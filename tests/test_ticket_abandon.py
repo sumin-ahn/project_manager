@@ -41,6 +41,8 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+from pm_engine.infra import repo_files
+
 import pytest
 
 from _git_fixture import remove_git_tree
@@ -132,7 +134,7 @@ class Env(NamedTuple):
 
 
 def _fixture_board(pd, env: Env):
-    board = pd._load_module_from_path(
+    board = repo_files.load_module(
         env.pm_home / ".project_manager" / "tools" / "board.py",
         "board.py", verifier=pd._verify_engine_rev,
     )
@@ -503,9 +505,9 @@ def test_owner_pid_is_recorded_only_when_the_caller_owns_the_run(pd, env, monkey
     owned = _prepare(pd, env, "T-8033", owner_pid=4242)
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: env.pm_home)
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "prepare", "--ticket", "T-8034", "--role", "architect", "--cwd", str(env.slot),
-    ], adapter_roots = pd._resolved_adapter_directories())
+    ], adapter_directories_fn=pd._resolved_adapter_directories)
 
     assert rc == 0
     rows = {row["ticket"]: row for row in _ledger_rows(env)}
@@ -1013,10 +1015,10 @@ def test_cli_reports_the_convergence_assertion_as_machine_fields(pd, env, monkey
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: env.pm_home)
     capsys.readouterr()
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "abandon", "--copy", str(plan.path), "--cwd", str(env.slot),
         delegate_rounds.ABANDON_ASSUME_DEAD_FLAG,
-    ], adapter_roots = pd._resolved_adapter_directories())
+    ], adapter_directories_fn=pd._resolved_adapter_directories)
 
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert rc == 0
@@ -1033,10 +1035,10 @@ def test_cli_abandon_wires_the_discard_reason_flag(pd, env, monkeypatch, capsys)
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: env.pm_home)
     capsys.readouterr()
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
         "abandon", "--copy", str(plan.path), "--cwd", str(env.slot),
         delegate_rounds.ABANDON_ASSUME_DEAD_FLAG, delegate_rounds.ABANDON_DISCARD_REASON_FLAG, _DISCARD_REASON,
-    ], adapter_roots = pd._resolved_adapter_directories())
+    ], adapter_directories_fn=pd._resolved_adapter_directories)
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out.strip().splitlines()[-1])
@@ -1054,9 +1056,9 @@ def test_cli_copies_query_labels_abandoned_rows(pd, env, monkeypatch, capsys):
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: env.pm_home)
     capsys.readouterr()
 
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["copies", "--ticket", "T-8111"], adapter_roots = pd._resolved_adapter_directories()) == 0
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111"], adapter_directories_fn=pd._resolved_adapter_directories) == 0
     listed = capsys.readouterr().out
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["copies", "--ticket", "T-8111", "--unharvested"], adapter_roots = pd._resolved_adapter_directories()) == 0
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111", "--unharvested"], adapter_directories_fn=pd._resolved_adapter_directories) == 0
     unharvested = capsys.readouterr().out
 
     assert "포기(" in listed and str(plan.path) in listed

@@ -8,15 +8,13 @@ and test inventories are read-only so later phases can be sized without
 changing their files.
 
 판정식 자체는 이 스크립트가 아니라 엔진 모듈
-``.project_manager/tools/private_refs.py`` 가 소유한다 — 출하 표면 안에 있어야 엔진과
-가드가 같은 판정을 소비한다. 이 파일은 그 판정을 **재수출**하고, 그 위에 개발 편의
-계층(파일 단위 재작성·표본/잔재 보고서·재고 집계·CLI)만 얹는다.
+``pm_engine.domain.private_refs``가 소유한다. 출하 표면은
+``pm_engine.infra.private_surface``를 직접 소비한다. 이 파일은 파일 재작성과 보고서·CLI를 담당한다.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import random
 import re
@@ -26,140 +24,21 @@ from pathlib import Path
 from typing import Iterable
 
 
-_PRIVATE_REFS_PATH = (
-    Path(__file__).resolve().parents[1]
-    / ".project_manager"
-    / "tools"
-    / "private_refs.py"
-)
+_TOOLS_DIR = Path(__file__).resolve().parents[1] / ".project_manager" / "tools"
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from pm_engine.domain import private_refs
+from pm_engine.infra import private_surface
 
-
-def _load_private_refs():
-    """판정식 엔진 모듈을 경로 로드한다 (도구는 패키지가 아니라 경로 로드 관례를 따른다)."""
-    spec = importlib.util.spec_from_file_location(
-        "private_refs", _PRIVATE_REFS_PATH
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(
-            "private_refs.py를 로드할 수 없음 — canonical 도구 사본을 확인하라"
-        )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    except FileNotFoundError as error:
-        sys.modules.pop(spec.name, None)
-        raise RuntimeError(
-            "private_refs.py가 없어 canonical 도구 사본을 확인하라"
-        ) from error
-    except Exception:
-        sys.modules.pop(spec.name, None)
-        raise
-    return module
-
-
-private_refs = _load_private_refs()
-
-# ── 판정식 재수출 (복제 0 — 이름마다 엔진 모듈의 **같은 객체**를 가리킨다) ──────────
-# 이 스크립트의 기존 공개 이름으로 접근하던 소비자가 그대로 동작해야 하므로 이름을 유지하되,
-# 값은 복사하지 않고 엔진 모듈에서 그대로 가져온다. 사본을 만들면 두 벌이 되어 판정이 갈린다.
-REPO = private_refs.REPO
-RAW_REF_RE = private_refs.RAW_REF_RE
-SPECIFIC_REF_RE = private_refs.SPECIFIC_REF_RE
-_INLINE_CODE_RE = private_refs._INLINE_CODE_RE
-_DATA_LITERAL_MARKER = private_refs._DATA_LITERAL_MARKER
-_DATA_LITERAL_PREFIX_RE = private_refs._DATA_LITERAL_PREFIX_RE
-_DATA_LITERAL_LINE_RE = private_refs._DATA_LITERAL_LINE_RE
-_DATA_LITERAL_BLOCK_RE = private_refs._DATA_LITERAL_BLOCK_RE
-_LONE_CARRIAGE_RETURN_RE = private_refs._LONE_CARRIAGE_RETURN_RE
-_NON_STATEMENT_TOKENS = private_refs._NON_STATEMENT_TOKENS
-_REFERENCE_ONLY_WRAPPER_RE = private_refs._REFERENCE_ONLY_WRAPPER_RE
-_DELTA_PATTERNS = private_refs._DELTA_PATTERNS
-TokenSpan = private_refs.TokenSpan
-RemovalSpan = private_refs.RemovalSpan
-DataLiteralMarkerError = private_refs.DataLiteralMarkerError
-repo_owned_paths = private_refs.repo_owned_paths
-shipping_paths = private_refs.shipping_paths
-_line_offsets = private_refs._line_offsets
-_offset = private_refs._offset
-_ast_column_to_character = private_refs._ast_column_to_character
-_line_records = private_refs._line_records
-_merge_spans = private_refs._merge_spans
-_subtract_spans = private_refs._subtract_spans
-_data_literal_markers = private_refs._data_literal_markers
-_data_literal_block_spans = private_refs._data_literal_block_spans
-_data_literal_spans = private_refs._data_literal_spans
-_doc_expression_ranges = private_refs._doc_expression_ranges
-_prose_token_ranges = private_refs._prose_token_ranges
-prose_context_spans = private_refs.prose_context_spans
-prose_token_spans = private_refs.prose_token_spans
-_specific_matches = private_refs._specific_matches
-_nearest_left_boundary = private_refs._nearest_left_boundary
-_nearest_right_boundary = private_refs._nearest_right_boundary
-_is_dot_unit = private_refs._is_dot_unit
-_actionable_matches = private_refs._actionable_matches
-line_delta_counts = private_refs.line_delta_counts
-line_delta = private_refs.line_delta
-_expand_unit_span = private_refs._expand_unit_span
-_candidate_removal_spans = private_refs._candidate_removal_spans
-remove_matched_spans = private_refs.remove_matched_spans
-_leading_whitespace = private_refs._leading_whitespace
-_result_payload = private_refs._result_payload
-_unsafe_result = private_refs._unsafe_result
-_line_rewrite_plan = private_refs._line_rewrite_plan
-# 비-python 출하 표면 언어 축(언어별 산문 경계 스캐너)도 같은 객체를 가리킨다.
-LANGUAGE_NOEXT = private_refs.LANGUAGE_NOEXT
-LANGUAGE_SH = private_refs.LANGUAGE_SH
-LANGUAGE_CMD = private_refs.LANGUAGE_CMD
-LANGUAGE_TOML = private_refs.LANGUAGE_TOML
-LANGUAGE_JS = private_refs.LANGUAGE_JS
-LANGUAGE_MANIFEST = private_refs.LANGUAGE_MANIFEST
-LANGUAGE_JSON = private_refs.LANGUAGE_JSON
-LANGUAGE_JSONC = private_refs.LANGUAGE_JSONC
-LANGUAGE_RULES = private_refs.LANGUAGE_RULES
-LANGUAGE_TXT = private_refs.LANGUAGE_TXT
-_LANGUAGE_BY_SUFFIX = private_refs._LANGUAGE_BY_SUFFIX
-_UNREGISTERED_ROOT_DESTINATIONS = private_refs._UNREGISTERED_ROOT_DESTINATIONS
-_root_destination_language_paths = private_refs._root_destination_language_paths
-language_paths = private_refs.language_paths
-language_of = private_refs.language_of
-_noext_prose_spans = private_refs._noext_prose_spans
-_cmd_prose_spans = private_refs._cmd_prose_spans
-_SHELL_HEREDOC_RE = private_refs._SHELL_HEREDOC_RE
-_skip_heredoc_bodies = private_refs._skip_heredoc_bodies
-_hash_comment_spans = private_refs._hash_comment_spans
-_shell_prose_spans = private_refs._shell_prose_spans
-_rules_prose_spans = private_refs._rules_prose_spans
-_toml_skip_string = private_refs._toml_skip_string
-_toml_skip_table_header = private_refs._toml_skip_table_header
-_toml_prose_spans = private_refs._toml_prose_spans
-_json_string_spans = private_refs._json_string_spans
-_json_value_spans = private_refs._json_value_spans
-_jsonc_prose_spans = private_refs._jsonc_prose_spans
-_JS_REGEX_PRECEDING_PUNCTUATION = private_refs._JS_REGEX_PRECEDING_PUNCTUATION
-_JS_REGEX_PRECEDING_KEYWORDS = private_refs._JS_REGEX_PRECEDING_KEYWORDS
-_JS_STATEMENT_HEAD_KEYWORDS = private_refs._JS_STATEMENT_HEAD_KEYWORDS
-_JS_STATEMENT_PAREN_TOKEN = private_refs._JS_STATEMENT_PAREN_TOKEN
-_JS_LITERAL_TOKEN = private_refs._JS_LITERAL_TOKEN
-_JS_FRAME_CODE = private_refs._JS_FRAME_CODE
-_JS_FRAME_TEMPLATE = private_refs._JS_FRAME_TEMPLATE
-_JsFrame = private_refs._JsFrame
-_js_skip_string = private_refs._js_skip_string
-_js_skip_regex = private_refs._js_skip_regex
-_js_is_regex_context = private_refs._js_is_regex_context
-_js_prose_spans = private_refs._js_prose_spans
-_manifest_prose_spans = private_refs._manifest_prose_spans
-_LANGUAGE_PROSE_SCANNERS = private_refs._LANGUAGE_PROSE_SCANNERS
-language_prose_spans = private_refs.language_prose_spans
-_prose_count = private_refs._prose_count
+REPO = Path(__file__).resolve().parents[1]
 
 
 PLACEHOLDER_RE = re.compile(r"(?<![A-Za-z0-9_])(?:T|ADR)-N{4}(?![A-Za-z0-9_])")
 _MECHANICAL_MARKDOWN_RE = re.compile(
-    r"\[\[\s*" + SPECIFIC_REF_RE.pattern
-    + r"\s*\]\]|\(\s*" + SPECIFIC_REF_RE.pattern
-    + r"(?:\s*[·,/;:+]\s*" + SPECIFIC_REF_RE.pattern + r")*\s*\)"
-    + r"|(?:^|\s)[··]\s*" + SPECIFIC_REF_RE.pattern,
+    r"\[\[\s*" + private_refs.SPECIFIC_REF_RE.pattern
+    + r"\s*\]\]|\(\s*" + private_refs.SPECIFIC_REF_RE.pattern
+    + r"(?:\s*[·,/;:+]\s*" + private_refs.SPECIFIC_REF_RE.pattern + r")*\s*\)"
+    + r"|(?:^|\s)[··]\s*" + private_refs.SPECIFIC_REF_RE.pattern,
     re.MULTILINE,
 )
 
@@ -192,7 +71,7 @@ def self_sufficiency_issues(before: str, after: str) -> list[str]:
     for number, (old, new) in enumerate(zip(before_lines, after_lines), 1):
         if old == new:
             continue
-        for name, counts in line_delta(old, new).items():
+        for name, counts in private_refs.line_delta(old, new).items():
             if counts["delta"] > 0:
                 issues.append(f"line {number} {name}: +{counts['delta']}")
     return issues
@@ -213,14 +92,14 @@ def strip_prose_text(text: str) -> tuple[str, int]:
 
 
 def _strip_prose_line(text: str) -> tuple[str, int]:
-    cleaned, removed, _ = _line_rewrite_plan(text)
+    cleaned, removed, _ = private_refs._line_rewrite_plan(text)
     return cleaned, removed
 
 
 def rewrite_python(source: str) -> tuple[str, int]:
     """Rewrite only Python prose tokens and return text plus replacement count."""
     original_newlines = source.count("\n")
-    spans = prose_token_spans(source)
+    spans = private_refs.prose_token_spans(source)
     replacements: list[tuple[int, int, str]] = []
     count = 0
     for span in spans:
@@ -238,11 +117,11 @@ def rewrite_python(source: str) -> tuple[str, int]:
 def line_invariant(before: str, after: str) -> dict[str, bool]:
     """Verify exact deletion reconstruction and the two line postconditions."""
     return {
-        "matched_span_reconstruction": after == remove_matched_spans(before),
+        "matched_span_reconstruction": after == private_refs.remove_matched_spans(before),
         "leading_whitespace_preserved": (
-            _leading_whitespace(before) == _leading_whitespace(after)
+            private_refs._leading_whitespace(before) == private_refs._leading_whitespace(after)
         ),
-        "meaningful_result": not _unsafe_result(before, after),
+        "meaningful_result": not private_refs._unsafe_result(before, after),
     }
 
 
@@ -259,7 +138,7 @@ def _changed_line_records(before: str, after: str, path: str) -> list[dict[str, 
                     "before": old,
                     "after": new,
                     "invariant": line_invariant(old, new),
-                    "delta": line_delta(old, new),
+                    "delta": private_refs.line_delta(old, new),
                 }
             )
     return records
@@ -270,7 +149,7 @@ def _delta_summary(
 ) -> dict[str, dict[str, int]]:
     summary = {
         name: {"before": 0, "after": 0, "delta": 0, "increased_lines": 0}
-        for name, _ in _DELTA_PATTERNS
+        for name, _ in private_refs._DELTA_PATTERNS
     }
     for record in records:
         delta = record["delta"]
@@ -323,14 +202,14 @@ def process_python(
         before = stream.read()
     after, replacements = rewrite_python(before)
     relative = path.relative_to(root).as_posix()
-    before_raw = len(RAW_REF_RE.findall(before))
+    before_raw = len(private_refs.RAW_REF_RE.findall(before))
     before_prose_raw = sum(
-        len(RAW_REF_RE.findall(span.text)) for span in prose_token_spans(before)
+        len(private_refs.RAW_REF_RE.findall(span.text)) for span in private_refs.prose_token_spans(before)
     )
-    before_prose = _prose_count(before)
-    after_prose = _prose_count(after)
+    before_prose = private_refs._prose_count(before)
+    after_prose = private_refs._prose_count(after)
     actionable_after = sum(
-        len(_actionable_matches(span.text)) for span in prose_token_spans(after)
+        len(private_refs._actionable_matches(span.text)) for span in private_refs.prose_token_spans(after)
     )
     changed_lines = _changed_line_records(before, after, relative)
     failures = _invariant_failures(changed_lines) + _delta_failures(changed_lines)
@@ -342,8 +221,8 @@ def process_python(
     residual_lines = sorted(
         {
             span.line + span.text[: match.start()].count("\n")
-            for span in prose_token_spans(after)
-            for match in _specific_matches(span.text)
+            for span in private_refs.prose_token_spans(after)
+            for match in private_refs._specific_matches(span.text)
         }
     )
     return FileResult(
@@ -462,11 +341,11 @@ def _inventory_markdown(paths: Iterable[Path], root: Path) -> dict[str, object]:
     total = mechanical = 0
     for path in paths:
         text = path.read_text(encoding="utf-8")
-        count = len(RAW_REF_RE.findall(text))
+        count = len(private_refs.RAW_REF_RE.findall(text))
         if not count:
             continue
         mechanical_count = sum(
-            len(RAW_REF_RE.findall(match.group()))
+            len(private_refs.RAW_REF_RE.findall(match.group()))
             for match in _MECHANICAL_MARKDOWN_RE.finditer(text)
         )
         files.append(
@@ -492,10 +371,10 @@ def _inventory_tests(paths: Iterable[Path], root: Path) -> dict[str, object]:
     total = prose = 0
     for path in paths:
         source = path.read_text(encoding="utf-8")
-        count = len(RAW_REF_RE.findall(source))
+        count = len(private_refs.RAW_REF_RE.findall(source))
         if not count:
             continue
-        prose_count = _prose_count(source)
+        prose_count = private_refs._prose_count(source)
         files.append(
             {
                 "path": path.relative_to(root).as_posix(),
@@ -515,7 +394,7 @@ def _inventory_tests(paths: Iterable[Path], root: Path) -> dict[str, object]:
 
 
 def _write_inventory(root: Path, output: Path) -> dict[str, object]:
-    _, markdown_paths = shipping_paths(root)
+    _, markdown_paths = private_surface.shipping_paths(root)
     # v1.5.0보다 넓은 출하 표면(CLAUDE.md·templates 포함)을 보고용으로 집계한다.
     tests = sorted((root / "tests").glob("*.py"))
     report = {
@@ -532,7 +411,7 @@ def run(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     report_dir = args.report_dir.resolve()
     report_dir.mkdir(parents=True, exist_ok=True)
-    python_paths, _ = shipping_paths(root)
+    python_paths, _ = private_surface.shipping_paths(root)
     canonical_tools = root / ".project_manager" / "tools"
     paths = [path for path in python_paths if path.parent == canonical_tools]
     try:

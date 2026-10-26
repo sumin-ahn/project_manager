@@ -27,6 +27,11 @@ import pytest
 
 from conftest import current_branch, write_cluster_ledger
 from _engine_tree import engine_python_files
+_TOOLS_DIR = Path(__file__).resolve().parents[1] / ".project_manager/tools"
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from pm_engine.domain import private_refs
+from pm_engine.infra import private_surface
 from pm_engine.infra import pm_paths
 from pm_engine.infra import review_diff
 from pm_engine.domain import review_diff_rules
@@ -34,7 +39,6 @@ from pm_engine.infra import manifest_store
 
 
 REPO = Path(__file__).resolve().parents[1]
-PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
 DATA_DIR = REPO / "tests/data"
 HARD_REPORT = DATA_DIR / "private_context_hard_allowlist.json"
 RATCHET_BASELINE = DATA_DIR / "private_context_baseline.json"
@@ -61,26 +65,6 @@ RATCHET_PATTERNS = {
         r"|(?<!\d)\d+차(?![A-Za-z0-9_])"
     ),
 }
-
-
-# 엔진 완료 기록 preflight(`ticket_finish._load_private_refs`)와 **같은** 공용 캐시 key.
-# 두 소비자가 같은 key 로 올리면 `sys.modules` 가 한 모듈 객체를 돌려주므로, 판정식이 한 벌뿐이라는
-# 요구가 함수 객체 동일성으로 성립한다(key 가 어긋나면 아래 동일성 회귀가 즉시 red).
-PRIVATE_REFS_CACHE_KEY = f"_project_manager_private_refs:{PRIVATE_REFS_MODULE.resolve()}"
-
-
-def _load_prose_scanner():
-    """사설 참조 판정식을 엔진 모듈에서 로드한다 — 판정 사본을 테스트가 다시 쓰지 않는다."""
-    spec = importlib.util.spec_from_file_location(
-        PRIVATE_REFS_CACHE_KEY, PRIVATE_REFS_MODULE
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-PROSE_SCANNER = _load_prose_scanner()
 
 
 @lru_cache(maxsize=None)
@@ -375,14 +359,14 @@ def _python_prose_ranges(source: str) -> list[tuple[int, int, str]]:
     # 출현(개행을 삼키는 패턴)이 어느 조각에도 온전히 안 담겨 탐지를 빠져나간다.
     return [
         (span.start, span.end, "python-prose")
-        for span in PROSE_SCANNER.prose_context_spans(source)
+        for span in private_refs.prose_context_spans(source)
     ]
 
 
 def _python_data_literal_spans(source: str) -> list[tuple[int, int]]:
     # 스트립 도구와 같은 판정 함수를 소비한다 — 표식이 붙은 리터럴은 채택자 디스크에
     # 기록되는 wire 문자열이라 사설 참조 재유입이 아니다(판정 사본을 두지 않는다).
-    return PROSE_SCANNER._data_literal_spans(source)
+    return private_refs._data_literal_spans(source)
 
 
 def _python_hard_occurrences(path: str, source: str) -> list[Occurrence]:
@@ -439,19 +423,19 @@ def _markdown_occurrences(
 
 # ── 언어 축 — python·markdown 을 뺀 출하 표면. HARD 는 전-파일 스캔 + surface 라벨
 # (python 축과 동일 구조), RATCHET 은 언어별 산문 구간 한정. 판정 사본이 아니라 엔진 모듈
-# (``private_refs.language_paths``/``language_of``/``language_prose_spans``)을 그대로 소비한다.
+# (``private_surface.language_paths``/``language_of``/``language_prose_spans``)을 그대로 소비한다.
 LANGUAGE_PROSE_SURFACE = "language-prose"
 LANGUAGE_NON_PROSE_SURFACE = "language-non-prose"
 
 
 def _language_paths(root: Path) -> list[Path]:
-    return PROSE_SCANNER.language_paths(root)
+    return private_surface.language_paths(root)
 
 
 def _language_prose_ranges(path: Path, source: str) -> list[tuple[int, int, str]]:
     return [
         (span.start, span.end, LANGUAGE_PROSE_SURFACE)
-        for span in PROSE_SCANNER.language_prose_spans(path, source)
+        for span in private_refs.language_prose_spans(path, source)
     ]
 
 
@@ -493,7 +477,7 @@ def _language_ratchet_occurrences(
 def _shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
     # 테스트와 재생성 스크립트가 같은 공용 OWNED 열거·표면 분류를 사용해야
     # 한쪽에서만 ignored 파생 파일을 baseline에 다시 넣는 판정 어긋남이 없다.
-    return PROSE_SCANNER.shipping_paths(root)
+    return private_surface.shipping_paths(root)
 
 
 @lru_cache(maxsize=None)
@@ -784,7 +768,7 @@ def test_shipping_inventory_git_missing_archive_falls_back_loudly(
     ignored_derived.parent.mkdir(parents=True)
     ignored_derived.write_text("derived\n", encoding="utf-8")
     _git(tmp_path, "add", ".gitignore", str(doc.relative_to(tmp_path)))
-    repo_files = PROSE_SCANNER.repo_files
+    repo_files = private_surface.repo_files
 
     _, owned_markdown = _shipping_paths(tmp_path)
     monkeypatch.setattr(repo_files.shutil, "which", lambda _name: None)
@@ -803,7 +787,7 @@ def _narrow_scope_python_paths(root: Path) -> set[Path]:
     이하로만 한정한다. sensitivity 대조 전용(프로덕션 코드가 아니다)."""
     resolved_root = root.resolve()
     narrow: set[Path] = set()
-    for path in PROSE_SCANNER.repo_owned_paths(root):
+    for path in private_surface.repo_owned_paths(root):
         relative = path.relative_to(resolved_root)
         parts = relative.parts
         if path.suffix != ".py":
@@ -827,8 +811,8 @@ def _count_lint_offenders(paths) -> int:
     count = 0
     for path in paths:
         source = path.read_text(encoding="utf-8")
-        for span in PROSE_SCANNER.prose_token_spans(source):
-            count += len(PROSE_SCANNER._actionable_matches(span.text))
+        for span in private_refs.prose_token_spans(source):
+            count += len(private_refs._actionable_matches(span.text))
     return count
 
 
@@ -1237,7 +1221,7 @@ def test_python_scanning_reuses_prose_classifier():
 
 def test_marked_data_literals_are_not_reference_inflow():
     """표식이 붙은 wire 리터럴은 재유입이 아니다 — 스트립과 같은 구간 판정을 소비한다."""
-    marker = "# " + PROSE_SCANNER._DATA_LITERAL_MARKER
+    marker = "# " + private_refs._DATA_LITERAL_MARKER
     source = "\n".join(
         (
             marker + ":begin",
@@ -1265,10 +1249,10 @@ def test_marked_data_literals_are_not_reference_inflow():
 
 def test_marker_text_inside_string_literal_does_not_hide_hard_reference():
     """리터럴 속 표식 글자로는 재유입 검사를 우회하지 못한다 — 표식은 주석 토큰만이다."""
-    marker = "# " + PROSE_SCANNER._DATA_LITERAL_MARKER
+    marker = "# " + private_refs._DATA_LITERAL_MARKER
     source = f'VALUE = "payload {marker} {_SYNTHETIC_REF}"\n'
 
-    assert PROSE_SCANNER._data_literal_spans(source) == []
+    assert private_refs._data_literal_spans(source) == []
     assert [item.match for item in _python_hard_occurrences("wire.py", source)] == [
         _SYNTHETIC_REF
     ]
@@ -1298,7 +1282,7 @@ def test_data_literal_exemption_requires_full_containment():
 
 def test_hard_match_straddling_a_data_boundary_stays_detected():
     """표식 경계를 걸친 hard 출현은 면제되지 않는다(양방향)."""
-    marker = "# " + PROSE_SCANNER._DATA_LITERAL_MARKER
+    marker = "# " + private_refs._DATA_LITERAL_MARKER
     entering = f'A = """{_SECTION_MARK}\n{_SECTION_CODE}"""  {marker}\n'
     leaving = f"B = 1  {marker} 설명 {_SECTION_MARK}\n{_SECTION_CODE} = 2\n"
     straddle = f"{_SECTION_MARK}\n{_SECTION_CODE}"
@@ -1322,7 +1306,7 @@ def test_ratchet_match_straddling_a_data_boundary_stays_detected():
     구간이 라인 단위이고 산문 범위가 토큰 단위라, 한 토큰 안에서 앞줄만 보호되고 뒷줄이
     열리는 형태가 나오지 않는다. 그 방향은 완전 포함 판정 테스트가 직접 덮는다.
     """
-    marker = "# " + PROSE_SCANNER._DATA_LITERAL_MARKER
+    marker = "# " + private_refs._DATA_LITERAL_MARKER
     source = f'"""문맥 {_SESSION_LABEL}\n{7} 회차"""  {marker}\n'
 
     assert [item.match for item in _python_ratchet_occurrences("wire.py", source)] == [
@@ -1351,7 +1335,7 @@ def test_inventory_delta_flags_stale_entries():
 # 이 소비하는 ``_python_prose_ranges``/``RATCHET_PATTERNS`` 는 건드리지 않는다(그 대장은 T-번호·
 # ADR-번호·세션 표기 등 다른 클래스를 추적하며, 이 판정면과 공유하면 대장 재생성이 강제된다).
 
-_MARKER_LABEL_PATTERNS = dict(PROSE_SCANNER._DELTA_PATTERNS)
+_MARKER_LABEL_PATTERNS = dict(private_refs._DELTA_PATTERNS)
 _CIRCLED_MARKER_RE = _MARKER_LABEL_PATTERNS["circled-marker"]
 _DESIGN_LABEL_RE = _MARKER_LABEL_PATTERNS["design-label"]
 _FSTRING_START = getattr(tokenize, "FSTRING_START", None)
@@ -1734,7 +1718,7 @@ def _language_axis_spans(path: Path, source: str) -> tuple[tuple[int, str], ...]
     """(줄 번호, span 텍스트) 전수 — 개수만이 아니라 내용까지 값으로 대조한다."""
     return tuple(
         (span.line, span.text)
-        for span in PROSE_SCANNER.language_prose_spans(path, source)
+        for span in private_refs.language_prose_spans(path, source)
     )
 
 
@@ -1774,9 +1758,9 @@ def test_unregistered_extension_is_fail_loud(tmp_path, monkeypatch):
     assert injected in wide, "언어 축 열거는 미등록 확장자도 시야에 넣어야 한다(필터 없음)"
 
     with pytest.raises(ValueError, match="미등록 확장자"):
-        PROSE_SCANNER.language_of(injected)
+        private_refs.language_of(injected)
     with pytest.raises(ValueError, match="미등록 확장자"):
-        PROSE_SCANNER.language_prose_spans(injected, injected.read_text(encoding="utf-8"))
+        private_refs.language_prose_spans(injected, injected.read_text(encoding="utf-8"))
 
 
 @dataclass(frozen=True)
@@ -1805,7 +1789,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix="",
-            language=PROSE_SCANNER.LANGUAGE_NOEXT,
+            language=private_refs.LANGUAGE_NOEXT,
             prose_source=f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\nbuild/\n",
             prose_spans=((1, f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),),
             prose_hard_hits=1,
@@ -1821,7 +1805,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".sh",
-            language=PROSE_SCANNER.LANGUAGE_SH,
+            language=private_refs.LANGUAGE_SH,
             prose_source=(
                 f"echo ok  # 후행 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
                 f"# 라인 선두 설명 {_WORK_ITEM_SAMPLE}\n"
@@ -1849,7 +1833,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".cmd",
-            language=PROSE_SCANNER.LANGUAGE_CMD,
+            language=private_refs.LANGUAGE_CMD,
             prose_source=(
                 f"rem 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
                 f":: 두 번째 설명 {_WORK_ITEM_SAMPLE}\n"
@@ -1870,7 +1854,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".toml",
-            language=PROSE_SCANNER.LANGUAGE_TOML,
+            language=private_refs.LANGUAGE_TOML,
             prose_source=(
                 f'description = "설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"\n'
                 'prompt = """\n'
@@ -1900,7 +1884,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".js",
-            language=PROSE_SCANNER.LANGUAGE_JS,
+            language=private_refs.LANGUAGE_JS,
             prose_source=(
                 f"const label = `${{1 /* 보간 주석 {_WORK_ITEM_SAMPLE} "
                 f"{_DECISION_LABEL_SAMPLE} */}}`;\n"
@@ -1927,7 +1911,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".cjs",
-            language=PROSE_SCANNER.LANGUAGE_JS,
+            language=private_refs.LANGUAGE_JS,
             prose_source=(
                 f"/* 블록 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE} */\n"
                 "module.exports = {};\n"
@@ -1950,7 +1934,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".manifest",
-            language=PROSE_SCANNER.LANGUAGE_MANIFEST,
+            language=private_refs.LANGUAGE_MANIFEST,
             prose_source=(
                 f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
                 ".project_manager/tools/board.py\n"
@@ -1969,7 +1953,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".json",
-            language=PROSE_SCANNER.LANGUAGE_JSON,
+            language=private_refs.LANGUAGE_JSON,
             prose_source=(
                 f'{{"_comment": "설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"}}\n'
             ),
@@ -1987,7 +1971,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".jsonc",
-            language=PROSE_SCANNER.LANGUAGE_JSONC,
+            language=private_refs.LANGUAGE_JSONC,
             prose_source=(
                 "{\n"
                 f"  // 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
@@ -2011,7 +1995,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".rules",
-            language=PROSE_SCANNER.LANGUAGE_RULES,
+            language=private_refs.LANGUAGE_RULES,
             prose_source=(
                 f"allow = true # 후행 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
             ),
@@ -2031,7 +2015,7 @@ _LANGUAGE_AXIS_FIXTURES = [
     pytest.param(
         LanguageAxisFixture(
             suffix=".txt",
-            language=PROSE_SCANNER.LANGUAGE_TXT,
+            language=private_refs.LANGUAGE_TXT,
             prose_source=f"안내 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n",
             prose_spans=((1, f"안내 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),),
             prose_hard_hits=1,
@@ -2053,7 +2037,7 @@ def test_language_axis_prose_spans_are_asserted_by_value(fixture, tmp_path):
     path = _write_language_fixture(tmp_path, "prose", fixture.suffix, fixture.prose_source)
     source = path.read_text(encoding="utf-8")
 
-    assert PROSE_SCANNER.language_of(path) == fixture.language
+    assert private_refs.language_of(path) == fixture.language
     assert _language_axis_spans(path, source) == fixture.prose_spans
 
     _hard_total, prose_hard, ratchet = _language_axis_counts(path, source)
@@ -2094,9 +2078,9 @@ def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
     assert prose_hard == fixture.prose_hard_hits >= 1
     assert ratchet == fixture.prose_ratchet_hits >= 1
 
-    disabled = dict(PROSE_SCANNER._LANGUAGE_PROSE_SCANNERS)
+    disabled = dict(private_refs._LANGUAGE_PROSE_SCANNERS)
     disabled[fixture.language] = lambda _source: []
-    monkeypatch.setattr(PROSE_SCANNER, "_LANGUAGE_PROSE_SCANNERS", disabled)
+    monkeypatch.setattr(private_refs, "_LANGUAGE_PROSE_SCANNERS", disabled)
 
     after_total, after_prose_hard, after_ratchet = _language_axis_counts(path, source)
     assert (after_prose_hard, after_ratchet) == (0, 0)
@@ -2105,7 +2089,7 @@ def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
 
 # ── 사설 참조 완료 기록 preflight(``ticket_finish.TicketFinisher._default_private_ref_block``) ──
 #
-# 판정식 자체는 이 파일이 이미 로드한 ``PROSE_SCANNER``(=private_refs.py)와 같은 소스다 — 여기서
+# 판정식 자체는 이 파일이 직접 import한 ``domain.private_refs``와 같은 소스다 — 여기서
 # 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter(묶음 장부 포함) 로 재현한다(DI 로
 # git 을 가짜로 만들지 않는다) — 측정 폭의 기준점(``additional_reviewer.integration_anchor``)을
 # 그대로 태워야 통합 브랜치가 이미 가진 줄 같은 실제 형상이 재현된다.
@@ -2525,13 +2509,12 @@ def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(pref
     _pref_write_ticket(root, _pref_ticket("108"), claimed_rev)
     external = _load_tool_module("additional_reviewer")
     finisher = _pref_finisher(pref_tf, root)
-    private_refs = pref_tf._load_private_refs()
     expected = {
-        path for path in private_refs.shipping_paths(root)[0]
+        path for path in private_surface.shipping_paths(root)[0]
         if path.relative_to(root).as_posix() == _PREF_TOUCH
     }
     actual = set(
-        finisher._private_ref_surface_paths(pm_paths.home_at(root), root, [_PREF_TOUCH], private_refs)
+        finisher._private_ref_surface_paths(pm_paths.home_at(root), root, [_PREF_TOUCH])
     )
     assert actual == expected and actual  # 비어 있으면 교집합이 실재하지 않아 무의미한 단언이다
 
@@ -2551,7 +2534,6 @@ def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
     assert len(mirrors) == 3
     assert all((REPO / mirror).is_file() for mirror in mirrors)
     assert all(review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), mirror) for mirror in mirrors)
-    private_refs = pref_tf._load_private_refs()
     finisher = pref_tf.TicketFinisher(
         board_py=REPO / ".project_manager" / "tools" / "board.py",
         task_workspace=REPO,
@@ -2559,7 +2541,7 @@ def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
     selected = {
         path.relative_to(REPO).as_posix()
         for path in finisher._private_ref_surface_paths(
-            pm_paths.home_at(REPO), REPO, [canonical, *mirrors], private_refs,
+            pm_paths.home_at(REPO), REPO, [canonical, *mirrors],
         )
     }
     assert selected == {canonical}
@@ -2618,10 +2600,7 @@ def test_private_ref_preflight_sensitivity_removed_call_lets_offense_through(pre
 def test_private_ref_block_defers_entirely_to_loaded_scanner_no_duplicate(
     pref_tf, tmp_path, monkeypatch,
 ):
-    """판정은 `_load_private_refs()` 가 준 모듈의 함수만 쓴다(사본 0). 실 참조 패턴이
-    하나도 없는 파일에서, 스텁 스캐너의 sentinel 결과가 그대로 출력에 실리는 것으로 "숨은
-    재구현이 없다"를 값으로 증명한다 — 사본이 있었다면 스텁을 갈아 끼워도 원래 판정이
-    남아 이 단언이 깨진다."""
+    """실제 domain predicate 세 개의 sentinel 결과가 preflight에 반영된다."""
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)  # 실 참조 패턴 0
     claimed_rev = _pref_commit(root, "seed")
@@ -2629,7 +2608,6 @@ def test_private_ref_block_defers_entirely_to_loaded_scanner_no_duplicate(
     _pref_write_ticket(root, ticket, claimed_rev)
     _pref_write_target(root, _PREF_BASE_BODY + "# 평범한 주석 한 줄 추가\n")
 
-    real_private_refs = pref_tf._load_private_refs()
     sentinel = "SENTINEL-" + "9" * 4
 
     class _FakeSpan:
@@ -2657,29 +2635,15 @@ def test_private_ref_block_defers_entirely_to_loaded_scanner_no_duplicate(
     def fake_specific_matches(text):
         return [_FakeMatch(sentinel)] if text == sentinel else []
 
-    fake_module = types.SimpleNamespace(
-        shipping_paths=real_private_refs.shipping_paths,
-        prose_token_spans=fake_prose_token_spans,
-        _actionable_matches=fake_actionable_matches,
-        _specific_matches=fake_specific_matches,
-        DataLiteralMarkerError=real_private_refs.DataLiteralMarkerError,
-    )
-    monkeypatch.setattr(pref_tf, "_load_private_refs", lambda: fake_module)
+    monkeypatch.setattr(private_refs, "prose_token_spans", fake_prose_token_spans)
+    monkeypatch.setattr(private_refs, "_actionable_matches", fake_actionable_matches)
+    monkeypatch.setattr(private_refs, "_specific_matches", fake_specific_matches)
 
     block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
     assert block is not None
     assert sentinel in block
 
 
-def test_private_ref_scanner_module_is_shared_with_the_reinflow_guard(pref_tf):
-    """완료 기록 preflight 와 이 가드는 **같은 판정식 모듈 객체**를 쓴다(공용 로더 key 정합).
-
-    이름만 같은 두 모듈 객체를 각자 로드하면 판정식이 두 벌이 되어, 한쪽만 고쳐도 다른 쪽은
-    옛 판정으로 통과한다. 함수 객체 동일성으로 그 갈림을 원천 차단한다."""
-    loaded = pref_tf._load_private_refs()
-    assert loaded is PROSE_SCANNER
-    assert loaded.prose_token_spans is PROSE_SCANNER.prose_token_spans
-    assert loaded._actionable_matches is PROSE_SCANNER._actionable_matches
 
 
 def test_private_ref_preflight_does_not_reference_allowlist_or_baseline_files():
@@ -2749,7 +2713,6 @@ def test_real_historical_inflow_agrees_with_the_reinflow_guard(pref_tf, tmp_path
     target.write_text(source, encoding="utf-8")
 
     external = _load_tool_module("additional_reviewer")
-    private_refs = pref_tf._load_private_refs()
     finisher = pref_tf.TicketFinisher(
         board_py=REPO / ".project_manager" / "tools" / "board.py",
         task_workspace=code_tree,
@@ -2758,7 +2721,7 @@ def test_real_historical_inflow_agrees_with_the_reinflow_guard(pref_tf, tmp_path
         diff_text
     )
     actionable, raw = finisher._private_ref_diff_offenders(
-        [target], code_tree, diff_text, private_refs,
+        [target], code_tree, diff_text,
     )
     hard = sorted(
         (item.line, item.kind, item.match, item.surface)

@@ -40,6 +40,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pm_engine.domain import finish_rules
+
+from pm_engine.infra import finish_git
+
 import pytest
 
 from _slot_seed import seed_slot
@@ -335,7 +339,7 @@ def test_line_the_integration_branch_already_had_leaves_the_width(tf, tmp_path):
 
     _write_cluster_ledger(root / ".project_manager" / "board", tickets=(_TICKET,),
                           base_branch=None)
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _block_with_stderr(tf, root)
     assert "통합 브랜치(base_branch)를 선언하지 않았다" in str(caught.value)
 
@@ -384,7 +388,7 @@ def test_unresolvable_integration_branch_stops_the_judgment(tf, tmp_path):
     (root / _TOUCH).write_text(offending, encoding="utf-8")
     _commit(root, "cluster work")
 
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _block_with_stderr(tf, root)
 
     assert "task/absent" in str(caught.value) and "찾지 못했다" not in str(caught.value)
@@ -786,7 +790,6 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     # 미해소는 소유 거부라는 다른 축이다.
     monkeypatch.setenv("PM_SESSION_NAME", "t")
     monkeypatch.setattr(tf, "REPO", home)
-    monkeypatch.setattr(tf, "TOOLS_DIR", home / ".project_manager" / "tools")
     monkeypatch.setattr(tf, "BOARD_PY", home / ".project_manager" / "tools" / "board.py")
     monkeypatch.setattr(
         tf, "LOG_FILE", home / ".project_manager" / "wiki" / "log" / "current.md")
@@ -2409,7 +2412,6 @@ def _residual_repo(tf, tmp_path: Path, monkeypatch, *, members: tuple[str, ...])
         _write_ticket(board_dir, _MEMBER_B, claimed_rev=seed, touches=(_TOUCH_B,))
     _write_cluster_ledger(board_dir, tickets=members)
     monkeypatch.setattr(tf, "REPO", root)
-    monkeypatch.setattr(tf, "TOOLS_DIR", root / ".project_manager" / "tools")
     monkeypatch.setattr(tf, "BOARD_PY", root / ".project_manager" / "tools" / "board.py")
     monkeypatch.setattr(
         tf, "LOG_FILE", root / ".project_manager" / "wiki" / "log" / "current.md")
@@ -2531,9 +2533,9 @@ def test_declared_change_population_requires_a_member_change(tf, tmp_path, monke
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
         task_workspace=root,
         run_git_stdout_at_fn=lambda cwd, args: ((1, "") if args[:2] == ["diff", "--name-only"]
-                                                else tf.TicketFinisher._default_run_git_stdout_at(cwd, args)),
+                                                else finish_git._default_run_git_stdout_at(cwd, args)),
     )
-    with pytest.raises(tf._CloseObservationFailure):
+    with pytest.raises(finish_rules._CloseObservationFailure):
         finisher._declared_change_problem(_MEMBER_A, root)
 
 
@@ -2563,12 +2565,12 @@ def test_home_new_path_query_failure_stops(tf, tmp_path, monkeypatch):
     def run(cwd, args):
         if args[:1] == ["ls-files"]:
             return 128, "fatal: 합성 관측 실패"
-        return tf.TicketFinisher._default_run_git_stdout_at(cwd, args)
+        return finish_git._default_run_git_stdout_at(cwd, args)
 
     finisher = tf.TicketFinisher(board_py=root / ".project_manager" / "tools" / "board.py",
                                  log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
                                  task_workspace=root, run_git_stdout_at_fn=run)
-    with pytest.raises(tf._CloseObservationFailure, match="git ls-files rc=128"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="git ls-files rc=128"):
         finisher._home_new_paths(["notes/new.md"])
     assert tf.TicketFinisher(board_py=root / ".project_manager" / "tools" / "board.py",
                              log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
@@ -2592,14 +2594,14 @@ def test_declared_change_new_git_queries_fail_loud(tf, tmp_path, monkeypatch):
         def run(cwd, args):
             if predicate(args):
                 return 128, "fatal: 합성 관측 실패"
-            return tf.TicketFinisher._default_run_git_stdout_at(cwd, args)
+            return finish_git._default_run_git_stdout_at(cwd, args)
         return run
 
     status_fails = failing_at(lambda args: args[:1] == ["status"] and "--untracked-files=no" in args)
     finisher = tf.TicketFinisher(board_py=board_py, log_file=log_file, task_workspace=root,
                                  run_git_stdout_at_fn=status_fails)
     (root / _TOUCH_A).unlink()
-    with pytest.raises(tf._CloseObservationFailure, match="추적 여부를 관측하지 못했다"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="추적 여부를 관측하지 못했다"):
         finisher._tracked_in(root, _TOUCH_A)
 
     staged_deletion_fails = failing_at(lambda args: args[:2] == ["diff", "--cached"])
@@ -2612,7 +2614,7 @@ def test_declared_change_new_git_queries_fail_loud(tf, tmp_path, monkeypatch):
     ticket.write_text(ticket.read_text(encoding="utf-8").replace("touches:\n", "touches: [unclosed\n", 1),
                       encoding="utf-8")
     reader = tf.TicketFinisher(board_py=board_py, log_file=log_file, task_workspace=root)
-    with pytest.raises(tf._CloseObservationFailure, match="티켓을 읽지 못해"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="티켓을 읽지 못해"):
         reader._declared_change_problem(_MEMBER_A, root)
 
 
@@ -2631,7 +2633,7 @@ def test_residual_population_stops_without_an_integration_tip(
     (root / _UNDECLARED).write_text(_CHANGED_BODY, encoding="utf-8")
     _commit_paths(root, _UNDECLARED)
 
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _residual_verdict(tf, root, _MEMBER_A)
 
     assert _MEMBER_A in str(caught.value)
@@ -2678,7 +2680,6 @@ def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
                           base_branch=_UNBORN_BRANCH, branch=_UNBORN_BRANCH)
     monkeypatch.setenv("PM_SESSION_NAME", "t")
     monkeypatch.setattr(tf, "REPO", root)
-    monkeypatch.setattr(tf, "TOOLS_DIR", root / ".project_manager" / "tools")
     monkeypatch.setattr(tf, "BOARD_PY", root / ".project_manager" / "tools" / "board.py")
     monkeypatch.setattr(
         tf, "LOG_FILE", root / ".project_manager" / "wiki" / "log" / "current.md")
@@ -2714,7 +2715,7 @@ def test_unborn_baseline_requires_head_on_the_declared_branch(tf, tmp_path, monk
     detached_head = _unborn_repo(tf, tmp_path / "other-head", monkeypatch,
                                  head_branch=_OTHER_BRANCH)
 
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _residual_verdict(tf, detached_head, _MEMBER_A)
     assert _UNBORN_BRANCH in str(caught.value) and "이 코드 트리에 없다" in str(caught.value)
 
@@ -2723,7 +2724,7 @@ def test_unborn_baseline_requires_head_on_the_declared_branch(tf, tmp_path, monk
     _write_cluster_ledger(committed / ".project_manager" / "board",
                           tickets=(_MEMBER_A,), base_branch="task/absent")
 
-    with pytest.raises(tf._CloseObservationFailure) as caught:
+    with pytest.raises(finish_rules._CloseObservationFailure) as caught:
         _residual_verdict(tf, committed, _MEMBER_A)
     assert "task/absent" in str(caught.value) and "이 코드 트리에 없다" in str(caught.value)
 
@@ -2797,9 +2798,9 @@ def test_status_query_failure_stops_residual_gate_and_report(tf, tmp_path, capsy
         log_file=tmp_path / "log.md",
         status_entries_at_fn=lambda _cwd: tf.status_entries(_failing, strict=True),
     )
-    with pytest.raises(tf._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
         finisher._residual_split(tmp_path, (_TOUCH_A,), (), ticket_id=_MEMBER_A)
-    with pytest.raises(tf._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
         finisher._report_dirty_after_stage((_TOUCH_A,), cwd=tmp_path)
 
     assert "스코프 밖 잔여 변경 없음" not in capsys.readouterr().out

@@ -7,7 +7,7 @@ from _manager_home import tree_snapshot
 import ticket_finish as finish
 from pm_engine.app import cluster_binding, ticket_access
 from pm_engine.cli import board_ticket
-from pm_engine.domain import identity_args, ticket_rules
+from pm_engine.domain import finish_rules, identity_args, ticket_rules
 from pm_engine.infra import fs, pm_paths, ticket_store
 
 
@@ -112,7 +112,7 @@ def test_missing_ticket_remains_observation_failure(ownership_home):
     # 파일명 prefix가 같아도 canonical ID가 다르면 정확 티켓 조회는 실패한다.
     ticket_store.dump_ticket(path.with_name(f"{missing}-other.md"), {"id": _TICKET}, "")
     before = path.read_bytes()
-    with pytest.raises(finish._CloseObservationFailure, match=f"{missing} 명세 파일"):
+    with pytest.raises(finish_rules._CloseObservationFailure, match=f"{missing} 명세 파일"):
         _closer(home, board_py)._board_complete_problems(missing)
     assert path.read_bytes() == before
 

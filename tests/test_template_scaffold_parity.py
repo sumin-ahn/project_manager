@@ -34,6 +34,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pm_engine.app import cluster_code_tree
+from pm_engine.infra import cluster_store, pm_paths
+
 import pytest
 
 from _harness_matrix import HARNESSES, _PM_IMPORT
@@ -733,16 +736,14 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     closer = finish.ClusterCloser
 
     # 살아 있는 멤버의 미결속은 동명 기준 브랜치로 해소하지 않고 조회 전에 거부한다.
-    probe = object.__new__(closer)
-    probe._cluster = "C-guidance"
     ledger = {"branch": None, "base_branch": "main"}
-    probe._ledger = lambda: ledger
+    monkeypatch.setattr(cluster_store, "load_cluster", lambda home, cluster: ledger)
     reads = []
     monkeypatch.setattr(
         lease_store, "_read_lease_rows_status",
         lambda path: reads.append(path) or (identity_args.LEDGER_OK, []),
     )
-    tree, problem = probe._resolve_code_tree()
+    tree, problem = cluster_code_tree.resolve_code_tree(pm_paths.home_at(REPO), "C-guidance")
     assert tree is None and "미결속" in problem and "cluster new" in problem
     assert reads == [] and ledger == {"branch": None, "base_branch": "main"}
 

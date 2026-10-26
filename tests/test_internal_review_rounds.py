@@ -12,6 +12,9 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+from pm_engine.infra import pm_paths
+from pm_engine.cli import delegate_cmd
+
 import pytest
 from pm_engine.infra import review_rounds
 from pm_engine.domain import review_form, review_state, review_verdict, round_rules
@@ -44,7 +47,8 @@ def pd(monkeypatch, tmp_path):
     module = _load(f"pm_delegate_internal_{tmp_path.name}", TOOLS / "pm_delegate.py")
     owner = tmp_path / "pm-home"
     (owner / ".project_manager" / ".local").mkdir(parents=True)
-    monkeypatch.setattr(module, "_CONFIG_REPO_OVERRIDE", owner)
+    monkeypatch.setattr(module, "REPO", owner)
+
     return module
 
 
@@ -218,7 +222,7 @@ def test_legacy_unfingerprinted_fixed_resolution_is_unrecognized(pd):
 )
 def test_rounds_cli_has_no_destructive_or_direct_value_surface(pd, argv):
     with pytest.raises(SystemExit) as exc:
-        pd._cmd_rounds(argv)
+        delegate_cmd._cmd_rounds(pm_paths.home_at(pd.REPO), argv)
     assert exc.value.code == 2
 
 
@@ -321,7 +325,7 @@ def test_terminal_judgement_failure_is_unknown_not_zero(pd, reply):
 def test_resolve_offers_only_pm_verified(pd, capsys):
     """내부 처분 표면은 기계 확인 하나뿐이다."""
     with pytest.raises(SystemExit) as exc:
-        pd._cmd_rounds(["resolve", "--help"])
+        delegate_cmd._cmd_rounds(pm_paths.home_at(pd.REPO), ["resolve", "--help"])
 
     assert exc.value.code == 0
     out = "".join(capsys.readouterr().out.split())

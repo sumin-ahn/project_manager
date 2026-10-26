@@ -1,9 +1,8 @@
 """위임 공개 명령 처리 (층: cli)."""
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable
 
-from typing import Callable
 from pathlib import Path
 import argparse
 from pm_engine.infra import cluster_store
@@ -11,6 +10,10 @@ from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store
 from pm_engine.infra import console
 import datetime
+from pm_engine.app import cluster_binding, cluster_code_tree, ticket_access
+from pm_engine.cli import task_args
+from pm_engine.domain import finish_rules, identity_args
+from pm_engine.infra import git
 from pm_engine.app import delegate_changelog
 from pm_engine.app import delegate_channel
 from pm_engine.app import delegate_cluster_review
@@ -472,7 +475,7 @@ def _review_prompt_path(owner: Path, run_id: str) -> Path:
 
 def _prepare_native_review(
     home, cluster: str, *, cwd: Path, focus_path: Path | None,
-    reopen_ordinal: int | None, adapter_roots: Sequence[str],
+    reopen_ordinal: int | None, adapter_directories_fn: Callable[[], tuple[str, ...]],
 ) -> int:
     """같은 하네스 리뷰 준비 — 교차 실행과 같은 준비·조립으로 프롬프트 파일을 쓴다.
 
@@ -485,6 +488,7 @@ def _prepare_native_review(
         home, cluster=cluster, cwd=cwd, focus_path=focus_path,
         owner_pid=None, reopen_ordinal=reopen_ordinal,
     )
+    adapter_roots = adapter_directories_fn()
     prompt = delegate_cluster_review.cluster_review_prompt(
         home, sources, tree=cwd, plan=plan, adapter_roots=adapter_roots,
     )
@@ -517,7 +521,7 @@ def _prepare_native_review(
     return 0
 
 
-def _cmd_ticket(home, argv: list[str], *, adapter_roots: Sequence[str]) -> int:
+def _cmd_ticket(home, argv: list[str], *, adapter_directories_fn: Callable[[], tuple[str, ...]]) -> int:
     """native 위임도 cross와 같은 사본 helper를 쓰는 prepare/harvest CLI."""
     parser = build_subcommand_parser("ticket")
     assert parser is not None  # 같은 모듈의 literal command — introspection/실행 단일 parser.
@@ -590,7 +594,7 @@ def _cmd_ticket(home, argv: list[str], *, adapter_roots: Sequence[str]) -> int:
             if args.role == review_form.INTERNAL_REVIEW_ROLE:
                 return _prepare_native_review(
                     home, args.cluster, cwd=cwd_repo, focus_path=Path(args.focus) if args.focus else None,
-                    reopen_ordinal=args.reopen_ordinal, adapter_roots=adapter_roots,
+                    reopen_ordinal=args.reopen_ordinal, adapter_directories_fn=adapter_directories_fn,
                 )
             if args.cluster:
                 cluster_plan = delegate_prepare.prepare_cluster_copy(
@@ -988,3 +992,135 @@ def _dry_run_harness_annotations(
         if harness == "opencode" else None
     )
     return budget_note, transport_note
+
+
+def _cluster_confirmation_tree(
+    home, cluster: str, *, identity: argparse.Namespace | None = None,
+) -> Path:
+    """확인 커맨드를 돌릴 트리 1곳 — 묶음 통합 브랜치를 체크아웃한 코드 트리.
+
+    명시 선택은 task_args의 task 보유 조인을 사용한다. finish가 넘긴 task 단독 입력은
+    공용 해소 함수의 묶음 branch 탐색을 사용한다. 어느 경로든
+    확인 실행 트리가 묶음 브랜치와 다르면 기입 전에 거부한다.
+    """
+    selection = identity if identity is not None else argparse.Namespace()
+    # finish는 task 귀속만 전달한다. 실행 위치는 finish의 공용 묶음 브랜치 탐색을 사용한다.
+    task_only = (getattr(selection, "task", None)
+                 and getattr(selection, "repo", None) is None
+                 and getattr(selection, "slot", None) is None)
+    if task_only:
+        ticket_access._validate_actor_task_or_exit(home, selection.task)
+        try:
+            resolved, problem = cluster_code_tree.resolve_code_tree(home, cluster)
+        except finish_rules._CloseObservationFailure as exc:
+            raise delegate_errors.DelegateError(str(exc)) from exc
+        if problem:
+            raise delegate_errors.DelegateError(problem)
+    else:
+        try:
+            resolved = task_args._claim_code_tree(home, selection)
+        except SystemExit as exc:
+            raise delegate_errors.DelegateError(str(exc)) from exc
+    if not resolved:
+        raise delegate_errors.DelegateError(
+            f"확인 커맨드를 돌릴 코드 트리를 해소하지 못했습니다: {cluster} — "
+            "`--task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가) 으로 "
+            "트리를 명시하세요"
+        )
+    tree = Path(resolved)
+    problem = cluster_binding.cluster_binding_problem(home, cluster, tree=str(tree))
+    if problem:
+        raise delegate_errors.DelegateError(problem)
+    if not git._git_head_at(str(tree)):
+        raise delegate_errors.DelegateError(f"확인 실행 코드 트리의 HEAD를 읽지 못했습니다: {tree}")
+    branch = str((cluster_store.load_cluster(home, cluster) or {}).get("branch") or "").strip()
+    if branch:
+        current = git._cluster_current_branch(str(tree))
+        if current != branch:
+            raise delegate_errors.DelegateError(
+                f"확인 커맨드 실행 트리가 묶음 통합 브랜치가 아닙니다: {tree} "
+                f"(현재 {current or '미상'} · 필요 {branch}) — 다른 브랜치에서 잰 관측을 "
+                "기계 확인으로 적지 않습니다"
+            )
+    return tree
+
+
+def _cmd_rounds_resolve_cluster(
+    home, cluster: str, *, identity: argparse.Namespace | None = None,
+    run_fn: Callable | None = None,
+) -> int:
+    """`resolve --cluster --pm-verified` — 멤버마다 확인 실행·기입·완료 판정 재확인.
+
+    rc 는 하나라도 실패하면 1 이다. 앞 티켓의 기입은 되돌리지 않는다 — 티켓별 독립이라
+    실패한 자리만 다시 부르면 이어진다(회수와 같은 규율). 잔여 0 멤버는 무대상이다.
+    """
+    members = cluster_store.cluster_live_members(home, cluster)
+    if not members:
+        print(
+            f"오류: 클러스터 멤버가 없습니다: {cluster} — "
+            f"`board.py cluster show {cluster}` 로 장부를 확인하세요",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        tree = _cluster_confirmation_tree(home, cluster, identity=identity)
+    except delegate_errors.DelegateError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    rc = 0
+    for ticket in members:
+        rc = max(rc, delegate_changelog._resolve_ticket_pm_verified(
+            home, ticket, cluster=cluster, tree=tree,
+            run_fn=run_fn,
+        ))
+    return rc
+
+
+def _cmd_rounds(home, argv: list[str], run_fn: Callable | None = None) -> int:
+    """리뷰 잔여의 확인 생성·기입 서브커맨드(`rounds resolve --cluster`).
+
+    `run_fn` 은 확인 커맨드 실행 seam(테스트 DI) — 생략하면 `subprocess.run` 이다.
+    """
+    parser = argparse.ArgumentParser(
+        prog="pm_delegate.py rounds",
+        description=(
+            "code-reviewer 리뷰 잔여의 기계 확인 생성·기입. 판정 입력은 리뷰 라운드 파일과 "
+            "명세 PM 영역이다."
+        ),
+    )
+    subparsers = parser.add_subparsers(dest="rounds_command", required=True)
+    resolve = subparsers.add_parser(
+        "resolve",
+        help="묶음 멤버마다 리뷰 잔여를 현재 fix 의 기계 확인으로 기입하고 완료 판정을 연다",
+    )
+    resolve.add_argument(
+        "--cluster", required=True, metavar="C-<ticket-group>",
+        help="묶음 멤버 전부를 대상으로 한다(확인 커맨드는 엔진이 실행)",
+    )
+    resolve.add_argument(
+        "--pm-verified",
+        action="store_true",
+        required=True,
+        help=(
+            "기계 확인 증거로 해소. 발동 조건(code-reviewer 채널로 스코프): delta 가 정상 "
+            "파싱되고 그 채널 accepted 잔여가 0 이며 판정 표면 finding 수가 리뷰 라운드 잔여 "
+            "이상이고, accepted 가 있었다면 그 채널 기계 확인이 1건 이상 존재"
+        ),
+    )
+    identity_args.add_identity_args(resolve)
+    args = parser.parse_args(argv)
+    try:
+        identity_args.parse_identity(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if not delegate_ledger._is_valid_cluster_id(args.cluster):
+        parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
+    try:
+        owner = pm_paths.resolve_pm_home_for_repo(home.root)
+        owner_home = pm_paths.home_at(Path(owner).resolve())
+        return _cmd_rounds_resolve_cluster(
+            owner_home, args.cluster, identity=args, run_fn=run_fn,
+        )
+    except (delegate_errors.DelegateError, OSError, UnicodeError, ValueError) as exc:
+        print(f"오류: 리뷰 잔여 확인 실패: {exc}", file=sys.stderr)
+        return 1

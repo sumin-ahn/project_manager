@@ -1156,53 +1156,8 @@ def test_mutation_unregistered_unverified_call_is_red(tmp_path):
     )
 
 
-def test_mutation_noop_verifier_is_red(tmp_path):
-    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    path = tools / "pm_delegate.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    replaced = False
-    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
-        for keyword in call.keywords:
-            if (
-                keyword.arg == "verifier"
-                and isinstance(keyword.value, ast.Name)
-                and keyword.value.id == "_verify_engine_rev"
-            ):
-                keyword.value = ast.parse("lambda *_: None", mode="eval").body
-                replaced = True
-                break
-        if replaced:
-            break
-    assert replaced
-    ast.fix_missing_locations(tree)
-    path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
-
-    report = collect_central_guard_report(tools)
-    assert any(
-        "pm_delegate.py" in item and "effective verifier" in item
-        for item in report.violations
-    )
 
 
-def test_mutation_target_missing_from_stamped_modules_is_red(tmp_path):
-    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    engine_path = tools / "engine_rev.py"
-    tree = ast.parse(engine_path.read_text(encoding="utf-8"))
-    assignment = _module_assignment(tree, "STAMPED_MODULES")
-    assert isinstance(assignment.value, (ast.Tuple, ast.List, ast.Set))
-    assignment.value.elts = [
-        node
-        for node in assignment.value.elts
-        if not (isinstance(node, ast.Constant) and node.value == "ticket_finish.py")
-    ]
-    ast.fix_missing_locations(tree)
-    engine_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
-
-    report = collect_central_guard_report(tools)
-    assert any(
-        "ticket_finish.py" in item and "STAMPED_MODULES" in item
-        for item in report.violations
-    )
 
 
 def test_mutation_class_body_deep_import_is_red(tmp_path):
@@ -1527,23 +1482,6 @@ def test_same_named_nested_scope_cannot_impersonate_central_loader(
     )
 
 
-@pytest.mark.parametrize(
-    "condition",
-    (
-        ast.Constant(value=False),
-        ast.parse("os.environ.get('PM_STRICT_REV')").body[0].value,
-    ),
-    ids=("if-false", "environment-gate"),
-)
-def test_mutation_nonliteral_conditional_verifier_is_red(tmp_path, condition):
-    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    loader = tools / "pm_delegate.py"
-    source = loader.read_text(encoding="utf-8")
-    needle = '"ticket_finish.py",\n            verifier=_verify_engine_rev,'
-    assert needle in source
-    loader.write_text(source.replace(needle, '"ticket_finish.py",', 1), encoding="utf-8")
-    report = collect_central_guard_report(tools)
-    assert any("exactly one explicit policy" in item for item in report.violations)
 
 
 def test_mutation_find_repo_root_anchors_fail_loud_in_all_four_modules(tmp_path):

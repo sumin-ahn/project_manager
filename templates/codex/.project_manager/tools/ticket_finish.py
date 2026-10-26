@@ -47,13 +47,13 @@ from typing import Callable, NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.app import cluster_binding, tier_signals  # noqa: E402
-from pm_engine.domain import cluster_rules  # noqa: E402
+from pm_engine.app import cluster_binding, cluster_code_tree, tier_signals  # noqa: E402
+from pm_engine.domain import cluster_rules, finish_rules, private_refs  # noqa: E402
 from pm_engine.domain import identity_args, pytest_report, round_rules, ticket_rules  # noqa: E402
 from pm_engine.infra import areas_store, cluster_store, conf_store, console, doc_page_store, fs, lease_store, log_store, pm_paths, raw_output, repo_coordinates, repo_files, round_store, ticket_store  # noqa: E402
 from pm_engine.app import doc_affected, doc_staleness, freshness_lint, regression, slot_resolution  # noqa: E402
 
-from pm_engine.infra import git, review_diff
+from pm_engine.infra import finish_git, git, private_surface, review_diff
 from pm_engine.domain import review_diff_rules
 from pm_engine.infra import board_git
 from pm_engine.app import ticket_access
@@ -61,7 +61,6 @@ from pm_engine.app import board_sync
 from pm_engine.app import completion_gate
 from pm_engine.cli import board_ticket
 
-_load_module_from_path = repo_files.load_module
 
 
 # ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
@@ -85,7 +84,6 @@ LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"  # 리스 장부 (task 해소 read-only)
-TOOLS_DIR = REPO / ".project_manager" / "tools"  # 남은 형제 도구 적재 앵커 (회귀 cwd 해소)
 # areas.md 경로는 상수로 굳히지 않는다 — board/ 분리 시 board/ 안으로
 # 옮겨가므로, `_resolve_per_repo_test_cmd` 가 `pm_paths.areas_file`(board 루트 추종)을 쓰는 해소 체인에 위임.
 
@@ -98,76 +96,12 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"  # 남은 형제 도구 적재 �
 ENGINE_REV = "v1.8.1"
 
 
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제 모듈의 baked ENGINE_REV 를 이 사본의 것과 대조한다 (fail-loud·skew→명시 에러).
-
-    불일치/부재(구형 형제는 리터럴 부재=None)면 사본 skew → 명시 에러(어느 파일이 어떤 rev 인지
-    지목 + pm-update 안내). self-contained(engine_rev.py 런타임 의존 0)라 부분복사도 정확 검출한다.
-    """
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
-            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
-            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
-        )
-        err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
-        raise err
-
-
-def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지.
-
-    fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
-    판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
-    (예: 신 ticket_finish→신 pm_handoff→구 형제 검출이 None 강등되지 않게)."""
-    return getattr(exc, "_engine_rev_skew", False)
-
-
-def _report_engine_rev_skew_at_terminal(exc) -> int:
-    """명시된 CLI 종료 경계에서 marked skew를 진단하고 실패 rc로 바꾼다."""
-    print(
-        f"[중단] 엔진 사본 불일치: {exc} — 먼저 pm-update로 엔진 전체를 "
-        "동기화한 뒤 다시 실행하세요.",
-        file=sys.stderr,
-    )
-    return 1
 
 
 
 
-# 사설 참조 판정식 모듈의 **공용** 캐시 key 접두 — 소비자 이름을 넣지 않는다. 재유입 가드
-# (`tests/test_private_context_guard.py`)도 같은 key 로 올리므로 두 소비자가 한 모듈 객체를
-# 공유하고, "판정식 사본 0" 이 함수 객체 동일성으로 성립한다.
-PRIVATE_REFS_CACHE_KEY_PREFIX = "_project_manager_private_refs:"
 
 
-def _load_private_refs():
-    """사설 참조 판정식 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
-
-    판정식(`prose_token_spans`·`_actionable_matches`·`shipping_paths` 등)의 단일 진실은
-    `private_refs.py` 다 — 완료 기록은 그 함수를 그대로 호출할 뿐 사본을 두지 않는다.
-    `scripts/strip_private_refs.py`·`tests/test_private_context_guard.py` 와 같은 소스를 본다.
-
-    `cache=True` 가 **load-bearing** 이다 — `private_refs.py` 는 postponed annotation
-    (`from __future__ import annotations`) 아래 `@dataclass(frozen=True)` 를 쓰는데, 공용
-    로더가 `cache=False` 로 실행하면(기본값) `exec_module` 이 돌기 **전에** 모듈이
-    `sys.modules` 에 없어 `dataclasses._is_type`(3.12)이 `cls.__module__` 을 못 찾고
-    `AttributeError` 로 죽는다(모듈 자기 자신을 찾으려는 dataclass 내부 조회일 뿐, 이 사본이
-    다른 소비자와 공유되는 것과는 무관하다)."""
-    pr_path = TOOLS_DIR / "private_refs.py"
-    if not pr_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            pr_path, "private_refs.py", verifier=_verify_engine_rev,
-            cache=True, cache_key=f"{PRIVATE_REFS_CACHE_KEY_PREFIX}{pr_path.resolve()}",
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패가 완료를 막지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
 
 
 def _regression_cwd(worktree_slot: str | None = None) -> str:
@@ -192,7 +126,7 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
 # ── 복구 문의 `--repo/--slot` 제품 트리 (pm_handoff 미러) ──
 # `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`)에서만 받고, 그 슬롯이 복구할 제품
 # 트리다(정체성 아님). 정상 종결의 정체성은 `--task`(필수)이고
-# 작업 트리는 묶음 기록의 브랜치로 찾는다(`ClusterCloser._resolve_code_tree`). 판정은
+# 작업 트리는 묶음 기록의 브랜치로 찾는다(`app.cluster_code_tree.resolve_code_tree`). 판정은
 # `slot_resolution._resolve_explicit_identity_slot`(대여 기록 조인 검증)이 한다(복제 0).
 
 def _resolve_finish_slot(repo: str, slot: int) -> tuple[str | None, str | None]:
@@ -1058,7 +992,7 @@ def _is_local_runtime_path(path: str) -> bool:
 
 
 # ── 사설 참조 완료 기록 preflight 보조 (측정 폭·판정식은 다른 소유자를 그대로 부른다) ──
-# 판정식 자체(`prose_token_spans`·`_actionable_matches`)는 private_refs.py 가, 측정 폭
+# 판정식 자체(`prose_token_spans`·`_actionable_matches`)는 domain.private_refs가, 측정 폭
 # 원문(0-컨텍스트 unified diff)은 additional_reviewer.measured_diff_text 가 소유한다. 여기 두
 # 함수는 그 둘 사이 **형식 변환**만 한다 — 새 판정 로직이 아니다.
 
@@ -1443,11 +1377,11 @@ class TicketFinisher:
         self._run_git_at_fn = run_git_at_fn or self._default_run_git_at
         # task worktree도 홈과 같은 규칙: 기계 판독(`ls-files -z`/`status --porcelain -z`)에는
         # stdout만 쓴다. mutation seam은 stderr 진단을 계속 합쳐 호출자에게 보인다.
-        self._run_git_stdout_at_fn = run_git_stdout_at_fn or self._default_run_git_stdout_at
+        self._run_git_stdout_at_fn = run_git_stdout_at_fn or finish_git._default_run_git_stdout_at
         self._status_entries_at_fn = status_entries_at_fn or self._default_status_entries_at
         # 사설 참조 완료 기록 preflight seam — 차단 사유 문자열 또는 None(통과·경고·판정
         # 불가). 진입 게이트의 첫 자리다 — 측정 폭(touches ∩ 출하 표면)의 내용(사설 참조)이
-        # 확정 차단감이면 그 뒤의 DoD·잔여 판정을 물을 이유가 없다. 판정식은 private_refs.py
+        # 확정 차단감이면 그 뒤의 DoD·잔여 판정을 물을 이유가 없다. 판정식은 domain.private_refs
         # 소유(사본 0) — 여기서는 측정 폭 재사용 + 호출만 한다.
         self._private_ref_block_fn = private_ref_block_fn or self._default_private_ref_block
         # DoD 기록 게이트 preflight seam — 차단 사유 문자열 또는 None(통과·판정 불가).
@@ -1519,8 +1453,6 @@ class TicketFinisher:
         try:
             text = fs.read_text_shared(self._log_file, encoding="utf-8")
         except Exception as exc:  # noqa: BLE001 — 읽기 실패는 중복 방지 판정 불능.
-            if _is_engine_rev_skew(exc):
-                raise
             return False
         markers = tuple(
             marker.format(ticket=ticket_id) for marker in _LOG_ENTRY_TICKET_MARKERS
@@ -1588,7 +1520,7 @@ class TicketFinisher:
             return None
         anchor, reason = review_diff.integration_anchor(code_tree, tip)
         if reason is not None:
-            raise _CloseObservationFailure(f"{ticket_id} {reason}")
+            raise finish_rules._CloseObservationFailure(f"{ticket_id} {reason}")
         return anchor
 
     def _integration_tip(self, ticket_id: str, code_tree: Path) -> str | None:
@@ -1604,7 +1536,7 @@ class TicketFinisher:
         (커밋된 인구 = 공집합 · 측정 폭 = 가드 off)."""
         branch = _cluster_integration_branch(self._board_py, ticket_id)
         if not branch:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 _INTEGRATION_TIP_UNDECLARED.format(ticket=ticket_id))
         rc, _out = self._run_git_stdout_at_fn(
             code_tree,
@@ -1613,7 +1545,7 @@ class TicketFinisher:
         if rc != 0:
             if _unborn_baseline(self._run_git_stdout_at_fn, code_tree, branch):
                 return None
-            raise _CloseObservationFailure(_INTEGRATION_TIP_UNRESOLVED.format(
+            raise finish_rules._CloseObservationFailure(_INTEGRATION_TIP_UNRESOLVED.format(
                 ticket=ticket_id, branch=branch, tree=code_tree))
         return branch
 
@@ -1677,7 +1609,7 @@ class TicketFinisher:
         return cls._touch_contains(canonical, changed_path)
 
     # ── 사설 참조 완료 기록 preflight ────────────────────────────────────────
-    # 판정식·표면 술어는 private_refs.py 소유(사본 0). 측정 폭은 additional_reviewer 측정의
+    # 판정식은 domain.private_refs, 표면 열거는 infra.private_surface 소유다. 측정 폭은 additional_reviewer 측정의
     # 앵커 seam(`_measurement_anchor`)을 재사용한다 — 리뷰가 본 표면과 이 게이트가 보는
     # 표면이 갈리지 않는다. rc 정책의 축은 **그 줄이 통합 브랜치에 이미 있는가**다: 통합
     # 브랜치에 없는 줄(도입 커밋이 없거나, 커밋은 됐지만 그 커밋이 통합 브랜치의 조상이
@@ -1692,16 +1624,16 @@ class TicketFinisher:
     # 다른 기준으로 접지 않고 멈춘다.
 
     def _private_ref_surface_paths(
-        self, engine_home, code_tree: Path, touches: Sequence[str], private_refs,
+        self, engine_home, code_tree: Path, touches: Sequence[str],
     ) -> list[Path]:
         """터치 선언 ∩ 사설 참조 출하 python 표면 ∖ 기계 mirror — 절대경로 목록(표면 해소).
 
-        표면 정의는 `private_refs.shipping_paths` 가, 측정 제외는
-        `additional_reviewer.is_machine_mirror_path` 가 소유한다(정의 사본 0 · markdown 절반은
+        표면 정의는 `private_surface.shipping_paths` 가, 측정 제외는
+        `review_diff.is_machine_mirror_path` 가 소유한다(정의 사본 0 · markdown 절반은
         이 게이트 밖 — 비목표). 기계 mirror 를 빼는 이유는 `templates/<타깃>/` 아래 엔진
         사본이 canonical 을 그대로 복사한 결과이기 때문이다 — 빼지 않으면 같은 유입 한 건이
         canonical 1 + 사본 3 으로 네 번 지목되고, 사람이 고칠 자리가 어디인지 흐려진다."""
-        python_paths, _markdown_paths = private_refs.shipping_paths(code_tree)
+        python_paths, _markdown_paths = private_surface.shipping_paths(code_tree)
         surface: list[Path] = []
         for path in python_paths:
             relative = path.relative_to(code_tree).as_posix()
@@ -1714,7 +1646,6 @@ class TicketFinisher:
 
     def _private_ref_diff_offenders(
         self, surface_paths: Sequence[Path], code_tree: Path, diff_text: str,
-        private_refs,
     ) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str]]]:
         """표면 파일 중 `diff_text` 가 새로 추가한 줄에서 (actionable, raw) offender 를 낸다.
 
@@ -1789,8 +1720,6 @@ class TicketFinisher:
                 code_tree, ["merge-base", "--is-ancestor", sha, integration_tip],
             )
         except Exception as exc:  # noqa: BLE001 — 판정 실패는 신규 취급(차단 방향).
-            if _is_engine_rev_skew(exc):
-                raise  # 사본 skew 는 판정으로 접지 않는다(fail-loud).
             return False
         return rc == 0
 
@@ -1832,20 +1761,17 @@ class TicketFinisher:
         새로 들인 유입이라 함께 차단한다. 통합 브랜치가 이미 가진 줄의 raw 는 blame sha 를
         실어 알린다(차단감이 따로 있으면 차단 문구 안에, 없으면 stderr 경고로).
 
-        측정 불가(모듈 부재·touches 부재·표면 교집합 없음)는 **가드 off** 다 — 이 축의 실패로
+        측정 불가(touches 부재·표면 교집합 없음)는 **가드 off** 다 — 이 축의 실패로
         완료 기록을 막지 않는다(hard 차단은 확정 사실에만 건다). 판정
         기준(통합 브랜치)이 없는 것은 그 축에 들지 않는다 — 기준 없는 판정은 통과가 아니라
         정지다."""
-        private_refs = _load_private_refs()
-        if private_refs is None:
-            return None
         touches = self._normalize_measured_touches(
             self._measured_ticket_touches(ticket_id))
         if not touches:
             return None
         code_tree = self._code_tree()
         surface_paths = self._private_ref_surface_paths(
-            pm_paths.home_at(TOOLS_DIR.resolve().parents[1]), code_tree, touches, private_refs,
+            pm_paths.home_at(Path(__file__).resolve().parents[2]), code_tree, touches,
         )
         if not surface_paths:
             return None
@@ -1864,7 +1790,7 @@ class TicketFinisher:
         if not diff_text.strip():
             return None
         actionable, raw = self._private_ref_diff_offenders(
-            surface_paths, code_tree, diff_text, private_refs,
+            surface_paths, code_tree, diff_text,
         )
         if not actionable and not raw:
             return None
@@ -2012,7 +1938,7 @@ class TicketFinisher:
         티켓 판독 실패를 빈 touches 로 접으면 "판정 대상 아님" 으로 통과한다."""
         snapshot = _ticket_frontmatter_snapshot(self._board_py, ticket_id)
         if snapshot.error is not None:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{ticket_id} 티켓을 읽지 못해 선언 변경을 판정할 수 없다 ({snapshot.error})")
         touches = _clean_touches(snapshot.frontmatter.get("touches"))
         home_share: list[str] = []
@@ -2025,7 +1951,7 @@ class TicketFinisher:
             return None
         declared = self._normalize_measured_touches(touches)
         if declared is None:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{ticket_id} 선언 경로를 코드 트리 좌표로 옮기지 못했다 — 선언 변경의 머지 여부를 판정할 수 없다")
         # 어느 트리에도 실재하지 않는 선언(신규 파일 또는 삭제)은 두 계획에 모두 실린다 — PM 홈 쪽
         #   변경(홈 문서 삭제)도 이 종결이 커밋하는 변경이다.
@@ -2040,7 +1966,7 @@ class TicketFinisher:
         if tip is not None:
             rc, out = self._run_git_stdout_at_fn(cwd, ["diff", "--name-only", "-z", f"{tip}...HEAD"])
             if rc != 0:
-                raise _CloseObservationFailure(_RESIDUAL_POPULATION_UNRESOLVED.format(
+                raise finish_rules._CloseObservationFailure(_RESIDUAL_POPULATION_UNRESOLVED.format(
                     ticket=ticket_id, tip=tip))
             population.update(path for path in out.split("\0") if path)
         if any(self._touch_claims_path(touch, path) for touch in declared for path in population):
@@ -2060,7 +1986,7 @@ class TicketFinisher:
             return []
         rc, out = self._run_git_stdout_at_fn(REPO, ["ls-files", "-z", "--", *candidates])
         if rc != 0:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{REPO} 에서 선언 경로의 추적 여부를 관측하지 못했다 (git ls-files rc={rc})")
         tracked = [path for path in out.split("\0") if path]
         return [touch for touch in candidates
@@ -2071,7 +1997,7 @@ class TicketFinisher:
         try:
             return self._status_entries_fn() if cwd == REPO else self._status_entries_at_fn(cwd)
         except StatusObservationError as exc:
-            raise _CloseObservationFailure(f"작업 트리 상태를 관측하지 못했다 ({cwd}) — {exc}") from exc
+            raise finish_rules._CloseObservationFailure(f"작업 트리 상태를 관측하지 못했다 ({cwd}) — {exc}") from exc
 
     def _observed_status_paths(self, cwd: Path) -> set[str]:
         """선언 변경 판정이 보는 그 트리의 미커밋 경로."""
@@ -2175,7 +2101,7 @@ class TicketFinisher:
         rc, out = self._run_git_stdout_at_fn(
             cwd, ["diff", "--name-only", "-z", f"{tip}...HEAD"])
         if rc != 0:
-            raise _CloseObservationFailure(_RESIDUAL_POPULATION_UNRESOLVED.format(
+            raise finish_rules._CloseObservationFailure(_RESIDUAL_POPULATION_UNRESOLVED.format(
                 ticket=ticket_id, tip=tip))
         declared = tuple(scope) + tuple(
             self._normalize_measured_touches(
@@ -2360,8 +2286,6 @@ class TicketFinisher:
         try:
             baseline_tree = self._materialize_tree(code_tree, claimed_rev)
         except (OSError, RuntimeError) as exc:
-            if _is_engine_rev_skew(exc):
-                raise  # 사본 불일치는 판정 skip 한 줄로 접지 않는다(다른 형제 로더와 같은 규칙).
             print(
                 f"  ⚠ 자기 축 회귀 판정 skip — {ticket_id}: baseline 판정 실패({exc})",
                 file=sys.stderr,
@@ -2457,14 +2381,6 @@ class TicketFinisher:
         )
         return result.returncode, result.stdout + result.stderr
 
-    @staticmethod
-    def _default_run_git_stdout_at(cwd: Path, args: list[str]) -> tuple[int, str]:
-        """task worktree의 기계 파싱용 git 실행 — stderr 경고를 결과에 섞지 않는다."""
-        result = subprocess.run(
-            ["git"] + args, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", cwd=str(cwd),
-        )
-        return result.returncode, result.stdout
 
     def _default_board_count(self) -> int:
         """done 티켓 수를 반환한다 (board.py 위치의 Home 티켓 디렉터리).
@@ -2557,7 +2473,7 @@ class TicketFinisher:
         rc, out = self._run_git_stdout_at_fn(
             tree, ["status", "--porcelain", "-z", "--untracked-files=no", "--", candidate])
         if rc != 0:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{tree} 에서 선언 경로 {candidate} 의 추적 여부를 관측하지 못했다 (git status rc={rc})")
         return bool(out.strip("\0").strip())
 
@@ -3014,7 +2930,7 @@ class TicketFinisher:
 # **종결은 슬롯을 반납하지 않는다.** 슬롯은 task 가 빌리는 것이라 반납은 task 종료
 # (`pm-config task end`)나 사용자 반납(`pm-config release`) 몫이다. 종결이 도는 작업 트리는
 # 묶음 기록의 `branch`(없으면 `base_branch`)를 체크아웃한 작업 트리 정확히 하나다
-# (`_resolve_code_tree`) — task 가 슬롯을 몇 개 쥐었는지는 보지 않고, 대여 기록은 찾는 곳을
+# (`app.cluster_code_tree.resolve_code_tree`) — task 가 슬롯을 몇 개 쥐었는지는 보지 않고, 대여 기록은 찾는 곳을
 # 정하는 데만 읽는다.
 #
 # **막을 조건은 첫 부작용 전에 전부 모아 한 번에 낸다**(`preflight`). 각 단계가 자기 차례에
@@ -3072,17 +2988,7 @@ _CLOSE_INTEGRATION_TREE_DIRTY = (
 
 # 작업 트리 해소의 두 멈춤 — 브랜치를 쥔 트리가 없을 때와 둘 이상일 때다. 모호 문구는 통합
 # 트리 해소(`_integration_worktree`)도 같이 쓴다(한 규칙 한 문구).
-_CLOSE_CODE_TREE_MISSING = (
-    "묶음 기록 {key} {branch} 를 체크아웃한 작업 트리가 없다 — 대여 기록의 작업 폴더 {folders}곳이 "
-    "속한 저장소의 작업 트리를 모두 보았다. 재배치가 충돌로 멈춘 트리는 목록에 브랜치 없이 "
-    "나오므로 그 브랜치를 쥔 것으로 보이지 않는다 — 그 트리의 재배치를 끝내거나 되돌린 뒤 다시 "
-    "실행하라."
-)
 
-_CLOSE_TREE_AMBIGUOUS = (
-    "{branch} 를 체크아웃한 작업 트리가 {count}개다 ({trees}) — 어느 트리에서 돌지 고르지 "
-    "않는다. 한 트리만 그 브랜치를 쥐게 한 뒤 다시 실행하라."
-)
 
 _CLOSE_TICKET_NOT_CLAIMED = (
     "{ticket} 가 claimed 가 아니다({status}) — 완료 기록은 claimed 티켓만 done 으로 옮긴다."
@@ -3099,13 +3005,6 @@ _CLOSE_OPEN_ALL_DONE = (
 )
 
 
-class _CloseObservationFailure(Exception):
-    """close 단계의 **관측 자체가 실패**했다 — 그 단계에서 정지한다.
-
-    "관측했는데 대상이 없다"(커밋할 변경 없음·서브모듈 아님)와 구별한다: 전자는
-    건너뛰기이고 이쪽은 판정 불능이다. 판정 불능을 완료·clean·무대상으로 접으면 그 단계가
-    실제로 끝났다는 증거 없이 다음 단계로 넘어가고, 마지막에 남는 것은 근거 없는 종결 기록뿐
-    이다. 관측이 신뢰의 뿌리라는 불변식은 이 구분으로만 지켜진다."""
 
 
 class ClusterCloser:
@@ -3113,7 +3012,7 @@ class ClusterCloser:
 
     git·board·위임 호출은 전부 `TicketFinisher` 가 이미 들고 있는 seam 을 그대로 쓴다(사본 0).
     이 클래스가 새로 받는 seam 은 라운드 처분 CLI 하나뿐이다. 슬롯은 반납하지 않는다 — 대여
-    기록은 작업 트리를 찾을 곳을 정하는 데만 읽는다(`_resolve_code_tree`).
+    기록은 작업 트리를 찾을 곳을 정하는 데만 읽는다(`app.cluster_code_tree.resolve_code_tree`).
     """
 
     # `(단계 키, 사람이 읽는 이름, 읽기 전용 선검사 메서드 이름 또는 None)`.
@@ -3220,7 +3119,7 @@ class ClusterCloser:
         try:
             found = ticket_store.find_ticket_exact(self._home, tid)
         except Exception as exc:  # noqa: BLE001 — 조회 실패는 판정 불능(정지).
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{tid} 상태를 관측하지 못했다 — {type(exc).__name__}: {exc}") from exc
         return found[0] if found is not None else None
 
@@ -3249,13 +3148,11 @@ class ClusterCloser:
                  "--ignore-submodules=dirty", "--", *pathspec],
             )
         except Exception as exc:  # noqa: BLE001 — 관측 실패는 정지(무대상 위장 금지).
-            if _is_engine_rev_skew(exc):
-                raise
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"남은 변경을 관측하지 못했다 ({cwd}) — "
                 f"{type(exc).__name__}: {exc}") from exc
         if rc != 0:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"남은 변경을 관측하지 못했다 ({cwd} · git status rc={rc}): {out.rstrip()}")
         entries = git.git_parse_porcelain_z(out)
         return tuple(path for _code, path in entries)
@@ -3270,13 +3167,11 @@ class ClusterCloser:
             rc, out = self._git_stdout(
                 cwd, ["merge-base", "--is-ancestor", ancestor, descendant])
         except Exception as exc:  # noqa: BLE001 — 판정 실패는 정지.
-            if _is_engine_rev_skew(exc):
-                raise
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{ancestor} 가 {descendant} 의 조상인지 판정하지 못했다 ({cwd}) — "
                 f"{type(exc).__name__}: {exc}") from exc
         if rc not in (0, 1):
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{ancestor} 가 {descendant} 의 조상인지 판정하지 못했다 "
                 f"({cwd} · rc={rc}): {out.rstrip()}")
         return rc == 0
@@ -3288,39 +3183,11 @@ class ClusterCloser:
         try:
             entries = self._finisher._status_entries_at_fn(cwd)
         except Exception as exc:  # noqa: BLE001 — 관측 실패는 정지(clean 위장 금지).
-            if _is_engine_rev_skew(exc):
-                raise
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"작업 트리 상태를 관측하지 못했다 ({cwd}) — "
                 f"{type(exc).__name__}: {exc}") from exc
         return tuple(path for _code, path in entries)
 
-    def _worktree_list(self, folder: Path) -> list[tuple[Path, str | None]]:
-        """`folder` 가 속한 저장소의 작업 트리 전부 — `(경로, 체크아웃한 브랜치 ref 또는 None)`.
-
-        `git worktree list --porcelain` 해석은 이 한 곳이다 — 작업 트리 해소와 통합 트리 해소가
-        같은 해석을 쓴다. detached 트리(재배치가 멈춘 트리 포함)는 `branch` 줄이 없어 None 이다.
-        폴더가 디스크에서 사라지고 등록만 남은 항목(prunable)은 작업 트리가 아니라 내지 않는다 —
-        git 은 그 등록을 브랜치와 함께 계속 낸다. 조회 실패는 정지다(미해소 위장 금지).
-        """
-        try:
-            rc, out = self._git_stdout(folder, ["worktree", "list", "--porcelain"])
-        except Exception as exc:  # noqa: BLE001 — 조회 실패는 정지(미해소 위장 금지).
-            if _is_engine_rev_skew(exc):
-                raise
-            raise _CloseObservationFailure(
-                f"작업 트리 목록을 관측하지 못했다 ({folder}) — "
-                f"{type(exc).__name__}: {exc}") from exc
-        if rc != 0:
-            raise _CloseObservationFailure(
-                f"작업 트리 목록을 관측하지 못했다 ({folder} · rc={rc}): {out.rstrip()}")
-        trees: list[tuple[Path, str | None]] = []
-        for line in out.splitlines():
-            if line.startswith("worktree "):
-                trees.append((Path(line[len("worktree "):].strip()), None))
-            elif line.startswith("branch ") and trees:
-                trees[-1] = (trees[-1][0], line[len("branch "):].strip())
-        return [(tree, ref) for tree, ref in trees if tree.exists()]
 
     def _integration_worktree(self, branch: str) -> Path | None:
         """그 브랜치를 체크아웃한 작업 트리 (없으면 None · 둘 이상이면 정지).
@@ -3330,65 +3197,13 @@ class ClusterCloser:
         우회(`--ignore-other-worktrees`)가 있어 둘 이상도 관측된다 — 그때는 고르지 않는다.
         """
         target = f"refs/heads/{branch}"
-        holders = [tree for tree, ref in self._worktree_list(self._code_tree())
+        holders = [tree for tree, ref in finish_git._worktree_list(self._code_tree(), run_git_stdout_at=self._git_stdout)
                    if ref == target]
         if len(holders) > 1:
-            raise _CloseObservationFailure(_CLOSE_TREE_AMBIGUOUS.format(
+            raise finish_rules._CloseObservationFailure(finish_rules._CLOSE_TREE_AMBIGUOUS.format(
                 branch=branch, count=len(holders), trees=", ".join(map(str, holders))))
         return holders[0] if holders else None
 
-    def _resolve_code_tree(self) -> tuple[Path | None, str | None]:
-        """이번 종결이 도는 작업 트리 — `(트리, None)` 또는 `(None, 멈춤 사유)`.
-
-        명시 묶음 기록의 `branch`를 체크아웃한 작업 트리가 **정확히
-        하나**일 때만 그 트리다. 찾는 곳은 대여 기록 행의 작업 폴더 가운데 git 작업 트리인 것이
-        속한 저장소의 작업 트리 전부다(이미 목록에 나온 폴더는 다시 묻지 않는다). PM 홈 자신은
-        찾는 곳이 아니다 — 홈이 작업 폴더와 같은 저장소일 때만 그 목록에 들어 후보가 된다.
-        찾은 트리가 작업 폴더면 그 행의 경로(`REPO/<slot>`)로 넘긴다 — git 목록은 실경로를 내므로
-        심링크 슬롯을 실경로로 넘기면 슬롯 좌표(`work/<repo>_<N>/` touches)를 풀 수 없다.
-
-        task 정체성은 보지 않는다 — 누가 그 트리를 빌렸는지는 작업 트리 선택의 입력이
-        아니다(소유 확인은 멤버 `claimed_by` 대조가 따로 한다). "한 브랜치는 한 트리" 는 한
-        저장소 안에서만 성립하고 우회도 있으므로 없음·둘 이상은 고르지 않고 멈춘다. 대여 기록
-        판독 불능·목록 조회 실패는 관측 실패(정지)다.
-        """
-        key, branch = "branch", self._declared_branch("branch")
-        if branch is None:
-            return None, (f"{self._cluster}는 제품 브랜치 미결속 장부다. 기존 "
-                          "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
-                          "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시 재결속하라")
-        ledger_status, rows = lease_store._read_lease_rows_status(pm_paths.leases_file(self._home))
-        if ledger_status == identity_args.LEDGER_UNREADABLE:
-            raise _CloseObservationFailure(
-                f"대여 기록을 읽지 못했다 ({pm_paths.leases_file(self._home)}) — 작업 트리를 찾을 곳을 정할 수 없다.")
-        # 작업 폴더(실경로 → 대여 행 경로) — git 작업 트리인 것만, 대여 기록 순서대로.
-        folders: dict[Path, Path] = {}
-        for row in rows:
-            slot = str(row.get("slot") or "").strip()
-            folder = self._home.root / slot
-            if slot and (folder / ".git").exists():
-                folders.setdefault(folder.resolve(), folder)
-        target = f"refs/heads/{branch}"
-        listed: set[Path] = set()
-        holders: list[Path] = []
-        for resolved_folder, folder in folders.items():
-            if resolved_folder in listed:
-                continue
-            for tree, ref in self._worktree_list(folder):
-                resolved = tree.resolve()
-                if resolved in listed:
-                    continue
-                listed.add(resolved)
-                if ref == target:
-                    holders.append(folders.get(resolved, tree))
-        if not holders:
-            return None, _CLOSE_CODE_TREE_MISSING.format(
-                key=key, branch=branch, folders=len(folders))
-        if len(holders) > 1:
-            return None, _CLOSE_TREE_AMBIGUOUS.format(
-                branch=branch, count=len(holders), trees=", ".join(map(str, holders)))
-        print(f"  작업 트리 → {holders[0]} (묶음 기록 {key} {branch})")
-        return holders[0], None
 
     def _code_tree(self) -> Path:
         return self._finisher._code_tree()
@@ -3505,7 +3320,7 @@ class ClusterCloser:
         """
         found = ticket_store.find_ticket_exact(self._home, tid)
         if found is None:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{tid} 명세 파일을 board 에서 찾지 못했다 — 차단 사유를 관측할 수 없다.")
         _status, path = found
         frontmatter, _body = ticket_store.load_ticket(path)
@@ -3750,7 +3565,7 @@ class ClusterCloser:
             block = self._sync_board_git(paths)
             if block is None:
                 block = self._commit_pm_home()
-        except _CloseObservationFailure:
+        except finish_rules._CloseObservationFailure:
             # 관측 실패도 종결 표시의 근거가 아니다 — 되돌리고 그대로 정지한다.
             self._restore_progress(*prior)
             raise
@@ -3772,15 +3587,15 @@ class ClusterCloser:
             try:
                 found = ticket_store.find_ticket_exact(self._home, tid)
             except Exception as exc:  # noqa: BLE001 — 조회 실패는 정지.
-                raise _CloseObservationFailure(
+                raise finish_rules._CloseObservationFailure(
                     f"{tid} 명세 경로를 관측하지 못했다 — "
                     f"{type(exc).__name__}: {exc}") from exc
             if found is None:
-                raise _CloseObservationFailure(
+                raise finish_rules._CloseObservationFailure(
                     f"{tid} 명세 파일을 board 에서 찾지 못했다 — 기록 대상이 확정되지 않는다.")
             paths.append(found[1])
         if not paths:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"{self._cluster} 기록 대상 경로가 하나도 없다 — 멤버 해소를 확인하라.")
         return paths
 
@@ -3818,13 +3633,11 @@ class ClusterCloser:
             rc, out = self._git_stdout(
                 REPO, ["ls-files", "--stage", "--", _CLOSE_BOARD_POINTER_PATH])
         except Exception as exc:  # noqa: BLE001 — 판정 실패는 정지.
-            if _is_engine_rev_skew(exc):
-                raise
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"board 포인터를 관측하지 못했다 ({REPO}) — "
                 f"{type(exc).__name__}: {exc}") from exc
         if rc != 0:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"board 포인터를 관측하지 못했다 ({REPO} · rc={rc}): {out.rstrip()}")
         if not out.strip():
             return None
@@ -3989,7 +3802,7 @@ class ClusterCloser:
              "--untracked-files=all"],
         )
         if rc != 0:
-            raise _CloseObservationFailure(f"작업 트리 상태를 read-only 관측하지 못했다 ({tree})")
+            raise finish_rules._CloseObservationFailure(f"작업 트리 상태를 read-only 관측하지 못했다 ({tree})")
         entries = git.git_parse_porcelain_z(out)
         return tuple(path for _code, path in entries)
 
@@ -4140,7 +3953,7 @@ class ClusterCloser:
     def _head_revision(self, tree: Path) -> str:
         rc, out = self._git_stdout(tree, ["rev-parse", "--verify", "HEAD"])
         if rc != 0 or not out.strip():
-            raise _CloseObservationFailure(f"제품 exact HEAD를 읽지 못했다 ({tree})")
+            raise finish_rules._CloseObservationFailure(f"제품 exact HEAD를 읽지 못했다 ({tree})")
         return out.strip().splitlines()[0]
 
     def _report_other_slots(self) -> None:
@@ -4164,7 +3977,7 @@ class ClusterCloser:
             try:
                 dirty = self._reconcile_dirty_paths(path)
                 dirty_label = f"dirty({len(dirty)})" if dirty else "clean"
-            except _CloseObservationFailure:
+            except finish_rules._CloseObservationFailure:
                 dirty_label = "unknown"
             print(f"  · 비선택 슬롯 보존: path={path} branch={branch} state={dirty_label}")
 
@@ -4198,7 +4011,7 @@ class ClusterCloser:
         try:
             pathspec = ledger_path.relative_to(board_root).as_posix()
         except ValueError as exc:
-            raise _CloseObservationFailure(
+            raise finish_rules._CloseObservationFailure(
                 f"cluster ledger가 board-git 밖을 가리킨다: {ledger_path}") from exc
         return bool(self._pending_paths(board_root, [pathspec]))
 
@@ -4206,7 +4019,7 @@ class ClusterCloser:
         """이미 통합된 all-done cluster를 git mutation 없이 감사 가능하게 닫는다."""
         try:
             first, first_status, problem = self._validate_reconcile()
-        except _CloseObservationFailure as failure:
+        except finish_rules._CloseObservationFailure as failure:
             first, first_status, problem = None, None, f"관측 실패 — {failure}"
         if problem:
             print(f"\n[중단] reconcile preflight — {problem}", file=sys.stderr)
@@ -4215,7 +4028,7 @@ class ClusterCloser:
         self._report_other_slots()
         try:
             second, second_status, problem = self._validate_reconcile()
-        except _CloseObservationFailure as failure:
+        except finish_rules._CloseObservationFailure as failure:
             second, second_status, problem = None, None, f"관측 실패 — {failure}"
         if problem or second != first or second_status != first_status:
             detail = problem or "제품 HEAD 또는 board 상태가 bookend 사이에 drift했다"
@@ -4243,7 +4056,7 @@ class ClusterCloser:
         else:
             try:
                 needs_board_sync = self._reconcile_ledger_pending()
-            except _CloseObservationFailure as failure:
+            except finish_rules._CloseObservationFailure as failure:
                 print(f"\n[중단] reconcile board persistence 관측 실패 — {failure}", file=sys.stderr)
                 return 1
             if needs_board_sync:
@@ -4255,7 +4068,7 @@ class ClusterCloser:
             ledger_path = cluster_store.cluster_ledger_path(self._home, self._cluster)
             try:
                 block = self._sync_board_git([ledger_path])
-            except _CloseObservationFailure as failure:
+            except finish_rules._CloseObservationFailure as failure:
                 block = f"board-git 기록 관측 실패 — {failure}"
             if block is not None:
                 if prior is not None:
@@ -4314,7 +4127,7 @@ class ClusterCloser:
             block = self._resolve_members()
             if not block and not self._reconcile_integrated:
                 block = self._open_all_done_block()
-        except _CloseObservationFailure as failure:
+        except finish_rules._CloseObservationFailure as failure:
             print(f"\n[중단] 관측 실패 — {failure}", file=sys.stderr)
             return 1
         if block:
@@ -4336,8 +4149,8 @@ class ClusterCloser:
         # 없으면 코드 단계가 없어 찾지 않는다.
         if self._tickets:
             try:
-                tree, problem = self._resolve_code_tree()
-            except _CloseObservationFailure as failure:
+                tree, problem = cluster_code_tree.resolve_code_tree(self._home, self._cluster, run_git_stdout_at=self._git_stdout)
+            except finish_rules._CloseObservationFailure as failure:
                 tree, problem = None, f"관측 실패 — {failure}"
             if problem:
                 print(f"\n[중단] 작업 트리 해소 — {problem}", file=sys.stderr)
@@ -4346,7 +4159,7 @@ class ClusterCloser:
             self._finisher.use_code_tree(tree)
         try:
             reasons = self.preflight()
-        except _CloseObservationFailure as failure:
+        except finish_rules._CloseObservationFailure as failure:
             print(f"\n[중단] 관측 실패 — {failure}", file=sys.stderr)
             return 1
         if reasons:
@@ -4361,7 +4174,7 @@ class ClusterCloser:
             print(f"\n[{index}/{total}] {label}...")
             try:
                 block = getattr(self, f"_step_{key}")()
-            except _CloseObservationFailure as failure:
+            except finish_rules._CloseObservationFailure as failure:
                 block = f"관측 실패 — {failure}"
             if block:
                 print(f"\n[중단] {block}", file=sys.stderr)
@@ -4511,7 +4324,7 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
 
     # 복구 문이 복구할 제품 트리(`work/<repo>_<N>`). 정상 종결의 작업 트리는 이 값이 아니라
-    # 묶음 기록의 브랜치로 찾는다(`ClusterCloser._resolve_code_tree`).
+    # 묶음 기록의 브랜치로 찾는다(`app.cluster_code_tree.resolve_code_tree`).
     close_slot: str | None = None
     # board 하위 호출(complete)에 실을 정체성 인자 — task-mode 귀속은 `<user>/<task>` 라 board 도
     # 같은 축으로 소유를 대조한다. 복구 문은 board 정체성 인자를 싣지 않는다.
@@ -4559,14 +4372,9 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 복구 안내로 번역한다."""
-    try:
-        console.configure_console_utf8()
-        return _main(argv)
-    except Exception as exc:  # noqa: BLE001 — marked skew만 사용자 진단+rc로 종료.
-        if _is_engine_rev_skew(exc):
-            return _report_engine_rev_skew_at_terminal(exc)
-        raise
+    """콘솔 인코딩 설정 후 종결 CLI를 실행한다."""
+    console.configure_console_utf8()
+    return _main(argv)
 
 
 if __name__ == "__main__":

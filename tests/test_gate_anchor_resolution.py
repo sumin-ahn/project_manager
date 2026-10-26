@@ -413,8 +413,7 @@ def test_delegate_anchor_oracle_is_sensitive_to_engine_repo_fallback(
     _home, worktree, _ticket = _managed_worktree(tmp_path)
     delegate = _load("pm_delegate_anchor_sensitivity")
     monkeypatch.setattr(delegate, "REPO", worktree)
-    delegate._CONFIG_REPO_OVERRIDE = worktree
-    old_conf = conf_store.local_config(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    old_conf = conf_store.local_config(pm_paths.home_at(delegate.REPO))
     with pytest.raises(delegate_errors.DelegateError):
         delegate_config.resolve_delegate(old_conf, "developer", "normal", None, None, None)
 
@@ -892,9 +891,8 @@ def test_delegate_raw_storage_uses_resolved_pm_home_owner(tmp_path, monkeypatch)
     home, worktree, _ticket = _managed_worktree(tmp_path)
     delegate = _load("pm_delegate_raw_owner")
     monkeypatch.setattr(delegate, "REPO", worktree)
-    delegate._CONFIG_REPO_OVERRIDE = home
 
-    raw_dir, ledger = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE))
+    raw_dir, ledger = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=home))
     assert raw_dir == home / ".project_manager" / ".local" / "delegate"
     assert ledger == home / ".project_manager" / ".local" / "raw_outputs.json"
 

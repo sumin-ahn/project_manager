@@ -410,14 +410,23 @@ def test_manifest_bare_entries_are_a_superset_of_the_pre_regression_baseline(man
     비교 기준이 없다는 뜻이라 skip 한다 — 이 검증은 이 저장소의 이 시점(rebase 직후)을
     겨냥한 값 확인이다."""
     rel = manifest_path.relative_to(REPO).as_posix()
+    current_text = manifest_path.read_text(encoding="utf-8")
+    current_paths = _manifest_entry_paths(current_text)
+    retired = ".project_manager/tools/private_refs.py"
+    assert retired not in current_paths
+    assert ("# pm-retired-path: " + retired + " -> "
+            ".project_manager/tools/pm_engine/domain/private_refs.py") in current_text
+    engine_root = manifest_path.parent.parent
+    assert not (engine_root / retired).exists()
+    assert ".project_manager/tools/pm_engine" in current_paths
+    for name in ("domain/private_refs.py", "infra/private_surface.py"):
+        assert (engine_root / ".project_manager/tools/pm_engine" / name).is_file()
     baseline = subprocess.run(
         ["git", "show", f"task/main:{rel}"],
         cwd=str(REPO), capture_output=True, text=True, timeout=10,
     )
     if baseline.returncode != 0:
         pytest.skip(f"task/main 참조 없음 — 이 환경에선 기준선 비교 불가: {baseline.stderr.strip()}")
-    current_text = manifest_path.read_text(encoding="utf-8")
-    current_paths = _manifest_entry_paths(current_text)
     # 재는 것은 **등재 경로가 사라졌는가** 하나다 — 주석 문면과 `@source` 값은 등재가 아니라
     # flavor manifest parity 가드의 소관이다.
     missing = {path for path in _manifest_entry_paths(baseline.stdout) - current_paths
@@ -433,7 +442,6 @@ def test_manifest_bare_entries_are_a_superset_of_the_pre_regression_baseline(man
                if not any(stem in path for stem in retired_stems)}
     assert not missing, f"{rel} 에서 task/main 대비 누락된 등재: {sorted(missing)}"
     # 이번 라운드의 두 신규 bare 등재도 값으로 함께 확인한다(F-001 이 지운 두 항목).
-    assert ".project_manager/tools/private_refs.py" in current_paths
     assert ".project_manager/tools/pm_principles.py" in current_paths
     assert ".project_manager/wiki/pm_principles.md" in current_paths
 
