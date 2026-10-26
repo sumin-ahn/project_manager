@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """CLI 콘솔 출력 인코딩을 실행 환경과 정합하는 공용 부트스트랩.
 
-Windows 콘솔 codepage와 Python 텍스트 스트림을 함께 맞춘다. 모든 단계는 best-effort라
-콘솔 핸들이 없거나 테스트 캡처 스트림이 ``reconfigure``를 지원하지 않아도 CLI 본동작을
-막지 않는다.
+Windows 콘솔 codepage와 Python 텍스트 스트림을 함께 맞춘다. 스트림 조작(flush·isatty·
+``reconfigure``·안내 출력)은 닫히거나 끊긴 스트림, 캡처 스트림, pythonw 의 None 스트림에서
+정해진 타입의 실패만 무시해 CLI 본동작을 막지 않는다. Win32 콘솔 API 호출 실패는 전파한다.
 """
 from __future__ import annotations
 import unicodedata
@@ -109,157 +109,130 @@ def _get_kernel32() -> Any:
 def _restore_console_codepages(
     kernel32: Any, output_cp: int | None, input_cp: int | None
 ) -> None:
-    """엔진이 바꾼 콘솔 codepage를 독립적인 best-effort 호출로 원복한다."""
+    """엔진이 바꾼 콘솔 codepage를 원복한다 (닫힌·끊긴 스트림의 flush 실패만 무시한다)."""
     # Python의 표준 스트림 최종 flush보다 atexit 콜백이 먼저 실행된다. 아직 버퍼에 남은
     # UTF-8/cp949 bytes가 원복된 codepage 아래에서 뒤늦게 나가지 않도록 먼저 비운다.
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
-        except Exception:
+        except (OSError, ValueError):
             pass
-    try:
-        if output_cp:
-            kernel32.SetConsoleOutputCP(output_cp)
-    except Exception:
-        pass
-    try:
-        if input_cp:
-            kernel32.SetConsoleCP(input_cp)
-    except Exception:
-        pass
+    if output_cp:
+        kernel32.SetConsoleOutputCP(output_cp)
+    if input_cp:
+        kernel32.SetConsoleCP(input_cp)
 
 
 def _set_console_codepage_utf8() -> None:
     """Windows 콘솔 codepage를 보관한 뒤 UTF-8로 맞추고 종료 원복을 등록한다."""
     if _probe_os_name() != "nt":
         return
-    try:
-        state = _process_state()
-        kernel32 = _get_kernel32()
-        output_cp = int(kernel32.GetConsoleOutputCP())
-        input_cp = int(kernel32.GetConsoleCP())
-        # 출력/입력 콘솔은 독립 핸들이다. 둘 다 0일 때만 할 일이 없고, 한쪽만 있으면
-        # 그쪽의 최초값 보관·UTF-8 전환·원복을 계속 수행한다.
-        if not output_cp and not input_cp:
-            return
+    state = _process_state()
+    kernel32 = _get_kernel32()
+    output_cp = int(kernel32.GetConsoleOutputCP())
+    input_cp = int(kernel32.GetConsoleCP())
+    # 출력/입력 콘솔은 독립 핸들이다. 둘 다 0일 때만 할 일이 없고, 한쪽만 있으면
+    # 그쪽의 최초값 보관·UTF-8 전환·원복을 계속 수행한다.
+    if not output_cp and not input_cp:
+        return
 
-        # configure가 중복 호출돼도 최초 원본과 atexit 콜백 하나만 보존한다.
-        if output_cp and state["original_output_cp"] is None:
-            state["original_output_cp"] = output_cp
-        if input_cp and state["original_input_cp"] is None:
-            state["original_input_cp"] = input_cp
+    # configure가 중복 호출돼도 최초 원본과 atexit 콜백 하나만 보존한다.
+    if output_cp and state["original_output_cp"] is None:
+        state["original_output_cp"] = output_cp
+    if input_cp and state["original_input_cp"] is None:
+        state["original_input_cp"] = input_cp
 
-        output_changed = False
-        input_changed = False
-        if output_cp:
-            try:
-                output_changed = bool(kernel32.SetConsoleOutputCP(_UTF8_CODEPAGE))
-            except Exception:
-                pass
-        if input_cp:
-            try:
-                input_changed = bool(kernel32.SetConsoleCP(_UTF8_CODEPAGE))
-            except Exception:
-                pass
-        if (output_changed or input_changed) and not state["restore_registered"]:
-            atexit.register(
-                _restore_console_codepages,
-                kernel32,
-                state["original_output_cp"],
-                state["original_input_cp"],
-            )
-            state["restore_registered"] = True
-    except Exception:
-        pass
+    output_changed = False
+    input_changed = False
+    if output_cp:
+        output_changed = bool(kernel32.SetConsoleOutputCP(_UTF8_CODEPAGE))
+    if input_cp:
+        input_changed = bool(kernel32.SetConsoleCP(_UTF8_CODEPAGE))
+    if (output_changed or input_changed) and not state["restore_registered"]:
+        atexit.register(
+            _restore_console_codepages,
+            kernel32,
+            state["original_output_cp"],
+            state["original_input_cp"],
+        )
+        state["restore_registered"] = True
 
 
 def _toolhelp_processes() -> list[tuple[int, int, str]]:
     """Toolhelp32 snapshot을 ``(pid, parent_pid, exe)`` 목록으로 바꾼다.
 
     ``kernel32`` 인자는 Windows VM 없이도 동일한 ctypes 포인터 경계를 검증하기 위한
-    주입 seam이다. WinAPI 실패는 빈 목록으로 축약한다.
+    주입 seam이다. 유효하지 않은 snapshot 핸들은 빈 목록이고, WinAPI 호출 예외는 전파한다.
     """
     if _probe_os_name() != "nt":
         return []
-    try:
-        class PROCESSENTRY32W(ctypes.Structure):
-            _fields_ = [
-                ("dwSize", wintypes.DWORD),
-                ("cntUsage", wintypes.DWORD),
-                ("th32ProcessID", wintypes.DWORD),
-                ("th32DefaultHeapID", ctypes.c_size_t),
-                ("th32ModuleID", wintypes.DWORD),
-                ("cntThreads", wintypes.DWORD),
-                ("th32ParentProcessID", wintypes.DWORD),
-                ("pcPriClassBase", wintypes.LONG),
-                ("dwFlags", wintypes.DWORD),
-                ("szExeFile", wintypes.WCHAR * 260),
-            ]
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
 
-        api = _get_kernel32()
-        create_snapshot = api.CreateToolhelp32Snapshot
-        try:
-            create_snapshot.restype = wintypes.HANDLE
-        except Exception:
-            pass
-        snapshot = create_snapshot(_TH32CS_SNAPPROCESS, 0)
-        invalid_handle = ctypes.c_void_p(-1).value
-        if snapshot in (None, 0, -1, invalid_handle):
-            return []
-
-        entries: list[tuple[int, int, str]] = []
-        try:
-            entry = PROCESSENTRY32W()
-            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-            ok = api.Process32FirstW(snapshot, ctypes.byref(entry))
-            while ok:
-                entries.append(
-                    (
-                        int(entry.th32ProcessID),
-                        int(entry.th32ParentProcessID),
-                        str(entry.szExeFile),
-                    )
-                )
-                ok = api.Process32NextW(snapshot, ctypes.byref(entry))
-        finally:
-            try:
-                api.CloseHandle(snapshot)
-            except Exception:
-                pass
-        return entries
-    except Exception:
+    api = _get_kernel32()
+    create_snapshot = api.CreateToolhelp32Snapshot
+    create_snapshot.restype = wintypes.HANDLE
+    snapshot = create_snapshot(_TH32CS_SNAPPROCESS, 0)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if snapshot in (None, 0, -1, invalid_handle):
         return []
+
+    entries: list[tuple[int, int, str]] = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = api.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            entries.append(
+                (
+                    int(entry.th32ProcessID),
+                    int(entry.th32ParentProcessID),
+                    str(entry.szExeFile),
+                )
+            )
+            ok = api.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        api.CloseHandle(snapshot)
+    return entries
 
 
 def _parent_process_name() -> str | None:
     """stdio 통과 런처·배치 셸을 건너뛴 첫 조상의 exe 이름을 소문자로 반환한다."""
     if _probe_os_name() != "nt":
         return None
-    try:
-        processes = {
-            pid: (parent_pid, exe_name)
-            for pid, parent_pid, exe_name in _toolhelp_processes()
-        }
-        current_pid = os.getpid()
-        visited = {current_pid}
-        for _ in range(_MAX_ANCESTOR_DEPTH):
-            current = processes.get(current_pid)
-            if current is None:
-                return None
-            parent_pid = current[0]
-            if parent_pid in visited:
-                return None
-            visited.add(parent_pid)
-            parent = processes.get(parent_pid)
-            if parent is None or not parent[1]:
-                return None
-            parent_name = ntpath.basename(parent[1]).lower()
-            if parent_name not in _STDIO_PASSTHROUGH_PROCESS_NAMES:
-                return parent_name
-            current_pid = parent_pid
-        return None
-    except Exception:
-        return None
+    processes = {
+        pid: (parent_pid, exe_name)
+        for pid, parent_pid, exe_name in _toolhelp_processes()
+    }
+    current_pid = os.getpid()
+    visited = {current_pid}
+    for _ in range(_MAX_ANCESTOR_DEPTH):
+        current = processes.get(current_pid)
+        if current is None:
+            return None
+        parent_pid = current[0]
+        if parent_pid in visited:
+            return None
+        visited.add(parent_pid)
+        parent = processes.get(parent_pid)
+        if parent is None or not parent[1]:
+            return None
+        parent_name = ntpath.basename(parent[1]).lower()
+        if parent_name not in _STDIO_PASSTHROUGH_PROCESS_NAMES:
+            return parent_name
+        current_pid = parent_pid
+    return None
 
 
 def _utf8_reader_requested() -> bool:
@@ -316,7 +289,7 @@ def _show_powershell_hint_once() -> None:
     state["hint_shown"] = True
     try:
         sys.stderr.write(_HINT_TEMPLATE.format(cp=state["original_output_cp"]) + "\n")
-    except Exception:
+    except (OSError, ValueError):
         pass
 
 
@@ -343,12 +316,12 @@ def _stream_isatty(stream: Any) -> bool:
     """스트림의 tty 여부를 보수적으로 읽는다. 미지원 캡처 스트림은 non-tty다."""
     try:
         return bool(stream.isatty())
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         return False
 
 
 def configure_console_utf8() -> None:
-    """codepage와 stdout/stderr를 현재 캡처 환경에 맞춘다 (best-effort)."""
+    """codepage와 stdout/stderr를 현재 캡처 환경에 맞춘다 (reconfigure 불가 스트림은 미적용으로 남긴다)."""
     _set_console_codepage_utf8()
     capture_encoding = _powershell_capture_encoding()
     state = _process_state()
@@ -384,7 +357,7 @@ def configure_console_utf8() -> None:
                     stream_state["selected_encoding"] = selected
                     if name == "stdout":
                         state["selected_encoding"] = selected
-            except Exception:
+            except (OSError, ValueError, LookupError):
                 pass
     state["applied"] = all(
         stream_state["applied"] for stream_state in state["streams"].values()
@@ -397,7 +370,7 @@ def _flush_quietly(stream: Any) -> None:
     """스트림 flush 를 best-effort 로 시도한다 (닫힌/미지원 스트림도 출력을 막지 않는다)."""
     try:
         stream.flush()
-    except Exception:
+    except (OSError, ValueError):
         pass
 
 

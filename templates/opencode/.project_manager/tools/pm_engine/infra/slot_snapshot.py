@@ -7,11 +7,8 @@ from pm_engine.infra import clock, pm_paths, pool_store, submodule_git, worktree
 
 
 def _slot_head(git_runner: worktree_records.GitRunner) -> "str | None":
-    """슬롯 worktree HEAD 커밋 sha (live·`git rev-parse HEAD`·fail-soft None·`current_branch` 동형 규율)."""
-    try:
-        rc, out = git_runner(["rev-parse", "HEAD"])
-    except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 None(raise 금지 규칙).
-        return None
+    """슬롯 worktree HEAD 커밋 sha (live·`git rev-parse HEAD`·rc≠0 은 None·runner 예외는 전파)."""
+    rc, out = git_runner(["rev-parse", "HEAD"])
     if rc != 0:
         return None
     return out.strip() or None
@@ -22,12 +19,9 @@ def _snapshot_submodule_pins(git_runner: worktree_records.GitRunner) -> "list[di
 
     pin = submodule 의 현재 체크아웃 sha(선두 flag 제거) — "여기 두고 간다"의 기준값(재개 시 이
     sha 와 달라지면 drift·`_submodule_pin_drift`). `_submodule_statuses`와 같은 `submodule
-    status` primitive 를 읽되 sha 만 뽑는다. rc≠0(조회 불가/submodule 없음)·예외 → 빈 목록(fail-soft).
+    status` primitive 를 읽되 sha 만 뽑는다. rc≠0(조회 불가/submodule 없음) → 빈 목록, runner 예외는 전파.
     """
-    try:
-        rc, out = git_runner(["submodule", "status"])
-    except Exception:  # noqa: BLE001 — fail-soft: 빈 목록(스냅에 submodule 생략).
-        return []
+    rc, out = git_runner(["submodule", "status"])
     if rc != 0:
         return []
     pins: list[dict] = []
@@ -47,8 +41,8 @@ def _snapshot_submodule_pins(git_runner: worktree_records.GitRunner) -> "list[di
 def _snapshot_slot_git(home, slot: str, *, git_runner: worktree_records.GitRunner | None = None) -> "dict | None":
     """슬롯의 live git 상태를 스냅한다 — `{branch, head, submodules, recorded_at}` (base 제외).
 
-    write 프리미티브의 원료(base 는 호출부가 결정: create=새 기록·alloc/bind=기존 보존). 전부
-    fail-soft(`current_branch`/`slot_status` 동형·raise 금지). 슬롯 경로 부재 가드는 **실경로
+    write 프리미티브의 원료(base 는 호출부가 결정: create=새 기록·alloc/bind=기존 보존). git rc≠0
+    은 각 칸의 None·빈 값이고 runner 예외는 전파한다. 슬롯 경로 부재 가드는 **실경로
     (git_runner 미주입)에서만** 본다 — 주입 runner(hermetic 테스트)는 존재/HEAD 를 모델링하는
     권위라 건너뛴다. 슬롯 부재(실경로)면 None(스냅 불가 → 호출부가 기존 git 을 유지)."""
     runner = git_runner
@@ -67,30 +61,27 @@ def _snapshot_slot_git(home, slot: str, *, git_runner: worktree_records.GitRunne
 
 def _apply_git_snapshot(home, lease: "Lease", *, base_branch: "str | None" = None,
                         git_runner: worktree_records.GitRunner | None = None) -> None:
-    """`lease.git` 을 live 슬롯 스냅으로 갱신한다 — write 프리미티브 본체(in-place·fail-soft).
+    """`lease.git` 을 live 슬롯 스냅으로 갱신한다 — write 프리미티브 본체(in-place).
 
     base 는 **readonly 슬롯 전용**이다(브랜치가 없어 따라갈 부모 브랜치를 장부에 둔다). readonly lease 에
     `base_branch` 주어짐(생성·refresh) = base 를 `{branch, commit=방금 스냅한 head}` 로 **새로** 기록 /
     미주어짐 = 기존 `lease.git.base` **보존**. 작업 슬롯은 `base_branch` 와 무관하게 base 가 없다(부모는
     git 설정 `branch.<branch>.pm-parent` 가 진실 — 옛 장부 base 는 다음 스냅에서 빠진다).
     스냅 불가(슬롯 부재 등 None)면 기존 git 을 clobber 하지 않고 그대로 둔다(silent 손실 방지).
-    예외 흡수 — 스냅 실패가 리스 lifecycle op 을 막지 않는다.
+    스냅 예외는 전파한다.
     """
-    try:
-        snap = _snapshot_slot_git(home, lease.slot, git_runner=git_runner)
-        if snap is None:
-            return  # 슬롯 부재/스냅 불가 → 기존 git 유지(clobber 안 함).
-        if lease.role != pool_store._LEASE_ROLE_READONLY:
-            base = None
-        elif base_branch is not None:
-            base = {"branch": base_branch, "commit": snap.get("head")}
-        else:
-            base = lease.git.get("base") if isinstance(lease.git, dict) else None
-        if base is not None:
-            snap = {"base": base, **snap}   # base 를 앞에(스키마 순서·cosmetic).
-        lease.git = snap
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 스냅 실패가 alloc/bind/create 를 막지 않는다.
-        pass
+    snap = _snapshot_slot_git(home, lease.slot, git_runner=git_runner)
+    if snap is None:
+        return  # 슬롯 부재/스냅 불가 → 기존 git 유지(clobber 안 함).
+    if lease.role != pool_store._LEASE_ROLE_READONLY:
+        base = None
+    elif base_branch is not None:
+        base = {"branch": base_branch, "commit": snap.get("head")}
+    else:
+        base = lease.git.get("base") if isinstance(lease.git, dict) else None
+    if base is not None:
+        snap = {"base": base, **snap}   # base 를 앞에(스키마 순서·cosmetic).
+    lease.git = snap
 
 
 def record_git_snapshot(home, slot: str, *, base_branch: "str | None" = None,
@@ -115,12 +106,9 @@ def record_git_snapshot(home, slot: str, *, base_branch: "str | None" = None,
 def _is_ancestor(git_runner: worktree_records.GitRunner, ancestor: str, descendant: str) -> bool:
     """`git merge-base --is-ancestor <ancestor> <descendant>` — ancestor 가 descendant 의 조상인가.
 
-    rc0=조상(True)·rc1=아님(False)·rc>1 또는 예외=False(보수적 — 판정 불가는 "후손 아님"으로 →
+    rc0=조상(True)·rc1=아님(False)·rc>1=False(runner 예외는 전파·보수적 — 판정 불가는 "후손 아님"으로 →
     FAIL-LOUD 쪽으로 기운다·경보를 놓치기보다 잘못 울리는 게 낫다). git 결정론 판정(추측 아님)."""
-    try:
-        rc, _out = git_runner(["merge-base", "--is-ancestor", ancestor, descendant])
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 불가는 후손 아님(보수적).
-        return False
+    rc, _out = git_runner(["merge-base", "--is-ancestor", ancestor, descendant])
     return rc == 0
 
 

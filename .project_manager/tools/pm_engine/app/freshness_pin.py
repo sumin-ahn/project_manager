@@ -32,7 +32,7 @@ def _verified_at_backfill_targets(home) -> list[Path]:
         targets.append(pm_paths.architecture_file(home))
     if pm_paths.status_file(home).exists():
         targets.append(pm_paths.status_file(home))
-    for page in doc_page_store.load_pages(pm_paths.domain_dir(home), strict=True):
+    for page in doc_page_store.load_pages(pm_paths.domain_dir(home)):
         if page.get("covers"):
             targets.append(Path(page["path"]))
     return targets

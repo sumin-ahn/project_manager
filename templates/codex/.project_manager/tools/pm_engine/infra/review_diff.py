@@ -148,13 +148,13 @@ def _canonical_measure_path(path: str) -> str:
 # 갈리므로 패턴을 손보지 않아도 따라온다.
 _TEMPLATES_FLAVOR_RE = re.compile(r"^templates/([^/]+)/(.+)$")
 
-# flavor 이름 → manifest 항목 리스트(또는 로드 실패 시 None). flavor 당 1회만 읽고 재사용한다 —
+# flavor 이름 → manifest 항목 리스트(또는 manifest 부재 시 None). flavor 당 1회만 읽고 재사용한다 —
 # 측정 제외 판정이 diff 경로마다 호출하므로 매번 재파싱하면 큰 diff에서 I/O 가 선형으로 늘어난다.
 _adapter_manifest_entries_cache: dict[tuple[Path, str], list | None] = {}
 
 
 def _adapter_flavor_manifest(home, flavor: str) -> list | None:
-    """`<flavor>` 출하 manifest 항목 (flavor 당 1회 로드·캐시). 실패/부재는 None."""
+    """`<flavor>` 출하 manifest 항목 (flavor 당 1회 로드·캐시). 부재는 None, 파싱 실패는 전파."""
     cache_key = (Path(home.root), flavor)
     if cache_key not in _adapter_manifest_entries_cache:
         manifest_path = (
@@ -162,7 +162,7 @@ def _adapter_flavor_manifest(home, flavor: str) -> list | None:
         )
         try:
             entries = manifest_store.read_manifest(manifest_path)
-        except Exception:  # noqa: BLE001 — 부재/파싱 실패는 그 flavor 판정만 보류.
+        except FileNotFoundError:  # 부재는 그 flavor 판정만 보류.
             entries = None
         _adapter_manifest_entries_cache[cache_key] = entries
     return _adapter_manifest_entries_cache[cache_key]

@@ -51,15 +51,10 @@ def _board_git_root_file_backfill_target(
     except (OSError, UnicodeError):
         return None
 
-    try:
-        tracked = git._board_git(home, ["ls-files", "--error-unmatch", "--", name])
-        dirty = git._board_git(home, [
-            "status", "--porcelain", "-z", "-uall", "--", name,
-        ])
-    except Exception as exc:  # noqa: BLE001 — 소유/clean 미확인은 append 거부(안전 방향).
-        print(f"  ⚠ board {name} backfill 보류 — git 소유/clean 상태를 확인하지 못했다({exc}). "
-              "사용자 편집 보존을 위해 쓰지 않는다.", file=sys.stderr)
-        return None
+    tracked = git._board_git(home, ["ls-files", "--error-unmatch", "--", name])
+    dirty = git._board_git(home, [
+        "status", "--porcelain", "-z", "-uall", "--", name,
+    ])
 
     if tracked.returncode not in (0, 1) or dirty.returncode != 0:
         print(f"  ⚠ board {name} backfill 보류 — git 상태 확인 실패. 사용자 WIP를 mutation "
@@ -1011,36 +1006,35 @@ def _board_git_refresh_after_rollback(home) -> None:
     untracked 경로 충돌처럼 그 관문을 통과하고도 pull 이 rc≠0 인 갈래가 있다. rc 를 확인하고
     사유는 `_classify_pull_failure`(claim prefetch 와 동일 판정기)로 붙여 안내한다.
     """
-    with contextlib.suppress(Exception):
-        upstream = _board_git_upstream(home)
-        if upstream is None:
-            return
-        _board_git_fetch(home, upstream.remote)   # 추적 ref 갱신 — 아래 behind 판정의 전제.
-        behind = _board_git_behind(home, upstream.tracking)
-        if behind is None or behind <= 0:
-            return
-        if _board_git_has_tracked_changes(home):
-            print(f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서지만 미커밋 변경이 있어 "
-                  f"pull --rebase 를 생략했다(남의 작업을 치우지 않는다). 정리 후 "
-                  f"`git -C .project_manager/board pull --rebase` 로 최신화하라.",
-                  file=sys.stderr)
-            return
-        pull = _board_git_pull_rebase(home)
-        if pull.returncode == 0:
-            return
-        # **실패도 생략과 똑같이 loud** 해야 약속이 반쪽이 아니다 — untracked 경로 충돌처럼
-        # 사전 감지(추적 변경 유무)를 통과하고도 rc≠0 인 갈래가 있다. 사유 판정은 claim prefetch
-        # 와 **같은 판정기**를 재사용한다(새 로직 0·두 벌 금지).
-        failure = _classify_pull_failure(home, upstream, pull, behind)
-        label = board_git_rules._BOARD_GIT_BLOCK_LABELS.get(failure.block or "", failure.block or "원인 미상")
-        hint = _board_git_dirty_hint(failure.dirty)
-        detail = f" (git: {failure.detail})" if failure.detail and not hint else ""
-        parts = [f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서는데 "
-                 f"pull --rebase 가 실패했다({label}){detail}."]
-        if hint:
-            parts.append(hint)
-        parts.append("해소 후 `git -C .project_manager/board pull --rebase` 로 최신화하라.")
-        print(" ".join(parts), file=sys.stderr)
+    upstream = _board_git_upstream(home)
+    if upstream is None:
+        return
+    _board_git_fetch(home, upstream.remote)   # 추적 ref 갱신 — 아래 behind 판정의 전제.
+    behind = _board_git_behind(home, upstream.tracking)
+    if behind is None or behind <= 0:
+        return
+    if _board_git_has_tracked_changes(home):
+        print(f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서지만 미커밋 변경이 있어 "
+              f"pull --rebase 를 생략했다(남의 작업을 치우지 않는다). 정리 후 "
+              f"`git -C .project_manager/board pull --rebase` 로 최신화하라.",
+              file=sys.stderr)
+        return
+    pull = _board_git_pull_rebase(home)
+    if pull.returncode == 0:
+        return
+    # **실패도 생략과 똑같이 loud** 해야 약속이 반쪽이 아니다 — untracked 경로 충돌처럼
+    # 사전 감지(추적 변경 유무)를 통과하고도 rc≠0 인 갈래가 있다. 사유 판정은 claim prefetch
+    # 와 **같은 판정기**를 재사용한다(새 로직 0·두 벌 금지).
+    failure = _classify_pull_failure(home, upstream, pull, behind)
+    label = board_git_rules._BOARD_GIT_BLOCK_LABELS.get(failure.block or "", failure.block or "원인 미상")
+    hint = _board_git_dirty_hint(failure.dirty)
+    detail = f" (git: {failure.detail})" if failure.detail and not hint else ""
+    parts = [f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서는데 "
+             f"pull --rebase 가 실패했다({label}){detail}."]
+    if hint:
+        parts.append(hint)
+    parts.append("해소 후 `git -C .project_manager/board pull --rebase` 로 최신화하라.")
+    print(" ".join(parts), file=sys.stderr)
 
 
 def _board_git_root_indexes_safe_to_restore(

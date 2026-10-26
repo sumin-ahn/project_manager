@@ -1022,8 +1022,7 @@ def current_owner_principal() -> str:
 
     user = (os.environ.get("USERNAME") or "").strip()
     if not user:
-        with contextlib.suppress(Exception):
-            user = getpass.getuser()
+        user = getpass.getuser()
     domain = (os.environ.get("USERDOMAIN") or "").strip()
     return f"{domain}\\{user}" if domain and user else user
 

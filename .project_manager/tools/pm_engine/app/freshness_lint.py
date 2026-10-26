@@ -86,7 +86,7 @@ _AMBIGUOUS_STDERR_SIGNALS: tuple[str, ...] = ("ambiguous", "short object id")
 
 
 def _git_rc(home, argv: list[str], *, runner=None, repo: Path | None = None) -> int | None:
-    """git 명령의 rc 만 반환(stdout 무시)·git 부재/예외 → None (`_git_run` 얇은 래퍼·사본 0)."""
+    """git 명령의 rc 만 반환(stdout 무시)·git 부재 → None, 실행 예외는 전파 (`_git_run` 얇은 래퍼·사본 0)."""
     res = git._git_run(argv, runner=runner, repo=home.root if repo is None else repo)
     return res[0] if res is not None else None
 

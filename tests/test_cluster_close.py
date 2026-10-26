@@ -48,6 +48,7 @@ from pm_engine.cli import cluster_close, finish_record
 from pm_engine.cli import ticket_finish as ticket_finish_cli
 
 import pytest
+import yaml
 
 from _slot_seed import seed_slot
 from pm_engine.app import round_seed
@@ -2575,8 +2576,8 @@ def test_declared_change_new_git_queries_fail_loud(tf, tmp_path, monkeypatch):
     """[[T-0959]] F-007 (I7) — 선언 변경 판정이 새로 쓰는 조회가 실패하면 통과로 접지 않고 관측 실패로 멈춘다.
 
     세 갈래다: 지운 선언 경로의 추적 조회(`_tracked_in` 의 status), 미리 `git rm` 한 선언 삭제 조회(`stage_scope` 의
-    `diff --cached`), 티켓 판독(`_declared_change_problem`). 어느 하나라도 빈 값으로 접히면 선언 변경이 다른 계획으로
-    가거나 판정 대상에서 빠진다.
+    `diff --cached`), 티켓 판독(`_declared_change_problem` — 판독 예외가 그대로 전파된다). 어느 하나라도 빈 값으로
+    접히면 선언 변경이 다른 계획으로 가거나 판정 대상에서 빠진다.
     """
     root = _residual_repo(tf, tmp_path, monkeypatch, members=(_MEMBER_A,))
     board_py = root / ".project_manager" / "tools" / "board.py"
@@ -2607,7 +2608,7 @@ def test_declared_change_new_git_queries_fail_loud(tf, tmp_path, monkeypatch):
     ticket.write_text(ticket.read_text(encoding="utf-8").replace("touches:\n", "touches: [unclosed\n", 1),
                       encoding="utf-8")
     reader = finish_record.TicketFinisher(pm_paths.home_at(root), board_py=board_py, log_file=log_file, task_workspace=root)
-    with pytest.raises(finish_rules._CloseObservationFailure, match="티켓을 읽지 못해"):
+    with pytest.raises(yaml.YAMLError):
         reader._declared_change_problem(_MEMBER_A, root)
 
 

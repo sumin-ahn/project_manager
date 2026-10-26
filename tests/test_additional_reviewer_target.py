@@ -1640,12 +1640,11 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
 @pytest.mark.parametrize("seam", ["raw-write", "raw-finish"])
 def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
         external, monkeypatch, tmp_path, capsys, seam):
-    """판명된 no-spawn 뒤의 raw 박제·레코드 마감이 죽어도 라운드는 되돌아가고 장부는 loud 하다.
+    """판명된 no-spawn 뒤의 raw 박제·레코드 마감이 죽어도 라운드는 되돌아가고 실패는 드러난다.
 
     이 구간은 두 되돌림을 동시에 요구한다. (1) 라운드 예약 — 자식이 없었으니 환불한다. (2) raw
-    선점/미마감 레코드 — 스폰 전 중단과 **같은 보상 경로**로 닫는다. 보상 자체가 또 실패해도
-    주 예외를 덮지 않고(중단 사유는 주 예외가 소유한다) 실패 사실만 경고로 남긴다 — 조용히
-    성공한 척하는 표면이 없어야 사후에 장부를 믿을 수 있다."""
+    선점/미마감 레코드 — 스폰 전 중단과 **같은 보상 경로**로 닫는다. 보상 자체가 또 실패하면 그
+    실패가 전파되고 주 예외는 traceback 의 `__context__` 로 남는다 — 경고로 낮추지 않는다."""
     repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
@@ -1658,9 +1657,12 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
     else:
         _break_raw_finish(external, monkeypatch, RuntimeError)
 
-    with pytest.raises(RuntimeError):                 # 주 예외가 1순위 그대로
+    with pytest.raises(RuntimeError, match="주입") as raised:    # 보상 실패가 전파된다
         external.main(["--gate", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
+    # 주 예외는 버려지지 않고 traceback 의 `__context__` 로 남는다.
+    assert isinstance(raised.value.__context__, RuntimeError)
+    assert "주입" in str(raised.value.__context__)
 
     assert reviewer.calls == []                                   # 자식 0
     ledger = _round_ledger(repo)
@@ -1669,16 +1671,10 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
     assert err.count("라운드 예약 환불: 게이트") == 1               # 정확히 한 번
     records = _raw_ledger(repo)
     assert len(records) == 1
-    if seam == "raw-write":
-        # 박제만 실패했다 — 레코드는 실패 축으로 닫고, 빈 파일이 남았다고 말한다.
-        assert records[0]["rc"] == reviewer_raw._PRE_SPAWN_ABORT_RC
-        assert records[0]["finished_at"] is not None
-        assert "스폰 전 중단 사유의 raw 박제 실패" in err
-    else:
-        # 마감이 두 번 다 실패했다 — 미마감으로 남되 "실제로는 스폰 0"을 함께 말한다.
-        assert records[0].get("finished_at") is None
-        assert "스폰 전 중단 레코드 마감 실패" in err
-        assert "실제로는 스폰 0" in err
+    # 보상이 끝까지 가지 못했다 — 레코드는 미마감으로 남는다(핸드오프 미마감 점검이 알린다).
+    assert records[0].get("finished_at") is None
+    if seam == "raw-finish":
+        # 박제는 됐고 마감만 실패했다 — raw 에 중단 사유가 남는다.
         raw = _raw_text(repo)
         assert "스폰 전 중단" in raw and "호출 0·과금 0" in raw
 

@@ -43,7 +43,7 @@ _UPSTREAM_GIT_CONFIG_KV = (
 
 
 def _real_upstream_git_runner(*, timeout: int = UPSTREAM_GIT_TIMEOUT_SECONDS) -> install_git.GitRunner:
-    """upstream git 호출(ls-remote·remote get-url·rev-parse·캐시 clone/fetch)용 GitRunner (fail-soft).
+    """upstream git 호출(ls-remote·remote get-url·rev-parse·캐시 clone/fetch)용 GitRunner.
 
     `_real_git_runner` 와 달리 `-C <dest>` 로 고정하지 않는다 — 호출부가 `-C <checkout>`·
     `ls-remote <url>` 등 컨텍스트를 argv 로 직접 준다. URL 안전 계약 강제:
@@ -55,7 +55,7 @@ def _real_upstream_git_runner(*, timeout: int = UPSTREAM_GIT_TIMEOUT_SECONDS) ->
         (빈값) 강제. `_real_git_runner`(로컬 추적집합 조회)와 달리 *네트워크-facing* 이라 격리한다.
       - timeout — 기본값은 조회(ls-remote·rev-parse) 기준 상한이고, 캐시 clone/fetch 처럼
         비용 축이 다른 호출은 호출부가 `timeout=` 으로 자기 상한을 준다(runner 사본 0).
-    git 바이너리 부재·예외는 (1, stderr) 로 감싼다(호출부가 rc 로 판정).
+    git 바이너리 부재는 (1, 사유) 로 돌려 호출부가 rc 로 판정한다. 실행 예외(시간 초과 등)는 전파한다.
     """
     git_binary = shutil.which("git")
 
@@ -84,19 +84,16 @@ def _real_upstream_git_runner(*, timeout: int = UPSTREAM_GIT_TIMEOUT_SECONDS) ->
             env[f"GIT_CONFIG_KEY_{idx}"] = key
             env[f"GIT_CONFIG_VALUE_{idx}"] = val
         env["GIT_CONFIG_COUNT"] = str(len(config_kv))
-        try:
-            result = subprocess.run(
-                [git_binary, *argv],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                env=env,
-            )
-            return result.returncode, (result.stdout or "") + (result.stderr or "")
-        except Exception as exc:  # noqa: BLE001 — fail-soft: rc!=0 로 호출부 위임.
-            return 1, str(exc)
+        result = subprocess.run(
+            [git_binary, *argv],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=env,
+        )
+        return result.returncode, (result.stdout or "") + (result.stderr or "")
 
     return runner
 

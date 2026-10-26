@@ -2867,17 +2867,17 @@ def test_handoff_reports_clean_when_nothing_to_push(hf, monkeypatch, tmp_path, c
 
 
 def test_ahead_count_falls_through_to_second_baseline_on_exception(hf, tmp_path):
-    """[6/7]: 첫 baseline 후보에서 git 예외가 나도 두 번째 후보를 시도한다(rc 실패와 동일 취급).
+    """[6/7]: 첫 baseline 후보가 실패(upstream 미설정)해도 두 번째 후보를 시도한다.
 
-    첫 후보 예외로 곧장 미해소로 떨어지면 upstream 미설정 형상(= 첫 후보가 늘 실패)이 곧
-    "미push 수 미해소"가 돼 origin/main 폴백이 죽는다.
+    첫 후보 실패로 곧장 미해소로 떨어지면 upstream 미설정 형상(= 첫 후보가 늘 실패)이 곧
+    "미push 수 미해소"가 돼 origin/main 폴백이 죽는다. 실 git 은 upstream 미설정을 rc 128 로 답한다.
     """
     tried: list[str] = []
 
     def runner(args: list[str]) -> tuple[int, str]:
         tried.append(args[-1])
         if args[-1].startswith("@{upstream}"):
-            raise OSError("git: no upstream")
+            return 128, "fatal: no upstream configured for branch 'main'\n"
         return 0, "3\n"
 
     assert pm_engine.infra.handoff_git._ahead_commit_count(runner) == (3, "origin/main")

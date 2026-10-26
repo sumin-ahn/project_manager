@@ -731,21 +731,18 @@ def protected_hook_wired(home,
         None 을 "모름" 으로 표시하고 `False` 로 단정하지 않는다.
 
     """
-    try:
-        bare = pm_paths.bare_repo_path(home, repo)
-        if not bare.exists():
-            return None            # 게이트할 bare 없음 — 배선 여부를 논할 수 없다.
-        runner = git_runner or git._real_clone_runner()
-        rc, out = runner(["-C", str(bare), "config", "--get", "core.hooksPath"])
-        if rc != 0:
-            # `--get` 은 키 부재에도 rc≠0(=1) 이다. 키 부재 = 미배선이 맞지만, git 자체가 못
-            # 도는 경우(바이너리 부재 등)와 구별이 안 되므로 bare 프로브로 갈라낸다.
-            probe_rc, _probe = runner(
-                ["-C", str(bare), "rev-parse", "--is-bare-repository"])
-            return False if probe_rc == 0 else None
-        configured = out.strip().splitlines()[0].strip() if out.strip() else ""
-        if not configured:
-            return False
-        return Path(configured).resolve() == (pm_paths.repo_hooks_dir(home) / repo).resolve()
-    except Exception as exc:  # noqa: BLE001 — git·경로 판정 실패는 None.
-        return None
+    bare = pm_paths.bare_repo_path(home, repo)
+    if not bare.exists():
+        return None            # 게이트할 bare 없음 — 배선 여부를 논할 수 없다.
+    runner = git_runner or git._real_clone_runner()
+    rc, out = runner(["-C", str(bare), "config", "--get", "core.hooksPath"])
+    if rc != 0:
+        # `--get` 은 키 부재에도 rc≠0(=1) 이다. 키 부재 = 미배선이 맞지만, git 자체가 못
+        # 도는 경우(바이너리 부재 등)와 구별이 안 되므로 bare 프로브로 갈라낸다.
+        probe_rc, _probe = runner(
+            ["-C", str(bare), "rev-parse", "--is-bare-repository"])
+        return False if probe_rc == 0 else None
+    configured = out.strip().splitlines()[0].strip() if out.strip() else ""
+    if not configured:
+        return False
+    return Path(configured).resolve() == (pm_paths.repo_hooks_dir(home) / repo).resolve()

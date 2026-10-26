@@ -17,20 +17,15 @@ from pm_engine.infra import conf_store
 import sys
 
 # 인터프리터 탐지는 `python_env._detect_py()` 가 단일 진실. pm_import 가 자체 탐지를 신설하지
-# 않는다 — 플랫폼별 python3/python 해석을 한 곳에 둔다. 탐지가 실패하면 리눅스 현행과 동치인
-# "python3" 로 폴백.
-_DEFAULT_PY_FALLBACK = "python3"
+# 않는다 — 플랫폼별 python3/python 해석을 한 곳에 둔다.
 
 
 def _detected_py() -> str:
     """{{PY}} 치환·local.conf runtime.py= 기본값으로 쓸 인터프리터 명령을 탐지한다.
 
-    `python_env._detect_py()` 를 재사용(단일 진실). 호출이 실패하면 "python3" 폴백(리눅스 현행 동치).
+    `python_env._detect_py()` 를 재사용(단일 진실). 탐지 실패는 전파한다.
     """
-    try:
-        return python_env._detect_py()
-    except Exception:  # noqa: BLE001 — 탐지 실패는 폴백.
-        return _DEFAULT_PY_FALLBACK
+    return python_env._detect_py()
 
 
 def _default_test_cmd() -> str:
@@ -318,11 +313,10 @@ def _read_local_conf(path: Path) -> dict[str, str]:
 
     apply 경로가 이 함수를 지난다 — 구표기 conf 를 가진 채택자도 **엔진 파일은 받아야** 안내대로
     고칠 수 있다. 그래서 여기서는 `assert_no_legacy` 를 부르지 않는다(값을 실제로 소비하는
-    지점이 부른다·§교체 절차). 미존재/읽기 실패 → {}.
+    지점이 부른다·§교체 절차). 파일 부재 → {}, 읽기 실패는 전파한다.
 
-    파일이 없으면 형제 로더를 읽지 않고 {} 다(`print_conf_migration_notice` 와 같은 규칙) — 갱신 입구가
-    계획에 넘길 conf 를 한 번 읽는데, conf 가 없는 트리(init 전·출하 템플릿·형제가 빠진 복구 트리)에서
-    없는 파일을 읽으려고 형제를 싣다 멈추면 그 형제를 되살릴 동기 자신이 죽는다.
+    파일이 없으면 공용 로더를 부르지 않고 {} 다(`print_conf_migration_notice` 와 같은 규칙) — conf 가
+    없는 트리(init 전·출하 템플릿)에서도 갱신 입구가 계획을 세울 수 있어야 한다.
     """
     if not Path(path).is_file():
         return {}

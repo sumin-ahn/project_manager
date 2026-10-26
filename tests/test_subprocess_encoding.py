@@ -300,15 +300,35 @@ class _RcRecorder:
     """subprocess.Popen 대역 — env kwargs 를 기록하고 returncode 0 을 돌려준다.
 
     pytest 자식을 실제 기동하지 않고 env 전달만 검증한다. 회귀 러너는 출력을 tee(실시간 echo +
-    캡처)하려고 `Popen` 으로 띄우므로 대역도 스트림 + `wait()` 를 갖춘 프로세스 형태다.
+    캡처)하려고 `Popen` 으로 띄우므로 대역도 스트림 + `wait()` 를 갖춘 프로세스 형태다. 훅 위치
+    권위 해소는 `subprocess.run` 으로 같은 `Popen` 을 지나므로 컨텍스트 관리자·`communicate()`·
+    `poll()` 까지 실물과 같은 모양을 갖춘다(rc 0·빈 출력).
     """
 
     class _Proc:
+        args = ()
+        returncode = 0
+
         def __init__(self):
             self.stdout = io.StringIO("")
             self.stderr = io.StringIO("")
 
-        def wait(self):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def communicate(self, input=None, timeout=None):
+            return "", ""
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            return None
+
+        def wait(self, timeout=None):
             return 0
 
     def __init__(self):
@@ -433,10 +453,16 @@ def test_common_codepage_noop_on_posix(console_encoding, monkeypatch):
 
 
 def test_codepage_best_effort_swallows_exception(console_encoding, monkeypatch):
-    """ctypes 호출이 예외(콘솔 핸들 없음 등)를 던져도 조용히 통과(best-effort)."""
+    """ctypes 호출 예외(콘솔 핸들 없음 등)는 삼키지 않고 전파한다."""
     monkeypatch.setattr(console_encoding, "_probe_os_name", lambda: "nt")
 
     class _Boom:
+        def GetConsoleOutputCP(self):  # noqa: N802
+            return 949
+
+        def GetConsoleCP(self):  # noqa: N802
+            return 949
+
         def SetConsoleOutputCP(self, cp):  # noqa: N802
             raise OSError("no console handle")
 
@@ -444,8 +470,8 @@ def test_codepage_best_effort_swallows_exception(console_encoding, monkeypatch):
             raise OSError("no console handle")
 
     monkeypatch.setattr(console_encoding, "_get_kernel32", lambda: _Boom())
-    # 예외가 새어나오면 이 호출이 raise — pytest 가 실패로 잡는다.
-    console_encoding._set_console_codepage_utf8()
+    with pytest.raises(OSError, match="no console handle"):
+        console_encoding._set_console_codepage_utf8()
 
 
 def test_common_stream_reconfigure_is_guarded_and_best_effort(console_encoding, monkeypatch):

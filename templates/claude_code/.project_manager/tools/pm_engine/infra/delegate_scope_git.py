@@ -55,10 +55,7 @@ def resolve_workspace_root(
 
 def _capture_modes(cwd: Path, runner: Callable[[Path, list[str]], tuple[int, str]]) -> tuple[tuple[str, str], ...]:
     """porcelain v2 지문 캡처 — 실패하면 빈 값(상태코드/해시 비교로 강등)."""
-    try:
-        rc, output = runner(cwd, ["status", "--porcelain=v2", "-z", "--untracked-files=all"])
-    except Exception:  # noqa: BLE001 — 보강 신호라 판정을 죽이지 않는다.
-        return ()
+    rc, output = runner(cwd, ["status", "--porcelain=v2", "-z", "--untracked-files=all"])
     if rc != 0:
         return ()
     return delegate_scope_rules.parse_porcelain_v2_modes(output)
@@ -66,10 +63,7 @@ def _capture_modes(cwd: Path, runner: Callable[[Path, list[str]], tuple[int, str
 
 def _capture_head(cwd: Path, runner: Callable[[Path, list[str]], tuple[int, str]]) -> str:
     """HEAD sha — 커밋 없는 repo/해소 실패는 빈 문자열(그 경우 커밋 판정은 비활성)."""
-    try:
-        rc, output = runner(cwd, ["rev-parse", "HEAD"])
-    except Exception:  # noqa: BLE001
-        return ""
+    rc, output = runner(cwd, ["rev-parse", "HEAD"])
     return output.strip() if rc == 0 else ""
 
 
@@ -120,10 +114,7 @@ def _hash_object(
     """``git hash-object -- <paths>`` 1회. 실패/출력 불일치는 None(호출부가 강등)."""
     if not batch:
         return []
-    try:
-        rc, output = runner(cwd, ["hash-object", "--", *batch])
-    except Exception:  # noqa: BLE001 — 보강 신호 산출 실패는 판정을 죽이지 않는다.
-        return None
+    rc, output = runner(cwd, ["hash-object", "--", *batch])
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if rc != 0 or len(lines) != len(batch):
         return None
@@ -175,10 +166,7 @@ def committed_paths(
     runner = run_git or _default_git_runner
     args = ["diff-tree", "-r", "--no-commit-id", "--name-only", "-z"]
     args += [before.head, after.head] if before.head else ["--root", after.head]
-    try:
-        rc, output = runner(Path(workspace), args)
-    except Exception:  # noqa: BLE001 — 보강 입력이라 판정을 죽이지 않는다.
-        return ()
+    rc, output = runner(Path(workspace), args)
     if rc != 0:
         return ()
     return tuple(sorted({token for token in output.split("\0") if token}))
@@ -255,7 +243,7 @@ def allowed_paths(
                 pm_root=Path(pm_root),
                 workspace=Path(workspace),
             )
-        except Exception as exc:  # normalizer 구체 예외 타입에 결합하지 않는다(항목 단위 드롭).
+        except repo_coordinates.RepoCoordinateError as exc:  # 해소 불가 touches 항목만 드롭(on_drop 보고).
             if on_drop is not None:
                 on_drop(item, str(exc))
             continue

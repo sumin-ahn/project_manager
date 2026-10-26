@@ -256,14 +256,8 @@ class TicketFinisher:
         self._task_workspace = None
 
     def _measured_ticket_touches(self, ticket_id: str) -> list[str]:
-        """현재 티켓 touches — board 판독이 실패하면 티켓 원문 frontmatter 에서 복구한다."""
-        snapshot = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
-        if snapshot.error is None:
-            return finish_store.get_ticket_touches(self._home, ticket_id)
-        fallback = finish_store._fallback_ticket_frontmatter(
-            self._home, ticket_id,
-        )
-        return finish_rules._clean_touches(fallback.get("touches"))
+        """현재 티켓 touches — 티켓 읽기·파싱 실패는 전파한다."""
+        return finish_store.get_ticket_touches(self._home, ticket_id)
 
     def _warn_once(self, key: str, message: str) -> None:
         """같은 사유를 한 실행에서 **한 번만** 낸다 (조용한 강등 금지 · 중복 출력 금지).
@@ -531,13 +525,10 @@ class TicketFinisher:
         있는 경로) 대상이 아니다. 단 분리 코드 트리에서 홈에만 있는 경로가 홈 git 미추적 새 경로이고 홈 상태
         루트(board·wiki) 밖이면 코드 몫으로 센다(`_home_new_paths` — 작업 폴더 대신 홈에 쓴 새 파일은 홈
         커밋에만 실려 머지되지 않는다). 판정 단위는 멤버이고 선언 경로 하나라도 인구에 있으면 통과다. 어느 트리에도
-        없는 선언(미정 경로)은 홈 변경으로도 충족된다(홈 문서 삭제). 조회 실패는 관측 실패로 멈춘다 —
-        티켓 판독 실패를 빈 touches 로 접으면 "판정 대상 아님" 으로 통과한다."""
-        snapshot = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
-        if snapshot.error is not None:
-            raise finish_rules._CloseObservationFailure(
-                f"{ticket_id} 티켓을 읽지 못해 선언 변경을 판정할 수 없다 ({snapshot.error})")
-        touches = finish_rules._clean_touches(snapshot.frontmatter.get("touches"))
+        없는 선언(미정 경로)은 홈 변경으로도 충족된다(홈 문서 삭제). 티켓 판독 실패는 전파한다 —
+        빈 touches 로 접으면 "판정 대상 아님" 으로 통과한다."""
+        frontmatter = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
+        touches = finish_rules._clean_touches(frontmatter.get("touches"))
         home_share: list[str] = []
         if touches and self._is_separated_code_tree(self._home, cwd):
             touches, home_share = self._split_touches_by_tree(ticket_id, cwd)
@@ -655,26 +646,19 @@ class TicketFinisher:
         경로 비교는 `scope_covers` 다(pathspec magic 은 덮지 않는다) — 해소 불능 선언 하나가
         임의의 커밋을 면제하면 이 게이트가 통째로 무력해진다.
 
-        스냅샷 읽기가 실패하면 제외 없이 종전 인구를 쓰고 그 사실을 한 줄로 알린다.
+        스냅샷 읽기 실패는 전파한다.
         """
         members = [member for member in finish_store._cluster_member_ids(self._home, ticket_id)
                    if member != ticket_id]
         if not members:
             return ()
-        snapshot = finish_store.get_in_window_ticket_touches(
+        in_window = finish_store.get_in_window_ticket_touches(
             self._home, since=finish_store.get_ticket_claimed_at(self._home, ticket_id),
         )
-        if snapshot.error is not None:
-            self._warn_once(
-                f"residual-attribution:{ticket_id}",
-                finish_rules._RESIDUAL_ATTRIBUTION_SKIP_NOTE.format(
-                    ticket=ticket_id, error=snapshot.error),
-            )
-            return ()
         scopes: list[str] = []
         for member in members:
             normalized = self._normalize_measured_touches(
-                snapshot.tickets.get(member, []))
+                in_window.get(member, []))
             scopes.extend(normalized or [])
         return tuple(dict.fromkeys(scopes))
 
@@ -1035,10 +1019,10 @@ class TicketFinisher:
 
     def _warn_pm_direct_conditions(self, ticket_id: str) -> None:
         """PM-direct a·b를 재검하되 finish 흐름/반환 코드는 막지 않는다."""
-        snapshot = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
-        if snapshot.error is not None or snapshot.frontmatter.get("tier") != "pm-direct":
+        frontmatter = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
+        if frontmatter.get("tier") != "pm-direct":
             return
-        touches = finish_rules._clean_touches(snapshot.frontmatter.get("touches"))
+        touches = finish_rules._clean_touches(frontmatter.get("touches"))
         measured_touches = ([] if not touches else
                             self._normalize_measured_touches(touches))
         if measured_touches is None:
@@ -1064,7 +1048,7 @@ class TicketFinisher:
                   file=sys.stderr)
             return
         for warning in finish_rules.pm_direct_finish_warnings(
-                snapshot.frontmatter.get("tier"), touches, changed_paths,
+                frontmatter.get("tier"), touches, changed_paths,
                 touched_file_count=len(expanded.paths),
                 unresolved_directories=expanded.unresolved_directories):
             print(f"  ⚠ {warning}", file=sys.stderr)

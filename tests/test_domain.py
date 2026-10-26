@@ -179,18 +179,15 @@ def test_load_pages_excludes_readme_and_template(dm, tmp_path):
 
 
 def test_load_pages_graceful_skip_broken(dm, tmp_path, capsys):
-    # frontmatter 없는 파일 + 안 닫힌 frontmatter — 둘 다 skip, crash 0. (T-0245)
-    # nofm(구분자 없음)은 조용히 skip(요약에만 집계)·malformed(`---` 시작·깨짐)은 개별 경고 유지.
+    # frontmatter 없는 파일은 페이지가 아니지만, 안 닫힌 frontmatter(`---` 시작·깨짐)는 페이지
+    # 오류라 그 경로를 담은 열거 오류로 전파한다.
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "nofm.md").write_text("그냥 본문\n", encoding="utf-8")
     (tmp_path / "broken.md").write_text("---\ntitle: x\n본문(닫힘 없음)\n", encoding="utf-8")
     _write_page(tmp_path, "ok.md", frontmatter="title: 정상\ntype: concept")
-    pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    assert [p["title"] for p in pages] == ["정상"]
-    err = capsys.readouterr().err
-    assert "broken.md" in err          # malformed = 개별 경고 유지.
-    assert "nofm.md" not in err        # frontmatter-less = 파일명 개별 경고 없음.
-    assert "frontmatter 없는 파일 1개 skip" in err  # 요약 1줄에만 집계.
+    with pytest.raises(doc_page_store.DomainPageEnumerationError) as raised:
+        doc_page_store.load_pages(domain_dir=tmp_path)
+    assert raised.value.path == tmp_path / "broken.md"
 
 
 def test_load_pages_frontmatterless_silent_with_summary_line(dm, tmp_path, capsys):
@@ -234,29 +231,26 @@ def test_load_pages_no_frontmatterless_prints_no_summary(dm, tmp_path, capsys):
 
 
 def test_load_pages_malformed_warns_individually_no_summary(dm, tmp_path, capsys):
-    # malformed(`---` 시작·본문 깨짐)만 있으면 개별 경고 유지·frontmatter-less 요약은 없다.
+    # malformed(`---` 시작·본문 깨짐)는 경고 뒤 skip 이 아니라 경로를 담은 열거 오류다.
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "broken.md").write_text("---\ntitle: x\n닫힘 없음\n", encoding="utf-8")
     _write_page(tmp_path, "ok.md", frontmatter="title: 정상\ntype: concept")
-    pages = doc_page_store.load_pages(domain_dir=tmp_path)
-    assert [p["title"] for p in pages] == ["정상"]
-    err = capsys.readouterr().err
-    assert "broken.md 파싱 skip" in err            # 개별 경고.
-    assert "frontmatter 없는 파일" not in err        # frontmatter-less 요약 아님.
+    with pytest.raises(doc_page_store.DomainPageEnumerationError, match="broken.md") as raised:
+        doc_page_store.load_pages(domain_dir=tmp_path)
+    assert raised.value.path == tmp_path / "broken.md"
+    assert "frontmatter 없는 파일" not in capsys.readouterr().err   # frontmatter-less 요약 아님.
 
 
 def test_load_pages_non_utf8_file_no_crash_warns_individually(dm, tmp_path, capsys):
-    # T-0245 reviewer must-fix: non-UTF-8 .md(cp949 tmp 등)는 pre-read 에서 UnicodeDecodeError
-    # — OSError 가 아니라서 안 잡으면 load_pages 전체 크래시(crash-0 회귀). parse_page 로
-    # fall-through 해 개별 경고로 처리되고 정상 페이지는 계속 로드돼야 한다.
+    # non-UTF-8 .md(cp949 tmp 등)는 pre-read 에서 UnicodeDecodeError — 판정 불가라 그 경로를 담은
+    # 열거 오류로 전파한다(조용-skip 요약으로 오분류하지 않는다).
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "cp949.md").write_bytes("한글 메모, frontmatter 없음".encode("cp949"))
     _write_page(tmp_path, "ok.md", frontmatter="title: 정상\ntype: concept")
-    pages = doc_page_store.load_pages(domain_dir=tmp_path)  # 크래시 없어야 함.
-    assert [p["title"] for p in pages] == ["정상"]
-    err = capsys.readouterr().err
-    assert "cp949.md 파싱 skip" in err             # 개별 경고(판정 불가 → malformed 채널).
-    assert "frontmatter 없는 파일" not in err        # 조용-skip 요약으로 오분류 금지.
+    with pytest.raises(doc_page_store.DomainPageEnumerationError, match="cp949.md") as raised:
+        doc_page_store.load_pages(domain_dir=tmp_path)
+    assert isinstance(raised.value.__cause__, UnicodeDecodeError)
+    assert "frontmatter 없는 파일" not in capsys.readouterr().err   # 조용-skip 요약으로 오분류 금지.
 
 
 def test_load_pages_missing_dir_returns_empty(dm, tmp_path):

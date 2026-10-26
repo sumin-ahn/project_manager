@@ -413,7 +413,7 @@ def test_deny_json_schema_and_remediation(guard):
                 "/pm-dev-delegate 스킬로 위임하라 (실행형 처방: 1) 프롬프트를 "
                 "파일로 저장한 뒤(경로: "
                 "`.project_manager/.local/delegate/manual-researcher-normal-prompt.md`) "
-                f"2) backbone `{delegate_env._guard_prescribed_interpreter()} "
+                f"2) backbone `{delegate_env._prescribed_interpreter()} "
                 ".project_manager/tools/pm_delegate.py --role researcher "
                 "--prompt-file .project_manager/.local/delegate/manual-researcher-normal-prompt.md "
                 "--cwd /fixture/worktree --ticket <T-NNNN>`)"
@@ -542,38 +542,6 @@ def test_deny_remediation_interpreter_follows_the_execution_platform(
     assert f"backbone `{windows_token} .project_manager/tools/pm_delegate.py" in windows_reason
     assert f"backbone `{posix_token} .project_manager/tools/pm_delegate.py" in posix_reason
     assert f"`{posix_token} " not in windows_reason
-
-
-def test_deny_remediation_survives_interpreter_resolution_failure(
-    guard, monkeypatch, capsys
-):
-    """T-0728 — 형제 모듈 해소 실패가 deny 판정이나 엔벨로프 키를 무너뜨리지 않는다.
-
-    훅 경로라 fail-open 이 계약이다. 다만 조용히 강등되지는 않는다 — 사유가 stderr 로 남고
-    채택자가 그 줄의 인터프리터를 손으로 바꿀 수 있어야 한다.
-    """
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("사본 불일치 주입")
-
-    monkeypatch.setattr(contract, "entrypoint_command", _boom)
-    conf = {
-        "delegate.enabled": "true",
-        "delegate.developer.harness": "codex",
-        "delegate.developer.model": "gpt",
-    }
-    # 주입 선-단언 — 해소 경로가 실제로 끊겼는지.
-    with pytest.raises(RuntimeError):
-        contract.entrypoint_command(contract.DELEGATE_ENTRYPOINT)
-
-    with pytest.raises(RuntimeError, match="사본 불일치 주입"):
-        delegate_env._prescribed_interpreter()
-
-    interpreter = delegate_env._guard_prescribed_interpreter()
-    captured = capsys.readouterr()
-
-    assert interpreter == delegate_env._PRESCRIBED_INTERPRETER_FALLBACK
-    assert "처방 인터프리터 표기를 해소하지 못해" in captured.err
-    assert "사본 불일치 주입" in captured.err
 
 
 def test_deny_remediation_keeps_posix_quoting_off_windows(guard_home, guard, monkeypatch):

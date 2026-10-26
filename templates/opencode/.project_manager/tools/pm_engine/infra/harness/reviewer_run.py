@@ -134,10 +134,7 @@ def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
                 f" · 실측 침묵 {measured_label}] "
                 f"벽시계 상한 {timeout}초는 미도달. 재시도: `--idle-timeout <초>` 또는 local.conf "
                 f"`{reviewer_budget.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
-    try:
-        return watchdog.format_partial_output(head, exc)
-    except Exception as formatter_exc:  # noqa: BLE001 - timeout diagnosis must survive formatter failure.
-        return head
+    return watchdog.format_partial_output(head, exc)
 
 
 # raw 박제/진단 **표시**에만 쓰는 구분자. 판정 경계는 이 문자열이 아니라 아래 두 필드다 —
@@ -461,7 +458,7 @@ def _run_reviewer_ex(
         # 돈 러너에서 올라올 때 이미 나간 호출이 환불된다.
         return (False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"),
                 _started_after(exc, spawn_reached))
-    except Exception as exc:  # noqa: BLE001
+    except (watchdog.ProcessCleanupError, watchdog.StallWatchdogError, OSError, ValueError) as exc:
         if getattr(exc, "process_cleanup_failed", False) is True:
             output = (
                 f"[리뷰어 프로세스 정리 실패: {exc} — 잔존 프로세스 가능성 때문에 자동 재시도/"

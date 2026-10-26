@@ -79,7 +79,8 @@ def _real_git_runner(cwd: Path) -> worktree_records.GitRunner:
     """실 git 을 `cwd` 컨텍스트로 호출하는 GitRunner 를 만든다 (pm_import._real_git_runner 선례).
 
     반환 callable: argv(list) → (returncode, stdout+stderr). git 바이너리 부재(shutil.which)
-    면 (1, msg)·예외는 (1, str(exc)) 로 감싼다(fail-soft·rc!=0 로 호출부에 위임). `git -C
+    면 (1, msg)·exec 경쟁의 FileNotFoundError 는 (1, str(exc)) 로 돌려 호출부가 rc 로 판정하고,
+    그 밖의 실행 예외(시간 초과 등)는 전파한다. `git -C
     <cwd> <argv...>` 형태로 항상 그 work tree/repo 에 묶는다. 인코딩은 엔진 관례대로 UTF-8
     (한글 경로·메시지 안전).
 
@@ -125,7 +126,7 @@ def _real_git_runner_interactive(
         대형 repo 의 full checkout 이 옛 captured 120s 에 false-kill 되던 블로커 해소.
 
     반환 `(rc, "")` — 출력은 콘솔로 직접 갔으므로 캡처 문자열은 없다(rc 로만 성공/실패 판정).
-    git 부재/예외는 `(1, str(exc))`(또는 부재 메시지) — `_real_git_runner` 와 같은 fail-soft.
+    git 부재는 `(1, 부재 메시지)`, 실행 예외(시간 초과 등)는 전파한다.
     `create_slot` 의 submodule/worktree-add 단계가 `git_runner is None` 인 실경로에서만 이걸
     쓴다 — 주입된 git_runner(테스트 mock)가 있으면 그대로(DI seam 보존·인터랙티브 안 탐).
 
@@ -138,15 +139,12 @@ def _real_git_runner_interactive(
     def runner(argv: list) -> tuple[int, str]:
         if git_binary is None:
             return 1, "git 바이너리를 찾을 수 없음 (PATH)."
-        try:
-            # capture_output 미지정 = stdout/stderr/stdin 부모 콘솔 상속(인터랙티브).
-            result = subprocess.run(
-                [git_binary, "-C", str(cwd), *argv],
-                timeout=timeout,
-            )
-            return result.returncode, ""
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 타임아웃/예외 메시지 surface.
-            return 1, str(exc)
+        # capture_output 미지정 = stdout/stderr/stdin 부모 콘솔 상속(인터랙티브).
+        result = subprocess.run(
+            [git_binary, "-C", str(cwd), *argv],
+            timeout=timeout,
+        )
+        return result.returncode, ""
 
     return runner
 
@@ -207,8 +205,8 @@ def _is_valid_bare(bare_path: Path, *, runner: worktree_records.GitRunner) -> bo
          파싱 아님·견고)로 이 빈/부분 bare 를 broken 으로 잡는다.
 
     부분 bare 는 discovery 가 상위 워킹트리로 올라가 is-bare `false`(rc0·`.repos/` 는 워킹트리
-    안)거나 상위도 repo 아니면 rc≠0(fatal) — 어느 쪽도 조건1 False. **fail-soft**: git 바이너리
-    부재·예외는 runner 가 (1, msg) 로 감싸므로 자연히 False(크래시 0·rc≠0 로 호출부 위임).
+    안)거나 상위도 repo 아니면 rc≠0(fatal) — 어느 쪽도 조건1 False. git 바이너리 부재는 runner 가
+    (1, msg) 로 돌려 자연히 False 이고, 실행 예외는 전파한다.
 
     is-bare 파싱은 `"true" in out.split()`(reviewer sug) — `_real_git_runner` 가 stdout+stderr
     를 결합 반환하므로, 유효 bare 라도 git 이 stderr 경고 한 줄을 내면 `out.strip()==
@@ -346,7 +344,7 @@ def list_git_worktrees(home,
     을 **capture 러너**(`_real_git_runner`)로 실행한다 — 출력을 파싱해야 하므로 인터랙티브(출력이
     콘솔 직행·빈 out)를 쓰지 않는다. 짧은 로컬 read-only op 라 유한 timeout 으로 충분.
 
-    **fail-soft**: git 부재·rc≠0·예외는 그 bare 를 건너뛴다(빈 기여·크래시 0·rc≠0 로 위임). **DI
+    git 부재·rc≠0 은 그 bare 를 건너뛰고(빈 기여) runner 예외는 전파한다. **DI
     seam 보존**: 주입 runner(테스트 mock)는 모든 bare 에 재사용(hermetic — porcelain 을 모델링·실
     git 안 탐). 반환은 GitWorktree 리스트(bare 엔트리 포함·slot=None) — 호출부(reconcile/슬롯번호)가
     non-bare 슬롯만 필터한다.
@@ -358,10 +356,7 @@ def list_git_worktrees(home,
     result: list[worktree_records.GitWorktree] = []
     for _r, bare in bares:
         runner = git_runner or _real_git_runner(bare)
-        try:
-            rc, out = runner(["worktree", "list", "--porcelain"])
-        except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 흡수(그 bare 건너뜀).
-            continue
+        rc, out = runner(["worktree", "list", "--porcelain"])
         if rc != 0:
             continue
         result.extend(_parse_worktree_porcelain(home, out))
@@ -411,7 +406,7 @@ def current_branch(home, slot: str, *, git_runner: worktree_records.GitRunner | 
     `refs/heads/` 접두만 정확히 벗기면 진짜 이름이 `heads/x` 인 브랜치(합법·`heads/x` → 그대로 보존)
     도 오인하지 않는다(`--short` 후 `heads/` strip 은 이 브랜치를 `x` 로 오인한다·codex must-fix).
 
-    `None` 반환(전부 fail-soft·예외 raise 금지·표시층이 "(detached/조회불가)" 등으로 변환):
+    `None` 반환(표시층이 "(detached/조회불가)" 등으로 변환, runner 예외는 전파):
       - detached HEAD — `symbolic-ref` 가 rc≠0(symbolic ref 아님).
       - git 호출 실패 (rc≠0) — 손상/락/git 부재 등.
       - `refs/heads/` 로 시작 안 하는 이상 출력 — 보수적으로 None(브랜치 아님).
@@ -421,8 +416,6 @@ def current_branch(home, slot: str, *, git_runner: worktree_records.GitRunner | 
     (기존 DI seam 패턴 — 테스트는 mock runner 주입으로 hermetic·실 git 불요). **슬롯 경로
     부재 가드는 실경로(미주입)에서만 본다** — git_runner 주입 시엔 그 runner 가 존재/rc/HEAD
     를 전부 모델링하는 권위이므로 fs 가드를 건너뛴다(hermetic 테스트가 슬롯 폴더 없이 동작).
-    주입 runner 가 예외를 던져도 None 으로 흡수한다(docstring 의 "raise 금지" 규칙을 DI seam
-    까지 보장 — 실 `_real_git_runner` 는 이미 예외를 (1, str) 로 감싸므로 실경로는 영향 없음).
     """
     runner = git_runner
     if runner is None:
@@ -430,10 +423,7 @@ def current_branch(home, slot: str, *, git_runner: worktree_records.GitRunner | 
         if not path.exists():
             return None
         runner = _real_git_runner(path)
-    try:
-        rc, out = runner(["symbolic-ref", "HEAD"])
-    except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 None(규칙: raise 금지).
-        return None
+    rc, out = runner(["symbolic-ref", "HEAD"])
     if rc != 0:  # detached(symbolic ref 아님)·git 부재/실패 → 브랜치 없음.
         return None
     ref = out.strip()
@@ -447,17 +437,13 @@ def _rollback_worktree(home, repo: str, slot_path_: Path, *, git_runner: worktre
 
     bare 컨텍스트(`.repos/<repo>.git`)에서 `git worktree remove <slot_path> --force` 를
     부른다 — `add` 가 거기서 일어났으므로 `remove` 도 같은 컨텍스트라야 한다(공유 .git 원
-    = bare). 실패하면 best-effort 로 `worktree prune` 폴백.
+    = bare). remove 가 rc≠0 이면 `worktree prune` 으로 등록 메타만이라도 정리한다.
 
-    **best-effort·2차 예외 삼킴 금지**: 이 함수는 절대 raise 하지 않는다(롤백 자체가 실패해도
-    원래 에러로 raise 되도록·호출부가 finally/except 에서 부른다). 댕글링 worktree("슬롯
-    없음"+재시도 "이미 존재")가 안 생기게 fs 를 정리하는 게 목적이고, 정리 실패는 원래
-    에러를 가린다(2차 예외)는 더 나쁜 결과를 부르므로 조용히 best-effort 한다.
+    호출부가 finally/except 에서 부른다. 댕글링 worktree("슬롯 없음"+재시도 "이미 존재")가 안
+    생기게 정리하는 게 목적이다. runner 예외(롤백 자체의 실행 실패)는 전파하고, 원래 에러는
+    traceback 의 `__context__` 로 남는다.
     """
     runner = git_runner or _real_git_runner(pm_paths.bare_repo_path(home, repo))
-    try:
-        rc, _out = runner(["worktree", "remove", str(slot_path_), "--force"])
-        if rc != 0:
-            runner(["worktree", "prune"])  # 폴백 — 등록 메타만이라도 정리.
-    except Exception:  # noqa: BLE001 — best-effort: 롤백 실패가 원래 에러를 가리면 안 됨.
-        pass
+    rc, _out = runner(["worktree", "remove", str(slot_path_), "--force"])
+    if rc != 0:
+        runner(["worktree", "prune"])  # 폴백 — 등록 메타만이라도 정리.

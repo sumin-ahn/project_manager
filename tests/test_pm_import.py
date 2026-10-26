@@ -972,8 +972,8 @@ def test_t0933_runner_platforms(pm_import, monkeypatch, os_name, argv):
         raise subprocess.TimeoutExpired("fixture-git", 137)
 
     monkeypatch.setattr(subprocess, "run", failed_run)
-    failure = subprocess.TimeoutExpired("fixture-git", 137)
-    assert runner(argv) == (1, str(failure))
+    with pytest.raises(subprocess.TimeoutExpired):
+        runner(argv)
     assert dict(os.environ) == parent_env
 
 
@@ -5809,6 +5809,7 @@ def test_adapter_config_partial_managed_dest_is_judged_without_install_shape(
     template = source / "templates" / "codex" / ".codex" / "hooks.json"
     template.parent.mkdir(parents=True)
     template.write_text('{"hooks": {"PreCompact": ["new"]}}\n', encoding="utf-8")
+    _track_source_tree(source)
     dest = tmp_path / "partial-dest"
     hooks = dest / ".codex" / "hooks.json"
     hooks.parent.mkdir(parents=True)
@@ -5831,6 +5832,7 @@ def test_adapter_config_partial_managed_nonfile_is_unavailable(
     template = source / "templates" / "codex" / ".codex" / "hooks.json"
     template.parent.mkdir(parents=True)
     template.write_text('{"hooks": {}}\n', encoding="utf-8")
+    _track_source_tree(source)
     dest = tmp_path / f"partial-{kind}"
     candidate = dest / ".codex" / "hooks.json"
     candidate.parent.mkdir(parents=True)
@@ -5850,6 +5852,7 @@ def test_adapter_config_partial_managed_regular_file_read_failure_is_unavailable
     template = source / "templates" / "codex" / ".codex" / "hooks.json"
     template.parent.mkdir(parents=True)
     template.write_text('{"hooks": {}}\n', encoding="utf-8")
+    _track_source_tree(source)
     dest = tmp_path / "partial-unreadable"
     candidate = dest / ".codex" / "hooks.json"
     candidate.parent.mkdir(parents=True)
@@ -5870,6 +5873,7 @@ def test_adapter_config_partial_report_only_does_not_infer_harness(pm_import, tm
     template = source / "templates" / "codex" / ".codex" / "config.toml"
     template.parent.mkdir(parents=True)
     template.write_text("upstream = true\n", encoding="utf-8")
+    _track_source_tree(source)
     dest = tmp_path / "report-only"
     report = dest / ".codex" / "config.toml"
     report.parent.mkdir(parents=True)
@@ -6051,6 +6055,7 @@ def _legacy_raw_digest_instance(pm_import, root: Path) -> tuple[Path, Path, Path
     template = source / "templates" / "codex" / ".codex" / "hooks.json"
     template.parent.mkdir(parents=True)
     write_crlf(template, _CURRENT_HOOKS)
+    _track_source_tree(source)
     dest = root / "legacy-ledger"
     hooks = dest / ".codex" / "hooks.json"
     hooks.parent.mkdir(parents=True)
@@ -6128,6 +6133,7 @@ def test_record_adapter_baseline_records_content_digest_for_crlf_upstream_laydow
     template = source / "templates" / "codex" / ".codex" / "hooks.json"
     template.parent.mkdir(parents=True)
     write_crlf(template, _CURRENT_HOOKS)
+    _track_source_tree(source)
     dest = tmp_path / "crlf-laydown"
     hooks = dest / ".codex" / "hooks.json"
     hooks.parent.mkdir(parents=True)

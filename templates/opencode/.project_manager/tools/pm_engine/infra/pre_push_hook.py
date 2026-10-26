@@ -363,13 +363,10 @@ def _authoritative_hooks_resolution(home) -> tuple[Path | None, str | None]:
     (`_stale_pre_push_hook_refusal` — 순수 해소가 훅을 못 찾았을 때만).
 
     사유 유무가 호출부의 방향이다(`_hooks_dir_resolution` 서술과 같은 규칙): 사유가 있으면
-    **git 이 답을 못 한 판정 불능**이라 차단 방향이고, 사유 없는 None(git 부재·대역 subprocess의
-    예외)은 종전대로 순수 해소 결과를 그대로 쓴다.
+    **git 이 답을 못 한 판정 불능**이라 차단 방향이고, 사유 없는 None(git 부재)은 순수 해소
+    결과를 그대로 쓴다. 해소 중 예외는 전파한다.
     """
-    try:
-        return _hooks_dir_resolution(home)
-    except Exception:  # noqa: BLE001 — 대역 subprocess/스텁 예외는 순수 해소로 폴백.
-        return None, None
+    return _hooks_dir_resolution(home)
 
 
 def _installed_hook_interpreter(body: str) -> str | None:

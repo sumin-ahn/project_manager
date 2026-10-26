@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from conftest import current_branch, write_cluster_ledger
 from pm_engine.domain import finish_rules
@@ -135,8 +136,8 @@ def test_window_includes_done_tickets_completed_after_my_claim(tmp_path):
     snapshot = _window(root, "T-1301")
 
     # cutoff 와 같은 순간의 완료(`Z` 표기 = `+00:00`)도 창 안이다(`completed_at >= since`).
-    assert set(snapshot.tickets) == {"T-1301", "T-1302", "T-1303"} and snapshot.error is None
-    assert snapshot.tickets["T-1302"] == ["tests/test_b.py"]
+    assert set(snapshot) == {"T-1301", "T-1302", "T-1303"}
+    assert snapshot["T-1302"] == ["tests/test_b.py"]
 
     # 창 시각은 writer 형식 UTC 만 받는 엄격 parser(domain.finish_rules)로 읽는다.
     utc = datetime.timezone.utc
@@ -170,7 +171,7 @@ def test_window_excludes_done_tickets_completed_before_my_claim(tmp_path):
 
     snapshot = _window(root, "T-1311")
 
-    assert set(snapshot.tickets) == {"T-1311"} and snapshot.error is None
+    assert set(snapshot) == {"T-1311"}
 
 
 @requires_git
@@ -186,7 +187,7 @@ def test_missing_claimed_at_folds_to_the_claimed_only_window(tmp_path):
 
     snapshot = _window(root, "T-1321")
 
-    assert set(snapshot.tickets) == {"T-1321"} and snapshot.error is None
+    assert set(snapshot) == {"T-1321"}
 
 
 @requires_git
@@ -202,12 +203,12 @@ def test_out_of_window_broken_ticket_is_never_fully_parsed(tmp_path):
 
     snapshot = _window(root, "T-1331")
 
-    assert set(snapshot.tickets) == {"T-1331"} and snapshot.error is None
+    assert set(snapshot) == {"T-1331"}
 
 
 @requires_git
 def test_in_window_broken_ticket_is_reported_as_a_snapshot_error(tmp_path):
-    """창 **안** 티켓이 손상되면 조용히 넘기지 않는다 — 스냅샷이 읽기 실패를 보고한다."""
+    """창 **안** 티켓이 손상되면 조용히 넘기지 않는다 — 읽기 실패가 전파된다."""
     root, _anchor = _wave_shape(
         tmp_path,
         {"T-1341": _ticket(["tests"], claimed_at=_CLAIMED_AT),
@@ -216,7 +217,5 @@ def test_in_window_broken_ticket_is_reported_as_a_snapshot_error(tmp_path):
         {"tests/test_a.py": 11, "tests/test_b.py": 17},
     )
 
-    snapshot = _window(root, "T-1341")
-
-    assert snapshot.error is not None and "T-1342" in snapshot.error
-    assert "T-1342" not in snapshot.tickets
+    with pytest.raises(yaml.YAMLError):
+        _window(root, "T-1341")

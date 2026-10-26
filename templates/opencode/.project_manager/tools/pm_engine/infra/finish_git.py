@@ -69,40 +69,34 @@ def _git_blame_short_sha(
     run_git_stdout_at_fn: Callable[[Path, list[str]], tuple[int, str]],
     code_tree: Path, path: str, line: int,
 ) -> str | None:
-    """`path:line` 을 도입한 커밋의 축약 sha (미커밋 줄·조회 실패는 None).
+    """`path:line` 을 도입한 커밋의 축약 sha (미커밋 줄·git rc≠0 은 None, runner 예외는 전파).
 
-    잔여로 남는 흡수분(claim 이후 다른 커밋이 offender 를 들여온 경우) 경고에만 쓴다 — 이
-    조회가 실패해도 경고 자체는 그대로 나가고 sha 만 빠진다(진단 강화일 뿐 차단 축이 아니다).
+    잔여로 남는 흡수분(claim 이후 다른 커밋이 offender 를 들여온 경우) 경고에만 쓴다 — git 이
+    rc≠0 으로 답하면 경고 자체는 그대로 나가고 sha 만 빠진다(진단 강화일 뿐 차단 축이 아니다).
 
     **작업트리를 보는 `git blame` 이어야 한다** — `git log -L` 은 커밋된 내용만 따라가므로
     아직 커밋되지 않은 줄에 HEAD 의 같은 줄 번호에 있던 **무관한 커밋** sha 를 붙인다(유입
     커밋을 식별하라는 이 경고의 목적과 반대다). blame 이 미커밋 줄에 내는 all-zero sha 는
     도입 커밋이 없다는 뜻이므로 sha 없이 경고한다."""
-    try:
-        rc, out = run_git_stdout_at_fn(
-            code_tree,
-            ["blame", "--porcelain", f"-L{line},{line}", "--", path],
-        )
-    except Exception:  # noqa: BLE001 — 진단 강화 실패가 경고를 막지 않는다.
-        return None
+    rc, out = run_git_stdout_at_fn(
+        code_tree,
+        ["blame", "--porcelain", f"-L{line},{line}", "--", path],
+    )
     if rc != 0 or not out.strip():
         return None
     sha = out.split(maxsplit=1)[0]
     if finish_rules._BLAME_SHA_RE.fullmatch(sha) is None or set(sha) == {"0"}:
         return None  # 미커밋(작업트리에만 있는) 줄 — 도입 커밋이 아직 없다.
-    try:
-        rc, short = run_git_stdout_at_fn(code_tree, ["rev-parse", "--short", sha])
-    except Exception:  # noqa: BLE001 — 축약 실패도 경고를 막지 않는다.
-        return None
+    rc, short = run_git_stdout_at_fn(code_tree, ["rev-parse", "--short", sha])
     short = short.strip()
     return short if rc == 0 and short else None
 
 
 def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
                    *, strict: bool = False) -> tuple[tuple[str, str], ...]:
-    """현재 워킹트리 상태 `((XY, 경로), …)` — 조회 실패·비-git 은 `()`(비차단).
+    """현재 워킹트리 상태 `((XY, 경로), …)` — git rc≠0·비-git 은 `()`(비차단), runner 예외는 전파.
 
-    `strict` 면 조회 실패(예외·rc≠0)를 빈 목록으로 접지 않고 그대로 올린다
+    `strict` 면 rc≠0 을 빈 목록으로 접지 않고 그대로 올린다
     (`StatusObservationError`) — "판정 불능" 과 "관측했더니 clean" 을 가르는 축이다. 접는
     자리는 이 seam 이 아니라 소비자다. 값 파싱은 두 갈래가 같다.
 
@@ -116,12 +110,7 @@ def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
 
     rename/copy의 원본 경로 토큰까지 공유 파서에서 소비해 가짜 잔여 항목을 방지한다.
     """
-    try:
-        rc, out = run_git(["status", "--porcelain", "-z", "--untracked-files=all"])
-    except Exception:  # noqa: BLE001 — strict 관측 실패는 그대로 전파한다.
-        if strict:
-            raise
-        return ()
+    rc, out = run_git(["status", "--porcelain", "-z", "--untracked-files=all"])
     if rc != 0:
         if strict:
             raise finish_rules.StatusObservationError(f"git status 조회 실패 (rc={rc}): {out.strip()}")

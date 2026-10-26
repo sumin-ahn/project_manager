@@ -31,10 +31,7 @@ def _pm_install_evidence(source_root: Path) -> tuple[dict[str, set[str]], dict[s
             root = Path(source_root) / "templates" / dirname
             if not root.is_dir():
                 continue
-            try:
-                shipped = list(install_source._iter_source_files(root, "full"))
-            except Exception as exc:  # noqa: BLE001 — 열거 실패는 판별자 0(구조 판정으로 강등).
-                continue
+            shipped = list(install_source._iter_source_files(root, "full"))
             for rel, _src in shipped:
                 rel_posix = rel.as_posix()
                 every.add(rel_posix)

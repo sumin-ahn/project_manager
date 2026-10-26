@@ -407,7 +407,9 @@ def test_git_unavailable_is_silent_skip(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "codex.md", covers=["templates/codex/**"],
                  verified_at="cafe0004")
-    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git) == []
+    # git 부재는 실물 그대로 PATH 에 git 이 없는 상태로 흉내 낸다 — 판정 불가라 조용히 skip.
+    monkeypatch.setattr(git.shutil, "which", lambda _name: None)
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO)) == []
 
 
 def test_verified_at_absent_is_skip(board, domain, monkeypatch, tmp_path):
@@ -1936,7 +1938,8 @@ def test_rev_parse_ambiguous_signal(board):
 
 def test_sha_anchor_status_unknown_empty_or_raise(board):
     assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "", runner=_anchor_git())[0] == freshness_lint._ANCHOR_UNKNOWN
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_raising_git)[0] == freshness_lint._ANCHOR_UNKNOWN
+    with pytest.raises(RuntimeError, match="git unavailable"):
+        freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_raising_git)
 
 
 # codex R16: 검증 후 하류 명령이 **canonical full OID** 를 쓰는지 argv 로 단언 (원 입력 재해석 제거).

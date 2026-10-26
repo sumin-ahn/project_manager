@@ -1,4 +1,4 @@
-"""정확 티켓·귀속 창·묶음 장부 조회, 원문 복구, 이 실행의 산출물 열거 (층: infra)."""
+"""정확 티켓·귀속 창·묶음 장부 조회, 이 실행의 산출물 열거 (층: infra)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,52 +8,35 @@ from pm_engine.infra import board_git, cluster_store, fs, pm_paths, round_store,
 
 
 def count_board_done(home) -> int:
-    """done 티켓 수를 반환한다 (명시 Home 의 티켓 디렉터리).
-
-    실패 시 -1 반환.
-    """
-    try:
-        # board 루트 추종 — board/ 분리시 ticket 이 board/tickets 로 빠진다(Home 의 board 루트).
-        done_dir = pm_paths.tickets_dir(home) / "done"
-        return len(list(done_dir.glob("T-*.md")))
-    except Exception:
-        return -1
+    """done 티켓 수를 반환한다 (명시 Home 의 티켓 디렉터리)."""
+    # board 루트 추종 — board/ 분리시 ticket 이 board/tickets 로 빠진다(Home 의 board 루트).
+    done_dir = pm_paths.tickets_dir(home) / "done"
+    return len(list(done_dir.glob("T-*.md")))
 
 
 def get_ticket_title(home, ticket_id: str) -> str:
-    """ticket_id 의 title 을 명시 Home 의 티켓에서 읽어온다 (실패 시 빈 문자열).
+    """ticket_id 의 title 을 명시 Home 의 티켓에서 읽어온다 (제목 없음은 빈 문자열).
 
-    조회는 `_ticket_frontmatter` 한 지점을 쓴다 — 제목과 touches 가 서로 다른 파일을
+    조회는 `_ticket_frontmatter_snapshot` 한 지점을 쓴다 — 제목과 touches 가 서로 다른 파일을
     보면 마감 로그가 가리키는 티켓과 게이트가 판정한 티켓이 갈린다.
     """
-    title = _ticket_frontmatter(home, ticket_id).get("title")
+    title = _ticket_frontmatter_snapshot(home, ticket_id).get("title")
     return title if isinstance(title, str) and title else ""
 
 
-def _ticket_frontmatter_snapshot(
-    home, ticket_id: str,
-) -> finish_rules.TicketFrontmatterSnapshot:
-    """ticket frontmatter 와 파일 읽기 실패 진단을 함께 돌려준다.
+def _ticket_frontmatter_snapshot(home, ticket_id: str) -> dict:
+    """ticket frontmatter 를 읽는다 — 티켓 읽기·파싱 실패는 전파한다.
 
     touches 소비처의 단일 해소 지점 — 같은 티켓을 두 번 다르게 찾지 않는다.
     조회는 공용 정확-일치 seam(`ticket_store.find_ticket_exact`)이다: `{id}-*.md` prefix glob 의
     첫 매칭을 믿으면 `T-NNNN` 과 `T-NNNN-001` 공존 시 **다른 티켓의 touches** 로 완료
     게이트가 판정한다(조용한 오판). 정확 일치가 없으면 폴백 없이 {} 다 — 판정 입력이 없는 것과
     무관 티켓으로 판정하는 것 중 전자가 안전하다(게이트는 off 로 떨어질 뿐이다)."""
-    try:
-        found = ticket_store.find_ticket_exact(home, ticket_id)
-        if found is None:
-            return finish_rules.TicketFrontmatterSnapshot({}, None)
-        fm, _body = ticket_store.load_ticket(found[1])
-    except Exception as exc:
-        detail = " ".join(str(exc).split()) or type(exc).__name__
-        return finish_rules.TicketFrontmatterSnapshot({}, f"{pm_paths.tickets_dir(home)}: {detail}")
-    return finish_rules.TicketFrontmatterSnapshot(fm if isinstance(fm, dict) else {}, None)
-
-
-def _ticket_frontmatter(home, ticket_id: str) -> dict:
-    """기존 fail-soft 조회 표면 — 상세 실패는 diff 전용 snapshot 소비자가 보존한다."""
-    return _ticket_frontmatter_snapshot(home, ticket_id).frontmatter
+    found = ticket_store.find_ticket_exact(home, ticket_id)
+    if found is None:
+        return {}
+    fm, _body = ticket_store.load_ticket(found[1])
+    return fm if isinstance(fm, dict) else {}
 
 
 def get_ticket_claimed_rev(home, ticket_id: str) -> str | None:
@@ -61,7 +44,7 @@ def get_ticket_claimed_rev(home, ticket_id: str) -> str | None:
 
     `board.py claim` 이 claim 시점 코드 트리 HEAD 를 박제한 값이다. 구 티켓(박제 이전)엔
     없으므로 None 이 정상 형상이고, 그때 그 축을 접는 판정은 소비자가 소유한다."""
-    claimed_rev = _ticket_frontmatter(home, ticket_id).get("claimed_rev")
+    claimed_rev = _ticket_frontmatter_snapshot(home, ticket_id).get("claimed_rev")
     return claimed_rev.strip() or None if isinstance(claimed_rev, str) else None
 
 
@@ -72,18 +55,18 @@ def get_ticket_claimed_at(home, ticket_id: str) -> str | None:
     `done/` 으로 옮겨졌어도 아직 같은 트리에 자기 diff 를 남기고 있으므로 귀속 창 안이다.
     구 티켓(박제 이전)엔 없으므로 None 이 정상 형상이고, 그때 창을 못 정하는 판정은 소비자가
     소유한다(종전 `claimed/` 만 보는 창으로 접는다)."""
-    claimed_at = _ticket_frontmatter(home, ticket_id).get("claimed_at")
+    claimed_at = _ticket_frontmatter_snapshot(home, ticket_id).get("claimed_at")
     return claimed_at.strip() or None if isinstance(claimed_at, str) else None
 
 
 def get_ticket_touches(home, ticket_id: str) -> list[str]:
     """ticket_id 의 frontmatter `touches`(파일/디렉토리 경로 목록)를 명시 Home 에서 읽는다.
 
-    문자열 원소만 취한다(비-문자열 오기는 버림). ticket 부재/깨짐 →
-    [](graceful·crash 0 — soft 알림은 막지 않는다). domain soft 알림 step 이 쓴다.
+    문자열 원소만 취한다(비-문자열 오기는 버림). ticket 부재 → [], 읽기·파싱 실패는 전파한다.
+    domain soft 알림 step 이 쓴다.
     """
     # --touches CLI 와 동형: 각 원소 strip·빈 값/비-문자열 drop (silent-miss 방어).
-    return finish_rules._clean_touches(_ticket_frontmatter(home, ticket_id).get("touches"))
+    return finish_rules._clean_touches(_ticket_frontmatter_snapshot(home, ticket_id).get("touches"))
 
 
 def _done_paths_in_window(home, since: str | None) -> list[Path]:
@@ -123,8 +106,8 @@ def _done_paths_in_window(home, since: str | None) -> list[Path]:
 
 def get_in_window_ticket_touches(
     home, *, since: str | None = None,
-) -> finish_rules.ClaimedTouchesSnapshot:
-    """귀속 창 안 티켓별 touches 와 읽기 실패 진단.
+) -> dict[str, list[str]]:
+    """귀속 창 안 티켓별 touches.
 
     창 = `claimed/` ∪ (`done/` 중 `completed_at >= since`)이고 `since` 는 현재 티켓의
     `claimed_at` 이다. `claimed/` 만 보면 같은 wave 에서 **먼저 완료된** 티켓이 `done/` 으로
@@ -134,71 +117,26 @@ def get_in_window_ticket_touches(
 
     잔여 판정의 다른 멤버 경로(`_sibling_member_scopes`) 입력은 이 스냅샷뿐이다. 새 장부나 설정을 만들지 않고, 보드가 권위 있게 정한
     `tickets_dir()/{claimed,done}` 과 각 티켓 frontmatter `touches` 만 읽는다. 디렉터리와
-    frontmatter status 가 모두 같은 행만 인정한다. 정상적인 빈 touches/빈 창은 `error=None`이고,
-    모듈·디렉터리·티켓 읽기/파싱 실패는 error 에 담아 호출부가 loud 하게 보정 skip 을 알린다.
+    frontmatter status 가 모두 같은 행만 인정한다. 디렉터리 부재·티켓 읽기/파싱 실패·id/status
+    손상은 전파한다(손상된 창으로 귀속을 판정하지 않는다).
     """
-    try:
-        claimed_dir = pm_paths.tickets_dir(home) / "claimed"
-        if not claimed_dir.is_dir():
-            raise FileNotFoundError(f"claimed 티켓 디렉터리 부재: {claimed_dir}")
-        window_paths = [("claimed", path)
-                        for path in sorted(claimed_dir.glob("T-*.md"))]
-        window_paths += [("done", path)
-                         for path in _done_paths_in_window(home, since)]
-    except Exception as exc:  # noqa: BLE001 — 보드 미로드면 타 티켓 제외 없이 과다 판정 쪽 유지.
-        detail = " ".join(str(exc).split()) or type(exc).__name__
-        return finish_rules.ClaimedTouchesSnapshot({}, f"{pm_paths.tickets_dir(home)}: {detail}")
+    claimed_dir = pm_paths.tickets_dir(home) / "claimed"
+    if not claimed_dir.is_dir():
+        raise FileNotFoundError(f"claimed 티켓 디렉터리 부재: {claimed_dir}")
+    window_paths = [("claimed", path)
+                    for path in sorted(claimed_dir.glob("T-*.md"))]
+    window_paths += [("done", path)
+                     for path in _done_paths_in_window(home, since)]
 
     in_window: dict[str, list[str]] = {}
-    errors: list[str] = []
     for status, path in window_paths:
-        try:
-            fm, _body = ticket_store.load_ticket(path)
-        except Exception as exc:  # noqa: BLE001 — 호출부가 전체 보정을 보수적으로 skip 한다.
-            detail = " ".join(str(exc).split()) or type(exc).__name__
-            errors.append(f"{path}: {detail}")
-            continue
+        fm, _body = ticket_store.load_ticket(path)
         ticket_id = fm.get("id") if isinstance(fm, dict) else None
         if (not isinstance(ticket_id, str) or not ticket_id.strip()
                 or fm.get("status") != status):
-            errors.append(f"{path}: {status} frontmatter(id/status) 손상")
-            continue
+            raise ValueError(f"{path}: {status} frontmatter(id/status) 손상")
         in_window[ticket_id.strip()] = finish_rules._clean_touches(fm.get("touches"))
-    return finish_rules.ClaimedTouchesSnapshot(in_window, "; ".join(errors) or None)
-
-
-def _fallback_ticket_frontmatter(
-    home, ticket_id: str,
-) -> dict:
-    """정상 frontmatter 판독이 실패했을 때 현재 티켓의 최소 입력만 복구한다.
-
-    정상 경로의 YAML 판정을 대체하지 않는다. 명시 Home 의 board 티켓 디렉터리에서
-    frontmatter `id`가 정확히 같은 후보가 **하나**일 때만 쓴다. touches는
-    round_store의 raw frontmatter parser를 재사용한다. 후보가 모호하거나 읽히지
-    않으면 {}라 임의 스코프를 만들지 않는다.
-    """
-    tickets_dir = pm_paths.tickets_dir(home)
-    candidates: list[tuple[Path, str]] = []
-    for status in ("open", "claimed", "blocked", "done"):
-        for path in sorted((tickets_dir / status).glob(f"{ticket_id}*.md")):
-            try:
-                text = fs.read_text_shared(path, encoding="utf-8")
-            except (OSError, UnicodeError):
-                continue
-            if finish_rules._fallback_frontmatter_scalar(text, "id") == ticket_id:
-                candidates.append((path, text))
-    if len(candidates) != 1:
-        return {}
-    path, text = candidates[0]
-    # round_store의 원문 frontmatter parser는 손상된 opener를 `AnchorResolutionError`
-    # 로 알린다. 이 fallback은 측정 가드용 입력 복구라 그 경우에도 가드 off로 접어 완료 기록을
-    # 막지 않는다. 다른 예외는 삼키지 않는다.
-    parser_errors = (OSError, UnicodeError, pm_paths.AnchorResolutionError)
-    try:
-        touches = round_store._parse_touches_from_file(path)
-    except parser_errors:
-        return {}
-    return {"touches": touches}
+    return in_window
 
 
 def _round_stage_candidates(tickets_dir: Path, ticket_id: str) -> list[Path]:
@@ -270,21 +208,18 @@ def ticket_cluster_ledger(home, ticket_id: str) -> tuple[str | None, dict | None
     """티켓과 명시 Home의 장부에서 묶음 ID와 frontmatter를 읽는다.
 
     ticket_cluster 규칙은 cluster_rules, 장부 IO는 cluster_store를 사용한다.
-    조회 실패는 기존 무판정 (None, None)을 유지하며 장부 부재는 (묶음 ID, None)이다."""
-    try:
-        found = ticket_store.find_ticket_exact(home, ticket_id)
-        frontmatter: dict = {}
-        if found is not None:
-            loaded, _body = ticket_store.load_ticket(found[1])
-            frontmatter = loaded if isinstance(loaded, dict) else {}
-        cluster = cluster_rules.ticket_cluster(ticket_id, frontmatter)
-        return cluster, cluster_store.load_cluster(home, cluster)
-    except Exception as exc:  # noqa: BLE001 — 조회 실패는 판정 불능(차단 아님).
-        return None, None
+    조회 실패는 전파하며 장부 부재는 (묶음 ID, None)이다."""
+    found = ticket_store.find_ticket_exact(home, ticket_id)
+    frontmatter: dict = {}
+    if found is not None:
+        loaded, _body = ticket_store.load_ticket(found[1])
+        frontmatter = loaded if isinstance(loaded, dict) else {}
+    cluster = cluster_rules.ticket_cluster(ticket_id, frontmatter)
+    return cluster, cluster_store.load_cluster(home, cluster)
 
 
 def _cluster_integration_branch(home, ticket_id: str) -> str | None:
-    """이 티켓이 속한 묶음의 **통합 브랜치** 이름 (선언 부재·조회 실패는 None).
+    """이 티켓이 속한 묶음의 **통합 브랜치** 이름 (선언 부재는 None, 조회 실패는 전파).
 
     값의 소유자는 cluster_store의 묶음 장부(`base_branch`)다 — 이 도구는 그 선언을 읽기만 한다.
     값은 장부를 만들 때 박히므로(발행이 만드는 크기 1 장부 포함) 선언 부재는 판정 입력이
@@ -302,7 +237,7 @@ def _cluster_integration_branch(home, ticket_id: str) -> str | None:
 
 
 def _cluster_member_ids(home, ticket_id: str) -> tuple[str, ...]:
-    """이 티켓이 속한 묶음의 멤버 티켓 ID (장부 부재·조회 실패는 빈 튜플).
+    """이 티켓이 속한 묶음의 멤버 티켓 ID (장부 부재는 빈 튜플, 조회 실패는 전파).
 
     장부 해소는 `ticket_cluster_ledger` 한 벌이고 목록을 읽는 술어는 cluster_store 소유
     (`cluster_store.cluster_tickets`)다 — 이 도구는 그 둘을 잇기만 한다(멤버 규칙 사본 0).
@@ -310,8 +245,5 @@ def _cluster_member_ids(home, ticket_id: str) -> tuple[str, ...]:
     _cluster, ledger = ticket_cluster_ledger(home, ticket_id)
     if not ledger:
         return ()
-    try:
-        members = cluster_store.cluster_tickets(ledger)
-    except Exception:  # noqa: BLE001 — 목록 조회 실패는 제외 없이(인구 유지) 접는다.
-        return ()
+    members = cluster_store.cluster_tickets(ledger)
     return tuple(str(member).strip() for member in members if str(member).strip())

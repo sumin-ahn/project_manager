@@ -99,16 +99,13 @@ def _derive_sed_exclude_relpaths(manifest_path: Path) -> frozenset:
     산출은 정확히 {pm_role.md, pm_playbook.md, pm_principles.md}.
 
     manifest 파싱은 manifest_store.read_manifest 재사용(새 파서 신설 없음·_render_managed_relpaths 동형).
-    manifest 부재·파싱 실패 → 리터럴 floor SED_EXCLUDE_FLOOR (fail-soft — 빈 집합이면 broken-manifest
-    엣지에서 방법론 문서가 조용히 오치환되므로 기존 제외를 floor 로 보장·should-fix). 정상
+    manifest 부재 → 리터럴 floor SED_EXCLUDE_FLOOR, 파싱 실패는 전파한다(깨진 manifest 로 방법론
+    문서를 오치환하지 않는다). 정상
     파싱은 파생 결과를 그대로 반환한다(manifest 가 방법론 문서를 명시적으로 뺐다면 그 판단을 존중)."""
     wiki_prefix = ".project_manager/wiki/"
     if not manifest_path.is_file():
         return SED_EXCLUDE_FLOOR
-    try:
-        entries = manifest_store.read_manifest(manifest_path)
-    except Exception:  # noqa: BLE001 — 파싱 실패는 floor 로 폴백(기존 제외 보존·should-fix).
-        return SED_EXCLUDE_FLOOR
+    entries = manifest_store.read_manifest(manifest_path)
     out: set = set()
     for entry in entries:
         rel = str(entry).replace("\\", "/")
@@ -133,7 +130,7 @@ def _dest_sed_exclude(dest_root: Path) -> frozenset:
     모듈-import 시점(실행 checkout)이 아니라 *복사가 끝난 dest* 의 manifest 에서 파생한다 — pm_import
     는 `--from <다른 checkout>` 에서 복사할 수 있어, 실제 dest 에 실린 manifest 가 기준이어야 upstream
     진화(신규 직속 방법론 문서)가 자동 편입된다. manifest 는 self-prop 복사 대상이라 치환(복사 이후)
-    단계엔 dest 에 실재한다. 부재/실패는 SED_EXCLUDE_FLOOR(fail-soft)."""
+    단계엔 dest 에 실재한다. 부재는 SED_EXCLUDE_FLOOR, 파싱 실패는 전파한다."""
     return _derive_sed_exclude_relpaths(dest_root / ".project_manager" / "engine.manifest")
 
 
@@ -439,13 +436,10 @@ def _has_harness_templates(root: Path, harness: str) -> bool:
 
 
 def _pm_update_read_manifest(manifest_path: Path) -> list:
-    """manifest_store.read_manifest 재사용 (부재·파싱 실패는 빈 리스트·무동작). 새 파서 신설 없음."""
+    """manifest_store.read_manifest 재사용 (부재는 빈 리스트·파싱 실패는 전파). 새 파서 신설 없음."""
     if not manifest_path.is_file():
         return []
-    try:
-        return list(manifest_store.read_manifest(manifest_path))
-    except Exception:  # noqa: BLE001 — 파싱 실패는 빈 리스트(무동작).
-        return []
+    return list(manifest_store.read_manifest(manifest_path))
 
 
 def _dest_manifest_core_paths(dest_root: Path) -> set[str]:

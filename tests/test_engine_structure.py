@@ -4,6 +4,8 @@ R1 층 순위(허용 import 대상·경로 적재 금지), R2 도메인 층 순�
 R4 패키지 안은 모듈 단위 import 만, R7 모듈 1,500줄 이하.
 R5 평면 진입 파일은 하나의 문법(경로 삽입·cli 모듈 하나 import·콘솔 설정 뒤 패키지 main 호출)만,
 R6 어댑터는 `from pm_engine.cli import hooks` 외 엔진 import·평면 엔진 import·경로 적재 금지.
+R8 넓은 처리부(Exception·BaseException·맨 except)는 모든 경로가 재전파하거나(P1) 훅 진입 fail-open
+(P2·엔진)·원인 보고(P3·어댑터)일 때만 허용하고, 넓은 suppress 는 금지한다.
 """
 from __future__ import annotations
 
@@ -52,6 +54,10 @@ R6_MIN_PYTHON_ADAPTERS = 6
 R6_MIN_JS_ADAPTERS = 16
 R6_JS_PYTHON_IMPORT = re.compile(r"\b(?:from|import)\s+(pm_engine(?:\.\w+)*)(?:\s+import\s+([\w, ]+))?")
 R6_JS_PATH_LOAD = re.compile(r"\b(spec_from_file_location|SourceFileLoader|run_path)\b")
+R8_BROAD_NAMES = frozenset({"Exception", "BaseException"})
+R8_LAYERS = ("domain", "infra")
+R8_ENTRY_PACKAGE = "pm_engine.cli"
+R8_MESSAGE = "넓은 처리부가 예외를 삼킨다"
 
 
 def package_modules(package: Path) -> dict[str, Path]:
@@ -554,3 +560,302 @@ def test_r6_reports_synthetic_adapter_violations(name, source):
     assert r6_violations(Path("adapter.py"), "from pm_engine.cli import hooks\n", flat_names) == []
     assert r6_violations(Path("adapter.js"), "spawn(python, ['board.py', 'hook-tool'])\n", flat_names) == []
     assert r6_violations(Path(name), source, flat_names), source
+
+
+# ── R8 예외 삼킴 ─────────────────────────────────────────────────────────────
+
+
+def _r8_names(node: ast.expr) -> list[str]:
+    elements = node.elts if isinstance(node, ast.Tuple) else [node]
+    return [element.id if isinstance(element, ast.Name) else element.attr
+            for element in elements if isinstance(element, (ast.Name, ast.Attribute))]
+
+
+def _r8_is_broad_handler(handler: ast.ExceptHandler) -> bool:
+    return handler.type is None or bool(R8_BROAD_NAMES & set(_r8_names(handler.type)))
+
+
+def _r8_is_suppress_call(node: ast.expr) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    called = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
+    return called == "suppress"
+
+
+def _r8_is_broad_suppress(item: ast.withitem) -> bool:
+    call = item.context_expr
+    return _r8_is_suppress_call(call) and any(
+        R8_BROAD_NAMES & set(_r8_names(argument)) for argument in call.args)
+
+
+def _r8_is_exit(statement: ast.stmt) -> bool:
+    return (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+            and ast.unparse(statement.value.func) == "sys.exit")
+
+
+def _r8_own_nodes(statements: list[ast.stmt]):
+    """문장 목록 아래 노드 — 중첩 함수·클래스·lambda 본문은 보지 않는다."""
+    stack = list(statements)
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(child for child in ast.iter_child_nodes(node)
+                     if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)))
+
+
+def _r8_flow(statements: list[ast.stmt], return_allowed) -> tuple[bool, bool]:
+    """(정상 종료 가능, raise 아닌 탈출 가능). `return_allowed(ret)` 가 참인 return 은 허용 종결이다."""
+    for statement in statements:
+        falls, escapes = _r8_flow_statement(statement, return_allowed)
+        if escapes:
+            return True, True
+        if not falls:
+            return False, False
+    return True, False
+
+
+def _r8_flow_statement(statement: ast.stmt, return_allowed) -> tuple[bool, bool]:
+    if isinstance(statement, ast.Raise) or _r8_is_exit(statement):
+        return False, False
+    if isinstance(statement, ast.Return):
+        return False, not return_allowed(statement)
+    if isinstance(statement, (ast.Break, ast.Continue)):
+        return False, True
+    if isinstance(statement, ast.If):
+        body_falls, body_escapes = _r8_flow(statement.body, return_allowed)
+        else_falls, else_escapes = (_r8_flow(statement.orelse, return_allowed)
+                                    if statement.orelse else (True, False))
+        return body_falls or else_falls, body_escapes or else_escapes
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        falls, escapes = _r8_flow(statement.body, return_allowed)
+        if any(_r8_is_suppress_call(item.context_expr) for item in statement.items):
+            return True, escapes
+        return falls, escapes
+    if isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.Match)):
+        escapes = any(isinstance(node, ast.Return) and not return_allowed(node)
+                      for node in _r8_own_nodes([statement]))
+        return True, escapes
+    if isinstance(statement, ast.Try):
+        falls, escapes = _r8_flow(statement.body + statement.orelse, return_allowed)
+        for handler in statement.handlers:
+            handler_falls, handler_escapes = _r8_flow(handler.body, return_allowed)
+            falls, escapes = falls or handler_falls, escapes or handler_escapes
+        if statement.finalbody:
+            final_falls, final_escapes = _r8_flow(statement.finalbody, return_allowed)
+            if not final_falls:
+                return False, final_escapes
+            escapes = escapes or final_escapes
+        return falls, escapes
+    return True, False
+
+
+def _paths_all_raise(stmts: list[ast.stmt]) -> bool:
+    """처리부 본문의 모든 경로가 raise·`sys.exit(...)` 로 끝나는가 (P1)."""
+    falls, escapes = _r8_flow(stmts, lambda _return: False)
+    return not falls and not escapes
+
+
+def _r8_reads_bound_name(handler: ast.ExceptHandler) -> bool:
+    return bool(handler.name) and any(
+        isinstance(node, ast.Name) and node.id == handler.name and isinstance(node.ctx, ast.Load)
+        for node in _r8_own_nodes(handler.body))
+
+
+def _r8_is_default_literal(value: ast.expr | None) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, ast.Constant):
+        return value.value is None or value.value is True or value.value is False or value.value == ""
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        return not value.elts
+    return isinstance(value, ast.Dict) and not value.keys
+
+
+def _r8_returns_zero(statement: ast.Return) -> bool:
+    value = statement.value
+    return isinstance(value, ast.Constant) and type(value.value) is int and value.value == 0
+
+
+def _r8_form(handler: ast.ExceptHandler) -> str:
+    """3.1항 형태 이름 — 위반 문구가 정리할 모양을 가리킨다."""
+    nodes = list(_r8_own_nodes(handler.body))
+    returns = [node for node in nodes if isinstance(node, ast.Return)]
+    if all(isinstance(statement, ast.Pass) for statement in handler.body):
+        return "무시"
+    if any(isinstance(node, (ast.Break, ast.Continue)) for node in nodes):
+        return "건너뛰고 계속"
+    if returns:
+        if any(_r8_is_default_literal(node.value) for node in returns):
+            return "기본값 반환"
+        if all(isinstance(node.value, ast.Constant) and type(node.value.value) is int for node in returns):
+            return "문구 뒤 rc 반환"
+        return "다른 값 반환"
+    if any(isinstance(node, ast.Raise) for node in nodes):
+        return "일부만 재전파"
+    if any(isinstance(node, ast.Call) and ast.unparse(node.func) == "print" for node in nodes):
+        return "경고로 강등"
+    return "대입 뒤 진행"
+
+
+def _r8_hook_entry(handler: ast.ExceptHandler, parents: dict, tree: ast.Module) -> bool:
+    """P2 — 진입 cli 모듈 최상위 `main` 본문의 직접 try, 예외 이름을 읽고 비 raise 경로는 `return 0`."""
+    try_node = parents.get(handler)
+    function = parents.get(try_node)
+    if not (isinstance(function, ast.FunctionDef) and function.name == "main"
+            and try_node in function.body and parents.get(function) is tree):
+        return False
+    falls, escapes = _r8_flow(handler.body, _r8_returns_zero)
+    return _r8_reads_bound_name(handler) and not falls and not escapes
+
+
+def _r8_adapter_reports(handler: ast.ExceptHandler) -> bool:
+    """P3 — 어댑터 처리부가 예외 이름을 읽어 보고하고 기본값을 돌려주지 않는다."""
+    return (_r8_reads_bound_name(handler)
+            and not all(isinstance(statement, ast.Pass) for statement in handler.body)
+            and not any(isinstance(node, ast.Return) and _r8_is_default_literal(node.value)
+                        for node in _r8_own_nodes(handler.body)))
+
+
+def _r8_entry_module(rel_path: str) -> str | None:
+    parts = rel_path.split("/")
+    if len(parts) >= 3 and parts[-3:-1] == R8_ENTRY_PACKAGE.split("."):
+        return parts[-1].removesuffix(".py")
+    return None
+
+
+def r8_violations(rel_path: str, source_text: str, *, adapter: bool = False,
+                  entry_cli_modules: frozenset[str] = frozenset()) -> list[str]:
+    """파일 하나의 R8 위반 — `<경로>:<줄>: 넓은 처리부가 예외를 삼킨다(<형태>)` 목록."""
+    tree = ast.parse(source_text, filename=rel_path)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    is_entry = _r8_entry_module(rel_path) in entry_cli_modules
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.With, ast.AsyncWith)) and any(_r8_is_broad_suppress(item) for item in node.items):
+            out.append(f"{rel_path}:{node.lineno}: {R8_MESSAGE}(넓은 suppress)")
+            continue
+        if not isinstance(node, ast.ExceptHandler) or not _r8_is_broad_handler(node):
+            continue
+        if _paths_all_raise(node.body):
+            continue
+        if adapter and _r8_adapter_reports(node):
+            continue
+        if not adapter and is_entry and _r8_hook_entry(node, parents, tree):
+            continue
+        out.append(f"{rel_path}:{node.lineno}: {R8_MESSAGE}({_r8_form(node)})")
+    return sorted(out, key=lambda line: int(line.split(":")[1]))
+
+
+def entry_cli_modules(tools: Path) -> frozenset[str]:
+    """평면 진입 파일이 `from pm_engine.cli import X` 로 싣는 cli 모듈 이름 집합."""
+    modules: set[str] = set()
+    for path in sorted(tools.glob("*.py")):
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.ImportFrom) and node.module == R8_ENTRY_PACKAGE:
+                modules.update(alias.name for alias in node.names)
+    return frozenset(modules)
+
+
+@pytest.mark.parametrize("layer", R8_LAYERS)
+def test_r8_real_tree_layer_has_no_swallow(layer):
+    entries = entry_cli_modules(TOOLS)
+    assert entries, "평면 진입 파일의 cli 모듈 import 가 0개다(공허 검사)"
+    files = [path for path in engine_python_files(TOOLS)
+             if path.relative_to(TOOLS).as_posix().startswith(f"pm_engine/{layer}/")]
+    assert files, f"{layer} 층 스캔 파일이 0개다(공허 검사)"
+    violations = [
+        line
+        for path in files
+        for line in r8_violations(path.relative_to(TOOLS).as_posix(), path.read_text(encoding="utf-8"),
+                                  entry_cli_modules=entries)
+    ]
+    assert violations == []
+
+
+_R8_INFRA = "pm_engine/infra/sample.py"
+_R8_ENTRY = "pm_engine/cli/hookmod.py"
+_R8_ADAPTER = "templates/claude_code/.claude/hooks/sample.py"
+_R8_ENTRY_SET = frozenset({"hookmod"})
+
+_R8_SWALLOW_CASES = {
+    "default-return": (_R8_INFRA, "def f():\n    try:\n        g()\n    except Exception:\n        return None\n",
+                       False, _R8_ENTRY_SET, "기본값 반환"),
+    "other-value": (_R8_INFRA, "def f():\n    try:\n        g()\n    except Exception as exc:\n        return str(exc)\n",
+                    False, _R8_ENTRY_SET, "다른 값 반환"),
+    "pass": (_R8_INFRA, "def f():\n    try:\n        g()\n    except BaseException:\n        pass\n",
+             False, _R8_ENTRY_SET, "무시"),
+    "continue": (_R8_INFRA, "def f(xs):\n    for x in xs:\n        try:\n            g(x)\n        except Exception:\n            continue\n",
+                 False, _R8_ENTRY_SET, "건너뛰고 계속"),
+    "warn-only": (_R8_INFRA, "import sys\ndef f():\n    try:\n        g()\n    except Exception as exc:\n        print(exc, file=sys.stderr)\n",
+                  False, _R8_ENTRY_SET, "경고로 강등"),
+    "assign": (_R8_INFRA, "def f():\n    try:\n        value = g()\n    except Exception:\n        value = None\n    return value\n",
+               False, _R8_ENTRY_SET, "대입 뒤 진행"),
+    "partial-reraise": (_R8_INFRA, "def f(flag):\n    try:\n        g()\n    except Exception as exc:\n        if flag:\n            raise\n        return None\n",
+                        False, _R8_ENTRY_SET, "기본값 반환"),
+    "bare": (_R8_INFRA, "def f():\n    try:\n        g()\n    except:\n        return []\n",
+             False, _R8_ENTRY_SET, "기본값 반환"),
+    "tuple": (_R8_INFRA, "def f():\n    try:\n        g()\n    except (OSError, Exception):\n        return None\n",
+              False, _R8_ENTRY_SET, "기본값 반환"),
+    "early-return-before-raise": (
+        _R8_INFRA, "def f():\n    try:\n        g()\n    except Exception as exc:\n        if isinstance(exc, KeyError):\n            return 1\n        raise\n",
+        False, _R8_ENTRY_SET, "문구 뒤 rc 반환"),
+    "suppress-attr": (_R8_INFRA, "import contextlib\ndef f():\n    with contextlib.suppress(Exception):\n        g()\n",
+                      False, _R8_ENTRY_SET, "넓은 suppress"),
+    "suppress-name": (_R8_INFRA, "from contextlib import suppress\ndef f():\n    with suppress(BaseException):\n        g()\n",
+                      False, _R8_ENTRY_SET, "넓은 suppress"),
+    "entry-not-imported": (
+        _R8_ENTRY, "def main():\n    try:\n        return run()\n    except BaseException as exc:\n        report(exc)\n        return 0\n",
+        False, frozenset(), "문구 뒤 rc 반환"),
+    "entry-not-outermost": (
+        _R8_ENTRY, "def main(flag):\n    if flag:\n        try:\n            return run()\n        except BaseException as exc:\n            report(exc)\n            return 0\n    return 1\n",
+        False, _R8_ENTRY_SET, "문구 뒤 rc 반환"),
+    "entry-unbound": (_R8_ENTRY, "def main():\n    try:\n        return run()\n    except BaseException:\n        return 0\n",
+                      False, _R8_ENTRY_SET, "문구 뒤 rc 반환"),
+    "entry-nonzero-rc": (
+        _R8_ENTRY, "def main():\n    try:\n        return run()\n    except BaseException as exc:\n        print(exc)\n        return 1\n",
+        False, _R8_ENTRY_SET, "문구 뒤 rc 반환"),
+    "adapter-default": (_R8_ADAPTER, "def f():\n    try:\n        g()\n    except Exception as exc:\n        log(exc)\n        return ''\n",
+                        True, frozenset(), "기본값 반환"),
+    "adapter-pass": (_R8_ADAPTER, "def f():\n    try:\n        g()\n    except BaseException:\n        pass\n",
+                     True, frozenset(), "무시"),
+}
+
+_R8_ALLOWED_CASES = {
+    "cleanup-reraise": (_R8_INFRA, "def f():\n    try:\n        g()\n    except BaseException:\n        cleanup()\n        raise\n",
+                        False, _R8_ENTRY_SET),
+    "convert": (_R8_INFRA, "def f():\n    try:\n        g()\n    except Exception as exc:\n        raise RuntimeError('x') from exc\n",
+                False, _R8_ENTRY_SET),
+    "both-branches-raise": (
+        _R8_INFRA, "def f(flag):\n    try:\n        g()\n    except Exception as exc:\n        if flag:\n            raise\n        else:\n            raise RuntimeError('x') from exc\n",
+        False, _R8_ENTRY_SET),
+    "narrow": (_R8_INFRA, "def f():\n    try:\n        g()\n    except OSError:\n        return None\n",
+               False, _R8_ENTRY_SET),
+    "narrow-suppress": (_R8_INFRA, "import contextlib\ndef f():\n    with contextlib.suppress(OSError):\n        g()\n",
+                        False, _R8_ENTRY_SET),
+    "hook-entry": (_R8_ENTRY, "def main():\n    try:\n        return run()\n    except BaseException as exc:\n        report(exc)\n        return 0\n",
+                   False, _R8_ENTRY_SET),
+    "adapter-report": (_R8_ADAPTER, "def f():\n    try:\n        return g()\n    except BaseException as exc:\n        return envelope(f'{exc}')\n",
+                       True, frozenset()),
+}
+
+
+def _r8_scan_written(tmp_path: Path, rel: str, text: str, adapter: bool, entries: frozenset[str]) -> list[str]:
+    _write(tmp_path, rel, text)
+    return r8_violations(rel, (tmp_path / rel).read_text(encoding="utf-8"),
+                         adapter=adapter, entry_cli_modules=entries)
+
+
+@pytest.mark.parametrize("case", list(_R8_SWALLOW_CASES))
+def test_r8_reports_synthetic_swallow(tmp_path, case):
+    rel, text, adapter, entries, form = _R8_SWALLOW_CASES[case]
+    found = _r8_scan_written(tmp_path, rel, text, adapter, entries)
+    assert found, case
+    assert all(line.startswith(f"{rel}:") and R8_MESSAGE in line for line in found), found
+    assert f"({form})" in found[0], found
+
+
+@pytest.mark.parametrize("case", list(_R8_ALLOWED_CASES))
+def test_r8_accepts_allowed_forms(tmp_path, case):
+    rel, text, adapter, entries = _R8_ALLOWED_CASES[case]
+    assert _r8_scan_written(tmp_path, rel, text, adapter, entries) == [], case

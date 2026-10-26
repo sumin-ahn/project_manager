@@ -43,49 +43,46 @@ def _strip_yaml_scalar(value: str) -> str:
 
 
 def _claimed_tickets_for_session(home, session: str, tickets_dir: Path | None=None) -> list[str]:
-    """활성 슬롯(`<repo>_<N>`)이 claim 한 티켓 ID 목록을 board tickets 에서 가볍게 스캔한다 (fail-soft).
+    """활성 슬롯(`<repo>_<N>`)이 claim 한 티켓 ID 목록을 board tickets 에서 가볍게 스캔한다.
 
     board tickets(`_tickets_dir()`)가 status-subdir 레이아웃이면 `claimed/` 하위를, flat
     레이아웃이면 `status: claimed` frontmatter 를 대상으로, `claimed_by:`(`<email>/<session>`)의
     `/` 뒤 세션 파트가 `session` 과 같은 티켓의 `id:` 를 모은다. board 를 import 하지 않고
     (touches 격리·`_registered_repos`/leases 직접 read 동형) frontmatter 를 라인 스캔한다.
-    부재/스키마 불일치/예외는 fail-soft 빈 목록 — 대시보드는 편의 surface 이지 강제 아니다.
+    디렉터리 부재는 빈 목록, 개별 티켓 읽기 OSError 는 그 티켓만 건너뛴다. 그 밖의 예외는 전파한다.
     """
     if tickets_dir is None:
         tickets_dir = pm_paths.tickets_dir(home)
-    try:
-        if not tickets_dir.is_dir():
-            return []
-        claimed_dir = tickets_dir / "claimed"
-        if claimed_dir.is_dir():
-            candidates = sorted(claimed_dir.glob("*.md"))
-            require_status_claimed = False  # subdir 자체가 status 신호.
-        else:
-            candidates = sorted(tickets_dir.glob("*.md"))
-            require_status_claimed = True
-        result: list[str] = []
-        for f in candidates:
-            try:
-                head = fs.read_text_shared(f, encoding="utf-8")[:2000]  # frontmatter 만 필요.
-            except OSError:
-                continue
-            if require_status_claimed:
-                sm = _TICKET_FRONT_STATUS_RE.search(head)
-                # status 값도 따옴표 strip — `status: "claimed"`(YAML 따옴표) 인식 일관성.
-                if sm is None or _strip_yaml_scalar(sm.group(1)) != "claimed":
-                    continue
-            cb = _TICKET_FRONT_CLAIMED_BY_RE.search(head)
-            if cb is None:
-                continue
-            # YAML 따옴표 값(`claimed_by: "…/my_app_1"`) 방어 — surrounding 따옴표를
-            # 벗겨 `/` 뒤 세션 파트를 비교한다(현행 무해하나 견고화·codex suggestion).
-            if _strip_yaml_scalar(cb.group(1)).rsplit("/", 1)[-1] != session:
-                continue
-            idm = _TICKET_FRONT_ID_RE.search(head)
-            result.append(_strip_yaml_scalar(idm.group(1)) if idm else f.stem)
-        return sorted(set(result))
-    except Exception:  # noqa: BLE001 — fail-soft: 스캔 실패는 빈 목록(대시보드 줄 생략).
+    if not tickets_dir.is_dir():
         return []
+    claimed_dir = tickets_dir / "claimed"
+    if claimed_dir.is_dir():
+        candidates = sorted(claimed_dir.glob("*.md"))
+        require_status_claimed = False  # subdir 자체가 status 신호.
+    else:
+        candidates = sorted(tickets_dir.glob("*.md"))
+        require_status_claimed = True
+    result: list[str] = []
+    for f in candidates:
+        try:
+            head = fs.read_text_shared(f, encoding="utf-8")[:2000]  # frontmatter 만 필요.
+        except OSError:
+            continue
+        if require_status_claimed:
+            sm = _TICKET_FRONT_STATUS_RE.search(head)
+            # status 값도 따옴표 strip — `status: "claimed"`(YAML 따옴표) 인식 일관성.
+            if sm is None or _strip_yaml_scalar(sm.group(1)) != "claimed":
+                continue
+        cb = _TICKET_FRONT_CLAIMED_BY_RE.search(head)
+        if cb is None:
+            continue
+        # YAML 따옴표 값(`claimed_by: "…/my_app_1"`) 방어 — surrounding 따옴표를
+        # 벗겨 `/` 뒤 세션 파트를 비교한다(현행 무해하나 견고화·codex suggestion).
+        if _strip_yaml_scalar(cb.group(1)).rsplit("/", 1)[-1] != session:
+            continue
+        idm = _TICKET_FRONT_ID_RE.search(head)
+        result.append(_strip_yaml_scalar(idm.group(1)) if idm else f.stem)
+    return sorted(set(result))
 
 
 def _read_json_object(path: Path) -> dict | None:

@@ -10,8 +10,6 @@ per-repo 회귀 명령 해소(ADR-0014)·domain soft 알림(ADR-0018 #2)·전체
 """
 from __future__ import annotations
 
-from pm_engine.infra import round_store
-
 from pm_engine.cli import board_ticket
 
 
@@ -1770,58 +1768,6 @@ def _boom_pytest():
     raise AssertionError("차단된 완료는 회귀를 돌리지 않는다")
 
 
-def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
-        tf, tmp_path, monkeypatch):
-    """손상 ticket + board 불능은 측정 가드 off라 완료 기록을 막지 않는다."""
-    repo = tmp_path / "repo"
-    board_py = repo / ".project_manager" / "tools" / "board.py"
-    board_py.parent.mkdir(parents=True)
-    board_py.write_text("# board unavailable fixture\n", encoding="utf-8")
-    ticket = repo / ".project_manager" / "board" / "tickets" / "claimed" / "T-9001.md"
-    ticket.parent.mkdir(parents=True)
-    ticket.write_text(
-        "---\nid: T-9001\nestimate: small\ntouches:\n- src/app.py\n",
-        encoding="utf-8",
-    )
-    assert callable(round_store._parse_touches_from_file)
-    assert hasattr(pm_paths, "AnchorResolutionError")
-    monkeypatch.setattr(
-        finish_store, "_ticket_frontmatter_snapshot",
-        lambda _home, _ticket: finish_rules.TicketFrontmatterSnapshot(
-            {}, "board fixture unavailable",
-        ),
-    )
-
-    class _Log:
-        @staticmethod
-        def append_log(path, text):
-            path.write_text(text, encoding="utf-8")
-
-    completed: list[list[str]] = []
-    finisher = finish_record.TicketFinisher(
-        pm_paths.home_at(repo),
-        run_pytest_fn=_green_pytest(100),
-        run_board_fn=lambda args: (completed.append(args), (0, "board ok"))[1],
-        run_git_fn=lambda args: (0, ""),
-        board_count_fn=lambda: 10,
-        ticket_title_fn=lambda tid: "손상 ticket",
-        affected_domain_fn=lambda tid: [],
-        stage_scope_fn=lambda tid: finish_rules.StageScope((), None),
-        status_entries_fn=lambda: (),
-        dod_block_fn=lambda tid: None,
-        # 잔여 preflight 는 board 사본을 적재하는 묶음 장부 조회를 태운다 — 이 fixture 의 board_py 는
-        # 본문 없는 손상 사본이라 그 조회가 성립하지 않는다. 이 테스트의 초점은
-        # frontmatter 손상 폴백이라 off 로 그 관심사만 남긴다.
-        residual_block_fn=lambda tid: None,
-        log_file=tmp_path / "log.md",
-        board_py=board_py,
-    )
-
-    assert finisher.run("T-9001", section=None, dry_run=False) == 0
-    assert completed == [["complete", "T-9001", "--tests-pass"]]
-    assert "T-9001" in (tmp_path / "log.md").read_text(encoding="utf-8")
-
-
 # ── 측정 스코프 정규화 · 기계 mirror 제외 (T-0601 ①⑧) ────────────────────────
 #
 # ⑧ PM 홈 좌표 touches(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리에 그 경로가 없어 diff 가 0 이
@@ -2147,9 +2093,9 @@ def test_pm_direct_warning_is_never_block_and_preserves_finish_rc(
         tf, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         finish_store, "_ticket_frontmatter_snapshot",
-        lambda _home, _tid: finish_rules.TicketFrontmatterSnapshot({
+        lambda _home, _tid: {
             "tier": "pm-direct", "touches": ["src/app.py"],
-        }, None),
+        },
     )
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
@@ -2181,10 +2127,10 @@ def test_pm_direct_task_coordinate_failure_is_loud_and_never_uses_raw_touches(
     workspace.mkdir()
     monkeypatch.setattr(
         finish_store, "_ticket_frontmatter_snapshot",
-        lambda _home, _tid: finish_rules.TicketFrontmatterSnapshot({
+        lambda _home, _tid: {
             "tier": "pm-direct",
             "touches": ["work/project_manager_1/src/app.py"],
-        }, None),
+        },
     )
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
@@ -2203,9 +2149,9 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
         tf, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         finish_store, "_ticket_frontmatter_snapshot",
-        lambda _home, _tid: finish_rules.TicketFrontmatterSnapshot({
+        lambda _home, _tid: {
             "tier": "pm-direct", "touches": ["src/"],
-        }, None),
+        },
     )
     expansion = ticket_rules.TouchFileExpansion(
         ("src/a.py", "src/b.py", "src/c.py"), (),

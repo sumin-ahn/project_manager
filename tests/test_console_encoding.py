@@ -105,10 +105,23 @@ def test_probe_os_name_seam_defaults_to_the_real_interpreter_value(console_encod
     assert console_encoding._probe_os_name() == os.name
 
 
+class _Win32Function:
+    """ctypes 함수 포인터 대역 — 호출과 함께 `restype`·`argtypes` 속성 설정을 받는다."""
+
+    def __init__(self, func):
+        self._func = func
+        self.restype = None
+        self.argtypes = None
+
+    def __call__(self, *args):
+        return self._func(*args)
+
+
 class _FakeKernel32:
     """console codepage와 Toolhelp32 snapshot을 함께 대역한다."""
 
     def __init__(self, output_cp=949, input_cp=949, entries=()):
+        self.CreateToolhelp32Snapshot = _Win32Function(self._create_toolhelp32_snapshot)
         self.output_cp = output_cp
         self.input_cp = input_cp
         self.entries = list(entries)
@@ -136,7 +149,7 @@ class _FakeKernel32:
         self.input_cp = cp
         return 1
 
-    def CreateToolhelp32Snapshot(self, flags, pid):  # noqa: N802
+    def _create_toolhelp32_snapshot(self, flags, pid):
         assert flags == 0x00000002
         assert pid == 0
         return 17

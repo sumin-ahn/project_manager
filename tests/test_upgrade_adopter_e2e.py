@@ -922,7 +922,10 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "49f1e211d0a5623d434251c7dfb3e55e97ae3e06b82be4b6ee73bb1d71be1a05"
+#   예외 삼킴 정리(infra 층)에서 또 이동했다 — `install_conf._read_local_conf` docstring 의 낡은 서술
+#   (형제 로더·읽기 실패 → {})을 현행 동작(부재만 {}·읽기 실패는 전파)으로 고친 것뿐이다. 실행 코드·
+#   배달 경계·anchor 는 무편집이고 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "7dd376999b0e8501d65d101b970160913ebb7de4c2266c1a4b51b788195b6c78"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -2414,7 +2417,9 @@ def _install_t0585_updater(dest: Path) -> None:
 # 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
 # T-0971: 등록 repo 조회의 패키지 이동으로 `reinstall_protected_hooks` 한 줄과 머리 import 한 줄이
 # 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "edd374635473f4ad9ccfc9c59b6a0b5cc0ded321a9a40d182cd6295c140dee32"
+# 예외 삼킴 정리(infra 층): `install_conf._read_local_conf` docstring 현행화(실행 코드 무편집)로 전문 SHA 가
+# 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
+_PRE_T0876_PM_UPDATE_SHA256 = "19aa7d6898a799fa236efdaf5898e42b4ab3fc3f5357dc3a2fd6cb60dc77f4f4"
 
 
 def _pre_t0876_pm_update_source() -> str:

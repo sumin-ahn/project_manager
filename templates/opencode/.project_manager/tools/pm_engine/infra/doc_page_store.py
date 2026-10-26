@@ -20,7 +20,7 @@ CURRENT_TRUTH_GUIDE_MARKER = "현재-진실 vs 히스토리"
 
 
 class DomainPageEnumerationError(RuntimeError):
-    """strict 페이지 열거 중 특정 문서를 읽거나 파싱하지 못한 오류."""
+    """페이지 열거 중 특정 문서를 읽거나 파싱하지 못한 오류."""
 
     def __init__(self, path: Path, cause: Exception):
         self.path = Path(path)
@@ -81,7 +81,7 @@ def parse_page(path: Path) -> dict:
     }
 
 
-def load_pages(domain_dir: Path, *, strict: bool = False) -> list[dict]:
+def load_pages(domain_dir: Path) -> list[dict]:
     """domain/ 의 `*.md` 를 **재귀**(rglob) 스캔해 파싱된 페이지 리스트를 돌려준다.
 
     domain wikitree 를 하위 폴더로 조직해도 그 안의 페이지가 잡히도록 `rglob` 로 재귀
@@ -91,12 +91,9 @@ def load_pages(domain_dir: Path, *, strict: bool = False) -> list[dict]:
     **frontmatter-less 조용한 skip**: `---` 구분자로 시작하지 않는 `.md`(tmp·메모 등
     다수)는 "페이지 아님" — 개별 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적한다.
     스캔 종료 시 skip 이 1개 이상이면 stderr 에 디렉토리별 개수 요약 딱 1줄만 남긴다(파일
-    전체 목록 X — LLM 컨텍스트 낭비 원인). 반면 `---` 로 시작하는데 parse 가 깨지는(malformed)
-    파일은 진짜 페이지 오류 신호라 기존 개별 경고를 유지한다(crash 0).
-
-    `strict=True`는 쓰기 명령의 validate-all-first 대상 열거용이다. frontmatter로 시작한
-    문서의 읽기/파싱 실패를 `DomainPageEnumerationError(path, cause)`로 즉시 전파한다.
-    기본값 False는 조회/lint의 기존 graceful skip·경고 동작을 그대로 보존한다.
+    전체 목록 X — LLM 컨텍스트 낭비 원인). 반면 읽기 실패(비 UTF-8 포함)와 `---` 로 시작하는데
+    parse 가 깨지는(malformed) 파일은 진짜 페이지 오류라 `DomainPageEnumerationError(path, cause)`
+    로 전파한다 — 조회·lint·쓰기 명령 모두 같은 열거 계약이다.
 
     **draft 제외**: frontmatter `status == "draft"` 페이지는 미승인 초안
     (capture-draft scaffold)이라 index 에서 뺀다 — affected/lint/recall/capture 가
@@ -113,26 +110,19 @@ def load_pages(domain_dir: Path, *, strict: bool = False) -> list[dict]:
             continue
         # frontmatter 구분자(`---` 시작)가 아예 없는 파일 = 페이지 아님(tmp·메모 등). 개별
         # 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적(스캔 종료 시 요약 1줄).
-        # 읽기 실패는 판정 불가 → parse_page 로 넘겨 malformed 경고에 맡긴다. UnicodeDecodeError
-        # (non-UTF-8 tmp — cp949·바이너리)는 OSError 가 아니라 별도 포획 — 안 잡으면 load_pages
-        # 전체가 크래시해 crash-0 보장이 깨진다.
+        # 읽기 실패(UnicodeDecodeError 포함)는 판정 불가라 그 경로를 담은 열거 오류로 올린다.
         try:
             has_delimiter = fs.read_text_shared(path, encoding="utf-8").lstrip().startswith("---")
         except (OSError, UnicodeDecodeError) as exc:
-            if strict:
-                raise DomainPageEnumerationError(path, exc) from exc
-            has_delimiter = True
+            raise DomainPageEnumerationError(path, exc) from exc
         if not has_delimiter:
             key = path.parent.relative_to(domain_dir).as_posix()  # flat → "."
             non_page_counts[key] = non_page_counts.get(key, 0) + 1
             continue
         try:
             page = parse_page(path)
-        except Exception as exc:  # noqa: BLE001 — 기본 조회는 깨진 페이지 skip·strict는 전파.
-            if strict:
-                raise DomainPageEnumerationError(path, exc) from exc
-            print(f"domain: {path.name} 파싱 skip — {exc}", file=sys.stderr)
-            continue
+        except Exception as exc:  # noqa: BLE001 — 어떤 파싱 실패든 경로를 담아 변환 재전파.
+            raise DomainPageEnumerationError(path, exc) from exc
         if page["status"] == doc_pages.DRAFT_STATUS:
             continue  # 미승인 초안 — index 제외(promote 전까지 안 보임).
         pages.append(page)
@@ -147,13 +137,9 @@ def _page_body(page: dict) -> str:
     """페이지 body(frontmatter 뒤 본문)를 읽는다 — ticket_store.load_ticket 재사용(DRY).
 
     parse_page 는 frontmatter 만 담으므로 lint(인링크/라인수)용 body 를 따로 읽는다. 읽기/
-    파싱 실패는 빈 문자열(fail-soft — 깨진 페이지가 lint 를 죽이지 않게·load_pages 가 이미
-    파싱 가능한 것만 넘겼지만 방어적으로 흡수).
+    파싱 실패는 전파한다.
     """
-    try:
-        _fm, body = ticket_store.load_ticket(page["path"])
-    except Exception:  # noqa: BLE001 — fail-soft: 읽기 실패는 빈 body(lint 무crash).
-        return ""
+    _fm, body = ticket_store.load_ticket(page["path"])
     return body
 
 
