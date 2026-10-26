@@ -103,10 +103,12 @@ def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log
         "opencode": OPENCODE.read_text(encoding="utf-8"),
         "codex": " ".join(compaction_guidance[0].argv),
     }
-    assert "ctx-guidance" in sources["claude-template"]
+    # Claude 훅은 엔진 공개 진입(`judge_context`)의 안내를 그대로 싣고 정책 문구 사본을 두지 않는다.
+    assert "hooks.judge_context(" in sources["claude-template"]
+    assert policy_marker not in sources["claude-template"]
     assert "ctx-guidance" in sources["opencode"]
     assert "ctx-guidance --band precompact --json" in sources["codex"]
-    # 어댑터의 fail-soft 최소 복제본은 허용하되 정상 경로의 단일 진실은 pm_log 상수다.
+    # 정상 경로의 단일 진실은 domain.ctx_recovery 상수다.
     assert Path(pm_engine.domain.ctx_recovery.__file__).read_text(encoding="utf-8").count(policy_marker) == 1
 
 
@@ -170,18 +172,26 @@ def test_forbidden_phrases_absent_from_compaction_snapshot(pm_log, tmp_path):
     ), text
 
 
-def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log):
+def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log, tmp_path):
+    """Claude 훅 → 엔진 공개 진입 → domain 렌더 — 최종 밴드 안내가 공유 렌더 원문 그대로 실린다."""
+    from pm_engine.cli import hooks as cli_hooks
+    from pm_engine.infra import conf_store
+    from test_harness_ctx_limits import install_ctx_record
+
     hook = _load(CLAUDE_TEMPLATE, "t0648_ctx_stop_hook")
+    install_ctx_record(tmp_path)
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "usage": {"input_tokens": 190_000}}}) + "\n", encoding="utf-8")
+    home = cli_hooks.adapter_home(tmp_path)
+    budget = conf_store.read_ctx_budget(tmp_path, conf_store.local_config(home), "claude")
     expected = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
-        "final", used_pct=82, precompact_at_pct=80,
+        "final", used_pct=95, precompact_at_pct=budget["precompact_at_pct"],
     )
-    actual = hook._build_ctx_guidance(
-        ROOT,
-        band="final",
-        used_pct=82,
-        thresholds={"checkpoint_at_pct": 70, "precompact_at_pct": 80},
-    )
-    assert actual == expected
+    rc, output = hook.evaluate({"hook_event_name": "UserPromptSubmit", "session_id": "t0648",
+                                "transcript_path": str(transcript)}, home)
+    assert rc == 0
+    assert output["hookSpecificOutput"]["additionalContext"] == expected
 
 
 def test_t0934_guidance_execution_real_runtime_and_raw_utf8(tmp_path):

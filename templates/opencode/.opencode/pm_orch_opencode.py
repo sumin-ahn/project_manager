@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """opencode relay driver — `opencode run` subprocess 세션 구동 (어댑터·얇음).
 
-엔진 세션 연속성 모듈(`pm_engine.app.session.relay`)의 SessionDriver Protocol
-구현체. relay/respawn/marker 로직은 *엔진* Supervisor 에 있고(루트 `.project_manager/tools/`·
-DI 로 테스트), 이 파일은 **opencode CLI 고유**한 부분만 — `opencode run --format json` 을
-subprocess 로 호출하고 json 이벤트 스트림을 파싱한다(claude `pm_orch_claude.py` 와 동형).
+엔진 세션 연속성(Supervisor)의 SessionDriver 구현체. relay/respawn/marker 로직은 *엔진* 에 있고,
+엔진 공개 진입 `pm_engine.cli.hooks.run_relay` 가 이 클래스에 실제 파서·첫 이벤트 워치독 실행기·
+회전 판정·프롬프트 첨부 협력자를 공급해 구성한다. 이 파일은 **opencode CLI 고유**한 부분만 —
+`opencode run --format json` 을 subprocess 로 호출하고 json 이벤트 스트림을 파싱한다(claude
+`pm_orch_claude.py` 와 동형).
 
 CLI 진입점: `python3 pm_orch_opencode.py [--cwd <PM repo root>] [--agent pm]`.
 사용자가 이 wrapper 를 띄우면 ctx 한계 도달 시 손 안 대고 새 PM 으로 자동 회전(연속 운영).
@@ -44,111 +45,6 @@ def repo_root(start: Path) -> Path:
     return start.resolve().parent
 
 
-def _load_engine():
-    """루트 `.project_manager/tools` 의 엔진 패키지에서 세션 연속성 모듈을 import 한다.
-
-    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 tools 경로를 `sys.path` 에 넣은 뒤
-    `pm_engine.app.session.relay` 를 import 한다(claude `pm_orch_claude._load_engine` 동형).
-    Supervisor·마커 함수를 빌려 쓴다.
-    """
-    root = repo_root(Path(__file__).resolve().parent)
-    tools = root / ".project_manager" / "tools"
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    from pm_engine.app.session import relay
-    return relay, root
-
-
-# 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
-#   python3 .project_manager/tools/local_conf.py --render-adapter-block python
-# 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
-LEGACY_CONF_KEYS = (
-    "additional_reviewer.enabled",
-    "additional_reviewer_enabled",
-    "additional_reviewer_incomplete_round_limit",
-    "additional_reviewer_round_limit",
-    "additional_reviewer_wave_budget",
-    "ctx.checkpoint_pct",
-    "ctx.nudge_pct",
-    "ctx.precompact_pct",
-    "ctx.stop_pct",
-    "ctx.window_tokens",
-    "ctx_nudge_pct",
-    "ctx_stop_pct",
-    "ctx_window_tokens",
-    "date",
-    "delegate.code-reviewer.rounds_max",
-    "delegate_enabled",
-    "delegate_idle_timeout",
-    "delegate_timeout",
-    "diff_cap.large",
-    "diff_cap.medium",
-    "diff_cap.small",
-    "external_review_enabled",
-    "external_review_idle_timeout",
-    "external_review_incomplete_round_limit",
-    "external_review_progress_signal",
-    "external_review_round_limit",
-    "external_review_timeout",
-    "external_review_wave_budget",
-    "opencode_pro_model",
-    "project_name",
-    "project_root",
-    "project_tagline",
-    "py",
-    "regression_min_collected",
-    "review_denylist_extra",
-    "review_paths",
-    "review_rounds_max",
-    "reviewer_cmd",
-    "reviewer_env_keep_extra",
-    "reviewer_home_artifacts_extra",
-    "test_cmd",
-    "upstream",
-    "upstream_rev",
-    "upstream_seen_rev",
-    "user",
-)
-LEGACY_CONF_KEY_PREFIX = "ctx_window_tokens_"
-# 생성 끝 — 차단 구키
-
-
-def _assert_no_legacy_conf(conf: dict[str, str], path: Path) -> None:
-    """구표기 키가 남아 있으면 **값 해소 전에** 멈춘다 (조용한 기본값 강등 차단).
-
-    어댑터는 엔진을 import 하지 않아 신표기 이름을 말하지 못한다 — 무엇이 걸렸는지만 말하고
-    전수 지목은 엔진 도구(`board.py lint`·`pm_update.py` 안내)에 맡긴다. 여기서 강등하면 채택자는
-    conf 를 고쳤는데 아무 일도 안 일어나는 상태(임계·예산이 전부 엔진 기본값)를 본다."""
-    found = sorted(key for key in conf
-                   if key in LEGACY_CONF_KEYS
-                   or (key.startswith(LEGACY_CONF_KEY_PREFIX)
-                       and len(key) > len(LEGACY_CONF_KEY_PREFIX)))
-    if not found:
-        return
-    print(f"오류: local.conf 에 구표기 키가 남아 있습니다 ({path}) — "
-          f"{', '.join(found)}. 값이 조용히 기본값으로 떨어지지 않도록 여기서 멈춥니다. "
-          "전수 지목은 `board.py lint` 또는 `pm_update.py` 안내가 냅니다.", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def load_local_config(root: Path) -> dict[str, str]:
-    """`.project_manager/local.conf` 를 KEY=value dict 로 읽는다(없으면 {})."""
-    conf: dict[str, str] = {}
-    path = root / ".project_manager" / "local.conf"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return conf
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        conf[key.strip()] = value.strip()
-    _assert_no_legacy_conf(conf, path)
-    return conf
-
-
 class OpencodeCliDriver:
     """`opencode run` subprocess 로 PM 세션을 구동하는 SessionDriver (opencode 고유 어댑터).
 
@@ -180,8 +76,8 @@ class OpencodeCliDriver:
         self.opencode_bin = opencode_bin
         self.timeout = timeout
         self.runner = runner  # subprocess.run seam(테스트 stub 가능).
-        # 프로덕션 runner(_make_watchdog_runner)가 첫-이벤트 stall 소진 시 던지는 엔진
-        # StallWatchdogError 클래스(main 이 주입). None 이면 빈 튜플 → `except ()` 는 아무것도
+        # 프로덕션 runner(엔진 run_relay 가 공급하는 첫 이벤트 워치독 실행기)가 stall 소진 시 던지는 엔진
+        # StallWatchdogError 클래스(run_relay 가 주입). None 이면 빈 튜플 → `except ()` 는 아무것도
         # 안 잡는다(FakeRunner 주입 테스트 경로 무영향). fail-loud→turn-level fail-soft 로 수습.
         self._stall_error_types = (stall_error,) if stall_error is not None else ()
         # opencode 세션은 `-s <sid>` 로 어디서든 resume 되나(claude 의 cwd-scope 제약 없음),
@@ -290,23 +186,6 @@ class OpencodeCliDriver:
         )
 
 
-def _make_watchdog_runner(engine):
-    """프로덕션 기본 runner — 엔진 첫-이벤트 워치독으로 opencode 를 실행(startup stall→유한 재시도).
-
-    driver 의 `runner` seam(테스트가 FakeRunner 주입)을 유지하면서, 프로덕션 main 만 이 runner 로
-    현행 600s hard 가드(overall_timeout=self.timeout) *안쪽에* 첫-이벤트 감시를 더한다. capture_output/
-    text kwargs 는 흡수(워치독이 항상 캡처·text). first_event/retries 는 env 노브(engine 해소기)로.
-    StallWatchdogError 는 잡지 않고 올려보낸다 — driver `_turn` 이 loud stderr + fail-soft 로 수습."""
-    def runner(cmd, *, capture_output=True, text=True, timeout=TURN_TIMEOUT_SEC, **_kwargs):
-        return engine.run_with_first_event_watchdog(
-            cmd,
-            first_event_timeout=engine.first_event_timeout_default(),
-            overall_timeout=timeout,
-            retries=engine.stall_retries_default(),
-        )
-    return runner
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="opencode PM relay — thin stateless supervisor 세션 자동-회전."
@@ -334,39 +213,30 @@ def main(argv: list[str] | None = None) -> int:
         # relay 는 회전된 세션을 `/pm-bootstrap --task <task>` 로 다시 연다 — 부트스트랩이 `--task`
         # 필수라 task 없는 relay 는 시작하지 않는다(claude·codex 런처와 같은 자리·같은 문구).
         parser.error("relay 에는 --task <task> 가 필요하다")
-    engine, root = _load_engine()
-    from pm_engine.infra import raw_output
-    from pm_engine.infra.harness import contract, watchdog
+    root = repo_root(Path(__file__).resolve().parent)
+    tools = str(root / ".project_manager" / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    from pm_engine.cli import hooks
 
     cwd = args.cwd or os.getcwd()
-    load_local_config(root)  # 구표기 키가 남았으면 값을 읽기 전에 멈춘다.
-    # 압축 한도 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError). `opencode run --format
-    # json` 은 모델을 내지 않아 세션 모델은 확인하지 않는다 — 기록 E 는 대상 모델 전체의 최솟값이다.
-    budget, precompact_at_pct, _warning = engine.ctx_budget(root, "opencode", None)
-    # 프로덕션 driver 는 첫-이벤트 워치독 runner 로 opencode 를 구동(startup stall→유한 재시도).
-    # 소진 시 StallWatchdogError → driver `_turn` 이 loud + fail-soft(stall_error 주입).
-    driver = OpencodeCliDriver(
-        contract.parse_opencode_json,
-        ctx_budget=budget,
-        precompact_at_pct=precompact_at_pct,
-        root=root,
-        mark_stop=engine.mark_ctx_post_turn_if_over,
-        spawn_result=engine.SpawnResult,
-        agent=args.agent,
-        runner=_make_watchdog_runner(watchdog),
-        stall_error=watchdog.StallWatchdogError,
-        temp_root=raw_output.temp_root,
-        attached_message=contract.OPENCODE_ATTACHED_MSG,
-        assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
-    )
-    supervisor = engine.Supervisor(driver, root=root, task=args.task)
 
-    sys.stderr.write(
-        f"[pm-orch] opencode supervisor 시작 (cwd={cwd} agent={args.agent}). "
-        "ctx 한계 도달 시 자동 회전. 종료 = /quit 또는 EOF.\n"
+    def announced_driver(*driver_args, **driver_kwargs) -> OpencodeCliDriver:
+        # 시작 안내는 엔진이 예산 기록을 확인하고 driver 를 구성한 뒤에 낸다(설정 오류가 먼저 보인다).
+        driver = OpencodeCliDriver(*driver_args, **driver_kwargs)
+        sys.stderr.write(
+            f"[pm-orch] opencode supervisor 시작 (cwd={cwd} agent={args.agent}). "
+            "ctx 한계 도달 시 자동 회전. 종료 = /quit 또는 EOF.\n"
+        )
+        sys.stderr.flush()
+        return driver
+
+    # 압축 한도 기록이 없거나 손상·입력 불일치·구표기 local.conf 면 시작하지 않는다. `opencode run --format
+    # json` 은 모델을 내지 않아 세션 모델은 확인하지 않는다 — 기록 E 는 대상 모델 전체의 최솟값이다.
+    return hooks.run_relay(
+        hooks.adapter_home(root), announced_driver, harness="opencode", task=args.task, cwd=cwd,
+        agent=args.agent, stdin=sys.stdin, stdout=sys.stdout,
     )
-    sys.stderr.flush()
-    return supervisor.run_loop(cwd, sys.stdin, sys.stdout)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ _READ_SUBCOMMANDS: frozenset[str] = frozenset({'list', 'show', 'lint', 'tier-sig
 
 _READ_PM_INPUTS_BY_SUBCOMMAND: dict[str, str] = {'list': 'board·areas·local.conf·lease', 'show': 'board', 'lint': 'board·areas·wiki(decisions·ideas·specs·domain·current-truth)·hooks·local.conf', 'tier-signals': 'board', 'idea list': 'ideas', 'prefix list': 'board', 'cluster show': 'board'}
 
-_SIDECAR_SUBCOMMANDS: frozenset[str] = frozenset({'regression', 'livegate', 'git-anchor', 'git-grant', 'git-tool-input'})
+_SIDECAR_SUBCOMMANDS: frozenset[str] = frozenset({'regression', 'livegate', 'git-anchor', 'git-grant', 'git-tool-input', 'hook-context', 'hook-tool'})
 
 _SUBCOMMAND_GROUP_DESTS: dict[str, str] = {'idea': 'idea_cmd', 'prefix': 'prefix_cmd', 'cluster': 'cluster_cmd'}
 

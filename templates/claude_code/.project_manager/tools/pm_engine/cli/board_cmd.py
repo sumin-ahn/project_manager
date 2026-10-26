@@ -289,6 +289,15 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     p.add_argument("--tool", required=True, help=argparse.SUPPRESS)
     p.set_defaults(fn=hooks.cmd_git_tool_input)
 
+    p = sub.add_parser("hook-context", help=argparse.SUPPRESS)
+    p.add_argument("--harness", required=True, choices=hooks.CTX_HARNESSES, help=argparse.SUPPRESS)
+    p.add_argument("--session", required=True, help=argparse.SUPPRESS)
+    p.set_defaults(fn=hooks.cmd_hook_context)
+
+    p = sub.add_parser("hook-tool", help=argparse.SUPPRESS)
+    p.add_argument("--session", required=True, help=argparse.SUPPRESS)
+    p.set_defaults(fn=hooks.cmd_hook_tool)
+
     p = sub.add_parser("refresh", help="regenerate board.md")
     p.set_defaults(fn=board_dispatch.cmd_refresh)
 

@@ -1712,8 +1712,10 @@ def test_codex_explicit_tool_coordinate_precedes_session_cwd(monkeypatch, tmp_pa
     assert calls[-1][0] == str((session / "tool-cwd").resolve())
 
 
-def test_codex_live_bash_without_internal_workdir_warns_once_for_pm_home_relative_pytest(
+def test_codex_live_bash_without_internal_workdir_inherits_central_pytest_deny_every_time(
         monkeypatch, topology_without_home_tests):
+    """좌표(workdir) 없는 PM 홈 상대 pytest 도 중앙 판정의 거부를 그대로 받는다 — 매 호출 거부다
+    (warn 세션 중복 억제는 거부에 적용하지 않는다)."""
     dispatcher = _load("git_anchor_codex_missing_workdir", CODEX_DISPATCHER)
     home, _slot = topology_without_home_tests
     payload = _codex_live_bash_event()
@@ -1723,9 +1725,12 @@ def test_codex_live_bash_without_internal_workdir_warns_once_for_pm_home_relativ
 
     first = dispatcher.git_anchor_hook_evaluate(payload, home)
     second = dispatcher.git_anchor_hook_evaluate(payload, home)
-    assert first["systemMessage"].startswith("[git-anchor/warn]")
-    assert "decision" not in first
-    assert second == {}
+    for envelope in (first, second):
+        assert envelope["decision"] == "block"
+        assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert envelope["systemMessage"].startswith("[git-anchor/deny]")
+        assert envelope["systemMessage"] == envelope["reason"]
+    assert first == second
 
 
 def test_codex_missing_coordinate_keeps_real_git_mutation_deny(

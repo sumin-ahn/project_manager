@@ -35,7 +35,7 @@ NETWORK_OVERRIDE = ["-c", "sandbox_workspace_write.network_access=true"]
 SESSION_ID = "0199a9c4-3f7e-7c12-9a3b-2b4c5d6e7f80"
 READ_ROLES = ("researcher", "code-reviewer")
 WRITE_ROLES = ("developer", "architect")
-REGISTERED_SITE_OCCURRENCES = 106
+REGISTERED_SITE_OCCURRENCES = 108
 
 
 def _load(name: str, path: Path):

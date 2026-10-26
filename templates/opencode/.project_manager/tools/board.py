@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """보드 CLI 진입점.
 
-명령 파서·분류·dispatch 는 pm_engine.cli.board_cmd, 어댑터 git 훅 판정은 pm_engine.cli.hooks,
-각 명령의 처리는 pm_engine.cli·app 이 소유한다. 이 파일은 콘솔 설정·설치 앵커 Home·
-엔진 사본 불일치 진단과 CLI 호출만 맡는다.
-"""
+명령 파서·분류·dispatch 는 pm_engine.cli.board_cmd, 어댑터 훅 판정은 pm_engine.cli.hooks,
+각 명령의 처리는 pm_engine.cli·app 이 소유한다. 이 파일은 Python 런타임 하한 선검사·콘솔 설정·
+설치 앵커 Home·엔진 사본 불일치 진단과 CLI 호출만 맡는다.
 
-from __future__ import annotations
+하네스 훅은 이 파일을 한 번 실행해 판정까지 받는다. 그래서 파일 전체를 하한 미만 Python 도 파싱할 수
+있는 문법으로 쓰고, 패키지 import 전에 런타임 하한을 확인한다(별도 probe 프로세스 없음).
+"""
+from __future__ import print_function
+
+import sys
+
+# pm_engine.MIN_PYTHON 미러. tests/test_python_floor.py 가 skew 를 차단한다.
+MIN_PYTHON = (3, 11)
+
+if sys.version_info[:2] < MIN_PYTHON:
+    print("[중단] Python %d.%d+ 필요 · 현재 %d.%d" % (MIN_PYTHON + tuple(sys.version_info[:2])),
+          file=sys.stderr)
+    sys.exit(1)
 
 import argparse
 import ast
@@ -15,7 +28,6 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -122,15 +134,15 @@ def _verify_engine_rev(sibling_module, sibling_filename):
     got = getattr(sibling_module, "ENGINE_REV", None)
     if got != ENGINE_REV:
         err = RuntimeError(
-            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
-            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
-            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+            "엔진 사본 버전 불일치 — 로더 %s(rev=%r)가 형제 %s(rev=%r)를 로드했다 (사본 skew: 부분/수동 "
+            "복사 또는 구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 "
+            "재동기하라." % (Path(__file__).name, ENGINE_REV, sibling_filename, got)
         )
         err._engine_rev_skew = True  # fail-soft 로더가 재-raise 식별
         raise err
 
 
-def _is_engine_rev_skew(exc) -> bool:
+def _is_engine_rev_skew(exc):
     """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지.
 
     fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
@@ -246,7 +258,7 @@ def _is_engine_rev_skew(exc) -> bool:
 # Maps an idea's destination status to the imperative verb used in messages.
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None):
     """CLI 최외곽에서 엔진 사본 불일치를 traceback 대신 안내로 번역한다."""
     try:
         console.configure_console_utf8()

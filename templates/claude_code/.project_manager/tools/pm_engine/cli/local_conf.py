@@ -14,10 +14,11 @@ from pm_engine.domain import conf_schema
 from pm_engine.infra import console
 
 
-# ── 어댑터 파서용 데이터 내보내기 (엔진 미import 파서 4개 + 셸 훅) ────────
-# 어댑터(claude ctx_guard · codex/opencode driver · opencode JS core · run-tests 훅)는 엔진을
-# import 하지 않는 독립 파서라 이 표를 **손으로 복제하면** 표와 파서가 갈린다. 그래서 이 모듈이
-# 블록 텍스트를 **생성**하고, 각 파서는 그 산출을 그대로 품는다(동일성은 회귀가 값으로 단언).
+# ── 어댑터 파서용 데이터 내보내기 (엔진 미import 파서 + 셸 훅) ────────
+# Python 어댑터는 엔진 공개 진입(`cli.hooks`)으로 local.conf 를 읽으므로 자체 파서가 없다. 엔진을
+# import 하지 않는 독립 파서(opencode JS core · run-tests 셸 훅)는 이 표를 **손으로 복제하면** 표와
+# 파서가 갈린다. 그래서 이 모듈이 블록 텍스트를 **생성**하고, 각 파서는 그 산출을 그대로 품는다
+# (동일성은 회귀가 값으로 단언).
 # 재생성: `python3 local_conf.py --render-adapter-block <python|js|sh>`.
 ADAPTER_BLOCK_BEGIN = "생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)"
 ADAPTER_BLOCK_END = "생성 끝 — 차단 구키"

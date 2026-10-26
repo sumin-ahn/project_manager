@@ -12,30 +12,33 @@ import uuid
 from pathlib import Path
 from typing import NamedTuple, Protocol, TextIO
 
+from pm_engine.domain import ctx_recovery
 from pm_engine.infra import conf_store, fs
 from pm_engine.infra.harness import watchdog
 
 
-def ctx_budget(root, harness, session_model):
-    """relay·훅이 쓰는 (적용 한도 E, 압축 임박 경고 %, 모델 불일치 경고 또는 None).
+def ctx_budget(home, harness, session_model):
+    """relay 가 쓰는 (적용 한도 E, 압축 임박 경고 %, 모델 불일치 경고 또는 None).
 
-    압축 한도 기록 부재·손상·입력 불일치는 `conf_schema.CtxBudgetError` 로 올린다(기본값 대체 없음).
+    설정은 Home 의 local.conf(`conf_store.local_config`), 기록은 Home 데이터 루트의 압축 한도 기록이다.
+    기록 부재·손상·입력 불일치는 `conf_schema.CtxBudgetError` 로 올린다(기본값 대체 없음).
     회전 임계가 bootstrap 상한 이하면 `validate_relay_budget` 이 멈춘다."""
-    values = conf_store.load_checked(Path(root) / ".project_manager" / "local.conf")
-    budget = conf_store.read_ctx_budget(root, values, harness, session_model)
+    budget = conf_store.read_ctx_budget(
+        home.local_dir.parent.parent, conf_store.local_config(home), harness, session_model,
+    )
     validate_relay_budget(budget["E"], budget["precompact_at_pct"])
     return budget["E"], budget["precompact_at_pct"], budget["warning"]
 
 
-# marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
+# marker 디렉토리 — ctx 밴드 marker(`infra.compaction_store.ctx_marker_path`)와 같은 자리다.
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 
 # 이 marker 디렉토리는 여러 생산자가 공유한다 — `<세션>.<종류>` 자리를 남이 이미 쓰고 있으면
 # 멤버십 파일이 그 신호를 *위조* 한다(namespace "done" → `<sid>.done` = post-turn 회전 신호).
 #   done                                  · 이 파일 `_marker_path` (회전)
-#   nudge · nudge2 · final                · ctx_stop_hook.py:51,83,87 (사이클 넛지)
-#   compact-* (checkpoint·boundary·snapshot·snapshot-receipt)
-#                                         · infra.compaction_store._compaction_marker_path · opencode ctx-guard-core.cjs:315,323
+#   nudge · nudge2 · final                · infra.compaction_store.ctx_marker_path (사이클 넛지)
+#   compact-* (경계 처리·checkpoint·boundary·snapshot·snapshot-receipt)
+#                                         · infra.compaction_store · opencode ctx-guard-core.cjs
 RESERVED_MARKER_NAMESPACES = frozenset({"done", "nudge", "nudge2", "final"})
 RESERVED_MARKER_NAMESPACE_PREFIX = "compact-"
 
@@ -185,37 +188,26 @@ def mark_ctx_post_turn_if_over(
     precompact_at_pct 범위 판정은 호출부 책임이다.
     marker writer 가 성공한 경우에만 True 를 반환한다.
     """
-    if used_tokens <= 0 or budget <= 0:
-        return False
-    if used_tokens * 100 < budget * precompact_at_pct:
+    if not ctx_recovery.rotation_due(used_tokens, budget, precompact_at_pct):
         return False
     return bool(mark(root, session_id))
 
 
-def _sanitize_session_id(session_id: str) -> str:
-    """marker 파일명 안전화 — ctx_stop_hook._session_id 와 동일 규칙(파일명 안전 문자만·64자).
-
-    hook 이 child 의 session_id 를 이 규칙으로 sanitize 해 marker 를 쓰므로, marker 경로를
-    *예측* 하려면 supervisor 도 같은 변환을 적용해야 한다(uuid4 는 본래 안전하나 방어적 일치)."""
-    safe = "".join(c for c in session_id.strip() if c.isalnum() or c in "-_")[:64]
-    return safe or "unknown"
-
-
 def _marker_path(root: Path, session_id: str) -> Path:
-    return root / MARKER_DIR / f"{_sanitize_session_id(session_id)}.done"
+    return root / MARKER_DIR / f"{ctx_recovery.safe_session_id(session_id)}.done"
 
 
 def _session_once_path(root: Path, session_id: str, namespace: str) -> Path:
     """세션·namespace 당 멤버십 파일 **1개** 경로.
 
     키마다 파일을 만들지 않는다 — 이 디렉토리를 일괄 정리하는 코드가 없어서
-    (`_rearm_cycle` 은 nudge 3종만 unlink) 키별 파일은 세션당 수백 개가 영구 잔존한다.
+    (`compaction_store.rearm_ctx_cycle` 은 밴드 marker 3종만 unlink) 키별 파일은 세션당 수백 개가 영구 잔존한다.
     marker 디렉토리도 새로 만들지 않고 기존 `MARKER_DIR` 을 그대로 쓴다
     (`.project_manager/.gitignore` 의 `.local/` 커버를 상속 — 채택자 `git add -A` 안전).
     namespace 도 세션키와 같은 파일명 안전화를 거쳐 traversal 표기를 경로로 만들지 않는다.
     """
-    safe_session = _sanitize_session_id(session_id if isinstance(session_id, str) else "")
-    safe_namespace = _sanitize_session_id(namespace if isinstance(namespace, str) else "")
+    safe_session = ctx_recovery.safe_session_id(session_id if isinstance(session_id, str) else "")
+    safe_namespace = ctx_recovery.safe_session_id(namespace if isinstance(namespace, str) else "")
     return root / MARKER_DIR / f"{safe_session}.{safe_namespace}"
 
 
@@ -240,7 +232,7 @@ def claim_session_once(
     append 는 프로세스 간 원자적이지 않아 경합 시 같은 키가 두 줄 남을 수 있는데, 그 결과는
     "한 번 더 선점 성공(=발화)" 방향이라 fail-open 과 같다.
     """
-    safe_namespace = _sanitize_session_id(namespace if isinstance(namespace, str) else "")
+    safe_namespace = ctx_recovery.safe_session_id(namespace if isinstance(namespace, str) else "")
     if (safe_namespace in RESERVED_MARKER_NAMESPACES
             or safe_namespace.startswith(RESERVED_MARKER_NAMESPACE_PREFIX)):
         return None  # 남의 marker 이름 — 장부를 만들지 않는다(파일도 디렉토리도 미생성).

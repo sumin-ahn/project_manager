@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """codex relay driver — `codex exec` subprocess 세션 구동 (어댑터·얇음).
 
-엔진 세션 연속성 모듈(`pm_engine.app.session.relay`)의 SessionDriver Protocol 구현체. relay/
-respawn/marker 로직은 *엔진* Supervisor 에 있고(루트 `.project_manager/tools/`·DI 로 테스트),
-이 파일은 **codex CLI 고유**한 부분만 — `codex exec --json` 을 subprocess 로 호출하고 JSONL
-이벤트 스트림을 파싱한다(opencode `pm_orch_opencode.py` 와 동형·claude 와는 세션 id 획득 방식만 다름).
+엔진 세션 연속성(Supervisor)의 SessionDriver 구현체. relay/respawn/marker 로직은 *엔진* 에 있고,
+엔진 공개 진입 `pm_engine.cli.hooks.run_relay` 가 이 클래스에 실제 파서·실행기·회전 판정·marker
+writer 를 공급해 구성한다. 이 파일은 **codex CLI 고유**한 부분만 — `codex exec --json` 을
+subprocess 로 호출하고 JSONL 이벤트 스트림을 파싱한다(opencode `pm_orch_opencode.py` 와 동형·claude
+와는 세션 id 획득 방식만 다름).
 
 CLI 진입점: `python3 pm_orch_codex.py [--cwd <PM repo root>] [--task <task>]`.
 사용자가 이 wrapper 를 띄우면 ctx 한계 도달 시 손 안 대고 새 PM 으로 자동 회전(연속 운영).
@@ -19,25 +20,19 @@ codex thread_id 발급(claude 와 다른 핵심·opencode 동형): claude 는 `-
 로 **무기한 대기** 한다(라이브 실측·3m timeout 재현) — 매 turn subprocess 에
 `stdin=subprocess.DEVNULL` 을 준다. 미준수 시 relay 가 첫 turn 에서 영원히 멈춘다.
 
-ctx 기계 가드: 세 하네스 모두 driver 가 usage 로 예산 초과를 판정해
-**post-turn** 회전 marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전).
-marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입력을 다시 보내지 않고 다음 입력 전
-회전한다(세션 안 가드는 marker 를 만들지 않는다·비차단 안내 전용). 예산 = 엔진 압축 한도 기록의
-codex 적용 한도 E(`conf_store.read_ctx_budget`)이고, 엔진은 같은 기록으로 `.codex/config.toml` 의
-`model_auto_compact_token_limit` 을 쓴다(`pm_import.apply_harness_ctx`).
+ctx 기계 가드: 세 하네스 모두 driver 가 turn usage 를 엔진 회전 판정(`mark_ctx_if_over`)에 넘겨
+**post-turn** 회전 marker 를 박제한다(Supervisor 무수정 회전). marker 는 turn *실행 후* 박제 단일
+의미론 — Supervisor 는 그 입력을 다시 보내지 않고 다음 입력 전 회전한다(세션 안 가드는 marker 를
+만들지 않는다·비차단 안내 전용). 예산 = 엔진 압축 한도 기록의 codex 적용 한도 E 이고, 엔진은 같은
+기록으로 `.codex/config.toml` 의 `model_auto_compact_token_limit` 을 쓴다.
 
-codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
-opencode=JS core) — 그래서 엔진 루트 탐색·local.conf 파싱을 driver 자체에 둔다(opencode driver 동형).
-
-세션 안 ctx 넛지: 위 relay 축과 별개로, 훅 진입점(`PreToolUse`·
-`UserPromptSubmit`)에서 밴드에 들어가면 비차단 checkpoint 안내를 주입한다(회전 marker 미생산).
-점유는 훅 stdin 의 `transcript_path` rollout JSONL 에서 읽고, 밴드·임계·문구는 claude 와 같은 값을
-쓴다 — 압축이 시작된 뒤(PreCompact)에야 알려 주면 checkpoint 를 남길 여유가 없다는 것이 사유다.
+세션 안 ctx 넛지: 위 relay 축과 별개로, 훅 진입점(`UserPromptSubmit`)에서 rollout 점유 토큰과 모델을
+엔진 `judge_context` 에 넘겨 밴드 안내를 비차단 주입한다(회전 marker 미생산). 점유는 훅 stdin 의
+`transcript_path` rollout JSONL 에서 읽는다 — 밴드·임계·문구·marker 는 엔진 소유다.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -50,20 +45,9 @@ from typing import NamedTuple
 _engine_tools = str(Path(__file__).resolve().parents[1] / ".project_manager" / "tools")
 if _engine_tools not in sys.path:
     sys.path.insert(0, _engine_tools)
-from pm_engine.app import principle_recall
-from pm_engine.infra import pm_paths, principle_store
 
 CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
-
-# ── ctx 기계 가드 (쓴 % 기준) ──────────
-# 엔진 밴드 "사용 >= ctx.precompact_at_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 —
-# relay 경로는 그 같은 경계에서 driver 가 usage 로 **회전** 한다(post-turn marker → Supervisor 가 새
-# 세션으로 교체·실보호는 회전이 한다). 두 축 모두 압축 한도 기록의 비율을 쓴다.
-# 2단(strong) 넛지 마진(%p·파생값) — claude ctx_guard.CTX_NUDGE2_MARGIN_PCT·opencode
-# NUDGE2_MARGIN_PCT 미러. nudge2 밴드 = max(precompact_at − 이 마진, checkpoint_at) <= 사용 < precompact_at.
-CTX_NUDGE2_MARGIN_PCT = 3
-
 
 def repo_root(start: Path) -> Path:
     """driver 위치(``<root>/.codex/``)에서 엔진 루트를 낸다 — 그 부모다.
@@ -73,114 +57,6 @@ def repo_root(start: Path) -> Path:
     있는 남의 PM 홈에 착지한다(claude ctx_guard.repo_root·opencode `repo_root` 동형).
     """
     return start.resolve().parent
-
-
-def _load_engine():
-    """루트 `.project_manager/tools` 의 엔진 패키지에서 세션 연속성 모듈을 import 한다 (opencode 동형).
-
-    어댑터는 엔진을 PYTHONPATH 에 의존하지 않고 repo_root 기준 tools 경로를 `sys.path` 에 넣은 뒤
-    `pm_engine.app.session.relay` 를 import 한다. Supervisor·마커 함수를 빌려 쓴다."""
-    root = repo_root(Path(__file__).resolve().parent)
-    tools = root / ".project_manager" / "tools"
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    from pm_engine.app.session import relay
-    return relay, root
-
-
-# ── local.conf 직접 파싱 + ctx 예산 해소 (claude ctx_guard 미러·codex 는 옆에 ctx_guard 없음) ──
-
-# 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
-#   python3 .project_manager/tools/local_conf.py --render-adapter-block python
-# 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
-LEGACY_CONF_KEYS = (
-    "additional_reviewer.enabled",
-    "additional_reviewer_enabled",
-    "additional_reviewer_incomplete_round_limit",
-    "additional_reviewer_round_limit",
-    "additional_reviewer_wave_budget",
-    "ctx.checkpoint_pct",
-    "ctx.nudge_pct",
-    "ctx.precompact_pct",
-    "ctx.stop_pct",
-    "ctx.window_tokens",
-    "ctx_nudge_pct",
-    "ctx_stop_pct",
-    "ctx_window_tokens",
-    "date",
-    "delegate.code-reviewer.rounds_max",
-    "delegate_enabled",
-    "delegate_idle_timeout",
-    "delegate_timeout",
-    "diff_cap.large",
-    "diff_cap.medium",
-    "diff_cap.small",
-    "external_review_enabled",
-    "external_review_idle_timeout",
-    "external_review_incomplete_round_limit",
-    "external_review_progress_signal",
-    "external_review_round_limit",
-    "external_review_timeout",
-    "external_review_wave_budget",
-    "opencode_pro_model",
-    "project_name",
-    "project_root",
-    "project_tagline",
-    "py",
-    "regression_min_collected",
-    "review_denylist_extra",
-    "review_paths",
-    "review_rounds_max",
-    "reviewer_cmd",
-    "reviewer_env_keep_extra",
-    "reviewer_home_artifacts_extra",
-    "test_cmd",
-    "upstream",
-    "upstream_rev",
-    "upstream_seen_rev",
-    "user",
-)
-LEGACY_CONF_KEY_PREFIX = "ctx_window_tokens_"
-# 생성 끝 — 차단 구키
-
-
-def _assert_no_legacy_conf(conf: dict[str, str], path: Path) -> None:
-    """구표기 키가 남아 있으면 **값 해소 전에** 멈춘다 (조용한 기본값 강등 차단).
-
-    어댑터는 엔진을 import 하지 않아 신표기 이름을 말하지 못한다 — 무엇이 걸렸는지만 말하고
-    전수 지목은 엔진 도구(`board.py lint`·`pm_update.py` 안내)에 맡긴다. 여기서 강등하면 채택자는
-    conf 를 고쳤는데 아무 일도 안 일어나는 상태(임계·예산이 전부 엔진 기본값)를 본다."""
-    found = sorted(key for key in conf
-                   if key in LEGACY_CONF_KEYS
-                   or (key.startswith(LEGACY_CONF_KEY_PREFIX)
-                       and len(key) > len(LEGACY_CONF_KEY_PREFIX)))
-    if not found:
-        return
-    print(f"오류: local.conf 에 구표기 키가 남아 있습니다 ({path}) — "
-          f"{', '.join(found)}. 값이 조용히 기본값으로 떨어지지 않도록 여기서 멈춥니다. "
-          "전수 지목은 `board.py lint` 또는 `pm_update.py` 안내가 냅니다.", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def load_local_config(root: Path) -> dict[str, str]:
-    """`.project_manager/local.conf` 를 KEY=value dict 로 (없으면 {}).
-
-    claude `ctx_guard.load_local_config` 미러 — codex driver 는 엔진/claude 어댑터를 import 하지
-    않으므로 같은 파싱을 작게 재현한다(`#` 주석·빈 줄·`=` 없는 줄 skip)."""
-    conf: dict[str, str] = {}
-    path = root / ".project_manager" / "local.conf"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return conf
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        conf[key.strip()] = val.strip()
-    _assert_no_legacy_conf(conf, path)
-    return conf
 
 
 def _resolve_rollout_file(session_id: str) -> Path | None:
@@ -413,7 +289,7 @@ class CodexCliDriver:
         신선한 값으로 채택한다. 불일치·부재·파싱 실패는 2순위인 turn.completed 누계(input+output)
         차분으로 폴백한다. 이 차분은 turn 내 다중 모델 호출 합이라 실제 마지막 요청 점유의 보수적
         상한 근사다.
-        marker 박제 실패는 fail-soft."""
+        marker 박제 실패는 relay 를 멈추지 않는다(writer 가 원인을 stderr 에 알린다)."""
         if self._budget_reader is not None:
             rollout = self._rollout_file(session_id)  # 세션 모델 = rollout 마지막 turn_context 모델
             self._ctx_budget, self._precompact_at_pct, warning = self._budget_reader(
@@ -435,18 +311,14 @@ class CodexCliDriver:
             if rollout is not None else None
         )
         used = precise if precise is not None else delta
-        if not self._mark_ctx_if_over(
+        # 임계 판정은 엔진 회전 판정이, 기록 실패 진단은 주입된 marker writer 가 한다.
+        self._mark_ctx_if_over(
             self._root, session_id, used, self._ctx_budget, self._precompact_at_pct,
             self._mark_stop,
-        ):
-            # 임계 미달과 writer 실패가 같은 False 계약이지만, 여기까지 온 양수 사용량은
-            # helper가 판정한다. 실패도 relay를 막지는 않고 운영 가시성만 복원한다.
-            rotate_threshold = self._ctx_budget * self._precompact_at_pct / 100
-            if used >= rotate_threshold:
-                sys.stderr.write("[pm-orch] codex ctx marker 박제 실패\n")
+        )
 
 
-# ── 세션 안 ctx 넛지 판정 (claude ctx_guard/ctx_stop_hook 미러) ────────────────
+# ── 세션 안 ctx 넛지 (rollout 관측 → 엔진 judge_context) ────────────────
 # 훅 stdin 에는 토큰 정보가 없다 — codex-cli 0.147.0 격리 CODEX_HOME 라이브 프로브 실측 키는
 # session_id·turn_id·transcript_path·cwd·hook_event_name·model·permission_mode + 이벤트별
 # (prompt | tool_name·tool_input·tool_use_id) + 서브에이전트 발화에서만 agent_id·agent_type 이다.
@@ -454,54 +326,13 @@ class CodexCliDriver:
 # 읽는다(claude 훅이 transcript JSONL 의 마지막 assistant usage 를 읽는 것과 같은 축).
 #
 # 이 축은 위 relay 기계 가드(CodexCliDriver·post-turn 회전 marker)와 **다른 소비자**다 — 여기서는
-# 회전 marker 를 만들지 않고 비차단 안내만 주입한다. 밴드 경계·임계 키·안내 문구는
-# claude 와 같은 값을 쓰고 codex 전용 임계·문구를 새로 만들지 않는다.
+# 회전 marker 를 만들지 않고 비차단 안내만 주입한다. 밴드·임계·문구·사이클 marker 는 엔진 소유다.
 
 # rollout JSONL 은 세션이 길수록 커진다(라이브 실측 — 2 turn 46KB). 전량을 읽지 않고 꼬리만 본다:
-#   token_count 는 turn 마다 기록되므로 최신 값은 꼬리에 있고, 꼬리에서 못 찾으면 측정 불가로
-#   보고 침묵한다(fail-open — 가드 고장이 도구 호출을 막지 않는다).
+#   token_count 는 turn 마다 기록되므로 최신 값은 꼬리에 있고, 꼬리에서 못 찾으면 측정 불가(0)다.
 CTX_ROLLOUT_TAIL_BYTES = 256 * 1024
-# pm_log ctx-guidance 자식 상한(초) — claude ctx_stop_hook._SNAPSHOT_TIMEOUT_SECONDS 미러.
-CTX_GUIDANCE_TIMEOUT_SEC = 3.0
-# 사이클별 멱등 marker 디렉토리 — claude ctx_stop_hook._MARKER_DIR 와 같은 경로·규약
-# (`.project_manager/.local/` 는 이미 git-ignored 라 채택자가 `git add -A` 해도 안 실린다).
-CTX_MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
-# 밴드 → pm_log `ctx-guidance --band` 인자. 마지막 밴드 이름(stop)은 회전이 아니라 **최종 넛지**로
-# 소비된다(claude 와 같은 소비) — 그래서 인자는 `final` 이다.
-CTX_BAND_GUIDANCE_ARG = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
-# 밴드별 marker 파일 접미사 — claude `.nudge`/`.nudge2`/`.final` 와 같은 이름.
-CTX_BAND_MARKER_SUFFIX = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
 # 넛지를 주입할 수 있는 훅 이벤트 — 두 이벤트 모두 `additionalContext` 를 갖는다(스키마 실측).
 CTX_NUDGE_EVENTS = ("PreToolUse", "UserPromptSubmit")
-
-
-def nudge2_threshold(thresholds: dict[str, int]) -> int:
-    """2단 넛지 임계(쓴 %) — precompact_at − 마진, checkpoint_at 으로 하한 (claude nudge2_threshold 미러)."""
-    return max(thresholds["precompact_at_pct"] - CTX_NUDGE2_MARGIN_PCT,
-               thresholds["checkpoint_at_pct"])
-
-
-def context_used_pct_from_tokens(tokens: int, budget: int) -> int:
-    """점유 토큰 / 예산 → 사용 % (claude context_used_pct_from_tokens 미러).
-
-    측정 없음(토큰 <= 0)·예산 비정상은 0 — 정보 없음을 밴드로 승격하지 않는다."""
-    if budget <= 0 or tokens <= 0:
-        return 0
-    value = tokens / float(budget) * 100
-    if value != value or value in (float("inf"), float("-inf")):  # NaN/inf 가드
-        return 0
-    return max(0, min(100, round(value)))
-
-
-def classify(used_pct: int, thresholds: dict[str, int]) -> str:
-    """사용 % → 'ok' | 'nudge' | 'nudge2' | 'stop' (쓴 % 기준·claude classify 미러)."""
-    if used_pct >= thresholds["precompact_at_pct"]:
-        return "stop"
-    if used_pct >= nudge2_threshold(thresholds):
-        return "nudge2"
-    if used_pct >= thresholds["checkpoint_at_pct"]:
-        return "nudge"
-    return "ok"
 
 
 def _rollout_input_tokens(raw_line: bytes) -> int | None:
@@ -584,49 +415,9 @@ def _rollout_turn_model(transcript_path) -> str | None:
 
 
 def _hook_session_id(payload: dict) -> str:
-    """훅 payload 의 세션 식별자 → 파일명 안전 문자열 (claude `_session_id` 미러)."""
+    """훅 payload 의 세션 식별자 원문(없으면 빈 문자열). 파일명 안전화는 엔진이 한다."""
     sid = payload.get("session_id") or payload.get("sessionId")
-    if isinstance(sid, str) and sid.strip():
-        return "".join(c for c in sid.strip() if c.isalnum() or c in "-_")[:64] or "unknown"
-    return "unknown"
-
-
-def _ctx_marker_path(root: Path, session_id: str, band: str) -> Path:
-    return Path(root) / CTX_MARKER_DIR / f"{session_id}.{CTX_BAND_MARKER_SUFFIX[band]}"
-
-
-def _claim_ctx_marker(path: Path) -> bool:
-    """marker 를 배타 생성해 이번 호출이 사이클별 주입권을 얻었는지 (claude `_claim_marker` 미러).
-
-    `O_EXCL` 이라 두 채널(PreToolUse·UserPromptSubmit)이 동시에 와도 하나만 주입한다. 이미
-    선점됐거나 marker 를 못 쓰면 주입하지 않는다(중복 주입보다 침묵이 안전)."""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except OSError:
-        return False
-    try:
-        os.write(handle, b"codex ctx nudge injected\n")
-    except OSError:
-        pass  # 생성 성공 자체가 선점의 정본 — 본문 쓰기 실패는 선점을 무효화하지 않는다.
-    finally:
-        try:
-            os.close(handle)
-        except OSError:
-            pass
-    return True
-
-
-def _rearm_ctx_cycle(root: Path, session_id: str) -> None:
-    """ok 실측 복귀 시 밴드 marker 를 지워 다음 상승 사이클을 재무장 (claude `_rearm_cycle` 미러).
-
-    PostCompact 재무장은 비목표다 — 그 이벤트 배선을 고치면 채택자 hook trust 핀이 깨진다.
-    claude 도 ok 실측 경로 재무장을 병행하므로 압축 뒤 사이클은 이 경로가 연다."""
-    for band in CTX_BAND_MARKER_SUFFIX:
-        try:
-            _ctx_marker_path(root, session_id, band).unlink(missing_ok=True)
-        except OSError:
-            pass  # 정리 실패는 best-effort — 남은 marker 는 중복 주입만 막는다.
+    return sid if isinstance(sid, str) else ""
 
 
 def hook_is_subagent(payload: dict) -> bool:
@@ -642,104 +433,44 @@ def hook_is_subagent(payload: dict) -> bool:
     return False
 
 
-def _ctx_guidance_text(root: Path, *, band: str, used_pct: int,
-                       thresholds: dict[str, int], timeout: float,
-                       runner=subprocess.run) -> str:
-    """안내 문구는 엔진 `pm_log.py ctx-guidance` stdout **그대로** (문구 복제 금지·claude 대칭).
+def ctx_nudge_envelope(payload: dict, root: Path) -> dict:
+    """세션 안 ctx 판정 → 비차단 안내 엔벨로프. 엔진이 발화하지 않은 호출은 **빈 엔벨로프**.
 
-    엔진 부재·실패·timeout 은 빈 문자열 — 그 호출은 침묵한다(문구를 어댑터가 재작성하지 않는다).
-    `--json` 봉투는 `systemMessage` 형이라 모델-facing 주입엔 쓰지 않는다."""
-    engine = Path(root) / ".project_manager" / "tools" / "pm_log.py"
-    if not engine.is_file():
-        return ""
-    command = [
-        sys.executable, str(engine), "ctx-guidance",
-        "--band", CTX_BAND_GUIDANCE_ARG[band],
-        "--used-pct", str(used_pct),
-        "--precompact-at-pct", str(thresholds["precompact_at_pct"]),
-    ]
-    try:
-        completed = runner(command, cwd=str(root), stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, timeout=timeout)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return ""
-    if getattr(completed, "returncode", 1) != 0:
-        return ""
-    stdout = getattr(completed, "stdout", b"") or b""
-    if isinstance(stdout, bytes):
-        stdout = stdout.decode("utf-8", "replace")
-    return stdout.strip()
-
-
-def ctx_nudge_envelope(payload: dict, root: Path, *,
-                       timeout: float = CTX_GUIDANCE_TIMEOUT_SEC,
-                       runner=subprocess.run) -> dict:
-    """세션 안 ctx 밴드 판정 → 비차단 안내 엔벨로프. 밴드 밖·측정 실패는 **빈 엔벨로프**.
     압축 한도 기록 부재·손상·입력 불일치와 세션 모델 불일치(훅 입력 `model`)는 UserPromptSubmit 의
     `systemMessage` 로 알린다(불일치면 판정은 기록 값으로 계속한다).
 
     빈 엔벨로프는 디스패처 합본에서 기여 0이라 이 기능이 침묵한 호출의 stdout 은 이 가드가
     없던 때와 **바이트 동일**하다(측정된 통과 형태). 차단·회전 판정은 내지 않는다.
 
-    claude `ctx_stop_hook.evaluate` 와 같은 순서다 — 서브에이전트 면제 → 점유 측정 → 밴드 판정
-    → ok 실측이면 재무장 → 안내 문구 → 사이클 marker 선점 → 주입.
-
     **첫 turn 은 보호하지 못한다**: `rollout_context_tokens` 가 아직 측정 없는 새
-    thread 첫 요청에서 0(sentinel)을 돌려주면 사용률도 0%로 계산되고 밴드는 항상 `ok` 다 —
-    거짓으로 "안전"을 알리는 게 아니라 **판정 자체를 안 하는 침묵**이다(안내 문구를 만들지
-    않고 marker 도 건드리지 않는다). codex 훅에 이 구간을 메울 신호·비차단 채널이 없다는 결론은
-    라이브 실측(codex-cli 0.147.0)이고, claude·opencode 도 같은 구조적 한계를 갖는다(세 하네스
-    공통 규칙 — 하네스 특례 아님)."""
+    thread 첫 요청에서 0(sentinel)을 돌려주면 엔진은 미측정으로 보고 안내·marker 를 건드리지
+    않는다. codex 훅에 이 구간을 메울 신호·비차단 채널이 없다는 결론은 라이브 실측
+    (codex-cli 0.147.0)이고, claude·opencode 도 같은 구조적 한계를 갖는다."""
     event = payload.get("hook_event_name") or payload.get("hookEventName")
-    if event not in CTX_NUDGE_EVENTS:
+    if event not in CTX_NUDGE_EVENTS or hook_is_subagent(payload):
         return {}
-    if hook_is_subagent(payload):
-        return {}
-    root = Path(root)
-    tools = repo_root(Path(__file__).resolve().parent) / ".project_manager" / "tools"
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    from pm_engine.infra import conf_store
-    try:
-        budget = conf_store.read_ctx_budget(
-            root, load_local_config(root), "codex", payload.get("model"))
-    except ValueError as exc:  # 압축 한도 기록 부재·손상·입력 불일치 — 프롬프트 제출 때 알린다.
-        return {"systemMessage": f"[ctx-budget] {exc}"} if event == "UserPromptSubmit" else {}
-    envelope = _ctx_band_envelope(event, root, payload, budget, timeout=timeout, runner=runner)
-    if budget["warning"] and event == "UserPromptSubmit":
-        envelope = {**envelope, "systemMessage": f"[ctx-budget] {budget['warning']}"}
+    from pm_engine.cli import hooks
+
+    model = payload.get("model")
+    decision = hooks.judge_context(
+        hooks.adapter_home(root), harness="codex", session=_hook_session_id(payload),
+        tokens=rollout_context_tokens(payload.get("transcript_path")),
+        model=model if isinstance(model, str) else None, main_thread=True,
+    )
+    if decision["status"] == "unavailable":  # 압축 한도 기록 부재·손상·입력 불일치 — 프롬프트 제출 때 알린다.
+        return {"systemMessage": f"[ctx-budget] {decision['notice']}"} if event == "UserPromptSubmit" else {}
+    envelope = ({"hookSpecificOutput": {"hookEventName": event, "additionalContext": decision["guidance"]}}
+                if decision["emit"] else {})
+    if decision["notice"] and event == "UserPromptSubmit":
+        envelope = {**envelope, "systemMessage": f"[ctx-budget] {decision['notice']}"}
     return envelope
 
 
-def _ctx_band_envelope(event: str, root: Path, payload: dict, budget: dict, *, timeout: float,
-                       runner) -> dict:
-    """적용 한도 대비 사용 % 의 밴드 안내 엔벨로프 — 사이클당 한 번(marker)."""
-    session_id = _hook_session_id(payload)
-    tokens = rollout_context_tokens(payload.get("transcript_path"))
-    used_pct = context_used_pct_from_tokens(tokens, budget["E"])
-    band = classify(used_pct, budget)
-    if band == "ok":
-        # 정수 used=0 은 큰 예산에서 작은 양의 측정값일 수도 있다 — 재무장은 **실측된 ok**
-        # (점유 토큰 > 0)에서만 한다. 측정 실패(0)는 marker 를 보존해 중복 주입을 막는다.
-        if tokens > 0:
-            _rearm_ctx_cycle(root, session_id)
-        return {}
-    guidance = _ctx_guidance_text(
-        root, band=band, used_pct=used_pct, thresholds=budget,
-        timeout=max(0.1, min(CTX_GUIDANCE_TIMEOUT_SEC, timeout)), runner=runner)
-    if not guidance:
-        return {}  # 문구를 못 읽으면 침묵 — marker 도 안 쓴다(다음 호출이 다시 시도).
-    if not _claim_ctx_marker(_ctx_marker_path(root, session_id, band)):
-        return {}  # 이 사이클엔 이미 주입됐다(멱등).
-    return {"hookSpecificOutput": {"hookEventName": event,
-                                   "additionalContext": guidance}}
-
-
-# ── 판단 원칙 recall (claude `ctx_stop_hook._principle_recall_text` 미러) ────────────────
+# ── 판단 원칙 recall (엔진 recall_principles 소비) ────────────────
 # 레지스트리(`.project_manager/wiki/pm_principles.md`)의 `on: shell|edit|delegate|prompt` 태그
-# 항목을 이 호출에 대조해 매칭되면 additionalContext 로 합본한다. 판정 엔진은 세 어댑터가 공유하는
-# `pm_principles.judge_recall` 하나이고, 이 함수는 codex payload → (on, text) 축 변환만 소유한다
-# (§7.3 — 도구 이름→on 매핑은 어댑터 소유). 도구 무관(모든 이벤트에 발화)이라 ctx 넛지와 같은
+# 항목을 이 호출에 대조해 매칭되면 additionalContext 로 합본한다. 판정·seen marker 는 엔진
+# `recall_principles` 가 하고, 이 파일은 codex payload → (on, text) 축 변환만 소유한다
+# (도구 이름→on 매핑은 어댑터 소유). 도구 무관(모든 이벤트에 발화)이라 ctx 넛지와 같은
 # in-process 형태를 쓴다 — 자식 프로세스면 매 도구 호출마다 인터프리터가 하나 더 뜬다.
 _PRINCIPLE_SHELL_TOOL_NAME = "Bash"  # git-anchor(`git_anchor_hook_evaluate`)가 이미 쓰는 실측 값.
 _PRINCIPLE_EDIT_TOOL_NAME = "apply_patch"  # codex 내장 파일 편집 도구 이름 **추정치** — 캡처
@@ -788,46 +519,36 @@ def _principle_recall_signal(payload: dict) -> tuple[str, str] | None:
     return None
 
 
-def principle_recall_envelope(payload: dict, root: Path, *,
-                              timeout: float = CTX_GUIDANCE_TIMEOUT_SEC) -> dict:
-    """매칭 원칙을 additionalContext 로 합본(밖 매칭·서브에이전트·레지스트리 부재는 빈 엔벨로프).
+def principle_recall_envelope(payload: dict, root: Path) -> dict:
+    """매칭 원칙을 additionalContext 로 합본(밖 매칭·서브에이전트·정상 무매칭은 빈 엔벨로프).
 
     빈 엔벨로프는 디스패처 합본에서 기여 0 — 이 기능이 침묵한 호출의 stdout 은 이 가드가 없던
-    때와 바이트 동일하다. 차단 판정은 내지 않는다(레지스트리 항목은 전부 비차단)."""
+    때와 바이트 동일하다. 차단 판정은 내지 않는다(레지스트리 항목은 전부 비차단). 레지스트리 판독·
+    marker 기록 실패는 예외로 올라가 디스패처가 원인이 있는 경고 엔벨로프로 낸다."""
     signal = _principle_recall_signal(payload)
     if signal is None or hook_is_subagent(payload):
         return {}
     on, text = signal
-    home = pm_paths.home_at(Path(root))
-    session_id = _hook_session_id(payload)
-    try:
-        seen = principle_store.load_seen_marker(home, session_id)
-        result = principle_recall.judge_recall(home, on=on, text=text, seen=seen)
-    except Exception:  # noqa: BLE001 — 판정 실패는 비차단 침묵.
+    from pm_engine.cli import hooks
+
+    result = hooks.recall_principles(
+        hooks.adapter_home(root), session=_hook_session_id(payload), on=on, text=text, main_thread=True,
+    )
+    if not result:
         return {}
-    if not result or not result.get("text"):
-        return {}
-    if result.get("keys"):
-        try:
-            principle_store.record_seen_marker(home, session_id, result["keys"])
-        except Exception:  # noqa: BLE001 — marker 기록 실패는 소음(재주입)일 뿐.
-            pass
     event = payload.get("hook_event_name") or payload.get("hookEventName")
     return {"hookSpecificOutput": {"hookEventName": event,
                                    "additionalContext": result["text"]}}
 
 
-def principle_recall_rearm_envelope(payload: dict, root: Path, *,
-                                    timeout: float = CTX_GUIDANCE_TIMEOUT_SEC) -> dict:
+def principle_recall_rearm_envelope(payload: dict, root: Path) -> dict:
     """PostCompact 경계에서 원칙 recall marker 를 지워 다음 사이클을 재무장한다(부작용만).
 
-    압축 직후가 규칙이 컨텍스트에서 사라지는 지점이라 재무장 시점이 정확히 그 자리다(§7.5).
+    압축 직후가 규칙이 컨텍스트에서 사라지는 지점이라 재무장 시점이 정확히 그 자리다.
     PostCompact 는 이미 배선된 entrypoint 이벤트라 이 항목 추가는 config 변경이 필요 없다."""
-    home = pm_paths.home_at(Path(root))
-    try:
-        principle_store.rearm_seen_marker(home, _hook_session_id(payload))
-    except Exception:  # noqa: BLE001 — 재무장 실패는 다음 경계로 넘긴다.
-        pass
+    from pm_engine.cli import hooks
+
+    hooks.rearm_principles(hooks.adapter_home(root), session=_hook_session_id(payload))
     return {}
 
 
@@ -884,8 +605,8 @@ class CodexHookFeature(NamedTuple):
     argv         기능을 실행하는 커맨드. `{py}` = 이 인터프리터, `{tools}` = 엔진 도구 디렉토리,
                  `{self}` = 이 디스패처 파일 자신. 자식은 payload 를 stdin 으로 받고 엔벨로프
                  한 줄을 stdout 으로 낸다.
-    handler      이 파일 안에서 **in-process** 로 도는 기능이면 그 함수(`(payload, root, *,
-                 timeout) -> 엔벨로프`). 주면 `argv` 는 쓰이지 않는다. 도구 무관 기능(모든 도구
+    handler      이 파일 안에서 **in-process** 로 도는 기능이면 그 함수(`(payload, root) ->
+                 엔벨로프`). 주면 `argv` 는 쓰이지 않는다. 도구 무관 기능(모든 도구
                  호출마다 발화)을 자식 프로세스로 돌리면 매 호출에 인터프리터가 하나 더 뜨므로,
                  판정이 이 파일 안에 있는 기능은 자식을 띄우지 않는다(ctx 넛지).
     match_field  `tool_pattern` 을 대조할 payload 필드 이름. **판별 축은 이벤트마다 다르다** —
@@ -1177,14 +898,13 @@ def _run_hook_feature(feature: CodexHookFeature, payload: dict, payload_bytes: b
         return hook_fallback_envelope(feature.feature_id, f"{type(exc).__name__}: {detail}")
 
 
-def _run_hook_feature_inprocess(feature: CodexHookFeature, payload: dict, root: Path, *,
-                                timeout: float) -> dict:
+def _run_hook_feature_inprocess(feature: CodexHookFeature, payload: dict, root: Path) -> dict:
     """in-process 기능을 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 폴백 경고).
 
     자식 프로세스 경로(`_run_hook_feature`)와 **같은 실패 계약**이다 — 기능 고장이 도구 호출을
     막지 않고, 폴백은 마커를 달아 통과와 구별된다."""
     try:
-        envelope = feature.handler(payload, root, timeout=timeout)
+        envelope = feature.handler(payload, root)
         if not isinstance(envelope, dict):
             raise ValueError("엔벨로프가 dict 가 아님")
         return envelope
@@ -1358,11 +1078,10 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
         if route.decision == CODEX_HOOK_ROUTE_UNDECIDABLE:
             answers.append(hook_fallback_envelope(feature.feature_id, route.detail))
             continue
-        timeout = max(0.1, deadline - time.monotonic())
         if feature.handler is not None:
-            answers.append(_run_hook_feature_inprocess(
-                feature, payload, root, timeout=timeout))
+            answers.append(_run_hook_feature_inprocess(feature, payload, root))
             continue
+        timeout = max(0.1, deadline - time.monotonic())
         answers.append(_run_hook_feature(
             feature, payload, payload_bytes, root, runner=runner, timeout=timeout))
     return merge_hook_envelopes(answers)
@@ -1395,8 +1114,6 @@ def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int
 #   codex 엔벨로프로 옮기는 자리다 — `.codex/hooks.json` 은 여전히 `--hook-dispatch PreToolUse`
 #   만 알고, 이 기능은 위 `CODEX_HOOK_FEATURES` registry 에 자기 자신을 다시 부르는 항목으로만
 #   등록된다.
-GIT_ANCHOR_ONCE_NAMESPACE = "git-anchor"  # 세션 1회 발화 멤버십 namespace(엔진 claim_session_once).
-GIT_ANCHOR_ONCE_KEY_CHARS = 16  # 멤버십 키 = 발화 문구 sha256 앞 16자(문구 전문을 파일에 남기지 않는다).
 # Bash 명령 선필터(성능 전용 — 판정은 엔진 `pm_engine.cli.hooks` 가 한다). claude `pm_orch_claude.py`·opencode
 #   `git-anchor-core.cjs` 선필터와 같은 집합이다(테스트가 대조). 대상은 git 호출 · pytest · cd 잔존 ·
 #   파일 삭제·이동 명령과 삭제 API · 허용 표식 · 엔진 도구 경로 · 허용 기록 폴더다.
@@ -1446,13 +1163,11 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
     if not os.path.isabs(session_anchor):
         session_anchor = os.path.join(str(root), session_anchor)
     session_anchor = os.path.abspath(session_anchor)
-    coordinate_explicit = False
     anchor = session_anchor
     for key in ("workdir", "cwd"):
         value = tool_input.get(key)
         if not isinstance(value, str) or not value:
             continue
-        coordinate_explicit = True
         value = os.path.expanduser(value)
         anchor = value if os.path.isabs(value) else os.path.join(session_anchor, value)
         anchor = os.path.abspath(anchor)
@@ -1482,11 +1197,6 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
         judgment = hooks.judge_git_anchor_command(hooks.adapter_home(root), session, anchor, command)
     verdict = judgment.get("verdict")
     reason = judgment.get("reason", "git cwd 정체 판정")
-    if (
-        verdict == "deny" and not coordinate_explicit
-        and judgment.get("code") == "pm-home-relative-pytest-tests-missing"
-    ):
-        verdict = "warn"
     if verdict == "deny":
         text = f"[git-anchor/deny] {reason}"
         return {
@@ -1509,23 +1219,15 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
 
 
 def _git_anchor_duplicate(root: Path, payload: dict, text: str) -> bool:
-    """이 세션에서 **문자열이 완전히 같은** advisory 를 이미 냈으면 True(claude 헬퍼 재사용).
+    """이 세션에서 **문자열이 완전히 같은** advisory 를 이미 냈으면 True(claude 헬퍼와 같은 판정).
 
-    마커 I/O 실패(None)는 False — 발화를 유지한다(fail-open). 엔진 `relay.claim_session_
-    once` 를 그대로 부른다 — claude 와 같은 멤버십 디렉토리 `.project_manager/.local/ctx-stop/`
-    를 공유하되 세션키가 달라 서로 섞이지 않는다(새 상태 파일·새 디렉토리 0)."""
-    try:
-        engine, _engine_root = _load_engine()
-        key = hashlib.sha256(text.encode("utf-8")).hexdigest()[:GIT_ANCHOR_ONCE_KEY_CHARS]
-        claimed = engine.claim_session_once(
-            root,
-            payload.get("session_id") or payload.get("sessionId") or "",
-            GIT_ANCHOR_ONCE_NAMESPACE,
-            key,
-        )
-    except BaseException:  # 멤버십 판정 손상은 훅 판정을 깨지 않는다 — 발화 유지(fail-open).
-        return False
-    return claimed is False
+    세션 1회 판정은 엔진 ``claim_notice`` 가 한다 — claude 와 같은 멤버십 디렉토리를 공유하되
+    세션키가 달라 서로 섞이지 않는다. ``seen`` 만 억제하고 ``unavailable``(멤버십 파일 I/O 실패)은
+    False — 발화를 유지한다(fail-open). 거부(deny)는 이 판정을 지나지 않아 매번 실린다."""
+    from pm_engine.cli import hooks
+
+    claimed = hooks.claim_notice(hooks.adapter_home(root), session=_hook_session_id(payload), text=text)
+    return claimed["status"] == "seen"
 
 
 def run_git_anchor_hook(root: Path, *, stdin=None, stdout=None) -> int:
@@ -1578,17 +1280,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _make_resolving_runner(engine):
-    """프로덕션 runner — 실행 파일을 엔진 해소 함수(`contract.resolve_executable`)로 찾아 실행한다.
-
-    Windows npm 설치의 `codex.cmd` 는 이름 그대로 실행하지 못한다. 해소 실패는 `FileNotFoundError`
-    (PATH 부재)라 driver `_turn` 의 실행 실패 처리를 그대로 탄다."""
-    def runner(cmd, **kwargs):
-        return subprocess.run(
-            [engine.resolve_executable(cmd[0], kwargs.get("env")), *cmd[1:]], **kwargs)
-    return runner
-
-
 def main(argv: list[str] | None = None) -> int:
     actual_argv = sys.argv[1:] if argv is None else argv
     # 훅 축은 relay 부팅(엔진 적재·local.conf·supervisor)을 타지 않는다 — 훅은 매 도구 호출마다
@@ -1610,32 +1301,26 @@ def main(argv: list[str] | None = None) -> int:
         # relay 는 회전된 세션을 `$pm-bootstrap --task <task>` 로 다시 연다 — 부트스트랩이 `--task`
         # 필수라 task 없는 relay 는 시작하지 않는다. 훅 진입(같은 파서)은 task 를 받지 않아 여기서 본다.
         parser.error("relay 에는 --task <task> 가 필요하다")
-    engine, root = _load_engine()
-    from pm_engine.infra.harness import contract
+    root = repo_root(Path(__file__).resolve().parent)
+    from pm_engine.cli import hooks
 
     cwd = args.cwd or os.getcwd()
-    # driver-side ctx 가드 원천 — 압축 한도 기록의 예산·회전 임계 + 엔진 post-turn marker writer 주입.
-    # 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError).
-    ctx_budget, precompact_at_pct, _warning = engine.ctx_budget(root, "codex", None)
-    driver = CodexCliDriver(
-        contract.parse_codex_json,
-        runner=_make_resolving_runner(contract),
-        ctx_budget=ctx_budget,
-        budget_reader=lambda model: engine.ctx_budget(root, "codex", model),
-        precompact_at_pct=precompact_at_pct,
-        mark_stop=engine.write_post_turn_marker,
-        mark_ctx_if_over=engine.mark_ctx_post_turn_if_over,
-        spawn_result=engine.SpawnResult,
-        root=root,
-    )
-    supervisor = engine.Supervisor(driver, root=root, task=args.task)
 
-    sys.stderr.write(
-        f"[pm-orch] codex supervisor 시작 (cwd={cwd}). "
-        "ctx 한계 도달 시 자동 회전. 종료 = /quit 또는 EOF.\n"
+    def announced_driver(*driver_args, **driver_kwargs) -> CodexCliDriver:
+        # 시작 안내는 엔진이 예산 기록을 확인하고 driver 를 구성한 뒤에 낸다(설정 오류가 먼저 보인다).
+        driver = CodexCliDriver(*driver_args, **driver_kwargs)
+        sys.stderr.write(
+            f"[pm-orch] codex supervisor 시작 (cwd={cwd}). "
+            "ctx 한계 도달 시 자동 회전. 종료 = /quit 또는 EOF.\n"
+        )
+        sys.stderr.flush()
+        return driver
+
+    # 압축 한도 기록이 없거나 손상·입력 불일치면 시작하지 않는다(CtxBudgetError).
+    return hooks.run_relay(
+        hooks.adapter_home(root), announced_driver, harness="codex", task=args.task, cwd=cwd,
+        stdin=sys.stdin, stdout=sys.stdout,
     )
-    sys.stderr.flush()
-    return supervisor.run_loop(cwd, sys.stdin, sys.stdout)
 
 
 if __name__ == "__main__":
