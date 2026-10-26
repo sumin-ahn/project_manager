@@ -483,6 +483,7 @@ def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_
     log_file = tmp_path / "log.md"
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(adopter_board.REPO),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (0, "✅ 매니페스트 검증 통과 — 전략 13"),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),
@@ -510,6 +511,7 @@ def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tm
     log_file = tmp_path / "log.md"
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(adopter_board.REPO),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (1, "✗ 매니페스트 검증 실패"),
         run_board_fn=lambda args: pytest.fail("red 인데 board complete 가 불렸다"),
         run_git_fn=lambda args: pytest.fail("red 인데 git 이 불렸다"),

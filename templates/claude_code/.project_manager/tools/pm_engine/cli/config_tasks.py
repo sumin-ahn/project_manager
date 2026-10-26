@@ -36,12 +36,12 @@ def cmd_task_new(
     몫이라 여기서 열림 표시를 만지지 않는다).
 
     worktree_pool의 실제 함수 seam으로 시험을 격리한다. 예약패턴 판별 근거는 config_slots._registered_repos가
-    해소한다(읽기 실패면 None → traversal 검증만·`cmd_alloc` 과 같은 한 자리).
+    해소한다(`cmd_alloc` 과 같은 한 자리).
     """
 
     name = args.name
 
-    # 예약패턴(`<repo>_<N>`) 판별 근거 — areas fail-soft 해소(실패면 None·traversal 검증은 유지).
+    # 예약패턴(`<repo>_<N>`) 판별 근거 — areas.md 해소(판독 실패는 전파).
     registered = config_slots._registered_repos(home)
 
     try:
@@ -183,14 +183,10 @@ def cmd_task_end(
     # 1) claimed 소진 게이트 — board 스캔. task 레코드 prefix 로 prefix-open 정보도 함께.
     task_rec = pool_store.find_task(home, name)
     prefix = task_rec.prefix if task_rec is not None else None
-    scan = None
-    try:
-        # 설정 판독 실패에도 git 사용자로 claimed 소진 여부를 조회한다.
-        user = (repo_protection._local_conf_value(home, "identity.user")
-                or lease_store._git_config_email(home))
-        scan = ticket_access.scan_task_tickets(home, user, name, prefix)
-    except Exception:  # noqa: BLE001 — 실제 스캔 실패는 기존 claimed 게이트 skip 정책 유지.
-        scan = None
+    # 설정 판독 실패에도 git 사용자로 claimed 소진 여부를 조회한다.
+    user = (repo_protection._local_conf_value(home, "identity.user")
+            or lease_store._git_config_email(home))
+    scan = ticket_access.scan_task_tickets(home, user, name, prefix)
     if scan and scan.get("claimed"):
         print(
             f"[중단] task {name!r} 명의로 claimed 인 티켓이 남아있다 — 종료 거부(소진 게이트):",
@@ -410,7 +406,7 @@ def cmd_task_prefix(
     value = args.value
 
     # 1) task 명 검증(must-fix) — 공유 엔진 validator. registered_repos 는 예약패턴(`<repo>_<N>`)
-    # 거부용(areas 읽기 실패면 None, traversal 검증은 유지). InvalidTaskName → rc1(부작용 이전).
+    # 거부용(areas.md 판독 실패는 전파). InvalidTaskName → rc1(부작용 이전).
     registered = config_slots._registered_repos(home)
     try:
         task_rules._validate_task_name(name, registered)

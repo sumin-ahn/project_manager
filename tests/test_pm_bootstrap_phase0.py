@@ -329,15 +329,11 @@ def test_anchor_pm_home_passes(bootstrap, monkeypatch, tmp_path, capsys):
 
 
 def test_anchor_guard_internal_raise_failsoft_passes(bootstrap, monkeypatch, tmp_path, capsys):
-    """앵커 가드(board 헬퍼)가 **내부 raise** 하면 fail-soft 통과한다(부재만이 아니라 raise 경로도).
-
-    phase0 헬퍼의 `except Exception: return <통과값>`(의도적·오탐 0)이 헬퍼 내부 버그를 silent-pass
-    로 잡아먹지 않고 *통과값*을 돌려주는지 백스톱한다. dump 정상·rc 0(거부 아님)."""
+    """앵커 가드(board 헬퍼)가 **내부 raise** 하면 통과값으로 접지 않고 전파한다(dump 전에 멈춘다)."""
     inst = _make(bootstrap, tmp_path, board=_RaisingBoard(),
                  worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)
-    rc = inst.run(task="mytask")
-    assert rc == 0, "가드 raise 를 fail-soft(통과)로 흡수하지 못함"
-    assert capsys.readouterr().out != ""  # 정상 dump(거부 아님).
+    with pytest.raises(RuntimeError, match="가드 내부 버그"):
+        inst.run(task="mytask")
 
 
 # ── 2. main-참조 축 2 — 보호 브랜치 원격 origin-추적 (T-0276·§F9) ──────────────

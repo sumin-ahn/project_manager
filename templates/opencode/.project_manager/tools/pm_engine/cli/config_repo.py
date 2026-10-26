@@ -708,12 +708,11 @@ def cmd_repo_protected(
         new_cell = ",".join(tokens)
 
     # 2) areas.md 셀 변경 — 단일 진실 먼저(역순이면 훅이 비준되지 않은 목록을 강제한다).
-    duplicate_exc = areas_rules.AreasDuplicateRepo
-    missing_exc = areas_rules.AreasRepoNotFound
     try:
         old_cell, _new = areas_registry.areas_set_cell(home, name, "protected", new_cell)
-    except Exception as exc:  # noqa: BLE001 — 종류별 안내로 번역(부작용 0·아래 rc 1).
-        if duplicate_exc is not None and isinstance(exc, duplicate_exc):
+    except (areas_rules.AreasDuplicateRepo, areas_rules.AreasRepoNotFound, OSError, UnicodeError) as exc:
+        # 종류별 안내로 번역(부작용 0·rc 1).
+        if isinstance(exc, areas_rules.AreasDuplicateRepo):
             print(
                 f"[중단] areas.md 에 repo {name!r} 행이 {getattr(exc, 'count', 2)}개 있다(중복) — "
                 "어느 행을 고쳐야 하는지 기계가 정할 수 없다(리졸버는 first-match). 추측해서 한쪽만 "
@@ -722,7 +721,7 @@ def cmd_repo_protected(
                 file=sys.stderr,
             )
             return 1
-        if missing_exc is not None and isinstance(exc, missing_exc):
+        if isinstance(exc, areas_rules.AreasRepoNotFound):
             print(
                 f"[중단] repo {name!r} 이(가) areas.md 에 등록돼 있지 않다 — 보호목록 설정은 *기존* "
                 "행의 셀을 고칠 뿐 등록을 만들지 않는다. 먼저 등록하라: "
@@ -750,10 +749,7 @@ def cmd_repo_protected(
     #    **경로 스코프 필수**: paths 없이 부르면 board 전체가 "repo protected"
     #    커밋에 쓸려 들어가 *남의 미커밋 편집*까지 대신 커밋한다. claim 이 dirty 를 안 막게 된
     #    지금은 board 가 상시 dirty 라 그 노출이 더 크다. areas.md 만 이 mutation 의 산출물이다.
-    try:
-        board_sync._board_git_sync_best_effort(home, "repo protected", (pm_paths.areas_file(home),))
-    except Exception as exc:  # noqa: BLE001 — best-effort: 동기 실패가 설정을 되돌리지 않는다.
-        pass
+    board_sync._board_git_sync_best_effort(home, "repo protected", (pm_paths.areas_file(home),))
 
     # 5) 브랜치 실재 경고 1줄 — `repo add --protected` 와 **같은 공용 깔때기**(검증 비대칭 방지).
     #    거부 아님(미래 브랜치 선-보호가 정상·오타 가시화용).
@@ -776,7 +772,7 @@ def cmd_repo_list(home, args: argparse.Namespace) -> int:
     """
     try:
         _header, rows = areas_store._parse_areas(home)
-    except Exception as exc:  # noqa: BLE001 — 파싱 실패는 명시 에러(조용한 빈 표 금지).
+    except (OSError, UnicodeError, ValueError) as exc:  # 파싱 실패는 명시 에러(조용한 빈 표 금지).
         print(f"[중단] areas.md 파싱 실패 — {exc}", file=sys.stderr)
         return 1
     rows = [row for row in rows if row.get("repo")]

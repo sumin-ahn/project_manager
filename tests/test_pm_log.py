@@ -650,13 +650,14 @@ def test_checkpoint_parser_default_manual_appends_entry(tmp_path, monkeypatch):
 
 
 def test_registered_repos_non_utf8_areas_failure_is_fail_soft(monkeypatch, tmp_path):
-    'areas 파싱 실패는 None으로 강등해 기본 task 구문 검증을 유지한다.'
+    'areas 파싱 실패는 None으로 강등하지 않고 전파한다(예약패턴 검증을 완화하지 않는다).'
     home = pm_paths.home_at(tmp_path)
     mod = _load_module()
     def broken(_home):
         raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
     monkeypatch.setattr(areas_store, 'registered_repos', broken)
-    assert pm_engine.cli.log._registered_repos(home) is None
+    with pytest.raises(UnicodeDecodeError):
+        pm_engine.cli.log._registered_repos(home)
 
 
 # ── 소유 PM 홈 유도 (T-0888) ────────────────────────────────────────────────

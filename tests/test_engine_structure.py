@@ -55,7 +55,6 @@ R6_MIN_JS_ADAPTERS = 16
 R6_JS_PYTHON_IMPORT = re.compile(r"\b(?:from|import)\s+(pm_engine(?:\.\w+)*)(?:\s+import\s+([\w, ]+))?")
 R6_JS_PATH_LOAD = re.compile(r"\b(spec_from_file_location|SourceFileLoader|run_path)\b")
 R8_BROAD_NAMES = frozenset({"Exception", "BaseException"})
-R8_LAYERS = ("domain", "infra", "app")
 R8_ENTRY_PACKAGE = "pm_engine.cli"
 R8_MESSAGE = "넓은 처리부가 예외를 삼킨다"
 
@@ -757,18 +756,28 @@ def entry_cli_modules(tools: Path) -> frozenset[str]:
     return frozenset(modules)
 
 
-@pytest.mark.parametrize("layer", R8_LAYERS)
-def test_r8_real_tree_layer_has_no_swallow(layer):
+def test_r8_engine_has_no_swallow():
     entries = entry_cli_modules(TOOLS)
     assert entries, "평면 진입 파일의 cli 모듈 import 가 0개다(공허 검사)"
-    files = [path for path in engine_python_files(TOOLS)
-             if path.relative_to(TOOLS).as_posix().startswith(f"pm_engine/{layer}/")]
-    assert files, f"{layer} 층 스캔 파일이 0개다(공허 검사)"
+    files = engine_python_files(TOOLS)
+    assert files, "엔진 스캔 파일이 0개다(공허 검사)"
     violations = [
         line
         for path in files
         for line in r8_violations(path.relative_to(TOOLS).as_posix(), path.read_text(encoding="utf-8"),
                                   entry_cli_modules=entries)
+    ]
+    assert violations == []
+
+
+def test_r8_adapters_report_every_broad_catch():
+    files = [path for path in r6_adapter_files(REPO) if path.suffix == ".py"]
+    assert files, "어댑터 Python 스캔 파일이 0개다(공허 검사)"
+    violations = [
+        line
+        for path in files
+        for line in r8_violations(path.relative_to(REPO).as_posix(), path.read_text(encoding="utf-8"),
+                                  adapter=True)
     ]
     assert violations == []
 

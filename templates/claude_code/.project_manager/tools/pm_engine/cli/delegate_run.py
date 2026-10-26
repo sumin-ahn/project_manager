@@ -516,7 +516,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                             f"copy={ticket_copy.path}",
                             file=sys.stderr,
                         )
-                except Exception as exc:
+                except delegate_errors.DelegateError as exc:
                     # 정상 return rc에는 harvest 실패 rc=1이 더 강하다. 반면 runner/실행 예외가 이미
                     # 전파 중이면 finally return으로 삼키지 않고 원 예외를 그대로 보존하며 두 원인을
                     # 모두 stderr에 남긴다.

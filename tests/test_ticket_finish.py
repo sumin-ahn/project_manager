@@ -336,6 +336,7 @@ def _make_finisher(tf, tmp_path, *, affected):
     log_file = tmp_path / "log.md"
     return finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=_green_pytest(100),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),
@@ -380,12 +381,13 @@ def test_soft_step_domain_absent_graceful_skip(tf, tmp_path, capsys):
 
 
 def test_soft_step_exception_does_not_block_completion(tf, tmp_path, capsys):
-    """soft 알림 함수가 예외를 던져도 완료를 막지 않는다(rc 0·비차단 계약)."""
+    """soft 알림 함수의 예외는 삼키지 않고 전파한다(영향 페이지 조회 실패를 '영향 없음'으로 접지 않는다)."""
     def boom(_tid):
         raise RuntimeError("domain 조회 폭발")
 
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=_green_pytest(100),
         run_board_fn=lambda args: (0, "ok"),
         run_git_fn=lambda args: (0, ""),
@@ -394,9 +396,9 @@ def test_soft_step_exception_does_not_block_completion(tf, tmp_path, capsys):
         affected_domain_fn=boom,
         log_file=tmp_path / "log.md",
     )
-    rc = finisher.run("T-1234", section=None, dry_run=False)
-    assert rc == 0
-    assert "[완료] T-1234 기록 완료." in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="domain 조회 폭발"):
+        finisher.run("T-1234", section=None, dry_run=False)
+    assert "[완료] T-1234 기록 완료." not in capsys.readouterr().out
 
 
 def test_dry_run_label_shows_resolved_gate(tf, tmp_path, monkeypatch, capsys):
@@ -404,6 +406,7 @@ def test_dry_run_label_shows_resolved_gate(tf, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(finish_context, "_resolve_per_repo_test_cmd", lambda _home: "go test ./...")
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (0, "ok\n"),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),
@@ -1139,6 +1142,7 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
 
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=boom_pytest,
         run_board_fn=spy_board,
         run_git_fn=lambda args: (0, ""),
@@ -1460,6 +1464,7 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
     home_git, worktree_git, status_calls = [], [], []
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(home),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("--no-pytest must skip")),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (home_git.append(args) or (0, "")),
@@ -1515,6 +1520,7 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
     mutations = []
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(home),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (0, "1 passed in 0.1s"),
         run_board_fn=lambda args: (0, ""),
         run_git_fn=lambda args: (mutations.append(args) or (0, "")),
@@ -1557,6 +1563,7 @@ def test_single_ticket_completion_never_deletes_a_branch(tf, tmp_path, monkeypat
     mutations: list[list[str]] = []
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(home),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (0, "1 passed in 0.1s"),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (mutations.append(list(args)) or (0, "")),
@@ -1997,6 +2004,7 @@ def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
     monkeypatch.setattr(finish_context, "stage_scope", fake_scope)
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(home),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("--no-pytest must skip")),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),

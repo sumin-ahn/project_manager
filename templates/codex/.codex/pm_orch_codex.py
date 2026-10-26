@@ -869,11 +869,13 @@ def _run_hook_feature(feature: CodexHookFeature, payload: dict, payload_bytes: b
         #   커맨드가 이 자식의 출력·rc 를 `>/dev/null 2>&1 || true` 로 버리던 동작을 값 그대로
         #   옮긴 것이라, 여기서 경고를 내면 **모든 압축마다** 없던 소음이 새로 생긴다.
         #   이 침묵은 판정 불능의 조용한 통과와 다르다: 이 기능은 애초에 판정을 하지 않는다.
+        #   자식 기동 실패·시간 초과는 다르다 — 기록이 아예 남지 않으므로 원인을 담은 폴백 경고로 보인다.
         try:
             runner(_expand_hook_argv(feature.argv, root, payload), input=bytes(payload_bytes),
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-        except BaseException:  # noqa: BLE001 — 장부 기록 실패가 훅 답을 바꾸지 않는다.
-            pass
+        except BaseException as exc:  # noqa: BLE001 — 기능 고장이 도구 호출을 막지 않는다.
+            detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+            return hook_fallback_envelope(feature.feature_id, f"{type(exc).__name__}: {detail}")
         return {}
     try:
         completed = runner(

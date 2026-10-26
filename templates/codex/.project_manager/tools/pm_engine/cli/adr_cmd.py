@@ -17,35 +17,29 @@ from pm_engine.infra import lease_store, pm_paths
 # 결정을 개정(amends/supersedes)하는 바로 이 명령이 모순 lint 의 배선점이다 — 재정의 순간
 # (인지 시점)에 옛 결정을 참조하는 문서의 잔여 모순을 표면화한다. **개정에만** 발화한다(신규 plain 발행·
 # refines 는 참조 스코프가 없거나 대상 불변이라 잔여 모순을 안 만든다). 탐지=LLM(기본 dry·미호출)·판정=
-# 사람(advisory·차단 아님) — 이 트리거는 어떤 경우에도 발행을 막지 않는다(fail-soft·감싸 호출).
+# 사람(advisory·차단 아님). lint 실행 실패는 숨기지 않고 전파한다(ADR 파일은 이미 쓰였다).
 def emit_contradiction_advisory(
     home, *, new_number: int, title: str, adr_text: str, amends: list[int], supersedes: list[int],
 ) -> None:
     """개정(amends/supersedes) 시 모순 lint advisory 를 stderr 로 표면화한다(인지 시점).
 
-    개정 대상이 없으면 no-op. 모순 lint 오류는 조용히 무시(fail-soft — 부가
-    advisory 가 발행을 막지 않는다). LLM 은 호출하지 않는다(dry·비용 0) — 스코프+안내만 표면화한다."""
+    개정 대상이 없으면 no-op. 모순 lint 실행 실패는 전파한다. LLM 은 호출하지 않는다(dry·비용 0)
+    — 스코프+안내만 표면화한다."""
     targets = [adr_rules.adr_id(n) for n in (amends + supersedes)]
     if not targets:
         return
-    try:
-        new_id = adr_rules.adr_id(new_number)
-        result = adr_contradiction.ContradictionLinter(home).lint(  # dry (run_fn=None·LLM 미호출)
-            new_adr_id=new_id, new_adr_title=title, new_adr_text=adr_text, target_ids=targets,
-        )
-        print("\n" + adr_contradiction.format_advisory(new_id, targets, result), file=sys.stderr)
-    except Exception:
-        return  # advisory 는 fail-soft — 어떤 오류도 발행을 막지 않는다.
+    new_id = adr_rules.adr_id(new_number)
+    result = adr_contradiction.ContradictionLinter(home).lint(  # dry (run_fn=None·LLM 미호출)
+        new_adr_id=new_id, new_adr_title=title, new_adr_text=adr_text, target_ids=targets,
+    )
+    print("\n" + adr_contradiction.format_advisory(new_id, targets, result), file=sys.stderr)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def _resolve_default_author(home) -> "str | None":
-    """실행 패키지와 현재 Home으로 기본 작성자를 해소한다. 실제 해소 실패는 advisory다."""
-    try:
-        return lease_store.identity_tag(home)
-    except Exception:  # noqa: BLE001 — identity 해소 실패는 advisory 경로로(발행 무영향).
-        return None
+    """실행 패키지와 현재 Home으로 기본 작성자를 해소한다. 해소 실패는 전파한다."""
+    return lease_store.identity_tag(home)
 
 
 def _parse_id_list(tokens: list[str]) -> list[int]:

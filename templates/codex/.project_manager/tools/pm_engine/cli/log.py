@@ -179,12 +179,9 @@ def cmd_snapshot(home, args: argparse.Namespace) -> int:
     return 0
 
 
-def _registered_repos(home) -> set[str] | None:
-    """예약 task 판정용 등록 repo를 fail-soft 해소한다."""
-    try:
-        return areas_store.registered_repos(home)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화.
-        return None
+def _registered_repos(home) -> set[str]:
+    """예약 task 판정용 등록 repo를 해소한다. areas.md 판독 실패는 전파한다."""
+    return areas_store.registered_repos(home)
 
 
 def cmd_checkpoint(home, args: argparse.Namespace) -> int:

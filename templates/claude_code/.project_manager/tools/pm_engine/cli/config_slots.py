@@ -496,19 +496,13 @@ def cmd_release(
     return 0
 
 
-def _registered_repos(home) -> "set[str] | None":
-    """등록 repo 이름 — task 명 예약패턴(`<repo>_<N>`) 판별 근거. areas.md 에서 fail-soft 해소.
+def _registered_repos(home) -> set[str]:
+    """등록 repo 이름 — task 명 예약패턴(`<repo>_<N>`) 판별 근거. areas.md 에서 해소한다.
 
-    areas.md 읽기 실패를 `None` 으로 내린다. `None` 은
-    "등록 목록을 못 읽었다" 는 뜻이고, 그 상태에서도 `_validate_task_name` 의 traversal·절대경로·
-    빈 이름 검증은 그대로 강제된다 — 완화되는 것은 예약패턴 하나다. 해소 규칙이 이 한 자리라
-    `task new`(생성)와 `alloc`/`worktree add --task`(기바인딩 요구)가 같은 근거로 판정한다.
+    areas.md 판독 실패는 전파한다. 해소 규칙이 이 한 자리라 `task new`(생성)와
+    `alloc`/`worktree add --task`(기바인딩 요구)가 같은 근거로 판정한다.
     """
-    try:
-        return areas_store.registered_repos(home)
-    except (OSError, UnicodeError):
-        # areas.md 를 못 읽은 경우다 — None(예약패턴 검증만 완화·traversal 검증은 유지).
-        return None
+    return areas_store.registered_repos(home)
 
 
 def _validate_prebound_task(home, task: str) -> int:
@@ -517,7 +511,7 @@ def _validate_prebound_task(home, task: str) -> int:
     task 이름이 lease session 으로 **기록**되는 write-capable 경로의 선검증이자,
     정체성 *생성*(`task new`·bootstrap)이 슬롯 부착보다 먼저라는 순서를 강제한다. 통과면 0,
     실패면 1(진단은 이 함수가 stderr 로 출력). 예약패턴 판별 근거는 `_registered_repos` 하나가
-    해소한다(부재면 None → traversal 검증만·예약패턴만 완화).
+    해소한다.
     """
     registered = _registered_repos(home)
     try:
@@ -543,15 +537,12 @@ def _validate_prebound_task(home, task: str) -> int:
 
 
 def _slot_live_branch(home, slot: str) -> str:
-    """슬롯 worktree 의 live 브랜치를 fail-soft 조회.
+    """슬롯 worktree 의 live 브랜치를 조회한다.
 
-    `current_branch(slot)`(git=진실·장부 저장 폐지)를 부른다 — 미해소/조회불가는 표시 문자열로
-    흡수(재열거가 침묵/크래시 하지 않게).
+    `current_branch(slot)`(git=진실·장부 저장 폐지)를 부른다 — detached 는 표시 문자열로
+    내고, 조회 실패는 전파한다.
     """
-    try:
-        return worktree_git.current_branch(home, slot) or "(detached)"
-    except Exception as exc:  # noqa: BLE001 — 일반 조회 실패는 표시 흡수(재열거는 부작용 0).
-        return "(조회불가)"
+    return worktree_git.current_branch(home, slot) or "(detached)"
 
 
 def _render_task_slots(home, task_name: str) -> None:
@@ -562,10 +553,7 @@ def _render_task_slots(home, task_name: str) -> None:
     (묶음 처리 1급화). 부트스트랩 진입 열거와 같은 렌더 문법을 공유하려는 공용 헬퍼다.
     `slots_for_task`(session==task 명의 leased·장부 진실)에서 파생 — 신설 저장소 0·부작용 0.
     """
-    try:
-        slots = list(pool_store.slots_for_task(home, task_name) or [])
-    except Exception as exc:  # noqa: BLE001 — 일반 재열거 실패는 흡수(연산 자체는 이미 성공).
-        return
+    slots = list(pool_store.slots_for_task(home, task_name) or [])
     label = f"작업공간 (task {task_name!r} 보유 {len(slots)})"
     if not slots:
         print(f"{label}: (없음)")
@@ -597,8 +585,7 @@ def cmd_alloc(
     `<repo>_<N>` 예약(기계판별 구멍)을 fail-loud rc1 하고, **task 는 기바인딩이어야 한다**를
     강제한다 — 미바인딩이면 "먼저 `pm-config task new <task>` 또는 `/pm-bootstrap --task <task>` 으로
     task 를 만들라" 안내(정체성 *생성*은 그 둘 소관·alloc은 이미 존재하는 task 에 슬롯을 붙일 뿐).
-    예약패턴 판별 근거(등록 repo)는 `_registered_repos` 가 areas.md 에서 해소한다(읽기 실패면 traversal
-    검증만·예약패턴 완화).
+    예약패턴 판별 근거(등록 repo)는 `_registered_repos` 가 areas.md 에서 해소한다(판독 실패는 전파).
 
     worktree_pool의 실제 함수 seam으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
     """

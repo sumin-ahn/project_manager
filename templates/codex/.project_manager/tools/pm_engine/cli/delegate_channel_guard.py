@@ -111,15 +111,12 @@ def _report_fail_open(exc: BaseException, stderr: TextIO) -> None:
         f"[delegate-channel/warn] 가드 판정 실패({type(exc).__name__}: {detail}) "
         "— 통과(fail-open)"
     )
-    # fail-open 보고 자체가 죽으면 안 된다 — 콘솔 인코딩(CP949 등)이 UTF-8 재설정 전에
-    # 깨진 경로에서도 ASCII 폴백으로 강등하고, 그마저 실패하면 조용히 삼킨다.
+    # 콘솔 인코딩(CP949 등)이 UTF-8 재설정 전에 깨진 경로에서는 ASCII 로 바꿔 다시 쓴다.
+    # 그 쓰기도 실패하면 전파한다(stdout 엔벨로프는 이미 쓰였다).
     try:
         print(message, file=stderr)
-    except Exception:
-        try:
-            print(message.encode("ascii", "replace").decode("ascii"), file=stderr)
-        except Exception:
-            pass
+    except UnicodeEncodeError:
+        print(message.encode("ascii", "replace").decode("ascii"), file=stderr)
 
 
 def _codex_hook_fail_open(

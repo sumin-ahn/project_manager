@@ -604,6 +604,7 @@ def test_status_entries_ignores_stderr_noise_from_git(tf, tmp_path, monkeypatch,
         # 잔여 preflight 는 별도 관심사 — 이 테스트의 초점은 잡음 필터링(파싱 seam
         # 사용)이지 touches 밖 real.md 를 잔여로 차단하는 판정이 아니다. off로 그 초점만 남긴다.
         residual_block_fn=lambda tid: None,
+        dod_block_fn=lambda tid: None,
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
     )
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
@@ -733,6 +734,8 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "스코프 테스트 티켓",
         affected_domain_fn=lambda tid: None,
+        # tmp 홈에 티켓 파일이 없다 — DoD preflight 는 이 파일의 축이 아니라 통과 대역을 둔다.
+        dod_block_fn=lambda tid: None,
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
         **kwargs,
     )

@@ -435,19 +435,10 @@ def _reject_cross_role_prepare(home, role: str, tier: str, conf: dict[str, str])
     스위치 판정과 함께 쓴 값을 그대로 받는다(불변식 3 — 실행 엔진 사본 repo 로 읽으면 역할 매핑이 없는
     사본에서 조용히 no-op). 거부는 `verdict=="deny"` 중에서도 cross-harness 불일치 사유뿐이고,
     그 구별은 사용자용 사유 문자열이 아니라 구조 필드(harness/model 이 비어 있지 않음)로 한다(불변식 1).
-    PM 하네스 미상이나 실제 판정 실패는 기존 fail-open 경고로 보고한다.
+    판정 실패는 전파한다.
     """
-    try:
-        pm_harness = delegate_execute._session_harness(os.environ) or ""
-        result = delegate_channel.decide(home, role, tier, conf, pm_harness)
-    except Exception as exc:
-        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-        print(
-            "[pm-delegate/warn] cross 역할 채널 판정 불가"
-            f"(가드 로드/실행 실패: {type(exc).__name__}: {detail}) — prepare 통과(fail-open)",
-            file=sys.stderr,
-        )
-        return
+    pm_harness = delegate_execute._session_harness(os.environ) or ""
+    result = delegate_channel.decide(home, role, tier, conf, pm_harness)
     reason = result.get("reason", "")
     is_cross_harness_deny = (
         result.get("verdict") == "deny"

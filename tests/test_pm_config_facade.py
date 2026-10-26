@@ -2631,10 +2631,9 @@ def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
 
 
 def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
-    """must-fix — slot_git_status 가 던져도 장부 축(보유 task·role)은 유지·git 요약만 fail-soft 대체.
+    """slot_git_status 가 던지면 status 텍스트는 그 줄을 `(조회 불가)` 로 접지 않고 예외를 전파한다.
 
-    slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다 — git 실패로 장부 정보(task 귀속)까지
-    사라지면 silent degrade. git 실패 시 `보유 task=…` 는 그대로 출력하고 git 부분만 `(조회 불가)`."""
+    장부 축(보유 task)은 예외 전에 이미 출력된다 — 실패 지점까지의 출력은 남는다."""
     class _Boom(FakeWorktreePool):
         def slot_git_status(self, slot, *, repo_reads, git_runner=None):
             raise RuntimeError("git blew up")
@@ -2644,12 +2643,11 @@ def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, _Boom(leases=leases, tasks=tasks))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
-    assert rc == 0
+    with pytest.raises(RuntimeError, match="git blew up"):
+        config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     out = capsys.readouterr().out
-    assert "work/svc_1" in out                  # 리스 장부 축은 정상 surface
-    assert "보유 task=payjob" in out             # 장부 축(task 귀속)은 git 실패에도 유지(must-fix)
-    assert "(조회 불가)" in out                  # git 요약만 fail-soft 대체(크래시 0)
+    assert "work/svc_1" in out                  # 실패 전에 나간 리스 장부 축
+    assert "(조회 불가)" not in out              # git 실패를 표시 문자열로 접지 않는다
 
 
 def test_status_idle_lease_not_attributed_to_none_task(pc, monkeypatch, capsys):
@@ -2712,18 +2710,17 @@ def test_status_no_drift_omits_section(pc, monkeypatch, capsys):
 
 
 def test_status_reconcile_failure_does_not_break_status(pc, monkeypatch, capsys):
-    """reconcile_worktrees 가 예외를 던져도 status 는 rc0 로 끝난다(fail-soft·조회 전용·T-0295)."""
+    """reconcile_worktrees 가 예외를 던지면 status 는 drift 절을 생략하지 않고 예외를 전파한다."""
     class _Boom(FakeWorktreePool):
         def reconcile_worktrees(self, *, git_runner=None):
             raise RuntimeError("git blew up")
 
     wp = bind_pool(monkeypatch, _Boom(leases=[FakeLease(slot="work/svc_1", repo="svc", state="idle")]))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
-    assert rc == 0
+    with pytest.raises(RuntimeError, match="git blew up"):
+        config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     out = capsys.readouterr().out
-    assert "work/svc_1" in out          # 리스 장부는 정상 surface
-    assert "drift" not in out           # reconcile 실패 → drift 절 생략(크래시 0)
+    assert "work/svc_1" in out          # 실패 전에 나간 리스 장부 축
 
 
 def test_status_drift_guidance_recommends_prune_not_force_release(pc, monkeypatch, capsys):
@@ -4035,11 +4032,7 @@ def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, mon
 
 
 def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc, monkeypatch):
-    """areas.md 읽기 실패는 `None` 으로 내려가고 저장은 계속된다 — 헬퍼의 fail-soft 규칙 그대로.
-
-    `registered_repos` 가 실제로 내는 것은 `_parse_areas` 의 파일 읽기 실패다(`OSError`·
-    `UnicodeError`). 그 밖의 예외는 엔진 결함이므로 헬퍼가 삼키지 않고 올린다.
-    """
+    """areas.md 읽기 실패는 `None` 으로 접지 않고 전파한다 — 예약패턴 검증을 완화한 채 저장하지 않는다."""
     def _raise(_home):
         raise OSError("areas broken")
 
@@ -4048,13 +4041,12 @@ def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc, monkeypatch
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard())
-    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
-        argparse.Namespace(name="job", value="pay")
-    )
+    with pytest.raises(OSError, match="areas broken"):
+        config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
+            argparse.Namespace(name="job", value="pay")
+        )
 
-    assert rc == 0
-    val = [call for call in wp.calls if call[0] == "_validate_task_name"]
-    assert val and val[0][2] is None
+    assert [call for call in wp.calls if call[0] == "_validate_task_name"] == []
 
 
 def test_task_prefix_bad_format_refused(pc, monkeypatch, capsys):

@@ -213,16 +213,15 @@ class TicketFinisher:
         return result.returncode, output
 
     def _log_has_entry(self, ticket_id: str) -> bool:
-        """이 티켓의 완료 entry가 log 에 이미 있는가 (읽기 실패·파일 부재는 False).
+        """이 티켓의 완료 entry가 log 에 이미 있는가 (파일 부재는 False).
 
         판정은 완료 헤딩 줄의 티켓 표기 하나다 — PM이 선작성했거나 스켈레톤의 서술 불릿을
         채워도 그 표기는 남으므로, 한 번 남은 기록을 재실행이 다시 쌓지 않는다.
 
-        읽기 실패는 '없음'으로 접는다 — 이 관측은 차단 판정이 아니라 중복 방지이고, 못 읽었다고
-        기록을 막으면 완료 기록이 벽돌이 된다(중복은 사람이 지우면 되고, 누락은 안 그렇다)."""
+        파일 부재는 '없음'이다 — 완료 기록 append 가 파일을 만든다. 그 밖의 읽기 실패는 전파한다."""
         try:
             text = fs.read_text_shared(self._log_file, encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001 — 읽기 실패는 중복 방지 판정 불능.
+        except FileNotFoundError:
             return False
         markers = tuple(
             marker.format(ticket=ticket_id) for marker in _LOG_ENTRY_TICKET_MARKERS
@@ -425,20 +424,16 @@ class TicketFinisher:
         return "\n".join(lines)
 
     def _default_dod_block(self, ticket_id: str) -> str | None:
-        """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과·판정 불가면 None.
+        """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과면 None.
 
         규칙 소유자는 completion_gate(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
         권위 있는 차단은 여전히 [3/5] `board.py complete` 가 하고, 여기서는 **더 앞에서 한 번 더**
         묻는다. 이 preflight 가 없으면 [2/5] 가 log 스켈레톤을 append 한 *뒤에* [3/5] 가 막아,
         차단될 때마다 stray 스켈레톤이 남고 재실행마다 중복 append 된다(실측).
 
-        판정 불가(티켓 부재/손상)는 None 이다 — preflight 는 조기 안내일 뿐이고
-        진짜 게이트가 뒤에 있으므로, 여기서 fail-soft 해도 미체크 DoD 가 done 으로 새지 않는다."""
-        try:
-            _status, path = ticket_store.find_ticket(self._home, ticket_id)
-            _fm, body = ticket_store.load_ticket(path)
-        except Exception as exc:  # noqa: BLE001 — 조회 실패는 뒤 게이트가 소유(preflight fail-soft).
-            return None
+        티켓 부재/손상은 전파한다(log 골격 append 전이라 기록이 남지 않는다)."""
+        _status, path = ticket_store.find_ticket(self._home, ticket_id)
+        _fm, body = ticket_store.load_ticket(path)
         problems = completion_gate._dod_open_items(body)
         if not problems:
             return None
@@ -1018,7 +1013,7 @@ class TicketFinisher:
     # ── 메인 흐름 ────────────────────────────────────────────────────
 
     def _warn_pm_direct_conditions(self, ticket_id: str) -> None:
-        """PM-direct a·b를 재검하되 finish 흐름/반환 코드는 막지 않는다."""
+        """PM-direct a·b를 재검한다. 경고는 finish 흐름을 막지 않고, 재검 실패는 전파한다."""
         frontmatter = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
         if frontmatter.get("tier") != "pm-direct":
             return
@@ -1032,21 +1027,15 @@ class TicketFinisher:
                 file=sys.stderr,
             )
             return
-        try:
-            code_tree = self._code_tree()
-            expanded = tier_signals.expand_owned_touch_files(code_tree, measured_touches)
-            entries = (self._status_entries_at_fn(code_tree)
-                       if self._is_separated_code_tree(self._home, code_tree)
-                       else self._status_entries_fn())
-            changed_paths = tuple(
-                path for _xy, path in entries
-                if any(finish_rules._touch_claims_path(touch, path) for touch in measured_touches)
-            )
-        except Exception as exc:  # noqa: BLE001 — advisory 재검은 never-block.
-            detail = " ".join(str(exc).split()) or type(exc).__name__
-            print(f"  ⚠ PM-direct 재검 skip — git 변경 경로를 읽지 못했습니다 ({detail}).",
-                  file=sys.stderr)
-            return
+        code_tree = self._code_tree()
+        expanded = tier_signals.expand_owned_touch_files(code_tree, measured_touches)
+        entries = (self._status_entries_at_fn(code_tree)
+                   if self._is_separated_code_tree(self._home, code_tree)
+                   else self._status_entries_fn())
+        changed_paths = tuple(
+            path for _xy, path in entries
+            if any(finish_rules._touch_claims_path(touch, path) for touch in measured_touches)
+        )
         for warning in finish_rules.pm_direct_finish_warnings(
                 frontmatter.get("tier"), touches, changed_paths,
                 touched_file_count=len(expanded.paths),
@@ -1380,15 +1369,11 @@ class TicketFinisher:
         """이 ticket 이 건드린 영역의 domain 페이지를 soft 알림으로 출력한다 (비차단).
 
         영향 페이지가 stale(covers 코드가 page updated 후 커밋)이면 그 줄 앞에
-        `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. 도그푸딩/multi-PM 어디서든 일반 domain
-        부재·예외는 조용히 삼켜 완료를 막지 않는다. 영향 0 이면 한 줄
-        안내만 낸다. dry-run/실행 동일(정보 출력만). 일반 stale 예외/unknown 은 비차단.
+        `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. domain 레이어 부재(None)는 한 줄
+        안내, 영향 0 도 한 줄 안내만 낸다. dry-run/실행 동일(정보 출력만). 판정 예외는 전파한다.
         """
         print("\n[domain] 영향받는 domain 페이지 (soft·비차단):")
-        try:
-            affected = self._affected_domain_fn(ticket_id)
-        except Exception:  # noqa: BLE001 — 일반 soft 알림 실패만 완료를 막지 않는다.
-            affected = None
+        affected = self._affected_domain_fn(ticket_id)
         if affected is None:
             print("  (domain 레이어 없음 — skip)")
         elif not affected:

@@ -2202,6 +2202,17 @@ _EXCEPT_CLEANUP_REVERSALS = (
         '        )\n'
         '        return\n'
     ),
+    (
+        '    except repo_files.RepoFilesGitError as exc:\n'
+        '        print(\n'
+        '            "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "\n'
+        ,
+        '    except Exception as exc:\n'
+        '        if not isinstance(exc, repo_files.RepoFilesGitError):\n'
+        '            raise\n'
+        '        print(\n'
+        '            "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "\n'
+    ),
 )
 
 

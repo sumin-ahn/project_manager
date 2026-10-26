@@ -387,13 +387,9 @@ def main(home, argv: list[str] | None = None) -> int:
         return 1
     live_allowed = import_fill._live_harness_allowed(args.fill)
     if args.fill == "auto":
-        try:
-            cap_warning = import_fill.fill_harness_cap_advisory(fill_harness, dest_root)
-        except Exception as exc:  # noqa: BLE001 — advisory는 import를 막지 않는다.
-            print(f"[fill auto] 경고: 하네스 상한 판정 실패({exc})", file=sys.stderr)
-        else:
-            if cap_warning is not None:
-                print(cap_warning, file=sys.stderr)
+        cap_warning = import_fill.fill_harness_cap_advisory(fill_harness, dest_root)
+        if cap_warning is not None:
+            print(cap_warning, file=sys.stderr)
     if args.fill == "auto":
         gate = "실구동(게이트 통과)" if live_allowed else "stub/미구동(게이트 미통과 — 안전)"
         print(f"  fill=auto  harness={fill_harness}  → {gate}")

@@ -118,17 +118,9 @@ _CODEX_CARD_SECTION = "\n".join(
 )
 
 
-def _safe_command_card(home, task_name, *, environment=None) -> str | None:
-    """커맨드 카드를 fail-soft 로 렌더한다 — 실패하면 None(카드 절 생략·부트스트랩 유지).
-
-    카드 렌더 실패(정체성 dict 결손·예기치 못한 예외)는 부트스트랩 자체를 깨뜨리면 안
-    된다 — identity surface·board/git dump 는 이미 나갔으므로
-    카드만 조용히 생략한다.
-    """
-    try:
-        return _build_command_card_markdown(home, task_name, environment=environment)
-    except Exception:
-        return None
+def _safe_command_card(home, task_name, *, environment=None) -> str:
+    """부트스트랩 출력 끝에 붙일 커맨드 카드를 렌더한다. 렌더 실패는 전파한다."""
+    return _build_command_card_markdown(home, task_name, environment=environment)
 
 
 def _build_command_card_markdown(home, task_name, *, environment=None) -> str:
@@ -215,9 +207,7 @@ def _card_navigation_lines(self_tag: str, tool_invoke: str) -> list[str]:
 def _codex_card_section() -> str:
     """codex 하네스면 카드 codex 절(앞 공백 1줄 포함)을, 아니면 빈 문자열을 돌려준다.
 
-    모든 모드 카드(슬롯·task·readonly) 렌더 끝에 append 되며, 호출이
-    `_build_command_card_markdown`(→ `_safe_command_card` try/except) 안이라 감지/문자열화가
-    터져도 fail-soft(절 생략·부트스트랩 무손상). 비-codex 하네스는
+    모든 모드 카드(슬롯·task·readonly) 렌더 끝에 append 된다. 비-codex 하네스는
     빈 문자열 → 카드 byte 무변(env 미설정=절 부재=정상·회귀 0).
     """
     return f"\n\n{_CODEX_CARD_SECTION}" if _is_codex_harness() else ""

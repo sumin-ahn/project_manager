@@ -4571,8 +4571,7 @@ def test_reject_cross_role_prepare_does_not_misclassify_a_master_switch_deny_as_
 
 def test_fail_open_and_single_stderr_line_when_decide_raises(
         pd, rounds_env, monkeypatch, capsys):
-    """F-004 — decide() 실행 예외(개행 포함)를 직접 주입해도 rc=0·prepare 성공·stderr 침묵 없이
-    가드 경고는 정확히 물리 1행으로 접힌다."""
+    """decide() 실행 예외는 fail-open 경고 한 줄로 접지 않고 전파한다 — 사본 예약 전에 멈춘다."""
     pm_home, slot, tickets, _sync = rounds_env
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
     _write_local_conf(pm_home, {
@@ -4590,17 +4589,12 @@ def test_fail_open_and_single_stderr_line_when_decide_raises(
 
     monkeypatch.setattr(delegate_channel, "decide", _boom)
 
-    rc = _prepare_cli(pd, slot, "T-7914", "developer")
+    with pytest.raises(RuntimeError, match="decide 실행 실패"):
+        _prepare_cli(pd, slot, "T-7914", "developer")
 
     captured = capsys.readouterr()
-    assert rc == 0
-    warnings = [line for line in captured.err.splitlines(keepends=True)
-                if line.startswith("[pm-delegate/warn] ")]
-    assert len(warnings) == 1
-    assert warnings[0].count("\n") == 1
-    assert "decide 실행 실패 2행째" in warnings[0]
-    plan_json = json.loads(captured.out.strip().splitlines()[-1])
-    assert Path(plan_json["copy"]).exists()
+    assert "prepare 통과(fail-open)" not in captured.err
+    assert captured.out.strip() == ""
 
 
 # ── 회수 커밋의 대상 트리 ────────────────────────────────────────────────
