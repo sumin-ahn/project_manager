@@ -22,6 +22,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import shlex
 
 # pm_playbook.local.md 스텁 본문.
 # 단일 소스 = 이 인라인 상수. 루트 pm_playbook.local.md는 manifest 밖이라 템플릿
@@ -1224,3 +1225,28 @@ def _resolve_fill_harness(
         if _harness_binary_available(candidate):
             return candidate
     return selected[0]
+
+
+def _print_fill_result(result: FillResult, dry_run: bool) -> None:
+    """fill 결과를 사람 대상으로 출력. auto 제안은 *적용 안 함* — 사람 검토 전제."""
+    if result.mode == "manual":
+        if result.todos:
+            print(f"✓ 자유서술 placeholder TODO 표시: {'·'.join(result.todos)} "
+                  f"(채택자가 손으로 채웁니다).")
+        else:
+            print(f"  fill(manual): {result.note}")
+        return
+    # auto
+    print(f"[fill auto] harness={result.harness}  live={result.live}")
+    if result.runner_calls:
+        for call in result.runner_calls:
+            print(f"  구동 명령: {shlex.join(call) if hasattr(shlex, 'join') else ' '.join(call)}")
+    if result.values:
+        print("  제안된 자유서술 placeholder 값 (검토 후 손으로 반영 — 자동 확정 아님):")
+        for token, value in result.values.items():
+            preview = value.strip().splitlines()[0][:80] if value.strip() else "(빈 제안)"
+            print(f"    {token} → {preview}")
+        if dry_run:
+            print("  [dry-run] 제안만 출력 — 파일 미변경.")
+    if result.note:
+        print(f"  메모: {result.note}")

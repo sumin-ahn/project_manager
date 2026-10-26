@@ -31,6 +31,8 @@ import pytest
 from _win_skip import _can_symlink, posix_mode_supported
 from pm_engine.infra.harness import contract, watchdog
 
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -42,8 +44,7 @@ def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="module")
@@ -557,7 +558,7 @@ def test_real_harness_runner_delivers_prompt_by_declared_transport(pm_import, mo
         return subprocess.CompletedProcess(argv, 0, "{}", "")
 
     monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
     prompt = "첫 줄\n둘째 줄"
     for harness, expected in (("codex", prompt), ("claude", prompt), ("opencode", None)):
         captured.clear()
@@ -870,7 +871,7 @@ def test_explicit_fill_harness_overrides_binary_detection(pm_import, monkeypatch
 
 def test_harness_binary_available_uses_shutil_which(pm_import, monkeypatch):
     """_harness_binary_available 은 shutil.which 로 탐지(테스트가 patch 가능한 seam)."""
-    monkeypatch.setattr(pm_import.shutil, "which",
+    monkeypatch.setattr(shutil, "which",
                         lambda binary: "/usr/bin/claude" if binary == "claude" else None)
     assert import_fill._harness_binary_available("claude") is True
     assert import_fill._harness_binary_available("opencode") is False
@@ -1039,7 +1040,7 @@ def test_real_harness_runner_runs_in_dest_cwd(pm_import, tmp_path, monkeypatch):
         return subprocess.CompletedProcess(argv, 0, "ok", "")
 
     monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
     dest = tmp_path / "targetrepo"
     dest.mkdir()
     ok, _out = import_fill._real_harness_runner(["claude", "-p", "P"], "P", cwd=dest)

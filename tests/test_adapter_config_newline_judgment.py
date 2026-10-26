@@ -14,9 +14,14 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 
 import pytest
+
+from _git_fixture import init_git_repo
+from pm_engine.app import adapter_report
+from pm_engine.infra import adapter_baseline
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -82,17 +87,18 @@ def _make_case(tmp_path: Path, *, dest_hooks: bytes,
     hooks 는 managed 채널, config.toml 은 report-only 채널이다. 후자에 채택자 노브를 남겨
     report 차이가 rc 를 올리지 않는 경로도 함께 태운다.
 
-    `plant_upstream_engine` 은 상류 트리에 pm_import 사본을 놓는다 — 훅 세트 게이트가 **상류
-    세대 선언**을 읽는 전제라, `--accept` 계열을 태우는 절만 필요하다(부재면 fail-closed)."""
+    `plant_upstream_engine` 은 상류 트리에 엔진 package(`pm_engine`) 사본을 놓는다 — 훅 세트 게이트가
+    **상류 세대 선언**을 읽는 전제라, `--accept` 계열을 태우는 절만 필요하다(부재면 fail-closed)."""
     source = tmp_path / "framework"
     template = source / "templates" / "codex" / ".codex"
     template.mkdir(parents=True)
     (template / "hooks.json").write_bytes(template_hooks)
     (template / "config.toml").write_text("upstream = true\n", encoding="utf-8")
     if plant_upstream_engine:
-        upstream_engine = source / ".project_manager" / "tools" / "pm_import.py"
-        upstream_engine.parent.mkdir(parents=True)
-        upstream_engine.write_bytes((TOOLS / "pm_import.py").read_bytes())
+        # 상류 선언은 배송(tracked) 파일만 읽는다 — 상류 트리를 자기 git 저장소로 선언하고 커밋한다.
+        shutil.copytree(TOOLS / "pm_engine", source / ".project_manager" / "tools" / "pm_engine",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        init_git_repo(source, commit="upstream")
 
     dest = tmp_path / "adopter"
     (dest / ".codex").mkdir(parents=True)
@@ -116,7 +122,7 @@ def _read_ledger(dest: Path) -> dict:
 
 
 def _judgment(pm_import, dest: Path, source: Path, relpath: str = _HOOKS_REL):
-    return next(item for item in pm_import.judge_adapter_configs(dest, source)
+    return next(item for item in adapter_report.judge_adapter_configs(dest, source)
                 if item.relpath == relpath)
 
 
@@ -130,7 +136,7 @@ def test_content_sha256_folds_newline_notation(pm_import, tmp_path):
     crlf.write_bytes(_crlf(_UPSTREAM_HOOKS))
 
     assert lf.read_bytes() != crlf.read_bytes(), "픽스처 전제(bytes 는 달라야 한다)"
-    assert pm_import.content_sha256(lf) == pm_import.content_sha256(crlf)
+    assert adapter_baseline.content_sha256(lf) == adapter_baseline.content_sha256(crlf)
 
 
 def test_content_sha256_matches_raw_digest_for_lf_content(pm_import, tmp_path):
@@ -138,8 +144,8 @@ def test_content_sha256_matches_raw_digest_for_lf_content(pm_import, tmp_path):
     path = tmp_path / "lf.json"
     path.write_bytes(_UPSTREAM_HOOKS.encode("utf-8"))
 
-    assert pm_import.content_sha256(path) == pm_import.file_sha256(path)
-    assert pm_import.content_sha256(path) == _sha(_UPSTREAM_HOOKS)
+    assert adapter_baseline.content_sha256(path) == adapter_baseline.file_sha256(path)
+    assert adapter_baseline.content_sha256(path) == _sha(_UPSTREAM_HOOKS)
 
 
 def test_content_sha256_accepts_bytes_payload(pm_import, tmp_path):
@@ -147,8 +153,8 @@ def test_content_sha256_accepts_bytes_payload(pm_import, tmp_path):
     path = tmp_path / "crlf.json"
     path.write_bytes(_crlf(_UPSTREAM_HOOKS))
 
-    assert pm_import.content_sha256(_crlf(_UPSTREAM_HOOKS)) == _sha(_UPSTREAM_HOOKS)
-    assert pm_import.content_sha256(path) == pm_import.content_sha256(
+    assert adapter_baseline.content_sha256(_crlf(_UPSTREAM_HOOKS)) == _sha(_UPSTREAM_HOOKS)
+    assert adapter_baseline.content_sha256(path) == adapter_baseline.content_sha256(
         _UPSTREAM_HOOKS.encode("utf-8"))
 
 
@@ -159,16 +165,16 @@ def test_content_sha256_keeps_raw_bytes_for_undecodable_payload(pm_import, tmp_p
     lf.write_bytes(_BINARY_HOOKS_LF)
     crlf.write_bytes(_BINARY_HOOKS_CRLF)
 
-    assert pm_import.content_sha256(lf) == pm_import.file_sha256(lf) == _sha(
+    assert adapter_baseline.content_sha256(lf) == adapter_baseline.file_sha256(lf) == _sha(
         _BINARY_HOOKS_LF)
-    assert pm_import.content_sha256(lf) != pm_import.content_sha256(crlf), \
+    assert adapter_baseline.content_sha256(lf) != adapter_baseline.content_sha256(crlf), \
         "바이너리 payload 가 개행 정규화로 접혔다"
 
 
 def test_content_sha256_unreadable_path_is_none(pm_import, tmp_path):
     """읽을 수 없으면 None — `file_sha256` 과 같은 fail-soft(판정 불가를 0 으로 접지 않는다)."""
-    assert pm_import.content_sha256(tmp_path / "없는파일.json") is None
-    assert pm_import.content_sha256(tmp_path) is None  # 디렉토리
+    assert adapter_baseline.content_sha256(tmp_path / "없는파일.json") is None
+    assert adapter_baseline.content_sha256(tmp_path) is None  # 디렉토리
 
 
 # ── CRLF 체크아웃 채택자의 판정 (T-0710 회귀 본류) ────────────────────────────
@@ -185,10 +191,10 @@ def test_crlf_checkout_config_is_converged(pm_import, pm_config, tmp_path, capsy
     judgment = _judgment(pm_import, dest, source)
 
     assert judgment.status == "in-sync", judgment
-    assert pm_import.adapter_config_convergence_status(judgment) == "converged"
+    assert adapter_report.adapter_config_convergence_status(judgment) == "converged"
 
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
-    rc = pm_config.cmd_sync_adapter_config(args, pm_import=pm_import, dest_root=dest)
+    rc = pm_config.cmd_sync_adapter_config(args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert rc == 0, captured.err
@@ -228,7 +234,7 @@ def test_legacy_raw_ledger_entry_is_backfilled_without_touching_dest(
 
     judgment = _judgment(pm_import, dest, source)
     assert judgment.status == "in-sync", judgment
-    assert pm_import.adapter_config_convergence_status(judgment) == "unrecorded", \
+    assert adapter_report.adapter_config_convergence_status(judgment) == "unrecorded", \
         "구 축 원장은 backfill 대상이어야 한다"
 
     result = pm_update.sync_adapter_configs(dest, source, write=True)
@@ -277,7 +283,7 @@ def test_crlf_set_accept_does_not_exclude_unedited_as_adopter_edit(
     args = argparse.Namespace(
         list=False, check=False, accept=None, accept_all=True, source=str(source))
 
-    pm_config.cmd_sync_adapter_config(args, pm_import=pm_import, dest_root=dest)
+    pm_config.cmd_sync_adapter_config(args, dest_root=dest)
 
     out = capsys.readouterr().out
     excluded = [line for line in out.splitlines() if "세트 수용 제외" in line]

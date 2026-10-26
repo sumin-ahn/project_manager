@@ -376,7 +376,7 @@ def test_pm_import_opencode_fill_routes_watchdog(monkeypatch):
     monkeypatch.setattr(watchdog, "stall_retries_default", lambda: 1)
     monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     monkeypatch.setattr(
-        pm_import.subprocess, "Popen",
+        subprocess, "Popen",
         lambda *args, **kwargs: pytest.fail("테스트가 실 opencode를 spawn하려 함"),
     )
     ok, out = import_fill._real_harness_runner(
@@ -400,7 +400,7 @@ def test_pm_import_claude_fill_routes_shared_watchdog(monkeypatch):
 
     monkeypatch.setattr(watchdog, "run_with_first_event_watchdog", run_with_first_event_watchdog)
     monkeypatch.setattr(
-        pm_import.subprocess, "Popen",
+        subprocess, "Popen",
         lambda *args, **kwargs: pytest.fail("테스트가 실 claude를 spawn하려 함"),
     )
     ok, out = import_fill._real_harness_runner(["claude", "-p", "hi"], "prompt")

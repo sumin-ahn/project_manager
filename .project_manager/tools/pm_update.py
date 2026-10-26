@@ -73,11 +73,16 @@ from typing import NamedTuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.app import adapter_accept
 from pm_engine.app import adapter_render
+from pm_engine.app import adapter_report
+from pm_engine.app import harness_ctx
+from pm_engine.app import hook_sets
 from pm_engine.domain import install_rules
 from pm_engine.domain import jsonc
 from pm_engine.domain import render_rules
 from pm_engine.infra import install_conf
+from pm_engine.infra import install_receipt
 from pm_engine.infra import install_source
 from pm_engine.infra import skill_inventory
 from pm_engine.domain import conf_schema, manifest_rules, upstream_rules  # noqa: E402
@@ -88,7 +93,7 @@ from pm_engine.infra import pool_store
 from pm_engine.infra.harness import contract  # noqa: E402
 
 from pm_engine.app import areas_registry
-_load_module_from_path = repo_files.load_module
+from pm_engine.infra import upstream_git
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / ".project_manager" / "engine.manifest"
@@ -586,27 +591,16 @@ def _atomic_copy2(source: Path, dest: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def _resolve_hook_set_generation_and_sibling(source_root=None, *, required: bool = False):
-    """`(세대 선언, 그 해소에 쓴 형제 모듈)` — 형제 로드는 **이 한 지점**이다.
-
-    `_load_pm_import` 는 캐시가 없어 부를 때마다 사본을 다시 exec 한다. 해소와 소비(원자 write
-    판정자·세대 검사)가 각자 부르면 한 실행에서 같은 사본을 두 번 적재하므로 한 번 받아 함께
-    돌려준다. 완료 단계는 같은 세대 형제만 적재하므로 형제는 해소 지점을 늘 갖고 있고, 로드·해소
-    실패는 그대로 올라간다."""
-    pm_import = _load_pm_import()
-    return pm_import.hook_set_declarations(source_root, required=required), pm_import
-
-
 def resolve_hook_set_predicate(source_root=None):
     """훅 세트 원자-write 판정자 — 상류 세대 선언(못 읽으면 설치본 선언)으로 만든다.
 
-    선언은 pm_import 단일 진실이다(여기 사본을 두면 "검사는 하는데 원자 write 는 안 하는" 파일이
-    조용히 생긴다). 해소는 실행당 1회이고 결과를 `apply` 에 넘긴다 — 파일마다 부르면 사본 수만큼
-    모듈을 다시 로드한다(`_load_pm_import` 는 캐시 없음).
+    선언 해소·판정은 `app.hook_sets` 단일 진실이다(여기 사본을 두면 "검사는 하는데 원자 write 는
+    안 하는" 파일이 조용히 생긴다). 해소는 실행당 1회이고 결과를 `apply` 에 넘긴다 — 상류 선언
+    조회는 매번 별도 프로세스를 띄우므로 파일마다 부르지 않는다.
 
     상류를 주고도 그 선언을 못 읽으면 설치본 선언으로 판정하고 그 사실을 stderr 한 줄로 남긴다 —
     이번 상류가 새로 등재하는 훅 파일은 그 판정에서 빠져 일반 복사로 떨어진다."""
-    generation, pm_import = _resolve_hook_set_generation_and_sibling(source_root)
+    generation = hook_sets.hook_set_declarations(pm_paths.home_at(REPO), source_root)
     if source_root is not None and generation.reasons:
         print(
             "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 세대로 판정한다 — 이번 상류가 새로 "
@@ -614,23 +608,7 @@ def resolve_hook_set_predicate(source_root=None):
             file=sys.stderr,
         )
     return lambda rel, _t=generation.declarations: bool(
-        pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
-
-
-def _load_pm_import():
-    """pm_import 모듈을 같은 tools/ 에서 직접 로드 (남은 설치 기능의 평면 경계).
-
-    upstream.rev baseline 기록(매 sync)에 pm_import 의 URL 안전 git 호출
-    (read_upstream_rev — argv-list·timeout·GIT_TERMINAL_PROMPT=0)과 local.conf set-or-replace
-    (`_set_conf_keys` — record_upstream_rev 와 동일 백엔드)를 *재사용*한다 — pm_update 가 자체
-    git/conf-write 를 중복 구현하지 않게(엔진 stdlib-only 철학 안에서 검증된 안전 계약을 상속).
-    로드 실패는 호출부가 fail-soft
-    (baseline 기록은 best-effort·sync 자체를 깨지 않는다).
-    """
-    import_py = Path(__file__).resolve().parent / "pm_import.py"
-    return _load_module_from_path(
-        import_py, "pm_import.py", allow_unverified=True,
-    )
+        hook_sets.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
 
 
 # ── upstream baseline↔HEAD 변경점 요약 (read-only) ─────────
@@ -856,7 +834,7 @@ def _guest_engine_backfill_entries(
         guest_entries: list) -> tuple[list, list[str]]:
     """dest guest 절이 담아야 할 **엔진 행**을 upstream flavor 에서 재파생 — (엔트리, 해소 flavor).
 
-    파생은 pm_import 의 단일 생성기(`_guest_manifest_lines` — 복사 술어 `_in_adapter_namespace` 를
+    파생은 `infra.install_source` 의 단일 생성기(`_guest_manifest_lines` — 복사 술어 `_in_adapter_namespace` 를
     그대로 태운다)를 호출해 얻고 비-`@render` 행만 남긴다. 렌더물 행은 절에 이미 있고(add-harness
     가 등재) 재렌더로 전파되므로 백필 대상이 아니며, 생성기를 공유하므로 "등재 ⊆ 복사" 가 여기서도
     상속된다.
@@ -1000,7 +978,7 @@ def summarize_upstream_changes(
     채택자가 받은 baseline(`upstream.rev`) ↔ 그 이후 upstream HEAD 에 쌓인 변경을 *이미 로컬에
     있는* checkout 에서 `git log`/`diff --name-status` 로 집계한다 — **fetch/clone 안 함**
     (네트워크 0). git 안전 계약(argv-list·timeout·GIT_TERMINAL_PROMPT=0·config
-    격리)은 pm_import._real_upstream_git_runner 를 재사용한다(git_runner 미주입 시). 테스트는
+    격리)은 upstream_git._real_upstream_git_runner 를 재사용한다(git_runner 미주입 시). 테스트는
     git_runner 를 주입해 라이브 git 0 으로 결정론을 얻는다(DI seam).
 
     `manifest` 는 "무엇이 엔진인가"의 판별 집합 — 호출부가 **sync 와 동일한**
@@ -1030,7 +1008,7 @@ def summarize_upstream_changes(
     가 rc≠0(도달가능한데도 git 호출 실패·예외)면 status='summary_failed' — 빈 결과를 "변경 0"으로
     오판하지 않게 surface 한다(codex suggestion 1·advisory 오판 금지).
     """
-    runner = git_runner if git_runner is not None else _load_pm_import()._real_upstream_git_runner()
+    runner = git_runner if git_runner is not None else upstream_git._real_upstream_git_runner()
     result: dict = {
         "status": "ok",
         "head": "",
@@ -1157,13 +1135,12 @@ def _resolve_source(args, effective_dest: Path) -> tuple:
         # upstream= 이 URL(릴리스 추적 기본값)이면 그 URL 을 복사 소스로 쓸 **로컬 캐시
         #   checkout** 으로 바꾼다(최초 clone·이후 fetch). 캐시 자리는 dest PM 홈 안
         #   `.project_manager/.local/upstream-cache/<URL 해시>/` 하나이고, 만드는 코드는 엔진에
-        #   하나뿐이다(pm_import.resolve_upstream_url_cache — 스킬·관리자·명령줄 공용). clone/fetch
+        #   하나뿐이다(upstream_git.resolve_upstream_url_cache — 스킬·관리자·명령줄 공용). clone/fetch
         #   실패는 옛 캐시로 미끄러지지 않고 여기서 rc 1 로 끝난다.
-        pm_import = _load_pm_import()
         if upstream_rules.classify_upstream(stored) == "url":
             try:
-                source_root = pm_import.resolve_upstream_url_cache(effective_dest, stored)
-            except pm_import.UpstreamCacheError as exc:
+                source_root = upstream_git.resolve_upstream_url_cache(effective_dest, stored)
+            except upstream_git.UpstreamCacheError as exc:
                 print(f"오류: {exc}", file=sys.stderr)
                 return 1, None
         else:
@@ -1353,18 +1330,17 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
         뜬다(실측).
 
     두 키를 한 번의 공용 atomic writer로 묶는다 — 중간 중단에도 baseline 만 앞선 반쪽
-    상태가 생기지 않는다(어긋난 두 키 = 거짓 drift 의 원인이었다). rev 읽기는 pm_import 의
-    read_upstream_rev(URL 안전 git 호출), 파일 갱신은 pm_import 의 `_write_conf_keys_locked`(키 중복
+    상태가 생기지 않는다(어긋난 두 키 = 거짓 drift 의 원인이었다). rev 읽기는 `infra.upstream_git` 의
+    read_upstream_rev(URL 안전 git 호출), 파일 갱신은 `infra.install_conf` 의 `_write_conf_keys_locked`(키 중복
     정규화·atomic replace·실효값 검증·record_upstream_rev·pm_config upstream set 과 동일 백엔드의
     임계 구간 본문)를 재사용한다. git repo 아님·HEAD 해소 실패·local.conf 부재는 **graceful
-    생략**이다. 형제 로드·기록 실패는 그대로 올라간다(완료 단계는 같은 세대 형제만 적재한다).
+    생략**이다. 기록 실패는 그대로 올라간다.
 
     conf 존재 판정·atomic write·실효값 검증은 **한 락 구간**이다. source rev 읽기(git·네트워크)는
     대상 conf 와 무관하므로 락 밖이다 — 사람/네트워크 대기를 임계 구역에 넣지 않는다는 seam
     규약 그대로다.
     """
-    pm_import = _load_pm_import()
-    rev = pm_import.read_upstream_rev(source_root)  # 대상 conf 와 무관(git) — 락 밖.
+    rev = upstream_git.read_upstream_rev(source_root)  # 대상 conf 와 무관(git) — 락 밖.
     if not rev:
         return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략.
 
@@ -1929,7 +1905,7 @@ def resolve_manifest_selfheal(
     local_entries = manifest_store.read_manifest(dest_manifest)
     local_text = fs.read_text_shared(dest_manifest, encoding="utf-8")
     if guest_backfill_paths is None:
-        # 호출부가 이미 해소했으면 넘긴다(중복 IO·pm_import 재로드 회피). 안 넘기면 여기서 해소해
+        # 호출부가 이미 해소했으면 넘긴다(중복 IO 회피). 안 넘기면 여기서 해소해
         #   진단 판정이 호출 경로마다 갈리지 않게 한다.
         backfill, _flavors = _guest_engine_backfill_entries(
             effective_dest, source_root,
@@ -2128,15 +2104,14 @@ def _installed_entry_notation_manifests(
     wiki를 실제로 읽는 하네스 집합에서는 빠지면 안 되므로, 설치 하네스를 찾아 그 flavor manifest를
     context 입력에만 보탠다.
 
-    판정은 **pm_import.installed_harnesses 단일 진실**을 쓴다(구조 판정 사본 금지). 어댑터
+    판정은 **install_receipt.installed_harnesses 단일 진실**을 쓴다(구조 판정 사본 금지). 어댑터
     디렉터리+root-doc 실재만 보면 일반 프로젝트가 자기 용도로 가진 `.codex/`·`AGENTS.md`를 codex
     PM 설치로 오인해, PM 카드가 없는 인스턴스의 공유 wiki에 codex 표기(`$pm-bootstrap`)를 주입한다
     — pm_import(최초 설치·add-harness)와 pm_update(자기 갱신)가 같은 판정을 써야 표기가 어긋나지
     않는다.
     """
     paths = list(upstream_manifests)
-    pm_import = _load_pm_import()
-    harnesses = pm_import.installed_harnesses(effective_dest, source_root)
+    harnesses = install_receipt.installed_harnesses(effective_dest, source_root)
     template_registry = install_rules.HARNESS_TEMPLATE_DIRS
     seen = {Path(path).resolve() for path in paths}
     for harness in harnesses:
@@ -3399,7 +3374,7 @@ def render_input_conf_keys() -> frozenset[str]:
             | frozenset(render_rules.DELEGATE_HARNESS_CONF_KEYS.values()))
 
 
-def _installed_generation_source(dest_root: Path, conf: Mapping[str, str], pm_import) -> Path:
+def _installed_generation_source(dest_root: Path, conf: Mapping[str, str]) -> Path:
     """렌더 원본 — 설치 세대(`upstream.rev`)와 같은 커밋의 상류 트리. 다르면 `ConfApplyError`.
 
     fetch 하지 않는다: URL upstream 은 갱신이 받아 둔 캐시 폴더를 그대로 본다. 원본이 설치 세대보다
@@ -3410,7 +3385,7 @@ def _installed_generation_source(dest_root: Path, conf: Mapping[str, str], pm_im
             "upstream 미등록 — 렌더 원본을 알 수 없습니다. `pm-config upstream set <url|path>` 로 "
             "등록한 뒤 다시 실행하십시오."])
     if upstream_rules.classify_upstream(stored) == "url":
-        source_root = pm_import.upstream_cache_dir(dest_root, stored)
+        source_root = upstream_git.upstream_cache_dir(dest_root, stored)
     else:
         source_root = Path(stored).resolve()
     if not source_root.is_dir():
@@ -3418,7 +3393,7 @@ def _installed_generation_source(dest_root: Path, conf: Mapping[str, str], pm_im
             f"렌더 원본 폴더가 없습니다 ({source_root}) — `pm-config update`(또는 관리자 갱신 탭 "
             "[적용])로 원본을 받은 뒤 다시 실행하십시오."])
     installed = conf.get("upstream.rev", "").strip()
-    current = pm_import.read_upstream_rev(source_root)
+    current = upstream_git.read_upstream_rev(source_root)
     if not installed or current != installed:
         raise ConfApplyError([
             f"렌더 원본({source_root})의 세대 {current or '(알 수 없음)'} 가 설치 세대 `upstream.rev`"
@@ -3427,32 +3402,32 @@ def _installed_generation_source(dest_root: Path, conf: Mapping[str, str], pm_im
     return source_root
 
 
-def _plan_harness_ctx(dest_root: Path, values: dict, pm_import, opencode_config_dir: Path):
+def _plan_harness_ctx(dest_root: Path, values: dict, opencode_config_dir: Path):
     """사용 한도 묶음 계획 — 검사·모델 한도 조회·계산과 원장 쓰기 가능 확인. 거부는 `ConfApplyError`."""
     try:
-        changed, lines, entries = pm_import._harness_ctx_plan(dest_root, values, opencode_config_dir)
+        changed, lines, entries = harness_ctx._harness_ctx_plan(dest_root, values, opencode_config_dir)
         if changed:
-            pm_import._harness_ctx_baseline_writable(dest_root)
-    except pm_import.HarnessCtxError as exc:
+            harness_ctx._harness_ctx_baseline_writable(dest_root)
+    except harness_ctx.HarnessCtxError as exc:
         raise ConfApplyError(exc.violations) from exc
     return values, changed, lines, entries
 
 
-def _commit_harness_ctx(dest_root: Path, planned, pm_import) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _commit_harness_ctx(dest_root: Path, planned) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """사용 한도 묶음 기록 — 하네스 설정 파일·압축 한도 기록. (반영 줄, 바꾼 파일)."""
     values, changed, lines, entries = planned
     try:
-        written = pm_import._harness_ctx_commit(dest_root, values, changed, entries)
-    except pm_import.HarnessCtxError as exc:
+        written = harness_ctx._harness_ctx_commit(dest_root, values, changed, entries)
+    except harness_ctx.HarnessCtxError as exc:
         raise ConfApplyError(exc.violations, written=exc.written, write_stage=True) from exc
     return lines, written
 
 
-def _plan_render_outputs(dest_root: Path, values: dict, pm_import, _opencode_config_dir: Path):
+def _plan_render_outputs(dest_root: Path, values: dict, _opencode_config_dir: Path):
     """렌더 입력 묶음 계획 — 설치 세대 원본을 확인하고, 제안 값으로 계획한 render change 전부를 메모리에서
     그린다. 계획과 그리기는 같은 실행 패키지를 사용한다. 렌더 거부는 어느 단계에서 발생해도
     `ConfApplyError`로 전파한다."""
-    source_root = _installed_generation_source(dest_root, values, pm_import)
+    source_root = _installed_generation_source(dest_root, values)
     try:
         sync_plan = _resolve_engine_sync_plan(
             dest_root, source_root, conf=values)
@@ -3463,7 +3438,7 @@ def _plan_render_outputs(dest_root: Path, values: dict, pm_import, _opencode_con
         raise ConfApplyError([str(exc)]) from exc
 
 
-def _commit_render_outputs(_dest_root: Path, outputs, _pm_import) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _commit_render_outputs(_dest_root: Path, outputs) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """렌더 입력 묶음 기록 — 다 그린 산출물을 쓴다. (반영 줄 `<relpath> 다시 그림`, 바꾼 파일)."""
     written: list[str] = []
     for output in outputs:
@@ -3508,7 +3483,7 @@ def _reasoning_values(conf: Mapping[str, str]) -> list[tuple[str, str, str, str 
     return found
 
 
-def _plan_per_model_reasoning(dest_root: Path, values: dict, _pm_import, _opencode_config_dir: Path) -> None:
+def _plan_per_model_reasoning(dest_root: Path, values: dict, _opencode_config_dir: Path) -> None:
     """추론 값 묶음 계획 — 모델별 허용값 하네스 프로필(주·대체·추가 리뷰어)의 제안 추론 값이 그 모델이 받는
     값인지 카드 유무와 무관하게 확인한다. 밖이거나 판정할 수 없으면(조회 실패·모델 값 없음·목록에 모델
     없음) `ConfApplyError` 다. 저장은 값을 지우지 않는다. 조회는 카드 렌더 확인과 같은 하네스 계약
@@ -3531,15 +3506,15 @@ def _plan_per_model_reasoning(dest_root: Path, values: dict, _pm_import, _openco
         raise ConfApplyError(violations)
 
 
-def _commit_per_model_reasoning(_dest_root: Path, _planned, _pm_import) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _commit_per_model_reasoning(_dest_root: Path, _planned) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """추론 값 묶음 기록 — 확인만 하는 묶음이라 파생 파일이 없다(local.conf 기록은 `apply_conf` 몫)."""
     return (), ()
 
 
 class _ConfApplyStep(NamedTuple):
-    """키 묶음 하나의 반영. `key_filter(pm_import)` 는 그 묶음 키 판정, `plan(dest_root, 제안 값, pm_import,
-    opencode 전역 설정 폴더, 렌더러)` 은 쓰기 전 계획(거부는 `ConfApplyError`), `commit(dest_root, 계획,
-    pm_import)` 은 그 계획의 기록이다(반영 줄, 바꾼 파일)."""
+    """키 묶음 하나의 반영. `key_filter(키)` 는 그 묶음 키 판정, `plan(dest_root, 제안 값,
+    opencode 전역 설정 폴더)` 은 쓰기 전 계획(거부는 `ConfApplyError`), `commit(dest_root, 계획)` 은
+    그 계획의 기록이다(반영 줄, 바꾼 파일)."""
     key_filter: Callable
     plan: Callable
     commit: Callable
@@ -3549,11 +3524,11 @@ class _ConfApplyStep(NamedTuple):
 # 키는 추론 값 묶음과 렌더 입력 묶음 둘 다다). 사용 한도 키(`ctx.`·`harness.<harness>.ctx_window_tokens`)는
 # 다른 두 묶음과 겹치지 않는다. 추론 값 묶음을 렌더 앞에 두어 무효 값은 렌더 계획 전에 저장 문구로 거부한다.
 CONF_APPLY_STEPS: tuple[_ConfApplyStep, ...] = (
-    _ConfApplyStep(lambda pm_import: pm_import.is_harness_ctx_input_key,
+    _ConfApplyStep(harness_ctx.is_harness_ctx_input_key,
                    _plan_harness_ctx, _commit_harness_ctx),
-    _ConfApplyStep(lambda _pm_import: _is_reasoning_profile_key,
+    _ConfApplyStep(_is_reasoning_profile_key,
                    _plan_per_model_reasoning, _commit_per_model_reasoning),
-    _ConfApplyStep(lambda _pm_import: render_input_conf_keys().__contains__,
+    _ConfApplyStep(lambda key: key in render_input_conf_keys(),
                    _plan_render_outputs, _commit_render_outputs),
 )
 
@@ -3563,27 +3538,26 @@ def apply_conf(dest_root: Path, *, updates: Mapping[str, str | None] | None,
     """local.conf 에 `updates`(None 은 줄 삭제)를 쓰고 파생 파일에 반영한다 — `pm-config apply` 의 본문.
 
     `updates` 가 없으면 모든 반영 단계를, 있으면 바뀐 키가 걸리는 단계만 돈다. 순서: local.conf 쓰기 락 →
-    제안 값(`pm_import._conf_values`, 옛 키면 멈춤) → 선택된 단계의 계획 전부 → local.conf 기록 → 단계
+    제안 값(`harness_ctx._conf_values`, 옛 키면 멈춤) → 선택된 단계의 계획 전부 → local.conf 기록 → 단계
     순서대로 기록. 렌더러는 한 번 읽어 모든 단계 계획에 넘긴다(저장 한 번의 모델 목록 조회는 한 번).
     계획의 거부는 `ConfApplyError`(`write_stage` 거짓)이고 어느 파일도 바꾸지 않는다.
     기록 실패는 `ConfApplyError(write_stage=True, written=바꾼 파일)` 이다. 락 안에서 부르는 함수는 락을
     다시 잡지 않는다(같은 락 파일을 두 번 잡으면 교착)."""
     dest_root = Path(dest_root)
     conf_path = dest_root / _LOCAL_CONF_RELPATH
-    pm_import = _load_pm_import()
     with _local_conf_write_lock(conf_path):
-        values = pm_import._conf_values(conf_path, updates)
+        values = harness_ctx._conf_values(conf_path, updates)
         steps = [step for step in CONF_APPLY_STEPS
-                 if not updates or any(map(step.key_filter(pm_import), updates))]
+                 if not updates or any(map(step.key_filter, updates))]
 
-        planned = [(step, step.plan(dest_root, values, pm_import, opencode_config_dir))
+        planned = [(step, step.plan(dest_root, values, opencode_config_dir))
                    for step in steps]
         changed = install_conf._write_conf_keys_locked(conf_path, dict(updates)) if updates else False
         written: list[str] = [_LOCAL_CONF_RELPATH] if changed else []
         applied: list[str] = []
         for step, step_plan in planned:
             try:
-                lines, step_written = step.commit(dest_root, step_plan, pm_import)
+                lines, step_written = step.commit(dest_root, step_plan)
             except ConfApplyError as exc:
                 raise ConfApplyError(exc.violations, written=(*written, *exc.written),
                                      write_stage=True) from exc
@@ -3721,8 +3695,8 @@ def _resolve_planning_manifest(
 
     **add-harness guest 절의 합류도 여기서** 한다(`_join_guest_channels`). `_main` 에만 있으면
     미리보기와 계획이 guest 축에서 갈려 이 헬퍼의 존재 이유(미리보기 == 계획)가 거짓이 된다.
-    `guest_entries`/`guest_backfill` 은 호출부가 이미 해소했으면 넘기고(중복 IO·pm_import 재로드
-    회피), 없으면 여기서 해소한다.
+    `guest_entries`/`guest_backfill` 은 호출부가 이미 해소했으면 넘기고(중복 IO 회피), 없으면
+    여기서 해소한다.
     """
     if guest_entries is None:
         guest_entries = _dest_guest_manifest_entries(effective_dest)
@@ -4472,7 +4446,7 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
 # 보존한다 — 상류의 *동작* fix 가 기존 채택자에 도달할 채널이 0 이었다(훅 차단→비차단 fix 를 든
 # 릴리스가 나간 뒤에도 채택자가 차단판을 그대로 운영한 실측이 이 클래스다).
 #
-# 채널은 두 갈래이고 판정·분류의 단일 진실은 pm_import 다(소유 선언 → 채널 분류 → 원장 판정):
+# 채널은 두 갈래이고 판정·분류의 단일 진실은 `app.adapter_report` 다(소유 선언 → 채널 분류 → 원장 판정):
 #   managed  무편집(dest 해시 == 원장 해시)이면 백업 후 현행 template 으로 갱신 + 후속 행동 안내.
 #   report   갱신하지 않고 template 대비 drift 만 파일당 한 줄로 표기.
 # 어느 갈래든 **편집분·원장 부재는 무조건 보존**한다(하한선) — 수용은 채택자가 명시 커맨드로 한다.
@@ -4483,7 +4457,7 @@ _ADAPTER_CONFIG_LIST_HINT = (
     "./pm-config.sh sync-adapter-config --list (Windows 는 `.\\pm-config.cmd`)")
 _ADAPTER_CONFIG_WINDOWS_HINT = "Windows 는 `.\\pm-config.cmd`"
 _ADAPTER_BACKUP_HINT = ".pm_import_backups/<DATE>/"
-# pm_import 자체를 아직 못 불러오는 복구 RUN에서도 채널 적용 여부를 판정할 최소 좌표.
+# 채널 판정 전에 적용 여부를 가르는 최소 좌표.
 # "존재하는 managed 대상"만 완료 게이트 대상이라는 계약 경계다. 파일이 하나도 없는 순수
 # 엔진 복구 트리는 adapter 채널 unavailable이 아니라 적용 대상 없음(vacuous green)이다.
 _ADAPTER_CONFIG_DEST_CANDIDATES = (
@@ -4513,7 +4487,7 @@ def _instance_owned_template_delta_lines(
         dest_root: Path, source_root: Path) -> list[str]:
     """세대 델타 관측 채널 — 실패도 변경 없음으로 접지 않는 advisory 한 줄."""
     try:
-        return _load_pm_import().instance_owned_template_delta_lines(dest_root, source_root)
+        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)
     except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud(표식 skew 는 올린다).
         if _is_engine_rev_skew(exc):
             raise
@@ -4532,15 +4506,14 @@ def _print_instance_owned_template_delta(lines: list[str]) -> None:
 def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
 
-    `write=False`(dry-run)는 판정만 한다(파일·원장 미변경). pm_import 로드/판정 실패는
+    `write=False`(dry-run)는 판정만 한다(파일·원장 미변경). 판정 실패는
     `status="unavailable"` 로 반환한다. 엔진 파일 적용은 되돌리지 않지만 상위 완료 게이트는
     이를 non-green 으로 소비한다."""
     result = {"status": "ok", "updated": [], "preserved": [], "drift": [],
               "backfilled": [], "degraded": [], "blocking": [],
               "managed_converged": False}
     try:
-        pm_import = _load_pm_import()
-        judgments = pm_import.judge_adapter_configs(dest_root, source_root)
+        judgments = adapter_report.judge_adapter_configs(dest_root, source_root)
     except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(표식 skew 는 올린다).
         # 판정 불가는 `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구한다(이미 착지한
         #   엔진 파일은 그대로 선다).
@@ -4558,7 +4531,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
             # 이미 상류와 같다 — write 경로가 아래에서 원장을 뒤늦게 채운다. 성공 여부는
             # 재판정으로 확인한 뒤에만 ``backfilled`` 로 보고한다(원장 write 실패 false-green 금지).
             continue
-        summary = pm_import.adapter_config_drift_summary(judgment, dest_root)
+        summary = adapter_accept.adapter_config_drift_summary(judgment, dest_root)
         managed = judgment.mode == install_rules.ADAPTER_CONFIG_MANAGED
         if managed and judgment.status == "unedited":
             backup_rel = None
@@ -4566,7 +4539,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
                 try:
                     # 판정 시점 해시를 넘겨 **판정↔쓰기 사이 동시 편집**을 엔진이 재검증하게 한다
                     #   (raced 면 아무것도 안 덮고 돌아온다). 백업·원자 교체·원장 확인도 그 안이다.
-                    accepted = pm_import.accept_adapter_config(
+                    accepted = adapter_accept.accept_adapter_config(
                         dest_root, source_root, judgment.relpath,
                         expected_sha256=judgment.dest_sha256)
                 except (OSError, ValueError) as exc:
@@ -4600,7 +4573,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
     if write and (result["updated"] or backfill_candidates):
         # 갱신분·in-sync backfill 을 한 번에 기록한다(record 는 template 일치분만 담는다).
         try:
-            pm_import.record_adapter_baseline(dest_root, source_root)
+            adapter_accept.record_adapter_baseline(dest_root, source_root)
         except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격(표식 skew 는 올린다).
             if _is_engine_rev_skew(exc):
                 raise
@@ -4614,12 +4587,12 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
     # in-sync backfill write가 실패한 경우를 모두 여기서 같은 red로 잡는다. dry-run은 현재 상태를
     # 그대로 판정하므로 write 0 계약을 유지한다.
     try:
-        final_judgments = pm_import.judge_adapter_configs(dest_root, source_root)
+        final_judgments = adapter_report.judge_adapter_configs(dest_root, source_root)
     except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red(표식 skew 는 올린다).
         if _is_engine_rev_skew(exc):
             raise
         return {**result, "status": "unavailable", "reason": str(exc)}
-    unconverged = pm_import.unconverged_managed_adapter_configs(final_judgments)
+    unconverged = adapter_report.unconverged_managed_adapter_configs(final_judgments)
     result["blocking"] = [
         {"relpath": judgment.relpath, "status": status,
          "judgment_status": judgment.status}
@@ -4638,7 +4611,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
 def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
     """local.conf 의 하네스별 사용 한도·압축 비율을 하네스 설정 파일에 반영한다 — 멈추면 False.
 
-    무엇을 어디에 쓰는지·검사·원장 처리는 pm_import(`apply_harness_ctx`) 한 곳이 정하고 여기서는
+    무엇을 어디에 쓰는지·검사·원장 처리는 `app.harness_ctx.apply_harness_ctx` 한 곳이 정하고 여기서는
     출력과 멈춤만 맡는다. 어댑터 config 채널(`sync_adapter_configs`) **뒤**에 돈다 — 채널이 템플릿
     갱신·원장 기록을 끝낸 파일 위에 관리 키를 쓴다. `write=False`(dry-run)는 바뀔 줄만 낸다.
 
@@ -4656,12 +4629,11 @@ def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
               f"옛 키({', '.join(remaining)})가 남아 있다. 이름 이동과 폐지 키 정리가 끝난 뒤의 "
               "pm-update 가 반영한다.")
         return True
-    pm_import = _load_pm_import()
     try:
-        lines = pm_import.apply_harness_ctx(
+        lines = harness_ctx.apply_harness_ctx(
             effective_dest, write=write,
-            opencode_config_dir=pm_import.opencode_global_config_dir(os.environ, Path.home()))
-    except pm_import.HarnessCtxError as exc:
+            opencode_config_dir=harness_ctx.opencode_global_config_dir(os.environ, Path.home()))
+    except harness_ctx.HarnessCtxError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return False
     for line in lines:
@@ -4761,7 +4733,7 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
 # "config 가 요구하는 훅 세대를 **설치된 래퍼/드라이버가 실제로 감당하는가**" 를 본다. 두 축의
 # 갱신 주체가 달라(config = 채택자 소유·엔진 불가침 / 래퍼·드라이버 = manifest 등재) 세대 혼합
 # 창이 구조적으로 열리고, 그중 config 가 앞선 조합은 PreToolUse rc2 = 도구 전면 차단이다
-# (v1.7.0 흡수 실측). 검사는 읽기 전용이고, 판정·처방은 pm_import 단일 진실을 그대로 쓴다.
+# (v1.7.0 흡수 실측). 검사는 읽기 전용이고, 판정·처방은 `app.hook_sets` 단일 진실을 그대로 쓴다.
 
 
 def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
@@ -4774,18 +4746,17 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
         # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
         #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
         #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**
-        #   (문구는 pm_import `hook_set_query_fallback_lines` 단일 진실 — pm-config `--check` 와 같다).
-        #   해소와 판정이 같은 형제 적재를 쓴다(사본 1회 exec).
-        generation, pm_import = _resolve_hook_set_generation_and_sibling(source_root)
-        for line in pm_import.hook_set_query_fallback_lines(generation):
+        #   (문구는 `hook_sets.hook_set_query_fallback_lines` 단일 진실 — pm-config `--check` 와 같다).
+        generation = hook_sets.hook_set_declarations(pm_paths.home_at(REPO), source_root)
+        for line in hook_sets.hook_set_query_fallback_lines(generation):
             print(line, file=sys.stderr)
-        findings = pm_import.judge_adapter_hook_sets(
+        findings = hook_sets.judge_adapter_hook_sets(
             dest_root, source_root, declarations=generation.declarations)
-        remedy_lines = pm_import.hook_set_remedy_lines
+        remedy_lines = hook_sets.hook_set_remedy_lines
         # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면
         #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.
-        entrypoint_lines = pm_import.hook_entrypoint_advisory_lines
-        entrypoint_findings = pm_import.judge_adapter_hook_entrypoints(
+        entrypoint_lines = hook_sets.hook_entrypoint_advisory_lines
+        entrypoint_findings = hook_sets.judge_adapter_hook_entrypoints(
             dest_root, source_root, declarations=generation.declarations)
     except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다(표식 skew 는 올린다).
         if _is_engine_rev_skew(exc):
@@ -4808,16 +4779,12 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
     return result
 
 
-def _unverified_hook_scope_paths(pm_import, updated) -> tuple[str, ...]:
-    """판정 채널을 잃었을 때 **거부해야 할** 스코프 경로 — 훅 네임스페이스 하위 전량.
+def _unverified_hook_scope_paths(updated) -> tuple[str, ...]:
+    """판정이 실패했을 때 **거부해야 할** 스코프 경로 — 훅 네임스페이스 하위 전량.
 
     "결합 묶음을 검증할 수 없다" 는 인식 상태는 하나이므로 처분도 하나여야 한다(선언 미해소 폴백과
-    같은 fail-closed). 네임스페이스 목록조차 못 얻는 형상(판정 채널 자체 부재)은 종전대로 loud
-    통과다 — 거기서 거부하면 채널 없는 트리의 부분 복구가 통째로 잠긴다."""
-    try:
-        namespaces = tuple(f"{name}/" for name in pm_import.hook_set_namespaces(None))
-    except Exception:  # noqa: BLE001 — 채널 부재/손상은 위 계약대로 통과(경고는 호출부가 낸다).
-        return ()
+    같은 fail-closed)."""
+    namespaces = tuple(f"{name}/" for name in hook_sets.hook_set_namespaces(None))
     return tuple(path for path in updated if path.startswith(namespaces))
 
 
@@ -4847,27 +4814,25 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
     방법이 없고, 로컬 묶음 membership 으로 좁히면 "상류만 아는 묶음" 이 정확히 그 틈으로 빠진다
     (탈출구는 스코프 없는 전량 pm-update). 훅과 무관한 부분 전파는 종전대로 통과한다.
 
-    판정 채널을 못 불러오면 가드를 끄되 조용히 넘어가지 않는다(무진단 침묵 금지)."""
+    판정이 실패하면 훅 네임스페이스 하위 스코프를 거부하고 조용히 넘어가지 않는다(무진단 침묵 금지)."""
     updated = _change_dest_paths(scoped_changes)
     unverified: tuple[str, ...] = ()
-    pm_import = None
+    home = pm_paths.home_at(REPO)
     try:
-        # 해소와 가드 판정이 같은 형제 적재를 쓴다 — 따로 로드하면 한 실행에 사본을 두 번 exec 한다.
-        generation, pm_import = _resolve_hook_set_generation_and_sibling(
-            source_root, required=True)
+        generation = hook_sets.hook_set_declarations(home, source_root, required=True)
         if generation.declarations is None:
             # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히
             #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만
             #   있는 묶음은 정의상 로컬이 모르므로, membership 으로 좁히면 지금 닫으려는
             #   케이스가 그대로 빠져나간다. 훅이 사는 **네임스페이스** 하위를 건드리면 전부
             #   거부하고, 훅과 무관한 경로는 종전대로 통과시킨다.
-            generation = pm_import.hook_set_declarations(source_root)
+            generation = hook_sets.hook_set_declarations(home, source_root)
             namespaces = tuple(
                 f"{name}/" for name in
-                pm_import.hook_set_namespaces(generation.declarations))
+                hook_sets.hook_set_namespaces(generation.declarations))
             unverified = tuple(
                 path for path in updated if path.startswith(namespaces))
-        partial = pm_import.hook_set_partial_update(
+        partial = hook_sets.hook_set_partial_update(
             updated, _change_dest_paths(planned_changes),
             declarations=generation.declarations)
     except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.
@@ -4877,7 +4842,7 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
         # **인식 상태는 위 폴백과 같다** — 결합 묶음을 검증할 방법이 없다. 그러니 처분도 같아야
         #   한다: 훅 네임스페이스 하위만 거부하고(무관 경로는 종전대로 통과) 탈출구는 스코프 없는
         #   pm-update 다 — `--paths` 한정이라 복구 채널은 잠기지 않는다.
-        unverified = _unverified_hook_scope_paths(pm_import, updated)
+        unverified = _unverified_hook_scope_paths(updated)
         print(f"[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — {exc}.", file=sys.stderr)
     if unverified:
         print(
@@ -5833,7 +5798,7 @@ def _main(argv: list[str] | None = None) -> int:
         print_instance_owned_delta()
         return 0
 
-    # 훅 세트 판정자는 **상류 세대**로 미리 해소해 넘긴다 — 이번 실행이 pm_import 자체를
+    # 훅 세트 판정자는 **상류 세대**로 미리 해소해 넘긴다 — 이번 실행이 엔진 package 를
     #   갱신하면 dest 사본의 선언은 구세대라, 이번 세대가 추가한 훅 경로가 바로 이 실행에서
     #   비원자 copy2 로 떨어진다(원자 write 가 영영 한 세대 늦게 도착).
     apply(changes,  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).

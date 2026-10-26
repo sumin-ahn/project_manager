@@ -97,12 +97,11 @@ def _make_prompt(entry_doc: str) -> str:
     )
 
 
-def _load_pm_import(*, ctx_model: str = "fixture-model"):
+def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod, model=ctx_model)
+    return mod
 
 
 def _import_adopter(tmp_path: Path, harness: str, *, ctx_model: str = "fixture-model") -> Path:
@@ -110,11 +109,17 @@ def _import_adopter(tmp_path: Path, harness: str, *, ctx_model: str = "fixture-m
 
     `ctx_model` 은 고정 한도 픽스처가 기록할 모델 이름이다 — 설치 뒤 실제 세션 모델과 대조하는
     훅 출력을 단언하는 테스트는 그 세션 모델을 준다."""
-    pm_import = _load_pm_import(ctx_model=ctx_model)
+    pm_import = _load_pm_import()
     dest = tmp_path / f"adopter-{harness}"
-    rc = pm_import.main(
-        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
-    )
+    # 모델 한도 조회 고정은 이 설치 실행 구간에만 건다(끝나면 원래 함수로 돌아간다).
+    from _manager_home import known_ctx_seams
+    from pm_engine.app import harness_ctx
+    with pytest.MonkeyPatch.context() as patch:
+        for name, seam in known_ctx_seams(model=ctx_model).items():
+            patch.setattr(harness_ctx, name, seam)
+        rc = pm_import.main(
+            ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+        )
     assert rc == 0, f"{harness} adopter import 실패 (rc={rc})"
     return dest
 

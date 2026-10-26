@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from pm_engine.domain import conf_schema
 from pm_engine.infra import install_conf
+from pm_engine.infra import upstream_git
 
 from pm_engine.cli import board_init
 
@@ -144,18 +145,18 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (HOLDS_LOCK, "키 단위 RMW 백엔드(pm_import·pm_update·pm_config 공용)"),
     ("pm_engine/infra/install_conf.py", "_write_conf_keys_locked"):
         (UNDER_CALLER_LOCK, "임계 구간 본문(temp write + os.replace + 실효값 검증)"),
-    ("pm_import.py", "sync_local_conf"):
+    ("pm_engine/infra/install_conf.py", "sync_local_conf"):
         (DELEGATES, "import 직후 operational 키 정렬"),
     ("pm_engine/infra/install_conf.py", "reapply_preserved_conf_keys"):
         (HOLDS_LOCK, "현재 conf 읽기→보존 대상 계산→키 write→검증이 한 구간"),
-    ("pm_import.py", "record_upstream"):
+    ("pm_engine/infra/install_conf.py", "record_upstream"):
         (DELEGATES, "upstream 값 기록"),
-    ("pm_import.py", "record_upstream_rev"):
+    ("pm_engine/infra/install_conf.py", "record_upstream_rev"):
         (DELEGATES, "import 시 baseline rev 기록"),
-    ("pm_import.py", "record_opencode_model"):
+    ("pm_engine/infra/install_conf.py", "record_opencode_model"):
         (DELEGATES, "해소된 opencode 모델 기록"),
     ("pm_config.py", "cmd_upstream"):
-        (DELEGATES, "`pm-config upstream set` → pm_import._write_conf_keys"),
+        (DELEGATES, "`pm-config upstream set` → install_conf._write_conf_keys"),
     ("pm_update.py", "apply_conf"):
         (HOLDS_LOCK, "제안 값→반영 단계 계획 전부→conf 키 쓰기→단계 기록이 공용 락 안 한 흐름"),
     ("pm_update.py", "prune_unavailable_reasoning"):
@@ -632,16 +633,12 @@ def test_an_in_flight_preserve_blocks_a_later_merge_and_keeps_both_decisions(
 
 
 def _pm_update_rev_writer(pm_update, monkeypatch, rev: str):
-    """`record_upstream_revs` 가 쓸 pm_import 사본을 고정하고 source rev 만 못박는다.
+    """`record_upstream_revs` 가 읽을 source rev 만 못박는다.
 
-    실 코드는 호출마다 pm_import 사본을 새로 로드한다(캐시 없음) — 경쟁 상대(테스트가
-    monkeypatch 한 fixture 사본)와 **다른 인스턴스**여야 배리어가 한쪽만 멈춘다. git repo 를
-    만들지 않기 위해 rev 읽기만 대체하고, 형상 분류·키 writer·postcondition 은 실물 그대로 쓴다.
+    git repo 를 만들지 않기 위해 rev 읽기(`upstream_git.read_upstream_rev`)만 대체하고, 형상 분류·
+    키 writer·postcondition 은 실물 그대로 쓴다.
     """
-    writer = _load("pm_import")
-    monkeypatch.setattr(writer, "read_upstream_rev", lambda source_root: rev)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: writer)
-    return writer
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda source_root: rev)
 
 
 def _run_rev_record_against_an_upstream_flip(
@@ -798,7 +795,7 @@ def test_key_writer_takes_the_shared_lock(pm_import, monkeypatch, tmp_path):
     """`_write_conf_keys` 도 같은 락 파일을 잡는다(pm_import·pm_update·pm_config 공용 백엔드)."""
     conf = _conf_at(tmp_path, "session=pm\n")
     taken: list[str] = []
-    _spy_lock(pm_import.fs, monkeypatch, taken)
+    _spy_lock(fs, monkeypatch, taken)
 
     assert install_conf._write_conf_keys(conf, {"upstream.path": "/u"}) is True
 

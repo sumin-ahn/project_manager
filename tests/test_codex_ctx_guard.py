@@ -122,7 +122,7 @@ def test_config_exists_and_parses():
 def test_config_uses_documented_numeric_auto_compact_threshold_not_off_sentinel():
     """config은 문서화된 숫자 threshold만 쓴다; 미검증 off sentinel을 발명하지 않는다.
 
-    두 값은 반영(`pm_import.apply_harness_ctx`)의 기본값 고정점이다 — 사용 한도 200000 과
+    두 값은 반영(`harness_ctx.apply_harness_ctx`)의 기본값 고정점이다 — 사용 한도 200000 과
     압축 지점 200000 × 90% (T-0923)."""
     data = _load_config()
     assert "model_context_window" not in data, data.get("model_context_window")

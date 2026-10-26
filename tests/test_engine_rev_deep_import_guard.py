@@ -1138,24 +1138,6 @@ def test_manifest_ships_central_loader_before_every_consumer():
         assert all(seam_index < manifest.index(consumer) for consumer in consumers), path
 
 
-def test_mutation_unregistered_unverified_call_is_red(tmp_path):
-    tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
-    engine_path = tools / "engine_rev.py"
-    tree = ast.parse(engine_path.read_text(encoding="utf-8"))
-    assignment = _module_assignment(tree, "EXEMPT_UNVERIFIED_DEEP_IMPORTS")
-    assert isinstance(assignment.value, ast.Dict)
-    assignment.value.keys = []
-    assignment.value.values = []
-    ast.fix_missing_locations(tree)
-    engine_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
-
-    report = collect_central_guard_report(tools)
-    assert any(
-        "pm_import.py" in item and "code-owned exemption" in item
-        for item in report.violations
-    )
-
-
 def test_mutation_noop_verifier_is_red(tmp_path):
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
     path = tools / "pm_delegate.py"
@@ -1776,16 +1758,6 @@ def test_arbitrary_name_isolated_copy_bootstraps_without_pythonpath(tmp_path):
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
-
-
-def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
-    report = collect_central_guard_report(TOOLS)
-    measured = {(source, function) for source, function, _line in report.loader_calls}
-    assert ("pm_import.py", "_upstream_hook_set_declarations") in measured
-    engine_rev = _load_module(TOOLS, "engine_rev")
-    assert engine_rev.EXEMPT_UNVERIFIED_DEEP_IMPORTS[
-        ("pm_import.py", "_upstream_hook_set_declarations")
-    ].strip()
 
 
 def test_ast_ignores_comments_strings_and_vendor_template_copies(tmp_path):

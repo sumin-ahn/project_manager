@@ -11,6 +11,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from pm_engine.domain import install_rules
+from pm_engine.infra import fs
+import os
 
 # 신규 공유 board 에 스캐폴드하는 상태 디렉토리 — `ticket_rules.STATUS_DIRS` 와 같은 집합(리터럴 · 동치는
 # tests/test_status_dirs_single_truth.py 가 값으로 고정한다).
@@ -269,3 +272,108 @@ def _translate_dest_safety_errors(func: Callable) -> Callable:
             print(f"오류: {exc}", file=sys.stderr)
             return 1
     return wrapper
+
+
+# ── board.py init 호출 ─────────────────────────────────────────────────────
+
+def run_board_init(dest_root: Path) -> int:
+    """복사된 트리의 셋업(`pm-config init`)을 인자 없이 호출 — areas repo 행·local.conf·
+    pm_state·pre-push 훅 + 이 홈의 첫 슬롯 행 등록.
+
+    인자 0 호출은 그대로 성립한다 — init 은 `--prefix` 없이도 이 clone 의 repo 행을 등록하고
+    (prefix 칼럼은 빈 채 = 무prefix `T-NNNN` 카테고리), 그 등록에는 `--area`·사용자 승인이
+    필요 없다(신규 카테고리 신설이 아니다).
+
+    같은 인터프리터(sys.executable)로 호출 — board.py 는 pyyaml 의존이라 venv 보존 필요.
+    비대화형(stdin 비-tty)이면 board.py 는 대화형 질문을 건너뛰고 아무것도 묻지 않는다.
+    stdin=DEVNULL 의 isatty() 가 Windows 서 신뢰불가라, env 로
+    `PM_NONINTERACTIVE=1` 을 명시 전달해 결정적으로 skip 시킨다 (isatty 폴백 보조).
+
+    `PYTHONDONTWRITEBYTECODE=1` 도 함께 전달한다— board.py 는 같은 tools/ 디렉토리의
+    `pm_engine` 패키지를 import 하는데, 이 실행이 갓 복사된 새 프로젝트 트리 안(`dest_root`)에서
+    일어나므로 표준 바이트코드 캐싱이 `dest_root/.project_manager/tools/__pycache__/` 를 새로 만든다 — fresh
+    import 직후 빌드 산출물이 섞이는 것을 막는다(`test_import_excludes_pycache`).
+    """
+    tools = dest_root / ".project_manager" / "tools"
+    entry = tools / "pm_config.py"
+    if not entry.exists():
+        # 셋업 진입은 pm_config 가 소유한다(board init 위임 + 홈 슬롯 등록). 그 파일이 없으면
+        # 복사가 반쪽이라는 뜻이라 여기서 멈춘다 — board 로 우회하면 등록이 조용히 빠진다.
+        print(f"경고: pm_config.py 없음 ({entry}) — init 건너뜀.", file=sys.stderr)
+        return 1
+    result = subprocess.run(
+        [sys.executable, str(entry), "init"],
+        cwd=str(dest_root),
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "PM_NONINTERACTIVE": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+        encoding="utf-8",
+        errors="replace",
+    )
+    return result.returncode
+
+
+def git_init(dest_root: Path) -> int:
+    """--new 대상에 git init. 이미 .git 있으면 skip(0). returncode 를 반환한다.
+
+    MF2: git init 실패를 무시하면 git repo 없는 불완전 import 가 성공으로 끝난다 —
+    board.py init 의 pre-push 훅이 git repo 에 의존하므로 명세상 치명적이다. returncode 를
+    그대로 돌려주고, main 이 비0 이면 import 미완으로 판정한다.
+    """
+    if (dest_root / ".git").exists():
+        return 0
+    result = subprocess.run(
+        ["git", "init", str(dest_root)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode
+
+
+def ensure_backup_dir_gitignored(
+    dest_root: Path, git_safe: set | None, copied_relpaths: set,
+) -> str:
+    """dest .gitignore 에 `.pm_import_backups/` 패턴을 보장한다 (git 위생).
+
+    반환 상태: "added"(기존에 append) · "created"(신규 .gitignore 생성) ·
+      "present"(이미 무시 중·멱등 skip) · "unsafe-skip"(사전 존재 unbacked 사용자 .gitignore —
+      비파괴 위해 미변경) · "noop"(읽기 실패).
+
+    **비파괴:** 기존 .gitignore 를 append 하려면 둘 중 하나여야 한다 —
+      (a) **git-safe**(추적 중 & 미변경 → git 이 복원 가능), 또는
+      (b) **이번 import 가 복사·관리한 파일**(`.gitignore` ∈ copied_relpaths) — 이 경우 사용자
+          원본이 있었다면 CopyAction 이 이미 중앙 백업했으므로 append 가 안전하다.
+    둘 다 아니면 *사전 존재하는 unbacked 사용자 파일*이므로(미추적/dirty·import 가 안 건드림)
+    무백업 변조를 피해 "unsafe-skip" 으로 수동 추가를 안내한다(이 append 는 CopyAction 백업
+    경로를 타지 않으므로 별도 가드 필요). .gitignore 가 없으면 새로 만든다(비파괴·신규 파일).
+    """
+    pattern = f"{install_rules.BACKUP_DIR_NAME}/"
+    gitignore = dest_root / ".gitignore"
+    # .gitignore 가 symlink 면 write_text 가 링크 대상(프로젝트 밖 가능)을
+    #   따라가 변조한다 — git-safe 여도 링크 대상은 git 복원 대상이 아니다. CopyAction 의 symlink
+    #   비파괴 정책(follow_symlinks=False)과 일관되게 자동 append 를 거부한다.
+    if gitignore.is_symlink():
+        return "unsafe-skip"
+    if gitignore.is_file():
+        try:
+            text = fs.read_text_shared(gitignore, encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            return "noop"
+        # 이미 무시 중이면(정확한 패턴 줄·앞뒤 공백 무시) skip — 멱등.
+        existing_lines = {line.strip() for line in text.splitlines()}
+        if pattern in existing_lines or install_rules.BACKUP_DIR_NAME in existing_lines:
+            return "present"
+        git_safe_ok = git_safe is not None and ".gitignore" in git_safe
+        import_owned = Path(".gitignore") in copied_relpaths
+        if not (git_safe_ok or import_owned):
+            return "unsafe-skip"  # 사전 존재 unbacked 사용자 파일 — 무백업 변경 금지.
+        prefix = "" if text.endswith("\n") or text == "" else "\n"
+        new_text, status = f"{text}{prefix}{pattern}\n", "added"
+    else:
+        new_text, status = f"{pattern}\n", "created"
+    # 방어: 위생 write 실패(권한 등)가 *복사·치환이 끝난* import 말미를
+    #   깨뜨리지 않게 한다 — gitignore 위생은 should 부가단계라 실패해도 import 자체는 성공으로 둔다.
+    try:
+        gitignore.write_text(new_text, encoding="utf-8", newline="\n")
+    except OSError:
+        return "noop"
+    return status

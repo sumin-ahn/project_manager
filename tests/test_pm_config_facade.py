@@ -764,14 +764,6 @@ def test_forwarded_prog_restores_on_exception(pc):
 # ── upstream show/set 배선 — 검증(도달성·fail-closed) + local.conf atomic·타 키 보존 (T-0145) ──
 
 
-def _load_pm_import():
-    """실 pm_import 모듈 로드 — cmd_upstream 이 재사용하는 URL 안전 검증·conf set-or-replace 제공."""
-    spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _good_upstream_runner(argv):
     """ls-remote·rev-parse·--is-inside-work-tree 전부 OK(도달/유효 checkout) 가짜 git."""
     if "ls-remote" in argv:
@@ -798,7 +790,7 @@ def test_upstream_show_surfaces_value(pc, tmp_path, monkeypatch, capsys):
     """`upstream show` → 현재 upstream 값 + self-describing 분류 surface."""
     conf = _setup_repo_conf(pc, tmp_path, "upstream.path=https://github.com/x/y.git\n")
     args = argparse.Namespace(upstream_action="show")
-    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
     assert rc == 0
     out = capsys.readouterr().out
     assert "https://github.com/x/y.git" in out
@@ -809,7 +801,7 @@ def test_upstream_show_unregistered(pc, tmp_path, capsys):
     """upstream 미등록이면 안내(미등록) surface · rc 0."""
     _setup_repo_conf(pc, tmp_path, "session=pm\n")
     args = argparse.Namespace(upstream_action="show")
-    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
     assert rc == 0
     assert "미등록" in capsys.readouterr().out
 
@@ -820,7 +812,7 @@ def test_upstream_set_url_valid_records_and_preserves_keys(pc, tmp_path):
         pc, tmp_path, "# header\nsession=pm\nupstream.path=/old\ntest.cmd=pytest\n")
     args = argparse.Namespace(
         upstream_action="set", value="https://github.com/foo/bar.git")
-    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
     assert rc == 0
     text = conf.read_text(encoding="utf-8")
     assert "upstream.path=https://github.com/foo/bar.git" in text
@@ -842,7 +834,7 @@ def test_upstream_set_normalizes_duplicates_and_effective_value_is_requested(
 
     rc = pc.cmd_upstream(
         argparse.Namespace(upstream_action="set", value=requested),
-        pm_import=_load_pm_import(), git_runner=_good_upstream_runner,
+        git_runner=_good_upstream_runner,
     )
 
     assert rc == 0
@@ -858,12 +850,11 @@ def test_upstream_set_normalizes_duplicates_and_effective_value_is_requested(
 def test_upstream_set_postcondition_mismatch_fails_loud(pc, tmp_path, monkeypatch, capsys):
     """A2 — 쓰기 뒤 last-wins 실효값이 요청과 다르면 성공을 출력하지 않는다."""
     _setup_repo_conf(pc, tmp_path, "upstream.path=/old\n")
-    pm_import = _load_pm_import()
     monkeypatch.setattr(conf_schema, 'parse', lambda _text: {"upstream.path": "/raced"})
 
     rc = pc.cmd_upstream(
         argparse.Namespace(upstream_action="set", value="https://github.com/acme/new.git"),
-        pm_import=pm_import, git_runner=_good_upstream_runner,
+        git_runner=_good_upstream_runner,
     )
 
     captured = capsys.readouterr()
@@ -887,7 +878,7 @@ def test_upstream_set_recomputes_installed_gate_contract(pc, tmp_path, monkeypat
 
     bind_pool(monkeypatch, pool)
     assert pc.cmd_upstream(
-        args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner,
+        args, git_runner=_good_upstream_runner,
 
     ) == 0
     assert pool.last_protected_gate == ("release", "go test ./...")
@@ -899,7 +890,7 @@ def test_upstream_set_url_unreachable_rejected(pc, tmp_path, capsys):
     conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/keep\n")
     args = argparse.Namespace(
         upstream_action="set", value="https://github.com/no/such.git")
-    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_bad_upstream_runner)
+    rc = pc.cmd_upstream(args, git_runner=_bad_upstream_runner)
     assert rc == 1
     assert "도달 불가" in capsys.readouterr().err
     assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"  # 무변경
@@ -911,7 +902,7 @@ def test_upstream_set_path_valid_records(pc, tmp_path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     args = argparse.Namespace(upstream_action="set", value=str(checkout))
-    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
     assert rc == 0
     assert f"upstream.path={checkout}" in conf.read_text(encoding="utf-8")
 
@@ -921,7 +912,7 @@ def test_upstream_set_path_nonexistent_rejected(pc, tmp_path, capsys):
     conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/keep\n")
     args = argparse.Namespace(
         upstream_action="set", value=str(tmp_path / "does_not_exist"))
-    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
+    rc = pc.cmd_upstream(args, git_runner=_good_upstream_runner)
     assert rc == 1
     assert "디렉토리가 아니거나 존재하지 않음" in capsys.readouterr().err
     assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"
@@ -941,19 +932,10 @@ def test_upstream_set_unsafe_value_rejected_before_network(pc, tmp_path, capsys)
 
     args = argparse.Namespace(
         upstream_action="set", value="https://user:pass@github.com/x.git")
-    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=runner)
+    rc = pc.cmd_upstream(args, git_runner=runner)
     assert rc == 1
     assert called["n"] == 0, "순수 검증 실패인데도 git(네트워크)이 호출됨"
     assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"
-
-
-def test_upstream_engine_missing_errors_isolated(pc, monkeypatch, capsys):
-    """pm_import 로드 실패면 명시 에러 rc 1(침묵 무력화 금지)."""
-    monkeypatch.setattr(pc, "_load_module", lambda name, filename: None)
-    args = argparse.Namespace(upstream_action="show")
-    rc = pc.cmd_upstream(args)
-    assert rc == 1
-    assert "pm_import.py 엔진을 찾을 수 없다" in capsys.readouterr().err
 
 
 def test_upstream_no_action_surfaces_help(pc, monkeypatch):
@@ -974,7 +956,7 @@ def test_upstream_set_missing_conf_skips_network(pc, tmp_path, monkeypatch, caps
 
     args = argparse.Namespace(
         upstream_action="set", value="https://github.com/x/y.git")
-    rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=runner)
+    rc = pc.cmd_upstream(args, git_runner=runner)
     assert rc == 1
     assert "local.conf 없음" in capsys.readouterr().err
     assert called["n"] == 0, "conf 부재인데 git(네트워크)이 호출됨(네트워크 낭비)"

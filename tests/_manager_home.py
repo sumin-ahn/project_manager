@@ -85,7 +85,7 @@ def _run(argv: list[str], *, cwd: Path | None = None,
 
 # 모델 한도 조회 교체 지점 두 곳(`_read_harness_ctx_metadata`·`_ctx_claude_threshold`)의 고정 값.
 # 단일 출처는 환경 주입 폴더의 `sitecustomize.py` 다 — 같은 프로세스 교체(`known_ctx_seams`·
-# `known_ctx_module`)와 `-c` 자식 스크립트도 그 본문을 그대로 쓴다(교체 설치는 `sitecustomize` 로
+# `install_known_ctx_io`)와 `-c` 자식 스크립트도 그 본문을 그대로 쓴다(교체 설치는 `sitecustomize` 로
 # 읽힐 때만 일어난다).
 _KNOWN_CTX_SITE = Path(__file__).resolve().parent / "_known_ctx_site"
 _KNOWN_CTX_READER_PY = (_KNOWN_CTX_SITE / "sitecustomize.py").read_text(encoding="utf-8")
@@ -111,28 +111,14 @@ def _known_ctx_installation(tmp_path,monkeypatch):
     return folder
 
 
-def known_ctx_module(module, *, capacity=200000, context=1000000, model="fixture-model"):
-    """모듈(과 그 모듈이 싣는 pm_import·pm_update)의 모델 한도 조회를 고정 값으로 바꾼다.
+def install_known_ctx_io(monkeypatch) -> None:
+    """이 시험 동안 `app.harness_ctx` 의 모델 한도 조회 두 IO 함수를 고정 값으로 바꾼다(teardown 이 복원).
 
-    `model` 은 설치가 기록할 모델 이름이다 — 실제 세션을 띄우는 테스트는 그 세션 모델을 준다."""
-    namespace = {}
-    exec(_KNOWN_CTX_READER_PY, namespace)
-    if hasattr(module, '_read_harness_ctx_metadata'):
-        namespace['install_fixture_capacity'](module, capacity, context, model)
-    if getattr(module, '_known_ctx_loader', False):
-        return module
-    for name in ('_load_pm_import', '_load_pm_update', '_load_module'):
-        original = getattr(module, name, None)
-        if original is None:
-            continue
-        def loaded(*args, _original=original, **kwargs):
-            result = _original(*args, **kwargs)
-            if any(hasattr(result, key) for key in ('_read_harness_ctx_metadata', '_load_pm_import', '_load_pm_update', '_load_module')):
-                known_ctx_module(result, capacity=capacity, context=context, model=model)
-            return result
-        setattr(module, name, loaded)
-    module._known_ctx_loader = True
-    return module
+    엔진 package 는 프로세스에 하나라 설치·갱신·설정 어느 진입이 부르든 같은 함수를 지난다.
+    conftest 의 `known_ctx_io` fixture 가 이 함수를 부른다."""
+    from pm_engine.app import harness_ctx
+    for name, seam in known_ctx_seams().items():
+        monkeypatch.setattr(harness_ctx, name, seam)
 
 
 def known_ctx_env(env: dict | None = None, *, native_bin: Path | None = None,

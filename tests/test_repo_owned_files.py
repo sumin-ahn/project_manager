@@ -724,7 +724,7 @@ def test_pm_import_dest_fallback_uses_owned_mode(repo_files, tmp_path):
 
 def test_pm_import_non_git_dest_fallback_warning_is_visible(tmp_path, monkeypatch):
     pm_import = _load("pm_import_repo_files_nongit_test", "pm_import.py")
-    repo_files = pm_import.repo_files
+    repo_files = import_fill.repo_files
     dest = tmp_path / "adopter"
     dest.mkdir()
     (dest / "copied.md").write_text("copied\n", encoding="utf-8")
@@ -759,7 +759,7 @@ def test_repo_owned_loader_cache_preserves_warning_class_identity():
 
     update_first = pm_update.repo_files
     update_second = pm_update.repo_files
-    import_module = pm_import.repo_files
+    import_module = import_fill.repo_files
 
     assert update_first is update_second is import_module
     assert (
@@ -772,7 +772,7 @@ def test_pm_import_normal_copied_scope_never_enters_dest_walk(tmp_path, monkeypa
     pm_import = _load("pm_import_repo_files_main_path_test", "pm_import.py")
     copied = {Path(".project_manager/tools/board.py"), Path("AGENTS.md")}
     monkeypatch.setattr(
-        pm_import,
+        import_fill,
         "repo_files",
         types.SimpleNamespace(
             list_repo_owned_files=lambda *_a, **_k: pytest.fail(

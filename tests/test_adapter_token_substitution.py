@@ -28,6 +28,8 @@ from _manager_home import render_home
 from pm_engine.app import import_fill
 from pm_engine.app import import_render
 from pm_engine.infra import install_source
+from pm_engine.app import add_harness
+from pm_engine.infra import pm_paths
 
 import importlib.util
 import io
@@ -38,6 +40,8 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import init_git_repo
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -60,8 +64,7 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="module")
@@ -164,7 +167,7 @@ def test_add_harness_codex_substitutes_toml_via_sed_channel(pm_import, tmp_path)
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+        add_harness.add_harness(pm_paths.home_at(REPO), dest, "codex", dry_run=False, source_root=REPO)
 
     leaks = _token_leaks(dest, HARNESS_ADAPTER_DIRS["codex"])
     assert not leaks, f"add-harness codex 어댑터에 미해소 토큰 잔존(sed 채널 미커버): {leaks}"

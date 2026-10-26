@@ -133,9 +133,7 @@ def test_t0927_conf_contract(tmp_path, new_value):
 
 def test_t0927_conf_contract_partial_writer_is_failure(tmp_path, monkeypatch):
     updater = _load("pm_update")
-    writer = _load("pm_import")
     path = _conf(tmp_path / "home", "ctx.stop_pct=10\n")
-    monkeypatch.setattr(updater, "_load_pm_import", lambda: writer)
     monkeypatch.setattr(install_conf, "_write_conf_keys_locked", lambda *args: False)
     with pytest.raises(RuntimeError, match="ctx.stop_pct"):
         updater.migrate_renamed_conf_keys(path.parent.parent, write=True)

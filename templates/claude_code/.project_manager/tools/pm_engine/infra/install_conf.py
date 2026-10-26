@@ -9,6 +9,8 @@ from pm_engine.infra import install_files
 from pm_engine.infra import python_env
 import os
 import shutil
+from pm_engine.infra import conf_store
+import sys
 
 # 인터프리터 탐지는 `python_env._detect_py()` 가 단일 진실. pm_import 가 자체 탐지를 신설하지
 # 않는다 — 플랫폼별 python3/python 해석을 한 곳에 둔다. 탐지가 실패하면 리눅스 현행과 동치인
@@ -237,3 +239,106 @@ def _instance_project_name(dest_root: Path) -> str:
         if name:
             return name
     return dest_root.name
+
+
+def _local_conf_has_blocking_legacy(dest_root: Path) -> bool:
+    """dest 의 local.conf 에 **값 공급을 잃는** 구표기 키가 있는가 (안내 전용 키는 제외).
+
+    판정 기준은 공용 로더 하나다(`conf_schema.blocking_legacy`) — import 가 자기 목록을 들면
+    소비 지점과 갈린다.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        return False
+    return bool(conf_schema.blocking_legacy(conf_store.load(local_conf).legacy))
+
+
+def print_conf_migration_notice(dest_root: Path) -> None:
+    """local.conf 표기 통일 교체 안내 — import 도 채택자가 이 사실을 만나는 진입이다.
+
+    안내만 낸다(자동 이관 없음·엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다). 문구의 단일 진실은
+    공용 로더(`conf_schema.migration_notice`)이고 pm_update 사본과 같은 문장을 쓴다.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        return
+    for line in conf_schema.migration_notice(conf_store.load(local_conf)):
+        print(f"  {line}")
+
+
+def sync_local_conf(dest_root: Path, project_name: str) -> bool:
+    """board.py init 직후 local.conf 의 operational 해소값을 pm_import 치환값과 일치시킨다.
+
+    board.py init 의 감지값을 import 인자의 operational 값과 맞춰 엔진 문서(local.conf 해소)와
+    CLAUDE.md(sed 치환)가 *다른 값*을 보지 않게 한다.
+    `project.name`·`test.cmd`·`runtime.py` 3개 키만 키 단위 갱신해 정렬한다. 나머지 키
+    (ctx 예산·additional_reviewer 등)와 주석은 보존. clobber 금지. 파일 변경 시 True.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        print(f"경고: local.conf 없음 ({local_conf}) — operational 값 동기화 건너뜀.",
+              file=sys.stderr)
+        return False
+    updates = {
+        "project.name": project_name,
+        "test.cmd": _default_test_cmd(),
+        "runtime.py": _detected_py(),
+    }
+    return _write_conf_keys(local_conf, updates)
+
+
+def record_upstream(dest_root: Path, upstream_value) -> bool:
+    """upstream 값(URL 또는 로컬 경로)을 dest local.conf 에 `upstream.path=` 로 기록한다.
+
+    `--upstream`(future update 기록·URL 선호)↔`--from`(이번 import 파일 소스) 디커플:
+    이 함수는 *기록할 upstream 값*을 받아 그대로 박는다. `--upstream` 생략 시 호출부가
+    `--from`(=source_root)을 넘겨 **기존 동작(경로 기록)을 회귀 보존**한다 — `Path` 를 받으면
+    `str()` 로 직렬화하므로 옛 `record_upstream(dest_root, source_root)` 호출 형태도 그대로 동작.
+
+    이후 pm_update 가 --from 생략 시 이 값을 기본 upstream 으로 쓴다. 공용 writer의 키 단위
+    중복 정규화·atomic replace·실효값 검증을 거친다 — 따라서 재-import(--into)
+    는 reapply_preserved_conf_keys 가 백업의 *stale upstream 을 되살려도*(board init 은 upstream 을
+    쓰지 않으므로 preserve 가 옛 값을 복원한다) 마지막에 *현재 값* 으로 제자리 확정 갱신된다(stale
+    보존 아님). 바로 그 때문에 board init·conf sync·preserve 단계 *이후* 에 호출해야 갱신이 보장된다. 변경 시 True.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        print(f"경고: local.conf 없음 ({local_conf}) — upstream 기록 건너뜀.", file=sys.stderr)
+        return False
+    return _write_conf_keys(local_conf, {"upstream.path": str(upstream_value)})
+
+
+def record_upstream_rev(dest_root: Path, rev: str) -> bool:
+    """upstream baseline revision 을 dest local.conf 에 `upstream.rev=<commit>` 로 기록한다.
+
+    drift-lint의 baseline 입력 — "마지막 동기 이후 upstream 변경분"을 재는 기준점이다
+    import 시(이 함수)와 pm_update 매 sync 시 갱신된다. 현재 관찰값 `upstream.seen_rev` 는
+    **별개 키**이고 writer 도 하나뿐이다 — `pm_update.record_upstream_revs`(한 키 2역
+    금지·race/자기비교 회피). rev 가
+    빈 값(git repo 아님·HEAD 해소 실패)이면 호출부가 이 함수를 부르지 않는다(기록 생략·graceful).
+    공용 writer의 중복 정규화·atomic replace·실효값 검증을 거치며 다른 키·주석은 보존한다.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        print(f"경고: local.conf 없음 ({local_conf}) — upstream.rev 기록 건너뜀.", file=sys.stderr)
+        return False
+    return _write_conf_keys(local_conf, {"upstream.rev": rev})
+
+
+def record_opencode_model(dest_root: Path, model: str) -> bool:
+    """해소된 opencode 모델을 dest local.conf 에 `harness.opencode.pro_model=` 로 기록한다.
+
+    {{OPENCODE_PRO_MODEL}} 가 import 때 파일에 직접 치환되지만, local.conf 엔 안 들어가
+    pm_update 의 @render 가 그 토큰을 local.conf 에서 재유도할 때(`harness.opencode.pro_model` →
+    OPENCODE_PRO_MODEL · pm_update._LOCAL_CONF_TO_OPERATIONAL) 키 부재로 leak assertion 에
+    걸려 채택자 렌더가 crash 한다. 따라서 *실제로 모델이 해소된* 경로(flag·interactive)에서만
+    그 값을 local.conf 에 박아 둔다 — todo(미해소)는 토큰이 YAML 주석으로 남아 렌더 leak 이
+    없으므로 기록하지 않는다(호출부 게이트). 공용 writer의 중복 정규화·atomic replace·실효값
+    검증을 거치며 다른 키·주석은 보존한다. local.conf 부재면 graceful skip. 변경 시 True.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        print(f"경고: local.conf 없음 ({local_conf}) — opencode 모델 기록 건너뜀.",
+              file=sys.stderr)
+        return False
+    return _write_conf_keys(local_conf, {"harness.opencode.pro_model": model})

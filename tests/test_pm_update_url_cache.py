@@ -1,7 +1,7 @@
 """T-0908 — URL upstream 을 엔진이 직접 캐시 clone/fetch 한다 (스킬 셸 절차 폐지).
 
 `pm-config update`(=`pm_update.py`)는 `--from` 없이도 URL upstream 을 소스로 쓴다. URL 을 로컬
-트리로 바꾸는 코드는 엔진 한 자리(`pm_import.resolve_upstream_url_cache`)뿐이고, 캐시는 dest PM
+트리로 바꾸는 코드는 엔진 한 자리(`upstream_git.resolve_upstream_url_cache`)뿐이고, 캐시는 dest PM
 홈 안 `.project_manager/.local/upstream-cache/<URL 해시>/`(git-ignored)에 산다. 같은 자리를
 `add-harness`·`sync-adapter-config` 의 소스 해소도 부른다.
 
@@ -28,6 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pm_engine.infra import upstream_git
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -55,11 +56,6 @@ def _load(name: str):
 def pm_update():
     from _manager_home import complete_in_process
     return complete_in_process(_load("pm_update"))
-
-
-@pytest.fixture(scope="module")
-def pm_import():
-    return _load("pm_import")
 
 
 @pytest.fixture(scope="module")
@@ -148,7 +144,7 @@ def _snapshot(root: Path) -> dict:
 _HOOKS = '{"hooks": {"PreCompact": ["new"]}}\n'
 
 
-def test_t0933_long_cache_clone_uses_the_real_runner(pm_import, tmp_path, monkeypatch):
+def test_t0933_long_cache_clone_uses_the_real_runner(tmp_path, monkeypatch):
     """265자 이상 pack keep 경로의 실제 file URL clone과 HEAD를 검증한다."""
     source = _make_framework_repo(tmp_path / "fw")
     url = _make_bare(source, tmp_path / "fw.git")
@@ -168,16 +164,16 @@ def test_t0933_long_cache_clone_uses_the_real_runner(pm_import, tmp_path, monkey
         assert len(str(old_dest)) == len(str(dest))
         # 모듈 로컬 대역으로 longpaths 추가 전의 설정 6항목만 전달한다.
         with monkeypatch.context() as before:
-            before.setattr(pm_import, "os", SimpleNamespace(
+            before.setattr(upstream_git, "os", SimpleNamespace(
                 name="posix", environ=os.environ, devnull=os.devnull))
-            old_runner = pm_import._real_upstream_git_runner(
-                timeout=pm_import.UPSTREAM_CLONE_TIMEOUT_SECONDS)
+            old_runner = upstream_git._real_upstream_git_runner(
+                timeout=upstream_git.UPSTREAM_CLONE_TIMEOUT_SECONDS)
             old_rc, old_out = old_runner(["clone", "--", url, str(old_dest)])
         assert old_rc == 128, old_out
         assert "Filename too long" in old_out, old_out
 
-    runner = pm_import._real_upstream_git_runner(
-        timeout=pm_import.UPSTREAM_CLONE_TIMEOUT_SECONDS)
+    runner = upstream_git._real_upstream_git_runner(
+        timeout=upstream_git.UPSTREAM_CLONE_TIMEOUT_SECONDS)
     rc, out = runner(["clone", "--", url, str(dest)])
     assert rc == 0, out
     committed = _git(["-C", str(source), "show", f"HEAD:{SENTINEL_REL}"], binary=True).stdout
@@ -381,31 +377,31 @@ def _imported_codex_instance(dest: Path, url: str) -> Path:
     return dest
 
 
-def test_add_harness_source_resolves_url_upstream_via_cache(pm_import, tmp_path):
+def test_add_harness_source_resolves_url_upstream_via_cache(tmp_path):
     """URL upstream 인 imported 인스턴스의 어댑터 소스가 캐시로 해소된다(`[중단]` 대상 아님)."""
     source = _make_framework_repo(tmp_path / "fw")
     url = _make_bare(source, tmp_path / "fw.git")
     dest = _imported_codex_instance(tmp_path / "inst", url)
 
-    got = pm_import._resolve_add_harness_source(dest, "codex", None)
+    got = upstream_git._resolve_add_harness_source(dest, "codex", None)
 
     assert got == _only_cache(dest), f"캐시가 아닌 다른 소스로 해소됨: {got}"
     assert (got / "templates" / "codex").is_dir()
 
 
-def test_local_source_wins_over_url_cache(pm_import, tmp_path):
+def test_local_source_wins_over_url_cache(tmp_path):
     """dest 가 프레임워크 checkout 이면 URL upstream 이어도 네트워크를 타지 않는다(차단 추가 0)."""
     dest = _make_framework_repo(tmp_path / "fwdest")
     _dest_with_url_upstream(dest, (tmp_path / "absent.git").as_uri())
 
-    got = pm_import._resolve_add_harness_source(dest, "codex", None)
+    got = upstream_git._resolve_add_harness_source(dest, "codex", None)
 
     assert got == dest.resolve(), f"로컬 templates 가 있는데 캐시로 갔다: {got}"
     assert not _cache_root(dest).exists(), "로컬 소스로 끝나는 형상에서 캐시를 만들었다"
 
 
 def test_sync_adapter_config_check_resolves_url_upstream(
-        pm_config, pm_import, tmp_path, capsys):
+        pm_config, tmp_path, capsys):
     """`sync-adapter-config --check` 가 URL upstream 에서 `--from` 없이 판정을 낸다."""
     source = _make_framework_repo(tmp_path / "fw")
     url = _make_bare(source, tmp_path / "fw.git")
@@ -418,7 +414,7 @@ def test_sync_adapter_config_check_resolves_url_upstream(
            json.dumps(ledger, indent=2) + "\n")
     args = argparse.Namespace(list=False, check=True, accept=None, source=None)
 
-    rc = pm_config.cmd_sync_adapter_config(args, pm_import=pm_import, dest_root=dest)
+    rc = pm_config.cmd_sync_adapter_config(args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert "[중단]" not in captured.err, f"URL upstream 소스 미해소로 멈춤: {captured.err!r}"
@@ -427,12 +423,12 @@ def test_sync_adapter_config_check_resolves_url_upstream(
 
 
 def test_sync_adapter_config_reports_cache_failure_loudly(
-        pm_config, pm_import, tmp_path, capsys):
+        pm_config, tmp_path, capsys):
     """캐시 clone 실패는 traceback 이 아니라 `[중단]` + rc 1 로 나온다."""
     dest = _imported_codex_instance(tmp_path / "inst", (tmp_path / "absent.git").as_uri())
     args = argparse.Namespace(list=False, check=True, accept=None, source=None)
 
-    rc = pm_config.cmd_sync_adapter_config(args, pm_import=pm_import, dest_root=dest)
+    rc = pm_config.cmd_sync_adapter_config(args, dest_root=dest)
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -441,22 +437,22 @@ def test_sync_adapter_config_reports_cache_failure_loudly(
 
 # ── 캐시 자리·재사용 판정의 단위 (경로 안전) ─────────────────────────────────
 
-def test_cache_dir_is_per_url_inside_dest_local(pm_import, tmp_path):
+def test_cache_dir_is_per_url_inside_dest_local(tmp_path):
     """캐시 자리는 dest `.project_manager/.local/upstream-cache/<해시>` 이고 URL 마다 갈린다."""
     dest = tmp_path / "dest"
-    one = pm_import.upstream_cache_dir(dest, "https://example.invalid/a.git")
-    two = pm_import.upstream_cache_dir(dest, "https://example.invalid/b.git")
+    one = upstream_git.upstream_cache_dir(dest, "https://example.invalid/a.git")
+    two = upstream_git.upstream_cache_dir(dest, "https://example.invalid/b.git")
 
     assert one.parent == (dest.resolve() / CACHE_RELDIR) and one != two
     assert one.name.isalnum() and len(one.name) == 16, f"캐시 이름에 URL 문자가 샜다: {one.name}"
 
 
-def test_rejected_upstream_value_never_reaches_git(pm_import, tmp_path):
+def test_rejected_upstream_value_never_reaches_git(tmp_path):
     """형태 안전 계약 위반 값(평문 http)은 clone 도 시도하지 않고 거부된다."""
     called: list = []
 
-    with pytest.raises(pm_import.UpstreamCacheError):
-        pm_import.resolve_upstream_url_cache(
+    with pytest.raises(upstream_git.UpstreamCacheError):
+        upstream_git.resolve_upstream_url_cache(
             tmp_path / "dest", "http://example.invalid/x.git",
             git_runner=lambda argv: (called.append(argv), (0, ""))[1])
 

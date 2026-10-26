@@ -37,8 +37,17 @@ from _win_skip import posix_mode_supported
 from pm_engine.domain import conf_schema, manifest_rules
 from pm_engine.infra import manifest_store
 from pm_engine.infra.harness import contract
+from pm_engine.app import adapter_accept
+from pm_engine.app import adapter_report
+from pm_engine.app import add_harness
+from pm_engine.app import harness_ctx
+from pm_engine.infra import adapter_baseline
+from pm_engine.infra import adapter_documents
+from pm_engine.infra import upstream_git
 
 REPO = Path(__file__).resolve().parents[1]
+# 설치·추가를 실행하는 엔진 Home(이 checkout).
+ENGINE_HOME = pm_paths.home_at(REPO)
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 합성 manifest 의 일반 관리 파일 — 엔진 코드(`.project_manager/tools/`) 밖이라 계획·미리보기·완료 단계가
@@ -59,16 +68,12 @@ def _load_pm_update():
 
 
 @pytest.fixture(autouse=True)
-def _known_native_capacity(pm_update,monkeypatch):
-    """갱신이 싣는 pm_import 의 모델 한도 조회를 고정 값(C=1000000, 모델 창 2000000)으로 바꾼다."""
+def _known_native_capacity(monkeypatch):
+    """갱신이 부르는 모델 한도 조회(`app.harness_ctx`)를 고정 값(C=1000000, 모델 창 2000000)으로 바꾼다."""
     from _manager_home import known_ctx_seams
-    original=pm_update._load_pm_import
-    def load():
-        module=original()
-        for name,seam in known_ctx_seams(capacity=1000000,context=2000000).items():
-            setattr(module,name,seam)
-        return module
-    monkeypatch.setattr(pm_update,'_load_pm_import',load)
+    from pm_engine.app import harness_ctx
+    for name, seam in known_ctx_seams(capacity=1000000, context=2000000).items():
+        monkeypatch.setattr(harness_ctx, name, seam)
 
 
 @pytest.fixture(scope="module")
@@ -443,7 +448,7 @@ def test_upstream_file_not_dir_errors(pm_update, tmp_path, monkeypatch, capsys):
 def test_record_upstream_rev_baseline_records_head(pm_update, tmp_path, monkeypatch):
     """source 가 git checkout 이면 매 sync 후 upstream_rev=<HEAD> 를 dest local.conf 에 기록.
 
-    pm_update 는 git 을 직접 안 부르고 pm_import.read_upstream_rev(URL 안전 git 호출)를 재사용한다
+    pm_update 는 git 을 직접 안 부르고 upstream_git.read_upstream_rev(URL 안전 git 호출)를 재사용한다
     — 그 read 를 monkeypatch 해 라이브 git 없이 baseline 기록 *배선* 을 검증한다(매 sync).
     """
     dest = tmp_path / "dest"
@@ -451,9 +456,7 @@ def test_record_upstream_rev_baseline_records_head(pm_update, tmp_path, monkeypa
     source = tmp_path / "src"
     source.mkdir()
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "headcommit99")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "headcommit99")
 
     changed = pm_update.record_upstream_rev_baseline(dest, source)
     assert changed is True
@@ -470,9 +473,7 @@ def test_record_upstream_rev_baseline_skips_when_source_not_git(pm_update, tmp_p
     source = tmp_path / "src"
     source.mkdir()
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
     changed = pm_update.record_upstream_rev_baseline(dest, source)
     assert changed is False
@@ -489,9 +490,7 @@ def test_main_records_upstream_rev_on_successful_sync(pm_update, tmp_path, monke
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     # baseline rev 읽기를 결정적으로 stub(라이브 git 0).
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "syncedrev42")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "syncedrev42")
 
     rc = pm_update.main([])  # 실 sync(dry-run 아님) — sentinel 1개 복사.
     assert rc == 0
@@ -508,9 +507,7 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
     rc = pm_update.main(["--dry-run"])
     assert rc == 0
@@ -531,9 +528,7 @@ def test_record_upstream_rev_baseline_records_seen_for_path_upstream(
     source = tmp_path / "src"
     source.mkdir()
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "pathrev1234")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "pathrev1234")
 
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
@@ -562,9 +557,7 @@ def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
     source = tmp_path / "src"
     source.mkdir()
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "nextsyncrev9")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "nextsyncrev9")
 
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
     text = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
@@ -591,9 +584,7 @@ def test_record_upstream_rev_baseline_records_seen_for_url_upstream(
     source = tmp_path / "cache"  # 엔진이 clone/fetch 한 로컬 캐시 checkout.
     source.mkdir()
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "cacheheadrev")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "cacheheadrev")
 
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
@@ -610,9 +601,7 @@ def test_record_upstream_revs_reports_same_keys_for_both_shapes(
     """
     source = tmp_path / "src"
     source.mkdir()
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shaperev777")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shaperev777")
 
     both = {"upstream.rev": "shaperev777", "upstream.seen_rev": "shaperev777"}
 
@@ -647,9 +636,7 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
     source = tmp_path / "src"
     source.mkdir()
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "onepassrev5")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "onepassrev5")
     calls: list[dict] = []
     real_write = install_conf._write_conf_keys_locked
     monkeypatch.setattr(
@@ -669,9 +656,7 @@ def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, c
     _write_local_conf(fake_repo, f"upstream.path={stored}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "bothkeysrev1")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "bothkeysrev1")
 
     assert pm_update.main([]) == 0
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
@@ -701,9 +686,7 @@ def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monk
     )
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "currentrev")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "currentrev")
 
     assert pm_update.main([]) == 0
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
@@ -726,9 +709,7 @@ def test_main_no_changes_with_matching_path_revs_is_quiet(pm_update, tmp_path, m
     )
     before = local_conf.read_text(encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "currentrev")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "currentrev")
     real_write_text = Path.write_text
     local_conf_writes: list[Path] = []
 
@@ -761,9 +742,7 @@ def test_main_no_changes_dry_run_does_not_converge_path_revs(
     )
     before = local_conf.read_text(encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "currentrev")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "currentrev")
 
     assert pm_update.main(["--dry-run"]) == 0
     assert local_conf.read_text(encoding="utf-8") == before
@@ -806,9 +785,7 @@ def test_main_url_sync_records_both_keys(pm_update, tmp_path, monkeypatch, capsy
     )
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "cachehead77")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "cachehead77")
 
     assert pm_update.main(["--from", str(cache)]) == 0
     out = capsys.readouterr().out
@@ -833,9 +810,7 @@ def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypa
     monkeypatch.setattr(
         pm_update, "detect_manifest_skew", lambda *a, **k: ("skew", [skew_stub]))
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
     assert pm_update.main([]) == 0
     out = capsys.readouterr().out
@@ -955,9 +930,7 @@ def test_main_selfheal_supersedes_skew_suppression(pm_update, tmp_path, monkeypa
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "amendrev")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "amendrev")
 
     rc = pm_update.main([])  # 실 sync.
     assert rc == 0
@@ -979,9 +952,7 @@ def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkey
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "insyncrev7")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "insyncrev7")
 
     rc = pm_update.main([])
     assert rc == 0
@@ -1005,9 +976,7 @@ def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "failsoftrev")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "failsoftrev")
 
     rc = pm_update.main([])
     assert rc == 0
@@ -1028,9 +997,7 @@ def test_main_dry_run_shows_selfheal_not_skew_without_recording(pm_update, tmp_p
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
     rc = pm_update.main(["--dry-run"])
     assert rc == 0
@@ -1058,9 +1025,7 @@ def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch,
     _write_local_conf(target_root, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "targetrev1")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "targetrev1")
 
     rc = pm_update.main(["--from", str(source), "--target", "tgt"])
     assert rc == 0
@@ -1416,17 +1381,15 @@ _OPENCODE_FLAVOR_MANIFEST = (
 def _make_guest_framework(root: Path) -> Path:
     """합성 프레임워크 — `templates/{claude_code,opencode}` 최소 manifest + 실 파일.
 
-    실 프레임워크와 같이 `tools/pm_import.py` 사본을 둔다 — 훅 세트 세대 선언이 거기 살고,
+    실 프레임워크와 같이 `tools/pm_engine` package 사본을 둔다 — 훅 세트 세대 선언이 거기 살고,
     경로 스코프 가드가 상류 세대를 못 읽으면 어댑터 훅 영역 부분 전파를 fail-closed 로 거부한다
     (T-0610). 상류가 온전한 checkout 이라는 전제를 픽스처가 재현해야 그 가드의 정상 경로를 탄다."""
     for rel, text in _GUEST_FRAMEWORK_FILES.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    upstream_pm_import = root / ".project_manager" / "tools" / "pm_import.py"
-    upstream_pm_import.parent.mkdir(parents=True, exist_ok=True)
-    upstream_pm_import.write_text(
-        (TOOLS / "pm_import.py").read_text(encoding="utf-8"), encoding="utf-8")
+    shutil.copytree(TOOLS / "pm_engine", root / ".project_manager" / "tools" / "pm_engine",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     (root / ".project_manager" / "engine.manifest").write_text(
         ".project_manager/tools/board.py\n", encoding="utf-8")
     for flavor, text in (("claude_code", _CLAUDE_FLAVOR_MANIFEST),
@@ -2866,9 +2829,7 @@ def test_main_selfheal_reaches_new_entry_in_one_run(pm_update, tmp_path, monkeyp
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "healedrev")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "healedrev")
 
     rc = pm_update.main([])  # 단일 실행.
     assert rc == 0
@@ -2896,9 +2857,7 @@ def test_main_dry_run_shows_selfheal_without_side_effects(pm_update, tmp_path, m
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
 
     rc = pm_update.main(["--dry-run"])
     assert rc == 0
@@ -2926,9 +2885,7 @@ def test_main_target_mode_skips_selfheal(pm_update, tmp_path, monkeypatch, capsy
     _write_local_conf(target_root, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "targetrev2")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "targetrev2")
 
     rc = pm_update.main(["--from", str(source), "--target", "tgt"])
     assert rc == 0
@@ -2971,9 +2928,7 @@ def test_main_flavor_selfheal_skew_uses_flavor_manifest_no_false_suppress(
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "flavorrev")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "flavorrev")
 
     rc = pm_update.main([])
     assert rc == 0
@@ -3034,9 +2989,7 @@ def test_url_upstream_explicit_from_local_still_works(pm_update, tmp_path, monke
     local_src = tmp_path / "local_checkout"
     _make_upstream(local_src)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "localrev1")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "localrev1")
 
     rc = pm_update.main(["--from", str(local_src)])
     assert rc == 0, f"명시 --from(로컬)인데 URL 게이트가 막음: {capsys.readouterr().err!r}"
@@ -4516,14 +4469,12 @@ def test_summarize_diff_failure_surfaces(pm_update, tmp_path):
 # ── main --changes end-to-end (fake _real_upstream_git_runner 주입·라이브 git 0) ──
 
 def _patch_upstream_runner(pm_update, monkeypatch, runner):
-    """_run_changes 가 git_runner 미주입으로 호출하므로 pm_import._real_upstream_git_runner 를 stub.
+    """_run_changes 가 git_runner 미주입으로 호출하므로 upstream_git._real_upstream_git_runner 를 stub.
 
-    summarize_upstream_changes(source, baseline, manifest) (git_runner 없음) → _load_pm_import().
+    summarize_upstream_changes(source, baseline, manifest) (git_runner 없음) → upstream_git.
     _real_upstream_git_runner() 를 부른다. 그 팩토리를 fake runner 반환으로 바꿔 라이브 git 0.
     """
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "_real_upstream_git_runner", lambda: runner)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "_real_upstream_git_runner", lambda: runner)
 
 
 def test_changes_main_normal_three_blocks(pm_update, tmp_path, monkeypatch, capsys):
@@ -4821,9 +4772,7 @@ def _selfheal_preview_fixture(pm_update, tmp_path, monkeypatch):
     _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
     return fake_repo, source
 
 
@@ -4897,9 +4846,7 @@ def _legacy_preserved_preview_fixture(pm_update, tmp_path, monkeypatch, shared_r
     _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "shouldnotappear")
     return fake_repo, source
 
 
@@ -5941,9 +5888,7 @@ def test_apply_board_separated_writes_template_into_board(pm_update, tmp_path, m
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     # baseline rev 기록은 본 테스트 무관 — 라이브 git 없이 graceful 생략되게 stub None.
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
     rc = pm_update.main([])  # 실 sync.
     assert rc == 0
@@ -6077,9 +6022,7 @@ def _make_flavor_manifest_repo(root: Path) -> None:
 
 def _stub_no_baseline_git(pm_update, monkeypatch) -> None:
     """baseline rev 기록을 라이브 git 없이 graceful 생략(read_upstream_rev→None)."""
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
 
 @pytest.mark.parametrize("target,flavor,foreign", [
@@ -6709,9 +6652,7 @@ def test_paths_scope_does_not_record_upstream_baseline(pm_update, tmp_path, monk
 
     같은 형상에서 스코프 없이 돌리면 baseline 이 기록된다(대조군) — 억제가 이 모드 고유임을 못박는다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "baseline")
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "scopedrev7")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "scopedrev7")
 
     assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
@@ -7167,12 +7108,11 @@ def test_adapter_config_accept_enters_auto_update_track(pm_update, tmp_path):
     """수용 → 백업 + template 채택 + 원장 기록 → **다음 상류 변경이 자동 갱신**된다.
 
     구세대 채택자가 보고 모드를 빠져나가는 경로 전체를 한 번에 태운다(수용 없이는 영구 보고)."""
-    pm_import = pm_update._load_pm_import()
     dest, source = _make_adapter_config_case(tmp_path, hooks=_EDITED_HOOKS)
     assert pm_update.sync_adapter_configs(dest, source, write=True)["preserved"], \
         "픽스처 전제(수용 전에는 보존+보고)"
 
-    outcome = pm_import.accept_adapter_config(
+    outcome = adapter_accept.accept_adapter_config(
         dest, source, _ADAPTER_HOOKS_REL,
         expected_sha256=hashlib.sha256(_EDITED_HOOKS.encode("utf-8")).hexdigest())
 
@@ -7199,8 +7139,7 @@ def test_adapter_baseline_ledger_is_not_registered_and_not_shipped(pm_update):
     등재하면 byte-copy 가 채택자 원장을 상류 값으로 덮어 "무편집" 판정이 통째로 거짓이 된다.
     동시에 출하물이 아니므로(인스턴스가 런타임에 만드는 상태 파일) **출하-등재 역방향 가드
     (T-0584)의 스캔 대상 밖**이다 — 그 가드에 예외 목록을 둘 이유가 없다는 판정의 근거다."""
-    pm_import = pm_update._load_pm_import()
-    ledger_rel = pm_import.ADAPTER_BASELINE_RELPATH.as_posix()
+    ledger_rel = adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()
     for manifest_path in _MANIFESTS:
         registered = {str(entry).replace("\\", "/")
                       for entry in manifest_store.read_manifest(manifest_path)}
@@ -7217,13 +7156,12 @@ def test_adapter_config_accept_refuses_when_file_changed_after_judgment(
 
     판정과 쓰기 사이는 실재하는 창이다 — 그 사이 채택자/다른 프로세스가 파일을 바꿨는데 판정
     시점 결론으로 덮으면, 백업엔 남더라도 "무편집이라 안전" 이라는 전제 자체가 거짓이 된다."""
-    pm_import = pm_update._load_pm_import()
     dest, source = _make_adapter_config_case(tmp_path, hooks=_INSTALLED_HOOKS)
     judged_hash = hashlib.sha256(_INSTALLED_HOOKS.encode("utf-8")).hexdigest()
     concurrent = '{"hooks": {"PreCompact": ["판정 뒤 편집"]}}\n'
     (dest / _ADAPTER_HOOKS_REL).write_text(concurrent, encoding="utf-8")
 
-    outcome = pm_import.accept_adapter_config(
+    outcome = adapter_accept.accept_adapter_config(
         dest, source, _ADAPTER_HOOKS_REL, expected_sha256=judged_hash)
 
     assert outcome.status == "raced", outcome
@@ -7238,12 +7176,11 @@ def test_adapter_config_accept_reports_ledger_failure_instead_of_success(
 
     파일 교체는 성공했는데 판정 기준이 안 남으면 다음 동기가 이 파일을 영구 보고 모드로 본다.
     호출부(CLI·동기 채널)가 그 사실을 알아야 사람에게 복구 경로를 낼 수 있다."""
-    pm_import = pm_import_module = pm_update._load_pm_import()
     dest, source = _make_adapter_config_case(tmp_path, hooks=_EDITED_HOOKS)
     # 원장 쓰기를 실패시킨다 — 기록 경로를 **디렉토리**로 점유(권한 chmod 는 root 에서 무력).
     (dest / ".project_manager" / "adapter_baseline.json").mkdir()
 
-    outcome = pm_import_module.accept_adapter_config(
+    outcome = adapter_accept.accept_adapter_config(
         dest, source, _ADAPTER_HOOKS_REL,
         expected_sha256=hashlib.sha256(_EDITED_HOOKS.encode("utf-8")).hexdigest())
 
@@ -7251,7 +7188,7 @@ def test_adapter_config_accept_reports_ledger_failure_instead_of_success(
     assert outcome.detail, "실패 사유가 비어 있다(호출부가 안내할 내용 없음)"
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _UPSTREAM_HOOKS, \
         "픽스처 전제(파일 교체 자체는 성공)"
-    assert pm_import.read_adapter_baseline(dest).get("files") == {}
+    assert adapter_baseline.read_adapter_baseline(dest).get("files") == {}
 
 
 def test_adapter_config_future_schema_ledger_is_not_overwritten(pm_update, tmp_path):
@@ -7259,7 +7196,6 @@ def test_adapter_config_future_schema_ledger_is_not_overwritten(pm_update, tmp_p
 
     해석 못 하는 문서를 빈 원장으로 접은 뒤 이 엔진 형식으로 다시 쓰면 신 엔진의 기록이 통째로
     파괴된다(읽기 거부와 쓰기 거부는 짝이어야 한다·설치 기록과 동형)."""
-    pm_import = pm_update._load_pm_import()
     dest, source = _make_adapter_config_case(tmp_path, hooks=_INSTALLED_HOOKS)
     ledger_path = dest / ".project_manager" / "adapter_baseline.json"
     future = json.dumps(
@@ -7269,15 +7205,15 @@ def test_adapter_config_future_schema_ledger_is_not_overwritten(pm_update, tmp_p
     ledger_path.write_text(future, encoding="utf-8")
 
     # 판정: 해석 불가 → 빈 원장 취급(=보존 쪽). 기록: 거부.
-    assert pm_import.read_adapter_baseline(dest)["files"] == {}
-    assert pm_import.record_adapter_baseline(dest, source) == []
+    assert adapter_baseline.read_adapter_baseline(dest)["files"] == {}
+    assert adapter_accept.record_adapter_baseline(dest, source) == []
     assert ledger_path.read_text(encoding="utf-8") == future, "미래 schema 원장을 덮었다"
 
     # 동기 채널·수용도 같은 판정을 받는다 — 파일은 손대지 않고 loud 하게 보존한다.
     result = pm_update.sync_adapter_configs(dest, source, write=True)
     assert result["updated"] == []
     assert ledger_path.read_text(encoding="utf-8") == future
-    outcome = pm_import.accept_adapter_config(dest, source, _ADAPTER_HOOKS_REL)
+    outcome = adapter_accept.accept_adapter_config(dest, source, _ADAPTER_HOOKS_REL)
     assert outcome.status == "ledger-blocked", outcome
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _INSTALLED_HOOKS, \
         "원장을 못 쓰는데 파일을 갈아치웠다(다음 동기가 영구 보고 모드로 본다)"
@@ -7289,7 +7225,6 @@ def test_adapter_config_write_is_atomic_replace_not_truncate_in_place(
 
     in-place `O_TRUNC` 재열기는 디스크 오류 시 원본을 날린 채 호출부엔 "원본 보존" 으로 보고되는
     창을 만든다. 임시 파일 write 단계에서 실패시켜 **원본 byte 불변 + 임시 파일 잔재 0** 을 본다."""
-    pm_import = pm_update._load_pm_import()
     dest, source = _make_adapter_config_case(tmp_path, hooks=_EDITED_HOOKS)
 
     def _fail_fsync(_fd):
@@ -7297,7 +7232,7 @@ def test_adapter_config_write_is_atomic_replace_not_truncate_in_place(
 
     monkeypatch.setattr(os, "fsync", _fail_fsync)  # 엔진이 쓰는 그 os 모듈 객체.
 
-    outcome = pm_import.accept_adapter_config(
+    outcome = adapter_accept.accept_adapter_config(
         dest, source, _ADAPTER_HOOKS_REL,
         expected_sha256=hashlib.sha256(_EDITED_HOOKS.encode("utf-8")).hexdigest())
 
@@ -7308,32 +7243,11 @@ def test_adapter_config_write_is_atomic_replace_not_truncate_in_place(
     assert leftovers == [], f"임시 파일 잔재: {leftovers}"
 
 
-def test_adapter_config_unavailable_channel_is_loud_not_silent(
-        pm_update, tmp_path, monkeypatch, capsys):
-    """채널이 못 돌면(**pm_import 로드 실패 등**) 조용히 넘기지 않는다 (형제 훅 재설치 동형).
-
-    조용한 skip 은 "상류 동작 fix 가 이 채택자에 안 갔다" 는 사실을 관측 불가로 만든다 —
-    hooks.json 이 옛 세대로 남았는데 출력 0줄이면 사람이 알 방법이 없다."""
-    dest, source = _make_adapter_config_case(tmp_path, hooks=_INSTALLED_HOOKS)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: None)
-
-    result = pm_update.sync_adapter_configs(dest, source, write=True)
-    pm_update._print_adapter_config_finding(result, dry_run=False)
-
-    assert result["status"] == "unavailable" and result["reason"]
-    err = capsys.readouterr().err
-    assert "어댑터 config 채널을 건너뛰었다" in err, f"무음 skip(관측 불가): {err!r}"
-    assert result["reason"] in err, "사유가 안 나와 사람이 원인을 못 짚는다"
-    assert "sync-adapter-config --list" in err, "판정 조회 안내 부재"
-
-
 def test_adapter_config_backfill_is_green_only_after_ledger_verification(
         pm_update, tmp_path, monkeypatch):
     """template byte가 같아도 원장 write 실패면 backfilled 성공/green으로 접지 않는다."""
-    pm_import = pm_update._load_pm_import()
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
-    monkeypatch.setattr(pm_import, "record_adapter_baseline", lambda *_a, **_kw: [])
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(adapter_accept, "record_adapter_baseline", lambda *_a, **_kw: [])
 
     result = pm_update.sync_adapter_configs(dest, source, write=True)
 
@@ -7350,14 +7264,12 @@ def test_adapter_config_backfill_is_green_only_after_ledger_verification(
 def test_adapter_config_ledger_exception_is_rc_contract_not_traceback(
         pm_update, tmp_path, monkeypatch):
     """원장 writer 예외도 파일 적용을 되돌리지 않고 managed red 결과로 번역한다."""
-    pm_import = pm_update._load_pm_import()
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
 
     def _raise(*_args, **_kwargs):
         raise OSError("ledger disk failure")
 
-    monkeypatch.setattr(pm_import, "record_adapter_baseline", _raise)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(adapter_accept, "record_adapter_baseline", _raise)
 
     result = pm_update.sync_adapter_configs(dest, source, write=True)
 
@@ -7419,10 +7331,8 @@ def test_pm_update_adapter_channel_unavailable_is_rc1(
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_bytes(sentinel.read_bytes())
     monkeypatch.setattr(pm_update, "REPO", dest)
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "judge_adapter_configs",
+    monkeypatch.setattr(adapter_report, "judge_adapter_configs",
                         lambda *_a, **_k: (_ for _ in ()).throw(OSError("판정 채널 고장")))
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
     assert pm_update.main(["--from", str(source)]) == 1
@@ -7520,7 +7430,6 @@ def test_adapter_config_outer_gate_candidate_zero_is_false(pm_update, tmp_path):
 
 def test_adapter_config_outer_candidate_paths_match_channel_declaration(pm_update):
     """복구용 외곽 후보 상수는 중앙 channel의 non-none 경로 전수와 정확히 일치한다."""
-    pm_import = pm_update._load_pm_import()
     declared = {
         relpath
         for channel in install_rules.ADAPTER_CONFIG_CHANNEL.values()
@@ -7934,11 +7843,14 @@ def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp
     assert card.read_bytes() == settled, "허용값 밖 값으로 카드가 다시 기록됐다"
 
 
-def _import_adopter(pm_import, dest: Path, harness: str = "claude") -> None:
+def _import_adopter(dest: Path, harness: str = "claude") -> None:
     """fresh 채택자 설치 (출력 삼킴·라이브 하네스 미호출)."""
     import io
     from contextlib import redirect_stdout
 
+    spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
+    pm_import = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm_import)
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = pm_import.main([
@@ -7969,10 +7881,9 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     → local.conf 에 sonnet/haiku 기록 → pm-update 초회·수렴 두 실행 모두 그 값으로 렌더 →
     delegate_channel_guard 경고 0.
     """
-    pm_import = pm_update._load_pm_import()
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
-    _import_adopter(pm_import, dest, "claude")
+    _import_adopter(dest, "claude")
     card = dest / ".claude" / "agents" / "developer.md"
 
     # ① 위임 미설정 fresh import — 활성 리터럴 대신 TODO 중화, 어댑터 토큰 leak 0.
@@ -8003,7 +7914,6 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
         "채택자 재동기가 리터럴을 되돌린다"
     )
     monkeypatch.setattr(pm_update, "REPO", dest)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     for run in ("초회", "수렴"):
         assert pm_update.main(["--from", str(REPO)]) == 0, f"{run} pm-update rc≠0"
         assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "sonnet"', \
@@ -8040,12 +7950,11 @@ def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
     안 잡히는 사각이라 guest 형상으로 직접 태운다: dry-run `[render]` 예고 → apply 값 일치 →
     재실행 변경 0(멱등).
     """
-    pm_import = pm_update._load_pm_import()
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
     dest = tmp_path / "guest-adopter"
-    _import_adopter(pm_import, dest, "codex")
-    pm_import.add_harness(dest, "claude", dry_run=False, source_root=REPO)
+    _import_adopter(dest, "codex")
+    add_harness.add_harness(ENGINE_HOME, dest, "claude", dry_run=False, source_root=REPO)
     capsys.readouterr()
     card = dest / ".claude" / "agents" / "developer.md"
     assert card.is_file(), "claude-as-guest 카드 미복사(픽스처 전제 붕괴)"
@@ -8061,7 +7970,6 @@ def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
     _pin_card_model(card, "opus")  # 옛 값(손편집) — 다음 update 가 되돌려야 한다.
 
     monkeypatch.setattr(pm_update, "REPO", dest)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
     assert pm_update.main(["--from", str(REPO), "--dry-run"]) == 0
@@ -8086,11 +7994,10 @@ def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monk
     codex host 인데 developer 를 claude 로 위임하는 형상: `.codex/agents/developer-hard.toml` 은
     이번 형상에서 스폰되지 않으므로 claude 용 모델을 박으면 카드가 conf 와 어긋난 사실을 감춘다.
     렌더는 실패하지 않는다 — 미해소가 update rc 를 바꾸지 않는다."""
-    pm_import = pm_update._load_pm_import()
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
     dest = tmp_path / "unused-profile"
-    _import_adopter(pm_import, dest, "codex")
+    _import_adopter(dest, "codex")
     capsys.readouterr()
 
     conf = dest / ".project_manager" / "local.conf"
@@ -8102,7 +8009,6 @@ def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monk
         encoding="utf-8", newline="\n",
     )
     monkeypatch.setattr(pm_update, "REPO", dest)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
     assert pm_update.main(["--from", str(REPO)]) == 0, "미사용 프로필이 update rc 를 바꿨다"
@@ -8153,10 +8059,9 @@ def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch)
     rc 1 이고 설정 파일은 그대로다."""
     import tomllib
 
-    pm_import = pm_update._load_pm_import()
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
-    _import_adopter(pm_import, dest, "claude,codex")
+    _import_adopter(dest, "claude,codex")
     conf = dest / ".project_manager" / "local.conf"
     kept = [line for line in conf.read_text(encoding="utf-8").splitlines()
             if not line.startswith("ctx.")]
@@ -8204,10 +8109,9 @@ def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, mo
 
     HOME 아래 `.config/opencode` 와 `OPENCODE_CONFIG_DIR` 의 설정은 대상이 아니다. 전역 파일은
     읽기만 하고, dry-run 은 프로젝트 파일을 바꾸지 않는다."""
-    pm_import = pm_update._load_pm_import()
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
-    _import_adopter(pm_import, dest, "opencode")
+    _import_adopter(dest, "opencode")
     xdg = tmp_path / "xdg"
     (xdg / "opencode").mkdir(parents=True)
     global_file = xdg / "opencode" / "opencode.jsonc"
@@ -8235,7 +8139,7 @@ def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, mo
 
     run = _adopter_update(dest, env=env)
     assert run.returncode == 0, run.stdout + run.stderr
-    document = pm_import._load_adapter_config_document(project)
+    document = adapter_documents._load_adapter_config_document(project)
     models = document["provider"]["ollama"]["models"]
     assert models["gemma-t"]["limit"] == {"context": 2000000, "input": 200000, "output": 32000}
     assert "home-model" not in models and "config-dir-model" not in models
@@ -8359,13 +8263,12 @@ def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
 def test_conf_apply_key_groups_select_steps(pm_update):
     """키 묶음 판정 — 사용 한도 키는 다른 묶음과 겹치지 않고, 추론 값 묶음은 추론 값이 있는 프로필(위임
     세트·대체 세트·추가 리뷰어)의 하네스·모델·추론 키 전부다. 위임 세트 키는 렌더 입력 묶음에도 걸린다."""
-    pm_import = pm_update._load_pm_import()
     render_keys = pm_update.render_input_conf_keys()
     local_conf = conf_schema
     ctx_keys = set(local_conf.CTX_INPUT_KEYS)
     assert len(render_keys) == 22, sorted(render_keys)
-    assert all(pm_import.is_harness_ctx_input_key(key) for key in ctx_keys)
-    assert not any(pm_import.is_harness_ctx_input_key(key) for key in render_keys)
+    assert all(harness_ctx.is_harness_ctx_input_key(key) for key in ctx_keys)
+    assert not any(harness_ctx.is_harness_ctx_input_key(key) for key in render_keys)
     assert not render_keys & ctx_keys
     expected = {
         "ctx.compact_at_pct": [True, False, False],
@@ -8377,7 +8280,7 @@ def test_conf_apply_key_groups_select_steps(pm_update):
         "identity.user": [False, False, False],
     }
     for key, steps in expected.items():
-        assert [step.key_filter(pm_import)(key) for step in pm_update.CONF_APPLY_STEPS] == steps, key
+        assert [step.key_filter(key) for step in pm_update.CONF_APPLY_STEPS] == steps, key
 
 
 # ── 갱신의 추론 값 정리(conf 이관) — 그 모델이 받지 않는 opencode 추론 값을 지우고 알린다 (T-0946) ──

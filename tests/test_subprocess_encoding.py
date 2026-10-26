@@ -43,6 +43,7 @@ from _engine_tree import engine_python_files
 from pm_engine.infra.harness import contract
 from pm_engine.cli import regression_cmd
 from pm_engine.infra import pre_push_hook, python_env
+from pm_engine.app import install_board
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -168,7 +169,7 @@ def test_pm_import_harness_runner_uses_utf8_watchdog(pm_import, monkeypatch):
 
     # 실행 파일 찾기가 이 머신 PATH(claude 설치 여부)에 매이지 않게 이름 그대로 돌려준다.
     monkeypatch.setattr(contract, "resolve_executable", lambda name, env: name)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", recording_forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", recording_forbidden_popen)
     ok, _ = import_fill._real_harness_runner(
         ["claude", "-p", "분석 프롬프트"], "프롬프트")
 
@@ -184,8 +185,8 @@ def test_pm_import_board_init_passes_utf8(pm_import, monkeypatch, tmp_path):
     tools.mkdir(parents=True)
     (tools / "pm_config.py").write_text("# stub", encoding="utf-8")
     rec = _Recorder()
-    monkeypatch.setattr(pm_import.subprocess, "run", rec)
-    pm_import.run_board_init(tmp_path)
+    monkeypatch.setattr(subprocess, "run", rec)
+    install_board.run_board_init(tmp_path)
     assert rec.calls
     _assert_utf8(rec.calls[0])
 

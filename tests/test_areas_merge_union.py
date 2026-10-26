@@ -46,6 +46,8 @@ from pm_engine.domain import board_git_rules
 from pm_engine.infra import areas_store
 from pm_engine.infra import board_git
 
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -65,8 +67,7 @@ def _load_mod(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture

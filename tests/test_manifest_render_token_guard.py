@@ -51,7 +51,10 @@ import pytest
 from _git_fixture import init_git_repo
 from pm_engine.infra import manifest_store, pre_push_hook
 from pm_engine.infra import pm_paths
+from pm_engine.infra import upstream_git
 from pm_engine.infra import task_store
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -83,8 +86,7 @@ def _load(name: str, alias: str | None = None):
     spec = importlib.util.spec_from_file_location(alias or name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="module")
@@ -491,8 +493,7 @@ def test_import_then_update_roundtrip_does_not_oscillate(
     가 아니다.
     """
     framework = _build_claude_framework(tmp_path)
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
     dest = tmp_path / "adopter"
     buf = io.StringIO()

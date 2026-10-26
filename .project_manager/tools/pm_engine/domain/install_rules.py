@@ -424,3 +424,10 @@ def _in_adapter_namespace(
     if _is_render_managed(rel_posix, owned_paths):
         return False
     return True
+
+
+# --into 백업 중앙화 디렉토리. 충돌 파일별 형제 `*.backup.<DATE>` 를 트리 전역에
+# 흩뿌리는 대신, 무백업 덮기 불가(미추적·dirty·비-git)인 파일만 단일 디렉토리
+# `<dest>/.pm_import_backups/<DATE>/` 에 relpath 미러링으로 모은다. git 이 추적 중이고
+# 미변경인 파일은 git 이 내용을 보존하므로 백업 없이 덮는다(git-safe skip).
+BACKUP_DIR_NAME = ".pm_import_backups"

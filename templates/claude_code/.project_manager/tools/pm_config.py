@@ -56,13 +56,13 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
   - task end → ticket_access.scan_task_tickets(claimed 소진 게이트) → task_lifecycle.end_task(dirty 게이트·
                일괄 idle 반납·서술 폴더 `_ended/<task>-<날짜>/` 아카이브 이동·삭제 아님).
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
-  - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
-                  (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
+  - add-harness → app.add_harness.add_harness_cli(home, dest, harness, dry_run=, source_root=) verbatim forward
+                  (복사 스코프+인터페이스 예외 번역+소스 해소는 app.add_harness 단일 진실·
                   중복 0). `--from` 생략 시 dest local.conf upstream.path 자동 해소(imported 인스턴스).
   - delegate models → contract.model_listing(모델 원천 표 `MODEL_SOURCE` 한 행의 조회 — 별칭 표 그대로 /
                   표가 선언한 조회 명령 실행). 응답에 모델별 `variants`(opencode)가 실린다.
                   읽기 전용이고 조회 실패는 빈 목록이 아니라 rc 3 이다(사유는 stderr 한 줄).
-  - sync-adapter-config → pm_import.judge_adapter_configs(조회) / accept_adapter_config(수용·백업
+  - sync-adapter-config → adapter_report.judge_adapter_configs(조회) / adapter_accept.accept_adapter_config(수용·백업
                   후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
                   분만 자동 갱신하고 나머지는 보존+보고하므로, 이 커맨드가 보존분을 채택자가
                   명시적으로 받는 유일한 채널이다(소스 해소는 add-harness 와 같은 규칙).
@@ -86,13 +86,11 @@ import argparse
 import contextlib
 import datetime
 import functools
-import inspect
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Callable
 
 
@@ -104,9 +102,18 @@ from pm_engine.domain import conf_schema, upstream_rules
 from pm_engine.infra import conf_store, console, fs, lease_store, pm_paths, repo_files
 from pm_engine.infra.harness import contract
 from pm_engine.app import repo_protection
+from pm_engine.app import adapter_accept
+from pm_engine.app import adapter_report
+from pm_engine.app import adapter_templates
+from pm_engine.app import add_harness
+from pm_engine.app import harness_ctx
+from pm_engine.app import hook_sets
 from pm_engine.app import import_fill
 from pm_engine.domain import install_rules
+from pm_engine.infra import adapter_baseline
 from pm_engine.infra import install_conf
+from pm_engine.infra import install_receipt
+from pm_engine.infra import upstream_git
 from pm_engine.infra import branch_store, git
 from pm_engine.infra import pool_store
 from pm_engine.infra import task_store
@@ -546,17 +553,17 @@ def _source_missing_required(source_root: Path, values: dict) -> list[str]:
             if row["kind"] == "key" and row["required"] and row["key"] not in values]
 
 
-def _status_json_conf(pm_import_mod, source_root: Path | None) -> dict:
+def _status_json_conf(source_root: Path | None) -> dict:
     """설정 완전성 — 필수 누락·폐지 키·미지 키·표준과 다른 값·최신 기준 누락 다섯 목록.
 
     판정은 `conf_schema` 레지스트리 하나가 낸다(값 해석 사본 0). 압축 한도(`ctx_budget`)는 기록과
-    도구 설정 파일을 함께 읽는 `pm_import.ctx_budget_status` 가 낸다. `missing_for_latest` 는 소스
+    도구 설정 파일을 함께 읽는 `harness_ctx.ctx_budget_status` 가 낸다. `missing_for_latest` 는 소스
     checkout 이 해소된 호출(`--from` 또는 `--with-adapters`)에서만 채워지고 그 밖에는 null 이다.
     """
     result = conf_store.load(REPO / ".project_manager" / "local.conf")
     values = result.values
     return {
-        "ctx_budget": pm_import_mod.ctx_budget_status(REPO, values),
+        "ctx_budget": harness_ctx.ctx_budget_status(REPO, values),
         "missing_required": list(conf_schema.missing_required(values)),
         "legacy": [{"key": key, "replacement": replacement}
                    for key, replacement in sorted(result.legacy.items())],
@@ -568,7 +575,7 @@ def _status_json_conf(pm_import_mod, source_root: Path | None) -> dict:
     }
 
 
-def _status_json_adapters(pm_import_mod, source_root: Path) -> dict:
+def _status_json_adapters(source_root: Path) -> dict:
     """어댑터 파일별 판정·diff 둘·기능 표 + 문서 파일(검사 없음) 한 줄.
 
     판정 어휘(`mode`·`status`)는 엔진 값 그대로다 — 표시 라벨은 읽는 쪽(관리자) 몫이라 여기서
@@ -588,17 +595,17 @@ def _status_json_adapters(pm_import_mod, source_root: Path) -> dict:
                       "latest": feature.latest, "verdict": feature.verdict}
                      for feature in report.features],
         "distance": report.distance,
-    } for report in pm_import_mod.adapter_config_reports(REPO, source_root)]
+    } for report in adapter_report.adapter_config_reports(REPO, source_root)]
     files.extend(
         {"path": target.relpath, "ownership": "instance", "status": "unchecked"}
-        for target in pm_import_mod.instance_owned_template_targets(REPO, source_root)
+        for target in adapter_templates.instance_owned_template_targets(REPO, source_root)
         if target.mode == install_rules.ADAPTER_CONFIG_NO_CHANNEL
     )
     files.sort(key=lambda row: row["path"])
     return {"source": str(Path(source_root).resolve()), "files": files}
 
 
-def _status_json_document(args,  *, board_mod, pm_import_mod,
+def _status_json_document(args,  *, board_mod,
                           source_root: Path | None, git_runner: worktree_records.GitRunner) -> dict:
     """현황 JSON 한 벌 — 절 순서는 계약이 아니고 키가 계약이다(스키마 번호는 상수 하나)."""
     leases = pool_store.list_leases(pm_paths.home_at(REPO))
@@ -616,26 +623,21 @@ def _status_json_document(args,  *, board_mod, pm_import_mod,
         "tasks": _status_json_tasks( tasks),
         "git": _status_json_git(git_runner),
         "repos": _status_json_repos(),
-        "harnesses": list(pm_import_mod.installed_harnesses(REPO)),
-        "conf": _status_json_conf(pm_import_mod, source_root),
+        "harnesses": list(install_receipt.installed_harnesses(REPO)),
+        "conf": _status_json_conf(source_root),
         "board": None if board_mod is None else board_mod.status_snapshot(),
         "adapters": (None if not getattr(args, "with_adapters", False)
-                     else _status_json_adapters(pm_import_mod, source_root)),
+                     else _status_json_adapters(source_root)),
     }
 
 
-def _emit_status_json(args,  *, board=None, pm_import=None) -> int:
+def _emit_status_json(args,  *, board=None) -> int:
     """`status --json` — 문서를 **전부 만든 뒤** 한 번에 낸다(부분 산출 없음).
 
     소스가 필요한 절(`--with-adapters`·`--from`)에서 소스를 못 잡으면 stdout 에 아무것도 쓰지
     않고 rc≠0 이다 — 반쪽 JSON 을 파싱한 관리자가 "그 절이 비어 있다" 를 정상으로 읽는 것이
     이 계약이 막으려는 상태다(텍스트 경로 `sync-adapter-config` 의 `[중단]` + rc 1 과 같은 판정).
     """
-    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
-    if pm_import_mod is None:
-        print("[중단] pm_import.py 엔진을 찾을 수 없다 — 하네스·어댑터 조회 불가 "
-              f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).", file=sys.stderr)
-        return 1
     board_mod = None
     if getattr(args, "with_board", False):
         board_mod = board or _load_module("board", "board.py")
@@ -646,21 +648,21 @@ def _emit_status_json(args,  *, board=None, pm_import=None) -> int:
     source_root: Path | None = None
     if getattr(args, "with_adapters", False) or getattr(args, "source", None):
         try:
-            source_root = pm_import_mod.resolve_adapter_config_source(
+            source_root = adapter_accept.resolve_adapter_config_source(
                 REPO, getattr(args, "source", None))
         except FileNotFoundError as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
-        except pm_import_mod.UpstreamCacheError as exc:
+        except upstream_git.UpstreamCacheError as exc:
             # URL upstream 캐시 clone/fetch 실패 — 옛 캐시로 진행하지 않고 조회를 멈춘다.
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
     try:
         document = _status_json_document(
-            args,  board_mod=board_mod, pm_import_mod=pm_import_mod,
+            args,  board_mod=board_mod,
             source_root=source_root,
             git_runner=git._real_clone_runner())
-    except (FileNotFoundError, pm_import_mod.AdapterConfigChannelUnavailable) as exc:
+    except (FileNotFoundError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:
         # 판정 기준이 없는 상태 둘만 rc 로 번역한다 — 소스에 대조할 파일이 없거나(잘못된 `--from`)
         # 어댑터 판정 채널이 unavailable 인 경우. 그 밖의 실패는 삼키지 않는다(정상 산출로 위장 금지).
         print(f"[중단] 현황 JSON 조회 실패: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -695,7 +697,6 @@ def cmd_status(
     *,
 
     board=None,
-    pm_import=None,
 ) -> int:
     """`status | whoami` — 2축 cockpit(task 상황 + slot 풀·슬롯당 git 요약).
 
@@ -718,7 +719,7 @@ def cmd_status(
     표면). 텍스트 출력은 그 플래그가 없을 때 종전 바이트 그대로다. `--json` 은 `status` 전용이라
     `whoami` 는 텍스트 별칭으로 남는다(계약 하나).
 
-    worktree_pool 주입으로 hermetic 테스트(board·pm_import 도 같은 관례).
+    worktree_pool 주입으로 hermetic 테스트(board 도 같은 관례).
     """
     usage_error = _status_json_usage_error(args)
     if usage_error is not None:
@@ -726,7 +727,7 @@ def cmd_status(
         return 2                              # 인자 오용 — argparse 와 같은 종료코드.
 
     if getattr(args, "json", False):
-        return _emit_status_json(args,  board=board, pm_import=pm_import)
+        return _emit_status_json(args,  board=board)
     leases = pool_store.list_leases(pm_paths.home_at(REPO))
     sess = lease_store.session_name(pm_paths.home_at(REPO))
     mine = [l for l in leases if l.state == "leased" and l.session == sess]
@@ -930,28 +931,28 @@ def cmd_update(
 # upstream 값(URL|경로 self-describing)을 조회/전환한다. set 은 검증(URL→ls-remote 도달성·
 # 경로→존재+checkout)을 통과해야 local.conf 에 atomic 재기록(타 키 보존)된다 — fail-closed
 # (나쁜 값 silently 기록 금지). URL 안전 계약(scheme allowlist·credential 거부·leading-dash·
-# argv-list·timeout)·local.conf set-or-replace 는 pm_import 헬퍼를 재사용한다(중복 구현 0).
+# argv-list·timeout)은 domain.upstream_rules·infra.upstream_git, local.conf set-or-replace 는
+# infra.install_conf 를 재사용한다(중복 구현 0).
 
 
 def _validate_upstream_reachable(
     value: str,
     *,
-    pm_import_mod,
     git_runner: worktree_records.GitRunner | None = None,
 ) -> tuple[bool, str]:
     """upstream 값 도달성 검증 — URL→`git ls-remote`·경로→존재+git checkout (fail-closed).
 
-    pm_import.validate_upstream_value(순수 형태 안전·scheme/credential/dash)를 먼저 통과시킨 뒤
+    upstream_rules.validate_upstream_value(순수 형태 안전·scheme/credential/dash)를 먼저 통과시킨 뒤
     *도달성*을 본다:
       - URL  → `git ls-remote <url>` rc==0(원격 reachable·argv-list·timeout·GIT_TERMINAL_PROMPT=0).
       - 경로 → 디렉토리 존재 + `git -C <path> rev-parse --is-inside-work-tree` rc==0(git checkout).
-    git 호출은 pm_import._real_upstream_git_runner(URL 안전 계약)를 기본으로, 테스트는 git_runner
+    git 호출은 upstream_git._real_upstream_git_runner(URL 안전 계약)를 기본으로, 테스트는 git_runner
     주입(라이브 git 0). (ok, reason). 실패는 모두 거부(fail-closed) — silently 기록 금지.
     """
-    ok, reason = pm_import_mod.validate_upstream_value(value)
+    ok, reason = upstream_rules.validate_upstream_value(value)
     if not ok:
         return False, reason
-    runner = git_runner if git_runner is not None else pm_import_mod._real_upstream_git_runner()
+    runner = git_runner if git_runner is not None else upstream_git._real_upstream_git_runner()
     kind = upstream_rules.classify_upstream(value)
     if kind == "url":
         # `--` 로 위치인자 종결(value 가 옵션으로 오인되지 않게·leading-dash 는 이미 거부됨이나 방어).
@@ -978,7 +979,6 @@ def _validate_upstream_reachable(
 def cmd_upstream(
     args: argparse.Namespace,
     *,
-    pm_import=None,
     git_runner: worktree_records.GitRunner | None = None,
 ) -> int:
     """`upstream show | set <value>` — upstream 값 조회/전환.
@@ -988,19 +988,10 @@ def cmd_upstream(
       `upstream.path=` atomic 재기록(타 키 보존). 나쁜 값은 거부(rc 1·기록 안 함). 값 self-describing
       이라 path↔URL 전환이 자동(스킬 freshness 분기가 모양으로 적응).
 
-    local.conf set-or-replace(install_conf._set_conf_keys·타 키·주석 보존)·URL 안전 검증(pm_import.
-    validate_upstream_value)을 재사용한다(중복 0). pm_import/git_runner 주입으로 hermetic 테스트
+    local.conf set-or-replace(install_conf._set_conf_keys·타 키·주석 보존)·URL 안전 검증(upstream_rules.
+    validate_upstream_value)을 재사용한다(중복 0). git_runner 주입으로 hermetic 테스트
     (라이브 git/실 conf-write 없이 배선·검증 분기 검증).
     """
-    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
-    if pm_import_mod is None:
-        print(
-            "[중단] pm_import.py 엔진을 찾을 수 없다 — upstream 조회/전환 불가 "
-            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
-
     local_conf = REPO / ".project_manager" / "local.conf"
     action = getattr(args, "upstream_action", None)
 
@@ -1029,8 +1020,7 @@ def cmd_upstream(
         )
         return 1
 
-    ok, reason = _validate_upstream_reachable(
-        value, pm_import_mod=pm_import_mod, git_runner=git_runner)
+    ok, reason = _validate_upstream_reachable(value, git_runner=git_runner)
     if not ok:
         print(f"[중단] upstream 값 거부 (기록 안 함) — {reason}", file=sys.stderr)
         return 1
@@ -1090,15 +1080,14 @@ def cmd_init(
 def cmd_add_harness(
     args: argparse.Namespace,
     *,
-    pm_import=None,
     dest_root: Path | None = None,
 ) -> int:
     """`add-harness <harness> [--dry-run]` — 라이브 인스턴스에 두 번째 harness 어댑터 추가.
 
-    pm_import.add_harness_cli(dest, harness, dry_run=) 로 verbatim 위임한다 — 복사 스코프(어댑터
-    네임스페이스만)·비파괴 백업·토큰 치환은 pm_import 의 add_harness 가, 인터페이스 예외의 친화
-    번역(rc 1)은 그 main-style 래퍼 add_harness_cli 가 단일 진실로 소유한다(pm_import 가 CLI 규격·
-    로직/에러경계 중복 0). harness 는 choices 로 재검증하지 않고 verbatim 으로 넘긴다 — 미지원
+    `app.add_harness.add_harness_cli(home, dest, harness, dry_run=)` 로 verbatim 위임한다 — 복사
+    스코프(어댑터 네임스페이스만)·비파괴 백업·토큰 치환은 add_harness 가, 인터페이스 예외의 친화
+    번역(rc 1)은 그 main-style 래퍼 add_harness_cli 가 단일 진실로 소유한다(CLI 규격·
+    로직/에러경계 중복 0). 실행 Home 은 이 pm_config 사본의 REPO 앵커다. harness 는 choices 로 재검증하지 않고 verbatim 으로 넘긴다 — 미지원
     harness('both'/오타)는 add_harness_cli 가 ValueError→rc 1 로 거른다(pm_config 자체 검증 0).
 
     dest 해소는 기존 pm_config 관례(REPO=스크립트-위치 앵커·cwd 무관·cmd_upstream 과 동형) —
@@ -1106,31 +1095,24 @@ def cmd_add_harness(
     미주입 시 *호출 시점*에 REPO 로 해소한다(테스트 monkeypatch/주입 존중·cmd_repo_add repos_dir
     동형 — 함수 default 로 굳히면 주입이 안 먹는다).
 
-    pm_import/dest_root 주입으로 hermetic 테스트(실 복사 부작용 없이 위임 배선 검증).
+    dest_root 주입으로 hermetic 테스트(실 복사 부작용 없이 위임 배선 검증).
     """
-    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
-    if pm_import_mod is None:
-        print(
-            "[중단] pm_import.py 엔진을 찾을 수 없다 — harness 추가 불가 "
-            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
     dest = dest_root if dest_root is not None else REPO
-    # --from(source_root) 은 optional — 생략 시 pm_import 가 dest local.conf upstream.path 에서 어댑터
+    # --from(source_root) 은 optional — 생략 시 add_harness 가 dest local.conf upstream.path 에서 어댑터
     # 소스를 자동 해소한다(imported 인스턴스 갭). 기존 Namespace(테스트/구 호출)에 source 가
     # 없어도 getattr 로 안전하게 None 폴백(하위호환·verbatim forward).
     source_root = getattr(args, "source", None)
     # usage prog 정합 — init/update forward 와 동형 위임-경계 가드. add_harness_cli
     # 는 자체 argparse 를 만들지 않고 main-style 로 출력·rc 반환하지만, 위임 경계를 init/update 와
-    # 균일하게 감싸 pm_import 가 어떤 argparse usage 를 surface 하더라도 파일명("pm_import.py")이 새지
+    # 균일하게 감싸 어떤 argparse usage 가 surface 되더라도 파일명("pm_import.py")이 새지
     # 않게 한다(에이전트가 칠 실 커맨드 pm-config add-harness 와 정합·경계 leak 0). rc 는 그대로 전파.
     with _forwarded_prog({"pm_import.py": f"{repo_protection._FACADE_PROG} add-harness"}):
-        return pm_import_mod.add_harness_cli(
-            dest, args.harness, dry_run=args.dry_run, source_root=source_root)
+        return add_harness.add_harness_cli(
+            pm_paths.home_at(REPO), dest, args.harness, dry_run=args.dry_run,
+            source_root=source_root)
 
 
-# instance-owned 어댑터 config 판정 → 사람이 읽을 라벨. 판정 이름 자체는 pm_import 소유이고
+# instance-owned 어댑터 config 판정 → 사람이 읽을 라벨. 판정 이름 자체는 app.adapter_report 소유이고
 # 여기선 표시만 한다(판정 사본 0). ⚠ **라벨은 mode 와 함께 판정한다** — `unedited` 는 managed 에서만
 # 자동 갱신을 뜻하고 report 대상에선 "무편집이지만 갱신 안 함" 이다(status 만 보면 거짓 안내).
 _ADAPTER_CONFIG_STATUS_LABEL = {
@@ -1154,56 +1136,16 @@ _ADAPTER_ACCEPT_FAILURE_HINT = {
 }
 
 
-def _accepts_kwarg(func, name: str) -> bool:
-    """그 함수가 이 키워드를 받는가 — **엔진 사본 세대 차** 흡수 지점.
-
-    복구 채널·부분 전파 창에서는 형제 pm_import 가 직전 세대일 수 있다(그 창을 열어 두는 게
-    복구 exemption 의 목적이다). 새 키워드를 무조건 넘기면 그 상태에서 CLI 가 TypeError 로
-    죽는다 — 있으면 쓰고 없으면 구 시그니처로 강등하되, 강등은 **loud** 다(무음 강등 금지)."""
-    if func is None:
-        return False
-    try:
-        return name in inspect.signature(func).parameters
-    except (TypeError, ValueError):  # 시그니처를 못 읽는 호출가능 객체 — 보수적으로 구형 취급.
-        return False
-
-
-def _warn_engine_downgrade(what: str, effect: str) -> None:
-    """구형 형제 엔진 때문에 기능을 낮춰 실행한다는 사실을 알린다(관측 불가 금지)."""
-    print(f"[경고] 형제 pm_import 가 구세대라 {what} 없이 진행한다 — {effect}. "
-          "pm-update 로 엔진 사본을 맞춘 뒤 다시 실행하면 정상 판정을 받는다.", file=sys.stderr)
-
-
-def _adapter_accept_decision(pm_import_mod, dest: Path, source_root: Path, relpath: str):
-    """수용 전 세대 판정 — 막을 사유 + 판정에 쓴 template 해시(`None` = 강제할 게이트 부재).
+def _adapter_accept_decision(dest: Path, source_root: Path, relpath: str):
+    """수용 전 세대 판정 — 막을 사유 + 판정에 쓴 template 해시·선언 snapshot digest.
 
     **mutation 게이트라 상류 세대 선언으로 판정한다**: 설치본 선언은 상류가 이번에 들여오는 새
     플래그를 모르므로, 그 위에서 config 를 앞세우면 게이트가 있으나 마나다. 상류를 못 읽으면
-    엔진이 fail-closed 로 blocker 를 낸다(모르면 멈춘다).
-
-    형제 사본이 구세대면 **있는 만큼 게이트를 살린다**(강등은 3단이고 각 단은 loud 다):
-      신 API 전부      상류 선언 판정 + 스냅샷 결속.
-      `hook_set_accept_blockers` 만  직전 세대 — 순서 게이트 판정은 그대로 적용하고 결속만 뺀다.
-                       게이트가 실재하는데 통째로 끄면 그 창에서 락아웃을 그대로 설치한다.
-      둘 다 부재       강제할 선언 자체가 없는 세대 — loud 후 게이트 없이 진행(도입 이전 경로)."""
-    decide = getattr(pm_import_mod, "hook_set_accept_decision", None)
-    resolve = getattr(pm_import_mod, "hook_set_declarations", None)
-    if decide is not None and resolve is not None:
-        return decide(dest, source_root, relpath,
-                      declarations=resolve(source_root, required=True))
-    blockers_fn = getattr(pm_import_mod, "hook_set_accept_blockers", None)
-    if blockers_fn is not None:
-        _warn_engine_downgrade(
-            "상류 세대 선언·수용 스냅샷 결속",
-            "직전 세대의 순서 게이트로 판정한다(설치본 선언 기준이라 이번 상류가 새로 들여오는 "
-            "플래그는 못 보고, 판정한 상류 bytes 와 설치 bytes 도 결속되지 않는다)")
-        return SimpleNamespace(
-            blockers=list(blockers_fn(dest, source_root, relpath)),
-            template_sha256=None, generation_sha256=None,
-            generation="로컬", reasons=())
-    _warn_engine_downgrade(
-        "훅 세트 세대 게이트", "미지원 드라이버 위에 config 를 앞세워도 막지 못한다")
-    return None
+    엔진이 fail-closed 로 blocker 를 낸다(모르면 멈춘다)."""
+    return hook_sets.hook_set_accept_decision(
+        dest, source_root, relpath,
+        declarations=hook_sets.hook_set_declarations(
+            pm_paths.home_at(REPO), source_root, required=True))
 
 
 def _adapter_accept_order_blocked(decision, relpath: str) -> bool:
@@ -1213,7 +1155,7 @@ def _adapter_accept_order_blocked(decision, relpath: str) -> bool:
     dest 에 아직 없으면 훅이 미지원 플래그를 rc2 로 거부하고, 그 rc 는 도구 차단으로 번역된다
     (v1.7.0 흡수 실측 락아웃). 위험 방향은 이쪽 하나뿐이라 "엔진 파일 선행 · config 후행"
     순서를 여기서 기계가 강제한다 — 단건 `--accept` 와 세트 수용이 같은 게이트를 탄다."""
-    if decision is None or not decision.blockers:
+    if not decision.blockers:
         return False
     print(f"[중단] 어댑터 config 수용 거부 ({relpath}) — 이 세대가 요구하는 훅 파일이 아직 "
           "dest 에 설치돼 있지 않다(파일을 바꾸지 않았다).", file=sys.stderr)
@@ -1224,12 +1166,12 @@ def _adapter_accept_order_blocked(decision, relpath: str) -> bool:
     return True
 
 
-def _accept_adapter_config_one(pm_import_mod, dest: Path, source_root: Path,
+def _accept_adapter_config_one(dest: Path, source_root: Path,
                                relpath: str, judgments) -> int:
     """config 한 개 수용 — 선행조건 게이트 → 원자 교체 → rc·안내 (단건·세트 공용 경로).
 
     단건과 세트가 이 함수 하나만 호출하므로 게이트·백업·경쟁 판정·안내가 갈릴 수 없다."""
-    decision = _adapter_accept_decision(pm_import_mod, dest, source_root, relpath)
+    decision = _adapter_accept_decision(dest, source_root, relpath)
     if _adapter_accept_order_blocked(decision, relpath):
         return 1
     # 수용은 **판정을 먼저 받고** 그 시점 해시를 넘긴다 — 판정과 쓰기 사이에 파일이 바뀌면
@@ -1237,24 +1179,13 @@ def _accept_adapter_config_one(pm_import_mod, dest: Path, source_root: Path,
     #   **template**(게이트가 검사한 bytes 와 실제 복사할 bytes 의 결속) — 후자가 없으면 상류가
     #   그 사이 바뀌어도 "검사한 세대" 와 다른 내용이 설치된다.
     judged = next((item for item in judgments if item.relpath == relpath), None)
-    accept = pm_import_mod.accept_adapter_config
-    snapshot = {}
-    if decision is not None:
-        # 스냅샷 결속은 **둘이 한 벌**이다(상류 config bytes + 선언 소스 bytes) — 한쪽만 지원하는
-        #   사본은 없지만, 지원 여부는 각각 확인해 구세대에서 TypeError 로 죽지 않게 한다.
-        for name, value in (("expected_template_sha256", decision.template_sha256),
-                            ("expected_generation_sha256", decision.generation_sha256)):
-            if _accepts_kwarg(accept, name):
-                snapshot[name] = value
-            elif value is not None:
-                _warn_engine_downgrade(
-                    f"수용 스냅샷 결속({name})",
-                    "판정한 상류 내용과 다른 bytes 가 설치돼도 감지하지 못한다")
     try:
-        outcome = accept(
+        # 스냅샷 결속은 **둘이 한 벌**이다(상류 config bytes + 선언 package snapshot digest).
+        outcome = adapter_accept.accept_adapter_config(
             dest, source_root, relpath,
             expected_sha256=judged.dest_sha256 if judged is not None else None,
-            **snapshot)
+            expected_template_sha256=decision.template_sha256,
+            expected_generation_sha256=decision.generation_sha256)
     except ValueError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
@@ -1277,19 +1208,13 @@ def _accept_adapter_config_one(pm_import_mod, dest: Path, source_root: Path,
     note = install_rules.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(relpath)
     if note:
         print(f"  ⚠️ {note}")
-    ctx_files = getattr(pm_import_mod, "HARNESS_CTX_FILES", None)
-    if ctx_files is None:
-        _warn_engine_downgrade(
-            "사용 한도·압축 비율 반영",
-            "하네스 설정 파일이면 관리 키가 local.conf 값이 아니라 템플릿 값으로 남는다")
-        return 0
-    if relpath in ctx_files.values():
+    if relpath in harness_ctx.HARNESS_CTX_FILES.values():
         # 템플릿 값으로 돌아간 관리 키에 local.conf 의 사용 한도를 다시 쓴다(원장이 방금 증언한
         #   파일이라 반영 뒤에도 무편집 판정이 유지된다). 설치·add-harness 와 같은 한 번이다 —
         #   옛 키가 남은 conf 면 반영을 건너뛰고 알리며, 검사 거부만 rc 1(설정 파일 무변경)이다.
         try:
-            pm_import_mod._print_harness_ctx_apply(dest)
-        except pm_import_mod.HarnessCtxError as exc:
+            harness_ctx._print_harness_ctx_apply(dest)
+        except harness_ctx.HarnessCtxError as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
     return 0
@@ -1303,7 +1228,7 @@ _ADAPTER_SET_ACCEPT_EXCLUDED = {
 }
 
 
-def _warn_hook_set_query_fallback(pm_import_mod, generation) -> None:
+def _warn_hook_set_query_fallback(generation) -> None:
     """조회 축 강등 사유 표면화 — 상류 선언을 못 읽어 설치본 세대로 판정했다는 사실을 남긴다.
 
     조회 축은 관대 계약이라 차단하지 않는다(판정을 통째로 잃는 것보다 한 세대 뒤 선언으로라도 보는
@@ -1311,44 +1236,31 @@ def _warn_hook_set_query_fallback(pm_import_mod, generation) -> None:
     채택자는 강등된 판정을 정상 판정으로 읽는다 — 차단이 아니라 침묵만 제거한다(mutation 축의
     fail-closed 와 대비).
 
-    **문구는 pm_import 단일 진실**(`hook_set_query_fallback_lines` — `hook_set_remedy_lines` 와 같은
-    규약)이다. 그 함수가 없는 세대 사본이면 조용히 건너뛴다(그 세대엔 이 안내 자체가 없다)."""
-    lines = getattr(pm_import_mod, "hook_set_query_fallback_lines", None)
-    if lines is None:
-        return
-    for line in lines(generation):
+    **문구는 `app.hook_sets` 단일 진실**(`hook_set_query_fallback_lines` — `hook_set_remedy_lines` 와
+    같은 규약)이다."""
+    for line in hook_sets.hook_set_query_fallback_lines(generation):
         print(line, file=sys.stderr)
 
 
-def _report_hook_set_findings(pm_import_mod, dest: Path, source_root: Path) -> bool:
+def _report_hook_set_findings(dest: Path, source_root: Path) -> bool:
     """훅 세트 세대 불일치를 stderr 로 내고 하나라도 있으면 True (`--check` 소비·write 0).
 
-    판정·처방은 pm_import 단일 진실을 그대로 쓴다(pm-update 와 같은 문구). 선언은 **상류 세대**를
-    우선한다(같은 해소 지점) — 조회 성격이라 상류를 못 읽으면 설치본 선언으로 내려가되 **그 사유는
-    알린다**(무경고 green 금지). 판정 함수가 없는 구형 사본이면 조용히 건너뛴다 — 강제할 선언
-    자체가 없는 세대다."""
-    judge = getattr(pm_import_mod, "judge_adapter_hook_sets", None)
-    if judge is None:
-        return False
-    resolve = getattr(pm_import_mod, "hook_set_declarations", None)
-    if not _accepts_kwarg(judge, "declarations") or resolve is None:
-        # 구세대 사본 — 판정은 하되(그 세대가 아는 만큼) 상류 선언은 못 태운다.
-        _warn_engine_downgrade(
-            "훅 세트 상류 선언", "이번 상류가 새로 들여오는 플래그·묶음은 판정되지 않는다")
-        findings = judge(dest, source_root)
-    else:
-        generation = resolve(source_root)
-        _warn_hook_set_query_fallback(pm_import_mod, generation)
-        findings = judge(dest, source_root, declarations=generation.declarations)
+    판정·처방은 `app.hook_sets` 단일 진실을 그대로 쓴다(pm-update 와 같은 문구). 선언은 **상류
+    세대**를 우선한다(같은 해소 지점) — 조회 성격이라 상류를 못 읽으면 설치본 선언으로 내려가되
+    **그 사유는 알린다**(무경고 green 금지)."""
+    generation = hook_sets.hook_set_declarations(pm_paths.home_at(REPO), source_root)
+    _warn_hook_set_query_fallback(generation)
+    findings = hook_sets.judge_adapter_hook_sets(
+        dest, source_root, declarations=generation.declarations)
     for finding in findings:
         print(f"[중단] 어댑터 훅 세트 세대 불일치({finding.harness}) — {finding.detail}.",
               file=sys.stderr)
-        for line in pm_import_mod.hook_set_remedy_lines(finding):
+        for line in hook_sets.hook_set_remedy_lines(finding):
             print(f"    → {line}", file=sys.stderr)
     return bool(findings)
 
 
-def _accept_adapter_config_set(pm_import_mod, dest: Path, source_root: Path,
+def _accept_adapter_config_set(dest: Path, source_root: Path,
                                judgments) -> int:
     """세트 수용 — 대상 선정·선-표시·파일당 수용 (`--accept-all`).
 
@@ -1382,11 +1294,11 @@ def _accept_adapter_config_set(pm_import_mod, dest: Path, source_root: Path,
     print(f"# 세트 수용 대상 {len(targets)}건 (소스: {source_root})")
     for item in targets:
         print(f"  - {item.relpath} · {item.harness} · {item.mode} · "
-              f"{_adapter_config_label(item, pm_import_mod)}")
+              f"{_adapter_config_label(item)}")
     failed = 0
     for item in targets:
         if _accept_adapter_config_one(
-                pm_import_mod, dest, source_root, item.relpath, judgments) != 0:
+                dest, source_root, item.relpath, judgments) != 0:
             failed += 1
     print(f"# 세트 수용 결과: {len(targets) - failed}/{len(targets)} 수용"
           + (f" · {failed} 실패/거부" if failed else "")
@@ -1394,7 +1306,7 @@ def _accept_adapter_config_set(pm_import_mod, dest: Path, source_root: Path,
     return 1 if (failed or excluded) else 0
 
 
-def _adapter_config_label(judgment, pm_import_mod) -> str:
+def _adapter_config_label(judgment) -> str:
     """판정 → 표시 라벨 (mode 와 status 를 함께 본다·mode 상수는 엔진 소유)."""
     common = _ADAPTER_CONFIG_STATUS_LABEL.get(judgment.status, judgment.status)
     if judgment.mode == install_rules.ADAPTER_CONFIG_REPORT:
@@ -1405,7 +1317,6 @@ def _adapter_config_label(judgment, pm_import_mod) -> str:
 def cmd_sync_adapter_config(
     args: argparse.Namespace,
     *,
-    pm_import=None,
     dest_root: Path | None = None,
 ) -> int:
     """`sync-adapter-config [--list | --check | --accept <relpath> | --accept-all]` — config 채널.
@@ -1417,7 +1328,8 @@ def cmd_sync_adapter_config(
     모드에 갇힌다). 두 경로 모두 수용 전에 훅 세트 선행조건을 같은 게이트로 검사한다
     (`_adapter_accept_order_blocked` — 엔진 파일 선행 · config 후행).
 
-    판정·수용 로직은 pm_import 단일 진실(`judge_adapter_configs`·`accept_adapter_config`)이고
+    판정·수용 로직은 `app.adapter_report`·`app.adapter_accept` 단일 진실(`judge_adapter_configs`·
+    `accept_adapter_config`)이고
     여기선 표시와 rc 번역만 한다. dest 해소는 pm_config 관례(REPO 앵커·cmd_add_harness 동형),
     소스 해소는 add-harness 와 같은 규칙(`--from` > local.conf upstream.path(경로) > dest
     자기전환 > local.conf upstream.path(URL→로컬 캐시 clone/fetch))이다.
@@ -1427,22 +1339,14 @@ def cmd_sync_adapter_config(
     edited managed 파일은 보존된 파일별 ``template_rev``를 쓰므로 명시적 ``--accept``
     전까지 매 check에 반복된다. 백업/git을 대신하는 durable backstop은 아니다.
     """
-    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
-    if pm_import_mod is None:
-        print(
-            "[중단] pm_import.py 엔진을 찾을 수 없다 — 어댑터 config 판정 불가 "
-            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
     dest = dest_root if dest_root is not None else REPO
     try:
-        source_root = pm_import_mod.resolve_adapter_config_source(
+        source_root = adapter_accept.resolve_adapter_config_source(
             dest, getattr(args, "source", None))
     except FileNotFoundError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
-    except pm_import_mod.UpstreamCacheError as exc:
+    except upstream_git.UpstreamCacheError as exc:
         # URL upstream 캐시 clone/fetch 실패 — 옛 캐시로 진행하지 않고 판정 자체를 멈춘다.
         print(f"[중단] {exc}", file=sys.stderr)
         return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
@@ -1452,9 +1356,9 @@ def cmd_sync_adapter_config(
     # 변경 없음으로 접지 않고 전량 확인을 명시한다.
     if getattr(args, "check", False):
         try:
-            delta_lines = pm_import_mod.instance_owned_template_delta_lines(
+            delta_lines = adapter_report.instance_owned_template_delta_lines(
                 dest, source_root)
-        except Exception as exc:  # noqa: BLE001 — 구/부분 엔진도 check 본류는 계속한다.
+        except Exception as exc:  # noqa: BLE001 — 관측 실패는 advisory 로 내고 check 본류는 계속한다.
             if _is_engine_rev_skew(exc):
                 raise
             delta_lines = [
@@ -1465,7 +1369,7 @@ def cmd_sync_adapter_config(
             print(line)
 
     try:
-        judgments = pm_import_mod.judge_adapter_configs(dest, source_root)
+        judgments = adapter_report.judge_adapter_configs(dest, source_root)
     except Exception as exc:  # noqa: BLE001 — 판정 채널 unavailable은 완료 게이트 red.
         if _is_engine_rev_skew(exc):
             raise
@@ -1480,13 +1384,13 @@ def cmd_sync_adapter_config(
     if accept:
         return _finish_sync_adapter_config(
             _accept_adapter_config_one(
-                pm_import_mod, dest, source_root, accept, judgments),
+                dest, source_root, accept, judgments),
             check=getattr(args, "check", False),
         )
     if getattr(args, "accept_all", False):
         return _finish_sync_adapter_config(
             _accept_adapter_config_set(
-                pm_import_mod, dest, source_root, judgments),
+                dest, source_root, judgments),
             check=getattr(args, "check", False),
         )
 
@@ -1496,21 +1400,21 @@ def cmd_sync_adapter_config(
         #   실재). 여기서 조용히 green 을 내면 게이트 표면이 통째로 우회된다.
         if getattr(args, "check", False):
             return _finish_sync_adapter_config(
-                1 if _report_hook_set_findings(pm_import_mod, dest, source_root) else 0,
+                1 if _report_hook_set_findings(dest, source_root) else 0,
                 check=True,
             )
         return _finish_sync_adapter_config(0, check=False)
     print(f"# 어댑터 config 판정 (소스: {source_root})")
     for judgment in judgments:
-        label = _adapter_config_label(judgment, pm_import_mod)
+        label = _adapter_config_label(judgment)
         print(f"  - {judgment.relpath} · {judgment.harness} · {judgment.mode} · {label}")
     if getattr(args, "check", False):
-        # `--check`는 판정만 읽는다(write 0). 완료 판정은 pm_import helper가 소유하므로
+        # `--check`는 판정만 읽는다(write 0). 완료 판정은 adapter_report helper가 소유하므로
         # pm-update와 이 CLI가 상태를 서로 다르게 해석할 수 없다.
         # 훅 세트 세대도 **같은 자리에서** 본다 — 스킬 카드가 이 커맨드를 완료 게이트로 지목하는데
         #   pm-update 가 rc1 로 막는 클래스를 여기서 green 으로 통과시키면 게이트가 갈린다.
-        hook_set_failed = _report_hook_set_findings(pm_import_mod, dest, source_root)
-        unconverged = pm_import_mod.unconverged_managed_adapter_configs(judgments)
+        hook_set_failed = _report_hook_set_findings(dest, source_root)
+        unconverged = adapter_report.unconverged_managed_adapter_configs(judgments)
         if not unconverged:
             if hook_set_failed:
                 return _finish_sync_adapter_config(1, check=True)
@@ -1578,7 +1482,7 @@ _DELEGATE_MODEL_LIST_LIMIT = 12
 _MODEL_ALIAS_CONF_PREFIX = "delegate.model_alias."
 
 
-def _installed_harnesses(pm_import_mod) -> list[str]:
+def _installed_harnesses() -> list[str]:
     """등록 하네스 중 **이 환경에 설치된** 것만 (registry 순서 보존).
 
     설치되지 않은 하네스의 모델을 안내하지 않는다 — 채택자가 쓸 수 없는 값을 고르게 만드는
@@ -1612,7 +1516,6 @@ def _model_alias_members(conf: dict) -> dict[str, list[str]]:
 
 def _print_delegate_model_guidance(
     *,
-    pm_import=None,
     conf=None,
 ) -> int:
     """`[m]` — 설치된 하네스별로 `delegate.<role>[.hard].model` 에 넣을 값을 안내한다.
@@ -1623,20 +1526,12 @@ def _print_delegate_model_guidance(
 
     조회 실패(바이너리 부재·rc·timeout·파싱 0)는 형식 안내로 **강등**하되 조용하지 않다:
     강등 사실을 그 자리에 적고, 실패 사유 자체는 조회 seam 이 stderr 한 줄로 남긴다.
-    pm_import·conf 주입으로 hermetic 테스트(라이브 CLI 미구동).
+    conf 주입으로 hermetic 테스트(라이브 CLI 미구동).
     """
-    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
-    if pm_import_mod is None:
-        print(
-            "[중단] pm_import.py 엔진을 찾을 수 없다 — 모델 안내 불가 "
-            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
-            file=sys.stderr,
-        )
-        return 1
     model_source = contract.MODEL_SOURCE
 
     print("\n## 위임 모델 안내 (local.conf `delegate.<role>[.hard].model` 단일 진실):")
-    installed = _installed_harnesses(pm_import_mod)
+    installed = _installed_harnesses()
     if not installed:
         print("  (설치된 하네스 없음 — 안내할 대상이 없다. 하네스를 설치한 뒤 다시 보라.)")
     for harness in installed:
@@ -1727,11 +1622,10 @@ def cmd_apply(args, *, pm_update=None, dest_root: Path | None = None) -> int:
         print(f"[중단] local.conf 없음 ({conf_file}) — 먼저 `pm-config init` 으로 셋업하라.",
               file=sys.stderr)
         return 1
-    pm_import_mod = pm_update_mod._load_pm_import()
     try:
         result = pm_update_mod.apply_conf(
             dest, updates={key: value or None for key, value in updates.items()},
-            opencode_config_dir=pm_import_mod.opencode_global_config_dir(os.environ, Path.home()))
+            opencode_config_dir=harness_ctx.opencode_global_config_dir(os.environ, Path.home()))
     except pm_update_mod.ConfApplyError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
         return 1 if exc.write_stage else _APPLY_REFUSED
@@ -2164,16 +2058,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_task_branch.set_defaults(func=functools.partial(config_tasks.cmd_task_branch, home))
 
     # add-harness <harness> [--dry-run] — 라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가
-    # pm_import.add_harness_cli 로 verbatim 위임(cmd_add_harness) — harness 는
-    # choices 로 재검증하지 않고(pm_import 가 CLI 규격 단일 진실·미지원은 add_harness_cli 가
+    # app.add_harness.add_harness_cli 로 verbatim 위임(cmd_add_harness) — harness 는
+    # choices 로 재검증하지 않고(add_harness 가 CLI 규격 단일 진실·미지원은 add_harness_cli 가
     # ValueError→rc 1) 그대로 넘긴다. repo/worktree/release 와 동형의 func-dispatch 서브커맨드다.
     p_add_harness = sub.add_parser(
         "add-harness",
-        help="라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가 (pm_import.add_harness 위임)",
+        help="라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가 (add_harness 위임)",
     )
     p_add_harness.add_argument(
         "harness",
-        help="추가할 harness 어댑터 (claude|opencode|codex·pm_import 가 검증). 어댑터 네임스페이스만 복사(비파괴).",
+        help="추가할 harness 어댑터 (claude|opencode|codex·add_harness 가 검증). 어댑터 네임스페이스만 복사(비파괴).",
     )
     p_add_harness.add_argument(
         "--from", dest="source", metavar="SOURCE", default=None,
@@ -2188,7 +2082,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # sync-adapter-config [--list|--check|--accept <경로>] — instance-owned config 채널.
     #   동기(pm-update)는 무편집분만 자동 갱신하고 편집분·원장 부재는 보존+보고한다. 이 커맨드가
-    #   그 보존분을 채택자가 명시적으로 받는 유일한 채널이다(판정은 pm_import 단일 진실).
+    #   그 보존분을 채택자가 명시적으로 받는 유일한 채널이다(판정은 adapter_report 단일 진실).
     p_sync_cfg = sub.add_parser(
         "sync-adapter-config",
         help="어댑터 config(hooks.json·settings.json 등) 판정 조회 / 상류 값 수용",

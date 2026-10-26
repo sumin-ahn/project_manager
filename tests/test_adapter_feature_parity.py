@@ -79,6 +79,7 @@ from typing import NamedTuple
 import pytest
 
 from _harness_matrix import HARNESS_ADAPTER_DIRS, HARNESSES, TEMPLATES, _PM_IMPORT, entry_docs
+from pm_engine.infra import adapter_documents
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -166,9 +167,9 @@ def _claude_hook_rows(templates_dir: Path) -> set[str]:
         raise RuntimeError(f"claude settings.json 없음: {settings_path}")
     document = json.loads(settings_path.read_text(encoding="utf-8"))
     rows: set[str] = set()
-    for command in _PM_IMPORT._hook_commands(document):
-        tokens = _PM_IMPORT._split_hook_command(command)
-        script_rel, arguments = _PM_IMPORT._hook_script_and_arguments(tokens)
+    for command in adapter_documents._hook_commands(document):
+        tokens = adapter_documents._split_hook_command(command)
+        script_rel, arguments = adapter_documents._hook_script_and_arguments(tokens)
         if script_rel is None:
             continue
         script_name = Path(script_rel).name

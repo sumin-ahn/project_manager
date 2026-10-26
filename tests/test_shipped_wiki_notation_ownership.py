@@ -34,6 +34,7 @@ import pytest
 from _harness_matrix import HARNESSES, REPO, TEMPLATES, _PM_IMPORT
 from _repo_owned_inventory import TRACKED_ONLY, repo_owned_paths
 from pm_engine.infra import manifest_store
+from pm_engine.app import add_harness
 
 
 WIKI_PREFIX = ".project_manager/wiki/"
@@ -181,7 +182,7 @@ def test_production_derives_the_same_unowned_set_as_the_ledger():
     contexts = {}
     for harness in HARNESSES:
         contexts.update(dict.fromkeys(_manifest_entries(_template_dir(harness)), ()))
-    derived = set(_PM_IMPORT._unowned_shipped_wiki_relpaths(REPO, HARNESSES, contexts))
+    derived = set(add_harness._unowned_shipped_wiki_relpaths(REPO, HARNESSES, contexts))
     assert derived == set(UNOWNED_SHIPPED_WIKI_LEDGER), (
         f"production 파생 ≠ 원장 — 초과: {sorted(derived - set(UNOWNED_SHIPPED_WIKI_LEDGER))} · "
         f"누락: {sorted(set(UNOWNED_SHIPPED_WIKI_LEDGER) - derived)}"

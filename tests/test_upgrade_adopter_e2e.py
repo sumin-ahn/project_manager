@@ -65,8 +65,16 @@ from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
 from _engine_tree import engine_python_files
 
 import ast
+from pm_engine.app import add_harness
+from pm_engine.app import hook_sets
+from pm_engine.domain import adapter_specs
+from pm_engine.infra import pm_paths
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
+# 설치·추가를 실행하는 엔진 Home(이 checkout).
+ENGINE_HOME = pm_paths.home_at(REPO)
 
 
 @pytest.fixture(scope="module")
@@ -457,7 +465,7 @@ def _build_upgraded_adopter(
     _prime_engine_to_canonical(dest)
 
     # ② add-harness 이력 — guest 절 등재 + guest 어댑터 실파일.
-    plan = _PM_IMPORT.add_harness(dest, guest, dry_run=False, source_root=REPO)
+    plan = add_harness.add_harness(ENGINE_HOME, dest, guest, dry_run=False, source_root=REPO)
     assert plan, f"{host}→{guest}: add-harness plan 이 비어 있다(픽스처 무효)"
     block = _guest_manifest_block(dest)
     assert block is not None, f"{host}→{guest}: add-harness 가 guest 절을 등재하지 않았다"
@@ -690,7 +698,7 @@ def test_upgrade_adopter_skill_manifest_reconcile_never_silently_drops_guest(tmp
         f"(조용한 소실)\n{output}")
     assert "add-harness" in output, (
         f"guest 절 소실을 알렸으나 복구 채널 안내가 없다(actionable 아님)\n{output}")
-    _PM_IMPORT.add_harness(dest, _REPORTED_GUEST, dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, _REPORTED_GUEST, dry_run=False, source_root=REPO)
     assert _guest_manifest_block(dest) is not None, (
         "안내대로 add-harness 를 재실행했는데 guest 절이 복구되지 않는다 — 안내가 거짓이다")
 
@@ -912,7 +920,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "85e1a9263e13eadf66ef2f6f434c83fa4dd3e5d3828842995aae6925d5916efd"
+_T0585_PM_UPDATE_SHA256 = "ebfe28826eeaacbc95a2a3b4008e4c5540d9a53436e21cfba7abea57493155a4"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -926,12 +934,7 @@ _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, sourc
     result = {"status": "ok", "updated": [], "preserved": [], "drift": [],
               "backfilled": [], "degraded": []}
     try:
-        # **로드도 try 안**이다 — 부분 전파로 pm_import 사본이 없는 트리에서 로더가 던지면
-        #   그 예외가 CLI 를 통째로 죽인다(엔진 복구 실행이 바로 그 형상이다).
-        pm_import = _load_pm_import()
-        if pm_import is None:
-            return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
-        judgments = pm_import.judge_adapter_configs(dest_root, source_root)
+        judgments = adapter_report.judge_adapter_configs(dest_root, source_root)
     except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(skew 만 예외).
         if _is_engine_rev_skew(exc):
             raise
@@ -944,7 +947,7 @@ _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, sourc
             if judgment.baseline_sha256 != judgment.dest_sha256:
                 result["backfilled"].append(judgment.relpath)
             continue
-        summary = pm_import.adapter_config_drift_summary(judgment, dest_root)
+        summary = adapter_accept.adapter_config_drift_summary(judgment, dest_root)
         managed = judgment.mode == install_rules.ADAPTER_CONFIG_MANAGED
         if managed and judgment.status == "unedited":
             backup_rel = None
@@ -952,7 +955,7 @@ _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, sourc
                 try:
                     # 판정 시점 해시를 넘겨 **판정↔쓰기 사이 동시 편집**을 엔진이 재검증하게 한다
                     #   (raced 면 아무것도 안 덮고 돌아온다). 백업·원자 교체·원장 확인도 그 안이다.
-                    accepted = pm_import.accept_adapter_config(
+                    accepted = adapter_accept.accept_adapter_config(
                         dest_root, source_root, judgment.relpath,
                         expected_sha256=judgment.dest_sha256)
                 except (OSError, ValueError) as exc:
@@ -985,7 +988,7 @@ _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, sourc
 
     if write and (result["updated"] or result["backfilled"]):
         # 갱신분·in-sync backfill 을 한 번에 기록한다(record 는 template 일치분만 담는다).
-        pm_import.record_adapter_baseline(dest_root, source_root)
+        adapter_accept.record_adapter_baseline(dest_root, source_root)
     return result
 
 
@@ -1286,7 +1289,7 @@ _PROTECTION_PACKAGE_REVERSALS = (
 
 def _reverse_board_provider_move(source: str) -> str:
     """현행 provider 이동을 역적용해 동결 updater의 기존 bytes와 SHA를 보존한다."""
-    replacements = [('\nfrom pm_engine.app import areas_registry\n', ''), ('from typing import NamedTuple\n', 'from types import SimpleNamespace\nfrom typing import NamedTuple\n'), ('def fill_self_repo_row(effective_dest: Path, *, write: bool) -> None:\n    """대상 Home의 빈 자기 행을 채우고 기존 write/dry-run 결과를 출력한다."""\n    filled = areas_registry.fill_self_repo_row(pm_paths.home_at(Path(effective_dest)), write=write)\n    if filled is None:\n        return\n    if write:\n        print(f"  ✓ areas.md 자기 행 git·base 기록: {filled}")\n    else:\n        print(f"[dry-run] areas.md 자기 행 git·base 기록 예정: {filled}")', 'def fill_self_repo_row(effective_dest: Path, *, write: bool) -> None:\n    """흡수 말미 1회 — areas.md 자기 행(폴더 이름 행)의 `git`·`base` 가 둘 다 비었으면 채운다.\n\n    설치가 자기 행에 두 칸을 기록하기 전의 채택자 데이터 이관이다. 규칙(대상 행·값·덮어쓰지\n    않음)은 dest 의 board `fill_self_repo_row` 가 소유한다 — 이 함수는 방금 동기된 dest 엔진을\n    로드해 부르고 결과 한 줄만 낸다. dest 에 pm_config.py 가 없으면(엔진 미배치 dest) 무동작\n    (`reinstall_protected_hooks` 와 같은 판정). `write=False`(dry-run)는 판정만 한다.\n    """\n    pm_config = _load_dest_pm_config(effective_dest)\n    if pm_config is None:\n        return\n    board = pm_config._load_module("board", "board.py")\n    if board is None:\n        raise RuntimeError(\n            f"{effective_dest}/.project_manager/tools/board.py 를 로드하지 못했다 — areas.md 자기 행 "\n            "이관 불가. 엔진 사본을 다시 동기한 뒤 pm-update 를 재실행하라.")\n    filled = board.fill_self_repo_row(write=write)\n    if filled is None:\n        return\n    if write:\n        print(f"  ✓ areas.md 자기 행 git·base 기록: {filled}")\n    else:\n        print(f"[dry-run] areas.md 자기 행 git·base 기록 예정: {filled}")'), ('def _read_hook_artifact(', 'def _load_dest_pm_config(dest_root: Path):\n    """자기 repo 행 채움에 필요한 대상 pm_config를 적재한다.\n\n    자기 행 채움의 평면 board 소비가 남아 있어 이 로더를 유지한다.\n    보호 훅 재설치는 완료 프로세스의 패키지와 대상 Home을 사용한다.\n    부재는 None, 적재 예외는 호출부로 전파한다.\n    """\n    pm_config_py = Path(dest_root) / ".project_manager" / "tools" / "pm_config.py"\n    if not pm_config_py.exists():\n        return None\n    return _load_module_from_path(\n        pm_config_py, "pm_config.py", allow_unverified=True,\n    )\n\n\ndef _read_hook_artifact(')]
+    replacements = [('\nfrom pm_engine.app import areas_registry\nfrom pm_engine.infra import upstream_git\n', 'from pm_engine.infra import upstream_git\n_load_module_from_path = repo_files.load_module\n'), ('from typing import NamedTuple\n', 'from types import SimpleNamespace\nfrom typing import NamedTuple\n'), ('def fill_self_repo_row(effective_dest: Path, *, write: bool) -> None:\n    """대상 Home의 빈 자기 행을 채우고 기존 write/dry-run 결과를 출력한다."""\n    filled = areas_registry.fill_self_repo_row(pm_paths.home_at(Path(effective_dest)), write=write)\n    if filled is None:\n        return\n    if write:\n        print(f"  ✓ areas.md 자기 행 git·base 기록: {filled}")\n    else:\n        print(f"[dry-run] areas.md 자기 행 git·base 기록 예정: {filled}")', 'def fill_self_repo_row(effective_dest: Path, *, write: bool) -> None:\n    """흡수 말미 1회 — areas.md 자기 행(폴더 이름 행)의 `git`·`base` 가 둘 다 비었으면 채운다.\n\n    설치가 자기 행에 두 칸을 기록하기 전의 채택자 데이터 이관이다. 규칙(대상 행·값·덮어쓰지\n    않음)은 dest 의 board `fill_self_repo_row` 가 소유한다 — 이 함수는 방금 동기된 dest 엔진을\n    로드해 부르고 결과 한 줄만 낸다. dest 에 pm_config.py 가 없으면(엔진 미배치 dest) 무동작\n    (`reinstall_protected_hooks` 와 같은 판정). `write=False`(dry-run)는 판정만 한다.\n    """\n    pm_config = _load_dest_pm_config(effective_dest)\n    if pm_config is None:\n        return\n    board = pm_config._load_module("board", "board.py")\n    if board is None:\n        raise RuntimeError(\n            f"{effective_dest}/.project_manager/tools/board.py 를 로드하지 못했다 — areas.md 자기 행 "\n            "이관 불가. 엔진 사본을 다시 동기한 뒤 pm-update 를 재실행하라.")\n    filled = board.fill_self_repo_row(write=write)\n    if filled is None:\n        return\n    if write:\n        print(f"  ✓ areas.md 자기 행 git·base 기록: {filled}")\n    else:\n        print(f"[dry-run] areas.md 자기 행 git·base 기록 예정: {filled}")'), ('def _read_hook_artifact(', 'def _load_dest_pm_config(dest_root: Path):\n    """자기 repo 행 채움에 필요한 대상 pm_config를 적재한다.\n\n    자기 행 채움의 평면 board 소비가 남아 있어 이 로더를 유지한다.\n    보호 훅 재설치는 완료 프로세스의 패키지와 대상 Home을 사용한다.\n    부재는 None, 적재 예외는 호출부로 전파한다.\n    """\n    pm_config_py = Path(dest_root) / ".project_manager" / "tools" / "pm_config.py"\n    if not pm_config_py.exists():\n        return None\n    return _load_module_from_path(\n        pm_config_py, "pm_config.py", allow_unverified=True,\n    )\n\n\ndef _read_hook_artifact(')]
     for current, previous in replacements:
         assert source.count(current) == 1, current
         source = source.replace(current, previous, 1)
@@ -1509,12 +1512,21 @@ def _t0585_pm_update_source() -> str:
     동결 fixture의 렌더 실패 흡수 anchor도 module 인자가 없는 현행 호출 형태로 맞췄다.
     배달 계획·적용·퇴역 순서와 역적용 delta는 유지하며, exact-marker와 시대착오 부재
     단언을 통과한 합성본의 지문을 재수집했다.
+
+    상류 선언·설치 기록·하네스 추가 이동 반영: 잔류 updater 가 평면 설치 모듈을 적재하던 자리
+    (`_load_pm_import`·세대/형제 동반 해소)를 지우고 어댑터 판정·수용·원장·ctx 반영을 package
+    소유자(`adapter_report`·`adapter_accept`·`harness_ctx`·`hook_sets`)의 직접 호출로 바꿨다. 동결
+    `sync_adapter_configs` 본문도 같은 공급자 호출로 연결했다(적재 실패 시 unavailable 로 접던 분기는
+    적재 단계 자체가 없어져 사라졌고 판정·백업·교체·원장 순서는 그대로다). 채널 좌표 주석 anchor 는
+    현행 문구로 맞췄다. `_main`·`plan`·`apply`·`_adapter_config_gate_failed` 의 AST 는 기준 HEAD 와
+    같고, marker 4곳과 시대착오 부재 단언을 선통과한 뒤 RUN1 의 결함 제어 흐름·RUN2 전파를 실행으로
+    확인하고 지문을 재수집했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
     source = _slice_replace(
         source,
-        "# pm_import 자체를 아직 못 불러오는 복구 RUN에서도 채널 적용 여부를 판정할 최소 좌표.\n",
+        "# 채널 판정 전에 적용 여부를 가르는 최소 좌표.\n",
         "def sync_adapter_configs",
         "\n\n",
     )
@@ -1661,7 +1673,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
 # T-0971: 등록 repo 조회의 패키지 이동으로 `reinstall_protected_hooks` 한 줄과 머리 import 한 줄이
 # 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "bb59bac0de01920017020eff9d6eebc5f3417a01e7f035d2ec7151055d6600d5"
+_PRE_T0876_PM_UPDATE_SHA256 = "ffd9c4b394e2a88d35a1a2f4faf53087c662741d5acbe8626ac8ee56708bc7bf"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -1745,6 +1757,11 @@ def _pre_t0876_pm_update_source() -> str:
     동결 fixture의 렌더 실패 흡수 anchor도 module 인자가 없는 현행 호출 형태로 맞췄다.
     배달 계획·적용·퇴역 순서와 역적용 delta는 유지하며, exact-marker와 시대착오 부재
     단언을 통과한 합성본의 지문을 재수집했다.
+
+    상류 선언·설치 기록·하네스 추가 이동 반영: 잔류 updater 가 평면 설치 모듈을 적재하던 자리를 지우고
+    어댑터·ctx 공급자를 package 소유자의 직접 호출로 바꿨다. 퇴역 경로 delta 의 exact-marker 는 그대로
+    유일 해소되고, RUN1 이 검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)와
+    `_main`·`plan`·`apply` 의 AST 는 무편집이다. 실행 확인 뒤 합성본 지문만 갱신했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -2249,7 +2266,7 @@ def test_upgrade_adopter_gains_a_codex_hook_feature_by_engine_code_alone(tmp_pat
     # 만들어진 트리의 **파일 내용**으로 진입점을 단언한다(조립 문자열이 아니라 산출물).
     installed = json.loads((dest / hooks_rel).read_text(encoding="utf-8"))["hooks"]
     declared = tuple(entrypoint.event for entrypoint
-                     in _PM_IMPORT.ADAPTER_HOOK_SET["codex"].entrypoints)
+                     in adapter_specs.ADAPTER_HOOK_SET["codex"].entrypoints)
     assert set(installed) == set(declared), "설치 config 와 엔진 선언의 이벤트 집합이 갈렸다"
     for event in declared:
         groups = installed[event]
@@ -2259,7 +2276,7 @@ def test_upgrade_adopter_gains_a_codex_hook_feature_by_engine_code_alone(tmp_pat
             assert _CODEX_DISPATCHER_REL in groups[0]["hooks"][0][key], (event, key)
             assert f"--hook-dispatch {event}" in groups[0]["hooks"][0][key], (event, key)
     assert (dest / _CODEX_DISPATCHER_REL).is_file(), "디스패처가 설치되지 않았다"
-    assert _PM_IMPORT.judge_adapter_hook_entrypoints(dest, framework, ["codex"]) == [], \
+    assert hook_sets.judge_adapter_hook_entrypoints(dest, framework, ["codex"]) == [], \
         "갓 만든 채택자에 진입점 소견이 뜬다(거짓 red)"
     # 진입점이 열려 있으나 아직 이 이벤트에 등록된 기능은 없다.
     assert _run_shipped_entrypoint(
@@ -2330,7 +2347,7 @@ def test_upgrade_adopter_absorbs_the_widened_entrypoint_set_without_advisory_noi
         "--fill", "manual", "--from", str(framework),
     ]) == 0
     # 전제: 이 세대 채택자에는 진입점이 3건 빠져 있다(소견이 발화할 수 있는 상태).
-    before = _PM_IMPORT.judge_adapter_hook_entrypoints(dest, framework, ["codex"])
+    before = hook_sets.judge_adapter_hook_entrypoints(dest, framework, ["codex"])
     assert {finding.event for finding in before} == set(_T0806_MIGRATED_EVENTS), before
 
     upstream_hooks.write_bytes(current_bytes)  # 상류를 이 릴리즈 세대로 되돌린다.
@@ -2341,7 +2358,7 @@ def test_upgrade_adopter_absorbs_the_widened_entrypoint_set_without_advisory_noi
         "무편집 managed config 가 새 세대로 교체되지 않았다"
     assert "훅 진입점 누락" not in run.stderr, \
         f"같은 실행에서 교체된 config 에 거짓 소견이 났다\n{run.stderr}"
-    assert _PM_IMPORT.judge_adapter_hook_entrypoints(dest, framework, ["codex"]) == []
+    assert hook_sets.judge_adapter_hook_entrypoints(dest, framework, ["codex"]) == []
     # 흡수 뒤 압축 진입점이 실제로 등록 기능을 돌린다(형태 수렴 + 발화 확인).
     envelope = _run_shipped_entrypoint(
         dest, "PreCompact",

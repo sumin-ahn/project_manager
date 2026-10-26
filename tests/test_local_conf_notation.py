@@ -45,6 +45,7 @@ from pm_engine.infra import conf_store, pm_paths, python_env
 from pm_engine.app import conf_lint, regression
 
 from pm_engine.infra import conf_store
+from pm_engine.infra import install_conf
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -543,13 +544,12 @@ def test_import_into_an_existing_tree_delivers_engine_then_refuses_init(
     구표기 conf 로 init 을 돌리면 그 안에서 conf 를 소비해 traceback 이 나고, 채택자는 무엇을
     고쳐야 하는지 대신 스택을 본다. 엔진 파일은 이미 새것이므로 키만 바꾸고 재실행하면 된다.
     """
-    imp = _load("pm_import", "notice_pm_import")
     dest = tmp_path / "adopter"
     (dest / ".project_manager").mkdir(parents=True)
     _write_conf(dest, _LEGACY_CONF)
 
-    assert imp._local_conf_has_blocking_legacy(dest) is True
-    imp.print_conf_migration_notice(dest)
+    assert install_conf._local_conf_has_blocking_legacy(dest) is True
+    install_conf.print_conf_migration_notice(dest)
     out = capsys.readouterr().out
     assert "additional_reviewer_enabled" in out
     assert "제거(대체 키 없음)" in out

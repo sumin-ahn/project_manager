@@ -100,7 +100,7 @@ def _strip_jsonc_trailing_commas(text: str) -> str:
     return "".join(out)
 
 
-# ── jsonc 키 경로 편집 (하네스 설정 반영 · `pm_import.apply_harness_ctx`) ──────────
+# ── jsonc 키 경로 편집 (하네스 설정 반영 · `app.harness_ctx.apply_harness_ctx`) ──────────
 # 위 두 함수와 같은 규칙이다: 위치는 주석을 가린 사본(오프셋 == 원본)에서 찾고 원본의 같은
 # 오프셋을 고친다. 재직렬화하지 않으므로 주석·키 순서·들여쓰기·개행 표기가 그대로 남는다.
 # JSON 은 JSONC 의 부분집합이라 `.claude/settings.json` 도 같은 함수로 고친다.

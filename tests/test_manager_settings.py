@@ -64,9 +64,8 @@ with fs.local_conf_write_lock(conf):
 
 from _manager_home import _KNOWN_CTX_READER_PY
 
-# 사본 `pm_config.py` 자식 — 그 명령이 싣는 pm_import(직접 로드와 저장 본문 pm_update 경유 둘 다)의 모델
-# 한도 조회를 고정 값으로 바꾼다(`prepare`). 거부를 재는 테스트는 `install_fixture_capacity(pmi)` 줄을
-# 다른 준비로 바꾼다.
+# 사본 `pm_config.py` 자식 — 그 명령이 싣는 엔진 package 의 모델 한도 조회(`app.harness_ctx`)를 고정 값으로
+# 바꾼다(`prepare`). 거부를 재는 테스트는 `install_fixture_capacity(pmi)` 줄을 다른 준비로 바꾼다.
 _KNOWN_CTX_CHILD = _KNOWN_CTX_READER_PY + r"""
 import sys,importlib.util
 from pathlib import Path
@@ -76,16 +75,8 @@ entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
 def prepare(pmi):
     install_fixture_capacity(pmi)
     return pmi
-original=entry._load_module
-def load(name,filename):
-    module=original(name,filename)
-    if name=='pm_import':
-        return prepare(module)
-    if name=='pm_update':
-        loader=module._load_pm_import
-        module._load_pm_import=lambda: prepare(loader())
-    return module
-entry._load_module=load
+from pm_engine.app import harness_ctx
+prepare(harness_ctx)
 raise SystemExit(entry.main(sys.argv[2:]))
 """
 

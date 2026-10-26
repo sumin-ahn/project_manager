@@ -40,8 +40,15 @@ import pytest
 from _textio import write_crlf, write_lf
 from _win_skip import _can_symlink
 from pm_engine.infra import manifest_store
+from pm_engine.app import add_harness
+from pm_engine.infra import install_receipt
+from pm_engine.infra import pm_paths
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
+# 설치·추가를 실행하는 엔진 Home(이 checkout).
+ENGINE_HOME = pm_paths.home_at(REPO)
 TOOLS = REPO / ".project_manager" / "tools"
 
 requires_symlink = pytest.mark.skipif(
@@ -52,8 +59,7 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(module)
+    return module
 
 
 @pytest.fixture(scope="module")
@@ -150,7 +156,7 @@ def test_add_harness_cli_translates_missing_reader_manifest_to_rc1(
     _register_notation(pm_import, monkeypatch, "claude_absent")
     capsys.readouterr()
 
-    rc = pm_import.add_harness_cli(dest, "codex", dry_run=False, source_root=REPO)
+    rc = add_harness.add_harness_cli(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -167,10 +173,10 @@ def test_add_harness_stops_before_copy_for_unregistered_notation(
         pm_import, monkeypatch, "codex", "_HARNESS_LABEL_BY_TEMPLATE_DIR")
 
     with pytest.raises(ValueError, match="미등록"):
-        pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+        add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
     assert not (dest / ".codex").exists(), "복사가 시작됨(부분 설치)"
 
-    rc = pm_import.add_harness_cli(dest, "codex", dry_run=False, source_root=REPO)
+    rc = add_harness.add_harness_cli(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
     assert rc == 1
 
 
@@ -187,7 +193,7 @@ def test_shared_rerender_plan_rejects_parent_escape(pm_import, tmp_path):
         ".project_manager/wiki/../../../outside.md": ("codex", "opencode"),
     }
     with pytest.raises(RuntimeError, match="안전하지 않"):
-        pm_import._shared_notation_rerender_plan(dest, contexts, None, None)
+        add_harness._shared_notation_rerender_plan(ENGINE_HOME, dest, contexts, None, None)
     assert outside.read_text(encoding="utf-8") == "EXTERNAL\n"
 
 
@@ -202,7 +208,7 @@ def test_add_harness_rejects_symlinked_shared_doc_before_copy(pm_import, tmp_pat
     role.symlink_to(external)
 
     with pytest.raises(install_files.UnsafeDestPathError, match="안전하지 않"):
-        pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+        add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert external.read_text(encoding="utf-8") == "EXTERNAL ROLE `/pm-bootstrap`\n", \
         "저장소 밖 파일이 변경됨(④ 미해소)"
@@ -222,7 +228,7 @@ def test_add_harness_cli_translates_unsafe_shared_doc_to_rc1(pm_import, tmp_path
     role.symlink_to(external)
     capsys.readouterr()
 
-    rc = pm_import.add_harness_cli(dest, "codex", dry_run=False, source_root=REPO)
+    rc = add_harness.add_harness_cli(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -243,7 +249,7 @@ def test_add_harness_cli_translates_unsafe_manifest_to_rc1(pm_import, tmp_path, 
     manifest.symlink_to(external)
     capsys.readouterr()
 
-    rc = pm_import.add_harness_cli(dest, "codex", dry_run=False, source_root=REPO)
+    rc = add_harness.add_harness_cli(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -279,7 +285,7 @@ def test_inplace_backup_does_not_write_through_broken_symlink(pm_import, tmp_pat
     role.parent.mkdir(parents=True)
     role.write_text("`/pm-bootstrap`\n", encoding="utf-8")
     outside = tmp_path / "OUTSIDE_TARGET.md"  # 아직 없음 = 깨진 링크 대상.
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     planned = backup_root / ".project_manager" / "wiki" / "pm_role.md"
     planned.parent.mkdir(parents=True)
     planned.symlink_to(outside)
@@ -305,11 +311,11 @@ def test_symlinked_shared_doc_is_rejected_not_silently_skipped(pm_import, tmp_pa
     contexts = {".project_manager/wiki/pm_role.md": ("codex", "opencode")}
 
     with pytest.raises(RuntimeError, match="안전하지 않"):
-        pm_import._shared_notation_rerender_plan(dest, contexts, None, None)
+        add_harness._shared_notation_rerender_plan(ENGINE_HOME, dest, contexts, None, None)
 
     # 부재 경로는 대상이 아니므로 조용히 지나간다(거부 대상은 *실존하는* 위험 경로).
     absent = {".project_manager/wiki/absent.md": ("codex", "opencode")}
-    targets, blocked = pm_import._shared_notation_rerender_plan(
+    targets, blocked = add_harness._shared_notation_rerender_plan(ENGINE_HOME, 
         dest, absent, None, None)
     assert targets == [] and blocked == []
 
@@ -323,7 +329,7 @@ def test_add_harness_dry_run_lists_shared_doc_rerender(pm_import, tmp_path, caps
     before = role.read_text(encoding="utf-8")
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=True, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True, source_root=REPO)
 
     out = capsys.readouterr().out
     assert "공유 문서 재렌더" in out, out
@@ -338,9 +344,9 @@ def test_add_harness_backs_up_shared_docs_before_rerender(pm_import, tmp_path, c
     before = role.read_text(encoding="utf-8")
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
-    backup = (dest / pm_import.BACKUP_DIR_NAME / datetime.date.today().isoformat()
+    backup = (dest / install_rules.BACKUP_DIR_NAME / datetime.date.today().isoformat()
               / ".project_manager" / "wiki" / "pm_role.md")
     assert backup.is_file(), "공유 문서 재렌더가 백업 범위 밖(⑤ 미해소)"
     assert backup.read_text(encoding="utf-8") == before
@@ -356,10 +362,10 @@ def test_shared_docs_are_not_backed_up_when_git_can_restore(pm_import, tmp_path)
     role = dest / ".project_manager" / "wiki" / "pm_role.md"
     role.parent.mkdir(parents=True)
     role.write_text("`/pm-bootstrap`\n", encoding="utf-8")
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     contexts = {".project_manager/wiki/pm_role.md": ("codex", "opencode")}
 
-    targets, blocked = pm_import._shared_notation_rerender_plan(
+    targets, blocked = add_harness._shared_notation_rerender_plan(ENGINE_HOME, 
         dest, contexts, backup_root, {".project_manager/wiki/pm_role.md"})
     assert blocked == [] and targets == [Path(".project_manager/wiki/pm_role.md")]
     outcome = install_files._backup_before_inplace_edit(
@@ -384,12 +390,12 @@ def test_add_harness_leaves_no_stale_notation_in_unowned_wiki_seed(
     dest = _live_instance(pm_import, tmp_path / f"{host}_add", host)
     assert "`/spike-new`" in _spike_line(dest)  # 사전조건(단일 하네스 표기).
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     line = _spike_line(dest)
     assert "`$spike-new`(codex)" in line, f"codex 표기 미반영(조용한 잔존): {line}"
     assert f"`/spike-new`({'claude' if host == 'claude' else 'opencode'})" in line, line
-    backup = (dest / pm_import.BACKUP_DIR_NAME / datetime.date.today().isoformat()
+    backup = (dest / install_rules.BACKUP_DIR_NAME / datetime.date.today().isoformat()
               / ".project_manager" / "wiki" / "raw" / "README.md")
     assert backup.is_file(), "미소유 wiki seed 재렌더가 백업 범위 밖"
     assert "`/spike-new`" in backup.read_text(encoding="utf-8")
@@ -401,7 +407,7 @@ def test_add_harness_lists_unowned_wiki_seed_in_plan(pm_import, tmp_path, capsys
     before = _spike_line(dest)
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=True, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True, source_root=REPO)
 
     out = capsys.readouterr().out
     assert "[rerender] .project_manager/wiki/raw/README.md" in out, out
@@ -411,10 +417,10 @@ def test_add_harness_lists_unowned_wiki_seed_in_plan(pm_import, tmp_path, capsys
 def test_add_harness_rerender_is_idempotent(pm_import, tmp_path, capsys):
     """재실행하면 재렌더 계획 0건 — 무변경 파일은 계획·백업 어디에도 안 들어간다."""
     dest = _live_instance(pm_import, tmp_path / "idem")
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     out = capsys.readouterr().out
     assert "[rerender]" not in out, out
@@ -442,23 +448,23 @@ def test_into_existing_instance_renders_for_both_reader_harnesses(
     assert "`$pm-bootstrap" in role and "`/pm-bootstrap" in role, "기존 독자(codex) 표기 유실"
     state_text = state.read_text(encoding="utf-8")
     assert "`/pm-handoff`(claude) / `$pm-handoff`(codex)" in state_text, state_text[:400]
-    backup = (dest / pm_import.BACKUP_DIR_NAME / datetime.date.today().isoformat()
+    backup = (dest / install_rules.BACKUP_DIR_NAME / datetime.date.today().isoformat()
               / ".project_manager" / "wiki" / "pm_state.md")
     assert backup.is_file(), "생성 산출물 재렌더가 백업 범위 밖"
 
 
 def test_generated_template_sibling_is_derived_not_enumerated(pm_import):
-    assert pm_import._generated_template_sibling(
+    assert add_harness._generated_template_sibling(
         ".project_manager/wiki/pm_state.template.md") == ".project_manager/wiki/pm_state.md"
-    assert pm_import._generated_template_sibling(
+    assert add_harness._generated_template_sibling(
         ".project_manager/wiki/tickets/_template.md") is None
-    assert pm_import._generated_template_sibling(".project_manager/wiki/pm_role.md") is None
+    assert add_harness._generated_template_sibling(".project_manager/wiki/pm_role.md") is None
 
 
 def test_unowned_shipped_wiki_relpaths_exclude_manifest_owned(pm_import):
     """미소유 wiki 후보는 출하 인벤토리에서 파생되고 manifest 소유분은 빠진다(손-열거 0)."""
     contexts = {".project_manager/wiki/pm_role.md": ("claude_code",)}
-    unowned = pm_import._unowned_shipped_wiki_relpaths(
+    unowned = add_harness._unowned_shipped_wiki_relpaths(
         REPO, ("claude", "codex"), contexts)
     assert ".project_manager/wiki/raw/README.md" in unowned
     assert ".project_manager/wiki/pm_role.md" not in unowned
@@ -467,10 +473,10 @@ def test_unowned_shipped_wiki_relpaths_exclude_manifest_owned(pm_import):
 
 def test_installed_harnesses_reads_dest_tree(pm_import, tmp_path):
     dest = _live_instance(pm_import, tmp_path / "detect", "claude")
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude", "codex"]
-    assert pm_import.installed_harnesses(tmp_path / "absent", REPO) == []
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude", "codex"]
+    assert install_receipt.installed_harnesses(tmp_path / "absent", REPO) == []
 
 
 # ── 표기 렌더는 줄끝을 바꾸지 않는다 (표기 외 바이트 변경 0) ─────────────────
@@ -530,8 +536,8 @@ def test_newline_preserving_roundtrip_helpers(pm_import, tmp_path):
 def test_add_harness_does_not_double_backup_copied_shared_doc(pm_import, tmp_path):
     """복사 plan 이 싣는 경로는 재렌더 목록에서 빠진다 — 같은 파일 이중 백업 0."""
     dest = _live_instance(pm_import, tmp_path / "nodouble", "opencode")
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
-    backup_root = (dest / pm_import.BACKUP_DIR_NAME
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
+    backup_root = (dest / install_rules.BACKUP_DIR_NAME
                    / datetime.date.today().isoformat())
     # 두 번째 백업은 `_free_backup_path` 가 `.1` 순번으로 남긴다 — 그 자리가 비어야 한다.
     assert not (backup_root / "AGENTS.md.1").exists(), "공유 root doc 이 두 번 백업됨"
@@ -544,7 +550,7 @@ def test_pm_install_evidence_is_derived_and_non_empty(pm_import):
 
     하나라도 비면 그 하네스는 구조 판정으로 강등돼 오판정이 되살아나므로 여기서 red 로 잡는다.
     production 판정(`installed_harnesses`)이 소비하는 바로 그 함수를 태운다."""
-    evidence, shipped_all = pm_import._pm_install_evidence(REPO)
+    evidence, shipped_all = install_receipt._pm_install_evidence(REPO)
     assert set(evidence) == set(install_rules.REGISTERED_HARNESSES)
     assert set(shipped_all) == set(install_rules.REGISTERED_HARNESSES)
     for harness, marks in evidence.items():
@@ -564,7 +570,7 @@ def test_pm_install_evidence_is_derived_and_non_empty(pm_import):
 
 def _forget_install_receipt(pm_import, dest: Path) -> None:
     """기록 도입 이전 인스턴스 형상 — 어댑터는 그대로 두고 기록만 없앤다(추론 축 재현)."""
-    (dest / pm_import.INSTALL_RECEIPT_RELPATH).unlink()
+    (dest / install_receipt.INSTALL_RECEIPT_RELPATH).unlink()
 
 
 def test_single_missing_sentinel_file_does_not_hide_a_real_install(pm_import, tmp_path):
@@ -576,7 +582,7 @@ def test_single_missing_sentinel_file_does_not_hide_a_real_install(pm_import, tm
     dest = _live_instance(pm_import, tmp_path / "missing_sentinel", "claude")
     _forget_install_receipt(pm_import, dest)
     (dest / ".claude" / "pm_orch_claude.py").unlink()
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]
 
 
 def test_coexisting_install_survives_a_missing_exclusive_sentinel(pm_import, tmp_path):
@@ -586,13 +592,13 @@ def test_coexisting_install_survives_a_missing_exclusive_sentinel(pm_import, tmp
     opencode 몫으로 귀속하면 그 파일 하나 없어진 것만으로 claude 가 통째로 미검출됐다 → 이후
     갱신이 claude 표기를 지운다(거짓 음성 = 표기 유실)."""
     dest = _live_instance(pm_import, tmp_path / "coexist", "claude")
-    pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO)
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude", "opencode"]
+    add_harness.add_harness(ENGINE_HOME, dest, "opencode", dry_run=False, source_root=REPO)
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude", "opencode"]
 
     _forget_install_receipt(pm_import, dest)
     (dest / ".claude" / "pm_orch_claude.py").unlink()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude", "opencode"], \
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude", "opencode"], \
         "전용 판별자 1개 소실로 공존 하네스가 미검출(표기 유실 재발)"
 
 
@@ -608,16 +614,16 @@ def test_shared_evidence_counts_as_install_conservatively(pm_import, tmp_path):
     (dest / "CLAUDE.md").write_text("# 우리 팀 claude 메모\n", encoding="utf-8")
     assert (dest / ".claude" / "skills" / "pm-bootstrap" / "SKILL.md").is_file()
 
-    assert pm_import.installed_harnesses(dest, REPO) == ["opencode"], \
+    assert install_receipt.installed_harnesses(dest, REPO) == ["opencode"], \
         "기록이 있는데도 채택자 자작 진입문서가 독자를 늘림(거짓 양성 잔존)"
 
     _forget_install_receipt(pm_import, dest)
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude", "opencode"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude", "opencode"]
 
     # 반대 축은 그대로 — PM 자산이 하나도 없으면(채택자 자기 트리) 여전히 미검출이다.
     (dest / "CLAUDE.md").unlink()
     shutil.rmtree(dest / ".claude" / "skills")
-    assert pm_import.installed_harnesses(dest, REPO) == ["opencode"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["opencode"]
 
 
 def test_adopter_owned_codex_tree_is_not_read_as_pm_install(pm_import, tmp_path):
@@ -629,9 +635,9 @@ def test_adopter_owned_codex_tree_is_not_read_as_pm_install(pm_import, tmp_path)
     (dest / ".agents" / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
     (dest / "AGENTS.md").write_text("# 우리 프로젝트 규약\n", encoding="utf-8")
 
-    assert pm_import.installed_harnesses(dest, REPO) == []
+    assert install_receipt.installed_harnesses(dest, REPO) == []
     # 구조 판정만 하면(판별자 없음) 옛 오판정이 그대로 재현된다 — 가드 비공허성.
-    assert pm_import.installed_harnesses(dest) == ["codex"]
+    assert install_receipt.installed_harnesses(dest) == ["codex"]
 
 
 def test_self_update_on_adopter_owned_codex_tree_injects_no_codex_notation(render_home,
@@ -705,7 +711,7 @@ def test_add_harness_does_not_substitute_or_fill_existing_docs(pm_import, tmp_pa
     status = dest / ".project_manager" / "wiki" / "status.md"
     status.write_text(_ADOPTER_STATUS, encoding="utf-8")
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     after = status.read_text(encoding="utf-8")
     for token in ("{{PROJECT_NAME}}", "{{TEST_CMD}}", "{{PY}}", "{{PROJECT_CONSTRAINTS}}"):
@@ -864,7 +870,7 @@ def test_planned_target_swapped_to_broken_symlink_fails_the_plan(
     contexts = {".project_manager/wiki/pm_role.md": ("codex", "opencode")}
 
     with pytest.raises(install_files.UnsafeDestPathError, match="안전하지 않"):
-        pm_import._shared_notation_rerender_plan(dest, contexts, None, None)
+        add_harness._shared_notation_rerender_plan(ENGINE_HOME, dest, contexts, None, None)
     assert not missing.exists(), "깨진 링크를 따라 저장소 밖에 파일을 만듦"
 
 
@@ -895,7 +901,7 @@ def test_backup_absorbs_target_deleted_after_precheck(
     monkeypatch.setattr(install_files, "_is_inplace_edit_candidate", delete_after_precheck)
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     err = capsys.readouterr().err
     assert "대상이 사라져" in err and "pm_role.md" in err, err
@@ -1015,7 +1021,7 @@ def test_root_swap_aborts_the_whole_run_not_just_one_file(
     monkeypatch.setattr(install_files, "_backup_before_inplace_edit", swap_root_then_backup)
     capsys.readouterr()
 
-    rc = pm_import.add_harness_cli(dest, "codex", dry_run=False, source_root=REPO)
+    rc = add_harness.add_harness_cli(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -1048,7 +1054,7 @@ def test_copy_channel_refuses_root_swapped_right_after_plan(
     monkeypatch.setattr(install_plan, "plan_copy", plan_then_swap_root)
     capsys.readouterr()
 
-    rc = pm_import.add_harness_cli(dest, "codex", dry_run=False, source_root=REPO)
+    rc = add_harness.add_harness_cli(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -1241,7 +1247,7 @@ def test_broken_symlink_target_is_loudly_excluded_not_silently_skipped(
     monkeypatch.setattr(install_files, "_backup_before_inplace_edit", swap_then_backup)
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     err = capsys.readouterr().err
     assert "계획 검증 뒤" in err and "pm_role.md" in err, err
@@ -1326,7 +1332,7 @@ def test_plan_preview_read_refuses_swap_after_safety_check(pm_import, tmp_path, 
     contexts = {".project_manager/wiki/pm_role.md": ("codex", "opencode")}
 
     with pytest.raises(install_files.UnsafeDestPathError, match="안전하지 않"):
-        pm_import._shared_notation_rerender_plan(dest, contexts, None, None)
+        add_harness._shared_notation_rerender_plan(ENGINE_HOME, dest, contexts, None, None)
     assert outside.read_text(encoding="utf-8") == _OUTSIDE_TEXT
 
 
@@ -1342,7 +1348,7 @@ def test_backup_refuses_source_swapped_after_plan(pm_import, tmp_path):
     role.write_text("`/pm-bootstrap`\n", encoding="utf-8")
     outside = tmp_path / "OUTSIDE_ROLE.md"
     outside.write_text(_OUTSIDE_TEXT, encoding="utf-8")
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     rel = Path(".project_manager/wiki/pm_role.md")
     assert install_files._is_safe_dest_path(dest, rel)  # 계획 시점 통과(사전조건).
     _swap_to_outside_symlink(role, outside)
@@ -1365,8 +1371,8 @@ def test_backup_refuses_when_backup_dir_is_swapped_to_outside_link(pm_import, tm
     role.write_text("사용자 내용 `/pm-bootstrap`\n", encoding="utf-8")
     outside_dir = tmp_path / "outside_backups"
     outside_dir.mkdir()
-    (dest / pm_import.BACKUP_DIR_NAME).symlink_to(outside_dir, target_is_directory=True)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    (dest / install_rules.BACKUP_DIR_NAME).symlink_to(outside_dir, target_is_directory=True)
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     rel = Path(".project_manager/wiki/pm_role.md")
 
     outcome = install_files._backup_before_inplace_edit(dest, [rel], backup_root, set())
@@ -1387,11 +1393,11 @@ def test_sensitivity_path_based_backup_writes_outside_the_repo(pm_import, tmp_pa
     role.write_text("사용자 내용\n", encoding="utf-8")
     outside_dir = tmp_path / "outside_backups"
     outside_dir.mkdir()
-    (dest / pm_import.BACKUP_DIR_NAME).symlink_to(outside_dir, target_is_directory=True)
+    (dest / install_rules.BACKUP_DIR_NAME).symlink_to(outside_dir, target_is_directory=True)
     rel = Path(".project_manager/wiki/pm_role.md")
 
     target = install_files._free_backup_path(
-        dest / pm_import.BACKUP_DIR_NAME / "2026-01-01" / rel)
+        dest / install_rules.BACKUP_DIR_NAME / "2026-01-01" / rel)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(dest / rel, target, follow_symlinks=False)
 
@@ -1417,7 +1423,7 @@ def test_add_harness_refuses_swap_between_plan_and_backup(
     monkeypatch.setattr(install_files, "_backup_before_inplace_edit", swap_then_backup)
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     err = capsys.readouterr().err
     assert outside.read_text(encoding="utf-8") == _OUTSIDE_TEXT, \
@@ -1445,14 +1451,14 @@ def test_add_harness_refuses_swap_between_backup_and_render(
     monkeypatch.setattr(import_render, "render_managed_files", swap_then_render)
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     err = capsys.readouterr().err
     assert outside.read_text(encoding="utf-8") == _OUTSIDE_TEXT, \
         "렌더 쓰기가 교체된 링크를 따라 저장소 밖을 고침"
     assert "계획 검증 뒤" in err and "pm_role.md" in err, err
     # 백업은 교체 *전* 원본을 담았다 — 비파괴 복원 가능성 불변.
-    backup = (dest / pm_import.BACKUP_DIR_NAME / datetime.date.today().isoformat()
+    backup = (dest / install_rules.BACKUP_DIR_NAME / datetime.date.today().isoformat()
               / ".project_manager" / "wiki" / "pm_role.md")
     assert backup.read_text(encoding="utf-8") == before
 
@@ -1483,7 +1489,7 @@ def test_sensitivity_path_based_render_write_follows_the_swapped_symlink(
     monkeypatch.setattr(import_render, "render_managed_files", swap_then_render)
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert outside.read_text(encoding="utf-8") != _OUTSIDE_TEXT, \
         "옛 경로 기반 쓰기가 밖을 안 고쳤다면 이 형상은 TOCTOU 증거가 아니다"
@@ -1515,7 +1521,7 @@ def test_render_absorbs_target_vanishing_between_read_and_write(
     monkeypatch.setattr(install_files, "read_dest_text_keeping_newlines", read_then_delete)
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     err = capsys.readouterr().err
     assert "대상이 사라져" in err and "pm_role.md" in err, err
@@ -1563,11 +1569,11 @@ def test_unbackupable_shared_doc_is_dropped_from_rerender(pm_import, tmp_path):
     role = dest / ".project_manager" / "wiki" / "pm_role.md"
     role.parent.mkdir(parents=True)
     role.write_text("`/pm-bootstrap`\n", encoding="utf-8")
-    (dest / pm_import.BACKUP_DIR_NAME).write_text("not a directory", encoding="utf-8")
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    (dest / install_rules.BACKUP_DIR_NAME).write_text("not a directory", encoding="utf-8")
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     contexts = {".project_manager/wiki/pm_role.md": ("codex", "opencode")}
 
-    targets, blocked = pm_import._shared_notation_rerender_plan(
+    targets, blocked = add_harness._shared_notation_rerender_plan(ENGINE_HOME, 
         dest, contexts, backup_root, set())
     assert targets == []
     assert blocked == [".project_manager/wiki/pm_role.md"]
@@ -1673,7 +1679,7 @@ def test_plan_preview_refuses_a_fifo_swapped_after_precheck(
 
     with _fails_instead_of_hanging():
         with pytest.raises(install_files.UnsafeDestPathError, match="안전하지 않"):
-            pm_import._shared_notation_rerender_plan(dest, contexts, None, None)
+            add_harness._shared_notation_rerender_plan(ENGINE_HOME, dest, contexts, None, None)
 
 
 @requires_fifo
@@ -1683,7 +1689,7 @@ def test_backup_refuses_a_fifo_swapped_after_precheck(pm_import, tmp_path, monke
     role = dest / ".project_manager" / "wiki" / "pm_role.md"
     role.parent.mkdir(parents=True)
     role.write_text("사용자 내용\n", encoding="utf-8")
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     rel = Path(".project_manager/wiki/pm_role.md")
     original = install_files._is_inplace_edit_candidate
 
@@ -1720,7 +1726,7 @@ def test_recheck_fallback_creates_missing_backup_parents(
     rel = Path(".project_manager/wiki/pm_role.md")
     (dest / rel).parent.mkdir(parents=True)
     (dest / rel).write_text("사용자 내용\n", encoding="utf-8")
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
 
     target = install_files._backup_to_central_dir_nofollow(dest, rel, backup_root)
 
@@ -1738,8 +1744,8 @@ def test_recheck_fallback_refuses_symlinked_backup_ancestor(
     (dest / rel).write_text("사용자 내용\n", encoding="utf-8")
     outside_dir = tmp_path / "outside_backups"
     outside_dir.mkdir()
-    (dest / pm_import.BACKUP_DIR_NAME).symlink_to(outside_dir, target_is_directory=True)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    (dest / install_rules.BACKUP_DIR_NAME).symlink_to(outside_dir, target_is_directory=True)
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
 
     with pytest.raises(install_files.UnsafeDestPathError):
         install_files._backup_to_central_dir_nofollow(dest, rel, backup_root)
@@ -1825,7 +1831,7 @@ def test_symlink_backup_and_unlink_refuse_a_swapped_parent(pm_import, tmp_path, 
     src.write_text("TEMPLATE\n", encoding="utf-8")
     rel = Path("adapter/card.md")
     (dest / rel).symlink_to(outside_secret)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     action = install_files.CopyAction(
         src, dest / rel, backup_root / rel, dest_root=dest, backup_dir_name=".pm_import_backups")
     root_identity = install_files.dest_root_identity(dest)
@@ -1853,7 +1859,7 @@ def test_symlink_backup_preserves_the_link_itself(pm_import, tmp_path):
     src.write_text("TEMPLATE\n", encoding="utf-8")
     rel = Path("adapter/card.md")
     (dest / rel).symlink_to(target)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
 
     install_files.CopyAction(src, dest / rel, backup_root / rel, dest_root=dest, backup_dir_name=".pm_import_backups").run(
         root_identity=install_files.dest_root_identity(dest))
@@ -1911,7 +1917,7 @@ def test_symlink_backup_records_the_link_target_without_the_extended_prefix(
     rel = Path("adapter/card.md")
     (dest / rel).symlink_to(_WINDOWS_LINK_TARGET)
     assert os.readlink(dest / rel) == _WINDOWS_LINK_TARGET, "주입 전제(링크 대상이 확장 표기)"
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
 
     install_files.CopyAction(src, dest / rel, backup_root / rel, dest_root=dest, backup_dir_name=".pm_import_backups").run(
         root_identity=install_files.dest_root_identity(dest))
@@ -2088,7 +2094,7 @@ def test_recheck_fallback_handles_symlink_backup_and_unlink(
     src.write_text("TEMPLATE\n", encoding="utf-8")
     rel = Path("adapter/card.md")
     (dest / rel).symlink_to(target)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
 
     install_files.CopyAction(src, dest / rel, backup_root / rel, dest_root=dest, backup_dir_name=".pm_import_backups").run(
         root_identity=install_files.dest_root_identity(dest))
@@ -2130,7 +2136,7 @@ def test_file_created_after_plan_is_not_overwritten_without_backup(
     template.mkdir()
     rel = Path("card.md")
     (template / rel).write_text("TEMPLATE\n", encoding="utf-8")
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     action = install_files.CopyAction(
         template / rel, dest / rel, None, dest_root=dest, backup_dir_name=".pm_import_backups")  # 계획: 신규(백업 없음).
     (dest / rel).write_text("사용자가 방금 만든 파일\n", encoding="utf-8")
@@ -2155,7 +2161,7 @@ def test_file_deleted_after_plan_is_not_recreated(pm_import, tmp_path, capsys):
     rel = Path("card.md")
     (template / rel).write_text("TEMPLATE\n", encoding="utf-8")
     (dest / rel).write_text("기존 파일\n", encoding="utf-8")
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     action = install_files.CopyAction(
         template / rel, dest / rel, backup_root / rel, dest_root=dest, backup_dir_name=".pm_import_backups")  # 계획: 기존(백업).
     (dest / rel).unlink()
@@ -2350,7 +2356,7 @@ def test_backup_and_write_are_bound_to_one_leaf_identity(
     (dest / rel).write_text("사용자 원본\n", encoding="utf-8")
     intruder = tmp_path / "intruder.md"
     intruder.write_text("백업 안 된 새 파일\n", encoding="utf-8")
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     action = install_files.CopyAction(
         template / rel, dest / rel, backup_root / rel, dest_root=dest, backup_dir_name=".pm_import_backups")
     original_open = install_files._open_dest_relative_nofollow
@@ -2413,7 +2419,7 @@ def test_symlink_backup_and_unlink_are_identity_bound(
     link_target = tmp_path / "user_target.md"
     link_target.write_text("링크 대상\n", encoding="utf-8")
     (dest / rel).symlink_to(link_target)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     action = install_files.CopyAction(
         template / rel, dest / rel, backup_root / rel, dest_root=dest, backup_dir_name=".pm_import_backups")
     original_backup = install_files._backup_symlink_nofollow
@@ -2446,7 +2452,7 @@ def test_receipt_skips_a_harness_whose_copies_were_all_excluded(
     assert pm_import.main(
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
          "--from", str(REPO), "--name", "Excluded"]) == 0
-    before = (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
+    before = (dest / install_receipt.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
     # add-harness 의 복사를 전부 제외시킨다(계획 뒤 상태 변화와 같은 결과).
     monkeypatch.setattr(
         install_files, "apply_copy_plan",
@@ -2454,13 +2460,13 @@ def test_receipt_skips_a_harness_whose_copies_were_all_excluded(
             [], [], [action.dst.relative_to(dest_root).as_posix() for action in plan]))
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     err = capsys.readouterr().err
     assert "codex" in err and "설치 기록에 올리지 않습니다" in err, err
-    assert (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8") == before, \
+    assert (dest / install_receipt.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8") == before, \
         "선 적 없는 어댑터가 기록에 올랐다(유령 생성)"
-    assert pm_import.installed_harnesses(dest, REPO) == ["claude"]
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]
 
 
 def test_receipt_keeps_preexisting_harness_even_if_files_are_gone(
@@ -2474,8 +2480,8 @@ def test_receipt_keeps_preexisting_harness_even_if_files_are_gone(
     (dest / "CLAUDE.md").unlink()
     capsys.readouterr()
 
-    recordable, dropped = pm_import.established_harnesses(
-        dest, ["claude", "codex"], pm_import.installed_harnesses(dest, REPO))
+    recordable, dropped = install_receipt.established_harnesses(
+        dest, ["claude", "codex"], install_receipt.installed_harnesses(dest, REPO))
 
     assert recordable == ["claude"], "기존 기록분을 이번 실행이 철회했다"
     assert dropped == ["codex"]
@@ -2520,7 +2526,7 @@ def test_rerender_backup_reports_absent_target(pm_import, tmp_path):
     """계획이 실재를 확인한 재렌더 대상이 사라지면 백업 단계가 loud 로 알린다(조용한 skip 0)."""
     dest = tmp_path / "inst"
     (dest / ".project_manager" / "wiki").mkdir(parents=True)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / "2026-01-01"
     rel = Path(".project_manager/wiki/pm_role.md")  # 계획엔 있었으나 지금은 부재.
 
     outcome = install_files._backup_before_inplace_edit(dest, [rel], backup_root, set())

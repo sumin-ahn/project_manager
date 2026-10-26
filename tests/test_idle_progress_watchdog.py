@@ -257,11 +257,21 @@ _HARNESS_LITERAL_EXEMPTIONS = {
         "fill 하네스별 wire argv를 만드는 전달 어댑터(timeout 비소유)",
     ("pm_engine/app/import_fill", "run_fill"):
         "하네스별 wire 출력 parser를 고르는 fill reply 디코더(timeout 비소유)",
-    ("pm_import", "add_harness"):
+    ("pm_engine/app/add_harness", "add_harness"):
         "추가할 어댑터 namespace의 안내 문구 소유(fill 실행 판정과 무관)",
     ("pm_import", "main"):
         "import CLI의 어댑터 선택·안내 표현 소유(timeout 판정은 _real_harness_runner 단독)",
 }
+
+
+# 평면 pm_import 에서 엔진 package 로 옮겨 간 설치·어댑터 정의의 소유 모듈 — 옮기기 전과 같은 범위를 검사한다.
+_PM_IMPORT_MOVED_MODULES = (
+    "pm_engine/app/adapter_accept", "pm_engine/app/adapter_report", "pm_engine/app/adapter_templates",
+    "pm_engine/app/add_harness", "pm_engine/app/harness_ctx", "pm_engine/app/hook_sets",
+    "pm_engine/app/install_board", "pm_engine/domain/adapter_specs", "pm_engine/domain/upstream_rules",
+    "pm_engine/infra/adapter_baseline", "pm_engine/infra/adapter_documents", "pm_engine/infra/install_conf",
+    "pm_engine/infra/install_receipt", "pm_engine/infra/upstream_declarations", "pm_engine/infra/upstream_git",
+)
 
 
 def _module_harness_literal_hits(module_name: str, source: str) -> dict[str, list[tuple[int, str]]]:
@@ -329,7 +339,8 @@ def _unexpected_harness_literal_hits(
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd")
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd",
+                     *_PM_IMPORT_MOVED_MODULES)
     }
     unexpected = {}
     for module_name, source in sources.items():
@@ -1348,7 +1359,8 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd")
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd",
+                     *_PM_IMPORT_MOVED_MODULES)
         for qualname in _module_harness_literal_hits(
             module_name, (TOOLS / f"{module_name}.py").read_text(encoding="utf-8"))
     }
@@ -1473,7 +1485,8 @@ def test_structural_guard_rejects_new_timeout_bypass_callers(
                      "pm_engine/infra/harness/contract", "pm_engine/infra/harness/watchdog",
                      "pm_engine/infra/raw_output", "pm_engine/infra/harness/delegate_run",
                      "pm_engine/infra/harness/delegate_env", "pm_engine/infra/harness/delegate_transport",
-                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd")
+                     "pm_engine/infra/reviewer_target", "pm_engine/app/delegate_execute", "pm_engine/infra/harness/reviewer_run", "pm_engine/app/reviewer_run", "pm_engine/infra/reviewer_raw", "pm_engine/cli/delegate_cmd",
+                     *_PM_IMPORT_MOVED_MODULES)
     }
     sources[module_name] = _apply_mutation_anchor(
         sources[module_name], needle, replacement,
@@ -1575,7 +1588,7 @@ def test_fill_routes_every_driver_through_shared_watchdog(
     """세 번째 표면 fill도 3 드라이버 전부 같은 profile+watchdog 판정을 탄다."""
     fake = _RecordingRelay()
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
     argv = import_fill._build_runner_argv(harness, tmp_path, tmp_path / "prompt.md")
 
     ok, _output = import_fill._real_harness_runner(argv, "prompt")
@@ -1607,7 +1620,7 @@ def test_fill_reads_target_repo_profile_overrides(pm_import, monkeypatch, tmp_pa
     )
     fake = _RecordingRelay()
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     import_fill._real_harness_runner(["codex", "exec", "--json", "prompt"], "prompt", cwd=tmp_path)
 
@@ -1620,7 +1633,7 @@ def test_fill_claude_plain_blob_disables_idle_from_actual_argv(
     """평문 `claude -p`는 event-stream 프로필을 소비하지 않아 정상 실행을 idle kill하지 않는다."""
     fake = _RecordingRelay()
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
     argv = import_fill._build_runner_argv("claude", tmp_path, None)
 
     import_fill._real_harness_runner(argv, "prompt")
@@ -1652,7 +1665,7 @@ def test_fill_prints_effective_limits_before_spawn(pm_import, monkeypatch, capsy
     """채택자가 호출 전에 실효 idle/wall과 Ctrl-C 중단 방법을 본다."""
     fake = _RecordingRelay()
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
 
@@ -1671,7 +1684,7 @@ def test_fill_timeout_preserves_partial_stdout_and_stderr(
     )
     fake = _RecordingRelay(exc=exc)
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     ok, output = import_fill._real_harness_runner(["codex", "exec", "prompt"], "prompt")
 
@@ -1692,7 +1705,7 @@ def test_fill_startup_stall_preserves_partial_output(pm_import, monkeypatch):
     )
     fake._exc = exc
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     ok, output = import_fill._real_harness_runner(
         ["opencode", "run", "prompt"], "prompt")
@@ -1712,7 +1725,7 @@ def test_fill_stall_error_reports_wall_axis(pm_import, monkeypatch):
     )
     fake._exc = exc
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     ok, output = import_fill._real_harness_runner(
         ["opencode", "run", "prompt", "--format", "json"], "prompt")
@@ -1729,7 +1742,7 @@ def test_fill_profile_failure_is_soft_and_stage_specific(pm_import, monkeypatch)
     monkeypatch.setattr(watchdog, "resolve_harness_profile", lambda *args: (_ for _ in ()).throw(
         RuntimeError("profile unavailable")))
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     ok, output = import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
 
@@ -1759,7 +1772,7 @@ def test_fill_marked_skew_passes_other_fail_soft_boundaries(
 
         fake._completed = _SkewResult()
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     with pytest.raises(RuntimeError) as excinfo:
         import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
@@ -1776,7 +1789,7 @@ def test_fill_result_normalization_failure_is_soft(pm_import, monkeypatch):
 
     fake = _RecordingRelay(completed=_BrokenResult())
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     ok, output = import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
 
@@ -1789,7 +1802,7 @@ def test_fill_spawn_missing_file_is_binary_diagnostic(pm_import, monkeypatch):
     """실 워치독 spawn의 FileNotFoundError만 하니스 바이너리 부재로 진단한다."""
     fake = _RecordingRelay(exc=FileNotFoundError(2, "missing", "claude"))
     fake.install(monkeypatch)
-    monkeypatch.setattr(pm_import.subprocess, "Popen", _forbidden_popen)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
     ok, output = import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
 

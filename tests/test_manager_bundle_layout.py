@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pm_engine.domain import install_rules
 
+import json
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import pytest
 
 from manager import BUNDLED_TOOLS, PACKAGE_ROOT, REPO_ROOT, build, load_engine_module, runner
 from manager.bridge_update import BUILD_INFO_MODULE, bundle_root, import_argv
+from pm_engine.infra import upstream_git
 
 REPO = Path(__file__).resolve().parents[1]
 SPEC_FILE = REPO / "manager" / "manager.spec"
@@ -217,13 +219,61 @@ def test_an_unknown_target_is_not_given_a_made_up_name(system, machine):
 # ── ⑤ 각인 모듈과 빌드 산출의 자리 ───────────────────────────────────────────
 
 
-def test_the_imprint_module_carries_the_build_checkout_upstream_and_nothing_else():
+_IMPRINT_FIXED_URL = "https://fixed.example.invalid/x/y.git"
+
+# 단독 실행된 `build.py`(관리자 package 가 import 경로에 없는 상태)의 각인 — origin 조회 자리(git)만
+#   고정 URL 대역으로 바꾸고 나머지는 실물이다. 마지막 줄에 엔진 모듈이 적재된 파일을 낸다.
+_STANDALONE_IMPRINT = """
+import json, shutil, subprocess, sys, types, importlib.util
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("build_standalone", sys.argv[1])
+build = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(build)
+before = sorted(name for name in ("manager", "pm_engine") if name in sys.modules)
+build.BUILD_INFO_FILE = Path(sys.argv[2])
+def fixed_origin(argv, **kwargs):
+    assert list(argv[-3:]) == ["remote", "get-url", "origin"], argv
+    return types.SimpleNamespace(returncode=0, stdout=sys.argv[3] + "\\n", stderr="")
+shutil.which = lambda _name: "fixture-git"
+subprocess.run = fixed_origin
+build.imprint_build_info()
+from pm_engine.infra import upstream_git
+print(json.dumps({"before": before, "engine": upstream_git.__file__}))
+"""
+
+
+def test_the_imprint_module_carries_the_build_checkout_upstream_and_nothing_else(
+        tmp_path, monkeypatch):
     """각인은 읽는 곳이 있는 값 하나다 — 관리자 버전 표기는 번들 엔진 rev 가 낸다."""
     namespace: dict = {}
     exec(build.build_info_source("git@example.invalid:x/y.git"), namespace)
 
     assert namespace["UPSTREAM_URL"] == "git@example.invalid:x/y.git"
     assert [name for name in namespace if not name.startswith("__")] == ["UPSTREAM_URL"]
+
+    # 실제 각인 함수 — origin 은 엔진 seam(upstream_git)으로 읽고 임시 각인 파일에 그 값 하나를 쓴다.
+    imprint = tmp_path / "in_process_build_info.py"
+    monkeypatch.setattr(build, "BUILD_INFO_FILE", imprint)
+    monkeypatch.setattr(upstream_git, "_real_upstream_git_runner",
+                        lambda: lambda argv: (0, _IMPRINT_FIXED_URL + "\n"))
+    assert build.imprint_build_info() == imprint
+    written: dict = {}
+    exec(imprint.read_text(encoding="utf-8"), written)
+    assert written["UPSTREAM_URL"] == _IMPRINT_FIXED_URL
+
+    # 단독 실행 — 관리자 package 초기화가 번들 엔진 tools 를 import 경로에 올린 뒤 엔진을 읽는다.
+    standalone = tmp_path / "standalone_build_info.py"
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", _STANDALONE_IMPRINT,
+         str(PACKAGE_ROOT / "build.py"), str(standalone), _IMPRINT_FIXED_URL],
+        capture_output=True, text=True, encoding="utf-8", check=False)
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert observed["before"] == [], "단독 실행 전제 붕괴 — 관리자/엔진 package 가 이미 적재됐다"
+    assert Path(observed["engine"]) == BUNDLED_TOOLS / "pm_engine" / "infra" / "upstream_git.py"
+    written = {}
+    exec(standalone.read_text(encoding="utf-8"), written)
+    assert written["UPSTREAM_URL"] == _IMPRINT_FIXED_URL
 
 
 @git_required

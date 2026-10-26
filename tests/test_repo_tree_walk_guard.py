@@ -319,6 +319,22 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException("tmp_path에 fresh import한 adapter fixture의 치환 결과만 검사"),
+    (
+        "tests/test_s9_hook_declarations.py",
+        "_tree_bytes",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp_path 합성 상류 checkout의 read-only 불변식 스냅샷 — 선언 조회가 '어떤 파일도 추가/수정하지 "
+        "않았다'가 판정 대상이라 전수 bytes 가 본질(좁힌 열거는 예기치 못한 write를 놓친다)"),
+    (
+        "tests/test_s9_hook_declarations.py",
+        "_listing_child",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "실행 Home 임시 루트에 엔진이 만든 staging 트리(repo 아님)의 파일 목록 — 원문만 내려가고 "
+        "바이트코드 캐시가 섞이지 않았는지가 판정 대상"),
 }
 
 ALL_EXCEPTIONS = {**MIGRATION_EXCEPTIONS, **REVIEWED_NON_INVENTORY_EXCEPTIONS}

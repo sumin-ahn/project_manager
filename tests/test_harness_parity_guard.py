@@ -89,9 +89,9 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
         "어댑터 설치 — 라이브 스모크 러너의 codex CLI argv"),
     ("import_fill.py", "_build_runner_argv", "opencode"): Site(
         "어댑터 설치 — 라이브 스모크 러너의 opencode CLI argv"),
-    ("pm_import.py", "add_harness", "claude"): Site(
+    ("add_harness.py", "add_harness", "claude"): Site(
         "어댑터 설치 — claude 타깃의 어댑터 디렉터리 배치"),
-    ("pm_import.py", "add_harness", "codex"): Site(
+    ("add_harness.py", "add_harness", "codex"): Site(
         "어댑터 설치 — codex 타깃의 어댑터 디렉터리 배치"),
     ("pm_import.py", "main", "claude"): Site(
         "어댑터 설치 — `--harness claude` 스캐폴드 선택"),
@@ -125,13 +125,13 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
         "CLI 형식 — 임시 쓰기 자리 이름 표기 실측값", HARNESS_NAMES),
     ("install_rules.py", "ADAPTER_CONFIG_CHANNEL"): (
         "어댑터 설치 — 하네스마다 config 파일 채널이 다르다", HARNESS_NAMES),
-    ("pm_import.py", "ADAPTER_HOOK_SET"): (
+    ("adapter_specs.py", "ADAPTER_HOOK_SET"): (
         "어댑터 설치 — 하네스마다 훅 등록 파일 집합이 다르다", HARNESS_NAMES),
     ("install_rules.py", "ADD_HARNESS_ADAPTER"): (
         "어댑터 설치 — 하네스마다 어댑터 디렉터리 이름이 다르다", HARNESS_NAMES),
     ("install_rules.py", "ADD_HARNESS_CREATE_IF_ABSENT"): (
         "어댑터 설치 — 부재 시 새로 만들 config 파일이 하네스마다 다르다", HARNESS_NAMES),
-    ("pm_import.py", "ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS"): (
+    ("adapter_specs.py", "ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS"): (
         "어댑터 설치 — 손편집 보존 대상 필드가 하네스 config 포맷마다 다르다", HARNESS_NAMES),
     ("install_rules.py", "HARNESS_TEMPLATE_DIRS"): (
         "어댑터 설치 — 하네스마다 출하 template 디렉터리가 다르다", HARNESS_NAMES),
@@ -506,13 +506,13 @@ def test_no_permission_or_env_branch_on_harness_name(tmp_path):
 
 def test_a_removed_site_makes_its_ledger_entry_dead(tmp_path):
     """감도 — 등재된 자리를 코드에서 지우고 원장을 그대로 두면 죽은 예외로 잡힌다."""
-    emptied = tmp_path / "pm_import.py"
+    emptied = tmp_path / "add_harness.py"
     emptied.write_text("def add_harness(name):\n    return name\n", encoding="utf-8")
 
     measured = _measured_sites([emptied])
 
-    assert measured.get(("pm_import.py", "add_harness", "codex"), 0) == 0
-    assert ("pm_import.py", "add_harness", "codex") in ledger()
+    assert measured.get(("add_harness.py", "add_harness", "codex"), 0) == 0
+    assert ("add_harness.py", "add_harness", "codex") in ledger()
 
 
 def test_adapter_path_literals_are_not_harness_identity_branches(tmp_path):

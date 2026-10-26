@@ -5,7 +5,7 @@ annotated 태그의 `^{}` peeled 행은 후보가 아니다. 같은 upstream 을
 조회는 1회다.
 
 값과 실행이 지나는 자리는 **엔진의 upstream seam** 하나다(관리자 쪽 사본 0) — 값은
-`pm_import.validate_upstream_value` 가 먼저 거르고, git 은 `_real_upstream_git_runner` 가
+`upstream_rules.validate_upstream_value` 가 먼저 거르고, git 은 `_real_upstream_git_runner` 가
 비대화 auth·config 격리·`--` 종결로 부른다. 그 두 축을 실 호출의 argv·env 로 실측한다.
 """
 from __future__ import annotations
@@ -18,7 +18,8 @@ import pytest
 
 from _manager_home import git_required, make_bare_with_tags
 
-from manager import CallError, load_engine_module, upstream
+from manager import CallError, upstream
+from pm_engine.infra import upstream_git  # noqa: F401  (엔진 모듈 적재는 관찰 대상이 아니다)
 
 pytestmark = git_required
 
@@ -52,8 +53,6 @@ def observed(monkeypatch) -> list[dict]:
 @pytest.fixture
 def no_spawn(monkeypatch):
     """스폰 자리의 관찰자 — 불리면 그 자리에서 실패한다(결과를 지어내지 않는다)."""
-    load_engine_module("pm_import.py")      # 엔진 모듈 로드는 관찰 대상이 아니다(캐시에 올린다)
-
     def observer(*args, **kwargs):
         raise AssertionError(f"git 이 떴다: {args!r}")
 

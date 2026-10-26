@@ -44,8 +44,17 @@ from _harness_matrix import (
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from _skill_command import ARGUMENTS_SECTION
 from pm_engine.domain import ticket_rules
+from pm_engine.app import add_harness
+from pm_engine.infra import adapter_baseline
+from pm_engine.infra import install_receipt
+from pm_engine.infra import upstream_git
+from pm_engine.infra import pm_paths
+
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
 
 REPO = Path(__file__).resolve().parents[1]
+# 설치·추가를 실행하는 엔진 Home(이 checkout).
+ENGINE_HOME = pm_paths.home_at(REPO)
 TOOLS = REPO / ".project_manager" / "tools"
 
 _RAW_PM_SKILLS = (
@@ -159,8 +168,7 @@ def _load_pm_import():
     spec = importlib.util.spec_from_file_location("pm_import", TOOLS / "pm_import.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="module")
@@ -174,8 +182,7 @@ def _load_pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 @pytest.fixture(scope="module")
@@ -206,7 +213,7 @@ def test_fresh_adopter_default_installs_every_registered_harness_adapter(
         )
 
     receipt = json.loads(
-        (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
+        (dest / install_receipt.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
     )
     assert receipt["harnesses"] == list(install_rules.REGISTERED_HARNESSES)
 
@@ -221,7 +228,7 @@ def test_fresh_adopter_default_folds_shared_agents_entry_to_neutral_source(
     ]) == 0
 
     receipt = json.loads(
-        (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
+        (dest / install_receipt.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
     )
     assert receipt["instance_owned_templates"]["AGENTS.md"] == {
         "weight": "full",
@@ -1476,7 +1483,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     # 는 소스를 명시 --from > dest upstream(path) > dest(templates) 순으로 해소하는데, fresh 인스턴스는
     # upstream 을 *URL*(origin)로 기록하므로 자동 해소 대상이 아니다 — 채택자는 로컬 checkout 을 명시한다.
     # 이 e2e 의 초점은 소스 해소가 아니라 복사 스코프/바이트 불변이라 REPO 를 명시해 결정화한다.
-    plan = pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    plan = add_harness.add_harness(ENGINE_HOME, dest, added, dry_run=False, source_root=REPO)
     assert plan, f"{base}→{added}: add-harness plan 이 비어 있다."
 
     after = _snapshot_tree(dest)
@@ -1531,8 +1538,8 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     #   (dev-state metadata·설치 기록과 같은 성질). 보존된 편집분은 애초에 기록되지 않으므로 이 예외가
     #   clobber 를 가리지 않는다 — 원장의 기록 규칙 자체는 `test_pm_import.py` 의 절이 못박는다.
     _MANIFEST_REL = ".project_manager/engine.manifest"
-    _RECEIPT_REL = pm_import.INSTALL_RECEIPT_RELPATH.as_posix()
-    _BASELINE_REL = pm_import.ADAPTER_BASELINE_RELPATH.as_posix()
+    _RECEIPT_REL = install_receipt.INSTALL_RECEIPT_RELPATH.as_posix()
+    _BASELINE_REL = adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()
     _CTX_RECORD_REL = ".project_manager/.local/ctx-budget.json"
     notation_shared = {
         ".project_manager/wiki/README.md",
@@ -1651,7 +1658,7 @@ def test_add_harness_preserves_crlf_manifest_notation(pm_import, tmp_path):
     before = _to_crlf(manifest)
     assert _stray_lf(before) == 0, "픽스처가 CRLF 단일 표기를 못 만들었다(공허 게이트)"
 
-    assert pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO), \
+    assert add_harness.add_harness(ENGINE_HOME, dest, "opencode", dry_run=False, source_root=REPO), \
         "add-harness plan 이 비어 있다"
 
     after = manifest.read_bytes()
@@ -1697,7 +1704,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
     assert pm_import.main(
         ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"]
     ) == 0
-    pm_import.add_harness(dest, added, dry_run=False, source_root=REPO)
+    add_harness.add_harness(ENGINE_HOME, dest, added, dry_run=False, source_root=REPO)
 
     engine_rows = _guest_engine_rows(pm_update, dest)
     assert engine_rows, f"{base}->{added}: guest 엔진 행 미등재(동기 채널 부재)"
@@ -1761,8 +1768,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
     assert pm_update.main(["--from", str(REPO)]) == 0, f"{base}->{added}: self-update rc≠0"
 
     after = _snapshot_tree(dest)
@@ -1889,8 +1895,7 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
 
     # hermetic self-update: read_upstream_rev(라이브 git baseline)를 stub + pm_update 가 이 stub 된
     #   pm_import 를 쓰게 배선(서브프로세스/네트워크 0·framework 는 비-git 이라 어차피 None 이지만 명시 격리).
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
     # fresh opencode 채택자 — 결정적 모델 flag(라이브 opencode 미실행·models seam 은 fixture stub).
     dest = tmp_path / "adopter-opencode"

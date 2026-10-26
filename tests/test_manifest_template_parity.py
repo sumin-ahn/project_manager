@@ -31,6 +31,7 @@ from _git_fixture import init_git_repo
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
 from pm_engine.infra import manifest_store
+from pm_engine.domain import adapter_specs
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -256,7 +257,7 @@ def test_t0953_precompact_capture_hook_retired_in_all_manifests():
         "pm_import_t0953_retired", REPO / ".project_manager" / "tools" / "pm_import.py")
     pm_import = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pm_import)
-    assert RETIRED_PRECOMPACT_PATH[0] not in pm_import.ADAPTER_HOOK_SET["claude"].live_files
+    assert RETIRED_PRECOMPACT_PATH[0] not in adapter_specs.ADAPTER_HOOK_SET["claude"].live_files
 
 
 def test_reviewer_executable_has_only_the_new_physical_name_in_all_shipping_trees():

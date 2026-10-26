@@ -1208,7 +1208,7 @@ def test_t0943_status_ctx_budget_shape_and_readonly(tmp_path, monkeypatch):
     install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
     monkeypatch.setattr(module, "REPO", tmp_path)
     before = _snapshot_fixture_bytes(tmp_path)
-    conf = module._status_json_conf(load_engine("pm_import"), None)
+    conf = module._status_json_conf(None)
     assert "ctx_applied" not in conf
     claude = conf["ctx_budget"]["claude"]
     assert set(claude) == {"status", "E", "P", "checkpoint", "precompact", "checkpoint_at_pct", "precompact_at_pct",
@@ -1233,7 +1233,7 @@ def test_t0949_status_ctx_budget_settings_mismatch(tmp_path, monkeypatch):
     assert text.count('"autoCompactWindow": 188000') == 1
     settings.write_text(text.replace('"autoCompactWindow": 188000', '"autoCompactWindow": 190000'), encoding="utf-8")
     before = _snapshot_fixture_bytes(tmp_path)
-    claude = module._status_json_conf(load_engine("pm_import"), None)["ctx_budget"]["claude"]
+    claude = module._status_json_conf(None)["ctx_budget"]["claude"]
     assert claude["status"] == "ok" and "settings_mismatch" in claude
     assert claude["settings_mismatch"] == [{"path": "autoCompactWindow", "file": 190000, "record": 188000}]
     assert _snapshot_fixture_bytes(tmp_path) == before

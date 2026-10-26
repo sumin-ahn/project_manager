@@ -17,6 +17,7 @@ from pm_engine.domain import review_contract
 from pm_engine.cli import board_list
 from pm_engine.cli import board_prefix
 from pm_engine.cli import board_ticket
+from pm_engine.infra import upstream_git
 
 
 import importlib.util
@@ -2726,9 +2727,7 @@ def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch
     # 어긋난 채로는 advisory 1건(회귀 sensitivity — 이 테스트가 vacuous 하지 않음).
     assert len(conf_lint.lint_adapter_drift(board._home())) == 1
 
-    pm_import = pm_update._load_pm_import()
-    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "converged9999")
-    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "converged9999")
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
 
     assert conf_lint.lint_adapter_drift(board._home()) == [], \

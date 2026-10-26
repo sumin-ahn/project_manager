@@ -23,6 +23,8 @@ import pytest
 
 from _git_fixture import init_git_repo
 
+pytestmark = pytest.mark.usefixtures("known_ctx_io")
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 NEW_TEMPLATE = REPO / "templates" / "opencode" / "AGENTS.md"
@@ -44,8 +46,7 @@ def _load_pm_update():
     spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    from _manager_home import known_ctx_module
-    return known_ctx_module(mod)
+    return mod
 
 
 # 임베드 세대 수 + 세대 index → git 출하 blob ref (provenance lock). parametrize collection 시점에

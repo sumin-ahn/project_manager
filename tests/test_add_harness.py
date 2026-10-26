@@ -1,7 +1,7 @@
 """add-harness 소스 해소 테스트 (T-0282 · ADR-0048 gap).
 
 `pm_config add-harness <harness>` 가 **imported 인스턴스**(scoped-core 사본·`templates/` 부재·
-② PM 홈 형상)에서 어댑터 소스를 못 찾던 갭을 닫는다. 소스 해소 우선순위(pm_import 단일 진실):
+② PM 홈 형상)에서 어댑터 소스를 못 찾던 갭을 닫는다. 소스 해소 우선순위(add_harness 단일 진실):
 
     explicit `--from`  >  dest local.conf upstream(path·templates 보유)  >  dest 자신(templates
     보유·framework-checkout 자기전환)  >  친화 FileNotFoundError
@@ -20,6 +20,7 @@ URL upstream 은 로컬 소스(경로 upstream·dest 자기전환)가 없을 때
 """
 from __future__ import annotations
 
+from pm_engine.app import harness_ctx
 from pm_engine.app import import_fill
 from pm_engine.infra import install_git
 
@@ -32,8 +33,14 @@ from pathlib import Path
 import pytest
 
 from _manager_home import _known_ctx_installation
+from pm_engine.app import add_harness
+from pm_engine.domain import install_rules
+from pm_engine.infra import upstream_git
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
+# 설치·추가를 실행하는 엔진 Home(이 checkout).
+ENGINE_HOME = pm_paths.home_at(REPO)
 TOOLS = REPO / ".project_manager" / "tools"
 
 
@@ -55,14 +62,14 @@ def pm_config():
 
 
 @pytest.fixture(autouse=True)
-def _known_native_capacity(tmp_path,pm_import,monkeypatch):
+def _known_native_capacity(tmp_path,monkeypatch):
     from _manager_home import known_ctx_seams
     for name,seam in known_ctx_seams(capacity=200000,context=232000).items():
-        monkeypatch.setattr(pm_import,name,seam)
+        monkeypatch.setattr(harness_ctx,name,seam)
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_opencode_models(pm_import, monkeypatch):
+def _hermetic_opencode_models(monkeypatch):
     """T-0033 동형 — apply 경로(resolve_opencode_model)가 라이브 `opencode models` CLI 를 치지
     않도록 (False, []) 고정(미설치 동치). 이 파일의 add_harness 는 전부 dry_run 이라 실제로 도달
     하지 않지만 hermetic 보험."""
@@ -135,7 +142,7 @@ def test_resolve_source_prefers_explicit(pm_import, tmp_path):
     _make_fake_framework(dest, "opencode")            # dest 도 templates 보유(자기전환 후보)
     _write_local_conf(dest, upstream=str(_make_fake_framework(tmp_path / "up", "opencode")))
     explicit = _make_fake_framework(tmp_path / "explicit_fw", "opencode")
-    got = pm_import._resolve_add_harness_source(dest, "opencode", explicit)
+    got = upstream_git._resolve_add_harness_source(dest, "opencode", explicit)
     assert got == explicit.resolve()
 
 
@@ -144,7 +151,7 @@ def test_resolve_source_from_upstream_absolute_path(pm_import, tmp_path):
     fw = _make_fake_framework(tmp_path / "fw", "opencode")
     dest = tmp_path / "inst"
     _write_local_conf(dest, upstream=str(fw))         # dest 자신엔 templates 없음
-    got = pm_import._resolve_add_harness_source(dest, "opencode", None)
+    got = upstream_git._resolve_add_harness_source(dest, "opencode", None)
     assert got == fw.resolve()
 
 
@@ -153,7 +160,7 @@ def test_resolve_source_from_upstream_relative_path(pm_import, tmp_path):
     dest = tmp_path / "inst"
     _make_fake_framework(dest / "fw", "opencode")     # dest/fw 에 templates
     _write_local_conf(dest, upstream="fw")            # 상대 경로
-    got = pm_import._resolve_add_harness_source(dest, "opencode", None)
+    got = upstream_git._resolve_add_harness_source(dest, "opencode", None)
     assert got == (dest / "fw").resolve()
 
 
@@ -165,8 +172,8 @@ def test_resolve_source_url_upstream_failure_is_loud(pm_import, tmp_path):
     """
     dest = tmp_path / "inst"
     _write_local_conf(dest, upstream=(tmp_path / "absent.git").as_uri())
-    with pytest.raises(pm_import.UpstreamCacheError) as exc:
-        pm_import._resolve_add_harness_source(dest, "opencode", None)
+    with pytest.raises(upstream_git.UpstreamCacheError) as exc:
+        upstream_git._resolve_add_harness_source(dest, "opencode", None)
     assert "clone 실패" in str(exc.value)
 
 
@@ -175,7 +182,7 @@ def test_resolve_source_prefers_dest_self_over_url_cache(pm_import, tmp_path):
     dest = _make_fake_framework(tmp_path / "fwdest", "opencode")
     _write_local_conf(dest, upstream=(tmp_path / "absent.git").as_uri())
 
-    assert pm_import._resolve_add_harness_source(dest, "opencode", None) == dest.resolve()
+    assert upstream_git._resolve_add_harness_source(dest, "opencode", None) == dest.resolve()
     assert not (dest / ".project_manager" / ".local" / "upstream-cache").exists(), \
         "로컬 소스로 끝나는 형상에서 캐시 clone 을 시도했다"
 
@@ -184,7 +191,7 @@ def test_resolve_source_dest_self_when_has_templates(pm_import, tmp_path):
     """framework-checkout 자기전환: upstream 미해소여도 dest 에 templates 있으면 dest(회귀 보존)."""
     dest = _make_fake_framework(tmp_path / "fwdest", "opencode")
     _write_local_conf(dest, upstream="")              # 쓸 만한 upstream 없음
-    got = pm_import._resolve_add_harness_source(dest, "opencode", None)
+    got = upstream_git._resolve_add_harness_source(dest, "opencode", None)
     assert got == dest.resolve()
 
 
@@ -193,7 +200,7 @@ def test_resolve_source_friendly_error_when_unresolvable(pm_import, tmp_path):
     dest = tmp_path / "inst"
     _write_local_conf(dest, project_name="X")         # upstream 키 없음·templates 없음
     with pytest.raises(FileNotFoundError) as exc:
-        pm_import._resolve_add_harness_source(dest, "opencode", None)
+        upstream_git._resolve_add_harness_source(dest, "opencode", None)
     msg = str(exc.value)
     assert "--from" in msg and "upstream" in msg
 
@@ -203,7 +210,7 @@ def test_resolve_source_no_local_conf_falls_through(pm_import, tmp_path):
     dest = tmp_path / "inst"
     dest.mkdir()
     with pytest.raises(FileNotFoundError):
-        pm_import._resolve_add_harness_source(dest, "opencode", None)
+        upstream_git._resolve_add_harness_source(dest, "opencode", None)
 
 
 def test_resolve_source_upstream_without_templates_falls_to_error(pm_import, tmp_path):
@@ -213,7 +220,7 @@ def test_resolve_source_upstream_without_templates_falls_to_error(pm_import, tmp
     dest = tmp_path / "inst"
     _write_local_conf(dest, upstream=str(bare))
     with pytest.raises(FileNotFoundError):
-        pm_import._resolve_add_harness_source(dest, "opencode", None)
+        upstream_git._resolve_add_harness_source(dest, "opencode", None)
 
 
 def test_resolve_source_harness_specific_templates(pm_import, tmp_path):
@@ -222,10 +229,10 @@ def test_resolve_source_harness_specific_templates(pm_import, tmp_path):
     dest = tmp_path / "inst"
     _write_local_conf(dest, upstream=str(fw))
     # opencode 는 해소.
-    assert pm_import._resolve_add_harness_source(dest, "opencode", None) == fw.resolve()
+    assert upstream_git._resolve_add_harness_source(dest, "opencode", None) == fw.resolve()
     # claude(templates/claude_code 부재)는 upstream 스킵 → dest-self 도 없어 에러.
     with pytest.raises(FileNotFoundError):
-        pm_import._resolve_add_harness_source(dest, "claude", None)
+        upstream_git._resolve_add_harness_source(dest, "claude", None)
 
 
 # ── add_harness end-to-end (source_root=None → upstream 자동 해소) ────────────
@@ -240,7 +247,7 @@ def test_add_harness_auto_resolves_upstream_end_to_end(pm_import, tmp_path):
     dest = _build_live_instance(pm_import, tmp_path / "imported", "claude")
     assert not (dest / "templates").exists(), "imported 인스턴스는 scoped-core(templates 부재)여야."
     _set_conf_upstream(dest, str(REPO))
-    plan = pm_import.add_harness(dest, "opencode", dry_run=True)   # source_root=None
+    plan = add_harness.add_harness(ENGINE_HOME, dest, "opencode", dry_run=True)   # source_root=None
     rels = _plan_relpaths(plan, dest)
     assert rels, "plan 이 비어 있다 — upstream 에서 opencode 어댑터가 해소돼야 한다."
     assert "AGENTS.md" in rels
@@ -255,7 +262,7 @@ def test_add_harness_explicit_from_overrides_upstream(pm_import, tmp_path):
     dest = _build_live_instance(pm_import, tmp_path / "imported2", "claude")
     _set_conf_upstream(dest, (tmp_path / "absent.git").as_uri())  # URL — 자동 해소면 실패할 값
     # explicit REPO 를 주면 upstream 무관하게 그대로 소스로 쓴다.
-    plan = pm_import.add_harness(dest, "opencode", dry_run=True, source_root=REPO)
+    plan = add_harness.add_harness(ENGINE_HOME, dest, "opencode", dry_run=True, source_root=REPO)
     rels = _plan_relpaths(plan, dest)
     assert "AGENTS.md" in rels and ".opencode/agents/pm.md" in rels
 
@@ -264,11 +271,11 @@ def test_add_harness_imported_instance_reports_cache_failure(pm_import, tmp_path
     """imported 인스턴스 + 도달 불가 URL upstream — 캐시 실패가 CLI 경계에서 rc 1 로 번역된다."""
     dest = _build_live_instance(pm_import, tmp_path / "imported3", "claude")
     _set_conf_upstream(dest, (tmp_path / "absent.git").as_uri())
-    with pytest.raises(pm_import.UpstreamCacheError):
-        pm_import.add_harness(dest, "opencode", dry_run=True)      # source_root=None
+    with pytest.raises(upstream_git.UpstreamCacheError):
+        add_harness.add_harness(ENGINE_HOME, dest, "opencode", dry_run=True)      # source_root=None
 
     capsys.readouterr()
-    rc = pm_import.add_harness_cli(dest, "opencode", dry_run=True)
+    rc = add_harness.add_harness_cli(ENGINE_HOME, dest, "opencode", dry_run=True)
     assert rc == 1, "캐시 실패가 rc 1 로 번역되지 않음(traceback 노출)"
     assert "clone 실패" in capsys.readouterr().err
 
@@ -300,7 +307,7 @@ def test_add_harness_codex_onto_claude_host_lays_down_adapter(pm_import, tmp_pat
     엔진/wiki/claude 어댑터 불가침·전부 codex 네임스페이스 안(dual-namespace 스코프 정확성)."""
     dest = _build_live_instance(pm_import, tmp_path / "cl_host", "claude")
     _set_conf_upstream(dest, str(REPO))
-    plan = pm_import.add_harness(dest, "codex", dry_run=True)      # source_root=None
+    plan = add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True)      # source_root=None
     rels = _plan_relpaths(plan, dest)
     assert rels, "plan 이 비어 있다 — codex 어댑터가 해소돼야 한다."
     assert "AGENTS.md" in rels                                     # claude 호스트엔 없던 공통 코어 신규
@@ -331,7 +338,7 @@ def test_add_harness_applies_ctx_values(pm_import, tmp_path, capsys):
         "ctx.compact_at_pct=90", "ctx.compact_at_pct=85"), encoding="utf-8")
     capsys.readouterr()
 
-    pm_import.add_harness(dest, "codex", dry_run=False)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)
 
     document = tomllib.loads((dest / ".codex" / "config.toml").read_text(encoding="utf-8"))
     assert document["model_auto_compact_token_limit"] == 170000
@@ -357,7 +364,7 @@ def test_add_harness_skips_harness_ctx_apply_while_legacy_keys_remain(pm_import,
     settings_before = settings.read_bytes()
     capsys.readouterr()
 
-    assert pm_import.add_harness_cli(dest, "codex", dry_run=False) == 0
+    assert add_harness.add_harness_cli(ENGINE_HOME, dest, "codex", dry_run=False) == 0
 
     out = capsys.readouterr().out
     assert "하네스 설정 반영을 건너뜁니다" in out and "ctx.window_tokens" in out
@@ -369,7 +376,7 @@ def test_add_harness_codex_namespace_invariant_zero_outside(pm_import, tmp_path)
     """불변식(ADR-0048 Decision 5·codex): codex add plan 이 codex 네임스페이스 밖 relpath 0개."""
     dest = _build_live_instance(pm_import, tmp_path / "cl_host_inv", "claude")
     _set_conf_upstream(dest, str(REPO))
-    plan = pm_import.add_harness(dest, "codex", dry_run=True)
+    plan = add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True)
     rels = _plan_relpaths(plan, dest)
     outside = [r for r in rels if not _rel_in_namespace(r, "codex")]
     assert outside == [], f"codex add plan 에 네임스페이스 밖 relpath 포함(불변식 위반): {outside}"
@@ -383,7 +390,7 @@ def test_add_harness_codex_onto_opencode_host_agents_md_git_safe_skip(pm_import,
     agents_before = (dest / "AGENTS.md").read_bytes()
     _git_commit_all(dest)                                         # AGENTS.md 를 추적&미변경으로
     _set_conf_upstream(dest, str(REPO))                          # (local.conf 만 dirty·AGENTS.md 는 clean)
-    plan = pm_import.add_harness(dest, "codex", dry_run=True)     # source_root=None
+    plan = add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True)     # source_root=None
     agents = next((a for a in plan if a.dst == dest / "AGENTS.md"), None)
     assert agents is None, "추적된 instance-owned AGENTS.md가 plan에 들어가면 안 된다."
     assert (dest / "AGENTS.md").read_bytes() == agents_before
@@ -397,7 +404,7 @@ def test_add_harness_codex_apply_prints_trust_guidance(pm_import, tmp_path, caps
     """codex add-harness 실적용 완료 출력에 loud 2단계 trust 안내(D5) + 실제 laydown sanity."""
     dest = _build_live_instance(pm_import, tmp_path / "cl_host_apply", "claude")
     _set_conf_upstream(dest, str(REPO))
-    pm_import.add_harness(dest, "codex", dry_run=False)           # 실적용
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)           # 실적용
     out = capsys.readouterr().out
     assert "2단계 trust 승인" in out              # loud 헤더(copy 로그 `.../hooks/` 경로와 충돌 회피)
     assert "hook trust" in out
@@ -441,13 +448,13 @@ def test_add_harness_backup_gitignores_backup_dir(pm_import, tmp_path):
     _git_commit_paths(dest, ".gitignore")            # .gitignore=git-safe·researcher=fresh
     _set_conf_upstream(dest, str(REPO))
     today = datetime.date.today().isoformat()
-    pm_import.add_harness(dest, "codex", dry_run=False)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / today
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / today
     # AGENTS.md는 instance-owned라 백업하지 않고, engine-managed researcher 충돌이 백업을 유도한다.
     assert (backup_root / ".codex" / "agents" / "researcher.toml").is_file()
     # 결과: 패턴 append + git 이 실제로 무시(파일 단언 + git check-ignore 이중).
-    assert f"{pm_import.BACKUP_DIR_NAME}/" in (dest / ".gitignore").read_text(encoding="utf-8")
-    assert _git_ignores(dest, f"{pm_import.BACKUP_DIR_NAME}/{today}/.codex/agents/researcher.toml"), \
+    assert f"{install_rules.BACKUP_DIR_NAME}/" in (dest / ".gitignore").read_text(encoding="utf-8")
+    assert _git_ignores(dest, f"{install_rules.BACKUP_DIR_NAME}/{today}/.codex/agents/researcher.toml"), \
         "백업 디렉토리가 git 에 무시되지 않음 — add-harness 위생 미배선."
 
 
@@ -463,10 +470,10 @@ def test_add_harness_no_backup_leaves_gitignore_untouched(pm_import, tmp_path):
     #   유지한다(board init 이 언제든 template 에서 다시 만든다).
     (dest / ".project_manager" / "wiki" / "pm_state.md").unlink()
     before = (dest / ".gitignore").read_text(encoding="utf-8")
-    assert f"{pm_import.BACKUP_DIR_NAME}/" not in before   # sanity: 원래 패턴 없음
+    assert f"{install_rules.BACKUP_DIR_NAME}/" not in before   # sanity: 원래 패턴 없음
     today = datetime.date.today().isoformat()
-    pm_import.add_harness(dest, "codex", dry_run=False)
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / today
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / today
     assert not backup_root.exists(), "백업이 없어야 하는데 중앙 백업 디렉토리가 생성됨(전제 붕괴)."
     assert (dest / ".gitignore").read_text(encoding="utf-8") == before, \
         "무백업 add 가 .gitignore 를 편집함(최소 변경 위반)."
@@ -481,12 +488,12 @@ def test_add_harness_backup_gitignore_preserves_custom_appends_once(pm_import, t
     (dest / ".gitignore").write_text("my-secret-artifacts/\n", encoding="utf-8")   # 사용자 커스텀만
     _git_commit_paths(dest, ".gitignore")            # 커스텀 .gitignore=git-safe·AGENTS.md=fresh
     _set_conf_upstream(dest, str(REPO))
-    pm_import.add_harness(dest, "codex", dry_run=False)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)
     text = (dest / ".gitignore").read_text(encoding="utf-8")
     assert "my-secret-artifacts/" in text, "사용자 커스텀 규칙이 손실됨(비파괴 위반)."
-    assert text.count(f"{pm_import.BACKUP_DIR_NAME}/") == 1, \
+    assert text.count(f"{install_rules.BACKUP_DIR_NAME}/") == 1, \
         "패턴이 정확히 1회 append 되지 않음(0=미배선·>1=중복 — append-only 위반)."
-    assert text.endswith(f"{pm_import.BACKUP_DIR_NAME}/\n"), "패턴이 말미에 append 되지 않음."
+    assert text.endswith(f"{install_rules.BACKUP_DIR_NAME}/\n"), "패턴이 말미에 append 되지 않음."
 
 
 @requires_git
@@ -497,14 +504,14 @@ def test_add_harness_backup_gitignore_idempotent_when_present(pm_import, tmp_pat
     (dest / ".codex" / "agents" / "researcher.toml").write_text(
         "LOCAL ENGINE-MANAGED EDIT\n", encoding="utf-8")
     (dest / ".gitignore").write_text(
-        f"keep/\n{pm_import.BACKUP_DIR_NAME}/\n", encoding="utf-8")   # 이미 무시 중
+        f"keep/\n{install_rules.BACKUP_DIR_NAME}/\n", encoding="utf-8")   # 이미 무시 중
     _git_commit_paths(dest, ".gitignore")
     _set_conf_upstream(dest, str(REPO))
-    pm_import.add_harness(dest, "codex", dry_run=False)
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)
     text = (dest / ".gitignore").read_text(encoding="utf-8")
     today = datetime.date.today().isoformat()
-    assert (dest / pm_import.BACKUP_DIR_NAME / today / ".codex" / "agents" / "researcher.toml").is_file()
-    assert text.count(f"{pm_import.BACKUP_DIR_NAME}/") == 1, "이미 존재하는 패턴이 중복됨(멱등 위반)."
+    assert (dest / install_rules.BACKUP_DIR_NAME / today / ".codex" / "agents" / "researcher.toml").is_file()
+    assert text.count(f"{install_rules.BACKUP_DIR_NAME}/") == 1, "이미 존재하는 패턴이 중복됨(멱등 위반)."
     assert "keep/" in text, "기존 규칙이 손실됨(비파괴 위반)."
 
 
@@ -527,8 +534,8 @@ def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(
     # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
         install_git, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
-    pm_import.add_harness(dest, "codex", dry_run=False)             # source_root=None → upstream 해소
-    backup_root = dest / pm_import.BACKUP_DIR_NAME / today
+    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)             # source_root=None → upstream 해소
+    backup_root = dest / install_rules.BACKUP_DIR_NAME / today
     # 전제: 비-git 이라 engine-managed 충돌이 중앙 백업됨(git_safe None → 전부 백업).
     assert (backup_root / ".codex" / "agents" / "researcher.toml").is_file()
     # 결과: git 아닌 채택자엔 .gitignore 를 만들지 않는다(guard 미동작 시 helper 가 'created' 로 오염).
@@ -539,43 +546,46 @@ def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(
 # ── pm_config `--from` 노출 + source_root forward ─────────────────────────────
 
 class _FakePmImport:
-    """pm_import 대역 — add_harness_cli 호출 인자(특히 source_root)를 기록한다."""
+    """`app.add_harness.add_harness_cli` 대역 — 호출 인자(특히 source_root)를 기록한다.
+
+    `install(monkeypatch)` 가 실제 소유 함수 자리에 이 대역을 붙인다."""
 
     def __init__(self, rc: int = 0):
         self.calls: list[dict] = []
         self._rc = rc
 
-    def add_harness_cli(self, dest_root, harness, *, dry_run, source_root=None):
+    def install(self, monkeypatch):
+        monkeypatch.setattr(add_harness, "add_harness_cli", self.add_harness_cli)
+        return self
+
+    def add_harness_cli(self, home, dest_root, harness, *, dry_run, source_root=None):
         self.calls.append(
-            {"dest_root": dest_root, "harness": harness,
+            {"home": home, "dest_root": dest_root, "harness": harness,
              "dry_run": dry_run, "source_root": source_root})
         return self._rc
 
 
-def test_cmd_add_harness_forwards_source_root(pm_config):
+def test_cmd_add_harness_forwards_source_root(pm_config, monkeypatch):
     """`--from` 값(args.source)이 add_harness_cli 로 source_root 로 forward 된다."""
-    fake = _FakePmImport()
+    fake = _FakePmImport().install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=True, source=str(REPO))
-    rc = pm_config.cmd_add_harness(args, pm_import=fake, dest_root=Path("/live/inst"))
+    rc = pm_config.cmd_add_harness(args, dest_root=Path("/live/inst"))
     assert rc == 0
     assert fake.calls[0]["source_root"] == str(REPO)
 
 
-def test_cmd_add_harness_source_defaults_none(pm_config):
+def test_cmd_add_harness_source_defaults_none(pm_config, monkeypatch):
     """source 미보유 Namespace(구 호출/테스트)도 getattr 폴백으로 source_root=None(하위호환)."""
-    fake = _FakePmImport()
+    fake = _FakePmImport().install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=False)   # source 없음
-    rc = pm_config.cmd_add_harness(args, pm_import=fake, dest_root=Path("/x"))
+    rc = pm_config.cmd_add_harness(args, dest_root=Path("/x"))
     assert rc == 0
     assert fake.calls[0]["source_root"] is None
 
 
 def test_add_harness_dispatch_forwards_from_flag(pm_config, monkeypatch):
     """`main(["add-harness","opencode","--from",<src>,"--dry-run"])` 가 source_root 로 forward."""
-    fake = _FakePmImport()
-    monkeypatch.setattr(
-        pm_config, "_load_module",
-        lambda name, filename: fake if name == "pm_import" else None)
+    fake = _FakePmImport().install(monkeypatch)
     rc = pm_config.main(["add-harness", "opencode", "--from", "/src/fw", "--dry-run"])
     assert rc == 0
     assert fake.calls[0]["source_root"] == "/src/fw"
