@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pm_engine.domain import ticket_rules
+from pm_engine.domain import round_rules, ticket_rules
 from pm_engine.infra import cluster_store, pm_paths, round_store, ticket_store
 from pm_engine.app import round_seed
 from pm_engine.app import areas_lint
@@ -220,20 +220,15 @@ def lint_rounds(home) -> list[tuple[str, str, str]]:
 
     차단 소비자는 완료 게이트다 — 여기서는 같은 판정을 **보이게만** 한다(never-block).
 
-    fail-soft 경계는 **티켓 하나**다 — 한 티켓의 읽기 실패가 그때까지 모은 판정을 통째로
-    버리지 않고 그 티켓만 사유로 남긴다. 판정 자체를 못 한 자리를 조용히 비우지 않기 위해서다.
+    티켓 단위 라운드 판정 실패(RoundsError·OSError·UnicodeError)는 그 티켓만 finding 으로 남긴다
+    — 한 티켓의 읽기 실패가 그때까지 모은 판정을 통째로 버리지 않는다. 라운드 루트 판독 예외와
+    그 밖 예외는 전파한다.
 
     라운드 디렉터리 자리의 파일 항목과 점(`.`) 으로 시작하는 항목은 라운드가 아니라 잘못 놓인
     잔여·엔진의 원자 교체 중간 파일이다 — 둘 다 seam 판정 밖이라 여기서 표면화한다.
     """
-    try:
-        root = round_store.rounds_dir(pm_paths.tickets_dir(home))
-        entries = sorted(root.iterdir()) if root.is_dir() else []
-    # fail-soft 사유: 라운드 판정은 전역 board lint 의 visibility-only/never-block 축이다.
-    # 디렉터리 판독 실패가 무관한 board 조회를 죽이지 않게 축을 생략한다. 차단 소비자(완료
-    # 게이트)는 반대로 fail-closed 다 — 이 비대칭은 의도된 것이다.
-    except Exception:  # noqa: BLE001 — 위 등록 사유의 advisory fail-soft 경계.
-        return []
+    root = round_store.rounds_dir(pm_paths.tickets_dir(home))
+    entries = sorted(root.iterdir()) if root.is_dir() else []
 
     findings: list[tuple[str, str, str]] = []
     for entry in entries:
@@ -252,7 +247,7 @@ def lint_rounds(home) -> list[tuple[str, str, str]]:
                 item.name for item in entry.iterdir()
                 if item.name.startswith(round_store.ROUND_TEMPORARY_PREFIX)
             )
-        except Exception as exc:  # noqa: BLE001 — 티켓 단위 advisory fail-soft 경계.
+        except (round_rules.RoundsError, OSError, UnicodeError) as exc:  # 티켓 단위 라운드 판정 실패만 finding.
             findings.append((
                 ticket, _ROUND_UNREADABLE_LINT_KIND,
                 f"라운드 판정 실패(이 티켓만 건너뛴다): {exc}",
@@ -333,12 +328,9 @@ def lint_codex_delegate_observations(home) -> list[tuple[str, str, str]]:
     The guard owns JSONL rotation and the idempotent set comparison.  Board lint
     only aggregates all retained misses into one PM-facing advisory line.
     """
-    try:
-        misses = codex_observation.scan_codex_observation_misses(
-            home, state_dir=home.local_dir / "delegate-channel",
-        )
-    except Exception as exc:  # noqa: BLE001 — observation visibility never blocks lint.
-        return []
+    misses = codex_observation.scan_codex_observation_misses(
+        home, state_dir=home.local_dir / "delegate-channel",
+    )
     if not misses:
         return []
 

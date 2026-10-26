@@ -490,15 +490,12 @@ def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
 
 
 def test_actor_override_registered_repos_failsoft(board, monkeypatch):
-    """areas 파싱 실패(registered_repos raise)여도 char/traversal 검증은 유지·정상 task 통과."""
+    """areas 파싱 실패(registered_repos raise)는 전파한다 — 예약패턴 검증을 완화하지 않는다."""
     def _boom(_home):
         raise RuntimeError("areas broken")
     monkeypatch.setattr(areas_store, "registered_repos", _boom)
-    # 정상 task 는 통과(예약패턴만 완화·char 검증 유지).
-    assert task_args._actor_session_override(pm_paths.home_at(board.REPO), argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
-    # 불법 char 는 여전히 거부.
-    with pytest.raises(SystemExit):
-        task_args._actor_session_override(pm_paths.home_at(board.REPO), argparse.Namespace(repo=None, slot=None, task="../evil"))
+    with pytest.raises(RuntimeError, match="areas broken"):
+        task_args._actor_session_override(pm_paths.home_at(board.REPO), argparse.Namespace(repo=None, slot=None, task="job1"))
 
 
 def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):

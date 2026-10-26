@@ -30,12 +30,9 @@ def lint_areas_repo_unregistered(home) -> list[tuple[str, str, str]]:
     네임스페이스가 조용히 사라지므로, 처방(init 재실행)을 상시 보인다.
 
     kind=`areas-repo-unregistered`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push
-    미차단). areas 파싱 실패는 빈 결과(lint 를 깨지 않는다).
+    미차단). areas 파싱 예외는 전파한다.
     """
-    try:
-        if areas_store.registered_repos(home):
-            return []
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 무발화(advisory 가 lint 를 깨지 않는다).
+    if areas_store.registered_repos(home):
         return []
     # 라벨은 파일명 고정 — `_rel_to_repo` 는 앵커(worktree/PM 홈)에 따라 상대/절대가 갈려
     # 같은 보드에서 다른 문자열이 나온다(앵커 무관 동일 출력 계약).
@@ -52,12 +49,9 @@ def lint_areas_duplicate_repo(home) -> list[tuple[str, str, str]]:
     `areas_set_cell`(setter)의 fail-loud 와 짝 — 그쪽은 쓰기를 막고, 이쪽은 상시 가시화한다.
 
     kind=`areas-duplicate-repo`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push
-    미차단). areas.md 부재/파싱 실패는 빈 결과(무영향).
+    미차단). areas.md 부재는 빈 결과(무영향), 파싱 예외는 전파한다.
     """
-    try:
-        _header, rows = areas_store._parse_areas(home)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 빈 결과(lint 를 깨지 않는다).
-        return []
+    _header, rows = areas_store._parse_areas(home)
     counts: dict[str, int] = {}
     for row in rows:
         repo = row.get("repo")

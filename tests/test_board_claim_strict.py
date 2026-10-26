@@ -358,7 +358,7 @@ def _racing_push(board_mod, tmp_path: Path, bare: Path, *, name: str):
 
     def _push(_home):
         _advance_remote(tmp_path, bare, name=name)   # 그 사이 다른 clone 이 push.
-        return real_push(pm_paths.home_at(board.REPO))                            # → non-FF 로 거부된다.
+        return real_push(_home)                            # → non-FF 로 거부된다.
 
     return _push
 

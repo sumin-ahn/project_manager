@@ -997,10 +997,8 @@ def test_finish_survives_touches_absent_from_this_repo(tf, tmp_path, monkeypatch
 
 @requires_git
 def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, capsys):
-    """stage 판정기(board 모듈)를 못 띄우면 **차단**이다 — stage 0 을 정상 완료로 넘기지
-    않는다. 차단 문구는 원인 사유뿐 아니라 **잔여 목록·처방도 동봉**한다(스코프를 못
-    산출했다는 사실을 빈 스코프로 읽어 코드 트리 dirty 전량을 잔여로 접는다) — board complete
-    는 이 갈래에서 불리지 않고, log 스켈레톤도 안 남는다.
+    """stage 판정기 예외는 완료 기록을 **차단**한다 — 예외로 전파해 stage 0 을 정상 완료로
+    넘기지 않는다. board complete 는 이 갈래에서 불리지 않고, log 스켈레톤도 안 남는다.
 
     실제 형상: 실행 인터프리터엔 PyYAML 이 없고 venv 엔 있어 board *CLI* 는 성공하는데
     `import yaml` 하는 board 모듈 로드만 실패한다. `scope_error` 는 '판정 불가'가 아니라 '이
@@ -1020,12 +1018,8 @@ def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, c
         raise OSError("scope IO unavailable")
     monkeypatch.setattr(git, "git_scope_stage_pathspec", failed_scope)
 
-    assert finisher.run("T-0001", section=None, dry_run=False) == 1
-    captured = capsys.readouterr()
-    assert "[중단]" in captured.err
-    assert "스코프를 산출하지 못했다" in captured.err, "판정기 사망이 조용히 넘어감"
-    assert "미스테이지 잔여" in captured.err
-    assert "a.py" in captured.err
+    with pytest.raises(OSError, match="scope IO unavailable"):
+        finisher.run("T-0001", section=None, dry_run=False)
     assert _staged(root) == set()
     assert log_file.read_text(encoding="utf-8") == log_before, "차단된 실행이 log 를 건드렸다"
 

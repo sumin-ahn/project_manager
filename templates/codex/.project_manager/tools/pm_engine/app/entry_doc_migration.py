@@ -478,10 +478,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
     captured = None
     matched_gen = None
     for idx, b64 in enumerate(_OLD_OPENCODE_AGENTS_GENERATIONS):
-        try:
-            gen_text = _decode_entry_doc_generation(b64)
-        except Exception:  # noqa: BLE001 — 세대 디코드 실패는 그 세대 skip(다음 세대 시도).
-            continue
+        gen_text = _decode_entry_doc_generation(b64)
         captured = _match_entry_doc_generation(gen_text, adopter_agents, operational_keys)
         if captured is not None:
             matched_gen = idx

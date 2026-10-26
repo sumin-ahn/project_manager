@@ -1929,11 +1929,12 @@ def test_sha_anchor_status_ambiguous(board):
 
 
 def test_rev_parse_ambiguous_signal(board):
-    # non-quiet stderr 3-tuple 에 모호 신호가 있으면 True, 2-tuple(대역 stderr 없음)·예외는 False.
+    # non-quiet stderr 3-tuple 에 모호 신호가 있으면 True, 2-tuple(대역 stderr 없음)은 False, 예외는 전파.
     assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO),
         "25b0", runner=lambda a: (128, "", _REAL_AMBIGUOUS_STDERR)) is True
     assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=lambda a: (1, "")) is False
-    assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=_raising_git) is False
+    with pytest.raises(RuntimeError, match="git unavailable"):
+        freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=_raising_git)
 
 
 def test_sha_anchor_status_unknown_empty_or_raise(board):

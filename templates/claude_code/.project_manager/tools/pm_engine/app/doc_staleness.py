@@ -41,8 +41,8 @@ _REPOSITORY_FAILURE_CACHE: ContextVar[
 # ── staleness (git 기반·covers→pathspec·fail-soft) ───────────────────────────
 # 페이지 `covers` 코드가 페이지 `updated` *후* git 커밋된 적 있으면 stale = "페이지 지식이
 # 코드보다 뒤처졌을 수 있다". enforcement 아닌 visibility — ⚠ 표시·lint
-# advisory 만(막지 않음). 판정불가는 전부 None(fail-soft·"unknown") — git 부재(CI 등)·
-# 에러·covers 빈·updated 파싱 실패에 crash 0.
+# advisory 만(막지 않음). 판정불가(git rc≠0·covers 빈·updated 파싱 실패)는 None("unknown"),
+# git 실행 예외는 전파한다.
 
 
 def _real_git_runner(cwd: Path) -> GitRunner:
@@ -74,11 +74,8 @@ def _page_owner_repo(home, page: dict) -> tuple[Path | None, str | None]:
     ``NormalizedRepoPath.workspace``의 git common-dir 정체성을 대조해 멀티-repo 동명
     상대경로 오매칭을 막되, 같은 repo의 다른 linked-worktree 슬롯은 허용한다.
     """
-    try:
-        owner = page["repo"] if "repo" in page else "self"
-        owner_repo, owner_error = freshness_lint._freshness_owner_repo(pm_paths.home_at(home.root), owner)
-    except Exception as exc:  # noqa: BLE001 — owner 해소 실패는 stale unknown.
-        return (None, f"페이지 repo 소유 checkout 해소 예외: {exc}")
+    owner = page["repo"] if "repo" in page else "self"
+    owner_repo, owner_error = freshness_lint._freshness_owner_repo(pm_paths.home_at(home.root), owner)
     if owner_repo is None:
         return (None, owner_error or "페이지 repo 소유 checkout 미해소")
     try:
@@ -101,6 +98,7 @@ def _repository_identity(checkout: Path) -> tuple[Path | None, str | None]:
     linked worktree 슬롯들은 checkout 절대경로가 달라도 `--git-common-dir`를 공유한다.
     반대로 별개 저장소는 같은 상대경로 파일을 가져도 common-dir가 다르다. git 실패·빈 출력·
     비-git 디렉토리는 정체성을 추측하지 않고 `(None, reason)`으로 보수적으로 제외한다.
+    git 실행 예외는 전파한다.
     성공은 checkout 실경로별 프로세스 캐시, 실패는 `_repository_query_batch`의 호출 단위
     캐시에 두어 같은 조회 안의 판정을 고정하면서 다음 명시 조회에서는 재시도한다.
     """
@@ -120,10 +118,7 @@ def _repository_identity(checkout: Path) -> tuple[Path | None, str | None]:
             failure_cache[resolved] = result
         return result
 
-    try:
-        rc, out = _real_git_runner(resolved)(["rev-parse", "--git-common-dir"])
-    except Exception as exc:  # noqa: BLE001 — 주입 runner 예외도 fail-closed.
-        return failure(f"git common-dir 호출 예외: {exc}")
+    rc, out = _real_git_runner(resolved)(["rev-parse", "--git-common-dir"])
     common_dir_text = out.strip()
     if rc != 0 or not common_dir_text or "\n" in common_dir_text:
         reason = (
@@ -191,11 +186,8 @@ def _empty_tree_oid(runner: GitRunner) -> str | None:
     """이 repo 의 object-format 에 맞는 빈 트리 OID (SHA-1/SHA-256 중립).
 
     `git rev-parse --show-object-format` 로 알고 감지 → 상수 조회. 미지 포맷·감지 실패(rc≠0·
-    ancient git·예외) → None(호출부가 fail-soft skip). repo-constant 라 covers_pathspecs 가 1회 산출."""
-    try:
-        rc, out = runner(["rev-parse", "--show-object-format"])
-    except Exception:  # noqa: BLE001 — fail-soft.
-        return None
+    ancient git) → None(호출부가 skip). git 실행 예외는 전파한다. repo-constant 라 covers_pathspecs 가 1회 산출."""
+    rc, out = runner(["rev-parse", "--show-object-format"])
     if rc != 0:
         return None
     return _EMPTY_TREE_OID_BY_FORMAT.get(out.strip())
@@ -211,7 +203,8 @@ def _pathspec_observable(runner: GitRunner, pathspec: str, verified_at: str,
     - `False` = HEAD 트리에 없음 + pin 이후 델타 0 = **pin 시점부터 이 저장소가 못 봄**. never-tracked
       (`templates/**` 류·이력 0) 이든 pin *이전* 삭제/외부 이전이든 forward-관찰가능성 0 →
       동일하게 판정 불가(unverifiable·호출부 advisory).
-    - `None`  = git 오류(rc≠0·non-repo·예외)·`empty_tree` 산출 실패 — 분류 불가(거짓 분류 없이 skip).
+    - `None`  = git 오류(rc≠0·non-repo)·`empty_tree` 산출 실패 — 분류 불가(거짓 분류 없이 skip).
+      git 실행 예외는 전파한다.
 
     **판정 축을 커밋 이력과 일관되게 HEAD 트리 기준으로 한다**
     **index(staged)** 를 포함해 — 새 경로를 stage 만 해도 present 인데 `<sha>..HEAD` 는 비어 순간
@@ -225,19 +218,13 @@ def _pathspec_observable(runner: GitRunner, pathspec: str, verified_at: str,
     델타 확인을 생략한다(short-circuit)."""
     if empty_tree is None:
         return None  # 빈 트리 OID 산출 실패 — fail-soft skip.
-    try:
-        rc, out = runner(["diff", "--name-only", empty_tree, "HEAD", "--", pathspec])
-    except Exception:  # noqa: BLE001 — 주입 runner raise 도 분류 불가(skip·fail-soft).
-        return None
+    rc, out = runner(["diff", "--name-only", empty_tree, "HEAD", "--", pathspec])
     if rc != 0:
         return None  # git 부재/non-repo/env 오류 — 분류 불가(거짓 분류 회피).
     if out.strip():
         return True  # HEAD 트리(커밋)에 있음 — index/staged 무관.
     # HEAD 트리에 없음 — pin 이후 델타(삭제/rename 포함) 확인. pin 이전부터 부재면 델타 0 → absent.
-    try:
-        rc, out = runner(["log", "-1", "--oneline", f"{verified_at}..HEAD", "--", pathspec])
-    except Exception:  # noqa: BLE001 — fail-soft.
-        return None
+    rc, out = runner(["log", "-1", "--oneline", f"{verified_at}..HEAD", "--", pathspec])
     if rc != 0:
         return None  # env 오류·range 불가 — 분류 불가.
     return bool(out.strip())
@@ -292,7 +279,7 @@ def covers_pathspecs(home, covers, *, repo: Path | None = None,
         삭제/rename 된 경로는 `<sha>..HEAD` 델타로 **존재**. **`covers_glob_pathspec` 로 원본 글롭을
         직접 넘겨**(접두사 손실 폐기·지원 문법만) `**/x.py`·`src/*.py` 도 정확 판정.
 
-    **fail-soft**: git 부재·non-repo·rc≠0·예외인 pathspec 은 분류 불가라 어느 쪽에도 안 넣는다
+    **분류 불가**: non-repo·rc≠0 인 pathspec 은 어느 쪽에도 안 넣는다(git 실행 예외는 전파)
     (거짓 분류 회피 — unmappable 과 구분: git 오류는 skip, 형식상 매핑불가는 unmappable). `verified_at`
     = pin(호출부가 anchor 유효성 검증 후 전달·range 양끝). `git_runner` 미지정 시 `_real_git_runner(repo)`.
 
@@ -335,8 +322,8 @@ def page_stale(home, page: dict, *,
       - `updated` 파싱 실패(부재·깨짐).
       - covers 글롭이 전부 pathspec 매핑 불가(빈/공백 또는 미지원 문법 — 비-경계 `**`·절대
         경로 등·`covers_glob_pathspec` 이 None) — 좁힐 대상 없음.
-      - git 호출 실패(rc≠0·git 부재/에러) 또는 빈 출력(미추적·커밋 0).
-    crash 0 — git 없는 환경(CI 등)도 무탈히 unknown.
+      - git 호출 rc≠0 또는 빈 출력(미추적·커밋 0).
+    git 실행 예외(주입 runner 예외 포함)는 전파한다.
 
     **원본-글롭 pathspec**(`covers_glob_pathspec`·`:(glob)` magic — sha-축과 동일 판정 기계
     재사용): git 이 `*`(세그먼트 내)·경계 `**`(슬래시 횡단)을 네이티브로 매칭한다 —
@@ -363,10 +350,7 @@ def page_stale(home, page: dict, *,
     runner = git_runner or _page_owner_git_runner(home, page)
     if runner is None:
         return None
-    try:
-        rc, out = runner(["log", "-1", _GIT_LOG_FORMAT, "--", *pathspecs])
-    except Exception:  # noqa: BLE001 — fail-soft: 주입 runner raise 도 unknown(None).
-        return None
+    rc, out = runner(["log", "-1", _GIT_LOG_FORMAT, "--", *pathspecs])
     if rc != 0:
         return None
 

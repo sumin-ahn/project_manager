@@ -38,6 +38,7 @@ from pm_engine.app import delegate_scope_audit
 
 from pm_engine.infra import conf_store
 from pm_engine.domain import delegate_run_rules
+from pm_engine.domain import delegate_scope_rules
 from pm_engine.domain import reviewer_result
 
 from pm_engine.app import round_maintenance
@@ -430,9 +431,14 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda *_a, **_kw: pm_home)
     monkeypatch.setattr(pm_paths, '_owns_real_board', lambda _path: False)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: {delegate_run_rules.DELEGATE_ENABLED_KEY: "true"})
-    # 범위 감사는 이 진입점 판정과 독립 축이다(전용 회귀가 소유) — 여기서 죽이면 준비/예약/장부
-    # 축만 남는다.
-    monkeypatch.setattr(delegate_scope_audit, "begin_scope_audit", lambda *_a, **_kw: None)
+    # 범위 감사는 이 진입점 판정과 독립 축이다(전용 회귀가 소유) — 빈 감사 대역으로 세우면
+    # 준비/예약/장부 축만 남는다(기준 rev 없음).
+    monkeypatch.setattr(
+        delegate_scope_audit, "begin_scope_audit",
+        lambda *_a, **_kw: delegate_scope_audit.ScopeAudit(
+            (), delegate_scope_rules.WorktreeState(()), slot, pm_home),
+    )
+    monkeypatch.setattr(delegate_scope_audit, "report_scope_audit", lambda *_a, **_kw: None)
 
     class _FakeRun:
         """`run_fn` seam — 실제 하네스는 절대 스폰하지 않는다(로컬 가짜 경계)."""

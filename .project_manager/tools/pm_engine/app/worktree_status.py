@@ -18,13 +18,8 @@ def slot_status(home, slot: str, *, git_runner: worktree_records.GitRunner | Non
         (`_resync_submodules_selective` 와 *같은* primitive). detached & pin≠working=drift(경고)·
         on-branch=dev-ahead(정보)·detached & pin==working=pinned.
 
-    **전부 fail-soft — 예외 raise 안 함**(형제 backbone `current_branch`·`_resync_submodules_
-    selective`·`_rollback_worktree` 와 같은 규율·미래 호출부[on-demand 전체-풀 status·sync]가
-    이 계약에 기댄다): `current_branch` 는 자체 흡수. upstream/submodule 은 rc≠0 이면 미해소/
-    빈목록이고, `git_runner` 자체가 **예외를 던져도** 본문 try/except 로 흡수한다(upstream 미해소·
-    submodule 빈목록으로 보수적 degrade — 각각 독립 흡수라 한쪽 실패가 다른쪽을 안 가린다).
-    실 `_real_git_runner` 는 이미 예외를 (1, str) 로 감싸 rc≠0 경로로 오지만, 주입 runner
-    (DI seam·테스트/미래 호출부)가 raise 해도 이 계약이 지켜진다. `git_runner` 미주입 시 슬롯
+    upstream/submodule 은 rc≠0 이면 미해소/빈목록이다. `git_runner` 의 예외(주입 runner 포함)는
+    전파한다. `git_runner` 미주입 시 슬롯
     worktree 바인딩 `_real_git_runner(slot_path(slot))` 로 해소(hermetic 테스트는 mock 주입).
     슬롯 경로 부재 가드는 **실경로(미주입)에서만** 본다 — 주입 runner 는 존재/rc/HEAD 를
     전부 모델링하는 권위이므로 fs 가드를 건너뛴다(`current_branch` 동형).
@@ -36,16 +31,8 @@ def slot_status(home, slot: str, *, git_runner: worktree_records.GitRunner | Non
             return worktree_records.SlotStatus(slot, branch=None, upstream=None, upstream_ok=False, submodules=[])
         runner = worktree_git._real_git_runner(path)
     branch = worktree_git.current_branch(home, slot, git_runner=runner)
-    # upstream/submodule 조회는 runner 예외까지 흡수한다(docstring "예외 raise 안 함" 계약).
-    # 각각 독립 try/except — 한쪽 raise 가 다른쪽 정보를 가리지 않게(부분 degrade).
-    try:
-        upstream, upstream_ok = submodule_git._upstream_status(runner)
-    except Exception:  # noqa: BLE001 — fail-soft: runner raise → 미해소로 흡수(경고 surface).
-        upstream, upstream_ok = None, False
-    try:
-        submodules = submodule_git._submodule_statuses(runner, target=slot)
-    except Exception:  # noqa: BLE001 — fail-soft: runner raise → 빈목록(부트스트랩 줄 생략).
-        submodules = []
+    upstream, upstream_ok = submodule_git._upstream_status(runner)
+    submodules = submodule_git._submodule_statuses(runner, target=slot)
     return worktree_records.SlotStatus(
         slot, branch=branch, upstream=upstream, upstream_ok=upstream_ok, submodules=submodules
     )

@@ -1317,11 +1317,19 @@ def test_claude_agent_card_reader_exception_is_nonblocking_warning(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
-    assert result["verdict"] == "allow"
-    assert "RuntimeError: reader failed" in result["reason"]
-    hook = delegate_channel.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
-    assert "permissionDecision" not in hook["hookSpecificOutput"]
+    # 이름 없는 판독기 예외는 판정 함수 밖으로 전파하고, 훅 진입 fail-open 이 받는다.
+    with pytest.raises(RuntimeError, match="reader"):
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    assert cli_delegate_channel_guard.main(guard_home,
+        stdin=io.StringIO(json.dumps(_payload("developer"))),
+        stdout=stdout,
+        stderr=stderr,
+        config_loader=lambda _home: conf,
+    ) == 0
+    assert "permissionDecision" not in stdout.getvalue()
+    assert "fail-open" in stderr.getvalue() and "RuntimeError" in stderr.getvalue()
 
 
 def test_claude_hard_tier_reads_its_own_card_and_is_quiet_on_match(

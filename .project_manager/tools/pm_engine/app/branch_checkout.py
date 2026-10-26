@@ -140,9 +140,10 @@ def _rebase_in_progress(home, slot: str, *, git_runner: worktree_records.GitRunn
 
     worktree 슬롯의 per-worktree git 디렉토리 위치를 `git rev-parse --git-path <name>` 로 해소하고
     (worktree 는 `.git` 이 gitdir 를 가리키는 파일이라 직접 경로 조합 불가) 그 경로 실재를 본다. 둘
-    중 하나라도 있으면 rebase 진행 중(선-검사 스킵 사유). git 조회 실패·예외 → False(fail-soft·
-    진행중 미검출 시 rebase 시도가 git 자체 'already a rebase in progress' 로 rc≠0 → conflict 로
-    수렴·이중 안전). `git_runner` 미주입이면 슬롯 worktree 바인딩 실 runner(부재면 False)."""
+    중 하나라도 있으면 rebase 진행 중(선-검사 스킵 사유). git 조회 rc≠0 → 그 이름은 미검출(진행중
+    미검출 시 rebase 시도가 git 자체 'already a rebase in progress' 로 rc≠0 → conflict 로
+    수렴·이중 안전). git 실행 예외는 전파한다. `git_runner` 미주입이면 슬롯 worktree 바인딩 실
+    runner(부재면 False)."""
     runner = git_runner
     if runner is None:
         p = pm_paths.slot_path(home, slot)
@@ -150,10 +151,7 @@ def _rebase_in_progress(home, slot: str, *, git_runner: worktree_records.GitRunn
             return False
         runner = worktree_git._real_git_runner(p)
     for name in ("rebase-merge", "rebase-apply"):
-        try:
-            rc, out = runner(["rev-parse", "--git-path", name])
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 불가는 진행중 아님(rebase 가 이중 안전).
-            continue
+        rc, out = runner(["rev-parse", "--git-path", name])
         if rc != 0:
             continue
         raw = (out or "").strip()

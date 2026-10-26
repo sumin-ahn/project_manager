@@ -55,7 +55,7 @@ R6_MIN_JS_ADAPTERS = 16
 R6_JS_PYTHON_IMPORT = re.compile(r"\b(?:from|import)\s+(pm_engine(?:\.\w+)*)(?:\s+import\s+([\w, ]+))?")
 R6_JS_PATH_LOAD = re.compile(r"\b(spec_from_file_location|SourceFileLoader|run_path)\b")
 R8_BROAD_NAMES = frozenset({"Exception", "BaseException"})
-R8_LAYERS = ("domain", "infra")
+R8_LAYERS = ("domain", "infra", "app")
 R8_ENTRY_PACKAGE = "pm_engine.cli"
 R8_MESSAGE = "넓은 처리부가 예외를 삼킨다"
 

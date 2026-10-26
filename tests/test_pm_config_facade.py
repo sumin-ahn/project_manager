@@ -1928,19 +1928,20 @@ def test_repo_add_registers_protected_column_empty(pc, monkeypatch, tmp_path):
 
 
 def test_install_protected_hook_helper_fail_soft_on_exception(pc, monkeypatch):
-    """_install_protected_hook — install 이 던져도 fail-soft False (등록/슬롯 생성을 안 깬다·T-0076)."""
+    """_install_protected_hook — install 예외는 전파한다(False 로 강등하지 않는다)."""
     class _BoomWp:
         def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
             raise RuntimeError("boom")
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _BoomWp())
-    assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", ) is False
+    with pytest.raises(RuntimeError, match="boom"):
+        repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", )
 
 
 @pytest.mark.parametrize("action", ["repo-add", "worktree-add"])
 def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
         pc, monkeypatch, tmp_path, capsys, action):
-    """A1/B4 경계 — 일반 설치 예외는 두 생성 명령 모두 rc0·경고이며 traceback이 아니다."""
+    """A1/B4 경계 — 일반 설치 예외는 두 생성 명령 모두를 실패시킨다(원인 문구는 예외에 남는다)."""
     class _BoomWp(FakeWorktreePool):
         def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
             raise RuntimeError("ordinary install failure")
@@ -1951,29 +1952,27 @@ def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
         (repos / "svc.git").mkdir(parents=True)
         bind_pool(monkeypatch, pool)
         bind_board(monkeypatch, FakeBoard(registered=("svc",)))
-        rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
-            _repo_add_args(pc, name="svc"),
-             clone_runner=FakeGitRecorder(rc=0),
-            repos_dir=repos,
-        )
+        with pytest.raises(RuntimeError, match="ordinary install failure"):
+            config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
+                _repo_add_args(pc, name="svc"),
+                 clone_runner=FakeGitRecorder(rc=0),
+                repos_dir=repos,
+            )
     else:
         bind_pool(monkeypatch, pool)
         bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-        rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
-            argparse.Namespace(repo="svc", test=None, readonly=False, task=None, user_ack="svc"),
+        with pytest.raises(RuntimeError, match="ordinary install failure"):
+            config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
+                argparse.Namespace(repo="svc", test=None, readonly=False, task=None, user_ack="svc"),
 
-        )
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "ordinary install failure" in captured.err
-    assert "Traceback" not in captured.err
+            )
 
 
 
 
 @pytest.mark.parametrize("upstream", ["~pm_user_that_cannot_exist_0524/repo", "bad\0path"])
 def test_install_protected_hook_gate_resolution_error_is_fail_soft(pc, tmp_path, monkeypatch, upstream):
-    """B4 — gate config의 expanduser/Path 오류도 등록·슬롯 생성을 깨지 않고 False로 강등한다."""
+    """B4 — gate config의 expanduser/Path 오류는 raw installer 전에 예외로 전파한다(입력이 문구에 남는다)."""
     home = tmp_path / "bad-gate-config"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
@@ -1986,11 +1985,9 @@ def test_install_protected_hook_gate_resolution_error_is_fail_soft(pc, tmp_path,
 
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _MustNotInstall())
-    assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO),
-        "svc", ) is False
-    reason = repo_protection.protected_hook_install_failure_reason(pm_paths.home_at(pc.REPO), "svc")
-    assert reason is not None
-    assert "RuntimeError" in reason or "ValueError" in reason
+    with pytest.raises((RuntimeError, ValueError)) as excinfo:
+        repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", )
+    reason = str(excinfo.value)
     assert (upstream in reason or "home directory" in reason
             or "embedded null byte" in reason)
 
@@ -2052,12 +2049,9 @@ def test_install_protected_hook_rejects_phantom_user_home_from_windows_expanduse
 
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _MustNotInstall())
-    assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO),
-        "svc", ) is False
-    reason = repo_protection.protected_hook_install_failure_reason(pm_paths.home_at(pc.REPO), "svc")
-    assert reason is not None
-    assert "RuntimeError" in reason
-    assert upstream in reason          # 어떤 입력이 안 풀렸는지 진단에 남는다
+    with pytest.raises(RuntimeError) as excinfo:
+        repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", )
+    assert upstream in str(excinfo.value)    # 어떤 입력이 안 풀렸는지 진단에 남는다
 
 
 def test_install_protected_hook_keeps_existing_user_home_resolving(pc, tmp_path, monkeypatch):
@@ -2098,10 +2092,9 @@ def test_gate_resolution_failure_names_the_input_whatever_the_platform_text(pc, 
 
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _MustNotInstall())
-    assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO),
-        "svc", ) is False
-    reason = repo_protection.protected_hook_install_failure_reason(pm_paths.home_at(pc.REPO), "svc")
-    assert reason is not None
+    with pytest.raises(RuntimeError) as excinfo:
+        repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", )
+    reason = str(excinfo.value)
     assert upstream in reason
     assert "ValueError" in reason      # 원인 예외 문구도 잃지 않는다
 

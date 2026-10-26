@@ -55,15 +55,12 @@ def _manifest_render_relpaths(home) -> set[str]:
     편입된다(손-열거 0). config·hooks·엔진 코드·`node_modules` 등 런타임/설정
     파일은 `@render` 가 아니라 `@source`(byte-copy)/미등재라 이 집합에 애초에 안 든다 — 스코프가
     구조적으로 어댑터 본문으로 좁혀진다. manifest_store.read_manifest 재사용. manifest 부재는 빈
-    set(검사 대상 0·무발화)."""
+    set(검사 대상 0·무발화), 판독 예외는 전파한다."""
     managed: set[str] = set()
     for manifest_path in _engine_manifest_paths(home):
-        try:
-            for entry in manifest_store.read_manifest(manifest_path):
-                if getattr(entry, "render", False):
-                    managed.add(str(entry).replace("\\", "/"))
-        except Exception:  # noqa: BLE001 — 깨진/부재 manifest 는 검사 대상 0(무발화).
-            continue
+        for entry in manifest_store.read_manifest(manifest_path):
+            if getattr(entry, "render", False):
+                managed.add(str(entry).replace("\\", "/"))
     return managed
 
 
@@ -124,34 +121,26 @@ def _shipping_template_render_scopes(home) -> list[tuple[Path, set[str]]]:
          파일 정확일치/디렉토리 prefix 판정) 하위일 때만 면제 근거가 된다. @render 0 개인 트리는
          후보에서 아예 빠진다(디렉토리 이름·엔진 사본만 흉내낸 트리 봉쇄).
 
-    타깃 열거·manifest 파싱 실패 시 그 후보 제외(전부 실패면 빈 목록) — **면제는 특권이지
-    기본값이 아니다**(판정원이 없으면 면제하지 않고 leak 을 보고하는 쪽이 보수적)."""
-    try:
-        names = shipping_targets.discover_target_names(home)
-    except Exception:  # noqa: BLE001 — 열거 실패는 면제 없음(보수 방향).
-        return []
+    manifest 부재·`@render` 0 개인 후보는 제외한다 — **면제는 특권이지 기본값이 아니다**(판정원이
+    없으면 면제하지 않고 leak 을 보고하는 쪽이 보수적). 타깃 열거·탈출 검증(ValueError)·manifest
+    판독 예외는 전파해 lint 가 실패한다."""
+    names = shipping_targets.discover_target_names(home)
     scopes: list[tuple[Path, set[str]]] = []
     for name in names:
-        try:
-            # 탈출 검증 포함(ValueError) + 디렉토리 부재(FileNotFoundError) → 후보 제외.
-            root = shipping_targets.resolve_target_root(home, name)
-        except Exception:  # noqa: BLE001 — 검증 실패는 면제 없음(보수 방향).
-            continue
+        # 탈출 검증 포함 — symlink 탈출은 ValueError 로 전파한다.
+        root = shipping_targets.resolve_target_root(home, name)
         manifest = root / ".project_manager" / "engine.manifest"
         if not manifest.is_file():
             continue
-        try:
-            render_managed = {
-                str(entry).replace("\\", "/")
-                for entry in manifest_store.read_manifest(manifest)
-                # `@source=<path>` remap 항목은 제외한다 — 아래 후보 조립(`template_root / rel_posix`)
-                # 이 "사본은 dest 와 같은 상대경로"를 전제하는데, source-remap 은 그 전제를 깬다
-                # (`ManifestEntry.source_rel`). 전제가 안 서는 항목은 면제 판정 범위 밖으로
-                # 두는 쪽이 보수적이다(오면제 대신 leak 보고). 완전 해소(remap 경로 추적)는 후속.
-                if getattr(entry, "render", False) and not getattr(entry, "source_rel", None)
-            }
-        except Exception:  # noqa: BLE001 — 깨진 manifest 는 면제 없음(보수 방향).
-            continue
+        render_managed = {
+            str(entry).replace("\\", "/")
+            for entry in manifest_store.read_manifest(manifest)
+            # `@source=<path>` remap 항목은 제외한다 — 아래 후보 조립(`template_root / rel_posix`)
+            # 이 "사본은 dest 와 같은 상대경로"를 전제하는데, source-remap 은 그 전제를 깬다
+            # (`ManifestEntry.source_rel`). 전제가 안 서는 항목은 면제 판정 범위 밖으로
+            # 두는 쪽이 보수적이다(오면제 대신 leak 보고). 완전 해소(remap 경로 추적)는 후속.
+            if getattr(entry, "render", False) and not getattr(entry, "source_rel", None)
+        }
         if render_managed:
             scopes.append((root, render_managed))
     return scopes

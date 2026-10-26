@@ -212,8 +212,7 @@ def test_layer3_local_conf_when_rows_have_no_test_cmd(tool, monkeypatch):
 def test_layer4_board_default_when_nothing_configured(tool, monkeypatch):
     """4층 — 앞 세 층이 다 비면 board 기본 pytest 명령이 게이트다.
 
-    None(호출부 솔로 argv)은 이 층이 아니라 board 로드 실패·해소 예외에서만 나온다 —
-    그 두 경로는 바로 아래 두 테스트가 각각 잡는다.
+    해소 예외는 전파한다(바로 아래 테스트가 잡는다).
     """
     mod = tool
     stub = _StubBoard(areas_exists=False, conf={})
@@ -221,14 +220,15 @@ def test_layer4_board_default_when_nothing_configured(tool, monkeypatch):
 
 
 def test_resolution_exception_is_solo_fallback(tool, monkeypatch):
-    """해소 중 예외도 삼켜 솔로 폴백 — 게이트 해소가 도구를 죽이지 않는다."""
+    """해소 중 예외는 전파한다 — 기본 pytest 명령으로 조용히 강등하지 않는다."""
     mod = tool
 
     class _Boom(_StubBoard):
         def id_prefix(self):
             raise RuntimeError("areas 파싱 실패")
 
-    assert _resolve(mod, _Boom(repos={"heru"}), monkeypatch) is None
+    with pytest.raises(RuntimeError, match="areas 파싱 실패"):
+        _resolve(mod, _Boom(repos={"heru"}), monkeypatch)
 
 
 def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):

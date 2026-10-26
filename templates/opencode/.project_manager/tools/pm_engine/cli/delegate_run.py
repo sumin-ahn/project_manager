@@ -458,16 +458,14 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
         scope_audit = delegate_scope_audit.begin_scope_audit(
             home, effective_ticket, cwd, pm_root=board_repo, adapter_roots=adapter_roots,
         )
-        if scope_audit is not None and touch_overlaps:
+        if touch_overlaps:
             # 실행 전에 이미 경고한 겹침 경로를 회수 시점 판정 입력으로 싣는다. 캡처 함수의
             # 입력이 아니라 이 위임이 무엇을 겹친다고 알렸는지의 기록이다.
             scope_audit = scope_audit._replace(
                 overlap_paths=delegate_scope_audit.overlap_touch_paths(touch_overlaps),
             )
         try:
-            target_rev = (
-                scope_audit.before.head or None if scope_audit is not None else None
-            )
+            target_rev = scope_audit.before.head or None
             print(
                 f"하네스 {harness}(model={model}) 실행 중 (유료 호출).",
                 file=sys.stderr,

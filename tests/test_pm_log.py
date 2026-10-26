@@ -22,6 +22,7 @@ import pm_engine.infra.compaction_store
 import pm_engine.infra.log_store
 import pm_engine.infra.pm_paths
 
+from pm_engine.domain import delegate_errors
 from pm_engine.domain import log_entries
 
 import contextlib
@@ -996,19 +997,15 @@ def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
 
 
 def test_inflight_section_absorbs_corrupt_delegate_ledger_as_one_line(tmp_path, capsys):
-    """T-0787 — fail-soft(손상): 비-UTF8 장부도 절 하나만 1줄로 접고 다른 절은 온전하다."""
+    """손상: 비-UTF8 위임 장부는 snapshot 을 실패시킨다(절 실패 줄로 접지 않는다)."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     ledger = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_bytes(b"\xff\xfe \xf8\xa1\xa1\xa1\xa1 not valid utf-8\n")
 
-    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
-
-    assert warning is None and text is not None
-    assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
-    assert "## 장부 포인터" in text and "## 열린 todo (파일 실측)" in text and "## 복구 포인터" in text
-    assert "조회 실패" in capsys.readouterr().err
+    with pytest.raises(delegate_errors.DelegateError, match="비-UTF8"):
+        pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
 
 
@@ -1199,24 +1196,6 @@ def test_todo_section_without_open_todos_names_the_write_warning(tmp_path):
     assert "없음" in section
     assert "pm-config task todo add main" in section
     assert "경고" in section
-
-
-def test_inflight_section_multiline_exception_does_not_forge_headings(tmp_path, monkeypatch):
-    """T-0787 F-003 — fail-soft 절의 예외 사유에 개행이 섞여도 heading 주입이 없다."""
-    mod = _load_module()
-    pm_home, cwd = _snapshot_home(tmp_path)
-
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("bad ledger\n## forged-exc-1\n## forged-exc-2")
-
-    monkeypatch.setattr(delegate_ledger, "ticket_copy_records", _boom)
-    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
-
-    assert warning is None and text is not None
-    headings = [line for line in text.splitlines() if line.startswith("## ")]
-    assert "## forged-exc-1" not in headings and "## forged-exc-2" not in headings
-    section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
-    assert section.count("\n") <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINES
 
 
 def test_wip_probe_targets_reserve_pm_home_seat_when_leased_slots_exceed_cap(

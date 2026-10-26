@@ -3437,9 +3437,8 @@ def test_propagated_exception_before_handoff_refunds_the_reserved_ticket_copy(
 def test_cleanup_failure_does_not_mask_the_original_rejection(
     pd, refund_env, monkeypatch, capsys,
 ):
-    """T-0846 — 환불(`abandon_ticket_copy`) 자체가 `DelegateError` 가 아닌 예외로 실패해도 원
-    rc·거부 사유는 그대로 나오고, 정리 실패는 추가 loud 줄로만 붙는다(원 결과를 대체하지 않음).
-    실패한 환불은 예약도 그대로 남긴다 — 잃어버리지 않고 loud 로 남긴다."""
+    """환불(`abandon_ticket_copy`) 자체가 실패하면 원 거부 사유와 재시도 안내를 낸 뒤 환불 실패가
+    전파한다(정리 실패가 주 거부를 대신한다). 실패한 환불은 예약을 그대로 남긴다."""
     home, tickets = refund_env
     ticket = "T-9106"
     _write_spec(tickets, ticket)
@@ -3455,16 +3454,16 @@ def test_cleanup_failure_does_not_mask_the_original_rejection(
     prompt = home / "task.md"
     prompt.write_text(
         "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수", encoding="utf-8")
-    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
-        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
-         "--ticket", ticket, "--output-dir", str(home / "raw")],
-        run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
-    )
-    assert rc == 1
+    with pytest.raises(RuntimeError, match="정리 폭발"):
+        cli_delegate_run.main(pm_paths.home_at(pd.REPO),
+            ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+             "--ticket", ticket, "--output-dir", str(home / "raw")],
+            run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
+        )
 
     err = capsys.readouterr().err
     assert "재앵커" in err, "원 거부 사유가 그대로 나와야 한다"
-    assert "환불 실패" in err and "정리 폭발" in err, "정리 실패가 추가 loud 줄로 붙어야 한다"
+    assert "환불 실패" in err and "정리 폭발" in err, "재시도 안내가 loud 줄로 남아야 한다"
 
     after = (
         _refund_round_file_count(pd, home, ticket),
@@ -3555,13 +3554,12 @@ def test_gate_refund_control_exceptions_do_not_override_the_original_rejection_r
     pd, refund_env, monkeypatch, capsys,
 ):
     """F-001 — `main()` 환불(`abandon_ticket_copy`)에 `KeyboardInterrupt`·`SystemExit` 를
-    주입해도 원 거부 rc=1·원 사유가 그대로 나오고, 정리 실패는 추가 loud 줄로만 붙는다(원래는
-    `except Exception`만 잡아 두 제어 예외가 rc 대신 그대로 전파됐다)."""
+    주입하면 원 사유와 재시도 안내(유형 포함)를 낸 뒤 그 제어 예외가 전파한다."""
     home, tickets = refund_env
 
-    for index, (exc_factory, label) in enumerate([
-        (lambda: KeyboardInterrupt(), "KeyboardInterrupt"),
-        (lambda: SystemExit(73), "SystemExit"),
+    for index, (exc_factory, label, exc_type) in enumerate([
+        (lambda: KeyboardInterrupt(), "KeyboardInterrupt", KeyboardInterrupt),
+        (lambda: SystemExit(73), "SystemExit", SystemExit),
     ]):
         ticket = f"T-9302{index}"
         _write_spec(tickets, ticket)
@@ -3577,12 +3575,12 @@ def test_gate_refund_control_exceptions_do_not_override_the_original_rejection_r
         prompt = home / "task.md"
         prompt.write_text(
             "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수", encoding="utf-8")
-        rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
-            ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
-             "--ticket", ticket, "--output-dir", str(home / "raw")],
-            run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
-        )
-        assert rc == 1, f"{label}: 원 rc=1 이 보존돼야 한다"
+        with pytest.raises(exc_type):
+            cli_delegate_run.main(pm_paths.home_at(pd.REPO),
+                ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+                 "--ticket", ticket, "--output-dir", str(home / "raw")],
+                run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
+            )
 
         err = capsys.readouterr().err
         assert "재앵커" in err, f"{label}: 원 거부 사유가 그대로 나와야 한다"
@@ -3640,10 +3638,9 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
     pd, rounds_env, monkeypatch, capsys,
 ):
     """F-001 — `prepare_ticket_copy` 예약 전 rollback(`force_rmtree`) 에 `RuntimeError`·
-    `KeyboardInterrupt`·`SystemExit` 를 주입해도 원 `ClusterRoundBudgetExceeded` 가 그대로
-    전파된다(원래는 `except OSError`만 잡아 주입 예외가 대신 전파되고 경고도 없었다). 정리
-    자체는 여전히 실패하므로(주입) run-dir 고아는 남는다 — 이번 fix 가 보장하는 건 원 예외
-    형·경고 유무이지 정리 성공이 아니다."""
+    `KeyboardInterrupt`·`SystemExit` 를 주입하면 잔류 안내 뒤 그 정리 실패가 전파되고, 원
+    `ClusterRoundBudgetExceeded` 는 `__context__` 로 남는다. 정리 자체는 실패하므로(주입) run-dir
+    고아는 남는다."""
     pm_home, slot, tickets, _sync = rounds_env
     declared = _DECLARED_DEVELOPER_ROUNDS
     _write_spec(tickets, "T-9304", rounds=_round_plan("developer", declared))
@@ -3699,18 +3696,21 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
 
     file_lock = fs
     expected_run_dirs = baseline[1]
-    for exc_factory, label in [
-        (lambda: RuntimeError("정리 폭발(probe)"), "RuntimeError"),
-        (lambda: KeyboardInterrupt(), "KeyboardInterrupt"),
-        (lambda: SystemExit(74), "SystemExit"),
+    for exc_factory, label, exc_type in [
+        (lambda: RuntimeError("정리 폭발(probe)"), "RuntimeError", RuntimeError),
+        (lambda: KeyboardInterrupt(), "KeyboardInterrupt", KeyboardInterrupt),
+        (lambda: SystemExit(74), "SystemExit", SystemExit),
     ]:
         def _boom(*_a, _factory=exc_factory, **_k):
             raise _factory()
 
         monkeypatch.setattr(file_lock, "force_rmtree", _boom)
         capsys.readouterr()
-        with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded):
+        with pytest.raises(exc_type) as excinfo:
             _attempt_rejected_prepare()
+        assert isinstance(excinfo.value.__context__, delegate_errors.ClusterRoundBudgetExceeded), (
+            f"{label}: 원 예산 거부가 __context__ 로 남아야 한다"
+        )
         err = capsys.readouterr().err
         assert "run-dir 정리 실패" in err and label in err, (
             f"{label}: 정리 실패가 유형과 함께 loud 줄로 붙어야 한다 — err={err}"

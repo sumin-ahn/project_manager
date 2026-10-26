@@ -66,8 +66,7 @@ def observe_codex_pretooluse(
             reason=reason,
             state_dir=state_dir,
         )
-    except BaseException as exc:
-
+    except OSError as exc:  # 관측 장부 기록 실패는 판정을 바꾸지 않는다(차단 판정 유지 경고).
         return _codex_observation_failure(result, exc)
     return codex_envelope._validated_codex_envelope(result)
 
@@ -92,8 +91,7 @@ def observe_codex_subagent_start(
             reason=reason,
             state_dir=state_dir,
         )
-    except BaseException as exc:
-
+    except OSError as exc:  # 관측 장부 기록 실패는 판정을 바꾸지 않는다(차단 판정 유지 경고).
         return _codex_observation_failure(result, exc)
     return codex_envelope._validated_codex_envelope(result)
 
@@ -118,7 +116,9 @@ def _record_supervisor_fallback(
     stdout alone disappears with the turn, and a fallback that looks like a normal
     pass is what let a permanently-failing wrapper hide.  The row also makes the
     unpaired spawn visible to the existing ``board.py lint`` miss scan, because no
-    ``decision_allow`` was ever recorded for it.
+    ``decision_allow`` was ever recorded for it.  A failing ledger write
+    propagates; the guard entry point's fail-open reports it with the same
+    fallback envelope.
     """
     try:
         payload = json.loads(payload_bytes.decode("utf-8"))
@@ -126,21 +126,16 @@ def _record_supervisor_fallback(
             payload = {}
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
         payload = {}
-    try:
-        codex_observation._append_codex_observation(
-            home, payload,
-            hook_event_name=event,
-            status=delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_STATUS,
-            reason=(
-                f"[delegate-channel/warn] {delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER}: "
-                f"{detail} — 가드 판정 없이 통과(fail-open)"
-            ),
-            state_dir=state_dir,
-        )
-    except BaseException:
-        # The audit trail is best effort; a failing ledger must not turn the
-        # fail-open answer into a hook crash.
-        pass
+    codex_observation._append_codex_observation(
+        home, payload,
+        hook_event_name=event,
+        status=delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_STATUS,
+        reason=(
+            f"[delegate-channel/warn] {delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER}: "
+            f"{detail} — 가드 판정 없이 통과(fail-open)"
+        ),
+        state_dir=state_dir,
+    )
 
 
 def supervise_codex_hook(
@@ -185,7 +180,7 @@ def supervise_codex_hook(
         if not isinstance(candidate, dict):
             raise ValueError("가드 stdout 이 JSON 객체가 아님")
         envelope = codex_envelope._validated_codex_envelope(candidate)
-    except BaseException as exc:
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
         detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
         detail = f"{type(exc).__name__}: {detail}"
         _record_supervisor_fallback(home, event, payload_bytes, detail, state_dir)

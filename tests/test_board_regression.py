@@ -1587,7 +1587,7 @@ def test_missing_or_corrupt_ledger_never_downgrades(board):
 
 
 def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, capsys):
-    """손상 frontmatter 는 강등을 취소하고 FULL 로 간다 — 크래시도, 부분 강등도 아니다."""
+    """손상 frontmatter 는 예외로 전파한다 — 회귀를 실행하지 않고, 부분 강등도 없다."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
@@ -1595,12 +1595,12 @@ def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, ca
         raise ValueError("frontmatter 손상")
 
     monkeypatch.setattr(regression, "_ticket_touches", _boom)
-    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
-    assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    out, err = capsys.readouterr()
-    assert "강등을 취소" in err and "T-0002" in err
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+    with pytest.raises(ValueError, match="frontmatter 손상"):
+        regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args())
+    out, _err = capsys.readouterr()
     assert "강등합니다" not in out
-    assert _flag(board)["scope"] == "full"
+    assert fake.calls == []
 
 
 def test_full_run_is_downgraded_during_an_active_cycle(board, monkeypatch, capsys):
@@ -1774,7 +1774,7 @@ def test_one_gate_without_touches_cancels_the_whole_downgrade(
 
 
 def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, capsys):
-    """touches 읽기 실패(손상 frontmatter)도 같은 취급 — 확정 못 한 게이트가 있으면 FULL."""
+    """touches 읽기 실패(손상 frontmatter)는 예외로 전파한다 — 나머지 게이트로 부분 강등하지 않는다."""
     def _resolve(_home, tid):
         if tid == "T-0003":
             raise ValueError("frontmatter 손상")
@@ -1783,12 +1783,11 @@ def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, cap
     _two_active_gates(board, monkeypatch, _resolve)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    out, err = capsys.readouterr()
+    with pytest.raises(ValueError, match="frontmatter 손상"):
+        regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args())
+    out, _err = capsys.readouterr()
     assert "강등합니다" not in out
-    assert "T-0003" in err and "ValueError" in err      # 사유에 실패 형상을 남긴다
-    assert "-k" not in fake.calls[0]["args"][0]
-    assert _flag(board)["scope"] == "full"
+    assert fake.calls == []
 
 
 def test_all_gates_resolved_still_downgrade_to_the_union(board, monkeypatch, capsys):

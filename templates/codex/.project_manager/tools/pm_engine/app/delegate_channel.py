@@ -42,7 +42,7 @@ def _claude_native_model_warning(home, role: str, tier: str, model: str) -> str:
     shown_path = relative.as_posix() if relative is not None else "(명시 매핑 없음)"
     try:
         card_model, relative = native_agent_card._read_claude_native_agent_model(home, role, tier)
-    except Exception as exc:
+    except (OSError, UnicodeError, ValueError, ImportError, NotImplementedError) as exc:
         detail = " ".join(str(exc).split()) or type(exc).__name__
         return (
             f"[delegate-channel/warn] Claude native model 검사 실패"

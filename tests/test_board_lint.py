@@ -1192,11 +1192,12 @@ def test_lint_domain_graceful_when_dir_missing(board, monkeypatch, tmp_path):
 
 
 def test_lint_domain_absorbs_exceptions(board, monkeypatch, tmp_path):
-    """domain 호출이 예외를 던져도 [] 로 흡수 — board lint 정상 진행(비차단 계약)."""
+    """domain 페이지 적재 예외는 전파한다 — 빈 결과로 접지 않는다(board lint 실패)."""
     def boom(domain_dir, **kw):
         raise RuntimeError("boom")
     monkeypatch.setattr(doc_page_store, "load_pages", boom)
-    assert doc_lint.lint_domain(pm_paths.home_at(board.REPO)) == []
+    with pytest.raises(RuntimeError, match="boom"):
+        doc_lint.lint_domain(pm_paths.home_at(board.REPO))
 
 
 def test_lint_domain_no_circular_import_on_load():
@@ -2023,7 +2024,8 @@ def test_render_leak_template_mirror_rejects_symlink_escape(board, monkeypatch, 
 
     링크를 허용하면 candidate 가 루트 산출물 *자기 자신*으로 해소돼 byte-identical 이 자명
     성립한다 — 한 줄 symlink 로 render-leak 백스톱 전체가 무력화된다. 후보 트리는
-    `shipping_targets.resolve_target_root`(resolve 후 parent 가 `templates/` 실경로) 로 걸러낸다.
+    `shipping_targets.resolve_target_root`(resolve 후 parent 가 `templates/` 실경로) 가 탈출을
+    ValueError 로 거부하고, 그 거부는 lint 실패로 전파한다(면제 후보로 인정되지 않는다).
     """
     fake_repo = tmp_path / "symlink_root"
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
@@ -2039,14 +2041,10 @@ def test_render_leak_template_mirror_rejects_symlink_escape(board, monkeypatch, 
 
     assert (templates / "alias" / ".claude" / "agents" / "architect.md").read_bytes() \
         == adapter.read_bytes(), "전제 확인: 링크 경유로 루트 파일이 그대로 보인다(자명 일치)."
-    assert render_lint._shipping_template_render_scopes(pm_paths.home_at(board.REPO)) == [], (
-        "templates/ 밖으로 탈출하는 symlink 트리가 면제 후보로 인정됐다."
-    )
-    findings = render_lint.lint_render_leak(pm_paths.home_at(board.REPO))
-    assert any(name == ".claude/agents/architect.md" and kind == "render-leak"
-               for name, kind, _ in findings), (
-        f"symlink 자기참조로 면제가 자명 성립 — 실 leak 을 놓쳤다: {findings}"
-    )
+    with pytest.raises(ValueError):
+        render_lint._shipping_template_render_scopes(pm_paths.home_at(board.REPO))
+    with pytest.raises(ValueError):
+        render_lint.lint_render_leak(pm_paths.home_at(board.REPO))
 
 
 @requires_symlink

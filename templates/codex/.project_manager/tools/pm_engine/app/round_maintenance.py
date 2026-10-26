@@ -94,13 +94,10 @@ def _round_pending_ledger_owner(home) -> Path:
 def _round_pending_abandon_command(home, tid: str, ordinal: int, role: str) -> str | None:
     """미회수 장부에서 이 pending 라운드의 실 `--copy`/`--cwd` 를 해소해 완성 abandon 커맨드를 낸다.
 
-    장부 부재·PM 홈 미확정·이 (순번, 역할)의 미회수 행 부재·경로 형태 불일치는 전부 해소
-    불능으로 `None`(호출부가 `ticket copies --unharvested` 조회 처방으로 대체한다)."""
+    이 (순번, 역할)의 미회수 행 부재·경로 형태 불일치는 해소 불능으로 `None`(호출부가
+    `ticket copies --unharvested` 조회 처방으로 대체한다). 장부 조회 예외는 전파한다."""
     owner = _round_pending_ledger_owner(home)
-    try:
-        rows = delegate_ledger.ticket_copy_records(owner, ticket=tid, unharvested=True)
-    except Exception:
-        return None
+    rows = delegate_ledger.ticket_copy_records(owner, ticket=tid, unharvested=True)
     match = next((row for row in rows if row.get('ordinal') == ordinal and row.get('role') == role), None)
     if match is None:
         return None

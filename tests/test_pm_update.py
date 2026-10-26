@@ -6204,7 +6204,7 @@ def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tm
     dest = tmp_path / "no-engine"
     dest.mkdir()
     result = update_adapters.reinstall_protected_hooks(dest, write=True)
-    assert result["status"] == "no_repos" and result["reason"] is None
+    assert result["status"] == "no_repos" and "reason" not in result
     update_adapters._print_protected_hook_reinstall_finding(result, dry_run=False)
     cap = capsys.readouterr()
     assert cap.out == "" and cap.err == ""

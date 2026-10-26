@@ -766,7 +766,7 @@ def test_soft_step_marks_stale_affected_page_with_warning(tf, tmp_path, capsys):
 
 
 def test_affected_domain_titles_stale_exception_yields_unknown(tf, tmp_path, monkeypatch):
-    """page_stale 이 예외를 던지면 그 페이지 stale=None(무표시)·비차단(목록은 정상 반환)."""
+    """page_stale 예외는 전파한다 — 그 페이지를 stale=None(무표시)으로 접지 않는다."""
     class _FakeDomain:
         @staticmethod
         def load_pages():
@@ -786,8 +786,8 @@ def test_affected_domain_titles_stale_exception_yields_unknown(tf, tmp_path, mon
 
     _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: ["src/x.py"])
-    # 예외를 흡수해 stale=None 으로 surface — crash 0·목록 정상.
-    assert finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001") == [("폭발 페이지", None)]
+    with pytest.raises(RuntimeError, match="stale 산출 폭발"):
+        finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001")
 
 
 def test_affected_domain_titles_shares_single_git_runner(tf, tmp_path, monkeypatch):

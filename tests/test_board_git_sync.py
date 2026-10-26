@@ -479,12 +479,12 @@ def test_claim_confirm_commit_fail_rolls_back_despite_push_ok(board, tmp_path, m
 
 @requires_git
 def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, monkeypatch):
-    """rollback 의 reset 이 throw 해도 confirm 은 bool 만 반환(예외 미전파·never traceback·reviewer sug).
+    """rollback 의 reset 이 throw 하면 나머지 복원 단계를 모두 시도한 뒤 그 예외가 전파한다.
 
-    push non-FF 후 rollback 의 `reset --soft` 가 예외(timeout·git 소실)를 던지는 상황에서도,
-    `_board_git_claim_rollback` 가 `contextlib.suppress` 로 예외를 삼켜 confirm 이 깨끗한 False 를
-    내야 한다(ADR-0012 loser=race-lost rc=1·never traceback). reset/push 호출만 throw 시키고
-    commit 은 정상 통과시켜 push-실패 경로를 탄다."""
+    push non-FF 후 rollback 의 `reset --soft` 가 예외(timeout·git 소실)를 던지는 상황에서
+    `_board_git_claim_rollback` 의 finally 사슬이 파일·index 복원을 계속 시도하고, 끝에서 reset
+    예외를 올린다(claim 은 확정되지 않는다). reset 호출만 throw 시키고 commit 은 정상 통과시켜
+    push-실패 경로를 탄다."""
     bare = tmp_path / "bare-throw"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
@@ -495,7 +495,7 @@ def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, mon
     real_git = git._board_git
 
     def _flaky_git(_home, args, *, check=False, timeout=None):
-        # reset(rollback) 호출은 throw — rollback 이 이를 삼켜야 confirm 이 bool 만 낸다.
+        # reset(rollback) 호출은 throw — 뒤 단계 복원은 계속 시도돼야 한다.
         if args[:1] == ["reset"]:
             raise RuntimeError("simulated reset failure (timeout/git 소실)")
         return real_git(_home, args, check=check, timeout=timeout)
@@ -506,11 +506,10 @@ def test_claim_confirm_rollback_reset_throw_never_traceback(board, tmp_path, mon
     monkeypatch.setattr(board_git, "_board_git_push",
                         lambda _home: subprocess.CompletedProcess([], 1, "", "rejected (non-FF)"))
 
-    # 예외가 confirm 을 빠져나오면 이 호출이 raise → 테스트 실패. bool 만 나와야 한다.
-    ok = board_claim._board_git_claim_confirm(pm_paths.home_at(board.REPO), anchor, files)
-    assert ok is False, "push 실패인데 confirm 이 확정함(또는 예외 전파)."
-    # reset 이 throw 해도 **파일 복원은 별도 suppress 구간**이라 티켓은 open/ 으로 돌아온다
-    # (거짓 소유 0 — 이력만 못 되감은 상태로 남고 다음 mutation 이 catch-up).
+    with pytest.raises(RuntimeError, match="simulated reset failure"):
+        board_claim._board_git_claim_confirm(pm_paths.home_at(board.REPO), anchor, files)
+    # reset 이 throw 해도 **파일 복원은 finally 사슬의 뒤 단계**라 티켓은 open/ 으로 돌아온다
+    # (거짓 소유 0 — 이력만 못 되감은 상태로 남는다).
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
         "reset throw 인데 티켓 파일 복원까지 건너뜀 — 롤백 단계가 서로를 막고 있다."
 

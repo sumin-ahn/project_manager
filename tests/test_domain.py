@@ -1291,12 +1291,13 @@ def test_page_stale_all_unmappable_covers_returns_none(dm):
 
 
 def test_page_stale_runner_raises_returns_none(dm):
-    # 주입 runner 가 raise 해도 fail-soft None(crash 0).
+    # 주입 runner 예외는 전파한다(unknown None 으로 접지 않는다).
     def runner(argv):
         raise RuntimeError("boom")
 
     page = {"path": Path("/d/p.md"), "covers": ["src/x/**"], "updated": "2026-06-19"}
-    assert doc_staleness.page_stale(pm_paths.home_at(dm.REPO), page, git_runner=runner) is None
+    with pytest.raises(RuntimeError, match="boom"):
+        doc_staleness.page_stale(pm_paths.home_at(dm.REPO), page, git_runner=runner)
 
 
 def test_page_stale_passes_pathspecs_to_git(dm):

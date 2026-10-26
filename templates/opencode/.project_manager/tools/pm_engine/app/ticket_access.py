@@ -316,12 +316,9 @@ def _validate_actor_task_or_exit(home, task: str) -> None:
     **같은 한 지점**을 소비해, 무검증 task 명이 created_by/claimed_by/lease-session 으로 영속되거나
     실행-위치로 쓰이기 **이전** 부작용 0 로 거부한다. 공유 validator = `identity_args.validate_task_name`
     (worktree_pool 엔진 validator 와 동형·로직 중복 0). 예약패턴(`<repo>_<N>`) 판정용 registered_repos
-    는 areas 에서 fail-soft 해소(파싱 실패 시 char/traversal 검증만).
+    는 areas 에서 해소한다(판독 예외는 전파).
     """
-    try:
-        registered = areas_store.registered_repos(home)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화(char/traversal 유지).
-        registered = None
+    registered = areas_store.registered_repos(home)
     try:
         identity_args.validate_task_name(task, registered)
     except identity_args.InvalidTaskName as e:

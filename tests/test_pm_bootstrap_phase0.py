@@ -256,9 +256,10 @@ class _Pool:
 
 
 class _OldPool(_Pool):
-    """compare_slot_git 미구현 풀(구버전). 기록↔live 검사가 getattr None 으로 no-op 함을 본다."""
+    """기록↔live 판정 결과가 없는 풀. 정합 검사가 None 결과를 '미상'으로 표기함을 본다."""
 
-    compare_slot_git = None  # 속성 자체를 제거(getattr → None → 정합 검사 skip)
+    def compare_slot_git(self, slot, *args, **kwargs):
+        return None  # 판정 결과 없음 → 기록↔live 미상
 
 
 def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):

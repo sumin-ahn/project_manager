@@ -49,10 +49,7 @@ def _git_commits_between(home, sha: str, pathspecs: list[str], *,
             except (OSError, subprocess.SubprocessError):  # fail-soft: 타임아웃/예외를 rc≠0 로.
                 return 1, ""
 
-    try:
-        rc, out = runner(["log", "--oneline", f"{sha}..HEAD", "--", *pathspecs])
-    except Exception:  # noqa: BLE001 — 주입 runner raise 도 unknown(None).
-        return None
+    rc, out = runner(["log", "--oneline", f"{sha}..HEAD", "--", *pathspecs])
     if rc != 0:
         return None
     return bool(out.strip())
@@ -115,10 +112,7 @@ def _rev_parse_ambiguous(home, sha: str, *, runner=None,
             return False
         stderr = r.stderr or ""
     else:
-        try:
-            result = runner(argv)
-        except Exception:  # noqa: BLE001
-            return False
+        result = runner(argv)
         stderr = result[2] if len(result) >= 3 else ""   # 2-tuple 대역 → stderr 없음.
     low = stderr.lower()
     return any(sig in low for sig in _AMBIGUOUS_STDERR_SIGNALS)

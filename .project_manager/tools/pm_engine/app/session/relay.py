@@ -340,15 +340,10 @@ class Supervisor:
                 out_stream.write(reply + "\n")
                 out_stream.flush()
                 # 출력 소비 지점 — 응답이 출력 상한(32k tok) 근방이면 silent 절단 의심 loud advisory
-                # (never-block·stdout 은 이미 위에서 그대로 전달·경고는 별도 sink). advisory 는
-                # relay 를 절대 못 죽인다 — detect/message/sink write 전 경로를 try/except 로 감싼다
-                # (병적 sink·근사 예외가 파이프라인을 중단시키면 안 됨·never-block 을 코드로 못박음).
-                try:
-                    cap_hit, cap_reason = watchdog.detect_output_cap_hit(reply)
-                    if cap_hit:
-                        cap_hit_log(watchdog.cap_hit_warning_message(cap_reason))
-                except Exception:  # noqa: BLE001 — advisory 는 어떤 이유로도 relay 를 막지 않는다.
-                    pass
+                # (stdout 은 이미 위에서 그대로 전달·경고는 별도 sink). 감지·sink 예외는 전파한다.
+                cap_hit, cap_reason = watchdog.detect_output_cap_hit(reply)
+                if cap_hit:
+                    cap_hit_log(watchdog.cap_hit_warning_message(cap_reason))
 
             # 매 turn 직후 1회 stat — marker 있으면 다음 입력을 받기 전에 회전.
             # 이 turn 은 이미 처리·응답됐으므로 입력을 다시 보내지 않는다.

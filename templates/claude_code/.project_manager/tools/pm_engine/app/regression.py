@@ -313,18 +313,13 @@ def _review_cycle_downgrade(home) -> tuple[list[str], list[str]]:
     **확정은 전-게이트 단위다** — 활성 게이트 중 하나라도 스코프를 확정하지 못하면 나머지
     touches 로 부분 강등하지 않고 강등 자체를 취소한다. 부분 강등은 미해소 게이트가 건드린
     범위를 한 번도 돌지 않은 실행에 rc0 을 주는데, 그 green 은 활성 게이트 **전부**에 대한
-    통과로 읽힌다(false-green). 확정 실패는 세 가지고 전부 같은 취급이다: 읽기/파싱 실패(손상
-    frontmatter)·빈 touches(선언 없음)·티켓 미해소(`_ticket_touches` 가 빈 목록).
-    손상 티켓 한 건이 `regression run` 을 크래시시키지는 않는다 — 사유 1줄을 내고 FULL 로
-    진행한다(넓히는 방향이라 안전하다)."""
+    통과로 읽힌다(false-green). 확정 실패는 세 가지고 전부 같은 취급이다: 형식 미확정(touches 가
+    리스트[str] 아님)·빈 touches(선언 없음)·티켓 미해소(`_ticket_touches` 가 빈 목록). 사유 1줄을
+    내고 FULL 로 진행한다(넓히는 방향이라 안전하다). 티켓 읽기·파싱 예외는 전파한다."""
     gates: list[str] = []
     touches: list[str] = []
     for gate in _active_review_gates(home):
-        try:
-            gate_touches = _ticket_touches(home, gate)
-        except Exception as exc:  # noqa: BLE001 — 손상 티켓 1건이 회귀 실행을 막지 않는다.
-            return _downgrade_cancelled(
-                gate, f"touches 를 읽지 못했습니다 ({type(exc).__name__}: {exc})")
+        gate_touches = _ticket_touches(home, gate)
         if gate_touches is None:
             return _downgrade_cancelled(
                 gate, "touches 형식을 확정하지 못했습니다 (리스트[str] 아님·손상 frontmatter)")
@@ -940,7 +935,7 @@ def _areas_test_cmd_by_repo(home) -> str | None:
 
 
 def _resolve_gate_cmd(home) -> str | None:
-    """활성 회귀 게이트 명령(문자열)을 해소한다. 해소 실패면 None(기본 폴백).
+    """활성 회귀 게이트 명령(문자열)을 해소한다. 해소 예외는 전파한다.
 
     해소 체인 — 앞선 층이 비어 있지 않은 값을 주면 거기서 멈춘다:
 
@@ -953,30 +948,20 @@ def _resolve_gate_cmd(home) -> str | None:
     areas.md 가 board/ 안(submodule)으로 옮겨가므로 legacy 위치를 보면 stale 이다. **3층은 그
     가드 밖**이다 — 채택자 진입문서가 게이트의 단일 진실로 선언하는 레이어라 areas.md 가 아예
     없는 형상에서도 읽혀야 한다.
-
-    해소 중 예외는 삼켜 기본 폴백(None)으로 흘린다 — 게이트 해소 실패가 도구를 죽이지 않는다
-    (현행 보존).
     """
-    try:
-        if pm_paths.areas_file(home).exists():
-            # 1층 — 활성 prefix 행 (multi-repo 네임스페이스).
-            prefix = areas_store.id_prefix(home)
-            if prefix:
-                row = areas_store._areas_row_for_prefix(home, prefix)
-                if row and row.get("test_cmd"):
-                    return row["test_cmd"]
-            # 2층 — 활성 repo 행 (prefix 칼럼이 빈 무prefix 형상).
-            by_repo = _areas_test_cmd_by_repo(home)
-            if by_repo:
-                return by_repo
-        # 3층 — local.conf 명시 설정 (areas.md 부재 형상에서도 유효·가드 밖).
-        conf_cmd = conf_store.local_config(home).get("test.cmd")
-        if conf_cmd:
-            return conf_cmd
-    except Exception as exc:  # noqa: BLE001 — 해소 실패는 기본 폴백(현행 보존).
-        # 구표기 conf 잔존은 삼키지 않는다 — 삼키면 채택자가 conf 에 적어 둔 게이트가 사라진 채
-        # 기본 pytest 로 조용히 강등된다(중앙 로더를 fail-loud 로 만든 이유가 여기서 무효가 된다).
-        if getattr(exc, "_legacy_conf_key", False):
-            raise
-        return None
+    if pm_paths.areas_file(home).exists():
+        # 1층 — 활성 prefix 행 (multi-repo 네임스페이스).
+        prefix = areas_store.id_prefix(home)
+        if prefix:
+            row = areas_store._areas_row_for_prefix(home, prefix)
+            if row and row.get("test_cmd"):
+                return row["test_cmd"]
+        # 2층 — 활성 repo 행 (prefix 칼럼이 빈 무prefix 형상).
+        by_repo = _areas_test_cmd_by_repo(home)
+        if by_repo:
+            return by_repo
+    # 3층 — local.conf 명시 설정 (areas.md 부재 형상에서도 유효·가드 밖).
+    conf_cmd = conf_store.local_config(home).get("test.cmd")
+    if conf_cmd:
+        return conf_cmd
     return python_env.default_pytest_cmd()

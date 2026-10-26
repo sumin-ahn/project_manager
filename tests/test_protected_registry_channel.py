@@ -1066,7 +1066,7 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(bootstr
 
 
 def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, monkeypatch):
-    """중앙 설치 깔때기가 raw 예외를 False로 강등해도 실패 안내는 loud하다."""
+    """재설치 raw 예외는 전파한다 — 정합화 성공 문구를 내지 않는다."""
     hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
 
@@ -1076,10 +1076,10 @@ def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, 
 
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]),
                        pool=_Boom(hooks))
-    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
+    with pytest.raises(RuntimeError, match="hooksPath 설정 실패"):
+        bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc')
     err = capsys.readouterr().err
-    assert "정합화하지 못했습니다" in err
-    assert "RuntimeError: hooksPath 설정 실패" in err
+    assert "정합화했습니다" not in err
 
 
 def test_bootstrap_no_reconcile_when_in_sync(bootstrap, tmp_path, monkeypatch, capsys):
@@ -1112,7 +1112,7 @@ def test_bootstrap_reconcile_skips_when_sidecar_absent(bootstrap, tmp_path, monk
 
 
 def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path, monkeypatch):
-    """재설치가 raise 해도 삼킨다(보호 훅은 추가 가드 — 진입을 막지 않는다)."""
+    """재설치가 raise 하면 그 예외가 전파한다(False 로 강등하지 않는다)."""
     hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
 
@@ -1122,13 +1122,14 @@ def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path, 
 
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]),
                        pool=_Boom(hooks))
-    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
+    with pytest.raises(RuntimeError, match="boom"):
+        bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc')
 
 
 
 
 def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(bootstrap, tmp_path, monkeypatch):
-    """A1/B4 경계 — 같은 비교 catch의 일반 parser 오류는 여전히 False다."""
+    """A1/B4 경계 — 비교 단계의 일반 parser 오류는 전파한다."""
     hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
 
@@ -1138,7 +1139,8 @@ def test_bootstrap_reconcile_comparison_keeps_ordinary_error_fail_soft(bootstrap
 
     inst = _reconciler(
         bootstrap, tmp_path, monkeypatch, board=_BoomBoard(["main"]), pool=FakePool(hooks))
-    assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
+    with pytest.raises(RuntimeError, match="ordinary parser failure"):
+        bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc')
 
 
 

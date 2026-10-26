@@ -249,7 +249,7 @@ def repin_verified_at(
     prepared: list[tuple[Path, str, str | None]] = []
     try:
         targets = _verified_at_targets(home, pages)
-    except Exception as exc:  # noqa: BLE001 — 대상 열거 실패도 validate-all-first 중단.
+    except (_VerifiedAtPageSelectionError, doc_page_store.DomainPageEnumerationError) as exc:  # 선택·열거 오류도 validate-all-first 중단.
         error_path = Path(getattr(exc, "path", pm_paths.domain_dir(home)))
         return [(error_path, f"error:enumeration:{exc}")]
     for path in targets:

@@ -583,7 +583,7 @@ class _AxisIsolationScope:
 
 
 def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys, monkeypatch):
-    """F-002: 새 축(교집합)의 예외가 **이미 확정된** 범위-밖 경고를 지우지 않는다."""
+    """F-002: 새 축(교집합)의 예외는 전파하되 **이미 출력된** 범위-밖 경고를 지우지 않는다."""
     seam = _AxisIsolationScope()
     monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", seam.capture_worktree_state)
     monkeypatch.setattr(delegate_scope_rules, "head_moved", seam.head_moved)
@@ -599,12 +599,12 @@ def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys
         ("src/shared.py",),             # 교집합 축 입력 — 계산은 터진다
     )
 
-    delegate_scope_audit.report_scope_audit(audit, "developer")
+    with pytest.raises(RuntimeError, match="교집합 축"):       # 새 축 실패는 전파
+        delegate_scope_audit.report_scope_audit(audit, "developer")
     err = capsys.readouterr().err
 
     assert "=== ⚠ 위임 범위 밖 변경 ===" in err       # 기존 신호 보존
     assert "stray/out.txt" in err
-    assert "위임 범위 판정 실패" in err               # 새 축 실패도 loud
     assert CHANGED_OVERLAP_PREFIX not in err
 
 

@@ -65,10 +65,7 @@ def _regression_cwd(
             file=sys.stderr,
         )
         return str(repo_root)
-    try:
-        auto = _auto_slot(home, areas_file, leases_file)
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 실패는 REPO 폴백.
-        auto = None
+    auto = _auto_slot(home, areas_file, leases_file)
     if auto:
         # 자동해소도 **명시 슬롯과 같은 존재 검사**를 탄다. 판정은 장부(areas·leases)만 보므로
         #   worktree 디렉토리가 물리적으로 없을 수 있고(장부-파일시스템 out-of-sync), 그대로

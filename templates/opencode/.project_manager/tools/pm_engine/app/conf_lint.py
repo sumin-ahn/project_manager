@@ -128,7 +128,7 @@ def lint_local_conf(home) -> list[tuple[str, str, str]]:
     try:
         result = conf_store.load(home.local_conf)
         text = fs.read_text_shared(home.local_conf, encoding="utf-8")
-    except Exception:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
+    except (OSError, UnicodeError):  # 판독 실패는 lint_local_conf_readable 이 finding 1건으로 보고한다.
         return []
     where = pm_paths._rel_to_repo(home, home.local_conf)
     findings = [
@@ -274,10 +274,11 @@ def lint_delegate(home) -> list[tuple[str, str, str]]:
     model_lint.lint_same_model(conf) 의 `(label, detail)` 를 board 관례 `(label, kind, detail)` 로
     감싼다. kind=`delegate-same-model`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드에 *절대*
     기여하지 않는다·visibility>enforcement — 사용자가 동일-모델 조합을 선택할 자유 유지). 설정
-    읽기 실패·설정 미매핑 → [] (delegate 미사용 프로젝트 무영향). `home` 의
+    판독 실패·구표기·설정 미매핑 → [] (판독 실패·구표기는 conf 축 finding 이 보고한다·delegate
+    미사용 프로젝트 무영향). 그 밖 예외는 전파한다. `home` 의
     local.conf(local_config)로 판정한다."""
     try:
         findings = model_lint.lint_same_model(conf_store.local_config(home))
-    except Exception:  # noqa: BLE001 — 설정 읽기 실패는 빈 결과(advisory).
+    except (OSError, UnicodeError, conf_schema.LegacyConfKeyError):  # 판독 실패·구표기는 conf 축이 finding 으로 보고한다.
         return []
     return [(label, "delegate-same-model", detail) for label, detail in findings]
