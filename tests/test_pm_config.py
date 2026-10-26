@@ -158,24 +158,6 @@ def test_add_harness_dispatch_routes_to_handler(pc, monkeypatch):
 # ── usage prog 정합 (T-0249·ADR-0043) — 위임-경계 가드 + 서브파서 usage ──────
 
 
-def test_add_harness_forward_remaps_foreign_prog(pc, monkeypatch):
-    """위임 *중* `_forwarded_prog` 활성 — 경계 안에서 만든 `pm_import.py` prog 를
-    `pm-config add-harness` 로 치환하고, 위임 종료 후 argparse 전역을 원복한다 (T-0249·경계 leak 0)."""
-    observed: dict = {}
-
-    def _surface_usage():
-        # add_harness_cli 가 위임 중 어떤 argparse usage 를 surface 하는 상황 모사.
-        observed["prog"] = argparse.ArgumentParser(prog="pm_import.py").prog
-
-    FakePmImport(rc=0, on_call=_surface_usage).install(monkeypatch)
-    args = argparse.Namespace(harness="opencode", dry_run=False)
-    rc = config_install.cmd_add_harness(pm_paths.home_at(pc.REPO), args, dest_root=Path("/x"))
-    assert rc == 0
-    assert observed["prog"] == "pm-config add-harness"   # 위임 중 파일명 leak 0
-    # 위임 종료 후 전역 argparse 원복(누수 0).
-    assert argparse.ArgumentParser(prog="pm_import.py").prog == "pm_import.py"
-
-
 def _usage_line(text: str) -> str:
     return next(l for l in text.splitlines() if l.startswith("usage:"))
 

@@ -52,8 +52,7 @@ def _require_python(version_info=None) -> None:
 # future annotations 덕분에 아래 list[...] / X | None 표기도 체크 전 평가되지 않는다.
 _require_python()
 
-# tomllib 을 쓰는 설치 공급자는 하한 검사 뒤에 적재한다(tomllib 적재가 먼저 실패해야 사유가 분명하다).
-import tomllib  # noqa: E402  (하한 검사 뒤 적재 순서 고정)
+# tomllib 을 쓰는 설치 공급자(package CLI)는 하한 검사 뒤에 적재한다(하한 검사가 먼저 실패해야 사유가 분명하다).
 from pm_engine.cli import import_cmd  # noqa: E402
 from pm_engine.infra import pm_paths  # noqa: E402
 

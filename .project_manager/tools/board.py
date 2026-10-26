@@ -54,7 +54,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 # Home은 실행 코드 루트와 PM 데이터 루트를 구분한다. 등록 worktree의 읽기 폴백은
-# 명시 Home을 패키지에 전달하며, 잔류 조회 경로 두 개만 context에서 재앵커한다.
+# 명시 Home을 패키지에 전달하며, board 루트·Home override 두 개만 context에서 바꾼다.
 _READ_BOARD_ROOT_OVERRIDE: Path | None = None
 _READ_PM_HOME_OVERRIDE: Path | None = None
 
@@ -62,11 +62,6 @@ _READ_PM_HOME_OVERRIDE: Path | None = None
 def _home():
     """이 실행의 기준 경로 — 자기 앵커 `REPO`, read 폴백 중이면 소유 PM 홈의 board·로컬 입력."""
     return pm_paths.home_at(REPO, _READ_PM_HOME_OVERRIDE, _READ_BOARD_ROOT_OVERRIDE)
-
-
-CODEX_DELEGATE_OBSERVATIONS = (
-    REPO / ".project_manager" / ".local" / "delegate-channel" / "codex-observations.jsonl"
-)
 
 
 # ── PM-홈 worktree 오실행 가드 (mutation dispatch 게이트) ───────────────
@@ -254,36 +249,21 @@ def judge_git_anchor_command(
 # argv: tools 경로 · task · 세션 ID.
 
 
-# 등록 worktree read 폴백에서 같은 PM 홈으로 옮겨야 하는 import-time 경로 상수 전수.
-# board_root/tickets/areas는 lazy override가 담당하고, 이 표는 wiki 잔류 상태·
-# PM 로컬 설정·그 상태를 읽는 deep-import 모듈을 담당한다. 상대경로가 단일 진실이라 새
-# PM-owned 입력을 추가할 때 이 표와 `_READ_PM_INPUTS_BY_SUBCOMMAND`를 함께 갱신하게 된다.
-_READ_PM_PATH_RELS: dict[str, str] = {
-    "CODEX_DELEGATE_OBSERVATIONS": ".local/delegate-channel/codex-observations.jsonl",
-}
-
-
 @contextlib.contextmanager
 def _read_pm_inputs_at(pm_home: Path, board_root_path: Path) -> Iterator[None]:
-    """읽기 dispatch의 Home override와 잔류 조회 경로 두 개를 설정하고 복원한다.
+    """읽기 dispatch의 board 루트·Home override 두 개를 설정하고 복원한다.
 
     패키지의 티켓·wiki·설정 경로는 명시 Home에서 해소한다.
     mutation/sidecar는 이 context에 진입하지 않아 쓰기 게이트 의미론은 바뀌지 않는다.
     """
     global _READ_BOARD_ROOT_OVERRIDE, _READ_PM_HOME_OVERRIDE
-    saved = {name: globals()[name] for name in _READ_PM_PATH_RELS}
     saved_board_override = _READ_BOARD_ROOT_OVERRIDE
     saved_home_override = _READ_PM_HOME_OVERRIDE
-    pm_dir = pm_home / ".project_manager"
     try:
-        for name, rel in _READ_PM_PATH_RELS.items():
-            globals()[name] = pm_dir / rel
         _READ_BOARD_ROOT_OVERRIDE = board_root_path
         _READ_PM_HOME_OVERRIDE = pm_home
         yield
     finally:
-        for name, value in saved.items():
-            globals()[name] = value
         _READ_BOARD_ROOT_OVERRIDE = saved_board_override
         _READ_PM_HOME_OVERRIDE = saved_home_override
 

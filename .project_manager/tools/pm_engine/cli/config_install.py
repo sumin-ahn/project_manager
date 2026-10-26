@@ -53,13 +53,8 @@ def cmd_add_harness(
     # 소스를 자동 해소한다(imported 인스턴스 갭). 기존 Namespace(테스트/구 호출)에 source 가
     # 없어도 getattr 로 안전하게 None 폴백(하위호환·verbatim forward).
     source_root = getattr(args, "source", None)
-    # usage prog 정합 — init forward 와 동형 위임-경계 가드. add_harness_cli 는 자체 argparse 를
-    # 만들지 않고 main-style 로 출력·rc 반환하지만, 위임 경계를 균일하게 감싸 어떤 argparse usage 가
-    # surface 되더라도 파일명("pm_import.py")이 새지 않게 한다(에이전트가 칠 실 커맨드
-    # pm-config add-harness 와 정합·경계 leak 0). rc 는 그대로 전파.
-    with config_status._forwarded_prog({"pm_import.py": f"{repo_protection._FACADE_PROG} add-harness"}):
-        return add_harness.add_harness_cli(
-            home, dest, args.harness, dry_run=args.dry_run, source_root=source_root)
+    return add_harness.add_harness_cli(
+        home, dest, args.harness, dry_run=args.dry_run, source_root=source_root)
 
 
 def cmd_apply(home, args, *, dest_root: Path | None = None) -> int:

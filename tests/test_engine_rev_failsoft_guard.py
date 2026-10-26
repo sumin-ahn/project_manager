@@ -40,6 +40,7 @@ from pathlib import Path
 
 import pytest
 
+from _engine_tree import engine_python_files
 from _textio import utf8_child_env
 from pm_engine.cli import finish_record
 from pm_engine.infra import pm_paths
@@ -52,15 +53,6 @@ _RECOVERY_REASONS = "_ENGINE_REV_SKEW_RECOVERY_REASONS"
 _TERMINAL_MARKER = "_report_engine_rev_skew_at_terminal"
 _SKEW_PREDICATE = "_is_engine_rev_skew"
 _SKEW_ATTRIBUTE = "_engine_rev_skew"
-# 평면 진입점에서 package 로 옮긴 CLI·명령 handler 의 원천. marked catch 가 위치만 바뀌었으므로 같은
-# 원장에 남긴다(평면 진입점의 원천과 함께 스캔).
-_MOVED_PACKAGE_SOURCES = (
-    "pm_engine/cli/config_adapter.py",
-    "pm_engine/cli/config_install.py",
-    "pm_engine/cli/import_cmd.py",
-    "pm_engine/cli/regression_cmd.py",
-    "pm_engine/cli/update_cmd.py",
-)
 
 
 @dataclass(frozen=True)
@@ -902,12 +894,11 @@ def _flat_sources(tools: Path) -> dict[str, str]:
 
 
 def _canonical_sources() -> dict[str, str]:
-    sources = _flat_sources(TOOLS)
-    sources.update(
-        (relative, (TOOLS / relative).read_text(encoding="utf-8"))
-        for relative in _MOVED_PACKAGE_SOURCES
-    )
-    return sources
+    """평면 진입 파일과 `pm_engine` package 전체를 한 원장으로 스캔한다(엔진 전수 열거 공용)."""
+    return {
+        path.relative_to(TOOLS).as_posix(): path.read_text(encoding="utf-8")
+        for path in engine_python_files(TOOLS)
+    }
 
 
 def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
@@ -1324,25 +1315,35 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 열거는 package 로 옮겨 marked 재전파를 그대로 두었고, 표기 재렌더 판정의 렌더 오류 흡수는 지웠다.
     # 묶음 소유 선검사의 parser 전용 loader 경계 1개를 제거했다.
     # 공용 해소·CLI 이동과 private loader 은퇴에 따른 경계 재고는 실제 스캔으로 확인한다(38→18).
-    # 갱신 본체가 package(`app.update_plan`·`app.update_adapters`)로 옮겨 평면 경계 7개가 줄었다(18→11):
-    # `_resolve_engine_sync_plan` 1·`_instance_owned_template_delta_lines` 1·`sync_adapter_configs` 3·
-    # `check_adapter_hook_sets` 1·`refuse_partial_hook_set_scope` 1. 옮긴 핸들러의 marked 재전파는 그대로다.
-    # 설치·갱신 CLI 와 설정·보드 명령이 package(`pm_engine.cli`)로 옮겨 같은 11경계가 위치만 바뀌었다:
-    # import 진입 2·update 진입 1·adapter accept 2·apply 1 의 marked 재전파, release drift 거부의
-    # terminal 보고 1. package 의 직접 판독(`getattr(exc, "_engine_rev_skew", False)`)도 같은 marker 다.
-    assert len(report.boundaries) == 11, "propagation sweep boundary ratchet changed"
+    # 24 = 평면 진입 파일 4 + `pm_engine` package 20. 스캔 원장은 평면 `tools/*.py` 와 package 전체다.
+    # 평면 4: board·pm_config·worktree_pool 의 terminal 보고 3, `pm_config._load_module` 재전파 1.
+    # package 의 CLI 7: import 진입 2·update 진입 1·adapter accept 2·apply 1 의 marked 재전파, release
+    # drift 거부의 terminal 보고 1. package 의 app·infra 13: 갱신 본체(`app.update_plan` 1·
+    # `app.update_adapters` 6), fill 실행(`app.import_fill` 4), 설치 증거 열거(`infra.install_receipt` 1),
+    # 미소유 wiki 후보 열거(`app.add_harness` 1)의 marked 재전파. package 의 직접 판독
+    # (`getattr(exc, "_engine_rev_skew", False)`)도 같은 marker 다.
+    assert len(report.boundaries) == 24, "propagation sweep boundary ratchet changed"
     assert {
         (item.source, item.function, item.disposition) for item in report.boundaries
     } == {
         ("board.py", "main", "terminal-report"),
         ("pm_config.py", "_load_module", "reraises"),
         ("pm_config.py", "main", "terminal-report"),
+        ("pm_engine/app/add_harness.py", "_unowned_shipped_wiki_relpaths", "reraises"),
+        ("pm_engine/app/import_fill.py", "_fill_failure_with_partial", "reraises"),
+        ("pm_engine/app/import_fill.py", "_real_harness_runner", "reraises"),
+        ("pm_engine/app/update_adapters.py", "_instance_owned_template_delta_lines", "reraises"),
+        ("pm_engine/app/update_adapters.py", "sync_adapter_configs", "reraises"),
+        ("pm_engine/app/update_adapters.py", "check_adapter_hook_sets", "reraises"),
+        ("pm_engine/app/update_adapters.py", "refuse_partial_hook_set_scope", "reraises"),
+        ("pm_engine/app/update_plan.py", "_resolve_engine_sync_plan", "reraises"),
         ("pm_engine/cli/config_adapter.py", "cmd_sync_adapter_config", "reraises"),
         ("pm_engine/cli/config_install.py", "cmd_apply", "reraises"),
         ("pm_engine/cli/import_cmd.py", "main", "reraises"),
         ("pm_engine/cli/regression_cmd.py", "_refuse_release_for_engine_drift",
          "terminal-report"),
         ("pm_engine/cli/update_cmd.py", "main", "reraises"),
+        ("pm_engine/infra/install_receipt.py", "_pm_install_evidence", "reraises"),
         ("worktree_pool.py", "main", "terminal-report"),
     }
     # 보드 terminal 진단은 `cli.board_dispatch` 하나가 소유한다(평면 board.py 에 사본·별칭 없음).

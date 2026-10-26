@@ -318,12 +318,14 @@ def test_pm_import_precheck_is_310_parseable_and_precedes_tomllib():
         and isinstance(stmt.value.func, ast.Name)
         and stmt.value.func.id == "_require_python"
     )
-    tomllib_index = next(
+    # tomllib 을 적재하는 설치 공급자는 package CLI(`pm_engine.cli.import_cmd`)다.
+    cli_import_index = next(
         i for i, stmt in enumerate(tree.body)
-        if isinstance(stmt, ast.Import)
-        and any(alias.name == "tomllib" for alias in stmt.names)
+        if isinstance(stmt, ast.ImportFrom)
+        and stmt.module == "pm_engine.cli"
+        and any(alias.name == "import_cmd" for alias in stmt.names)
     )
-    assert require_index < tomllib_index
+    assert require_index < cli_import_index
 
     pm_import = _load("pm_import")
     with pytest.raises(SystemExit, match=r"Python 3\.11\+ 필요 · 현재 3\.10"):

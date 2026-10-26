@@ -1182,7 +1182,7 @@ def test_mutation_target_missing_from_stamped_modules_is_red(tmp_path):
 
     report = collect_central_guard_report(tools)
     assert any(
-        "board.py" in item and "STAMPED_MODULES" in item
+        "gate target board.py is not in STAMPED_MODULES" in item
         for item in report.violations
     )
 
