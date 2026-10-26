@@ -1216,10 +1216,6 @@ def run_git_anchor_hook(root: Path, *, stdin=None, stdout=None) -> int:
         payload = json.loads(raw) if raw else {}
         if not isinstance(payload, dict):
             payload = {}
-        # 판정은 설치 루트 엔진의 공개 진입(`pm_engine.cli.hooks`)이 한다 — 그 tools 를 import 경로에 둔다.
-        tools = str(root / ".project_manager" / "tools")
-        if tools not in sys.path:
-            sys.path.insert(0, tools)
         envelope = git_anchor_hook_evaluate(payload, root)
     except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash 를 막지 않는다.
         detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__

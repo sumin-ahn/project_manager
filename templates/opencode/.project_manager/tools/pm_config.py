@@ -8,8 +8,6 @@
 from __future__ import annotations
 
 
-import argparse
-import functools
 import os
 import sys
 from pathlib import Path
@@ -19,19 +17,8 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
-from pm_engine.infra import console, lease_store, pm_paths, repo_files
-from pm_engine.app import repo_protection
-from pm_engine.cli import config_adapter
+from pm_engine.infra import console, pm_paths
 from pm_engine.cli import config_cmd
-from pm_engine.cli import config_console
-from pm_engine.cli import config_install
-from pm_engine.cli import config_models
-from pm_engine.cli import config_repo
-from pm_engine.cli import config_slots
-from pm_engine.cli import config_status
-from pm_engine.cli import config_tasks
-from pm_engine.cli import config_upstream
-
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py 와 동일 앵커 관례
 # (어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
@@ -48,11 +35,7 @@ ENGINE_REV = "v1.8.1"
 
 
 def _is_engine_rev_skew(exc) -> bool:
-    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지.
-
-    fail-soft sibling 로더의 `except Exception` 은 로드 실패/부재만 None 으로 흡수하고, 이
-    판정이 True 인 예외(중첩 로드에서 검출된 형제 skew)는 재-raise 해 fail-loud 를 보존한다
-    (예: 신 pm_config→신 board→구 형제 검출이 None 강등되지 않게)."""
+    """예외가 rev-스탬프 skew(EngineRevSkew·불완전 복사) 유래인지."""
     return getattr(exc, "_engine_rev_skew", False)
 
 

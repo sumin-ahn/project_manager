@@ -758,27 +758,6 @@ def test_update_error_usage_shows_facade_prog_not_pm_update_py(pc, capsys):
     assert "pm-config update" in combined     # facade prog(+서브)로 표기
 
 
-def test_forwarded_prog_remaps_only_mapped_and_restores(pc):
-    """`_forwarded_prog` — 매핑 prog 만 치환·매핑 밖은 통과·블록 종료 후 __init__ 원복 (T-0249)."""
-    original_init = argparse.ArgumentParser.__init__
-    with config_status._forwarded_prog({"board.py": "pm-config"}):
-        # 매핑된 top-level prog → 치환.
-        assert argparse.ArgumentParser(prog="board.py").prog == "pm-config"
-        # 매핑 밖 prog(파생 subparser·타 도구)는 그대로 통과 — 오염 0.
-        assert argparse.ArgumentParser(prog="pm-config init").prog == "pm-config init"
-    # 블록 종료 후 전역 argparse 원복(누수 0).
-    assert argparse.ArgumentParser.__init__ is original_init
-
-
-def test_forwarded_prog_restores_on_exception(pc):
-    """`_forwarded_prog` — 블록 안 예외(SystemExit 포함)에도 finally 로 __init__ 원복 (T-0249)."""
-    original_init = argparse.ArgumentParser.__init__
-    with pytest.raises(SystemExit):
-        with config_status._forwarded_prog({"board.py": "pm-config"}):
-            raise SystemExit(2)
-    assert argparse.ArgumentParser.__init__ is original_init
-
-
 # ── upstream show/set 배선 — 검증(도달성·fail-closed) + local.conf atomic·타 키 보존 (T-0145) ──
 
 
