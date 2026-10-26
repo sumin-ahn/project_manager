@@ -58,6 +58,7 @@ import pytest
 
 from _test_exec import python_argv_command
 from pm_engine.infra import pm_paths
+from pm_engine.infra.harness import delegate_env
 from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
 from pm_engine.infra import delegate_ledger, round_store
 
@@ -252,7 +253,11 @@ def test_review_input_spans_the_merge_base_with_the_integration_tip(pd, review_e
     prompt = delegate_cluster_review.build_cluster_review_prompt(
         pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), review, dict.fromkeys(review.members, "본문"), tree=home, focus=None,
     )
-    command = shlex.split(prompt.split("```sh\n", 1)[1].split("\n```", 1)[0])
+    # 프롬프트의 명령은 실행 셸 규칙으로 렌더된다 — 같은 argv 의 렌더와 비교하고 실행은 argv 로 한다.
+    command = ["git", "-C", str(home.resolve()), "--no-pager", "diff", "--no-ext-diff", "--no-color",
+               f"{review.merge_base}..{review.branch}", "--"]
+    rendered = prompt.split("```sh\n", 1)[1].split("\n```", 1)[0]
+    assert rendered == delegate_env.render_shell_command(command)
     patch = subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8").stdout
     assert "integration.txt" not in patch
     assert "T-8001 구현" in patch and "T-8002 구현" in patch

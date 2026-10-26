@@ -161,6 +161,8 @@ def test_metadata_relative_gitdir_pointer(pd, tmp_path):
     work.mkdir()
     separate.parent.mkdir()
     _git("init", "-q", "--separate-git-dir", str(separate), str(work))
+    # Git for Windows 는 `.git` 포인터 파일을 숨김으로 만들고, 숨김 파일 덮어쓰기는 거부된다 — 지우고 새로 쓴다.
+    (work / ".git").unlink()
     (work / ".git").write_text("gitdir: ../meta/repo.git\n", encoding="utf-8")
     assert delegate_transport._git_metadata_write_roots(work) == (_real(separate),)
 

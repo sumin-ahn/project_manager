@@ -1004,9 +1004,13 @@ def _import_multipm_home(tmp_path: Path, harness: str,
     pm_import = _load_pm_import()
     home = tmp_path / f"mpm-home-{harness}"
     origins = tmp_path / f"origins-{harness}"
-    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
-        ["--new", str(home), "--harness", harness, "--name", "MPM", "--fill", "manual"]
-    )
+    # 모델 한도 조회 고정은 이 설치 실행 구간에만 건다(`_import_adopter` 와 같다).
+    from _manager_home import install_known_ctx_io
+    with pytest.MonkeyPatch.context() as patch:
+        install_known_ctx_io(patch)
+        rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
+            ["--new", str(home), "--harness", harness, "--name", "MPM", "--fill", "manual"]
+        )
     assert rc == 0, f"{harness} multi-PM home import 실패 (rc={rc})"
 
     for repo in repos:

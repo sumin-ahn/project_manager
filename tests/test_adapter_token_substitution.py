@@ -121,10 +121,14 @@ def imported(pm_import, tmp_path_factory):
     """하니스 전수 fresh import 트리 (모듈 1회 — import 는 비싸다)."""
     root = tmp_path_factory.mktemp("adopters")
     trees: dict[str, Path] = {}
-    for harness in HARNESS_ADAPTER_DIRS:
-        dest = root / f"adopter-{harness}"
-        _import_new(pm_import, dest, harness)
-        trees[harness] = dest
+    # 모듈 범위 픽스처는 함수 범위 `known_ctx_io` 보다 먼저 돈다 — 모델 한도 조회 고정을 여기서 직접 건다.
+    from _manager_home import install_known_ctx_io
+    with pytest.MonkeyPatch.context() as patch:
+        install_known_ctx_io(patch)
+        for harness in HARNESS_ADAPTER_DIRS:
+            dest = root / f"adopter-{harness}"
+            _import_new(pm_import, dest, harness)
+            trees[harness] = dest
     return trees
 
 
