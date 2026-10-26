@@ -8280,6 +8280,31 @@ def test_apply_renders_every_render_change_before_writing(pm_update, tmp_path):
     assert "delegate.researcher.reasoning=ultra" in str(caught.value)
     assert {card.name: card.read_bytes() for card in cards} == settled
 
+    # 엔진 패키지 교체 행과 계획 값이 함께 와도 render 전량 계획은 그대로다 — render 산출물은 하나도
+    #   쓰지 않는다. 패키지 게시와 backup 정리는 render 앞의 묶음이라 끝난 상태로 남는다(되돌리지 않는다).
+    package_rel = manifest_rules._ENGINE_PACKAGE_REL
+    (source / package_rel).mkdir(parents=True)
+    (source / package_rel / "keep.py").write_text("# keep\n", encoding="utf-8")
+    manifest_file.write_text(f"{package_rel}\n.claude/agents    @render\n", encoding="utf-8")
+    _track_source_tree(source)
+    (dest / package_rel).mkdir(parents=True)
+    (dest / package_rel / "obsolete.py").write_text("# obsolete\n", encoding="utf-8")
+    conf.write_text(sonnet_conf, encoding="utf-8")
+    package_plans: list = []
+    changes, _missing = update_plan.plan(
+        pm_paths.home_at(pm_update.REPO), source, manifest_store.read_manifest(manifest_file),
+        dest_root=dest, conf=_local_conf_of(pm_update, dest), package_plan_out=package_plans)
+    assert changes[0][3] == "replace-dir" and package_plans[0].deleted == ("obsolete.py",)
+    conf.write_text(sonnet_conf.replace(
+        "delegate.researcher.reasoning=high", "delegate.researcher.reasoning=ultra"), encoding="utf-8")
+    with pytest.raises(RuntimeError) as caught:
+        update_render.apply(pm_paths.home_at(pm_update.REPO), changes, package_plan=package_plans[0])
+    assert type(caught.value).__name__ == "RenderLeakError", caught.value
+    assert {card.name: card.read_bytes() for card in cards} == settled
+    assert sorted(path.name for path in (dest / package_rel).iterdir()) == ["keep.py"]
+    assert not any(path.name.startswith(manifest_rules._ENGINE_TRANSFER_BACKUP_PREFIX)
+                   for path in (dest / ".project_manager" / "tools").iterdir())
+
 
 def test_conf_apply_key_groups_select_steps(pm_update):
     """키 묶음 판정 — 사용 한도 키는 다른 묶음과 겹치지 않고, 추론 값 묶음은 추론 값이 있는 프로필(위임
@@ -8548,6 +8573,30 @@ def _t0951_record_launch(pm_update, monkeypatch) -> list:
     return launched
 
 
+# 엔진 패키지 사례 — 상류 패키지 keep.py(+source_extra), 대상 패키지 keep.py(+dest_extra). 패키지는 디렉터리째
+#   교체되므로 대상 전용 파일은 삭제로, 상류 전용 파일은 추가로 센다.
+_T0951_PACKAGE = manifest_rules._ENGINE_PACKAGE_REL
+
+
+def _t0951_package_case(pm_update, tmp_path, monkeypatch, *, source_extra=None, dest_extra=None,
+                        probe="# probe\n", files=None, manifest=()):
+    files = {**_T0951_FILES, **(files or {}), f"{_T0951_PACKAGE}/keep.py": "# keep\n",
+             **{f"{_T0951_PACKAGE}/{rel}": text for rel, text in (source_extra or {}).items()}}
+    dest, source = _t0951_case(pm_update, tmp_path, monkeypatch, files=files,
+                               manifest=[_T0951_PACKAGE, _T0951_PROBE, "adapterdir", *manifest])
+    for rel, text in {"keep.py": "# keep\n", **(dest_extra or {})}.items():
+        (dest / _T0951_PACKAGE / rel).parent.mkdir(parents=True, exist_ok=True)
+        (dest / _T0951_PACKAGE / rel).write_text(text, encoding="utf-8")
+    if probe is not None:
+        (dest / _T0951_PROBE).write_text(probe, encoding="utf-8")
+    return dest, source
+
+
+def _t0951_transfer_leftovers(dest: Path) -> list[str]:
+    tools = dest / ".project_manager" / "tools"
+    return sorted(path.name for path in tools.iterdir() if path.name.startswith(".pm-engine-"))
+
+
 def test_transfer_stage_runs_no_completion_step(pm_update, tmp_path, monkeypatch):
     """AT-004 — 전달 프로세스는 엔진 코드만 옮기고 완료 단계 함수를 하나도 부르지 않는다."""
     dest, source = _t0951_case(pm_update, tmp_path, monkeypatch)
@@ -8562,6 +8611,16 @@ def test_transfer_stage_runs_no_completion_step(pm_update, tmp_path, monkeypatch
     assert launched == [(dest, source, 1, ["--from", str(source)])]
     assert (dest / _T0951_PROBE).read_text(encoding="utf-8") == "# probe\n"
     assert not (dest / "adapterdir").exists(), "전달 프로세스가 엔진 코드 밖 행을 옮겼다"
+
+    # 엔진 패키지 추가 1·삭제 1 + 평면 1 — 인계 값은 교체 행 수(1)가 아니라 파일 수 3 이다.
+    launched.clear()
+    dest, source = _t0951_package_case(pm_update, tmp_path / "package", monkeypatch,
+                                       source_extra={"added.py": "# added\n"},
+                                       dest_extra={"gone.py": "# gone\n"}, probe=None)
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 0
+    assert launched == [(dest, source, 3, ["--from", str(source)])]
+    assert sorted(path.name for path in (dest / _T0951_PACKAGE).iterdir()) == ["added.py", "keep.py"]
+    assert not (dest / "adapterdir").exists()
 
 
 @pytest.mark.parametrize("case", (
@@ -8607,6 +8666,19 @@ def test_completion_handoff_is_validated_before_any_write(
     assert _t0951_tree(dest) == before, "인계 값 오류인데 dest 를 바꿨다"
     assert engine_transfer.COMPLETION_ENV not in os.environ, "인계 값이 실행 뒤에 남았다"
 
+    if case == "pending_engine_code":
+        # 엔진 패키지의 삭제만 남은 형상도 완료 단계의 엔진 코드 잔존이다 — 쓰기 전에 멈춘다.
+        dest, source = _t0951_package_case(pm_update, tmp_path / "package", monkeypatch,
+                                           dest_extra={"obsolete.py": "# obsolete\n"})
+        monkeypatch.setenv(engine_transfer.COMPLETION_ENV, json.dumps(
+            {"dest": str(dest), "source": str(source), "transferred": 0}))
+        before = _t0951_tree(dest)
+        assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 1
+        err = capsys.readouterr().err
+        assert expected_message in err and _T0951_PACKAGE in err, err
+        assert _t0951_tree(dest) == before and _t0951_transfer_leftovers(dest) == []
+        assert engine_transfer.COMPLETION_ENV not in os.environ
+
 
 def test_known_ctx_env_requires_a_test_scoped_native_folder(tmp_path):
     """실행 파일 폴더가 환경에 없으면 `known_ctx_env` 는 호출자가 준 테스트 임시 폴더만 쓴다 —
@@ -8645,6 +8717,27 @@ def test_dry_run_defers_preview_while_engine_code_is_pending(
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"]) == 0
     assert launched == [(dest, source, 0, ["--from", str(source), "--dry-run"])]
 
+    # 엔진 패키지 추가 1·변경 1·삭제 1 + 평면 1 — 표시는 교체 행 하나, 건수는 파일 합 4, 쓰기·락·자식 0.
+    launched.clear()
+    dest, source = _t0951_package_case(
+        pm_update, tmp_path / "package", monkeypatch,
+        source_extra={"added.py": "# added\n", "changed.py": "# v2\n"},
+        dest_extra={"changed.py": "# v1\n", "obsolete.py": "# obsolete\n"}, probe="# old probe\n")
+    before = _t0951_tree(dest)
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert f"  [replace-dir] {_T0951_PACKAGE} (추가 1·변경 1·삭제 1)" in out, out
+    assert "엔진 코드 4 파일 변경 예정" in out, out
+    assert launched == [] and _t0951_tree(dest) == before
+    assert _t0951_transfer_leftovers(dest) == [], "dry-run 이 락·stage·backup 을 만들었다"
+    for rel in ("added.py", "changed.py"):
+        (dest / _T0951_PACKAGE / rel).write_text(
+            {"added.py": "# added\n", "changed.py": "# v2\n"}[rel], encoding="utf-8")
+    (dest / _T0951_PACKAGE / "obsolete.py").unlink()
+    (dest / _T0951_PROBE).write_text("# probe\n", encoding="utf-8")
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--dry-run"]) == 0
+    assert launched == [(dest, source, 0, ["--from", str(source), "--dry-run"])]
+
 
 def test_paths_scope_is_refused_while_engine_code_is_pending(
         pm_update, tmp_path, monkeypatch, capsys):
@@ -8673,6 +8766,16 @@ def test_paths_scope_is_refused_while_engine_code_is_pending(
     assert "부분 전파" in capsys.readouterr().err
     assert _t0951_tree(target) == target_before
 
+    # 자기 갱신은 엔진 패키지의 삭제만 남아도 패키지 경로·그 자식·다른 경로 모두 쓰기 전에 거부한다.
+    dest, source = _t0951_package_case(pm_update, tmp_path / "package", monkeypatch,
+                                       dest_extra={"obsolete.py": "# obsolete\n"})
+    before = _t0951_tree(dest)
+    for scope in (_T0951_PACKAGE, f"{_T0951_PACKAGE}/keep.py", "adapterdir/one.md"):
+        assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", scope]) == 1, scope
+        err = capsys.readouterr().err
+        assert "부분 전파" in err and _T0951_PACKAGE in err, err
+    assert _t0951_tree(dest) == before and _t0951_transfer_leftovers(dest) == []
+
 
 _T0951_NEXT_GEN = "{{NEXT_GEN_MARK}}"
 
@@ -8692,6 +8795,20 @@ def test_drift_changes_reports_engine_code_before_rendering(pm_update, tmp_path,
     (dest / _T0951_PROBE).write_text("# probe\n", encoding="utf-8")
     with pytest.raises(RuntimeError) as raised:
         update_plan.drift_changes(pm_paths.home_at(pm_update.REPO), dest)
+    assert type(raised.value).__name__ == "RenderLeakError", raised.value
+
+    # 엔진 패키지만 뒤처진 트리(삭제만 있음)도 패키지 경로 한 행이고 렌더러를 부르지 않는다. 패키지가
+    #   맞아지면 같은 세대 렌더 실패는 그대로 올라간다.
+    package_dest, _package_source = _t0951_package_case(
+        pm_update, tmp_path / "package", monkeypatch,
+        files={"renderdir/card.md": f"# 카드 {_T0951_NEXT_GEN}\n"}, manifest=["renderdir    @render"],
+        dest_extra={"obsolete.py": "# obsolete\n"})
+    (package_dest / "renderdir").mkdir()
+    (package_dest / "renderdir" / "card.md").write_text("# 카드\n", encoding="utf-8")
+    assert update_plan.drift_changes(pm_paths.home_at(package_dest), package_dest) == [_T0951_PACKAGE]
+    (package_dest / _T0951_PACKAGE / "obsolete.py").unlink()
+    with pytest.raises(RuntimeError) as raised:
+        update_plan.drift_changes(pm_paths.home_at(package_dest), package_dest)
     assert type(raised.value).__name__ == "RenderLeakError", raised.value
 
 

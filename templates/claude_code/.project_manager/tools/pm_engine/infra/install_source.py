@@ -290,7 +290,8 @@ def _iter_source_files(template_root: Path, weight: str = "full"):
     checkout의 미추적·machine-local 파일은 복사 후보가 아니며, 비-git 소스에서 filesystem
     폴백할 때는 seam이 RepoFilesFallbackWarning으로 추적 보장 소실을 loud하게 알린다.
     COPY_EXCLUDE_*는 추적 여부와 별개인 출하 정책(node_modules·stale bytecode·내부 README)과
-    fill 스캔 공통 방어를 위해 그 위에 계속 적용한다.
+    fill 스캔 공통 방어를 위해 그 위에 계속 적용한다. 엔진 패키지 교체가 `.project_manager/tools/`
+    바로 아래에 남기는 락·stage·backup 도 추적 여부와 무관하게 제외한다(그 자리를 지우지는 않는다).
     """
     files = [
         path
@@ -301,6 +302,9 @@ def _iter_source_files(template_root: Path, weight: str = "full"):
         )
         # 프레임워크-내부 doc(최상위 README.md 등)은 adopter 로 출하하지 않는다.
         and path.relative_to(template_root).as_posix() not in COPY_EXCLUDE_RELPATHS
+        # 엔진 패키지 교체의 락·복구 트리는 이 템플릿의 운영 산출물이다(git 없는 사본에도 남는다).
+        and not manifest_rules._is_engine_transfer_artifact(
+            path.relative_to(template_root).as_posix())
     ]
     # lite 모드: 이 트리에서 lite 가 대체할 full 진입 relpath 집합을 먼저 모은다.
     lite_overridden: set[Path] = set()

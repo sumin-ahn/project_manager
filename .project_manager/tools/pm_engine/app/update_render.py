@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
+import contextlib
 import shutil
 from pm_engine.app import adapter_render
 from pm_engine.app import hook_sets
@@ -372,19 +373,26 @@ def _write_render_outputs(outputs) -> None:
         render_io._write_rendered_text(output.dst, output.source, output.text)
 
 
-def apply(home, changes: list[tuple], *, is_hook_set_path=None) -> None:
+def apply(home, changes: list[tuple], *, is_hook_set_path=None, package_plan=None) -> None:
     """change 적용 — render 아닌 change 를 계획 순서대로 쓴 뒤, render change 전부를 그리고 나서 쓴다.
 
     dst 가 `_RenderDst`(render 플래그 운반·plan 산출)면 그 플래그로 분기한다. 평문 Path dst
     (레거시 직접 호출)는 render 비대상 → copy2(후방호환·현 pm_update 동작 불변).
 
+    엔진 패키지 교체 행(`replace-dir`)은 파일 복사가 아니다. 그 행이 있으면 `package_plan`(계획이 낸
+    `EnginePackagePlan`)이 반드시 함께 와야 하고, 전달 프로세스와 같은 교체 구간
+    (`engine_transfer.engine_package_delivery`)에서 패키지를 먼저 게시한 뒤 나머지 render 아닌 change 를
+    쓰고, 그 묶음이 성공하면 이전 패키지 backup 을 정리한다. 계획 값 없이 교체 행만 오거나 둘이 맞지
+    않으면 쓰기 전에 실패한다. 복사한 패키지를 이 프로세스가 다시 적재하지 않는다.
+
     render가 아닌 change를 쓴 뒤 실행 Home(`home`)으로 render change 전부를 메모리에서 그린다.
     렌더가 전부 성공한 뒤 `_write_render_outputs`로 기록한다. 하나라도 거부되면 render 파일은
-    바뀌지 않는다(앞 단계의 파일은 이미 쓰였을 수 있다). 렌더 값은 dest local.conf를 한 번 읽는다.
+    바뀌지 않는다(앞 단계의 파일·게시한 패키지는 이미 쓰였을 수 있고 되돌리지 않는다). 렌더 값은 dest
+    local.conf를 한 번 읽는다.
 
     engine.manifest self-prop overwrite 는 add-harness guest 절을 재부착한다(위 헬퍼). 그 재부착에
     함께 기록할 파생 엔진 행은 dst(`_RenderDst.guest_backfill_lines`)가 실어 나른다 — `entry_
-    notation_template` 과 같은 운반 방식이라 이 함수의 시그니처는 그대로다.
+    notation_template` 과 같은 운반 방식이다.
 
     **훅 세트 파일만 원자 교체**한다 — 하네스가 실행 중에 읽는 파일을 copy2 로 덮으면
     truncate→채움 창에 부분 파일이 실행된다. 그 밖의 파일은 현행 copy2 그대로다(전 파일 확대는
@@ -394,43 +402,46 @@ def apply(home, changes: list[tuple], *, is_hook_set_path=None) -> None:
     """
     hook_set_path = (is_hook_set_path if is_hook_set_path is not None
                      else hook_sets.resolve_hook_set_predicate(home))
+    engine_transfer.change_file_count(changes, package_plan)  # 교체 행 ↔ 계획 값 대조(쓰기 전).
+    file_changes = [change for change in changes if change[3] != "replace-dir"]
+    render_changes = [change for change in file_changes if getattr(change[2], "render", False)]
+    with (engine_transfer.engine_package_delivery(package_plan)
+          if len(file_changes) < len(changes) else contextlib.nullcontext()):
+        for _r, sp, dst, _kind in file_changes:
+            if getattr(dst, "render", False):
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if (
+                getattr(dst, "entry_notation_template", None) is not None
+                or getattr(dst, "flat_command_skill", None) is not None
+                or getattr(dst, "codex_operational_skill", None) is not None
+            ):
 
-    render_changes = [change for change in changes if getattr(change[2], "render", False)]
-    for _r, sp, dst, _kind in changes:
-        if getattr(dst, "render", False):
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if (
-            getattr(dst, "entry_notation_template", None) is not None
-            or getattr(dst, "flat_command_skill", None) is not None
-            or getattr(dst, "codex_operational_skill", None) is not None
-        ):
-
-            text = fs.read_text_shared(Path(sp), encoding="utf-8")
-            rendered = text
-            if getattr(dst, "entry_notation_template", None) is not None:
-                rendered = render_rules.render_skill_entry_notation(
-                    rendered,
-                    dst.entry_notation_template,
-                    source=str(sp), skill_names=skill_inventory._installed_skill_entry_names(home),
-                )
-            if getattr(dst, "flat_command_skill", None) is not None:
-                rendered = _render_flat_command_reference(
-                    rendered, dst.flat_command_skill
-                )
-            if getattr(dst, "codex_operational_skill", None) is not None:
-                rendered = _render_codex_operational_detail(
-                    rendered, dst.codex_operational_skill
-                )
-            render_io._write_rendered_text(Path(dst), Path(sp), rendered)
-        elif str(_r).replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL:
-            # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).
-            manifest_store._copy_manifest_preserving_guest(
-                sp, Path(dst), getattr(dst, "guest_backfill_lines", None))
-        elif hook_set_path(_r):
-            engine_transfer._atomic_copy2(Path(sp), Path(dst))
-        else:
-            shutil.copy2(sp, dst)
+                text = fs.read_text_shared(Path(sp), encoding="utf-8")
+                rendered = text
+                if getattr(dst, "entry_notation_template", None) is not None:
+                    rendered = render_rules.render_skill_entry_notation(
+                        rendered,
+                        dst.entry_notation_template,
+                        source=str(sp), skill_names=skill_inventory._installed_skill_entry_names(home),
+                    )
+                if getattr(dst, "flat_command_skill", None) is not None:
+                    rendered = _render_flat_command_reference(
+                        rendered, dst.flat_command_skill
+                    )
+                if getattr(dst, "codex_operational_skill", None) is not None:
+                    rendered = _render_codex_operational_detail(
+                        rendered, dst.codex_operational_skill
+                    )
+                render_io._write_rendered_text(Path(dst), Path(sp), rendered)
+            elif str(_r).replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL:
+                # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).
+                manifest_store._copy_manifest_preserving_guest(
+                    sp, Path(dst), getattr(dst, "guest_backfill_lines", None))
+            elif hook_set_path(_r):
+                engine_transfer._atomic_copy2(Path(sp), Path(dst))
+            else:
+                shutil.copy2(sp, dst)
     if not render_changes:
         return
 

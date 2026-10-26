@@ -1354,8 +1354,12 @@ def test_main_empty_tracked_inventory_is_nonzero_before_copy(
 
 
 def test_tracked_source_inventory_still_applies_policy_exclusions(
-        pm_import, tmp_path):
-    """tracked-only 위에도 재설치물·stale bytecode·내부 README 정책 제외는 유지."""
+        pm_import, tmp_path, monkeypatch):
+    """tracked-only 위에도 재설치물·stale bytecode·내부 README 정책 제외는 유지.
+
+    엔진 패키지 교체가 `.project_manager/tools/` 바로 아래 남기는 락·stage·backup 은 추적돼 있어도,
+    git 없는 템플릿 사본의 filesystem 열거에서도 출하 후보가 아니다. 다른 부모의 같은 이름과 접미사 없는
+    예약 접두사 같은 정상 경로는 그대로 출하한다."""
     template = tmp_path / "tracked-template"
     (template / "node_modules").mkdir(parents=True)
     (template / "__pycache__").mkdir()
@@ -1379,6 +1383,34 @@ def test_tracked_source_inventory_still_applies_policy_exclusions(
         for rel, _path in import_fill._iter_copied_files(template, explicit_scope)
     }
     assert scanned == {"kept.txt"}
+
+    artifacts = {
+        ".project_manager/tools/.pm-engine-transfer.lock": "",
+        ".project_manager/tools/.pm-engine-stage-a1b2/pm_engine_old.py": "# stage\n",
+        ".project_manager/tools/.pm-engine-backup-a1b2/__init__.py": "# backup\n",
+    }
+    lookalikes = {
+        "kept.txt": "ship me\n",
+        "docs/.pm-engine-transfer.lock": "다른 부모의 같은 이름\n",
+        ".project_manager/tools/.pm-engine-stage-": "접미사 없는 접두사\n",
+        ".project_manager/tools/pm_engine/.pm-engine-backup-x/keep.py": "패키지 안 같은 접두사\n",
+    }
+    for kind in ("tracked", "unpacked"):
+        root = tmp_path / f"{kind}-transfer-template"
+        for rel, text in {**artifacts, **lookalikes}.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+        if kind == "tracked":
+            _track_source_tree(root)
+            shipped = {rel.as_posix() for rel, _path in install_source._iter_source_files(root)}
+        else:
+            with monkeypatch.context() as patch:
+                patch.setattr(repo_files, "_real_git_runner",
+                              lambda _cwd: lambda _argv: (128, ""))
+                with pytest.warns(repo_files.RepoFilesFallbackWarning):
+                    shipped = {rel.as_posix()
+                               for rel, _path in install_source._iter_source_files(root)}
+        assert shipped == set(lookalikes), kind
 
 
 # ── ②b --harness codex: 세 번째 하네스 스캐폴드 (ADR-0070 D5·T-0403) ───────────

@@ -50,6 +50,7 @@ from pm_engine.infra import install_receipt
 from pm_engine.infra import upstream_git
 from pm_engine.infra import pm_paths
 from pm_engine.app import update_manifest
+from pm_engine.app import update_plan
 from pm_engine.cli import import_cmd
 from pm_engine.cli import update_cmd
 
@@ -1042,13 +1043,20 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, harness):
-    """세 flavor 실출하 사본이 중앙 loader를 포함하고 self-update 뒤에도 직접 CLI로 동작한다."""
+    """세 flavor 실출하 사본이 중앙 loader를 포함하고 self-update 뒤에도 직접 CLI로 동작한다.
+
+    대상 패키지에만 있던 모듈(ghost)은 실제 self-update(전달 + 새 완료 프로세스) 뒤 사라지고, 출하하지
+    않는 인스턴스 파일의 바이트는 그대로이며, 다음 엔진 코드 계획은 0 이다."""
     dest = tmp_path / f"central-loader-{harness}"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
     ) == 0
     seam = dest / ".project_manager" / "tools" / "pm_engine" / "infra" / "repo_files.py"
     assert seam.is_file() and "def load_module(" in seam.read_text(encoding="utf-8")
+    ghost = dest / ".project_manager" / "tools" / "pm_engine" / "app" / "zz_ghost_module.py"
+    ghost.write_text("# 상류에 없는 대상 전용 모듈\n", encoding="utf-8")
+    sentinel = dest / ".project_manager" / "wiki" / "zz_instance_sentinel.md"
+    sentinel.write_bytes("# 인스턴스 상태 — 출하하지 않는다\r\n".encode("utf-8"))
 
     from _manager_home import known_ctx_env
     updated = subprocess.run(
@@ -1070,6 +1078,10 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
     assert updated.returncode == 0, (
         f"{harness} self-update failed\nstdout={updated.stdout}\nstderr={updated.stderr}"
     )
+    assert "[replace-dir] .project_manager/tools/pm_engine" in updated.stdout, updated.stdout
+    assert not ghost.exists(), f"{harness}: 대상 전용 모듈이 self-update 뒤에도 남았다"
+    assert sentinel.read_bytes() == "# 인스턴스 상태 — 출하하지 않는다\r\n".encode("utf-8")
+    assert update_plan._engine_code_plan(pm_paths.home_at(dest), dest, REPO)["changes"] == []
     lint = _board(dest, "lint", "--gate")
     assert lint.returncode == 0, (
         f"{harness} post-update board bootstrap failed\nstdout={lint.stdout}\nstderr={lint.stderr}"

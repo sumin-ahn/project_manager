@@ -25,8 +25,34 @@ SOURCE_TAG_PREFIX = "@source="
 # read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들(복수·순서 무관). `@source=<path>` 는
 # 값 운반 마커라 prefix 검사로 별도 처리(이 튜플 밖).
 _MANIFEST_MARKERS = (RENDER_TAG, TARGET_OWNED_TAG)
-# 엔진 구현 패키지 디렉터리 행 — 평면 엔진 파일보다 먼저 전달한다(read_manifest 정렬).
+# 엔진 구현 패키지 디렉터리 행 — 평면 엔진 파일보다 먼저 전달한다(read_manifest 정렬). 갱신기는 이
+# 디렉터리를 파일 단위로 덮지 않고 통째로 바꾼다(같은 부모의 완성 대기 트리 → 게시).
 _ENGINE_PACKAGE_REL = ".project_manager/tools/pm_engine"
+# 패키지 교체가 패키지 옆(`.project_manager/tools/` 바로 아래)에 남기는 운영 산출물의 예약 이름.
+#   락 파일은 같은 대상의 교체 writer 를 직렬화하려고 지우지 않고 남는다. 완성 대기 트리(stage)와 기존
+#   패키지 보존 트리(backup)는 정상 완료 때 정리되고, 실패하면 수동 복구 자료로 남는다. 어느 쪽도
+#   새 채택자에게 출하하지 않는다(`_is_engine_transfer_artifact`).
+_ENGINE_TRANSFER_LOCK_NAME = ".pm-engine-transfer.lock"
+_ENGINE_TRANSFER_STAGE_PREFIX = ".pm-engine-stage-"
+_ENGINE_TRANSFER_BACKUP_PREFIX = ".pm-engine-backup-"
+
+
+def _is_engine_transfer_artifact(relative: str) -> bool:
+    """repo 상대경로가 패키지 교체의 운영 산출물(락·stage·backup 과 그 하위)인가.
+
+    부모가 정확히 `.project_manager/tools` 인 자리만 본다. 다른 부모의 같은 이름과, 접미사 없는
+    예약 접두사 자체(`.pm-engine-stage-`)는 정상 경로로 둔다."""
+    parts = relative.replace("\\", "/").strip("/").split("/")
+    parent = _ENGINE_PACKAGE_REL.split("/")[:-1]
+    if len(parts) <= len(parent) or parts[:len(parent)] != parent:
+        return False
+    name = parts[len(parent)]
+    if name == _ENGINE_TRANSFER_LOCK_NAME:
+        return len(parts) == len(parent) + 1
+    return any(
+        name.startswith(prefix) and len(name) > len(prefix)
+        for prefix in (_ENGINE_TRANSFER_STAGE_PREFIX, _ENGINE_TRANSFER_BACKUP_PREFIX)
+    )
 
 
 class ManifestEntry(str):

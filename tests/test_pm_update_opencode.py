@@ -272,12 +272,14 @@ def test_plan_dest_is_repo_templates_when_source_is_external(pm_update, tmp_path
 
 # ── main() --target 통합 (임시 파일시스템) ────────────────────────────────
 
-def test_main_target_opencode_dry_run(pm_update, tmp_path, monkeypatch):
+def test_main_target_opencode_dry_run(pm_update, tmp_path, monkeypatch, capsys):
     """--target opencode --dry-run 이 파일을 변경하지 않고 rc=0 을 반환한다.
 
     source 와 dest 를 모두 tmp_path 하위로 monkeypatch 해 실 REPO 에 영향 없이 검증한다.
     manifest 항목이 source 에 모두 존재하면 missing=0 → changes>0 → dry-run 이므로 rc=0.
-    dry-run 이므로 dest 에 실제 파일이 생성되지 않아야 한다.
+    dry-run 이므로 dest 에 실제 파일이 생성되지 않아야 한다. 엔진 패키지에 잔여 모듈이 있는 세 타깃의
+    `--all-targets --dry-run` 도 타깃마다 `[replace-dir]` 한 줄과 파일 수를 보이고 원천·대상에 아무것도
+    (락·stage·backup 포함) 쓰지 않는다.
     """
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "upstream"
@@ -304,6 +306,31 @@ def test_main_target_opencode_dry_run(pm_update, tmp_path, monkeypatch):
     assert rc == 0
     # dry-run 이므로 실제 파일은 생성되지 않아야 한다
     assert not (dest / sentinel_rel).exists()
+
+    from test_fresh_adopter_e2e import _snapshot_tree
+    package_rel = ".project_manager/tools/pm_engine"
+    package_source = tmp_path / "package-upstream"
+    _make_source(package_source, {
+        f"{package_rel}/keep.py": "# keep\n", sentinel_rel: "# dry run sentinel\n",
+        ".project_manager/engine.manifest": f"{package_rel}\n{sentinel_rel}\n"})
+    package_repo = tmp_path / "package_repo"
+    for name in ("claude_code", "codex", "opencode"):
+        target = package_repo / "templates" / name
+        (target / package_rel).mkdir(parents=True)
+        (target / package_rel / "keep.py").write_text("# keep\n", encoding="utf-8")
+        (target / package_rel / "retired_module.py").write_text("# 상류에서 지운 모듈\n",
+                                                                encoding="utf-8")
+        (target / sentinel_rel).write_text("# dry run sentinel\n", encoding="utf-8")
+    repo_before, source_before = _snapshot_tree(package_repo), _snapshot_tree(package_source)
+    capsys.readouterr()
+    rc = update_cmd.main(pm_paths.home_at(package_repo),
+                         ["--from", str(package_source), "--all-targets", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out.count(f"  [replace-dir] {package_rel} (추가 0·변경 0·삭제 1)") == 3, out
+    assert out.count("[dry-run] 1 파일 변경 예정") == 3, out
+    assert _snapshot_tree(package_repo) == repo_before
+    assert _snapshot_tree(package_source) == source_before
 
 
 def test_main_target_unknown_returns_error(pm_update, tmp_path):

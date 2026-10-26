@@ -31,6 +31,10 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
   --dry-run 은 받을 엔진 코드만 보여 주고, --paths 는 엔진 코드 변경이 남아 있으면 거부한다.
   engine.manifest 의 각 경로를 <upstream>/<path> → <dest-root>/<path> 로 복사(overwrite).
   디렉토리는 재귀. manifest 에 없는 경로는 무시. --dry-run = 변경 예정만 출력(미적용).
+  엔진 패키지(.project_manager/tools/pm_engine)는 파일 단위로 덮지 않고 디렉터리째 바꾼다 — 상류에서
+  지우거나 이름을 바꾼 모듈과 대상에만 있던 모듈도 사라진다. 출력은 [replace-dir] 한 줄에 추가·변경·삭제
+  파일 수를 붙이고, 변경 파일 수는 그 파일 수를 합산한다. 교체는 같은 부모의 완성 대기 트리와 기존
+  패키지 보존 트리 두 번의 rename 이고, 실패하면 남은 두 트리의 위치를 알린다(rc 1).
   --paths 지정 시 그 경로(파일 또는 디렉토리) 아래만 전파한다 — manifest 등재분에 한정하고
   미등재 경로는 rc1 로 거부한다. 부분 전파이므로 upstream.rev baseline 기록·진입 doc
   마이그레이션·보호 훅 재설치·동기 후 프롬프트는 발화하지 않는다(전량 흡수로 오인 방지).
@@ -63,6 +67,7 @@ from pm_engine.app import upstream_revisions
 from pm_engine.cli import update_changes
 from pm_engine.domain import manifest_rules
 from pm_engine.infra import console
+from pm_engine.infra import engine_transfer as package_transfer
 from pm_engine.infra import install_conf
 from pm_engine.infra import repo_files
 from pm_engine.infra import retired_paths
@@ -116,7 +121,9 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         help=(
             "명시한 경로만 전파한다(opt-in 부분 전파·반복 지정 가능). manifest 등재 경로만 "
             "허용하며 미등재 경로는 거부한다(rc1·조용한 무전파 없음). 엔진 코드"
-            "(.project_manager/tools/) 변경이 남아 있으면 쓰기 전에 거부한다(rc1). 경로는 repo 루트 상대 "
+            "(.project_manager/tools/) 변경이 남아 있으면 쓰기 전에 거부한다(rc1) — 단 --target·"
+            "--all-targets 는 엔진 패키지 경로(.project_manager/tools/pm_engine) 전체를 고르면 그 "
+            "패키지 교체를 전파한다(패키지 안 일부만 고르면 rc1). 경로는 repo 루트 상대 "
             "(파일 또는 디렉토리)다. 전량 흡수가 아니므로 upstream.rev baseline 기록·진입 doc "
             "마이그레이션·보호 훅 재설치·동기 후 프롬프트는 건너뛴다(부분 전파를 '최신' 으로 "
             "박으면 drift-lint 가 거짓 침묵한다). --target·--all-targets 와 조합 가능하고 "
@@ -327,6 +334,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     selfheal = sync_plan["selfheal"]
     manifest = sync_plan["manifest"]
     changes, missing = sync_plan["changes"], sync_plan["missing"]
+    package_plan = sync_plan["package_plan"]
 
     # 완료 프로세스는 엔진 코드 변경 0건일 때만 진행한다 — 전달 프로세스가 옮긴 뒤 상류가 바뀌었으면
     #   여기서 옮기면 이 프로세스가 복사한 엔진 모듈을 적재하게 된다. 쓰기 전에 멈추고 재실행을 안내한다.
@@ -337,9 +345,11 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
               f"바뀐 것이다. 같은 갱신을 다시 실행하라: {', '.join(pending_engine)}",
               file=sys.stderr)
         return 1
-    # 내보내기의 `--paths` 도 같은 규칙이다 — 엔진 코드는 세대 단위로만 옮긴다.
+    # 내보내기의 `--paths` 도 같은 규칙이다 — 엔진 코드는 세대 단위로만 옮긴다(엔진 패키지는 패키지
+    #   경로 전체를 고른 경우만 교체 행을 전파한다).
     if scope_paths:
-        rc = engine_transfer._refuse_scope_with_pending_engine_code(changes)
+        rc = engine_transfer._refuse_scope_with_pending_engine_code(
+            changes, target=bool(args.target), scope_paths=scope_paths, source_root=source_root)
         if rc:
             return rc
 
@@ -430,7 +440,12 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         if rc:
             return rc
 
+    change_files = package_transfer.change_file_count(changes, package_plan)
+    engine_transfer._print_engine_changes(
+        [change for change in changes if change[3] == "replace-dir"], package_plan)
     for r, _sp, _dst, kind in changes:
+        if kind == "replace-dir":
+            continue
         # render path 는 byte-copy 가 아니라 재렌더 산출물 — PM 이 구분하게 [render] 로 표기
         # ([update] = byte-copy· dry-run 표기). new 든 update 든 render 면 [render].
         label = (
@@ -596,7 +611,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
                 effective_dest, source_root, skew_status, skew_new)
         return 0
     if args.dry_run:
-        print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
+        print(f"[dry-run] {change_files} 파일 변경 예정 (적용 안 함).")
         update_manifest._print_retired_manifest_files(retired_files)  # apply 경로와 같은 보고(무write).
         update_manifest._print_manifest_selfheal_finding(selfheal, dry_run=True)
         update_manifest._print_manifest_skew_finding(skew_status, skew_new, dry_run=True)
@@ -629,8 +644,9 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     #   갱신하면 dest 사본의 선언은 구세대라, 이번 세대가 추가한 훅 경로가 바로 이 실행에서
     #   비원자 copy2 로 떨어진다(원자 write 가 영영 한 세대 늦게 도착).
     update_render.apply(home, changes,  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).
-                        is_hook_set_path=hook_sets.resolve_hook_set_predicate(home, source_root))
-    print(f"✓ {transferred + len(changes)} 파일 동기화")
+                        is_hook_set_path=hook_sets.resolve_hook_set_predicate(home, source_root),
+                        package_plan=package_plan)
+    print(f"✓ {transferred + change_files} 파일 동기화")
 
     # apply 완료를 관측한 뒤에만 구 경로를 옮긴다. 이 게이트가 실패하면
     # 아래 instance migration·upstream.rev baseline 모두에 도달하지 않는다.
@@ -671,7 +687,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         print_instance_owned_delta()
         if update_adapters._adapter_hook_set_gate_failed(hook_set_check):
             print(
-                f"[중단] 엔진 파일 {len(changes)}건은 적용됐지만 설치된 훅 세트가 채택자 config "
+                f"[중단] 엔진 파일 {change_files}건은 적용됐지만 설치된 훅 세트가 채택자 config "
                 "가 요구하는 세대가 아니다 — 위 처방 후 pm-update 를 재실행하라"
                 "(방치하면 훅이 rc2 로 도구 호출을 막는다).",
                 file=sys.stderr,
@@ -681,7 +697,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             # apply는 이미 완료됐다. rollback/성공 은폐 없이 엔진 적용 사실(위 ✓ 출력)을 남기고,
             # 전체 흡수 baseline·후속 성공 프롬프트만 차단한다.
             print(
-                f"[중단] 엔진 파일 {len(changes)}건은 적용됐지만 managed 어댑터 config가 "
+                f"[중단] 엔진 파일 {change_files}건은 적용됐지만 managed 어댑터 config가 "
                 "미수렴이다 — 위 처방 후 pm-update를 재실행하고 "
                 "`pm-config sync-adapter-config --check`를 통과시켜라.",
                 file=sys.stderr,
@@ -711,8 +727,9 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
 
 
 def main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") -> int:
-    """CLI 경계: repo 출하 seam의 분류 오류만 짧은 실행 오류로 바꾼다.
+    """CLI 경계: repo 출하 seam의 분류 오류와 엔진 패키지 교체 실패만 짧은 실행 오류로 바꾼다.
 
+    패키지 교체 실패(`PackageReplaceError`)는 단계·원인과 남은 stage·backup 위치를 담아 rc 1 이다.
     apply/render/IO 등 다른 예외는 프로그래밍·시퀀싱 오류이므로 기존처럼 호출자에게 전파한다.
     """
     console.configure_console_utf8()
@@ -720,6 +737,16 @@ def main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") -> 
         return _main(home, argv, prog=prog)
     except manifest_rules.EmptyShippingInventoryError as exc:
         print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    except package_transfer.PackageReplaceError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        if exc.stage is not None or exc.backup is not None:
+            print(
+                "  복구: 갱신·실행 중인 엔진을 멈추고 위 stage·backup(같은 부모의 "
+                f"{manifest_rules._ENGINE_TRANSFER_STAGE_PREFIX}*·"
+                f"{manifest_rules._ENGINE_TRANSFER_BACKUP_PREFIX}*)을 확인하라. 패키지 자리가 비었고 "
+                "완전한 backup 이 있으면 backup 을 패키지 이름으로 되돌린다. 평면 엔진 파일까지 같은 "
+                "세대로 맞추려면 원인을 고친 뒤 같은 갱신을 다시 실행한다.", file=sys.stderr)
         return 1
     except Exception as exc:
         # 엔진 사본 skew 는 분류 이전에 그대로 올린다 — 아래 분기도 결과적으로 re-raise 하지만,

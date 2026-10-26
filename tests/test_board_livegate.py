@@ -172,7 +172,34 @@ def _seed_engine_drift_fixture(dest_root: Path, upstream_root: Path, *, drift: b
         init_git_repo(root, commit="seed")
 
 
-_DRY_RUN_CHANGE_RE = re.compile(r"^\s*\[(?:new|update|render)\]\s+(.+)$")
+_DRY_RUN_CHANGE_RE = re.compile(r"^\s*\[(new|update|render|replace-dir)\]\s+(.+)$")
+# 패키지 교체 행만 경로 뒤에 파일 수 꼬리가 붙는다 — 일반 파일 경로의 공백·괄호는 자르지 않는다.
+_REPLACE_DIR_COUNTS_RE = re.compile(r" \(추가 \d+·변경 \d+·삭제 \d+\)$")
+_PACKAGE_REL = manifest_rules._ENGINE_PACKAGE_REL
+
+
+def _dry_run_change_path(line: str) -> str | None:
+    """dry-run 변경 행 → 경로(라벨과 경로를 따로 잡고 replace-dir 행만 건수 꼬리를 뗀다)."""
+    match = _DRY_RUN_CHANGE_RE.match(line)
+    if match is None:
+        return None
+    label, path = match.groups()
+    return _REPLACE_DIR_COUNTS_RE.sub("", path) if label == "replace-dir" else path
+
+
+def _seed_package_drift_fixture(dest_root: Path, upstream_root: Path, *, dest_extra: dict) -> None:
+    """엔진 패키지 행 하나만 등재한 픽스처 — upstream·dest 모두 keep.py, dest 에만 `dest_extra`."""
+    for root in (dest_root, upstream_root):
+        (root / _PACKAGE_REL).mkdir(parents=True, exist_ok=True)
+        (root / _PACKAGE_REL / "keep.py").write_text("# keep\n", encoding="utf-8")
+        (root / ".project_manager" / "engine.manifest").write_text(
+            _PACKAGE_REL + "\n", encoding="utf-8")
+    for rel, text in dest_extra.items():
+        (dest_root / _PACKAGE_REL / rel).parent.mkdir(parents=True, exist_ok=True)
+        (dest_root / _PACKAGE_REL / rel).write_text(text, encoding="utf-8")
+    (dest_root / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={upstream_root}\n", encoding="utf-8")
+    init_git_repo(upstream_root, commit="seed")
 
 
 def _rec_args(cwd=None, repo=None, slot=None):
@@ -244,12 +271,29 @@ def test_drift_changes_detects_byte_diff(tmp_path, pm_update_module):
     _seed_engine_drift_fixture(dest, upstream, drift=True)
     assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) == [_DRIFT_MANIFEST_REL]
 
+    # 엔진 패키지에서 대상 전용 모듈만 남은(삭제만 있는) 형상도 패키지 경로 한 건의 drift 다.
+    package_dest, package_upstream = tmp_path / "package-dest", tmp_path / "package-upstream"
+    _seed_package_drift_fixture(package_dest, package_upstream,
+                                dest_extra={"obsolete.py": "# obsolete\n"})
+    assert update_plan.drift_changes(
+        pm_paths.home_at(package_dest), package_dest) == [_PACKAGE_REL]
+
 
 def test_drift_changes_empty_when_in_sync(tmp_path, pm_update_module):
     """dest 가 upstream 과 byte-identical 이면 빈 목록(drift 0)."""
     dest, upstream = tmp_path / "dest", tmp_path / "upstream"
     _seed_engine_drift_fixture(dest, upstream, drift=False)
     assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) == []
+
+    # 패키지가 맞고 캐시 디렉터리만 다르면 drift 0 이고, 판정은 아무것도 쓰지 않는다.
+    from test_fresh_adopter_e2e import _snapshot_tree
+    package_dest, package_upstream = tmp_path / "package-dest", tmp_path / "package-upstream"
+    _seed_package_drift_fixture(package_dest, package_upstream,
+                                dest_extra={"__pycache__/keep.cpython-311.pyc": "cache"})
+    before = _snapshot_tree(package_dest)
+    assert update_plan.drift_changes(pm_paths.home_at(package_dest), package_dest) == []
+    assert _snapshot_tree(package_dest) == before
+    assert (package_dest / _PACKAGE_REL / "__pycache__" / "keep.cpython-311.pyc").is_file()
 
 
 def test_drift_changes_none_when_local_conf_absent(tmp_path, pm_update_module):
@@ -328,10 +372,27 @@ def test_drift_changes_matches_main_dry_run_relpaths(
     assert rc == 0
     out = capsys.readouterr().out
     dry_run_paths = {
-        match.group(1) for line in out.splitlines()
-        if (match := _DRY_RUN_CHANGE_RE.match(line))
+        path for line in out.splitlines()
+        if (path := _dry_run_change_path(line)) is not None
     }
     assert dry_run_paths == set(update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest)) == {_DRIFT_MANIFEST_REL}
+
+    # 패키지 교체 행 — 표시는 `[replace-dir] 경로 (추가·변경·삭제)` 이고 경로만 drift 집합과 같다.
+    package_dest, package_upstream = tmp_path / "package-dest", tmp_path / "package-upstream"
+    _seed_package_drift_fixture(package_dest, package_upstream,
+                                dest_extra={"obsolete.py": "# obsolete\n"})
+    assert update_cmd.main(pm_paths.home_at(package_dest), ["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert f"  [replace-dir] {_PACKAGE_REL} (추가 0·변경 0·삭제 1)" in out, out
+    dry_run_paths = {
+        path for line in out.splitlines()
+        if (path := _dry_run_change_path(line)) is not None
+    }
+    assert dry_run_paths == set(
+        update_plan.drift_changes(pm_paths.home_at(package_dest), package_dest)) == {_PACKAGE_REL}
+    # 건수 꼬리는 replace-dir 행에서만 뗀다 — 일반 파일 경로의 공백·괄호는 그대로다.
+    assert _dry_run_change_path("  [update] docs/a (추가 1·변경 1·삭제 1)") == (
+        "docs/a (추가 1·변경 1·삭제 1)")
 
 
 def _seed_missing_source_fixture(dest_root: Path, upstream_root: Path) -> None:

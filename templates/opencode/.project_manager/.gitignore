@@ -22,3 +22,9 @@ review_context.local.md
 
 # .local/ = per-clone·per-slot 스크래치 (회귀 게이트 플래그·worktree-leases·slots/<repo>_<N>/pm_state.md).
 .local/
+
+# 엔진 패키지(tools/pm_engine) 교체의 운영 산출물 — 같은 대상 writer 를 직렬화하는 락(지우지 않고 남는다)과
+#   실패 시 수동 복구 자료로 남는 완성 대기 트리·이전 패키지 보존 트리. 출하하지 않는다.
+tools/.pm-engine-transfer.lock
+tools/.pm-engine-stage-*/
+tools/.pm-engine-backup-*/

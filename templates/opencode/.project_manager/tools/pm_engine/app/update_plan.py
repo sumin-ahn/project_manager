@@ -5,13 +5,16 @@ from collections.abc import Mapping
 from pathlib import Path
 import filecmp
 import sys
+import warnings
 from pm_engine.app import update_manifest
 from pm_engine.app import update_render
 from pm_engine.domain import manifest_rules
 from pm_engine.domain import upstream_rules
+from pm_engine.infra import engine_transfer
 from pm_engine.infra import fs
 from pm_engine.infra import install_conf
 from pm_engine.infra import manifest_store
+from pm_engine.infra import retired_paths
 from pm_engine.infra import update_paths
 
 
@@ -28,10 +31,11 @@ def plan(
     inventory_out: set[str] | None = None,
     dest_inventory_out: set[str] | None = None,
     guest_backfill_lines: list[str] | None = None,
+    package_plan_out: list[engine_transfer.EnginePackagePlan] | None = None,
     conf: Mapping[str, str],
 
 ) -> tuple[list[tuple], list[str]]:
-    """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).
+    """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update|replace-dir).
 
     home: 실행 Home — 카드 렌더의 코드 inventory 와 조회 위치.
     dest_root: 동기화 대상 루트. None 이면 실행 Home 루트(self-location) 사용.
@@ -60,12 +64,52 @@ def plan(
 
     ``guest_backfill_lines``는 apply 가 guest 절에 기록할 파생 엔진 행이다. self-prop 판정에만 쓴다 —
     기록 지점이 apply 한 곳뿐이라 그 change 가 계획에 없으면 파생분이 영원히 기록되지 않는다.
+
+    manifest 에 정확한 엔진 패키지 행(`manifest_rules._ENGINE_PACKAGE_REL`)이 있으면 그 행과 그 아래
+    자식 행은 파일 단위로 계획하지 않는다. 패키지 출하 목록과 대상 트리를 바이트로 비교한 계획 값
+    (`EnginePackagePlan`)을 만들고, 추가·변경·삭제가 하나라도 있으면 `(패키지 경로, source 디렉터리,
+    dest 디렉터리, "replace-dir")` 한 행을 맨 앞에 둔다(삭제만 있어도 변경이다). 계획 값은
+    ``package_plan_out``을 주면 거기에 한 개 담는다 — 교체 행의 적용·파일 수 계산이 이 값을 쓴다.
+    ``inventory_out``·``dest_inventory_out``에는 패키지 파일도 파일 단위 좌표로 담는다.
     """
     effective_dest = dest_root if dest_root is not None else home.root
     changes: list[tuple] = []
     missing: list[str] = []
+    package_rel = manifest_rules._ENGINE_PACKAGE_REL
+    package_index = next(
+        (index for index, entry in enumerate(manifest)
+         if str(entry).replace("\\", "/").strip("/") == package_rel),
+        None,
+    )
     for entry_index, entry in enumerate(manifest):
         rel = str(entry)
+        rel_norm = rel.replace("\\", "/").strip("/")
+        if package_index is not None and (
+                rel_norm == package_rel or rel_norm.startswith(package_rel + "/")):
+            if entry_index != package_index:
+                continue  # 자식 행의 소유 파일은 패키지 출하 목록이 이미 담았다.
+            package_files, package_missing = _engine_package_inventory(
+                source_root, manifest, effective_dest)
+            if package_missing:
+                missing.extend(package_missing)
+                continue
+            for relative, source in package_files:
+                if inventory_out is not None:
+                    inventory_out.add(f"{package_rel}/{relative}")
+                    try:
+                        inventory_out.add(source.relative_to(source_root).as_posix())
+                    except ValueError:
+                        pass
+                if dest_inventory_out is not None:
+                    dest_inventory_out.add(f"{package_rel}/{relative}")
+            package = engine_transfer.prepare_engine_package(
+                source_root / manifest_rules._source_root_rel(entry),
+                effective_dest / package_rel, package_files)
+            if package_plan_out is not None:
+                package_plan_out.append(package)
+            if package.added or package.updated or package.deleted:
+                changes.insert(0, (package_rel, package.source_dir, package.dest_dir, "replace-dir"))
+            continue
         if rel.replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL and manifest_source_text is not None:
             # 선택 flavor 합집합은 upstream에 단일 실파일로 존재하지 않는다. 인메모리 source를
             # change tuple에 실어 self-prop가 합집합 전체를 설치/갱신하게 한다.
@@ -230,6 +274,55 @@ def plan(
     return changes, missing
 
 
+def _engine_package_inventory(
+    source_root: Path, manifest: list, dest_root: Path,
+) -> tuple[tuple[tuple[str, Path], ...], list[str]]:
+    """정확한 엔진 패키지 행과 그 아래 자식 행의 실제 출하 목록 — (files, missing).
+
+    files 는 (패키지 상대경로, 실제 source Path) 의 정렬 tuple 이고, missing 은 source 가 없는 manifest
+    좌표다. tracked-only 열거·`@source`·가장 구체적인 소유권·dest 리매핑은 `manifest_store` seam 이
+    정한다(자식 override 도 그대로 따른다). 패키지 구간에서만 tracked 제외 경고를 명시 실패로 올린다 —
+    불완전한 목록으로 기존 패키지를 통째로 바꾸면 빠진 모듈이 지워진다. 패키지 코드에는 순수 byte
+    출하만 있으므로 `@render`·`@target-owned` 표식도 쓰기 전에 거부한다. 거부는 모두
+    `PackageReplaceError(phase="validation")` 다."""
+    package_rel = manifest_rules._ENGINE_PACKAGE_REL
+    dest_dir = dest_root / package_rel
+    files: list[tuple[str, Path]] = []
+    missing: list[str] = []
+    for index, entry in enumerate(manifest):
+        rel = str(entry).replace("\\", "/").strip("/")
+        if rel != package_rel and not rel.startswith(package_rel + "/"):
+            continue
+        source = source_root / manifest_rules._source_root_rel(entry)
+        if manifest_rules._entry_render_flag(entry) or manifest_rules._entry_target_owned_flag(entry):
+            raise engine_transfer.PackageReplaceError(
+                "validation", f"엔진 패키지 행에는 @render·@target-owned 를 둘 수 없다: {rel}",
+                source=source, dest=dest_dir)
+        try:
+            retired_paths._assert_no_link_components(source_root, source, label="엔진 패키지 원천")
+            retired_paths._assert_no_link_components(dest_root, dest_dir, label="엔진 패키지 대상")
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", manifest_rules.SkippedRepoShippingEntryWarning)
+                inventory, source_missing, _target_owned = (
+                    manifest_store.manifest_entry_shipping_inventory(
+                        source_root, manifest, index, dest_root))
+        except (retired_paths.RetiredPathError, manifest_rules.SkippedRepoShippingEntryWarning) as exc:
+            raise engine_transfer.PackageReplaceError(
+                "validation", f"엔진 패키지 출하 목록을 확정하지 못했다: {exc}",
+                source=source, dest=dest_dir, original=exc) from exc
+        if source_missing:
+            missing.append(str(entry))
+            continue
+        for shipped_rel, shipped_source in inventory:
+            shipped = str(shipped_rel).replace("\\", "/")
+            if not shipped.startswith(package_rel + "/"):
+                raise engine_transfer.PackageReplaceError(
+                    "validation", f"엔진 패키지 밖 출하 경로가 패키지 행에 섞였다: {shipped}",
+                    source=source, dest=dest_dir)
+            files.append((shipped[len(package_rel) + 1:], Path(shipped_source)))
+    return tuple(sorted(files)), missing
+
+
 class _EngineSyncNotationContextError(RuntimeError):
     """선택된 flavor manifest 에서 notation 템플릿 context 를 해소하지 못함 — 원본 사유를 감싼다.
 
@@ -282,6 +375,8 @@ def _resolve_engine_sync_plan(
       - "persisted_guest_backfill": apply 가 절에 기록할 manifest-line 리스트(`legacy_preserved`
         면 None)
       - "entry_notation_templates": 계획에 쓰인 notation 템플릿 dict
+      - "package_plan": 엔진 패키지 계획 값(`EnginePackagePlan`) — 정확한 패키지 행이 없거나 그 source
+        가 없으면(missing 에 남는다) None. 교체 행의 적용·파일 수 계산에 그대로 넘긴다.
     """
     if guest_entries is None:
         guest_entries = update_manifest._dest_guest_manifest_entries(effective_dest)
@@ -363,6 +458,7 @@ def _resolve_engine_sync_plan(
             raise
         raise _EngineSyncNotationContextError(str(exc)) from exc
 
+    package_plans: list[engine_transfer.EnginePackagePlan] = []
     changes, missing = plan(
         home, source_root, manifest, dest_root=effective_dest,
         render_enabled=render_enabled,
@@ -375,6 +471,7 @@ def _resolve_engine_sync_plan(
         inventory_out=inventory_out,
         dest_inventory_out=dest_inventory_out,
         guest_backfill_lines=persisted_guest_backfill,
+        package_plan_out=package_plans,
         conf=conf,
 
     )
@@ -385,6 +482,7 @@ def _resolve_engine_sync_plan(
         "selfheal": selfheal,
         "persisted_guest_backfill": persisted_guest_backfill,
         "entry_notation_templates": entry_notation_templates,
+        "package_plan": package_plans[0] if package_plans else None,
     }
 
 
@@ -457,12 +555,14 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
 
 
 def _engine_code_plan(home, effective_dest: Path, source_root: Path) -> dict:
-    """엔진 코드 행의 계획 — `{"changes", "missing", "manifest", "selfheal"}`.
+    """엔진 코드 행의 계획 — `{"changes", "missing", "manifest", "selfheal", "package_plan"}`.
 
     계획 manifest 해소(guest 절·자기치유·은퇴 지시 검증 포함)는 완료 단계와 같은 함수를 쓰고, 계획은
     엔진 코드 행만 렌더 없이 한다(엔진 코드 행에는 표식이 없어 렌더러를 읽지 않는다). 전달 프로세스가
     옮길 대상이고, board 드리프트 검사(`drift_changes`)가 먼저 보는 축이다. `manifest` 는 해소된 계획
-    manifest 전체다(부재 판정이 `@target-owned` 표식을 찾는다)."""
+    manifest 전체다(부재 판정이 `@target-owned` 표식을 찾는다). 엔진 패키지는 교체 행 하나와 계획 값
+    `package_plan`(정확한 패키지 행이 없거나 source 가 없으면 None)으로 나온다 — 패키지에서 삭제만
+    있어도 변경이고 드리프트다."""
     guest_entries = update_manifest._dest_guest_manifest_entries(effective_dest)
     guest_backfill, _flavors = update_manifest._guest_engine_backfill_entries(
         effective_dest, source_root, guest_entries)
@@ -472,7 +572,9 @@ def _engine_code_plan(home, effective_dest: Path, source_root: Path) -> dict:
     manifest = update_manifest._resolve_planning_manifest(
         effective_dest, source_root, selfheal,
         guest_entries=guest_entries, guest_backfill=guest_backfill)
+    package_plans: list[engine_transfer.EnginePackagePlan] = []
     changes, missing = plan(
         home, source_root, [entry for entry in manifest if manifest_rules._is_engine_code(entry)],
-        dest_root=effective_dest, render_enabled=False, conf={})
-    return {"changes": changes, "missing": missing, "manifest": manifest, "selfheal": selfheal}
+        dest_root=effective_dest, render_enabled=False, package_plan_out=package_plans, conf={})
+    return {"changes": changes, "missing": missing, "manifest": manifest, "selfheal": selfheal,
+            "package_plan": package_plans[0] if package_plans else None}

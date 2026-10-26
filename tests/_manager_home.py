@@ -165,7 +165,11 @@ def complete_in_process(monkeypatch):
     dest 에는 그 갱신기가 없으므로 이 구간 동안 그 IO 함수를 바꿔, 인계 값(`PM_UPDATE_COMPLETION`)을
     인계된 dest·source·전달 수로 묶은 채 `cli.update_cmd.main` 을 인계 dest 의 Home 과 원래 argv 로 부르고
     인계 값을 원래대로 돌린다. 구간을 벗어나면 교체도 풀린다(다른 테스트에 남지 않는다). 이 교체가 빠진
-    자기 갱신 호출은 dest 에 갱신기가 없어 rc 2 로 실패한다(조용히 지나가지 않는다)."""
+    자기 갱신 호출은 dest 에 갱신기가 없어 rc 2 로 실패한다(조용히 지나가지 않는다).
+
+    교체와 되돌림은 받은 `monkeypatch` 하나에 기록한다. 별도 MonkeyPatch 로 기록하면 같은 테스트가 구간
+    안에서 같은 함수를 다시 바꿨을 때(전달 기록 대역) 두 기록의 되돌림 순서가 엇갈려, 테스트가 끝난 뒤
+    이 교체가 모듈에 남는다(뒤 테스트의 실제 완료 프로세스가 같은 프로세스 호출로 바뀐다)."""
     from pm_engine.app import engine_transfer
     from pm_engine.cli import update_cmd
     from pm_engine.infra import pm_paths
@@ -183,9 +187,12 @@ def complete_in_process(monkeypatch):
             else:
                 os.environ[name] = previous
 
-    with monkeypatch.context() as patch:
-        patch.setattr(engine_transfer, "_launch_completion", launch)
+    previous_launch = engine_transfer._launch_completion
+    monkeypatch.setattr(engine_transfer, "_launch_completion", launch)
+    try:
         yield
+    finally:
+        monkeypatch.setattr(engine_transfer, "_launch_completion", previous_launch)
 
 
 def make_pm_home(destination: Path, *, upstream: Path | str | None = None,

@@ -1252,10 +1252,397 @@ def _flat_updater_source() -> str:
     repo_line = next(line for line in flat.splitlines(keepends=True)
                      if line.startswith("REPO = Path(__file__)"))
     entry = flat[flat.index('\n\nif __name__ == "__main__":'):]
-    return (shebang + cli[:doc_end] + "\nfrom __future__ import annotations\n\n\n"
-            + "".join(_PRE_S9_UPDATE_IMPORTS) + repo_line + _PRE_S9_FLAT_ENTRY_HELPERS
-            + "\n\n" + unqualify("\n\n".join(parts)) + "\n\ndef _main(" + unqualify(cli_body.rstrip("\n") + "\n")
-            + unqualify(entry))
+    return _reverse_engine_package_replace(
+        shebang + cli[:doc_end] + "\nfrom __future__ import annotations\n\n\n"
+        + "".join(_PRE_S9_UPDATE_IMPORTS) + repo_line + _PRE_S9_FLAT_ENTRY_HELPERS
+        + "\n\n" + unqualify("\n\n".join(parts)) + "\n\ndef _main(" + unqualify(cli_body.rstrip("\n") + "\n")
+        + unqualify(entry))
+
+
+# 엔진 패키지 디렉터리 교체(교체 행 `replace-dir`·계획 값 `package_plan`·락 안 게시)는 두 동결 세대 updater 에
+# 없던 개념이다. 그 세대는 패키지 디렉터리 행도 파일 단위로 복사했다 — 합성본에서 계획·적용·전달·CLI 의
+# 해당 원문(설명 포함)을 그 세대 원문으로 되돌려, 합성본의 바이트와 지문이 교체 도입 전과 같게 한다. 원문
+# 쌍은 (현행, 그 세대)이고 현행 쪽은 합성본에서 정확히 한 번 해소돼야 한다. 계획·적용·전달·CLI 원문을 고치면
+# 이 쌍을 같은 방식(교체 도입 전 합성본과의 줄 단위 차이)으로 다시 만든다.
+_ENGINE_PACKAGE_REPLACE_REVERSALS = (
+    (
+        '  엔진 패키지(.project_manager/tools/pm_engine)는 파일 단위로 덮지 않고 디렉터리째 바꾼다 — 상류에서\n'
+        '  지우거나 이름을 바꾼 모듈과 대상에만 있던 모듈도 사라진다. 출력은 [replace-dir] 한 줄에 추가·변경·삭제\n'
+        '  파일 수를 붙이고, 변경 파일 수는 그 파일 수를 합산한다. 교체는 같은 부모의 완성 대기 트리와 기존\n'
+        '  패키지 보존 트리 두 번의 rename 이고, 실패하면 남은 두 트리의 위치를 알린다(rc 1).\n',
+        "",
+    ),
+    (
+        '    package_plan_out: list[engine_transfer.EnginePackagePlan] | None = None,\n',
+        "",
+    ),
+    (
+        '    """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update|replace-dir).\n',
+        '    """(changes, missing) 반환. changes = [(rel, src, dst, kind)] (kind: new|update).\n',
+    ),
+    (
+        '\n'
+        '    manifest 에 정확한 엔진 패키지 행(`manifest_rules._ENGINE_PACKAGE_REL`)이 있으면 그 행과 그 아래\n'
+        '    자식 행은 파일 단위로 계획하지 않는다. 패키지 출하 목록과 대상 트리를 바이트로 비교한 계획 값\n'
+        '    (`EnginePackagePlan`)을 만들고, 추가·변경·삭제가 하나라도 있으면 `(패키지 경로, source 디렉터리,\n'
+        '    dest 디렉터리, "replace-dir")` 한 행을 맨 앞에 둔다(삭제만 있어도 변경이다). 계획 값은\n'
+        '    ``package_plan_out``을 주면 거기에 한 개 담는다 — 교체 행의 적용·파일 수 계산이 이 값을 쓴다.\n'
+        '    ``inventory_out``·``dest_inventory_out``에는 패키지 파일도 파일 단위 좌표로 담는다.\n',
+        "",
+    ),
+    (
+        '    package_rel = manifest_rules._ENGINE_PACKAGE_REL\n'
+        '    package_index = next(\n'
+        '        (index for index, entry in enumerate(manifest)\n'
+        '         if str(entry).replace("\\\\", "/").strip("/") == package_rel),\n'
+        '        None,\n'
+        '    )\n',
+        "",
+    ),
+    (
+        '        rel_norm = rel.replace("\\\\", "/").strip("/")\n'
+        '        if package_index is not None and (\n'
+        '                rel_norm == package_rel or rel_norm.startswith(package_rel + "/")):\n'
+        '            if entry_index != package_index:\n'
+        '                continue  # 자식 행의 소유 파일은 패키지 출하 목록이 이미 담았다.\n'
+        '            package_files, package_missing = update_plan._engine_package_inventory(\n'
+        '                source_root, manifest, effective_dest)\n'
+        '            if package_missing:\n'
+        '                missing.extend(package_missing)\n'
+        '                continue\n'
+        '            for relative, source in package_files:\n'
+        '                if inventory_out is not None:\n'
+        '                    inventory_out.add(f"{package_rel}/{relative}")\n'
+        '                    try:\n'
+        '                        inventory_out.add(source.relative_to(source_root).as_posix())\n'
+        '                    except ValueError:\n'
+        '                        pass\n'
+        '                if dest_inventory_out is not None:\n'
+        '                    dest_inventory_out.add(f"{package_rel}/{relative}")\n'
+        '            package = engine_transfer.prepare_engine_package(\n'
+        '                source_root / manifest_rules._source_root_rel(entry),\n'
+        '                effective_dest / package_rel, package_files)\n'
+        '            if package_plan_out is not None:\n'
+        '                package_plan_out.append(package)\n'
+        '            if package.added or package.updated or package.deleted:\n'
+        '                changes.insert(0, (package_rel, package.source_dir, package.dest_dir, "replace-dir"))\n'
+        '            continue\n',
+        "",
+    ),
+    (
+        '      - "package_plan": 엔진 패키지 계획 값(`EnginePackagePlan`) — 정확한 패키지 행이 없거나 그 source\n'
+        '        가 없으면(missing 에 남는다) None. 교체 행의 적용·파일 수 계산에 그대로 넘긴다.\n',
+        "",
+    ),
+    (
+        '        raise _EngineSyncNotationContextError(str(exc)) from exc\n'
+        '\n'
+        '    package_plans: list[engine_transfer.EnginePackagePlan] = []\n'
+        '    changes, missing = plan(\n'
+        '        home, source_root, manifest, dest_root=effective_dest,\n',
+        '        raise _EngineSyncNotationContextError(str(exc)) from exc\n'
+        '\n'
+        '    changes, missing = plan(\n'
+        '        home, source_root, manifest, dest_root=effective_dest,\n',
+    ),
+    (
+        '        package_plan_out=package_plans,\n',
+        "",
+    ),
+    (
+        '        "package_plan": package_plans[0] if package_plans else None,\n',
+        "",
+    ),
+    (
+        'def apply(home, changes: list[tuple], *, is_hook_set_path=None, package_plan=None) -> None:\n',
+        'def apply(home, changes: list[tuple], *, is_hook_set_path=None) -> None:\n',
+    ),
+    (
+        '    엔진 패키지 교체 행(`replace-dir`)은 파일 복사가 아니다. 그 행이 있으면 `package_plan`(계획이 낸\n'
+        '    `EnginePackagePlan`)이 반드시 함께 와야 하고, 전달 프로세스와 같은 교체 구간\n'
+        '    (`engine_transfer.engine_package_delivery`)에서 패키지를 먼저 게시한 뒤 나머지 render 아닌 change 를\n'
+        '    쓰고, 그 묶음이 성공하면 이전 패키지 backup 을 정리한다. 계획 값 없이 교체 행만 오거나 둘이 맞지\n'
+        '    않으면 쓰기 전에 실패한다. 복사한 패키지를 이 프로세스가 다시 적재하지 않는다.\n'
+        '\n',
+        "",
+    ),
+    (
+        '    바뀌지 않는다(앞 단계의 파일·게시한 패키지는 이미 쓰였을 수 있고 되돌리지 않는다). 렌더 값은 dest\n'
+        '    local.conf를 한 번 읽는다.\n',
+        '    바뀌지 않는다(앞 단계의 파일은 이미 쓰였을 수 있다). 렌더 값은 dest local.conf를 한 번 읽는다.\n',
+    ),
+    (
+        '    notation_template` 과 같은 운반 방식이다.\n',
+        '    notation_template` 과 같은 운반 방식이라 이 함수의 시그니처는 그대로다.\n',
+    ),
+    (
+        '    engine_transfer.change_file_count(changes, package_plan)  # 교체 행 ↔ 계획 값 대조(쓰기 전).\n'
+        '    file_changes = [change for change in changes if change[3] != "replace-dir"]\n'
+        '    render_changes = [change for change in file_changes if getattr(change[2], "render", False)]\n'
+        '    with (engine_transfer.engine_package_delivery(package_plan)\n'
+        '          if len(file_changes) < len(changes) else contextlib.nullcontext()):\n'
+        '        for _r, sp, dst, _kind in file_changes:\n'
+        '            if getattr(dst, "render", False):\n'
+        '                continue\n'
+        '            dst.parent.mkdir(parents=True, exist_ok=True)\n'
+        '            if (\n'
+        '                getattr(dst, "entry_notation_template", None) is not None\n'
+        '                or getattr(dst, "flat_command_skill", None) is not None\n'
+        '                or getattr(dst, "codex_operational_skill", None) is not None\n'
+        '            ):\n',
+        "",
+    ),
+    (
+        '                text = fs.read_text_shared(Path(sp), encoding="utf-8")\n'
+        '                rendered = text\n'
+        '                if getattr(dst, "entry_notation_template", None) is not None:\n'
+        '                    rendered = render_rules.render_skill_entry_notation(\n'
+        '                        rendered,\n'
+        '                        dst.entry_notation_template,\n'
+        '                        source=str(sp), skill_names=skill_inventory._installed_skill_entry_names(home),\n'
+        '                    )\n'
+        '                if getattr(dst, "flat_command_skill", None) is not None:\n'
+        '                    rendered = _render_flat_command_reference(\n'
+        '                        rendered, dst.flat_command_skill\n'
+        '                    )\n'
+        '                if getattr(dst, "codex_operational_skill", None) is not None:\n'
+        '                    rendered = _render_codex_operational_detail(\n'
+        '                        rendered, dst.codex_operational_skill\n'
+        '                    )\n'
+        '                _write_rendered_text(Path(dst), Path(sp), rendered)\n'
+        '            elif str(_r).replace("\\\\", "/") == manifest_rules._MANIFEST_SELF_REL:\n'
+        '                # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).\n'
+        '                _copy_manifest_preserving_guest(\n'
+        '                    sp, Path(dst), getattr(dst, "guest_backfill_lines", None))\n'
+        '            elif hook_set_path(_r):\n'
+        '                _atomic_copy2(Path(sp), Path(dst))\n'
+        '            else:\n'
+        '                shutil.copy2(sp, dst)\n',
+        '    render_changes = [change for change in changes if getattr(change[2], "render", False)]\n'
+        '    for _r, sp, dst, _kind in changes:\n'
+        '        if getattr(dst, "render", False):\n'
+        '            continue\n'
+        '        dst.parent.mkdir(parents=True, exist_ok=True)\n'
+        '        if (\n'
+        '            getattr(dst, "entry_notation_template", None) is not None\n'
+        '            or getattr(dst, "flat_command_skill", None) is not None\n'
+        '            or getattr(dst, "codex_operational_skill", None) is not None\n'
+        '        ):\n'
+        '\n'
+        '            text = fs.read_text_shared(Path(sp), encoding="utf-8")\n'
+        '            rendered = text\n'
+        '            if getattr(dst, "entry_notation_template", None) is not None:\n'
+        '                rendered = render_rules.render_skill_entry_notation(\n'
+        '                    rendered,\n'
+        '                    dst.entry_notation_template,\n'
+        '                    source=str(sp), skill_names=skill_inventory._installed_skill_entry_names(home),\n'
+        '                )\n'
+        '            if getattr(dst, "flat_command_skill", None) is not None:\n'
+        '                rendered = _render_flat_command_reference(\n'
+        '                    rendered, dst.flat_command_skill\n'
+        '                )\n'
+        '            if getattr(dst, "codex_operational_skill", None) is not None:\n'
+        '                rendered = _render_codex_operational_detail(\n'
+        '                    rendered, dst.codex_operational_skill\n'
+        '                )\n'
+        '            _write_rendered_text(Path(dst), Path(sp), rendered)\n'
+        '        elif str(_r).replace("\\\\", "/") == manifest_rules._MANIFEST_SELF_REL:\n'
+        '            # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).\n'
+        '            _copy_manifest_preserving_guest(\n'
+        '                sp, Path(dst), getattr(dst, "guest_backfill_lines", None))\n'
+        '        elif hook_set_path(_r):\n'
+        '            _atomic_copy2(Path(sp), Path(dst))\n'
+        '        else:\n'
+        '            shutil.copy2(sp, dst)\n',
+    ),
+    (
+        '# 디스크에 있던 갱신기(전달 프로세스)는 엔진 코드(`.project_manager/tools/`)만 옮기고(엔진 패키지는\n'
+        '# 디렉터리째 먼저 교체하고 나머지 평면 엔진 파일을 그 뒤에 복사한다), 옮겨 받은\n',
+        '# 디스크에 있던 갱신기(전달 프로세스)는 엔진 코드(`.project_manager/tools/`)만 옮기고, 옮겨 받은\n',
+    ),
+    (
+        '    """엔진 코드 행의 계획 — `{"changes", "missing", "manifest", "selfheal", "package_plan"}`.\n',
+        '    """엔진 코드 행의 계획 — `{"changes", "missing", "manifest", "selfheal"}`.\n',
+    ),
+    (
+        '    manifest 전체다(부재 판정이 `@target-owned` 표식을 찾는다). 엔진 패키지는 교체 행 하나와 계획 값\n'
+        '    `package_plan`(정확한 패키지 행이 없거나 source 가 없으면 None)으로 나온다 — 패키지에서 삭제만\n'
+        '    있어도 변경이고 드리프트다."""\n',
+        '    manifest 전체다(부재 판정이 `@target-owned` 표식을 찾는다)."""\n',
+    ),
+    (
+        '        guest_entries=guest_entries, guest_backfill=guest_backfill)\n'
+        '    package_plans: list[engine_transfer.EnginePackagePlan] = []\n'
+        '    changes, missing = plan(\n',
+        '        guest_entries=guest_entries, guest_backfill=guest_backfill)\n'
+        '    changes, missing = plan(\n',
+    ),
+    (
+        '        dest_root=effective_dest, render_enabled=False, package_plan_out=package_plans, conf={})\n'
+        '    return {"changes": changes, "missing": missing, "manifest": manifest, "selfheal": selfheal,\n'
+        '            "package_plan": package_plans[0] if package_plans else None}\n',
+        '        dest_root=effective_dest, render_enabled=False, conf={})\n'
+        '    return {"changes": changes, "missing": missing, "manifest": manifest, "selfheal": selfheal}\n',
+    ),
+    (
+        'def _refuse_scope_with_pending_engine_code(changes, *, target: bool = False,\n'
+        '                                           scope_paths=(), source_root: Path) -> int:\n',
+        'def _refuse_scope_with_pending_engine_code(changes) -> int:\n',
+    ),
+    (
+        '    하나도 옮기지 않으면 옛 엔진 코드가 새 템플릿을 그린다. 자기 갱신(`target=False`)은 어떤 엔진 코드\n'
+        '    변경이든 거부한다. 내보내기(`target=True`)는 엔진 패키지 교체 행만 예외로, 요청 경로가 패키지 전체\n'
+        '    (패키지 경로 자신 또는 그 조상, dest·source 두 좌표)를 덮으면 그 행을 남은 변경에서 뺀다. 패키지\n'
+        '    안 일부만 고른 요청은 자동으로 넓히지 않고 패키지 경로를 고르라고 거부한다. 다른 평면 엔진 변경의\n'
+        '    거부는 그대로다."""\n'
+        '    pending_changes = [change for change in changes if _is_engine_code(change[0])]\n'
+        '    if target:\n'
+        '        for change in [change for change in pending_changes if change[3] == "replace-dir"]:\n'
+        '            candidates = _scope_change_candidates(change[0], change[1], source_root)\n'
+        '            if any(_in_scope_paths(candidate, list(scope_paths))\n'
+        '                   for candidate in candidates):\n'
+        '                pending_changes.remove(change)\n'
+        '                continue\n'
+        '            partial = [path for path in scope_paths\n'
+        '                       if any(path.startswith(candidate + "/") for candidate in candidates)]\n'
+        '            if partial:\n'
+        '                print(\n'
+        '                    f"오류: 엔진 패키지는 디렉터리 단위로만 옮긴다 — 패키지 안 일부 경로({\', \'.join(partial)})"\n'
+        '                    f"만 전파하지 않는다. --paths {change[0]} 로 패키지 전체를 고르라.",\n'
+        '                    file=sys.stderr,\n'
+        '                )\n'
+        '                return 1\n'
+        '    pending = sorted(str(change[0]).replace("\\\\", "/") for change in pending_changes)\n',
+        '    하나도 옮기지 않으면 옛 엔진 코드가 새 템플릿을 그린다."""\n'
+        '    pending = sorted(str(change[0]).replace("\\\\", "/") for change in changes\n'
+        '                     if _is_engine_code(change[0]))\n',
+    ),
+    (
+        '    복사 **전**에 끝난다. 엔진 패키지에 변경이 있으면 같은 부모의 락 안에서 패키지를 디렉터리째 먼저\n'
+        '    교체하고(`package_transfer.engine_package_delivery`), 나머지 평면 엔진 파일을 복사한 뒤 이전 패키지\n'
+        '    backup 을 정리한다. 정리까지 성공해야 완료 프로세스를 띄운다 — 교체·복사·정리 실패는\n'
+        '    `PackageReplaceError` 로 올라가 완료 프로세스가 뜨지 않는다. 복사를 시작한 뒤에는 엔진 모듈을 새로\n'
+        '    적재하지 않는다. 인계 파일 수는 평면 행 수 + 패키지의 추가·변경·삭제 파일 수다. `--dry-run` 은 엔진\n',
+        '    복사 **전**에 끝난다. 복사를 시작한 뒤에는 엔진 모듈을 새로 적재하지 않는다. `--dry-run` 은 엔진\n',
+    ),
+    (
+        '    package_plan = engine["package_plan"]\n',
+        "",
+    ),
+    (
+        '    rc = (_refuse_scope_with_pending_engine_code(changes, source_root=source_root) if scope_paths\n',
+        '    rc = (_refuse_scope_with_pending_engine_code(changes) if scope_paths\n',
+    ),
+    (
+        '    transferred = package_transfer.change_file_count(changes, package_plan)\n'
+        '    engine_transfer._print_engine_changes(changes, package_plan)\n',
+        '    for rel, _src, _dst, kind in changes:\n'
+        '        print(f"  [{kind}] {rel}")\n',
+    ),
+    (
+        '        print(f"[dry-run] 엔진 코드 {transferred} 파일 변경 예정 (적용 안 함).")\n',
+        '        print(f"[dry-run] 엔진 코드 {len(changes)} 파일 변경 예정 (적용 안 함).")\n',
+    ),
+    (
+        '        # 엔진 패키지 먼저, 나머지 평면 엔진 파일 다음이다. `apply` 는 훅 세트 판정자와 렌더 입력을\n'
+        '        #   해소하므로 부르지 않는다(엔진 코드 행은 훅 세트·렌더 대상이 아니다).\n'
+        '        flat_changes = [change for change in changes if change[3] != "replace-dir"]\n'
+        '        with (package_transfer.engine_package_delivery(package_plan)\n'
+        '              if len(flat_changes) < len(changes) else contextlib.nullcontext()):\n'
+        '            for _rel, src, dst, _kind in flat_changes:\n'
+        '                Path(dst).parent.mkdir(parents=True, exist_ok=True)\n'
+        '                shutil.copy2(src, dst)\n',
+        '        # manifest 순서(엔진 패키지 먼저 — `read_manifest`)대로 바이트를 옮긴다. `apply` 는 훅 세트\n'
+        '        #   판정자와 렌더 입력을 해소하므로 부르지 않는다(엔진 코드 행은 훅 세트·렌더 대상이 아니다).\n'
+        '        for _rel, src, dst, _kind in changes:\n'
+        '            Path(dst).parent.mkdir(parents=True, exist_ok=True)\n'
+        '            shutil.copy2(src, dst)\n',
+    ),
+    (
+        '        effective_dest, source_root, 0 if args.dry_run else transferred, argv)\n',
+        '        effective_dest, source_root, 0 if args.dry_run else len(changes), argv)\n',
+    ),
+    (
+        '            "(.project_manager/tools/) 변경이 남아 있으면 쓰기 전에 거부한다(rc1) — 단 --target·"\n'
+        '            "--all-targets 는 엔진 패키지 경로(.project_manager/tools/pm_engine) 전체를 고르면 그 "\n'
+        '            "패키지 교체를 전파한다(패키지 안 일부만 고르면 rc1). 경로는 repo 루트 상대 "\n',
+        '            "(.project_manager/tools/) 변경이 남아 있으면 쓰기 전에 거부한다(rc1). 경로는 repo 루트 상대 "\n',
+    ),
+    (
+        '    package_plan = sync_plan["package_plan"]\n',
+        "",
+    ),
+    (
+        '    # 내보내기의 `--paths` 도 같은 규칙이다 — 엔진 코드는 세대 단위로만 옮긴다(엔진 패키지는 패키지\n'
+        '    #   경로 전체를 고른 경우만 교체 행을 전파한다).\n',
+        '    # 내보내기의 `--paths` 도 같은 규칙이다 — 엔진 코드는 세대 단위로만 옮긴다.\n',
+    ),
+    (
+        '        rc = _refuse_scope_with_pending_engine_code(\n'
+        '            changes, target=bool(args.target), scope_paths=scope_paths, source_root=source_root)\n',
+        '        rc = _refuse_scope_with_pending_engine_code(changes)\n',
+    ),
+    (
+        '    change_files = package_transfer.change_file_count(changes, package_plan)\n'
+        '    engine_transfer._print_engine_changes(\n'
+        '        [change for change in changes if change[3] == "replace-dir"], package_plan)\n',
+        "",
+    ),
+    (
+        '        if kind == "replace-dir":\n'
+        '            continue\n',
+        "",
+    ),
+    (
+        '        print(f"[dry-run] {change_files} 파일 변경 예정 (적용 안 함).")\n',
+        '        print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")\n',
+    ),
+    (
+        '                        is_hook_set_path=resolve_hook_set_predicate(home, source_root),\n'
+        '                        package_plan=package_plan)\n'
+        '    print(f"✓ {transferred + change_files} 파일 동기화")\n',
+        '                        is_hook_set_path=resolve_hook_set_predicate(home, source_root))\n'
+        '    print(f"✓ {transferred + len(changes)} 파일 동기화")\n',
+    ),
+    (
+        '                f"[중단] 엔진 파일 {change_files}건은 적용됐지만 설치된 훅 세트가 채택자 config "\n',
+        '                f"[중단] 엔진 파일 {len(changes)}건은 적용됐지만 설치된 훅 세트가 채택자 config "\n',
+    ),
+    (
+        '                f"[중단] 엔진 파일 {change_files}건은 적용됐지만 managed 어댑터 config가 "\n',
+        '                f"[중단] 엔진 파일 {len(changes)}건은 적용됐지만 managed 어댑터 config가 "\n',
+    ),
+    (
+        '    """CLI 경계: repo 출하 seam의 분류 오류와 엔진 패키지 교체 실패만 짧은 실행 오류로 바꾼다.\n',
+        '    """CLI 경계: repo 출하 seam의 분류 오류만 짧은 실행 오류로 바꾼다.\n',
+    ),
+    (
+        '    패키지 교체 실패(`PackageReplaceError`)는 단계·원인과 남은 stage·backup 위치를 담아 rc 1 이다.\n',
+        "",
+    ),
+    (
+        '        return 1\n'
+        '    except package_transfer.PackageReplaceError as exc:\n'
+        '        print(f"오류: {exc}", file=sys.stderr)\n'
+        '        if exc.stage is not None or exc.backup is not None:\n'
+        '            print(\n'
+        '                "  복구: 갱신·실행 중인 엔진을 멈추고 위 stage·backup(같은 부모의 "\n'
+        '                f"{manifest_rules._ENGINE_TRANSFER_STAGE_PREFIX}*·"\n'
+        '                f"{manifest_rules._ENGINE_TRANSFER_BACKUP_PREFIX}*)을 확인하라. 패키지 자리가 비었고 "\n'
+        '                "완전한 backup 이 있으면 backup 을 패키지 이름으로 되돌린다. 평면 엔진 파일까지 같은 "\n'
+        '                "세대로 맞추려면 원인을 고친 뒤 같은 갱신을 다시 실행한다.", file=sys.stderr)\n',
+        "",
+    ),
+)
+
+
+def _reverse_engine_package_replace(source: str) -> str:
+    """패키지 디렉터리 교체 역적용 — 원문 쌍의 현행 쪽은 각각 정확히 한 번 해소돼야 한다."""
+    for current, legacy in _ENGINE_PACKAGE_REPLACE_REVERSALS:
+        assert source.count(current) == 1, current
+        source = source.replace(current, legacy, 1)
+    assert "replace-dir" not in source and "package_plan" not in source   # 교체 개념 잔존 0
+    return source
 
 
 def _slice_replace(source: str, start_marker: str, end_marker: str, replacement: str) -> str:
