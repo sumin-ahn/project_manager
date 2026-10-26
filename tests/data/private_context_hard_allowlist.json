@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 240,
+  "count": 232,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 84
+    "python-prose": 76
   },
   "entries": [
     {
@@ -45,22 +45,6 @@
       "match": "T-0259",
       "surface": "python-non-prose",
       "hash": "691fc8b3274961f2215fcf7bc3695c3e3caf435b306ae1f6b45b0821e6d44985",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/engine_rev.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "336c6aac874fae949f1e1206489d879023573cd2c6a3dcdb9eea205a5c3fff97",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/engine_rev.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "bec39a37fac0f2f025745267428756cb3807bc82bacd8286daac1bef010d3c45",
       "count": 1
     },
     {
@@ -349,22 +333,6 @@
       "match": "T-0259",
       "surface": "python-non-prose",
       "hash": "691fc8b3274961f2215fcf7bc3695c3e3caf435b306ae1f6b45b0821e6d44985",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/engine_rev.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "336c6aac874fae949f1e1206489d879023573cd2c6a3dcdb9eea205a5c3fff97",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/engine_rev.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "bec39a37fac0f2f025745267428756cb3807bc82bacd8286daac1bef010d3c45",
       "count": 1
     },
     {
@@ -765,22 +733,6 @@
       "match": "T-0259",
       "surface": "python-non-prose",
       "hash": "691fc8b3274961f2215fcf7bc3695c3e3caf435b306ae1f6b45b0821e6d44985",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/engine_rev.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "336c6aac874fae949f1e1206489d879023573cd2c6a3dcdb9eea205a5c3fff97",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/engine_rev.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "bec39a37fac0f2f025745267428756cb3807bc82bacd8286daac1bef010d3c45",
       "count": 1
     },
     {
@@ -1405,22 +1357,6 @@
       "match": "T-0259",
       "surface": "python-non-prose",
       "hash": "691fc8b3274961f2215fcf7bc3695c3e3caf435b306ae1f6b45b0821e6d44985",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/engine_rev.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "336c6aac874fae949f1e1206489d879023573cd2c6a3dcdb9eea205a5c3fff97",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/engine_rev.py",
-      "kind": "work_item",
-      "match": "T-0729",
-      "surface": "python-prose",
-      "hash": "bec39a37fac0f2f025745267428756cb3807bc82bacd8286daac1bef010d3c45",
       "count": 1
     },
     {

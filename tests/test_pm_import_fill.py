@@ -94,7 +94,7 @@ def _make_imported_tree(pm_import, tmp_path, harness="claude", name="Fillee"):
     """
     dest = tmp_path / name.lower()
     # manual fill(기본)로 import — 이후 테스트가 트리 상태를 검사한다.
-    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", harness, "--name", name], engine_rev=pm_import.ENGINE_REV)
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", harness, "--name", name])
     assert rc == 0
     return dest
 
@@ -188,28 +188,10 @@ def test_fill_failure_partial_formatter_keeps_head_for_general_failure(
     assert import_fill._fill_failure_with_partial("head", RuntimeError("original")) == "head"
 
 
-@pytest.mark.parametrize("failure_site", ("formatter",))
-def test_fill_failure_partial_formatter_reraises_engine_rev_skew(
-        pm_import, monkeypatch, failure_site):
-    """rev skew는 일반 포맷 실패와 달리 fill 경로에서도 숨기지 않는다."""
-    skew = RuntimeError("skew")
-    skew._engine_rev_skew = True
-
-    class BrokenRelay:
-        @staticmethod
-        def format_partial_output(head, exc):
-            raise skew
-
-    monkeypatch.setattr(watchdog, "format_partial_output", BrokenRelay.format_partial_output)
-
-    with pytest.raises(RuntimeError, match="skew"):
-        import_fill._fill_failure_with_partial("head", RuntimeError("original"))
-
-
 def test_fill_harness_help_lists_and_import_default_are_registry_derived(pm_import, capsys):
     """실제 --help의 registry 목록과 import 기본값/epilog가 ``all`` 계약에 일치한다."""
     with pytest.raises(SystemExit) as exc_info:
-        import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--help"], engine_rev=pm_import.ENGINE_REV)
+        import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--help"])
     assert exc_info.value.code == 0
     help_text = " ".join(capsys.readouterr().out.split())
     registered_csv = ",".join(install_rules.HARNESS_TEMPLATE_DIRS)
@@ -331,7 +313,7 @@ def test_fill_auto_claude_excludes_opencode_token(pm_import, tmp_path):
 def test_fill_manual_is_default_and_marks_todo(pm_import, tmp_path):
     """main 기본(--fill 미지정 = manual): 하니스 미구동, 자유서술 placeholder 에 TODO 표시."""
     dest = tmp_path / "manualdefault"
-    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Manual"], engine_rev=pm_import.ENGINE_REV)
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Manual"])
     assert rc == 0
     # 자유서술 placeholder 가 있는 파일(root doc CLAUDE.md §프로젝트 고유 제약)에 TODO 마커가 표시됐다.
     # (ADR-0030: 어댑터는 free-form-free → 마커는 root doc·pm_role.local.md 에 — developer.md 는 더 이상 토큰 없음.)
@@ -391,7 +373,7 @@ def test_main_auto_without_env_forces_manual(pm_import, tmp_path, monkeypatch, c
     )
     dest = tmp_path / "autonoenv"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "AutoNoEnv",
-                         "--fill", "auto"], engine_rev=pm_import.ENGINE_REV)
+                         "--fill", "auto"])
     assert rc == 0
     out = capsys.readouterr().out
     # 게이트 미통과 안내 + manual 폴백(TODO 표시).
@@ -605,7 +587,7 @@ def test_dry_run_auto_does_not_touch_fs(pm_import, tmp_path, capsys):
     """--dry-run + --fill auto: 디렉토리 미생성·파일 미변경, fill 의도만 출력."""
     dest = tmp_path / "dryauto"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryAuto",
-                         "--fill", "auto", "--dry-run"], engine_rev=pm_import.ENGINE_REV)
+                         "--fill", "auto", "--dry-run"])
     assert rc == 0
     assert not dest.exists(), "--dry-run 인데 대상 디렉토리가 생성됨."
     out = capsys.readouterr().out
@@ -622,7 +604,7 @@ def test_dry_run_auto_does_not_call_real_harness(pm_import, tmp_path, monkeypatc
     )
     dest = tmp_path / "dryautoenv"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryAutoEnv",
-                         "--fill", "auto", "--dry-run"], engine_rev=pm_import.ENGINE_REV)
+                         "--fill", "auto", "--dry-run"])
     assert rc == 0
     assert not dest.exists()
 
@@ -793,7 +775,7 @@ def _make_into_dest_with_user_file(tmp_path, name="into_target"):
 def test_into_manual_fill_does_not_touch_user_file(pm_import, tmp_path):
     """--into + manual: 복사 안 한 사용자 파일(sentinel 포함)은 TODO 마킹 없이 불변."""
     dest, user_file, original = _make_into_dest_with_user_file(tmp_path, "into_manual")
-    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--into", str(dest), "--harness", "claude", "--name", "IntoManual"], engine_rev=pm_import.ENGINE_REV)
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--into", str(dest), "--harness", "claude", "--name", "IntoManual"])
     assert rc == 0
     # 사용자 파일이 글자 하나 안 바뀌었다 — TODO 마커도 sentinel 치환도 없음.
     assert user_file.read_text(encoding="utf-8") == original, \
@@ -814,7 +796,7 @@ def test_into_auto_stub_fill_does_not_touch_user_file(pm_import, tmp_path, monke
     )
     dest, user_file, original = _make_into_dest_with_user_file(tmp_path, "into_auto")
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--into", str(dest), "--harness", "claude", "--name", "IntoAuto",
-                         "--fill", "auto"], engine_rev=pm_import.ENGINE_REV)
+                         "--fill", "auto"])
     assert rc == 0
     assert user_file.read_text(encoding="utf-8") == original, \
         "auto(manual 폴백) fill 이 복사 안 한 사용자 파일을 수정함(비파괴 위반)."
@@ -929,7 +911,7 @@ from pm_engine.infra import install_source, pm_paths
 roots = install_source.resolve_template_roots(Path.cwd(), "all")
 print(json.dumps({"roots": [root.name for root in roots],
                   "harness": import_fill._resolve_fill_harness(None, "all")}))
-import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--help"], engine_rev=pm_import.ENGINE_REV)
+import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--help"])
 """
     result = subprocess.run(
         [sys.executable, "-c", script, str(tools_dir)], cwd=checkout,
@@ -969,7 +951,7 @@ def test_dry_run_auto_prints_fill_plan(pm_import, tmp_path, capsys):
     """--dry-run + --fill auto: 채울 대상 토큰·결정된 harness·게이트 상태를 계획으로 출력."""
     dest = tmp_path / "dryplan"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryPlan",
-                         "--fill", "auto", "--dry-run"], engine_rev=pm_import.ENGINE_REV)
+                         "--fill", "auto", "--dry-run"])
     assert rc == 0
     assert not dest.exists(), "--dry-run 인데 대상 디렉토리가 생성됨."
     out = capsys.readouterr().out
@@ -986,7 +968,7 @@ def test_dry_run_auto_plan_gate_not_passed_states_manual_fallback(pm_import, tmp
     monkeypatch.delenv("PM_IMPORT_LIVE_HARNESS", raising=False)
     dest = tmp_path / "drygate"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryGate",
-                         "--fill", "auto", "--dry-run"], engine_rev=pm_import.ENGINE_REV)
+                         "--fill", "auto", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "미통과" in out and "manual 폴백" in out, \
@@ -1003,7 +985,7 @@ def test_dry_run_auto_plan_gate_passed_states_live(pm_import, tmp_path, monkeypa
     )
     dest = tmp_path / "drygatepass"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryGatePass",
-                         "--fill", "auto", "--dry-run"], engine_rev=pm_import.ENGINE_REV)
+                         "--fill", "auto", "--dry-run"])
     assert rc == 0
     assert not dest.exists(), "--dry-run 인데 파일시스템이 변경됨."
     out = capsys.readouterr().out
@@ -1095,7 +1077,7 @@ def test_reimport_does_not_clobber_pm_playbook_local(pm_import, tmp_path):
     sentinel = "SENTINEL-누적학습-T0028 — 이 줄은 재-import 에서 보존돼야 한다.\n"
     stub.write_text(stub.read_text(encoding="utf-8") + sentinel, encoding="utf-8")
     # 3) 같은 dest 로 재-import(--into).
-    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--into", str(dest), "--harness", "claude", "--name", "PbReimport"], engine_rev=pm_import.ENGINE_REV)
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--into", str(dest), "--harness", "claude", "--name", "PbReimport"])
     assert rc == 0
     after = stub.read_text(encoding="utf-8")
     assert sentinel in after, "재-import 가 기존 pm_playbook.local.md 의 누적 학습을 덮어씀(비파괴 위반)."

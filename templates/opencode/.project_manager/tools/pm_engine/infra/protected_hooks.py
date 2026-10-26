@@ -378,7 +378,7 @@ $branch
     # family checkout)엔 PM 엔진 파일이 없으므로(회사 repo 무영향), 설치자가 훅 옆에 쓴 sidecar
     # `engine-root`(PM 홈 REPO 절대경로 1줄)에서 board.py 를 해소한다. livegate.json 도 그 PM 홈 .local
     # 소유라 기록 위치와 정합. 인터프리터는 실행검증 폴백(python3->python->py·WindowsApps 가짜
-    # shim 회피) + Python 3.11 하한 검증(engine_rev.MIN_PYTHON 미러·테스트 skew 가드).
+    # shim 회피) + Python 3.11 하한 검증(pm_engine.MIN_PYTHON).
     # sidecar 부재/경로 무효/인터프리터 부재 = fail-closed 거부(무력화 방지).
     if [ "$resolved" != "1" ]; then
         engine_root=""

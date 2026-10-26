@@ -31,11 +31,6 @@ from pm_engine.infra import pm_paths
 from pm_engine.infra import console  # noqa: E402
 
 
-# baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을 사용하기 전에
-# 명시적인 sibling-skew 오류로 막는다.
-ENGINE_REV = "v1.8.1"
-
-
 class _CliUsageError(Exception):
     """Internal argparse failure converted to the fail-open JSON contract."""
 

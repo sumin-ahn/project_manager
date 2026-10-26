@@ -138,7 +138,7 @@ class Env(NamedTuple):
 def _fixture_board(pd, env: Env):
     board = repo_files.load_module(
         env.pm_home / ".project_manager" / "tools" / "board.py",
-        "board.py", verifier=pd._verify_engine_rev,
+        "board.py",
     )
     board.REPO = env.pm_home
 

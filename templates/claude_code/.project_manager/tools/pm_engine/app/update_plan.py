@@ -328,8 +328,7 @@ class _EngineSyncNotationContextError(RuntimeError):
 
     `plan()` 자신이 낼 수 있는 다른 `RuntimeError`(예 `EmptyShippingInventoryError`)와 구분되는
     전용 타입이다 — 호출부(`_main`·`drift_changes`)가 "notation context 실패"만 좁게 받아 처리
-    (에러+rc2 대 None 판정 불능)하고, `plan()` 이 낸 무관한 `RuntimeError` 는 그대로 전파시킨다
-    (엔진 사본 skew 는 이 타입으로 감싸지 않는다 — 마커를 잃지 않도록 원본 그대로 재-raise 한다).
+    (에러+rc2 대 None 판정 불능)하고, `plan()` 이 낸 무관한 `RuntimeError` 는 그대로 전파시킨다.
     """
 
 
@@ -450,12 +449,6 @@ def _resolve_engine_sync_plan(
             else manifest_store._entry_notation_templates_from_manifests(notation_manifests, source_root)
         )
     except RuntimeError as exc:
-        # 엔진 사본 skew 는 감싸지 않고 원본 그대로 재-raise 한다(마커 보존) — `plan()` 자신이
-        #   낼 수 있는 다른 `RuntimeError`(예 `EmptyShippingInventoryError`)와 이 지점의 notation
-        #   context 실패를 구분해야 호출부가 좁게 처리한다(F-001 추출 전 `_main` 의 try/except
-        #   경계와 동형 — 넓게 잡으면 `plan()` 의 무관한 예외까지 이 지점 처리로 오분류된다).
-        if getattr(exc, "_engine_rev_skew", False):
-            raise
         raise _EngineSyncNotationContextError(str(exc)) from exc
 
     package_plans: list[engine_transfer.EnginePackagePlan] = []
@@ -534,13 +527,9 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
     except _EngineSyncNotationContextError:
         return None
     except RuntimeError as exc:
-        # 엔진 사본 skew(마커 보존을 위해 `_resolve_engine_sync_plan` 이 원본 그대로 재-raise 함)도
-        #   여기서 판정 불능으로 접지 않는다 — 이 게이트는 "실행 엔진 사본이 upstream 과 갈렸는가"
-        #   를 묻는데, 사본끼리 rev 가 갈린 트리는 그 질문의 **가장 강한 양성**이다. `None` 은
-        #   호출부에서 "이 형상엔 게이트가 적용되지 않음(무차단)" 으로 읽히므로, 접으면 게이트가
-        #   잡으라고 만들어진 그 형상에서만 조용히 통과한다(false-green). 흡수 없이 올려 사본
-        #   재동기 안내를 그대로 보이고, `plan()` 의 다른 RuntimeError(예
-        #   `EmptyShippingInventoryError`)도 종전대로 전파한다.
+        # `None` 은 호출부에서 "이 형상엔 게이트가 적용되지 않음(무차단)" 으로 읽히므로 판정 불능으로
+        #   접지 않는다. `plan()` 의 다른 RuntimeError(예 `EmptyShippingInventoryError`)는 종전대로
+        #   전파한다.
         raise
     missing = sync_plan["missing"]
     if missing:

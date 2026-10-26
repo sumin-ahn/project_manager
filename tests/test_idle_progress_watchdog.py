@@ -1754,34 +1754,6 @@ def test_fill_profile_failure_is_soft_and_stage_specific(pm_import, monkeypatch)
     assert not fake.calls
 
 
-@pytest.mark.parametrize("stage", ["profile", "spawn", "result"])
-def test_fill_marked_skew_passes_other_fail_soft_boundaries(
-        pm_import, monkeypatch, stage):
-    """조정한 프로필·spawn·결과 경계도 marked skew만은 반드시 바깥으로 통과시킨다."""
-    skew = RuntimeError(f"{stage} skew")
-    skew._engine_rev_skew = True
-    fake = _RecordingRelay()
-    if stage == "profile":
-        monkeypatch.setattr(watchdog, "resolve_harness_profile",
-                            lambda *args: (_ for _ in ()).throw(skew))
-    elif stage == "spawn":
-        fake._exc = skew
-    else:
-        class _SkewResult:
-            @property
-            def stdout(self):
-                raise skew
-
-        fake._completed = _SkewResult()
-    fake.install(monkeypatch)
-    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
-
-    assert excinfo.value is skew
-
-
 def test_fill_result_normalization_failure_is_soft(pm_import, monkeypatch):
     """성공 응답 객체 정규화의 일반 예외는 기존 fill fail-soft 계약을 유지한다."""
     class _BrokenResult:

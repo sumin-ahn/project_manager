@@ -138,10 +138,6 @@ def _unowned_shipped_wiki_relpaths(
             try:
                 shipped = list(install_source._iter_source_files(root, "full"))
             except Exception as exc:  # noqa: BLE001 — 열거 실패는 후보 0(무동작).
-                # 엔진 사본 skew 는 삼키지 않는다 — 구 사본 부분 도달을 조용한 후보 0 으로
-                #   덮으면 재렌더가 통째로 사라진다(엔진 관례: fail-soft 하되 skew 만 재-raise).
-                if getattr(exc, "_engine_rev_skew", False):
-                    raise
                 continue
             for rel, _src in shipped:
                 rel_posix = rel.as_posix()

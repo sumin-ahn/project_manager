@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """pm_import — PM 프레임워크 import 단일 진입 커맨드 (--new = PM 홈 생성 / --into = 기존 프로젝트 임베드).
 
-이 파일은 실행 진입점이다 — 인터프리터 하한을 먼저 검사한 뒤 이 사본 위치의 Home 과 각인
-(`ENGINE_REV`)으로 `pm_engine.cli.import_cmd.main` 을 부른다. 사용법·동작·결정은
+이 파일은 실행 진입점이다 — 인터프리터 하한을 먼저 검사한 뒤 이 사본 위치의 Home 으로
+`pm_engine.cli.import_cmd.main` 을 부른다. 사용법·동작·결정은
 `pm_engine.cli.import_args` 모듈 문서(`pm_import.py --help`)가 소유한다.
 """
 
@@ -17,24 +17,6 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 import pm_engine  # noqa: E402
-
-# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
-# Python 하한 probe보다 먼저 평가되므로 3.10에서도 파싱 가능한 문법만 쓴다.
-ENGINE_REV = "v1.8.1"
-
-
-def _verify_engine_rev(sibling_module, sibling_filename):
-    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
-    got = getattr(sibling_module, "ENGINE_REV", None)
-    if got != ENGINE_REV:
-        err = RuntimeError(
-            "엔진 사본 버전 불일치 — 로더 %s(rev=%r)가 형제 %s(rev=%r)를 로드했다 "
-            "(사본 skew: 부분/수동 복사 또는 구형 사본). `pm-update`(또는 pm_update.py)로 "
-            ".project_manager/tools/ 전체를 재동기하라."
-            % (Path(__file__).name, ENGINE_REV, sibling_filename, got)
-        )
-        err._engine_rev_skew = True
-        raise err
 
 
 def _require_python(version_info=None) -> None:
@@ -60,4 +42,4 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 if __name__ == "__main__":
-    sys.exit(import_cmd.main(pm_paths.home_at(REPO), engine_rev=ENGINE_REV))
+    sys.exit(import_cmd.main(pm_paths.home_at(REPO)))

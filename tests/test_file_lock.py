@@ -2009,14 +2009,6 @@ _SEAM_READ_SITE = ("pm_engine/infra/fs.py", "open_shared")
 # **등재된 예외** — 공유 읽기 seam 을 쓸 수 없거나 대상이 아닌 판독. `(모듈, 함수)` → 사유.
 # 등재 밖 종전 읽기도, 사유가 빈 등재도 red 다([[T-0729]] §결정 · 선택지 A 의 판독 쪽 확장).
 SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
-    ("engine_rev.py", "read_literal"): (
-        "rev 검증자 자신의 부트스트랩 판독 — 형제 file_lock 을 로드하려면 그 사본의 rev 를 "
-        "대조해야 하고 그 대조를 하는 곳이 여기라 순환이다"
-    ),
-    ("engine_rev.py", "bump"): (
-        "같은 순환 위에서 자기 rev 를 포함해 전 모듈 리터럴을 다시 쓰는 경로 — 스탬프가 바뀌는 "
-        "도중이라 형제 rev 대조가 성립하지 않는다"
-    ),
     ("pm_engine/app/import_render.py", "render_file"): (
         "인자가 상류 템플릿 원본(원자 교체 대상 아님)인지 목적지 사본(pm_import 가 원자 교체)인지 "
         "**정적으로 구분되지 않는다**. 렌더는 순수 변환이라 이 판독이 상태를 만들지 않고, 호출부의 "

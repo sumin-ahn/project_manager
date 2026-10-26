@@ -523,18 +523,8 @@ def test_actual_cache_false_entry_pattern_preserves_process_state_across_two_loa
     owner = importlib.util.module_from_spec(owner_spec)
     owner_spec.loader.exec_module(owner)
     loader = owner.load_module
-    first = loader(
-        MODULE_PATH,
-        "console.py",
-        allow_unverified=True,
-        cache=False,
-    )
-    second = loader(
-        MODULE_PATH,
-        "console.py",
-        allow_unverified=True,
-        cache=False,
-    )
+    first = loader(MODULE_PATH, "console.py")
+    second = loader(MODULE_PATH, "console.py")
     assert first is not second
 
     kernel32 = _FakeKernel32(entries=REAL_PY_LAUNCHER_CHAIN)

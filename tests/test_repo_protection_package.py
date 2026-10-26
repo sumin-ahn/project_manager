@@ -21,7 +21,7 @@ def test_hook_artifact_bytes_and_paths_match(tmp_path):
     assert [a.executable for a in actual] == [False, False, False, True, True]
     assert [a.content for a in actual[:3]] == [
         "main\n", f"{tmp_path.resolve()}\n", "release\npytest -q\n"]
-    assert hashlib.sha256(actual[3].content.encode()).hexdigest() == '03060956bb6e63801c4adebe381597c88d4e2b5e115eac88dc9460b5531742dd'
+    assert hashlib.sha256(actual[3].content.encode()).hexdigest() == '6aafd4c9d0c82405f72b36eab95b20efa9f2f9826b5a2d674215e4541fe63ddc'
     assert hashlib.sha256(actual[4].content.encode()).hexdigest() == '5611a9c2920efed728152bcc97392090130e6caab8d680a6b8fa564c385f46f2'
     assert all(a.path.parent == pm_paths.repo_hooks_dir(home) / "repo" for a in actual)
 

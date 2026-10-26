@@ -3877,25 +3877,6 @@ def test_role_preambles_include_prohibition_phrases(pd):
         assert text.count(delegate_prompt_rules._prohibition(install_rules.adapter_directories())) == 1, f"{role}: 공통 금지 문구를 정확히 한 번 써야 함"
 
 
-def _isolated_delegate(tmp_path: Path, registry_source: str):
-    tools = tmp_path / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    # 엔진 패키지(`pm_engine/`)도 함께 둔다 — 엔진 소스 판독이 공유 읽기 seam 을 지나므로(T-0729)
-    # 그것이 없으면 registry 해소가 skew 이전에 부재로 죽어 회귀가 다른 것을 잰다.
-    shutil.copy2(TOOLS / "pm_delegate.py", tools / "pm_delegate.py")
-    shutil.copytree(TOOLS / "pm_engine", tools / "pm_engine",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    (tools / "pm_import.py").write_text(
-        f'ENGINE_REV = "{_load("pm_delegate_rev", TOOLS / "pm_delegate.py").ENGINE_REV}"\n'
-        f"{registry_source}\n",
-        encoding="utf-8",
-    )
-    return _load(f"pm_delegate_isolated_{id(tmp_path)}", tools / "pm_delegate.py"), tools
-
-
-
-
-
 def test_adapter_registry_old_value_shape_fails_explicitly_without_character_spread(monkeypatch):
     """구형 값 형상은 어댑터 경로를 문자별로 펼치기 전에 거부한다."""
     monkeypatch.setattr(install_rules, "ADD_HARNESS_ADAPTER", {"claude": (".claude", "CLAUDE.md")})

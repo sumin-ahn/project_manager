@@ -143,8 +143,8 @@ def bundled_engine_imports(repo_root: Path | str,
                            trees: tuple[str, ...] = BUNDLED_TREES) -> tuple[str, ...]:
     """번들 트리의 `.py` 가 최상위에서 부르는 표준 라이브러리 모듈 이름 전부(정렬).
 
-    그 파일들은 모듈이 아니라 **데이터**로 실리고(`BUNDLED_TREES`) 런타임에 `load_engine_module`
-    이 exec 하므로, 그 import 는 PyInstaller 정적 분석이 보지 못한다. 그래서 이름으로 세워야
+    그 파일들은 모듈이 아니라 **데이터**로 실리고(`BUNDLED_TREES`) 런타임에 번들 패키지를 일반
+    import 로 읽으므로, 그 import 는 PyInstaller 정적 분석이 보지 못한다. 그래서 이름으로 세워야
     하는데 목록을 손으로 적으면 반드시 뒤처진다 — 파일에서 뽑는다.
 
     표준 라이브러리만인 것은 인터프리터 합의다: 실행 파일에 엔진의 런타임 의존(PyYAML)은 들어
@@ -167,7 +167,7 @@ def hidden_imports(repo_root: Path | str) -> tuple[str, ...]:
 def build_info_source(upstream_url: str) -> str:
     """각인 모듈 `manager/_build_info.py` 의 내용 — 읽는 곳이 있는 값 하나뿐이다.
 
-    관리자 버전 표기의 단일 진실은 번들 엔진의 rev(`manager.engine_rev()`)라 여기 없다.
+    관리자 버전 표기의 단일 진실은 번들 엔진 패키지 값(`manager.engine_rev()`)이라 여기 없다.
     """
     return (
         '"""빌드가 각인한 값 — 이 파일은 `manager/build.py` 가 만든다(git-ignored·손으로 고치지 않는다)."""\n'

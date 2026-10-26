@@ -134,7 +134,7 @@ def test_config_init_preserves_raw_tokens_and_prog(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(board_init, "cmd_init", record)
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
     argv = ["init", "--prefix", "X", "--area", "a", "--owner", "me"]
-    assert config_cmd._main(home, argv, engine_rev="v-test") == 7
+    assert config_cmd._main(home, argv) == 7
     assert seen == [(home, "X", "a", "me")]
 
     with pytest.raises(SystemExit) as stopped:

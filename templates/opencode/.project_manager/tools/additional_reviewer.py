@@ -105,10 +105,6 @@ from pm_engine.infra import reviewer_target
 from pm_engine.domain import delegate_errors  # noqa: E402
 from pm_engine.infra import conf_store, console, pm_paths, round_store  # noqa: E402
 
-# ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
-# baked 리터럴 — engine_rev.py --bump가 전 stamped 모듈과 함께 재작성한다.
-ENGINE_REV = "v1.8.1"
-
 
 # ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
 # 설치 깊이는 `pm_import` 가 못 박는다 — 도구는 `<root>/.project_manager/tools/` 에만 놓인다.

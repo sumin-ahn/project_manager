@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import pm_engine
 
 from pm_engine.app import repo_protection
 from pm_engine.cli import board_cmd
@@ -528,7 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _main(home: home.Home, argv: list[str] | None = None, *, engine_rev: str) -> int:
+def _main(home: home.Home, argv: list[str] | None = None) -> int:
     console.configure_console_utf8()
 
     raw = list(sys.argv[1:] if argv is None else argv)
@@ -589,10 +590,10 @@ def _main(home: home.Home, argv: list[str] | None = None, *, engine_rev: str) ->
         return 1
 
     if args.func is config_status.cmd_status:
-        return args.func(home, args, engine_rev=engine_rev)
+        return args.func(home, args, engine_rev=pm_engine.ENGINE_REV)
     return args.func(home, args)
 
 
-def main(home: home.Home, argv: list[str] | None = None, *, engine_rev: str) -> int:
-    """서브커맨드를 dispatch 한다. `engine_rev` 는 설치 사본의 각인 값이다."""
-    return _main(home, argv, engine_rev=engine_rev)
+def main(home: home.Home, argv: list[str] | None = None) -> int:
+    """서브커맨드를 dispatch 한다. status 에는 엔진 세대 값 `pm_engine.ENGINE_REV` 를 넘긴다."""
+    return _main(home, argv)

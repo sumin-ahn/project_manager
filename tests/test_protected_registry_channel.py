@@ -984,12 +984,6 @@ def _reconciler(bootstrap, tmp_path, monkeypatch, *, board, pool):
     return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path / "home"), run_board_fn=lambda args: (0, ''), run_pytest_fn=lambda: (0, ''), run_git_fn=lambda args: (0, ''), log_file=log_file, areas_file=areas_file)
 
 
-def _marked_skew(message="injected engine rev skew"):
-    exc = RuntimeError(message)
-    exc._engine_rev_skew = True
-    return exc
-
-
 def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys, monkeypatch):
     """sidecar 가 areas 와 다르면 재설치한다 — *다른 clone* 의 변경을 세션 시작에 흡수."""
     hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"

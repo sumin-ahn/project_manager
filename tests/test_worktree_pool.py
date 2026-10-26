@@ -6781,20 +6781,19 @@ def test_switch_record_exception_converges_to_record_failed(wp, monkeypatch):
 
 
 def test_switch_record_exception_preserves_cause(wp, monkeypatch):
-    """안내 예외로 변환해도 상위 marker 소비 경계가 사본 불일치를 식별할 수 있다."""
+    """안내 예외로 변환해도 원래 기록 실패 예외를 원인으로 보존한다."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", refs=["task/main"])
-    skew = RuntimeError("injected marked engine skew")
-    skew._engine_rev_skew = True
+    cause = RuntimeError("injected record failure")
 
     def fail_record(_home, *_args, **_kwargs):
-        raise skew
+        raise cause
 
     monkeypatch.setattr(slot_snapshot, "record_git_snapshot", fail_record)
     with pytest.raises(worktree_records.SwitchRefused) as raised:
         branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
 
-    assert raised.value.__cause__ is skew
+    assert raised.value.__cause__ is cause
 
 
 def test_switch_record_no_change_with_same_branch_is_not_success(wp, monkeypatch):

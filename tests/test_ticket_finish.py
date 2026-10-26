@@ -1823,7 +1823,7 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
         status_entries_fn=lambda: (),
         dod_block_fn=lambda tid: None,
         # 잔여 preflight 는 board 사본을 적재하는 묶음 장부 조회를 태운다 — 이 fixture 의 board_py 는
-        # ENGINE_REV 가 없는 손상 사본이라 그 적재 자체가 skew fail-loud 다. 이 테스트의 초점은
+        # 본문 없는 손상 사본이라 그 조회가 성립하지 않는다. 이 테스트의 초점은
         # frontmatter 손상 폴백이라 off 로 그 관심사만 남긴다.
         residual_block_fn=lambda tid: None,
         log_file=tmp_path / "log.md",

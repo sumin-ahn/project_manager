@@ -263,7 +263,7 @@ def _spec_text(ticket: str, *, status: str = "claimed", body: str = "") -> str:
 def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
-        "board.py", verifier=pd._verify_engine_rev,
+        "board.py",
     )
     board.REPO = pm_home
 
@@ -2699,7 +2699,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     pm_home, slot, tickets, sync_log = rounds_env
     external = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "additional_reviewer.py",
-        "additional_reviewer.py", verifier=pd._verify_engine_rev,
+        "additional_reviewer.py",
     )
     board = _fixture_board(pd, pm_home, sync_log)
 

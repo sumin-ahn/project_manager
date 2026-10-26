@@ -6,6 +6,8 @@ R4 패키지 안은 모듈 단위 import 만, R7 모듈 1,500줄 이하.
 from __future__ import annotations
 
 import ast
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -166,3 +168,28 @@ def test_rule_detects_synthetic_violation(tmp_path, rule, rel, text):
     _write(tmp_path, "pm_engine/infra/fs.py", "from pm_engine.infra import bad\n" if rule == "R3" else "")
     _write(tmp_path, rel, text)
     assert collect(tmp_path / "pm_engine")[rule], rule
+
+
+def test_entry_file_bootstraps_package_from_isolated_copy(tmp_path):
+    """`python -I` 격리 실행에서 임의 이름으로 적재한 진입 파일이 자기 형제 pm_engine 을 쓴다."""
+    tools = tmp_path / "isolated" / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    shutil.copy2(PACKAGE.parent / "pm_log.py", tools / "pm_log.py")
+    shutil.copytree(PACKAGE, tools / PACKAGE.name, ignore=shutil.ignore_patterns("__pycache__"))
+    probe = (
+        "import importlib.util\n"
+        "from pathlib import Path\n"
+        f"path = Path({str(tools / 'pm_log.py')!r})\n"
+        "spec = importlib.util.spec_from_file_location('arbitrary_isolated_name', path)\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "assert callable(module.console.configure_console_utf8)\n"
+        "print(Path(module.console.__file__).resolve())\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", probe],
+        cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    loaded = Path(result.stdout.strip())
+    assert loaded == (tools / PACKAGE.name / "infra" / "console.py").resolve(), loaded

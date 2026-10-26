@@ -139,7 +139,7 @@ def _spec_text(ticket: str, cluster: str) -> str:
 def _fixture_board(pd, pm_home: Path):
     board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
-        "board.py", verifier=pd._verify_engine_rev,
+        "board.py",
     )
     board.REPO = pm_home
     round_maintenance._rounds_mutation_sync_paths = lambda _home, _message, _paths: True

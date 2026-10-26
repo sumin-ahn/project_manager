@@ -23,9 +23,7 @@ def _run_lint_hooks(home) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for hook in sorted(pm_paths.hooks_dir(home).glob("lint_*.py")):
         try:
-            mod = repo_files.load_module(
-                hook, hook.name, allow_unverified=True,
-            )
+            mod = repo_files.load_module(hook, hook.name)
             check = getattr(mod, "check", None)
             if not callable(check):
                 print(f"⚠️  lint hook {hook.name}: check() 미정의 — 건너뜀", file=sys.stderr)

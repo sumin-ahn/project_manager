@@ -101,7 +101,7 @@ def _done_ticket_text(
 def _fixture_board(pd, home: Path):
     board = repo_files.load_module(
         home / ".project_manager" / "tools" / "board.py",
-        "board.py", verifier=pd._verify_engine_rev,
+        "board.py",
     )
     board.REPO = home
     return board

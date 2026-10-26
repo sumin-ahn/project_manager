@@ -348,7 +348,7 @@ def imported(pm_import, tmp_path_factory):
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude",
-                             "--name", PROJECT_NAME, "--fill", "manual"], engine_rev=pm_import.ENGINE_REV)
+                             "--name", PROJECT_NAME, "--fill", "manual"])
     assert rc == 0, f"import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
     return dest
 
@@ -507,7 +507,7 @@ def test_import_then_update_roundtrip_does_not_oscillate(
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", PROJECT_NAME,
-                             "--fill", "manual", "--from", str(framework)], engine_rev=pm_import.ENGINE_REV)
+                             "--fill", "manual", "--from", str(framework)])
     assert rc == 0, f"import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
 
     monkeypatch.setattr(pm_update, "REPO", dest)

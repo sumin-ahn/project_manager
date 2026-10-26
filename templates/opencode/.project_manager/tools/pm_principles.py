@@ -11,8 +11,6 @@ if _TOOLS_DIR not in sys.path:
 from pm_engine.cli import principles
 from pm_engine.infra import console
 
-ENGINE_REV = "v1.8.1"
-
 
 def main(argv: list[str] | None = None) -> int:
     console.configure_console_utf8()

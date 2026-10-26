@@ -11,17 +11,13 @@ import json
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from _git_fixture import init_git_repo
-from pm_engine.app import adapter_accept
-from pm_engine.app import adapter_report
 from pm_engine.app import conf_apply
 from pm_engine.app import engine_transfer
 from pm_engine.app import entry_doc_migration
-from pm_engine.app import hook_sets
 from pm_engine.app import update_adapters
 from pm_engine.app import update_finish
 from pm_engine.app import update_manifest
@@ -226,48 +222,7 @@ def test_transfer_uses_fresh_completion_without_import_after_copy(tmp_path, monk
     assert engine_transfer._take_completion_handoff() == good
     assert engine_transfer._take_completion_handoff() is None
 
-    # 갱신의 판정 흡수 경계는 표식된 엔진 사본 불일치를 흡수하지 않고 같은 예외로 올린다.
     monkeypatch.undo()
-    skew = RuntimeError("표식된 엔진 사본 불일치")
-    skew._engine_rev_skew = True
-
-    def raise_skew(*_args, **_kwargs):
-        raise skew
-
-    in_sync = SimpleNamespace(relpath=".codex/config.toml", status="in-sync",
-                              baseline_sha256="old", dest_sha256="new")
-    judged: list[int] = []
-
-    def first_empty_then_skew(*_args):
-        judged.append(1)
-        if len(judged) == 1:
-            return []
-        raise skew
-
-    boundaries = (
-        ([(update_manifest, "_installed_entry_notation_manifests", raise_skew)],
-         lambda: update_plan._resolve_engine_sync_plan(home, home.root, source, conf={})),
-        ([(adapter_report, "instance_owned_template_delta_lines", raise_skew)],
-         lambda: update_adapters._instance_owned_template_delta_lines(home.root, source)),
-        ([(adapter_report, "judge_adapter_configs", raise_skew)],
-         lambda: update_adapters.sync_adapter_configs(home.root, source, write=False)),
-        ([(adapter_report, "judge_adapter_configs", lambda *_args: [in_sync]),
-          (adapter_accept, "record_adapter_baseline", raise_skew)],
-         lambda: update_adapters.sync_adapter_configs(home.root, source, write=True)),
-        ([(adapter_report, "judge_adapter_configs", first_empty_then_skew)],
-         lambda: update_adapters.sync_adapter_configs(home.root, source, write=False)),
-        ([(hook_sets, "hook_set_declarations", raise_skew)],
-         lambda: update_adapters.check_adapter_hook_sets(home, home.root, source)),
-        ([(hook_sets, "hook_set_declarations", raise_skew)],
-         lambda: update_adapters.refuse_partial_hook_set_scope(home, [], [], source)),
-    )
-    for patches, invoke in boundaries:
-        for owner, name, replacement in patches:
-            monkeypatch.setattr(owner, name, replacement)
-        with pytest.raises(RuntimeError) as raised:
-            invoke()
-        assert raised.value is skew, f"{patches[-1][1]} 경계가 표식된 불일치를 바꿔 올렸다"
-        monkeypatch.undo()
 
     # 기동 실패는 성공으로 바뀌지 않는다.
     monkeypatch.setattr(sys, "executable", str(tmp_path / "missing-python"))

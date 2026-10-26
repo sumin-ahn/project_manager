@@ -114,7 +114,7 @@ def _spec_text(ticket: str, *, design: str = "done", status: str = "claimed") ->
 def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
     board = repo_files.load_module(
         pm_home / ".project_manager" / "tools" / "board.py",
-        "board.py", verifier=pd._verify_engine_rev,
+        "board.py",
     )
     board.REPO = pm_home
 

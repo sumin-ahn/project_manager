@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -339,14 +340,16 @@ def make_upstream_checkout(root: Path, *, source: Path, rev: str = "v9.9.9") -> 
     `git ls-remote --tags` 가 최신 태그를 답하는 저장소다(네트워크 0 · 모듈 단위 픽스처로 한 번만
     만든다). 홈도 같은 `source` 로 설치한다 — 설치 기준 커밋이 이 clone 의 이력에 있고 상류가 홈보다
     rev 하나만 앞선다(이 트리를 직접 clone 하면 커밋 전 변경이 빠져 상류 내용이 홈보다 뒤로 간다).
-    rev 는 엔진 자신의 `engine_rev.py --bump` 로 올린다 — 리터럴을 손으로 고치면 stamped 형제
-    29개가 어긋나 그 사본이 skew 로 죽는다(실측).
+    rev 는 엔진 세대 값의 단일 진실(`pm_engine/__init__.py` 의 `ENGINE_REV` 한 줄)을 고쳐 올린다.
     """
     root.mkdir(parents=True, exist_ok=True)
     checkout = root / "upstream"
     _git("clone", "-q", "--no-local", str(source), str(checkout))
-    _run([sys.executable, str(checkout / ".project_manager" / "tools" / "engine_rev.py"),
-          "--bump", rev])
+    package_init = checkout / ".project_manager" / "tools" / "pm_engine" / "__init__.py"
+    text = package_init.read_text(encoding="utf-8")
+    new_text, count = re.subn(r'(?m)^ENGINE_REV = "[^"]*"$', f'ENGINE_REV = "{rev}"', text)
+    assert count == 1, f"{package_init} 에 ENGINE_REV 줄이 정확히 하나가 아니다({count})"
+    package_init.write_text(new_text, encoding="utf-8")
     _git("-C", str(checkout), "commit", "-qam", f"engine rev {rev}")
     _git("-C", str(checkout), "tag", rev)
     return checkout

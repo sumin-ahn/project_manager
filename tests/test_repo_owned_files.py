@@ -768,3 +768,18 @@ def test_pm_import_normal_copied_scope_never_enters_dest_walk(tmp_path, monkeypa
     )
 
     assert import_fill._resolve_fill_scope(tmp_path, copied) is copied
+
+
+def test_load_module_requires_expected_basename(repo_files, tmp_path):
+    """중앙 적재기는 기대 파일명과 같은 한 경로 이름만 적재한다."""
+    target = tmp_path / "sample.py"
+    target.write_text("VALUE = 510\n", encoding="utf-8")
+
+    assert repo_files.load_module(target, "sample.py").VALUE == 510
+    with pytest.raises(ValueError, match="filename mismatch"):
+        repo_files.load_module(target, "other.py")
+    for name in ("", "dir/sample.py", "dir\\sample.py", ".", ".."):
+        with pytest.raises(ValueError, match="one basename"):
+            repo_files.load_module(target, name)
+    with pytest.raises(TypeError):
+        repo_files.load_module(str(target), "sample.py")

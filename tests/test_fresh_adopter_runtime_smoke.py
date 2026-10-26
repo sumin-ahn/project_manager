@@ -119,7 +119,7 @@ def _import_adopter(tmp_path: Path, harness: str, *, ctx_model: str = "fixture-m
         for name, seam in known_ctx_seams(model=ctx_model).items():
             patch.setattr(harness_ctx, name, seam)
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
-            ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"], engine_rev=pm_import.ENGINE_REV
+            ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
         )
     assert rc == 0, f"{harness} adopter import 실패 (rc={rc})"
     return dest

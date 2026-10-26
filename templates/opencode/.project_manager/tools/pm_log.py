@@ -46,7 +46,6 @@ from pm_engine.infra import console, pm_paths
 from pm_engine.cli import log
 
 REPO = Path(__file__).resolve().parents[2]
-ENGINE_REV = "v1.8.1"
 
 
 def main(argv=None):

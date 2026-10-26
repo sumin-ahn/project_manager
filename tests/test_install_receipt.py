@@ -80,7 +80,7 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
 def _new_instance(pm_import, dest: Path, harness: str = "claude") -> Path:
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", harness, "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV)
+         "--from", str(REPO), "--name", "Receipt Inst"])
     assert rc == 0, f"인스턴스 셋업 실패(rc={rc})"
     return dest
 
@@ -122,7 +122,7 @@ def test_into_records_the_union_of_existing_and_selected(pm_import, tmp_path):
 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude", "codex"]
 
@@ -144,7 +144,7 @@ def test_planning_paths_do_not_write_a_receipt(pm_import, tmp_path, capsys):
 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "codex", "--fill", "manual", "--dry-run",
-         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
     assert not _receipt_path(pm_import, dest).exists(), "import dry-run 이 기록을 만들었다"
 
 
@@ -244,7 +244,7 @@ def test_legacy_instance_backfills_on_reimport(pm_import, tmp_path):
 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--into", str(dest), "--harness", "claude", "--fill", "manual",
-         "--from", str(REPO), "--name", "Receipt Inst"], engine_rev=pm_import.ENGINE_REV) == 0
+         "--from", str(REPO), "--name", "Receipt Inst"]) == 0
 
     assert _receipt(pm_import, dest)["harnesses"] == ["claude"]
 

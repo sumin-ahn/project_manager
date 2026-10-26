@@ -463,7 +463,6 @@ def _build_upgraded_adopter(
     assert import_cmd.main(
         pm_paths.home_at(_PM_IMPORT.REPO),
         ["--new", str(dest), "--harness", host, "--name", _ADOPTER_NAME, "--fill", "manual"],
-        engine_rev=_PM_IMPORT.ENGINE_REV,
     ) == 0, f"{host} import 실패"
     _prime_engine_to_canonical(dest)
 
@@ -1252,11 +1251,11 @@ def _flat_updater_source() -> str:
     repo_line = next(line for line in flat.splitlines(keepends=True)
                      if line.startswith("REPO = Path(__file__)"))
     entry = flat[flat.index('\n\nif __name__ == "__main__":'):]
-    return _reverse_engine_package_replace(
+    return _reverse_engine_rev_marker_removal(_reverse_engine_package_replace(
         shebang + cli[:doc_end] + "\nfrom __future__ import annotations\n\n\n"
         + "".join(_PRE_S9_UPDATE_IMPORTS) + repo_line + _PRE_S9_FLAT_ENTRY_HELPERS
         + "\n\n" + unqualify("\n\n".join(parts)) + "\n\ndef _main(" + unqualify(cli_body.rstrip("\n") + "\n")
-        + unqualify(entry))
+        + unqualify(entry)))
 
 
 # 엔진 패키지 디렉터리 교체(교체 행 `replace-dir`·계획 값 `package_plan`·락 안 게시)는 두 동결 세대 updater 에
@@ -1642,6 +1641,151 @@ def _reverse_engine_package_replace(source: str) -> str:
         assert source.count(current) == 1, current
         source = source.replace(current, legacy, 1)
     assert "replace-dir" not in source and "package_plan" not in source   # 교체 개념 잔존 0
+    return source
+
+
+# 엔진 버전 대조 장치(표식된 사본 불일치 재전파 분기와 그 설명)는 두 동결 세대 updater 에 있던 원문이다.
+# 현행 계획·어댑터·CLI 원문에서 그 분기를 지웠으므로 합성본에서 그 세대 원문으로 되돌려 지문을 그대로
+# 맞춘다. 원문 쌍은 (현행, 그 세대)이고 현행 쪽은 합성본에서 정확히 한 번 해소돼야 한다.
+_ENGINE_REV_MARKER_REVERSALS = (
+    (
+        '    전용 타입이다 — 호출부(`_main`·`drift_changes`)가 "notation context 실패"만 좁게 받아 처리\n'
+        '    (에러+rc2 대 None 판정 불능)하고, `plan()` 이 낸 무관한 `RuntimeError` 는 그대로 전파시킨다.\n'
+        '    """\n',
+        '    전용 타입이다 — 호출부(`_main`·`drift_changes`)가 "notation context 실패"만 좁게 받아 처리\n'
+        '    (에러+rc2 대 None 판정 불능)하고, `plan()` 이 낸 무관한 `RuntimeError` 는 그대로 전파시킨다\n'
+        '    (엔진 사본 skew 는 이 타입으로 감싸지 않는다 — 마커를 잃지 않도록 원본 그대로 재-raise 한다).\n'
+        '    """\n'
+    ),
+    (
+        '    except RuntimeError as exc:\n'
+        '        raise _EngineSyncNotationContextError(str(exc)) from exc\n',
+        '    except RuntimeError as exc:\n'
+        '        # 엔진 사본 skew 는 감싸지 않고 원본 그대로 재-raise 한다(마커 보존) — `plan()` 자신이\n'
+        '        #   낼 수 있는 다른 `RuntimeError`(예 `EmptyShippingInventoryError`)와 이 지점의 notation\n'
+        '        #   context 실패를 구분해야 호출부가 좁게 처리한다(F-001 추출 전 `_main` 의 try/except\n'
+        '        #   경계와 동형 — 넓게 잡으면 `plan()` 의 무관한 예외까지 이 지점 처리로 오분류된다).\n'
+        '        if getattr(exc, "_engine_rev_skew", False):\n'
+        '            raise\n'
+        '        raise _EngineSyncNotationContextError(str(exc)) from exc\n'
+    ),
+    (
+        '    except RuntimeError as exc:\n'
+        '        # `None` 은 호출부에서 "이 형상엔 게이트가 적용되지 않음(무차단)" 으로 읽히므로 판정 불능으로\n'
+        '        #   접지 않는다. `plan()` 의 다른 RuntimeError(예 `EmptyShippingInventoryError`)는 종전대로\n'
+        '        #   전파한다.\n'
+        '        raise\n',
+        '    except RuntimeError as exc:\n'
+        '        # 엔진 사본 skew(마커 보존을 위해 `_resolve_engine_sync_plan` 이 원본 그대로 재-raise 함)도\n'
+        '        #   여기서 판정 불능으로 접지 않는다 — 이 게이트는 "실행 엔진 사본이 upstream 과 갈렸는가"\n'
+        '        #   를 묻는데, 사본끼리 rev 가 갈린 트리는 그 질문의 **가장 강한 양성**이다. `None` 은\n'
+        '        #   호출부에서 "이 형상엔 게이트가 적용되지 않음(무차단)" 으로 읽히므로, 접으면 게이트가\n'
+        '        #   잡으라고 만들어진 그 형상에서만 조용히 통과한다(false-green). 흡수 없이 올려 사본\n'
+        '        #   재동기 안내를 그대로 보이고, `plan()` 의 다른 RuntimeError(예\n'
+        '        #   `EmptyShippingInventoryError`)도 종전대로 전파한다.\n'
+        '        raise\n'
+    ),
+    (
+        '        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud.\n'
+        '        return [\n',
+        '        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud(표식 skew 는 올린다).\n'
+        '        if getattr(exc, "_engine_rev_skew", False):\n'
+        '            raise\n'
+        '        return [\n'
+    ),
+    (
+        '        judgments = adapter_report.judge_adapter_configs(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다.\n'
+        '        # 판정 불가는 `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구한다(이미 착지한\n',
+        '        judgments = adapter_report.judge_adapter_configs(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(표식 skew 는 올린다).\n'
+        '        # 판정 불가는 `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구한다(이미 착지한\n'
+    ),
+    (
+        '        #   엔진 파일은 그대로 선다).\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n',
+        '        #   엔진 파일은 그대로 선다).\n'
+        '        if getattr(exc, "_engine_rev_skew", False):\n'
+        '            raise\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n'
+    ),
+    (
+        '            adapter_accept.record_adapter_baseline(dest_root, source_root)\n'
+        '        except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격.\n'
+        '            result["degraded"].append({\n',
+        '            adapter_accept.record_adapter_baseline(dest_root, source_root)\n'
+        '        except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격(표식 skew 는 올린다).\n'
+        '            if getattr(exc, "_engine_rev_skew", False):\n'
+        '                raise\n'
+        '            result["degraded"].append({\n'
+    ),
+    (
+        '        final_judgments = adapter_report.judge_adapter_configs(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red.\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n',
+        '        final_judgments = adapter_report.judge_adapter_configs(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red(표식 skew 는 올린다).\n'
+        '        if getattr(exc, "_engine_rev_skew", False):\n'
+        '            raise\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n'
+    ),
+    (
+        '    판정 실패는 `status="unavailable"` 로 내린다(형제 `sync_adapter_configs` 와 같은 fail-soft\n'
+        '    — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다)."""\n'
+        '    result: dict = {"status": "ok", "findings": [], "entrypoints": [], "reason": None}\n',
+        '    판정 실패는 `status="unavailable"` 로 내린다(형제 `sync_adapter_configs` 와 같은 fail-soft\n'
+        '    — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다). 엔진 사본 skew 만 예외."""\n'
+        '    result: dict = {"status": "ok", "findings": [], "entrypoints": [], "reason": None}\n'
+    ),
+    (
+        '            dest_root, source_root, declarations=generation.declarations)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n',
+        '            dest_root, source_root, declarations=generation.declarations)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다(표식 skew 는 올린다).\n'
+        '        if getattr(exc, "_engine_rev_skew", False):\n'
+        '            raise\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n'
+    ),
+    (
+        '    except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.\n'
+        '        partial = None\n',
+        '    except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.\n'
+        '        if getattr(exc, "_engine_rev_skew", False):\n'
+        '            raise\n'
+        '        partial = None\n'
+    ),
+    (
+        '    except _EngineSyncNotationContextError as exc:\n'
+        '        # 여기 도달한 것만 notation context 해소 실패다(무진단 침묵 금지).\n'
+        '        print(f"오류: {exc}", file=sys.stderr)\n',
+        '    except _EngineSyncNotationContextError as exc:\n'
+        '        # 엔진 사본 skew 는 이 타입으로 감싸이지 않는다(`_resolve_engine_sync_plan` 이 원본 그대로\n'
+        '        #   재-raise 해 이 except 를 지나쳐 아래 `main()` 의 최외곽 skew 재-raise 로 올라간다) —\n'
+        '        #   그걸 "context 실패 rc2" 로 덮으면 로드 경계 진단이 사라진다. 여기 도달한 것만 진짜\n'
+        '        #   notation context 해소 실패다(무진단 침묵 금지).\n'
+        '        print(f"오류: {exc}", file=sys.stderr)\n'
+    ),
+    (
+        '    except Exception as exc:\n'
+        '        if not isinstance(exc, repo_files.RepoFilesGitError):\n',
+        '    except Exception as exc:\n'
+        '        # 엔진 사본 skew 는 분류 이전에 그대로 올린다 — 아래 분기도 결과적으로 re-raise 하지만,\n'
+        '        #   skew 가 이 경계를 지난다는 사실을 명시해 둔다.\n'
+        '        if getattr(exc, "_engine_rev_skew", False):\n'
+        '            raise\n'
+        '        if not isinstance(exc, repo_files.RepoFilesGitError):\n'
+    ),
+)
+
+
+def _reverse_engine_rev_marker_removal(source: str) -> str:
+    """버전 대조 분기 삭제 역적용 — 원문 쌍의 현행 쪽은 각각 정확히 한 번 해소돼야 한다."""
+    for current, legacy in _ENGINE_REV_MARKER_REVERSALS:
+        assert source.count(current) == 1, current
+        source = source.replace(current, legacy, 1)
     return source
 
 
@@ -2656,7 +2800,7 @@ def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
     assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
         "--fill", "manual",
-    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
+    ]) == 0
     # 먼저 나머지 엔진을 canonical과 맞춰 RUN2의 엔진 change를 정확히 0으로 만든다.
     _prime_engine_to_canonical(dest)
 
@@ -2745,7 +2889,7 @@ def test_upgrade_adopter_crlf_dest_reaches_zero_change_and_keeps_notation(tmp_pa
     assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
         "--fill", "manual",
-    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
+    ]) == 0
     _prime_engine_to_canonical(dest)
     # 대조군: 승격 직후는 변경 0 이어야 이 게이트가 **CRLF 변환분만** 재는 측정기가 된다.
     settled = _run_pm_update(dest)
@@ -2851,7 +2995,7 @@ def test_upgrade_adopter_gains_a_codex_hook_feature_by_engine_code_alone(tmp_pat
     assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
         "--fill", "manual", "--from", str(framework),
-    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
+    ]) == 0
 
     hooks_rel = ".codex/hooks.json"
     hooks_before = (dest / hooks_rel).read_bytes()
@@ -2939,7 +3083,7 @@ def test_upgrade_adopter_absorbs_the_widened_entrypoint_set_without_advisory_noi
     assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
         "--fill", "manual", "--from", str(framework),
-    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
+    ]) == 0
     # 전제: 이 세대 채택자에는 진입점이 3건 빠져 있다(소견이 발화할 수 있는 상태).
     before = hook_sets.judge_adapter_hook_entrypoints(dest, framework, ["codex"])
     assert {finding.event for finding in before} == set(_T0806_MIGRATED_EVENTS), before
@@ -3023,7 +3167,7 @@ def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_
     assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO), [
         "--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME,
         "--fill", "manual",
-    ], engine_rev=_PM_IMPORT.ENGINE_REV) == 0
+    ]) == 0
     _prime_engine_to_canonical(dest)
     conf = dest / ".project_manager" / "local.conf"
     conf.write_text(f"upstream={REPO}\n" + _OPERATIONAL_CONF + _LEGACY_AXES_CONF,
@@ -3127,7 +3271,7 @@ def test_upgrade_adopter_drops_the_legacy_home_row_on_sync(tmp_path):
     """흡수가 옛 홈 자신 행을 지운다 — 작업 폴더 행은 그대로 · 재실행은 byte 불변(멱등)."""
     dest = tmp_path / "legacy-home-row"
     assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO),
-        ["--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME, "--fill", "manual"], engine_rev=_PM_IMPORT.ENGINE_REV
+        ["--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME, "--fill", "manual"]
     ) == 0
     _prime_engine_to_canonical(dest)
     ledger = _seed_legacy_home_row(dest)
@@ -3149,9 +3293,6 @@ def test_upgrade_adopter_drops_the_legacy_home_row_on_sync(tmp_path):
 # ── 전달/완료 두 프로세스 갱신 (T-0951) ─────────────────────────────────────────────────────────────
 # 실제 git 상류(`make_committed_source`)·실제 설치(`pm_import --new`)·서브프로세스 실행만 쓴다.
 
-_T0951_SKEW_NOTICE = "엔진 사본 버전 불일치"
-
-
 @pytest.fixture
 def t0951_opencode_path(request, tmp_path, monkeypatch):
     """opencode 형상만 가짜 opencode 를 PATH 앞에 둔다(POSIX 아닌 플랫폼은 그 형상만 skip)."""
@@ -3166,7 +3307,7 @@ _PINNED_V18_COMMITS = {
     "v1.8.1": "298ffe604ab951146b0acc4d70b57a16a563a1bc",
 }
 # 엔진 패키지로 옮겨 평면 위치에서 은퇴한 모듈(manifest `# pm-retired-path:`).
-_PACKAGE_RETIRED_FLAT_MODULES = ("file_lock.py", "console_encoding.py", "repo_owned_files.py")
+_PACKAGE_RETIRED_FLAT_MODULES = ("file_lock.py", "console_encoding.py", "repo_owned_files.py", "engine_rev.py")
 
 
 def _pinned_source(tmp_path: Path, commit: str) -> Path:
@@ -3323,14 +3464,6 @@ def test_completion_exit_code_and_output_are_relayed(tmp_path):
     assert "완료 단계 표식 오류" in run.stderr, run.stderr
 
 
-def _t0951_set_engine_rev(path: Path, rev: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    new_text, count = re.subn(r'^ENGINE_REV = "[^"]*"', f'ENGINE_REV = "{rev}"', text,
-                              count=1, flags=re.MULTILINE)
-    assert count == 1, path
-    path.write_text(new_text, encoding="utf-8", newline="\n")
-
-
 def _t0951_pm_update(home: Path, source: Path) -> subprocess.CompletedProcess:
     from _manager_home import known_ctx_env
     return subprocess.run(
@@ -3338,24 +3471,6 @@ def _t0951_pm_update(home: Path, source: Path) -> subprocess.CompletedProcess:
         cwd=home, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=300, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"},
                                        native_bin=home.parent / "known-ctx-native"))
-
-
-def test_stale_sibling_copy_converges_in_one_update(tmp_path):
-    """옛 rev 의 형제 사본 하나는 한 번의 갱신으로 상류와 같아지고 강등 알림이 없다 (AT-022).
-
-    전달 프로세스는 엔진 모듈을 적재하지 않고 옮기며, 완료 프로세스는 이미 맞춰진 사본만 적재한다
-    — 옛 사본을 검증 적재할 일이 없으므로 버전 불일치 알림도 없다."""
-    from _manager_home import make_committed_source, make_pm_home
-    source = make_committed_source(tmp_path / "source")
-    home = make_pm_home(tmp_path / "home", upstream=source, source=source)
-    stale = home / ".project_manager/tools/pm_import.py"
-    _t0951_set_engine_rev(stale, "v1.7.13")
-
-    run = _t0951_pm_update(home, source)
-
-    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
-    assert _T0951_SKEW_NOTICE not in run.stdout + run.stderr
-    assert stale.read_bytes() == (source / ".project_manager/tools/pm_import.py").read_bytes()
 
 
 @pytest.fixture(autouse=True)

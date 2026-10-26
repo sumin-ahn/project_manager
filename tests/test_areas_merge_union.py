@@ -787,7 +787,7 @@ def test_new_board_submodule_seed_deploys_union(board, tmp_path, monkeypatch):
     dest = tmp_path / "home"
 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H",
-                           "--board-submodule", "--board-remote", str(bare)], engine_rev=pm_import.ENGINE_REV) == 0
+                           "--board-submodule", "--board-remote", str(bare)]) == 0
 
     board_dir = dest / ".project_manager" / "board"
     assert (board_dir / ".gitattributes").is_file()

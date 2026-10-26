@@ -405,7 +405,7 @@ def test_hook_installs_under_own_git_dir(board, monkeypatch, capsys):
     body = (hooks / "pre-push").read_text(encoding="utf-8")
     assert pre_push_hook._PM_HOOK_SIGNATURE in body
     # 길이는 엔진 본문에서 유도한다 — 값을 복제하면 본문 한 글자에 이 테스트가 거짓 red 다.
-    # 그래도 보호훅(22538 바이트)과는 세 자릿수로 갈려 덮어쓰기는 이 대조에 걸린다.
+    # 그래도 보호훅(22507 바이트)과는 세 자릿수로 갈려 덮어쓰기는 이 대조에 걸린다.
     assert len(body.encode("utf-8")) == len(
         pre_push_hook.pre_push_hook_body("python3").encode("utf-8"))
     assert capsys.readouterr().err == ""       # 설치했으면 사유를 낼 것이 없다
