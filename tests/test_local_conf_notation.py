@@ -42,7 +42,7 @@ from _engine_tree import engine_python_files
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store, pm_paths, python_env
-from pm_engine.app import conf_lint, regression
+from pm_engine.app import conf_lint, finish_context, regression
 
 from pm_engine.infra import conf_store
 
@@ -144,11 +144,11 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
 def test_module_level_local_config_seams_are_still_patchable(monkeypatch, tmp_path):
     """모듈 레벨 `local_config` 이름은 시그니처째 보존된다 — 63지점 테스트 seam."""
     for name in ("additional_reviewer", "ticket_finish", "pm_delegate"):
-        module = _load(name, f"seam_{name}")
-        owner = module if name == "ticket_finish" else conf_store
+        _load(name, f"seam_{name}")
+        owner = conf_store
         assert callable(owner.local_config)
         monkeypatch.setattr(owner, "local_config", lambda *a, **k: {"test.cmd": "x"})
-        assert (owner.local_config() if name == "ticket_finish" else owner.local_config(pm_paths.home_at(tmp_path)))["test.cmd"] == "x"
+        assert owner.local_config(pm_paths.home_at(tmp_path))["test.cmd"] == "x"
 
 
 # ── ② 구표기 fail-loud (소비는 멈추고 배달은 계속) ─────────────────────────
@@ -177,10 +177,7 @@ def test_legacy_keys_stop_the_consumer_instead_of_silently_defaulting(tmp_path, 
     # 예외 **종류**는 이름으로 본다 — 도구마다 로더 사본이 따로 로드돼 클래스 identity 가 다르고,
     # 계약은 "구표기 잔존이 이 이름의 예외로 멈춘다" 이지 특정 객체가 아니다.
     with pytest.raises(RuntimeError) as caught:
-        if name == "ticket_finish":
-            module.local_config()
-        else:
-            conf_store.local_config(pm_paths.home_at(tmp_path))
+        conf_store.local_config(pm_paths.home_at(tmp_path))
 
     assert type(caught.value).__name__ == "LegacyConfKeyError"
     message = str(caught.value)
@@ -241,9 +238,7 @@ def test_gate_resolution_stops_instead_of_falling_back_to_the_default_suite(tmp_
         if name == "pm_handoff":
             regression._resolve_gate_cmd(pm_paths.home_at(tmp_path))
         else:
-            finish = _load("ticket_finish", "gate_ticket_finish")
-            finish.REPO = tmp_path
-            finish._resolve_per_repo_test_cmd()
+            finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(tmp_path))
 
     assert type(caught.value).__name__ == "LegacyConfKeyError"
     assert "test_cmd" in str(caught.value)

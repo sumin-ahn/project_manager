@@ -23,7 +23,7 @@ from pm_engine.domain import reviewer_budget
 from pm_engine.app import reviewer_reservation
 from pm_engine.cli import reviewer_rounds
 from pm_engine.app import reviewer_run
-from pm_engine.infra import round_store
+from pm_engine.infra import finish_store, round_store
 
 from pm_engine.app import reviewer_prompt
 
@@ -893,11 +893,6 @@ def _coexisting_tickets(tmp_path) -> Path:
     return tickets
 
 
-def _real_board_shim(tmp_path, finish) -> Path:
-    """tmp 보드 홈의 board.py 위치 — ticket_finish 는 그 위치에서 만든 Home 으로 **실 seam** 조회를 한다."""
-    return tmp_path / ".project_manager" / "tools" / "board.py"
-
-
 def test_prefix_glob_first_match_is_the_reproduced_hazard(tmp_path):
     """재현 — 공존 픽스처의 `T-0036-*.md` 첫 매칭은 **다른 티켓**이다(차단이 어디서 서는지 못박음)."""
     tickets = _coexisting_tickets(tmp_path)
@@ -908,7 +903,6 @@ def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
         external, tmp_path, monkeypatch):
     """강등 스코프·리뷰 범위·완료 로드가 모두 canonical `T-0036` 을 본다 (오인 0·DoD)."""
     _coexisting_tickets(tmp_path)
-    finish = _load("ticket_finish")
     board = _load("board")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(external, "REPO", tmp_path)
@@ -919,12 +913,12 @@ def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
     # ② 리뷰 범위 (추가 리뷰어)
     assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036", ) == ["src/pay.py"]
     # ③ 완료 게이트 티켓 로드 (ticket_finish)
-    shim = _real_board_shim(tmp_path, finish)
-    assert finish.get_ticket_touches(shim, "T-0036") == ["src/pay.py"]
+    finish_home = pm_paths.home_at(tmp_path)
+    assert finish_store.get_ticket_touches(finish_home, "T-0036") == ["src/pay.py"]
 
     # prefixed 티켓 자신의 조회는 그대로 자기 값을 본다 (좁힘이 정상 조회를 삼키지 않는다).
     assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036-001", ) == ["src/unrelated.py"]
-    assert finish.get_ticket_touches(shim, "T-0036-001") == ["src/unrelated.py"]
+    assert finish_store.get_ticket_touches(finish_home, "T-0036-001") == ["src/unrelated.py"]
     assert regression._ticket_touches(board._home(), "T-0036-001") == ["src/unrelated.py"]
 
 
@@ -932,14 +926,13 @@ def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
         external, tmp_path, monkeypatch):
     """정확 일치가 없으면 각 소비처는 종전 처리 그대로다 (FULL·빈 값·fail-loud)."""
     _coexisting_tickets(tmp_path)
-    finish = _load("ticket_finish")
     board = _load("board")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(external, "REPO", tmp_path)
-    shim = _real_board_shim(tmp_path, finish)
+    finish_home = pm_paths.home_at(tmp_path)
 
     assert regression._ticket_touches(board._home(), "T-0036-002") == []              # 스코프 없음 = FULL
-    assert finish.get_ticket_touches(shim, "T-0036-002") == []
+    assert finish_store.get_ticket_touches(finish_home, "T-0036-002") == []
     with pytest.raises(pm_paths.AnchorResolutionError):           # touches 는 fail-loud 유지
         round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036-002", )
 

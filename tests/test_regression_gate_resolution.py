@@ -19,8 +19,8 @@ red** 로 오판된다. 판정도 게이트 종류로 가른다 — pytest 게�
 
 해소 체인이 읽는 패키지 함수(`pm_paths.areas_file`·`areas_store`·`conf_store.local_config`·
 `python_env.default_pytest_cmd`)를 stub 으로 갈아끼우면 실 areas.md·local.conf 없이 층별 판정을
-고정할 수 있다. 마지막 절(무prefix 채택자 형상)은 stub 없이 두 도구의 `REPO` 를 tmp 채택자 홈에
-묶어 등록→해소→판정을 끝까지 태운다.
+고정할 수 있다. 마지막 절(무prefix 채택자 형상)은 stub 없이 tmp 채택자 홈의 명시 Home 으로
+등록→해소→판정을 끝까지 태운다.
 
 도구는 패키지가 아니므로 importlib 동적 로드 (test_ticket_finish·test_pm_handoff 관용구).
 """
@@ -31,6 +31,8 @@ from pm_engine.infra import pm_paths
 import pm_engine.app.regression
 import pm_engine.cli.handoff
 import pm_engine.domain.handoff_text
+import pm_engine.app.finish_context
+from pm_engine.cli import finish_record
 
 import argparse
 import importlib.util
@@ -64,7 +66,7 @@ def _load_tool(name: str):
 
 @pytest.fixture(scope="module")
 def tf():
-    return _load_tool("ticket_finish")
+    return pm_engine.app.finish_context
 
 
 @pytest.fixture(scope="module")
@@ -136,7 +138,8 @@ def _install_stub(stub, monkeypatch):
 def _resolve(mod, stub, monkeypatch):
     _install_stub(stub, monkeypatch)
     return (pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
-            if mod is pm_engine.domain.handoff_text else mod._resolve_per_repo_test_cmd())
+            if mod is pm_engine.domain.handoff_text
+            else mod._resolve_per_repo_test_cmd(pm_paths.home_at(Path("/tmp/t0989-gate"))))
 
 
 # ── 층별 우선순위 ────────────────────────────────────────────────────────
@@ -248,7 +251,7 @@ def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):
 
 def test_gate_is_pytest_classification(tool):
     """None(해소 실패)=솔로 pytest argv → True. pytest 토큰 포함 → True. 그 외 → False."""
-    mod = tool
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
     assert mod._gate_is_pytest(None) is True
     assert mod._gate_is_pytest("pytest tests/ -q") is True
     assert mod._gate_is_pytest("python3 -m pytest tests/ -q") is True
@@ -258,21 +261,21 @@ def test_gate_is_pytest_classification(tool):
 
 def test_non_pytest_gate_green_is_exit_code_only(tool):
     """비-pytest 게이트는 exit 0 만 green — 요약행이 없어도 green 이다."""
-    mod = tool
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
     assert mod._regression_is_green("✅ 매니페스트 검증 통과", 0, NON_PYTEST_CMD) is True
     assert mod._regression_is_green("", 0, NON_PYTEST_CMD) is True
 
 
 def test_non_pytest_gate_red_is_not_swallowed(tool):
     """fail-soft 가 아니다 — 비-pytest 게이트도 rc != 0 이면 red."""
-    mod = tool
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
     assert mod._regression_is_green("아무 출력", 1, NON_PYTEST_CMD) is False
     assert mod._regression_is_green("✅ 통과처럼 보이는 출력", 2, NON_PYTEST_CMD) is False
 
 
 def test_pytest_gate_verdict_unchanged(tool):
     """pytest 게이트 판정은 기존 요약행 경로 그대로(도그푸딩 무회귀)."""
-    mod = tool
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
     green = "1472 passed, 24 deselected in 12.34s"
     assert mod._regression_is_green(green, 0, None) is True
     assert mod._regression_is_green(green, 0, "pytest tests/ -q") is True
@@ -284,7 +287,7 @@ def test_pytest_gate_verdict_unchanged(tool):
 
 def test_gate_label_shows_solo_argv_for_none(tool):
     """안내 문구 — 해소 실패(None)는 실제 실행 argv 라벨을 보여준다."""
-    mod = tool
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
     assert mod._gate_label(None) == "pytest tests/ -q -n auto"
     assert mod._gate_label(NON_PYTEST_CMD) == NON_PYTEST_CMD
 
@@ -332,7 +335,7 @@ def test_resolution_parity_across_tools(tf, hf, monkeypatch, case, tmp_path):
     home = pm_paths.home_at(tmp_path)
     stub = _PARITY_BOARDS[case]
     _install_stub(stub, monkeypatch)
-    finish_cmd = tf._resolve_per_repo_test_cmd()
+    finish_cmd = tf._resolve_per_repo_test_cmd(home)
     handoff_cmd = pm_engine.app.regression._resolve_gate_cmd(home)
     assert finish_cmd == handoff_cmd, f'{case}: 두 도구의 게이트 해소가 갈렸다'
     assert finish_cmd == _PARITY_EXPECTED[case]
@@ -352,7 +355,7 @@ def test_resolution_parity_across_tools(tf, hf, monkeypatch, case, tmp_path):
 )
 def test_verdict_parity_across_tools(tf, hf, output, returncode, gate_cmd, expected):
     """green 판정도 두 도구가 같다 — 게이트 종류 분기가 한쪽에만 들어가면 red."""
-    finish_verdict = tf._regression_is_green(output, returncode, gate_cmd)
+    finish_verdict = pm_engine.domain.handoff_text._regression_is_green(output, returncode, gate_cmd)
     handoff_verdict = pm_engine.domain.handoff_text._regression_is_green(output, returncode, gate_cmd)
     assert finish_verdict == handoff_verdict, "두 도구의 회귀 판정이 갈렸다"
     assert finish_verdict is expected
@@ -362,13 +365,15 @@ def test_gate_surface_parity_across_tools(tf, hf):
     """두 도구가 같은 이름의 게이트 표면과 같은 라벨 상수를 노출한다."""
     for name in ("_resolve_per_repo_test_cmd", "_gate_is_pytest", "_gate_label",
                  "_regression_is_green"):
-        assert callable(getattr(tf, name)), f"ticket_finish 에 {name} 부재"
+        finish_owner = tf if name == "_resolve_per_repo_test_cmd" else pm_engine.domain.handoff_text
+        assert callable(getattr(finish_owner, name)), f"ticket_finish 에 {name} 부재"
         assert callable(getattr(pm_engine.app.regression, "_resolve_gate_cmd") if name == "_resolve_per_repo_test_cmd" else getattr(pm_engine.domain.handoff_text, name)), f"pm_handoff 에 {name} 부재"
-    assert tf._DEFAULT_GATE_LABEL == pm_engine.domain.handoff_text._DEFAULT_GATE_LABEL
-    assert tf._PYTEST_GATE_TOKEN == pm_engine.domain.handoff_text._PYTEST_GATE_TOKEN
+    gate = pm_engine.domain.handoff_text  # finish_record 의 게이트 판정 소유자
+    assert gate._DEFAULT_GATE_LABEL == pm_engine.domain.handoff_text._DEFAULT_GATE_LABEL
+    assert gate._PYTEST_GATE_TOKEN == pm_engine.domain.handoff_text._PYTEST_GATE_TOKEN
     for gate_cmd in (None, "pytest tests/ -q", NON_PYTEST_CMD, LOCAL_CONF_CMD):
-        assert tf._gate_is_pytest(gate_cmd) == pm_engine.domain.handoff_text._gate_is_pytest(gate_cmd)
-        assert tf._gate_label(gate_cmd) == pm_engine.domain.handoff_text._gate_label(gate_cmd)
+        assert gate._gate_is_pytest(gate_cmd) == pm_engine.domain.handoff_text._gate_is_pytest(gate_cmd)
+        assert gate._gate_label(gate_cmd) == pm_engine.domain.handoff_text._gate_label(gate_cmd)
 
 
 # ── 무prefix 채택자 형상 e2e (repo add + tests/ 없음 + 비-pytest 게이트) ──
@@ -463,9 +468,8 @@ def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
     assert areas_store.id_prefix(adopter_board._home()) is None
     assert areas_store.registered_prefixes(adopter_board._home()) == set()
     assert areas_store.registered_repos(adopter_board._home()) == {'heru'}
-    monkeypatch.setattr(tf, 'REPO', adopter_board.REPO)
     home = pm_paths.home_at(adopter_board.REPO)
-    assert tf._resolve_per_repo_test_cmd() == NON_PYTEST_CMD
+    assert tf._resolve_per_repo_test_cmd(home) == NON_PYTEST_CMD
     assert pm_engine.app.regression._resolve_gate_cmd(home) == NON_PYTEST_CMD
 
 
@@ -476,9 +480,9 @@ def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_
     수정 전엔 하드코딩 `pytest tests/ -q` 로 폴백해 `tests/` 부재("no tests ran")로 항상
     red 였다.
     """
-    monkeypatch.setattr(tf, "REPO", adopter_board.REPO)
     log_file = tmp_path / "log.md"
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(adopter_board.REPO),
         run_pytest_fn=lambda: (0, "✅ 매니페스트 검증 통과 — 전략 13"),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),
@@ -503,9 +507,9 @@ def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_
 def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tmp_path,
                                                            monkeypatch, capsys):
     """fail-soft 가 아니다 — 비-pytest 게이트가 rc != 0 이면 기록 전에 중단(rc 1·부작용 0)."""
-    monkeypatch.setattr(tf, "REPO", adopter_board.REPO)
     log_file = tmp_path / "log.md"
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(adopter_board.REPO),
         run_pytest_fn=lambda: (1, "✗ 매니페스트 검증 실패"),
         run_board_fn=lambda args: pytest.fail("red 인데 board complete 가 불렸다"),
         run_git_fn=lambda args: pytest.fail("red 인데 git 이 불렸다"),
@@ -589,6 +593,7 @@ def test_verdict_parity_across_tools_with_declared_platforms(
     _install_stub(stub, monkeypatch)
     for tool in (tf, hf):
         command = (pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
-                   if tool is pm_engine.domain.handoff_text else tool._resolve_per_repo_test_cmd())
+                   if tool is pm_engine.domain.handoff_text
+                   else tool._resolve_per_repo_test_cmd(pm_paths.home_at(Path("/tmp/t0989-gate"))))
         assert command == gate_cmd
-        assert tool._regression_is_green(output, rc, command) is expected
+        assert pm_engine.domain.handoff_text._regression_is_green(output, rc, command) is expected

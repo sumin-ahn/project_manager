@@ -15,7 +15,6 @@ from pm_engine.infra import regression_store
 from pm_engine.infra import review_rounds
 from pm_engine.infra import ticket_store
 import argparse
-import datetime
 import json
 import os
 import re
@@ -25,28 +24,7 @@ import sys
 GATE_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰어)
 
 
-_UTC_ISO_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
-)
-
-
 _TARGET_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-
-
-def _parse_utc_iso(value: object) -> datetime.datetime | None:
-    """writer 형식의 ISO-8601 UTC 시각만 datetime 으로 파싱한다 (아니면 None).
-
-    `datetime.fromisoformat` 단독은 공백 separator·offset 생략 등도 받아들인다. 장부 선후는 보안
-    경계라 writer 가 내는 `YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00`(`Z`도 동치)만 받고, 실제 달력값과
-    UTC offset 을 다시 확인한다. 문자열 사전순 비교는 손상값 `zzz`가 미래로 통하는 구멍이라 쓰지
-    않는다."""
-    if not isinstance(value, str) or _UTC_ISO_RE.fullmatch(value) is None:
-        return None
-    try:
-        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.utcoffset() == datetime.timedelta(0) else None
 
 
 def _unresolved_must_fix_data(home, data: object, ledger: Path) -> list[str]:

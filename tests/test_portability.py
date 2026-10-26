@@ -24,7 +24,7 @@ from pm_engine.infra import pm_paths, pre_push_hook, process, python_env
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# _default_python() 을 동일 헬퍼로 보유하는 세 도구 — 공통적으로 4조합을 검증.
+# 공용 `python_env._default_python(home)` 을 쓰는 세 도구 — 공통적으로 4조합을 검증.
 DEFAULT_PYTHON_TOOLS = ("pm_bootstrap", "pm_handoff", "ticket_finish")
 
 
@@ -93,12 +93,11 @@ def test_default_python_seam_defaults_to_the_real_interpreter_value(name):
 
     `pm_engine.infra.process`·`pm_engine.infra.console` 은 각자 시험 파일(test_reviewer_argv_platform_split·
     test_console_encoding)에서 이 불변성을 이미 확인한다 — 여기서는
-    `_default_python()` 을 공유하는 pm_bootstrap·pm_handoff·ticket_finish 세 사본이
-    각자 독립적으로 같은 불변성을 지키는지 못 박는다(pm_handoff·ticket_finish 는
-    board.py 를 import 하지 않으므로 seam 사본 각각을 직접 확인해야 한다).
+    pm_bootstrap·pm_handoff·ticket_finish 세 도구가 적재된 상태에서도 그 공용 seam 이 같은
+    불변성을 지키는지 못 박는다(세 도구 모두 `python_env._default_python(home)` 을 소비한다).
     """
     mod = _load(name)
-    assert (process._probe_os_name() if name in {"pm_bootstrap", "pm_handoff"} else mod._probe_os_name()) == os.name
+    assert process._probe_os_name() == os.name
 
 
 
@@ -107,12 +106,8 @@ def test_default_python_posix_venv_present(monkeypatch, tmp_path, name):
     """posix + venv 존재 → venv/bin/python (이 머신 현행 보존)."""
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=True, nt=False)
-    if name in {"pm_bootstrap", "pm_handoff"}:
-        monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
-    else:
-        monkeypatch.setattr(mod, "REPO", repo)
-        monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
-    assert (python_env._default_python(pm_paths.home_at(repo)) if name in {"pm_bootstrap", "pm_handoff"} else mod._default_python()) == str(repo / "venv" / "bin" / "python")
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
+    assert python_env._default_python(pm_paths.home_at(repo)) == str(repo / "venv" / "bin" / "python")
 
 
 @pytest.mark.parametrize("name", DEFAULT_PYTHON_TOOLS)
@@ -120,12 +115,8 @@ def test_default_python_nt_venv_present(monkeypatch, tmp_path, name):
     """nt + venv 존재 → venv/Scripts/python.exe."""
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=True, nt=True)
-    if name in {"pm_bootstrap", "pm_handoff"}:
-        monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
-    else:
-        monkeypatch.setattr(mod, "REPO", repo)
-        monkeypatch.setattr(mod, "_probe_os_name", lambda: "nt")
-    assert (python_env._default_python(pm_paths.home_at(repo)) if name in {"pm_bootstrap", "pm_handoff"} else mod._default_python()) == str(repo / "venv" / "Scripts" / "python.exe")
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
+    assert python_env._default_python(pm_paths.home_at(repo)) == str(repo / "venv" / "Scripts" / "python.exe")
 
 
 @pytest.mark.parametrize("name", DEFAULT_PYTHON_TOOLS)
@@ -133,13 +124,9 @@ def test_default_python_posix_venv_absent_falls_back(monkeypatch, tmp_path, name
     """posix + venv 부재 → sys.executable 폴백."""
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=False, nt=False)
-    if name in {"pm_bootstrap", "pm_handoff"}:
-        monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
-    else:
-        monkeypatch.setattr(mod, "REPO", repo)
-        monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
     monkeypatch.setattr(mod.sys, "executable", "/fake/sys/python")
-    assert (python_env._default_python(pm_paths.home_at(repo)) if name in {"pm_bootstrap", "pm_handoff"} else mod._default_python()) == "/fake/sys/python"
+    assert python_env._default_python(pm_paths.home_at(repo)) == "/fake/sys/python"
 
 
 @pytest.mark.parametrize("name", DEFAULT_PYTHON_TOOLS)
@@ -147,13 +134,9 @@ def test_default_python_nt_venv_absent_falls_back(monkeypatch, tmp_path, name):
     """nt + venv 부재 → sys.executable 폴백 (Scripts/python.exe 없음)."""
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=False, nt=True)
-    if name in {"pm_bootstrap", "pm_handoff"}:
-        monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
-    else:
-        monkeypatch.setattr(mod, "REPO", repo)
-        monkeypatch.setattr(mod, "_probe_os_name", lambda: "nt")
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
     monkeypatch.setattr(mod.sys, "executable", "/fake/sys/python")
-    assert (python_env._default_python(pm_paths.home_at(repo)) if name in {"pm_bootstrap", "pm_handoff"} else mod._default_python()) == "/fake/sys/python"
+    assert python_env._default_python(pm_paths.home_at(repo)) == "/fake/sys/python"
 
 
 # ── python_env._detect_py() — which monkeypatch 3분기 ───────────────────────────

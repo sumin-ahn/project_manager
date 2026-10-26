@@ -30,7 +30,9 @@ from _engine_tree import engine_python_files
 _TOOLS_DIR = Path(__file__).resolve().parents[1] / ".project_manager/tools"
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
-from pm_engine.domain import private_refs
+from pm_engine.app import finish_private_refs
+from pm_engine.cli import finish_record
+from pm_engine.domain import finish_rules, private_refs
 from pm_engine.infra import private_surface
 from pm_engine.infra import pm_paths
 from pm_engine.infra import review_diff
@@ -2087,7 +2089,7 @@ def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
     # HARD 총량은 불변 — 산문 표면 라벨만 뒤집힌다(축 구조가 python 축과 같다는 확인).
     assert after_total == hard_total
 
-# ── 사설 참조 완료 기록 preflight(``ticket_finish.TicketFinisher._default_private_ref_block``) ──
+# ── 사설 참조 완료 기록 preflight(``cli.finish_record.TicketFinisher._default_private_ref_block``) ──
 #
 # 판정식 자체는 이 파일이 직접 import한 ``domain.private_refs``와 같은 소스다 — 여기서
 # 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter(묶음 장부 포함) 로 재현한다(DI 로
@@ -2162,27 +2164,19 @@ def _pref_write_ticket(
         base_branch=current_branch(root), branch=current_branch(root))
 
 
-def _pref_finisher(tf_module, root: Path):
-    return tf_module.TicketFinisher(
-        board_py=root / ".project_manager" / "tools" / "board.py",
-        task_workspace=root,
-    )
+def _pref_finisher(root: Path):
+    return finish_record.TicketFinisher(pm_paths.home_at(root), task_workspace=root)
 
 
-def _pref_block_with_stderr(tf_module, root: Path, ticket_id: str) -> tuple[str | None, str]:
+def _pref_block_with_stderr(root: Path, ticket_id: str) -> tuple[str | None, str]:
     """(차단 문자열 또는 None, 그 실행이 낸 stderr) — 경고 축까지 값으로 본다."""
     buffer = io.StringIO()
     with contextlib.redirect_stderr(buffer):
-        block = _pref_finisher(tf_module, root)._default_private_ref_block(ticket_id)
+        block = _pref_finisher(root)._default_private_ref_block(ticket_id)
     return block, buffer.getvalue()
 
 
-@pytest.fixture(scope="module")
-def pref_tf():
-    return _load_tool_module("ticket_finish")
-
-
-def test_private_ref_preflight_blocks_new_actionable_reference(pref_tf, tmp_path):
+def test_private_ref_preflight_blocks_new_actionable_reference(tmp_path):
     """claim 이후 추가한 줄의 사설 참조는 파일:라인·토큰을 값으로 지목하며 차단한다."""
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
@@ -2195,14 +2189,14 @@ def test_private_ref_preflight_blocks_new_actionable_reference(pref_tf, tmp_path
         f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is not None
     assert "pref_target.py:5" in block
     assert _SYNTHETIC_REF in block
 
 
 def test_private_ref_preflight_blocks_reference_added_below_the_docstring_head(
-    pref_tf, tmp_path,
+    tmp_path,
 ):
     """여러 줄 docstring 의 **2행 이후**에 들어온 참조도 차단한다(줄 번호 결합 정합).
 
@@ -2228,7 +2222,7 @@ def test_private_ref_preflight_blocks_reference_added_below_the_docstring_head(
         "    상세 설명.\n", f"    상세 설명 ({_SYNTHETIC_REF})\n",
     )
     _pref_write_target(root, body)
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     hard = [
         (item.line, item.kind, item.match)
         for item in _python_hard_occurrences(_PREF_TOUCH, body)
@@ -2239,7 +2233,7 @@ def test_private_ref_preflight_blocks_reference_added_below_the_docstring_head(
     assert f"✗ {_PREF_TOUCH}:7 {_SYNTHETIC_REF}" in block
 
 
-def test_private_ref_preflight_pre_existing_offense_is_not_a_false_block(pref_tf, tmp_path):
+def test_private_ref_preflight_pre_existing_offense_is_not_a_false_block(tmp_path):
     """base 커밋에 이미 있던 참조는 이 티켓 탓으로 잡히지 않는다(false-block 0)."""
     root = _pref_repo(tmp_path)
     _pref_write_target(
@@ -2258,11 +2252,11 @@ def test_private_ref_preflight_pre_existing_offense_is_not_a_false_block(pref_tf
         f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
         '    return "hi" + "!"\n',
     )
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is None
 
 
-def test_private_ref_preflight_cites_only_the_new_line(pref_tf, tmp_path):
+def test_private_ref_preflight_cites_only_the_new_line(tmp_path):
     """base 와 신규가 공존하면 신규 줄만 지목한다(base 줄의 참조는 안 실린다)."""
     root = _pref_repo(tmp_path)
     _pref_write_target(
@@ -2281,13 +2275,13 @@ def test_private_ref_preflight_cites_only_the_new_line(pref_tf, tmp_path):
         f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is not None
     assert _SYNTHETIC_REF in block
     assert _PREF_BASE_REF not in block
 
 
-def test_private_ref_preflight_silent_on_clean_ticket(pref_tf, tmp_path, capsys):
+def test_private_ref_preflight_silent_on_clean_ticket(tmp_path, capsys):
     """유입 0 이면 반환값·stdout·stderr 모두 조용하다(오탐 0)."""
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
@@ -2295,14 +2289,14 @@ def test_private_ref_preflight_silent_on_clean_ticket(pref_tf, tmp_path, capsys)
     ticket = _pref_ticket("104")
     _pref_write_ticket(root, ticket, claimed_rev)
     _pref_write_target(root, _PREF_BASE_BODY.replace('"hi"', '"hello"'))
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     captured = capsys.readouterr()
     assert block is None
     assert captured.out == "" and captured.err == ""
 
 
 def test_private_ref_preflight_ignores_a_line_the_integration_branch_already_has(
-    pref_tf, tmp_path,
+    tmp_path,
 ):
     """통합 브랜치가 이미 가진 줄은 이번 폭 밖이다 — 차단도 경고도 없다.
 
@@ -2322,14 +2316,14 @@ def test_private_ref_preflight_ignores_a_line_the_integration_branch_already_has
     )
     _pref_commit(root, "offense the integration branch already carries")
 
-    block, stderr = _pref_block_with_stderr(pref_tf, root, ticket)
+    block, stderr = _pref_block_with_stderr(root, ticket)
 
     assert block is None
     assert stderr == ""
 
 
 def test_private_ref_preflight_blocks_raw_only_when_the_line_is_uncommitted(
-    pref_tf, tmp_path,
+    tmp_path,
 ):
     """안전 삭제가 불가능한(허용분 재작성형) 참조라도 그 줄이 **아직 커밋되지 않았으면**
     이 티켓이 방금 넣은 신규 유입이므로 차단한다 — 이 갈래를 경고로 두면 삭제 단위가 안
@@ -2346,7 +2340,7 @@ def test_private_ref_preflight_blocks_raw_only_when_the_line_is_uncommitted(
         + _PREF_MIXED_CONTEXT_COMMENT
         + '    return "hi"\n',
     )
-    block, stderr = _pref_block_with_stderr(pref_tf, root, ticket)
+    block, stderr = _pref_block_with_stderr(root, ticket)
     assert block is not None
     assert "(1건)" in block.splitlines()[0]
     assert f"✗ {_PREF_TOUCH}:5 {_SYNTHETIC_REF} (미커밋 신규)" in block
@@ -2354,7 +2348,7 @@ def test_private_ref_preflight_blocks_raw_only_when_the_line_is_uncommitted(
 
 
 def test_private_ref_preflight_block_lists_only_this_widths_offenders(
-    pref_tf, tmp_path,
+    tmp_path,
 ):
     """차단 목록(✗)에는 이번 폭의 유입만 싣는다 — 통합 브랜치가 이미 가진 줄은 폭 밖이다.
 
@@ -2380,7 +2374,7 @@ def test_private_ref_preflight_block_lists_only_this_widths_offenders(
         + f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
-    block, stderr = _pref_block_with_stderr(pref_tf, root, ticket)
+    block, stderr = _pref_block_with_stderr(root, ticket)
     blocked = [line for line in block.splitlines() if line.lstrip().startswith("✗")]
     assert block is not None
     assert blocked == [f"  ✗ {_PREF_TOUCH}:6 {_SYNTHETIC_REF}"]
@@ -2388,7 +2382,7 @@ def test_private_ref_preflight_block_lists_only_this_widths_offenders(
     assert stderr == ""
 
 
-def test_private_ref_preflight_silent_when_touches_outside_python_surface(pref_tf, tmp_path):
+def test_private_ref_preflight_silent_when_touches_outside_python_surface(tmp_path):
     """touches 가 사설 참조 python 표면과 안 겹치면 판정 로딩조차 안 하고 무발화한다."""
     root = _pref_repo(tmp_path)
     (root / "docs").mkdir()
@@ -2399,11 +2393,11 @@ def test_private_ref_preflight_silent_when_touches_outside_python_surface(pref_t
     (root / "docs" / "readme.md").write_text(
         f"hello ({_SYNTHETIC_REF})\n", encoding="utf-8",
     )
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is None
 
 
-def test_private_ref_preflight_blocks_inflow_in_non_ascii_tracked_path(pref_tf, tmp_path):
+def test_private_ref_preflight_blocks_inflow_in_non_ascii_tracked_path(tmp_path):
     """비-ASCII 경로에서도 유입을 잡는다 — git 은 그 경로를 8진 escape 로 인용해 내므로,
     인용 표기를 풀지 않으면 그 파일이 판정에서 통째로 빠진다(유입이 있는데 통과)."""
     root = _pref_repo(tmp_path)
@@ -2415,13 +2409,13 @@ def test_private_ref_preflight_blocks_inflow_in_non_ascii_tracked_path(pref_tf, 
     target.write_text(
         f'"""표본."""\n# 사설 참조 표식 ({_SYNTHETIC_REF})\n', encoding="utf-8",
     )
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is not None
     assert f"{_PREF_NON_ASCII_TOUCH}:2 {_SYNTHETIC_REF}" in block
 
 
 def test_private_ref_preflight_blocks_inflow_in_non_ascii_untracked_new_file(
-    pref_tf, tmp_path,
+    tmp_path,
 ):
     """아직 추적되지 않은 신규 파일도 같은 폭의 구성원이다 — 비-ASCII 이름이면 그 축
     (``--no-index`` 실행) 헤더도 인용 표기로 나온다."""
@@ -2433,12 +2427,12 @@ def test_private_ref_preflight_blocks_inflow_in_non_ascii_untracked_new_file(
     (root / _PREF_NON_ASCII_TOUCH).write_text(
         f'"""표본."""\n# 사설 참조 표식 ({_SYNTHETIC_REF})\n', encoding="utf-8",
     )
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is not None
     assert f"{_PREF_NON_ASCII_TOUCH}:2 {_SYNTHETIC_REF}" in block
 
 
-def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(pref_tf, tmp_path):
+def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(tmp_path):
     """rename 은 목적지 경로로 접어 판정한다 — 목적지가 인용되는 비-ASCII 이름이어도 같다."""
     root = _pref_repo(tmp_path)
     (root / _PREF_RENAME_SOURCE).write_text(
@@ -2462,14 +2456,14 @@ def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(pref_t
         root, "HEAD", [_PREF_RENAME_SOURCE, _PREF_NON_ASCII_TOUCH],
         claimed_rev=claimed_rev,
     )
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     # rename 메타데이터 형상을 실제로 태웠다는 값 증거(신규 파일 형상으로 접히지 않았다).
     assert "rename to " in diff_text
     assert block is not None
     assert f"{_PREF_NON_ASCII_TOUCH}:5 {_SYNTHETIC_REF}" in block
 
 
-def test_private_ref_preflight_skips_binary_python_without_traceback(pref_tf, tmp_path):
+def test_private_ref_preflight_skips_binary_python_without_traceback(tmp_path):
     """NUL 을 담은 이진 ``.py`` 는 diff 에 추가 줄이 잡히지 않는다 — 판정 대상이 아니고
     예외 없이 지나간다(제어군: 아래 UTF-8 미해석 파일과 갈리는 축이 NUL 유무다)."""
     root = _pref_repo(tmp_path)
@@ -2478,12 +2472,12 @@ def test_private_ref_preflight_skips_binary_python_without_traceback(pref_tf, tm
     ticket = _pref_ticket("116")
     _pref_write_ticket(root, ticket, claimed_rev)
     (root / _PREF_TOUCH).write_bytes(b"\x00\x01\x02 binary payload\n")
-    block, stderr = _pref_block_with_stderr(pref_tf, root, ticket)
+    block, stderr = _pref_block_with_stderr(root, ticket)
     assert block is None
     assert stderr == ""
 
 
-def test_private_ref_preflight_warns_when_changed_python_is_not_utf8(pref_tf, tmp_path):
+def test_private_ref_preflight_warns_when_changed_python_is_not_utf8(tmp_path):
     """NUL 이 없는 비-UTF-8 ``.py`` 는 diff 에 추가 줄이 잡힌다 — 읽기 예외를 다루지 않으면
     완료 preflight 전체가 traceback 으로 죽는다. 차단하지 않되 판정 불가를 값으로 알린다."""
     root = _pref_repo(tmp_path)
@@ -2494,13 +2488,13 @@ def test_private_ref_preflight_warns_when_changed_python_is_not_utf8(pref_tf, tm
     (root / _PREF_TOUCH).write_bytes(
         _PREF_BASE_BODY.encode("utf-8") + "# 주석 한 줄\n".encode("euc-kr")
     )
-    block, stderr = _pref_block_with_stderr(pref_tf, root, ticket)
+    block, stderr = _pref_block_with_stderr(root, ticket)
     assert block is None
     assert "판정 불가" in stderr
     assert "UnicodeDecodeError" in stderr
 
 
-def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(pref_tf, tmp_path):
+def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(tmp_path):
     """표면 해소는 `shipping_paths` 결과를 touches 로 좁힌 것과 값으로 일치한다
     (하드코딩 목록이 아니다)."""
     root = _pref_repo(tmp_path)
@@ -2508,18 +2502,17 @@ def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(pref
     claimed_rev = _pref_commit(root, "seed")
     _pref_write_ticket(root, _pref_ticket("108"), claimed_rev)
     external = _load_tool_module("additional_reviewer")
-    finisher = _pref_finisher(pref_tf, root)
     expected = {
         path for path in private_surface.shipping_paths(root)[0]
         if path.relative_to(root).as_posix() == _PREF_TOUCH
     }
     actual = set(
-        finisher._private_ref_surface_paths(pm_paths.home_at(root), root, [_PREF_TOUCH])
+        finish_private_refs._private_ref_surface_paths(pm_paths.home_at(root), root, [_PREF_TOUCH])
     )
     assert actual == expected and actual  # 비어 있으면 교집합이 실재하지 않아 무의미한 단언이다
 
 
-def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
+def test_private_ref_preflight_surface_excludes_machine_mirror_copies():
     """표면 = 출하 python ∩ touches ∖ 기계 mirror. 실 트리에서 canonical 엔진 파일 하나와
     그 template 사본 전부를 선언해도 남는 것은 canonical 하나다 — 같은 유입을 사본 수만큼
     중복 지목하지 않는다(제외 술어는 `additional_reviewer` 소유)."""
@@ -2534,20 +2527,16 @@ def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
     assert len(mirrors) == 3
     assert all((REPO / mirror).is_file() for mirror in mirrors)
     assert all(review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), mirror) for mirror in mirrors)
-    finisher = pref_tf.TicketFinisher(
-        board_py=REPO / ".project_manager" / "tools" / "board.py",
-        task_workspace=REPO,
-    )
     selected = {
         path.relative_to(REPO).as_posix()
-        for path in finisher._private_ref_surface_paths(
+        for path in finish_private_refs._private_ref_surface_paths(
             pm_paths.home_at(REPO), REPO, [canonical, *mirrors],
         )
     }
     assert selected == {canonical}
 
 
-def test_private_ref_preflight_runs_before_regression_log_board_git(pref_tf, tmp_path):
+def test_private_ref_preflight_runs_before_regression_log_board_git(tmp_path):
     """이 preflight 가 차단하면 회귀·log·board·git mutation 어떤 부작용도 없다(DoD
     preflight 와 동형인 자리 계약). 실 판정으로 재현한다 — DI 스텁이 아니라 실 판정이 앞자리에서
     막는지를 본다."""
@@ -2562,8 +2551,8 @@ def test_private_ref_preflight_runs_before_regression_log_board_git(pref_tf, tmp
         f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
-    finisher = pref_tf.TicketFinisher(
-        board_py=root / ".project_manager" / "tools" / "board.py",
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(root),
         task_workspace=root,
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
@@ -2574,7 +2563,7 @@ def test_private_ref_preflight_runs_before_regression_log_board_git(pref_tf, tmp
     assert not (tmp_path / "log.md").exists()
 
 
-def test_private_ref_preflight_sensitivity_removed_call_lets_offense_through(pref_tf, tmp_path):
+def test_private_ref_preflight_sensitivity_removed_call_lets_offense_through(tmp_path):
     """민감도 — 이 판정을 preflight 배열에서 빼면(override→None) 같은 유입이 안 걸린다.
     같은 트리에서 실 판정(`_default_private_ref_block`)은 차단함을 대조로 고정한다."""
     root = _pref_repo(tmp_path)
@@ -2588,8 +2577,8 @@ def test_private_ref_preflight_sensitivity_removed_call_lets_offense_through(pre
         f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
-    finisher = pref_tf.TicketFinisher(
-        board_py=root / ".project_manager" / "tools" / "board.py",
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(root),
         task_workspace=root,
         private_ref_block_fn=lambda tid: None,
     )
@@ -2598,7 +2587,7 @@ def test_private_ref_preflight_sensitivity_removed_call_lets_offense_through(pre
 
 
 def test_private_ref_block_defers_entirely_to_loaded_scanner_no_duplicate(
-    pref_tf, tmp_path, monkeypatch,
+    tmp_path, monkeypatch,
 ):
     """실제 domain predicate 세 개의 sentinel 결과가 preflight에 반영된다."""
     root = _pref_repo(tmp_path)
@@ -2639,7 +2628,7 @@ def test_private_ref_block_defers_entirely_to_loaded_scanner_no_duplicate(
     monkeypatch.setattr(private_refs, "_actionable_matches", fake_actionable_matches)
     monkeypatch.setattr(private_refs, "_specific_matches", fake_specific_matches)
 
-    block = _pref_finisher(pref_tf, root)._default_private_ref_block(ticket)
+    block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is not None
     assert sentinel in block
 
@@ -2649,8 +2638,10 @@ def test_private_ref_block_defers_entirely_to_loaded_scanner_no_duplicate(
 def test_private_ref_preflight_does_not_reference_allowlist_or_baseline_files():
     """판정 코드는 재유입 가드의 allowlist/ratchet 원장 파일 경로를 참조하지 않는다
     (재생성으로 통과시키는 경로가 구조적으로 없다)."""
-    source = (REPO / ".project_manager" / "tools" / "ticket_finish.py").read_text(
-        encoding="utf-8"
+    tools = REPO / ".project_manager" / "tools" / "pm_engine"
+    source = "".join(
+        (tools / owner).read_text(encoding="utf-8")
+        for owner in ("cli/finish_record.py", "app/finish_private_refs.py")
     )
     assert "private_context_hard_allowlist" not in source
     assert "private_context_baseline" not in source
@@ -2690,7 +2681,7 @@ def _require_historical_inflow_commit() -> None:
         )
 
 
-def test_real_historical_inflow_agrees_with_the_reinflow_guard(pref_tf, tmp_path):
+def test_real_historical_inflow_agrees_with_the_reinflow_guard(tmp_path):
     """실 사고 커밋 1건 — 그 커밋이 추가한 줄에서 두 경로의 값을 대조한다.
 
     전량 회귀 가드(HARD)가 그 줄들에서 내는 출현 4건과 완료 preflight 의 raw 축 4건이 같은
@@ -2713,14 +2704,10 @@ def test_real_historical_inflow_agrees_with_the_reinflow_guard(pref_tf, tmp_path
     target.write_text(source, encoding="utf-8")
 
     external = _load_tool_module("additional_reviewer")
-    finisher = pref_tf.TicketFinisher(
-        board_py=REPO / ".project_manager" / "tools" / "board.py",
-        task_workspace=code_tree,
-    )
-    added, unresolved = pref_tf._parsed_diff_added_lines(
+    added, unresolved = finish_rules._parsed_diff_added_lines(
         diff_text
     )
-    actionable, raw = finisher._private_ref_diff_offenders(
+    actionable, raw = finish_private_refs._private_ref_diff_offenders(
         [target], code_tree, diff_text,
     )
     hard = sorted(
@@ -2740,7 +2727,7 @@ def test_real_historical_inflow_agrees_with_the_reinflow_guard(pref_tf, tmp_path
     assert {surface for _line, _kind, _match, surface in hard} == {"python-prose"}
 
 
-def test_real_historical_inflow_blocks_when_reproduced_uncommitted(pref_tf, tmp_path):
+def test_real_historical_inflow_blocks_when_reproduced_uncommitted(tmp_path):
     """같은 사고를 완료 기록 시점 형상(=변경이 아직 미커밋)으로 재현하면 4줄 전부 차단이다.
 
     사고 당시 이 유입은 병합 뒤 전량 회귀에서야 드러났다. 차단 축이 actionable 단독이면
@@ -2764,7 +2751,7 @@ def test_real_historical_inflow_blocks_when_reproduced_uncommitted(pref_tf, tmp_
     _pref_write_ticket(root, ticket, claimed_rev, touches=(_HISTORICAL_INFLOW_PATH,))
     target.write_text(source, encoding="utf-8")  # 커밋 전 — 완료 기록이 도는 실제 시점
 
-    block, stderr = _pref_block_with_stderr(pref_tf, root, ticket)
+    block, stderr = _pref_block_with_stderr(root, ticket)
     assert block is not None
     blocked = [line for line in block.splitlines() if line.lstrip().startswith("✗")]
     citations = [int(line.split(":")[1].split()[0]) for line in blocked]

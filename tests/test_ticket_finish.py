@@ -40,8 +40,13 @@ import pytest
 
 from _git_fixture import init_git_repo
 from conftest import write_cluster_ledger
-from pm_engine.infra import git, areas_store, cluster_store, conf_store, doc_page_store, pm_paths, python_env, repo_coordinates, ticket_store
+from pm_engine.infra import git, areas_store, cluster_store, conf_store, doc_page_store, fs, pm_paths, python_env, repo_coordinates, ticket_store
 from pm_engine.app import doc_affected, doc_staleness, freshness_lint, slot_resolution
+from pm_engine.app import finish_context, finish_private_refs
+from pm_engine.cli import cluster_close, finish_record
+from pm_engine.cli import ticket_finish as ticket_finish_cli
+from pm_engine.domain import finish_rules, handoff_text
+from pm_engine.infra import finish_baseline, finish_git, finish_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -68,7 +73,7 @@ def _neutralize_misanchor_guard(tf, monkeypatch):
     가드가 아니라 main() 의 정체성/모호 게이트 등 orthogonal 로직을 검증하므로, 오실행 감지를
     None(미해소)로 격리해 가드를 통과시킨다. 가드 자체의 검증은 전용 파일
     `test_board_worktree_misanchor_guard.py` 가 담당한다."""
-    monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
 
 
 def _git_seed(root: Path) -> None:
@@ -85,6 +90,10 @@ def _git_seed(root: Path) -> None:
                    capture_output=True, text=True, encoding="utf-8")
 
 
+# 판정 기준 해소의 실제 구현 — 기준 해소 자체를 축으로 삼는 케이스가 대역을 걷어 낼 때 쓴다.
+_REAL_INTEGRATION_BRANCH = finish_store._cluster_integration_branch
+
+
 @pytest.fixture(autouse=True)
 def _declare_the_integration_basis(tf, monkeypatch):
     """이 파일의 hermetic 픽스처에는 묶음 장부가 없다 — 판정 기준 선언만 대역으로 세운다.
@@ -92,50 +101,49 @@ def _declare_the_integration_basis(tf, monkeypatch):
     엔진은 판정 기준(묶음 장부 `base_branch`)이 없으면 멈춘다. 여기서 검증하는 축은 소프트
     단계·라벨·stage·회귀 흐름이지 그 기준의 해소가 아니므로, **이 트리의 현재 커밋**을 기준으로
     선언한다(커밋 인구 = 공집합 · 측정 기준점 = HEAD). 기준 해소 자체를 축으로 삼는 케이스는
-    실 장부를 가진 tmp 저장소와 그 안의 엔진 사본으로 돌아 이 대역과 무관하다
-    (`_load_tool_copy` — 다른 모듈 객체)."""
+    실 장부를 가진 tmp 저장소에서 `_REAL_INTEGRATION_BRANCH` 로 이 대역을 되돌린다."""
     monkeypatch.setattr(
-        tf, "_cluster_integration_branch", lambda _board_py, _ticket_id: "HEAD")
+        finish_store, "_cluster_integration_branch", lambda _home, _ticket_id: "HEAD")
 
 
 # ── parse_pytest_output / is_pytest_green: 조합·rc 가드 ───────────────────────
 
 def test_parse_pytest_output_passed_only(tf):
-    assert tf.parse_pytest_output("402 passed in 8.74s") == (402, 0)
+    assert finish_rules.parse_pytest_output("402 passed in 8.74s") == (402, 0)
 
 
 def test_parse_pytest_output_passed_and_deselected(tf):
-    assert tf.parse_pytest_output("1472 passed, 24 deselected in 12.34s") == (1472, 24)
+    assert finish_rules.parse_pytest_output("1472 passed, 24 deselected in 12.34s") == (1472, 24)
 
 
 def test_parse_pytest_output_failed_and_passed(tf):
     """failed 가 있어도 passed/deselected 만 파싱 (red 판정은 호출 측)."""
-    assert tf.parse_pytest_output("5 failed, 1467 passed, 24 deselected in 10s") == (1467, 24)
+    assert finish_rules.parse_pytest_output("5 failed, 1467 passed, 24 deselected in 10s") == (1467, 24)
 
 
 def test_parse_pytest_output_no_passed_returns_none(tf):
-    assert tf.parse_pytest_output("collected 0 items / errored") is None
+    assert finish_rules.parse_pytest_output("collected 0 items / errored") is None
 
 
 def test_is_pytest_green_passed_no_failed(tf):
-    assert tf.is_pytest_green("402 passed in 8.74s", returncode=0) is True
+    assert handoff_text.is_pytest_green("402 passed in 8.74s", returncode=0) is True
 
 
 def test_is_pytest_green_passed_with_deselected(tf):
-    assert tf.is_pytest_green("1472 passed, 24 deselected in 1s", returncode=0) is True
+    assert handoff_text.is_pytest_green("1472 passed, 24 deselected in 1s", returncode=0) is True
 
 
 def test_is_pytest_green_with_failed_is_red(tf):
-    assert tf.is_pytest_green("5 failed, 1467 passed in 1s", returncode=1) is False
+    assert handoff_text.is_pytest_green("5 failed, 1467 passed in 1s", returncode=1) is False
 
 
 def test_is_pytest_green_nonzero_returncode_guards(tf):
     """rc != 0 이면 'N passed' 가 있어도 green 으로 오판하지 않는다 (인터럽트·부분 출력)."""
-    assert tf.is_pytest_green("402 passed in 8.74s", returncode=2) is False
+    assert handoff_text.is_pytest_green("402 passed in 8.74s", returncode=2) is False
 
 
 def test_is_pytest_green_no_passed_is_false(tf):
-    assert tf.is_pytest_green("collected 0 items", returncode=0) is False
+    assert handoff_text.is_pytest_green("collected 0 items", returncode=0) is False
 
 
 # ── 회귀 명령 per-repo 해소 (codex must-fix 1·ADR-0014·T-0730) ────────────────
@@ -200,7 +208,7 @@ def _install_stub(stub, monkeypatch):
 def test_resolve_per_repo_cmd_solo_no_areas_returns_default(tf, tmp_path, monkeypatch):
     """솔로 폴백 — areas.md 부재면 4층 기본 명령(`python_env.default_pytest_cmd`)."""
     _install_stub(_FakeBoard(None, None, areas_path=tmp_path / "no-areas.md"), monkeypatch)
-    assert tf._resolve_per_repo_test_cmd() == python_env.default_pytest_cmd()
+    assert finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
 
 
 def test_resolve_per_repo_cmd_multipm_returns_row_cmd(tf, tmp_path, monkeypatch):
@@ -208,7 +216,7 @@ def test_resolve_per_repo_cmd_multipm_returns_row_cmd(tf, tmp_path, monkeypatch)
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
     _install_stub(_FakeBoard("A1", {"test_cmd": "go test ./..."}, areas_path=areas), monkeypatch)
-    assert tf._resolve_per_repo_test_cmd() == "go test ./..."
+    assert finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(REPO)) == "go test ./..."
 
 
 def test_resolve_per_repo_cmd_multipm_no_prefix_returns_default(tf, tmp_path, monkeypatch):
@@ -216,7 +224,7 @@ def test_resolve_per_repo_cmd_multipm_no_prefix_returns_default(tf, tmp_path, mo
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
     _install_stub(_FakeBoard(None, None, areas_path=areas), monkeypatch)
-    assert tf._resolve_per_repo_test_cmd() == python_env.default_pytest_cmd()
+    assert finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
 
 
 def test_resolve_per_repo_cmd_multipm_empty_test_cmd_returns_default(tf, tmp_path, monkeypatch):
@@ -224,7 +232,7 @@ def test_resolve_per_repo_cmd_multipm_empty_test_cmd_returns_default(tf, tmp_pat
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
     _install_stub(_FakeBoard("A1", {"test_cmd": ""}, areas_path=areas), monkeypatch)
-    assert tf._resolve_per_repo_test_cmd() == python_env.default_pytest_cmd()
+    assert finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
 
 
 def test_resolve_per_repo_cmd_blank_prefix_uses_repo_row(tf, tmp_path, monkeypatch):
@@ -241,14 +249,14 @@ def test_resolve_per_repo_cmd_blank_prefix_uses_repo_row(tf, tmp_path, monkeypat
         rows=[{"repo": "heru", "prefix": "", "test_cmd": "viewer bind"}],
         repos={"heru"},
     ), monkeypatch)
-    assert tf._resolve_per_repo_test_cmd() == "viewer bind"
+    assert finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(REPO)) == "viewer bind"
 
 
 def test_resolve_per_repo_cmd_reads_local_conf_without_areas(tf, tmp_path, monkeypatch):
     """areas.md 가 아예 없어도 local.conf test_cmd 를 읽는다 (T-0730·3층은 areas 가드 밖)."""
     _install_stub(_FakeBoard(None, None, areas_path=tmp_path / "no-areas.md",
                              conf={"test.cmd": "go test ./..."}), monkeypatch)
-    assert tf._resolve_per_repo_test_cmd() == "go test ./..."
+    assert finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(REPO)) == "go test ./..."
 
 
 def test_default_run_pytest_solo_uses_venv_pytest_argv(tf, tmp_path, monkeypatch):
@@ -267,9 +275,9 @@ def test_default_run_pytest_solo_uses_venv_pytest_argv(tf, tmp_path, monkeypatch
             stderr = ""
         return R()
 
-    monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: None)
-    monkeypatch.setattr(tf.subprocess, "run", fake_run)
-    finisher = tf.TicketFinisher(venv_python="/venv/bin/python", regression_cwd="/repo")
+    monkeypatch.setattr(finish_context, "_resolve_per_repo_test_cmd", lambda _home: None)
+    monkeypatch.setattr(finish_record.subprocess, "run", fake_run)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python="/venv/bin/python", regression_cwd="/repo")
     rc, out = finisher._default_run_pytest()
     assert rc == 0
     # 솔로 = venv pytest argv(리스트)·shell 미사용·tests/ 경로 보존.
@@ -297,9 +305,9 @@ def test_default_run_pytest_multipm_uses_per_repo_shell_cmd(tf, tmp_path, monkey
             stderr = ""
         return R()
 
-    monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: "go test ./...")
-    monkeypatch.setattr(tf.subprocess, "run", fake_run)
-    finisher = tf.TicketFinisher(venv_python="/venv/bin/python", regression_cwd="/wt/A_1")
+    monkeypatch.setattr(finish_context, "_resolve_per_repo_test_cmd", lambda _home: "go test ./...")
+    monkeypatch.setattr(finish_record.subprocess, "run", fake_run)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python="/venv/bin/python", regression_cwd="/wt/A_1")
     rc, out = finisher._default_run_pytest()
     assert rc == 0
     # multi-PM = per-repo 문자열 cmd·shell 실행·활성 repo cwd.
@@ -328,7 +336,8 @@ def _make_finisher(tf, tmp_path, *, affected):
     이 도구가 안 건드린다(ADR-0023) → log_file 만 tmp 로 둔다.
     """
     log_file = tmp_path / "log.md"
-    return tf.TicketFinisher(
+    return finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=_green_pytest(100),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),
@@ -377,7 +386,8 @@ def test_soft_step_exception_does_not_block_completion(tf, tmp_path, capsys):
     def boom(_tid):
         raise RuntimeError("domain 조회 폭발")
 
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=_green_pytest(100),
         run_board_fn=lambda args: (0, "ok"),
         run_git_fn=lambda args: (0, ""),
@@ -393,8 +403,9 @@ def test_soft_step_exception_does_not_block_completion(tf, tmp_path, capsys):
 
 def test_dry_run_label_shows_resolved_gate(tf, tmp_path, monkeypatch, capsys):
     """dry-run 안내는 **실제로 돌 명령**을 보여준다 — 해소된 게이트가 있으면 그 문자열 (T-0730)."""
-    monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: "go test ./...")
-    finisher = tf.TicketFinisher(
+    monkeypatch.setattr(finish_context, "_resolve_per_repo_test_cmd", lambda _home: "go test ./...")
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=lambda: (0, "ok\n"),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),
@@ -412,7 +423,7 @@ def test_dry_run_label_shows_resolved_gate(tf, tmp_path, monkeypatch, capsys):
 
 def test_dry_run_label_shows_solo_argv_when_unresolved(tf, tmp_path, monkeypatch, capsys):
     """해소 실패(솔로) dry-run 안내도 병렬 기본을 보여준다."""
-    monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: None)
+    monkeypatch.setattr(finish_context, "_resolve_per_repo_test_cmd", lambda _home: None)
     finisher = _make_finisher(tf, tmp_path, affected=[])
     rc = finisher.run("T-1234", section=None, dry_run=True)
     assert rc == 0
@@ -471,7 +482,7 @@ def test_run_ignores_section_arg(tf, tmp_path, capsys):
 
 def test_log_skeleton_reports_measured_total_no_old_total(tf):
     """log 스켈레톤은 실측 new_total 1줄만 — old_total/delta 박제 없음(ADR-0023·ADR-0008)."""
-    skeleton = tf.build_log_skeleton(
+    skeleton = finish_record.build_log_skeleton(
         ticket_id="T-0001", title="t", new_total=42, board_before=1, board_after=2,
     )
     assert "회귀 42 / 42" in skeleton
@@ -480,7 +491,7 @@ def test_log_skeleton_reports_measured_total_no_old_total(tf):
 
 def test_log_skeleton_adds_task_tag_when_task_is_resolved(tf):
     """task 완료 entry는 handoff와 같은 sentinel 태그를 헤더 말미에 생산한다."""
-    skeleton = tf.build_log_skeleton(
+    skeleton = finish_record.build_log_skeleton(
         ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
         entry_type="feat", date="2026-08-06", task="orch-dev-T0547",
     )
@@ -491,7 +502,7 @@ def test_log_skeleton_adds_task_tag_when_task_is_resolved(tf):
 
 def test_log_skeleton_without_task_uses_canonical_ticket_wikilink(tf):
     """정체성 태그와 무관하게 새 완료 entry의 ticket 참조는 canonical wikilink다."""
-    skeleton = tf.build_log_skeleton(
+    skeleton = finish_record.build_log_skeleton(
         ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
         entry_type="feat", date="2026-08-06",
     )
@@ -508,8 +519,8 @@ def test_log_entry_detection_accepts_canonical_and_legacy_ticket_markers(
         f"## [2026-08-29] fix | {ticket_marker} — 완료\n\n- 실제 증거\n",
         encoding="utf-8",
     )
-    assert tf.TicketFinisher(log_file=log_file)._log_has_entry("T-0547") is True
-    assert tf.TicketFinisher(log_file=log_file)._log_has_entry("T-9999") is False
+    assert finish_record.TicketFinisher(pm_paths.home_at(REPO), log_file=log_file)._log_has_entry("T-0547") is True
+    assert finish_record.TicketFinisher(pm_paths.home_at(REPO), log_file=log_file)._log_has_entry("T-9999") is False
 
 
 def test_dry_run_reports_existing_entry_skip_without_append_preview(
@@ -531,41 +542,31 @@ def test_dry_run_reports_existing_entry_skip_without_append_preview(
 
 def test_get_ticket_touches_non_list_returns_empty(tf, tmp_path):
     """get_ticket_touches — board 부재(spec 실패 가능)·touches 비-리스트 graceful []."""
-    # 존재하지 않는 board_py → spec 은 만들어지나 exec 실패 → [].
-    assert tf.get_ticket_touches(tmp_path / "nope-board.py", "T-0001") == []
-
-
-# T-0397 — get_ticket_touches 의 board 로더가 로드한 board 모듈의 ENGINE_REV 를 실 엔진 rev 와
-# 대조한다. fake board 대역도 유효 rev 스탬프를 지녀야 skew 로 오판되지 않는다(값은 실 engine_rev
-# 에서 읽어 baked — 하드코딩·릴리즈 커플링 회피).
-def _real_engine_rev() -> str:
-    spec = importlib.util.spec_from_file_location("engine_rev", TOOLS / "engine_rev.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.ENGINE_REV
+    # 티켓이 없는 Home → [].
+    assert finish_store.get_ticket_touches(pm_paths.home_at(tmp_path / "nope"), "T-0001") == []
 
 
 def _write_fake_board(tmp_path, touches_repr):
-    """touches 를 가진 티켓 `T-0001` 을 tmp 홈에 쓰고 그 홈의 board.py 경로를 돌려준다(hermetic).
+    """touches 를 가진 티켓 `T-0001` 을 tmp 홈에 쓰고 그 홈의 Home 을 돌려준다(hermetic).
 
-    조회는 board.py 위치(`<홈>/.project_manager/tools/board.py`)에서 만든 Home 의 티켓 디렉터리를 읽는다.
+    조회는 명시 Home 의 티켓 디렉터리를 읽는다.
     """
     ticket = tmp_path / ".project_manager" / "wiki" / "tickets" / "open" / "T-0001-fake.md"
     ticket.parent.mkdir(parents=True, exist_ok=True)
     ticket.write_text(f"---\nid: T-0001\ntouches: {touches_repr}\n---\nbody\n", encoding="utf-8")
-    return tmp_path / ".project_manager" / "tools" / "board.py"
+    return pm_paths.home_at(tmp_path)
 
 
 def test_get_ticket_touches_strips_list_whitespace_and_drops_empty(tf, tmp_path):
     """get_ticket_touches — 리스트 원소 strip·빈/비-문자열 drop (silent-miss 방어·T-0081)."""
-    board_py = _write_fake_board(tmp_path, "['src/a.py', ' src/b.py', '  ', 123]")
-    assert tf.get_ticket_touches(board_py, "T-0001") == ["src/a.py", "src/b.py"]
+    home = _write_fake_board(tmp_path, "['src/a.py', ' src/b.py', '  ', 123]")
+    assert finish_store.get_ticket_touches(home, "T-0001") == ["src/a.py", "src/b.py"]
 
 
 def test_get_ticket_touches_strips_scalar_string(tf, tmp_path):
     """get_ticket_touches — 스칼라 문자열도 strip·빈 문자열 → []."""
-    assert tf.get_ticket_touches(_write_fake_board(tmp_path, "'  src/x.py '"), "T-0001") == ["src/x.py"]
-    assert tf.get_ticket_touches(_write_fake_board(tmp_path, "'   '"), "T-0001") == []
+    assert finish_store.get_ticket_touches(_write_fake_board(tmp_path, "'  src/x.py '"), "T-0001") == ["src/x.py"]
+    assert finish_store.get_ticket_touches(_write_fake_board(tmp_path, "'   '"), "T-0001") == []
 
 
 def _patch_domain(monkeypatch, fake):
@@ -604,8 +605,8 @@ def test_affected_domain_titles_uses_pages_for_touches(tf, tmp_path, monkeypatch
             return False  # fresh — soft step 무표시.
 
     _patch_domain(monkeypatch, _FakeDomain())
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
-    assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == [("영향페이지", False)]
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: ["src/x.py"])
+    assert finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001") == [("영향페이지", False)]
 
 
 def test_affected_domain_titles_normalizes_pm_home_worktree_touch(
@@ -640,15 +641,14 @@ def test_affected_domain_titles_normalizes_pm_home_worktree_touch(
         def page_stale(page, *, git_runner=None):
             return False
 
-    monkeypatch.setattr(tf, "REPO", tmp_path)
     _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(
-        tf,
+        finish_store,
         "get_ticket_touches",
-        lambda bp, tid: [f"{slot}/src/x.py"],
+        lambda home, tid: [f"{slot}/src/x.py"],
     )
 
-    assert tf.affected_domain_titles("T-0473", tf.BOARD_PY) == [
+    assert finish_context.affected_domain_titles(pm_paths.home_at(tmp_path), "T-0473") == [
         ("완료 좌표 페이지", False),
     ]
     assert seen == ["src/x.py"]
@@ -686,14 +686,13 @@ def test_affected_domain_titles_bad_coordinate_warns_per_path_and_continues(
         def page_stale(page, *, git_runner=None):
             return False
 
-    monkeypatch.setattr(tf, "REPO", tmp_path)
     _patch_domain(monkeypatch, _FakeDomain())
     monkeypatch.setattr(
-        tf, "get_ticket_touches",
-        lambda bp, tid: ["work/project_manager_2/src/bad.py", "src/valid.py"],
+        finish_store, "get_ticket_touches",
+        lambda home, tid: ["work/project_manager_2/src/bad.py", "src/valid.py"],
     )
 
-    assert tf.affected_domain_titles("T-0473", tf.BOARD_PY) == [
+    assert finish_context.affected_domain_titles(pm_paths.home_at(tmp_path), "T-0473") == [
         ("남은 페이지", False),
     ]
     assert seen == ["src/valid.py"]
@@ -714,12 +713,12 @@ def test_affected_domain_titles_nonprefixed_touches_skip_coordinate_loader(
             return []
 
     _patch_domain(monkeypatch, _FakeDomain())
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: ["src/x.py"])
     monkeypatch.setattr(
         repo_coordinates, "normalize_repo_path",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("normalizer를 로드하면 안 됨")),
     )
-    assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == []
+    assert finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001") == []
 
 
 def test_affected_domain_titles_empty_touches_skips_load_pages(tf, monkeypatch):
@@ -737,8 +736,8 @@ def test_affected_domain_titles_empty_touches_skips_load_pages(tf, monkeypatch):
             raise AssertionError("빈 touches 인데 pages_for_touches 호출됨")
 
     _patch_domain(monkeypatch, _FakeDomain())
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: [])
-    assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == []
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: [])
+    assert finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001") == []
     assert calls["load_pages"] == 0  # load_pages 스캔 자체를 건너뜀
 
 
@@ -781,9 +780,9 @@ def test_affected_domain_titles_stale_exception_yields_unknown(tf, tmp_path, mon
             raise RuntimeError("stale 산출 폭발")
 
     _patch_domain(monkeypatch, _FakeDomain())
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: ["src/x.py"])
     # 예외를 흡수해 stale=None 으로 surface — crash 0·목록 정상.
-    assert tf.affected_domain_titles("T-0001", tf.BOARD_PY) == [("폭발 페이지", None)]
+    assert finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001") == [("폭발 페이지", None)]
 
 
 def test_affected_domain_titles_shares_single_git_runner(tf, tmp_path, monkeypatch):
@@ -812,8 +811,8 @@ def test_affected_domain_titles_shares_single_git_runner(tf, tmp_path, monkeypat
             return None
 
     _patch_domain(monkeypatch, _FakeDomain())
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
-    result = tf.affected_domain_titles("T-0001", tf.BOARD_PY)
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: ["src/x.py"])
+    result = finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001")
     assert result == [("A", None), ("B", None), ("C", None)]
     assert calls["runner_built"] == 1                       # 페이지 3개여도 runner 1회 생성
     assert calls["runners_seen"] == [sentinel, sentinel, sentinel]  # 같은 runner 공유
@@ -854,8 +853,8 @@ def test_affected_domain_titles_uses_each_page_owner_runner(tf, tmp_path, monkey
         freshness_lint, "_freshness_owner_repo",
         lambda home, repo: ((owner if repo == "upstream" else self_repo), None),
     )
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
-    result = tf.affected_domain_titles("T-0001", tf.BOARD_PY)
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: ["src/x.py"])
+    result = finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001")
     assert result == [("외부", False), ("내부", False)]
     assert seen_repos == [owner, self_repo]
     assert seen_runners[0] is not seen_runners[1]
@@ -887,8 +886,8 @@ def test_affected_domain_titles_unresolved_owner_skips_stale_soft_warning(
         freshness_lint, "_freshness_owner_repo",
         lambda home, _repo: (None, "owner checkout unavailable"),
     )
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda bp, tid: ["src/x.py"])
-    affected = tf.affected_domain_titles("T-0001", tf.BOARD_PY)
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: ["src/x.py"])
+    affected = finish_context.affected_domain_titles(pm_paths.home_at(REPO), "T-0001")
 
     assert affected == [("미해소 외부", None)]
     _make_finisher(tf, tmp_path, affected=affected)._notify_affected_domain("T-0001")
@@ -965,7 +964,7 @@ def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypat
     ])
     (tmp_path / "work" / "myrepo_7").mkdir(parents=True)
     _bind_pm_handoff_seams(tf, monkeypatch, areas, leases, repo_root=tmp_path)
-    result = tf._regression_cwd()
+    result = finish_context._regression_cwd(pm_paths.home_at(REPO))
     assert result.replace(os.sep, "/").endswith("work/myrepo_7")
     assert result != str(tmp_path)  # repo_root 폴백과 구별
 
@@ -985,7 +984,7 @@ def test_regression_cwd_explicit_slot_overrides_auto(tf, tmp_path, monkeypatch):
     ])
     (tmp_path / "work" / "foo_2").mkdir(parents=True)
     _bind_pm_handoff_seams(tf, monkeypatch, areas, leases, repo_root=tmp_path)
-    result = tf._regression_cwd("work/foo_2")
+    result = finish_context._regression_cwd(pm_paths.home_at(REPO), "work/foo_2")
     assert result.replace(os.sep, "/").endswith("work/foo_2")
 
 
@@ -998,7 +997,7 @@ def test_regression_cwd_solo_falls_back_to_repo(tf, tmp_path, monkeypatch):
          "session": "myrepo_7", "state": "leased"},
     ])
     _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
-    assert tf._regression_cwd() == str(tf.REPO)
+    assert finish_context._regression_cwd(pm_paths.home_at(REPO)) == str(REPO)
 
 
 def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkeypatch):
@@ -1017,10 +1016,10 @@ def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkey
             stderr = ""
         return R()
 
-    monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: None)
-    monkeypatch.setattr(tf, "_regression_cwd", lambda: "/wt/project_manager_1")
-    monkeypatch.setattr(tf.subprocess, "run", fake_run)
-    finisher = tf.TicketFinisher(venv_python="/venv/bin/python")  # regression_cwd 미주입
+    monkeypatch.setattr(finish_context, "_resolve_per_repo_test_cmd", lambda _home: None)
+    monkeypatch.setattr(finish_context, "_regression_cwd", lambda _home: "/wt/project_manager_1")
+    monkeypatch.setattr(finish_record.subprocess, "run", fake_run)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python="/venv/bin/python")  # regression_cwd 미주입
     rc, _out = finisher._default_run_pytest()
     assert rc == 0
     assert captured["cwd"] == "/wt/project_manager_1"  # __init__ 박제 아니라 런타임 해소
@@ -1061,20 +1060,18 @@ def test_repo_constant_anchors_at_the_install_depth(tf):
 
 def test_default_python_venv_present_is_preferred(tf, tmp_path, monkeypatch):
     """venv 후보 존재 → venv 인터프리터 우선(도그푸딩 불변·회귀 인터프리터 보존)."""
-    monkeypatch.setattr(tf, "REPO", tmp_path)
     sub = "Scripts/python.exe" if os.name == "nt" else "bin/python"
     cand = tmp_path / "venv" / sub
     cand.parent.mkdir(parents=True)
     cand.write_text("", encoding="utf-8")
-    assert tf._default_python() == str(cand)
+    assert python_env._default_python(pm_paths.home_at(tmp_path)) == str(cand)
 
 
 def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, monkeypatch):
     """venv 부재(정상 채택자 경로) → sys.executable 폴백 — 에러 아님, 폴백 분기.
 
     시스템 인터프리터에 pytest 가 깔린 형상은 venv/ 를 안 만든다 → 그 환경 pytest 를 쓴다."""
-    monkeypatch.setattr(tf, "REPO", tmp_path)  # tmp 아래 venv/ 없음
-    assert tf._default_python() == tf.sys.executable
+    assert python_env._default_python(pm_paths.home_at(tmp_path)) == sys.executable
 
 
 # ── 두-git 다중슬롯 seam — --repo/--slot/--no-pytest disambiguation (T-0285·ADR-0027·ADR-0057) ──
@@ -1087,27 +1084,20 @@ def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, m
 # `slot_resolution._resolve_explicit_identity_slot`(M3 조인검증) 재사용(DRY).
 
 
-def _bind_pm_handoff_repo(tf, monkeypatch, repo_root: Path):
-    """ticket_finish 의 `REPO` 를 `repo_root` 로 monkeypatch 한다 — wrapper 가 이 앵커로 만든 Home 을
-    넘기므로 `_resolve_explicit_identity_slot`(M3 리스 조인검증)·`_regression_cwd`(L1) 의
-    leases_file/repo_root 해소가 이 tmp_path 를 본다(hermetic·실 장부·실 REPO 미접촉)."""
-    monkeypatch.setattr(tf, "REPO", repo_root)
-
-
 def test_repo_slot_resolves_explicit_worktree_slot(tf, tmp_path, monkeypatch):
     """(a) --repo/--slot → explicit worktree 슬롯 `work/<repo>_<N>` 결정론적 해소.
 
-    실 `slot_resolution` 을 쓰되 리스 장부 부재(`_bind_pm_handoff_repo` 의 tmp_path repo_root)라
+    실 `slot_resolution` 을 쓰되 리스 장부 부재(tmp_path Home)라
     **M3**(세션↔repo 조인검증)는 검증불가·fail-soft(신뢰) — 결정론적. 회귀 cwd =
     REPO/<slot>(main 이 `_regression_cwd` forward) — L1(stale→REPO 폴백)이 발동하지 않게
     그 디렉토리를 실제로 만든다.
     """
-    _bind_pm_handoff_repo(tf, monkeypatch, tmp_path)
+    home = pm_paths.home_at(tmp_path)
     (tmp_path / "work" / "project_manager_1").mkdir(parents=True)
-    slot, err = tf._resolve_finish_slot("project_manager", 1)
+    slot, err = slot_resolution._resolve_explicit_identity_slot(home, "project_manager", 1)
     assert err is None
     assert slot == "work/project_manager_1"
-    cwd = tf._regression_cwd("work/project_manager_1")
+    cwd = finish_context._regression_cwd(home, "work/project_manager_1")
     assert cwd.replace(os.sep, "/").endswith("work/project_manager_1")
 
 
@@ -1119,7 +1109,7 @@ def test_repo_alone_bypasses_ambiguity(tf, monkeypatch):
     """
     monkeypatch.setattr(slot_resolution, "_resolve_explicit_identity_slot",
                         lambda _home, repo, slot, leases_file=None: (f"work/{repo}_{slot}", None))
-    slot, err = tf._resolve_finish_slot("project_manager", 2)
+    slot, err = slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(REPO), "project_manager", 2)
     assert err is None            # 명시했으므로 모호 아님(short-circuit)
     assert slot == "work/project_manager_2"
 
@@ -1128,7 +1118,6 @@ def test_repo_alone_bypasses_ambiguity(tf, monkeypatch):
 
 def test_resolve_finish_slot_m3_rejects_repo_join_mismatch(tf, tmp_path, monkeypatch):
     """명시 --repo/--slot 이 실제 활성 리스와 조인 불일치 → fail-loud(조용히 안 넘김·ADR-0057 M3)."""
-    _bind_pm_handoff_repo(tf, monkeypatch, tmp_path)
     leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     leases.parent.mkdir(parents=True)
     leases.write_text(
@@ -1136,7 +1125,7 @@ def test_resolve_finish_slot_m3_rejects_repo_join_mismatch(tf, tmp_path, monkeyp
         '"state": "leased"}]}',
         encoding="utf-8",
     )
-    slot, err = tf._resolve_finish_slot("myrepo", 99)
+    slot, err = slot_resolution._resolve_explicit_identity_slot(pm_paths.home_at(tmp_path), "myrepo", 99)
     assert slot is None
     assert err is not None and "M3" in err and "조인" in err
 
@@ -1156,7 +1145,8 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
         board_calls.append(args)
         return 0, "board ok"
 
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=boom_pytest,
         run_board_fn=spy_board,
         run_git_fn=lambda args: (0, ""),
@@ -1199,21 +1189,21 @@ def _capture_main_forward(tf, monkeypatch) -> dict:
     """
     captured: dict = {}
 
-    class _SpyFinisher(tf.TicketFinisher):
-        def __init__(self, **kw):
+    class _SpyFinisher(finish_record.TicketFinisher):
+        def __init__(self, home, **kw):
             captured["finisher_kwargs"] = dict(kw)
-            super().__init__(**kw)
+            super().__init__(home, **kw)
 
     class _SpyCloser:
-        def __init__(self, cluster, **kw):
+        def __init__(self, home, cluster, **kw):
             captured["cluster"] = cluster
             captured.update(kw)
 
         def run(self) -> int:
             return 0
 
-    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
-    monkeypatch.setattr(tf, "ClusterCloser", _SpyCloser)
+    monkeypatch.setattr(finish_record, "TicketFinisher", _SpyFinisher)
+    monkeypatch.setattr(cluster_close, "ClusterCloser", _SpyCloser)
     return captured
 
 
@@ -1235,23 +1225,23 @@ def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys)
     """
     resolve_calls: list = []
 
-    def _spy_resolve(repo, slot):  # 무인자 진입은 이 갈래로 오지 않는다(정체성=task).
+    def _spy_resolve(home, repo, slot):  # 무인자 진입은 이 갈래로 오지 않는다(정체성=task).
         resolve_calls.append((repo, slot))
         return None, None
 
-    monkeypatch.setattr(tf, "_resolve_finish_slot", _spy_resolve)
+    monkeypatch.setattr(slot_resolution, "_resolve_explicit_identity_slot", _spy_resolve)
     captured: dict = {}
 
-    class _SpyFinisher(tf.TicketFinisher):
-        def __init__(self, **kw):
+    class _SpyFinisher(finish_record.TicketFinisher):
+        def __init__(self, home, **kw):
             captured["regression_cwd"] = kw.get("regression_cwd")
-            super().__init__(**kw)
+            super().__init__(home, **kw)
 
         def run(self, **kw):
             captured["skip_pytest"] = kw.get("skip_pytest")
             return 0
 
-    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    monkeypatch.setattr(finish_record, "TicketFinisher", _SpyFinisher)
     with pytest.raises(SystemExit) as exc:
         tf.main(["T-1234", "--no-pytest"])
     err = capsys.readouterr().err
@@ -1314,8 +1304,7 @@ class _FakeRoundsBoard:
 
 
 def _rounds_home(tf, tmp_path, monkeypatch) -> tuple[Path, Path]:
-    """`tf.REPO` 를 tmp 홈에 묶고 그 Home 의 티켓 디렉터리와 묶음 소속 티켓 파일을 만든다."""
-    monkeypatch.setattr(tf, "REPO", tmp_path)
+    """tmp 홈의 티켓 디렉터리와 묶음 소속 티켓 파일을 만든다(조회는 그 Home 을 명시로 받는다)."""
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     ticket_path = tickets_dir / "claimed" / "T-0753-fake.md"
     ticket_path.parent.mkdir(parents=True)
@@ -1335,7 +1324,7 @@ def test_engine_written_paths_includes_existing_round_files(tf, tmp_path, monkey
     review_round.write_text("review\n", encoding="utf-8")
     board = _FakeRoundsBoard(tickets_dir, ticket_path)
 
-    paths = tf.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
+    paths = finish_store.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
 
     assert dev_round in paths
     assert review_round in paths
@@ -1352,7 +1341,7 @@ def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_p
     (tickets_dir.parent / ".git").mkdir()
     board = _FakeRoundsBoard(tickets_dir, ticket_path)
 
-    paths = tf.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
+    paths = finish_store.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
 
     assert paths == [tmp_path / "log.md"]
 
@@ -1377,7 +1366,7 @@ def test_engine_written_paths_excludes_non_round_and_temporary_files_by_grammar(
         (round_dir / name).write_text("x\n", encoding="utf-8")
     board = _FakeRoundsBoard(tickets_dir, ticket_path)
 
-    paths = tf.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
+    paths = finish_store.engine_written_paths(pm_paths.home_at(tmp_path), "T-0753", tmp_path / "log.md")
 
     assert dev_round in paths
     for name in non_round_names:
@@ -1406,7 +1395,7 @@ def test_round_stage_candidates_uses_round_filename_grammar_not_ad_hoc_suffix(
     for name in names:
         (round_dir / name).write_text("x\n", encoding="utf-8")
 
-    candidates = tf._round_stage_candidates(tickets_dir, "T-0753")
+    candidates = finish_store._round_stage_candidates(tickets_dir, "T-0753")
 
     assert candidates == [
         round_dir / "01-developer.md", round_dir / "02-code-reviewer.md",
@@ -1415,9 +1404,8 @@ def test_round_stage_candidates_uses_round_filename_grammar_not_ad_hoc_suffix(
 
 def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path, monkeypatch):
     """untracked 신규 라운드 파일이 실 git repo 에서 `git add` 로 실제 stage 된다 (리뷰 F-005 —
-    후보 산출뿐 아니라 real git 경로까지 왕복). board 대역은 조회 두 자리(`find_ticket`·
-    `_board_git_enabled`)만 대역하고, `git_scope_stage_pathspec` 자체는 실
-    board.py 것을 그대로 빌려 real git 서브프로세스(status/ls-files/check-ignore)를 태운다."""
+    후보 산출뿐 아니라 real git 경로까지 왕복). 조회는 tmp repo 의 명시 Home 을 쓰고,
+    `git_scope_stage_pathspec` 는 real git 서브프로세스(status/ls-files/check-ignore)를 태운다."""
     repo = tmp_path / "repo"
     tickets_dir = repo / ".project_manager" / "wiki" / "tickets"
     ticket_path = tickets_dir / "claimed" / "T-0753-fake.md"
@@ -1438,30 +1426,8 @@ def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path, 
 
     assert git(["init", "-q"])[0] == 0
 
-    board_py = tmp_path / "real_round_stage_board.py"
-    board_py.write_text(
-        f"ENGINE_REV = {_real_engine_rev()!r}\n"
-        "import importlib.util as _ilu\n"
-        "from pathlib import Path as _Path\n"
-        "_spec = _ilu.spec_from_file_location(\n"
-        f"    '_t0753_real_board_for_round_stage_test', {str(TOOLS / 'board.py')!r})\n"
-        "_real_board = _ilu.module_from_spec(_spec)\n"
-        "_spec.loader.exec_module(_real_board)\n"
-        "ticket_cluster = _real_board.ticket_cluster\n"
-        "def cluster_ledger_path(cluster):\n"
-        "    return _TICKETS_DIR / 'clusters' / (cluster if cluster.startswith('C-') else 'C-' + cluster)\n"
-        f"_TICKET_PATH = _Path({str(ticket_path)!r})\n"
-        f"_TICKETS_DIR = _Path({str(tickets_dir)!r})\n"
-        "def find_ticket(ticket_id):\n"
-        "    return ('claimed', _TICKET_PATH)\n"
-        "def _board_git_enabled():\n"
-        "    return False\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(tf, "REPO", repo)
-
-    scope = tf.stage_scope(
-        "T-0753", board_py, repo / "log.md", git,
+    scope = finish_context.stage_scope(
+        pm_paths.home_at(repo), "T-0753", repo / "log.md", git,
         repo=repo, include_touches=False,
     )
     assert scope.error is None
@@ -1487,21 +1453,21 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
     # add 는 작업 트리에 있는 파일만 받는다 — 선언 변경 파일을 실제로 둔다.
     (worktree / "tests").mkdir(exist_ok=True)
     (worktree / "tests" / "test_real_change.py").write_text("changed = 1\n", encoding="utf-8")
-    monkeypatch.setattr(tf, "REPO", home)
     calls = []
 
-    def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
+    def fake_scope(_home, ticket_id, log_file, run_git, *, repo=None,
                    include_touches=True, include_engine_outputs=True,
                    touches_workspace=None, touches=None):
         repo = Path(repo or home)
         calls.append((repo, include_touches, include_engine_outputs))
         if include_engine_outputs:
-            return tf.StageScope((".project_manager/wiki/log/current.md",), None)
-        return tf.StageScope(("tests/test_real_change.py",), None)
+            return finish_rules.StageScope((".project_manager/wiki/log/current.md",), None)
+        return finish_rules.StageScope(("tests/test_real_change.py",), None)
 
-    monkeypatch.setattr(tf, "stage_scope", fake_scope)
+    monkeypatch.setattr(finish_context, "stage_scope", fake_scope)
     home_git, worktree_git, status_calls = [], [], []
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(home),
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("--no-pytest must skip")),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (home_git.append(args) or (0, "")),
@@ -1547,16 +1513,16 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
     _git_seed(worktree)
     (home / "home.md").write_text("home\n", encoding="utf-8")
     (worktree / "code.py").write_text("code = 1\n", encoding="utf-8")
-    monkeypatch.setattr(tf, "REPO", home)
 
-    def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
+    def fake_scope(_home, ticket_id, log_file, run_git, *, repo=None,
                    include_touches=True, include_engine_outputs=True,
                    touches_workspace=None, touches=None):
-        return tf.StageScope((("home.md",) if include_engine_outputs else ("code.py",)), None)
+        return finish_rules.StageScope((("home.md",) if include_engine_outputs else ("code.py",)), None)
 
-    monkeypatch.setattr(tf, "stage_scope", fake_scope)
+    monkeypatch.setattr(finish_context, "stage_scope", fake_scope)
     mutations = []
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(home),
         run_pytest_fn=lambda: (0, "1 passed in 0.1s"),
         run_board_fn=lambda args: (0, ""),
         run_git_fn=lambda args: (mutations.append(args) or (0, "")),
@@ -1587,18 +1553,18 @@ def test_single_ticket_completion_never_deletes_a_branch(tf, tmp_path, monkeypat
     worktree.mkdir(parents=True)
     init_git_repo(worktree, commit="seed")
     (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
-    monkeypatch.setattr(tf, "REPO", home)
 
-    def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
+    def fake_scope(_home, ticket_id, log_file, run_git, *, repo=None,
                    include_touches=True, include_engine_outputs=True,
                    touches_workspace=None, touches=None):
         if include_engine_outputs:
-            return tf.StageScope((".project_manager/wiki/log/current.md",), None)
-        return tf.StageScope(("tests/test_real_change.py",), None)
+            return finish_rules.StageScope((".project_manager/wiki/log/current.md",), None)
+        return finish_rules.StageScope(("tests/test_real_change.py",), None)
 
-    monkeypatch.setattr(tf, "stage_scope", fake_scope)
+    monkeypatch.setattr(finish_context, "stage_scope", fake_scope)
     mutations: list[list[str]] = []
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(home),
         run_pytest_fn=lambda: (0, "1 passed in 0.1s"),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (mutations.append(list(args)) or (0, "")),
@@ -1635,27 +1601,29 @@ def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, 
             return 0, "?? tests/new.py\0"
         return 0, "tests/new.py\0"
 
-    def fake_scope(ticket_id, board_py, log_file, run_git, **kwargs):
+    def fake_scope(_home, ticket_id, log_file, run_git, **kwargs):
         # stderr warning이 붙은 mutation output을 복원하면 이 runner가 아니라 mutation_runner가 호출돼 red.
         assert run_git(["ls-files", "-z"]) == (0, "tests/new.py\0")
-        return tf.StageScope(("tests/new.py",), None)
+        return finish_rules.StageScope(("tests/new.py",), None)
 
-    monkeypatch.setattr(tf, "stage_scope", fake_scope)
-    finisher = tf.TicketFinisher(
+    monkeypatch.setattr(finish_context, "stage_scope", fake_scope)
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_git_at_fn=mutation_runner,
         run_git_stdout_at_fn=stdout_runner,
         task_workspace=worktree,
     )
 
-    assert finisher._code_stage_scope("T-0437", worktree) == tf.StageScope(("tests/new.py",), None)
+    assert finisher._code_stage_scope("T-0437", worktree) == finish_rules.StageScope(("tests/new.py",), None)
     assert finisher._default_status_entries_at(worktree) == (("??", "tests/new.py"),)
     assert [args[0] for _, args in parser_calls] == ["ls-files", "status"]
 
 
 def _write_coordinate_stage_board(monkeypatch, tmp_path, touches: list[str]) -> Path:
-    """touches 를 가진 티켓 `T-0473` 과 file-only stage primitive 를 제공하는 hermetic board 홈.
+    """touches 를 가진 티켓 `T-0473` 과 file-only stage primitive 를 제공하는 hermetic board 루트.
 
-    티켓 조회는 board.py 위치(`<홈>/.project_manager/tools/board.py`)에서 만든 Home 을 읽는다.
+    PM 좌표 앵커(Home.root)와 다른 board 루트를 돌려준다 — 호출부가 `home_at(..., board_root=)` 로
+    두 루트를 분리한 Home 을 만든다.
     """
     monkeypatch.setattr(git, "git_scope_stage_pathspec",
                         lambda repo, declared, run_git=None: [p.relative_to(repo).as_posix() for p in declared if p.is_file()])
@@ -1664,15 +1632,7 @@ def _write_coordinate_stage_board(monkeypatch, tmp_path, touches: list[str]) -> 
     ticket.parent.mkdir(parents=True)
     ticket.write_text(f"---\nid: T-0473\ntouches: {json.dumps(touches)}\n---\nbody\n",
                       encoding="utf-8")
-    path = pm / "tools" / "board.py"
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        f"ENGINE_REV = {_real_engine_rev()!r}\n"
-        "def git_scope_stage_pathspec(repo, declared, run_git=None):\n"
-        "    return [p.relative_to(repo).as_posix() for p in declared if p.is_file()]\n",
-        encoding="utf-8",
-    )
-    return path
+    return pm / "wiki"
 
 
 def test_task_stage_scope_normalizes_pm_home_touch_and_stages_real_file(
@@ -1683,18 +1643,17 @@ def test_task_stage_scope_normalizes_pm_home_touch_and_stages_real_file(
     changed = workspace / "src" / "change.py"
     changed.parent.mkdir(parents=True)
     changed.write_text("changed\n", encoding="utf-8")
-    board_py = _write_coordinate_stage_board(
+    board_root = _write_coordinate_stage_board(
         monkeypatch, tmp_path,
         ["work/project_manager_1/src/change.py"],
     )
-    monkeypatch.setattr(tf, "REPO", home)
-    finisher = tf.TicketFinisher(
-        board_py=board_py,
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(home, board_root=board_root),
         task_workspace=workspace,
         run_git_stdout_at_fn=lambda cwd, args: (0, ""),
     )
 
-    assert finisher._code_stage_scope("T-0473", workspace) == tf.StageScope(("src/change.py",), None)
+    assert finisher._code_stage_scope("T-0473", workspace) == finish_rules.StageScope(("src/change.py",), None)
 
 
 def test_task_stage_scope_worktree_slot_mismatch_fails_loud(
@@ -1703,13 +1662,12 @@ def test_task_stage_scope_worktree_slot_mismatch_fails_loud(
     home = tmp_path / "pm-home"
     workspace = home / "work" / "project_manager_1"
     workspace.mkdir(parents=True)
-    board_py = _write_coordinate_stage_board(
+    board_root = _write_coordinate_stage_board(
         monkeypatch, tmp_path,
         ["work/project_manager_2/src/change.py"],
     )
-    monkeypatch.setattr(tf, "REPO", home)
-    finisher = tf.TicketFinisher(
-        board_py=board_py,
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(home, board_root=board_root),
         task_workspace=workspace,
         run_git_stdout_at_fn=lambda cwd, args: (0, ""),
     )
@@ -1735,14 +1693,13 @@ def test_task_stage_scope_normalizes_coordinate_notation_variants(
     changed = workspace / "src" / "change.py"
     changed.parent.mkdir(parents=True)
     changed.write_text("changed\n", encoding="utf-8")
-    board_py = _write_coordinate_stage_board(monkeypatch, tmp_path, [touch])
-    monkeypatch.setattr(tf, "REPO", home)
-    finisher = tf.TicketFinisher(
-        board_py=board_py,
+    board_root = _write_coordinate_stage_board(monkeypatch, tmp_path, [touch])
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(home, board_root=board_root),
         task_workspace=workspace,
         run_git_stdout_at_fn=lambda cwd, args: (0, ""),
     )
-    assert finisher._code_stage_scope("T-0473", workspace) == tf.StageScope(("src/change.py",), None)
+    assert finisher._code_stage_scope("T-0473", workspace) == finish_rules.StageScope(("src/change.py",), None)
 
 
 def test_task_stage_scope_rejects_traversal_fails_loud(
@@ -1750,11 +1707,10 @@ def test_task_stage_scope_rejects_traversal_fails_loud(
     home = tmp_path / "pm-home"
     workspace = home / "work" / "project_manager_1"
     workspace.mkdir(parents=True)
-    board_py = _write_coordinate_stage_board(
+    board_root = _write_coordinate_stage_board(
         monkeypatch, tmp_path, ["work/project_manager_1/../../outside.py"])
-    monkeypatch.setattr(tf, "REPO", home)
-    finisher = tf.TicketFinisher(
-        board_py=board_py,
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(home, board_root=board_root),
         task_workspace=workspace,
         run_git_stdout_at_fn=lambda cwd, args: (0, ""),
     )
@@ -1789,12 +1745,11 @@ def test_task_stage_scope_rejects_root_or_absolute_before_real_git_stage(
         return result.returncode, result.stdout
 
     assert git(["init", "-q"])[0] == 0
-    monkeypatch.setattr(tf, "REPO", home)
-    monkeypatch.setattr(tf, "get_ticket_touches", lambda *args: [touch])
+    monkeypatch.setattr(finish_store, "get_ticket_touches", lambda *args: [touch])
 
-    scope = tf.stage_scope(
+    scope = finish_context.stage_scope(
+        pm_paths.home_at(home),
         "T-0473",
-        tf.BOARD_PY,
         home / "log.md",
         git,
         repo=workspace,
@@ -1837,8 +1792,8 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
     assert callable(round_store._parse_touches_from_file)
     assert hasattr(pm_paths, "AnchorResolutionError")
     monkeypatch.setattr(
-        tf, "_ticket_frontmatter_snapshot",
-        lambda _board, _ticket: tf.TicketFrontmatterSnapshot(
+        finish_store, "_ticket_frontmatter_snapshot",
+        lambda _home, _ticket: finish_rules.TicketFrontmatterSnapshot(
             {}, "board fixture unavailable",
         ),
     )
@@ -1849,14 +1804,15 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
             path.write_text(text, encoding="utf-8")
 
     completed: list[list[str]] = []
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(repo),
         run_pytest_fn=_green_pytest(100),
         run_board_fn=lambda args: (completed.append(args), (0, "board ok"))[1],
         run_git_fn=lambda args: (0, ""),
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "손상 ticket",
         affected_domain_fn=lambda tid: [],
-        stage_scope_fn=lambda tid: tf.StageScope((), None),
+        stage_scope_fn=lambda tid: finish_rules.StageScope((), None),
         status_entries_fn=lambda: (),
         dod_block_fn=lambda tid: None,
         # 잔여 preflight 는 board 사본을 적재하는 묶음 장부 조회를 태운다 — 이 fixture 의 board_py 는
@@ -1883,9 +1839,8 @@ def test_measured_touches_normalizes_pm_home_coordinates(tf, tmp_path, monkeypat
     """PM 홈 좌표는 측정 트리 좌표로 정규화된다 (stage 경로와 같은 규칙·사본 0)."""
     workspace = tmp_path / "work" / "proj_1"
     workspace.mkdir(parents=True)
-    monkeypatch.setattr(tf, "REPO", tmp_path)
 
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(tmp_path), log_file=tmp_path / "log.md", task_workspace=workspace)
     assert finisher._normalize_measured_touches(
         ["work/proj_1/.project_manager/tools/board.py", "work/proj_1/tests/"]) == [
         ".project_manager/tools/board.py", "tests"]
@@ -1895,7 +1850,7 @@ def test_measured_touches_leaves_plain_repo_paths_untouched(tf, tmp_path, monkey
     """접두 없는 채택자 형상은 normalizer 를 타지 않는다 (경량 판정·현행 무변경)."""
     monkeypatch.setattr(repo_coordinates, "normalize_repo_paths",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("normalizer 미호출")))
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), log_file=tmp_path / "log.md")
     assert finisher._normalize_measured_touches(
         [".project_manager/tools/board.py"]) == [".project_manager/tools/board.py"]
 
@@ -1904,9 +1859,8 @@ def test_measured_touches_slot_mismatch_is_unresolved(tf, tmp_path, monkeypatch)
     """슬롯 불일치는 정규화 불능(None)이다 — 조용한 diff 0 으로 접지 않는다."""
     workspace = tmp_path / "work" / "proj_1"
     workspace.mkdir(parents=True)
-    monkeypatch.setattr(tf, "REPO", tmp_path)
 
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(tmp_path), log_file=tmp_path / "log.md", task_workspace=workspace)
     assert finisher._normalize_measured_touches(["work/other_2/tools/board.py"]) is None
 
 
@@ -1919,7 +1873,8 @@ def test_measured_touches_slot_mismatch_is_unresolved(tf, tmp_path, monkeypatch)
 
 def _dod_finisher(tf, tmp_path, *, dod_block, log_file: Path | None = None):
     """DoD preflight 만 살아 있는 finisher — 나머지 부작용 seam 은 전부 폭발 대역."""
-    return tf.TicketFinisher(
+    return finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=_boom_pytest,
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
         run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
@@ -1954,7 +1909,8 @@ def test_repeated_dod_block_never_duplicates_the_skeleton(tf, tmp_path):
 
 def test_dod_preflight_runs_after_the_private_ref(tf, tmp_path, capsys):
     """진입 게이트 순서 = 사설 참조 → DoD (앞선 거절이 먼저·안내 1개만 뜬다)."""
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=_boom_pytest,
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "t",
@@ -1982,7 +1938,8 @@ def test_dry_run_is_also_refused_by_the_dod_preflight(tf, tmp_path):
 
 def _residual_finisher(tf, tmp_path, *, residual_block, log_file: Path | None = None):
     """잔여 preflight 만 살아 있는 finisher — `_dod_finisher` 동형(나머지 부작용 seam 폭발 대역)."""
-    return tf.TicketFinisher(
+    return finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=_boom_pytest,
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
         run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
@@ -2009,7 +1966,8 @@ def test_residual_preflight_blocks_before_the_log_skeleton(tf, tmp_path, capsys)
 
 def test_residual_preflight_runs_after_the_dod_block(tf, tmp_path, capsys):
     """진입 게이트 순서 = 사설 참조 → DoD → 잔여(더 넓은/앞선 거절이 먼저·안내 1개만 뜬다)."""
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=_boom_pytest,
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "t",
@@ -2028,7 +1986,8 @@ def test_preflight_seam_order_is_private_ref_dod_residual_self_axis(tf, tmp_path
     self_axis. residual 이 차단하면 self_axis(poison)는 **불리지 않는다**(순서가 값으로
     확인되지 않으면 이후 게이트 삽입이 뒤로 밀려도 코드 리뷰로만 잡힌다)."""
     calls: list[str] = []
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
         run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
@@ -2053,8 +2012,9 @@ def test_residual_preflight_dry_run_is_also_refused(tf, tmp_path):
 def test_default_residual_block_treats_scope_error_as_a_block(tf, tmp_path):
     """`scope_error` 는 '판정 불가'가 아니라 차단이다 — 이 실행은 아무것도 stage 못한다는
     확정 사실이라, 여기서 fail-soft 하면 전량 미머지가 조용히 통과한다."""
-    finisher = tf.TicketFinisher(
-        stage_scope_fn=lambda tid: tf.StageScope((), "board 모듈을 로드하지 못했다"),
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
+        stage_scope_fn=lambda tid: finish_rules.StageScope((), "board 모듈을 로드하지 못했다"),
         status_entries_fn=lambda: (),
         log_file=tmp_path / "log.md",
     )
@@ -2065,8 +2025,9 @@ def test_default_residual_block_treats_scope_error_as_a_block(tf, tmp_path):
 
 def test_default_residual_block_passes_when_nothing_is_dirty(tf, tmp_path):
     """스코프 밖 잔여가 전혀 없으면 None — 정상 완료 흐름은 무영향(역방향 회귀)."""
-    finisher = tf.TicketFinisher(
-        stage_scope_fn=lambda tid: tf.StageScope(("src/a.py",), None),
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
+        stage_scope_fn=lambda tid: finish_rules.StageScope(("src/a.py",), None),
         status_entries_fn=lambda: (("M ", "src/a.py"),),
         log_file=tmp_path / "log.md",
     )
@@ -2084,18 +2045,18 @@ def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
     worktree.mkdir(parents=True)
     _git_seed(worktree)
     (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
-    monkeypatch.setattr(tf, "REPO", home)
 
-    def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
+    def fake_scope(_home, ticket_id, log_file, run_git, *, repo=None,
                    include_touches=True, include_engine_outputs=True,
                    touches_workspace=None, touches=None):
         repo = Path(repo or home)
         if include_engine_outputs:
-            return tf.StageScope((".project_manager/wiki/log/current.md",), None)
-        return tf.StageScope(("tests/test_real_change.py",), None)
+            return finish_rules.StageScope((".project_manager/wiki/log/current.md",), None)
+        return finish_rules.StageScope(("tests/test_real_change.py",), None)
 
-    monkeypatch.setattr(tf, "stage_scope", fake_scope)
-    finisher = tf.TicketFinisher(
+    monkeypatch.setattr(finish_context, "stage_scope", fake_scope)
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(home),
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("--no-pytest must skip")),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),
@@ -2124,7 +2085,7 @@ def test_default_dod_preflight_consumes_the_board_gate(tf, tmp_path):
     """기본 seam 은 board 의 DoD 판정을 그대로 부른다 (규칙 사본 0·값 형식도 board 것)."""
     board_py = _write_dod_board(
         tmp_path, "## 완료 조건\n- [x] 한 건\n- [ ] 남은 항목\n")
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(tmp_path), log_file=tmp_path / "log.md", board_py=board_py)
 
     block = finisher._default_dod_block("T-1234")
     assert block is not None
@@ -2137,7 +2098,7 @@ def test_default_dod_preflight_passes_a_closed_ticket(tf, tmp_path):
     """전항 마감이면 None — 정상 완료 흐름은 무영향."""
     board_py = _write_dod_board(
         tmp_path, "## 완료 조건\n- [x] 한 건\n- [>] 이월분 (이월: v1.7.1·T-0602)\n")
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(tmp_path), log_file=tmp_path / "log.md", board_py=board_py)
     assert finisher._default_dod_block("T-1234") is None
 
 
@@ -2146,7 +2107,7 @@ def test_default_dod_preflight_passes_a_closed_ticket(tf, tmp_path):
 # ── PM-direct 완료 재검 (T-0677) ───────────────────────────────────────────────
 
 def test_pm_direct_warns_when_touches_exceed_two_files(tf):
-    warnings = tf.pm_direct_finish_warnings(
+    warnings = finish_rules.pm_direct_finish_warnings(
         "pm-direct", ["a.py", "b.py", "c.py"], [],
     )
     assert len(warnings) == 1
@@ -2154,7 +2115,7 @@ def test_pm_direct_warns_when_touches_exceed_two_files(tf):
 
 
 def test_pm_direct_directory_touch_uses_expanded_file_count(tf):
-    warnings = tf.pm_direct_finish_warnings(
+    warnings = finish_rules.pm_direct_finish_warnings(
         "pm-direct", ["src/"], [], touched_file_count=3,
     )
     assert len(warnings) == 1
@@ -2162,7 +2123,7 @@ def test_pm_direct_directory_touch_uses_expanded_file_count(tf):
 
 
 def test_pm_direct_unresolved_directory_warns_conservatively(tf):
-    warnings = tf.pm_direct_finish_warnings(
+    warnings = finish_rules.pm_direct_finish_warnings(
         "pm-direct", ["src/"], [], touched_file_count=0,
         unresolved_directories=["src"],
     )
@@ -2171,7 +2132,7 @@ def test_pm_direct_unresolved_directory_warns_conservatively(tf):
 
 
 def test_pm_direct_warns_for_code_diff_without_changed_test(tf):
-    warnings = tf.pm_direct_finish_warnings(
+    warnings = finish_rules.pm_direct_finish_warnings(
         "pm-direct", ["src/app.py"], ["src/app.py"],
     )
     assert len(warnings) == 1
@@ -2179,11 +2140,11 @@ def test_pm_direct_warns_for_code_diff_without_changed_test(tf):
 
 
 def test_pm_direct_recheck_normal_pass_and_non_pm_direct_are_silent(tf):
-    assert tf.pm_direct_finish_warnings(
+    assert finish_rules.pm_direct_finish_warnings(
         "pm-direct", ["src/app.py", "tests/test_app.py"],
         ["src/app.py", "tests/test_app.py"],
     ) == ()
-    assert tf.pm_direct_finish_warnings(
+    assert finish_rules.pm_direct_finish_warnings(
         "normal", ["a.py", "b.py", "c.py"], ["a.py"],
     ) == ()
 
@@ -2191,12 +2152,13 @@ def test_pm_direct_recheck_normal_pass_and_non_pm_direct_are_silent(tf):
 def test_pm_direct_warning_is_never_block_and_preserves_finish_rc(
         tf, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        tf, "_ticket_frontmatter_snapshot",
-        lambda _board, _tid: tf.TicketFrontmatterSnapshot({
+        finish_store, "_ticket_frontmatter_snapshot",
+        lambda _home, _tid: finish_rules.TicketFrontmatterSnapshot({
             "tier": "pm-direct", "touches": ["src/app.py"],
         }, None),
     )
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=_green_pytest(7),
         run_board_fn=lambda _args: (0, "board ok"),
         run_git_fn=lambda _args: (0, ""),
@@ -2204,7 +2166,7 @@ def test_pm_direct_warning_is_never_block_and_preserves_finish_rc(
         ticket_title_fn=lambda _tid: "PM direct",
         affected_domain_fn=lambda _tid: [],
         status_entries_fn=lambda: ((" M", "src/app.py"),),
-        stage_scope_fn=lambda _tid: tf.StageScope((), None),
+        stage_scope_fn=lambda _tid: finish_rules.StageScope((), None),
         dod_block_fn=lambda _tid: None,
         # 잔여 preflight 는 별도 관심사 — 이 fixture의 scope=() + dirty 1건은 PM-direct
         # 재검용 대역일 뿐 잔여 판정 대상이 아니다. off로 이 테스트의 초점(경고가 rc를 절대
@@ -2224,14 +2186,14 @@ def test_pm_direct_task_coordinate_failure_is_loud_and_never_uses_raw_touches(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setattr(
-        tf, "_ticket_frontmatter_snapshot",
-        lambda _board, _tid: tf.TicketFrontmatterSnapshot({
+        finish_store, "_ticket_frontmatter_snapshot",
+        lambda _home, _tid: finish_rules.TicketFrontmatterSnapshot({
             "tier": "pm-direct",
             "touches": ["work/project_manager_1/src/app.py"],
         }, None),
     )
-    finisher = tf.TicketFinisher(
-        board_py=tf.BOARD_PY,
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         task_workspace=workspace,
         status_entries_at_fn=lambda _cwd: ((" M", "src/app.py"),),
     )
@@ -2246,8 +2208,8 @@ def test_pm_direct_task_coordinate_failure_is_loud_and_never_uses_raw_touches(
 def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
         tf, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        tf, "_ticket_frontmatter_snapshot",
-        lambda _board, _tid: tf.TicketFrontmatterSnapshot({
+        finish_store, "_ticket_frontmatter_snapshot",
+        lambda _home, _tid: finish_rules.TicketFrontmatterSnapshot({
             "tier": "pm-direct", "touches": ["src/"],
         }, None),
     )
@@ -2255,8 +2217,8 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
         ("src/a.py", "src/b.py", "src/c.py"), (),
     )
     monkeypatch.setattr(tier_signals, "expand_owned_touch_files", lambda _repo, _touches: expansion)
-    finisher = tf.TicketFinisher(
-        board_py=tf.BOARD_PY,
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         task_workspace=tmp_path,
         status_entries_at_fn=lambda _cwd: (),
     )
@@ -2357,16 +2319,17 @@ def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
     return board_ticket.cmd_claim(board._home(), argparse.Namespace(id=ticket_id, user="me", task="me"))
 
 
-def test_completion_has_no_change_size_cap(tmp_path, capsys):
+def test_completion_has_no_change_size_cap(tmp_path, monkeypatch, capsys):
     """estimate small 티켓이 선언 경로 안에서 400줄을 바꿔도 진입 게이트가 막지 않는다."""
     root, board = _wave_repo(tmp_path)
     assert _wave_claim(board) == 0
     _wave_git(root, "add", "-A")
     _wave_git(root, "commit", "-qm", "claim 기록")
     _wave_write(root / "src" / "app.py", 5 + _WAVE_CHANGED_LINES)
-    finish = _load_tool_copy(root, "ticket_finish")
+    monkeypatch.setattr(finish_store, "_cluster_integration_branch", _REAL_INTEGRATION_BRANCH)
     completed: list[list[str]] = []
-    finisher = finish.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(root),
         run_pytest_fn=_green_pytest(100),
         run_board_fn=lambda args: (completed.append(args), (0, "board ok"))[1],
         run_git_fn=lambda args: (0, ""),
@@ -2385,9 +2348,9 @@ def test_completion_has_no_change_size_cap(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "서킷브레이커" not in captured.out + captured.err
     assert completed == [["complete", _WAVE_TICKET, "--tests-pass"]]
-    assert "diff_cap_block_fn" not in inspect.signature(finish.TicketFinisher).parameters
+    assert "diff_cap_block_fn" not in inspect.signature(finish_record.TicketFinisher).parameters
     for name in ("get_ticket_estimate", "DiffAttribution", "_default_diff_cap_block"):
-        assert not hasattr(finish, name) and not hasattr(finish.TicketFinisher, name), name
+        assert not hasattr(finish_record, name) and not hasattr(finish_record.TicketFinisher, name), name
 
 
 # ── 완료 대상 작업 트리 자기 축 회귀 ─────────────────────────────────────────
@@ -2455,7 +2418,7 @@ def _axis_board_ticket(root: Path, ticket_id: str, claimed_rev: str) -> Path:
 
 
 def _axis_finisher(tf, root: Path, board_py: Path):
-    return tf.TicketFinisher(task_workspace=root, board_py=board_py)
+    return finish_record.TicketFinisher(pm_paths.home_at(root), task_workspace=root, board_py=board_py)
 
 
 # ── 순수 파싱 helper (git/pytest 출력 파싱만 — 서브프로세스 0) ────────────────
@@ -2468,7 +2431,7 @@ def test_self_axis_target_paths_keeps_only_flat_tests_py(tf):
         "tests/test_b.py",
         "README.md",
     ])
-    assert tf._self_axis_target_paths(listing) == {"tests/test_a.py", "tests/test_b.py"}
+    assert finish_rules._self_axis_target_paths(listing) == {"tests/test_a.py", "tests/test_b.py"}
 
 
 def test_self_axis_failed_node_ids_parses_function_level_ids(tf):
@@ -2479,7 +2442,7 @@ def test_self_axis_failed_node_ids_parses_function_level_ids(tf):
         "ERROR tests/test_c.py - collection error\n"
         "2 failed, 1 error in 0.1s\n"
     )
-    assert tf._self_axis_failed_node_ids(output) == {
+    assert finish_rules._self_axis_failed_node_ids(output) == {
         "tests/test_a.py::test_x", "tests/test_b.py::test_y", "tests/test_c.py",
     }
 
@@ -2494,7 +2457,7 @@ def test_self_axis_failed_node_ids_normalizes_the_path_to_posix(tf):
         "FAILED tests/test_d.py::test_p[a\\b] - AssertionError\n"
         "2 failed, 1 error in 0.1s\n"
     )
-    assert tf._self_axis_failed_node_ids(output) == {
+    assert finish_rules._self_axis_failed_node_ids(output) == {
         "tests/test_a.py::test_x", "tests/test_c.py", "tests/test_d.py::test_p[a\\b]",
     }
 
@@ -2508,12 +2471,13 @@ def test_self_axis_target_files_unions_tracked_untracked_and_ratchet_list(tf, tm
     (root / "tests" / "test_axis_untracked.py").write_text(
         "def test_new():\n    assert True\n", encoding="utf-8")
 
-    finisher = tf.TicketFinisher()
-    target = finisher._self_axis_target_files(root)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
+    target = finish_baseline._self_axis_target_files(
+        root, run_git_stdout_at=finisher._run_git_stdout_at_fn)
 
     assert "tests/test_axis_a.py" in target       # tracked(unstaged) 변경
     assert "tests/test_axis_untracked.py" in target  # untracked 신규
-    assert set(tf._SELF_AXIS_RATCHET_GUARD_FILES) <= target  # 전-트리 가드 항상 포함
+    assert set(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES) <= target  # 전-트리 가드 항상 포함
 
 
 # ── `_default_self_axis_block` 시나리오(T1~T3·T9) ────────────────────────────
@@ -2525,7 +2489,7 @@ def test_default_self_axis_block_does_not_block_on_inherited_red_only(
     _axis_write_a(root, "def test_a():\n    assert False  # already red at claim time\n")
     base = _axis_commit(root, "base is red")
     board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    monkeypatch.setattr(tf, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+    monkeypatch.setattr(finish_rules, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
 
     finisher = _axis_finisher(tf, root, board_py)
     block = finisher._default_self_axis_block("T-AXIS")
@@ -2547,7 +2511,7 @@ def test_default_self_axis_block_blocks_on_new_failure_in_a_file_with_inherited_
         encoding="utf-8")
     base = _axis_commit(root, "base has test_a red")
     board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    monkeypatch.setattr(tf, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+    monkeypatch.setattr(finish_rules, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
 
     (root / "tests" / "test_axis_a.py").write_text(
         "def test_a():\n    assert False  # still red — inherited\n"
@@ -2570,11 +2534,11 @@ def test_default_self_axis_block_costs_nothing_when_the_work_tree_is_green(
     root = _axis_repo(tmp_path)
     base = _axis_head(root)
     board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    monkeypatch.setattr(tf, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+    monkeypatch.setattr(finish_rules, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
 
     finisher = _axis_finisher(tf, root, board_py)
     monkeypatch.setattr(
-        finisher, "_materialize_tree",
+        finish_baseline, "_materialize_tree",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("materialize 미호출이어야 한다")))
 
     block = finisher._default_self_axis_block("T-AXIS")
@@ -2592,7 +2556,7 @@ def test_default_self_axis_block_is_silent_when_claimed_rev_is_absent(
     board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev="")
     finisher = _axis_finisher(tf, root, board_py)
     monkeypatch.setattr(
-        finisher, "_run_pytest_subset",
+        finish_baseline, "_run_pytest_subset",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("pytest 미호출이어야 한다")))
 
     block = finisher._default_self_axis_block("T-AXIS")
@@ -2615,7 +2579,7 @@ _AXIS_BACKSLASH_NODE_B = "tests\\test_axis_a.py::test_b"
 
 def _axis_child_output_runner(code_tree: Path, work_out: str, base_out: str):
     """`_run_pytest_subset` 대역 — 작업 트리에는 `work_out`, baseline 트리에는 `base_out`."""
-    def _run(cwd: Path, files) -> tuple[int, str]:
+    def _run(cwd: Path, files, *, venv_python) -> tuple[int, str]:
         return 1, (work_out if Path(cwd) == code_tree else base_out)
     return _run
 
@@ -2630,7 +2594,7 @@ def test_default_self_axis_block_does_not_invent_a_new_failure_from_separator_no
 
     finisher = _axis_finisher(tf, root, board_py)
     monkeypatch.setattr(
-        finisher, "_run_pytest_subset",
+        finish_baseline, "_run_pytest_subset",
         _axis_child_output_runner(
             finisher._code_tree(),
             f"FAILED {_AXIS_BACKSLASH_NODE_A} - AssertionError\n1 failed in 0.1s\n",
@@ -2654,7 +2618,7 @@ def test_default_self_axis_block_lists_new_failures_in_posix_notation(
 
     finisher = _axis_finisher(tf, root, board_py)
     monkeypatch.setattr(
-        finisher, "_run_pytest_subset",
+        finish_baseline, "_run_pytest_subset",
         _axis_child_output_runner(
             finisher._code_tree(),
             f"FAILED {_AXIS_BACKSLASH_NODE_A} - AssertionError\n"
@@ -2694,12 +2658,13 @@ def test_untracked_scan_omission_would_have_missed_the_new_red(tf, tmp_path):
     (root / "tests" / "test_axis_untracked.py").write_text(
         "def test_new():\n    assert False\n", encoding="utf-8")
 
-    finisher = tf.TicketFinisher()
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
     _rc, tracked_out = finisher._run_git_stdout_at_fn(root, ["diff", "--name-only", "HEAD"])
-    tracked_only = tf._self_axis_target_paths(tracked_out)
+    tracked_only = finish_rules._self_axis_target_paths(tracked_out)
     assert "tests/test_axis_untracked.py" not in tracked_only
 
-    full = finisher._self_axis_target_files(root)
+    full = finish_baseline._self_axis_target_files(
+        root, run_git_stdout_at=finisher._run_git_stdout_at_fn)
     assert "tests/test_axis_untracked.py" in full  # ls-files -o 를 더하면 잡힌다
 
 
@@ -2726,12 +2691,12 @@ def test_head_tree_alone_would_have_missed_the_staged_red(tf, tmp_path):
     _axis_write_a(root, "def test_a():\n    assert False  # staged, not committed\n")
     _axis_git(root, "add", "-A")
 
-    finisher = tf.TicketFinisher()
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
     rc, out = finisher._run_git_stdout_at_fn(root, ["show", "HEAD:tests/test_axis_a.py"])
     assert rc == 0 and "assert 1 == 1" in out  # HEAD 트리 자체는 여전히 base 내용
 
     _rc2, diff_out = finisher._run_git_stdout_at_fn(root, ["diff", "--name-only", "HEAD"])
-    assert "tests/test_axis_a.py" in tf._self_axis_target_paths(diff_out)
+    assert "tests/test_axis_a.py" in finish_rules._self_axis_target_paths(diff_out)
 
 
 # ── T-0851 — 정리 실패 표면화(호출 형태 검사가 아니라 실제 삭제 실패 주입) ─────
@@ -2762,9 +2727,9 @@ def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_e
     """except 경로 — 정리(force_rmtree) 실패가 원래 예외(git archive 실패)를 덮지 않고, 정리
     실패 자체는 loud 경고로 표면화된다(삼키지 않는다)."""
     root = _axis_repo(tmp_path)
-    finisher = tf.TicketFinisher()
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
 
-    file_lock = tf.fs
+    file_lock = fs
     real_force_rmtree = file_lock.force_rmtree
     attempted: list[Path] = []
     injected = OSError("디렉터리 정리 실패 — 시뮬레이션(권한 거부)")
@@ -2772,7 +2737,9 @@ def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_e
         file_lock, "force_rmtree", _failing_force_rmtree(attempted, injected))
 
     with pytest.raises(RuntimeError, match="git archive"):
-        finisher._materialize_tree(root, "no-such-ref-at-all")
+        finish_baseline._materialize_tree(
+            pm_paths.home_at(REPO), root, "no-such-ref-at-all",
+            run_git_stdout_at=finisher._run_git_stdout_at_fn)
 
     captured = capsys.readouterr()
     assert "baseline scratch 정리 실패" in captured.err
@@ -2795,7 +2762,7 @@ def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_fa
 
     finisher = _axis_finisher(tf, root, board_py)
 
-    file_lock = tf.fs
+    file_lock = fs
     real_force_rmtree = file_lock.force_rmtree
     attempted: list[Path] = []
     injected = OSError("디렉터리 정리 실패 — 시뮬레이션(잠긴 핸들)")
@@ -2853,32 +2820,36 @@ def test_alternates_presence_flips_a_real_pytest_failure_set_by_exactly_one_node
     """alternates 있는/없는 baseline 양쪽에서 같은 canary 를 실 pytest 로 돌려 실패 노드 ID
     집합 차이를 값으로 대조한다 — 차집합은 정확히 canary 노드 1건이어야 한다. 같은 실행에서
     직렬 소요를 박제한다."""
-    finisher = tf.TicketFinisher(venv_python=sys.executable)
-    rc_old, old_out = finisher._run_git_stdout_at_fn(tf.REPO, ["rev-parse", "HEAD~3"])
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python=sys.executable)
+    rc_old, old_out = finisher._run_git_stdout_at_fn(REPO, ["rev-parse", "HEAD~3"])
     assert rc_old == 0
     target_sha = old_out.strip()
 
     t0 = time.time()
-    on_tree = finisher._materialize_tree(tf.REPO, "HEAD")
+    on_tree = finish_baseline._materialize_tree(
+        pm_paths.home_at(REPO), REPO, "HEAD", run_git_stdout_at=finisher._run_git_stdout_at_fn)
     try:
         assert (on_tree / ".git" / "objects" / "info" / "alternates").is_file()
         _write_alternates_canary(on_tree, target_sha)
-        on_rc, on_out = finisher._run_pytest_subset(on_tree, [_ALTERNATES_CANARY_FILE])
+        on_rc, on_out = finish_baseline._run_pytest_subset(
+            on_tree, [_ALTERNATES_CANARY_FILE], venv_python=finisher._venv_python)
     finally:
-        tf.fs.force_rmtree(on_tree)
+        fs.force_rmtree(on_tree)
     t1 = time.time()
 
-    off_tree = finisher._materialize_tree(tf.REPO, "HEAD")
+    off_tree = finish_baseline._materialize_tree(
+        pm_paths.home_at(REPO), REPO, "HEAD", run_git_stdout_at=finisher._run_git_stdout_at_fn)
     try:
         (off_tree / ".git" / "objects" / "info" / "alternates").unlink()
         _write_alternates_canary(off_tree, target_sha)
-        off_rc, off_out = finisher._run_pytest_subset(off_tree, [_ALTERNATES_CANARY_FILE])
+        off_rc, off_out = finish_baseline._run_pytest_subset(
+            off_tree, [_ALTERNATES_CANARY_FILE], venv_python=finisher._venv_python)
     finally:
-        tf.fs.force_rmtree(off_tree)
+        fs.force_rmtree(off_tree)
     t2 = time.time()
 
-    on_failed = tf._self_axis_failed_node_ids(on_out)
-    off_failed = tf._self_axis_failed_node_ids(off_out)
+    on_failed = finish_rules._self_axis_failed_node_ids(on_out)
+    off_failed = finish_rules._self_axis_failed_node_ids(off_out)
 
     assert on_rc == 0 and on_failed == set(), on_out
     assert off_rc != 0 and off_failed == {_ALTERNATES_CANARY_NODE}, off_out
@@ -2915,24 +2886,25 @@ def _repo_fingerprint(finisher, root: Path) -> tuple[int, str, str, int]:
 def test_gate_execution_does_not_mutate_the_original_repository(tf):
     """T7 — 게이트 실행 전후 원 저장소 지문 4종(refs 수·refs 해시·status 해시·loose object
     수) 동일. materialize·alternates 가 원 저장소에 아무 것도 쓰지 않음을 값으로 확인한다."""
-    finisher = tf.TicketFinisher(venv_python=sys.executable)
-    before = _repo_fingerprint(finisher, tf.REPO)
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python=sys.executable)
+    before = _repo_fingerprint(finisher, REPO)
 
-    scratch = finisher._materialize_tree(tf.REPO, "HEAD")
+    scratch = finish_baseline._materialize_tree(
+        pm_paths.home_at(REPO), REPO, "HEAD", run_git_stdout_at=finisher._run_git_stdout_at_fn)
     # `ignore_errors=True` 는 read-only git object 를 남긴다 — baseline scratch 는 이제
     # 저장소 안 임시 루트에 서므로 남으면 그대로 쌓인다. 엔진과 같은 삭제 seam 을 쓴다.
-    tf.fs.force_rmtree(scratch)
+    fs.force_rmtree(scratch)
 
-    after = _repo_fingerprint(finisher, tf.REPO)
+    after = _repo_fingerprint(finisher, REPO)
     assert before == after
 
 
 # ── T10 — 전-트리 ratchet 가드 목록 정합 + 신규 가드 커버리지 ─────────────────
 
 def test_self_axis_ratchet_guard_files_are_real_existing_files(tf):
-    for rel in tf._SELF_AXIS_RATCHET_GUARD_FILES:
+    for rel in finish_rules._SELF_AXIS_RATCHET_GUARD_FILES:
         assert (REPO / rel).is_file(), f"{rel} 가 실재하지 않는다"
-    assert len(tf._SELF_AXIS_RATCHET_GUARD_FILES) == len(set(tf._SELF_AXIS_RATCHET_GUARD_FILES))
+    assert len(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES) == len(set(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES))
 
 
 def test_self_axis_ratchet_guard_list_is_a_subset_of_the_full_test_suite(tf):
@@ -2942,16 +2914,17 @@ def test_self_axis_ratchet_guard_list_is_a_subset_of_the_full_test_suite(tf):
     (`test_git_anchor_guard.py` 류의 좁은 범위 가드) 오탐이었다 — 그 시도는 기각하고 최소
     보증만 남긴다."""
     all_test_files = {f"tests/{p.name}" for p in (REPO / "tests").glob("test_*.py")}
-    assert set(tf._SELF_AXIS_RATCHET_GUARD_FILES) <= all_test_files
+    assert set(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES) <= all_test_files
 
 
 # ── I7 소스 단언 — 통과 시 문구 0줄(pass-phrase 재발 방지) ────────────────────
 
 def test_self_axis_source_never_spells_out_a_pass_phrase(tf):
-    source = Path(tf.__file__).read_text(encoding="utf-8")
+    source = Path(finish_record.__file__).read_text(encoding="utf-8")
     start = source.index("_default_self_axis_block")
     end = source.index("def _default_run_board")
-    section = source[start:end]
+    # 판정 본체(finish_record)와 추출된 baseline 실행(finish_baseline)을 함께 본다.
+    section = source[start:end] + Path(finish_baseline.__file__).read_text(encoding="utf-8")
     for banned in ("자기 축 통과", "green 이다", "판정 green", "seam green"):
         assert banned not in section
 
@@ -2959,7 +2932,8 @@ def test_self_axis_source_never_spells_out_a_pass_phrase(tf):
 def test_source_never_calls_merge_tree_for_self_axis_judgment(tf):
     """I1 — 판정 트리는 완료 대상 작업 트리 자체다. 소스에 `merge-tree` 호출이 없다(합성
     병합 트리를 만들지 않는다는 불변식의 소스 단언)."""
-    source = Path(tf.__file__).read_text(encoding="utf-8")
+    source = "".join(Path(module.__file__).read_text(encoding="utf-8")
+                     for module in (tf, finish_record, finish_baseline))
     assert "merge-tree" not in source
 
 
@@ -2968,7 +2942,8 @@ def test_source_never_calls_merge_tree_for_self_axis_judgment(tf):
 def test_self_axis_preflight_runs_last_after_private_ref_and_dod_pass(tf, tmp_path):
     # 앞선 preflight(잔여 판정)는 git 을 읽는다 — 막혀야 하는 것은 git 쓰기(add·commit)다.
     git_calls: list[list[str]] = []
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
         run_git_fn=lambda args: (git_calls.append(list(args)) or (0, "")),
@@ -2982,7 +2957,8 @@ def test_self_axis_preflight_runs_last_after_private_ref_and_dod_pass(tf, tmp_pa
 
 def test_self_axis_preflight_is_never_called_when_dod_blocks(tf, tmp_path):
     calls: list[str] = []
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
         dod_block_fn=lambda tid: "DoD 미마감",
         self_axis_block_fn=lambda tid: calls.append(tid) or None,
@@ -2994,7 +2970,8 @@ def test_self_axis_preflight_is_never_called_when_dod_blocks(tf, tmp_path):
 
 def test_self_axis_preflight_still_fires_with_no_pytest(tf, tmp_path):
     """T8 — `--no-pytest` 로 [1/5] 회귀를 건너뛰어도 자기 축 preflight 는 그대로 발화한다."""
-    finisher = tf.TicketFinisher(
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(REPO),
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 라 미호출")),
         dod_block_fn=lambda tid: None,
         self_axis_block_fn=lambda tid: f"자기 축 회귀 신규 실패 — {tid}",
@@ -3006,18 +2983,18 @@ def test_self_axis_preflight_still_fires_with_no_pytest(tf, tmp_path):
 
 def test_self_axis_block_fn_defaults_to_the_real_implementation(tf):
     """DI 인자 1개 — 미주입이면 `_default_self_axis_block` 이 기본값이다."""
-    finisher = tf.TicketFinisher()
+    finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
     assert finisher._self_axis_block_fn == finisher._default_self_axis_block
 
 
 def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     from test_cluster_close import _build_close_env, _write_cluster_ledger, _CLUSTER, _CLUSTER_BRANCH, _INTEGRATION_BRANCH, _git, _rev
+    monkeypatch.setattr(finish_store, "_cluster_integration_branch", _REAL_INTEGRATION_BRANCH)
     env = _build_close_env(_load_module(), tmp_path / "rebound", monkeypatch)
     closer = env.closer()
     owner_home = pm_paths.home_at(env.home)
     _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), branch=None)
-    board_py = env.home / ".project_manager/tools/board.py"
-    assert env.tf._cluster_integration_branch(board_py, env.ticket) is None
+    assert finish_store._cluster_integration_branch(owner_home, env.ticket) is None
     assert closer.run() == 1
     _git(env.slot, "checkout", "--", "src/app.py")
     _git(env.slot, "checkout", "--detach")
@@ -3050,7 +3027,7 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     _git(env.code, "checkout", _INTEGRATION_BRANCH)
     (env.slot / "src/app.py").write_text("seed = 1\nwork = 2\n", encoding="utf-8")
     leases, home = env.lease_bytes(), env.home_log()
-    assert env.tf._cluster_integration_branch(board_py, env.ticket) == _INTEGRATION_BRANCH
+    assert finish_store._cluster_integration_branch(owner_home, env.ticket) == _INTEGRATION_BRANCH
     assert env.closer(cluster="rebound").run() == 0
     after = cluster_store.load_cluster(owner_home, "rebound")
     assert after["branch"] == declaration["branch"] and after["base_branch"] == declaration["base_branch"]
@@ -3070,12 +3047,12 @@ def test_t0962_finish_takes_repo_slot_only_for_reconcile(tf, capsys):
             tf.main(argv)
         assert exc.value.code == 2
         assert "--reconcile-integrated" in capsys.readouterr().err
-    skeleton = tf.build_log_skeleton("T-0001", "제목", 1, 1, 1, date="2026-10-18", task="alpha")
+    skeleton = finish_record.build_log_skeleton("T-0001", "제목", 1, 1, 1, date="2026-10-18", task="alpha")
     assert "(task:alpha)" in skeleton.splitlines()[0]
     with pytest.raises(TypeError):
-        tf.build_log_skeleton("T-0001", "제목", 1, 1, 1, session="proj_1")
-    assert "session" not in inspect.signature(tf.TicketFinisher.run).parameters
-    assert "session" not in inspect.signature(tf.ClusterCloser).parameters
+        finish_record.build_log_skeleton("T-0001", "제목", 1, 1, 1, session="proj_1")
+    assert "session" not in inspect.signature(finish_record.TicketFinisher.run).parameters
+    assert "session" not in inspect.signature(cluster_close.ClusterCloser).parameters
 
 
 def test_t0962_finish_without_task_stops_before_writes(tf, tmp_path, monkeypatch, capsys):
@@ -3095,16 +3072,15 @@ def test_t0962_finish_without_task_stops_before_writes(tf, tmp_path, monkeypatch
                     "state": "leased", "role": "work"}],
         "tasks": [{"name": "solo-task"}]}), encoding="utf-8")
     monkeypatch.setattr(tf, "REPO", tmp_path)
-    monkeypatch.setattr(tf, "LOG_FILE", log_file)
     calls: list = []
-    monkeypatch.setattr(tf.subprocess, "run", lambda *a, **k: calls.append(a) or pytest.fail(
+    monkeypatch.setattr(finish_record.subprocess, "run", lambda *a, **k: calls.append(a) or pytest.fail(
         "--task 없는 종결이 하위 프로세스(board·git)를 불렀다"))
 
-    def _no_pipeline(**_kwargs):
+    def _no_pipeline(*_args, **_kwargs):
         pytest.fail("--task 없는 종결이 종결 파이프라인을 만들었다")
 
-    monkeypatch.setattr(tf, "TicketFinisher", _no_pipeline)
-    monkeypatch.setattr(tf, "ClusterCloser", _no_pipeline)
+    monkeypatch.setattr(finish_record, "TicketFinisher", _no_pipeline)
+    monkeypatch.setattr(cluster_close, "ClusterCloser", _no_pipeline)
     for argv in (["--cluster", "C-grp"], ["--cluster", "C-grp", "--no-pytest"], ["T-0001"]):
         with pytest.raises(SystemExit) as exc:
             tf.main(argv)

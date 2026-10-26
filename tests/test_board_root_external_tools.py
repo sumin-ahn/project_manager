@@ -30,6 +30,8 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import areas_store, pm_paths, python_env
 from pm_engine.app import slot_resolution
+from pm_engine.app import finish_context
+from pm_engine.infra import finish_store
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -210,10 +212,9 @@ def test_external_parse_touches_legacy_reads_wiki(external):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ticket_finish — count_board_done(board.py 위치 Home 추종) · _resolve_per_repo_test_cmd
+# ticket_finish — count_board_done(명시 Home 추종) · _resolve_per_repo_test_cmd
 # ════════════════════════════════════════════════════════════════════════
-# count_board_done(board_py) 는 board.py 위치(`<홈>/.project_manager/tools/board.py`)에서 만든
-# Home 의 티켓 디렉터리를 센다. 진실(board/tickets/done=1)과 스테일(wiki/tickets/done=99)을 함께 두어
+# finish_store.count_board_done(home) 은 명시 Home 의 티켓 디렉터리를 센다. 진실(board/tickets/done=1)과 스테일(wiki/tickets/done=99)을 함께 두어
 # 어느 쪽을 세는지 결정적으로 가른다.
 
 
@@ -236,8 +237,8 @@ def test_ticket_finish_count_board_done_calls_tickets_dir_not_constant(ticket_fi
     """count_board_done 가 Home 의 board 루트(`pm_paths.tickets_dir`)를 센다 — 스테일 wiki 아님.
 
     board/tickets(진실·1)를 세야 한다. 99 가 나오면 회귀."""
-    bp = _write_fake_board(tmp_path)
-    assert ticket_finish.count_board_done(bp) == 1, \
+    _write_fake_board(tmp_path)
+    assert finish_store.count_board_done(pm_paths.home_at(tmp_path)) == 1, \
         "count_board_done 가 board 모듈 tickets_dir()(진실)를 안 부름 — TICKETS_DIR 상수(stale) 봄."
 
 
@@ -248,16 +249,15 @@ def test_ticket_finish_resolve_test_cmd_uses_board_areas_file(ticket_finish, tmp
     _make_board_dir(tmp_path)
     (tmp_path / ".project_manager" / "board" / "areas.md").write_text(
         "| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
-    monkeypatch.setattr(ticket_finish, "REPO", tmp_path)
     monkeypatch.setattr(areas_store, "id_prefix", lambda _home, override=None: "PM")
     monkeypatch.setattr(
         areas_store, "_areas_row_for_prefix",
         lambda _home, prefix: {"test_cmd": "go test ./..."} if prefix == "PM" else None)
-    assert ticket_finish._resolve_per_repo_test_cmd() == "go test ./..."
+    assert finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(tmp_path)) == "go test ./..."
 
 
 def test_ticket_finish_resolve_test_cmd_default_when_board_areas_absent(
         ticket_finish, tmp_path, monkeypatch):
     """Home 의 areas.md 가 없으면 4층 기본 명령 — 솔로 폴백(현행 pytest 보존)."""
-    monkeypatch.setattr(ticket_finish, "REPO", tmp_path / "nonexistent")
-    assert ticket_finish._resolve_per_repo_test_cmd() == python_env.default_pytest_cmd()
+    assert finish_context._resolve_per_repo_test_cmd(
+        pm_paths.home_at(tmp_path / "nonexistent")) == python_env.default_pytest_cmd()

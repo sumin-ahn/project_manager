@@ -4,9 +4,8 @@ from __future__ import annotations
 import pytest
 
 from _manager_home import tree_snapshot
-import ticket_finish as finish
 from pm_engine.app import cluster_binding, ticket_access
-from pm_engine.cli import board_ticket
+from pm_engine.cli import board_ticket, cluster_close, finish_record
 from pm_engine.domain import finish_rules, identity_args, ticket_rules
 from pm_engine.infra import fs, pm_paths, ticket_store
 
@@ -34,12 +33,12 @@ def ownership_home(tmp_path, monkeypatch):
 
 
 def _closer(home, board_py, *, task=_TASK, board_identity_args=()):
-    finisher = finish.TicketFinisher(
-        board_py=board_py, log_file=home.root / "log.md",
+    finisher = finish_record.TicketFinisher(
+        home, board_py=board_py, log_file=home.root / "log.md",
         regression_cwd=str(home.root),
     )
-    return finish.ClusterCloser(
-        f"C-{_TICKET}", home=home, finisher=finisher, board_py=board_py,
+    return cluster_close.ClusterCloser(
+        home, f"C-{_TICKET}", finisher=finisher, board_py=board_py,
         task=task, board_identity_args=board_identity_args,
     )
 

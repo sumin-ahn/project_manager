@@ -16,7 +16,7 @@ hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)�
 from __future__ import annotations
 
 from pm_engine.app import delegate_changelog
-from pm_engine.cli import delegate_cmd
+from pm_engine.cli import cluster_close, delegate_cmd, finish_record
 
 from pm_engine.app import delegate_cluster_review
 from pm_engine.infra import delegate_copy_git
@@ -1857,11 +1857,11 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert _git(home, 'worktree', 'add', '-q', str(five), _CLUSTER_BRANCH).returncode == 0
     rows = [{'slot': f'work/proj_{n}', 'repo': 'proj', 'session': 'main', 'state': 'leased', 'role': 'work'} for n in (1, 5)]
     pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
-    tf = _load_tool('ticket_finish', f'ticket_finish_t0929_{explicit}')
-    execution_globals = (tf.REPO, tf.LEASES_FILE)
-    finisher = tf.TicketFinisher()
-    closer = tf.ClusterCloser(_CLUSTER, finisher=finisher, home=pm_paths.home_at(home),
-                             task='main', board_identity_args=['--task', 'main'])
+    execution_home = pm_paths.home_at(home)
+    finisher = finish_record.TicketFinisher(execution_home)
+    closer = cluster_close.ClusterCloser(execution_home, _CLUSTER, finisher=finisher,
+                                         task='main', board_identity_args=['--task', 'main'])
+    execution_homes = (finisher._home, closer._home)
     found, problem = cluster_code_tree.resolve_code_tree(closer._home, closer._cluster, run_git_stdout_at=closer._git_stdout)
     assert problem is None and found == five
     forwarded = []
@@ -1876,7 +1876,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert delegate_cmd._cluster_confirmation_tree(
         pm_paths.home_at(home), _CLUSTER, identity=identity) == found
     assert pm_paths.leases_file(board._home()).read_bytes() == before
-    assert (tf.REPO, tf.LEASES_FILE) == execution_globals
+    assert (finisher._home, closer._home) == execution_homes
     # 실행 엔진과 PM 데이터 홈이 달라도 상대 대여 경로는 PM 홈을 기준으로 해소한다.
     engine = home.parent / "separate-engine"
     engine.mkdir()
@@ -1921,7 +1921,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
         cluster_code_tree.resolve_code_tree(mixed_home, _CLUSTER, run_git_stdout_at=closer._git_stdout)
     with pytest.raises(delegate_errors.DelegateError):
         delegate_cmd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=identity)
-    assert (tf.REPO, tf.LEASES_FILE) == execution_globals
+    assert (finisher._home, closer._home) == execution_homes
     pm_paths.leases_file(board._home()).write_bytes(before)
 
     # finish argv에서 실제 내부 확인·기입·처분까지 연결하며 외부 명령만 대역으로 둔다.

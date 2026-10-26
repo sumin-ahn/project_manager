@@ -42,6 +42,8 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import utf8_child_env
+from pm_engine.cli import finish_record
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1628,8 +1630,8 @@ def test_runtime_instance_callable_attribute_boundaries_rethrow_marked_skew(case
     이 fail-soft 핸들러들에 도달한다 — 미존재/빈 목록/빈 보고로 강등하면 안 된다.
     """
     skew = _marked_skew()
-    module = _runtime_tool("ticket_finish.py")
-    instance = object.__new__(module.TicketFinisher)
+    instance = object.__new__(finish_record.TicketFinisher)
+    instance._home = pm_paths.home_at(REPO)
     instance._status_entries_fn = _raiser(skew)
     invoke = lambda: instance._dirty_split(["src/file.py"])
     with pytest.raises(RuntimeError) as raised:

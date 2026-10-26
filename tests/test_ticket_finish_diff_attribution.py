@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pm_engine.infra import cluster_store, pm_paths
-from pm_engine.cli import board_cluster
+from pm_engine.cli import board_cluster, finish_record
 from pm_engine.domain import cluster_rules
 
 
@@ -180,7 +180,7 @@ def _probe_code_tree(tf, monkeypatch) -> list[Path]:
     기록 자체(claimed→done 이동)는 별도 테스트가 소유한다. git·stage 경로는 실물 그대로다.
     """
     trees: list[Path] = []
-    original = tf.TicketFinisher
+    original = finish_record.TicketFinisher
 
     class _CodeTreeProbe(original):
         def _code_tree(self):
@@ -191,7 +191,7 @@ def _probe_code_tree(tf, monkeypatch) -> list[Path]:
         def _default_run_board(self, args):
             return 0, "board ok"
 
-    monkeypatch.setattr(tf, "TicketFinisher", _CodeTreeProbe)
+    monkeypatch.setattr(finish_record, "TicketFinisher", _CodeTreeProbe)
     return trees
 
 
