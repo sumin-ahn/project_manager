@@ -96,7 +96,6 @@ def test_t0658_real_reply_fixtures_keep_prose_none_unknown_and_reject_list_count
 def test_t0658_fix1_real_structured_pass_reply_is_zero_verdict_and_must_fix(pd):
     """T-0657 2R 실 reply의 bare 절이 `확인 결과`에서 닫혀 통과 0건으로 판정된다."""
     reply = _reply(T0657_ROUND2_STRUCTURED_PASS_REPLY)
-    external = pd._load_additional_reviewer()
 
     assert review_verdict.verdict_words(reply) == ("통과",)
     assert review_verdict._extract_internal_must_fix_items(reply) == []

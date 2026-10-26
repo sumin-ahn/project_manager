@@ -55,7 +55,6 @@ STAMPED_MODULES = (
     "contradiction_lint.py",
     "pm_adr.py",
     "pm_delegate.py",
-    "delegate_scope.py",
     "delegate_channel_guard.py",
     "additional_reviewer.py",
     "pm_render.py",

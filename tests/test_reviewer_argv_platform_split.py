@@ -19,6 +19,12 @@ r"""reviewer_cmd argv 분해의 **실행 플랫폼 규칙**과 분해 규칙 사
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+import pm_engine.infra.harness.reviewer_run
+
+from pm_engine.infra.harness import contract
+from pm_engine.infra import reviewer_target
+
 import importlib.util
 import os
 import shlex
@@ -109,9 +115,9 @@ def test_additional_reviewer_calls_the_shared_seam_instead_of_its_own_copy(exter
         return ["stub-argv"]
 
     monkeypatch.setattr(process, "split_command_argv", _stub_split_command_argv)
-    monkeypatch.setattr(external, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
 
-    assert external._split_reviewer_argv("codex --model x") == ["stub-argv"]
+    assert reviewer_target._split_reviewer_argv("codex --model x") == ["stub-argv"]
     assert seen == [("codex --model x", True)], (
         "분해가 process.split_command_argv 를 타지 않았거나 플랫폼 판정을 넘기지 않았다")
 
@@ -125,9 +131,9 @@ def test_the_shared_seam_and_additional_reviewer_agree_token_for_token(external,
         "codex --model gpt-5.6 exec",
     )
     for windows in (True, False):
-        monkeypatch.setattr(external, "_running_on_windows", lambda: windows)
+        monkeypatch.setattr(contract, 'running_on_windows', lambda: windows)
         for command in commands:
-            assert external._split_reviewer_argv(command) == process.split_command_argv(
+            assert reviewer_target._split_reviewer_argv(command) == process.split_command_argv(
                 command, windows=windows), (command, windows)
 
 
@@ -191,9 +197,9 @@ def test_windows_reviewer_command_reaches_the_runner_as_an_executable_argv(
     """
     # 선-단언 ①: 이 픽스처가 실제로 축을 태운다 — POSIX 규칙이면 argv[0] 이 뭉개진다.
     assert shlex.split(WINDOWS_REVIEWER_CMD)[0] != WINDOWS_EXECUTABLE
-    monkeypatch.setattr(external, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
     # 선-단언 ②: 플랫폼 주입이 실제로 걸렸다(주입이 no-op 이면 가드가 시험되지 않는다).
-    assert external._running_on_windows() is True
+    assert contract.running_on_windows() is True
 
     seen: dict[str, list[str]] = {}
 
@@ -201,8 +207,8 @@ def test_windows_reviewer_command_reaches_the_runner_as_an_executable_argv(
         seen["argv"] = list(argv)
         return _completed(0)
 
-    ok, _output, started = external._run_reviewer_ex(
-        "prompt", WINDOWS_REVIEWER_CMD, 5, runner)
+    ok, _output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+        pm_paths.home_at(external.REPO), "prompt", WINDOWS_REVIEWER_CMD, 5, runner)
 
     assert (ok, started) == (True, True)
     assert seen["argv"] == [WINDOWS_EXECUTABLE, "-c", "pass"]
@@ -221,11 +227,11 @@ def test_real_subprocess_run_still_works_under_the_windows_rule(external, monkey
     """
     import sys
 
-    monkeypatch.setattr(external, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
     command = shlex.join([sys.executable, "-c", "pass"])
-    assert external._split_reviewer_argv(command)[0] == sys.executable, (
+    assert reviewer_target._split_reviewer_argv(command)[0] == sys.executable, (
         "Windows 규칙이 인용된 인터프리터 경로를 단일 토큰으로 복원하지 못했다")
-    ok, _output, started = external._run_reviewer_ex("prompt", command, 5, subprocess.run)
+    ok, _output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", command, 5, subprocess.run)
     assert (ok, started) == (True, True)
 
 
@@ -235,12 +241,12 @@ def test_the_watchdog_join_and_split_round_trip_keeps_the_executable(external, m
     왕복이 깨지면 Windows 에서 프로필 키가 뭉개진 실행 파일 이름이 되어, 진행신호 계약과 무진행
     상한이 조용히 "미지 CLI" 로 내려앉는다(같은 결함의 두 번째 표면).
     """
-    monkeypatch.setattr(external, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
     argv = [r"C:\Users\pm\AppData\Local\Programs\codex\codex.exe", "exec", "--model", "gpt-5.6"]
     joined = shlex.join(argv)
 
-    assert external._split_reviewer_argv(joined) == argv
-    assert external.reviewer_name(joined) == "codex"        # 프로필 키가 살아난다
+    assert reviewer_target._split_reviewer_argv(joined) == argv
+    assert reviewer_target.reviewer_name(joined) == "codex"        # 프로필 키가 살아난다
 
 
 # ── 4. 진단 분리 (무음 환불 0) ──────────────────────────────────────────────
@@ -253,23 +259,23 @@ def test_unresolved_executable_is_loud_and_distinct_from_no_reviewer_configured(
     한 문구로 합치면 "리뷰어를 안 깔았나 보다"로 흡수돼, 교차검증이 돌지 않은 실행이 정상 형상과
     같은 모양이 된다(30여 릴리즈 은닉된 경로).
     """
-    monkeypatch.setattr(external, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
 
     def missing(argv, **kwargs):
         raise FileNotFoundError(argv[0])
 
-    ok, output, started = external._run_reviewer_ex(
-        "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
+    ok, output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+        pm_paths.home_at(external.REPO), "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
     assert (ok, started) == (False, False)
-    assert external.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
-    assert external.NO_REVIEWER_CONFIGURED_MARKER not in output.answer
+    assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
+    assert pm_engine.infra.harness.reviewer_run.NO_REVIEWER_CONFIGURED_MARKER not in output.answer
     assert "교차검증은 실행되지 않았습니다" in output.answer
     assert WINDOWS_EXECUTABLE in output.answer          # 무엇으로 띄우려 했는지
 
-    ok, output, started = external._run_reviewer_ex("prompt", "   ", 5, missing)
+    ok, output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", "   ", 5, missing)
     assert (ok, started) == (False, False)
-    assert external.NO_REVIEWER_CONFIGURED_MARKER in output.answer
-    assert external.REVIEWER_LAUNCH_FAILURE_MARKER not in output.answer
+    assert pm_engine.infra.harness.reviewer_run.NO_REVIEWER_CONFIGURED_MARKER in output.answer
+    assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER not in output.answer
 
 
 def test_a_mangled_executable_names_the_declared_command(external, monkeypatch):
@@ -277,17 +283,17 @@ def test_a_mangled_executable_names_the_declared_command(external, monkeypatch):
 
     "설치 안 됨"과 "엔진이 커맨드를 잘못 분해함"을 사람이 그 자리에서 가를 수 있는 유일한 사실이다.
     """
-    monkeypatch.setattr(external, "_running_on_windows", lambda: False)  # POSIX 규칙 = 훼손
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: False)  # POSIX 규칙 = 훼손
 
     def missing(argv, **kwargs):
         raise FileNotFoundError(argv[0])
 
-    _ok, output, _started = external._run_reviewer_ex(
-        "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
+    _ok, output, _started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+        pm_paths.home_at(external.REPO), "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
     assert "해소된 커맨드에 없는 실행 파일로 분해됐습니다" in output.answer
     assert WINDOWS_REVIEWER_CMD in output.answer
 
     # PATH 에 없는 평범한 커맨드는 그 대조를 붙이지 않는다 (선언과 시도가 같다).
-    _ok, output, _started = external._run_reviewer_ex("prompt", "codex --model x", 5, missing)
-    assert external.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
+    _ok, output, _started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", "codex --model x", 5, missing)
+    assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
     assert "해소된 커맨드에 없는" not in output.answer

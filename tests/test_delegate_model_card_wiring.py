@@ -27,6 +27,8 @@ stdlib + tomllib(3.11+) + pyyaml(엔진 런타임 의존). 실 CLI 미실행(ope
 """
 from __future__ import annotations
 
+from pm_engine.infra import native_agent_card
+
 import importlib
 import importlib.util
 import re
@@ -607,7 +609,7 @@ def test_hand_enumerated_surfaces_see_the_whole_card_set(surface):
 
 def test_guard_card_map_sees_the_whole_claude_card_set(guard):
     """가드 카드맵(6번째 손열거 표면)도 claude 카드 전량을 본다."""
-    view = {path.stem for path in guard.CLAUDE_NATIVE_AGENT_CARDS.values()}
+    view = {path.stem for path in native_agent_card.CLAUDE_NATIVE_AGENT_CARDS.values()}
     assert view == _claude_card_stems(), (
         f"가드 카드맵 시야가 갈렸다 — 누락 {sorted(_claude_card_stems() - view)}"
     )

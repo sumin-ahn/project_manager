@@ -14,6 +14,11 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+
+from pm_engine.infra import conf_store
+from pm_engine.infra.harness import delegate_env
+
 import ast
 import importlib.util
 import json
@@ -102,8 +107,8 @@ def _write_prompt(tmp_path: Path) -> Path:
 
 def _run(pd, monkeypatch, tmp_path, fake, conf=None) -> tuple[int, Path]:
     """mock 위임 1회 실행 — (rc, 장부 경로). raw/장부는 tmp output-dir 로 격리한다."""
-    monkeypatch.setattr(pd, "local_config", lambda: conf if conf is not None else _conf())
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf if conf is not None else _conf())
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     outdir = tmp_path / "raw"
     rc = pd.main(
         ["--role", "developer", "--prompt-file", str(_write_prompt(tmp_path)),
@@ -244,7 +249,7 @@ def test_no_substitute_note_has_single_consumer(pd):
     지점마다 안내를 손으로 이어붙이면 **새 실패 경로가 조용히 빠뜨린다** — 실제로 스폰 전 거부
     경로가 그렇게 누락됐다. 소비자를 하나로 묶어 다음 인스턴스를 기계로 막는다.
     """
-    tree = ast.parse(PM_DELEGATE.read_text(encoding="utf-8"))
+    tree = ast.parse(Path(delegate_execute.__file__).read_text(encoding="utf-8"))
     funnel = next(
         (node for node in tree.body
          if isinstance(node, ast.FunctionDef) and node.name == "fail_loud"), None)
@@ -262,7 +267,7 @@ def test_no_substitute_note_has_single_consumer(pd):
     assert not leaked, (
         f"안내 문구를 깔때기 밖에서 직접 결합한 지점: pm_delegate.py:{leaked} — "
         "실패 종료는 `return fail_loud(<사유>)` 로만 끝내라.")
-    assert pd.fail_loud is not None  # 로드된 모듈에도 같은 seam 이 존재
+    assert delegate_execute.fail_loud is not None  # 로드된 모듈에도 같은 seam 이 존재
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -318,11 +323,11 @@ def test_every_channel_exit_goes_through_the_funnel(pd):
     이 단언이 막는 것은 "안내를 손으로 안 이어붙였다"가 아니라 **안내를 아예 안 내는 새 실패
     종료**다 — 그 경로는 raw 장부만 남고 사람에겐 아무 처방이 없어, 실패한 위임을 세션 native
     모델이 조용히 대행하는 입구가 된다."""
-    leaked = _leaking_exits(PM_DELEGATE.read_text(encoding="utf-8"), _CHANNEL_FUNCTION)
+    leaked = _leaking_exits(Path(delegate_execute.__file__).read_text(encoding="utf-8"), _CHANNEL_FUNCTION)
     assert not leaked, (
         f"깔때기를 안 거치는 종료: pm_delegate.py:{leaked} — 실패 종료는 "
         "`return fail_loud(<사유>)`, 성공 종료는 `return 0` 으로만 끝내라.")
-    assert callable(pd.fail_loud)
+    assert callable(delegate_execute.fail_loud)
 
 
 @pytest.mark.parametrize("statement, detected", [

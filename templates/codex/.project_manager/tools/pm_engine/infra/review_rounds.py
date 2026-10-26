@@ -17,6 +17,9 @@
 
 from __future__ import annotations
 
+from typing import Iterator
+import contextlib
+
 import datetime
 import json
 import os
@@ -541,3 +544,103 @@ def _gate_disposition_problem(
         return f"{prefix} · {label} — 발동 조건을 재검증할 수 없습니다(호출부 설정 누락)"
     problem = pm_verified_problem()
     return None if problem is None else f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"
+
+
+# ── 라운드 상한 장부 ─────────────
+# 추가 리뷰어 호출은 유료 호출이라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한
+# 게이트 클러스터 25라운드). PM 자의 라운드 집계를 기계 장부로 대체한다
+# ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별로 실 호출 횟수(count)와 라운드별 산출을
+# per-clone·git-ignored 장부에 기록하고, 상한을 넘기면 실행 전에 거부한다. 폐지된 라운드 연장
+# 승인이 남긴 필드는 정규화가 승계 없이 떨어뜨린다(`RETIRED_ACK_FIELD` — 그 사실은
+# 게이트·값과 함께 한 번 알린다). 장부는 세션/클론 로컬 현상이라
+# `.project_manager/.local/`(regression/livegate sidecar 와 동위·board 상태 아님)에 둔다. 경로는
+# 호출부가 넘긴 Home의 PM 소유자에서 장부 경로를 해소한다.
+# 한다(_tickets_dir 동형). 손상 장부는 빈 장부로 fail-soft(회귀해소·regression flag 동형).
+#
+# 장부는 두 축을 함께 싣는다:
+#   · 게이트 축 — 최상위 키가 게이트 이름이고 값이 `_gate_entry` 스키마다. 상한 집계용
+#     `records`(예약/마감 레코드) 옆에 **라운드별 산출** `rounds`(판정 rc·결함 수)를 append 한다.
+#     `rounds` 는 지워지지 않는 이력이라 "그 라운드가 실결함을 냈는가"를 나중에도 기계로 확인할 수
+#     있고, 수렴-형상 게이트(`_convergence_refusal`)의 판정 입력이기도 하다. 게이트 종결 시점의
+#     **처분 선언**(`resolution` — `--resolve-gate`)도 같은 항목에 실린다. 처분 선언은 릴리즈
+#     차단(`board.py livegate record`)이 읽는 절이고,
+#     그 값의 해석은 `gate_resolution` 이 소유한다(여기선 구조만 보존).
+#   · wave 축 — 예약 키 `wave`(`WAVE_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 게이트 상한만
+#     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 게이트 합계를 이 예산이 묶는다. 두 축이 한
+#     dict 를 공유하므로 **예약 키를 게이트 이름으로 쓰는 것은 기계로 막는다**(`_reserved_gate_error`
+#     가 `--gate` 를 거르고 `_gate_entry` 가 그 키를 fail-loud 로 거부·집계 순회는 건너뛴다).
+# 두 축의 적용 범위는 같다 — 장부를 타는 실행은 게이트가 해소된 실행(명시 `--gate` 또는 `--ticket`
+# 자동 유도)뿐이라 wave 도 그 라운드만 센다. 게이트가 없는 실행(selector 에 티켓이 없거나 명시
+# `--no-gate` opt-out)은 장부 밖이고 어느 예산도 쓰지 않으며, 그 사실을 loud 로 표기한다.
+
+
+def _round_ledger_path(home) -> Path:
+    """라운드 장부 경로 — 해소된 **소유 PM 홈**의 `.local/json`.
+
+    Home.local_dir는 호출부가 확정한 PM 소유자의 장부 디렉터리다.
+    코드 트리와 PM 소유자가 다른 실행에서도 같은 게이트 예산을 공유한다.
+
+    diff 앵커(diff_root)에 매달면 **같은 게이트의 과금 상한이 diff_root 가 바뀔 때마다 조용히
+    리셋된다** — 새로 판 슬롯에서 같은 `--gate T-NNNN` 을 돌리면
+    count 가 0 부터 다시 세어져 상한이 무력화된다. 라운드는 이미 `--gate` 키로 분리되므로 슬롯별
+    장부 분리가 주는 추가 격리는 없다(옛 "슬롯별 게이트 수명 분리" 근거 대체).
+    """
+    return (
+        (home.local_dir.parent.parent) / ".project_manager" / ".local" / "review_rounds.json"
+    )
+
+
+def _legacy_round_ledger_path(home) -> Path:
+    """옛 규칙(diff 앵커)의 라운드 장부 경로 — 1회 승계(backfill)의 입력.
+
+    앵커를 소유 PM 홈으로 옮기기 전의 실행들은 이 경로에 카운트를 쌓아 뒀다. 그 중에는 상한을
+    이미 넘겨 **차단 중인 게이트**(rc 4·ack 대기)가 있고, 새 앵커에서 0 부터 다시 세면
+    그 차단이 무통보로 열린다.
+    """
+    return home.root / ".project_manager" / ".local" / "review_rounds.json"
+
+
+def _read_round_ledger_at(path: Path) -> dict:
+    """지정 경로의 라운드 장부를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
+    return read_ledger(path)
+
+
+def _load_round_ledger(home) -> dict:
+    """라운드 장부(gate→{count, records, rounds})를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
+    return _read_round_ledger_at(_round_ledger_path(home))
+
+
+def _restrict_to_owner(path: Path) -> None:
+    """호출 산출물을 소유자 전용 접근으로 제한한다 (플랫폼 수단은 공용 seam 소유).
+
+    `os.chmod(0o600/0o700)` 을 직접 부르지 않는 이유는 그 호출이 **Windows 에서 아무 제한도
+    걸지 않기 때문**이다(실측 `S_IMODE`=0o666). opencode transport 샌드박스에는 검토 대상 diff
+    원문이 들어가므로 "다른 사용자에게 읽히지 않는다" 는 이 도구의 보안 경계다 —
+    수단(퍼미션/ACL)은 `fs` 가 소유하고 여기서는 보장만 요구한다.
+    """
+    fs.restrict_to_owner(path)
+
+
+def _round_ledger_lock_path(home) -> Path:
+    """라운드 장부 배타락 파일 — 장부 **옆** `lock`(장부 경로에서 파생).
+
+    앵커를 장부에서 파생한다 — 락과 장부가 각자 앵커를 계산하면 앵커 규칙이 갈릴 때 서로 다른
+    파일을 잠근 두 실행이 같은 장부를 동시에 read-modify-write 한다(상한 우회 창).
+    """
+    return _round_ledger_path(home).with_name("review_rounds.lock")
+
+
+@contextlib.contextmanager
+def _round_ledger_lock(home) -> Iterator[None]:
+    """라운드 장부 read-modify-write 를 직렬화하는 OS 파일락.
+
+    확인(상한 대조)→예약(count+1)→저장을 하나의 임계 구역으로 묶어, 동시 실행 2개가 같은 잔여
+    슬롯을 통과해 상한을 우회하는 것을 막는다. 프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock
+    없음). **재진입 금지**(flock 관례·board_lock 동형) — 예약과 환불은 *각자 독립* 락 구간이다
+    (중첩 아님).
+
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `fs` seam 이 소유하고 이
+    도구는 *어느 파일에 거는지*(경로 규약)만 정한다.
+    """
+    with fs.exclusive_file_lock(_round_ledger_lock_path(home)):
+        yield

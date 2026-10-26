@@ -15,9 +15,9 @@ origin/* remote-tracking ref(origin/main 등)가 안 생긴다 → 그 bare 를 
   - fail-soft — refspec set 실패·fetch 실패는 경고 surface 하되 repo add rc 0(등록 진행).
 """
 from __future__ import annotations
+from pm_engine.domain import delegate_rounds
 from pm_engine.cli import config_repo
-from pm_engine.infra import lease_store
-from pm_engine.infra import pm_paths
+from pm_engine.infra import lease_store, pm_paths
 from pm_engine.infra import git, areas_store
 
 import argparse
@@ -960,9 +960,4 @@ def test_ticket_copy_exclude_rule_matches_the_delegate_canon(pc):
     두 값이 어긋나면 엔진이 심은 규칙을 엔진 자신이 정본으로 인정하지 않아 모든 풀 슬롯의
     라운드 준비가 막힌다.
     """
-    spec = importlib.util.spec_from_file_location(
-        "pm_delegate_exclude_rule", TOOLS / "pm_delegate.py")
-    delegate = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(delegate)
-
-    assert config_repo.TICKET_COPY_POOL_IGNORE_RULE == delegate.TICKET_COPY_POOL_IGNORE_RULE
+    assert config_repo.TICKET_COPY_POOL_IGNORE_RULE == delegate_rounds.TICKET_COPY_POOL_IGNORE_RULE

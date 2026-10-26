@@ -6,6 +6,9 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.infra import pm_paths
+
 import ast
 import importlib.util
 import os
@@ -240,7 +243,7 @@ def test_engine_copies_resolve_the_os_temp_dir_only_in_the_declared_seam():
     assert not offenders, "선언된 자리 밖에서 OS 임시 폴더를 해소함: " + ", ".join(offenders)
 
     # 스캔이 공허하지 않다는 증거 — 선언된 그 자리는 실재한다.
-    canonical = (ROOT / ".project_manager" / "tools" / "pm_delegate.py").read_text(
+    canonical = (ROOT / ".project_manager" / "tools" / "pm_engine/infra/raw_output.py").read_text(
         encoding="utf-8")
     assert "tempfile.gettempdir()" in canonical
     # 민감도 양방향 — 같은 호출이 자리 밖이면 잡고, 선언된 자리 안이면 통과한다.
@@ -278,17 +281,17 @@ def test_read_role_temp_place_passes_the_project_anchor(monkeypatch, tmp_path):
     outside_the_pm_home.mkdir()
     monkeypatch.setattr(delegate, "REPO", pm_home)
     monkeypatch.setattr(delegate, "_CONFIG_REPO_OVERRIDE", None)
-    monkeypatch.setattr(delegate, "_gettempdir", lambda: str(outside_the_pm_home))
+    monkeypatch.setattr(raw_output, '_gettempdir', lambda: str(outside_the_pm_home))
     anchor = raw_output.temp_root(pm_home).resolve()
 
     for harness in ("codex", "claude", "opencode"):
-        temp_parent, _component = delegate._read_tmp_parent(harness)
+        temp_parent, _component = delegate_temp._read_tmp_parent(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE), harness)
         assert anchor == temp_parent or anchor in temp_parent.parents, (
             f"{harness} 격리 자리가 앵커 밖이다: {temp_parent}")
 
     # 민감도 — 옛 형태(`Path(_gettempdir())`)가 내는 값은 이 앵커 밖이다. 그 형태로 되돌리면
     # 위 단언이 red 라는 뜻이고, 그래서 위 통과가 공허하지 않다.
-    reverted = Path(delegate._gettempdir()).resolve()
+    reverted = Path(raw_output._gettempdir()).resolve()
     assert anchor != reverted and anchor not in reverted.parents
 
 

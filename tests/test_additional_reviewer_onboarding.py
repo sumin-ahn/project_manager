@@ -18,9 +18,10 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd, bootstrap_card
 from pm_engine.cli import bootstrap as bootstrap_cli
-from pm_engine.cli import bootstrap_card
-from pm_engine.infra import pm_paths
+from pm_engine.infra import pm_paths, reviewer_target
+from pm_engine.domain import reviewer_budget, reviewer_result
 
 import argparse
 import importlib.util
@@ -468,7 +469,7 @@ def test_engine_cli_help_names_the_activity_as_additional_review(capsys):
     """
     delegate = _load("pm_delegate")
     with pytest.raises(SystemExit):
-        delegate._cmd_raw(["--help"])
+        delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, pm_home=delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(delegate._CONFIG_REPO_OVERRIDE or delegate.REPO)), ["--help"])
     help_text = capsys.readouterr().out
 
     assert "추가 리뷰" in help_text
@@ -562,7 +563,7 @@ def test_codex_cards_keep_dollar_skill_entry_notation():
 # 확장자 하나가 빠지면 그 표면의 잔존은 영영 안 보인다(현행 실잔재는 0 — 그 상태를 못박는다).
 _RETIRED_ACK_SCAN_SUFFIXES = {".md", ".py", ".sh", ".cmd", ".jsonc", ".toml"}
 # 엔진의 폐지 안내·구 장부 해석이 사는 파일 (canonical + 템플릿 미러 4벌 모두 같은 이름).
-_RETIRED_ACK_ENGINE_FILE = "additional_reviewer.py"
+_RETIRED_ACK_ENGINE_FILES = ("additional_reviewer.py", "reviewer_budget.py")
 # 폐지 동작을 단언하느라 플래그 리터럴이 정당하게 남는 테스트 (파일명 명시 — 디렉토리 통째 아님).
 _RETIRED_ACK_TEST_FILES = (
     "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(상수·부재 단언)
@@ -580,7 +581,7 @@ def _retired_ack_scan_targets() -> list[Path]:
         rel = path.relative_to(REPO).as_posix()
         if rel == "CHANGELOG.md" or rel in _RETIRED_ACK_TEST_FILES:
             continue
-        if path.name == _RETIRED_ACK_ENGINE_FILE:
+        if path.name in _RETIRED_ACK_ENGINE_FILES:
             continue
         targets.append(path)
     return targets
@@ -633,9 +634,10 @@ def test_residue_scan_covers_the_execution_and_config_surfaces(rel):
 
 def test_retired_round_ack_allowlist_entries_are_load_bearing():
     """allowlist 는 실제로 그 문자열을 담은 자리만 뺀다 — 빈 예외는 가드를 헐겁게 만든다."""
-    engine = (TOOLS / _RETIRED_ACK_ENGINE_FILE).read_text(encoding="utf-8")
-    assert RETIRED_ROUND_ACK_FLAG in engine      # 거부 안내 + 구 장부 필드 해석 주석
-    assert "폐지" in engine
+    for path in (TOOLS / "additional_reviewer.py", TOOLS / "pm_engine/domain/reviewer_budget.py"):
+        engine = path.read_text(encoding="utf-8")
+        assert RETIRED_ROUND_ACK_FLAG in engine
+        assert "폐지" in engine
     assert RETIRED_ROUND_ACK_FLAG in (REPO / "CHANGELOG.md").read_text(
         encoding="utf-8")                        # 릴리즈 히스토리
     for rel in _RETIRED_ACK_TEST_FILES:          # 목록이 썩으면(잔존 0 파일이 남으면) red
@@ -813,12 +815,12 @@ def test_no_entry_carries_an_optin_prompt_or_force_flag(board, pm_update):
 def test_knob_key_constants_match_the_engine_table():
     """엔진의 노브 키 상수가 글자 단위로 이 표와 같다 (배선 드리프트 가드)."""
     core = _additional_reviewer()
-    assert (core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY
+    assert (reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY
             == "additional_reviewer.incomplete_rounds_max")
-    assert core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY == "additional_reviewer.wave_budget"
+    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY == "additional_reviewer.wave_budget"
     assert set(KNOB_KEYS) == {
-        core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY,
-        core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY,
+        reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY,
+        reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY,
     }
     # 판정 상한은 노브도 축도 아니다 — 키 상수·해소 함수·엔진 기본값이 모두 없다(축 제거).
     assert not hasattr(core, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
@@ -840,7 +842,7 @@ def test_knob_resolution_reads_the_configured_key(key, conf_shape, expected):
     resolver_name, engine_default = _KNOB_RESOLVERS[key]
     conf = {"set": {key: "3"}, "none": {}}[conf_shape]
 
-    resolved = getattr(core, resolver_name)(conf)
+    resolved = getattr(reviewer_target, resolver_name)(conf)
     assert resolved == (engine_default if expected is None else expected)
 
 
@@ -849,9 +851,9 @@ def test_empty_knob_value_is_unset():
     core = _additional_reviewer()
     for key in KNOB_KEYS:
         resolver_name, engine_default = _KNOB_RESOLVERS[key]
-        resolve = getattr(core, resolver_name)
+        resolve = getattr(reviewer_target, resolver_name)
         assert resolve({key: "   "}) == engine_default
-        assert core.knob_value_key({key: "   "}, key) is None
+        assert reviewer_result.knob_value_key({key: "   "}, key) is None
 
 
 @pytest.mark.parametrize("broken", ["abc", "-1", "3.5"])
@@ -860,15 +862,15 @@ def test_broken_knob_value_falls_to_the_engine_default(broken):
     core = _additional_reviewer()
     for key in KNOB_KEYS:
         resolver_name, engine_default = _KNOB_RESOLVERS[key]
-        assert getattr(core, resolver_name)({key: broken}) == engine_default
+        assert getattr(reviewer_target, resolver_name)({key: broken}) == engine_default
         # 값을 공급한 키는 여전히 그 키다(형식 오류가 공급 사실을 뒤집지 않는다).
-        assert core.knob_value_key({key: broken}, key) == key
+        assert reviewer_result.knob_value_key({key: broken}, key) == key
 
 
 def test_engine_guidance_names_the_knob_keys():
     """상한/예산 차단 안내가 현재 키를 가르친다 — 안내는 채택자가 값을 고치는 유일한 접점이다."""
     core = _additional_reviewer()
-    round_guidance = core._ROUND_LIMIT_GUIDANCE
-    assert core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
+    round_guidance = reviewer_budget._ROUND_LIMIT_GUIDANCE
+    assert reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
     assert "additional_reviewer.round_limit" not in round_guidance
-    assert core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in core._WAVE_BUDGET_GUIDANCE
+    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in reviewer_budget._WAVE_BUDGET_GUIDANCE

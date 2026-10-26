@@ -1,6 +1,21 @@
 """T-0637 — 추가 리뷰 payload 의 sandbox transport·조기 종료 고지."""
 from __future__ import annotations
 
+from pm_engine.infra import fs
+
+from pm_engine.infra import review_diff
+from pm_engine.domain import review_diff_rules
+from pm_engine.infra import review_rounds
+from pm_engine.domain import reviewer_budget
+from pm_engine.infra import reviewer_raw
+from pm_engine.app import reviewer_run
+from pm_engine.app import reviewer_scope
+from pm_engine.infra import round_store
+
+from pm_engine.infra import conf_store
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.infra import reviewer_target
+
 import importlib.util
 import inspect
 import subprocess
@@ -73,16 +88,16 @@ def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None):
     if conf is not None:
         config.update(conf)
     monkeypatch.setattr(external, "REPO", tmp_path)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(config))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(config))
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path,
     )
-    monkeypatch.setattr(external, "_resolve_diff_root", lambda *args, **kwargs: tmp_path)
-    monkeypatch.setattr(external, "parse_ticket_touches", lambda *args, **kwargs: ["src/"])
+    monkeypatch.setattr(reviewer_scope, "_resolve_diff_root", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(round_store, "parse_ticket_touches", lambda *args, **kwargs: ["src/"])
     payload = diff if diff is not None else _raw_diff("src/app.py")
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *args, **kwargs: review_diff.ReviewDiff(
             payload,
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -97,7 +112,7 @@ def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None):
         calls.append(kwargs)
         return _pass_result()
 
-    monkeypatch.setattr(external, "run_review", _review)
+    monkeypatch.setattr(reviewer_run, "run_review", _review)
     return calls
 
 
@@ -107,21 +122,21 @@ def test_git_c_unquote_reassembles_octal_bytes_before_utf8_decode(external):
         r'\355\225\234\352\270\200 \355\214\214\354\235\274.js"'
     )
 
-    assert external._git_c_unquote(quoted) == (
+    assert review_diff_rules._git_c_unquote(quoted) == (
         "a/.opencode/node_modules/pkg/한글 파일.js"
     )
-    assert external._git_c_unquote(r'"a/quote\"-back\\slash.js"') == (
+    assert review_diff_rules._git_c_unquote(r'"a/quote\"-back\\slash.js"') == (
         'a/quote"-back\\slash.js'
     )
 
 
 def _owner_only(external, path: Path) -> bool:
     """`path` 가 소유자 전용 접근인가 — 엔진 공용 seam(플랫폼 수단 소유)으로 실측한다."""
-    return external.fs.owner_only_access(path)
+    return fs.owner_only_access(path)
 
 
 def _opencode_target(external):
-    return external.resolve_reviewer_target({
+    return reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": "opencode",
         "additional_reviewer.model": "zai/glm-4.6",
     })
@@ -132,7 +147,7 @@ def test_opencode_transport_is_inside_review_sandbox_and_self_hidden(external, t
     sandbox = tmp_path / "mirror-tree"
     sandbox.mkdir()
 
-    with external._structured_transport(target, "검토 diff", sandbox) as (argv, stdin_text):
+    with reviewer_raw._structured_transport(target, "검토 diff", sandbox) as (argv, stdin_text):
         prompt_file = Path(argv[argv.index("--file") + 1])
         wire_dir = Path(argv[argv.index("--dir") + 1])
         ignore = prompt_file.parent / ".gitignore"
@@ -164,12 +179,12 @@ def test_opencode_transport_restriction_goes_through_the_platform_seam(
     sandbox = tmp_path / "mirror-tree"
     sandbox.mkdir()
     restricted: list[Path] = []
-    real_restrict = external._restrict_to_owner
+    real_restrict = review_rounds._restrict_to_owner
     monkeypatch.setattr(
-        external, "_restrict_to_owner",
+        review_rounds, "_restrict_to_owner",
         lambda path: (restricted.append(Path(path)), real_restrict(path))[1])
 
-    with external._structured_transport(target, "검토 diff", sandbox) as (argv, _stdin):
+    with reviewer_raw._structured_transport(target, "검토 diff", sandbox) as (argv, _stdin):
         prompt_file = Path(argv[argv.index("--file") + 1])
 
     assert set(restricted) == {
@@ -180,8 +195,7 @@ def test_opencode_transport_restriction_goes_through_the_platform_seam(
 def test_opencode_post_create_containment_failure_cleans_transport(
         external, monkeypatch, tmp_path):
     target = _opencode_target(external)
-    delegate = external._load_delegate_transport()
-    real_assert = delegate._assert_opencode_transport_path
+    real_assert = delegate_temp._assert_opencode_transport_path
     seen: list[Path] = []
 
     def _assert(cwd, prompt_file):
@@ -190,10 +204,10 @@ def test_opencode_post_create_containment_failure_cleans_transport(
         if len(seen) == 2:
             raise delegate_errors.DelegateError("containment 재검사 거부")
 
-    monkeypatch.setattr(delegate, "_assert_opencode_transport_path", _assert)
+    monkeypatch.setattr(delegate_temp, '_assert_opencode_transport_path', _assert)
 
     with pytest.raises(delegate_errors.DelegateError, match="containment 재검사 거부"):
-        with external._structured_transport(target, "검토 diff", tmp_path):
+        with reviewer_raw._structured_transport(target, "검토 diff", tmp_path):
             pytest.fail("containment 실패 뒤 yield하면 안 된다")
 
     assert len(seen) == 2
@@ -227,8 +241,8 @@ def test_early_exit_notice_matrix_has_cell_specific_expectations(
     assert calls == []
     captured = capsys.readouterr()
     assert (DERIVED_PREFIX in captured.err) is derived_notice
-    assert (external._UNACCOUNTED_OPT_OUT_NOTICE in captured.err) is unaccounted_notice
-    assert (external._SUMMARY_UNACCOUNTED_GATE in captured.out) is confirmed_notice
+    assert (reviewer_budget._UNACCOUNTED_OPT_OUT_NOTICE in captured.err) is unaccounted_notice
+    assert (reviewer_budget._SUMMARY_UNACCOUNTED_GATE in captured.out) is confirmed_notice
     if derived_notice:
         assert "이 실행이 리뷰어를 부르면 라운드 회계가" in captured.err
     else:
@@ -240,10 +254,10 @@ def test_gate_and_anchor_order_remains_unambiguous(external):
     """게이트 해소 → 조기 종료 → 선택 거부 → 예약 순서를 고정한다."""
     source = inspect.getsource(external._main)
     positions = [
-        source.index("gate_derivation = _derive_gate_from_ticket(args)"),
+        source.index("gate_derivation = reviewer_reservation._derive_gate_from_ticket(args)"),
         source.index("if not diff.strip():"),
         source.index("if not args.gate and not args.no_gate:"),
-        source.index("budget = _reserve_round_budget("),
+        source.index("budget = reviewer_reservation._reserve_round_budget("),
     ]
     assert positions == sorted(positions)
 
@@ -281,7 +295,7 @@ def test_help_and_shipped_skill_send_examples_choose_gate_accounting(external):
 @pytest.mark.parametrize("failure", ["empty", "whitespace", "base", "names", "mismatch", "untracked-list"])
 def test_invalid_review_input_has_no_side_effects(
         external, monkeypatch, tmp_path, capsys, dry_run, failure):
-    real_extract = external.extract_diff
+    real_extract = review_diff.extract_diff
     calls = _wire_main(external, monkeypatch, tmp_path)
     def git(argv, **kwargs):
         if "ls-files" in argv:
@@ -294,7 +308,7 @@ def test_invalid_review_input_has_no_side_effects(
             return subprocess.CompletedProcess(argv, 128, "", "base failed")
         text = "" if failure == "empty" else " \n\t" if failure == "whitespace" else "AUTO_PATCH_SENTINEL"
         return subprocess.CompletedProcess(argv, 0, text, "")
-    monkeypatch.setattr(external, "extract_diff", lambda base, paths: real_extract(base, paths, git))
+    monkeypatch.setattr(review_diff, "extract_diff", lambda _home, base, paths: real_extract(_home, base, paths, git))
     output = tmp_path / "must-not-exist"
     argv = ["--paths", "x.py", "--gate", "T-9001", "--output-dir", str(output)]
     if failure != "untracked-list":
@@ -308,12 +322,12 @@ def test_invalid_review_input_has_no_side_effects(
 
 
 def test_raw_preserves_actual_reviewer_git_output(external, monkeypatch, tmp_path):
-    target = external.resolve_reviewer_target(_REVIEWER_TARGET)
+    target = reviewer_target.resolve_reviewer_target(_REVIEWER_TARGET)
     actual_output = "diff --git a/x.py b/x.py\n+ACTUAL_TOOL_OUTPUT\n"
     def run(argv, **kwargs):
         return subprocess.CompletedProcess(argv, 0, actual_output, "git read succeeded")
-    result = external.run_review(
-        "### 리뷰 입력 좌표\n", target, 5, run_fn=run,
+    result = reviewer_run.run_review(
+        pm_paths.home_at(external.REPO), "### 리뷰 입력 좌표\n", target, 5, run_fn=run,
         cwd=tmp_path, output_dir=tmp_path / "raw",
     )
     raw = Path(result["file"]).read_text(encoding="utf-8")

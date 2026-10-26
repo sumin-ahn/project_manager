@@ -19,6 +19,28 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_prepare
+from pm_engine.app import delegate_prompt
+from pm_engine.domain import delegate_rounds
+from pm_engine.app import delegate_scope_audit
+from pm_engine.domain import review_contract
+
+from pm_engine.infra import conf_store
+from pm_engine.infra import delegate_config
+from pm_engine.infra.harness import delegate_env
+from pm_engine.domain import delegate_prompt_rules
+from pm_engine.infra import delegate_raw
+from pm_engine.infra.harness import delegate_run
+from pm_engine.domain import delegate_run_rules
+from pm_engine.infra import delegate_scope_git
+from pm_engine.domain import delegate_scope_rules
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.infra.harness import delegate_transport
+from pm_engine.infra import pm_paths
+
 import datetime as _datetime
 import errno
 import hashlib
@@ -119,7 +141,7 @@ def _write_prompt(tmp_path: Path, text: str = "티켓 본문: 구현하라.") ->
 
 def test_codex_argv_global_options_before_exec(pd):
     """codex `-a never -s <mode>` 는 exec **앞** 전역 옵션(exec 뒤는 rc=2·0.145.0 실측)."""
-    argv = pd.build_codex_argv("gpt-x", None, "developer", "/w/t")
+    argv = contract.build_codex_argv("gpt-x", None, "developer", "/w/t")
     assert argv[:5] == ["codex", "-a", "never", "-s", "workspace-write"]
     exec_index = argv.index("exec")
     assert argv[5:exec_index] == ["-c", "sandbox_workspace_write.network_access=true"]
@@ -131,13 +153,13 @@ def test_codex_argv_global_options_before_exec(pd):
 def test_codex_argv_read_role_sandbox(pd):
     """read 역할(researcher/code-reviewer)은 codex `-s read-only`(기계적 차단·§3.5)."""
     for role in ("researcher", "code-reviewer"):
-        argv = pd.build_codex_argv("m", None, role, "/w")
+        argv = contract.build_codex_argv("m", None, role, "/w")
         assert argv[argv.index("-s") + 1] == "read-only"
 
 
 def test_codex_argv_reasoning_flag(pd):
     """codex reasoning = `-c model_reasoning_effort=<r>`(§6)."""
-    argv = pd.build_codex_argv("m", "xhigh", "developer", "/w")
+    argv = contract.build_codex_argv("m", "xhigh", "developer", "/w")
     config_values = [argv[index + 1] for index, token in enumerate(argv) if token == "-c"]
     assert config_values.count("model_reasoning_effort=xhigh") == 1
     assert config_values.count("sandbox_workspace_write.network_access=true") == 1
@@ -152,7 +174,7 @@ _CODEX_NETWORK_OVERRIDE = ["-c", "sandbox_workspace_write.network_access=true"]
 def test_codex_argv_network_override_once_before_exec(pd, role, resume):
     """네 역할·신규/재개 모두 네트워크 true override 가 exec 앞에 정확히 한 번 실린다."""
     session_id = "0199a9c4-3f7e-7c12-9a3b-2b4c5d6e7f80" if resume else None
-    argv = pd.build_codex_argv("m", "high", role, "/w", session_id)
+    argv = contract.build_codex_argv("m", "high", role, "/w", session_id)
     exec_index = argv.index("exec")
     pairs = [argv[index:index + 2] for index, token in enumerate(argv) if token == "-c"]
     assert pairs.count(_CODEX_NETWORK_OVERRIDE) == 1
@@ -171,7 +193,7 @@ def test_codex_argv_network_override_once_before_exec(pd, role, resume):
 def test_claude_argv_tools_by_role(pd):
     """claude `--tools` 역할별 도구셋(§3.5): write=편집포함·researcher=Write/Bash 제외(Edit 만
     티켓 사본 절 기록용)·reviewer=Bash 포함."""
-    dev = pd.build_claude_argv("opus", None, "developer")
+    dev = contract.build_claude_argv("opus", None, "developer")
     # 출력 형식 = stream-json(+CLI 강제 `--verbose`) — 진행 신호 축 승격(T-0489 ④).
     assert dev[:7] == ["claude", "-p", "--output-format", "stream-json", "--verbose",
                        "--model", "opus"]
@@ -179,37 +201,37 @@ def test_claude_argv_tools_by_role(pd):
     assert "Write" in dev_tools and "Edit" in dev_tools and "Bash" in dev_tools
     assert "--permission-mode" in dev and dev[dev.index("--permission-mode") + 1] == "acceptEdits"
 
-    res_tools = pd.build_claude_argv("opus", None, "researcher")
+    res_tools = contract.build_claude_argv("opus", None, "researcher")
     rt = res_tools[res_tools.index("--tools") + 1]
     # 티켓 사본 자기 절 기록용 Edit 만 허용(T-0696)·Write/Bash 는 계속 기계적 차단.
     assert "Bash" not in rt and "Write" not in rt and "Edit" in rt
 
-    rev = pd.build_claude_argv("opus", None, "code-reviewer")
+    rev = contract.build_claude_argv("opus", None, "code-reviewer")
     rvt = rev[rev.index("--tools") + 1]
     assert "Bash" in rvt and "Write" not in rvt and "Edit" not in rvt  # 읽기+테스트(규율)
     assert "--permission-mode" not in rev  # read 역할은 write perm-mode 없음
 
 
 def test_claude_argv_effort(pd):
-    argv = pd.build_claude_argv("opus", "high", "developer")
+    argv = contract.build_claude_argv("opus", "high", "developer")
     assert "--effort" in argv and argv[argv.index("--effort") + 1] == "high"
 
 
 def test_opencode_argv_agent_and_dir(pd):
     """opencode는 native와 같은 custom 역할 agent를 직접 선택하고 cwd/file을 고정한다."""
-    dev = pd.build_opencode_argv("prov/m", None, "developer", "/w/t", "/tmp/p.md")
+    dev = contract.build_opencode_argv("prov/m", None, "developer", "/w/t", "/tmp/p.md")
     assert dev[:2] == ["opencode", "run"]
     assert dev[dev.index("--file") + 1] == "/tmp/p.md"
     assert dev[dev.index("--dir") + 1] == "/w/t"
     assert dev[dev.index("--agent") + 1] == "developer"
     assert dev[dev.index("-m") + 1] == "prov/m"
 
-    res = pd.build_opencode_argv("prov/m", None, "researcher", "/w", "/tmp/p.md")
+    res = contract.build_opencode_argv("prov/m", None, "researcher", "/w", "/tmp/p.md")
     assert res[res.index("--agent") + 1] == "researcher"
 
 
 def test_opencode_argv_variant(pd):
-    argv = pd.build_opencode_argv("prov/m", "medium", "architect", "/w", "/tmp/p.md")
+    argv = contract.build_opencode_argv("prov/m", "medium", "architect", "/w", "/tmp/p.md")
     assert "--variant" in argv and argv[argv.index("--variant") + 1] == "medium"
 
 
@@ -222,13 +244,13 @@ def _conf(**kw) -> dict:
 def test_resolve_config_maps_role(pd):
     conf = _conf(**{"delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
                     "delegate.developer.reasoning": "high"})
-    assert pd.resolve_delegate(conf, "developer", "normal", None, None, None) == ("codex", "gpt-x", "high")
+    assert delegate_config.resolve_delegate(conf, "developer", "normal", None, None, None) == ("codex", "gpt-x", "high")
 
 
 def test_resolve_cli_full_override_ignores_config(pd):
     """CLI 완전지정(--harness AND --model) = 설정 미참조(원자 override)."""
     conf = _conf(**{"delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"})
-    assert pd.resolve_delegate(conf, "developer", "normal", "claude", "opus", None) == ("claude", "opus", None)
+    assert delegate_config.resolve_delegate(conf, "developer", "normal", "claude", "opus", None) == ("claude", "opus", None)
 
 
 def test_resolve_hard_tier_read_wholesale(pd):
@@ -238,58 +260,58 @@ def test_resolve_hard_tier_read_wholesale(pd):
         "delegate.developer.hard.harness": "codex", "delegate.developer.hard.model": "hard-m",
         "delegate.developer.hard.reasoning": "high",
     })
-    assert pd.resolve_delegate(conf, "developer", "hard", None, None, None) == ("codex", "hard-m", "high")
+    assert delegate_config.resolve_delegate(conf, "developer", "hard", None, None, None) == ("codex", "hard-m", "high")
 
 
 def test_resolve_hard_missing_fail_loud(pd):
     """hard 세트 미설정 → fail-loud(normal 강등 금지·§3.2)."""
     conf = _conf(**{"delegate.developer.harness": "codex", "delegate.developer.model": "normal-m"})
     with pytest.raises(delegate_errors.DelegateError, match="hard"):
-        pd.resolve_delegate(conf, "developer", "hard", None, None, None)
+        delegate_config.resolve_delegate(conf, "developer", "hard", None, None, None)
 
 
 def test_resolve_hard_incomplete_fail_loud(pd):
     """hard 세트 불완전(model 없음) → fail-loud(부분 채움 금지)."""
     conf = _conf(**{"delegate.developer.hard.harness": "codex"})
     with pytest.raises(delegate_errors.DelegateError):
-        pd.resolve_delegate(conf, "developer", "hard", None, None, None)
+        delegate_config.resolve_delegate(conf, "developer", "hard", None, None, None)
 
 
 def test_resolve_unmapped_fail_loud(pd):
     """역할 매핑 미설정 → fail-loud(조용한 claude 폴백 금지·ADR-0070 D5)."""
     with pytest.raises(delegate_errors.DelegateError, match="매핑 미설정"):
-        pd.resolve_delegate(_conf(), "researcher", "normal", None, None, None)
+        delegate_config.resolve_delegate(_conf(), "researcher", "normal", None, None, None)
 
 
 def test_resolve_cli_partial_override_rejected(pd):
     """CLI 부분 override(--harness 만) → DelegateError(방어적·usage error 는 _validate_args)."""
     with pytest.raises(delegate_errors.DelegateError, match="동반 필수"):
-        pd.resolve_delegate(_conf(), "developer", "normal", "codex", None, None)
+        delegate_config.resolve_delegate(_conf(), "developer", "normal", "codex", None, None)
 
 
 def test_resolve_colon_model_id_whole(pd):
     """콜론 포함 모델 ID(.model 통째)는 모호 0 — 값을 그대로 통과."""
     conf = _conf(**{"delegate.developer.harness": "opencode",
                     "delegate.developer.model": "ollama/glm-5.2:cloud"})
-    _h, model, _r = pd.resolve_delegate(conf, "developer", "normal", None, None, None)
+    _h, model, _r = delegate_config.resolve_delegate(conf, "developer", "normal", None, None, None)
     assert model == "ollama/glm-5.2:cloud"
 
 
 def test_resolve_bad_harness_fail_loud(pd):
     conf = _conf(**{"delegate.developer.harness": "gemini", "delegate.developer.model": "m"})
     with pytest.raises(delegate_errors.DelegateError, match="미지원 harness"):
-        pd.resolve_delegate(conf, "developer", "normal", None, None, None)
+        delegate_config.resolve_delegate(conf, "developer", "normal", None, None, None)
 
 
 # ══ ③ reasoning 드라이버별 허용집합 (§6) ══════════════════════════════════════
 
 def test_reasoning_codex_accepts_xhigh(pd, tmp_path):
-    assert pd._validate_reasoning("codex", "xhigh", model="gpt-x", cwd=tmp_path) == "xhigh"
+    assert delegate_config._validate_reasoning("codex", "xhigh", model="gpt-x", cwd=tmp_path) == "xhigh"
 
 
 def test_reasoning_codex_out_of_set_fail_loud(pd, tmp_path):
     with pytest.raises(delegate_errors.DelegateError, match="허용집합"):
-        pd._validate_reasoning("codex", "ultra", model="gpt-x", cwd=tmp_path)
+        delegate_config._validate_reasoning("codex", "ultra", model="gpt-x", cwd=tmp_path)
 
 
 def test_reasoning_claude_measured_set(pd, tmp_path):
@@ -298,15 +320,15 @@ def test_reasoning_claude_measured_set(pd, tmp_path):
     claude `--effort` = {low,medium,high,xhigh,max}(CLI 경고 authoritative). 허용값은 통과하고 집합
     밖(오타)만 fail-loud 함을 못박는다. 정적 허용값이라 모델 목록을 조회하지 않는다."""
     for r in ("low", "medium", "high", "xhigh", "max"):
-        assert pd._validate_reasoning("claude", r, model="opus", cwd=tmp_path) == r
+        assert delegate_config._validate_reasoning("claude", r, model="opus", cwd=tmp_path) == r
     with pytest.raises(delegate_errors.DelegateError, match="허용집합"):
-        pd._validate_reasoning("claude", "ultra", model="opus", cwd=tmp_path)
-    assert pd._validate_reasoning("codex", "max", model="gpt-x", cwd=tmp_path) == "max"
+        delegate_config._validate_reasoning("claude", "ultra", model="opus", cwd=tmp_path)
+    assert delegate_config._validate_reasoning("codex", "max", model="gpt-x", cwd=tmp_path) == "max"
 
 
 def test_reasoning_none_omits_flag(pd, tmp_path):
-    assert pd._validate_reasoning("claude", None, model="opus", cwd=tmp_path) is None
-    assert pd._validate_reasoning("opencode", "", model="prov/m", cwd=tmp_path) is None
+    assert delegate_config._validate_reasoning("claude", None, model="opus", cwd=tmp_path) is None
+    assert delegate_config._validate_reasoning("opencode", "", model="prov/m", cwd=tmp_path) is None
 
 
 @pytest.mark.skipif(not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
@@ -332,7 +354,7 @@ def test_opencode_reasoning_checked_with_run_cwd_and_env(pd, monkeypatch, tmp_pa
     assert "허용집합" in err and "ollama/glm-5.2:cloud" in err
     recorded = calls(fakebin)
     assert [Path(cwd).resolve() for cwd, _args in recorded] == [repo.resolve()]
-    assert pd.resolve_delegate(conf, "researcher", "normal", None, None, None) == (
+    assert delegate_config.resolve_delegate(conf, "researcher", "normal", None, None, None) == (
         "opencode", "ollama/glm-5.2:cloud", "high")
     assert len(calls(fakebin)) == 1, "해소 단계가 모델 목록을 조회했다"
 
@@ -355,9 +377,9 @@ def _enabled_conf(**extra) -> dict:
 
 
 def _run_main(pd, monkeypatch, argv, conf, run_fn=None):
-    monkeypatch.setattr(pd, "local_config", lambda: conf)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf)
     # cwd git-repo 검증은 통과로 고정(테스트 tmp_path 는 git repo 가 아님) — 검증 자체는 전용 테스트에서.
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     isolated_argv = list(argv)
     if "--output-dir" not in isolated_argv and "--prompt-file" in isolated_argv:
         prompt = Path(isolated_argv[isolated_argv.index("--prompt-file") + 1])
@@ -404,8 +426,7 @@ def test_dry_run_outputs_argv_and_prompt(pd, monkeypatch, tmp_path, capsys):
 def test_t0658_code_reviewer_role_preamble_contains_parser_derived_contract(pd):
     """code-reviewer 역할 머리말(두 리뷰 경로가 프롬프트 앞에 싣는다)이 판정 선언·목록 0건·허용
     토큰 계약을 모두 싣는다."""
-    out = pd._role_preamble(review_form.INTERNAL_REVIEW_ROLE)
-    external = pd._load_additional_reviewer()
+    out = delegate_prompt._role_preamble(review_form.INTERNAL_REVIEW_ROLE, pd._resolved_adapter_directories())
 
     assert "행 선두" in out and "인용문·코드펜스" in out
     assert "`판정: 통과` 또는 `판정: 반려`" in out
@@ -425,7 +446,7 @@ def test_t0658_review_contract_tracks_parser_token_sources_without_literal_copy(
     """허용 토큰 원천을 바꾸면 preamble도 즉시 따라가며 0건 regex와 안내도 한 tuple을 읽는다."""
     monkeypatch.setattr(review_verdict, "_PASS_VERDICT_TOKENS", frozenset({"PROBE_PASS"}))
     monkeypatch.setattr(review_verdict, "_REJECT_VERDICT_TOKENS", frozenset({"PROBE_REJECT"}))
-    preamble = pd._internal_review_format_preamble()
+    preamble = review_contract._internal_review_format_preamble()
 
     assert "`판정: PROBE_PASS`" in preamble
     assert "`판정: PROBE_REJECT`" in preamble
@@ -453,7 +474,7 @@ def test_successful_delegation_stdout_reply(pd, monkeypatch, tmp_path, capsys):
 
 def test_reserve_raw_output_is_o_excl_0600(pd, tmp_path, monkeypatch):
     """raw 선점 = O_EXCL 원자 생성 + mode 0600 + PID/UUID 파일명(감사·권한 유출 회귀·§3.4)."""
-    dest = pd._reserve_raw_output("codex", tmp_path)
+    dest = raw_output._reserve_raw_output(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", tmp_path)
     assert dest.is_file()
     assert dest.name.startswith("pm_delegate_codex_")
     if posix_mode_supported():
@@ -468,9 +489,9 @@ def test_reserve_raw_output_is_o_excl_0600(pd, tmp_path, monkeypatch):
         def uuid4():
             return _ReservedUuid
 
-    monkeypatch.setattr(pd, "uuid", _ReservedUuid)
+    monkeypatch.setattr(raw_output, "uuid", _ReservedUuid)
     with pytest.raises(FileExistsError):
-        pd._reserve_raw_output("codex", tmp_path)
+        raw_output._reserve_raw_output(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", tmp_path)
 
 
 def test_empty_reply_fail_loud(pd, monkeypatch, tmp_path, capsys):
@@ -535,9 +556,9 @@ def test_opencode_transport_copy_non_repo_is_o_excl_0600(pd, monkeypatch, tmp_pa
     cwd = tmp_path / "plain-directory"
     cwd.mkdir()
     fixed_uuid = type("FixedUuid", (), {"hex": "fixed-transport-id"})()
-    monkeypatch.setattr(pd.uuid, "uuid4", lambda: fixed_uuid)
+    monkeypatch.setattr(delegate_temp.uuid, "uuid4", lambda: fixed_uuid)
 
-    prompt_path = pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
+    prompt_path = delegate_temp._save_opencode_transport_prompt(cwd, "합성 프롬프트")
 
     assert prompt_path.parent.parent == cwd / ".project_manager" / ".local" / "delegate"
     assert prompt_path.name == "prompt.md"
@@ -546,9 +567,9 @@ def test_opencode_transport_copy_non_repo_is_o_excl_0600(pd, monkeypatch, tmp_pa
     if posix_mode_supported():
         assert stat.S_IMODE(prompt_path.stat().st_mode) == 0o600
     with pytest.raises(FileExistsError):
-        pd._save_opencode_transport_prompt(cwd, "덮어쓰기 금지")
+        delegate_temp._save_opencode_transport_prompt(cwd, "덮어쓰기 금지")
     assert prompt_path.read_text(encoding="utf-8") == "합성 프롬프트"
-    pd._cleanup_attempt_transport(prompt_path)
+    delegate_temp._cleanup_attempt_transport(prompt_path)
     assert not (cwd / ".project_manager").exists()
 
 
@@ -560,27 +581,27 @@ def test_opencode_transport_without_dir_fd_or_o_nofollow_round_trips(
     monkeypatch.setattr(pd.os, "supports_dir_fd", frozenset())
     monkeypatch.delattr(pd.os, "O_NOFOLLOW", raising=False)
 
-    transport = pd._save_opencode_transport_prompt(cwd, "portable prompt")
-    argv = pd._build_target_argv(
+    transport = delegate_temp._save_opencode_transport_prompt(cwd, "portable prompt")
+    argv = delegate_run._build_target_argv(
         "opencode", "prov/m", None, "developer", transport.sandbox, transport,
     )
-    launch_argv, launch_cwd = pd._opencode_transport_launch_target(transport, argv)
+    launch_argv, launch_cwd = delegate_transport._opencode_transport_launch_target(transport, argv)
 
     assert launch_cwd == str(cwd)
     assert Path(launch_argv[launch_argv.index("--file") + 1]).read_text(
         encoding="utf-8",
     ) == "portable prompt"
-    pd._cleanup_attempt_transport(transport)
+    delegate_temp._cleanup_attempt_transport(transport)
     assert not (cwd / ".project_manager").exists()
 
 
 def test_portable_exclusive_write_collision_preserves_existing_file(pd, tmp_path):
     """O_EXCL 충돌은 선존재 파일을 삭제하거나 덮어쓰지 않는다."""
     target = tmp_path / "exclusive.txt"
-    pd._portable_exclusive_write(target, "original")
+    delegate_temp._portable_exclusive_write(target, "original")
 
     with pytest.raises(FileExistsError):
-        pd._portable_exclusive_write(target, "replacement")
+        delegate_temp._portable_exclusive_write(target, "replacement")
 
     assert target.read_text(encoding="utf-8") == "original"
 
@@ -616,7 +637,7 @@ def test_portable_exclusive_write_rollback_success_propagates_silently(
     )
 
     with pytest.raises(OSError, match="의도한 쓰기 실패"):
-        pd._portable_exclusive_write(target, "content")
+        delegate_temp._portable_exclusive_write(target, "content")
 
     captured = capsys.readouterr()
     assert captured.err == ""
@@ -642,7 +663,7 @@ def test_portable_exclusive_write_rollback_failure_warns_and_keeps_original_exce
     monkeypatch.setattr(pd.os, "unlink", _deny_rollback_unlink)
 
     with pytest.raises(OSError, match="의도한 쓰기 실패") as excinfo:
-        pd._portable_exclusive_write(target, "content")
+        delegate_temp._portable_exclusive_write(target, "content")
 
     # 원래 예외 *그 객체* 가 chaining 오염 없이 전파된다(리뷰 F-001 — `raise … from unlink_exc` 회귀 차단).
     assert excinfo.value is sentinel
@@ -658,7 +679,7 @@ def test_portable_exclusive_write_success_path_unchanged(pd, tmp_path, capsys):
     """(c) 정상 경로(쓰기 성공) 동작·반환은 불변 — 경고 없음."""
     target = tmp_path / "normal.txt"
 
-    result = pd._portable_exclusive_write(target, "정상 내용")
+    result = delegate_temp._portable_exclusive_write(target, "정상 내용")
 
     captured = capsys.readouterr()
     assert result is None
@@ -696,7 +717,7 @@ def test_opencode_transport_prompt_residual_retry_succeeds_cleans_everything(
     monkeypatch.setattr(pd.os, "unlink", _unlink)
 
     with pytest.raises(OSError, match="의도한 쓰기 실패"):
-        pd._save_opencode_transport_prompt(cwd, "민감 프롬프트")
+        delegate_temp._save_opencode_transport_prompt(cwd, "민감 프롬프트")
 
     captured = capsys.readouterr()
     assert unlink_calls["n"] == 2
@@ -736,7 +757,7 @@ def test_opencode_transport_ignore_residual_marks_ignore_created_for_retry(
     monkeypatch.setattr(pd.os, "unlink", _unlink)
 
     with pytest.raises(OSError, match="의도한 쓰기 실패"):
-        pd._save_opencode_transport_prompt(cwd, "민감 프롬프트")
+        delegate_temp._save_opencode_transport_prompt(cwd, "민감 프롬프트")
 
     captured = capsys.readouterr()
     assert unlink_calls["n"] == 2                          # 1차 거부 + cleanup 재시도
@@ -760,7 +781,7 @@ def test_opencode_transport_rollback_enoent_leaves_no_residual_marker(
 
     monkeypatch.setattr(pd.os, "unlink", _unlink)
     with pytest.raises(OSError, match="의도한 쓰기 실패") as excinfo:
-        pd._portable_exclusive_write(target, "content")
+        delegate_temp._portable_exclusive_write(target, "content")
     assert not hasattr(excinfo.value, "_pm_residual_path")
     assert not target.exists()
 
@@ -792,15 +813,15 @@ def test_opencode_transport_prompt_residual_retry_fails_preserves_ignore(
     monkeypatch.setattr(pd.os, "unlink", _deny_prompt_unlink)
 
     with pytest.raises(OSError, match="의도한 쓰기 실패"):
-        pd._save_opencode_transport_prompt(cwd, "민감 프롬프트")
+        delegate_temp._save_opencode_transport_prompt(cwd, "민감 프롬프트")
 
     captured = capsys.readouterr()
     # 호출 디렉터리 형상은 엔진 상수로 고정돼 있다(`<sandbox>/<REL_DIR>/<attempt_id>/prompt.md` ·
     # ignore 는 같은 attempt 디렉터리) — 재귀 tree-walk 없이 한 단계 glob 으로 잔여를 센다.
-    residual_prompt = cwd / pd._OPENCODE_TRANSPORT_REL_DIR
+    residual_prompt = cwd / delegate_temp._OPENCODE_TRANSPORT_REL_DIR
     prompt_paths = sorted(residual_prompt.glob("*/prompt.md"))
     assert len(prompt_paths) == 1 and prompt_paths[0].exists()  # 잔여 프롬프트 보존(재시도 실패)
-    ignore_paths = [prompt_paths[0].parent / pd._OPENCODE_TRANSPORT_IGNORE]
+    ignore_paths = [prompt_paths[0].parent / delegate_temp._OPENCODE_TRANSPORT_IGNORE]
     assert ignore_paths[0].exists()  # 자기-은닉 ignore 보존(노출 방지)
     assert "쓰기 실패 롤백 삭제 실패" in captured.err  # T-0705 1차 실패 경고
     assert "합성 프롬프트 삭제 실패" in captured.err  # cleanup 재시도 실패도 loud
@@ -813,13 +834,13 @@ def test_opencode_transport_prompt_success_path_unaffected_by_residual_signal(
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
 
-    transport = pd._save_opencode_transport_prompt(cwd, "정상 프롬프트")
+    transport = delegate_temp._save_opencode_transport_prompt(cwd, "정상 프롬프트")
 
     assert transport.prompt_created is True
     assert transport.ignore_created is True
     assert transport.path.read_text(encoding="utf-8") == "정상 프롬프트"
 
-    pd._cleanup_attempt_transport(transport)
+    delegate_temp._cleanup_attempt_transport(transport)
 
     captured = capsys.readouterr()
     assert captured.err == ""
@@ -831,20 +852,20 @@ def test_opencode_send_rejects_symlink_parent(pd, tmp_path):
     """send 직전 prompt 부모가 symlink면 lexical 경로 호출을 거부한다."""
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
-    transport = pd._save_opencode_transport_prompt(cwd, "prepared prompt")
+    transport = delegate_temp._save_opencode_transport_prompt(cwd, "prepared prompt")
     parked = transport.path.parent.with_name(f"{transport.path.parent.name}-parked")
     transport.path.parent.rename(parked)
     transport.path.parent.symlink_to(parked, target_is_directory=True)
-    argv = pd._build_target_argv(
+    argv = delegate_run._build_target_argv(
         "opencode", "prov/m", None, "developer", transport.sandbox, transport,
     )
     try:
         with pytest.raises(delegate_errors.DelegateError, match="전달 부모.*symlink"):
-            pd._opencode_transport_launch_target(transport, argv)
+            delegate_transport._opencode_transport_launch_target(transport, argv)
     finally:
         transport.path.parent.unlink()
         parked.rename(transport.path.parent)
-        pd._cleanup_attempt_transport(transport)
+        delegate_temp._cleanup_attempt_transport(transport)
 
 
 def test_opencode_existing_attempt_directory_fails_loud(
@@ -853,7 +874,7 @@ def test_opencode_existing_attempt_directory_fails_loud(
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
     fixed_uuid = type("FixedUuid", (), {"hex": "existing-attempt"})()
-    monkeypatch.setattr(pd.uuid, "uuid4", lambda: fixed_uuid)
+    monkeypatch.setattr(delegate_temp.uuid, "uuid4", lambda: fixed_uuid)
     attempt_dir = (
         cwd / ".project_manager" / ".local" / "delegate"
         / f"pm_delegate_{os.getpid()}_existing-attempt"
@@ -863,7 +884,7 @@ def test_opencode_existing_attempt_directory_fails_loud(
     sentinel.write_text("keep", encoding="utf-8")
 
     with pytest.raises(FileExistsError):
-        pd._save_opencode_transport_prompt(cwd, "must not be written")
+        delegate_temp._save_opencode_transport_prompt(cwd, "must not be written")
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert not (attempt_dir / "prompt.md").exists()
@@ -884,7 +905,7 @@ def test_opencode_transport_directory_creation_oserror_is_delegate_error(
     monkeypatch.setattr(pd.Path, "mkdir", _fail_local)
 
     with pytest.raises(delegate_errors.DelegateError, match="전달 디렉터리 생성 실패.*injected"):
-        pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
+        delegate_temp._save_opencode_transport_prompt(cwd, "합성 프롬프트")
 
 
 @pytest.mark.skipif(
@@ -894,7 +915,7 @@ def test_opencode_transport_parent_and_files_have_private_modes(pd, tmp_path):
     """POSIX 생성 경계는 모든 신규 부모 0700과 prompt/ignore 0600을 고정한다."""
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
-    transport = pd._save_opencode_transport_prompt(cwd, "private prompt")
+    transport = delegate_temp._save_opencode_transport_prompt(cwd, "private prompt")
     try:
         for parent in (
             cwd / ".project_manager",
@@ -908,7 +929,7 @@ def test_opencode_transport_parent_and_files_have_private_modes(pd, tmp_path):
             (transport.path.parent / ".gitignore").stat().st_mode,
         ) == 0o600
     finally:
-        pd._cleanup_attempt_transport(transport)
+        delegate_temp._cleanup_attempt_transport(transport)
 
 
 def test_opencode_transport_save_is_wired_to_containment_guard(
@@ -925,7 +946,7 @@ def test_opencode_transport_save_is_wired_to_containment_guard(
     monkeypatch.setattr(contract, "assert_opencode_prompt_in_cwd", assert_opencode_prompt_in_cwd)
 
     with pytest.raises(delegate_errors.DelegateError, match="배선 가드 거부"):
-        pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
+        delegate_temp._save_opencode_transport_prompt(cwd, "합성 프롬프트")
 
     assert len(calls) == 1
     assert calls[0][0] == cwd
@@ -937,17 +958,17 @@ def test_opencode_execute_checks_containment_again_immediately_before_send(
     """실행 진입점은 생성 전 검사에 더해 argv 조립 직전 2차 containment를 수행한다."""
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
-    original_assert = pd._assert_opencode_transport_path
+    original_assert = delegate_temp._assert_opencode_transport_path
     calls = []
 
     def _counting_assert(cwd_arg, prompt_file):
         calls.append((Path(cwd_arg), Path(prompt_file)))
         original_assert(cwd_arg, prompt_file)
 
-    monkeypatch.setattr(pd, "_assert_opencode_transport_path", _counting_assert)
+    monkeypatch.setattr(delegate_temp, '_assert_opencode_transport_path', _counting_assert)
 
-    pd._execute_attempt(
-        harness="opencode",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -974,12 +995,12 @@ def test_opencode_overlapping_transport_cleanup_removes_shared_skeleton_quietly(
     """겹친 두 transport의 마지막 정리가 공유 골격을 회수하고 ENOTEMPTY를 경고하지 않는다."""
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
-    first = pd._save_opencode_transport_prompt(cwd, "첫 번째 합성 프롬프트")
-    second = pd._save_opencode_transport_prompt(cwd, "두 번째 합성 프롬프트")
+    first = delegate_temp._save_opencode_transport_prompt(cwd, "첫 번째 합성 프롬프트")
+    second = delegate_temp._save_opencode_transport_prompt(cwd, "두 번째 합성 프롬프트")
 
-    pd._cleanup_attempt_transport(first)
+    delegate_temp._cleanup_attempt_transport(first)
     assert (cwd / ".project_manager" / ".local" / "delegate").is_dir()
-    pd._cleanup_attempt_transport(second)
+    delegate_temp._cleanup_attempt_transport(second)
 
     assert not (cwd / ".project_manager").exists()
     assert capsys.readouterr().err == ""
@@ -994,11 +1015,11 @@ def test_opencode_raw_reservation_failure_rolls_back_transport(
     def _fail_raw_reservation(*args, **kwargs):
         raise OSError("의도한 raw 예약 실패")
 
-    monkeypatch.setattr(pd, "_reserve_raw_output", _fail_raw_reservation)
+    monkeypatch.setattr(raw_output, '_reserve_raw_output', _fail_raw_reservation)
 
     with pytest.raises(OSError, match="의도한 raw 예약 실패"):
-        pd._execute_attempt(
-            harness="opencode",
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
             model="prov/m",
             reasoning=None,
             role="developer",
@@ -1020,10 +1041,10 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
     cwd = tmp_path / "sandbox"
     cwd.mkdir()
     output_dir = tmp_path / "raw"
-    original_reserve = pd._reserve_raw_output
+    original_reserve = raw_output._reserve_raw_output
     seen = {}
 
-    def _reserve_then_swap(harness, requested_output_dir):
+    def _reserve_then_swap(_home, harness, requested_output_dir):
         attempt_parent = next(
             cwd.glob(".project_manager/.local/delegate/pm_delegate_*")
         )
@@ -1031,13 +1052,13 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
         attempt_parent.rename(parked)
         attempt_parent.symlink_to(parked, target_is_directory=True)
         seen.update(attempt_parent=attempt_parent, parked=parked)
-        return original_reserve(harness, requested_output_dir)
+        return original_reserve(_home, harness, requested_output_dir)
 
-    monkeypatch.setattr(pd, "_reserve_raw_output", _reserve_then_swap)
+    monkeypatch.setattr(raw_output, '_reserve_raw_output', _reserve_then_swap)
     try:
         with pytest.raises(delegate_errors.DelegateError, match="전달 부모.*symlink"):
-            pd._execute_attempt(
-                harness="opencode",
+            delegate_execute._execute_attempt(
+                pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
                 model="prov/m",
                 reasoning=None,
                 role="developer",
@@ -1064,7 +1085,7 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
     assert "pre-spawn rejection" in raw_text
 
     capsys.readouterr()
-    assert pd._cmd_raw(["--unfinished", "--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--unfinished", "--output-dir", str(output_dir)]) == 0
     assert "미마감 raw 없음" in capsys.readouterr().out
 
 
@@ -1083,7 +1104,7 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
     )
 
     capsys.readouterr()
-    assert pd._cmd_raw(["--unfinished", "--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--unfinished", "--output-dir", str(output_dir)]) == 0
     out = capsys.readouterr()
     assert "미마감 raw 1건" in out.out
     assert "경고" not in out.err          # 부재를 손상으로 읽지 않는다 — 경고 0
@@ -1102,7 +1123,7 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
     assert "run_id" not in finished[0] and "copy" not in finished[0]
 
     capsys.readouterr()
-    assert pd._cmd_raw(["--output-dir", str(output_dir)]) == 0
+    assert delegate_cmd._cmd_raw(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), ["--output-dir", str(output_dir)]) == 0
     assert "경고" not in capsys.readouterr().err
 
 
@@ -1130,8 +1151,8 @@ def test_opencode_symlink_cwd_preserves_lexical_process_and_file_paths(
             "timed_out": False,
         }
 
-    result = pd._execute_attempt(
-        harness="opencode",
+    result = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1189,8 +1210,8 @@ def test_opencode_non_root_cwd_transport_is_hidden_while_running(pd, tmp_path):
             "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="opencode",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1215,8 +1236,8 @@ def test_opencode_pm_uninstalled_repo_leaves_no_marker_skeleton(pd, tmp_path):
     _init_transport_test_repo(repo)
     assert not (repo / ".project_manager").exists()
 
-    pd._execute_attempt(
-        harness="opencode",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1315,7 +1336,7 @@ def test_opencode_external_symlink_fallback_prepare_is_main_rc1_without_tracebac
             "stdout": "",
             "stderr": "codex executable missing",
             "timed_out": False,
-            pd.RUN_RESULT_LAUNCH_FAILED: True,
+            delegate_run_rules.RUN_RESULT_LAUNCH_FAILED: True,
         }
 
     rc = _run_main(
@@ -1429,7 +1450,7 @@ def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
             prepared_cwd / ".project_manager" / ".local" / "delegate"
         )
         assert prompt_path.read_text(encoding="utf-8") == "role preamble + task"
-        assert row[pd.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(prepared_path)
+        assert row[delegate_run_rules.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(prepared_path)
         assert Path(row["raw_path"]).parent == (
             pm_home / ".project_manager" / ".local" / "delegate"
         )
@@ -1440,8 +1461,8 @@ def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
             "timed_out": False,
         }
 
-    result = pd._execute_attempt(
-        harness="opencode",
+    result = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode",
         model="prov/m",
         reasoning=None,
         role="developer",
@@ -1456,7 +1477,7 @@ def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
     ledger_path = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
     row = _json.loads(ledger_path.read_text(encoding="utf-8"))["records"][0]
     assert result.raw_path.resolve() == Path(row["raw_path"])
-    assert row[pd.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(seen["prepared_path"])
+    assert row[delegate_run_rules.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(seen["prepared_path"])
     raw_text = result.raw_path.read_text(encoding="utf-8")
     assert str(seen["prompt_path"]) in raw_text
     assert (
@@ -1466,7 +1487,7 @@ def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
         f"# transport_prompt_path_lexical: {seen['prepared_path']}" in raw_text
     )
     assert "# transport_binding_mode: lexical" in raw_text
-    assert row[pd.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(seen["prepared_path"])
+    assert row[delegate_run_rules.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(seen["prepared_path"])
     assert result.raw_path.is_file()
     assert not seen["prompt_path"].exists()
 
@@ -1475,7 +1496,7 @@ def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
 
 def test_non_dev_tier_usage_error(pd, monkeypatch, tmp_path):
     prompt = _write_prompt(tmp_path)
-    monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf())
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf())
     with pytest.raises(SystemExit) as ei:
         pd.main(["--role", "researcher", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
                  "--tier", "hard"])
@@ -1484,7 +1505,7 @@ def test_non_dev_tier_usage_error(pd, monkeypatch, tmp_path):
 
 def test_partial_cli_override_usage_error(pd, monkeypatch, tmp_path):
     prompt = _write_prompt(tmp_path)
-    monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf())
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf())
     with pytest.raises(SystemExit) as ei:
         pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
                  "--harness", "codex"])  # --model 없음
@@ -1493,7 +1514,7 @@ def test_partial_cli_override_usage_error(pd, monkeypatch, tmp_path):
 
 def test_reasoning_without_override_usage_error(pd, monkeypatch, tmp_path):
     prompt = _write_prompt(tmp_path)
-    monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf())
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf())
     with pytest.raises(SystemExit) as ei:
         pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
                  "--reasoning", "high"])
@@ -1502,7 +1523,7 @@ def test_reasoning_without_override_usage_error(pd, monkeypatch, tmp_path):
 
 def test_relative_cwd_usage_error(pd, monkeypatch, tmp_path):
     prompt = _write_prompt(tmp_path)
-    monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf())
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf())
     with pytest.raises(SystemExit) as ei:
         pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", "relative/path"])
     assert ei.value.code == 2
@@ -1517,7 +1538,7 @@ def test_build_env_allowlist_excludes_foreign_creds(pd, monkeypatch):
     monkeypatch.setenv("HOME", "/home/u")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
     monkeypatch.setenv("CODEX_HOME", "/iso/codex")
-    env = pd.build_env("codex")
+    env = delegate_env.build_env("codex")
     assert "FOO_API_KEY" not in env
     assert env.get("PATH") == "/usr/bin"
     assert env.get("HOME") == "/home/u"
@@ -1547,7 +1568,7 @@ def _windows_env_sample(**extra) -> dict[str, str]:
 def test_build_env_windows_keeps_harness_required_temp_and_system_keys(pd):
     """Windows 축 정제가 임시 디렉터리·시스템 키를 떨구지 않는다(5차 측정 `KeyError: 'TMP'`)."""
     source = _windows_env_sample()
-    env = pd.build_env("opencode", windows=True, source=source)
+    env = delegate_env.build_env("opencode", windows=True, source=source)
     for key in ("TEMP", "TMP", "SystemRoot", "ComSpec", "PATHEXT",
                 "USERPROFILE", "APPDATA", "LOCALAPPDATA"):
         assert env[key] == source[key], key
@@ -1557,7 +1578,7 @@ def test_build_env_windows_keeps_harness_required_temp_and_system_keys(pd):
 def test_build_env_windows_env_names_are_case_insensitive(pd):
     """Windows env 이름은 대소문자를 구분하지 않는다 — 사본 dict 로 넘어와도 필수 키를 찾는다."""
     source = {key.upper(): value for key, value in _windows_env_sample().items()}
-    env = pd.build_env("codex", windows=True, source=source)
+    env = delegate_env.build_env("codex", windows=True, source=source)
     assert env["SystemRoot"] == source["SYSTEMROOT"]
     assert env["ComSpec"] == source["COMSPEC"]
     assert env["TEMP"] == source["TEMP"]
@@ -1565,13 +1586,13 @@ def test_build_env_windows_env_names_are_case_insensitive(pd):
 
 def test_build_env_platform_key_declarations_stay_consistent(pd):
     """필수/임시 키 선언이 그 플랫폼 allowlist 안에 있다 — 선언만 늘고 전달은 안 되는 drift 차단."""
-    windows_allowlist = set(pd._ENV_ALLOWLIST_BASE) | set(pd._ENV_ALLOWLIST_WINDOWS)
-    assert set(pd._TEMP_ENV_KEYS_WINDOWS) <= windows_allowlist
-    assert set(pd._REQUIRED_CHILD_ENV_KEYS_WINDOWS) <= windows_allowlist
-    assert set(pd._TEMP_ENV_KEYS_POSIX) <= set(pd._ENV_ALLOWLIST_BASE)
-    assert set(pd._REQUIRED_CHILD_ENV_KEYS_POSIX) <= set(pd._ENV_ALLOWLIST_BASE)
+    windows_allowlist = set(delegate_run_rules._ENV_ALLOWLIST_BASE) | set(delegate_run_rules._ENV_ALLOWLIST_WINDOWS)
+    assert set(delegate_run_rules._TEMP_ENV_KEYS_WINDOWS) <= windows_allowlist
+    assert set(delegate_run_rules._REQUIRED_CHILD_ENV_KEYS_WINDOWS) <= windows_allowlist
+    assert set(delegate_run_rules._TEMP_ENV_KEYS_POSIX) <= set(delegate_run_rules._ENV_ALLOWLIST_BASE)
+    assert set(delegate_run_rules._REQUIRED_CHILD_ENV_KEYS_POSIX) <= set(delegate_run_rules._ENV_ALLOWLIST_BASE)
     # POSIX 정제는 Windows 전용 키를 새로 흘리지 않는다(경계 유지).
-    assert not set(pd._ENV_ALLOWLIST_WINDOWS) & set(pd._ENV_ALLOWLIST_BASE)
+    assert not set(delegate_run_rules._ENV_ALLOWLIST_WINDOWS) & set(delegate_run_rules._ENV_ALLOWLIST_BASE)
 
 
 def test_build_env_absent_required_key_is_loud_with_reason(pd):
@@ -1579,30 +1600,30 @@ def test_build_env_absent_required_key_is_loud_with_reason(pd):
     source = _windows_env_sample()
     source.pop("SystemRoot")
     with pytest.raises(delegate_errors.DelegateError) as ei:
-        pd.build_env("claude", windows=True, source=source)
+        delegate_env.build_env("claude", windows=True, source=source)
     message = str(ei.value)
     assert "SystemRoot" in message and "부모 env 없음" in message
 
 
 def test_build_env_dropped_required_key_names_the_sanitizer(pd, monkeypatch):
     """부모엔 있는데 정제가 떨군 경우는 사유가 원인을 가른다(환경 문제와 구분)."""
-    monkeypatch.setattr(pd, "_ENV_ALLOWLIST_WINDOWS", ("TEMP", "TMP", "ComSpec"))
+    monkeypatch.setattr(delegate_run_rules, '_ENV_ALLOWLIST_WINDOWS', ("TEMP", "TMP", "ComSpec"))
     with pytest.raises(delegate_errors.DelegateError, match="정제가 떨굼"):
-        pd.build_env("codex", windows=True, source=_windows_env_sample())
+        delegate_env.build_env("codex", windows=True, source=_windows_env_sample())
 
 
 def test_build_env_fills_temp_from_measurement_when_parent_has_no_temp_name(
         pd, monkeypatch):
     """임시 디렉터리 이름이 부모 env 에 하나도 없으면 실측값으로 채운다(빈 채로 스폰 금지)."""
-    monkeypatch.setattr(pd, "_gettempdir", lambda: "/measured/tmp")
-    posix = pd.build_env("codex", windows=False, source={"PATH": "/usr/bin"})
-    assert posix[pd._TEMP_ENV_KEYS_POSIX[0]] == "/measured/tmp"
-    windows = pd.build_env("codex", windows=True, source={
+    monkeypatch.setattr(raw_output, '_gettempdir', lambda: "/measured/tmp")
+    posix = delegate_env.build_env("codex", windows=False, source={"PATH": "/usr/bin"})
+    assert posix[delegate_run_rules._TEMP_ENV_KEYS_POSIX[0]] == "/measured/tmp"
+    windows = delegate_env.build_env("codex", windows=True, source={
         "PATH": r"C:\Windows",
         "SystemRoot": r"C:\Windows",
         "ComSpec": r"C:\Windows\system32\cmd.exe",
     })
-    assert windows[pd._TEMP_ENV_KEYS_WINDOWS[0]] == "/measured/tmp"
+    assert windows[delegate_run_rules._TEMP_ENV_KEYS_WINDOWS[0]] == "/measured/tmp"
 
 
 def test_opencode_execution_injects_exact_runtime_role_after_env_sanitizing(
@@ -1616,8 +1637,8 @@ def test_opencode_execution_injects_exact_runtime_role_after_env_sanitizing(
         return {"returncode": 0, "stdout": _opencode_stdout("DONE"),
                 "stderr": "", "timed_out": False}
 
-    pd._execute_attempt(
-        harness="opencode", model="provider/model", reasoning="high",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="provider/model", reasoning="high",
         role="code-reviewer", cwd=tmp_path, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
@@ -1646,14 +1667,14 @@ def test_env_allowlist_applied_in_main(pd, monkeypatch, tmp_path):
 def test_read_role_permission_axis(pd):
     """각 하네스 read 역할이 자기 권한 계약을 선택한다(mock 범위 검증)."""
     # codex: read-only sandbox
-    assert pd.build_codex_argv("m", None, "researcher", "/w")[4] == "read-only"
+    assert contract.build_codex_argv("m", None, "researcher", "/w")[4] == "read-only"
     # claude researcher: Write/Bash 부재(기계적)·Edit 는 티켓 사본 자기 절 전용(T-0696)
-    rt = pd.build_claude_argv("m", None, "researcher")
+    rt = contract.build_claude_argv("m", None, "researcher")
     tools = rt[rt.index("--tools") + 1]
     assert not any(t in tools for t in ("Write", "Bash")) and "Edit" in tools
     # opencode reviewer: build/plan 축약 없이 custom 역할 카드 선택.
-    assert pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p")[
-        pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p").index("--agent") + 1] == "code-reviewer"
+    assert contract.build_opencode_argv("m", None, "code-reviewer", "/w", "/p")[
+        contract.build_opencode_argv("m", None, "code-reviewer", "/w", "/p").index("--agent") + 1] == "code-reviewer"
 
 
 def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
@@ -1663,7 +1684,7 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     _init_codex_read_role_repo(cwd)
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1684,8 +1705,8 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
             "stderr": "", "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="codex", model="gpt-x", reasoning=None,
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1699,14 +1720,14 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
     assert argv[argv.index("-C") + 1] == str(seen["read_tmp"])
     assert seen["process_cwd"] == seen["read_tmp"]
     assert all(seen["env"][key] == str(seen["read_tmp"])
-               for key in pd._READ_TMP_ENV_KEYS)
+               for key in delegate_run_rules._READ_TMP_ENV_KEYS)
     assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert str(seen["read_tmp"]) in seen["prompt"]
     assert "-p no:cacheprovider" in seen["prompt"]
     assert f"cd {cwd}" in seen["prompt"]
     assert "worktree" in seen["prompt"]
     assert not seen["read_tmp"].exists()
-    assert pd.WRITE_ROLES == frozenset({"developer", "architect"})
+    assert delegate_run_rules.WRITE_ROLES == frozenset({"developer", "architect"})
 
 
 _CODEX_READ_TMP_PROFILE = "pm_delegate_read_tmp"
@@ -1743,8 +1764,8 @@ def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
     worktree.mkdir()
     target = worktree / "tracked.py"
     target.write_text("sentinel = 1\n", encoding="utf-8")
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: pm_home_temp)
-    read_tmp = pd._create_read_role_temp("codex", worktree)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: pm_home_temp)
+    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", worktree)
     assert read_tmp is not None
     temp_probe = read_tmp.path / "probe"
     before = (
@@ -1774,7 +1795,7 @@ def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
         f"permissions.{_CODEX_READ_TMP_PROFILE}="
         f"{_codex_read_tmp_profile_value(read_tmp.path)}"
     )
-    env = pd._apply_read_tmp_env(dict(os.environ), "codex", read_tmp)
+    env = delegate_transport._apply_read_tmp_env(dict(os.environ), "codex", read_tmp)
     try:
         completed = subprocess.run(
             [
@@ -1805,7 +1826,7 @@ def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
         )
         assert after == before
     finally:
-        pd._cleanup_read_role_temp(read_tmp)
+        delegate_temp._cleanup_read_role_temp(read_tmp)
     assert not read_tmp.path.exists()
 
 
@@ -1815,7 +1836,7 @@ def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1827,8 +1848,8 @@ def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
             "stderr": "", "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None,
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1846,7 +1867,7 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1857,16 +1878,16 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
             read_tmp=read_tmp, writable_tmp=writable_tmp,
             prompt_path=prompt_path,
         )
-        assert read_tmp.parent == temp_root / pd._OPENCODE_READ_TMP_PARENT
-        assert writable_tmp == read_tmp / pd._OPENCODE_ALLOWED_TMP_COMPONENT
+        assert read_tmp.parent == temp_root / delegate_run_rules._OPENCODE_READ_TMP_PARENT
+        assert writable_tmp == read_tmp / delegate_run_rules._OPENCODE_ALLOWED_TMP_COMPONENT
         assert env["TEMP"] == str(writable_tmp)
         prompt_text = prompt_path.read_text(encoding="utf-8")
         assert str(writable_tmp) in prompt_text
         # 임시 디렉터리 변수 표기는 실행 셸을 따른다(PowerShell 은 `$env:` 접두) — 기대값을
         # 엔진 렌더에서 만들고 리터럴로 박지 않는다. 두 표기는 전용 회귀가 모두 태운다.
         assert (
-            f'"{pd._temp_env_reference()}/'
-            f'{pd._READ_TMP_PYTEST_REL_BY_HARNESS["opencode"]}"'
+            f'"{delegate_env._temp_env_reference()}/'
+            f'{delegate_run_rules._READ_TMP_PYTEST_REL_BY_HARNESS["opencode"]}"'
         ) in prompt_text
         (writable_tmp / "pytest-artifact").write_text("ok", encoding="utf-8")
         return {
@@ -1874,8 +1895,8 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
             "stderr": "", "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="opencode", model="prov/m", reasoning=None,
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="prov/m", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
@@ -1883,7 +1904,7 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
 
     assert not seen["read_tmp"].exists()
     assert not seen["prompt_path"].exists()
-    assert not (temp_root / pd._OPENCODE_READ_TMP_PARENT).exists()
+    assert not (temp_root / delegate_run_rules._OPENCODE_READ_TMP_PARENT).exists()
     assert not (cwd / ".project_manager").exists()
 
 
@@ -1894,8 +1915,8 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
 @pytest.fixture
 def acl_platform(pd, monkeypatch):
     """fd 결속 primitive 가 없는 ACL 플랫폼을 주입한다(실제 실행 플랫폼과 무관하게 태운다)."""
-    monkeypatch.setattr(pd, "_READ_TMP_FD_SUPPORTED", False)
-    monkeypatch.setattr(pd, "_read_tmp_owner_acl_platform", lambda: True)
+    monkeypatch.setattr(delegate_temp, '_READ_TMP_FD_SUPPORTED', False)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_owner_acl_platform', lambda: True)
 
 
 def _acl_read_attempt(pd, monkeypatch, tmp_path, harness, model, stdout_fn):
@@ -1904,7 +1925,7 @@ def _acl_read_attempt(pd, monkeypatch, tmp_path, harness, model, stdout_fn):
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     _init_codex_read_role_repo(cwd)
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1919,8 +1940,8 @@ def _acl_read_attempt(pd, monkeypatch, tmp_path, harness, model, stdout_fn):
         return {"returncode": 0, "stdout": stdout_fn("검토 완료"),
                 "stderr": "", "timed_out": False}
 
-    pd._execute_attempt(
-        harness=harness, model=model, reasoning=None, role="code-reviewer",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness=harness, model=model, reasoning=None, role="code-reviewer",
         cwd=cwd, prompt="role preamble + task", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
@@ -1938,7 +1959,7 @@ def test_acl_platform_codex_read_attempt_grants_workspace_write_not_read_only(
     assert argv[argv.index("-C") + 1] == str(seen["read_tmp"])
     assert seen["process_cwd"] == seen["read_tmp"]
     assert all(seen["env"][key] == str(seen["read_tmp"])
-               for key in pd._READ_TMP_ENV_KEYS)
+               for key in delegate_run_rules._READ_TMP_ENV_KEYS)
     assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert not seen["read_tmp"].exists()
     assert list(seen["temp_root"].iterdir()) == []
@@ -1962,9 +1983,9 @@ def test_acl_platform_opencode_read_attempt_keeps_measured_allowed_tmp(
         pd, monkeypatch, tmp_path, "opencode", "prov/m", _opencode_stdout)
 
     read_tmp = seen["read_tmp"]
-    assert seen["env"]["TMP"] == str(read_tmp / pd._OPENCODE_ALLOWED_TMP_COMPONENT)
+    assert seen["env"]["TMP"] == str(read_tmp / delegate_run_rules._OPENCODE_ALLOWED_TMP_COMPONENT)
     assert seen["env"]["TEMP"] == seen["env"]["TMP"]
-    assert read_tmp.parent == seen["temp_root"] / pd._OPENCODE_READ_TMP_PARENT
+    assert read_tmp.parent == seen["temp_root"] / delegate_run_rules._OPENCODE_READ_TMP_PARENT
     assert not read_tmp.exists()
     assert list(seen["temp_root"].iterdir()) == []      # 공유 opencode 골격까지 회수
 
@@ -1976,7 +1997,7 @@ def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     file_lock = pd.fs
     restricted: list[Path] = []
     removed: list[Path] = []
@@ -1991,11 +2012,11 @@ def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
 
     monkeypatch.setattr(file_lock, "force_rmtree", _tracked_rmtree)
 
-    read_tmp = pd._create_read_role_temp("opencode", cwd)
+    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", cwd)
     assert read_tmp is not None
     assert read_tmp.parent_fd is None and read_tmp.owned_fds == []
     (read_tmp.writable_path / "artifact").write_text("ok", encoding="utf-8")
-    pd._cleanup_read_role_temp(read_tmp)
+    delegate_temp._cleanup_read_role_temp(read_tmp)
 
     assert read_tmp.path in restricted and read_tmp.writable_path in restricted
     assert removed == [read_tmp.path]                 # dir_fd rmtree 대신 공용 삭제 seam
@@ -2009,15 +2030,15 @@ def test_acl_platform_read_tmp_cleanup_on_runner_exception(
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
 
     def _explode(argv, *, stdin_text, cwd, env, timeout, harness):
         (Path(env["TMP"]) / "runner-artifact").write_text("partial", encoding="utf-8")
         raise RuntimeError("의도한 runner 예외")
 
     with pytest.raises(RuntimeError, match="의도한 runner 예외"):
-        pd._execute_attempt(
-            harness="claude", model="opus", reasoning=None,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
             output_dir=tmp_path / "raw", run_fn=_explode, attempt="primary",
         )
@@ -2026,31 +2047,31 @@ def test_acl_platform_read_tmp_cleanup_on_runner_exception(
 
 
 @pytest.mark.parametrize("harness,argv_fn", [
-    ("codex", lambda pd: pd.build_codex_argv("m", None, "code-reviewer", "/w")),
-    ("claude", lambda pd: pd.build_claude_argv("m", None, "code-reviewer")),
-    ("opencode", lambda pd: pd.build_opencode_argv(
+    ("codex", lambda pd: contract.build_codex_argv("m", None, "code-reviewer", "/w")),
+    ("claude", lambda pd: contract.build_claude_argv("m", None, "code-reviewer")),
+    ("opencode", lambda pd: contract.build_opencode_argv(
         "m", None, "code-reviewer", "/w", "/p")),
 ])
 def test_unresolved_write_target_is_loud_not_read_only_degrade(
         pd, tmp_path, harness, argv_fn):
     """쓰기 대상 해소 실패는 `read-only` 강등이 아니라 사유와 함께 멈춘다."""
     missing = tmp_path / "gone"
-    read_tmp = pd._ReadRoleTemp(
+    read_tmp = delegate_temp._ReadRoleTemp(
         missing, parent_fd=None, identity=(0, 0), owned_fds=[])
     with pytest.raises(delegate_errors.DelegateError, match="강등하지 않고"):
-        pd._apply_read_tmp_argv(argv_fn(pd), harness, "code-reviewer", read_tmp)
+        delegate_transport._apply_read_tmp_argv(argv_fn(pd), harness, "code-reviewer", read_tmp)
 
 
 def test_unresolved_ticket_copy_write_target_is_loud(pd, tmp_path):
     """codex 가 `--add-dir` 로 여는 ticket 사본 디렉터리도 권한 결정 전에 실측한다."""
     attempt = tmp_path / "attempt"
     attempt.mkdir()
-    read_tmp = pd._ReadRoleTemp(
+    read_tmp = delegate_temp._ReadRoleTemp(
         attempt, parent_fd=None, identity=(0, 0), owned_fds=[])
     copy = tmp_path / "gone" / "ticket-T-1.md"
     with pytest.raises(delegate_errors.DelegateError, match="ticket 사본 쓰기 대상"):
-        pd._apply_read_tmp_argv(
-            pd.build_codex_argv("m", None, "code-reviewer", "/w"),
+        delegate_transport._apply_read_tmp_argv(
+            contract.build_codex_argv("m", None, "code-reviewer", "/w"),
             "codex", "code-reviewer", read_tmp, copy)
 
 
@@ -2061,9 +2082,9 @@ def test_write_probe_name_stays_within_engine_artifact_budget(pd):
     (같은 자리 `NN-<role>.md`·`spec.md` 는 모두 들어간다)."""
     budget = max(
         len(round_rules.round_filename(1, "code-reviewer")),
-        len(pd.TICKET_COPY_SPEC_NAME),
+        len(delegate_rounds.TICKET_COPY_SPEC_NAME),
     )
-    first, second = pd._write_probe_name(), pd._write_probe_name()
+    first, second = delegate_transport._write_probe_name(), delegate_transport._write_probe_name()
     assert len(first) <= budget
     assert first != second                      # 겹친 attempt 가 서로를 선점하지 않는다
 
@@ -2095,10 +2116,10 @@ def test_write_probe_fits_wherever_engine_artifacts_fit(pd, tmp_path):
     deep = _deep_directory_with_remaining_budget(tmp_path, budget + 1)
     (deep / artifact).write_text("{}", encoding="utf-8")
 
-    pd._probe_writable_target(deep, label="ticket 사본")     # 예외 없이 통과해야 한다
+    delegate_transport._probe_writable_target(deep, label="ticket 사본")     # 예외 없이 통과해야 한다
 
     assert not any(
-        entry.name.startswith(pd._WRITE_PROBE_PREFIX) for entry in deep.iterdir()
+        entry.name.startswith(delegate_transport._WRITE_PROBE_PREFIX) for entry in deep.iterdir()
     )
 
 
@@ -2112,7 +2133,7 @@ def test_write_target_probe_measures_actual_write_not_existence(pd, tmp_path):
     target.mkdir(mode=0o500)
     try:
         with pytest.raises(delegate_errors.DelegateError, match="쓰기 대상 실측 실패"):
-            pd._probe_writable_target(target, label="read 역할 임시")
+            delegate_transport._probe_writable_target(target, label="read 역할 임시")
     finally:
         target.chmod(0o700)
 
@@ -2125,22 +2146,22 @@ def test_read_tmp_preamble_prescribes_platform_shell_and_interpreter(
 
     PowerShell 5.x 의 `$TMPDIR` 은 env 가 아니라 빈 변수라 basetemp 가 드라이브 루트로 튀고,
     Windows 의 `python3` 는 WindowsApps 가짜 shim 일 수 있다. 세 하네스 × 두 표기를 모두 태운다."""
-    monkeypatch.setattr(pd, "_running_on_windows", lambda: windows)
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: windows)
     attempt = tmp_path / "attempt"
     attempt.mkdir()
-    read_tmp = pd._ReadRoleTemp(
+    read_tmp = delegate_temp._ReadRoleTemp(
         attempt, parent_fd=None, identity=(0, 0), owned_fds=[])
 
-    note = pd._read_tmp_prompt_note(harness, tmp_path / "worktree", read_tmp)
+    note = delegate_transport._read_tmp_prompt_note(harness, tmp_path / "worktree", read_tmp)
 
-    expected_reference = pd._temp_env_reference()
-    other_reference = pd._temp_env_reference(windows=not windows)
+    expected_reference = delegate_env._temp_env_reference()
+    other_reference = delegate_env._temp_env_reference(windows=not windows)
     assert (
         f'--basetemp "{expected_reference}/'
-        f'{pd._READ_TMP_PYTEST_REL_BY_HARNESS[harness]}"'
+        f'{delegate_run_rules._READ_TMP_PYTEST_REL_BY_HARNESS[harness]}"'
     ) in note
     assert other_reference not in note
-    assert f"`{pd._prescribed_interpreter()} -m pytest" in note
+    assert f"`{delegate_env._prescribed_interpreter()} -m pytest" in note
 
 
 # 부모 env 에 절대 존재하지 않는 필수 키 이름 — env 해소 실패를 주입하는 sentinel.
@@ -2159,28 +2180,28 @@ def test_env_resolution_failure_leaves_no_attempt_residue(
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
-    monkeypatch.setattr(pd, "_running_on_windows", lambda: windows)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
+    monkeypatch.setattr(contract, 'running_on_windows', lambda: windows)
     # Windows 축을 POSIX 에서도 재현: 이 플랫폼 필수 키가 부모 env 에 실재해야 주입한 누락 키
     # 하나만으로 해소가 실패한다(그 키들까지 없으면 다른 사유로 멈춰 이 회귀가 시험되지 않는다).
     for key in ("SystemRoot", "ComSpec"):
         monkeypatch.setenv(key, str(tmp_path / key))
     monkeypatch.setattr(
-        pd, "_REQUIRED_CHILD_ENV_KEYS_POSIX",
-        pd._REQUIRED_CHILD_ENV_KEYS_POSIX + (_NEVER_SET_ENV_KEY,))
+        delegate_run_rules, '_REQUIRED_CHILD_ENV_KEYS_POSIX',
+        delegate_run_rules._REQUIRED_CHILD_ENV_KEYS_POSIX + (_NEVER_SET_ENV_KEY,))
     monkeypatch.setattr(
-        pd, "_REQUIRED_CHILD_ENV_KEYS_WINDOWS",
-        pd._REQUIRED_CHILD_ENV_KEYS_WINDOWS + (_NEVER_SET_ENV_KEY,))
+        delegate_run_rules, '_REQUIRED_CHILD_ENV_KEYS_WINDOWS',
+        delegate_run_rules._REQUIRED_CHILD_ENV_KEYS_WINDOWS + (_NEVER_SET_ENV_KEY,))
     # 주입이 실제로 걸렸는가 — 실행 플랫폼 축의 목록에 없으면 해소가 성공해 가드가 시험되지 않는다.
-    assert _NEVER_SET_ENV_KEY in pd._required_child_env_keys(pd._running_on_windows())
+    assert _NEVER_SET_ENV_KEY in delegate_env._required_child_env_keys(contract.running_on_windows())
     assert _NEVER_SET_ENV_KEY not in os.environ
 
     def _never_called(*_args, **_kwargs):
         raise AssertionError("env 해소 실패 뒤에는 스폰하지 않는다")
 
     with pytest.raises(delegate_errors.DelegateError, match=_NEVER_SET_ENV_KEY):
-        pd._execute_attempt(
-            harness="opencode", model="prov/m", reasoning=None,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="opencode", model="prov/m", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
             output_dir=tmp_path / "raw", run_fn=_never_called, attempt="primary",
         )
@@ -2200,12 +2221,12 @@ def test_transport_prompt_write_restricts_owner_access_via_shared_seam(
         file_lock, "restrict_to_owner",
         lambda path, **kwargs: restricted.append(Path(path)))
 
-    transport = pd._save_opencode_transport_prompt(tmp_path, "합성 프롬프트")
+    transport = delegate_temp._save_opencode_transport_prompt(tmp_path, "합성 프롬프트")
     try:
         assert transport.path in restricted
-        assert transport.path.parent / pd._OPENCODE_TRANSPORT_IGNORE in restricted
+        assert transport.path.parent / delegate_temp._OPENCODE_TRANSPORT_IGNORE in restricted
     finally:
-        pd._cleanup_attempt_transport(transport)
+        delegate_temp._cleanup_attempt_transport(transport)
 
 
 @pytest.mark.integration
@@ -2272,8 +2293,8 @@ def test_read_tmp_unsupported_platform_preamble_is_explicit(
     실제 격리 temp 를 받으므로 이 문구가 아니라 실 경로 preamble 이 정본이다(T-0713)."""
     cwd = tmp_path / "worktree"
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_READ_TMP_FD_SUPPORTED", False)
-    monkeypatch.setattr(pd, "_read_tmp_owner_acl_platform", lambda: False)
+    monkeypatch.setattr(delegate_temp, '_READ_TMP_FD_SUPPORTED', False)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_owner_acl_platform', lambda: False)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -2283,14 +2304,14 @@ def test_read_tmp_unsupported_platform_preamble_is_explicit(
             "stderr": "", "timed_out": False,
         }
 
-    pd._execute_attempt(
-        harness="codex", model="gpt-x", reasoning=None,
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="role preamble + task",
         timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
         attempt="primary",
     )
 
-    assert pd.READ_REGRESSION_UNAVAILABLE_NOTE in seen["prompt"]
+    assert delegate_run_rules.READ_REGRESSION_UNAVAILABLE_NOTE in seen["prompt"]
     assert "회귀 숫자는 developer 보고값을 인용" in seen["prompt"]
     assert "직접 실행하지 못했다는 사실" in seen["prompt"]
 
@@ -2302,7 +2323,7 @@ def test_acl_platform_preamble_is_the_real_path_not_the_unavailable_note(
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     _init_codex_read_role_repo(cwd)
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -2310,13 +2331,13 @@ def test_acl_platform_preamble_is_the_real_path_not_the_unavailable_note(
         return {"returncode": 0, "stdout": _codex_stdout("검토 완료"),
                 "stderr": "", "timed_out": False}
 
-    pd._execute_attempt(
-        harness="codex", model="gpt-x", reasoning=None, role="code-reviewer",
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="code-reviewer",
         cwd=cwd, prompt="role preamble + task", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
     )
 
-    assert pd.READ_REGRESSION_UNAVAILABLE_NOTE not in seen["prompt"]
+    assert delegate_run_rules.READ_REGRESSION_UNAVAILABLE_NOTE not in seen["prompt"]
     assert str(seen["read_tmp"]) in seen["prompt"]
 
 
@@ -2326,7 +2347,7 @@ def test_read_tmp_cleanup_on_runner_exception(pd, monkeypatch, tmp_path):
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
 
     def _explode(argv, *, stdin_text, cwd, env, timeout, harness):
         read_tmp = Path(env["TMPDIR"])
@@ -2334,8 +2355,8 @@ def test_read_tmp_cleanup_on_runner_exception(pd, monkeypatch, tmp_path):
         raise RuntimeError("의도한 runner 예외")
 
     with pytest.raises(RuntimeError, match="의도한 runner 예외"):
-        pd._execute_attempt(
-            harness="claude", model="opus", reasoning=None,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review",
             timeout=30, output_dir=tmp_path / "raw", run_fn=_explode,
             attempt="primary",
@@ -2350,7 +2371,7 @@ def test_read_tmp_cleanup_on_timeout_child_kill_result(pd, monkeypatch, tmp_path
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
 
     def _timed_out(argv, *, stdin_text, cwd, env, timeout, harness):
         read_tmp = Path(env["TMPDIR"])
@@ -2360,8 +2381,8 @@ def test_read_tmp_cleanup_on_timeout_child_kill_result(pd, monkeypatch, tmp_path
             "timed_out": True,
         }
 
-    result = pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None,
+    result = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review",
         timeout=1, output_dir=tmp_path / "raw", run_fn=_timed_out,
         attempt="primary",
@@ -2378,15 +2399,15 @@ def test_read_tmp_cleanup_on_raw_reservation_failure(
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     monkeypatch.setattr(
-        pd, "_reserve_raw_output",
+        raw_output, '_reserve_raw_output',
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("raw reserve failed")),
     )
 
     with pytest.raises(OSError, match="raw reserve failed"):
-        pd._execute_attempt(
-            harness="claude", model="opus", reasoning=None,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
             role="code-reviewer", cwd=cwd, prompt="review",
             timeout=30, output_dir=tmp_path / "raw",
             run_fn=lambda *args, **kwargs: pytest.fail("runner must not start"),
@@ -2420,29 +2441,29 @@ def test_read_role_temp_place_is_the_project_temp_root(pd, monkeypatch, tmp_path
     anchor = raw_output.temp_root(pm_home)
 
     for harness in ("codex", "claude", "opencode"):
-        temp_parent, component = pd._read_tmp_parent(harness)
+        temp_parent, component = delegate_temp._read_tmp_parent(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), harness)
 
         assert anchor == temp_parent or anchor in temp_parent.parents
         # 하네스별 부모 이름 규칙은 자리를 옮겨도 불변이다.
-        assert component == pd._READ_TMP_PARENT_COMPONENT_BY_HARNESS[harness]
+        assert component == delegate_run_rules._READ_TMP_PARENT_COMPONENT_BY_HARNESS[harness]
         assert temp_parent == (anchor / component if component else anchor)
 
-        read_tmp = pd._create_read_role_temp(harness, cwd)
+        read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), harness, cwd)
         assert read_tmp is not None
         try:
             # 격리 보호 셋이 옮긴 자리에서도 같은 단언으로 성립한다.
             if posix_mode_supported():
                 assert stat.S_IMODE(read_tmp.path.stat().st_mode) == 0o700
-            assert (read_tmp.parent_fd is not None) == pd._READ_TMP_FD_SUPPORTED
+            assert (read_tmp.parent_fd is not None) == delegate_temp._READ_TMP_FD_SUPPORTED
             assert not read_tmp.path.is_symlink()
             assert read_tmp.path.parent == temp_parent
             # 검토 프롬프트가 처방하는 `--basetemp` 도 그 자리 안이다.
-            preamble = pd._reanchor_exec_root_preamble(
+            preamble = delegate_transport._reanchor_exec_root_preamble(
                 cwd, read_tmp.path, read_tmp.writable_path)
             basetemp = Path(preamble.split("--basetemp")[1].split()[0])
             assert anchor in basetemp.parents
         finally:
-            pd._cleanup_read_role_temp(read_tmp)
+            delegate_temp._cleanup_read_role_temp(read_tmp)
         assert not read_tmp.path.exists()
 
 
@@ -2458,21 +2479,21 @@ def test_read_role_temp_survives_a_cwd_that_owns_the_temp_root(
     monkeypatch.setattr(pd, "REPO", pm_home)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
 
-    read_tmp = pd._create_read_role_temp("claude", pm_home)   # cwd == PM 홈
+    read_tmp = delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "claude", pm_home)   # cwd == PM 홈
     assert read_tmp is not None
     try:
         assert read_tmp.path.is_relative_to(pm_home)          # cwd 트리 **안**인데 통과한다
         assert read_tmp.path.is_relative_to(
-            pm_home.joinpath(*pd._LOCAL_RUNTIME_PREFIX_PARTS))
+            pm_home.joinpath(*delegate_temp._LOCAL_RUNTIME_PREFIX_PARTS))
     finally:
-        pd._cleanup_read_role_temp(read_tmp)
+        delegate_temp._cleanup_read_role_temp(read_tmp)
 
     # 역방향 — 같은 cwd 라도 추적 표면으로 해소되면 거부한다(옛 판정의 보호는 그대로다).
     tracked_root = pm_home / "scratch"
     tracked_root.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: tracked_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: tracked_root)
     with pytest.raises(delegate_errors.DelegateError, match="검토 표면 안으로 해소되어 거부"):
-        pd._create_read_role_temp("claude", pm_home)
+        delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "claude", pm_home)
     assert list(tracked_root.iterdir()) == []                 # 거부 뒤 잔여 0
 
 
@@ -2490,7 +2511,7 @@ def test_read_tmp_cleanup_removes_a_read_only_subtree(pd, monkeypatch, tmp_path)
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
 
     def _leave_read_only_tree(argv, *, stdin_text, cwd, env, timeout, harness):
         artifact = Path(env["TMPDIR"]) / "pytest_full" / "read-only"
@@ -2500,8 +2521,8 @@ def test_read_tmp_cleanup_removes_a_read_only_subtree(pd, monkeypatch, tmp_path)
         return {"returncode": 0, "stdout": _claude_stdout("검토 완료"),
                 "stderr": "", "timed_out": False}
 
-    attempt = pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None,
+    attempt = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_leave_read_only_tree,
         attempt="primary",
@@ -2518,7 +2539,7 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
     cwd.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     file_lock = pd.fs
     monkeypatch.setattr(
         file_lock, "force_rmtree",
@@ -2530,8 +2551,8 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
         return {"returncode": 0, "stdout": _claude_stdout("검토 완료"),
                 "stderr": "", "timed_out": False}
 
-    attempt = pd._execute_attempt(
-        harness="claude", model="opus", reasoning=None,
+    attempt = delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="claude", model="opus", reasoning=None,
         role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
         output_dir=tmp_path / "raw", run_fn=_succeed, attempt="primary",
     )
@@ -2542,7 +2563,7 @@ def test_read_tmp_that_cannot_be_removed_fails_the_attempt(
     assert str(residue) in attempt.result["stderr"]     # 잔존 경로가 사유에 실린다
     assert "경고: read 역할 임시 디렉터리 정리 실패" in capsys.readouterr().err
     # 인프라 실패 분류가 아니므로 유료 폴백을 부르지 않는다.
-    assert pd.classify_infrastructure_failure(attempt.result) is None
+    assert delegate_run.classify_infrastructure_failure(attempt.result) is None
     shutil.rmtree(residue)
 
 
@@ -2566,12 +2587,12 @@ def test_read_tmp_attempt_name_fits_the_windows_path_budget(pd):
     windows_temp_root = (
         r"C:\Users\smahn\project_manager_dev\.project_manager\.local\tmp"
     )
-    name = pd._read_tmp_attempt_name()
+    name = delegate_temp._read_tmp_attempt_name()
     total = len(windows_temp_root) + 1 + len(name) + 1 + len(_MEASURED_READ_TMP_TAIL)
 
     assert total <= _WINDOWS_MAX_PATH, f"경로 예산 초과: {total}자"
-    assert name.startswith(pd._READ_TMP_PREFIX)
-    assert pd._read_tmp_attempt_name() != name      # 겹친 attempt 가 서로를 선점하지 않는다
+    assert name.startswith(delegate_run_rules._READ_TMP_PREFIX)
+    assert delegate_temp._read_tmp_attempt_name() != name      # 겹친 attempt 가 서로를 선점하지 않는다
 
 
 # ══ ⑧ 쓰기-타깃 axis 재앵커 (§4.6) ════════════════════════════════════════════
@@ -2613,21 +2634,21 @@ def test_write_target_reanchor_engine_code(pd, tmp_path):
     """write 역할 + 엔진 코드(.project_manager/tools/) 타깃 + PM 홈 cwd → 재앵커 대상 반환(§4.6)."""
     home, wt = _fake_pm_home(tmp_path)
     prompt = "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수"
-    assert pd.check_write_target_reanchor("developer", home, prompt) == wt
+    assert delegate_execute.check_write_target_reanchor("developer", home, prompt) == wt
 
 
 def test_write_target_pm_doc_passes(pd, tmp_path):
     """PM-doc(wiki) write 는 PM 홈 cwd 정당 → 재앵커 안 함(§4.6)."""
     home, _wt = _fake_pm_home(tmp_path)
     prompt = "wiki/roadmap.md 를 갱신하라"
-    assert pd.check_write_target_reanchor("architect", home, prompt) is None
+    assert delegate_execute.check_write_target_reanchor("architect", home, prompt) is None
 
 
 def test_read_role_no_reanchor(pd, tmp_path):
     """read 역할은 엔진 코드 언급이 있어도 재앵커 안 함(write 타깃 아님·§4.6)."""
     home, _wt = _fake_pm_home(tmp_path)
     prompt = ".project_manager/tools/board.py 를 조사하라"
-    assert pd.check_write_target_reanchor("researcher", home, prompt) is None
+    assert delegate_execute.check_write_target_reanchor("researcher", home, prompt) is None
 
 
 def test_reanchor_fail_loud_in_main(pd, monkeypatch, tmp_path, capsys):
@@ -2681,7 +2702,7 @@ class _FakeRelayWatchdog:
 def test_default_run_fn_launch_error_all_drivers(pd, monkeypatch, harness):
     """3드라이버 전부 바이너리 미설치(워치독 스폰 FileNotFoundError) → rc≠0·진단(traceback 아님)."""
     _FakeRelayWatchdog(FileNotFoundError(2, "nope", "bin")).install(monkeypatch)
-    res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
     assert res["returncode"] != 0 and res["timed_out"] is False
     assert "실행 불가" in res["stderr"]
 
@@ -2703,9 +2724,9 @@ def test_default_run_fn_timeout_all_drivers(pd, monkeypatch, harness):
     프로세스그룹 kill 자체는 이제 워치독 소관이다(watchdog 실-Popen 테스트가 잔존 0을 단언) —
     여기서는 위임층의 정규화(분류 가능한 timed_out 신호)만 본다."""
     _FakeRelayWatchdog(subprocess.TimeoutExpired(cmd="x", timeout=1)).install(monkeypatch)
-    res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1, harness=harness)
     assert res["timed_out"] is True and res["returncode"] != 0
-    assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_TIMEOUT
+    assert delegate_run.classify_infrastructure_failure(res) == delegate_run_rules.FAILURE_CLASS_TIMEOUT
 
 
 # ══ must-fix 3(보완): 3하네스×4역할 argv 매트릭스 전수(12·권한축) ════════════
@@ -2716,10 +2737,10 @@ def test_argv_matrix_permission_axis(pd, harness, role):
     """3하네스×4역할 12조합 전수 — 각 드라이버의 역할 선택이 정확히 반영된다."""
     write = role in ("developer", "architect")
     if harness == "codex":
-        argv = pd.build_codex_argv("m", None, role, "/w")
+        argv = contract.build_codex_argv("m", None, role, "/w")
         assert argv[argv.index("-s") + 1] == ("workspace-write" if write else "read-only")
     elif harness == "claude":
-        argv = pd.build_claude_argv("m", None, role)
+        argv = contract.build_claude_argv("m", None, role)
         tools = argv[argv.index("--tools") + 1]
         if write:
             assert "Write" in tools and "Edit" in tools
@@ -2733,7 +2754,7 @@ def test_argv_matrix_permission_axis(pd, harness, role):
             assert "--permission-mode" not in argv
             assert ("Bash" in tools) == (role == "code-reviewer")  # reviewer 만 Bash(pytest)
     else:  # opencode
-        argv = pd.build_opencode_argv("m", None, role, "/w", "/p")
+        argv = contract.build_opencode_argv("m", None, role, "/w", "/p")
         assert argv[argv.index("--agent") + 1] == role
 
 
@@ -2741,7 +2762,7 @@ def test_argv_matrix_permission_axis(pd, harness, role):
 
 def test_timeout_nonpositive_usage_error(pd, monkeypatch, tmp_path):
     prompt = _write_prompt(tmp_path)
-    monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf())
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf())
     with pytest.raises(SystemExit) as ei:
         pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
                  "--timeout", "0"])
@@ -2752,21 +2773,21 @@ def test_conf_delegate_timeout_failsoft(pd):
     """conf delegate.timeout 비수치/≤0 은 traceback 대신 **하네스 프로필 선언값**으로 fail-soft."""
     ns = type("NS", (), {"timeout": None})()
     declared = int(watchdog.HARNESS_PROFILES["codex"].wall_timeout)
-    assert pd._resolve_timeout(ns, {"delegate.timeout": "abc"}, "codex") == declared
-    assert pd._resolve_timeout(ns, {"delegate.timeout": "-5"}, "codex") == declared
-    assert pd._resolve_timeout(ns, {"delegate.timeout": "600"}, "codex") == 600
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns, {"delegate.timeout": "abc"}, "codex") == declared
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns, {"delegate.timeout": "-5"}, "codex") == declared
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns, {"delegate.timeout": "600"}, "codex") == 600
     # 하네스별 키가 표면-flat legacy 키를 이긴다(더 구체적인 선언).
-    assert pd._resolve_timeout(
-        ns, {"delegate.timeout": "600", "harness.codex.wall_timeout": "900"}, "codex") == 900
+    assert delegate_env._resolve_timeout(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns, {"delegate.timeout": "600", "harness.codex.wall_timeout": "900"}, "codex") == 900
     ns2 = type("NS", (), {"timeout": 42})()
-    assert pd._resolve_timeout(ns2, {}, "codex") == 42   # CLI 가 가장 강함
+    assert delegate_env._resolve_timeout(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ns2, {}, "codex") == 42   # CLI 가 가장 강함
 
 
 # ══ R2 must-fix 1: opencode positional message 필수 ══════════════════════════
 
 def test_opencode_argv_has_message_positional(pd):
     """opencode run 은 --file 이 있어도 비어있지 않은 positional message 를 요구(부재 시 rc=1·실측)."""
-    argv = pd.build_opencode_argv("m", None, "developer", "/w", "/p")
+    argv = contract.build_opencode_argv("m", None, "developer", "/w", "/p")
     # 고정 message 선언은 공용 드라이버 계약(contract)이 소유한다 — 위임 wrapper 는 그 값을 쓴다.
     assert argv[:3] == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG]
     assert argv[2].strip()  # 비어있지 않음
@@ -2781,8 +2802,8 @@ def test_empty_config_is_allowed_but_unmapped_rc1(pd, monkeypatch, tmp_path, cap
     "위임이 꺼져 있다"고 말하면 거짓 처방이다(켤 줄이 없는데 켜라고 한다).
     """
     prompt = _write_prompt(tmp_path)
-    monkeypatch.setattr(pd, "local_config", lambda: {})
-    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: {})
+    monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     fake = _FakeRun(stdout=_codex_stdout())
     rc = pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
                  run_fn=fake)
@@ -2798,18 +2819,18 @@ def test_empty_config_is_allowed_but_unmapped_rc1(pd, monkeypatch, tmp_path, cap
 def test_cwd_in_git_repo_unit(pd):
     ok = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "/repo\n"})()
     bad = lambda *a, **k: type("R", (), {"returncode": 128, "stdout": ""})()
-    assert pd._cwd_in_git_repo(Path("/x"), ok) is True
-    assert pd._cwd_in_git_repo(Path("/x"), bad) is False
+    assert delegate_env._cwd_in_git_repo(Path("/x"), ok) is True
+    assert delegate_env._cwd_in_git_repo(Path("/x"), bad) is False
 
     def _boom(*a, **k):
         raise FileNotFoundError("git")
-    assert pd._cwd_in_git_repo(Path("/x"), _boom) is False
+    assert delegate_env._cwd_in_git_repo(Path("/x"), _boom) is False
 
 
 def test_cwd_not_git_repo_fail_loud(pd, monkeypatch, tmp_path, capsys):
     """비-repo(광범위 홈 등) cwd → fail-loud rc=1(신뢰 작업공간 아님)."""
     prompt = _write_prompt(tmp_path)
-    monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf())
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf())
     fake = _FakeRun(stdout=_codex_stdout())
     bad_git = lambda *a, **k: type("R", (), {"returncode": 128, "stdout": ""})()
     rc = pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
@@ -2868,11 +2889,11 @@ def test_pm_delegate_registered_and_synced_in_template(target):
 
 def test_targets_engine_code_path_normalization(pd):
     """정확 문자열 매칭이 아니라 성분 시퀀스 판정 — trailing slash 없음·`./` 우회 표기도 잡는다."""
-    assert pd._prompt_targets_engine_code("수정 .project_manager/tools/board.py 함수") is True
-    assert pd._prompt_targets_engine_code("대상 .project_manager/tools") is True          # trailing slash 없음
-    assert pd._prompt_targets_engine_code("수정 .project_manager/./tools/x.py") is True    # ./ 우회
-    assert pd._prompt_targets_engine_code("wiki/roadmap.md 를 갱신하라") is False          # PM-doc(통과)
-    assert pd._prompt_targets_engine_code(".project_manager/wiki/x.md 초안") is False      # tools 아님
+    assert delegate_prompt_rules._prompt_targets_engine_code("수정 .project_manager/tools/board.py 함수") is True
+    assert delegate_prompt_rules._prompt_targets_engine_code("대상 .project_manager/tools") is True          # trailing slash 없음
+    assert delegate_prompt_rules._prompt_targets_engine_code("수정 .project_manager/./tools/x.py") is True    # ./ 우회
+    assert delegate_prompt_rules._prompt_targets_engine_code("wiki/roadmap.md 를 갱신하라") is False          # PM-doc(통과)
+    assert delegate_prompt_rules._prompt_targets_engine_code(".project_manager/wiki/x.md 초안") is False      # tools 아님
 
 
 @pytest.mark.parametrize(
@@ -2893,7 +2914,7 @@ def test_targets_engine_code_ignores_read_only_board_cli(pd, call):
         "wiki/roadmap.md 를 갱신하라\n"
         f"python3 .project_manager/tools/board.py {call}"
     )
-    assert pd._prompt_targets_engine_code(prompt) is False
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is False
 
 
 @pytest.mark.parametrize(
@@ -3031,7 +3052,7 @@ def test_additional_read_only_board_operations_rc0(
 )
 def test_targets_engine_code_ignores_negative_context(pd, prompt):
     """B: 경로와 같은 문장/절의 명시적 금지 문맥은 write 타깃이 아니다."""
-    assert pd._prompt_targets_engine_code(prompt) is False
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is False
 
 
 @pytest.mark.parametrize(
@@ -3045,7 +3066,7 @@ def test_targets_engine_code_ignores_negative_context(pd, prompt):
 )
 def test_targets_engine_code_still_blocks_real_writes(pd, prompt):
     """음성 통제: 실제 엔진 write 지시 3종은 계속 재앵커 대상이다."""
-    assert pd._prompt_targets_engine_code(prompt) is True
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is True
 
 
 @pytest.mark.parametrize(
@@ -3141,7 +3162,7 @@ def test_read_only_call_does_not_hide_later_engine_write(pd):
         "python3 .project_manager/tools/board.py show T-0466\n"
         "이제 .project_manager/tools/board.py 를 수정하라"
     )
-    assert pd._prompt_targets_engine_code(prompt) is True
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is True
 
 
 _ADVERSARIAL_ENGINE_WRITE_PROMPTS = [
@@ -3267,7 +3288,7 @@ _ADVERSARIAL_ENGINE_WRITE_PROMPTS = [
 @pytest.mark.parametrize("prompt", _ADVERSARIAL_ENGINE_WRITE_PROMPTS)
 def test_adversarial_contexts_are_not_exempted(pd, prompt):
     """금지 절 전파·show span 주변 write·shell 후속 명령 우회는 모두 보수적으로 차단한다."""
-    assert pd._prompt_targets_engine_code(prompt) is True
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is True
 
 
 def test_normal_multiple_path_listing_does_not_form_engine_path(pd):
@@ -3278,13 +3299,13 @@ def test_normal_multiple_path_listing_does_not_form_engine_path(pd):
         "- tools/pm_delegate.py\n"
         "- tests/test_pm_delegate.py"
     )
-    assert pd._prompt_targets_engine_code(prompt) is False
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is False
 
 
 @pytest.mark.parametrize("separator", ["⁄", "∕", "⧸", "／", "╱", "⟋"])
 def test_unicode_confusable_separator_is_noncanonical_and_harmless(pd, separator):
     """유니코드 slash 동형문자 6종은 실제 경로 구분자가 아니므로 비매칭 동작을 박제한다."""
-    assert pd._prompt_targets_engine_code(
+    assert delegate_prompt_rules._prompt_targets_engine_code(
         f".project_manager{separator}tools/pm_delegate.py 를 수정하라"
     ) is False
 
@@ -3314,7 +3335,7 @@ def test_unicode_confusable_separator_is_noncanonical_and_harmless(pd, separator
 )
 def test_only_two_narrow_exemption_forms_remain_valid(pd, prompt):
     """인용/백틱/./·fence 변형도 순수 read-only 호출 또는 직접 결합 금지만 통과한다."""
-    assert pd._prompt_targets_engine_code(prompt) is False
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is False
 
 
 @pytest.mark.parametrize(
@@ -3328,7 +3349,7 @@ def test_only_two_narrow_exemption_forms_remain_valid(pd, prompt):
 )
 def test_negative_engine_path_redirected_to_non_engine_path_is_exempt(pd, prompt):
     """대신/instead의 명시 대상이 비-엔진 경로면 엔진 금지는 유지되어 false-block하지 않는다."""
-    assert pd._prompt_targets_engine_code(prompt) is False
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is False
 
 
 @pytest.mark.parametrize(
@@ -3366,7 +3387,7 @@ def test_ignore_override_redirected_to_non_engine_path_rc0(
 )
 def test_negative_engine_path_same_or_pronoun_redirect_still_blocks(pd, prompt):
     """같은 엔진 경로 또는 무경로 대명사 redirect는 금지 취소이므로 계속 write로 판정한다."""
-    assert pd._prompt_targets_engine_code(prompt) is True
+    assert delegate_prompt_rules._prompt_targets_engine_code(prompt) is True
 
 
 @pytest.mark.parametrize(
@@ -3610,7 +3631,7 @@ def test_ignore_in_prior_sentence_does_not_override_engine_path_prohibition(
 
 def test_write_target_docstring_lists_residual_threat_shapes(pd):
     """판정 함수가 의도적으로 남긴 위협모델 경계 3형태를 docstring에 명시한다."""
-    doc = pd._prompt_targets_engine_code.__doc__ or ""
+    doc = delegate_prompt_rules._prompt_targets_engine_code.__doc__ or ""
     for phrase in ("자기모순 shape", "separator 없이", "유니코드 동형"):
         assert phrase in doc
 
@@ -3825,7 +3846,7 @@ def test_lint_empty_conf_no_warn(pd):
 
 def test_cmd_lint_subcommand_never_blocks(pd, monkeypatch, capsys):
     """`pm_delegate.py lint` 는 동일-모델 경고가 있어도 rc=0(never-block·§3.7)."""
-    monkeypatch.setattr(pd, "local_config", lambda: _reviewer_conf("gpt-x", "gpt-x"))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _reviewer_conf("gpt-x", "gpt-x"))
     rc = pd.main(["lint"])
     assert rc == 0
     err = capsys.readouterr().err
@@ -3834,7 +3855,7 @@ def test_cmd_lint_subcommand_never_blocks(pd, monkeypatch, capsys):
 
 def test_cmd_lint_subcommand_clean(pd, monkeypatch, capsys):
     """정합(모델 상이) 시 lint 는 stdout 안내 + rc=0."""
-    monkeypatch.setattr(pd, "local_config", lambda: _reviewer_conf("gpt-x", "opus"))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _reviewer_conf("gpt-x", "opus"))
     rc = pd.main(["lint"])
     assert rc == 0
     assert "경고 없음" in capsys.readouterr().out
@@ -3843,23 +3864,25 @@ def test_cmd_lint_subcommand_clean(pd, monkeypatch, capsys):
 # ── role preamble drift 가드(§4.3·T-0447): 엔진-shipped 최소본 4개 존재 + 금지 문구 포함 ──
 def test_role_preambles_cover_all_four_roles(pd):
     """ROLE_PREAMBLES = 정확히 4역할(developer/researcher/architect/code-reviewer)·비-빈 텍스트."""
-    assert set(pd.ROLE_PREAMBLES) == {"developer", "researcher", "architect", "code-reviewer"}
-    for role, text in pd.ROLE_PREAMBLES.items():
+    assert set(delegate_prompt_rules._ROLE_IDENTITIES) == {"developer", "researcher", "architect", "code-reviewer"}
+    for role in delegate_prompt_rules._ROLE_IDENTITIES:
+        text = delegate_prompt._role_preamble(role, pd._resolved_adapter_directories())
         assert text.strip(), f"{role} preamble 이 비어 있음"
         assert role.split("-")[0] in text or "서브에이전트" in text  # 역할 정체성 서술
 
 
 def test_role_preambles_include_prohibition_phrases(pd):
     """4 preamble 모두 금지 문구(commit/push·board 조작·어댑터 수정 금지)를 포함(drift 가드)."""
-    adapter_directories = tuple(pd.ADAPTER_DIRECTORIES)
+    adapter_directories = tuple(pd._resolved_adapter_directories())
     assert adapter_directories, "엔진 등록부에서 파생된 어댑터 디렉토리가 0개"
-    for role, text in pd.ROLE_PREAMBLES.items():
+    for role in delegate_prompt_rules._ROLE_IDENTITIES:
+        text = delegate_prompt._role_preamble(role, pd._resolved_adapter_directories())
         assert "commit" in text and "push" in text, f"{role}: git 비가역 금지 문구 누락"
         assert "board" in text, f"{role}: board 조작 금지 문구 누락"
         assert "엔진 등록 통합 루트 전체" in text, f"{role}: 어댑터 범위 정의 누락"
         for adapter_dir in adapter_directories:
             assert adapter_dir in text, f"{role}: 등록 어댑터 {adapter_dir} 수정 금지 문구 누락"
-        assert text.count(pd._prohibition()) == 1, f"{role}: 공통 금지 문구를 정확히 한 번 써야 함"
+        assert text.count(delegate_prompt_rules._prohibition(pd._resolved_adapter_directories())) == 1, f"{role}: 공통 금지 문구를 정확히 한 번 써야 함"
 
 
 def _isolated_delegate(tmp_path: Path, registry_source: str):
@@ -3896,7 +3919,7 @@ def test_adapter_registry_engine_rev_skew_fails_loud_when_lazy_boundary_is_consu
     )
 
     with pytest.raises(RuntimeError, match="엔진 사본 버전 불일치") as exc:
-        tuple(delegate.ADAPTER_DIRECTORIES)
+        tuple(delegate._resolved_adapter_directories())
     assert getattr(exc.value, "_engine_rev_skew", False) is True
     assert "pm_import.py" in str(exc.value)
 
@@ -3911,7 +3934,7 @@ def test_adapter_registry_old_value_shape_fails_explicitly_without_character_spr
     )
 
     with pytest.raises(delegate._AdapterRegistrySchemaError, match="adapter_dirs"):
-        tuple(delegate.ADAPTER_DIRECTORIES)
+        tuple(delegate._resolved_adapter_directories())
 
 
 @pytest.mark.parametrize(
@@ -3940,8 +3963,8 @@ def test_adapter_registry_notation_changes_do_not_brick_cli(
 ):
     """B sensitivity: AnnAssign는 파생하고 비-literal 표기는 일반 문구 degrade·CLI help rc=0."""
     delegate, tools = _isolated_delegate(tmp_path, registry_source)
-    assert tuple(delegate.ADAPTER_DIRECTORIES) == expected
-    prohibition = delegate.ROLE_PREAMBLES["developer"]
+    assert tuple(delegate._resolved_adapter_directories()) == expected
+    prohibition = delegate_prompt._role_preamble("developer", delegate._resolved_adapter_directories())
     assert "엔진 등록 통합 루트 전체" in prohibition
     for adapter_dir in expected:
         assert adapter_dir in prohibition
@@ -3988,15 +4011,15 @@ def _assert_adapter_registry_matches_surface(registered, observed):
 def test_adapter_registry_matches_actual_template_surface(pd):
     """단일 출처가 템플릿 3타깃의 실제 어댑터 루트를 빠짐없이 포괄한다."""
     _assert_adapter_registry_matches_surface(
-        pd.ADAPTER_DIRECTORIES, _template_adapter_surface())
+        pd._resolved_adapter_directories(), _template_adapter_surface())
 
 
 def test_adapter_surface_guard_is_sensitive_to_each_omission(pd):
     """등록 어댑터를 어느 하나라도 빼면 표면 대조 가드가 red임을 전 항목으로 입증한다."""
     observed = _template_adapter_surface()
-    _assert_adapter_registry_matches_surface(pd.ADAPTER_DIRECTORIES, observed)
-    for omitted in pd.ADAPTER_DIRECTORIES:
-        reduced = tuple(d for d in pd.ADAPTER_DIRECTORIES if d != omitted)
+    _assert_adapter_registry_matches_surface(pd._resolved_adapter_directories(), observed)
+    for omitted in pd._resolved_adapter_directories():
+        reduced = tuple(d for d in pd._resolved_adapter_directories() if d != omitted)
         with pytest.raises(AssertionError, match="실제 템플릿 표면 불일치"):
             _assert_adapter_registry_matches_surface(reduced, observed)
 
@@ -4062,17 +4085,17 @@ def test_fallback_uses_its_own_harness_budget(pd, monkeypatch, tmp_path):
 def test_resolve_fallback_role_tier_atomic_and_no_default(pd):
     """주 매핑 동형 per-role/tier 원자 tuple: 미설정=None, hard는 normal 폴백을 상속하지 않는다."""
     normal = _fallback_conf()
-    assert pd.resolve_fallback(normal, "developer", "normal") == ("claude", "opus", "high")
-    assert pd.resolve_fallback(normal, "developer", "hard") is None
+    assert delegate_config.resolve_fallback(normal, "developer", "normal") == ("claude", "opus", "high")
+    assert delegate_config.resolve_fallback(normal, "developer", "hard") is None
 
     hard = {
         "delegate.developer.hard.fallback.harness": "opencode",
         "delegate.developer.hard.fallback.model": "prov/hard",
         "delegate.developer.hard.fallback.reasoning": "max",
     }
-    assert pd.resolve_fallback(hard, "developer", "hard") == ("opencode", "prov/hard", "max")
+    assert delegate_config.resolve_fallback(hard, "developer", "hard") == ("opencode", "prov/hard", "max")
     with pytest.raises(delegate_errors.DelegateError, match="불완전"):
-        pd.resolve_fallback(
+        delegate_config.resolve_fallback(
             {"delegate.developer.fallback.harness": "claude"},
             "developer",
             "normal",
@@ -4099,7 +4122,7 @@ def test_resolve_fallback_role_tier_atomic_and_no_default(pd):
 )
 def test_infrastructure_failure_classifier_positive_only(pd, result, expected):
     """문서/실측 양성 패턴만 분류하고 정상 완료·일반 반려는 보수적으로 폴백하지 않는다."""
-    assert pd.classify_infrastructure_failure(result) == expected
+    assert delegate_run.classify_infrastructure_failure(result) == expected
 
 
 @pytest.mark.parametrize(
@@ -4118,11 +4141,11 @@ def test_rc_zero_success_is_never_classified(pd, stderr):
     변이 실증: classify_infrastructure_failure 의 `if rc == 0: return None` 을 지우면 이 케이스들이
     '한도/레이트리밋'으로 분류돼 red 가 된다(가드 없이도 green 이던 이전 케이스는 조사 밀착으로
     `\\b` 가 깨져 애초에 비매칭이었다)."""
-    matched = pd._INFRA_QUOTA_PATTERNS[0].search(stderr) or pd._INFRA_QUOTA_PATTERNS[1].search(stderr)
+    matched = delegate_run._INFRA_QUOTA_PATTERNS[0].search(stderr) or delegate_run._INFRA_QUOTA_PATTERNS[1].search(stderr)
     assert matched is not None, "케이스 문자열이 패턴에 매칭돼야 가드가 load-bearing 하다"
     result = {"returncode": 0, "stdout": _codex_stdout("완료"), "stderr": stderr,
               "timed_out": False}
-    assert pd.classify_infrastructure_failure(result) is None
+    assert delegate_run.classify_infrastructure_failure(result) is None
 
 
 @pytest.mark.parametrize(
@@ -4138,7 +4161,7 @@ def test_rc_zero_beats_explicit_failure_signal(pd, signal):
     문서 계약("rc=0 은 절대 폴백 안 함")의 방어적 보장이다 — 검사 순서를 되돌리면 red."""
     result = {"returncode": 0, "stdout": _claude_stdout("완료"), "stderr": "", "timed_out": False}
     result.update(signal)
-    assert pd.classify_infrastructure_failure(result) is None
+    assert delegate_run.classify_infrastructure_failure(result) is None
 
 
 def _codex_error_event(message: str) -> str:
@@ -4157,14 +4180,14 @@ def test_failure_scan_excludes_reply_and_prompt_echo(pd):
     `rate_limit_exceeded` 를 인용해 stdout 전문 스캔이 부당 폴백을 냈다(자기참조 재현)."""
     quote = "패턴 rate_limit_exceeded 와 401 Unauthorized 를 문서화했다"
     echoed = "\n".join([_codex_stdout(quote), _codex_user_echo(quote)])
-    assert pd.classify_infrastructure_failure(
+    assert delegate_run.classify_infrastructure_failure(
         {"returncode": 1, "stdout": echoed, "stderr": "", "timed_out": False}) is None
     # 같은 문구라도 stderr(하네스 진단 채널)면 양성 — 경계가 채널이지 문구가 아님을 고정.
-    assert pd.classify_infrastructure_failure(
+    assert delegate_run.classify_infrastructure_failure(
         {"returncode": 1, "stdout": echoed, "stderr": quote, "timed_out": False}
     ) == "한도/레이트리밋"
     # stdout 채널도 error 이벤트면 살아있다(죽은 채널 아님).
-    assert pd.classify_infrastructure_failure({
+    assert delegate_run.classify_infrastructure_failure({
         "returncode": 1,
         "stdout": "\n".join([_codex_stdout(quote),
                              _codex_error_event("stream error: rate_limit_exceeded")]),
@@ -4176,7 +4199,7 @@ def test_error_event_reply_field_is_not_scanned(pd):
     """error 표식이 붙은 이벤트라도 reply 본문 필드(claude `result`)는 스캔 대상이 아니다."""
     event = _json.dumps({"type": "result", "is_error": True, "session_id": "s1",
                          "result": "리뷰 결과: rate_limit_exceeded 처리를 보강하라"})
-    assert pd.classify_infrastructure_failure(
+    assert delegate_run.classify_infrastructure_failure(
         {"returncode": 1, "stdout": event, "stderr": "", "timed_out": False}) is None
 
 
@@ -4236,13 +4259,13 @@ def _opencode_api_error_event(response_body: str) -> str:
 def test_claude_api_retry_authentication_failed_is_auth(pd):
     """무효 key: api_retry 비-reply error enum이 AUTH 양성 근거다."""
     event = _claude_api_retry_event("authentication_failed")
-    assert pd.classify_infrastructure_failure(_failed_stdout(event)) == pd.FAILURE_CLASS_AUTH
+    assert delegate_run.classify_infrastructure_failure(_failed_stdout(event)) == delegate_run_rules.FAILURE_CLASS_AUTH
 
 
 def test_claude_assistant_authentication_failed_is_auth(pd):
     """미로그인: 사람용 content는 제외돼도 top-level error enum으로 AUTH를 분류한다."""
     event = _claude_assistant_error_event("authentication_failed")
-    assert pd.classify_infrastructure_failure(_failed_stdout(event)) == pd.FAILURE_CLASS_AUTH
+    assert delegate_run.classify_infrastructure_failure(_failed_stdout(event)) == delegate_run_rules.FAILURE_CLASS_AUTH
 
 
 @pytest.mark.parametrize(
@@ -4256,9 +4279,9 @@ def test_claude_assistant_authentication_failed_is_auth(pd):
 )
 def test_claude_error_enums_are_quota(pd, event_factory, error):
     """실측한 두 claude 이벤트 형상에서 quota error enum만 바꿔도 QUOTA로 분류한다."""
-    assert pd.classify_infrastructure_failure(
+    assert delegate_run.classify_infrastructure_failure(
         _failed_stdout(event_factory(error))
-    ) == pd.FAILURE_CLASS_QUOTA
+    ) == delegate_run_rules.FAILURE_CLASS_QUOTA
 
 
 def test_opencode_provider_authentication_error_passthrough_is_auth(pd):
@@ -4268,7 +4291,7 @@ def test_opencode_provider_authentication_error_passthrough_is_auth(pd):
         "error": {"type": "authentication_error", "message": "API key is invalid."},
     })
     event = _opencode_api_error_event(response_body)
-    assert pd.classify_infrastructure_failure(_failed_stdout(event)) == pd.FAILURE_CLASS_AUTH
+    assert delegate_run.classify_infrastructure_failure(_failed_stdout(event)) == delegate_run_rules.FAILURE_CLASS_AUTH
 
 
 @pytest.mark.parametrize(
@@ -4281,7 +4304,7 @@ def test_opencode_provider_authentication_error_passthrough_is_auth(pd):
 def test_opencode_provider_quota_passthrough_is_quota(pd, response_body):
     """opencode가 responseBody에 전달한 Anthropic enum/메시지를 QUOTA로 분류한다."""
     event = _opencode_api_error_event(response_body)
-    assert pd.classify_infrastructure_failure(_failed_stdout(event)) == pd.FAILURE_CLASS_QUOTA
+    assert delegate_run.classify_infrastructure_failure(_failed_stdout(event)) == delegate_run_rules.FAILURE_CLASS_QUOTA
 
 
 @pytest.mark.parametrize(
@@ -4305,14 +4328,14 @@ def test_new_infra_terms_in_reply_fields_are_not_classified(pd, reply_key, quote
         "session_id": "echo-only",
         reply_key: f"문서에 {quote} 패턴을 인용했다",
     })
-    assert pd.classify_infrastructure_failure(_failed_stdout(event)) is None
+    assert delegate_run.classify_infrastructure_failure(_failed_stdout(event)) is None
 
 
 def test_bare_rate_limit_pattern_has_token_boundary(pd):
     """bare enum은 단독 줄만 잡는다 — 합성어·산문 문장-중간 표기는 배제한다."""
-    bare = next(pattern for pattern in pd._INFRA_QUOTA_PATTERNS
+    bare = next(pattern for pattern in delegate_run._INFRA_QUOTA_PATTERNS
                 if pattern.pattern == r"^\s*rate_limit\s*$")
-    dedicated = next(pattern for pattern in pd._INFRA_QUOTA_PATTERNS
+    dedicated = next(pattern for pattern in delegate_run._INFRA_QUOTA_PATTERNS
                      if pattern.pattern == r"\brate_limit_error\b")
     assert bare.search("rate_limit_options_menu") is None
     assert bare.search("rate_limit_error") is None
@@ -4331,7 +4354,7 @@ def test_complement_enums_stay_unclassified(pd, unlisted):
     """여집합 결정 핀 — 주석이 '추가하지 않는다'고 못박은 표기는 단독 enum 줄로 와도 None 이다.
     이 테스트가 red 면 누군가 패턴을 과광범화한 것이다(보수 방향 위반)."""
     event = _claude_api_retry_event(unlisted)
-    assert pd.classify_infrastructure_failure(_failed_stdout(event)) is None
+    assert delegate_run.classify_infrastructure_failure(_failed_stdout(event)) is None
 
 
 @pytest.mark.parametrize("channel", ["stderr", "stdout_diag"])
@@ -4344,7 +4367,7 @@ def test_prose_rate_limit_mention_is_not_quota(pd, channel):
     else:
         event = _json.dumps({"type": "error", "is_error": True, "message": prose})
         res = {"returncode": 1, "stdout": event, "stderr": "", "timed_out": False}
-    assert pd.classify_infrastructure_failure(res) is None
+    assert delegate_run.classify_infrastructure_failure(res) is None
 
 
 def test_opencode_model_not_found_remains_unclassified(pd):
@@ -4358,27 +4381,27 @@ def test_opencode_model_not_found_remains_unclassified(pd):
             "data": {"message": "Model not found: unconfigured-provider/missing-model"},
         },
     })
-    assert pd.classify_infrastructure_failure(_failed_stdout(event)) is None
+    assert delegate_run.classify_infrastructure_failure(_failed_stdout(event)) is None
 
 
 def test_launch_failure_needs_explicit_signal_not_rc127(pd):
     """rc=127 추론 폐기 — 정상 실행된 하네스의 자체 exit 127 을 스폰 실패로 오분류하지 않는다."""
     harness_own_127 = {"returncode": 127, "stdout": _codex_stdout("bash: 명령 없음"),
                        "stderr": "script exited 127", "timed_out": False}
-    assert pd.classify_infrastructure_failure(harness_own_127) is None
-    signalled = pd._launch_failure_result("codex", FileNotFoundError(2, "No such file", "codex"))
-    assert signalled[pd.RUN_RESULT_LAUNCH_FAILED] is True
-    assert pd.classify_infrastructure_failure(signalled) == pd.FAILURE_CLASS_LAUNCH
+    assert delegate_run.classify_infrastructure_failure(harness_own_127) is None
+    signalled = delegate_run._launch_failure_result("codex", FileNotFoundError(2, "No such file", "codex"))
+    assert signalled[delegate_run_rules.RUN_RESULT_LAUNCH_FAILED] is True
+    assert delegate_run.classify_infrastructure_failure(signalled) == delegate_run_rules.FAILURE_CLASS_LAUNCH
 
 
 @pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
 def test_default_run_fn_launch_error_carries_explicit_signal(pd, monkeypatch, harness):
     """실 드라이버의 launch 정규화도 rc 가 아니라 명시 신호를 싣는다(분류 근거 단일화)."""
     _FakeRelayWatchdog(FileNotFoundError(2, "No such file", "bin")).install(monkeypatch)
-    res = pd._default_run_fn(["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["bin"], stdin_text="x", cwd="/tmp", env={}, timeout=1,
                              harness=harness)
-    assert res[pd.RUN_RESULT_LAUNCH_FAILED] is True
-    assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_LAUNCH
+    assert res[delegate_run_rules.RUN_RESULT_LAUNCH_FAILED] is True
+    assert delegate_run.classify_infrastructure_failure(res) == delegate_run_rules.FAILURE_CLASS_LAUNCH
 
 
 def test_opencode_first_event_stall_is_infrastructure_class(pd, monkeypatch):
@@ -4390,17 +4413,17 @@ def test_opencode_first_event_stall_is_infrastructure_class(pd, monkeypatch):
     stalled.output = "startup partial stdout\n"
     stalled.stderr = "startup partial stderr\n"
     _FakeRelayWatchdog(stalled).install(monkeypatch)
-    res = pd._default_run_fn(["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
                              timeout=1, harness="opencode")
     assert res["returncode"] == 1 and res["timed_out"] is False
-    assert res[pd.RUN_RESULT_STALLED] is True
+    assert res[delegate_run_rules.RUN_RESULT_STALLED] is True
     assert res["stdout"] == "startup partial stdout\n"
     assert "startup partial stderr" in res["stderr"]
-    assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_STALL
+    assert delegate_run.classify_infrastructure_failure(res) == delegate_run_rules.FAILURE_CLASS_STALL
     # 엔진 마커만 남은 결과(신호 키 없음)도 백스톱으로 분류된다 — 마커는 엔진이 직접 찍는다.
     marker_only = {"returncode": 1, "stdout": "",
-                   "stderr": f"{pd.OPENCODE_STALL_MARKER} 3회 소진]", "timed_out": False}
-    assert pd.classify_infrastructure_failure(marker_only) == pd.FAILURE_CLASS_STALL
+                   "stderr": f"{delegate_run_rules.OPENCODE_STALL_MARKER} 3회 소진]", "timed_out": False}
+    assert delegate_run.classify_infrastructure_failure(marker_only) == delegate_run_rules.FAILURE_CLASS_STALL
 
 
 def test_startup_watchdog_wall_axis_is_timeout_not_first_event_stall(pd, monkeypatch):
@@ -4413,17 +4436,17 @@ def test_startup_watchdog_wall_axis_is_timeout_not_first_event_stall(pd, monkeyp
     expired.stderr = "wall diagnostic\n"
     _FakeRelayWatchdog(expired).install(monkeypatch)
 
-    res = pd._default_run_fn(
-        ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
+    res = delegate_run._default_run_fn(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["opencode", "run"], stdin_text=None, cwd="/tmp", env={},
         timeout=30, harness="opencode",
     )
     assert res["returncode"] == 1 and res["timed_out"] is True
-    assert res[pd.RUN_RESULT_TIMEOUT_AXIS] == "wall"
-    assert res[pd.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] == 30.0
-    assert pd.RUN_RESULT_STALLED not in res
-    assert pd.OPENCODE_STALL_MARKER not in res["stderr"]
+    assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_AXIS] == "wall"
+    assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] == 30.0
+    assert delegate_run_rules.RUN_RESULT_STALLED not in res
+    assert delegate_run_rules.OPENCODE_STALL_MARKER not in res["stderr"]
     assert "벽시계 백스톱 30s" in res["stderr"]
-    assert pd.classify_infrastructure_failure(res) == pd.FAILURE_CLASS_TIMEOUT
+    assert delegate_run.classify_infrastructure_failure(res) == delegate_run_rules.FAILURE_CLASS_TIMEOUT
 
 
 def test_stall_triggers_configured_fallback(pd, monkeypatch, tmp_path, capsys):
@@ -4431,8 +4454,8 @@ def test_stall_triggers_configured_fallback(pd, monkeypatch, tmp_path, capsys):
     conf = _fallback_conf(**{"delegate.developer.harness": "opencode",
                              "delegate.developer.model": "prov/m"})
     fake = _SequenceRun(
-        {"returncode": 1, "stdout": "", "stderr": f"{pd.OPENCODE_STALL_MARKER} 3회 소진]",
-         "timed_out": False, pd.RUN_RESULT_STALLED: True},
+        {"returncode": 1, "stdout": "", "stderr": f"{delegate_run_rules.OPENCODE_STALL_MARKER} 3회 소진]",
+         "timed_out": False, delegate_run_rules.RUN_RESULT_STALLED: True},
         {"returncode": 0, "stdout": _claude_stdout("stall fallback"), "stderr": "",
          "timed_out": False},
     )
@@ -4446,7 +4469,7 @@ def test_stall_triggers_configured_fallback(pd, monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert [call["harness"] for call in fake.calls] == ["opencode", "claude"]
-    assert f"사유: {pd.FAILURE_CLASS_STALL}" in captured.err
+    assert f"사유: {delegate_run_rules.FAILURE_CLASS_STALL}" in captured.err
 
 
 def test_cleanup_failure_forbids_configured_fallback(pd, monkeypatch, tmp_path, capsys):
@@ -4454,7 +4477,7 @@ def test_cleanup_failure_forbids_configured_fallback(pd, monkeypatch, tmp_path, 
     conf = _fallback_conf()
     fake = _SequenceRun(
         {"returncode": 1, "stdout": "PARTIAL", "stderr": "cleanup failed",
-         "timed_out": False, pd.RUN_RESULT_CLEANUP_FAILED: True},
+         "timed_out": False, delegate_run_rules.RUN_RESULT_CLEANUP_FAILED: True},
         {"returncode": 0, "stdout": _claude_stdout("cleanup fallback"), "stderr": "",
          "timed_out": False},
     )
@@ -4494,10 +4517,10 @@ def test_dry_run_displays_configured_fallback_mapping(pd, monkeypatch, tmp_path,
 
 def test_help_documents_opt_in_claude_opus_fallback_example(pd):
     """운용 확정 조합은 채택자 예시로만 노출하고 엔진 런타임 기본값으로 만들지 않는다."""
-    help_text = pd.build_arg_parser().format_help()
+    help_text = delegate_cmd.build_arg_parser().format_help()
     assert "delegate.developer.fallback.harness=claude" in help_text
     assert "delegate.developer.fallback.model=opus" in help_text
-    assert pd.resolve_fallback({}, "developer", "normal") is None
+    assert delegate_config.resolve_fallback({}, "developer", "normal") is None
 
 
 def test_quota_failure_loud_fallback_and_reply_provenance(
@@ -4718,15 +4741,15 @@ def test_harness_timeout_budget_counts_opencode_retry_windows(pd, monkeypatch):
     분기) 실행 예산 = timeout + retries×min(창, timeout), 정리는 각 시도마다 10초다."""
     _FakeStallKnobs(retries=2,
                                                                    first_event_timeout=90.0).install(monkeypatch)
-    assert pd._harness_timeout_budget("codex", 600) == 610      # 단일 시도 정리 10초
-    assert pd._harness_timeout_budget("claude", 600) == 610
-    assert pd._harness_timeout_budget("opencode", 600) == 810   # 600 + 2×90 + 3×10
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", 600) == 610      # 단일 시도 정리 10초
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "claude", 600) == 610
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", 600) == 810   # 600 + 2×90 + 3×10
     # wall 이 첫-이벤트 창보다 짧으면 중복 호출 없이 첫 시도에서 끝난다.
-    assert pd._harness_timeout_budget("opencode", 30) == 40     # 30 + 단일 정리 10
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", 30) == 40     # 30 + 단일 정리 10
     # 노브를 못 읽으면 기본 최대 2회가 wall 전부를 쓰는 안전 상한으로 낮게 예고하지 않는다.
     monkeypatch.setattr(watchdog, "stall_retries_default",
                         lambda: (_ for _ in ()).throw(OSError("no knob")))
-    assert pd._harness_timeout_budget("opencode", 600) == 1830
+    assert delegate_env._harness_timeout_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "opencode", 600) == 1830
 
 
 def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch):
@@ -4734,28 +4757,28 @@ def test_max_declared_execution_path_budget_counts_both_attempts(pd, monkeypatch
     _FakeStallKnobs(
         retries=2, first_event_timeout=90.0).install(monkeypatch)
     # HARNESS_PROFILES 는 실 watchdog 선언을 그대로 쓴다.
-    assert pd.max_declared_execution_path_budget() == 2 * (14400 + 2 * 90 + 3 * 10)
+    assert delegate_env.max_declared_execution_path_budget(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE)) == 2 * (14400 + 2 * 90 + 3 * 10)
 
 
 def test_runtime_harness_cap_advisory_is_loud_for_existing_adopter(pd, monkeypatch):
     """engine.manifest 밖 기존 adapter 설정이 낮으면 실행 시 조용히 무력화되지 않는다."""
-    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 18220)
-    warning = pd.harness_cap_advisory({
+    monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 18220)
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {
         "CLAUDECODE": "1",
         "BASH_MAX_TIMEOUT_MS": "1800000",
     })
     assert warning is not None
     assert "1800s <" in warning and "부분 산출물 보존 전에" in warning
     assert "18230000ms" in warning
-    assert pd.harness_cap_advisory({
+    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {
         "CLAUDECODE": "1",
         "BASH_MAX_TIMEOUT_MS": "18230000",
     }) is None
 
 
 def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
-    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 18220)
-    warning = pd.harness_cap_advisory({"OPENCODE": "1"})
+    monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 18220)
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), {"OPENCODE": "1"})
     assert warning is not None
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS 미해소" in warning
 
@@ -4772,7 +4795,7 @@ def _harness_cap_pairs(pd, env):
     단언을 값으로 대조하기 위한 테스트 지역 조립이다.
     """
     cap_env = watchdog.HARNESS_CAP_ENV
-    return tuple((name, cap_env.get(name)) for name in pd._session_harnesses(env))
+    return tuple((name, cap_env.get(name)) for name in delegate_execute._session_harnesses(env))
 
 
 @pytest.mark.parametrize("key", ("OPENCODE_CONFIG", "CLAUDE_CONFIG_DIR",
@@ -4784,13 +4807,13 @@ def test_runtime_harness_cap_ignores_config_and_unmeasured_keys(pd, key):
 
 def test_runtime_harness_cap_warns_for_all_nested_session_axes(pd, monkeypatch):
     """둘 이상의 실측 세션이 겹치면 각 공개 상한을 모두 검사한다."""
-    monkeypatch.setattr(pd, "max_declared_execution_path_budget", lambda: 10)
+    monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 10)
     env = {"OPENCODE": "child", "CLAUDECODE": "parent"}
     assert _harness_cap_pairs(pd, env) == (
         ("claude", "BASH_MAX_TIMEOUT_MS"),
         ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
     )
-    warning = pd.harness_cap_advisory(env)
+    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), env)
     assert warning is not None
     assert warning.count("[pm-delegate] 경고:") == 2
     assert "BASH_MAX_TIMEOUT_MS" in warning
@@ -4812,7 +4835,7 @@ def test_runtime_harness_cap_unknown_marker_is_never_blocking(pd, monkeypatch):
     env = {"GEMINI_SESSION": "session"}
 
     assert _harness_cap_pairs(pd, env) == (("gemini", None),)
-    assert pd.harness_cap_advisory(env) is None
+    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), env) is None
 
 
 def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
@@ -4864,7 +4887,7 @@ def test_dry_run_reports_fallback_skip_reason(pd, monkeypatch, tmp_path, capsys)
 
 def test_help_documents_classification_coverage_boundary(pd):
     """§help가 3축 근거 편입과 opencode 무진단 침묵의 stall 경계를 함께 못박는다."""
-    help_text = pd.build_arg_parser().format_help()
+    help_text = delegate_cmd.build_arg_parser().format_help()
     assert "codex 실근거와 claude 2.1.220 실측/바이너리 enum" in help_text
     assert "opencode 1.18.4 provider passthrough 실측" in help_text
     assert "opencode 무진단 연결/fetch 침묵은 첫-이벤트 stall 축" in help_text
@@ -4886,7 +4909,7 @@ def test_fallback_is_documented_in_the_registry_not_seeded_into_conf(pd):
     assert spec.default is None, "폴백은 엔진 기본값을 갖지 않는다"
     board_source = (TOOLS / "board.py").read_text(encoding="utf-8")
     assert "delegate.developer.fallback." not in board_source, "init 시드에 폴백 예시 잔존"
-    assert pd.resolve_fallback({}, "developer", "normal") is None
+    assert delegate_config.resolve_fallback({}, "developer", "normal") is None
 
 
 def test_fallback_raw_points_back_to_primary_raw(pd, monkeypatch, tmp_path, capsys):
@@ -5036,7 +5059,6 @@ def _scope_workspace(
         encoding="utf-8",
     )
     monkeypatch.setattr(pd, "REPO", pm_home)
-    monkeypatch.setattr(pd, "BOARD_PY", TOOLS / "board.py")   # 실 엔진 board(ticket 조회)
     prompt = _write_prompt(workspace)                          # cwd 안(containment) · 캡처 전 존재
     return workspace, prompt
 
@@ -5154,7 +5176,7 @@ def test_adapter_edit_warns_even_when_ticket_touches_allow_it(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """핵심 실측: touches 안 어댑터 변경도 독립 축이 경고하고 rc는 바꾸지 않는다."""
-    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    adapter_root = tuple(pd._resolved_adapter_directories())[0]
     relative = f"{adapter_root}/settings/delegated.json"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{adapter_root}",),
@@ -5176,7 +5198,7 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """손상 ticket으로 touches 준비가 실패해도 캡처가 성공했으면 형제 어댑터 축은 경고한다."""
-    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    adapter_root = tuple(pd._resolved_adapter_directories())[0]
     relative = f"{adapter_root}/settings/corrupt-ticket.json"
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
     ticket_path = (
@@ -5221,7 +5243,7 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """sensitivity: touches 실패 시 audit 전체를 None으로 되돌리면 어댑터 경고 oracle이 red다."""
-    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    adapter_root = tuple(pd._resolved_adapter_directories())[0]
     relative = f"{adapter_root}/settings/coupled-regression.json"
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
     ticket_path = (
@@ -5240,15 +5262,15 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
         + _DESIGN_SECTION
     )
     ticket_path.write_text(corrupt_text, encoding="utf-8", newline="\n")
-    real_begin = pd.begin_scope_audit
+    real_begin = delegate_scope_audit.begin_scope_audit
 
-    def _coupled_begin(ticket, cwd, *, pm_root=None, adapter_roots=None):
+    def _coupled_begin(_home, ticket, cwd, *, pm_root=None, adapter_roots=None):
         audit = real_begin(
-            ticket, cwd, pm_root=pm_root, adapter_roots=adapter_roots,
+            _home, ticket, cwd, pm_root=pm_root, adapter_roots=adapter_roots,
         )
         return None if audit is not None and audit.touches is None else audit
 
-    monkeypatch.setattr(pd, "begin_scope_audit", _coupled_begin)
+    monkeypatch.setattr(delegate_scope_audit, "begin_scope_audit", _coupled_begin)
     fake = _WritingRun(workspace, ([relative], _ok_result()))
     rc = _run_main(
         pd, monkeypatch,
@@ -5267,7 +5289,7 @@ def test_adapter_axis_consumes_every_derived_registry_root(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """새 목록 없이 T-0521 파생의 모든 루트 전체(임의 하위 포함)를 경고 대상으로 삼는다."""
-    adapter_roots = tuple(pd.ADAPTER_DIRECTORIES)
+    adapter_roots = tuple(pd._resolved_adapter_directories())
     assert adapter_roots, "등록부 파생 루트 0이면 테스트가 vacuous"
     touches = tuple(f"work/demo_1/{root}" for root in adapter_roots)
     relatives = [f"{root}/arbitrary/deep/file.txt" for root in adapter_roots]
@@ -5372,7 +5394,7 @@ def test_adapter_root_snapshot_oracle_is_sensitive_to_postrun_registry_reread(
         return (registry_source.read_text(encoding="utf-8"),)
 
     monkeypatch.setattr(pd, "_adapter_directories_from_engine_source", _derive_registry)
-    real_adapter_paths = pd._adapter_edit_paths
+    real_adapter_paths = delegate_scope_audit._adapter_edit_paths
 
     def _lazy_adapter_paths(scope, before, after, *, workspace, roots):
         return real_adapter_paths(
@@ -5380,7 +5402,7 @@ def test_adapter_root_snapshot_oracle_is_sensitive_to_postrun_registry_reread(
             roots=pd._resolved_adapter_directories(),
         )
 
-    monkeypatch.setattr(pd, "_adapter_edit_paths", _lazy_adapter_paths)
+    monkeypatch.setattr(delegate_scope_audit, "_adapter_edit_paths", _lazy_adapter_paths)
     relative = f"{initial_root}/runtime/adapter.py"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{initial_root}",),
@@ -5412,7 +5434,7 @@ def test_adapter_axis_does_not_match_sibling_prefix(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """등록 루트 '전체'는 경로 경계 기준이며 이름만 비슷한 형제 디렉토리까지 넓히지 않는다."""
-    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    adapter_root = tuple(pd._resolved_adapter_directories())[0]
     sibling = f"{adapter_root}-backup"
     relative = f"{sibling}/settings.json"
     workspace, prompt = _scope_workspace(
@@ -5434,7 +5456,7 @@ def test_ticket_omitted_runs_both_policy_axes_for_adapter_edit(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """여집합: --ticket 생략도 새 축을 끄지 않고, 두 정책을 구분해 의도적으로 함께 보고한다."""
-    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    adapter_root = tuple(pd._resolved_adapter_directories())[0]
     relative = f"{adapter_root}/settings.json"
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
     fake = _WritingRun(workspace, ([relative], _ok_result()))
@@ -5477,12 +5499,12 @@ def test_adapter_warning_oracle_is_sensitive_when_axis_is_removed(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """축 formatter를 되돌린 형상에서는 핵심 oracle이 red임을 기계적으로 입증한다."""
-    adapter_root = tuple(pd.ADAPTER_DIRECTORIES)[0]
+    adapter_root = tuple(pd._resolved_adapter_directories())[0]
     relative = f"{adapter_root}/settings.json"
     workspace, prompt = _scope_workspace(
         tmp_path, monkeypatch, pd, touches=(f"work/demo_1/{adapter_root}",),
     )
-    monkeypatch.setattr(pd, "_format_adapter_edit_warning", lambda _paths: "")
+    monkeypatch.setattr(delegate_scope_audit, "_format_adapter_edit_warning", lambda _paths: "")
     fake = _WritingRun(workspace, ([relative], _ok_result()))
     rc = _run_main(
         pd, monkeypatch,
@@ -5544,7 +5566,7 @@ def test_dry_run_skips_scope_audit(pd, monkeypatch, tmp_path, capsys):
     """미리보기는 아무것도 실행하지 않는다 — 캡처/판정도 발화하지 않는다."""
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
     loader = _ExplodingLoader()
-    monkeypatch.setattr(pd, "_load_delegate_scope", loader)
+    monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", loader)
     rc = _run_main(
         pd, monkeypatch,
         ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
@@ -5559,10 +5581,10 @@ def test_scope_audit_prep_failure_is_nonblocking(pd, monkeypatch, tmp_path, caps
     """판정 **준비** 실패(board/git 불능)는 loud 1줄 + 위임 정상 진행(비차단 보험)."""
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
 
-    def _boom():
+    def _boom(_workspace):
         raise RuntimeError("delegate_scope 로드 불가")
 
-    monkeypatch.setattr(pd, "_load_delegate_scope", _boom)
+    monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", _boom)
     fake = _WritingRun(workspace, (["stray/ignored.txt"], _ok_result()))
     rc = _run_main(
         pd, monkeypatch,
@@ -5580,7 +5602,6 @@ def test_scope_audit_prep_failure_is_nonblocking(pd, monkeypatch, tmp_path, caps
 def test_scope_audit_report_failure_is_nonblocking(pd, monkeypatch, tmp_path, capsys):
     """회수 시점 판정 실패도 rc/reply 를 바꾸지 않는다(traceback 금지·loud 1줄)."""
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
-    real_scope = _load("delegate_scope_probe", TOOLS / "delegate_scope.py")
 
     class _FlakyScope:
         """첫 캡처(위임 전)는 성공, 두 번째(회수 시)는 실패하는 판정 모듈 대역."""
@@ -5603,10 +5624,10 @@ def test_scope_audit_report_failure_is_nonblocking(pd, monkeypatch, tmp_path, ca
         def capture_worktree_state(self, *a, **k):
             self.captures += 1
             if self.captures > 1:
-                raise real_scope.DelegateScopeError("git status 실패(rc=128)")
-            return real_scope.WorktreeState(())
+                raise delegate_scope_rules.DelegateScopeError("git status 실패(rc=128)")
+            return delegate_scope_rules.WorktreeState(())
 
-    monkeypatch.setattr(pd, "_load_delegate_scope", _FlakyScope)
+    monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", _FlakyScope().capture_worktree_state)
     fake = _WritingRun(workspace, (["stray/whatever.txt"], _ok_result()))
     rc = _run_main(
         pd, monkeypatch,
@@ -5686,9 +5707,7 @@ def test_commit_during_delegation_is_loud_and_audited(pd, monkeypatch, tmp_path,
 def test_content_signal_degradation_is_announced(pd, monkeypatch, tmp_path, capsys):
     """해시 보강이 전량 실패하면 감지력 축소를 알린다(조용한 강등 금지)."""
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
-    scope_module = _load("delegate_scope_degraded", TOOLS / "delegate_scope.py")
-    monkeypatch.setattr(scope_module, "_hash_object", lambda *a, **k: None)
-    monkeypatch.setattr(pd, "_load_delegate_scope", lambda: scope_module)
+    monkeypatch.setattr(delegate_scope_git, '_hash_object', lambda *a, **k: None)
     fake = _WritingRun(workspace, (["src/impl.py"], _ok_result()))
     rc = _run_main(
         pd, monkeypatch,
@@ -5722,10 +5741,9 @@ def test_other_slot_touch_item_is_dropped_loudly_not_fatal(pd, monkeypatch, tmp_
 
 def test_write_roles_single_source_matches_detector_default(pd):
     """쓰기 역할집합 이중 정의 방지 — 감지기 기본값과 위임 엔진 값이 같아야 한다."""
-    scope = _load("delegate_scope_roles", TOOLS / "delegate_scope.py")
-    assert scope.WRITE_ROLES == pd.WRITE_ROLES
+    assert delegate_scope_git.delegate_run_rules.WRITE_ROLES == delegate_run_rules.WRITE_ROLES
     # 역할 축은 write/read 2분할이 전부 — 새 역할이 생기면 read(허용 0) 쪽 기본값이 된다.
-    assert pd.WRITE_ROLES | pd.READ_ROLES == frozenset(conf_schema.ROLE_CHOICES)
+    assert delegate_run_rules.WRITE_ROLES | delegate_run_rules.READ_ROLES == frozenset(conf_schema.ROLE_CHOICES)
 
 
 def test_midrun_io_error_does_not_fallback(pd, monkeypatch, tmp_path, capsys):
@@ -5755,17 +5773,17 @@ def test_midrun_io_error_does_not_fallback(pd, monkeypatch, tmp_path, capsys):
 
 def test_midrun_io_error_result_carries_no_launch_signal(pd):
     """정규화 결과 자체에 분류 신호가 없어야 폴백 대상에서 빠진다(분류기 계약)."""
-    result = pd._midrun_failure_result("codex", OSError(32, "Broken pipe"))
-    assert pd.RUN_RESULT_LAUNCH_FAILED not in result
-    assert pd.classify_infrastructure_failure(result) is None
+    result = delegate_run._midrun_failure_result("codex", OSError(32, "Broken pipe"))
+    assert delegate_run_rules.RUN_RESULT_LAUNCH_FAILED not in result
+    assert delegate_run.classify_infrastructure_failure(result) is None
 
 
 @pytest.mark.parametrize("exc", [FileNotFoundError(2, "no binary"), PermissionError(13, "denied")])
 def test_spawn_stage_errors_still_classified_as_launch(pd, exc):
     """스폰 단계(바이너리 부재·실행 권한)는 여전히 launch 실패 — 폴백 대상이다."""
-    assert pd.classify_infrastructure_failure(
-        pd._launch_failure_result("codex", exc)) == pd.FAILURE_CLASS_LAUNCH
-    assert isinstance(exc, pd._LAUNCH_STAGE_ERRORS)
+    assert delegate_run.classify_infrastructure_failure(
+        delegate_run._launch_failure_result("codex", exc)) == delegate_run_rules.FAILURE_CLASS_LAUNCH
+    assert isinstance(exc, delegate_run._LAUNCH_STAGE_ERRORS)
 
 
 def test_default_run_fn_midrun_oserror_is_not_launch(pd, monkeypatch):
@@ -5775,16 +5793,16 @@ def test_default_run_fn_midrun_oserror_is_not_launch(pd, monkeypatch):
     잡아 kill 후 재전파한다(tests/test_idle_progress_watchdog.py 가 단언)."""
     broken = OSError(32, "Broken pipe")
     _FakeRelayWatchdog(broken).install(monkeypatch)
-    res = pd._default_run_fn(["codex"], stdin_text="x", cwd="/tmp", env={}, timeout=5,
+    res = delegate_run._default_run_fn(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), ["codex"], stdin_text="x", cwd="/tmp", env={}, timeout=5,
                              harness="codex")
-    assert res["returncode"] == 1 and pd.RUN_RESULT_LAUNCH_FAILED not in res
-    assert pd.classify_infrastructure_failure(res) is None
+    assert res["returncode"] == 1 and delegate_run_rules.RUN_RESULT_LAUNCH_FAILED not in res
+    assert delegate_run.classify_infrastructure_failure(res) is None
 
 
 def test_help_documents_ticket_scope_flag(pd):
     """ticket 범위 판정·생략 의미와 리뷰 역할의 묶음 단위를 §help가 알린다."""
     # argparse 가 줄바꿈하므로 wrap 에 안전한 토큰으로 본다.
-    help_text = " ".join(pd.build_arg_parser().format_help().split())
+    help_text = " ".join(delegate_cmd.build_arg_parser().format_help().split())
     assert "--ticket T-NNNN" in help_text
     assert "범위 밖 변경을 경고 판정" in help_text
     assert "생략 시 허용 경로 0" in help_text
@@ -5793,7 +5811,7 @@ def test_help_documents_ticket_scope_flag(pd):
 
 def test_code_reviewer_requires_the_cluster(pd, monkeypatch, tmp_path, capsys):
     """리뷰 단위는 묶음이다 — `--cluster` 없는 code-reviewer 호출은 사용 오류(rc 2)다."""
-    monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf(**{
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf(**{
         "delegate.code-reviewer.harness": "codex",
         "delegate.code-reviewer.model": "gpt-r",
     }))
@@ -5825,7 +5843,7 @@ def test_native_advisory_accepts_measured_codex_markers(pd, monkeypatch, key):
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "session-marker")
 
-    assert pd.native_advisory("codex", "developer") is not None
+    assert delegate_execute.native_advisory("codex", "developer") is not None
 
 
 def test_native_advisory_claude_survives_opencode_config_dir(pd, monkeypatch):
@@ -5834,8 +5852,8 @@ def test_native_advisory_claude_survives_opencode_config_dir(pd, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "session-marker")
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/user-config/opencode")
 
-    assert pd.native_advisory("claude", "developer") is not None
-    assert pd.native_advisory("opencode", "developer") is None
+    assert delegate_execute.native_advisory("claude", "developer") is not None
+    assert delegate_execute.native_advisory("opencode", "developer") is None
 
 
 @pytest.mark.parametrize("key", ("CLAUDE_CONFIG_DIR", "OPENCODE_CONFIG",
@@ -5845,9 +5863,9 @@ def test_native_advisory_ignores_config_and_unmeasured_keys(pd, monkeypatch, key
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "configured")
 
-    assert pd.native_advisory("codex", "developer") is None
-    assert pd.native_advisory("claude", "developer") is None
-    assert pd.native_advisory("opencode", "developer") is None
+    assert delegate_execute.native_advisory("codex", "developer") is None
+    assert delegate_execute.native_advisory("claude", "developer") is None
+    assert delegate_execute.native_advisory("opencode", "developer") is None
 
 
 @pytest.mark.parametrize("key", ("OPENCODE", "OPENCODE_PID"))
@@ -5856,7 +5874,7 @@ def test_native_advisory_accepts_measured_opencode_markers(pd, monkeypatch, key)
     _clear_native_advisory_env(monkeypatch)
     monkeypatch.setenv(key, "opencode-session")
 
-    assert pd.native_advisory("opencode", "developer") is not None
+    assert delegate_execute.native_advisory("opencode", "developer") is not None
 
 
 def test_native_advisory_nested_claude_opencode_is_ambiguous(pd, monkeypatch):
@@ -5865,8 +5883,8 @@ def test_native_advisory_nested_claude_opencode_is_ambiguous(pd, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "claude-parent")
     monkeypatch.setenv("OPENCODE", "opencode-child")
 
-    assert pd.native_advisory("claude", "developer") is None
-    assert pd.native_advisory("opencode", "developer") is None
+    assert delegate_execute.native_advisory("claude", "developer") is None
+    assert delegate_execute.native_advisory("opencode", "developer") is None
 
 
 def test_native_advisory_multiple_harness_markers_are_ambiguous(pd, monkeypatch):
@@ -5875,16 +5893,16 @@ def test_native_advisory_multiple_harness_markers_are_ambiguous(pd, monkeypatch)
     monkeypatch.setenv("CODEX_THREAD_ID", "codex-session")
     monkeypatch.setenv("CLAUDECODE", "claude-session")
 
-    assert pd.native_advisory("codex", "developer") is None
-    assert pd.native_advisory("claude", "developer") is None
+    assert delegate_execute.native_advisory("codex", "developer") is None
+    assert delegate_execute.native_advisory("claude", "developer") is None
 
 
 def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
     """공개 하네스 도메인 밖 값과 미지정 값은 native 안내 대상이 아니다."""
     _clear_native_advisory_env(monkeypatch)
 
-    assert pd.native_advisory("gemini", "developer") is None
-    assert pd.native_advisory(None, "developer") is None
+    assert delegate_execute.native_advisory("gemini", "developer") is None
+    assert delegate_execute.native_advisory(None, "developer") is None
 
 
 def test_native_advisory_applies_to_the_review_role(pd, monkeypatch):
@@ -5893,7 +5911,7 @@ def test_native_advisory_applies_to_the_review_role(pd, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "1")
 
     for role in (review_form.INTERNAL_REVIEW_ROLE, "developer", "architect", "researcher"):
-        advisory = pd.native_advisory("claude", role)
+        advisory = delegate_execute.native_advisory("claude", role)
         assert advisory is not None, role
         assert "설계·구현·리뷰·조사는 native 위임이 규칙" in advisory, role
         assert "엔진" not in advisory and "더 저렴" not in advisory, role
@@ -5907,25 +5925,25 @@ def test_ticket_prepare_rejects_review_role_on_a_ticket(pd, monkeypatch, tmp_pat
     _clear_native_advisory_env(monkeypatch)
     slot = tmp_path / "slot"
     slot.mkdir()
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: tmp_path / "pm")
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: tmp_path / "pm")
     prepared_roles: list[str] = []
 
-    def _prepare(**kwargs):
+    def _prepare(_home, **kwargs):
         prepared_roles.append(kwargs["role"])
-        return pd.TicketCopyPlan(
+        return delegate_rounds.TicketCopyPlan(
             slot / "01-developer.md", slot, "T-7807", kwargs["role"], 1,
             tmp_path / "pm" / "01-developer.md", "a" * 32, "",
         )
 
-    monkeypatch.setattr(pd, "prepare_ticket_copy", _prepare)
+    monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", _prepare)
 
-    assert pd._cmd_ticket([
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
-    ]) == 0
+    ], adapter_roots = pd._resolved_adapter_directories()) == 0
     with pytest.raises(SystemExit) as exc:
-        pd._cmd_ticket([
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
             "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-        ])
+        ], adapter_roots = pd._resolved_adapter_directories())
     assert exc.value.code == 2
     assert prepared_roles == ["developer"]
 
@@ -5970,7 +5988,7 @@ def _seed_t0650_raw(
     raw_path = output_dir / f"seed_{role}_{abs(started_offset_sec)}_{len(reply)}.txt"
     stdout = _t0650_codex_stdout(session_id, reply)
     raw_path.write_text(
-        pd._format_meta(
+        delegate_config._format_meta(
             ["codex", "exec", "--json"], 0, "codex", "gpt-x", 0.1,
             stdout, "", attempt="primary",
         ),
@@ -5978,14 +5996,14 @@ def _seed_t0650_raw(
     )
     record_id = raw_output.start_raw_record(
         output_dir / "raw_outputs.json",
-        surface=pd.DELEGATE_RAW_SURFACE,
+        surface=delegate_run_rules.DELEGATE_RAW_SURFACE,
         harness="codex",
         model="gpt-x",
         role=role,
         raw_path=raw_path,
         attempt="primary",
         now=started,
-        extra={pd.RESUME_FIELD_TICKET: ticket},
+        extra={delegate_run_rules.RESUME_FIELD_TICKET: ticket},
     )
     if completed:
         raw_output.finish_raw_record(
@@ -5996,8 +6014,8 @@ def _seed_t0650_raw(
             silence_sec=None,
             now=started + _datetime.timedelta(seconds=1),
             extra={
-                pd.RESUME_FIELD_SESSION_ID: session_id,
-                pd.RESUME_FIELD_REPLY_EXTRACTED: True,
+                delegate_run_rules.RESUME_FIELD_SESSION_ID: session_id,
+                delegate_run_rules.RESUME_FIELD_REPLY_EXTRACTED: True,
             },
         )
     return record_id, raw_path
@@ -6006,13 +6024,13 @@ def _seed_t0650_raw(
 def test_t0650_stage_exit_regression_scope_is_only_in_developer_preamble(pd):
     """stage-exit full은 실행·기록 책임이 있는 developer/fix에만 주입된다."""
     directories = (".claude", ".opencode", ".codex", ".agents")
-    developer = pd._role_preamble("developer", directories)
-    reviewer = pd._role_preamble("code-reviewer", directories)
-    assert pd.REGRESSION_SCOPE_PREAMBLE in developer
+    developer = delegate_prompt._role_preamble("developer", directories)
+    reviewer = delegate_prompt._role_preamble("code-reviewer", directories)
+    assert delegate_prompt_rules.REGRESSION_SCOPE_PREAMBLE in developer
     assert "targeted tests" in developer
     assert "프로젝트 `test_cmd`" in developer
     assert "`rc=0`" in developer
-    assert pd.REGRESSION_SCOPE_PREAMBLE not in reviewer
+    assert delegate_prompt_rules.REGRESSION_SCOPE_PREAMBLE not in reviewer
 
 
 @pytest.mark.parametrize(
@@ -6037,8 +6055,8 @@ def test_t0650_cold_guard_uses_real_ledger_shapes(
         output_dir.mkdir()
         (output_dir / "raw_outputs.json").write_text("{broken", encoding="utf-8")
 
-    record = pd.cold_reinjection_record(
-        _T0650_TICKET, "developer", output_dir,
+    record = delegate_raw.cold_reinjection_record(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), _T0650_TICKET, "developer", output_dir,
     )
     captured = capsys.readouterr()
     assert (record is not None) is blocked
@@ -6096,7 +6114,7 @@ def test_t0650_cold_write_role_matrix_uses_real_ledger(
     if fresh_reason is not None:
         rows = raw_output.raw_records(output_dir / "raw_outputs.json")
         assert sum(
-            row.get(pd.FRESH_REASON_FIELD) == fresh_reason for row in rows
+            row.get(delegate_run_rules.FRESH_REASON_FIELD) == fresh_reason for row in rows
         ) == 1
 
 
@@ -6120,7 +6138,7 @@ def test_t0650_cold_dry_run_bypasses_completed_write_record(
 
 def test_t0650_cold_rejection_omits_resume_for_unsupported_harness(pd):
     """[R] 처방은 선언표 capability를 읽어 opencode에는 fresh 사유만 요구한다."""
-    message = pd.cold_reinjection_rejection(
+    message = delegate_raw.cold_reinjection_rejection(
         _T0650_TICKET, "developer", "opencode", {"id": "record-1"},
     )
     assert "--resume-from" not in message
@@ -6154,12 +6172,12 @@ def test_t0650_attach_raw_selects_latest_completed_and_preserves_reply_in_prompt
     )
     assert rc == 0
     sent = fake.calls[0]["stdin_text"]
-    assert pd.ATTACH_RAW_SECTION_TITLE in sent
+    assert delegate_run_rules.ATTACH_RAW_SECTION_TITLE in sent
     assert sent.endswith(exact_reply)
     assert sent.count(exact_reply) == 1
     assert "오래된 보고" not in sent
-    assert pd.resolve_attached_raw(
-        latest_id, output_dir=output_dir,
+    assert delegate_raw.resolve_attached_raw(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), latest_id, output_dir=output_dir,
     ).reply == exact_reply
 
 
@@ -6170,7 +6188,7 @@ def test_additional_reviewer_raw_answer_accepts_new_and_legacy_header(pd, prefix
         "# reviewer: claude\n\n"
         "판정: 통과\n\n[stderr]\nprogress\n"
     )
-    assert pd._additional_reviewer_raw_answer(content) == "판정: 통과\n"
+    assert delegate_run_rules._additional_reviewer_raw_answer(content) == "판정: 통과\n"
 
 
 @pytest.mark.parametrize("selector_kind", ["missing", "unfinished"])
@@ -6251,7 +6269,7 @@ def test_t0650_codex_resume_capability_and_argv_are_measured_contract(pd):
     assert contract.HARNESS_RESUME_SUPPORT == {
         "claude": True, "codex": True, "opencode": False,
     }
-    argv = pd.build_codex_argv(
+    argv = contract.build_codex_argv(
         "gpt-x", "high", "developer", "/workspace", _T0650_SESSION,
     )
     assert argv[:5] == ["codex", "-a", "never", "-s", "workspace-write"]
@@ -6304,8 +6322,8 @@ def test_t0650_codex_0147_missing_rollout_reruns_fresh_for_write_and_read(
     )
     err = capsys.readouterr().err
 
-    assert pd.is_resume_session_missing(missing_result) is True
-    assert pd.is_resume_session_missing({
+    assert delegate_run.is_resume_session_missing(missing_result) is True
+    assert delegate_run.is_resume_session_missing({
         **missing_result,
         "stderr": "Error: no rollout found for thread id 12345678-1234-4234-8234-123456789abc (code -32601)",
     }) is False
@@ -6360,7 +6378,7 @@ def test_t0650_codex_rc0_session_id_mismatch_still_blocks_write_fresh(
 def test_t0650_live_codex_exec_resume_json_round_trip(pd, tmp_path):
     """[C] opt-in 라이브: fresh exec의 thread id를 exec resume --json으로 이어받는다."""
     fresh = subprocess.run(
-        pd.build_codex_argv("", None, "researcher", str(tmp_path)),
+        contract.build_codex_argv("", None, "researcher", str(tmp_path)),
         input="Reply with only T0650_LIVE_CODE.",
         text=True,
         capture_output=True,
@@ -6374,7 +6392,7 @@ def test_t0650_live_codex_exec_resume_json_round_trip(pd, tmp_path):
     assert session_id and "T0650_LIVE_CODE" in (first_reply or "")
 
     resumed = subprocess.run(
-        pd.build_codex_argv("", None, "researcher", str(tmp_path), session_id),
+        contract.build_codex_argv("", None, "researcher", str(tmp_path), session_id),
         input="Reply with only the code from the previous turn.",
         text=True,
         capture_output=True,

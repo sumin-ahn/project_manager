@@ -5,6 +5,17 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_run
+from pm_engine.app import reviewer_scope
+import pm_engine.domain.reviewer_prompt
+
+from pm_engine.domain import reviewer_budget
+from pm_engine.infra import round_store
+
+from pm_engine.infra import conf_store
+
 import importlib.util
 from pathlib import Path
 
@@ -85,11 +96,11 @@ def _round_text(role: str, marker: str) -> str:
 
 def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=None):
     monkeypatch.setattr(external, "REPO", tmp_path)
-    monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {**_REVIEWER_TARGET, **(conf or {})})
+    monkeypatch.setattr(conf_store, 'local_config',
+                        lambda _home, repo=None: {**_REVIEWER_TARGET, **(conf or {})})
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *args, **kwargs: review_diff.ReviewDiff(
             DIFF,
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -99,12 +110,12 @@ def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=N
     )
     if ticket is not None:
         monkeypatch.setattr(
-            external, "_find_ticket_file", lambda ticket_id, pm_home=None: ticket,
+            round_store, "_find_ticket_file", lambda _home, ticket_id, pm_home=None: ticket,
         )
 
 
 def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
-    def _run_review(prompt, *args, **kwargs):
+    def _run_review(_home, prompt, *args, **kwargs):
         prompts.append(prompt)
         return {
             "reviewer": "fixture", "ok": True, "output": "판정: 통과",
@@ -113,11 +124,11 @@ def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "run_review", _run_review)
+    monkeypatch.setattr(reviewer_run, "run_review", _run_review)
     # 이 파일은 프롬프트 입력 축(T-0695)을 소유한다. 산출 회수(T-0696)는 실 board 왕복이 필요한
     # 별도 축이라 tests/test_additional_reviewer_ticket_harvest.py가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
-        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_harvest, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
 
 
@@ -227,7 +238,7 @@ def test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam(
 ):
     _wire(external, monkeypatch, tmp_path)
     monkeypatch.setattr(
-        external, "parse_ticket_touches", lambda ticket_id, pm_home=None: ["x.py"],
+        round_store, "parse_ticket_touches", lambda _home, ticket_id, pm_home=None: ["x.py"],
     )
 
     assert external.main(["--ticket", "T-fixture", "--dry-run"]) == 0
@@ -255,12 +266,13 @@ def test_review_context_always_declares_ticket_decisions_authoritative(
     external, monkeypatch, tmp_path,
 ):
     phrase = "티켓 §결정·§설계·PM 판정 블록은 **권위 있는 확정 사항**"
-    assert phrase in external._DEFAULT_CONTEXT_HEADER
+    assert phrase in reviewer_budget._DEFAULT_CONTEXT_HEADER
 
-    overlay = tmp_path / "review_context.local.md"
+    home = pm_paths.home_at(tmp_path / "code", pm_home=tmp_path / "owner")
+    home.local_dir.parent.mkdir(parents=True)
+    overlay = home.local_dir.parent / "review_context.local.md"
     overlay.write_text("# 프로젝트 전용 맥락\n", encoding="utf-8")
-    monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", overlay)
-    loaded = external._load_review_context()
+    loaded = round_store._load_review_context(home)
     assert "# 프로젝트 전용 맥락" in loaded
     assert phrase in loaded
     assert "design-proposal" in loaded
@@ -280,8 +292,8 @@ def test_ticket_body_real_board_lookup_is_exact_across_status_dirs(
         encoding="utf-8",
     )
 
-    body = external._load_ticket_text_and_body(
-        external._find_ticket_file("T-9001", pm_home=tmp_path))[1]
+    body = round_store._load_ticket_text_and_body(
+        round_store._find_ticket_file(pm_paths.home_at(Path(tmp_path).resolve()), "T-9001", ))[1]
     assert "정확 티켓 본문" in body
     assert "충돌 티켓 본문" not in body
 
@@ -301,20 +313,20 @@ def test_ticket_and_cross_repo_paths_load_body_from_selected_pm_home(
         _ticket(tickets / "claimed" / "T-9001-cross.md", body=body)
 
     monkeypatch.setattr(external, "REPO", engine_home)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(_REVIEWER_TARGET))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo",
         lambda anchor, **kwargs: (
             engine_home if Path(anchor).resolve() == engine_home.resolve() else selected_home
         ),
     )
-    monkeypatch.setattr(external, "_resolve_diff_root", lambda *args, **kwargs: selected_home)
+    monkeypatch.setattr(reviewer_scope, "_resolve_diff_root", lambda *args, **kwargs: selected_home)
     monkeypatch.setattr(
-        external, "_normalize_review_paths", lambda *args, **kwargs: ("x.py",),
+        reviewer_scope, "_normalize_review_paths", lambda *args, **kwargs: ("x.py",),
     )
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *args, **kwargs: review_diff.ReviewDiff(
             DIFF,
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -337,13 +349,13 @@ def test_unterminated_frontmatter_fails_loud_for_body_and_touches(
     broken = tmp_path / "T-9001-broken.md"
     broken.write_text("---\nid: T-9001\ntouches:\n- x.py\n", encoding="utf-8")
     monkeypatch.setattr(
-        external, "_find_ticket_file", lambda ticket_id, pm_home=None: broken,
+        round_store, "_find_ticket_file", lambda _home, ticket_id, pm_home=None: broken,
     )
 
     with pytest.raises(pm_paths.AnchorResolutionError, match="frontmatter가 닫히지"):
-        external._load_ticket_text_and_body(broken)
+        round_store._load_ticket_text_and_body(broken)
     with pytest.raises(pm_paths.AnchorResolutionError, match="frontmatter가 닫히지"):
-        external._parse_touches_from_file(broken)
+        round_store._parse_touches_from_file(broken)
 
 
 # ── [[ADR-0090]] — 입력 선별 (명세 전량 · 역할별 마지막 라운드 파일) ────────────────
@@ -478,8 +490,8 @@ def test_select_ticket_body_for_review_is_pure_and_deterministic(
         )
         for ordinal in (1, 2)
     ]
-    first = external._select_ticket_body_for_review(SPEC_BODY, rounds)
-    second = external._select_ticket_body_for_review(SPEC_BODY, rounds)
+    first = pm_engine.domain.reviewer_prompt._select_ticket_body_for_review(SPEC_BODY, rounds)
+    second = pm_engine.domain.reviewer_prompt._select_ticket_body_for_review(SPEC_BODY, rounds)
     assert first == second
     assert first.omitted_rounds == 1
     assert "라운드1 본문" not in first.text

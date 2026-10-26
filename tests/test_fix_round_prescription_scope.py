@@ -1,6 +1,10 @@
 """fix 라운드 delta 꼬리 제약 블록 — 부착·복제 0·전달 지시 파리티 문면 가드."""
 from __future__ import annotations
 
+from pm_engine.domain import review_contract
+
+from pm_engine.domain import delegate_prompt_rules
+
 import importlib.util
 import json
 from pathlib import Path
@@ -117,14 +121,14 @@ def test_notice_attaches_once_at_tail_for_accepted_delta(pd):
     disposition = _disposition(pd)
     delta = _delta(pd, [(finding, disposition)])
 
-    rendered = pd.render_pm_review_delta("T-TEST", delta)
+    rendered = review_contract.render_pm_review_delta("T-TEST", delta)
 
     assert rendered.startswith("## PM 승인 리뷰 delta — T-TEST")
-    assert pd.PM_REVIEW_FIX_SCOPE_NOTICE in rendered
-    assert rendered.count(pd.PM_REVIEW_FIX_SCOPE_NOTICE) == 1
-    assert rendered.rstrip().endswith(pd.PM_REVIEW_FIX_SCOPE_NOTICE.rstrip())
+    assert delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE in rendered
+    assert rendered.count(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE) == 1
+    assert rendered.rstrip().endswith(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE.rstrip())
     finding_index = rendered.index(f"### {finding.id}")
-    notice_index = rendered.index(pd.PM_REVIEW_FIX_SCOPE_NOTICE)
+    notice_index = rendered.index(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE)
     assert finding_index < notice_index
 
 
@@ -138,10 +142,10 @@ def test_notice_attaches_once_regardless_of_finding_count(pd):
     ]
     delta = _delta(pd, pairs)
 
-    rendered = pd.render_pm_review_delta("T-TEST", delta)
+    rendered = review_contract.render_pm_review_delta("T-TEST", delta)
 
     assert "F-001" in rendered and "F-002" in rendered
-    assert rendered.count(pd.PM_REVIEW_FIX_SCOPE_NOTICE) == 1
+    assert rendered.count(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE) == 1
 
 
 # --- 3. 빈 출력 3경로 — accepted 0 · finding-zero · confirmation resolved 소진 --
@@ -150,7 +154,7 @@ def test_notice_attaches_once_regardless_of_finding_count(pd):
 @pytest.mark.parametrize("finding_zero", [False, True])
 def test_empty_accepted_delta_stays_empty(pd, finding_zero):
     delta = _delta(pd, [], finding_zero=finding_zero)
-    assert pd.render_pm_review_delta("T-TEST", delta) == ""
+    assert review_contract.render_pm_review_delta("T-TEST", delta) == ""
 
 
 def test_confirmation_resolved_exhaustion_stays_empty(pd):
@@ -212,14 +216,14 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
     delta = review_state.parse_pm_review_delta(spec, [first, resolved])
 
     assert delta.accepted == ()
-    assert pd.render_pm_review_delta("T-TEST", delta) == ""
+    assert review_contract.render_pm_review_delta("T-TEST", delta) == ""
 
 
 # --- 4. 내용 계약(비-vacuous) — 개념 토큰 -------------------------------------
 
 
 def test_notice_content_holds_scope_gap_success_report_concepts(pd):
-    notice = pd.PM_REVIEW_FIX_SCOPE_NOTICE
+    notice = delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE
     missing = [
         name for name, groups in CONTENT_CONCEPTS.items()
         if not all(any(term in notice for term in alternatives) for alternatives in groups)
@@ -241,7 +245,7 @@ def _notice_lines(pd_module) -> list[str]:
     return [
         normalized
         for normalized in (
-            _normalize_line(line) for line in pd_module.PM_REVIEW_FIX_SCOPE_NOTICE.splitlines()
+            _normalize_line(line) for line in delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE.splitlines()
         )
         if len(normalized) >= MIN_DUPLICATE_LINE_LENGTH
     ]

@@ -22,6 +22,22 @@
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+from pm_engine.infra import review_diff
+from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_prompt
+from pm_engine.app import reviewer_run
+from pm_engine.infra import round_store
+
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_prepare
+from pm_engine.app import delegate_scope_audit
+
+from pm_engine.infra import conf_store
+from pm_engine.domain import delegate_run_rules
+from pm_engine.domain import reviewer_result
+
 from pm_engine.app import round_maintenance
 
 
@@ -115,7 +131,7 @@ def _fixture_board(pd, pm_home: Path, sync_log: list, monkeypatch):
         return True
 
     round_maintenance._rounds_mutation_sync_paths = _sync
-    monkeypatch.setattr(board_dashboard, 'refresh_board', lambda _home,  *args, **kwargs: None)
+    monkeypatch.setattr(board_dashboard, 'refresh_board', lambda *args, **kwargs: None)
     return board
 
 
@@ -214,9 +230,8 @@ def _ledger_rows(pm_home: Path) -> list[dict]:
 
 
 def _prepare(pd, pm_home: Path, slot: Path, ticket: str, role: str):
-    return pd.prepare_ticket_copy(
-        ticket=ticket, role=role, cwd=slot, pm_home=pm_home,
-    )
+    return delegate_prepare.prepare_ticket_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), ticket=ticket, role=role, cwd=slot, )
 
 
 def _land(pd, pm_home: Path, slot: Path, plan) -> None:
@@ -366,16 +381,16 @@ def test_ticket_prepare_cli_refuses_the_review_role_without_a_round(
     """
     pm_home, slot, tickets, _board = rounds_env
     _write_spec(tickets, "T-7807", rounds=("developer", "code-reviewer"))
-    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
-    assert pd._cmd_ticket([
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
-    ]) == 0
+    ], adapter_roots = pd._resolved_adapter_directories()) == 0
     capsys.readouterr()
 
     with pytest.raises(SystemExit) as exc:
-        pd._cmd_ticket([
+        delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), [
             "prepare", "--ticket", "T-7807", "--role", "code-reviewer", "--cwd", str(slot),
-        ])
+        ], adapter_roots = pd._resolved_adapter_directories())
 
     assert exc.value.code == 2
     assert sorted(path.name for path in _rounds_dir(pm_home, "T-7807").iterdir()) == [
@@ -406,15 +421,13 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
     (slot / "tracked.txt").write_text("seed\nreview\n", encoding="utf-8", newline="\n")
     assert _git(slot, "commit", "-qam", "review target").returncode == 0
 
-    external = pd._load_additional_reviewer()
-    monkeypatch.setattr(external, "repo_root_from_cwd", lambda _cwd: slot)
+    monkeypatch.setattr(pm_paths, 'repo_root_from_cwd', lambda _cwd: slot)
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda *_a, **_kw: pm_home)
-    monkeypatch.setattr(external, "_owns_real_board", lambda _path: False)
-    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: external)
-    monkeypatch.setattr(pd, "local_config", lambda: {pd.DELEGATE_ENABLED_KEY: "true"})
+    monkeypatch.setattr(pm_paths, '_owns_real_board', lambda _path: False)
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: {delegate_run_rules.DELEGATE_ENABLED_KEY: "true"})
     # 범위 감사는 이 진입점 판정과 독립 축이다(전용 회귀가 소유) — 여기서 죽이면 준비/예약/장부
     # 축만 남는다.
-    monkeypatch.setattr(pd, "begin_scope_audit", lambda *_a, **_kw: None)
+    monkeypatch.setattr(delegate_scope_audit, "begin_scope_audit", lambda *_a, **_kw: None)
 
     class _FakeRun:
         """`run_fn` seam — 실제 하네스는 절대 스폰하지 않는다(로컬 가짜 경계)."""
@@ -515,9 +528,8 @@ def test_seed_judgment_consumes_the_harvest_seed_comparison(pd, rounds_env, caps
     developer = _prepare(pd, pm_home, slot, "T-7811", "developer")
 
     # 회수면: 손대지 않은 산출 → board 미변경(= 시드 그대로).
-    unchanged = pd.harvest_ticket_copy(
-        copy_path=developer.path, cwd=slot, pm_home=pm_home,
-    )
+    unchanged = delegate_harvest.harvest_ticket_copy(
+        pm_paths.home_at(Path(pm_home).resolve()), copy_path=developer.path, cwd=slot, )
     assert unchanged.changed is False
     # 준비면: 같은 라운드를 시드로 지목한다.
     stale = round_seed.unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
@@ -589,8 +601,7 @@ def external():
 def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     """스폰면 배선 — REPO 를 `rounds_env` 의 pm_home 에 고정하고 diff 추출만 대체한다.
 
-    `_load_pm_delegate()` 는 실 로더 그대로 둔다 — 이 표면이 실제로
-    같은 판정 함수(`round_seed.unharvested_developer_round`)를 부르는지가 검증 대상이다. touches 는
+    실제 판정 함수(`round_seed.unharvested_developer_round`) 호출이 검증 대상이다. touches 는
     `rounds_env` 픽스처 티켓이 `touches: []` 로 시드되므로(§인터페이스 밖) `parse_ticket_touches`
     만 테스트 seam 으로 고정한다(기존 `test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam`
     과 같은 축).
@@ -598,15 +609,15 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     # 추가 리뷰어 대상은 구조화 tuple 이 필수다(미고정 모델 실행 경로가 없다). 이 축은 이 파일의
     # 검증 대상이 아니므로 해소 가능한 최소 tuple 을 기본으로 깔고, 호출자가 준 값이 이긴다.
     resolved = {
-        external.ADDITIONAL_REVIEWER_HARNESS_KEY: "codex",
-        external.ADDITIONAL_REVIEWER_MODEL_KEY: "test-model",
+        reviewer_result.ADDITIONAL_REVIEWER_HARNESS_KEY: "codex",
+        reviewer_result.ADDITIONAL_REVIEWER_MODEL_KEY: "test-model",
     }
     resolved.update(conf or {})
     monkeypatch.setattr(external, "REPO", pm_home)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(resolved))
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(resolved))
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *args, **kwargs: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *args, **kwargs: review_diff.ReviewDiff(
             DIFF,
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -615,13 +626,13 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
         ),
     )
     monkeypatch.setattr(
-        external, "parse_ticket_touches", lambda ticket_id, pm_home=None: ["x.py"],
+        round_store, "parse_ticket_touches", lambda _home, ticket_id, pm_home=None: ["x.py"],
     )
 
 
 def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]):
     """실 스폰 경계 스텁 — 리뷰 실행·산출 회수(다른 축 소유)를 자른다."""
-    def _run_review(prompt, *args, **kwargs):
+    def _run_review(_home, prompt, *args, **kwargs):
         prompts.append(prompt)
         return {
             "reviewer": "fixture", "ok": True, "output": "판정: 통과",
@@ -630,9 +641,9 @@ def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]
             "any_must_fix": False, "all_pass": True,
         }
 
-    monkeypatch.setattr(external, "run_review", _run_review)
+    monkeypatch.setattr(reviewer_run, "run_review", _run_review)
     monkeypatch.setattr(
-        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_harvest, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
 
 
@@ -828,7 +839,7 @@ def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table
 
     for name, rounds in shapes.items():
         capsys.readouterr()
-        external._warn_seed_developer_round(rounds, ticket=name)
+        reviewer_prompt._warn_seed_developer_round(rounds, ticket=name)
         warned = SPAWN_WARNING_MARK in capsys.readouterr().err
         judged = round_seed.unharvested_developer_round(rounds) is not None
         assert warned == judged, name
@@ -837,11 +848,11 @@ def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table
     seed_rounds = shapes["A1"]
     assert round_seed.unharvested_developer_round(seed_rounds) is not None
     capsys.readouterr()
-    external._warn_seed_developer_round(seed_rounds, ticket="T-7831")
+    reviewer_prompt._warn_seed_developer_round(seed_rounds, ticket="T-7831")
     assert SPAWN_WARNING_MARK in capsys.readouterr().err
 
     flipped = [item._replace(pending=False) for item in seed_rounds]
     assert round_seed.unharvested_developer_round(flipped) is None
     capsys.readouterr()
-    external._warn_seed_developer_round(flipped, ticket="T-7831")
+    reviewer_prompt._warn_seed_developer_round(flipped, ticket="T-7831")
     assert SPAWN_WARNING_MARK not in capsys.readouterr().err

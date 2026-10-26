@@ -18,6 +18,18 @@ extract_diff·run_review·local_config 를 주입해 실제 git/추가 리뷰어
 """
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+from pm_engine.domain import reviewer_budget
+from pm_engine.app import reviewer_reservation
+from pm_engine.cli import reviewer_rounds
+from pm_engine.app import reviewer_run
+from pm_engine.infra import round_store
+
+from pm_engine.app import reviewer_prompt
+
+from pm_engine.infra import conf_store
+from pm_engine.infra import reviewer_target
+
 import datetime
 import importlib.util
 import json
@@ -98,12 +110,12 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None):
     """main() 을 tmp REPO 로 격리 배선하고 라운드별 must_fix 를 주입한다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
-        external, "local_config",
-        lambda repo=None: dict(conf) if conf is not None
+        conf_store, 'local_config',
+        lambda _home, repo=None: dict(conf) if conf is not None
         else dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *a, **k: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *a, **k: review_diff.ReviewDiff(
             'diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n',
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -112,7 +124,7 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None):
         ),
     )
     reviewer = _Reviewer(series)
-    monkeypatch.setattr(external, "run_review", reviewer)
+    monkeypatch.setattr(reviewer_run, "run_review", reviewer)
     real_main = external.main
 
     def _isolated_main(argv=None):
@@ -135,14 +147,14 @@ def _ledger(tmp_path) -> dict:
 
 def test_rounds_max_default_and_knob(external):
     """미설정 → 2(출하 기본값) · local.conf `additional_reviewer.rounds_max` 가 상한을 바꾼다."""
-    assert external._review_rounds_max({}) == 2
-    assert external._review_rounds_max({"additional_reviewer.rounds_max": "5"}) == 5
+    assert reviewer_target._review_rounds_max({}) == 2
+    assert reviewer_target._review_rounds_max({"additional_reviewer.rounds_max": "5"}) == 5
 
 
 def test_rounds_max_garbage_and_negative_fall_back(external):
     """비정수·음수는 기본값으로 fail-soft (다른 예산 노브와 같은 규칙)."""
-    assert external._review_rounds_max({"additional_reviewer.rounds_max": "x"}) == 2
-    assert external._review_rounds_max({"additional_reviewer.rounds_max": "-2"}) == 2
+    assert reviewer_target._review_rounds_max({"additional_reviewer.rounds_max": "x"}) == 2
+    assert reviewer_target._review_rounds_max({"additional_reviewer.rounds_max": "-2"}) == 2
 
 
 def _entry(external, must_fix_series):
@@ -151,7 +163,7 @@ def _entry(external, must_fix_series):
         {"sequence": index + 1, "verdict": 0 if value == 0 else 1, "must_fix": value}
         for index, value in enumerate(must_fix_series)
     ]}}
-    return external._gate_entry(ledger, "g")
+    return reviewer_reservation._gate_entry(ledger, "g")
 
 
 def test_series_reads_reservation_order_not_append_order(external):
@@ -159,46 +171,46 @@ def test_series_reads_reservation_order_not_append_order(external):
     ledger = {"g": {"rounds": [
         {"sequence": 2, "must_fix": 5}, {"sequence": 1, "must_fix": 1},
     ]}}
-    entry = external._gate_entry(ledger, "g")
-    assert external._recorded_must_fix_series(entry) == (1, 5)
+    entry = reviewer_reservation._gate_entry(ledger, "g")
+    assert reviewer_reservation._recorded_must_fix_series(entry) == (1, 5)
 
 
 def test_unknown_must_fix_is_not_folded_into_zero(external):
     """셀 근거가 없던 라운드는 '미상'(None)이고 0 으로 접지 않는다 (보수 방향)."""
     entry = _entry(external, [None])
-    assert external._recorded_must_fix_series(entry) == (None,)
-    assert external._format_must_fix_series((3, None, 0)) == "3 → 미상 → 0"
+    assert reviewer_reservation._recorded_must_fix_series(entry) == (None,)
+    assert reviewer_budget._format_must_fix_series((3, None, 0)) == "3 → 미상 → 0"
 
 
 def test_convergence_passes_below_the_cap(external):
     """상한 미만이고 발산이 아니면 통과 (정상 경로 무영향)."""
-    assert external._convergence_refusal(_entry(external, []), 3) is None
-    assert external._convergence_refusal(_entry(external, [3]), 3) is None
-    assert external._convergence_refusal(_entry(external, [3, 1]), 3) is None
+    assert reviewer_reservation._convergence_refusal(_entry(external, []), 3) is None
+    assert reviewer_reservation._convergence_refusal(_entry(external, [3]), 3) is None
+    assert reviewer_reservation._convergence_refusal(_entry(external, [3, 1]), 3) is None
 
 
 def test_convergence_blocks_on_increase_before_the_cap(external):
     """직전 대비 must_fix 증가는 상한 도달을 기다리지 않는다 (조기 차단·DoD)."""
-    refusal = external._convergence_refusal(_entry(external, [3, 5]), 3)
-    assert refusal == external.CONVERGENCE_DIVERGING
+    refusal = reviewer_reservation._convergence_refusal(_entry(external, [3, 5]), 3)
+    assert refusal == reviewer_budget.CONVERGENCE_DIVERGING
 
 
 def test_convergence_blocks_at_the_cap_with_unresolved_defects(external):
     """상한 도달 + must_fix 미해소 → 차단 (비감소 3R 형상·DoD)."""
-    refusal = external._convergence_refusal(_entry(external, [3, 2, 2]), 3)
-    assert refusal == external.CONVERGENCE_CAP_UNRESOLVED
+    refusal = reviewer_reservation._convergence_refusal(_entry(external, [3, 2, 2]), 3)
+    assert refusal == reviewer_budget.CONVERGENCE_CAP_UNRESOLVED
 
 
 def test_convergence_blocks_at_the_cap_even_when_clean(external):
     """상한 도달은 must_fix 0 이어도 라운드를 더 주지 않는다 (사유 라벨만 갈린다)."""
-    refusal = external._convergence_refusal(_entry(external, [3, 1, 0]), 3)
-    assert refusal == external.CONVERGENCE_CAP_REACHED
+    refusal = reviewer_reservation._convergence_refusal(_entry(external, [3, 1, 0]), 3)
+    assert refusal == reviewer_budget.CONVERGENCE_CAP_REACHED
 
 
 def test_convergence_treats_unknown_last_round_as_unresolved(external):
     """마지막 라운드가 '미상'이면 해소로 접지 않는다 — 미상을 0 으로 읽으면 발산이 통과한다."""
-    refusal = external._convergence_refusal(_entry(external, [1, 1, None]), 3)
-    assert refusal == external.CONVERGENCE_CAP_UNRESOLVED
+    refusal = reviewer_reservation._convergence_refusal(_entry(external, [1, 1, None]), 3)
+    assert refusal == reviewer_budget.CONVERGENCE_CAP_UNRESOLVED
 
 
 # ══ ① main 흐름: 차단·통과 ══════════════════════════════════════════════════
@@ -213,7 +225,7 @@ def test_default_cap_blocks_the_third_round(external, monkeypatch, tmp_path, cap
     assert reviewer.calls == 2
     capsys.readouterr()
 
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 2                    # 리뷰어 미호출 (호출 0)
     err = capsys.readouterr().err
     assert "수렴 게이트 차단" in err
@@ -232,7 +244,7 @@ def test_increasing_series_is_blocked_early(external, monkeypatch, tmp_path, cap
         assert external.main(argv) == 1
     capsys.readouterr()
 
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 2
     err = capsys.readouterr().err
     assert "발산" in err and "조기 차단" in err
@@ -265,7 +277,7 @@ def test_rounds_max_knob_can_lower_the_cap(external, monkeypatch, tmp_path):
     argv = ["--gate", "T-0596-lower", "--paths", "x.py"]
 
     assert external.main(argv) == 1
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 1
     assert _ledger(tmp_path)["T-0596-lower"]["count"] == 1
 
@@ -363,10 +375,10 @@ def test_inflight_reservation_counts_toward_the_convergence_cap(external, tmp_pa
     ledger = json.loads(
         (tmp_path / ".project_manager" / ".local" / "review_rounds.json").read_text(
             encoding="utf-8"))
-    entry = external._gate_entry(ledger, "g")
+    entry = reviewer_reservation._gate_entry(ledger, "g")
     assert review_rounds.inflight_reservations(entry) == 1
-    assert external._convergence_round_usage(entry) == (2, 1)
-    assert external._convergence_refusal(entry, 3) == external.CONVERGENCE_CAP_UNRESOLVED
+    assert reviewer_reservation._convergence_round_usage(entry) == (2, 1)
+    assert reviewer_reservation._convergence_refusal(entry, 3) == reviewer_budget.CONVERGENCE_CAP_UNRESOLVED
 
 
 def test_second_concurrent_reservation_is_refused_before_sending(
@@ -378,7 +390,7 @@ def test_second_concurrent_reservation_is_refused_before_sending(
 
     rc = external.main(["--gate", "T-0602f", "--paths", "x.py"])
 
-    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 0                       # 호출 0
     err = capsys.readouterr().err
     assert "수렴 게이트 차단" in err
@@ -407,7 +419,7 @@ def test_fresh_reservation_counts_but_a_timed_out_one_does_not(external, tmp_pat
         ledger = json.loads(
             (tmp_path / ".project_manager" / ".local" / "review_rounds.json").read_text(
                 encoding="utf-8"))
-        return external._gate_entry(ledger, "g")
+        return reviewer_reservation._gate_entry(ledger, "g")
 
     fresh = _entry(5)
     assert review_rounds.inflight_reservations(fresh, wall_timeout_sec=3600) == 1
@@ -443,14 +455,14 @@ def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_p
         "verdict": {"has_must_fix": False, "has_pass": False}, "file": None,
         "failed": True, "started": False, "any_must_fix": False, "all_pass": False,
     }
-    monkeypatch.setattr(external, "run_review", lambda *a, **k: dict(unstarted))
+    monkeypatch.setattr(reviewer_run, "run_review", lambda *a, **k: dict(unstarted))
     _seed_rounds(tmp_path, "T-0602h", completed=2, inflight=0)
     assert external.main(["--gate", "T-0602h", "--paths", "x.py"]) == 1
 
     entry = _ledger(tmp_path)["T-0602h"]
-    assert review_rounds.inflight_reservations(external._gate_entry({"g": entry}, "g")) == 0
+    assert review_rounds.inflight_reservations(reviewer_reservation._gate_entry({"g": entry}, "g")) == 0
     reviewer = _Reviewer([1])
-    monkeypatch.setattr(external, "run_review", reviewer)
+    monkeypatch.setattr(reviewer_run, "run_review", reviewer)
     assert external.main(["--gate", "T-0602h", "--paths", "x.py"]) == 1   # 여전히 열려 있다
     assert reviewer.calls == 1
 
@@ -477,10 +489,10 @@ def _inflight_entry(*, deadline: str | None, started_at: str) -> dict:
 def test_reservation_stamps_its_own_deadline(external):
     """예약이 **이 실행의** 백스톱을 만료 시각으로 새긴다 (백스톱 없으면 null)."""
     entry: dict = {}
-    record = external._reserve_round(entry, "r1", wall_timeout_sec=3600)
+    record = reviewer_reservation._reserve_round(entry, "r1", wall_timeout_sec=3600)
     assert record["deadline"] > _ahead(3500) and record["deadline"] < _ahead(3700)
-    assert external._reserve_round(entry, "r2")["deadline"] is None
-    assert external._reserve_round(entry, "r3", wall_timeout_sec=0)["deadline"] is None
+    assert reviewer_reservation._reserve_round(entry, "r2")["deadline"] is None
+    assert reviewer_reservation._reserve_round(entry, "r3", wall_timeout_sec=0)["deadline"] is None
 
 
 def test_a_short_caller_timeout_does_not_expire_a_long_running_reservation(external):
@@ -490,7 +502,7 @@ def test_a_short_caller_timeout_does_not_expire_a_long_running_reservation(exter
     entry = _inflight_entry(deadline=_ahead(3600), started_at=_ago(600))
 
     assert review_rounds.inflight_reservations(entry, wall_timeout_sec=60) == 1
-    assert external._convergence_refusal(entry, 1, wall_timeout_sec=60) is not None
+    assert reviewer_reservation._convergence_refusal(entry, 1, wall_timeout_sec=60) is not None
 
 
 def test_an_expired_deadline_is_reclaimed_even_with_a_long_caller_timeout(external):
@@ -540,9 +552,9 @@ def _git_init(root: Path) -> None:
 
 def test_reviewer_call_has_no_change_size_cap(external, monkeypatch, tmp_path, capsys):
     """estimate small 티켓 게이트의 400줄 변경도 리뷰어를 부른다 — 변경 줄 수 거부가 없다."""
-    real_extract_diff = external.extract_diff
+    real_extract_diff = review_diff.extract_diff
     _wire(external, monkeypatch, tmp_path, series=[0])
-    monkeypatch.setattr(external, "extract_diff", real_extract_diff)
+    monkeypatch.setattr(review_diff, "extract_diff", real_extract_diff)
     # 실 티켓 게이트라 라운드 파일 회수가 구조화 블록을 요구한다 — 통과 회신에 빈 블록을 싣는다.
     block = json.dumps({"version": review_form.PM_REVIEW_VERSION, "findings": [],
                         "confirmations": []}, separators=(",", ":"))
@@ -554,7 +566,7 @@ def test_reviewer_call_has_no_change_size_cap(external, monkeypatch, tmp_path, c
         result.update(output=answer, answer=answer)
         return result
 
-    monkeypatch.setattr(external, "run_review", _structured_review)
+    monkeypatch.setattr(reviewer_run, "run_review", _structured_review)
     _write_ticket(tmp_path, "T-0950", "estimate: small")
     _git_init(tmp_path)
     (tmp_path / "src").mkdir()
@@ -595,7 +607,7 @@ def test_reviewer_call_has_no_change_size_cap(external, monkeypatch, tmp_path, c
 ])
 def test_machine_mirror_predicate_is_the_single_exclusion_rule(external, path, mirrored):
     """제외 판정은 경로 문자열 하나다 — 두 소비처(리뷰·완료)가 같은 술어를 쓴다(사본 0)."""
-    assert external.is_machine_mirror_path(path) is mirrored
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), path) is mirrored
 
 
 # ── 어댑터층 기계 mirror (T-0832) ───────────────────────────────────────────
@@ -622,7 +634,7 @@ def test_machine_mirror_predicate_is_the_single_exclusion_rule(external, path, m
 ])
 def test_adapter_layer_mirror_derives_from_manifest_source_direction(external, path, mirrored):
     """어댑터층 판정 = 그 타깃 engine.manifest 의 `@source=` 방향(자기참조=손작업·교차=mirror)."""
-    assert external.is_machine_mirror_path(path) is mirrored
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), path) is mirrored
 
 
 def test_comment_example_of_a_self_referential_original_is_still_self_referential(external):
@@ -632,7 +644,7 @@ def test_comment_example_of_a_self_referential_original_is_still_self_referentia
     원본" 의 실례를 하나 든다. manifest 에서 그 override 행이 사라지면 경로 성격이 기계 mirror 로
     뒤집히는데 주석은 옛 성격을 예로 든 채 남는다(T-0895 실측). 예시 경로를 주석에서 뽑아 술어로
     되재 그 drift 를 값으로 막는다 — `<타깃>` 류 자리표시자는 실 경로가 아니라 제외한다."""
-    lines = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8").splitlines()
+    lines = Path(review_diff.__file__).read_text(encoding="utf-8").splitlines()
     anchor = next(index for index, line in enumerate(lines)
                   if line.startswith("_TEMPLATES_FLAVOR_RE"))
     start = anchor
@@ -642,7 +654,7 @@ def test_comment_example_of_a_self_referential_original_is_still_self_referentia
               if "<" not in path]
     assert quoted, "판정 근거 주석이 자기참조 원본의 실 경로 예시를 잃었다"
     for path in quoted:
-        assert external.is_machine_mirror_path(path) is False, (
+        assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), path) is False, (
             f"주석이 자기참조 원본의 예로 든 {path} 가 지금은 기계 mirror 다")
 
 
@@ -672,14 +684,23 @@ def test_adapter_layer_mirror_extends_to_a_new_target_without_code_changes(
     )
     monkeypatch.setattr(external, "REPO", fake_repo)
 
-    assert external.is_machine_mirror_path("templates/newtarget/.newtarget/agents/x.md") is True
-    assert external.is_machine_mirror_path(
-        "templates/newtarget/.newtarget/hooks/guard.py") is False
-    assert external.is_machine_mirror_path("templates/newtarget/AGENTS.md") is False
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/.newtarget/agents/x.md") is True
+    assert review_diff.is_machine_mirror_path(
+        pm_paths.home_at(external.REPO), "templates/newtarget/.newtarget/hooks/guard.py") is False
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/AGENTS.md") is False
     # bare 부모 아래 다른 파일은 여전히 mirror(교차 위치) — override 의 영향이 그 파일 자신으로 좁다.
-    assert external.is_machine_mirror_path("templates/newtarget/.guest/other.md") is True
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/.guest/other.md") is True
     # `@target-owned` override 파일은 부모가 mirror 라도 손작업으로 남는다(F-001).
-    assert external.is_machine_mirror_path("templates/newtarget/.guest/manual.md") is False
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/.guest/manual.md") is False
+
+    other_home = pm_paths.home_at(tmp_path / "other")
+    other_manifest = other_home.root / "templates/newtarget/.project_manager/engine.manifest"
+    other_manifest.parent.mkdir(parents=True)
+    other_manifest.write_text(
+        ".newtarget/agents @source=templates/newtarget/.newtarget/agents\n", encoding="utf-8",
+    )
+    assert review_diff.is_machine_mirror_path(other_home, "templates/newtarget/.newtarget/agents/x.md") is False
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(fake_repo), "templates/newtarget/.newtarget/agents/x.md") is True
 
 
 def test_exclusion_is_a_subtree_including_hand_edited_files(external):
@@ -688,8 +709,8 @@ def test_exclusion_is_a_subtree_including_hand_edited_files(external):
     이 경계를 문서와 술어가 같은 말로 해야 다음 사람이 "mirror 만 빠진다"로 오독하지 않는다.
     오차 방향은 측정 축소뿐이라 정당한 작업을 오차단하지 않는다."""
     hand_edited = "templates/codex/.project_manager/engine.manifest"
-    assert external.is_machine_mirror_path(hand_edited) is True
-    doc = external.is_machine_mirror_path.__doc__
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), hand_edited) is True
+    doc = review_diff.is_machine_mirror_path.__doc__
     assert "전부는 아니다" in doc and "측정 축소" in doc
 
 
@@ -721,9 +742,9 @@ def test_measured_diff_reuses_the_review_stage_table(external, tmp_path):
                    capture_output=True)
     (root / "seed.py").write_text("seed\n" + "".join(f"a{i}\n" for i in range(12)),
                                   encoding="utf-8")
-    diff_text = external.measured_diff_text(root, "HEAD", ["seed.py"])
+    diff_text = review_diff.measured_diff_text(root, "HEAD", ["seed.py"])
     assert _added_lines(diff_text) == [f"+a{i}" for i in range(12)]
-    assert external.measured_diff_text(root, "HEAD", ["없는경로.py"]) == ""
+    assert review_diff.measured_diff_text(root, "HEAD", ["없는경로.py"]) == ""
 
 
 # ── untracked 신규 파일 (T-0604 ③) ──────────────────────────────────────────
@@ -745,7 +766,7 @@ def test_untracked_new_files_ride_the_measured_width(external, tmp_path):
     _untracked(root, "new_module.py", 40)
 
     for scope in (["new_module.py"], ["."]):
-        diff_text = external.measured_diff_text(root, "HEAD", scope)
+        diff_text = review_diff.measured_diff_text(root, "HEAD", scope)
         assert "new_module.py" in diff_text and len(_added_lines(diff_text)) == 40, scope
 
 
@@ -756,7 +777,7 @@ def test_measuring_untracked_files_does_not_touch_the_index(external, tmp_path):
     before = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
                             capture_output=True, text=True, check=True).stdout
 
-    assert "new_module.py" in external.measured_diff_text(root, "HEAD", ["."])
+    assert "new_module.py" in review_diff.measured_diff_text(root, "HEAD", ["."])
 
     after = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
                            capture_output=True, text=True, check=True).stdout
@@ -769,7 +790,7 @@ def test_untracked_files_outside_the_declared_scope_are_not_measured(external, t
     _untracked(root, "src/inside.py", 7)
     _untracked(root, "elsewhere/outside.py", 900)
 
-    diff_text = external.measured_diff_text(root, "HEAD", ["src/"])
+    diff_text = review_diff.measured_diff_text(root, "HEAD", ["src/"])
     assert "src/inside.py" in diff_text and "outside.py" not in diff_text
 
 
@@ -784,7 +805,7 @@ def test_ignored_files_are_not_measured(external, tmp_path):
     (root / "seed.py").write_text("seed\nedit\n", encoding="utf-8")   # 손작업 1줄 추가
     _untracked(root, "build/artifact.py", 300)
 
-    diff_text = external.measured_diff_text(root, "HEAD", ["."])
+    diff_text = review_diff.measured_diff_text(root, "HEAD", ["."])
     assert "artifact.py" not in diff_text and _added_lines(diff_text) == ["+edit"]
 
 
@@ -797,7 +818,7 @@ def test_a_commit_range_stage_does_not_pull_in_untracked_files(external, tmp_pat
                    capture_output=True)
     _untracked(root, "new_module.py", 40)
 
-    diff_text = external.measured_diff_text(root, "HEAD~1..HEAD", ["."])
+    diff_text = review_diff.measured_diff_text(root, "HEAD~1..HEAD", ["."])
     assert "new_module.py" not in diff_text and _added_lines(diff_text) == ["+more"]
 
 
@@ -807,13 +828,13 @@ def test_untracked_new_files_appear_in_the_review_diff(external, monkeypatch, tm
     _untracked(root, "new_module.py", 3)
     monkeypatch.setattr(external, "REPO", root)
 
-    diff = external.extract_diff("HEAD", ["new_module.py"])
+    diff = review_diff.extract_diff(pm_paths.home_at(external.REPO), "HEAD", ["new_module.py"])
 
     assert "new file mode" in diff.text and "new_module.py" in diff.text and "+n0" in diff.text
     assert diff.paths == ("new_module.py",)
     assert any("--no-index" in argv and argv[-1] == "new_module.py" for argv in diff.read_commands)
     import hashlib
-    assert external._target_rev_fingerprint(diff.text) == (
+    assert reviewer_budget._target_rev_fingerprint(diff.text) == (
         "sha256:" + hashlib.sha256(diff.text.encode("utf-8")).hexdigest()
     )
 
@@ -848,7 +869,7 @@ def test_estimate_is_read_as_yaml_not_as_a_regex_tail(
     """주석·인용·여백 형상을 YAML 해석으로 읽는다 — 꼬리를 값에 붙이면 board 와 다른 값이 된다."""
     path = _write_ticket(tmp_path, "T-0910", declared)
     monkeypatch.setattr(external, "REPO", tmp_path)
-    assert external._parse_estimate_from_file(path) == expected
+    assert round_store._parse_estimate_from_file(path) == expected
 
 
 # ══ ③-c 티켓 조회는 canonical ID 정확 일치 (T-0603 ④) ═══════════════════════
@@ -896,13 +917,13 @@ def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
     assert regression._ticket_touches(board._home(), "T-0036") == ["src/pay.py"]
     assert regression._gate_ticket(board._home(), "T-0036")[1].name.startswith("T-0036-본래")
     # ② 리뷰 범위 (추가 리뷰어)
-    assert external.parse_ticket_touches("T-0036", pm_home=tmp_path) == ["src/pay.py"]
+    assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036", ) == ["src/pay.py"]
     # ③ 완료 게이트 티켓 로드 (ticket_finish)
     shim = _real_board_shim(tmp_path, finish)
     assert finish.get_ticket_touches(shim, "T-0036") == ["src/pay.py"]
 
     # prefixed 티켓 자신의 조회는 그대로 자기 값을 본다 (좁힘이 정상 조회를 삼키지 않는다).
-    assert external.parse_ticket_touches("T-0036-001", pm_home=tmp_path) == ["src/unrelated.py"]
+    assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036-001", ) == ["src/unrelated.py"]
     assert finish.get_ticket_touches(shim, "T-0036-001") == ["src/unrelated.py"]
     assert regression._ticket_touches(board._home(), "T-0036-001") == ["src/unrelated.py"]
 
@@ -920,7 +941,7 @@ def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
     assert regression._ticket_touches(board._home(), "T-0036-002") == []              # 스코프 없음 = FULL
     assert finish.get_ticket_touches(shim, "T-0036-002") == []
     with pytest.raises(pm_paths.AnchorResolutionError):           # touches 는 fail-loud 유지
-        external.parse_ticket_touches("T-0036-002", pm_home=tmp_path)
+        round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036-002", )
 
 
 def test_slugless_ticket_filename_still_resolves(external, tmp_path, monkeypatch):
@@ -931,7 +952,7 @@ def test_slugless_ticket_filename_still_resolves(external, tmp_path, monkeypatch
         "---\nid: T-0040\nestimate: medium\ntouches:\n- src/a.py\n---\n\n# 본문\n",
         encoding="utf-8")
     monkeypatch.setattr(external, "REPO", tmp_path)
-    assert external.parse_ticket_touches("T-0040", pm_home=tmp_path) == ["src/a.py"]
+    assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0040", ) == ["src/a.py"]
 
 
 # ══ ④ 비-매핑 frontmatter 는 조회 경로를 죽이지 않는다 (T-0605 ④) ═══════════
@@ -1012,25 +1033,25 @@ def test_ticket_touches_forces_a_list_of_strings(tmp_path, monkeypatch, declarat
 def test_legacy_outcomes_sort_before_the_sequenced_ones(external):
     """순번 없는 구기록이 앞(오래된 쪽)·순번 있는 기록이 순번 순으로 뒤."""
     rounds = [{"sequence": 2, "verdict": 0}, {"verdict": 1}, {"sequence": 1, "verdict": 1}]
-    ordered = external._ordered_round_outcomes(rounds)
+    ordered = reviewer_rounds._ordered_round_outcomes(rounds)
     assert [row.get("sequence") for row in ordered] == [None, 1, 2]
 
 
 def test_an_upgrade_pass_becomes_the_latest_over_a_legacy_rejection(external):
     """구기록 반려 뒤에 신기록 통과가 쌓이면 **최신은 통과**다 — 자격도 닫힌다."""
-    entry = external._gate_entry({"g": {"rounds": [
+    entry = reviewer_reservation._gate_entry({"g": {"rounds": [
         {"verdict": 1, "must_fix": 2},                       # 구세대 반려(순번 없음)
         {"sequence": 1, "verdict": 0, "must_fix": 0},        # 업그레이드 후 통과
     ]}}, "g")
 
-    assert external._ordered_round_outcomes(entry["rounds"])[-1]["verdict"] == 0
+    assert reviewer_rounds._ordered_round_outcomes(entry["rounds"])[-1]["verdict"] == 0
 
 
 def test_the_ordering_rule_is_the_shared_board_seam(external):
     """정렬 규칙의 소유자는 board 공용 seam 이다 — 사본이 생기면 두 표면이 갈린다."""
     board = _load("board")
     rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
-    assert external._ordered_round_outcomes(rounds) == sorted(
+    assert reviewer_rounds._ordered_round_outcomes(rounds) == sorted(
         rounds, key=review_rounds.round_outcome_order_key)
 
 
@@ -1047,7 +1068,7 @@ def test_review_coordinates_replay_the_selected_git_stage(external, monkeypatch,
         (root / "seed.py").write_text("seed\nworking\n", encoding="utf-8")
     _untracked(root, "outside.py", 3)
     monkeypatch.setattr(external, "REPO", root)
-    review = external.extract_diff(base, ["seed.py"])
+    review = review_diff.extract_diff(pm_paths.home_at(external.REPO), base, ["seed.py"])
     assert review.base == ("HEAD~1..HEAD" if base == "HEAD" else base)
     assert review.paths == ("seed.py",)
     assert "outside.py" not in review.text
@@ -1064,7 +1085,7 @@ def test_review_preserves_canceling_staged_and_unstaged_changes(external, monkey
     subprocess.run(["git", "-C", str(root), "add", "seed.py"], check=True, capture_output=True)
     (root / "seed.py").write_text("seed\n", encoding="utf-8")
     monkeypatch.setattr(external, "REPO", root)
-    review = external.extract_diff("HEAD", ["seed.py"])
+    review = review_diff.extract_diff(pm_paths.home_at(external.REPO), "HEAD", ["seed.py"])
     assert review.base == "HEAD" and review.paths == ("seed.py",)
     assert "+staged" in review.text and "-staged" in review.text
     assert len(review.read_commands) == 2
@@ -1092,14 +1113,14 @@ def test_review_paths_preserve_untracked_deleted_renamed_and_binary_files(
     (root / "deleted.py").unlink()
     (root / "binary.bin").write_bytes(b"\x00new\xfe")
     (root / unusual).write_text("UNTRACKED_SENTINEL\n", encoding="utf-8")
-    review = external.extract_diff("HEAD", ["."])
+    review = review_diff.extract_diff(pm_paths.home_at(external.REPO), "HEAD", ["."])
     assert set(review.paths) == {"renamed.py", "deleted.py", "binary.bin", unusual}
     assert "Binary files" in review.text and "deleted file mode" in review.text
     assert "UNTRACKED_SENTINEL" in review.text
     no_index = next(argv for argv in review.read_commands if "--no-index" in argv)
     result = subprocess.run(no_index, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 1 and "UNTRACKED_SENTINEL" in result.stdout
-    prompt = external.build_prompt(tree=root, base=review.base, target=review.target,
+    prompt = reviewer_prompt.build_prompt(pm_paths.home_at(external.REPO), tree=root, base=review.base, target=review.target,
                                    changed_paths=review.paths, read_commands=review.read_commands)
     line = next(line for line in prompt.splitlines() if line.startswith("- 변경 파일"))
     assert json.loads(line.split(": ", 1)[1]) == list(review.paths)
@@ -1116,7 +1137,7 @@ def test_explicit_commit_range_excludes_untracked_review_input(external, monkeyp
     subprocess.run(["git", "-C", str(root), "commit", "-m", "second"], check=True, capture_output=True)
     _untracked(root, "outside.py", 3)
     monkeypatch.setattr(external, "REPO", root)
-    review = external.extract_diff("HEAD~1..HEAD", ["."])
+    review = review_diff.extract_diff(pm_paths.home_at(external.REPO), "HEAD~1..HEAD", ["."])
     assert review.paths == ("seed.py",) and "outside.py" not in review.text
     assert len(review.read_commands) == 1 and "--no-index" not in review.read_commands[0]
 
@@ -1125,14 +1146,14 @@ def test_review_metadata_queries_fail_closed(external, monkeypatch, tmp_path):
     root = _git_repo(tmp_path)
     monkeypatch.setattr(external, "REPO", root)
     with pytest.raises(RuntimeError, match="git diff 실패"):
-        external.extract_diff("missing-base", ["."])
+        review_diff.extract_diff(pm_paths.home_at(external.REPO), "missing-base", ["."])
     (root / "seed.py").write_text("edited\n", encoding="utf-8")
     def fail_names(argv, **kwargs):
         if "--name-only" in argv:
             return subprocess.CompletedProcess(argv, 128, "", "name query failed")
         return subprocess.run(argv, **kwargs)
     with pytest.raises(RuntimeError, match="name query failed"):
-        external.extract_diff("HEAD", ["."], fail_names)
+        review_diff.extract_diff(pm_paths.home_at(external.REPO), "HEAD", ["."], fail_names)
 
 
 @pytest.mark.parametrize("paths", [["."], ["ls-files"]])
@@ -1149,7 +1170,7 @@ def test_review_untracked_name_matching_git_subcommand(
             no_index_results.append(result)
         return result
 
-    review = external.extract_diff("HEAD", paths, run)
+    review = review_diff.extract_diff(pm_paths.home_at(external.REPO), "HEAD", paths, run)
 
     assert review.base == "HEAD" and review.paths == ("ls-files",)
     assert "+UNTRACKED_LS_FILES_SENTINEL" in review.text
@@ -1172,4 +1193,4 @@ def test_review_untracked_name_matching_git_subcommand(
         return subprocess.run(argv, **kwargs)
 
     with pytest.raises(RuntimeError, match="git ls-files 실패.*untracked query failed"):
-        external.extract_diff("HEAD", paths, fail_untracked_query)
+        review_diff.extract_diff(pm_paths.home_at(external.REPO), "HEAD", paths, fail_untracked_query)

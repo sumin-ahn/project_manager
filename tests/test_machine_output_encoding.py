@@ -24,6 +24,15 @@ T-0690 은 PowerShell 이 캡처하는 非tty stdout 을 콘솔 codepage(cp949 �
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+
+from pm_engine.app import delegate_execute
+from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_prepare
+from pm_engine.domain import delegate_rounds
+
+from pm_engine.domain import delegate_channel_rules
+
 from pm_engine.infra import pm_paths
 import pm_engine.app.session_snapshot
 import pm_engine.cli.log
@@ -255,17 +264,17 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     pm_delegate = _load("pm_delegate")
     slot = tmp_path / "슬롯 — 사본"
     slot.mkdir()
-    monkeypatch.setattr(pm_delegate, "_ticket_cli_owner", lambda _cwd: tmp_path / "pm")
-    plan = pm_delegate.TicketCopyPlan(
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: tmp_path / "pm")
+    plan = delegate_rounds.TicketCopyPlan(
         slot / "01-developer.md", slot, "T-2000", "developer", 1,
         tmp_path / "pm" / "01-developer.md", "a" * 32, "",
     )
-    monkeypatch.setattr(pm_delegate, "prepare_ticket_copy", lambda **_kwargs: plan)
+    monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", lambda _home, **_kwargs: plan)
     stream = capture_console()
 
-    assert pm_delegate._cmd_ticket([
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, pm_home=pm_delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pm_delegate._CONFIG_REPO_OVERRIDE or pm_delegate.REPO)), [
         "prepare", "--ticket", "T-2000", "--role", "developer", "--cwd", str(slot),
-    ]) == 0
+    ], adapter_roots = pm_delegate._resolved_adapter_directories()) == 0
 
     prepared = _machine_payload(stream)
     assert prepared == {
@@ -275,13 +284,13 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
 
     harvest_stream = capture_console()
     monkeypatch.setattr(
-        pm_delegate, "harvest_ticket_copy",
-        lambda **_kwargs: pm_delegate.TicketHarvestResult(False, True),
+        delegate_harvest, "harvest_ticket_copy",
+        lambda _home, **_kwargs: delegate_rounds.TicketHarvestResult(False, True),
     )
 
-    assert pm_delegate._cmd_ticket([
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, pm_home=pm_delegate._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pm_delegate._CONFIG_REPO_OVERRIDE or pm_delegate.REPO)), [
         "harvest", "--copy", str(plan.path), "--cwd", str(slot),
-    ]) == 0
+    ], adapter_roots = pm_delegate._resolved_adapter_directories()) == 0
 
     assert _machine_payload(harvest_stream) == {
         "copy": str(plan.path.resolve()), "changed": False, "sync_ready": True,
@@ -289,7 +298,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     }
 
 
-def _guard_conf() -> dict[str, str]:
+def _guard_conf(_home) -> dict[str, str]:
     return {
         "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
@@ -383,7 +392,7 @@ def test_delegate_channel_guard_fallback_line_survives_a_missing_seam(
 
     text = _written_bytes(stream).decode("utf-8")
     assert text.count("\n") == 1
-    assert set(json.loads(text)) == set(guard.CODEX_WARNING_ENVELOPE_KEYS)
+    assert set(json.loads(text)) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
     # 조용한 강등이 아니다 — 원인(seam 로드 실패)이 fail-open 보고에 남는다.
     assert "simulated missing console_encoding" in stderr.getvalue()
 
@@ -714,12 +723,12 @@ def test_allowed_exceptions_are_reasoned():
         (
             ".project_manager/tools/delegate_channel_guard.py",
             "            _write_machine_line(\n"
-            "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False),\n"
+            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
             "                output_stream,\n"
             "                console,\n"
             "            )\n",
             "            json.dump(\n"
-            "                _validated_codex_envelope(result), output_stream, ensure_ascii=False\n"
+            "                codex_envelope._validated_codex_envelope(result), output_stream, ensure_ascii=False\n"
             "            )\n"
             "            output_stream.write(\"\\n\")\n",
             STREAM_DUMP_SHAPE,
@@ -728,12 +737,12 @@ def test_allowed_exceptions_are_reasoned():
         (
             ".project_manager/tools/delegate_channel_guard.py",
             "            _write_machine_line(\n"
-            "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False),\n"
+            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
             "                output_stream,\n"
             "                console,\n"
             "            )\n",
             "            output_stream.write(\n"
-            "                json.dumps(_validated_codex_envelope(result), ensure_ascii=False)\n"
+            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False)\n"
             "                + \"\\n\"\n"
             "            )\n",
             STDOUT_WRITE_SHAPE,

@@ -22,6 +22,8 @@ from pm_engine.infra import pm_paths
 
 from pm_engine.cli import bootstrap as bootstrap_cli
 
+from pm_engine.infra import round_store
+
 import importlib.util
 from pathlib import Path
 
@@ -166,7 +168,7 @@ def external(tmp_path, monkeypatch):
 
 def test_external_tickets_dir_legacy_is_wiki(external):
     """legacy → _tickets_dir() == wiki/tickets (현 위치·무변경)."""
-    assert external._tickets_dir() == external._tmp / ".project_manager" / "wiki" / "tickets"
+    assert pm_paths.tickets_dir(pm_paths.home_at(external.REPO)) == external._tmp / ".project_manager" / "wiki" / "tickets"
 
 
 def test_external_tickets_dir_present_is_board_tickets(external):
@@ -174,7 +176,7 @@ def test_external_tickets_dir_present_is_board_tickets(external):
 
     *수정 전*: TICKETS_DIR 상수가 wiki/tickets 에 굳어 이 단언이 fail."""
     _make_board_dir(external._tmp)
-    assert external._tickets_dir() == external._tmp / ".project_manager" / "board" / "tickets"
+    assert pm_paths.tickets_dir(pm_paths.home_at(external.REPO)) == external._tmp / ".project_manager" / "board" / "tickets"
 
 
 def _write_ticket_with_touches(path: Path, tid: str, touches: list[str]) -> None:
@@ -194,7 +196,7 @@ def test_external_parse_touches_reads_board_not_stale_wiki(external):
     _write_ticket_with_touches(
         board_dir / "tickets" / "open" / "T-0001-x.md", "T-0001",
         ["src/pay.py", "tests/test_pay.py"])
-    touches = external.parse_ticket_touches("T-0001")
+    touches = round_store.parse_ticket_touches(pm_paths.home_at(external.REPO), "T-0001")
     assert touches == ["src/pay.py", "tests/test_pay.py"], \
         f"board ticket touches 를 board/tickets(진실)에서 안 해소 — stale wiki 봄: {touches}"
 
@@ -204,7 +206,7 @@ def test_external_parse_touches_legacy_reads_wiki(external):
     wiki_tk = _make_wiki_tickets(external._tmp)
     _write_ticket_with_touches(
         wiki_tk / "open" / "T-0001-x.md", "T-0001", ["src/a.py"])
-    assert external.parse_ticket_touches("T-0001") == ["src/a.py"]
+    assert round_store.parse_ticket_touches(pm_paths.home_at(external.REPO), "T-0001") == ["src/a.py"]
 
 
 # ════════════════════════════════════════════════════════════════════════

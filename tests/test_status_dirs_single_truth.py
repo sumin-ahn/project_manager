@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import round_store
+
 from pm_engine.infra import pm_paths
 import pm_engine.app.session_snapshot
 
@@ -89,7 +91,7 @@ def test_additional_reviewer_resolves_ticket_in_every_status_dir(external, board
         _seed_ticket(tickets, status, f"T-90{index:02d}")
 
     for index, status in enumerate(ticket_rules.STATUS_DIRS):
-        resolved = external._find_ticket_file(f"T-90{index:02d}", pm_home=tmp_path)
+        resolved = round_store._find_ticket_file(pm_paths.home_at(Path(tmp_path).resolve()), f"T-90{index:02d}", )
         assert resolved == tickets / status / f"T-90{index:02d}.md"
 
 
@@ -104,12 +106,12 @@ def test_additional_reviewer_owns_real_board_matches_board_for_every_status(
     for index, status in enumerate(ticket_rules.STATUS_DIRS):
         pm_dir = tmp_path / f"home{index}" / ".project_manager"
         _seed_ticket(pm_dir / "board" / "tickets", status, "T-0001")
-        assert external._owns_real_board(pm_dir) is True
-        assert external._owns_real_board(pm_dir) is pm_paths._has_real_board(pm_dir)
+        assert pm_paths._owns_real_board(pm_dir) is True
+        assert pm_paths._owns_real_board(pm_dir) is pm_paths._has_real_board(pm_dir)
 
     empty = tmp_path / "scaffold" / ".project_manager"
     (empty / "board" / "tickets" / "open").mkdir(parents=True)
-    assert external._owns_real_board(empty) is False
+    assert pm_paths._owns_real_board(empty) is False
 
 
 def test_additional_reviewer_follows_injected_status_without_code_change(
@@ -121,9 +123,9 @@ def test_additional_reviewer_follows_injected_status_without_code_change(
     tickets = tmp_path / ".project_manager" / "board" / "tickets"
     _seed_ticket(tickets, FAKE_STATUS, "T-9100")
 
-    assert external._find_ticket_file("T-9100", pm_home=tmp_path) == (
+    assert round_store._find_ticket_file(pm_paths.home_at(Path(tmp_path).resolve()), "T-9100", ) == (
         tickets / FAKE_STATUS / "T-9100.md")
-    assert external._owns_real_board(tmp_path / ".project_manager") is True
+    assert pm_paths._owns_real_board(tmp_path / ".project_manager") is True
 
 
 # ── (3) pm_log 장부 census ───────────────────────────────────────────────────

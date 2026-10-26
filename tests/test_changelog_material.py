@@ -13,6 +13,10 @@ hermetic 패턴은 `test_cluster_review_round.py`(자기-정박 PM 홈 + 실 git
 """
 from __future__ import annotations
 
+from pm_engine.cli import delegate_cmd
+
+from pm_engine.infra import conf_store, pm_paths
+
 
 
 
@@ -129,9 +133,9 @@ def material_env(tmp_path, pd, monkeypatch):
     since = datetime.datetime.fromisoformat(
         _git(checkout, "log", "-1", "--format=%cI", _TAG).stdout.strip())
 
-    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: home)
     _fixture_board(pd, home)
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {
         "upstream.path": str(checkout),
     })
     return home, done, checkout, since
@@ -416,7 +420,7 @@ def test_material_refuses_a_missing_code_checkout_coordinate(
         pd, material_env, monkeypatch, capsys):
     """조용한 빈 목록 금지 — 좌표가 없으면 rc≠0 이다."""
     _home, _done, _checkout, _since = material_env
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {})
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {})
 
     assert pd.main(["changelog", "material", "--since", _TAG]) == 1
 
@@ -428,7 +432,7 @@ def test_material_refuses_a_missing_code_checkout_coordinate(
 def test_material_refuses_a_code_checkout_that_is_not_a_local_directory(
         pd, material_env, monkeypatch, capsys):
     _home, _done, _checkout, _since = material_env
-    monkeypatch.setattr(pd, "local_config", lambda *_a, **_k: {
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home, *_a, **_k: {
         "upstream.path": "https://example.invalid/framework.git",
     })
 
@@ -445,7 +449,7 @@ def test_material_refuses_a_code_checkout_that_is_not_a_local_directory(
 
 def test_changelog_material_surface_is_registered_in_the_public_parser(pd):
     """스킬 md ↔ CLI 존재 가드가 읽는 그 parser 에 서브커맨드·옵션이 실재한다."""
-    parser = pd.build_subcommand_parser("changelog")
+    parser = delegate_cmd.build_subcommand_parser("changelog")
 
     assert parser is not None
     args = parser.parse_args(["material", "--since", _TAG])
@@ -453,7 +457,7 @@ def test_changelog_material_surface_is_registered_in_the_public_parser(pd):
 
 
 def test_changelog_material_requires_the_span_start(pd):
-    parser = pd.build_subcommand_parser("changelog")
+    parser = delegate_cmd.build_subcommand_parser("changelog")
 
     with pytest.raises(SystemExit):
         parser.parse_args(["material"])

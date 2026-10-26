@@ -9,6 +9,14 @@
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+
+from pm_engine.infra import conf_store
+from pm_engine.domain import delegate_run_rules
+from pm_engine.infra.harness import delegate_temp
+from pm_engine.infra.harness import delegate_transport
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -27,7 +35,7 @@ NETWORK_OVERRIDE = ["-c", "sandbox_workspace_write.network_access=true"]
 SESSION_ID = "0199a9c4-3f7e-7c12-9a3b-2b4c5d6e7f80"
 READ_ROLES = ("researcher", "code-reviewer")
 WRITE_ROLES = ("developer", "architect")
-REGISTERED_SITE_OCCURRENCES = 107
+REGISTERED_SITE_OCCURRENCES = 106
 
 
 def _load(name: str, path: Path):
@@ -81,14 +89,14 @@ def _network_override_count(argv: list[str]) -> int:
 
 
 def _write_argv(pd, cwd: Path, resume: bool = False) -> list[str]:
-    return pd.build_codex_argv("gpt-x", None, "developer", str(cwd),
+    return contract.build_codex_argv("gpt-x", None, "developer", str(cwd),
                                SESSION_ID if resume else None)
 
 
 def _forbid_git_metadata_lookup(pd, monkeypatch):
     def _forbidden(*_args, **_kwargs):
         pytest.fail("재앵커·read-only 실행이 원 git 메타데이터를 조회했다")
-    monkeypatch.setattr(pd, "_git_metadata_write_roots", _forbidden)
+    monkeypatch.setattr(delegate_transport, '_git_metadata_write_roots', _forbidden)
 
 
 class _Completed:
@@ -121,7 +129,7 @@ def test_metadata_worktree_opens_common_and_worktree_dirs(pd, tmp_path):
     worktree = tmp_path / "작업 슬롯 1"
     _git("-C", str(main), "worktree", "add", "-q", "-b", "slot-branch", str(worktree))
     (worktree_git_dir,) = (main / ".git" / "worktrees").iterdir()
-    roots = pd._git_metadata_write_roots(worktree)
+    roots = delegate_transport._git_metadata_write_roots(worktree)
     assert roots == (_real(main / ".git"), _real(worktree_git_dir))
     assert _real(tmp_path) not in roots
 
@@ -129,7 +137,7 @@ def test_metadata_worktree_opens_common_and_worktree_dirs(pd, tmp_path):
 def test_metadata_plain_clone_keeps_in_workspace_dot_git(pd, tmp_path):
     """작업공간 안에 있다는 이유로 일반 clone 의 `.git` 을 생략하지 않는다."""
     repo = _committed_repo(tmp_path / "plain")
-    assert pd._git_metadata_write_roots(repo) == (_real(repo / ".git"),)
+    assert delegate_transport._git_metadata_write_roots(repo) == (_real(repo / ".git"),)
 
 
 def test_metadata_submodule_opens_only_its_module_dir(pd, tmp_path):
@@ -138,7 +146,7 @@ def test_metadata_submodule_opens_only_its_module_dir(pd, tmp_path):
     parent = _committed_repo(tmp_path / "parent")
     _git("-c", "protocol.file.allow=always", "-C", str(parent), "submodule", "add", "-q",
          str(upstream), "child")
-    roots = pd._git_metadata_write_roots(parent / "child")
+    roots = delegate_transport._git_metadata_write_roots(parent / "child")
     assert roots == (_real(parent / ".git" / "modules" / "child"),)
     assert _real(parent / ".git") not in roots
 
@@ -147,7 +155,7 @@ def test_metadata_subdirectory_cwd_resolves_to_repo_metadata(pd, tmp_path):
     repo = _committed_repo(tmp_path / "repo")
     sub = repo / "pkg" / "inner"
     sub.mkdir(parents=True)
-    assert pd._git_metadata_write_roots(sub) == (_real(repo / ".git"),)
+    assert delegate_transport._git_metadata_write_roots(sub) == (_real(repo / ".git"),)
 
 
 def test_metadata_relative_gitdir_pointer(pd, tmp_path):
@@ -158,7 +166,7 @@ def test_metadata_relative_gitdir_pointer(pd, tmp_path):
     separate.parent.mkdir()
     _git("init", "-q", "--separate-git-dir", str(separate), str(work))
     (work / ".git").write_text("gitdir: ../meta/repo.git\n", encoding="utf-8")
-    assert pd._git_metadata_write_roots(work) == (_real(separate),)
+    assert delegate_transport._git_metadata_write_roots(work) == (_real(separate),)
 
 
 @pytest.mark.parametrize("shape,expected", [
@@ -181,7 +189,7 @@ def test_metadata_minimal_root_set(pd, tmp_path, shape, expected):
     common.mkdir(parents=True, exist_ok=True)
     git_dir.mkdir(parents=True, exist_ok=True)
     runner = _runner_returning(_Completed(0, f"{common}\n{git_dir}\n"))
-    roots = pd._git_metadata_write_roots(tmp_path, git_run_fn=runner)
+    roots = delegate_transport._git_metadata_write_roots(tmp_path, git_run_fn=runner)
     by_name = {"common": _real(common), "git": _real(git_dir)}
     assert roots == tuple(by_name[name] for name in expected)
     assert _real(tmp_path) not in roots
@@ -198,8 +206,8 @@ def test_metadata_write_argv_adds_global_root_and_network(pd, tmp_path, role):
     main = _committed_repo(tmp_path / "main")
     worktree = tmp_path / "slot"
     _git("-C", str(main), "worktree", "add", "-q", "-b", "slot-branch", str(worktree))
-    argv = pd._apply_workspace_git_dirs(
-        pd.build_codex_argv("gpt-x", None, role, str(worktree)), "workspace-add-dir", worktree,
+    argv = delegate_transport._apply_workspace_git_dirs(
+        contract.build_codex_argv("gpt-x", None, role, str(worktree)), "workspace-add-dir", worktree,
     )
     (worktree_git_dir,) = (main / ".git" / "worktrees").iterdir()
     assert _global_added_dirs(argv) == [str(_real(main / ".git")), str(_real(worktree_git_dir))]
@@ -209,8 +217,8 @@ def test_metadata_write_argv_adds_global_root_and_network(pd, tmp_path, role):
 
 def test_metadata_write_attempt_transport_adds_git_root(pd, tmp_path):
     repo = _committed_repo(tmp_path / "repo")
-    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
-        "codex", "gpt-x", None, "developer", repo, "task",
+    argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "developer", repo, "task",
     )
     assert read_tmp is None and prompt_path is None
     assert _global_added_dirs(argv) == [str(_real(repo / ".git"))]
@@ -230,10 +238,10 @@ def test_scope_read_reanchor_never_opens_source_git(
     temp_root.mkdir(parents=True)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
     _forbid_git_metadata_lookup(pd, monkeypatch)
-    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
-        "codex", "gpt-x", None, role, source, "review",
+    argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, role, source, "review",
         SESSION_ID if resume else None, run_dir if with_run_dir else None,
     )
     try:
@@ -249,7 +257,7 @@ def test_scope_read_reanchor_never_opens_source_git(
         if resume:
             assert argv[-2:] == [SESSION_ID, "-"]
     finally:
-        pd._cleanup_attempt_transport(prompt_path, read_tmp)
+        delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
 
 
 @pytest.mark.parametrize("role", READ_ROLES)
@@ -257,10 +265,10 @@ def test_scope_read_without_tmp_stays_read_only_without_git_roots(
         pd, tmp_path, monkeypatch, role):
     """tmp 를 준비하지 못한 실행에 원 git 쓰기를 여는 보상 동작이 없다."""
     source = _committed_repo(tmp_path / "source")
-    monkeypatch.setattr(pd, "_create_read_role_temp", lambda *_a, **_k: None)
+    monkeypatch.setattr(delegate_temp, '_create_read_role_temp', lambda *_a, **_k: None)
     _forbid_git_metadata_lookup(pd, monkeypatch)
-    argv, _stdin, _prompt_path, read_tmp = pd._prepare_attempt_transport(
-        "codex", "gpt-x", None, role, source, "review",
+    argv, _stdin, _prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, role, source, "review",
     )
     assert read_tmp is None
     assert argv[argv.index("-s") + 1] == "read-only"
@@ -274,7 +282,7 @@ def test_scope_write_role_with_other_exec_root_skips_lookup(pd, tmp_path, monkey
     other = tmp_path / "other"
     other.mkdir()
     argv = _write_argv(pd, other)
-    assert pd._apply_workspace_git_dirs(argv, "workspace-add-dir", tmp_path) == argv
+    assert delegate_transport._apply_workspace_git_dirs(argv, "workspace-add-dir", tmp_path) == argv
 
 
 # ── failure ──────────────────────────────────────────────────────────────
@@ -287,33 +295,33 @@ def test_scope_write_role_with_other_exec_root_skips_lookup(pd, tmp_path, monkey
 def test_failure_runner_exception_is_loud(pd, tmp_path, exception):
     runner = _runner_returning(exception=exception)
     with pytest.raises(delegate_errors.DelegateError, match="git 메타데이터 위치 조회 실패") as info:
-        pd._git_metadata_write_roots(tmp_path, git_run_fn=runner)
+        delegate_transport._git_metadata_write_roots(tmp_path, git_run_fn=runner)
     assert info.value.__cause__ is exception
 
 
 def test_failure_nonzero_exit_carries_code_and_diagnostic(pd, tmp_path):
     runner = _runner_returning(_Completed(128, "", "fatal: not a git repository"))
     with pytest.raises(delegate_errors.DelegateError, match="rc=128.*not a git repository"):
-        pd._git_metadata_write_roots(tmp_path, git_run_fn=runner)
+        delegate_transport._git_metadata_write_roots(tmp_path, git_run_fn=runner)
 
 
 @pytest.mark.parametrize("stdout", ["", "\n", "/only/one\n", "/a\n/b\n/c\n", "/a\n\n"])
 def test_failure_malformed_output_is_not_empty_roots(pd, tmp_path, stdout):
     runner = _runner_returning(_Completed(0, stdout))
     with pytest.raises(delegate_errors.DelegateError, match="두 경로가 아님"):
-        pd._git_metadata_write_roots(tmp_path, git_run_fn=runner)
+        delegate_transport._git_metadata_write_roots(tmp_path, git_run_fn=runner)
 
 
 def test_failure_relative_path(pd, tmp_path):
     runner = _runner_returning(_Completed(0, f"{tmp_path}\n.git\n"))
     with pytest.raises(delegate_errors.DelegateError, match="절대경로가 아님"):
-        pd._git_metadata_write_roots(tmp_path, git_run_fn=runner)
+        delegate_transport._git_metadata_write_roots(tmp_path, git_run_fn=runner)
 
 
 def test_failure_missing_directory(pd, tmp_path):
     runner = _runner_returning(_Completed(0, f"{tmp_path / 'gone'}\n{tmp_path}\n"))
     with pytest.raises(delegate_errors.DelegateError, match="해소 실패"):
-        pd._git_metadata_write_roots(tmp_path, git_run_fn=runner)
+        delegate_transport._git_metadata_write_roots(tmp_path, git_run_fn=runner)
 
 
 def test_failure_not_a_directory(pd, tmp_path):
@@ -321,7 +329,7 @@ def test_failure_not_a_directory(pd, tmp_path):
     plain_file.write_text("x", encoding="utf-8")
     runner = _runner_returning(_Completed(0, f"{tmp_path}\n{plain_file}\n"))
     with pytest.raises(delegate_errors.DelegateError, match="디렉터리가 아님"):
-        pd._git_metadata_write_roots(tmp_path, git_run_fn=runner)
+        delegate_transport._git_metadata_write_roots(tmp_path, git_run_fn=runner)
 
 
 @pytest.mark.parametrize("argv,match", [
@@ -333,7 +341,7 @@ def test_failure_not_a_directory(pd, tmp_path):
 ])
 def test_failure_corrupt_argv(pd, tmp_path, argv, match):
     with pytest.raises(delegate_errors.DelegateError, match=match):
-        pd._apply_workspace_git_dirs(argv, "workspace-add-dir", tmp_path)
+        delegate_transport._apply_workspace_git_dirs(argv, "workspace-add-dir", tmp_path)
 
 
 @pytest.mark.parametrize("argv", [
@@ -354,18 +362,18 @@ def test_failure_formatter_rejects_empty_root():
 def test_failure_git_error_stops_before_child_spawn(pd, tmp_path, monkeypatch):
     """git 조회 실패는 자식 호출 0회로 끝난다 — 빈 루트로 바꿔 실행을 잇지 않는다."""
     repo = _committed_repo(tmp_path / "repo")
-    real_run = pd.subprocess.run
+    real_run = delegate_transport.subprocess.run
 
     def run(argv, **kwargs):
         if "--git-common-dir" in argv:
             return subprocess.CompletedProcess(argv, 128, "", "fatal: boom")
         return real_run(argv, **kwargs)
 
-    monkeypatch.setattr(pd.subprocess, "run", run)
+    monkeypatch.setattr(delegate_transport.subprocess, "run", run)
     spawned: list = []
     with pytest.raises(delegate_errors.DelegateError, match="fatal: boom"):
-        pd._execute_attempt(
-            harness="codex", model="gpt-x", reasoning=None, role="developer", cwd=repo,
+        delegate_execute._execute_attempt(
+            pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE, board_root=pm_paths._board_root_at(pd._CONFIG_REPO_OVERRIDE or pd.REPO)), harness="codex", model="gpt-x", reasoning=None, role="developer", cwd=repo,
             prompt="task", timeout=30, output_dir=tmp_path / "raw",
             run_fn=lambda *a, **k: spawned.append(a), attempt="primary",
         )
@@ -377,14 +385,14 @@ def test_failure_after_read_tmp_cleans_the_attempt_tmp(pd, tmp_path, monkeypatch
     source = _committed_repo(tmp_path / "source")
     temp_root = tmp_path / "pm-home-temp"
     temp_root.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
 
     def _broken(*_args, **_kwargs):
         raise delegate_errors.DelegateError("finalizer 실패")
 
-    monkeypatch.setattr(pd, "_apply_workspace_git_dirs", _broken)
+    monkeypatch.setattr(delegate_transport, '_apply_workspace_git_dirs', _broken)
     with pytest.raises(delegate_errors.DelegateError, match="finalizer 실패"):
-        pd._prepare_attempt_transport("codex", "gpt-x", None, "code-reviewer", source, "r")
+        delegate_transport._prepare_attempt_transport(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "code-reviewer", source, "r")
     assert list(temp_root.iterdir()) == []
 
 
@@ -392,7 +400,7 @@ def test_failure_after_read_tmp_cleans_the_attempt_tmp(pd, tmp_path, monkeypatch
 
 def test_resume_write_argv_keeps_add_dir_global_and_positionals_last(pd, tmp_path):
     repo = _committed_repo(tmp_path / "repo")
-    argv = pd._apply_workspace_git_dirs(_write_argv(pd, repo, resume=True),
+    argv = delegate_transport._apply_workspace_git_dirs(_write_argv(pd, repo, resume=True),
                                         "workspace-add-dir", repo)
     assert _global_added_dirs(argv) == [str(_real(repo / ".git"))]
     assert argv[argv.index("exec"):argv.index("exec") + 2] == ["exec", "resume"]
@@ -407,9 +415,9 @@ def test_resume_read_run_dir_is_global_not_resume_option(pd, tmp_path, monkeypat
     temp_root.mkdir()
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    monkeypatch.setattr(pd, "_read_tmp_root", lambda: temp_root)
-    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
-        "codex", "gpt-x", None, "code-reviewer", source, "r", SESSION_ID, run_dir,
+    monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: temp_root)
+    argv, _stdin, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "code-reviewer", source, "r", SESSION_ID, run_dir,
     )
     try:
         resume_index = argv.index("resume")
@@ -417,7 +425,7 @@ def test_resume_read_run_dir_is_global_not_resume_option(pd, tmp_path, monkeypat
         assert _global_added_dirs(argv) == [str(run_dir)]
         assert argv[-2:] == [SESSION_ID, "-"]
     finally:
-        pd._cleanup_attempt_transport(prompt_path, read_tmp)
+        delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
 
 
 def test_resume_new_and_resume_share_the_same_formatter(pd, tmp_path):
@@ -441,13 +449,13 @@ def dry_run_argv(pd, monkeypatch, tmp_path, capsys):
     def run(role: str, cwd: Path) -> list[str]:
         prompt = tmp_path / "prompt.md"
         prompt.write_text("작업 지시", encoding="utf-8")
-        monkeypatch.setattr(pd, "local_config", lambda: _codex_conf(role))
+        monkeypatch.setattr(conf_store, 'local_config', lambda _home: _codex_conf(role))
 
         def _no_side_effect(*_args, **_kwargs):
             pytest.fail("dry-run 이 임시 디렉터리·쓰기 프로브를 만들었다")
 
-        monkeypatch.setattr(pd, "_create_read_role_temp", _no_side_effect)
-        monkeypatch.setattr(pd, "_probe_writable_target", _no_side_effect)
+        monkeypatch.setattr(delegate_temp, '_create_read_role_temp', _no_side_effect)
+        monkeypatch.setattr(delegate_transport, '_probe_writable_target', _no_side_effect)
         spawned: list = []
         rc = pd.main(["--role", role, "--prompt-file", str(prompt), "--cwd", str(cwd),
                       "--output-dir", str(tmp_path / "raw"), "--dry-run"],
@@ -475,8 +483,8 @@ def test_dry_run_read_hides_source_git_root_and_keeps_preamble(
     assert "--add-dir" not in argv
     assert argv[argv.index("-s") + 1] == "read-only"
     assert _network_override_count(argv) == 1
-    if pd._read_tmp_strategy() is not None:
-        predicted_exec_root, _writable = pd._predict_read_tmp_paths("codex")
+    if delegate_temp._read_tmp_strategy() is not None:
+        predicted_exec_root, _writable = delegate_transport._predict_read_tmp_paths(pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex")
         assert str(predicted_exec_root.parent) in out   # 예측 프리앰블 보존(이름 꼬리는 무작위)
 
 
@@ -485,19 +493,19 @@ def test_dry_run_read_hides_source_git_root_and_keeps_preamble(
 @pytest.mark.parametrize("role", WRITE_ROLES + READ_ROLES)
 def test_cli_formats_claude_and_opencode_argv_unchanged(pd, tmp_path, role):
     """다른 CLI 형식 argv 는 finalizer 를 지나도 바이트 그대로다(git 조회 없음)."""
-    claude = pd.build_claude_argv("opus", "high", role)
-    opencode = pd.build_opencode_argv("prov/m", "high", role, str(tmp_path),
+    claude = contract.build_claude_argv("opus", "high", role)
+    opencode = contract.build_opencode_argv("prov/m", "high", role, str(tmp_path),
                                       str(tmp_path / "p.md"))
-    assert pd._apply_workspace_git_dirs(
-        list(claude), pd._READ_TMP_ARGV_MODE_BY_HARNESS["claude"], tmp_path) == claude
-    assert pd._apply_workspace_git_dirs(
-        list(opencode), pd._READ_TMP_ARGV_MODE_BY_HARNESS["opencode"], tmp_path) == opencode
+    assert delegate_transport._apply_workspace_git_dirs(
+        list(claude), delegate_run_rules._READ_TMP_ARGV_MODE_BY_HARNESS["claude"], tmp_path) == claude
+    assert delegate_transport._apply_workspace_git_dirs(
+        list(opencode), delegate_run_rules._READ_TMP_ARGV_MODE_BY_HARNESS["opencode"], tmp_path) == opencode
     assert "--add-dir" not in claude and "--add-dir" not in opencode
     assert "sandbox_workspace_write.network_access=true" not in claude + opencode
 
 
 def test_cli_formats_codex_mode_comes_from_existing_declaration(pd):
-    assert pd._READ_TMP_ARGV_MODE_BY_HARNESS == {
+    assert delegate_run_rules._READ_TMP_ARGV_MODE_BY_HARNESS == {
         "codex": "workspace-add-dir", "claude": "add-dir", "opencode": "role-agent",
     }
 
@@ -525,9 +533,9 @@ def test_cli_formats_no_legacy_mode_knob(pd, tmp_path, monkeypatch):
     """옛 동작을 고르는 설정이 없다 — 네트워크 키를 설정에 넣어도 override 는 그대로 한 번 실린다."""
     repo = _committed_repo(tmp_path / "repo")
     conf = {**_codex_conf("developer"), "delegate.codex.network": "false"}
-    monkeypatch.setattr(pd, "local_config", lambda: conf)
-    argv, _stdin, _prompt_path, read_tmp = pd._prepare_attempt_transport(
-        "codex", "gpt-x", None, "developer", repo, "task",
+    monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf)
+    argv, _stdin, _prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
+        pm_paths.home_at(pd.REPO, pm_home=pd._CONFIG_REPO_OVERRIDE), "codex", "gpt-x", None, "developer", repo, "task",
     )
     assert read_tmp is None
     assert _network_override_count(argv) == 1
@@ -538,7 +546,7 @@ def test_cli_formats_all_config_overrides_before_exec(pd, tmp_path, resume):
     """`-c` 는 전부 exec 앞에 있다 — exec 뒤에 `-c` 가 하나라도 있으면 codex 가 앞의 `-c`(네트워크
     override)를 버린다(codex-cli 0.163.0 실측: reasoning 을 exec 뒤에 둔 developer-hard 위임에서
     loopback 소켓이 막혔다)."""
-    argv = pd.build_codex_argv("gpt-x", "xhigh", "developer", str(tmp_path),
+    argv = contract.build_codex_argv("gpt-x", "xhigh", "developer", str(tmp_path),
                                SESSION_ID if resume else None)
     exec_index = argv.index("exec")
     assert "-c" not in argv[exec_index:], argv

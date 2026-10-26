@@ -39,7 +39,7 @@ _RETIRED_IDENTIFIERS = (
     "_session_pid",
 )
 # `pid_is_alive` 가 남아도 되는 유일한 축 — 엔진이 스스로 띄운 위임 자식 프로세스.
-_CHILD_PROCESS_OWNER = "pm_delegate.py"
+_CHILD_PROCESS_OWNERS = frozenset({"delegate_cmd.py", "delegate_copy_store.py"})
 # 이 파일 자신은 그 식별자들을 문자열로 들고 있으므로 스캔 대상에서 뺀다.
 _SELF = Path(__file__).name
 
@@ -204,8 +204,8 @@ def test_pid_liveness_is_only_asked_about_delegate_children():
                 if name == "pid_is_alive":
                     callers.append(path.name)
 
-    assert set(callers) == {_CHILD_PROCESS_OWNER}, f"세션 축에서 생존을 조회한다: {sorted(set(callers))}"
-    assert callers.count(_CHILD_PROCESS_OWNER) == 3, "위임 자식 조회 자리 수가 바뀌었다"
+    assert set(callers) == _CHILD_PROCESS_OWNERS, f"세션 축에서 생존을 조회한다: {sorted(set(callers))}"
+    assert len(callers) == 3, "위임 자식 조회 자리 수가 바뀌었다"
 
 
 def test_no_engine_source_reintroduces_a_pool_liveness_helper():

@@ -12,6 +12,7 @@
 도구는 패키지가 아니므로 importlib 동적 로드 (test_pm_log 의 _load_module 관용구).
 """
 from __future__ import annotations
+from pm_engine.domain import review_contract
 
 from pm_engine.cli import board_list
 from pm_engine.cli import board_prefix
@@ -3306,9 +3307,7 @@ def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
     path = _lint_ticket(board, "claimed", "T-3020")
     seed = round_seed.render_round_seed(
         "code-reviewer", path.read_text(encoding="utf-8"), today=ROUND_DATE)
-    marker = _load_module(
-        "pm_delegate_lint", BOARD_PY.with_name("pm_delegate.py"),
-    ).pm_review_refused_line("code-reviewer")
+    marker = review_contract.pm_review_refused_line("code-reviewer")
     _lint_round(board, "T-3020", "01-developer.md",
                 f"## 구현 보충 (developer · {ROUND_DATE})\n\n실제 산출.\n")
     _lint_round(board, "T-3020", "02-code-reviewer.md", seed)

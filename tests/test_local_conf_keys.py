@@ -18,6 +18,10 @@ hermetic: 실 `local.conf` 파일을 tmp 에 만들어 board 도구가 그 파�
 """
 from __future__ import annotations
 
+from pm_engine.infra import delegate_config
+from pm_engine.domain import delegate_run_rules
+from pm_engine.infra import reviewer_target
+
 from pm_engine.infra import pm_paths
 
 
@@ -606,17 +610,17 @@ _MOVED_DEFAULTS = (
                  lambda c: conf_store._conf_default_int("ctx.compact_at_pct"), 90,
                  id="board-ctx-compact-at-pct"),
     pytest.param("additional_reviewer.paths", "src/,tests/,scripts/,.project_manager/tools/",
-                 lambda c: c.reviewer._configured_paths({}),
+                 lambda c: reviewer_target._configured_paths({}),
                  ["src/", "tests/", "scripts/", ".project_manager/tools/"],
                  id="reviewer-paths"),
     pytest.param("additional_reviewer.incomplete_rounds_max", "2",
-                 lambda c: c.reviewer._incomplete_round_limit({}), 2,
+                 lambda c: reviewer_target._incomplete_round_limit({}), 2,
                  id="reviewer-incomplete-rounds-max"),
     pytest.param("additional_reviewer.rounds_max", "2",
-                 lambda c: c.reviewer._review_rounds_max({}), 2,
+                 lambda c: reviewer_target._review_rounds_max({}), 2,
                  id="reviewer-rounds-max"),
     pytest.param("additional_reviewer.wave_budget", "24",
-                 lambda c: c.reviewer._wave_budget({}), 24,
+                 lambda c: reviewer_target._wave_budget({}), 24,
                  id="reviewer-wave-budget"),
 )
 
@@ -796,12 +800,12 @@ def test_the_delegate_switch_on_values_are_the_engine_verdict(conf_module, keys_
     governor = next(row["governed_by"] for row in _rows(keys_document)
                     if row["governed_by"] and row["governed_by"]["on"] is not None)
 
-    assert governor["key"] == delegate.DELEGATE_ENABLED_KEY
+    assert governor["key"] == delegate_run_rules.DELEGATE_ENABLED_KEY
     assert governor["on"] == list(conf_schema.DELEGATE_ENABLED_VALUES)
     for value in governor["on"]:
-        assert delegate._is_enabled({governor["key"]: value.upper()})
+        assert delegate_config._is_enabled({governor["key"]: value.upper()})
     for value in ("false", "0", "no", "off"):
-        assert not delegate._is_enabled({governor["key"]: value})
+        assert not delegate_config._is_enabled({governor["key"]: value})
         assert value not in governor["on"]
 
 

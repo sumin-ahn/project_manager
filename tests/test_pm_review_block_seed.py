@@ -1,6 +1,11 @@
 """T-0700 — parser 상수 기반 리뷰 골격과 disposition-template 계약."""
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+
+from pm_engine.domain import review_contract
+from pm_engine.domain import reviewer_budget
+
 from pm_engine.domain import round_rules
 
 
@@ -408,7 +413,7 @@ def test_refused_previous_round_is_not_a_prefill_source(pd):
     """회수 거부 표식이 있는 라운드는 판정 표면 밖이라 확인 대상을 공급하지 않는다."""
     refused_text = (
         "## 추가 리뷰 (additional-reviewer · 2026-08-17)\n\n"
-        + pd.ADDITIONAL_REVIEWER_REFUSED_LINE + "\n\n"
+        + review_contract.ADDITIONAL_REVIEWER_REFUSED_LINE + "\n\n"
         + _reviewer_round_text(pd, _review_payload("X-001")).partition("\n")[2]
     )
     rendered = round_seed.render_ticket_growth_section_seed(
@@ -421,14 +426,14 @@ def test_refused_previous_round_is_not_a_prefill_source(pd):
 def test_the_refused_marker_line_is_read_back_for_every_round_role(pd):
     """표식 발행 문법과 판독이 갈리지 않는다 — 역할 전수로 왕복을 고정한다."""
     for role in sorted(delegate_ledger.TICKET_COPY_ROLES):
-        line = pd.pm_review_refused_line(role)
+        line = review_contract.pm_review_refused_line(role)
         assert review_form.pm_review_refused_marker_present(line) is True, role
         assert review_form.pm_review_refused_marker_present(f"머리\n{line}\n꼬리\n") is True, role
     # 옛 산출에 이미 박혀 있는 줄은 새 문법의 인스턴스다(마이그레이션 없음).
-    assert pd.ADDITIONAL_REVIEWER_REFUSED_LINE == pd.pm_review_refused_line(
+    assert review_contract.ADDITIONAL_REVIEWER_REFUSED_LINE == review_contract.pm_review_refused_line(
         review_form.ADDITIONAL_REVIEWER_ROLE,
     )
-    assert review_form.pm_review_refused_marker_present(pd.ADDITIONAL_REVIEWER_REFUSED_LINE) is True
+    assert review_form.pm_review_refused_marker_present(review_contract.ADDITIONAL_REVIEWER_REFUSED_LINE) is True
     # 표식이 없는 본문은 판독 0 이다(존재가 아니라 문법을 본다).
     assert review_form.pm_review_refused_marker_present(
         "<!-- pm-review-refused -->\n<!-- pm-review-refused role= -->\n",
@@ -444,14 +449,14 @@ def test_a_marked_round_leaves_the_surface_whatever_its_role(pd, capsys):
     landed = _reviewer_round(pd, _review_payload("F-001"), ordinal=1)
     marked_text = (
         _seeded_round_text(pd, "code-reviewer")
-        + pd.pm_review_refused_line("code-reviewer") + "\n"
+        + review_contract.pm_review_refused_line("code-reviewer") + "\n"
     )
     marked = _round(pd, 2, marked_text)
 
     rounds = [landed, marked]
     assert review_state._pm_review_refused_rounds(rounds) == {("code-reviewer", 2)}
     assert [item.ordinal for item in review_state._pm_review_surface_rounds(rounds)] == [1]
-    assert "F-001" in pd.render_pm_review_disposition_template("", rounds)
+    assert "F-001" in review_contract.render_pm_review_disposition_template("", rounds)
     # `review delta` 도 그 라운드를 읽지 않는다 — 남는 사유는 PM 미판정(정상 상태)이지
     # 자리표시 블록의 malformed 가 아니다(표식이 없으면 그쪽이 티켓 전체를 막는다).
     with pytest.raises(review_form.PMReviewError) as caught:
@@ -494,7 +499,7 @@ def _fake_board(spec_path: Path, tickets_dir: Path):
 
 def test_disposition_template_prefills_all_pending_ids_and_filled_block_passes(pd):
     reviewer = _reviewer_round(pd, _review_payload("F-002", "F-001"))
-    rendered = pd.render_pm_review_disposition_template("", [reviewer])
+    rendered = review_contract.render_pm_review_disposition_template("", [reviewer])
     payload = json.loads(
         rendered.split("```pm-review-disposition-v1\n", 1)[1].split("\n```", 1)[0]
     )
@@ -518,7 +523,7 @@ def test_disposition_template_preserves_existing_rows_and_replaces_partial_block
     reviewer = _reviewer_round(pd, _review_payload("F-001", "F-002"))
     existing = _decision("F-001", "rejected")
     spec = _disposition_block([existing])
-    rendered = pd.render_pm_review_disposition_template(spec, [reviewer])
+    rendered = review_contract.render_pm_review_disposition_template(spec, [reviewer])
     payload = json.loads(
         rendered.split("```pm-review-disposition-v1\n", 1)[1].split("\n```", 1)[0]
     )
@@ -555,10 +560,11 @@ def test_disposition_template_rejects_confirmation_only_round(
         }],
     }, ordinal=2)
     with pytest.raises(delegate_errors.DelegateError, match="confirmation-only.*신규 finding이 없습니다"):
-        pd.render_pm_review_disposition_template("", [first, second], 2)
+        review_contract.render_pm_review_disposition_template("", [first, second], 2)
 
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     spec_path = _materialize(pd, "", [first, second], tickets_dir, "T-0700")
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     assert pd.main([
         "review", "disposition-template", "--ticket", "T-0700", "--ordinal", "2",
@@ -571,8 +577,8 @@ def test_disposition_template_defaults_latest_and_honors_explicit_ordinal(pd):
         _reviewer_round(pd, _review_payload("F-001"), ordinal=1),
         _reviewer_round(pd, _review_payload("F-002"), ordinal=2),
     ]
-    latest = pd.render_pm_review_disposition_template("", rounds)
-    first = pd.render_pm_review_disposition_template("", rounds, 1)
+    latest = review_contract.render_pm_review_disposition_template("", rounds)
+    first = review_contract.render_pm_review_disposition_template("", rounds, 1)
     assert '"reviewer_ordinal":2' in latest and '"id":"F-002"' in latest
     assert '"reviewer_ordinal":1' in first and '"id":"F-001"' in first
 
@@ -584,6 +590,7 @@ def test_disposition_template_cli_and_pending_error_prescribe_same_command(
     spec_path = _materialize(
         pd, "", [_reviewer_round(pd, _review_payload("F-007"))], tickets_dir, "T-0700",
     )
+    monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     assert pd.main([
         "review", "disposition-template", "--ticket", "T-0700",
@@ -648,7 +655,7 @@ def test_t0981_external_prompt_uses_the_native_test_rule():
     external = _load(
         REPO / ".project_manager/tools/additional_reviewer.py", "t0981_external_notice",
     )
-    requirement = external._versioned_block_requirement()
+    requirement = reviewer_budget._versioned_block_requirement()
     assert review_form.PM_REVIEW_FIX_TEST_RULE in requirement
     assert "existing:" in requirement
     assert requirement.count(review_form.PM_REVIEW_FIX_TEST_RULE) == 1

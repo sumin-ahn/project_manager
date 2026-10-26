@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from pm_engine.app import codex_hook
+
+import pytest
+
+from pm_engine.domain import codex_envelope
+from pm_engine.infra import codex_observation
+from pm_engine.domain import delegate_channel_rules
+from pm_engine.infra import pm_paths
+
 import importlib.util
 import json
 from copy import deepcopy
@@ -66,12 +75,12 @@ def _isolate_codex_lint(board, monkeypatch) -> None:
 
 
 def test_unmatched_subagentstart_is_one_never_blocking_lint_advisory(
-    monkeypatch, tmp_path, capsys
+    guard_home, monkeypatch, tmp_path, capsys
 ):
     guard = _load("delegate_guard_board_lint_miss", TOOLS / "delegate_channel_guard.py")
     board = _load("board_codex_lint_miss", TOOLS / "board.py")
-    guard.observe_codex_subagent_start(_subagent_start(), state_dir=tmp_path)
-    monkeypatch.setattr(board, "CODEX_DELEGATE_OBSERVATIONS", guard._codex_audit_path(tmp_path))
+    codex_hook.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
+    monkeypatch.setattr(board, "CODEX_DELEGATE_OBSERVATIONS", codex_observation._codex_audit_path(guard_home, tmp_path))
 
     findings = board.lint_codex_delegate_observations()
 
@@ -90,19 +99,24 @@ def test_unmatched_subagentstart_is_one_never_blocking_lint_advisory(
 
 
 def test_matching_pretooluse_and_subagentstart_emit_zero_lint_advisories(
-    monkeypatch, tmp_path
+    guard_home, monkeypatch, tmp_path
 ):
     guard = _load("delegate_guard_board_lint_match", TOOLS / "delegate_channel_guard.py")
     board = _load("board_codex_lint_match", TOOLS / "board.py")
-    decision = guard._result("allow", "[delegate-channel/record] fixture")
-    result = guard._codex_decision_envelope(decision)
+    decision = delegate_channel_rules._result("allow", "[delegate-channel/record] fixture")
+    result = codex_envelope._codex_decision_envelope(decision)
     # allow envelope 는 `{}` 라 판정을 담지 못한다 — 라이브 훅과 같이 decision 을 함께 넘긴다.
-    guard.observe_codex_pretooluse(
-        _pretooluse(), result, decision=decision, state_dir=tmp_path
+    codex_hook.observe_codex_pretooluse(
+        guard_home, _pretooluse(), result, decision=decision, state_dir=tmp_path
     )
-    guard.observe_codex_subagent_start(_subagent_start(), state_dir=tmp_path)
-    monkeypatch.setattr(board, "CODEX_DELEGATE_OBSERVATIONS", guard._codex_audit_path(tmp_path))
+    codex_hook.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
+    monkeypatch.setattr(board, "CODEX_DELEGATE_OBSERVATIONS", codex_observation._codex_audit_path(guard_home, tmp_path))
 
     assert board.lint_codex_delegate_observations() == []
     _isolate_codex_lint(board, monkeypatch)
     assert board.lint_tickets() == []
+
+
+@pytest.fixture
+def guard_home(tmp_path):
+    return pm_paths.home_at(tmp_path / "rendered")

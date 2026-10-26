@@ -124,7 +124,7 @@ def test_bump_round_trip_rewrites_delegate_modules(tmp_path):
     current = _load_engine_rev()
     major, minor, patch = map(int, current.ENGINE_REV.removeprefix("v").split("."))
     next_rev = f"v{major}.{minor}.{patch + 1}"
-    delegate_modules = ("pm_delegate.py", "delegate_scope.py")
+    delegate_modules = ("pm_delegate.py",)
     assert set(delegate_modules) <= set(current.STAMPED_MODULES)
 
     tools = tmp_path / ".project_manager" / "tools"

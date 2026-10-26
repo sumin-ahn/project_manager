@@ -18,6 +18,19 @@ hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(형제 `test_a
 """
 from __future__ import annotations
 
+from pm_engine.infra import review_diff
+from pm_engine.infra import review_rounds
+from pm_engine.domain import reviewer_budget
+from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_reservation
+from pm_engine.cli import reviewer_rounds
+from pm_engine.app import reviewer_run
+from pm_engine.infra import round_store
+
+from pm_engine.infra.harness import delegate_env
+
+from pm_engine.infra import conf_store
+
 import argparse
 import importlib.util
 import json
@@ -106,15 +119,15 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
     하나가 되게 한다(앵커 해소 회귀는 `test_gate_anchor_resolution.py` 소유)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
-        external, "local_config",
-        lambda repo=None: dict(conf) if conf is not None
+        conf_store, 'local_config',
+        lambda _home, repo=None: dict(conf) if conf is not None
         else dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path)
-    monkeypatch.setattr(external, "parse_ticket_touches", lambda ticket, **kwargs: ["x.py"])
+    monkeypatch.setattr(round_store, "parse_ticket_touches", lambda _home, ticket, **kwargs: ["x.py"])
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *a, **k: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *a, **k: review_diff.ReviewDiff(
             'diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n',
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -126,10 +139,10 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
     # 회수(T-0696)는 실 보드 왕복이 필요한 별도 축이라 여기서는 격리한다 — 그 회귀는
     # tests/test_additional_reviewer_ticket_harvest.py 가 소유한다(run_review stub 과 같은 결).
     monkeypatch.setattr(
-        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_harvest, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
     reviewer = _Reviewer(series if series is not None else [0])
-    monkeypatch.setattr(external, "run_review", reviewer)
+    monkeypatch.setattr(reviewer_run, "run_review", reviewer)
     real_main = external.main
 
     def _isolated_main(argv=None):
@@ -235,7 +248,7 @@ def test_derived_gate_spends_the_wave_budget_too(external, monkeypatch, tmp_path
     """유도된 게이트의 라운드는 wave 총예산에서도 차감된다 (회계 축이 갈리지 않는다)."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--ticket", TICKET]) == 0
-    assert _ledger(tmp_path)[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert _ledger(tmp_path)[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
 
 
 def test_derived_gate_hits_the_convergence_cap_like_an_explicit_one(
@@ -249,7 +262,7 @@ def test_derived_gate_hits_the_convergence_cap_like_an_explicit_one(
         assert external.main(argv) == 1
     capsys.readouterr()
 
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 2              # 리뷰어 미호출 (호출 0·과금 0)
     err = capsys.readouterr().err
     assert "수렴 게이트 차단" in err
@@ -322,7 +335,7 @@ def test_paths_only_dry_run_needs_no_gate(external, monkeypatch, tmp_path, capsy
     assert _ledger(tmp_path) == {}
     captured = capsys.readouterr()
     assert "[dry-run] 리뷰어 호출 생략" in captured.out
-    assert external._GATE_ACCOUNTING_REQUIRED_GUIDANCE not in captured.err
+    assert reviewer_budget._GATE_ACCOUNTING_REQUIRED_GUIDANCE not in captured.err
 
 
 def test_dry_run_with_a_derived_gate_records_nothing(external, monkeypatch, tmp_path, capsys):
@@ -340,7 +353,7 @@ def test_a_reserved_ledger_key_ticket_is_refused_before_sending(
     """유도한 이름도 예약 키 검사를 지난다 — 장부 예약 키 티켓은 호출 전 rc 1 (크래시 아님)."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--ticket", external.WAVE_SECTION_KEY]) == 1
+    assert external.main(["--ticket", reviewer_budget.WAVE_SECTION_KEY]) == 1
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
@@ -350,16 +363,16 @@ def test_a_reserved_ledger_key_ticket_is_refused_before_sending(
 def test_report_surface_is_not_a_derivation_target(external):
     """조회면의 `--gate` 는 '한 게이트만 보기' 필터라 유도값이 사용자 선택으로 둔갑하면 안 된다."""
     args = _args(ticket=TICKET, rounds_report=True)
-    assert external._derive_gate_from_ticket(args) == external.GateDerivation()
+    assert reviewer_reservation._derive_gate_from_ticket(args) == reviewer_budget.GateDerivation()
     assert args.gate is None
 
 
 def test_resolve_gate_surface_is_not_a_derivation_target(external):
     """처분 선언면의 `--gate` 는 무시 목록 입력이다 — 유도하면 없던 무시 경고가 뜬다."""
     args = _args(ticket=TICKET, resolve_gate=OTHER_GATE, rounds_report=False)
-    assert external._derive_gate_from_ticket(args) == external.GateDerivation()
+    assert reviewer_reservation._derive_gate_from_ticket(args) == reviewer_budget.GateDerivation()
     assert args.gate is None
-    assert "--gate" not in external._resolve_gate_ignored_flags(
+    assert "--gate" not in reviewer_rounds._resolve_gate_ignored_flags(
         argparse.Namespace(gate=args.gate, no_gate=False, rounds_report=False,
                            ack_wave=False, force=False))
 
@@ -369,7 +382,7 @@ def test_derivation_helper_sets_the_gate_and_returns_one_line(external, capsys):
 
     헬퍼가 직접 찍으면 stderr 첫 줄이 config provenance 라는 계약을 이 고지가 밀어낸다."""
     args = _args(ticket=TICKET)
-    derivation = external._derive_gate_from_ticket(args)
+    derivation = reviewer_reservation._derive_gate_from_ticket(args)
     assert args.gate == TICKET
     assert derivation.refusal is None
     assert derivation.notice.startswith(_DERIVED_PREFIX)
@@ -393,8 +406,8 @@ def test_empty_diff_does_not_claim_the_derived_gate_was_ledgered(
     """빈 diff 조기 종료는 예약·기록 전이라 자동 유도 고지도 호출 조건형으로만 남는다."""
     reviewer = _wire(external, monkeypatch, tmp_path)
     monkeypatch.setattr(
-        external, "extract_diff",
-        lambda *a, **k: external.ReviewDiff(
+        review_diff, "extract_diff",
+        lambda *a, **k: review_diff.ReviewDiff(
             '',
             'HEAD',
             'INDEX/WORKTREE (untracked 포함)',
@@ -483,13 +496,13 @@ def test_removed_confirm_fix_does_not_open_a_derived_gate(external, monkeypatch,
     reviewer = _wire(external, monkeypatch, tmp_path, series=[2])
     argv = ["--ticket", TICKET]
     assert external.main(argv) == 1
-    before = external._round_ledger_path().read_bytes()
+    before = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).read_bytes()
     capsys.readouterr()
 
     with pytest.raises(SystemExit):
         external.main(argv + ["--confirm-fix"])
     assert reviewer.calls == 1
-    assert external._round_ledger_path().read_bytes() == before
+    assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).read_bytes() == before
     assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
 
 
@@ -518,7 +531,7 @@ def test_pre_spawn_notice_is_conditional_not_a_sent_claim(
     def _fail(*a, **k):
         raise RuntimeError("리뷰어 환경 구성 실패(주입)")
 
-    monkeypatch.setattr(external._load_pm_delegate(), "build_env", _fail)
+    monkeypatch.setattr(delegate_env, "build_env", _fail)
     with pytest.raises(RuntimeError):
         external.main(["--paths", "x.py", "--no-gate"])
     err = capsys.readouterr().err
@@ -532,7 +545,7 @@ def test_summary_block_states_the_unaccounted_gate(external, monkeypatch, tmp_pa
     _wire(external, monkeypatch, tmp_path)
 
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
-    assert f"게이트: {external._SUMMARY_UNACCOUNTED_GATE}" in capsys.readouterr().out
+    assert f"게이트: {reviewer_budget._SUMMARY_UNACCOUNTED_GATE}" in capsys.readouterr().out
 
 
 def test_summary_block_names_the_derived_gate(external, monkeypatch, tmp_path, capsys):
@@ -542,7 +555,7 @@ def test_summary_block_names_the_derived_gate(external, monkeypatch, tmp_path, c
     assert external.main(["--ticket", TICKET]) == 0
     out = capsys.readouterr().out
     assert f"게이트: {TICKET}" in out
-    assert external._SUMMARY_UNACCOUNTED_GATE not in out
+    assert reviewer_budget._SUMMARY_UNACCOUNTED_GATE not in out
 
 
 # ══ ⑤ 조회·처분면의 무시 경고 ═══════════════════════════════════════════════
@@ -559,7 +572,7 @@ def test_report_surface_warns_that_no_gate_is_ignored(external, monkeypatch, tmp
 
 def test_resolve_gate_surface_warns_that_no_gate_is_ignored(external):
     """처분 선언면의 무시 목록에도 `--no-gate` 가 든다 (선언은 호출·예약이 없다)."""
-    ignored = external._resolve_gate_ignored_flags(
+    ignored = reviewer_rounds._resolve_gate_ignored_flags(
         argparse.Namespace(gate=None, no_gate=True, rounds_report=False,
                            ack_wave=False, force=False))
     assert ignored == "--no-gate"

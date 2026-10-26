@@ -10,6 +10,8 @@ per-repo 회귀 명령 해소(ADR-0014)·domain soft 알림(ADR-0018 #2)·전체
 """
 from __future__ import annotations
 
+from pm_engine.infra import round_store
+
 from pm_engine.cli import board_ticket
 
 
@@ -1832,8 +1834,7 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
         "---\nid: T-9001\nestimate: small\ntouches:\n- src/app.py\n",
         encoding="utf-8",
     )
-    external = tf._load_additional_reviewer()
-    assert external is not None
+    assert callable(round_store._parse_touches_from_file)
     assert hasattr(pm_paths, "AnchorResolutionError")
     monkeypatch.setattr(
         tf, "_ticket_frontmatter_snapshot",
@@ -1869,23 +1870,6 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
     assert finisher.run("T-9001", section=None, dry_run=False) == 0
     assert completed == [["complete", "T-9001", "--tests-pass"]]
     assert "T-9001" in (tmp_path / "log.md").read_text(encoding="utf-8")
-
-
-def test_measurement_anchor_stops_without_the_anchor_symbol(tf, tmp_path, monkeypatch):
-    """사본은 있으나 앵커 seam 이 없는 구형/부분 설치는 멈춘다 — 폭을 물을 수 없다.
-
-    기준점 없이 잰 값으로 판정하면 같은 게이트가 설치 상태에 따라 다른 폭을 재게 되므로,
-    가드 off 가 아니라 정지다."""
-    external = tf._load_additional_reviewer()
-    assert external is not None
-    monkeypatch.delattr(external, "integration_anchor", raising=False)
-
-    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
-
-    with pytest.raises(tf._CloseObservationFailure) as caught:
-        finisher._measurement_anchor("T-1234", external)
-
-    assert "integration_anchor 부재" in str(caught.value)
 
 
 # ── 측정 스코프 정규화 · 기계 mirror 제외 (T-0601 ①⑧) ────────────────────────

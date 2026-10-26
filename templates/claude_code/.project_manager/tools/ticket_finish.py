@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+
 import argparse
 import datetime
 import json
@@ -52,7 +53,8 @@ from pm_engine.domain import identity_args, pytest_report, round_rules, ticket_r
 from pm_engine.infra import areas_store, cluster_store, conf_store, console, doc_page_store, fs, lease_store, log_store, pm_paths, raw_output, repo_coordinates, repo_files, round_store, ticket_store  # noqa: E402
 from pm_engine.app import doc_affected, doc_staleness, freshness_lint, regression, slot_resolution  # noqa: E402
 
-from pm_engine.infra import git
+from pm_engine.infra import git, review_diff
+from pm_engine.domain import review_diff_rules
 from pm_engine.infra import board_git
 from pm_engine.app import ticket_access
 from pm_engine.app import board_sync
@@ -132,26 +134,6 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
     return 1
 
 
-
-
-def _load_additional_reviewer():
-    """additional_reviewer 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
-
-    완료 기록 측정(폭의 단계 표·기준점·기계 mirror 제외)은 additional_reviewer 가 소유한다(그쪽이
-    diff 산정 로직의 단일 진실이다). 완료 기록의 사설 참조 검사는 그 측정을 빌려 쓸 뿐이라 사본을
-    두지 않는다 — 리뷰가 본 diff 와 완료 기록이 본 diff 가 갈리지 않게 한다."""
-    er_path = TOOLS_DIR / "additional_reviewer.py"
-    if not er_path.exists():
-        return None
-    try:
-        mod = _load_module_from_path(
-            er_path, "additional_reviewer.py", verifier=_verify_engine_rev,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패가 완료를 막지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return None
-    return mod
 
 
 # 사설 참조 판정식 모듈의 **공용** 캐시 key 접두 — 소비자 이름을 넣지 않는다. 재유입 가드
@@ -267,7 +249,6 @@ def local_config() -> dict[str, str]:
 # **프레임워크 자기 회귀(=현행 `pytest tests/ -q` venv 실행)는 반드시 보존**한다:
 # 어느 층도 값을 주지 못하면 None 을 돌려, 호출부가 현행 argv 를 그대로 쓰게 한다(board 의
 # 기본 폴백 `pytest -q` 와 달리 venv 인터프리터·`tests/` 경로를 보존 — 도그푸딩 불변).
-
 
 
 # ── PM-홈 worktree 오실행 가드 (쓰기-경로 전용) ─────────────────────────
@@ -671,13 +652,13 @@ def _fallback_frontmatter_scalar(text: str, key: str) -> str | None:
 
 
 def _fallback_ticket_frontmatter(
-    board_py: Path, ticket_id: str, external,
+    board_py: Path, ticket_id: str,
 ) -> dict:
     """board.py 자체가 import/read 불능일 때 현재 티켓의 최소 입력만 복구한다.
 
     정상 경로의 YAML 판정을 대체하지 않는다. board.py 위치에서 PM 루트와 board/legacy tickets
     디렉터리를 결정하고, frontmatter `id`가 정확히 같은 후보가 **하나**일 때만 쓴다. touches는
-    additional_reviewer 의 기존 raw frontmatter parser를 재사용한다. 후보가 모호하거나 읽히지
+    round_store의 raw frontmatter parser를 재사용한다. 후보가 모호하거나 읽히지
     않으면 {}라 임의 스코프를 만들지 않는다.
     """
     try:
@@ -699,12 +680,12 @@ def _fallback_ticket_frontmatter(
     if len(candidates) != 1:
         return {}
     path, text = candidates[0]
-    # additional_reviewer의 원문 frontmatter parser는 손상된 opener를 `AnchorResolutionError`
+    # round_store의 원문 frontmatter parser는 손상된 opener를 `AnchorResolutionError`
     # 로 알린다. 이 fallback은 측정 가드용 입력 복구라 그 경우에도 가드 off로 접어 완료 기록을
     # 막지 않는다. 다른 예외는 삼키지 않는다.
-    parser_errors = (AttributeError, OSError, UnicodeError, pm_paths.AnchorResolutionError)
+    parser_errors = (OSError, UnicodeError, pm_paths.AnchorResolutionError)
     try:
-        touches = external._parse_touches_from_file(path)
+        touches = round_store._parse_touches_from_file(path)
     except parser_errors:
         return {}
     return {"touches": touches}
@@ -813,10 +794,6 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
 # rc=1 에러이기 때문이다 — 조용히 건너뛰는 건 광역 `add -A` 일 때뿐이다. 즉 스코프화가 이 성질을
 # 반전시킨다. 안 걸르면 `touches` 에 gitignored 경로가 하나만 있어도
 # board complete 이후 stage 가 통째로 죽고 잔여 loud 보고까지 사라진다.
-
-
-
-
 
 
 _WORKTREE_TOUCH_PREFIX = re.compile(r"^work/[^/]+_\d+(?:/|$)")
@@ -1166,7 +1143,7 @@ def _cluster_member_ids(board_py: Path, ticket_id: str) -> tuple[str, ...]:
 
 
 def _parsed_diff_added_lines(
-    diff_text: str, block_path_fn: Callable[[list[str]], str | None],
+    diff_text: str,
 ) -> tuple[dict[str, set[int]], list[str]]:
     """0-컨텍스트 unified diff 원문 → ({새 파일 상대경로: {추가된 줄 번호}}, 경로 미확정 헤더).
 
@@ -1187,7 +1164,7 @@ def _parsed_diff_added_lines(
     added: dict[str, set[int]] = {}
     unresolved: list[str] = []
     for block in blocks:
-        path = block_path_fn(block)
+        path = review_diff_rules._diff_block_path(block)
         if path is None:
             unresolved.append(block[0].rstrip("\r\n"))
             continue
@@ -1368,10 +1345,6 @@ _INTEGRATION_TIP_UNDECLARED = (
 _INTEGRATION_TIP_UNRESOLVED = (
     "{ticket} 장부가 선언한 통합 브랜치 {branch} 가 이 코드 트리에 없다 ({tree}) — 판정 기준을 "
     "해소하지 못했다. 장부의 통합 브랜치 이름과 이 트리의 브랜치를 대조하라."
-)
-_INTEGRATION_ANCHOR_SEAM_ABSENT = (
-    "additional_reviewer 사본에 integration_anchor 부재(구형/부분 설치) — 측정 폭의 기준점을 물을 "
-    "수 없다. pm-update 로 .project_manager/tools/ 를 재동기하라."
 )
 _RESIDUAL_POPULATION_UNRESOLVED = (
     "{ticket} 통합 브랜치 tip 으로 커밋된 인구를 읽지 못했다 ({tip}) — 잔여 판정 인구가 성립"
@@ -1592,13 +1565,13 @@ class TicketFinisher:
         self._regression_cwd = str(tree)
         self._task_workspace = None
 
-    def _measured_ticket_touches(self, ticket_id: str, external) -> list[str]:
+    def _measured_ticket_touches(self, ticket_id: str) -> list[str]:
         """현재 티켓 touches — board 판독이 실패하면 티켓 원문 frontmatter 에서 복구한다."""
         snapshot = _ticket_frontmatter_snapshot(self._board_py, ticket_id)
         if snapshot.error is None:
             return get_ticket_touches(self._board_py, ticket_id)
         fallback = _fallback_ticket_frontmatter(
-            self._board_py, ticket_id, external,
+            self._board_py, ticket_id,
         )
         return _clean_touches(fallback.get("touches"))
 
@@ -1612,24 +1585,20 @@ class TicketFinisher:
         self._loud_notes.add(key)
         print(f"  ⚠ {message}", file=sys.stderr)
 
-    def _measurement_anchor(self, ticket_id: str, external) -> str | None:
+    def _measurement_anchor(self, ticket_id: str) -> str | None:
         """측정 폭의 기준점 — 통합 브랜치와의 merge-base. 해소 실패는 정지다.
 
         사설 참조 판정이 이 한 자리에서 값을 받는다 — 리뷰가 본 표면과 완료 기록이 보는
-        표면이 갈리지 않는다. 구형/부분 설치로 측정 seam 이 없으면
-        폭을 물을 수 없으므로 그것도 정지다(옛 폭으로 접는 갈래가 없다).
+        표면이 갈리지 않는다. integration_anchor의 기준점 판정을 직접 사용한다.
 
         빈 기준선(커밋 0)에서는 기준선도 HEAD 도 없어 **잴 표면 자체가 없다** — `None` 을
         돌려주고, 호출부가 기존 "측정 불가 = 가드 off + loud 한 줄" 등급으로 접는다(빈 트리
         sentinel 같은 새 rev 를 만들지 않는다)."""
-        anchor_fn = getattr(external, "integration_anchor", None)
-        if anchor_fn is None:
-            raise _CloseObservationFailure(_INTEGRATION_ANCHOR_SEAM_ABSENT)
         code_tree = self._code_tree()
         tip = self._integration_tip(ticket_id, code_tree)
         if tip is None:
             return None
-        anchor, reason = anchor_fn(code_tree, tip)
+        anchor, reason = review_diff.integration_anchor(code_tree, tip)
         if reason is not None:
             raise _CloseObservationFailure(f"{ticket_id} {reason}")
         return anchor
@@ -1735,7 +1704,7 @@ class TicketFinisher:
     # 다른 기준으로 접지 않고 멈춘다.
 
     def _private_ref_surface_paths(
-        self, code_tree: Path, touches: Sequence[str], private_refs, external,
+        self, engine_home, code_tree: Path, touches: Sequence[str], private_refs,
     ) -> list[Path]:
         """터치 선언 ∩ 사설 참조 출하 python 표면 ∖ 기계 mirror — 절대경로 목록(표면 해소).
 
@@ -1750,14 +1719,14 @@ class TicketFinisher:
             relative = path.relative_to(code_tree).as_posix()
             if not scope_covers(touches, relative):
                 continue
-            if external.is_machine_mirror_path(relative):
+            if review_diff.is_machine_mirror_path(engine_home, relative):
                 continue
             surface.append(path)
         return surface
 
     def _private_ref_diff_offenders(
         self, surface_paths: Sequence[Path], code_tree: Path, diff_text: str,
-        private_refs, block_path_fn,
+        private_refs,
     ) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str]]]:
         """표면 파일 중 `diff_text` 가 새로 추가한 줄에서 (actionable, raw) offender 를 낸다.
 
@@ -1767,7 +1736,7 @@ class TicketFinisher:
 
         판정하지 못한 표면(비-UTF-8 · 구문 오류 · 경로 미확정 diff block)은 차단하지 않되
         **조용히 넘기지도 않는다** — 확정 사실에만 hard 차단을 걸되, 못 본 자리는 값으로 알린다."""
-        added_by_path, unresolved = _parsed_diff_added_lines(diff_text, block_path_fn)
+        added_by_path, unresolved = _parsed_diff_added_lines(diff_text)
         for header in unresolved:
             print(
                 f"  ⚠ 사설 참조 판정 불가(차단 아님) — diff 경로 미확정: {header}",
@@ -1882,20 +1851,13 @@ class TicketFinisher:
         private_refs = _load_private_refs()
         if private_refs is None:
             return None
-        external = _load_additional_reviewer()
-        if external is None:
-            return None
-        measured_diff_text_fn = getattr(external, "measured_diff_text", None)
-        block_path_fn = getattr(external, "_diff_block_path", None)
-        if measured_diff_text_fn is None or block_path_fn is None:
-            return None  # 구형/부분 additional_reviewer 사본 — 표면 자체가 없다.
         touches = self._normalize_measured_touches(
-            self._measured_ticket_touches(ticket_id, external))
+            self._measured_ticket_touches(ticket_id))
         if not touches:
             return None
         code_tree = self._code_tree()
         surface_paths = self._private_ref_surface_paths(
-            code_tree, touches, private_refs, external,
+            pm_paths.home_at(TOOLS_DIR.resolve().parents[1]), code_tree, touches, private_refs,
         )
         if not surface_paths:
             return None
@@ -1903,10 +1865,10 @@ class TicketFinisher:
         if integration_tip is None:
             self._warn_unborn_baseline(ticket_id)
             return None
-        anchor = self._measurement_anchor(ticket_id, external)
+        anchor = self._measurement_anchor(ticket_id)
         relative_paths = [path.relative_to(code_tree).as_posix() for path in surface_paths]
         try:
-            diff_text = measured_diff_text_fn(
+            diff_text = review_diff.measured_diff_text(
                 code_tree, "HEAD", relative_paths, claimed_rev=anchor,
             )
         except OSError:
@@ -1914,7 +1876,7 @@ class TicketFinisher:
         if not diff_text.strip():
             return None
         actionable, raw = self._private_ref_diff_offenders(
-            surface_paths, code_tree, diff_text, private_refs, block_path_fn,
+            surface_paths, code_tree, diff_text, private_refs,
         )
         if not actionable and not raw:
             return None

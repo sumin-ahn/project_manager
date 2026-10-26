@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+from pm_engine.domain import delegate_errors
+import subprocess
+
 from typing import NamedTuple
 from pm_engine.domain import ticket_rules
 
@@ -430,6 +433,121 @@ def _resolve_read_board(home) -> _ReadBoardResolution:
     if data_home == Path(home.root).resolve():
         return _ReadBoardResolution(_board_root_at(home.root), None)
     return _ReadBoardResolution(_board_root_at(data_home), data_home)
+
+
+
+def _repo_root_for_cwd(cwd: Path) -> Path:
+    """명시 cwd를 prepare/harvest가 공유하는 제품 Git 루트로 정규화한다.
+
+    앱 checkout은 `.project_manager`를 소유하지 않아도 된다. 보드·config의 PM 홈 소유
+    해소는 `_ticket_cli_owner`/lease 경계가 별도로 담당한다.
+    """
+    if not cwd.is_absolute():
+        raise delegate_errors.DelegateError("--cwd 는 절대경로여야 합니다")
+    resolved = cwd.resolve()
+    return Path(repo_root_from_cwd(resolved) or resolved).resolve()
+
+
+
+
+def _path_repo_root(path: Path) -> Path | None:
+    """존재 경로(파일이면 부모)에서 가장 가까운 git repo 루트를 반환한다."""
+    start = path if path.is_dir() else path.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
+def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) -> bool:
+    """이번 검토 범위가 **최초 PM 홈**에서 파생됐는가 (diff 소유자 대조 대상).
+
+    명시 `--paths` 나 유효 ticket touches 가 범위를 완전 지정하지 않은 실행은 최초 PM 홈 config
+    를 읽어 범위를 얻는다. 그 config 가 `additional_reviewer.paths` 를 선언했든 레지스트리 기본
+    경로로 떨어졌든 **범위의 출처는 최초 PM 홈 하나**라, 표시 conf 와 실제 호출
+    범위가 갈리는 위험은 같다 — 그래서 선언 유무를 판정 입력으로 쓰지 않는다.
+    """
+    return not ticket_selected and not explicit_paths
+
+
+# ── PM 홈 앵커 재지정 감지 (adopter#0 false-green 게이트) ────────────────
+# additional_reviewer 의 import 사본은 PM 홈에 있어 REPO 가 PM 홈으로
+# 해소된다 — 실 코드 변경은 canonical worktree에 있으므로 `git diff` 가 비어 codex 가 "변경
+# 없음"을 통과로 판정하는 false-green 이 난다.
+# board.py `_pm_home_worktree_misanchor`의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
+# 잡고, 여긴 PM 홈에서 실행된 추가 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
+# 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 anchor/conf 를
+# 명시 인자로 받아 DI seam 이 된다. 판정 *형태*는 board `_has_real_board` 동형이되 상태 집합은
+# 복제하지 않고 단일 진실(`ticket_rules.STATUS_DIRS`)을 승계한다 — 사본은 새 상태에서 갈린다.
+
+def _owns_real_board(pm_dir: Path) -> bool:
+    """`.project_manager` 디렉토리(`pm_dir`)가 실 티켓(`T-*.md`)을 가진 board 를 소유하는가.
+
+    board/ 분리면 `board/tickets`, legacy 면 `wiki/tickets` 상태 디렉토리에 실 티켓이
+    하나라도 있으면 True. 빈 scaffold(README/_template 만 — worktree 출하 형상)는 False (worktree
+    자신을 PM 홈으로 오인해 가드 오탐 내지 않게·board.py `_has_real_board` 동형)."""
+    for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
+        if not base.is_dir():
+            continue
+        for status in ticket_rules.STATUS_DIRS:
+            status_dir = base / status
+            if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
+                return True
+    return False
+
+
+def _canonical_worktree(anchor: Path) -> Path | None:
+    """adopter#0 PM 홈 `anchor` 의 canonical 코드 worktree(재지정 대상) 경로 — 없으면 None.
+
+    `<anchor>/work/*` 스캔 중 엔진 사본(`.project_manager/tools/additional_reviewer.py`)을 가진 첫
+    디렉토리를 반환한다(슬롯 생성 도구가 쓰는 `work/<name>` 경로 관례와 동형). 없으면
+    None(무관 형상·재지정 대상 없음).
+
+    local.conf `upstream.path` 은 재지정 대상 결정에 **쓰지 않는다** — upstream 은 URL 이거나 무관한
+    로컬 checkout(`pm_import --from <로컬>`)일 수 있어, 실 board 를
+    소유한 정규 채택자에서 stale/무관 checkout 으로 오안내하며 정상 리뷰를 hard-block 한다(빈-diff
+    백스톱도 실 diff 가 non-empty 면 무력). `work/` 슬롯 스캔만으로 adopter#0재지정을
+    완전 커버하고, upstream 분기는 잉여+오탐만 더한다 — 제거가 동등 커버리지·최소·오탐 0(codex/reviewer
+    이중 게이트 수렴 must-fix)."""
+    work_dir = anchor / "work"
+    if work_dir.is_dir():
+        for sub in sorted(work_dir.iterdir()):
+            if (sub / ".project_manager" / "tools" / "additional_reviewer.py").is_file():
+                return sub
+    return None
+
+
+def _pm_home_reanchor(anchor: Path) -> Path | None:
+    """`anchor`(REPO=도구 자기-앵커)가 adopter#0 PM 홈이면 재지정 대상 worktree 를, 아니면 None.
+
+    2중 conjunction (오탐 0 지향·fail-soft): (1) anchor 가 실 board 소유(PM 홈) — worktree(코드
+    전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) anchor 아래 canonical
+    코드 worktree(`work/<name>`) 존재. 일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
+    None(무영향)."""
+    # additional_reviewer.main은 명시 selector 기반 diff_root 해소로 전환되어 이 헬퍼를 호출하지 않는다.
+    # pm_delegate.check_write_target_reanchor가 adopter write-target 보호에 계속 사용하므로 유지한다.
+    if not _owns_real_board(anchor / ".project_manager"):
+        return None
+    return _canonical_worktree(anchor)
+
+
+def repo_root_from_cwd(cwd: Path | None) -> Path | None:
+    """호출 cwd/`--cwd`에서 가장 가까운 제품 repo 루트를 해소한다.
+
+    Git `rev-parse --show-toplevel`을 써 linked worktree의 `.git` 파일과 일반 checkout의
+    `.git` 디렉토리를 같은 근거로 본다. 제품 repo에 `.project_manager`를 요구하지
+    않는다. PM 홈은 호출부가 `resolve_pm_home_for_repo`로 lease 장부에서 별도
+    해소한다. cwd 미지정/비-repo면 None이며 divergence 가드는 조용히 skip한다.
+    """
+    if cwd is None:
+        return None
+    return _path_repo_root(cwd.resolve())
 
 
 def _resolve_log_file(home) -> Path:

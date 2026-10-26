@@ -5,6 +5,15 @@
 """
 from __future__ import annotations
 
+from pm_engine.infra import pm_paths
+from pm_engine.domain import reviewer_budget
+from pm_engine.infra import review_diff
+from pm_engine.app import reviewer_run
+from pm_engine.domain import reviewer_result
+from pm_engine.app import reviewer_prompt
+
+from pm_engine.infra import reviewer_target
+
 import importlib.util
 import json
 import subprocess
@@ -56,8 +65,9 @@ def test_ticket_finish_pytest_parser_seams(ticket_finish):
 
 
 def test_additional_reviewer_symbols(additional_reviewer):
+    owners = {"parse_verdict": reviewer_result, "build_prompt": reviewer_prompt, "run_review": reviewer_run, "extract_diff": review_diff}
     for sym in ("run_review", "parse_verdict", "extract_diff", "build_prompt"):
-        assert callable(getattr(additional_reviewer, sym))
+        assert callable(getattr(owners.get(sym, additional_reviewer), sym))
 
 
 # ── 순수 로직 (R16·R17) ─────────────────────────────────────────────────
@@ -82,26 +92,26 @@ def test_verdict_and_exit(additional_reviewer, tmp_path):
                           ensure_ascii=False) + "\n"
 
     # 실행 대상은 해소된 구조화 tuple 하나다(모델 미고정 커맨드 직접 실행 경로는 폐지).
-    target = additional_reviewer.resolve_reviewer_target({
+    target = reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": "codex",
         "additional_reviewer.model": "gpt-5.6-sol",
     })
 
-    r = additional_reviewer.run_review(
-        "p", target=target, output_dir=tmp_path,
+    r = reviewer_run.run_review(
+        pm_paths.home_at(additional_reviewer.REPO), "p", target=target, output_dir=tmp_path,
         run_fn=mock(reply("판정: 통과\n\n**must-fix**:\n- 없음\n")),
     )
-    assert r["all_pass"] and additional_reviewer.determine_exit_code(r) == 0
+    assert r["all_pass"] and reviewer_budget.determine_exit_code(r) == 0
 
-    r = additional_reviewer.run_review(
-        "p", target=target, output_dir=tmp_path,
+    r = reviewer_run.run_review(
+        pm_paths.home_at(additional_reviewer.REPO), "p", target=target, output_dir=tmp_path,
         run_fn=mock(reply("판정: 반려\n\n**must-fix**:\n- foo\n")),
     )
-    assert r["any_must_fix"] and additional_reviewer.determine_exit_code(r) == 1
+    assert r["any_must_fix"] and reviewer_budget.determine_exit_code(r) == 1
 
-    r = additional_reviewer.run_review(
-        "p", target=target, output_dir=tmp_path, run_fn=mock("boom", rc=1),
+    r = reviewer_run.run_review(
+        pm_paths.home_at(additional_reviewer.REPO), "p", target=target, output_dir=tmp_path, run_fn=mock("boom", rc=1),
     )
-    assert r["failed"] and additional_reviewer.determine_exit_code(r) == 1
+    assert r["failed"] and reviewer_budget.determine_exit_code(r) == 1
 
 

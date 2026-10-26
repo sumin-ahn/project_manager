@@ -840,7 +840,7 @@ def test_read_input_inventory_covers_every_read_leaf():
 def test_pm_owned_path_inventory_is_complete():
     """import-time PM-owned 경로 상수 전수가 재앵커 표에 있다."""
     b = _load_board()
-    expected = {'DELEGATE_CHANNEL_GUARD_PY', 'CODEX_DELEGATE_OBSERVATIONS'}
+    expected = {'CODEX_DELEGATE_OBSERVATIONS'}
     assert set(b._READ_PM_PATH_RELS) == expected
 
 

@@ -19,6 +19,8 @@ monkeypatch 한다(test_board_root 의 함수-scope 새-모듈 로드 + REPO 재
 환경에선 실 git 케이스를 skip 한다(단위 게이트 테스트는 항상 실행).
 """
 from __future__ import annotations
+from pm_engine.app import delegate_prepare
+from pm_engine.infra import pm_paths
 
 from pm_engine.cli import board_ticket
 
@@ -186,7 +188,7 @@ def test_t0928_prepare_sync_preserves_scope_and_reports_local_vs_remote(
     monkeypatch.setattr(board_git, "_board_git_push", push)
     if mode == "commit":
         monkeypatch.setattr(git, "git_scope_stage_and_commit", lambda *a, **k: None)
-    plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
+    plan = delegate_prepare.prepare_ticket_copy(pm_paths.home_at(tmp_path), ticket="T-0001", role="architect", cwd=slot)
     assert plan.path.is_file() and plan.board_path.is_file()
     assert len(delegate_ledger.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
     out = capsys.readouterr()
@@ -220,7 +222,7 @@ def test_t0928_prepare_sync_legacy_keeps_noop_semantics(board, tmp_path, monkeyp
         raise AssertionError("별도 board-git이 없는 경로의 git 호출")
 
     monkeypatch.setattr(git, "_board_git", forbidden)
-    plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
+    plan = delegate_prepare.prepare_ticket_copy(pm_paths.home_at(tmp_path), ticket="T-0001", role="architect", cwd=slot)
     assert plan.path.is_file()
     captured = capsys.readouterr()
     out = captured.out + captured.err
@@ -242,7 +244,7 @@ def test_t0928_prepare_sync_marks_malformed_touches_and_preserves_source(
     monkeypatch.setattr(board_git, "_board_git_push",
                         lambda _home: subprocess.CompletedProcess([], 0, "", ""))
     head = board_git._board_git_head(board._home())
-    plan = pd.prepare_ticket_copy(ticket="T-0001", role="architect", cwd=slot, pm_home=tmp_path)
+    plan = delegate_prepare.prepare_ticket_copy(pm_paths.home_at(tmp_path), ticket="T-0001", role="architect", cwd=slot)
     assert "touches 형식 오류" in (pm_paths.wiki_dir(board._home()) / "board.md").read_text(encoding="utf-8")
     assert ticket_store.load_ticket(spec)[0]["touches"] == malformed
     assert spec.read_bytes() == original

@@ -16,39 +16,17 @@
         "count": 1
       }
     ],
-    ".project_manager/tools/additional_reviewer.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "ff1f19f489cbc6f2b6ea5102638d22f9bb2f64451fbd076b967cff3adc758e76",
-        "count": 1
-      }
-    ],
-    ".project_manager/tools/delegate_channel_guard.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
-        "count": 1
-      }
-    ],
     ".project_manager/tools/pm_delegate.py": [
       {
         "kind": "session_stamp",
-        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_engine/app/delegate_execute.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
         "count": 1
       }
     ],
@@ -118,6 +96,18 @@
       {
         "kind": "session_stamp",
         "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_engine/domain/codex_envelope.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
         "count": 1
       }
     ],
@@ -260,6 +250,20 @@
         "count": 1
       }
     ],
+    ".project_manager/tools/pm_engine/infra/harness/delegate_run.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
+        "count": 1
+      }
+    ],
+    ".project_manager/tools/pm_engine/infra/review_rounds.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "ff1f19f489cbc6f2b6ea5102638d22f9bb2f64451fbd076b967cff3adc758e76",
+        "count": 1
+      }
+    ],
     ".project_manager/tools/pm_engine/infra/ticket_store.py": [
       {
         "kind": "session_stamp",
@@ -392,39 +396,17 @@
         "count": 1
       }
     ],
-    "templates/claude_code/.project_manager/tools/additional_reviewer.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "ff1f19f489cbc6f2b6ea5102638d22f9bb2f64451fbd076b967cff3adc758e76",
-        "count": 1
-      }
-    ],
-    "templates/claude_code/.project_manager/tools/delegate_channel_guard.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
-        "count": 1
-      }
-    ],
     "templates/claude_code/.project_manager/tools/pm_delegate.py": [
       {
         "kind": "session_stamp",
-        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/app/delegate_execute.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
         "count": 1
       }
     ],
@@ -494,6 +476,18 @@
       {
         "kind": "session_stamp",
         "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/domain/codex_envelope.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
         "count": 1
       }
     ],
@@ -636,6 +630,20 @@
         "count": 1
       }
     ],
+    "templates/claude_code/.project_manager/tools/pm_engine/infra/harness/delegate_run.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/infra/review_rounds.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "ff1f19f489cbc6f2b6ea5102638d22f9bb2f64451fbd076b967cff3adc758e76",
+        "count": 1
+      }
+    ],
     "templates/claude_code/.project_manager/tools/pm_engine/infra/ticket_store.py": [
       {
         "kind": "session_stamp",
@@ -771,39 +779,17 @@
         "count": 1
       }
     ],
-    "templates/codex/.project_manager/tools/additional_reviewer.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "ff1f19f489cbc6f2b6ea5102638d22f9bb2f64451fbd076b967cff3adc758e76",
-        "count": 1
-      }
-    ],
-    "templates/codex/.project_manager/tools/delegate_channel_guard.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
-        "count": 1
-      }
-    ],
     "templates/codex/.project_manager/tools/pm_delegate.py": [
       {
         "kind": "session_stamp",
-        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/app/delegate_execute.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
         "count": 1
       }
     ],
@@ -873,6 +859,18 @@
       {
         "kind": "session_stamp",
         "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/domain/codex_envelope.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
         "count": 1
       }
     ],
@@ -1012,6 +1010,20 @@
       {
         "kind": "session_stamp",
         "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/infra/harness/delegate_run.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/infra/review_rounds.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "ff1f19f489cbc6f2b6ea5102638d22f9bb2f64451fbd076b967cff3adc758e76",
         "count": 1
       }
     ],
@@ -1341,39 +1353,17 @@
         "count": 1
       }
     ],
-    "templates/opencode/.project_manager/tools/additional_reviewer.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "ff1f19f489cbc6f2b6ea5102638d22f9bb2f64451fbd076b967cff3adc758e76",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.project_manager/tools/delegate_channel_guard.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
-        "count": 1
-      }
-    ],
     "templates/opencode/.project_manager/tools/pm_delegate.py": [
       {
         "kind": "session_stamp",
-        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/app/delegate_execute.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "810cd339f3287ded2ef32a39d9c653abb2a7ce8868f1c97a6a30368b69167305",
         "count": 1
       }
     ],
@@ -1443,6 +1433,18 @@
       {
         "kind": "session_stamp",
         "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/domain/codex_envelope.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
         "count": 1
       }
     ],
@@ -1582,6 +1584,20 @@
       {
         "kind": "session_stamp",
         "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/infra/harness/delegate_run.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_engine/infra/review_rounds.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "ff1f19f489cbc6f2b6ea5102638d22f9bb2f64451fbd076b967cff3adc758e76",
         "count": 1
       }
     ],

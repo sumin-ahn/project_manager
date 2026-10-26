@@ -183,7 +183,7 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: worktree_records.Gi
 # 위임 사본 루트(run-dir)를 숨기는 정본 규칙 — 두-git 풀 슬롯의 정본은 그 풀 bare 의
 # `info/exclude` 다. bare 의 exclude 는 `$GIT_COMMON_DIR/info/exclude` 라 그 풀의 모든 linked
 # worktree 가 공유하므로, 앱 저장소에 프레임워크 파일을 두거나 사람이 exclude 를 손으로
-# 고치는 절차가 사라진다. 값은 `pm_delegate.TICKET_COPY_POOL_IGNORE_RULE` 과 같은
+# 고치는 절차가 사라진다. 값은 `delegate_rounds.TICKET_COPY_POOL_IGNORE_RULE` 과 같은
 # 문자열이어야 한다(판정하는 쪽과 설치하는 쪽의 불변식은 테스트가 고정). 루트 앵커 디렉터리
 # 규칙이라 저장소가 추적하는 `.project_manager/tools`·`wiki` 는 숨기지 않는다.
 TICKET_COPY_POOL_IGNORE_RULE = "/.project_manager/.local/"
@@ -204,7 +204,7 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
 
     **fail-soft**: 쓰기 실패는 경고를 surface 하되 repo 등록·슬롯 생성 자체는 막지 않는다
     (옆 두 헬퍼 `_set_bare_fetch_refspec`·`_ensure_bare_branch_tracking` 과 같은 계약). 조용한
-    생략이 아니다 — 진짜 게이트는 `pm_delegate` 의 사본 루트 검사(fail-loud)이고, 여기서 rc 를
+    생략이 아니다 — 진짜 게이트는 `delegate_copy_store`의 사본 루트 검사(fail-loud)이고, 여기서 rc 를
     1 로 만들면 exclude 쓰기 실패가 repo 등록 자체를 막는다. 반환 = 규칙이 설치된 상태인지.
     """
     exclude = bare_path / "info" / "exclude"

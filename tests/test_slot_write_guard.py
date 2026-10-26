@@ -6,6 +6,8 @@ git 쓰기 주인 판정은 실제 linked worktree 가 필요해 `test_git_ancho
 """
 from __future__ import annotations
 
+from pm_engine.app import delegate_execute
+
 from pm_engine.app import engine_guard
 from pm_engine.infra import pm_paths
 
@@ -330,10 +332,10 @@ def test_delegate_env_names_the_task_that_holds_the_slot(board, home, monkeypatc
     pm_delegate = _load("slot_write_guard_pm_delegate", TOOLS / "pm_delegate.py")
     monkeypatch.setattr(board, "REPO", home)
     monkeypatch.setattr(pm_delegate, "REPO", home)
-    assert pm_delegate._delegate_task_env(home / "work" / "app_1") == {"PM_DELEGATE_TASK": "alpha"}
-    assert pm_delegate._delegate_task_env(home / "work" / "app_4" / "src") == {"PM_DELEGATE_TASK": "beta"}
-    assert pm_delegate._delegate_task_env(home / "work" / "app_2") == {}
-    assert pm_delegate._delegate_task_env(home) == {}
+    assert delegate_execute._delegate_task_env(pm_paths.home_at(home), home / "work" / "app_1") == {"PM_DELEGATE_TASK": "alpha"}
+    assert delegate_execute._delegate_task_env(pm_paths.home_at(home), home / "work" / "app_4" / "src") == {"PM_DELEGATE_TASK": "beta"}
+    assert delegate_execute._delegate_task_env(pm_paths.home_at(home), home / "work" / "app_2") == {}
+    assert delegate_execute._delegate_task_env(pm_paths.home_at(home), home) == {}
 
 
 def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(board, home, monkeypatch):

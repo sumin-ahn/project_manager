@@ -8,8 +8,8 @@ PM 홈에 untracked 로 표면화했다. per-clone 파일이 커밋에 유입되
 `local.conf`·`.local/` 과 같은 per-clone 클래스라 엔진 `.project_manager/.gitignore` 에 등재하고
 manifest 전파로 출하 템플릿 전 타깃(=채택자가 받는 사본)에 내린다. 가드는 세 축이다:
 
-  ① 생성 주체와 ignore 규칙이 같은 파일을 가리킨다 — `additional_reviewer.REVIEW_CONTEXT_FILE` 에서
-     이름·디렉토리를 파생해 단언한다(상수 rename 시 ignore 규칙 미갱신을 잡는다).
+  ① 생성 주체와 ignore 규칙이 같은 파일을 가리킨다 — `round_store._load_review_context` 에서
+     실제 판독 경로의 이름·디렉터리를 단언한다.
   ② 엔진 canonical + 출하 템플릿 전 타깃에 규칙이 등재돼 있다 — 엔진만 고치면 채택자에게 닿는
      채널(pm_import 트리 복사·pm_update manifest 전파)이 비어 출하 누락으로 남는다([[T-0473]] 선례).
   ③ `git check-ignore` 실판정 — 임시 채택자 repo 에 실 파일을 만들어 rc=0 과 `git status` 무표면화를
@@ -23,7 +23,8 @@ hermetic — stdlib + `git` 서브프로세스만 (라이브 하니스·네트�
 """
 from __future__ import annotations
 
-import importlib.util
+from pm_engine.infra import fs, pm_paths, round_store
+
 import re
 import shutil
 import subprocess
@@ -46,15 +47,6 @@ _GIT = shutil.which("git")
 
 requires_git_binary = pytest.mark.skipif(
     _GIT is None, reason="git 바이너리 부재 — check-ignore 실판정 실행 불가.")
-
-
-def _load_additional_reviewer():
-    """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — tests/ 공통 규약."""
-    spec = importlib.util.spec_from_file_location(
-        "additional_reviewer", TOOLS / "additional_reviewer.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _target_names() -> set[str]:
@@ -132,14 +124,27 @@ def _write(repo: Path, relpath: str, body: str = "본문\n") -> None:
 # ── ① 생성 주체 ↔ ignore 규칙 동일 대상 ────────────────────────────────────────
 
 
-def test_ignore_rule_targets_the_additional_reviewer_overlay_constant():
+def test_ignore_rule_targets_the_additional_reviewer_overlay_constant(tmp_path, monkeypatch):
     """ignore 규칙 대상이 additional_reviewer 가 실제로 읽는 overlay 파일과 같다.
 
-    상수를 rename 하면 규칙이 죽은 이름을 무시하게 되고 새 이름이 다시 untracked 로 샌다. 위치
+    실제 판독 경로의 이름이 바뀌어도 ignore 규칙이 옛 이름에 남는 경우를 검출한다. 위치
     단언(부모 디렉토리 `.project_manager`)도 함께 건다 — bare-name 패턴은 규칙 파일이 있는
     디렉토리 하위에서만 유효하므로, overlay 가 다른 곳으로 옮겨지면 이 등재는 무력해진다.
     """
-    overlay = _load_additional_reviewer().REVIEW_CONTEXT_FILE
+    home = pm_paths.home_at(tmp_path / "code", pm_home=tmp_path / "owner")
+    expected = home.local_dir.parent / "review_context.local.md"
+    expected.parent.mkdir(parents=True)
+    expected.write_text("fixture overlay\n", encoding="utf-8")
+    read_paths = []
+    read_text = fs.read_text_shared
+
+    def observed_read(path, **kwargs):
+        read_paths.append(path)
+        return read_text(path, **kwargs)
+
+    monkeypatch.setattr(fs, "read_text_shared", observed_read)
+    round_store._load_review_context(home)
+    overlay, = read_paths
     assert overlay.name == OVERLAY_FILE_NAME, (
         "additional_reviewer overlay 파일명이 바뀌었는데 ignore 규칙이 옛 이름에 남아 있다 — "
         f"규칙 대상을 {overlay.name!r} 로 갱신하라")
@@ -149,20 +154,26 @@ def test_ignore_rule_targets_the_additional_reviewer_overlay_constant():
 
 
 def test_every_overlay_literal_in_source_matches_the_registered_name():
-    """additional_reviewer.py 안의 overlay 파일명 리터럴 전 지점이 등재명과 같다.
+    """실제 overlay 소유자와 모든 출하 사본의 파일명 리터럴이 등재명과 같다.
 
-    모듈 로드 시점 바인딩 외에 PM 홈 재바인딩 지점이 같은 리터럴을 중복 보유한다 — 재바인딩
-    쪽만 rename 되면 위 상수 단언은 green 인 채 `--pm-home` 해소 실행이 읽는 파일명이 갈린다.
-    소스의 `*.local.md` 파일명 리터럴을 전수 스캔해 등재명 하나로 고정한다 (지점 수 하한 2).
+    source 이동 뒤 canonical과 mirror의 실제 위치를 모두 검사한다. 파일명 판정과
+    두 지점 이상의 검사 하한은 유지한다.
     """
-    source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
-    literals = re.findall(r'"([A-Za-z0-9_.-]+\.local\.md)"', source)
+    owner = Path(round_store.__file__)
+    relative_owner = owner.relative_to(REPO)
+    sources = (owner, *(TEMPLATES_DIR / name / relative_owner for name in sorted(_target_names())))
+    literals = [
+        literal for source in sources
+        for literal in re.findall(
+            r'"([A-Za-z0-9_.-]+\.local\.md)"', source.read_text(encoding="utf-8"),
+        )
+    ]
     assert len(literals) >= 2, (
-        "overlay 파일명 리터럴이 2지점(모듈 바인딩 + PM 홈 재바인딩) 미만으로 줄었다 — "
+        "overlay 파일명 리터럴이 canonical·mirror의 2지점 미만으로 줄었다 — "
         "경로 조립이 바뀌었으면 이 스캔 패턴을 실 조립 형태로 갱신하라")
     stray = [lit for lit in literals if lit != OVERLAY_FILE_NAME]
     assert not stray, (
-        f"additional_reviewer.py 의 overlay 리터럴 {stray!r} 가 등재명 {OVERLAY_FILE_NAME!r} 와 "
+        f"round_store canonical·mirror의 overlay 리터럴 {stray!r} 가 등재명 {OVERLAY_FILE_NAME!r} 와 "
         "다르다 — 전 지점을 같은 이름으로 맞추고 ignore 등재를 갱신하라")
 
 
