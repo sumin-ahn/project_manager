@@ -1683,11 +1683,10 @@ _ENGINE_REV_MARKER_REVERSALS = (
         '        raise _EngineSyncNotationContextError(str(exc)) from exc\n'
     ),
     (
-        '    except RuntimeError as exc:\n'
-        '        # `None` 은 호출부에서 "이 형상엔 게이트가 적용되지 않음(무차단)" 으로 읽히므로 판정 불능으로\n'
-        '        #   접지 않는다. `plan()` 의 다른 RuntimeError(예 `EmptyShippingInventoryError`)는 종전대로\n'
-        '        #   전파한다.\n'
-        '        raise\n',
+        '    except _EngineSyncNotationContextError:\n'
+        '        return None\n',
+        '    except _EngineSyncNotationContextError:\n'
+        '        return None\n'
         '    except RuntimeError as exc:\n'
         '        # 엔진 사본 skew(마커 보존을 위해 `_resolve_engine_sync_plan` 이 원본 그대로 재-raise 함)도\n'
         '        #   여기서 판정 불능으로 접지 않는다 — 이 게이트는 "실행 엔진 사본이 upstream 과 갈렸는가"\n'

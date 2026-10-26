@@ -526,11 +526,6 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
         return None
     except _EngineSyncNotationContextError:
         return None
-    except RuntimeError as exc:
-        # `None` 은 호출부에서 "이 형상엔 게이트가 적용되지 않음(무차단)" 으로 읽히므로 판정 불능으로
-        #   접지 않는다. `plan()` 의 다른 RuntimeError(예 `EmptyShippingInventoryError`)는 종전대로
-        #   전파한다.
-        raise
     missing = sync_plan["missing"]
     if missing:
         # `@target-owned` 항목의 source 부재는 정상(타깃 고유 어댑터·엔진 upstream 에 없음) — `_main`

@@ -137,9 +137,8 @@ def _console_worktree_add(home, input_fn):
     빌드명령 프롬프트의 표시 기본값은 명시 Home의 areas_store에서 읽는다. 프롬프트 내부 중단은
     cmd_worktree_add → _prompt_test_cmd 가 None 으로 흡수(크래시 0·기존 폴백).
 
-    이 액션은 핸들러 rc 를 읽지 않는다(취소/중단 sentinel 만 반환) — 그래서 엔진 사본 불일치
-    (marked engine skew)는 rc 가 아니라 예외로 올라와야 루프가 끝난다. cmd_worktree_add 가
-    그 경계를 재전파하고 `main` 이 CLI 와 같은 문구·rc 로 번역한다.
+    이 액션은 핸들러 rc 를 읽지 않는다(취소/중단 sentinel 만 반환). 핸들러가 올린 예외는
+    잡지 않고 그대로 올라간다.
     """
     repo = _console_input(input_fn, "슬롯을 만들 repo 이름: ")
     if repo is _CONSOLE_ABORT:
