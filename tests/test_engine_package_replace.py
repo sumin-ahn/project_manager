@@ -308,7 +308,7 @@ def test_package_child_scope_is_refused(tmp_path, monkeypatch, capsys):
     (target / FLAT).write_text("# flat v1\n", encoding="utf-8")
     assert update_cmd.main(repo_home, ["--target", "tgt", "--paths", ".project_manager/tools"]) == 1
     assert FLAT in capsys.readouterr().err, "별도 평면 엔진 변경의 거부가 약해졌다"
-    (target / FLAT).write_text("# flat v2\n", encoding="utf-8")
+    (target / FLAT).write_text("# flat v2\n", encoding="utf-8", newline="\n")
     assert update_cmd.main(repo_home, ["--target", "tgt", "--paths", ".project_manager/tools"]) == 0
     assert _package_tree(target / PACKAGE) == {"keep.py": "# keep\n"}
 

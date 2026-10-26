@@ -49,6 +49,13 @@ BUILD_TIME_MODULE = "build.py"
 ENGINE_SCRATCH_ROOT = ".project_manager/.local"
 # 엔진이 갱신을 예고하는 두 채널 — byte-copy 와 토큰 치환(@render). 둘 다 예고다.
 ANNOUNCE_PREFIXES = ("[update] ", "[render] ")
+# 엔진 패키지 교체 예고 — 디렉터리 한 줄에 파일 수만 붙는다. 그 디렉터리 아래 변경 전부가 예고다.
+REPLACE_DIR_PREFIX = "[replace-dir] "
+# 패키지 교체가 같은 대상의 writer 를 직렬화하려고 지우지 않고 남기는 락 — 엔진 운영 산출물이다.
+ENGINE_TRANSFER_LOCK = ".project_manager/tools/.pm-engine-transfer.lock"
+# 상류 패키지 변경을 만들 canonical 패키지 파일 두 개.
+UPSTREAM_PACKAGE_EDITS = (".project_manager/tools/pm_engine/__init__.py",
+                          ".project_manager/tools/pm_engine/domain/__init__.py")
 
 
 @pytest.fixture(scope="module")
@@ -86,9 +93,9 @@ def api(tmp_path, monkeypatch) -> Api:
 
 
 def _durable(snapshot: dict[str, str]) -> dict[str, str]:
-    """엔진 스크래치를 걷어낸 트리 스냅샷."""
+    """엔진 스크래치와 패키지 교체 락을 걷어낸 트리 스냅샷."""
     return {name: digest for name, digest in snapshot.items()
-            if not name.startswith(ENGINE_SCRATCH_ROOT)}
+            if not name.startswith(ENGINE_SCRATCH_ROOT) and name != ENGINE_TRANSFER_LOCK}
 
 
 def _direct_update(pm_home: Path, *args: str) -> subprocess.CompletedProcess:
@@ -239,20 +246,37 @@ def test_the_manager_package_has_no_file_copying_code():
     assert offenders == {}
 
 
-def test_the_update_call_only_changes_what_the_engine_announced(api, pm_home):
-    """적용이 바꾸는 것은 엔진이 바꾼다고 말한 그 파일들이다(관리자가 더 손대지 않는다)."""
+def test_the_update_call_only_changes_what_the_engine_announced(api, pm_home, upstream, tmp_path):
+    """적용이 바꾸는 것은 엔진이 바꾼다고 말한 그 파일들이다(관리자가 더 손대지 않는다).
+
+    상류는 패키지 파일 두 개를 더 바꾼 두 번째 clone 이다 — 패키지 교체 예고까지 같이 잰다."""
+    from _manager_home import _git
+    package_upstream = tmp_path / "package-upstream"
+    _git("clone", "-q", "--no-local", str(upstream), str(package_upstream))
+    for name in UPSTREAM_PACKAGE_EDITS:
+        edited = package_upstream / name
+        edited.write_bytes(edited.read_bytes() + b"# upstream package change\n")
+    _git("-C", str(package_upstream), "commit", "-qam", "upstream package change")
+    set_conf_key(pm_home, "upstream.path", str(package_upstream))
+
+    preview = api.update_preview(str(pm_home))["stdout"].splitlines()
     announced = {line.split(prefix, 1)[1].strip()
-                 for line in api.update_preview(str(pm_home))["stdout"].splitlines()
-                 for prefix in ANNOUNCE_PREFIXES if prefix in line}
+                 for line in preview for prefix in ANNOUNCE_PREFIXES if prefix in line}
+    announced_packages = {line.split(REPLACE_DIR_PREFIX, 1)[1].split(" (", 1)[0].strip()
+                          for line in preview if REPLACE_DIR_PREFIX in line}
     assert announced, "상류가 앞서 있지 않다 — 픽스처 전제 붕괴"
+    assert announced_packages, "상류 패키지 변경이 예고되지 않았다 — 픽스처 전제 붕괴"
     before = _durable(tree_snapshot(pm_home))
 
     assert api.update_apply(str(pm_home))["rc"] == 0
 
     after = _durable(tree_snapshot(pm_home))
     changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
-    # 엔진이 예고한 파일 + 엔진 자신이 기록하는 baseline(local.conf) 밖은 없어야 한다.
-    assert changed <= announced | {".project_manager/local.conf"}, changed
+    assert set(UPSTREAM_PACKAGE_EDITS) <= changed, "상류 패키지 변경이 착지하지 않았다"
+    unannounced = {name for name in changed
+                   if not any(name.startswith(f"{package}/") for package in announced_packages)}
+    # 엔진이 예고한 파일·패키지 + 엔진 자신이 기록하는 baseline(local.conf) 밖은 없어야 한다.
+    assert unannounced <= announced | {".project_manager/local.conf"}, unannounced
 
 
 @pytest.mark.parametrize("preview, count", [(True, 1), (False, 2)])
