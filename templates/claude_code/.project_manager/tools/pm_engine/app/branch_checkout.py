@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from pm_engine.domain import worktree_records
-from pm_engine.infra import branch_store, lease_store, pm_paths, pool_store, slot_snapshot, sparse_checkout, submodule_git, worktree_git
+from pm_engine.infra import areas_store, branch_store, lease_store, pm_paths, pool_store, slot_snapshot, sparse_checkout, submodule_git, worktree_git
 
 
 def _apply_slot_folders(home, slot: str, folders: "list[str] | None", *,
@@ -326,7 +326,7 @@ def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None
          커맨드가 스스로 슬롯을 보호브랜치에 앉힌다). 원문과 다르면 stderr 로 **loud 고지**
          (조용히 다른 브랜치로 가지 않는다).
       6. **보호목록 거부** — 정규화된 브랜치가 그 repo 보호목록이면 거부.
-         `protected` 주입 시 그 목록(테스트 hermetic), 아니면 `_resolve_protected(repo)`.
+         `protected` 주입 시 그 목록(테스트 hermetic), 아니면 `areas_store._repo_protected(repo)`.
       7. **존재 판정**(`refs/heads/<정규화>`) → **미존재면 `not-found`**(switch 는 브랜치를 만들지
          않는다 — 새 브랜치는 부모를 기록하는 `create_task_branch`) · **타 worktree 점유 거부**
          (`checked-out-elsewhere` — 다른 worktree 가 이미 checkout 중이면 그 경로를 실어 거부·
@@ -371,7 +371,7 @@ def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None
         print(f"[알림] 슬롯 {slot} switch: {expansion} — 보호목록 검사·전환·장부 기록은 전부 "
               f"`{target}` 기준으로 진행한다.", file=sys.stderr)
 
-    protected_list = protected if protected is not None else branch_store._resolve_protected(home, repo)
+    protected_list = protected if protected is not None else areas_store._repo_protected(home, repo)
     if target in protected_list:
         detail = f"`{target}`" + (f" ({expansion})" if expansion else "")
         raise worktree_records.SwitchRefused(slot, "protected", detail=detail)
@@ -426,7 +426,7 @@ def create_task_branch(home, slot: str, branch: str, *, parent: str, owner_task:
          보유한 슬롯이 아니면 `not-owner`.
       2. worktree 부재 `no-worktree` · dirty `dirty` · rebase 진행 중 `rebase-in-progress`.
       3. 브랜치명 정규화(`_normalize_branch_name`) 실패 `invalid-ref` — 이후 전부 정규화 이름 기준.
-      4. 보호목록 `protected`(`protected` 주입 또는 `_resolve_protected(repo)`) · 로컬 브랜치 존재
+      4. 보호목록 `protected`(`protected` 주입 또는 `areas_store._repo_protected(repo)`) · 로컬 브랜치 존재
          `exists` · 로컬 브랜치 아닌 ref 로 해소 `ambiguous-ref` · 접두 부모 D/F 충돌 `df-conflict`.
       5. 부모 비교 ref(`parent_ref` — 원격/로컬 중 최신) 없음 `parent-missing` · 그 끝 커밋(fork) 해소
          실패 `git-error`.
@@ -457,7 +457,7 @@ def create_task_branch(home, slot: str, branch: str, *, parent: str, owner_task:
     target = branch_store._normalize_branch_name(branch, git_runner=runner)
     if target is None:
         raise worktree_records.TaskBranchRefused(slot, "invalid-ref", detail=f"`{branch}`")
-    protected_list = protected if protected is not None else branch_store._resolve_protected(home, lease.repo)
+    protected_list = protected if protected is not None else areas_store._repo_protected(home, lease.repo)
     if target in protected_list:
         raise worktree_records.TaskBranchRefused(slot, "protected", detail=f"`{target}`")
     if branch_store._local_branch_exists(target, git_runner=runner):

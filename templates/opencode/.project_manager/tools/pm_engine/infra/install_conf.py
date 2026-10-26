@@ -20,22 +20,14 @@ import sys
 # 않는다 — 플랫폼별 python3/python 해석을 한 곳에 둔다.
 
 
-def _detected_py() -> str:
-    """{{PY}} 치환·local.conf runtime.py= 기본값으로 쓸 인터프리터 명령을 탐지한다.
-
-    `python_env._detect_py()` 를 재사용(단일 진실). 탐지 실패는 전파한다.
-    """
-    return python_env._detect_py()
-
-
 def _default_test_cmd() -> str:
     """기본 test_cmd — `python_env.default_pytest_cmd` 의 xdist 가용성 판정과 같은 명령을 사용한다.
 
     상수 하드코딩(`python3 -m pytest`)은 Windows 에서 깨진다(`python3`=비기능 shim 또는
-    엉뚱한 Store Python). `_detected_py()` 를 경유해 `python_env._detect_py()` 의 실행검증된
+    엉뚱한 Store Python). `python_env._detect_py()` 의 실행검증된
     인터프리터를 쓴다 — local.conf `runtime.py=` 와 동일 소스라 일관.
     """
-    return python_env.default_pytest_cmd(_detected_py())
+    return python_env.default_pytest_cmd(python_env._detect_py())
 
 
 def _force_rmtree(path: Path) -> None:
@@ -246,7 +238,7 @@ def sync_local_conf(dest_root: Path, project_name: str) -> bool:
     updates = {
         "project.name": project_name,
         "test.cmd": _default_test_cmd(),
-        "runtime.py": _detected_py(),
+        "runtime.py": python_env._detect_py(),
     }
     return _write_conf_keys(local_conf, updates)
 

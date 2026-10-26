@@ -400,9 +400,7 @@ def _default_run_fn(
     except OSError as exc:
         return _midrun_failure_result(harness, exc)
     except watchdog.ProcessCleanupError as exc:
-        if getattr(exc, "process_cleanup_failed", False) is True:
-            return _cleanup_failure_result(harness, exc)
-        raise
+        return _cleanup_failure_result(harness, exc)
 
 
 # 스폰 단계로 확신할 수 있는 예외들(바이너리 부재·실행 권한·경로 형상). 그 밖의 OSError 는 실행 중

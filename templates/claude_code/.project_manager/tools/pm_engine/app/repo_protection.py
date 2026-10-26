@@ -145,7 +145,7 @@ def protected_hook_install_failure_reason(home, repo: str) -> str | None:
 def _install_protected_hook(home, repo: str) -> bool:
     """보호 훅을 설치하고 Home·repo별 최근 실패 사유를 보관한다."""
     _PROTECTED_HOOK_FAILURE_REASONS.pop((home, repo), None)
-    protected = branch_store._resolve_protected(home, repo)
+    protected = areas_store._repo_protected(home, repo)
     mode, test_cmd = _protected_push_gate_config(home, repo)
     installed = bool(protected_hooks.install_protected_hook(
         home, repo, protected, gate_mode=mode, test_cmd=test_cmd))
@@ -159,7 +159,7 @@ def _install_protected_hook(home, repo: str) -> bool:
 def _areas_protected_cell(home, repo: str) -> str | None:
     """areas.md 그 repo 행의 **raw** `protected` 셀 — 행 부재 → None (출처 판정용).
 
-    `branch_store._resolve_protected`(폴백 적용된 실효값)와 달리 "명시했나 / 비었나 / 행이 없나"를
+    `areas_store._repo_protected`(폴백 적용된 실효값)와 달리 "명시했나 / 비었나 / 행이 없나"를
     구별해야 조회 출력의 **출처** 줄을 정직하게 낼 수 있다. 행 부재 → None, 파싱 예외는 전파.
     """
     _header, rows = areas_store._parse_areas(home)

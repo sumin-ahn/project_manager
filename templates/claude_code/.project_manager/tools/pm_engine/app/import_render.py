@@ -10,6 +10,7 @@ from pm_engine.infra import install_conf
 from pm_engine.infra import install_files
 from pm_engine.infra import install_source
 from pm_engine.infra import manifest_store
+from pm_engine.infra import python_env
 from pm_engine.infra import skill_inventory
 import sys
 
@@ -29,7 +30,7 @@ def _substitution_map(project_name: str, project_root: Path, today: str) -> dict
         "{{PROJECT_NAME}}": project_name,
         "{{PROJECT_TAGLINE}}": install_rules.DEFAULT_TAGLINE,
         "{{PROJECT_ROOT}}": str(project_root),
-        "{{PY}}": install_conf._detected_py(),
+        "{{PY}}": python_env._detect_py(),
         "{{TEST_CMD}}": install_conf._default_test_cmd(),
         "{{DATE}}": today,
     }

@@ -279,7 +279,7 @@ def delete_branch_by_rule(home,
     """브랜치 삭제 판정과 삭제 — 슬롯 제거가 쓰는 단일 규칙.
 
     차례(앞에서 걸리면 그 자리에서 보존한다):
-      1. repo 보호 브랜치(`_resolve_protected`) 또는 공용 저장소 기본 브랜치 → 보존.
+      1. repo 보호 브랜치(`areas_store._repo_protected`) 또는 공용 저장소 기본 브랜치 → 보존.
       2. 자식 브랜치(`branch_children`) 1개 이상 → 보존 + 자식 목록.
       3. 부모 기록 없음 → 보존. 부모 브랜치가 지워져 비교 ref(`parent_ref`)가 없으면 합쳐짐을 잴 수
          없어 보존.
@@ -296,7 +296,7 @@ def delete_branch_by_rule(home,
     def preserved(reason: str, **fields) -> BranchDeletion:
         return BranchDeletion(branch, action=worktree_records.BRANCH_PRESERVED, reason=reason, **fields)
 
-    if branch in _resolve_protected(home, repo):
+    if branch in areas_store._repo_protected(home, repo):
         return preserved(worktree_records.BRANCH_REASON_PROTECTED)
     if branch == _shared_default_branch(git_runner=git_runner):
         return preserved(worktree_records.BRANCH_REASON_DEFAULT)
@@ -522,11 +522,6 @@ def _shared_stash_subjects(shared: dict, git_runner: worktree_records.GitRunner)
     if "stash" not in shared:
         shared["stash"] = _stash_subjects(git_runner)
     return shared["stash"]
-
-
-def _resolve_protected(home, repo: str) -> list[str]:
-    """대상 Home 등록부의 실효 보호목록. 판독 실패는 전파한다."""
-    return list(areas_store._repo_protected(home, repo))
 
 
 def _normalize_branch_name(branch: str, *, git_runner: worktree_records.GitRunner) -> "str | None":

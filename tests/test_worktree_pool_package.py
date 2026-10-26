@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from pm_engine.infra import areas_store, branch_store, pm_paths, pool_store, task_store
+from pm_engine.infra import areas_store, pm_paths, pool_store, task_store
 from pm_engine.app import task_lifecycle
 
 
@@ -83,9 +83,8 @@ def test_snapshot_todo_uses_target_home_without_flat_engine(tmp_path):
 
 def test_registered_protection_overrides_default(tmp_path):
     home = pm_paths.home_at(tmp_path)
-    assert branch_store._resolve_protected(home, "repo") == ["main", "master", "develop"]
+    assert areas_store._repo_protected(home, "repo") == ["main", "master", "develop"]
     path = pm_paths.areas_file(home)
     path.parent.mkdir(parents=True)
     path.write_text("| repo | protected |\n|---|---|\n| repo | release |\n", encoding="utf-8")
     assert areas_store._repo_protected(home, "repo") == ["release"]
-    assert branch_store._resolve_protected(home, "repo") == ["release"]

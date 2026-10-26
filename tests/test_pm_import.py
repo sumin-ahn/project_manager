@@ -452,7 +452,7 @@ def test_local_conf_operational_values_synced(pm_import, tmp_path):
 
     D11 seam: board.py init 은 project_name 빈값·test_cmd=`pytest -q` 를 하드코딩하므로,
     pm_import 가 init 직후 local.conf operational 값을 sed 치환값(--name·DEFAULT_TEST_CMD·
-    _detected_py())으로 동기화해야 한다. 파일 존재만 보는 기존 테스트로는 이 불일치를 못 잡는다.
+    python_env._detect_py())으로 동기화해야 한다. 파일 존재만 보는 기존 테스트로는 이 불일치를 못 잡는다.
     """
     dest = tmp_path / "confsync"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "Banana Corp"])
@@ -463,8 +463,8 @@ def test_local_conf_operational_values_synced(pm_import, tmp_path):
         f"local.conf project_name 이 --name 과 불일치: {conf.get('project.name')!r}"
     assert conf.get("test.cmd") == install_conf._default_test_cmd(), \
         f"local.conf test_cmd 이 _default_test_cmd() 와 불일치: {conf.get('test.cmd')!r}"
-    assert conf.get("runtime.py") == install_conf._detected_py(), \
-        f"local.conf py 가 _detected_py() 와 불일치: {conf.get('runtime.py')!r}"
+    assert conf.get("runtime.py") == python_env._detect_py(), \
+        f"local.conf py 가 _detect_py() 와 불일치: {conf.get('runtime.py')!r}"
 
 
 def test_default_test_cmd_delegates_to_board_parallel_default(pm_import, monkeypatch):
@@ -475,7 +475,7 @@ def test_default_test_cmd_delegates_to_board_parallel_default(pm_import, monkeyp
             assert runtime == "fixture-python"
             return "fixture-python -m pytest tests/ -q -n auto"
 
-    monkeypatch.setattr(install_conf, "_detected_py", lambda: "fixture-python")
+    monkeypatch.setattr(python_env, "_detect_py", lambda: "fixture-python")
     monkeypatch.setattr(python_env, "default_pytest_cmd", _Board.default_pytest_cmd)
     assert install_conf._default_test_cmd() == (
         "fixture-python -m pytest tests/ -q -n auto"

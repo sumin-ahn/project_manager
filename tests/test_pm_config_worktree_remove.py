@@ -18,7 +18,7 @@ worktree 슬롯 lifecycle 의 *제거 본체*(수동 `git worktree remove` 위�
 
 hermetic 필수 — worktree_pool 모듈 전역(REPO·LEASES_FILE·WORK_DIR·REPOS_DIR)은 import 시점에
 실 repo 절대경로로 굳으므로 tmp 로 재지정한다(test_worktree_pool.py 패턴 동류). board.py 는
-import 하지 않는다(보호목록은 `_resolve_protected` 를 monkeypatch 한다).
+import 하지 않는다(보호목록은 `areas_store._repo_protected` 를 monkeypatch 한다).
 """
 from __future__ import annotations
 from pm_engine.cli import config_slots
@@ -38,6 +38,7 @@ import pytest
 
 from _git_fixture import init_git_repo
 from pm_engine.app import branch_checkout
+from pm_engine.infra import areas_store
 from pm_engine.infra import branch_store
 from pm_engine.infra import pm_paths
 from pm_engine.infra import pool_store
@@ -92,7 +93,7 @@ def proj(tmp_path):
 def wp(proj, monkeypatch):
     """tmp-바인딩 worktree_pool 모듈 — 보호목록은 `main` 하나로 고정(실 areas.md 미접촉)."""
     mod = _load_wp_bound(proj)
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo: ["main"])
     return mod
 
 
@@ -460,7 +461,7 @@ def family(proj, tmp_path, monkeypatch):
     """실 bare + 슬롯 A_1(base main·부모 main 기록) — (wp, bare, slot_dir, bare_runner)."""
     _init_repo(proj)
     wp = bind_pool(monkeypatch, _load_wp_bound(proj))
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: ["release"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo: ["release"])
     bare = _mk_real_bare(wp, "A", tmp_path)
     worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     return wp, bare, pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1"), worktree_git._real_git_runner(bare)
@@ -488,7 +489,7 @@ def test_real_judge_protected_branch_preserved(family):
 def test_real_judge_shared_default_branch_preserved_even_from_worktree_runner(family, monkeypatch):
     """차례 1 — 공용 저장소 기본 브랜치는 보존. 슬롯 worktree 에 묶인 runner 여도 슬롯 HEAD 가 아니라 공용 HEAD 를 읽는다."""
     wp, bare, slot_dir, runner = family
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: [])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo: [])
     slot_runner = worktree_git._real_git_runner(slot_dir)
     assert branch_store._shared_default_branch(git_runner=slot_runner) == "main"
     deletion = branch_store.delete_branch_by_rule(pm_paths.home_at(wp.REPO), "main", repo="A", git_runner=runner)
@@ -665,7 +666,7 @@ def submodule_slot(proj, tmp_path, monkeypatch):
     """하위 모듈을 초기화한 슬롯 A_1 — (wp, bare, slot_dir)."""
     _init_repo(proj)
     wp = bind_pool(monkeypatch, _load_wp_bound(proj))
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo: ["main"])
     bare = _mk_real_bare_with_submodule(wp, "A", tmp_path)
     worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
     slot_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1")
@@ -881,7 +882,7 @@ def pool(proj, tmp_path, monkeypatch):
     """실 bare + 슬롯 A_1·A_2(base main) — A_1 에 합쳐지지 않은 커밋 1개. (wp, bare)."""
     _init_repo(proj)
     wp = bind_pool(monkeypatch, _load_wp_bound(proj))
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo: ["main"])
     bare = _mk_real_bare(wp, "A", tmp_path)
     worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_1
     worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)   # A_2

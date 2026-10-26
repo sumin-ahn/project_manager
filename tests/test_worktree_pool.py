@@ -6927,17 +6927,17 @@ def test_raw_git_switch_still_diverges(wp):
     assert result.branch_match is False
 
 
-def test_resolve_protected_uses_registry_then_defaults(wp, monkeypatch):
+def test_repo_protected_uses_registry_then_defaults(wp, monkeypatch):
     """등록부 판독 값을 그대로 쓰고 판독 실패는 전파한다."""
-    monkeypatch.setattr(areas_store, "_repo_protected", lambda home, repo: ["trunk"])
-    assert branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A") == ["trunk"]
-    monkeypatch.setattr(areas_store, "_repo_protected", lambda home, repo: list(areas_rules.DEFAULT_PROTECTED))
-    assert branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A") == list(areas_rules.DEFAULT_PROTECTED)
-    def ordinary_failure(home, repo):
+    monkeypatch.setattr(areas_store, "_parse_areas", lambda home: (["repo", "protected"], [{"repo": "A", "protected": "trunk"}]))
+    assert areas_store._repo_protected(pm_paths.home_at(wp.REPO), "A") == ["trunk"]
+    monkeypatch.setattr(areas_store, "_parse_areas", lambda home: ([], []))
+    assert areas_store._repo_protected(pm_paths.home_at(wp.REPO), "A") == list(areas_rules.DEFAULT_PROTECTED)
+    def ordinary_failure(home):
         raise RuntimeError("ordinary parser failure")
-    monkeypatch.setattr(areas_store, "_repo_protected", ordinary_failure)
+    monkeypatch.setattr(areas_store, "_parse_areas", ordinary_failure)
     with pytest.raises(RuntimeError, match="ordinary parser failure"):
-        branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A")
+        areas_store._repo_protected(pm_paths.home_at(wp.REPO), "A")
 
 
 
@@ -6946,7 +6946,7 @@ def test_cmd_switch_success_reports_what_happened(wp, monkeypatch, capsys):
     """switch CLI — 성공 시 전환 형태·재기록 head 를 surface(rc 0·무엇을 했는지 stdout)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo, **kw: ["main"])
     monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: git)
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "task/main"])       # 접두 생략도 _normalize_slot 이 work/ 붙임
@@ -6960,7 +6960,7 @@ def test_cmd_switch_refusal_is_rc1_loud(wp, monkeypatch, capsys):
     """switch CLI — 선-검사 거부는 rc 1 + 사유(보호목록 브랜치로의 전환)."""
     _switch_lease(wp, branch="feature-x")
     git = _SwitchGit(head="feature-x")
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo, **kw: ["main"])
     monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: git)
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "main"])
@@ -6988,7 +6988,7 @@ def test_switch_preserved_record_clear_failure_is_record_failed(wp, monkeypatch,
 
     _switch_lease(wp)
     cli_git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo, **kw: ["main"])
     monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: locked(cli_git))
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "task/main"])

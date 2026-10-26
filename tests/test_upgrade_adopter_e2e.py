@@ -922,10 +922,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-#   예외 삼킴 정리(infra 층)에서 또 이동했다 — `install_conf._read_local_conf` docstring 의 낡은 서술
-#   (형제 로더·읽기 실패 → {})을 현행 동작(부재만 {}·읽기 실패는 전파)으로 고친 것뿐이다. 실행 코드·
-#   배달 경계·anchor 는 무편집이고 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "7dd376999b0e8501d65d101b970160913ebb7de4c2266c1a4b51b788195b6c78"
+_T0585_PM_UPDATE_SHA256 = "49f1e211d0a5623d434251c7dfb3e55e97ae3e06b82be4b6ee73bb1d71be1a05"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1811,6 +1808,18 @@ def _reverse_engine_rev_marker_removal(source: str) -> str:
 # 한 번 해소돼야 한다. 다른 역적용 쌍은 정리 전 원문을 기준으로 하므로 이 역적용을 가장 먼저 건다.
 _EXCEPT_CLEANUP_REVERSALS = (
     (
+        '    지점이 부른다·§교체 절차). 파일 부재 → {}, 읽기 실패는 전파한다.\n'
+        '\n'
+        '    파일이 없으면 공용 로더를 부르지 않고 {} 다(`print_conf_migration_notice` 와 같은 규칙) — conf 가\n'
+        '    없는 트리(init 전·출하 템플릿)에서도 갱신 입구가 계획을 세울 수 있어야 한다.\n'
+        ,
+        '    지점이 부른다·§교체 절차). 미존재/읽기 실패 → {}.\n'
+        '\n'
+        '    파일이 없으면 형제 로더를 읽지 않고 {} 다(`print_conf_migration_notice` 와 같은 규칙) — 갱신 입구가\n'
+        '    계획에 넘길 conf 를 한 번 읽는데, conf 가 없는 트리(init 전·출하 템플릿·형제가 빠진 복구 트리)에서\n'
+        '    없는 파일을 읽으려고 형제를 싣다 멈추면 그 형제를 되살릴 동기 자신이 죽는다.\n'
+    ),
+    (
         '    dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"\n'
         '    dest_owned = manifest_rules._core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))\n'
         '    harness_by_flavor = {\n'
@@ -2088,7 +2097,7 @@ _EXCEPT_CLEANUP_REVERSALS = (
     ),
     (
         'def _protected_hook_in_sync(home, repo: str) -> bool:\n'
-        '    expected = branch_store._resolve_protected(home, repo)\n'
+        '    expected = areas_store._repo_protected(home, repo)\n'
         '    mode, test_cmd = repo_protection._protected_push_gate_config(home, repo, report_downgrade=False)\n'
         '    for artifact in protected_hooks.protected_hook_artifacts(\n'
         '            home, repo, expected, gate_mode=mode, test_cmd=test_cmd):\n'
@@ -2837,9 +2846,7 @@ def _install_t0585_updater(dest: Path) -> None:
 # 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
 # T-0971: 등록 repo 조회의 패키지 이동으로 `reinstall_protected_hooks` 한 줄과 머리 import 한 줄이
 # 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-# 예외 삼킴 정리(infra 층): `install_conf._read_local_conf` docstring 현행화(실행 코드 무편집)로 전문 SHA 가
-# 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "19aa7d6898a799fa236efdaf5898e42b4ab3fc3f5357dc3a2fd6cb60dc77f4f4"
+_PRE_T0876_PM_UPDATE_SHA256 = "edd374635473f4ad9ccfc9c59b6a0b5cc0ded321a9a40d182cd6295c140dee32"
 
 
 def _pre_t0876_pm_update_source() -> str:

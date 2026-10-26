@@ -7,7 +7,7 @@ from pathlib import Path
 from pm_engine.domain import areas_rules
 from pm_engine.infra import areas_store, console, fs, lease_store, pm_paths
 from pm_engine.app import repo_protection
-from pm_engine.infra import branch_store, git, protected_hooks
+from pm_engine.infra import git, protected_hooks
 from pm_engine.infra import worktree_git
 from pm_engine.domain import worktree_records
 from pm_engine.app import areas_registry
@@ -600,7 +600,7 @@ def _print_protected_status(
     """`repo protected <name>` 조회 — 실효값 + 출처 + sidecar 정합/drift 3줄.
 
     "빈 값이라 기본값 폴백 중" 과 "이 clone 의 훅은 아직 옛 값으로 동작" 두 사실이 안 보이면
-    사용자가 계속 헷갈린다 — 그래서 **실효값**(branch_store가 해소한 목록)·**출처**(명시/기본값
+    사용자가 계속 헷갈린다 — 그래서 **실효값**(areas_store가 해소한 목록)·**출처**(명시/기본값
     폴백/미등록)·**sidecar 정합**(훅이 실제로 읽는 파일과 같은가)을 함께 낸다. 조회는 순수
     읽기라 어떤 파일도 쓰지 않는다(rc 0).
 
@@ -609,7 +609,7 @@ def _print_protected_status(
     "sidecar 는 최신인데 훅이 아예 안 걸린" 부분성공(`install_protected_hook` 3단계 실패)이
     `✓ 정합` 으로 보인다 — 보호가 꺼져 있는데 정합하다고 거짓 보고하는 것이다.
     """
-    effective = branch_store._resolve_protected(home, name)
+    effective = areas_store._repo_protected(home, name)
     print(f"{name} · protected = {', '.join(effective)}")
 
     cell = repo_protection._areas_protected_cell(home, name)

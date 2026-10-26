@@ -14,7 +14,6 @@ from pm_engine.domain import install_rules
 from pm_engine.domain import manifest_rules
 from pm_engine.infra import adapter_baseline
 from pm_engine.infra import areas_store
-from pm_engine.infra import branch_store
 from pm_engine.infra import conf_store
 from pm_engine.infra import fs
 from pm_engine.infra import pm_paths
@@ -507,7 +506,7 @@ def _hook_artifact_executable(path: Path) -> bool:
 
 
 def _protected_hook_in_sync(home, repo: str) -> bool:
-    expected = branch_store._resolve_protected(home, repo)
+    expected = areas_store._repo_protected(home, repo)
     mode, test_cmd = repo_protection._protected_push_gate_config(home, repo, report_downgrade=False)
     for artifact in protected_hooks.protected_hook_artifacts(
             home, repo, expected, gate_mode=mode, test_cmd=test_cmd):
