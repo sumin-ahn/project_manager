@@ -72,8 +72,8 @@ def _git(argv, cwd):
 def _write_ledger(mod, *leases):
     """리스 장부 파일에 엔트리를 직접 쓴다(worktree_pool atomic write 동형 스키마) —
     `tests/test_board_per_repo.py` 의 `_write_ledger`/`_lease_row` 패턴과 동형."""
-    pm_paths.leases_file(mod._home()).parent.mkdir(parents=True, exist_ok=True)
-    pm_paths.leases_file(mod._home()).write_text(json.dumps({"leases": list(leases)}), encoding="utf-8")
+    pm_paths.leases_file(pm_paths.home_at(mod.REPO)).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(pm_paths.home_at(mod.REPO)).write_text(json.dumps({"leases": list(leases)}), encoding="utf-8")
 
 
 def _lease_row(*, slot, repo, state="leased", session="s"):
@@ -95,7 +95,7 @@ def _register_slot(root: Path, *, slot: str = "work/demo_1", repo: str = "demo")
 
 def _seed(mod, status: str, tid: str, touches, **extra) -> Path:
     """활성/draft 후보 티켓 하나를 `tickets_dir()/<status>` (또는 `.drafts`)에 직접 심는다."""
-    directory = pm_paths.drafts_dir(mod._home()) if status == "draft" else (pm_paths.tickets_dir(mod._home()) / status)
+    directory = pm_paths.drafts_dir(pm_paths.home_at(mod.REPO)) if status == "draft" else (pm_paths.tickets_dir(pm_paths.home_at(mod.REPO)) / status)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{tid}-x.md"
     fm = {"id": tid, "title": "x", "status": status, "touches": touches,
@@ -122,13 +122,13 @@ def test_no_candidates_is_silent_even_with_resolved_ledger(anchored):
     """겹침 0 — 슬롯 줄까지 전부 침묵(다른 티켓이 아예 없어도 헤더가 안 나온다)."""
     _write_ledger(anchored, _lease_row(slot="work/demo_1", repo="demo", state="idle"))
     anchored.REPO = anchored.REPO  # no-op(가독)
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_overlapping_ticket_is_reported_with_id_and_count(anchored):
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert lines[0] == cluster_binding._PUBLISH_OVERLAP_HEADER
     assert any("tools/x.py" in ln and "T-0002" in ln and "1건" in ln for ln in lines)
 
@@ -136,60 +136,60 @@ def test_overlapping_ticket_is_reported_with_id_and_count(anchored):
 def test_self_id_is_excluded(anchored):
     """방금 만든 티켓 자신은 후보에서 빠진다(자기 자신과는 항상 겹치므로 제외하지 않으면 오탐)."""
     _seed(anchored, "open", "T-0001", ["tools/x.py"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_done_status_is_not_a_candidate(anchored):
     _seed(anchored, "done", "T-0002", ["tools/x.py"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_draft_status_is_a_candidate(anchored):
     """draft 는 board.md·list·board-git 어디에도 안 보이지만 좌표를 이미 점유한다."""
     _seed(anchored, "draft", "T-0002", ["tools/x.py"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
 
 
 def test_corrupted_candidate_frontmatter_is_skipped_fail_soft(anchored, capsys):
     """손상 frontmatter 후보 1건이 있어도 나머지 판정은 계속되고 크래시하지 않는다."""
-    bad = pm_paths.tickets_dir(anchored._home()) / "open" / "T-bad-x.md"
+    bad = pm_paths.tickets_dir(pm_paths.home_at(anchored.REPO)) / "open" / "T-bad-x.md"
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text("not: [valid yaml\n---\nbody", encoding="utf-8")
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
 
 
 def test_candidate_with_unclear_touches_format_is_dropped_not_crashed(anchored):
     """후보 touches 가 리스트가 아닌 스칼라(형식 불명)면 그 후보만 조용히 빠진다."""
-    path = pm_paths.tickets_dir(anchored._home()) / "open" / "T-0002-x.md"
+    path = pm_paths.tickets_dir(pm_paths.home_at(anchored.REPO)) / "open" / "T-0002-x.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     ticket_store.dump_ticket(path, {
         "id": "T-0002", "title": "x", "status": "open", "touches": "tools/x.py",
         "depends_on": [], "blocks": [], "tags": [],
     }, "# x\n")
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_candidate_with_empty_touches_is_dropped_not_crashed(anchored):
     _seed(anchored, "open", "T-0002", [])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert lines == []
 
 
 def test_own_touches_unclear_format_yields_silence(anchored):
     """대상 자신의 touches 가 형식 불명(스칼라)이면 판정불능으로 침묵(크래시 없음)."""
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", "tools/x.py", repo="demo")  # str, not list
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", "tools/x.py", repo="demo")  # str, not list
     assert lines == []
 
 
 def test_own_touches_empty_yields_silence(anchored):
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", [], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", [], repo="demo")
     assert lines == []
 
 
@@ -204,7 +204,7 @@ def test_paths_sorted_ascending_by_overlap_count_and_capped(anchored):
         for j in range(overlap_n):
             counter += 1
             _seed(anchored, "open", f"T-{1000 + counter}", [own_path])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", own_touches, repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", own_touches, repo="demo")
     assert lines[0] == cluster_binding._PUBLISH_OVERLAP_HEADER
     assert len(lines) <= cluster_binding._PUBLISH_OVERLAP_TOTAL_LINE_BUDGET
     body = lines[1:]
@@ -221,7 +221,7 @@ def test_paths_sorted_ascending_by_overlap_count_and_capped(anchored):
 def test_id_list_capped_at_six_and_remainder_folded_by_count(anchored):
     for i in range(9):
         _seed(anchored, "open", f"T-{2000 + i}", ["tools/x.py"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     target = next(ln for ln in lines if "tools/x.py" in ln)
     assert "9건 겹침" in target
     assert target.count("T-2") == 6
@@ -234,7 +234,7 @@ def test_directory_and_file_declarations_meet_on_the_same_path_axis(anchored):
     파일 선언 후보(`tools/x.py`)는 내 `tools/x.py` 버킷에 잡힌다."""
     _seed(anchored, "open", "T-0002", ["tests/sub/y.py"])
     _seed(anchored, "open", "T-0003", ["tools/x.py"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tests", "tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tests", "tools/x.py"], repo="demo")
     tests_line = next(ln for ln in lines if ln.strip().startswith("tests:"))
     file_line = next(ln for ln in lines if "tools/x.py" in ln)
     assert "T-0002" in tests_line
@@ -249,7 +249,7 @@ def test_prefixed_touch_normalizes_and_overlaps_bare_declaration(anchored, tmp_p
     """`work/<repo>_1/tests` 접두 선언과 무접두 `tests` 선언이 같은 파일로 만난다."""
     _register_slot(tmp_path, slot="work/demo_1", repo="demo")
     _seed(anchored, "open", "T-0002", ["work/demo_1/tests"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tests"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tests"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
 
 
@@ -257,7 +257,7 @@ def test_prefixed_touch_without_ledger_row_drops_without_crash(anchored):
     """등록 안 된 슬롯 접두는 항목 단위로 드롭 — 크래시 0·판정 계속."""
     _seed(anchored, "open", "T-0002", ["work/unregistered_9/tests"])
     _seed(anchored, "open", "T-0003", ["tests"])
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tests"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tests"], repo="demo")
     # 미등록 접두(T-0002)는 드롭되어 안 보이고, 정상 무접두(T-0003)는 그대로 겹침으로 잡힌다.
     joined = "\n".join(lines)
     assert "T-0003" in joined
@@ -279,35 +279,35 @@ def test_idle_slot_count_follows_ledger_not_hardcoded(anchored):
                   _lease_row(slot="work/A_2", repo="demo", state="idle"),
                   _lease_row(slot="work/A_3", repo="demo", state="idle"),
                   _lease_row(slot="work/A_4", repo="demo", state="leased"))
-    lines_idle3 = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines_idle3 = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert any("idle) 슬롯 3개" in ln for ln in lines_idle3)
 
     _write_ledger(anchored, _lease_row(slot="work/A_1", repo="demo", state="leased"))
-    lines_idle0 = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines_idle0 = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert any("idle) 슬롯 0개" in ln for ln in lines_idle0)
 
 
 def test_creating_state_is_not_counted_as_idle(anchored):
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
     _write_ledger(anchored, _lease_row(slot="work/A_1", repo="demo", state="creating"))
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert any("idle) 슬롯 0개" in ln for ln in lines)
 
 
 def test_missing_ledger_omits_slot_line_but_keeps_overlap(anchored):
     """장부 부재 — 슬롯 줄은 생략되지만 겹침 재료 자체는 여전히 나온다(판정불능≠전체 침묵)."""
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    assert not pm_paths.leases_file(anchored._home()).exists()
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    assert not pm_paths.leases_file(pm_paths.home_at(anchored.REPO)).exists()
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
     assert not any("idle" in ln for ln in lines)
 
 
 def test_corrupt_ledger_omits_slot_line_without_crash(anchored):
     _seed(anchored, "open", "T-0002", ["tools/x.py"])
-    pm_paths.leases_file(anchored._home()).parent.mkdir(parents=True, exist_ok=True)
-    pm_paths.leases_file(anchored._home()).write_text("{ not json", encoding="utf-8")
-    lines = cluster_binding._publish_overlap_material(anchored._home(), "T-0001", ["tools/x.py"], repo="demo")
+    pm_paths.leases_file(pm_paths.home_at(anchored.REPO)).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(pm_paths.home_at(anchored.REPO)).write_text("{ not json", encoding="utf-8")
+    lines = cluster_binding._publish_overlap_material(pm_paths.home_at(anchored.REPO), "T-0001", ["tools/x.py"], repo="demo")
     assert any("T-0002" in ln for ln in lines)
     assert not any("idle" in ln for ln in lines)
 
@@ -374,7 +374,7 @@ def test_cmd_new_emits_overlap_material_on_stderr(board_git, capsys):
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
-    rc = board_ticket.cmd_new(board_git._home(), _new_args(touches=".project_manager/tools/board.py"))
+    rc = board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
@@ -393,7 +393,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
-    assert board_ticket.cmd_new(board_git._home(), _new_args(
+    assert board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(
         touches=".project_manager/tools/board.py")) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft)
@@ -402,7 +402,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
     capsys.readouterr()
 
     bind_product_cluster(board_git, tid)
-    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid))
     assert rc == 0, "touches 겹침이 승격을 막았다 — never-block 계약 위반."
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
@@ -413,7 +413,7 @@ def test_cmd_promote_emits_material_and_never_blocks(board_git, capsys):
 def test_no_overlap_promote_has_no_material_header(board_git, capsys):
     """겹침이 없으면 promote 성공 stderr 에 재료 헤더 자체가 없다(기존 draft/sync 경고와는 별개 축)."""
     board_dir = board_git._board_dir
-    assert board_ticket.cmd_new(board_git._home(), _new_args(touches="unique/path/only_here.py")) == 0
+    assert board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(touches="unique/path/only_here.py")) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft)
     tid = fm["id"]
@@ -421,7 +421,7 @@ def test_no_overlap_promote_has_no_material_header(board_git, capsys):
     capsys.readouterr()
 
     bind_product_cluster(board_git, tid)
-    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid))
     assert rc == 0
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER not in err
@@ -438,7 +438,7 @@ def test_stdout_machine_channel_is_unchanged(board_git, capsys):
         "depends_on": [], "blocks": [], "tags": [],
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
-    rc = board_ticket.cmd_new(board_git._home(), _new_args(touches=".project_manager/tools/board.py"))
+    rc = board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     out = capsys.readouterr().out
     assert re.match(r"created (T-\S+)", out) is not None
@@ -469,7 +469,7 @@ def test_cmd_new_reports_registered_repo_idle_count_not_physical_folder_name(
         _lease_row(slot="work/canonical_3", repo="canonical", session="canonical_3", state="idle"))
 
     ensure_product_slot(board_git, repo="canonical", task=_TASK)
-    rc = board_ticket.cmd_new(board_git._home(), _new_args(repo="canonical", slot=1, touches="tools/x.py"))
+    rc = board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(repo="canonical", slot=1, touches="tools/x.py"))
     assert rc == 0
     err = capsys.readouterr().err
     assert "idle) 슬롯 2개" in err, f"REPO.name 을 다시 유도했다면 0개가 나온다: {err!r}"
@@ -490,7 +490,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
     ensure_product_slot(board_git, repo="canonical", task=_TASK)
-    assert board_ticket.cmd_new(board_git._home(), _new_args(
+    assert board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(
         touches="tools/x.py", repo="canonical", slot=1)) == 0
     draft = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft)
@@ -506,7 +506,7 @@ def test_cmd_promote_reports_registered_repo_idle_count_from_ticket_provenance(
         _lease_row(slot="work/canonical_3", repo="canonical", session="canonical_3", state="idle"))
 
     bind_product_cluster(board_git, tid, repo="canonical", task=_TASK)
-    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid))
     assert rc == 0
     err = capsys.readouterr().err
     assert "idle) 슬롯 2개" in err, f"REPO.name 을 다시 유도했다면 0개가 나온다: {err!r}"
@@ -536,7 +536,7 @@ def test_cmd_new_material_total_lines_stay_within_budget_with_slot_and_many_cand
     _write_ledger(board_git, _lease_row(
         slot="work/A_1", repo=board_git.REPO.name, state="idle"))
 
-    rc = board_ticket.cmd_new(board_git._home(), _new_args(touches=",".join(own_touches)))
+    rc = board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(touches=",".join(own_touches)))
     assert rc == 0
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER in err
@@ -579,7 +579,7 @@ def test_legacy_no_board_git_still_emits_material(tmp_path, monkeypatch, capsys)
     }, _FILLED_BODY.replace("T-NNNN", "T-0002"))
 
     ensure_product_slot(mod, task=_TASK)  # 홈 git board 발행도 task 폴더가 필요하다(T-0962)
-    rc = board_ticket.cmd_new(mod._home(), _new_args(touches=".project_manager/tools/board.py"))
+    rc = board_ticket.cmd_new(pm_paths.home_at(mod.REPO), _new_args(touches=".project_manager/tools/board.py"))
     assert rc == 0
     err = capsys.readouterr().err
     assert cluster_binding._PUBLISH_OVERLAP_HEADER in err

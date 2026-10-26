@@ -65,6 +65,7 @@ from pm_engine.infra import delegate_ledger, round_store
 from pm_engine.app import round_seed
 
 from pm_engine.infra import fs
+from pm_engine.cli import delegate_run as cli_delegate_run
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -2717,7 +2718,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
         content=round_rules.render_round_header(
             review_form.ADDITIONAL_REVIEWER_ROLE, today="2026-08-22",
         ) + "\n\n" + _review_body(pd, review_form.ADDITIONAL_REVIEWER_ROLE, ["X-007"]),
-        lock=fs.board_lock(board._home()),
+        lock=fs.board_lock(pm_paths.home_at(board.REPO)),
     )
     assert external_first.exists()
 
@@ -3217,7 +3218,7 @@ def test_reanchor_rejection_refunds_the_reserved_ticket_copy(pd, refund_env):
     prompt.write_text(
         "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수", encoding="utf-8",
     )
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
          "--ticket", ticket, "--output-dir", str(home / "raw")],
         run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
@@ -3261,7 +3262,7 @@ def test_successful_delegation_does_not_refund_the_ticket_copy(pd, refund_env, m
     def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
         return {"returncode": 0, "stdout": codex_reply, "stderr": "", "timed_out": False}
 
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
          "--ticket", ticket, "--output-dir", str(home / "raw")],
         run_fn=_run_fn,
@@ -3293,7 +3294,7 @@ def test_cross_delegation_binds_run_id_and_copy_to_its_delegate_rounds_reservati
     def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
         return {"returncode": 0, "stdout": _codex_reply(), "stderr": "", "timed_out": False}
 
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
          "--ticket", ticket, "--output-dir", str(home / "raw")],
         run_fn=_run_fn,
@@ -3353,7 +3354,7 @@ def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
             # cold 재투입 거부(같은 ticket·role 완료 레코드 존재)를 명시 fresh 로 넘긴다 —
             # 이 테스트가 보려는 건 재사용 축이 아니라 두 번째 run 의 결속 값이다.
             argv += ["--fresh", "1:1 결속 값 검증을 위한 두 번째 독립 run"]
-        rc = pd.main(argv, run_fn=_run_fn)
+        rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO), argv, run_fn=_run_fn)
         assert rc == 0
 
     all_round_rows = [row for row in _ledger_rows(home) if row["ticket"] == ticket]
@@ -3419,7 +3420,7 @@ def test_propagated_exception_before_handoff_refunds_the_reserved_ticket_copy(
     prompt = home / "task.md"
     prompt.write_text("문서를 정리하라", encoding="utf-8")
     with pytest.raises(delegate_errors.DelegateError, match="probe"):
-        pd.main(
+        cli_delegate_run.main(pm_paths.home_at(pd.REPO),
             ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
              "--ticket", ticket, "--output-dir", str(home / "raw")],
             run_fn=lambda *a, **k: pytest.fail("전파 예외 뒤 스폰되면 안 됨"),
@@ -3454,7 +3455,7 @@ def test_cleanup_failure_does_not_mask_the_original_rejection(
     prompt = home / "task.md"
     prompt.write_text(
         "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수", encoding="utf-8")
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
          "--ticket", ticket, "--output-dir", str(home / "raw")],
         run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
@@ -3576,7 +3577,7 @@ def test_gate_refund_control_exceptions_do_not_override_the_original_rejection_r
         prompt = home / "task.md"
         prompt.write_text(
             "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수", encoding="utf-8")
-        rc = pd.main(
+        rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
             ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
              "--ticket", ticket, "--output-dir", str(home / "raw")],
             run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
@@ -3621,7 +3622,7 @@ def test_gate_refund_original_control_exception_still_propagates_when_cleanup_su
     prompt = home / "task.md"
     prompt.write_text("문서를 정리하라", encoding="utf-8")
     with pytest.raises(KeyboardInterrupt):
-        pd.main(
+        cli_delegate_run.main(pm_paths.home_at(pd.REPO),
             ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
              "--ticket", ticket, "--output-dir", str(home / "raw")],
             run_fn=lambda *a, **k: pytest.fail("전파 예외 뒤 스폰되면 안 됨"),
@@ -4152,7 +4153,7 @@ def test_all_three_entry_points_report_the_identical_rejection_reason(
     _write_design_spec(tickets, "T-8141", design="n/a")
     prompt = home / "task.md"
     prompt.write_text("작업 내용", encoding="utf-8")
-    rc2 = pd.main(
+    rc2 = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
          "--ticket", "T-8141", "--output-dir", str(home / "raw")],
         run_fn=lambda *a, **k: pytest.fail("설계 근거 거부 뒤 스폰되면 안 됨"),

@@ -78,6 +78,15 @@ def test_min_python_single_source_and_tomllib_rationale():
     assert pm_engine.MIN_PYTHON == (3, 11)
     assert floor_value == pm_engine.MIN_PYTHON
     assert board_value == pm_engine.MIN_PYTHON  # 훅 진입 board 의 같은 프로세스 하한 선검사.
+    pm_import_tree = ast.parse((TOOLS / "pm_import.py").read_text(encoding="utf-8"))
+    pm_import_value = next(
+        ast.literal_eval(stmt.value)
+        for stmt in pm_import_tree.body
+        if isinstance(stmt, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "MIN_PYTHON"
+                for target in stmt.targets)
+    )
+    assert pm_import_value == pm_engine.MIN_PYTHON  # pm_import 진입의 하한 선검사.
     assert "tomllib" in source
     assert "지배 제약" in source
 
@@ -189,7 +198,7 @@ def test_board_interp_runs_rejects_old_but_executable_python(monkeypatch):
         calls.append(argv)
         return Result(0 if argv[1] == "--version" else 1)
 
-    monkeypatch.setattr(board.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     assert python_env._interp_runs("py") is False
     assert calls[0][1] == "--version"
     assert calls[1][1].endswith("python_floor.py")
@@ -222,7 +231,7 @@ def test_board_missing_floor_probe_degrades_to_inline_floor_check(
         return Result(stdout=f"Python {version[0]}.{version[1]}\n")
 
     monkeypatch.setattr(shutil, "which", lambda cmd: f"/fake/{cmd}" if cmd in versions else None)
-    monkeypatch.setattr(board.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     assert python_env._detect_py() == "python"
 
     versions["python"] = (2, 7)
@@ -366,12 +375,10 @@ def test_shell_floor_mirrors_engine_constant():
 def test_pm_import_precheck_is_310_parseable_and_precedes_tomllib():
     source = (TOOLS / "pm_import.py").read_text(encoding="utf-8")
     tree = ast.parse(source, feature_version=(3, 10))
-    require_index = next(
+    floor_index = next(
         i for i, stmt in enumerate(tree.body)
-        if isinstance(stmt, ast.Expr)
-        and isinstance(stmt.value, ast.Call)
-        and isinstance(stmt.value.func, ast.Name)
-        and stmt.value.func.id == "_require_python"
+        if isinstance(stmt, ast.If)
+        and ast.unparse(stmt.test) == "sys.version_info[:2] < MIN_PYTHON"
     )
     # tomllib 을 적재하는 설치 공급자는 package CLI(`pm_engine.cli.import_cmd`)다.
     cli_import_index = next(
@@ -380,11 +387,27 @@ def test_pm_import_precheck_is_310_parseable_and_precedes_tomllib():
         and stmt.module == "pm_engine.cli"
         and any(alias.name == "import_cmd" for alias in stmt.names)
     )
-    assert require_index < cli_import_index
+    assert floor_index < cli_import_index
 
-    pm_import = _load("pm_import")
-    with pytest.raises(SystemExit, match=r"Python 3\.11\+ 필요 · 현재 3\.10"):
-        pm_import._require_python((3, 10, 99))
+    completed = subprocess.run(
+        [sys.executable, "-c", _PM_IMPORT_FLOOR_SIMULATION, str(TOOLS / "pm_import.py")],
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(), timeout=60,
+    )
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "Python 3.11+ 필요 · 현재 3.10" in completed.stderr
+    assert "engine=False" in completed.stderr
+
+
+_PM_IMPORT_FLOOR_SIMULATION = """
+import runpy, sys
+sys.version_info = (3, 10, 99, "final", 0)
+try:
+    runpy.run_path(sys.argv[1], run_name="__main__")
+except SystemExit as exc:
+    sys.stderr.write("%s\\nengine=%s\\n" % (exc.code, "pm_engine" in sys.modules))
+    raise
+"""
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재")

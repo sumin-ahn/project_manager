@@ -79,13 +79,13 @@ def _conf_key(name: str) -> str:
 
 def _write_conf(board, **kv) -> None:
     """local.conf 를 쓴다 — querying identity(user=) 명시용 (ADR-0056 user-first)."""
-    board._home().local_conf.write_text(
+    pm_paths.home_at(board.REPO).local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
-    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-seed.md"
+    path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status / f"{tid}-seed.md"
     ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "created_by": created_by, "claimed_by": claimed_by,
                              "depends_on": [], "tags": []}, "# seed\n")
@@ -96,7 +96,7 @@ def _list_ids(board, capsys, **flags) -> list[str]:
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
                               all=flags.get("all", False), task=flags.get("task"))
-    rc = board_list.cmd_list(board._home(), args)
+    rc = board_list.cmd_list(pm_paths.home_at(board.REPO), args)
     assert rc == 0
     out = capsys.readouterr().out
     ids = []

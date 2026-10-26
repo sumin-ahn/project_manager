@@ -1037,20 +1037,7 @@ def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkey
 # 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다 — `pm_import` 가 그 깊이를 못 박으
 # 므로 REPO 는 상향 탐색이 아니라 `Path(__file__).resolve().parents[2]` 다. 상향 탐색은 합성
 # 트리에서 자기 위의 실 인스턴스를 답으로 주는 부작용만 냈다 (additional_reviewer 동형).
-#
-# hermetic seam: 헬퍼는 모듈 전역 `__file__` 을 읽으므로 fresh 모듈 인스턴스의 `__file__` 을
-# tmp 합성 경로로 monkeypatch 해 실제 파일 이동 없이 임의 깊이를 모사한다.
-
-
-def test_repo_root_is_the_own_root_not_the_enclosing_home(tf, tmp_path, monkeypatch):
-    """중첩 `.project_manager`(PM 홈 안 worktree·ADR-0027) → 자기 루트를 낸다(바깥 홈 아님)."""
-    outer = tmp_path / "home"
-    inner = outer / "work" / "wt1"
-    (outer / ".project_manager").mkdir(parents=True)
-    tools = inner / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    monkeypatch.setattr(tf, "__file__", str(tools / "ticket_finish.py"))
-    assert tf._find_repo_root() == inner
+# 진입 파일의 REPO 식은 R5 문법(tests/test_engine_structure.py)이 고정한다.
 
 
 def test_repo_constant_anchors_at_the_install_depth(tf):
@@ -2317,13 +2304,13 @@ def _wave_repo(tmp_path: Path, *, git: bool = True,
 def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
     # claim 은 `--task` 와 그 task 가 보유한 폴더가 필요하다(T-0962) — 솔로 형상이라 홈 자신이 그
     # task 의 폴더(장부 행 `slot="."`)다. 다른 축엔 무관심하다.
-    ledger = pm_paths.leases_file(board._home())
+    ledger = pm_paths.leases_file(pm_paths.home_at(board.REPO))
     if not ledger.exists():
         ledger.parent.mkdir(parents=True, exist_ok=True)
         ledger.write_text(json.dumps({"leases": [
             {"slot": ".", "repo": board.REPO.name, "session": "me",
              "state": "leased", "role": "work"}]}), encoding="utf-8")
-    return board_ticket.cmd_claim(board._home(), argparse.Namespace(id=ticket_id, user="me", task="me"))
+    return board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(id=ticket_id, user="me", task="me"))
 
 
 def test_completion_has_no_change_size_cap(tmp_path, monkeypatch, capsys):

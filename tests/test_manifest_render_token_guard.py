@@ -411,7 +411,6 @@ def test_ensure_task_pm_state_renders_creation_date(tmp_path):
 
     wp = _load("worktree_pool", alias="wp_for_token_ownership_test")
     wp.REPO = proj
-    wp.LOCAL_DIR = local
     wp.TASKS_DIR = local / "tasks"
 
     state = task_store.ensure_task_pm_state(pm_paths.home_at(wp.REPO), "tokenjob")
@@ -443,7 +442,7 @@ def test_board_init_seeds_pm_state_with_creation_date(board, monkeypatch, tmp_pa
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = board_init.cmd_init(board._home(), args)
+        rc = board_init.cmd_init(pm_paths.home_at(board.REPO), args)
 
     assert rc == 0, buf.getvalue()[-2000:]
     text = state_file.read_text(encoding="utf-8")

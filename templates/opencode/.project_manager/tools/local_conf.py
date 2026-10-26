@@ -10,14 +10,14 @@ import sys
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.cli import local_conf as cli  # noqa: E402
-from pm_engine.infra import console  # noqa: E402
+from pm_engine.cli import local_conf
+from pm_engine.infra import console
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None):
     console.configure_console_utf8()
-    return cli.main(argv)
+    return local_conf.main(argv)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main(sys.argv[1:]))

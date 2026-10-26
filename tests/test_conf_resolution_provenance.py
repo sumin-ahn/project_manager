@@ -1,7 +1,8 @@
 """Cross-repo local.conf 분기와 호출 프로필 provenance.
 
-두 호출 표면만 대상으로 한다. `_find_repo_root` 보유 도구 전수는 아래 inventory 테스트가
-기계로 다시 뽑아, local.conf 로 호출 대상을 고르지 않는 형제의 제외도 명시적으로 고정한다.
+두 호출 표면만 대상으로 한다. REPO 로 Home 을 만드는 진입 파일과 그 패키지 CLI 전수는 아래
+inventory 테스트가 기계로 다시 뽑아, local.conf 로 호출 대상을 고르지 않는 형제의 제외도 명시적으로
+고정한다.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from pm_engine.infra import conf_store
 from pm_engine.infra.harness import delegate_env
 from pm_engine.infra import reviewer_target
 
+import ast
 import importlib.util
 import json
 import subprocess
@@ -22,6 +24,7 @@ from pathlib import Path
 import pytest
 from _engine_tree import engine_python_files
 from pm_engine.infra import pm_paths
+from pm_engine.cli import delegate_run as cli_delegate_run
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -366,7 +369,7 @@ def test_delegate_primary_raw_records_conf_and_profile(
     monkeypatch.setattr(delegate, "REPO", engine)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf))
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *args, **kwargs: True)
-    rc = delegate.main([
+    rc = cli_delegate_run.main(pm_paths.home_at(delegate.REPO), [
         "--role", "researcher",
         "--prompt-file", str(prompt),
         "--cwd", str(target),
@@ -413,7 +416,7 @@ def test_delegate_cli_override_raw_records_override_source(
     monkeypatch.setattr(delegate, "REPO", engine)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: dict(conf))
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *args, **kwargs: True)
-    rc = delegate.main([
+    rc = cli_delegate_run.main(pm_paths.home_at(delegate.REPO), [
         "--role", "researcher",
         "--prompt-file", str(prompt),
         "--cwd", str(target),
@@ -725,22 +728,36 @@ def test_additional_reviewer_raw_records_conf_and_profile(external, tmp_path):
     ) in raw
 
 
+def _home_entry_cli_modules() -> dict[str, str]:
+    """REPO 로 Home 을 만드는 진입 파일 → 그 진입이 부르는 패키지 CLI 모듈(tools 상대경로)."""
+    out: dict[str, str] = {}
+    for path in sorted(TOOLS.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "pm_paths.home_at(REPO)" not in text:
+            continue
+        cli_names = [
+            alias.name
+            for stmt in ast.parse(text).body
+            if isinstance(stmt, ast.ImportFrom) and stmt.module == "pm_engine.cli"
+            for alias in stmt.names
+        ]
+        assert len(cli_names) == 1, (path.name, cli_names)
+        out[path.name] = f"pm_engine/cli/{cli_names[0]}.py"
+    return out
+
+
 def test_find_repo_root_tool_inventory_and_scope_are_explicit():
-    found = {
-        path.relative_to(TOOLS).as_posix()
-        for path in engine_python_files(TOOLS)
-        if "def _find_repo_root()" in path.read_text(encoding="utf-8")
-    }
-    assert found == {
-        "contradiction_lint.py",
-        "additional_reviewer.py",
-        "pm_delegate.py",
-        "ticket_finish.py",
+    found = _home_entry_cli_modules()
+    assert set(found) == {
+        "additional_reviewer.py", "board.py", "contradiction_lint.py", "delegate_channel_guard.py",
+        "domain.py", "pm_adr.py", "pm_bootstrap.py", "pm_config.py", "pm_delegate.py",
+        "pm_handoff.py", "pm_import.py", "pm_log.py", "pm_update.py", "ticket_finish.py",
+        "worktree_pool.py",
     }
 
     source = {
-        name: (TOOLS / name).read_text(encoding="utf-8")
-        for name in found
+        name: (TOOLS / name).read_text(encoding="utf-8") + (TOOLS / cli).read_text(encoding="utf-8")
+        for name, cli in found.items()
     }
     assert "reviewer_cmd" in source["additional_reviewer.py"]
     # 판정 축은 **conf 키 리터럴**(`"delegate.…"`)이다 — 도구 파일명(`pm_delegate.py`)은 키가
@@ -750,6 +767,11 @@ def test_find_repo_root_tool_inventory_and_scope_are_explicit():
 
     assert _reads_delegate_conf_keys(
         (TOOLS / "pm_engine/app/delegate_execute.py").read_text(encoding="utf-8"))
+    # 호출 프로필 키를 진입·패키지 CLI 에서 직접 읽는 표면은 추가 리뷰어 하나다.
+    assert {
+        name for name, text in source.items()
+        if "reviewer_cmd" in text or _reads_delegate_conf_keys(text)
+    } == {"additional_reviewer.py"}
     assert "local.conf" not in source["contradiction_lint.py"]
     # ticket_finish 는 local.conf 를 읽지만 호출 프로필 키/소비자는 없다. local.conf 판독은 명시
     # Home 을 넘기는 회귀 게이트 해소(`finish_context` → `regression._resolve_gate_cmd`)뿐이다.

@@ -68,6 +68,7 @@ from pm_engine.infra import raw_output
 from pm_engine.infra.harness import contract, watchdog
 from pm_engine.domain import delegate_errors, model_lint, review_form, review_state, review_verdict, round_rules
 from pm_engine.app import round_seed
+from pm_engine.cli import delegate_run as cli_delegate_run
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -380,7 +381,7 @@ def _run_main(pd, monkeypatch, argv, conf, run_fn=None):
             cwd = Path(isolated_argv[isolated_argv.index("--cwd") + 1])
             raw_dir = cwd.parent / f".{cwd.name}-raw"
         isolated_argv += ["--output-dir", str(raw_dir)]
-    return pd.main(isolated_argv, run_fn=run_fn)
+    return cli_delegate_run.main(pm_paths.home_at(pd.REPO), isolated_argv, run_fn=run_fn)
 
 
 def test_disabled_returns_rc3(pd, monkeypatch, tmp_path, capsys):
@@ -2797,7 +2798,7 @@ def test_empty_config_is_allowed_but_unmapped_rc1(pd, monkeypatch, tmp_path, cap
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: {})
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     fake = _FakeRun(stdout=_codex_stdout())
-    rc = pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO), ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
                  run_fn=fake)
     assert rc == 1
     err = capsys.readouterr().err
@@ -2825,7 +2826,7 @@ def test_cwd_not_git_repo_fail_loud(pd, monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: _enabled_conf())
     fake = _FakeRun(stdout=_codex_stdout())
     bad_git = lambda *a, **k: type("R", (), {"returncode": 128, "stdout": ""})()
-    rc = pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO), ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
                  run_fn=fake, git_run_fn=bad_git)
     assert rc == 1
     assert "git 저장소" in capsys.readouterr().err

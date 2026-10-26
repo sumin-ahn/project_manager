@@ -39,8 +39,6 @@
   - 인계 프롬프트는 stdout 만 — 파일 저장 안 함.
   - pm_state.md 슬라이딩 윈도우 = 3 차 (프로젝트별 조정 — SLIDING_WINDOW_SIZE).
 """
-from __future__ import annotations
-
 import os
 import sys
 from pathlib import Path
@@ -48,8 +46,8 @@ from pathlib import Path
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from pm_engine.infra import console, pm_paths
 from pm_engine.cli import handoff
+from pm_engine.infra import console, pm_paths
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -60,4 +58,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

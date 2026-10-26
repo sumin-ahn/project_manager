@@ -78,6 +78,7 @@ from test_board_livegate import (  # noqa: E402
     _pv_write_round,
     _pv_write_ticket,
 )
+import argparse
 
 
 def _load(name: str = "additional_reviewer"):
@@ -98,7 +99,7 @@ def _patch_atomic_replace(monkeypatch, module, fake):
 
     `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
     `os.replace` 에 건 주입을 지나지 않는다. 엔진 모듈이 seam 을 받는 형상은 둘이다: import
-    시점 전역(`board.fs`)과 쓰기 경로 지연 로더(`review_rounds.fs`·
+    시점 전역(`fs`)과 쓰기 경로 지연 로더(`review_rounds.fs`·
     프로세스 캐시). 그 실제 지점에 걸어야 두 OS 에서 같은 관측이 선다.
     """
     seam = module.fs
@@ -246,13 +247,13 @@ def test_the_verdict_round_limit_axis_is_gone(external):
 
 def test_timeout_cli_override_beats_local_conf(external):
     """명시 CLI 양수값은 local.conf 설정보다 우선한다."""
-    args = external.argparse.Namespace(timeout=37)
+    args = argparse.Namespace(timeout=37)
     assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO), args, {"additional_reviewer.timeout": "71"}, _reviewer_cmd(external)) == 37
 
 
 def test_timeout_uses_local_conf_when_cli_unspecified(external):
     """CLI 미지정(None) 시 clone별 additional_reviewer.timeout 을 사용한다."""
-    args = external.argparse.Namespace(timeout=None)
+    args = argparse.Namespace(timeout=None)
     assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO), args, {"additional_reviewer.timeout": "71"}, _reviewer_cmd(external)) == 71
 
 
@@ -268,14 +269,14 @@ def _declared_wall(external) -> int:
 
 def test_timeout_uses_default_when_not_configured(external):
     """CLI/conf 모두 없으면 리뷰어 하네스 프로필의 유한 백스톱을 쓴다(T-0489 — 상수 폐지)."""
-    args = external.argparse.Namespace(timeout=None)
+    args = argparse.Namespace(timeout=None)
     assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO), args, {}, _reviewer_cmd(external)) == _declared_wall(external)
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-1"])
 def test_timeout_invalid_conf_warns_and_falls_back(external, capsys, raw):
     """비수치/0/음수 conf 는 경고 뒤 선언 기본값으로 fail-soft 한다."""
-    args = external.argparse.Namespace(timeout=None)
+    args = argparse.Namespace(timeout=None)
     assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO), args, {"additional_reviewer.timeout": raw}, _reviewer_cmd(external)) == \
         _declared_wall(external)
     warning = capsys.readouterr().err
@@ -317,8 +318,7 @@ def test_print_summary_failure_shows_reason_line(external, capsys):
 def test_ledger_path_derives_from_repo(external, tmp_path, monkeypatch):
     """장부 경로 = `<앵커>/.project_manager/.local/review_rounds.json` (호출 시점 해소·per-clone).
 
-    앵커는 raw 장부와 같은 규칙 — 해소된 소유 PM 홈(`_PM_HOME_OVERRIDE`) 우선, 미주입이면
-    엔진 자기 앵커 REPO 폴백.
+    앵커는 raw 장부와 같은 규칙 — 넘겨받은 Home(엔진 자기 앵커 REPO)의 local 디렉터리다.
     """
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)) == \

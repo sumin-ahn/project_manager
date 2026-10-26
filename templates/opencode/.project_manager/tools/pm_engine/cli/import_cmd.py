@@ -19,7 +19,6 @@ from pm_engine.cli import import_args
 from pm_engine.domain import install_rules
 from pm_engine.domain import upstream_rules
 from pm_engine.infra import adapter_baseline
-from pm_engine.infra import console
 from pm_engine.infra import install_conf
 from pm_engine.infra import install_files
 from pm_engine.infra import install_git
@@ -32,7 +31,6 @@ from pm_engine.infra import upstream_git
 
 @install_board._translate_dest_safety_errors
 def main(home, argv: list[str] | None = None) -> int:
-    console.configure_console_utf8()
     ap = argparse.ArgumentParser(
         prog="pm_import.py",
         description=import_args._cli_description(),

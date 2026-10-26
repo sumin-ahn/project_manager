@@ -28,6 +28,7 @@ import pytest
 
 from _win_skip import posix_bash_supported
 from _hook_commands import inline_script_payloads
+from pm_engine.cli import delegate_channel_guard as cli_delegate_channel_guard
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -346,7 +347,7 @@ def test_codex_cross_mapping_cli_emits_exact_measured_json_bytes(
     expected = delegate_channel.evaluate_codex_hook(guard_home, payload, config_loader=lambda _home: conf)
     stdout = io.StringIO()
 
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["codex-hook"],
         stdin=io.StringIO(json.dumps(payload)),
         stdout=stdout,
@@ -524,7 +525,7 @@ def test_codex_hook_never_writes_a_partial_envelope_to_the_host(
     stdout = io.StringIO()
     stderr = io.StringIO()
 
-    rc = guard.main(
+    rc = cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["codex-hook"],
         stdin=io.StringIO(json.dumps(_payload("developer"))),
         stdout=stdout,
@@ -617,7 +618,7 @@ def test_codex_hook_cli_infrastructure_failure_is_rc0_allow_and_user_warning(gua
     def broken_config():
         raise OSError("broken\nlocal.conf")
 
-    rc = guard.main(
+    rc = cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["codex-hook"],
         stdin=io.StringIO(json.dumps(_payload("developer"))),
         stdout=stdout,
@@ -827,7 +828,7 @@ def test_matching_events_survive_rotation_without_false_positive(
     ]
     assert spawn["turn_id"] != start["turn_id"]
     stdout = io.StringIO()
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["codex-hook"],
         stdin=io.StringIO(json.dumps(spawn)),
         stdout=stdout,
@@ -837,7 +838,7 @@ def test_matching_events_survive_rotation_without_false_positive(
     assert json.loads(stdout.getvalue()) == {}
 
     observed = io.StringIO()
-    assert guard.main(
+    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["codex-subagent-observe"],
         stdin=io.StringIO(json.dumps(start)),
         stdout=observed,
@@ -1115,7 +1116,7 @@ def test_supervisor_fallback_leaves_a_durable_observation_row(guard_home, guard,
 def test_supervisor_cli_emits_one_json_line_and_rc0(guard, tmp_path):
     stdout = io.StringIO()
 
-    rc = guard.main(
+    rc = cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["supervise", "SubagentStart", sys.executable, "-c", "import sys; sys.exit(4)"],
         stdin=io.StringIO(json.dumps(_subagent_start())),
         stdout=stdout,
@@ -1137,7 +1138,7 @@ def test_supervisor_cli_without_a_child_command_is_still_a_full_envelope(
 ):
     stdout = io.StringIO()
 
-    rc = guard.main(
+    rc = cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         ["supervise", "PreToolUse"],
         stdin=io.StringIO("{}"),
         stdout=stdout,

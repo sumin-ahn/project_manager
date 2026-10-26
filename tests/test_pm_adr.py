@@ -16,6 +16,7 @@ import pytest
 from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.domain import adr_rules
 from pm_engine.app import adr_issue, wiki_lint
+from pm_engine.cli import adr_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -85,8 +86,7 @@ def test_validate_slug_rejects_dangerous(adr, slug):
 def test_cli_rejects_bad_slug_before_side_effects(adr, capsys, monkeypatch, wiki):
     """CLI new --slug ../evil → rc 2·에러·decisions 무변경(부작용 이전 거부)."""
     decisions, log = wiki
-    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(adr, "LOG_FILE", log)
+    monkeypatch.setattr(adr, "REPO", decisions.parents[2])
     before = sorted(p.name for p in decisions.iterdir())
     rc = adr.main(["new", "--title", "T", "--slug", "../evil"])
     assert rc == 2
@@ -100,8 +100,7 @@ def test_cli_rejects_bad_amends_id_rc2(adr, capsys, monkeypatch, wiki):
     옛엔 parse_adr_num ValueError 가 uncaught traceback 으로 노출 — slug 게이트와 동형의
     입구 거부로 전환. 정상 ID 경로는 기존 e2e 가 커버(과차단 아님)."""
     decisions, log = wiki
-    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(adr, "LOG_FILE", log)
+    monkeypatch.setattr(adr, "REPO", decisions.parents[2])
     before = sorted(p.name for p in decisions.iterdir())
     rc = adr.main(["new", "--title", "T", "--slug", "t", "--amends", "ADR-oops"])
     err = capsys.readouterr().err
@@ -113,14 +112,16 @@ def test_cli_rejects_bad_amends_id_rc2(adr, capsys, monkeypatch, wiki):
 def test_cli_author_defaults_to_identity_resolution(adr, capsys, monkeypatch, wiki):
     """--author 생략 → board identity_tag 해소값 채움·명시 인자 우선·해소 불가는 현행 빈 값 (T-0376)."""
     decisions, log = wiki
-    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(adr, "LOG_FILE", log)
-    monkeypatch.setattr(adr, "_resolve_default_author", lambda: "alice/pm_1")
+    monkeypatch.setattr(adr, "REPO", decisions.parents[2])
+    monkeypatch.setattr(adr_cmd, "_resolve_default_author", lambda _home: "alice/pm_1")
     rc = adr.main(["new", "--title", "T1", "--slug", "auto-author"])
     assert rc == 0
     capsys.readouterr()
     made = next(p for p in decisions.glob("*auto-author*"))
     assert "author: alice/pm_1" in made.read_text(encoding="utf-8")
+    # CLI 발행은 REPO Home 의 결정 색인과 wiki/log/current.md 에 쓴다(슬롯 공유 로그 해소 없음).
+    assert "[0062](0062-auto-author.md)" in (decisions / "README.md").read_text(encoding="utf-8")
+    assert "decide | [[ADR-0062]] — T1" in log.read_text(encoding="utf-8")
     # 명시 인자 우선.
     rc = adr.main(["new", "--title", "T2", "--slug", "explicit-author", "--author", "bob/pm_2"])
     assert rc == 0
@@ -128,7 +129,7 @@ def test_cli_author_defaults_to_identity_resolution(adr, capsys, monkeypatch, wi
     made2 = next(p for p in decisions.glob("*explicit-author*"))
     assert "author: bob/pm_2" in made2.read_text(encoding="utf-8")
     # 해소 불가(None) → 현행 빈 값 경로 유지(발행은 성공).
-    monkeypatch.setattr(adr, "_resolve_default_author", lambda: None)
+    monkeypatch.setattr(adr_cmd, "_resolve_default_author", lambda _home: None)
     rc = adr.main(["new", "--title", "T3", "--slug", "no-author"])
     assert rc == 0
     capsys.readouterr()
@@ -382,13 +383,13 @@ def test_build_decide_log_entry(adr):
 @pytest.fixture
 def wiki(tmp_path):
     """임시 decisions/ + README + log/current.md 셋업."""
-    decisions = tmp_path / "wiki" / "decisions"
+    decisions = tmp_path / ".project_manager" / "wiki" / "decisions"
     decisions.mkdir(parents=True)
     (decisions / "0060-a.md").write_text(
         "---\ntitle: A\nstatus: accepted\ntype: decision\n---\n# ADR-0060\n", encoding="utf-8")
     (decisions / "0061-target.md").write_text(_TARGET_ADR, encoding="utf-8")
     (decisions / "README.md").write_text(_README, encoding="utf-8")
-    log = tmp_path / "wiki" / "log" / "current.md"
+    log = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     log.parent.mkdir(parents=True)
     log.write_text("# Log\n\n## [2026-07-01] create | x\n\n- seed.\n", encoding="utf-8")
     return decisions, log
@@ -435,12 +436,12 @@ def test_issue_is_lint_clean_against_board_adr_lifecycle(adr, wiki, monkeypatch)
     decisions, log = wiki
     board = _load("board")
     monkeypatch.setattr(board, "REPO", decisions.parent.parent / "home")
-    home_decisions = pm_paths.decisions_dir(board._home())
+    home_decisions = pm_paths.decisions_dir(pm_paths.home_at(board.REPO))
     shutil.copytree(decisions, home_decisions)
     decisions = home_decisions
 
     # 발행 전: 대상은 accepted·back-ref 없음 → 사전 findings 0(기존은 정합).
-    assert wiki_lint.lint_adr_lifecycle(board._home()) == []
+    assert wiki_lint.lint_adr_lifecycle(pm_paths.home_at(board.REPO)) == []
 
     issuer = adr_issue.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")
     plan = issuer.plan(
@@ -451,7 +452,7 @@ def test_issue_is_lint_clean_against_board_adr_lifecycle(adr, wiki, monkeypatch)
     issuer.apply(plan)
 
     # 발행 후: amends 걸었지만 back-ref/status 를 발행 시점에 채웠으므로 여전히 clean.
-    findings = wiki_lint.lint_adr_lifecycle(board._home())
+    findings = wiki_lint.lint_adr_lifecycle(pm_paths.home_at(board.REPO))
     assert findings == [], f"발행 산출이 lint dirty — {findings}"
 
 
@@ -500,10 +501,9 @@ def test_apply_partial_failure_reports_done_and_remaining(adr, wiki, monkeypatch
 
 
 def test_cli_main_dry_run(adr, capsys, monkeypatch, wiki):
-    """CLI new --dry-run — 미리보기 출력·쓰기 없음(모듈 상수 DECISIONS_DIR/LOG_FILE monkeypatch)."""
+    """CLI new --dry-run — 미리보기 출력·쓰기 없음(REPO 를 임시 Home 으로 monkeypatch)."""
     decisions, log = wiki
-    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(adr, "LOG_FILE", log)
+    monkeypatch.setattr(adr, "REPO", decisions.parents[2])
     before = sorted(p.name for p in decisions.iterdir())
     rc = adr.main(["new", "--title", "CLI 결정", "--slug", "cli-one",
                    "--tags", "adr", "--dry-run"])

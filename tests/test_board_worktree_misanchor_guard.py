@@ -313,7 +313,7 @@ def test_show_from_boardless_worktree_reads_single_ledger_owner(
     )
     assert "-- T-0100 (done/) --" in captured.out
     assert "ticket not found" not in (captured.out + captured.err)
-    assert b._home() == pm_paths.home_at(worktree), "read dispatch 뒤 앵커 Home이 바뀜"
+    assert pm_paths.home_at(b.REPO) == pm_paths.home_at(worktree), "read dispatch 뒤 앵커 Home이 바뀜"
 
 
 def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
@@ -359,8 +359,8 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
             owner_pm / "wiki" / "decisions", owner_pm / "wiki" / "specs",
         )
     ]
-    assert b._home().board_root == worktree / ".project_manager" / "wiki"
-    assert b._home() == pm_paths.home_at(worktree)
+    assert pm_paths.home_at(b.REPO).board_root == worktree / ".project_manager" / "wiki"
+    assert pm_paths.home_at(b.REPO) == pm_paths.home_at(worktree)
     capsys.readouterr()
 
 
@@ -409,7 +409,7 @@ def test_worktree_lint_output_equals_pm_home_and_resolves_pm_wiki_targets(
     assert wt_result.out.splitlines()[0].endswith(
         f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['lint']})"
     )
-    assert b._home() == pm_paths.home_at(worktree)
+    assert pm_paths.home_at(b.REPO) == pm_paths.home_at(worktree)
 
 
 def test_worktree_idea_list_reads_pm_home_idea_content(
@@ -891,7 +891,7 @@ def test_pm_home_cwd_no_false_positive(tmp_path, monkeypatch, capsys):
     _make_real_board(pm_home / ".project_manager", split=True)
     assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(pm_home)) is None
     monkeypatch.setattr(b, "REPO", pm_home)
-    assert board_dispatch._guard_worktree_misanchor(b._home(), "board.py new") is False
+    assert board_dispatch._guard_worktree_misanchor(pm_paths.home_at(b.REPO), "board.py new") is False
     assert capsys.readouterr().err == ""
 
 
@@ -905,7 +905,7 @@ def test_solo_standalone_first_ticket_no_false_positive(tmp_path, monkeypatch, c
     assert git._is_linked_worktree(solo) is False
     assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(solo)) is None
     monkeypatch.setattr(b, "REPO", solo)
-    assert board_dispatch._guard_worktree_misanchor(b._home(), "board.py new") is False
+    assert board_dispatch._guard_worktree_misanchor(pm_paths.home_at(b.REPO), "board.py new") is False
     assert capsys.readouterr().err == ""
 
 
@@ -970,7 +970,7 @@ def test_read_fallback_does_not_weaken_following_mutation_gate(
     _isolate_board_module(b, monkeypatch, worktree)
 
     assert b.main(["show", "T-0100"]) == 0
-    assert b._home() == pm_paths.home_at(worktree)
+    assert pm_paths.home_at(b.REPO) == pm_paths.home_at(worktree)
     assert b.main(["new", "stray 유발"]) == 1
     captured = capsys.readouterr()
     assert "worktree(코드 전용) 트리에서 실행" in captured.err

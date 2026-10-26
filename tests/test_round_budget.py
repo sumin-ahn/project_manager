@@ -420,7 +420,7 @@ def test_developer_prepare_requires_the_architect_test_contract(pd, budget_env):
     _seed(pm_home, tickets, "C-contract", ["T-7000"])
     board = _fixture_board(pd, pm_home)
     round_store.reserve_round(
-        pm_paths.tickets_dir(board._home()), "T-7000", "architect",
+        pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-7000", "architect",
         content="## 설계\n- 테스트 계약 누락\n", lock=contextlib.nullcontext(),
     )
 
@@ -458,7 +458,7 @@ def test_initial_developer_harvest_requires_the_architect_target_in_its_diff(
     _seed(pm_home, tickets, "C-arch-target", ["T-7006"])
     board = _fixture_board(pd, pm_home)
     round_store.reserve_round(
-        pm_paths.tickets_dir(board._home()), "T-7006", "architect",
+        pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-7006", "architect",
         content=_architect_output(pd), lock=contextlib.nullcontext(),
     )
     plan = delegate_prepare.prepare_cluster_copy(
@@ -479,7 +479,7 @@ def test_developer_harvest_requires_an_exact_green_full_regression_record(
     _seed(pm_home, tickets, "C-stage-record", ["T-7009"])
     board = _fixture_board(pd, pm_home)
     round_store.reserve_round(
-        pm_paths.tickets_dir(board._home()), "T-7009", "architect",
+        pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-7009", "architect",
         content=_architect_output(pd), lock=contextlib.nullcontext(),
     )
     plan = delegate_prepare.prepare_cluster_copy(
@@ -562,8 +562,8 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
     board = _fixture_board(pd, pm_home)
     home = pm_home.resolve()
     assert (
-        board.REPO, board._home().local_dir, (board._home().local_dir / "board.lock"),
-        (pm_paths.wiki_dir(board._home()) / "board.md"), pm_paths.leases_file(board._home()), board._home().local_conf,
+        board.REPO, pm_paths.home_at(board.REPO).local_dir, (pm_paths.home_at(board.REPO).local_dir / "board.lock"),
+        (pm_paths.wiki_dir(pm_paths.home_at(board.REPO)) / "board.md"), pm_paths.leases_file(pm_paths.home_at(board.REPO)), pm_paths.home_at(board.REPO).local_conf,
     ) == (
         home,
         home / ".project_manager" / ".local",
@@ -591,7 +591,7 @@ def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
     _seed(pm_home, tickets, "C-arch-red", ["T-7003"])
     board = _fixture_board(pd, pm_home)
     round_store.reserve_round(
-        pm_paths.tickets_dir(board._home()), "T-7003", "architect",
+        pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-7003", "architect",
         content=_architect_output(
             pd, command=python_argv_command("-m", "module_that_does_not_exist_t0871"), expected="green",
         ),
@@ -776,7 +776,7 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
         board_round.read_text(encoding="utf-8"))) == 1
 
     rounds_after = round_seed.load_rounds(
-        pm_paths.tickets_dir(board._home()), "T-7100")
+        pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-7100")
     assert delegate_rounds._cluster_cycle_roles(rounds_after, frozenset(_CYCLE)) == ("architect",)
     with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded) as caught:
         delegate_prepare.prepare_cluster_copy(
@@ -1262,7 +1262,7 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
         if len(entries) == 2:
             # 사전판정과 이 임계구역 사이에 다른 준비가 마지막 fix 자리를 가져갔다.
             round_store.reserve_round(
-                pm_paths.tickets_dir(board._home()), "T-7050", "developer", content="## 경쟁 예약\n",
+                pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-7050", "developer", content="## 경쟁 예약\n",
                 lock=contextlib.nullcontext(),
             )
         return real_lock(_home, *args, **kwargs)
@@ -1453,8 +1453,8 @@ def board_env(tmp_path, monkeypatch):
     """실 board git + 코드 git — `cluster replan` 이 쓰는 두 저장소."""
     board = _load_tool("board", "board_replan")
     anchor_board_module(board, tmp_path, monkeypatch)
-    (pm_paths.wiki_dir(board._home()) / "board.md").parent.mkdir(parents=True, exist_ok=True)
-    (pm_paths.wiki_dir(board._home()) / "board.md").touch()
+    (pm_paths.wiki_dir(pm_paths.home_at(board.REPO)) / "board.md").parent.mkdir(parents=True, exist_ok=True)
+    (pm_paths.wiki_dir(pm_paths.home_at(board.REPO)) / "board.md").touch()
     for key, value in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, value)
     bare = tmp_path / "bare"
@@ -1484,9 +1484,9 @@ def _cluster_args(action: str, name: str, **kwargs) -> argparse.Namespace:
 
 
 def _issue(board, title: str) -> str:
-    directory = pm_paths.tickets_dir(board._home())
+    directory = pm_paths.tickets_dir(pm_paths.home_at(board.REPO))
     before = {path.name for path in directory.glob("*/T-*.md")}
-    assert board_ticket.cmd_new(board._home(), argparse.Namespace(
+    assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), argparse.Namespace(
         title=title, touches=None, depends=None, tag=None, estimate="small",
         prefix=None, user=None, session=None, repo=None, slot=None, task=None,
     )) == 0

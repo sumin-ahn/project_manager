@@ -108,8 +108,8 @@ def _install_fake(board, monkeypatch, fake):
     """회귀(Popen tee)·livegate(run 캡처) 두 seam 을 같은 대역으로 덮는다 (실 자식 0)."""
     # 실행 child 대역에 metadata 조회가 섞이지 않게 가짜 Git fixture를 격리한다.
     monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
-    monkeypatch.setattr(board.subprocess, "run", fake)
-    monkeypatch.setattr(board.subprocess, "Popen", fake)
+    monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(subprocess, "Popen", fake)
     return fake
 
 
@@ -120,7 +120,7 @@ def _reg_args(task=None, repo=None, slot=None, cmd=None, cwd=None):
 
 def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatch, capsys):
     """--task 로 F6 해소된 슬롯 worktree 절대경로가 (a) subprocess cwd 로 고정·(b) surface 된다."""
-    _write_leases(pm_paths.leases_file(board._home()), [
+    _write_leases(pm_paths.leases_file(pm_paths.home_at(board.REPO)), [
         {"slot": "work/A_1", "repo": "A", "session": "job1", "state": "leased",
          "test_cmd": "pytest -q"},
     ])
@@ -128,7 +128,7 @@ def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatc
     (target / ".git").mkdir(parents=True)
     fake = _FakeRun(0, pytest_summary(10))
     _install_fake(board, monkeypatch, fake)
-    rc = regression_cmd.cmd_regression(board._home(), _reg_args(task="job1"))
+    rc = regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _reg_args(task="job1"))
     assert rc == 0
     expected_cwd = str(board.REPO / "work" / "A_1")
     assert fake.calls, "regression subprocess 미기동"
@@ -139,25 +139,25 @@ def test_regression_run_task_threads_absolute_cwd_and_surfaces(board, monkeypatc
 
 def test_regression_run_task_ambiguous_holding_fails_loud(board, monkeypatch):
     """--task 가 통틀어 2개↑ 보유(모호·⑦) → fail-loud(SystemExit) — 암묵 선택 안 함."""
-    _write_leases(pm_paths.leases_file(board._home()), [
+    _write_leases(pm_paths.leases_file(pm_paths.home_at(board.REPO)), [
         {"slot": "work/A_1", "repo": "A", "session": "job2", "state": "leased"},
         {"slot": "work/B_1", "repo": "B", "session": "job2", "state": "leased"},
     ])
     _install_fake(board, monkeypatch, _FakeRun(0, "ok"))
     with pytest.raises(SystemExit):
-        regression_cmd.cmd_regression(board._home(), _reg_args(task="job2"))
+        regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _reg_args(task="job2"))
 
 
 def test_regression_run_task_repo_selects_unique_owned_workspace(board, monkeypatch):
     """task가 다른 repo 슬롯을 여럿 보유해도 repo 유일 선택은 허용한다."""
-    _write_leases(pm_paths.leases_file(board._home()), [
+    _write_leases(pm_paths.leases_file(pm_paths.home_at(board.REPO)), [
         {"slot": "work/A_1", "repo": "A", "session": "job3", "state": "leased", "test_cmd": "pytest -q"},
         {"slot": "work/B_1", "repo": "B", "session": "job3", "state": "leased"},
     ])
     (board.REPO / "work/A_1/.git").mkdir(parents=True)
     (board.REPO / "work/A_1/tests").mkdir()
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(10)))
-    assert regression_cmd.cmd_regression(board._home(), _reg_args(task="job3", repo="A")) == 0
+    assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _reg_args(task="job3", repo="A")) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO / "work/A_1")
 
 
@@ -167,7 +167,7 @@ def test_regression_run_rejects_task_cwd_before_subprocess(board, monkeypatch, t
     _install_fake(board, monkeypatch, fake)
 
     with pytest.raises(SystemExit) as exc:
-        regression_cmd.cmd_regression(board._home(), _reg_args(task="job3", cwd=str(tmp_path / "outside")))
+        regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _reg_args(task="job3", cwd=str(tmp_path / "outside")))
 
     assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
@@ -181,7 +181,7 @@ def test_regression_run_non_task_cwd_remains_override(board, monkeypatch, tmp_pa
     fake = _FakeRun(0, pytest_summary())
     _install_fake(board, monkeypatch, fake)
 
-    assert regression_cmd.cmd_regression(board._home(), _reg_args(cwd=str(target), cmd="pytest -q")) == 0
+    assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _reg_args(cwd=str(target), cmd="pytest -q")) == 0
 
     assert fake.calls[0]["kwargs"]["cwd"] == str(target)
 
@@ -192,14 +192,14 @@ def _lg_args(task=None, repo=None, slot=None, cwd=None):
 
 def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
     """livegate record --task → F6 슬롯 worktree 절대경로를 cwd 로 고정·surface (release cmd 고정)."""
-    _write_leases(pm_paths.leases_file(board._home()), [
+    _write_leases(pm_paths.leases_file(pm_paths.home_at(board.REPO)), [
         {"slot": "work/A_2", "repo": "A", "session": "job4", "state": "leased"},
     ])
     (board.REPO / "work/A_2/.git").mkdir(parents=True)
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
     # engine-root sidecar 해소를 솔로 폴백으로(_resolve_livegate_flag 가 hooksPath 미설정 시 정상).
-    regression_cmd.cmd_livegate(board._home(), _lg_args(task="job4"))
+    regression_cmd.cmd_livegate(pm_paths.home_at(board.REPO), _lg_args(task="job4"))
     expected_cwd = str(board.REPO / "work" / "A_2")
     # 마지막(release) subprocess 호출의 cwd 가 F6 슬롯 절대경로.
     assert fake.calls[-1]["kwargs"]["cwd"] == expected_cwd
@@ -212,7 +212,7 @@ def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypa
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
     with pytest.raises(SystemExit) as exc:
-        regression_cmd.cmd_livegate(board._home(), _lg_args(task="job4", slot=2))
+        regression_cmd.cmd_livegate(pm_paths.home_at(board.REPO), _lg_args(task="job4", slot=2))
     assert "--slot 은 --repo 필수" in str(exc.value)
     assert fake.calls == []
 
@@ -223,12 +223,12 @@ def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, 
     _install_fake(board, monkeypatch, fake)
 
     with pytest.raises(SystemExit) as exc:
-        regression_cmd.cmd_livegate(board._home(), _lg_args(task="job4", cwd=str(tmp_path / "outside")))
+        regression_cmd.cmd_livegate(pm_paths.home_at(board.REPO), _lg_args(task="job4", cwd=str(tmp_path / "outside")))
 
     assert "외부 경로 override를 허용하지 않는다" in str(exc.value)
     assert "--cwd" in str(exc.value)
     assert fake.calls == []
-    assert not pm_paths.livegate_flag(board._home()).exists()
+    assert not pm_paths.livegate_flag(pm_paths.home_at(board.REPO)).exists()
 
 
 def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_path):
@@ -243,7 +243,7 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
         lambda home, cwd: (pm_paths.livegate_flag(home), regression_store._LG_NO_HOOK),
     )
 
-    assert regression_cmd.cmd_livegate(board._home(), _lg_args(cwd=str(target))) == 0
+    assert regression_cmd.cmd_livegate(pm_paths.home_at(board.REPO), _lg_args(cwd=str(target))) == 0
 
     assert fake.calls[-1]["kwargs"]["cwd"] == str(target)
 
@@ -254,7 +254,7 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
 def test_actor_session_override_task_mode_returns_task(board):
     """task 지정 시 귀속 세션 override = task 이름 — claim/new created_by 가 <user>/<task>."""
     ns = argparse.Namespace(task="myjob")
-    assert task_args._actor_session_override(board._home(), ns) == "myjob"
+    assert task_args._actor_session_override(pm_paths.home_at(board.REPO), ns) == "myjob"
     # 비실행 명령은 task+repo/slot 혼합을 조용히 task 우선하지 않는다 — parser 가 `--repo`/`--slot`
     # 자체를 받지 않는다(T-0962).
     with pytest.raises(SystemExit) as exc:
@@ -286,8 +286,8 @@ def test_board_provenance_commands_reject_task_repo_mix_at_ingress(board, comman
 
 def test_new_task_prefix_and_created_by(board, monkeypatch):
     """new --task: --prefix 생략 시 task 설정 prefix 사용·created_by=<user>/<task> (F5·F5b)."""
-    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
-    pm_paths.leases_file(board._home()).write_text(json.dumps({
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({
         "leases": [],
         "tasks": [{"name": "job5", "prefix": "PAY"}],
     }), encoding="utf-8")
@@ -326,7 +326,7 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
 
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
                             estimate="small", prefix=None, user="smahn", task="job5")
-    rc = board_ticket.cmd_new(board._home(), ns)
+    rc = board_ticket.cmd_new(pm_paths.home_at(board.REPO), ns)
     assert rc == 0
     assert seen["override"] == "PAY"                 # task 설정 prefix 적용(F5)
     assert seen["created_by"] == "smahn/job5"         # created_by=<user>/<task>(F5b)
@@ -334,8 +334,8 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
 
 def _stub_new_env(board, monkeypatch, *, tasks):
     """cmd_new 3단 해소 테스트용 공통 stub — id_prefix override 캡처 + 부작용 격리(F5·T-0357)."""
-    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
-    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
     # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
     monkeypatch.setattr(board_cluster, "_cluster_publish_base_branch",
                         lambda _home, args: (str(board.REPO / "product"), "task/main")
@@ -368,7 +368,7 @@ def test_new_explicit_prefix_wins_over_task(board, monkeypatch):
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
                             estimate="small", prefix="ACC", user="smahn", task="job5",
                             user_ack="ACC")
-    assert board_ticket.cmd_new(board._home(), ns) == 0
+    assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), ns) == 0
     assert seen["override"] == "ACC"                 # 명시 --prefix 가 task 설정(PAY)을 이김(tier1)
 
 
@@ -377,7 +377,7 @@ def test_new_no_prefix_no_task_defaults_none(board, monkeypatch):
     seen = _stub_new_env(board, monkeypatch, tasks=[{"name": "job0"}])
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
                             estimate="small", prefix=None, user="smahn", task="job0")
-    assert board_ticket.cmd_new(board._home(), ns) == 0
+    assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), ns) == 0
     assert seen["override"] is None                  # 무prefix → id_prefix(None) → legacy T-NNNN(tier3)
 
 
@@ -478,7 +478,7 @@ def test_actor_override_rejects_unsafe_task_before_side_effect(board, bad):
     """_actor_session_override 깔때기가 불법 task 명을 SystemExit 로 거부(char/traversal 검증)."""
     ns = argparse.Namespace(repo=None, slot=None, task=bad)
     with pytest.raises(SystemExit):
-        task_args._actor_session_override(board._home(), ns)
+        task_args._actor_session_override(pm_paths.home_at(board.REPO), ns)
 
 
 def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
@@ -486,7 +486,7 @@ def test_actor_override_rejects_reserved_slot_pattern_task(board, monkeypatch):
     monkeypatch.setattr(areas_store, "registered_repos", lambda _home: {"project_manager"})
     ns = argparse.Namespace(repo=None, slot=None, task="project_manager_1")
     with pytest.raises(SystemExit):
-        task_args._actor_session_override(board._home(), ns)
+        task_args._actor_session_override(pm_paths.home_at(board.REPO), ns)
 
 
 def test_actor_override_registered_repos_failsoft(board, monkeypatch):
@@ -495,16 +495,16 @@ def test_actor_override_registered_repos_failsoft(board, monkeypatch):
         raise RuntimeError("areas broken")
     monkeypatch.setattr(areas_store, "registered_repos", _boom)
     # 정상 task 는 통과(예약패턴만 완화·char 검증 유지).
-    assert task_args._actor_session_override(board._home(), argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
+    assert task_args._actor_session_override(pm_paths.home_at(board.REPO), argparse.Namespace(repo=None, slot=None, task="job1")) == "job1"
     # 불법 char 는 여전히 거부.
     with pytest.raises(SystemExit):
-        task_args._actor_session_override(board._home(), argparse.Namespace(repo=None, slot=None, task="../evil"))
+        task_args._actor_session_override(pm_paths.home_at(board.REPO), argparse.Namespace(repo=None, slot=None, task="../evil"))
 
 
 def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):
     """new --task <불법> → rc≠0(SystemExit) · 티켓 파일/기록 부작용 0 (깔때기 경유)."""
-    pm_paths.leases_file(board._home()).parent.mkdir(parents=True, exist_ok=True)
-    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [], "tasks": []}), encoding="utf-8")
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [], "tasks": []}), encoding="utf-8")
     tickets_open = board.REPO / "tickets" / "open"
     monkeypatch.setattr(pm_paths, "tickets_dir", lambda _home: board.REPO / "tickets")
     tickets_open.mkdir(parents=True, exist_ok=True)
@@ -512,7 +512,7 @@ def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
                             estimate="small", prefix=None, user="smahn", task="../evil")
     with pytest.raises(SystemExit):
-        board_ticket.cmd_new(board._home(), ns)
+        board_ticket.cmd_new(pm_paths.home_at(board.REPO), ns)
     assert list(tickets_open.glob("*.md")) == []   # 부작용 0
 
 
@@ -520,7 +520,7 @@ def test_claim_rejects_unsafe_task_before_mutation(board, monkeypatch):
     """claim --task <불법> → SystemExit(깔때기) · claimed_by 영속 이전 (board mutation 미도달)."""
     ns = argparse.Namespace(id="T-0001", repo=None, slot=None, task="foo)bar", user=None)
     with pytest.raises(SystemExit):
-        board_ticket.cmd_claim(board._home(), ns)
+        board_ticket.cmd_claim(pm_paths.home_at(board.REPO), ns)
 
 
 def test_ticket_finish_rejects_unsafe_task(tf, monkeypatch, capsys):
@@ -544,7 +544,7 @@ def _t0929_mock_workspaces(board, monkeypatch):
         (path / 'tests').mkdir()
         rows.append({'slot': f'work/A_{n}', 'repo': 'A', 'session': 'main',
                      'role': 'work', 'state': 'leased', 'test_cmd': f'pytest -q -k slot{n}'})
-    _write_leases(pm_paths.leases_file(board._home()), rows)
+    _write_leases(pm_paths.leases_file(pm_paths.home_at(board.REPO)), rows)
     monkeypatch.setattr(git, '_cluster_current_branch', lambda tree: f'task/slot{Path(tree).name[-1]}')
     monkeypatch.setattr(git, '_git_head_at', lambda tree: f'head{Path(tree).name[-1]}')
     return rows
@@ -556,25 +556,25 @@ def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
-    call = (lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else (lambda a: regression_cmd.cmd_livegate(board._home(), a))
+    call = (lambda a: regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), a)) if consumer == 'regression' else (lambda a: regression_cmd.cmd_livegate(pm_paths.home_at(board.REPO), a))
     assert call(args) == 0
     assert next(call for call in fake.calls if call['kwargs'].get('shell'))['kwargs']['cwd'] == str(board.REPO / 'work/A_5')
-    assert lease_store.session_name(board._home(), 'main') == 'main'
+    assert lease_store.session_name(pm_paths.home_at(board.REPO), 'main') == 'main'
 
 
 @pytest.mark.parametrize('consumer', ['regression', 'livegate'])
 def test_t0929_consumers_readonly_write_refused(board, monkeypatch, consumer):
     rows = _t0929_mock_workspaces(board, monkeypatch)
     rows[-1]['role'] = 'readonly'
-    _write_leases(pm_paths.leases_file(board._home()), rows)
+    _write_leases(pm_paths.leases_file(pm_paths.home_at(board.REPO)), rows)
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
     args = (_reg_args(task='main', repo='A', slot=5) if consumer == 'regression'
             else _lg_args(task='main', repo='A', slot=5))
     with pytest.raises(SystemExit, match='readonly'):
-        ((lambda a: regression_cmd.cmd_regression(board._home(), a)) if consumer == 'regression' else (lambda a: regression_cmd.cmd_livegate(board._home(), a)))(args)
+        ((lambda a: regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), a)) if consumer == 'regression' else (lambda a: regression_cmd.cmd_livegate(pm_paths.home_at(board.REPO), a)))(args)
     assert fake.calls == []
-    assert not pm_paths.regression_flag(board._home()).exists()
-    assert not pm_paths.livegate_flag(board._home()).exists()
+    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()
+    assert not pm_paths.livegate_flag(pm_paths.home_at(board.REPO)).exists()
 
 
 @pytest.mark.parametrize('command', ['init', 'reid', 'migrate-identity'])

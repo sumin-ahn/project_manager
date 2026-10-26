@@ -103,6 +103,7 @@ def _leaves_by_tool(tools_dir: Path) -> dict[str, dict[tuple, set]]:
             "pm_handoff.py": "pm_engine/cli/handoff",
             "pm_log.py": "pm_engine/cli/log",
             "ticket_finish.py": "pm_engine/cli/ticket_finish",
+            "domain.py": "pm_engine/cli/domain_cmd",
         }.get(tool, tool[:-3])
         mod = _load(tools_dir, implementation)
         result[tool] = _leaf_options(mod.build_parser())

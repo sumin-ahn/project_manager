@@ -208,7 +208,7 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
 
     import argparse
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="tester")
-    rc = board_init.cmd_init(board._home(), args)
+    rc = board_init.cmd_init(pm_paths.home_at(board.REPO), args)
 
     assert rc == 0
     written = local_conf.read_text(encoding="utf-8")

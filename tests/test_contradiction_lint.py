@@ -266,12 +266,12 @@ def test_cli_no_targets_is_noop(cl, capsys):
 
 
 def test_cli_dry_reports_scope(cl, tmp_path, monkeypatch, capsys):
-    decisions = tmp_path / "wiki" / "decisions"
+    decisions = tmp_path / ".project_manager" / "wiki" / "decisions"
     decisions.mkdir(parents=True)
     (decisions / "0062-new.md").write_text(
         "---\ntitle: 새 결정\n---\n# ADR-0062\n본문.", encoding="utf-8")
     ref = _write(tmp_path, "wiki/other.md", "옛 [[ADR-0061]] 전제.")
-    monkeypatch.setattr(cl, "DECISIONS_DIR", decisions)
+    monkeypatch.setattr(cl, "REPO", decisions.parents[2])
     monkeypatch.setattr(adr_contradiction, "_default_scope_files", lambda home: [ref])
     rc = cl.main(["--new-adr", "ADR-0062", "--amends", "ADR-0061", "--show-prompt"])
     assert rc == 0
@@ -287,7 +287,7 @@ def test_cli_dry_reports_scope(cl, tmp_path, monkeypatch, capsys):
 @pytest.fixture
 def wiki(tmp_path):
     """test_pm_adr 와 동형 임시 decisions/ + README + log 셋업."""
-    decisions = tmp_path / "wiki" / "decisions"
+    decisions = tmp_path / ".project_manager" / "wiki" / "decisions"
     decisions.mkdir(parents=True)
     (decisions / "0060-a.md").write_text(
         "---\ntitle: A\nstatus: accepted\ntype: decision\n---\n# ADR-0060\n", encoding="utf-8")
@@ -303,7 +303,7 @@ def wiki(tmp_path):
         "## Superseded (비권위)\n\n| # | Title | superseded_by | 무엇 |\n|---|---|---|---|\n\n"
         "## Amended (유효)\n\n| # | Title | amended_by | 무엇 |\n|---|---|---|---|\n")
     (decisions / "README.md").write_text(readme, encoding="utf-8")
-    log = tmp_path / "wiki" / "log" / "current.md"
+    log = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     log.parent.mkdir(parents=True)
     log.write_text("# Log\n", encoding="utf-8")
     return decisions, log
@@ -318,10 +318,8 @@ def test_pm_adr_amends_triggers_advisory(adr, wiki, tmp_path, monkeypatch, capsy
     """개정(amends) 발행 → 모순 lint advisory 가 stderr 로 표면화·rc 0(차단 아님)."""
     decisions, log = wiki
     ref = _write(tmp_path, "wiki/ref.md", "이 방침은 [[ADR-0061]] 을 전제로 한다.")
-    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(adr, "LOG_FILE", log)
+    monkeypatch.setattr(adr, "REPO", decisions.parents[2])
     _patch_scope(adr, monkeypatch, [ref])
-    monkeypatch.setattr(adr, "REPO", tmp_path)
 
     rc = adr.main(["new", "--title", "개정 결정", "--slug", "amend-one",
                    "--amends", "ADR-0061", "--dry-run"])
@@ -336,8 +334,7 @@ def test_pm_adr_plain_new_no_trigger(adr, wiki, tmp_path, monkeypatch, capsys):
     """신규 plain 발행(개정 없음) → 모순 lint 발화 안 함(참조 스코프 무·트리거 조건 미충족)."""
     decisions, log = wiki
     ref = _write(tmp_path, "wiki/ref.md", "이 방침은 [[ADR-0061]] 을 전제로 한다.")
-    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(adr, "LOG_FILE", log)
+    monkeypatch.setattr(adr, "REPO", decisions.parents[2])
     _patch_scope(adr, monkeypatch, [ref])
 
     rc = adr.main(["new", "--title", "신규", "--slug", "plain-new", "--dry-run"])
@@ -349,8 +346,7 @@ def test_pm_adr_refines_no_trigger(adr, wiki, tmp_path, monkeypatch, capsys):
     """refines(대상 불변·확장)만 → 모순 lint 발화 안 함(잔여 모순을 안 만든다)."""
     decisions, log = wiki
     ref = _write(tmp_path, "wiki/ref.md", "[[ADR-0061]] 전제.")
-    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(adr, "LOG_FILE", log)
+    monkeypatch.setattr(adr, "REPO", decisions.parents[2])
     _patch_scope(adr, monkeypatch, [ref])
 
     rc = adr.main(["new", "--title", "확장", "--slug", "refine-one",
@@ -362,8 +358,7 @@ def test_pm_adr_refines_no_trigger(adr, wiki, tmp_path, monkeypatch, capsys):
 def test_pm_adr_trigger_failsoft(adr, wiki, monkeypatch, capsys):
     """모순 lint 실행이 터져도 발행은 rc 0 (advisory fail-soft·차단 아님)."""
     decisions, log = wiki
-    monkeypatch.setattr(adr, "DECISIONS_DIR", decisions)
-    monkeypatch.setattr(adr, "LOG_FILE", log)
+    monkeypatch.setattr(adr, "REPO", decisions.parents[2])
     def _boom(*_args, **_kwargs):
         raise RuntimeError("모순 lint 실행 실패 시뮬")
     monkeypatch.setattr(adr_contradiction, "ContradictionLinter", _boom)

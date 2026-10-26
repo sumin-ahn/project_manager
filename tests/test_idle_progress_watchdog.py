@@ -2010,8 +2010,8 @@ def test_init_conf_holds_values_only_without_a_seed_block(board):
 
     설명 블록을 conf 로 배달하던 경로는 폐지됐다(카탈로그는 출하 문서 한 곳). 예시가 다시 들어오면
     같은 키가 두 곳에서 설명되고, 그 사본이 drift 한다."""
-    assert board_init.cmd_init(board._home(), _init_args()) == 0
-    conf = board._home().local_conf.read_text(encoding="utf-8")
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args()) == 0
+    conf = pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8")
     commented_keys = [line for line in conf.splitlines()
                       if line.strip().startswith("#") and "=" in line]
     assert commented_keys == [], commented_keys
@@ -2020,15 +2020,15 @@ def test_init_conf_holds_values_only_without_a_seed_block(board):
 
 def test_existing_adopter_conf_receives_no_appended_block(board):
     """기존 conf 를 가진 채택자에게도 append 되는 블록이 없다 — 실행할수록 길어지지 않는다."""
-    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
-    board._home().local_conf.write_text(
+    pm_paths.home_at(board.REPO).local_conf.parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.home_at(board.REPO).local_conf.write_text(
         "identity.user=pm@example.com\nruntime.py=python3\ntest.cmd=pytest -q\n",
         encoding="utf-8")
 
-    board_init.cmd_init(board._home(), _init_args())
-    once = board._home().local_conf.read_text(encoding="utf-8")
-    board_init.cmd_init(board._home(), _init_args())
-    twice = board._home().local_conf.read_text(encoding="utf-8")
+    board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args())
+    once = pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8")
+    board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args())
+    twice = pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8")
 
     assert once == twice                                          # 멱등
     assert "identity.user=pm@example.com" in twice                # 비파괴 병합
@@ -2226,7 +2226,7 @@ def test_additional_reviewer_cleanup_failure_saves_partial_output(
 
 def test_additional_reviewer_follows_reviewer_harness_profile(external):
     """리뷰어 커맨드의 **하네스 프로필**을 따른다 — 별도 타임아웃 상수 0(값 출처 단일)."""
-    unset = external.argparse.Namespace(timeout=None, idle_timeout=None)
+    unset = argparse.Namespace(timeout=None, idle_timeout=None)
     assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO), unset, {}, "codex exec --sandbox read-only") == \
         int(watchdog.CLOUD_WALL_TIMEOUT_SEC)
     # 로컬 GPU 리뷰어(opencode)를 물리면 그 축의 값으로 갈린다 — 표면이 아니라 축이 값을 정한다.
@@ -2369,7 +2369,7 @@ def test_additional_reviewer_wall_clock_is_a_backstop_not_a_primary(external):
 
     실측: 같은 입력 2회 중 하나는 900초 초과 kill / 다른 하나는 `--timeout 1500` 성공. 900 으로
     되돌리면 그 false-kill 구조가 그대로 복원된다."""
-    unset = external.argparse.Namespace(timeout=None)
+    unset = argparse.Namespace(timeout=None)
     assert reviewer_target._resolve_timeout(pm_paths.home_at(external.REPO), unset, {}, "codex exec") > 1500
 
 
@@ -2970,8 +2970,8 @@ def test_relay_and_reviewer_share_the_definite_launch_failure_table(external):
 
 
 def _conf_with(board, text: str) -> None:
-    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
-    board._home().local_conf.write_text(text, encoding="utf-8")
+    pm_paths.home_at(board.REPO).local_conf.parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.home_at(board.REPO).local_conf.write_text(text, encoding="utf-8")
 
 
 def test_repeated_init_is_byte_identical(board):
@@ -2982,11 +2982,11 @@ def test_repeated_init_is_byte_identical(board):
     """
     _conf_with(board, "session=pm\nruntime.py=python3\n")
 
-    assert board_init.cmd_init(board._home(), _init_args()) == 0
-    once = board._home().local_conf.read_bytes()
-    assert board_init.cmd_init(board._home(), _init_args()) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args()) == 0
+    once = pm_paths.home_at(board.REPO).local_conf.read_bytes()
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args()) == 0
 
-    assert board._home().local_conf.read_bytes() == once
+    assert pm_paths.home_at(board.REPO).local_conf.read_bytes() == once
 
 
 def _conf_with_init_defaults(board, extra: str) -> str:
@@ -3015,7 +3015,7 @@ def test_already_seeded_conf_is_left_untouched(board):
         board, "delegate.developer.harness=codex\n" + legacy_seed)
     _conf_with(board, polluted)
 
-    assert board_init.cmd_init(board._home(), _init_args()) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args()) == 0
 
-    conf = board._home().local_conf.read_text(encoding="utf-8")
+    conf = pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8")
     assert conf == polluted, "채택자 conf 를 엔진이 재작성했다(소급 청소 금지)"

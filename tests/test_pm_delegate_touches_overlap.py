@@ -28,6 +28,8 @@ from conftest import write_cluster_ledger
 from pm_engine.infra import repo_coordinates
 from pm_engine.domain import ticket_rules
 from pm_engine.domain import delegate_errors
+from pm_engine.cli import delegate_run as cli_delegate_run
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -131,7 +133,7 @@ def _enabled_conf(**extra) -> dict:
 def _run_main(pd, monkeypatch, argv, conf, run_fn=None):
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf)
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
-    return pd.main(list(argv), run_fn=run_fn)
+    return cli_delegate_run.main(pm_paths.home_at(pd.REPO), list(argv), run_fn=run_fn)
 
 
 def _ticket_text(pd, ticket_id: str, *, status: str, claimed_by: str | None,

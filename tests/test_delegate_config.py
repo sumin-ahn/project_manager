@@ -83,7 +83,7 @@ def test_lint_delegate_surfaces_advisory(board, monkeypatch):
         "delegate.code-reviewer.harness": "claude", "delegate.code-reviewer.model": "gpt-x",
     }
     monkeypatch.setattr(conf_store, "local_config", lambda _home: same)
-    findings = conf_lint.lint_delegate(board._home())
+    findings = conf_lint.lint_delegate(pm_paths.home_at(board.REPO))
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert kind == "delegate-same-model"
@@ -95,9 +95,9 @@ def test_lint_delegate_clean_no_finding(board, monkeypatch):
     """모델 상이·미설정이면 lint_delegate 는 finding 0(솔로/미사용 무영향)."""
     monkeypatch.setattr(conf_store, "local_config", lambda _home: {
         "delegate.developer.model": "gpt-x", "delegate.code-reviewer.model": "opus"})
-    assert conf_lint.lint_delegate(board._home()) == []
+    assert conf_lint.lint_delegate(pm_paths.home_at(board.REPO)) == []
     monkeypatch.setattr(conf_store, "local_config", lambda _home: {})
-    assert conf_lint.lint_delegate(board._home()) == []
+    assert conf_lint.lint_delegate(pm_paths.home_at(board.REPO)) == []
 
 
 def _same_model_conf() -> dict:
@@ -112,7 +112,7 @@ def test_lint_tickets_wires_delegate(board, monkeypatch):
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
     monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # 실 DOMAIN_DIR 스캔 격리.
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
-    kinds = {kind for _label, kind, _detail in ticket_lint.lint_tickets(board._home())}
+    kinds = {kind for _label, kind, _detail in ticket_lint.lint_tickets(pm_paths.home_at(board.REPO))}
     assert "delegate-same-model" in kinds
 
 
@@ -121,7 +121,7 @@ def test_cmd_lint_gate_delegate_is_advisory_exit0(board, monkeypatch, capsys):
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
     monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # advisory 격리(gate 산술만).
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
-    rc = board_lint.cmd_lint(board._home(), argparse.Namespace(gate=True))
+    rc = board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=True))
     assert rc == 0                                          # block_count 0 → gate 통과
     out = capsys.readouterr().out
     assert "delegate-same-model" in out                    # 보고엔 표면화(가시성 유지)
@@ -144,13 +144,13 @@ def test_init_conf_carries_values_only(board):
     설명이 conf 에 살면 값과 어긋난 채 굳는다(그 파일은 아무도 다시 읽지 않는다). 카탈로그의
     자리는 출하 문서이고, conf 는 이 clone 이 실제로 정한 값만 담는다.
     """
-    rc = board_init.cmd_init(board._home(), _init_args())
+    rc = board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args())
     assert rc == 0
-    text = board._home().local_conf.read_text(encoding="utf-8")
+    text = pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8")
     for marker in _EXPLANATION_MARKERS:
         assert marker not in text, f"conf 에 설명 블록 잔존: {marker}"
     # 활성 키는 전부 실값이다 — 위임 축은 한 줄도 없다(기본 허용이라 기록할 값이 없다).
-    parsed = conf_store.local_config(board._home())
+    parsed = conf_store.local_config(pm_paths.home_at(board.REPO))
     assert not [key for key in parsed if key.startswith("delegate.")], parsed
     for key in ("runtime.py", "test.cmd", "project.name",
                 "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct"):
@@ -163,8 +163,8 @@ def test_init_conf_has_no_commented_out_key_examples(board):
     주석 예시는 "설정 0개인 설명"이라 실값과 모순돼도 아무 게이트가 못 본다. 카탈로그가
     문서로 갔으므로 conf 의 주석은 파일 정체를 밝히는 머리말뿐이어야 한다.
     """
-    board_init.cmd_init(board._home(), _init_args())
-    for line in board._home().local_conf.read_text(encoding="utf-8").splitlines():
+    board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args())
+    for line in pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped.startswith("#"):
             continue
@@ -174,18 +174,18 @@ def test_init_conf_has_no_commented_out_key_examples(board):
 
 def test_init_merges_without_appending_a_delegate_block(board):
     """기존 conf 로 재실행해도 위임 블록을 덧붙이지 않고 사용자 값을 그대로 둔다(비파괴)."""
-    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
-    board._home().local_conf.write_text(
+    pm_paths.home_at(board.REPO).local_conf.parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.home_at(board.REPO).local_conf.write_text(
         "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nctx.compact_at_pct=85\n"
         "additional_reviewer.harness=codex\n",
         encoding="utf-8")
 
-    assert board_init.cmd_init(board._home(), _init_args()) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args()) == 0
 
-    text = board._home().local_conf.read_text(encoding="utf-8")
+    text = pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8")
     for marker in _EXPLANATION_MARKERS:
         assert marker not in text
-    parsed = conf_store.local_config(board._home())
+    parsed = conf_store.local_config(pm_paths.home_at(board.REPO))
     assert parsed["ctx.compact_at_pct"] == "85"             # 커스텀 값 보존
     assert parsed["additional_reviewer.harness"] == "codex"  # 기존 값 보존
     assert parsed["session"] == "pm"
@@ -197,17 +197,17 @@ def test_init_preserves_an_explicit_delegate_switch(board):
     기본이 허용이라 값이 없는 것과 `false` 는 다른 상태다 — init 이 그 줄을 지우면 위임이
     조용히 다시 켜진다.
     """
-    board._home().local_conf.parent.mkdir(parents=True, exist_ok=True)
-    board._home().local_conf.write_text(
+    pm_paths.home_at(board.REPO).local_conf.parent.mkdir(parents=True, exist_ok=True)
+    pm_paths.home_at(board.REPO).local_conf.write_text(
         "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\ndelegate.enabled=false\n"
         "delegate.developer.harness=codex\ndelegate.developer.model=gpt-x\n",
         encoding="utf-8")
 
-    board_init.cmd_init(board._home(), _init_args())
+    board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args())
 
-    parsed = conf_store.local_config(board._home())
+    parsed = conf_store.local_config(pm_paths.home_at(board.REPO))
     assert parsed["delegate.enabled"] == "false"
     assert parsed["delegate.developer.harness"] == "codex"
-    active = [ln for ln in board._home().local_conf.read_text(encoding="utf-8").splitlines()
+    active = [ln for ln in pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8").splitlines()
               if ln.strip().startswith("delegate.enabled=")]
     assert active == ["delegate.enabled=false"]             # 재질문/중복 기록 없음

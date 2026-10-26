@@ -14,6 +14,7 @@ from pathlib import Path
 
 from _git_fixture import init_git_repo
 from pm_engine.infra import ticket_store
+from pm_engine.infra import pm_paths
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -200,7 +201,7 @@ def test_tier_signals_cli_is_advisory_rc_zero(tmp_path, monkeypatch, capsys):
         "touches": [".project_manager/tools/shared.py"],
     }, ""))
 
-    assert board_round.cmd_tier_signals(board._home(), types.SimpleNamespace(id="T-0677")) == 0
+    assert board_round.cmd_tier_signals(pm_paths.home_at(board.REPO), types.SimpleNamespace(id="T-0677")) == 0
     out = capsys.readouterr().out
     assert "advisory" in out and "h1 tool modules: 1" in out
     assert "h2 shared code: yes" in out and "docs-only: no" in out

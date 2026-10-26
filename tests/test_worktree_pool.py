@@ -76,7 +76,6 @@ def _load_wp_bound(proj: Path):
     local = proj / ".project_manager" / ".local"
     overrides = {
         "REPO": proj,
-        "LOCAL_DIR": local,
         "LEASES_FILE": local / "worktree-leases.json",
         "LEASES_LOCK": local / "worktree-leases.lock",
         "TASKS_DIR": local / "tasks",   # task 서술 공간 tmp 재배선(T-0353·⑮) — 미재배선 시 실
@@ -7474,7 +7473,7 @@ def test_bind_task_rejects_open_record(wp):
 
 def test_bind_task_does_not_touch_slots_dir(wp):
     """task 바인딩은 `.local/slots/` 를 건드리지 않는다(마이그레이션 0·DoD·⑥ 직교)."""
-    slots_dir = wp.LOCAL_DIR / "slots"
+    slots_dir = pm_paths.home_at(wp.REPO).local_dir / "slots"
     slots_dir.mkdir(parents=True, exist_ok=True)
     (slots_dir / "sentinel").write_text("x", encoding="utf-8")
     task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "job1", session="s-test")
@@ -7815,7 +7814,7 @@ def test_bind_task_rejects_unsafe_name_in_engine(wp, bad):
         task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), bad, session="s-test")
     # 부작용 0 — 장부에 tasks 미기록, tasks 디렉토리 미생성.
     assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
-    assert not (wp.LOCAL_DIR / "tasks").exists() or list((wp.LOCAL_DIR / "tasks").iterdir()) == []
+    assert not (pm_paths.home_at(wp.REPO).local_dir / "tasks").exists() or list((pm_paths.home_at(wp.REPO).local_dir / "tasks").iterdir()) == []
 
 
 def test_bind_task_valid_name_passes(wp):
@@ -7838,7 +7837,7 @@ def test_validate_task_name_is_load_bearing_before_writes(wp):
     """검증이 write/mkdir *이전* — 거부 시 장부·디렉토리 흔적 0(부작용 순서 핀)."""
     with _pytest_task.raises(worktree_records.InvalidTaskName):
         task_lifecycle.bind_task(pm_paths.home_at(wp.REPO), "../escape", session="s-test")
-    assert not (wp.LOCAL_DIR / "tasks").exists()
+    assert not (pm_paths.home_at(wp.REPO).local_dir / "tasks").exists()
     assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 
@@ -7930,7 +7929,7 @@ def test_create_task_rejects_unsafe_name_before_writes(wp):
     """부적합 이름은 mkdir·장부 write 이전 fail-loud(`bind_task` 동형 must-fix)."""
     with _pytest_task.raises(worktree_records.InvalidTaskName):
         task_lifecycle.create_task(pm_paths.home_at(wp.REPO), "../escape")
-    assert not (wp.LOCAL_DIR / "tasks").exists()
+    assert not (pm_paths.home_at(wp.REPO).local_dir / "tasks").exists()
     assert pool_store.list_tasks(pm_paths.home_at(wp.REPO)) == []
 
 

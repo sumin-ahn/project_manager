@@ -1211,6 +1211,15 @@ def _top_level_segments(text: str) -> dict[str, str]:
     return segments
 
 
+# 진입 형태 통일 역적용. 동결 세대는 콘솔 설정을 CLI main 첫 문장에서 하고 `__main__` 가드가 Home 만 넘겨
+# CLI main 을 불렀다 — 현행은 평면 진입 main 이 콘솔을 설정하고 argv 를 넘긴다. (현행, 그 세대) 원문 쌍이다.
+_ENTRY_FORM_CONSOLE_REVERSAL = (
+    '    """\n    try:\n        return _main(home, argv, prog=prog)\n',
+    '    """\n    console.configure_console_utf8()\n    try:\n        return _main(home, argv, prog=prog)\n',
+)
+_ENTRY_FORM_GUARD = '\n\nif __name__ == "__main__":\n    sys.exit(update_cmd.main(pm_paths.home_at(REPO)))\n'
+
+
 def _flat_updater_source() -> str:
     """현행 평면 진입 + 소유 모듈 원문을 package 이동 전 한 파일 배치로 합친 updater 원문."""
     tools = REPO / ".project_manager" / "tools"
@@ -1250,7 +1259,11 @@ def _flat_updater_source() -> str:
     _cli_imports, cli_body = cli[doc_end:].split("\n\ndef _main(", 1)
     repo_line = next(line for line in flat.splitlines(keepends=True)
                      if line.startswith("REPO = Path(__file__)"))
-    entry = flat[flat.index('\n\nif __name__ == "__main__":'):]
+    assert flat.count('\n\nif __name__ == "__main__":') == 1
+    entry = _ENTRY_FORM_GUARD
+    current_console, frozen_console = _ENTRY_FORM_CONSOLE_REVERSAL
+    assert cli_body.count(current_console) == 1, current_console
+    cli_body = cli_body.replace(current_console, frozen_console, 1)
     return _reverse_engine_rev_marker_removal(_reverse_engine_package_replace(
         shebang + cli[:doc_end] + "\nfrom __future__ import annotations\n\n\n"
         + "".join(_PRE_S9_UPDATE_IMPORTS) + repo_line + _PRE_S9_FLAT_ENTRY_HELPERS

@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 from pm_engine.domain import delegate_errors
 from pm_engine.infra import pm_paths
+from pm_engine.cli import additional_reviewer as cli_additional_reviewer
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -252,7 +253,7 @@ def test_early_exit_notice_matrix_has_cell_specific_expectations(
 
 def test_gate_and_anchor_order_remains_unambiguous(external):
     """게이트 해소 → 조기 종료 → 선택 거부 → 예약 순서를 고정한다."""
-    source = inspect.getsource(external._main)
+    source = inspect.getsource(cli_additional_reviewer.main)
     positions = [
         source.index("gate_derivation = reviewer_reservation._derive_gate_from_ticket(args)"),
         source.index("if not diff.strip():"),
@@ -267,7 +268,7 @@ def test_help_and_shipped_skill_send_examples_choose_gate_accounting(external):
     script = "python3 .project_manager/tools/additional_reviewer.py"
     help_commands = [
         line.strip()
-        for line in external.build_arg_parser().format_help().splitlines()
+        for line in cli_additional_reviewer.build_arg_parser().format_help().splitlines()
         if line.strip().startswith(script)
     ]
     skill_paths = sorted({

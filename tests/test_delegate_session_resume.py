@@ -45,6 +45,7 @@ from _git_fixture import init_git_repo
 from pm_engine.infra import raw_output
 from pm_engine.infra.harness import contract
 from pm_engine.domain import delegate_errors
+from pm_engine.cli import delegate_run as cli_delegate_run
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -153,7 +154,7 @@ def _run_main(pd, monkeypatch, argv, run_fn=None, conf=None):
     # 이 파일은 resume wire/ledger 축을 검증한다. code-reviewer의 실 ticket-copy 왕복은 전용
     # growth 회귀가 소유하므로 여기서는 필수 --ticket을 유지하되 copy transport만 격리한다.
     monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", lambda _home, **_kw: None)
-    return pd.main(list(argv), run_fn=run_fn)
+    return cli_delegate_run.main(pm_paths.home_at(pd.REPO), list(argv), run_fn=run_fn)
 
 
 # resume 축의 기본 역할 — read 역할이고 `--ticket` 단위로 실행된다. code-reviewer 는 묶음

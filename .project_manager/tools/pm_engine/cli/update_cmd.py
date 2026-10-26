@@ -66,7 +66,6 @@ from pm_engine.app import upstream_changes
 from pm_engine.app import upstream_revisions
 from pm_engine.cli import update_changes
 from pm_engine.domain import manifest_rules
-from pm_engine.infra import console
 from pm_engine.infra import engine_transfer as package_transfer
 from pm_engine.infra import install_conf
 from pm_engine.infra import repo_files
@@ -729,7 +728,6 @@ def main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") -> 
     패키지 교체 실패(`PackageReplaceError`)는 단계·원인과 남은 stage·backup 위치를 담아 rc 1 이다.
     apply/render/IO 등 다른 예외는 프로그래밍·시퀀싱 오류이므로 기존처럼 호출자에게 전파한다.
     """
-    console.configure_console_utf8()
     try:
         return _main(home, argv, prog=prog)
     except manifest_rules.EmptyShippingInventoryError as exc:

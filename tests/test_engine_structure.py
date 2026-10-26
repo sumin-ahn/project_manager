@@ -2,10 +2,13 @@
 
 R1 층 순위(허용 import 대상·경로 적재 금지), R2 도메인 층 순수성, R3 순환 없음,
 R4 패키지 안은 모듈 단위 import 만, R7 모듈 1,500줄 이하.
+R5 평면 진입 파일은 하나의 문법(경로 삽입·cli 모듈 하나 import·콘솔 설정 뒤 패키지 main 호출)만,
+R6 어댑터는 `from pm_engine.cli import hooks` 외 엔진 import·평면 엔진 import·경로 적재 금지.
 """
 from __future__ import annotations
 
 import ast
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from _engine_tree import engine_python_files
+from pm_engine.infra import repo_files
 
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE = REPO / ".project_manager" / "tools" / "pm_engine"
@@ -28,6 +32,26 @@ PATH_LOAD_ALLOWED = frozenset({
     ("pm_engine.app.lint_hooks", "_run_lint_hooks", "load_module"),
 })
 MAX_LINES = 1500
+TOOLS = PACKAGE.parent
+# R5 의 유일한 대상 밖 파일: 엔진을 import 하지 않고 하한 미만 Python 에서 도는 하한 probe.
+R5_EXCLUDED_ENTRY = "python_floor.py"
+R5_MIN_ENTRY_FILES = 17
+R5_TOOLS_ASSIGN = "_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))"
+R5_TOOLS_IF = "if _TOOLS_DIR not in sys.path:\n    sys.path.insert(0, _TOOLS_DIR)"
+R5_REPO_ASSIGN = "REPO = Path(__file__).resolve().parents[2]"
+R5_FLOOR_TEST = "sys.version_info[:2] < MIN_PYTHON"
+R5_CONSOLE_CALL = "console.configure_console_utf8()"
+R5_GUARD = "if __name__ == '__main__':\n    sys.exit(main(sys.argv[1:]))"
+R5_INFRA_NAMES = frozenset({"console", "pm_paths"})
+R6_PATH_LOAD_CALLS = frozenset({"spec_from_file_location", "SourceFileLoader", "run_path", "load_module",
+                                "module_from_spec", "exec_module", "import_module", "__import__"})
+R6_JS_SUFFIXES = (".js", ".cjs", ".mjs")
+R6_ADAPTER_DIRS = (".claude", ".codex", ".opencode")
+R6_JS_ADAPTER_DIR = ".opencode"
+R6_MIN_PYTHON_ADAPTERS = 6
+R6_MIN_JS_ADAPTERS = 16
+R6_JS_PYTHON_IMPORT = re.compile(r"\b(?:from|import)\s+(pm_engine(?:\.\w+)*)(?:\s+import\s+([\w, ]+))?")
+R6_JS_PATH_LOAD = re.compile(r"\b(spec_from_file_location|SourceFileLoader|run_path)\b")
 
 
 def package_modules(package: Path) -> dict[str, Path]:
@@ -193,3 +217,340 @@ def test_entry_file_bootstraps_package_from_isolated_copy(tmp_path):
     assert result.returncode == 0, result.stderr
     loaded = Path(result.stdout.strip())
     assert loaded == (tools / PACKAGE.name / "infra" / "console.py").resolve(), loaded
+
+
+def _r5_head(node: ast.stmt | None) -> str:
+    return ast.unparse(node).splitlines()[0][:80] if node is not None else "(파일 끝)"
+
+
+def _r5_is_docstring(node: ast.stmt) -> bool:
+    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+
+
+def _r5_is_floor_exit(node: ast.stmt) -> bool:
+    if isinstance(node, ast.Raise):
+        call = node.exc
+        return (isinstance(call, ast.Call) and ast.unparse(call.func) == "SystemExit"
+                and len(call.args) == 1 and not call.keywords)
+    return (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func) == "sys.exit" and len(node.value.args) == 1)
+
+
+def _r5_is_floor_block(node: ast.stmt) -> bool:
+    if not (isinstance(node, ast.If) and not node.orelse and ast.unparse(node.test) == R5_FLOOR_TEST):
+        return False
+    *head, last = node.body
+    messages_only = all(
+        isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+        and ast.unparse(stmt.value.func) in ("print", "sys.stderr.write")
+        for stmt in head
+    )
+    return messages_only and _r5_is_floor_exit(last)
+
+
+def _r5_is_floor_value(node: ast.stmt) -> bool:
+    return (isinstance(node, ast.Assign) and len(node.targets) == 1
+            and ast.unparse(node.targets[0]) == "MIN_PYTHON"
+            and isinstance(node.value, ast.Tuple) and len(node.value.elts) == 2
+            and all(isinstance(elt, ast.Constant) and type(elt.value) is int for elt in node.value.elts))
+
+
+def r5_violations(source_text: str) -> list[str]:
+    """평면 진입 파일 최상위 문장을 하나의 문법으로 차례로 소비하고 어긋난 곳을 돌려준다.
+
+    순서: docstring → `from __future__` → os·sys·Path import → (MIN_PYTHON 하한 블록) →
+    `_TOOLS_DIR` 대입 → sys.path 삽입 → cli 모듈 하나와 infra console[·pm_paths] import →
+    (REPO 식) → `def main(argv=None)` → `__main__` 가드. os·sys·Path import 는 하한 블록 앞뒤와
+    sys.path 삽입 뒤에 올 수 있다. 모듈을 import·실행하지 않고 AST 만 읽는다.
+    """
+    body = ast.parse(source_text).body
+    out: list[str] = []
+    index = 0
+    seen_std: set[str] = set()
+
+    def current() -> ast.stmt | None:
+        return body[index] if index < len(body) else None
+
+    def take(predicate) -> bool:
+        nonlocal index
+        if index < len(body) and predicate(body[index]):
+            index += 1
+            return True
+        return False
+
+    def report(expected: str) -> None:
+        out.append(f"문장 {index + 1}: {_r5_head(current())} — 기대 {expected}")
+
+    def std_import(node: ast.stmt) -> bool:
+        if isinstance(node, ast.Import) and len(node.names) == 1:
+            alias = node.names[0]
+            if alias.asname is None and alias.name in ("os", "sys") and alias.name not in seen_std:
+                seen_std.add(alias.name)
+                return True
+        if (isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "pathlib"
+                and [(a.name, a.asname) for a in node.names] == [("Path", None)] and "Path" not in seen_std):
+            seen_std.add("Path")
+            return True
+        return False
+
+    take(_r5_is_docstring)
+    while take(lambda n: isinstance(n, ast.ImportFrom) and n.module == "__future__"):
+        pass
+    while take(std_import):
+        pass
+    if take(_r5_is_floor_value):
+        if not take(_r5_is_floor_block):
+            report(f"`if {R5_FLOOR_TEST}:` 안 print·sys.stderr.write 뒤 raise SystemExit/sys.exit 하나")
+            return out
+        while take(std_import):
+            pass
+    if not take(lambda n: ast.unparse(n) == R5_TOOLS_ASSIGN):
+        report(f"`{R5_TOOLS_ASSIGN}`")
+        return out
+    if not take(lambda n: ast.unparse(n) == R5_TOOLS_IF):
+        report("`if _TOOLS_DIR not in sys.path: sys.path.insert(0, _TOOLS_DIR)`")
+        return out
+    while take(std_import):
+        pass
+    cli_modules: list[str] = []
+    infra_names: set[str] = set()
+
+    def package_import(node: ast.stmt) -> bool:
+        if not (isinstance(node, ast.ImportFrom) and node.level == 0
+                and all(alias.asname is None for alias in node.names)):
+            return False
+        if node.module == "pm_engine.cli" and len(node.names) == 1:
+            cli_modules.append(node.names[0].name)
+            return True
+        if node.module == "pm_engine.infra" and {alias.name for alias in node.names} <= R5_INFRA_NAMES:
+            infra_names.update(alias.name for alias in node.names)
+            return True
+        return False
+
+    while take(package_import):
+        pass
+    if len(cli_modules) != 1:
+        out.append(f"pm_engine.cli 모듈 import {len(cli_modules)}개 — 기대 별칭 없는 1개")
+    if "console" not in infra_names:
+        out.append("`from pm_engine.infra import console` 없음 — 기대 console import")
+    has_repo = take(lambda n: ast.unparse(n) == R5_REPO_ASSIGN)
+    if has_repo and "Path" not in seen_std:
+        out.append("REPO 식이 있는데 `from pathlib import Path` 없음")
+    if has_repo != ("pm_paths" in infra_names):
+        out.append("REPO 식과 pm_paths import 는 함께 있거나 함께 없어야 한다")
+    module = cli_modules[0] if cli_modules else "<cli 모듈>"
+    expected_return = (f"return {module}.main(pm_paths.home_at(REPO), argv)" if has_repo
+                       else f"return {module}.main(argv)")
+
+    def entry_main(node: ast.stmt) -> bool:
+        if not (isinstance(node, ast.FunctionDef) and node.name == "main"
+                and not node.decorator_list and node.returns is None):
+            return False
+        args = node.args
+        if (args.posonlyargs or args.kwonlyargs or args.vararg or args.kwarg
+                or [arg.arg for arg in args.args] != ["argv"] or args.args[0].annotation is not None
+                or len(args.defaults) != 1
+                or not (isinstance(args.defaults[0], ast.Constant) and args.defaults[0].value is None)):
+            return False
+        return [ast.unparse(stmt) for stmt in node.body] == [R5_CONSOLE_CALL, expected_return]
+
+    if not take(entry_main):
+        report(f"`def main(argv=None):` 본문 `{R5_CONSOLE_CALL}` 다음 `{expected_return}`")
+        return out
+    if not take(lambda n: ast.unparse(n) == R5_GUARD):
+        report('`if __name__ == "__main__": sys.exit(main(sys.argv[1:]))`')
+        return out
+    if index != len(body):
+        report("파일 끝(허용 형태 밖 문장)")
+    return out
+
+
+def r5_entry_files(tools: Path) -> list[Path]:
+    return [path for path in sorted(tools.glob("*.py")) if path.name != R5_EXCLUDED_ENTRY]
+
+
+def test_r5_entry_files_have_the_single_form():
+    targets = r5_entry_files(TOOLS)
+    assert len(targets) >= R5_MIN_ENTRY_FILES, [path.name for path in targets]
+    violations = {
+        path.name: found
+        for path in targets
+        if (found := r5_violations(path.read_text(encoding="utf-8")))
+    }
+    assert violations == {}
+
+
+_R5_VALID_ENTRY = '''"""합성 진입."""
+import os
+import sys
+from pathlib import Path
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.cli import log
+from pm_engine.infra import console, pm_paths
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def main(argv=None):
+    console.configure_console_utf8()
+    return log.main(pm_paths.home_at(REPO), argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+'''
+
+_R5_VALID_FLOOR_ENTRY = '''"""하한 블록이 있는 합성 진입."""
+import sys
+
+MIN_PYTHON = (3, 11)
+
+if sys.version_info[:2] < MIN_PYTHON:
+    print("하한 미만", file=sys.stderr)
+    sys.exit(1)
+
+import os
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from pm_engine.cli import local_conf
+from pm_engine.infra import console
+
+
+def main(argv=None):
+    console.configure_console_utf8()
+    return local_conf.main(argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+'''
+
+_R5_MAIN_DEF = "def main(argv=None):\n"
+_R5_MAIN_BODY = "    console.configure_console_utf8()\n    return log.main(pm_paths.home_at(REPO), argv)\n"
+
+
+@pytest.mark.parametrize("source", [
+    _R5_VALID_ENTRY.replace("\n\ndef main", "\n\ndef helper():\n    return 1\n\n\ndef main"),
+    _R5_VALID_ENTRY.replace("import os\n", "import os\nimport json\n"),
+    _R5_VALID_ENTRY.replace("from pm_engine.cli import log\n", "import board\nfrom pm_engine.cli import log\n"),
+    _R5_VALID_ENTRY.replace("REPO = Path(__file__).resolve().parents[2]\n",
+                            "REPO = Path(__file__).resolve().parents[2]\n"
+                            "SPEC = importlib.util.spec_from_file_location('board', 'board.py')\n"),
+    _R5_VALID_ENTRY.replace(_R5_MAIN_BODY, "    return log.main(pm_paths.home_at(REPO), argv)\n"),
+    _R5_VALID_ENTRY.replace(_R5_MAIN_BODY, "    argv = argv\n" + _R5_MAIN_BODY),
+    _R5_VALID_ENTRY.replace("from pm_engine.cli import log\n", "from pm_engine.cli import log\nfrom pm_engine.cli import hooks\n"),
+    _R5_VALID_ENTRY.replace(_R5_MAIN_DEF, "def main(argv=None, run_fn=None):\n"),
+    _R5_VALID_ENTRY.replace(_R5_MAIN_DEF, "def main(argv: list[str] | None = None) -> int:\n"),
+    _R5_VALID_ENTRY.replace("REPO = Path(__file__).resolve().parents[2]\n", "REPO = Path(__file__).parent.parent.parent\n"),
+    _R5_VALID_ENTRY.replace("    sys.exit(main(sys.argv[1:]))\n", "    sys.exit(main())\n"),
+    _R5_VALID_FLOOR_ENTRY.replace('    print("하한 미만", file=sys.stderr)\n', '    reason = "하한 미만"\n'),
+], ids=[
+    "extra-function", "import-json", "import-flat-board", "path-load-call", "console-missing",
+    "console-not-first", "two-cli-imports", "main-extra-argument", "main-annotation",
+    "repo-other-expression", "guard-without-argv", "floor-block-assignment",
+])
+def test_r5_reports_synthetic_entry_violations(source):
+    # 기준 형태 두 개는 위반 0 이다 — 검출이 변형 한 곳에서 나온다는 대조군.
+    assert r5_violations(_R5_VALID_ENTRY) == [] and r5_violations(_R5_VALID_FLOOR_ENTRY) == []
+    assert source not in (_R5_VALID_ENTRY, _R5_VALID_FLOOR_ENTRY)
+    assert r5_violations(source), source
+
+
+def _r6_python_violations(source_text: str, flat_names: frozenset[str]) -> list[str]:
+    out: list[str] = []
+    for node in ast.walk(ast.parse(source_text)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top == "pm_engine" or top in flat_names:
+                    out.append(f"{node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            top = node.module.split(".")[0]
+            names = [(alias.name, alias.asname) for alias in node.names]
+            if top == "pm_engine" and not (node.module == "pm_engine.cli" and names == [("hooks", None)]):
+                out.append(f"{node.lineno}: from {node.module} import {', '.join(n for n, _ in names)}")
+            elif top in flat_names:
+                out.append(f"{node.lineno}: from {node.module}")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            called = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
+            if called in R6_PATH_LOAD_CALLS:
+                out.append(f"{node.lineno}: 경로 적재 {called}()")
+    return out
+
+
+def _r6_js_violations(source_text: str) -> list[str]:
+    out: list[str] = []
+    for match in R6_JS_PYTHON_IMPORT.finditer(source_text):
+        module, names = match.group(1), (match.group(2) or "").replace(" ", "")
+        if not (module == "pm_engine.cli" and names == "hooks"):
+            out.append(f"{source_text.count(chr(10), 0, match.start()) + 1}: 내장 Python {match.group(0)}")
+    for match in R6_JS_PATH_LOAD.finditer(source_text):
+        out.append(f"{source_text.count(chr(10), 0, match.start()) + 1}: 내장 경로 적재 {match.group(1)}")
+    return out
+
+
+def r6_violations(path: Path, source_text: str, flat_names: frozenset[str]) -> list[str]:
+    """어댑터 파일 하나의 엔진 import 경계 위반. Python 은 AST, JS 는 내장 Python 원문을 본다."""
+    if path.suffix == ".py":
+        return _r6_python_violations(source_text, flat_names)
+    return _r6_js_violations(source_text)
+
+
+def r6_adapter_files(root: Path) -> list[Path]:
+    """templates 타깃과 저장소 루트의 repo 소유 어댑터 Python·JS (git ignore 대상인 npm 의존성 제외)."""
+    bases = [Path("."), *sorted(path.relative_to(root) for path in (root / "templates").iterdir() if path.is_dir())]
+    found: list[Path] = []
+    for base in bases:
+        for directory in R6_ADAPTER_DIRS:
+            if not (root / base / directory).is_dir():
+                continue
+            for relative in repo_files.list_repo_owned_files(root, base / directory, mode=repo_files.OWNED):
+                if relative.suffix == ".py" or (directory == R6_JS_ADAPTER_DIR and relative.suffix in R6_JS_SUFFIXES):
+                    found.append(root / relative)
+    return sorted(found)
+
+
+def _flat_engine_names() -> frozenset[str]:
+    return frozenset(path.stem for path in TOOLS.glob("*.py"))
+
+
+def test_r6_adapters_import_only_public_hooks():
+    targets = r6_adapter_files(REPO)
+    python_files = [path for path in targets if path.suffix == ".py"]
+    js_files = [path for path in targets if path.suffix in R6_JS_SUFFIXES]
+    assert len(python_files) >= R6_MIN_PYTHON_ADAPTERS, python_files
+    assert len(js_files) >= R6_MIN_JS_ADAPTERS, js_files
+    flat_names = _flat_engine_names()
+    violations = {
+        path.relative_to(REPO).as_posix(): found
+        for path in targets
+        if (found := r6_violations(path, path.read_text(encoding="utf-8"), flat_names))
+    }
+    assert violations == {}
+
+
+@pytest.mark.parametrize("name,source", [
+    ("adapter.py", "from pm_engine.app import principle_recall\n"),
+    ("adapter.py", "from pm_engine.cli import hooks as h\n"),
+    ("adapter.py", "import board\n"),
+    ("adapter.py", "import importlib.util\nimportlib.util.spec_from_file_location('x', 'board.py')\n"),
+    ("adapter.py", "import importlib\nimportlib.import_module('pm_engine.app.hooks')\n"),
+    ("adapter.py", "import runpy\nrunpy.run_path('board.py')\n"),
+    ("adapter.cjs", "const code = `from pm_engine.infra import conf_store`;\n"),
+    ("adapter.js", "const code = 'importlib.util.spec_from_file_location(name, path)';\n"),
+], ids=[
+    "app-module-import", "hooks-alias", "flat-board-import", "spec-from-file-location",
+    "import-module", "runpy-run-path", "js-embedded-engine-import", "js-embedded-path-load",
+])
+def test_r6_reports_synthetic_adapter_violations(name, source):
+    flat_names = _flat_engine_names()
+    # 공개 hooks import 와 CLI subprocess 호출은 위반 0 이다 — 검출이 금지 형태에서 나온다는 대조군.
+    assert r6_violations(Path("adapter.py"), "from pm_engine.cli import hooks\n", flat_names) == []
+    assert r6_violations(Path("adapter.js"), "spawn(python, ['board.py', 'hook-tool'])\n", flat_names) == []
+    assert r6_violations(Path(name), source, flat_names), source

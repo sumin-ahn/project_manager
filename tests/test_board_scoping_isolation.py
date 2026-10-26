@@ -143,7 +143,7 @@ def _conf_key(name: str) -> str:
 
 
 def _write_conf(board, **kv) -> None:
-    board._home().local_conf.write_text(
+    pm_paths.home_at(board.REPO).local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
@@ -157,7 +157,7 @@ def _new(board, capsys, *, prefix, session, user, title) -> str:
     repo, slot = _split_session(session)
     task = _task_of(session)
     ensure_product_slot(board, repo=repo, number=slot, task=task)
-    rc = board_ticket.cmd_new(board._home(), argparse.Namespace(
+    rc = board_ticket.cmd_new(pm_paths.home_at(board.REPO), argparse.Namespace(
         prefix=prefix, repo=repo, slot=slot, task=task, user=user, title=title,
         touches=None, depends=None, tag=None, estimate="small"))
     out = capsys.readouterr().out
@@ -183,7 +183,7 @@ def _claim(board, capsys, tid, *, session, user) -> None:
     """실 `cmd_claim` 으로 claim(claimed_by=<user>/<task> 스탬프) — `--task`(+위치 인자)로 호출한다.
     board-git 비활성이라 즉시 확정."""
     repo, slot = _split_session(session)
-    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(
+    rc = board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(
         id=tid, task=_task_of(session), repo=repo, slot=slot, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim rc={rc}: {out}"
@@ -200,7 +200,7 @@ def _view(board, capsys, **flags) -> list[str]:
     if session is not None:
         os.environ["PM_SESSION_NAME"] = _task_of(session)
     try:
-        rc = board_list.cmd_list(board._home(), argparse.Namespace(
+        rc = board_list.cmd_list(pm_paths.home_at(board.REPO), argparse.Namespace(
             status=flags.get("status"), tag=None, mine=flags.get("mine", False),
             all=flags.get("all", False), task=flags.get("task")))
     finally:
@@ -227,7 +227,7 @@ def _seed_composite(board, capsys, *, areas: bool = True) -> types.SimpleNamespa
     각 정체성 전환은 `cmd_new`/`cmd_claim` 의 `--session`/`--user` override 로만(local.conf 무관).
     """
     if areas:
-        pm_paths.areas_file(board._home()).write_text(_COMPOSITE_AREAS, encoding="utf-8")
+        pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_COMPOSITE_AREAS, encoding="utf-8")
     al_pfx, be_pfx = ("al", "be") if areas else (None, None)
 
     def slot(pfx, session, user, tag):
@@ -325,17 +325,17 @@ def _claim_task(board, capsys, tid, *, task, user) -> None:
     tree = init_git_repo(board.REPO / slot, commit=f"task fixture {task}")
     head = git._git_head_at(str(tree))
     assert head and git._cluster_current_branch(str(tree)) == "main"
-    leases = (json.loads(pm_paths.leases_file(board._home()).read_text(encoding="utf-8"))
-              if pm_paths.leases_file(board._home()).exists() else {"leases": []})
+    leases = (json.loads(pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_text(encoding="utf-8"))
+              if pm_paths.leases_file(pm_paths.home_at(board.REPO)).exists() else {"leases": []})
     leases["leases"].append({
         "slot": slot, "repo": repo, "session": task, "state": "leased", "role": "work",
     })
-    pm_paths.leases_file(board._home()).write_text(json.dumps(leases), encoding="utf-8")
-    rc = board_ticket.cmd_claim(board._home(), argparse.Namespace(
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(leases), encoding="utf-8")
+    rc = board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(
         id=tid, repo=None, slot=None, task=task, user=user))
     out = capsys.readouterr().out
     assert rc == 0, f"cmd_claim --task rc={rc}: {out}"
-    status, path = ticket_store.find_ticket_exact(board._home(), tid)
+    status, path = ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), tid)
     fm, _ = ticket_store.load_ticket(path)
     assert status == "claimed"
     assert (fm["claimed_by"], fm["claimed_rev"]) == (f"{user}/{task}", head)
@@ -452,7 +452,7 @@ def _make_board_runner(board):
                                   all="--all" in argv, task=None, repo=None, slot=None)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = board_list.cmd_list(board._home(), args)
+            rc = board_list.cmd_list(pm_paths.home_at(board.REPO), args)
         return rc, buf.getvalue()
     return run
 
@@ -467,7 +467,7 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys, tmp_path):
     _write_conf(board, user="alice", session="alpha_1")
     pm_bootstrap = _load("pm_bootstrap")
 
-    bs = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=_make_board_runner(board), log_file=pm_paths.wiki_dir(board._home()) / 'log/current.md', areas_file=pm_paths.areas_file(board._home()))
+    bs = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=_make_board_runner(board), log_file=pm_paths.wiki_dir(pm_paths.home_at(board.REPO)) / 'log/current.md', areas_file=pm_paths.areas_file(pm_paths.home_at(board.REPO)))
     result = bs._collect_board()
 
     open_tickets = set(result["open_tickets"])
@@ -502,7 +502,7 @@ def _make_pre_fix_is_mine(board):
         if status == "open":
             if my_user is None or not area_owner_in_use:
                 return True   # 옛 degrade — 다중사용자 미claim open 유출
-            return ticket_access._ticket_area_owner(board._home(), fm.get("id") or "") == my_user
+            return ticket_access._ticket_area_owner(pm_paths.home_at(board.REPO), fm.get("id") or "") == my_user
         return False
     return _is_mine
 

@@ -70,6 +70,7 @@ if _TOOLS_DIR not in sys.path:
 import pm_engine.infra  # noqa: E402,F401
 from pm_engine.cli import board_cluster
 from pm_engine.domain import cluster_rules
+from pm_engine.infra import pm_paths
 
 
 @pytest.fixture
@@ -618,6 +619,6 @@ def bind_product_cluster(board, ticket, *, repo="binding", number=1, task="bindi
     ensure_product_slot(board, repo=repo, number=number, task=task)
     name = f"bound-{ticket.lower()}"
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        assert board_cluster.cmd_cluster(board._home(), argparse.Namespace(cluster_cmd="new", name=name,
+        assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), argparse.Namespace(cluster_cmd="new", name=name,
             tickets=ticket, spike=None, repo=repo, slot=number, task=task)) == 0
     return cluster_rules.cluster_id_for_name(name)

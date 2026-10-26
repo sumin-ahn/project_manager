@@ -297,11 +297,11 @@ def test_update_raw_dispatch_preserves_usage_rc_and_cli_entry(tmp_path, monkeypa
         err = capsys.readouterr().err
         assert err.startswith(f"usage: {prog} ") and "--no-such-flag" in err
 
-    # 평면 pm_update.py 는 실행 진입만 남았다(옛 main 재수출 없음) — 실제 자식으로 package CLI 에 닿는다.
+    # 평면 pm_update.py 는 R5 진입 main 하나만 둔다(옛 main 재수출 없음) — 실제 자식으로 package CLI 에 닿는다.
     flat = TOOLS / "pm_update.py"
     flat_tree = ast.parse(flat.read_text(encoding="utf-8"))
-    assert not [node.name for node in flat_tree.body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    assert [node.name for node in flat_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))] == ["main"]
     child = subprocess.run(
         [sys.executable, str(flat), "--help"], cwd=tmp_path, capture_output=True, text=True,
         encoding="utf-8", env=utf8_child_env(), timeout=60, check=False,

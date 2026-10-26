@@ -135,11 +135,11 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
     external = _load("additional_reviewer", "notation_external")
     config = _load("pm_config", "notation_config")
     board.REPO = tmp_path
-    external.LOCAL_CONF = board._home().local_conf
+    external.LOCAL_CONF = pm_paths.home_at(board.REPO).local_conf
     external.REPO = tmp_path
     config.REPO = tmp_path
 
-    assert conf_store.local_config(board._home())["identity.user"] == "last@example.com"
+    assert conf_store.local_config(pm_paths.home_at(board.REPO))["identity.user"] == "last@example.com"
     assert conf_store.local_config(pm_paths.home_at(external.REPO))["identity.user"] == "last@example.com"
     assert repo_protection._local_conf_value(pm_paths.home_at(config.REPO), "identity.user") == "last@example.com"
 
@@ -261,7 +261,7 @@ def test_the_exception_text_points_at_adopter_owned_files(tmp_path):
     board.REPO = tmp_path
 
     with pytest.raises(RuntimeError) as caught:
-        conf_store.local_config(board._home())
+        conf_store.local_config(pm_paths.home_at(board.REPO))
 
     message = str(caught.value)
     for line in conf_module.adopter_pointer_lines():
@@ -615,12 +615,12 @@ def test_init_conf_holds_only_real_values(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
 
-    conf_store._write_init_local_conf(board._home())
+    conf_store._write_init_local_conf(pm_paths.home_at(board.REPO))
 
     conf = (pm / "local.conf").read_text(encoding="utf-8")
     assert [line for line in conf.splitlines()
             if line.startswith("#") and "=" in line] == []
-    assert conf_store.local_config(board._home())["test.cmd"] == python_env.default_pytest_cmd("python3")
+    assert conf_store.local_config(pm_paths.home_at(board.REPO))["test.cmd"] == python_env.default_pytest_cmd("python3")
 
 
 def test_the_registry_documents_the_keys_the_conf_no_longer_explains(conf_module):
@@ -706,7 +706,7 @@ def test_board_lint_surfaces_legacy_keys_and_restated_comments(tmp_path, monkeyp
     conf = _write_conf(tmp_path, _LEGACY_CONF + "# test.cmd=pytest -q\ntest.cmd=make test\n")
     monkeypatch.setattr(board, "REPO", tmp_path)
 
-    findings = conf_lint.lint_local_conf(board._home())
+    findings = conf_lint.lint_local_conf(pm_paths.home_at(board.REPO))
     details = "\n".join(detail for _where, _kind, detail in findings)
 
     assert findings, "실 conf 의 구표기가 조회면에 뜨지 않는다"
@@ -723,7 +723,7 @@ def test_board_lint_is_quiet_on_a_clean_conf(tmp_path, monkeypatch):
     conf = _write_conf(tmp_path, "runtime.py=python3\ntest.cmd=pytest -q\n")
     monkeypatch.setattr(board, "REPO", tmp_path)
 
-    assert conf_lint.lint_local_conf(board._home()) == []
+    assert conf_lint.lint_local_conf(pm_paths.home_at(board.REPO)) == []
 
 
 # ── ⑩ 어댑터 conf 해소 경로 ──────────────────────────────────────────────

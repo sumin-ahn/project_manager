@@ -38,6 +38,7 @@ from pm_engine.app import board_claim
 from pm_engine.domain import board_git_rules
 from pm_engine.infra import board_git
 from pm_engine.infra import git
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -156,7 +157,7 @@ def test_show_surfaces_ticket_local_remote_status_mismatch(board, tmp_path, caps
     _advance_other_clone(bare, tmp_path, dest_status="done")
 
     board_dir = tmp_path / ".project_manager" / "board"
-    rc = board_list.cmd_show(board._home(), _show_args())
+    rc = board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     # 역방향(F-001): upstream 이 있는 정상 형상에서는 전역 freshness 줄도 그대로 나온다.
@@ -177,7 +178,7 @@ def test_show_silent_when_local_matches_remote(board, tmp_path, capsys):
     bare = _bare(tmp_path, "bare-show-match")
     _make_board_git(tmp_path, remote=bare)
     # 원격을 전혀 전진시키지 않음 — 로컬/원격 둘 다 open.
-    rc = board_list.cmd_show(board._home(), _show_args())
+    rc = board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     assert rc == 0
     err = capsys.readouterr().err
     assert "로컬 사본 stale" not in err
@@ -190,7 +191,7 @@ def test_cmd_list_behind_line_first_pinned_on_real_multi_clone(board, tmp_path, 
     _make_board_git(tmp_path, remote=bare)
     _advance_other_clone(bare, tmp_path, dest_status="claimed")
 
-    rc = board_list.cmd_list(board._home(), _list_args())
+    rc = board_list.cmd_list(pm_paths.home_at(board.REPO), _list_args())
     assert rc == 0
     err = capsys.readouterr().err
     assert "board-git:" in err
@@ -210,7 +211,7 @@ def test_show_does_not_mutate_board_working_tree(board, tmp_path, capsys):
     before_head = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     before_porcelain = _git(["status", "--porcelain"], board_dir).stdout
 
-    board_list.cmd_show(board._home(), _show_args())
+    board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     capsys.readouterr()
 
     assert ticket_path.read_bytes() == before_bytes
@@ -226,7 +227,7 @@ def test_show_offline_degrades_without_crash_or_false_currency_claim(board, tmp_
     board_dir = _make_board_git(tmp_path, remote=bare)
     remove_git_tree(bare)   # 원격 도달 불가.
 
-    rc = board_list.cmd_show(board._home(), _show_args())
+    rc = board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.out == _expected_show_stdout(   # stdout 은 baseline 그대로.
@@ -263,7 +264,7 @@ def test_show_withholds_mismatch_verdict_when_remote_snapshot_unverified(
     os.utime(fetch_head, (stale_ts, stale_ts))
     remove_git_tree(bare)                       # 그런데 원격 도달 불가 → fetch 실패(검증 불가).
 
-    rc = board_list.cmd_show(board._home(), _show_args())
+    rc = board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.out == _expected_show_stdout(
@@ -285,7 +286,7 @@ def test_show_silent_when_ticket_absent_from_remote_tracking(board, tmp_path, ca
     _git(["add", "-A"], board_dir)
     _git(["commit", "-qm", "local-only T-0001"], board_dir)   # 원격엔 push 하지 않는다.
 
-    rc = board_list.cmd_show(board._home(), _show_args("T-0001"))
+    rc = board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args("T-0001"))
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.out == _expected_show_stdout(
@@ -307,7 +308,7 @@ def _make_legacy_project(tmp_path: Path, tid: str = "T-0001") -> None:
 def test_show_non_git_board_no_freshness_output(board, tmp_path, capsys):
     """board 비-git — stderr 는 존재가 아니라 **값**으로 무출력이고 stdout 은 baseline 이다."""
     _make_legacy_project(tmp_path)
-    rc = board_list.cmd_show(board._home(), _show_args())
+    rc = board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.err == ""
@@ -334,7 +335,7 @@ def test_show_board_git_without_upstream_is_silent(board, tmp_path, capsys):
     _git(["add", "-A"], board_dir)
     _git(["commit", "-qm", "board init (no remote)"], board_dir)
 
-    rc = board_list.cmd_show(board._home(), _show_args())
+    rc = board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert cap.err == ""
@@ -362,7 +363,7 @@ def test_show_skips_fetch_when_fetch_head_within_ttl(board, tmp_path, capsys, mo
         return real_board_git(_home, args, check=check, timeout=timeout)
 
     monkeypatch.setattr(git, "_board_git", _counting_board_git)
-    rc = board_list.cmd_show(board._home(), _show_args())
+    rc = board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     assert rc == 0
     err = capsys.readouterr().err
     assert not any(c and c[0] == "fetch" for c in calls), \
@@ -393,7 +394,7 @@ def test_show_runs_fetch_when_fetch_head_stale(board, tmp_path, capsys, monkeypa
         return real_board_git(_home, args, check=check, timeout=timeout)
 
     monkeypatch.setattr(git, "_board_git", _counting_board_git)
-    board_list.cmd_show(board._home(), _show_args())
+    board_list.cmd_show(pm_paths.home_at(board.REPO), _show_args())
     capsys.readouterr()
     assert any(c and c[0] == "fetch" for c in calls), \
         f"TTL 밖인데 show 가 fetch 를 호출하지 않음: {calls}"
@@ -406,9 +407,9 @@ def test_board_git_behind_returns_real_zero_when_up_to_date(board, tmp_path):
     """원격과 같은 커밋이면 실측 0 을 낸다 — 폴백 0 이 아니라 **계산된** 0(known)."""
     bare = _bare(tmp_path, "bare-behind-zero")
     _make_board_git(tmp_path, remote=bare)
-    upstream = board_git._board_git_upstream(board._home())
+    upstream = board_git._board_git_upstream(pm_paths.home_at(board.REPO))
     assert upstream is not None
-    assert board_git._board_git_behind(board._home(), upstream.tracking) == 0
+    assert board_git._board_git_behind(pm_paths.home_at(board.REPO), upstream.tracking) == 0
 
 
 @requires_git
@@ -418,9 +419,9 @@ def test_board_git_behind_returns_real_count_when_remote_advances(board, tmp_pat
     board_dir = _make_board_git(tmp_path, remote=bare)
     _advance_other_clone(bare, tmp_path, dest_status="done")
     _git(["fetch", "origin"], board_dir)
-    upstream = board_git._board_git_upstream(board._home())
+    upstream = board_git._board_git_upstream(pm_paths.home_at(board.REPO))
     assert upstream is not None
-    assert board_git._board_git_behind(board._home(), upstream.tracking) == 1
+    assert board_git._board_git_behind(pm_paths.home_at(board.REPO), upstream.tracking) == 1
 
 
 @requires_git
@@ -428,7 +429,7 @@ def test_board_git_behind_returns_none_when_rev_list_fails(board, tmp_path):
     """rev-list 가 실패하면(없는 추적 ref) 0 이 아니라 None — 계산 불능은 값이 아니다."""
     bare = _bare(tmp_path, "bare-behind-unknown")
     _make_board_git(tmp_path, remote=bare)
-    assert board_git._board_git_behind(board._home(), "refs/remotes/origin/no-such-branch") is None
+    assert board_git._board_git_behind(pm_paths.home_at(board.REPO), "refs/remotes/origin/no-such-branch") is None
 
 
 # ── claim 거부 문구 — 로컬 stale 진술 + 원격 status + behind 3요소 (순수 함수) ──
@@ -475,7 +476,7 @@ def test_claim_prefetch_blocks_race_lost_with_real_behind(board, tmp_path):
     _make_board_git(tmp_path, remote=bare)
     _advance_other_clone(bare, tmp_path, dest_status="done")
 
-    prefetch = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
+    prefetch = board_claim._board_git_claim_prefetch(pm_paths.home_at(board.REPO), "T-0001")
     assert prefetch.block == board_git_rules._CLAIM_BLOCK_RACE_LOST
     assert prefetch.detail == "done"
     assert prefetch.behind == 1
@@ -490,12 +491,12 @@ def test_claim_prefetch_block_decision_unchanged_when_behind_unknown(
     monkeypatch.setattr(board_git, "_board_git_behind", lambda _home, tracking: None)
 
     # (1) 선점 없음 → 차단하지 않는다(옛 0 폴백과 동일 방향: 원격이 앞섰다고 보지 않는다).
-    prefetch = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
+    prefetch = board_claim._board_git_claim_prefetch(pm_paths.home_at(board.REPO), "T-0001")
     assert prefetch.block is None
     assert prefetch.anchor
 
     # (2) 원격 선점 → 여전히 차단한다(수치만 unknown 으로 실린다).
     _advance_other_clone(bare, tmp_path, dest_status="claimed")
-    blocked = board_claim._board_git_claim_prefetch(board._home(), "T-0001")
+    blocked = board_claim._board_git_claim_prefetch(pm_paths.home_at(board.REPO), "T-0001")
     assert blocked.block == board_git_rules._CLAIM_BLOCK_RACE_LOST
     assert blocked.behind is None

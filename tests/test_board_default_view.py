@@ -95,13 +95,13 @@ def _conf_key(name: str) -> str:
 
 
 def _write_conf(board, **kv) -> None:
-    board._home().local_conf.write_text(
+    pm_paths.home_at(board.REPO).local_conf.write_text(
         "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
         encoding="utf-8")
 
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):
-    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-seed.md"
+    path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status / f"{tid}-seed.md"
     ticket_store.dump_ticket(path, {"id": tid, "title": title, "status": status,
                              "claimed_by": claimed_by, "created_by": created_by,
                              "depends_on": [], "tags": []}, "# seed\n")
@@ -113,7 +113,7 @@ def _run(board, capsys, **flags) -> str:
     args = argparse.Namespace(status=flags.get("status"), tag=flags.get("tag"),
                               mine=flags.get("mine", False),
                               all=flags.get("all", False), task=flags.get("task"))
-    rc = board_list.cmd_list(board._home(), args)
+    rc = board_list.cmd_list(pm_paths.home_at(board.REPO), args)
     assert rc == 0
     return capsys.readouterr().out
 
@@ -362,7 +362,7 @@ def test_all_does_not_resolve_identity(board, capsys, monkeypatch):
 def test_all_mutually_exclusive_with_mine(board):
     """`--all` + `--mine` 는 상호 배타 — fail-loud(뷰 스코프는 하나만)."""
     with pytest.raises(SystemExit) as exc:
-        board_list.cmd_list(board._home(), argparse.Namespace(status=None, tag=None, mine=True,
+        board_list.cmd_list(pm_paths.home_at(board.REPO), argparse.Namespace(status=None, tag=None, mine=True,
                                           all=True, task=None))
     assert "--all" in str(exc.value)
 
@@ -377,7 +377,7 @@ def test_all_mutually_exclusive_with_repo_slot(board):
 def test_all_mutually_exclusive_with_task(board):
     """`--all` + `--task` 도 상호 배타 — fail-loud (뷰 스코프는 하나만)."""
     with pytest.raises(SystemExit) as exc:
-        board_list.cmd_list(board._home(), argparse.Namespace(status=None, tag=None, mine=False,
+        board_list.cmd_list(pm_paths.home_at(board.REPO), argparse.Namespace(status=None, tag=None, mine=False,
                                           all=True, task="refactor"))
     assert "--all" in str(exc.value)
 

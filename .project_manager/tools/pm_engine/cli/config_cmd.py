@@ -530,8 +530,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _main(home: home.Home, argv: list[str] | None = None) -> int:
-    console.configure_console_utf8()
-
     raw = list(sys.argv[1:] if argv is None else argv)
 
     # 무인자 분기: 인자 0 일 때

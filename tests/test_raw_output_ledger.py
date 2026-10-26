@@ -1250,16 +1250,14 @@ def test_corrupt_lease_registered_slot_records_no_round_anywhere(
 
 def test_main_clears_raw_anchor_between_calls(
         external, monkeypatch, tmp_path, capsys):
-    """main() 의 finally 원복을 검증 — 호출 뒤 override 잔존이면 다음 호출/라이브러리
-    호출이 남의 PM 홈에 박제한다. (_main 진입 초기화는 pm_delegate 대칭 방어로 별도 유지 —
-    이 테스트의 오라클은 main() 원복이다.)"""
+    """main() 은 전역 Home override 없이 호출마다 넘겨받은 Home 만 쓴다 — 연속 호출이
+    남의 PM 홈에 박제하지 않는다."""
     _pm_home, worktree = _review_slot_family(tmp_path)
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
 
     assert external.main(["--paths", "seed.txt", "--no-gate"]) == 0
     capsys.readouterr()
-    assert external._PM_HOME_OVERRIDE is None
 
 
 # ══ T-0774 — 요약 레코드 보존을 원문보다 짧게 두지 않는다(귀속이 먼저 사라지는 역전 정정) ══

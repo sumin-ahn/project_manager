@@ -87,6 +87,13 @@
         "count": 1
       }
     ],
+    ".project_manager/tools/pm_engine/cli/worktree_cmd.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
+        "count": 1
+      }
+    ],
     ".project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "kind": "session_stamp",
@@ -302,13 +309,6 @@
         "count": 1
       }
     ],
-    ".project_manager/tools/worktree_pool.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
-        "count": 1
-      }
-    ],
     ".project_manager/wiki/pm_role.md": [
       {
         "kind": "session_stamp",
@@ -466,6 +466,13 @@
       {
         "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_engine/cli/worktree_cmd.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
         "count": 1
       }
     ],
@@ -684,13 +691,6 @@
         "count": 1
       }
     ],
-    "templates/claude_code/.project_manager/tools/worktree_pool.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
-        "count": 1
-      }
-    ],
     "templates/claude_code/.project_manager/wiki/architecture.md": [
       {
         "kind": "circled_marker",
@@ -851,6 +851,13 @@
       {
         "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
+        "count": 1
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_engine/cli/worktree_cmd.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
         "count": 1
       }
     ],
@@ -1066,13 +1073,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    "templates/codex/.project_manager/tools/worktree_pool.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
         "count": 1
       }
     ],
@@ -1430,6 +1430,13 @@
         "count": 1
       }
     ],
+    "templates/opencode/.project_manager/tools/pm_engine/cli/worktree_cmd.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
+        "count": 1
+      }
+    ],
     "templates/opencode/.project_manager/tools/pm_engine/domain/adr_rules.py": [
       {
         "kind": "session_stamp",
@@ -1642,13 +1649,6 @@
       {
         "kind": "session_stamp",
         "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.project_manager/tools/worktree_pool.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "237c1fa6c81886d6e23bc30b110af6b2ecaba11f36c5c25bdaf0e631be14617d",
         "count": 1
       }
     ],

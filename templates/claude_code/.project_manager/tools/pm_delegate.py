@@ -32,17 +32,13 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
   · 위임 마스터 스위치 — `delegate.enabled`(기본 ON·채널 무관). off 면 `run`·`ticket prepare` 가
                   rc=3 + stderr 안내(false-green 차단)이고 하네스 훅의 `decide` 도 deny 한다.
 
-설정 시드/lint·어댑터 배선은 별도 표면이다. 기본 단위 테스트는 run_fn DI 로
+설정 시드/lint·어댑터 배선은 별도 표면이다. CLI 본체는 `pm_engine.cli.delegate_run` 이고 이 파일은
+콘솔 설정과 설치 앵커 Home 으로 그 CLI 를 부르는 진입이다. 기본 단위 테스트는 패키지 CLI 의 run_fn DI 로
 격리하고, Codex resume 2-turn 검증만 명시 환경변수 opt-in 라이브 테스트로 둔다.
 """
-
-from __future__ import annotations
-
-
 import os
 import sys
 from pathlib import Path
-from typing import Callable
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
@@ -50,35 +46,13 @@ if _TOOLS_DIR not in sys.path:
 from pm_engine.cli import delegate_run
 from pm_engine.infra import console, pm_paths
 
-
-# ── REPO 앵커 (설치 깊이 고정 · hermetic 테스트 monkeypatch seam) ──────────
-# 설치 깊이는 `pm_import` 가 못 박는다 — 도구는 `<root>/.project_manager/tools/` 에만 놓인다.
-# REPO 는 module-level 상수로 유지해 hermetic 테스트가 monkeypatch 할 수 있게 한다
-# 구현은 pm_engine의 실제 소유 모듈을 직접 사용하고, 이 앵커는 잔류 CLI 입력만 구성한다.
+REPO = Path(__file__).resolve().parents[2]
 
 
-def _find_repo_root() -> Path:
-    """엔진 루트 — 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다.
-
-    상향 탐색을 하지 않는다. 설치 경로를 만드는 쪽(`pm_import`)이 그 깊이를 못 박으므로
-    다른 깊이는 나올 수 없고, 탐색은 합성 트리에서 **자기 위 실 인스턴스**를 답으로 주는
-    부작용만 낸다(실측: 실 PM 홈 log 오염·등록 안 된 worktree 가 등록으로 판정).
-    나머지 도구 20곳과 같은 규칙이다.
-    """
-    return Path(__file__).resolve().parents[2]
-
-
-REPO = _find_repo_root()
-
-
-def main(argv: list[str] | None = None, run_fn: Callable | None = None,
-         git_run_fn: Callable | None = None) -> int:
-    """CLI 진입 — 콘솔 인코딩 설정이 첫 동작이다(인자 오류처럼 CLI 본체 앞뒤에서 나가는 출력도
-    같은 콘솔 설정 아래 있어야 한다 · 형제 진입점 관용구와 동형)."""
+def main(argv=None):
     console.configure_console_utf8()
-    return delegate_run.main(pm_paths.home_at(REPO), argv, run_fn=run_fn,
-                             git_run_fn=git_run_fn)
+    return delegate_run.main(pm_paths.home_at(REPO), argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

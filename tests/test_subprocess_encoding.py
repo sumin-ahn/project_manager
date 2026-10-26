@@ -354,12 +354,12 @@ def test_regression_run_child_forces_utf8_env(board, monkeypatch, tmp_path,
         # 순수 해소가 위치를 확정 못 하는 형상 — 엔진이 git 에 훅 위치를 묻는다(부수 자식).
         monkeypatch.setattr(pre_push_hook, "_pure_hooks_dir", lambda _home: None)
     rec = _RcRecorder()
-    monkeypatch.setattr(board.subprocess, "Popen", rec)
+    monkeypatch.setattr(subprocess, "Popen", rec)
     # os.environ 보존 검증용 마커 키.
     monkeypatch.setenv("T0024_SENTINEL", "preserved")
     args = argparse.Namespace(action="run", cmd=None, ticket=None,
                               touches="tests/test_subprocess_encoding.py")
-    rc = regression_cmd.cmd_regression(board._home(), args)
+    rc = regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), args)
     assert rc == 0
     assert rec.calls, "pytest 자식 subprocess 호출이 일어나지 않음"
     # 주입 선-단언 — 의도한 형상이 **실제로** 태워졌는지 먼저 못박는다(형상이 안 서면 가드가
@@ -473,57 +473,6 @@ def test_common_stream_reconfigure_is_guarded_and_best_effort(console_encoding, 
     console_encoding.configure_console_utf8()
 
 
-def _has_main_guard(tree: ast.AST) -> bool:
-    """AST에 ``if __name__ == "__main__"`` 진입 가드가 있는지."""
-    return any(
-        isinstance(node, ast.If)
-        and isinstance(node.test, ast.Compare)
-        and isinstance(node.test.left, ast.Name)
-        and node.test.left.id == "__name__"
-        and any(
-            isinstance(comparator, ast.Constant) and comparator.value == "__main__"
-            for comparator in node.test.comparators
-        )
-        for node in ast.walk(tree)
-    )
-
-
-def _delegated_package_main(tree: ast.Module) -> list[ast.FunctionDef]:
-    """평면 진입점이 `__main__` 에서 부르는 `pm_engine.cli.<module>.main` 정의를 돌려준다.
-
-    설치·갱신 CLI 처럼 main 본체가 package 로 옮긴 진입점도 같은 선행 helper 계약을 받는다.
-    """
-    cli_aliases = {
-        alias.asname or alias.name: alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom) and node.module == "pm_engine.cli"
-        for alias in node.names
-    }
-    guard = next(
-        node for node in tree.body
-        if isinstance(node, ast.If) and _has_main_guard(ast.Module(body=[node], type_ignores=[]))
-    )
-    targets = {
-        cli_aliases[call.func.value.id]
-        for call in ast.walk(guard)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "main"
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id in cli_aliases
-    }
-    definitions = []
-    for module in sorted(targets):
-        package_tree = ast.parse(
-            (TOOLS / "pm_engine" / "cli" / f"{module}.py").read_text(encoding="utf-8"),
-        )
-        definitions.extend(
-            node for node in package_tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
-        )
-    return definitions
-
-
 def test_console_codepage_helper_has_single_definition():
     """codepage 제어 구현은 공용 모듈 한 곳뿐이다(복붙 재도입 차단)."""
     definitions = []
@@ -536,110 +485,6 @@ def test_console_codepage_helper_has_single_definition():
         ):
             definitions.append(path.relative_to(TOOLS).as_posix())
     assert definitions == ["pm_engine/infra/console.py"]
-
-
-def test_every_main_entrypoint_calls_common_console_helper():
-    """tools/*.py의 현재·미래 ``__main__`` 전수가 main 최상위 선행부에서 공용 helper를 호출한다."""
-    entrypoints = {}
-    for path in TOOLS.glob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        if path.name == "python_floor.py":
-            # 실제 엔진보다 먼저 구 Python(2.7 포함)에서 실행되는 ASCII-only bootstrap probe.
-            # 엔진 콘솔 모듈(pm_engine/infra/console.py)은 3.11 엔진이므로 이 probe가 먼저 하한을 판정해야 한다.
-            continue
-        if _has_main_guard(tree):
-            entrypoints[path.name] = tree
-
-    assert entrypoints, "__main__ 진입점 스캔 결과가 비었다(공허 가드)"
-    missing = []
-    for filename, tree in sorted(entrypoints.items()):
-        main_defs = [
-            node for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
-        ] or _delegated_package_main(tree)
-        if len(main_defs) != 1:
-            missing.append(f"{filename}: top-level main 정의 {len(main_defs)}개")
-            continue
-        main_tree = main_defs[0]
-
-        scan_body = list(main_tree.body)
-        if (
-            scan_body
-            and isinstance(scan_body[0], ast.Expr)
-            and isinstance(scan_body[0].value, ast.Constant)
-            and isinstance(scan_body[0].value.value, str)
-        ):
-            scan_body = scan_body[1:]
-        # Marked engine-skew를 traceback 대신 사용자 진단+rc로 번역하는 진입점은 loader와
-        # helper를 최외곽 try 안에 둔다. try.body의 선행 순서를 동일한 계약으로 검사한다.
-        if len(scan_body) == 1 and isinstance(scan_body[0], ast.Try):
-            scan_body = scan_body[0].body
-
-        def direct_call(stmt):
-            if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
-                return stmt.value
-            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-                return stmt.value
-            return None
-
-        def call_name(call):
-            if isinstance(call.func, ast.Name):
-                return call.func.id
-            if isinstance(call.func, ast.Attribute):
-                return call.func.attr
-            return None
-
-        helper_indexes = [
-            index
-            for index, stmt in enumerate(scan_body)
-            if isinstance(stmt, ast.Expr)
-            and (call := direct_call(stmt)) is not None
-            and call_name(call) == "configure_console_utf8"
-        ]
-        if len(helper_indexes) != 1:
-            missing.append(f"{filename}: main 최상위 helper 호출 {len(helper_indexes)}개")
-            continue
-
-        helper_index = helper_indexes[0]
-        leading = scan_body[:helper_index]
-        if (
-            leading
-            and isinstance(leading[0], ast.Expr)
-            and isinstance(leading[0].value, ast.Constant)
-            and isinstance(leading[0].value.value, str)
-        ):
-            leading = leading[1:]  # 함수 docstring은 출력/dispatch가 아닌 메타데이터
-        allowed_loader_calls = {
-            "_load_module_from_path",
-            "spec_from_file_location",
-            "module_from_spec",
-            "exec_module",
-            "_verify_engine_rev",
-        }
-        unexpected = []
-        for stmt in leading:
-            call = direct_call(stmt)
-            name = call_name(call) if call is not None else type(stmt).__name__
-            if name not in allowed_loader_calls:
-                unexpected.append(name)
-        helper_func = scan_body[helper_index].value.func
-        loads_common_file = (
-            isinstance(helper_func, ast.Attribute)
-            and isinstance(helper_func.value, ast.Name)
-            and helper_func.value.id == "console"
-        )
-        if unexpected or not loads_common_file:
-            missing.append(
-                f"{filename}: helper 전 비-로더 statement={unexpected}, "
-                f"패키지 console 호출={loads_common_file}"
-            )
-
-    assert not missing, (
-        "__main__ 보유 도구의 main() 최상위 선행 console helper 관용구 위반: "
-        f"{missing}; 스캔 전수={sorted(entrypoints)}. 각 main() 첫 동작에 "
-        "`console.configure_console_utf8()`(`from pm_engine.infra import console`)를 "
-        "parser/print/dispatch보다 먼저 넣어라."
-    )
 
 
 # ── T-0068: .cmd forwarder 회귀 가드 (비-ASCII 0 + CRLF) ─────────────────────

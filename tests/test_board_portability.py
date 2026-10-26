@@ -24,6 +24,8 @@ from pm_engine.infra import areas_store, conf_store, pre_push_hook, python_env, 
 
 from pm_engine.infra import conf_store
 from pm_engine.infra import ticket_store
+from pm_engine.infra import pm_paths
+from pm_engine.infra import fs
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -106,14 +108,14 @@ def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
     path.write_text("---\nid: T-9999\n---\nbody\n", encoding="utf-8")
 
     captured: dict = {}
-    orig = board.fs.read_text_shared
+    orig = fs.read_text_shared
 
     def spy(target, *args, **kwargs):
         if Path(target).name == "T-9999-y.md":
             captured["encoding"] = kwargs.get("encoding")
         return orig(target, *args, **kwargs)
 
-    monkeypatch.setattr(board.fs, "read_text_shared", spy)
+    monkeypatch.setattr(fs, "read_text_shared", spy)
     ticket_store.load_ticket(path)
     assert captured.get("encoding") == "utf-8"
 
@@ -150,7 +152,7 @@ def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
         lambda cmd: r"C:\Python\python.exe" if cmd == "python" else None,
     )
 
-    assert pre_push_hook.install_pre_push_hook(board._home()) is True
+    assert pre_push_hook.install_pre_push_hook(pm_paths.home_at(board.REPO)) is True
 
     body = (hooks / "pre-push").read_text(encoding="utf-8")
     assert "python .project_manager/tools/board.py regression" in body
@@ -178,7 +180,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
         return orig(self, data, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", spy)
-    pre_push_hook.install_pre_push_hook(board._home())
+    pre_push_hook.install_pre_push_hook(pm_paths.home_at(board.REPO))
     assert captured.get("encoding") == "utf-8"
     assert (hooks / "pre-push").is_file()      # 교체가 실제로 최종 경로에 착지했다
 
@@ -211,7 +213,7 @@ def test_init_seeds_used_pct_keys(board, monkeypatch, tmp_path):
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
 
-    assert board_init.cmd_init(board._home(), args) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
     assert "ctx.checkpoint_at_pct=70\n" in conf_text
@@ -230,7 +232,7 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
 
-    assert board_init.cmd_init(board._home(), args) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
     assert f"ctx.compact_at_pct={conf_store._conf_default_int('ctx.compact_at_pct')}" in conf_text
@@ -239,7 +241,7 @@ def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_p
                    "harness.claude.ctx_window_tokens",
                    "harness.opencode.ctx_window_tokens"):
         assert marker not in conf_text, f"conf 에 설명 블록 잔존: {marker}"
-    parsed = conf_store.local_config(board._home())  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
+    parsed = conf_store.local_config(pm_paths.home_at(board.REPO))  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
     assert parsed.get("ctx.compact_at_pct") == str(
         conf_store._conf_default_int("ctx.compact_at_pct"))
     assert not [key for key in parsed if key.startswith("harness.")]
@@ -285,7 +287,7 @@ def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_pa
     conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
     args = argparse.Namespace(prefix=None, area=None, owner=None, session=None)
 
-    assert board_init.cmd_init(board._home(), args) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
     # init 이 안 쓰는 사용자/operational 키가 전부 원값 그대로 생존.
@@ -308,7 +310,7 @@ def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_p
     conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
     args = argparse.Namespace(prefix=None, area=None, owner=None, session=None)
 
-    assert board_init.cmd_init(board._home(), args) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
     assert "ctx.compact_at_pct=95" in conf_text
@@ -325,7 +327,7 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     assert not conf_path.exists()
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
 
-    assert board_init.cmd_init(board._home(), args) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
     # 세션·prefix 는 per-clone conf 의 키가 아니다(T-0779) — 정체성은 lease 장부·areas.md.
@@ -348,9 +350,9 @@ def test_init_rerun_explicit_identity_registers_that_repo_and_preserves_conf(
     conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
     args = argparse.Namespace(prefix=None, area=None, owner=None, repo="newsess", slot=2)
 
-    assert board_init.cmd_init(board._home(), args) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), args) == 0
 
-    assert areas_store.registered_repos(board._home()) == {"newsess"}
+    assert areas_store.registered_repos(pm_paths.home_at(board.REPO)) == {"newsess"}
     conf_text = conf_path.read_text(encoding="utf-8")
     assert "session=my-pm" in conf_text          # init 이 안 쓰는 키는 byte 보존
     assert "session=newsess_2" not in conf_text  # 세션을 conf 에 쓰지 않는다
@@ -380,9 +382,9 @@ def test_init_rerun_guarantees_a_trailing_newline_after_the_last_key(
     conf_path.write_text(_NO_TRAILING_NL_CONF, encoding="utf-8")
     args = argparse.Namespace(prefix=None, area=None, owner=None, session=None)
 
-    assert board_init.cmd_init(board._home(), args) == 0
+    assert board_init.cmd_init(pm_paths.home_at(board.REPO), args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
     assert conf_text.endswith("\n")
     assert "ctx.compact_at_pct=95\n" in conf_text
-    assert conf_store.local_config(board._home()).get("ctx.compact_at_pct") == "95"
+    assert conf_store.local_config(pm_paths.home_at(board.REPO)).get("ctx.compact_at_pct") == "95"

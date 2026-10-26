@@ -85,7 +85,7 @@ def _seed_ticket(board, tid: str, *, created: str = "2026-07-01",
     `T-AAA-001-slug.md` 와 `T-aaa-001-slug.md` 가 같은 파일이라 두 번째 쓰기가 첫 번째를 덮어
     오염 형상 자체가 재현되지 않는다(Windows 실측). slug 를 갈라 두 파일로 심는다.
     """
-    path = pm_paths.tickets_dir(board._home()) / status / f"{tid}-{slug}.md"
+    path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status / f"{tid}-{slug}.md"
     ticket_store.dump_ticket(
         path,
         {"id": tid, "title": "t", "status": status, "created": created},
@@ -103,7 +103,7 @@ def _ids_on_disk(board) -> set[str]:
     """디스크의 모든 티켓 파일명에서 canonical ID 를 추출한다 (파일 rename 검증용)."""
     out = set()
     for status in ticket_rules.STATUS_DIRS:
-        for p in (pm_paths.tickets_dir(board._home()) / status).glob("T-*.md"):
+        for p in (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status).glob("T-*.md"):
             tid = ticket_rules._ticket_id_from_filename(p.name)
             if tid:
                 out.add(tid)
@@ -118,8 +118,8 @@ def _issued_ids(board) -> set[str]:
     """
     out = set()
     for status in ticket_rules.STATUS_DIRS:
-        for p in (pm_paths.tickets_dir(board._home()) / status).glob("T-*.md"):
-            tid = ticket_store._issued_ticket_id(board._home(), p)
+        for p in (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status).glob("T-*.md"):
+            tid = ticket_store._issued_ticket_id(pm_paths.home_at(board.REPO), p)
             if tid:
                 out.add(tid)
     return out
@@ -262,13 +262,13 @@ def test_rename_no_collision_swaps_prefix_and_files(board, capsys):
     _seed_ticket(board, "T-foo-002")
     wiki = _seed_wiki(board, "0001-x.md", "refs [[T-foo-001]] and T-foo-002\n")
 
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False))
     assert rc == 0
     # 파일명 rename — foo → bar (번호 유지).
     assert _ids_on_disk(board) == {"T-bar-001", "T-bar-002"}
     # 본문 frontmatter id 도 rewrite.
-    renamed = pm_paths.tickets_dir(board._home()) / "open" / "T-bar-001-slug.md"
+    renamed = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-bar-001-slug.md"
     fm, _ = ticket_store.load_ticket(renamed)
     assert fm["id"] == "T-bar-001"
     # wiki 참조까지 rewrite.
@@ -280,7 +280,7 @@ def test_rename_collision_guides_to_merge_and_aborts(board, capsys):
     _seed_ticket(board, "T-bar-003")  # bar 네임스페이스에 003 이미 존재 → 충돌.
     before = _ids_on_disk(board)
 
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack=None, dry_run=False))
     assert rc == 1
     err = capsys.readouterr().err
@@ -292,7 +292,7 @@ def test_rename_collision_guides_to_merge_and_aborts(board, capsys):
 
 def test_rename_to_none_strips_name(board):
     _seed_ticket(board, "T-foo-005")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="none", user_ack=None, dry_run=False))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-0005"}
@@ -300,7 +300,7 @@ def test_rename_to_none_strips_name(board):
 
 def test_rename_none_to_prefix_applies_name(board):
     _seed_ticket(board, "T-0005")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="none", dst="foo", user_ack="foo", dry_run=False))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-foo-005"}
@@ -308,7 +308,7 @@ def test_rename_none_to_prefix_applies_name(board):
 
 def test_rename_same_src_dst_rejected(board, capsys):
     _seed_ticket(board, "T-foo-001")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="foo", user_ack=None, dry_run=False))
     assert rc == 1
     assert "같다" in capsys.readouterr().err
@@ -316,7 +316,7 @@ def test_rename_same_src_dst_rejected(board, capsys):
 
 def test_rename_invalid_dst_format_rejected(board, capsys):
     _seed_ticket(board, "T-foo-001")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="Bad-Name", user_ack=None, dry_run=False))
     assert rc == 1
     assert "형식" in capsys.readouterr().err
@@ -325,7 +325,7 @@ def test_rename_invalid_dst_format_rejected(board, capsys):
 
 def test_rename_no_matching_tickets_is_noop(board, capsys):
     _seed_ticket(board, "T-0001")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="ghost", dst="bar", user_ack=None, dry_run=False))
     assert rc == 0
     assert "티켓이 없다" in capsys.readouterr().out
@@ -338,7 +338,7 @@ def test_rename_fold_reuses_existing_dst_canonical_case(board, capsys):
     """
     _seed_ticket(board, "T-AAA-001")
     _seed_ticket(board, "T-bbb-002")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="bbb", dst="aaa", user_ack=None, dry_run=False))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-AAA-001", "T-AAA-002"}
@@ -348,7 +348,7 @@ def test_rename_to_new_prefix_still_allowed(board):
     """dst 가 fold-충돌 없는 새 prefix 면 정상 rename (case-only 가드가 정상 rename 을 막지 않음)."""
     _seed_ticket(board, "T-AAA-001")
     _seed_ticket(board, "T-bbb-001")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="bbb", dst="ccc", user_ack="ccc", dry_run=False))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-AAA-001", "T-ccc-001"}
@@ -358,7 +358,7 @@ def test_rename_source_is_case_insensitive(board):
     """SOURCE 도 case-insensitive fold — `rename aaa bbb` 가 기존 `T-AAA-*` 를 relabel(no-op 아님·ADR-0055·T-0311 codex must-fix 1)."""
     _seed_ticket(board, "T-AAA-001")
     _seed_ticket(board, "T-AAA-002")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="aaa", dst="bbb", user_ack="bbb", dry_run=False))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-bbb-001", "T-bbb-002"}   # 소문자 src 가 대문자 시리즈 잡음
@@ -369,7 +369,7 @@ def test_rename_polluted_fold_namespace_collides(board, capsys):
     _seed_ticket(board, "T-AAA-001", slug="upper")
     _seed_ticket(board, "T-aaa-001", slug="lower")   # 같은 fold+번호 = 이미 case-split 오염
     assert _issued_ids(board) == {"T-AAA-001", "T-aaa-001"}   # 오염이 실제로 심겼다
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="aaa", dst="ccc", user_ack=None, dry_run=False))
     assert rc == 1
     assert "충돌" in capsys.readouterr().err
@@ -383,14 +383,14 @@ def test_rename_polluted_fold_namespace_collides(board, capsys):
 def test_strip_equals_rename_to_none(board):
     _seed_ticket(board, "T-foo-005")
     _seed_ticket(board, "T-foo-006")
-    rc = board_prefix.cmd_prefix_strip(board._home(), _ns(prefix="foo", dry_run=False))
+    rc = board_prefix.cmd_prefix_strip(pm_paths.home_at(board.REPO), _ns(prefix="foo", dry_run=False))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-0005", "T-0006"}
 
 
 def test_strip_dry_run_no_write(board, capsys):
     _seed_ticket(board, "T-foo-005")
-    rc = board_prefix.cmd_prefix_strip(board._home(), _ns(prefix="foo", dry_run=True))
+    rc = board_prefix.cmd_prefix_strip(pm_paths.home_at(board.REPO), _ns(prefix="foo", dry_run=True))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-foo-005"}  # 무변경
     assert "[dry-run]" in capsys.readouterr().out
@@ -406,7 +406,7 @@ def test_merge_append_default_numbering(board, capsys):
     _seed_ticket(board, "T-foo-001", created="2026-06-10")
     _seed_ticket(board, "T-foo-002", created="2026-06-05")
 
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["foo"], into="none", user_ack=None,
             reorder_chronological=False, dry_run=False))
     assert rc == 0
@@ -418,7 +418,7 @@ def test_merge_append_preserves_target_numbers(board):
     """append 는 대상 네임스페이스 기존 번호를 절대 안 바꾼다."""
     _seed_ticket(board, "T-acc-005", created="2026-01-01")
     _seed_ticket(board, "T-foo-001", created="2026-06-01")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["foo"], into="acc", user_ack=None,
             reorder_chronological=False, dry_run=False))
     assert rc == 0
@@ -430,7 +430,7 @@ def test_merge_reorder_chronological_renumbers_all(board):
     _seed_ticket(board, "T-0009", created="2026-06-04")
     _seed_ticket(board, "T-foo-001", created="2026-06-01")
     _seed_ticket(board, "T-foo-002", created="2026-06-08")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["foo"], into="none", user_ack=None,
             reorder_chronological=True, dry_run=False))
     assert rc == 0
@@ -446,7 +446,7 @@ def test_apply_file_renames_survives_swap(board):
                                (b, b.with_name("T-foo-001-slug.md"))])
     assert _ids_on_disk(board) == {"T-foo-001", "T-foo-002"}
     # 원본 두 파일이 다 살아남았는지(잔여 tmp 없음).
-    open_dir = pm_paths.tickets_dir(board._home()) / "open"
+    open_dir = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open"
     assert sorted(p.name for p in open_dir.glob("*")) == \
         ["T-foo-001-slug.md", "T-foo-002-slug.md"]
 
@@ -458,23 +458,23 @@ def test_merge_reorder_swap_survives_file_rename(board):
     _seed_ticket(board, "T-foo-001", created="2026-06-08")  # → T-foo-003
     _seed_ticket(board, "T-foo-002", created="2026-06-01")  # → T-foo-001
     _seed_ticket(board, "T-bar-001", created="2026-06-04")  # → T-foo-002
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["bar"], into="foo", user_ack=None,
             reorder_chronological=True, dry_run=False))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-foo-001", "T-foo-002", "T-foo-003"}
     # foo-002(가장 이른 created)가 T-foo-001 로.
-    fm, _ = ticket_store.load_ticket(pm_paths.tickets_dir(board._home()) / "open" / "T-foo-001-slug.md")
+    fm, _ = ticket_store.load_ticket(pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-foo-001-slug.md")
     assert fm["id"] == "T-foo-001"
 
 
 def test_plan_file_renames_excludes_unrewritable_ticket(board, capsys):
     """비-UTF-8(rewrite 스킵) 티켓 파일은 _plan_file_renames 에서도 제외(파일명↔content id 불일치 방지)."""
     _seed_ticket(board, "T-foo-001")
-    bad = pm_paths.tickets_dir(board._home()) / "open" / "T-foo-002-slug.md"
+    bad = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-foo-002-slug.md"
     bad.write_bytes(b"\xff\xfe id: T-foo-002 \x00\x80")  # 유효 UTF-8 아님 → rewrite skip 대상
     id_map = {"T-foo-001": "T-bar-001", "T-foo-002": "T-bar-002"}
-    renames = board_prefix._plan_file_renames(board._home(), id_map)
+    renames = board_prefix._plan_file_renames(pm_paths.home_at(board.REPO), id_map)
     got = {(src.name, dst.name) for src, dst in renames}
     # good 파일만 rename 계획에 포함·bad(비-UTF-8)는 제외(파일명 유지).
     assert got == {("T-foo-001-slug.md", "T-bar-001-slug.md")}
@@ -485,7 +485,7 @@ def test_plan_file_renames_excludes_unrewritable_ticket(board, capsys):
 
 def test_merge_into_self_rejected(board, capsys):
     _seed_ticket(board, "T-foo-001")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["foo"], into="foo", user_ack=None,
             reorder_chronological=False, dry_run=False))
     assert rc == 1
@@ -494,7 +494,7 @@ def test_merge_into_self_rejected(board, capsys):
 
 def test_merge_no_source_tickets_is_noop(board, capsys):
     _seed_ticket(board, "T-0001")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["ghost"], into="none", user_ack=None,
             reorder_chronological=False, dry_run=False))
     assert rc == 0
@@ -505,7 +505,7 @@ def test_merge_fold_reuses_existing_into_canonical_case(board, capsys):
     """`merge bbb --into aaa`는 기존 `AAA` canonical case 뒤에 append한다."""
     _seed_ticket(board, "T-AAA-001")
     _seed_ticket(board, "T-bbb-001")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["bbb"], into="aaa", user_ack=None,
             reorder_chronological=False, dry_run=False))
     assert rc == 0
@@ -516,7 +516,7 @@ def test_merge_into_exact_canonical_case_appends(board):
     """`merge bbb --into AAA`(정확 canonical case) → 기존 `T-AAA-*` 뒤에 append (case-only 가드 통과·무분할)."""
     _seed_ticket(board, "T-AAA-001")
     _seed_ticket(board, "T-bbb-001")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["bbb"], into="AAA", user_ack=None,
             reorder_chronological=False, dry_run=False))
     assert rc == 0
@@ -527,7 +527,7 @@ def test_merge_source_is_case_insensitive(board):
     """SOURCE 도 case-insensitive fold — `merge aaa --into bbb` 가 `T-AAA-*` source 를 모아 append (ADR-0055·T-0311 codex must-fix 2)."""
     _seed_ticket(board, "T-bbb-001", created="2026-06-01")
     _seed_ticket(board, "T-AAA-001", created="2026-08-01")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["aaa"], into="bbb", user_ack=None,
             reorder_chronological=False, dry_run=False))
     assert rc == 0
@@ -538,7 +538,7 @@ def test_merge_source_case_insensitive_reorder(board):
     """`--reorder-chronological` 경로도 source fold 매칭 — `T-AAA-*` 가 created 순 재번호에 포함 (T-0311 must-fix 2)."""
     _seed_ticket(board, "T-bbb-001", created="2026-08-01")
     _seed_ticket(board, "T-AAA-001", created="2026-06-01")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["aaa"], into="bbb", user_ack=None,
             reorder_chronological=True, dry_run=False))
     assert rc == 0
@@ -548,7 +548,7 @@ def test_merge_source_case_insensitive_reorder(board):
 def test_merge_self_into_via_fold_rejected(board, capsys):
     """`merge aaa --into AAA`(fold-동일) → 자기 자신 merge 로 fail-loud (self-guard fold·ADR-0055·T-0311)."""
     _seed_ticket(board, "T-AAA-001")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["aaa"], into="AAA", user_ack=None,
             reorder_chronological=False, dry_run=False))
     assert rc == 1
@@ -561,7 +561,7 @@ def test_merge_dry_run_reports_scale_no_write(board, capsys):
     _seed_ticket(board, "T-0001")
     _seed_ticket(board, "T-foo-001")
     _seed_wiki(board, "0001-x.md", "see T-foo-001\n")
-    rc = board_prefix.cmd_prefix_merge(board._home(),
+    rc = board_prefix.cmd_prefix_merge(pm_paths.home_at(board.REPO),
         _ns(sources=["foo"], into="none", user_ack=None,
             reorder_chronological=False, dry_run=True))
     assert rc == 0
@@ -579,7 +579,7 @@ def test_merge_dry_run_reports_scale_no_write(board, capsys):
 def test_delete_unregistered_prefix_confirm_only(board, capsys):
     """0 티켓·areas 미등록이면 지울 등록이 없어 '확인만'(변경 0)으로 정직하게 보고한다."""
     _seed_ticket(board, "T-0001")  # none 네임스페이스만 존재; foo=0 티켓·미등록.
-    rc = board_prefix.cmd_prefix_delete(board._home(), _ns(prefix="foo", dry_run=False))
+    rc = board_prefix.cmd_prefix_delete(pm_paths.home_at(board.REPO), _ns(prefix="foo", dry_run=False))
     assert rc == 0
     out = capsys.readouterr().out
     assert "0 티켓" in out
@@ -588,16 +588,16 @@ def test_delete_unregistered_prefix_confirm_only(board, capsys):
 
 def test_delete_registered_prefix_clears_areas_cell(board, capsys):
     """0 티켓·areas 등록됨 → 그 행의 prefix 셀을 실제로 비운다(행·repo 등록 보존·promise=do)."""
-    areas_registry.areas_append(board._home(), "foo", "area-foo", "reg", repo="foo", git="g:foo",
+    areas_registry.areas_append(pm_paths.home_at(board.REPO), "foo", "area-foo", "reg", repo="foo", git="g:foo",
                        test_cmd="pytest -q", area_owner="alice")
-    assert areas_store._areas_row_for_prefix(board._home(), "foo") is not None
-    rc = board_prefix.cmd_prefix_delete(board._home(), _ns(prefix="foo", dry_run=False))
+    assert areas_store._areas_row_for_prefix(pm_paths.home_at(board.REPO), "foo") is not None
+    rc = board_prefix.cmd_prefix_delete(pm_paths.home_at(board.REPO), _ns(prefix="foo", dry_run=False))
     assert rc == 0
     out = capsys.readouterr().out
     assert "셀" in out and "비움" in out
     # prefix 셀만 비웠고(등록 이름 해제) 행 자체와 다른 셀(repo·test_cmd·area_owner)은 보존.
-    assert areas_store._areas_row_for_prefix(board._home(), "foo") is None
-    _h, rows = areas_store._parse_areas(board._home())
+    assert areas_store._areas_row_for_prefix(pm_paths.home_at(board.REPO), "foo") is None
+    _h, rows = areas_store._parse_areas(pm_paths.home_at(board.REPO))
     foo_rows = [r for r in rows if r.get("repo") == "foo"]
     assert len(foo_rows) == 1                       # 행 유지(무손실)
     assert foo_rows[0]["prefix"] == ""              # prefix 셀만 비움
@@ -607,20 +607,20 @@ def test_delete_registered_prefix_clears_areas_cell(board, capsys):
 
 def test_delete_dry_run_registered_no_write(board, capsys):
     """--dry-run 은 등록 셀 비움 예정만 preview·쓰기 0(등록 유지)."""
-    areas_registry.areas_append(board._home(), "foo", "area-foo", "reg", repo="foo")
-    rc = board_prefix.cmd_prefix_delete(board._home(), _ns(prefix="foo", dry_run=True))
+    areas_registry.areas_append(pm_paths.home_at(board.REPO), "foo", "area-foo", "reg", repo="foo")
+    rc = board_prefix.cmd_prefix_delete(pm_paths.home_at(board.REPO), _ns(prefix="foo", dry_run=True))
     assert rc == 0
     assert "[dry-run]" in capsys.readouterr().out
-    assert areas_store._areas_row_for_prefix(board._home(), "foo") is not None   # 쓰기 0 — 등록 유지
+    assert areas_store._areas_row_for_prefix(pm_paths.home_at(board.REPO), "foo") is not None   # 쓰기 0 — 등록 유지
 
 
 def test_areas_clear_prefix_cell_preserves_other_rows(board):
     """`_areas_clear_prefix_cell` — 대상 prefix 셀만 비우고 무관 행은 원문 그대로 보존한다."""
-    areas_registry.areas_append(board._home(), "foo", "af", "reg", repo="foo", test_cmd="pt-foo")
-    areas_registry.areas_append(board._home(), "bar", "ab", "reg", repo="bar", test_cmd="pt-bar")
-    cleared = board_prefix._areas_clear_prefix_cell(board._home(), "foo")
+    areas_registry.areas_append(pm_paths.home_at(board.REPO), "foo", "af", "reg", repo="foo", test_cmd="pt-foo")
+    areas_registry.areas_append(pm_paths.home_at(board.REPO), "bar", "ab", "reg", repo="bar", test_cmd="pt-bar")
+    cleared = board_prefix._areas_clear_prefix_cell(pm_paths.home_at(board.REPO), "foo")
     assert cleared == 1
-    _h, rows = areas_store._parse_areas(board._home())
+    _h, rows = areas_store._parse_areas(pm_paths.home_at(board.REPO))
     foo = [r for r in rows if r.get("repo") == "foo"][0]
     bar = [r for r in rows if r.get("repo") == "bar"][0]
     assert foo["prefix"] == ""              # foo 만 비움
@@ -630,7 +630,7 @@ def test_areas_clear_prefix_cell_preserves_other_rows(board):
 
 def test_delete_nonempty_prefix_fails_loud(board, capsys):
     _seed_ticket(board, "T-foo-001")
-    rc = board_prefix.cmd_prefix_delete(board._home(), _ns(prefix="foo", dry_run=False))
+    rc = board_prefix.cmd_prefix_delete(pm_paths.home_at(board.REPO), _ns(prefix="foo", dry_run=False))
     assert rc == 1
     err = capsys.readouterr().err
     assert "티켓 1개" in err
@@ -641,14 +641,14 @@ def test_delete_nonempty_prefix_fails_loud(board, capsys):
 def test_delete_count_is_case_insensitive(board, capsys):
     """`delete AAA` 는 case-변종 `T-aaa-*` 티켓도 세어 fail-loud — 빈 것 오판 안 함 (ADR-0055·T-0311 fix 4)."""
     _seed_ticket(board, "T-aaa-001")   # 대상과 case 만 다른 티켓 존재
-    rc = board_prefix.cmd_prefix_delete(board._home(), _ns(prefix="AAA", dry_run=False))
+    rc = board_prefix.cmd_prefix_delete(pm_paths.home_at(board.REPO), _ns(prefix="AAA", dry_run=False))
     assert rc == 1
     assert "티켓 1개" in capsys.readouterr().err   # count fold → 1 (0 아님)
     assert _ids_on_disk(board) == {"T-aaa-001"}    # 물리삭제 없음
 
 
 def test_delete_none_rejected(board, capsys):
-    rc = board_prefix.cmd_prefix_delete(board._home(), _ns(prefix="none", dry_run=False))
+    rc = board_prefix.cmd_prefix_delete(pm_paths.home_at(board.REPO), _ns(prefix="none", dry_run=False))
     assert rc == 1
     assert "delete 불가" in capsys.readouterr().err
 
@@ -665,7 +665,7 @@ def test_home_git_dirty_does_not_abort_relabel(board, monkeypatch, capsys):
     """
     _seed_ticket(board, "T-foo-001")
     monkeypatch.setattr(board_prefix, "_home_git_status_porcelain", lambda _home: " M wiki/x.md\n")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False))
     assert rc == 0
     out = capsys.readouterr().out
@@ -678,7 +678,7 @@ def test_home_git_dirty_does_not_block_dry_run(board, monkeypatch, capsys):
     """dry-run 은 쓰기 0 이므로 홈 git 이 dirty 여도 규모 preview 는 낸다."""
     _seed_ticket(board, "T-foo-001")
     monkeypatch.setattr(board_prefix, "_home_git_status_porcelain", lambda _home: " M wiki/x.md\n")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack=None, dry_run=True))
     assert rc == 0
     assert "[dry-run]" in capsys.readouterr().out
@@ -697,7 +697,7 @@ def test_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
         lambda _home, msg, paths=None: calls["commit"].append((msg, paths)) or True)
     ticket = _seed_ticket(board, "T-foo-001")
 
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False))
     assert rc == 0
     # 분리 형상 → board-git 백업 commit 1회(relabel 메시지) + 백업 rev 안내.
@@ -714,7 +714,7 @@ def test_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
 def test_board_git_legacy_skips_with_guidance(board, monkeypatch, capsys):
     monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
     _seed_ticket(board, "T-foo-001")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False))
     assert rc == 0
     assert "legacy" in capsys.readouterr().out
@@ -763,7 +763,7 @@ def test_relabel_mutation_runs_under_single_board_lock(board, monkeypatch):
     """
     _seed_ticket(board, "T-foo-001")
     with _lock_depth_spy(board, monkeypatch) as rec:
-        rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+        rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
             src="foo", dst="bar", user_ack="bar", dry_run=False))
     assert rc == 0
     assert rec["count"] >= 1               # board_lock 을 잡았다(직렬화)
@@ -776,7 +776,7 @@ def test_relabel_dry_run_takes_no_lock(board, monkeypatch, capsys):
     """dry-run 은 read-only(쓰기 0)라 board_lock 을 전혀 잡지 않는다."""
     _seed_ticket(board, "T-foo-001")
     with _lock_depth_spy(board, monkeypatch) as rec:
-        rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+        rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
             src="foo", dst="bar", user_ack=None, dry_run=True))
     assert rc == 0
     assert rec["count"] == 0                # 락 미획득
@@ -821,16 +821,16 @@ def test_relabel_includes_drafts_dir(board, capsys):
     draft 가 잔존, promote 시 혼재가 보드로 재유입된다. rename 이 .drafts 파일명·frontmatter id
     까지 바꿈을 단언한다."""
     _seed_ticket(board, "T-foo-001")
-    (pm_paths.tickets_dir(board._home()) / ".drafts").mkdir(exist_ok=True)  # 엔진은 on-demand 생성(drafts_dir).
+    (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / ".drafts").mkdir(exist_ok=True)  # 엔진은 on-demand 생성(drafts_dir).
     draft = _seed_ticket(board, "T-foo-002", status=".drafts")
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False))
     assert rc == 0
-    renamed_draft = pm_paths.tickets_dir(board._home()) / ".drafts" / "T-bar-002-slug.md"
+    renamed_draft = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / ".drafts" / "T-bar-002-slug.md"
     assert renamed_draft.exists() and not draft.exists()    # .drafts 파일명 rename 됨.
     fm, _ = ticket_store.load_ticket(renamed_draft)
     assert fm["id"] == "T-bar-002"                           # frontmatter id 도 rewrite.
-    assert not (pm_paths.tickets_dir(board._home()) / ".drafts" / "T-foo-002-slug.md").exists()
+    assert not (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / ".drafts" / "T-foo-002-slug.md").exists()
 
 
 def test_relabel_dst_occupied_aborts_before_any_write(board, monkeypatch, capsys):
@@ -842,7 +842,7 @@ def test_relabel_dst_occupied_aborts_before_any_write(board, monkeypatch, capsys
     src_path = _seed_ticket(board, "T-foo-001", body="src body")
     dst_path = _seed_ticket(board, "T-bar-001", body="dst body")   # dst 점유자.
     monkeypatch.setattr(board_prefix, "_detect_collisions", lambda *a, **k: [])  # stale 검사 시뮬.
-    rc = board_prefix.cmd_prefix_rename(board._home(), _ns(
+    rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack=None, dry_run=False))
     assert rc == 1
     err = capsys.readouterr().err
@@ -873,7 +873,7 @@ _BROKEN_TICKET = (
 
 
 def _seed_broken(board, name: str = "T-foo-004-slug.md") -> Path:
-    path = pm_paths.tickets_dir(board._home()) / "open" / name
+    path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / name
     path.write_text(_BROKEN_TICKET, encoding="utf-8")
     return path
 
@@ -884,19 +884,19 @@ def test_scan_reports_the_skipped_ticket_to_its_caller(board):
     broken = _seed_broken(board)
 
     skipped: list[Path] = []
-    rows = areas_registry._scan_prefix_tickets(board._home(), skipped)
+    rows = areas_registry._scan_prefix_tickets(pm_paths.home_at(board.REPO), skipped)
 
     assert [t["id"] for t in rows] == ["T-foo-001"]
     assert skipped == [broken]
 
 
 @pytest.mark.parametrize("verb, call", [
-    ("prefix rename", lambda b: board_prefix.cmd_prefix_rename(b._home(), _ns(
+    ("prefix rename", lambda b: board_prefix.cmd_prefix_rename(pm_paths.home_at(b.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False))),
-    ("prefix merge", lambda b: board_prefix.cmd_prefix_merge(b._home(),
+    ("prefix merge", lambda b: board_prefix.cmd_prefix_merge(pm_paths.home_at(b.REPO),
         _ns(sources=["foo"], into="bar", user_ack="bar", dry_run=False,
             reorder_chronological=False))),
-    ("prefix delete", lambda b: board_prefix.cmd_prefix_delete(b._home(), _ns(prefix="ghost", dry_run=False))),
+    ("prefix delete", lambda b: board_prefix.cmd_prefix_delete(pm_paths.home_at(b.REPO), _ns(prefix="ghost", dry_run=False))),
 ])
 def test_id_reassigning_verbs_abort_on_an_unreadable_ticket(board, capsys, verb, call):
     """읽지 못한 티켓이 1건이라도 있으면 재부여 동사는 rc 1 로 멈추고 파일을 건드리지 않는다."""
@@ -919,7 +919,7 @@ def test_reid_aborts_on_an_unreadable_ticket(board, capsys):
 
     reid_args = argparse.Namespace(old_id="T-0036", new_id="T-0250", dry_run=False,
                                    repo=None, slot=None)
-    assert board_prefix.cmd_reid(board._home(), reid_args) == 1
+    assert board_prefix.cmd_reid(pm_paths.home_at(board.REPO), reid_args) == 1
     err = capsys.readouterr().err
     assert "[중단]" in err and "reid" in err and "clobber" in err
     assert _ids_on_disk(board) == before
@@ -929,7 +929,7 @@ def test_dry_run_is_blocked_too(board, capsys):
     """dry-run preview 도 같은 판정이다 — 신뢰할 수 없는 계획을 미리보기로 내보내지 않는다."""
     _seed_ticket(board, "T-foo-001")
     _seed_broken(board)
-    assert board_prefix.cmd_prefix_rename(board._home(), _ns(
+    assert board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack=None, dry_run=True)) == 1
     assert "[중단]" in capsys.readouterr().err
 
@@ -939,7 +939,7 @@ def test_read_only_prefix_list_survives_the_unreadable_ticket(board, capsys):
     _seed_ticket(board, "T-foo-001")
     _seed_broken(board)
 
-    assert board_prefix.cmd_prefix_list(board._home(), _ns()) == 0
+    assert board_prefix.cmd_prefix_list(pm_paths.home_at(board.REPO), _ns()) == 0
     out, err = capsys.readouterr()
     assert "foo" in out
     assert "T-foo-004-slug.md" in err                      # 조용한 드롭이 아니다
@@ -949,7 +949,7 @@ def test_read_only_prefix_list_survives_the_unreadable_ticket(board, capsys):
 def test_healthy_board_is_unaffected(board):
     """손상 0 인 보드에서는 종전 동작 그대로다 (게이트 추가로 정상 경로가 바뀌지 않는다)."""
     _seed_ticket(board, "T-foo-001")
-    assert board_prefix.cmd_prefix_rename(board._home(), _ns(
+    assert board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False)) == 0
     assert _ids_on_disk(board) == {"T-bar-001"}
 
@@ -976,7 +976,7 @@ def test_prefix_glob_first_match_is_the_reproduced_hazard(board, capsys):
 
     읽기(`show`)는 그 폴백이 legacy 조회를 살리는 자리라 종전대로 두고, 이동은 아래처럼 막는다."""
     path = _seed_prefixed_only(board)
-    status, found = ticket_store.find_ticket(board._home(), _MISSING_LEGACY_ID)
+    status, found = ticket_store.find_ticket(pm_paths.home_at(board.REPO), _MISSING_LEGACY_ID)
     assert (status, found) == ("open", path)
     assert "정확 일치 티켓 없음" in capsys.readouterr().err
 
@@ -985,7 +985,7 @@ def test_mutation_lookup_refuses_a_prefix_only_match(board):
     """mutation 조회는 canonical 불일치를 **미존재**로 올린다 (안내에 실재 후보를 싣는다)."""
     _seed_prefixed_only(board)
     with pytest.raises(FileNotFoundError) as excinfo:
-        ticket_store.find_ticket_for_mutation(board._home(), _MISSING_LEGACY_ID)
+        ticket_store.find_ticket_for_mutation(pm_paths.home_at(board.REPO), _MISSING_LEGACY_ID)
     message = str(excinfo.value)
     assert _MISSING_LEGACY_ID in message and _COEXISTING_PREFIXED_ID in message
 
@@ -1020,7 +1020,7 @@ def test_state_changing_commands_never_move_a_prefix_only_match(
     }[mutation]
     command = getattr(board_ticket, f"cmd_{mutation}")
 
-    assert command(board._home(), args) == 2
+    assert command(pm_paths.home_at(board.REPO), args) == 2
 
     assert path.exists(), f"{mutation} 이 남의 티켓을 옮겼다"
     assert _ids_on_disk(board) == {_COEXISTING_PREFIXED_ID}
@@ -1031,15 +1031,15 @@ def test_the_exact_id_still_moves_the_ticket(board):
     """정상 경로 무변경 — 정확한 canonical ID 로 부르면 종전대로 이동한다."""
     path = _seed_prefixed_only(board)
 
-    assert board_ticket.cmd_block(board._home(), _ns(id=_COEXISTING_PREFIXED_ID, reason="r")) == 0
+    assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _ns(id=_COEXISTING_PREFIXED_ID, reason="r")) == 0
 
     assert not path.exists()
-    assert (pm_paths.tickets_dir(board._home()) / "blocked" / f"{_COEXISTING_PREFIXED_ID}-slug.md").exists()
+    assert (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "blocked" / f"{_COEXISTING_PREFIXED_ID}-slug.md").exists()
 
 
 def test_a_ticket_absent_everywhere_is_still_a_plain_not_found(board, capsys):
     """비슷한 번호조차 없으면 안내는 종전처럼 단순 미존재다 (없는 후보를 지어내지 않는다)."""
     _seed_ticket(board, "T-9999")
-    assert board_ticket.cmd_block(board._home(), _ns(id=_MISSING_LEGACY_ID, reason="r")) == 2
+    assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _ns(id=_MISSING_LEGACY_ID, reason="r")) == 2
     err = capsys.readouterr().err
     assert _MISSING_LEGACY_ID in err and "T-9999" not in err

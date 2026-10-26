@@ -34,6 +34,7 @@ import pytest
 from conftest import anchor_board_module, bind_product_cluster
 from pm_engine.infra import ticket_store
 from pm_engine.app import body_lint
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -107,7 +108,7 @@ def test_each_placeholder_token_is_detected(token):
     자족 본문 뒤에 문제 토큰 하나만 얹어, 그 토큰이 실제로 게이트에 걸리는지 격리 확인한다
     (탐지 집합에 등재만 돼 있고 실효 검사가 빠지는 dead-token 방지)."""
     body = _FILLED_BODY + f"\n간섭 문장: {token}\n"
-    issues = body_lint._body_lint_issues(board_mod._home(), "T-0001", body)
+    issues = body_lint._body_lint_issues(pm_paths.home_at(board_mod.REPO), "T-0001", body)
     kinds = {(kind, detail) for _tid, kind, detail in issues}
     assert any(kind == "placeholder" and token in detail for kind, detail in kinds), (
         f"placeholder 토큰 {token!r} 이 게이트에 탐지되지 않음 — sensitivity 갭.")
@@ -127,7 +128,7 @@ def test_strengthened_tokens_present():
 
 def test_full_template_body_blocked():
     """제목만 바뀐 순수 템플릿(5절 뼈대) → 다수 placeholder issue(빈 draft)."""
-    issues = body_lint._body_lint_issues(board_mod._home(), "T-0001", _FULL_TEMPLATE_BODY)
+    issues = body_lint._body_lint_issues(pm_paths.home_at(board_mod.REPO), "T-0001", _FULL_TEMPLATE_BODY)
     kinds = [k for _t, k, _d in issues]
     assert kinds.count("placeholder") >= 5, (
         f"순수 템플릿이 5절 이상 placeholder 를 내야 하는데 {kinds!r}.")
@@ -138,7 +139,7 @@ def test_half_filled_body_now_blocked():
 
     강화 전 `_PLACEHOLDERS` 는 인터페이스/결정/T-XXXX 를 몰라 이 본문을 통과시켰다. 이제 인터페이스·
     결정·참고 절 미충전이 promote-차단돼야 "자족성 = placeholder 0"(ADR-0049)이 성립한다."""
-    issues = body_lint._body_lint_issues(board_mod._home(), "T-0001", _HALF_FILLED_BODY)
+    issues = body_lint._body_lint_issues(pm_paths.home_at(board_mod.REPO), "T-0001", _HALF_FILLED_BODY)
     details = " ".join(d for _t, _k, d in issues)
     assert issues, "절반-채운 draft 가 통과함 — 게이트 갭 회귀."
     # 인터페이스·결정·참고 절이 각각 잡혀야 한다(목표·DoD 는 실값이라 안 잡힘).
@@ -151,7 +152,7 @@ def test_half_filled_body_now_blocked():
 
 def test_self_contained_body_passes():
     """5절을 실값으로 채운 self-contained 본문 → issue 0(promotable)."""
-    assert body_lint._body_lint_issues(board_mod._home(), "T-0001", _FILLED_BODY) == [], (
+    assert body_lint._body_lint_issues(pm_paths.home_at(board_mod.REPO), "T-0001", _FILLED_BODY) == [], (
         "자족 본문이 promote 게이트에 걸림 — 오탐(실값 절을 placeholder 로 오판).")
 
 
@@ -230,14 +231,14 @@ def _draft_id(board_dir: Path) -> str:
 def test_promote_rejects_half_filled_draft(board_git):
     """목표·DoD 만 채우고 인터페이스·결정을 뼈대로 남긴 draft 의 promote 는 거부(rc=1)·open/ 미이동."""
     board_dir = board_git._board_dir
-    board_ticket.cmd_new(board_git._home(), _new_args("절반"))
+    board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args("절반"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     fm, _ = ticket_store.load_ticket(draft_path)
     ticket_store.dump_ticket(draft_path, fm, _HALF_FILLED_BODY)
 
-    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid))
     assert rc == 1, "인터페이스/결정 뼈대가 남은 draft 가 promote 통과함(게이트 갭)."
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 draft 는 .drafts/ 에 남아야 한다."
@@ -249,7 +250,7 @@ def test_promote_rejects_half_filled_draft(board_git):
 def test_promote_accepts_self_contained_draft(board_git):
     """5절을 실값으로 채운 draft 는 promote 성공(rc=0)·open/ 이동."""
     board_dir = board_git._board_dir
-    board_ticket.cmd_new(board_git._home(), _new_args("자족"))
+    board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args("자족"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
@@ -257,7 +258,7 @@ def test_promote_accepts_self_contained_draft(board_git):
     ticket_store.dump_ticket(draft_path, fm, _FILLED_BODY)
 
     bind_product_cluster(board_git, tid)
-    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid))
     assert rc == 0, "자족 본문의 draft promote 가 거부됨(오탐)."
     assert not list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "승격된 draft 가 .drafts/ 에 남음(open/ 이동 실패)."
@@ -288,10 +289,10 @@ def test_strict_gate_catches_deleted_sections_global_lint_does_not():
     strict 경로만 이 우회를 잡는다. 전역 lint(3절 불변)는 인터페이스/결정을 요구하지 않아 clean —
     레거시 티켓 blast-radius 0 을 동시 단언한다(단일 함수·소비측 파라미터)."""
     # 전역 lint 경로(strict_sections 기본 False) — 3절(목표/완료조건/참고)만 요구 → clean.
-    assert body_lint._body_lint_issues(board_mod._home(), "T-0001", _SECTION_DELETED_BODY) == [], (
+    assert body_lint._body_lint_issues(pm_paths.home_at(board_mod.REPO), "T-0001", _SECTION_DELETED_BODY) == [], (
         "전역 lint 가 인터페이스/결정 절 부재를 차단함 — 레거시 blast-radius(3절 불변 위반).")
     # authoring 게이트(strict) — 5절 존재 강제 → 인터페이스·결정 절 부재를 thin 으로 차단.
-    strict = body_lint._body_lint_issues(board_mod._home(), "T-0001", _SECTION_DELETED_BODY, strict_sections=True)
+    strict = body_lint._body_lint_issues(pm_paths.home_at(board_mod.REPO), "T-0001", _SECTION_DELETED_BODY, strict_sections=True)
     details = " ".join(d for _t, _k, d in strict)
     assert any(k == "thin" for _t, k, _d in strict), "strict 게이트가 절 삭제를 못 잡음(우회)."
     assert "## 인터페이스" in details, "인터페이스 절 삭제 미탐지(strict)."
@@ -309,14 +310,14 @@ def test_strict_sections_constant_is_five():
 def test_promote_rejects_section_deleted_draft(board_git):
     """인터페이스·결정 절을 삭제한 draft 의 promote 는 거부(rc=1)·open/ 미이동(strict authoring 게이트)."""
     board_dir = board_git._board_dir
-    board_ticket.cmd_new(board_git._home(), _new_args("절삭제"))
+    board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args("절삭제"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
     fm, _ = ticket_store.load_ticket(draft_path)
     ticket_store.dump_ticket(draft_path, fm, _SECTION_DELETED_BODY)
 
-    rc = board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid))
+    rc = board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid))
     assert rc == 1, "인터페이스/결정 절을 삭제한 draft 가 promote 통과함(절-삭제 우회)."
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 draft 는 .drafts/ 에 남아야 한다."
@@ -334,14 +335,14 @@ def test_promote_rejects_section_deleted_draft(board_git):
 @requires_git
 def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
     board_dir = board_git._board_dir
-    board_ticket.cmd_new(board_git._home(), _new_args("라운드 동반"))
+    board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args("라운드 동반"))
     tid = _draft_id(board_dir)
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
     fm, _ = ticket_store.load_ticket(draft_path)
     ticket_store.dump_ticket(draft_path, fm, _FILLED_BODY)
 
     rc_section = board_round.cmd_section_add(
-        board_git._home(), argparse.Namespace(id=tid, role="architect", label=None))
+        pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid, role="architect", label=None))
     assert rc_section == 0
     round_rel = f"tickets/rounds/{tid}/01-architect.md"
     assert (board_dir / round_rel).is_file()
@@ -349,7 +350,7 @@ def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
     assert round_rel not in tracked_before, "draft 구간에서 이미 커밋됨(promote 소유 위반)"
 
     bind_product_cluster(board_git, tid)
-    assert board_ticket.cmd_promote(board_git._home(), argparse.Namespace(id=tid)) == 0
+    assert board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid)) == 0
 
     tracked = _git(["ls-tree", "-r", "--name-only", "HEAD"], board_dir).stdout
     assert round_rel in tracked, "승격 커밋에 draft 라운드가 빠짐"

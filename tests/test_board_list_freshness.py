@@ -33,6 +33,7 @@ from pm_engine.domain import board_git_rules, git_freshness
 from pm_engine.infra import board_git
 from pm_engine.infra import git
 from pm_engine.infra import lease_store
+from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -105,14 +106,14 @@ def _wire_board_git(board, monkeypatch, **kw):
 def test_freshness_line_online_up_to_date(board, monkeypatch):
     """online·behind0·ahead0 → `board-git: 최신` (부트스트랩 판정 재사용)."""
     _wire_board_git(board, monkeypatch, fetch_rc=0, ab_out="0\t0")
-    line = board_git._board_git_freshness(board._home()).line
+    line = board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line
     assert line == "board-git: 최신"
 
 
 def test_freshness_line_offline_undetermined(board, monkeypatch):
     """offline(fetch 실패) → 판정불가 fail-soft (stale 스냅샷을 최신으로 오단정 안 함·T-0341 상속)."""
     _wire_board_git(board, monkeypatch, fetch_rc=1, ab_out="0\t0")
-    line = board_git._board_git_freshness(board._home()).line
+    line = board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line
     assert line is not None
     assert "판정불가 — 스냅샷일 수 있음" in line
     assert "최신" not in line              # offline 은 "최신" 을 주장하지 않는다.
@@ -122,7 +123,7 @@ def test_freshness_line_offline_undetermined(board, monkeypatch):
 def test_freshness_line_behind_warns(board, monkeypatch):
     """online·behind>0 → `behind N` + 수동 동기 필요 경고 (behind 시 경고·advisory)."""
     _wire_board_git(board, monkeypatch, fetch_rc=0, ab_out="0\t3")
-    line = board_git._board_git_freshness(board._home()).line
+    line = board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line
     assert line is not None
     assert "behind 3" in line
     assert "수동 동기 필요" in line
@@ -131,7 +132,7 @@ def test_freshness_line_behind_warns(board, monkeypatch):
 def test_freshness_line_solo_non_git_omitted(board, monkeypatch):
     """solo/board 비-git(`_board_git_enabled()` False) → None (표면화 생략·오탐 0)."""
     monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
-    assert board_git._board_git_freshness(board._home()).line is None
+    assert board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line is None
 
 
 def test_freshness_judgment_is_single_sourced(board, monkeypatch):
@@ -142,7 +143,7 @@ def test_freshness_judgment_is_single_sourced(board, monkeypatch):
     """
     _wire_board_git(board, monkeypatch, fetch_rc=0, ab_out="0\t0")
     monkeypatch.setattr(git_freshness, "_format_freshness", lambda scope: "SENTINEL")
-    assert board_git._board_git_freshness(board._home()).line == "board-git: SENTINEL"
+    assert board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line == "board-git: SENTINEL"
 
 
 # ── advisory fetch 조율 (T-0379 should-fix): FETCH_HEAD TTL 가드 + 5s timeout ──
@@ -160,21 +161,21 @@ def test_fetch_head_fresh_true_within_ttl(board, monkeypatch, tmp_path):
     """FETCH_HEAD mtime 이 TTL 이내 → `_board_fetch_head_fresh` True (직전 fetch 재사용)."""
     fh = _fetch_head(tmp_path, age_seconds=5)
     monkeypatch.setattr(git, "_board_git", _FakeBoardGit(fetch_head_path=fh))
-    assert board_git._board_fetch_head_fresh(board._home(), 60) is True
+    assert board_git._board_fetch_head_fresh(pm_paths.home_at(board.REPO), 60) is True
 
 
 def test_fetch_head_fresh_false_when_stale(board, monkeypatch, tmp_path):
     """FETCH_HEAD mtime 이 TTL 경과 → False (fetch 진행)."""
     fh = _fetch_head(tmp_path, age_seconds=120)
     monkeypatch.setattr(git, "_board_git", _FakeBoardGit(fetch_head_path=fh))
-    assert board_git._board_fetch_head_fresh(board._home(), 60) is False
+    assert board_git._board_fetch_head_fresh(pm_paths.home_at(board.REPO), 60) is False
 
 
 def test_fetch_head_fresh_false_when_absent(board, monkeypatch, tmp_path):
     """FETCH_HEAD 부재(한 번도 fetch 안 함·경로 stat 실패) → False (fetch 진행)."""
     missing = tmp_path / "FETCH_HEAD"   # 생성 안 함
     monkeypatch.setattr(git, "_board_git", _FakeBoardGit(fetch_head_path=missing))
-    assert board_git._board_fetch_head_fresh(board._home(), 60) is False
+    assert board_git._board_fetch_head_fresh(pm_paths.home_at(board.REPO), 60) is False
 
 
 def test_freshness_skips_fetch_when_fetch_head_fresh(board, monkeypatch, tmp_path):
@@ -183,7 +184,7 @@ def test_freshness_skips_fetch_when_fetch_head_fresh(board, monkeypatch, tmp_pat
     fake = _FakeBoardGit(fetch_head_path=fh, ab_out="0\t0")
     monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: True)
     monkeypatch.setattr(git, "_board_git", fake)
-    line = board_git._board_git_freshness(board._home()).line
+    line = board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line
     assert line == "board-git: 최신"
     assert fake.fetch_calls == []          # fetch 생략(TTL 재사용).
 
@@ -194,7 +195,7 @@ def test_freshness_runs_fetch_when_fetch_head_stale(board, monkeypatch, tmp_path
     fake = _FakeBoardGit(fetch_head_path=fh, ab_out="0\t0")
     monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: True)
     monkeypatch.setattr(git, "_board_git", fake)
-    board_git._board_git_freshness(board._home())
+    board_git._board_git_freshness(pm_paths.home_at(board.REPO))
     assert len(fake.fetch_calls) == 1      # stale → fetch 1회.
 
 
@@ -204,7 +205,7 @@ def test_advisory_fetch_timeout_is_5s(board, monkeypatch, tmp_path):
     fake = _FakeBoardGit(fetch_head_path=fh)
     monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: True)
     monkeypatch.setattr(git, "_board_git", fake)
-    board_git._board_git_freshness(board._home())
+    board_git._board_git_freshness(pm_paths.home_at(board.REPO))
     assert fake.fetch_calls, "fetch 가 호출되지 않았다"
     assert fake.fetch_calls[0]["timeout"] == board_git_rules._FRESHNESS_FETCH_TIMEOUT_SECONDS == 5
 
@@ -244,7 +245,7 @@ def _list_args(**over):
 def test_cmd_list_surfaces_freshness_on_stderr(list_board, monkeypatch, capsys):
     """cmd_list(board-git enabled) → freshness 1줄이 **stderr**, stdout 은 목록 포맷 무오염."""
     _wire_board_git(list_board, monkeypatch, fetch_rc=0, ab_out="0\t0")
-    rc = board_list.cmd_list(list_board._home(), _list_args())
+    rc = board_list.cmd_list(pm_paths.home_at(list_board.REPO), _list_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert "board-git: 최신" in cap.err     # freshness = stderr.
@@ -254,7 +255,7 @@ def test_cmd_list_surfaces_freshness_on_stderr(list_board, monkeypatch, capsys):
 def test_cmd_list_solo_no_freshness_line(list_board, capsys):
     """solo/board 비-git → cmd_list 가 freshness 를 내지 않는다(조용히 생략·회귀 0)."""
     # _board_git_enabled() 는 tmp 프로젝트에 board/.git 이 없어 기본 False.
-    rc = board_list.cmd_list(list_board._home(), _list_args())
+    rc = board_list.cmd_list(pm_paths.home_at(list_board.REPO), _list_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert "board-git:" not in cap.err
@@ -264,7 +265,7 @@ def test_cmd_list_solo_no_freshness_line(list_board, capsys):
 def test_cmd_list_freshness_covers_no_tickets_path(list_board, monkeypatch, capsys):
     """freshness 는 "(no tickets)" 경로에서도 표면화된다(양 return 경로 공통 소환)."""
     _wire_board_git(list_board, monkeypatch, fetch_rc=1)   # offline
-    rc = board_list.cmd_list(list_board._home(), _list_args())
+    rc = board_list.cmd_list(pm_paths.home_at(list_board.REPO), _list_args())
     assert rc == 0
     cap = capsys.readouterr()
     assert "(no tickets)" in cap.out

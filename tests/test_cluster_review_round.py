@@ -62,6 +62,7 @@ from pm_engine.domain import delegate_errors, review_form, review_state, round_r
 from pm_engine.infra import delegate_ledger, round_store
 
 from pm_engine.cli import task_args
+from pm_engine.cli import delegate_run as cli_delegate_run
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -239,7 +240,7 @@ def test_review_input_spans_the_merge_base_with_the_integration_tip(pd, review_e
     _integration_advances(home)
     board = _fixture_board(pd, home)
 
-    review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
+    review = delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home)
 
     assert review.members == _MEMBERS
     assert review.branch == _CLUSTER_BRANCH and review.base_branch == _BASE_BRANCH
@@ -268,7 +269,7 @@ def test_review_input_refuses_a_ledger_without_branch_coordinates(pd, review_env
     board = _fixture_board(pd, home)
 
     with pytest.raises(delegate_errors.DelegateError, match="통합 브랜치 좌표가 없습니다"):
-        delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
+        delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home)
 
 
 @requires_git
@@ -279,7 +280,7 @@ def test_review_input_refuses_an_empty_span(pd, review_env):
     board = _fixture_board(pd, home)
 
     with pytest.raises(delegate_errors.DelegateError, match="리뷰할 diff 가 없습니다"):
-        delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
+        delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -413,7 +414,7 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
     # 커밋된 산출은 이제 브랜치 tip 이라 리뷰 입력 결속을 그대로 통과한다.
     board = _fixture_board(pd, home)
     delegate_cluster_review.assert_cluster_review_tree(
-        delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home), repo=home)
+        delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home), repo=home)
 
 
 @requires_git
@@ -514,7 +515,7 @@ def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
     worktrees_before = _git(home, "worktree", "list").stdout
     capsys.readouterr()
 
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", str(home),
          "--output-dir", str(home.parent / "raw")],
         run_fn=lambda *a, **k: pytest.fail("결속 거부 뒤 스폰되면 안 됨"),
@@ -534,7 +535,7 @@ def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
 def test_prompt_carries_every_ticket_body_changed_files_focus_and_diff(pd, review_env):
     home, _tickets = review_env
     board = _fixture_board(pd, home)
-    review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
+    review = delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home)
     specs = delegate_cluster_review._cluster_member_specs(pm_paths.home_at(home), review.members)
     focus = "이번 라운드는 경계 판정의 값 대조를 중점으로 본다."
 
@@ -561,7 +562,7 @@ def test_prompt_leaves_the_block_requirement_to_the_round_seed(pd, review_env):
     """구조화 블록 요구는 라운드 파일 시드가 소유한다 — 두 벌이면 갈린다."""
     home, _tickets = review_env
     board = _fixture_board(pd, home)
-    review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home)
+    review = delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home)
     specs = delegate_cluster_review._cluster_member_specs(pm_paths.home_at(home), review.members)
 
     prompt = delegate_cluster_review.build_cluster_review_prompt(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), review, specs, tree=home, focus=None)
@@ -628,7 +629,7 @@ def _reserve_prior_rounds(pd, home: Path, roles: tuple[str, ...]) -> None:
             else:
                 content = f"## {role} 산출\n- {ticket} 실측\n"
             round_store.reserve_round(
-                pm_paths.tickets_dir(board._home()), ticket, role,
+                pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), ticket, role,
                 content=content,
                 lock=_contextlib.nullcontext(),
             )
@@ -671,7 +672,7 @@ def test_cross_review_runs_in_the_slot_and_harvests(pd, review_env, monkeypatch,
         reply = json.dumps({"type": "result", "result": "DONE", "session_id": "s-1"})
         return {"returncode": 0, "stdout": reply, "stderr": "", "timed_out": False}
 
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", str(home),
          "--output-dir", str(home.parent / "raw")],
         run_fn=_run_fn,
@@ -713,7 +714,7 @@ def test_cross_review_with_the_pm_harness_states_the_native_rule(
         executed.append(harness)
         return {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False}
 
-    pd.main(
+    cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", str(home),
          "--output-dir", str(home.parent / "raw")],
         run_fn=_run_fn,
@@ -734,7 +735,7 @@ def test_delegation_refuses_when_the_cluster_budget_is_spent(pd, review_env, cap
         pd, home, ("architect", "developer", "code-reviewer", "developer"))
     capsys.readouterr()
 
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", str(home),
          "--output-dir", str(home.parent / "raw")],
         run_fn=lambda *a, **k: pytest.fail("예산 거부 뒤 스폰되면 안 됨"),
@@ -1034,12 +1035,12 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
     ticket = _MEMBERS[0]
     assert not (home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()
 
-    completion = board_ticket._review_completion_problem(board._home(), ticket)
-    resolution = board_ticket._review_resolution_input_problem(board._home(), ticket)
+    completion = board_ticket._review_completion_problem(pm_paths.home_at(board.REPO), ticket)
+    resolution = board_ticket._review_resolution_input_problem(pm_paths.home_at(board.REPO), ticket)
     assert completion is not None and "code-reviewer 리뷰 라운드 03" in completion
     assert resolution is not None
-    assert board_ticket._review_completion_problem(board._home(), _MEMBERS[1]) is None
-    assert board_ticket._review_resolution_input_problem(board._home(), _MEMBERS[1]) is None
+    assert board_ticket._review_completion_problem(pm_paths.home_at(board.REPO), _MEMBERS[1]) is None
+    assert board_ticket._review_resolution_input_problem(pm_paths.home_at(board.REPO), _MEMBERS[1]) is None
 
     spec = tickets / f"{ticket}-review.md"
     spec.write_text(
@@ -1047,8 +1048,8 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
         + _disposition_block(pd, 3, [_decision("F-001", "rejected")]),
         encoding="utf-8", newline="")
 
-    assert board_ticket._review_completion_problem(board._home(), ticket) is None
-    assert board_ticket._review_resolution_input_problem(board._home(), ticket) is None
+    assert board_ticket._review_completion_problem(pm_paths.home_at(board.REPO), ticket) is None
+    assert board_ticket._review_resolution_input_problem(pm_paths.home_at(board.REPO), ticket) is None
 
 
 def _round(pd, ordinal: int, role: str, text: str):
@@ -1213,7 +1214,7 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
                         encoding="utf-8", newline="")
         for item in rounds:
             round_store.reserve_round(
-                pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
+                pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
     capsys.readouterr()
@@ -1561,7 +1562,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
     """
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [{
         "slot": ".", "repo": "proj", "session": "main", "state": "leased",
     }]}), encoding="utf-8")
     tree_identities = []
@@ -1585,7 +1586,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
                         encoding="utf-8", newline="")
         for item in rounds:
             round_store.reserve_round(
-                pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
+                pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
     capsys.readouterr()
@@ -1604,7 +1605,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
         assert '"observed":"rc=0' in text and "hi" in text
         assert "기계 확인 1건 기입" in out and ticket in out
         assert f"{ticket}: 리뷰 잔여 확인 완료" in out
-        assert board_ticket._review_completion_problem(board._home(), ticket) is None
+        assert board_ticket._review_completion_problem(pm_paths.home_at(board.REPO), ticket) is None
     assert not (home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()
 
 
@@ -1615,7 +1616,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
     home, tickets = review_env
     board = _fixture_board(pd, home)
     # 확인 트리는 `--task` 가 보유한 폴더에서만 해소한다(T-0962 — PM 홈 접기 없음).
-    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [{
         "slot": ".", "repo": "proj", "session": "main", "state": "leased",
     }]}), encoding="utf-8")
 
@@ -1632,7 +1633,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
         )
         for item in rounds:
             round_store.reserve_round(
-                pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
+                pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
     capsys.readouterr()
@@ -1663,7 +1664,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
     home, tickets = review_env
     board = _fixture_board(pd, home)
     # 확인 트리는 `--task` 가 보유한 폴더에서만 해소한다(T-0962 — PM 홈 접기 없음).
-    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [{
         "slot": ".", "repo": "proj", "session": "main", "state": "leased",
     }]}), encoding="utf-8")
 
@@ -1680,7 +1681,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
         )
         for item in rounds:
             round_store.reserve_round(
-                pm_paths.tickets_dir(board._home()), ticket, item.role, content=item.text,
+                pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), ticket, item.role, content=item.text,
                 lock=contextlib.nullcontext(),
             )
     capsys.readouterr()
@@ -1752,7 +1753,7 @@ def test_dry_run_previews_the_cluster_without_side_effects(pd, review_env, capsy
                      encoding="utf-8", newline="\n")
     before = _git(home, "worktree", "list").stdout
 
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", str(home),
          "--focus", str(focus), "--dry-run"],
         run_fn=lambda *a, **k: pytest.fail("dry-run 은 스폰하지 않는다"),
@@ -1790,7 +1791,7 @@ def test_a_refused_seat_harvest_does_not_pass_as_success(pd, review_env, capsys)
         return {"returncode": 0, "stdout": _codex_reply(), "stderr": "",
                 "timed_out": False}
 
-    rc = pd.main(
+    rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", str(home),
          "--output-dir", str(home.parent / "raw")],
         run_fn=_run_fn,
@@ -1825,11 +1826,11 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
                     encoding="utf-8", newline="")
     for item in rounds:
         round_store.reserve_round(
-            pm_paths.tickets_dir(board._home()), rejected, item.role, content=item.text,
+            pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), rejected, item.role, content=item.text,
             lock=contextlib.nullcontext(),
         )
     round_store.reserve_round(
-        pm_paths.tickets_dir(board._home()), passed, "code-reviewer",
+        pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), passed, "code-reviewer",
         content=_reviewer_round_text(pd, []), lock=contextlib.nullcontext(),
     )
     capsys.readouterr()
@@ -1841,7 +1842,7 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
 
     out = capsys.readouterr().out
     assert rc == 0, out
-    assert board_ticket._review_completion_problem(board._home(), rejected) is None
+    assert board_ticket._review_completion_problem(pm_paths.home_at(board.REPO), rejected) is None
     assert f"{passed}: 처분할 리뷰 잔여 없음(must-fix 0건) — 무대상" in out
     assert review_contract.PM_REVIEW_CONFIRMATION_SECTION not in (
         tickets / f"{passed}-review.md").read_text(encoding="utf-8")
@@ -1859,7 +1860,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert _git(home, 'worktree', 'add', '-q', '-b', 'task/other', str(one)).returncode == 0
     assert _git(home, 'worktree', 'add', '-q', str(five), _CLUSTER_BRANCH).returncode == 0
     rows = [{'slot': f'work/proj_{n}', 'repo': 'proj', 'session': 'main', 'state': 'leased', 'role': 'work'} for n in (1, 5)]
-    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': rows}), encoding='utf-8')
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({'leases': rows}), encoding='utf-8')
     execution_home = pm_paths.home_at(home)
     finisher = finish_record.TicketFinisher(execution_home)
     closer = cluster_close.ClusterCloser(execution_home, _CLUSTER, finisher=finisher,
@@ -1881,15 +1882,15 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert forwarded == [[
         'rounds', 'resolve', '--cluster', _CLUSTER, '--pm-verified', '--task', 'main']]
     identity = argparse.Namespace(task='main', repo='proj' if explicit else None, slot=5 if explicit else None)
-    before = pm_paths.leases_file(board._home()).read_bytes()
+    before = pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes()
     assert delegate_cmd._cluster_confirmation_tree(
         pm_paths.home_at(home), _CLUSTER, identity=identity) == found
-    assert pm_paths.leases_file(board._home()).read_bytes() == before
+    assert pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes() == before
     assert home_values(finisher) == home_values(closer) == expected_home
     # 실행 엔진과 PM 데이터 홈이 달라도 상대 대여 경로는 PM 홈을 기준으로 해소한다.
     engine = home.parent / "separate-engine"
     engine.mkdir()
-    mixed_home = pm_paths.home_at(engine, pm_home=home, board_root=board._home().board_root)
+    mixed_home = pm_paths.home_at(engine, pm_home=home, board_root=pm_paths.home_at(board.REPO).board_root)
     queries = []
     def observe_trees(cwd, args):
         queries.append((cwd, args))
@@ -1923,15 +1924,15 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
             return 0, observed
         patch.setattr(finish_git, "_default_run_git_stdout_at", native_listing)
         assert cluster_code_tree.resolve_code_tree(mixed_home, _CLUSTER) == (five, None)
-    assert pm_paths.leases_file(board._home()).read_bytes() == before
+    assert pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes() == before
     # 실행 트리와 다른 데이터 Home의 손상 lease는 첫 기록 전에 거부한다.
-    pm_paths.leases_file(board._home()).write_text('{broken', encoding='utf-8')
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text('{broken', encoding='utf-8')
     with pytest.raises(finish_rules._CloseObservationFailure):
         cluster_code_tree.resolve_code_tree(mixed_home, _CLUSTER, run_git_stdout_at=closer._git_stdout)
     with pytest.raises(delegate_errors.DelegateError):
         delegate_cmd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=identity)
     assert home_values(finisher) == home_values(closer) == expected_home
-    pm_paths.leases_file(board._home()).write_bytes(before)
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_bytes(before)
 
     # finish argv에서 실제 내부 확인·기입·처분까지 연결하며 외부 명령만 대역으로 둔다.
     import contextlib
@@ -1942,7 +1943,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
         path = tickets / f'{ticket}-review.md'
         path.write_text(path.read_text(encoding='utf-8') + '\n' + spec, encoding='utf-8')
         for item in rounds:
-            round_store.reserve_round(pm_paths.tickets_dir(board._home()), ticket, item.role,
+            round_store.reserve_round(pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), ticket, item.role,
                                         content=item.text, lock=contextlib.nullcontext())
     command_calls = []
     runner = _stub_run(0, 'hi\n')
@@ -1955,7 +1956,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert delegate_cmd._cmd_rounds(pm_paths.home_at(pd.REPO), argv, run_fn=observe) == 0
     assert len(command_calls) == len(_MEMBERS)
     assert all(Path(call['cwd']) == found for call in command_calls)
-    assert pm_paths.leases_file(board._home()).read_bytes() == before
+    assert pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes() == before
     for ticket in _MEMBERS:
         assert review_contract.PM_REVIEW_CONFIRMATION_SECTION in (tickets / f'{ticket}-review.md').read_text(encoding='utf-8')
 
@@ -1967,7 +1968,7 @@ def test_t0929_finish_confirmation_explicit_wrong_branch_refused(pd, review_env)
     board = _fixture_board(pd, home)
     slot = home / 'work/proj_1'
     assert _git(home, 'worktree', 'add', '-q', str(slot), _BASE_BRANCH).returncode == 0
-    pm_paths.leases_file(board._home()).write_text(json.dumps({'leases': [{'slot': 'work/proj_1', 'repo': 'proj', 'session': 'main'}]}), encoding='utf-8')
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({'leases': [{'slot': 'work/proj_1', 'repo': 'proj', 'session': 'main'}]}), encoding='utf-8')
     with pytest.raises(delegate_errors.DelegateError, match='브랜치'):
         delegate_cmd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=argparse.Namespace(task='main', repo='proj', slot=1))
 
@@ -1980,12 +1981,12 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
     board = _fixture_board(pd, home)
     slot = home / "work/proj_1"
     assert _git(home, "worktree", "add", "-q", str(slot), _BASE_BRANCH).returncode == 0
-    pm_paths.leases_file(board._home()).write_text(json.dumps({"leases": [{"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased", "role": "work"}]}), encoding="utf-8")
-    ledger_path = cluster_store.cluster_ledger_path(board._home(), _CLUSTER)
-    ledger = cluster_store.load_cluster(board._home(), _CLUSTER)
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [{"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased", "role": "work"}]}), encoding="utf-8")
+    ledger_path = cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), _CLUSTER)
+    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), _CLUSTER)
     ledger["branch"] = None
-    cluster_store.dump_cluster(board._home(), ledger)
-    before = (ledger_path.read_bytes(), pm_paths.leases_file(board._home()).read_bytes(),
+    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger)
+    before = (ledger_path.read_bytes(), pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes(),
               tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md"))))
     # 미결속 resolver는 base_branch가 있어도 대여 기록을 읽지 않는다.
     reads = []
@@ -1993,13 +1994,13 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
         patch.setattr(lease_store, "_read_lease_rows_status",
                       lambda path: reads.append(path) or (_ for _ in ()).throw(
                           AssertionError("unbound lease read")))
-        tree, problem = cluster_code_tree.resolve_code_tree(board._home(), _CLUSTER)
+        tree, problem = cluster_code_tree.resolve_code_tree(pm_paths.home_at(board.REPO), _CLUSTER)
         assert tree is None and "미결속" in problem
     assert reads == []
     identity = argparse.Namespace(task="main", repo=None if task_only else "proj", slot=None if task_only else 1)
     with pytest.raises(delegate_errors.DelegateError, match="cluster new"):
         delegate_cmd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=identity)
-    assert (ledger_path.read_bytes(), pm_paths.leases_file(board._home()).read_bytes(),
+    assert (ledger_path.read_bytes(), pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes(),
             tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md")))) == before
 
 
@@ -2017,7 +2018,7 @@ def test_cluster_prompt_size_is_independent_of_patch_and_queries_names_only(
                 assert "--name-only" in argv and "-z" in argv, patch[:19]
                 return subprocess.CompletedProcess(argv, 0, "\0".join(paths) + "\0", "")
             return subprocess.run(argv, **kwargs)
-        review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=run)
+        review = delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home, git_run_fn=run)
         prompts.append(delegate_cluster_review.build_cluster_review_prompt(
             pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), review, dict.fromkeys(review.members, "본문"), tree=home, focus="중점",
         ))
@@ -2038,7 +2039,7 @@ def test_cluster_input_preserves_nul_paths_and_rejects_name_query_failure(pd, re
         if "diff" in argv:
             return subprocess.CompletedProcess(argv, 0, "\0".join(names) + "\0", "")
         return subprocess.run(argv, **kwargs)
-    review = delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=run)
+    review = delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home, git_run_fn=run)
     assert review.paths == names
     prompt = delegate_cluster_review.build_cluster_review_prompt(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), review, dict.fromkeys(_MEMBERS, "본문"), tree=home, focus=None)
     line = next(line for line in prompt.splitlines() if line.startswith("- 변경 파일"))
@@ -2048,4 +2049,4 @@ def test_cluster_input_preserves_nul_paths_and_rejects_name_query_failure(pd, re
             return subprocess.CompletedProcess(argv, 128, "", "name query failed")
         return subprocess.run(argv, **kwargs)
     with pytest.raises(delegate_errors.DelegateError, match="name query failed"):
-        delegate_cluster_review.cluster_review_input(board._home(), _CLUSTER, repo=home, git_run_fn=fail)
+        delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home, git_run_fn=fail)

@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from pm_engine.infra import process, python_env
+import subprocess
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -130,7 +131,7 @@ def test_interp_runs_false_on_nonzero_rc(monkeypatch, board):
     class _R:
         returncode = 1
 
-    monkeypatch.setattr(board.subprocess, "run", lambda *a, **k: _R())
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
     assert python_env._interp_runs("python3") is False
 
 
@@ -138,7 +139,7 @@ def test_interp_runs_false_on_exception(monkeypatch, board):
     def _boom(*a, **k):
         raise FileNotFoundError("no such interpreter")
 
-    monkeypatch.setattr(board.subprocess, "run", _boom)
+    monkeypatch.setattr(subprocess, "run", _boom)
     assert python_env._interp_runs("python3") is False
 
 
@@ -146,5 +147,5 @@ def test_interp_runs_true_on_zero_rc(monkeypatch, board):
     class _R:
         returncode = 0
 
-    monkeypatch.setattr(board.subprocess, "run", lambda *a, **k: _R())
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
     assert python_env._interp_runs("py") is True

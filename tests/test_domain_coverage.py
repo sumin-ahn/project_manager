@@ -148,7 +148,7 @@ def test_page_zero_shapes_skip_with_visible_reason(
     if shape == "template":
         (domain_dir / "_template.md").write_text("# template\n", encoding="utf-8")
 
-    findings = doc_coverage.coverage_findings(pm_paths.home_at(domain.REPO), [], domain_dir=domain_dir, manifest_path=domain.ENGINE_MANIFEST)
+    findings = doc_coverage.coverage_findings(pm_paths.home_at(domain.REPO), [], domain_dir=domain_dir, manifest_path=pm_paths.engine_manifest(pm_paths.home_at(domain.REPO)))
 
     assert findings == []
     err = capsys.readouterr().err
@@ -667,12 +667,10 @@ def test_marker_and_command_inside_fence_are_examples_not_claim(domain, tmp_path
         encoding="utf-8",
     )
     monkeypatch.setattr(domain, "REPO", root)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
     pages = doc_page_store.load_pages(domain_dir)
-    assert doc_lint.lint_pages(pm_paths.home_at(domain.REPO), pages, domain_dir=domain.DOMAIN_DIR, manifest_path=domain.ENGINE_MANIFEST) == []
+    assert doc_lint.lint_pages(pm_paths.home_at(domain.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(domain.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(domain.REPO))) == []
     explicit = doc_coverage.coverage_findings(pm_paths.home_at(domain.REPO),
         pages, domain_dir=domain_dir, manifest_path=manifest, exemptions={}
     )
@@ -697,11 +695,9 @@ def test_numeric_prose_lint_cannot_be_disabled_by_marker_shape(
     body += "\n엔진 17 도구 전부 담당 페이지가 있다. 면제 = 0.\n"
     readme.write_text(body, encoding="utf-8")
     monkeypatch.setattr(domain, "REPO", root)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
-    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=domain.DOMAIN_DIR, manifest_path=domain.ENGINE_MANIFEST)
+    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=pm_paths.domain_dir(pm_paths.home_at(domain.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(domain.REPO)))
 
     assert findings == [(
         "coverage",
@@ -720,11 +716,9 @@ def test_markerless_adopter_domain_does_not_join_engine_coverage(
         encoding="utf-8",
     )
     monkeypatch.setattr(domain, "REPO", root)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
-    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=domain.DOMAIN_DIR, manifest_path=domain.ENGINE_MANIFEST)
+    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=pm_paths.domain_dir(pm_paths.home_at(domain.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(domain.REPO)))
 
     assert not any(kind == "coverage" for kind, _label, _detail in findings)
 
@@ -746,11 +740,9 @@ def test_markerless_adopter_numeric_domain_prose_is_not_coverage_finding(
         encoding="utf-8",
     )
     monkeypatch.setattr(domain, "REPO", root)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
-    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=domain.DOMAIN_DIR, manifest_path=domain.ENGINE_MANIFEST)
+    findings = doc_lint.lint_pages(pm_paths.home_at(domain.REPO), doc_page_store.load_pages(domain_dir), domain_dir=pm_paths.domain_dir(pm_paths.home_at(domain.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(domain.REPO)))
 
     assert not any(kind == "coverage" for kind, _label, _detail in findings)
 
@@ -841,9 +833,8 @@ def test_qualitative_coverage_prose_has_no_false_positive(domain, tmp_path):
 
 
 def test_coverage_command_output_is_machine_derived(domain, tmp_path, monkeypatch, capsys):
-    _root, _tools_dir, domain_dir, manifest, _readme_path = _coverage_tree(tmp_path, domain)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
+    root, _tools_dir, domain_dir, manifest, _readme_path = _coverage_tree(tmp_path, domain)
+    monkeypatch.setattr(domain, "REPO", root)
     monkeypatch.setattr(doc_coverage, "DOMAIN_COVERAGE_EXEMPTIONS", {})
 
     assert domain.main(["coverage"]) == 0
@@ -867,19 +858,17 @@ def test_coverage_finding_flows_through_board_and_gate_stays_zero(
     root, _tools, domain_dir, manifest, readme = _coverage_tree(tmp_path, domain)
     _readme(domain, readme, "complete")
     monkeypatch.setattr(domain, "REPO", root)
-    monkeypatch.setattr(domain, "DOMAIN_DIR", domain_dir)
-    monkeypatch.setattr(domain, "ENGINE_MANIFEST", manifest)
     monkeypatch.setattr(doc_coverage, "DOMAIN_COVERAGE_EXEMPTIONS", {})
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
     board = _load("board_coverage_gate_test", TOOLS / "board.py")
     monkeypatch.setattr(board, "REPO", root)
-    findings = doc_lint.lint_domain(board._home())
+    findings = doc_lint.lint_domain(pm_paths.home_at(board.REPO))
     assert any(label == "beta.py" and kind == "coverage"
                for label, kind, _detail in findings)
     monkeypatch.setattr(ticket_lint, "lint_tickets", lambda _home: findings)
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
 
     assert "coverage" in board_lint._ADVISORY_LINT_KINDS
-    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(board._home(), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
