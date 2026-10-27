@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-10-27
+
 ### Changed
 
 - `livegate record`는 직접 `--cwd`와 `--task`·`--repo`·`--slot`의 혼합 및 빈 cwd를 기록 전에 거부한다. readonly 경로는 `--cwd <경로>`만 지정하고, task 작업공간은 cwd 없이 `--task <task> [--repo <repo> --slot <N>]`으로 선택한다.
