@@ -131,7 +131,7 @@ class TicketFinisher:
         self._ticket_title_fn = ticket_title_fn or self._default_ticket_title
 
         # domain soft 알림 DI: 기본값은 패키지의 페이지 적재·매칭·stale 판정 구현.
-        # None 반환은 페이지 적재·매칭 실패를 뜻하며 완료를 막지 않는다(soft).
+        # 영향 페이지가 없으면 빈 목록이고 완료를 막지 않는다(soft). 적재·매칭 실패는 전파한다.
         self._affected_domain_fn = affected_domain_fn or self._default_affected_domain
 
         # git 파싱 전용 러너 — **stdout 만** 돌려준다. `_run_git_fn` 은 진단 메시지를 살리려고
