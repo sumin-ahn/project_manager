@@ -405,12 +405,15 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
     real_run = subprocess.run
     llm_envs: list[dict | None] = []
 
+    class _LlmReached(Exception):
+        """LLM 호출 지점 도달 — env 를 잡았으니 라이브 함수의 나머지(발행 단언)는 돌리지 않는다."""
+
     def _spy_run(cmd, *args, **kwargs):
         # LLM 바이너리 호출만 env 를 포착(import/board/pm_update 는 실행 그대로).
         if cmd and cmd[0] in ("opencode", "claude"):
             llm_envs.append(kwargs.get("env"))
-            # 라이브 LLM 은 실제로 띄우지 않는다 — 빈 성공 응답으로 대역.
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            # 라이브 LLM 은 실제로 띄우지 않는다.
+            raise _LlmReached
         return real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _spy_run)
@@ -433,21 +436,20 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, '_self_update', fixture_update)
 
     # 2개 라이브 테스트 함수를 각자 별도 자리에서 spy 하에 구동한다(둘이 같은 트리를 쓰면
-    # 앞 실행의 import 결과가 뒤 실행의 입력이 된다).
+    # 앞 실행의 import 결과가 뒤 실행의 입력이 된다). 자리 이름은 짧게 둔다 — 라이브 함수가 그 아래에
+    # 작업 폴더를 만들고, Windows git 은 경로가 길면 `'$GIT_DIR' too big` 으로 만들기를 거부한다.
     live_tests = [
         test_live_opencode_adopter_survives_pm_update_then_operates,
         test_live_claude_adopter_survives_pm_update_then_operates,
     ]
-    for fn in live_tests:
-        dest = tmp_path / fn.__name__
+    for index, fn in enumerate(live_tests):
+        dest = tmp_path / str(index)
         dest.mkdir()
-        try:
+        # 준비 단계(설치·갱신·작업 폴더) 실패는 그대로 올라와 이 시험을 실패시킨다.
+        with pytest.raises(_LlmReached):
             fn(dest)
-        except AssertionError:
-            # 라이브 LLM 을 stub 으로 막아 발행 단언은 실패할 수 있다 — 여기선 env 만 관심.
-            pass
 
-    assert llm_envs, "LLM subprocess 호출이 한 건도 포착되지 않음 — spy 배선 오류"
+    assert len(llm_envs) == len(live_tests)
     for env in llm_envs:
         assert env is not None, "LLM 호출에 env 미전달(부모 통째 상속) — 격리 깨짐"
         # 어떤 누수 변수의 부모(sentinel) 값도 LLM env 로 새지 않는다(_LEAK_VARS 순회).
