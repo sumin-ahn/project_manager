@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from pm_engine.app import slot_resolution
 from pm_engine.cli import cluster_close, finish_record
@@ -17,14 +16,9 @@ from pm_engine.infra import areas_store, finish_store, lease_store, pm_paths
 # 와 같은 pm_paths detector를 명시 Home으로 호출한다. 판정 오류는 전파하고, 쓰기 단계 전에
 # 등록 worktree 오실행을 거부한다.
 
-def _pm_home_misanchor(home) -> Path | None:
-    """명시 Home으로 등록 worktree를 검사한다. 판정 실패는 전파한다."""
-    return pm_paths._pm_home_worktree_misanchor(home)
-
-
 def _guard_worktree_misanchor(home) -> bool:
     """쓰기-경로 진입 가드 — 오실행이면 fail-loud 후 True(차단), 아니면 False(통과)."""
-    pm_home = _pm_home_misanchor(home)
+    pm_home = pm_paths._pm_home_worktree_misanchor(home)
     if pm_home is None:
         return False
     print(

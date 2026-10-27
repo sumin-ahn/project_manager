@@ -355,7 +355,7 @@ def test_pm_adr_refines_no_trigger(adr, wiki, tmp_path, monkeypatch, capsys):
     assert "모순 lint" not in capsys.readouterr().err
 
 
-def test_pm_adr_trigger_failsoft(adr, wiki, monkeypatch, capsys):
+def test_pm_adr_trigger_failure_propagates(adr, wiki, monkeypatch, capsys):
     """모순 lint 실행 예외는 advisory 생략으로 접지 않고 전파한다."""
     decisions, log = wiki
     monkeypatch.setattr(adr, "REPO", decisions.parents[2])

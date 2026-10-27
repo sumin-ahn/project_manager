@@ -400,7 +400,7 @@ def test_unresolvable_integration_branch_stops_the_judgment(tf, tmp_path):
 
 def test_cli_takes_exactly_one_close_target(tf, monkeypatch, capsys):
     """완료 기록 대상은 하나다 — 둘 다 주거나 둘 다 없으면 거부한다(부작용 앞)."""
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
     for argv in ([], [_TICKET, "--cluster", _CLUSTER]):
         with pytest.raises(SystemExit) as excinfo:
             ticket_finish_cli.main(pm_paths.home_at(REPO), argv)
@@ -412,7 +412,7 @@ def test_reconcile_cli_requires_explicit_repo_and_slot_and_rejects_task(
     tf, monkeypatch, capsys,
 ):
     """Recovery selector는 제품 repo+slot 둘 다 명시하며 task/암묵 해소를 받지 않는다."""
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
     cases = (
         ["--cluster", _CLUSTER, "--reconcile-integrated", "--repo", "code"],
         ["--cluster", _CLUSTER, "--reconcile-integrated", "--task", "main"],
@@ -657,7 +657,7 @@ class _CloseEnv:
             dod_block_fn=lambda tid: None,
             residual_block_fn=lambda tid: None,
             self_axis_block_fn=lambda tid: None,
-            affected_domain_fn=lambda tid: None,
+            affected_domain_fn=lambda tid: [],
         )
         values.update(overrides)
         return cls(pm_paths.home_at(self.home), **values)
@@ -793,7 +793,7 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     # 판정을 그대로 부르므로(사본 0) 세션이 해소돼야 각 케이스가 재려던 축만 남는다 — 세션
     # 미해소는 소유 거부라는 다른 축이다.
     monkeypatch.setenv("PM_SESSION_NAME", "t")
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
     return _CloseEnv(tf, home, code, slot, board_dir, ticket)
 
 
@@ -2673,7 +2673,7 @@ def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
     _write_cluster_ledger(board_dir, tickets=(_MEMBER_A,),
                           base_branch=_UNBORN_BRANCH, branch=_UNBORN_BRANCH)
     monkeypatch.setenv("PM_SESSION_NAME", "t")
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
     return root
 
 
@@ -2746,7 +2746,7 @@ def test_fresh_single_clone_home_requires_explicit_binding(
         run_board_fn=_run_board,
         dod_block_fn=lambda tid: None,
         self_axis_block_fn=lambda tid: None,
-        affected_domain_fn=lambda tid: None,
+        affected_domain_fn=lambda tid: [],
     )
     closer = cluster_close.ClusterCloser(
         pm_paths.home_at(root), _CLUSTER, finisher=finisher, board_py=board_py,

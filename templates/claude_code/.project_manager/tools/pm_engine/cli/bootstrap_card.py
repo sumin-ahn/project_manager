@@ -118,11 +118,6 @@ _CODEX_CARD_SECTION = "\n".join(
 )
 
 
-def _safe_command_card(home, task_name, *, environment=None) -> str:
-    """부트스트랩 출력 끝에 붙일 커맨드 카드를 렌더한다. 렌더 실패는 전파한다."""
-    return _build_command_card_markdown(home, task_name, environment=environment)
-
-
 def _build_command_card_markdown(home, task_name, *, environment=None) -> str:
     """이 세션이 쓸 전 커맨드를 정체성 채운 완성형으로 dump 하는 커맨드 카드.
 

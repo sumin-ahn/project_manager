@@ -37,11 +37,6 @@ def emit_contradiction_advisory(
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-def _resolve_default_author(home) -> "str | None":
-    """실행 패키지와 현재 Home으로 기본 작성자를 해소한다. 해소 실패는 전파한다."""
-    return lease_store.identity_tag(home)
-
-
 def _parse_id_list(tokens: list[str]) -> list[int]:
     """`--amends ADR-NNNN --amends 62` 또는 콤마 묶음(`--related a,b`)을 정수/문자열로 파싱."""
     out: list[int] = []
@@ -115,7 +110,7 @@ def cmd_new(home, args: argparse.Namespace) -> int:
     # --author 생략 시 기존 identity 해소 체인 재사용(board.identity_tag —
     # local.conf identity.user → git config user.email → 세션 토큰). 명시 인자 우선·해소 불가(None)면
     # 현행(빈 값 → lint_adr_author advisory) 유지 — 새 해소 로직 신설 0.
-    author = args.author or _resolve_default_author(home) or ""
+    author = args.author or lease_store.identity_tag(home) or ""
 
     issuer = adr_issue.AdrIssuer(
         decisions_dir=pm_paths.decisions_dir(home),

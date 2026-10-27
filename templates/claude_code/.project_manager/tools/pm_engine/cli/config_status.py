@@ -570,10 +570,8 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     # 저장소 공용 git 값(부모 기록·stash·부모 비교 ref)은 조회 1회에 한 번만 읽는다.
     repo_reads: dict = {}
 
-    def _slot_git_line(slot: str, *, readonly: bool) -> "str | None":
+    def _slot_git_line(slot: str, *, readonly: bool) -> str:
         status = worktree_status.slot_git_status(home, slot, repo_reads=repo_reads)
-        if not isinstance(status, dict):
-            return None
         summary = _slot_git_summary(status, readonly=readonly)
         folders = status.get("folders")
         return summary + (" · 폴더 " + ", ".join(folders) if folders is not None else "")
@@ -599,8 +597,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
         except worktree_records.SlotFoldersRefused as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
-        git_part = git_line if git_line is not None else "(조회 불가)"
-        print(f"      ↳ 보유 task={task_disp} · git: {git_part}")
+        print(f"      ↳ 보유 task={task_disp} · git: {git_line}")
 
     # 슬롯 없는 보존 브랜치 — 슬롯 제거의 삭제 판정이 남긴 브랜치(공용 git 설정 기록). 있을 때만 절을 낸다.
     preserved = branch_store.preserved_branches(home)
@@ -621,7 +618,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     #   - stale = 장부 등록·worktree 없음(dir 삭제/prune).
     #   - incomplete = provisional("creating") — worktree add 후 확정 전 중단된 create 흔적.
     recon = pm_engine.app.worktree_pool.reconcile_worktrees(home)
-    if recon is not None and (recon.orphans or recon.stale or recon.incomplete):
+    if recon.orphans or recon.stale or recon.incomplete:
         print("## ⚠ worktree × 장부 drift (조회 전용 — 자동삭제 안 함·정리는 사용자):")
         for w in recon.orphans:
             print(

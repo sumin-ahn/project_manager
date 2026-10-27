@@ -2630,7 +2630,7 @@ def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
     assert "보유 task=-" in svc2             # slot-모드 세션 → task 아님
 
 
-def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
+def test_status_slot_git_failure_propagates_after_task_axis(pc, monkeypatch, capsys):
     """slot_git_status 가 던지면 status 텍스트는 그 줄을 `(조회 불가)` 로 접지 않고 예외를 전파한다.
 
     장부 축(보유 task)은 예외 전에 이미 출력된다 — 실패 지점까지의 출력은 남는다."""
@@ -2709,7 +2709,7 @@ def test_status_no_drift_omits_section(pc, monkeypatch, capsys):
     assert "[orphan]" not in out and "[stale]" not in out and "[incomplete]" not in out
 
 
-def test_status_reconcile_failure_does_not_break_status(pc, monkeypatch, capsys):
+def test_status_reconcile_failure_propagates(pc, monkeypatch, capsys):
     """reconcile_worktrees 가 예외를 던지면 status 는 drift 절을 생략하지 않고 예외를 전파한다."""
     class _Boom(FakeWorktreePool):
         def reconcile_worktrees(self, *, git_runner=None):
@@ -4005,7 +4005,7 @@ def test_task_prefix_forwards_registered_repos_for_reserved_check(pc, monkeypatc
 
 
 def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, monkeypatch):
-    """등록 repo 해소는 `_registered_repos` 한 자리다 — 이 명령이 자기 사본으로 읽지 않는다.
+    """등록 repo 해소는 `areas_store.registered_repos` 한 자리다 — 이 명령이 자기 사본으로 읽지 않는다.
 
     사본이 남아 있으면 fail-soft 규칙(board 부재·속성 부재·조회 예외)이 자리마다 갈려, 같은
     이름이 `task new` 에서는 거부되고 여기서는 통과한다(또는 반대)."""
@@ -4014,10 +4014,10 @@ def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, mon
     seen: list = []
 
     def _spy(_home):
-        seen.append("_registered_repos")
+        seen.append("registered_repos")
         return ["svc"]
 
-    monkeypatch.setattr(config_slots, '_registered_repos', _spy)
+    monkeypatch.setattr(areas_store, 'registered_repos', _spy)
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
@@ -4026,12 +4026,12 @@ def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, mon
     )
 
     assert rc == 0
-    assert seen == ["_registered_repos"], "해소가 공용 헬퍼를 거치지 않았다(인라인 사본 잔존)"
+    assert seen == ["registered_repos"], "해소가 공용 헬퍼를 거치지 않았다(인라인 사본 잔존)"
     val = [call for call in wp.calls if call[0] == "_validate_task_name"]
     assert val and val[0][2] == ["svc"]
 
 
-def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc, monkeypatch):
+def test_task_prefix_propagates_registry_lookup_failure(pc, monkeypatch):
     """areas.md 읽기 실패는 `None` 으로 접지 않고 전파한다 — 예약패턴 검증을 완화한 채 저장하지 않는다."""
     def _raise(_home):
         raise OSError("areas broken")

@@ -636,10 +636,6 @@ class PmBootstrap:
             return None
         return fs.read_text_shared(self._log_file, encoding="utf-8")
 
-    def _current_user(self) -> str | None:
-        """명시 Home의 identity.user, git email 순서로 사용자를 해소한다."""
-        return lease_store.user_name(self._home)
-
     def _handoff_commit_author(self, handoff_header: str) -> str | None:
         """직전 handoff entry 헤더 줄을 담은 commit 의 author email (pickaxe).
 
@@ -682,7 +678,7 @@ class PmBootstrap:
         author = self._handoff_commit_author(header)
         if not author:
             return None
-        current = self._current_user()
+        current = lease_store.user_name(self._home)
         if not current:
             return None
         if current == author:
@@ -699,7 +695,7 @@ class PmBootstrap:
           (자기 컨텍스트는 pm_state/log 몫). `--done` 으로 release 된 idle 슬롯 섹션은
           활성 집합에 없어 배제된다(MF-1·codex·stale idle 노출 0). 활성 집합 판정불가(장부 부재)면
           필터 no-op(현행 표시 보존). 남는 타 슬롯 0개면 None(절 생략).
-        - 대시보드 부재/파싱 실패 → `_lease_others` 폴백(`{"mode":"lease","others":[…]}`).
+        - 대시보드 부재/읽기 실패(OSError) → `_lease_others` 폴백(`{"mode":"lease","others":[…]}`).
         - 어느 쪽도 타 PM 0개 → None(절 생략·graceful).
         """
         dash_file = pm_paths._dashboard_file(self._home)
@@ -710,15 +706,14 @@ class PmBootstrap:
                 text = None
             if text is not None:
                 sections = dashboard.parse_dashboard_sections(text)
-                if sections is not None:
-                    bound = self._task_name
-                    active = bootstrap_history._active_leased_sessions(self._home)
-                    others = [
-                        {"session": key, "body": body}
-                        for key, body in sections
-                        if key != bound and (active is None or key in active)
-                    ]
-                    return {"mode": "dashboard", "others": others} if others else None
+                bound = self._task_name
+                active = bootstrap_history._active_leased_sessions(self._home)
+                others = [
+                    {"session": key, "body": body}
+                    for key, body in sections
+                    if key != bound and (active is None or key in active)
+                ]
+                return {"mode": "dashboard", "others": others} if others else None
         lease_others = bootstrap_history._lease_others(self._home, self._task_name)
         return {"mode": "lease", "others": lease_others} if lease_others else None
 
@@ -813,14 +808,13 @@ class PmBootstrap:
                 state_path=self._pm_state_display_path(),
             )
             print(markdown)
-            card = bootstrap_card._safe_command_card(
+            card = bootstrap_card._build_command_card_markdown(
                 self._home,
                 self._task_name,
                 environment=getattr(self, "_command_environment", None),
             )
-            if card:
-                print()
-                print(card)
+            print()
+            print(card)
             if task_info is not None:
                 task_info["slot_set"] = self._task_slot_set_rows(
                     task_info["name"], leases=task_slot_leases

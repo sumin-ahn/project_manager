@@ -328,7 +328,7 @@ def test_anchor_pm_home_passes(bootstrap, monkeypatch, tmp_path, capsys):
 
 
 
-def test_anchor_guard_internal_raise_failsoft_passes(bootstrap, monkeypatch, tmp_path, capsys):
+def test_anchor_guard_internal_raise_propagates(bootstrap, monkeypatch, tmp_path, capsys):
     """앵커 가드(board 헬퍼)가 **내부 raise** 하면 통과값으로 접지 않고 전파한다(dump 전에 멈춘다)."""
     inst = _make(bootstrap, tmp_path, board=_RaisingBoard(),
                  worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)

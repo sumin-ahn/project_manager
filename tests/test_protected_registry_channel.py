@@ -1157,7 +1157,7 @@ def _stub_task_run(inst, monkeypatch, tmp_path, leases):
     monkeypatch.setattr(inst, "_collect_user_continuity", lambda _log: None)
     monkeypatch.setattr(inst, "_collect_handoff_context", lambda _log=None: None)
     monkeypatch.setattr(inst, "_collect_dashboard_others", lambda: None)
-    monkeypatch.setattr(bootstrap_card, "_safe_command_card", lambda _home, _task_name, *, environment=None: None)
+    monkeypatch.setattr(bootstrap_card, "_build_command_card_markdown", lambda _home, _task_name, *, environment=None: "")
 
 
 class _Lease:

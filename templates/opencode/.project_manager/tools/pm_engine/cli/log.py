@@ -179,11 +179,6 @@ def cmd_snapshot(home, args: argparse.Namespace) -> int:
     return 0
 
 
-def _registered_repos(home) -> set[str]:
-    """예약 task 판정용 등록 repo를 해소한다. areas.md 판독 실패는 전파한다."""
-    return areas_store.registered_repos(home)
-
-
 def cmd_checkpoint(home, args: argparse.Namespace) -> int:
     """checkpoint 골격 append. compaction은 boundary/phase marker로 경계당 1건만 허용한다."""
     task = getattr(args, "task", None)
@@ -200,7 +195,7 @@ def cmd_checkpoint(home, args: argparse.Namespace) -> int:
         task = identity_name
     if task is not None:
         try:
-            identity_args.validate_task_name(task, _registered_repos(home))
+            identity_args.validate_task_name(task, areas_store.registered_repos(home))
         except identity_args.InvalidTaskName as exc:
             print(
                 f"[중단] {exc} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"

@@ -587,7 +587,7 @@ class PmHandoff:
         )
         return False
 
-    def _ensure_task_pm_state(self, task: str) -> bool:
+    def _ensure_task_pm_state(self, task: str) -> None:
         """task pm_state가 존재함을 보장한다.
 
         정상 경로에서는 bootstrap의 `task_lifecycle.bind_task`가 task 생성/재개 시 이미 state를
@@ -595,7 +595,7 @@ class PmHandoff:
         생성 로직을 복제하지 않고 worktree_pool의 단일 primitive만 소비한다.
         """
         if self._pm_state_file.exists():
-            return True
+            return
 
         try:
             self._pm_state_file = Path(task_store.ensure_task_pm_state(self._home, task))
@@ -606,7 +606,6 @@ class PmHandoff:
             )
             raise
         print(f"  ✓ 구 task pm_state backfill ({self._pm_state_file})")
-        return True
 
     # ── slot 대시보드 자기 섹션 overwrite step ───────────
 
@@ -805,8 +804,8 @@ class PmHandoff:
         # task state 보장/차수 추론은 회귀·출하 게이트를 통과한 뒤, log/dashboard 등 첫 영속 변경
         # **전**에 끝낸다(MF-b). 구 task backfill 실패 시 외부 상태는 아직 무접촉이라 재시도해도
         # log 중복이 생기지 않는다. dry-run은 state를 만들지 않되 기존 state에서 같은 추론을 한다.
-        if not dry_run and owns_task_state and not self._ensure_task_pm_state(task):
-            return 1
+        if not dry_run and owns_task_state:
+            self._ensure_task_pm_state(task)
         if not self._pm_state_file.exists():
             print(
                 f"\n[중단] task pm_state가 없다: {self._pm_state_file} — "

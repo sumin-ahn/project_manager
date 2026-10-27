@@ -2951,7 +2951,7 @@ def test_handoff_reports_clean_raw_ledger(hf, monkeypatch, tmp_path, capsys):
     assert "⚠ 미마감 raw" not in out
 
 
-def test_handoff_raw_sweep_is_failsoft_on_corrupt_ledger(hf, monkeypatch, tmp_path, capsys):
+def test_handoff_raw_sweep_propagates_corrupt_ledger_read_failure(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 손상 장부는 '미마감 0건'으로 접지 않고 판독 실패를 전파한다."""
     ledger = tmp_path / "raw_outputs.json"
     ledger.write_text("{not json", encoding="utf-8")
@@ -3004,7 +3004,7 @@ def test_handoff_stays_silent_about_peers_when_there_are_none(hf, monkeypatch, t
     assert "사본 장부" not in out
 
 
-def test_peer_ledger_line_is_failsoft_on_a_corrupt_copy(hf, monkeypatch, tmp_path, capsys):
+def test_peer_ledger_line_propagates_corrupt_copy_read_failure(hf, monkeypatch, tmp_path, capsys):
     """[6b/7]: 손상된 사본 장부는 건수 미상으로 건너뛰지 않고 판독 실패를 전파한다."""
     broken = tmp_path / "broken" / "raw_outputs.json"
     broken.parent.mkdir()

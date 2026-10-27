@@ -496,24 +496,15 @@ def cmd_release(
     return 0
 
 
-def _registered_repos(home) -> set[str]:
-    """등록 repo 이름 — task 명 예약패턴(`<repo>_<N>`) 판별 근거. areas.md 에서 해소한다.
-
-    areas.md 판독 실패는 전파한다. 해소 규칙이 이 한 자리라 `task new`(생성)와
-    `alloc`/`worktree add --task`(기바인딩 요구)가 같은 근거로 판정한다.
-    """
-    return areas_store.registered_repos(home)
-
-
 def _validate_prebound_task(home, task: str) -> int:
     """task 명 검증(예약패턴·traversal) + 기바인딩 요구 — `alloc`/`worktree add --task` 공용.
 
     task 이름이 lease session 으로 **기록**되는 write-capable 경로의 선검증이자,
     정체성 *생성*(`task new`·bootstrap)이 슬롯 부착보다 먼저라는 순서를 강제한다. 통과면 0,
-    실패면 1(진단은 이 함수가 stderr 로 출력). 예약패턴 판별 근거는 `_registered_repos` 하나가
+    실패면 1(진단은 이 함수가 stderr 로 출력). 예약패턴 판별 근거는 `areas_store.registered_repos` 하나가
     해소한다.
     """
-    registered = _registered_repos(home)
+    registered = areas_store.registered_repos(home)
     try:
         task_rules._validate_task_name(task, registered)
     except worktree_records.InvalidTaskName as exc:
@@ -585,7 +576,7 @@ def cmd_alloc(
     `<repo>_<N>` 예약(기계판별 구멍)을 fail-loud rc1 하고, **task 는 기바인딩이어야 한다**를
     강제한다 — 미바인딩이면 "먼저 `pm-config task new <task>` 또는 `/pm-bootstrap --task <task>` 으로
     task 를 만들라" 안내(정체성 *생성*은 그 둘 소관·alloc은 이미 존재하는 task 에 슬롯을 붙일 뿐).
-    예약패턴 판별 근거(등록 repo)는 `_registered_repos` 가 areas.md 에서 해소한다(판독 실패는 전파).
+    예약패턴 판별 근거(등록 repo)는 `areas_store.registered_repos` 가 areas.md 에서 해소한다(판독 실패는 전파).
 
     worktree_pool의 실제 함수 seam으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
     """

@@ -88,7 +88,7 @@ class TicketFinisher:
         run_git_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         board_count_fn: Callable[[], int] | None = None,
         ticket_title_fn: Callable[[str], str] | None = None,
-        affected_domain_fn: Callable[[str], list[tuple[str, bool | None]] | None] | None = None,
+        affected_domain_fn: Callable[[str], list[tuple[str, bool | None]]] | None = None,
         run_git_stdout_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         stage_scope_fn: Callable[[str], finish_rules.StageScope] | None = None,
         status_entries_fn: Callable[[], tuple[tuple[str, str], ...]] | None = None,
@@ -872,10 +872,10 @@ class TicketFinisher:
         """
         return finish_store.get_ticket_title(self._home, ticket_id)
 
-    def _default_affected_domain(self, ticket_id: str) -> list[tuple[str, bool | None]] | None:
+    def _default_affected_domain(self, ticket_id: str) -> list[tuple[str, bool | None]]:
         """ticket touches ∩ domain covers 로 영향받는 페이지 (title, stale) 목록 (soft 알림).
 
-        페이지 적재·매칭 실패 → None (조용히 skip). `doc_affected.pages_for_touches` 재사용.
+        페이지 적재·매칭 예외는 전파한다. `doc_affected.pages_for_touches` 재사용.
         """
         return finish_context.affected_domain_titles(self._home, ticket_id)
 
@@ -1368,17 +1368,15 @@ class TicketFinisher:
                 staged_out)
 
     def _notify_affected_domain(self, ticket_id: str) -> None:
-        """이 ticket 이 건드린 영역의 domain 페이지를 soft 알림으로 출력한다 (비차단).
+        """이 ticket 이 건드린 영역의 domain 페이지를 soft 알림으로 출력한다.
 
         영향 페이지가 stale(covers 코드가 page updated 후 커밋)이면 그 줄 앞에
-        `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. domain 레이어 부재(None)는 한 줄
-        안내, 영향 0 도 한 줄 안내만 낸다. dry-run/실행 동일(정보 출력만). 판정 예외는 전파한다.
+        `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. 영향 0 은 한 줄 안내만 낸다.
+        dry-run/실행 동일(정보 출력만). 판정 예외는 전파한다.
         """
-        print("\n[domain] 영향받는 domain 페이지 (soft·비차단):")
+        print("\n[domain] 영향받는 domain 페이지 (soft):")
         affected = self._affected_domain_fn(ticket_id)
-        if affected is None:
-            print("  (domain 레이어 없음 — skip)")
-        elif not affected:
+        if not affected:
             print("  (영향 domain 페이지 없음)")
         else:
             # 각 영향 페이지: stale(True) 줄 앞에 ⚠ — fresh/unknown 은 무표시.

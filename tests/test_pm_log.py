@@ -296,7 +296,7 @@ def _three_task_pm_home(mod, monkeypatch, tmp_path, tasks: list[dict]) -> Path:
         state = pm_home / ".project_manager" / ".local" / "tasks" / name / "pm_state.md"
         state.parent.mkdir(parents=True)
         state.write_text(f"# {name}\n", encoding="utf-8")
-    monkeypatch.setattr(pm_engine.cli.log, "_registered_repos", lambda _home: set())
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: set())
     monkeypatch.chdir(pm_home)
     return pm_home
 
@@ -389,7 +389,7 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
         "tasks": [{"name": "foo_1", "prefix": None, "session": "s-foo", "started": "t"}],
     }
     ledger.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(pm_engine.cli.log, "_registered_repos", lambda _home: set())
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: set())
 
     rc = pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task=None, trigger='manual', session_id='s-foo', breadcrumb=False))
     entries = log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]
@@ -649,15 +649,14 @@ def test_checkpoint_parser_default_manual_appends_entry(tmp_path, monkeypatch):
     assert "checkpoint | (task:orch-dev-T0547) — manual" in current.read_text(encoding="utf-8")
 
 
-def test_registered_repos_non_utf8_areas_failure_is_fail_soft(monkeypatch, tmp_path):
-    'areas 파싱 실패는 None으로 강등하지 않고 전파한다(예약패턴 검증을 완화하지 않는다).'
+def test_checkpoint_propagates_non_utf8_areas_failure(monkeypatch, tmp_path):
+    'checkpoint 의 예약패턴 검증은 areas 판독 실패를 강등하지 않고 전파한다.'
     home = pm_paths.home_at(tmp_path)
-    mod = _load_module()
     def broken(_home):
         raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
     monkeypatch.setattr(areas_store, 'registered_repos', broken)
     with pytest.raises(UnicodeDecodeError):
-        pm_engine.cli.log._registered_repos(home)
+        pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task="job"))
 
 
 # ── 소유 PM 홈 유도 (T-0888) ────────────────────────────────────────────────

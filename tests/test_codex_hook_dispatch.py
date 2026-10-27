@@ -1421,7 +1421,7 @@ def test_side_effect_only_child_runs_but_never_answers(dispatcher, tmp_path):
                                     features=(silent,)) == {}
 
 
-def test_side_effect_only_failure_never_becomes_a_warning(dispatcher, tmp_path):
+def test_side_effect_only_failure_becomes_a_fallback_warning(dispatcher, tmp_path):
     """부작용 자식의 기동 실패·시간 초과는 침묵하지 않고 원인을 담은 폴백 경고가 된다.
 
     기록이 아예 남지 않는 실패라 `{}` 로 접으면 압축 checkpoint 가 빠진 사실이 보이지 않는다.

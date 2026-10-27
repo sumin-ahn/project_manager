@@ -71,7 +71,7 @@ def _neutralize_misanchor_guard(tf, monkeypatch):
     가드가 아니라 main() 의 정체성/모호 게이트 등 orthogonal 로직을 검증하므로, 오실행 감지를
     None(미해소)로 격리해 가드를 통과시킨다. 가드 자체의 검증은 전용 파일
     `test_board_worktree_misanchor_guard.py` 가 담당한다."""
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
 
 
 def _git_seed(root: Path) -> None:
@@ -330,7 +330,7 @@ def _green_pytest(passed: int = 100):
 def _make_finisher(tf, tmp_path, *, affected):
     """run() 을 hermetic 하게 돌릴 TicketFinisher — 모든 subprocess·board DI.
 
-    affected: _affected_domain_fn 대역(영향 (title, stale) 목록·[]·None). status.md 는
+    affected: _affected_domain_fn 대역(영향 (title, stale) 목록·[]). status.md 는
     이 도구가 안 건드린다(ADR-0023) → log_file 만 tmp 로 둔다.
     """
     log_file = tmp_path / "log.md"
@@ -370,17 +370,17 @@ def test_soft_step_no_affected_pages_prints_none_and_completes(tf, tmp_path, cap
     assert "[완료] T-1234 기록 완료." in out
 
 
-def test_soft_step_domain_absent_graceful_skip(tf, tmp_path, capsys):
-    """domain 레이어 부재(None) → 조용히 skip·완료 진행(솔로/신규 clone 무영향·rc 0)."""
-    finisher = _make_finisher(tf, tmp_path, affected=None)
+def test_soft_step_domain_absent_prints_no_affected_pages(tf, tmp_path, capsys):
+    """domain 레이어 부재는 빈 목록으로 온다 → 영향 0 문구·완료 진행(솔로/신규 clone 무영향·rc 0)."""
+    finisher = _make_finisher(tf, tmp_path, affected=[])
     rc = finisher.run("T-1234", section=None, dry_run=False)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "(domain 레이어 없음 — skip)" in out
+    assert "(영향 domain 페이지 없음)" in out
     assert "[완료] T-1234 기록 완료." in out
 
 
-def test_soft_step_exception_does_not_block_completion(tf, tmp_path, capsys):
+def test_soft_step_exception_propagates_before_completion(tf, tmp_path, capsys):
     """soft 알림 함수의 예외는 삼키지 않고 전파한다(영향 페이지 조회 실패를 '영향 없음'으로 접지 않는다)."""
     def boom(_tid):
         raise RuntimeError("domain 조회 폭발")
@@ -768,7 +768,7 @@ def test_soft_step_marks_stale_affected_page_with_warning(tf, tmp_path, capsys):
     assert "[완료] T-1234 기록 완료." in out
 
 
-def test_affected_domain_titles_stale_exception_yields_unknown(tf, tmp_path, monkeypatch):
+def test_affected_domain_titles_stale_exception_propagates(tf, tmp_path, monkeypatch):
     """page_stale 예외는 전파한다 — 그 페이지를 stale=None(무표시)으로 접지 않는다."""
     class _FakeDomain:
         @staticmethod
@@ -1147,7 +1147,7 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
         run_git_fn=lambda args: (0, ""),
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "테스트 티켓",
-        affected_domain_fn=lambda tid: None,
+        affected_domain_fn=lambda tid: [],
         log_file=tmp_path / "log.md",
     )
     rc = finisher.run("T-1234", section=None, dry_run=False, skip_pytest=True)
@@ -1470,7 +1470,7 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
         run_git_at_fn=lambda cwd, args: (worktree_git.append((cwd, args)) or (0, "")),
         board_count_fn=lambda: 0,
         ticket_title_fn=lambda ticket_id: "two git",
-        affected_domain_fn=lambda ticket_id: None,
+        affected_domain_fn=lambda ticket_id: [],
         status_entries_fn=lambda: (status_calls.append(("home", home)) or
                                    (("M ", ".project_manager/wiki/log/current.md"),)),
         status_entries_at_fn=lambda cwd: (status_calls.append(("task", cwd)) or
@@ -1525,7 +1525,7 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
         run_git_fn=lambda args: (mutations.append(args) or (0, "")),
         run_git_at_fn=lambda cwd, args: (mutations.append((cwd, args)) or (0, "")),
         board_count_fn=lambda: 0, ticket_title_fn=lambda tid: "x",
-        affected_domain_fn=lambda tid: None, log_file=home / "log.md",
+        affected_domain_fn=lambda tid: [], log_file=home / "log.md",
         task_workspace=worktree,
     )
     assert finisher.run("T-0437", section=None, dry_run=True, skip_pytest=True) == 0
@@ -1569,7 +1569,7 @@ def test_single_ticket_completion_never_deletes_a_branch(tf, tmp_path, monkeypat
         run_git_at_fn=lambda cwd, args: (mutations.append(list(args)) or (0, "")),
         board_count_fn=lambda: 0,
         ticket_title_fn=lambda ticket_id: "no branch delete",
-        affected_domain_fn=lambda ticket_id: None,
+        affected_domain_fn=lambda ticket_id: [],
         status_entries_fn=lambda: (),
         status_entries_at_fn=lambda cwd: (),
         residual_block_fn=lambda ticket_id: None,
@@ -2010,7 +2010,7 @@ def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
         run_git_at_fn=lambda cwd, args: (0, ""),
         board_count_fn=lambda: 0,
         ticket_title_fn=lambda ticket_id: "separated plans",
-        affected_domain_fn=lambda ticket_id: None,
+        affected_domain_fn=lambda ticket_id: [],
         # 홈 계획은 스코프 밖 잔여 1건(남의 wiki WIP) · 코드 트리 계획은 깨끗하다.
         status_entries_fn=lambda: (("M ", ".project_manager/wiki/roadmap.md"),),
         status_entries_at_fn=lambda cwd: (),
