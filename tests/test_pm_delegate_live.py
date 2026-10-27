@@ -150,7 +150,9 @@ def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path | None, harness:
     `cluster` 를 주면 묶음 리뷰 경로다 — 프롬프트는 엔진이 조립하고 `focus` 파일이 검토 중점으로
     실린다(`--prompt-file` 없음). reply 는 stdout(print)로 나오므로 capsys 로 회수한다.
     rc·reply·stderr 반환."""
-    monkeypatch.setattr(conf_store, 'local_config', lambda _home: {"delegate.enabled": "true"})
+    # test.cmd 도 함께 싣는다 — 회수의 stage-exit 대조(regression._test_cmd)가 같은 local_config 를 읽는다.
+    monkeypatch.setattr(conf_store, 'local_config',
+                        lambda _home: {"delegate.enabled": "true", "test.cmd": _CROSS_FULL_COMMAND})
     if cluster:
         target = ["--cluster", cluster, "--focus", str(focus)]
     else:

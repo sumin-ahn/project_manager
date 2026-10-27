@@ -70,11 +70,12 @@ from _manager_home import install_known_ctx_io
 # 작업 폴더를 만든 채택자 픽스처는 full wave 와 공용이다([[T-0956]]).
 from test_release_wave import (
     _MULTIREPO_REPOS, _MULTIREPO_TICKET, _RELEASE_WAVE_TASK, _WAVE_FILE, _WAVE_INTEGRATION_SLOT,
-    _WAVE_WORK_SLOT, _assert_multirepo_wave_side_effects, _baseline_adopter, _count_marked_tests,
+    _WAVE_WORK_SLOT, _assert_multirepo_wave_side_effects, _count_marked_tests,
     _guided_adopter,
     _import_multipm_home, _multirepo_wave_commands, _multirepo_wave_home, _pm_config,
 )
 from pm_engine.cli import import_cmd
+from test_fresh_adopter_runtime_smoke import _baseline_adopter
 
 REPO = Path(__file__).resolve().parents[1]
 

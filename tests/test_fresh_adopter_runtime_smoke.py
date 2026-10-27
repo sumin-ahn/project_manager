@@ -86,6 +86,69 @@ def _live_env(model: str) -> dict[str, str]:
     return env
 
 
+def _baseline_adopter(dest: Path) -> None:
+    """설치한 채택자의 첫 커밋을 host 가 만든다 — 작업 폴더(bare clone)와 Codex 의 이후 커밋의 전제.
+
+    커밋 0개 원본으로는 작업 폴더를 만들 수 없다(`repo add` 가 빈 bare 를 거부·[[T-0956]]). throwaway
+    adopter에는 remote가 없고, 테스트 전용 identity도 repo config에 남기지 않는다.
+    """
+    commands = (
+        ["git", "-C", str(dest), "add", "--all"],
+        [
+            "git", "-C", str(dest),
+            "-c", "user.name=PM release fixture",
+            "-c", "user.email=pm-release-fixture@example.invalid",
+            "commit", "--no-gpg-sign", "-m", "release fixture baseline",
+        ],
+    )
+    for command in commands:
+        proc = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False,
+        )
+        assert proc.returncode == 0, (
+            f"adopter baseline 실패: {' '.join(command)}\n"
+            f"stdout={proc.stdout[-1200:]}\nstderr={proc.stderr[-1200:]}"
+        )
+    assert (dest / ".git" / "index").is_file()
+    head = subprocess.run(
+        ["git", "-C", str(dest), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert head.returncode == 0 and head.stdout.strip()
+
+
+def _guide_folders(dest: Path, *, task: str, folders: int) -> None:
+    """설치된 채택자에 기준 커밋을 만들고 안내 명령으로 task 의 작업 폴더 `folders` 개를 만든다.
+
+    사람이 승인값을 주는 단계(`worktree add --user-ack`)라 라이브 LLM 이 아니라 host 가 실행한다.
+    """
+    _baseline_adopter(dest)
+    pm_config = str(dest / ".project_manager" / "tools" / "pm_config.py")
+    repo = dest.name
+    steps = [("worktree", "add", repo, "--user-ack", repo)] * folders
+    steps += [("task", "new", task)]
+    steps += [("alloc", repo, "--task", task)] * folders
+    # 작업 폴더 등록 owner 는 사람 신원(`git config user.email`)에서 온다 — 사용자 git 설정이 없는
+    # 환경에서도 같게 돌도록 그 값을 이 자식 프로세스 환경으로만 준다(repo config 에 남기지 않는다).
+    environment = {**os.environ, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.email",
+                   "GIT_CONFIG_VALUE_0": "pm-release-fixture@example.invalid"}
+    for step in steps:
+        proc = subprocess.run(
+            [sys.executable, pm_config, *step], cwd=dest, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            env=environment,
+        )
+        assert proc.returncode == 0, (
+            f"안내 경로 {' '.join(step)} rc={proc.returncode}\n"
+            f"stdout={proc.stdout[-1200:]}\nstderr={proc.stderr[-1200:]}"
+        )
+
+
+# 발행 귀속 task — 작업 폴더 준비(사람 승인 단계)는 host 가 `_guide_folders` 로 마친다.
+SMOKE_TASK = "smoke"
+
+
 def _make_prompt(entry_doc: str) -> str:
     """adopter 의 진입문서(`entry_doc`)만 보고 board 도구로 ticket 을 발행하라는 프롬프트.
 
@@ -94,7 +157,8 @@ def _make_prompt(entry_doc: str) -> str:
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
         "works. Then create exactly one ticket titled 'runtime smoke' using the project's board "
-        "tool (touches README.md). After it is created, reply with the new ticket id."
+        f"tool (touches README.md) under the existing task '{SMOKE_TASK}', whose work folder is "
+        "already allocated. After it is created, reply with the new ticket id."
     )
 
 
@@ -205,6 +269,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     dev_text = (dest / ".opencode" / "agents" / "developer.md").read_text(encoding="utf-8")
     assert install_rules.OPENCODE_MODEL_TOKEN not in dev_text, \
         "pm_update 후 .opencode/agents 에 리터럴 모델 토큰 잔존(@render leak·중화 안 됨)"
+    _guide_folders(dest, task=SMOKE_TASK, folders=1)
     # 2) post-update 운영성: 실 opencode 가 update 후 AGENTS.md 로 ticket 발행.
     open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
     before = {p.name for p in open_dir.glob("T-*.md")}
@@ -249,6 +314,7 @@ def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
     import re as _re
     assert not _re.search(r"\{\{[A-Z_]+\}\}", dev_text), \
         "pm_update 재렌더 후 .claude/agents 에 미해소 토큰 잔존(leak)"
+    _guide_folders(dest, task=SMOKE_TASK, folders=1)
     # 2) post-update 운영성: 실 claude 가 update 후 CLAUDE.md 로 ticket 발행.
     open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
     before = {p.name for p in open_dir.glob("T-*.md")}

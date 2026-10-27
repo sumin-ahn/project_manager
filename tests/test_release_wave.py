@@ -45,6 +45,8 @@ from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run
 # 런타임 smoke 와 헬퍼 공유(같은 tests/ 디렉토리·import) — adopter import·LLM env 격리·ticket 조회.
 # `_load_pm_import`(pm_import 모듈 로드)·`_real_models_runner` 스텁은 multi-repo 셋업 헬퍼에서도 재사용.
 from test_fresh_adopter_runtime_smoke import (
+    _baseline_adopter,
+    _guide_folders,
     _import_adopter,
     _live_env,
     _load_pm_import,
@@ -650,38 +652,6 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
             )
 
 
-def _baseline_adopter(dest: Path) -> None:
-    """설치한 채택자의 첫 커밋을 host 가 만든다 — 작업 폴더(bare clone)와 Codex 의 이후 커밋의 전제.
-
-    커밋 0개 원본으로는 작업 폴더를 만들 수 없다(`repo add` 가 빈 bare 를 거부·[[T-0956]]). throwaway
-    adopter에는 remote가 없고, 테스트 전용 identity도 repo config에 남기지 않는다.
-    """
-    commands = (
-        ["git", "-C", str(dest), "add", "--all"],
-        [
-            "git", "-C", str(dest),
-            "-c", "user.name=PM release fixture",
-            "-c", "user.email=pm-release-fixture@example.invalid",
-            "commit", "--no-gpg-sign", "-m", "release fixture baseline",
-        ],
-    )
-    for command in commands:
-        proc = subprocess.run(
-            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            check=False,
-        )
-        assert proc.returncode == 0, (
-            f"adopter baseline 실패: {' '.join(command)}\n"
-            f"stdout={proc.stdout[-1200:]}\nstderr={proc.stderr[-1200:]}"
-        )
-    assert (dest / ".git" / "index").is_file()
-    head = subprocess.run(
-        ["git", "-C", str(dest), "rev-parse", "--verify", "HEAD"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-    )
-    assert head.returncode == 0 and head.stdout.strip()
-
-
 def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) -> Path:
     """엔진 안내 경로 그대로 첫 작업 폴더를 만든 채택자([[T-0956]]).
 
@@ -690,26 +660,7 @@ def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) ->
     작업 폴더 `folders` 개를 보유한다. 카드 시험(folders=1)과 full wave(folders=2)가 함께 쓴다.
     """
     dest = _import_adopter(tmp_path, harness)
-    _baseline_adopter(dest)
-    pm_config = str(dest / ".project_manager" / "tools" / "pm_config.py")
-    repo = dest.name
-    steps = [("worktree", "add", repo, "--user-ack", repo)] * folders
-    steps += [("task", "new", task)]
-    steps += [("alloc", repo, "--task", task)] * folders
-    # 작업 폴더 등록 owner 는 사람 신원(`git config user.email`)에서 온다 — 사용자 git 설정이 없는
-    # 환경에서도 같게 돌도록 그 값을 이 자식 프로세스 환경으로만 준다(repo config 에 남기지 않는다).
-    environment = {**os.environ, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.email",
-                   "GIT_CONFIG_VALUE_0": "pm-release-fixture@example.invalid"}
-    for step in steps:
-        proc = subprocess.run(
-            [sys.executable, pm_config, *step], cwd=dest, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-            env=environment,
-        )
-        assert proc.returncode == 0, (
-            f"안내 경로 {' '.join(step)} rc={proc.returncode}\n"
-            f"stdout={proc.stdout[-1200:]}\nstderr={proc.stderr[-1200:]}"
-        )
+    _guide_folders(dest, task=task, folders=folders)
     return dest
 
 
