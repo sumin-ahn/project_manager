@@ -203,17 +203,11 @@ class _CommandEnvironment(NamedTuple):
 
 
 def _command_os_label(*, system: str | None = None, os_name: str | None = None) -> str:
-    """Resolve Windows/Linux/macOS/other without letting probes break bootstrap."""
+    """Resolve Windows/Linux/macOS/other from the platform and os-name probes (probe errors propagate)."""
     if system is None:
-        try:
-            system = platform.system()
-        except Exception:
-            system = ""
+        system = platform.system()
     if os_name is None:
-        try:
-            os_name = process._probe_os_name()
-        except Exception:
-            os_name = ""
+        os_name = process._probe_os_name()
     normalized = str(system).strip().lower()
     if str(os_name).strip().lower() == "nt" or normalized == "windows":
         return "windows"

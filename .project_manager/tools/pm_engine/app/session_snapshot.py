@@ -11,7 +11,6 @@ from pm_engine.app import session_identity
 from pm_engine.infra import session_store
 import shutil
 import subprocess
-import sys
 from pm_engine.infra import task_store
 from pm_engine.domain import ticket_rules
 import time
@@ -124,9 +123,9 @@ def _hearsay_section() -> str:
 def _git_status_counts(path: Path, timeout: float) -> tuple[int, int, int] | None:
     """``git --no-optional-locks status --porcelain`` 1회 — staged/미staged/untracked 개수.
 
-    git 부재·비-repo·timeout·기타 예외는 전부 흡수해 ``None`` — WIP 프로브 계약(전 예외 흡수)의
-    실행 지점이다. 이 함수는 절대 예외를 올리지 않는다(호출부가 subprocess 0 장부 조회와 섞이지
-    않게 이 함수 하나로 유일한 예외를 가둔다).
+    git 부재·예산 0 → ``None``(spawn 없음), rc≠0(비-repo 등) → ``None``. 프로브 예산 안의 시간 초과
+    (``subprocess.TimeoutExpired``)는 결과 미상이 정해진 상태라 ``None``(호출자가 "조회 불가"로
+    표기)이고, 그 밖의 실행 예외는 전파한다.
     """
     if timeout <= 0 or shutil.which("git") is None:
         return None
@@ -136,7 +135,7 @@ def _git_status_counts(path: Path, timeout: float) -> tuple[int, int, int] | Non
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, check=False,
         )
-    except Exception:  # noqa: BLE001 — WIP 프로브 전 예외 흡수 계약.
+    except subprocess.TimeoutExpired:  # 프로브 시간 계약 안의 결과 미상 시간 초과만 조회 불가로.
         return None
     if result.returncode != 0:
         return None
@@ -211,51 +210,24 @@ def _wip_slot_line(home, task: str, *, deadline: float, monotonic=time.monotonic
     return ctx_recovery._inflight_capped_line(prefix="- 슬롯 WIP: ", content=content, suffix="")
 
 
-def _section_query_failure_line(cause: str, *, heading: str, label: str) -> str:
-    """장부 조회 절의 skew 흡수 경계 표출 — 흡수해도 stderr 1줄 + payload 1줄로 표출한다.
-
-    장부·엔진 사본을 읽는 절(진행 중 작업·열린 todo)이 이 한 함수를 쓴다 — 접는 모양이 절마다
-    갈리면 압축 재주입의 줄 상한·heading 주입 방어가 절마다 따로 틀어진다.
-
-    복구 마커 호출(사유 등록 검증)은 흡수 지점인 호출부 except 핸들러가 직접 수행하고
-    (`skew` 로 그 판정을 받는다 — 정적 가드의 시야가 핸들러 본문이다), 여기서는 표출만 한다.
-    stderr 진단은 원문 그대로(다중행이어도 무방) 남기되, payload 에 실리는 절 본문은
-    ``_inflight_safe_text``로 정규화하고 ``_inflight_capped_line``으로 줄 상한을 지킨다
-    (예외 메시지에 개행이 섞이면 가짜 heading 을 주입할 수 있다).
-    """
-    print(f"경고: {label} 조회 실패 ({cause}) — 절을 1줄로 접음", file=sys.stderr)
-    line = ctx_recovery._inflight_capped_line(
-        prefix="- 조회 실패: ",
-        content=ctx_recovery._inflight_safe_text(cause),
-        suffix=" → `python3 .project_manager/tools/pm_bootstrap.py`로 직접 확인",
-    )
-    return heading + "\n" + line + "\n"
-
-
 def _inflight_section(home, task: str, *, deadline: float, monotonic=time.monotonic) -> str:
     """미회수 라운드 준비·미마감 raw·claimed 티켓·슬롯 WIP 을 in-process 조회로 편입한다.
 
     장부 조회는 subprocess 0(``delegate_ledger.ticket_copy_records``·``raw_output.raw_records``
-    in-process 호출) — WIP git 프로브(``_wip_slot_line``)만 유일한 예외(자체 상한·전 예외 흡수).
-    네 조회 중 하나라도 예외를 올리면 절 전체를 1줄로 접는다(다른 절은 온전 — 절 단위 fail-soft).
+    in-process 호출) — WIP git 프로브(``_wip_slot_line``)만 유일한 예외(자체 상한). 조회 예외는
+    전파해 snapshot 명령이 실패한다.
     각 불릿은 ``_inflight_safe_text``/``_inflight_capped_line`` 으로 이미 단일 줄이지만, 물리
     행 수도 조립 단계에서 실제로 강제한다(``_INFLIGHT_MAX_LINES`` — 선언만
     되고 조립에서 미강제였던 결함).
     """
-    try:
-        unharvested_rows = delegate_ledger.ticket_copy_records(home.local_dir.parent.parent, unharvested=True)
-        _raw_dir, raw_ledger = raw_output.raw_storage_paths(home.local_dir.parent.parent, "delegate")
-        unfinished_raw_rows = raw_output.unfinished_raw_records(raw_ledger, lock=False)
-        tickets_dir, _counts = _ticket_counts(home)
-        claimed_ids = [
-            path.stem for path in (tickets_dir / "claimed").glob("T-*.md")
-            if path.is_file()
-        ]
-    except Exception as exc:  # noqa: BLE001 — 절 단위 fail-soft(등록 경계에서만 skew 흡수).
-        cause = f'{type(exc).__name__}: {exc}'
-        return _section_query_failure_line(
-            cause, heading="## 진행 중 작업 (장부 실측)", label="진행 중 작업 절",
-        )
+    unharvested_rows = delegate_ledger.ticket_copy_records(home.local_dir.parent.parent, unharvested=True)
+    _raw_dir, raw_ledger = raw_output.raw_storage_paths(home.local_dir.parent.parent, "delegate")
+    unfinished_raw_rows = raw_output.unfinished_raw_records(raw_ledger, lock=False)
+    tickets_dir, _counts = _ticket_counts(home)
+    claimed_ids = [
+        path.stem for path in (tickets_dir / "claimed").glob("T-*.md")
+        if path.is_file()
+    ]
 
     lines = [
         ctx_recovery._unharvested_copies_line(unharvested_rows),

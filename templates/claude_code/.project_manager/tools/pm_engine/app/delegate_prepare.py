@@ -402,9 +402,9 @@ def prepare_cluster_copy(
             if run_dir_fd is not None:
                 os.close(run_dir_fd)
     except BaseException as exc:
-        # 정리(force_rmtree)가 `KeyboardInterrupt`·`SystemExit`·비-OSError 로 죽어도 이미
-        # pending 인 **원** 예외(`exc`)를 대체하지 않는다: 아래는 어떤 예외형이든 잡아 loud
-        # 경고만 남기고 마지막 `raise`(bare)는 항상 `exc` 를 그대로 재전파한다.
+        # 정리(force_rmtree)가 실패하면 잔류 경로를 안내한 뒤 정리 실패를 전파한다. 원 예외
+        # (`exc`)는 그 traceback 의 `__context__` 로 남는다. 정리가 성공하면 마지막 `raise`(bare)가
+        # `exc` 를 그대로 재전파한다.
         if not reserved and os.path.lexists(run_dir):
             try:
                 fs.force_rmtree(run_dir)
@@ -415,6 +415,7 @@ def prepare_cluster_copy(
                     f"있습니다: {run_dir}: {cause}",
                     file=sys.stderr,
                 )
+                raise
         elif reserved:
             # board 예약은 이미 성공했지만(예: 락 이탈 실패) 이후 단계가 실패했다. run_dir 은
             # 지우지 않는다(위 분기가 스킵) — 다음 조작자가 board 좌표로 찾을 수 있게 예약된
@@ -805,9 +806,9 @@ def _refund_gate_rejected_ticket_copy(
     이탈) 생존 판정이 자기 자신을 "진행 중"으로 오판해 막는다; 정상 스폰 후 죽은 run 의
     교차-프로세스 정리와는 다른 축이다.
     원 종료 사유(rc·메시지)는 이 함수 호출 **전**에 이미 stderr 로 loud 하게 남거나(명시 거부) 그대로
-    전파 중이다(예외 이탈). 여기서는 환불 결과만 덧붙이고, 환불 자체가 어떤 예외형으로 실패해도
-    (`DelegateError` 뿐 아니라) 원 결과를 대체하지 않는다 — `return`/`raise` 없이 경고만 추가해,
-    이 함수를 부른 `finally` 통과 뒤 원래 return 값·전파 예외가 그대로 유지된다.
+    전파 중이다(예외 이탈). 여기서는 환불 결과를 덧붙인다. 환불 자체가 실패하면 재시도 명령을
+    안내한 뒤 환불 실패를 전파한다 — 이 함수를 부른 `finally` 에서 원 return 값은 버려지고, 전파
+    중이던 원 예외는 환불 실패 traceback 의 `__context__` 로 남는다.
     """
     try:
         result = abandon_ticket_copy(
@@ -821,7 +822,7 @@ def _refund_gate_rejected_ticket_copy(
             f"{delegate_rounds.ABANDON_ASSUME_DEAD_FLAG}` 로 다시 시도하세요: {cause}",
             file=sys.stderr,
         )
-        return
+        raise
     print(
         "[pm-delegate] 위임 이탈(거부/예외) 후 ticket 예약 환불: "
         f"board_removed={str(result.board_removed).lower()} · "

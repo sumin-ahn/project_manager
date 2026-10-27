@@ -1110,11 +1110,12 @@ def test_non_git_tree_warns_on_stderr_without_blocking(hf, tmp_path, monkeypatch
 
 
 def test_dirty_paths_in_tree_failsoft_on_exception(hf):
-    """git 예외(미설치 등) → None(판정 불가) — 크래시하지 않는다."""
+    """git runner 예외는 None(판정 불가)으로 접지 않고 전파한다."""
     def _boom(args):
         raise RuntimeError("git boom")
 
-    assert pm_engine.infra.handoff_git._dirty_paths_in_tree("/wt", _boom) is None
+    with pytest.raises(RuntimeError, match="git boom"):
+        pm_engine.infra.handoff_git._dirty_paths_in_tree("/wt", _boom)
 
 
 def test_dirty_paths_in_tree_unions_tracked_and_untracked(hf):

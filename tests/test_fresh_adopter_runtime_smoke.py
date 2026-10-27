@@ -349,7 +349,11 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subprocess, "run", _spy_run)
     # 게이트 우회 — 라이브 분기 진입(실 LLM 은 spy 가 막음). which 도 통과시킨다.
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/stub")
+    # git 은 실물을 그대로 찾는다 — 없는 실행 파일 경로를 git 으로 돌려주면 git 호출이 실행 예외로 끝난다.
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name, *args, **kwargs: real_which(name, *args, **kwargs) if name == "git" else "/usr/bin/stub")
 
     import importlib
     mod = importlib.import_module(__name__)

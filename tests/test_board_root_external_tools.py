@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import areas_store, pm_paths, python_env
 from pm_engine.app import slot_resolution
-from pm_engine.app import finish_context
+from pm_engine.app import regression
 from pm_engine.infra import finish_store
 
 REPO = Path(__file__).resolve().parents[1]
@@ -212,7 +212,7 @@ def test_external_parse_touches_legacy_reads_wiki(external):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ticket_finish — count_board_done(명시 Home 추종) · _resolve_per_repo_test_cmd
+# ticket_finish — count_board_done(명시 Home 추종) · regression._resolve_gate_cmd
 # ════════════════════════════════════════════════════════════════════════
 # finish_store.count_board_done(home) 은 명시 Home 의 티켓 디렉터리를 센다. 진실(board/tickets/done=1)과 스테일(wiki/tickets/done=99)을 함께 두어
 # 어느 쪽을 세는지 결정적으로 가른다.
@@ -243,7 +243,7 @@ def test_ticket_finish_count_board_done_calls_tickets_dir_not_constant(ticket_fi
 
 
 def test_ticket_finish_resolve_test_cmd_uses_board_areas_file(ticket_finish, tmp_path, monkeypatch):
-    """_resolve_per_repo_test_cmd 의 areas.md 존재 가드가 Home 의 board 루트를 따른다(board/ 분리).
+    """`regression._resolve_gate_cmd` 의 areas.md 존재 가드가 Home 의 board 루트를 따른다(board/ 분리).
 
     board/areas.md 가 실재하면 prefix 행의 test_cmd 가 해소돼야 한다."""
     _make_board_dir(tmp_path)
@@ -253,11 +253,11 @@ def test_ticket_finish_resolve_test_cmd_uses_board_areas_file(ticket_finish, tmp
     monkeypatch.setattr(
         areas_store, "_areas_row_for_prefix",
         lambda _home, prefix: {"test_cmd": "go test ./..."} if prefix == "PM" else None)
-    assert finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(tmp_path)) == "go test ./..."
+    assert regression._resolve_gate_cmd(pm_paths.home_at(tmp_path)) == "go test ./..."
 
 
 def test_ticket_finish_resolve_test_cmd_default_when_board_areas_absent(
         ticket_finish, tmp_path, monkeypatch):
     """Home 의 areas.md 가 없으면 4층 기본 명령 — 솔로 폴백(현행 pytest 보존)."""
-    assert finish_context._resolve_per_repo_test_cmd(
+    assert regression._resolve_gate_cmd(
         pm_paths.home_at(tmp_path / "nonexistent")) == python_env.default_pytest_cmd()

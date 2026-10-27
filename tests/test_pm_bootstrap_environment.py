@@ -181,10 +181,8 @@ def test_platform_probe_exception_fails_soft_to_other(monkeypatch, tmp_path):
     # 엔진의 os_name 프로브 seam 에 건다 — 전역 `os.name` 을 바꾸면 이 프로세스의 pathlib 이
     # 그 값으로 flavour 를 고르느라 Windows 호스트에서 경로 연산 자체가 무너진다.
     monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
-    environment = python_env._detect_command_environment(pm_paths.home_at(tmp_path))
-    assert environment == python_env._CommandEnvironment(
-        "other", ("python3",), "os-default", "separate-lines"
-    )
+    with pytest.raises(RuntimeError, match="probe failed"):
+        python_env._detect_command_environment(pm_paths.home_at(tmp_path))
 
 
 @pytest.mark.parametrize(

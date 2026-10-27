@@ -194,10 +194,7 @@ def _prompt_model_choice(models: list[str], stdin) -> str | None:
     for i, m in enumerate(models, start=1):
         print(f"  {i}) {m}")
     print(f"  번호 입력 (1-{len(models)}, 빈 입력 = 건너뜀): ", end="")
-    try:
-        line = stdin.readline()
-    except Exception:  # noqa: BLE001 — 입력 실패는 미선택 폴백.
-        return None
+    line = stdin.readline()
     if not line:  # EOF
         return None
     choice = line.strip()
@@ -506,14 +503,6 @@ def fill_harness_cap_advisory(harness: str, cwd: Path | str | None) -> str | Non
     )
 
 
-def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
-    """워치독 kill/정리 실패의 stdout·stderr를 fill 실패 진단에 보존한다."""
-    try:
-        return watchdog.format_partial_output(head, exc)
-    except Exception as formatter_exc:  # noqa: BLE001 — 일반 formatter 실패는 fail-soft.
-        return head
-
-
 def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Path:
     """fill 실패 원문을 repo 안 private raw 파일로 이식 가능하게 박제한다."""
     return _write_fill_private_file(
@@ -582,9 +571,10 @@ def _write_fill_private_file(dest_root: Path, prefix: str, suffix: str, text: st
 def _real_harness_runner(
     argv: list[str], prompt: str, cwd: Path | str | None = None
 ) -> tuple[bool, str]:
-    """실 하니스 바이너리를 subprocess 로 구동(fail-soft). 반환: (성공 여부, stdout).
+    """실 하니스 바이너리를 subprocess 로 구동한다. 반환: (성공 여부, stdout).
 
-    additional_reviewer._run_reviewer_ex 선례 — 예외를 raise 하지 않고 (False, 에러텍스트)로 감싼다.
+    하니스 실행 실패(실행 파일 부재·정체·정리 실패·기동 OSError)는 (False, 에러텍스트)로 감싼다.
+    프로필 준비·결과 정규화·부분 출력 서식 예외는 전파한다.
     프롬프트는 FILL_DRIVER_BY_CMD 의 전달 방식대로 넘긴다 — 표준 입력이면 여기서 전문을 쓰고 닫는다,
     `--file` 이면 argv 가 이미 run_fill 이 쓴 파일을 가리킨다. 실행 인자에는 싣지 않는다.
 
@@ -599,27 +589,24 @@ def _real_harness_runner(
     표준 입력 전달은 전문을 쓴 뒤 **stdin 을 닫아 EOF를 전달**한다 — codex 는 stdin 미닫힘 시
     "Reading additional input from stdin..." 로 무기한 대기. 전달 방식·진행 신호 정책은 실제 argv와
     함께 FILL_DRIVER_BY_CMD에 선언돼 하네스 판정 코드와 분리된다."""
-    try:
-        harness, emits_progress, prompt_transport = _fill_driver(argv)
-        input_text = prompt if prompt_transport == install_rules.FILL_PROMPT_STDIN else None
-        profile = watchdog.resolve_harness_profile(harness, _fill_local_config(cwd))
-        progress_signal = (
-            profile.progress_signal if emits_progress else conf_schema.PROGRESS_SIGNAL_NONE
-        )
-        idle_timeout = watchdog.idle_timeout_for_signal(
-            progress_signal, profile.idle_timeout)
-        first_event_timeout = (
-            watchdog.first_event_timeout_default() if profile.startup_watchdog else None
-        )
-        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0
-        idle_label = f"{idle_timeout:.0f}초" if idle_timeout is not None else "비활성(증분 신호 없음)"
-        print(
-            f"[fill auto] 실행 상한: idle={idle_label} · wall={profile.wall_timeout:.0f}초 "
-            "(중단: Ctrl-C)",
-            file=sys.stderr,
-        )
-    except Exception as exc:  # noqa: BLE001 — 일반 프로필 준비 실패만 fill fail-soft.
-        return False, _fill_failure_with_partial(f"[하니스 프로필 준비 오류: {exc}]", exc)
+    harness, emits_progress, prompt_transport = _fill_driver(argv)
+    input_text = prompt if prompt_transport == install_rules.FILL_PROMPT_STDIN else None
+    profile = watchdog.resolve_harness_profile(harness, _fill_local_config(cwd))
+    progress_signal = (
+        profile.progress_signal if emits_progress else conf_schema.PROGRESS_SIGNAL_NONE
+    )
+    idle_timeout = watchdog.idle_timeout_for_signal(
+        progress_signal, profile.idle_timeout)
+    first_event_timeout = (
+        watchdog.first_event_timeout_default() if profile.startup_watchdog else None
+    )
+    retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0
+    idle_label = f"{idle_timeout:.0f}초" if idle_timeout is not None else "비활성(증분 신호 없음)"
+    print(
+        f"[fill auto] 실행 상한: idle={idle_label} · wall={profile.wall_timeout:.0f}초 "
+        "(중단: Ctrl-C)",
+        file=sys.stderr,
+    )
 
     try:
         result = watchdog.run_with_first_event_watchdog(
@@ -639,14 +626,14 @@ def _real_harness_runner(
         silence = getattr(exc, "silence_seconds", None)
         silence_label = f" · 실측 침묵 {silence:.0f}초" if silence is not None else ""
         kind = "무진행 임계" if axis == idle_axis else "벽시계 백스톱"
-        return False, _fill_failure_with_partial(
+        return False, watchdog.format_partial_output(
             f"[하니스 타임아웃 — {kind} {threshold:.0f}초 발화{silence_label}; "
             "자동 재시도 안 함 — 출력 확인 후 수동 재시도]",
             exc,
         )
     except FileNotFoundError:
         return False, f"[하니스 명령 '{argv[0] if argv else '?'}' 를 찾을 수 없음 — 설치/PATH 확인]"
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
+    except (watchdog.StallWatchdogError, watchdog.ProcessCleanupError, OSError) as exc:  # 하니스 실행 실패만 fill 실패 결과.
         if isinstance(exc, watchdog.StallWatchdogError):
             axis = getattr(exc, "timeout_axis", None)
             threshold = getattr(exc, "threshold_seconds", None)
@@ -659,17 +646,14 @@ def _real_harness_runner(
                 kind = f"무진행 임계{threshold_label}"
             else:
                 kind = f"벽시계 백스톱{threshold_label}"
-            return False, _fill_failure_with_partial(
+            return False, watchdog.format_partial_output(
                 f"[하니스 {kind} — 재시도 소진(fail-soft): {exc}]", exc)
-        return False, _fill_failure_with_partial(f"[하니스 실행 오류: {exc}]", exc)
+        return False, watchdog.format_partial_output(f"[하니스 실행 오류: {exc}]", exc)
 
-    try:
-        output = result.stdout or ""
-        if result.stderr:
-            output += f"\n[stderr]\n{result.stderr}"
-        return result.returncode == 0, output
-    except Exception as exc:  # noqa: BLE001 — 결과 정규화 실패도 fill fail-soft.
-        return False, _fill_failure_with_partial(f"[하니스 결과 처리 오류: {exc}]", exc)
+    output = result.stdout or ""
+    if result.stderr:
+        output += f"\n[stderr]\n{result.stderr}"
+    return result.returncode == 0, output
 
 
 def _build_fill_prompt(dest_root: Path, tokens: list[str]) -> str:
@@ -1070,20 +1054,12 @@ def run_fill(
     result = FillResult(mode="auto", harness=harness, live=live)
     result.runner_calls.append(list(argv))
     if not ok:
-        try:
-            raw_path = _save_fill_failure_output(dest_root, harness, output)
-            shown_path = raw_path.relative_to(dest_root)
-            result.note = (
-                "하니스 구동 실패(fail-soft) — 제안 없음. "
-                f"부분/오류 출력 원문 보존: {shown_path}"
-            )
-        except Exception as exc:  # noqa: BLE001 — raw 박제 실패도 import를 깨지 않는 fail-soft 경계.
-            # 박제가 실패해도 import는 깨지 않되 진단까지 잃지는 않는다. 이 경로는 의도적으로
-            # preview 절단을 하지 않아 stdout/stderr 전문이 사람에게 도달한다.
-            result.note = (
-                f"하니스 구동 실패(fail-soft) — raw 저장 실패({exc}); 제안 없음. "
-                f"출력 전문:\n{output}"
-            )
+        raw_path = _save_fill_failure_output(dest_root, harness, output)
+        shown_path = raw_path.relative_to(dest_root)
+        result.note = (
+            "하니스 구동 실패(fail-soft) — 제안 없음. "
+            f"부분/오류 출력 원문 보존: {shown_path}"
+        )
         return result
 
     # 하니스별 응답 파싱: opencode=--format json·codex=exec --json JSONL(agent_message)·claude=평문.

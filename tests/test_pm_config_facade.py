@@ -1928,19 +1928,20 @@ def test_repo_add_registers_protected_column_empty(pc, monkeypatch, tmp_path):
 
 
 def test_install_protected_hook_helper_fail_soft_on_exception(pc, monkeypatch):
-    """_install_protected_hook — install 이 던져도 fail-soft False (등록/슬롯 생성을 안 깬다·T-0076)."""
+    """_install_protected_hook — install 예외는 전파한다(False 로 강등하지 않는다)."""
     class _BoomWp:
         def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
             raise RuntimeError("boom")
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _BoomWp())
-    assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", ) is False
+    with pytest.raises(RuntimeError, match="boom"):
+        repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", )
 
 
 @pytest.mark.parametrize("action", ["repo-add", "worktree-add"])
 def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
         pc, monkeypatch, tmp_path, capsys, action):
-    """A1/B4 경계 — 일반 설치 예외는 두 생성 명령 모두 rc0·경고이며 traceback이 아니다."""
+    """A1/B4 경계 — 일반 설치 예외는 두 생성 명령 모두를 실패시킨다(원인 문구는 예외에 남는다)."""
     class _BoomWp(FakeWorktreePool):
         def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
             raise RuntimeError("ordinary install failure")
@@ -1951,29 +1952,27 @@ def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
         (repos / "svc.git").mkdir(parents=True)
         bind_pool(monkeypatch, pool)
         bind_board(monkeypatch, FakeBoard(registered=("svc",)))
-        rc = config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
-            _repo_add_args(pc, name="svc"),
-             clone_runner=FakeGitRecorder(rc=0),
-            repos_dir=repos,
-        )
+        with pytest.raises(RuntimeError, match="ordinary install failure"):
+            config_repo.cmd_repo_add(pm_paths.home_at(pc.REPO),
+                _repo_add_args(pc, name="svc"),
+                 clone_runner=FakeGitRecorder(rc=0),
+                repos_dir=repos,
+            )
     else:
         bind_pool(monkeypatch, pool)
         bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
-        rc = config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
-            argparse.Namespace(repo="svc", test=None, readonly=False, task=None, user_ack="svc"),
+        with pytest.raises(RuntimeError, match="ordinary install failure"):
+            config_slots.cmd_worktree_add(pm_paths.home_at(pc.REPO),
+                argparse.Namespace(repo="svc", test=None, readonly=False, task=None, user_ack="svc"),
 
-        )
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "ordinary install failure" in captured.err
-    assert "Traceback" not in captured.err
+            )
 
 
 
 
 @pytest.mark.parametrize("upstream", ["~pm_user_that_cannot_exist_0524/repo", "bad\0path"])
 def test_install_protected_hook_gate_resolution_error_is_fail_soft(pc, tmp_path, monkeypatch, upstream):
-    """B4 — gate config의 expanduser/Path 오류도 등록·슬롯 생성을 깨지 않고 False로 강등한다."""
+    """B4 — gate config의 expanduser/Path 오류는 raw installer 전에 예외로 전파한다(입력이 문구에 남는다)."""
     home = tmp_path / "bad-gate-config"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
@@ -1986,11 +1985,9 @@ def test_install_protected_hook_gate_resolution_error_is_fail_soft(pc, tmp_path,
 
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _MustNotInstall())
-    assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO),
-        "svc", ) is False
-    reason = repo_protection.protected_hook_install_failure_reason(pm_paths.home_at(pc.REPO), "svc")
-    assert reason is not None
-    assert "RuntimeError" in reason or "ValueError" in reason
+    with pytest.raises((RuntimeError, ValueError)) as excinfo:
+        repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", )
+    reason = str(excinfo.value)
     assert (upstream in reason or "home directory" in reason
             or "embedded null byte" in reason)
 
@@ -2052,12 +2049,9 @@ def test_install_protected_hook_rejects_phantom_user_home_from_windows_expanduse
 
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _MustNotInstall())
-    assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO),
-        "svc", ) is False
-    reason = repo_protection.protected_hook_install_failure_reason(pm_paths.home_at(pc.REPO), "svc")
-    assert reason is not None
-    assert "RuntimeError" in reason
-    assert upstream in reason          # 어떤 입력이 안 풀렸는지 진단에 남는다
+    with pytest.raises(RuntimeError) as excinfo:
+        repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", )
+    assert upstream in str(excinfo.value)    # 어떤 입력이 안 풀렸는지 진단에 남는다
 
 
 def test_install_protected_hook_keeps_existing_user_home_resolving(pc, tmp_path, monkeypatch):
@@ -2098,10 +2092,9 @@ def test_gate_resolution_failure_names_the_input_whatever_the_platform_text(pc, 
 
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _MustNotInstall())
-    assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO),
-        "svc", ) is False
-    reason = repo_protection.protected_hook_install_failure_reason(pm_paths.home_at(pc.REPO), "svc")
-    assert reason is not None
+    with pytest.raises(RuntimeError) as excinfo:
+        repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO), "svc", )
+    reason = str(excinfo.value)
     assert upstream in reason
     assert "ValueError" in reason      # 원인 예외 문구도 잃지 않는다
 
@@ -2637,11 +2630,10 @@ def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
     assert "보유 task=-" in svc2             # slot-모드 세션 → task 아님
 
 
-def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
-    """must-fix — slot_git_status 가 던져도 장부 축(보유 task·role)은 유지·git 요약만 fail-soft 대체.
+def test_status_slot_git_failure_propagates_after_task_axis(pc, monkeypatch, capsys):
+    """slot_git_status 가 던지면 status 텍스트는 그 줄을 `(조회 불가)` 로 접지 않고 예외를 전파한다.
 
-    slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다 — git 실패로 장부 정보(task 귀속)까지
-    사라지면 silent degrade. git 실패 시 `보유 task=…` 는 그대로 출력하고 git 부분만 `(조회 불가)`."""
+    장부 축(보유 task)은 예외 전에 이미 출력된다 — 실패 지점까지의 출력은 남는다."""
     class _Boom(FakeWorktreePool):
         def slot_git_status(self, slot, *, repo_reads, git_runner=None):
             raise RuntimeError("git blew up")
@@ -2651,12 +2643,11 @@ def test_status_slot_git_failure_keeps_task_axis(pc, monkeypatch, capsys):
     wp = bind_pool(monkeypatch, _Boom(leases=leases, tasks=tasks))
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "me")
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
-    assert rc == 0
+    with pytest.raises(RuntimeError, match="git blew up"):
+        config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     out = capsys.readouterr().out
-    assert "work/svc_1" in out                  # 리스 장부 축은 정상 surface
-    assert "보유 task=payjob" in out             # 장부 축(task 귀속)은 git 실패에도 유지(must-fix)
-    assert "(조회 불가)" in out                  # git 요약만 fail-soft 대체(크래시 0)
+    assert "work/svc_1" in out                  # 실패 전에 나간 리스 장부 축
+    assert "(조회 불가)" not in out              # git 실패를 표시 문자열로 접지 않는다
 
 
 def test_status_idle_lease_not_attributed_to_none_task(pc, monkeypatch, capsys):
@@ -2718,19 +2709,18 @@ def test_status_no_drift_omits_section(pc, monkeypatch, capsys):
     assert "[orphan]" not in out and "[stale]" not in out and "[incomplete]" not in out
 
 
-def test_status_reconcile_failure_does_not_break_status(pc, monkeypatch, capsys):
-    """reconcile_worktrees 가 예외를 던져도 status 는 rc0 로 끝난다(fail-soft·조회 전용·T-0295)."""
+def test_status_reconcile_failure_propagates(pc, monkeypatch, capsys):
+    """reconcile_worktrees 가 예외를 던지면 status 는 drift 절을 생략하지 않고 예외를 전파한다."""
     class _Boom(FakeWorktreePool):
         def reconcile_worktrees(self, *, git_runner=None):
             raise RuntimeError("git blew up")
 
     wp = bind_pool(monkeypatch, _Boom(leases=[FakeLease(slot="work/svc_1", repo="svc", state="idle")]))
     bind_pool(monkeypatch, wp)
-    rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
-    assert rc == 0
+    with pytest.raises(RuntimeError, match="git blew up"):
+        config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     out = capsys.readouterr().out
-    assert "work/svc_1" in out          # 리스 장부는 정상 surface
-    assert "drift" not in out           # reconcile 실패 → drift 절 생략(크래시 0)
+    assert "work/svc_1" in out          # 실패 전에 나간 리스 장부 축
 
 
 def test_status_drift_guidance_recommends_prune_not_force_release(pc, monkeypatch, capsys):
@@ -4015,7 +4005,7 @@ def test_task_prefix_forwards_registered_repos_for_reserved_check(pc, monkeypatc
 
 
 def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, monkeypatch):
-    """등록 repo 해소는 `_registered_repos` 한 자리다 — 이 명령이 자기 사본으로 읽지 않는다.
+    """등록 repo 해소는 `areas_store.registered_repos` 한 자리다 — 이 명령이 자기 사본으로 읽지 않는다.
 
     사본이 남아 있으면 fail-soft 규칙(board 부재·속성 부재·조회 예외)이 자리마다 갈려, 같은
     이름이 `task new` 에서는 거부되고 여기서는 통과한다(또는 반대)."""
@@ -4024,10 +4014,10 @@ def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, mon
     seen: list = []
 
     def _spy(_home):
-        seen.append("_registered_repos")
+        seen.append("registered_repos")
         return ["svc"]
 
-    monkeypatch.setattr(config_slots, '_registered_repos', _spy)
+    monkeypatch.setattr(areas_store, 'registered_repos', _spy)
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, board)
@@ -4036,17 +4026,13 @@ def test_task_prefix_resolves_registered_repos_through_the_shared_helper(pc, mon
     )
 
     assert rc == 0
-    assert seen == ["_registered_repos"], "해소가 공용 헬퍼를 거치지 않았다(인라인 사본 잔존)"
+    assert seen == ["registered_repos"], "해소가 공용 헬퍼를 거치지 않았다(인라인 사본 잔존)"
     val = [call for call in wp.calls if call[0] == "_validate_task_name"]
     assert val and val[0][2] == ["svc"]
 
 
-def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc, monkeypatch):
-    """areas.md 읽기 실패는 `None` 으로 내려가고 저장은 계속된다 — 헬퍼의 fail-soft 규칙 그대로.
-
-    `registered_repos` 가 실제로 내는 것은 `_parse_areas` 의 파일 읽기 실패다(`OSError`·
-    `UnicodeError`). 그 밖의 예외는 엔진 결함이므로 헬퍼가 삼키지 않고 올린다.
-    """
+def test_task_prefix_propagates_registry_lookup_failure(pc, monkeypatch):
+    """areas.md 읽기 실패는 `None` 으로 접지 않고 전파한다 — 예약패턴 검증을 완화한 채 저장하지 않는다."""
     def _raise(_home):
         raise OSError("areas broken")
 
@@ -4055,13 +4041,12 @@ def test_task_prefix_keeps_going_when_the_registry_lookup_raises(pc, monkeypatch
 
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard())
-    rc = config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
-        argparse.Namespace(name="job", value="pay")
-    )
+    with pytest.raises(OSError, match="areas broken"):
+        config_tasks.cmd_task_prefix(pm_paths.home_at(pc.REPO),
+            argparse.Namespace(name="job", value="pay")
+        )
 
-    assert rc == 0
-    val = [call for call in wp.calls if call[0] == "_validate_task_name"]
-    assert val and val[0][2] is None
+    assert [call for call in wp.calls if call[0] == "_validate_task_name"] == []
 
 
 def test_task_prefix_bad_format_refused(pc, monkeypatch, capsys):

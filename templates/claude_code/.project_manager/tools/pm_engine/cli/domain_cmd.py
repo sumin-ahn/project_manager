@@ -84,15 +84,11 @@ def cmd_list(home, args: argparse.Namespace) -> int:
 def _touches_from_ticket(home, ticket_id: str) -> list[str]:
     """ticket_store.load_ticket 으로 ticket frontmatter 의 `touches` 를 읽는다(없으면 []).
 
-    ticket 부재/깨짐 → [](graceful·crash 0). frontmatter `touches` 의
+    ticket 부재/깨짐은 전파한다. frontmatter `touches` 의
     문자열 원소만 취한다(비-문자열 오기는 방어적으로 버림 — parse_page covers 동형).
     """
-    try:
-        _status, path = ticket_store.find_ticket(home, ticket_id)
-        fm, _body = ticket_store.load_ticket(path)
-    except Exception as exc:  # noqa: BLE001 — 부재/깨진 ticket 은 graceful(빈 touches).
-        print(f"domain: ticket {ticket_id} touches 읽기 skip — {exc}", file=sys.stderr)
-        return []
+    _status, path = ticket_store.find_ticket(home, ticket_id)
+    fm, _body = ticket_store.load_ticket(path)
     touches = fm.get("touches")
     if isinstance(touches, str):
         return [touches.strip()] if touches.strip() else []
@@ -137,7 +133,7 @@ def _touches_from_tickets(home, tickets_csv: str) -> list[str]:
 
     `--tickets T-a,T-b` → 각 ticket frontmatter touches 의 union(발견 순서 보존·dedup).
     공백 trim·빈 토큰 제거(`--touches` CLI 동형). 부재/깨진 ticket 은 `_touches_from_ticket`
-    이 graceful 하게 [] 를 돌려주므로 crash 0(그 ticket 만 조용히 빈 기여).
+    에서 전파한다.
     """
     seen: set[str] = set()
     out: list[str] = []

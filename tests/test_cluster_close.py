@@ -48,6 +48,7 @@ from pm_engine.cli import cluster_close, finish_record
 from pm_engine.cli import ticket_finish as ticket_finish_cli
 
 import pytest
+import yaml
 
 from _slot_seed import seed_slot
 from pm_engine.app import round_seed
@@ -399,7 +400,7 @@ def test_unresolvable_integration_branch_stops_the_judgment(tf, tmp_path):
 
 def test_cli_takes_exactly_one_close_target(tf, monkeypatch, capsys):
     """완료 기록 대상은 하나다 — 둘 다 주거나 둘 다 없으면 거부한다(부작용 앞)."""
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
     for argv in ([], [_TICKET, "--cluster", _CLUSTER]):
         with pytest.raises(SystemExit) as excinfo:
             ticket_finish_cli.main(pm_paths.home_at(REPO), argv)
@@ -411,7 +412,7 @@ def test_reconcile_cli_requires_explicit_repo_and_slot_and_rejects_task(
     tf, monkeypatch, capsys,
 ):
     """Recovery selector는 제품 repo+slot 둘 다 명시하며 task/암묵 해소를 받지 않는다."""
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
     cases = (
         ["--cluster", _CLUSTER, "--reconcile-integrated", "--repo", "code"],
         ["--cluster", _CLUSTER, "--reconcile-integrated", "--task", "main"],
@@ -656,7 +657,7 @@ class _CloseEnv:
             dod_block_fn=lambda tid: None,
             residual_block_fn=lambda tid: None,
             self_axis_block_fn=lambda tid: None,
-            affected_domain_fn=lambda tid: None,
+            affected_domain_fn=lambda tid: [],
         )
         values.update(overrides)
         return cls(pm_paths.home_at(self.home), **values)
@@ -792,7 +793,7 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     # 판정을 그대로 부르므로(사본 0) 세션이 해소돼야 각 케이스가 재려던 축만 남는다 — 세션
     # 미해소는 소유 거부라는 다른 축이다.
     monkeypatch.setenv("PM_SESSION_NAME", "t")
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
     return _CloseEnv(tf, home, code, slot, board_dir, ticket)
 
 
@@ -2575,8 +2576,8 @@ def test_declared_change_new_git_queries_fail_loud(tf, tmp_path, monkeypatch):
     """[[T-0959]] F-007 (I7) — 선언 변경 판정이 새로 쓰는 조회가 실패하면 통과로 접지 않고 관측 실패로 멈춘다.
 
     세 갈래다: 지운 선언 경로의 추적 조회(`_tracked_in` 의 status), 미리 `git rm` 한 선언 삭제 조회(`stage_scope` 의
-    `diff --cached`), 티켓 판독(`_declared_change_problem`). 어느 하나라도 빈 값으로 접히면 선언 변경이 다른 계획으로
-    가거나 판정 대상에서 빠진다.
+    `diff --cached`), 티켓 판독(`_declared_change_problem` — 판독 예외가 그대로 전파된다). 어느 하나라도 빈 값으로
+    접히면 선언 변경이 다른 계획으로 가거나 판정 대상에서 빠진다.
     """
     root = _residual_repo(tf, tmp_path, monkeypatch, members=(_MEMBER_A,))
     board_py = root / ".project_manager" / "tools" / "board.py"
@@ -2607,7 +2608,7 @@ def test_declared_change_new_git_queries_fail_loud(tf, tmp_path, monkeypatch):
     ticket.write_text(ticket.read_text(encoding="utf-8").replace("touches:\n", "touches: [unclosed\n", 1),
                       encoding="utf-8")
     reader = finish_record.TicketFinisher(pm_paths.home_at(root), board_py=board_py, log_file=log_file, task_workspace=root)
-    with pytest.raises(finish_rules._CloseObservationFailure, match="티켓을 읽지 못해"):
+    with pytest.raises(yaml.YAMLError):
         reader._declared_change_problem(_MEMBER_A, root)
 
 
@@ -2672,7 +2673,7 @@ def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
     _write_cluster_ledger(board_dir, tickets=(_MEMBER_A,),
                           base_branch=_UNBORN_BRANCH, branch=_UNBORN_BRANCH)
     monkeypatch.setenv("PM_SESSION_NAME", "t")
-    monkeypatch.setattr(ticket_finish_cli, "_pm_home_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
     return root
 
 
@@ -2745,7 +2746,7 @@ def test_fresh_single_clone_home_requires_explicit_binding(
         run_board_fn=_run_board,
         dod_block_fn=lambda tid: None,
         self_axis_block_fn=lambda tid: None,
-        affected_domain_fn=lambda tid: None,
+        affected_domain_fn=lambda tid: [],
     )
     closer = cluster_close.ClusterCloser(
         pm_paths.home_at(root), _CLUSTER, finisher=finisher, board_py=board_py,

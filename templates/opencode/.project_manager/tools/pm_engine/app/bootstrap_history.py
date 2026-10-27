@@ -2,7 +2,6 @@
 from __future__ import annotations
 from pm_engine.infra import lease_store
 import json
-from pm_engine.domain import session_history
 from pm_engine.infra import fs, pm_paths
 import re
 from pathlib import Path
@@ -32,22 +31,11 @@ def parse_log_last_entry(log_text: str) -> dict[str, str] | None:
 
 
 def extract_last_log_entry_body(log_text: str) -> str | None:
-    """log_entries로 분할한 마지막 로그 본문을 반환한다. 항목 부재·파싱 실패는 None."""
-    try:
-        _preamble, entries = log_entries.split_entries(log_text)
-    except Exception:
-        return None
+    """log_entries로 분할한 마지막 로그 본문을 반환한다. 항목 부재는 None, 분할 예외는 전파."""
+    _preamble, entries = log_entries.split_entries(log_text)
     if not entries:
         return None
     return entries[-1][1].rstrip()
-
-
-def infer_session_num(pm_state_text: str) -> int | str | None:
-    """session_history의 공통 규칙으로 다음 세션 차수를 판독한다. 파싱 실패는 None."""
-    try:
-        return session_history.infer_next_session_num(pm_state_text)
-    except Exception:
-        return None
 
 
 def _session_slot_number(
@@ -102,7 +90,7 @@ def parse_last_handoff_session_num(
     무태그/타 슬롯 무시). **bound 가 None(정체성 미해소)이면 전역 tag-agnostic
     파싱**으로 폴백한다: fresh clone(lease 부재)에 tracked 로그가 태그를 가져도
     log-derived 차수를 잃지 않게(user 연속성 surface 와 동일 원리 — 양성 슬롯일 때만
-    필터). handoff entry 부재·log 부재/파싱 실패 → None(fail-soft).
+    필터). handoff entry 부재·log 부재 → None, 분할 예외는 전파.
     """
     if not log_text:
         return None
@@ -121,13 +109,10 @@ def parse_last_handoff_session_num(
 def extract_slot_handoff_entry(
     home, log_text: str | None, *, bound_session: str | None = None
 ) -> dict[str, str] | None:
-    """자기 슬롯의 마지막 handoff 항목과 본문을 반환한다. log_entries와 공통 소유 규칙을 사용한다. 항목 부재·파싱 실패는 None."""
+    """자기 슬롯의 마지막 handoff 항목과 본문을 반환한다. log_entries와 공통 소유 규칙을 사용한다. 항목 부재는 None, 분할 예외는 전파."""
     if not log_text:
         return None
-    try:
-        _preamble, entries = log_entries.split_entries(log_text)
-    except Exception:
-        return None
+    _preamble, entries = log_entries.split_entries(log_text)
     owns_untagged = _session_owns_untagged(home, bound_session)
     selected: str | None = None
     for _date, entry_text in entries:

@@ -33,11 +33,8 @@ def _phase0_main_reference_reason(home, repo: str, slot_id: str) -> str | None:
          ⚠️ *임의* upstream 이 아니다 — 정상 작업 슬롯은 자기 feature 브랜치(`origin/a5` 등)를 추적하는
          게 정상(미해소=경고)이라 그건 통과시킨다. 보호브랜치 원격을 추적할 때만 main-참조.
     보호브랜치 직접 checkout 이 우선(더 구체적 사유). detached(브랜치 None·upstream 없음·readonly
-    등)·조회불가·풀 미지원은 None(fail-soft·오탐 0)."""
-    try:
-        branch = worktree_git.current_branch(home, slot_id)
-    except Exception:
-        branch = None
+    등)·풀 미지원은 None(오탐 0). 조회 예외는 전파한다."""
+    branch = worktree_git.current_branch(home, slot_id)
     protected = _protected_warning(home, repo, branch)
     if protected is not None:
         return f"보호 브랜치 `{protected}` 를 직접 체크아웃한 상태입니다"
@@ -54,11 +51,8 @@ def _phase0_protected_upstream(home, repo: str, slot_id: str) -> str | None:
     한다. upstream `<remote>/<branch>` 의 branch 부분(첫 `/` 이후·`feature/x` 도 보존)이 보호목록
     (`_protected_warning`)이면 main-참조로 판정한다. **자기 feature 브랜치 추적(`origin/a5`)은 정상
     작업 슬롯이라 제외**(오탐 0 — concern 은 `origin/main` 추적). slot_status 미지원(구 풀)·None·
-    미해소 upstream·`/` 없는 이름·예외는 None(fail-soft·보수 판정)."""
-    try:
-        status = worktree_status.slot_status(home, slot_id)
-    except Exception:
-        return None
+    미해소 upstream·`/` 없는 이름은 None(보수 판정). 조회 예외는 전파한다."""
+    status = worktree_status.slot_status(home, slot_id)
     if status is None or not getattr(status, "upstream_ok", False):
         return None
     upstream = getattr(status, "upstream", None)
@@ -123,30 +117,15 @@ def _remedy_branch_ref_ok(home, slot_id: str, branch: str, *, run_git_fn) -> boo
     통과 조건은 `normalize(cand) == cand` — 정규화 결과가 원문과 다르면(revspec 확장·`@{-1}`)
     제안 이름이 다른 브랜치로 해소되어 안내가 거짓말이 되므로 후보에서 배제한다.
 
-    경로 해소 실패·**git 호출 자체가 터진 경우**는 True(검사 생략·현행 동작 유지·fail-soft) —
-    후보 판정 실패가 0단계 안내를 막지 않는다(`_slot_branch_exists` 동형 규율). `_normalize_branch_name` 은 runner 예외를 자기 안에서 None(=거부)으로 흡수하므로,
-    "이름이 무효" 와 "git 이 못 돌았다" 를 가르기 위해 러너가 예외를 표시(`failed`)한다.
-    (rc≠0 로 조용히 실패하는 git 은 무효와 구분 불가 — 그 경우 후보가 소진돼 "브랜치명 직접
-    지정" 안내로 수렴한다. 여전히 실행 가능한 안내다.)"""
-    try:
-        slot_dir = str(pm_paths.slot_path(home, slot_id))
-    except Exception:
-        return True
-    failed: list[bool] = []
+    경로 해소 예외·git 호출 예외는 전파한다. (rc≠0 로 실패하는 git 은 무효와 구분 불가 — 그
+    경우 후보가 소진돼 "브랜치명 직접 지정" 안내로 수렴한다. 여전히 실행 가능한 안내다.)"""
+    slot_dir = str(pm_paths.slot_path(home, slot_id))
 
     def runner(argv):
         """슬롯 worktree 바인딩 git 러너 — DI `_run_git_fn` 에 `-C <slot_dir>` 를 붙인다."""
-        try:
-            return run_git_fn(["-C", slot_dir, *argv])
-        except Exception:
-            failed.append(True)
-            raise
+        return run_git_fn(["-C", slot_dir, *argv])
 
-    try:
-        ok = branch_store._normalize_branch_name(branch, git_runner=runner) == branch
-    except Exception:
-        return True
-    return True if failed else ok
+    return branch_store._normalize_branch_name(branch, git_runner=runner) == branch
 
 
 def _remedy_branch_command(
@@ -177,19 +156,12 @@ def _slot_branch_exists(home, slot_id: str, branch: str, *, run_git_fn) -> bool:
     """그 슬롯 worktree 에 로컬 브랜치 `branch` 가 이미 있는가 (remedy 후보 충돌 검사).
 
     `git -C <slot_dir> show-ref --verify --quiet refs/heads/<branch>`(argv-list·shell 미경유)를
-    DI 러너(`_run_git_fn`)로 돌린다 — rc 0 = 존재. 경로 해소 실패·git 호출 실패/예외는
-    **미존재로 간주**한다(fail-soft — 안내는 계속 나가야 하고, 후보 판정 실패로 진입 검증을
-    깨뜨리지 않는다)."""
-    try:
-        slot_dir = str(pm_paths.slot_path(home, slot_id))
-    except Exception:
-        return False
-    try:
-        rc, _out = run_git_fn(
-            ["-C", slot_dir, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"]
-        )
-    except Exception:
-        return False
+    DI 러너(`_run_git_fn`)로 돌린다 — rc 0 = 존재, rc≠0 = 미존재. 경로 해소·git 호출 예외는
+    전파한다."""
+    slot_dir = str(pm_paths.slot_path(home, slot_id))
+    rc, _out = run_git_fn(
+        ["-C", slot_dir, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"]
+    )
     return rc == 0
 
 
@@ -229,10 +201,7 @@ def _task_slot_fault(
             f"{reason} — 이 슬롯 커밋이 canonical/보호 브랜치로 새면 공유 이력이 오염된다.",
             _remedy_branch_command(home, repo, slot_id, task, run_git_fn=run_git_fn),
         )
-    try:
-        result = slot_snapshot.compare_slot_git(home, slot_id)
-    except Exception:
-        result = None
+    result = slot_snapshot.compare_slot_git(home, slot_id)
     if result is not None and getattr(result, "fail_loud", False):
         return (
             "기록↔live diverged (외부 개입 가능성)",
@@ -259,19 +228,13 @@ def _task_slot_row(home, lease, slot_id: str) -> dict:
 
 
 def _task_slot_git_status(home, slot_id: str) -> dict:
-    """`slot_git_status(slot)`(branch·head·dirty) fail-soft 조회 — 조회 실패는 {}."""
-    try:
-        return worktree_status.slot_git_status(home, slot_id) or {}
-    except Exception:
-        return {}
+    """`slot_git_status(slot)`(branch·head·dirty) 조회 — 결과 없음은 {}, 조회 예외는 전파."""
+    return worktree_status.slot_git_status(home, slot_id) or {}
 
 
 def _task_slot_record_live(home, slot_id: str) -> str:
-    """기록↔live 상태 문자열 — `compare_slot_git` 소비 (ok|unrecorded|diverged|unknown·fail-soft)."""
-    try:
-        result = slot_snapshot.compare_slot_git(home, slot_id)
-    except Exception:
-        return "unknown"
+    """기록↔live 상태 문자열 — `compare_slot_git` 소비 (ok|unrecorded|diverged|unknown). 조회 예외는 전파."""
+    result = slot_snapshot.compare_slot_git(home, slot_id)
     if result is None:
         return "unknown"
     if getattr(result, "unrecorded", False):
@@ -284,13 +247,10 @@ def _task_slot_record_live(home, slot_id: str) -> str:
 def _protected_warning(home, repo: str, branch: str | None) -> str | None:
     """등록부 보호목록에 포함된 live 브랜치의 소프트 경고.
 
-    areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해소와 일반 판독 실패는 경고를 생략한다."""
+    areas_store로 대상 Home의 보호목록을 직접 읽는다. 브랜치 미해소는 경고를 생략하고 판독 예외는 전파한다."""
     if not branch:
         return None
-    try:
-        protected = areas_store._repo_protected(home, repo)
-    except Exception:
-        return None
+    protected = areas_store._repo_protected(home, repo)
     return branch if branch in protected else None
 
 
@@ -318,45 +278,42 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
     드리프트로 치지 않는다(오탐 0).
 
     보호목록은 대상 Home의 areas_store로 읽고 보호 패키지를 직접 호출한다.
-    실제 판독·git 실패는 기존 fail-soft 처리를 유지한다.
+    판독·비교·재설치 예외는 전파한다.
 
-    **fail-soft 는 조용하지 않다(must-fix)**: drift 를 *발견한 뒤* 재설치가 실패하면
+    **재설치 False 는 조용하지 않다(must-fix)**: drift 를 *발견한 뒤* 재설치가 실패하면
     (`install_protected_hook` 은 bare 부재·`core.hooksPath` 설정 실패 시 **예외 없이 False**),
     sidecar 는 여전히 stale 인데 "정합화했습니다" 를 내면 이 티켓이 닫으려던 값-연결 끊김을
-    *정합하다고 거짓 보고*하는 것이 된다(사용자가 확인할 이유를 없앤다). 그래서 반환 False /
-    예외 둘 다 **실패 안내 + 재실행 커맨드**를 loud 하게 내고 False 를 돌려준다. 진입은 여전히
-    막지 않는다(보호 훅은 추가 가드).
+    *정합하다고 거짓 보고*하는 것이 된다(사용자가 확인할 이유를 없앤다). 그래서 반환 False 면
+    **실패 안내 + 재실행 커맨드**를 loud 하게 내고 False 를 돌려준다. 진입은 막지 않는다(보호
+    훅은 추가 가드).
 
     True = 재설치를 실제로 수행하고 **성공**함.
     """
     hooks_dir = pm_paths.repo_hooks_dir(home)
     contract_name = protected_hooks.PROTECTED_GATE_CONTRACT_NAME
-    try:
-        protected = list(areas_store._repo_protected(home, repo))
-        sidecar = Path(hooks_dir) / repo / "protected"
-        if not sidecar.is_file():
-            return False
-        current = [
-            line.strip()
-            for line in fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        protected_ok = current == protected
-        gate_mode, test_cmd = repo_protection._protected_push_gate_config(
-            home, repo, report_downgrade=False
-        )
-        expected_contract = f"{gate_mode}\n{test_cmd}\n"
-        contract_sidecar = Path(hooks_dir) / repo / str(contract_name)
-        current_contract = (
-            fs.read_text_shared(contract_sidecar, encoding="utf-8")
-            if contract_sidecar.is_file()
-            else None
-        )
-        contract_ok = current_contract == expected_contract
-        wired = _protected_hook_wired(home, repo)
-        if protected_ok and contract_ok and (wired is not False):
-            return False
-    except Exception:
+    protected = list(areas_store._repo_protected(home, repo))
+    sidecar = Path(hooks_dir) / repo / "protected"
+    if not sidecar.is_file():
+        return False
+    current = [
+        line.strip()
+        for line in fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    protected_ok = current == protected
+    gate_mode, test_cmd = repo_protection._protected_push_gate_config(
+        home, repo, report_downgrade=False
+    )
+    expected_contract = f"{gate_mode}\n{test_cmd}\n"
+    contract_sidecar = Path(hooks_dir) / repo / str(contract_name)
+    current_contract = (
+        fs.read_text_shared(contract_sidecar, encoding="utf-8")
+        if contract_sidecar.is_file()
+        else None
+    )
+    contract_ok = current_contract == expected_contract
+    wired = protected_hooks.protected_hook_wired(home, repo)
+    if protected_ok and contract_ok and (wired is not False):
         return False
     drift_axes = []
     if not protected_ok:
@@ -384,17 +341,12 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
         enforcement_state = (
             "보호목록은 강제 중이지만 옛/미설치 증거 계약으로 동작합니다"
         )
-    try:
-        installed = bool(repo_protection._install_protected_hook(home, repo))
-    except Exception as exc:
-        installed = False
-        reason = f"{exc.__class__.__name__}: {exc}"
-    else:
+    installed = bool(repo_protection._install_protected_hook(home, repo))
+    if not installed:
         reason = repo_protection.protected_hook_install_failure_reason(home, repo)
         reason = reason or "install_protected_hook이 원인 미해소 실패를 반환"
-    if not installed:
         print(
-            f"[경고·0단계] {repo} {cause} 이 clone 의 훅을 **정합화하지 못했습니다** — {reason}. 훅은 아직 {stale_state} 이며, {enforcement_state}.\n  → 재실행:  {_protected_retry_command(home, repo)}   (멱등·bare 부재면 `repo add {repo}` 먼저)",
+            f"[경고·0단계] {repo} {cause} 이 clone 의 훅을 **정합화하지 못했습니다** — {reason}. 훅은 아직 {stale_state} 이며, {enforcement_state}.\n  → 재실행:  {repo_protection.protected_retry_command(home, repo)}   (멱등·bare 부재면 `repo add {repo}` 먼저)",
             file=sys.stderr,
         )
         return False
@@ -403,19 +355,3 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
         file=sys.stderr,
     )
     return True
-
-
-def _protected_retry_command(home, repo: str) -> str:
-    """대상 Home의 보호목록 상태에 따른 재실행 명령."""
-    try:
-        return repo_protection.protected_retry_command(home, repo)
-    except Exception:
-        return f"{bootstrap_rules._CARD_TOOL_INVOKE}/pm_config.py repo protected {repo}   (현재 상태 확인 후 재설정)"
-
-
-def _protected_hook_wired(home, repo: str) -> bool | None:
-    """대상 Home의 bare hooksPath를 보호 훅 모듈로 조회한다."""
-    try:
-        return protected_hooks.protected_hook_wired(home, repo)
-    except Exception:
-        return None

@@ -58,7 +58,7 @@ _BOARD_GITATTRIBUTES_SCAFFOLD = (
 
 
 def _board_setup_git(argv: list[str], cwd: Path | None) -> tuple[int, str]:
-    """board submodule 셋업용 git 실행 → (rc, stdout+stderr). fail-soft(예외→(1,msg)).
+    """board submodule 셋업용 git 실행 → (rc, stdout+stderr). 실행 예외는 전파한다.
 
     `-c protocol.file.allow=always` 를 상시 얹어 로컬/`file://` remote(hermetic 테스트·self-split
     로컬 board) 의 submodule 전송을 허용한다 — ssh/https remote 는 그 transport 만 제어하므로 무영향
@@ -69,15 +69,12 @@ def _board_setup_git(argv: list[str], cwd: Path | None) -> tuple[int, str]:
     git_binary = shutil.which("git")
     if git_binary is None:
         return 1, "git 바이너리를 찾을 수 없음 (PATH)."
-    try:
-        result = subprocess.run(
-            [git_binary, "-c", "protocol.file.allow=always", *argv],
-            cwd=str(cwd) if cwd is not None else None,
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_BOARD_SETUP_GIT_TIMEOUT_SECONDS)
-        return result.returncode, (result.stdout or "") + (result.stderr or "")
-    except Exception as exc:  # noqa: BLE001 — fail-soft: rc!=0 로 호출부 위임.
-        return 1, str(exc)
+    result = subprocess.run(
+        [git_binary, "-c", "protocol.file.allow=always", *argv],
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=_BOARD_SETUP_GIT_TIMEOUT_SECONDS)
+    return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
 def _board_areas_scaffold() -> str:

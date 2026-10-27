@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pm_engine.infra import fs, lease_store
+from pm_engine.infra import areas_store, fs, lease_store
 from pm_engine.app import branch_checkout, repo_protection
 from pm_engine.infra import pool_store
 from pm_engine.app import task_lifecycle
@@ -35,14 +35,14 @@ def cmd_task_new(
     동명 종료 archive(`TaskArchived` — `task reopen` 안내) · **이미 있는 이름**(재개는 bootstrap
     몫이라 여기서 열림 표시를 만지지 않는다).
 
-    worktree_pool의 실제 함수 seam으로 시험을 격리한다. 예약패턴 판별 근거는 config_slots._registered_repos가
-    해소한다(읽기 실패면 None → traversal 검증만·`cmd_alloc` 과 같은 한 자리).
+    worktree_pool의 실제 함수 seam으로 시험을 격리한다. 예약패턴 판별 근거는 areas_store.registered_repos가
+    해소한다(`cmd_alloc` 과 같은 한 자리).
     """
 
     name = args.name
 
-    # 예약패턴(`<repo>_<N>`) 판별 근거 — areas fail-soft 해소(실패면 None·traversal 검증은 유지).
-    registered = config_slots._registered_repos(home)
+    # 예약패턴(`<repo>_<N>`) 판별 근거 — areas.md 해소(판독 실패는 전파).
+    registered = areas_store.registered_repos(home)
 
     try:
         task = task_lifecycle.create_task(home, name, registered_repos=registered)
@@ -183,15 +183,11 @@ def cmd_task_end(
     # 1) claimed 소진 게이트 — board 스캔. task 레코드 prefix 로 prefix-open 정보도 함께.
     task_rec = pool_store.find_task(home, name)
     prefix = task_rec.prefix if task_rec is not None else None
-    scan = None
-    try:
-        # 설정 판독 실패에도 git 사용자로 claimed 소진 여부를 조회한다.
-        user = (repo_protection._local_conf_value(home, "identity.user")
-                or lease_store._git_config_email(home))
-        scan = ticket_access.scan_task_tickets(home, user, name, prefix)
-    except Exception:  # noqa: BLE001 — 실제 스캔 실패는 기존 claimed 게이트 skip 정책 유지.
-        scan = None
-    if scan and scan.get("claimed"):
+    # 설정 판독 실패에도 git 사용자로 claimed 소진 여부를 조회한다.
+    user = (repo_protection._local_conf_value(home, "identity.user")
+            or lease_store._git_config_email(home))
+    scan = ticket_access.scan_task_tickets(home, user, name, prefix)
+    if scan.get("claimed"):
         print(
             f"[중단] task {name!r} 명의로 claimed 인 티켓이 남아있다 — 종료 거부(소진 게이트):",
             file=sys.stderr,
@@ -242,7 +238,7 @@ def cmd_task_end(
         print(f"  서술 폴더 없음(.local/tasks/{name}/ 부재) — 장부 task 레코드만 제거.")
 
     # task 지정 prefix 의 open 티켓 = 정보 표시만(차단 안 함·prefix≠경계).
-    if scan and scan.get("prefix_open"):
+    if scan.get("prefix_open"):
         print(f"ℹ task 지정 prefix {prefix!r} 의 open 티켓(정보·경계 아님·차단 안 함):")
         for row in scan["prefix_open"]:
             print(f"  - {row['id']} {row['title']}")
@@ -402,16 +398,15 @@ def cmd_task_prefix(
          atomic 갱신. task 부재면 rc1 안내(생성은 `task new`·bootstrap 소관).
 
     실행 패키지의 prefix 검증·승인·락 안 fresh 재검증을 통과한 경우에만 저장한다.
-    단, task 예약명 검증에 넘기는 registered_repos 조회만 실패 시 None으로 완화하고
-    traversal 검증은 엔진 validator로 계속 강제한다.
+    task 예약명 검증에 넘기는 registered_repos 조회 실패(areas.md 판독 실패)는 전파한다.
     """
 
     name = args.name
     value = args.value
 
     # 1) task 명 검증(must-fix) — 공유 엔진 validator. registered_repos 는 예약패턴(`<repo>_<N>`)
-    # 거부용(areas 읽기 실패면 None, traversal 검증은 유지). InvalidTaskName → rc1(부작용 이전).
-    registered = config_slots._registered_repos(home)
+    # 거부용(areas.md 판독 실패는 전파). InvalidTaskName → rc1(부작용 이전).
+    registered = areas_store.registered_repos(home)
     try:
         task_rules._validate_task_name(name, registered)
     except worktree_records.InvalidTaskName as exc:

@@ -111,7 +111,7 @@ def test_first_bootstrap_run_binds_before_context_and_renders_seeded_state(wp, m
     instance._collect_log_entry = lambda: None
     instance._collect_user_continuity = lambda _log_text: None
     instance._collect_dashboard_others = lambda: None
-    monkeypatch.setattr(bootstrap_card, "_safe_command_card", lambda _home, _task_name, *, environment=None: None)
+    monkeypatch.setattr(bootstrap_card, "_build_command_card_markdown", lambda _home, _task_name, *, environment=None: "")
 
     observed: list[dict] = []
     collect_handoff_context = instance._collect_handoff_context

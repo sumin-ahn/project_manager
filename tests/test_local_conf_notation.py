@@ -41,7 +41,7 @@ from _engine_tree import engine_python_files
 from pm_engine.cli import local_conf as local_conf_cli
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store, pm_paths, python_env
-from pm_engine.app import conf_lint, finish_context, regression
+from pm_engine.app import conf_lint, regression
 
 from pm_engine.infra import conf_store
 from pm_engine.infra import install_conf
@@ -238,10 +238,7 @@ def test_gate_resolution_stops_instead_of_falling_back_to_the_default_suite(tmp_
 
     # 실 파일을 읽는 Home 으로 두 도구의 동형 경로를 돌린다(주입 dict 아님).
     with pytest.raises(RuntimeError) as caught:
-        if name == "pm_handoff":
-            regression._resolve_gate_cmd(pm_paths.home_at(tmp_path))
-        else:
-            finish_context._resolve_per_repo_test_cmd(pm_paths.home_at(tmp_path))
+        regression._resolve_gate_cmd(pm_paths.home_at(tmp_path))
 
     assert type(caught.value).__name__ == "LegacyConfKeyError"
     assert "test_cmd" in str(caught.value)

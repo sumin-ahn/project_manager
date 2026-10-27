@@ -588,7 +588,7 @@ class PmBootstrap:
         반환: {"session_num": int|str|None, "session_stale": bool,
                "state_session_num": int|str|None, "todos": list[dict],
                "state_path": str} 또는 None(pm_state·log·todo 전부 미해소 — surface 생략·graceful).
-        - `session_num`: pm_state(`infer_session_num`) 와 log(`parse_last_handoff_session_num`+1)
+        - `session_num`: pm_state(`session_history.infer_next_session_num`) 와 log(`parse_last_handoff_session_num`+1)
           을 `reconcile_session_num` 으로 교차검증한 *최종* 차수. pm_state 해소 경로가 우선이되
           (현행 무변경), pm_state 미해소(template/부재)면 log-derived N+1 로 **폴백**하고, pm_state
           가 해소돼도 log-derived 가 더 크면 **log 우선(max)** + stale 표시(머신 간 미동기).
@@ -601,12 +601,9 @@ class PmBootstrap:
         state_path = self._resolve_pm_state_file()
         state_text: str | None = None
         if state_path is not None and state_path.exists():
-            try:
-                state_text = fs.read_text_shared(state_path, encoding="utf-8")
-            except Exception:
-                state_text = None
+            state_text = fs.read_text_shared(state_path, encoding="utf-8")
         state_num = (
-            bootstrap_history.infer_session_num(state_text)
+            session_history.infer_next_session_num(state_text)
             if state_text is not None
             else None
         )
@@ -634,20 +631,10 @@ class PmBootstrap:
         }
 
     def _read_log_text(self) -> str | None:
-        """log/current.md 원문을 읽는다 (차수 log-폴백/user 연속성 공용·fail-soft None)."""
+        """log/current.md 원문을 읽는다 (차수 log-폴백/user 연속성 공용·부재면 None)."""
         if not self._log_file.exists():
             return None
-        try:
-            return fs.read_text_shared(self._log_file, encoding="utf-8")
-        except Exception:
-            return None
-
-    def _current_user(self) -> str | None:
-        """명시 Home의 identity.user, git email 순서로 사용자를 해소한다."""
-        try:
-            return lease_store.user_name(self._home)
-        except Exception:
-            return None
+        return fs.read_text_shared(self._log_file, encoding="utf-8")
 
     def _handoff_commit_author(self, handoff_header: str) -> str | None:
         """직전 handoff entry 헤더 줄을 담은 commit 의 author email (pickaxe).
@@ -691,7 +678,7 @@ class PmBootstrap:
         author = self._handoff_commit_author(header)
         if not author:
             return None
-        current = self._current_user()
+        current = lease_store.user_name(self._home)
         if not current:
             return None
         if current == author:
@@ -708,7 +695,7 @@ class PmBootstrap:
           (자기 컨텍스트는 pm_state/log 몫). `--done` 으로 release 된 idle 슬롯 섹션은
           활성 집합에 없어 배제된다(MF-1·codex·stale idle 노출 0). 활성 집합 판정불가(장부 부재)면
           필터 no-op(현행 표시 보존). 남는 타 슬롯 0개면 None(절 생략).
-        - 대시보드 부재/파싱 실패 → `_lease_others` 폴백(`{"mode":"lease","others":[…]}`).
+        - 대시보드 부재/읽기 실패(OSError) → `_lease_others` 폴백(`{"mode":"lease","others":[…]}`).
         - 어느 쪽도 타 PM 0개 → None(절 생략·graceful).
         """
         dash_file = pm_paths._dashboard_file(self._home)
@@ -718,19 +705,15 @@ class PmBootstrap:
             except OSError:
                 text = None
             if text is not None:
-                try:
-                    sections = dashboard.parse_dashboard_sections(text)
-                except Exception:
-                    sections = None
-                if sections is not None:
-                    bound = self._task_name
-                    active = bootstrap_history._active_leased_sessions(self._home)
-                    others = [
-                        {"session": key, "body": body}
-                        for key, body in sections
-                        if key != bound and (active is None or key in active)
-                    ]
-                    return {"mode": "dashboard", "others": others} if others else None
+                sections = dashboard.parse_dashboard_sections(text)
+                bound = self._task_name
+                active = bootstrap_history._active_leased_sessions(self._home)
+                others = [
+                    {"session": key, "body": body}
+                    for key, body in sections
+                    if key != bound and (active is None or key in active)
+                ]
+                return {"mode": "dashboard", "others": others} if others else None
         lease_others = bootstrap_history._lease_others(self._home, self._task_name)
         return {"mode": "lease", "others": lease_others} if lease_others else None
 
@@ -825,14 +808,13 @@ class PmBootstrap:
                 state_path=self._pm_state_display_path(),
             )
             print(markdown)
-            card = bootstrap_card._safe_command_card(
+            card = bootstrap_card._build_command_card_markdown(
                 self._home,
                 self._task_name,
                 environment=getattr(self, "_command_environment", None),
             )
-            if card:
-                print()
-                print(card)
+            print()
+            print(card)
             if task_info is not None:
                 task_info["slot_set"] = self._task_slot_set_rows(
                     task_info["name"], leases=task_slot_leases
@@ -850,11 +832,8 @@ class PmBootstrap:
         return 0
 
     def _reject_worktree_copy_anchor(self) -> bool:
-        """실행 Home의 등록 worktree 앵커를 검사한다. 판정 실패는 기존 fail-soft를 유지한다."""
-        try:
-            pm_home = pm_paths._pm_home_worktree_misanchor(self._home)
-        except Exception:
-            return False
+        """실행 Home의 등록 worktree 앵커를 검사한다. 판정 실패는 전파한다."""
+        pm_home = pm_paths._pm_home_worktree_misanchor(self._home)
         if pm_home is None:
             return False
         print(
@@ -1058,7 +1037,7 @@ class PmBootstrap:
                 f"[중단] task {task!r} 생성/재개 중 pm_state 보장에 실패했습니다 — {exc}. task 장부만 있는 반쪽 상태로 진행하지 않습니다.",
                 file=sys.stderr,
             )
-            return None
+            raise
         pm_state = pm_paths.task_dir(self._home, task) / "pm_state.md"
         if not pm_state.exists():
             print(
@@ -1085,7 +1064,7 @@ class PmBootstrap:
             if resolved is None:
                 raise RuntimeError("slots_for_task가 None을 반환")
             return list(resolved)
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             print(
                 f"[중단·진입검증] task {task!r} 보유 슬롯 장부 조회 실패 — {exc}. 실제 0슬롯으로 간주하지 않고 부분 dump 없이 중단합니다.",
                 file=sys.stderr,
@@ -1139,19 +1118,15 @@ class PmBootstrap:
     def _task_slot_set_rows(
         self, task: str, *, leases: list | None = None
     ) -> list[dict]:
-        """task 보유 슬롯 전수 열거 행렬 데이터 (fail-soft·부작용 0).
+        """task 보유 슬롯 전수 열거 행렬 데이터 (부작용 0).
 
         `slots_for_task(task)` → 슬롯별 {slot·repo·branch·head·record_live·dirty} dict 리스트를
         돌려준다 — 진입 검증(_validate_task_slot_set) **통과 후** surface 렌더(markdown 행렬·JSON)가
         소비한다. run()은 최초 strict 조회·검증을 통과한 `leases` 스냅샷을 주입해 재조회 사이
         장부 변경/오류로 surface가 검증 결과와 어긋나는 일을 막는다. 직접 호출 호환 경로만
-        slots_for_task를 조회하며, 미제공/실패는 빈 리스트(→ "(없음)" 분기·graceful).
-        매 필드 조회는 fail-soft다."""
+        slots_for_task를 조회한다(빈 결과는 "(없음)" 분기). 조회 실패는 전파한다."""
         if leases is None:
-            try:
-                leases = list(pool_store.slots_for_task(self._home, task) or [])
-            except Exception:
-                return []
+            leases = list(pool_store.slots_for_task(self._home, task) or [])
         else:
             leases = list(leases)
         rows: list[dict] = []

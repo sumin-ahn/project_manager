@@ -13,10 +13,9 @@ import shutil
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import pm_paths, ticket_store
+from pm_engine.infra import lease_store, pm_paths, ticket_store
 from pm_engine.domain import adr_rules
 from pm_engine.app import adr_issue, wiki_lint
-from pm_engine.cli import adr_cmd
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -113,7 +112,7 @@ def test_cli_author_defaults_to_identity_resolution(adr, capsys, monkeypatch, wi
     """--author 생략 → board identity_tag 해소값 채움·명시 인자 우선·해소 불가는 현행 빈 값 (T-0376)."""
     decisions, log = wiki
     monkeypatch.setattr(adr, "REPO", decisions.parents[2])
-    monkeypatch.setattr(adr_cmd, "_resolve_default_author", lambda _home: "alice/pm_1")
+    monkeypatch.setattr(lease_store, "identity_tag", lambda _home: "alice/pm_1")
     rc = adr.main(["new", "--title", "T1", "--slug", "auto-author"])
     assert rc == 0
     capsys.readouterr()
@@ -129,7 +128,7 @@ def test_cli_author_defaults_to_identity_resolution(adr, capsys, monkeypatch, wi
     made2 = next(p for p in decisions.glob("*explicit-author*"))
     assert "author: bob/pm_2" in made2.read_text(encoding="utf-8")
     # 해소 불가(None) → 현행 빈 값 경로 유지(발행은 성공).
-    monkeypatch.setattr(adr_cmd, "_resolve_default_author", lambda _home: None)
+    monkeypatch.setattr(lease_store, "identity_tag", lambda _home: None)
     rc = adr.main(["new", "--title", "T3", "--slug", "no-author"])
     assert rc == 0
     capsys.readouterr()

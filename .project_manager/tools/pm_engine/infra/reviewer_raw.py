@@ -129,8 +129,8 @@ def _abort_pre_spawn_raw(
       그것 하나다.
     · 레코드가 있으면 raw 에 중단 사유를 박제하고 레코드를 실패 축으로 마감한다.
 
-    정리 실패는 loud 경고만 남기고 삼킨다 — 이 구간의 **주 예외**(호출부가 다시 던진다)가 진단을
-    소유하고, 정리 예외가 그것을 덮으면 원인이 사라진다."""
+    raw 박제·레코드 마감 실패는 전파한다 — 호출부가 다시 던지려던 주 예외는 traceback 의
+    `__context__` 로 남는다. 선점 파일 unlink 의 OSError 만 경고로 남긴다."""
     if record_id is None or ledger_path is None:
         try:
             raw_path.unlink()
@@ -141,29 +141,14 @@ def _abort_pre_spawn_raw(
                 file=sys.stderr,
             )
         return
-    try:
-        _write_reserved_output(
-            raw_path,
-            f"[스폰 전 중단 — 자식 프로세스 시작 없음(호출 0·과금 0): {reason}]",
-            local_conf_path=local_conf_path,
-            resolved_profile=resolved_profile,
-            target=target,
-            )
-    except Exception as exc:  # noqa: BLE001 — 정리 실패가 주 예외를 덮지 않는다
-        print(
-            f"경고: 스폰 전 중단 사유의 raw 박제 실패 ({type(exc).__name__}: {exc}) — "
-            f"빈 파일이 남았습니다: {raw_path}",
-            file=sys.stderr,
-        )
-    try:
-        raw_output.finish_raw_record(
-            ledger_path, record_id,
-            rc=_PRE_SPAWN_ABORT_RC, elapsed_sec=elapsed, silence_sec=None,
-        )
-    except Exception as exc:  # noqa: BLE001 — 정리 실패가 주 예외를 덮지 않는다
-        cause = f"{type(exc).__name__}: {exc}"
-        print(
-            f"경고: 스폰 전 중단 레코드 마감 실패 ({cause}) — raw 장부에 "
-            f"미마감 레코드가 남았습니다(실제로는 스폰 0): {ledger_path}",
-            file=sys.stderr,
-        )
+    _write_reserved_output(
+        raw_path,
+        f"[스폰 전 중단 — 자식 프로세스 시작 없음(호출 0·과금 0): {reason}]",
+        local_conf_path=local_conf_path,
+        resolved_profile=resolved_profile,
+        target=target,
+    )
+    raw_output.finish_raw_record(
+        ledger_path, record_id,
+        rc=_PRE_SPAWN_ABORT_RC, elapsed_sec=elapsed, silence_sec=None,
+    )

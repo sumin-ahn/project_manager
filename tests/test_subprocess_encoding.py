@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from pm_engine.app import import_fill
 from pm_engine.app import import_render
-from pm_engine.infra import install_conf
 
 from pm_engine.infra import pm_paths
 from pm_engine.infra import review_diff
@@ -238,16 +237,16 @@ def test_bench_weight_subprocess_passes_utf8(bench_weight, monkeypatch):
 
 
 def test_pm_substitution_py_matches_detected(pm_import):
-    """치환맵의 {{PY}} 가 _detected_py() 결과와 일치(하드코딩 상수 아님)."""
+    """치환맵의 {{PY}} 가 _detect_py() 결과와 일치(하드코딩 상수 아님)."""
     sub = import_render._substitution_map("Proj", REPO, "2026-06-14")
-    assert sub["{{PY}}"] == install_conf._detected_py()
+    assert sub["{{PY}}"] == python_env._detect_py()
 
 
 def _stub_interp_runs(monkeypatch):
     """후보 실행검증(_interp_runs → subprocess.run)을 결정화한다.
 
     T-0022 후 _detect_py 는 후보를 `subprocess.run([cmd,"--version"])` 으로 실행검증한다.
-    pm_import._detected_py 는 board 를 fresh-load 하므로 전역 subprocess.run 을 patch 해
+    pm_import._detect_py 는 board 를 fresh-load 하므로 전역 subprocess.run 을 patch 해
     그 fresh board 까지 흔든다 — 실 인터프리터 비의존. (os.name 은 건드리지 않는다: posix
     강제는 Windows 에서 pathlib 을 깨뜨림. 대신 fake_which 가 `py`·`python3` 를 부재로
     돌려 OS 무관하게 'python' 만 후보로 통과시킨다.)
@@ -264,7 +263,7 @@ def _stub_interp_runs(monkeypatch):
 
 
 def test_detected_py_routes_through_detection_not_hardcoded(pm_import, monkeypatch):
-    """py·python3 부재·python 존재 환경을 강제하면 _detected_py 가 'python' 을 반환.
+    """py·python3 부재·python 존재 환경을 강제하면 _detect_py 가 'python' 을 반환.
 
     수정 전(DEFAULT_PY='python3' 하드코딩)에서는 이 단언이 깨진다 — 탐지 경로(board.
     _detect_py)를 실제로 경유함을 증명. ambient PYTHONUTF8/PATH/OS 와 무관하게 결정적.
@@ -276,7 +275,7 @@ def test_detected_py_routes_through_detection_not_hardcoded(pm_import, monkeypat
 
     _stub_interp_runs(monkeypatch)
     monkeypatch.setattr(shutil, "which", fake_which)
-    assert install_conf._detected_py() == "python"
+    assert python_env._detect_py() == "python"
 
 
 def test_substitution_py_uses_python_when_python3_absent(pm_import, monkeypatch):
@@ -300,15 +299,35 @@ class _RcRecorder:
     """subprocess.Popen 대역 — env kwargs 를 기록하고 returncode 0 을 돌려준다.
 
     pytest 자식을 실제 기동하지 않고 env 전달만 검증한다. 회귀 러너는 출력을 tee(실시간 echo +
-    캡처)하려고 `Popen` 으로 띄우므로 대역도 스트림 + `wait()` 를 갖춘 프로세스 형태다.
+    캡처)하려고 `Popen` 으로 띄우므로 대역도 스트림 + `wait()` 를 갖춘 프로세스 형태다. 훅 위치
+    권위 해소는 `subprocess.run` 으로 같은 `Popen` 을 지나므로 컨텍스트 관리자·`communicate()`·
+    `poll()` 까지 실물과 같은 모양을 갖춘다(rc 0·빈 출력).
     """
 
     class _Proc:
+        args = ()
+        returncode = 0
+
         def __init__(self):
             self.stdout = io.StringIO("")
             self.stderr = io.StringIO("")
 
-        def wait(self):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def communicate(self, input=None, timeout=None):
+            return "", ""
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            return None
+
+        def wait(self, timeout=None):
             return 0
 
     def __init__(self):
@@ -433,10 +452,16 @@ def test_common_codepage_noop_on_posix(console_encoding, monkeypatch):
 
 
 def test_codepage_best_effort_swallows_exception(console_encoding, monkeypatch):
-    """ctypes 호출이 예외(콘솔 핸들 없음 등)를 던져도 조용히 통과(best-effort)."""
+    """ctypes 호출 예외(콘솔 핸들 없음 등)는 삼키지 않고 전파한다."""
     monkeypatch.setattr(console_encoding, "_probe_os_name", lambda: "nt")
 
     class _Boom:
+        def GetConsoleOutputCP(self):  # noqa: N802
+            return 949
+
+        def GetConsoleCP(self):  # noqa: N802
+            return 949
+
         def SetConsoleOutputCP(self, cp):  # noqa: N802
             raise OSError("no console handle")
 
@@ -444,8 +469,8 @@ def test_codepage_best_effort_swallows_exception(console_encoding, monkeypatch):
             raise OSError("no console handle")
 
     monkeypatch.setattr(console_encoding, "_get_kernel32", lambda: _Boom())
-    # 예외가 새어나오면 이 호출이 raise — pytest 가 실패로 잡는다.
-    console_encoding._set_console_codepage_utf8()
+    with pytest.raises(OSError, match="no console handle"):
+        console_encoding._set_console_codepage_utf8()
 
 
 def test_common_stream_reconfigure_is_guarded_and_best_effort(console_encoding, monkeypatch):

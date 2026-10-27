@@ -228,7 +228,7 @@ def format_changed_overlap_warning(paths: Sequence[str]) -> str:
 class ScopeAudit(NamedTuple):
     """위임 **전체 단위**(primary + 폴백 attempt 포함) 범위 판정 입력."""
 
-    touches: tuple[str, ...] | None  # None이면 generic 축만 강등(ticket 준비 실패)
+    touches: tuple[str, ...]
     before: delegate_scope_rules.WorktreeState
     workspace: Path               # git toplevel(=--cwd 가 하위 디렉토리여도 판정 기준은 루트)
     pm_root: Path                # --cwd lease에서 해소한 board/config 소유 PM 홈
@@ -287,7 +287,7 @@ def begin_scope_audit(
     *,
     pm_root: Path | None = None,
     adapter_roots: Sequence[str],
-) -> ScopeAudit | None:
+) -> ScopeAudit:
     """위임 실행 **직전** worktree 상태를 캡처한다.
 
     호출 시점은 실행-전 게이트(매핑·재앵커·dry-run)를 **모두 통과한
@@ -300,28 +300,15 @@ def begin_scope_audit(
     (같은 세션이 claim 중인 다른 ticket 과 겹치는 선언). 이 함수는 그 축을 계산하지 않는다 —
     호출부가 회수 시점 판정용으로 결과에 실어 준다(``_replace``).
 
-    공통 베이스라인(toplevel·worktree 캡처)이 실패하면 전후 차이를 만들 수 없어 generic과
-    어댑터 두 축이 모두 죽는다. 반면 board 로드·ticket 부재/손상으로 touches 준비만 실패하면
-    generic 축만 loud 강등하고, 같은 worktree 캡처를 쓰는 어댑터 축은 보존한다. 일반 실패는 위임을 막지 않고 경고한다."""
+    공통 베이스라인(toplevel·worktree 캡처)·내용 신호 확인·ticket touches 준비의 예외는 전파해
+    하네스 실행 전에 위임을 실패시킨다."""
     roots = tuple(adapter_roots)
-    try:
-        workspace = delegate_scope_git.resolve_workspace_root(cwd)
-        before = delegate_scope_git.capture_worktree_state(workspace)
-    except Exception as exc:  # noqa: BLE001 — 공통 캡처 실패만 두 축을 함께 끈다.
-        print(
-            "경고: 위임 범위 판정 준비 실패"
-            f"(공통 worktree 캡처: {exc}) — generic·어댑터 두 축 모두 판정 불가, 비차단 진행.",
-            file=sys.stderr,
-        )
-        return None
+    workspace = delegate_scope_git.resolve_workspace_root(cwd)
+    before = delegate_scope_git.capture_worktree_state(workspace)
 
     # 해시 대상이 있는데 지문을 하나도 못 구했으면 이미 dirty 한 파일의 재수정을 못 잡는다 —
     # 강등된 채로 조용히 통과시키지 않는다(축소된 감지력을 PM 이 알아야 한다).
-    try:
-        degraded = delegate_scope_git.content_signal_missing(before, workspace)
-    except Exception as exc:  # noqa: BLE001 — 보강 신호 진단 실패로 두 판정축을 버리지 않는다.
-        degraded = False
-        print(f"경고: 내용 해시 보강 상태 확인 실패({exc}) — 비차단 진행.", file=sys.stderr)
+    degraded = delegate_scope_git.content_signal_missing(before, workspace)
     if degraded:
         print(
             "경고: 내용 해시 보강 신호 없음 — 이미 dirty 한 파일의 재수정은 감지 불가"
@@ -329,22 +316,13 @@ def begin_scope_audit(
             file=sys.stderr,
         )
 
-    try:
-        resolved_pm_root = pm_root or home.root
-        touches = delegate_scope_git.ticket_touches(
-            home, ticket,
-        ) if ticket else ()
-        touches = _with_template_propagation(
-            touches, workspace=workspace, pm_root=resolved_pm_root,
-        )
-    except Exception as exc:  # noqa: BLE001 — touches의 형제인 어댑터 축은 보존한다.
-        touches = None
-        print(
-            "=== ⚠ 위임 범위 판정 축 강등 ===\n"
-            f"ticket touches 준비 실패({exc}) — generic 범위 축만 판정할 수 없습니다. "
-            "공통 worktree 캡처가 살아 있어 어댑터 편집 축은 계속 판정합니다.",
-            file=sys.stderr,
-        )
+    resolved_pm_root = pm_root or home.root
+    touches = delegate_scope_git.ticket_touches(
+        home, ticket,
+    ) if ticket else ()
+    touches = _with_template_propagation(
+        touches, workspace=workspace, pm_root=resolved_pm_root,
+    )
     return ScopeAudit(touches, before, workspace, pm_root or home.root, roots)
 
 
@@ -395,72 +373,56 @@ def _format_adapter_edit_warning(paths: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
-def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
+def report_scope_audit(audit: ScopeAudit, role: str) -> None:
     """위임 **회수 시점**(모든 attempt 종료 후 1회)의 변경을 두 독립 축으로 loud 경고한다.
 
     축 1은 ticket touches 기반 범위 밖 변경, 축 2는 touches와 독립적인 역할 공통 어댑터 편집
     금지 위반이다. 축 1에는 병렬 위임 교집합(실행 전 경고한 겹침 경로)이 실제로 바뀌었는지
     1줄이 따라붙는다 — 같은 전후 캡처를 소비하는 같은 축의 사후 신호다.
-    반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다. 한 축의 판정
-    실패가 다른 축까지 지우지 않으며 둘 다 비차단이다. 쓰기 허용 역할집합은 이 모듈의
+    경고는 반환값/rc 를 바꾸지 않는다 — 격리/복원/수용 판정은 PM 몫이다. 판정 예외는 전파한다
+    (이미 출력한 축의 경고는 남는다). 쓰기 허용 역할집합은 이 모듈의
     WRITE_ROLES 를 주입해 단일 출처로 쓴다(감지기 기본값과의 드리프트는 테스트가 막는다).
     raw 박제 기본 `.project_manager/.local/delegate/`는 gitignored라 판정에 안 잡히며,
     `--output-dir`를 repo 안의 비-ignore 경로로 주면 그 산출물도
-    '위임이 만든 변경'으로 잡힌다(의도). 일반 판정 실패는 경고하고 비차단 진행한다.
+    '위임이 만든 변경'으로 잡힌다(의도).
 
     형제-가지 여집합 결정: 어댑터 축은 ``--ticket``이 있을 때만 돌지 않는다. 생략 실행에서도
     반드시 돌며, 그때 같은 경로가 "허용 0의 범위 밖"과 "역할 공통 금지 위반" 두 블록에 나오는
     중복은 의도적이다. 한 블록으로 합치면 PM이 정책 성격을 오판하므로 경로 중복보다 축 식별을
     우선한다."""
-    if audit is None:
-        return
-    try:
-        after = delegate_scope_git.capture_worktree_state(audit.workspace)
-        if delegate_scope_rules.head_moved(audit.before, after):
-            # 커밋 자체가 역할 계약 위반 신호다(위임 역할은 commit/push 금지) — 범위 안이든 밖이든
-            # 별도로 알린다. 커밋된 경로는 아래 판정 입력에 합산된다(worktree 는 clean 이라 무증거).
-            print(
-                "경고: 위임 중 커밋이 발생했습니다(위임 역할은 commit 금지) — "
-                f"HEAD {audit.before.head or '(없음)'} → {after.head or '(없음)'}. "
-                "커밋된 변경도 범위 판정에 합산합니다.",
-                file=sys.stderr,
-            )
-    except Exception as exc:  # noqa: BLE001 — 공통 캡처 실패면 두 축 모두 판정 불가.
-        print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
-        return
-
-    if audit.touches is not None or audit.overlap_paths:
-        try:
-            if audit.touches is not None:
-                paths = delegate_scope_git.out_of_scope_changes(
-                    audit.before, after,
-                    touches=audit.touches, role=role, pm_root=audit.pm_root,
-                    workspace=audit.workspace,
-                    write_roles=delegate_run_rules.WRITE_ROLES, on_drop=_warn_dropped_touch,
-                )
-                warning = delegate_scope_rules.format_warning(paths)
-                # **계산 직후 즉시** 출력한다 — 뒤따르는 교집합 계산이 실패해도 이미 확정된
-                # 범위-밖 신호가 함께 사라지면 "한 축 실패가 다른 축을 지우지 않는다"가 깨진다.
-                if warning:
-                    print(warning, file=sys.stderr)
-            # 교집합 축은 같은 전후 캡처를 소비하므로 같은 판정 경계 안에서 계산한다(같은
-            # 비차단 경고 하나). 위 출력이 선행하므로 이 축의 실패는 기존 신호를 못 지운다.
-            overlap_warning = format_changed_overlap_warning(
-                _changed_overlap_paths(audit, after, role)
-            )
-            if overlap_warning:
-                print(overlap_warning, file=sys.stderr)
-        except Exception as exc:  # noqa: BLE001 — 일반 판정 실패는 경고 후 비차단 진행.
-            print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
-
-    try:
-        adapter_paths = _adapter_edit_paths(
-            audit.before, after, workspace=audit.workspace,
-            roots=audit.adapter_roots,
+    after = delegate_scope_git.capture_worktree_state(audit.workspace)
+    if delegate_scope_rules.head_moved(audit.before, after):
+        # 커밋 자체가 역할 계약 위반 신호다(위임 역할은 commit/push 금지) — 범위 안이든 밖이든
+        # 별도로 알린다. 커밋된 경로는 아래 판정 입력에 합산된다(worktree 는 clean 이라 무증거).
+        print(
+            "경고: 위임 중 커밋이 발생했습니다(위임 역할은 commit 금지) — "
+            f"HEAD {audit.before.head or '(없음)'} → {after.head or '(없음)'}. "
+            "커밋된 변경도 범위 판정에 합산합니다.",
+            file=sys.stderr,
         )
-    except Exception as exc:  # noqa: BLE001 — 어댑터 축만 강등, 기존 범위 축은 보존.
-        print(f"경고: 어댑터 편집 경고 축 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
-        return
+
+    paths = delegate_scope_git.out_of_scope_changes(
+        audit.before, after,
+        touches=audit.touches, role=role, pm_root=audit.pm_root,
+        workspace=audit.workspace,
+        write_roles=delegate_run_rules.WRITE_ROLES, on_drop=_warn_dropped_touch,
+    )
+    warning = delegate_scope_rules.format_warning(paths)
+    # **계산 직후 즉시** 출력한다 — 뒤따르는 교집합 계산이 실패해도 이미 확정된 범위-밖 신호는
+    # stderr 에 남는다.
+    if warning:
+        print(warning, file=sys.stderr)
+    # 교집합 축은 같은 전후 캡처를 소비하는 같은 축의 사후 신호다.
+    overlap_warning = format_changed_overlap_warning(
+        _changed_overlap_paths(audit, after, role)
+    )
+    if overlap_warning:
+        print(overlap_warning, file=sys.stderr)
+
+    adapter_paths = _adapter_edit_paths(
+        audit.before, after, workspace=audit.workspace,
+        roots=audit.adapter_roots,
+    )
     if adapter_paths is None:
         print(
             "=== ⚠ 어댑터 편집 경고 축 강등 ===\n"

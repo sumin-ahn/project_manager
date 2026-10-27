@@ -1113,7 +1113,7 @@ _S9_FLAT_UPDATER_ORDER = (
     ("app/update_finish.py", ("fill_self_repo_row", "drop_self_lease_rows", "_LEGACY_SLOT_SESSION_RE", "idle_legacy_slot_session_rows",)),
     ("app/conf_apply.py", ("ReasoningPruneError", "prune_unavailable_reasoning",)),
     ("app/entry_doc_migration.py", ("migrate_renamed_conf_keys", "migrate_entry_doc", "_print_entry_doc_migration_finding",)),
-    ("app/update_adapters.py", ("_ADAPTER_CONFIG_ACCEPT_HINT", "_ADAPTER_CONFIG_LIST_HINT", "_ADAPTER_CONFIG_WINDOWS_HINT", "_ADAPTER_BACKUP_HINT", "_ADAPTER_CONFIG_DEST_CANDIDATES", "_has_adapter_config_candidate", "_instance_owned_template_delta_lines", "_print_instance_owned_template_delta", "sync_adapter_configs", "apply_harness_ctx_limits", "_adapter_config_gate_failed", "_print_adapter_config_finding", "check_adapter_hook_sets", "_unverified_hook_scope_paths", "_change_dest_paths", "refuse_partial_hook_set_scope", "_adapter_hook_set_gate_failed", "_print_adapter_hook_set_finding", "_read_hook_artifact", "_EXEC_BIT_MEANINGFUL", "_hook_artifact_executable", "_protected_hook_in_sync", "reinstall_protected_hooks", "_print_protected_hook_reinstall_finding", "_refuse_missing_sources",)),
+    ("app/update_adapters.py", ("_ADAPTER_CONFIG_ACCEPT_HINT", "_ADAPTER_CONFIG_LIST_HINT", "_ADAPTER_CONFIG_WINDOWS_HINT", "_ADAPTER_BACKUP_HINT", "_ADAPTER_CONFIG_DEST_CANDIDATES", "_has_adapter_config_candidate", "_instance_owned_template_delta_lines", "_print_instance_owned_template_delta", "sync_adapter_configs", "apply_harness_ctx_limits", "_adapter_config_gate_failed", "_print_adapter_config_finding", "check_adapter_hook_sets", "_change_dest_paths", "refuse_partial_hook_set_scope", "_adapter_hook_set_gate_failed", "_print_adapter_hook_set_finding", "_read_hook_artifact", "_EXEC_BIT_MEANINGFUL", "_hook_artifact_executable", "_protected_hook_in_sync", "reinstall_protected_hooks", "_print_protected_hook_reinstall_finding", "_refuse_missing_sources",)),
     ("app/engine_transfer.py", ("COMPLETION_ENV", "_COMPLETION_FIELDS", "CompletionHandoffError", "_take_completion_handoff",)),
     ("domain/manifest_rules.py", ("_is_engine_code",)),
     ("app/update_plan.py", ("_engine_code_plan",)),
@@ -1264,11 +1264,11 @@ def _flat_updater_source() -> str:
     current_console, frozen_console = _ENTRY_FORM_CONSOLE_REVERSAL
     assert cli_body.count(current_console) == 1, current_console
     cli_body = cli_body.replace(current_console, frozen_console, 1)
-    return _reverse_engine_rev_marker_removal(_reverse_engine_package_replace(
+    return _reverse_engine_rev_marker_removal(_reverse_engine_package_replace(_reverse_except_cleanup(
         shebang + cli[:doc_end] + "\nfrom __future__ import annotations\n\n\n"
         + "".join(_PRE_S9_UPDATE_IMPORTS) + repo_line + _PRE_S9_FLAT_ENTRY_HELPERS
         + "\n\n" + unqualify("\n\n".join(parts)) + "\n\ndef _main(" + unqualify(cli_body.rstrip("\n") + "\n")
-        + unqualify(entry)))
+        + unqualify(entry))))
 
 
 # 엔진 패키지 디렉터리 교체(교체 행 `replace-dir`·계획 값 `package_plan`·락 안 게시)는 두 동결 세대 updater 에
@@ -1796,6 +1796,438 @@ _ENGINE_REV_MARKER_REVERSALS = (
 def _reverse_engine_rev_marker_removal(source: str) -> str:
     """버전 대조 분기 삭제 역적용 — 원문 쌍의 현행 쪽은 각각 정확히 한 번 해소돼야 한다."""
     for current, legacy in _ENGINE_REV_MARKER_REVERSALS:
+        assert source.count(current) == 1, current
+        source = source.replace(current, legacy, 1)
+    return source
+
+
+# 넓은 예외 처리부 정리 역적용. 두 동결 세대 updater 는 계획·어댑터·마이그레이션 원문에 넓은 처리부(실패를
+# unavailable·note·skip 으로 접는 갈래)와 그 갈래만 쓰던 정의(`_unverified_hook_scope_paths`)를 갖고 있었다.
+# 현행 원문에서 그 처리부를 지우거나 좁혔으므로 합성본에서 그 세대 원문으로 되돌려 지문을 그대로 맞춘다.
+# 원문 쌍은 (현행, 그 세대)이고 정리 전후 합성본의 줄 단위 차이에서 만들었다. 현행 쪽은 합성본에서 정확히
+# 한 번 해소돼야 한다. 다른 역적용 쌍은 정리 전 원문을 기준으로 하므로 이 역적용을 가장 먼저 건다.
+_EXCEPT_CLEANUP_REVERSALS = (
+    (
+        '    지점이 부른다·§교체 절차). 파일 부재 → {}, 읽기 실패는 전파한다.\n'
+        '\n'
+        '    파일이 없으면 공용 로더를 부르지 않고 {} 다(`print_conf_migration_notice` 와 같은 규칙) — conf 가\n'
+        '    없는 트리(init 전·출하 템플릿)에서도 갱신 입구가 계획을 세울 수 있어야 한다.\n'
+        ,
+        '    지점이 부른다·§교체 절차). 미존재/읽기 실패 → {}.\n'
+        '\n'
+        '    파일이 없으면 형제 로더를 읽지 않고 {} 다(`print_conf_migration_notice` 와 같은 규칙) — 갱신 입구가\n'
+        '    계획에 넘길 conf 를 한 번 읽는데, conf 가 없는 트리(init 전·출하 템플릿·형제가 빠진 복구 트리)에서\n'
+        '    없는 파일을 읽으려고 형제를 싣다 멈추면 그 형제를 되살릴 동기 자신이 죽는다.\n'
+    ),
+    (
+        '    dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"\n'
+        '    dest_owned = manifest_rules._core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))\n'
+        '    harness_by_flavor = {\n'
+        '        template_dir: harness\n'
+        '        for harness, template_dirs in install_rules.HARNESS_TEMPLATE_DIRS.items()\n'
+        '        for template_dir in template_dirs\n'
+        '    }\n'
+        '    entries: list = []\n'
+        ,
+        '    dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"\n'
+        '    try:\n'
+        '        dest_owned = manifest_rules._core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))\n'
+        '        harness_by_flavor = {\n'
+        '            template_dir: harness\n'
+        '            for harness, template_dirs in install_rules.HARNESS_TEMPLATE_DIRS.items()\n'
+        '            for template_dir in template_dirs\n'
+        '        }\n'
+        '    except Exception as exc:  # noqa: BLE001 — 파생 실패는 현행 거동 유지(sync 자체는 계속).\n'
+        '        # 조용히 접지 않는다 — 파생이 꺼지면 guest 엔진 파일이 그 실행에서 다시 동결되는데,\n'
+        '        #   출력이 없으면 "원래 갱신 대상이 아니다" 와 구분되지 않는다.\n'
+        '        print(f"note: guest 엔진 행 파생을 건너뛴다(fail-soft·엔진 동기는 계속): {exc}",\n'
+        '              file=sys.stderr)\n'
+        '        return [], []\n'
+        '    entries: list = []\n'
+    ),
+    (
+        '        adapter_dirs, root_doc = install_rules.ADD_HARNESS_ADAPTER[harness]\n'
+        '        lines = install_source._guest_manifest_lines(\n'
+        '            template_root, adapter_dirs, root_doc, dest_owned)\n'
+        '        resolved.append(flavor)\n'
+        ,
+        '        adapter_dirs, root_doc = install_rules.ADD_HARNESS_ADAPTER[harness]\n'
+        '        try:\n'
+        '            lines = install_source._guest_manifest_lines(\n'
+        '                template_root, adapter_dirs, root_doc, dest_owned)\n'
+        '        except Exception as exc:  # noqa: BLE001 — 한 flavor 실패가 나머지를 막지 않는다.\n'
+        '            print(f"note: guest flavor {flavor} 의 엔진 행 파생 실패(그 flavor 만 건너뛴다): {exc}",\n'
+        '                  file=sys.stderr)\n'
+        '            continue\n'
+        '        resolved.append(flavor)\n'
+    ),
+    (
+        '    for idx, b64 in enumerate(_OLD_OPENCODE_AGENTS_GENERATIONS):\n'
+        '        gen_text = _decode_entry_doc_generation(b64)\n'
+        '        captured = _match_entry_doc_generation(gen_text, adopter_agents, operational_keys)\n'
+        ,
+        '    for idx, b64 in enumerate(_OLD_OPENCODE_AGENTS_GENERATIONS):\n'
+        '        try:\n'
+        '            gen_text = _decode_entry_doc_generation(b64)\n'
+        '        except Exception:  # noqa: BLE001 — 세대 디코드 실패는 그 세대 skip(다음 세대 시도).\n'
+        '            continue\n'
+        '        captured = _match_entry_doc_generation(gen_text, adopter_agents, operational_keys)\n'
+    ),
+    (
+        '        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)\n'
+        '    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 세대 델타 판정 실패만 advisory 줄, 그 밖 전파.\n'
+        '        return [\n'
+        ,
+        '        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud.\n'
+        '        return [\n'
+    ),
+    (
+        '\n'
+        '    `write=False`(dry-run)는 판정만 한다(파일·원장 미변경). 판정 채널의 이름 있는 실패(OSError·\n'
+        '    ValueError·AdapterConfigChannelUnavailable)는 `status="unavailable"` 로 반환한다. 엔진 파일\n'
+        '    적용은 되돌리지 않지만 상위 완료 게이트는 이를 non-green 으로 소비한다. 그 밖 예외는 전파한다."""\n'
+        '    result = {"status": "ok", "updated": [], "preserved": [], "drift": [],\n'
+        ,
+        '\n'
+        '    `write=False`(dry-run)는 판정만 한다(파일·원장 미변경). 판정 실패는\n'
+        '    `status="unavailable"` 로 반환한다. 엔진 파일 적용은 되돌리지 않지만 상위 완료 게이트는\n'
+        '    이를 non-green 으로 소비한다."""\n'
+        '    result = {"status": "ok", "updated": [], "preserved": [], "drift": [],\n'
+    ),
+    (
+        '        judgments = adapter_report.judge_adapter_configs(dest_root, source_root)\n'
+        '    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 판정 채널 실패만 unavailable, 그 밖 전파.\n'
+        '        # 판정 불가는 `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구한다(이미 착지한\n'
+        ,
+        '        judgments = adapter_report.judge_adapter_configs(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다.\n'
+        '        # 판정 불가는 `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구한다(이미 착지한\n'
+    ),
+    (
+        '            adapter_accept.record_adapter_baseline(dest_root, source_root)\n'
+        '        except (OSError, ValueError) as exc:  # 기준선 기록 실패는 degraded, 재판정이 rc1로 승격.\n'
+        '            result["degraded"].append({\n'
+        ,
+        '            adapter_accept.record_adapter_baseline(dest_root, source_root)\n'
+        '        except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격.\n'
+        '            result["degraded"].append({\n'
+    ),
+    (
+        '        final_judgments = adapter_report.judge_adapter_configs(dest_root, source_root)\n'
+        '    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 재판정 채널 실패만 unavailable(게이트 red), 그 밖 전파.\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n'
+        ,
+        '        final_judgments = adapter_report.judge_adapter_configs(dest_root, source_root)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red.\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n'
+    ),
+    (
+        '    발화하므로 갱신 사실과 후속 행동이 같은 자리에서 보여야 한다. 소견이 없으면(정상·전부 최신)\n'
+        '    무출력이지만, **`unavailable` 은 조용히 넘기지 않는다** — 채널이 안 돌았다는 건 상류 동작\n'
+        '    fix 가 이 채택자에 안 갔다는 뜻이라, 침묵하면 그 사실을 알 방법이 아예 없다."""\n'
+        '    status = result.get("status")\n'
+        ,
+        '    발화하므로 갱신 사실과 후속 행동이 같은 자리에서 보여야 한다. 소견이 없으면(정상·전부 최신)\n'
+        '    무출력이지만, **`unavailable` 은 조용히 넘기지 않는다**(형제 `_print_protected_hook_reinstall_\n'
+        '    finding` 동형) — 채널이 안 돌았다는 건 상류 동작 fix 가 이 채택자에 안 갔다는 뜻이라, 침묵하면\n'
+        '    그 사실을 알 방법이 아예 없다."""\n'
+        '    status = result.get("status")\n'
+    ),
+    (
+        '\n'
+        '    판정 예외는 전파한다 — 앞 단계(엔진 파일 적용)는 남고 같은 명령 재실행이 나머지를 수행한다."""\n'
+        '    result: dict = {"findings": [], "entrypoints": []}\n'
+        '    # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은\n'
+        '    #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라\n'
+        '    #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**\n'
+        '    #   (문구는 `hook_sets.hook_set_query_fallback_lines` 단일 진실 — pm-config `--check` 와 같다).\n'
+        '    generation = hook_sets.hook_set_declarations(home, source_root)\n'
+        '    for line in hook_sets.hook_set_query_fallback_lines(generation):\n'
+        '        print(line, file=sys.stderr)\n'
+        '    findings = hook_sets.judge_adapter_hook_sets(\n'
+        '        dest_root, source_root, declarations=generation.declarations)\n'
+        '    remedy_lines = hook_sets.hook_set_remedy_lines\n'
+        '    # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면\n'
+        '    #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.\n'
+        '    entrypoint_lines = hook_sets.hook_entrypoint_advisory_lines\n'
+        '    entrypoint_findings = hook_sets.judge_adapter_hook_entrypoints(\n'
+        '        dest_root, source_root, declarations=generation.declarations)\n'
+        '    result["findings"] = [\n'
+        ,
+        '\n'
+        '    판정 실패는 `status="unavailable"` 로 내린다(형제 `sync_adapter_configs` 와 같은 fail-soft\n'
+        '    — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다)."""\n'
+        '    result: dict = {"status": "ok", "findings": [], "entrypoints": [], "reason": None}\n'
+        '    try:\n'
+        '        # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은\n'
+        '        #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라\n'
+        '        #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**\n'
+        '        #   (문구는 `hook_sets.hook_set_query_fallback_lines` 단일 진실 — pm-config `--check` 와 같다).\n'
+        '        generation = hook_sets.hook_set_declarations(home, source_root)\n'
+        '        for line in hook_sets.hook_set_query_fallback_lines(generation):\n'
+        '            print(line, file=sys.stderr)\n'
+        '        findings = hook_sets.judge_adapter_hook_sets(\n'
+        '            dest_root, source_root, declarations=generation.declarations)\n'
+        '        remedy_lines = hook_sets.hook_set_remedy_lines\n'
+        '        # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면\n'
+        '        #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.\n'
+        '        entrypoint_lines = hook_sets.hook_entrypoint_advisory_lines\n'
+        '        entrypoint_findings = hook_sets.judge_adapter_hook_entrypoints(\n'
+        '            dest_root, source_root, declarations=generation.declarations)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.\n'
+        '        return {**result, "status": "unavailable", "reason": str(exc)}\n'
+        '    result["findings"] = [\n'
+    ),
+    (
+        '    ]\n'
+        '    return result\n'
+        '\n'
+        '\n'
+        ,
+        '    ]\n'
+        '    return result\n'
+        '\n'
+        '\n'
+        'def _unverified_hook_scope_paths(updated) -> tuple[str, ...]:\n'
+        '    """판정이 실패했을 때 **거부해야 할** 스코프 경로 — 훅 네임스페이스 하위 전량.\n'
+        '\n'
+        '    "결합 묶음을 검증할 수 없다" 는 인식 상태는 하나이므로 처분도 하나여야 한다(선언 미해소 폴백과\n'
+        '    같은 fail-closed)."""\n'
+        '    namespaces = tuple(f"{name}/" for name in hook_sets.hook_set_namespaces(None))\n'
+        '    return tuple(path for path in updated if path.startswith(namespaces))\n'
+        '\n'
+        '\n'
+    ),
+    (
+        '\n'
+        '    판정 예외는 전파한다(적용 전 판정이라 쓰기 0)."""\n'
+        '    updated = _change_dest_paths(scoped_changes)\n'
+        ,
+        '\n'
+        '    판정이 실패하면 훅 네임스페이스 하위 스코프를 거부하고 조용히 넘어가지 않는다(무진단 침묵 금지)."""\n'
+        '    updated = _change_dest_paths(scoped_changes)\n'
+    ),
+    (
+        '    unverified: tuple[str, ...] = ()\n'
+        '    generation = hook_sets.hook_set_declarations(home, source_root, required=True)\n'
+        '    if generation.declarations is None:\n'
+        '        # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히\n'
+        '        #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만\n'
+        '        #   있는 묶음은 정의상 로컬이 모르므로, membership 으로 좁히면 지금 닫으려는\n'
+        '        #   케이스가 그대로 빠져나간다. 훅이 사는 **네임스페이스** 하위를 건드리면 전부\n'
+        '        #   거부하고, 훅과 무관한 경로는 종전대로 통과시킨다.\n'
+        '        generation = hook_sets.hook_set_declarations(home, source_root)\n'
+        '        namespaces = tuple(\n'
+        '            f"{name}/" for name in\n'
+        '            hook_sets.hook_set_namespaces(generation.declarations))\n'
+        '        unverified = tuple(\n'
+        '            path for path in updated if path.startswith(namespaces))\n'
+        '    partial = hook_sets.hook_set_partial_update(\n'
+        '        updated, _change_dest_paths(planned_changes),\n'
+        '        declarations=generation.declarations)\n'
+        '    if unverified:\n'
+        ,
+        '    unverified: tuple[str, ...] = ()\n'
+        '    try:\n'
+        '        generation = hook_sets.hook_set_declarations(home, source_root, required=True)\n'
+        '        if generation.declarations is None:\n'
+        '            # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히\n'
+        '            #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만\n'
+        '            #   있는 묶음은 정의상 로컬이 모르므로, membership 으로 좁히면 지금 닫으려는\n'
+        '            #   케이스가 그대로 빠져나간다. 훅이 사는 **네임스페이스** 하위를 건드리면 전부\n'
+        '            #   거부하고, 훅과 무관한 경로는 종전대로 통과시킨다.\n'
+        '            generation = hook_sets.hook_set_declarations(home, source_root)\n'
+        '            namespaces = tuple(\n'
+        '                f"{name}/" for name in\n'
+        '                hook_sets.hook_set_namespaces(generation.declarations))\n'
+        '            unverified = tuple(\n'
+        '                path for path in updated if path.startswith(namespaces))\n'
+        '        partial = hook_sets.hook_set_partial_update(\n'
+        '            updated, _change_dest_paths(planned_changes),\n'
+        '            declarations=generation.declarations)\n'
+        '    except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.\n'
+        '        partial = None\n'
+        '        # **인식 상태는 위 폴백과 같다** — 결합 묶음을 검증할 방법이 없다. 그러니 처분도 같아야\n'
+        '        #   한다: 훅 네임스페이스 하위만 거부하고(무관 경로는 종전대로 통과) 탈출구는 스코프 없는\n'
+        '        #   pm-update 다 — `--paths` 한정이라 복구 채널은 잠기지 않는다.\n'
+        '        unverified = _unverified_hook_scope_paths(updated)\n'
+        '        print(f"[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — {exc}.", file=sys.stderr)\n'
+        '    if unverified:\n'
+    ),
+    (
+        'def _adapter_hook_set_gate_failed(result: dict) -> bool:\n'
+        '    """훅 세트 검사의 완료 게이트 — 불일치가 하나라도 남으면 True."""\n'
+        '    return bool(result.get("findings"))\n'
+        ,
+        'def _adapter_hook_set_gate_failed(result: dict) -> bool:\n'
+        '    """훅 세트 검사의 완료 게이트 — 불일치가 하나라도 남으면 True.\n'
+        '\n'
+        '    `unavailable` 은 게이트를 막지 않는다(형제 config 채널과 다른 판단): 이 검사는 채널이 아니라\n'
+        '    가드라, 판정 불가를 red 로 올리면 구형/부분 트리에서 복구 실행 자체가 자기잠김한다. 대신\n'
+        '    침묵하지 않고 경고를 낸다."""\n'
+        '    return bool(result.get("findings"))\n'
+    ),
+    (
+        '    dry_run 은 문구만 바꾼다(판정 자체가 읽기 전용이라 write 경로와 결과가 같다)."""\n'
+        '    for finding in result.get("findings", []):\n'
+        ,
+        '    dry_run 은 문구만 바꾼다(판정 자체가 읽기 전용이라 write 경로와 결과가 같다)."""\n'
+        '    status = result.get("status")\n'
+        '    if status == "unavailable":\n'
+        '        print(\n'
+        '            "[경고] 어댑터 훅 세트 세대 검사를 건너뛰었다 — "\n'
+        '            f"{result.get(\'reason\')}. 설치된 훅 래퍼/드라이버가 채택자 config 가 요구하는 "\n'
+        '            "세대인지 확인되지 않았다.",\n'
+        '            file=sys.stderr,\n'
+        '        )\n'
+        '        return\n'
+        '    for finding in result.get("findings", []):\n'
+    ),
+    (
+        '    본문·권한·IO 오류)를 *같은* None 으로 수렴시키는 게 요점 — 둘 다 "이 파일은 현 엔진 산출물이\n'
+        '    아니다" 라는 같은 결론이고, 따라서 같은 해소(재설치)로 가야 한다. 예외를 밖으로 내면 깨진 훅\n'
+        '    본문 하나가 재설치 전에 명령을 멈춰 **깨진 훅이 복구되지 않는다**."""\n'
+        '    try:\n'
+        ,
+        '    본문·권한·IO 오류)를 *같은* None 으로 수렴시키는 게 요점 — 둘 다 "이 파일은 현 엔진 산출물이\n'
+        '    아니다" 라는 같은 결론이고, 따라서 같은 해소(재설치)로 가야 한다. 예외를 밖으로 내면 호출부의\n'
+        '    fail-soft 가 그걸 `unavailable`(=재설치 안 함)로 처리해 **깨진 훅이 영영 복구되지 않는다**."""\n'
+        '    try:\n'
+    ),
+    (
+        'def _protected_hook_in_sync(home, repo: str) -> bool:\n'
+        '    expected = areas_store._repo_protected(home, repo)\n'
+        '    mode, test_cmd = repo_protection._protected_push_gate_config(home, repo, report_downgrade=False)\n'
+        '    for artifact in protected_hooks.protected_hook_artifacts(\n'
+        '            home, repo, expected, gate_mode=mode, test_cmd=test_cmd):\n'
+        '        if _read_hook_artifact(artifact.path) != artifact.content:\n'
+        '            return False\n'
+        '        if artifact.executable and not _hook_artifact_executable(artifact.path):\n'
+        '            return False\n'
+        '    return protected_hooks.protected_hook_wired(home, repo) is True\n'
+        '\n'
+        ,
+        'def _protected_hook_in_sync(home, repo: str) -> bool:\n'
+        '    try:\n'
+        '        expected = branch_store._resolve_protected(home, repo)\n'
+        '        mode, test_cmd = repo_protection._protected_push_gate_config(home, repo, report_downgrade=False)\n'
+        '        for artifact in protected_hooks.protected_hook_artifacts(\n'
+        '                home, repo, expected, gate_mode=mode, test_cmd=test_cmd):\n'
+        '            if _read_hook_artifact(artifact.path) != artifact.content:\n'
+        '                return False\n'
+        '            if artifact.executable and not _hook_artifact_executable(artifact.path):\n'
+        '                return False\n'
+        '        return protected_hooks.protected_hook_wired(home, repo) is True\n'
+        '    except Exception:\n'
+        '        return False\n'
+        '\n'
+    ),
+    (
+        'def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:\n'
+        '    result = {"status": "done", "targets": [], "in_sync": [],\n'
+        '              "drifted": [], "failed": [], "no_bare": []}\n'
+        '    home = pm_paths.home_at(Path(dest_root).resolve())\n'
+        ,
+        'def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:\n'
+        '    result = {"status": "unavailable", "targets": [], "in_sync": [],\n'
+        '              "drifted": [], "failed": [], "no_bare": [], "reason": None}\n'
+        '    home = pm_paths.home_at(Path(dest_root).resolve())\n'
+    ),
+    (
+        '    home = pm_paths.home_at(Path(dest_root).resolve())\n'
+        '    repos = sorted(areas_store.registered_repos(home))\n'
+        '    if not repos:\n'
+        '        result["status"] = "no_repos"\n'
+        '        return result\n'
+        ,
+        '    home = pm_paths.home_at(Path(dest_root).resolve())\n'
+        '    try:\n'
+        '        repos = sorted(areas_store.registered_repos(home))\n'
+        '        if not repos:\n'
+        '            result["status"] = "no_repos"\n'
+        '            return result\n'
+        '        for repo in repos:\n'
+        '            if not pm_paths.bare_repo_path(home, repo).exists():\n'
+        '                result["no_bare"].append(repo)\n'
+        '                continue\n'
+        '            result["targets"].append(repo)\n'
+        '            if _protected_hook_in_sync(home, repo):\n'
+        '                result["in_sync"].append(repo)\n'
+        '                continue\n'
+        '            result["drifted"].append(repo)\n'
+        '            if write and not repo_protection._install_protected_hook_reporting(\n'
+        '                    home, repo, action="(재)설치"):\n'
+        '                result["failed"].append(repo)\n'
+        '        result["status"] = "done"\n'
+        '        return result\n'
+    ),
+    (
+        '        return result\n'
+        '    for repo in repos:\n'
+        '        if not pm_paths.bare_repo_path(home, repo).exists():\n'
+        '            result["no_bare"].append(repo)\n'
+        '            continue\n'
+        '        result["targets"].append(repo)\n'
+        '        if _protected_hook_in_sync(home, repo):\n'
+        '            result["in_sync"].append(repo)\n'
+        '            continue\n'
+        '        result["drifted"].append(repo)\n'
+        '        if write and not repo_protection._install_protected_hook_reporting(\n'
+        '                home, repo, action="(재)설치"):\n'
+        '            result["failed"].append(repo)\n'
+        '    return result\n'
+        '\n'
+        ,
+        '        return result\n'
+        '    except Exception as exc:\n'
+        '        result["reason"] = f"{type(exc).__name__}: {exc}"\n'
+        '        return result\n'
+        '\n'
+    ),
+    (
+        '    **정합이면 완전히 조용**하다(`in_sync` 만 있는 매 sync 의 정상 경로) — 트리거를 끄지 않고\n'
+        '    출력만 낮춘 게 이 함수다. 등록 repo 0(=`no_repos`)도 조용(걸 대상 없음)."""\n'
+        '    status = result.get("status")\n'
+        ,
+        '    **정합이면 완전히 조용**하다(`in_sync` 만 있는 매 sync 의 정상 경로) — 트리거를 끄지 않고\n'
+        '    출력만 낮춘 게 이 함수다. 등록 repo 0(=`no_repos`)도 조용(걸 대상 없음). `unavailable` 은\n'
+        '    훅이 갱신되지 않았다는 뜻이므로 stderr 경고 + 재설치 커맨드를 낸다(침묵 무력화 금지)."""\n'
+        '    status = result.get("status")\n'
+    ),
+    (
+        '    if status == "no_repos":\n'
+        '        return\n'
+        ,
+        '    if status == "no_repos":\n'
+        '        return\n'
+        '    if status == "unavailable":\n'
+        '        print(\n'
+        '            "[경고] 보호 브랜치 훅 정합 확인/재설치를 건너뛰었다 — "\n'
+        '            f"{result.get(\'reason\')}. 이 clone 의 훅은 **옛 엔진 본문**으로 남을 수 있다.\\n"\n'
+        '            "  → 먼저 pm-update로 엔진 전체를 동기화한 뒤 재실행하세요.\\n"\n'
+        '            "  → 그 다음 재설치(멱등): pm-config repo add <repo>",\n'
+        '            file=sys.stderr,\n'
+        '        )\n'
+        '        return\n'
+    ),
+    (
+        '    except repo_files.RepoFilesGitError as exc:\n'
+        '        print(\n'
+        '            "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "\n'
+        ,
+        '    except Exception as exc:\n'
+        '        if not isinstance(exc, repo_files.RepoFilesGitError):\n'
+        '            raise\n'
+        '        print(\n'
+        '            "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "\n'
+    ),
+)
+
+
+def _reverse_except_cleanup(source: str) -> str:
+    """예외 처리부 정리 역적용 — 원문 쌍의 현행 쪽은 각각 정확히 한 번 해소돼야 한다."""
+    for current, legacy in _EXCEPT_CLEANUP_REVERSALS:
         assert source.count(current) == 1, current
         source = source.replace(current, legacy, 1)
     return source

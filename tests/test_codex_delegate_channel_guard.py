@@ -225,7 +225,7 @@ def test_codex_cross_mapping_denies_with_both_measured_fields_and_real_cwd(
     # 처방의 인터프리터 표기는 실행 플랫폼 해소값이다(Windows 는 런처) — 기대값을 리터럴로
     # 재타이핑하지 않고 가드의 해소 seam 에서 얻는다.
     assert (
-        f"{delegate_env._guard_prescribed_interpreter()} .project_manager/tools/pm_delegate.py"
+        f"{delegate_env._prescribed_interpreter()} .project_manager/tools/pm_delegate.py"
         in result["reason"]
     )
     assert "프롬프트를 파일로 저장" in result["reason"]

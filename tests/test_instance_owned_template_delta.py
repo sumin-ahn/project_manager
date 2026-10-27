@@ -554,7 +554,7 @@ def test_pm_update_managed_auto_update_does_not_prescribe_accept(
     monkeypatch.setattr(update_adapters, "_print_protected_hook_reinstall_finding", lambda *_a, **_k: None)
     monkeypatch.setattr(
         update_adapters, "check_adapter_hook_sets",
-        lambda *_args, **_kwargs: {"status": "ok", "findings": []})
+        lambda *_args, **_kwargs: {"findings": []})
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *_args: False)
 
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)])

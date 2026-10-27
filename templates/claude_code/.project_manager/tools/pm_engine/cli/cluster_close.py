@@ -781,7 +781,7 @@ class ClusterCloser:
     # ── 진행 기록 ─────────────────────────────────────────────────────
 
     def _record_progress(self, step_key: str) -> None:
-        """장부에 단계 진행을 남긴다 — 관측을 대신하지 않는 보조 기록(실패는 비차단)."""
+        """장부에 단계 진행을 남긴다 — 관측을 대신하지 않는 보조 기록(기록 실패는 전파)."""
         status = (_CLUSTER_STATUS_CLOSED if step_key == self.STEPS[-1][0]
                   else _CLUSTER_STATUS_CLOSING)
         self._write_progress(step_key, status)
@@ -794,25 +794,22 @@ class ClusterCloser:
         self._write_progress(step_key, status)
 
     def _write_progress(self, step_key: str | None, status: str | None) -> None:
-        """장부의 진행 기록 두 값을 쓴다 (기록 실패는 비차단 경고 1줄)."""
+        """장부의 진행 기록 두 값을 쓴다 (기록 실패는 전파한다)."""
         if self._dry_run:
             return
-        try:
-            with fs.board_lock(self._home):
-                ledger = cluster_store.load_cluster(self._home, self._cluster)
-                if ledger is None:
-                    return
-                if step_key is None:
-                    ledger.pop(_CLOSE_STEP_KEY, None)
-                else:
-                    ledger[_CLOSE_STEP_KEY] = step_key
-                if status is None or status in cluster_rules.CLUSTER_STATUSES:
-                    # cluster_rules의 상태 열거에 포함될 때만 쓴다. None은 되돌리기
-                    # 전 값이 비어 있던 형상이라 그대로 되돌린다.
-                    ledger["status"] = status
-                cluster_store.dump_cluster(self._home, ledger)
-        except Exception as exc:  # noqa: BLE001 — 기록 실패가 종결을 되돌리지 않는다.
-            print(f"  ⚠ 장부 진행 기록 실패 — {self._cluster}: {exc}", file=sys.stderr)
+        with fs.board_lock(self._home):
+            ledger = cluster_store.load_cluster(self._home, self._cluster)
+            if ledger is None:
+                return
+            if step_key is None:
+                ledger.pop(_CLOSE_STEP_KEY, None)
+            else:
+                ledger[_CLOSE_STEP_KEY] = step_key
+            if status is None or status in cluster_rules.CLUSTER_STATUSES:
+                # cluster_rules의 상태 열거에 포함될 때만 쓴다. None은 되돌리기
+                # 전 값이 비어 있던 형상이라 그대로 되돌린다.
+                ledger["status"] = status
+            cluster_store.dump_cluster(self._home, ledger)
 
     # ── 실행 ──────────────────────────────────────────────────────────
 
@@ -905,14 +902,11 @@ class ClusterCloser:
         return tuple(path for _code, path in entries)
 
     def _reconcile_ticket_frontmatter(self, tid: str) -> tuple[dict | None, str | None]:
-        try:
-            found = ticket_store.find_ticket_exact(self._home, tid)
-            if found is None:
-                return None, f"{tid} 티켓을 찾지 못했다"
-            status, path = found
-            fm, _body = ticket_store.load_ticket(path)
-        except Exception as exc:  # noqa: BLE001 — recovery 판정 불능은 fail-closed.
-            return None, f"{tid} 티켓을 읽지 못했다: {type(exc).__name__}: {exc}"
+        found = ticket_store.find_ticket_exact(self._home, tid)
+        if found is None:
+            return None, f"{tid} 티켓을 찾지 못했다"
+        status, path = found
+        fm, _body = ticket_store.load_ticket(path)
         if status != "done" or str(fm.get("status") or "") != "done":
             return None, f"{tid}가 all-done 상태가 아니다 (directory={status}, frontmatter={fm.get('status')})"
         return fm, None

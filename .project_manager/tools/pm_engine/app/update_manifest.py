@@ -118,19 +118,12 @@ def _guest_engine_backfill_entries(
     if not flavors:
         return [], []
     dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
-    try:
-        dest_owned = manifest_rules._core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))
-        harness_by_flavor = {
-            template_dir: harness
-            for harness, template_dirs in install_rules.HARNESS_TEMPLATE_DIRS.items()
-            for template_dir in template_dirs
-        }
-    except Exception as exc:  # noqa: BLE001 — 파생 실패는 현행 거동 유지(sync 자체는 계속).
-        # 조용히 접지 않는다 — 파생이 꺼지면 guest 엔진 파일이 그 실행에서 다시 동결되는데,
-        #   출력이 없으면 "원래 갱신 대상이 아니다" 와 구분되지 않는다.
-        print(f"note: guest 엔진 행 파생을 건너뛴다(fail-soft·엔진 동기는 계속): {exc}",
-              file=sys.stderr)
-        return [], []
+    dest_owned = manifest_rules._core_manifest_paths(fs.read_text_shared(dest_manifest, encoding="utf-8"))
+    harness_by_flavor = {
+        template_dir: harness
+        for harness, template_dirs in install_rules.HARNESS_TEMPLATE_DIRS.items()
+        for template_dir in template_dirs
+    }
     entries: list = []
     seen: set[str] = set()
     resolved: list[str] = []
@@ -142,13 +135,8 @@ def _guest_engine_backfill_entries(
         if not (template_root / ".project_manager" / "engine.manifest").is_file():
             continue
         adapter_dirs, root_doc = install_rules.ADD_HARNESS_ADAPTER[harness]
-        try:
-            lines = install_source._guest_manifest_lines(
-                template_root, adapter_dirs, root_doc, dest_owned)
-        except Exception as exc:  # noqa: BLE001 — 한 flavor 실패가 나머지를 막지 않는다.
-            print(f"note: guest flavor {flavor} 의 엔진 행 파생 실패(그 flavor 만 건너뛴다): {exc}",
-                  file=sys.stderr)
-            continue
+        lines = install_source._guest_manifest_lines(
+            template_root, adapter_dirs, root_doc, dest_owned)
         resolved.append(flavor)
         for line in lines:
             entry = manifest_rules._parse_manifest_line(line)

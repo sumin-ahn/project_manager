@@ -486,7 +486,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
 
     status·whoami 는 같은 데이터·같은 핸들러 — whoami 는 이 세션 줄을 머리에 둔다. 데이터는
     전부 장부(기계)에서 파생([[living-truth-docs-anti-ossification]]) — 신설 저장소 없음. 전
-    surface(task/slot/git)는 일반 조회 실패에 fail-soft 다.
+    surface(task/slot/git)의 조회 실패는 전파한다.
 
     `status --json` 은 같은 수집을 **기계 계약**으로 낸다(`_emit_status_json` — 관리자 읽기
     표면). 텍스트 출력은 그 플래그가 없을 때 종전 바이트 그대로다. `--json` 은 `status` 전용이라
@@ -552,11 +552,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     # task 축 — 사람이 명명한 task 별 {보유 작업공간·prefix}. list_tasks
     # + slots_for_task(session==task 명의 leased 슬롯). task 명 집합은 slot 풀 축의 "보유 task"
     # 귀속에도 쓴다. 공급자는 소유 모듈을 직접 부른다 — 있는지 더듬지 않는다.
-    tasks = []
-    try:
-        tasks = pool_store.list_tasks(home) or []
-    except Exception as exc:  # noqa: BLE001 — task 조회 실패가 status 를 막지 않는다(조회 전용·fail-soft).
-        tasks = []
+    tasks = pool_store.list_tasks(home) or []
     # truthy name 만 — 레코드가 name 미보유(None/빈값)면 집합에 넣지 않는다(방어). None 이 섞이면
     # idle lease(session=None/"")가 `보유 task=None` 으로 오귀인될 수 있다(reviewer suggestion).
     task_names = {n for n in (getattr(t, "name", None) for t in tasks) if n}
@@ -564,29 +560,18 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     if not tasks:
         print("  (task 없음 — 명명한 task 미등록·세션은 아래 풀 축에만 나타남)")
     for t in tasks:
-        slots = []
-        try:
-            slots = pool_store.slots_for_task(home, t.name) or []
-        except Exception as exc:  # noqa: BLE001 — 슬롯 귀속 실패는 fail-soft(작업공간 미표시).
-            slots = []
+        slots = pool_store.slots_for_task(home, t.name) or []
         ws = ", ".join(s.slot for s in slots) or "(보유 작업공간 없음)"
         prefix = getattr(t, "prefix", None) or "없음(기본)"
         print(f"  - {t.name} · prefix={prefix} · 작업공간: {ws}")
 
     # 슬롯 git 요약 헬퍼 — slot_git_status를 한 줄로.
-    # 조회 실패는 fail-soft(요약 줄 생략) — 리스 장부 축은 그대로 surface.
+    # 조회 실패는 전파한다.
     # 저장소 공용 git 값(부모 기록·stash·부모 비교 ref)은 조회 1회에 한 번만 읽는다.
     repo_reads: dict = {}
 
-    def _slot_git_line(slot: str, *, readonly: bool) -> "str | None":
-        try:
-            status = worktree_status.slot_git_status(home, slot, repo_reads=repo_reads)
-        except worktree_records.SlotFoldersRefused:
-            raise
-        except Exception as exc:  # noqa: BLE001 — 일반 git 조회 실패만 요약 생략.
-            return None
-        if not isinstance(status, dict):
-            return None
+    def _slot_git_line(slot: str, *, readonly: bool) -> str:
+        status = worktree_status.slot_git_status(home, slot, repo_reads=repo_reads)
         summary = _slot_git_summary(status, readonly=readonly)
         folders = status.get("folders")
         return summary + (" · 폴더 " + ", ".join(folders) if folders is not None else "")
@@ -605,16 +590,14 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
         )
         # 보유 task 귀속(장부 축) — lease.session 이 task 명이면 그 task 가 이 슬롯을 보유(session
         # 축). idle 슬롯(session 이 task 명 아님/빈값)은 `-`. **장부 유래라 항상 출력** —
-        # slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다. git 요약만
-        # fail-soft: 조회 실패/API 부재면 그 부분만 `(조회 불가)` 로 대체하고 task 귀속은 잃지 않는다.
+        # slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다.
         task_disp = l.session if (l.session and l.session in task_names) else "-"
         try:
             git_line = _slot_git_line(l.slot, readonly=role == "readonly")
         except worktree_records.SlotFoldersRefused as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
-        git_part = git_line if git_line is not None else "(조회 불가)"
-        print(f"      ↳ 보유 task={task_disp} · git: {git_part}")
+        print(f"      ↳ 보유 task={task_disp} · git: {git_line}")
 
     # 슬롯 없는 보존 브랜치 — 슬롯 제거의 삭제 판정이 남긴 브랜치(공용 git 설정 기록). 있을 때만 절을 낸다.
     preserved = branch_store.preserved_branches(home)
@@ -629,16 +612,13 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
 
     # git worktree × 장부 정합(reconcile) — 실 git worktree 와 장부를 대조해 drift 를
     # surface 한다. **조회 전용·부작용 0**: 삭제/prune/이동 안 함 — 판정·복구 안내만(자동삭제는
-    # 사용자 위임·파일 삭제 원칙). reconcile 실패는 status 를 막지 않는다(fail-soft·advisory).
+    # 사용자 위임·파일 삭제 원칙). reconcile 실패는 전파한다.
     #   - orphan = git worktree 존재·장부 미등록(중단된 create/수동 add 잔존·audit #2·다음 create
     #     번호 충돌·audit #4 의 근원). status 가 이걸 못 보던 게 audit #3.
     #   - stale = 장부 등록·worktree 없음(dir 삭제/prune).
     #   - incomplete = provisional("creating") — worktree add 후 확정 전 중단된 create 흔적.
-    try:
-        recon = pm_engine.app.worktree_pool.reconcile_worktrees(home)
-    except Exception as exc:  # noqa: BLE001 — reconcile 실패가 status 를 막지 않는다(조회 전용).
-        recon = None
-    if recon is not None and (recon.orphans or recon.stale or recon.incomplete):
+    recon = pm_engine.app.worktree_pool.reconcile_worktrees(home)
+    if recon.orphans or recon.stale or recon.incomplete:
         print("## ⚠ worktree × 장부 drift (조회 전용 — 자동삭제 안 함·정리는 사용자):")
         for w in recon.orphans:
             print(

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pm_engine.infra import board_git
 from pm_engine.domain import board_git_rules
 import shlex
+import subprocess
 import sys
 
 
@@ -34,9 +35,10 @@ def _board_git_sync_best_effort(home, message: str,
     board 가 별도 git 이 아니면 no-op(legacy). 별도 git 이면: 로컬 commit을 항상
     시도하고, **새 commit 사실(HEAD 전진)**을 확인한 뒤 → pull --rebase ; push 를 best-effort 로.
     local commit 실패가 mutation 파일을 uncommitted로 남기면 pull/push를 건너뛰고 False를 반환한다.
-    offline/auth/conflict 등
-    어떤 실패도 **작업을 차단하지 않는다** — stale 경고만 stderr 로 내고 계속한다. active
-    retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가 catch-up 한다.
+    git 이 돌려준 rc 실패(offline/auth/conflict 등)와 네트워크 timeout 은 **작업을 차단하지
+    않는다** — stale 경고만 stderr 로 내고 계속한다. 그 밖 예외(git 실행 파일 부재 등)는
+    전파한다. active retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가
+    catch-up 한다.
 
     `paths` = 그 mutation 이 만진 경로. claim 뿐 아니라 **ticket mutation 8개
     (new/promote/complete/block/unclaim/unblock/section-add/tier)도 함께** 스코프화해 출하한다 — claim 차단을
@@ -102,7 +104,7 @@ def _board_git_sync_best_effort_locked(home, message: str,
         # 추적 dirty 면 pull 이 어차피 rc≠0 이라 건너뛰고 push 만 시도한다(FF 면 성공·아니면 경고).
         pull = None if board_git._board_git_has_tracked_changes(home) else board_git._board_git_pull_rebase(home)
         push = board_git._board_git_push(home) if (pull is None or pull.returncode == 0) else None
-    except Exception as exc:  # noqa: BLE001 — fail-soft: best-effort sync 는 절대 작업을 막지 않는다.
+    except subprocess.TimeoutExpired as exc:  # 결과 미상 timeout 은 보류 경고 뒤 다음 mutation 이 catch-up 한다.
         uncommitted = board_git._board_git_uncommitted_scope(
             home, paths, root_files=wrote_root_files)
         if uncommitted.entries:

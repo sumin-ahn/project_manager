@@ -743,9 +743,7 @@ def main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") -> 
                 "완전한 backup 이 있으면 backup 을 패키지 이름으로 되돌린다. 평면 엔진 파일까지 같은 "
                 "세대로 맞추려면 원인을 고친 뒤 같은 갱신을 다시 실행한다.", file=sys.stderr)
         return 1
-    except Exception as exc:
-        if not isinstance(exc, repo_files.RepoFilesGitError):
-            raise
+    except repo_files.RepoFilesGitError as exc:
         print(
             "오류: source 출하 파일의 git 추적정보를 열거하지 못함 — "
             f"{exc}; 해당 checkout 경로와 git index 상태를 확인·복구한 뒤 다시 실행하라.",

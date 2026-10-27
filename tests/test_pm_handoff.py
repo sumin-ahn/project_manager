@@ -584,6 +584,7 @@ def test_run_rejects_invalid_task_before_side_effects(hf, tmp_path, capsys):
 
 def test_run_task_mode_explicit_pm_state_emits_task_trigger(hf, monkeypatch, tmp_path, capsys):
     '명시 pm_state_file(hermetic) + task 조합에서도 [5/7] 이 task-only 트리거를 emit 한다 (T-0394).\n\n    정체성 판정 축은 run() 전체에서 `task is not None` 단일 — 명시 pm_state 주입 경로도 로그\n    헤더 태그(`task:<이름>`)·dashboard 섹션이 task 로 처리한다. 트리거만 `task_mode`\n    (`not _pm_state_file_explicit` 포함)로 갈라지면 로그/대시보드↔트리거 불일치(codex must-fix)라,\n    같은 축으로 통일됐는지 명시 pm_state 경로로 가드한다.\n    '
+    (tmp_path / '.project_manager').mkdir()  # raw 장부 위치 앵커(미마감 raw sweep)
     home = pm_paths.home_at(tmp_path)
     pm_state = tmp_path / 'pm_state.md'
     pm_state.write_text(_state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding='utf-8')
@@ -743,6 +744,7 @@ def _playbook_with_prompt() -> str:
 
 def test_run_checklist_includes_domain_capture_reminder(hf, monkeypatch, tmp_path, capsys):
     '핸드오프 7단계 후 잔여 손작업 checklist 에 domain capture 검토 리마인더가 1줄 있다.'
+    (tmp_path / '.project_manager').mkdir()  # raw 장부 위치 앵커(미마감 raw sweep)
     home = pm_paths.home_at(tmp_path)
     pm_state = tmp_path / 'pm_state.md'
     pm_state.write_text(_state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding='utf-8')
@@ -1474,6 +1476,7 @@ def test_main_task_reserved_slot_name_rejected(hf, captured_run, monkeypatch, tm
 
 def test_run_task_writes_task_tag_and_dashboard_key(hf, monkeypatch, tmp_path, capsys):
     'task 모드 — log 헤더 태그 `(task:<name>)`(sentinel)·dashboard 자기 섹션 `## <name>`(verbatim).\n\n    hermetic(명시 pm_state 주입) dry_run 으로 태그/키 생성 배선만 본다. 슬롯 태그(`<repo>_<N>`)와\n    달리 sentinel `task:` 접두를 붙여 서술형 괄호와 기계 구분한다. dashboard 는 verbatim 이라\n    sentinel 없이 `## mytask`(interface 2).'
+    (tmp_path / '.project_manager').mkdir()  # raw 장부 위치 앵커(미마감 raw sweep)
     home = pm_paths.home_at(tmp_path)
     pm_state = tmp_path / 'pm_state.md'
     pm_state.write_text(_state(_entry(4), _entry(5), _entry(6), pointer=_POINTER_1_3), encoding='utf-8')
@@ -2200,10 +2203,8 @@ def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(hf, tmp_
 def test_run_task_mode_blocks_before_log_when_intent_write_raises(hf, tmp_path, monkeypatch, capsys):
     pool = bind_pool(monkeypatch, _TaskPidPool(task_pid_error=True))
     handoff = _task_mode_handoff(hf, tmp_path, monkeypatch, pool)
-    rc = handoff.run("mytask", 
-        dry_run=False, skip_pytest=True, user_ack="mytask"
-    )
-    assert rc == 1
+    with pytest.raises(OSError, match="ledger unavailable"):
+        handoff.run("mytask", dry_run=False, skip_pytest=True, user_ack="mytask")
     assert "ledger unavailable" in capsys.readouterr().err
     assert not handoff._log_file.exists()
 
@@ -2297,8 +2298,8 @@ def test_task_state_ensure_failure_leaves_log_and_dashboard_untouched(hf, tmp_pa
     pool = bind_pool(monkeypatch, _FailEnsurePool([]))
     bind_pool(monkeypatch, pool)
     handoff = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (0, '1 passed in 0.01s\n'), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_playbook_file=playbook, dashboard_file=dashboard_file)
-    rc = handoff.run('mytask', dry_run=False, skip_pytest=True, user_ack='mytask')
-    assert rc == 1
+    with pytest.raises(OSError, match='injected ensure failure'):
+        handoff.run('mytask', dry_run=False, skip_pytest=True, user_ack='mytask')
     assert log_file.read_text(encoding='utf-8') == 'LOG-SENTINEL\n'
     assert dashboard_file.read_text(encoding='utf-8') == 'DASH-SENTINEL\n'
     assert 'task pm_state 생성 실패' in capsys.readouterr().err
@@ -2321,6 +2322,23 @@ def test_task_regression_runs_in_held_workspace(hf, monkeypatch, tmp_path, capsy
     out = capsys.readouterr().out
     assert "▷ work/project_manager_1 회귀" in out
     assert "dirty" in out
+
+
+def test_task_regression_slot_compare_failure_propagates(hf, monkeypatch, tmp_path):
+    """슬롯 변경 판정의 조회 예외는 '보수적 변경 취급'으로 접지 않고 전파한다 — 회귀·기록 전에 멈춘다."""
+    class _CompareFailPool(_TaskSetPool):
+        def compare_slot_git(self, slot):
+            raise OSError("compare 조회 실패")
+
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box)
+    pool = bind_pool(monkeypatch, _CompareFailPool(["work/project_manager_1"]))
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn, monkeypatch=monkeypatch)
+    box[0] = handoff
+    with pytest.raises(OSError, match="compare 조회 실패"):
+        handoff.run("mytask", dry_run=False, skip_pytest=False, user_ack="mytask")
+    assert cwds == []
+    assert not handoff._log_file.exists()
 
 
 def test_task_regression_runs_each_changed_slot(hf, monkeypatch, tmp_path, capsys):
@@ -2565,12 +2583,9 @@ def test_corrupt_real_ledger_blocks_handoff_without_records(hf, monkeypatch, tmp
      monkeypatch=monkeypatch)
     before_state = handoff._pm_state_file.read_text(encoding="utf-8")
 
-    assert handoff.run("mytask", 
-        dry_run=False, skip_pytest=False, user_ack="mytask"
-    ) == 1
+    with pytest.raises(ValueError):  # 손상 JSON(JSONDecodeError)이 그대로 올라온다.
+        handoff.run("mytask", dry_run=False, skip_pytest=False, user_ack="mytask")
 
-    captured = capsys.readouterr()
-    assert "task 장부 membership 조회 실패" in captured.err
     assert ledger.read_bytes() == before_ledger
     assert not handoff._log_file.exists()
     assert not handoff._dashboard_file.exists()
@@ -2714,6 +2729,7 @@ def test_task_resnap_zero_held_slots_skips(hf, monkeypatch, tmp_path, capsys):
 
 def test_task_resnap_dry_run_previews_all_slots(hf, monkeypatch, tmp_path, capsys):
     """dry_run task 재스냅 — 보유 슬롯별 예고만·write 프리미티브 미호출(미리보기·T-0393)."""
+    (tmp_path / '.project_manager').mkdir()  # raw 장부 위치 앵커(미마감 raw sweep)
     pool = bind_pool(monkeypatch, _TaskSetPool(["work/a_1", "work/b_1"]))
     handoff = _task_reg_handoff(hf, tmp_path, pool, lambda: (0, pytest_summary()), monkeypatch=monkeypatch)
     rc = handoff.run("mytask", 
@@ -2867,17 +2883,17 @@ def test_handoff_reports_clean_when_nothing_to_push(hf, monkeypatch, tmp_path, c
 
 
 def test_ahead_count_falls_through_to_second_baseline_on_exception(hf, tmp_path):
-    """[6/7]: 첫 baseline 후보에서 git 예외가 나도 두 번째 후보를 시도한다(rc 실패와 동일 취급).
+    """[6/7]: 첫 baseline 후보가 실패(upstream 미설정)해도 두 번째 후보를 시도한다.
 
-    첫 후보 예외로 곧장 미해소로 떨어지면 upstream 미설정 형상(= 첫 후보가 늘 실패)이 곧
-    "미push 수 미해소"가 돼 origin/main 폴백이 죽는다.
+    첫 후보 실패로 곧장 미해소로 떨어지면 upstream 미설정 형상(= 첫 후보가 늘 실패)이 곧
+    "미push 수 미해소"가 돼 origin/main 폴백이 죽는다. 실 git 은 upstream 미설정을 rc 128 로 답한다.
     """
     tried: list[str] = []
 
     def runner(args: list[str]) -> tuple[int, str]:
         tried.append(args[-1])
         if args[-1].startswith("@{upstream}"):
-            raise OSError("git: no upstream")
+            return 128, "fatal: no upstream configured for branch 'main'\n"
         return 0, "3\n"
 
     assert pm_engine.infra.handoff_git._ahead_commit_count(runner) == (3, "origin/main")
@@ -2935,14 +2951,16 @@ def test_handoff_reports_clean_raw_ledger(hf, monkeypatch, tmp_path, capsys):
     assert "⚠ 미마감 raw" not in out
 
 
-def test_handoff_raw_sweep_is_failsoft_on_corrupt_ledger(hf, monkeypatch, tmp_path, capsys):
-    """[6b/7]: 손상 장부는 사유 1줄 후 skip — 핸드오프를 막지 않는다(비차단 계약)."""
+def test_handoff_raw_sweep_propagates_corrupt_ledger_read_failure(hf, monkeypatch, tmp_path, capsys):
+    """[6b/7]: 손상 장부는 '미마감 0건'으로 접지 않고 판독 실패를 전파한다."""
     ledger = tmp_path / "raw_outputs.json"
     ledger.write_text("{not json", encoding="utf-8")
 
-    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger, monkeypatch=monkeypatch)
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), raw_ledger_file=ledger, monkeypatch=monkeypatch)
+    with pytest.raises(ValueError):
+        _run_task_handoff(handoff)
 
-    assert "⚠ 미마감 raw 조회 실패" in out
+    assert "미마감 raw 없음" not in capsys.readouterr().out
 
 
 def test_handoff_raw_sweep_reports_missing_ledger(hf, monkeypatch, tmp_path, capsys):
@@ -2986,17 +3004,19 @@ def test_handoff_stays_silent_about_peers_when_there_are_none(hf, monkeypatch, t
     assert "사본 장부" not in out
 
 
-def test_peer_ledger_line_is_failsoft_on_a_corrupt_copy(hf, monkeypatch, tmp_path, capsys):
-    """[6b/7]: 손상된 사본 장부는 사유 1줄 후 건너뛴다 — 핸드오프를 막지 않는다."""
+def test_peer_ledger_line_propagates_corrupt_copy_read_failure(hf, monkeypatch, tmp_path, capsys):
+    """[6b/7]: 손상된 사본 장부는 건수 미상으로 건너뛰지 않고 판독 실패를 전파한다."""
     broken = tmp_path / "broken" / "raw_outputs.json"
     broken.parent.mkdir()
     broken.write_text("{not json", encoding="utf-8")
 
-    out = _run_handoff_out(hf, tmp_path, capsys,
-                           raw_ledger_file=_write_ledger(tmp_path, unfinished=1),
-                           peer_raw_ledger_files=(broken,), monkeypatch=monkeypatch)
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(),
+                                raw_ledger_file=_write_ledger(tmp_path, unfinished=1),
+                                peer_raw_ledger_files=(broken,), monkeypatch=monkeypatch)
+    with pytest.raises(ValueError):
+        _run_task_handoff(handoff)
 
-    assert "⚠ 사본 장부 조회 실패" in out
+    assert f"사본 장부 {broken}" not in capsys.readouterr().out
 
 
 def test_peer_ledger_discovery_reuses_the_delegate_query_rule(hf, tmp_path, monkeypatch):

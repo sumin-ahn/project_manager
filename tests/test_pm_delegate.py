@@ -5101,10 +5101,10 @@ def test_adapter_edit_warns_even_when_ticket_touches_allow_it(
     _assert_adapter_warning(err, relative)           # 역할 공통 금지 축은 독립 발화
 
 
-def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
+def test_corrupt_ticket_fails_delegation_before_harness_runs(
     pd, monkeypatch, tmp_path, capsys,
 ):
-    """손상 ticket으로 touches 준비가 실패해도 캡처가 성공했으면 형제 어댑터 축은 경고한다."""
+    """손상 ticket 으로 touches 준비가 실패하면 하네스 실행 전에 위임이 실패한다(범위 감사 준비 실패)."""
     adapter_root = tuple(install_rules.adapter_directories())[0]
     relative = f"{adapter_root}/settings/corrupt-ticket.json"
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
@@ -5131,65 +5131,18 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
     ticket_path.write_text(corrupt_text, encoding="utf-8", newline="\n")
     fake = _WritingRun(workspace, ([relative], _ok_result()))
 
-    rc = _run_main(
-        pd, monkeypatch,
-        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
-         "--ticket", TICKET_ID],
-        _enabled_conf(), fake,
-    )
-    err = capsys.readouterr().err
-
-    assert rc == 0 and fake.calls == ["codex"], err
-    assert SCOPE_DEGRADED_HEADER in err
-    assert "generic 범위 축만 판정할 수 없습니다" in err
-    assert WARNING_HEADER not in err
-    _assert_adapter_warning(err, relative)
-
-
-def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
-    pd, monkeypatch, tmp_path, capsys,
-):
-    """sensitivity: touches 실패 시 audit 전체를 None으로 되돌리면 어댑터 경고 oracle이 red다."""
-    adapter_root = tuple(install_rules.adapter_directories())[0]
-    relative = f"{adapter_root}/settings/coupled-regression.json"
-    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
-    ticket_path = (
-        tmp_path / "pm_home" / ".project_manager" / "wiki" / "tickets" / "open"
-        / f"{TICKET_ID}-scope.md"
-    )
-    # 손상 축은 `touches` 형식뿐이다(매핑) — 티켓 조회는 성립한다.
-    corrupt_text = (
-        f"---\nid: {TICKET_ID}\ntitle: 손상\nstatus: open\n"
-        "touches:\n  broken: yes\n"
-        # T-0815 설계 근거 게이트 관심사 밖 — `done` + 설계 절로 미리 해소(이 테스트의 손상
-        # 축이 아니다).
-        "design: done\n"
-        "---\n\n"
-        f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n\n"
-        + _DESIGN_SECTION
-    )
-    ticket_path.write_text(corrupt_text, encoding="utf-8", newline="\n")
-    real_begin = delegate_scope_audit.begin_scope_audit
-
-    def _coupled_begin(_home, ticket, cwd, *, pm_root=None, adapter_roots=None):
-        audit = real_begin(
-            _home, ticket, cwd, pm_root=pm_root, adapter_roots=adapter_roots,
+    with pytest.raises(delegate_scope_rules.DelegateScopeError, match=TICKET_ID):
+        _run_main(
+            pd, monkeypatch,
+            ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+             "--ticket", TICKET_ID],
+            _enabled_conf(), fake,
         )
-        return None if audit is not None and audit.touches is None else audit
-
-    monkeypatch.setattr(delegate_scope_audit, "begin_scope_audit", _coupled_begin)
-    fake = _WritingRun(workspace, ([relative], _ok_result()))
-    rc = _run_main(
-        pd, monkeypatch,
-        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
-         "--ticket", TICKET_ID],
-        _enabled_conf(), fake,
-    )
     err = capsys.readouterr().err
 
-    assert rc == 0 and SCOPE_DEGRADED_HEADER in err
-    with pytest.raises(AssertionError, match="어댑터 경고 축 header 누락"):
-        _assert_adapter_warning(err, relative)
+    assert fake.calls == [], err
+    assert SCOPE_DEGRADED_HEADER not in err
+    assert ADAPTER_WARNING_HEADER not in err
 
 
 def test_adapter_axis_consumes_every_derived_registry_root(
@@ -5303,9 +5256,9 @@ def test_adapter_root_snapshot_oracle_is_sensitive_to_postrun_registry_reread(
     monkeypatch.setattr(install_rules, 'adapter_directories', _derive_registry)
     real_adapter_paths = delegate_scope_audit._adapter_edit_paths
 
-    def _lazy_adapter_paths(scope, before, after, *, workspace, roots):
+    def _lazy_adapter_paths(before, after, *, workspace, roots):
         return real_adapter_paths(
-            scope, before, after, workspace=workspace,
+            before, after, workspace=workspace,
             roots=install_rules.adapter_directories(),
         )
 
@@ -5484,8 +5437,8 @@ def test_dry_run_skips_scope_audit(pd, monkeypatch, tmp_path, capsys):
     assert WARNING_HEADER not in capsys.readouterr().err
 
 
-def test_scope_audit_prep_failure_is_nonblocking(pd, monkeypatch, tmp_path, capsys):
-    """판정 **준비** 실패(board/git 불능)는 loud 1줄 + 위임 정상 진행(비차단 보험)."""
+def test_scope_audit_prep_failure_fails_delegation(pd, monkeypatch, tmp_path, capsys):
+    """판정 **준비** 실패(board/git 불능)는 하네스 실행 전에 위임을 실패시킨다."""
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
 
     def _boom(_workspace):
@@ -5493,21 +5446,20 @@ def test_scope_audit_prep_failure_is_nonblocking(pd, monkeypatch, tmp_path, caps
 
     monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", _boom)
     fake = _WritingRun(workspace, (["stray/ignored.txt"], _ok_result()))
-    rc = _run_main(
-        pd, monkeypatch,
-        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
-         "--ticket", TICKET_ID],
-        _enabled_conf(), fake,
-    )
+    with pytest.raises(RuntimeError, match="delegate_scope 로드 불가"):
+        _run_main(
+            pd, monkeypatch,
+            ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace),
+             "--ticket", TICKET_ID],
+            _enabled_conf(), fake,
+        )
     captured = capsys.readouterr()
-    assert rc == 0 and fake.calls == ["codex"]       # 위임은 그대로 수행
-    assert "위임 범위 판정 준비 실패" in captured.err
+    assert fake.calls == []                          # 하네스는 실행되지 않는다
     assert WARNING_HEADER not in captured.err
-    assert "완료" in captured.out                    # reply 회수도 정상
 
 
-def test_scope_audit_report_failure_is_nonblocking(pd, monkeypatch, tmp_path, capsys):
-    """회수 시점 판정 실패도 rc/reply 를 바꾸지 않는다(traceback 금지·loud 1줄)."""
+def test_scope_audit_report_failure_fails_delegation(pd, monkeypatch, tmp_path, capsys):
+    """회수 시점 판정 실패는 위임 실패로 전파한다(reply 는 이미 회수돼 출력에 남는다)."""
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
 
     class _FlakyScope:
@@ -5536,14 +5488,14 @@ def test_scope_audit_report_failure_is_nonblocking(pd, monkeypatch, tmp_path, ca
 
     monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", _FlakyScope().capture_worktree_state)
     fake = _WritingRun(workspace, (["stray/whatever.txt"], _ok_result()))
-    rc = _run_main(
-        pd, monkeypatch,
-        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace)],
-        _enabled_conf(), fake,
-    )
+    with pytest.raises(delegate_scope_rules.DelegateScopeError, match="git status 실패"):
+        _run_main(
+            pd, monkeypatch,
+            ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(workspace)],
+            _enabled_conf(), fake,
+        )
     captured = capsys.readouterr()
-    assert rc == 0
-    assert "위임 범위 판정 실패" in captured.err
+    assert fake.calls == ["codex"]                   # 하네스는 실행됐다
     assert "완료" in captured.out
 
 

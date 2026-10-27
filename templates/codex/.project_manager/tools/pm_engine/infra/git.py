@@ -166,24 +166,19 @@ def _cluster_current_branch(tree: str) -> str | None:
 
 
 def _git_run(argv: list[str], *, runner=None, repo: Path) -> tuple[int, str] | None:
-    """git 명령의 `(rc, stdout)` 반환·git 부재/예외 → None. runner seam(hermetic 테스트)·미주입
-    시 실 subprocess(`git -C repo`). rev-parse 해소 OID(prefix 검증용)가 필요한 곳이 쓴다."""
+    """git 명령의 `(rc, stdout)` 반환·git 부재(PATH 에 없음) → None. runner seam(hermetic 테스트)·미주입
+    시 실 subprocess(`git -C repo`). 실행 예외(시간 초과 등)는 전파한다. rev-parse 해소 OID(prefix
+    검증용)가 필요한 곳이 쓴다."""
     if runner is None:
         if shutil.which("git") is None:
             return None
         repo = Path(repo)
-        try:
-            r = subprocess.run(
-                ["git", "-C", str(repo), *argv],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
-        except (OSError, subprocess.SubprocessError):  # 타임아웃/바이너리 이상은 None(환경적).
-            return None
+        r = subprocess.run(
+            ["git", "-C", str(repo), *argv],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=_BOARD_GIT_TIMEOUT_SECONDS)
         return r.returncode, r.stdout or ""
-    try:
-        rc, out = runner(argv)
-    except Exception:  # noqa: BLE001 — 주입 runner raise 도 None.
-        return None
+    rc, out = runner(argv)
     return rc, out
 
 
@@ -207,29 +202,26 @@ GIT_TIMEOUT_SECONDS = 600   # clone 은 네트워크 — 부트스트랩/worktre
 
 
 def _real_clone_runner() -> worktree_records.GitRunner:
-    """`git clone ...` 을 실행하는 GitRunner (fail-soft). argv 는 clone 인자 그대로.
+    """`git clone ...` 을 실행하는 GitRunner. argv 는 clone 인자 그대로.
 
     clone 은 `-C <dir>` 가 아니라 `git clone <url> <dest>` 형태라 별도 runner 로 둔다.
-    git 바이너리 부재(shutil.which)·예외는 (1, stderr-or-"") 로 감싼다 — 호출부가 rc 로
-    판정. 인코딩은 엔진 관례대로 UTF-8(한글 경로·메시지 안전).
+    git 바이너리 부재(shutil.which)는 (1, 사유) 로 돌려 호출부가 rc 로 판정한다. 실행 예외
+    (시간 초과 등)는 전파한다. 인코딩은 엔진 관례대로 UTF-8(한글 경로·메시지 안전).
     """
     git_binary = shutil.which("git")
 
     def runner(argv: list) -> tuple[int, str]:
         if git_binary is None:
             return 1, "git 바이너리를 찾을 수 없음 (PATH)."
-        try:
-            result = subprocess.run(
-                [git_binary, *argv],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=GIT_TIMEOUT_SECONDS,
-            )
-            return result.returncode, (result.stdout or "") + (result.stderr or "")
-        except Exception as exc:  # noqa: BLE001 — fail-soft: rc!=0 로 호출부에 위임.
-            return 1, str(exc)
+        result = subprocess.run(
+            [git_binary, *argv],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+        return result.returncode, (result.stdout or "") + (result.stderr or "")
 
     return runner
 
@@ -296,7 +288,7 @@ def _bare_missing_branches(home,
 
     보호목록은 **브랜치 실재를 요구하지 않는다**(아직 없는 `release` 를 미리 보호하는 게 정상).
     그래서 거부하지 않고 *경고*만 낸다 — 오타(`mian`)를 조용히 흘리지 않기 위한 가시화다.
-    bare 부재(clone 전)·git 실패는 빈 리스트(fail-soft·경고 생략).
+    bare 부재(clone 전)·git rc≠0 은 빈 리스트(경고 생략), runner 예외는 전파한다.
 
     **bare 조회 자체가 실패하면 경고를 통째로 생략한다** — git 바이너리 부재/권한 등으로 모든
     `show-ref` 가 rc≠0 이 되면 멀쩡한 브랜치까지 "없다"고 오탐한다. 먼저 `rev-parse
@@ -307,20 +299,17 @@ def _bare_missing_branches(home,
     if not branches or not bare.exists():
         return []
     runner = clone_runner or _real_clone_runner()
-    try:
-        probe_rc, _probe = runner(
-            ["-C", str(bare), "rev-parse", "--is-bare-repository"])
-        if probe_rc != 0:
-            return []   # bare 조회 불가(git 부재/깨진 bare) — 오탐 방지로 경고 생략.
-        missing: list[str] = []
-        for branch in branches:
-            rc, _out = runner(
-                ["-C", str(bare), "show-ref", "--verify", "--quiet",
-                 f"refs/heads/{branch}"])
-            if rc != 0:
-                missing.append(branch)
-    except Exception:  # noqa: BLE001 — fail-soft: 경고는 부가 정보(판정 실패=생략).
-        return []
+    probe_rc, _probe = runner(
+        ["-C", str(bare), "rev-parse", "--is-bare-repository"])
+    if probe_rc != 0:
+        return []   # bare 조회 불가(git 부재/깨진 bare) — 오탐 방지로 경고 생략.
+    missing: list[str] = []
+    for branch in branches:
+        rc, _out = runner(
+            ["-C", str(bare), "show-ref", "--verify", "--quiet",
+             f"refs/heads/{branch}"])
+        if rc != 0:
+            missing.append(branch)
     return missing
 
 

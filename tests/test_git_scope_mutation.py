@@ -600,10 +600,11 @@ def test_status_entries_ignores_stderr_noise_from_git(tf, tmp_path, monkeypatch,
         run_git_stdout_fn=lambda args: (0, " M real.md\0"),           # 파싱 seam
         board_count_fn=lambda: 1,
         ticket_title_fn=lambda tid: "t",
-        affected_domain_fn=lambda tid: None,
+        affected_domain_fn=lambda tid: [],
         # 잔여 preflight 는 별도 관심사 — 이 테스트의 초점은 잡음 필터링(파싱 seam
         # 사용)이지 touches 밖 real.md 를 잔여로 차단하는 판정이 아니다. off로 그 초점만 남긴다.
         residual_block_fn=lambda tid: None,
+        dod_block_fn=lambda tid: None,
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
     )
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
@@ -732,7 +733,9 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
         run_board_fn=run_board_fn or (lambda args: (0, "board ok")),
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "스코프 테스트 티켓",
-        affected_domain_fn=lambda tid: None,
+        affected_domain_fn=lambda tid: [],
+        # tmp 홈에 티켓 파일이 없다 — DoD preflight 는 이 파일의 축이 아니라 통과 대역을 둔다.
+        dod_block_fn=lambda tid: None,
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
         **kwargs,
     )
@@ -997,10 +1000,8 @@ def test_finish_survives_touches_absent_from_this_repo(tf, tmp_path, monkeypatch
 
 @requires_git
 def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, capsys):
-    """stage 판정기(board 모듈)를 못 띄우면 **차단**이다 — stage 0 을 정상 완료로 넘기지
-    않는다. 차단 문구는 원인 사유뿐 아니라 **잔여 목록·처방도 동봉**한다(스코프를 못
-    산출했다는 사실을 빈 스코프로 읽어 코드 트리 dirty 전량을 잔여로 접는다) — board complete
-    는 이 갈래에서 불리지 않고, log 스켈레톤도 안 남는다.
+    """stage 판정기 예외는 완료 기록을 **차단**한다 — 예외로 전파해 stage 0 을 정상 완료로
+    넘기지 않는다. board complete 는 이 갈래에서 불리지 않고, log 스켈레톤도 안 남는다.
 
     실제 형상: 실행 인터프리터엔 PyYAML 이 없고 venv 엔 있어 board *CLI* 는 성공하는데
     `import yaml` 하는 board 모듈 로드만 실패한다. `scope_error` 는 '판정 불가'가 아니라 '이
@@ -1020,12 +1021,8 @@ def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, c
         raise OSError("scope IO unavailable")
     monkeypatch.setattr(git, "git_scope_stage_pathspec", failed_scope)
 
-    assert finisher.run("T-0001", section=None, dry_run=False) == 1
-    captured = capsys.readouterr()
-    assert "[중단]" in captured.err
-    assert "스코프를 산출하지 못했다" in captured.err, "판정기 사망이 조용히 넘어감"
-    assert "미스테이지 잔여" in captured.err
-    assert "a.py" in captured.err
+    with pytest.raises(OSError, match="scope IO unavailable"):
+        finisher.run("T-0001", section=None, dry_run=False)
     assert _staged(root) == set()
     assert log_file.read_text(encoding="utf-8") == log_before, "차단된 실행이 log 를 건드렸다"
 

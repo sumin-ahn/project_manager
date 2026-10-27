@@ -2986,11 +2986,8 @@ def test_create_slot_submodule_failure_rolls_back_worktree(wp):
 
 
 def test_create_slot_rollback_failure_still_raises_original(wp):
-    """롤백 자체가 실패(remove rc≠0/예외)해도 원래 submodule 에러로 raise(2차 예외 삼킴 금지·T-0070).
-
-    `_rollback_worktree` 는 best-effort — remove 가 실패해도 raise 하지 않아 원래
-    RuntimeError(submodule init failed)가 호출부로 전파된다. remove 가 rc≠0 또는 예외를
-    던지는 두 케이스 모두 원래 에러가 살아남는지 본다.
+    """롤백 remove 가 rc≠0 이면 원래 submodule 에러로 raise 하고, remove 가 예외를 던지면 그
+    예외가 전파되며 원래 에러는 `__context__` 로 남는다.
     """
     _mk_bare_placeholder(wp, "A")
 
@@ -3018,8 +3015,10 @@ def test_create_slot_rollback_failure_still_raises_original(wp):
         if argv[:2] == ["worktree", "remove"]:
             raise OSError("remove blew up")  # 롤백이 예외
         return (0, "")
-    with pytest.raises(RuntimeError, match="submodule init failed"):
+    with pytest.raises(OSError, match="remove blew up") as raised:
         worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", git_runner=remove_raises)
+    assert isinstance(raised.value.__context__, RuntimeError)
+    assert "submodule init failed" in str(raised.value.__context__)
     assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
@@ -3127,13 +3126,14 @@ def test_list_git_worktrees_parses_porcelain(wp):
 
 
 def test_list_git_worktrees_failsoft_on_rc_and_raise(wp):
-    """list_git_worktrees fail-soft — rc≠0·runner 예외는 빈 리스트(크래시 0·T-0295)."""
+    """list_git_worktrees — rc≠0 은 빈 리스트, runner 예외는 전파한다."""
     _mk_bare_placeholder(wp, "A")
     assert worktree_git.list_git_worktrees(pm_paths.home_at(wp.REPO), "A", git_runner=_WorktreeListGit("", list_rc=1)) == []
 
     def boom(argv):
         raise OSError("git gone")
-    assert worktree_git.list_git_worktrees(pm_paths.home_at(wp.REPO), "A", git_runner=boom) == []
+    with pytest.raises(OSError, match="git gone"):
+        worktree_git.list_git_worktrees(pm_paths.home_at(wp.REPO), "A", git_runner=boom)
 
 
 def test_reconcile_flags_orphan(wp):
@@ -3424,21 +3424,15 @@ def test_real_git_runner_combines_stdout_and_stderr(wp, monkeypatch):
 
 
 def test_real_git_runner_exception_surfaces_message(wp, monkeypatch):
-    """`_real_git_runner` 의 except 가 (1, str(exc)) — 타임아웃/예외 메시지 surface(T-0070).
-
-    옛 코드는 (1, "")로 삼켰다(침묵 무력화). TimeoutExpired 를 시뮬해 메시지가 out 에
-    실리는지 본다 — 그래야 다음 사람이 "왜 죽었는지" 안다.
-    """
+    """`_real_git_runner` 의 실행 예외(시간 초과)는 rc 로 접지 않고 그대로 전파한다."""
     def boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="git submodule", timeout=600)
 
     monkeypatch.setattr(worktree_git.shutil, "which", lambda _name: "/usr/bin/git")
     monkeypatch.setattr(worktree_git.subprocess, "run", boom)
     runner = worktree_git._real_git_runner(wp.REPO)
-    rc, out = runner(["submodule", "update"])
-    assert rc == 1
-    assert out != "", "예외 메시지가 빈 문자열로 삼켜짐(침묵 무력화 회귀)"
-    assert "TimeoutExpired" in out or "600" in out, f"타임아웃 메시지가 surface 안 됨: {out!r}"
+    with pytest.raises(subprocess.TimeoutExpired, match="600"):
+        runner(["submodule", "update"])
 
 
 def test_real_git_runner_missing_git_returns_message(wp, monkeypatch):
@@ -3829,21 +3823,15 @@ def test_current_branch_missing_slot_path_returns_none_real_path(wp):
 
 
 def test_current_branch_never_raises_failsoft(wp):
-    """fail-soft 계약 — git_runner 가 (1,...) 을 돌려주거나 *예외를 던져도* current_branch 는
-    raise 하지 않는다(둘 다 None).
-
-    실 `_real_git_runner` 는 예외를 (1, str(exc)) 로 감싸 rc≠0 으로 흡수하지만, 주입 runner
-    가 직접 raise 하는 경우(codex T-0072 suggestion)까지 current_branch 가 try/except 로
-    흡수함을 박제한다 — DI seam 까지 "raise 금지" 계약 보장.
-    """
+    """git_runner 가 (1,...) 을 돌려주면 None, runner 가 예외를 던지면 그 예외를 전파한다."""
     def rc_fail(argv):
         return (1, "boom: timeout")
     assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=rc_fail) is None
 
     def raiser(argv):
         raise RuntimeError("git exploded")
-    # 주입 runner 가 raise 해도 current_branch 는 raise 하지 않고 None.
-    assert worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=raiser) is None
+    with pytest.raises(RuntimeError, match="git exploded"):
+        worktree_git.current_branch(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=raiser)
 
 
 @_git_required
@@ -6939,16 +6927,17 @@ def test_raw_git_switch_still_diverges(wp):
     assert result.branch_match is False
 
 
-def test_resolve_protected_uses_registry_then_defaults(wp, monkeypatch):
-    """등록부 판독과 일반 판독 실패의 안전 기본값을 유지한다."""
-    monkeypatch.setattr(areas_store, "_repo_protected", lambda home, repo: ["trunk"])
-    assert branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A") == ["trunk"]
-    monkeypatch.setattr(areas_store, "_repo_protected", lambda home, repo: list(areas_rules.DEFAULT_PROTECTED))
-    assert branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A") == list(areas_rules.DEFAULT_PROTECTED)
-    def ordinary_failure(home, repo):
+def test_repo_protected_uses_registry_then_defaults(wp, monkeypatch):
+    """등록부 판독 값을 그대로 쓰고 판독 실패는 전파한다."""
+    monkeypatch.setattr(areas_store, "_parse_areas", lambda home: (["repo", "protected"], [{"repo": "A", "protected": "trunk"}]))
+    assert areas_store._repo_protected(pm_paths.home_at(wp.REPO), "A") == ["trunk"]
+    monkeypatch.setattr(areas_store, "_parse_areas", lambda home: ([], []))
+    assert areas_store._repo_protected(pm_paths.home_at(wp.REPO), "A") == list(areas_rules.DEFAULT_PROTECTED)
+    def ordinary_failure(home):
         raise RuntimeError("ordinary parser failure")
-    monkeypatch.setattr(areas_store, "_repo_protected", ordinary_failure)
-    assert branch_store._resolve_protected(pm_paths.home_at(wp.REPO), "A") == list(areas_rules.DEFAULT_PROTECTED)
+    monkeypatch.setattr(areas_store, "_parse_areas", ordinary_failure)
+    with pytest.raises(RuntimeError, match="ordinary parser failure"):
+        areas_store._repo_protected(pm_paths.home_at(wp.REPO), "A")
 
 
 
@@ -6957,7 +6946,7 @@ def test_cmd_switch_success_reports_what_happened(wp, monkeypatch, capsys):
     """switch CLI — 성공 시 전환 형태·재기록 head 를 surface(rc 0·무엇을 했는지 stdout)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo, **kw: ["main"])
     monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: git)
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "task/main"])       # 접두 생략도 _normalize_slot 이 work/ 붙임
@@ -6971,7 +6960,7 @@ def test_cmd_switch_refusal_is_rc1_loud(wp, monkeypatch, capsys):
     """switch CLI — 선-검사 거부는 rc 1 + 사유(보호목록 브랜치로의 전환)."""
     _switch_lease(wp, branch="feature-x")
     git = _SwitchGit(head="feature-x")
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo, **kw: ["main"])
     monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: git)
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "main"])
@@ -6999,7 +6988,7 @@ def test_switch_preserved_record_clear_failure_is_record_failed(wp, monkeypatch,
 
     _switch_lease(wp)
     cli_git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"])
-    monkeypatch.setattr(branch_store, "_resolve_protected", lambda _home, repo, **kw: ["main"])
+    monkeypatch.setattr(areas_store, "_repo_protected", lambda _home, repo, **kw: ["main"])
     monkeypatch.setattr(worktree_git, "_real_git_runner", lambda path: locked(cli_git))
     (wp.REPO / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     rc = wp.main(["switch", "A_1", "task/main"])

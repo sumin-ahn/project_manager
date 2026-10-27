@@ -13,7 +13,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
 
-from pm_engine.app import completion_gate, finish_context, finish_private_refs, tier_signals
+from pm_engine.app import (
+    completion_gate, finish_context, finish_private_refs, regression, slot_resolution, tier_signals,
+)
 from pm_engine.domain import finish_rules, handoff_text
 from pm_engine.infra import (
     finish_baseline, finish_git, finish_store, fs, lease_store, log_store, pm_paths,
@@ -86,7 +88,7 @@ class TicketFinisher:
         run_git_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         board_count_fn: Callable[[], int] | None = None,
         ticket_title_fn: Callable[[str], str] | None = None,
-        affected_domain_fn: Callable[[str], list[tuple[str, bool | None]] | None] | None = None,
+        affected_domain_fn: Callable[[str], list[tuple[str, bool | None]]] | None = None,
         run_git_stdout_fn: Callable[[list[str]], tuple[int, str]] | None = None,
         stage_scope_fn: Callable[[str], finish_rules.StageScope] | None = None,
         status_entries_fn: Callable[[], tuple[tuple[str, str], ...]] | None = None,
@@ -114,8 +116,8 @@ class TicketFinisher:
         # 회귀 cwd seam — 분리된 PM 홈엔 tests/ 가 없으므로 회귀는 활성
         # worktree 슬롯(tests/)에서 돌아야 한다. **즉시 고정하지 않는다** — `regression_cwd`
         # 명시 주입은 그대로 보존(테스트/명시 override)하되, 미지정이면 `__init__` 시점 박제
-        # 대신 _default_run_pytest 가 런타임에 `finish_context._regression_cwd` 로 self-host 슬롯을
-        # 자동해소한다(`slot_resolution._regression_cwd` 재사용·판정 불능은 Home 루트 폴백).
+        # 대신 _default_run_pytest 가 런타임에 `slot_resolution._regression_cwd` 로 self-host 슬롯을
+        # 자동해소한다(판정 불능은 Home 루트 폴백).
         self._regression_cwd = str(regression_cwd) if regression_cwd else None
         self._task_workspace = Path(task_workspace) if task_workspace else None
 
@@ -129,7 +131,7 @@ class TicketFinisher:
         self._ticket_title_fn = ticket_title_fn or self._default_ticket_title
 
         # domain soft 알림 DI: 기본값은 패키지의 페이지 적재·매칭·stale 판정 구현.
-        # None 반환은 페이지 적재·매칭 실패를 뜻하며 완료를 막지 않는다(soft).
+        # 영향 페이지가 없으면 빈 목록이고 완료를 막지 않는다(soft). 적재·매칭 실패는 전파한다.
         self._affected_domain_fn = affected_domain_fn or self._default_affected_domain
 
         # git 파싱 전용 러너 — **stdout 만** 돌려준다. `_run_git_fn` 은 진단 메시지를 살리려고
@@ -176,18 +178,18 @@ class TicketFinisher:
         """회귀를 실행해 (returncode, stdout+stderr) 반환.
 
         명령 해소:
-          - **해소 성공** — `finish_context._resolve_per_repo_test_cmd`(areas prefix 행 > areas repo 행 >
+          - **해소 성공** — `regression._resolve_gate_cmd`(areas prefix 행 > areas repo 행 >
             local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
           - **프레임워크 자기 회귀** — 해소 실패면 현행 그대로
             `[venv_python, -m, pytest, tests/, -q, -n, auto]` venv argv.
 
         cwd 는 런타임 해소— 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
-        없으면 `finish_context._regression_cwd` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
+        없으면 `slot_resolution._regression_cwd` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
         worktree 의 tests/ 에서 돌게). 판정 불능은 Home 루트 폴백(현행 보존·additive).
         """
         cwd = (self._regression_cwd if self._regression_cwd is not None
-               else finish_context._regression_cwd(self._home))
-        per_repo_cmd = finish_context._resolve_per_repo_test_cmd(self._home)
+               else slot_resolution._regression_cwd(self._home))
+        per_repo_cmd = regression._resolve_gate_cmd(self._home)
         if per_repo_cmd:
             # multi-PM — per-repo test_cmd 문자열을 shell 로(board.py regression run 과 동형).
             result = subprocess.run(
@@ -213,16 +215,15 @@ class TicketFinisher:
         return result.returncode, output
 
     def _log_has_entry(self, ticket_id: str) -> bool:
-        """이 티켓의 완료 entry가 log 에 이미 있는가 (읽기 실패·파일 부재는 False).
+        """이 티켓의 완료 entry가 log 에 이미 있는가 (파일 부재는 False).
 
         판정은 완료 헤딩 줄의 티켓 표기 하나다 — PM이 선작성했거나 스켈레톤의 서술 불릿을
         채워도 그 표기는 남으므로, 한 번 남은 기록을 재실행이 다시 쌓지 않는다.
 
-        읽기 실패는 '없음'으로 접는다 — 이 관측은 차단 판정이 아니라 중복 방지이고, 못 읽었다고
-        기록을 막으면 완료 기록이 벽돌이 된다(중복은 사람이 지우면 되고, 누락은 안 그렇다)."""
+        파일 부재는 '없음'이다 — 완료 기록 append 가 파일을 만든다. 그 밖의 읽기 실패는 전파한다."""
         try:
             text = fs.read_text_shared(self._log_file, encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001 — 읽기 실패는 중복 방지 판정 불능.
+        except FileNotFoundError:
             return False
         markers = tuple(
             marker.format(ticket=ticket_id) for marker in _LOG_ENTRY_TICKET_MARKERS
@@ -244,7 +245,7 @@ class TicketFinisher:
             return self._task_workspace
         if self._regression_cwd is not None:
             return Path(self._regression_cwd)
-        return Path(finish_context._regression_cwd(self._home))
+        return Path(slot_resolution._regression_cwd(self._home))
 
     def use_code_tree(self, tree: Path) -> None:
         """이 트리를 코드 트리로 쓴다 — 회귀 cwd 와 `_code_tree()` 가 이 값을 본다.
@@ -256,14 +257,8 @@ class TicketFinisher:
         self._task_workspace = None
 
     def _measured_ticket_touches(self, ticket_id: str) -> list[str]:
-        """현재 티켓 touches — board 판독이 실패하면 티켓 원문 frontmatter 에서 복구한다."""
-        snapshot = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
-        if snapshot.error is None:
-            return finish_store.get_ticket_touches(self._home, ticket_id)
-        fallback = finish_store._fallback_ticket_frontmatter(
-            self._home, ticket_id,
-        )
-        return finish_rules._clean_touches(fallback.get("touches"))
+        """현재 티켓 touches — 티켓 읽기·파싱 실패는 전파한다."""
+        return finish_store.get_ticket_touches(self._home, ticket_id)
 
     def _warn_once(self, key: str, message: str) -> None:
         """같은 사유를 한 실행에서 **한 번만** 낸다 (조용한 강등 금지 · 중복 출력 금지).
@@ -431,20 +426,16 @@ class TicketFinisher:
         return "\n".join(lines)
 
     def _default_dod_block(self, ticket_id: str) -> str | None:
-        """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과·판정 불가면 None.
+        """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과면 None.
 
         규칙 소유자는 completion_gate(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
         권위 있는 차단은 여전히 [3/5] `board.py complete` 가 하고, 여기서는 **더 앞에서 한 번 더**
         묻는다. 이 preflight 가 없으면 [2/5] 가 log 스켈레톤을 append 한 *뒤에* [3/5] 가 막아,
         차단될 때마다 stray 스켈레톤이 남고 재실행마다 중복 append 된다(실측).
 
-        판정 불가(티켓 부재/손상)는 None 이다 — preflight 는 조기 안내일 뿐이고
-        진짜 게이트가 뒤에 있으므로, 여기서 fail-soft 해도 미체크 DoD 가 done 으로 새지 않는다."""
-        try:
-            _status, path = ticket_store.find_ticket(self._home, ticket_id)
-            _fm, body = ticket_store.load_ticket(path)
-        except Exception as exc:  # noqa: BLE001 — 조회 실패는 뒤 게이트가 소유(preflight fail-soft).
-            return None
+        티켓 부재/손상은 전파한다(log 골격 append 전이라 기록이 남지 않는다)."""
+        _status, path = ticket_store.find_ticket(self._home, ticket_id)
+        _fm, body = ticket_store.load_ticket(path)
         problems = completion_gate._dod_open_items(body)
         if not problems:
             return None
@@ -531,13 +522,10 @@ class TicketFinisher:
         있는 경로) 대상이 아니다. 단 분리 코드 트리에서 홈에만 있는 경로가 홈 git 미추적 새 경로이고 홈 상태
         루트(board·wiki) 밖이면 코드 몫으로 센다(`_home_new_paths` — 작업 폴더 대신 홈에 쓴 새 파일은 홈
         커밋에만 실려 머지되지 않는다). 판정 단위는 멤버이고 선언 경로 하나라도 인구에 있으면 통과다. 어느 트리에도
-        없는 선언(미정 경로)은 홈 변경으로도 충족된다(홈 문서 삭제). 조회 실패는 관측 실패로 멈춘다 —
-        티켓 판독 실패를 빈 touches 로 접으면 "판정 대상 아님" 으로 통과한다."""
-        snapshot = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
-        if snapshot.error is not None:
-            raise finish_rules._CloseObservationFailure(
-                f"{ticket_id} 티켓을 읽지 못해 선언 변경을 판정할 수 없다 ({snapshot.error})")
-        touches = finish_rules._clean_touches(snapshot.frontmatter.get("touches"))
+        없는 선언(미정 경로)은 홈 변경으로도 충족된다(홈 문서 삭제). 티켓 판독 실패는 전파한다 —
+        빈 touches 로 접으면 "판정 대상 아님" 으로 통과한다."""
+        frontmatter = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
+        touches = finish_rules._clean_touches(frontmatter.get("touches"))
         home_share: list[str] = []
         if touches and self._is_separated_code_tree(self._home, cwd):
             touches, home_share = self._split_touches_by_tree(ticket_id, cwd)
@@ -655,26 +643,19 @@ class TicketFinisher:
         경로 비교는 `scope_covers` 다(pathspec magic 은 덮지 않는다) — 해소 불능 선언 하나가
         임의의 커밋을 면제하면 이 게이트가 통째로 무력해진다.
 
-        스냅샷 읽기가 실패하면 제외 없이 종전 인구를 쓰고 그 사실을 한 줄로 알린다.
+        스냅샷 읽기 실패는 전파한다.
         """
         members = [member for member in finish_store._cluster_member_ids(self._home, ticket_id)
                    if member != ticket_id]
         if not members:
             return ()
-        snapshot = finish_store.get_in_window_ticket_touches(
+        in_window = finish_store.get_in_window_ticket_touches(
             self._home, since=finish_store.get_ticket_claimed_at(self._home, ticket_id),
         )
-        if snapshot.error is not None:
-            self._warn_once(
-                f"residual-attribution:{ticket_id}",
-                finish_rules._RESIDUAL_ATTRIBUTION_SKIP_NOTE.format(
-                    ticket=ticket_id, error=snapshot.error),
-            )
-            return ()
         scopes: list[str] = []
         for member in members:
             normalized = self._normalize_measured_touches(
-                snapshot.tickets.get(member, []))
+                in_window.get(member, []))
             scopes.extend(normalized or [])
         return tuple(dict.fromkeys(scopes))
 
@@ -891,10 +872,10 @@ class TicketFinisher:
         """
         return finish_store.get_ticket_title(self._home, ticket_id)
 
-    def _default_affected_domain(self, ticket_id: str) -> list[tuple[str, bool | None]] | None:
+    def _default_affected_domain(self, ticket_id: str) -> list[tuple[str, bool | None]]:
         """ticket touches ∩ domain covers 로 영향받는 페이지 (title, stale) 목록 (soft 알림).
 
-        페이지 적재·매칭 실패 → None (조용히 skip). `doc_affected.pages_for_touches` 재사용.
+        페이지 적재·매칭 예외는 전파한다. `doc_affected.pages_for_touches` 재사용.
         """
         return finish_context.affected_domain_titles(self._home, ticket_id)
 
@@ -1034,11 +1015,11 @@ class TicketFinisher:
     # ── 메인 흐름 ────────────────────────────────────────────────────
 
     def _warn_pm_direct_conditions(self, ticket_id: str) -> None:
-        """PM-direct a·b를 재검하되 finish 흐름/반환 코드는 막지 않는다."""
-        snapshot = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
-        if snapshot.error is not None or snapshot.frontmatter.get("tier") != "pm-direct":
+        """PM-direct a·b를 재검한다. 경고는 finish 흐름을 막지 않고, 재검 실패는 전파한다."""
+        frontmatter = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
+        if frontmatter.get("tier") != "pm-direct":
             return
-        touches = finish_rules._clean_touches(snapshot.frontmatter.get("touches"))
+        touches = finish_rules._clean_touches(frontmatter.get("touches"))
         measured_touches = ([] if not touches else
                             self._normalize_measured_touches(touches))
         if measured_touches is None:
@@ -1048,23 +1029,17 @@ class TicketFinisher:
                 file=sys.stderr,
             )
             return
-        try:
-            code_tree = self._code_tree()
-            expanded = tier_signals.expand_owned_touch_files(code_tree, measured_touches)
-            entries = (self._status_entries_at_fn(code_tree)
-                       if self._is_separated_code_tree(self._home, code_tree)
-                       else self._status_entries_fn())
-            changed_paths = tuple(
-                path for _xy, path in entries
-                if any(finish_rules._touch_claims_path(touch, path) for touch in measured_touches)
-            )
-        except Exception as exc:  # noqa: BLE001 — advisory 재검은 never-block.
-            detail = " ".join(str(exc).split()) or type(exc).__name__
-            print(f"  ⚠ PM-direct 재검 skip — git 변경 경로를 읽지 못했습니다 ({detail}).",
-                  file=sys.stderr)
-            return
+        code_tree = self._code_tree()
+        expanded = tier_signals.expand_owned_touch_files(code_tree, measured_touches)
+        entries = (self._status_entries_at_fn(code_tree)
+                   if self._is_separated_code_tree(self._home, code_tree)
+                   else self._status_entries_fn())
+        changed_paths = tuple(
+            path for _xy, path in entries
+            if any(finish_rules._touch_claims_path(touch, path) for touch in measured_touches)
+        )
         for warning in finish_rules.pm_direct_finish_warnings(
-                snapshot.frontmatter.get("tier"), touches, changed_paths,
+                frontmatter.get("tier"), touches, changed_paths,
                 touched_file_count=len(expanded.paths),
                 unresolved_directories=expanded.unresolved_directories):
             print(f"  ⚠ {warning}", file=sys.stderr)
@@ -1146,7 +1121,7 @@ class TicketFinisher:
         else:
             # 게이트 종류(pytest 스위트 / 해소된 임의 명령)를 먼저 해소한다 — green 판정
             # 기준과 안내 문구가 여기서 갈린다(`handoff_text._gate_is_pytest`).
-            gate_cmd = finish_context._resolve_per_repo_test_cmd(self._home)
+            gate_cmd = regression._resolve_gate_cmd(self._home)
             if dry_run:
                 print(
                     f"  [dry-run] {handoff_text._gate_label(gate_cmd)} 실행 중 "
@@ -1393,21 +1368,15 @@ class TicketFinisher:
                 staged_out)
 
     def _notify_affected_domain(self, ticket_id: str) -> None:
-        """이 ticket 이 건드린 영역의 domain 페이지를 soft 알림으로 출력한다 (비차단).
+        """이 ticket 이 건드린 영역의 domain 페이지를 soft 알림으로 출력한다.
 
         영향 페이지가 stale(covers 코드가 page updated 후 커밋)이면 그 줄 앞에
-        `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. 도그푸딩/multi-PM 어디서든 일반 domain
-        부재·예외는 조용히 삼켜 완료를 막지 않는다. 영향 0 이면 한 줄
-        안내만 낸다. dry-run/실행 동일(정보 출력만). 일반 stale 예외/unknown 은 비차단.
+        `⚠` 를 단다 — fresh(False)/unknown(None)은 무표시. 영향 0 은 한 줄 안내만 낸다.
+        dry-run/실행 동일(정보 출력만). 판정 예외는 전파한다.
         """
-        print("\n[domain] 영향받는 domain 페이지 (soft·비차단):")
-        try:
-            affected = self._affected_domain_fn(ticket_id)
-        except Exception:  # noqa: BLE001 — 일반 soft 알림 실패만 완료를 막지 않는다.
-            affected = None
-        if affected is None:
-            print("  (domain 레이어 없음 — skip)")
-        elif not affected:
+        print("\n[domain] 영향받는 domain 페이지 (soft):")
+        affected = self._affected_domain_fn(ticket_id)
+        if not affected:
             print("  (영향 domain 페이지 없음)")
         else:
             # 각 영향 페이지: stale(True) 줄 앞에 ⚠ — fresh/unknown 은 무표시.

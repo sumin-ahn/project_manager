@@ -15,12 +15,9 @@ def validate_task_name_engine(home, task: str) -> None:
     """task 이름과 등록 repo 예약패턴의 공용 검증.
 
 CLI와 직접 호출 모두 데이터 소비 전에 task_rules 검증을 수행한다.
-등록부 판독 실패 시 예약패턴 검사만 완화하며 경로·문자 검증은 유지한다."""
+등록부 판독 예외는 전파한다."""
 
-    try:
-        registered = areas_store.registered_repos(home)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 None(예약패턴만 완화·traversal 유지).
-        registered = None
+    registered = areas_store.registered_repos(home)
     task_rules._validate_task_name(task, registered)
 
 

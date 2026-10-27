@@ -191,7 +191,7 @@ def _cmd_rebase(home, args) -> int:
     if batch:
         try:
             slots = [lease.slot for lease in pool_store.slots_for_task_strict(home, task)]
-        except Exception as exc:  # noqa: BLE001 — mutation 대상 해소 실패는 0개 성공이 아님.
+        except (OSError, ValueError) as exc:  # mutation 대상 해소 실패는 0개 성공이 아님.
             print(
                 f"[중단] task {task!r} 보유 슬롯 장부 조회 실패 — {exc}. "
                 "rebase 대상을 0개로 간주하지 않는다.",

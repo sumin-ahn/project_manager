@@ -256,9 +256,10 @@ class _Pool:
 
 
 class _OldPool(_Pool):
-    """compare_slot_git 미구현 풀(구버전). 기록↔live 검사가 getattr None 으로 no-op 함을 본다."""
+    """기록↔live 판정 결과가 없는 풀. 정합 검사가 None 결과를 '미상'으로 표기함을 본다."""
 
-    compare_slot_git = None  # 속성 자체를 제거(getattr → None → 정합 검사 skip)
+    def compare_slot_git(self, slot, *args, **kwargs):
+        return None  # 판정 결과 없음 → 기록↔live 미상
 
 
 def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):
@@ -327,16 +328,12 @@ def test_anchor_pm_home_passes(bootstrap, monkeypatch, tmp_path, capsys):
 
 
 
-def test_anchor_guard_internal_raise_failsoft_passes(bootstrap, monkeypatch, tmp_path, capsys):
-    """앵커 가드(board 헬퍼)가 **내부 raise** 하면 fail-soft 통과한다(부재만이 아니라 raise 경로도).
-
-    phase0 헬퍼의 `except Exception: return <통과값>`(의도적·오탐 0)이 헬퍼 내부 버그를 silent-pass
-    로 잡아먹지 않고 *통과값*을 돌려주는지 백스톱한다. dump 정상·rc 0(거부 아님)."""
+def test_anchor_guard_internal_raise_propagates(bootstrap, monkeypatch, tmp_path, capsys):
+    """앵커 가드(board 헬퍼)가 **내부 raise** 하면 통과값으로 접지 않고 전파한다(dump 전에 멈춘다)."""
     inst = _make(bootstrap, tmp_path, board=_RaisingBoard(),
                  worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)
-    rc = inst.run(task="mytask")
-    assert rc == 0, "가드 raise 를 fail-soft(통과)로 흡수하지 못함"
-    assert capsys.readouterr().out != ""  # 정상 dump(거부 아님).
+    with pytest.raises(RuntimeError, match="가드 내부 버그"):
+        inst.run(task="mytask")
 
 
 # ── 2. main-참조 축 2 — 보호 브랜치 원격 origin-추적 (T-0276·§F9) ──────────────

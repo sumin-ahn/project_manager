@@ -83,12 +83,6 @@ def parse_pytest_output(output: str) -> tuple[int, int] | None:
     return passed, deselected
 
 
-class TicketFrontmatterSnapshot(NamedTuple):
-    """현재 티켓 frontmatter 읽기 결과 — 미발견과 티켓 읽기 실패를 분리한다."""
-    frontmatter: dict
-    error: str | None
-
-
 def _clean_touches(value: object) -> list[str]:
     """frontmatter touches 값을 정규 문자열 목록으로 접는다."""
     if isinstance(value, str):
@@ -149,12 +143,6 @@ def pm_direct_finish_warnings(
     return tuple(warnings)
 
 
-class ClaimedTouchesSnapshot(NamedTuple):
-    """귀속 창 안 티켓 touches 읽기 결과 — 정상 빈 목록과 읽기 실패를 분리한다."""
-    tickets: dict[str, list[str]]
-    error: str | None
-
-
 def _frontmatter_head(text: str) -> str:
     """티켓 원문에서 frontmatter 블록만 잘라낸다 (본문 제외 · YAML 파싱 없음)."""
     if not text.startswith("---"):
@@ -164,7 +152,7 @@ def _frontmatter_head(text: str) -> str:
 
 
 def _fallback_frontmatter_scalar(text: str, key: str) -> str | None:
-    """보수적 단일-line scalar 복구 — board 모듈 불능 폴백과 창 판정의 머리 판독이 함께 쓴다."""
+    """보수적 단일-line scalar 복구 — 귀속 창 판정의 frontmatter 머리 판독이 쓴다."""
     match = re.search(rf"(?m)^{re.escape(key)}\s*:\s*(.*?)\s*$", text)
     if match is None:
         return None
@@ -366,10 +354,6 @@ _INTEGRATION_TIP_UNRESOLVED = (
 _RESIDUAL_POPULATION_UNRESOLVED = (
     "{ticket} 통합 브랜치 tip 으로 커밋된 인구를 읽지 못했다 ({tip}) — 잔여 판정 인구가 성립"
     "하지 않는다. 이 트리에서 그 브랜치가 해소되는지 확인하라."
-)
-_RESIDUAL_ATTRIBUTION_SKIP_NOTE = (
-    "잔여 판정 귀속 보정 skip — {ticket} 창 안 티켓 touches 를 읽지 못했다 ({error}). 같은 "
-    "묶음 다른 멤버가 선언한 경로도 잔여로 잡힐 수 있다."
 )
 _UNBORN_BASELINE_GUARD_OFF = (
     "{ticket} 기준선 없음 — 장부가 선언한 통합 브랜치 {branch} 가 이 트리가 든 그 브랜치이고 "

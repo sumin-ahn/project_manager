@@ -164,11 +164,8 @@ def _write_hook_json(output: dict) -> None:
     if buffer is None:  # `.buffer` 없는 캡처 스트림(테스트·래퍼) — 종전 텍스트 경로.
         stream.write(text)
         return
-    try:
-        # 텍스트 레이어에 남은 출력이 bytes 뒤로 밀리지 않게 먼저 비운다.
-        stream.flush()
-    except Exception:
-        pass
+    # 텍스트 레이어에 남은 출력이 bytes 뒤로 밀리지 않게 먼저 비운다.
+    stream.flush()
     buffer.write(text.encode("utf-8"))
     buffer.flush()
 

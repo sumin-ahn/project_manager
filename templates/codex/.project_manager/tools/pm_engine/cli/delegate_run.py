@@ -458,16 +458,14 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
         scope_audit = delegate_scope_audit.begin_scope_audit(
             home, effective_ticket, cwd, pm_root=board_repo, adapter_roots=adapter_roots,
         )
-        if scope_audit is not None and touch_overlaps:
+        if touch_overlaps:
             # 실행 전에 이미 경고한 겹침 경로를 회수 시점 판정 입력으로 싣는다. 캡처 함수의
             # 입력이 아니라 이 위임이 무엇을 겹친다고 알렸는지의 기록이다.
             scope_audit = scope_audit._replace(
                 overlap_paths=delegate_scope_audit.overlap_touch_paths(touch_overlaps),
             )
         try:
-            target_rev = (
-                scope_audit.before.head or None if scope_audit is not None else None
-            )
+            target_rev = scope_audit.before.head or None
             print(
                 f"하네스 {harness}(model={model}) 실행 중 (유료 호출).",
                 file=sys.stderr,
@@ -518,7 +516,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                             f"copy={ticket_copy.path}",
                             file=sys.stderr,
                         )
-                except Exception as exc:
+                except delegate_errors.DelegateError as exc:
                     # 정상 return rc에는 harvest 실패 rc=1이 더 강하다. 반면 runner/실행 예외가 이미
                     # 전파 중이면 finally return으로 삼키지 않고 원 예외를 그대로 보존하며 두 원인을
                     # 모두 stderr에 남긴다.

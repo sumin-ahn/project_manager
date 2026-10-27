@@ -206,14 +206,15 @@ def test_timeout_output_routes_through_shared_partial_formatter(external, monkey
 @pytest.mark.parametrize("failure", (ValueError("formatter"),))
 def test_timeout_output_keeps_head_when_partial_formatter_fails(
         external, monkeypatch, failure):
-    """이미 timeout인 리뷰는 포맷터 실패로 CLI 밖으로 튀지 않는다."""
+    """부분 산출물 포맷터 실패는 timeout 진단으로 접지 않고 전파한다."""
     class BrokenRelay:
         @staticmethod
         def format_partial_output(head, exc):
             raise failure
     monkeypatch.setattr(watchdog, "format_partial_output", BrokenRelay.format_partial_output)
     exc = subprocess.TimeoutExpired(["reviewer"], 1, output="partial")
-    assert pm_engine.infra.harness.reviewer_run._timeout_output(1, exc).startswith("[리뷰어 타임아웃")
+    with pytest.raises(type(failure), match=str(failure)):
+        pm_engine.infra.harness.reviewer_run._timeout_output(1, exc)
 
 
 @pytest.mark.parametrize("output, expected", [
@@ -476,11 +477,11 @@ def test_started_false_on_spawn_failures(external):
 
 
 def test_started_true_on_generic_error_conservative(external):
-    """기타 실행 오류는 시작 여부 불확실 → 보수적으로 started=True (상한 우회 방지 > 과잉 카운트)."""
+    """watchdog 실행 실패 타입 밖의 실행 오류는 실패 결과로 접지 않고 전파한다."""
     def _boom(*a, **k):
         raise RuntimeError("weird")
-    ok, _o, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "p", "codex", 5, _boom)
-    assert (ok, started) == (False, True)
+    with pytest.raises(RuntimeError, match="weird"):
+        pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "p", "codex", 5, _boom)
 
 
 def test_strict_legacy_runner_does_not_receive_idle_timeout(external):
@@ -2019,23 +2020,22 @@ def test_relay_marked_post_spawn_failure_stays_conservative(external):
 
 
 def test_preparation_failure_before_the_boundary_is_started_false(external):
-    """러너 안의 **준비 구간**(콜백 전) 실패는 자식이 없었다는 사실이 확정 — started=False."""
+    """러너 안의 **준비 구간**(콜백 전) 실패는 전파하고 소유권을 넘기지 않는다."""
     handoffs = []
     runner = _spawn_boundary_runner(raise_before=RuntimeError("프로필 해소 실패"))
-    ok, out, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
-        pm_paths.home_at(external.REPO), "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
-    assert (ok, started) == (False, False)
+    with pytest.raises(RuntimeError, match="프로필 해소 실패"):
+        pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+            pm_paths.home_at(external.REPO), "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
     assert handoffs == [], "스폰 경계를 지나지도 않았는데 소유권을 넘겼다"
-    assert "리뷰어 실행 오류" in out.answer
 
 
 def test_failure_after_the_boundary_stays_started_true(external):
-    """경계를 **지난 뒤**의 불확실 실패는 종전대로 보수적 started=True (환불 없음)."""
+    """경계를 **지난 뒤**의 실패는 전파하되 소유권은 이미 넘어갔다 (환불 없음)."""
     handoffs = []
     runner = _spawn_boundary_runner(raise_after=RuntimeError("드레인 중 오류"))
-    ok, _out, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
-        pm_paths.home_at(external.REPO), "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
-    assert (ok, started) == (False, True)
+    with pytest.raises(RuntimeError, match="드레인 중 오류"):
+        pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
+            pm_paths.home_at(external.REPO), "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
     assert handoffs == [1], "경계를 지났는데 소유권을 넘기지 않았다"
 
 
@@ -2154,11 +2154,11 @@ def test_unmarked_seam_typeerror_keeps_the_boundary_position_rule(
 
 
 def test_general_failure_marked_child_existed_is_started_true(external):
-    """일반 실행 오류 분기도 같은 우선순위다 — 콜백 전이어도 표식 False 면 started=True."""
+    """watchdog 실행 실패 타입 밖의 일반 실행 오류는 표식과 무관하게 전파한다."""
     runner = _spawn_boundary_runner(
         raise_before=_marked(RuntimeError("Popen 뒤 정리 중 오류"), False))
-    ok, _out, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "p", "codex", 5, runner)
-    assert (ok, started) == (False, True)
+    with pytest.raises(RuntimeError, match="Popen 뒤 정리 중 오류"):
+        pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "p", "codex", 5, runner)
 
 
 def test_started_priority_is_owned_by_one_helper(external):
@@ -2241,7 +2241,8 @@ def test_preparation_failure_before_popen_spends_no_budget(
     gate = ["--gate", "T-9002", "--paths", "x.py"]
 
     for _ in range(3):
-        assert run(gate) == 1
+        with pytest.raises(RuntimeError, match="워치독 준비 실패"):
+            run(gate)
     ledger = _ledger(external, tmp_path)
     assert ledger["T-9002"]["count"] == 0
     assert _wave_budget_state(external, tmp_path)["spent"] == 0
@@ -2283,7 +2284,8 @@ def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
     gate = ["--gate", "T-9003", "--paths", "x.py"]
 
-    assert run(gate) == 1
+    with pytest.raises(RuntimeError, match="드레인 중 오류"):
+        run(gate)
     assert _ledger(external, tmp_path)["T-9003"]["count"] == 1
     assert _wave_budget_state(external, tmp_path)["spent"] == 1
     assert run(gate) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED

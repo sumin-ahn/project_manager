@@ -90,8 +90,8 @@ def harness_cap_required_budget(execution_budget: float) -> float:
 def format_partial_output(head: str, exc: BaseException) -> str:
     """실패 진단 뒤에 kill 시점 stdout/stderr를 안전하게 붙인다.
 
-    이미 실패한 timeout/cleanup 경로에서 쓰이므로, 예외 객체의 비정상 속성이나 비-UTF8 bytes가
-    원래 진단을 가리는 일은 허용하지 않는다. 문자열 입력의 형식은 기존 소비처 형식을 보존한다.
+    이미 실패한 timeout/cleanup 경로에서 쓰이므로 비-UTF8 bytes 는 replacement decode 로 표시한다.
+    서식 중 예외는 전파한다. 문자열 입력의 형식은 기존 소비처 형식을 보존한다.
 
     | 입력 ``output=b\"ok\\xff\"`` | 이전 additional-reviewer | 현재 공용 포맷터 |
     | --- | --- | --- |
@@ -100,24 +100,18 @@ def format_partial_output(head: str, exc: BaseException) -> str:
     pm_import fill은 통합 전에도 replacement decode를 사용했으므로 이 bytes 처리에는 변화가 없다.
     """
     def as_text(value) -> str:
-        try:
-            if isinstance(value, bytes):
-                return value.decode("utf-8", errors="replace")
-            return str(value) if value else ""
-        except Exception:  # noqa: BLE001 - formatter failure must not erase the diagnosis.
-            return "[부분 산출물 표시 불가]"
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value) if value else ""
 
-    try:
-        stdout = as_text(getattr(exc, "output", ""))
-        stderr = as_text(getattr(exc, "stderr", ""))
-        parts = [head]
-        if stdout:
-            parts.append(f"\n[중단 시점까지의 stdout — {len(stdout)}자 보존]\n{stdout}")
-        if stderr:
-            parts.append(f"\n[중단 시점까지의 stderr — {len(stderr)}자 보존]\n{stderr}")
-        return "".join(parts)
-    except Exception:  # noqa: BLE001 - `head` itself may be a hostile str subclass.
-        return head if isinstance(head, str) else "[실패 진단]"
+    stdout = as_text(getattr(exc, "output", ""))
+    stderr = as_text(getattr(exc, "stderr", ""))
+    parts = [head]
+    if stdout:
+        parts.append(f"\n[중단 시점까지의 stdout — {len(stdout)}자 보존]\n{stdout}")
+    if stderr:
+        parts.append(f"\n[중단 시점까지의 stderr — {len(stderr)}자 보존]\n{stderr}")
+    return "".join(parts)
 
 
 def harness_cap_advisory(
@@ -927,14 +921,11 @@ SILENCE_SEC_ATTR = "silence_sec"
 
 
 def _proc_partial_output(proc) -> tuple[str, str]:
-    """proc 가 지금까지 받은 (stdout, stderr) 스냅샷. 어댑터가 미지원이면 ("","")."""
+    """proc 가 지금까지 받은 (stdout, stderr) 스냅샷. 어댑터가 미지원이면 ("",""), getter 예외는 전파."""
     getter = getattr(proc, "partial_output", None)
     if not callable(getter):
         return "", ""
-    try:
-        stdout, stderr = getter()
-    except Exception:  # noqa: BLE001 — 부분 산출물 회수 실패가 kill 경로를 깨면 안 된다.
-        return "", ""
+    stdout, stderr = getter()
     return stdout or "", stderr or ""
 
 

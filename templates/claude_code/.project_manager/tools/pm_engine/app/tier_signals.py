@@ -38,11 +38,7 @@ def expand_owned_touch_files(repo: Path, touches: Sequence[str], *, list_owned=N
         if not target.is_dir():
             unresolved.add(rel.as_posix())
             continue
-        try:
-            owned = _list_owned_touch_files(repo, rel, list_owned)
-        except Exception as exc:
-            unresolved.add(rel.as_posix())
-            continue
+        owned = _list_owned_touch_files(repo, rel, list_owned)
         prefix = rel.as_posix().rstrip('/') + '/'
         for item in owned:
             candidate = Path(item).as_posix()
@@ -95,20 +91,13 @@ def tier_signals(touches: Sequence[str], tools_dir: Path, *, list_owned=None) ->
     """PM 판정을 대체하지 않는 h1·h2·문서-전용 기계 신호."""
     repo = tools_dir.parent.parent
     subtree = Path('.')
-    try:
-        owned = tuple(_list_owned_touch_files(repo, subtree, list_owned))
-        owned_error = None
-    except Exception as exc:
-        owned = ()
-        owned_error = exc
+    owned = tuple(_list_owned_touch_files(repo, subtree, list_owned))
 
     def inventory(_repo, _subtree):
-        if owned_error is not None:
-            raise owned_error
         return owned
     expanded = expand_owned_touch_files(repo, touches, list_owned=inventory)
     modules = ticket_rules._tier_tool_module_touches(expanded.paths)
-    shared = set(_shared_tool_code(tools_dir, list_owned=inventory)) if owned_error is None else set()
+    shared = set(_shared_tool_code(tools_dir, list_owned=inventory))
     canonical_touches = tuple((ticket_rules._canonical_tier_touch(path) for path in touches))
     touched_shared = tuple(sorted((path for path in shared if any((path == touch or path.startswith(touch + '/') for touch in canonical_touches if touch)))))
     return ticket_rules.TierSignals(modules, touched_shared, bool(expanded.paths) and (not expanded.unresolved_directories) and all((ticket_rules._is_tier_document(path) for path in expanded.paths)), tuple((path for path in expanded.unresolved_directories if path == '.project_manager/tools' or path.startswith('.project_manager/tools/'))))

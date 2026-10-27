@@ -127,7 +127,7 @@ def _unowned_shipped_wiki_relpaths(
 
     add-harness 가 **기존 dest 파일**을 재렌더할 대상을 이 집합으로 한정한다 — 채택자가 직접
     쓴 wiki 문서(티켓·ADR·spike·domain 페이지)는 여기 없으므로 제자리 재작성 대상이 되지
-    않는다(출하 seed 만·blast radius 한정). 소스 트리 부재/열거 실패는 빈 목록(무동작)."""
+    않는다(출하 seed 만·blast radius 한정). 소스 트리 부재는 빈 목록(무동작), 열거 예외는 전파한다."""
     owners = {rel.rstrip("/") for rel in notation_contexts}
     out: set[str] = set()
     for name in harnesses:
@@ -135,10 +135,7 @@ def _unowned_shipped_wiki_relpaths(
             root = Path(source_root) / "templates" / dirname
             if not root.is_dir():
                 continue
-            try:
-                shipped = list(install_source._iter_source_files(root, "full"))
-            except Exception as exc:  # noqa: BLE001 — 열거 실패는 후보 0(무동작).
-                continue
+            shipped = list(install_source._iter_source_files(root, "full"))
             for rel, _src in shipped:
                 rel_posix = rel.as_posix()
                 if not install_files._is_notation_fallback_scope(rel_posix):

@@ -407,7 +407,9 @@ def test_git_unavailable_is_silent_skip(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "codex.md", covers=["templates/codex/**"],
                  verified_at="cafe0004")
-    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git) == []
+    # git 부재는 실물 그대로 PATH 에 git 이 없는 상태로 흉내 낸다 — 판정 불가라 조용히 skip.
+    monkeypatch.setattr(git.shutil, "which", lambda _name: None)
+    assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO)) == []
 
 
 def test_verified_at_absent_is_skip(board, domain, monkeypatch, tmp_path):
@@ -1927,16 +1929,37 @@ def test_sha_anchor_status_ambiguous(board):
 
 
 def test_rev_parse_ambiguous_signal(board):
-    # non-quiet stderr 3-tuple 에 모호 신호가 있으면 True, 2-tuple(대역 stderr 없음)·예외는 False.
+    # non-quiet stderr 3-tuple 에 모호 신호가 있으면 True, 2-tuple(대역 stderr 없음)은 False, 예외는 전파.
     assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO),
         "25b0", runner=lambda a: (128, "", _REAL_AMBIGUOUS_STDERR)) is True
     assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=lambda a: (1, "")) is False
-    assert freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=_raising_git) is False
+    with pytest.raises(RuntimeError, match="git unavailable"):
+        freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=_raising_git)
+
+
+@pytest.mark.parametrize("probe", ("commits_between", "rev_parse_ambiguous"))
+def test_real_git_path_timeout_propagates(board, tmp_path, monkeypatch, probe):
+    """T-1008 F-003 — 실 subprocess 경로의 git 실행 예외(시간 초과)도 주입 runner 와 같이 전파한다.
+
+    판정불가(None·False)는 git 바이너리 부재 갈래에만 남는다."""
+    monkeypatch.setattr(freshness_lint.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def timed_out_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(freshness_lint.subprocess, "run", timed_out_run)
+    home = pm_paths.home_at(board.REPO)
+    with pytest.raises(subprocess.TimeoutExpired):
+        if probe == "commits_between":
+            freshness_lint._git_commits_between(home, "cafe0001", [".project_manager/tools"], repo=tmp_path)
+        else:
+            freshness_lint._rev_parse_ambiguous(home, "cafe0001", repo=tmp_path)
 
 
 def test_sha_anchor_status_unknown_empty_or_raise(board):
     assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "", runner=_anchor_git())[0] == freshness_lint._ANCHOR_UNKNOWN
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_raising_git)[0] == freshness_lint._ANCHOR_UNKNOWN
+    with pytest.raises(RuntimeError, match="git unavailable"):
+        freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_raising_git)
 
 
 # codex R16: 검증 후 하류 명령이 **canonical full OID** 를 쓰는지 argv 로 단언 (원 입력 재해석 제거).

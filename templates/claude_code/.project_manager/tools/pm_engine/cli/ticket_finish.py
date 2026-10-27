@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from pm_engine.app import slot_resolution
 from pm_engine.cli import cluster_close, finish_record
@@ -14,20 +13,12 @@ from pm_engine.infra import areas_store, finish_store, lease_store, pm_paths
 # ── PM-홈 worktree 오실행 가드 (쓰기-경로 전용) ─────────────────────────
 # ticket_finish 를 PM 홈의 등록 worktree cwd 에서 오실행하면 실행 앵커가 worktree 로 착지해
 # stray `wiki/log/current.md` append(+ board.py complete 오실행)를 낸다. board.py
-# 와 같은 pm_paths detector를 명시 Home으로 호출한다. 실제 판정 오류는 기존 fail-soft를
-# 유지하며 쓰기 단계 전에 등록 worktree 오실행을 거부한다.
-
-def _pm_home_misanchor(home) -> Path | None:
-    """명시 Home으로 등록 worktree를 검사한다. 실제 판정 실패는 None으로 반환한다."""
-    try:
-        return pm_paths._pm_home_worktree_misanchor(home)
-    except Exception as exc:  # noqa: BLE001 — 판정 실패는 통과(오탐 0·standalone 무영향).
-        return None
-
+# 와 같은 pm_paths detector를 명시 Home으로 호출한다. 판정 오류는 전파하고, 쓰기 단계 전에
+# 등록 worktree 오실행을 거부한다.
 
 def _guard_worktree_misanchor(home) -> bool:
     """쓰기-경로 진입 가드 — 오실행이면 fail-loud 후 True(차단), 아니면 False(통과)."""
-    pm_home = _pm_home_misanchor(home)
+    pm_home = pm_paths._pm_home_worktree_misanchor(home)
     if pm_home is None:
         return False
     print(
@@ -160,12 +151,9 @@ def main(home, argv: list[str] | None = None) -> int:
     # (`identity_args.validate_task_name`·`task_rules._validate_task_name`과 동형·로직 중복 0)를 소비해,
     # 실행-위치 해소 이전 불법 task 명(traversal/공백/`<repo>_<N>` 예약)을 fail-loud 한다. `--slot`
     # 검증과 동형으로 `--no-pytest` 무관 **항상** 수행(회귀 skip 여도 정체성 검증은 우회 안 됨). 예약패턴
-    # 판정용 registered_repos 는 `areas_store.registered_repos` 로 fail-soft 해소(실패 시 char/traversal 검증만).
+    # 판정용 registered_repos 는 `areas_store.registered_repos` 로 해소한다(판독 실패는 전파).
     if identity.task:
-        try:
-            registered = areas_store.registered_repos(home)
-        except Exception:  # noqa: BLE001 — areas 파싱 실패는 예약패턴 검증만 완화(char/traversal 유지).
-            registered = None
+        registered = areas_store.registered_repos(home)
         try:
             identity_args.validate_task_name(identity.task, registered)
         except identity_args.InvalidTaskName as exc:

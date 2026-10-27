@@ -349,29 +349,6 @@ def _has_pre_push(hooks: Path) -> bool:
         return False
 
 
-def _authoritative_hooks_resolution(home) -> tuple[Path | None, str | None]:
-    """git 권위 해소 `(훅 디렉토리, 판정 불능 사유)` — `_hooks_dir_resolution` 의 판정용 표면.
-
-    저장소 config 직접 파싱(`_pure_hooks_dir`)은 **repo config 의 선언만** 본다. `core.hooksPath`
-    는 global(`~/.gitconfig`)·system·명령행(`-c`)·worktree 범위에서도 선언되고, 훅을 실행하는
-    git 과 훅을 설치하는 엔진(`install_pre_push_hook` → `_hooks_dir`)은 그 해소를 따른다 —
-    세대 판정만 `.git/hooks` 를 보면 사내 표준 hooksPath 형상에서 **구세대 훅이 계속 실행되는데
-    차단은 서지 않는다**(우회). 이 함수가 그 자리를 메운다.
-
-    subprocess 1회를 쓴다 — 회귀 진입은 hot path 지만 이 축은 push 게이트 차단이라 "위치를 잘못
-    봐서 안 막는 것"이 비용보다 크다. 그래서 **언제 묻는지**는 호출부가 정한다
-    (`_stale_pre_push_hook_refusal` — 순수 해소가 훅을 못 찾았을 때만).
-
-    사유 유무가 호출부의 방향이다(`_hooks_dir_resolution` 서술과 같은 규칙): 사유가 있으면
-    **git 이 답을 못 한 판정 불능**이라 차단 방향이고, 사유 없는 None(git 부재·대역 subprocess의
-    예외)은 종전대로 순수 해소 결과를 그대로 쓴다.
-    """
-    try:
-        return _hooks_dir_resolution(home)
-    except Exception:  # noqa: BLE001 — 대역 subprocess/스텁 예외는 순수 해소로 폴백.
-        return None, None
-
-
 def _installed_hook_interpreter(body: str) -> str | None:
     """설치된 훅이 쓰는 인터프리터 (게이트 줄이 없으면 None)."""
     match = _PM_HOOK_INTERPRETER_RE.search(body)
@@ -440,7 +417,7 @@ def _stale_pre_push_hook_refusal(home) -> str | None:
       1. 순수 해소(`_pure_hooks_dir`)가 찾은 자리에 `pre-push` 가 **실재하면** 그 파일로 판정한다
          — 이미 판정 대상을 손에 쥐었으므로 git 을 부를 이유가 없다(회귀 진입에 subprocess 0).
       2. 그 자리에 훅이 없거나 순수 해소가 확정에 실패하면 **git 의 권위 해소**
-         (`_authoritative_hooks_resolution`)를 묻는다. repo config 밖(global/system/worktree)에서
+         (`_hooks_dir_resolution`)를 묻는다. repo config 밖(global/system/worktree)에서
          `core.hooksPath` 가 선언된 형상이 정확히 이 경우다 — 훅은 그 경로에 설치돼 실행되는데
          순수 해소는 `.git/hooks` 를 보고 "미설치"로 읽어 세대 차단이 우회됐다. git 이 **답을
          못 하면 사유를 stderr 에 남기고**, 부르지 못하면(부재·대역) 조용히 — 어느 쪽이든 현행
@@ -457,7 +434,7 @@ def _stale_pre_push_hook_refusal(home) -> str | None:
         return None                                   # 비-repo 트리 — 판정 대상 밖(git 호출 0).
     hooks = _pure_hooks_dir(home)
     if hooks is None or not _has_pre_push(hooks):
-        authoritative, unresolved_reason = _authoritative_hooks_resolution(home)
+        authoritative, unresolved_reason = _hooks_dir_resolution(home)
         if unresolved_reason is not None:
             # git 이 훅 위치를 답하지 못했다 — 판정을 생략하되 **사유를 남긴다**. 침묵하면
             # "판정이 돌아서 통과"와 "판정이 아예 안 돎"이 같은 결과로 보인다(Windows 실측에서

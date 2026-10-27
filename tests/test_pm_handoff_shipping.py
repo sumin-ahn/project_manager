@@ -306,11 +306,10 @@ def test_shipping_paths_unknown_when_diff_fails(hf):
 
 
 def test_shipping_paths_failsoft_on_exception(hf):
-    """git 예외(미설치 등) → 크래시 없이 has_unknown=True (fail-soft)."""
+    """git runner 예외는 has_unknown 으로 접지 않고 전파한다."""
     runner = _git_stub(raise_exc=True)
-    hits, unknown = pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
-    assert hits == []
-    assert unknown is True
+    with pytest.raises(RuntimeError, match="git boom"):
+        pm_engine.infra.handoff_git._shipping_paths_in_pending_push("/wt", git_runner=runner)
 
 
 # ── must-fix 1: 미커밋(working tree·untracked) 출하 변경 감지 (T-0151) ───────────

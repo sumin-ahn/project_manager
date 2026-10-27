@@ -93,9 +93,8 @@ class PmHandoff:
         때문이다.
 
         write 프리미티브 `slot_snapshot.record_git_snapshot(slot)` 만 호출한다 — 브랜치 부모
-        기록은 git 설정에 있어 건드리지 않는다·판정 로직 재구현 없음. fail-soft: worktree_pool 부재
-        (미셋업)·슬롯 미바인딩/장부 부재(record None)·스냅 예외는 무해 skip(핸드오프
-        차단 안 함).
+        기록은 git 설정에 있어 건드리지 않는다·판정 로직 재구현 없음. 슬롯 미바인딩/장부 부재(record None)는
+        무해 skip, 스냅 예외는 전파한다.
 
         **실갱신 vs 무변경 구분 출력(dual-gate suggestion)**: `record_git_snapshot` 은 슬롯
         live 스냅이 불가하면(worktree 경로 부재 등) 기존 `lease.git` 을 clobber 하지 않고 그대로
@@ -106,7 +105,7 @@ class PmHandoff:
         if task is not None:
             try:
                 owned = bool(pool_store.lease_owned_by_task_strict(self._home, slot, task))
-            except Exception as exc:  # noqa: BLE001
+            except (OSError, ValueError) as exc:
                 print(f"  [중단·소유권 재검증] task 슬롯 {slot!r} 장부 조회 실패 — {exc}. "
                       "git 재스냅을 실행하지 않습니다.", file=sys.stderr)
                 return False
@@ -116,11 +115,7 @@ class PmHandoff:
                       "새 소유자의 lease.git을 덮어쓰지 않습니다.", file=sys.stderr)
                 return False
         before_git = self._lease_git_before(slot)
-        try:
-            lease = slot_snapshot.record_git_snapshot(self._home, slot)
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 재스냅 실패가 핸드오프를 막지 않는다.
-            print(f"  ⚠ git 재스냅 실패 — {exc} (skip·무해).", file=sys.stderr)
-            return True
+        lease = slot_snapshot.record_git_snapshot(self._home, slot)
         if lease is None:
             print(f"  ⚠ slot {slot!r} 리스 장부에 없음 — git 재스냅 skip(무해).", file=sys.stderr)
             return True
@@ -140,15 +135,11 @@ class PmHandoff:
         return True
 
     def _lease_git_before(self, slot: str) -> "dict | None":
-        """재스냅 *전* 슬롯 lease.git 을 조회한다 — 실갱신/무변경 판별용 (fail-soft).
+        """재스냅 *전* 슬롯 lease.git 을 조회한다 — 실갱신/무변경 판별용.
 
         worktree_pool `read_lease`(순수 장부 read·`record_git_snapshot` 짝)로 현재 스냅을 읽는다.
-        구버전 풀(`read_lease` 부재)·조회 실패·미기록은 None(→ 후 값이 dict 면 실갱신으로 취급·
-        보수적: 판별 불가는 '기록'으로 표기해 무변경 오표기보다 정보 손실이 적다)."""
-        try:
-            lease = pool_store.read_lease(self._home, slot)
-        except Exception as exc:  # noqa: BLE001 — 일반 조회 실패는 None(판별 보수적 폴백).
-            return None
+        미기록은 None(→ 후 값이 dict 면 실갱신으로 취급). 조회 실패는 전파한다."""
+        lease = pool_store.read_lease(self._home, slot)
         if lease is None:
             return None
         git = getattr(lease, "git", None)
@@ -195,23 +186,16 @@ class PmHandoff:
           - dirty(미커밋 변경) → changed(compare 는 head 만 봐 커밋 안 한 작업을 못 잡는다).
           - head match + branch match + clean → **unchanged**(직전 green 불변·회귀 신호 0·skip).
         판정 프리미티브는 재구현하지 않고 worktree_pool `compare_slot_git`(도착 스냅 vs live)+
-        `slot_git_status`(dirty)를 소비한다. fail-soft **보수**: worktree_pool 부재·조회 예외는
-        changed(놓치기보다 도는 게 낫다 — 무변경 오판이 회귀 누락으로 이어지는 게 더 위험)."""
+        `slot_git_status`(dirty)를 소비한다. 조회 예외는 전파한다."""
 
-        try:
-            cmp = slot_snapshot.compare_slot_git(self._home, slot)
-        except Exception as exc:  # noqa: BLE001 — fail-soft 보수: 판정 불가는 변경 취급(회귀 포함).
-            return True, "compare 예외·보수적 변경 취급"
+        cmp = slot_snapshot.compare_slot_git(self._home, slot)
         if getattr(cmp, "unrecorded", False):
             return True, "스냅 미기록·보수적 변경 취급"
         if not getattr(cmp, "branch_match", False):
             return True, "branch 변경"
         if getattr(cmp, "head_relation", None) != worktree_records.HEAD_MATCH:
             return True, f"head {getattr(cmp, 'head_relation', None)}(전진/재설정)"
-        try:
-            dirty = bool(worktree_status.slot_git_status(self._home, slot).get("dirty", False))
-        except Exception as exc:  # noqa: BLE001 — fail-soft 보수: dirty 조회 불가는 변경 취급.
-            return True, "dirty 조회 예외·보수적 변경 취급"
+        dirty = bool(worktree_status.slot_git_status(self._home, slot).get("dirty", False))
         if dirty:
             return True, "dirty(미커밋 변경)"
         return False, "head match·clean"
@@ -221,7 +205,7 @@ class PmHandoff:
 
         현행 1슬롯 한정(`_record_slot_snapshot` 단일 호출)을 폐지하고, task 가 보유한 leased 슬롯
         전수(`_task_held_slots`·slots_for_task)를 루프로 재스냅한다. 각 슬롯은 프리미티브
-        (`_record_slot_snapshot`)를 그대로 재사용(per-slot fail-soft·판정 재구현 없음). 보유 0개면
+        (`_record_slot_snapshot`)를 그대로 재사용(판정 재구현 없음). 보유 0개면
         명시 skip. dry_run 은 슬롯별 예고만."""
         slots = self._task_held_slots(task)
         print("\n[재스냅] task 보유 슬롯 git 재스냅 (집합 전체 두고 간다)...")
@@ -250,14 +234,14 @@ class PmHandoff:
         그 세션의 열림/닫힘은 task 행 하나가 말한다.
 
         같은-session 재실행 판정이 이 durable 신호에 의존하므로 더는 보조 fail-soft 기록이 아니다.
-        step2 log write **전**에 성공해야 하며, 엔진/primitive/record 부재·예외는 fail-loud(False)다.
+        step2 log write **전**에 성공해야 한다. record 부재는 [중단](False), 기록 예외는 [중단] 문구 뒤 전파한다.
         성공 뒤 후속 단계가 중단돼도 종료 기록이 남아 재실행이 같은 차수로 복구된다."""
 
         try:
             task_rec = task_lifecycle.close_task_session(self._home, task)
         except Exception as exc:  # noqa: BLE001 — load-bearing intent 기록 실패는 차단.
             print(f"  [중단] task 종료 기록 실패 — {exc}.", file=sys.stderr)
-            return False
+            raise
         if task_rec is None:
             print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
                   file=sys.stderr)
@@ -274,7 +258,7 @@ class PmHandoff:
         """회귀를 실행해 (returncode, stdout+stderr) 반환.
 
         명령 해소(ticket_finish `_default_run_pytest` 와 동형):
-          - **해소 성공** — `_resolve_per_repo_test_cmd()` 가 준 문자열을 shell 로 실행
+          - **해소 성공** — `regression._resolve_gate_cmd()` 가 준 문자열을 shell 로 실행
             (board.py 회귀와 동형·비-Python repo 수용).
           - **해소 실패** — `[venv_python, -m, pytest, tests/, -q, -n, auto]` 병렬 기본 argv.
 
@@ -331,14 +315,9 @@ class PmHandoff:
         — **task 슬롯별 회귀**에선 그 REPO 에서 pytest 가 돌아 그
         슬롯이 green 처럼 보인다(vacuous-pass·엉뚱한 트리 green). 그래서 이 경로에선 REPO
         폴백을 금지하고 부재를 fail-loud(그 슬롯 red)로 올린다. 실재 판별은 worktree_pool `slot_path(slot).
-        exists()`(엔진 소유 축·`_regression_cwd` 의 `REPO/slot` 과 동형). 판별 불가(worktree_pool 부재·
-        구버전 pool·slot_path 부재·예외)는 **False**(=차단 안 함·fail-soft — 기존 `_regression_cwd` 해소에
-        위임)."""
+        exists()`(엔진 소유 축·`_regression_cwd` 의 `REPO/slot` 과 동형). 판별 실패는 전파한다."""
 
-        try:
-            return not pm_paths.slot_path(self._home, slot).exists()
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 판별 실패는 차단 안 함(기존 해소에 위임).
-            return False
+        return not pm_paths.slot_path(self._home, slot).exists()
 
     def _classify_task_changed_slots(self, task: str) -> list[tuple[str, str]]:
         """task 보유 슬롯을 변경/무변경 분류해 **변경-슬롯 [(slot, reason)] 리스트**를 돌려준다.
@@ -493,14 +472,11 @@ class PmHandoff:
 
     # ── 미마감 raw sweep step ────────────────
 
-    def _resolve_raw_ledger(self) -> Path | None:
-        """조회할 raw 장부 경로 — 명시 주입 우선, 없으면 `raw_output` 기본 위치. 해소 실패는 None."""
+    def _resolve_raw_ledger(self) -> Path:
+        """조회할 raw 장부 경로 — 명시 주입 우선, 없으면 `raw_output` 기본 위치. 해소 실패는 전파한다."""
         if self._raw_ledger_file is not None:
             return self._raw_ledger_file
-        try:
-            _raw_dir, ledger = raw_output.raw_storage_paths(self._home.local_dir.parent.parent, "delegate")
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 위치 해소 실패는 sweep 만 건너뛴다.
-            return None
+        _raw_dir, ledger = raw_output.raw_storage_paths(self._home.local_dir.parent.parent, "delegate")
         return ledger
 
     def _unfinished_raw_step(self) -> None:
@@ -508,7 +484,8 @@ class PmHandoff:
 
         미마감 = 실행 전 예약된 레코드가 마감되지 않은 것 = 그 위임/리뷰가 비정상 종료했다는 뜻.
         누적되면 장부 조회가 무력해지므로 세션 끝에서 건수를 보여주고 정리 판단을 PM 에게 남긴다.
-        **차단하지 않는다**(rc 무영향) — 장부 부재·조회 실패는 전부 사유 1줄 후 skip.
+        미마감 건수는 차단하지 않는다(rc 무영향). 장부 부재는 사유 1줄 후 skip, 위치 해소·장부 판독
+        실패는 전파한다.
 
         판정 범위(어느 장부를 봤는지)를 항상 1줄로 밝힌다 — 위임은 소유 PM 홈
         (`raw_output`에 전달한 Home)이나 명시 `--output-dir` 기준으로 장부를 고르므로
@@ -517,23 +494,16 @@ class PmHandoff:
         전 장부 통합 조회는 이 표면의 범위 밖).
         """
         ledger = self._resolve_raw_ledger()
-        if ledger is None:
-            print("  raw 장부 위치 미해소 — sweep skip.")
-            return
         print(f"  이 장부 기준: {ledger}")
         self._report_unfinished_raw(ledger)
         self._report_peer_raw_ledgers(ledger)
 
     def _report_unfinished_raw(self, ledger: Path) -> None:
-        """결정 공급 장부 1개의 미마감 판정 — 건수 + 최근 N건 (비차단·사유 1줄 후 skip)."""
+        """결정 공급 장부 1개의 미마감 판정 — 건수 + 최근 N건 (부재는 사유 1줄 후 skip)."""
         if not ledger.exists():
             print("  raw 장부 없음 — 미마감 raw 0건.")
             return
-        try:
-            rows = raw_output.unfinished_raw_records(ledger)
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 손상 장부가 핸드오프를 막지 않는다.
-            print(f"  ⚠ 미마감 raw 조회 실패 ({exc}) — sweep skip.")
-            return
+        rows = raw_output.unfinished_raw_records(ledger)
         if not rows:
             print("  미마감 raw 없음.")
             return
@@ -551,14 +521,11 @@ class PmHandoff:
 
     def _peer_raw_ledgers(self, primary: Path) -> tuple[Path, ...]:
         """이 sweep 이 **안 보는** 사본 장부(worktree 등) — 판정은 위임 조회면 것을 재사용."""
-        try:
-            resolved_primary = primary.resolve()
-            if self._peer_raw_ledger_files is not None:
-                peers: tuple[Path, ...] = tuple(self._peer_raw_ledger_files)
-            else:
-                peers = tuple(raw_output._peer_engine_ledgers(self._home, None))
-        except Exception:  # noqa: BLE001 — fail-soft: 병기 실패가 핸드오프를 막지 않는다.
-            return ()
+        resolved_primary = primary.resolve()
+        if self._peer_raw_ledger_files is not None:
+            peers: tuple[Path, ...] = tuple(self._peer_raw_ledger_files)
+        else:
+            peers = tuple(raw_output._peer_engine_ledgers(self._home, None))
         return tuple(peer for peer in peers if peer != resolved_primary)
 
     def _report_peer_raw_ledgers(self, primary: Path) -> None:
@@ -568,11 +535,7 @@ class PmHandoff:
         있다는 사실과 그 건수만 알린다. 사본이 없으면 아무 줄도 내지 않는다.
         """
         for peer in self._peer_raw_ledgers(primary):
-            try:
-                count = len(raw_output.unfinished_raw_records(peer))
-            except Exception as exc:  # noqa: BLE001 — fail-soft: 손상 사본이 핸드오프를 막지 않는다.
-                print(f"  ⚠ 사본 장부 조회 실패 ({peer}: {exc}) — 건수 미상.")
-                continue
+            count = len(raw_output.unfinished_raw_records(peer))
             print(
                 f"  {'⚠ ' if count else ''}사본 장부 {peer} — 미마감 {count}건 "
                 "(이 sweep 밖·통합 조회는 범위 밖)."
@@ -581,21 +544,15 @@ class PmHandoff:
     # ── 구 task state 호환 backfill (정상 생성은 bind_task 시점) ─────────────────────
 
     def _task_registration_status(self, task: str) -> tuple[str, str | None]:
-        """task 장부 membership과 실패 원인을 읽기 전용으로 구분해 반환한다."""
+        """task 장부 membership을 읽기 전용으로 구분해 반환한다. 장부 판독 실패는 전파한다."""
         if self._task_record_snapshot is not None and self._task_record_snapshot[0] == task:
             return "registered", None
 
         # membership도 같은 strict 장부 파서를 우선 사용한다. 그렇지 않으면 손상 JSON을
         # "미등록 task"로 오인해 held-slot strict gate에 도달하기 전에 원인을 숨긴다.
-        try:
-            registered = pool_store.find_task_strict(self._home, task)
-        except Exception as exc:  # noqa: BLE001 — 호출부가 strict 중단/관측용 강등을 결정한다.
-            return "lookup-failed", str(exc)
+        registered = pool_store.find_task_strict(self._home, task)
         if registered is None:
-            try:
-                archives = task_store.task_archive_candidates(self._home, task)
-            except Exception as exc:  # noqa: BLE001 — archive lookup도 strict 진단으로 승격.
-                return "lookup-failed", str(exc)
+            archives = task_store.task_archive_candidates(self._home, task)
             if archives:
                 return "archived", ", ".join(path.name for path in archives)
             return "unregistered", None
@@ -612,13 +569,6 @@ class PmHandoff:
         status, detail = self._task_registration_status(task)
         if status == "registered":
             return True
-        if status == "lookup-failed":
-            print(
-                f"\n[중단] task 장부 membership 조회 실패 — {detail}. "
-                "task 상태를 만들거나 기록하지 않는다.",
-                file=sys.stderr,
-            )
-            return False
         if status == "archived":
             print(
                 f"\n[중단] task {task!r} 은(는) 종료 archive로 보관됨 ({detail}) — "
@@ -637,7 +587,7 @@ class PmHandoff:
         )
         return False
 
-    def _ensure_task_pm_state(self, task: str) -> bool:
+    def _ensure_task_pm_state(self, task: str) -> None:
         """task pm_state가 존재함을 보장한다.
 
         정상 경로에서는 bootstrap의 `task_lifecycle.bind_task`가 task 생성/재개 시 이미 state를
@@ -645,7 +595,7 @@ class PmHandoff:
         생성 로직을 복제하지 않고 worktree_pool의 단일 primitive만 소비한다.
         """
         if self._pm_state_file.exists():
-            return True
+            return
 
         try:
             self._pm_state_file = Path(task_store.ensure_task_pm_state(self._home, task))
@@ -654,9 +604,8 @@ class PmHandoff:
                 f"\n[중단] task pm_state 생성 실패 — {exc}. task state 없이 handoff하지 않는다.",
                 file=sys.stderr,
             )
-            return False
+            raise
         print(f"  ✓ 구 task pm_state backfill ({self._pm_state_file})")
-        return True
 
     # ── slot 대시보드 자기 섹션 overwrite step ───────────
 
@@ -855,8 +804,8 @@ class PmHandoff:
         # task state 보장/차수 추론은 회귀·출하 게이트를 통과한 뒤, log/dashboard 등 첫 영속 변경
         # **전**에 끝낸다(MF-b). 구 task backfill 실패 시 외부 상태는 아직 무접촉이라 재시도해도
         # log 중복이 생기지 않는다. dry-run은 state를 만들지 않되 기존 state에서 같은 추론을 한다.
-        if not dry_run and owns_task_state and not self._ensure_task_pm_state(task):
-            return 1
+        if not dry_run and owns_task_state:
+            self._ensure_task_pm_state(task)
         if not self._pm_state_file.exists():
             print(
                 f"\n[중단] task pm_state가 없다: {self._pm_state_file} — "
@@ -1152,8 +1101,8 @@ class PmHandoff:
         # 세션 중 브랜치/HEAD 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계
         # record-vs-live 정합(compare_slot_git)을 `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기
         # 진행을 외부-개입 오경보로 차단하는 것을 막는다. base 미전달=기존 보존(arrival 동형)·
-        # 판정 재구현 없이 write 프리미티브만 호출. dry_run 은 예고만. worktree_pool 부재·장부
-        # 부재는 _record_slot_snapshot 내부에서 fail-soft(무해 skip).
+        # 판정 재구현 없이 write 프리미티브만 호출. dry_run 은 예고만. 장부 부재는
+        # _record_slot_snapshot 내부에서 무해 skip.
         if not self._record_task_slot_snapshots(task, dry_run):
             return 1
 

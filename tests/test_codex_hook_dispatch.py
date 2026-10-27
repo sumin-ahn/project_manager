@@ -1421,8 +1421,11 @@ def test_side_effect_only_child_runs_but_never_answers(dispatcher, tmp_path):
                                     features=(silent,)) == {}
 
 
-def test_side_effect_only_failure_never_becomes_a_warning(dispatcher, tmp_path):
-    """부작용 자식이 없거나 멈춰도 침묵이다 — 옛 `>/dev/null 2>&1 || true` 와 같은 값."""
+def test_side_effect_only_failure_becomes_a_fallback_warning(dispatcher, tmp_path):
+    """부작용 자식의 기동 실패·시간 초과는 침묵하지 않고 원인을 담은 폴백 경고가 된다.
+
+    기록이 아예 남지 않는 실패라 `{}` 로 접으면 압축 checkpoint 가 빠진 사실이 보이지 않는다.
+    정상 종료한 자식의 rc·출력을 보지 않는 계약은 `test_side_effect_only_child_runs_but_never_answers` 가 고정한다."""
     missing = dispatcher.CodexHookFeature(
         "fixture-missing", "PostToolUse", None,
         ("{tools}/does-not-exist.py",), side_effect_only=True)
@@ -1430,10 +1433,15 @@ def test_side_effect_only_failure_never_becomes_a_warning(dispatcher, tmp_path):
         "fixture-hang-side-effect", "PostToolUse", None,
         ("{py}", "-c", "import time; time.sleep(30)"), side_effect_only=True)
 
-    assert dispatcher.dispatch_hook("PostToolUse", b"{}", tmp_path,
-                                    features=(missing,)) == {}
-    assert dispatcher.dispatch_hook("PostToolUse", b"{}", tmp_path,
-                                    features=(hanging,), budget=1.0) == {}
+    for feature, envelope, cause in (
+            (missing, dispatcher.dispatch_hook("PostToolUse", b"{}", tmp_path, features=(missing,)),
+             "FileNotFoundError"),
+            (hanging, dispatcher.dispatch_hook("PostToolUse", b"{}", tmp_path, features=(hanging,),
+                                               budget=1.0),
+             "TimeoutExpired")):
+        message = envelope.get("systemMessage", "")
+        assert dispatcher.CODEX_HOOK_ADAPTER_FALLBACK_MARKER in message, envelope
+        assert feature.feature_id in message and cause in message, message
 
 
 def test_match_field_routes_on_the_event_specific_field(dispatcher):

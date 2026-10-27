@@ -1468,13 +1468,23 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
             id="pm_delegate-_run_delegate_cli-        timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)\n-        if harness == \"opencode\":\n            timeout = 60\n        else:\n            timeout = delegate_env._resolve_timeout(pm_paths.home_at(REPO, pm_home=_CONFIG_REPO_OVERRIDE), args, conf, harness)\n",
         ),
         # 세 번째 표면: fill runner가 공용 profile을 받은 뒤 특정 하네스만 idle 축을 끄는 우회.
-        (
+        # 앵커는 프로필 준비가 함수 본문 직속(4칸)인 실제 들여쓰기를 고정한다. 같은 줄이 형제
+        # fill_harness_cap_advisory 에도 있어 뒤따르는 idle 표시 줄까지 묶어 유일하게 한다.
+        # id 는 기존 노드 이름.
+        pytest.param(
             "pm_engine/app/import_fill",
             "_real_harness_runner",
-            "        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0\n",
-            '        if harness == "claude":\n'
-            "            idle_timeout = None\n"
-            "        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0\n",
+            "    retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0\n"
+            "    idle_label = ",
+            '    if harness == "claude":\n'
+            "        idle_timeout = None\n"
+            "    retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0\n"
+            "    idle_label = ",
+            id="pm_engine/app/import_fill-_real_harness_runner-"
+               "        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0\n-"
+               '        if harness == "claude":\n'
+               "            idle_timeout = None\n"
+               "        retries = watchdog.stall_retries_default() if profile.startup_watchdog else 0\n",
         ),
     ],
 )
@@ -1739,23 +1749,21 @@ def test_fill_stall_error_reports_wall_axis(pm_import, monkeypatch):
 
 
 def test_fill_profile_failure_is_soft_and_stage_specific(pm_import, monkeypatch):
-    """프로필 준비 실패는 spawn 진단과 섞지 않고 해당 단계에서 fail-soft한다."""
+    """프로필 준비 실패는 spawn 전에 전파한다(fill 실패 결과로 접지 않는다)."""
     fake = _RecordingRelay()
     monkeypatch.setattr(watchdog, "resolve_harness_profile", lambda *args: (_ for _ in ()).throw(
         RuntimeError("profile unavailable")))
     fake.install(monkeypatch)
     monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
-    ok, output = import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
+    with pytest.raises(RuntimeError, match="profile unavailable"):
+        import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
 
-    assert ok is False
-    assert "프로필 준비 오류" in output
-    assert "profile unavailable" in output
     assert not fake.calls
 
 
 def test_fill_result_normalization_failure_is_soft(pm_import, monkeypatch):
-    """성공 응답 객체 정규화의 일반 예외는 기존 fill fail-soft 계약을 유지한다."""
+    """성공 응답 객체 정규화의 일반 예외는 전파한다(fill 실패 결과로 접지 않는다)."""
     class _BrokenResult:
         @property
         def stdout(self):
@@ -1765,11 +1773,8 @@ def test_fill_result_normalization_failure_is_soft(pm_import, monkeypatch):
     fake.install(monkeypatch)
     monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
 
-    ok, output = import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
-
-    assert ok is False
-    assert "결과 처리 오류" in output
-    assert "broken result" in output
+    with pytest.raises(RuntimeError, match="broken result"):
+        import_fill._real_harness_runner(["claude", "-p", "prompt"], "prompt")
 
 
 def test_fill_spawn_missing_file_is_binary_diagnostic(pm_import, monkeypatch):

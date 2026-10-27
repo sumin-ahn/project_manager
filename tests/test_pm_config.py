@@ -31,6 +31,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -491,6 +492,9 @@ def test_sync_adapter_config_check_partial_managed_dest_unrecorded_is_rc1(
     template = source / "templates" / "codex" / _CHECK_HOOKS_REL
     template.parent.mkdir(parents=True)
     template.write_text(_CHECK_UPSTREAM_HOOKS, encoding="utf-8")
+    # 출하 인벤토리는 tracked-only 다 — source 를 임시 checkout 으로 만든다.
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(source), "add", "-f", "-A"], check=True)
     dest = tmp_path / "partial-dest"
     hooks = dest / _CHECK_HOOKS_REL
     hooks.parent.mkdir(parents=True)

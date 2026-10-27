@@ -16,9 +16,7 @@ from pm_engine.infra import raw_output
 import re
 import shlex
 import subprocess
-import sys
 from pm_engine.infra.harness import watchdog
-
 
 
 # ── 드라이버 관측 능력 선언 (분기 특례가 아니라 테이블) ────────────────────────────
@@ -346,35 +344,3 @@ def _known_harnesses() -> frozenset[str]:
     return frozenset(
         str(name).strip() for name in watchdog.HARNESS_SESSION_MARKERS if str(name).strip()
     )
-
-
-# 처방 줄이 해소에 실패했을 때 쓰는 표기. POSIX 에서는 정확하고 Windows 에서는 shim 위험이 있으나,
-# 훅 경로에서 해소 실패가 deny 판정 자체를 무너뜨리는 것보다 낫다 — 대신 침묵하지 않는다.
-_PRESCRIBED_INTERPRETER_FALLBACK = "python3"
-
-
-def _guard_prescribed_interpreter() -> str:
-    """처방 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
-
-    Windows 의 ``python3``/``python`` 은 WindowsApps 가짜 shim 일 수 있어(실측에서 rc 9009
-    로 실패한 표기다) 런처가 1순위다. 그 판정은 ``contract.entrypoint_command`` 하나가
-    소유한다 — 여기에 규칙 사본을 만들면 표기가 둘이 되어 반드시 갈린다.
-
-    이 함수는 **훅 경로**에서 불린다. 해소가 실패해도 deny 판정과 엔벨로프 키를 무너뜨리면
-    안 되므로 종전 표기로 내려앉되, 그 사실을 stderr 로 남겨 조용한 강등이 되지 않게 한다.
-    """
-    try:
-        interpreter, _entry = contract.entrypoint_command(
-            contract.DELEGATE_ENTRYPOINT, windows=contract.running_on_windows(),
-        )
-    except Exception as exc:  # noqa: BLE001 — 훅 fail-open: 판정을 막지 않는다.
-        cause = f"{type(exc).__name__}: {exc}"
-        print(
-            "[delegate-channel/warn] 처방 인터프리터 표기를 해소하지 못해 "
-            f"`{_PRESCRIBED_INTERPRETER_FALLBACK}` 로 표기합니다 ({cause}) — "
-            "Windows 라면 그 줄의 인터프리터를 런처(`py -3`)로 바꿔 실행하십시오.",
-            file=sys.stderr,
-        )
-        return _PRESCRIBED_INTERPRETER_FALLBACK
-    token = str(interpreter).strip()
-    return token or _PRESCRIBED_INTERPRETER_FALLBACK

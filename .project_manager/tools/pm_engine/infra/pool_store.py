@@ -322,10 +322,5 @@ def _is_registered_task(home, name: str) -> bool:
     비재진입이라 락 보유 중 호출하면 데드락이다(현 호출부 = CLI 요약 루프·락 밖·내부 리뷰 지적).
 
     not-owner 스킵의 보유자가 **task 명의**면 해소는 `--task <task>`(소유 축을 밝히는 것)이다 —
-    사용자가 그걸 추측하지 않게 CLI 안내에 실값을 싣기 위한 판정. 장부 IO/파싱 실패는 False
-    (fail-soft — 안내 문구가 없을 뿐 스킵 자체는 그대로 loud). 안내용 조회가 CLI 를 죽이지
-    않는다(`pm_config.cmd_status` 의 task 축 fail-soft 와 동형)."""
-    try:
-        return find_task(home, name) is not None
-    except Exception:  # noqa: BLE001 — 안내 전용 조회·실패는 문구 생략(스킵 판정엔 무영향).
-        return False
+    사용자가 그걸 추측하지 않게 CLI 안내에 실값을 싣기 위한 판정. 장부 IO/파싱 실패는 전파한다."""
+    return find_task(home, name) is not None

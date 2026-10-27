@@ -13,9 +13,8 @@
 red** 로 오판된다. 판정도 게이트 종류로 가른다 — pytest 게이트는 기존 요약행(불변), 비-pytest
 게이트는 exit code 0 만 green 이고 rc != 0 은 그대로 중단이다(fail-soft 아님).
 
-체인의 단일 사본은 `regression._resolve_gate_cmd` 이고 두 도구는 자기 트리의
-`Home` 을 넘겨 위임한다. 그래도 두 도구는 **자기 이름의 표면**을 각각 노출하므로, 층별 케이스를
-양쪽에 걸고(파라미터화) 결과 동일성까지 단언해 미러가 갈리면 red 가 되게 한다.
+체인의 단일 사본은 `regression._resolve_gate_cmd` 이고 두 도구(`cli.finish_record`·`cli.handoff`)는
+자기 트리의 `Home` 을 넘겨 이 함수를 직접 부른다.
 
 해소 체인이 읽는 패키지 함수(`pm_paths.areas_file`·`areas_store`·`conf_store.local_config`·
 `python_env.default_pytest_cmd`)를 stub 으로 갈아끼우면 실 areas.md·local.conf 없이 층별 판정을
@@ -137,9 +136,7 @@ def _install_stub(stub, monkeypatch):
 
 def _resolve(mod, stub, monkeypatch):
     _install_stub(stub, monkeypatch)
-    return (pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
-            if mod is pm_engine.domain.handoff_text
-            else mod._resolve_per_repo_test_cmd(pm_paths.home_at(Path("/tmp/t0989-gate"))))
+    return pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
 
 
 # ── 층별 우선순위 ────────────────────────────────────────────────────────
@@ -212,8 +209,7 @@ def test_layer3_local_conf_when_rows_have_no_test_cmd(tool, monkeypatch):
 def test_layer4_board_default_when_nothing_configured(tool, monkeypatch):
     """4층 — 앞 세 층이 다 비면 board 기본 pytest 명령이 게이트다.
 
-    None(호출부 솔로 argv)은 이 층이 아니라 board 로드 실패·해소 예외에서만 나온다 —
-    그 두 경로는 바로 아래 두 테스트가 각각 잡는다.
+    해소 예외는 전파한다(바로 아래 테스트가 잡는다).
     """
     mod = tool
     stub = _StubBoard(areas_exists=False, conf={})
@@ -221,14 +217,15 @@ def test_layer4_board_default_when_nothing_configured(tool, monkeypatch):
 
 
 def test_resolution_exception_is_solo_fallback(tool, monkeypatch):
-    """해소 중 예외도 삼켜 솔로 폴백 — 게이트 해소가 도구를 죽이지 않는다."""
+    """해소 중 예외는 전파한다 — 기본 pytest 명령으로 조용히 강등하지 않는다."""
     mod = tool
 
     class _Boom(_StubBoard):
         def id_prefix(self):
             raise RuntimeError("areas 파싱 실패")
 
-    assert _resolve(mod, _Boom(repos={"heru"}), monkeypatch) is None
+    with pytest.raises(RuntimeError, match="areas 파싱 실패"):
+        _resolve(mod, _Boom(repos={"heru"}), monkeypatch)
 
 
 def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):
@@ -335,10 +332,7 @@ def test_resolution_parity_across_tools(tf, hf, monkeypatch, case, tmp_path):
     home = pm_paths.home_at(tmp_path)
     stub = _PARITY_BOARDS[case]
     _install_stub(stub, monkeypatch)
-    finish_cmd = tf._resolve_per_repo_test_cmd(home)
-    handoff_cmd = pm_engine.app.regression._resolve_gate_cmd(home)
-    assert finish_cmd == handoff_cmd, f'{case}: 두 도구의 게이트 해소가 갈렸다'
-    assert finish_cmd == _PARITY_EXPECTED[case]
+    assert pm_engine.app.regression._resolve_gate_cmd(home) == _PARITY_EXPECTED[case]
 
 
 @pytest.mark.parametrize(
@@ -363,11 +357,8 @@ def test_verdict_parity_across_tools(tf, hf, output, returncode, gate_cmd, expec
 
 def test_gate_surface_parity_across_tools(tf, hf):
     """두 도구가 같은 이름의 게이트 표면과 같은 라벨 상수를 노출한다."""
-    for name in ("_resolve_per_repo_test_cmd", "_gate_is_pytest", "_gate_label",
-                 "_regression_is_green"):
-        finish_owner = tf if name == "_resolve_per_repo_test_cmd" else pm_engine.domain.handoff_text
-        assert callable(getattr(finish_owner, name)), f"ticket_finish 에 {name} 부재"
-        assert callable(getattr(pm_engine.app.regression, "_resolve_gate_cmd") if name == "_resolve_per_repo_test_cmd" else getattr(pm_engine.domain.handoff_text, name)), f"pm_handoff 에 {name} 부재"
+    for name in ("_gate_is_pytest", "_gate_label", "_regression_is_green"):
+        assert callable(getattr(pm_engine.domain.handoff_text, name)), f"handoff_text 에 {name} 부재"
     gate = pm_engine.domain.handoff_text  # finish_record 의 게이트 판정 소유자
     assert gate._DEFAULT_GATE_LABEL == pm_engine.domain.handoff_text._DEFAULT_GATE_LABEL
     assert gate._PYTEST_GATE_TOKEN == pm_engine.domain.handoff_text._PYTEST_GATE_TOKEN
@@ -469,7 +460,6 @@ def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
     assert areas_store.registered_prefixes(pm_paths.home_at(adopter_board.REPO)) == set()
     assert areas_store.registered_repos(pm_paths.home_at(adopter_board.REPO)) == {'heru'}
     home = pm_paths.home_at(adopter_board.REPO)
-    assert tf._resolve_per_repo_test_cmd(home) == NON_PYTEST_CMD
     assert pm_engine.app.regression._resolve_gate_cmd(home) == NON_PYTEST_CMD
 
 
@@ -483,6 +473,7 @@ def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_
     log_file = tmp_path / "log.md"
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(adopter_board.REPO),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (0, "✅ 매니페스트 검증 통과 — 전략 13"),
         run_board_fn=lambda args: (0, "board ok"),
         run_git_fn=lambda args: (0, ""),
@@ -510,6 +501,7 @@ def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tm
     log_file = tmp_path / "log.md"
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(adopter_board.REPO),
+        dod_block_fn=lambda tid: None,
         run_pytest_fn=lambda: (1, "✗ 매니페스트 검증 실패"),
         run_board_fn=lambda args: pytest.fail("red 인데 board complete 가 불렸다"),
         run_git_fn=lambda args: pytest.fail("red 인데 git 이 불렸다"),
@@ -591,9 +583,6 @@ def test_verdict_parity_across_tools_with_declared_platforms(
         conf["test.windows.cmd"] = platform_command
     stub = _StubBoard(areas_exists=False, conf=conf)
     _install_stub(stub, monkeypatch)
-    for tool in (tf, hf):
-        command = (pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
-                   if tool is pm_engine.domain.handoff_text
-                   else tool._resolve_per_repo_test_cmd(pm_paths.home_at(Path("/tmp/t0989-gate"))))
-        assert command == gate_cmd
-        assert pm_engine.domain.handoff_text._regression_is_green(output, rc, command) is expected
+    command = pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
+    assert command == gate_cmd
+    assert pm_engine.domain.handoff_text._regression_is_green(output, rc, command) is expected

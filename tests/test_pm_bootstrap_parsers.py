@@ -18,6 +18,7 @@ from pm_engine.cli import bootstrap as bootstrap_cli
 from pm_engine.cli import bootstrap_report
 from pm_engine.domain import bootstrap_rules
 from pm_engine.domain import log_entries
+from pm_engine.domain import session_history
 
 from pm_engine.infra import pm_paths
 
@@ -500,7 +501,7 @@ def test_extract_last_log_entry_body_no_entries_is_none():
     assert bootstrap_history.extract_last_log_entry_body("") is None
 
 
-# ── infer_session_num (T-0179·차수 추론·pm_handoff.infer_next_session_num 재사용) ──
+# ── 차수 추론 (T-0179·부트스트랩이 session_history.infer_next_session_num 을 직접 부른다) ──
 
 _PM_STATE_TEXT = (
     "---\ntitle: PM State\n---\n\n"
@@ -519,13 +520,13 @@ _PM_STATE_TEXT = (
 def test_infer_session_num_returns_next_number():
     """세션 식별 절 최고차(41) + 1 = 42 를 반환한다 (pm_handoff.infer_next_session_num 재사용)."""
     mod = _load_module()
-    assert bootstrap_history.infer_session_num(_PM_STATE_TEXT) == 42
+    assert session_history.infer_next_session_num(_PM_STATE_TEXT) == 42
 
 
 def test_infer_session_num_no_section_returns_placeholder():
     """세션 식별 절/entry 가 없으면 `?` placeholder (pm_handoff 계약 전달)."""
     mod = _load_module()
-    assert bootstrap_history.infer_session_num("## 다른 절\n- 내용\n") == "?"
+    assert session_history.infer_next_session_num("## 다른 절\n- 내용\n") == "?"
 
 
 # ── _format_session_label (T-0179·차수 announce 머리표·crash 금지) ─────────────
@@ -824,7 +825,7 @@ def test_collect_board_git_head_failure_is_none(tmp_path):
 
 # ── 차수 log-폴백 + stale 교차검증 run() 통합 (T-0208) ─────────────────────────
 
-# pm_state 세션 식별 절은 있으나 entry 가 없는 template → infer_session_num == "?"(미해소).
+# pm_state 세션 식별 절은 있으나 entry 가 없는 template → session_history.infer_next_session_num == "?"(미해소).
 _PM_STATE_TEMPLATE = (
     "---\ntitle: PM State\n---\n\n"
     "## 세션 식별 (현재까지 사용된 이름)\n\n"

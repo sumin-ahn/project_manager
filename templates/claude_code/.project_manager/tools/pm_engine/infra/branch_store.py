@@ -7,7 +7,6 @@ from pathlib import Path
 from pm_engine.domain import worktree_records
 from pm_engine.infra import clock, pm_paths, pool_store, worktree_git
 from pm_engine.infra import areas_store
-from pm_engine.domain import areas_rules
 
 
 class BranchParentError(RuntimeError):
@@ -280,7 +279,7 @@ def delete_branch_by_rule(home,
     """브랜치 삭제 판정과 삭제 — 슬롯 제거가 쓰는 단일 규칙.
 
     차례(앞에서 걸리면 그 자리에서 보존한다):
-      1. repo 보호 브랜치(`_resolve_protected`) 또는 공용 저장소 기본 브랜치 → 보존.
+      1. repo 보호 브랜치(`areas_store._repo_protected`) 또는 공용 저장소 기본 브랜치 → 보존.
       2. 자식 브랜치(`branch_children`) 1개 이상 → 보존 + 자식 목록.
       3. 부모 기록 없음 → 보존. 부모 브랜치가 지워져 비교 ref(`parent_ref`)가 없으면 합쳐짐을 잴 수
          없어 보존.
@@ -297,7 +296,7 @@ def delete_branch_by_rule(home,
     def preserved(reason: str, **fields) -> BranchDeletion:
         return BranchDeletion(branch, action=worktree_records.BRANCH_PRESERVED, reason=reason, **fields)
 
-    if branch in _resolve_protected(home, repo):
+    if branch in areas_store._repo_protected(home, repo):
         return preserved(worktree_records.BRANCH_REASON_PROTECTED)
     if branch == _shared_default_branch(git_runner=git_runner):
         return preserved(worktree_records.BRANCH_REASON_DEFAULT)
@@ -451,7 +450,7 @@ def _resolve_base_commit(home, slot: str, ref: str, *, git_runner: worktree_reco
     """`ref`(브랜치 또는 커밋)의 커밋 sha 를 슬롯 worktree 에서 해소한다 (rebase `--onto` 검증·fork).
 
     `git rev-parse --verify <ref>^{commit}` — 브랜치면 tip, 커밋이면 그 커밋. 해소 불가(rc≠0)·슬롯
-    부재·예외 → None. 실경로(runner 미주입)는 슬롯 worktree 바인딩 runner, 슬롯 부재면 None
+    부재 → None, runner 예외는 전파한다. 실경로(runner 미주입)는 슬롯 worktree 바인딩 runner, 슬롯 부재면 None
     (`_slot_head` 동형 규율)."""
     runner = git_runner
     if runner is None:
@@ -459,10 +458,7 @@ def _resolve_base_commit(home, slot: str, ref: str, *, git_runner: worktree_reco
         if not p.exists():
             return None
         runner = worktree_git._real_git_runner(p)
-    try:
-        rc, out = runner(["rev-parse", "--verify", f"{ref}^{{commit}}"])
-    except Exception:  # noqa: BLE001 — fail-soft: 해소 불가는 None.
-        return None
+    rc, out = runner(["rev-parse", "--verify", f"{ref}^{{commit}}"])
     if rc != 0:
         return None
     return (out or "").strip() or None
@@ -528,14 +524,6 @@ def _shared_stash_subjects(shared: dict, git_runner: worktree_records.GitRunner)
     return shared["stash"]
 
 
-def _resolve_protected(home, repo: str) -> list[str]:
-    """대상 Home 등록부의 실효 보호목록. 일반 판독 실패의 안전 기본값은 유지한다."""
-    try:
-        return list(areas_store._repo_protected(home, repo))
-    except Exception:
-        return list(areas_rules.DEFAULT_PROTECTED)
-
-
 def _normalize_branch_name(branch: str, *, git_runner: worktree_records.GitRunner) -> "str | None":
     """`branch` 를 **git 이 실제로 해석할 브랜치명**으로 정규화한다 — `check-ref-format --branch` 출력.
 
@@ -554,7 +542,7 @@ def _normalize_branch_name(branch: str, *, git_runner: worktree_records.GitRunne
 
     반환 = 정규화된 브랜치명. 아래는 전부 None(**fail-closed** 거부 — 정규화 불가 = 안전검사 불가라
     통과시키지 않는다. 옛 `_branch_ref_name_ok` 의 "판정 불가는 통과" fail-soft 를 뒤집는다):
-      - rc≠0(ref 규칙 위반) · 호출/예외 실패.
+      - rc≠0(ref 규칙 위반). runner 예외는 전파한다.
       - 출력이 비었거나 여러 줄·공백 포함(예상 밖 형태 방어).
       - **고정점 아님** — 정규화 결과를 한 번 더 통과시켰을 때 자기 자신이 아니면 거부한다
         (`--branch` rc 0 이 곧 안전은 아니라는 가정).
@@ -563,10 +551,7 @@ def _normalize_branch_name(branch: str, *, git_runner: worktree_records.GitRunne
     (`bootstrap_slots._remedy_branch_ref_ok` → `_remedy_branch_name`)도 판정을 따로 구현하지 않고 이
     함수를 호출한다(제안 쪽과 실행 쪽이 갈리면 안내가 곧바로 실행 불가·codex 게이트 must-fix)."""
     def resolve(name: str) -> "str | None":
-        try:
-            rc, out = git_runner(["check-ref-format", "--branch", name])
-        except Exception:  # noqa: BLE001 — fail-closed: 판정 불가는 거부(안전검사 불가).
-            return None
+        rc, out = git_runner(["check-ref-format", "--branch", name])
         if rc != 0:
             return None
         text = (out or "").strip()
@@ -583,12 +568,9 @@ def _normalize_branch_name(branch: str, *, git_runner: worktree_records.GitRunne
 def _local_branch_exists(branch: str, *, git_runner: worktree_records.GitRunner) -> bool:
     """슬롯 worktree 에 로컬 브랜치 `refs/heads/<branch>` 가 있는가 — switch `not-found`·task branch `exists` 판정.
 
-    `git show-ref --verify --quiet refs/heads/<branch>` rc 0 = 존재. 호출/예외 실패는 미존재
-    (fail-soft — 이어지는 checkout 이 git 오류로 loud 하게 surface)."""
-    try:
-        rc, _out = git_runner(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
-    except Exception:  # noqa: BLE001 — fail-soft: 판정 불가는 미존재(git 이 최종 판정).
-        return False
+    `git show-ref --verify --quiet refs/heads/<branch>` rc 0 = 존재, rc≠0 은 미존재.
+    runner 예외는 전파한다."""
+    rc, _out = git_runner(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
     return rc == 0
 
 
@@ -606,11 +588,8 @@ def _branch_protected_upstream(branch: str, protected: "list[str]", *,
 
     `git rev-parse --abbrev-ref <branch>@{upstream}`(`_upstream_status` 의 branch-지정 변형·rc 우선
     판정 동형 — `_real_git_runner` 는 stdout+stderr 를 합쳐 주므로 미해소 시 out 이 비어있지 않다).
-    미해소(rc≠0·빈 이름)·`/` 없는 이름·호출 실패는 None(fail-soft — 판정 불가는 통과·오탐 0)."""
-    try:
-        rc, out = git_runner(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"])
-    except Exception:  # noqa: BLE001 — fail-soft: 조회 실패는 판정 생략(오탐 0).
-        return None
+    미해소(rc≠0·빈 이름)·`/` 없는 이름는 None(판정 불가는 통과·오탐 0). runner 예외는 전파한다."""
+    rc, out = git_runner(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"])
     name = (out or "").strip()
     if rc != 0 or not name or "/" not in name:
         return None
@@ -630,12 +609,9 @@ def _non_branch_ref_kind(name: str, *, git_runner: worktree_records.GitRunner) -
     을 보고, 이건 *인자 자체가 로컬 브랜치가 아닌 것*을 가리키는 경우다(둘 다 필요).
 
     `refs/remotes/<name>` → "remote-tracking" · `refs/tags/<name>` → "태그" · 둘 다 아니면 None.
-    호출 실패/예외는 None(fail-soft — 판정 불가는 통과·`-b` 생성이 최종 방어)."""
+    runner 예외는 전파한다(`-b` 생성이 최종 방어)."""
     for ref_prefix, kind in (("refs/remotes/", "remote-tracking ref"), ("refs/tags/", "태그")):
-        try:
-            rc, _out = git_runner(["show-ref", "--verify", "--quiet", f"{ref_prefix}{name}"])
-        except Exception:  # noqa: BLE001 — fail-soft: 판정 불가는 통과.
-            continue
+        rc, _out = git_runner(["show-ref", "--verify", "--quiet", f"{ref_prefix}{name}"])
         if rc == 0:
             return kind
     return None
@@ -672,14 +648,11 @@ def _branch_checked_out_elsewhere(home, branch: str, slot: str, *,
     경로, 둘 다 `resolve()`)으로 한다 — 장부 슬롯 값이 `_slot_from_worktree_path` 로 되짚어지지
     않는 경우에도 값 비교로는 정확히 self 로 잡힌다.
 
-    fail-open: `worktree list` 호출 실패·rc≠0·예외는 None(판정 생략) — 이 선-검사가 fail-open
+    fail-open: `worktree list` rc≠0 은 None(판정 생략·runner 예외는 전파) — 이 선-검사가 fail-open
     해도 `_checkout` 프리미티브(plain checkout 만·리셋 없음)가 기존 브랜치 리셋을 막는 최종 방어선이다(불변식 4·
     두 층 중 하나가 죽어도 데이터 유실은 0). 이 함수는 리셋을 막지 않는다 — 진단·명시 사유만
     낸다(정책은 여기, 비파괴 실행은 `_checkout` — 프리미티브가 정책을 알지 않는다)."""
-    try:
-        rc, out = git_runner(["worktree", "list", "--porcelain"])
-    except Exception:  # noqa: BLE001 — fail-soft: 조회 실패는 판정 생략(프리미티브가 최종 방어).
-        return None
+    rc, out = git_runner(["worktree", "list", "--porcelain"])
     if rc != 0:
         return None
     self_path = pm_paths.slot_path(home, slot).resolve()

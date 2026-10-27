@@ -175,13 +175,10 @@ def lint_domain_freshness(home, *, runner=None) -> list[tuple[str, str, str]]:
 
     advisory 는 never-block(`_ADVISORY_LINT_KINDS`)이라 `--gate` 종료코드에 기여하지 않는다.
 
-    fail-soft: 페이지 스캔 실패·페이지 없음·verified_at 부재·covers 빈·git 불가(sha
-    해소 None) → [](명시 skip·신규 clone 무영향). `updated` date 기반 `lint_domain`
+    페이지 없음·verified_at 부재·covers 빈·git 불가(sha 해소 None) → [](명시 skip·신규 clone
+    무영향). 페이지 스캔 예외는 전파한다. `updated` date 기반 `lint_domain`
     stale 과는 별개 축(이건 sha 기준)."""
-    try:
-        pages = doc_page_store.load_pages(pm_paths.domain_dir(home))
-    except Exception:  # noqa: BLE001 — 스캔 실패는 [] 로 흡수(board lint 정상 진행).
-        return []
+    pages = doc_page_store.load_pages(pm_paths.domain_dir(home))
     findings: list[tuple[str, str, str]] = []
     _UNVERIFIABLE_PREFIX = ("이 저장소에서 freshness 검증 불가(소유 페이지일 수 있음·소유 "
                             "repo 에서 재검증) — ")
@@ -243,32 +240,28 @@ def lint_domain(home) -> list[tuple[str, str, str]]:
     `lint_pages` 의 `(kind, label, detail)` 를 board 관례 `(label, kind, detail)` 로
     재배열해 돌려준다. kind 는 domain 의 `stale`/`orphan`/`oversized`/`history` 를 보존 —
     `_ADVISORY_LINT_KINDS` 에 등재돼 `--gate` 종료코드에 *절대* 기여하지 않는다(visibility>
-    enforcement). 깨진 페이지·git 부재 → [] (domain 미사용
-    프로젝트 무영향). `lint_pages` 가 이미 graceful 이므로 얇게 위임하되, 어떤 예외도 [] 로
-    흡수해 board lint 자체는 항상 정상 진행한다.
+    enforcement). domain 미사용 프로젝트는 [] (무영향). 페이지 적재·판정 예외는
+    전파해 board lint 가 실패한다.
 
     date freshness도 페이지별 `repo:` 소유 시계로 판정한다. owner checkout별 runner를
     캐시해 같은 repo 페이지끼리 공유하고, 소유 repo 미해소/runner 생성 실패는 그 페이지 stale을
     unknown으로 둔다(sha freshness 축은 별도 `domain-unverifiable` advisory로 표면화).
     """
-    try:
-        pages = doc_page_store.load_pages(pm_paths.domain_dir(home))
-        runners: dict[Path, object] = {}
+    pages = doc_page_store.load_pages(pm_paths.domain_dir(home))
+    runners: dict[Path, object] = {}
 
-        def git_runner_factory(page):
-            owner_repo, _owner_error = freshness_lint._freshness_owner_repo(home, page.get("repo"))
-            if owner_repo is None:
-                return None
-            owner_repo = Path(owner_repo)
-            if owner_repo not in runners:
-                runners[owner_repo] = doc_staleness._real_git_runner(owner_repo)
-            return runners[owner_repo]
+    def git_runner_factory(page):
+        owner_repo, _owner_error = freshness_lint._freshness_owner_repo(home, page.get("repo"))
+        if owner_repo is None:
+            return None
+        owner_repo = Path(owner_repo)
+        if owner_repo not in runners:
+            runners[owner_repo] = doc_staleness._real_git_runner(owner_repo)
+        return runners[owner_repo]
 
-        findings = lint_pages(
-            home, pages, git_runner_factory=git_runner_factory,
-            domain_dir=pm_paths.domain_dir(home), manifest_path=pm_paths.engine_manifest(home),
-        )
-    except Exception:  # noqa: BLE001 — 어떤 실패도 빈 결과로 흡수(board lint 정상 진행).
-        return []
+    findings = lint_pages(
+        home, pages, git_runner_factory=git_runner_factory,
+        domain_dir=pm_paths.domain_dir(home), manifest_path=pm_paths.engine_manifest(home),
+    )
     # domain (kind, label, detail) → board (label, kind, detail) 재배열.
     return [(label, kind, detail) for kind, label, detail in findings]

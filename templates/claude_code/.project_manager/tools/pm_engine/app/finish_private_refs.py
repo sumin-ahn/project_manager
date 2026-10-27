@@ -120,12 +120,9 @@ def _line_reached_integration(
     자체가 안 된 것이다. 도달했다는 증거가 없는 줄을 흡수분으로 접으면 이 게이트가 막으려는
     신규 유입이 경고로 강등돼 나간다 — 반대 방향의 오분류는 사람이 그 자리를 한 번 보는
     비용에서 끝난다."""
-    try:
-        rc, _out = run_git_stdout_at(
-            code_tree, ["merge-base", "--is-ancestor", sha, integration_tip],
-        )
-    except Exception as exc:  # noqa: BLE001 — 판정 실패는 신규 취급(차단 방향).
-        return False
+    rc, _out = run_git_stdout_at(
+        code_tree, ["merge-base", "--is-ancestor", sha, integration_tip],
+    )
     return rc == 0
 
 

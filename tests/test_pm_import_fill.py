@@ -127,7 +127,7 @@ def test_fill_capability_and_runner_mapping_are_registry_derived(pm_import, tmp_
 def test_fill_failure_formatter_preserves_head_for_non_utf8_output(pm_import):
     """kill 경로의 비-UTF8 bytes도 원 진단을 가리지 않고 replacement로 표시한다."""
     exc = subprocess.TimeoutExpired(["runner"], 1, output=b"ok\xff", stderr=b"err\xfe")
-    rendered = import_fill._fill_failure_with_partial("[원 진단]", exc)
+    rendered = watchdog.format_partial_output("[원 진단]", exc)
     assert rendered.startswith("[원 진단]")
     assert "ok�" in rendered and "err�" in rendered
 
@@ -141,13 +141,13 @@ def test_fill_failure_formatter_preserves_head_for_non_utf8_output(pm_import):
 def test_shared_partial_formatter_keeps_all_text_without_truncation(pm_import, output, expected):
     """없음·짧음·기존 preview 경계·대용량 모두 공용 seam에서 전량 보존한다."""
     exc = subprocess.TimeoutExpired(["runner"], 1, output=output)
-    rendered = import_fill._fill_failure_with_partial("[원 진단]", exc)
+    rendered = watchdog.format_partial_output("[원 진단]", exc)
     assert expected in rendered
     assert rendered.startswith("[원 진단]")
 
 
 def test_shared_partial_formatter_keeps_head_when_output_stringification_fails(pm_import):
-    """포맷할 산출물이 고장나도 kill 원인 진단은 남는다."""
+    """포맷할 산출물이 고장나면 그 서식 예외가 전파한다(원 진단 head 로 접지 않는다)."""
     class BrokenOutput:
         def __bool__(self):
             return True
@@ -157,35 +157,8 @@ def test_shared_partial_formatter_keeps_head_when_output_stringification_fails(p
 
     exc = subprocess.TimeoutExpired(["runner"], 1)
     exc.output = BrokenOutput()
-    assert import_fill._fill_failure_with_partial("[원 진단]", exc).startswith("[원 진단]")
-
-
-def test_fill_failure_routes_through_shared_partial_formatter(pm_import, monkeypatch):
-    """fill 소비처를 옛 로컬 결합기로 되돌리면 이 seam 감지가 실패한다."""
-    class Relay:
-        @staticmethod
-        def format_partial_output(head, exc):
-            return f"shared:{head}:{exc.output}"
-
-    monkeypatch.setattr(watchdog, "format_partial_output", Relay.format_partial_output)
-    exc = subprocess.TimeoutExpired(["runner"], 1, output="partial")
-    assert import_fill._fill_failure_with_partial("head", exc) == "shared:head:partial"
-
-
-@pytest.mark.parametrize("failure_site", ("formatter",))
-def test_fill_failure_partial_formatter_keeps_head_for_general_failure(
-        pm_import, monkeypatch, failure_site):
-    """일반 포맷터 실패는 원 진단을 가리지 않고 fill fail-soft를 유지한다."""
-    failure = RuntimeError("general")
-
-    class BrokenRelay:
-        @staticmethod
-        def format_partial_output(head, exc):
-            raise failure
-
-    monkeypatch.setattr(watchdog, "format_partial_output", BrokenRelay.format_partial_output)
-
-    assert import_fill._fill_failure_with_partial("head", RuntimeError("original")) == "head"
+    with pytest.raises(UnicodeError, match="broken"):
+        watchdog.format_partial_output("[원 진단]", exc)
 
 
 def test_fill_harness_help_lists_and_import_default_are_registry_derived(pm_import, capsys):
@@ -701,7 +674,7 @@ def test_fill_failure_raw_rechecks_containment_after_file_creation(
 
 def test_fill_runner_failure_exposes_full_output_if_raw_save_fails(
         pm_import, tmp_path, monkeypatch):
-    """raw 박제 실패도 fail-soft이며 preview 절단 없이 stderr 끝까지 화면 note에 싣는다."""
+    """raw 박제 실패는 전파한다(설치를 fill 실패 note 로 계속하지 않는다)."""
     dest = _make_imported_tree(pm_import, tmp_path, harness="claude", name="RawFallback")
     output = "O" * 600 + "\n[stderr]\nTAIL-ERR"
     monkeypatch.setattr(
@@ -709,18 +682,16 @@ def test_fill_runner_failure_exposes_full_output_if_raw_save_fails(
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("read-only")),
     )
 
-    result = import_fill.run_fill(
-        dest, "claude", live=False, runner=_StubRunner(ok=False, output=output))
-
-    assert "raw 저장 실패" in result.note
-    assert output in result.note
+    with pytest.raises(OSError, match="read-only"):
+        import_fill.run_fill(
+            dest, "claude", live=False, runner=_StubRunner(ok=False, output=output))
 
 
 @pytest.mark.skipif(not _can_symlink(), reason="symlink 생성 능력 필요")
 @pytest.mark.parametrize("linked_component", [".local", "fill"])
 def test_fill_failure_raw_rejects_symlink_component_without_touching_target(
         pm_import, tmp_path, linked_component):
-    """raw 경로 또는 조상이 symlink면 repo 밖 chmod/create 없이 전문 표시 폴백한다."""
+    """raw 경로 또는 조상이 symlink면 repo 밖 chmod/create 없이 경로 탈출 오류로 전파한다."""
     dest = _make_imported_tree(
         pm_import, tmp_path, harness="claude", name=f"RawLink{linked_component}")
     local = dest / ".project_manager" / ".local"
@@ -737,11 +708,10 @@ def test_fill_failure_raw_rejects_symlink_component_without_touching_target(
         (local / "fill").symlink_to(outside, target_is_directory=True)
 
     output = "FULL-STDOUT\n[stderr]\nFULL-TAIL"
-    result = import_fill.run_fill(
-        dest, "claude", live=False, runner=_StubRunner(ok=False, output=output))
+    with pytest.raises(OSError, match="대상 repo 밖"):
+        import_fill.run_fill(
+            dest, "claude", live=False, runner=_StubRunner(ok=False, output=output))
 
-    assert "raw 저장 실패" in result.note
-    assert output in result.note, "symlink 거부 폴백이 원문을 절단함"
     assert list(outside.iterdir()) == [], "repo 밖 symlink 대상에 raw 파일을 생성함"
     if posix_mode_supported():
         assert outside.stat().st_mode & 0o777 == 0o755, "repo 밖 디렉터리 권한을 변경함"

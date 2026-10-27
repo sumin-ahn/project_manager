@@ -150,8 +150,6 @@ def real_git_runner(
         except FileNotFoundError as exc:
             # which 이후 바이너리가 사라지는 exec 경쟁은 각 소비처의 기존 git 부재 rc로 보존한다.
             return missing_binary_rc, str(exc)
-        except Exception as exc:  # noqa: BLE001 — 호출 실패도 각 상위 계약이 rc로 처리.
-            return 1, str(exc)
 
     return runner
 
@@ -241,7 +239,8 @@ def list_repo_owned_entries(
     주입 ``git_runner``도 rc 127=git 부재, 구조 프로브 rc 128=비-repo 규약을 지켜야 한다.
     프로브 rc 0은 원 실패 진단 문구와 무관하게 저장소가 있는 것으로 판정한다. 폴백은
     추적/ignore 의미를 보장할 수 없어 경고가 계약의 일부다. TRACKED_ONLY의 그 밖의 실패는
-    추적정보가 있는 상태에서 누출하지 않도록 loud 실패한다.
+    추적정보가 있는 상태에서 누출하지 않도록 loud 실패한다. runner 호출 자체의 예외(시간 초과
+    등)는 mode 와 무관하게 ``RepoFilesGitError`` 로 올린다.
     """
     try:
         mode_args = _MODE_GIT_ARGS[mode]
@@ -260,13 +259,11 @@ def list_repo_owned_entries(
             "--",
             f":(literal){norm}",
         ])
-    except Exception as exc:  # noqa: BLE001 — mode 계약에 따라 loud 실패/폴백.
-        if mode == TRACKED_ONLY:
-            raise RepoFilesGitError(
-                "repo-owned tracked_only git ls-files 호출 실패 "
-                f"(checkout={checkout_path}, subtree={norm!r})"
-            ) from exc
-        rc, out = 1, str(exc)
+    except Exception as exc:  # noqa: BLE001 — runner 예외는 모든 mode 에서 열거 실패로 변환.
+        raise RepoFilesGitError(
+            "repo-owned git ls-files 호출 실패 "
+            f"(checkout={checkout_path}, subtree={norm!r}, mode={mode})"
+        ) from exc
 
     entries: list[RepoOwnedEntry] = []
     fallback_rc: int | None = None

@@ -22,10 +22,10 @@ GIT_SAFE_TIMEOUT_SECONDS = 15
 
 
 def _real_git_runner(dest_root: Path) -> GitRunner:
-    """실 git 을 dest_root 컨텍스트로 호출하는 GitRunner 를 만든다(fail-soft).
+    """실 git 을 dest_root 컨텍스트로 호출하는 GitRunner 를 만든다.
 
-    반환 callable: argv(list) → (returncode, stdout). git 바이너리 부재(shutil.which) 또는
-    어떤 예외든 (1, "") 로 감싼다 — git_safe_relpaths 가 이를 None(전부 백업) 폴백으로 본다.
+    반환 callable: argv(list) → (returncode, stdout). git 바이너리 부재(shutil.which)는
+    (1, "") 로 돌려 git_safe_relpaths 가 None(전부 백업)으로 본다. 실행 예외(시간 초과 등)는 전파한다.
     `git -C <dest> <argv...>` 형태로 항상 dest_root work tree 에 묶는다(_real_models_runner 선례).
     """
     git_binary = shutil.which("git")
@@ -33,18 +33,15 @@ def _real_git_runner(dest_root: Path) -> GitRunner:
     def runner(argv: list) -> tuple:
         if git_binary is None:
             return 1, ""
-        try:
-            result = subprocess.run(
-                [git_binary, "-C", str(dest_root), *argv],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=GIT_SAFE_TIMEOUT_SECONDS,
-            )
-            return result.returncode, result.stdout or ""
-        except Exception:  # noqa: BLE001 — fail-soft: 어떤 예외도 import 를 깨지 않는다.
-            return 1, ""
+        result = subprocess.run(
+            [git_binary, "-C", str(dest_root), *argv],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=GIT_SAFE_TIMEOUT_SECONDS,
+        )
+        return result.returncode, result.stdout or ""
 
     return runner
 

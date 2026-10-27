@@ -31,10 +31,7 @@ def _local_conf_value(home, key: str) -> str | None:
 
 def _repo_registry_git(home, repo: str) -> str | None:
     """동일 repo 행에서 처음 나타나는 비어 있지 않은 git 값을 읽는다."""
-    try:
-        _header, rows = areas_store._parse_areas(home)
-    except Exception:
-        rows = []
+    _header, rows = areas_store._parse_areas(home)
     for row in rows:
         if row.get("repo") == repo and row.get("git"):
             return row["git"]
@@ -81,9 +78,9 @@ def _protected_push_gate_config(home,
                 else _PROTECTED_GATE_SELF_TEST)
         return mode, test_cmd
 
-    # 경로 해소 실패는 **어떤 값이** 안 풀렸는지와 함께 올린다 — 호출부(`_install_protected_hook`)
-    # 는 원인만 기록하고 fail-soft 하는데, 플랫폼마다 문구가 달라(POSIX "embedded null byte" /
-    # Windows "stat: embedded null character in path") 입력을 안 실으면 진단이 남지 않는다.
+    # 경로 해소 실패는 **어떤 값이** 안 풀렸는지와 함께 올린다 — 플랫폼마다 문구가 달라(POSIX
+    # "embedded null byte" / Windows "stat: embedded null character in path") 입력을 안 실으면
+    # 전파된 traceback 에 진단이 남지 않는다.
     try:
         candidate = pm_paths._expanded_user_path(upstream)
         if not candidate.is_absolute():
@@ -123,18 +120,12 @@ def _resolve_repo_test_cmd(home, repo: str) -> str:
     (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
     보여주는 게 목적이다(must-fix 1 — 슬롯이 areas 보다 우선이라 잘못 덮으면 안 됨).
     """
-    try:
-        _header, rows = areas_store._parse_areas(home)
-    except Exception:  # noqa: BLE001 — areas 파싱 실패는 아래 폴백.
-        rows = []
+    _header, rows = areas_store._parse_areas(home)
     for row in rows:
         if row.get("repo") == repo and row.get("test_cmd"):
             return row["test_cmd"]
     # 구 3칼럼 registry에는 repo 칼럼이 없으므로 prefix lookup을 하위호환으로 유지한다.
-    try:
-        row = areas_store._areas_row_for_prefix(home, repo)
-    except Exception:  # noqa: BLE001 — areas 실패는 최종 폴백.
-        row = None
+    row = areas_store._areas_row_for_prefix(home, repo)
     if row and row.get("test_cmd"):
         return row["test_cmd"]
     return _default_test_cmd(home)
@@ -154,31 +145,24 @@ def protected_hook_install_failure_reason(home, repo: str) -> str | None:
 def _install_protected_hook(home, repo: str) -> bool:
     """보호 훅을 설치하고 Home·repo별 최근 실패 사유를 보관한다."""
     _PROTECTED_HOOK_FAILURE_REASONS.pop((home, repo), None)
-    try:
-        protected = branch_store._resolve_protected(home, repo)
-        mode, test_cmd = _protected_push_gate_config(home, repo)
-        installed = bool(protected_hooks.install_protected_hook(
-            home, repo, protected, gate_mode=mode, test_cmd=test_cmd))
-        if not installed:
-            _PROTECTED_HOOK_FAILURE_REASONS[(home, repo)] = (
-                "install_protected_hook이 False를 반환(bare 미러 부재 또는 "
-                "bare core.hooksPath 설정 실패)")
-        return installed
-    except Exception as exc:
-        _PROTECTED_HOOK_FAILURE_REASONS[(home, repo)] = f"{type(exc).__name__}: {exc}"
-        return False
+    protected = areas_store._repo_protected(home, repo)
+    mode, test_cmd = _protected_push_gate_config(home, repo)
+    installed = bool(protected_hooks.install_protected_hook(
+        home, repo, protected, gate_mode=mode, test_cmd=test_cmd))
+    if not installed:
+        _PROTECTED_HOOK_FAILURE_REASONS[(home, repo)] = (
+            "install_protected_hook이 False를 반환(bare 미러 부재 또는 "
+            "bare core.hooksPath 설정 실패)")
+    return installed
 
 
 def _areas_protected_cell(home, repo: str) -> str | None:
     """areas.md 그 repo 행의 **raw** `protected` 셀 — 행 부재 → None (출처 판정용).
 
-    `branch_store._resolve_protected`(폴백 적용된 실효값)와 달리 "명시했나 / 비었나 / 행이 없나"를
-    구별해야 조회 출력의 **출처** 줄을 정직하게 낼 수 있다. 파싱 실패 → None.
+    `areas_store._repo_protected`(폴백 적용된 실효값)와 달리 "명시했나 / 비었나 / 행이 없나"를
+    구별해야 조회 출력의 **출처** 줄을 정직하게 낼 수 있다. 행 부재 → None, 파싱 예외는 전파.
     """
-    try:
-        _header, rows = areas_store._parse_areas(home)
-    except Exception:  # noqa: BLE001 — 일반 areas 실패만 None.
-        return None
+    _header, rows = areas_store._parse_areas(home)
     for row in rows:
         if row.get("repo") == repo:
             return row.get("protected") or ""
@@ -272,10 +256,7 @@ def _install_protected_hook_reporting(home,
 
 
 def _refresh_protected_gate_contracts(home) -> tuple[list[str], list[str]]:
-    try:
-        repos = sorted(areas_store.registered_repos(home))
-    except Exception:
-        return [], []
+    repos = sorted(areas_store.registered_repos(home))
     attempted, failed = [], []
     for repo in repos:
         attempted.append(repo)

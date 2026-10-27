@@ -22,6 +22,7 @@ import pm_engine.infra.compaction_store
 import pm_engine.infra.log_store
 import pm_engine.infra.pm_paths
 
+from pm_engine.domain import delegate_errors
 from pm_engine.domain import log_entries
 
 import contextlib
@@ -37,7 +38,7 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import normalize_newlines, write_lf
-from pm_engine.infra import areas_store, delegate_ledger, log_store, pm_paths, raw_output
+from pm_engine.infra import areas_store, log_store, pm_paths, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -295,7 +296,7 @@ def _three_task_pm_home(mod, monkeypatch, tmp_path, tasks: list[dict]) -> Path:
         state = pm_home / ".project_manager" / ".local" / "tasks" / name / "pm_state.md"
         state.parent.mkdir(parents=True)
         state.write_text(f"# {name}\n", encoding="utf-8")
-    monkeypatch.setattr(pm_engine.cli.log, "_registered_repos", lambda _home: set())
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: set())
     monkeypatch.chdir(pm_home)
     return pm_home
 
@@ -388,7 +389,7 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
         "tasks": [{"name": "foo_1", "prefix": None, "session": "s-foo", "started": "t"}],
     }
     ledger.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(pm_engine.cli.log, "_registered_repos", lambda _home: set())
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: set())
 
     rc = pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task=None, trigger='manual', session_id='s-foo', breadcrumb=False))
     entries = log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]
@@ -648,14 +649,14 @@ def test_checkpoint_parser_default_manual_appends_entry(tmp_path, monkeypatch):
     assert "checkpoint | (task:orch-dev-T0547) — manual" in current.read_text(encoding="utf-8")
 
 
-def test_registered_repos_non_utf8_areas_failure_is_fail_soft(monkeypatch, tmp_path):
-    'areas 파싱 실패는 None으로 강등해 기본 task 구문 검증을 유지한다.'
+def test_checkpoint_propagates_non_utf8_areas_failure(monkeypatch, tmp_path):
+    'checkpoint 의 예약패턴 검증은 areas 판독 실패를 강등하지 않고 전파한다.'
     home = pm_paths.home_at(tmp_path)
-    mod = _load_module()
     def broken(_home):
         raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
     monkeypatch.setattr(areas_store, 'registered_repos', broken)
-    assert pm_engine.cli.log._registered_repos(home) is None
+    with pytest.raises(UnicodeDecodeError):
+        pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task="job"))
 
 
 # ── 소유 PM 홈 유도 (T-0888) ────────────────────────────────────────────────
@@ -995,20 +996,16 @@ def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
     assert "슬롯 WIP: work/product_1" in text
 
 
-def test_inflight_section_absorbs_corrupt_delegate_ledger_as_one_line(tmp_path, capsys):
-    """T-0787 — fail-soft(손상): 비-UTF8 장부도 절 하나만 1줄로 접고 다른 절은 온전하다."""
+def test_inflight_section_corrupt_delegate_ledger_fails_snapshot(tmp_path, capsys):
+    """손상: 비-UTF8 위임 장부는 snapshot 을 실패시킨다(절 실패 줄로 접지 않는다)."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     ledger = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_bytes(b"\xff\xfe \xf8\xa1\xa1\xa1\xa1 not valid utf-8\n")
 
-    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
-
-    assert warning is None and text is not None
-    assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
-    assert "## 장부 포인터" in text and "## 열린 todo (파일 실측)" in text and "## 복구 포인터" in text
-    assert "조회 실패" in capsys.readouterr().err
+    with pytest.raises(delegate_errors.DelegateError, match="비-UTF8"):
+        pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
 
 
@@ -1201,24 +1198,6 @@ def test_todo_section_without_open_todos_names_the_write_warning(tmp_path):
     assert "경고" in section
 
 
-def test_inflight_section_multiline_exception_does_not_forge_headings(tmp_path, monkeypatch):
-    """T-0787 F-003 — fail-soft 절의 예외 사유에 개행이 섞여도 heading 주입이 없다."""
-    mod = _load_module()
-    pm_home, cwd = _snapshot_home(tmp_path)
-
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("bad ledger\n## forged-exc-1\n## forged-exc-2")
-
-    monkeypatch.setattr(delegate_ledger, "ticket_copy_records", _boom)
-    text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
-
-    assert warning is None and text is not None
-    headings = [line for line in text.splitlines() if line.startswith("## ")]
-    assert "## forged-exc-1" not in headings and "## forged-exc-2" not in headings
-    section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
-    assert section.count("\n") <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINES
-
-
 def test_wip_probe_targets_reserve_pm_home_seat_when_leased_slots_exceed_cap(
     tmp_path, monkeypatch,
 ):
@@ -1254,6 +1233,35 @@ def test_wip_slot_line_surfaces_skipped_slot_count_without_spawning(tmp_path, mo
     assert "PM 홈" in line
     assert f"외 2개(프로브 생략)" in line
     assert len(probe_calls) == pm_engine.domain.ctx_recovery._WIP_PROBE_MAX_CALLS
+
+
+def test_wip_slot_line_marks_git_timeout_as_unavailable(tmp_path, monkeypatch):
+    """T-1008 F-002 — 프로브 예산 안의 git 시간 초과는 그 대상만 "조회 불가"로 남긴다(snapshot 비실패)."""
+    pm_home = tmp_path / "pm-home-distinct"
+    monkeypatch.setattr(pm_engine.app.session_snapshot, "_lease_task_slots", lambda _home, *_a, **_k: [])
+    monkeypatch.setattr(pm_engine.app.session_snapshot.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def timed_out_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(pm_engine.app.session_snapshot.subprocess, "run", timed_out_run)
+
+    line = pm_engine.app.session_snapshot._wip_slot_line(pm_paths.home_at(pm_home), "main", deadline=10.0, monotonic=lambda: 0.0)
+
+    assert "PM 홈 조회 불가" in line
+
+
+def test_git_status_counts_propagates_non_timeout_failure(tmp_path, monkeypatch):
+    """T-1008 F-002 — 시간 초과 밖의 실행 예외는 조회 불가로 접지 않고 전파한다."""
+    monkeypatch.setattr(pm_engine.app.session_snapshot.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def broken_run(argv, **kwargs):
+        raise PermissionError("git 실행 권한 없음")
+
+    monkeypatch.setattr(pm_engine.app.session_snapshot.subprocess, "run", broken_run)
+
+    with pytest.raises(PermissionError, match="git 실행 권한 없음"):
+        pm_engine.app.session_snapshot._git_status_counts(tmp_path, 0.5)
 
 
 def test_snapshot_max_bytes_fits_opencode_channel_cap():

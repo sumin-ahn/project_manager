@@ -1,6 +1,9 @@
 """보호 패키지의 Home·artifact·재설치 계약."""
 from pathlib import Path
 import importlib.util
+
+import pytest
+
 from pm_engine.infra import pm_paths, protected_hooks, areas_store
 from pm_engine.app import repo_protection
 from pm_engine.app import update_adapters
@@ -30,24 +33,26 @@ def test_failure_reason_is_bound_to_home(tmp_path, monkeypatch):
     left = pm_paths.home_at(tmp_path / "left")
     right = pm_paths.home_at(tmp_path / "right")
 
+    false_reason = ("install_protected_hook이 False를 반환(bare 미러 부재 또는 "
+                    "bare core.hooksPath 설정 실패)")
+
     def fail(home, repo, protected, **kwargs):
         if home == left:
             raise OSError("left installation")
-        raise RuntimeError("right installation")
+        return False
 
     monkeypatch.setattr(protected_hooks, "install_protected_hook", fail)
-    assert repo_protection._install_protected_hook(left, "repo") is False
-    assert repo_protection.protected_hook_install_failure_reason(right, "repo") is None
+    # 설치 예외는 사유로 접지 않고 전파한다.
+    with pytest.raises(OSError, match="left installation"):
+        repo_protection._install_protected_hook(left, "repo")
+    assert repo_protection.protected_hook_install_failure_reason(left, "repo") is None
     assert repo_protection._install_protected_hook(right, "repo") is False
-    assert repo_protection.protected_hook_install_failure_reason(left, "repo") == (
-        "OSError: left installation")
-    assert repo_protection.protected_hook_install_failure_reason(right, "repo") == (
-        "RuntimeError: right installation")
+    assert repo_protection.protected_hook_install_failure_reason(right, "repo") == false_reason
+    assert repo_protection.protected_hook_install_failure_reason(left, "repo") is None
     monkeypatch.setattr(protected_hooks, "install_protected_hook", lambda *a, **kw: True)
     assert repo_protection._install_protected_hook(left, "repo") is True
     assert repo_protection.protected_hook_install_failure_reason(left, "repo") is None
-    assert repo_protection.protected_hook_install_failure_reason(right, "repo") == (
-        "RuntimeError: right installation")
+    assert repo_protection.protected_hook_install_failure_reason(right, "repo") == false_reason
 
 
 def test_registry_first_match_and_first_nonempty_are_distinct(tmp_path):

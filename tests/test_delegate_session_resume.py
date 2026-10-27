@@ -28,6 +28,7 @@ from pm_engine.app import delegate_prepare
 from pm_engine.domain import delegate_rounds
 
 from pm_engine.infra import conf_store
+from pm_engine.infra import delegate_scope_git
 from pm_engine.infra.harness import delegate_env
 from pm_engine.infra.harness import delegate_run
 from pm_engine.domain import delegate_run_rules
@@ -154,6 +155,9 @@ def _run_main(pd, monkeypatch, argv, run_fn=None, conf=None):
     # 이 파일은 resume wire/ledger 축을 검증한다. code-reviewer의 실 ticket-copy 왕복은 전용
     # growth 회귀가 소유하므로 여기서는 필수 --ticket을 유지하되 copy transport만 격리한다.
     monkeypatch.setattr(delegate_prepare, "prepare_ticket_copy", lambda _home, **_kw: None)
+    # 범위 감사는 실 티켓의 touches 를 읽는다. 이 파일의 티켓은 board 에 없으므로 touches 판독만
+    # 대역으로 세운다(감사의 worktree 캡처·보고는 실 경로).
+    monkeypatch.setattr(delegate_scope_git, "ticket_touches", lambda _home, _ticket: ())
     return cli_delegate_run.main(pm_paths.home_at(pd.REPO), list(argv), run_fn=run_fn)
 
 

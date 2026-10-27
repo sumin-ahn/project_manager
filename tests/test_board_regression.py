@@ -1587,7 +1587,7 @@ def test_missing_or_corrupt_ledger_never_downgrades(board):
 
 
 def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, capsys):
-    """손상 frontmatter 는 강등을 취소하고 FULL 로 간다 — 크래시도, 부분 강등도 아니다."""
+    """손상 frontmatter 는 예외로 전파한다 — 회귀를 실행하지 않고, 부분 강등도 없다."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
@@ -1595,12 +1595,12 @@ def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, ca
         raise ValueError("frontmatter 손상")
 
     monkeypatch.setattr(regression, "_ticket_touches", _boom)
-    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
-    assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    out, err = capsys.readouterr()
-    assert "강등을 취소" in err and "T-0002" in err
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+    with pytest.raises(ValueError, match="frontmatter 손상"):
+        regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args())
+    out, _err = capsys.readouterr()
     assert "강등합니다" not in out
-    assert _flag(board)["scope"] == "full"
+    assert fake.calls == []
 
 
 def test_full_run_is_downgraded_during_an_active_cycle(board, monkeypatch, capsys):
@@ -1774,7 +1774,7 @@ def test_one_gate_without_touches_cancels_the_whole_downgrade(
 
 
 def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, capsys):
-    """touches 읽기 실패(손상 frontmatter)도 같은 취급 — 확정 못 한 게이트가 있으면 FULL."""
+    """touches 읽기 실패(손상 frontmatter)는 예외로 전파한다 — 나머지 게이트로 부분 강등하지 않는다."""
     def _resolve(_home, tid):
         if tid == "T-0003":
             raise ValueError("frontmatter 손상")
@@ -1783,12 +1783,11 @@ def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, cap
     _two_active_gates(board, monkeypatch, _resolve)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    out, err = capsys.readouterr()
+    with pytest.raises(ValueError, match="frontmatter 손상"):
+        regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args())
+    out, _err = capsys.readouterr()
     assert "강등합니다" not in out
-    assert "T-0003" in err and "ValueError" in err      # 사유에 실패 형상을 남긴다
-    assert "-k" not in fake.calls[0]["args"][0]
-    assert _flag(board)["scope"] == "full"
+    assert fake.calls == []
 
 
 def test_all_gates_resolved_still_downgrade_to_the_union(board, monkeypatch, capsys):
@@ -2281,7 +2280,7 @@ def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
     assert pre_push_hook._pure_hooks_dir(pm_paths.home_at(board.REPO)) == (board.REPO / ".git" / "hooks").resolve()
     assert not (board.REPO / ".git" / "hooks" / "pre-push").exists()
     # 차단 축 — git 권위 해소가 실제 실행되는 훅을 찾아 세대를 판정한다.
-    assert pre_push_hook._authoritative_hooks_resolution(pm_paths.home_at(board.REPO))[0] == hooks.resolve()
+    assert pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))[0] == hooks.resolve()
     assert "구버전" in (pre_push_hook._stale_pre_push_hook_refusal(pm_paths.home_at(board.REPO)) or "")
     assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 고치지 않는다
 
@@ -2302,7 +2301,7 @@ def test_a_current_hook_under_a_global_hooks_path_passes(board, monkeypatch, tmp
     hook.write_text(pre_push_hook.pre_push_hook_body("python3"), encoding="utf-8")
 
     # 판정이 돌았음의 근거 — 해소가 실패하면 아래 통과는 아무 것도 뜻하지 않는다.
-    assert pre_push_hook._authoritative_hooks_resolution(pm_paths.home_at(board.REPO))[0] == hooks.resolve()
+    assert pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))[0] == hooks.resolve()
     assert pre_push_hook._stale_pre_push_hook_refusal(pm_paths.home_at(board.REPO)) is None
     # 같은 자리의 구세대 본문은 차단된다 — 통과가 '판정 부재'가 아니라 '현행 판정'임을 가른다.
     hook.write_text(_legacy_hook(), encoding="utf-8")
@@ -2326,7 +2325,7 @@ def test_an_unanswerable_git_hooks_query_is_loud_instead_of_silent(
     hooks_dir, reason = pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))
     assert hooks_dir is None
     assert reason and "rc=" in reason
-    assert pre_push_hook._authoritative_hooks_resolution(pm_paths.home_at(board.REPO))[0] is None
+    assert pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))[0] is None
 
     # 관측성 축 — 판정 생략이 사유와 함께 stderr 에 남는다(판정 부재를 통과로 읽지 않게).
     assert pre_push_hook._stale_pre_push_hook_refusal(pm_paths.home_at(board.REPO)) is None
@@ -2346,7 +2345,7 @@ def test_an_uncallable_git_stays_silent_and_keeps_the_pure_verdict(board, monkey
     monkeypatch.setattr(subprocess, "run", _no_git)
     assert pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO)) == (None, None)
     assert pre_push_hook._hooks_dir(pm_paths.home_at(board.REPO)) is None
-    assert pre_push_hook._authoritative_hooks_resolution(pm_paths.home_at(board.REPO))[0] is None
+    assert pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))[0] is None
     assert capsys.readouterr().err == ""
 
 

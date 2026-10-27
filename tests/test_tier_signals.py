@@ -12,6 +12,8 @@ import types
 import uuid
 from pathlib import Path
 
+import pytest
+
 from _git_fixture import init_git_repo
 from pm_engine.infra import ticket_store
 from pm_engine.infra import pm_paths
@@ -140,13 +142,12 @@ def test_tool_directory_touch_expands_to_owned_python_modules(tmp_path):
 def test_unresolved_tool_directory_uses_conservative_h1_default(tmp_path):
     board = _load_board()
     tools = tmp_path / ".project_manager" / "tools"
-    signals = tier_signals.tier_signals(
-        [".project_manager/tools/"], tools,
-        list_owned=lambda _repo, _subtree: (_ for _ in ()).throw(OSError("boom")),
-    )
-    assert signals.tool_modules == ()
-    assert signals.unresolved_directories == (".project_manager/tools",)
-    assert signals.h1 is True
+    # 소유 파일 열거 실패는 전파한다 — 미해소 디렉터리로 접지 않는다.
+    with pytest.raises(OSError, match="boom"):
+        tier_signals.tier_signals(
+            [".project_manager/tools/"], tools,
+            list_owned=lambda _repo, _subtree: (_ for _ in ()).throw(OSError("boom")),
+        )
 
 
 def test_docs_only_accepts_cards_wiki_readme_and_changelog(tmp_path):
@@ -184,11 +185,12 @@ def test_docs_only_expands_skill_directory_touch_like_t0678(tmp_path):
 def test_docs_only_unresolved_directory_cannot_false_safe_yes(tmp_path):
     board = _load_board()
     tools = tmp_path / ".project_manager" / "tools"
-    signals = tier_signals.tier_signals(
-        [".claude/skills/"], tools,
-        list_owned=lambda _repo, _subtree: (_ for _ in ()).throw(OSError("boom")),
-    )
-    assert signals.docs_only is False
+    # 소유 파일 열거 실패는 전파한다 — docs-only 판정으로 접지 않는다.
+    with pytest.raises(OSError, match="boom"):
+        tier_signals.tier_signals(
+            [".claude/skills/"], tools,
+            list_owned=lambda _repo, _subtree: (_ for _ in ()).throw(OSError("boom")),
+        )
 
 
 def test_tier_signals_cli_is_advisory_rc_zero(tmp_path, monkeypatch, capsys):

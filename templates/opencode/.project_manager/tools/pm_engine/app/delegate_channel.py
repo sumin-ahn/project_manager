@@ -20,7 +20,7 @@ def _remediation(role: str, tier: str) -> str:
     if role == delegate_channel_rules._REVIEW_ROLE:
         return (
             f"{relay._runtime_skill_entry('pm-dev-delegate')} 스킬로 위임하라 "
-            f"(실행형 처방: backbone `{delegate_env._guard_prescribed_interpreter()} "
+            f"(실행형 처방: backbone `{delegate_env._prescribed_interpreter()} "
             f".project_manager/tools/pm_delegate.py --role {role} "
             f"--cluster {delegate_channel_rules._CLUSTER_PLACEHOLDER} --cwd {delegate_channel_rules._WORKTREE_PLACEHOLDER}`)"
         )
@@ -30,7 +30,7 @@ def _remediation(role: str, tier: str) -> str:
         f"{relay._runtime_skill_entry('pm-dev-delegate')} 스킬로 위임하라 "
         f"(실행형 처방: 1) 프롬프트를 파일로 저장한 뒤"
         f"(경로: `{prompt_file.as_posix()}`) "
-        f"2) backbone `{delegate_env._guard_prescribed_interpreter()} .project_manager/tools/pm_delegate.py "
+        f"2) backbone `{delegate_env._prescribed_interpreter()} .project_manager/tools/pm_delegate.py "
         f"--role {role}{tier_arg} --prompt-file {prompt_file.as_posix()} "
         f"--cwd {delegate_channel_rules._WORKTREE_PLACEHOLDER} --ticket {delegate_channel_rules._TICKET_PLACEHOLDER}`)"
     )
@@ -42,7 +42,7 @@ def _claude_native_model_warning(home, role: str, tier: str, model: str) -> str:
     shown_path = relative.as_posix() if relative is not None else "(명시 매핑 없음)"
     try:
         card_model, relative = native_agent_card._read_claude_native_agent_model(home, role, tier)
-    except Exception as exc:
+    except (OSError, UnicodeError, ValueError, ImportError, NotImplementedError) as exc:
         detail = " ".join(str(exc).split()) or type(exc).__name__
         return (
             f"[delegate-channel/warn] Claude native model 검사 실패"

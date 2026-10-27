@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 349,
+  "count": 337,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -53,11 +53,6 @@
       {
         "kind": "session_stamp",
         "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
         "count": 1
       },
       {
@@ -297,18 +292,6 @@
         "count": 1
       }
     ],
-    ".project_manager/tools/pm_engine/infra/worktree_git.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
     ".project_manager/wiki/pm_role.md": [
       {
         "kind": "session_stamp",
@@ -435,11 +418,6 @@
       {
         "kind": "session_stamp",
         "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
         "count": 1
       },
       {
@@ -679,18 +657,6 @@
         "count": 1
       }
     ],
-    "templates/claude_code/.project_manager/tools/pm_engine/infra/worktree_git.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
-        "count": 1
-      }
-    ],
     "templates/claude_code/.project_manager/wiki/architecture.md": [
       {
         "kind": "circled_marker",
@@ -820,11 +786,6 @@
       {
         "kind": "session_stamp",
         "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
         "count": 1
       },
       {
@@ -1061,18 +1022,6 @@
       {
         "kind": "session_stamp",
         "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
-        "count": 1
-      }
-    ],
-    "templates/codex/.project_manager/tools/pm_engine/infra/worktree_git.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
         "count": 1
       }
     ],
@@ -1400,11 +1349,6 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "89a6a384cf18f2e19c29ac8611e5832b792a6a0c3cd93837aa46610aff2342f2",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
         "count": 1
       }
@@ -1637,18 +1581,6 @@
       {
         "kind": "session_stamp",
         "hash": "f461a3c40efa81eaba09d30ad7ab67df1ba114774db594ac00d8651895ed3ae6",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.project_manager/tools/pm_engine/infra/worktree_git.py": [
-      {
-        "kind": "session_stamp",
-        "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "916396b82195de5a97d26ec7584f62db11a2ef2b8005fc7fc754ead1df2fa700",
         "count": 1
       }
     ],

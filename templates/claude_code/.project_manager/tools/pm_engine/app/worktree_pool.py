@@ -645,22 +645,25 @@ def create_slot(home,
                 provisional.session = ""
             # create git 스냅 — readonly 는 따라갈 부모 브랜치를 base 로 함께 기록한다(commit=방금
             # detach 한 tip). 작업 슬롯의 부모는 위 git 설정 기록이 진실이라 스냅이 base 를 두지 않는다.
-            # fail-soft — 스냅 실패가 create 를 안 막는다.
+            # 스냅 예외는 전파한다(아래 청소가 provisional 을 지운다).
             slot_snapshot._apply_git_snapshot(home, provisional, base_branch=base, git_runner=git_runner)
             pool_store._write_ledger(home, leases)
             return provisional
         except BaseException:
             # **중단-안전 청소** — 실패(rc≠0 raise)·예외·KeyboardInterrupt 는 여기서 단일
             # 경로로 정리한다: (1) worktree add 가 성공했으면(worktree_created) 그 worktree 를
-            # `_rollback_worktree`(remove --force·best-effort) 로 지운다(add 자체 실패면 지울 게 없어
+            # `_rollback_worktree`(remove --force) 로 지운다(add 자체 실패면 지울 게 없어
             # (2) provisional("creating") 엔트리를 장부에서 제거하고
-            # 다시 쓴다(불완전 슬롯 미등록·기존 계약). 롤백은 2차 예외를 삼켜 원래 에러를 가리지 않는다.
+            # 다시 쓴다(불완전 슬롯 미등록·기존 계약). 두 단계를 모두 시도하고, 롤백 실패는 전파하되
+            # 원래 에러는 traceback 의 `__context__` 로 남는다.
             # (SIGKILL 은 여기 못 옴 — provisional 이 disk 에 남아 reconcile 이 incomplete 로 잡는다.)
-            if worktree_created:
-                worktree_git._rollback_worktree(home, repo, path, git_runner=git_runner)
-            if provisional_recorded:
-                leases[:] = [l for l in leases if l.slot != slot]
-                pool_store._write_ledger(home, leases)
+            try:
+                if worktree_created:
+                    worktree_git._rollback_worktree(home, repo, path, git_runner=git_runner)
+            finally:
+                if provisional_recorded:
+                    leases[:] = [l for l in leases if l.slot != slot]
+                    pool_store._write_ledger(home, leases)
             raise
 
 

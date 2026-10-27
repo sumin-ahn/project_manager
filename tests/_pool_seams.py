@@ -193,7 +193,6 @@ _OWNERS = {
     '_resolve_current_slot': (slot_resolution, True),
     '_resolve_git_timeout': (worktree_git, False),
     '_resolve_parent_ref': (branch_store, False),
-    '_resolve_protected': (branch_store, True),
     '_resolve_submodule_timeout': (worktree_git, False),
     '_resync_submodules_selective': (submodule_git, False),
     '_rollback_worktree': (worktree_git, True),

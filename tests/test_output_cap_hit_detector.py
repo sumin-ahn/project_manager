@@ -223,10 +223,7 @@ def test_run_loop_cap_hit_never_blocks_rotation(engine, tmp_path):
 
 
 def test_run_loop_advisory_never_blocks_on_pathological_sink(engine, tmp_path):
-    """병적 sink(경고 write 가 예외)여도 relay 는 안 죽는다 — never-block 을 코드로 못박음(try/except).
-
-    advisory emission 전 경로(detect/message/sink write)를 try/except 로 감쌌으므로, sink 가
-    폭발해도 응답 전달·이후 turn 진행이 끊기면 안 된다(파이프라인 무중단 단언)."""
+    """병적 sink(경고 write 가 예외)는 relay 를 중단시키며 전파한다 — 응답은 sink 전에 이미 전달됐다."""
     big = "가" * (engine.CAP_HIT_CHAR_THRESHOLD + 100)
     driver = _ReplyDriver([big, "다음 turn 정상 응답"])
     sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")
@@ -235,7 +232,7 @@ def test_run_loop_advisory_never_blocks_on_pathological_sink(engine, tmp_path):
         raise RuntimeError("병적 sink — advisory write 폭발")
 
     out = io.StringIO()
-    rc = sup.run_loop("/cwd", io.StringIO("first\nsecond\n"), out, cap_hit_log=boom_sink)
-    assert rc == 0                                    # sink 폭발에도 정상 종료.
-    assert big in out.getvalue()                      # 첫(cap-hit) 응답도 그대로 전달.
-    assert "다음 turn 정상 응답" in out.getvalue()      # 둘째 turn 도 완주(무중단).
+    with pytest.raises(RuntimeError, match="병적 sink"):
+        sup.run_loop("/cwd", io.StringIO("first\nsecond\n"), out, cap_hit_log=boom_sink)
+    assert big in out.getvalue()                      # 첫(cap-hit) 응답은 sink 전에 전달됐다.
+    assert "다음 turn 정상 응답" not in out.getvalue()  # 둘째 turn 은 진행하지 않는다.

@@ -774,13 +774,13 @@ def test_find_repo_root_tool_inventory_and_scope_are_explicit():
     } == {"additional_reviewer.py"}
     assert "local.conf" not in source["contradiction_lint.py"]
     # ticket_finish 는 local.conf 를 읽지만 호출 프로필 키/소비자는 없다. local.conf 판독은 명시
-    # Home 을 넘기는 회귀 게이트 해소(`finish_context` → `regression._resolve_gate_cmd`)뿐이다.
+    # Home 을 넘기는 회귀 게이트 해소(`finish_record` → `regression._resolve_gate_cmd`)뿐이다.
     finish_sources = {
         name: (TOOLS / name).read_text(encoding="utf-8")
         for name in ("ticket_finish.py", "pm_engine/app/finish_context.py",
                      "pm_engine/cli/finish_record.py", "pm_engine/cli/ticket_finish.py")
     }
-    assert "regression._resolve_gate_cmd(home)" in finish_sources["pm_engine/app/finish_context.py"]
+    assert "regression._resolve_gate_cmd(self._home)" in finish_sources["pm_engine/cli/finish_record.py"]
     for text in finish_sources.values():
         assert "reviewer_cmd" not in text
         assert not _reads_delegate_conf_keys(text)

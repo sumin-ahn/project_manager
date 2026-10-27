@@ -10,6 +10,7 @@ from pm_engine.infra import install_conf
 from pm_engine.infra import install_files
 from pm_engine.infra import install_source
 from pm_engine.infra import manifest_store
+from pm_engine.infra import python_env
 from pm_engine.infra import skill_inventory
 import sys
 
@@ -29,7 +30,7 @@ def _substitution_map(project_name: str, project_root: Path, today: str) -> dict
         "{{PROJECT_NAME}}": project_name,
         "{{PROJECT_TAGLINE}}": install_rules.DEFAULT_TAGLINE,
         "{{PROJECT_ROOT}}": str(project_root),
-        "{{PY}}": install_conf._detected_py(),
+        "{{PY}}": python_env._detect_py(),
         "{{TEST_CMD}}": install_conf._default_test_cmd(),
         "{{DATE}}": today,
     }
@@ -156,19 +157,17 @@ def _unregistered_skill_notation_message(unregistered: list[str]) -> str:
 def _render_managed_relpaths(dest_root: Path) -> set[str]:
     """복사된 트리의 engine.manifest 에서 `@render` path(repo 기준 relpath·POSIX) 집합.
 
-    manifest_store.read_manifest 를 재사용해 `.render` True 항목만 모은다. manifest 부재·파싱 실패
-    → 빈 set(render 대상 0·무동작). 디렉토리 path 는 하위 어댑터 산출물의 prefix 매칭에 쓴다."""
+    manifest_store.read_manifest 를 재사용해 `.render` True 항목만 모은다. manifest 부재
+    → 빈 set(render 대상 0·무동작), 판독 예외는 전파한다. 디렉토리 path 는 하위 어댑터
+    산출물의 prefix 매칭에 쓴다."""
     manifest = dest_root / ".project_manager" / "engine.manifest"
     if not manifest.is_file():
         return set()
-    try:
-        return {
-            str(e).replace("\\", "/")
-            for e in manifest_store.read_manifest(manifest)
-            if getattr(e, "render", False)
-        }
-    except Exception:  # noqa: BLE001 — 파싱 실패는 render 대상 0(무동작).
-        return set()
+    return {
+        str(e).replace("\\", "/")
+        for e in manifest_store.read_manifest(manifest)
+        if getattr(e, "render", False)
+    }
 
 
 def render_managed_files(

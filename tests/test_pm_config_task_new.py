@@ -240,14 +240,13 @@ def test_task_new_reserved_slot_pattern_refused_via_registered_repos(pc, monkeyp
     assert "부적합 task 명" in capsys.readouterr().err
 
 
-def test_task_new_survives_board_absence_with_traversal_still_blocked(pc, wp, monkeypatch, capsys):
-    """areas.md 읽기 실패(registered 해소 불가)여도 생성은 되고 traversal 검증은 유지된다(fail-soft)."""
+def test_task_new_propagates_areas_read_failure_and_writes_no_ledger(pc, wp, monkeypatch, capsys):
+    """areas.md 읽기 실패(registered 해소 불가)는 전파하고 task 장부를 만들지 않는다."""
     monkeypatch.setattr(areas_store, "registered_repos", _raise_areas_read)
 
-    assert _run_new(pc, wp, "job", monkeypatch=monkeypatch) == 0
-    assert _ledger_rows(wp)[0]["session"] == ""
-    capsys.readouterr()
-    assert _run_new(pc, wp, "../evil", monkeypatch=monkeypatch) == 1
+    with pytest.raises(OSError, match="areas broken"):
+        _run_new(pc, wp, "job", monkeypatch=monkeypatch)
+    assert not wp.LEASES_FILE.exists(), "판독 실패 뒤 장부가 만들어졌다"
 
 
 
@@ -256,27 +255,26 @@ def test_task_new_survives_board_absence_with_traversal_still_blocked(pc, wp, mo
 
 
 def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validation(pc, wp, monkeypatch, capsys):
-    """예약패턴 판별 근거의 해소가 `_registered_repos` 한 자리다 — 두 호출부가 같은 값을 본다.
+    """예약패턴 판별 근거의 해소가 `areas_store.registered_repos` 한 자리다 — 두 호출부가 같은 값을 본다.
 
-    areas.md 읽기 실패는 None(예약패턴만 완화되고 traversal 검증은 유지)이고, 실 레지스트리가
-    있으면 같은 목록이다. 규칙이 두 자리로 갈리면 같은 이름이 `task new` 에서는 거부되고
-    `alloc`/`worktree add --task` 에서는 통과한다(또는 반대)."""
+    areas.md 읽기 실패는 전파하고, 실 레지스트리가 있으면 같은 목록이다. 규칙이 두 자리로 갈리면
+    같은 이름이 `task new` 에서는 거부되고 `alloc`/`worktree add --task` 에서는 통과한다(또는 반대)."""
 
-    # 실제로 나는 것은 areas.md 읽기 실패다 — 그 밖의 예외는 엔진 결함이라 헬퍼가 올린다.
     with monkeypatch.context() as patched:
         patched.setattr(areas_store, "registered_repos", _raise_areas_read)
-        assert config_slots._registered_repos(pm_paths.home_at(pc.REPO)) is None
-    assert config_slots._registered_repos(pm_paths.home_at(pc.REPO)) == ["app"]
+        with pytest.raises(OSError, match="areas broken"):
+            areas_store.registered_repos(pm_paths.home_at(pc.REPO))
+    assert areas_store.registered_repos(pm_paths.home_at(pc.REPO)) == ["app"]
 
     calls: list = []
-    resolve = config_slots._registered_repos
+    resolve = areas_store.registered_repos
 
     def _record(_home):
         resolved = resolve(_home)
         calls.append(resolved)
         return resolved
 
-    monkeypatch.setattr(config_slots, '_registered_repos', _record)
+    monkeypatch.setattr(areas_store, 'registered_repos', _record)
 
     # 생성 경로(기바인딩 미요구)와 기바인딩 요구 경로가 같은 이름을 같은 근거로 거부한다.
     assert _run_new(pc, wp, "app_2", monkeypatch=monkeypatch) == 1

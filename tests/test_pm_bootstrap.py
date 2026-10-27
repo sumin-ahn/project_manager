@@ -178,24 +178,15 @@ def test_slot_status_uninitialized_is_warning(wp):
 
 
 def test_slot_status_absorbs_runner_exception(wp):
-    """runner 가 예외를 던져도 slot_status 는 raise 하지 않고 보수적 SlotStatus 반환 (fail-soft 계약·codex).
-
-    docstring 이 "예외 raise 안 함" 을 약속한다 — branch 조회 후 upstream/submodule 단계에서
-    git_runner 가 raise 하면 upstream 미해소·submodule 빈목록으로 흡수해야 한다(미래 호출부
-    [on-demand status·sync]가 이 계약에 기댄다). 비공허: slot_status 본문 try/except 를 제거하면
-    이 호출이 RuntimeError 로 전파돼 red.
-    """
+    """runner 예외는 slot_status 밖으로 전파한다 — 미해소·빈목록으로 접지 않는다."""
     def raising(argv):
         # 브랜치 조회는 정상(current_branch 자체 흡수) — 그 이후 단계에서 raise.
         if argv == ["symbolic-ref", "HEAD"]:   # full ref (T-0377).
             return 0, "refs/heads/a5\n"
         raise RuntimeError("git exploded")
 
-    status = worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=raising)  # raise 하면 이 줄에서 터짐.
-    assert status.branch == "a5"          # current_branch 는 정상 조회.
-    assert status.upstream is None        # upstream 조회 raise → 미해소로 흡수.
-    assert status.upstream_ok is False
-    assert status.submodules == []        # submodule 조회 raise → 빈목록으로 흡수.
+    with pytest.raises(RuntimeError, match="git exploded"):
+        worktree_status.slot_status(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=raising)
 
 
 def test_slot_status_no_submodule_empty_list(wp):
@@ -665,7 +656,7 @@ def test_remedy_branch_prefixes_protected_preferred(bootstrap, tmp_path, *, monk
     """(a) preferred 가 보호브랜치(`main`)면 그대로 쓰지 않고 `task/main` 을 제안한다."""
     git_fn, _calls = _remedy_git()          # 기존 브랜치 없음 — 보호목록만이 배제 사유.
     inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
-    pool = bind_pool(monkeypatch, _RemedyPool(tmp_path))
+    pool = bind_pool(monkeypatch, _remedy_pool(None, tmp_path))
     assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'main', run_git_fn=inst._run_git_fn) == "task/main"
 
 
@@ -701,12 +692,11 @@ def test_remedy_branch_prefixes_existing_plain_name(monkeypatch, bootstrap, tmp_
 
 
 def test_remedy_branch_fail_soft_on_git_error(monkeypatch, bootstrap, tmp_path):
-    """(e) git 호출 실패는 fail-soft — 미존재로 간주하고 안내는 계속 나간다(크래시 0)."""
+    """(e) git 호출 예외는 전파한다 — 미존재로 간주해 거짓 안내를 내지 않는다."""
     git_fn, _calls = _remedy_git(raises=True)
     inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
-    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn) == "foo"
-    # 보호브랜치 축은 git 무관이라 그대로 살아 있다(fail-soft ≠ 판정 포기).
-    assert bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'main', run_git_fn=inst._run_git_fn) == "task/main"
+    with pytest.raises(OSError, match="git 실행 실패"):
+        bootstrap_slots._remedy_branch_name(pm_paths.home_at(tmp_path), 'X', 'work/X_1', 'foo', run_git_fn=inst._run_git_fn)
 
 
 def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path, *, monkeypatch):
@@ -715,7 +705,7 @@ def test_remedy_branch_task_fault_consumes_helper(bootstrap, tmp_path, *, monkey
     slot_dir.mkdir(parents=True)
     git_fn, _calls = _remedy_git()
     inst = _remedy_inst(monkeypatch, bootstrap, git_fn=git_fn, tmp_path=tmp_path)
-    pool = bind_pool(monkeypatch, _RemedyPool(slot_dir, branch="main"))
+    pool = bind_pool(monkeypatch, _remedy_pool(None, slot_dir, branch="main"))
     lease = SimpleNamespace(slot="work/X_1", repo="X", session="main", state="leased", role="work")
     fault = bootstrap_slots._task_slot_fault(pm_paths.home_at(tmp_path), lease, 'main', run_git_fn=inst._run_git_fn)
     assert fault is not None

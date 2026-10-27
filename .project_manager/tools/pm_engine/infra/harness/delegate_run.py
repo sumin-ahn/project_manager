@@ -10,7 +10,6 @@ from pm_engine.domain import delegate_run_rules
 import re
 from pm_engine.domain import reviewer_result
 import subprocess
-import sys
 from pm_engine.infra.harness import watchdog
 
 
@@ -27,16 +26,9 @@ def _observed_must_fix_items(reply: str | None) -> list[str]:
     """
     if not reply or not reply.strip():
         return []
-    try:
-        items = reviewer_result._extract_must_fix_items(reply)
-        items = [item for item in items if item and item.strip()]
-        return [] if reviewer_result._is_none_items(items) else items
-    except Exception as exc:  # noqa: BLE001 — 원장 보강 실패가 위임 자체를 죽이지 않는다.
-        print(
-            f"경고: 장부 must_fix 항목 추출 실패({exc}) — 이 레코드는 항목 없이 남습니다.",
-            file=sys.stderr,
-        )
-        return []
+    items = reviewer_result._extract_must_fix_items(reply)
+    items = [item for item in items if item and item.strip()]
+    return [] if reviewer_result._is_none_items(items) else items
 
 
 # ── reply 추출 (contract 3파서 재사용) ────────────────────────────────────
@@ -407,10 +399,8 @@ def _default_run_fn(
         return _launch_failure_result(harness, exc)
     except OSError as exc:
         return _midrun_failure_result(harness, exc)
-    except Exception as exc:
-        if getattr(exc, "process_cleanup_failed", False) is True:
-            return _cleanup_failure_result(harness, exc)
-        raise
+    except watchdog.ProcessCleanupError as exc:
+        return _cleanup_failure_result(harness, exc)
 
 
 # 스폰 단계로 확신할 수 있는 예외들(바이너리 부재·실행 권한·경로 형상). 그 밖의 OSError 는 실행 중
@@ -490,20 +480,12 @@ def _build_target_argv(
 
 
 def _observe_harness_result(harness: str, stdout: str):
-    """회신 wire 1회 관측(회신·세션 id·usage) — 실패는 관측 없음으로 강등(비차단).
+    """회신 wire 1회 관측(회신·세션 id·usage). 빈 stdout 은 관측 없음, 추출 예외는 전파한다.
 
-    이 관측은 감사 보강이라 실패해도 위임 자체를 죽이지 않는다. 회수 경로의 fail-loud 는 종전
-    그대로 `extract_reply` 가 소유한다."""
+    회수 경로의 fail-loud 는 종전 그대로 `extract_reply` 가 소유한다."""
     if not stdout:
         return contract.HarnessReply(None, None, None)
-    try:
-        return contract.extract_harness_result(harness, stdout)
-    except Exception as exc:  # noqa: BLE001 — 관측 실패가 실행/마감을 막지 않는다.
-        print(
-            f"경고: 회신 구조화 관측 실패({exc}) — 장부에 세션 id/usage 를 남기지 못합니다.",
-            file=sys.stderr,
-        )
-        return contract.HarnessReply(None, None, None)
+    return contract.extract_harness_result(harness, stdout)
 
 
 def _finished_ledger_fields(
