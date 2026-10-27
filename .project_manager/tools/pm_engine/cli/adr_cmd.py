@@ -144,7 +144,7 @@ def cmd_new(home, args: argparse.Namespace) -> int:
         print(f"  ⚠ {w}", file=sys.stderr)
 
     # 모순 lint 트리거 — 개정(amends/supersedes)에만 발화. dry-run/apply 공통으로
-    # 인지 시점(재정의 명령)에 잔여 모순 스코프를 표면화한다(advisory·fail-soft·차단 아님).
+    # 인지 시점(재정의 명령)에 잔여 모순 스코프를 표면화한다(advisory·차단 아님, 실행 실패는 전파).
     emit_contradiction_advisory(
         home, new_number=number, title=args.title, adr_text=plan["adr_text"],
         amends=amends, supersedes=supersedes,

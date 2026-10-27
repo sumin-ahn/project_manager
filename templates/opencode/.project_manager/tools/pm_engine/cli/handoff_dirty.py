@@ -59,7 +59,7 @@ def _dirty_tree_gate(home, *, held_slots, run_git_fn, ack_dirty: str | None, aut
         `--auto-trigger`(사용자 명시 핸드오프 호출부 호환 신호) → 차단 대신 loud 경고 +
         사유 자동 박제. 이 플래그 자체는 실행 승인이나 자동 핸드오프 트리거가 아니다.
       - `--dry-run` → 판정 결과 미리보기만(차단 없음·기존 dry-run 의미 유지).
-    판정 불가 트리(비-git·git 부재)는 비차단 경고 1줄로 stderr surface 한다 — 판정을 못 한
+    판정 불가 트리(비-git·git 이상)는 비차단 경고 1줄로 stderr surface 한다 — 판정을 못 한
     것을 dirty 로 단정해 정상 핸드오프를 막지 않는다(false-block 회피). 커밋 0(unborn HEAD)은
     판정 불가가 아니라 **전량 미커밋**이라 untracked 목록으로 정상 판정한다.
     """

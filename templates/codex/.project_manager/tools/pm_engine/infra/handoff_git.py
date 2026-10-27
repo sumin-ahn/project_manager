@@ -202,8 +202,9 @@ def _dirty_paths_in_tree(
     비교 ref 가 없어 실패하지만 그 트리는 "전량 미커밋"이라 게이트가 가장 잡아야 할 상태다.
     커밋 유무를 `rev-parse --verify HEAD` 로 확인해, 커밋이 없으면 staged ∪ untracked 로 판정한다
     (`_unborn_head_dirty_paths` — 전량 staged 인 트리를 clean 으로 오판하지 않는다).
-    커밋이 있는데 diff 가 실패했거나(git 이상) unborn 조회까지 실패(비-git 트리·git 부재)면 None —
+    커밋이 있는데 diff 가 실패했거나(git 이상) unborn 조회까지 실패(비-git 트리)면 None —
     호출부가 비차단 경고로 처리한다(판정 못 한 것을 dirty 로 단정해 정상 핸드오프를 막지 않는다).
+    git 실행 파일 부재 같은 실행 예외는 전파한다.
     """
     paths = _uncommitted_and_untracked_paths(tree, runner)
     if paths is not None:

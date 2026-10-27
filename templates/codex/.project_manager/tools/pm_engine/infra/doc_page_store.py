@@ -39,8 +39,8 @@ def parse_page(path: Path) -> dict:
     `repo` 는 그 sha/covers 를 판정할 **소유 저장소 시계**(`self` | `upstream`) — 키 부재만
     `self` 로 자연 퇴화한다. 명시 빈 문자열/false/0/컨테이너는 그대로 보존해 freshness lint 가
     `domain-unverifiable`로 표면화한다.
-    frontmatter 깨짐은 호출부가 처리하도록 예외를 그대로 전파한다(load_pages
-    가 graceful skip). `status` 는 capture-draft 가 쓴 `draft` 진실 — load_pages 가 이로
+    frontmatter 깨짐은 예외를 그대로 전파한다(load_pages
+    도 전파한다). `status` 는 capture-draft 가 쓴 `draft` 진실 — load_pages 가 이로
     미승인 초안을 index 에서 제외한다(suffix 가 아닌 frontmatter status 가 필터 기준).
     """
     fm, _body = ticket_store.load_ticket(path)
