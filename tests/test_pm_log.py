@@ -38,7 +38,7 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import normalize_newlines, write_lf
-from pm_engine.infra import areas_store, delegate_ledger, log_store, pm_paths, raw_output
+from pm_engine.infra import areas_store, log_store, pm_paths, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -997,7 +997,7 @@ def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
     assert "슬롯 WIP: work/product_1" in text
 
 
-def test_inflight_section_absorbs_corrupt_delegate_ledger_as_one_line(tmp_path, capsys):
+def test_inflight_section_corrupt_delegate_ledger_fails_snapshot(tmp_path, capsys):
     """손상: 비-UTF8 위임 장부는 snapshot 을 실패시킨다(절 실패 줄로 접지 않는다)."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
@@ -1234,6 +1234,35 @@ def test_wip_slot_line_surfaces_skipped_slot_count_without_spawning(tmp_path, mo
     assert "PM 홈" in line
     assert f"외 2개(프로브 생략)" in line
     assert len(probe_calls) == pm_engine.domain.ctx_recovery._WIP_PROBE_MAX_CALLS
+
+
+def test_wip_slot_line_marks_git_timeout_as_unavailable(tmp_path, monkeypatch):
+    """T-1008 F-002 — 프로브 예산 안의 git 시간 초과는 그 대상만 "조회 불가"로 남긴다(snapshot 비실패)."""
+    pm_home = tmp_path / "pm-home-distinct"
+    monkeypatch.setattr(pm_engine.app.session_snapshot, "_lease_task_slots", lambda _home, *_a, **_k: [])
+    monkeypatch.setattr(pm_engine.app.session_snapshot.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def timed_out_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(pm_engine.app.session_snapshot.subprocess, "run", timed_out_run)
+
+    line = pm_engine.app.session_snapshot._wip_slot_line(pm_paths.home_at(pm_home), "main", deadline=10.0, monotonic=lambda: 0.0)
+
+    assert "PM 홈 조회 불가" in line
+
+
+def test_git_status_counts_propagates_non_timeout_failure(tmp_path, monkeypatch):
+    """T-1008 F-002 — 시간 초과 밖의 실행 예외는 조회 불가로 접지 않고 전파한다."""
+    monkeypatch.setattr(pm_engine.app.session_snapshot.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def broken_run(argv, **kwargs):
+        raise PermissionError("git 실행 권한 없음")
+
+    monkeypatch.setattr(pm_engine.app.session_snapshot.subprocess, "run", broken_run)
+
+    with pytest.raises(PermissionError, match="git 실행 권한 없음"):
+        pm_engine.app.session_snapshot._git_status_counts(tmp_path, 0.5)
 
 
 def test_snapshot_max_bytes_fits_opencode_channel_cap():

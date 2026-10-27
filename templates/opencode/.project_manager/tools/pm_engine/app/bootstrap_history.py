@@ -2,7 +2,6 @@
 from __future__ import annotations
 from pm_engine.infra import lease_store
 import json
-from pm_engine.domain import session_history
 from pm_engine.infra import fs, pm_paths
 import re
 from pathlib import Path
@@ -37,11 +36,6 @@ def extract_last_log_entry_body(log_text: str) -> str | None:
     if not entries:
         return None
     return entries[-1][1].rstrip()
-
-
-def infer_session_num(pm_state_text: str) -> int | str | None:
-    """session_history의 공통 규칙으로 다음 세션 차수를 판독한다. 판독 예외는 전파."""
-    return session_history.infer_next_session_num(pm_state_text)
 
 
 def _session_slot_number(

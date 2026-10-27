@@ -901,8 +901,8 @@ LIVEGATE_RELEASE_PIN = 22  # `pytest -m release` 로 돌아야 하는 라이브/
 # 형상)에서 회귀는 **항상 red** 로 오판되고 핸드오프가 통째로 막힌다(→ `--no-pytest` 상시 우회
 # → 진짜 red 를 놓친다).
 #
-# 이 절이 해소 체인의 **단일 사본**이다 — `cli.handoff`의 직접 호출·`finish_context._resolve_per_repo_test_cmd`
-# 는 명시 `Home` 을 넘겨 `_resolve_gate_cmd(home)` 에 위임한다. 해소 함수가 한 도구에만
+# 이 절이 해소 체인의 **단일 사본**이다 — `cli.handoff`·`cli.finish_record` 는 명시 `Home` 을 넘겨
+# `_resolve_gate_cmd(home)` 를 직접 부른다. 해소 함수가 한 도구에만
 # 있던 미러 이탈이 이 결함의 절반이었다.
 
 def _active_repo_name(home) -> str | None:

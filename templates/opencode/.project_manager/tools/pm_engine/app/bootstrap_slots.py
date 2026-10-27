@@ -312,7 +312,7 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
         else None
     )
     contract_ok = current_contract == expected_contract
-    wired = _protected_hook_wired(home, repo)
+    wired = protected_hooks.protected_hook_wired(home, repo)
     if protected_ok and contract_ok and (wired is not False):
         return False
     drift_axes = []
@@ -346,7 +346,7 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
         reason = repo_protection.protected_hook_install_failure_reason(home, repo)
         reason = reason or "install_protected_hook이 원인 미해소 실패를 반환"
         print(
-            f"[경고·0단계] {repo} {cause} 이 clone 의 훅을 **정합화하지 못했습니다** — {reason}. 훅은 아직 {stale_state} 이며, {enforcement_state}.\n  → 재실행:  {_protected_retry_command(home, repo)}   (멱등·bare 부재면 `repo add {repo}` 먼저)",
+            f"[경고·0단계] {repo} {cause} 이 clone 의 훅을 **정합화하지 못했습니다** — {reason}. 훅은 아직 {stale_state} 이며, {enforcement_state}.\n  → 재실행:  {repo_protection.protected_retry_command(home, repo)}   (멱등·bare 부재면 `repo add {repo}` 먼저)",
             file=sys.stderr,
         )
         return False
@@ -355,13 +355,3 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
         file=sys.stderr,
     )
     return True
-
-
-def _protected_retry_command(home, repo: str) -> str:
-    """대상 Home의 보호목록 상태에 따른 재실행 명령."""
-    return repo_protection.protected_retry_command(home, repo)
-
-
-def _protected_hook_wired(home, repo: str) -> bool | None:
-    """대상 Home의 bare hooksPath를 보호 훅 모듈로 조회한다."""
-    return protected_hooks.protected_hook_wired(home, repo)

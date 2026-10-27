@@ -5101,7 +5101,7 @@ def test_adapter_edit_warns_even_when_ticket_touches_allow_it(
     _assert_adapter_warning(err, relative)           # 역할 공통 금지 축은 독립 발화
 
 
-def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
+def test_corrupt_ticket_fails_delegation_before_harness_runs(
     pd, monkeypatch, tmp_path, capsys,
 ):
     """손상 ticket 으로 touches 준비가 실패하면 하네스 실행 전에 위임이 실패한다(범위 감사 준비 실패)."""
@@ -5437,7 +5437,7 @@ def test_dry_run_skips_scope_audit(pd, monkeypatch, tmp_path, capsys):
     assert WARNING_HEADER not in capsys.readouterr().err
 
 
-def test_scope_audit_prep_failure_is_nonblocking(pd, monkeypatch, tmp_path, capsys):
+def test_scope_audit_prep_failure_fails_delegation(pd, monkeypatch, tmp_path, capsys):
     """판정 **준비** 실패(board/git 불능)는 하네스 실행 전에 위임을 실패시킨다."""
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
 
@@ -5458,7 +5458,7 @@ def test_scope_audit_prep_failure_is_nonblocking(pd, monkeypatch, tmp_path, caps
     assert WARNING_HEADER not in captured.err
 
 
-def test_scope_audit_report_failure_is_nonblocking(pd, monkeypatch, tmp_path, capsys):
+def test_scope_audit_report_failure_fails_delegation(pd, monkeypatch, tmp_path, capsys):
     """회수 시점 판정 실패는 위임 실패로 전파한다(reply 는 이미 회수돼 출력에 남는다)."""
     workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
 

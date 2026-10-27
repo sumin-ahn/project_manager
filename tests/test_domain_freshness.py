@@ -1937,6 +1937,25 @@ def test_rev_parse_ambiguous_signal(board):
         freshness_lint._rev_parse_ambiguous(pm_paths.home_at(board.REPO), "25b0", runner=_raising_git)
 
 
+@pytest.mark.parametrize("probe", ("commits_between", "rev_parse_ambiguous"))
+def test_real_git_path_timeout_propagates(board, tmp_path, monkeypatch, probe):
+    """T-1008 F-003 — 실 subprocess 경로의 git 실행 예외(시간 초과)도 주입 runner 와 같이 전파한다.
+
+    판정불가(None·False)는 git 바이너리 부재 갈래에만 남는다."""
+    monkeypatch.setattr(freshness_lint.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def timed_out_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(freshness_lint.subprocess, "run", timed_out_run)
+    home = pm_paths.home_at(board.REPO)
+    with pytest.raises(subprocess.TimeoutExpired):
+        if probe == "commits_between":
+            freshness_lint._git_commits_between(home, "cafe0001", [".project_manager/tools"], repo=tmp_path)
+        else:
+            freshness_lint._rev_parse_ambiguous(home, "cafe0001", repo=tmp_path)
+
+
 def test_sha_anchor_status_unknown_empty_or_raise(board):
     assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "", runner=_anchor_git())[0] == freshness_lint._ANCHOR_UNKNOWN
     with pytest.raises(RuntimeError, match="git unavailable"):

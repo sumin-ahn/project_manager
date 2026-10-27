@@ -319,7 +319,7 @@ def check_adapter_hook_sets(home, dest_root: Path, source_root: Path) -> dict:
     """훅 세트 세대 정합을 1회 판정한다 — 결과 dict(출력은 호출부·write 0).
 
     판정 예외는 전파한다 — 앞 단계(엔진 파일 적용)는 남고 같은 명령 재실행이 나머지를 수행한다."""
-    result: dict = {"status": "ok", "findings": [], "entrypoints": []}
+    result: dict = {"findings": [], "entrypoints": []}
     # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
     #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
     #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**

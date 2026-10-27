@@ -6199,7 +6199,7 @@ def test_reinstall_protected_hooks_no_registered_repos_is_quiet(pm_update, tmp_p
     assert cap.out == "" and cap.err == ""
 
 
-def test_reinstall_protected_hooks_engine_absent_is_fail_soft_loud(pm_update, tmp_path, capsys):
+def test_reinstall_protected_hooks_engine_absent_reports_no_repos(pm_update, tmp_path, capsys):
     """대상 flat 엔진과 registry가 모두 없어도 정상 미등록 Home으로 판정한다."""
     dest = tmp_path / "no-engine"
     dest.mkdir()

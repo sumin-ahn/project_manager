@@ -1,4 +1,4 @@
-"""완료 기록의 회귀 cwd·명령, stage 선언, 영향 domain 입력 해소 (층: app)."""
+"""완료 기록의 stage 선언, 영향 domain 입력 해소 (층: app)."""
 from __future__ import annotations
 
 import sys
@@ -6,53 +6,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
 
-from pm_engine.app import doc_affected, doc_staleness, freshness_lint, regression, slot_resolution
+from pm_engine.app import doc_affected, doc_staleness, freshness_lint
 from pm_engine.domain import finish_rules
 from pm_engine.infra import doc_page_store, finish_store, git, pm_paths, repo_coordinates
-
-
-def _regression_cwd(home, worktree_slot: str | None = None) -> str:
-    """회귀를 실행할 작업 디렉토리를 해소한다 (`slot_resolution._regression_cwd` 위임).
-
-    해소 순서:
-      - `worktree_slot`(multi-PM 명시) 가 있으면 `home.root / worktree_slot`,
-      - 없으면 `slot_resolution._auto_slot` 으로 단일 self-host 슬롯을 자동해소(`work/<repo>_<N>`),
-      - 그것도 없으면(판정 불능 — 모호) **`home.root`**. 등록된 홈은 홈 자신이 슬롯 행이라 위 층에서
-        해소된다.
-
-    앵커는 호출자가 넘긴 Home 이다(호출자가 앵커를 재지정하면 해소도 그 트리를 따른다).
-    해소 예외는 전파한다.
-    """
-    return slot_resolution._regression_cwd(home, worktree_slot)
-
-
-# ── 회귀 명령 해소 (per-repo) ──────────────────────────────────
-#
-# 활성 repo 가 비-Python(Go 등)이거나 `tests/` 자체가 없을 수 있어 `pytest tests/ -q` 가
-# 틀린다 — 회귀는 그 repo 의 `test_cmd`(areas.md 레지스트리 prefix 행/repo 행 > local.conf)를
-# 써야 한다. 해소 체인의 단일 사본은 `regression._resolve_gate_cmd` 이고 완료 기록은 명시
-# `Home` 을 넘겨 위임한다(아래 `_resolve_per_repo_test_cmd`).
-#
-# **프레임워크 자기 회귀(=현행 `pytest tests/ -q` venv 실행)는 반드시 보존**한다:
-# 어느 층도 값을 주지 못하면 None 을 돌려, 호출부가 현행 argv 를 그대로 쓰게 한다(board 의
-# 기본 폴백 `pytest -q` 와 달리 venv 인터프리터·`tests/` 경로를 보존 — 도그푸딩 불변).
-
-
-def _resolve_per_repo_test_cmd(home) -> str | None:
-    """활성 회귀 게이트 명령(문자열)을 해소한다. 해소 예외는 전파한다.
-
-    해소 체인 — 앞선 층이 비어 있지 않은 값을 주면 거기서 멈춘다:
-
-      1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
-      2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
-      3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
-      4. `python_env.default_pytest_cmd()` — xdist 가용 Python이면 `-n auto` 병렬 기본
-
-    **체인 자체는 `regression._resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 위임한다
-    (`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff 엔 없던
-    미러 이탈이 무prefix 채택자 결함의 절반이었다: 사본 둘을 만들면 다음 갱신에서 다시 갈린다.
-    """
-    return regression._resolve_gate_cmd(home)
 
 
 # ── domain 연동 (soft 알림) ──────────────────────────────────

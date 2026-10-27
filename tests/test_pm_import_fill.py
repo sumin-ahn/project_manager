@@ -127,7 +127,7 @@ def test_fill_capability_and_runner_mapping_are_registry_derived(pm_import, tmp_
 def test_fill_failure_formatter_preserves_head_for_non_utf8_output(pm_import):
     """kill 경로의 비-UTF8 bytes도 원 진단을 가리지 않고 replacement로 표시한다."""
     exc = subprocess.TimeoutExpired(["runner"], 1, output=b"ok\xff", stderr=b"err\xfe")
-    rendered = import_fill._fill_failure_with_partial("[원 진단]", exc)
+    rendered = watchdog.format_partial_output("[원 진단]", exc)
     assert rendered.startswith("[원 진단]")
     assert "ok�" in rendered and "err�" in rendered
 
@@ -141,7 +141,7 @@ def test_fill_failure_formatter_preserves_head_for_non_utf8_output(pm_import):
 def test_shared_partial_formatter_keeps_all_text_without_truncation(pm_import, output, expected):
     """없음·짧음·기존 preview 경계·대용량 모두 공용 seam에서 전량 보존한다."""
     exc = subprocess.TimeoutExpired(["runner"], 1, output=output)
-    rendered = import_fill._fill_failure_with_partial("[원 진단]", exc)
+    rendered = watchdog.format_partial_output("[원 진단]", exc)
     assert expected in rendered
     assert rendered.startswith("[원 진단]")
 
@@ -158,36 +158,7 @@ def test_shared_partial_formatter_keeps_head_when_output_stringification_fails(p
     exc = subprocess.TimeoutExpired(["runner"], 1)
     exc.output = BrokenOutput()
     with pytest.raises(UnicodeError, match="broken"):
-        import_fill._fill_failure_with_partial("[원 진단]", exc)
-
-
-def test_fill_failure_routes_through_shared_partial_formatter(pm_import, monkeypatch):
-    """fill 소비처를 옛 로컬 결합기로 되돌리면 이 seam 감지가 실패한다."""
-    class Relay:
-        @staticmethod
-        def format_partial_output(head, exc):
-            return f"shared:{head}:{exc.output}"
-
-    monkeypatch.setattr(watchdog, "format_partial_output", Relay.format_partial_output)
-    exc = subprocess.TimeoutExpired(["runner"], 1, output="partial")
-    assert import_fill._fill_failure_with_partial("head", exc) == "shared:head:partial"
-
-
-@pytest.mark.parametrize("failure_site", ("formatter",))
-def test_fill_failure_partial_formatter_keeps_head_for_general_failure(
-        pm_import, monkeypatch, failure_site):
-    """일반 포맷터 실패는 전파한다(fill 실패 note 로 접지 않는다)."""
-    failure = RuntimeError("general")
-
-    class BrokenRelay:
-        @staticmethod
-        def format_partial_output(head, exc):
-            raise failure
-
-    monkeypatch.setattr(watchdog, "format_partial_output", BrokenRelay.format_partial_output)
-
-    with pytest.raises(RuntimeError, match="general"):
-        import_fill._fill_failure_with_partial("head", RuntimeError("original"))
+        watchdog.format_partial_output("[원 진단]", exc)
 
 
 def test_fill_harness_help_lists_and_import_default_are_registry_derived(pm_import, capsys):

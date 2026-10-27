@@ -13,7 +13,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
 
-from pm_engine.app import completion_gate, finish_context, finish_private_refs, tier_signals
+from pm_engine.app import (
+    completion_gate, finish_context, finish_private_refs, regression, slot_resolution, tier_signals,
+)
 from pm_engine.domain import finish_rules, handoff_text
 from pm_engine.infra import (
     finish_baseline, finish_git, finish_store, fs, lease_store, log_store, pm_paths,
@@ -114,8 +116,8 @@ class TicketFinisher:
         # 회귀 cwd seam — 분리된 PM 홈엔 tests/ 가 없으므로 회귀는 활성
         # worktree 슬롯(tests/)에서 돌아야 한다. **즉시 고정하지 않는다** — `regression_cwd`
         # 명시 주입은 그대로 보존(테스트/명시 override)하되, 미지정이면 `__init__` 시점 박제
-        # 대신 _default_run_pytest 가 런타임에 `finish_context._regression_cwd` 로 self-host 슬롯을
-        # 자동해소한다(`slot_resolution._regression_cwd` 재사용·판정 불능은 Home 루트 폴백).
+        # 대신 _default_run_pytest 가 런타임에 `slot_resolution._regression_cwd` 로 self-host 슬롯을
+        # 자동해소한다(판정 불능은 Home 루트 폴백).
         self._regression_cwd = str(regression_cwd) if regression_cwd else None
         self._task_workspace = Path(task_workspace) if task_workspace else None
 
@@ -176,18 +178,18 @@ class TicketFinisher:
         """회귀를 실행해 (returncode, stdout+stderr) 반환.
 
         명령 해소:
-          - **해소 성공** — `finish_context._resolve_per_repo_test_cmd`(areas prefix 행 > areas repo 행 >
+          - **해소 성공** — `regression._resolve_gate_cmd`(areas prefix 행 > areas repo 행 >
             local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
           - **프레임워크 자기 회귀** — 해소 실패면 현행 그대로
             `[venv_python, -m, pytest, tests/, -q, -n, auto]` venv argv.
 
         cwd 는 런타임 해소— 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
-        없으면 `finish_context._regression_cwd` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
+        없으면 `slot_resolution._regression_cwd` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
         worktree 의 tests/ 에서 돌게). 판정 불능은 Home 루트 폴백(현행 보존·additive).
         """
         cwd = (self._regression_cwd if self._regression_cwd is not None
-               else finish_context._regression_cwd(self._home))
-        per_repo_cmd = finish_context._resolve_per_repo_test_cmd(self._home)
+               else slot_resolution._regression_cwd(self._home))
+        per_repo_cmd = regression._resolve_gate_cmd(self._home)
         if per_repo_cmd:
             # multi-PM — per-repo test_cmd 문자열을 shell 로(board.py regression run 과 동형).
             result = subprocess.run(
@@ -243,7 +245,7 @@ class TicketFinisher:
             return self._task_workspace
         if self._regression_cwd is not None:
             return Path(self._regression_cwd)
-        return Path(finish_context._regression_cwd(self._home))
+        return Path(slot_resolution._regression_cwd(self._home))
 
     def use_code_tree(self, tree: Path) -> None:
         """이 트리를 코드 트리로 쓴다 — 회귀 cwd 와 `_code_tree()` 가 이 값을 본다.
@@ -1119,7 +1121,7 @@ class TicketFinisher:
         else:
             # 게이트 종류(pytest 스위트 / 해소된 임의 명령)를 먼저 해소한다 — green 판정
             # 기준과 안내 문구가 여기서 갈린다(`handoff_text._gate_is_pytest`).
-            gate_cmd = finish_context._resolve_per_repo_test_cmd(self._home)
+            gate_cmd = regression._resolve_gate_cmd(self._home)
             if dry_run:
                 print(
                     f"  [dry-run] {handoff_text._gate_label(gate_cmd)} 실행 중 "

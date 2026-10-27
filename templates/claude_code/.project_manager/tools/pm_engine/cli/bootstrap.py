@@ -588,7 +588,7 @@ class PmBootstrap:
         반환: {"session_num": int|str|None, "session_stale": bool,
                "state_session_num": int|str|None, "todos": list[dict],
                "state_path": str} 또는 None(pm_state·log·todo 전부 미해소 — surface 생략·graceful).
-        - `session_num`: pm_state(`infer_session_num`) 와 log(`parse_last_handoff_session_num`+1)
+        - `session_num`: pm_state(`session_history.infer_next_session_num`) 와 log(`parse_last_handoff_session_num`+1)
           을 `reconcile_session_num` 으로 교차검증한 *최종* 차수. pm_state 해소 경로가 우선이되
           (현행 무변경), pm_state 미해소(template/부재)면 log-derived N+1 로 **폴백**하고, pm_state
           가 해소돼도 log-derived 가 더 크면 **log 우선(max)** + stale 표시(머신 간 미동기).
@@ -603,7 +603,7 @@ class PmBootstrap:
         if state_path is not None and state_path.exists():
             state_text = fs.read_text_shared(state_path, encoding="utf-8")
         state_num = (
-            bootstrap_history.infer_session_num(state_text)
+            session_history.infer_next_session_num(state_text)
             if state_text is not None
             else None
         )

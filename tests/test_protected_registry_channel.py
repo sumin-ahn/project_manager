@@ -566,7 +566,7 @@ def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    monkeypatch.setattr(bootstrap_slots, "_protected_hook_wired", lambda _home, repo: False)
+    monkeypatch.setattr(protected_hooks, "protected_hook_wired", lambda _home, repo: False)
     assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is True
     assert pool.calls == [("svc", ["main"])]
     err = capsys.readouterr().err
@@ -580,7 +580,7 @@ def test_bootstrap_silent_when_content_and_wiring_both_ok(bootstrap, tmp_path, m
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    monkeypatch.setattr(bootstrap_slots, "_protected_hook_wired", lambda _home, repo: True)
+    monkeypatch.setattr(protected_hooks, "protected_hook_wired", lambda _home, repo: True)
     assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     assert pool.calls == [] and capsys.readouterr().err == ""
 
@@ -592,24 +592,9 @@ def test_bootstrap_wiring_unknown_keeps_current_behaviour(bootstrap, tmp_path, m
     write_gate_contract(hooks, "svc", "self-test", "pytest -q")
     pool = bind_pool(monkeypatch, FakePool(hooks))
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    monkeypatch.setattr(bootstrap_slots, "_protected_hook_wired", lambda _home, repo: None)
+    monkeypatch.setattr(protected_hooks, "protected_hook_wired", lambda _home, repo: None)
     assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     assert pool.calls == []
-
-
-def test_bootstrap_wiring_judgment_delegates_to_pm_config(bootstrap, pc, tmp_path, monkeypatch):
-    """배선 판정은 `protected_hooks.protected_hook_wired` 를 **소비**한다(재구현/복붙 아님).
-
-    부트스트랩의 실제 패키지 소유자와 같은 Home 입력의 판정이
-    **동일**한지를 본다(로직이 갈라지면 값이 갈린다). ADR-0072 의 "두 벌 금지" 원칙 동형.
-    """
-    assert bootstrap_slots.protected_hooks is protected_hooks
-    pool, hooks, _repos = _wired_pool(tmp_path, repo="svc")
-    write_sidecar(hooks, "svc", ["main"])
-    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["main"]), pool=pool)
-    bind_pool(monkeypatch, pool)
-    assert bootstrap_slots._protected_hook_wired(pm_paths.home_at(tmp_path / "home"), 'svc') == protected_hooks.protected_hook_wired(pm_paths.home_at(pc.REPO),
-        "svc")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1302,15 +1287,6 @@ def test_bootstrap_failure_guidance_in_fallback_state_offers_default(bootstrap, 
     err = capsys.readouterr().err
     assert "repo protected svc default" in err
     assert "repo protected svc main,master,develop" not in err
-
-
-def test_bootstrap_retry_command_delegates_to_pm_config(bootstrap, pc, tmp_path, monkeypatch):
-    """부트스트랩이 분기를 재구현하지 않고 `repo_protection.protected_retry_command` 를 소비한다."""
-
-    fake_board = _ReconcileBoard(["main"], cell="")
-    inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=fake_board,
-                       pool=FakePool(tmp_path / "home" / ".project_manager/.local/repo-hooks"))
-    assert bootstrap_slots._protected_retry_command(pm_paths.home_at(tmp_path / "home"), 'svc') == repo_protection.protected_retry_command(pm_paths.home_at(pc.REPO), "svc")
 
 
 # ════════════════════════════════════════════════════════════════════════

@@ -503,11 +503,6 @@ def fill_harness_cap_advisory(harness: str, cwd: Path | str | None) -> str | Non
     )
 
 
-def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
-    """워치독 kill/정리 실패의 stdout·stderr를 fill 실패 진단에 보존한다."""
-    return watchdog.format_partial_output(head, exc)
-
-
 def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Path:
     """fill 실패 원문을 repo 안 private raw 파일로 이식 가능하게 박제한다."""
     return _write_fill_private_file(
@@ -631,7 +626,7 @@ def _real_harness_runner(
         silence = getattr(exc, "silence_seconds", None)
         silence_label = f" · 실측 침묵 {silence:.0f}초" if silence is not None else ""
         kind = "무진행 임계" if axis == idle_axis else "벽시계 백스톱"
-        return False, _fill_failure_with_partial(
+        return False, watchdog.format_partial_output(
             f"[하니스 타임아웃 — {kind} {threshold:.0f}초 발화{silence_label}; "
             "자동 재시도 안 함 — 출력 확인 후 수동 재시도]",
             exc,
@@ -651,9 +646,9 @@ def _real_harness_runner(
                 kind = f"무진행 임계{threshold_label}"
             else:
                 kind = f"벽시계 백스톱{threshold_label}"
-            return False, _fill_failure_with_partial(
+            return False, watchdog.format_partial_output(
                 f"[하니스 {kind} — 재시도 소진(fail-soft): {exc}]", exc)
-        return False, _fill_failure_with_partial(f"[하니스 실행 오류: {exc}]", exc)
+        return False, watchdog.format_partial_output(f"[하니스 실행 오류: {exc}]", exc)
 
     output = result.stdout or ""
     if result.stderr:

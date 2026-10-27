@@ -749,7 +749,7 @@ def test_sync_path_reports_missing_entrypoint_without_blocking(
     update_adapters._print_adapter_hook_set_finding(result, dry_run=False)
     err = capsys.readouterr().err
 
-    assert result["status"] == "ok" and result["findings"] == []
+    assert result["findings"] == []
     assert {item["event"] for item in result["entrypoints"]} == set(
         _CODEX_ENTRYPOINT_EVENTS) - {"PreToolUse"}
     assert "어댑터 훅 진입점 누락(codex)" in err
@@ -786,7 +786,7 @@ def test_sync_path_reports_mixed_generation_loudly_and_blocks(pm_update, tmp_pat
     result = update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
     update_adapters._print_adapter_hook_set_finding(result, dry_run=False)
 
-    assert result["status"] == "ok" and len(result["findings"]) == 1
+    assert len(result["findings"]) == 1
     assert update_adapters._adapter_hook_set_gate_failed(result)
     err = capsys.readouterr().err
     assert "훅 세트 세대 불일치" in err, err
@@ -1837,7 +1837,7 @@ def test_sync_check_surfaces_the_query_axis_downgrade_reason(pm_update, tmp_path
     result = update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
 
     err = capsys.readouterr().err
-    assert result["status"] == "ok" and result["findings"] == [], result
+    assert result["findings"] == [], result
     assert "설치본 선언으로 판정한다" in err, f"강등 사유가 버려졌다: {err!r}"
     assert "상류 엔진 package 필수 파일 부재" in err, err
 

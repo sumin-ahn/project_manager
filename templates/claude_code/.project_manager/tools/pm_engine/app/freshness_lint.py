@@ -24,10 +24,10 @@ def _git_commits_between(home, sha: str, pathspecs: list[str], *,
     """`<sha>..HEAD` 에 `pathspecs` 경로 커밋이 있으면 True·없으면 False·판정불가 None.
 
     verified_at 판정의 핵심 — `git log --oneline <sha>..HEAD -- <pathspecs>` 출력이 비지
-    않으면 그 sha 이후 매핑 경로가 바뀐 것(stale). fail-soft(모두 None):
+    않으면 그 sha 이후 매핑 경로가 바뀐 것(stale). 판정불가(None):
       - sha 빈값·pathspec 전부 빈 → None (판정 대상 없음).
-      - git 바이너리 부재·미지 sha(rc≠0·`bad revision`)·타임아웃/예외 → None (skip).
-    None 은 "판정불가(unknown)"라 호출부가 finding 을 내지 않는다(현행 freshness fail-soft
+      - git 바이너리 부재·미지 sha(rc≠0·`bad revision`) → None (skip).
+    실행 예외는 전파한다. None 은 "판정불가(unknown)"라 호출부가 finding 을 내지 않는다(현행 freshness fail-soft
     성격·신규 clone 무탈). `runner` 는 테스트 hermetic seam(argv→(rc, stdout))·미주입
     시 실 subprocess(`git -C repo`)를 쓴다. `repo` 부재는 REPO(기존 호출·자연 퇴화)."""
     sha = (sha or "").strip()
@@ -40,14 +40,11 @@ def _git_commits_between(home, sha: str, pathspecs: list[str], *,
         repo = Path(repo) if repo is not None else home.root
 
         def runner(argv: list[str]) -> tuple[int, str]:
-            try:
-                r = subprocess.run(
-                    ["git", "-C", str(repo), *argv],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
-                return r.returncode, r.stdout or ""
-            except (OSError, subprocess.SubprocessError):  # fail-soft: 타임아웃/예외를 rc≠0 로.
-                return 1, ""
+            r = subprocess.run(
+                ["git", "-C", str(repo), *argv],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
+            return r.returncode, r.stdout or ""
 
     rc, out = runner(["log", "--oneline", f"{sha}..HEAD", "--", *pathspecs])
     if rc != 0:
@@ -95,7 +92,7 @@ def _rev_parse_ambiguous(home, sha: str, *, runner=None,
     `git rev-parse --verify --quiet <sha>^{commit}` 는 모호 시 stderr 를 **억제**(실측·rc1) 하므로,
     실패 경로에서 `--quiet` 없이 재질의해 stderr 의 `_AMBIGUOUS_STDERR_SIGNALS`(소문자 부분일치)를
     본다. 모호는 환경 오류가 아니라 **pin 의 속성**이라 호출부가 `_ANCHOR_AMBIGUOUS`(unverifiable)로
-    표면화한다. git 부재/예외 → False(모호로 단정 안 함·rc 기반 분류로 폴백).
+    표면화한다. git 부재 → False(모호로 단정 안 함·rc 기반 분류로 폴백). 실행 예외는 전파한다.
 
     `runner` 대역: `(rc, stdout)` 또는 `(rc, stdout, stderr)` — 3-tuple 이면 stderr 를 본다(hermetic
     테스트가 모호 stderr 를 주입)."""
@@ -104,12 +101,9 @@ def _rev_parse_ambiguous(home, sha: str, *, runner=None,
         if shutil.which("git") is None:
             return False
         repo = Path(repo) if repo is not None else home.root
-        try:
-            r = subprocess.run(
-                ["git", "-C", str(repo), *argv], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
-        except (OSError, subprocess.SubprocessError):  # 진단 실패는 False(rc 기반 분류 유지).
-            return False
+        r = subprocess.run(
+            ["git", "-C", str(repo), *argv], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=git._BOARD_GIT_TIMEOUT_SECONDS)
         stderr = r.stderr or ""
     else:
         result = runner(argv)

@@ -258,7 +258,7 @@ class PmHandoff:
         """회귀를 실행해 (returncode, stdout+stderr) 반환.
 
         명령 해소(ticket_finish `_default_run_pytest` 와 동형):
-          - **해소 성공** — `_resolve_per_repo_test_cmd()` 가 준 문자열을 shell 로 실행
+          - **해소 성공** — `regression._resolve_gate_cmd()` 가 준 문자열을 shell 로 실행
             (board.py 회귀와 동형·비-Python repo 수용).
           - **해소 실패** — `[venv_python, -m, pytest, tests/, -q, -n, auto]` 병렬 기본 argv.
 

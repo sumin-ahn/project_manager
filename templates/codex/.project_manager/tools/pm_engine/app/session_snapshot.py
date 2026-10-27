@@ -123,16 +123,20 @@ def _hearsay_section() -> str:
 def _git_status_counts(path: Path, timeout: float) -> tuple[int, int, int] | None:
     """``git --no-optional-locks status --porcelain`` 1회 — staged/미staged/untracked 개수.
 
-    git 부재·예산 0 → ``None``(spawn 없음), rc≠0(비-repo 등) → ``None``. 실행 예외(timeout 포함)는
-    전파한다.
+    git 부재·예산 0 → ``None``(spawn 없음), rc≠0(비-repo 등) → ``None``. 프로브 예산 안의 시간 초과
+    (``subprocess.TimeoutExpired``)는 결과 미상이 정해진 상태라 ``None``(호출자가 "조회 불가"로
+    표기)이고, 그 밖의 실행 예외는 전파한다.
     """
     if timeout <= 0 or shutil.which("git") is None:
         return None
-    result = subprocess.run(
-        ["git", "--no-optional-locks", "-C", str(path), "status", "--porcelain"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=timeout, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(path), "status", "--porcelain"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:  # 프로브 시간 계약 안의 결과 미상 시간 초과만 조회 불가로.
+        return None
     if result.returncode != 0:
         return None
     staged = unstaged = untracked = 0
