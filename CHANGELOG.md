@@ -23,6 +23,32 @@
 - 엔진은 세션 토큰에서 repo·prefix 를 분해하지 않는다. prefix 는 `--prefix` > task prefix > 등록 prefix 가 정확히 1개면 그것 순서로 정한다.
 - 옛 슬롯 토큰(`<user>/<repo>_<N>`)으로 귀속된 진행 중 티켓은 `board.py migrate-identity --task <task>` 가 `<user>/<task>` 로 옮긴다. 다른 user 의 토큰은 그대로 두고 표준 오류로 목록만 낸다.
 - `worktree_pool.alloc` 은 `owner_task` 가 필수다(세션 명의 대여·같은 세션 재대여·브랜치 재부착 갈래 삭제). `create_slot` 의 `session` 인자를 지웠다.
+- **BREAKING: 엔진 구현을 `.project_manager/tools/pm_engine/` 패키지로 옮겼다.** `.project_manager/tools/` 에는 진입 파일 18개만 남는다(`board.py`·`ticket_finish.py`·`pm_bootstrap.py`·`pm_handoff.py`·`pm_log.py`·`pm_config.py`·`pm_update.py`·`pm_import.py`·`pm_delegate.py`·`pm_adr.py`·`pm_principles.py`·`additional_reviewer.py`·`contradiction_lint.py`·`delegate_channel_guard.py`·`domain.py`·`local_conf.py`·`worktree_pool.py`·`python_floor.py`). 진입 명령의 이름·인자·출력은 이 판의 다른 항목에 적은 변경 외에는 그대로다. 진입 파일은 `main()` 하나만 두고 구현을 패키지에서 불러오므로, 평면 모듈을 직접 import 하던 사용자 스크립트(예 `import board`·`import local_conf`·`import identity_args`)는 실패한다. `.project_manager/hooks/lint_*.py` 도 같고, 그 import 실패는 `board.py lint` 실패가 된다. 패키지로 옮겨 사라진 평면 모듈 12개는 Removed 에 적었다.
+- **갱신이 엔진 패키지를 디렉터리째 바꾼다.** `pm-update`(관리자 [적용] 포함)는 `.project_manager/tools/pm_engine` 을 파일 단위로 덮지 않고 통째로 교체한다. 상류에서 지우거나 이름을 바꾼 모듈과 사본에만 있던 파일도 함께 사라진다. 미리보기와 적용 출력은 패키지를 `[replace-dir] .project_manager/tools/pm_engine (추가 N·변경 N·삭제 N)` 한 줄로 보이고, 변경 파일 수에 이 수를 더한다. 삭제만 있어도 변경으로 센다. 교체는 같은 폴더에 새 패키지 트리(`.pm-engine-stage-*`)를 만든 뒤, 기존 패키지를 보존 트리(`.pm-engine-backup-*`)로, 새 트리를 `pm_engine` 으로 이름을 두 번 바꾼다. 새 트리 게시에 실패하면 기존 패키지를 되돌리고, 어느 단계에서 실패하든 실패 단계와 남은 트리의 경로를 알린 뒤 rc 1 로 멈춘다. 두 이름 바꾸기 사이에 프로세스가 강제 종료되면 남은 두 트리로 손으로 되돌린다. 같은 사본을 동시에 갱신하지 못하게 막는 락 파일 `.project_manager/tools/.pm-engine-transfer.lock` 은 지우지 않고 남긴다. 세 이름은 `.project_manager/.gitignore` 에 들어가고, 새 프로젝트 적용(`pm_import`)에도 복사되지 않는다.
+- **엔진 버전 값이 한 곳이다.** 버전은 `.project_manager/tools/pm_engine/__init__.py` 의 `ENGINE_REV` 하나이며, `pm-config status --json` 의 `engine_rev` 와 관리자 `--version` 이 이 값을 읽는다. 평면 파일마다 새기던 버전 표기와 사본 불일치 검사(`[중단] 엔진 사본 불일치`)는 지웠다. 옛 파일과 새 파일이 섞인 사본은 import 오류(traceback)로 멈추고, 복구는 갱신 재실행이다.
+- **BREAKING: 엔진이 처리하지 못하는 예외를 삼키지 않는다.** 예외를 기본값·빈 목록·경고로 바꾸고 계속하던 곳을 지워, 그런 실패는 traceback 과 rc 1 로 끝난다. git 이 rc≠0 을 돌려주거나 파일이 없음을 값으로 판정하는 정상 상태는 그대로다.
+  - 조회: `pm_bootstrap.py`(`/pm-bootstrap`)·`pm_handoff.py`·`pm-config status`(텍스트 출력)·`board.py lint` 는 조회 하나가 예외로 실패하면 그 줄을 빼거나 `(조회불가)` 로 적고 계속하던 것을 멈춘다. `pm-config status --json` 의 기본 출력은 바뀌지 않았고, `--with-board` 는 board lint 를 함께 돌리므로 lint 와 같은 원인으로 실패한다.
+  - domain 페이지: 페이지 하나를 읽지 못하거나 frontmatter 가 깨지면 `board.py lint`·`domain.py`·`ticket_finish.py`(영향 domain 안내)가 그 페이지를 건너뛰지 않고 경로와 원인을 내며 멈춘다. `---` 로 시작하지 않는 `.md` 는 이전처럼 페이지가 아닌 것으로 보고 건너뛴다.
+  - 채택자 lint 훅: `.project_manager/hooks/lint_*.py` 를 불러오거나 실행하다 실패하면 경고 뒤 건너뛰지 않고 `board.py lint` 가 실패한다. `check()` 가 없는 훅은 이전처럼 경고 뒤 건너뛴다.
+  - 위임: `pm_delegate.py` 의 위임 범위 감사가 준비나 보고 단계에서 실패하면 경고가 아니라 위임 실패다. 돌려받기가 거부가 아닌 예외로 실패하면 복구 안내 없이 traceback 으로 끝나며, 사본은 남아 `ticket harvest --copy` 로 다시 돌려받는다. `ticket prepare` 는 교차 하네스 판정이 실패하면 통과시키지 않고 멈춘다.
+  - 압축 기록: 압축 때 부르는 `pm_log.py snapshot` 은 조회가 실패하면 snapshot 을 쓰지 않고 실패한다. 진행 중 작업을 확인하는 git 상태 조회의 시간 초과만 `조회 불가` 로 적고 계속한다.
+  - git 실행: 실행 중 예외(시간 초과 등)를 실패 문구나 빈 값으로 바꾸지 않고 traceback·rc 1 로 낸다(`pm-update`(`pm-config update`)·`pm_import.py`·`pm_bootstrap.py`·`worktree_pool.py` 등). 저장소가 아닌 폴더의 처리는 그대로다. board 저장소에 쓰는 명령(`new`·`complete` 등)의 commit·pull·push 시간 초과는 이전처럼 보류 경고 뒤 다음 쓰기가 따라잡고, `claim` 의 pull·push 시간 초과는 이전처럼 오프라인으로 본다. 그 밖의 예외는 traceback·rc 1 이며, 이미 만든 로컬 기록(claim 커밋 포함)은 남을 수 있다.
+  - `pm-update` 완료 단계: 어댑터 설정 채널의 판정 실패만 이전처럼 결과에 남기고 끝에서 rc 1 로 알린다. 훅 세트·보호 훅·추가 하네스 엔진 행 처리의 예외는 첫 실패에서 멈추며, 같은 명령을 다시 실행하면 나머지를 끝낸다(받은 엔진 파일은 그대로 남는다).
+  - `pm_import.py --fill auto`: 하네스 실행 실패(시간 초과·기동 실패 등)만 이전처럼 fill 실패로 적고 설치를 계속한다. 그 밖의 fill 처리 예외는 설치를 멈춘다(파일 복사는 끝난 상태).
+  - 정리 실패: 실패를 처리하던 중 정리(임시 폴더 삭제·되돌리기·기록 마감)까지 실패하면, 정리 실패를 경고로 낮추지 않고 traceback 으로 낸다. 원래 실패는 같은 traceback 안에 남고 재시도 안내 문구도 그대로 나온다. 이때 rc 는 원래 거부의 rc(예: 예산 초과) 대신 1 이다.
+  - 여러 단계 명령: 핸드오프·묶음 종결은 실패 전 단계의 기록이 남는다. 묶음 종결(`ticket_finish.py`)은 원인을 고친 뒤 같은 명령을 다시 실행하면 이어서 진행한다.
+  - Windows 콘솔: 콘솔 코드페이지 설정 같은 Win32 콘솔 API 호출의 실패를 무시하지 않고 traceback·rc 1 로 낸다. 닫혔거나 없는 표준 스트림(pythonw 등)을 다루다 난 실패는 이전처럼 무시한다.
+  - 훅: 이전처럼 도구 호출을 막지 않는다. 위임 채널 가드(`delegate_channel_guard.py`)는 내부 실패 때 경고와 함께 통과(rc 0)한다. Codex 의 압축 checkpoint 단계(압축 전·후)는 자식 기동 실패와 시간 초과를 조용히 넘기지 않고 원인을 담은 `adapter-fallback` 경고로 보인다. 그 자식이 rc≠0 으로 끝나는 실패는 이전처럼 보이지 않는다.
+- **세 하네스 훅의 판정을 엔진 한 곳에서 한다.** 하네스 어댑터(`.claude/`·`.codex/`·`.opencode/` 의 훅 파일)가 따로 갖던 컨텍스트 경고 판정·설정 판독·셸 명령 거름 규칙의 사본을 지웠다. git·컨텍스트 경고·원칙 recall 판정은 엔진이 하고, 어댑터는 하네스 기록에서 값을 읽어 엔진에 넘긴 뒤 결과를 하네스 형식으로 내기만 한다. 어댑터 파일은 갱신이 바꾸고, 하네스 설정(`.claude/settings.json`·`.codex/hooks.json`·`.opencode/opencode.jsonc`)의 훅 등록은 바뀌지 않았다.
+  - 셸 명령을 엔진에 넘기기 전에 문자열 표식(git·엔진 경로 등)으로 거르던 단계를 세 하네스에서 지웠다. 이제 모든 셸 명령이 엔진 판정을 받으므로, 이 세션이 빌리지 않은 작업 폴더에서 실행하는 명령처럼 전에는 조용히 지나가던 명령에도 경고가 붙을 수 있다.
+  - Codex 에서 `workdir` 없이 PM 홈에서 `pytest tests/` 를 실행하면(PM 홈에 `tests/` 가 없을 때) 경고로 낮추지 않고 거부한다. Claude·OpenCode 와 같은 판정이다.
+  - OpenCode 는 도구 호출 하나의 사전 판정(git·파일 삭제·도구 입력·컨텍스트 사용량·원칙 recall)을 `board.py hook-tool` 한 번으로 받는다. 도구 호출마다 Python 이 한 번 뜬다(전에는 read 같은 도구는 띄우지 않았고 bash 는 두 번 띄웠다). git 판정이 거부이면 컨텍스트·recall 처리는 하지 않는다.
+  - OpenCode 의 컨텍스트 경고가 Claude·Codex 와 같은 규칙을 따른다. 사용률은 정수로 반올림해 단계를 정하고 표시는 100% 를 넘지 않는다. 세 단계 경고(`[ctx-nudge]`·`[ctx-nudge/강화]`·`[ctx-nudge/최종]`)는 단계마다 한 번 나가며, 강화 경고를 낸 뒤 최종 기준에 닿으면 최종 경고도 따로 나간다. OpenCode 를 다시 띄워도 같은 세션에서 같은 단계 경고는 반복되지 않고, 사용률이 첫 단계 기준 아래로 내려간 실측이 있으면 다음 상승 때 다시 나간다. 모델 식별자를 관측하지 못하면 모델 미지정으로 판정한다.
+  - OpenCode 서브에이전트(task 로 띄운 자식 세션)의 도구 호출에는 원칙 recall 을 붙이지 않는다.
+  - OpenCode 는 `local.conf` 의 `runtime.py` 가 비어 있으면 PATH 에서 처음 찾은 Python 하나로 판정한다. 그 Python 이 3.11 미만이면 다음 후보로 넘어가지 않으며, 판정 없이 도구 호출마다 `Python 3.11+ 필요` 경고가 붙는다.
+  - 판정 중 설정·기록 파일을 읽지 못하는 등의 실패는 빈 결과로 넘기지 않고 원인을 담은 경고로 보인다.
+- **codex 위임의 권한을 대화형 PM 과 맞췄다.** 승인 없이 도는 codex 위임(`pm_delegate.py`)은 명령 네트워크를 건별로 승인받을 수 없으므로, 모든 역할의 실행에 `-c sandbox_workspace_write.network_access=true` 를 붙여 명령 네트워크를 연다. 원 작업 폴더에 쓰는 실행은 그 저장소의 git 메타데이터 폴더(`git rev-parse --git-common-dir`·`--git-dir` 결과)를 `--add-dir` 로 더 연다. 그래서 위임받은 developer 가 작업 폴더(linked worktree·일반 clone·submodule)에서 `git add` 를 하고 로컬 소켓을 여는 시험을 돌릴 수 있다. 읽기 역할은 이전처럼 원 트리를 읽기 전용으로 본다. `--add-dir` 와 `-c` 설정은 신규 실행과 재개 실행(`--resume-from`) 모두 `exec` 앞에 둔다. 대화형 PM 의 `.codex/config.toml` 은 `network_access = false` 그대로이고 주석만 바뀌었다.
+- **리뷰 프롬프트에 diff 본문을 넣지 않는다.** 묶음 리뷰(code-reviewer)와 추가 리뷰어(`additional_reviewer.py`)의 프롬프트는 엔진이 뽑은 patch 본문 대신 리뷰 대상 트리의 절대경로·비교 기준·대상·변경 파일 전체 목록과, diff 를 읽는 `git -C <트리> --no-pager diff …` 명령을 담는다. 리뷰어는 트리에서 직접 읽는다. 변경이 큰 묶음에서 프롬프트가 하네스 입력 한도를 넘어 리뷰가 시작되지 못하던 문제가 없어진다. 비교 범위·빈 변경 거부·명령행 옵션은 그대로다.
 
 ### Removed
 
@@ -31,6 +57,22 @@
   - `board.py verified-at-backfill` 을 지웠다. 핀이 없는 현재-진실 문서는 `board.py verified-at-repin --repo self --page <문서>` 로 처음 핀을 쓴다.
   - `un-migrated-overlay` lint 를 지웠다. `@render` 어댑터 본문은 갱신 때마다 다시 렌더되고, 남은 리터럴 토큰은 `render-leak`(차단)이 잡는다.
   - `pm-update` 끝의 구 역할 절 안내를 지웠다. 같은 상태를 `legacy-growth-section` 이 보인다.
+- **평면 엔진 모듈 12개.** `console_encoding.py`·`delegate_scope.py`·`engine_rev.py`·`file_lock.py`·`identity_args.py`·`pm_relay.py`·`pm_render.py`·`private_refs.py`·`repo_coordinates.py`·`repo_owned_files.py`·`review_rounds.py`·`ticket_rounds.py` 를 지우고 내용을 `pm_engine` 패키지로 옮겼다. 다른 엔진 파일이 불러 쓰던 모듈이며, 갱신이 사본의 이 파일들을 `.pm_import_backups/<날짜>/` 로 옮긴다. `engine_rev.py` 의 버전 일괄 갱신 명령(`--bump`)도 함께 없어졌다. 버전 값은 `pm_engine/__init__.py` 의 `ENGINE_REV` 한 줄을 고친다.
+- **`local_conf.py --render-adapter-block`.** 어댑터 파일에 넣을 차단 구키 블록을 만들던 옵션이다. 어댑터가 설정을 직접 읽지 않게 되어 쓰는 곳이 없다. `local_conf.py` 는 `--keys`·`--keys --json` 만 받는다.
+
+### Fixed
+
+- 최종 수정 라운드의 돌려받기가, 리뷰어가 수정 계약(`fix_contract`)의 `test` 칸에 확인용 기존 시험 경로를 적은 지적을 그 시험 파일이 바뀌지 않았다며 거부하던 문제를 고쳤다. 기존 시험을 다시 돌리기만 하는 계약은 `existing: tests/<파일>.py` 로 적는다. 이 계약은 시험 파일이 실재하는지와 `location` 의 수정 경로 중 하나가 바뀌었는지를 확인한 뒤 계약 명령을 실행한다. 접두 없이 시험 경로로 시작하는 `test` 는 이전처럼 그 시험 파일의 변경을 요구한다. 묶음 리뷰와 추가 리뷰어의 프롬프트가 이 표기를 안내한다.
+- 대여된 작업 폴더가 2개 이상인 홈에서 `board.py regression run`·`regression check`(pre-push 훅이 부른다)가 task 이름 단위로 돌아, 한 task 가 작업 폴더를 여럿 가지면 첫 폴더만 돌고 확인하던 문제를 고쳤다. 이제 대여된 작업 폴더마다 그 폴더의 경로와 시험 명령으로 돌리고, 기록도 폴더마다 따로 둔다(`.project_manager/.local/regression-workspace-<해시>.json`). 출력은 폴더를 `<task>@<폴더>` 로 보인다. `--task`·`--cwd` 로 위치를 고른 실행과 대여 작업 폴더가 하나인 홈은 그대로다.
+
+### 업그레이드 노트
+
+- **v1.8.2 는 v1.8.0·v1.8.1 사본에서만 받는다.** v1.7.13 이하는 v1.8.0 으로 먼저 올린 뒤 받는다. v1.7.13 이하 사본을 바로 갱신하면 옛 갱신기가 엔진 코드를 복사하지 않고 `[중단] retired-path manifest 자기치유 실패` 를 내며 rc 1 로 멈춘다. v1.8.0 업그레이드 노트의 "다음 릴리즈(v1.8.1)는 v1.8.0 을 거쳐서만 받는다" 는 엔진 패키지 전환을 담을 판을 가리킨 문장이고, 그 판이 v1.8.2 다(v1.8.1 은 Windows 관리자 수정만 담았다).
+- **v1.8.0·v1.8.1 에서는 갱신을 한 번 실행하면 된다.** 디스크의 옛 갱신기가 엔진 코드(새 `pm_engine/` 포함)를 옮기고, 받은 갱신기가 나머지를 끝낸다. 두 번째 실행은 `변경 없음` 이다. 첫 갱신은 옛 평면 모듈 12개를 `.pm_import_backups/<날짜>/.project_manager/tools/` 아래로 옮기며 파일마다 `[퇴역] <옛 경로> -> <백업 경로>` 를 낸다.
+- **평면 모듈을 불러 쓰던 스크립트와 lint 훅을 고친다.** 채택자 스크립트나 `.project_manager/hooks/lint_*.py` 가 `.project_manager/tools/` 의 평면 모듈을 import 했다면 갱신 뒤 실패한다. 진입 파일은 명령으로 실행하는 파일이며 `main()` 하나만 두므로, 그런 스크립트는 진입 명령을 실행하도록 바꾼다. lint 훅의 import 실패는 `board.py lint` 실패로 나온다.
+- **갱신 뒤 `board.py lint` 를 한 번 실행한다.** 전에는 경고 뒤 건너뛰던 손상(읽을 수 없거나 frontmatter 가 깨진 domain 페이지, 불러올 수 없는 lint 훅)이 이제 lint 실패로 나온다.
+- **대여된 작업 폴더가 2개 이상인 홈은 회귀를 다시 기록한다.** `--task` 없이 부르는 `regression check`·`regression run` 의 기록이 작업 폴더마다 따로 쌓이도록 바뀌어, 갱신 전 기록을 쓰지 않는다. 갱신 뒤 첫 `regression check` 는 모든 작업 폴더를 미검증으로 보므로 `board.py regression run` 을 한 번 실행해 폴더마다 기록을 만든다.
+- **OpenCode 채택자는 `local.conf` 의 `runtime.py` 를 확인한다.** 비어 있고 PATH 에서 먼저 찾히는 Python 이 3.11 미만이면 훅 판정이 돌지 않고 도구 호출마다 경고가 붙는다. `runtime.py` 에 3.11 이상 인터프리터를 적는다.
 
 ## [1.8.1] - 2026-10-16
 
