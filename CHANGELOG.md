@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-10-29
+
 ### Changed
 
 - OpenCode 출하 모델을 `ollama/glm-5.3:cloud` 로 바꿨다. 출하 `.opencode/opencode.jsonc` 의 모델 선언이 `glm-5.2:cloud` 에서 `glm-5.3:cloud` 로 바뀌고 `limit`(context 200000·input 200000·output 32768)과 `compaction.reserved` 는 그대로다. `pm_import --opencode-model` 도움말과 카드 모델 TODO 안내의 예시도 같은 모델로 바꿨다.
