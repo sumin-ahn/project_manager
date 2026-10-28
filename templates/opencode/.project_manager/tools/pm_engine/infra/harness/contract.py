@@ -533,7 +533,8 @@ def opencode_runtime_role_config(role: str) -> str:
     allowlisting. Incoming content is intentionally not merged or inherited: it is an arbitrary runtime
     override surface and may contain plugins, commands, or secrets. Normal user/project config files still
     load through the separately allowlisted ``OPENCODE_CONFIG``/``OPENCODE_CONFIG_DIR`` anchors; this
-    highest-precedence fragment only pins the delegated role's identity and permissions.
+    highest-precedence fragment only pins the delegated role's identity, its permissions, and
+    how an automatically rejected permission request is handled.
     """
     perm_axis(role)  # shared role allowlist and wording
     # ``edit`` is allowed for every role, researcher included: all participating roles record
@@ -563,6 +564,12 @@ def opencode_runtime_role_config(role: str) -> str:
                 "permission": permission,
             },
         },
+        # Non-interactive ``opencode run`` auto-rejects every ``ask`` request, and on the resulting
+        # RejectedError it ends the whole run unless this flag is true (OpenCode 1.18.34 failToolCall).
+        # With it the rejection goes back to the model as a tool error and the run continues, like
+        # claude ``-p`` and codex ``-a never``. It changes no allow/deny/ask decision. The key is
+        # experimental: re-measure this behaviour whenever the pinned OpenCode version changes.
+        "experimental": {"continue_loop_on_deny": True},
     }
     return json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 

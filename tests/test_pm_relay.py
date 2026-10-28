@@ -65,7 +65,8 @@ def test_opencode_prompt_guard_converts_cwd_symlink_loop(orch, tmp_path):
 @pytest.mark.parametrize("role", ("developer", "architect", "code-reviewer", "researcher"))
 def test_opencode_runtime_role_config_is_self_contained_and_stable(orch, role):
     """Cross adopter에 agent 카드가 없어도 선택 역할 하나의 mode 가 완결되고, 반복 호출이
-    같은 wire bytes 를 낸다(감사 가능한 결정론).
+    같은 wire bytes 를 낸다(감사 가능한 결정론). 자동 거부된 권한 요청이 실행을 끝내지 않고
+    모델에게 돌아가도록 experimental.continue_loop_on_deny 도 싣는다.
 
     permission 값 자체의 기대치(edit/bash/task/webfetch 등)는 손기입하지 않는다 — 출하 카드
     frontmatter 와의 파리티는 아래 test_opencode_runtime_role_fragment_matches_shipped_card_permission
@@ -74,7 +75,8 @@ def test_opencode_runtime_role_config_is_self_contained_and_stable(orch, role):
     first = contract.opencode_runtime_role_config(role)
     assert first == contract.opencode_runtime_role_config(role)  # stable wire/audit bytes
     config = json.loads(first)
-    assert set(config) == {"agent"}
+    assert set(config) == {"agent", "experimental"}
+    assert config["experimental"] == {"continue_loop_on_deny": True}
     assert set(config["agent"]) == {role}
     agent = config["agent"][role]
     assert agent["mode"] == "all"
