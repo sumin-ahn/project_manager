@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from _manager_home import render_home
+from _opencode_model import SHIPPED_MODEL
 from pm_engine.app import adapter_render
 from pm_engine.app import import_fill
 from pm_engine.app import import_render
@@ -236,7 +237,7 @@ def test_neutralize_model_todo_comments_and_neutralizes(pm_render):
     assert out == (
         '# model: "<provider/model>"'
         "  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 "
-        "provider/model(예: ollama/glm-5.2:cloud) 로 치환\n"
+        f"provider/model(예: {SHIPPED_MODEL}) 로 치환\n"
     )
 
 

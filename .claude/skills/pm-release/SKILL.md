@@ -44,7 +44,7 @@ record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must
 - 릴리즈 전 추가 리뷰어 교차검증(`additional_reviewer`)의 `--paths`도 같은 readonly 슬롯 worktree를 가리킨다.
 - `PM_ORCH_LIVE_RELEASE=1`이 없으면 release wave가 skip되어 수집 N=0, record가 fail한다.
 - board 출력 `release N/<pin> green ✓`의 N==pin을 눈으로 확인해 보고한다. 다르면 마커 소실·wrong-cwd이므로 fail로 릴리즈를 막는다.
-- live tier는 **release 단일**이고 **3 하네스 실측**이다 — claude·opencode 는 wave 전 구간(부트스트랩~핸드오프·multi-repo·multi-user), codex 는 위임 완주와 relay 마커 정체성 2건으로 커버 깊이가 얕다. opencode 는 회사 기준 버전·격리 `--dir`·glm-5.2 로 돈다.
+- live tier는 **release 단일**이고 **3 하네스 실측**이다 — claude·opencode 는 wave 전 구간(부트스트랩~핸드오프·multi-repo·multi-user), codex 는 위임 완주와 relay 마커 정체성 2건으로 커버 깊이가 얕다. opencode 는 회사 기준 버전·격리 `--dir`·출하 `.opencode/opencode.jsonc` 가 선언한 모델로 돈다.
 
 #### Windows 관리자 창 확인 (사람 확인)
 

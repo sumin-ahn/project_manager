@@ -4,7 +4,7 @@
 backbone pytest(`test_pm_adr.py` 20케이스)로는 "pm_adr.py 가 옳게 도나"만 검증되고 "**실 LLM 이
 스킬 읽고 ADR 발행 flow 를 원자 수행하나**"는 미검증이다([[ADR-0050]]·[[harness-test-vs-machine-test]]).
 이 파일이 그 갭을 on-demand 라이브 tier 에서 메운다 — fresh import 홈에 seed decisions(기존 ADR 1 +
-README 표)를 깔고, **스킬을 유일 컨텍스트**로 준 실 LLM(claude + opencode/glm-5.2:cloud)에게 구체
+README 표)를 깔고, **스킬을 유일 컨텍스트**로 준 실 LLM(claude + opencode/출하 모델)에게 구체
 주제의 ADR 발행을 시켜 **실 decisions 상태**(새 ADR 파일 = 다음 번호 + frontmatter + 주제 marker ·
 README Accepted 행 · log decide entry)로 단언한다.
 
@@ -39,7 +39,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
+from _opencode_model import LIVE_MODEL
 # codex 축(D7): 기본 모델 = 로컬 config 상속(gpt-5.5·-m 생략)·명시 override 만 env.
 CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")  # None → codex 로컬 config 기본 상속.
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CLAUDE_TIMEOUT", "600"))
@@ -145,7 +145,7 @@ def test_pm_adr_live_claude(tmp_path):
     reason="pm-adr 라이브 — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
 )
 def test_pm_adr_live_opencode(tmp_path):
-    """실 opencode(glm-5.2:cloud)가 스킬만 보고 ADR 발행 flow 수행·실 decisions 상태 단언."""
+    """실 opencode(출하 모델)가 스킬만 보고 ADR 발행 flow 수행·실 decisions 상태 단언."""
     dest = _import_adopter(tmp_path, "opencode")
     _seed_decisions(dest)
     prompt = _issue_prompt(_SKILL.read_text(encoding="utf-8"))

@@ -85,7 +85,7 @@ def main(home, argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--opencode-model", dest="opencode_model", metavar="PROVIDER/MODEL",
                     default=None,
-                    help="{{OPENCODE_PRO_MODEL}} 결정적 치환값 (비대화/CI). 예 'ollama/glm-5.2:cloud'. "
+                    help="{{OPENCODE_PRO_MODEL}} 결정적 치환값 (비대화/CI). 예 'ollama/glm-5.3:cloud'. "
                          "opencode 어댑터 미포함이면 무시(claude-only)")
     ap.add_argument("--dry-run", action="store_true",
                     help="적용 없이 fill 계획만 출력 (실 하니스 미호출·파일시스템 미변경)")

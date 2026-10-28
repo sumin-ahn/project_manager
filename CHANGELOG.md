@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- OpenCode 출하 모델을 `ollama/glm-5.3:cloud` 로 바꿨다. 출하 `.opencode/opencode.jsonc` 의 모델 선언이 `glm-5.2:cloud` 에서 `glm-5.3:cloud` 로 바뀌고 `limit`(context 200000·input 200000·output 32768)과 `compaction.reserved` 는 그대로다. `pm_import --opencode-model` 도움말과 카드 모델 TODO 안내의 예시도 같은 모델로 바꿨다.
+
 ### Fixed
 
 - `board.py cluster new` 가 task branch 로 묶음 브랜치를 먼저 만든 작업 폴더를 지목하면 장부 `base_branch` 를 통합 브랜치가 아니라 묶음 브랜치 자신으로 기록하던 결함을 고쳤다(리뷰 준비의 merge-base 가 빈 diff 가 되어 실패했다). 이제 묶음 브랜치가 이미 있으면 그 부모 기록(`branch.<묶음브랜치>.pm-parent`)을 기준 브랜치로 적고, 아직 없으면 지목 트리의 현재 브랜치를 적는다. 묶음 브랜치가 있는데 부모 기록이 없으면 장부·멤버 명세·브랜치를 쓰기 전에 복구 방법과 함께 종료 코드 1 로 멈춘다.
@@ -21,6 +25,8 @@
 - 업그레이드 직후, 마지막 압축 경계가 대화 기록 끝 4 MiB 안에 있는 진행 중 Claude 세션은 이미 처리한 압축을 한 번 더 처리한다. log 에 압축 checkpoint 골격·breadcrumb 가 1건 더 남고, 복구 텍스트가 한 번 더 주입된다. 그 뒤로는 경계마다 한 번만 처리한다.
 - 옛 순번 표식(`.project_manager/.local/ctx-stop/<세션>.compact-<숫자>`)은 더 읽지 않는다. 남아 있어도 동작에 영향이 없고 지워도 된다.
 - 이미 커밋된 백업은 `git rm -r --cached .pm_import_backups` 뒤 커밋하면 추적만 풀린다(파일은 남는다). 루트 `.gitignore` 의 `.pm_import_backups/` 줄은 남겨도 된다. 백업 폴더가 이미 있어도 무시 파일은 이 엔진이 다음 백업을 쓸 때 생긴다.
+- 기존 OpenCode 채택자의 `.opencode/opencode.jsonc` 는 채택자 소유라 갱신이 바꾸지 않는다. 갱신은 `.opencode/opencode.jsonc` 의 인스턴스 소유 템플릿 변경 알림과 처방 `pm-config sync-adapter-config --accept .opencode/opencode.jsonc` 를 낸다. 그대로 두면 glm-5.2 선언과 모델 설정이 남아 지금처럼 glm-5.2 로 돈다.
+- glm-5.3 으로 옮기려면 `pm-config sync-adapter-config --accept .opencode/opencode.jsonc` 를 실행하거나(파일 전체를 출하본으로 바꾸고 원래 파일은 `.pm_import_backups/` 의 날짜 폴더에 백업한다. 손댄 항목은 백업에서 다시 옮긴다) `provider.ollama.models` 에 `"glm-5.3:cloud": { "limit": { "context": 200000, "input": 200000, "output": 32768 } }` 항목을 손으로 더한다. 이어서 `pm-config apply --set harness.opencode.pro_model=ollama/glm-5.3:cloud` 로 PM 카드 모델을 바꾸고, glm-5.2 를 쓰는 `delegate.<역할>.model`·`additional_reviewer.model` 도 같은 값으로 바꾼다. 선언에서 glm-5.2 를 뺀 채 이 값들을 두면 전역 설정에 glm-5.2 가 없는 머신에서 OpenCode 가 `Model not found` 로 멈춘다.
 
 ## [1.8.2] - 2026-10-27
 

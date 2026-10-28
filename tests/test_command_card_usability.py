@@ -4,7 +4,7 @@
 보고 **첫 시도**에 맞는 커맨드를 치는가"(사용성)는 못 본다. 카드의 소비자가 LLM 이므로 그 판정은
 LLM 이 load-bearing 이다(사용자 지시: "진짜로 얘네들이 커맨드를 잘 쓰는지"). 이 파일은 그 갭을
 릴리즈 라이브 tier 에서 메운다 — fresh import 홈에 **부트스트랩 커맨드 카드만** 컨텍스트로 주고
-실 LLM 2하네스(claude + opencode/glm-5.2:cloud)에 표준 티켓 라이프사이클(new→cluster new→promote→
+실 LLM 2하네스(claude + opencode/출하 모델)에 표준 티켓 라이프사이클(new→cluster new→promote→
 claim→종결)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0** & 출력에 `--help`/`-h` 호출·재시도
 흔적 0 임을 단언한다.
 
@@ -81,10 +81,10 @@ REPO = Path(__file__).resolve().parents[1]
 
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
-# claude: sonnet-4-6(API 과금·env override). opencode: glm-5.2:cloud(ollama cloud·2026-07-07 채택·
+# claude: sonnet-4-6(API 과금·env override). opencode: 출하 모델(ollama cloud·2026-07-07 채택·
 # T-0258 이 교체·과금 0·env override). release_wave 와 동일 단일 진실(양쪽 파일 default 일치).
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
+from _opencode_model import LIVE_MODEL
 # opencode 는 느리고 변동 커 1800s, claude 는 lifecycle 4콜 여유분 600s (release_wave 상속).
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
@@ -742,7 +742,7 @@ def test_command_card_usability_claude(tmp_path):
            "기본 skip·사용자 트리거.",
 )
 def test_command_card_usability_opencode_best_effort(tmp_path):
-    """실 opencode(glm-5.2:cloud)가 카드만 보고 표준 lifecycle 을 운영한다 (best-effort — claude 대비 비대칭).
+    """실 opencode(출하 모델)가 카드만 보고 표준 lifecycle 을 운영한다 (best-effort — claude 대비 비대칭).
 
     claude 와 같은 카드-only 프롬프트지만 **판정 강도가 낮다** — 테스트명 `_best_effort` 가 그 한계를
     표기한다. opencode 는 stream-json 처럼 tool-call 을 정밀 노출하지 않아(stdout 스캔뿐) 기대 op 각

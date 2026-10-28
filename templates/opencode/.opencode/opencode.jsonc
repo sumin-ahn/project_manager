@@ -34,7 +34,7 @@
   // 출력 상한 자체를 32000 위로 올리진 못한다 — 32000 상향은 env OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX
   // 로만 가능(upstream 실측). 실질 억제 레버는 deny-and-redirect + safe_write chunk 도구
   // (.opencode/plugins/safe-write.js)다. 하드 절단(finish_reason=length)은 config 로 못 막는다.
-  // 채택자는 자기 provider/model 에 맞춰 아래 엔트리를 조정한다(도그푸딩 모델 = ollama/glm-5.2:cloud).
+  // 채택자는 자기 provider/model 에 맞춰 아래 엔트리를 조정한다.
   // ⚠️ opencode(≥1.17.19)는 config 에 model `limit` 지정 시 context·output 을 *둘 다* 요구한다
   //   (dynamic ollama 모델은 models.dev 카탈로그 context 부재 → 명시 필수·라이브 실측).
   // ⚠️ output 은 context 보다 충분히 작게 둔다. `limit.input` 이 없는 모델의 자동 컴팩션 트리거가
@@ -46,7 +46,7 @@
   "provider": {
     "ollama": {
       "models": {
-        "glm-5.2:cloud": {
+        "glm-5.3:cloud": {
           "limit": {
             "context": 200000,
             "input": 200000,

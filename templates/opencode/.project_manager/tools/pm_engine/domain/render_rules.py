@@ -256,7 +256,7 @@ def _model_todo_tail(available: list[str] | None = None) -> str:
         return ("  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 provider/model 로 치환 "
                 f"(가용: {', '.join(available)})")
     return ("  # TODO: opencode 모델 ID 를 넣으려면 이 줄 주석 해제 후 "
-            "provider/model(예: ollama/glm-5.2:cloud) 로 치환")
+            "provider/model(예: ollama/glm-5.3:cloud) 로 치환")
 
 
 def neutralize_model_todo(
