@@ -1427,7 +1427,7 @@ _ADD_HARNESS_NS_BOUND = _derive_ns_bound(HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC)
 
 # 스냅샷 제외 트리 컴포넌트 — VCS/캐시 산출물 + pm_import 백업. `.pm_import_backups/` 는 add-harness 가
 # root doc(AGENTS.md) 충돌을 만나 backup+copy 할 때 생기는 **안전 아티팩트**다 (⚠ add-harness 경로는
-# main import 와 달리 ensure_backup_dir_gitignored 를 안 태워 git-ignore 미보장 — 엔진 위생 갭·별도 티켓 후보) —
+# 백업 폴더 안 `.gitignore` 가 git 에는 무시시키지만 스냅샷은 파일 트리를 직접 읽으므로 따로 뺀다) —
 # opencode↔codex 는 공통 코어 AGENTS.md 가 byte-identical 이라, git-미커밋 fresh 채택자에선 git-safe
 # skip 이 아니라 backup+identical-rewrite 로 처리된다(라이브 클로버 아님·백업이 원본 보존·재기록은
 # 동일 바이트). 백업 아티팩트는 어댑터 네임스페이스도 실 트리도 아니라 스냅샷에서 뺀다 — *실* 파일

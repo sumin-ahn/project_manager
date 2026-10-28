@@ -13,6 +13,7 @@ from pm_engine.domain import conf_schema
 from pm_engine.domain import manifest_rules
 from pm_engine.infra import conf_store
 from pm_engine.infra import fs
+from pm_engine.infra import install_files
 from pm_engine.infra import manifest_store
 
 
@@ -314,6 +315,8 @@ def retire_manifest_paths(
             plan = _validate_retired_path_plan(
                 dest_root, source_root, manifest, declarations,
             )
+            if plan:
+                install_files.ensure_backup_dir_ignored(dest_root)
             for old, _new, backup in plan:
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 # overwrite 금지: 위에서 고른 좌표가 락 구간에서도 비어 있다.

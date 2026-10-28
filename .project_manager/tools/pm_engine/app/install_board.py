@@ -11,8 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pm_engine.domain import install_rules
-from pm_engine.infra import fs
 import os
 
 # 신규 공유 board 에 스캐폴드하는 상태 디렉토리 — `ticket_rules.STATUS_DIRS` 와 같은 집합(리터럴 · 동치는
@@ -324,53 +322,3 @@ def git_init(dest_root: Path) -> int:
         stderr=subprocess.DEVNULL,
     )
     return result.returncode
-
-
-def ensure_backup_dir_gitignored(
-    dest_root: Path, git_safe: set | None, copied_relpaths: set,
-) -> str:
-    """dest .gitignore 에 `.pm_import_backups/` 패턴을 보장한다 (git 위생).
-
-    반환 상태: "added"(기존에 append) · "created"(신규 .gitignore 생성) ·
-      "present"(이미 무시 중·멱등 skip) · "unsafe-skip"(사전 존재 unbacked 사용자 .gitignore —
-      비파괴 위해 미변경) · "noop"(읽기 실패).
-
-    **비파괴:** 기존 .gitignore 를 append 하려면 둘 중 하나여야 한다 —
-      (a) **git-safe**(추적 중 & 미변경 → git 이 복원 가능), 또는
-      (b) **이번 import 가 복사·관리한 파일**(`.gitignore` ∈ copied_relpaths) — 이 경우 사용자
-          원본이 있었다면 CopyAction 이 이미 중앙 백업했으므로 append 가 안전하다.
-    둘 다 아니면 *사전 존재하는 unbacked 사용자 파일*이므로(미추적/dirty·import 가 안 건드림)
-    무백업 변조를 피해 "unsafe-skip" 으로 수동 추가를 안내한다(이 append 는 CopyAction 백업
-    경로를 타지 않으므로 별도 가드 필요). .gitignore 가 없으면 새로 만든다(비파괴·신규 파일).
-    """
-    pattern = f"{install_rules.BACKUP_DIR_NAME}/"
-    gitignore = dest_root / ".gitignore"
-    # .gitignore 가 symlink 면 write_text 가 링크 대상(프로젝트 밖 가능)을
-    #   따라가 변조한다 — git-safe 여도 링크 대상은 git 복원 대상이 아니다. CopyAction 의 symlink
-    #   비파괴 정책(follow_symlinks=False)과 일관되게 자동 append 를 거부한다.
-    if gitignore.is_symlink():
-        return "unsafe-skip"
-    if gitignore.is_file():
-        try:
-            text = fs.read_text_shared(gitignore, encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            return "noop"
-        # 이미 무시 중이면(정확한 패턴 줄·앞뒤 공백 무시) skip — 멱등.
-        existing_lines = {line.strip() for line in text.splitlines()}
-        if pattern in existing_lines or install_rules.BACKUP_DIR_NAME in existing_lines:
-            return "present"
-        git_safe_ok = git_safe is not None and ".gitignore" in git_safe
-        import_owned = Path(".gitignore") in copied_relpaths
-        if not (git_safe_ok or import_owned):
-            return "unsafe-skip"  # 사전 존재 unbacked 사용자 파일 — 무백업 변경 금지.
-        prefix = "" if text.endswith("\n") or text == "" else "\n"
-        new_text, status = f"{text}{prefix}{pattern}\n", "added"
-    else:
-        new_text, status = f"{pattern}\n", "created"
-    # 방어: 위생 write 실패(권한 등)가 *복사·치환이 끝난* import 말미를
-    #   깨뜨리지 않게 한다 — gitignore 위생은 should 부가단계라 실패해도 import 자체는 성공으로 둔다.
-    try:
-        gitignore.write_text(new_text, encoding="utf-8", newline="\n")
-    except OSError:
-        return "noop"
-    return status

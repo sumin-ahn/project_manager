@@ -6,7 +6,6 @@ from pm_engine.app import adapter_accept
 from pm_engine.app import harness_ctx
 from pm_engine.app import import_fill
 from pm_engine.app import import_render
-from pm_engine.app import install_board
 from pm_engine.app import install_plan
 from pm_engine.domain import adapter_specs
 from pm_engine.domain import install_rules
@@ -706,18 +705,6 @@ def add_harness(
     # 자유서술 placeholder 는 TODO 표시(비-LLM·main manual 흐름과 동일).
     install_files.assert_dest_root_unchanged(dest_root, root_identity)  # 단계 경계 재확인(위와 같은 이유).
     import_fill._run_manual_fill(dest_root, proc_relpaths, root_identity=root_identity)
-    # main import(:3289)와 **대칭** — 이번 add 가 실제로 중앙 백업을 만들었으면
-    #   (backup_root 생성) .gitignore 가 `.pm_import_backups/` 를 무시하게 보장한다(채택자
-    #   git status 오염 방지). 같은 헬퍼 재사용(신규 로직 0)·발화 조건은 git repo(git_safe
-    #   판정 가능) + 백업 실생성 시에만 — 무백업 add 는 gitignore 무변(최소 변경). add-harness
-    #   는 항상 라이브 인스턴스라 main 의 is_new 분기는 없다(backup_root 도 상시 non-None).
-    if git_safe is not None and backup_root.exists():
-        gi_status = install_board.ensure_backup_dir_gitignored(dest_root, git_safe, copied_relpaths)
-        if gi_status in ("added", "created"):
-            print(f"✓ .gitignore 에 {install_rules.BACKUP_DIR_NAME}/ 추가 (백업이 git status 오염 방지)")
-        elif gi_status == "unsafe-skip":
-            print(f"  ⚠️ .gitignore 가 미추적/변경 상태 — 비파괴 위해 자동 추가 생략. "
-                  f"수동으로 `{install_rules.BACKUP_DIR_NAME}/` 한 줄을 추가하세요.")
     # 설치 기록 — 이번에 추가한 하네스 ∪ 이미 설치돼 있던 하네스(`selected_harnesses`) 중 **실제로
     #   어댑터가 선 것만** 박제한다(적용 단계에서 전부 제외됐으면 기록이 유령을 만든다). 이후 판정은
     #   이 기록을 진실로 쓰므로 판별자 파일이 사라져도 독자 집합이 유실되지 않고, 기록이 없던 구

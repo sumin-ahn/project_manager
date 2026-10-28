@@ -103,6 +103,8 @@ class CopyAction:
         #   `FileNotFoundError` 를 상태 변화 클래스로 정규화한다(그대로 새면 적용 루프가 죽는다).
         #   소스 쪽 오류는 쓰기 단계가 별도로 가른다(진짜 누락은 그대로 올린다).
         try:
+            if self.backup is not None and dst_existed:
+                ensure_backup_dir_ignored(self.dest_root, root_identity=root_identity)
             if dst_existed and not dst_is_symlink:
                 # **기존 일반 파일: fd 하나로 백업 읽기와 덮어쓰기를 모두 한다.** 옛 흐름은 백업과
                 #   쓰기가 각각 leaf 를 다시 열어, 그 사이 같은 자리가 다른 파일로 바뀌면 백업 없는
@@ -189,6 +191,27 @@ class UnsafeDestPathError(RuntimeError):
     읽기/쓰기 전에 `_is_safe_dest_path` 로 판정하고 **작업 시작 전** 던진다(부분 적용 0·외부
     파일 불변). RuntimeError 를 상속해 옛 호출부 처리를 유지하면서, CLI 경계
     (`add_harness_cli`)가 이 타입만 골라 친화 메시지 + rc 1 로 번역한다(traceback 0)."""
+
+
+BACKUP_DIR_IGNORE_TEXT = "*\n"
+
+
+def ensure_backup_dir_ignored(dest_root: Path, *, root_identity: tuple | None = None) -> None:
+    """백업 폴더 안 `.gitignore`(내용 `*`)를 없을 때만 만든다.
+
+    백업을 쓰는 지점이 백업 쓰기 직전에 부른다. 이미 그 자리에 무엇이 있으면 덮지 않고,
+    경로 안전 오류는 호출 지점의 기존 예외 경계가 백업 쓰기 실패와 같게 처리한다."""
+    rel = Path(install_rules.BACKUP_DIR_NAME) / ".gitignore"
+    try:
+        fd = _open_dest_relative_nofollow(
+            dest_root, rel, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644,
+            create_parents=True, root_identity=root_identity)
+    except FileExistsError:
+        return
+    try:
+        os.write(fd, BACKUP_DIR_IGNORE_TEXT.encode("utf-8"))
+    finally:
+        os.close(fd)
 
 
 def _free_backup_path(backup: Path) -> Path:
@@ -1245,6 +1268,7 @@ def _backup_before_inplace_edit(
         if git_safe is not None and rel.as_posix() in git_safe:
             continue  # git 이 복원 가능 — 백업 생략(plan_copy git-safe skip 과 동형).
         try:
+            ensure_backup_dir_ignored(dest_root, root_identity=root_identity)
             _backup_to_central_dir_nofollow(
                 dest_root, rel, backup_root, root_identity=root_identity)
         except UnsafeDestPathError:

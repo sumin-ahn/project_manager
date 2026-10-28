@@ -4238,84 +4238,13 @@ def test_into_real_git_repo_tracked_clean_skip_dirty_backup(pm_import, tmp_path)
     assert (backup_root / "CLAUDE.md").is_file(), "dirty 충돌이 중앙 백업되지 않음."
     assert (backup_root / "CLAUDE.md").read_text(encoding="utf-8") == \
         "now modified — uncommitted\n", "dirty 백업이 미커밋 내용을 보존하지 않음."
-    # .gitignore 위생(should): 백업 디렉토리 패턴이 추가됐다.
-    gitignore = dest / ".gitignore"
-    assert gitignore.is_file(), ".gitignore 가 생성/갱신되지 않음(git repo·백업 생성됨)."
-    assert f"{install_rules.BACKUP_DIR_NAME}/" in gitignore.read_text(encoding="utf-8")
-
-
-def test_ensure_backup_dir_gitignored_create_then_idempotent(pm_import, tmp_path):
-    """.gitignore 없으면 생성("created")·이미 패턴 있으면 멱등("present")·내용 불변."""
-    dest = tmp_path / "gi"
-    dest.mkdir()
-    # 1회차: .gitignore 없음 → 패턴 1줄 신규 생성(비파괴·신규 파일).
-    assert install_board.ensure_backup_dir_gitignored(dest, set(), set()) == "created"
-    text1 = (dest / ".gitignore").read_text(encoding="utf-8")
-    assert text1 == f"{install_rules.BACKUP_DIR_NAME}/\n"
-    # 2회차: 이미 있음 → 멱등 skip(git-safe 여부 무관)·내용 불변.
-    assert install_board.ensure_backup_dir_gitignored(dest, {".gitignore"}, set()) == "present"
-    assert (dest / ".gitignore").read_text(encoding="utf-8") == text1
-
-
-def test_ensure_backup_dir_gitignored_appends_when_git_safe(pm_import, tmp_path):
-    """기존 .gitignore 가 git-safe(추적&미변경)면 기존 규칙 보존하고 패턴만 append("added")."""
-    dest = tmp_path / "gi2"
-    dest.mkdir()
-    (dest / ".gitignore").write_text("node_modules/\n*.log\n", encoding="utf-8")
-    assert install_board.ensure_backup_dir_gitignored(dest, {".gitignore"}, set()) == "added"
-    text = (dest / ".gitignore").read_text(encoding="utf-8")
-    assert "node_modules/" in text and "*.log" in text, "기존 규칙이 손실됨 — 비파괴 위반."
-    assert text.endswith(f"{install_rules.BACKUP_DIR_NAME}/\n")
-
-
-def test_ensure_backup_dir_gitignored_import_owned_appends(pm_import, tmp_path):
-    """import 가 복사·관리한 .gitignore(copied_relpaths)면 git-safe 아니어도 append("added").
-
-    CopyAction 이 사용자 원본을 이미 중앙 백업했으므로 안전 (e2e 정상 경로 — 템플릿이 .gitignore 출하)."""
-    dest = tmp_path / "gi4"
-    dest.mkdir()
-    (dest / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
-    from pathlib import Path as _P
-    # git-safe 아님(set())·하지만 import 가 복사한 파일 → 안전 append.
-    assert install_board.ensure_backup_dir_gitignored(dest, set(), {_P(".gitignore")}) == "added"
-    assert (dest / ".gitignore").read_text(encoding="utf-8").endswith(
-        f"{install_rules.BACKUP_DIR_NAME}/\n")
-
-
-def test_ensure_backup_dir_gitignored_unsafe_skips_unbacked_change(pm_import, tmp_path):
-    """사전 존재 unbacked 사용자 .gitignore(git-safe 아님·import 미복사)면 무백업 변경 금지 (codex T-0034 must-fix).
-
-    이 append 는 CopyAction 백업 경로를 안 타므로, git 이 복원 못 하고 import 도 안 건드린
-    .gitignore 를 변조하면 비파괴 계약 위반이다 → "unsafe-skip" 으로 원본 불변 유지.
-    """
-    dest = tmp_path / "gi3"
-    dest.mkdir()
-    original = "node_modules/\n*.log\n"
-    (dest / ".gitignore").write_text(original, encoding="utf-8")
-    # git_safe 아님 + import 미복사(copied 빈) → 변경 금지.
-    assert install_board.ensure_backup_dir_gitignored(dest, set(), set()) == "unsafe-skip"
-    assert (dest / ".gitignore").read_text(encoding="utf-8") == original
-    # git_safe is None(비-git/판정 불가)도 동일하게 보수적 skip.
-    assert install_board.ensure_backup_dir_gitignored(dest, None, set()) == "unsafe-skip"
-    assert (dest / ".gitignore").read_text(encoding="utf-8") == original
-
-
-@requires_symlink
-def test_ensure_backup_dir_gitignored_symlink_skips_no_follow(pm_import, tmp_path):
-    """.gitignore 가 symlink 면 write_text 가 링크 대상을 따라가 변조 → skip (codex T-0034·MF1).
-
-    git-safe·import-소유로 표시돼도 symlink 면 거부 — 링크 대상은 git 복원 대상이 아니다."""
-    from pathlib import Path as _P
-    dest = tmp_path / "gisym"
-    dest.mkdir()
-    target = tmp_path / "outside_gitignore"        # 프로젝트 '밖' 가리키는 대상
-    target.write_text("external content\n", encoding="utf-8")
-    os.symlink(target, dest / ".gitignore")
-    # git-safe + import-소유로 표시해도 symlink 면 unsafe-skip(링크 follow 금지).
-    status = install_board.ensure_backup_dir_gitignored(dest, {".gitignore"}, {_P(".gitignore")})
-    assert status == "unsafe-skip", status
-    # 링크 대상(프로젝트 밖) 내용 불변 — 따라가 변조하지 않음.
-    assert target.read_text(encoding="utf-8") == "external content\n"
+    # 백업 폴더는 폴더 안 `.gitignore`(`*`)로 git 이 무시하고 루트 `.gitignore` 는 건드리지 않는다.
+    assert (dest / install_rules.BACKUP_DIR_NAME / ".gitignore").read_text(encoding="utf-8") == "*\n"
+    root_gitignore = dest / ".gitignore"
+    assert not root_gitignore.exists() or install_rules.BACKUP_DIR_NAME not in root_gitignore.read_text(encoding="utf-8")
+    status = subprocess.run(["git", "-C", str(dest), "status", "--porcelain", "--untracked-files=all"],
+                            check=True, capture_output=True, text=True).stdout
+    assert install_rules.BACKUP_DIR_NAME not in status, status
 
 
 def test_parse_status_dirty_handles_rename_old_path(pm_import):
