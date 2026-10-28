@@ -1,4 +1,4 @@
-"""PROTO T-1013: 백업 폴더 `.pm_import_backups/` 는 폴더 안 `.gitignore`(`*`) 로 git 이 무시한다."""
+"""백업 폴더 `.pm_import_backups/` 는 폴더 안 `.gitignore`(`*`) 로 git 이 무시한다."""
 from __future__ import annotations
 
 import datetime
@@ -136,3 +136,26 @@ def test_existing_ignore_file_is_left_as_is(tmp_path):
     ignore.write_text("# adopter note\n*\n", encoding="utf-8")
     _entry_doc(dest, tmp_path)
     assert ignore.read_text(encoding="utf-8") == "# adopter note\n*\n"
+
+
+def test_retired_migration_blocked_by_a_file_at_backup_dir_aborts_like_a_backup_write_failure(
+        tmp_path, capsys):
+    """백업 폴더 자리가 일반 파일이면 은퇴 파일 이주는 [중단] 한 줄과 False 로 끝난다."""
+    dest = tmp_path / "plain"
+    dest.mkdir()
+    (dest / install_rules.BACKUP_DIR_NAME).write_text("not a dir\n", encoding="utf-8")
+    old_rel = ".project_manager/tools/external_review.py"
+    new_rel = ".project_manager/tools/additional_reviewer.py"
+    source = tmp_path / "source"
+    (source / new_rel).parent.mkdir(parents=True)
+    (source / new_rel).write_bytes(b"new reviewer\n")
+    manifest_path = source / ".project_manager" / "engine.manifest"
+    manifest_path.write_text(f"{new_rel}\n# pm-retired-path: {old_rel} -> {new_rel}\n", encoding="utf-8")
+    (dest / old_rel).parent.mkdir(parents=True)
+    (dest / old_rel).write_bytes(b"old reviewer\n")
+    (dest / new_rel).write_bytes(b"new reviewer\n")
+    ok = retired_paths._run_retired_path_migration(
+        dest, source, [manifest_rules.ManifestEntry(new_rel)],
+        {"upstream_manifests": [str(manifest_path)]}, write=True)
+    assert ok is False
+    assert "[중단] retired-path 이주 실패" in capsys.readouterr().err

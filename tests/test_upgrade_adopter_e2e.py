@@ -1226,6 +1226,8 @@ _BACKUP_DIR_IGNORE_REVERSALS = (
      "                install_files.ensure_backup_dir_ignored(dest_root)\n", ""),
     ("    install_files.ensure_backup_dir_ignored(dest_root)\n"
      "    dst = Path(backup_root) / rel\n", "    dst = Path(backup_root) / rel\n"),
+    ("    except (OSError, UnicodeError, RetiredPathError, install_files.UnsafeDestPathError) as exc:\n",
+     "    except (OSError, UnicodeError, RetiredPathError) as exc:\n"),
 )
 
 

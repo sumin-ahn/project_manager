@@ -4212,7 +4212,7 @@ def test_dry_run_into_no_change_and_shows_git_decision(pm_import, tmp_path, caps
 @requires_git
 def test_into_real_git_repo_tracked_clean_skip_dirty_backup(pm_import, tmp_path):
     """실 git init 한 repo 에 --into: 추적&clean 충돌은 백업 생략, dirty 충돌은 중앙 백업,
-    .gitignore 에 `.pm_import_backups/` 가 추가된다(should). 라이브 git e2e."""
+    백업 폴더 안 .gitignore 로 git status 에 백업이 보이지 않고 루트 .gitignore 는 바뀌지 않는다. 라이브 git e2e."""
     import subprocess
     dest = tmp_path / "realgit"
     dest.mkdir()

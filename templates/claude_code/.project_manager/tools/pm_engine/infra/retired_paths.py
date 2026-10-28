@@ -371,7 +371,7 @@ def _run_retired_path_migration(
             effective_dest, source_root, manifest, manifest_paths, write=write,
             prospective_replacements=prospective if not write else None,
         )
-    except (OSError, UnicodeError, RetiredPathError) as exc:
+    except (OSError, UnicodeError, RetiredPathError, install_files.UnsafeDestPathError) as exc:
         print(f"[중단] retired-path 이주 실패 — {exc}", file=sys.stderr)
         return False
     verb = "퇴역 예정" if not write else "퇴역"
