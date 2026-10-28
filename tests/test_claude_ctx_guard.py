@@ -1126,9 +1126,10 @@ def test_t0953_transcript_reading_returns_last_boundary_uuid(guard, tmp_path):
         _compact_boundary(number=1),
         {"type": "assistant", "message": {"role": "assistant", "model": "m1",
                                           "usage": {"input_tokens": 5_000}}},
-        {"type": "system", "subtype": "compact_boundary_note"},
-        {"type": "user", "message": {"role": "user", "content": "compact_boundary"}},
         _compact_boundary(number=2),
+        {"type": "system", "subtype": "compact_boundary_note"},
+        {"type": "user", "uuid": _boundary_uuid(99),
+         "message": {"role": "user", "content": "compact_boundary"}},
         {"type": "assistant", "message": {"role": "assistant", "model": "m2",
                                           "usage": {"input_tokens": 7_000}}},
     ]
