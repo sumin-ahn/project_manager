@@ -931,16 +931,51 @@ def test_t0929_selected_tree_new_and_cluster_anchor(split_env, tmp_path):
     board, _, _ = split_env
     slot = tmp_path / 'work' / f'{SLOT_REPO}_2'
     branch = 'task/selected'
-    assert _git(['checkout', '-qb', branch], slot).returncode == 0
+    base = 'task/selected-base'
+    assert _git(['checkout', '-qb', base], slot).returncode == 0
     assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args('선택 발행', task='main', repo=SLOT_REPO, slot=2)) == 0
     tid = ticket_store.load_ticket(_all_ticket_files(board)[0])[0]['id']
     fm, _ = ticket_store.load_ticket(ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), tid)[1])
     assert fm['created_by'].endswith('/main')
-    assert cluster_store.load_cluster(pm_paths.home_at(board.REPO), fm['cluster'])['base_branch'] == branch
+    assert cluster_store.load_cluster(pm_paths.home_at(board.REPO), fm['cluster'])['base_branch'] == base
     assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args('new', 'selected', tickets=tid, task='main', slot=2)) == 0
     ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), 'C-selected')
-    assert ledger['base_branch'] == branch
+    assert ledger['base_branch'] == base
+    assert ledger['branch'] == branch
+    assert _git(['show-ref', '--verify', 'refs/heads/task/selected'], slot).returncode == 0
     assert _git(['show-ref', '--verify', 'refs/heads/task/selected'], tmp_path / 'work' / f'{SLOT_REPO}_1').returncode != 0
+
+
+@requires_git
+@pytest.mark.parametrize('path', ['card', 'task-branch'])
+def test_cluster_new_base_branch_is_the_bundle_parent(split_env, tmp_path, path):
+    board, _, slot = split_env
+    home = pm_paths.home_at(board.REPO)
+    tid = _issue_ticket(board, '기준 기록')
+    if path == 'task-branch':
+        from pm_engine.app import branch_checkout
+        branch_checkout.create_task_branch(home, f'work/{SLOT_REPO}_1', 'task/basis', parent='task/main', owner_task='main', protected=[])
+    assert board_cluster.cmd_cluster(home, _cluster_args('new', 'basis', tickets=tid, slot=1)) == 0
+    ledger = cluster_store.load_cluster(home, 'C-basis')
+    assert ledger['branch'] == 'task/basis'
+    assert ledger['base_branch'] == 'task/main'
+    assert ledger['base_branch'] != ledger['branch']
+    from pm_engine.infra import branch_store, worktree_git
+    parent = branch_store.read_branch_parent('task/basis', git_runner=worktree_git._real_git_runner(slot))
+    assert parent['name'] == ledger['base_branch']
+
+
+@requires_git
+def test_cluster_new_refuses_an_existing_bundle_branch_without_parent_record(split_env, tmp_path, capsys):
+    board, _, slot = split_env
+    home = pm_paths.home_at(board.REPO)
+    tid = _issue_ticket(board, '부모 기록 없음')
+    assert _git(['checkout', '-qb', 'task/orphan'], slot).returncode == 0
+    before = {path: path.read_bytes() for path in _all_ticket_files(board)}
+    assert board_cluster.cmd_cluster(home, _cluster_args('new', 'orphan', tickets=tid, slot=1)) == 1
+    assert 'branch.task/orphan.pm-parent' in capsys.readouterr().err
+    assert cluster_store.load_cluster(home, 'C-orphan') is None
+    assert {path: path.read_bytes() for path in _all_ticket_files(board)} == before
 
 
 @requires_git

@@ -248,20 +248,36 @@ def _cluster_branch_state(tree: str, branch: str) -> bool | None:
         return None
     return result[0] == 0
 
-def _cluster_ensure_branch(tree: str, branch: str, base: str | None) -> str:
-    """통합 브랜치를 만든다(있으면 그대로) — 결과를 사람이 읽는 1줄로 돌려준다.
+def _cluster_new_base_branch(tree: str, branch: str, current: str | None) -> tuple[str | None, str | None]:
+    """`cluster new` 가 장부에 적을 기준 브랜치 — `(기준, None)` 또는 `(None, 멈춤 사유)`.
 
-    브랜치 생성 실패는 장부 생성을 막지 않는다 — 이 1줄이 `cluster new` 출력에 그대로 실리고,
-    그 뒤의 브랜치 부재는 **트리를 든 표면**(확인 실행 `cli.delegate_cmd._cluster_confirmation_tree` ·
-    공용 트리 해소 `app.cluster_code_tree.resolve_code_tree`)가 자기 자리에서 판정한다(조용한 통과 아님).
+    묶음 브랜치가 이미 있으면 그 부모 기록(`branch.<묶음브랜치>.pm-parent`)이 기준이다. 지목 트리가
+    이미 묶음 브랜치에 앉아 있어도(task branch 로 먼저 만든 경로) 통합 브랜치가 기록된다. 아직 없으면
+    지목 트리의 현재 브랜치다(`_cluster_ensure_branch` 가 그 브랜치를 부모로 기록하며 만든다).
+    기준을 정하지 못하면 사유를 돌려주고 호출부가 첫 쓰기 전에 멈춘다.
     """
     state = _cluster_branch_state(tree, branch)
     if state is None:
-        return f'생성 보류(코드 git 판정 불능: {tree})'
+        return (None, f'묶음 브랜치 {branch} 의 실재를 판정하지 못했다(코드 git 판정 불능: {tree}) — 아무것도 쓰지 않았다.')
     if state:
+        record = branch_store.read_branch_parent(branch, git_runner=worktree_git._real_git_runner(Path(tree)))
+        if record is None:
+            return (None, f'묶음 브랜치 {branch} 가 이미 있는데 부모 기록 `branch.{branch}.pm-parent` 가 없어 기준 브랜치를 정하지 못한다(지목 트리: {tree}) — 아무것도 쓰지 않았다. 그 브랜치를 든 작업 폴더에서 `worktree_pool.py rebase <슬롯> --task <task이름> --onto <통합브랜치>` 로 부모를 기록하거나, 쓰지 않는 브랜치면 지운 뒤 다시 실행하라.')
+        return (record['name'], None)
+    if not current:
+        return (None, f'지목 트리 {tree} 의 현재 브랜치를 읽지 못해 묶음 브랜치 {branch} 의 기점을 정하지 못한다 — 아무것도 쓰지 않았다.')
+    return (current, None)
+
+def _cluster_ensure_branch(tree: str, branch: str, base: str) -> str:
+    """통합 브랜치를 만든다(있으면 그대로) — 결과를 사람이 읽는 1줄로 돌려준다.
+
+    기준 브랜치 `base` 는 `_cluster_new_base_branch` 가 첫 쓰기 전에 정한 값이다. 브랜치 생성 실패는
+    장부 생성을 막지 않는다 — 이 1줄이 `cluster new` 출력에 그대로 실리고, 그 뒤의 브랜치 부재는
+    **트리를 든 표면**(확인 실행 `cli.delegate_cmd._cluster_confirmation_tree` ·
+    공용 트리 해소 `app.cluster_code_tree.resolve_code_tree`)가 자기 자리에서 판정한다(조용한 통과 아님).
+    """
+    if _cluster_branch_state(tree, branch):
         return f'이미 있음 ({tree})'
-    if not base:
-        return f'생성 보류(기점 브랜치 미해소: {tree})'
     result = git._git_run(['branch', branch, base], repo=Path(tree))
     if result is None or result[0] != 0:
         return f'생성 실패(기점 {base} · {tree})'
