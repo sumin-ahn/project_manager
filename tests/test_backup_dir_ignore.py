@@ -28,7 +28,7 @@ def _today_root(dest: Path) -> Path:
 
 
 def _copy_action(dest: Path, tmp_path: Path) -> tuple[Path, bytes]:
-    (dest / "CLAUDE.md").write_text("adopter edit\n", encoding="utf-8")
+    (dest / "CLAUDE.md").write_bytes(b"adopter edit\n")
     src = tmp_path / "src_CLAUDE.md"
     src.write_text("template\n", encoding="utf-8")
     backup = _today_root(dest) / "CLAUDE.md"
@@ -38,7 +38,7 @@ def _copy_action(dest: Path, tmp_path: Path) -> tuple[Path, bytes]:
 
 
 def _inplace(dest: Path, tmp_path: Path) -> tuple[Path, bytes]:
-    (dest / "AGENTS.md").write_text("instance doc\n", encoding="utf-8")
+    (dest / "AGENTS.md").write_bytes(b"instance doc\n")
     outcome = install_files._backup_before_inplace_edit(
         dest, [Path("AGENTS.md")], _today_root(dest), set())
     assert outcome.backed_up == ["AGENTS.md"]
@@ -48,13 +48,13 @@ def _inplace(dest: Path, tmp_path: Path) -> tuple[Path, bytes]:
 def _local_conf(dest: Path, tmp_path: Path) -> tuple[Path, bytes]:
     conf = dest / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
-    conf.write_text("runtime.py=python3\n", encoding="utf-8")
+    conf.write_bytes(b"runtime.py=python3\n")
     install_conf.backup_existing_local_conf(dest, _today_root(dest))
     return _today_root(dest) / ".project_manager" / "local.conf", b"runtime.py=python3\n"
 
 
 def _entry_doc(dest: Path, tmp_path: Path) -> tuple[Path, bytes]:
-    (dest / "AGENTS.md").write_text("old entry doc\n", encoding="utf-8")
+    (dest / "AGENTS.md").write_bytes(b"old entry doc\n")
     entry_doc_migration._entry_doc_backup(dest, "AGENTS.md", entry_doc_migration._entry_doc_backup_root(dest))
     return _today_root(dest) / "AGENTS.md", b"old entry doc\n"
 
@@ -81,11 +81,12 @@ def _adapter_accept(dest: Path, tmp_path: Path) -> tuple[Path, bytes]:
     case_dest, source = _make_adapter_config_case(tmp_path / "case", hooks=_EDITED_HOOKS)
     for item in case_dest.iterdir():
         shutil.move(str(item), str(dest / item.name))
+    original = (dest / _ADAPTER_HOOKS_REL).read_bytes()
     outcome = adapter_accept.accept_adapter_config(
         dest, source, _ADAPTER_HOOKS_REL,
         expected_sha256=hashlib.sha256(_EDITED_HOOKS.encode("utf-8")).hexdigest())
     assert outcome.status == "accepted", outcome.detail
-    return _today_root(dest) / _ADAPTER_HOOKS_REL, _EDITED_HOOKS.encode("utf-8")
+    return _today_root(dest) / _ADAPTER_HOOKS_REL, original
 
 
 _WRITERS = {
