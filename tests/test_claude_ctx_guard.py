@@ -22,6 +22,7 @@ from pm_engine.domain import ctx_recovery
 from pm_engine.infra import compaction_store, conf_store, pm_paths
 import importlib.util
 import json
+import tracemalloc
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -127,11 +128,16 @@ def _append_transcript_entry(path: Path, entry: dict) -> None:
         stream.write(json.dumps(entry) + "\n")
 
 
-def _compact_boundary(*, post_tokens=11_387) -> dict:
-    """Claude Code 2.1.222 환경에서 관측한 저장 transcript compact 경계 최소 fixture."""
+def _boundary_uuid(number: int) -> str:
+    return f"00000000-0000-4000-8000-{number:012d}"
+
+
+def _compact_boundary(*, post_tokens=11_387, number: int = 1) -> dict:
+    """저장 transcript compact 경계 최소 fixture — 실측 형식(2.1.271~2.1.302)처럼 고유 ``uuid`` 를 갖는다."""
     return {
         "type": "system",
         "subtype": "compact_boundary",
+        "uuid": _boundary_uuid(number),
         "compactMetadata": {
             "trigger": "manual",
             "preTokens": 655_736,
@@ -284,7 +290,7 @@ def test_transcript_tokens_last_request(guard, tmp_path):
         ("assistant", {"input_tokens": 100_000, "cache_creation_input_tokens": 50_000,
                        "cache_read_input_tokens": 30_000}),
     ])
-    assert guard.context_tokens_from_transcript(path) == (180_000, None, 0)
+    assert guard.context_tokens_from_transcript(path) == (180_000, None, None)
 
 
 def test_transcript_tokens_stop_at_compact_boundary_without_new_usage(guard, tmp_path):
@@ -293,7 +299,7 @@ def test_transcript_tokens_stop_at_compact_boundary_without_new_usage(guard, tmp
 
     # compactMetadata.postTokens 는 compact 결과 크기지만 아직 새 assistant 요청의 usage 실측이
     # 아니다. 경계 뒤 usage 가 없으면 측정불가 0으로 두어 이전 사이클 usage를 재사용하지 않는다.
-    assert guard.context_tokens_from_transcript(path) == (0, None, 1)
+    assert guard.context_tokens_from_transcript(path) == (0, None, _boundary_uuid(1))
 
 
 def test_transcript_tokens_only_use_usage_after_compact_boundary(guard, tmp_path):
@@ -308,7 +314,7 @@ def test_transcript_tokens_only_use_usage_after_compact_boundary(guard, tmp_path
         }},
     })
 
-    assert guard.context_tokens_from_transcript(path) == (150_002, None, 1)
+    assert guard.context_tokens_from_transcript(path) == (150_002, None, _boundary_uuid(1))
 
 
 def test_transcript_used_pct(guard, tmp_path):
@@ -319,7 +325,7 @@ def test_transcript_used_pct(guard, tmp_path):
 
 
 def test_transcript_missing_file_zero(guard, tmp_path):
-    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None, 0)
+    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None, None)
     assert _transcript_pct(guard, tmp_path / "nope.jsonl", 200_000) == 0
 
 
@@ -331,7 +337,7 @@ def test_transcript_malformed_lines_skipped(guard, tmp_path):
         + "{broken\n",
         encoding="utf-8",
     )
-    assert guard.context_tokens_from_transcript(path) == (20_000, None, 0)
+    assert guard.context_tokens_from_transcript(path) == (20_000, None, None)
 
 
 def test_hook_evaluate_ok_passes(guard, stop_hook, tmp_path):
@@ -760,7 +766,7 @@ def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
     rc3, first_prompt = stop_hook.evaluate(prompt, _home(tmp_path))
     assert rc3 == 0 and first_prompt is None
     assert not any(marker.exists() for marker in markers)
-    assert (marker_dir / f"{sid}.compact-1").exists()
+    assert (marker_dir / f"{sid}.compact-{_boundary_uuid(1)}").exists()
 
     _append_transcript_entry(transcript, {
         "type": "assistant",
@@ -986,9 +992,11 @@ def _t0953_transcript(root: Path, tokens: list[int], boundaries_before: list[boo
     """usage 항목마다 앞에 경계를 둘지 정해 주 대화 기록을 쓴다."""
     path = root / "main-session.jsonl"
     path.write_text("", encoding="utf-8")
+    number = 0
     for value, boundary in zip(tokens, boundaries_before):
         if boundary:
-            _append_transcript_entry(path, _compact_boundary())
+            number += 1
+            _append_transcript_entry(path, _compact_boundary(number=number))
         _append_transcript_entry(path, {
             "type": "assistant", "isSidechain": False,
             "message": {"role": "assistant", "usage": {"input_tokens": value}},
@@ -1037,13 +1045,13 @@ def test_t0953_main_hook_after_boundary_runs_checkpoint_and_snapshot_once(
     assert rc == 0
     assert _t0953_engine_calls(calls) == [
         ["checkpoint", "--trigger", "compaction", "--session-id", "s-1",
-         "--boundary-id", "claude-s-1-2", "--breadcrumb"],
+         "--boundary-id", _boundary_uuid(2), "--breadcrumb"],
         ["snapshot", "--session-id", "s-1"],
     ]
     context = output["hookSpecificOutput"]["additionalContext"]
     assert context.startswith("## PM 정체성 (compaction 복구)")
     assert "permissionDecision" not in output["hookSpecificOutput"]
-    assert (marker_dir / "s-1.compact-2").is_file()
+    assert (marker_dir / f"s-1.compact-{_boundary_uuid(2)}").is_file()
     assert not (marker_dir / "s-1.nudge").exists() and not (marker_dir / "s-1.final").exists()
 
     calls.clear()
@@ -1065,14 +1073,14 @@ def test_t0953_subagent_exemption_uses_agent_id_not_agent_type(stop_hook, tmp_pa
     subagent = _t0953_pretool(transcript, tmp_path, agent_id="a1", agent_type="Explore")
     assert stop_hook.evaluate(subagent, _home(tmp_path)) == (0, None)
     assert calls == []
-    assert not (marker_dir / "s-1.compact-1").exists()
+    assert not (marker_dir / f"s-1.compact-{_boundary_uuid(1)}").exists()
     assert (marker_dir / "s-1.nudge").read_text(encoding="utf-8") == "fired\n"
     assert not (marker_dir / "s-1.final").exists()
 
     agent_session = _t0953_pretool(transcript, tmp_path, agent_type="pm")
     rc, output = stop_hook.evaluate(agent_session, _home(tmp_path))
     assert rc == 0 and output is not None
-    assert (marker_dir / "s-1.compact-1").is_file()
+    assert (marker_dir / f"s-1.compact-{_boundary_uuid(1)}").is_file()
     assert [call[0] for call in _t0953_engine_calls(calls)].count("checkpoint") == 1
 
 
@@ -1099,7 +1107,7 @@ def test_t0953_failure_signal_carries_engine_reason_once(stop_hook, tmp_path, mo
     assert rc == 0 and calls == []
     assert output is None or "systemMessage" not in output
 
-    _append_transcript_entry(transcript, _compact_boundary())
+    _append_transcript_entry(transcript, _compact_boundary(number=3))
     _append_transcript_entry(transcript, {
         "type": "assistant", "message": {"role": "assistant", "usage": {"input_tokens": 3_000}},
     })
@@ -1111,27 +1119,252 @@ def test_t0953_failure_signal_carries_engine_reason_once(stop_hook, tmp_path, mo
     assert output["systemMessage"] == "[ctx-checkpoint] 압축 기록 실패: " + snapshot_reason
 
 
-def test_t0953_transcript_reading_counts_compact_boundaries(guard, tmp_path):
-    """한 번 읽기로 점유 토큰·모델·경계 수를 낸다 — 비슷한 subtype 과 본문 문자열은 세지 않는다(AT-010)."""
+def test_t0953_transcript_reading_returns_last_boundary_uuid(guard, tmp_path):
+    """한 번 읽기로 점유 토큰·모델·마지막 경계 uuid 를 낸다 — 비슷한 subtype 과 본문 문자열은 경계가 아니다(AT-010)."""
     path = tmp_path / "boundaries.jsonl"
     entries = [
-        _compact_boundary(),
+        _compact_boundary(number=1),
         {"type": "assistant", "message": {"role": "assistant", "model": "m1",
                                           "usage": {"input_tokens": 5_000}}},
+        _compact_boundary(number=2),
         {"type": "system", "subtype": "compact_boundary_note"},
-        {"type": "user", "message": {"role": "user", "content": "compact_boundary"}},
-        _compact_boundary(),
+        {"type": "user", "uuid": _boundary_uuid(99),
+         "message": {"role": "user", "content": "compact_boundary"}},
         {"type": "assistant", "message": {"role": "assistant", "model": "m2",
                                           "usage": {"input_tokens": 7_000}}},
     ]
     path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
-    assert guard.context_tokens_from_transcript(path) == (7_000, "m2", 2)
+    assert guard.context_tokens_from_transcript(path) == (7_000, "m2", _boundary_uuid(2))
 
     three = tmp_path / "three.jsonl"
     three.write_text("".join(json.dumps(entry) + "\n" for entry in (
-        _compact_boundary(),
+        _compact_boundary(number=1),
         {"type": "assistant", "message": {"usage": {"input_tokens": 9}}},
-        _compact_boundary(), _compact_boundary(),
+        _compact_boundary(number=2), _compact_boundary(number=3),
     )), encoding="utf-8")
-    assert guard.context_tokens_from_transcript(three) == (0, None, 3)
-    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None, 0)
+    assert guard.context_tokens_from_transcript(three) == (0, None, _boundary_uuid(3))
+    assert guard.context_tokens_from_transcript(tmp_path / "nope.jsonl") == (0, None, None)
+
+
+# ── 8. 대화 기록 끝부분 읽기 ───────────────────────────────────────────
+# 훅은 도구 호출마다 돈다. 기록은 끝에서부터 읽기 단위로 읽는다. 점유·모델은 바뀌기 전 구현과 같고,
+# 마지막 경계 uuid 는 usage 를 찾은 뒤 끝부분 범위(`_TAIL_WINDOW_BYTES`)까지만 찾는다.
+
+_KO = "한글 본문 대화 기록 "
+
+
+def _previous_usage_input_tokens(usage) -> int | None:
+    """바뀌기 전 구현의 usage 입력 토큰합(입력 + 캐시 생성 + 캐시 읽기) 사본."""
+    if not isinstance(usage, dict):
+        return None
+    total, seen = 0, False
+    for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+        val = usage.get(key)
+        if isinstance(val, (int, float)) and val == val:
+            total += int(val)
+            seen = True
+    return total if seen else None
+
+
+def _previous_tokens_and_model(path) -> tuple[int, str | None]:
+    """바뀌기 전 구현의 점유·모델 판정 사본(파일 전체를 읽고 ``splitlines``) — 같은 결과 대조 기준."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0, None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary":
+            return 0, None
+        message = entry.get("message")
+        usage = message.get("usage") if isinstance(message, dict) else None
+        tokens = _previous_usage_input_tokens(usage) if usage is not None else None
+        if tokens is not None and tokens > 0:
+            model = message.get("model")
+            return tokens, model if isinstance(model, str) else None
+    return 0, None
+
+
+
+def _line(entry: dict) -> bytes:
+    return (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _usage_entry(tokens: int, *, model: str | None = None, text: str = "") -> dict:
+    message: dict = {"role": "assistant", "usage": {"input_tokens": tokens}}
+    if model:
+        message["model"] = model
+    if text:
+        message["content"] = [{"type": "text", "text": text}]
+    return {"type": "assistant", "message": message}
+
+
+def _user_entry(text: str) -> dict:
+    return {"type": "user", "message": {"role": "user", "content": text}}
+
+
+_READING_CASES = {
+    "empty": (b"", None),
+    "blank-lines": (b"\n\n   \n\n", None),
+    "broken-json": (b"not json\n" + _line(_usage_entry(20_000)) + b"{broken\n", None),
+    "non-object-json": (_line(_usage_entry(11)) + b'[1, 2]\n"text"\n5\nnull\n', None),
+    "zero-usage-after-positive": (
+        _line(_usage_entry(30_000, model="m1")) + _line(_usage_entry(0, model="m2")), None),
+    "boundary-last": (
+        _line(_usage_entry(190_000)) + _line(_compact_boundary(number=1)), _boundary_uuid(1)),
+    "usage-after-boundary": (
+        _line(_usage_entry(190_000)) + _line(_compact_boundary(number=1))
+        + _line(_usage_entry(150_002, model="m3")), _boundary_uuid(1)),
+    "korean": (
+        _line(_usage_entry(42_000, model="m-ko", text=_KO * 40)) + _line(_user_entry(_KO * 25)), None),
+    "no-trailing-newline": (_line(_usage_entry(7)) + _line(_usage_entry(8))[:-1], None),
+    "crlf": (
+        _line(_usage_entry(5)).replace(b"\n", b"\r\n") + _line(_usage_entry(6)).replace(b"\n", b"\r\n"),
+        None),
+    "line-separator-inside-string": (
+        _line(_usage_entry(1_000)) + _line(_usage_entry(2_000, text="앞\u2028뒤")), None),
+    "very-long-line": (
+        _line(_usage_entry(10)) + _line(_usage_entry(64_000, model="m-long", text=_KO * 12_000)), None),
+    "boundary-text-in-content": (
+        _line(_usage_entry(3_000))
+        + _line(_user_entry(json.dumps({"type": "system", "subtype": "compact_boundary"}))), None),
+}
+
+
+@pytest.mark.parametrize("chunk", [7, 4096, 64 * 1024])
+@pytest.mark.parametrize("case", sorted(_READING_CASES))
+def test_transcript_reading_matches_previous_implementation(guard, tmp_path, monkeypatch, case, chunk):
+    """빈 파일·빈 줄·깨진 JSON·경계 직후·경계 뒤 usage·한글·읽기 단위에 걸친 줄·매우 긴 한 줄에서 점유·모델이
+    바뀌기 전 구현과 같고, 마지막 경계 uuid 를 낸다(읽기 단위 7 B 는 모든 줄과 한글 문자를 단위 경계에 걸친다)."""
+    content, boundary = _READING_CASES[case]
+    path = tmp_path / "transcript.jsonl"
+    path.write_bytes(content)
+    monkeypatch.setattr(guard, "_READ_CHUNK_BYTES", chunk)
+    tokens, model, found = guard.context_tokens_from_transcript(path)
+    assert (tokens, model) == _previous_tokens_and_model(path)
+    assert found == boundary
+
+
+def test_transcript_reading_missing_file_matches_previous(guard, tmp_path):
+    missing = tmp_path / "nope.jsonl"
+    assert guard.context_tokens_from_transcript(missing) == (0, None, None)
+    assert _previous_tokens_and_model(missing) == (0, None)
+
+
+def test_transcript_reading_skips_partially_written_last_line(guard, tmp_path):
+    """쓰는 중인 마지막 줄이 다중 바이트 문자 중간에서 끊겨도 깨진 줄로 건너뛴다 — 바뀌기 전 구현은 파일 전체를
+    먼저 디코딩해 UnicodeDecodeError 로 훅이 죽었다."""
+    path = tmp_path / "partial.jsonl"
+    path.write_bytes(_line(_usage_entry(4_000, model="m1"))
+                     + b'{"type":"assistant","message":{"usage":{"input_tokens":5}},"t":"'
+                     + "한".encode("utf-8")[:2])
+    assert guard.context_tokens_from_transcript(path) == (4_000, "m1", None)
+    with pytest.raises(UnicodeDecodeError):
+        _previous_tokens_and_model(path)
+
+
+def test_transcript_boundary_search_stops_at_tail_window_after_usage(guard, tmp_path, monkeypatch):
+    """usage 를 찾은 뒤에는 끝부분 범위까지만 경계를 찾고, usage 를 찾기 전이면 범위를 넘어도 경계까지 읽는다."""
+    monkeypatch.setattr(guard, "_TAIL_WINDOW_BYTES", 2048)
+    filler = b"".join(_line(_usage_entry(1_000 + index)) for index in range(60))
+    assert len(filler) > 2 * 2048
+    far = tmp_path / "far.jsonl"
+    far.write_bytes(_line(_compact_boundary(number=1)) + filler)
+    assert guard.context_tokens_from_transcript(far) == (1_059, None, None)
+    near = tmp_path / "near.jsonl"
+    near.write_bytes(filler + _line(_compact_boundary(number=2)) + _line(_usage_entry(77)))
+    assert guard.context_tokens_from_transcript(near) == (77, None, _boundary_uuid(2))
+    quiet = tmp_path / "quiet.jsonl"
+    quiet.write_bytes(_line(_usage_entry(190_000)) + _line(_compact_boundary(number=3))
+                      + b"".join(_line(_user_entry(_KO * 10)) for _ in range(40)))
+    assert guard.context_tokens_from_transcript(quiet) == (0, None, _boundary_uuid(3))
+
+
+def test_transcript_boundary_without_uuid_is_rejected(guard, tmp_path):
+    """경계 항목에 uuid 가 없으면 형식이 바뀐 것이다 — 경계를 못 가린 채 넘기지 않고 ValueError 로 올린다."""
+    path = tmp_path / "no-uuid.jsonl"
+    path.write_bytes(_line(_usage_entry(5)) + _line({"type": "system", "subtype": "compact_boundary"}))
+    with pytest.raises(ValueError, match="uuid"):
+        guard.context_tokens_from_transcript(path)
+
+
+def _write_large_transcript(path: Path, size: int) -> None:
+    """합성 대화 기록 — 한 줄 약 0.5~3 KB(한글), 1 MiB 마다 경계, 끝에서 W(4 MiB) 안에는 경계 없음."""
+    usage = _line(_usage_entry(120_000, model="m-large", text=_KO * 100))
+    user = _line(_user_entry(_KO * 60))
+    block = (usage + user) * 64
+    written = 0
+    number = 0
+    with path.open("wb") as stream:
+        while written < size:
+            if written // (1024 * 1024) > number and size - written > 6 * 1024 * 1024:
+                number += 1
+                boundary = _line(_compact_boundary(number=number))
+                stream.write(boundary)
+                written += len(boundary)
+            stream.write(block)
+            written += len(block)
+        stream.write(usage)
+
+
+@pytest.fixture(scope="module")
+def large_transcript(tmp_path_factory) -> Path:
+    path = tmp_path_factory.mktemp("t1010") / "large.jsonl"
+    _write_large_transcript(path, 24 * 1024 * 1024)
+    return path
+
+
+def test_transcript_reading_memory_does_not_grow_with_file_size(guard, large_transcript):
+    """24 MiB 기록에서 훅 1회 최대 할당이 2 MiB 미만이다 — 파일 전체를 읽으면(텍스트·바이트·줄 목록) 최대 할당이
+    파일 크기 이상이라 이 단언이 깨진다."""
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        result = guard.context_tokens_from_transcript(large_transcript)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 2 * 1024 * 1024, peak
+    assert result == (120_000, "m-large", None)
+
+
+def test_transcript_reading_touches_only_the_tail(guard, large_transcript, monkeypatch):
+    """24 MiB 기록에서 읽은 가장 앞 위치가 끝에서 W + 읽기 단위 2개 안이다 — 시간이 기록 크기와 무관하다."""
+    path = large_transcript
+    offsets: list[int] = []
+    real_open = open
+
+    class Recorder:
+        def __init__(self, stream):
+            self._stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._stream.close()
+
+        def seek(self, *args):
+            return self._stream.seek(*args)
+
+        def tell(self):
+            return self._stream.tell()
+
+        def read(self, *args):
+            offsets.append(self._stream.tell())
+            return self._stream.read(*args)
+
+    monkeypatch.setattr(guard, "open", lambda name, mode: Recorder(real_open(name, mode)), raising=False)
+    result = guard.context_tokens_from_transcript(path)
+    size = path.stat().st_size
+    assert offsets, "기록을 모듈의 open 으로 읽지 않음"
+    assert size - min(offsets) <= guard._TAIL_WINDOW_BYTES + 2 * guard._READ_CHUNK_BYTES, size - min(offsets)
+    assert result[0] == 120_000

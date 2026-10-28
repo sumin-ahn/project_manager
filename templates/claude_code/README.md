@@ -53,11 +53,12 @@ Claude Code의 native auto-compaction을 켠 채 사용한다. 메인 PM 세션�
 `additionalContext`로 checkpoint 안내를 사이클당 한 번씩 주입한다. 모든 밴드는 비차단이며 prompt,
 도구 실행, compaction을 거부하지 않는다. 압축 기록은 압축 이벤트가 아니라 같은 훅이 맡는다(압축
 이벤트 입력으로는 주 세션 압축과 서브에이전트 압축을 가를 수 없다). 압축 뒤 첫
-`PreToolUse`/`UserPromptSubmit`이 주 대화 기록의 압축 경계 수 증가를 보고, 경계마다 한 번
-breadcrumb와 checkpoint 골격을 남기고 엔진 `pm_log.py snapshot`의 최종 텍스트를 `additionalContext`로
+`PreToolUse`/`UserPromptSubmit`이 주 대화 기록 끝부분에서 새 압축 경계 항목(경계의 `uuid`)을 보고,
+경계마다 한 번 breadcrumb와 checkpoint 골격을 남기고 엔진 `pm_log.py snapshot`의 최종 텍스트를 `additionalContext`로
 주입한다. 기록 대상 task 는 이 세션이 `/pm-bootstrap --task <task>` 으로 연 task 다. 판정하지 못하면
 엔진 사유 한 줄을 `systemMessage`로 보인다. 서브에이전트의 도구 호출(훅 입력 `agent_id`)은 어떤
-상태도 바꾸지 않고 native compaction으로 독립 정리된다.
+상태도 바꾸지 않고 native compaction으로 독립 정리된다. 훅은 대화 기록을 끝에서부터 읽으므로(끝 약
+4 MiB) 기록이 커져도 호출마다 쓰는 메모리와 시간이 늘지 않는다.
 
 자동 골격의 구간·서사 불릿은 PM이 채운다. `ctx_stop_hook`은 framework-owned(`@source`)라
 `pm_update`가 갱신한다. instance-owned는 `settings.json`뿐이므로 기존 채택자는 자기 파일에 남은

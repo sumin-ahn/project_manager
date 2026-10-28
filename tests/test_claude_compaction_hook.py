@@ -1,7 +1,7 @@
 """출하 Claude ctx 훅의 압축 기록 smoke (T-0621 · T-0953).
 
 압축 기록은 압축 이벤트(PreCompact·PostCompact)가 아니라 주 스레드 훅(PreToolUse·UserPromptSubmit,
-`agent_id` 없음)이 한다. 그 훅이 주 대화 기록의 압축 경계 수 증가를 보고 경계마다 한 번 PM 홈
+`agent_id` 없음)이 한다. 그 훅이 주 대화 기록 끝부분의 마지막 압축 경계 uuid 를 보고 경계마다 한 번 PM 홈
 log/current.md 에 breadcrumb 와 checkpoint 골격을 남기고 엔진 snapshot 을 주입한다. 기록 task 는
 훅 입력 `session_id` 와 같은 `session` 을 가진 task 기록이다. 계약:
   ① 열린 task 가 여럿인 PM 홈 루트 세션도 그 세션 task 로 기록·주입한다(경계당 1회).
@@ -79,10 +79,14 @@ def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "produc
     (git_dir / "commondir").write_text("../..\n", encoding="utf-8")
 
 
+_BOUNDARY_UUID = "00000000-0000-4000-8000-0000000000a1"
+
+
 def _compact_boundary() -> dict:
     """주 대화 기록의 압축 경계 항목(설계 3.3절 실측 형상)."""
     return {
         "type": "system", "subtype": "compact_boundary", "isSidechain": False,
+        "uuid": _BOUNDARY_UUID,
         "compactMetadata": {"trigger": "auto", "preTokens": 429_814, "postTokens": 11_387},
     }
 
@@ -141,7 +145,7 @@ def test_t0953_pm_home_root_session_with_three_tasks_records_and_injects(tmp_pat
     appended = _log(tmp_path).read_text(encoding="utf-8").split("기존 entry", 1)[1]
     assert appended.count("\n## ") == 1 and appended.count(CHECKPOINT_HEADER) == 1
     assert appended.count(BREADCRUMB_MARKER) == 1
-    assert (_ctx_stop(tmp_path) / "s-main.compact-1").is_file()
+    assert (_ctx_stop(tmp_path) / f"s-main.compact-{_BOUNDARY_UUID}").is_file()
 
     log_before = _log(tmp_path).read_bytes()
     second = _run_hook(hook, _prompt("s-main", transcript, tmp_path), cwd=tmp_path)
@@ -212,7 +216,7 @@ def test_t0953_subagent_tool_call_does_not_take_main_boundary(tmp_path):
 
     assert subagent.returncode == 0 and subagent.stdout == "", subagent
     assert _log(tmp_path).read_bytes() == log_before
-    assert not (marker_dir / "s-main.compact-1").exists()
+    assert not (marker_dir / f"s-main.compact-{_BOUNDARY_UUID}").exists()
     assert list(marker_dir.glob("compact-checkpoint.*")) == []
 
     main = _run_hook(hook, {**base, "tool_use_id": "toolu_main"}, cwd=tmp_path)
@@ -220,7 +224,7 @@ def test_t0953_subagent_tool_call_does_not_take_main_boundary(tmp_path):
     assert main.returncode == 0, main.stderr
     context = json.loads(main.stdout)["hookSpecificOutput"]["additionalContext"]
     assert context.startswith("## PM 정체성 (compaction 복구)") and "- task: main" in context
-    assert (marker_dir / "s-main.compact-1").is_file()
+    assert (marker_dir / f"s-main.compact-{_BOUNDARY_UUID}").is_file()
     appended = _log(tmp_path).read_text(encoding="utf-8").split("기존 entry", 1)[1]
     assert appended.count(CHECKPOINT_HEADER) == 1
 

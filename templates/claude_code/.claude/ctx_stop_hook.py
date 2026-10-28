@@ -3,15 +3,15 @@
 
 Claude Code 가 PreToolUse(도구 실행 전)와 UserPromptSubmit(prompt 처리 전)에서 호출한다. 그 밖의
 이벤트 입력은 아무것도 바꾸지 않는다. 훅 입력엔 ``context_window`` 가 **없을 수 있어**(statusline
-전용) — 그래서 훅은 ``transcript_path`` JSONL 을 한 번 읽어 점유 토큰·모델·압축 경계 수를 얻고
+전용) — 그래서 훅은 ``transcript_path`` JSONL 끝부분을 한 번 읽어 점유 토큰·모델·마지막 압축 경계 uuid 를 얻고
 (``ctx_guard``), 엔진 ``judge_context`` 를 한 번 불러 그 결과를 Claude 훅 출력으로 옮긴다.
 
 밴드(nudge/nudge2/stop) 판정·안내 문구·사이클 marker 선점은 엔진 소유다. 이 훅은 엔진이 발화하라고 한
 안내만 ``additionalContext`` 로 비차단 주입하고 deny/block/회전 marker 를 만들지 않는다.
 
 압축 감지: PreCompact·PostCompact 입력은 주 세션 압축과 서브에이전트 압축을 구별할 수 없다(둘 다
-주 세션 ID·주 대화 기록으로 온다). 그래서 압축 처리는 주 스레드 훅이 한다 — 주 대화 기록의 압축
-경계 수 N 을 경계로 넘기면 엔진이 ``<세션>.compact-<N>`` 을 배타 선점하고 밴드·원칙 marker 를
+주 세션 ID·주 대화 기록으로 온다). 그래서 압축 처리는 주 스레드 훅이 한다 — 주 대화 기록의 마지막
+압축 경계 항목의 uuid 를 경계로 넘기면 엔진이 ``<세션>.compact-<uuid>`` 를 배타 선점하고 밴드·원칙 marker 를
 재무장한다. 최초 처리일 때만 이 훅이 ``pm_log.py checkpoint``(골격·breadcrumb)와 ``pm_log.py snapshot``
 주입을 한다. 기록에 실패하면 엔진 사유 한 줄을 ``systemMessage``·``additionalContext`` 로 보인다.
 
@@ -246,21 +246,21 @@ def evaluate(stdin: dict, home) -> tuple[int, dict | None]:
     """훅 핵심 진입 — 압축 경계 처리, ctx 밴드 안내, 원칙 recall 채널을 합본한다(모두 비차단).
 
     주 스레드 훅(PreToolUse·UserPromptSubmit, ``agent_id`` 없음)만 판정한다. 대화 기록은 한 번
-    읽어 점유 토큰·모델·경계 수를 함께 얻고 엔진 ``judge_context`` 를 한 번 부른다. recall 은 독립
+    읽어 점유 토큰·모델·마지막 경계 uuid 를 함께 얻고 엔진 ``judge_context`` 를 한 번 부른다. recall 은 독립
     채널이라 밴드 판정과 무관하게 매칭되면 additionalContext 에 누적된다."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     if event not in _MAIN_THREAD_EVENTS or _is_subagent_call(stdin):
         return 0, None
     transcript = stdin.get("transcript_path")
-    raw_tokens, session_model, boundaries = (
+    raw_tokens, session_model, boundary = (
         ctx_guard.context_tokens_from_transcript(transcript)
         if isinstance(transcript, str) and transcript
-        else (0, None, 0)
+        else (0, None, None)
     )
     decision = hooks.judge_context(
         home, harness="claude", session=_session_id(stdin), tokens=raw_tokens,
         model=session_model, main_thread=True,
-        boundary=str(boundaries) if boundaries >= 1 else None,
+        boundary=boundary,
     )
     output = None
     if decision["compaction_new"]:

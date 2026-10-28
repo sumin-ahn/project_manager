@@ -202,15 +202,15 @@ def test_durable_compaction_is_idempotent(tmp_path, monkeypatch):
     assert _judge_in_process(root, 150_000, None)["emit"] is True
     assert _judge(root, 150_000)["emit"] is False
     principle_store.record_seen_marker(home, "s-1", ["shell:git"])
-    child = _judge_in_process(root, 0, "1")
-    assert (child["compaction_new"], child["compaction_boundary_id"]) == (True, "claude-s-1-1")
+    child = _judge_in_process(root, 0, "00000000-0000-4000-8000-000000000001")
+    assert (child["compaction_new"], child["compaction_boundary_id"]) == (True, "00000000-0000-4000-8000-000000000001")
     assert child["compaction_guidance"] == ctx_recovery.build_ctx_guard_guidance("precompact")
-    assert sorted(_markers(root)) == ["s-1.compact-1"]  # 밴드 marker 셋 재무장.
+    assert sorted(_markers(root)) == ["s-1.compact-00000000-0000-4000-8000-000000000001"]  # 밴드 marker 셋 재무장.
     assert principle_store.load_seen_marker(home, "s-1") == set()
-    same = _judge(root, 0, boundary="1")
+    same = _judge(root, 0, boundary="00000000-0000-4000-8000-000000000001")
     assert (same["compaction_new"], same["compaction_guidance"], same["compaction_boundary_id"]) == (
         False, None, None)
-    assert _judge(root, 150_000, boundary="1")["emit"] is True  # 재무장 뒤 같은 사이클의 다음 상승.
+    assert _judge(root, 150_000, boundary="00000000-0000-4000-8000-000000000001")["emit"] is True  # 재무장 뒤 같은 사이클의 다음 상승.
 
     def broken_rearm(_home, _session):
         raise PermissionError("seen marker 삭제 불가")
@@ -218,19 +218,21 @@ def test_durable_compaction_is_idempotent(tmp_path, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(principle_store, "rearm_seen_marker", broken_rearm)
         with pytest.raises(PermissionError, match="seen marker 삭제 불가"):
-            _judge(root, 0, boundary="2")
-    assert "s-1.compact-2" not in _markers(root)  # 실패한 경계는 다음 호출이 다시 처리한다.
+            _judge(root, 0, boundary="00000000-0000-4000-8000-000000000002")
+    assert "s-1.compact-00000000-0000-4000-8000-000000000002" not in _markers(root)  # 실패한 경계는 다음 호출이 다시 처리한다.
     (root / ".project_manager" / ".local" / "ctx-budget.json").unlink()
-    retried = _judge(root, 150_000, boundary="2")
+    retried = _judge(root, 150_000, boundary="00000000-0000-4000-8000-000000000002")
     assert (retried["status"], retried["emit"], retried["compaction_new"]) == ("unavailable", False, True)
     opaque = _judge(root, 0, harness="opencode", session="ses_1", boundary="20261027T000000Z-uuid/ses_1")
     assert opaque["compaction_boundary_id"] == "20261027T000000Z-uuid/ses_1"
     assert "ses_1.compact-20261027T000000Z-uuidses_1" in _markers(root)
-    subagent = _judge(root, 190_000, main_thread=False, boundary="9")
+    subagent = _judge(root, 190_000, main_thread=False, boundary="00000000-0000-4000-8000-000000000009")
     assert subagent == {"version": 1, "status": "ok", "measured": False, "used_pct": None, "level": None,
                         "notice": None, "guidance": None, "emit": False, "compaction_new": False,
                         "compaction_guidance": None, "compaction_boundary_id": None}
-    assert "s-1.compact-9" not in _markers(root)
+    assert "s-1.compact-00000000-0000-4000-8000-000000000009" not in _markers(root)
+    digits = _judge(root, 0, boundary="7")
+    assert (digits["compaction_new"], digits["compaction_boundary_id"]) == (True, "7")  # 하네스별 경계 변형 없음.
 
 
 def _hook_context(board: Path, payload, *, session: str = "S") -> subprocess.CompletedProcess:
