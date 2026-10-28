@@ -59,7 +59,7 @@ def test_claude_and_codex_return_the_same_unmeasured_sentinel_before_first_respo
         '{"type":"event_msg","payload":{"type":"agent_message","message":"hi"}}\n',
         encoding="utf-8")
 
-    assert claude.context_tokens_from_transcript(str(transcript)) == (0, None, 0)
+    assert claude.context_tokens_from_transcript(str(transcript)) == (0, None, None)
     assert codex.rollout_context_tokens(str(rollout)) == 0
 
 

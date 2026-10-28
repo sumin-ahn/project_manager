@@ -141,12 +141,13 @@ def test_boundary_rearm_does_not_raise_without_registry(tmp_path):
     stop_hook = _load("ctx_stop_hook")
     transcript = tmp_path / "transcript.jsonl"
     transcript.write_text(
-        json.dumps({"type": "system", "subtype": "compact_boundary"}) + "\n", encoding="utf-8")
+        json.dumps({"type": "system", "subtype": "compact_boundary",
+                    "uuid": "00000000-0000-4000-8000-000000000001"}) + "\n", encoding="utf-8")
     stdin = {"hook_event_name": "UserPromptSubmit", "session_id": "sess-rearm",
              "transcript_path": str(transcript), "prompt": "계속"}
     rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-rearm.compact-1").is_file()
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-rearm.compact-00000000-0000-4000-8000-000000000001").is_file()
     assert output["systemMessage"] == "[ctx-checkpoint] 압축 기록 실패: pm_log.py 없음"
 
 

@@ -44,12 +44,12 @@ def context_status(home, *, harness: str, tokens: int, model: str | None) -> dic
     return _observe(home, harness, tokens, model)[0]
 
 
-def _claim_compaction(home, harness: str, session: str, boundary: str | None) -> tuple[bool, str | None, str | None]:
+def _claim_compaction(home, session: str, boundary: str | None) -> tuple[bool, str | None, str | None]:
     """새 압축 경계면 (True, precompact 안내, 기록용 경계 ID), 처리 없음·이미 처리면 (False, None, None).
 
     안내를 먼저 렌더한 뒤 경계 marker 를 선점하고, 최초 선점이면 밴드 marker 셋과 원칙 recall marker 를
     재무장한다. 재무장이 실패하면 이번에 선점한 경계 marker 만 지워 다음 호출이 다시 처리하게 하고 원인을
-    올린다."""
+    올린다. 경계는 하네스가 관측한 고유값이라 marker 이름과 기록용 경계 ID 에 그대로 쓴다."""
     if boundary is None:
         return False, None, None
     guidance = ctx_recovery.build_ctx_guard_guidance("precompact")
@@ -62,10 +62,7 @@ def _claim_compaction(home, harness: str, session: str, boundary: str | None) ->
     except BaseException:
         compaction_store.ctx_marker_path(home, session, kind).unlink()
         raise
-    # 세션 안 순번(숫자) 경계는 그 자체로 고유하지 않아 하네스·세션 키로 한정한 ID 로 기록하고,
-    # 불투명 경계 ID 는 관측한 값 그대로 쓴다.
-    boundary_id = f"{harness}-{ctx_recovery.safe_session_id(session)}-{boundary}" if boundary.isdigit() else boundary
-    return True, guidance, boundary_id
+    return True, guidance, boundary
 
 
 def _band_guidance(home, session: str, tokens: int, view: dict, budget: dict) -> str | None:
@@ -92,7 +89,7 @@ def judge_context(home, *, harness: str, session: str, tokens: int, model: str |
         view = _status_view("ok", 0, None, None, None)
         return {**view, "guidance": None, "emit": False, "compaction_new": False,
                 "compaction_guidance": None, "compaction_boundary_id": None}
-    compaction_new, compaction_guidance, boundary_id = _claim_compaction(home, harness, session, boundary)
+    compaction_new, compaction_guidance, boundary_id = _claim_compaction(home, session, boundary)
     view, budget = _observe(home, harness, tokens, model)
     guidance = _band_guidance(home, session, tokens, view, budget) if budget is not None else None
     return {
