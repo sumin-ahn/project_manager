@@ -264,8 +264,6 @@ def _cluster_new_base_branch(tree: str, branch: str, current: str | None) -> tup
         if record is None:
             return (None, f'묶음 브랜치 {branch} 가 이미 있는데 부모 기록 `branch.{branch}.pm-parent` 가 없어 기준 브랜치를 정하지 못한다(지목 트리: {tree}) — 아무것도 쓰지 않았다. 그 브랜치를 든 작업 폴더에서 `worktree_pool.py rebase <슬롯> --task <task이름> --onto <통합브랜치>` 로 부모를 기록하거나, 쓰지 않는 브랜치면 지운 뒤 다시 실행하라.')
         return (record['name'], None)
-    if not current:
-        return (None, f'지목 트리 {tree} 의 현재 브랜치를 읽지 못해 묶음 브랜치 {branch} 의 기점을 정하지 못한다 — 아무것도 쓰지 않았다.')
     return (current, None)
 
 def _cluster_ensure_branch(tree: str, branch: str, base: str) -> str:
