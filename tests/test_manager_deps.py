@@ -37,16 +37,6 @@ def _run_manager(*argv: str, extra_path: Path | None = None,
         env={**os.environ, "PYTHONPATH": search_path}, timeout=120)
 
 
-# 라이브러리가 스스로 찍는 줄 — 앱이 한 말이 아니다. 판정은 접두 하나로 한다(목록 아님).
-_LIBRARY_NOISE = "** ("
-
-
-def _app_lines(output: str) -> list[str]:
-    """앱이 한 말만 남긴다 — 빈 줄과 라이브러리 경고를 걷어낸다."""
-    return [line for line in output.strip().splitlines()
-            if line.strip() and not line.lstrip().startswith(_LIBRARY_NOISE)]
-
-
 def test_version_needs_no_window():
     completed = _run_manager("--version")
 
@@ -179,16 +169,22 @@ def test_smoke_opens_the_window_and_answers(tmp_path, monkeypatch):
     # 창을 여는 GTK·mesa·dconf 는 XDG 캐시·데이터 폴더에 쓴다. 실제 홈 대신 시험 폴더를 준다.
     for name in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
         monkeypatch.setenv(name, str(tmp_path / name.lower()))
+    # 라이브러리(GTK·WebKit)가 스스로 하는 말은 stderr 로 간다. 그 자리를 늘 채워 두려고 파이썬
+    # import 시간 기록(stderr)을 켠다.
+    monkeypatch.setenv("PYTHONPROFILEIMPORTTIME", "1")
     registry_file = tmp_path / "projects.json"
-    launcher = ["xvfb-run", "-a"] if sys.platform == "linux" else []
+    stderr_file = tmp_path / "stderr.txt"
+    # xvfb-run 은 명령의 stderr 를 stdout 에 합친다. stderr 를 파일($0)로 돌려 두 흐름을 가른다.
+    launcher = (["xvfb-run", "-a", "sh", "-c", 'exec "$@" 2>"$0"', str(stderr_file)]
+                if sys.platform == "linux" else [])
 
     completed = _run_manager("--smoke", "--registry", str(registry_file), launcher=launcher)
 
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    lines = _app_lines(completed.stdout)
+    library_output = stderr_file.read_text(encoding="utf-8", errors="replace") if launcher else ""
+    assert completed.returncode == 0, completed.stdout + completed.stderr + library_output
+    lines = completed.stdout.strip().splitlines()
     # 정상 경로에서 **앱이** 하는 말은 둘이다 — 서버가 뜬 주소 한 줄(브라우저 손님의 진입점)과
-    # smoke 결과 한 줄. 그 밖의 문장은 더하지 않는다. GTK·AT-SPI 가 스스로 찍는 경고는 앱의
-    # 말이 아니고 그 자리에 있고 없고가 환경마다 갈리므로 세지 않는다.
+    # smoke 결과 한 줄. 그 밖의 문장은 더하지 않는다. 앱은 이 둘을 stdout 에 쓴다.
     assert len(lines) == 2, lines
     assert lines[0].startswith("관리자 주소: http://127.0.0.1:")
     assert lines[1].startswith("smoke ok")
