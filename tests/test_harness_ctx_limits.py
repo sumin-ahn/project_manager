@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 
 from _manager_home import _known_ctx_installation, known_ctx_seams
+from _opencode_model import SHIPPED_MODEL, SHIPPED_MODEL_ID
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store
 from pm_engine.app import adapter_report
@@ -59,7 +60,7 @@ TEMPLATE_FILES = {
     "opencode": (TEMPLATES / "opencode" / ".opencode" / "opencode.jsonc",
                  ".opencode/opencode.jsonc"),
 }
-GLM = ("provider", "ollama", "models", "glm-5.2:cloud", "limit")
+GLM = ("provider", "ollama", "models", SHIPPED_MODEL_ID, "limit")
 
 
 def _load(name: str):
@@ -209,9 +210,9 @@ def test_targets_floor_and_reserved():
             "codex": {"E": effective, "P": point, "models": [{"id": "m", "provider": "openai", "C": 400000,
                       "basis": {"context_window": 1000000, "max_context_window": None,
                                 "model_context_window": None, "percent": 40}}]},
-            "opencode": {"E": effective, "P": point, "models": [{"id": "glm-5.2:cloud", "provider": "ollama",
+            "opencode": {"E": effective, "P": point, "models": [{"id": SHIPPED_MODEL_ID, "provider": "ollama",
                          "C": 400000, "basis": {"context": 1000000, "output": 32000, "source": "fixture"}}]}}
-    targets = harness_ctx.harness_ctx_targets({("ollama", "glm-5.2:cloud"): 32768}, entries(200000))
+    targets = harness_ctx.harness_ctx_targets({("ollama", SHIPPED_MODEL_ID): 32768}, entries(200000))
 
     assert targets[".claude/settings.json"] == {("autoCompactWindow",): 213000, ("idleCompaction",): False}
     assert targets[".codex/config.toml"] == {
@@ -220,7 +221,7 @@ def test_targets_floor_and_reserved():
         (*GLM, "context"): 1000000, (*GLM, "input"): 200000, (*GLM, "output"): 32768,
         ("compaction", "reserved"): 20000}
 
-    odd = harness_ctx.harness_ctx_targets({("ollama", "glm-5.2:cloud"): 32768}, entries(333333))
+    odd = harness_ctx.harness_ctx_targets({("ollama", SHIPPED_MODEL_ID): 32768}, entries(333333))
     assert odd[".claude/settings.json"][("autoCompactWindow",)] == 299999 + 33000   # 내림(반올림 300000 아님)
     assert odd[".codex/config.toml"][("model_auto_compact_token_limit",)] == 299999
     assert odd[".opencode/opencode.jsonc"][("compaction", "reserved")] == 33334
@@ -376,7 +377,7 @@ def test_apply_opencode_writes_limits_for_every_config_model(tmp_path):
     assert _only_insertions(before, restored), "관리 context 외의 주석·다른 멤버 바이트를 지우거나 바꿨다"
     document = _jsonc(path)
     ollama = document["provider"]["ollama"]["models"]
-    assert ollama["glm-5.2:cloud"]["limit"] == {"context": 232000, "input": 200000, "output": 32768}
+    assert ollama[SHIPPED_MODEL_ID]["limit"] == {"context": 232000, "input": 200000, "output": 32768}
     assert ollama["qwen3.8:27b-unc"]["limit"] == {"context": 232000, "input": 200000, "output": 32000}
     openrouter = document["provider"]["openrouter"]["models"]
     assert openrouter["anthropic/claude-x"]["limit"] == {
@@ -446,14 +447,14 @@ def test_shipped_defaults_and_resolved_native_fixed_point(tmp_path):
     config_dir = _global_dir(tmp_path)
     before = {relpath: (root / relpath).read_bytes() for _template, relpath in TEMPLATE_FILES.values()}
 
-    expected=('.opencode/opencode.jsonc provider.ollama.models."glm-5.2:cloud".limit.context 200000 → 232000',)
+    expected=(f'.opencode/opencode.jsonc provider.ollama.models."{SHIPPED_MODEL_ID}".limit.context 200000 → 232000',)
     assert _apply(root, config_dir, write=False) == expected
     assert {relpath: (root / relpath).read_bytes() for relpath in before} == before
     assert _apply(root, config_dir) == expected
     assert _apply(root, config_dir) == ()
 
     document = _jsonc(TEMPLATE_FILES["opencode"][0])
-    assert document["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == {
+    assert document["provider"]["ollama"]["models"][SHIPPED_MODEL_ID]["limit"] == {
         "context": 200000, "input": 200000, "output": 32768}
     assert document["compaction"] == {"reserved": 20000}
     assert tomllib.loads(TEMPLATE_FILES["codex"][0].read_text(encoding="utf-8"))[
@@ -527,7 +528,7 @@ def test_report_skips_managed_keys_and_ledger_follows_apply(tmp_path):
 
     latest = _jsonc(TEMPLATE_FILES["opencode"][0])
     project = json.loads(json.dumps(latest))
-    project["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"]["context"] = 50000
+    project["provider"]["ollama"]["models"][SHIPPED_MODEL_ID]["limit"]["context"] = 50000
     project["provider"]["ollama"]["models"]["qwen"] = {"limit": {"context": 1, "output": 1}}
     project["provider"]["lmstudio"] = {"models": {"x": {"limit": {"context": 1, "output": 1}}}}
     rows = adapter_report._adapter_feature_rows(".opencode/opencode.jsonc", project, latest)
@@ -635,9 +636,9 @@ def test_opencode_output_precedence_and_global_read_errors(tmp_path):
 
     shipped = TEMPLATE_FILES["opencode"][0].read_text(encoding="utf-8")
     with_project_output = shipped.replace(
-        '"glm-5.2:cloud": {',
+        f'"{SHIPPED_MODEL_ID}": {{',
         '"m": {\n          "limit": {\n            "context": 1,\n            "output": 3000\n'
-        '          }\n        },\n        "glm-5.2:cloud": {', 1)
+        f'          }}\n        }},\n        "{SHIPPED_MODEL_ID}": {{', 1)
     root = _project(tmp_path / "project-wins", harnesses=("opencode",),
                     texts={".opencode/opencode.jsonc": with_project_output})
     _apply(root, config_dir)
@@ -718,7 +719,7 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
         for name, seam in known_ctx_seams(capacity=capacity, context=3000000, model=model).items():
             patch.setattr(harness_ctx, name, seam)
         harness_ctx.apply_harness_ctx(root, write=True, opencode_config_dir=root / "global")
-    return "ollama/glm-5.2:cloud" if harness == "opencode" else model
+    return SHIPPED_MODEL if harness == "opencode" else model
 
 
 # ── T-0943 적용 시점 고정 ─────────────────────────────────────────────────────
@@ -788,9 +789,9 @@ def test_t0943_record_three_tools_fields_and_values(local_conf, tmp_path, monkey
     assert record["harnesses"]["claude"]["settings"] == {"autoCompactWindow": 597000, "idleCompaction": False}
     assert record["harnesses"]["codex"]["settings"] == {"model_auto_compact_token_limit": 535800}
     assert record["harnesses"]["opencode"]["settings"] == {
-        "compaction.reserved": 12000, 'provider.ollama.models."glm-5.2:cloud".limit.context': 262144,
-        'provider.ollama.models."glm-5.2:cloud".limit.input': 200000,
-        'provider.ollama.models."glm-5.2:cloud".limit.output': 32768}
+        "compaction.reserved": 12000, f'provider.ollama.models."{SHIPPED_MODEL_ID}".limit.context': 262144,
+        f'provider.ollama.models."{SHIPPED_MODEL_ID}".limit.input': 200000,
+        f'provider.ollama.models."{SHIPPED_MODEL_ID}".limit.output': 32768}
     assert not [field for field in T0943_RETIRED_FIELDS if field in text]
 
     assert json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))["autoCompactWindow"] == 597000
@@ -798,7 +799,7 @@ def test_t0943_record_three_tools_fields_and_values(local_conf, tmp_path, monkey
         "model_auto_compact_token_limit"] == 535800
     opencode = _jsonc(root / ".opencode/opencode.jsonc")
     assert opencode["compaction"]["reserved"] == 12000
-    assert opencode["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == {
+    assert opencode["provider"]["ollama"]["models"][SHIPPED_MODEL_ID]["limit"] == {
         "context": 262144, "input": 200000, "output": 32768}
     assert _apply(root, _global_dir(tmp_path)) == ()
     # 같은 값의 재적용은 기록도 다시 쓰지 않는다(적용 시각만 바뀌는 재기록 없음).
@@ -876,13 +877,13 @@ def test_t0943_reader_session_model_mismatch_warns_and_keeps_budget(local_conf, 
     read = local_conf.read_ctx_budget
     assert read(root, values, "claude", "claude-opus-5-5")["warning"] is None
     assert read(root, values, "codex", "gpt-6.1-sol")["warning"] is None
-    assert read(root, values, "opencode", "ollama/glm-5.2:cloud")["warning"] is None
+    assert read(root, values, "opencode", SHIPPED_MODEL)["warning"] is None
     assert read(root, values, "claude", "firstParty/claude-opus-5-5")["warning"] is None
     other = read(root, values, "claude", "claude-sonnet-5")
     assert other["E"] == 600000 and other["P"] == 564000
     assert "기록 claude-opus-5-5 · 현재 claude-sonnet-5" in other["warning"] and "firstParty" not in other["warning"]
     assert "`pm_config.py apply`" in other["warning"]
-    assert read(root, values, "opencode", "openrouter/glm-5.2:cloud")["warning"]
+    assert read(root, values, "opencode", f"openrouter/{SHIPPED_MODEL_ID}")["warning"]
 
 
 @pytest.mark.parametrize("basis", [
@@ -1097,7 +1098,7 @@ def test_t0943_opencode_target_minimum_and_output_cap(local_conf, tmp_path, monk
     monkeypatch.setattr(harness_ctx, "_ctx_native_protocol", lambda *args: pytest.fail("opencode 는 CLI 를 부르지 않는다"))
     if output_max:
         monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", output_max)
-    ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576, "qwen3.8:27b-unc": 262144})
+    ollama = _T0943OllamaShow({SHIPPED_MODEL_ID: 1048576, "qwen3.8:27b-unc": 262144})
     try:
         root, global_dir = _t0943_opencode_tree(tmp_path, monkeypatch, ollama.origin)
         _apply(root, global_dir)
@@ -1107,7 +1108,7 @@ def test_t0943_opencode_target_minimum_and_output_cap(local_conf, tmp_path, monk
     output = int(output_max or 32000)
     capacities = {f"{row['provider']}/{row['id']}": row["C"] for row in entry["models"]}
     assert capacities == {
-        "ollama/glm-5.2:cloud": 1048576 - output, "ollama/qwen3.8:27b-unc": 262144 - output,
+        SHIPPED_MODEL: 1048576 - output, "ollama/qwen3.8:27b-unc": 262144 - output,
         "openrouter/anthropic/claude-x": 272000, "openrouter/z-ai/glm-x": 300000 - output,
         "opencode/big-pickle": 1000000 - output}
     assert entry["C"] == 262144 - output and (entry["E"], entry["P"]) == (200000, 188000)
@@ -1146,7 +1147,7 @@ def test_t0955_unconfigured_provider_model_is_excluded_and_named(local_conf, tmp
     """AT-001 — 연결 키 없는 전역 설정 공급자(lmstudio)의 모델은 조회하지 않고 빼며 이름을 알린다. 연결된
     대상 5개(ollama 2 · openrouter 2 · opencode 1)로 반영하고 프로젝트 파일에 lmstudio 항목을 만들지 않는다."""
     _use_real_ctx_queries(monkeypatch)
-    ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576, "qwen3.8:27b-unc": 262144})
+    ollama = _T0943OllamaShow({SHIPPED_MODEL_ID: 1048576, "qwen3.8:27b-unc": 262144})
     try:
         root, global_dir = _t0943_opencode_tree(tmp_path, monkeypatch, ollama.origin)
         (global_dir / "opencode.jsonc").write_text('{"provider": {"lmstudio": {"models": {"local-x": {}}}}}',
@@ -1156,9 +1157,9 @@ def test_t0955_unconfigured_provider_model_is_excluded_and_named(local_conf, tmp
     finally:
         ollama.close()
     entry = _t0955_record(root, local_conf)["harnesses"]["opencode"]
-    assert sorted(f"{row['provider']}/{row['id']}" for row in entry["models"]) == [
-        "ollama/glm-5.2:cloud", "ollama/qwen3.8:27b-unc", "opencode/big-pickle",
-        "openrouter/anthropic/claude-x", "openrouter/z-ai/glm-x"]
+    assert sorted(f"{row['provider']}/{row['id']}" for row in entry["models"]) == sorted([
+        SHIPPED_MODEL, "ollama/qwen3.8:27b-unc", "opencode/big-pickle",
+        "openrouter/anthropic/claude-x", "openrouter/z-ai/glm-x"])
     assert entry["C"] == 262144 - 32000 and entry["E"] == 200000
     document = _jsonc(path=root / ".opencode/opencode.jsonc")
     assert "lmstudio" not in document["provider"]
@@ -1195,7 +1196,7 @@ def _t0955_without_provider_block(text: str) -> str:
 @pytest.mark.parametrize("case", ["cache-absent", "catalog-without-provider", "no-provider-block"])
 def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, monkeypatch, capsys, case):
     """AT-002 — 쓸 수 있는 opencode 모델이 0개면 반영하지 않는다. 반환 빈 튜플, 설정 파일 바이트 그대로,
-    기록 `harnesses` 빈 객체, 미반영 알림. 출하 모델(ollama/glm-5.2:cloud)이 있으면 그 이름도 알린다."""
+    기록 `harnesses` 빈 객체, 미반영 알림. 출하 모델이 있으면 그 이름도 알린다."""
     _use_real_ctx_queries(monkeypatch)
     cache = tmp_path / "cache"
     (cache / "opencode").mkdir(parents=True)
@@ -1222,9 +1223,9 @@ def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, mon
     if case == "no-provider-block":
         assert T0955_EXCLUDED not in err, err
     elif case == "cache-absent":
-        assert f"{_t0955_excluded_without_catalog(cache)}: ollama/glm-5.2:cloud" in err, err
+        assert f"{_t0955_excluded_without_catalog(cache)}: {SHIPPED_MODEL}" in err, err
     else:
-        assert f"{T0955_EXCLUDED}: ollama/glm-5.2:cloud" in err, err
+        assert f"{T0955_EXCLUDED}: {SHIPPED_MODEL}" in err, err
 
 
 def test_t0955_cache_absent_exclusion_names_missing_catalog(local_conf, tmp_path, monkeypatch, capsys):
@@ -1250,11 +1251,11 @@ def test_t0955_cache_absent_exclusion_names_missing_catalog(local_conf, tmp_path
 
     assert _apply(root, unconnected_global) == ()
     err = capsys.readouterr().err
-    assert f"{excluded}: " in err and "anthropic/claude-x" in err and "ollama/glm-5.2:cloud" in err, err
+    assert f"{excluded}: " in err and "anthropic/claude-x" in err and SHIPPED_MODEL in err, err
     assert T0955_NOT_APPLIED in err and T0955_CATALOG_HINT in err, err
     assert "공급자 연결 설정 없음" not in err, err
 
-    ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576})
+    ollama = _T0943OllamaShow({SHIPPED_MODEL_ID: 1048576})
     try:
         global_dir = _global_dir(tmp_path, {"opencode.json": json.dumps({"provider": {"ollama": {
             "npm": "@ai-sdk/openai-compatible", "options": {"baseURL": ollama.origin}}}})})
@@ -1284,7 +1285,7 @@ def test_t0955_routed_model_lookup_failure_still_refuses(local_conf, tmp_path, m
     lmstudio = ({"npm": "@ai-sdk/anthropic", "models": {"local-x": {}}} if case == "npm-only" else
                 {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": f"http://127.0.0.1:{port}/v1"},
                  "models": {"local-x": {}}})
-    ollama = _T0943OllamaShow({"glm-5.2:cloud": 1048576, "qwen3.8:27b-unc": 262144})
+    ollama = _T0943OllamaShow({SHIPPED_MODEL_ID: 1048576, "qwen3.8:27b-unc": 262144})
     try:
         root, global_dir = _t0943_opencode_tree(tmp_path, monkeypatch, ollama.origin)
         (global_dir / "opencode.jsonc").write_text(json.dumps({"provider": {"lmstudio": lmstudio}}),
@@ -1330,11 +1331,11 @@ def test_t0955_opencode_install_without_provider_settings(local_conf, tmp_path):
     output = f"--- stdout ---\n{completed.stdout[-3000:]}\n--- stderr ---\n{completed.stderr[-3000:]}"
     assert completed.returncode == 0, output
     document = _jsonc(path=dest / ".opencode/opencode.jsonc")
-    assert document["provider"]["ollama"]["models"]["glm-5.2:cloud"]["limit"] == T0955_SHIPPED_LIMIT
+    assert document["provider"]["ollama"]["models"][SHIPPED_MODEL_ID]["limit"] == T0955_SHIPPED_LIMIT
     assert document["compaction"]["reserved"] == 20000
     assert "opencode" not in _t0955_record(dest, local_conf)["harnesses"]
     excluded = _t0955_excluded_without_catalog(tmp_path / "xdg-cache")
-    assert f"{excluded}: ollama/glm-5.2:cloud" in completed.stderr, output
+    assert f"{excluded}: {SHIPPED_MODEL}" in completed.stderr, output
 
 
 def test_t0955_update_apply_without_provider_settings(tmp_path, monkeypatch, capsys):
@@ -1347,7 +1348,7 @@ def test_t0955_update_apply_without_provider_settings(tmp_path, monkeypatch, cap
     capsys.readouterr()
     assert update_adapters.apply_harness_ctx_limits(root, write=True) is True
     err = capsys.readouterr().err
-    assert "ollama/glm-5.2:cloud" in err and "[중단]" not in err, err
+    assert SHIPPED_MODEL in err and "[중단]" not in err, err
 
 
 # ── T-0949 설정 파일 값과 기록 settings 의 차이 ───────────────────────────────
@@ -1355,7 +1356,7 @@ def test_t0955_update_apply_without_provider_settings(tmp_path, monkeypatch, cap
 # 조회하지 않고(교체 지점 4개가 불리면 실패) 아무 파일도 쓰지 않는다.
 
 T0949_LOOKUPS = ("_read_harness_ctx_metadata", "_ctx_claude_threshold", "_ctx_native_protocol", "_ctx_ollama_show")
-T0949_GLM_INPUT = 'provider.ollama.models."glm-5.2:cloud".limit.input'
+T0949_GLM_INPUT = f'provider.ollama.models."{SHIPPED_MODEL_ID}".limit.input'
 
 
 def _t0949_no_lookup(monkeypatch) -> None:

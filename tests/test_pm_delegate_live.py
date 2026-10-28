@@ -59,6 +59,7 @@ from conftest import (
 from pm_engine.infra import raw_output
 from pm_engine.domain import review_form, review_state
 from pm_engine.app import round_seed
+from _opencode_model import SHIPPED_MODEL
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -68,10 +69,11 @@ PM_DELEGATE_LIVE = os.environ.get("PM_DELEGATE_LIVE") == "1"      # 3방향 on-d
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"     # release tier 트리거(livegate).
 
 # 모델(env override) — 라이브 실측 매핑(researcher 중심·저비용) 단일 진실. codex=gpt-5.6-terra(T-0449
-# 실측 유효)·claude=sonnet 계열 alias·opencode=ollama/glm-5.2:cloud([[opencode-live-model-glm52]]·$0).
+# 실측 유효)·claude=sonnet 계열 alias·opencode=출하 모델($0).
 CODEX_MODEL = os.environ.get("PM_DELEGATE_LIVE_CODEX_MODEL", "gpt-5.6-terra")
 CLAUDE_MODEL = os.environ.get("PM_DELEGATE_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-LIVE_MODEL = os.environ.get("PM_DELEGATE_LIVE_MODEL", "ollama/glm-5.2:cloud")
+# 교차 위임 저장소에는 `.opencode/` 가 없어 이 모델은 머신 전역 OpenCode 설정에 선언돼 있어야 한다.
+LIVE_MODEL = os.environ.get("PM_DELEGATE_LIVE_MODEL", SHIPPED_MODEL)
 _CODEX_TIMEOUT = int(os.environ.get("PM_DELEGATE_LIVE_CODEX_TIMEOUT", "600"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_DELEGATE_LIVE_CLAUDE_TIMEOUT", "600"))
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_DELEGATE_LIVE_TIMEOUT", "1800"))
@@ -478,7 +480,7 @@ def test_delegate_live_codex(tmp_path, monkeypatch, capsys):
            "기본 skip·on-demand.",
 )
 def test_delegate_live_opencode(tmp_path, monkeypatch, capsys):
-    """claude/codex PM → **opencode**(glm-5.2:cloud·$0) researcher 위임 1회 — reply marker + rc0 + raw.
+    """claude/codex PM → **opencode**(출하 모델·$0) researcher 위임 1회 — reply marker + rc0 + raw.
 
     `--file` 프롬프트 채널·`--dir` cwd 핀·`--agent researcher`(런타임 role config로
     edit/bash deny). 추론 값은 싣지 않는다 — 테스트 env 모델은 variants 가 없어 어떤 값이든 실행 직전

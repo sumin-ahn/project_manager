@@ -5,7 +5,7 @@
 테스트로는 미검증이다(스킬=프롬프트·[[ADR-0050]]·[[harness-test-vs-machine-test]]). 이 파일이 그
 갭을 릴리즈 라이브 tier 에서 메운다 — fresh import 홈에 **합성 green 릴리즈 wave**(N==그 홈 board.py
 `LIVEGATE_RELEASE_PIN` 개의 통과 `@release` 케이스)를 심고, 스킬을 유일 컨텍스트로 준 실 LLM
-2하네스(claude + opencode/glm-5.2:cloud·[[opencode-live-model-glm52]])에 릴리즈 pre-push 준비
+2하네스(claude + opencode/출하 모델)에 릴리즈 pre-push 준비
 시나리오를 시켜 판정한다:
 
   1. **engagement + green(비공허·강판정)** — LLM 이 스킬 step 2(livegate record)를 실제로 실행해
@@ -67,10 +67,10 @@ REPO = Path(__file__).resolve().parents[1]
 
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 라이브 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
-# claude: sonnet-4-6(API 과금·env override). opencode: glm-5.2:cloud(ollama cloud·과금 0·env override).
+# claude: sonnet-4-6(API 과금·env override). opencode: 출하 모델(ollama cloud·과금 0·env override).
 # release_wave/command_card_usability/pm_worktree_live 와 동일 단일 진실(default 일치).
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
+from _opencode_model import LIVE_MODEL
 # opencode 는 느리고 변동 커 1800s, claude 는 livegate record 1콜 여유분 600s (release_wave 상속).
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
@@ -510,7 +510,7 @@ def test_pm_release_live_claude(tmp_path):
            "기본 skip·사용자 트리거.",
 )
 def test_pm_release_live_opencode_best_effort(tmp_path):
-    """실 opencode(glm-5.2:cloud)가 스킬만 보고 pre-push 준비를 수행 (best-effort — claude 대비 비대칭).
+    """실 opencode(출하 모델)가 스킬만 보고 pre-push 준비를 수행 (best-effort — claude 대비 비대칭).
 
     claude 와 같은 스킬-only 프롬프트지만 **판정 강도가 낮다**(테스트명 `_best_effort`가 표기).
     opencode 는 stream-json 처럼 tool-call 을 정밀 노출하지 않아(stdout 스캔뿐) 커맨드를 hard-claim

@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pytest
 
+from _opencode_model import SHIPPED_MODEL, SHIPPED_MODEL_ID
+
 REPO = Path(__file__).resolve().parents[1]
 OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 
@@ -2341,7 +2343,7 @@ def _run_node_check(
         from test_harness_ctx_limits import install_ctx_record
         install_ctx_record(project_root, harness="opencode", capacity=2000000)
         script=re.sub(r'role\s*:\s*(["\'])assistant\1',
-            'modelID:"glm-5.2:cloud", providerID:"ollama", role:"assistant"',script)
+            f'modelID:"{SHIPPED_MODEL_ID}", providerID:"ollama", role:"assistant"',script)
     proc = subprocess.run(
         [_NODE, "-e", script, *(node_args or [])],
         cwd=str(CORE_DIR if project_root is None else project_root / ".opencode" / "lib"),
@@ -2640,15 +2642,15 @@ def test_t0943_plugin_recorded_model_nudges_other_model_warns(tmp_path):
     """기록에 있는 `provider/model` 이면 경고 없이 넛지, 다른 모델이면 같은 넛지에 toast 경고 한 번."""
     from test_harness_ctx_limits import install_ctx_record
     root = _t0943_project(tmp_path)
-    assert install_ctx_record(root, _T0943_CONF, harness="opencode", capacity=200000) == "ollama/glm-5.2:cloud"
+    assert install_ctx_record(root, _T0943_CONF, harness="opencode", capacity=200000) == SHIPPED_MODEL
     # 밴드 1회 발화는 세션별 durable marker 라 두 실행은 서로 다른 세션으로 본다.
-    same = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 162000, "t0943-same")  # 81% of E 200,000
+    same = _t0943_plugin_run(root, "ollama", SHIPPED_MODEL_ID, 162000, "t0943-same")  # 81% of E 200,000
     assert len(same["system"]) == 1 and "[ctx-nudge] 컨텍스트 사용 81%" in same["system"][0]
     assert not [text for text in same["toasts"] if "[ctx-budget]" in text]
-    other = _t0943_plugin_run(root, "openrouter", "glm-5.2:cloud", 162000, "t0943-other")
+    other = _t0943_plugin_run(root, "openrouter", SHIPPED_MODEL_ID, 162000, "t0943-other")
     assert len(other["system"]) == 1 and "[ctx-nudge] 컨텍스트 사용 81%" in other["system"][0]
     warnings = [text for text in other["toasts"] if "[ctx-budget]" in text]
-    assert len(warnings) == 1 and "모델이 바뀌었습니다" in warnings[0] and "openrouter/glm-5.2:cloud" in warnings[0]
+    assert len(warnings) == 1 and "모델이 바뀌었습니다" in warnings[0] and f"openrouter/{SHIPPED_MODEL_ID}" in warnings[0]
 
 
 @pytest.mark.skipif(_NODE is None, reason="node 없음")
@@ -2661,7 +2663,7 @@ def test_t0943_plugin_missing_record_toasts_error(tmp_path):
     shutil.copytree(REPO / ".project_manager" / "tools" / "pm_engine",
                     root / ".project_manager" / "tools" / "pm_engine",
                     ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
-    result = _t0943_plugin_run(root, "ollama", "glm-5.2:cloud", 190000)
+    result = _t0943_plugin_run(root, "ollama", SHIPPED_MODEL_ID, 190000)
     assert result["system"] == []
     errors = [text for text in result["toasts"] if "[ctx-budget]" in text]
     assert len(errors) == 1 and "압축 한도 기록이 없습니다" in errors[0] and "`pm_config.py apply`" in errors[0]

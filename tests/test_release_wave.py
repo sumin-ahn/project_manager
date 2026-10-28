@@ -63,10 +63,9 @@ _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 # opencode: full wave(claim→위임→complete sync-gate)는 *강한* 모델이 필요하다 — gemma4:26b 는
 # complete 의 sync-gate 를 못 넘어 flaky(위임=probe.txt 는 쓰나 ticket 이 claimed 에 머묾·PM 39 실측).
-# glm-5.2:cloud(ollama cloud) 강한 모델을 release default 로 쓴다(2026-07-07 채택·라이브 실측은
-# 릴리즈 wave). runtime_smoke[lite·sync-gate 없음]는 gemma 로 충분 — 거긴 별도 default.
-# env override 로 교체 가능.
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
+# 출하 모델(ollama cloud) 강한 모델을 release default 로 쓴다(라이브 실측은
+# 릴리즈 wave). env override 로 교체 가능.
+from _opencode_model import LIVE_MODEL
 CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")
 
 # full wave probe 가 작성하도록 지시하는 산출 파일·내용 — side-effect 단언의 기준(단일 진실).
@@ -1437,7 +1436,7 @@ def test_release_wave_multiuser_composite_opencode(tmp_path):
 
     T-0304(`test_board_scoping_isolation`)의 무-LLM composite 게이트의 **라이브 opencode 짝**(ADR-0053).
     셋업(`_import_multiuser_home`): 공유 보드 홈에 repo alpha(area_owner alice)·beta(area_owner bob)를
-    distinct user 로 등록. opencode(agentic·ollama glm-5.2)가 `_multiuser_wave_prompt` 로 각 identity 의
+    distinct user 로 등록. opencode(agentic·출하 모델)가 `_multiuser_wave_prompt` 로 각 identity 의
     [미claim open + claim] 티켓을 자기 `--user`/`--prefix`/`--task` 로 만든다.
 
     격리 판정은 **테스트가 직접** board.py list 를 돌려(side-effect·LLM phrasing 비결정 강건) —

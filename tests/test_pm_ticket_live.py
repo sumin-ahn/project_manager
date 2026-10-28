@@ -4,7 +4,7 @@
 (`test_board_promote_fill_gate.py`)로는 "게이트가 옳게 도나"만 검증되고 "**실 LLM 이 스킬 읽고
 자족적 티켓을 authoring 하나**"는 미검증이다([[ADR-0050]]·[[harness-test-vs-machine-test]]). 이
 파일이 그 갭을 on-demand 라이브 tier 에서 메운다 — fresh import 홈에서 **스킬을 유일 컨텍스트**로
-준 실 LLM(claude + opencode/glm-5.2:cloud)에게 구체 주제의 티켓을 authoring 시키고, **실 board
+준 실 LLM(claude + opencode/출하 모델)에게 구체 주제의 티켓을 authoring 시키고, **실 board
 상태**(발행된 티켓이 존재 + 5절 placeholder 0 + 주제 marker 포함)로 단언한다.
 
 판정 철학(release_wave·pm_worktree_live 상속):
@@ -49,7 +49,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 # on-demand 트리거 — 미설정이면 라이브 전부 skip(CI green 불변·runtime_smoke 와 동일 단일 진실).
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
+from _opencode_model import LIVE_MODEL
 # codex 축(D7): 기본 모델 = 로컬 config 상속(gpt-5.5·-m 생략)·명시 override 만 env.
 CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")  # None → codex 로컬 config 기본 상속.
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CLAUDE_TIMEOUT", "600"))
@@ -184,7 +184,7 @@ def test_pm_ticket_live_claude(tmp_path):
     reason="pm-ticket 라이브 — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
 )
 def test_pm_ticket_live_opencode(tmp_path):
-    """실 opencode(glm-5.2:cloud)가 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언.
+    """실 opencode(출하 모델)가 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언.
 
     claude 와 같은 스킬-only 프롬프트. side-effect(실 board 파일 상태)로만 판정해 opencode 의 tool-call
     비노출에 강건(release_wave 위임-관측 비대칭 상속). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판)·

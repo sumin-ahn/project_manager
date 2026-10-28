@@ -50,9 +50,9 @@ PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # (ticket 이 부른 `shipping` marker 는 ADR-0039 로 pytest.ini 에서 등록 제거됨 → 미등록 마커는
 # filterwarnings=error 로 수집 에러라 못 쓴다. env-gated skipif = "게이트 아님·CI green 불변" 동치.)
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
-# opencode: ollama cloud 모델(glm-5.2:cloud·2026-07-07 채택) — 이 박스 로컬 모델 불가(PM 48차)·
+# opencode: 출하 선언 모델(ollama cloud) — 이 박스 로컬 모델 불가(PM 48차)·
 # env override 가능.
-LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
+from _opencode_model import LIVE_MODEL, SHIPPED_MODEL
 # claude: sonnet-4-6(사용자 지정·API 과금) — env override.
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 RUNTIME_TIMEOUT = int(os.environ.get("PM_ADOPTER_RUNTIME_TIMEOUT", "300"))
@@ -285,11 +285,11 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
         f"--- opencode stdout(tail) ---\n{proc.stdout[-2000:]}\n--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
     assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 opencode 발행 ticket 미인식"
-    # 3) 출하 모델(ollama/glm-5.2:cloud)은 빈 전역 설정에서 공급자 연결 설정이 없어 사용 한도 대상에서 빠지고
+    # 3) 출하 모델은 빈 전역 설정에서 공급자 연결 설정이 없어 사용 한도 대상에서 빠지고
     #    갱신이 그 사실을 알린다(T-0955). 이 단언은 위 opencode 실행 뒤에 둔다 — 비라이브 격리 가드
     #    (`test_live_calls_use_isolated_env`)가 이 함수를 불러 실행 env 를 잡는다.
     update_output = upd.stdout + upd.stderr
-    assert "opencode 사용 한도 대상에서 뺀 모델" in update_output and "ollama/glm-5.2:cloud" in update_output, (
+    assert "opencode 사용 한도 대상에서 뺀 모델" in update_output and SHIPPED_MODEL in update_output, (
         "pm_update 가 연결 설정 없는 출하 모델의 제외를 알리지 않음(모델 목록 캐시에 ollama 공급자가 생겼는지 확인).\n"
         f"--- stdout ---\n{upd.stdout}\n--- stderr ---\n{upd.stderr}"
     )
@@ -543,7 +543,7 @@ def _run_opencode_nudge(dest: Path, attempts: int = 2) -> str:
 
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("opencode"),
-    reason="nudge 주입-도달 on-demand — PM_ORCH_LIVE=1 + opencode CLI(+glm-5.2) 필요. 기본 skip·CI green 불변.",
+    reason="nudge 주입-도달 on-demand — PM_ORCH_LIVE=1 + opencode CLI(+출하 모델) 필요. 기본 skip·CI green 불변.",
 )
 def test_live_opencode_nudge_injection_reaches_model(tmp_path):
     """실 opencode 세션서 graceful nudge 주입(experimental.chat.system.transform)이 모델에 도달 (T-0286).
