@@ -50,7 +50,7 @@ PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # (ticket 이 부른 `shipping` marker 는 ADR-0039 로 pytest.ini 에서 등록 제거됨 → 미등록 마커는
 # filterwarnings=error 로 수집 에러라 못 쓴다. env-gated skipif = "게이트 아님·CI green 불변" 동치.)
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
-# opencode: 출하 선언 모델(ollama cloud·2026-07-07 채택) — 이 박스 로컬 모델 불가(PM 48차)·
+# opencode: 출하 선언 모델(ollama cloud) — 이 박스 로컬 모델 불가(PM 48차)·
 # env override 가능.
 from _opencode_model import LIVE_MODEL, SHIPPED_MODEL
 # claude: sonnet-4-6(사용자 지정·API 과금) — env override.

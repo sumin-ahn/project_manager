@@ -63,9 +63,8 @@ _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 # opencode: full wave(claim→위임→complete sync-gate)는 *강한* 모델이 필요하다 — gemma4:26b 는
 # complete 의 sync-gate 를 못 넘어 flaky(위임=probe.txt 는 쓰나 ticket 이 claimed 에 머묾·PM 39 실측).
-# 출하 모델(ollama cloud) 강한 모델을 release default 로 쓴다(2026-07-07 채택·라이브 실측은
-# 릴리즈 wave). runtime_smoke[lite·sync-gate 없음]는 gemma 로 충분 — 거긴 별도 default.
-# env override 로 교체 가능.
+# 출하 모델(ollama cloud) 강한 모델을 release default 로 쓴다(라이브 실측은
+# 릴리즈 wave). env override 로 교체 가능.
 from _opencode_model import LIVE_MODEL
 CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")
 

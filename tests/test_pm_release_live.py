@@ -5,7 +5,7 @@
 테스트로는 미검증이다(스킬=프롬프트·[[ADR-0050]]·[[harness-test-vs-machine-test]]). 이 파일이 그
 갭을 릴리즈 라이브 tier 에서 메운다 — fresh import 홈에 **합성 green 릴리즈 wave**(N==그 홈 board.py
 `LIVEGATE_RELEASE_PIN` 개의 통과 `@release` 케이스)를 심고, 스킬을 유일 컨텍스트로 준 실 LLM
-2하네스(claude + opencode/출하 모델·[[opencode-live-model-glm52]])에 릴리즈 pre-push 준비
+2하네스(claude + opencode/출하 모델)에 릴리즈 pre-push 준비
 시나리오를 시켜 판정한다:
 
   1. **engagement + green(비공허·강판정)** — LLM 이 스킬 step 2(livegate record)를 실제로 실행해

@@ -4,7 +4,7 @@
 (`test_worktree_pool.py`)로는 "스크립트가 옳게 도나"만 검증되고 "**실 LLM 이 스킬 읽고 옳게
 관리하나**"는 미검증이다([[ADR-0050]]·[[harness-test-vs-machine-test]]). 이 파일이 그 갭을
 릴리즈 라이브 tier 에서 메운다 — fresh import 홈에 실 git 슬롯(2 submodule)을 세우고, **스킬을
-유일 컨텍스트**로 준 실 LLM 2하네스(claude + opencode/출하 모델·[[opencode-live-model-glm52]])에
+유일 컨텍스트**로 준 실 LLM 2하네스(claude + opencode/출하 모델)에
 운영중-관리 시나리오를 시켜 **실 git 상태**로 단언한다:
 
   1. **dev submodule no-clobber** — dev 지정한 submodule 이 재동기 후에도 그 dev 브랜치를 보존
@@ -54,7 +54,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 라이브 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
-# claude: sonnet-4-6(API 과금·env override). opencode: 출하 모델(ollama cloud·2026-07-07 채택·
+# claude: sonnet-4-6(API 과금·env override). opencode: 출하 모델(ollama cloud·
 # 과금 0·env override). release_wave/command_card_usability 와 동일 단일 진실(양쪽 default 일치).
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 from _opencode_model import LIVE_MODEL

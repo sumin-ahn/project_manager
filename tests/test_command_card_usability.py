@@ -81,8 +81,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
-# claude: sonnet-4-6(API 과금·env override). opencode: 출하 모델(ollama cloud·2026-07-07 채택·
-# T-0258 이 교체·과금 0·env override). release_wave 와 동일 단일 진실(양쪽 파일 default 일치).
+# claude: sonnet-4-6(API 과금·env override). opencode: 출하 모델(ollama cloud·
+# 과금 0·env override). release_wave 와 동일 단일 진실(양쪽 파일 default 일치).
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 from _opencode_model import LIVE_MODEL
 # opencode 는 느리고 변동 커 1800s, claude 는 lifecycle 4콜 여유분 600s (release_wave 상속).
