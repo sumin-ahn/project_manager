@@ -683,17 +683,6 @@ def main(home, argv: list[str] | None = None) -> int:
     elif playbook_status == "preserved":
         print("  pm_playbook.local.md 기존 파일 비파괴 보존 (인스턴스 소유 — 덮지 않음).")
 
-    # dest 가 git repo(git_safe is not None)이고 이번에 중앙 백업 디렉토리가
-    #   실제로 만들어졌으면, .gitignore 가 `.pm_import_backups/` 를 무시하지 않을 때 1줄 append
-    #   — 백업이 git status 를 오염시키지 않게 한다. 비-git/미생성/이미 무시 중이면 skip(멱등).
-    if not is_new and git_safe is not None and backup_root is not None and backup_root.exists():
-        gi_status = install_board.ensure_backup_dir_gitignored(dest_root, git_safe, copied_relpaths)
-        if gi_status in ("added", "created"):
-            print(f"✓ .gitignore 에 {install_rules.BACKUP_DIR_NAME}/ 추가 (백업이 git status 오염 방지)")
-        elif gi_status == "unsafe-skip":
-            print(f"  ⚠️ .gitignore 가 미추적/변경 상태 — 비파괴 위해 자동 추가 생략. "
-                  f"수동으로 `{install_rules.BACKUP_DIR_NAME}/` 한 줄을 추가하세요.")
-
     install_conf.print_conf_migration_notice(dest_root)
     print(f"✓ import 완료: {dest_root}")
     print("  다음: (--fill auto 했으면) 자유서술 placeholder 제안 검토·반영 → 기준 커밋 → "

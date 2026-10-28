@@ -118,6 +118,7 @@ def backup_existing_local_conf(dest_root: Path, backup_root: Path | None) -> str
     original_text = fs.read_text_shared(local_conf, encoding="utf-8")
     if backup_root is None:
         return original_text  # --new 빈 디렉토리 — 보존만(백업 위치 없음·실질 도달 안 함).
+    install_files.ensure_backup_dir_ignored(dest_root)
     backup = install_files._free_backup_path(backup_root / local_conf.relative_to(dest_root))
     backup.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(local_conf, backup)

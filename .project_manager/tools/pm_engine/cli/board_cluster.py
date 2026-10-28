@@ -188,6 +188,10 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
         if tree is None:
             print(f'[중단] 코드 트리를 해소하지 못했다 — 정체성 (repo={identity.repo} · slot={identity.slot} · task={identity.task}) 이 리스 장부의 활성 슬롯과 조인되지 않는다. `pm_handoff`/`worktree_pool` 로 슬롯을 확인한 뒤 다시 실행하라.', file=sys.stderr)
             return 1
+        base_branch, refusal = cluster_binding._cluster_new_base_branch(tree, branch, base_branch)
+        if refusal is not None:
+            print(f'[중단] {refusal}', file=sys.stderr)
+            return 1
         branch_note = cluster_binding._cluster_ensure_branch(tree, branch, base_branch)
         touched.append(cluster_store.dump_cluster(home, cluster_rules._new_cluster_fm(cluster, members, base_branch=base_branch, branch=branch, spike=spike)))
         for tid, path, fm, body, owner in resolved:

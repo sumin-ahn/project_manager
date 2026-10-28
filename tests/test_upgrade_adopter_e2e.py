@@ -1220,6 +1220,24 @@ _ENTRY_FORM_CONSOLE_REVERSAL = (
 _ENTRY_FORM_GUARD = '\n\nif __name__ == "__main__":\n    sys.exit(update_cmd.main(pm_paths.home_at(REPO)))\n'
 
 
+# 백업 폴더 무시 파일 보장 호출은 두 동결 세대 updater 에 없던 줄이라 합성 원문에서 되돌린다(핀 불변).
+_BACKUP_DIR_IGNORE_REVERSALS = (
+    ("            if plan:\n"
+     "                install_files.ensure_backup_dir_ignored(dest_root)\n", ""),
+    ("    install_files.ensure_backup_dir_ignored(dest_root)\n"
+     "    dst = Path(backup_root) / rel\n", "    dst = Path(backup_root) / rel\n"),
+    ("    except (OSError, UnicodeError, RetiredPathError, install_files.UnsafeDestPathError) as exc:\n",
+     "    except (OSError, UnicodeError, RetiredPathError) as exc:\n"),
+)
+
+
+def _reverse_backup_dir_ignore(source: str) -> str:
+    for current, frozen in _BACKUP_DIR_IGNORE_REVERSALS:
+        assert source.count(current) == 1, current
+        source = source.replace(current, frozen, 1)
+    return source
+
+
 def _flat_updater_source() -> str:
     """현행 평면 진입 + 소유 모듈 원문을 package 이동 전 한 파일 배치로 합친 updater 원문."""
     tools = REPO / ".project_manager" / "tools"
@@ -1264,11 +1282,11 @@ def _flat_updater_source() -> str:
     current_console, frozen_console = _ENTRY_FORM_CONSOLE_REVERSAL
     assert cli_body.count(current_console) == 1, current_console
     cli_body = cli_body.replace(current_console, frozen_console, 1)
-    return _reverse_engine_rev_marker_removal(_reverse_engine_package_replace(_reverse_except_cleanup(
+    return _reverse_backup_dir_ignore(_reverse_engine_rev_marker_removal(_reverse_engine_package_replace(_reverse_except_cleanup(
         shebang + cli[:doc_end] + "\nfrom __future__ import annotations\n\n\n"
         + "".join(_PRE_S9_UPDATE_IMPORTS) + repo_line + _PRE_S9_FLAT_ENTRY_HELPERS
         + "\n\n" + unqualify("\n\n".join(parts)) + "\n\ndef _main(" + unqualify(cli_body.rstrip("\n") + "\n")
-        + unqualify(entry))))
+        + unqualify(entry)))))
 
 
 # 엔진 패키지 디렉터리 교체(교체 행 `replace-dir`·계획 값 `package_plan`·락 안 게시)는 두 동결 세대 updater 에

@@ -14,6 +14,7 @@ from pm_engine.domain import render_rules
 from pm_engine.infra import conf_store
 from pm_engine.infra import fs
 from pm_engine.infra import install_conf
+from pm_engine.infra import install_files
 
 
 # ── 진입 doc 세대 마이그레이션 ────────────────────────────────
@@ -403,6 +404,7 @@ def _entry_doc_backup(dest_root: Path, rel: str, backup_root: Path) -> None:
     src = Path(dest_root) / rel
     if not src.is_file():
         return
+    install_files.ensure_backup_dir_ignored(dest_root)
     dst = Path(backup_root) / rel
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)

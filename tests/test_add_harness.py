@@ -417,11 +417,10 @@ def test_add_harness_codex_apply_prints_trust_guidance(pm_import, tmp_path, caps
     assert (dest / ".agents" / "skills").is_dir()
 
 
-# ── add-harness 백업 → .gitignore 위생 (T-0411 · main import :3289 대칭) ────────
-# add_harness 가 중앙 백업(`.pm_import_backups/`)을 만들면 main import 와 **대칭**으로
-# ensure_backup_dir_gitignored 를 태워 채택자 git status 오염을 막는다. 백업은
+# ── add-harness 백업 → 백업 폴더 안 .gitignore 위생 ────────
+# add_harness 가 중앙 백업(`.pm_import_backups/`)을 만들면 백업 폴더 안 `.gitignore`(`*`)가
+# 함께 생겨 채택자 git status 오염을 막고 루트 `.gitignore` 는 바뀌지 않는다. 백업은
 # instance-owned AGENTS.md가 아니라 model override 없는 engine-managed agent 충돌로 유도한다.
-# `.gitignore`를 커밋(git-safe)해 두면 helper가 패턴을 비파괴 append 한다.
 
 
 def _git_commit_paths(dest: Path, *relpaths: str) -> None:
@@ -454,10 +453,11 @@ def test_add_harness_backup_gitignores_backup_dir(pm_import, tmp_path):
     backup_root = dest / install_rules.BACKUP_DIR_NAME / today
     # AGENTS.md는 instance-owned라 백업하지 않고, engine-managed researcher 충돌이 백업을 유도한다.
     assert (backup_root / ".codex" / "agents" / "researcher.toml").is_file()
-    # 결과: 패턴 append + git 이 실제로 무시(파일 단언 + git check-ignore 이중).
-    assert f"{install_rules.BACKUP_DIR_NAME}/" in (dest / ".gitignore").read_text(encoding="utf-8")
+    # 결과: 폴더 안 `.gitignore` 로 git 이 무시하고 루트 `.gitignore` 에는 패턴을 더하지 않는다.
+    assert (dest / install_rules.BACKUP_DIR_NAME / ".gitignore").read_text(encoding="utf-8") == "*\n"
+    assert f"{install_rules.BACKUP_DIR_NAME}/" not in (dest / ".gitignore").read_text(encoding="utf-8")
     assert _git_ignores(dest, f"{install_rules.BACKUP_DIR_NAME}/{today}/.codex/agents/researcher.toml"), \
-        "백업 디렉토리가 git 에 무시되지 않음 — add-harness 위생 미배선."
+        "백업 디렉토리가 git 에 무시되지 않음."
 
 
 @requires_git
@@ -482,8 +482,8 @@ def test_add_harness_no_backup_leaves_gitignore_untouched(pm_import, tmp_path):
 
 
 @requires_git
-def test_add_harness_backup_gitignore_preserves_custom_appends_once(pm_import, tmp_path):
-    """③ 기존 .gitignore 커스텀 규칙 보존 + 패턴 1회 append(비파괴·append-only — helper 성질 상속)."""
+def test_add_harness_backup_leaves_root_gitignore_byte_identical(pm_import, tmp_path):
+    """③ 백업이 생겨도 채택자 루트 .gitignore 는 바이트 그대로다(무시는 백업 폴더 안 파일이 맡는다)."""
     dest = _build_live_instance(pm_import, tmp_path / "oc_custom", "opencode")
     (dest / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
     (dest / ".codex" / "agents" / "researcher.toml").write_text("LOCAL ENGINE-MANAGED EDIT\n", encoding="utf-8")
@@ -491,41 +491,15 @@ def test_add_harness_backup_gitignore_preserves_custom_appends_once(pm_import, t
     _git_commit_paths(dest, ".gitignore")            # 커스텀 .gitignore=git-safe·AGENTS.md=fresh
     _set_conf_upstream(dest, str(REPO))
     add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)
-    text = (dest / ".gitignore").read_text(encoding="utf-8")
-    assert "my-secret-artifacts/" in text, "사용자 커스텀 규칙이 손실됨(비파괴 위반)."
-    assert text.count(f"{install_rules.BACKUP_DIR_NAME}/") == 1, \
-        "패턴이 정확히 1회 append 되지 않음(0=미배선·>1=중복 — append-only 위반)."
-    assert text.endswith(f"{install_rules.BACKUP_DIR_NAME}/\n"), "패턴이 말미에 append 되지 않음."
-
-
-@requires_git
-def test_add_harness_backup_gitignore_idempotent_when_present(pm_import, tmp_path):
-    """③(멱등) 이미 `.pm_import_backups/` 를 무시 중이면 백업 발생해도 중복 append 없음(present skip)."""
-    dest = _build_live_instance(pm_import, tmp_path / "oc_idem", "opencode")
-    (dest / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
-    (dest / ".codex" / "agents" / "researcher.toml").write_text(
-        "LOCAL ENGINE-MANAGED EDIT\n", encoding="utf-8")
-    (dest / ".gitignore").write_text(
-        f"keep/\n{install_rules.BACKUP_DIR_NAME}/\n", encoding="utf-8")   # 이미 무시 중
-    _git_commit_paths(dest, ".gitignore")
-    _set_conf_upstream(dest, str(REPO))
-    add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)
-    text = (dest / ".gitignore").read_text(encoding="utf-8")
-    today = datetime.date.today().isoformat()
-    assert (dest / install_rules.BACKUP_DIR_NAME / today / ".codex" / "agents" / "researcher.toml").is_file()
-    assert text.count(f"{install_rules.BACKUP_DIR_NAME}/") == 1, "이미 존재하는 패턴이 중복됨(멱등 위반)."
-    assert "keep/" in text, "기존 규칙이 손실됨(비파괴 위반)."
+    assert (dest / ".gitignore").read_text(encoding="utf-8") == "my-secret-artifacts/\n", \
+        "채택자 루트 .gitignore 가 바뀜(백업 무시는 폴더 안 파일이 맡는다)."
 
 
 def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(
         pm_import, tmp_path, monkeypatch):
-    """비-git 채택자(git_safe None) + 백업 발생 → `.gitignore` **무생성**(무의미 아티팩트 오염 방지).
+    """비-git 채택자 + 백업 발생 → 루트 `.gitignore` 는 만들지 않는다(무시는 백업 폴더 안 파일이 맡는다).
 
-    `git_safe is not None` short-circuit 이 load-bearing: 없으면 백업 발생 시 helper 가 호출되고,
-    add_harness 스코프는 `.gitignore` 를 복사 안 함(import_owned 항상 False)이라 helper 의 else-분기가
-    비-git 디렉토리에 `.gitignore` 를 *신규 생성*("created") → git 도 아닌 채택자에 잉여 파일 오염.
-    @requires_git 불요 — git 바이너리 유무와 무관하게 git_safe 는 None(비-git tmp·fail-soft)이라
-    이 비-git 코드경로가 항상 탄다(plain 디렉토리 시나리오)."""
+    @requires_git 불요 — 비-git 코드경로(plain 디렉토리)를 탄다."""
     dest = tmp_path / "nongit_inst"
     dest.mkdir()
     _write_local_conf(dest, project_name="NonGit", upstream=str(REPO))  # 소스 해소용
@@ -540,9 +514,8 @@ def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(
     backup_root = dest / install_rules.BACKUP_DIR_NAME / today
     # 전제: 비-git 이라 engine-managed 충돌이 중앙 백업됨(git_safe None → 전부 백업).
     assert (backup_root / ".codex" / "agents" / "researcher.toml").is_file()
-    # 결과: git 아닌 채택자엔 .gitignore 를 만들지 않는다(guard 미동작 시 helper 가 'created' 로 오염).
-    assert not (dest / ".gitignore").exists(), \
-        "비-git 채택자에 .gitignore 가 생성됨 — `git_safe is not None` 가드 미동작(오염)."
+    # 결과: 루트 .gitignore 는 만들지 않는다.
+    assert not (dest / ".gitignore").exists(), "비-git 채택자 루트에 .gitignore 가 생성됨."
 
 
 # ── pm_config `--from` 노출 + source_root forward ─────────────────────────────

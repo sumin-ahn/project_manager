@@ -161,6 +161,7 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
         return AdapterConfigAcceptResult(
             "raced", relpath, None, None,
             "판정 뒤 파일이 바뀌었다(동시 편집) — 검증 없이 덮지 않는다. 다시 실행해 새 판정을 받아라")
+    install_files.ensure_backup_dir_ignored(dest_root, root_identity=root_identity)
     backup = install_files._copy_dest_file_nofollow(
         dest_root, Path(relpath),
         Path(install_rules.BACKUP_DIR_NAME) / datetime.date.today().isoformat() / relpath,
