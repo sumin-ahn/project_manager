@@ -302,7 +302,7 @@ def write_text_preserving_newline(path: Path, text: str, newline: str) -> None:
 #   (4) placeholder 치환 (5) opencode 모델 해소 (6) 자유서술 fill(TODO 표시·토큰 판정).
 #   원본(template)은 신뢰 소스라 경로로 읽는다.
 #   ⚠ **여기 없는 dest 쓰기는 여전히 경로 기반이다** — engine.manifest 병합/guest 절 갱신 ·
-#     `.gitignore` 보강 · local.conf 채널(백업·키 기록) · pm_playbook.local 스텁 생성 ·
+#     local.conf 채널(백업·키 기록) · pm_playbook.local 스텁 생성 ·
 #     board submodule scaffold · `--new` 최초 `mkdir`. 이들은 **정적 형상에서 안전**하다(계획 대상이
 #     아니거나·인스턴스 소유라 계획-적용 창 밖이거나·존재하면 덮지 않는다). 그러나 **동적 교체 창
 #     자체는 남는다** — 이 티켓의 범위가 계획-적용 창(위 6채널)이라 그렇게 한정했고, 확장은 별도
