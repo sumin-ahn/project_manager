@@ -344,21 +344,17 @@ def _reviewer_fix_test_requirement(value: str, field: str) -> tuple[str, tuple[s
     return ("changed" if targets else "location"), targets
 
 
-def _contract_repo_paths(value: str, field: str) -> tuple[str, ...]:
-    """계약 산문이 지목한 이 저장소의 파일 경로.
+def _contract_changed_paths(value: str, changed_paths: frozenset[str]) -> tuple[str, ...]:
+    """계약 산문의 낱말 중 이번 diff 의 바뀐 경로와 글자 그대로 같은 것.
 
-    fix 축의 작업 증명은 "계약이 적은 자리를 이번 라운드가 바꿨는가"다. 그 자리는
-    새 선언이 아니라 계약이 이미 채운 ``location`` 산문이라, 여기서 diff 와 대조할 수
-    있는 repo-relative 파일 경로만 뽑는다. 절대경로는 저장소 경로가 아니라 애초에
-    잡히지 않고, 상위 탈출은 loud 거부다.
+    fix 축의 작업 증명은 "계약이 적은 파일을 이번 라운드가 바꿨는가"다. 슬래시 없는
+    낱말은 모양만으로 최상위 파일과 버전 번호·심볼·도메인을 가를 수 없어, 바뀐 경로와
+    같은 낱말만 센다. 첫 등장 순서로, 중복 없이 돌려준다.
     """
     paths: list[str] = []
     for match in delegate_run_rules._CONTRACT_REPO_PATH_RE.finditer(value):
         target = match.group("path")
-        path = PurePosixPath(target)
-        if ".." in path.parts:
-            raise delegate_errors.DelegateError(f"{field} 경로는 repo-relative여야 합니다: {target}")
-        if path.suffix and target not in paths:
+        if target in changed_paths and target not in paths:
             paths.append(target)
     return tuple(paths)
 

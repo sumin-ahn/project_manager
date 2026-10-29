@@ -428,33 +428,23 @@ def _developer_round_harvest_problem(
                     finding.fix_contract["test"],
                     f"reviewer 추가 회귀 {finding.id}.test",
                 )
-                location_paths = review_contract._contract_repo_paths(
-                    finding.fix_contract["location"],
-                    f"reviewer 수정 계약 {finding.id}.location",
-                )
             except delegate_errors.DelegateError as exc:
                 return str(exc)
-            if test_kind == "existing" and not location_paths:
-                return f"reviewer 기존 시험 {finding.id}은 location에 repo-relative 수정 경로가 필요합니다"
-            if not targets and not location_paths:
-                return (
-                    f"reviewer 수정 계약 {finding.id}이 이 저장소의 경로를 하나도 "
-                    "지목하지 않았습니다 — test 의 repo-relative 테스트 대상"
-                    "(tests/*.py)이나 location 의 repo-relative 파일 경로가 필요합니다"
-                )
             # 시험 변경 계약은 시험 파일의 변경을 요구한다. 기존 시험 재실행과 시험
-            # 대상이 없는 지적은 location의 수정 경로 중 하나가 이번 diff에 있어야 한다.
+            # 대상이 없는 지적은 location 이 적은 파일 중 하나가 이번 diff에 있어야 한다.
             if test_kind == "changed":
                 missing = [target for target in targets if target not in changed_paths]
-            else:
-                missing = (
-                    [] if changed_paths.intersection(location_paths)
-                    else list(location_paths)
-                )
-            if missing:
+                if missing:
+                    return (
+                        f"reviewer 추가 회귀 {finding.id} 대상이 이 fix diff에 "
+                        f"추가·수정되지 않았습니다: {', '.join(missing)}"
+                    )
+            elif not review_contract._contract_changed_paths(
+                finding.fix_contract["location"], changed_paths,
+            ):
                 return (
-                    f"reviewer 추가 회귀 {finding.id} 대상이 이 fix diff에 "
-                    f"추가·수정되지 않았습니다: {', '.join(missing)}"
+                    f"reviewer 수정 계약 {finding.id}의 location 에 적힌 파일 중 "
+                    f"이 fix diff에 바뀐 것이 없습니다: {finding.fix_contract['location']}"
                 )
             if test_kind == "existing":
                 for target in targets:

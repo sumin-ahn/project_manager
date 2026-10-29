@@ -1784,7 +1784,8 @@ def test_contract_naming_no_repo_path_at_all_is_refused(pd, rounds_env):
         verify_row=_design_judgment_row("F-001"),
     )
     with pytest.raises(
-        delegate_rounds.TerminalFixHarvestError, match="저장소의 경로를 하나도 지목하지 않았습니다",
+        delegate_rounds.TerminalFixHarvestError,
+        match="location 에 적힌 파일 중 이 fix diff에 바뀐 것이 없습니다: 회수 판정 언저리",
     ):
         delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot, )
 
@@ -4938,4 +4939,50 @@ def test_t0981_existing_test_rejects_directory_before_command(t0981_gate):
     (gate.tree / "tests/test_directory.py").mkdir()
     problem = gate.check("existing: tests/test_directory.py")
     assert problem is not None and "tests/test_directory.py" in problem
+    assert gate.calls == []
+
+
+_T1017_ROOT_FILE_LOCATION = (
+    "CHANGELOG.md:27 · CHANGELOG.md:28 · CHANGELOG.md:32 "
+    "([1.8.3] Fixed 의 하위 줄 둘과 업그레이드 노트 첫 줄)"
+)
+
+
+def test_t1017_root_file_location_is_bound_by_this_diff(t0981_gate):
+    """location 이 저장소 최상위 파일만 적어도 이번 diff 의 그 파일 변경으로 확인한다."""
+    gate = t0981_gate
+    gate.changed = {"CHANGELOG.md"}
+    assert gate.check(
+        "시험 파일 없음 · CHANGELOG.md 문구 변경을 grep 줄 수로 확인한다",
+        location=_T1017_ROOT_FILE_LOCATION,
+        command=python_argv_command("-c", "print(138)"), expected="138",
+    ) is None
+    assert gate.check(
+        "existing: tests/test_existing.py", location=_T1017_ROOT_FILE_LOCATION,
+    ) is None
+    assert len(gate.calls) == 2
+
+
+def test_t1017_contract_changed_paths_reads_only_changed_names():
+    """바뀐 경로와 글자 그대로 같은 낱말만 경로로 센다."""
+    changed = frozenset({"CHANGELOG.md", "src/implementation.py", "tests/test_existing.py"})
+    assert review_contract._contract_changed_paths(
+        "CHANGELOG.md:27 · src/implementation.py:entry · src/other.py · CHANGELOG.md:28", changed,
+    ) == ("CHANGELOG.md", "src/implementation.py")
+    for word in (
+        "v1.8.3", "e.g.", "3.14", "example.com", "subprocess.run", "test_existing.py:3",
+        "/home/u/repo/CHANGELOG.md:27", "C:\\work\\repo\\CHANGELOG.md:27",
+    ):
+        assert review_contract._contract_changed_paths(f"{word} 문구 정정", changed) == (), word
+
+
+def test_t1017_location_without_a_changed_file_is_refused(t0981_gate):
+    """location 이 적은 파일을 이번 diff 가 하나도 바꾸지 않았으면 명령 실행 전에 거부한다."""
+    gate = t0981_gate
+    gate.changed = {"README.md", "tests/test_existing.py"}
+    for location in (_T1017_ROOT_FILE_LOCATION, "test_existing.py:3 · v1.8.3 · e.g."):
+        problem = gate.check("시험 파일 없음", location=location)
+        assert problem is not None, location
+        assert "이 fix diff에 바뀐 것이 없습니다" in problem
+        assert location in problem
     assert gate.calls == []
