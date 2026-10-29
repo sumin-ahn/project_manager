@@ -90,3 +90,26 @@ def test_config_uses_home_local_conf_when_code_root_differs(tmp_path):
     home.local_conf.write_text("test.cmd=first\ntest.cmd=\nupstream.path=ssh://h/repo\n", encoding="utf-8")
     assert repo_protection._local_conf_value(home, "test.cmd") == ""
     assert repo_protection._local_conf_value(home, "upstream.path") == "ssh://h/repo"
+
+
+def test_hook_wiring_does_not_climb_to_an_enclosing_repo(tmp_path):
+    """bare 자리가 git 저장소가 아닌 빈 폴더면 연결은 실패하고, 감싼 저장소 설정은 그대로다.
+
+    `git -C <폴더>` 는 폴더가 저장소가 아니면 위로 올라가 감싼 저장소를 찾는다. 회귀 시험의 임시
+    폴더가 슬롯 안에 있어, 그 길로 실제 공유 저장소의 `core.hooksPath` 가 시험 폴더로 바뀌어
+    보호 훅이 꺼졌다(2026-10-29 실측).
+    """
+    import subprocess
+
+    outer = tmp_path / "outer"
+    subprocess.run(["git", "init", "-q", str(outer)], check=True)
+    home = pm_paths.home_at(outer / "home")
+    pm_paths.bare_repo_path(home, "svc").mkdir(parents=True)
+
+    assert protected_hooks.install_protected_hook(
+        home, "svc", ["main"], gate_mode="release", test_cmd="pytest -q") is False
+    assert protected_hooks.protected_hook_wired(home, "svc") is None
+    outer_hooks = subprocess.run(
+        ["git", "-C", str(outer), "config", "--get", "core.hooksPath"],
+        capture_output=True, text=True)
+    assert outer_hooks.returncode == 1, outer_hooks.stdout

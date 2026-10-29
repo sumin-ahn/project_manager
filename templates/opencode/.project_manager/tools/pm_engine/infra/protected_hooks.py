@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from pm_engine.domain import worktree_records
-from pm_engine.infra import fs, git, pm_paths, worktree_git
+from pm_engine.infra import fs, git, pm_paths
 
 
 # ── 보호 브랜치 pre-push 훅 (하드·회사 repo 무영향 / 라이브 게이트 승격) ────
@@ -650,8 +650,8 @@ def install_protected_hook(
     후 True. **회사 repo 무영향** — 모든 write 는 `.project_manager/.local/` + bare config 1줄
     (client-side)·서버 ref/사용자 클론 무변경.
 
-    `git_runner` 주입 시 `core.hooksPath` config 호출을 그 runner 로(테스트 hermetic·`git -C
-    <bare>` 컨텍스트는 `_real_git_runner(bare)` 가 묶는다). LF 줄바꿈 명시(Windows 에서도 sh
+    `git_runner` 주입 시 `core.hooksPath` config 호출을 그 runner 로(테스트 hermetic). bare 는
+    argv 의 `--git-dir <bare>` 가 묶는다. LF 줄바꿈 명시(Windows 에서도 sh
     가 읽도록·newline="\\n").
 
     `gate_mode`/`test_cmd`는 의도적으로 기본값 없는 keyword-only다. 설치 경로가 repo별 계약
@@ -685,8 +685,11 @@ def install_protected_hook(
     # 3) bare core.hooksPath wiring (절대경로) — client-side·우리 미러 config 1줄.
     # **rc 검사**: config 실패면 훅이 실제로 wiring 안 됐는데 성공 보고하면 보호
     # 가드가 *침묵 무력화* 된다(하드 차단 보장 위반). rc≠0 → False 반환(호출부가 경고 surface).
-    runner = git_runner or worktree_git._real_git_runner(bare)
-    rc, _out = runner(["config", "core.hooksPath", str(hook_dir.resolve())])
+    # `--git-dir` 로 묶는다 — `-C <bare>` 는 bare 자리가 저장소가 아니면 위로 올라가 감싼 저장소
+    # (PM 홈·슬롯의 공유 저장소)의 설정을 바꾼다. 저장소가 아니면 git 이 실패하고 False 다.
+    runner = git_runner or git._real_clone_runner()
+    rc, _out = runner(
+        ["--git-dir", str(bare), "config", "core.hooksPath", str(hook_dir.resolve())])
     return rc == 0
 
 
@@ -719,7 +722,7 @@ def protected_hook_wired(home,
     영구 침묵한다. 이 티켓이 닫으려던 "값-연결 끊김을 정합하다고 거짓 보고" 와 같은 클래스라
     **표시/판정 층에서** 이 축을 함께 본다.
 
-    **읽기 전용** — `git -C <bare> config --get core.hooksPath` 를 읽어 `pm_paths.repo_hooks_dir(home)/<repo>` 와
+    **읽기 전용** — `git --git-dir <bare> config --get core.hooksPath` 를 읽어 `pm_paths.repo_hooks_dir(home)/<repo>` 와
     같은 경로인지 비교만 한다(`install_protected_hook` 은 호출하지 않는다·시그니처/본문 불변).
     경로 비교는 양쪽 `Path.resolve()` — 설치측이 `hook_dir.resolve()` 를 기록하므로 심링크/상대
     표기 차이를 흡수한다.
@@ -735,12 +738,12 @@ def protected_hook_wired(home,
     if not bare.exists():
         return None            # 게이트할 bare 없음 — 배선 여부를 논할 수 없다.
     runner = git_runner or git._real_clone_runner()
-    rc, out = runner(["-C", str(bare), "config", "--get", "core.hooksPath"])
+    rc, out = runner(["--git-dir", str(bare), "config", "--get", "core.hooksPath"])
     if rc != 0:
         # `--get` 은 키 부재에도 rc≠0(=1) 이다. 키 부재 = 미배선이 맞지만, git 자체가 못
         # 도는 경우(바이너리 부재 등)와 구별이 안 되므로 bare 프로브로 갈라낸다.
         probe_rc, _probe = runner(
-            ["-C", str(bare), "rev-parse", "--is-bare-repository"])
+            ["--git-dir", str(bare), "rev-parse", "--is-bare-repository"])
         return False if probe_rc == 0 else None
     configured = out.strip().splitlines()[0].strip() if out.strip() else ""
     if not configured:

@@ -4060,9 +4060,9 @@ def test_install_protected_hook_writes_hook_sidecar_and_sets_hookspath(wp):
     engine_root = hook_dir / "engine-root"
     assert engine_root.read_text(encoding="utf-8").strip() == str(wp.REPO.resolve())
     # core.hooksPath 를 bare 에 set — 절대경로(슬롯 push 게이트 wiring).
-    config_calls = [c for c in git.calls if c[:2] == ["config", "core.hooksPath"]]
+    config_calls = [c for c in git.calls if c[2:4] == ["config", "core.hooksPath"]]
     assert len(config_calls) == 1
-    assert config_calls[0][2] == str(hook_dir.resolve())
+    assert config_calls[0][4] == str(hook_dir.resolve())
 
 
 def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, monkeypatch):
@@ -4197,7 +4197,7 @@ def test_install_protected_hook_idempotent_updates_sidecar(wp):
     assert engine_root.read_text(encoding="utf-8").strip() == str(wp.REPO.resolve())
     # 훅은 단일(중복 파일 0)·core.hooksPath 매 호출 set(멱등).
     assert (wp.REPO_HOOKS_DIR / "A" / "pre-push").exists()
-    assert sum(1 for c in git.calls if c[:2] == ["config", "core.hooksPath"]) == 2
+    assert sum(1 for c in git.calls if c[2:4] == ["config", "core.hooksPath"]) == 2
 
 
 @pytest.mark.parametrize(
@@ -4224,7 +4224,7 @@ def test_install_protected_hook_config_failure_returns_false(wp):
     _mk_bare_placeholder(wp, "A")
 
     def config_fails(argv):
-        if argv[:2] == ["config", "core.hooksPath"]:
+        if argv[2:4] == ["config", "core.hooksPath"]:
             return (1, "fatal: config write failed")
         return (0, "")
 
@@ -4257,7 +4257,8 @@ def test_install_protected_hook_no_company_repo_mutation(wp):
     # 서버 ref 무변경 — install 은 .local 훅 + core.hooksPath config 만(ref 안 만짐).
     assert server_ref.read_text(encoding="utf-8") == "deadbeef\n"
     # git 호출은 config core.hooksPath 하나뿐(push/ref 조작 0).
-    assert git.calls == [["config", "core.hooksPath", str((wp.REPO_HOOKS_DIR / "A").resolve())]]
+    assert git.calls == [["--git-dir", str(bare), "config", "core.hooksPath",
+                          str((wp.REPO_HOOKS_DIR / "A").resolve())]]
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
