@@ -7460,6 +7460,26 @@ def test_bind_task_rejects_open_record(wp):
     assert exc_info.value.started == "2026-09-09T01:02:03+00:00"
 
 
+def test_bind_task_moves_the_session_off_its_other_task(wp):
+    """한 세션이 여는 task 는 하나다 — 같은 세션이 다른 task 를 열면 앞 task 가 같은 장부 쓰기에서 닫힌다."""
+    home = pm_paths.home_at(wp.REPO)
+    task_lifecycle.bind_task(home, "a", session="s-1")
+    _record, action = task_lifecycle.bind_task(home, "b", session="s-1")
+    assert action == "created"
+    assert (pool_store.find_task(home, "a").open, pool_store.find_task(home, "b").open) == (False, True)
+    assert session_identity.resolve_session_task(home, "s-1") == ("b", None)
+    _record, action = task_lifecycle.bind_task(home, "a", session="s-1")
+    assert action == "resumed"
+    assert (pool_store.find_task(home, "a").open, pool_store.find_task(home, "b").open) == (True, False)
+    assert session_identity.resolve_session_task(home, "s-1") == ("a", None)
+    # 다른 세션이 연 task 를 열려다 거부되면 task 기록은 바이트 그대로다(s-1 의 a 도 닫히지 않는다).
+    task_lifecycle.bind_task(home, "c", session="s-2")
+    before = wp.LEASES_FILE.read_bytes()
+    with _pytest_task.raises(worktree_records.TaskActiveElsewhere):
+        task_lifecycle.bind_task(home, "c", session="s-1")
+    assert wp.LEASES_FILE.read_bytes() == before
+
+
 def test_bind_task_does_not_touch_slots_dir(wp):
     """task 바인딩은 `.local/slots/` 를 건드리지 않는다(마이그레이션 0·DoD·⑥ 직교)."""
     slots_dir = pm_paths.home_at(wp.REPO).local_dir / "slots"
@@ -7771,6 +7791,7 @@ from pm_engine.infra import branch_store
 from pm_engine.infra import clock
 from pm_engine.infra import pm_paths
 from pm_engine.infra import pool_store
+from pm_engine.app import session_identity
 from pm_engine.app import slot_resolution
 from pm_engine.infra import slot_snapshot
 from pm_engine.infra import submodule_git

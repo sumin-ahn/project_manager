@@ -206,15 +206,6 @@ def _merge_additional_context(output: dict | None, event: str, extra_text: str) 
     return output
 
 
-def _is_subagent_call(stdin: dict) -> bool:
-    """서브에이전트 안에서 발화한 훅인가 — ``agent_id`` 하나로 판정한다.
-
-    서브에이전트 훅 입력의 ``session_id``·``transcript_path`` 는 주 세션과 같아 그 둘로는 가를 수
-    없다. ``agent_type`` 은 주 스레드 ``--agent`` 세션에도 실리므로 판정에 쓰지 않는다."""
-    agent_id = stdin.get("agent_id")
-    return isinstance(agent_id, str) and bool(agent_id.strip())
-
-
 def _combine_outputs(first: dict | None, second: dict | None) -> dict | None:
     """두 훅 출력을 합친다 — ``additionalContext``·``systemMessage`` 는 앞 것 뒤에 줄바꿈으로 잇는다."""
     if first is None:
@@ -249,7 +240,7 @@ def evaluate(stdin: dict, home) -> tuple[int, dict | None]:
     읽어 점유 토큰·모델·마지막 경계 uuid 를 함께 얻고 엔진 ``judge_context`` 를 한 번 부른다. recall 은 독립
     채널이라 밴드 판정과 무관하게 매칭되면 additionalContext 에 누적된다."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
-    if event not in _MAIN_THREAD_EVENTS or _is_subagent_call(stdin):
+    if event not in _MAIN_THREAD_EVENTS or ctx_guard.is_subagent_hook(stdin):
         return 0, None
     transcript = stdin.get("transcript_path")
     raw_tokens, session_model, boundary = (

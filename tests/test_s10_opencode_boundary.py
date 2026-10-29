@@ -101,11 +101,11 @@ def _hook_tool(root: Path, payload) -> subprocess.CompletedProcess:
 
 
 def test_hook_tool_json_contract_and_failures(tmp_path):
-    """7키 요청·6키 응답·ctx 11키·UTF-8/LF·rc 와 형식 오류·설정 오류·거부 우선, JS 소비자의 형식 검사."""
+    """8키 요청·6키 응답·ctx 11키·UTF-8/LF·rc 와 형식 오류·설정 오류·거부 우선, JS 소비자의 형식 검사."""
     root = _project(tmp_path)
     context = {"session": "native", "tokens": 156_000, "model": None, "main_thread": True, "boundary": None}
     request = {"version": 1, "cwd": str(root), "tool_name": "bash", "tool_input": {"command": "git status"},
-               "shell_command": "git status", "context": context,
+               "shell_command": "git status", "main_thread": True, "context": context,
                "recall": {"session": "native", "on": "shell", "text": "git status", "main_thread": True}}
     ok = _hook_tool(root, request)
     assert ok.returncode == 0, ok.stderr.decode("utf-8", "replace")
@@ -121,6 +121,7 @@ def test_hook_tool_json_contract_and_failures(tmp_path):
         {**request, "version": True},
         {**request, "extra": 1},
         {**request, "shell_command": "git log"},
+        {**request, "main_thread": "yes"},
         {**request, "context": {**context, "session": "wire", "tokens": True}},
         {**request, "context": {**context, "session": "wire", "x": 1}},
         {**request, "recall": {**request["recall"], "x": 1}},
@@ -145,7 +146,7 @@ def test_hook_tool_json_contract_and_failures(tmp_path):
 
     denied = json.loads(_hook_tool(root, {
         "version": 1, "cwd": str(root), "tool_name": "write",
-        "tool_input": {"filePath": "notes.md", "content": f"{GRANT_MARK} git push\n"}, "shell_command": None,
+        "tool_input": {"filePath": "notes.md", "content": f"{GRANT_MARK} git push\n"}, "shell_command": None, "main_thread": True,
         "context": {**context, "session": "deny"},
         "recall": {"session": "deny", "on": "edit", "text": "notes.md", "main_thread": True}}).stdout)
     assert denied["git"]["verdict"] == "deny"
@@ -405,7 +406,7 @@ def test_unfiltered_inputs_reach_central_guard(tmp_path, monkeypatch):
     root = _project(tmp_path)
     calls = []
 
-    def judge_git_anchor_command(home, session, cwd, command, grants=False):
+    def judge_git_anchor_command(home, session, cwd, command, *, main_thread, grants=False):
         calls.append((home, cwd, command))
         return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 

@@ -23,9 +23,16 @@
   - 압축 처리 표식이 경계 순번(`<세션>.compact-<N>`)에서 경계 항목의 `uuid`(`<세션>.compact-<uuid>`)로 바뀌었다. checkpoint 의 경계 ID 도 같은 `uuid` 다.
   - 쓰는 중이라 문자 중간에서 끊긴 마지막 줄은 건너뛴다(이전에는 훅이 디코딩 오류로 실패했다). `uuid` 가 없는 압축 경계 항목을 만나면 훅이 오류로 실패한다.
 - 설치(`--into`)·`add-harness`·갱신·`pm-config sync-adapter-config --accept` 가 만든 백업 폴더 `.pm_import_backups/` 를 git 이 무시하지 않아 채택자 저장소에 커밋될 수 있던 결함을 고쳤다. 이제 백업을 쓸 때 폴더 안에 `*` 한 줄짜리 `.gitignore` 를 함께 두고(이미 있으면 덮지 않는다), 엔진은 채택자 루트 `.gitignore` 를 더 고치지 않는다.
+- 서브에이전트(Claude `Agent`/`Task`·Codex `spawn_agent` 서브에이전트·OpenCode native task 자식 세션)가 슬롯 쓰기 거부 안내를 따라 `pm_bootstrap.py --task` 를 실행해 주 세션에 task 가 둘 묶이고, 압축 뒤 checkpoint 가 "이 세션이 연 task 여럿" 으로 실패하던 결함을 고쳤다. 서브에이전트의 세션 ID 는 주 세션과 같다.
+  - 서브에이전트의 슬롯 쓰기 거부·경고는 task 를 열라는 안내 대신 거부 사유를 위임한 PM 에게 돌려주라는 안내를 낸다. 통과·거부 결과는 주 세션과 같다. 서브에이전트의 `pm_bootstrap.py --task` 호출은 훅이 거부하고 세션 기록을 남기지 않는다.
+  - 같은 창(같은 세션)에서 다른 task 로 부트스트랩하면 앞 task 의 열림 기록을 닫고 stderr 에 `[task 전환]` 한 줄로 알린다. 닫힌 task 에는 핸드오프 기록이 남지 않는다. 한 세션에 열린 task 는 하나뿐이다.
+  - 슬롯 쓰기 판정·열린 todo 경고·압축 기록이 같은 규칙(그 세션이 연 task 가 정확히 하나일 때만 찾음)으로 세션 task 를 찾는다. 이전에는 슬롯 쓰기 판정만 task 기록의 첫 행을 골랐다.
+  - `board.py hook-tool` 요청에 최상위 키 `main_thread`(bool)가 필수로 더해졌다(요청 version 값은 1 그대로). 출하 어댑터 세 종은 함께 갱신된다.
 
 ### 업그레이드 노트
 
+- 같은 세션에 열린 task 가 이미 둘 이상 기록된 task 기록은 그 세션의 슬롯 쓰기가 "이 세션이 연 task 여럿" 사유로 거부된다(이전에는 task 기록 첫 행의 task 로 판정했다). 그 창에서 `pm_bootstrap.py --task <task>` 를 한 번 다시 실행하면 나머지 task 가 닫혀 풀린다.
+- 같은 창에서 다른 task 로 부트스트랩하면 앞 task 가 닫힌다. 앞 task 의 인계가 필요하면 전환 전에 그 task 로 핸드오프한다.
 - 업그레이드 직후, 마지막 압축 경계가 대화 기록 끝 4 MiB 안에 있는 진행 중 Claude 세션은 이미 처리한 압축을 한 번 더 처리한다. log 에 압축 checkpoint 골격·breadcrumb 가 1건 더 남고, 복구 텍스트가 한 번 더 주입된다. 그 뒤로는 경계마다 한 번만 처리한다.
 - 옛 순번 표식(`.project_manager/.local/ctx-stop/<세션>.compact-<숫자>`)은 더 읽지 않는다. 남아 있어도 동작에 영향이 없고 지워도 된다.
 - 이미 커밋된 백업은 `git rm -r --cached .pm_import_backups` 뒤 커밋하면 추적만 풀린다(파일은 남는다). 루트 `.gitignore` 의 `.pm_import_backups/` 줄은 남겨도 된다. 백업 폴더가 이미 있어도 무시 파일은 이 엔진이 다음 백업을 쓸 때 생긴다.

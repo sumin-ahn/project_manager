@@ -241,6 +241,35 @@ def test_task_new_identity_then_bootstrap_resumes(tmp_path, monkeypatch, capsys)
     assert pm_paths.task_pm_state_file(pm_paths.home_at(wp.REPO), task).read_bytes() == state_after_create
 
 
+def test_bootstrap_of_another_task_moves_the_same_session(tmp_path, monkeypatch, capsys):
+    """같은 세션이 다른 task 로 부트스트랩하면 앞 task 의 열림 기록을 닫고 `[task 전환]` 한 줄로 알린다.
+
+    실 task 기록·실 엔진(worktree_pool·pm_bootstrap)으로 판정한다. 세션 기록은 가드 훅 대신 실 기록
+    함수(`task_store.record_task_session_claim`)로 남긴다."""
+    proj = tmp_path / "proj"
+    (proj / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
+    template_dst = proj / ".project_manager" / "wiki" / "pm_state.template.md"
+    template_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template_dst)
+    (proj / "work").mkdir(parents=True, exist_ok=True)
+    (proj / ".repos").mkdir(parents=True, exist_ok=True)
+    wp = bind_pool(monkeypatch, _load_wp_bound(proj))
+    bootstrap_mod = _load_module("pm_bootstrap")
+    home = pm_paths.home_at(wp.REPO)
+
+    task_store.record_task_session_claim(home, "a", "s-same")
+    assert _make_bootstrap(bootstrap_mod, wp, tmp_path, monkeypatch=monkeypatch).run(task="a") == 0
+    assert "[task 전환]" not in capsys.readouterr().err
+    task_store.record_task_session_claim(home, "b", "s-same")
+    assert _make_bootstrap(bootstrap_mod, wp, tmp_path, monkeypatch=monkeypatch).run(task="b") == 0
+    switched = [line for line in capsys.readouterr().err.splitlines() if line.startswith("[task 전환]")]
+    assert len(switched) == 1 and "task a " in switched[0]
+    rows = json.loads(
+        (proj / ".project_manager" / ".local" / "worktree-leases.json").read_text(encoding="utf-8")
+    )["tasks"]
+    assert {row["name"]: row["session"] for row in rows} == {"a": "", "b": "s-same"}
+
+
 @pytest.mark.release
 @_git_required
 def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, monkeypatch, capsys):

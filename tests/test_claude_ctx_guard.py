@@ -87,7 +87,7 @@ def test_git_anchor_routes_new_command_classes_to_central_judgment(
     driver = _load("pm_orch_claude")
     calls = []
 
-    def judge_git_anchor_command(home, _session, cwd, shell_command, grants=False):
+    def judge_git_anchor_command(home, _session, cwd, shell_command, *, main_thread, grants=False):
         calls.append((home, cwd, shell_command, grants))
         return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 

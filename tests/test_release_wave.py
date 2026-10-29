@@ -115,11 +115,15 @@ _CLAUDE_COMPACTION_PROBE_PROMPT = (
     "Use Bash exactly once to run `pwd`, then reply exactly "
     f"{_COMPACTION_RECOVERY_SENTINEL}"
 )
-_OPENCODE_COMPACTION_CONTEXT = 32768
+_OPENCODE_COMPACTION_CONTEXT = 65536
 _OPENCODE_COMPACTION_OUTPUT = 4096
-# 현재 user prompt는 native compaction 대상이 아니므로 각 turn 자체가 context-output 입력
-# 상한보다 충분히 작아야 한다. 12k ASCII chars는 최악의 1 char/token이어도 28,672-token
+# 압축 경계(context - output)는 압축 직후 입력보다 커야 압축이 한 번 일어난 뒤 멈춘다.
+# 실측: context 32768(경계 28,672)에서는 압축 직후 입력이 28,889 토큰이라 경계를 넘어
+# 압축이 33회 반복됐고, 65536(경계 61,440)에서는 압축 1회 뒤 합계 48,944 토큰에서 멈췄다.
+# 현재 user prompt는 native compaction 대상이 아니므로 각 turn 자체가 입력 상한보다
+# 충분히 작아야 한다. 12k ASCII chars는 최악의 1 char/token이어도 61,440-token
 # 입력 상한보다 작고, 4 chars/token 기준 상한을 넘길 만큼 여러 turn을 누적한다.
+_OPENCODE_POST_COMPACTION_INPUT_MAX = 48_944
 _OPENCODE_COMPACTION_INPUT_LIMIT = (
     _OPENCODE_COMPACTION_CONTEXT - _OPENCODE_COMPACTION_OUTPUT
 )
@@ -200,25 +204,19 @@ def _claude_session_transcript(session_id: str) -> Path:
     return candidates[0]
 
 
-# 압축 기록·snapshot 의 task 는 세션 ID 로 찾는다(T-0953) — 라이브 웨이브는 그 세션을 이 task 로 기록한다.
+# multi-repo 라이브 웨이브가 여는 board task 이름.
 _RELEASE_WAVE_TASK = "release-wave"
 
 
-def _record_wave_task_session(dest: Path, session_id: str) -> None:
-    """격리 채택자 task 기록(`worktree-leases.json` 최상위 `tasks`)에 웨이브 세션을 연 task 로 남긴다.
+def _assert_wave_session_task(dest: Path, session_id: str) -> None:
+    """웨이브 주 세션이 연 task 가 정확히 `wave` 하나인지 단언한다(task 기록은 읽기만 한다).
 
-    웨이브 세션이 부트스트랩으로 이미 연 task(같은 `session` 행)가 있으면 기록을 바꾸지 않는다.
-    같은 세션 행이 둘이면 세션 판정이 미해소가 된다."""
-    assert isinstance(session_id, str) and session_id.strip(), session_id
-    ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
-    wanted = session_id.strip()
-    if any(str(row.get("session") or "").strip() == wanted for row in data.get("tasks", [])):
-        return
-    tasks = [row for row in data.get("tasks", []) if row.get("name") != _RELEASE_WAVE_TASK]
-    data["tasks"] = [*tasks, {"name": _RELEASE_WAVE_TASK, "session": session_id}]
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    압축 기록·snapshot 은 세션 ID 로 task 를 찾으므로, 주 세션이 프롬프트 첫 단계에서 부트스트랩해
+    `wave` 를 열었어야 한다. 행이 없거나 같은 세션 행이 둘이면 압축 기록이 막힌다."""
+    resolved = pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(dest), session_id)
+    assert resolved == (_WAVE_TASK, None), (
+        f"웨이브 세션({session_id})이 연 task 가 `{_WAVE_TASK}` 하나가 아니다: {resolved}"
+    )
 
 
 def _opencode_session_id(stdout: str) -> str:
@@ -360,6 +358,10 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
     )
 
 
+# 웨이브 주 세션이 첫 단계로 실행하는 부트스트랩 — 압축 기록이 이 세션의 task 를 찾는 근거다.
+_WAVE_BOOTSTRAP_COMMAND = f"python3 .project_manager/tools/pm_bootstrap.py --task {_WAVE_TASK}"
+
+
 def _full_wave_prompt(entry_doc: str, harness: str) -> str:
     """PM 세션이 고정 4회 위임과 native 라운드 파일 왕복을 운영하라는 프롬프트.
 
@@ -411,7 +413,10 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
     delegation_tool = "spawn_agent" if harness == "codex" else "Task"
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
-        "tool works. HARD DELEGATION GATE: the PM main may run board, prepare, and harvest commands but "
+        "tool works. First, in this main session and before any other board command or delegation, open "
+        f"the board task session with `{_WAVE_BOOTSTRAP_COMMAND}`. Only this main session runs "
+        "pm_bootstrap.py; subagents never run it, and a subagent that reports a slot write denial hands it "
+        "back to this main session. HARD DELEGATION GATE: the PM main may run board, prepare, and harvest commands but "
         f"must not directly write, edit, cp, or sed any round file body. Call native {delegation_tool} exactly four "
         "times in this order: architect once, developer once, code-reviewer once, developer once. After "
         "each prepare, pass that absolute round path and its complete ROUND contract below to the matching "
@@ -673,8 +678,8 @@ def test_release_wave_claude_full_wave(tmp_path):
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
     claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
-    side-effect(probe.txt·done)를 먼저 단언한다. 그 세션을 웨이브 task 를 연 세션으로 task 기록에 남긴
-    뒤 같은 세션을 낮은 native `--autocompact` 경계로 resume한다. 압축 뒤 첫 주 스레드 훅의
+    side-effect(probe.txt·done)를 먼저 단언한다. 주 세션이 첫 단계에서 연 task 가 정확히 `wave` 하나인지
+    단언한 뒤 같은 세션을 낮은 native `--autocompact` 경계로 resume한다. 압축 뒤 첫 주 스레드 훅의
     checkpoint 1건 이상과 snapshot 전달, 모델 sentinel 응답을 함께 확인한다. API 과금.
     """
     dest = _guided_adopter(tmp_path, "claude", task=_WAVE_TASK, folders=2)
@@ -714,7 +719,7 @@ def test_release_wave_claude_full_wave(tmp_path):
     _assert_wave_side_effects(dest, proc, "claude")
 
     assert proc.returncode == 0
-    _record_wave_task_session(dest, session_id)
+    _assert_wave_session_task(dest, session_id)
     resume_proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--resume", session_id,
@@ -779,8 +784,9 @@ def test_release_wave_opencode_full_wave(tmp_path):
     gemma 는 느리고 변동 커 timeout 1800s. `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판).
     compaction 경계는 격리 adopter의 `harness.opencode.ctx_window_tokens`(하네스별 키) + 선택
     모델 `limit.context-output`만 낮추고 반복 입력으로 넘긴다. 출하 config/generic 예산은 무변경.
-    두 단계다(T-0953): 첫 실행(`--format json`)에서 루트 세션 ID 를 얻어 task 기록에 남기고, 같은
-    세션(`--continue`)으로 압축을 일으킨다 — 압축 기록의 task 는 세션 ID 로 찾는다.
+    두 단계다(T-0953): 첫 실행(`--format json`)에서 루트 세션 ID 를 얻어 그 세션이 연 task 가 정확히
+    `wave` 하나인지 단언하고, 같은 세션(`--continue`)으로 압축을 일으킨다 — 압축 기록의 task 는 세션
+    ID 로 찾는다.
     """
     dest = _guided_adopter(tmp_path, "opencode", task=_WAVE_TASK, folders=2)
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
@@ -800,7 +806,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
 
     # side-effect(hard) — full wave 의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
     _assert_wave_side_effects(dest, proc, "opencode")
-    _record_wave_task_session(dest, _opencode_session_id(proc.stdout))
+    _assert_wave_session_task(dest, _opencode_session_id(proc.stdout))
 
     # full wave를 정상 context로 완주한 뒤에만 같은 completed session의 native
     # compaction 경계를 낮춰, 아래 bounded safe turns로 checkpoint+receipt를 관측한다.
@@ -1915,11 +1921,34 @@ def test_ctx_record_override_matches_local_conf(tmp_path, harness):
         assert settings.read_bytes() == settings_before
 
 
+def test_opencode_forced_compaction_limit_clears_the_post_compaction_input(tmp_path):
+    """강제 한도의 압축 경계는 압축 직후 입력 실측 최댓값보다 커야 압축이 끝없이 반복되지 않는다.
+
+    실측: context 32768(경계 28,672)은 압축 직후 입력 28,889 토큰 이상이라 압축 33회,
+    context 65536(경계 61,440)은 압축 1회 뒤 48,944 토큰에서 멈췄다."""
+    from test_harness_ctx_limits import install_ctx_record
+
+    session_model = install_ctx_record(tmp_path, {"harness.opencode.ctx_window_tokens": "200000"}, "opencode")
+    _force_opencode_compaction_threshold(tmp_path, session_model)
+
+    raw = (tmp_path / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8")
+    config = json.loads(raw)
+    provider, _, model_name = session_model.partition("/")
+    limit = config["provider"][provider]["models"][model_name]["limit"]
+    assert set(limit) == {"context", "output"}
+    assert limit["context"] - limit["output"] > _OPENCODE_POST_COMPACTION_INPUT_MAX
+
+
 def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
     tmp_path, monkeypatch,
 ):
     """full-wave 안의 checkpoint+receipt delta면 불필요한 추가 외부 turn을 생략한다."""
     calls = []
+    ledger_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger_path.parent.mkdir(parents=True)
+    ledger_path.write_text(json.dumps({"leases": [], "tasks": [{"name": _WAVE_TASK, "session": "ses_wave"}]}),
+                           encoding="utf-8")
+    ledger_before = ledger_path.read_bytes()
 
     monkeypatch.setitem(
         test_release_wave_opencode_full_wave.__globals__,
@@ -1961,52 +1990,57 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
 
     assert len(calls) == 1
     assert "--continue" not in calls[0]
-    ledger = json.loads((tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
-                        .read_text(encoding="utf-8"))
-    assert ledger["tasks"] == [{"name": _RELEASE_WAVE_TASK, "session": "ses_wave"}]
+    assert ledger_path.read_bytes() == ledger_before
     source = inspect.getsource(test_release_wave_opencode_full_wave)
     assert source.index('_assert_wave_side_effects(dest, proc, "opencode")') < source.index(
-        "_record_wave_task_session(dest, _opencode_session_id(proc.stdout))"
+        "_assert_wave_session_task(dest, _opencode_session_id(proc.stdout))"
     ) < source.index(
         "_force_opencode_compaction_threshold(dest, LIVE_MODEL)"
     ) < source.index("_opencode_compaction_probe_prompts()")
 
 
-def test_record_wave_task_session_keeps_the_bootstrapped_task(tmp_path):
-    """웨이브 세션이 부트스트랩으로 연 task 가 있으면 헬퍼가 기록을 바꾸지 않아 세션 판정이 그 task 하나다(T-0953 F-001).
+def test_wave_session_task_assertion_needs_exactly_one_wave_row(tmp_path):
+    """웨이브 세션 task 단언은 그 세션 행이 정확히 `wave` 하나일 때만 통과하고 장부를 쓰지 않는다."""
+    def ledger_with(name: str, rows: list[dict]) -> Path:
+        dest = tmp_path / name
+        ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text(json.dumps({"leases": [], "tasks": rows}), encoding="utf-8")
+        return dest
 
-    빈 기록이면 헬퍼가 release-wave 행 하나를 더해 그 task 로 해소된다. 판정은 실 pm_log 의
-    `resolve_session_task` 로 한다."""
-    spec = importlib.util.spec_from_file_location(
-        "pm_log_release_wave",
-        Path(__file__).resolve().parents[1] / ".project_manager" / "tools" / "pm_log.py",
-    )
-    pm_log = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(pm_log)
+    def ledger_bytes(dest: Path) -> bytes:
+        return (dest / ".project_manager" / ".local" / "worktree-leases.json").read_bytes()
 
-    bootstrapped = tmp_path / "bootstrapped"
-    ledger = bootstrapped / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(json.dumps({
-        "leases": [],
-        "tasks": [
-            {"name": "main", "prefix": None, "session": "ses_wave"},
-            {"name": "other", "prefix": None, "session": "ses_other"},
-        ],
-    }), encoding="utf-8")
-    before = ledger.read_bytes()
+    passing = ledger_with("wave", [{"name": _WAVE_TASK, "session": "ses_wave"},
+                                   {"name": "other", "session": "ses_other"}])
+    before = ledger_bytes(passing)
+    _assert_wave_session_task(passing, "ses_wave")
+    assert ledger_bytes(passing) == before
+    failing = {
+        "no-row": [{"name": _WAVE_TASK, "session": ""}],
+        "two-rows": [{"name": "adopter-claude", "session": "ses_wave"},
+                     {"name": _WAVE_TASK, "session": "ses_wave"}],
+        "other-name": [{"name": _RELEASE_WAVE_TASK, "session": "ses_wave"}],
+    }
+    for name, rows in failing.items():
+        dest = ledger_with(name, rows)
+        before = ledger_bytes(dest)
+        with pytest.raises(AssertionError):
+            _assert_wave_session_task(dest, "ses_wave")
+        assert ledger_bytes(dest) == before, name
 
-    _record_wave_task_session(bootstrapped, "ses_wave")
 
-    assert ledger.read_bytes() == before
-    rows = json.loads(ledger.read_text(encoding="utf-8"))["tasks"]
-    assert [row["name"] for row in rows if row["session"] == "ses_wave"] == ["main"]
-    assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(bootstrapped), "ses_wave") == ("main", None)
-
-    fresh = tmp_path / "fresh"
-    _record_wave_task_session(fresh, "ses_wave")
-
-    assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(fresh), "ses_wave") == (_RELEASE_WAVE_TASK, None)
+def test_full_wave_prompt_opens_the_wave_task_before_any_delegation():
+    """세 하네스 full wave 프롬프트가 주 세션 부트스트랩을 첫 위임·티켓 발행보다 먼저 한 번 지시한다."""
+    for entry_doc, harness, tool in (("CLAUDE.md", "claude", "Task"), ("AGENTS.md", "codex", "spawn_agent"),
+                                     ("AGENTS.md", "opencode", "Task")):
+        prompt = _full_wave_prompt(entry_doc, harness)
+        command = "python3 .project_manager/tools/pm_bootstrap.py --task wave"
+        assert prompt.count(command) == 1, harness
+        bootstrap = prompt.index(command)
+        assert bootstrap < prompt.index(f"Call native {tool} exactly four"), harness
+        assert bootstrap < prompt.index("create exactly one ticket"), harness
+        assert "subagents never run it" in prompt, harness
 
 
 def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):

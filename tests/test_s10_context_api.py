@@ -318,14 +318,14 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
     denied = json.loads(_hook_tool(board, {
         "version": 1, "cwd": str(root), "tool_name": "write",
         "tool_input": {"filePath": "tests/test_x.py", "content": "git 허용: git push\n"},
-        "shell_command": None, "recall": recall, "context": deny_context}).stdout)
+        "shell_command": None, "main_thread": True, "recall": recall, "context": deny_context}).stdout)
     assert denied["git"]["verdict"] == "deny"
     assert (denied["recall"], denied["recall_error"]) == (None, None)
     assert (denied["context"], denied["context_error"]) == (None, None)
     assert not any(name.startswith("ses-deny.") for name in _markers(root))  # 거부한 호출은 ctx marker 도 쓰지 않는다.
     assert principle_store.load_seen_marker(home, "ses-p") == set()  # 거부한 입력은 seen 을 소비하지 않는다.
     allowed = _hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "read",
-                                 "tool_input": {"filePath": "tests/test_x.py"}, "shell_command": None,
+                                 "tool_input": {"filePath": "tests/test_x.py"}, "shell_command": None, "main_thread": True,
                                  "context": None, "recall": recall})
     assert allowed.returncode == 0 and allowed.stdout.count(b"\n") == 1
     allowed_json = json.loads(allowed.stdout)
@@ -335,12 +335,12 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
     assert principle_store.load_seen_marker(home, "ses-p") == {"edit:(^|/)tests?/"}
     (wiki / "pm_principles.local.md").mkdir()
     broken = json.loads(_hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "read",
-                                           "tool_input": {}, "shell_command": None, "context": None,
+                                           "tool_input": {}, "shell_command": None, "main_thread": True, "context": None,
                                            "recall": {**recall, "session": "ses-q"}}).stdout)
     assert broken["git"]["verdict"] == "ok" and broken["recall"] is None
     assert broken["recall_error"].startswith(f"{DIRECTORY_OPEN_ERROR.__name__}: ")
     mismatch = _hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "bash",
-                                  "tool_input": {"command": "ls"}, "shell_command": "pwd", "context": None,
+                                  "tool_input": {"command": "ls"}, "shell_command": "pwd", "main_thread": True, "context": None,
                                   "recall": None})
     assert (mismatch.returncode, mismatch.stdout) == (2, b"")
     assert "[hook-tool] 입력 형식 오류" in mismatch.stderr.decode("utf-8")
@@ -348,7 +348,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
     # ctx 를 실은 요청은 같은 Home 의 공개 ctx API 와 같은 11키를 싣는다(첫 발화끼리 비교).
     observed = {"session": "ses-c", "tokens": 150_000, "model": None, "main_thread": True, "boundary": None}
     with_context = json.loads(_hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "read",
-                                                 "tool_input": {}, "shell_command": None,
+                                                 "tool_input": {}, "shell_command": None, "main_thread": True,
                                                  "context": observed, "recall": None}).stdout)
     assert with_context["context_error"] is None
     assert with_context["context"] == _judge(root, 150_000, harness="opencode", session="ses-c2")
@@ -357,7 +357,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
     conf.unlink()
     conf.mkdir()
     io_failed = json.loads(_hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "read",
-                                              "tool_input": {}, "shell_command": None,
+                                              "tool_input": {}, "shell_command": None, "main_thread": True,
                                               "context": {**observed, "session": "ses-io"}, "recall": None}).stdout)
     assert io_failed["git"]["verdict"] == "ok" and io_failed["context"] is None
     assert io_failed["context_error"].startswith(f"{DIRECTORY_OPEN_ERROR.__name__}: ")
@@ -366,10 +366,10 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
     for bad_context in ({**observed, "tokens": True}, {**observed, "extra": 1}, {**observed, "boundary": ""},
                         {key: observed[key] for key in ("session", "tokens", "model", "main_thread")}):
         refused = _hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "read", "tool_input": {},
-                                     "shell_command": None, "context": bad_context, "recall": None})
+                                     "shell_command": None, "main_thread": True, "context": bad_context, "recall": None})
         assert (refused.returncode, refused.stdout) == (2, b""), bad_context
     old_shape = _hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "read", "tool_input": {},
-                                   "shell_command": None, "recall": None})
+                                   "shell_command": None, "main_thread": True, "recall": None})
     assert (old_shape.returncode, old_shape.stdout) == (2, b"")  # context 키 없는 이전 형식은 받지 않는다.
 
 
