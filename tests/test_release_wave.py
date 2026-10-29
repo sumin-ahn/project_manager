@@ -2000,7 +2000,7 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
 
 
 def test_wave_session_task_assertion_needs_exactly_one_wave_row(tmp_path):
-    """웨이브 세션 task 단언은 그 세션 행이 정확히 `wave` 하나일 때만 통과하고 장부를 쓰지 않는다."""
+    """웨이브 세션 task 단언은 그 세션 행이 정확히 `wave` 하나일 때만 통과하고 task 기록을 쓰지 않는다."""
     def ledger_with(name: str, rows: list[dict]) -> Path:
         dest = tmp_path / name
         ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"

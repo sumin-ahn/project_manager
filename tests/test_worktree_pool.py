@@ -7461,7 +7461,7 @@ def test_bind_task_rejects_open_record(wp):
 
 
 def test_bind_task_moves_the_session_off_its_other_task(wp):
-    """한 세션이 여는 task 는 하나다 — 같은 세션이 다른 task 를 열면 앞 task 가 같은 장부 쓰기에서 닫힌다."""
+    """한 세션이 여는 task 는 하나다 — 같은 세션이 다른 task 를 열면 앞 task 가 같은 task 기록 쓰기에서 닫힌다."""
     home = pm_paths.home_at(wp.REPO)
     task_lifecycle.bind_task(home, "a", session="s-1")
     _record, action = task_lifecycle.bind_task(home, "b", session="s-1")
