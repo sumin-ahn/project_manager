@@ -452,10 +452,12 @@ def _neutralize_codex_ambient_markers(request, monkeypatch):
 
 _CODEX_AUTH = Path.home() / ".codex" / "auth.json"
 
-# codex exec 공통 argv 접두 (fill 러너·relay driver 와 동일 핀·ADR-0070): --json JSONL · workspace-write
-# (파일 편집/board.py 실행 필요) · --skip-git-repo-check(tmp 홈은 git repo 아님) ·
-# --dangerously-bypass-hook-trust(격리 홈에는 저장된 훅 신뢰가 없어 이 플래그 없이는 채택자 훅이 0건 돈다.
-# 훅 신뢰 2단계를 마친 실 채택자처럼 훅을 켠다. 프로젝트 trust 는 `codex exec` 가 스스로 홈에 기록한다).
+# codex exec 공통 argv 접두: 앞 여섯 인자는 fill 러너·relay driver 와 동일 핀(ADR-0070)이다 — --json JSONL ·
+# workspace-write(파일 편집/board.py 실행 필요) · --skip-git-repo-check(tmp 홈은 git repo 아님).
+# 마지막 --dangerously-bypass-hook-trust 는 시험 접두에만 있고 출하 fill 러너·relay driver 에는 없다
+# (격리 홈에는 저장된 훅 신뢰가 없어 이 플래그 없이는 채택자 훅이 0건 돈다. 훅 신뢰 2단계를 마친
+# 실 채택자처럼 훅을 켠다). 프로젝트 trust 는 `codex exec` 가 스스로 홈에 기록한다(danger-full-access
+# 실행에서 실측. workspace-write 는 미측정).
 _CODEX_EXEC_PREFIX = (
     "codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check",
     "--dangerously-bypass-hook-trust",
@@ -475,7 +477,7 @@ def codex_auth_available() -> bool:
 def make_codex_home(base: Path) -> Path:
     """격리 CODEX_HOME 을 만들고 실 auth.json 을 복사한다 (실 ~/.codex 미오염·trust 결정성).
 
-    trust 는 여기서 쓰지 않는다 — 프로젝트 trust 는 `codex exec` 가 스스로 이 홈에 기록한다(실측).
+    trust 는 여기서 쓰지 않는다 — 프로젝트 trust 는 `codex exec` 가 스스로 이 홈에 기록한다(danger-full-access 실행에서 실측, workspace-write 는 미측정).
     훅 신뢰는 저장된 값이 없으므로 `run_codex_exec` 의 `--dangerously-bypass-hook-trust` 로 훅을 돌린다."""
     home = base / ".codex-home"
     home.mkdir(parents=True, exist_ok=True)
