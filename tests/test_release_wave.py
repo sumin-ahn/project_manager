@@ -115,11 +115,15 @@ _CLAUDE_COMPACTION_PROBE_PROMPT = (
     "Use Bash exactly once to run `pwd`, then reply exactly "
     f"{_COMPACTION_RECOVERY_SENTINEL}"
 )
-_OPENCODE_COMPACTION_CONTEXT = 32768
+_OPENCODE_COMPACTION_CONTEXT = 65536
 _OPENCODE_COMPACTION_OUTPUT = 4096
-# 현재 user prompt는 native compaction 대상이 아니므로 각 turn 자체가 context-output 입력
-# 상한보다 충분히 작아야 한다. 12k ASCII chars는 최악의 1 char/token이어도 28,672-token
+# 압축 경계(context - output)는 압축 직후 입력보다 커야 압축이 한 번 일어난 뒤 멈춘다.
+# 실측: context 32768(경계 28,672)에서는 압축 직후 입력이 28,889 토큰이라 경계를 넘어
+# 압축이 33회 반복됐고, 65536(경계 61,440)에서는 압축 1회 뒤 합계 48,944 토큰에서 멈췄다.
+# 현재 user prompt는 native compaction 대상이 아니므로 각 turn 자체가 입력 상한보다
+# 충분히 작아야 한다. 12k ASCII chars는 최악의 1 char/token이어도 61,440-token
 # 입력 상한보다 작고, 4 chars/token 기준 상한을 넘길 만큼 여러 turn을 누적한다.
+_OPENCODE_POST_COMPACTION_INPUT_MAX = 48_944
 _OPENCODE_COMPACTION_INPUT_LIMIT = (
     _OPENCODE_COMPACTION_CONTEXT - _OPENCODE_COMPACTION_OUTPUT
 )
@@ -1915,6 +1919,24 @@ def test_ctx_record_override_matches_local_conf(tmp_path, harness):
         key: before[key] for key in ("models", "C", "settings")}
     if harness == "claude":
         assert settings.read_bytes() == settings_before
+
+
+def test_opencode_forced_compaction_limit_clears_the_post_compaction_input(tmp_path):
+    """강제 한도의 압축 경계는 압축 직후 입력 실측 최댓값보다 커야 압축이 끝없이 반복되지 않는다.
+
+    실측: context 32768(경계 28,672)은 압축 직후 입력 28,889 토큰 이상이라 압축 33회,
+    context 65536(경계 61,440)은 압축 1회 뒤 48,944 토큰에서 멈췄다."""
+    from test_harness_ctx_limits import install_ctx_record
+
+    session_model = install_ctx_record(tmp_path, {"harness.opencode.ctx_window_tokens": "200000"}, "opencode")
+    _force_opencode_compaction_threshold(tmp_path, session_model)
+
+    raw = (tmp_path / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8")
+    config = json.loads(raw)
+    provider, _, model_name = session_model.partition("/")
+    limit = config["provider"][provider]["models"][model_name]["limit"]
+    assert set(limit) == {"context", "output"}
+    assert limit["context"] - limit["output"] > _OPENCODE_POST_COMPACTION_INPUT_MAX
 
 
 def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
