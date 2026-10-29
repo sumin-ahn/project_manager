@@ -7472,7 +7472,7 @@ def test_bind_task_moves_the_session_off_its_other_task(wp):
     assert action == "resumed"
     assert (pool_store.find_task(home, "a").open, pool_store.find_task(home, "b").open) == (True, False)
     assert session_identity.resolve_session_task(home, "s-1") == ("a", None)
-    # 다른 세션이 연 task 를 열려다 거부되면 장부는 바이트 그대로다(s-1 의 a 도 닫히지 않는다).
+    # 다른 세션이 연 task 를 열려다 거부되면 task 기록은 바이트 그대로다(s-1 의 a 도 닫히지 않는다).
     task_lifecycle.bind_task(home, "c", session="s-2")
     before = wp.LEASES_FILE.read_bytes()
     with _pytest_task.raises(worktree_records.TaskActiveElsewhere):

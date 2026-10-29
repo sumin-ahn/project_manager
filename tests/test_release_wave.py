@@ -209,7 +209,7 @@ _RELEASE_WAVE_TASK = "release-wave"
 
 
 def _assert_wave_session_task(dest: Path, session_id: str) -> None:
-    """웨이브 주 세션이 연 task 가 정확히 `wave` 하나인지 단언한다(장부는 읽기만 한다).
+    """웨이브 주 세션이 연 task 가 정확히 `wave` 하나인지 단언한다(task 기록은 읽기만 한다).
 
     압축 기록·snapshot 은 세션 ID 로 task 를 찾으므로, 주 세션이 프롬프트 첫 단계에서 부트스트랩해
     `wave` 를 열었어야 한다. 행이 없거나 같은 세션 행이 둘이면 압축 기록이 막힌다."""

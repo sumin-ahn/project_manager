@@ -244,7 +244,7 @@ def test_task_new_identity_then_bootstrap_resumes(tmp_path, monkeypatch, capsys)
 def test_bootstrap_of_another_task_moves_the_same_session(tmp_path, monkeypatch, capsys):
     """같은 세션이 다른 task 로 부트스트랩하면 앞 task 의 열림 기록을 닫고 `[task 전환]` 한 줄로 알린다.
 
-    실 장부·실 엔진(worktree_pool·pm_bootstrap)으로 판정한다. 세션 기록은 가드 훅 대신 실 기록
+    실 task 기록·실 엔진(worktree_pool·pm_bootstrap)으로 판정한다. 세션 기록은 가드 훅 대신 실 기록
     함수(`task_store.record_task_session_claim`)로 남긴다."""
     proj = tmp_path / "proj"
     (proj / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)

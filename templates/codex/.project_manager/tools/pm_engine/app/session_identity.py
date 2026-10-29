@@ -95,7 +95,7 @@ def resolve_session_task(home, session_id: str | None) -> tuple[str | None, str 
     task 기록 파일이 없는 것만 "task 없음" 이다. 읽기 실패·JSON 파손·모양이 다른 파일은 판정할
     근거가 아니라 고장이므로 예외로 끝난다.
     """
-    # 세션 ID 가 없으면 장부를 읽기 전에 미해소다. 장부가 없으면 행이 없는 것과 같다.
+    # 세션 ID 가 없으면 task 기록을 읽기 전에 미해소다. task 기록이 없으면 행이 없는 것과 같다.
     without_rows = session_identity.session_task((), session_id)
     if without_rows[1] == session_identity.SESSION_TASK_REASON_NO_SESSION:
         return without_rows
