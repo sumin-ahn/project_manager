@@ -137,7 +137,7 @@ def _no_open_todo_judgment(home, session: str) -> dict[str, str] | None:
     if not pm_paths.leases_file(home).is_file():
         return None
     _leases, tasks = hooks._slot_ledger_rows(data_home)
-    task = hooks._session_task(session, tasks)
+    task, _unresolved = hooks._session_task(session, tasks)
     if task is None:
         return None
     open_todos = _open_todo_count(home, task)
@@ -275,6 +275,30 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
 
 _RECORD_TASK_SESSION_CLAIM_PROGRAM = 'import sys\nsys.path.insert(0, sys.argv[1])\nfrom pathlib import Path\nfrom pm_engine.infra import pm_paths, task_store\ntask_store.record_task_session_claim(pm_paths.home_at(Path(sys.argv[1]).parents[1]), sys.argv[2], sys.argv[3])\n'
 
+def _bootstrap_task_calls(parsed: shell_policy._ShellParseResult) -> list[tuple[Path, str]]:
+    """셸 명령 속 `pm_bootstrap.py --task <task>` 호출 — (부트스트랩 스크립트 경로, task) 목록.
+
+    실행 위치가 확실하고 엔진 호출이며 `--task` 값이 정적인 호출만 고른다."""
+    calls: list[tuple[Path, str]] = []
+    for call in parsed.engine_invocations:
+        details = shell_policy._engine_invocation_details(call.cwd, call.argv)
+        if not call.certain or details is None or details.kind != 'engine' or (Path(details.script).name != 'pm_bootstrap.py'):
+            continue
+        task = shell_policy._bootstrap_task_argument(details.args)
+        if task is None:
+            continue
+        calls.append(((Path(call.cwd).expanduser() / details.script).resolve(), task))
+    return calls
+
+def _delegated_bootstrap_denials(parsed: shell_policy._ShellParseResult) -> list[dict[str, str]]:
+    """서브에이전트의 `pm_bootstrap.py --task <task>` 호출마다 거부 판정 하나.
+
+    서브에이전트의 세션 ID 는 주 세션과 같아, 여기서 task 를 열면 주 세션의 task 가 바뀐다."""
+    return [
+        {'verdict': 'deny', 'cwd_identity': 'non-repo', 'code': git_policy.GIT_DESTRUCTIVE_DENY_CODE, 'case': git_policy._GIT_GUARD_CASE_DELEGATED_TASK, 'reason': f'위임받은 에이전트의 task 열기(pm_bootstrap.py --task {task})'}
+        for _script, task in _bootstrap_task_calls(parsed)
+    ]
+
 def _record_bootstrap_session_claims(session: str, parsed: shell_policy._ShellParseResult) -> None:
     """`pm_bootstrap.py --task <task>` 호출마다 이 세션 ID 기록을 그 부트스트랩 사본의 홈에 남긴다.
 
@@ -288,14 +312,7 @@ def _record_bootstrap_session_claims(session: str, parsed: shell_policy._ShellPa
     """
     if not session:
         return
-    for call in parsed.engine_invocations:
-        details = shell_policy._engine_invocation_details(call.cwd, call.argv)
-        if not call.certain or details is None or details.kind != 'engine' or (Path(details.script).name != 'pm_bootstrap.py'):
-            continue
-        task = shell_policy._bootstrap_task_argument(details.args)
-        if task is None:
-            continue
-        script = (Path(call.cwd).expanduser() / details.script).resolve()
+    for script, task in _bootstrap_task_calls(parsed):
         result = subprocess.run([sys.executable, '-c', _RECORD_TASK_SESSION_CLAIM_PROGRAM, str(script.parent), task, session], capture_output=True, text=True, encoding='utf-8')
         if result.returncode != 0:
             raise RuntimeError(f'세션 기록을 남기지 못했다 ({script.with_name('worktree_pool.py')} · rc={result.returncode}): {result.stderr.strip()}')

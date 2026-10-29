@@ -113,7 +113,8 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
 
     PreToolUse(Bash) 는 ``judge_git_anchor_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
     PreToolUse 도구(settings matcher 가 연 쓰기·편집·위임 도구)는 ``judge_tool_input`` 으로(허용 위조·
-    슬롯 쓰기 주인), UserPromptSubmit 은 허용 기록으로 보낸다. 세션 ID 는 훅 입력의 ``session_id`` 다."""
+    슬롯 쓰기 주인), UserPromptSubmit 은 허용 기록으로 보낸다. 세션 ID 는 훅 입력의 ``session_id`` 다.
+    서브에이전트 훅 입력(``agent_id`` 있음)은 ``main_thread=False`` 로 판정받는다."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     if event == "UserPromptSubmit":
         return git_grant_prompt_evaluate(stdin, root)
@@ -124,11 +125,14 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     cwd = stdin.get("cwd")
     anchor = cwd if isinstance(cwd, str) and cwd else str(root)
     session = _hook_session_id(stdin)
+    main_thread = not ctx_guard.is_subagent_hook(stdin)
     if tool != GIT_ANCHOR_SHELL_TOOL:
         from pm_engine.cli import hooks
 
         return _pre_tool_use_output(
-            hooks.judge_tool_input(hooks.adapter_home(root), session, anchor, tool, tool_input)
+            hooks.judge_tool_input(
+                hooks.adapter_home(root), session, anchor, tool, tool_input, main_thread=main_thread,
+            )
         )
     command = tool_input.get("command")
     # 셸 명령 원문은 거르지 않고 전부 엔진 판정에 넘긴다 — 판정 대상인지는 엔진이 정한다.
@@ -138,7 +142,8 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
 
     return _pre_tool_use_output(
         hooks.judge_git_anchor_command(
-            hooks.adapter_home(root), session, anchor, command, grants=bool(session),
+            hooks.adapter_home(root), session, anchor, command, main_thread=main_thread,
+            grants=bool(session),
         )
     )
 

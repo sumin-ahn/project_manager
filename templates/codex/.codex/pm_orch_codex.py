@@ -1125,6 +1125,7 @@ GIT_ANCHOR_PATCH_TOOL = "apply_patch"
 def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
     """codex PreToolUse payload 를 중앙 판정 seam 에 배선한다 — Bash 는 `judge_git_anchor_command`,
     apply_patch 는 `judge_tool_input`(슬롯 쓰기 주인·허용 위조). 세션 ID 는 payload `session_id` 다.
+    서브에이전트 발화(`hook_is_subagent`)는 `main_thread=False` 로 판정받는다.
 
     반환은 **항상 유효한 dict** 다 — 이 기능은 자식 프로세스로 돌고, 디스패처
     `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 adapter-fallback 경고로 강등한다. 그래서
@@ -1162,7 +1163,10 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
     if tool == GIT_ANCHOR_PATCH_TOOL:
         from pm_engine.cli import hooks
 
-        judgment = hooks.judge_tool_input(hooks.adapter_home(root), session, anchor, tool, tool_input)
+        judgment = hooks.judge_tool_input(
+            hooks.adapter_home(root), session, anchor, tool, tool_input,
+            main_thread=not hook_is_subagent(payload),
+        )
     else:
         command = tool_input.get("command")
         if not isinstance(command, str):
@@ -1170,7 +1174,9 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
         # 셸 명령 원문은 거르지 않고 전부 엔진 판정에 넘긴다 — 판정 대상인지는 엔진이 정한다.
         from pm_engine.cli import hooks
 
-        judgment = hooks.judge_git_anchor_command(hooks.adapter_home(root), session, anchor, command)
+        judgment = hooks.judge_git_anchor_command(
+            hooks.adapter_home(root), session, anchor, command, main_thread=not hook_is_subagent(payload),
+        )
     verdict = judgment.get("verdict")
     reason = judgment.get("reason", "git cwd 정체 판정")
     if verdict == "deny":

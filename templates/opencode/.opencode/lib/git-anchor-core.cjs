@@ -243,6 +243,8 @@ function createToolBoundary({
       tool_name: tool,
       tool_input: args,
       shell_command: shell ? args.command : null,
+      // 자식 세션(native task)은 git 판정을 최상위 세션 ID 로 받되 서브에이전트로 판정받는다.
+      main_thread: mainThread,
       context: observed
         ? { session: sessionID, tokens: observed.tokens, model: observed.model, main_thread: true, boundary: null }
         : null,

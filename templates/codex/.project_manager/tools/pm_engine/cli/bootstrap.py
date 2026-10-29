@@ -1002,6 +1002,11 @@ class PmBootstrap:
                         file=sys.stderr,
                     )
                     task_lifecycle.close_task_session(self._home, task)
+            # 같은 세션이 열어 둔 다른 task 는 bind_task 가 닫는다 — 닫힐 이름을 미리 읽어 알린다.
+            switched = sorted(
+                other.name for other in pool_store.list_tasks(self._home)
+                if other.name != task and other.open and other.session.strip() == session.strip()
+            )
             record, action = task_lifecycle.bind_task(
                 self._home,
                 task,
@@ -1010,6 +1015,11 @@ class PmBootstrap:
                     self._home, self._areas_file
                 ),
             )
+            if switched:
+                print(
+                    f"[task 전환] 이 세션이 열어 둔 task {', '.join(switched)} 의 열림 기록을 닫았다. 그 task 의 핸드오프 기록은 남지 않았다.",
+                    file=sys.stderr,
+                )
         except task_store.NoTaskSessionClaim as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return None

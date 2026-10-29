@@ -58,6 +58,13 @@ def create_task(home,
         return _create_task_locked(home, tasks, name, session="")
 
 
+def _close_other_tasks_of_session(tasks: list[worktree_records.Task], name: str, session: str) -> None:
+    """`session` 이 연 `name` 아닌 task 행을 닫는다(메모리 안 — 쓰기는 호출부가 한다)."""
+    for task in tasks:
+        if task.name != name and task.session.strip() == session.strip():
+            task.session = ""
+
+
 def bind_task(home, name: str, *, session: str,
               registered_repos: "list[str] | set[str] | None" = None) -> tuple[worktree_records.Task, str]:
     """task 를 신규/resume 바인딩한다 — 명 검증(must-fix) + 열림 기록 거부 + 서술 디렉토리 신설.
@@ -72,6 +79,8 @@ def bind_task(home, name: str, *, session: str,
 
     **세션**: `session` = 이 부트스트랩을 부른 하네스 세션 ID(가드 훅이 남긴 기록에서 온다 —
     `take_task_session_claim`). 같은 세션의 재진입은 거부하지 않고 재개한다(압축·재부트스트랩).
+    한 세션이 여는 task 는 하나다 — 같은 세션이 열어 둔 다른 task 는 같은 장부 쓰기에서 닫는다
+    (같은 창에서 task 를 바꾸는 경우). 거부되면 장부는 바뀌지 않는다.
 
     **열림 기록 거부**: 장부 행이 **다른 세션**으로 열려 있으면 `TaskActiveElsewhere` 로 거부한다(부트스트랩이
     dump 이전에 거부·판정에 프로세스 조회 0회). 해소는 사용자 행위다 — 그 창을 쓰거나,
@@ -91,7 +100,9 @@ def bind_task(home, name: str, *, session: str,
         existing = next((t for t in tasks if t.name == name), None)
         if existing is None:
             # 생성은 `create_task`(`task new`)와 공유하는 락 안쪽 헬퍼가 한다 — 여기선 열림으로
-            # 연다(재진입 없음·공개 create_task 를 부르지 않는다).
+            # 연다(재진입 없음·공개 create_task 를 부르지 않는다). 같은 세션의 다른 행은 그 쓰기에
+            # 함께 닫힌다(동명 archive 거부는 쓰기 전이라 장부가 그대로다).
+            _close_other_tasks_of_session(tasks, name, session)
             return _create_task_locked(home, tasks, name, session=session), "created"
         # 열림 기록 거부 — 다른 세션이 종료 기록 없이 열어 두었으면 두 번째 창을 열지 않는다.
         if existing.session and existing.session != session:
@@ -99,6 +110,7 @@ def bind_task(home, name: str, *, session: str,
         # 구 엔진에서 만들어져 task 디렉토리만 있고 state가 없는 레코드도 재개 시 즉시 backfill.
         # state 보장 실패 시 장부를 갱신하지 않아 반쪽 resume을 만들지 않는다.
         task_store.ensure_task_pm_state(home, name)
+        _close_other_tasks_of_session(tasks, name, session)
         existing.session = session  # 열림 기록 — 종료 기록(핸드오프·task close·end)이 닫는다.
         pool_store._write_tasks(home, tasks)
         return existing, "resumed"

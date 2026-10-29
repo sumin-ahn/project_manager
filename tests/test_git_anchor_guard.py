@@ -52,10 +52,10 @@ def test_flat_guard_string_and_path_roots_are_equivalent(tmp_path, entrypoint):
         if entrypoint == "write":
             return cli_hooks.judge_tool_input(
                 cli_hooks.adapter_home(root), "session", str(tmp_path), "Write",
-                {"file_path": str(tmp_path / "note.txt"), "content": "note"},
+                {"file_path": str(tmp_path / "note.txt"), "content": "note"}, main_thread=True,
             )
         return cli_hooks.judge_git_anchor_command(
-            cli_hooks.adapter_home(root), "session", str(tmp_path), "git status",
+            cli_hooks.adapter_home(root), "session", str(tmp_path), "git status", main_thread=True,
         )
 
     path_judgment = judge(tmp_path)
@@ -215,17 +215,17 @@ def test_shell_parser_uses_worst_git_judgment(topology, path_notation):
     home, slot = topology
     shell_slot = _shell_slot_path(home, slot, path_notation)
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "echo pre && git status && git add -- tests/shared.txt"
+        str(home), "echo pre && git status && git add -- tests/shared.txt", main_thread=True
     )
     assert got["verdict"] == "deny"
     reversed_calls = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git add -- tests/shared.txt && git status"
+        str(home), "git add -- tests/shared.txt && git status", main_thread=True
     )
     assert reversed_calls["verdict"] == "deny"
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "python3 build.py")["verdict"] == "ok"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "python3 build.py", main_thread=True)["verdict"] == "ok"
     # git 자체는 정상 slot 판정이지만 cwd 잔존 패턴은 별도 warn으로 승격한다.
     changed = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), f"cd {shell_slot} && git add -- tests/shared.txt"
+        str(home), f"cd {shell_slot} && git add -- tests/shared.txt", main_thread=True
     )
     assert changed["verdict"] == "warn"
     assert "대상을 절대경로로 지정하라" in changed["reason"]
@@ -281,11 +281,11 @@ def test_engine_guard_denies_worktree_board_mutation(topology):
     assert str(slot / ".project_manager" / "tools" / "board.py") in got["reason"]
     assert "board mutation은 PM 홈 사본" in got["reason"]
     via_shell = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(slot), "python3 .project_manager/tools/board.py complete T-0001",
+        str(slot), "python3 .project_manager/tools/board.py complete T-0001", main_thread=True,
     )
     assert via_shell["verdict"] == "deny"
     repeated_slash = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(slot), "python3 .project_manager//tools/board.py claim T-1",
+        str(slot), "python3 .project_manager//tools/board.py claim T-1", main_thread=True,
     )
     assert repeated_slash["verdict"] == "deny"
 
@@ -333,7 +333,7 @@ def test_relative_engine_call_warns_on_same_rev_different_bytes(topology):
         ),
     )
     via_shell = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(slot), "python3 .project_manager/tools/pm_delegate.py status",
+        str(slot), "python3 .project_manager/tools/pm_delegate.py status", main_thread=True,
     )
     assert via_shell == got
 
@@ -646,7 +646,7 @@ def test_unexpanded_engine_path_reports_unknown_without_changing_deny_axis(topol
     for token in ("$PMH", "${PMH}", "$1"):
         got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
             str(home),
-            f"python3 {token}/.project_manager/tools/pm_delegate.py status",
+            f"python3 {token}/.project_manager/tools/pm_delegate.py status", main_thread=True,
         )
         assert got["verdict"] == "warn"
         assert f"미확장 토큰={token}" in got["reason"]
@@ -655,7 +655,7 @@ def test_unexpanded_engine_path_reports_unknown_without_changing_deny_axis(topol
         assert "repo 앵커=" not in got["reason"]
 
     denied = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(slot), "python3 $PMH/.project_manager/tools/board.py claim T-0001",
+        str(slot), "python3 $PMH/.project_manager/tools/board.py claim T-0001", main_thread=True,
     )
     assert denied["verdict"] == "deny"
     assert denied["cwd_identity"] == "slot"
@@ -717,7 +717,7 @@ def test_mixed_git_and_engine_calls_use_strongest_judgment(topology):
     """(e) PM 홈에 tests/가 실재하면 혼합 호출에서도 false-deny가 없다."""
     home, _slot = topology
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git status && python3 -m pytest tests/",
+        str(home), "git status && python3 -m pytest tests/", main_thread=True,
     )
     assert got["verdict"] == "ok"
     assert "호출 1 [pm-home/ok]" in got["reason"]
@@ -730,7 +730,7 @@ def test_mixed_git_and_engine_calls_promote_missing_tests_deny(
     """(e) tests/ 부재가 실측된 형상에서는 혼합 호출의 deny가 최강 판정이다."""
     home, _slot = topology_without_home_tests
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git status && python3 -m pytest tests/",
+        str(home), "git status && python3 -m pytest tests/", main_thread=True,
     )
     assert got["verdict"] == "deny"
     assert "호출 2 [pm-home/deny]" in got["reason"]
@@ -745,7 +745,7 @@ def test_adjacent_identical_warns_render_as_one_range(topology):
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
         str(home),
         "git status && git commit -m repeat && git commit -m repeat "
-        "&& git commit -m repeat && git commit -m repeat",
+        "&& git commit -m repeat && git commit -m repeat", main_thread=True,
     )
 
     assert got["verdict"] == "warn"
@@ -766,7 +766,7 @@ def test_reason_rendering_does_not_rerun_judgments(monkeypatch, topology):
 
     monkeypatch.setattr(engine_guard, "judge_git_anchor", fake_judge)
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git status && git status && git status && git status",
+        str(home), "git status && git status && git status && git status", main_thread=True,
     )
 
     assert len(judged) == 4
@@ -788,7 +788,7 @@ def test_strongest_renderer_filters_lower_verdicts_without_closing_call_gaps(
 
     monkeypatch.setattr(engine_guard, "judge_git_anchor", filtered_judge)
     filtered = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git status && git status && git status && git status && git status && git status",
+        str(home), "git status && git status && git status && git status && git status && git status", main_thread=True,
     )
     assert filtered["reason"] == "호출 5–6 [pm-home/warn] ×2: repeat"
     assert "ok" not in filtered["reason"]
@@ -801,7 +801,7 @@ def test_strongest_renderer_filters_lower_verdicts_without_closing_call_gaps(
 
     monkeypatch.setattr(engine_guard, "judge_git_anchor", gapped_judge)
     gapped = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git status && git status && git status",
+        str(home), "git status && git status && git status", main_thread=True,
     )
     assert gapped["reason"] == (
         "호출 1 [pm-home/warn]: repeat | 호출 3 [pm-home/warn]: repeat"
@@ -818,7 +818,7 @@ def test_nonadjacent_or_different_warns_remain_separate(topology):
     )["reason"]
 
     nonadjacent = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git commit -m repeat && git status && git commit -m repeat",
+        str(home), "git commit -m repeat && git status && git commit -m repeat", main_thread=True,
     )
     assert nonadjacent["reason"] == (
         f"호출 1 [pm-home/warn]: {commit_warning} | "
@@ -826,7 +826,7 @@ def test_nonadjacent_or_different_warns_remain_separate(topology):
     )
 
     different_reasons = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git commit -m repeat && git add tests/not-there.txt",
+        str(home), "git commit -m repeat && git add tests/not-there.txt", main_thread=True,
     )
     assert different_reasons["reason"] == (
         f"호출 1 [pm-home/warn]: {commit_warning} | "
@@ -843,7 +843,7 @@ def test_repeated_special_deny_keeps_code_but_mixed_denies_drop_it(
     )
 
     repeated = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "python3 -m pytest tests/ && python3 -m pytest tests/",
+        str(home), "python3 -m pytest tests/ && python3 -m pytest tests/", main_thread=True,
     )
     assert repeated["verdict"] == "deny"
     assert repeated["code"] == "pm-home-relative-pytest-tests-missing"
@@ -856,7 +856,7 @@ def test_repeated_special_deny_keeps_code_but_mixed_denies_drop_it(
     mixed = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
         str(home),
         f"python3 {slot / '.project_manager/tools/board.py'} complete T-0001 "
-        "&& python3 -m pytest tests/",
+        "&& python3 -m pytest tests/", main_thread=True,
     )
     assert mixed["verdict"] == "deny"
     assert "code" not in mixed
@@ -877,7 +877,7 @@ def test_persistent_cd_pattern_warns_with_executable_prescription(
     home, slot = topology
     shell_slot = _shell_slot_path(home, slot, path_notation)
     command = f"echo pre{separator}cd {shell_slot}{separator}python3 build.py"
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)
     assert got["verdict"] == "warn"
     assert "대상을 절대경로로 지정하라" in got["reason"]
     assert "cd가 꼭 필요하면 이 호출 안에서만 사용" in got["reason"]
@@ -885,7 +885,7 @@ def test_persistent_cd_pattern_warns_with_executable_prescription(
     assert "workdir 파라미터" not in got["reason"]
 
     contextual = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), f"echo pre{separator}cd {shell_slot}{separator}git status",
+        str(home), f"echo pre{separator}cd {shell_slot}{separator}git status", main_thread=True,
     )
     assert contextual["verdict"] == "warn"
     assert "호출 2 [non-repo/warn]" in contextual["reason"]
@@ -904,14 +904,14 @@ def test_persistent_cd_pattern_warns_with_executable_prescription(
 def test_prefilter_false_positive_candidates_remain_ok(topology, command):
     """넓어진 선필터가 argv data·서브셸·heredoc을 cwd 잔존으로 오판하지 않는다."""
     home, _slot = topology
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)["verdict"] == "ok"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)["verdict"] == "ok"
 
 
 def test_existing_git_mutation_deny_is_unchanged(topology):
     """(g) 엔진 합류 뒤에도 기존 PM 홈 cross-pathspec git deny는 불변."""
     home, _slot = topology
     direct = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home), ["git", "add", "tests/shared.txt"])
-    shell = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "git add tests/shared.txt")
+    shell = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "git add tests/shared.txt", main_thread=True)
     assert shell == direct
     assert shell["verdict"] == "deny"
 
@@ -920,7 +920,7 @@ def test_posix_escaped_path_operand_keeps_shell_meaning(topology):
     """Windows 표기 정규화가 POSIX ``\\`` escape를 경로 구분자로 바꾸지 않는다."""
     home, _slot = topology
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), r"git add t\ests/shared.txt",
+        str(home), r"git add t\ests/shared.txt", main_thread=True,
     )
     assert got["verdict"] == "deny"
     assert "tests/shared.txt" in got["reason"]
@@ -938,7 +938,7 @@ def test_posix_escaped_path_operand_keeps_shell_meaning(topology):
 def test_shell_control_flow_preserves_actual_git_cwd(topology, command, identity):
     home, slot = topology
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), command.format(home=home, slot=slot)
+        str(home), command.format(home=home, slot=slot), main_thread=True
     )
     assert got["verdict"] == "deny"
     assert got["cwd_identity"] == identity
@@ -949,19 +949,19 @@ def test_shell_if_and_multiple_git_calls_keep_context(topology, path_notation):
     home, slot = topology
     shell_slot = _shell_slot_path(home, slot, path_notation)
     conditional = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), f"if cd {shell_slot}; then git add tests/shared.txt; fi"
+        str(home), f"if cd {shell_slot}; then git add tests/shared.txt; fi", main_thread=True
     )
     assert conditional["verdict"] == "ok"
     assert conditional["cwd_identity"] == "slot"
 
     multiple = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), f"git -C {shell_slot} commit -m slot && git commit -m home"
+        str(home), f"git -C {shell_slot} commit -m slot && git commit -m home", main_thread=True
     )
     assert multiple["verdict"] == "warn"
     assert "호출 2 [pm-home/warn]" in multiple["reason"]
 
     reversed_calls = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), f"git commit -m home && git -C {shell_slot} commit -m slot"
+        str(home), f"git commit -m home && git -C {shell_slot} commit -m slot", main_thread=True
     )
     assert reversed_calls["verdict"] == "warn"
     assert "호출 1 [pm-home/warn]" in reversed_calls["reason"]
@@ -971,14 +971,14 @@ def test_dynamic_cd_is_ambiguous_and_blocks_only_destructive_forms(topology):
     """대상 미확정 호출은 비파괴면 warn 이고, 파괴 형태면 슬롯·공용 저장소일 수 있어 거부한다."""
     home, _slot = topology
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "cd $TARGET; git add tests/shared.txt"
+        str(home), "cd $TARGET; git add tests/shared.txt", main_thread=True
     )
     assert got["verdict"] == "warn"
     assert "정적으로 단일 증명할 수 없음" in got["reason"]
-    destructive = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "cd $TARGET; git branch -D main")
+    destructive = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "cd $TARGET; git branch -D main", main_thread=True)
     assert destructive["verdict"] == "deny"
     assert "대상을 정적으로 정할 수 없어 슬롯·공용 저장소일 수 있음" in destructive["reason"]
-    non_destructive = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "cd $TARGET; git push origin main")
+    non_destructive = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "cd $TARGET; git push origin main", main_thread=True)
     assert non_destructive["verdict"] == "warn"
 
 
@@ -995,7 +995,7 @@ def test_dynamic_cd_is_ambiguous_and_blocks_only_destructive_forms(topology):
 )
 def test_unmodeled_cwd_changers_are_ambiguity_warn(topology, command):
     home, slot = topology
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command.format(slot=slot))
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command.format(slot=slot), main_thread=True)
     assert got["verdict"] == "warn"
     assert "정적으로 단일 증명할 수 없음" in got["reason"]
 
@@ -1003,7 +1003,7 @@ def test_unmodeled_cwd_changers_are_ambiguity_warn(topology, command):
 def test_unexecuted_cwd_changer_preserves_proven_home_anchor(topology):
     home, slot = topology
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), f"false && pushd {slot}; git add tests/shared.txt"
+        str(home), f"false && pushd {slot}; git add tests/shared.txt", main_thread=True
     )
     assert got["verdict"] == "deny"
     assert got["cwd_identity"] == "pm-home"
@@ -1020,17 +1020,17 @@ def test_unexecuted_cwd_changer_preserves_proven_home_anchor(topology):
 )
 def test_heredoc_body_git_is_data_and_never_denies(topology, command):
     home, _slot = topology
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)
     assert got["verdict"] in {"ok", "warn"}
 
 
 def test_real_commands_around_heredoc_are_still_judged(topology):
     home, _slot = topology
     before = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git add tests/shared.txt; cat <<EOF\ngit status\nEOF"
+        str(home), "git add tests/shared.txt; cat <<EOF\ngit status\nEOF", main_thread=True
     )
     after = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "cat <<EOF\ngit status\nEOF\ngit add tests/shared.txt"
+        str(home), "cat <<EOF\ngit status\nEOF\ngit add tests/shared.txt", main_thread=True
     )
     assert before["verdict"] == "deny"
     assert after["verdict"] == "deny"
@@ -1042,7 +1042,7 @@ def test_real_commands_around_heredoc_are_still_judged(topology):
 ])
 def test_fake_heredoc_does_not_hide_real_git(topology, command):
     home, _slot = topology
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)["verdict"] == "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)["verdict"] == "deny"
 
 
 @pytest.mark.parametrize(
@@ -1054,7 +1054,7 @@ def test_fake_heredoc_does_not_hide_real_git(topology, command):
 )
 def test_unmodeled_shell_shapes_surface_ambiguity_warn(topology, command):
     home, _slot = topology
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)
     assert got["verdict"] == "warn"
     assert "정적으로" in got["reason"]
 
@@ -1069,7 +1069,7 @@ def test_unmodeled_shell_shapes_surface_ambiguity_warn(topology, command):
 )
 def test_git_data_arguments_and_comments_are_not_commands(topology, command):
     home, _slot = topology
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)
     assert got["verdict"] == "ok"
 
 
@@ -1082,7 +1082,7 @@ def test_git_data_arguments_and_comments_are_not_commands(topology, command):
 )
 def test_unsupported_loop_control_is_ambiguity_warn(topology, command):
     home, _slot = topology
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)
     assert got["verdict"] == "warn"
     assert "정적으로 단일 증명할 수 없음" in got["reason"]
 
@@ -1092,7 +1092,7 @@ def test_newline_is_a_sequential_shell_boundary(topology, path_notation):
     home, slot = topology
     shell_slot = _shell_slot_path(home, slot, path_notation)
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), f"git -C {shell_slot} status\ngit add tests/shared.txt"
+        str(home), f"git -C {shell_slot} status\ngit add tests/shared.txt", main_thread=True
     )
     assert got["verdict"] == "deny"
     assert "호출 2 [pm-home/deny]" in got["reason"]
@@ -1102,7 +1102,7 @@ def test_if_else_tracks_failed_cd_branch_cwd(topology):
     home, _slot = topology
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
         str(home),
-        "if cd /nonexistent; then true; else git add tests/shared.txt; fi",
+        "if cd /nonexistent; then true; else git add tests/shared.txt; fi", main_thread=True,
     )
     assert got["verdict"] == "deny"
     assert got["cwd_identity"] == "pm-home"
@@ -1127,13 +1127,13 @@ def test_git_pathspec_normalization_and_no_separator_forms_deny(topology, argv):
 def test_shell_redirection_targets_are_not_git_pathspecs(topology):
     home, _slot = topology
     commit = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git commit -m msg > tests/shared.txt"
+        str(home), "git commit -m msg > tests/shared.txt", main_thread=True
     )
     add = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git add src/app.py 2> tests/shared.txt"
+        str(home), "git add src/app.py 2> tests/shared.txt", main_thread=True
     )
     still_dangerous = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git add tests/shared.txt > /dev/null"
+        str(home), "git add tests/shared.txt > /dev/null", main_thread=True
     )
     assert commit["verdict"] == "warn"
     assert add["verdict"] == "warn"
@@ -1147,7 +1147,7 @@ def test_shell_redirection_targets_are_not_git_pathspecs(topology):
 ])
 def test_attached_redirection_still_recognizes_git(topology, command):
     home, _slot = topology
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)["verdict"] == "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)["verdict"] == "deny"
 
 
 def test_pathspecs_resolve_from_invocation_cwd(topology):
@@ -1194,18 +1194,18 @@ def test_r8_parser_boundaries(topology):
     home, slot = topology
     assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home / "tests"), ["git", "add", ":(top)tests/shared.txt"])["verdict"] == "deny"
     assert engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(home / "tests"), ["git", "add", ":/tests/shared.txt"])["verdict"] == "deny"
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "echo x# <<EOF\ngit add tests/shared.txt\nEOF")["verdict"] != "deny"
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "cat <<''\ngit add tests/shared.txt\n\n")["verdict"] != "deny"
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "'git' add tests/shared.txt")["verdict"] == "deny"
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "git\\\n add tests/shared.txt")["verdict"] == "deny"
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), f"env GIT_WORK_TREE={home} GIT_DIR={home / '.git'} git add tests/shared.txt")["verdict"] == "warn"
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "command git add tests/shared.txt")["verdict"] == "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "echo x# <<EOF\ngit add tests/shared.txt\nEOF", main_thread=True)["verdict"] != "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "cat <<''\ngit add tests/shared.txt\n\n", main_thread=True)["verdict"] != "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "'git' add tests/shared.txt", main_thread=True)["verdict"] == "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "git\\\n add tests/shared.txt", main_thread=True)["verdict"] == "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), f"env GIT_WORK_TREE={home} GIT_DIR={home / '.git'} git add tests/shared.txt", main_thread=True)["verdict"] == "warn"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), "command git add tests/shared.txt", main_thread=True)["verdict"] == "deny"
 
 
 def test_r9_heredoc_data_preserves_backslash_newline(topology):
     home, _slot = topology
     command = "cat <<'EOF'\nEO\\\nF\ngit add tests/shared.txt\nEOF"
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)["verdict"] == "ok"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)["verdict"] == "ok"
     assert shell_policy._normalize_shell_line_continuations("git\\\n add") == "git add"
     quoted = "'git\\\n add'"
     assert shell_policy._normalize_shell_line_continuations(quoted) == quoted
@@ -1219,7 +1219,7 @@ def test_r9_wrapper_and_fragmented_command_words(topology):
         f"/usr/bin/env GIT_WORK_TREE={home} GIT_DIR={home / '.git'} git add tests/shared.txt",
     ]
     assert all(
-        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command)["verdict"] == "warn"
+        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, main_thread=True)["verdict"] == "warn"
         for command in overrides
     )
     home_mutations = [
@@ -1229,14 +1229,14 @@ def test_r9_wrapper_and_fragmented_command_words(topology):
         "/usr/bin/g''it add tests/shared.txt",
     ]
     assert all(
-        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)["verdict"] == "deny"
+        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)["verdict"] == "deny"
         for command in home_mutations
     )
     assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(slot), "command -p git add tests/shared.txt"
+        str(slot), "command -p git add tests/shared.txt", main_thread=True
     )["verdict"] == "ok"
     assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "env --unknown git add tests/shared.txt"
+        str(home), "env --unknown git add tests/shared.txt", main_thread=True
     )["verdict"] == "warn"
 
 
@@ -1251,18 +1251,18 @@ def test_r10_execution_wrappers_and_escaped_quote_continuation(topology):
         "exec env -i command -p nice -n 5 timeout --preserve-status 5 nohup -- git add tests/shared.txt",
     ]
     assert all(
-        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)["verdict"] == "deny"
+        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)["verdict"] == "deny"
         for command in wrappers
     )
     assert all(
-        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command)["verdict"] == "ok"
+        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, main_thread=True)["verdict"] == "ok"
         for command in wrappers
     )
     assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "sudo -u root git add tests/shared.txt"
+        str(home), "sudo -u root git add tests/shared.txt", main_thread=True
     )["verdict"] == "warn"
     escaped_quote = 'echo \\"; git\\\n add tests/shared.txt'
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), escaped_quote)["verdict"] == "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), escaped_quote, main_thread=True)["verdict"] == "deny"
 
 
 def test_r11_dynamic_command_word_is_ambiguity_not_ok(topology):
@@ -1273,11 +1273,11 @@ def test_r11_dynamic_command_word_is_ambiguity_not_ok(topology):
     ]
     for cwd in (home, slot):
         assert all(
-            cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(cwd), command)["verdict"] == "warn"
+            cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(cwd), command, main_thread=True)["verdict"] == "warn"
             for command in dynamic
         )
     assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(slot), "git add tests/shared.txt"
+        str(slot), "git add tests/shared.txt", main_thread=True
     )["verdict"] == "ok"
     data_only = [
         "echo $WRAPPER git add tests/shared.txt",
@@ -1285,7 +1285,7 @@ def test_r11_dynamic_command_word_is_ambiguity_not_ok(topology):
         "# $WRAPPER git add tests/shared.txt",
     ]
     assert all(
-        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)["verdict"] == "ok"
+        cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)["verdict"] == "ok"
         for command in data_only
     )
 
@@ -1301,7 +1301,7 @@ def test_pathspec_file_and_ambiguous_ref_forms_fail_open(topology):
         str(home), ["git", "commit", "-am", "tests/shared.txt"]
     )
     top_magic_shell = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(home), "git add ':(top)tests/shared.txt'"
+        str(home), "git add ':(top)tests/shared.txt'", main_thread=True
     )
     assert from_file["verdict"] == "warn"
     assert checkout["verdict"] == "warn"
@@ -1413,7 +1413,7 @@ def test_claude_hook_prefilter_warn_and_deny(monkeypatch, topology):
 
     class FakeBoard:
         @staticmethod
-        def judge_git_anchor_command(root, session, cwd, command, grants=False):
+        def judge_git_anchor_command(root, session, cwd, command, *, main_thread, grants=False):
             calls.append((cwd, command))
             verdict = "warn" if "$WRAPPER" in command else ("deny" if "tests/" in command else "warn")
             return {"verdict": verdict, "cwd_identity": "pm-home", "reason": "fixture"}
@@ -1461,7 +1461,7 @@ def test_claude_hook_system_exit_is_warn_and_rc0(
 
     class ExitBoard:
         @staticmethod
-        def judge_git_anchor_command(_root, _session, _cwd, _command, grants=False):
+        def judge_git_anchor_command(_root, _session, _cwd, _command, *, main_thread, grants=False):
             raise SystemExit(23)
 
     monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", ExitBoard.judge_git_anchor_command)
@@ -1695,7 +1695,7 @@ def test_codex_explicit_tool_coordinate_precedes_session_cwd(monkeypatch, tmp_pa
 
     class FakeBoard:
         @staticmethod
-        def judge_git_anchor_command(root, session, cwd, command, grants=False):
+        def judge_git_anchor_command(root, session, cwd, command, *, main_thread, grants=False):
             calls.append((cwd, command))
             return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 
@@ -1900,7 +1900,7 @@ def test_codex_git_anchor_hook_infra_failure_is_warn_rc0_and_bypasses_dedup(
 
     class ExitBoard:
         @staticmethod
-        def judge_git_anchor_command(_root, _session, _cwd, _command, grants=False):
+        def judge_git_anchor_command(_root, _session, _cwd, _command, *, main_thread, grants=False):
             raise SystemExit(23)
 
     monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", ExitBoard.judge_git_anchor_command)
@@ -2312,7 +2312,7 @@ def test_destructive_deny_reasons_prescribe_the_engine_route(topology):
         "git push --force": _ACTION_ASK_WITHOUT_GRANT,
     }
     for command, action in expectations.items():
-        lines = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command)["reason"].splitlines()
+        lines = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, main_thread=True)["reason"].splitlines()
         assert lines[0] == _STOP_LINE
         assert lines[1] == action, lines
         assert lines[2].startswith("거부한 호출: 손 git ") and f"`{command}`" in lines[2]
@@ -2359,7 +2359,7 @@ def test_destructive_forms_outside_slot_and_shared_repository_are_not_denied(
         non_repo = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(plain), ["git", *args])
         assert non_repo["verdict"] == "warn" and non_repo["cwd_identity"] == "non-repo", non_repo
     shell = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(unrelated), "git branch -D main && git push --force",
+        str(unrelated), "git branch -D main && git push --force", main_thread=True,
     )
     assert shell["verdict"] == "warn"
 
@@ -2375,10 +2375,10 @@ def test_git_alias_is_resolved_against_the_target_repository(topology):
     assert "브랜치 지우기" in repo_alias["reason"] and "`git branch -D main`" in repo_alias["reason"]
     chained = engine_guard.judge_git_anchor(pm_paths.home_at(home), "S", str(slot), ["git", "chain"])
     assert chained["verdict"] == "deny" and "`git stash clear`" in chained["reason"]
-    inline = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), "git -c alias.gone='reset --hard' gone")
+    inline = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), "git -c alias.gone='reset --hard' gone", main_thread=True)
     assert inline["verdict"] == "deny" and "`git reset --hard`" in inline["reason"]
     shell_alias = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(slot), "git -c alias.wipe='!git clean -fd' wipe",
+        str(slot), "git -c alias.wipe='!git clean -fd' wipe", main_thread=True,
     )
     assert shell_alias["verdict"] == "deny"
     assert "대상을 정적으로 정할 수 없어" in shell_alias["reason"]
@@ -2422,7 +2422,7 @@ def test_unresolvable_calls_with_destructive_forms_are_denied(
     """셸 alias·스크립트·GIT_DIR·변수 -C·subshell cd 등 대상을 못 정한 파괴 형태는 PM 홈 cwd 에서도 거부."""
     home, slot = topology
     rendered = command.format(slot=slot, bare=home / ".repos" / "product.git")
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), rendered)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), rendered, main_thread=True)
     assert got["verdict"] == "deny", got
     assert "손 git" in got["reason"]
 
@@ -2443,7 +2443,7 @@ def test_unresolvable_calls_without_destructive_forms_keep_the_previous_verdicts
 ):
     home, slot = topology
     rendered = command.format(slot=slot, bare=home / ".repos" / "product.git")
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), rendered)["verdict"] != "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), rendered, main_thread=True)["verdict"] != "deny"
 
 
 @pytest.mark.parametrize(
@@ -2459,20 +2459,20 @@ def test_unresolvable_calls_without_destructive_forms_keep_the_previous_verdicts
 )
 def test_destructive_git_text_as_data_is_not_denied(topology, command):
     home, slot = topology
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command)["verdict"] != "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, main_thread=True)["verdict"] != "deny"
 
 
 def test_shell_expansion_in_destructive_capable_arguments(topology):
     """인자 속 셸 변수는 슬롯에서만 형태 미확정 거부다. 대상이 확정된 PM 홈 push 는 종전 warn."""
     home, slot = topology
     judge = cli_hooks.judge_git_anchor_command
-    assert judge(cli_hooks.adapter_home(home), "S", str(slot), 'git push origin "$BRANCH"')["verdict"] == "deny"
-    assert judge(cli_hooks.adapter_home(home), "S", str(home), 'git push origin "$BRANCH"')["verdict"] == "warn"
-    assert judge(cli_hooks.adapter_home(home), "S", str(home), "git push origin HEAD && echo $?")["verdict"] == "warn"
-    kept = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main; echo $HOME")
+    assert judge(cli_hooks.adapter_home(home), "S", str(slot), 'git push origin "$BRANCH"', main_thread=True)["verdict"] == "deny"
+    assert judge(cli_hooks.adapter_home(home), "S", str(home), 'git push origin "$BRANCH"', main_thread=True)["verdict"] == "warn"
+    assert judge(cli_hooks.adapter_home(home), "S", str(home), "git push origin HEAD && echo $?", main_thread=True)["verdict"] == "warn"
+    kept = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main; echo $HOME", main_thread=True)
     assert kept["verdict"] == "deny"
     assert kept["code"] == git_policy.GIT_DESTRUCTIVE_DENY_CODE
-    assert judge(cli_hooks.adapter_home(home), "S", str(slot), 'git commit -m "$MESSAGE"')["verdict"] == "warn"
+    assert judge(cli_hooks.adapter_home(home), "S", str(slot), 'git commit -m "$MESSAGE"', main_thread=True)["verdict"] == "warn"
 
 
 def test_engine_branch_and_slot_commands_are_not_blocked_by_the_git_guard(
@@ -2485,7 +2485,7 @@ def test_engine_branch_and_slot_commands_are_not_blocked_by_the_git_guard(
         f"python3 {engine} task branch product_1 product_1 feature --from main",
         f"python3 {engine} worktree remove product_1 --user-ack product_1",
     ):
-        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command)["verdict"] != "deny"
+        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, main_thread=True)["verdict"] != "deny"
 
 
 def test_claude_hook_denies_destructive_slot_git_with_permission_decision(
@@ -2631,7 +2631,7 @@ def test_stop_reason_is_stop_line_then_one_next_action(topology, cwd_key, comman
     home, slot = topology
     cwd = slot if cwd_key == "slot" else home
     rendered = command.format(bare=home / ".repos" / "product.git")
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(cwd), rendered, grants=True)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(cwd), rendered, grants=True, main_thread=True)
     lines = got["reason"].splitlines()
     assert got["verdict"] == "deny", got
     assert lines[0] == _STOP_LINE
@@ -2643,7 +2643,7 @@ def test_stop_reason_is_stop_line_then_one_next_action(topology, cwd_key, comman
 def test_compound_command_lists_each_next_action_once(topology):
     home, slot = topology
     got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
-        str(slot), "git checkout -b feature; git branch -D main; git branch -D other", grants=True,
+        str(slot), "git checkout -b feature; git branch -D main; git branch -D other", grants=True, main_thread=True,
     )
     lines = got["reason"].splitlines()
     assert lines[:3] == [_STOP_LINE, _ACTION_BRANCH_CREATE, _ACTION_ASK_WITH_GRANT]
@@ -2654,17 +2654,17 @@ def test_compound_command_lists_each_next_action_once(topology):
 def test_user_grant_passes_the_exact_command_once(topology):
     home, slot = topology
     judge = cli_hooks.judge_git_anchor_command
-    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True)["verdict"] == "deny"
+    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True, main_thread=True)["verdict"] == "deny"
     granted = cli_hooks.record_git_grants(
         cli_hooks.adapter_home(home), "S", str(slot), "지워도 됩니다.\ngit 허용: git branch -D 'main'\n",
     )
     assert granted == ["git branch -D main"]
     assert len(_grant_files(home)) == 1
 
-    first = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True)
+    first = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True, main_thread=True)
     assert first["verdict"] == "warn" and first["reason"].startswith(_GRANTED)
     assert _grant_files(home) == []
-    second = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True)
+    second = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True, main_thread=True)
     assert second["verdict"] == "deny" and second["reason"].splitlines()[0] == _STOP_LINE
 
 
@@ -2673,14 +2673,14 @@ def test_user_grant_is_bound_to_argv_folder_and_session(topology):
     judge = cli_hooks.judge_git_anchor_command
     cli_hooks.record_git_grants(cli_hooks.adapter_home(home), "S", str(slot), "git 허용: git branch -D main")
     bare = home / ".repos" / "product.git"
-    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -d main", grants=True)["verdict"] == "deny"
-    assert judge(cli_hooks.adapter_home(home), "S", str(bare), "git branch -D main", grants=True)["verdict"] == "deny"
-    assert judge(cli_hooks.adapter_home(home), "S2", str(slot), "git branch -D main", grants=True)["verdict"] == "deny"
+    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -d main", grants=True, main_thread=True)["verdict"] == "deny"
+    assert judge(cli_hooks.adapter_home(home), "S", str(bare), "git branch -D main", grants=True, main_thread=True)["verdict"] == "deny"
+    assert judge(cli_hooks.adapter_home(home), "S2", str(slot), "git branch -D main", grants=True, main_thread=True)["verdict"] == "deny"
     # 허용 수단이 없는 하네스(세션 미전달)는 기록을 소비하지 않는다.
-    no_grant = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main")
+    no_grant = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", main_thread=True)
     assert no_grant["verdict"] == "deny" and _ACTION_ASK_WITHOUT_GRANT in no_grant["reason"]
     assert len(_grant_files(home)) == 1
-    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True)["verdict"] == "warn"
+    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True, main_thread=True)["verdict"] == "warn"
 
 
 def test_user_grant_does_not_open_engine_routes_or_compound_commands(topology):
@@ -2691,9 +2691,9 @@ def test_user_grant_does_not_open_engine_routes_or_compound_commands(topology):
         "git 허용: git checkout -b feature\ngit 허용: git worktree remove ../product_2\n"
         "git 허용: git branch -D main",
     )
-    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git checkout -b feature", grants=True)["verdict"] == "deny"
-    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git worktree remove ../product_2", grants=True)["verdict"] == "deny"
-    compound = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main && git reset --hard", grants=True)
+    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git checkout -b feature", grants=True, main_thread=True)["verdict"] == "deny"
+    assert judge(cli_hooks.adapter_home(home), "S", str(slot), "git worktree remove ../product_2", grants=True, main_thread=True)["verdict"] == "deny"
+    compound = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main && git reset --hard", grants=True, main_thread=True)
     assert compound["verdict"] == "deny"
     assert len(_grant_files(home)) == 3
 
@@ -2702,10 +2702,10 @@ def test_user_grant_covers_protected_file_removal_too(topology):
     home, _slot = topology
     judge = cli_hooks.judge_git_anchor_command
     command = "rm -rf .repos/product.git"
-    assert _ACTION_ASK_WITH_GRANT in judge(cli_hooks.adapter_home(home), "S", str(home), command, grants=True)["reason"]
+    assert _ACTION_ASK_WITH_GRANT in judge(cli_hooks.adapter_home(home), "S", str(home), command, grants=True, main_thread=True)["reason"]
     cli_hooks.record_git_grants(cli_hooks.adapter_home(home), "S", str(home), f"git 허용: {command}")
-    assert judge(cli_hooks.adapter_home(home), "S", str(home), command, grants=True)["verdict"] == "warn"
-    assert judge(cli_hooks.adapter_home(home), "S", str(home), command, grants=True)["verdict"] == "deny"
+    assert judge(cli_hooks.adapter_home(home), "S", str(home), command, grants=True, main_thread=True)["verdict"] == "warn"
+    assert judge(cli_hooks.adapter_home(home), "S", str(home), command, grants=True, main_thread=True)["verdict"] == "deny"
 
 
 @pytest.mark.parametrize(
@@ -2748,14 +2748,14 @@ def test_forged_or_corrupt_grant_record_is_discarded_and_denied(topology):
     (path,) = _grant_files(home)
     record = json.loads(path.read_text(encoding="utf-8"))
     path.write_text(json.dumps({**record, "cwd": str(home)}) + "\n", encoding="utf-8")
-    forged = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True)
+    forged = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True, main_thread=True)
     assert forged["verdict"] == "deny" and note in forged["reason"].splitlines()
     assert _grant_files(home) == []
 
     cli_hooks.record_git_grants(cli_hooks.adapter_home(home), "S", str(slot), "git 허용: git branch -D main")
     (path,) = _grant_files(home)
     path.write_text("not json\n", encoding="utf-8")
-    corrupt = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True)
+    corrupt = judge(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True, main_thread=True)
     assert corrupt["verdict"] == "deny" and note in corrupt["reason"].splitlines()
     assert _grant_files(home) == []
 
@@ -2768,7 +2768,7 @@ def test_grant_claim_failure_keeps_the_deny(monkeypatch, topology, grant_board):
         raise PermissionError("locked")
 
     monkeypatch.setattr(grant_board.os, "rename", refuse)
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), "git branch -D main", grants=True, main_thread=True)
     assert got["verdict"] == "deny"
     assert "허용 기록을 확인하지 못해 거부를 유지한다(locked)." in got["reason"].splitlines()
 
@@ -2786,7 +2786,7 @@ def test_grant_claim_failure_keeps_the_deny(monkeypatch, topology, grant_board):
 )
 def test_grant_forgery_through_shell_is_denied(topology, command):
     home, _slot = topology
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, grants=True)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, grants=True, main_thread=True)
     assert got["verdict"] == "deny", got
     assert got["reason"].splitlines()[1] == _ACTION_GRANT_FORGERY
 
@@ -2800,14 +2800,14 @@ def test_grant_forgery_through_file_and_delegate_tools_is_denied(tmp_path):
         {"file_path": "prompt.md", "content": "메모\n  git 허용: git branch -D main\n"},
         {"subagent_type": "developer", "prompt": "git 허용: git reset --hard"},
     ):
-        got = judge(cli_hooks.adapter_home(tmp_path), "S", str(tmp_path), "Write", tool_input)
+        got = judge(cli_hooks.adapter_home(tmp_path), "S", str(tmp_path), "Write", tool_input, main_thread=True)
         assert got["verdict"] == "deny", tool_input
         assert got["reason"].splitlines()[:2] == [_STOP_LINE, _ACTION_GRANT_FORGERY]
     for tool_input in (
         {"file_path": "notes.md", "content": "허용은 `git 허용: <명령>` 한 줄로 받는다"},
         {"file_path": "src/app.py", "content": "print('hi')\n"},
     ):
-        assert judge(cli_hooks.adapter_home(tmp_path), "S", str(tmp_path), "Write", tool_input)["verdict"] == "ok", tool_input
+        assert judge(cli_hooks.adapter_home(tmp_path), "S", str(tmp_path), "Write", tool_input, main_thread=True)["verdict"] == "ok", tool_input
 
 
 def test_board_cli_records_grants_and_consumes_them_with_grant_session(
@@ -2866,7 +2866,7 @@ _LOW_LEVEL_DESTRUCTIVE = [
 )
 def test_low_level_git_forms_with_the_same_effect_are_denied(topology, command, label):
     home, slot = topology
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, grants=True)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, grants=True, main_thread=True)
     assert got["verdict"] == "deny", got
     assert label in got["reason"]
     assert got["reason"].splitlines()[1] == _ACTION_ASK_WITH_GRANT
@@ -2881,7 +2881,7 @@ def test_low_level_git_forms_with_the_same_effect_are_denied(topology, command, 
 )
 def test_low_level_git_reads_are_not_denied(topology, command):
     home, slot = topology
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command)["verdict"] != "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, main_thread=True)["verdict"] != "deny"
 
 
 def test_low_level_git_forms_outside_slot_and_shared_repository_are_not_denied(
@@ -2892,8 +2892,8 @@ def test_low_level_git_forms_outside_slot_and_shared_repository_are_not_denied(
     _seed_repo(unrelated)
     for command in ("git update-ref -d refs/heads/main", "git symbolic-ref HEAD refs/heads/x",
                     "git checkout-index -f -a", "git read-tree --reset -u HEAD"):
-        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(unrelated), command)["verdict"] != "deny"
-        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command)["verdict"] != "deny"
+        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(unrelated), command, main_thread=True)["verdict"] != "deny"
+        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True)["verdict"] != "deny"
 
 
 _REMOVAL_DENIED = [
@@ -2935,7 +2935,7 @@ def test_file_commands_removing_slots_or_shared_repositories_are_denied(
     home, slot = topology
     cwd = slot if cwd_key == "slot" else home
     rendered = command.format(slot=slot, home=home)
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(cwd), rendered, grants=True)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(cwd), rendered, grants=True, main_thread=True)
     assert got["verdict"] == "deny", got
     assert got["reason"].splitlines()[:2] == [_STOP_LINE, action]
     assert got.get("code") == git_policy.GIT_DESTRUCTIVE_DENY_CODE
@@ -2969,7 +2969,7 @@ def test_file_commands_outside_protected_paths_are_not_denied(
     home, slot = topology
     cwd = slot if cwd_key == "slot" else home
     rendered = command.format(outside=tmp_path / "outside")
-    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(cwd), rendered)["verdict"] != "deny"
+    assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(cwd), rendered, main_thread=True)["verdict"] != "deny"
 
 
 @pytest.mark.parametrize(
@@ -2983,7 +2983,7 @@ def test_file_commands_outside_protected_paths_are_not_denied(
 )
 def test_interpreter_wrapped_git_forms_are_denied_as_unknown_target(topology, command):
     home, _slot = topology
-    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, grants=True)
+    got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(home), command, grants=True, main_thread=True)
     assert got["verdict"] == "deny", got
     assert got["reason"].splitlines()[:2] == [_STOP_LINE, _ACTION_FOLDER_UNKNOWN]
 
@@ -3051,9 +3051,9 @@ def test_claude_hook_denies_grant_forgery_through_write_edit_and_agent_tools(mon
 
     real_judge = cli_hooks.judge_tool_input
 
-    def judge(*args):
+    def judge(*args, **kwargs):
         loads.append(1)
-        return real_judge(*args)
+        return real_judge(*args, **kwargs)
 
     monkeypatch.setattr(cli_hooks, "judge_tool_input", judge)
     base = {"session_id": "s", "hook_event_name": "PreToolUse", "cwd": str(home)}
@@ -3184,18 +3184,18 @@ def test_slot_git_writes_pass_only_for_the_session_whose_task_holds_the_slot(top
     not_owned = git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_SLOT_NOT_OWNED]
     for command in ("git add -- tests/shared.txt", "git commit -m x", "git stash", "git merge main",
                     "git restore --staged tests/shared.txt"):
-        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command)["verdict"] == "ok", command
-        got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S-other", str(slot), command)
+        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", str(slot), command, main_thread=True)["verdict"] == "ok", command
+        got = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S-other", str(slot), command, main_thread=True)
         assert got["verdict"] == "deny", command
         assert got["reason"].splitlines()[:2] == [_STOP_LINE, no_task]
     # 보기만 하는 형태는 막지 않는다 — 남의 슬롯이면 셸 경고만 한다.
     for command in ("git stash list", "git clean -n", "git status"):
-        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S-other", str(slot), command)["verdict"] == "warn", command
+        assert cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S-other", str(slot), command, main_thread=True)["verdict"] == "warn", command
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     data = json.loads(ledger.read_text(encoding="utf-8"))
     data["tasks"].append({"name": "t2", "session": "S2"})
     ledger.write_text(json.dumps(data) + "\n", encoding="utf-8")
-    other = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S2", str(home), f"git -C {slot} commit -m x")
+    other = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S2", str(home), f"git -C {slot} commit -m x", main_thread=True)
     assert other["verdict"] == "deny"
     assert other["reason"].splitlines()[1] == not_owned
 

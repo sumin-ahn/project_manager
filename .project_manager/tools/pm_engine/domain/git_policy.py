@@ -54,6 +54,10 @@ _GIT_GUARD_CASE_SLOT_NO_TASK = "slot-no-task"
 
 _GIT_GUARD_CASE_SLOT_NOT_OWNED = "slot-not-owned"
 
+# 서브에이전트(하네스 기본 위임으로 뜬 에이전트)의 슬롯 쓰기 거부와 task 열기 거부 — 서브에이전트는
+# task 를 열거나 슬롯을 잡지 않고 거부를 위임한 PM 에게 돌려준다.
+_GIT_GUARD_CASE_DELEGATED_TASK = "delegated-task"
+
 # 열린 todo 없이 파일을 고치려는 경우 — 무엇을 하는 중인지 장부에 없으면 다음 세션도 사용자도
 # 그 일을 못 본다. 등록 경로(`pm-config task todo add`)는 셸 명령이라 이 판정을 타지 않는다.
 _GIT_GUARD_CASE_NO_OPEN_TODO = "no-open-todo"
@@ -405,12 +409,16 @@ _GIT_GUARD_ACTION_LINES: dict[str, str] = {
         "`git 허용: <명령 원문>` 입력을 요청한다."
     ),
     _GIT_GUARD_CASE_SLOT_NO_TASK: (
-        "이 세션에 열린 task 가 없다. `pm_bootstrap.py --task <task>` 으로 task 를 연 뒤 그 task 가 잡은 "
-        "슬롯에서 한다."
+        "이 세션이 연 task 가 없거나 여럿이다. `pm_bootstrap.py --task <task>` 으로 이 세션이 쓸 task "
+        "하나를 연 뒤(이 세션이 연 다른 task 는 닫힌다) 그 task 가 잡은 슬롯에서 한다."
     ),
     _GIT_GUARD_CASE_SLOT_NOT_OWNED: (
         "이 세션 task 가 잡은 슬롯에서만 쓴다. 잡은 슬롯이 없으면 `pm-config alloc <repo> --task <task>` "
         "으로 잡는다."
+    ),
+    _GIT_GUARD_CASE_DELEGATED_TASK: (
+        "위임받은 에이전트는 task 를 열거나(`pm_bootstrap.py`) 슬롯을 잡지(`pm-config alloc`) 않는다. "
+        "이 거부 사유를 그대로 위임한 PM 에게 돌려주고, PM 이 task 를 열거나 슬롯을 잡은 뒤 다시 위임받는다."
     ),
     _GIT_GUARD_CASE_NO_OPEN_TODO: (
         "지금 하는 일을 먼저 등록한다 — `pm-config task todo add <task> <할 일 한 줄>`. 목록은 "
@@ -427,6 +435,17 @@ _GIT_GUARD_ASK_WITHOUT_GRANT = (
     "사용자에게 이 명령을 실행할지 묻는다. 이 하네스에는 1회 허용 수단이 없으므로, 허용하면 "
     "사용자가 터미널에서 직접 실행한다."
 )
+
+
+# 서브에이전트에게는 주 세션용 안내(task 열기·슬롯 잡기) 대신 PM 에게 돌려주라는 안내를 낸다.
+_MAIN_THREAD_ONLY_CASES = frozenset({_GIT_GUARD_CASE_SLOT_NO_TASK, _GIT_GUARD_CASE_SLOT_NOT_OWNED})
+
+
+def _guard_case_for(case: str, *, main_thread: bool) -> str:
+    """서브에이전트 호출이면 주 세션 전용 경우(`slot-no-task`·`slot-not-owned`)를 `delegated-task` 로 바꾼다."""
+    if not main_thread and case in _MAIN_THREAD_ONLY_CASES:
+        return _GIT_GUARD_CASE_DELEGATED_TASK
+    return case
 
 
 class GitGrantShapeError(ValueError):

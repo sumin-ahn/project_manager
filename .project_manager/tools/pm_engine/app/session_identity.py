@@ -89,37 +89,25 @@ def resolve_session_task(home, session_id: str | None) -> tuple[str | None, str 
 
     입력은 세션 ID 하나다. cwd·열린 task 수·위임 환경 변수는 보지 않는다. task 기록
     (`worktree-leases.json` 최상위 `tasks[]`)의 `session` 은 부트스트랩이 남긴 하네스 세션 ID
-    원값이고, 그 값이 같은 항목이 정확히 1개일 때만 해소다. 반환은 해소면 ``(task, None)``,
-    미해소면 ``(None, 사유)``.
+    원값이고, 판정은 `domain.session_identity.session_task`(그 값이 같은 항목이 정확히 1개일 때만
+    해소)가 한다. 반환은 해소면 ``(task, None)``, 미해소면 ``(None, 사유)``.
 
     task 기록 파일이 없는 것만 "task 없음" 이다. 읽기 실패·JSON 파손·모양이 다른 파일은 판정할
     근거가 아니라 고장이므로 예외로 끝난다.
     """
-    wanted = session_id.strip() if isinstance(session_id, str) else ""
-    if not wanted:
-        return None, session_identity.SESSION_TASK_REASON_NO_SESSION
+    # 세션 ID 가 없으면 장부를 읽기 전에 미해소다. 장부가 없으면 행이 없는 것과 같다.
+    without_rows = session_identity.session_task((), session_id)
+    if without_rows[1] == session_identity.SESSION_TASK_REASON_NO_SESSION:
+        return without_rows
     ledger = pm_paths.leases_file(home)
     try:
         text = fs.read_text_shared(ledger, encoding="utf-8")
     except FileNotFoundError:
-        return None, session_identity.SESSION_TASK_REASON_NO_TASK.format(session=wanted)
+        return without_rows
     data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError(f"{ledger}: task 기록 파일 최상위가 JSON 객체가 아님")
     rows = data.get("tasks", [])
     if not isinstance(rows, list):
         raise ValueError(f"{ledger}: task 기록 `tasks` 가 목록이 아님")
-    names = sorted(
-        row["name"] for row in rows
-        if isinstance(row, dict)
-        and isinstance(row.get("name"), str) and row["name"].strip()
-        and isinstance(row.get("session"), str)
-        and row["session"].strip() == wanted
-    )
-    if not names:
-        return None, session_identity.SESSION_TASK_REASON_NO_TASK.format(session=wanted)
-    if len(names) > 1:
-        return None, session_identity.SESSION_TASK_REASON_MANY_TASKS.format(
-            session=wanted, names=", ".join(names),
-        )
-    return names[0], None
+    return session_identity.session_task(rows, session_id)

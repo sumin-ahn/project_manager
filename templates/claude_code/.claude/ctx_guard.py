@@ -14,6 +14,9 @@ statusLine(``ctx_statusline.py``)과 ctx 훅(``ctx_stop_hook.py``)이 Claude Cod
     토큰 = 현재 컨텍스트 점유; omc sessionTotalTokens 선례). 단, 마지막 compact 경계
     뒤의 usage 만 현재 사이클 실측으로 인정한다. 기록은 끝에서부터 읽어 훅 1회 메모리·시간이
     기록 크기와 무관하다.
+
+훅 입력이 서브에이전트 발화인지(``is_subagent_hook``)도 이 모듈이 읽는다 — ctx 훅과 git-anchor 훅이
+같은 규칙을 쓴다.
 """
 from __future__ import annotations
 
@@ -204,3 +207,13 @@ def _boundary_uuid(entry: dict) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"compact 경계 항목에 uuid 가 없음(timestamp={entry.get('timestamp')!r})")
     return value
+
+
+def is_subagent_hook(stdin: dict) -> bool:
+    """서브에이전트 안에서 발화한 훅인가 — ``agent_id`` 하나로 판정한다.
+
+    서브에이전트 훅 입력의 ``session_id``·``transcript_path`` 는 주 세션과 같아 그 둘로는 가를 수
+    없다. ``agent_type`` 은 주 스레드 ``--agent`` 세션에도 실리므로 판정에 쓰지 않는다. ctx 훅과
+    git-anchor 훅이 함께 쓴다."""
+    agent_id = stdin.get("agent_id")
+    return isinstance(agent_id, str) and bool(agent_id.strip())

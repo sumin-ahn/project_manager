@@ -37,7 +37,7 @@ def adapter_home(root: str | os.PathLike[str]) -> home.Home:
 
 
 def judge_tool_input(
-    home: home.Home, session: str, cwd: str, tool_name: str, tool_input: object,
+    home: home.Home, session: str, cwd: str, tool_name: str, tool_input: object, *, main_thread: bool,
 ) -> dict[str, str]:
     """셸이 아닌 도구(파일 쓰기·편집·위임 등) 입력 판정 — 허용 위조, 그리고 슬롯 쓰기 주인.
 
@@ -47,7 +47,9 @@ def judge_tool_input(
     슬롯일 때만 통과한다. 그리고 대상이 어디든, 이 세션 task 에 **열린 todo 가 없으면** 경고를 붙인다
     (`_no_open_todo_judgment`·막지는 않는다) — 무엇을 하는 중인지 장부에 없다는 사실을 화면에 올린다.
     거부가 이기고 경고는 거부가 없을 때만 나간다(같은 호출에 두 말을 겹치지 않는다).
+    ``main_thread`` 가 거짓(서브에이전트 호출)이면 슬롯 거부의 다음 행동은 PM 에게 돌려주라는 안내다.
     """
+    _check_type("main_thread", main_thread, (bool,))
     for text in git_policy._tool_input_strings(tool_input):
         if git_policy.GIT_GRANT_DIR_NAME in text.replace("\\", "/") or git_policy.GIT_GRANT_LINE.search(text):
             judgment = git_policy._git_grant_forgery_judgment(
@@ -69,7 +71,8 @@ def judge_tool_input(
         return {
             "verdict": "deny", "cwd_identity": "slot", "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
             "reason": git_policy._git_guard_stop_reason(
-                [item["case"] for item in denies], " | ".join(item["reason"] for item in denies),
+                [git_policy._guard_case_for(item["case"], main_thread=main_thread) for item in denies],
+                " | ".join(item["reason"] for item in denies),
                 grants_available=False,
             ),
         }
@@ -100,7 +103,7 @@ def record_git_grants(home: home.Home, session: str, cwd: str, prompt: str) -> l
 
 
 def judge_git_anchor_command(
-    home: home.Home, session: str, cwd: str, command: str, *, grants: bool = False,
+    home: home.Home, session: str, cwd: str, command: str, *, main_thread: bool, grants: bool = False,
     runner: Any = subprocess.run,
 ) -> dict[str, str]:
     """셸 command의 모든 git/엔진/파일 삭제 호출을 중앙 파싱하고 가장 강한 판정을 반환한다.
@@ -111,7 +114,10 @@ def judge_git_anchor_command(
     세션 기록을 남긴다(`_record_bootstrap_session_claims`). ``grants`` 는 이 하네스가 사용자 1회 허용을
     쓸 수 있을 때 준다 — 그러면 1회 허용으로 풀 수 있는 거부에서 ``home`` 에 남은 이 세션·정확히 같은
     명령의 허용 기록을 소비하고 통과시킨다. 없으면 그 거부는 사용자가 터미널에서 직접 실행하도록 안내한다.
+    ``main_thread`` 가 거짓(서브에이전트 호출)이면 `pm_bootstrap.py --task` 호출을 거부하고(서브에이전트의
+    세션 ID 는 주 세션과 같다) 슬롯 거부·경고의 다음 행동은 PM 에게 돌려주라는 안내다.
     """
+    _check_type("main_thread", main_thread, (bool,))
     root = home.root
     parsed = app_hooks._git_invocations_from_shell(cwd, command)
     invocations = parsed.invocations
@@ -159,8 +165,14 @@ def judge_git_anchor_command(
             "verdict": "warn", "cwd_identity": "non-repo",
             "reason": f"{parsed.reason} — 차단하지 않음; cwd를 직접 확인",
         })
+    if not main_thread:
+        judgments.extend(engine_guard._delegated_bootstrap_denials(parsed))
     if isinstance(command, str):
-        judgments.extend(app_hooks._shell_slot_warnings(root, session, cwd, command))
+        judgments.extend(app_hooks._shell_slot_warnings(root, session, cwd, command, main_thread=main_thread))
+    judgments = [
+        {**item, "case": git_policy._guard_case_for(item["case"], main_thread=main_thread)} if "case" in item else item
+        for item in judgments
+    ]
     if not judgments:
         return {
             "verdict": "ok", "cwd_identity": "non-repo",
@@ -182,7 +194,7 @@ def cmd_git_anchor(home: home.Home, args: argparse.Namespace) -> int:
     (정확히 같은 명령·같은 세션의 허용 기록이 있으면 소비한다).
     """
     judgment = judge_git_anchor_command(
-        home, args.session, args.cwd, args.command, grants=args.grants,
+        home, args.session, args.cwd, args.command, main_thread=True, grants=args.grants,
     )
     console.write_machine_line(json.dumps(judgment, ensure_ascii=False))
     return 0
@@ -202,7 +214,7 @@ def cmd_git_grant(home: home.Home, args: argparse.Namespace) -> int:
 def cmd_git_tool_input(home: home.Home, args: argparse.Namespace) -> int:
     """하네스 훅용 — stdin JSON 도구 입력의 판정(허용 위조·슬롯 쓰기 주인)을 한 줄 JSON 으로 출력한다."""
     tool_input = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-    judgment = judge_tool_input(home, args.session, args.cwd, args.tool, tool_input)
+    judgment = judge_tool_input(home, args.session, args.cwd, args.tool, tool_input, main_thread=True)
     console.write_machine_line(json.dumps(judgment, ensure_ascii=False))
     return 0
 
@@ -216,7 +228,9 @@ _NOTICE_STATUS = {True: "claimed", False: "seen", None: "unavailable"}
 # 기계 JSON 입력 세대와 키 집합 — 누락·추가 키는 업무 실행 전에 거부한다.
 HOOK_WIRE_VERSION = 1
 HOOK_CONTEXT_KEYS = frozenset({"version", "tokens", "model", "main_thread", "boundary"})
-HOOK_TOOL_KEYS = frozenset({"version", "cwd", "tool_name", "tool_input", "shell_command", "context", "recall"})
+HOOK_TOOL_KEYS = frozenset({
+    "version", "cwd", "tool_name", "tool_input", "shell_command", "main_thread", "context", "recall",
+})
 HOOK_TOOL_CONTEXT_KEYS = frozenset({"session", "tokens", "model", "main_thread", "boundary"})
 HOOK_RECALL_KEYS = frozenset({"session", "on", "text", "main_thread"})
 # `hook-tool` 의 ctx 관측을 보내는 하네스 — 일반 도구 호출 1회에 ctx 를 싣는 어댑터는 OpenCode 하나다.
@@ -415,6 +429,7 @@ def _hook_tool_request(request: dict) -> None:
     _check_type("cwd", request["cwd"], (str,))
     _check_type("tool_name", request["tool_name"], (str,))
     _check_type("shell_command", request["shell_command"], (str, type(None)))
+    _check_type("main_thread", request["main_thread"], (bool,))
     if request["shell_command"] is not None:
         tool_input = request["tool_input"]
         _check_type("tool_input", tool_input, (dict,))
@@ -451,9 +466,15 @@ def cmd_hook_tool(home: home.Home, args: argparse.Namespace) -> int:
     except (HookWireError, TypeError, ValueError) as exc:
         return _wire_failure("hook-tool", exc)
     if request["shell_command"] is not None:
-        git = judge_git_anchor_command(home, args.session, request["cwd"], request["shell_command"], grants=True)
+        git = judge_git_anchor_command(
+            home, args.session, request["cwd"], request["shell_command"],
+            main_thread=request["main_thread"], grants=True,
+        )
     else:
-        git = judge_tool_input(home, args.session, request["cwd"], request["tool_name"], request["tool_input"])
+        git = judge_tool_input(
+            home, args.session, request["cwd"], request["tool_name"], request["tool_input"],
+            main_thread=request["main_thread"],
+        )
     context, context_error, recall, recall_error = None, None, None, None
     if git["verdict"] != "deny":
         if request["context"] is not None:

@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from pm_engine.domain import git_policy, shell_policy
+from pm_engine.domain import git_policy, session_identity, shell_policy
 from pm_engine.infra import fs, git, process
 
 
@@ -351,8 +351,9 @@ _GIT_GRANT_ABSENT = "absent"
 _GIT_GRANT_FORGED = "forged"
 
 # 슬롯 쓰기 주인 판정 — 슬롯(`work/<repo>_<N>`) 안에는 그 슬롯을 잡은 task 의 세션만 쓴다. 이 세션의
-# task = task 기록 중 `session` 이 훅 세션 ID 와 같은 것. 위임 하네스(pm_delegate 가 띄움)는 세션 ID 가
-# 따로라 이 환경변수로 받은 task 로 판정한다(그 task 가 열려 있을 때만). 슬롯 밖은 판정하지 않는다.
+# task = task 기록 중 `session` 이 훅 세션 ID 와 같은 단 하나(`session_identity.session_task`). 위임
+# 하네스(pm_delegate 가 띄움)는 세션 ID 가 따로라 이 환경변수로 받은 task 로 판정한다(그 task 가 열려
+# 있을 때만). 슬롯 밖은 판정하지 않는다.
 SLOT_WRITE_DELEGATE_TASK_ENV = "PM_DELEGATE_TASK"
 
 # 파일 쓰기·편집 도구의 대상 경로 입력 키(실측 claude 2.1.272 · opencode 1.18.31).
@@ -411,16 +412,25 @@ def slot_containing(
     return None if row is None else (row, tasks)
 
 
-def _session_task(session: str, tasks: Sequence[dict]) -> str | None:
-    """이 세션이 연 task 이름 — 세션 ID 로 찾고, 없으면 위임 환경변수의 열린 task."""
-    if session:
-        for row in tasks:
-            if row.get("session") == session and isinstance(row.get("name"), str):
-                return row["name"]
+def _session_task(session: str, tasks: Sequence[dict]) -> tuple[str | None, str | None]:
+    """이 세션이 연 task — ``(task, None)`` 또는 ``(None, 미해소 사유)``.
+
+    세션 ID 로 찾는 규칙은 `domain.session_identity.session_task`(정확히 1행) 하나다. 세션 ID 가
+    없거나 그 세션이 연 task 가 없으면 위임 환경변수의 열린 task 로 찾는다. 세션이 연 task 가
+    여럿이면 위임 환경변수를 보지 않고 미해소다."""
+    task, reason = session_identity.session_task(tasks, session)
+    if task is not None:
+        return task, None
+    delegable = {
+        session_identity.SESSION_TASK_REASON_NO_SESSION,
+        session_identity.SESSION_TASK_REASON_NO_TASK.format(session=session.strip()),
+    }
+    if reason not in delegable:
+        return None, reason
     delegated = os.environ.get(SLOT_WRITE_DELEGATE_TASK_ENV, "")
     if delegated and any(row.get("name") == delegated and row.get("session") for row in tasks):
-        return delegated
-    return None
+        return delegated, None
+    return None, reason
 
 
 def _slot_write_judgment(
@@ -436,12 +446,12 @@ def _slot_owner_judgment(
 ) -> dict[str, str]:
     row, tasks = found
     slot = row["slot"]
-    task = _session_task(session, tasks)
+    task, unresolved = _session_task(session, tasks)
     if task is None:
         return {
             "verdict": "deny", "cwd_identity": "slot", "code": git_policy.GIT_DESTRUCTIVE_DENY_CODE,
             "case": git_policy._GIT_GUARD_CASE_SLOT_NO_TASK,
-            "reason": f"슬롯 {slot} 쓰기 — 이 세션({session or '세션 ID 없음'})이 연 task 없음 · 대상 {target}",
+            "reason": f"슬롯 {slot} 쓰기 — {unresolved} · 대상 {target}",
         }
     role = row.get("role", "work")
     if row.get("state") == "leased" and role == "work" and row.get("session") == task:
@@ -472,12 +482,12 @@ def _write_tool_targets(cwd: str, tool_name: str, tool_input: dict) -> list[Path
 
 
 def _shell_slot_warnings(
-    root: str | os.PathLike[str], session: str, cwd: str, command: str,
+    root: str | os.PathLike[str], session: str, cwd: str, command: str, *, main_thread: bool,
 ) -> list[dict[str, str]]:
     """셸 명령이 이 세션 task 의 것이 아닌 슬롯을 실행 위치나 절대경로로 가리키면 경고한다.
 
     셸 쓰기(리다이렉트·`sed -i`·스크립트)는 대상을 정적으로 못 정하므로 막지 않는다 — 슬롯 하나당
-    경고 한 줄로 알린다."""
+    경고 한 줄로 알린다. 서브에이전트(``main_thread`` 거짓)에게는 PM 에게 돌려주라는 안내를 싣는다."""
     warnings: list[dict[str, str]] = []
     seen: set[str] = set()
     for raw in (cwd, *_SHELL_ABSOLUTE_PATH.findall(command)):
@@ -493,7 +503,8 @@ def _shell_slot_warnings(
             "verdict": "warn", "cwd_identity": "slot",
             "reason": (
                 f"이 세션 task 가 잡지 않은 슬롯 {slot} 을 가리키는 셸 명령 — 셸 쓰기 대상은 판정하지 "
-                f"않는다. 쓰기라면 멈춘다: {git_policy._GIT_GUARD_ACTION_LINES[judgment['case']]}"
+                f"않는다. 쓰기라면 멈춘다: "
+                f"{git_policy._GIT_GUARD_ACTION_LINES[git_policy._guard_case_for(judgment['case'], main_thread=main_thread)]}"
             ),
         })
     return warnings
