@@ -453,8 +453,13 @@ def _neutralize_codex_ambient_markers(request, monkeypatch):
 _CODEX_AUTH = Path.home() / ".codex" / "auth.json"
 
 # codex exec 공통 argv 접두 (fill 러너·relay driver 와 동일 핀·ADR-0070): --json JSONL · workspace-write
-# (파일 편집/board.py 실행 필요) · --skip-git-repo-check(tmp 홈은 git repo 아님).
-_CODEX_EXEC_PREFIX = ("codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check")
+# (파일 편집/board.py 실행 필요) · --skip-git-repo-check(tmp 홈은 git repo 아님) ·
+# --dangerously-bypass-hook-trust(격리 홈에는 저장된 훅 신뢰가 없어 이 플래그 없이는 채택자 훅이 0건 돈다.
+# 훅 신뢰 2단계를 마친 실 채택자처럼 훅을 켠다. 프로젝트 trust 는 `codex exec` 가 스스로 홈에 기록한다).
+_CODEX_EXEC_PREFIX = (
+    "codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check",
+    "--dangerously-bypass-hook-trust",
+)
 
 # 라이브 codex subprocess 로 통과시킬 env 화이트리스트 — 부모 env 통째 상속 대신 필수만
 # (test_fresh_adopter_runtime_smoke._live_env 취지 동일). HOME 은 통과하되 CODEX_HOME 을 격리 dir 로
@@ -470,9 +475,8 @@ def codex_auth_available() -> bool:
 def make_codex_home(base: Path) -> Path:
     """격리 CODEX_HOME 을 만들고 실 auth.json 을 복사한다 (실 ~/.codex 미오염·trust 결정성).
 
-    trust 는 여기서 강제하지 않는다 — adr/ticket/relay 라이브는 `-s workspace-write` CLI 핀으로
-    쓰기가 열려 project trust 없이 동작(세션 실측). project config/hooks/skills 로드가 필요한
-    측정은 호출부가 `config.toml [projects]` trust 를 이 홈에 추가한다(`-c` override 는 무효·실측 §D3)."""
+    trust 는 여기서 쓰지 않는다 — 프로젝트 trust 는 `codex exec` 가 스스로 이 홈에 기록한다(실측).
+    훅 신뢰는 저장된 값이 없으므로 `run_codex_exec` 의 `--dangerously-bypass-hook-trust` 로 훅을 돌린다."""
     home = base / ".codex-home"
     home.mkdir(parents=True, exist_ok=True)
     shutil.copy2(_CODEX_AUTH, home / "auth.json")

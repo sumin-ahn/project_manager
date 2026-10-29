@@ -1803,6 +1803,7 @@ def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
     run_codex_exec("native wave", dest, home, sandbox="danger-full-access")
     assert calls[0][calls[0].index("-s") + 1] == "workspace-write"
     assert calls[1][calls[1].index("-s") + 1] == "danger-full-access"
+    assert all("--dangerously-bypass-hook-trust" in call for call in calls)
 
     live_source = inspect.getsource(test_release_wave_codex_native_ticket_growth)
     assert live_source.index('_guided_adopter(tmp_path, "codex"') < live_source.index(
