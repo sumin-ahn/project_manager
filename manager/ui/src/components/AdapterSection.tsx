@@ -127,8 +127,7 @@ export default function AdapterSection({ bridge, path, onConfLoaded }:
           <tbody>
             {section.files.map((file) => (
               <tr key={file.path} data-testid={`adapter-${file.path}`} className="align-top">
-                <td title={file.path}
-                    className="w-64 py-0.5 font-mono text-[11px] whitespace-nowrap">{file.path}</td>
+                <td className="w-64 break-all py-0.5 font-mono text-[11px]">{file.path}</td>
                 {hasChannel(file) ? (
                   <>
                     <td className="w-24 py-0.5 text-[11px]">{file.harness}</td>
@@ -139,7 +138,7 @@ export default function AdapterSection({ bridge, path, onConfLoaded }:
                     <td className="w-28 py-0.5 font-mono text-[11px] text-slate-500">
                       {file.template_rev?.slice(0, 8)}
                     </td>
-                    <td className="py-0.5 text-[11px] text-slate-500 whitespace-nowrap">
+                    <td className="py-0.5 text-[11px] text-slate-500">
                       {shown(file.distance)}
                       {editedLines(file)}
                     </td>
