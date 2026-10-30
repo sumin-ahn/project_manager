@@ -231,7 +231,7 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
         return {'verdict': 'ok', 'cwd_identity': identity, 'reason': '엔진/pytest 호출이 아님'}
     if details.kind == 'pytest':
         if identity == 'pm-home' and shell_policy._pytest_targets_tests(details.args) and (not (cwd_path / 'tests').is_dir()):
-            return {'verdict': 'deny', 'cwd_identity': identity, 'code': 'pm-home-relative-pytest-tests-missing', 'reason': 'PM 홈 cwd에서 pytest tests/를 실행하려 하나 cwd의 tests/ 디렉터리가 실재하지 않음 — 대상 worktree의 workdir에서 실행하라'}
+            return {'verdict': 'deny', 'cwd_identity': identity, 'code': 'pm-home-relative-pytest-tests-missing', 'reason': 'PM 홈 cwd에서 pytest tests/를 실행하려 하나 cwd의 tests/ 디렉터리가 실재하지 않음 — 작업 폴더의 시험 경로를 절대경로로 적어 다시 실행하라'}
         return {'verdict': 'ok', 'cwd_identity': identity, 'reason': 'pytest 호출은 PM 홈 tests/ 오앵커 패턴이 아님'}
     assert details.script is not None
     unexpanded = shell_policy._unexpanded_shell_parameters(details.script)

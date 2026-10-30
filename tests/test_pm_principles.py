@@ -78,14 +78,6 @@ def _codex_live_bash_event() -> dict:
     return dict(events[0])
 
 
-def _codex_live_delegate_event() -> dict:
-    """라이브 캡처 fixture의 `collaborationspawn_agent`(delegate 축) PreToolUse 이벤트."""
-    data = json.loads(CODEX_LIVE_HOOK_FIXTURE.read_text(encoding="utf-8"))
-    events = [event for event in data["events"] if event.get("tool_name") == "collaborationspawn_agent"]
-    assert len(events) == 1, events
-    return dict(events[0])
-
-
 def _write_registry(root: Path, text: str, *, local: str | None = None) -> None:
     wiki = root / ".project_manager" / "wiki"
     wiki.mkdir(parents=True, exist_ok=True)
@@ -703,62 +695,11 @@ def _write_codex_root(root: Path, registry_text: str) -> None:
     _write_engine_tools(root / ".project_manager" / "tools")
 
 
-def test_codex_bash_tool_name_maps_to_shell_axis_using_the_live_fixture(codex):
-    """실 캡처 fixture 의 Bash PreToolUse 이벤트가 shell 축으로 판별된다 — 이전엔
-    `tool == "shell"` 만 처리해 실 payload(tool_name=`Bash`)에서 무발화였다."""
-    payload = _codex_live_bash_event()
-    signal = codex._principle_recall_signal(payload)
-    assert signal == ("shell", payload["tool_input"]["command"])
-
-
-def test_codex_collaborationspawn_agent_still_maps_to_delegate_axis(codex):
-    """Bash 매핑 수정이 delegate 축(다른 tool_name)을 건드리지 않는다(역방향 확인)."""
-    payload = _codex_live_delegate_event()
-    signal = codex._principle_recall_signal(payload)
-    assert signal is not None
-    assert signal[0] == "delegate"
-    assert signal[1] == payload["tool_input"]["task_name"]
-
-
-def test_codex_apply_patch_tool_name_is_not_misrouted_to_shell_axis(codex):
-    """Bash→shell 매핑이 codex 의 다른 도구(apply_patch)를 shell 로 오판하지 않는다(역방향
-    확인) — apply_patch 자체는 fixture 에 이벤트가 없어 필드 추정치인 edit 축으로 간다."""
-    payload = {
-        "hook_event_name": "PreToolUse",
-        "tool_name": "apply_patch",
-        "tool_input": {"file_path": "tests/test_x.py"},
-    }
-    signal = codex._principle_recall_signal(payload)
-    assert signal == ("edit", "tests/test_x.py")
-
-
-def test_codex_apply_patch_edit_signal_is_a_synthetic_field_estimate_not_fixture_verified(codex):
-    """codex 캡처 fixture 에는 apply_patch PreToolUse 이벤트가 없다 — 이 테스트는 추정 필드명
-    (file_path/path/input)의 합성 입력 확인이지 라이브 도달 증거가 아니다. fixture 가 그 이벤트를
-    얻으면 이 테스트를 실 필드명으로 교체해야 한다(아래 guard 가 그 시점을 표시한다)."""
-    data = json.loads(CODEX_LIVE_HOOK_FIXTURE.read_text(encoding="utf-8"))
-    assert not [e for e in data["events"] if e.get("tool_name") == "apply_patch"], (
-        "fixture 에 apply_patch 이벤트가 생겼다 — 이 테스트를 그 실 필드명으로 교체하라"
-    )
-    for field in ("file_path", "path", "input"):
-        payload = {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "apply_patch",
-            "tool_input": {field: "tests/test_x.py"},
-        }
-        assert codex._principle_recall_signal(payload) == ("edit", "tests/test_x.py"), field
-
-
 def test_codex_principle_recall_envelope_surfaces_broken_registry_warning(codex, tmp_path):
     """codex `principle_recall_envelope` 도 파손 경고를 무출력으로 버리지 않는다 — 비차단이라
     `decision` 키가 없다(codex 축의 "rc0" 과 동형: 판정을 막지 않는 엔벨로프 형태)."""
     _write_codex_root(tmp_path, "#### 공유\n- `[shell: (unclosed]` 파손 항목.\n")
-    payload = {
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "tool_input": {"command": "ls -la"},
-        "session_id": "sess-codex-broken",
-    }
+    payload = {"hook_event_name": "UserPromptSubmit", "prompt": "ls -la", "session_id": "sess-codex-broken"}
     envelope = codex.principle_recall_envelope(payload, tmp_path)
     assert envelope != {}
     assert "decision" not in envelope
@@ -835,11 +776,18 @@ def test_package_principles_home_isolates_data_and_markers(tmp_path):
 def test_codex_recall_uses_package_without_flat_principles_cli(codex, tmp_path):
     wiki = tmp_path / '.project_manager' / 'wiki'
     wiki.mkdir(parents=True)
-    (wiki / 'pm_principles.md').write_text('#### rules\n- `[shell: git]` package rule\n', encoding='utf-8')
+    (wiki / 'pm_principles.md').write_text(
+        '#### rules\n- `[shell: git]` shell rule\n- `[prompt: git]` package rule\n', encoding='utf-8')
     assert not (tmp_path / '.project_manager' / 'tools' / 'pm_principles.py').exists()
-    event = _codex_live_bash_event()
-    event.pop('agent_id', None)
-    event.pop('agent_type', None)
-    event['tool_input'] = {'command': 'git status'}
-    result = codex.principle_recall_envelope(event, tmp_path)
-    assert 'package rule' in result['hookSpecificOutput']['additionalContext']
+    document = json.loads(CODEX_LIVE_HOOK_FIXTURE.read_text(encoding='utf-8'))
+    prompt_event = dict(next(e for e in document['first_turn_events'] if e['hook_event_name'] == 'UserPromptSubmit'))
+    prompt_event['prompt'] = 'git status'
+    result = codex.principle_recall_envelope(prompt_event, tmp_path)
+    assert result['hookSpecificOutput']['hookEventName'] == 'UserPromptSubmit'
+    context = result['hookSpecificOutput']['additionalContext']
+    assert 'package rule' in context and 'shell rule' not in context
+    shell_event = _codex_live_bash_event()
+    shell_event.pop('agent_id', None)
+    shell_event.pop('agent_type', None)
+    shell_event['tool_input'] = {'command': 'git status'}
+    assert codex.principle_recall_envelope(shell_event, tmp_path) == {}

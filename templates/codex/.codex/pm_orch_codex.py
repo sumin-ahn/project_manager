@@ -331,8 +331,6 @@ class CodexCliDriver:
 # rollout JSONL 은 세션이 길수록 커진다(라이브 실측 — 2 turn 46KB). 전량을 읽지 않고 꼬리만 본다:
 #   token_count 는 turn 마다 기록되므로 최신 값은 꼬리에 있고, 꼬리에서 못 찾으면 측정 불가(0)다.
 CTX_ROLLOUT_TAIL_BYTES = 256 * 1024
-# 넛지를 주입할 수 있는 훅 이벤트 — 두 이벤트 모두 `additionalContext` 를 갖는다(스키마 실측).
-CTX_NUDGE_EVENTS = ("PreToolUse", "UserPromptSubmit")
 
 
 def _rollout_input_tokens(raw_line: bytes) -> int | None:
@@ -369,7 +367,7 @@ def rollout_context_tokens(transcript_path) -> int:
     null·읽기 실패·token_count 0건은 전부 0(측정 없음)이라 밴드 판정으로 올라가지 않는다.
 
     **구조적 한계(라이브 실측 · codex-cli 0.147.0)**: 점유의 첫 기록은 첫 모델 **응답 뒤**
-    `event_msg/token_count` 다 — 새 thread 의 첫 `UserPromptSubmit`/`PreToolUse` 시점 rollout 에는
+    `event_msg/token_count` 다 — 새 thread 의 첫 `UserPromptSubmit` 시점 rollout 에는
     그 레코드가 아직 없어 이 함수는 0을 돌려준다. 그 0은 "사용률 0%"가 아니라 "아직 측정 안 됨"
     sentinel 이고, codex 훅 payload 11종 전부(`additionalProperties:false`)에 점유·윈도 신호가
     없어 대체 채널도 없다(호출부 `ctx_nudge_envelope` 가 이 sentinel 을 밴드 판정에 올리지 않는
@@ -447,7 +445,7 @@ def ctx_nudge_envelope(payload: dict, root: Path) -> dict:
     않는다. codex 훅에 이 구간을 메울 신호·비차단 채널이 없다는 결론은 라이브 실측
     (codex-cli 0.147.0)이고, claude·opencode 도 같은 구조적 한계를 갖는다."""
     event = payload.get("hook_event_name") or payload.get("hookEventName")
-    if event not in CTX_NUDGE_EVENTS or hook_is_subagent(payload):
+    if event != "UserPromptSubmit" or hook_is_subagent(payload):
         return {}
     from pm_engine.cli import hooks
 
@@ -458,65 +456,29 @@ def ctx_nudge_envelope(payload: dict, root: Path) -> dict:
         model=model if isinstance(model, str) else None, main_thread=True,
     )
     if decision["status"] == "unavailable":  # 압축 한도 기록 부재·손상·입력 불일치 — 프롬프트 제출 때 알린다.
-        return {"systemMessage": f"[ctx-budget] {decision['notice']}"} if event == "UserPromptSubmit" else {}
+        return {"systemMessage": f"[ctx-budget] {decision['notice']}"}
     envelope = ({"hookSpecificOutput": {"hookEventName": event, "additionalContext": decision["guidance"]}}
                 if decision["emit"] else {})
-    if decision["notice"] and event == "UserPromptSubmit":
+    if decision["notice"]:
         envelope = {**envelope, "systemMessage": f"[ctx-budget] {decision['notice']}"}
     return envelope
 
 
 # ── 판단 원칙 recall (엔진 recall_principles 소비) ────────────────
-# 레지스트리(`.project_manager/wiki/pm_principles.md`)의 `on: shell|edit|delegate|prompt` 태그
-# 항목을 이 호출에 대조해 매칭되면 additionalContext 로 합본한다. 판정·seen marker 는 엔진
-# `recall_principles` 가 하고, 이 파일은 codex payload → (on, text) 축 변환만 소유한다
-# (도구 이름→on 매핑은 어댑터 소유). 도구 무관(모든 이벤트에 발화)이라 ctx 넛지와 같은
-# in-process 형태를 쓴다 — 자식 프로세스면 매 도구 호출마다 인터프리터가 하나 더 뜬다.
-_PRINCIPLE_SHELL_TOOL_NAME = "Bash"  # git-anchor(`git_anchor_hook_evaluate`)가 이미 쓰는 실측 값.
-_PRINCIPLE_EDIT_TOOL_NAME = "apply_patch"  # codex 내장 파일 편집 도구 이름 **추정치** — 캡처
-# fixture 에 apply_patch PreToolUse 이벤트가 없어 라이브 미검증(어댑터 소유 매핑, 값이 다르면
-# 이 리터럴과 `_principle_recall_signal` 의 file_path/path/input 필드 시도 순서만 고치면 된다).
-# delegate-channel 기능의 `CODEX_SPAWN_TOOL_NAME`/`CODEX_ROLE_INPUT_FIELD`
-# (`delegate_channel_guard.py`) 와 같은 값의 로컬 리터럴 — 이 파일은 그 모듈을 subprocess argv
-# 로만 부르고 import 하지 않으므로(결합 최소화) 값을 복제한다. 값이 바뀌면 두 곳을 함께 고친다.
-_PRINCIPLE_DELEGATE_TOOL_NAME = "collaborationspawn_agent"
-_PRINCIPLE_DELEGATE_ROLE_FIELD = "task_name"
-
-
+# 레지스트리(`.project_manager/wiki/pm_principles.md`)의 `on: prompt` 태그 항목을 UserPromptSubmit
+# 프롬프트에 대조해 매칭되면 additionalContext 로 합본한다. 판정·seen marker 는 엔진
+# `recall_principles` 가 하고, 이 파일은 codex payload → (on, text) 축 변환만 소유한다.
+# ctx 넛지와 같은 in-process 형태를 쓴다 — 자식 프로세스면 호출마다 인터프리터가 하나 더 뜬다.
 
 
 def _principle_recall_signal(payload: dict) -> tuple[str, str] | None:
-    """codex payload → recall `on` 축 + 대조 텍스트(판별 불가면 None).
-
-    codex tool_name 리터럴은 claude 와 다르다. `Bash`·`collaborationspawn_agent` 는
-    `tests/fixtures/codex_0_147_0_live_hook_payloads.json` 실 캡처 값(git-anchor 가 이미 쓰는
-    `Bash` 와 같은 값)이고, `apply_patch`(파일 편집 축)는 그 fixture 에 이벤트가 없어 도구
-    이름·필드명(`file_path`/`path`/`input` 순서 시도) 모두 **추정치**다(라이브 확인 전까지) —
-    매핑은 어댑터 소유, claude `_principle_recall_signal` 과 같은 축(shell/edit/delegate/prompt)
-    으로 줄인다."""
+    """codex payload → recall `on` 축 + 대조 텍스트. UserPromptSubmit 의 프롬프트만 `prompt` 축으로 대조하고,
+    그 밖의 이벤트나 프롬프트가 문자열이 아니면 None."""
     event = payload.get("hook_event_name") or payload.get("hookEventName")
-    if event == "UserPromptSubmit":
-        prompt = payload.get("prompt")
-        return ("prompt", prompt) if isinstance(prompt, str) else None
-    if event != "PreToolUse":
+    if event != "UserPromptSubmit":
         return None
-    tool = payload.get("tool_name") or payload.get("toolName")
-    tool_input = payload.get("tool_input") or payload.get("toolInput") or {}
-    if not isinstance(tool_input, dict):
-        tool_input = {}
-    if tool == _PRINCIPLE_SHELL_TOOL_NAME:
-        command = tool_input.get("command")
-        if isinstance(command, (list, tuple)):
-            command = " ".join(str(part) for part in command)
-        return ("shell", command) if isinstance(command, str) else None
-    if tool == _PRINCIPLE_EDIT_TOOL_NAME:
-        file_path = (tool_input.get("file_path") or tool_input.get("path")
-                     or tool_input.get("input"))
-        return ("edit", str(file_path)) if file_path else None
-    if tool == _PRINCIPLE_DELEGATE_TOOL_NAME:
-        role = tool_input.get(_PRINCIPLE_DELEGATE_ROLE_FIELD) or ""
-        return ("delegate", str(role))
-    return None
+    prompt = payload.get("prompt")
+    return ("prompt", prompt) if isinstance(prompt, str) else None
 
 
 def principle_recall_envelope(payload: dict, root: Path) -> dict:
