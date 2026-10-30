@@ -550,6 +550,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             entry_doc_migration._print_entry_doc_migration_finding(result, dry_run=args.dry_run)
             update_finish.drop_self_lease_rows(effective_dest, write=not args.dry_run)
             update_finish.idle_legacy_slot_session_rows(effective_dest, write=not args.dry_run)
+            update_finish.rename_delegate_round_collected_key(effective_dest, write=not args.dry_run)
             entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=not args.dry_run)
             update_finish.fill_self_repo_row(effective_dest, write=not args.dry_run)
         if do_reinstall:
@@ -621,6 +622,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             entry_doc_migration._print_entry_doc_migration_finding(result, dry_run=True)
             update_finish.drop_self_lease_rows(effective_dest, write=False)
             update_finish.idle_legacy_slot_session_rows(effective_dest, write=False)
+            update_finish.rename_delegate_round_collected_key(effective_dest, write=False)
             entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=False)
             update_finish.fill_self_repo_row(effective_dest, write=False)
         if do_reinstall:  # 대상 해소만(write=False·무부작용).
@@ -660,6 +662,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         entry_doc_migration._print_entry_doc_migration_finding(result, dry_run=False)
         update_finish.drop_self_lease_rows(effective_dest, write=True)
         update_finish.idle_legacy_slot_session_rows(effective_dest, write=True)
+        update_finish.rename_delegate_round_collected_key(effective_dest, write=True)
         entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=True)
         update_finish.fill_self_repo_row(effective_dest, write=True)
 

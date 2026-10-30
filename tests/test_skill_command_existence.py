@@ -399,7 +399,7 @@ def test_existence_classifier_catches_drift():
     worktree = _load_parser("worktree_pool")
     config = _load_parser("pm_config")
     delegate_ticket, delegate_tokens = _parser_for_command(
-        "pm_delegate", _tokenize("ticket harvest --copy /tmp/c --cwd /tmp/w")
+        "pm_delegate", _tokenize("ticket collect --copy /tmp/c --cwd /tmp/w")
     )
     assert board is not None and handoff is not None
     assert worktree is not None and config is not None
@@ -415,8 +415,12 @@ def test_existence_classifier_catches_drift():
     ]
     # catch/pass — main 선행 dispatch의 중첩 parser도 실행과 같은 표면을 검사한다.
     assert check_command(delegate_ticket, delegate_tokens) == []
-    assert check_command(delegate_ticket, _tokenize("harvest --nonexistent x")) == [
+    assert check_command(delegate_ticket, _tokenize("collect --nonexistent x")) == [
         "미등록 플래그 '--nonexistent'"
+    ]
+    # catch — 이름을 바꾼 옛 서브커맨드는 별칭 없이 거부된다.
+    assert check_command(delegate_ticket, _tokenize("harvest --copy /tmp/c --cwd /tmp/w")) == [
+        "미등록 서브커맨드 'harvest'"
     ]
     # catch — constrained positional(regression action) 오타.
     assert check_command(board, _tokenize("regression runn --ticket T-1")) == [

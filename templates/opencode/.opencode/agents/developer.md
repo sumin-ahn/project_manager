@@ -76,7 +76,7 @@ ticket 본문이 **단일 진실**이다. 본문의 목표/인터페이스/결�
 
 ## 워크플로
 
-리뷰 재작업은 PM이 `pm_delegate.py review delta --ticket T-NNNN`으로 렌더한 accepted-only delta만
+리뷰 재작업은 PM이 `pm_delegate.py review accepted --ticket T-NNNN`으로 렌더한 accepted-only delta만
 명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 rejected/decision-required인
 finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 빈 delta면 코드 변경 없이 architect 테스트와 전체 회귀를 실행·기록한다.
 

@@ -320,7 +320,7 @@ def test_abandon_closes_all_three_kill_residue_assets(pd, env):
     plan = _prepare(pd, env, "T-8001")
     assert plan.run_dir.exists() and plan.board_path.exists()
     before = _ledger_rows(env)[-1]
-    assert Path(before["copy"]) == plan.path and before["harvested_at"] is None
+    assert Path(before["copy"]) == plan.path and before["collected_at"] is None
     assert "abandoned_at" not in before and "owner_pid" not in before
 
     result = _abandon(pd, env, plan)
@@ -332,7 +332,7 @@ def test_abandon_closes_all_three_kill_residue_assets(pd, env):
     assert not plan.run_dir.exists()
     assert not plan.board_path.exists()
     row = _ledger_rows(env)[-1]
-    assert row["abandoned_at"] is not None and row["harvested_at"] is None
+    assert row["abandoned_at"] is not None and row["collected_at"] is None
     assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8001", unharvested=True) == []
     assert env.sync_calls[-1][1] == [plan.board_path]
 
@@ -359,7 +359,7 @@ def test_abandon_leaves_other_live_runs_untouched(pd, env):
 
     assert alive.run_dir.exists() and alive.board_path.exists()
     alive_row = [row for row in _ledger_rows(env) if row["ticket"] == "T-8004"][-1]
-    assert alive_row["harvested_at"] is None and "abandoned_at" not in alive_row
+    assert alive_row["collected_at"] is None and "abandoned_at" not in alive_row
     assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8004", unharvested=True)[0][
         "copy"
     ] == str(alive.path)
@@ -911,7 +911,7 @@ def _base_row(**overrides) -> dict:
         "ticket": "T-8100", "role": "developer", "ordinal": 1,
         "run_id": "a" * 32, "copy": str((Path.cwd() / "copy.md").resolve()),
         "board_rel": "wiki/tickets/rounds/T-8100/01-developer.md",
-        "prepared_at": "2026-08-22T00:00:00+00:00", "harvested_at": None,
+        "prepared_at": "2026-08-22T00:00:00+00:00", "collected_at": None,
     }
     row.update(overrides)
     return row
@@ -967,7 +967,7 @@ def test_ledger_row_still_rejects_unknown_keys(pd):
 
 def test_ledger_row_still_rejects_missing_required_keys(pd):
     row = _base_row()
-    del row["harvested_at"]
+    del row["collected_at"]
     with pytest.raises(delegate_errors.DelegateError, match="schema 불일치"):
         delegate_ledger._delegate_rounds_ledger_row(row, line_number=1)
 
@@ -1060,7 +1060,7 @@ def test_cli_copies_query_labels_abandoned_rows(pd, env, monkeypatch, capsys):
 
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111"]) == 0
     listed = capsys.readouterr().out
-    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111", "--unharvested"]) == 0
+    assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111", "--uncollected"]) == 0
     unharvested = capsys.readouterr().out
 
     assert "포기(" in listed and str(plan.path) in listed

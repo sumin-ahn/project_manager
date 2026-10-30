@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""판단 원칙 조회·recall·재무장 CLI 진입점."""
+"""판단 원칙 조회·recall CLI 진입점."""
 import os
 import sys
 

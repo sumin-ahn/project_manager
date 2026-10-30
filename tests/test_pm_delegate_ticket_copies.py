@@ -3,7 +3,7 @@
 
 `ticket abandon` 의 "시드 그대로가 아님" 거부에 명시-확인 축(`--superseded-by ordinal`) 하나만
 연다 — 그 외 거부 조건(단일 처분·신뢰 뿌리·종료 증거·중간 순번 board 보존)은 손대지 않는다.
-`ticket harvest` 의 finding ID 재선언 거부는 판정 무결성 축이라 이 티켓의 대상이 아니다(회귀로
+`ticket collect` 의 finding ID 재선언 거부는 판정 무결성 축이라 이 티켓의 대상이 아니다(회귀로
 고정).
 
   R1 명시 축 필요    — `--superseded-by` 없이는 종전대로 거부(회귀).
@@ -11,9 +11,9 @@
   R3 생존 확인 유지  — 대체-확인이 종료 증거·소유 pid 생존 확인을 대신하지 않는다(역방향 확인).
   R4 실형상 종결     — 라운드 N/N+1 이 같은 finding ID 로 harvest·abandon 순환에 빠진 뒤,
                        `--superseded-by`(+`--assume-dead`) 로 라운드 N 이 종결되고
-                       `ticket copies --unharvested` 목록에서 값으로 사라진다.
+                       `ticket copies --uncollected` 목록에서 값으로 사라진다.
   R5 재호출 멱등     — 재호출은 `--superseded-by` 를 다시 주지 않아도 남은 정리를 끝낸다.
-  R6 harvest 비목표  — `ticket harvest` 는 이 축을 모른다.
+  R6 harvest 비목표  — `ticket collect` 는 이 축을 모른다.
   R7 산출 보존 불변식 — 검증·loud·장부 기록은 대체-확인이 실제로 발화한 호출에서만 나고,
                        파괴 효력(run-dir 삭제)은 장부에 기록된 값만 인정한다(재호출 인자 무시).
   R8 값·실재·순서    — `<1`·자기참조·부재 ordinal 은 시드 대조 분기와 무관하게 거부되고,
@@ -305,7 +305,7 @@ def test_t0928_recorded_seed_stays_pending_and_can_be_abandoned(pd, env):
     assert result.changed is False
     assert plan.board_path.read_bytes() == before
     assert plan.path.is_file()
-    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    assert _ledger_rows(pm_home)[-1]["collected_at"] is None
     assert len(sync_log) == 1
     abandoned = delegate_prepare.abandon_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot,
                                        assume_dead=True)
@@ -458,7 +458,7 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     """실측 재현: 라운드 1 이 F-001 을 내고, 라운드 2 가 같은 ID 로 회수된 뒤,
 
     라운드 1 은 harvest(ID 충돌)·abandon(산출 존재) 양쪽에 막힌다 — `--superseded-by` 로
-    종결하면 `ticket copies --unharvested` 목록에서 라운드 1 이 값으로 사라진다.
+    종결하면 `ticket copies --uncollected` 목록에서 라운드 1 이 값으로 사라진다.
     """
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9005", rounds=("code-reviewer", "code-reviewer"))
@@ -673,7 +673,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
 # ── R6 harvest 비목표 ────────────────────────────────────────────────────────
 
 def test_harvest_is_untouched_by_the_superseded_axis(pd):
-    """`ticket harvest` 는 이 축을 모른다 — finding ID 재선언 거부는 그대로다."""
+    """`ticket collect` 는 이 축을 모른다 — finding ID 재선언 거부는 그대로다."""
     source = inspect.getsource(delegate_harvest.harvest_ticket_copy)
     assert "superseded" not in source
 

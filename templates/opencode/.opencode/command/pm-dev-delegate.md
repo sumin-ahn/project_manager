@@ -6,7 +6,7 @@ audience: pm-internal
 
 # /pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] — orchestrator 위임
 
-> **harness 노트:** 아래 위임 블록은 **claude**(`Agent` 툴 · `subagent_type` · `run_in_background`) 표기다. **opencode** 는 같은 `description`·`subagent_type`·`prompt` 를 native `task` 툴로 부르고 background 필드가 없다(병렬은 호출측 동시 실행). **codex** 는 `spawn_agent(agent_type=…)` 를 쓰며 카드를 `.agents/skills/pm-dev-delegate/SKILL.md` 로 따로 출하한다. 필드 이름만 다르고 prepare→spawn→harvest 절차와 프롬프트 본문은 세 하네스가 같다. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
+> **harness 노트:** 아래 위임 블록은 **claude**(`Agent` 툴 · `subagent_type` · `run_in_background`) 표기다. **opencode** 는 같은 `description`·`subagent_type`·`prompt` 를 native `task` 툴로 부르고 background 필드가 없다(병렬은 호출측 동시 실행). **codex** 는 `spawn_agent(agent_type=…)` 를 쓰며 카드를 `.agents/skills/pm-dev-delegate/SKILL.md` 로 따로 출하한다. 필드 이름만 다르고 prepare→spawn→collect 절차와 프롬프트 본문은 세 하네스가 같다. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
@@ -38,7 +38,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --tas
 ```
 
 - 수열·테스트·종결의 규범은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md)
-  §"티켓과 위임"만 소유한다. 이 카드는 위 표의 prepare/harvest 호출 절차만 제공한다.
+  §"티켓과 위임"만 소유한다. 이 카드는 위 표의 prepare/collect 호출 절차만 제공한다.
 - 리뷰 행의 두 명령은 하네스로 고른다 — 같은 하네스면 준비(`ticket prepare`), 다르면 교차 실행이다(§code-reviewer 위임).
 - 현재 장부 단계는 `python3 .project_manager/tools/board.py cluster show C-<ticket-group>`으로 확인한다.
 - **게이트 처분은 종결이 실행한다** — 종결 2단계가 `pm_delegate.py rounds resolve --cluster C-<ticket-group> --pm-verified` 를 부르고 확인 커맨드도 엔진이 돌린다. PM 이 따로 부를 일은 처분만 먼저 확인할 때뿐이다.
@@ -98,7 +98,7 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
 명세 · `rounds/`=이전 라운드)을 깐다. 에이전트는 프롬프트에 주입된 그 절대경로들만 채우고 파일
 이름·순번은 엔진이 만든다.
 
-- **native prepare → spawn → harvest**:
+- **native prepare → spawn → collect**:
 
   ```bash
   python3 .project_manager/tools/pm_delegate.py ticket prepare \
@@ -106,10 +106,10 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
       --cwd <작업 worktree 절대경로>
   # 티켓마다 stdout JSON 한 줄 — `copy`(라운드 파일 절대경로)만 native Agent 프롬프트에 주입한다.
   # native 위임 종료 뒤(rc/판정과 무관) — run-dir 을 주면 그 run 의 티켓 전부를 한 번에 회수한다:
-  python3 .project_manager/tools/pm_delegate.py ticket harvest \
+  python3 .project_manager/tools/pm_delegate.py ticket collect \
       --copy <prepare JSON의 copy 또는 그 run-dir> --cwd <작업 worktree 절대경로>
   # 미회수 준비 조회(컴팩션·세션 교체 뒤 복구 진입점):
-  #   python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested
+  #   python3 .project_manager/tools/pm_delegate.py ticket copies --uncollected
   ```
 
   prepare가 실패하면 spawn하지 않는다. harvest가 실패하면 티켓을 다음 단계로 넘기지 않고 같은
@@ -132,7 +132,7 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
 
 - **실패 판정**: PM 홈 장부에 준비 기록이 없는 경로, 장부의 board 경로와 라운드 이름 불일치,
   예약 소실(board 라운드 파일 부재)은 board 를 바꾸지 않고 rc=1이다. run-dir 과 board 라운드를
-  보존한 채 원인을 고친 뒤 출력된 copy 경로로 `ticket harvest --copy <copy> --cwd <worktree>` 를
+  보존한 채 원인을 고친 뒤 출력된 copy 경로로 `ticket collect --copy <copy> --cwd <worktree>` 를
   다시 실행한다. 산출이
   **시드 그대로**면 board 를 바꾸지 않고 경고만 내며 run-dir 을 남긴다(게이트가 아니라 같은 세션을
   이어 시킬 여지다). run-dir 루트 `.project_manager/.local/delegate-ticket-copies/`는 tracked
@@ -211,7 +211,7 @@ delegate.enabled = false
 ```
 
 끄면 세 층이 막는다: `pm_delegate` 실행 `rc=3` · `pm_delegate ticket prepare` `rc=3`(run-dir·라운드
-순번 미생성) · 훅이 깔린 하네스의 역할 spawn `deny`. `ticket harvest`/`copies`와 `--dry-run`은 게이트
+순번 미생성) · 훅이 깔린 하네스의 역할 spawn `deny`. `ticket collect`/`copies`와 `--dry-run`은 게이트
 밖이다(진행 중 라운드가 고아가 되지 않게).
 
 **차단 범위의 한계**: 훅 등록 파일(`settings.json`·`hooks.json`·`opencode.jsonc`)은 채택자 소유라
@@ -287,9 +287,9 @@ Agent 툴 호출:
 > 잃어도 `python3 .project_manager/tools/pm_delegate.py raw [--unfinished]` 로 절대경로를 조회하라 —
 > **미마감 레코드 자체가 kill 증거**다. 재위임 전에 반드시 확인한다(완성분을 버리고 중복 과금하는 경로).
 > **native 위임은 raw 장부에는 남지 않지만 라운드 파일에는 남는다** — 같은 하네스 안에서 도는 위임은
-> 위 native prepare→spawn→harvest를 수행한다. 하네스 보고/전사가 끊겨도 prepare가 출력한 라운드
-> 파일을 먼저 읽고, `ticket harvest --copy ... --cwd ...`로 회수한 뒤에만 재위임한다. 경로마저
-> 잃었으면 `ticket copies --unharvested`가 미회수 준비를 열거한다.
+> 위 native prepare→spawn→collect를 수행한다. 하네스 보고/전사가 끊겨도 prepare가 출력한 라운드
+> 파일을 먼저 읽고, `ticket collect --copy ... --cwd ...`로 회수한 뒤에만 재위임한다. 경로마저
+> 잃었으면 `ticket copies --uncollected`가 미회수 준비를 열거한다.
 > **어느 장부를 봤는지 첫 줄로 확인한다** — `조회 장부: <절대경로>`. 장부는 **엔진 사본별**이라
 > `경고: 다른 엔진 사본 장부가 있습니다(이 조회에서는 읽지 않음): <경로>` 가 뜨면 자동 대체 조회가
 > 된 게 아니다 — 표시된 사본에서 **명시적으로 다시 조회**하라. `--output-dir DIR` 로 저장한 산출은
@@ -309,7 +309,7 @@ python3 .project_manager/tools/pm_delegate.py ticket prepare \
     --cwd <작업 worktree 절대경로> --focus <검토 중점 문단 파일 절대경로>
 # 멤버마다 stdout JSON 한 줄 — `copy`(그 티켓 라운드 파일)·`prompt`(엔진이 조립한 리뷰 프롬프트 파일·멤버 공통).
 # 서브에이전트 종료 뒤(판정과 무관) run-dir 하나로 멤버 전부를 돌려받는다:
-python3 .project_manager/tools/pm_delegate.py ticket harvest \
+python3 .project_manager/tools/pm_delegate.py ticket collect \
     --copy <prepare JSON의 copy 또는 그 run-dir> --cwd <작업 worktree 절대경로>
 ```
 
@@ -368,7 +368,7 @@ Agent 툴 호출:
      각 티켓 자리에 기록하라(첫 줄 헤더 유지). `spec.md`·`rounds/`는 읽기 전용이다."
 ```
 
-architect도 위 `ticket prepare --cluster` 뒤 Agent를 호출하고 종료 뒤 `ticket harvest --copy <run-dir>`
+architect도 위 `ticket prepare --cluster` 뒤 Agent를 호출하고 종료 뒤 `ticket collect --copy <run-dir>`
 를 실행한다. architect는 1회이고 회수 뒤 불변이다.
 
 **본문 점검(draft·승격 전)** 도 같은 architect 호출을 쓴다 — 바꾸는 것은 프롬프트 본문 한 곳이다.
@@ -387,7 +387,7 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 > `python3 .project_manager/tools/pm_delegate.py review disposition-template --cluster C-<ticket-group>` 이
 > 멤버 전부의 미판정 finding ID 를 프리필한 판정 골격을 내므로, 그 골격의 판정·사유 자리만 채워
 > 각 티켓 명세의 PM 영역에 붙인 뒤
-> `python3 .project_manager/tools/pm_delegate.py review delta --cluster C-<ticket-group>`을 실행한다. 출력된
+> `python3 .project_manager/tools/pm_delegate.py review accepted --cluster C-<ticket-group>`을 실행한다. 출력된
 > delta 를 발췌하지 말고 그대로 developer에게 전달한다(끝의 제약 블록 포함).
 > rejected/decision-required·보고서 전문은 출력에 없고 따로 전달하지도 않는다.
 > fix 는 묶음 브랜치를 체크아웃한 슬롯에서 **developer 1명**이 accepted 전부를 해소한다

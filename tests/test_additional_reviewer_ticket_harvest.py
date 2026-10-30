@@ -3,7 +3,7 @@
 두 축을 소유한다.
   · 회수: `additional_reviewer --ticket` 실행이 끝나면 **엔진이** 산출을 그 티켓의 새
     `additional-reviewer` 라운드 파일(`tickets/rounds/<T>/NN-additional-reviewer.md`)로 기록하고,
-    내부 리뷰어와 같은 `review delta` 표면에 올린다. 내용 검증(블록 부재·스키마 위반·중복·JSON
+    내부 리뷰어와 같은 `review accepted` 표면에 올린다. 내용 검증(블록 부재·스키마 위반·중복·JSON
     손상·finding ID 재선언·표면에 없는 confirmation 대상)에 걸리면 **라운드 파일을 만들지 않고**
     rc≠0 으로 사유를 말한다 — 산출 원문은 raw 에 남는다([[ADR-0090]] · 차등 판정·반사실 프로브
     없음).
@@ -325,7 +325,7 @@ def _run(external, pm_home: Path, *argv: str) -> int:
 def test_rejected_round_lands_as_a_round_file_and_delta_finding(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """(a) 반려 산출이 라운드 파일 하나가 되고 `review delta` 에 X- 가 뜬다."""
+    """(a) 반려 산출이 라운드 파일 하나가 되고 `review accepted` 에 X- 가 뜬다."""
     ticket_path = _seed_board(tmp_path)
     spec_before = ticket_path.read_text(encoding="utf-8")
     reply = _reject_reply(_finding())

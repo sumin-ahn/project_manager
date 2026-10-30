@@ -103,7 +103,7 @@ type: reference
 위임 단위는 **묶음(클러스터)** 이다 — 설계·리뷰·fix 는 묶음당 1회, 개발만 티켓당 1회다. 티켓은 PM이
 소유하는 명세 파일 하나와, 설계→구현→리뷰→fix 가 한 건씩 쌓이는 라운드 파일들로 이뤄지며 각 위임
 시점에도 self-contained다. 그래서 위임 프롬프트를 bespoke하게 재작성하지 않는다.
-`/pm-dev-delegate`는 `pm_delegate.py ticket prepare|harvest --cluster`로 slot
+`/pm-dev-delegate`는 `pm_delegate.py ticket prepare|collect --cluster`로 slot
 run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래) 하나에 티켓별 라운드 파일 N개를
 전달·회수한다(슬롯 없이 PM이 직접 채울 자리는 `board.py section-add`가 예약하는데, 그 명령은 **묶음
 장부가 없는 티켓만** 연다 — 장부가 있는 티켓의 라운드는 고정 예산이 지배하므로 위임 준비가 연다).
@@ -149,7 +149,7 @@ T-NNNN 을 구현하라. (developer)
 수행한다(종결이 `pm_delegate.py rounds resolve --cluster C-<ticket-group> --pm-verified` 를 부른다). 수렴 불변식은
 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유한다. 추가 리뷰어는 대상 튜플
 (`additional_reviewer.harness`/`.model`)을 선언한 채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
-증거·제안이며, `review disposition-template`과 `review delta`가 PM 판정 및 fix 입력을 연결한다.
+증거·제안이며, `review disposition-template`과 `review accepted`가 PM 판정 및 fix 입력을 연결한다.
 code-reviewer는 슬롯에서 `git -C <슬롯> diff <merge-base>..HEAD`로 변경 범위·내용을 직접 검증한다. PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거친다.
 
 ### 라운드 프로토콜 (내부 루프 비용 규율)
@@ -161,7 +161,7 @@ code-reviewer는 슬롯에서 `git -C <슬롯> diff <merge-base>..HEAD`로 변�
 3. **클래스 전수 열거 의무.** dev 는 구현 전에 결함 클래스의 인스턴스를 진입점·플랫폼·실패 모드·호출 경로 축으로 전수 나열해 보고하고 전부 처리한다. 보고된 형상만 처리한 결과는 미완이다. 전수 열거가 불가능하면 그 사실과 열거 경계를 보고한다. 클래스는 해당 결함의 클래스에 한정하며 티켓 밖 기능으로 스코프를 확대하지 않는다. 완료 보고에는 열거한 인스턴스 목록과 각각의 처리를 포함하며, 목록이 없으면 PM 이 반려한다.
 4. **역방향 확인 의무.** dev 는 고침이 반대 방향 실패를 만들지 않았는지 단언한다. 느슨함을 조인 fix 는 과결속을, 조임을 푼 fix 는 누락을, 차단을 추가한 fix 는 정상 사용 차단을 각각 확인한다.
 5. **finding/disposition 장부.** 블록 스키마의 단일 진실은 엔진 파서 상수이며 엔진이 골격을 공급한다. reviewer는 안정 ID와 must-fix별 수정·테스트 계약을 실값으로 채우고, PM은 `review disposition-template --cluster`가 낸 골격에 전수 disposition을 남긴다. finding 0도 reviewer의 0건 선언 뒤 fix 자리로 진행한다.
-6. **accepted-only delta + 세션 재사용.** `pm_delegate.py review delta --cluster C-<ticket-group>` 출력만 fix 프롬프트에 붙인다. 미판정·decision-required·계약 누락은 fix 준비를 차단하고 티켓을 정지해 사용자에게 보고한다. fix는 직전 dev 세션에 재사용하는 것이 기본이며 accepted가 0이어도 마지막 테스트·종결 자리로 실행한다.
+6. **accepted-only delta + 세션 재사용.** `pm_delegate.py review accepted --cluster C-<ticket-group>` 출력만 fix 프롬프트에 붙인다. 미판정·decision-required·계약 누락은 fix 준비를 차단하고 티켓을 정지해 사용자에게 보고한다. fix는 직전 dev 세션에 재사용하는 것이 기본이며 accepted가 0이어도 마지막 테스트·종결 자리로 실행한다.
 7. **라운드 장부 처리.** `cluster_round_sequence`가 예약 전 현재 단계와 예산을 검증하고,
    `ticket prepare`가 예약 좌표를 라운드 사본에 기록한다. 수열과 실패 시 행동의 규범은
    [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
@@ -195,7 +195,7 @@ code-reviewer는 슬롯에서 `git -C <슬롯> diff <merge-base>..HEAD`로 변�
 
 wave 중 묶음 종결은 `ticket_finish.py --cluster C-<ticket-group> --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
 
-10. **처방 밖 수정 금지·빈틈은 보고.** fix 라운드에서 고칠 수 있는 것은 `review delta` 가 낸 finding ID 와
+10. **처방 밖 수정 금지·빈틈은 보고.** fix 라운드에서 고칠 수 있는 것은 `review accepted` 가 낸 finding ID 와
     각 허용 수정 범위뿐이다. 그 제약과 빈틈 보고 형식은 delta 렌더러가 출력 끝에 함께 싣는다 — 카드·스킬·
     프롬프트에 같은 문장을 복제하지 않고, PM 은 렌더된 출력을 발췌하지 않고 그대로 fix 프롬프트에 붙인다.
     처방대로 따르면 다른 결함이 생기는 상호작용을 developer 가 발견하면 라운드 파일의 빈틈 절에

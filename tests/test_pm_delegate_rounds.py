@@ -1,4 +1,4 @@
-"""T-0750 — 라운드 파일 1개 왕복(prepare/harvest)과 run 닫힘 경계 [[ADR-0090]].
+"""T-0750 — 라운드 파일 1개 왕복(prepare/collect)과 run 닫힘 경계 [[ADR-0090]].
 
 여기서 지키는 성질은 넷이다.
   (1) 에이전트가 쓸 수 있는 회수 대상 파일은 run 당 정확히 하나다.
@@ -39,6 +39,7 @@ from pm_engine.infra.harness import delegate_transport
 from pm_engine.app import round_maintenance
 
 
+import argparse
 import contextlib
 import importlib.util
 import json
@@ -429,7 +430,7 @@ def test_prepare_lays_one_writable_round_and_read_only_inputs(pd, rounds_env):
         assert stat.S_IMODE((plan.run_dir / "spec.md").stat().st_mode) == 0o400
     row = _ledger_rows(pm_home)[-1]
     assert row["ticket"] == "T-7001" and row["role"] == "developer"
-    assert row["ordinal"] == 1 and row["harvested_at"] is None
+    assert row["ordinal"] == 1 and row["collected_at"] is None
     assert Path(row["copy"]) == plan.path
     assert (pm_home / row["board_rel"]) == plan.board_path
 
@@ -447,8 +448,9 @@ def test_harvest_replaces_board_round_and_closes_the_run(pd, rounds_env):
     assert result.changed is True and result.sync_ready is True
     assert plan.board_path.read_text(encoding="utf-8") == produced
     assert not plan.run_dir.exists()          # run 닫힘 = 재회수 없음
+    assert sync_log[-1][0] == "ticket-collect T-7002 developer"
     assert sync_log[-1][1] == [plan.board_path]
-    assert _ledger_rows(pm_home)[-1]["harvested_at"] is not None
+    assert _ledger_rows(pm_home)[-1]["collected_at"] is not None
 
 
 def test_closed_run_cannot_be_harvested_again(pd, rounds_env):
@@ -535,7 +537,7 @@ def test_unedited_seed_warns_keeps_run_dir_and_leaves_board_untouched(
     assert plan.run_dir.exists() and plan.path.exists()
     assert sync_log == before_sync
     assert "산출 없음" in capsys.readouterr().err
-    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    assert _ledger_rows(pm_home)[-1]["collected_at"] is None
 
 
 def test_crlf_slot_round_is_still_judged_unedited(pd, rounds_env, capsys):
@@ -2094,8 +2096,22 @@ def test_removed_cli_surface_is_gone(pd):
     assert "seal-backfill" not in text
     assert "--transfer-from" not in text
     assert "--capability-stdin" not in text
-    for command in ("prepare", "harvest", "copies"):
+    for command in ("prepare", "collect", "copies"):
         assert command in text
+    assert "harvest" not in text
+    copies = next(
+        action.choices["copies"] for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    copies_help = copies.format_help()
+    assert "--uncollected" in copies_help
+    assert "harvested" not in copies_help
+    review = delegate_cmd.build_subcommand_parser("review")
+    review_commands = next(
+        set(action.choices) for action in review._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    assert review_commands == {"accepted", "disposition-template", "verify-template"}
 
 
 def test_ledger_relocated_to_delegate_rounds(pd, tmp_path):
@@ -2518,7 +2534,7 @@ def _spec_and_rounds(pd, pm_home: Path, tickets: Path, ticket: str):
 def _harvest_rc(pd, monkeypatch, pm_home: Path, slot: Path, copy_path: Path) -> int:
     """실 CLI rc — 소유 PM 홈 해소만 픽스처 좌표로 고정한다(판정은 엔진 그대로)."""
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)])
+    return delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["collect", "--copy", str(copy_path), "--cwd", str(slot)])
 
 
 def test_redeclared_prior_finding_id_is_refused_at_harvest(
@@ -2550,7 +2566,7 @@ def test_redeclared_prior_finding_id_is_refused_at_harvest(
     # 거부가 산출을 파괴하지 않는다 — board bytes 불변 + run-dir 유지(재회수 가능).
     assert second.board_path.read_bytes() == reserved
     assert second.run_dir.exists() and second.path.exists()
-    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    assert _ledger_rows(pm_home)[-1]["collected_at"] is None
     assert sync_log == before_sync
 
     # `findings` 에만 다시 실은 형상도 같은 회수면에서 거부된다(전역 유일성 축).
@@ -2591,7 +2607,7 @@ def test_first_review_round_confirming_its_own_finding_is_refused_at_harvest(
     assert "F-001, F-002" in capsys.readouterr().err
     assert plan.board_path.read_bytes() == reserved
     assert plan.run_dir.exists() and plan.path.exists()
-    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    assert _ledger_rows(pm_home)[-1]["collected_at"] is None
     assert sync_log == before_sync
 
     # 선행 선언이 공집합이라 **어떤** 기존 ID 참조도 표면에 없다 — 자기-확인이 아닌 확인도 거부다.
@@ -2660,7 +2676,7 @@ def test_confirmation_round_referencing_prior_ids_still_lands(
     assert rc == 0
     assert second.board_path.read_text(encoding="utf-8") == produced
     assert not second.run_dir.exists()          # 정상 회수 = run 닫힘
-    assert _ledger_rows(pm_home)[-1]["harvested_at"] is not None
+    assert _ledger_rows(pm_home)[-1]["collected_at"] is not None
     assert [paths for _message, paths in sync_log][-1] == [second.board_path]
 
 
@@ -2763,7 +2779,7 @@ def _round_names(pm_home: Path, ticket: str, role: str) -> list[str]:
     )
 
 
-# ── disposition-template ↔ review delta 정합 ──────────────────────────────────
+# ── disposition-template ↔ review accepted 정합 ──────────────────────────────────
 
 
 def test_disposition_template_skeleton_is_accepted_by_review_delta(pd, rounds_env):
@@ -3068,7 +3084,7 @@ def test_researcher_round_prepare_is_refused(pd, rounds_env):
 
 
 def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
-    """역방향: harvest·copies 는 게이트 밖이다 — 진행 중 라운드를 고아로 만들지 않는다."""
+    """역방향: collect·copies 는 게이트 밖이다 — 진행 중 라운드를 고아로 만들지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
     declared = _DECLARED_DEVELOPER_ROUNDS
     _write_spec(tickets, "T-8006", rounds=_round_plan("developer", declared))
@@ -3077,7 +3093,7 @@ def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
     produced = plan.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- x\n"
     plan.path.write_text(produced, encoding="utf-8", newline="")
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(plan.path), "--cwd", str(slot)])
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["collect", "--copy", str(plan.path), "--cwd", str(slot)])
     assert rc == 0
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: pm_home)
 
@@ -3194,7 +3210,7 @@ def _refund_unterminated_ledger_rows(pd, home: Path, ticket: str) -> int:
         latest_by_copy[row["copy"]] = row
     return sum(
         1 for row in latest_by_copy.values()
-        if row.get("harvested_at") is None and "abandoned_at" not in row
+        if row.get("collected_at") is None and "abandoned_at" not in row
     )
 
 
@@ -3368,7 +3384,7 @@ def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
     assert len(round_rows) == 2
     assert {row["ordinal"] for row in round_rows} == {1, 2}
     assert round_rows[0]["run_id"] != round_rows[1]["run_id"]
-    assert all(row["harvested_at"] is not None for row in round_rows)
+    assert all(row["collected_at"] is not None for row in round_rows)
 
     raw_rows = [
         row for row in raw_output.raw_records(home / "raw" / "raw_outputs.json")
@@ -3498,7 +3514,7 @@ def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
             latest_by_copy[row["copy"]] = row
         return sum(
             1 for row in latest_by_copy.values()
-            if row.get("harvested_at") is None and "abandoned_at" not in row
+            if row.get("collected_at") is None and "abandoned_at" not in row
         )
 
     before = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
@@ -3665,7 +3681,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_budget_error(
             latest_by_copy[row["copy"]] = row
         return sum(
             1 for row in latest_by_copy.values()
-            if row.get("harvested_at") is None and "abandoned_at" not in row
+            if row.get("collected_at") is None and "abandoned_at" not in row
         )
 
     baseline = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
@@ -3759,7 +3775,7 @@ def test_board_lock_exit_failure_after_reserve_preserves_run_dir_and_diagnostics
 
     def _unterminated_ledger_rows() -> int:
         rows = [row for row in _ledger_rows(pm_home) if row["ticket"] == "T-9305"]
-        return sum(1 for row in rows if row.get("harvested_at") is None)
+        return sum(1 for row in rows if row.get("collected_at") is None)
 
     before = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
     assert before == (0, 0, 0)
@@ -3807,7 +3823,7 @@ def test_board_relative_path_failure_after_reserve_preserves_original_exception(
 
     def _unterminated_ledger_rows() -> int:
         rows = [row for row in _ledger_rows(pm_home) if row["ticket"] == "T-9306"]
-        return sum(1 for row in rows if row.get("harvested_at") is None)
+        return sum(1 for row in rows if row.get("collected_at") is None)
 
     before = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
     assert before == (0, 0, 0)
@@ -4293,7 +4309,7 @@ def test_native_role_prepare_is_unaffected_by_a_cross_mapping_elsewhere(
         copy_path.read_text(encoding="utf-8") + "\n## 산출\n- 값\n", encoding="utf-8", newline="",
     )
 
-    harvest_rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(copy_path), "--cwd", str(slot)])
+    harvest_rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["collect", "--copy", str(copy_path), "--cwd", str(slot)])
 
     assert harvest_rc == 0
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["changed"] is True
@@ -4647,7 +4663,7 @@ def test_developer_harvest_refuses_a_pool_operating_pm_home_as_cwd(pd, pool_env)
         _head_count(pm_home), plan.board_path.read_bytes(), _ledger_rows(pm_home),
     ) == before
     assert plan.path.is_file() and plan.run_dir.is_dir()
-    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    assert _ledger_rows(pm_home)[-1]["collected_at"] is None
     # 같은 회수를 다시 불러도 같은 거부다(자리가 닫히지 않았다).
     with pytest.raises(delegate_errors.DelegateError) as again:
         delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=pm_home, )

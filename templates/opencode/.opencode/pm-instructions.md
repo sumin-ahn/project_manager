@@ -114,7 +114,7 @@ ticket 본문은 다음으로 확인:
 
 손 프롬프트가 없다 — 엔진이 프롬프트 파일·라운드 자리를 만든다. 같은 하네스면 `ticket prepare --cluster
 C-<ticket-group> --role code-reviewer` 가 낸 `prompt` 파일 경로를 `task`(`subagent_type: code-reviewer`)에 넘기고
-종료 뒤 `ticket harvest` 로 돌려받는다. `/pm-dev-delegate` 카드의 code-reviewer 위임 절을 따른다.
+종료 뒤 `ticket collect` 로 돌려받는다. `/pm-dev-delegate` 카드의 code-reviewer 위임 절을 따른다.
 
 ### 2.6 reviewer 후 PM 처리
 

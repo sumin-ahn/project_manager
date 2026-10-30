@@ -142,7 +142,7 @@ rc=1), 그 밖의 티켓에는 규범으로 적용한다. **설계 면제 값은
 프롬프트 조립·라운드 자리 예약을 엔진이 한다(PM의 손 git 0 — 구현 산출은 그 라운드를 돌려받을 때
 이미 커밋돼 있다). 리뷰어는 슬롯을 그대로 읽으며, 실행은 다른 역할과 같은 transport 규칙을 따른다. reviewer finding은
 PM 판정 전 증거·제안이며 developer 명령이 아니다. PM은 versioned disposition으로 전수 판정하고
-`pm_delegate.py review delta --cluster`가 accepted-only delta를 렌더한다. 그 출력은 fix 준비의
+`pm_delegate.py review accepted --cluster`가 accepted-only delta를 렌더한다. 그 출력은 fix 준비의
 입력이고, decision-required는 사용자 결정 요청 표면으로 전달된다. 라운드 파일의
 이름·순번은 엔진이 만들며(`section-add`는 **묶음 장부가 없는 티켓**의 슬롯 없는 준비, `ticket prepare`는
 위임용 준비 — 장부가 있는 티켓의 라운드는 고정 예산이 지배하므로 위임 준비만 연다),
@@ -151,16 +151,16 @@ PM 판정 전 증거·제안이며 developer 명령이 아니다. PM은 versione
 에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare --cluster`가 board에 멤버
 전부의 순번을 예약하고 slot run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래) 하나에
 티켓마다 쓸 수 있는 라운드 파일 하나와 읽기 전용 입력(`spec.md`·`rounds/`)을 깐다. 에이전트는 자기
-자리만 채우고 `ticket harvest`가 board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run 닫힘).
+자리만 채우고 `ticket collect`가 board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run 닫힘).
 developer/fix는 라운드 `## 회귀`에 해소된 프로젝트 `test_cmd`와 `rc=0` 결과를 기록하며, 실행 횟수·red
 처리는 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
 회수가 성공하면 엔진이 그 슬롯의 코드 변경을 티켓 제목을 문안으로 커밋한다(변경이 없으면 커밋도
 없다) — 그래서 다음 단계인 리뷰의 입력이 확정된 트리이고 PM의 손 git은 0이다.
 산출이 시드 그대로면 board를 바꾸지 않고 경고만 낸다. draft에서는 architect 역할만 `section-add`와
-prepare/harvest가 허용되며 이 로컬 authoring 경로는 board-git sync를 0회 수행한다.
+prepare/collect가 허용되며 이 로컬 authoring 경로는 board-git sync를 0회 수행한다.
 developer/code-reviewer draft 실행과 blocked/done 전 역할은 예약 전에 거부되고, promote/claim 게이트는
 그대로다. 라운드 디렉터리는 고정 위치라 티켓 상태 이동을 따라가지 않는다. 실 위임에서는
-`/pm-dev-delegate`가 prepare/harvest를 감싼다. **종결은 한 커맨드다** — `ticket_finish.py --cluster`가
+`/pm-dev-delegate`가 prepare/collect를 감싼다. **종결은 한 커맨드다** — `ticket_finish.py --cluster`가
 기계/PM-owned terminal 확인 생성과 게이트 처분·티켓별 완료 기록·커밋·재배치·머지·board 기록을 고정 순서로 실행하고,
 막는 조건은 첫 부작용 앞 선검사가 전건 보고하며, 실패 지점에서 멈추고 재실행이 곧 재개다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만
 소유한다.

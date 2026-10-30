@@ -457,7 +457,7 @@ def test_a_marked_round_leaves_the_surface_whatever_its_role(pd, capsys):
     assert review_state._pm_review_refused_rounds(rounds) == {("code-reviewer", 2)}
     assert [item.ordinal for item in review_state._pm_review_surface_rounds(rounds)] == [1]
     assert "F-001" in review_contract.render_pm_review_disposition_template("", rounds)
-    # `review delta` 도 그 라운드를 읽지 않는다 — 남는 사유는 PM 미판정(정상 상태)이지
+    # `review accepted` 도 그 라운드를 읽지 않는다 — 남는 사유는 PM 미판정(정상 상태)이지
     # 자리표시 블록의 malformed 가 아니다(표식이 없으면 그쪽이 티켓 전체를 막는다).
     with pytest.raises(review_form.PMReviewError) as caught:
         review_state.parse_pm_review_delta("", rounds)
@@ -597,7 +597,7 @@ def test_disposition_template_cli_and_pending_error_prescribe_same_command(
     ]) == 0
     assert "F-007" in capsys.readouterr().out
 
-    assert pd.main(["review", "delta", "--ticket", "T-0700"]) == 1
+    assert pd.main(["review", "accepted", "--ticket", "T-0700"]) == 1
     error = capsys.readouterr().err
     assert "disposition-template --ticket T-0700" in error
 

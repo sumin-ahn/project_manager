@@ -640,7 +640,7 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
 
-    assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 0
+    assert pd.main(["review", "accepted", "--ticket", "T-0684"]) == 0
     output = capsys.readouterr().out
     assert "F-001" in output and "허용 수정 범위" in output
 
@@ -650,7 +650,7 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
         "confirmations": [],
     })
     _materialize(pd, pending, tickets_dir, "T-0684")
-    assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 1
+    assert pd.main(["review", "accepted", "--ticket", "T-0684"]) == 1
     error = capsys.readouterr().err
     assert "[pending]" in error and "전수 disposition" in error
 
@@ -711,7 +711,7 @@ def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys)
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
 
-    assert pd.main(["review", "delta", "--ticket", "T-0685"]) == 1
+    assert pd.main(["review", "accepted", "--ticket", "T-0685"]) == 1
     error = capsys.readouterr().err
     assert "round-gap" in error and "빠진 순번" in error
 
@@ -834,7 +834,7 @@ def test_pending_seed_round_leaves_prep_surface_output_bytes_unchanged(pd):
     )
 
 
-# ── 세 CLI 표면(review delta·review verify-template·rounds resolve --pm-verified) ──
+# ── 세 CLI 표면(review accepted·review verify-template·rounds resolve --pm-verified) ──
 
 def _materialize_rounds(pd, spec_text: str, rounds, tickets_dir: Path, ticket_id: str) -> Path:
     """명세 파일 + (역할이 섞일 수 있는) 라운드 목록을 실 파일로 깐다."""
@@ -851,7 +851,7 @@ def _materialize_rounds(pd, spec_text: str, rounds, tickets_dir: Path, ticket_id
 
 
 def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path, capsys):
-    """실 라운드 파일로 깐 티켓에서 시드 라운드가 섞여도 `review delta` CLI 는 rc=0."""
+    """실 라운드 파일로 깐 티켓에서 시드 라운드가 섞여도 `review accepted` CLI 는 rc=0."""
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     round1_text = _review_section({
         "version": BLOCK_VERSION,
@@ -873,7 +873,7 @@ def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", lambda _repo: tmp_path)
 
-    assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 0
+    assert pd.main(["review", "accepted", "--ticket", "T-0684"]) == 0
     assert "F-001" in capsys.readouterr().out
 
 

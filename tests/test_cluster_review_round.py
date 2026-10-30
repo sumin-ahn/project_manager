@@ -702,7 +702,7 @@ def test_cross_review_runs_in_the_slot_and_harvests(pd, review_env, monkeypatch,
     assert not (local / "cluster-review-runs.jsonl").exists()
     rows = delegate_ledger.ticket_copy_records(home)
     head = _git(home, "rev-parse", "HEAD").stdout.strip()
-    assert {row["ticket"] for row in rows if row["harvested_at"]} == set(_MEMBERS)
+    assert {row["ticket"] for row in rows if row["collected_at"]} == set(_MEMBERS)
     assert all(row.get("base_rev") == head for row in rows)
 
 
@@ -800,7 +800,7 @@ def test_removed_cluster_subcommand_has_no_parser(pd):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 같은 하네스 리뷰 — ticket prepare → 라운드 파일 → ticket harvest (I2)
+# 같은 하네스 리뷰 — ticket prepare → 라운드 파일 → ticket collect (I2)
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
@@ -911,7 +911,7 @@ def test_review_harvest_refuses_when_slot_changed_after_prepare(
         evidence = [prepared_head, _git(home, "rev-parse", "HEAD").stdout.strip()]
     capsys.readouterr()
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(run_dir), "--cwd", str(home)])
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["collect", "--copy", str(run_dir), "--cwd", str(home)])
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -921,7 +921,7 @@ def test_review_harvest_refuses_when_slot_changed_after_prepare(
     for ticket in _MEMBERS:
         assert _board_review_round(home, ticket).read_bytes() == seeds[ticket]
     assert run_dir.is_dir()
-    assert all(row["harvested_at"] is None for row in delegate_ledger.ticket_copy_records(home))
+    assert all(row["collected_at"] is None for row in delegate_ledger.ticket_copy_records(home))
 
 
 @requires_git
@@ -939,14 +939,14 @@ def test_review_harvest_accepts_round_file_only_change(pd, review_env, monkeypat
     capsys.readouterr()
 
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
-        "harvest", "--copy", lines[0]["run_dir"], "--cwd", str(home),
+        "collect", "--copy", lines[0]["run_dir"], "--cwd", str(home),
     ])
 
     assert rc == 0, capsys.readouterr().err
     for ticket in _MEMBERS:
         assert review_form.PM_REVIEW_BLOCK in _board_review_round(home, ticket).read_text(
             encoding="utf-8")
-    assert all(row["harvested_at"] for row in delegate_ledger.ticket_copy_records(home))
+    assert all(row["collected_at"] for row in delegate_ledger.ticket_copy_records(home))
 
 
 @requires_git
@@ -968,7 +968,7 @@ def test_review_harvest_refuses_a_row_without_base_rev(pd, review_env, capsys):
     seed = seat.board_path.read_bytes()
     capsys.readouterr()
 
-    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["harvest", "--copy", str(seat.path), "--cwd", str(home)])
+    rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["collect", "--copy", str(seat.path), "--cwd", str(home)])
 
     err = capsys.readouterr().err
     assert rc == 1, err
@@ -1013,7 +1013,7 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
         seat.write_text("".join(kept), encoding="utf-8", newline="")
     capsys.readouterr()
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
-        "harvest", "--copy", reopened[0]["run_dir"], "--cwd", str(home),
+        "collect", "--copy", reopened[0]["run_dir"], "--cwd", str(home),
     ])
     assert rc == 0, capsys.readouterr().err
 
@@ -1023,7 +1023,7 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
         pd, review_env, monkeypatch, capsys):
     """AT-001 — CLI 실행 없이 같은 하네스 경로로 만든 리뷰의 미처분 must-fix 가 판정을 막는다.
 
-    준비(`ticket prepare`) → 라운드 파일 작성 → 돌려받기(`ticket harvest`) 뒤 내부 기록 파일이
+    준비(`ticket prepare`) → 라운드 파일 작성 → 돌려받기(`ticket collect`) 뒤 내부 기록 파일이
     없어도 완료·종결 판정이 잔여를 거부하고, 기각 처분 기입 뒤에는 둘 다 통과한다.
     """
     home, tickets = review_env
@@ -1034,7 +1034,7 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
     for line in lines:
         _write_seat(pd, Path(line["copy"]), [finding] if line["ticket"] == _MEMBERS[0] else [])
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
-        "harvest", "--copy", lines[0]["run_dir"], "--cwd", str(home),
+        "collect", "--copy", lines[0]["run_dir"], "--cwd", str(home),
     ]) == 0
     board = _fixture_board(pd, home)
     ticket = _MEMBERS[0]
@@ -1224,7 +1224,7 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
             )
     capsys.readouterr()
 
-    rc = pd.main(["review", "delta", "--cluster", _CLUSTER])
+    rc = pd.main(["review", "accepted", "--cluster", _CLUSTER])
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -1804,7 +1804,7 @@ def test_a_refused_seat_harvest_does_not_pass_as_success(pd, review_env, capsys)
 
     assert rc == 1
     err = capsys.readouterr().err
-    assert "ticket harvest 거부" in err and _MEMBERS[1] in err
+    assert "ticket collect 거부" in err and _MEMBERS[1] in err
     first = (
         home / ".project_manager" / "wiki" / "tickets" / "rounds" / _MEMBERS[0]
         / "03-code-reviewer.md"

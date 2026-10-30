@@ -135,7 +135,7 @@ def test_pretooluse_has_no_tool_independent_feature_and_prompt_compact_features_
     by_id = {feature.feature_id: feature for feature in dispatcher.CODEX_HOOK_FEATURES}
     assert by_id["ctx-nudge-userpromptsubmit"].event == "UserPromptSubmit"
     assert by_id["principle-recall-userpromptsubmit"].event == "UserPromptSubmit"
-    assert by_id["principle-recall-rearm"].event == "PostCompact"
+    assert by_id["principle-recall-reset"].event == "PostCompact"
     for feature_id in ("compaction-checkpoint-pre", "compaction-guidance",
                        "compaction-checkpoint-post", "compaction-snapshot"):
         assert feature_id in by_id

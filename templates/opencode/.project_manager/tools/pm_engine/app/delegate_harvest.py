@@ -87,7 +87,7 @@ def harvest_ticket_copy(
         ) from exc
     if markdown_text._normalized_newlines(text) == markdown_text._normalized_newlines(reserved):
         print(
-            "경고: ticket harvest 산출 없음 — 준비가 시드한 라운드 골격이 그대로입니다: "
+            "경고: ticket collect 산출 없음 — 준비가 시드한 라운드 골격이 그대로입니다: "
             f"ticket={row['ticket']} {board_path.name} · run-dir 을 유지합니다: {run_dir}",
             file=sys.stderr,
         )
@@ -150,7 +150,7 @@ def harvest_ticket_copy(
             raise delegate_errors.DelegateError(f"회수할 티켓 명세가 없습니다: {row['ticket']}")
         is_draft = found[0] == "draft"
         round_store.replace_round(board_path, text)
-    message = f"ticket-harvest {row['ticket']} {row['role']}"
+    message = f"ticket-collect {row['ticket']} {row['role']}"
     # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 부분 동기된 사본에서 커밋만
     # 조용히 빠진 rc0(라운드는 바뀌었는데 board git 은 그대로)이 된다. 이름이 갈리면
     # AttributeError 로 loud 하게 죽는 편이 그 침묵보다 낫다.
@@ -158,7 +158,7 @@ def harvest_ticket_copy(
     if not is_draft:
         sync_ready = bool(round_maintenance._rounds_mutation_sync_paths(home, message, (board_path,)))
     harvested = dict(row)
-    harvested["harvested_at"] = datetime.datetime.now(
+    harvested["collected_at"] = datetime.datetime.now(
         datetime.timezone.utc
     ).isoformat()
     delegate_copy_store._append_delegate_rounds_ledger(home, harvested)

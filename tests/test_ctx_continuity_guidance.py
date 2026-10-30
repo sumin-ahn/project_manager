@@ -149,7 +149,7 @@ def _snapshot_fixture_pm_home(tmp_path):
         "ticket": "T-0001", "role": "architect", "ordinal": 1,
         "run_id": "a" * 32, "copy": str(tmp_path / "copy.md"),
         "board_rel": "wiki/tickets/rounds/T-0001/architect-1.md",
-        "prepared_at": "2026-08-21T00:00:00.000000+00:00", "harvested_at": None,
+        "prepared_at": "2026-08-21T00:00:00.000000+00:00", "collected_at": None,
     }
     ledger.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
     raw_ledger = local / "raw_outputs.json"

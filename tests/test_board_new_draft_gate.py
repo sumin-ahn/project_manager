@@ -595,7 +595,7 @@ def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp
         "copy": str(copy_path.resolve()),
         "board_rel": f"tickets/rounds/{tid}/01-architect.md",
         "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "harvested_at": None,
+        "collected_at": None,
     }
     ledger_dir = tmp_path / ".project_manager" / ".local"
     ledger_dir.mkdir(parents=True, exist_ok=True)

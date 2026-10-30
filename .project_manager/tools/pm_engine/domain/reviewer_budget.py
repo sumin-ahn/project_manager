@@ -390,7 +390,7 @@ _RESOLVE_GATE_PM_VERIFIED_GUIDANCE = (
     "  · `--pm-verified` 는 PM 판정 표면(리뷰 delta)이 그 채널 accepted 잔여 없이, 그 채널 잔여 "
     "must-fix 건수만큼 전건 처분되고, accepted 가 있었을 때만 기계 확인이 1건 이상 기록됐을 때만 "
     "선언됩니다.\n"
-    "  · 표면 상태는 `python3 .project_manager/tools/pm_delegate.py review delta --ticket {gate}` "
+    "  · 표면 상태는 `python3 .project_manager/tools/pm_delegate.py review accepted --ticket {gate}` "
     "로 확인하세요."
 )
 

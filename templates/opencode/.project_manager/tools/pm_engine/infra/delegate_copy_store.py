@@ -532,7 +532,7 @@ def _cluster_run_rows(home, run_dir: Path) -> list[dict]:
             latest[row["copy"]] = row
     rows = [
         row for row in latest.values()
-        if row["harvested_at"] is None and "abandoned_at" not in row
+        if row["collected_at"] is None and "abandoned_at" not in row
     ]
     if not rows:
         raise delegate_errors.DelegateError(

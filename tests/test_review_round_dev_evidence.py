@@ -278,7 +278,7 @@ def test_review_prepare_over_a_seed_developer_round_is_loud(pd, rounds_env, caps
         row for row in _ledger_rows(pm_home)
         if row["role"] == "developer" and row["ordinal"] == 2
     ][-1]
-    assert developer_row["harvested_at"] is None
+    assert developer_row["collected_at"] is None
 
 
 def test_review_prepare_over_a_seed_first_developer_round_is_loud(pd, rounds_env, capsys):

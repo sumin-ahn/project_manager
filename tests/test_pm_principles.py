@@ -181,6 +181,13 @@ def test_duplicate_item_within_the_same_file_last_one_wins(m, tmp_path):
     assert rules[0].text == "두 번째 문구(이게 이긴다)."
 
 
+def test_principles_cli_has_no_rearm_subcommand(m, tmp_path):
+    """부르는 곳이 없던 `rearm` 서브커맨드는 지워졌다 — 인자 오류(종료 코드 2)로 거부된다."""
+    with pytest.raises(SystemExit) as excinfo:
+        m.main(["rearm", "--root", str(tmp_path), "--session", "s"])
+    assert excinfo.value.code == 2
+
+
 def test_judge_recall_text_at_exact_10000_char_cap_is_not_summarized(m, tmp_path):
     """실제 `_MAX_INJECT_CHARS`(10,000) 경계 — 정확히 상한이면 원문 그대로다(monkeypatch 아님)."""
     fixed_len = len(principle_rules._INJECT_PREFIX) + 3  # f"{prefix} - {rule_text}" 의 고정 부분(공백 1 + "- ").

@@ -557,10 +557,10 @@ def test_run_dir_harvest_replaces_every_filled_round_and_closes_the_run(
         board_text = round_plan.board_path.read_text(encoding="utf-8")
         assert f"{round_plan.ticket} 실측" in board_text
     assert not plan.run_dir.exists()        # 마지막 자리가 닫히면 run 도 닫힌다.
-    assert all(row["harvested_at"] is not None
-               for row in _ledger_rows(pm_home) if row["harvested_at"] is not None)
+    assert all(row["collected_at"] is not None
+               for row in _ledger_rows(pm_home) if row["collected_at"] is not None)
     assert len([row for row in _ledger_rows(pm_home)
-                if row["harvested_at"] is not None]) == 2
+                if row["collected_at"] is not None]) == 2
 
 
 def test_run_dir_harvest_warns_per_ticket_when_one_seat_is_still_the_seed(
@@ -646,7 +646,7 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
         "ticket": "T-6016", "role": "architect", "ordinal": 1, "run_id": "b" * 32,
         "copy": str(copy_path), "board_rel": str(
             board_path.relative_to(pm_home)).replace("\\", "/"),
-        "prepared_at": "2026-01-01T00:00:00+00:00", "harvested_at": None,
+        "prepared_at": "2026-01-01T00:00:00+00:00", "collected_at": None,
     })
 
     result = delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=copy_path, cwd=slot, )
@@ -725,7 +725,7 @@ def test_cli_prepare_and_harvest_round_trip_over_a_run_dir(
     for row in rows:
         _fill(Path(row["copy"]), f"## 경계 실측\n- {row['ticket']} 실측")
 
-    rc = pd.main(["ticket", "harvest", "--copy", str(run_dir), "--cwd", str(slot)])
+    rc = pd.main(["ticket", "collect", "--copy", str(run_dir), "--cwd", str(slot)])
 
     out = capsys.readouterr().out
     assert rc == 0

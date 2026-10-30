@@ -882,7 +882,7 @@ def _git_init_adopter(dest: Path) -> None:
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path, harness):
-    """실 import 트리에서 `ticket prepare` → 라운드 파일 편집 → `ticket harvest` → `show` 1사이클.
+    """실 import 트리에서 `ticket prepare` → 라운드 파일 편집 → `ticket collect` → `show` 1사이클.
 
     기계층이다(라이브 LLM 0) — 에이전트가 할 편집을 테스트가 직접 한다. 이 사이클이 채택자
     사본에서 돌아야 위임이 성립하므로, 엔진만 고치고 template 전파를 빠뜨리면 여기서 red 다.
@@ -963,10 +963,10 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         encoding="utf-8", newline="",
     )
     design_harvested = _delegate_cli(
-        dest, "ticket", "harvest", "--copy", str(design_round), "--cwd", str(dest),
+        dest, "ticket", "collect", "--copy", str(design_round), "--cwd", str(dest),
     )
     assert design_harvested.returncode == 0, (
-        f"{harness} architect `ticket harvest` 실패(rc={design_harvested.returncode})\n"
+        f"{harness} architect `ticket collect` 실패(rc={design_harvested.returncode})\n"
         f"--- stdout ---\n{design_harvested.stdout}\n--- stderr ---\n{design_harvested.stderr}"
     )
 
@@ -1019,10 +1019,10 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         encoding="utf-8", newline="",
     )
     harvested = _delegate_cli(
-        dest, "ticket", "harvest", "--copy", str(round_file), "--cwd", str(dest),
+        dest, "ticket", "collect", "--copy", str(round_file), "--cwd", str(dest),
     )
     assert harvested.returncode == 0, (
-        f"{harness} `ticket harvest` 실패(rc={harvested.returncode})\n"
+        f"{harness} `ticket collect` 실패(rc={harvested.returncode})\n"
         f"--- stdout ---\n{harvested.stdout}\n--- stderr ---\n{harvested.stderr}"
     )
     assert json.loads(harvested.stdout.strip().splitlines()[-1])["changed"] is True

@@ -620,7 +620,7 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         handler=principle_recall_envelope,
     ),
     CodexHookFeature(
-        feature_id="principle-recall-rearm",
+        feature_id="principle-recall-reset",
         event="PostCompact",
         tool_pattern=None,
         argv=(),

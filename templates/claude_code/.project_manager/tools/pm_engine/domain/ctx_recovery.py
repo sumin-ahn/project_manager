@@ -144,7 +144,7 @@ def _inflight_capped_line(*, prefix: str, content: str, suffix: str) -> str:
 def _unharvested_copies_line(rows: list[dict]) -> str:
     """``delegate_ledger.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
     prefix = "- 미회수 라운드 준비 "
-    suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested`"
+    suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --uncollected`"
     if not rows:
         return _inflight_capped_line(prefix=prefix, content="0건", suffix=suffix)
     labels = [f"{row['ticket']} {row['role']}#{row['ordinal']}" for row in rows]

@@ -938,13 +938,13 @@ def _seed_raw_ledger(pm_home: Path, records: list[dict]) -> Path:
 
 def _delegate_row(
     tmp_path: Path, ticket: str, *, ordinal: int = 1, role: str = "architect",
-    harvested_at: str | None = None, prepared_at: str = "2026-08-21T00:00:00.000000+00:00",
+    collected_at: str | None = None, prepared_at: str = "2026-08-21T00:00:00.000000+00:00",
 ) -> dict:
     return {
         "ticket": ticket, "role": role, "ordinal": ordinal,
         "run_id": "a" * 32, "copy": str(tmp_path / f"{ticket}-{role}-{ordinal}.md"),
         "board_rel": f"wiki/tickets/rounds/{ticket}/{role}-{ordinal}.md",
-        "prepared_at": prepared_at, "harvested_at": harvested_at,
+        "prepared_at": prepared_at, "collected_at": collected_at,
     }
 
 
@@ -965,7 +965,7 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
     pm_home, cwd = _snapshot_home(tmp_path)
     _seed_delegate_rounds(pm_home, [
         _delegate_row(tmp_path, "T-0787"),
-        _delegate_row(tmp_path, "T-0786", harvested_at="2026-08-20T00:00:00.000000+00:00"),
+        _delegate_row(tmp_path, "T-0786", collected_at="2026-08-20T00:00:00.000000+00:00"),
     ])
     _seed_raw_ledger(pm_home, [_raw_record(tmp_path, "r1")])
     claimed_dir = pm_home / ".project_manager" / "board" / "tickets" / "claimed"
@@ -975,7 +975,7 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
 
     assert warning is None
     assert "## 진행 중 작업 (장부 실측)" in text
-    # T-0786 은 harvested_at 이 있어 미회수 집계에서 제외된다(1건만).
+    # T-0786 은 collected_at 이 있어 미회수 집계에서 제외된다(1건만).
     assert "미회수 라운드 준비 1건: T-0787 architect#1" in text
     assert "미마감 위임 raw 1건:" in text and "delegate/codex" in text
     assert "claimed 티켓 2건: T-0000-fixture · T-9999-extra" in text

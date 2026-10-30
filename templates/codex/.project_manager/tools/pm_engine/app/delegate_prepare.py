@@ -443,7 +443,7 @@ def prepare_cluster_copy(
             "copy": str(plan.path),
             "board_rel": record["board_rel"],
             "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "harvested_at": None,
+            "collected_at": None,
         }
         if owner_pid is not None:
             ledger_row["owner_pid"] = owner_pid
@@ -539,7 +539,7 @@ def abandon_ticket_copy(
         )
     # ── 1단계: 인가 ────────────────────────────────────────────────────────
     row = delegate_copy_store._delegate_round_record(home, copy_path)
-    if row["harvested_at"] is not None:
+    if row["collected_at"] is not None:
         raise delegate_errors.DelegateError(f"이미 회수된 준비는 포기할 수 없습니다: {copy_path}")
     expected = delegate_copy_store._expected_slot_round_path(cwd, row)
     given = Path(copy_path)
@@ -625,7 +625,7 @@ def abandon_ticket_copy(
                 superseded_confirmed_this_call = True
             else:
                 raise delegate_errors.DelegateError(
-                    "산출이 있어 포기할 수 없습니다(시드 그대로가 아님) — `ticket harvest` 로 "
+                    "산출이 있어 포기할 수 없습니다(시드 그대로가 아님) — `ticket collect` 로 "
                     "회수하거나, 재실행으로 대체된 라운드라면 그 대체본 ordinal 을 "
                     f"{delegate_rounds.ABANDON_SUPERSEDED_BY_FLAG} 로, 폐기하는 라운드라면 그 사유를 "
                     f"{delegate_rounds.ABANDON_DISCARD_REASON_FLAG} 로 밝히고 다시 부르세요: "

@@ -437,7 +437,7 @@ def _resolve_read_board(home) -> _ReadBoardResolution:
 
 
 def _repo_root_for_cwd(cwd: Path) -> Path:
-    """명시 cwd를 prepare/harvest가 공유하는 제품 Git 루트로 정규화한다.
+    """명시 cwd를 prepare/collect가 공유하는 제품 Git 루트로 정규화한다.
 
     앱 checkout은 `.project_manager`를 소유하지 않아도 된다. 보드·config의 PM 홈 소유
     해소는 `_ticket_cli_owner`/lease 경계가 별도로 담당한다.

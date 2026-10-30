@@ -278,10 +278,10 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
             description="PM disposition을 적용한 accepted-only reviewer delta",
         )
         sub = parser.add_subparsers(dest="review_command", required=True)
-        delta = sub.add_parser(
-            "delta", help="티켓 라운드에서 developer에게 허용된 finding만 렌더"
+        accepted = sub.add_parser(
+            "accepted", help="티켓 라운드에서 developer에게 허용된 finding만 렌더"
         )
-        _add_review_target_args(delta)
+        _add_review_target_args(accepted)
         disposition = sub.add_parser(
             "disposition-template",
             help="리뷰 라운드의 미판정 finding ID를 PM disposition 골격으로 렌더",
@@ -366,14 +366,14 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         ),
     )
     prepare.add_argument("--cwd", required=True, metavar="ABSPATH")
-    harvest = sub.add_parser(
-        "harvest", help="slot 라운드 파일로 board 라운드 파일을 교체하고 run 을 닫음",
+    collect = sub.add_parser(
+        "collect", help="slot 라운드 파일로 board 라운드 파일을 교체하고 run 을 닫음",
     )
-    harvest.add_argument(
+    collect.add_argument(
         "--copy", required=True, metavar="ABSPATH",
         help="라운드 파일 하나 또는 run-dir(디렉터리 인자는 그 run 의 티켓 전부를 회수한다)",
     )
-    harvest.add_argument("--cwd", required=True, metavar="ABSPATH")
+    collect.add_argument("--cwd", required=True, metavar="ABSPATH")
     abandon = sub.add_parser(
         "abandon",
         help="kill 로 죽은 예약을 포기 — 장부 행 마감 + board 라운드 정리 + run-dir 닫음",
@@ -405,7 +405,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     copies = sub.add_parser("copies", help="PM 홈 delegate-rounds 장부 조회")
     copies.add_argument("--ticket", default=None, metavar="T-NNNN")
     copies.add_argument(
-        "--unharvested", action="store_true", help="미회수 준비만 표시",
+        "--uncollected", action="store_true", help="미회수 준비만 표시",
     )
     return parser
 
@@ -507,13 +507,13 @@ def _prepare_native_review(
         f"run-dir={plan.run_dir} · 프롬프트={prompt_path}"
     )
     print(
-        f"  돌려받기: pm_delegate.py ticket harvest --copy {plan.run_dir} --cwd {cwd}"
+        f"  돌려받기: pm_delegate.py ticket collect --copy {plan.run_dir} --cwd {cwd}"
     )
     return 0
 
 
 def _cmd_ticket(home, argv: list[str]) -> int:
-    """native 위임도 cross와 같은 사본 helper를 쓰는 prepare/harvest CLI."""
+    """native 위임도 cross와 같은 사본 helper를 쓰는 prepare/collect CLI."""
     parser = build_subcommand_parser("ticket")
     assert parser is not None  # 같은 모듈의 literal command — introspection/실행 단일 parser.
     args = parser.parse_args(argv)
@@ -526,16 +526,16 @@ def _cmd_ticket(home, argv: list[str]) -> int:
             ledger = delegate_ledger._delegate_rounds_ledger_path(owner)
             print(f"조회 장부: {ledger}")
             rows = delegate_ledger.ticket_copy_records(
-                owner, ticket=args.ticket, unharvested=args.unharvested,
+                owner, ticket=args.ticket, unharvested=args.uncollected,
             )
-            label = "미회수 라운드 준비" if args.unharvested else "최근 라운드 준비"
+            label = "미회수 라운드 준비" if args.uncollected else "최근 라운드 준비"
             if not rows:
                 print(f"{label} 없음")
                 return 0
             print(f"{label} {len(rows)}건")
             for row in rows:
-                if row["harvested_at"] is not None:
-                    status = f"회수({row['harvested_at']})"
+                if row["collected_at"] is not None:
+                    status = f"회수({row['collected_at']})"
                 elif "abandoned_at" in row:
                     status = f"포기({row['abandoned_at']})"
                 else:
@@ -554,7 +554,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
             # 위임 마스터 스위치 — **준비 단계에서** 막는다. native 위임도 이 CLI 로 라운드 파일을
             # 준비하므로(스킬 규정) 여기가 엔진이 확실히 차단할 수 있는 지점이다. run-dir 생성·
             # 장부 순번 예약보다 앞이라 off 형상에서 고아 산출물이 남지 않는다.
-            # `harvest`·`copies` 는 게이트 밖이다 — 이미 준비된 라운드를 회수/조회하는 길까지
+            # `collect`·`copies` 는 게이트 밖이다 — 이미 준비된 라운드를 회수/조회하는 길까지
             # 막으면 스위치를 끄는 순간 진행 중 라운드가 고아가 된다.
             # owner_conf 를 한 번만 읽어 마스터 스위치와 cross 판정에 함께 넘긴다 — 실행 엔진
             # 사본(REPO) conf 는 판정에 관여하지 않는다(불변식 3: owner 가 provenance 단일 진실).
@@ -646,7 +646,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
             for outcome in outcomes:
                 if outcome.refusal is not None:
                     print(
-                        f"오류: ticket harvest 실패: {outcome.refusal}", file=sys.stderr)
+                        f"오류: ticket collect 실패: {outcome.refusal}", file=sys.stderr)
                     continue
                 console.write_machine_line(json.dumps({
                     "changed": outcome.result.changed,
@@ -662,7 +662,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
                 if item.result is not None and not item.result.changed)
             refused = sum(1 for item in outcomes if item.refusal is not None)
             print(
-                f"ticket harvest: 교체 {replaced} · 산출 없음 {unedited} · 거부 {refused} "
+                f"ticket collect: 교체 {replaced} · 산출 없음 {unedited} · 거부 {refused} "
                 f"(run-dir={copy})"
             )
             return 1 if refused else 0
@@ -730,7 +730,7 @@ def _emit_pm_review_verify_template(template: review_state.PMReviewVerifyTemplat
 
 
 def _cmd_review(home, argv: list[str]) -> int:
-    """review delta/disposition-template/verify-template — read-only 구조화 렌더 CLI.
+    """review accepted/disposition-template/verify-template — read-only 구조화 렌더 CLI.
 
     대상은 티켓 하나 또는 묶음 하나다. 묶음은 **같은 렌더의 티켓별 반복**이고 rc 는 하나라도
     실패하면 1 이다(부분 성공을 성공으로 접지 않는다).
@@ -778,7 +778,7 @@ def _cmd_review_ticket(home, args: argparse.Namespace, ticket: str) -> int:
             status, path = found
             if status not in ("open", "claimed"):
                 raise delegate_errors.DelegateError(
-                    f"review delta는 open/claimed 티켓만 허용: {ticket} in {status}/"
+                    f"review accepted는 open/claimed 티켓만 허용: {ticket} in {status}/"
                 )
             try:
                 with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
