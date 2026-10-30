@@ -194,7 +194,7 @@ const MANUAL_OPTION = "직접 입력";
 
 const INPUT = "w-full rounded border border-slate-200 px-1 font-mono text-[11px]";
 // 직접 정하지 않은 칸·스위치가 꺼진 칸 — 사용자가 쓴 값과 같은 굵기면 둘을 눈으로 가를 수 없다.
-const GREY = "block truncate text-[11px] text-slate-400";
+const GREY = "block min-w-0 break-words text-[11px] text-slate-400";
 
 
 /** 그 모델의 변형(추론 강도) 목록이 비었을 때 칸에 서는 말 — 고를 값이 없다. */
@@ -249,7 +249,7 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, variantsM
   const hint = blocked ? `먼저 ${dependsLabel} 를 고르세요`
     : variantsModel === "" ? `먼저 ${variantsLabel} 를 고르세요` : null;
   const select = (items: string[], manualOption: boolean) => (
-    <span className="flex items-center gap-1">
+    <span className="flex flex-wrap items-center gap-1">
       <select aria-label={row.key} value={value} className={INPUT}
               onChange={(event) => {
                 if (manualOption && event.target.value === MANUAL_OPTION) onManual();
@@ -259,7 +259,7 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, variantsM
         {listed(items).map((item) => <option key={item} value={item}>{item}</option>)}
         {manualOption && <option value={MANUAL_OPTION}>{MANUAL_OPTION}</option>}
       </select>
-      {hint && <span className="truncate text-[11px] text-slate-500">{hint}</span>}
+      {hint && <span className="text-[11px] text-slate-500">{hint}</span>}
     </span>
   );
 
@@ -268,11 +268,11 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, variantsM
   if (!choices.free_text && (blocked || variantsModel === "")) return select([], false);
   if (fetched === null || manual) {
     return (
-      <span className="flex items-center gap-1">
+      <span className="flex flex-wrap items-center gap-1">
         {choices.free_text
           ? <input aria-label={row.key} value={value} className={INPUT}
                    onChange={(event) => onChange(event.target.value)} />
-          : <span className={GREY} title={value}>{value}</span>}
+          : <span className={GREY}>{value}</span>}
         {/* 안내는 버튼 위에 둔다 — 같은 줄의 선택 칸이 그 문구를 이미 눈에 보이게 낸다. */}
         <button type="button" data-testid={`models-${row.key}`} disabled={blocked || busy}
                 title={hint ?? undefined} onClick={onFetch}
@@ -280,7 +280,7 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, variantsM
           목록 불러오기
         </button>
         {fetchError && (
-          <span title={fetchError.stderr} className="truncate text-[11px] text-red-600">
+          <span className="min-w-0 break-words text-[11px] text-red-600">
             {fetchError.message}{fetchError.stderr ? ` — ${fetchError.stderr}` : ""}
           </span>
         )}
@@ -289,9 +289,9 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, variantsM
   }
   if (fetchedItems === undefined) {
     return (
-      <span className="flex items-center gap-1">
-        <span className={GREY} title={value}>{value}</span>
-        <span className="truncate text-[11px] text-amber-700">{MODEL_NOT_LISTED}</span>
+      <span className="flex flex-wrap items-center gap-1">
+        <span className={GREY}>{value}</span>
+        <span className="text-[11px] text-amber-700">{MODEL_NOT_LISTED}</span>
       </span>
     );
   }
@@ -493,7 +493,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
    */
   const grey = (row: Row, on: boolean) => {
     const text = on ? valueOf(row.key) : row.readonly ? row.unset ?? "" : unsetHint(row);
-    return <span className={GREY} title={text}>{text}</span>;
+    return <span className={GREY}>{text}</span>;
   };
 
   const fieldLabel = (key: string) => keys.unit_fields[fieldOf(key)] ?? labelOfKey(key);
@@ -532,12 +532,12 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
     );
   };
 
-  // 이름을 크게, 설명은 그 아래 작은 글씨 한 줄 — 옆에 붙이면 잘려서 안 읽힌다.
+  // 이름을 크게, 설명은 그 아래 작은 글씨로 둔다. 둘 다 칸 너비에서 줄을 바꿔 잘리는 글이 없다.
   // 문구의 단일 소유는 엔진 키 목록이고 화면은 받아 그리기만 한다.
   const nameCell = (label: string, key: string, description: string) => (
-    <td className="w-72 py-1 pr-3 align-top">
-      <div className="truncate" title={label}>{label}</div>
-      <div className="truncate text-[11px] text-slate-500" title={`${key} · ${description}`}>
+    <td className="w-2/5 py-1 pr-3 align-top">
+      <div className="break-words">{label}</div>
+      <div className="break-words text-[11px] text-slate-500" title={key}>
         {description}
       </div>
     </td>
@@ -583,7 +583,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
           {budgetBlock(row.key)}
         </td>
         <td className="w-32 py-0.5 pr-2 text-[11px]">
-          <span className="flex gap-1 overflow-hidden whitespace-nowrap">
+          <span className="flex flex-wrap gap-1 break-all">
             <RowMarks row={row} conf={conf} />
             {conf.nonstandard.some((entry) => entry.key === row.key) && (
               <button type="button" disabled={busy} onClick={() => void reset(row.key)}
@@ -680,7 +680,7 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                       onClick={() => setSelectedNav(item.id)}
                       className={`flex w-full items-center justify-between px-3 py-1 text-left ${
                         item.id === current ? "bg-slate-100 font-medium" : "hover:bg-slate-50"}`}>
-                <span className="truncate">{item.label}</span>
+                <span>{item.label}</span>
                 {item.marks > 0 && (
                   <span data-testid={`nav-marks-${item.id}`}
                         className="rounded bg-amber-100 px-1 text-[11px] text-amber-700">
@@ -710,12 +710,12 @@ export default function SettingsTab({ bridge, path, light, settings, onReload, s
                   </table>
                 ) : (
                   <table key={run[0].kind + run[0].unit.unit} className="w-full table-fixed">
-                    <caption className="caption-top truncate text-left text-[11px] text-slate-500">
+                    <caption className="caption-top text-left text-[11px] text-slate-500">
                       {run[0].unit.cells[0].description}
                     </caption>
                     <thead>
                       <tr className="text-left text-[11px] text-slate-500">
-                        <th className="w-72" />
+                        <th className="w-2/5" />
                         <th className="w-6" />
                         {run[0].unit.cells.map((cell) => (
                           <th key={cell.key} className="font-normal">

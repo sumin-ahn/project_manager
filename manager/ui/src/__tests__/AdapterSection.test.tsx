@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterFile, AdapterResponse, Bridge, ConfSection, StatusDocument } from "../api";
 import AdapterMatrix, { cellText } from "../components/AdapterMatrix";
@@ -215,5 +215,20 @@ describe("전체 보기 매트릭스", () => {
     await waitFor(() => expect(screen.getByTestId(`cell-other-${EDITED.path}`))
       .toHaveTextContent("오류"));
     expect(screen.getByTestId(`cell-demo-${EDITED.path}`)).toHaveTextContent("0");
+  });
+});
+
+describe("T1021 어댑터 표의 잘리는 글 없음", () => {
+  it("T1021 경로·거리 칸은 칸 너비에서 줄을 바꾸고 버튼 칸은 한 줄로 둔다", async () => {
+    render(<AdapterSection bridge={makeBridge()} path={DEMO} onConfLoaded={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("adapter-load"));
+
+    const row = await screen.findByTestId(`adapter-${EDITED.path}`);
+    const path = within(row).getByText(EDITED.path);
+    expect(path).toHaveClass("break-all");
+    expect(path).not.toHaveClass("whitespace-nowrap");
+    expect(path).not.toHaveAttribute("title");
+    expect(within(row).getByText("최신과 3개 다름 · 편집 +1/-15")).not.toHaveClass("whitespace-nowrap");
+    expect(within(row).getByText("수용").parentElement).toHaveClass("whitespace-nowrap");
   });
 });

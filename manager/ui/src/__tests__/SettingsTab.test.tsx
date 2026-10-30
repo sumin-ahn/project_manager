@@ -539,6 +539,12 @@ describe("위임 절", () => {
     await waitFor(() => expect(reasoningCell()).toHaveTextContent("목록에 이 모델이 없습니다"));
     expect(reasoningCell()).toHaveTextContent("high");
     expect(screen.getByTestId("save")).toBeDisabled();                 // 편집 값이 생기지 않는다
+    const notListed = within(reasoningCell()).getByText("목록에 이 모델이 없습니다");
+    expect(notListed).not.toHaveClass("truncate");                     // T1021
+    expect(notListed.parentElement).toHaveClass("flex-wrap");
+    const current = within(reasoningCell()).getByText("high");
+    expect(current).toHaveClass("min-w-0", "break-words");
+    expect(current).not.toHaveAttribute("title");
   });
 
   it("세트를 켜도 도구가 비면 고를 목록이 없고 그 자리에 무엇을 먼저 고를지 나온다", () => {
@@ -556,6 +562,11 @@ describe("위임 절", () => {
     expect(screen.getAllByText(
       `먼저 ${KEYS.unit_fields[depends.slice(depends.lastIndexOf(".") + 1)]} 를 고르세요`)
       .length).toBeGreaterThan(0);
+    for (const hint of screen.getAllByText(
+      `먼저 ${KEYS.unit_fields[depends.slice(depends.lastIndexOf(".") + 1)]} 를 고르세요`)) {
+      expect(hint).not.toHaveClass("truncate");                       // T1021
+      expect(hint.parentElement).toHaveClass("flex-wrap");
+    }
     expect(screen.getByTestId(`models-${MODEL_CELL.key}`)).toBeDisabled();
     expect(screen.getByTestId("save")).toBeDisabled();       // 켜기만 해서는 적는 것이 없다
   });
@@ -593,6 +604,11 @@ describe("위임 절", () => {
 
     expect(await screen.findByText(/모델 목록을 내지 못했다/)).toBeInTheDocument();
     expect(screen.getByText(/\[중단\] opencode 조회 실패/)).toBeInTheDocument();
+    const failure = screen.getByText(/모델 목록을 내지 못했다/);
+    expect(failure).not.toHaveClass("truncate");                       // T1021
+    expect(failure).toHaveClass("min-w-0", "break-words");
+    expect(failure).not.toHaveAttribute("title");
+    expect(failure.parentElement).toHaveClass("flex-wrap");
     // 값을 지어내지 않는다 — 그 칸은 직접 칠 수 있는 텍스트 입력으로 남는다.
     expect((screen.getByLabelText(MODEL_CELL.key) as HTMLElement).tagName).toBe("INPUT");
   });
@@ -893,5 +909,51 @@ describe("T0949 설정 파일 값 차이", () => {
       expect(screen.getByTestId(`budget-${harness}`)).not.toHaveTextContent("설정 파일 값");
     }
     expect(screen.getByTestId("budget-claude")).toHaveTextContent("적용 한도 200000 · 압축 지점 180000");
+  });
+});
+
+describe("T1021 잘리는 글 없음", () => {
+  const HARNESS = KEYS.keys.find((entry) => entry.key.startsWith("harness."))!;
+  const WALL = "harness.claude.wall_timeout";
+
+  it("T1021 설정 이름·설명은 칸 너비에서 줄을 바꾸고 설명 줄의 마우스 올림 안내는 설정 키 하나다", () => {
+    mounted(makeBridge());
+    openGroup(HARNESS.group);
+    fireEvent.click(screen.getByTestId("show-unset"));
+    const row = screen.getByTestId(`conf-${WALL}`);
+    const label = within(row).getByText(HARNESS.unit_labels[WALL]);
+    const description = within(row).getByText(HARNESS.description);
+
+    for (const element of [label, description]) {
+      expect(element).not.toHaveClass("truncate");
+      expect(element).toHaveClass("break-words");
+    }
+    expect(label).not.toHaveAttribute("title");
+    expect(description).toHaveAttribute("title", WALL);
+    expect(description.closest("td")).toHaveClass("w-2/5");
+  });
+
+  it("T1021 회색 글·배지 칸·왼쪽 메뉴·묶음 표 설명은 자르지 않는다", () => {
+    mounted(makeBridge());
+    openGroup("runtime");
+    const unset = KEYS.keys.find((entry) => entry.key === "test.cmd")!.unset!;
+    const grey = within(screen.getByTestId("conf-test.cmd")).getByText(`기본 동작: ${unset}`);
+    expect(grey).not.toHaveClass("truncate");
+    expect(grey).toHaveClass("min-w-0", "break-words");
+    expect(grey).not.toHaveAttribute("title");
+
+    openGroup("ctx");
+    const marks = within(screen.getByTestId("conf-ctx.checkpoint_at_pct"))
+      .getByText("기본값으로").parentElement!;
+    expect(marks).toHaveClass("flex-wrap", "break-all");
+    expect(marks).not.toHaveClass("overflow-hidden");
+    expect(marks).not.toHaveClass("whitespace-nowrap");
+    expect(screen.getByTestId("nav-ctx").firstElementChild).not.toHaveClass("truncate");
+
+    openGroup(DELEGATE.group);
+    const caption = screen.getByText(DELEGATE.description);
+    expect(caption.tagName).toBe("CAPTION");
+    expect(caption).not.toHaveClass("truncate");
+    expect(caption.closest("table")!.querySelector("th")).toHaveClass("w-2/5");
   });
 });
