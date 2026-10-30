@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import REPO_ROOT
 
-APP_ID = "pm-manager"  # 프로그램 이름 · 등록 파일 이름 · StartupWMClass · Icon · 아이콘 파일 이름
+APP_ID = "pm-manager"  # 프로그램 이름 · 등록 파일 이름 · StartupWMClass · 아이콘 파일 이름
 ENTRY_DIRECTORY = "applications"
 ICON_DIRECTORY = Path("icons") / "hicolor" / "256x256" / "apps"
 FILE_MODE = 0o644
@@ -63,14 +63,20 @@ def _escape_value(value: str) -> str:
             .replace("\t", "\\t").replace("\r", "\\r"))
 
 
-def entry_text(argv: list[str], workdir: Path | None, name: str) -> str:
+def icon_path(data_dir: Path) -> Path:
+    """설치한 아이콘 파일의 절대경로. `Icon=` 에 테마 이름 대신 이 경로를 쓴다 — 이미 떠 있는
+    GNOME Shell 의 아이콘 테마는 새로 생긴 파일을 다시 읽지 않아 이름으로는 풀리지 않는다."""
+    return data_dir / ICON_DIRECTORY / f"{APP_ID}.png"
+
+
+def entry_text(argv: list[str], workdir: Path | None, name: str, icon: Path) -> str:
     """등록 파일 본문. `workdir` 이 없으면 `Path` 줄을 쓰지 않는다."""
     command = " ".join([_quote_exec_program(argv[0]), *argv[1:]])
     lines = ["[Desktop Entry]", "Type=Application", f"Name={_escape_value(name)}",
              f"Exec={_escape_value(command)}"]
     if workdir is not None:
         lines.append(f"Path={_escape_value(str(workdir))}")
-    lines += [f"Icon={APP_ID}", f"StartupWMClass={APP_ID}", "Terminal=false",
+    lines += [f"Icon={_escape_value(str(icon))}", f"StartupWMClass={APP_ID}", "Terminal=false",
               "Categories=Development;"]
     return "\n".join(lines) + "\n"
 
@@ -98,7 +104,7 @@ def register(icon_png: bytes, name: str, data_dir: Path) -> list[Path]:
         executable=sys.executable, frozen=hasattr(sys, "_MEIPASS"), repo_root=REPO_ROOT)
     targets = [
         (data_dir / ENTRY_DIRECTORY / f"{APP_ID}.desktop",
-         entry_text(argv, workdir, name).encode("utf-8")),
-        (data_dir / ICON_DIRECTORY / f"{APP_ID}.png", icon_png),
+         entry_text(argv, workdir, name, icon_path(data_dir)).encode("utf-8")),
+        (icon_path(data_dir), icon_png),
     ]
     return [path for path, content in targets if _write_if_changed(path, content)]

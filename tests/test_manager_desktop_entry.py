@@ -26,11 +26,13 @@ ICON_BYTES = b"\x89PNG fake icon"
 DESKTOP_NAME = "pm-manager.desktop"
 ICON_RELATIVE = Path("icons") / "hicolor" / "256x256" / "apps" / "pm-manager.png"
 
+ICON_FILE = Path("/data") / ICON_RELATIVE
+
 BUNDLE_ENTRY_TEXT = """[Desktop Entry]
 Type=Application
 Name=Project Manager
 Exec="/opt/My Apps/pm-manager-linux-x86_64"
-Icon=pm-manager
+Icon=/data/icons/hicolor/256x256/apps/pm-manager.png
 StartupWMClass=pm-manager
 Terminal=false
 Categories=Development;
@@ -40,7 +42,7 @@ Type=Application
 Name=Project Manager
 Exec="/home/u/venv dir/bin/python3" -m manager
 Path=/home/u/work/project_manager_5
-Icon=pm-manager
+Icon=/data/icons/hicolor/256x256/apps/pm-manager.png
 StartupWMClass=pm-manager
 Terminal=false
 Categories=Development;
@@ -77,8 +79,8 @@ def test_the_entry_text_for_the_bundle_and_the_source_tree():
     assert bundle == (["/opt/My Apps/pm-manager-linux-x86_64"], None)
     assert source == (["/home/u/venv dir/bin/python3", "-m", "manager"],
                       Path("/home/u/work/project_manager_5"))
-    assert desktop_entry.entry_text(*bundle, "Project Manager") == BUNDLE_ENTRY_TEXT
-    assert desktop_entry.entry_text(*source, "Project Manager") == SOURCE_ENTRY_TEXT
+    assert desktop_entry.entry_text(*bundle, "Project Manager", ICON_FILE) == BUNDLE_ENTRY_TEXT
+    assert desktop_entry.entry_text(*source, "Project Manager", ICON_FILE) == SOURCE_ENTRY_TEXT
 
 
 @_needs_gi
@@ -99,7 +101,8 @@ def test_gio_reads_back_the_command_from_the_entry(tmp_path):
         argv, workdir_value = desktop_entry.launch_command(
             executable=str(executable), frozen=frozen, repo_root=workdir)
         entry = tmp_path / f"entry{index}.desktop"
-        entry.write_text(desktop_entry.entry_text(argv, workdir_value, "Project Manager"),
+        icon_file = tmp_path / ICON_RELATIVE
+        entry.write_text(desktop_entry.entry_text(argv, workdir_value, "Project Manager", icon_file),
                          encoding="utf-8")
 
         info = Gio.DesktopAppInfo.new_from_filename(str(entry))
@@ -108,7 +111,8 @@ def test_gio_reads_back_the_command_from_the_entry(tmp_path):
         assert GLib.shell_parse_argv(info.get_commandline())[1] == argv
         assert info.get_string("Path") == (None if workdir_value is None else str(workdir_value))
         assert info.get_string("StartupWMClass") == "pm-manager"
-        assert info.get_string("Icon") == "pm-manager"
+        assert info.get_string("Icon") == str(icon_file)
+        assert info.get_icon().get_file().get_path() == str(icon_file)
 
 
 def test_register_writes_once_and_rewrites_only_on_change(tmp_path):
@@ -121,7 +125,7 @@ def test_register_writes_once_and_rewrites_only_on_change(tmp_path):
 
     assert written == [entry_path, icon_path]
     assert entry_path.read_text(encoding="utf-8") == desktop_entry.entry_text(
-        expected_argv, expected_workdir, "Project Manager")
+        expected_argv, expected_workdir, "Project Manager", icon_path)
     assert icon_path.read_bytes() == ICON_BYTES
     before = {path: (path.stat().st_ino, path.stat().st_mtime_ns) for path in written}
 
@@ -131,7 +135,7 @@ def test_register_writes_once_and_rewrites_only_on_change(tmp_path):
     entry_path.write_text("[Desktop Entry]\nExec=/moved/pm-manager\n", encoding="utf-8")
     assert desktop_entry.register(ICON_BYTES, "Project Manager", tmp_path) == [entry_path]
     assert entry_path.read_text(encoding="utf-8") == desktop_entry.entry_text(
-        expected_argv, expected_workdir, "Project Manager")
+        expected_argv, expected_workdir, "Project Manager", icon_path)
     assert [path.name for path in entry_path.parent.iterdir()] == [DESKTOP_NAME]
     assert [path.name for path in icon_path.parent.iterdir()] == ["pm-manager.png"]
 
@@ -208,3 +212,17 @@ def test_a_registration_failure_warns_and_still_opens_the_window(
     assert lines[0].startswith(
         "[경고] 독 아이콘용 .desktop 파일을 쓰지 못해 독에는 기본 아이콘이 나온다: ")
     assert "not-a-folder" in lines[0]
+
+
+def test_a_failed_replace_leaves_no_temporary_file(monkeypatch, tmp_path):
+    target = tmp_path / "applications" / DESKTOP_NAME
+
+    def failing_replace(source, destination):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(desktop_entry.os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        desktop_entry.register(ICON_BYTES, "Project Manager", tmp_path)
+
+    assert list(target.parent.iterdir()) == []
