@@ -89,7 +89,7 @@ def _run_main_with_diff(external, monkeypatch, diff: str):
         }
 
     monkeypatch.setattr(reviewer_run, "run_review", _fake_run_review)
-    exit_code = external.main(["--paths", "foo.py", "--no-gate"])
+    exit_code = external.main(["--paths", "foo.py", "--no-review-ticket"])
     return exit_code, called["reviewer"]
 
 

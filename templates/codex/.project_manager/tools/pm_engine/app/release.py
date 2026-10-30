@@ -40,7 +40,7 @@ _MUST_FIX_BLOCK_GUIDANCE = (
     "{items}\n"
     "  처방 — 현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언하세요:\n"
     "    python3 .project_manager/tools/additional_reviewer.py "
-    "--resolve-gate <게이트> --pm-verified\n"
+    "--resolve-review <게이트> --pm-verified\n"
     "  라운드 장부: {ledger}"
 )
 

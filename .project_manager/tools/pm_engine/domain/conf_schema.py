@@ -116,8 +116,9 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
         "additional_reviewer.incomplete_rounds_max",
     "additional_reviewer_incomplete_round_limit":
         "additional_reviewer.incomplete_rounds_max",
-    "external_review_wave_budget": "additional_reviewer.wave_budget",
-    "additional_reviewer_wave_budget": "additional_reviewer.wave_budget",
+    "external_review_wave_budget": "additional_reviewer.session_budget",
+    "additional_reviewer_wave_budget": "additional_reviewer.session_budget",
+    "additional_reviewer.wave_budget": "additional_reviewer.session_budget",
     "review_rounds_max": "additional_reviewer.rounds_max",
     "review_paths": "additional_reviewer.paths",
     # 제거 — 리뷰 내용에서 경로를 빼던 필터 축이 없어졌다(대체 키 없음)
@@ -428,7 +429,7 @@ KEY_REGISTRY: dict[str, KeySpec] = {
         "결과 없이 끝난 호출을 다시 부를 최대 횟수입니다.",
         default="2", required=False, group="additional_reviewer",
         governed_by="additional_reviewer.harness"),
-    "additional_reviewer.wave_budget": KeySpec(
+    "additional_reviewer.session_budget": KeySpec(
         "교차 검토 세션당 총 횟수",
         "한 세션에서 쓸 수 있는 전체 호출 수입니다.",
         default="24", required=False, group="additional_reviewer",

@@ -31,7 +31,7 @@ from pm_engine.domain import review_state
 # 하고, 이 모듈이 그 표의 사본을 들지 않는다.
 ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY = (
     "additional_reviewer.incomplete_rounds_max")
-ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer.wave_budget"
+ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer.session_budget"
 
 ADDITIONAL_REVIEWER_TIMEOUT_KEY = "additional_reviewer.timeout"
 ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY = "additional_reviewer.idle_timeout"
@@ -200,7 +200,7 @@ _MACHINE_MIRROR_RE = re.compile(
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 호출을 이 예산으로 묶는다. 기본 24 는
 # 게이트당 4라운드 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
 # `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf
-# additional_reviewer.wave_budget 로 조정 가능.
+# additional_reviewer.session_budget 로 조정 가능.
 
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
 # 실행 전 거부라 리뷰어는 호출되지 않는다(과금 없음). wave 예산 소진도 같은 축(호출 전
@@ -267,7 +267,7 @@ _CONVERGENCE_GUIDANCE = (
     "  라운드 {rounds}(완료 {completed} · 진행 중 예약 {inflight}) / 상한 {limit} · "
     "must_fix 추이 [{series}]\n"
     "  · 라운드를 더 쓰지 않습니다. 현재 티켓을 정지하고 남은 지적을 사용자에게 보고하세요.\n"
-    "  · 라운드별 산출은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
+    "  · 라운드별 산출은 `--rounds-report --review-ticket {gate}` 로 확인하세요.\n"
     "  · 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
     "  (장부: {ledger})"
 )
@@ -277,48 +277,48 @@ _CONVERGENCE_GUIDANCE = (
 _ACK_ROUNDS_REMOVED_GUIDANCE = (
     "오류: `--ack-rounds`(라운드 연장 승인)는 폐지됐습니다 — 이 실행은 아무것도 하지 않았습니다.\n"
     "  · 라운드 상한·수렴 상한에 걸리면 현재 티켓을 정지하고 사용자에게 보고합니다.\n"
-    "  · wave 예산 재개(`--ack-wave`)는 그대로입니다 — 별개 축입니다.\n"
-    "  · 현재 수렴 상황은 `--rounds-report --gate <T-NNNN>` 로 확인하세요."
+    "  · wave 예산 재개(`--reset-session-budget`)는 그대로입니다 — 별개 축입니다.\n"
+    "  · 현재 수렴 상황은 `--rounds-report --review-ticket <T-NNNN>` 로 확인하세요."
 )
 
-# ── 게이트 회계 자동 유도 (`--ticket` → `--gate`) ─────────────────────────────
+# ── 게이트 회계 자동 유도 (`--ticket` → `--review-ticket`) ─────────────────────────────
 # `--ticket` 만 준 실행은 리뷰를 정상 호출·과금하면서 라운드 예약·기록·상한 회계를 통째로
 # 건너뛰었다(실측: 하루 8 라운드 넘게가 장부에 0건). 그 조용한 무기록은 반려 must-fix 가
 # 릴리즈 차단 표면(`board.py livegate record`)에 도달하지 못하게 만드는 구멍이라, 기본값을
 # **기록**으로 뒤집는다 — `--ticket` 은 이미 이번 검토가 어느 티켓의 것인지 말하고 있으므로 그
 # 값을 게이트로 쓰면 회계를 붙이는 데 사람의 기억이 필요 없다([[mechanize-dont-instruct-llm]]:
 # "게이트를 같이 붙여라"는 규율 기억은 실측에서 실패했다). 회계 밖 자문 실행은 명시
-# opt-out(`--no-gate`)으로만 연다.
+# opt-out(`--no-review-ticket`)으로만 연다.
 #
 # 고지 **출력 자리**는 해소 결과를 말하는 자리다 — 유도 자체는 인자 파싱 직후에 하지만(뒤따르는
 # 게이트 검사·프롬프트·예약이 모두 그 값을 쓴다), 문구는 stderr **첫 줄 = config provenance** 계약을
 # 깨지 않게 provenance 직후에 낸다. 빈 diff 로 아직 끝날 수 있는 예약 전 자리이므로,
 # 장부에 붙었다는 확정형이 아니라 실행 조건형으로만 말한다.
 _GATE_DERIVED_NOTICE = (
-    "게이트 자동 유도: --gate {gate} (--ticket 값에서 유도 — 이 실행이 리뷰어를 부르면 라운드 회계가 "
+    "게이트 자동 유도: --review-ticket {gate} (--ticket 값에서 유도 — 이 실행이 리뷰어를 부르면 라운드 회계가 "
     "게이트 {gate}에 붙습니다). "
-    "회계 밖 자문 실행은 --no-gate 로 명시하세요."
+    "회계 밖 자문 실행은 --no-review-ticket 으로 명시하세요."
 )
 # 미리보기는 예약도 기록도 하지 않는다 — 같은 문구를 쓰면 "이번 실행이 기록된다"는 오보가 된다.
 _GATE_DERIVED_DRY_RUN_NOTICE = (
-    "게이트 자동 유도: --gate {gate} (--ticket 값에서 유도 — 미리보기라 이번 실행은 기록·집계하지 "
+    "게이트 자동 유도: --review-ticket {gate} (--ticket 값에서 유도 — 미리보기라 이번 실행은 기록·집계하지 "
     "않고, 실 호출 때 라운드 회계가 이 게이트에 붙습니다)."
 )
 
 # 회계 밖 실행의 loud 표기 — 침묵이 이 함정의 본체였으므로 명시 opt-out 실행은 자기
 # 상태를 스스로 말한다. 아무 선택도 없는 실 호출은 아래 `_GATE_ACCOUNTING_REQUIRED_GUIDANCE`로
-# 거부하므로, 이 조건형 경고는 `--no-gate` 경로에서만 나온다.
+# 거부하므로, 이 조건형 경고는 `--no-review-ticket` 경로에서만 나온다.
 # 예약 자리(호출 확정 전)의 문구는 **조건형**이다: 이 뒤로 환경 준비·스폰이 남아 있어 "호출했다"고
 # 확정하면 스폰 전에 중단된 실행이 이미 찍힌 고지와 모순된다. 확정 표기는 실행이 끝난 뒤 판정
 # 블록(`print_summary`)의 게이트 줄이 낸다.
 _UNACCOUNTED_RUN_TAIL = (
     "리뷰어를 부르면 라운드 장부에 기록되지 않고 라운드·wave 예산도 쓰지 않습니다 — 그 라운드에서 나온 "
     "반려 must-fix 는 릴리즈 차단(`board.py livegate record`)이 읽는 장부에 남지 않습니다.\n"
-    "  · 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 `--gate <게이트>` 로 "
+    "  · 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 `--review-ticket <게이트>` 로 "
     "실행하세요."
 )
 _UNACCOUNTED_OPT_OUT_NOTICE = (
-    "경고: `--no-gate` 명시 opt-out — 이 실행이 " + _UNACCOUNTED_RUN_TAIL
+    "경고: `--no-review-ticket` 명시 opt-out — 이 실행이 " + _UNACCOUNTED_RUN_TAIL
 )
 
 # 실 실행은 회계에 넣거나 명시적으로 빠져야 한다. 어느 쪽도 고르지 않은 실행을 경고만 하고
@@ -328,23 +328,23 @@ _GATE_ACCOUNTING_REQUIRED_GUIDANCE = (
     "오류: 실 호출에는 게이트 회계 지정 또는 명시 opt-out 이 필요합니다 — "
     "이 실행은 호출하지 않았습니다.\n"
     "  · 라운드 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 "
-    "`--gate <게이트>` 를 지정하세요.\n"
-    "  · 회계 밖 자문 실행이면 `--no-gate` 를 명시하세요."
+    "`--review-ticket <게이트>` 를 지정하세요.\n"
+    "  · 회계 밖 자문 실행이면 `--no-review-ticket` 을 명시하세요."
 )
 
 # 판정 블록의 게이트 줄 — 회계 밖 실행은 **끝난 뒤** 여기서 확정형으로 말한다. stderr 경고는 로그를
 # 안 읽으면 사라지지만 PM 은 판정 블록을 반드시 읽는다(오염 진단·실패 사유와 같은 근거).
 _SUMMARY_UNACCOUNTED_GATE = "(없음 — 회계 밖·라운드 장부 미기록)"
 
-# `--gate` 와 `--no-gate` 동시 지정 안내 — 한 실행이 "기록한다"와 "기록하지 않는다"를 동시에
+# `--review-ticket` 과 `--no-review-ticket` 동시 지정 안내 — 한 실행이 "기록한다"와 "기록하지 않는다"를 동시에
 # 뜻할 수 없다. 경고 후 한쪽을 골라 실행하면 그 선택이 조용한 자의 판정이 되므로 부작용 0
 # 지점에서 거부한다(`--ack-rounds` 폐지와 같은 자리·같은 규율).
 _GATE_OPT_OUT_CONFLICT_GUIDANCE = (
-    "오류: `--no-gate` 와 `--gate {gate}` 는 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
+    "오류: `--no-review-ticket` 과 `--review-ticket {gate}` 는 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
-    "  · `--gate` 는 이 라운드를 장부에 기록하겠다는 지정이고, `--no-gate` 는 기록하지 않겠다는 "
+    "  · `--review-ticket` 은 이 라운드를 장부에 기록하겠다는 지정이고, `--no-review-ticket` 은 기록하지 않겠다는 "
     "opt-out 입니다.\n"
-    "  · 회계에 넣으려면 `--no-gate` 를 빼고, 회계 밖 자문이면 `--gate` 를 빼세요."
+    "  · 회계에 넣으려면 `--no-review-ticket` 을 빼고, 회계 밖 자문이면 `--review-ticket` 을 빼세요."
 )
 
 
@@ -352,26 +352,26 @@ _GATE_OPT_OUT_CONFLICT_GUIDANCE = (
 # 같은 자리(추가 리뷰어 호출 전)에서 같은 rc 로 막는다 — 게이트마다 상한을 새로 받는 구조에서는
 # 티켓 수만큼 라운드가 늘어나기 때문이다. 성격은 라운드 상한과 같은 anti-loop pause 다.
 _WAVE_BUDGET_GUIDANCE = (
-    "오류: wave 예산 소진 — `--ack-wave` 로 재개(예산 리셋)\n"
+    "오류: wave 예산 소진 — `--reset-session-budget` 으로 재개(예산 리셋)\n"
     "  게이트 {gate} · wave spent={spent} (예산 {budget} · wave 시작 {started})\n"
     "  · 게이트별 라운드 상한과 **별개**인 wave 단위 총 라운드 예산입니다 — 티켓 수 × 라운드 "
     "상한으로 라운드가 확장되는 것을 막습니다.\n"
     "  · 먼저 `--rounds-report` 로 라운드별 산출을 확인하세요.\n"
-    "  · 같은 범위가 정상 수렴 중이면 PM 이 자율로 `--ack-wave` 를 붙여 재개합니다 "
+    "  · 같은 범위가 정상 수렴 중이면 PM 이 자율로 `--reset-session-budget` 을 붙여 재개합니다 "
     "(spent 를 0 으로 리셋):\n"
-    "      python3 .project_manager/tools/additional_reviewer.py --gate {gate} --ack-wave [기존 옵션]\n"
+    "      python3 .project_manager/tools/additional_reviewer.py --review-ticket {gate} --reset-session-budget [기존 옵션]\n"
     "  · 수렴이 안 되고 있으면(같은 지적 반복·범위 발산) 사용자에게 보고하세요.\n"
-    "  · 예산 조정은 local.conf `additional_reviewer.wave_budget`.\n"
+    "  · 예산 조정은 local.conf `additional_reviewer.session_budget`.\n"
     "  (장부: {ledger})"
 )
 
 
-# ── 게이트 처분 선언(`--resolve-gate`) 안내 ────────────────────────────────
+# ── 게이트 처분 선언(`--resolve-review`) 안내 ────────────────────────────────
 # 라운드 상한으로 종결된 게이트의 잔여 must-fix 를 **어떻게 소화했는지** 장부에 남기는 표면이다.
 # 선언 자체가 판정이 아니라 *기록*이고, 릴리즈 차단(`board.py livegate record`)은 그 기록 사실만
 # 읽는다 — "사소하니 넘어간다"는 자의 판정이 들어갈 자리를 어느 쪽에도 만들지 않는다.
 _RESOLVE_GATE_MODE_GUIDANCE = (
-    "오류: `--resolve-gate {gate}` 에는 `--pm-verified`가 필요합니다 — 이 실행은 아무것도 "
+    "오류: `--resolve-review {gate}` 에는 `--pm-verified`가 필요합니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
     "  · PM 판정 표면의 기계 확인 증거로만 해소합니다(재호출 없음 — accepted 잔여 "
     "0·잔여 must-fix 건수만큼 전건 처분·필요 시 기계 확인 1건 이상).\n"
@@ -379,9 +379,9 @@ _RESOLVE_GATE_MODE_GUIDANCE = (
 )
 
 _RESOLVE_GATE_REQUIRED_GUIDANCE = (
-    "오류: `{flag}` 는 `--resolve-gate <게이트>` 와 함께 써야 합니다 — 처분할 게이트가 없으면 "
+    "오류: `{flag}` 는 `--resolve-review <게이트>` 와 함께 써야 합니다 — 처분할 게이트가 없으면 "
     "선언할 사실이 없습니다.\n"
-    "      python3 .project_manager/tools/additional_reviewer.py --resolve-gate <게이트> {flag}"
+    "      python3 .project_manager/tools/additional_reviewer.py --resolve-review <게이트> {flag}"
     "{value}"
 )
 
@@ -401,18 +401,18 @@ _RESOLVE_GATE_UNKNOWN_GUIDANCE = (
 )
 
 _RESOLVE_GATE_DRY_RUN_GUIDANCE = (
-    "오류: `--resolve-gate {gate}` 는 `--dry-run` 과 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
+    "오류: `--resolve-review {gate}` 는 `--dry-run` 과 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
     "  · 처분 선언은 장부에 사실을 남기는 것이 목적이라 미리보기가 성립하지 않습니다 "
     "(호출은 어차피 없습니다).\n"
-    "  · 지금 상태만 보려면 `--rounds-report --gate {gate}` 를 쓰세요."
+    "  · 지금 상태만 보려면 `--rounds-report --review-ticket {gate}` 를 쓰세요."
 )
 
 _RESOLVE_GATE_NO_RESIDUAL_GUIDANCE = (
     "오류: 게이트 {gate} 에는 처분할 잔여 must-fix 가 없습니다 (최종 라운드 must_fix={residual}).\n"
     "  · 처분 선언은 **반려로 끝난** 게이트의 잔여를 소화하는 기록입니다 — 잔여가 없으면 릴리즈 "
     "게이트도 이 게이트를 보지 않습니다(무대상).\n"
-    "  · 현재 상태는 `--rounds-report --gate {gate}` 로 확인하세요."
+    "  · 현재 상태는 `--rounds-report --review-ticket {gate}` 로 확인하세요."
 )
 
 
@@ -449,11 +449,11 @@ _RESERVED_GATE_GUIDANCE = (
 )
 
 
-def _reserved_gate_error(gate: str | None, *, flag: str = "--gate") -> str | None:
+def _reserved_gate_error(gate: str | None, *, flag: str = "--review-ticket") -> str | None:
     """게이트 이름이 장부 예약 키면 차단 안내를 돌려준다 (아니면 None).
 
     판정 입력은 이름 하나뿐이라 호출·장부 접근 **전에** 부를 수 있다 — 거부된 실행은 호출도
-    장부 변경도 남기지 않는다. 게이트 이름을 받는 표면이 여럿이라(`--gate`·`--resolve-gate`)
+    장부 변경도 남기지 않는다. 게이트 이름을 받는 표면이 여럿이라(`--review-ticket`·`--resolve-review`)
     어느 플래그가 걸렸는지는 인자로 받는다 — 판정 규칙은 한 곳이다."""
     if gate is None or gate not in _RESERVED_LEDGER_KEYS:
         return None
@@ -534,7 +534,7 @@ def _gate_names(ledger: dict) -> list[str]:
 
 
 def _reset_wave(ledger: dict) -> dict:
-    """`--ack-wave` — ack 시점에 예산을 리셋한다(다음 호출이 새 시작 시각을 찍는다).
+    """`--reset-session-budget` — ack 시점에 예산을 리셋한다(다음 호출이 새 시작 시각을 찍는다).
 
     새 세대 id 를 발급한다 — 리셋 전에 예약한 실행의 환불이 이 wave 의 예산을 깎지 못하게."""
     ledger[WAVE_SECTION_KEY] = {"id": _new_wave_id(), "started": None, "spent": 0}
@@ -637,8 +637,8 @@ class RoundBudget(NamedTuple):
     """이번 실행의 예산 판정 결과 — 거부 rc 또는 예약 identity.
 
     `refused_rc` 가 채워진 결과는 **그 자리에서 끝나는 실행**이다(raw·스폰·과금 없음).
-    통과한 실행 중 `--gate` 지정분만 예약 좌표(gate·round_id·sequence·wave_id)를 갖는다 —
-    `--gate` 없는 실행은 종전대로 장부 밖이라 세 값이 비어 있는 통과 결과다.
+    통과한 실행 중 `--review-ticket` 지정분만 예약 좌표(gate·round_id·sequence·wave_id)를 갖는다 —
+    `--review-ticket` 없는 실행은 종전대로 장부 밖이라 세 값이 비어 있는 통과 결과다.
 
     `sequence` 는 **예약 시점** 순번이다: 마감 때 레코드를 되찾아 읽으면 그 사이 집계 창이
     비워진 실행만 순번을 잃는다. `wave_id` 는 예약 시점 wave 세대라

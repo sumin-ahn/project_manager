@@ -38,7 +38,7 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 #   readonly 슬롯 경로는 `pm-config status` 의 role=readonly 행에서 확인(`worktree` 서브커맨드는 add·prune-stale·remove 뿐).
 ```
 
-record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must-fix를 차단한다(rc=1·우회 플래그 없음). 차단되면 현재 티켓 fix의 기계 확인이 끝난 게이트만 `additional_reviewer.py --resolve-gate <게이트> --pm-verified`로 선언한다. 다른 티켓이나 근거 게이트로 잔여를 넘기는 처분은 없다. 상태는 `additional_reviewer.py --rounds-report`로 확인하며 `livegate check`도 같은 판정을 반복한다.
+record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must-fix를 차단한다(rc=1·우회 플래그 없음). 차단되면 현재 티켓 fix의 기계 확인이 끝난 게이트만 `additional_reviewer.py --resolve-review <게이트> --pm-verified`로 선언한다. 다른 티켓이나 근거 게이트로 잔여를 넘기는 처분은 없다. 상태는 `additional_reviewer.py --rounds-report`로 확인하며 `livegate check`도 같은 판정을 반복한다.
 
 - 릴리즈 readonly 기준면은 기존 `--cwd <절대경로>`로 핀한다. 일반 task의 소유 작업공간에서 livegate를 기록하는 경우는 `--task <task> --repo <repo> --slot <N>`으로 실행 대상을 선택한다. task 귀속과 선택한 HEAD·브랜치·test_cmd를 결속한다. 두 경로를 섞거나 다중 슬롯에서 암묵적으로 고르지 않는다.
 - 릴리즈 전 추가 리뷰어 교차검증(`additional_reviewer`)의 `--paths`도 같은 readonly 슬롯 worktree를 가리킨다.

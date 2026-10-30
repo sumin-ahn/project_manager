@@ -176,7 +176,7 @@ def test_paths_only_prompt_does_not_include_ticket_body(
 ):
     _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--paths", "x.py", "--no-gate", "--dry-run"]) == 0
+    assert external.main(["--paths", "x.py", "--no-review-ticket", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "### 게이트 티켓 본문" not in out
     assert "ticket_body_bytes:" not in out
@@ -185,14 +185,14 @@ def test_paths_only_prompt_does_not_include_ticket_body(
 def test_paths_and_gate_without_ticket_states_body_is_unassembled(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """`--paths --gate T-NNNN`(본문 미조립 형상) — [[T-0819]] 값 단언.
+    """`--paths --review-ticket T-NNNN`(본문 미조립 형상) — [[T-0819]] 값 단언.
 
     `--ticket` 이 없으면 `prepare_ticket_body` 가 조립을 건너뛰어 `ticket_body_bytes` 줄
     자체가 안 찍힌다(형상 E). 미리보기가 침묵 대신 이 사실을 한 줄로 말해야 한다.
     """
     _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--paths", "x.py", "--gate", "T-9999", "--dry-run"]) == 0
+    assert external.main(["--paths", "x.py", "--review-ticket", "T-9999", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "### 게이트 티켓 본문" not in out
     assert "ticket_body_bytes:" not in out, "본문 미조립 — 이 줄 자체가 없다"
@@ -201,7 +201,7 @@ def test_paths_and_gate_without_ticket_states_body_is_unassembled(
 
 @pytest.mark.parametrize(
     "accounting_args",
-    (["--gate", "T-7777"], ["--no-gate"]),
+    (["--review-ticket", "T-7777"], ["--no-review-ticket"]),
     ids=("explicit-gate-override", "no-gate"),
 )
 def test_ticket_and_paths_header_uses_body_source_ticket_id(

@@ -216,15 +216,15 @@ additional_reviewer.reasoning=max
 호출마다 비용을 다시 묻지 않는다 — 리뷰마다·상한 재개마다의 승인 절차는 없다. 라운드/wave 상한은 기계적 anti-loop 정지이며 축마다 규율이 다르다:
 
 - **리뷰 라운드 축(연장 승인 없음)** — 상한 2회(`additional_reviewer.rounds_max`), 직전 라운드 대비 must-fix 증가는 상한 전 조기 차단이다. rc=4면 `--rounds-report`로 장부를 읽고 현재 티켓을 정지해 사용자에게 보고한다. 라운드를 연장하는 승인 플래그는 폐지됐다.
-- **wave 예산 축(재개 ack 유지)** — rc=4 면 `--rounds-report` 로 장부를 읽고 **같은 scope 의 정상 수렴이면 PM 이 자율로 `--ack-wave`** 하며 판단 근거를 log 에 남긴다. 예산을 열어도 라운드 축의 수렴 판정은 그대로 닫혀 있다.
+- **wave 예산 축(재개 ack 유지)** — rc=4 면 `--rounds-report` 로 장부를 읽고 **같은 scope 의 정상 수렴이면 PM 이 자율로 `--reset-session-budget`** 하며 판단 근거를 log 에 남긴다. 예산을 열어도 라운드 축의 수렴 판정은 그대로 닫혀 있다.
 
 **잔여 must-fix 의 처분(릴리즈 전 필수).** 상한으로 종결된 게이트에 must-fix 가 남았으면 그 잔여를 어떻게 소화했는지 장부에 선언한다. 건수를 읽지 못한 판정 무효 라운드의 잔여는 `0`이 아니라 **미상**이며 똑같이 차단·처분 대상이다. 선언 없는 잔여는 릴리즈가 열리지 않는다(`board.py livegate record` 가 실행 전에 차단·우회 플래그 없음). 보호훅의 `PM_SKIP_LIVE_GATE=1`도 장부 writer가 원자 갱신한 현행 잔여 표식이 명확히 `clear`일 때만 라이브 축을 우회한다. 표식 부재·손상·판독 실패는 잔여 미상이라 fail-closed이며, `board.py livegate record` 1회로 환경과 표식을 먼저 복구한다.
 
 ```bash
-python3 .project_manager/tools/additional_reviewer.py --resolve-gate <게이트> --pm-verified
+python3 .project_manager/tools/additional_reviewer.py --resolve-review <게이트> --pm-verified
 ```
 
-처분은 현재 티켓 fix의 판정 표면과 기계 확인 증거를 재검증하는 `pm-verified` 하나다. 선언은 그때의 라운드에 결속하므로 선언 뒤 새 라운드가 오면 stale로 다시 막힌다. `--resolve-gate`는 기록 명령이라 `--dry-run`과 함께 쓰면 rc=1로 거부한다. 상태는 `--rounds-report`의 처분 열(미처분/pm-verified/무대상)로 확인한다.
+처분은 현재 티켓 fix의 판정 표면과 기계 확인 증거를 재검증하는 `pm-verified` 하나다. 선언은 그때의 라운드에 결속하므로 선언 뒤 새 라운드가 오면 stale로 다시 막힌다. `--resolve-review`는 기록 명령이라 `--dry-run`과 함께 쓰면 rc=1로 거부한다. 상태는 `--rounds-report`의 처분 열(미처분/pm-verified/무대상)로 확인한다.
 
 사용자에게 올리는 경우는 중대한 scope 확대·그 밖의 독립적 사용자 게이트 사유다.
 
@@ -239,7 +239,7 @@ Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `
   `--ticket` 이 touches 를 diff 경로로 잡고, `--adr` 이 관련 ADR 을 프롬프트에 참조로 넣는다.
 - **설계 리뷰** (ADR/spike): ADR/spike 문서 자체를 diff 로 보낸다.
   ```
-  python3 .project_manager/tools/additional_reviewer.py --base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>   # 실 호출은 --gate(또는 --ticket 유도)나 명시적 --no-gate 필수
+  python3 .project_manager/tools/additional_reviewer.py --base <ref> --paths .project_manager/wiki/decisions/ ... --review-ticket <T-NNNN|ADR-NNNN>   # 실 호출은 --review-ticket(또는 --ticket 유도)나 명시적 --no-review-ticket 필수
   ```
 - **diff-only 한계**: 추가 리뷰어는 **diff 만** 본다 (`--adr` 은 ID 참조일 뿐 본문 미포함). ADR 본문이 필요하거나 코드 ticket 이 ADR 을 함께 개정하면 **`--paths` 에 코드 경로(ticket touches)와 ADR/문서 경로를 함께 나열**한다. ⚠️ `--paths` 는 `--ticket` touches 를 *대체*하므로 코드 경로 누락 시 코드 diff 가 리뷰에서 빠진다. 또는 코드(`--ticket`)·설계(`--paths`)를 **별도 실행**한다.
 - 판정: 추가 리뷰어가 must-fix 감지 시 exit 1 (반려). 리뷰어 호출 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 폴백 신호).

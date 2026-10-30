@@ -96,7 +96,7 @@ def _owner_only(path: Path) -> bool:
 
 def _conf(harness: str = "codex", model: str = "gpt-5.6-sol",
           reasoning: str | None = "max", **extra: str) -> dict[str, str]:
-    """리뷰 축 conf — `extra` 는 **속성 이름만** 받는다(`wave_budget="1"`).
+    """리뷰 축 conf — `extra` 는 **속성 이름만** 받는다(`session_budget="1"`).
 
     kwargs 는 점을 담지 못하므로 축 접두(`additional_reviewer.`)를 여기서 붙인다."""
     conf = {
@@ -402,7 +402,7 @@ def test_reserved_sentinel_model_is_refused_before_output_dir_raw_and_spawn(
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
 
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py",
+    rc = external.main(["--review-ticket", "T-0590", "--paths", "x.py",
                         "--output-dir", str(outdir)])
     captured = capsys.readouterr()
 
@@ -423,7 +423,7 @@ def test_resolution_failure_precedes_every_side_effect(
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
 
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py",
+    rc = external.main(["--review-ticket", "T-0590", "--paths", "x.py",
                         "--output-dir", str(outdir)])
     err = capsys.readouterr().err
 
@@ -529,7 +529,7 @@ def test_user_config_defaults_cannot_change_argv_or_ledger(
             (home / ".codex" / "config.toml").write_text(
                 'model = "someone-elses-default"\n', encoding="utf-8")
             patch.setenv("HOME", str(home))
-            assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+            assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
             capsys.readouterr()
         rows = _raw_ledger(repo)
         assert len(rows) == 1
@@ -578,7 +578,7 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
     reviewer = _FakeReviewer(stdout=_wire("opencode"), rc=rc)
     _wire_main(external, monkeypatch, repo, reviewer)
 
-    external.main(["--paths", "x.py", "--no-gate"])
+    external.main(["--paths", "x.py", "--no-review-ticket"])
     err = capsys.readouterr().err
 
     call = reviewer.calls[0]
@@ -619,7 +619,7 @@ def test_prompt_file_cleanup_failure_is_loud_and_does_not_mask_the_result(
     _wire_main(external, monkeypatch, repo, reviewer)
     _failing_prompt_unlink(external, monkeypatch)
 
-    rc = external.main(["--paths", "x.py", "--no-gate"])
+    rc = external.main(["--paths", "x.py", "--no-review-ticket"])
     captured = capsys.readouterr()
 
     # 주 결과 보존 — 판정·종료코드·raw 박제 어느 것도 정리 실패에 오염되지 않는다.
@@ -804,7 +804,7 @@ def test_a_whitespace_only_reply_takes_the_fail_loud_extraction_path(
     reviewer = _FakeReviewer(stdout=wire, stderr="진행 로그: " + _DECOY)
     _wire_main(external, monkeypatch, repo, reviewer)
 
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py"])
+    rc = external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     captured = capsys.readouterr()
 
     assert rc == 1
@@ -834,7 +834,7 @@ def test_malformed_wire_fails_loudly_and_still_closes_raw_and_ledger(
     reviewer = _FakeReviewer(stdout=wire, stderr="진행 로그: " + _DECOY)
     _wire_main(external, monkeypatch, repo, reviewer)
 
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py"])
+    rc = external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     captured = capsys.readouterr()
 
     assert rc == 1                                          # 조용한 통과 없음
@@ -864,7 +864,7 @@ def test_malformed_wire_does_not_send_the_operator_down_the_auth_path(
     reviewer = _FakeReviewer(stdout=_malformed_wire('{"type":"result","result":{"a":1}}'))
     _wire_main(external, monkeypatch, repo, reviewer)
 
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 1
+    assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 1
     captured = capsys.readouterr()
 
     assert "인증 입력이 빠져 실패했을 수" not in captured.err
@@ -934,7 +934,7 @@ def test_structured_provenance_is_one_string_across_four_surfaces(
     assert f"source={reviewer_result.REVIEWER_SOURCE_STRUCTURED}" in preview
     assert f"harness={harness}, model={model}, reasoning={reasoning}" in preview
 
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+    assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     first = capsys.readouterr().err.splitlines()[0]
     assert f"local_conf={conf_path}" in first
     assert (f"source={reviewer_result.REVIEWER_SOURCE_STRUCTURED}, harness={harness}, "
@@ -971,7 +971,7 @@ def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders
     assert reviewer_result.REVIEWER_CWD_PLACEHOLDER in target.command
     assert reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER in target.command
 
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+    assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     capsys.readouterr()
     argv = reviewer.calls[0]["argv"]
     # 실 argv 는 같은 자리에 실제 값이 들어가고, 나머지 토큰 순서/내용은 정체 문자열과 같다.
@@ -998,11 +998,11 @@ def test_round_limit_refusal_creates_no_output_dir(
     first_out, second_out = tmp_path / "raw-1", tmp_path / "raw-2"
 
     for _ in range(limit):                          # 상한까지 실제로 호출한다
-        assert external.main(["--gate", "T-0590", "--paths", "x.py",
+        assert external.main(["--review-ticket", "T-0590", "--paths", "x.py",
                               "--output-dir", str(first_out)]) == 0
     after_first = _round_ledger(repo)
     capsys.readouterr()
-    rc = external.main(["--gate", "T-0590", "--paths", "x.py",
+    rc = external.main(["--review-ticket", "T-0590", "--paths", "x.py",
                         "--output-dir", str(second_out)])
     err = capsys.readouterr().err
 
@@ -1021,7 +1021,7 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
         external, monkeypatch, tmp_path, capsys):
     """스폰 전 실패의 환불도 **예약 시점 세대**만 깎는다 (마감 경로와 같은 규칙).
 
-    예약 구간 락은 이미 풀린 뒤라, 준비 구간 중 다른 실행이 `--ack-wave` 로 새 wave 를 여는 순서는
+    예약 구간 락은 이미 풀린 뒤라, 준비 구간 중 다른 실행이 `--reset-session-budget` 으로 새 wave 를 여는 순서는
     실제 동시 실행과 같다. 세대 확인이 없으면 옛 실행의 실패가 새 예산을 깎아 승인 1회로 예산이
     늘어난다."""
     # 추론 값이 있으면 실행 직전 확인(`check_reviewer_reasoning`)이 예약 **전**에 env 를 만든다 — 이
@@ -1031,7 +1031,7 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
     _wire_main(external, monkeypatch, repo, reviewer)
 
     def _reset_wave_then_fail(*args, **kwargs):
-        with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):          # 다른 실행의 `--ack-wave` 대역
+        with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):          # 다른 실행의 `--reset-session-budget` 대역
             ledger = review_rounds._load_round_ledger(pm_paths.home_at(external.REPO))
             reviewer_reservation._spend_wave_round(reviewer_budget._reset_wave(ledger))
             reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), ledger)
@@ -1039,7 +1039,7 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
 
     monkeypatch.setattr(delegate_env, 'build_env', _reset_wave_then_fail)
     with pytest.raises(RuntimeError):
-        external.main(["--gate", "T-0590", "--paths", "x.py"])
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
 
     ledger = _round_ledger(repo)
@@ -1076,7 +1076,7 @@ def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
     outdir = tmp_path / "raw-out"
 
     with pytest.raises(failure):
-        external.main(["--gate", "T-0590", "--paths", "x.py",
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py",
                        "--output-dir", str(outdir)])
     err = capsys.readouterr().err
 
@@ -1090,7 +1090,7 @@ def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
 
     # 환불한 슬롯은 살아 있다 — 상한 1·미완 상한 1 인데 다음 정상 실행이 그대로 호출된다.
     restore()
-    assert external.main(["--gate", "T-0590", "--paths", "x.py",
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py",
                           "--output-dir", str(outdir)]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
@@ -1107,14 +1107,14 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
     실패가 다음 라운드를 먹는다. 이전 시점이 러너 호출 직전이면 이 구간은 그대로 환불 대상이다."""
     repo = _repo(tmp_path / "repo", _conf(
         incomplete_rounds_max="1",
-        wave_budget="1"))
+        session_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     blocker = tmp_path / "raw-out"                   # 디렉토리 자리에 놓인 일반 파일
     blocker.write_text("not a directory\n", encoding="utf-8")
 
     with pytest.raises(FileExistsError):
-        external.main(["--gate", "T-0590", "--paths", "x.py",
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py",
                        "--output-dir", str(blocker)])
     err = capsys.readouterr().err
 
@@ -1128,7 +1128,7 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
 
     # 환불한 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 호출된다.
     outdir = tmp_path / "raw-out-ok"
-    assert external.main(["--gate", "T-0590", "--paths", "x.py",
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py",
                           "--output-dir", str(outdir)]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
@@ -1201,7 +1201,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
 
     monkeypatch.setattr(reviewer_raw, "_structured_transport", _boom)
     with pytest.raises(failure):
-        external.main(["--gate", "T-0590", "--paths", "x.py"])
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
 
     assert reviewer.calls == []                                  # 스폰 0
@@ -1222,7 +1222,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
 
     # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 호출된다.
     monkeypatch.setattr(reviewer_raw, "_structured_transport", real_transport)
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
     assert _round_ledger(repo)["T-0590"]["count"] == 1
@@ -1274,7 +1274,7 @@ def test_failure_after_the_spawn_attempt_keeps_the_reservation(
         monkeypatch.setattr(reviewer_raw, "_write_reserved_output", _boom)
 
     with pytest.raises(expected):
-        external.main(["--gate", "T-0590", "--paths", "x.py"])
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
 
     assert len(reviewer.calls) == 1                           # 스폰은 실제로 일어났다
@@ -1305,7 +1305,7 @@ def test_missing_reviewer_binary_refunds_exactly_once_through_finalization(
         raise FileNotFoundError(argv[0])              # 실행 파일 부재 — 호출 0
 
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _missing)
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
 
     ledger = _round_ledger(repo)
@@ -1410,7 +1410,7 @@ def test_a_second_attempt_launch_failure_still_charges_the_first_spawn(
     monkeypatch.setattr(
         pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_relay_runner(popen, clock, retries=1)))
 
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
 
     assert attempts == ["spawned", "launch-failed"]  # 정확히 2회 시도
@@ -1435,7 +1435,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
         model="gpt-5.6-sol\x00bad", incomplete_rounds_max="1"))
     _wire_main(external, monkeypatch, repo)              # 러너는 실 워치독 그대로
 
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 1
     capsys.readouterr()
 
     ledger = _round_ledger(repo)
@@ -1447,7 +1447,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
     # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 호출된다.
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(reviewer))
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
     assert _round_ledger(repo)["T-0590"]["count"] == 1
@@ -1479,7 +1479,7 @@ def test_a_post_spawn_failure_is_never_refunded_whatever_its_type(
         pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run",
         _home_bound_runner(_runner_that_spawns_then_raises_marked(reviewer, failure)))
 
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
 
     assert len(reviewer.calls) == 1                       # 호출은 실제로 일어났다
@@ -1602,7 +1602,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     전파되고(진단은 주 예외가 소유한다) raw 레코드는 이미 정직하게 닫혀 있어야 한다."""
     repo = _repo(tmp_path / "repo", _conf(
         incomplete_rounds_max="1",
-        wave_budget="1"))
+        session_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     real_summary = reviewer_harvest.print_summary
@@ -1613,7 +1613,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_missing_binary_runner))
     monkeypatch.setattr(reviewer_harvest, "print_summary", _boom)
     with pytest.raises(failure):
-        external.main(["--gate", "T-0590", "--paths", "x.py"])
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
 
     assert reviewer.calls == []                                   # 자식 0
@@ -1631,7 +1631,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 호출된다.
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(reviewer))
     monkeypatch.setattr(reviewer_harvest, "print_summary", real_summary)
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
     assert _round_ledger(repo)["T-0590"]["count"] == 1
@@ -1658,7 +1658,7 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
         _break_raw_finish(external, monkeypatch, RuntimeError)
 
     with pytest.raises(RuntimeError, match="주입") as raised:    # 보상 실패가 전파된다
-        external.main(["--gate", "T-0590", "--paths", "x.py"])
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
     # 주 예외는 버려지지 않고 traceback 의 `__context__` 로 남는다.
     assert isinstance(raised.value.__context__, RuntimeError)
@@ -1708,13 +1708,13 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
     막힌다. 마감 저장은 실패했지만 환불 저장은 성공하는 형상이 실측 축이다(락 경합은 지나간다)."""
     repo = _repo(tmp_path / "repo", _conf(
         incomplete_rounds_max="1",
-        wave_budget="1"))
+        session_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_missing_binary_runner))
     saves = _flaky_ledger_save(external, monkeypatch, fail_from=2, fail_to=2)
 
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
     err = capsys.readouterr().err
 
     assert reviewer.calls == []                                   # 자식 0 (호출·과금 0)
@@ -1729,7 +1729,7 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
 
     # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 스폰·성공한다.
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(reviewer))
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1                                # 재시도는 실제로 스폰됐다
     ledger = _round_ledger(repo)
@@ -1749,7 +1749,7 @@ def test_a_failing_compensation_after_no_spawn_stays_loud_and_conservative(
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_missing_binary_runner))
     saves = _flaky_ledger_save(external, monkeypatch, fail_from=2)   # 마감·보상 모두 실패
 
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 1   # 판정 rc 보존
     err = capsys.readouterr().err
 
     assert reviewer.calls == []                                   # 자식 0
@@ -1774,7 +1774,7 @@ def test_a_spawned_run_is_not_refunded_when_the_finalization_save_fails(
     _wire_main(external, monkeypatch, repo, reviewer)
     saves = _flaky_ledger_save(external, monkeypatch, fail_from=2, fail_to=2)
 
-    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0   # 통과 판정 그대로
+    assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 0   # 통과 판정 그대로
     err = capsys.readouterr().err
 
     assert len(reviewer.calls) == 1                               # 스폰은 실제로 일어났다
@@ -1812,7 +1812,7 @@ def test_a_spawned_run_is_never_refunded_by_the_same_failures(
         _break_raw_finish(external, monkeypatch, RuntimeError)
 
     with pytest.raises(RuntimeError):
-        external.main(["--gate", "T-0590", "--paths", "x.py"])
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
 
     assert len(reviewer.calls) == 1                               # 스폰은 실제로 일어났다
@@ -1850,7 +1850,7 @@ def test_a_failing_refund_never_masks_the_original_pre_spawn_failure(
     monkeypatch.setattr(review_rounds, "_round_ledger_lock", _lock)
     monkeypatch.setattr(reviewer_raw, "_structured_transport", _boom)
     with pytest.raises(failure):                     # 주 예외가 1순위 그대로
-        external.main(["--gate", "T-0590", "--paths", "x.py"])
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
 
     assert reviewer.calls == []
@@ -1881,7 +1881,7 @@ def test_an_unexpected_refund_failure_stays_fatal_and_keeps_the_original_context
     monkeypatch.setattr(reviewer_reservation, "_refund_reserved_round", _refund_boom)
     monkeypatch.setattr(reviewer_raw, "_structured_transport", _boom)
     with pytest.raises(ValueError) as caught:
-        external.main(["--gate", "T-0590", "--paths", "x.py"])
+        external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
 
     assert isinstance(caught.value.__context__, RuntimeError)
     assert reviewer.calls == []
@@ -1896,7 +1896,7 @@ def test_permitted_run_still_creates_the_requested_output_dir(
     outdir = tmp_path / "raw-out"
 
     assert external.main([
-        "--paths", "x.py", "--no-gate", "--output-dir", str(outdir),
+        "--paths", "x.py", "--no-review-ticket", "--output-dir", str(outdir),
     ]) == 0
     capsys.readouterr()
 
@@ -2120,7 +2120,7 @@ def test_round_and_wave_caps_are_anti_loop_without_round_extension(external):
         assert "재설계" not in guidance and "분할" not in guidance
         assert "새 티켓" not in guidance and "후속 티켓" not in guidance
     # wave 축만 승인으로 재개한다 (별개 비용 축).
-    assert "--ack-wave" in reviewer_budget._WAVE_BUDGET_GUIDANCE
+    assert "--reset-session-budget" in reviewer_budget._WAVE_BUDGET_GUIDANCE
     assert "자율" in reviewer_budget._WAVE_BUDGET_GUIDANCE
 
 
@@ -2147,7 +2147,7 @@ def test_coordinate_prompt_keeps_codex_cwd_permissions_and_shared_env(
     env = {"PATH": os.environ.get("PATH", ""), "REVIEW_ENV_SENTINEL": "same"}
     harnesses = []
     monkeypatch.setattr(delegate_env, 'build_env', lambda harness: (harnesses.append(harness), env)[1])
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+    assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     call = reviewer.calls[0]
     assert Path(call["cwd"]) == repo and call["env"] == env and harnesses == ["codex"]
     assert "-C" not in call["argv"]

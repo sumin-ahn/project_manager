@@ -39,17 +39,17 @@
     보존한다(전량 폐기 금지).
   - must-fix 감지 → exit 1
   - 통과 → exit 0
-  - 수렴-형상 차단(--gate 별) → exit 4 (실행 전 거부). 라운드 장부의 must_fix 추이로 판정한다:
+  - 수렴-형상 차단(--review-ticket 별) → exit 4 (실행 전 거부). 라운드 장부의 must_fix 추이로 판정한다:
     라운드 수가 상한(local.conf additional_reviewer.rounds_max·기본 2)에 닿았거나 직전 라운드보다 must_fix 가
     늘었으면(발산·조기 차단) 라운드를 더 쓰지 않고 현재 티켓을 정지해 사용자에게 보고한다.
-  - 미완 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 판정 없이
+  - 미완 라운드 상한 도달(--review-ticket 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 판정 없이
     끝난 호출 2회
     (local.conf additional_reviewer.incomplete_rounds_max)를 채우면 이후 실행을 기계 차단한다. 성격은
     **무한 루프 차단(anti-loop pause)**이다 — 연장 승인(`--ack-rounds`)은 폐지됐고, 호출하면
     아무것도 하지 않고 거부한다.
   - wave 예산 소진 → exit 4 (같은 rc·같은 실행 전 거부). 게이트별 상한과 **별개로** wave 단위
-    총 라운드 예산(local.conf additional_reviewer.wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
-    으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--ack-wave`(예산 리셋).
+    총 라운드 예산(local.conf additional_reviewer.session_budget·기본 24)을 두어 티켓 수 × 라운드 상한
+    으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--reset-session-budget`(예산 리셋).
 
 설계:
   - 어댑터 seam: canonical `additional_reviewer.{harness,model,reasoning}` tuple 을 `contract` 의
@@ -63,16 +63,16 @@
     위임 채널과 같은 seam(`pm_delegate.build_env`)이 조립한다. 채널이 다르다고 다른 권한·다른 홈을
     주지 않는다. 회신 본문의 품질 검사(`detect_output_contamination`)는 그대로 남는다 — 엇갈린 판정·
     옛 raw 인용이 섞이면 이번 판정이 이 리뷰의 것이라는 보장이 없어 '판정 불명확'으로 접는다.
-  - 라운드 상한 기계 차단: 추가 리뷰어 호출(유료)이 무한 반복되지 않게 `--gate <T-NNNN>`
+  - 라운드 상한 기계 차단: 추가 리뷰어 호출(유료)이 무한 반복되지 않게 `--review-ticket <T-NNNN>`
     별 라운드 장부(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 호출을
     count 하고, 수렴 축(must_fix 추이)과 미완 축이 상한에 닿으면 실행 *전에* 거부(exit 4)한다.
     호출 횟수만 세던 판정 라운드 상한은 제거됐다 — 수렴 판정이 같은 범위를 더 정확히 본다.
     "몇 라운드나 돌았나"라는
     PM 자의 집계를 기계 장부로 대체하는 것이고([[mechanize-dont-instruct-llm]]), 수렴 여부 판정도
     같은 장부의 must_fix 추이가 소유한다(사람의 "이번엔 진짜 수렴 중" 판단을 입력으로 쓰지 않는다).
-    게이트를 붙이는 것도 기억에 맡기지 않는다 — `--gate` 미지정 `--ticket` 실행은 게이트를 그
-    티켓으로 **자동 유도**하고(명시 `--gate` 가 항상 우선), 회계 밖 자문 실행은 명시
-    opt-out `--no-gate` 로만 연다(그 실행은 무기록·비회계를 loud 로 표기한다).
+    게이트를 붙이는 것도 기억에 맡기지 않는다 — `--review-ticket` 미지정 `--ticket` 실행은 게이트를 그
+    티켓으로 **자동 유도**하고(명시 `--review-ticket` 이 항상 우선), 회계 밖 자문 실행은 명시
+    opt-out `--no-review-ticket` 로만 연다(그 실행은 무기록·비회계를 loud 로 표기한다).
   - 라운드별 산출 장부 + wave 예산: 같은 장부에 라운드마다 산출(`rounds` — 판정 rc·must-fix 수)을
     append 하고, 전 게이트 합계 호출을 wave 단위로 센다(`wave` 절). 라운드 수만으로는 "그 라운드가
     실결함을 냈는가"를 기계로 확인할 수 없어 게이트 심도 대비 비용 적정성 판단이 PM 자기보고에

@@ -72,13 +72,13 @@ def test_removed_resolution_options_are_rejected_without_ledger_mutation(
 ):
     before = review.ledger.read_bytes()
     with pytest.raises(SystemExit):
-        review.module.main(["--resolve-gate", "T-0610", removed, "T-0611"])
+        review.module.main(["--resolve-review", "T-0610", removed, "T-0611"])
     assert review.ledger.read_bytes() == before
     assert f"unrecognized arguments: {removed}" in capsys.readouterr().err
 
 
 def test_resolve_gate_requires_pm_verified_and_never_suggests_follow_up(review, capsys):
-    assert review.module.main(["--resolve-gate", "T-0610"]) == 1
+    assert review.module.main(["--resolve-review", "T-0610"]) == 1
     err = capsys.readouterr().err
     assert "--pm-verified" in err
     assert "--into" not in err and "--fixed" not in err

@@ -15,6 +15,7 @@
 - 위임·리뷰 명령 이름을 평어로 바꿨다. `pm_delegate.py ticket harvest` 는 `ticket collect`, `ticket copies --unharvested` 는 `ticket copies --uncollected`, `pm_delegate.py review delta` 는 `review accepted` 다. 인자·출력·종료 코드는 그대로이고 옛 이름은 받지 않는다(인자 오류, 종료 코드 2). 돌려받기가 board 에 남기는 커밋 문구도 `ticket-collect` 로 시작한다.
 - 위임 라운드 기록 파일(`.project_manager/.local/delegate-rounds.jsonl`)의 행 키 `harvested_at` 을 `collected_at` 으로 바꿨다. 엔진은 옛 키 행을 읽지 않고, 갱신이 기존 행을 한 번 옮긴다.
 - Codex 훅 기능 이름 `principle-recall-rearm` 을 `principle-recall-reset` 으로 바꿨다. `pm_orch_codex.py --hook-features` 출력과 훅 대체 경고에 보이는 이름이고 동작은 그대로다.
+- 추가 리뷰어 명령(`additional_reviewer.py`)의 플래그 네 개와 설정 키 하나의 이름을 바꿨다. `--gate` → `--review-ticket`, `--no-gate` → `--no-review-ticket`, `--resolve-gate` → `--resolve-review`, `--ack-wave` → `--reset-session-budget`, `local.conf` 의 `additional_reviewer.wave_budget` → `additional_reviewer.session_budget` 이다. 동작과 기본값(24)은 같다. 옛 플래그는 받지 않고 인자 오류(종료 코드 2)로 끝난다. 도움말·오류 안내와, 보호 브랜치 pre-push 훅이 남은 must-fix 로 push 를 막을 때 내는 안내도 새 이름을 쓴다.
 
 ### Removed
 
@@ -31,6 +32,9 @@
 
 - **명령 이름이 바뀐다.** 채택자 스크립트·로컬 스킬·문서가 `ticket harvest`·`ticket copies --unharvested`·`review delta` 를 부르면 `ticket collect`·`ticket copies --uncollected`·`review accepted` 로 고치고, `pm_principles.py rearm` 호출은 지운다. 출하 스킬·카드·방법론 문서는 갱신이 바꾼다.
 - **위임 라운드 기록 파일은 갱신이 옮긴다.** 갱신 한 번에 기존 행의 `harvested_at` 이 `collected_at` 으로 바뀌고 `위임 라운드 기록 파일의 행 N개에서 키 harvested_at 을 collected_at 으로 이동` 한 줄이 나온다. 준비만 하고 돌려받지 않은 라운드는 갱신 뒤 `ticket collect` 로 그대로 돌려받는다. 옮기는 동안 덧붙인 행은 잃을 수 있으므로 다른 세션의 위임 명령(`ticket prepare`·`ticket collect`·`ticket abandon`·`pm_delegate.py --role`)이 돌지 않을 때 갱신한다.
+- **추가 리뷰어 플래그 이름이 바뀐다.** 옛 플래그(`--gate`·`--no-gate`·`--resolve-gate`·`--ack-wave`)로 `additional_reviewer.py` 를 부르는 스크립트·메모·채택자 소유 문서는 `--review-ticket`·`--no-review-ticket`·`--resolve-review`·`--reset-session-budget` 으로 고친다. 옛 이름에는 별칭이 없다.
+- **설정 키는 갱신이 옮긴다.** `local.conf` 의 `additional_reviewer.wave_budget` 줄은 갱신이 값과 함께 `additional_reviewer.session_budget` 으로 옮긴다(새 키에 이미 값이 있으면 그 값을 남기고 옛 줄만 지운다). 갱신 뒤에 옛 키를 다시 적으면 설정을 읽는 명령이 새 키 이름을 알리며 멈춘다.
+- **보호 브랜치 pre-push 훅은 갱신이 다시 설치한다.** 훅 본문의 안내 한 줄이 바뀌어 갱신이 설치된 훅을 새 본문으로 바꾼다. 리뷰 라운드 기록 파일(`.project_manager/.local/review_rounds.json`)은 형식이 그대로라 옮길 것이 없다.
 
 ## [1.8.3] - 2026-10-30
 

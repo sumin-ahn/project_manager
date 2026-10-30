@@ -766,7 +766,7 @@ def test_spawn_face_shape_d_non_developer_seed_role_is_silent(
 def test_spawn_face_shape_e_paths_gate_without_ticket_is_silent(
     pd, external, rounds_env, monkeypatch, capsys,
 ):
-    """형상 E — `--paths --gate T-NNNN`(티켓 본문 미조립). 이 판정 대상이 아니다 — 무음."""
+    """형상 E — `--paths --review-ticket T-NNNN`(티켓 본문 미조립). 이 판정 대상이 아니다 — 무음."""
     pm_home, slot, tickets, _board = rounds_env
     ticket = "T-7825"
     _write_spec(tickets, ticket)
@@ -774,7 +774,7 @@ def test_spawn_face_shape_e_paths_gate_without_ticket_is_silent(
     _wire_external(external, monkeypatch, pm_home)
     capsys.readouterr()
 
-    rc = external.main(["--paths", "x.py", "--gate", ticket, "--dry-run"])
+    rc = external.main(["--paths", "x.py", "--review-ticket", ticket, "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0

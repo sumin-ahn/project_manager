@@ -102,7 +102,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 각 skill의 체크리스트는 `.claude/skills/pm-*/SKILL.md`를 본다.
 
-리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `additional_reviewer`)를 병행한다. 코드: `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-gate` 명시). 전제는 대상 튜플 `additional_reviewer.harness`/`.model`/`.reasoning` 선언이며, 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
+리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `additional_reviewer`)를 병행한다. 코드: `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --review-ticket <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-review-ticket` 명시). 전제는 대상 튜플 `additional_reviewer.harness`/`.model`/`.reasoning` 선언이며, 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
 
 내부 루프의 수렴 불변식은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유하고, 실행 절차는 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"을 따른다.
 
@@ -223,7 +223,7 @@ developer·reviewer·추가 리뷰어 없이 PM이 직접 편집할 수 있다. 
 
 PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비용으로·밖으로 내보낼지* 결정한다.
 
-**자율+사후 `log/current.md` 기록:** 사용자가 선택한 목표 안에서 **claim 전** 자족성을 위한 super-ticket 분할(원 티켓을 대체·종결하고 목표 확대 0), `depends_on`·`blocks` 변경, `block`·`unblock`, spec 추출·갱신, 일상 ADR(`scope: internal-process`), 위임·세션 spawn, 추가 리뷰어 wave 예산 상한의 **같은 scope 정상 수렴 ack**(`--ack-wave` — 리뷰 라운드 축엔 재개 ack 자체가 없다).
+**자율+사후 `log/current.md` 기록:** 사용자가 선택한 목표 안에서 **claim 전** 자족성을 위한 super-ticket 분할(원 티켓을 대체·종결하고 목표 확대 0), `depends_on`·`blocks` 변경, `block`·`unblock`, spec 추출·갱신, 일상 ADR(`scope: internal-process`), 위임·세션 spawn, 추가 리뷰어 wave 예산 상한의 **같은 scope 정상 수렴 ack**(`--reset-session-budget` — 리뷰 라운드 축엔 재개 ack 자체가 없다).
 
 **사용자 게이트(사전 동의):** 새 ticket·claim 뒤 분할·현재 목표 확대, [[pm_role.local.md]] §사용자 게이트. 그 밖의 예: 미션·핵심 안전 경계, 유료/한도 API 대량 호출, 키 발급·외부 게시·배포, `scope:mission` ADR. 리뷰 finding·suggestion은 새 ticket 발행 승인이 아니다.
 

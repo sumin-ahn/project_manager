@@ -62,18 +62,18 @@ git add <신규/변경 경로>     # untracked 파일이 diff 에 포함되게
 정상 리뷰를 통째로 폐기했다.
 
 ticket의 `touches`로 정하려면 `--ticket`, 직접 지정하려면 `--paths`로 리뷰 대상을 핀한다.
-`--paths` 실 호출에는 게이트 지정(`--gate <게이트>`) 또는 명시적 `--no-gate`가 필요하다.
+`--paths` 실 호출에는 게이트 지정(`--review-ticket <게이트>`) 또는 명시적 `--no-review-ticket`이 필요하다.
 
 ```bash
 # ticket touches 로 경로 결정 (권장 — DoD/touches 와 정합·게이트는 이 티켓으로 자동 유도)
 python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN
 
-# 또는 경로/base 직접 지정 (실 호출 회계 선택: 여기서는 --gate)
-python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ tests/ .project_manager/tools/ --gate T-NNNN
+# 또는 경로/base 직접 지정 (실 호출 회계 선택: 여기서는 --review-ticket)
+python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ tests/ .project_manager/tools/ --review-ticket T-NNNN
 ```
 
-- `--gate T-NNNN`: 게이트 표식 겸 라운드 장부 키. `--ticket` 실행에서는 자동 유도되므로 다른 이름을 쓸 때만 명시한다.
-- `--no-gate`: 게이트 회계 opt-out(장부 미기록·예산 미소모·loud 표기). `--gate` 와 함께 쓰지 못한다.
+- `--review-ticket T-NNNN`: 게이트 표식 겸 라운드 장부 키. `--ticket` 실행에서는 자동 유도되므로 다른 이름을 쓸 때만 명시한다.
+- `--no-review-ticket`: 게이트 회계 opt-out(장부 미기록·예산 미소모·loud 표기). `--review-ticket` 과 함께 쓰지 못한다.
 - `--adr ADR-NNNN …`: 관련 ADR을 프롬프트에 포함.
 - 호출 없는 미리보기: `--dry-run`.
 

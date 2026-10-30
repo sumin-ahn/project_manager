@@ -483,7 +483,7 @@
       "readonly": false
     },
     {
-      "key": "additional_reviewer.wave_budget",
+      "key": "additional_reviewer.session_budget",
       "group": "additional_reviewer",
       "label": "교차 검토 세션당 총 횟수",
       "description": "한 세션에서 쓸 수 있는 전체 호출 수입니다.",
