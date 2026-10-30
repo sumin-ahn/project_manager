@@ -850,7 +850,7 @@ def test_dispatch_gate_decision_matches_classification():
     for argv in (["regression", "run"], ["regression", "run", "--cmd", "echo ok"]):
         assert board_dispatch._resolved_subcommand(board_cmd.build_parser().parse_args(argv)) == "regression"
     for argv in (["list"], ["show", "T-0100"], ["lint"],
-                 ["regression", "check"], ["livegate", "check"],
+                 ["regression", "check"], ["live-test", "check"],
                  ["idea", "list"], ["prefix", "list"]):
         assert not _fires(argv), argv
 

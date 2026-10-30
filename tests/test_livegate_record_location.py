@@ -143,7 +143,7 @@ def _hook_read_flag(hooks_dir: Path) -> Path:
     읽는다. record 가 정렬해야 할 목표 위치 — `_resolve_livegate_flag` 와 독립 계산해 대조한다.
     """
     root = (hooks_dir / "engine-root").read_text(encoding="utf-8").splitlines()[0].strip()
-    return Path(root) / ".project_manager" / ".local" / "livegate.json"
+    return Path(root) / ".project_manager" / ".local" / "live-test.json"
 
 
 def _platform_regression_record(anchor: Path) -> dict:
@@ -184,7 +184,7 @@ def test_resolve_livegate_flag_engine_root_matches_hook_read(tmp_path, monkeypat
     assert mode == regression_store._LG_ENGINE_ROOT
     # 독립 재구성한 훅-read 위치와 일치(record 위치 == 훅 read 위치).
     assert flag == _hook_read_flag(hooks_dir)
-    assert flag == engine / ".project_manager" / ".local" / "livegate.json"
+    assert flag == engine / ".project_manager" / ".local" / "live-test.json"
     # 호출된 사본의 순진한 위치(worktree .local)로 쓰지 않는다 — 정확히 이게 PM 60 버그였다.
     assert flag != pm_paths.livegate_flag(pm_paths.home_at(mod.REPO))
 
@@ -289,7 +289,7 @@ def test_resolve_hookspath_without_engine_root_is_no_hook_not_broken(tmp_path, m
 
     flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(worktree))
 
-    assert mode == regression_store._LG_NO_HOOK, "livegate 훅 아닌 hooksPath 를 broken 으로 오탐하면 안 됨"
+    assert mode == regression_store._LG_NO_HOOK, "live-test 훅 아닌 hooksPath 를 broken 으로 오탐하면 안 됨"
     assert flag == pm_paths.livegate_flag(pm_paths.home_at(mod.REPO))
 
 
@@ -351,7 +351,7 @@ def test_record_broken_engine_root_fails_loud_no_write(tmp_path, monkeypatch, ca
     assert "false-green 차단" in err
     # pass 위장을 어디에도 남기지 않는다 — 호출-사본 .local 도, engine .local 도.
     assert not pm_paths.livegate_flag(pm_paths.home_at(mod.REPO)).exists()
-    assert not (engine / ".project_manager" / ".local" / "livegate.json").exists()
+    assert not (engine / ".project_manager" / ".local" / "live-test.json").exists()
     # fail-fast: BROKEN 은 실행 전에 알 수 있으니 값비싼 `pytest -m release`(~6.5분 실 LLM·실과금)를
     # 아예 안 돈다. resolve+BROKEN 체크가 run *앞*에 온다 (T-0287 리뷰 should-fix·PM 60 낭비 회피).
     assert not fake.pytest_ran, \
@@ -369,7 +369,7 @@ def test_hook_body_shares_engine_root_livegate_convention():
     body = protected_hooks._PROTECTED_PRE_PUSH_HOOK
     assert "engine-root" in body, "훅이 engine-root sidecar 를 안 읽으면 record 정렬 근거가 사라짐"
     assert ".project_manager/tools/board.py" in body
-    assert "livegate check" in body
+    assert "live-test check" in body
 
 
 @_git_required
@@ -421,7 +421,7 @@ def test_resolve_relative_hookspath_resolves_against_worktree_root(tmp_path, mon
     flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(worktree))
 
     assert mode == regression_store._LG_ENGINE_ROOT, "상대 core.hooksPath 를 worktree root 기준 해소하지 못함"
-    assert flag == engine / ".project_manager" / ".local" / "livegate.json"
+    assert flag == engine / ".project_manager" / ".local" / "live-test.json"
 
 
 # ── ⑥ check 단일 소스: record 와 대칭 (T-0306·모듈상수 직독 제거·wrong-copy 오독 차단) ──

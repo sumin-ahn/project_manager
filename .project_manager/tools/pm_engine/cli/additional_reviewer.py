@@ -90,7 +90,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resolve-review", default=None, metavar="T-NNNN",
                         help="게이트 처분 선언 — 반려로 끝난 게이트의 잔여 must-fix 를 어떻게 "
                              "소화했는지 장부에 남기고 종료 (호출 없음). `--pm-verified` "
-                             "필수. 릴리즈 게이트(`board.py livegate "
+                             "필수. 릴리즈 게이트(`board.py live-test "
                              "record`)가 이 선언을 읽어 미처분 잔여를 차단한다")
     parser.add_argument("--pm-verified", action="store_true",
                         help="--resolve-review 처분: PM 판정 표면(리뷰 delta)의 기계 확인 증거로 "

@@ -1439,7 +1439,7 @@ def test_t0958_flow_cards_state_switch_order(tmp_path):
     claim_text = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
     finish_text = (_WAVE_SKILLS / "pm-wave-finish" / "SKILL.md").read_text(encoding="utf-8")
     block = claim_text.split("```bash", 1)[1].split("```", 1)[0].splitlines()
-    assert any(line.strip() == "python3 .project_manager/tools/board.py lint --gate" for line in block)
+    assert any(line.strip() == "python3 .project_manager/tools/board.py lint --blocking" for line in block)
     claims = [index for index, line in enumerate(block) if "board.py claim " in line]
     assert len(claims) == 1 and "--task <task>" in block[claims[0]], block
     step6 = "\n".join(block[next(i for i, line in enumerate(block) if line.startswith("# 6.")):])
@@ -2186,7 +2186,7 @@ def test_t0959_new_output_lint_command_passes_after_fill(tmp_path):
     created = _run_card_line(dest, lines[("board.py", "new")], {'"<제목>"': '"lint probe"'})
     tid = _created_ticket_id(created)
     match = re.search(r"then `(board\.py lint[^`]*)`", created.stdout)
-    assert match and match.group(1) == "board.py lint --gate", created.stdout
+    assert match and match.group(1) == "board.py lint --blocking", created.stdout
     lint = [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), *match.group(1).split()[1:]]
 
     def run_lint() -> subprocess.CompletedProcess:
@@ -2276,7 +2276,7 @@ def test_commands_leaving_the_sandbox_are_detected(tmp_path):
     home = tmp_path / "adopter-claude"
     readonly = tmp_path / "adopter-claude-readonly"
     outside = tmp_path.parent / "outer-pm-home"
-    record = ("PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record "
+    record = ("PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py live-test record "
               f"--cwd {readonly}")
     clean = [
         "python3 .project_manager/tools/board.py list",       # 홈 안 상대 실행

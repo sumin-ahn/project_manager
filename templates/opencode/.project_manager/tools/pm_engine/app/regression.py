@@ -594,7 +594,7 @@ def _platform_record_problem(data: dict, cwd: str, expected_head: str,
     if livegate and (
             not isinstance(data.get("n"), int) or isinstance(data.get("n"), bool)
             or data.get("n") != LIVEGATE_RELEASE_PIN):
-        return "livegate collection mismatch"
+        return "live-test collection mismatch"
     if data.get("conf_anchor") != os.path.abspath(cwd):
         return "conf_anchor mismatch"
     cells = data.get("platforms")

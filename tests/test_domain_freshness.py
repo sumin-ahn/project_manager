@@ -457,8 +457,8 @@ def test_unverifiable_never_blocks_gate(board, monkeypatch):
         monkeypatch.setattr(module, fn, stub)
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [
         ("codex 어댑터", "domain-unverifiable", "이 저장소에서 freshness 검증 불가")])
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 # ── 유닛: domain.covers_glob_pathspec / covers_pathspecs (R6 :(glob) 매핑) ────

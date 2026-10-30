@@ -192,8 +192,8 @@ def test_gate_zero_on_unknown_key_only(board, monkeypatch, tmp_path):
     for module, fn, stub in _UNRELATED_LINT_FNS:
         monkeypatch.setattr(module, fn, stub)
 
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 # ── ③ 유입 경로 전수 — 오타·폐기 키·섹션 오기·대소문자 ──────────────────────

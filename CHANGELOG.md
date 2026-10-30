@@ -16,6 +16,12 @@
 - 위임 라운드 기록 파일(`.project_manager/.local/delegate-rounds.jsonl`)의 행 키 `harvested_at` 을 `collected_at` 으로 바꿨다. 엔진은 옛 키 행을 읽지 않고, 갱신이 기존 행을 한 번 옮긴다.
 - Codex 훅 기능 이름 `principle-recall-rearm` 을 `principle-recall-reset` 으로 바꿨다. `pm_orch_codex.py --hook-features` 출력과 훅 대체 경고에 보이는 이름이고 동작은 그대로다.
 - 추가 리뷰어 명령(`additional_reviewer.py`)의 플래그 네 개와 설정 키 하나의 이름을 바꿨다. `--gate` → `--review-ticket`, `--no-gate` → `--no-review-ticket`, `--resolve-gate` → `--resolve-review`, `--ack-wave` → `--reset-session-budget`, `local.conf` 의 `additional_reviewer.wave_budget` → `additional_reviewer.session_budget` 이다. 동작과 기본값(24)은 같다. 옛 플래그는 받지 않고 인자 오류(종료 코드 2)로 끝난다. 도움말·오류 안내와, 보호 브랜치 pre-push 훅이 남은 must-fix 로 push 를 막을 때 내는 안내도 새 이름을 쓴다.
+- 릴리즈 라이브 시험 명령과 lint 차단 플래그의 이름을 바꿨다. 동작은 같고 옛 이름은 받지 않는다(인자 오류, 종료 코드 2).
+  - `board.py livegate record|check` → `board.py live-test record|check`. 출력 접두도 `live-test:` 다.
+  - 보호 브랜치 push 의 라이브 시험 우회 환경 변수 `PM_SKIP_LIVE_GATE` → `PM_SKIP_LIVE_TEST`. 우회 조건(미해소 must-fix 가 없다는 표시가 있을 때만)은 그대로다.
+  - 릴리즈 라이브 시험 기록 파일 `.project_manager/.local/livegate.json` → `.project_manager/.local/live-test.json`.
+  - `board.py lint --gate` → `board.py lint --blocking`. `board.py init` 이 설치하는 pre-push 훅과 `/pm-bootstrap` 도 이 이름으로 lint 를 부른다.
+  - `pm_config.py status --json --with-board` 의 `board.livegate` → `board.live_test`. 관리자 상태 탭도 이 키를 읽는다.
 
 ### Removed
 
@@ -35,6 +41,10 @@
 - **추가 리뷰어 플래그 이름이 바뀐다.** 옛 플래그(`--gate`·`--no-gate`·`--resolve-gate`·`--ack-wave`)로 `additional_reviewer.py` 를 부르는 스크립트·메모·채택자 소유 문서는 `--review-ticket`·`--no-review-ticket`·`--resolve-review`·`--reset-session-budget` 으로 고친다. 옛 이름에는 별칭이 없다.
 - **설정 키는 갱신이 옮긴다.** `local.conf` 의 `additional_reviewer.wave_budget` 줄은 갱신이 값과 함께 `additional_reviewer.session_budget` 으로 옮긴다(새 키에 이미 값이 있으면 그 값을 남기고 옛 줄만 지운다). 갱신 뒤에 옛 키를 다시 적으면 설정을 읽는 명령이 새 키 이름을 알리며 멈춘다.
 - **보호 브랜치 pre-push 훅은 갱신이 다시 설치한다.** 훅 본문의 안내 한 줄이 바뀌어 갱신이 설치된 훅을 새 본문으로 바꾼다. 리뷰 라운드 기록 파일(`.project_manager/.local/review_rounds.json`)은 형식이 그대로라 옮길 것이 없다.
+- **갱신 뒤 `board.py init` 을 한 번 실행한다.** 이미 설치된 pre-push 훅(`.git/hooks/pre-push`)은 옛 플래그 `lint --gate` 를 불러 push 가 막힌다(`tests/` 가 없는 트리는 `unrecognized arguments: --gate`, `tests/` 가 있는 트리는 "설치된 pre-push 훅이 구버전입니다"). 갱신은 이 훅을 다시 설치하지 않는다. 보호 브랜치 pre-push 훅은 갱신이 새 이름(`live-test check`·`PM_SKIP_LIVE_TEST`)으로 다시 설치한다.
+- **라이브 시험 명령·환경 변수 이름이 바뀐다.** `board.py livegate record|check`·`board.py lint --gate`·`PM_SKIP_LIVE_GATE` 를 적은 스크립트와 채택자 소유 문서는 `board.py live-test record|check`·`board.py lint --blocking`·`PM_SKIP_LIVE_TEST` 로 고친다. 옛 환경 변수 `PM_SKIP_LIVE_GATE=1` 은 무시되어 라이브 시험 확인이 그대로 요구된다.
+- **옛 라이브 시험 기록은 읽지 않는다.** `.project_manager/.local/livegate.json` 은 남아 있어도 동작에 영향이 없고 지워도 된다. 릴리즈 전에 `board.py live-test record` 로 새로 기록한다.
+- `pm_config.py status --json --with-board` 의 `board.livegate` 를 읽던 도구는 `board.live_test` 를 읽는다.
 
 ## [1.8.3] - 2026-10-30
 

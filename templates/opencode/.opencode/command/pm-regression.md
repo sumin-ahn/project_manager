@@ -22,7 +22,7 @@ audience: pm-internal
 python3 .project_manager/tools/board.py regression run
 ```
 
-- green → 해당 후보의 완료·통합과 일반 push의 core 증거로 사용한다. 선언 플랫폼 전체는 릴리즈 livegate record에서 같은 커밋으로 검증한다.
+- green → 해당 후보의 완료·통합과 일반 push의 core 증거로 사용한다. 선언 플랫폼 전체는 릴리즈 live-test record에서 같은 커밋으로 검증한다.
 - red → 해당 후보의 완료·통합과 core 보호 push를 차단하고 원인을 수정한다. 다른 트리의 독립 개발은 계속한다(코드 repo 한정, PM 홈 push는 회귀 비대상).
 - 개발 run/check는 현재 플랫폼의 test_cmd만 실행·판정하고 qa.platforms의 wrapper는 호출하지 않는다. Windows 전체 검증은 모든 구현·통합 후 릴리즈 직전에 실행한다. 새 scheduler나 작업 큐를 추가하지 않는다.
 - 결과는 per-clone `.project_manager/.local/regression.json`에 HEAD 키로 기록된다.

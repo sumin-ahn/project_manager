@@ -105,7 +105,7 @@ def test_unmatched_subagentstart_is_one_never_blocking_lint_advisory(
     assert "matcher drift" in detail
     _isolate_codex_lint(board, monkeypatch)
     assert ticket_lint.lint_tickets(home) == findings
-    assert board_lint.cmd_lint(home, SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(home, SimpleNamespace(blocking=True)) == 0
     output = capsys.readouterr().out
     assert output.count("[codex-delegate-matcher-miss]") == 1
 

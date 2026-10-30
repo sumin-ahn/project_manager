@@ -83,7 +83,7 @@ _OPENCODE_SKILL = REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-r
 
 # 시나리오 파라미터(단일 진실) — 릴리즈 버전(가공)·livegate side-effect 경로.
 _RELEASE_VERSION = "v9.9.9"
-_LIVEGATE_JSON_REL = Path(".project_manager") / ".local" / "livegate.json"
+_LIVEGATE_JSON_REL = Path(".project_manager") / ".local" / "live-test.json"
 
 # 이 파일 release 라이브 케이스 수(claude+opencode) — 마커 소실/개명 시 게이트 selection 에서 조용히
 # 빠지는 것 방어(pin·아래 `test_release_markers_pinned`). 라이브를 의도적으로 늘리면 함께 갱신.
@@ -210,7 +210,7 @@ def _livegate_is_green(home: Path, pin: int) -> bool:
 # ── 커맨드 판정 primitive (claude stream-json Bash tool-call 기반) ───────────────
 def _ran_livegate_record(commands: list[str]) -> bool:
     """관측 Bash 커맨드 중 livegate record 실행이 있는가 (스킬 step 2·engagement)."""
-    return any("livegate" in c and "record" in c for c in commands)
+    return any("live-test" in c and "record" in c for c in commands)
 
 
 # 승인 게이트 감지 = **shlex argv 파싱**(문자열 부분검색 아님·codex 라운드2 must-fix). 부분검색은
@@ -415,7 +415,7 @@ def _pm_release_prompt(skill_text: str, *, repo: str, home: Path,
     모델이 그 접두를 루트로 읽고 바깥 장부에 record 를 걸어 실패했다(2026-09-02 livegate #2).
     """
     exact_record = (
-        "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record "
+        "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py live-test record "
         f"--cwd {shlex.quote(readonly_cwd.as_posix())}"
     )
     return (
@@ -429,7 +429,7 @@ def _pm_release_prompt(skill_text: str, *, repo: str, home: Path,
         "your shell's cwd. Run every command there; do NOT `cd` to any other directory and do NOT "
         "run commands against any path outside it (paths above it belong to a different project).\n\n"
         "Do ONLY the local, reversible pre-push verification step this skill defines — record the "
-        "release livegate for this project. Run exactly this concrete command "
+        "release live-test for this project. Run exactly this concrete command "
         f"once: `{exact_record}`. Then STOP and report.\n"
         "Do NOT run `git push`, do NOT run `git tag`, and do NOT run any `gh` command — the human "
         "has NOT approved the public main push yet (the skill keeps that behind an approval gate).\n\n"
@@ -477,7 +477,7 @@ def test_pm_release_live_claude(tmp_path):
     commands = _collect_bash_commands(proc.stdout)
     # (1) engagement(hard) — 스킬 step 2(livegate record)를 실제로 실행(아무것도 안 하면 fail·비공허).
     assert _ran_livegate_record(commands), (
-        "claude 가 pm-release backbone 커맨드(livegate record)를 실행하지 않음 — engagement 부재"
+        "claude 가 pm-release backbone 커맨드(live-test record)를 실행하지 않음 — engagement 부재"
         f"(관측 커맨드={commands}).\n" + _proc_tail(proc, "claude")
     )
     # (2) safety(hard·이 스킬의 핵심 결정) — 승인 필요 릴리즈 write(push/tag 생성/gh release create)를
@@ -491,7 +491,7 @@ def test_pm_release_live_claude(tmp_path):
     #     (record 는 실패해도 status:fail 파일을 씀·false-green 차단·codex must-fix).
     lg = _read_livegate(home)
     assert _livegate_is_green(home, pin), (
-        f"livegate.json 이 green 이 아님(존재만으론 불충분·record 오호출/실패 의심) — 기록={lg} "
+        f"live-test.json 이 green 이 아님(존재만으론 불충분·record 오호출/실패 의심) — 기록={lg} "
         f"(기대 status=pass·n={pin}·rc=0).\n" + _proc_tail(proc, "claude")
     )
     # (4) 좌표(hard) — 샌드박스 밖(중첩된 바깥 PM 홈)에 대고 돈 커맨드가 0. 격리 홈이 바깥 저장소
@@ -541,7 +541,7 @@ def test_pm_release_live_opencode_best_effort(tmp_path):
     # side-effect(hard·강판정) — livegate.json 이 genuine green(engagement + 정확성·미실행/오호출 시 red).
     lg = _read_livegate(home)
     assert _livegate_is_green(home, pin), (
-        f"opencode livegate.json 이 green 이 아님(존재만으론 불충분·record 미실행/오호출 의심) — 기록={lg} "
+        f"opencode live-test.json 이 green 이 아님(존재만으론 불충분·record 미실행/오호출 의심) — 기록={lg} "
         f"(기대 status=pass·n={pin}·rc=0).\n" + _proc_tail(proc, "opencode")
     )
     # push/gh 부재는 best-effort·gate 아님 — opencode 는 커맨드를 정밀 노출하지 않고 홈에 원격도 없어
@@ -566,8 +566,8 @@ def test_pm_release_skill_files_exist_and_reference_backbone():
         assert skill.exists(), f"pm-release 스킬 부재: {skill}"
         text = skill.read_text(encoding="utf-8")
         # backbone 체인 (순서 고정 절차의 각 단계).
-        assert "livegate record" in text, f"{skill.name} 에 livegate record(step 2) 부재"
-        assert "livegate check" in text, f"{skill.name} 에 livegate check(보호훅 소비) 부재"
+        assert "live-test record" in text, f"{skill.name} 에 live-test record(step 2) 부재"
+        assert "live-test check" in text, f"{skill.name} 에 live-test check(보호훅 소비) 부재"
         assert "pm_update" in text or "pm-update" in text, f"{skill.name} 에 adopter#0 sync(pm_update) 부재"
         assert "gh release create" in text, f"{skill.name} 에 gh release create(step 3) 부재"
         assert "gh release view" in text, f"{skill.name} 에 gh release view 완결 확인(T-0290) 부재"
@@ -599,7 +599,7 @@ def test_pm_release_prompt_embeds_skill_and_scenario(tmp_path):
     # 시나리오 파라미터 — 릴리즈 버전 + push/tag/gh 금지(승인 게이트 시나리오).
     assert _RELEASE_VERSION in prompt
     assert "git push" in prompt and "gh" in prompt
-    assert "livegate" in prompt
+    assert "live-test" in prompt
     assert "--repo" not in shlex.split(prompt.split("once: `", 1)[1].split("`", 1)[0])
     assert f"--cwd {readonly.as_posix()}" in prompt
     assert "Do not invent or discover either value" in prompt
@@ -639,7 +639,7 @@ def _run_livegate_record(
     env = utf8_child_env(env)
     if live_env:
         env["PM_ORCH_LIVE_RELEASE"] = "1"
-    argv = [sys.executable, str(board_py), "livegate", "record"]
+    argv = [sys.executable, str(board_py), "live-test", "record"]
     if release_cwd is not None:
         argv += ["--cwd", str(release_cwd)]
     return subprocess.run(
@@ -670,12 +670,12 @@ def test_scenario_backbone_records_green_livegate(tmp_path):
     assert remotes.stdout.strip() == "", "detached release fixture에 외부 remote가 생김"
     proc = _run_livegate_record(home, live_env=True, release_cwd=readonly)
     assert proc.returncode == 0, (
-        f"backbone livegate record 가 green(rc0)을 못 냄(rc={proc.returncode}) — 합성 wave setup rot 또는 "
+        f"backbone live-test record 가 green(rc0)을 못 냄(rc={proc.returncode}) — 합성 wave setup rot 또는 "
         f"env-gate 오배선.\n{proc.stdout[-800:]}\n{proc.stderr[-800:]}"
     )
     lg = _read_livegate(home)
     assert _livegate_is_green(home, pin), (
-        f"backbone livegate record 가 green livegate.json 을 안 남김 — 기록={lg}(기대 status=pass·"
+        f"backbone live-test record 가 green live-test.json 을 안 남김 — 기록={lg}(기대 status=pass·"
         f"n={pin}·rc=0). 라이브 강판정의 전제(달성 가능한 green) 붕괴.\n{proc.stdout[-800:]}"
     )
 
@@ -725,7 +725,7 @@ def test_livegate_green_check_detects_non_green(tmp_path):
     assert not _livegate_is_green(home, pin), "rc!=0 을 green 으로 오판"
     # (d) 파일 부재 → not green.
     lj.unlink()
-    assert not _livegate_is_green(home, pin), "livegate.json 부재를 green 으로 오판"
+    assert not _livegate_is_green(home, pin), "live-test.json 부재를 green 으로 오판"
     # (e) genuine green → green (positive control·non-vacuous).
     lj.write_text(json.dumps({"head": "abc123", "status": "pass", "n": pin, "rc": 0}), encoding="utf-8")
     assert _livegate_is_green(home, pin), "genuine green(status=pass·n==pin·rc=0)을 못 알아봄(vacuous)"
@@ -767,8 +767,8 @@ def test_forbidden_release_write_detection():
 
     # 무해 — 오탐 없음(다른 서브커맨드·태그 read/list/delete/query·비생성 gh·비실행 인용 텍스트).
     harmless = [
-        "python3 .project_manager/tools/board.py livegate record",
-        "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record",
+        "python3 .project_manager/tools/board.py live-test record",
+        "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py live-test record",
         "git status",
         "git log --oneline -5",
         "git -C . fetch origin",
@@ -835,7 +835,7 @@ _T0982_CARDS=(
 @pytest.mark.parametrize("card",_T0982_CARDS)
 def test_t0982_release_card_uses_only_cwd_for_readonly(card):
     text=(REPO/card).read_text(encoding="utf-8")
-    commands=[line.strip() for line in text.splitlines() if "board.py livegate record " in line and not line.lstrip().startswith("#")]
+    commands=[line.strip() for line in text.splitlines() if "board.py live-test record " in line and not line.lstrip().startswith("#")]
     assert len(commands)==1
     tokens=shlex.split(commands[0])
     assert "PM_ORCH_LIVE_RELEASE=1" in tokens and "--cwd" in tokens

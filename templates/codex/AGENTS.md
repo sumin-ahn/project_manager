@@ -45,7 +45,7 @@ env prefix 없이 호출한다:
 ### 세션 식별
 
 - **task 사용자 경로** — 시작/재개는 `$pm-bootstrap --task <task>`, 종료는 `$pm-handoff`(무인자 · 스킬은 인자를 받지 않는다)만 쓴다. 이 표기는 스킬 진입 표기이며 자체 slash command를 뜻하지 않는다. 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python backbone은 `pm_bootstrap.py --task <task>`·`pm_handoff.py --task <task> --user-ack <값>`을 사용하며, 종료 시 그 값은 PM 이 부트스트랩에서 사용자와 확인한 정체성으로 채운다. task와 repo/slot 혼합 진입은 엔진이 거부한다.
-- 실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new 코드 트리·rounds resolve에 한정한다. 다중 작업공간 task는 `--task <task> --repo <repo> --slot <N>`으로 자기 실행 대상을 지정하며 귀속 task는 유지한다. 미소유·타 task·idle·쓰기용 readonly 및 선택 없는 다중 슬롯은 부작용 전에 거부한다. `--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 작업 트리를 찾는다.
+- 실행 위치 선택은 regression run·live-test record·claim 앵커·new/cluster new 코드 트리·rounds resolve에 한정한다. 다중 작업공간 task는 `--task <task> --repo <repo> --slot <N>`으로 자기 실행 대상을 지정하며 귀속 task는 유지한다. 미소유·타 task·idle·쓰기용 readonly 및 선택 없는 다중 슬롯은 부작용 전에 거부한다. `--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 작업 트리를 찾는다.
 - **PM 세션 정체성은 task 이름 하나다.** board 귀속 쓰기(new·claim 등)는 `--task <task>`를 전달한다:
   ```bash
   {{PY}} .project_manager/tools/board.py claim T-NNNN --task <task>   # task 의 폴더가 2개 이상이면 --repo <repo> --slot <N> 추가
@@ -84,7 +84,7 @@ ticket을 닫을 때:
   ```
   bare commit은 남이 stage한 변경까지 싣는다. 공유 워킹트리는 선언 경로만 커밋한다. ⚠️ 미추적 파일을 pathspec에 바로 주면 `error: pathspec '…' did not match any file(s) known to git`로 전체 커밋이 rc=1이므로 먼저 `git add`한다. ⚠️ `claimed/`→`done/` 이동은 옛/새 경로를 함께 지정한다. 메시지 말미에 `Co-Authored-By` 트레일러를 둔다.
 
-ADR/ticket/idea 참조는 ID-wikilink(`[[ADR-NNNN]]`·`[[T-NNNN]]`·`[[idea-NNNN]]`)만 사용한다. 생파일명·슬러그는 금지되며 `board.py lint --gate`가 강제한다. 단일 진실은 [[pm_playbook]] §참조 규약이다.
+ADR/ticket/idea 참조는 ID-wikilink(`[[ADR-NNNN]]`·`[[T-NNNN]]`·`[[idea-NNNN]]`)만 사용한다. 생파일명·슬러그는 금지되며 `board.py lint --blocking`이 강제한다. 단일 진실은 [[pm_playbook]] §참조 규약이다.
 
 ## 5. PM 결정 권한
 

@@ -683,12 +683,12 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
     #     exit 0). fresh adopter 는 seen-unset 관찰불가 advisory(never-block·option-a)라 blocking 은
     #     `--gate` 로 확인한다(test_fresh_adopter_e2e 동형).
     lint = subprocess.run(
-        [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), "lint", "--gate"],
+        [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), "lint", "--blocking"],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
     assert lint.returncode == 0, (
-        f"codex adopter blocking lint 비-clean(`--gate` exit {lint.returncode}) — 출하 doc dangling "
+        f"codex adopter blocking lint 비-clean(`--blocking` exit {lint.returncode}) — 출하 doc dangling "
         f"[[ADR/T]]·thin 누출?\n--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}")
 
     # (3) 부트스트랩 카드 codex 절 — import 된 채택자 pm_bootstrap 이 codex env 감지 시 실행모델/위임

@@ -361,9 +361,9 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     #     때만) 이라 adapter-drift **관찰불가 advisory** 가 발화하는 게 정상이다(never-block·pm-update
     #     nudge·option-a·T-0305) — advisory 는 `--gate` 를 차단 안 하므로 blocking clean 은 `--gate` 로
     #     확인하고, 무인자 lint(advisory 표면화)는 아래에서 actionable 여부만 본다.
-    lint = _board(dest, "lint", "--gate")
+    lint = _board(dest, "lint", "--blocking")
     assert lint.returncode == 0, (
-        f"{harness} adopter blocking lint 비-clean(`--gate` exit≠0) — wiki 출하 doc 에 dangling "
+        f"{harness} adopter blocking lint 비-clean(`--blocking` exit≠0) — wiki 출하 doc 에 dangling "
         f"[[ADR/T]]·thin·depends 누출?\n--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}"
     )
     # 무인자 lint 는 fresh adopter seen-unset 이라 adapter-drift 관찰불가 advisory 로 exit 1(표면화)이
@@ -1082,7 +1082,7 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
     assert not ghost.exists(), f"{harness}: 대상 전용 모듈이 self-update 뒤에도 남았다"
     assert sentinel.read_bytes() == "# 인스턴스 상태 — 출하하지 않는다\r\n".encode("utf-8")
     assert update_plan._engine_code_plan(pm_paths.home_at(dest), dest, REPO)["changes"] == []
-    lint = _board(dest, "lint", "--gate")
+    lint = _board(dest, "lint", "--blocking")
     assert lint.returncode == 0, (
         f"{harness} post-update board bootstrap failed\nstdout={lint.stdout}\nstderr={lint.stderr}"
     )
@@ -1340,9 +1340,9 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
     assert "관찰불가" in observ.stdout and "pm-update" in observ.stdout, (
         f"{harness}: 관찰불가 advisory 가 명확·actionable(pm-update 안내) 하지 않음\n{observ.stdout}")
     # never-block — seen-unset 관찰불가도 `--gate` 종료코드 0.
-    observ_gate = _board(dest, "lint", "--gate")
+    observ_gate = _board(dest, "lint", "--blocking")
     assert observ_gate.returncode == 0, (
-        f"{harness}: 관찰불가 advisory 가 `--gate` 차단(never-block 위배·exit {observ_gate.returncode})\n{observ_gate.stdout}")
+        f"{harness}: 관찰불가 advisory 가 `--blocking` 차단(never-block 위배·exit {observ_gate.returncode})\n{observ_gate.stdout}")
 
     # seen≠baseline 주입 → 실 drift 발화(관찰불가 아닌 **방향-중립 불일치** 메시지·T-0413).
     #   lint 는 git 을 안 하므로 두 rev 의 선후를 모른다 — "이후 변경됨" 단정은 관찰값이 baseline 의
@@ -1356,9 +1356,9 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
         f"{harness}: 방향 단정 메시지 잔존(거짓 경보 클래스)\n{fired.stdout}"
 
     # never-block — advisory 라 `--gate` 종료코드 0.
-    gated = _board(dest, "lint", "--gate")
+    gated = _board(dest, "lint", "--blocking")
     assert gated.returncode == 0, (
-        f"{harness}: adapter-drift 가 `--gate` 를 차단(never-block 위배·exit {gated.returncode})\n{gated.stdout}"
+        f"{harness}: adapter-drift 가 `--blocking` 을 차단(never-block 위배·exit {gated.returncode})\n{gated.stdout}"
     )
 
 

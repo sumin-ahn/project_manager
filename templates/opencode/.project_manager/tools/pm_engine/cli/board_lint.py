@@ -22,7 +22,7 @@ def cmd_lint(home, args: argparse.Namespace) -> int:
     줄로 항상 돈다. 새 게이트가 아니라 기존 판정의 부착 지점을 하나 더 두는 것이고, 판정은 lint
     수집보다 **앞**이다(옛 훅 아래서 통과한 lint 가 push 허가로 읽히지 않게).
     """
-    gate = getattr(args, "gate", False)
+    gate = getattr(args, "blocking", False)
     if gate:
         stale_hook = pre_push_hook._stale_pre_push_hook_refusal(home)
         if stale_hook is not None:

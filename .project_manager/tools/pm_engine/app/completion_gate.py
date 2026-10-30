@@ -96,7 +96,7 @@ def _livegate_check(home, args: argparse.Namespace) -> int:
     """
     rev = getattr(args, "rev", None)
     if not rev:
-        print("livegate check: --rev <sha> 필요 (push 대상 커밋).", file=sys.stderr)
+        print("live-test check: --rev <sha> 필요 (push 대상 커밋).", file=sys.stderr)
         return 1
     # 읽을 위치를 push 보호훅 read 위치와 정렬(record 와 대칭·단일 소스). 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 사본으로 check 해도
@@ -108,7 +108,7 @@ def _livegate_check(home, args: argparse.Namespace) -> int:
         # 기록 위치와 훅 read 위치가 갈릴 수 있어 pass/fail 판정을 신뢰 못 한다. 조용한 통과 대신
         # record 와 동형 fail-loud 거부(false-green/false-red 백스톱). engine-root
         # sidecar 수리 또는 `pm-config repo add` 재실행.
-        print("livegate: fail — 보호훅 engine-root sidecar 무효 "
+        print("live-test: fail — 보호훅 engine-root sidecar 무효 "
               "(hooksPath 설치됐으나 PM 홈 board.py 미해소) — 기록 위치와 훅 read 위치가 갈릴 수 "
               "있어 거부(false-green 차단). engine-root sidecar 수리 또는 "
               "`pm-config repo add` 재실행. 릴리즈 차단.", file=sys.stderr)
@@ -122,7 +122,7 @@ def _livegate_check(home, args: argparse.Namespace) -> int:
         # 옛 clear 를 새 blocked 위에 덮지 않도록 둘 다 review_rounds.lock 을 공유한다.
         problems = _sync_release_must_fix_marker(home, flag)
     except OSError as exc:
-        print("livegate: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
+        print("live-test: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
               f"({type(exc).__name__}: {exc}). 장부/`.local` 권한을 복구한 뒤 다시 실행하세요.",
               file=sys.stderr)
         return 1
@@ -132,32 +132,32 @@ def _livegate_check(home, args: argparse.Namespace) -> int:
             ledger=release._release_rounds_ledger(flag)), file=sys.stderr)
         return 1
     if not flag.exists():
-        print("livegate: 기록 없음 — `board.py livegate record` 필요 (릴리즈 차단).",
+        print("live-test: 기록 없음 — `board.py live-test record` 필요 (릴리즈 차단).",
               file=sys.stderr)
         return 1
     data = json.loads(fs.read_text_shared(flag, encoding="utf-8"))
     if data.get("status") != "pass":
         n, rc = data.get("n"), data.get("rc")
-        print(f"livegate: RED (status={data.get('status')}, 수집 {n}, rc={rc}) "
+        print(f"live-test: RED (status={data.get('status')}, 수집 {n}, rc={rc}) "
               "— 릴리즈 차단.", file=sys.stderr)
         return 1
     head = data.get("head")
     if head != rev:
-        print(f"livegate: rev 불일치 (기록 {str(head)[:8]} ≠ push {str(rev)[:8]}) "
-              "— `livegate record` 재실행 필요 (릴리즈 차단).", file=sys.stderr)
+        print(f"live-test: rev 불일치 (기록 {str(head)[:8]} ≠ push {str(rev)[:8]}) "
+              "— `live-test record` 재실행 필요 (릴리즈 차단).", file=sys.stderr)
         return 1
     if "platforms" in data:
         problem = release._release_evidence_problem(home, data, flag, rev)
         if problem is not None:
-            print(f"livegate: platform snapshot 불일치({problem}) — 릴리즈 차단.", file=sys.stderr)
+            print(f"live-test: platform snapshot 불일치({problem}) — 릴리즈 차단.", file=sys.stderr)
             return 1
     else:
         _core, _anchor, commands, problem = release._release_core_context(home, flag, os.path.abspath(cwd))
         if commands or problem is not None:
-            print(f"livegate: platform snapshot 누락({problem or '현재 선언 플랫폼 존재'}) — "
-                  "livegate record 재실행 필요. 릴리즈 차단.", file=sys.stderr)
+            print(f"live-test: platform snapshot 누락({problem or '현재 선언 플랫폼 존재'}) — "
+                  "live-test record 재실행 필요. 릴리즈 차단.", file=sys.stderr)
             return 1
-    print(f"livegate: green @ {str(rev)[:8]} ✓")
+    print(f"live-test: green @ {str(rev)[:8]} ✓")
     return 0
 
 

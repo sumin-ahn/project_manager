@@ -67,8 +67,8 @@ export default function StatusTab({ light, heavy, remote }:
         {board?.regression != null && (
           <MachineRecord name="regression" label="회귀" record={board.regression} />
         )}
-        {board?.livegate != null && (
-          <MachineRecord name="livegate" label="게이트" record={board.livegate} />
+        {board?.live_test != null && (
+          <MachineRecord name="live-test" label="게이트" record={board.live_test} />
         )}
       </section>
 

@@ -3421,7 +3421,7 @@ def test_update_release_skill_cards_pin_zero_change_and_adapter_gate_contract():
     for card in release_cards:
         text = card.read_text(encoding="utf-8")
         assert text.count("sync-adapter-config --check") >= 2, card
-        assert "livegate/main push/tag/GitHub Release" in text, card
+        assert "live-test/main push/tag/GitHub Release" in text, card
 
 
 # ── S7 진입점이 열린 채택자에 가드 기능이 **코드만으로** 도달하나 (T-0777) ────────

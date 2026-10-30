@@ -454,7 +454,7 @@ class PmHandoff:
         if shipping_hits:
             print(
                 f"  ⚠ 미검증 출하 변경 {len(shipping_hits)}파일 — 릴리즈 전 "
-                "라이브(release wave) 필요: `board.py livegate record`."
+                "라이브(release wave) 필요: `board.py live-test record`."
             )
             return
         if has_unknown:

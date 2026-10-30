@@ -42,7 +42,7 @@ _C_BOARD_LIST = _CardCmd("board.py", "list", ("list",), ())
 _C_BOARD_NEW = _CardCmd("board.py", 'new "<제목>"', ("new",), ())
 _C_BOARD_PROMOTE = _CardCmd("board.py", "promote T-NNNN", ("promote",), ())
 _C_BOARD_SHOW = _CardCmd("board.py", "show T-NNNN", ("show",), ())
-_C_BOARD_LINT = _CardCmd("board.py", "lint --gate", ("lint",), ("--gate",))
+_C_BOARD_LINT = _CardCmd("board.py", "lint --blocking", ("lint",), ("--blocking",))
 _C_BOARD_CLAIM = _CardCmd("board.py", "claim T-NNNN", ("claim",), ())
 _C_BOARD_CLUSTER_NEW = _CardCmd(
     "board.py",

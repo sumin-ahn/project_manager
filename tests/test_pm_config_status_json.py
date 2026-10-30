@@ -562,7 +562,7 @@ def test_with_board_counts_open_lint_and_gate_records(home):
     local = home / ".project_manager" / ".local"
     _write_json(local / "regression.json",
                 {"head": "abc123", "status": "pass", "rc": 0, "collected": 12345})
-    _write_json(local / "livegate.json", {"head": "abc123", "status": "pass", "n": 18})
+    _write_json(local / "live-test.json", {"head": "abc123", "status": "pass", "n": 18})
 
     board = _status_json(home, "--with-board")["board"]
 
@@ -570,7 +570,7 @@ def test_with_board_counts_open_lint_and_gate_records(home):
                                "done": 1, "discarded": 1}, "초안은 세지 않는다"
     assert board["open"] == [{"id": "T-0001", "title": "열린 것", "claimed_by": None}]
     assert board["regression"]["collected"] == 12345
-    assert board["livegate"]["n"] == 18
+    assert board["live_test"]["n"] == 18
     assert isinstance(board["lint"], list)
     assert all({"kind", "message"} == set(row) for row in board["lint"])
 

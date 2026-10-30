@@ -51,7 +51,7 @@ def _save_round_ledger(home, ledger: dict) -> None:
     path = review_rounds._round_ledger_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     problems = completion_gate._unresolved_must_fix_data(home, ledger, path)
-    livegate_flag = path.with_name("livegate.json")
+    livegate_flag = path.with_name("live-test.json")
     if problems:
         release._write_release_must_fix_marker(livegate_flag, problems)
     review_rounds.write_ledger(path, ledger)

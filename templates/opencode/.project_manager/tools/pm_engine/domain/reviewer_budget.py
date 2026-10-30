@@ -313,7 +313,7 @@ _GATE_DERIVED_DRY_RUN_NOTICE = (
 # 블록(`print_summary`)의 게이트 줄이 낸다.
 _UNACCOUNTED_RUN_TAIL = (
     "리뷰어를 부르면 라운드 장부에 기록되지 않고 라운드·wave 예산도 쓰지 않습니다 — 그 라운드에서 나온 "
-    "반려 must-fix 는 릴리즈 차단(`board.py livegate record`)이 읽는 장부에 남지 않습니다.\n"
+    "반려 must-fix 는 릴리즈 차단(`board.py live-test record`)이 읽는 장부에 남지 않습니다.\n"
     "  · 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 `--review-ticket <게이트>` 로 "
     "실행하세요."
 )

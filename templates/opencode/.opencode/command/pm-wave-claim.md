@@ -29,7 +29,7 @@ python3 .project_manager/tools/board.py cluster show <ticket-group>   # 선언�
 python3 .project_manager/tools/board.py show T-NNNN
 
 # 3. lint (의존성 일관성 · 차단 항목만 rc 1)
-python3 .project_manager/tools/board.py lint --gate
+python3 .project_manager/tools/board.py lint --blocking
 
 # 4. PM 검증 (아래 체크리스트 · 멤버마다)
 

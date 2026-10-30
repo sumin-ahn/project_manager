@@ -191,7 +191,7 @@ class PmBootstrap:
             counts["done"] = bootstrap_rules.parse_board_counts(done_output).get(
                 "done", 0
             )
-        lint_rc, lint_output = self._run_board_fn(["lint", "--gate"])
+        lint_rc, lint_output = self._run_board_fn(["lint", "--blocking"])
         lint_counts = bootstrap_rules.parse_lint_counts(lint_output)
         lint_parse_failed = lint_counts is None
         hook_generation_blocked = (

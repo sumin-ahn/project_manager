@@ -291,7 +291,7 @@ def test_parse_lint_result_gate_advisory_only():
     assert bootstrap_report.parse_lint_result(out) == "2 warnings"
 
 
-@pytest.mark.parametrize("lint_argv", [["lint"], ["lint", "--gate"]])
+@pytest.mark.parametrize("lint_argv", [["lint"], ["lint", "--blocking"]])
 def test_parse_lint_result_matches_actual_board_lint_output(
     lint_argv, isolated_board_anchor
 ):
@@ -1015,7 +1015,7 @@ def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt(tmp_path)
     def board_fn(args: list[str]) -> tuple[int, str]:
         if args[0] == "list":
             return (0, "  [open   ] T-0010  x  -  adapter\n")
-        if args == ["lint", "--gate"]:
+        if args == ["lint", "--blocking"]:
             return (2, lint_error)
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
@@ -1054,7 +1054,7 @@ def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint
     def board_fn(args: list[str]) -> tuple[int, str]:
         if args[0] == "list":
             return (0, "  [open   ] T-0010  x  -  adapter\n")
-        if args == ["lint", "--gate"]:
+        if args == ["lint", "--blocking"]:
             return (0, lint_output)
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
@@ -1073,7 +1073,7 @@ def test_collect_board_keeps_explicit_clean_nonblocking(tmp_path):
     def board_fn(args: list[str]) -> tuple[int, str]:
         if args[0] == "list":
             return (0, "  [open   ] T-0010  x  -  adapter\n")
-        if args == ["lint", "--gate"]:
+        if args == ["lint", "--blocking"]:
             return (0, "✓ no lint issues\n")
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
@@ -1550,7 +1550,7 @@ def test_collect_board_names_the_hook_generation_block_instead_of_unparsed(tmp_p
     def board_fn(args: list[str]) -> tuple[int, str]:
         if args[0] == "list":
             return (0, "  [open   ] T-0010  x  -  adapter\n")
-        if args == ["lint", "--gate"]:
+        if args == ["lint", "--blocking"]:
             return (1, hook_block)
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
@@ -1568,7 +1568,7 @@ def test_collect_board_keeps_unparsed_for_a_non_hook_lint_failure(tmp_path):
     def board_fn(args: list[str]) -> tuple[int, str]:
         if args[0] == "list":
             return (0, "  [open   ] T-0010  x  -  adapter\n")
-        if args == ["lint", "--gate"]:
+        if args == ["lint", "--blocking"]:
             return (2, "Traceback (most recent call last):\nRuntimeError: hook boom\n")
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 

@@ -18,7 +18,7 @@ engine은 `--review-ticket <T-NNNN>`별 라운드 장부를 세고, 실행 전�
 - `--review-ticket` 과 `--no-review-ticket` 동시 지정은 rc=1 로 거부된다(한 실행이 기록과 무기록을 동시에 뜻할 수 없다). 조회면(`--rounds-report`)·처분면(`--resolve-review`)에서는 회계가 없으므로 무시 경고 목록에 든다.
 - 티켓·게이트 없는 `--paths` 실 호출은 rc=1 로 거부된다. `--review-ticket <게이트>` 또는 명시적 `--no-review-ticket` 중 하나를 반드시 선택한다(`--dry-run` 미리보기는 예외).
 
-기본값을 "기록"으로 둔 근거는 실측이다. `--ticket` 만으로 돈 라운드가 하루 8건 넘게 장부에 0건으로 남아, 반려 must-fix 가 릴리즈 차단 표면(`board.py livegate record`)에 도달하지 못했다.
+기본값을 "기록"으로 둔 근거는 실측이다. `--ticket` 만으로 돈 라운드가 하루 8건 넘게 장부에 0건으로 남아, 반려 must-fix 가 릴리즈 차단 표면(`board.py live-test record`)에 도달하지 못했다.
 
 - **라운드 상한 2회**(`local.conf`의 `additional_reviewer.rounds_max`) — 기록 라운드가 상한에 닿으면 must-fix 잔존과 무관하게 차단한다. 잔존 여부는 차단 사유 라벨만 가른다(`cap-unresolved` / `cap-reached`).
 - **발산 조기 차단** — 직전 라운드보다 must-fix가 늘면 상한 도달을 기다리지 않고 그 자리에서 차단한다. 줄지 않고 평탄한 형상(상한 3 override 예: 3→2→2)은 조기 차단이 아니라 상한에서 걸린다.
@@ -37,7 +37,7 @@ engine은 `--review-ticket <T-NNNN>`별 라운드 장부를 세고, 실행 전�
 
 ## 잔여 must-fix 의 처분 선언
 
-상한으로 종결된 게이트에 must-fix 가 남았으면 게이트를 닫기 전에 그 잔여의 처분을 장부에 선언한다. 선언되지 않은 잔여는 릴리즈를 막는다 — `board.py livegate record`/`check` 가 실행 전에 차단하고 우회 플래그는 없다(그 자리에 "사소하니 넘어간다"는 판단이 들어가 실사고가 났다).
+상한으로 종결된 게이트에 must-fix 가 남았으면 게이트를 닫기 전에 그 잔여의 처분을 장부에 선언한다. 선언되지 않은 잔여는 릴리즈를 막는다 — `board.py live-test record`/`check` 가 실행 전에 차단하고 우회 플래그는 없다(그 자리에 "사소하니 넘어간다"는 판단이 들어가 실사고가 났다).
 
 ```bash
 python3 .project_manager/tools/additional_reviewer.py --resolve-review <게이트> --pm-verified

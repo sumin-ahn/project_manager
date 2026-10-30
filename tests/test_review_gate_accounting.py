@@ -451,7 +451,7 @@ def test_no_gate_opts_out_of_the_ledger_with_a_loud_notice(
     err = capsys.readouterr().err
     assert "`--no-review-ticket` 명시 opt-out" in err
     assert "라운드·wave 예산도 쓰지 않습니다" in err
-    assert "livegate record" in err               # 릴리즈 차단이 못 본다는 사실까지
+    assert "live-test record" in err               # 릴리즈 차단이 못 본다는 사실까지
     assert _DERIVED_PREFIX not in err
 
 

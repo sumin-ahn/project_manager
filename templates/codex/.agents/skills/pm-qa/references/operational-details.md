@@ -16,7 +16,7 @@ git: clean / 변경 파일 수, branch, HEAD
 
 - 회귀(core) red/미실행이면 해당 후보의 후속 완료·통합을 중단한다. pending 중 다른 작업 트리의 독립 개발은 계속한다.
 - 같은 HEAD·명령·트리의 완료된 core green은 재사용한다. 결과가 없으면 백그라운드 실행하고 검증 트리의 코드와 HEAD를 동결한다.
-- 개발 회귀는 core만 실행한다. 선언 플랫폼의 전체 검증은 릴리즈 livegate record가 소유한다.
+- 개발 회귀는 core만 실행한다. 선언 플랫폼의 전체 검증은 릴리즈 live-test record가 소유한다.
 - 운영 데이터가 있으면 인스턴스 overlay로 필요한 요약을 덧붙인다. evidence는 선택이며 경로는 인스턴스가 소유한다.
 
 ## 릴리즈 wrapper 규약
