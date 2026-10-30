@@ -10,6 +10,9 @@
 이 파일이 그 문장을 코드로 고정한다. `sys.executable` 을 쓰면 frozen 에서 그것이 관리자 실행
 파일 자신이고, `pm_import` 가 `board.py init` 을 `sys.executable` 로 부르므로 관리자가 자기
 자신을 다시 띄운다(실측 `pm_import.py:3224`).
+
+예외는 `desktop_entry.py` 한 자리다. Linux 독 아이콘용 `.desktop` 파일의 실행 명령은 관리자
+자신을 다시 띄우는 명령이라 그 값이 `sys.executable` 이어야 한다(엔진을 부르는 데는 쓰지 않는다).
 """
 from __future__ import annotations
 
@@ -89,7 +92,7 @@ def test_the_import_command_never_uses_the_managers_own_executable(unpacked, tmp
 
 
 def test_no_manager_module_reads_sys_executable():
-    """서술이 아니라 코드로 잰다 — `sys.executable` 접근 노드가 하나도 없어야 한다."""
+    """서술이 아니라 코드로 잰다 — `sys.executable` 접근 노드는 독 아이콘 등록 모듈에만 있다."""
     offenders = []
     for module in sorted((REPO / "manager").glob("*.py")):
         tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
@@ -97,7 +100,7 @@ def test_no_manager_module_reads_sys_executable():
                       if isinstance(node, ast.Attribute) and node.attr == "executable"
                       and isinstance(node.value, ast.Name) and node.value.id == "sys"]
 
-    assert offenders == []
+    assert offenders == ["desktop_entry.py"]
 
 
 # ── ③ 프로젝트가 없는 자리 = OS 기본 / 있는 자리 = 그 사본의 runtime.py ──────

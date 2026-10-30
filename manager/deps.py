@@ -12,11 +12,16 @@ Linux 는 백엔드 모듈이 있어도 창을 붙일 화면을 열지 못할 �
 않은 X 서버 · 끊긴 소켓 — 이 경우는 라이브러리가 예외 없이 프로세스를 끝내므로 여기서 미리
 걸러야 한다). 그 판정은 `Gtk.init_check()` 로 하고 문장도 그 결과까지만 말한다(원인은 관측하지
 않는다) — rc 1(화면 산출물 없음과 같은 값 · 설치 문제가 아니다).
+
+Linux 는 백엔드 import 가 GTK 를 처음 초기화하므로 그 바로 앞에서 프로그램 이름을 정한다
+(창 이름이 그 값이 된다. 초기화 뒤에 정하면 창 이름 일부가 옛 이름으로 남는다).
 """
 from __future__ import annotations
 
 import importlib
 import platform
+
+from . import desktop_entry
 
 MISSING_RENDERER_RC = 3
 NO_DISPLAY_RC = 1
@@ -101,6 +106,8 @@ def missing_renderer_message(*, system: str | None = None,
     else:
         return None, 0
     try:
+        if system == "Linux":
+            desktop_entry.set_program_name()
         importlib.import_module(module_name)
     except (ImportError, ValueError) as exc:
         # ValueError 는 `gi.require_version` 이 없는 typelib 을 만났을 때 나온다.
