@@ -432,13 +432,12 @@ def test_manifest_bare_entries_are_a_superset_of_the_pre_regression_baseline(man
                if not _covered_by_current_entry(path, current_paths)}
     # 선언된 retire는 기존 bare 파일과 그 이름을 설명하던 주석의 의도적 제거다. 그 밖의
     # baseline 행은 계속 부분집합이어야 하므로 rename이 unrelated manifest 누락을 가리지 않는다.
-    retired_stems = {
-        Path(line.split(":", 1)[1].split("->", 1)[0].strip()).stem
+    retired_olds = {
+        line.split(":", 1)[1].split("->", 1)[0].strip()
         for line in current_text.splitlines()
         if line.startswith("# pm-retired-path:")
     }
-    missing = {path for path in missing
-               if not any(stem in path for stem in retired_stems)}
+    missing -= retired_olds
     assert not missing, f"{rel} 에서 task/main 대비 누락된 등재: {sorted(missing)}"
     # 이번 라운드의 두 신규 bare 등재도 값으로 함께 확인한다(F-001 이 지운 두 항목).
     assert ".project_manager/tools/pm_principles.py" in current_paths
@@ -752,9 +751,9 @@ def test_codex_merge_hook_envelopes_caps_the_combined_multi_answer_path(codex):
     (리뷰 실측 10,091 재현 — recall 단독 상한과 별개로 합본 뒤 재검사가 없었다). 원문을 그대로
     자르지 않고 생략 표시로 접는다(비차단 — `decision` 키 없음)."""
     cap = codex.CODEX_ADDITIONAL_CONTEXT_MAX_CHARS
-    nudge = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "ctx-nudge 안내"}}
+    warn = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "ctx-nudge 안내"}}
     recall = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "x" * cap}}
-    merged = codex.merge_hook_envelopes([nudge, recall])
+    merged = codex.merge_hook_envelopes([warn, recall])
     combined = merged["hookSpecificOutput"]["additionalContext"]
     assert len(combined) <= cap
     assert "x" * 50 not in combined

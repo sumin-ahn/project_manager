@@ -92,7 +92,7 @@ def test_band_rounding_table(tmp_path):
     rounding = {(1, 200): 0, (3, 200): 2, (5, 200): 2, (139, 200): 70, (141, 200): 70, (143, 200): 72,
                 (400_000, E): 100, (0, E): 0, (-5, E): 0, (15_328, 0): 0, (15_328, 20_000): 77}
     assert {pair: ctx_recovery.context_used_pct(*pair) for pair in rounding} == rounding
-    table = {69: "ok", 70: "nudge", 76: "nudge", 77: "nudge2", 79: "nudge2", 80: "stop", 100: "stop"}
+    table = {69: "ok", 70: "warn", 76: "warn", 77: "warn2", 79: "warn2", 80: "stop", 100: "stop"}
     assert {used: ctx_recovery.classify(used, THRESHOLDS) for used in table} == table
     assert ctx_recovery.CTX_NUDGE2_MARGIN_PCT == 3
     assert ctx_recovery.nudge2_threshold({"checkpoint_at_pct": 79, "precompact_at_pct": 80}) == 79
@@ -105,10 +105,10 @@ def test_band_rounding_table(tmp_path):
     assert relay.mark_ctx_post_turn_if_over(marker_root, "sid", 799, 1000, 80) is False
     assert relay.stop_marker_present(marker_root, "sid") is False
     assert relay.mark_ctx_post_turn_if_over(marker_root, "sid", 800, 1000, 80) is True
-    # 공개 API 도 같은 표 — 기록 E=200,000 에서 69.5% 는 70%(nudge), 70.5% 도 70%.
+    # 공개 API 도 같은 표 — 기록 E=200,000 에서 69.5% 는 70%(warn), 70.5% 도 70%.
     home = hooks.adapter_home(_root(tmp_path))
-    for tokens, used, level in ((139_000, 70, "nudge"), (141_000, 70, "nudge"), (153_000, 76, "nudge"),
-                                (154_000, 77, "nudge2"), (159_000, 80, "stop"), (500_000, 100, "stop")):
+    for tokens, used, level in ((139_000, 70, "warn"), (141_000, 70, "warn"), (153_000, 76, "warn"),
+                                (154_000, 77, "warn2"), (159_000, 80, "stop"), (500_000, 100, "stop")):
         status = hooks.context_status(home, harness="claude", tokens=tokens, model=None)
         assert (status["used_pct"], status["level"]) == (used, level), tokens
 
@@ -119,10 +119,10 @@ def test_statusline_is_read_only(tmp_path):
     home = hooks.adapter_home(root)
     marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
-    for kind in ("nudge", "nudge2", "final"):
+    for kind in ("warn", "warn2", "final"):
         (marker_dir / f"s-1.{kind}").write_bytes(f"fired-{kind}\n".encode())
     before = _local_files(root)
-    expected = {0: (False, 0, "ok"), 100_000: (True, 50, "ok"), 150_000: (True, 75, "nudge"),
+    expected = {0: (False, 0, "ok"), 100_000: (True, 50, "ok"), 150_000: (True, 75, "warn"),
                 190_000: (True, 95, "stop")}
     for tokens, (measured, used, level) in expected.items():
         status = hooks.context_status(home, harness="claude", tokens=tokens, model=None)
@@ -139,24 +139,24 @@ def test_statusline_is_read_only(tmp_path):
     assert (unavailable["status"], unavailable["measured"], unavailable["used_pct"], unavailable["level"]) == (
         "unavailable", True, None, None)
     assert "`pm_config.py apply`" in unavailable["notice"]
-    assert _markers(root) == {f"s-1.{kind}": f"fired-{kind}\n".encode() for kind in ("nudge", "nudge2", "final")}
+    assert _markers(root) == {f"s-1.{kind}": f"fired-{kind}\n".encode() for kind in ("warn", "warn2", "final")}
 
 
 def test_nudge2_and_final_are_independent(tmp_path):
-    """nudge·nudge2·final 은 사이클당 각자 한 번 — 앞 밴드 발화가 뒤 밴드를 소모하지 않고 건너뛴 밴드도 낸다."""
+    """warn·warn2·final 은 사이클당 각자 한 번 — 앞 밴드 발화가 뒤 밴드를 소모하지 않고 건너뛴 밴드도 낸다."""
     root = _root(tmp_path)
     first = _judge(root, 156_000)
     assert set(first) == DECISION_KEYS
-    assert (first["level"], first["emit"]) == ("nudge2", True)
-    assert first["guidance"] == ctx_recovery.build_ctx_guard_guidance("nudge2", used_pct=78, precompact_at_pct=80)
+    assert (first["level"], first["emit"]) == ("warn2", True)
+    assert first["guidance"] == ctx_recovery.build_ctx_guard_guidance("warn2", used_pct=78, precompact_at_pct=80)
     assert _judge(root, 156_000)["emit"] is False
     final = _judge(root, 190_000)
     assert (final["level"], final["emit"]) == ("stop", True)
     assert final["guidance"] == ctx_recovery.build_ctx_guard_guidance("final", used_pct=95, precompact_at_pct=80)
     assert _judge(root, 190_000) == {**final, "guidance": None, "emit": False}
-    assert sorted(_markers(root)) == ["s-1.final", "s-1.nudge2"]
+    assert sorted(_markers(root)) == ["s-1.final", "s-1.warn2"]
     skipped = _judge(root, 190_000, session="s-2")
-    assert skipped["emit"] is True and sorted(_markers(root)) == ["s-1.final", "s-1.nudge2", "s-2.final"]
+    assert skipped["emit"] is True and sorted(_markers(root)) == ["s-1.final", "s-1.warn2", "s-2.final"]
 
 
 def test_measured_ok_and_zero_rearm(tmp_path):
@@ -167,11 +167,11 @@ def test_measured_ok_and_zero_rearm(tmp_path):
     unmeasured = _judge(first, 0)
     assert (unmeasured["measured"], unmeasured["used_pct"], unmeasured["level"], unmeasured["emit"]) == (
         False, 0, "ok", False)
-    assert sorted(_markers(first)) == ["s-1.nudge"]
+    assert sorted(_markers(first)) == ["s-1.warn"]
     assert _judge(first, 150_000)["emit"] is False
     assert _judge(first, 4_000)["level"] == "ok"
     assert _markers(first) == {}
-    assert sorted(_markers(second)) == ["s-1.nudge"]
+    assert sorted(_markers(second)) == ["s-1.warn"]
     assert _judge(first, 150_000)["emit"] is True and _judge(second, 150_000)["emit"] is False
 
 
@@ -264,7 +264,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
 
     with monkeypatch.context() as patch:
         patch.setattr(ctx_recovery, "build_ctx_guard_guidance", broken_render)
-        with pytest.raises(RuntimeError, match="렌더 실패 nudge"):
+        with pytest.raises(RuntimeError, match="렌더 실패 warn"):
             _judge(root, 150_000, harness="opencode")
     assert _markers(root) == {}  # 렌더 실패는 밴드 marker 를 소비하지 않는다.
 
@@ -274,7 +274,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
     assert good.returncode == 0, good.stderr.decode("utf-8", "replace")
     assert good.stdout.endswith(b"\n") and good.stdout.count(b"\n") == 1
     decision = json.loads(good.stdout)
-    assert set(decision) == DECISION_KEYS and (decision["level"], decision["emit"]) == ("nudge", True)
+    assert set(decision) == DECISION_KEYS and (decision["level"], decision["emit"]) == ("warn", True)
     for bad in ({"version": 1, "tokens": True, "model": None, "main_thread": True, "boundary": None},
                 {"version": 1, "tokens": 1, "model": None, "main_thread": True, "boundary": None, "x": 1},
                 {"version": 2, "tokens": 1, "model": None, "main_thread": True, "boundary": None},
@@ -352,7 +352,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
                                                  "context": observed, "recall": None}).stdout)
     assert with_context["context_error"] is None
     assert with_context["context"] == _judge(root, 150_000, harness="opencode", session="ses-c2")
-    assert with_context["context"]["emit"] is True and {"ses-c.nudge", "ses-c2.nudge"} <= set(_markers(root))
+    assert with_context["context"]["emit"] is True and {"ses-c.warn", "ses-c2.warn"} <= set(_markers(root))
     # ctx 설정 IO 실패는 git 판정을 보존한 채 context_error 로 드러나고, 형식 오류는 부작용 전에 rc 2 다.
     conf.unlink()
     conf.mkdir()

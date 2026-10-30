@@ -1,7 +1,7 @@
-"""pm-wave-finish 스킬 문서가 ADR-0023(status judgment-only) 모델과 정합함을 못박는다.
+"""pm-cluster-finish 스킬 문서가 ADR-0023(status judgment-only) 모델과 정합함을 못박는다.
 
 배경: ADR-0023 으로 `ticket_finish.py` 는 status.md 합계표/스칼라를 더 이상 갱신하지 않고
-`--section` 을 deprecated no-op 로 받는다. 그런데 pm-wave-finish 스킬 문서(claude SKILL ×2 +
+`--section` 을 deprecated no-op 로 받는다. 그런데 pm-cluster-finish 스킬 문서(claude SKILL ×2 +
 opencode 표면)와 pm_role 카탈로그가 한동안 "CLI 가 status.md 스칼라 갱신" 이라는 *거짓 서술*을
 남겨 채택자를 오도했다(T-0108·이 세션 통합 메타 "redefine 후 기존 자산 갱신 누락" 클래스). 이
 가드는 그 정확한 stale 문구의 재발과 `--section` deprecated 문서화의 회귀를 차단한다.
@@ -12,19 +12,19 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-# pm-wave-finish 출하 문서 4종(root + claude_code + opencode skill/command).
+# pm-cluster-finish 출하 문서 4종(root + claude_code + opencode skill/command).
 WAVE_FINISH_DOCS = [
-    REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
-    REPO / "templates" / "claude_code" / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
-    REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
-    REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-wave-finish.md",
+    REPO / ".claude" / "skills" / "pm-cluster-finish" / "SKILL.md",
+    REPO / "templates" / "claude_code" / ".claude" / "skills" / "pm-cluster-finish" / "SKILL.md",
+    REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-cluster-finish" / "SKILL.md",
+    REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-cluster-finish.md",
 ]
 
 TICKET_FINISH = REPO / ".project_manager" / "tools" / "pm_engine" / "cli" / "ticket_finish.py"
 
 
 def test_wave_finish_docs_have_no_status_scalar_claim():
-    """pm-wave-finish 문서에 'status.md 스칼라' (ADR-0023 으로 제거된 거짓 서술) 가 없다."""
+    """pm-cluster-finish 문서에 'status.md 스칼라' (ADR-0023 으로 제거된 거짓 서술) 가 없다."""
     for doc in WAVE_FINISH_DOCS:
         assert doc.is_file(), f"누락: {doc}"
         text = doc.read_text(encoding="utf-8")
@@ -37,11 +37,11 @@ def test_wave_finish_docs_have_no_status_scalar_claim():
 
 
 def test_claude_wave_finish_skill_copies_byte_identical():
-    """root 와 claude_code 템플릿의 pm-wave-finish SKILL.md 가 byte-동일 (파리티)."""
+    """root 와 claude_code 템플릿의 pm-cluster-finish SKILL.md 가 byte-동일 (파리티)."""
     root = WAVE_FINISH_DOCS[0].read_bytes()
     tmpl = WAVE_FINISH_DOCS[1].read_bytes()
     assert root == tmpl, (
-        ".claude/skills/pm-wave-finish/SKILL.md 의 root 와 claude_code 템플릿 사본이 "
+        ".claude/skills/pm-cluster-finish/SKILL.md 의 root 와 claude_code 템플릿 사본이 "
         "갈렸다 — 한 쪽만 고치고 다른 쪽을 놓치는 drift 클래스 (둘 다 같이 갱신)")
 
 

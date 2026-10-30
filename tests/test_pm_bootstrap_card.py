@@ -337,13 +337,13 @@ _SKILL_POINTER = "> wave 운영은 스킬로 invoke·backbone 직접호출 금�
 
 # wave op → (스킬 진입 needle, 스킬-고유 강등 CLI 엔진 needle) — 스킬이 강등 엔진 줄보다 먼저/primary.
 # needle 은 해당 스킬 아래에서 *처음* 등장하는 CLI 엔진(카탈로그 sub-op 중복 없는 것)이어야 한다.
-# /pm-qa(엔진 regression/lint 가 /pm-wave-claim·/pm-regression 과 중복)는 전용 block-scope 테스트로
+# /pm-qa(엔진 regression/lint 가 /pm-cluster-claim·/pm-regression 과 중복)는 전용 block-scope 테스트로
 # 검증(아래 test_card_qa_demotes_regression_and_lint). /pm-dev-delegate(Agent 툴)·/pm-update(facade
 # 셸)는 CLI 강등 줄이 없어 여기서 제외.
 _SKILL_FIRST_OPS = [
-    ("/pm-wave-claim T-NNNN", "board.py claim T-NNNN"),
+    ("/pm-cluster-claim T-NNNN", "board.py claim T-NNNN"),
     ("/pm-regression", "board.py regression run"),
-    ("/pm-wave-finish T-NNNN", "ticket_finish.py <T-NNNN>"),
+    ("/pm-cluster-finish T-NNNN", "ticket_finish.py <T-NNNN>"),
     ("/pm-handoff", "pm_handoff.py"),
 ]
 

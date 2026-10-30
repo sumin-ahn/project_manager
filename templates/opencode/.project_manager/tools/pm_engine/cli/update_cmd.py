@@ -503,6 +503,9 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     # 구 updater가 신 파일·신 updater를 배달한 뒤 다음 changes=0 실행이
     # 실제 퇴역을 닫는다. `--paths`/`--target`은 요청 밖 write라 비발화다.
     do_retire = not args.target and not scope_paths
+    if do_retire:
+        retired_old = retired_paths.declared_retired_olds(source_root, selfheal)
+        retired_files = [rel for rel in retired_files if rel not in retired_old]
 
     # ── 보호 훅 정합 확인 + drift 재설치 — migrate 와 **같은 경계·같은
     #    시퀀싱**(--target 비발화 · changes 0 경로에서도 write · dry-run 은 판정만). changes 로

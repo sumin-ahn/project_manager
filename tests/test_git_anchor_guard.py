@@ -1497,7 +1497,7 @@ def test_claude_hook_mode_outer_boundary_is_warn_rc0(monkeypatch, capsys, failur
 # ── 세션 내 완전일치 중복 억제 (T-0764) ────────────────────────────────────
 # 발화 문구·차단 동작은 그대로 두고 *같은 말을 두 번 하지 않는* 것만 본다.
 # stdin 형상은 라이브 훅과 같다 — `session_id` 는 ctx_stop_hook 이 marker 파일명으로 쓰는 그 필드다
-# (실 세션 marker `.project_manager/.local/ctx-stop/<uuid>.nudge` 가 그 값의 실재 증거).
+# (실 세션 marker `.project_manager/.local/ctx-stop/<uuid>.warn` 가 그 값의 실재 증거).
 
 def _hook_stdin(monkeypatch, driver, home: Path, command: str, session_id: str) -> dict:
     payload = {
@@ -2029,7 +2029,7 @@ const [root, bin, emptyBin] = process.argv.slice(1);
 const conf = path.join(root, ".project_manager", "local.conf");
 const board = path.join(root, ".project_manager", "tools", "board.py");
 const git = {verdict:"deny", cwd_identity:"slot", reason:"원문\r\n거부"};
-const decision = {version:1, status:"ok", measured:true, used_pct:78, level:"nudge2", notice:null,
+const decision = {version:1, status:"ok", measured:true, used_pct:78, level:"warn2", notice:null,
   guidance:"안내", emit:true, compaction_new:false, compaction_guidance:null, compaction_boundary_id:null};
 const toolRequest = {version:1, cwd:root, tool_name:"write", tool_input:{filePath:"원문\r\n파일", content:"UTF-8 원문"},
   shell_command:null, context:null, recall:null};

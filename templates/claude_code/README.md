@@ -14,8 +14,8 @@ claude_code LLM 세션이 `CLAUDE.md` 를 진입으로 PM 을 구동한다 — o
 
 - **`CLAUDE.md`** (진입) — 세션 부트스트랩·작업 원칙·자주 쓰는 명령. Claude Code 가 자동 로드.
 - **`.claude/agents/`** — researcher · architect · developer · code-reviewer 서브에이전트 정의.
-- **`.claude/skills/`** — PM workflow slash command (`/pm-bootstrap` · `/pm-wave-claim` · `/pm-dev-delegate` ·
-  `/pm-wave-finish` · `/pm-handoff`). 목록·역할 단일 진실 = `pm_role.md` §"skill 카탈로그".
+- **`.claude/skills/`** — PM workflow slash command (`/pm-bootstrap` · `/pm-cluster-claim` · `/pm-dev-delegate` ·
+  `/pm-cluster-finish` · `/pm-handoff`). 목록·역할 단일 진실 = `pm_role.md` §"skill 카탈로그".
 - **`.claude/settings*.json`** — PM 세션 권한(allow/deny) + 훅 배선(ctx 가드·위임 채널 가드·compaction breadcrumb).
 
 ### 위임 기제 = `Agent` 툴 `subagent_type`
@@ -49,7 +49,7 @@ longhand·placeholder 표는 루트 [`docs/manual-import.md`](../../docs/manual-
 ## Context safety: native compaction + checkpoint
 
 Claude Code의 native auto-compaction을 켠 채 사용한다. 메인 PM 세션의
-`PreToolUse`/`UserPromptSubmit` 훅은 컨텍스트가 nudge·강화·final 밴드에 들어갈 때
+`PreToolUse`/`UserPromptSubmit` 훅은 컨텍스트가 warn·강화·final 밴드에 들어갈 때
 `additionalContext`로 checkpoint 안내를 사이클당 한 번씩 주입한다. 모든 밴드는 비차단이며 prompt,
 도구 실행, compaction을 거부하지 않는다. 압축 기록은 압축 이벤트가 아니라 같은 훅이 맡는다(압축
 이벤트 입력으로는 주 세션 압축과 서브에이전트 압축을 가를 수 없다). 압축 뒤 첫

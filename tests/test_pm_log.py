@@ -67,7 +67,7 @@ def _redirect_paths(mod, monkeypatch, root: Path):
     return (log_dir, archive_dir)
 
 
-@pytest.mark.parametrize("band", ["nudge", "nudge2", "final", "precompact"])
+@pytest.mark.parametrize("band", ["warn", "warn2", "final", "precompact"])
 def test_ctx_guidance_all_bands_preserve_required_and_forbid_accident_phrase(band):
     """중앙 정책 상수의 필수·금지 표현을 네 band 최종 출력 전체에 고정한다."""
     mod = _load_module(f"pm_log_ctx_policy_{band}")
@@ -1344,7 +1344,7 @@ _T0952_LOGGED_WINDOW_MISMATCH = (
     "## [2026-10-10] checkpoint | (task:main) — compaction\n\n"
     "<!-- ctx-band-check: missed -->\n"
     "> ⚠ [ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼 — 이번 압축 사이클에서 "
-    "nudge/nudge2/final 밴드가 한 번도 발화하지 않음 (설정 600,000 tokens · PreCompact 관측 410,455 tokens).\n"
+    "warn/warn2/final 밴드가 한 번도 발화하지 않음 (설정 600,000 tokens · PreCompact 관측 410,455 tokens).\n"
     "> 처방: `.project_manager/local.conf`의 `harness.claude.ctx_window_tokens`를 "
     "관측 사용량 410,455 tokens 이하로 낮추고 다음 사이클 밴드 발화를 확인.\n\n"
     "- 구간: 변경량 상한 삭제 결정 기록 이후 ~ T-0950 설계 비준.\n"

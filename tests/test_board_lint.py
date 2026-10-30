@@ -2278,8 +2278,8 @@ _T0463_TOKEN_FORM_MIRRORS = (
     ".claude/skills/pm-dev-delegate/SKILL.md",
     ".claude/skills/pm-handoff/SKILL.md",
     ".claude/skills/pm-ticket/SKILL.md",
-    ".claude/skills/pm-wave-claim/SKILL.md",
-    ".claude/skills/pm-wave-finish/SKILL.md",
+    ".claude/skills/pm-cluster-claim/SKILL.md",
+    ".claude/skills/pm-cluster-finish/SKILL.md",
     ".claude/skills/pm-worktree/SKILL.md",
 )
 

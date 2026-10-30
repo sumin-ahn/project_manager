@@ -39,4 +39,4 @@ git: clean / 변경 파일 수, branch, HEAD
 
 관련 실행 스킬을 연결한다.
 
-[[pm-regression]], [[pm-wave-finish]], [[pm-release]], [[pm-bootstrap]].
+[[pm-regression]], [[pm-cluster-finish]], [[pm-release]], [[pm-bootstrap]].

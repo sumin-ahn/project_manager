@@ -172,7 +172,7 @@ def test_t0953_subagent_compaction_leaves_main_state_untouched(tmp_path):
     ])
     marker_dir = _ctx_stop(tmp_path)
     marker_dir.mkdir(parents=True)
-    for suffix in ("nudge", "final"):
+    for suffix in ("warn", "final"):
         (marker_dir / f"s-main.{suffix}").write_text("fired\n", encoding="utf-8")
     log_before = _log(tmp_path).read_bytes()
     base = {"session_id": "s-main", "transcript_path": str(main_transcript), "cwd": str(slot),
@@ -193,7 +193,7 @@ def test_t0953_subagent_compaction_leaves_main_state_untouched(tmp_path):
     assert _log(tmp_path).read_bytes() == log_before
     assert list(marker_dir.glob("compact-checkpoint.*")) == []
     assert list(marker_dir.glob("*.compact-*")) == []
-    assert sorted(path.name for path in marker_dir.iterdir()) == ["s-main.final", "s-main.nudge"]
+    assert sorted(path.name for path in marker_dir.iterdir()) == ["s-main.final", "s-main.warn"]
 
 
 def test_t0953_subagent_tool_call_does_not_take_main_boundary(tmp_path):

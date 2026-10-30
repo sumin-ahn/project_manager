@@ -36,10 +36,10 @@ MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 # 이 marker 디렉토리는 여러 생산자가 공유한다 — `<세션>.<종류>` 자리를 남이 이미 쓰고 있으면
 # 멤버십 파일이 그 신호를 *위조* 한다(namespace "done" → `<sid>.done` = post-turn 회전 신호).
 #   done                                  · 이 파일 `_marker_path` (회전)
-#   nudge · nudge2 · final                · infra.compaction_store.ctx_marker_path (사이클 넛지)
+#   warn · warn2 · final                · infra.compaction_store.ctx_marker_path (사이클 넛지)
 #   compact-* (경계 처리·checkpoint·boundary·snapshot·snapshot-receipt)
 #                                         · infra.compaction_store · opencode ctx-guard-core.cjs
-RESERVED_MARKER_NAMESPACES = frozenset({"done", "nudge", "nudge2", "final"})
+RESERVED_MARKER_NAMESPACES = frozenset({"done", "warn", "warn2", "final"})
 RESERVED_MARKER_NAMESPACE_PREFIX = "compact-"
 
 

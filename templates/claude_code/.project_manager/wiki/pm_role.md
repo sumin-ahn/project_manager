@@ -82,15 +82,15 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 |---|---|---|
 | `/pm-bootstrap` | 세션 시작; board·git·차수·log 본문·남은작업 surface | `pm_bootstrap.py` |
 | `/pm-ticket` | 티켓 초안 발행 → architect 점검 라운드(묶음 1회) → 비준·승격 | `board.py new/lint/promote` |
-| `/pm-wave-claim T-NNNN` | 묶음 선언 + DoD self-containment 검증 + 멤버 claim + 작업 폴더 전환 | `board.py cluster/show/lint/claim` · `worktree_pool.py switch` |
+| `/pm-cluster-claim T-NNNN` | 묶음 선언 + DoD self-containment 검증 + 멤버 claim + 작업 폴더 전환 | `board.py cluster/show/lint/claim` · `worktree_pool.py switch` |
 | `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | 묶음 단계 위임 — 설계·리뷰·fix 는 묶음 1회, 개발은 티켓당 1회 | `Agent` 툴 |
 | `/pm-regression` | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
 | `/pm-qa` | 회귀+lint+git 통합 report | `board.py regression/lint` |
-| `/pm-wave-finish` | 묶음 종결 6단계(확인 생성/처분·완료 기록·커밋·재배치·머지·board) + 첫 부작용 앞 선검사 전건 보고; 슬롯 반납·status 미접촉 | `ticket_finish.py` |
+| `/pm-cluster-finish` | 묶음 종결 6단계(확인 생성/처분·완료 기록·커밋·재배치·머지·board) + 첫 부작용 앞 선검사 전건 보고; 슬롯 반납·status 미접촉 | `ticket_finish.py` |
 | `/pm-handoff` | 세션 종료 7단계 | `pm_handoff.py` |
 
 **무코드/개념(ADR·doc·decision) ticket도 종결 단위는 묶음이다.** 별도 검증 근거가 있으면
-`/pm-wave-finish`(`ticket_finish.py --cluster ... --no-pytest`)로 같은 6단계를 실행한다.
+`/pm-cluster-finish`(`ticket_finish.py --cluster ... --no-pytest`)로 같은 6단계를 실행한다.
 `board.py complete`는 6단계 내부 결속 호출이며 PM이 직접 실행하지 않는다.
 
 환경·갱신:
@@ -167,7 +167,7 @@ developer/code-reviewer draft 실행과 blocked/done 전 역할은 예약 전에
 
 `ticket done`·`cluster closed`는 서로 다른 상태이고, 종결은 슬롯을 반납하지 않는다. 모든 멤버만 이미 done이고
 장부가 open인 과거 반쪽 상태는 정상 종결을 재실행하거나 수동으로 status를 편집하지 않는다.
-`/pm-wave-finish` 카드의 all-done recovery가 요구하는 명시 제품 slot·멤버별 commit·legacy anchor·
+`/pm-cluster-finish` 카드의 all-done recovery가 요구하는 명시 제품 slot·멤버별 commit·legacy anchor·
 exact 사용자 승인값을 검증해 `closure.mode=reconciled`로만 닫는다. dirty slot은 보고·보존한다.
 
 티어는 다음 순서의 첫 매치로 PM이 확정해 `board.py tier <T-NNNN> pm-direct|normal|hard`로 기록한다.

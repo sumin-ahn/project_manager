@@ -41,12 +41,12 @@ def _read(rel: str) -> str:
     return text
 
 
-# ── ② pm-wave-claim: lint 차단 섹션 수 = _REQUIRED_SECTIONS 길이 ────────────────
+# ── ② pm-cluster-claim: lint 차단 섹션 수 = _REQUIRED_SECTIONS 길이 ────────────────
 
 WAVE_CLAIM_DOCS = (
-    ".claude/skills/pm-wave-claim/SKILL.md",
-    "templates/opencode/.claude/skills/pm-wave-claim/SKILL.md",
-    "templates/opencode/.opencode/command/pm-wave-claim.md",  # T-0674 사람 slash 표면
+    ".claude/skills/pm-cluster-claim/SKILL.md",
+    "templates/opencode/.claude/skills/pm-cluster-claim/SKILL.md",
+    "templates/opencode/.opencode/command/pm-cluster-claim.md",  # T-0674 사람 slash 표면
 )
 
 
@@ -265,14 +265,14 @@ def test_tickets_readme_dod_contract_matches_complete_gate():
         assert "부분 이월" in text, f"{rel}: 통과 형상(부분 이월) 서술 누락"
 
 
-# ── ⑥ pm-wave-finish: DoD preflight의 확정/불확정 경로와 log 멱등 계약 ────────
+# ── ⑥ pm-cluster-finish: DoD preflight의 확정/불확정 경로와 log 멱등 계약 ────────
 
 WAVE_FINISH_DOCS = (
-    ".claude/skills/pm-wave-finish/SKILL.md",
-    "templates/claude_code/.claude/skills/pm-wave-finish/SKILL.md",
-    "templates/codex/.agents/skills/pm-wave-finish/SKILL.md",
-    "templates/opencode/.claude/skills/pm-wave-finish/SKILL.md",
-    "templates/opencode/.opencode/command/pm-wave-finish.md",
+    ".claude/skills/pm-cluster-finish/SKILL.md",
+    "templates/claude_code/.claude/skills/pm-cluster-finish/SKILL.md",
+    "templates/codex/.agents/skills/pm-cluster-finish/SKILL.md",
+    "templates/opencode/.claude/skills/pm-cluster-finish/SKILL.md",
+    "templates/opencode/.opencode/command/pm-cluster-finish.md",
 )
 
 
@@ -287,7 +287,7 @@ def test_wave_finish_docs_distinguish_dod_preflight_outcomes_and_single_log_entr
             "중복 append",
             "ticket당 완료 entry 하나",
         ):
-            assert phrase in text, f"{rel}: pm-wave-finish 계약 문구 '{phrase}' 누락"
+            assert phrase in text, f"{rel}: pm-cluster-finish 계약 문구 '{phrase}' 누락"
         assert "선작성하지 않은 경우에만" not in text, (
             f"{rel}: 완료 entry 내용 계약이 후작성 경로에만 걸림"
         )

@@ -600,7 +600,7 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
 #     user 엔트리 비해제(F-002)·사용자 메시지 영구 해제·주입 실패 흡수(never-block)·durable marker
 #     영속 확인. node 부재 시 skip.
 #   ㉤ (node 있으면) 게이트 상태 프로세스 간 이어짐 — headless one-shot 모델 대응의 핵심 계약을
-#     별개 node 프로세스 3개(save→load+nudge→load)로 실측. node 부재 시 skip.
+#     별개 node 프로세스 3개(save→load+warn→load)로 실측. node 부재 시 skip.
 
 STALL_OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 STALL_PLUGIN_FILE = STALL_OPENCODE / "plugins" / "stall-watchdog.js"  # ESM 진입점 shim.

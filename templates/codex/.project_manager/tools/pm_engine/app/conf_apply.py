@@ -14,6 +14,7 @@ from pm_engine.domain import render_rules
 from pm_engine.domain import upstream_rules
 from pm_engine.infra import fs
 from pm_engine.infra import install_conf
+from pm_engine.infra import skill_inventory
 from pm_engine.infra import upstream_git
 from pm_engine.infra.harness import contract
 
@@ -120,7 +121,8 @@ def _plan_render_outputs(home, dest_root: Path, values: dict):
             home, dest_root, source_root, conf=values)
         render_changes = [change for change in sync_plan["changes"]
                           if getattr(change[2], "render", False)]
-        return update_render._render_outputs(home, render_changes, values)
+        return update_render._render_outputs(
+            home, render_changes, values, skill_inventory._installed_skill_entry_names(home))
     except render_rules.RenderLeakError as exc:
         raise ConfApplyError([str(exc)]) from exc
 

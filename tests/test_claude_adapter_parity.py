@@ -41,7 +41,7 @@ TEMPLATE_CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 IDENTICAL_RELPATHS = [
     "skills/pm-handoff/SKILL.md",
     "skills/pm-dev-delegate/SKILL.md",
-    "skills/pm-wave-claim/SKILL.md",
+    "skills/pm-cluster-claim/SKILL.md",
     "skills/pm-worktree/SKILL.md",
     "agents/architect.md",
     "agents/code-reviewer.md",
@@ -134,7 +134,7 @@ def test_t0953_stale_compaction_entries_show_retired_rows():
 # ── byte-identical 어댑터 산출물 (hook·skills·agents) ─────────────────────────
 
 def test_adapter_artifacts_byte_identical():
-    """pm-handoff/pm-dev-delegate/pm-wave-claim/pm-worktree skill·agents 4파일이 양 트리 byte-identical.
+    """pm-handoff/pm-dev-delegate/pm-cluster-claim/pm-worktree skill·agents 4파일이 양 트리 byte-identical.
 
     각 파일에 대해 양 트리 존재 + 바이트 동일 검증 (pm_update 전파 무드리프트).
     """

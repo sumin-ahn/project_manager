@@ -136,7 +136,7 @@ def _build_command_card_markdown(home, task_name, *, environment=None) -> str:
     pm_handoff.py)일 때만** "직접 금지" 강등 줄로 그리고, 엔진이 Agent 툴(`/pm-dev-delegate`)·
     facade 셸(`/pm-update`=pm-update.sh)이면 python3 줄을 지어내지 않고 skill-only + 평문 note
     로 둔다. additional_reviewer 는 래핑 스킬 없는 별도 추가 리뷰어 게이트라 강등이 아니라 직접-CLI 예외
-    (`board.py new`/`promote` 발행 authoring 도 동일 · 완료 진입은 /pm-wave-finish 하나라
+    (`board.py new`/`promote` 발행 authoring 도 동일 · 완료 진입은 /pm-cluster-finish 하나라
     direct `board.py complete` 줄은 카드에 없다). 강등 = 제거 아님: CLI backbone
     줄은 정체성 보간·⚠ 인접·argparse 정합 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
     카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
@@ -296,7 +296,7 @@ def _task_command_card_lines(
     lines.append("# wave 운영 (스킬로 invoke — backbone CLI 엔진은 직접 금지)")
     lines.append(
         skill(
-            "/pm-wave-claim T-NNNN",
+            "/pm-cluster-claim T-NNNN",
             "묶음 선언 + ticket claim + 작업 폴더 전환 · DoD 자족 검증",
         )
     )
@@ -334,7 +334,7 @@ def _task_command_card_lines(
     lines.append(
         engine(
             _C_WP_SWITCH,
-            f"{_runtime_skill_entry('pm-wave-claim')} 6단계 · 코드 변경이 없어도 실행한다 · claim 뒤, 파일 수정·종결 전 · 작업 폴더(<slot>=work/<repo>_<N>)를 묶음 브랜치로 전환(같은 저장소의 폴더 1개면 그 폴더, 2개면 cluster new 에 지목하지 않은 폴더)",
+            f"{_runtime_skill_entry('pm-cluster-claim')} 6단계 · 코드 변경이 없어도 실행한다 · claim 뒤, 파일 수정·종결 전 · 작업 폴더(<slot>=work/<repo>_<N>)를 묶음 브랜치로 전환(같은 저장소의 폴더 1개면 그 폴더, 2개면 cluster new 에 지목하지 않은 폴더)",
         )
     )
     lines.append(
@@ -349,7 +349,7 @@ def _task_command_card_lines(
         )
     )
     lines.append(
-        skill("/pm-wave-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage")
+        skill("/pm-cluster-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage")
     )
     lines.append(
         engine(

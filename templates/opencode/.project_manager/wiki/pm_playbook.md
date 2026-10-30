@@ -253,7 +253,7 @@ Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `
 부트스트랩: 1) CLAUDE.md  2) .project_manager/wiki/status.md  3) python3 .project_manager/tools/board.py show <T-NNNN>
 작업 시작: python3 .project_manager/tools/board.py claim <T-NNNN> --task <task>
 ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
-완료 시: 전체 회귀 → `/pm-wave-finish` 묶음 종결 → status.md·log/current.md 서술 점검.
+완료 시: 전체 회귀 → `/pm-cluster-finish` 묶음 종결 → status.md·log/current.md 서술 점검.
 막히면 block --reason 으로 PM 세션에.
 ```
 
@@ -279,7 +279,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
 2. **묶음 선언 + claim** — `board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>
    --task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자 추가)로 이번 wave 의 운영 단위·통합 브랜치·설계 문서를
    결속한다. 통합 브랜치를 둘 **코드 트리는 명시가 필수**이고, 없으면 첫 쓰기 앞에서 거부된다.
-   그 다음 멤버마다 `/pm-wave-claim`이
+   그 다음 멤버마다 `/pm-cluster-claim`이
    DoD self-containment·depends_on·placeholder·wikilink dangling을 검증한다. **묶음 판단은 PM 몫**이다 —
    엔진은 touches 겹침·가용 슬롯을 경고만 하고 자동으로 묶지 않는다. 겹침이 있어도 슬롯이 남아 있으면
    병렬로 나눌 수 있다.
@@ -303,7 +303,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    - **fix 라운드**: accepted finding 전부를 reviewer 수정·테스트 계약대로 해소한다.
    - **rejected/suggestion**: board 의무로 바꾸지 않고 현재 판정에서 닫는다.
    - **결정 필요**: 목표 확대가 필요하면 board를 쓰지 않고 사용자에게 선택을 요청한다.
-8. **묶음 종결** — `/pm-wave-finish`(`ticket_finish.py --cluster`)가 기계/PM-owned terminal 확인 생성·게이트 처분 →
+8. **묶음 종결** — `/pm-cluster-finish`(`ticket_finish.py --cluster`)가 기계/PM-owned terminal 확인 생성·게이트 처분 →
    티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋을 고정 순서로
    실행한다. 막는 조건은 첫 부작용 앞 선검사가 전건 보고하고, 실패 지점에서 멈추며 재실행이 곧 재개다. **status.md 는 건드리지 않는다**(judgment-only ·
    테스트 수 박제 ✗).
@@ -328,7 +328,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
 
 board·status·log·로드맵 단일 진실은 PM 1명이 유지하되 잡일을 줄인다:
 
-- **종결 자동화** — 묶음 종결(첫 부작용 앞 선검사 → 기계/PM-owned terminal 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-wave-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
+- **종결 자동화** — 묶음 종결(첫 부작용 앞 선검사 → 기계/PM-owned terminal 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-cluster-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
 - **상태 분리·복구** — `ticket done`·`cluster closed`를 서로 추론하지 않고, 종결은 슬롯을 반납하지 않는다.
   PM의 direct `board.py complete`는 금지되고 cluster 멤버는 엔진도 첫 write 전에 거부한다. 모든
   멤버가 done인데 장부만 open인 legacy 반쪽 상태는 `ticket_finish.py --cluster ...

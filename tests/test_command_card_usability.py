@@ -222,7 +222,7 @@ _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
 _SHELL_PUNCT = set("();<>|&;")  # shlex punctuation_chars — statement 를 가르는 연산자 문자.
 _OP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 # 스크립트 자신이 곧 조작인 도구 — `board.py <op>` 와 달리 서브커맨드가 없다(카드의 강등 엔진 줄).
-# `ticket_finish.py` = /pm-wave-finish 의 엔진이고 그것이 카드의 유일한 완료 진입이다.
+# `ticket_finish.py` = /pm-cluster-finish 의 엔진이고 그것이 카드의 유일한 완료 진입이다.
 _SCRIPT_OPS = {"pm_handoff.py": "handoff", "ticket_finish.py": "finish"}
 # 첫 하위 명령이 곧 조작인 도구 — 카드의 작업 폴더 전환은 `worktree_pool.py switch` 다([[T-0956]]).
 # board.py 에는 switch 하위 명령이 없어 조작 이름이 겹치지 않는다.
@@ -966,7 +966,7 @@ def _card_fills(tid: str, cluster: str, slot: str) -> dict[str, str]:
 # 티켓 ID 모양. 시험은 이 두 값과 `<slot>` 정의를 카드에서 읽는다(시험이 값을 고르지 않는다).
 _CARD_NAME_RULE_RE = re.compile(r"예: `(?P<example>[^`]+)`\).*티켓 ID 모양\(`(?P<reserved>[^`]+)`\)")
 _CARD_SLOT_FORM_RE = re.compile(r"<slot>=(?P<form>[^)\s]+)\)")
-# pm-wave-claim 흐름 카드의 같은 규칙(bash 주석이라 백틱이 없다).
+# pm-cluster-claim 흐름 카드의 같은 규칙(bash 주석이라 백틱이 없다).
 _SKILL_NAME_RULE_RE = re.compile(r"예: (?P<example>[\w.-]+)\)\. 티켓 ID 모양\((?P<reserved>[^)]+)\)")
 _SKILL_REPO_PLACEHOLDER_RE = re.compile(r"--repo (<[^>]+>)")
 _WAVE_SKILLS = REPO / ".claude" / "skills"
@@ -1006,7 +1006,7 @@ def _load_board_module(home: Path):
 def test_t0956_card_cluster_name_rule_matches_engine(monkeypatch):
     """[[T-0956]] AT-012 — 카드·흐름 카드의 묶음 이름 예시는 엔진이 받고 티켓 ID 모양은 거부한다.
 
-    카드 두 렌더(codex 표지 없음·있음 — codex 는 스킬 표기 `$`·codex 절이 붙는다)와 pm-wave-claim
+    카드 두 렌더(codex 표지 없음·있음 — codex 는 스킬 표기 `$`·codex 절이 붙는다)와 pm-cluster-claim
     흐름 카드가 같은 규칙을 싣는다. 두 흐름 카드의 `--repo` 자리는 저장소 이름 표기(`<repo>`) 하나뿐이고,
     카드의 `<slot>` 정의는 `release`·`switch` 가 함께 받는 `work/<repo>_<N>` 이다.
     """
@@ -1020,9 +1020,9 @@ def test_t0956_card_cluster_name_rule_matches_engine(monkeypatch):
         card = _render_command_card(REPO)
         rules.append(_card_name_rule(card))
         assert _CARD_SLOT_FORM_RE.search(card)["form"] == "work/<repo>_<N>"
-    claim_skill = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
+    claim_skill = (_WAVE_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
     skill_rule = _SKILL_NAME_RULE_RE.search(claim_skill)
-    assert skill_rule, "pm-wave-claim 흐름 카드가 묶음 이름 규칙을 싣지 않는다"
+    assert skill_rule, "pm-cluster-claim 흐름 카드가 묶음 이름 규칙을 싣지 않는다"
     rules.append((skill_rule["example"], skill_rule["reserved"]))
     assert len(set(rules)) == 1, rules
     example, reserved = rules[0]
@@ -1032,7 +1032,7 @@ def test_t0956_card_cluster_name_rule_matches_engine(monkeypatch):
     instance = reserved.replace("N", "1")
     assert cluster_rules._validate_cluster_name(instance) is not None
     assert cluster_rules.is_auto_cluster_id(instance) == instance
-    for name in ("pm-wave-claim", "pm-wave-finish"):
+    for name in ("pm-cluster-claim", "pm-cluster-finish"):
         text = (_WAVE_SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
         placeholders = _SKILL_REPO_PLACEHOLDER_RE.findall(text)
         assert placeholders and set(placeholders) == {"<repo>"}, (name, placeholders)
@@ -1052,7 +1052,7 @@ _PLACEHOLDER_SOURCES = (
 def test_t0956_flow_card_rule_scopes_task_name(monkeypatch):
     """[[T-0956]] 리뷰 F-005 — 자리 표기는 뜻별로 `<task>`·`<ticket-group>`·`<repo>` 다.
 
-    원본에 옛 표기 `<이름>`·`<C-이름>` 이 남지 않는다. pm-wave-claim 흐름 카드의 cluster new 줄은
+    원본에 옛 표기 `<이름>`·`<C-이름>` 이 남지 않는다. pm-cluster-claim 흐름 카드의 cluster new 줄은
     묶음 이름 자리 `<ticket-group>`, claim 줄은 `--task <task>`·`--repo <repo>` 이고, 카드 두 렌더와
     흐름 카드의 규칙 줄은 `<ticket-group>` 자리를 말하며 AT-012 정규식이 그 줄에서 예시 `login-fix`
     와 거부 모양 `T-NNNN` 을 읽는다(규칙이 task 이름 자리로 번지지 않는다).
@@ -1067,7 +1067,7 @@ def test_t0956_flow_card_rule_scopes_task_name(monkeypatch):
                           for token in _RETIRED_PLACEHOLDERS if token in text]
     assert leftovers == []
 
-    lines = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8").splitlines()
+    lines = (_WAVE_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8").splitlines()
     cluster_new = [line for line in lines if "board.py cluster new " in line]
     assert cluster_new and all("board.py cluster new <ticket-group> " in line for line in cluster_new)
     claim = [line for line in lines if "board.py claim " in line and "--task " in line]
@@ -1430,14 +1430,14 @@ def test_t0958_card_multirepo_one_folder_each_closes_first_ticket(tmp_path):
 def test_t0958_flow_cards_state_switch_order(tmp_path):
     """[[T-0958]] — 흐름 카드가 switch 필수·순서·폴더 선택과 task 세션의 claim 줄을 실행 줄 옆에 싣는다.
 
-    pm-wave-claim: lint 줄은 `lint --gate`, 5단계 claim 줄은 하나이고 `--task <task>` 를 갖는다(T-0962 — 슬롯
+    pm-cluster-claim: lint 줄은 `lint --gate`, 5단계 claim 줄은 하나이고 `--task <task>` 를 갖는다(T-0962 — 슬롯
     세션 claim 줄은 없다), 6단계는 코드 변경이 없어도 실행하고 폴더 1개·2개의 대상과 파일 수정 시점을 말한다.
-    pm-wave-finish: 실행 블록의 전제와 dry-run 항목이 switch 뒤를 말한다. 옛 슬롯 형식 claim
+    pm-cluster-finish: 실행 블록의 전제와 dry-run 항목이 switch 뒤를 말한다. 옛 슬롯 형식 claim
     (`--repo --slot` 만)은 claim 자체가 rc 1 이고 티켓은 open 에 남는다([[T-0959]] AT-008 · 예전에는 claim
     이 통과하고 종결이 소유 불일치로 막혔다).
     """
-    claim_text = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
-    finish_text = (_WAVE_SKILLS / "pm-wave-finish" / "SKILL.md").read_text(encoding="utf-8")
+    claim_text = (_WAVE_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
+    finish_text = (_WAVE_SKILLS / "pm-cluster-finish" / "SKILL.md").read_text(encoding="utf-8")
     block = claim_text.split("```bash", 1)[1].split("```", 1)[0].splitlines()
     assert any(line.strip() == "python3 .project_manager/tools/board.py lint --blocking" for line in block)
     claims = [index for index, line in enumerate(block) if "board.py claim " in line]
@@ -2110,7 +2110,7 @@ def test_t0959_board_submodule_finish_is_unchanged(tmp_path):
 
 @pytest.mark.parametrize("shape", ["home-git", "board-submodule"])
 def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
-    """[[T-0959]] — pm-wave-claim 실행 블록을 단계 순서대로 실행하면 두 board 형상 모두 claim·switch 까지 rc 0 이다.
+    """[[T-0959]] — pm-cluster-claim 실행 블록을 단계 순서대로 실행하면 두 board 형상 모두 claim·switch 까지 rc 0 이다.
 
     블록이 cluster new 다음에 promote 를 싣는다. 공유 board(서브모듈)의 발행은 draft 라 promote 없이는 claim 이
     "currently in draft/" 로 막혔다. 홈 git board 의 발행은 이미 open 이라 promote 는 그대로 두고 rc 0 이다.
@@ -2122,7 +2122,7 @@ def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
     repo = dest.name
     tid = _created_ticket_id(_run_in(dest, "new", "skill probe", "--task", CARD_TASK, tool="board.py"))
     _fill_any_ticket(dest, tid)
-    claim_text = (_WAVE_SKILLS / "pm-wave-claim" / "SKILL.md").read_text(encoding="utf-8")
+    claim_text = (_WAVE_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
     block = claim_text.split("```bash", 1)[1].split("```", 1)[0].splitlines()
     step6 = next(index for index, line in enumerate(block) if line.startswith("# 6."))
     fills = {"<ticket-group>": "wave-probe", "<T-NNNN,T-NNNN>": tid, "T-NNNN": tid,

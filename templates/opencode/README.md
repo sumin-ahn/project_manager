@@ -64,7 +64,7 @@ opencode 는 모델 placeholder 해소가 필수라 **수동 `cp -r` 은 불완�
 ## Context safety: native compaction + checkpoint
 
 OpenCode의 native compaction을 유지하고 `.opencode/plugins/ctx-guard.js`가 메인 세션의 최신
-`AssistantMessage.tokens`를 관측한다. nudge·강화·final 밴드는 다음 model turn의 system context에
+`AssistantMessage.tokens`를 관측한다. warn·강화·final 밴드는 다음 model turn의 system context에
 checkpoint 안내를 사이클당 한 번씩 추가할 뿐 prompt, 도구 실행, compaction을
 차단하지 않는다. `session.compacted` 뒤에는 `pm_log.py snapshot` 최종 텍스트를 다음 model turn의
 system context에 verbatim 1회 주입하고 dedup checkpoint 골격을 만든 뒤 다음 사이클을 재무장한다.

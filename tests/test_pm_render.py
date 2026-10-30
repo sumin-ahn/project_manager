@@ -33,6 +33,7 @@ from pm_engine.app import update_plan
 from pm_engine.app import update_render
 from pm_engine.infra import install_conf
 from pm_engine.infra import pm_paths
+from pm_engine.infra import skill_inventory
 from pm_engine.app import render_lint
 from pm_engine.cli import board_lint
 
@@ -78,14 +79,14 @@ def test_operational_plain_replace_no_omit(render_home, pm_render):
     """operational 토큰은 plain replace(omit 없음·값으로 치환·host 행 유지)."""
     tpl = "session for {{PROJECT_NAME}} runs {{TEST_CMD}}\n"
     out = adapter_render.render_adapter(render_home,
-        tpl, operational={"PROJECT_NAME": "acme", "TEST_CMD": "pytest -q"})
+        tpl, operational={"PROJECT_NAME": "acme", "TEST_CMD": "pytest -q"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert out == "session for acme runs pytest -q\n"
 
 
 def test_operational_token_alone_not_dropped(render_home, pm_render):
     """operational 토큰 단독 행은 drop 대상 아님(plain replace·host 행 유지)."""
     tpl = "{{PROJECT_ROOT}}\n"
-    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_ROOT": "/repo"})
+    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_ROOT": "/repo"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert out == "/repo\n"
 
 
@@ -100,7 +101,7 @@ def test_operational_missing_key_leaks_not_silently_emptied(render_home, pm_rend
     tpl = "root: {{PROJECT_ROOT}}\n"
     with pytest.raises(render_rules.RenderLeakError):
         # operational 에 다른 키만 보유·PROJECT_ROOT 부재 → 빈 치환 아닌 leak.
-        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"})
+        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
 
 
 def test_operational_empty_value_leaks_not_silently_emptied(render_home, pm_render):
@@ -113,7 +114,7 @@ def test_operational_empty_value_leaks_not_silently_emptied(render_home, pm_rend
     """
     tpl = "{{PROJECT_NAME}} 프로젝트\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
-        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": ""})
+        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": ""}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     msg = str(exc.value)
     assert "{{PROJECT_NAME}}" in msg
     # 빈값 원인 힌트: local.conf `<key>=` 가 빈값 — 값을 채우라.
@@ -130,7 +131,7 @@ def test_operational_empty_value_hint_only_for_leaked_token(render_home, pm_rend
     tpl = "value: {{UNKNOWN}}\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
         adapter_render.render_adapter(render_home,
-            tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": ""})
+            tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": ""}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     msg = str(exc.value)
     assert "{{UNKNOWN}}" in msg
     # PROJECT_ROOT 는 빈값이나 텍스트에 없어 leak 아님 → 빈값 힌트 부재.
@@ -142,7 +143,7 @@ def test_multiple_operational_tokens_one_line_both_resolved(render_home, pm_rend
     """한 행의 operational 토큰 2개 모두 plain replace 로 해소(whole-text 패스·잔여 토큰 0)."""
     tpl = "{{PROJECT_NAME}}: {{PROJECT_ROOT}}\n"
     out = adapter_render.render_adapter(render_home,
-        tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": "/r"})
+        tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": "/r"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert out == "acme: /r\n"
     assert "{{" not in out
 
@@ -156,7 +157,7 @@ def test_opencode_pro_model_operational_resolved(render_home, pm_render):
     """operational 에 OPENCODE_PRO_MODEL 공급 → `{{OPENCODE_PRO_MODEL}}` plain replace 해소(leak 0)."""
     tpl = "pro model: {{OPENCODE_PRO_MODEL}}\n"
     out = adapter_render.render_adapter(render_home,
-        tpl, operational={"OPENCODE_PRO_MODEL": "anthropic/claude-opus-4"})
+        tpl, operational={"OPENCODE_PRO_MODEL": "anthropic/claude-opus-4"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert out == "pro model: anthropic/claude-opus-4\n"
     assert "{{" not in out
 
@@ -172,7 +173,7 @@ def test_opencode_pro_model_missing_graceful_todo_not_leak(render_home, pm_rende
     model: 줄을 주석화·토큰 제거해 자족 유지하고 채택자-fill 지점만 남긴다(rc0).
     """
     tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\nbody\n'
-    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"})
+    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     # 리터럴 토큰 제거(자족 유지) — render leak 안 남.
     assert "{{OPENCODE_PRO_MODEL}}" not in out
     # model: 줄 주석화(YAML frontmatter 에 model 키 부재 → opencode 기본 모델·T-0077).
@@ -189,7 +190,7 @@ def test_leak_assert_integrity_other_token_still_leaks_with_model_todo(render_ho
     """
     tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\nvalue: {{GENUINELY_UNWIRED}}\n'
     with pytest.raises(render_rules.RenderLeakError) as exc:
-        adapter_render.render_adapter(render_home, tpl, operational={})
+        adapter_render.render_adapter(render_home, tpl, operational={}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     msg = str(exc.value)
     # 진짜 미배선 토큰은 leak 목록에 올라 fail-loud.
     assert "{{GENUINELY_UNWIRED}}" in msg
@@ -202,7 +203,7 @@ def test_opencode_pro_model_off_model_line_still_leaks(render_home, pm_render):
     중화 대상 아님 → 여전히 leak(진짜 미배선·불변식 c·false-green 근절)."""
     tpl = "설명: {{OPENCODE_PRO_MODEL}} 사용 예시\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
-        adapter_render.render_adapter(render_home, tpl, operational={})
+        adapter_render.render_adapter(render_home, tpl, operational={}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert "{{OPENCODE_PRO_MODEL}}" in str(exc.value)
 
 
@@ -217,13 +218,13 @@ def test_opencode_pro_model_empty_in_conf_still_leaks(render_home, pm_render):
     tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
     # 경로 ①: operational 에 빈 문자열로 존재 → _fill_operational 가 detected_empty 로 기록.
     with pytest.raises(render_rules.RenderLeakError) as exc:
-        adapter_render.render_adapter(render_home, tpl, operational={"OPENCODE_PRO_MODEL": ""})
+        adapter_render.render_adapter(render_home, tpl, operational={"OPENCODE_PRO_MODEL": ""}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert "{{OPENCODE_PRO_MODEL}}" in str(exc.value)
     assert "빈값" in str(exc.value), "빈값 원인 힌트(값을 채우라)가 소실."
     # 경로 ②: 호출자(pm_update)가 local.conf `harness.opencode.pro_model=` 를 excluded → empty_keys 로 전달.
     with pytest.raises(render_rules.RenderLeakError) as exc2:
         adapter_render.render_adapter(render_home,
-            tpl, operational={"PROJECT_NAME": "acme"}, empty_keys=["OPENCODE_PRO_MODEL"])
+            tpl, operational={"PROJECT_NAME": "acme"}, empty_keys=["OPENCODE_PRO_MODEL"], skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert "{{OPENCODE_PRO_MODEL}}" in str(exc2.value)
 
 
@@ -293,7 +294,7 @@ def test_render_neutralize_matches_import_fallback_output(render_home, pm_render
     import_fill._mark_model_todos(render_home, dest, {rel}, [])
     import_out = f.read_text(encoding="utf-8")
     # render_adapter 중화(operational 미해소) — self-update 경로.
-    render_out = adapter_render.render_adapter(render_home, model_tpl, operational={})
+    render_out = adapter_render.render_adapter(render_home, model_tpl, operational={}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert import_out == render_out
     assert "{{OPENCODE_PRO_MODEL}}" not in import_out
 
@@ -304,7 +305,7 @@ def test_leak_raises_on_unknown_token(render_home, pm_render):
     """allow-list 밖 토큰(`{{FOO}}`)이 산출물에 잔존하면 RenderLeakError."""
     tpl = "value: {{FOO}}\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
-        adapter_render.render_adapter(render_home, tpl)
+        adapter_render.render_adapter(render_home, tpl, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert "{{FOO}}" in str(exc.value)
 
 
@@ -326,7 +327,7 @@ def test_stray_omit_marker_raises(render_home, pm_render):
     """
     tpl = "body\n<!-- /pm:omit-if-empty -->\ntail\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
-        adapter_render.render_adapter(render_home, tpl)
+        adapter_render.render_adapter(render_home, tpl, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert "omit-marker" in str(exc.value)
 
 
@@ -338,14 +339,14 @@ def test_unfilled_operational_token_is_leak_strict(render_home, pm_render):
     """
     tpl = "host: {{PROJECT_NAME}}\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
-        adapter_render.render_adapter(render_home, tpl, operational={})
+        adapter_render.render_adapter(render_home, tpl, operational={}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert "{{PROJECT_NAME}}" in str(exc.value)
 
 
 def test_filled_operational_token_no_leak(render_home, pm_render):
     """operational 토큰을 값으로 채우면 잔여 0 → leak 아님(plain replace 정상 경로)."""
     tpl = "host: {{PROJECT_NAME}}\n"
-    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"})
+    out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert out == "host: acme\n"
     assert "{{" not in out
 
@@ -359,7 +360,7 @@ def test_freeform_token_left_literal_is_leak(render_home, pm_render):
     """
     tpl = "보호: {{PROTECTED_PATHS}}\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
-        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"})
+        adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert "{{PROTECTED_PATHS}}" in str(exc.value)
 
 
@@ -840,7 +841,7 @@ def test_render_text_empty_local_conf_raises_with_hint(pm_update, tmp_path):
     # RenderLeakError 는 RuntimeError 서브클래스 — pm_update 가 pm_render 를 격리 로드하므로
     # 클래스 동일성 대신 base + 이름으로 잡는다(모듈 인스턴스 간 클래스 객체 상이).
     with pytest.raises(RuntimeError) as exc:
-        update_render._render_text(pm_paths.home_at(pm_update.REPO), src_f, _local_conf_of(pm_update, dst))
+        update_render._render_text(pm_paths.home_at(pm_update.REPO), src_f, _local_conf_of(pm_update, dst), skill_names=skill_inventory._installed_skill_entry_names(pm_paths.home_at(pm_update.REPO)))
     assert type(exc.value).__name__ == "RenderLeakError"
     msg = str(exc.value)
     assert "{{PROJECT_NAME}}" in msg
@@ -1013,7 +1014,7 @@ def test_codex_tier_toml_renders_hard_profile_values(render_home, pm_render):
         delegate_harness={
             "DELEGATE_MODEL_DEVELOPER_HARD": "codex",
             "DELEGATE_REASONING_DEVELOPER_HARD": "codex",
-        },
+        }, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     fields = _model_fields(out)
     assert fields["model"] == 'model = "gpt-5.6-sol"'
@@ -1024,7 +1025,7 @@ def test_codex_tier_toml_renders_hard_profile_values(render_home, pm_render):
 def test_codex_tier_toml_unset_conf_is_graceful_todo(render_home, pm_render):
     """위임 매핑 미설정 채택자 — TOML 도 leak 대신 intentional-TODO 중화(키 부재 = config 기본 상속)."""
     out = adapter_render.render_adapter(render_home, _CODEX_HARD_TOML, operational={},
-                                   source=_CODEX_HARD_SOURCE, card_path=_CODEX_HARD_CARD)
+                                   source=_CODEX_HARD_SOURCE, card_path=_CODEX_HARD_CARD, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     fields = _model_fields(out)
     assert fields["model"].startswith('# model = "<model>"')
     assert fields["model_reasoning_effort"].startswith(
@@ -1034,7 +1035,7 @@ def test_codex_tier_toml_unset_conf_is_graceful_todo(render_home, pm_render):
     assert "{{" not in out
     # 멱등 — 중화 산출물을 다시 렌더해도 같은 bytes(재렌더 왕복 0).
     assert adapter_render.render_adapter(render_home,
-        out, operational={}, source=_CODEX_HARD_SOURCE, card_path=_CODEX_HARD_CARD) == out
+        out, operational={}, source=_CODEX_HARD_SOURCE, card_path=_CODEX_HARD_CARD, skill_names=skill_inventory._installed_skill_entry_names(render_home)) == out
 
 
 def test_unused_profile_neutralizes_instead_of_filling_other_harness_model(render_home, pm_render):
@@ -1050,7 +1051,7 @@ def test_unused_profile_neutralizes_instead_of_filling_other_harness_model(rende
         delegate_harness={
             "DELEGATE_MODEL_DEVELOPER_HARD": "claude",
             "DELEGATE_REASONING_DEVELOPER_HARD": "claude",
-        },
+        }, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     model_line = _model_fields(out)["model"]
     assert model_line.startswith('# model = "<model>"'), model_line
@@ -1070,7 +1071,7 @@ def test_unused_profile_judgment_is_per_role(render_home, pm_render):
         delegate_harness={
             "DELEGATE_MODEL_DEVELOPER": "claude",      # 이 카드의 하네스 — 그대로 렌더.
             "DELEGATE_MODEL_ARCHITECT": "codex",       # 다른 역할이 타 하네스여도 무관.
-        },
+        }, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     assert out == 'model: "sonnet"\n'
 
@@ -1080,7 +1081,7 @@ def test_delegate_harness_unknown_keeps_current_render(render_home, pm_render):
     tpl = 'model: "{{DELEGATE_MODEL_DEVELOPER}}"\n'
     out = adapter_render.render_adapter(render_home,
         tpl, operational={"DELEGATE_MODEL_DEVELOPER": "sonnet"},
-        card_path=".codex/agents/developer.toml", delegate_harness={})
+        card_path=".codex/agents/developer.toml", delegate_harness={}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert out == 'model: "sonnet"\n'
 
 
@@ -1140,7 +1141,7 @@ def test_claude_effort_renders_conf_value(render_home, pm_render):
             "DELEGATE_REASONING_ARCHITECT": "max",
         },
         card_path=_CLAUDE_ARCHITECT_CARD,
-        delegate_harness=_CLAUDE_ARCHITECT_HARNESS,
+        delegate_harness=_CLAUDE_ARCHITECT_HARNESS, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     assert out == '---\nname: architect\nmodel: "opus"\neffort: "max"\n---\n'
 
@@ -1153,7 +1154,7 @@ def test_claude_effort_unresolved_is_neutralized(render_home, pm_render):
     out = adapter_render.render_adapter(render_home,
         _CLAUDE_ARCHITECT_TEMPLATE,
         operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
-        card_path=_CLAUDE_ARCHITECT_CARD,
+        card_path=_CLAUDE_ARCHITECT_CARD, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     line = _effort_line(out)
     assert line.startswith('# effort: "<reasoning>"'), line
@@ -1162,7 +1163,7 @@ def test_claude_effort_unresolved_is_neutralized(render_home, pm_render):
     assert "{{" not in out
     assert adapter_render.render_adapter(render_home,
         out, operational={"DELEGATE_MODEL_ARCHITECT": "opus"},
-        card_path=_CLAUDE_ARCHITECT_CARD) == out, "중화 산출물 재렌더가 멱등하지 않다"
+        card_path=_CLAUDE_ARCHITECT_CARD, skill_names=skill_inventory._installed_skill_entry_names(render_home)) == out, "중화 산출물 재렌더가 멱등하지 않다"
 
 
 def test_claude_effort_unused_profile_is_neutralized(render_home, pm_render):
@@ -1177,7 +1178,7 @@ def test_claude_effort_unused_profile_is_neutralized(render_home, pm_render):
         delegate_harness={
             "DELEGATE_MODEL_ARCHITECT": "codex",
             "DELEGATE_REASONING_ARCHITECT": "codex",
-        },
+        }, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     line = _effort_line(out)
     assert line.startswith('# effort: "<reasoning>"'), line
@@ -1203,7 +1204,7 @@ def test_unused_profile_skips_reasoning_value_check(render_home, pm_render):
         delegate_harness={
             "DELEGATE_MODEL_ARCHITECT": "opencode",
             "DELEGATE_REASONING_ARCHITECT": "opencode",
-        },
+        }, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     assert _effort_line(out).startswith('# effort: "<reasoning>"')
     assert "minimal" not in out
@@ -1218,7 +1219,7 @@ def test_claude_effort_empty_value_is_loud_leak(render_home, pm_render):
         with pytest.raises(render_rules.RenderLeakError) as excinfo:
             adapter_render.render_adapter(render_home,
                 _CLAUDE_ARCHITECT_TEMPLATE, operational=operational, empty_keys=empty_keys,
-                card_path=_CLAUDE_ARCHITECT_CARD, delegate_harness=_CLAUDE_ARCHITECT_HARNESS,
+                card_path=_CLAUDE_ARCHITECT_CARD, delegate_harness=_CLAUDE_ARCHITECT_HARNESS, skill_names=skill_inventory._installed_skill_entry_names(render_home),
                     )
         assert "delegate.architect.reasoning=" in str(excinfo.value), excinfo.value
 
@@ -1238,7 +1239,7 @@ def test_reasoning_outside_ladder_fails_render(render_home, pm_render, value):
                 "DELEGATE_REASONING_ARCHITECT": value,
             },
             card_path=_CLAUDE_ARCHITECT_CARD,
-            delegate_harness=_CLAUDE_ARCHITECT_HARNESS,
+            delegate_harness=_CLAUDE_ARCHITECT_HARNESS, skill_names=skill_inventory._installed_skill_entry_names(render_home),
             )
     message = str(excinfo.value)
     assert f"delegate.architect.reasoning={value}" in message, message
@@ -1255,7 +1256,7 @@ def test_codex_reasoning_outside_ladder_fails_render(render_home, pm_render):
                 "DELEGATE_REASONING_DEVELOPER_HARD": "ultra",
             },
             source=_CODEX_HARD_SOURCE,
-            card_path=_CODEX_HARD_CARD,
+            card_path=_CODEX_HARD_CARD, skill_names=skill_inventory._installed_skill_entry_names(render_home),
             )
     assert "delegate.developer.hard.reasoning=ultra" in str(excinfo.value)
 
@@ -1274,7 +1275,7 @@ def test_reasoning_ladder_values_render_on_both_formats(render_home, pm_render, 
     out = adapter_render.render_adapter(render_home,
         template,
         operational={f"DELEGATE_MODEL_{token}": "m", f"DELEGATE_REASONING_{token}": value},
-        card_path=card_path,
+        card_path=card_path, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     assert expected in out.splitlines(), out
 
@@ -1287,7 +1288,7 @@ def test_reasoning_fill_without_card_harness_fails(render_home, pm_render):
             operational={
                 "DELEGATE_MODEL_ARCHITECT": "opus",
                 "DELEGATE_REASONING_ARCHITECT": "max",
-            },
+            }, skill_names=skill_inventory._installed_skill_entry_names(render_home),
             )
     assert "delegate.architect.reasoning=max" in str(excinfo.value)
 
@@ -1327,7 +1328,7 @@ def _render_opencode_researcher(pm_render, operational, *, render_home, **kwargs
         _OPENCODE_RESEARCHER_TEMPLATE.read_text(encoding="utf-8"),
         operational={"PROJECT_NAME": "Acme", **operational},
         card_path=_OPENCODE_RESEARCHER_CARD,
-        **{"delegate_harness": _OPENCODE_RESEARCHER_HARNESS, **kwargs},
+        **{"delegate_harness": _OPENCODE_RESEARCHER_HARNESS, **kwargs}, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
 
 

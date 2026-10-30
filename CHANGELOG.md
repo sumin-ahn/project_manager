@@ -22,6 +22,8 @@
   - 릴리즈 라이브 시험 기록 파일 `.project_manager/.local/livegate.json` → `.project_manager/.local/live-test.json`.
   - `board.py lint --gate` → `board.py lint --blocking`. `board.py init` 이 설치하는 pre-push 훅과 `/pm-bootstrap` 도 이 이름으로 lint 를 부른다.
   - `pm_config.py status --json --with-board` 의 `board.livegate` → `board.live_test`. 관리자 상태 탭도 이 키를 읽는다.
+- 스킬 `/pm-wave-claim`·`/pm-wave-finish` 의 이름을 `/pm-cluster-claim`·`/pm-cluster-finish` 로 바꿨다(Codex 는 `$pm-cluster-claim`·`$pm-cluster-finish`, OpenCode 명령 팔레트도 같은 이름). 스킬 내용과 동작은 같고 옛 이름은 없다. 갱신하면 옛 스킬 파일(`.claude/skills/pm-wave-*/`·`.agents/skills/pm-wave-*/`·`.opencode/command/pm-wave-*.md`)은 지우지 않고 `.pm_import_backups/(날짜)/` 로 옮기며, 갱신 출력에 `[퇴역]` 으로 나온다.
+- `pm_log.py ctx-guidance` 의 `--band` 를 `--level` 로, 값 `nudge`·`nudge2` 를 `warn`·`warn2` 로 바꿨다(`final`·`precompact` 는 그대로). 컨텍스트 사용률 구간 이름도 같은 값을 쓴다. 숨김 명령 `board.py hook-context`·`hook-tool` 응답의 `level` 값이 `ok`·`warn`·`warn2`·`stop` 이 되고, 구간마다 경고를 한 번만 내려고 만드는 표시 파일이 `.project_manager/.local/ctx-stop/(세션).warn`·`(세션).warn2` 가 된다. 출하 어댑터(Claude 상태 줄, OpenCode 플러그인, Codex 압축 안내)는 함께 바뀐다. 옛 플래그와 옛 값은 인자 오류(종료 코드 2)다.
 
 ### Removed
 
@@ -33,6 +35,8 @@
 - 관리자 설정 탭에서 설정 설명·이름, 직접 정함을 끈 칸의 기본값·기본 동작 문구, 목록 칸의 안내·오류 문구, 배지, 왼쪽 메뉴 이름, 묶음 표 설명, 어댑터 파일 표의 경로·거리 칸이 말줄임(…)으로 잘리거나 칸 밖으로 밀려, 창을 넓히거나 마우스를 올려야 읽히던 결함을 고쳤다. 이제 글은 칸 너비에서 줄을 바꿔 모두 보인다. 설정 이름·설명 칸은 고정 너비(18rem)가 아니라 표 너비의 5분의 2라 창을 넓히면 설명 줄 수가 줄고 좁히면 는다. 같은 글을 되풀이하던 마우스 올림 안내는 지웠고, 설명 줄에 마우스를 올리면 설정 키만 보인다.
 - Linux(GNOME)에서 관리자 창이 독·작업 전환기에 앱 아이콘이 아니라 기본 아이콘으로 나오던 결함을 고쳤다. 창 이름(`WM_CLASS`)이 실행 방식에 따라 `__main__.py`(`python3 -m manager`)나 실행 파일 이름으로 달라졌고, 그 이름과 맞는 `.desktop` 파일이 없었기 때문이다. 이제 창 이름은 늘 `pm-manager` 이고, Linux 에서 관리자 창을 열면 `$XDG_DATA_HOME/applications/pm-manager.desktop`(기본 `~/.local/share`)과 아이콘 `$XDG_DATA_HOME/icons/hicolor/256x256/apps/pm-manager.png` 를 둔다. 내용이 같으면 다시 쓰지 않고 실행 파일 위치가 바뀌면 고쳐 쓴다. `.desktop` 파일의 실행 명령은 실행 파일로 띄웠으면 그 파일, `python3 -m manager` 로 띄웠으면 그 인터프리터와 저장소 폴더다. `--smoke`·`--version` 은 파일을 쓰지 않는다. 파일을 쓰지 못하면 표준 출력에 `[경고]` 한 줄을 내고 창은 그대로 연다. Windows·macOS 는 바뀌지 않는다.
   - Linux 관리자 화면의 저장소 폴더가 `~/.local/share/__main__.py/`(`python3 -m manager`)·`~/.local/share/pm-manager-linux-x86_64/`(실행 파일)에서 `~/.local/share/pm-manager/` 로 바뀐다. `--port` 를 고정해 쓰던 경우 화면이 기억한 선택(설정 안 함 항목 보기)이 한 번 초기화된다. 옛 폴더와 `~/.cache` 의 같은 이름 폴더는 지워도 된다.
+- 상류가 새 스킬을 더한 갱신에서 Codex 사본은 새 스킬 파일과 그 스킬을 부르는 문서의 호출 표기(`$pm-…`)가 둘째 갱신에서야 바뀌어, 갱신을 두 번 해야 트리가 맞던 결함을 고쳤다. 갱신의 호출 표기 렌더가 같은 갱신이 처음 쓰는 스킬 파일의 이름도 쓴다.
+- 갱신이 manifest 의 `# pm-retired-path:` 지시로 디렉터리 행 아래 파일을 백업 폴더로 옮길 때, 같은 실행이 그 파일을 `[퇴역]` 줄과 함께 "상류 부재 파일 — 동기는 지우지 않는다" 로도 알리던 결함을 고쳤다. 이제 그 파일은 `[퇴역]` 으로만 나온다.
 
 ### 업그레이드 노트
 
@@ -45,6 +49,10 @@
 - **라이브 시험 명령·환경 변수 이름이 바뀐다.** `board.py livegate record|check`·`board.py lint --gate`·`PM_SKIP_LIVE_GATE` 를 적은 스크립트와 채택자 소유 문서는 `board.py live-test record|check`·`board.py lint --blocking`·`PM_SKIP_LIVE_TEST` 로 고친다. 옛 환경 변수 `PM_SKIP_LIVE_GATE=1` 은 무시되어 라이브 시험 확인이 그대로 요구된다.
 - **옛 라이브 시험 기록은 읽지 않는다.** `.project_manager/.local/livegate.json` 은 남아 있어도 동작에 영향이 없고 지워도 된다. 릴리즈 전에 `board.py live-test record` 로 새로 기록한다.
 - `pm_config.py status --json --with-board` 의 `board.livegate` 를 읽던 도구는 `board.live_test` 를 읽는다.
+- **OpenCode 를 추가 하네스로 붙인 사본(`pm-config add-harness opencode`)은 `.project_manager/engine.manifest` 의 `# >>> pm add-harness guest` 구획에서 두 줄을 고친다.** `.opencode/command/pm-wave-claim.md`·`.opencode/command/pm-wave-finish.md` 행에서 `pm-wave-claim` 을 `pm-cluster-claim` 으로, `pm-wave-finish` 를 `pm-cluster-finish` 로 바꾼다(행마다 경로와 `@source` 두 곳). 갱신 전후 어느 때나 되고, 고친 뒤 갱신하면 `.opencode/command/pm-cluster-claim.md`·`pm-cluster-finish.md` 가 설치된다. 고치지 않으면 새 명령 파일이 설치되지 않고 갱신마다 옛 두 행이 `[skip]` 으로 나온다. 하네스를 하나만 쓰는 사본은 할 일이 없다.
+- 옛 스킬 파일(`/pm-wave-claim`·`/pm-wave-finish`)을 고쳐 썼다면 `.pm_import_backups/(날짜)/` 의 백업에서 새 스킬(`.claude/skills/pm-cluster-claim/` 등)로 옮겨 적는다. 옮긴 뒤 남는 빈 폴더 `.claude/skills/pm-wave-claim/` 등은 지워도 된다. 스크립트·채택자 소유 문서의 옛 스킬 이름도 새 이름으로 고친다.
+- `pm_log.py ctx-guidance --band …` 를 직접 부르는 스크립트는 `--level` 과 새 값(`warn`·`warn2`)으로 바꾼다. 상태 응답 `level` 의 `nudge`·`nudge2` 를 비교하던 채택자 도구도 `warn`·`warn2` 로 고친다.
+- 갱신할 때 진행 중이던 세션은 같은 사용률 구간의 경고를 한 번 더 받는다. 옛 표시 파일 `.project_manager/.local/ctx-stop/(세션).nudge`·`(세션).nudge2` 는 더 읽지 않으며 지워도 된다.
 
 ## [1.8.3] - 2026-10-30
 

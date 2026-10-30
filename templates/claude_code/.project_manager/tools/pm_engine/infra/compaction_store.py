@@ -12,7 +12,7 @@ import uuid
 
 
 # ctx 밴드 marker 종류 — 사이클마다 밴드별로 한 번 선점한다(서로 독립).
-CTX_BAND_MARKER_KINDS = ("nudge", "nudge2", "final")
+CTX_BAND_MARKER_KINDS = ("warn", "warn2", "final")
 # 압축 경계 처리 marker 종류의 접두. 뒤에 경계 ID 의 파일명 안전 키가 붙는다.
 CTX_COMPACTION_MARKER_PREFIX = "compact-"
 

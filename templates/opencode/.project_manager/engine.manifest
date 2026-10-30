@@ -100,6 +100,18 @@
 .project_manager/tools/pm_delegate.py
 # 사설 참조 규칙과 출하 표면은 pm_engine 디렉터리로 배송한다.
 # pm-retired-path: .project_manager/tools/private_refs.py -> .project_manager/tools/pm_engine/domain/private_refs.py
+# 스킬 이름 변경(pm-wave-* -> pm-cluster-*): 옛 스킬 파일을 갱신 때 백업 폴더로 옮긴다. 새 스킬 파일은
+#   렌더 행이라 NEW 로 쓸 수 없어, 새 스킬 이름을 카드에 싣는 bootstrap_card.py 를 기준 파일로 둔다.
+# pm-retired-path: .claude/skills/pm-wave-claim/SKILL.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .claude/skills/pm-wave-claim/references/operational-details.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .claude/skills/pm-wave-finish/SKILL.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .claude/skills/pm-wave-finish/references/operational-details.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .agents/skills/pm-wave-claim/SKILL.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .agents/skills/pm-wave-claim/references/operational-details.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .agents/skills/pm-wave-finish/SKILL.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .agents/skills/pm-wave-finish/references/operational-details.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .opencode/command/pm-wave-claim.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# pm-retired-path: .opencode/command/pm-wave-finish.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
 # pm_principles: 판단 원칙 레지스트리 로더 + recall 판정. 출하층 `wiki/pm_principles.md`
 #   와 PM 홈 로컬층 `wiki/pm_principles.local.md`(미출하·manifest 미등재)를 합성해 세 어댑터가
 #   공유하는 `judge_recall` 하나로 판정한다. stdlib-only. 신설 도구라 등록 필수(미등록=전파 안 됨).
@@ -158,8 +170,8 @@
 .opencode/command/pm-review.md           @render @source=.claude/skills/pm-review/SKILL.md
 .opencode/command/pm-ticket.md           @render @source=.claude/skills/pm-ticket/SKILL.md
 .opencode/command/pm-update.md           @render @source=.claude/skills/pm-update/SKILL.md
-.opencode/command/pm-wave-claim.md       @render @source=.claude/skills/pm-wave-claim/SKILL.md
-.opencode/command/pm-wave-finish.md      @render @source=.claude/skills/pm-wave-finish/SKILL.md
+.opencode/command/pm-cluster-claim.md       @render @source=.claude/skills/pm-cluster-claim/SKILL.md
+.opencode/command/pm-cluster-finish.md      @render @source=.claude/skills/pm-cluster-finish/SKILL.md
 .opencode/command/pm-worktree.md         @render @source=.claude/skills/pm-worktree/SKILL.md
 .opencode/command/spike-new.md           @render @source=.claude/skills/spike-new/SKILL.md
 # 평탄 command의 operational-detail 링크는 pm_update가 skill별 모델 표면

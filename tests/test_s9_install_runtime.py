@@ -44,7 +44,7 @@ def test_two_execution_homes_keep_destinations_and_reasoning_cwd_separate(tmp_pa
     for index, home in enumerate(homes):
         _write(home.root, f".agents/skills/card-{index}/SKILL.md", "fixture")
         assert _install(home, source, tmp_path / f"dest-{index}", f"Project-{index}") == f"description: Project-{index}\n"
-        rendered = adapter_render.render_adapter(home, f"`/card-{index}`\neffort: {{{{DELEGATE_REASONING_DEVELOPER}}}}\n", {"DELEGATE_REASONING_DEVELOPER": "high"}, template_dir="codex", card_path=".claude/agents/developer.md")
+        rendered = adapter_render.render_adapter(home, f"`/card-{index}`\neffort: {{{{DELEGATE_REASONING_DEVELOPER}}}}\n", {"DELEGATE_REASONING_DEVELOPER": "high"}, template_dir="codex", card_path=".claude/agents/developer.md", skill_names=skill_inventory._installed_skill_entry_names(home))
         assert rendered == f"`$card-{index}`\neffort: high\n"
     assert calls == [home.root for home in homes]
 

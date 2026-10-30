@@ -1558,7 +1558,7 @@ def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProc
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("claude"),
-    reason="release wave final nudge — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
+    reason="release wave final warn — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
 def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):

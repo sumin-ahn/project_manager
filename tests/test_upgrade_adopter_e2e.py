@@ -1295,6 +1295,32 @@ def _flat_updater_source() -> str:
 # 쌍은 (현행, 그 세대)이고 현행 쪽은 합성본에서 정확히 한 번 해소돼야 한다. 계획·적용·전달·CLI 원문을 고치면
 # 이 쌍을 같은 방식(교체 도입 전 합성본과의 줄 단위 차이)으로 다시 만든다.
 _ENGINE_PACKAGE_REPLACE_REVERSALS = (
+    ('    # 명시 이주 채널(manifest)이 없는 세대를 기존과 같이 fail-soft로\n    # 지나간다(임의 삭제로 추측하지 않음).\n    manifest_paths = retired_paths._retired_directive_manifests(source_root, selfheal)\n',
+     '    manifest_paths = [Path(path) for path in selfheal.get("upstream_manifests", [])]\n    if not manifest_paths:\n        manifest_paths = [Path(source_root) / ".project_manager" / "engine.manifest"]\n    # 구 upstream은 manifest 자체가 없을 수 있다. 명시 이주 채널이 없는\n    # 세대를 기존과 같이 fail-soft로 지나간다(임의 삭제로 추측하지 않음).\n    manifest_paths = [path for path in manifest_paths if path.is_file()]\n'),
+    ('    card_path: str | None = None,\n    *,\n    skill_names: tuple[str, ...],\n) -> str:\n',
+     '    card_path: str | None = None,\n) -> str:\n'),
+    ('        card_path=card_path,\n        skill_names=skill_names,\n    )\n',
+     '        card_path=card_path,\n    )\n'),
+    ('    codex_operational_skill: str | None = None,\n    *,\n    skill_names: tuple[str, ...],\n) -> bool:\n',
+     '    codex_operational_skill: str | None = None,\n) -> bool:\n'),
+    ('        codex_operational_skill, _dest_relative_path(dst, dest_root),\n        skill_names=skill_names,\n    )\n',
+     '        codex_operational_skill, _dest_relative_path(dst, dest_root),\n    )\n'),
+    ('                    skill_names=skill_inventory._installed_skill_entry_names(home),\n',
+     ''),
+    ('def _render_outputs(\n    home, changes: list[tuple], conf: Mapping[str, str], skill_names: tuple[str, ...],\n) -> list[_RenderOutput]:\n',
+     'def _render_outputs(home, changes: list[tuple], conf: Mapping[str, str]) -> list[_RenderOutput]:\n'),
+    ('            skill_names=skill_names,\n',
+     ''),
+    ('    skill_names = update_render._skill_names_after_apply(home, file_changes)\n',
+     ''),
+    ('                        source=str(sp), skill_names=skill_names,\n',
+     '                        source=str(sp), skill_names=skill_inventory._installed_skill_entry_names(home),\n'),
+    ('    _write_render_outputs(_render_outputs(home, render_changes, conf, skill_names))\n',
+     '    _write_render_outputs(_render_outputs(home, render_changes, conf))\n'),
+    ('        return _render_outputs(\n            home, render_changes, values, skill_inventory._installed_skill_entry_names(home))\n',
+     '        return _render_outputs(home, render_changes, values)\n'),
+    ('    if do_retire:\n        retired_old = retired_paths.declared_retired_olds(source_root, selfheal)\n        retired_files = [rel for rel in retired_files if rel not in retired_old]\n',
+     ''),
     (
         '  엔진 패키지(.project_manager/tools/pm_engine)는 파일 단위로 덮지 않고 디렉터리째 바꾼다 — 상류에서\n'
         '  지우거나 이름을 바꾼 모듈과 대상에만 있던 모듈도 사라진다. 출력은 [replace-dir] 한 줄에 추가·변경·삭제\n'

@@ -15,6 +15,7 @@ from pm_engine.app import import_fill
 from pm_engine.domain import install_rules
 from pm_engine.domain import render_rules
 from pm_engine.infra import install_conf
+from pm_engine.infra import skill_inventory
 from pm_engine.app import repo_protection
 from pm_engine.infra import protected_hooks, pm_paths
 
@@ -7698,7 +7699,7 @@ def test_agent_card_renders_conf_model_through_local_conf(render_home, pm_update
         rendered = adapter_render.render_adapter(render_home,
             (template_tree / name).read_text(encoding="utf-8"),
             operational,
-            source=name,
+            source=name, skill_names=skill_inventory._installed_skill_entry_names(render_home),
         )
         assert _card_model_line(rendered) == model_line, \
             f"{name} 이 conf 해소값으로 렌더되지 않았다"
@@ -7718,7 +7719,7 @@ def test_agent_card_unset_delegate_model_is_graceful_todo(render_home, pm_update
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
     rendered = adapter_render.render_adapter(render_home,
         (template_tree / "developer.md").read_text(encoding="utf-8"),
-        operational, source="developer.md", empty_keys=empty_keys,
+        operational, source="developer.md", empty_keys=empty_keys, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
 
     line = _card_model_line(rendered)
@@ -7729,12 +7730,12 @@ def test_agent_card_unset_delegate_model_is_graceful_todo(render_home, pm_update
     # 해소된 역할은 같은 실행에서 정상 렌더 — 미해소 하나가 전체를 끌어내리지 않는다.
     resolved = adapter_render.render_adapter(render_home,
         (template_tree / "researcher.md").read_text(encoding="utf-8"),
-        operational, source="researcher.md", empty_keys=empty_keys,
+        operational, source="researcher.md", empty_keys=empty_keys, skill_names=skill_inventory._installed_skill_entry_names(render_home),
     )
     assert _card_model_line(resolved) == 'model: "haiku"'
     # 멱등 — 중화된 산출물을 다시 렌더해도 같은 bytes(재렌더 왕복 0).
     assert adapter_render.render_adapter(render_home,
-        rendered, operational, source="developer.md", empty_keys=empty_keys) == rendered
+        rendered, operational, source="developer.md", empty_keys=empty_keys, skill_names=skill_inventory._installed_skill_entry_names(render_home)) == rendered
 
 
 def test_agent_card_empty_delegate_model_is_loud_leak(render_home, pm_update, tmp_path):
@@ -7750,7 +7751,7 @@ def test_agent_card_empty_delegate_model_is_loud_leak(render_home, pm_update, tm
     with pytest.raises(render_rules.RenderLeakError, match="delegate.developer.model"):
         adapter_render.render_adapter(render_home,
             (template_tree / "developer.md").read_text(encoding="utf-8"),
-            operational, source="developer.md", empty_keys=empty_keys,
+            operational, source="developer.md", empty_keys=empty_keys, skill_names=skill_inventory._installed_skill_entry_names(render_home),
         )
 
 
@@ -7792,7 +7793,7 @@ def test_render_text_claude_cards_render_conf_reasoning(pm_update, tmp_path):
     }
     for name, effort in expected.items():
         rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO),
-            REPO / ".claude" / "agents" / name, _local_conf_of(pm_update, dest), card_path=f".claude/agents/{name}")
+            REPO / ".claude" / "agents" / name, _local_conf_of(pm_update, dest), card_path=f".claude/agents/{name}", skill_names=skill_inventory._installed_skill_entry_names(pm_paths.home_at(pm_update.REPO)))
         assert _card_effort_line(rendered) == f'effort: "{effort}"', \
             f"{name} 의 effort 가 conf reasoning 으로 렌더되지 않았다"
         assert _card_model_line(rendered) == 'model: "opus"', name
@@ -7813,7 +7814,7 @@ def test_render_text_rejects_reasoning_outside_harness_ladder(pm_update, tmp_pat
     with pytest.raises(RuntimeError) as excinfo:
         update_render._render_text(pm_paths.home_at(pm_update.REPO),
             REPO / ".claude" / "agents" / "architect.md", _local_conf_of(pm_update, dest),
-            card_path=".claude/agents/architect.md")
+            card_path=".claude/agents/architect.md", skill_names=skill_inventory._installed_skill_entry_names(pm_paths.home_at(pm_update.REPO)))
     assert type(excinfo.value).__name__ == "RenderLeakError", excinfo.value
     assert "delegate.architect.reasoning=ultra" in str(excinfo.value)
 
@@ -8861,3 +8862,59 @@ def test_directory_row_retirement_completes_in_one_update(pm_update, tmp_path, m
     assert not old.exists(), "은퇴 OLD 가 dest 에 남았다"
     backups = list((dest / ".pm_import_backups").glob(f"*/{_T0951_OLD}"))
     assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "# old\n"
+
+
+def test_update_entry_notation_includes_skill_cards_written_in_same_run(pm_update, tmp_path):
+    """한 번의 갱신이 새 스킬 카드를 쓰면 같은 갱신의 호출 표기 렌더가 그 카드 이름을 안다.
+
+    렌더가 실행 Home 의 카드만 읽으면 이번 적용이 처음 쓰는 카드의 `/pm-newcard` 가 그대로 남고
+    다음 갱신이 `$pm-newcard` 로 다시 고친다(두 번째 갱신이 트리를 바꿈)."""
+    source = tmp_path / "source"
+    card = source / ".claude" / "skills" / "pm-newcard" / "SKILL.md"
+    card.parent.mkdir(parents=True)
+    card.write_text("# /pm-newcard 새 카드\n", encoding="utf-8")
+    _track_source_tree(source)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    home = pm_paths.home_at(dest)
+    entries = [manifest_rules.ManifestEntry(".agents/skills", render=True, source_rel=".claude/skills")]
+
+    changes, missing = update_plan.plan(
+        home, source, entries, dest_root=dest, render_enabled=True,
+        entry_notation_template="codex", conf=_local_conf_of(pm_update, dest))
+    assert not missing
+    update_render.apply(home, changes)
+
+    rendered = (dest / ".agents" / "skills" / "pm-newcard" / "SKILL.md").read_text(encoding="utf-8")
+    assert rendered == "# $pm-newcard 새 카드\n"
+    again, missing = update_plan.plan(
+        home, source, entries, dest_root=dest, render_enabled=True,
+        entry_notation_template="codex", conf=_local_conf_of(pm_update, dest))
+    assert not missing and again == []
+
+
+def test_retired_directive_old_under_directory_row_is_reported_only_as_retired(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """디렉토리 행 아래 파일을 퇴역 지시가 옮기는 실행은 그 파일을 상류 부재 보고에 넣지 않는다.
+
+    퇴역 단계가 `[퇴역]` 으로 옮긴 파일을 같은 실행이 '동기는 지우지 않는다' 로 다시 알리면 두 줄이
+    어긋난다."""
+    fake_repo = tmp_path / "dest"
+    source = tmp_path / "source"
+    old_rel = f"{RETIRED_DIR_REL}/old.md"
+    files = {f"{RETIRED_DIR_REL}/keep.md": "# keep\n", "anchor.py": "# anchor\n"}
+    _make_upstream_tree(source, files,
+                        [RETIRED_DIR_REL, "anchor.py", f"# pm-retired-path: {old_rel} -> anchor.py"])
+    for rel, text in {**files, old_rel: "# old\n"}.items():
+        (fake_repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (fake_repo / rel).write_text(text, encoding="utf-8")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
+    _track_source_tree(fake_repo)
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
+
+    out = capsys.readouterr().out
+    assert f"[퇴역] {old_rel} ->" in out, out
+    assert not (fake_repo / old_rel).exists()
+    assert "상류 부재 파일" not in out, out

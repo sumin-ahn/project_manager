@@ -56,7 +56,7 @@ def test_policy_constant_states_auto_continuation_and_user_only_handoff(pm_log):
     assert "세션 종료·작업 축소는 사용자 지시로만 한다" in policy
 
 
-@pytest.mark.parametrize("band", ("nudge", "nudge2", "final", "precompact"))
+@pytest.mark.parametrize("band", ("warn", "warn2", "final", "precompact"))
 def test_every_ctx_band_includes_shared_policy_and_no_winding_down_phrase(pm_log, band):
     text = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         band, used_pct=82, precompact_at_pct=80,
@@ -65,7 +65,7 @@ def test_every_ctx_band_includes_shared_policy_and_no_winding_down_phrase(pm_log
     assert not any(pattern.search(text) for pattern in FORBIDDEN), text
 
 
-@pytest.mark.parametrize("band", ("nudge", "nudge2", "final", "precompact"))
+@pytest.mark.parametrize("band", ("warn", "warn2", "final", "precompact"))
 def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, band):
     """4밴드×필수 3종을 직접 렌더와 실제 raw CLI 출력 양쪽에서 고정한다."""
     direct = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
@@ -73,7 +73,7 @@ def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, 
     )
     result = subprocess.run(
         [
-            sys.executable, str(PM_LOG), "ctx-guidance", "--band", band,
+            sys.executable, str(PM_LOG), "ctx-guidance", "--level", band,
             "--used-pct", "82", "--precompact-at-pct", "80",
         ],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
@@ -109,12 +109,12 @@ def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log
     # OpenCode core 는 엔진 ctx 판정(`board.py hook-context`)의 안내를 그대로 싣고 정책 문구 사본을 두지 않는다.
     assert "runHookContext(" in sources["opencode"]
     assert policy_marker not in sources["opencode"]
-    assert "ctx-guidance --band precompact --json" in sources["codex"]
+    assert "ctx-guidance --level precompact --json" in sources["codex"]
     # 정상 경로의 단일 진실은 domain.ctx_recovery 상수다.
     assert Path(pm_engine.domain.ctx_recovery.__file__).read_text(encoding="utf-8").count(policy_marker) == 1
 
 
-@pytest.mark.parametrize("band", ("nudge", "nudge2", "final", "precompact"))
+@pytest.mark.parametrize("band", ("warn", "warn2", "final", "precompact"))
 def test_forbidden_winding_down_phrases_are_absent_from_rendered_outputs(pm_log, band):
     """검사 상수 선언을 오탐하지 않고 사용자가 받는 최종 출력만 판정한다."""
     output = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
@@ -210,7 +210,7 @@ def _opencode_guidance_home(tmp_path):
 
 def _pm_log_guidance(root, band, used_pct):
     command = [sys.executable, str(root / ".project_manager" / "tools" / "pm_log.py"),
-               "ctx-guidance", "--band", band, "--used-pct", str(used_pct), "--precompact-at-pct", "80"]
+               "ctx-guidance", "--level", band, "--used-pct", str(used_pct), "--precompact-at-pct", "80"]
     return subprocess.run(command, cwd=root, capture_output=True, env=utf8_child_env(), check=True)
 
 
@@ -220,7 +220,7 @@ def test_t0934_guidance_execution_real_runtime_and_raw_utf8(tmp_path):
     root, lib = _opencode_guidance_home(tmp_path)
     floor = root / ".project_manager" / "tools" / "python_floor.py"
     assert floor.read_bytes() == PM_LOG.with_name("python_floor.py").read_bytes()
-    producer = _pm_log_guidance(root, "nudge", 75)
+    producer = _pm_log_guidance(root, "warn", 75)
     script = r"""
 const m = require("./git-anchor-core.cjs");
 const decision = m.runHookContext(process.argv[1], {session:"ses_t0934", tokens:150000, model:null,
@@ -287,13 +287,13 @@ const m = require("./ctx-guard-core.cjs");
 """
     result = subprocess.run([node, "-e", script, str(root)], cwd=lib, capture_output=True, check=True,
                             timeout=30)
-    producer = _pm_log_guidance(root, "nudge", 75)
+    producer = _pm_log_guidance(root, "warn", 75)
     assert json.loads(result.stdout) == [producer.stdout.decode("utf-8").strip()]
 
 
 def test_codex_json_payload_is_engine_owned_shared_value(pm_log):
     result = subprocess.run(
-        [sys.executable, str(PM_LOG), "ctx-guidance", "--band", "precompact", "--json"],
+        [sys.executable, str(PM_LOG), "ctx-guidance", "--level", "precompact", "--json"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
         env=utf8_child_env(), check=True,
     )
@@ -307,7 +307,7 @@ def test_codex_json_payload_is_engine_owned_shared_value(pm_log):
 def test_ctx_guidance_takes_used_and_precompact_at(pm_log):
     """T-0923 AT-019 — 안내는 쓴 % 와 압축 임박 경고 비율만 받는다(남은 % 인자·표기 없음)."""
     result = subprocess.run(
-        [sys.executable, str(PM_LOG), "ctx-guidance", "--band", "final",
+        [sys.executable, str(PM_LOG), "ctx-guidance", "--level", "final",
          "--used-pct", "82", "--precompact-at-pct", "80"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
         env=utf8_child_env(),
@@ -317,13 +317,13 @@ def test_ctx_guidance_takes_used_and_precompact_at(pm_log):
     assert "잔여" not in result.stdout
     assert result.stdout.rstrip("\n") == pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         "final", used_pct=82, precompact_at_pct=80)
-    # nudge 밴드는 비율을 받아도 싣지 않는다(최종 밴드만의 표기).
+    # warn 밴드는 비율을 받아도 싣지 않는다(최종 밴드만의 표기).
     assert "압축 임박 경고" not in pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
-        "nudge", used_pct=72, precompact_at_pct=80)
+        "warn", used_pct=72, precompact_at_pct=80)
 
     for retired in (["--remaining-pct", "18"], ["--stop-pct", "20"]):
         refused = subprocess.run(
-            [sys.executable, str(PM_LOG), "ctx-guidance", "--band", "final",
+            [sys.executable, str(PM_LOG), "ctx-guidance", "--level", "final",
              "--used-pct", "82", *retired],
             cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
             env=utf8_child_env(),

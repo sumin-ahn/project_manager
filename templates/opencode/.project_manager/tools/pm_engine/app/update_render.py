@@ -109,6 +109,8 @@ def _render_text(
     flat_command_skill: str | None = None,
     codex_operational_skill: str | None = None,
     card_path: str | None = None,
+    *,
+    skill_names: tuple[str, ...],
 ) -> str:
     """source 템플릿을 local.conf 값(`conf`)으로 렌더한 텍스트 — `@render` 렌더 규칙의 유일한 구현.
 
@@ -134,6 +136,7 @@ def _render_text(
         source=str(source_path),
         delegate_harness=_delegate_harness_from_local_conf(conf),
         card_path=card_path,
+        skill_names=skill_names,
     )
     if flat_command_skill is not None:
         rendered = _render_flat_command_reference(rendered, flat_command_skill)
@@ -327,6 +330,8 @@ def _render_eq_dst(
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
     flat_command_skill: str | None = None,
     codex_operational_skill: str | None = None,
+    *,
+    skill_names: tuple[str, ...],
 ) -> bool:
     """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용.
 
@@ -339,6 +344,7 @@ def _render_eq_dst(
     rendered = _render_text(
         home, sp, conf, entry_notation_template, flat_command_skill,
         codex_operational_skill, _dest_relative_path(dst, dest_root),
+        skill_names=skill_names,
     )
     return _rendered_text_matches_dest(rendered, dst)
 
@@ -351,7 +357,9 @@ class _RenderOutput(NamedTuple):
     text: str
 
 
-def _render_outputs(home, changes: list[tuple], conf: Mapping[str, str]) -> list[_RenderOutput]:
+def _render_outputs(
+    home, changes: list[tuple], conf: Mapping[str, str], skill_names: tuple[str, ...],
+) -> list[_RenderOutput]:
     """render change 전부를 `_render_text` 로 메모리에서 그린다 — 하나라도 렌더가 거부되면 그 예외가
     그대로 올라가고 아무 파일도 쓰지 않는다(뒤 카드의 실패가 앞 카드를 바꾼 채 남기지 않는다)."""
     outputs: list[_RenderOutput] = []
@@ -362,6 +370,7 @@ def _render_outputs(home, changes: list[tuple], conf: Mapping[str, str]) -> list
             getattr(dst, "flat_command_skill", None),
             getattr(dst, "codex_operational_skill", None),
             card_path=relpath,
+            skill_names=skill_names,
         )))
     return outputs
 
@@ -405,6 +414,7 @@ def apply(home, changes: list[tuple], *, is_hook_set_path=None, package_plan=Non
     engine_transfer.change_file_count(changes, package_plan)  # 교체 행 ↔ 계획 값 대조(쓰기 전).
     file_changes = [change for change in changes if change[3] != "replace-dir"]
     render_changes = [change for change in file_changes if getattr(change[2], "render", False)]
+    skill_names = _skill_names_after_apply(home, file_changes)
     with (engine_transfer.engine_package_delivery(package_plan)
           if len(file_changes) < len(changes) else contextlib.nullcontext()):
         for _r, sp, dst, _kind in file_changes:
@@ -423,7 +433,7 @@ def apply(home, changes: list[tuple], *, is_hook_set_path=None, package_plan=Non
                     rendered = render_rules.render_skill_entry_notation(
                         rendered,
                         dst.entry_notation_template,
-                        source=str(sp), skill_names=skill_inventory._installed_skill_entry_names(home),
+                        source=str(sp), skill_names=skill_names,
                     )
                 if getattr(dst, "flat_command_skill", None) is not None:
                     rendered = _render_flat_command_reference(
@@ -447,7 +457,25 @@ def apply(home, changes: list[tuple], *, is_hook_set_path=None, package_plan=Non
 
     first_rel, _sp, first_dst, _kind = render_changes[0]
     conf = install_conf._read_local_conf(_dest_root_for(first_dst, first_rel) / ".project_manager" / "local.conf")
-    _write_render_outputs(_render_outputs(home, render_changes, conf))
+    _write_render_outputs(_render_outputs(home, render_changes, conf, skill_names))
+
+
+# 스킬 카드 경로 `(root)/(이름)/SKILL.md` 의 root — `skill_inventory` 가 읽는 두 폴더와 같다.
+_SKILL_CARD_ROOTS = ((".claude", "skills"), (".agents", "skills"))
+_SKILL_CARD_FILE = "SKILL.md"
+
+
+def _skill_names_after_apply(home, changes) -> tuple[str, ...]:
+    """이번 적용이 끝난 뒤의 스킬 카드 이름 — 실행 Home 의 카드에 이번 적용이 쓰는 카드를 더한다.
+
+    호출 표기 렌더는 이 이름만 바꾼다. Home 만 읽으면 같은 갱신이 처음 쓰는 카드의 이름은
+    다음 갱신에서야 바뀐다."""
+    names = set(skill_inventory._installed_skill_entry_names(home))
+    for rel, _sp, _dst, _kind in changes:
+        parts = str(rel).replace("\\", "/").split("/")
+        if len(parts) == 4 and tuple(parts[:2]) in _SKILL_CARD_ROOTS and parts[3] == _SKILL_CARD_FILE:
+            names.add(parts[2])
+    return tuple(sorted(names))
 
 
 def _dest_root_for(dst: Path, rel: str) -> Path:

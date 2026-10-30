@@ -46,6 +46,6 @@ audience: pm-internal
 각 스킬의 실행 책임을 정리한다.
 
 - [[pm-regression]]: 백그라운드 core 회귀와 표적 개발 루프.
-- [[pm-wave-finish]]: 검증 결과를 확인한 후보의 종결.
+- [[pm-cluster-finish]]: 검증 결과를 확인한 후보의 종결.
 - [[pm-release]]: 선언 플랫폼 전체와 라이브 릴리즈 게이트.
 - [[pm-bootstrap]]: 세션 진입과 현재 결과 확인.

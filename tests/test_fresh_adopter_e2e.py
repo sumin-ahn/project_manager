@@ -64,7 +64,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 _RAW_PM_SKILLS = (
     "pm-adr", "pm-bootstrap", "pm-dev-delegate", "pm-env", "pm-handoff",
     "pm-qa", "pm-regression", "pm-release", "pm-review", "pm-ticket",
-    "pm-update", "pm-wave-claim", "pm-wave-finish", "pm-worktree",
+    "pm-update", "pm-cluster-claim", "pm-cluster-finish", "pm-worktree",
 )
 _RAW_SLASH_ENTRY = re.compile(
     r"(?<![A-Za-z0-9_.>/\-])/(?P<skill>"
@@ -345,7 +345,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     #   pm_import(rglob 전체트리 byte-copy)로만 출하된다 — manifest 미등재·self-update 채널 없음
     #   (@target-owned 등재는 upstream=claude 루트에 .opencode/ 부재라 skip). 진입점 shim
     #   (plugins/ctx-guard.js)이 core(lib/ctx-guard-core.cjs)를 import 하므로, 한쪽만 landing 하면
-    #   opencode 가 플러그인을 로드 못 한다(nudge/stop 死) → 실 출하 산출물에서 *함께* 도착을 못박는다
+    #   opencode 가 플러그인을 로드 못 한다(warn/stop 死) → 실 출하 산출물에서 *함께* 도착을 못박는다
     #   ([[feature-ship-needs-fresh-adopter-gate]] — source parity 로는 실 landing 을 보증 못 함).
     if harness == "opencode":
         shim = dest / ".opencode" / "plugins" / "ctx-guard.js"
@@ -359,7 +359,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     #     wikilink·thin·depends 누출은 `_ADVISORY_LINT_KINDS` 밖(blocking)이라 `--gate`(exit≠0)로 잡힌다.
     #     fresh adopter 는 baseline-set(import 가 upstream_rev 기록)·seen-unset(seen 은 pm-update 관찰
     #     때만) 이라 adapter-drift **관찰불가 advisory** 가 발화하는 게 정상이다(never-block·pm-update
-    #     nudge·option-a·T-0305) — advisory 는 `--gate` 를 차단 안 하므로 blocking clean 은 `--gate` 로
+    #     warn·option-a·T-0305) — advisory 는 `--gate` 를 차단 안 하므로 blocking clean 은 `--gate` 로
     #     확인하고, 무인자 lint(advisory 표면화)는 아래에서 actionable 여부만 본다.
     lint = _board(dest, "lint", "--blocking")
     assert lint.returncode == 0, (
@@ -1334,7 +1334,7 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
 
     # seen 미기록 → 관찰불가 advisory 발화 (option-a·T-0305·never-block). fresh adopter 는 항상
     #   baseline-set·seen-unset 이라 첫 lint 가 관찰불가 advisory 를 낸다 — 아직 upstream 미관찰이라
-    #   drift 판정 불가인 *정직한 상태표현*이자 pm-update nudge(silent stale 근절). 과거 silent [] 를 대체.
+    #   drift 판정 불가인 *정직한 상태표현*이자 pm-update warn(silent stale 근절). 과거 silent [] 를 대체.
     observ = _board(dest, "lint")
     assert "adapter-drift" in observ.stdout, f"{harness}: seen 미기록 관찰불가 advisory 미발화\n{observ.stdout}"
     assert "관찰불가" in observ.stdout and "pm-update" in observ.stdout, (

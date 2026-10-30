@@ -10,7 +10,7 @@
     python3 .project_manager/tools/pm_log.py archive --before YYYY-MM-DD [--dry-run]
     python3 .project_manager/tools/pm_log.py archive --keep-last N [--dry-run]
     python3 .project_manager/tools/pm_log.py migrate [--dry-run]
-    python3 .project_manager/tools/pm_log.py ctx-guidance --band nudge|nudge2|final|precompact [--json]
+    python3 .project_manager/tools/pm_log.py ctx-guidance --level warn|warn2|final|precompact [--json]
     python3 .project_manager/tools/pm_log.py checkpoint --task NAME [--trigger compaction|manual]
     python3 .project_manager/tools/pm_log.py snapshot [--session-id ID] [--json]
 

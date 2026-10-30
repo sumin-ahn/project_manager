@@ -15,6 +15,7 @@ from pm_engine.infra import fs
 from pm_engine.infra import install_conf
 from pm_engine.infra import manifest_store
 from pm_engine.infra import retired_paths
+from pm_engine.infra import skill_inventory
 from pm_engine.infra import update_paths
 
 
@@ -242,6 +243,7 @@ def plan(
                     home, sp, dst, effective_dest, conf, item_notation_template,
                     flat_command_skill,
                     codex_operational_skill,
+                    skill_names=skill_inventory._installed_skill_entry_names(home),
                 ):
                     changes.append((r, sp, dst, "update"))
             elif (

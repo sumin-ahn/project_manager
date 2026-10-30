@@ -500,7 +500,7 @@ def _slash_refs(text: str) -> "set[str]":
 def test_slash_skill_references_exist():
     """스킬 md 의 `/pm-<skill>`/`/spike-<skill>` 상호참조가 실재 스킬/진입점을 가리키는지 (T-0347).
 
-    슬래시는 prose 상호참조(예 "`/pm-wave-finish` 호출 전")로 사는 커맨드 모양이라 md 전문에서
+    슬래시는 prose 상호참조(예 "`/pm-cluster-finish` 호출 전")로 사는 커맨드 모양이라 md 전문에서
     추출한다. 제거·개명된 스킬을 가리키는 dangling 참조를 잡는다.
     """
     valid = _canonical_skill_names()
@@ -527,13 +527,13 @@ def test_slash_classifier_catches_unknown_skill():
     `/pm-…`(`./pm-config.sh`·`pm-import.py`) 오매치는 슬래시로 안 잡히는지 못박는다.
     """
     valid = _canonical_skill_names()
-    assert "pm-wave-finish" in valid
+    assert "pm-cluster-finish" in valid
     assert "pm-bootstrap" in valid
     assert "pm-import" in valid  # 파사드 진입점도 유효.
     assert "pm-nonexistent" not in valid
 
     # 실 슬래시 참조는 추출된다.
-    assert _slash_refs("`/pm-wave-finish` 호출 전 baseline 확인") == {"pm-wave-finish"}
+    assert _slash_refs("`/pm-cluster-finish` 호출 전 baseline 확인") == {"pm-cluster-finish"}
     assert _slash_refs("세션 시작은 `/pm-bootstrap`") == {"pm-bootstrap"}
     # 없는 스킬은 추출되나 유효 집합에 없음 → offender.
     bogus = _slash_refs("`/pm-nonexistent` 로 위임")

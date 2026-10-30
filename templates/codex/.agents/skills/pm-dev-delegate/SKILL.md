@@ -1,6 +1,6 @@
 ---
 name: pm-dev-delegate
-description: "Codex native spawn_agent 기반 architect/developer/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+description: "Codex native spawn_agent 기반 architect/developer/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-cluster-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
 audience: pm-internal
 ---
 
@@ -48,7 +48,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster C-<ticket-group> --tas
 
 ## 사전 조건
 
-- 묶음이 선언돼 있고 멤버 티켓이 claim 됐다 (`$pm-wave-claim` 통과 · claim 정체성 `--task <task>`).
+- 묶음이 선언돼 있고 멤버 티켓이 claim 됐다 (`$pm-cluster-claim` 통과 · claim 정체성 `--task <task>`).
 - claim 뒤 작업 폴더를 `worktree_pool.py switch <slot> task/<ticket-group>`(`<slot>=work/<repo>_<N>`)로 묶음 브랜치에 옮겼다(코드 변경이 없어도 · 작업·종결 전).
 - 예외 — **draft의 architect 본문 점검 라운드는 claim 이전**이다. 엔진이 draft × architect만 허용하고(developer·code-reviewer의 draft 라운드는 거부) 이 경로는 board-git sync 0회다.
 - depends_on 모두 done.
