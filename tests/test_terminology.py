@@ -21,6 +21,8 @@ from typing import NamedTuple
 
 import pytest
 
+from pm_engine.app import principle_recall
+from pm_engine.infra import pm_paths
 from _repo_owned_inventory import OWNED, repo_owned_paths
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1026,42 +1028,116 @@ def test_review_loop_guard_detects_each_retired_phrase(
     assert offenders == [f"skill.md:1 :: {retired}"]
 
 
-# ── T-0795: '부기'(附記) 폐지 가드 ─────────────────────────────────────────────
-# '부기'는 일본식 한자어(附記 덧붙여 적음 / 簿記 장부 기록)로 국립국어원 순화 대상이고, 이 프로젝트
-# 문서 규칙(번역체·일본식 공문서체 금지)과 어긋난다. 사용자 결정(2026-08-22)으로 출하 표면 전량에서
-# '기록' 계열로 바꿨다 — 합성어는 `완료 기록`·`기록 게이트`, 단독·동사 용법이 의미를 잃으면 '추가
-# 기록'. 런타임 메시지(`[완료] T-NNNN 기록 완료.`)를 문자열로 단언하는 테스트가 있어 메시지와 단언이
-# 같은 표기를 들고 있어야 하므로 `tests/` 도 이 가드의 시야 안이다(산문 축인 리뷰 루프 가드와 갈린다).
-# historical(CHANGELOG·log·decisions·tickets·sealed spike·pm_import 백업)은 그 시점 표기 기록이라
-# 제외한다.
+# ── 지어낸 말 폐기 검사 (대응표에서 바꿈이 끝난 낱말) ─────────────────────────
+# 출하 원칙 레지스트리의 평어 항목(`pm_principles.md` §"티켓과 위임")이 규칙을, `pm_playbook.md`
+# §"용어 대응표" 가 낱말을 정한다. 이 검사는 바꿈이 끝난 낱말이 출하 글 범위(엔진 메시지·방법론·
+# 스킬·3타깃 사본)와 시험 단언에 다시 들어오지 않았는지만 본다. 바꿈이 끝나지 않은 낱말의 남은
+# 수는 세어 고정하지 않는다(줄어들기만 하는 상한은 두지 않는다). 후속 치환이 낱말을 끝내면
+# `_RETIRED_PLAIN_WORDS` 에 더한다. 낱말을 정의하는 두 자리(대응표 절, 평어 항목 줄)는 뺀다.
+# 런타임 메시지를 문자열로 단언하는 시험이 같은 표기를 들고 있어야 하므로 `tests/` 도 검사 범위 안이다.
+# 기록성 파일(CHANGELOG·log·decisions·tickets·확정된 spike·갱신 백업)은 그 시점 표기라 뺀다.
 #
-# 리터럴 분할: 이 가드 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
-_RETIRED_BOOKKEEPING_TERM = "부" + "기"
+# 리터럴 분할: 이 검사 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
+_RETIRED_PLAIN_WORDS = ("부" + "기", "래" + "칫")
+_PLAIN_WORD_TABLE_HEADING = "### 용어 대응표"
+_PLAIN_WORD_RULE_POINTER = '§"용어 대응표"'
+_PLAYBOOK_SUFFIX = ".project_manager/wiki/pm_playbook.md"
+_PRINCIPLES_SUFFIX = ".project_manager/wiki/pm_principles.md"
+# 사용자가 대응표에 반드시 넣으라고 지정한 낱말.
+_USER_NAMED_COINED_WORDS = (
+    "harvest", "부" + "기", "장부", "delta", "스냅샷", "시드", "회수", "게이트",
+    "래" + "칫", "seam", "폴백", "박제", "처방", "결속",
+)
 
 
-def _retired_bookkeeping_offenders(files: list[Path]) -> list[str]:
-    """검사 대상의 폐기 용어 잔존을 줄 단위로 반환한다."""
+def _plain_word_table_span(lines: list[str]) -> range:
+    """`pm_playbook.md` 대응표 절의 줄 범위(제목부터 다음 제목 전까지). 절이 없으면 ValueError."""
+    start = lines.index(_PLAIN_WORD_TABLE_HEADING)
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith("#")),
+        len(lines),
+    )
+    return range(start, end)
+
+
+def _retired_plain_word_offenders(files: list[Path]) -> list[str]:
+    """바꿈이 끝난 낱말을 줄 단위로 반환한다(대응표 절과 평어 항목 줄은 건너뛴다)."""
     offenders = []
     for f in files:
-        for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
-            if _RETIRED_BOOKKEEPING_TERM in line:
-                offenders.append(f"{f.relative_to(REPO).as_posix()}:{lineno}")
+        rel = f.relative_to(REPO).as_posix()
+        lines = f.read_text(encoding="utf-8").splitlines()
+        skipped = _plain_word_table_span(lines) if rel.endswith(_PLAYBOOK_SUFFIX) else range(0)
+        for lineno, line in enumerate(lines, 1):
+            if lineno - 1 in skipped:
+                continue
+            if rel.endswith(_PRINCIPLES_SUFFIX) and _PLAIN_WORD_RULE_POINTER in line:
+                continue
+            for word in _RETIRED_PLAIN_WORDS:
+                if word in line:
+                    offenders.append(f"{rel}:{lineno} :: {word}")
     return offenders
 
 
-def test_no_retired_bookkeeping_term_in_shipping_surface():
-    """출하 표면(엔진 메시지·방법론·스킬·3타깃 사본·테스트 단언)에 '부기' 0 (T-0795)."""
-    offenders = _retired_bookkeeping_offenders(
-        _shipped_text_surface(include_tests=True))
+def test_no_retired_plain_word_in_shipping_surface():
+    """출하 글 범위와 시험에 바꿈이 끝난 낱말이 0 이다(정의 자리 두 곳 제외)."""
+    offenders = _retired_plain_word_offenders(_shipped_text_surface(include_tests=True))
     assert not offenders, (
-        f"폐기 용어 '{_RETIRED_BOOKKEEPING_TERM}' 잔존 — '기록' 계열로 정정하라 "
-        f"(T-0795): {offenders}"
+        "바꿈이 끝난 지어낸 말이 다시 들어왔다. pm_playbook.md §\"용어 대응표\" 의 평어로 "
+        f"고쳐라: {offenders}"
     )
+
+
+def test_plain_word_table_defines_user_named_and_retired_words():
+    """대응표 절이 사용자 지정 낱말 14개와 바꿈이 끝난 낱말을 모두 행으로 갖는다."""
+    lines = (REPO / _PLAYBOOK_SUFFIX).read_text(encoding="utf-8").splitlines()
+    table = "\n".join(lines[index] for index in _plain_word_table_span(lines))
+    missing = [
+        word for word in (*_USER_NAMED_COINED_WORDS, *_RETIRED_PLAIN_WORDS)
+        if f"`{word}`" not in table
+    ]
+    assert not missing, f"대응표 절에 없는 낱말: {missing}"
+
+
+def test_plain_word_rule_is_an_edit_recall_rule_pointing_at_the_table():
+    """평어 항목은 출하층 §티켓과 위임의 `edit` 규칙이고 모델이 읽는 글의 파일에서만 나온다."""
+    home = pm_paths.home_at(REPO)
+    rules = [rule for rule in principle_recall.load(home)
+             if _PLAIN_WORD_RULE_POINTER in rule.text]
+    assert len(rules) == 1, [rule.text[:40] for rule in rules]
+    rule = rules[0]
+    assert (rule.on, rule.layer, rule.bundle) == ("edit", "shipped", "티켓과 위임")
+    assert rule.text.rsplit(". ", 1)[-1].startswith("어기면"), rule.text
+    hits = (
+        "/work/repo/.project_manager/tools/pm_engine/app/delegate_prompt.py",
+        "/work/repo/.claude/skills/pm-ticket/SKILL.md",
+        "/work/repo/.claude/agents/developer.md",
+        "/work/repo/.agents/skills/pm-review/SKILL.md",
+        "/work/repo/.codex/agents/developer.toml",
+        "/work/repo/.opencode/lib/ctx-guard-core.cjs",
+        "/work/repo/.project_manager/board/tickets/draft/spec.md",
+        "/work/repo/.project_manager/wiki/tickets/open/spec.md",
+        "/work/repo/.project_manager/wiki/pm_playbook.md",
+        "/work/repo/.project_manager/.local/tasks/main/prompts/arch.md",
+        "/work/repo/AGENTS.md",
+        "/work/repo/CLAUDE.lite.md",
+    )
+    misses = (
+        "/work/repo/src/app/main.py",
+        "/work/repo/tests/test_app.py",
+        "/work/repo/README.md",
+        "/work/repo/docs/guide.md",
+    )
+    for path in hits:
+        recalled = principle_recall.judge_recall(home, on="edit", text=path)
+        assert recalled is not None and _PLAIN_WORD_RULE_POINTER in recalled["text"], path
+    for path in misses:
+        recalled = principle_recall.judge_recall(home, on="edit", text=path)
+        assert recalled is None or _PLAIN_WORD_RULE_POINTER not in recalled["text"], path
 
 
 @pytest.mark.parametrize("relpath", [
     ".project_manager/tools/ticket_finish.py",   # 런타임 메시지 최다 보유
-    ".project_manager/engine.manifest",          # 확장자 밖 산문 — 손 sweep 이 빠뜨렸던 자리
+    ".project_manager/engine.manifest",          # 확장자 밖 산문(손 정리가 빠뜨렸던 자리)
     ".project_manager/wiki/pm_playbook.md",
     ".claude/skills/pm-wave-finish/SKILL.md",
     "README.md",
@@ -1070,11 +1146,11 @@ def test_no_retired_bookkeeping_term_in_shipping_surface():
     "templates/opencode/.opencode/agents/pm.md",
     "templates/claude_code/.project_manager/wiki/tickets/README.md",
 ])
-def test_bookkeeping_guard_scope_includes_every_sweep_axis(relpath):
-    """sweep 이 실제로 손댄 축(엔진·manifest·방법론·스킬·README·테스트·3타깃 사본)이 시야 안이다.
+def test_retired_plain_word_scope_includes_every_sweep_axis(relpath):
+    """엔진·manifest·방법론·스킬·README·시험·3타깃 사본이 검사 범위 안이다.
 
-    manifest·타깃 어댑터 진입·타깃 wiki 스캐폴드는 `pm_update` 전파 대상이 아니라 손 sweep 이
-    빠뜨리기 쉬운 자리다(이번 sweep 도 루트 `engine.manifest` 를 1차 스코프에서 놓쳤다).
+    manifest·타깃 어댑터 진입·타깃 wiki 스캐폴드는 `pm_update` 전파 대상이 아니라 손 정리가
+    빠뜨리기 쉬운 자리다.
     """
     view = {path.relative_to(REPO).as_posix()
             for path in _shipped_text_surface(include_tests=True)}
@@ -1085,21 +1161,43 @@ def test_bookkeeping_guard_scope_includes_every_sweep_axis(relpath):
     "CHANGELOG.md",
     ".pm_import_backups/2026-08-10/AGENTS.md",
 ])
-def test_bookkeeping_guard_leaves_historical_records_alone(relpath):
-    """historical 기록은 시야 밖이다 — 그 시점 표기라 고칠 수 없고 red 로 만들면 안 된다."""
+def test_retired_plain_word_scope_leaves_historical_records_alone(relpath):
+    """기록성 파일은 검사 범위 밖이다. 그 시점 표기라 고칠 수 없고 실패로 만들면 안 된다."""
     view = {path.relative_to(REPO).as_posix()
             for path in _shipped_text_surface(include_tests=True)}
     assert relpath not in view
 
 
-def test_bookkeeping_guard_detects_reintroduction(tmp_path, monkeypatch):
-    """폐기 용어를 다시 넣으면 검사가 그 줄을 검출한다 (sensitivity)."""
-    doc = tmp_path / "tool.py"
-    doc.write_text(
-        f'print("[완료] {{tid}} {_RETIRED_BOOKKEEPING_TERM} 완료.")\n', encoding="utf-8")
+def test_retired_plain_word_guard_detects_reintroduction(tmp_path, monkeypatch):
+    """바꿈이 끝난 낱말을 다시 넣으면 그 줄을 찾고 정의 자리 두 곳은 건너뛴다(민감도)."""
+    word = _RETIRED_PLAIN_WORDS[0]
+    wiki = tmp_path / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    playbook = wiki / "pm_playbook.md"
+    playbook.write_text(
+        f"## 메타 정책\n{_PLAIN_WORD_TABLE_HEADING}\n| `{word}` | 기록 | |\n"
+        f"### 의존성 정의\n{word} 를 다시 쓴다.\n",
+        encoding="utf-8",
+    )
+    principles = wiki / "pm_principles.md"
+    principles.write_text(
+        f"- `[edit: x]` 지어낸 말({word} 등)은 {_PLAIN_WORD_RULE_POINTER} 의 평어를 쓴다. "
+        "어기면 늘어난다.\n"
+        f"- 다른 항목에 {word} 가 있다. 어기면 늘어난다.\n",
+        encoding="utf-8",
+    )
+    tool = tmp_path / "tool.py"
+    tool.write_text(f'print("[완료] {{tid}} {word} 완료.")\n', encoding="utf-8")
     monkeypatch.setitem(globals(), "REPO", tmp_path)
 
-    assert _retired_bookkeeping_offenders([doc]) == ["tool.py:1"]
+    assert _retired_plain_word_offenders([playbook, principles, tool]) == [
+        f".project_manager/wiki/pm_playbook.md:5 :: {word}",
+        f".project_manager/wiki/pm_principles.md:2 :: {word}",
+        f"tool.py:1 :: {word}",
+    ]
+    playbook.write_text(f"## 메타 정책\n{word} 표가 없다.\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        _retired_plain_word_offenders([playbook])
 
 
 # ── T-0887: 우리 채널을 '외부'로 부르지 않는다 ─────────────────────────────

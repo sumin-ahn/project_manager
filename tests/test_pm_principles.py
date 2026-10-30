@@ -309,11 +309,11 @@ def test_broken_registry_warning_is_carried_in_the_single_text_field_all_adapter
 # ── canonical 레지스트리 형태 값 확인 ────────────────────────────────────
 
 def test_canonical_registry_recall_and_judgment_counts(m, tmp_path):
-    """실 출하 레지스트리의 분류 건수 — RECALL 15(태그) · JUDGMENT 13(무태그)."""
+    """실 출하 레지스트리의 분류 건수 — RECALL 16(태그) · JUDGMENT 13(무태그)."""
     rules = principle_recall.load(pm_paths.home_at(REPO))
     recall = [rule for rule in rules if rule.on is not None]
     judgment = [rule for rule in rules if rule.on is None]
-    assert len(recall) == 15, [rule.match for rule in recall]
+    assert len(recall) == 16, [rule.match for rule in recall]
     assert len(judgment) == 13
     for rule in recall:
         assert rule.on in principle_rules.ON_VALUES
@@ -365,7 +365,7 @@ def test_canonical_registry_loads_from_each_shipped_target(m, tmp_path):
     for target in ("claude_code", "codex", "opencode"):
         target_root = REPO / "templates" / target
         rules = principle_recall.load(pm_paths.home_at(target_root))
-        assert len(rules) == 28, target
+        assert len(rules) == 29, target
 
 
 # ── engine.manifest 정합 ──────────────────────────────────────────────────

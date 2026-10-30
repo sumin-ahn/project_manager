@@ -6,6 +6,9 @@
 버저닝은 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) 을 따른다.
 
 ## [Unreleased]
+### Added
+
+- 출하 원칙 레지스트리(`.project_manager/wiki/pm_principles.md`) §"티켓과 위임" 에 평어 규칙을 더했다. 엔진·어댑터 폴더(`.claude`·`.codex`·`.opencode`·`.agents`)·티켓·위임 프롬프트·방법론 문서·`CLAUDE.md`·`AGENTS.md` 를 편집하면 Claude·OpenCode 주 세션에 한 번 안내되고, 비유를 한 번 풀어야 뜻이 나오는 지어낸 말 대신 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어를 쓰게 한다. 대응표는 지어낸 말·평어·문맥에 따라 가르는 기준 세 칸이다.
 
 ### Fixed
 
