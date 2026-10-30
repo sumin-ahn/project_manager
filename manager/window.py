@@ -12,7 +12,7 @@ from pathlib import Path
 
 import webview
 
-from . import PACKAGE_ROOT
+from . import PACKAGE_ROOT, desktop_entry
 from .bridge import Api
 from .server import CLIENT_QUERY, WINDOW_CLIENT, ManagerServer
 
@@ -89,10 +89,20 @@ class ManagerWindow:
 
 
 def open_window(*, registry_file: Path | str | None = None, port: int = 0) -> int:
-    """관리자 창 — 화면 산출물이 없으면 rc 1."""
+    """관리자 창 — 화면 산출물이 없으면 rc 1.
+
+    Linux 는 창을 만들기 전에 독 아이콘용 `.desktop` 파일과 아이콘을 사용자 데이터 폴더에 둔다
+    (쓰지 못하면 경고 한 줄만 내고 창은 연다).
+    """
     message = missing_screen_message()
     if message is not None:
         print(message)
         return 1
+    if platform.system() == "Linux":
+        icon_png = window_icon().read_bytes()
+        try:
+            desktop_entry.register(icon_png, WINDOW_TITLE, desktop_entry.data_home())
+        except OSError as exc:
+            print(f"[경고] 독 아이콘용 .desktop 파일을 쓰지 못해 독에는 기본 아이콘이 나온다: {exc}")
     ManagerWindow(registry_file=registry_file, port=port).start()
     return 0

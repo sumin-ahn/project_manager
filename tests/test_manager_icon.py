@@ -1,6 +1,6 @@
-"""앱 아이콘이 세 자리(창·실행 파일·화면 탭)에 실제로 배선돼 있는지.
+"""앱 아이콘이 네 자리(창·실행 파일·화면 탭·Linux 독 등록)에 실제로 배선돼 있는지.
 
-아이콘 원본은 `manager/assets` 한 자리다. 세 소비자가 각자 자기 파일을 들고 있으면 하나만
+아이콘 원본은 `manager/assets` 한 자리다. 소비자가 각자 자기 파일을 들고 있으면 하나만
 바뀌는 날 서로 다른 그림이 나온다 — 그래서 이 테스트는 파일의 존재가 아니라 **자리가 하나임**을
 본다.
 """
@@ -79,6 +79,15 @@ def test_the_window_icon_is_an_ico_on_windows():
     for system in ("Windows", "Linux", "Darwin"):
         assert window_icon(system=system).parent == MANAGER / "assets"
         assert window_icon(system=system).is_file()
+
+
+def test_the_dock_registration_copies_the_window_icon():
+    """Linux 독 등록은 창 아이콘과 같은 `window_icon()` 의 바이트를 복사한다 — 자기 자리를 갖지 않는다."""
+    assert "icon_png = window_icon().read_bytes()" in (MANAGER / "window.py").read_text(
+        encoding="utf-8")
+    registration = (MANAGER / "desktop_entry.py").read_text(encoding="utf-8")
+    assert "icon-256.png" not in registration
+    assert "assets" not in registration
 
 
 def test_the_build_log_survives_a_non_utf8_console():

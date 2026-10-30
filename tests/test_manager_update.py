@@ -9,7 +9,7 @@
   3. 미리보기는 프로젝트 폴더를 한 바이트도 건드리지 않는다.
   4. 적용은 그 사본의 `engine_rev` 를 전진시킨다.
   5. 실패는 rc 와 엔진 원문 그대로 오고, 목록의 마지막 성공값은 살아 있다.
-  6. 관리자 코드에는 엔진 파일을 복사하는 자리가 없다(쓰기는 등록부 하나뿐).
+  6. 관리자 코드에는 엔진 파일을 복사하는 자리가 없다(쓰기는 등록부와 독 아이콘 등록 둘뿐).
 """
 from __future__ import annotations
 
@@ -44,6 +44,9 @@ REGISTRY_OWNED_MODULE = "registry.py"
 # 각인 모듈 `manager/_build_info.py` 를 쓴다 — 그 파일이 번들에 실리지 않는 것은
 # tests/test_manager_bundle_layout.py 가 잰다.
 BUILD_TIME_MODULE = "build.py"
+# 독 아이콘 등록은 사용자 데이터 폴더의 두 파일(`.desktop`·아이콘)을 쓴다. 엔진 파일이나 프로젝트
+# 폴더에는 쓰지 않으므로 이 검사의 목적(엔진 복사 금지)과 부딪히지 않는다.
+DOCK_ENTRY_MODULE = "desktop_entry.py"
 # 엔진이 소유한 per-clone 스크래치(락 파일·임시 트리) — git-ignored 이고 명령마다 생겼다 사라진다.
 # "갱신이 무엇을 남겼는가" 는 이 축을 걷어낸 트리에서만 말할 수 있다.
 ENGINE_SCRATCH_ROOT = ".project_manager/.local"
@@ -232,10 +235,10 @@ def test_a_path_that_is_not_a_pm_home_is_an_error_dict(api, tmp_path):
 
 
 def test_the_manager_package_has_no_file_copying_code():
-    """갱신도 적용도 전부 서브프로세스다 — 파일을 만드는 자리는 등록부 하나뿐이다."""
+    """갱신도 적용도 전부 서브프로세스다 — 파일을 만드는 자리는 등록부와 독 아이콘 등록 둘뿐이다."""
     offenders: dict[str, list[str]] = {}
     for module in sorted((REPO / "manager").glob("*.py")):
-        if module.name in (REGISTRY_OWNED_MODULE, BUILD_TIME_MODULE):
+        if module.name in (REGISTRY_OWNED_MODULE, BUILD_TIME_MODULE, DOCK_ENTRY_MODULE):
             continue
         source = module.read_text(encoding="utf-8")
         found = [f"{api_name}(" for api_name in FILE_WRITING_APIS

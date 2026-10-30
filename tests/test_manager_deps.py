@@ -188,3 +188,5 @@ def test_smoke_opens_the_window_and_answers(tmp_path, monkeypatch):
     assert len(lines) == 2, lines
     assert lines[0].startswith("관리자 주소: http://127.0.0.1:")
     assert lines[1].startswith("smoke ok")
+    # --smoke 는 독 아이콘용 파일을 쓰지 않는다(등록은 창 실행만 한다).
+    assert not (tmp_path / "xdg_data_home" / "applications").exists()
