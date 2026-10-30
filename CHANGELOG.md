@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- PM 홈에 `tests/` 가 없는데 상대 경로로 `pytest tests/…` 를 실행해 훅이 거부할 때, 사유 끝 안내 "대상 worktree의 workdir에서 실행하라" 를 Codex 에서 따르면 같은 거부가 반복되던 결함을 고쳤다. Codex(0.164.0)는 `exec_command` 의 `workdir` 를 훅 입력에 넘기지 않아 훅이 바뀐 실행 위치를 보지 못한다. 이제 안내는 "작업 폴더의 시험 경로를 절대경로로 적어 다시 실행하라" 이고, 그대로 고친 명령은 Claude·Codex·OpenCode 훅을 통과한다. 거부 조건과 `code` 값은 그대로다.
+
 ## [1.8.3] - 2026-10-30
 
 ### Changed

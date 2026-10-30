@@ -1736,6 +1736,74 @@ def test_codex_live_bash_without_internal_workdir_inherits_central_pytest_deny_e
     assert first == second
 
 
+PYTEST_RETRY_GUIDANCE = "cwd의 tests/ 디렉터리가 실재하지 않음 — 작업 폴더의 시험 경로를 절대경로로 적어 다시 실행하라"
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode"])
+def test_pm_home_relative_pytest_absolute_path_retry_passes_every_harness_hook(
+        topology_without_home_tests, harness):
+    """PM 홈에서 상대 경로 pytest 는 새 안내로 거부되고, 안내대로 작업 폴더 시험 경로를 절대경로로
+    적은 명령은 세 하네스 훅 모두 메시지 없이 통과한다. 훅 입력에는 명령 문자열과 PM 홈 cwd 만 있다
+    (Codex 0.164.0 은 `workdir` 를 훅 입력에 싣지 않는다)."""
+    home, slot = topology_without_home_tests
+    relative = "python3 -m pytest tests/test_probe.py -q"
+    absolute = f"python3 -m pytest {slot.as_posix()}/tests/test_probe.py -q"
+    if harness == "claude":
+        driver = _load("pm_home_pytest_retry_claude", CLAUDE_DRIVER)
+
+        def evaluate(command):
+            return driver.git_anchor_hook_evaluate({
+                "session_id": "S", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                "cwd": str(home), "tool_input": {"command": command},
+            }, home)
+
+        denied = evaluate(relative)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert denied["hookSpecificOutput"]["permissionDecisionReason"].endswith(PYTEST_RETRY_GUIDANCE)
+        assert evaluate(absolute) is None
+    elif harness == "codex":
+        dispatcher = _load("pm_home_pytest_retry_codex", CODEX_DISPATCHER)
+
+        def evaluate(command):
+            payload = _codex_live_bash_event()
+            payload.pop("agent_id", None)
+            payload.pop("agent_type", None)
+            payload.update(session_id="S", cwd=str(home), tool_input={"command": command})
+            return dispatcher.git_anchor_hook_evaluate(payload, home)
+
+        denied = evaluate(relative)
+        assert denied["decision"] == "block"
+        assert denied["reason"].endswith(PYTEST_RETRY_GUIDANCE)
+        assert evaluate(absolute) == {}
+    else:
+        node = shutil.which("node")
+        assert node is not None, "실제 OpenCode hook 검증에 node가 필요하다"
+        shutil.copytree(BOARD_PY.parent, home / ".project_manager/tools")
+        script = r'''
+const assert = require("node:assert");
+const core = require("./git-anchor-core.cjs");
+const [home, relative, absolute, guidance] = process.argv.slice(1);
+(async () => {
+ const toasts = [];
+ const boundary = core.createToolBoundary({root: home, directory: home, worktree: home, client: {
+  tui: {showToast: async (toast) => { toasts.push(toast); }},
+  session: {get: async ({path}) => ({data: {id: path.id}})},
+ }, contextFor: () => null, acceptContext: async () => {}});
+ await assert.rejects(
+  boundary.before({tool: "bash", sessionID: "S"}, {args: {command: relative}}),
+  (error) => error.message.startsWith("[git-anchor/deny]") && error.message.endsWith(guidance));
+ await boundary.before({tool: "bash", sessionID: "S"}, {args: {command: absolute}});
+ assert.deepStrictEqual(toasts, []);
+ console.log("PYTEST_RETRY_OK");
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+'''
+        result = subprocess.run(
+            [node, "-e", script, str(home), relative, absolute, PYTEST_RETRY_GUIDANCE],
+            cwd=OPEN_CORE.parent, capture_output=True, text=True, encoding="utf-8")
+        assert result.returncode == 0, result.stderr
+        assert "PYTEST_RETRY_OK" in result.stdout
+
+
 def test_codex_missing_coordinate_keeps_real_git_mutation_deny(
         monkeypatch, topology_without_home_tests):
     dispatcher = _load("git_anchor_codex_missing_coordinate_mutation", CODEX_DISPATCHER)

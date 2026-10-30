@@ -749,12 +749,14 @@ _STUB_PM_LOG = (
 )
 
 
+_TOOL_EVENT_KEYS = {"tool_name": "Bash", "tool_input": {"command": "echo hi"}}
+
+
 def _payload(rollout: Path, **extra) -> dict:
     payload = {
-        "hook_event_name": "PreToolUse",
+        "hook_event_name": "UserPromptSubmit",
         "model": _RECORD_MODEL,
-        "tool_name": "Bash",
-        "tool_input": {"command": "echo hi"},
+        "prompt": "계속",
         "session_id": "01a029b8-dd2b-7cc0-aac8-65158e5d120b",
         "transcript_path": str(rollout),
     }
@@ -866,9 +868,8 @@ def _record_guidance_renders(monkeypatch) -> list:
     return calls
 
 
-@pytest.mark.parametrize("event", ("UserPromptSubmit", "PreToolUse"))
-def test_first_turn_without_token_count_is_silent(codex_ctx, tmp_path, monkeypatch, event):
-    """첫 turn(rollout 에 token_count 0건)은 두 채널 모두 침묵 — 엔진 문구 생성 자체가 없다.
+def test_first_turn_without_token_count_is_silent(codex_ctx, tmp_path, monkeypatch):
+    """첫 turn(rollout 에 token_count 0건)은 UserPromptSubmit 채널이 침묵 — 엔진 문구 생성 자체가 없다.
 
     존재 검사가 아니라 렌더 호출 리스트가 **비었음**을 값으로 단언한다(=측정 없음을 실측
     0%로 오인해 안내를 만들지 않았다). I1-a·I1-c."""
@@ -876,14 +877,13 @@ def test_first_turn_without_token_count_is_silent(codex_ctx, tmp_path, monkeypat
     rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
     calls = _record_guidance_renders(monkeypatch)
 
-    envelope = codex_ctx.ctx_nudge_envelope(_first_turn_payload(rollout, event), root)
+    envelope = codex_ctx.ctx_nudge_envelope(_first_turn_payload(rollout, "UserPromptSubmit"), root)
 
     assert envelope == {}
     assert calls == [], "측정 없음이 엔진 문구 생성을 호출했다 — 0%를 실측치로 오인했다는 뜻"
 
 
-@pytest.mark.parametrize("event", ("UserPromptSubmit", "PreToolUse"))
-def test_first_turn_never_reports_a_usage_percentage(codex_ctx, tmp_path, monkeypatch, event):
+def test_first_turn_never_reports_a_usage_percentage(codex_ctx, tmp_path, monkeypatch):
     """첫 turn 엔벨로프 직렬화·엔진 렌더 호출 어디에도 사용률 수치가 없다(거짓 안내 부재·I1-b).
 
     감도: 측정 없음을 정상 관측치(used_pct=0)로 바꾸는 회귀가 있으면 `used_pct` 인자가
@@ -892,7 +892,7 @@ def test_first_turn_never_reports_a_usage_percentage(codex_ctx, tmp_path, monkey
     rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
     calls = _record_guidance_renders(monkeypatch)
 
-    envelope = codex_ctx.ctx_nudge_envelope(_first_turn_payload(rollout, event), root)
+    envelope = codex_ctx.ctx_nudge_envelope(_first_turn_payload(rollout, "UserPromptSubmit"), root)
 
     serialized = json.dumps(envelope, ensure_ascii=False)
     assert "%" not in serialized and "컨텍스트 사용" not in serialized
@@ -1008,7 +1008,7 @@ def test_band_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
     envelope = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
 
     hook_output = envelope["hookSpecificOutput"]
-    assert hook_output["hookEventName"] == "PreToolUse"
+    assert hook_output["hookEventName"] == "UserPromptSubmit"
     guidance = hook_output["additionalContext"]
     # 렌더에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → nudge2).
     assert guidance == ctx_recovery.build_ctx_guard_guidance("nudge2", used_pct=77, precompact_at_pct=80)
@@ -1016,17 +1016,6 @@ def test_band_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
     # 비차단 — 어떤 결정 필드도 내지 않는다(ADR-0081 D1·codex 는 allow/ask 자체를 거부한다).
     assert set(envelope) == {"hookSpecificOutput"}
     assert "permissionDecision" not in hook_output and "decision" not in envelope
-
-
-def test_user_prompt_submit_uses_its_own_event_name(codex_ctx, tmp_path):
-    """두 채널 모두 자기 이벤트 이름으로 주입한다(호스트가 이름으로 봉투를 검증한다)."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
-    rollout = _write_rollout(tmp_path)
-
-    envelope = codex_ctx.ctx_nudge_envelope(
-        _payload(rollout, hook_event_name="UserPromptSubmit", tool_name=None), root)
-
-    assert envelope["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
 
 
 def test_out_of_band_traffic_is_silent(codex_ctx, tmp_path):
@@ -1081,7 +1070,10 @@ def test_measured_ok_rearms_the_cycle_but_unmeasured_ok_does_not(codex_ctx, tmp_
     # 예산이 커져 실측 ok 로 돌아오면(압축 후 형상) 다음 상승 사이클이 열린다.
     (root / ".project_manager" / "local.conf").write_text(_OUT_OF_BAND_BUDGET,
                                                           encoding="utf-8")
-    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    # UserPromptSubmit 은 압축 한도 기록 불일치를 systemMessage 로 알린다.
+    stale_envelope = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+    assert set(stale_envelope) == {"systemMessage"}
+    assert stale_envelope["systemMessage"].startswith("[ctx-budget]")
     assert list(marker_dir.iterdir())  # 입력 변경 후 stale 기록으로 재무장하지 않는다.
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(root, harness="codex", model=_RECORD_MODEL)
@@ -1104,12 +1096,14 @@ def test_subagent_hook_calls_are_exempt(codex_ctx, tmp_path):
 
 
 def test_unrelated_hook_events_are_not_touched(codex_ctx, tmp_path):
-    """주입 채널은 두 이벤트뿐 — PostToolUse 등에서는 판정 자체를 하지 않는다."""
+    """주입 채널은 UserPromptSubmit 뿐 — 밴드 안이어도 PreToolUse·PostToolUse 에서는 판정 자체를 하지 않는다."""
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
 
-    assert codex_ctx.ctx_nudge_envelope(
-        _payload(rollout, hook_event_name="PostToolUse"), root) == {}
+    for event in ("PreToolUse", "PostToolUse"):
+        assert codex_ctx.ctx_nudge_envelope(
+            _payload(rollout, hook_event_name=event, **_TOOL_EVENT_KEYS), root) == {}, event
+    assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
 
 
 # ── 4.5 디스패처 합본·출하 CLI (침묵이 실제로 침묵인가) ──────────────────────
@@ -1139,7 +1133,9 @@ def test_dispatcher_stays_byte_identical_to_the_pass_shape_out_of_band(codex_ctx
     rollout = _write_rollout(tmp_path)
 
     assert codex_ctx.dispatch_hook(
-        "PreToolUse", json.dumps(_payload(rollout)).encode("utf-8"), root) == {}
+        "PreToolUse",
+        json.dumps(_payload(rollout, hook_event_name="PreToolUse", **_TOOL_EVENT_KEYS)).encode("utf-8"),
+        root) == {}
     assert codex_ctx.dispatch_hook(
         "UserPromptSubmit",
         json.dumps(_payload(rollout, hook_event_name="UserPromptSubmit")).encode("utf-8"),
@@ -1222,8 +1218,8 @@ def test_self_child_spawn_succeeds_in_both_layouts_without_adapter_fallback(tmp_
 
     completed = subprocess.run(
         [sys.executable, str(dispatcher_copy), "--hook-dispatch", "PreToolUse"],
-        input=json.dumps(_payload(tmp_path / "unused-rollout.jsonl",
-                                  transcript_path=None)).encode("utf-8"),
+        input=json.dumps(_payload(tmp_path / "unused-rollout.jsonl", transcript_path=None,
+                                  hook_event_name="PreToolUse", **_TOOL_EVENT_KEYS)).encode("utf-8"),
         capture_output=True, timeout=60)
 
     assert completed.returncode == 0, (label, completed.stderr)
@@ -1253,14 +1249,10 @@ def test_self_reconstructed_from_root_would_miss_the_flat_layout(tmp_path):
 # 실제 Codex 훅 입력 필드(codex-cli 0.147.0 실측) — provider·profile 은 없다.
 
 
-def _t0943_hook_input(rollout: Path, root: Path, event: str, model: str) -> dict:
+def _t0943_hook_input(rollout: Path, root: Path, model: str) -> dict:
     payload = {"session_id": "01a029b8-dd2b-7cc0-aac8-65158e5d120b", "turn_id": "t0943-turn",
-               "transcript_path": str(rollout), "cwd": str(root), "hook_event_name": event,
-               "model": model, "permission_mode": "default"}
-    if event == "PreToolUse":
-        payload.update(tool_name="Bash", tool_input={"command": "echo hi"}, tool_use_id="call_t0943")
-    else:
-        payload.update(prompt="계속")
+               "transcript_path": str(rollout), "cwd": str(root), "hook_event_name": "UserPromptSubmit",
+               "model": model, "permission_mode": "default", "prompt": "계속"}
     return payload
 
 
@@ -1268,7 +1260,7 @@ def test_t0943_model_only_hook_input_runs_the_band(codex_ctx, tmp_path):
     """`model` 만 있는 실제 입력이 기록 모델과 같으면 밴드 판정이 돈다(경고 없음)."""
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     envelope = codex_ctx.ctx_nudge_envelope(
-        _t0943_hook_input(_write_rollout(tmp_path), root, "PreToolUse", _RECORD_MODEL), root)
+        _t0943_hook_input(_write_rollout(tmp_path), root, _RECORD_MODEL), root)
     assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
         "nudge2", used_pct=77, precompact_at_pct=80)
     assert "systemMessage" not in envelope
@@ -1279,13 +1271,13 @@ def test_t0943_other_model_and_missing_record_use_system_message(codex_ctx, tmp_
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
     envelope = codex_ctx.ctx_nudge_envelope(
-        _t0943_hook_input(rollout, root, "UserPromptSubmit", "gpt-other"), root)
+        _t0943_hook_input(rollout, root, "gpt-other"), root)
     assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
         "nudge2", used_pct=77, precompact_at_pct=80)
     assert "모델이 바뀌었습니다" in envelope["systemMessage"] and "gpt-other" in envelope["systemMessage"]
 
     (root / ".project_manager/.local/ctx-budget.json").unlink()
     envelope = codex_ctx.ctx_nudge_envelope(
-        _t0943_hook_input(rollout, root, "UserPromptSubmit", _RECORD_MODEL), root)
+        _t0943_hook_input(rollout, root, _RECORD_MODEL), root)
     assert set(envelope) == {"systemMessage"}
     assert envelope["systemMessage"].startswith("[ctx-budget]") and "`pm_config.py apply`" in envelope["systemMessage"]
