@@ -869,7 +869,7 @@ def _record_guidance_renders(monkeypatch) -> list:
 
 
 def test_first_turn_without_token_count_is_silent(codex_ctx, tmp_path, monkeypatch):
-    """첫 turn(rollout 에 token_count 0건)은 두 채널 모두 침묵 — 엔진 문구 생성 자체가 없다.
+    """첫 turn(rollout 에 token_count 0건)은 UserPromptSubmit 채널이 침묵 — 엔진 문구 생성 자체가 없다.
 
     존재 검사가 아니라 렌더 호출 리스트가 **비었음**을 값으로 단언한다(=측정 없음을 실측
     0%로 오인해 안내를 만들지 않았다). I1-a·I1-c."""
@@ -1249,11 +1249,10 @@ def test_self_reconstructed_from_root_would_miss_the_flat_layout(tmp_path):
 # 실제 Codex 훅 입력 필드(codex-cli 0.147.0 실측) — provider·profile 은 없다.
 
 
-def _t0943_hook_input(rollout: Path, root: Path, event: str, model: str) -> dict:
+def _t0943_hook_input(rollout: Path, root: Path, model: str) -> dict:
     payload = {"session_id": "01a029b8-dd2b-7cc0-aac8-65158e5d120b", "turn_id": "t0943-turn",
-               "transcript_path": str(rollout), "cwd": str(root), "hook_event_name": event,
-               "model": model, "permission_mode": "default"}
-    payload.update(prompt="계속")
+               "transcript_path": str(rollout), "cwd": str(root), "hook_event_name": "UserPromptSubmit",
+               "model": model, "permission_mode": "default", "prompt": "계속"}
     return payload
 
 
@@ -1261,7 +1260,7 @@ def test_t0943_model_only_hook_input_runs_the_band(codex_ctx, tmp_path):
     """`model` 만 있는 실제 입력이 기록 모델과 같으면 밴드 판정이 돈다(경고 없음)."""
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     envelope = codex_ctx.ctx_nudge_envelope(
-        _t0943_hook_input(_write_rollout(tmp_path), root, "UserPromptSubmit", _RECORD_MODEL), root)
+        _t0943_hook_input(_write_rollout(tmp_path), root, _RECORD_MODEL), root)
     assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
         "nudge2", used_pct=77, precompact_at_pct=80)
     assert "systemMessage" not in envelope
@@ -1272,13 +1271,13 @@ def test_t0943_other_model_and_missing_record_use_system_message(codex_ctx, tmp_
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
     envelope = codex_ctx.ctx_nudge_envelope(
-        _t0943_hook_input(rollout, root, "UserPromptSubmit", "gpt-other"), root)
+        _t0943_hook_input(rollout, root, "gpt-other"), root)
     assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
         "nudge2", used_pct=77, precompact_at_pct=80)
     assert "모델이 바뀌었습니다" in envelope["systemMessage"] and "gpt-other" in envelope["systemMessage"]
 
     (root / ".project_manager/.local/ctx-budget.json").unlink()
     envelope = codex_ctx.ctx_nudge_envelope(
-        _t0943_hook_input(rollout, root, "UserPromptSubmit", _RECORD_MODEL), root)
+        _t0943_hook_input(rollout, root, _RECORD_MODEL), root)
     assert set(envelope) == {"systemMessage"}
     assert envelope["systemMessage"].startswith("[ctx-budget]") and "`pm_config.py apply`" in envelope["systemMessage"]
