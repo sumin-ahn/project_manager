@@ -1034,8 +1034,8 @@ def test_review_loop_guard_detects_each_retired_phrase(
 # 스킬·3타깃 사본)와 시험 단언에 다시 들어오지 않았는지만 본다. 바꿈이 끝나지 않은 낱말의 남은
 # 수는 세어 고정하지 않는다(줄어들기만 하는 상한은 두지 않는다). 후속 치환이 낱말을 끝내면
 # `_RETIRED_PLAIN_WORDS` 에 더한다. 낱말을 정의하는 두 자리(대응표 절, 평어 항목 줄)는 뺀다.
-# 런타임 메시지를 문자열로 단언하는 시험이 같은 표기를 들고 있어야 하므로 `tests/` 도 시야 안이다.
-# 기록성 파일(CHANGELOG·log·decisions·tickets·sealed spike·갱신 백업)은 그 시점 표기라 뺀다.
+# 런타임 메시지를 문자열로 단언하는 시험이 같은 표기를 들고 있어야 하므로 `tests/` 도 검사 범위 안이다.
+# 기록성 파일(CHANGELOG·log·decisions·tickets·확정된 spike·갱신 백업)은 그 시점 표기라 뺀다.
 #
 # 리터럴 분할: 이 검사 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
 _RETIRED_PLAIN_WORDS = ("부" + "기", "래" + "칫")
@@ -1099,7 +1099,7 @@ def test_plain_word_table_defines_user_named_and_retired_words():
 
 
 def test_plain_word_rule_is_an_edit_recall_rule_pointing_at_the_table():
-    """평어 항목은 출하층 §티켓과 위임의 편집 축 규칙이고 모델이 읽는 글의 파일에서만 나온다."""
+    """평어 항목은 출하층 §티켓과 위임의 `edit` 규칙이고 모델이 읽는 글의 파일에서만 나온다."""
     home = pm_paths.home_at(REPO)
     rules = [rule for rule in principle_recall.load(home)
              if _PLAIN_WORD_RULE_POINTER in rule.text]
