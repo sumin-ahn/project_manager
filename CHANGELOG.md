@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 출하 원칙 레지스트리(`.project_manager/wiki/pm_principles.md`) §"티켓과 위임" 에 평어 규칙을 더했다. 엔진·어댑터 폴더(`.claude`·`.codex`·`.opencode`·`.agents`)·티켓·위임 프롬프트·방법론 문서·`CLAUDE.md`·`AGENTS.md` 를 편집하면 Claude·OpenCode 주 세션에 한 번 안내되고, 비유를 한 번 풀어야 뜻이 나오는 지어낸 말 대신 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어를 쓰게 한다. 대응표는 지어낸 말·평어·문맥에 따라 가르는 기준 세 칸이다.
+
 ### Fixed
 
 - PM 홈에 `tests/` 가 없는데 상대 경로로 `pytest tests/…` 를 실행해 훅이 거부할 때, 사유 끝 안내 "대상 worktree의 workdir에서 실행하라" 를 Codex 에서 따르면 같은 거부가 반복되던 결함을 고쳤다. Codex(0.164.0)는 `exec_command` 의 `workdir` 를 훅 입력에 넘기지 않아 훅이 바뀐 실행 위치를 보지 못한다. 이제 안내는 "작업 폴더의 시험 경로를 절대경로로 적어 다시 실행하라" 이고, 그대로 고친 명령은 Claude·Codex·OpenCode 훅을 통과한다. 거부 조건과 `code` 값은 그대로다.
