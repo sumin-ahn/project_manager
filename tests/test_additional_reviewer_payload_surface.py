@@ -31,7 +31,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 MACHINE_PATH = ".opencode/node_modules/pkg/index.js"
 SHIPPED_TARGETS = ("claude_code", "codex", "opencode")
-DERIVED_PREFIX = "게이트 자동 유도: --review-ticket"
+DERIVED_PREFIX = "리뷰 집계 티켓 자동 유도: --review-ticket"
 
 
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
@@ -245,9 +245,9 @@ def test_early_exit_notice_matrix_has_cell_specific_expectations(
     assert (reviewer_budget._UNACCOUNTED_OPT_OUT_NOTICE in captured.err) is unaccounted_notice
     assert (reviewer_budget._SUMMARY_UNACCOUNTED_GATE in captured.out) is confirmed_notice
     if derived_notice:
-        assert "이 실행이 리뷰어를 부르면 라운드 회계가" in captured.err
+        assert "이 실행이 리뷰어를 부르면 라운드 집계가" in captured.err
     else:
-        assert "이 실행이 리뷰어를 부르면 라운드 회계가" not in captured.err
+        assert "이 실행이 리뷰어를 부르면 라운드 집계가" not in captured.err
     assert not (tmp_path / ".project_manager" / ".local" / "review_rounds.json").exists()
 
 

@@ -755,7 +755,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
 
     capsys.readouterr()
     with pytest.raises(
-        delegate_errors.DelegateError, match="슬롯 라운드 파일이 시드와 달라져 run-dir 을 지우지 않았습니다",
+        delegate_errors.DelegateError, match="슬롯 라운드 파일이 빈 양식과 달라져 run-dir 을 지우지 않았습니다",
     ):
         delegate_prepare.abandon_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, assume_dead=True,

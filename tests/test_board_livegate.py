@@ -1437,7 +1437,7 @@ def test_pm_verified_declaration_blocks_on_open_accepted_finding(pm_verified_rel
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
     assert problem is not None
-    assert "accepted 잔여가 있습니다" in problem
+    assert "accepted 남은 지적이 있습니다" in problem
 
 
 def test_pm_verified_declaration_blocks_when_accepted_lacks_machine_confirmation(pm_verified_release):

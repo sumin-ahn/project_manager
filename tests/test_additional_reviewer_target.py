@@ -1013,7 +1013,7 @@ def test_round_limit_refusal_creates_no_output_dir(
     # 장부는 상한 도달 상태 그대로다 — 거부는 예약도 환불도 하지 않는다(왕복 흔적 없음).
     assert _round_ledger(repo) == after_first
     assert after_first["T-0590"]["count"] == limit
-    assert "수렴 게이트 차단" in err
+    assert "마무리 통과 조건에서 막힘" in err
     assert "추가 리뷰어 실행 중" not in err            # 과금 문구 앞에서 끊긴다
 
 
@@ -1046,7 +1046,7 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
     assert reviewer.calls == []
     assert ledger["T-0590"]["count"] == 0                        # 라운드 count 는 환불
     assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1        # 새 wave 소비는 그대로
-    assert "wave 가 이미 리셋" in err                              # 갈린 축을 조용히 두지 않는다
+    assert "세션 호출 예산이 이미 리셋" in err                              # 갈린 축을 조용히 두지 않는다
 
 
 # 예약~스폰 사이에서 나갈 수 있는 실패의 세 부류 — 일반 예외 하나와 인터프리터가 던지는
@@ -1621,7 +1621,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
     assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
     assert ledger["T-0590"]["rounds"] == []                        # 산출도 남기지 않는다
-    assert err.count("라운드 예약 환불: 게이트") == 1               # 조용히도, 두 번도 아니다
+    assert err.count("라운드 예약 환불: 리뷰 집계 티켓") == 1               # 조용히도, 두 번도 아니다
     # raw 는 `run_review` 가 이미 정직하게 닫았다 — 보상 경로가 닫힌 레코드를 다시 덮지 않는다.
     records = _raw_ledger(repo)
     assert len(records) == 1 and records[0]["rc"] == 127
@@ -1668,7 +1668,7 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
     assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
-    assert err.count("라운드 예약 환불: 게이트") == 1               # 정확히 한 번
+    assert err.count("라운드 예약 환불: 리뷰 집계 티켓") == 1               # 정확히 한 번
     records = _raw_ledger(repo)
     assert len(records) == 1
     # 보상이 끝까지 가지 못했다 — 레코드는 미마감으로 남는다(핸드오프 미마감 점검이 알린다).
@@ -1723,8 +1723,8 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
     assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
     assert ledger["T-0590"]["rounds"] == []                        # 산출도 남기지 않는다
-    assert "라운드 장부 마감 실패" in err                            # 실패는 여전히 loud
-    assert err.count("라운드 예약 환불: 게이트") == 1                # 조용히도, 두 번도 아니다
+    assert "라운드 기록 마감 실패" in err                            # 실패는 여전히 loud
+    assert err.count("라운드 예약 환불: 리뷰 집계 티켓") == 1                # 조용히도, 두 번도 아니다
     assert "미완으로 남아" not in err              # 되돌린 라운드를 미완이라고 말하지 않는다
 
     # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 스폰·성공한다.
@@ -1757,10 +1757,10 @@ def test_a_failing_compensation_after_no_spawn_stays_loud_and_conservative(
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1                         # 되돌리지 못한 예약
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
-    assert "라운드 장부 마감 실패" in err
+    assert "라운드 기록 마감 실패" in err
     assert "라운드 예약 환불 실패" in err                           # 보상 실패도 말한다
     assert "미완으로 남아" in err
-    assert "라운드 예약 환불: 게이트" not in err                     # 성공을 사칭하지 않는다
+    assert "라운드 예약 환불: 리뷰 집계 티켓" not in err                     # 성공을 사칭하지 않는다
 
 
 def test_a_spawned_run_is_not_refunded_when_the_finalization_save_fails(
@@ -1783,7 +1783,7 @@ def test_a_spawned_run_is_not_refunded_when_the_finalization_save_fails(
     assert ledger["T-0590"]["count"] == 1                         # 예약은 그대로 소비
     assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
-    assert "라운드 장부 마감 실패" in err and "미완으로 남아" in err
+    assert "라운드 기록 마감 실패" in err and "미완으로 남아" in err
     assert "라운드 예약 환불" not in err
 
 
@@ -1855,7 +1855,7 @@ def test_a_failing_refund_never_masks_the_original_pre_spawn_failure(
 
     assert reviewer.calls == []
     assert "라운드 예약 환불 실패" in err              # 정리 실패는 조용히 넘어가지 않는다
-    assert "라운드 예약 환불: 게이트" not in err        # 되돌리지 못했으면 그렇게 말하지 않는다
+    assert "라운드 예약 환불: 리뷰 집계 티켓" not in err        # 되돌리지 못했으면 그렇게 말하지 않는다
     assert _round_ledger(repo)["T-0590"]["count"] == 1
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]
 

@@ -534,7 +534,7 @@ def test_output_landing_before_the_removal_preserves_bytes_and_run_dir(
         pd, monkeypatch, call_index=call_index, path=plan.path, before=before,
     )
 
-    with pytest.raises(delegate_errors.DelegateError, match="시드와 달라져") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="빈 양식과 달라져") as caught:
         _abandon(pd, env, plan)
 
     assert plan.run_dir.is_dir()
@@ -869,7 +869,7 @@ def test_abandon_refuses_an_already_harvested_run(pd, env):
     plan = _prepare(pd, env, "T-8070")
     _land_architect(pd, env, plan)
 
-    with pytest.raises(delegate_errors.DelegateError, match="이미 회수된 준비는 포기할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="이미 돌려받은 준비는 포기할 수 없습니다"):
         _abandon(pd, env, plan)
 
 
@@ -879,7 +879,7 @@ def test_harvest_refuses_an_abandoned_reservation(pd, env):
     plan = _prepare(pd, env, "T-8071")
     _abandon(pd, env, plan)
 
-    with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 회수할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 돌려받을 수 없습니다"):
         delegate_harvest.harvest_ticket_copy(
             pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=plan.path, cwd=env.slot, )
 
@@ -897,7 +897,7 @@ def test_reused_ordinal_survives_the_old_runs_harvest(pd, env):
     dead_copy.parent.mkdir(parents=True, exist_ok=True)
     dead_copy.write_text(dead_text + "\n옛 run 산출\n", encoding="utf-8", newline="")
 
-    with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 회수할 수 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 돌려받을 수 없습니다"):
         delegate_harvest.harvest_ticket_copy(
             pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=dead_copy, cwd=env.slot, )
 
@@ -1064,7 +1064,7 @@ def test_cli_copies_query_labels_abandoned_rows(pd, env, monkeypatch, capsys):
     unharvested = capsys.readouterr().out
 
     assert "포기(" in listed and str(plan.path) in listed
-    assert "미회수 라운드 준비 없음" in unharvested
+    assert "돌려받지 않은 라운드 준비 없음" in unharvested
 
 
 # ── I6 락 경계: stub 없이 실 board 호출 그래프를 태우는 교착 회귀 ───────────

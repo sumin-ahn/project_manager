@@ -247,7 +247,7 @@ def _extract_internal_must_fix_items(reply: str) -> list[str] | None:
 # 재리뷰는 유료 호출이라 판정 불능의 기본 처방이 아니다. 두 축이 모두 판정을 못 세운
 # 실행에서만 선택지로 제시하고, 그때도 비용과 대안(회수된 산출 직접 판정)을 함께 적는다.
 _INTERNAL_REREVIEW_LAST_RESORT = (
-    "재리뷰는 유료 호출이라 기본 행동이 아닙니다 — 먼저 회수된 라운드 파일을 읽고 PM이 "
+    "재리뷰는 유료 호출이라 기본 행동이 아닙니다 — 먼저 돌려받은 라운드 파일을 읽고 PM이 "
     "직접 판정하세요(`rounds resolve --pm-verified`). 그래도 재리뷰가 필요하면:"
 )
 
@@ -255,7 +255,7 @@ _INTERNAL_REREVIEW_LAST_RESORT = (
 # 대상은 축마다 다르므로 규칙 문장과 재리뷰 불요 문장만 공유하고 가운데만 갈린다.
 _INTERNAL_PASS_BOTH_AXES_RULE = "통과는 기계 블록과 산문이 모두 통과일 때만 기록합니다 —"
 _INTERNAL_PASS_NO_REREVIEW = (
-    "이미 회수된 라운드 파일을 PM이 직접 판정해도 되며 재리뷰(유료 호출)는 필요 없습니다."
+    "이미 돌려받은 라운드 파일을 PM이 직접 판정해도 되며 재리뷰(유료 호출)는 필요 없습니다."
 )
 
 # 기계 블록만 통과인 실행 — 채울 축은 산문이다.
@@ -266,8 +266,8 @@ _INTERNAL_PASS_NEEDS_BOTH_AXES_REPAIR = (
 
 # 두 축이 서로 다른 값을 세운 실행 — 처방은 산출 일치이지 재리뷰가 아니다.
 _INTERNAL_VERDICT_CONFLICT_REPAIR = (
-    "회수된 라운드 파일에서 두 출처 중 무엇이 이 라운드의 실제 판정인지 확인해 산출을 "
-    "일치시키세요. 어느 쪽도 장부에 기록하지 않았습니다."
+    "돌려받은 라운드 파일에서 두 출처 중 무엇이 이 라운드의 실제 판정인지 확인해 산출을 "
+    "일치시키세요. 어느 쪽도 라운드 기록에 적지 않았습니다."
 )
 
 # 기계 블록 축이 못 선 실행의 처방 — 허용 severity 값은 파서 enum에서만 파생한다.
@@ -451,7 +451,7 @@ def _internal_block_assessment(text: str | None) -> InternalReplyAssessment:
         InternalReplyOutcome(None, None),
         InternalReplyDiagnostic(
             INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE,
-            f"기계 블록 축 판정 불능({reason})",
+            f"기계 블록 기준 판정 불능({reason})",
             _INTERNAL_BLOCK_UNUSABLE_REPAIR,
         ),
     )
@@ -490,7 +490,7 @@ def _internal_round_verdict(text: str | None) -> InternalRoundVerdict:
                 unknown,
                 InternalReplyDiagnostic(
                     INTERNAL_DIAGNOSTIC_VERDICT_CONFLICT,
-                    "두 판정 축 상충 — 기계 블록 "
+                    "두 판정 기준 상충 — 기계 블록 "
                     f"{conflict[INTERNAL_VERDICT_SOURCE_BLOCK]} · 산문 "
                     f"{conflict[INTERNAL_VERDICT_SOURCE_REPLY]}",
                     _INTERNAL_VERDICT_CONFLICT_REPAIR,

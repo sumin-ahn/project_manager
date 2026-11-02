@@ -57,5 +57,5 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
 # 프롬프트에 실제로 실리는 developer 산출 라운드 이름(없으면 "없음")을 값으로 말한다.
 _SPAWN_SEED_DEVELOPER_ROUND_WARNING = (
     "경고: 추가 리뷰어가 {ticket} 의 산출 없는 developer 라운드 위에서 스폰됩니다 — "
-    "{name} 이 시드 골격 그대로입니다. 이번 프롬프트에 실리는 developer 산출 라운드: {latest}."
+    "{name} 이 빈 양식 그대로입니다. 이번 프롬프트에 실리는 developer 산출 라운드: {latest}."
 )

@@ -365,17 +365,17 @@ def _pm_review_prescription(
             f"--ticket {ticket} --reviewer-role {role} --ordinal {ordinal}`"
             for role, ordinal in channels
         )
-        return f"다음 골격을 생성해 PM이 finding ID를 전수 disposition하세요: {commands}"
+        return f"다음 빈 양식을 생성해 PM이 finding ID를 전수 disposition하세요: {commands}"
     prescriptions = {
         # 라운드 축에서 판정을 막는 상태는 순번 유일성·연속성 하나뿐이라 처방도 하나다
         # 봉인·장부 시절의 문제별 처방 분기는 사라졌다.
         "unsealed": (
             "라운드 순번이 깨졌다 — `tickets/rounds/<ticket>/` 의 빠진 순번을 board git "
-            "이력에서 복원하라(라운드 파일은 회수 후 불변이다)"
+            "이력에서 복원하라(라운드 파일은 돌려받은 뒤 불변이다)"
         ),
         "malformed": "reviewer 형식을 versioned block 계약에 맞춰 보정한 뒤 다시 판정하세요",
         "pending": (
-            "다음 골격을 생성해 PM이 finding ID를 전수 disposition한 뒤 다시 실행하세요: "
+            "다음 빈 양식을 생성해 PM이 finding ID를 전수 disposition한 뒤 다시 실행하세요: "
             "`python3 .project_manager/tools/pm_delegate.py review "
             f"disposition-template --ticket {ticket}`"
             " (오류의 대상 채널이 여러 개면 채널마다 "
@@ -454,7 +454,7 @@ def _pm_review_pm_owned_contract_ids(
     if impostors:
         raise PMReviewError(
             "malformed",
-            "developer verify가 PM-owned를 선언했지만 accepted scope 표식이 없습니다: "
+            "developer verify가 PM-owned를 선언했지만 accepted scope 표시가 없습니다: "
             f"{', '.join(impostors)} — scope는 "
             f"{PM_REVIEW_PM_OWNED_SCOPE_PREFIX!r} prefix로 시작해야 합니다"
         )

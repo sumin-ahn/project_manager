@@ -587,7 +587,7 @@ def test_codex_hard_profile_missing_allows_without_normal_fallback_or_warning(gu
 
     assert codex_envelope._codex_decision_envelope(decision) == {}
     assert "hard 프로필 미설정" in decision["reason"]
-    assert "normal 강등 금지" in decision["reason"]
+    assert "normal 로 수준 낮춤 금지" in decision["reason"]
     assert "delegate-channel/record" in decision["reason"]
     assert "delegate-channel/warn" not in decision["reason"]
     assert "--tier hard" not in decision["reason"]

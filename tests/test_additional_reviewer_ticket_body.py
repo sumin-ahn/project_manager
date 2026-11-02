@@ -141,7 +141,7 @@ def test_ticket_dry_run_prompt_includes_full_body_without_frontmatter(
 
     assert external.main(["--ticket", "T-9001", "--dry-run"]) == 0
     captured = capsys.readouterr()
-    assert "### 게이트 티켓 본문 (T-9001)" in captured.out
+    assert "### 검토 대상 티켓 본문 (T-9001)" in captured.out
     assert "## 결정\n승인된 방어는 제거한다." in captured.out
     assert "secret_frontmatter: do-not-send" not in captured.out
     # 상한 표기는 없다 — 상한 자체가 사라졌다([[ADR-0090]]).
@@ -166,7 +166,7 @@ def test_real_send_prompt_includes_ticket_body_without_frontmatter(
     ]) == 0
     assert len(prompts) == 1
     prompt = prompts[0]
-    assert "### 게이트 티켓 본문 (T-9001)" in prompt
+    assert "### 검토 대상 티켓 본문 (T-9001)" in prompt
     assert "## 결정\n실 호출 경로도 확정 결정을 받는다." in prompt
     assert "secret_frontmatter: do-not-send" not in prompt
 
@@ -178,7 +178,7 @@ def test_paths_only_prompt_does_not_include_ticket_body(
 
     assert external.main(["--paths", "x.py", "--no-review-ticket", "--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "### 게이트 티켓 본문" not in out
+    assert "### 검토 대상 티켓 본문" not in out
     assert "ticket_body_bytes:" not in out
 
 
@@ -194,7 +194,7 @@ def test_paths_and_gate_without_ticket_states_body_is_unassembled(
 
     assert external.main(["--paths", "x.py", "--review-ticket", "T-9999", "--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "### 게이트 티켓 본문" not in out
+    assert "### 검토 대상 티켓 본문" not in out
     assert "ticket_body_bytes:" not in out, "본문 미조립 — 이 줄 자체가 없다"
     assert "ticket_body: 미조립" in out, "침묵 대신 미조립 사실을 값으로 말해야 한다"
 
@@ -215,8 +215,8 @@ def test_ticket_and_paths_header_uses_body_source_ticket_id(
         "--ticket", "T-9001", "--paths", "x.py", *accounting_args, "--dry-run",
     ]) == 0
     out = capsys.readouterr().out
-    assert "### 게이트 티켓 본문 (T-9001)" in out
-    assert "### 게이트 티켓 본문 (T-7777)" not in out
+    assert "### 검토 대상 티켓 본문 (T-9001)" in out
+    assert "### 검토 대상 티켓 본문 (T-7777)" not in out
     assert "본문 출처는 T-9001이다." in out
 
 
@@ -230,7 +230,7 @@ def test_ticket_and_paths_missing_body_warns_and_keeps_recovery_channel(
     ]) == 0
     captured = capsys.readouterr()
     assert "본문 없이 계속합니다" in captured.err
-    assert "### 게이트 티켓 본문" not in captured.out
+    assert "### 검토 대상 티켓 본문" not in captured.out
 
 
 def test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam(
@@ -243,9 +243,9 @@ def test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam(
 
     assert external.main(["--ticket", "T-fixture", "--dry-run"]) == 0
     captured = capsys.readouterr()
-    assert "테스트 fixture가 ticket touches seam만 주입" in captured.err
+    assert "테스트 fixture가 ticket touches 교체 지점만 주입" in captured.err
     assert "주입된 ticket scope" not in captured.err
-    assert "### 게이트 티켓 본문" not in captured.out
+    assert "### 검토 대상 티켓 본문" not in captured.out
 
 
 def test_removed_confirm_fix_dry_run_is_rejected_before_loading_ticket_body(
@@ -259,7 +259,7 @@ def test_removed_confirm_fix_dry_run_is_rejected_before_loading_ticket_body(
         external.main(["--ticket", "T-9001", "--confirm-fix", "--dry-run"])
     captured = capsys.readouterr()
     assert "unrecognized arguments: --confirm-fix" in captured.err
-    assert "### 게이트 티켓 본문" not in captured.out
+    assert "### 검토 대상 티켓 본문" not in captured.out
 
 
 def test_review_context_always_declares_ticket_decisions_authoritative(

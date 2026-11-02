@@ -460,7 +460,7 @@ def test_refused_harvest_creates_no_round_file_and_keeps_the_raw_output(
 
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
     err = capsys.readouterr().err
-    assert "회수 문제" in err and reason in err
+    assert "돌려받기 문제" in err and reason in err
     assert "라운드 파일은 만들지 않았습니다" in err
     assert "raw 에 보존됩니다" in err
     assert _round_paths(tmp_path) == []
@@ -498,7 +498,7 @@ def test_reply_cannot_declare_the_engine_refusal_marker(
     )
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
     err = capsys.readouterr().err
-    assert "회수 문제" in err and review_form.PM_REVIEW_REFUSED_MARKER in err
+    assert "돌려받기 문제" in err and review_form.PM_REVIEW_REFUSED_MARKER in err
     assert _round_paths(tmp_path) == []
 
 
@@ -546,7 +546,7 @@ def test_a_malformed_existing_round_does_not_open_the_gate(
 
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
     err = capsys.readouterr().err
-    assert "회수 문제" in err and "손상된 review fence" in err
+    assert "돌려받기 문제" in err and "손상된 review fence" in err
     assert [path.name for path in _round_paths(tmp_path)] == [f"01-{ROLE}.md"]
 
 
@@ -564,7 +564,7 @@ def test_a_malformed_existing_round_does_not_block_a_valid_new_round(
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-100")))
 
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert "회수 문제" not in capsys.readouterr().err
+    assert "돌려받기 문제" not in capsys.readouterr().err
     assert [path.name for path in _round_paths(tmp_path)] == [
         f"01-{ROLE}.md", f"02-{ROLE}.md",
     ]
@@ -754,7 +754,7 @@ def test_prompt_requires_the_versioned_block_rendered_from_parser_constants(
 
 def test_prompt_says_the_round_file_is_the_harvest_target(external):
     """프롬프트는 회수 도착지를 라운드 파일로 말한다(옛 '역할 절' 표현 없음)."""
-    assert "라운드 파일로 회수" in reviewer_budget._VERSIONED_BLOCK_HEADER
+    assert "라운드 파일로 돌려받고" in reviewer_budget._VERSIONED_BLOCK_HEADER
     assert "역할 절" not in reviewer_budget._VERSIONED_BLOCK_HEADER
 
 
@@ -972,7 +972,7 @@ def test_ticket_shaped_gate_missing_from_the_board_says_why(
 
     assert _run(external, tmp_path, "--review-ticket", "T-9999", "--paths", "x.py") == 1
     err = capsys.readouterr().err
-    assert "미회수" in err and "T-9999" in err
+    assert "돌려받지 않음" in err and "T-9999" in err
 
 
 def test_reviewer_failure_reports_that_nothing_was_harvested(
@@ -990,7 +990,7 @@ def test_reviewer_failure_reports_that_nothing_was_harvested(
 
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     err = capsys.readouterr().err
-    assert "미회수" in err and "회신을 받지 못했습니다" in err
+    assert "돌려받지 않음" in err and "회신을 받지 못했습니다" in err
     assert "라운드 파일을 만들지 않습니다" in err
     assert _round_paths(tmp_path) == []
 
@@ -1081,7 +1081,7 @@ def test_reused_finding_id_is_refused_and_the_next_round_can_land(
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
     err = capsys.readouterr().err
-    assert "회수 문제" in err and "재선언" in err
+    assert "돌려받기 문제" in err and "재선언" in err
     assert len(_round_paths(tmp_path)) == 1        # 거부 산출은 라운드가 되지 않는다.
 
     # 재시도 라운드가 새 ID 로 정상 착지한다.
@@ -1111,7 +1111,7 @@ def test_self_confirmed_new_finding_is_refused_and_the_next_round_can_land(
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
 
     err = capsys.readouterr().err
-    assert "회수 문제" in err and "ID 중복: X-001" in err
+    assert "돌려받기 문제" in err and "ID 중복: X-001" in err
     assert _round_paths(tmp_path) == []            # 거부 산출은 라운드가 되지 않는다.
 
     # 규약대로 나눠 낸 다음 라운드는 그대로 착지한다(역방향).
@@ -1180,7 +1180,7 @@ def test_confirmation_of_an_unharvested_id_is_refused(
     ), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
     err = capsys.readouterr().err
-    assert "회수 문제" in err and "confirmation 대상 finding 부재: X-001" in err
+    assert "돌려받기 문제" in err and "confirmation 대상 finding 부재: X-001" in err
     assert _round_paths(tmp_path) == []
 
     # 다음 라운드가 정상 착지하고 delta 가 green 이다.
@@ -1365,7 +1365,7 @@ def test_rounds_seam_error_becomes_a_harvest_problem_not_a_traceback(
 
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     err = capsys.readouterr().err
-    assert "회수 문제" in err and "라운드 예약 충돌 probe" in err
+    assert "돌려받기 문제" in err and "라운드 예약 충돌 probe" in err
     assert _round_paths(tmp_path) == []
 
 

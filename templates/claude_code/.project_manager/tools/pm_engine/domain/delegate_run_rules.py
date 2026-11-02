@@ -185,8 +185,8 @@ DELEGATE_IDLE_TIMEOUT_KEY = "delegate.idle_timeout"
 # 없어 사후에 누가 무엇을 했는지 재구성할 수 없었다. 그래서 안내는 **명시 재호출**만 지시한다
 # (실패 자체는 raw 장부의 그 레코드에 rc 와 함께 남는다).
 NO_SILENT_SUBSTITUTE_NOTE = (
-    "  재위임은 명시 재호출만 — 이 호출은 설정된 폴백 밖의 다른 하네스/모델로 자동 대체하지 "
-    "않습니다. 현 세션의 native 모델이 대신 수행하지 마세요(실패는 raw 장부에 남습니다: "
+    "  재위임은 명시 재호출만 — 이 호출은 설정된 대체 하네스·모델 밖의 다른 하네스/모델로 자동 대체하지 "
+    "않습니다. 현 세션의 native 모델이 대신 수행하지 마세요(실패는 raw 출력 기록에 남습니다: "
     "`pm_delegate.py raw --limit 5`)."
 )
 
@@ -485,10 +485,10 @@ def build_resume_delta_payload(
     lines = [
         "## 이어지는 라운드 (직전 위임 세션 재사용)",
         "이 세션은 직전 위임 라운드를 이어받는다 — 역할·금지·이미 읽은 파일은 그대로 유효하다.",
-        "아래 '직전 라운드 기록'은 장부에 남은 구조화 값이고, 그 뒤 본문은 호출자가 보낸 원문이다.",
+        "아래 '직전 라운드 기록'은 raw 출력 기록에 남은 구조화 값이고, 그 뒤 본문은 호출자가 보낸 원문이다.",
         "",
         "### 직전 라운드 기록",
-        f"- 기준 rev: {base_rev}" if base_rev else "- 기준 rev: 장부에 기록 없음",
+        f"- 기준 rev: {base_rev}" if base_rev else "- 기준 rev: 기록 없음",
     ]
     items = [str(item) for item in must_fix_items if str(item).strip()]
     if items:
@@ -497,7 +497,7 @@ def build_resume_delta_payload(
             f"  {index}. {item}" for index, item in enumerate(items, start=1)
         )
     else:
-        lines.append("- must_fix 항목: 장부에 기록 없음")
+        lines.append("- must_fix 항목: 기록 없음")
     lines += ["", "### 이번 라운드 입력 (호출자 원문)", "", task_text]
     return "\n".join(lines)
 

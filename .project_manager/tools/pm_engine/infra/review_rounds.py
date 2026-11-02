@@ -113,9 +113,9 @@ def write_ledger(path: Path | str, ledger: dict) -> None:
 def warn_retired_ack_field(gate: str, value: int) -> None:
     """폐지 필드를 버린다는 사실을 그 게이트·값과 함께 알린다(승계 없음)."""
     print(
-        f"경고: 라운드 장부의 폐지 필드 `{RETIRED_ACK_FIELD}` 를 버립니다 — 게이트 {gate} · "
+        f"경고: 라운드 기록의 폐지 필드 `{RETIRED_ACK_FIELD}` 를 버립니다 — 리뷰 집계 티켓 {gate} · "
         f"{RETIRED_ACK_FIELD}={value}. 폐지된 라운드 연장 승인이 남긴 값이라 승계하지 "
-        "않으므로, 이 게이트의 집계는 이제 전체 레코드 기준입니다. 장부가 다시 기록되면 이 "
+        "않으므로, 이 리뷰 집계 티켓의 집계는 이제 전체 레코드 기준입니다. 기록 파일이 다시 쓰이면 이 "
         "안내는 사라집니다.",
         file=sys.stderr,
     )
@@ -139,7 +139,7 @@ def normalize_gate_entry(
     경로로 들어온다)."""
     if gate in reserved_keys:
         raise ValueError(
-            f"라운드 장부 예약 키를 게이트로 쓸 수 없습니다: {gate!r} "
+            f"라운드 기록 예약 키를 리뷰 집계 티켓으로 쓸 수 없습니다: {gate!r} "
             f"(예약 키: {', '.join(sorted(reserved_keys))})"
         )
     entry = ledger.get(gate)
@@ -439,7 +439,7 @@ def gate_entry_corruption(entry: object) -> str | None:
     정수 `rounds` 는 예외로 갈렸다(각각 통과·통과·중단). 셋을 한 술어로 모아 호출부가 **한 처분**
     (릴리즈 차단)으로 수렴시킨다."""
     if not isinstance(entry, dict):
-        return f"게이트 항목 형식 오류({type(entry).__name__}) — 해석 불가"
+        return f"리뷰 집계 티켓 항목 형식 오류({type(entry).__name__}) — 해석 불가"
     rounds = entry.get("rounds")
     if rounds is not None and not isinstance(rounds, list):
         return f"`rounds` 형식 오류({type(rounds).__name__}) — 라운드 이력 해석 불가"
@@ -525,7 +525,7 @@ def _gate_disposition_problem(
     미처분으로 fail-loud 한다."""
     corruption = gate_entry_corruption(entry)
     if corruption is not None:
-        return f"  · {gate}: {corruption} — 잔여 must-fix 를 확인할 수 없어 차단합니다"
+        return f"  · {gate}: {corruption} — 남은 must-fix 를 확인할 수 없어 차단합니다"
     if not gate_has_residual(entry):
         return None
     prefix = f"  · {gate}: 최종 라운드 must_fix {gate_residual_label(entry)}"
@@ -537,9 +537,9 @@ def _gate_disposition_problem(
         current = gate_round_binding(entry)
         return (f"{prefix} · {label} 이후 새 라운드가 기록됐습니다 "
                 f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
-                f"#{current['round_sequence']}/{current['rounds']}건) · 새 잔여로 다시 선언하세요")
+                f"#{current['round_sequence']}/{current['rounds']}건) · 새 남은 지적으로 다시 선언하세요")
     if not allow_pm_verified:
-        return f"{prefix} · {label} — 이 장부에서는 pm-verified 처분을 허용하지 않습니다"
+        return f"{prefix} · {label} — 이 기록에서는 pm-verified 처분을 허용하지 않습니다"
     if pm_verified_problem is None:
         return f"{prefix} · {label} — 발동 조건을 재검증할 수 없습니다(호출부 설정 누락)"
     problem = pm_verified_problem()

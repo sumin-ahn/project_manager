@@ -1353,7 +1353,7 @@ def test_a_ledger_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatc
     ledger = _seed(pm_home, tickets, "C-vanish", ["T-7120"])
     _refuse_at_the_lock(pd, pm_home, monkeypatch, ledger.unlink)
 
-    with pytest.raises(delegate_errors.DelegateError, match="묶음 장부가 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="묶음 기록이 없습니다"):
         delegate_prepare.prepare_cluster_copy(
             pm_paths.home_at(Path(pm_home).resolve()), cluster="C-vanish", role="architect", cwd=slot, )
 
@@ -1429,7 +1429,7 @@ def test_the_ticket_surface_without_a_ledger_stops_too(pd, budget_env):
         delegate_prepare.prepare_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), ticket="T-7090", role="architect", cwd=slot, )
 
-    assert "묶음 장부가 없습니다" in str(caught.value)
+    assert "묶음 기록이 없습니다" in str(caught.value)
     assert _round_names(pm_home, "T-7090") == []
 
 

@@ -51,7 +51,7 @@ def print_summary(result: dict, gate: str | None = None) -> None:
     name = result.get("reviewer", "reviewer")
     print(sep)
     print(f"추가 리뷰어 코드리뷰 결과 요약 [{name}]")
-    print(f"게이트: {gate if gate else reviewer_budget._SUMMARY_UNACCOUNTED_GATE}")
+    print(f"리뷰 집계 티켓: {gate if gate else reviewer_budget._SUMMARY_UNACCOUNTED_GATE}")
     print(sep)
     print(f"\n[{name}] {_format_verdict(result['ok'], result.get('verdict'))}")
     if result.get("file"):
@@ -107,7 +107,7 @@ def _harvest_target_ticket(
     try:
         round_store._find_ticket_file(home, gate, )
     except pm_paths.AnchorResolutionError as exc:
-        return None, f"게이트 {gate} 를 보드에서 찾지 못해 회수하지 않았습니다: {exc}"
+        return None, f"리뷰 집계 티켓 {gate} 를 보드에서 찾지 못해 돌려받지 않았습니다: {exc}"
     return gate, None
 
 
@@ -185,7 +185,7 @@ def _harvest_additional_reviewer_section(
     """
     reply = result.get("answer") or result.get("output") or ""
     if not reply.strip():
-        return "리뷰어 회신이 비어 회수할 산출이 없습니다"
+        return "리뷰어 회신이 비어 돌려받을 산출이 없습니다"
     try:
         return _reserve_additional_reviewer_round(
             home, ticket, reply, )
@@ -242,7 +242,7 @@ def _reserve_additional_reviewer_round(
     # 파일만 만들어지고 board 커밋은 조용히 빠진 rc0 이 된다(AttributeError 로 죽는 편이 낫다).
     sync_ready = bool(round_maintenance._rounds_mutation_sync_paths(home, message, [round_path]))
     print(
-        f"[additional-reviewer] 티켓 회수: {ticket} {role}[{ordinal}] → {round_path}"
+        f"[additional-reviewer] 라운드 돌려받음: {ticket} {role}[{ordinal}] → {round_path}"
         + ("" if sync_ready else " (board-git 동기 미준비)"),
         file=sys.stderr,
     )
@@ -286,7 +286,7 @@ def _run_review_round(
     )
     print(
         f"[additional-reviewer] 리뷰어 실행 조건: cwd={diff_root} "
-        "· env=위임 채널과 같은 seam(pm_delegate.build_env)",
+        "· env=위임 채널과 같은 공용 함수(pm_delegate.build_env)",
         file=sys.stderr,
     )
 
@@ -369,8 +369,8 @@ def _run_review_round(
                 # 않은 실행이 같은 모양이 된다(Windows 경로 분해 결함이 30여 릴리즈 숨은 경로).
                 if refunded_round:
                     print(
-                        f"라운드 환불: 게이트 {budget.gate} — 리뷰어 프로세스가 시작되지 않아 "
-                        "추가 리뷰어 교차검증이 **실행되지 않았습니다**(호출 0·상한/wave 예산 "
+                        f"라운드 환불: 리뷰 집계 티켓 {budget.gate} — 리뷰어 프로세스가 시작되지 않아 "
+                        "추가 리뷰어 교차검증이 **실행되지 않았습니다**(호출 0·상한/세션 호출 예산 "
                         f"미소진). 사유: {reviewer_budget._first_output_line(result) or '미상'}",
                         file=sys.stderr,
                     )
@@ -396,14 +396,14 @@ def _run_review_round(
             # 한 번만 선다). 스폰된 실행(started=True)은 종전대로 건드리지 않는다 — 프롬프트가
             # 이미 나갔을 수 있어 되돌리면 과금된 호출이 상한을 소비하지 않는다(MF-A).
             refunded = not started and reservation.release(
-                reason="스폰 없이 끝난 실행의 장부 마감 실패")
+                reason="스폰 없이 끝난 실행의 기록 마감 실패")
             print(
-                f"경고: 라운드 장부 마감 실패 ({type(exc).__name__}: {exc}) — 다른 게이트 "
-                "실행이 장부 락을 보유 중일 수 있습니다. "
-                + ("호출이 없던 라운드라 예약은 되돌렸습니다(상한·wave 예산 미소진)."
+                f"경고: 라운드 기록 마감 실패 ({type(exc).__name__}: {exc}) — 다른 리뷰 집계 티켓 "
+                "실행이 기록 락을 보유 중일 수 있습니다. "
+                + ("호출이 없던 라운드라 예약은 되돌렸습니다(상한·세션 호출 예산 미소진)."
                    if refunded else
                    "이 라운드는 미완으로 남아 다음 실행의 재시도 예산에서 세어집니다.")
-                + f" (장부: {review_rounds._round_ledger_path(home)})",
+                + f" (기록 파일: {review_rounds._round_ledger_path(home)})",
                 file=sys.stderr,
             )
 
@@ -413,10 +413,10 @@ def _run_review_round(
     # 형상 `--review-ticket` 이고, 대상이 있는데 회수하지 않은 실행은 사유를 반드시 말한다(조용한 누락 금지).
     harvest_ticket, target_problem = _harvest_target_ticket(home, args, )
     if target_problem is not None:
-        print(f"경고: 추가 리뷰어 산출 미회수 — {target_problem}", file=sys.stderr)
+        print(f"경고: 추가 리뷰어 산출 돌려받지 않음 — {target_problem}", file=sys.stderr)
     elif harvest_ticket and not (started and not result.get("failed")):
         print(
-            f"경고: 추가 리뷰어 산출 미회수 — {harvest_ticket}: 이번 라운드는 "
+            f"경고: 추가 리뷰어 산출 돌려받지 않음 — {harvest_ticket}: 이번 라운드는 "
             "리뷰어 회신을 받지 못했습니다(호출 실패·타임아웃). 산출 없음이라 라운드 파일을 "
             f"만들지 않습니다 · raw={result.get('file')}",
             file=sys.stderr,
@@ -426,7 +426,7 @@ def _run_review_round(
             home, harvest_ticket, result, )
         if problem is not None:
             print(
-                f"오류: 추가 리뷰어 산출 회수 문제 — {problem}\n"
+                f"오류: 추가 리뷰어 산출 돌려받기 문제 — {problem}\n"
                 f"  · 라운드 파일은 만들지 않았습니다 · 산출 원문은 raw 에 보존됩니다: "
                 f"{result.get('file')}\n"
                 "  · PM 판정 전에 리뷰어에게 구조화 블록을 갖춘 회신을 다시 받으세요.",

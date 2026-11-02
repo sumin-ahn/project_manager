@@ -89,8 +89,8 @@ def _wave_state(ledger: dict) -> dict:
     else:
         spent = reviewer_budget._recorded_round_outcomes(ledger, since=started)
         print(
-            f"경고: 라운드 장부 {corruption} — wave 소비를 라운드 산출 이력으로 **재계산**했습니다 "
-            f"(spent={spent}). 손상은 승인을 대신하지 않습니다 — 새 wave 로 시작하려면 "
+            f"경고: 라운드 기록 {corruption} — 세션 호출 예산 소비를 라운드 산출 이력으로 **재계산**했습니다 "
+            f"(spent={spent}). 손상은 승인을 대신하지 않습니다 — 세션 호출 예산을 새로 시작하려면 "
             "`--reset-session-budget`.",
             file=sys.stderr,
         )
@@ -334,7 +334,7 @@ def _reserve_round_budget(
     if not args.review_ticket:
         # wave 승인은 게이트 단위 예산 리셋이므로 대상이 없으면 무시한다.
         if args.reset_session_budget:
-            print("경고: --reset-session-budget 은 --review-ticket 과 함께 써야 합니다 (게이트 단위 장부) — 무시.",
+            print("경고: --reset-session-budget 은 --review-ticket 과 함께 써야 합니다 (리뷰 집계 티켓 단위 기록) — 무시.",
                   file=sys.stderr)
         # 호출이 확정된 구간이지만 **아직 스폰 전**이다(환경 준비가 남아 있다) — 그래서 문구는
         # 조건형이고("이 실행이 호출되면"), 확정 표기는 실행이 끝난 뒤 판정 블록의 게이트 줄이
@@ -357,8 +357,8 @@ def _reserve_round_budget(
                     ledger[args.review_ticket]
                 )
                 print(
-                    f"legacy 라운드 장부 승계: {review_rounds._legacy_round_ledger_path(home)} → "
-                    f"{review_rounds._round_ledger_path(home)} · gate={args.review_ticket} "
+                    f"legacy 라운드 기록 승계: {review_rounds._legacy_round_ledger_path(home)} → "
+                    f"{review_rounds._round_ledger_path(home)} · review-ticket={args.review_ticket} "
                     f"verdicts={legacy_verdicts} incomplete={legacy_incomplete}",
                     file=sys.stderr,
                 )
@@ -458,9 +458,9 @@ def _reserve_round_budget(
         # **호출 전에** 멈춘다(과금 0). 가장 흔한 원인은 동시 실행의 락 보유다(Windows
         # `msvcrt.locking` 은 재시도 소진 시 OSError·POSIX 는 블로킹이라 여기 안 온다).
         print(
-            f"오류: 라운드 장부 임계 구역 진입 실패 ({type(exc).__name__}: {exc}) — 다른 "
-            "게이트 실행이 장부 락을 보유 중일 수 있습니다. 잠시 후 다시 실행하세요 "
-            f"(장부: {review_rounds._round_ledger_path(home)}).",
+            f"오류: 라운드 기록 임계 구역 진입 실패 ({type(exc).__name__}: {exc}) — 다른 "
+            "리뷰 집계 티켓 실행이 기록 락을 보유 중일 수 있습니다. 잠시 후 다시 실행하세요 "
+            f"(기록 파일: {review_rounds._round_ledger_path(home)}).",
             file=sys.stderr,
         )
         return reviewer_budget.RoundBudget(refused_rc=1)
@@ -481,7 +481,7 @@ def _refund_reserved_round(ledger: dict, reservation: reviewer_budget.RoundBudge
         return False
     if not _refund_wave_round(_wave_state(ledger), reservation.wave_id):
         print(
-            "경고: 예약 시점 wave 가 이미 리셋돼 wave 예산은 환불하지 않았습니다 "
+            "경고: 예약 시점 세션 호출 예산이 이미 리셋돼 세션 호출 예산은 환불하지 않았습니다 "
             "(라운드 count 만 환불).",
             file=sys.stderr,
         )
@@ -511,15 +511,15 @@ def _release_round_reservation(home, reservation: reviewer_budget.RoundBudget, *
     except OSError as exc:
         print(
             f"경고: 라운드 예약 환불 실패 ({type(exc).__name__}: {exc}) — {reason}(으)로 호출 "
-            "없이 중단한 실행의 예약이 장부에 남았습니다. 다음 실행의 미완 재시도 예산에서 "
-            f"세어집니다 (장부: {review_rounds._round_ledger_path(home)}).",
+            "없이 중단한 실행의 예약이 기록에 남았습니다. 다음 실행의 미완 재시도 예산에서 "
+            f"세어집니다 (기록 파일: {review_rounds._round_ledger_path(home)}).",
             file=sys.stderr,
         )
         return False
     if refunded:
         print(
-            f"라운드 예약 환불: 게이트 {reservation.gate} — {reason}(으)로 호출 없이 "
-            "중단했습니다(상한·wave 예산 미소진).",
+            f"라운드 예약 환불: 리뷰 집계 티켓 {reservation.gate} — {reason}(으)로 호출 없이 "
+            "중단했습니다(상한·세션 호출 예산 미소진).",
             file=sys.stderr,
         )
     return refunded

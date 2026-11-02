@@ -78,7 +78,7 @@ def render_rounds_report(
     ledger_path: Path | str | None = None,
     gate: str | None = None,
     wave_budget: int | None = None,
-    title: str = "추가 리뷰 라운드 장부",
+    title: str = "추가 리뷰 라운드 기록",
     include_wave: bool = True,
 ) -> str:
     """라운드 장부를 조회 표로 렌더한다 (게이트별 라운드 수 · 라운드별 산출 · wave spent).
@@ -97,30 +97,30 @@ def render_rounds_report(
     lines = [
         f"{title}: {ledger_path if ledger_path is not None else '(미해소)'}",
         "범례: 판정 0=통과 · 1=비통과(반려·실패·불명확) · '미상'=판정이 무효했던 라운드",
-        "처분: 미처분=잔여 must-fix 선언 없음(릴리즈 차단) · "
-        "pm-verified=현재 티켓 fix의 기계 확인 완료 · 무대상=잔여 없음",
+        "처분: 미처분=남은 must-fix 선언 없음(릴리즈 차단) · "
+        "pm-verified=현재 티켓 fix의 기계 확인 완료 · 무대상=남은 지적 없음",
     ]
     if include_wave:
         lines.insert(
             1,
-            f"wave: spent={wave['spent']} / 예산 {wave_budget} · "
+            f"세션 호출 예산: spent={wave['spent']} / 예산 {wave_budget} · "
             f"시작 {wave['started'] or '미시작'}",
         )
     names = [name for name in reviewer_budget._gate_names(snapshot) if gate is None or name == gate]
     if not names:
         lines.append(
-            f"게이트 {gate}: 장부에 기록 없음" if gate else "기록된 게이트 없음"
+            f"리뷰 집계 티켓 {gate}: 기록 없음" if gate else "기록된 리뷰 집계 티켓 없음"
         )
         return "\n".join(lines)
     for name in names:
         entry = reviewer_reservation._gate_entry(snapshot, name)
         rounds = entry["rounds"]
         lines.append(
-            f"게이트 {name}: count={entry['count']} · 산출 {len(rounds)}건 · "
+            f"리뷰 집계 티켓 {name}: count={entry['count']} · 산출 {len(rounds)}건 · "
             f"처분={_format_gate_resolution(entry)}"
         )
         if not rounds:
-            lines.append("  (라운드 산출 기록 없음 — 산출 장부 이전의 호출)")
+            lines.append("  (라운드 산출 기록 없음 — 산출 기록 이전의 호출)")
             continue
         for outcome in _ordered_round_outcomes(rounds):
             sequence = _round_sequence(outcome)
@@ -147,7 +147,7 @@ def _print_rounds_report(
         # 조회는 호출이 없어 conf 판독 실패로 막을 이유가 없다(호출 경로의 fail-closed 와
         # 다른 축) — 예산 표기만 기본값으로 낮추고 그 사실을 알린다.
         print(
-            f"경고: local.conf 읽기 실패 ({type(exc).__name__}: {exc}) — wave 예산 표기를 "
+            f"경고: local.conf 읽기 실패 ({type(exc).__name__}: {exc}) — 세션 호출 예산 표기를 "
             f"기본값 {reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)} 로 대체합니다.",
             file=sys.stderr,
         )
@@ -208,7 +208,7 @@ def _resolve_gate_command(home, args: argparse.Namespace, ) -> int:
         return 1
     ignored = _resolve_gate_ignored_flags(args)
     if ignored:
-        print(f"경고: --resolve-review 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
+        print(f"경고: --resolve-review 는 라운드 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
               file=sys.stderr)
     owner = pm_paths.resolve_pm_home_for_repo(engine_repo)
     home = pm_paths.home_at(home.root, pm_home=owner, board_root=pm_paths._board_root_at(owner))
@@ -247,7 +247,7 @@ def _resolve_gate_command(home, args: argparse.Namespace, ) -> int:
         reviewer_reservation._save_round_ledger(home, ledger)
     if previous is not None:
         print(f"이전 처분 선언을 교체합니다: {_describe_resolution(previous)}", file=sys.stderr)
-    print(f"게이트 처분 선언: {gate} · 잔여 must_fix {residual_label} · "
+    print(f"리뷰 집계 티켓 처분 선언: {gate} · 남은 must_fix {residual_label} · "
           f"{_describe_resolution(declared)}")
-    print(f"  · 장부: {review_rounds._round_ledger_path(home)}")
+    print(f"  · 기록 파일: {review_rounds._round_ledger_path(home)}")
     return 0

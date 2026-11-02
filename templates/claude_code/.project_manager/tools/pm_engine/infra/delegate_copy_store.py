@@ -52,7 +52,7 @@ def _append_delegate_rounds_ledger(home, row: dict) -> None:
     delegate_ledger._delegate_rounds_ledger_row(row, line_number=0)
     local_dir, local_fd = _secure_machine_dir(
         pm_home_root, delegate_ledger.DELEGATE_ROUNDS_LEDGER_REL_PATH.parent.parts,
-        label="PM delegate-rounds 장부 디렉터리",
+        label="PM 위임 라운드 기록 디렉터리",
     )
     path = local_dir / delegate_ledger.DELEGATE_ROUNDS_LEDGER_REL_PATH.name
     try:
@@ -61,14 +61,14 @@ def _append_delegate_rounds_ledger(home, row: dict) -> None:
         except FileNotFoundError:
             observed = None
         if observed is not None and not stat.S_ISREG(observed.st_mode):
-            raise delegate_errors.DelegateError(f"delegate-rounds 장부가 regular file 이 아님: {path}")
+            raise delegate_errors.DelegateError(f"위임 라운드 기록이 regular file 이 아님: {path}")
         payload = (
             json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             + "\n"
         )
         fs.append_atomic(path, payload, mode=0o600)
     except OSError as exc:
-        raise delegate_errors.DelegateError(f"delegate-rounds 장부 append 실패: {path}: {exc}") from exc
+        raise delegate_errors.DelegateError(f"위임 라운드 기록 append 실패: {path}: {exc}") from exc
     finally:
         if local_fd is not None:
             os.close(local_fd)
@@ -84,8 +84,8 @@ def _delegate_round_record(home, copy_path: Path) -> dict:
     ]
     if not matches:
         raise delegate_errors.DelegateError(
-            f"delegate-rounds 장부에 준비 기록 없음: {resolved} — 준비하지 않은 파일은 "
-            "회수하지 않습니다"
+            f"위임 라운드 기록에 준비 기록 없음: {resolved} — 준비하지 않은 파일은 "
+            "돌려받지 않습니다"
         )
     return matches[-1]
 
@@ -536,7 +536,7 @@ def _cluster_run_rows(home, run_dir: Path) -> list[dict]:
     ]
     if not rows:
         raise delegate_errors.DelegateError(
-            f"delegate-rounds 장부에 이 run 의 미회수 준비가 없습니다: {run_dir} — "
+            f"위임 라운드 기록에 이 run 의 돌려받지 않은 준비가 없습니다: {run_dir} — "
             "준비하지 않았거나 이미 처분된 run 입니다"
         )
     return sorted(rows, key=lambda row: (row["ticket"], row["ordinal"]))
@@ -607,7 +607,7 @@ def _abandon_liveness_problem(
     owner_pid = row.get("owner_pid")
     if owner_pid is None:
         return (
-            "이 예약에는 종료 증거가 없습니다(장부 행에 owner_pid 없음) — run 이 끝났음을 "
+            "이 예약에는 종료 증거가 없습니다(위임 라운드 기록 행에 owner_pid 없음) — run 이 끝났음을 "
             f"확인했다면 {delegate_rounds.ABANDON_ASSUME_DEAD_FLAG} 로 다시 부르세요: {coordinates}{hint}"
         )
     if raw_output.pid_is_alive(owner_pid):

@@ -552,7 +552,7 @@ def test_prompt_carries_every_ticket_body_changed_files_focus_and_diff(pd, revie
     assert f"리뷰 대상 트리: {home} (브랜치 {_CLUSTER_BRANCH})" in prompt
     assert f"git -C {home}" in prompt and "돌려받기가 거부된다" in prompt
     for ticket in _MEMBERS:
-        assert f"### 게이트 티켓 본문 ({ticket})" in prompt
+        assert f"### 검토 대상 티켓 본문 ({ticket})" in prompt
         assert f"{ticket} 목표 문장." in prompt
     for path in review.paths:
         assert PurePosixPath(path).as_posix() in prompt
@@ -841,7 +841,7 @@ def test_ticket_prepare_code_reviewer_writes_engine_prompt(
     prompt = prompt_path.read_text(encoding="utf-8")
     assert f"리뷰 대상 트리: {home.resolve()} (브랜치 {_CLUSTER_BRANCH})" in prompt
     for ticket in _MEMBERS:
-        assert f"### 게이트 티켓 본문 ({ticket})" in prompt
+        assert f"### 검토 대상 티켓 본문 ({ticket})" in prompt
         assert f"{ticket} 목표 문장." in prompt
     for line in lines:
         assert f"- {line['ticket']}: {line['copy']}" in prompt
@@ -1230,7 +1230,7 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
     out = capsys.readouterr().out
     for ticket in _MEMBERS:
         assert f"# {ticket}" in out
-        assert f"## PM 승인 리뷰 delta — {ticket}" in out
+        assert f"## PM 이 수락한 리뷰 지적 — {ticket}" in out
     assert out.count("F-001") >= len(_MEMBERS)
 
 
@@ -1609,7 +1609,7 @@ def test_resolve_cluster_completes_without_internal_ledger(
         assert review_contract.PM_REVIEW_CONFIRMATION_SECTION in text
         assert '"observed":"rc=0' in text and "hi" in text
         assert "기계 확인 1건 기입" in out and ticket in out
-        assert f"{ticket}: 리뷰 잔여 확인 완료" in out
+        assert f"{ticket}: 남은 리뷰 지적 확인 완료" in out
         assert board_ticket._review_completion_problem(pm_paths.home_at(board.REPO), ticket) is None
     assert not (home / ".project_manager" / ".local" / "internal_review_rounds.json").exists()
 
@@ -1772,7 +1772,7 @@ def test_dry_run_previews_the_cluster_without_side_effects(pd, review_env, capsy
     # PM 검토 중점은 파일 실값 그대로 프롬프트에 실린다(엔진은 자리만 만든다).
     assert "### PM 검토 중점" in out and "경계 판정의 값 대조" in out
     for ticket in _MEMBERS:
-        assert f"### 게이트 티켓 본문 ({ticket})" in out
+        assert f"### 검토 대상 티켓 본문 ({ticket})" in out
     assert _git(home, "worktree", "list").stdout == before
     assert delegate_ledger.ticket_copy_records(home) == []
 
@@ -1848,7 +1848,7 @@ def test_resolve_cluster_skips_a_member_whose_review_passed_clean(
     out = capsys.readouterr().out
     assert rc == 0, out
     assert board_ticket._review_completion_problem(pm_paths.home_at(board.REPO), rejected) is None
-    assert f"{passed}: 처분할 리뷰 잔여 없음(must-fix 0건) — 무대상" in out
+    assert f"{passed}: 처분할 남은 리뷰 지적 없음(must-fix 0건) — 무대상" in out
     assert review_contract.PM_REVIEW_CONFIRMATION_SECTION not in (
         tickets / f"{passed}-review.md").read_text(encoding="utf-8")
 

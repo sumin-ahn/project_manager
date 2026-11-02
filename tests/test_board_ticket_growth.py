@@ -598,7 +598,7 @@ def test_section_add_on_a_ledgered_ticket_refuses_before_the_loud_spec_read(
 
     error = capsys.readouterr().err
     assert "티켓을 읽지 못해 건너뜁니다" in error          # soft 판독까지만 갔다
-    assert f"묶음 장부 C-{tid}" in error and "ticket prepare" in error
+    assert f"묶음 기록 C-{tid}" in error and "ticket prepare" in error
     assert _round_names(board_dir, tid) == []
     assert path.read_bytes() == before_spec and _head(board_dir) == before_head
 

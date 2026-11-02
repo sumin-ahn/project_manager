@@ -50,15 +50,15 @@ def harvest_ticket_copy(
     # 한 copy 는 회수 또는 포기 중 **하나로만** 종결된다. 포기된 행의 회수를 열어 두면, 그 순번을
     # 다시 쓴 새 라운드를 옛 run 의 회수가 덮어쓴다(잘못된 포기의 유일한 조용한 손상 경로).
     if "abandoned_at" in row:
-        raise delegate_errors.DelegateError(f"이미 포기된 준비는 회수할 수 없습니다: {copy_path}")
+        raise delegate_errors.DelegateError(f"이미 포기된 준비는 돌려받을 수 없습니다: {copy_path}")
     # 장부 행이 인가하는 경로와 **전량 일치**해야 한다 — containment·깊이·순번/역할 결속이
     # 이 단언 하나로 닫힌다.
     expected = delegate_copy_store._expected_slot_round_path(cwd, row)
     given = Path(copy_path)
     if not given.is_absolute() or not delegate_copy_store._same_lexical_path(given, expected):
         raise delegate_errors.DelegateError(
-            "delegate-rounds 장부가 인가한 라운드 경로와 불일치 — 회수하지 않습니다: "
-            f"요청={given} · 장부 인가={expected}"
+            "위임 라운드 기록이 인가한 라운드 경로와 불일치 — 돌려받지 않습니다: "
+            f"요청={given} · 기록 인가={expected}"
         )
     delegate_copy_store._assert_slot_run_dir_chain_is_plain(cwd, delegate_ledger._row_ticket_relative_dir(row))
     text = delegate_copy_store._read_slot_round_text(expected)
@@ -66,7 +66,7 @@ def harvest_ticket_copy(
     board_path = pm_home_root / Path(*PurePosixPath(row["board_rel"]).parts)
     if board_path.name != expected.name:
         raise delegate_errors.DelegateError(
-            "delegate-rounds 장부의 board 경로와 라운드 이름 불일치: "
+            "위임 라운드 기록의 board 경로와 라운드 이름 불일치: "
             f"board={board_path.name} · 기대={expected.name}"
         )
     if row["role"] == review_form.INTERNAL_REVIEW_ROLE:
@@ -87,7 +87,7 @@ def harvest_ticket_copy(
         ) from exc
     if markdown_text._normalized_newlines(text) == markdown_text._normalized_newlines(reserved):
         print(
-            "경고: ticket collect 산출 없음 — 준비가 시드한 라운드 골격이 그대로입니다: "
+            "경고: ticket collect 산출 없음 — 준비가 만든 라운드 빈 양식 그대로입니다: "
             f"ticket={row['ticket']} {board_path.name} · run-dir 을 유지합니다: {run_dir}",
             file=sys.stderr,
         )
@@ -97,8 +97,8 @@ def harvest_ticket_copy(
             review_contract.parse_architect_tests(text)
         except delegate_errors.DelegateError as exc:
             raise delegate_errors.DelegateError(
-                f"architect 라운드 회수 거부 — {exc}. board 라운드 파일과 slot run-dir 은 "
-                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
+                f"architect 라운드 돌려받기 거부 — {exc}. board 라운드 파일과 slot run-dir 은 "
+                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 돌려받으세요: "
                 f"round={board_path.name} · copy={expected}"
             ) from exc
     if row["role"] in review_form.REVIEW_ROLES:
@@ -110,8 +110,8 @@ def harvest_ticket_copy(
         )
         if problem is not None:
             raise delegate_errors.DelegateError(
-                f"리뷰 라운드 회수 거부 — {problem}. board 라운드 파일과 slot run-dir 은 "
-                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
+                f"리뷰 라운드 돌려받기 거부 — {problem}. board 라운드 파일과 slot run-dir 은 "
+                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 돌려받으세요: "
                 f"round={board_path.name} · copy={expected}"
             )
     if row["role"] == "developer":
@@ -132,14 +132,14 @@ def harvest_ticket_copy(
         if problem is not None:
             if terminal_fix:
                 raise delegate_rounds.TerminalFixHarvestError(
-                    f"최종 fix 회수 거부 — {problem}. terminal stop: board 라운드 "
+                    f"최종 fix 돌려받기 거부 — {problem}. terminal stop: board 라운드 "
                     f"파일과 slot run-dir 증거를 그대로 보존했습니다. 현재 티켓 "
                     f"상태와 실패 근거를 사용자에게 보고하세요: "
                     f"round={board_path.name} · copy={expected}"
                 )
             raise delegate_errors.DelegateError(
-                f"developer 라운드 회수 거부 — {problem}. board 라운드 파일과 slot run-dir 은 "
-                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
+                f"developer 라운드 돌려받기 거부 — {problem}. board 라운드 파일과 slot run-dir 은 "
+                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 돌려받으세요: "
                 f"round={board_path.name} · copy={expected}"
             )
     # promote와 같은 락에서 공개 상태 확인·교체를 마친다. draft 회수는 로컬 산출이며,
@@ -147,7 +147,7 @@ def harvest_ticket_copy(
     with fs.board_lock(home):
         found = ticket_store.find_ticket_exact(home, row["ticket"])
         if found is None:
-            raise delegate_errors.DelegateError(f"회수할 티켓 명세가 없습니다: {row['ticket']}")
+            raise delegate_errors.DelegateError(f"돌려받을 티켓 명세가 없습니다: {row['ticket']}")
         is_draft = found[0] == "draft"
         round_store.replace_round(board_path, text)
     message = f"ticket-collect {row['ticket']} {row['role']}"
@@ -242,7 +242,7 @@ def _review_round_harvest_problem(
     try:
         found = ticket_store.find_ticket_exact(home, ticket)
         if found is None:
-            return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
+            return f"티켓 명세를 찾지 못해 돌려받기 판정을 낼 수 없습니다: {ticket}"
         _status, spec_path = found
         spec_text = fs.read_text_shared(
             spec_path, encoding="utf-8", newline="",
@@ -251,7 +251,7 @@ def _review_round_harvest_problem(
             pm_paths.tickets_dir(home), ticket, ticket_text=spec_text,
         )
     except (delegate_errors.DelegateError, round_rules.RoundsError, OSError, UnicodeError) as exc:
-        return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
+        return f"돌려받기 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
     corpus = tuple(
         item for item in rounds
         if not (item.role == reviewer_role and item.ordinal == ordinal)
@@ -336,7 +336,7 @@ def _developer_round_harvest_problem(
     try:
         found = ticket_store.find_ticket_exact(home, ticket)
         if found is None:
-            return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
+            return f"티켓 명세를 찾지 못해 돌려받기 판정을 낼 수 없습니다: {ticket}"
         _status, spec_path = found
         spec_text = fs.read_text_shared(
             spec_path, encoding="utf-8", newline="",
@@ -345,7 +345,7 @@ def _developer_round_harvest_problem(
             pm_paths.tickets_dir(home), ticket, ticket_text=spec_text,
         )
     except (round_rules.RoundsError, OSError, UnicodeError) as exc:
-        return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
+        return f"돌려받기 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
 
     repo_root = pm_paths._repo_root_for_cwd(cwd)
     try:
@@ -363,7 +363,7 @@ def _developer_round_harvest_problem(
     seed_rows = round_seed._dev_round_seed_verify_rows(markdown_text._normalized_newlines(reserved))
     if seed_rows is None:
         return (
-            f"예약 골격의 {review_form.PM_REVIEW_VERIFY_BLOCK} 블록을 읽지 못해 회수 판정을 낼 수 "
+            f"예약 빈 양식의 {review_form.PM_REVIEW_VERIFY_BLOCK} 블록을 읽지 못해 돌려받기 판정을 낼 수 "
             f"없습니다: ordinal={ordinal}"
         )
     filled: dict[str, review_form.PMReviewVerifyRow] = {}
@@ -382,7 +382,7 @@ def _developer_round_harvest_problem(
         ]
         if deleted:
             return (
-                f"시드가 실은 verify 행을 지웠습니다: {', '.join(deleted)} — 행은 지우지 말고 값만 "
+                f"빈 양식에 실린 verify 행을 지웠습니다: {', '.join(deleted)} — 행은 지우지 말고 값만 "
                 "갱신하세요(이번 라운드에 구현하지 않은 finding 은 machine_verifiable=false · "
                 f"reason={review_form.PM_REVIEW_VERIFY_GAP_REASON} 로 선언합니다)"
             )
@@ -410,7 +410,7 @@ def _developer_round_harvest_problem(
         try:
             delta = review_state.parse_pm_review_delta(spec_text, rounds)
         except review_form.PMReviewError as exc:
-            return f"fix 입력 리뷰 delta를 읽지 못했습니다[{exc.code}]: {exc}"
+            return f"fix 입력인 수락한 리뷰 지적을 읽지 못했습니다[{exc.code}]: {exc}"
         try:
             pm_owned_ids = review_form._pm_review_pm_owned_contract_ids(delta, filled)
         except delegate_errors.DelegateError as exc:
@@ -480,7 +480,7 @@ def _developer_round_harvest_problem(
     except (
         delegate_errors.DelegateError, review_form.PMReviewError, round_rules.RoundsError, OSError, UnicodeError,
     ) as exc:
-        return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
+        return f"돌려받기 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
     machine_axis_ids = {
         finding.id for finding, _disposition in delta.accepted
     }

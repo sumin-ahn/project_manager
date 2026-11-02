@@ -686,7 +686,7 @@ def test_delegate_subdirectory_cwd_still_triggers_pm_home_reanchor(
         "--dry-run",
     ]) == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err
+    assert "대상 저장소를 다시 잡으세요" in err
     assert str(worktree) in err
 
 

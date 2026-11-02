@@ -62,11 +62,11 @@ def _assert_developer_commit_tree(cwd: Path) -> None:
             )
         )
     raise delegate_errors.DelegateError(
-        "developer 라운드 회수 거부 — --cwd 가 슬롯 풀을 운영하는 PM 홈입니다"
-        f"(장부 루트: {Path(cwd).resolve()}). 티켓 제목 커밋은 코드 트리에만 만듭니다: "
+        "developer 라운드 돌려받기 거부 — --cwd 가 슬롯 풀을 운영하는 PM 홈입니다"
+        f"(기록 루트: {Path(cwd).resolve()}). 티켓 제목 커밋은 코드 트리에만 만듭니다: "
         + " / ".join(pools)
         + ". board 라운드 파일과 slot run-dir 은 그대로 보존했습니다 — `--cwd` 를 그 슬롯으로 "
-        "바꿔 같은 회수를 다시 실행하세요."
+        "바꿔 같은 돌려받기를 다시 실행하세요."
     )
 
 
@@ -98,14 +98,14 @@ def _assert_review_tree_unchanged(cwd: Path, row: Mapping[str, object], *, copy:
     ordinal = int(row["ordinal"])
     if not base_rev:
         raise delegate_errors.DelegateError(
-            f"리뷰 라운드 돌려받기 거부 — 장부 행에 base_rev 가 없습니다(이 엔진 이전 준비라 "
+            f"리뷰 라운드 돌려받기 거부 — 위임 라운드 기록 행에 base_rev 가 없습니다(이 엔진 이전 준비라 "
             f"준비 뒤 슬롯 변경을 판정할 수 없음): {ticket} ordinal={ordinal} · copy={copy}. "
             f"`pm_delegate.py ticket abandon --copy {copy} --cwd {cwd} "
             f"{delegate_rounds.ABANDON_ASSUME_DEAD_FLAG}`(사본에 산출이 있으면 "
             f"`{delegate_rounds.ABANDON_DISCARD_REASON_FLAG} <사유>` 추가)로 닫은 뒤, board 에 그 순번 라운드가 "
             f"남아 있으면 `pm_delegate.py ticket prepare --cluster C-<ticket-group> --role "
             f"{review_form.INTERNAL_REVIEW_ROLE} {review_state.PREPARE_REOPEN_ORDINAL_FLAG} {ordinal} --cwd {cwd}` "
-            f"(슬롯 사본의 `{review_form.PM_REVIEW_REFUSED_MARKER}` 표식 줄은 지운다), 없으면 "
+            f"(슬롯 사본의 `{review_form.PM_REVIEW_REFUSED_MARKER}` 표시 줄은 지운다), 없으면 "
             f"{review_state.PREPARE_REOPEN_ORDINAL_FLAG} 없이 다시 준비하세요"
         )
     head = _cluster_git(cwd, "rev-parse", "HEAD").strip()
@@ -116,7 +116,7 @@ def _assert_review_tree_unchanged(cwd: Path, row: Mapping[str, object], *, copy:
     raise delegate_errors.DelegateError(
         f"리뷰 라운드 돌려받기 거부 — 준비 뒤 슬롯이 바뀌었습니다: {ticket} "
         f"ordinal={ordinal} · 준비 HEAD={base_rev} · 현재 HEAD={head} · 작업 트리 변경: "
-        f"{changes}. board 라운드·장부·run-dir 은 그대로입니다. 리뷰어 산출이 아닌 잔여면 "
+        f"{changes}. board 라운드·위임 라운드 기록·run-dir 은 그대로입니다. 리뷰어 산출이 아닌 남은 변경이면 "
         f"되돌린 뒤 같은 `--copy` 로 다시 돌려받고, 리뷰가 바뀐 트리를 봤으면 "
         f"`pm_delegate.py ticket abandon --copy {copy} --cwd {cwd} {delegate_rounds.ABANDON_ASSUME_DEAD_FLAG} "
         f"{delegate_rounds.ABANDON_DISCARD_REASON_FLAG} <사유>` 로 폐기한 뒤 `ticket prepare --cluster C-<ticket-group> "

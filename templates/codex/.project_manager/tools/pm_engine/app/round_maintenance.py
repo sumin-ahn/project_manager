@@ -66,7 +66,7 @@ def _active_ticket_path(home, tid: str, action: str, *, role: str | None=None) -
     if action == 'section-add':
         cluster = _section_add_owning_cluster(home, tid, path)
         if cluster is not None:
-            print(f'cannot section-add {tid}: 묶음 장부 {cluster} 가 이 티켓의 라운드 수열을 소유한다 — 라운드는 위임 준비가 연다(고정 예산 판정)\n  · python3 .project_manager/tools/pm_delegate.py ticket prepare --ticket {tid} --role {role} --cwd <작업공간 절대경로>\n  · 이어 시키는 단계를 같은 순번에 다시 여는 인자는 그 명령의 --help 가 말한다.', file=sys.stderr)
+            print(f'cannot section-add {tid}: 묶음 기록 {cluster} 가 이 티켓의 라운드 수열을 소유한다 — 라운드는 위임 준비가 연다(고정 예산 판정)\n  · python3 .project_manager/tools/pm_delegate.py ticket prepare --ticket {tid} --role {role} --cwd <작업공간 절대경로>\n  · 이어 시키는 단계를 같은 순번에 다시 여는 인자는 그 명령의 --help 가 말한다.', file=sys.stderr)
             return (1, None)
     return (0, path)
 
@@ -124,4 +124,4 @@ def _discard_round_pending_notice(home, tid: str) -> None:
     first = pending[0]
     resolved = _round_pending_abandon_command(home, tid, first.ordinal, first.role)
     prescription = resolved if resolved is not None else _ROUND_PENDING_UNHARVESTED_QUERY
-    print(f'ⓘ  round-pending {len(pending)}건({first.path.name}) — 회수하려면 `{prescription}`', file=sys.stderr)
+    print(f'ⓘ  round-pending {len(pending)}건({first.path.name}) — 돌려받으려면 `{prescription}`', file=sys.stderr)

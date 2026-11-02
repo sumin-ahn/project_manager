@@ -621,7 +621,7 @@ def test_run_dir_harvest_refuses_when_no_unharvested_row_matches(pd, cluster_env
     _fill(plan.rounds[0].path, "## 경계 실측\n- 실측")
     delegate_harvest.harvest_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
-    with pytest.raises(delegate_errors.DelegateError, match="미회수 준비가 없습니다"):
+    with pytest.raises(delegate_errors.DelegateError, match="돌려받지 않은 준비가 없습니다"):
         delegate_harvest.harvest_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
 

@@ -217,7 +217,7 @@ def test_declared_fallback_still_runs_once_and_stays_loud(pd, monkeypatch, tmp_p
     assert rc == 0
     assert [call["harness"] for call in fake.calls] == ["codex", "claude"], (
         f"선언된 1단 폴백이 실행되지 않음(또는 2단 폴백 발생): {fake.calls}")
-    assert "폴백: codex→claude(opus)" in captured.err
+    assert "대체 동작: codex→claude(opus)" in captured.err
     assert "폴백결과" in captured.out
     # 두 attempt 모두 장부에 마감 레코드로 남는다(실패한 primary 도 사라지지 않는다).
     rows = sorted(_ledger_rows(ledger), key=lambda row: row["started_at"])
@@ -241,7 +241,7 @@ def test_declared_fallback_failure_has_no_second_substitute(pd, monkeypatch, tmp
     err = capsys.readouterr().err
     assert rc == 1
     assert len(fake.calls) == 2, f"2차 폴백이 발생함: {fake.calls}"
-    assert "2차 폴백 없음" in err
+    assert "두 번째 대체 동작 없음" in err
     assert "재위임은 명시 재호출만" in err
 
 

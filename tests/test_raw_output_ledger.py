@@ -464,7 +464,7 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
     assert raw_path.is_file()
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--unfinished"]) == 0
     output = capsys.readouterr().out
-    assert output.splitlines()[0] == f"조회 장부: {ledger_path.resolve()}"
+    assert output.splitlines()[0] == f"조회 기록 파일: {ledger_path.resolve()}"
     assert "미마감 raw 1건" in output
     assert str(raw_path.resolve()) in output
 
@@ -480,7 +480,7 @@ def test_raw_empty_still_prints_resolved_ledger_on_first_line(
 
     lines = capsys.readouterr().out.splitlines()
     assert lines == [
-        f"조회 장부: {ledger_path.resolve()}",
+        f"조회 기록 파일: {ledger_path.resolve()}",
         "최근 raw 없음",
     ]
 
@@ -507,7 +507,7 @@ def test_raw_output_dir_reads_that_ledger(
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--output-dir", str(output_dir)]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == f"조회 장부: {ledger_path.resolve()}"
+    assert lines[0] == f"조회 기록 파일: {ledger_path.resolve()}"
     assert lines[1] == "최근 raw 1건"
     assert "explicit-model" not in "\n".join(lines)
     assert str(raw_path.resolve()) in lines[2]
@@ -540,7 +540,7 @@ def test_raw_close_finishes_unfinished_record_with_fixed_abnormal_schema(
     assert row["finish_note"] == "수동 마감(raw close)"
     output = capsys.readouterr().out
     assert f"raw 레코드 마감: {record_id}" in output
-    assert f"마감 장부: {ledger_path.resolve()}" in output
+    assert f"마감 기록 파일: {ledger_path.resolve()}" in output
 
 
 def test_raw_close_rejects_already_finished_record(
@@ -570,7 +570,7 @@ def test_raw_close_rejects_unknown_record_id(
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", "missing-record", "--output-dir", str(output_dir),
     ]) == 1
-    assert "미발견: missing-record" in capsys.readouterr().err
+    assert "기록에 항목 없음: missing-record" in capsys.readouterr().err
     assert not (output_dir / "raw_outputs.json").exists()
 
 
@@ -638,7 +638,7 @@ def test_raw_close_warns_when_old_completion_is_pruned(
     warning = [line for line in lines if line.startswith("경고:")]
     assert warning == [
         f"경고: raw 레코드 {record_id}는 완료 보존창"
-        f"({raw_output.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 장부에서 제거됨"
+        f"({raw_output.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 기록에서 제거됨"
     ]
     assert raw_output.raw_records(ledger_path) == []
 
@@ -681,9 +681,9 @@ def test_raw_warns_about_peer_engine_ledger_without_reading_it(
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == f"조회 장부: {current_ledger.resolve()}"
+    assert lines[0] == f"조회 기록 파일: {current_ledger.resolve()}"
     assert lines[1] == (
-        "경고: 다른 엔진 사본 장부가 있습니다"
+        "경고: 다른 엔진 사본의 raw 출력 기록 파일이 있습니다"
         f"(이 조회에서는 읽지 않음): {peer_ledger.resolve()}"
     )
     assert lines[2] == "최근 raw 없음"
@@ -964,7 +964,7 @@ def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
     monkeypatch.setattr(delegate, "REPO", pm_home)
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
     query = capsys.readouterr().out
-    assert query.splitlines()[0] == f"조회 장부: {home_ledger.resolve()}"
+    assert query.splitlines()[0] == f"조회 기록 파일: {home_ledger.resolve()}"
     assert "최근 raw 1건" in query
     assert "additional-reviewer" in query
     assert str(raw_path.resolve()) in query
@@ -1013,7 +1013,7 @@ def test_unresolvable_pm_home_fails_loud_and_writes_no_raw(
     assert external.main(["--paths", "seed.txt", "--no-review-ticket"]) == 1
 
     err = capsys.readouterr().err
-    assert "앵커 해소 실패" in err and "슬롯 대여 기록 파일" in err
+    assert "대상 저장소 해소 실패" in err and "슬롯 대여 기록 파일" in err
     assert "board가 필요 없는 실행" not in err
     assert not (
         worktree / ".project_manager" / ".local" / "raw_outputs.json"
@@ -1147,9 +1147,9 @@ def test_legacy_gate_is_inherited_and_the_retired_field_is_dropped(
 
     err = capsys.readouterr().err
     assert rc == 0                                # 제거된 축이 막던 자리 — 이제 열린다
-    assert "legacy 라운드 장부 승계" in err
-    assert f"gate={gate} verdicts=4 incomplete=0" in err   # 승계 고지 집계는 전체 레코드 기준
-    assert f"게이트 {gate}" in err and "acked_through=2" in err   # 폐지 필드 알림(승계 경로)
+    assert "legacy 라운드 기록 승계" in err
+    assert f"review-ticket={gate} verdicts=4 incomplete=0" in err   # 승계 고지 집계는 전체 레코드 기준
+    assert f"리뷰 집계 티켓 {gate}" in err and "acked_through=2" in err   # 폐지 필드 알림(승계 경로)
     home_entry = _round_entry(pm_home, gate)
     assert home_entry["count"] == 5               # 승계 4 + 이번 예약 1
     assert "acked_through" not in home_entry      # 승계분도 스키마에서 떨어진다
@@ -1159,7 +1159,7 @@ def test_legacy_gate_is_inherited_and_the_retired_field_is_dropped(
         ["--paths", "seed.txt", "--review-ticket", gate]
     ) == 0
     err = capsys.readouterr().err
-    assert "legacy 라운드 장부 승계" not in err
+    assert "legacy 라운드 기록 승계" not in err
     assert "acked_through" not in err
 
 
@@ -1180,7 +1180,7 @@ def test_inherited_gate_has_no_round_extension_path(
     ) == 1
     err = capsys.readouterr().err
     assert "폐지" in err and "정지" in err and "사용자에게 보고" in err
-    assert "legacy 라운드 장부 승계" not in err   # 거부는 장부에 손대지 않는다
+    assert "legacy 라운드 기록 승계" not in err   # 거부는 장부에 손대지 않는다
     assert _round_count(pm_home, gate) == 0       # 승계조차 하지 않는다(부작용 0)
 
 
@@ -1198,7 +1198,7 @@ def test_gate_absent_from_legacy_starts_from_zero(
     ) == 0
 
     err = capsys.readouterr().err
-    assert "legacy 라운드 장부 승계" not in err
+    assert "legacy 라운드 기록 승계" not in err
     assert _round_count(pm_home, fresh_gate) == 1
 
 
@@ -1212,14 +1212,14 @@ def test_legacy_round_inheritance_happens_once_per_gate(
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(["--paths", "seed.txt", "--review-ticket", gate]) == 0
-    assert "legacy 라운드 장부 승계" in capsys.readouterr().err
+    assert "legacy 라운드 기록 승계" in capsys.readouterr().err
     assert _round_count(pm_home, gate) == 2       # 승계 1 + 이번 예약 1
 
     # legacy 를 차단 수위로 바꿔도 두 번째 실행은 쳐다보지 않는다(재승계면 rc 4 로 막혔을 값).
     _write_legacy_round_ledger(worktree, gate, {"count": 99})
 
     assert external.main(["--paths", "seed.txt", "--review-ticket", gate]) == 0
-    assert "legacy 라운드 장부 승계" not in capsys.readouterr().err
+    assert "legacy 라운드 기록 승계" not in capsys.readouterr().err
     assert _round_count(pm_home, gate) == 3
 
 
@@ -1241,7 +1241,7 @@ def test_corrupt_lease_registered_slot_records_no_round_anywhere(
                  ["--paths", "seed.txt", "--no-review-ticket"]):
         assert external.main(argv) == 1, argv
         err = capsys.readouterr().err
-        assert "앵커 해소 실패" in err and "슬롯 대여 기록 파일" in err, argv
+        assert "대상 저장소 해소 실패" in err and "슬롯 대여 기록 파일" in err, argv
         assert "게이트 스냅샷 마커" not in err, argv
 
     assert _round_count(worktree, gate) == 0
@@ -1399,8 +1399,8 @@ def test_raw_cmd_surfaces_orphan_warning_and_list_even_when_ledger_is_empty(
     lines = output.splitlines()
 
     assert "최근 raw 없음" in lines
-    warning = [line for line in lines if line.startswith("경고: 장부 미참조 원문")]
-    assert warning == ["경고: 장부 미참조 원문 1건 42바이트 (엔진 명명 · 삭제 안 함 · 목록은 아래)"]
+    warning = [line for line in lines if line.startswith("경고: 기록에 없는 원문")]
+    assert warning == ["경고: 기록에 없는 원문 1건 42바이트 (엔진 명명 · 삭제 안 함 · 목록은 아래)"]
     assert any(str(orphan.resolve()) in line for line in lines)
     assert str(pm_authored.resolve()) not in output
 
@@ -1419,7 +1419,7 @@ def test_raw_cmd_orphan_list_respects_limit_and_notes_omission(
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--limit", "2"]) == 0
     output = capsys.readouterr().out
 
-    assert "경고: 장부 미참조 원문 3건 3바이트" in output
+    assert "경고: 기록에 없는 원문 3건 3바이트" in output
     assert "이하 1건 생략" in output
 
 

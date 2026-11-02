@@ -129,7 +129,7 @@ def prepare_cluster_copy(
     if not members:
         raise delegate_errors.DelegateError(
             f"클러스터 멤버가 없습니다: {cluster} — `board.py cluster show {cluster}` 로 "
-            "장부를 확인하세요"
+            "묶음 기록을 확인하세요"
         )
 
     # ── (1) 티켓별 상태 판정 + 명세 판독 (board 무영향) ─────────────────────
@@ -473,10 +473,10 @@ def prepare_cluster_copy(
         if not board_git._board_git_enabled(home):
             print("ticket prepare: 별도 board-git 없음 (기존 no-op 기록)", file=sys.stderr)
         elif ready:
-            print("ticket prepare: 신규 시드 로컬 기록 완료 "
+            print("ticket prepare: 새 빈 양식 로컬 기록 완료 "
                   "(원격 동기 보류는 board sync 경고로 안내)", file=sys.stderr)
         else:
-            print("ticket prepare: 신규 시드 로컬 기록 보류 (local-only/uncommitted)", file=sys.stderr)
+            print("ticket prepare: 새 빈 양식 로컬 기록 보류 (local-only/uncommitted)", file=sys.stderr)
     return delegate_rounds.ClusterCopyPlan(run_dir, cluster, run_id, role, tuple(plans))
 
 
@@ -540,13 +540,13 @@ def abandon_ticket_copy(
     # ── 1단계: 인가 ────────────────────────────────────────────────────────
     row = delegate_copy_store._delegate_round_record(home, copy_path)
     if row["collected_at"] is not None:
-        raise delegate_errors.DelegateError(f"이미 회수된 준비는 포기할 수 없습니다: {copy_path}")
+        raise delegate_errors.DelegateError(f"이미 돌려받은 준비는 포기할 수 없습니다: {copy_path}")
     expected = delegate_copy_store._expected_slot_round_path(cwd, row)
     given = Path(copy_path)
     if not given.is_absolute() or not delegate_copy_store._same_lexical_path(given, expected):
         raise delegate_errors.DelegateError(
-            "delegate-rounds 장부가 인가한 라운드 경로와 불일치 — 포기하지 않습니다: "
-            f"요청={given} · 장부 인가={expected}"
+            "위임 라운드 기록이 인가한 라운드 경로와 불일치 — 포기하지 않습니다: "
+            f"요청={given} · 기록 인가={expected}"
         )
     run_dir = expected.parent
     # chain 검사는 **지울 것이 남아 있을 때만** 한다 — 이미 지운 run-dir 을 다시 요구하면
@@ -556,7 +556,7 @@ def abandon_ticket_copy(
     board_path = pm_home_root / Path(*PurePosixPath(row["board_rel"]).parts)
     if board_path.name != expected.name:
         raise delegate_errors.DelegateError(
-            "delegate-rounds 장부의 board 경로와 라운드 이름 불일치: "
+            "위임 라운드 기록의 board 경로와 라운드 이름 불일치: "
             f"board={board_path.name} · 기대={expected.name}"
         )
     if superseded_by_ordinal is not None:
@@ -625,8 +625,8 @@ def abandon_ticket_copy(
                 superseded_confirmed_this_call = True
             else:
                 raise delegate_errors.DelegateError(
-                    "산출이 있어 포기할 수 없습니다(시드 그대로가 아님) — `ticket collect` 로 "
-                    "회수하거나, 재실행으로 대체된 라운드라면 그 대체본 ordinal 을 "
+                    "산출이 있어 포기할 수 없습니다(빈 양식 그대로가 아님) — `ticket collect` 로 "
+                    "돌려받거나, 재실행으로 대체된 라운드라면 그 대체본 ordinal 을 "
                     f"{delegate_rounds.ABANDON_SUPERSEDED_BY_FLAG} 로, 폐기하는 라운드라면 그 사유를 "
                     f"{delegate_rounds.ABANDON_DISCARD_REASON_FLAG} 로 밝히고 다시 부르세요: "
                     f"ticket={row['ticket']} {board_path.name}"
@@ -639,9 +639,9 @@ def abandon_ticket_copy(
         if superseded_confirmed_this_call:
             # loud 는 생존 게이트를 통과한 뒤에만 — 거부된 호출에 "포기합니다" 를 남기지 않는다.
             print(
-                "[pm-delegate] 대체-확인: 산출이 시드와 달라도 포기합니다 — "
+                "[pm-delegate] 대체-확인: 산출이 빈 양식과 달라도 포기합니다 — "
                 f"ticket={row['ticket']} role={row['role']} ordinal={row['ordinal']} 을 "
-                f"ordinal={superseded_by_ordinal} 대체본으로 간주합니다(산출은 board 판정 표면에 "
+                f"ordinal={superseded_by_ordinal} 대체본으로 간주합니다(산출은 board 판정 범위에 "
                 f"오르지 않습니다): copy={copy_path}",
                 file=sys.stderr,
             )
@@ -649,7 +649,7 @@ def abandon_ticket_copy(
             print(
                 "[pm-delegate] 폐기-확인: 이 라운드를 폐기합니다 — "
                 f"ticket={row['ticket']} role={row['role']} ordinal={row['ordinal']} · "
-                f"사유={discard_reason}(산출이 있으면 board 라운드 파일로 옮기고 판정 표면에는 "
+                f"사유={discard_reason}(산출이 있으면 board 라운드 파일로 옮기고 판정 범위에는 "
                 f"오르지 않습니다): copy={copy_path}",
                 file=sys.stderr,
             )
@@ -727,7 +727,7 @@ def abandon_ticket_copy(
                 )
             except (OSError, UnicodeError) as exc:
                 raise delegate_errors.DelegateError(
-                    f"board 라운드 표식 발행 실패: {board_path}: {exc}"
+                    f"board 라운드 표시 줄 쓰기 실패: {board_path}: {exc}"
                 ) from exc
             marker_issued = True
             changed = True
@@ -768,7 +768,7 @@ def abandon_ticket_copy(
                 for reference in references
             ):
                 raise delegate_errors.DelegateError(
-                    "슬롯 라운드 파일이 시드와 달라져 run-dir 을 지우지 않았습니다(산출 보존) — "
+                    "슬롯 라운드 파일이 빈 양식과 달라져 run-dir 을 지우지 않았습니다(산출 보존) — "
                     f"산출을 직접 꺼낸 뒤 정리하세요: copy={expected} · run-dir={run_dir}"
                 )
         try:

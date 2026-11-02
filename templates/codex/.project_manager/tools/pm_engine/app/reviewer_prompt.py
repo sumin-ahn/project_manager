@@ -51,13 +51,13 @@ def build_prompt(
     if adr_refs:
         parts.append(f"관련 ADR: {', '.join(adr_refs)}\n\n")
     if gate:
-        parts.append(f"게이트 ticket: {gate}\n\n")
+        parts.append(f"리뷰 집계 티켓: {gate}\n\n")
     bodies: list[tuple[str | None, str]] = list(ticket_bodies or ())
     if not bodies and ticket_body is not None:
         bodies = [(ticket_id or gate, ticket_body)]
     for label_value, body in bodies:
         ticket_label = f" ({label_value})" if label_value else ""
-        parts.append(f"### 게이트 티켓 본문{ticket_label}\n")
+        parts.append(f"### 검토 대상 티켓 본문{ticket_label}\n")
         parts.append(body)
         if not body.endswith("\n"):
             parts.append("\n")

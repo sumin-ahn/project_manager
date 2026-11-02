@@ -26,10 +26,10 @@ def _ticket_copy_preamble(plan: delegate_rounds.TicketCopyPlan) -> str:
     """
     seat = (
         f"라운드 산출 기록: 이 위임의 산출은 {plan.path} **하나에만** 쓴다"
-        f"(첫 줄 헤더는 그대로 두고 그 아래 골격을 채운다). 같은 디렉터리의 "
+        f"(첫 줄 헤더는 그대로 두고 그 아래 빈 양식을 채운다). 같은 디렉터리의 "
         f"`{delegate_rounds.TICKET_COPY_SPEC_NAME}`(티켓 명세)와 `{delegate_rounds.TICKET_COPY_ROUNDS_DIRNAME}/`"
         "(이전 라운드)는 **읽기 전용**이다. PM 홈 티켓은 편집하지 마라. "
-        "이 파일은 응답과 별개로 종료 시 기계 회수된다."
+        "이 파일은 응답과 별개로 종료 시 엔진이 돌려받는다."
     )
     if not plan.next_finding_id:
         return seat
@@ -69,12 +69,12 @@ def _cluster_copy_preamble(plan: delegate_rounds.ClusterCopyPlan) -> str:
     )
     return (
         "라운드 산출 기록: 이 위임의 산출은 아래 티켓별 라운드 파일에만 쓴다"
-        "(첫 줄 헤더는 그대로 두고 그 아래 골격을 채운다). 티켓 하나에 대한 지적은 그 티켓의 "
+        "(첫 줄 헤더는 그대로 두고 그 아래 빈 양식을 채운다). 티켓 하나에 대한 지적은 그 티켓의 "
         "파일에만 적는다.\n"
         f"{seats}\n"
         f"같은 디렉터리의 `{delegate_rounds.TICKET_COPY_SPEC_NAME}`(티켓 명세)와 "
         f"`{delegate_rounds.TICKET_COPY_ROUNDS_DIRNAME}/`(이전 라운드)는 **읽기 전용**이다. PM 홈 티켓은 "
-        "편집하지 마라. 이 파일들은 응답과 별개로 종료 시 기계 회수된다."
+        "편집하지 마라. 이 파일들은 응답과 별개로 종료 시 엔진이 돌려받는다."
     )
 
 

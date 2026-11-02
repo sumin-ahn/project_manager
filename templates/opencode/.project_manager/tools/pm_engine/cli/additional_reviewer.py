@@ -30,27 +30,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 예시:
-  # 기본 (HEAD 기준 변경, local.conf additional_reviewer.paths/기본 경로) — 회계 밖 실행을 명시
+  # 기본 (HEAD 기준 변경, local.conf additional_reviewer.paths/기본 경로) — 집계 밖 실행을 명시
   python3 .project_manager/tools/additional_reviewer.py --no-review-ticket
 
-  # ticket 의 touches 로 경로 결정 (--review-ticket 미지정이면 그 티켓으로 게이트 자동 유도·장부 기록)
+  # ticket 의 touches 로 경로 결정 (--review-ticket 미지정이면 그 티켓으로 리뷰 집계 티켓 자동 유도·라운드 기록)
   python3 .project_manager/tools/additional_reviewer.py --ticket T-0259
 
-  # 게이트 회계 밖 자문 실행 (명시 opt-out · 장부 미기록·예산 미소모)
+  # 집계 밖 자문 실행 (명시 opt-out · 라운드 기록 안 함·예산 미소모)
   python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --no-review-ticket
 
-  # 특정 base 와 경로·게이트 지정
+  # 특정 base 와 경로·리뷰 집계 티켓 지정
   python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ tests/ --review-ticket T-NNNN
 
   # dry-run (좌표·프롬프트만 출력, 호출 안 함 — 비허용이어도 허용)
   python3 .project_manager/tools/additional_reviewer.py --dry-run
 
-  # 라운드 장부 조회 (호출 없음 — 게이트별 라운드 수·라운드별 산출·처분·wave spent)
+  # 라운드 기록 조회 (호출 없음 — 리뷰 집계 티켓별 라운드 수·라운드별 산출·처분·세션 호출 예산 spent)
   python3 .project_manager/tools/additional_reviewer.py --rounds-report --review-ticket T-NNNN
 
-  # 게이트 처분 선언 (호출 없음 — 릴리즈 게이트가 읽는 잔여 must-fix 소화 기록)
+  # 리뷰 집계 티켓 처분 선언 (호출 없음 — 라이브 시험 통과 조건이 읽는 남은 must-fix 소화 기록)
   python3 .project_manager/tools/additional_reviewer.py --resolve-review T-NNNN --pm-verified
-  # --pm-verified 는 PM 판정 표면의 기계 확인 증거로 해소한다(재호출 없음).
+  # --pm-verified 는 PM 판정 범위의 기계 확인 증거로 해소한다(재호출 없음).
   # --resolve-review 와 --dry-run 조합은 기록 목적과 모순이라 rc1로 거부.
 
 추가 리뷰어 대상(원자 tuple · 정상 경로):
@@ -59,7 +59,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         additional_reviewer.reasoning=max     (선택 · 하네스별 허용집합 검증)
         harness/model 은 동반 필수다. 이 tuple 이 없으면 대상이 없어 fail-loud 다
         (모델을 고정하지 않는 실행 경로는 폐지됐다).
-과금 상한: 호출마다 비용을 다시 묻지 않는다 — 무한 라운드는 라운드/wave 예산이 기계로 막는다.
+과금 상한: 호출마다 비용을 다시 묻지 않는다 — 무한 라운드는 라운드/세션 호출 예산이 기계로 막는다.
 """,
     )
     parser.add_argument("--base", default="HEAD",
@@ -69,34 +69,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="검토 대상 경로 (기본: local.conf additional_reviewer.paths / src tests scripts ...)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="ticket ID — touches 로 검토 경로 결정. --review-ticket 미지정이면 이 값이 "
-                             "게이트로 자동 유도돼 라운드가 장부에 기록·집계된다")
+                             "리뷰 집계 티켓으로 자동 유도돼 라운드가 기록·집계된다")
     parser.add_argument("--review-ticket", default=None, metavar="T-NNNN",
-                        help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키) — 미지정이면 "
+                        help="리뷰 집계 티켓 표시 (로깅 + 라운드 상한 기록 키) — 미지정이면 "
                              "--ticket 에서 자동 유도한다(명시 값이 항상 우선)")
     parser.add_argument("--no-review-ticket", action="store_true",
-                        help="게이트 회계 opt-out — --ticket 자동 유도를 끄고 라운드 장부 기록·"
-                             "라운드/wave 예산 집계 없이 실행한다 (회계 밖 자문 실행·loud 표기 · "
+                        help="리뷰 집계 opt-out — --ticket 자동 유도를 끄고 라운드 기록·"
+                             "라운드/세션 호출 예산 집계 없이 실행한다 (집계 밖 자문 실행·loud 표기 · "
                              "--review-ticket 과 함께 쓸 수 없음)")
     parser.add_argument("--ack-rounds", action="store_true",
                         help="(폐지됨) 라운드 연장 승인 — 호출하면 아무것도 하지 않고 거부한다. "
                              "현재 티켓의 고정 fix 단계에서 종결해야 한다.")
     parser.add_argument("--reset-session-budget", action="store_true",
-                        help="wave 예산 재개 — wave spent 를 0 으로 리셋 후 재개 "
-                             "(게이트 지정 필수 — --review-ticket 또는 --ticket 유도 · 같은 범위의 "
-                             "정상 수렴이면 PM 이 자율 판단)")
+                        help="세션 호출 예산 재개 — 세션 호출 예산 spent 를 0 으로 리셋 후 재개 "
+                             "(리뷰 집계 티켓 지정 필수 — --review-ticket 또는 --ticket 유도 · 같은 범위의 "
+                             "정상적으로 마무리되는 중이면 PM 이 자율 판단)")
     parser.add_argument("--rounds-report", action="store_true",
-                        help="라운드 장부 조회 — 게이트별 라운드 수·라운드별 판정/결함 수·처분·wave "
-                             "spent 를 출력하고 종료 (호출 없음·--review-ticket 으로 한 게이트만)")
+                        help="라운드 기록 조회 — 리뷰 집계 티켓별 라운드 수·라운드별 판정/결함 수·처분·세션 호출 예산 "
+                             "spent 를 출력하고 종료 (호출 없음·--review-ticket 으로 한 리뷰 집계 티켓만)")
     parser.add_argument("--resolve-review", default=None, metavar="T-NNNN",
-                        help="게이트 처분 선언 — 반려로 끝난 게이트의 잔여 must-fix 를 어떻게 "
-                             "소화했는지 장부에 남기고 종료 (호출 없음). `--pm-verified` "
-                             "필수. 릴리즈 게이트(`board.py live-test "
-                             "record`)가 이 선언을 읽어 미처분 잔여를 차단한다")
+                        help="리뷰 집계 티켓 처분 선언 — 반려로 끝난 리뷰 집계 티켓의 남은 must-fix 를 어떻게 "
+                             "소화했는지 기록에 남기고 종료 (호출 없음). `--pm-verified` "
+                             "필수. 라이브 시험 통과 조건(`board.py live-test "
+                             "record`)가 이 선언을 읽어 미처분 남은 지적을 차단한다")
     parser.add_argument("--pm-verified", action="store_true",
-                        help="--resolve-review 처분: PM 판정 표면(리뷰 delta)의 기계 확인 증거로 "
+                        help="--resolve-review 처분: PM 판정 범위(수락한 리뷰 지적)의 기계 확인 증거로 "
                              "해소 — 재호출 없음(`pm_delegate rounds resolve --pm-verified` "
-                             "와 같은 이름·같은 의미). 발동 조건: 이 채널 accepted 잔여 0·이 채널 "
-                             "잔여 must-fix 건수만큼 판정 표면 전건 처분(미판정 0)·이 채널에 "
+                             "와 같은 이름·같은 의미). 발동 조건: 이 채널 accepted 남은 지적 0·이 채널 "
+                             "남은 must-fix 건수만큼 판정 범위 전건 처분(미판정 0)·이 채널에 "
                              "accepted 가 있었을 때만 기계 확인 1건 이상")
     parser.add_argument("--dry-run", action="store_true",
                         help="좌표·프롬프트만 출력, 리뷰어를 부르지 않음 (빈 diff 면 "
@@ -105,7 +105,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="리뷰 원문 저장 디렉토리"
                              " (기본: .project_manager/.local/review)."
                              " 실제로 리뷰어를 부르는 실행에서만 생성된다"
-                             " (미리보기·게이트 거부는 만들지 않음)")
+                             " (미리보기·통과 조건에서 막힌 실행은 만들지 않음)")
     parser.add_argument("--timeout", type=reviewer_target._timeout_seconds_arg, default=None,
                         metavar="SEC",
                         help="리뷰어 실행 벽시계 백스톱(초) — 기본은 해소 대상의 하네스 프로필. "
@@ -194,7 +194,7 @@ def main(home, argv: list[str] | None = None) -> int:
             raw_paths = tuple(parsed_touches)
             if not raw_paths:
                 raise pm_paths.AnchorResolutionError(
-                    f"board anchor {engine_pm_home}: ticket {args.ticket} 의 touches가 비어 있어 "
+                    f"board 대상 저장소 {engine_pm_home}: ticket {args.ticket} 의 touches 가 비어 있어 "
                     "검토 범위를 확정할 수 없습니다."
                 )
         elif args.paths:
@@ -229,7 +229,7 @@ def main(home, argv: list[str] | None = None) -> int:
                 "config를 읽어 얻은 이번 실행의 범위입니다.\n"
                 "  · 절대 `--paths <경로>`로 이번 검토 범위를 직접 지정하거나, 유효한 "
                 "`--ticket T-NNNN`(touches 채워진 것)으로 범위를 파생시키세요.\n"
-                "  · 두 PM 홈이 같은 슬롯을 등록한 상태라면 lease 장부의 슬롯 등록을 정리하세요."
+                "  · 두 PM 홈이 같은 슬롯을 등록한 상태라면 슬롯 대여 기록의 슬롯 등록을 정리하세요."
             )
         selected_paths = reviewer_scope._normalize_review_paths(
             pm_paths.home_at(diff_root, pm_home=pm_home, board_root=pm_paths._board_root_at(pm_home)), raw_paths,
@@ -237,7 +237,7 @@ def main(home, argv: list[str] | None = None) -> int:
             ticket_selected=ticket_selected,
         )
     except (pm_paths.AnchorResolutionError, OSError, UnicodeError) as exc:
-        print(f"오류: 추가 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
+        print(f"오류: 추가 리뷰 대상 저장소 해소 실패 — {exc}", file=sys.stderr)
         return 1
 
     # 리뷰 코드와 PM 데이터 소유자를 별도 좌표로 보존한다.
@@ -262,7 +262,7 @@ def main(home, argv: list[str] | None = None) -> int:
             )
             return 1
         except pm_paths.AnchorResolutionError as exc:
-            print(f"오류: 추가 리뷰 앵커 해소 실패 — {exc}", file=sys.stderr)
+            print(f"오류: 추가 리뷰 대상 저장소 해소 실패 — {exc}", file=sys.stderr)
             return 1
     # 시간 예산은 **해소된 대상의 하네스 프로필**을 따른다 — 대상 command 를 먼저 해소해야
     # 어떤 축(클라우드/로컬)의 값을 쓸지 정해진다. 깨진 conf의
@@ -418,13 +418,13 @@ def main(home, argv: list[str] | None = None) -> int:
                 return True
             if ticket_scope_fixture_injected:
                 print(
-                    "경고: 테스트 fixture가 ticket touches seam만 주입하고 본문 provenance는 "
+                    "경고: 테스트 fixture가 ticket touches 교체 지점만 주입하고 본문 provenance는 "
                     f"제공하지 않아 {args.ticket} 본문 없이 계속합니다: {exc}",
                     file=sys.stderr,
                 )
                 ticket_body = None
                 return True
-            print(f"오류: 게이트 티켓 본문 로딩 실패 — {exc}", file=sys.stderr)
+            print(f"오류: 검토 대상 티켓 본문 로딩 실패 — {exc}", file=sys.stderr)
             return False
         ticket_body = composed_body
         ticket_body_bytes = len(ticket_body.encode("utf-8"))
@@ -464,7 +464,7 @@ def main(home, argv: list[str] | None = None) -> int:
             # 본문 미조립은 정상 형상(예: `--paths` 로 검토 범위를 대체하고 `--ticket` 은
             # 안 준 실행)이지만, 침묵하면 "본문이 실렸다고 착각한 채 결과를 읽는" 경로가
             # 열린다 — 정상 형상도 미조립이라고 값으로 말한다.
-            print("ticket_body: 미조립 — 이번 리뷰어 입력에 게이트 티켓 본문이 실리지 않습니다")
+            print("ticket_body: 미조립 — 이번 리뷰어 입력에 검토 대상 티켓 본문이 실리지 않습니다")
         print("=== [dry-run] 프롬프트 미리보기 (호출 없음) ===")
         print(prompt)
         print("=== [dry-run] 리뷰어 호출 생략 ===")

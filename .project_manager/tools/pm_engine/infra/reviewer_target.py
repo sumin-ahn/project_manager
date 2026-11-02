@@ -138,7 +138,7 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
             f"`{reviewer_result.ADDITIONAL_REVIEWER_MODEL_KEY}={model}` 은 예약 sentinel 입니다 — 엔진이 '모델 "
             f"미고정'을 표시하는 낱말이라(예약: {', '.join(sorted(reviewer_result.RESERVED_MODEL_VALUES))}) "
             "구조화 프로필의 모델 값이 될 수 없습니다. 구조화 프로필은 정의상 모델을 고정한 "
-            "tuple 인데 이 값을 받으면 raw 장부·raw 헤더·stderr provenance 가 legacy 미고정 실행과 "
+            "tuple 인데 이 값을 받으면 raw 출력 기록·raw 헤더·stderr provenance 가 legacy 미고정 실행과 "
             "구분되지 않아 '어느 모델이 이 판정을 냈는가'를 사후에 확정할 수 없습니다.\n"
             f"  · 실제 모델 이름을 적으세요(예: `{reviewer_result.ADDITIONAL_REVIEWER_MODEL_KEY}=gpt-5.6-sol`).\n"
             "  · 모델 미고정 실행 경로는 폐지됐습니다 — 실행하려면 모델을 고정해야 합니다."

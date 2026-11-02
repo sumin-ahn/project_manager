@@ -209,8 +209,8 @@ def review_harvest_problem(
     """
     if review_form.pm_review_refused_marker_present(reply_text):
         return (
-            f"엔진 전용 표식({review_form.PM_REVIEW_REFUSED_MARKER})을 회신이 선언했습니다 — 그 줄은 "
-            "라운드를 판정 표면에서 빼므로 산출이 스스로 쓸 수 없습니다"
+            f"엔진 전용 표시({review_form.PM_REVIEW_REFUSED_MARKER})을 회신이 선언했습니다 — 그 줄은 "
+            "라운드를 판정 범위에서 빼므로 산출이 스스로 쓸 수 없습니다"
         )
     problem = validate_review_block(reply_text, reviewer_role=reviewer_role)
     if problem is not None:
@@ -232,7 +232,7 @@ def review_harvest_problem(
     if collisions:
         return (
             f"finding ID 재선언: {', '.join(collisions)} — 티켓에 이미 있는 ID 라 이 라운드를 "
-            "회수하지 않았습니다(다음 라운드에서 새 ID 로 다시 내십시오)"
+            "돌려받지 않았습니다(다음 라운드에서 새 ID 로 다시 내십시오)"
         )
     missing = _review_missing_confirmation_targets(
         reply_text,
@@ -242,8 +242,8 @@ def review_harvest_problem(
     )
     if missing:
         return (
-            f"confirmation 대상 finding 부재: {', '.join(missing)} — 티켓 판정 표면에 없는 "
-            "ID 라 이 라운드를 회수하지 않았습니다(존재하지 않는 ID 이거나 회수되지 않은 "
+            f"confirmation 대상 finding 부재: {', '.join(missing)} — 티켓 판정 범위에 없는 "
+            "ID 라 이 라운드를 돌려받지 않았습니다(존재하지 않는 ID 이거나 돌려받지 않은 "
             "산출의 ID 입니다 · 다음 라운드에서 실재하는 ID 로 다시 내십시오)"
         )
     return None
@@ -289,8 +289,8 @@ def _internal_review_format_preamble() -> str:
         f"{none_examples}). 산문 `must-fix 없습니다`는 0건으로 읽히지 않는다.\n"
         "- 판정 낱말은 파서 허용 토큰 중 하나만 쓰며 통과·반려 또는 허용 밖 낱말을 "
         f"섞지 않는다(통과 허용형: {pass_examples}; 반려 허용형: {reject_examples}).\n"
-        "- 같은 code-reviewer 사본 절에 section-add가 시드한 리뷰 골격을 그대로 채운다. "
-        "키·상태·분류를 다시 쓰거나 골격 밖 schema를 만들지 않는다."
+        "- 같은 code-reviewer 사본 절에 section-add가 만든 리뷰 빈 양식을 그대로 채운다. "
+        "키·상태·분류를 다시 쓰거나 빈 양식 밖 schema를 만들지 않는다."
     )
 
 
@@ -530,8 +530,8 @@ def render_pm_review_disposition_template(
         )
         raise review_form.PMReviewError(
             "malformed",
-            f"reviewer {section.role} ordinal={section.ordinal}에 판정 표면이 받지 않는 "
-            f"finding ID 가 있어 판정 골격을 내지 않습니다: {listed} — 기존 finding 은 "
+            f"reviewer {section.role} ordinal={section.ordinal}에 판정 범위가 받지 않는 "
+            f"finding ID 가 있어 판정 빈 양식을 내지 않습니다: {listed} — 기존 finding 은 "
             "`confirmations` 로만 참조하고 `findings` 에는 신규 ID 만 씁니다",
         )
 
@@ -588,7 +588,7 @@ def render_pm_review_delta(ticket: str, delta: review_form.PMReviewDelta) -> str
     """
     if not delta.accepted:
         return ""
-    lines = [f"## PM 승인 리뷰 delta — {ticket}", ""]
+    lines = [f"## PM 이 수락한 리뷰 지적 — {ticket}", ""]
     for finding, disposition in delta.accepted:
         lines.extend([
             f"### {finding.id}",

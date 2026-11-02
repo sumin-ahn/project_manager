@@ -107,14 +107,14 @@ _OUTPUT_FORMAT_BLOCK = """\
 # 구조화 블록 요구 — 스키마는 엔진 파서 상수에서만 파생한다(여기서 다시 적지 않는다).
 _VERSIONED_BLOCK_HEADER = """\
 ### 구조화 판정 블록 (필수)
-위 산문 뒤에 아래 스키마의 블록을 **정확히 하나** 출력하라. 엔진이 이 회신 전문을 게이트 티켓의
-`additional-reviewer` 라운드 파일로 회수하고, PM 은 이 블록으로 판정한다 — 증거·권고·심각도는 블록이
+위 산문 뒤에 아래 스키마의 블록을 **정확히 하나** 출력하라. 엔진이 이 회신 전문을 리뷰 집계 티켓의
+`additional-reviewer` 라운드 파일로 돌려받고, PM 은 이 블록으로 판정한다 — 증거·권고·심각도는 블록이
 단일 진실이므로 산문에 같은 항목을 다시 서술하지 마라.
 
 """
 _VERSIONED_BLOCK_RULES = """\
 - `id` 는 이 채널 전용 접두 `{prefix}-` 를 쓰고 **이번 라운드는 {next_id} 부터** 매긴다 —
-  티켓 전역 유일이라 본문에 이미 있는 ID 를 다시 쓰면 이 라운드는 회수되지 않는다.
+  티켓 전역 유일이라 본문에 이미 있는 ID 를 다시 쓰면 엔진이 이 라운드를 돌려받지 않는다.
 - `severity` 가 "반드시 고쳐야 하는가"의 단일 진실이다(가장 높은 값 `{top_severity}` 는 산문
   must-fix 절과 같은 건수여야 한다).
 - `authority` 는 티켓 §목표/§결정 또는 `[[T-NNNN]]`·`[[ADR-NNNN]]` 같은 권위 근거를 적는다.
@@ -128,9 +128,9 @@ _VERSIONED_BLOCK_RULES = """\
   failure=`금지어 안내가 parser 목록과 어긋난다` · design=`parser 상수에서 안내를 렌더한다` ·
   test=`tests/test_additional_reviewer_ticket_harvest.py` ·
   command=`python3 -m pytest tests/test_additional_reviewer_ticket_harvest.py -q` · expected=`passed`.
-- 위 티켓 본문에 이미 있는 블록(지난 라운드 산출·시드 골격)을 회신에 **재인용하지 마라** —
+- 위 티켓 본문에 이미 있는 블록(지난 라운드 산출·빈 양식)을 회신에 **재인용하지 마라** —
   이 회신에는 네가 이번에 낸 블록 하나만 있어야 한다.
-- 블록이 없거나 스키마를 어기면 이 라운드는 회수되지 않는다(라운드 파일 없음 · 종료코드 ≠ 0).
+- 블록이 없거나 스키마를 어기면 엔진이 이 라운드를 돌려받지 않는다(라운드 파일 없음 · 종료코드 ≠ 0).
 
 """
 
@@ -245,40 +245,40 @@ def _empty_diff_guidance(paths: Sequence[str], *, root: Path) -> str:
 # "반례가 진짜니까 계속"을 사람이 승인하는 구조 자체가 비용 누수였다(실측 12라운드). 상한에
 # 닿으면 현재 티켓을 정지하고 사용자에게 보고한다.
 _ROUND_LIMIT_GUIDANCE = (
-    "오류: 추가 리뷰어 미완 라운드 상한 도달 — 게이트 {gate} · "
+    "오류: 추가 리뷰어 미완 라운드 상한 도달 — 리뷰 집계 티켓 {gate} · "
     "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
     "  (미완 재시도 상한 {incomplete_limit}). 무한 라운드 차단이라 "
     "초과분은 기계가 멈춥니다 — 자의 우회 불가.\n"
     "  · **미완**은 판정이 없던 호출입니다 — 타임아웃·중단뿐 아니라 **오염 진단으로 무효화된 "
-    "판정**도 이 축에 들어갑니다(판정 표면과 같은 규칙이라 두 표면이 갈리지 않습니다).\n"
-    "  · 먼저 `--rounds-report` 로 라운드별 산출과 수렴 상황을 확인하세요.\n"
+    "판정**도 미완에 들어갑니다(판정 범위와 같은 규칙이라 두 곳이 갈리지 않습니다).\n"
+    "  · 먼저 `--rounds-report` 로 라운드별 산출과 마무리 상황을 확인하세요.\n"
     "  · 현재 티켓을 정지하고 사용자에게 보고하세요 — 라운드 연장 승인(`--ack-rounds`)은 "
     "폐지됐습니다.\n"
     "  · 미완 재시도 상한은 local.conf "
     "`additional_reviewer.incomplete_rounds_max` 로 조정합니다.\n"
-    "  (장부: {ledger} · count={count})"
+    "  (기록 파일: {ledger} · count={count})"
 )
 
 # 수렴-형상 차단 안내 (라운드 상한 rc 를 그대로 쓴다 — 호출 전 예산 거부라 같은 축).
 # 라운드 수는 **완료 산출 + 진행 중 예약**이다 — 상한 판정과 같은 수를 보여야 "상한에 닿았는데
 # 왜 막히나"를 문구가 스스로 답한다(동시 실행이 이미 나가 있는 형상).
 _CONVERGENCE_GUIDANCE = (
-    "오류: 리뷰 수렴 게이트 차단 — 게이트 {gate} · {reason}\n"
+    "오류: 리뷰 마무리 통과 조건에서 막힘 — 리뷰 집계 티켓 {gate} · {reason}\n"
     "  라운드 {rounds}(완료 {completed} · 진행 중 예약 {inflight}) / 상한 {limit} · "
     "must_fix 추이 [{series}]\n"
     "  · 라운드를 더 쓰지 않습니다. 현재 티켓을 정지하고 남은 지적을 사용자에게 보고하세요.\n"
     "  · 라운드별 산출은 `--rounds-report --review-ticket {gate}` 로 확인하세요.\n"
     "  · 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
-    "  (장부: {ledger})"
+    "  (기록 파일: {ledger})"
 )
 
 # `--ack-rounds` 폐지 안내 — 플래그는 인자표에 남겨 두고(모르는 인자 오류 대신 처방을 낸다)
 # 호출 자체를 거부한다. 연장 승인 경로가 남아 있으면 상한이 상한이 아니게 된다.
 _ACK_ROUNDS_REMOVED_GUIDANCE = (
     "오류: `--ack-rounds`(라운드 연장 승인)는 폐지됐습니다 — 이 실행은 아무것도 하지 않았습니다.\n"
-    "  · 라운드 상한·수렴 상한에 걸리면 현재 티켓을 정지하고 사용자에게 보고합니다.\n"
-    "  · wave 예산 재개(`--reset-session-budget`)는 그대로입니다 — 별개 축입니다.\n"
-    "  · 현재 수렴 상황은 `--rounds-report --review-ticket <T-NNNN>` 로 확인하세요."
+    "  · 라운드 상한·마무리 상한에 걸리면 현재 티켓을 정지하고 사용자에게 보고합니다.\n"
+    "  · 세션 호출 예산 재개(`--reset-session-budget`)는 그대로입니다 — 별개 기준입니다.\n"
+    "  · 현재 마무리 상황은 `--rounds-report --review-ticket <T-NNNN>` 로 확인하세요."
 )
 
 # ── 게이트 회계 자동 유도 (`--ticket` → `--review-ticket`) ─────────────────────────────
@@ -295,14 +295,14 @@ _ACK_ROUNDS_REMOVED_GUIDANCE = (
 # 깨지 않게 provenance 직후에 낸다. 빈 diff 로 아직 끝날 수 있는 예약 전 자리이므로,
 # 장부에 붙었다는 확정형이 아니라 실행 조건형으로만 말한다.
 _GATE_DERIVED_NOTICE = (
-    "게이트 자동 유도: --review-ticket {gate} (--ticket 값에서 유도 — 이 실행이 리뷰어를 부르면 라운드 회계가 "
-    "게이트 {gate}에 붙습니다). "
-    "회계 밖 자문 실행은 --no-review-ticket 으로 명시하세요."
+    "리뷰 집계 티켓 자동 유도: --review-ticket {gate} (--ticket 값에서 유도 — 이 실행이 리뷰어를 부르면 라운드 집계가 "
+    "리뷰 집계 티켓 {gate} 에 붙습니다). "
+    "집계 밖 자문 실행은 --no-review-ticket 으로 명시하세요."
 )
 # 미리보기는 예약도 기록도 하지 않는다 — 같은 문구를 쓰면 "이번 실행이 기록된다"는 오보가 된다.
 _GATE_DERIVED_DRY_RUN_NOTICE = (
-    "게이트 자동 유도: --review-ticket {gate} (--ticket 값에서 유도 — 미리보기라 이번 실행은 기록·집계하지 "
-    "않고, 실 호출 때 라운드 회계가 이 게이트에 붙습니다)."
+    "리뷰 집계 티켓 자동 유도: --review-ticket {gate} (--ticket 값에서 유도 — 미리보기라 이번 실행은 기록·집계하지 "
+    "않고, 실 호출 때 라운드 집계가 이 리뷰 집계 티켓에 붙습니다)."
 )
 
 # 회계 밖 실행의 loud 표기 — 침묵이 이 함정의 본체였으므로 명시 opt-out 실행은 자기
@@ -312,9 +312,9 @@ _GATE_DERIVED_DRY_RUN_NOTICE = (
 # 확정하면 스폰 전에 중단된 실행이 이미 찍힌 고지와 모순된다. 확정 표기는 실행이 끝난 뒤 판정
 # 블록(`print_summary`)의 게이트 줄이 낸다.
 _UNACCOUNTED_RUN_TAIL = (
-    "리뷰어를 부르면 라운드 장부에 기록되지 않고 라운드·wave 예산도 쓰지 않습니다 — 그 라운드에서 나온 "
-    "반려 must-fix 는 릴리즈 차단(`board.py live-test record`)이 읽는 장부에 남지 않습니다.\n"
-    "  · 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 `--review-ticket <게이트>` 로 "
+    "리뷰어를 부르면 라운드 기록에 남지 않고 라운드·세션 호출 예산도 쓰지 않습니다 — 그 라운드에서 나온 "
+    "반려 must-fix 는 릴리즈 차단(`board.py live-test record`)이 읽는 기록에 남지 않습니다.\n"
+    "  · 집계에 넣으려면 `--ticket <T-NNNN>`(리뷰 집계 티켓 자동 유도) 또는 `--review-ticket <T-NNNN>` 로 "
     "실행하세요."
 )
 _UNACCOUNTED_OPT_OUT_NOTICE = (
@@ -325,16 +325,16 @@ _UNACCOUNTED_OPT_OUT_NOTICE = (
 # 진행하면 티켓 누락 한 번이 라운드 장부·livegate 누락으로 이어진다. dry-run·조회·처분은
 # 리뷰어를 부르지 않아 이 검사에 도달하지 않는다.
 _GATE_ACCOUNTING_REQUIRED_GUIDANCE = (
-    "오류: 실 호출에는 게이트 회계 지정 또는 명시 opt-out 이 필요합니다 — "
+    "오류: 실 호출에는 리뷰 집계 티켓 지정 또는 명시 opt-out 이 필요합니다 — "
     "이 실행은 호출하지 않았습니다.\n"
-    "  · 라운드 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 "
-    "`--review-ticket <게이트>` 를 지정하세요.\n"
-    "  · 회계 밖 자문 실행이면 `--no-review-ticket` 을 명시하세요."
+    "  · 라운드 집계에 넣으려면 `--ticket <T-NNNN>`(리뷰 집계 티켓 자동 유도) 또는 "
+    "`--review-ticket <T-NNNN>` 를 지정하세요.\n"
+    "  · 집계 밖 자문 실행이면 `--no-review-ticket` 을 명시하세요."
 )
 
 # 판정 블록의 게이트 줄 — 회계 밖 실행은 **끝난 뒤** 여기서 확정형으로 말한다. stderr 경고는 로그를
 # 안 읽으면 사라지지만 PM 은 판정 블록을 반드시 읽는다(오염 진단·실패 사유와 같은 근거).
-_SUMMARY_UNACCOUNTED_GATE = "(없음 — 회계 밖·라운드 장부 미기록)"
+_SUMMARY_UNACCOUNTED_GATE = "(없음 — 집계 밖·라운드 기록 안 함)"
 
 # `--review-ticket` 과 `--no-review-ticket` 동시 지정 안내 — 한 실행이 "기록한다"와 "기록하지 않는다"를 동시에
 # 뜻할 수 없다. 경고 후 한쪽을 골라 실행하면 그 선택이 조용한 자의 판정이 되므로 부작용 0
@@ -342,9 +342,9 @@ _SUMMARY_UNACCOUNTED_GATE = "(없음 — 회계 밖·라운드 장부 미기록)
 _GATE_OPT_OUT_CONFLICT_GUIDANCE = (
     "오류: `--no-review-ticket` 과 `--review-ticket {gate}` 는 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
-    "  · `--review-ticket` 은 이 라운드를 장부에 기록하겠다는 지정이고, `--no-review-ticket` 은 기록하지 않겠다는 "
+    "  · `--review-ticket` 은 이 라운드를 기록하겠다는 지정이고, `--no-review-ticket` 은 기록하지 않겠다는 "
     "opt-out 입니다.\n"
-    "  · 회계에 넣으려면 `--no-review-ticket` 을 빼고, 회계 밖 자문이면 `--review-ticket` 을 빼세요."
+    "  · 집계에 넣으려면 `--no-review-ticket` 을 빼고, 집계 밖 자문이면 `--review-ticket` 을 빼세요."
 )
 
 
@@ -352,17 +352,17 @@ _GATE_OPT_OUT_CONFLICT_GUIDANCE = (
 # 같은 자리(추가 리뷰어 호출 전)에서 같은 rc 로 막는다 — 게이트마다 상한을 새로 받는 구조에서는
 # 티켓 수만큼 라운드가 늘어나기 때문이다. 성격은 라운드 상한과 같은 anti-loop pause 다.
 _WAVE_BUDGET_GUIDANCE = (
-    "오류: wave 예산 소진 — `--reset-session-budget` 으로 재개(예산 리셋)\n"
-    "  게이트 {gate} · wave spent={spent} (예산 {budget} · wave 시작 {started})\n"
-    "  · 게이트별 라운드 상한과 **별개**인 wave 단위 총 라운드 예산입니다 — 티켓 수 × 라운드 "
+    "오류: 세션 호출 예산 소진 — `--reset-session-budget` 으로 재개(예산 리셋)\n"
+    "  리뷰 집계 티켓 {gate} · 세션 호출 예산 spent={spent} (예산 {budget} · 시작 {started})\n"
+    "  · 리뷰 집계 티켓별 라운드 상한과 **별개**인 세션 단위 총 라운드 예산입니다 — 티켓 수 × 라운드 "
     "상한으로 라운드가 확장되는 것을 막습니다.\n"
     "  · 먼저 `--rounds-report` 로 라운드별 산출을 확인하세요.\n"
-    "  · 같은 범위가 정상 수렴 중이면 PM 이 자율로 `--reset-session-budget` 을 붙여 재개합니다 "
+    "  · 같은 범위가 정상적으로 마무리되는 중이면 PM 이 자율로 `--reset-session-budget` 을 붙여 재개합니다 "
     "(spent 를 0 으로 리셋):\n"
     "      python3 .project_manager/tools/additional_reviewer.py --review-ticket {gate} --reset-session-budget [기존 옵션]\n"
-    "  · 수렴이 안 되고 있으면(같은 지적 반복·범위 발산) 사용자에게 보고하세요.\n"
+    "  · 마무리가 안 되고 있으면(같은 지적 반복·범위 발산) 사용자에게 보고하세요.\n"
     "  · 예산 조정은 local.conf `additional_reviewer.session_budget`.\n"
-    "  (장부: {ledger})"
+    "  (기록 파일: {ledger})"
 )
 
 
@@ -373,45 +373,45 @@ _WAVE_BUDGET_GUIDANCE = (
 _RESOLVE_GATE_MODE_GUIDANCE = (
     "오류: `--resolve-review {gate}` 에는 `--pm-verified`가 필요합니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
-    "  · PM 판정 표면의 기계 확인 증거로만 해소합니다(재호출 없음 — accepted 잔여 "
-    "0·잔여 must-fix 건수만큼 전건 처분·필요 시 기계 확인 1건 이상).\n"
-    "  · 후속 티켓·후속 게이트로 잔여를 넘기는 처분은 지원하지 않습니다."
+    "  · PM 판정 범위의 기계 확인 증거로만 해소합니다(재호출 없음 — accepted 남은 지적 "
+    "0·남은 must-fix 건수만큼 전건 처분·필요 시 기계 확인 1건 이상).\n"
+    "  · 후속 티켓·후속 리뷰 집계 티켓으로 남은 지적을 넘기는 처분은 지원하지 않습니다."
 )
 
 _RESOLVE_GATE_REQUIRED_GUIDANCE = (
-    "오류: `{flag}` 는 `--resolve-review <게이트>` 와 함께 써야 합니다 — 처분할 게이트가 없으면 "
+    "오류: `{flag}` 는 `--resolve-review <T-NNNN>` 와 함께 써야 합니다 — 처분할 리뷰 집계 티켓이 없으면 "
     "선언할 사실이 없습니다.\n"
-    "      python3 .project_manager/tools/additional_reviewer.py --resolve-review <게이트> {flag}"
+    "      python3 .project_manager/tools/additional_reviewer.py --resolve-review <T-NNNN> {flag}"
     "{value}"
 )
 
 _RESOLVE_GATE_PM_VERIFIED_GUIDANCE = (
-    "오류: 게이트 {gate} 에는 pm-verified 처분을 선언할 수 없습니다 — {detail}\n"
-    "  · `--pm-verified` 는 PM 판정 표면(리뷰 delta)이 그 채널 accepted 잔여 없이, 그 채널 잔여 "
+    "오류: 리뷰 집계 티켓 {gate} 에는 pm-verified 처분을 선언할 수 없습니다 — {detail}\n"
+    "  · `--pm-verified` 는 PM 판정 범위(수락한 리뷰 지적)가 그 채널 accepted 남은 지적 없이, 그 채널 남은 "
     "must-fix 건수만큼 전건 처분되고, accepted 가 있었을 때만 기계 확인이 1건 이상 기록됐을 때만 "
     "선언됩니다.\n"
-    "  · 표면 상태는 `python3 .project_manager/tools/pm_delegate.py review accepted --ticket {gate}` "
+    "  · 판정 범위 상태는 `python3 .project_manager/tools/pm_delegate.py review accepted --ticket {gate}` "
     "로 확인하세요."
 )
 
 _RESOLVE_GATE_UNKNOWN_GUIDANCE = (
-    "오류: 게이트 {gate} 는 라운드 장부에 기록이 없습니다 — 처분할 잔여가 없습니다.\n"
-    "  · 처분 선언의 입력은 장부의 기록 사실뿐입니다(그 게이트로 실제 돈 라운드).\n"
-    "  · 게이트 이름을 `--rounds-report` 로 확인하세요 (장부: {ledger})."
+    "오류: 리뷰 집계 티켓 {gate} 는 라운드 기록이 없습니다 — 처분할 남은 지적이 없습니다.\n"
+    "  · 처분 선언의 입력은 라운드 기록의 사실뿐입니다(그 리뷰 집계 티켓으로 실제 돈 라운드).\n"
+    "  · 리뷰 집계 티켓 이름을 `--rounds-report` 로 확인하세요 (기록 파일: {ledger})."
 )
 
 _RESOLVE_GATE_DRY_RUN_GUIDANCE = (
     "오류: `--resolve-review {gate}` 는 `--dry-run` 과 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
-    "  · 처분 선언은 장부에 사실을 남기는 것이 목적이라 미리보기가 성립하지 않습니다 "
+    "  · 처분 선언은 기록에 사실을 남기는 것이 목적이라 미리보기가 성립하지 않습니다 "
     "(호출은 어차피 없습니다).\n"
     "  · 지금 상태만 보려면 `--rounds-report --review-ticket {gate}` 를 쓰세요."
 )
 
 _RESOLVE_GATE_NO_RESIDUAL_GUIDANCE = (
-    "오류: 게이트 {gate} 에는 처분할 잔여 must-fix 가 없습니다 (최종 라운드 must_fix={residual}).\n"
-    "  · 처분 선언은 **반려로 끝난** 게이트의 잔여를 소화하는 기록입니다 — 잔여가 없으면 릴리즈 "
-    "게이트도 이 게이트를 보지 않습니다(무대상).\n"
+    "오류: 리뷰 집계 티켓 {gate} 에는 처분할 남은 must-fix 가 없습니다 (최종 라운드 must_fix={residual}).\n"
+    "  · 처분 선언은 **반려로 끝난** 리뷰 집계 티켓의 남은 지적을 소화하는 기록입니다 — 남은 지적이 없으면 라이브 시험 "
+    "통과 조건도 이 리뷰 집계 티켓을 보지 않습니다(무대상).\n"
     "  · 현재 상태는 `--rounds-report --review-ticket {gate}` 로 확인하세요."
 )
 
@@ -441,11 +441,11 @@ _RESERVED_LEDGER_KEYS: frozenset[str] = frozenset({WAVE_SECTION_KEY})
 _GATE_ENTRY_MARKERS: tuple[str, ...] = ("count", "records", "rounds")
 
 _RESERVED_GATE_GUIDANCE = (
-    "오류: `{flag} {gate}` 는 라운드 장부의 예약 키라 게이트 이름으로 쓸 수 없습니다 "
+    "오류: `{flag} {gate}` 는 라운드 기록의 예약 키라 리뷰 집계 티켓 이름으로 쓸 수 없습니다 "
     "(예약 키: {keys}).\n"
-    "  · 그 키는 장부 최상위에서 wave 예산 절이 씁니다 — 같은 이름의 게이트는 게이트 집계와 "
-    "wave 예산이 서로 덮어써 라운드 상한·예산이 둘 다 조용히 무력화됩니다.\n"
-    "  · 다른 게이트 이름으로 다시 실행하세요 (이름 형식 제약은 없습니다 — 예약 키만 거부)."
+    "  · 그 키는 기록 최상위에서 세션 호출 예산 절이 씁니다 — 같은 이름의 리뷰 집계 티켓은 티켓별 집계와 "
+    "세션 호출 예산이 서로 덮어써 라운드 상한·예산이 둘 다 조용히 무력화됩니다.\n"
+    "  · 다른 리뷰 집계 티켓 이름으로 다시 실행하세요 (이름 형식 제약은 없습니다 — 예약 키만 거부)."
 )
 
 
@@ -478,7 +478,7 @@ def _wave_frame_corruption(raw: object) -> str | None:
         return None
     if not isinstance(raw, dict):
         return f"`{WAVE_SECTION_KEY}` 절 형식 오류({type(raw).__name__})"
-    return f"예약 키 `{WAVE_SECTION_KEY}` 자리의 옛 게이트 항목"
+    return f"예약 키 `{WAVE_SECTION_KEY}` 자리의 옛 리뷰 집계 티켓 항목"
 
 
 def _wave_spent_corruption(spent: object) -> str | None:
@@ -604,7 +604,7 @@ def _format_must_fix_series(series: Sequence[int | None]) -> str:
 # 한다. rc 4 로 끝나는 실행이 "재개"를 말하면 stderr 가 종료 코드와 어긋난 loud 오보가 된다
 # (승인 자체는 저장되므로 다음 실행이 이어받는다).
 _APPROVAL_RESUMED_VERB = "재개"
-_APPROVAL_REFUSED_VERB = "기록(이번 실행은 남은 축이 막아 거부)"
+_APPROVAL_REFUSED_VERB = "기록(이번 실행은 남은 기준이 막아 거부)"
 
 
 def _approval_notes(
@@ -616,7 +616,7 @@ def _approval_notes(
     verb = _APPROVAL_RESUMED_VERB if resumed else _APPROVAL_REFUSED_VERB
     notes: list[str] = []
     if wave_reset:
-        notes.append(f"wave 예산 승인 {verb}: spent 리셋 (예산 {wave_budget}).")
+        notes.append(f"세션 호출 예산 승인 {verb}: spent 리셋 (예산 {wave_budget}).")
     return notes
 
 

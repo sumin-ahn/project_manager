@@ -274,7 +274,7 @@ def _timeout_failure_result(harness: str, timeout: int,
         measured_label = (
             f"{measured:.0f}s" if measured is not None else "관측 불가"
         )
-        reason = (f"[{harness} 무진행 임계 {threshold:.0f}s 발화 · 실측 침묵 {measured_label} "
+        reason = (f"[{harness} 무진행 임계 {threshold:.0f}s 넘음 · 실측 침묵 {measured_label} "
                   f"— 정상 작업이었다면 local.conf harness.{harness}.idle_timeout=<초> 로 상향]")
     else:
         silence_label = (
@@ -425,7 +425,7 @@ def _midrun_failure_result(harness: str, exc: BaseException) -> watchdog.RunResu
         "returncode": 1,
         "stdout": "",
         "stderr": (f"하네스 {harness} 실행 중 I/O 오류: {exc} — 프롬프트가 이미 넘어갔을 수 있어 "
-                   "자동 폴백하지 않습니다(중복 호출 차단). 결과를 확인하고 수동 재시도하세요."),
+                   "자동 대체 동작을 하지 않습니다(중복 호출 차단). 결과를 확인하고 수동 재시도하세요."),
         "timed_out": False,
     }
 
@@ -436,7 +436,7 @@ def _cleanup_failure_result(harness: str, exc: BaseException) -> watchdog.RunRes
         "returncode": 1,
         "stdout": getattr(exc, "output", "") or "",
         "stderr": (
-            f"[{harness} 프로세스 정리 실패: {exc} — 잔존 프로세스 가능성 때문에 자동 폴백 금지, "
+            f"[{harness} 프로세스 정리 실패: {exc} — 잔존 프로세스 가능성 때문에 자동 대체 동작 금지, "
             "사람 확인 필요] "
             f"{getattr(exc, 'stderr', '') or ''}"
         ).rstrip(),

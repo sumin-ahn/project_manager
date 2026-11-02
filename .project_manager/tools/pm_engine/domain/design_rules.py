@@ -165,7 +165,7 @@ def _design_issues(tid: str, body: str, design: Any) -> list[tuple[str, str, str
 # 갈리지 않는다(세 진입점 파리티 단언의 전제). **면제 항목은 없다** — 설계 단계를 건너뛰는
 # 길이 있으면 그 티켓만 라운드 순번이 어긋난다.
 _DESIGN_EVIDENCE_REMEDY = (
-    "해소: (1) architect 라운드를 회수(시드 그대로면 근거 아님) · "
+    "해소: (1) architect 라운드 돌려받기(빈 양식 그대로면 근거 아님) · "
     f"(2) `design: {DESIGN_DONE}` + `{_DESIGN_SECTION}` 절 4항목"
     f"({'·'.join(_DESIGN_PLACEHOLDER_LABELS)}) 충전"
 )

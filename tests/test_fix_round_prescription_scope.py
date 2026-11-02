@@ -123,7 +123,7 @@ def test_notice_attaches_once_at_tail_for_accepted_delta(pd):
 
     rendered = review_contract.render_pm_review_delta("T-TEST", delta)
 
-    assert rendered.startswith("## PM 승인 리뷰 delta — T-TEST")
+    assert rendered.startswith("## PM 이 수락한 리뷰 지적 — T-TEST")
     assert delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE in rendered
     assert rendered.count(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE) == 1
     assert rendered.rstrip().endswith(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE.rstrip())

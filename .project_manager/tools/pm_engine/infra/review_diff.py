@@ -243,7 +243,7 @@ def is_machine_mirror_path(home, path: str) -> bool:
 _MERGE_BASE_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 INTEGRATION_TIP_UNRESOLVED_NOTE = (
-    "통합 브랜치 {ref} 를 이 트리에서 해소하지 못했다 — 측정 폭의 기준점이 없다. 장부가 선언한 "
+    "통합 브랜치 {ref} 를 이 트리에서 해소하지 못했다 — 측정 폭의 기준점이 없다. 묶음 기록이 선언한 "
     "통합 브랜치가 이 트리에 있는지 확인하라."
 )
 

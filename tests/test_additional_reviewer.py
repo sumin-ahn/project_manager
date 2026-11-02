@@ -120,8 +120,8 @@ def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, t
     )
     landmarks = (
         "관련 ADR: ADR-0088",
-        "게이트 ticket: T-0695",
-        "### 게이트 티켓 본문 (T-0695)",
+        "리뷰 집계 티켓: T-0695",
+        "### 검토 대상 티켓 본문 (T-0695)",
         "## 결정\n확정 설계",
         "### 리뷰 입력 좌표",
     )
@@ -136,8 +136,8 @@ def test_build_prompt_requires_coordinates_and_rejects_diff(external, monkeypatc
                   changed_paths=["x.py"], read_commands=[("git", "-C", str(tmp_path), "diff", "--")])
     prompt = reviewer_prompt.build_prompt(pm_paths.home_at(tmp_path), "BODY", ["ADR-1"], "T-1", **coords)
     assert "관련 ADR: ADR-1" in prompt
-    assert "게이트 ticket: T-1" in prompt
-    assert "### 게이트 티켓 본문 (T-1)\nBODY" in prompt
+    assert "리뷰 집계 티켓: T-1" in prompt
+    assert "### 검토 대상 티켓 본문 (T-1)\nBODY" in prompt
     for key in coords:
         with pytest.raises(TypeError):
             reviewer_prompt.build_prompt(pm_paths.home_at(tmp_path), **{name: value for name, value in coords.items() if name != key})
@@ -531,7 +531,7 @@ def test_runner_seam_skew_is_loud_and_distinct(external):
 
     ok, out, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "p", "codex", 5, incompatible)
     assert (ok, started) == (False, False)
-    assert "runner seam 계약 오류" in out.answer
+    assert "runner 교체 지점 계약 오류" in out.answer
     assert "리뷰어 실행 오류" not in out.answer
 
 
@@ -1059,7 +1059,7 @@ def test_lock_failure_before_send_is_translated_and_blocks_the_send(
     err = capsys.readouterr().err
     assert rc == 1
     assert calls["n"] == 0                       # 호출 시도 0
-    assert "다른 게이트 실행이 장부 락을 보유" in err
+    assert "다른 리뷰 집계 티켓 실행이 기록 락을 보유" in err
     assert "잠시 후 다시 실행" in err
     assert str(review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))) in err
 
@@ -1076,7 +1076,7 @@ def test_lock_failure_at_finish_keeps_the_verdict_exit_code(
     err = capsys.readouterr().err
     assert rc == 0                               # 통과 판정 그대로 (락 사정으로 안 뒤집힘)
     assert calls["n"] == 1                       # 호출은 정상 수행
-    assert "라운드 장부 마감 실패" in err
+    assert "라운드 기록 마감 실패" in err
     assert "미완으로 남아" in err
     # 마감 못 한 레코드는 finished_at 없이 남아 다음 실행이 보수적으로(미완) 센다.
     record = _ledger(external, tmp_path)["T-0565"]["records"][0]
@@ -1309,7 +1309,7 @@ def test_gate_entry_detection_survives_the_retired_marker_removal(external):
     썼다). 그래서 폐지 필드만 있고 `count` 가 없는 항목은 실 장부에 없다."""
     assert "acked_through" not in reviewer_budget._GATE_ENTRY_MARKERS
     old_shape = {"count": 4, "acked_through": 2, "records": [], "rounds": []}
-    assert reviewer_budget._wave_frame_corruption(old_shape) == "예약 키 `wave` 자리의 옛 게이트 항목"
+    assert reviewer_budget._wave_frame_corruption(old_shape) == "예약 키 `wave` 자리의 옛 리뷰 집계 티켓 항목"
     # 정상 wave 절은 그대로 통과한다(판별이 넓어지지도 않는다).
     assert reviewer_budget._wave_frame_corruption(
         {"id": "abc", "started": None, "spent": 0}) is None
@@ -1531,14 +1531,14 @@ def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
     assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED   # 라운드 상한과 같은 rc
     assert calls["n"] == 2                            # 리뷰어 미호출 (호출 전 거부)
     err = capsys.readouterr().err
-    assert "wave 예산 소진" in err
+    assert "세션 호출 예산 소진" in err
     assert "--reset-session-budget" in err and "예산 리셋" in err
     assert "--rounds-report" in err                   # 보고 근거 조회면 안내
     assert "T-0312" not in _ledger(external, tmp_path)  # 거부는 아무것도 커밋하지 않는다
 
     rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py", "--reset-session-budget"])
     assert rc == 0 and calls["n"] == 3
-    assert "wave 예산 승인 재개" in capsys.readouterr().err
+    assert "세션 호출 예산 승인 재개" in capsys.readouterr().err
     assert _wave(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
 
 
@@ -1620,7 +1620,7 @@ def test_refund_skips_a_wave_that_was_reset_mid_flight(
 
     assert _wave(external, tmp_path)["spent"] == 1       # 새 wave 의 소비는 그대로
     assert _ledger(external, tmp_path)["T-0326"]["count"] == 0   # 라운드 count 는 환불됨
-    assert "wave 가 이미 리셋" in capsys.readouterr().err
+    assert "세션 호출 예산이 이미 리셋" in capsys.readouterr().err
 
 
 def test_refund_is_skipped_when_the_reservation_record_vanishes(
@@ -1695,7 +1695,7 @@ def test_negative_wave_spent_does_not_reopen_the_budget(
     assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED          # 여전히 막힌다
     assert calls["n"] == 2                                   # 호출 없음
     assert "음수" in err and "재계산" in err
-    assert "wave 예산 소진" in err
+    assert "세션 호출 예산 소진" in err
     assert _wave(external, tmp_path)["spent"] == 2           # 이력 기반 복원값이 저장된다
 
 
@@ -1731,7 +1731,7 @@ def test_refused_run_leaves_no_gate_entry_in_the_ledger(
     rc = external.main(["--review-ticket", "T-0332", "--paths", "x.py"])   # wave 예산 소진으로 거부
 
     assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
-    assert "wave 예산 소진" in capsys.readouterr().err
+    assert "세션 호출 예산 소진" in capsys.readouterr().err
     assert calls["n"] == 2                                        # 호출 없음
     assert "T-0332" not in _ledger(external, tmp_path)
 
@@ -1774,8 +1774,8 @@ def test_wave_approval_survives_a_round_limit_refusal(
     assert "미완 라운드 상한 도달" in err
     assert calls["n"] == spent
     assert _wave(external, tmp_path)["spent"] == 0        # 리셋은 남았다
-    assert "wave 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다
-    assert "wave 예산 승인 기록" in err and "거부" in err
+    assert "세션 호출 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다
+    assert "세션 호출 예산 승인 기록" in err and "거부" in err
 
     # 라운드 축에는 재개 승인이 없다 — 리셋된 wave 로도 그 게이트는 계속 막힌다.
     assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
@@ -1818,8 +1818,8 @@ def test_rounds_report_dumps_gate_rounds_and_wave(external, monkeypatch, tmp_pat
     out = capsys.readouterr().out
     assert calls["n"] == 1                                  # 조회는 리뷰어를 부르지 않는다
     assert str(review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))) in out        # 어느 장부를 읽었는지
-    assert "wave: spent=1 / 예산 24" in out
-    assert "게이트 T-0320: count=1" in out
+    assert "세션 호출 예산: spent=1 / 예산 24" in out
+    assert "리뷰 집계 티켓 T-0320: count=1" in out
     assert "판정=1(비통과) must_fix=2 suggestions=미상" in out
 
 
@@ -1832,7 +1832,7 @@ def test_rounds_report_filters_by_gate(external, monkeypatch, tmp_path, capsys):
 
     assert external.main(["--rounds-report", "--review-ticket", "T-0321"]) == 0
     out = capsys.readouterr().out
-    assert "게이트 T-0321" in out and "T-0322" not in out
+    assert "리뷰 집계 티켓 T-0321" in out and "T-0322" not in out
 
 
 def test_rounds_report_on_empty_ledger_is_rc_zero(external, monkeypatch, tmp_path, capsys):
@@ -1841,11 +1841,11 @@ def test_rounds_report_on_empty_ledger_is_rc_zero(external, monkeypatch, tmp_pat
     assert external.main(["--rounds-report"]) == 0
     out = capsys.readouterr().out
     assert calls["n"] == 0
-    assert "wave: spent=0 / 예산 24 · 시작 미시작" in out
-    assert "기록된 게이트 없음" in out
+    assert "세션 호출 예산: spent=0 / 예산 24 · 시작 미시작" in out
+    assert "기록된 리뷰 집계 티켓 없음" in out
 
     assert external.main(["--rounds-report", "--review-ticket", "T-0323"]) == 0
-    assert "게이트 T-0323: 장부에 기록 없음" in capsys.readouterr().out
+    assert "리뷰 집계 티켓 T-0323: 기록 없음" in capsys.readouterr().out
 
 
 def test_rounds_report_with_a_selector_reads_the_recording_anchor(
@@ -1859,7 +1859,7 @@ def test_rounds_report_with_a_selector_reads_the_recording_anchor(
     out = capsys.readouterr().out
     assert calls["n"] == 1                                  # selector 조회도 호출 없음
     assert str(review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))) in out
-    assert "게이트 T-0334: count=1" in out
+    assert "리뷰 집계 티켓 T-0334: count=1" in out
 
 
 def test_rounds_report_warns_about_ignored_action_flags(
@@ -1901,10 +1901,10 @@ def test_render_rounds_report_marks_unknown_fields_and_is_read_only(external):
         ledger, ledger_path="/tmp/review_rounds.json", wave_budget=24,
     )
 
-    assert "wave: spent=3 / 예산 24 · 시작 2026-08-07T00:00:00+00:00" in report
+    assert "세션 호출 예산: spent=3 / 예산 24 · 시작 2026-08-07T00:00:00+00:00" in report
     # 조회 표에서 폐지 필드 항목이 사라졌다 — 게이트 줄은 count·산출·처분만 싣는다.
     assert "acked_through" not in report
-    assert "게이트 T-0324: count=2 · 산출 2건 · 처분=" in report
+    assert "리뷰 집계 티켓 T-0324: count=2 · 산출 2건 · 처분=" in report
     assert "#1 2026-08-07T00:00:00+00:00 판정=0(통과) must_fix=0 suggestions=미상" in report
     assert "#미상 시각 미상 판정=미상 must_fix=미상 suggestions=미상" in report
     assert "(라운드 산출 기록 없음" in report            # 구세대 게이트 표기
@@ -2122,7 +2122,7 @@ def test_seam_typeerror_marked_no_child_is_started_false(external):
         pm_paths.home_at(external.REPO), "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
     assert (ok, started) == (False, False), "표식(자식 없음)을 무시하고 경계 위치로 판정했다"
     assert handoffs == [1]
-    assert "seam 호출 오류" in out.answer
+    assert "교체 지점 호출 오류" in out.answer
 
 
 def test_seam_typeerror_marked_child_existed_is_started_true(external):

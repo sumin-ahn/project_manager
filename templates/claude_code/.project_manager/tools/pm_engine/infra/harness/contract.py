@@ -634,7 +634,7 @@ def validate_harness(harness: str) -> str:
     if harness not in conf_schema.HARNESS_CHOICES:
         raise HarnessContractError(
             f"미지원 harness {harness!r} — 지원: {', '.join(conf_schema.HARNESS_CHOICES)}. "
-            "조용한 폴백 금지(명시 등록 요구)."
+            "말없는 대체 동작 금지(명시 등록 요구)."
         )
     return harness
 

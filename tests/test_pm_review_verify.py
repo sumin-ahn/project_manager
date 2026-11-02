@@ -326,7 +326,7 @@ def test_seed_degrades_without_fence_when_review_output_is_malformed(pd, capsys)
         "developer", _with_design_waiver(""), rounds=[r1],
     )
     assert review_form.PM_REVIEW_VERIFY_BLOCK not in body
-    assert "accepted delta 를 해소할 수 없어" in capsys.readouterr().err
+    assert "수락한 리뷰 지적을 해소할 수 없어" in capsys.readouterr().err
 
 
 # ── pending 판정(시점 독립) ──────────────────────────────────────────────
@@ -506,7 +506,7 @@ def test_confirmation_command_must_match_the_verify_row(pd):
     spec_bad = spec + _confirmation_block(
         pd, 2, [_confirmation_row("F-001", command="echo different")],
     )
-    with pytest.raises(review_form.PMReviewError, match="verify 행과 결속되지 않습니다") as caught:
+    with pytest.raises(review_form.PMReviewError, match="verify 행과 연결되지 않습니다") as caught:
         _verify_delta(pd, spec_bad, rounds)
     assert caught.value.code == "malformed"
 
@@ -725,7 +725,7 @@ def test_pm_verified_evidence_problem_requires_empty_accepted_and_a_machine_conf
     (`_basic_ticket` = code-reviewer 채널 F-001 1건 → 표면 하한 1)."""
     spec, rounds = _basic_ticket(pd)
     # accepted 잔여가 있으면 거부.
-    assert "accepted 잔여" in review_state.pm_verified_evidence_problem(
+    assert "accepted 남은 지적" in review_state.pm_verified_evidence_problem(
         spec, rounds, reviewer_role=review_form.INTERNAL_REVIEW_ROLE, surface_floor=1,
     )
     # resolve 됐지만 기계 확인이 없으면(가상: 리뷰 confirmation 만으로 해소) — 대조군은
@@ -742,7 +742,7 @@ def test_pm_verified_evidence_problem_rejects_when_delta_cannot_parse(pd):
     problem = review_state.pm_verified_evidence_problem(
         "", [r1], reviewer_role=review_form.INTERNAL_REVIEW_ROLE, surface_floor=1,
     )
-    assert problem is not None and "delta 파싱 실패" in problem
+    assert problem is not None and "수락한 지적 파싱 실패" in problem
 
 
 def test_pm_verified_evidence_problem_fails_loud_when_the_channel_is_not_given(pd):
@@ -1219,7 +1219,7 @@ def test_machine_confirmation_cannot_bind_to_an_unfilled_placeholder_row(pd):
     """역방향 확인 (a) — 자리표시자 행을 근거로 한 기계 확인은 결속에서 막힌다."""
     spec, rounds = _shape_two_findings(pd, {2: [_skeleton_row(pd, "F-001")]})
     spec_bad = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001")])
-    with pytest.raises(review_form.PMReviewError, match="결속되지 않습니다") as caught:
+    with pytest.raises(review_form.PMReviewError, match="연결되지 않습니다") as caught:
         review_state.parse_pm_review_delta(spec_bad, rounds)
     assert caught.value.code == "malformed"
 
@@ -1856,6 +1856,6 @@ def test_machine_confirmation_cannot_bind_to_a_pending_developer_round(pd, tmp_p
     """
     spec, rounds = _cross_invariant_shape(pd, tmp_path)
     spec_bad = spec + _confirmation_block(pd, 4, [_confirmation_row("F-002")])
-    with pytest.raises(review_form.PMReviewError, match="아직 회수되지 않은 developer 라운드") as caught:
+    with pytest.raises(review_form.PMReviewError, match="아직 돌려받지 않은 developer 라운드") as caught:
         review_state.parse_pm_review_delta(spec_bad, rounds)
     assert caught.value.code == "malformed"

@@ -189,7 +189,7 @@ def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard_home
     assert missing["verdict"] == "allow"
     assert (missing["harness"], missing["model"]) == ("", "")
     assert "hard 프로필 미설정" in missing["reason"]
-    assert "normal 강등 금지" in missing["reason"]
+    assert "normal 로 수준 낮춤 금지" in missing["reason"]
     assert "--tier hard" not in missing["reason"]
     assert "delegate-channel/record" in missing["reason"]
     assert "delegate-channel/warn" not in missing["reason"]

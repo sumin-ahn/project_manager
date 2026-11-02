@@ -57,7 +57,7 @@ def _resolve_diff_root(
     }
     if len(absolute_roots) > 1:
         raise pm_paths.AnchorResolutionError(
-            "--paths가 여러 git repo를 가리킵니다 — 추가 리뷰 1회는 diff 앵커 하나만 허용합니다."
+            "--paths가 여러 git repo를 가리킵니다 — 추가 리뷰 1회는 diff 대상 저장소 하나만 허용합니다."
         )
     if absolute_roots:
         selected_root = next(iter(absolute_roots)).resolve()
@@ -94,7 +94,7 @@ def _resolve_diff_root(
             return selected[0]
         if len(selected) > 1:
             raise pm_paths.AnchorResolutionError(
-                "ticket touches가 여러 등록 worktree를 가리킵니다 — diff 앵커가 모호합니다."
+                "ticket touches가 여러 등록 worktree를 가리킵니다 — diff 대상 저장소가 모호합니다."
             )
 
     if engine_repo.resolve() != pm_home.resolve():
@@ -123,7 +123,7 @@ def _resolve_diff_root(
     raise pm_paths.AnchorResolutionError(
         "명시 경로에서 diff worktree를 하나로 해소할 수 없습니다. "
         f"ticket touches에 등록 슬롯 경로를 포함하거나 절대 --paths를 사용하세요: {detail}\n"
-        "  · 변경을 이미 커밋했다면 `--base <공통 base ref>`로 앵커를 명시하세요 — 직전 커밋 한 "
+        "  · 변경을 이미 커밋했다면 `--base <공통 base ref>`로 기준 커밋을 명시하세요 — 직전 커밋 한 "
         "칸(HEAD~1..HEAD)은 아무 것도 안 한 슬롯도 공유 base 의 마지막 커밋으로 걸리므로 슬롯 "
         "소유 근거로 쓰지 않습니다."
     )

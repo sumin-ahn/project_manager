@@ -1340,7 +1340,7 @@ def test_opencode_external_symlink_fallback_prepare_is_main_rc1_without_tracebac
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert "폴백 실행 준비/raw 박제 실패" in err
+    assert "대체 동작 실행 준비/raw 출력 기록 실패" in err
     assert "sandbox 밖" in err
     assert "primary raw:" in err
     assert "Traceback" not in err
@@ -2051,7 +2051,7 @@ def test_unresolved_write_target_is_loud_not_read_only_degrade(
     missing = tmp_path / "gone"
     read_tmp = delegate_temp._ReadRoleTemp(
         missing, parent_fd=None, identity=(0, 0), owned_fds=[])
-    with pytest.raises(delegate_errors.DelegateError, match="강등하지 않고"):
+    with pytest.raises(delegate_errors.DelegateError, match="낮추지 않고"):
         delegate_transport._apply_read_tmp_argv(argv_fn(pd), harness, "code-reviewer", read_tmp)
 
 
@@ -2485,7 +2485,7 @@ def test_read_role_temp_survives_a_cwd_that_owns_the_temp_root(
     tracked_root = pm_home / "scratch"
     tracked_root.mkdir()
     monkeypatch.setattr(delegate_temp, '_read_tmp_root', lambda _home: tracked_root)
-    with pytest.raises(delegate_errors.DelegateError, match="검토 표면 안으로 해소되어 거부"):
+    with pytest.raises(delegate_errors.DelegateError, match="검토 범위 안으로 해소되어 거부"):
         delegate_temp._create_read_role_temp(pm_paths.home_at(pd.REPO), "claude", pm_home)
     assert list(tracked_root.iterdir()) == []                 # 거부 뒤 잔여 0
 
@@ -2654,7 +2654,7 @@ def test_reanchor_fail_loud_in_main(pd, monkeypatch, tmp_path, capsys):
                    _enabled_conf(), fake)
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -2949,7 +2949,7 @@ def test_show_natural_language_tail_with_write_instruction_rc1(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -2988,7 +2988,7 @@ def test_read_only_quote_real_file_write_still_rc1(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -3082,7 +3082,7 @@ def test_read_only_board_reference_with_korean_conjugated_write_rc1(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -3432,7 +3432,7 @@ def test_pronoun_redirect_does_not_capture_path_from_next_sentence(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -3461,7 +3461,7 @@ def test_same_or_pronoun_redirect_fails_main(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -3570,7 +3570,7 @@ def test_show_quote_followed_by_file_reference_write_fails_main(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -3594,7 +3594,7 @@ def test_patch_show_quote_file_reference_fails_main(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -3670,7 +3670,7 @@ def test_adversarial_engine_writes_fail_loud_in_main(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -3698,7 +3698,7 @@ def test_real_engine_writes_still_fail_loud_in_main(
     )
     assert rc == 1
     err = capsys.readouterr().err
-    assert "재앵커" in err and str(wt) in err
+    assert "대상 저장소를 다시 잡으세요" in err and str(wt) in err
     assert fake.calls == []
 
 
@@ -3712,7 +3712,7 @@ def test_reanchor_normalized_variants_in_main(pd, monkeypatch, tmp_path, capsys)
                    ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home)],
                    _enabled_conf(), fake)
     assert rc == 1
-    assert "재앵커" in capsys.readouterr().err
+    assert "대상 저장소를 다시 잡으세요" in capsys.readouterr().err
     assert fake.calls == []
 
 
@@ -4398,9 +4398,9 @@ def test_cleanup_failure_forbids_configured_fallback(pd, monkeypatch, tmp_path, 
     captured = capsys.readouterr()
     assert rc == 1
     assert [call["harness"] for call in fake.calls] == ["codex"]
-    assert "자동 폴백을 실행하지 않습니다" in captured.err
+    assert "자동 대체 동작을 실행하지 않습니다" in captured.err
     assert "아직 살아 있을 수 있어" in captured.err
-    assert "폴백:" not in captured.err
+    assert "대체 동작:" not in captured.err
     primary_raw = sorted((tmp_path / "raw").glob("pm_delegate_codex_*"))[0]
     assert "PARTIAL" in primary_raw.read_text(encoding="utf-8")
 
@@ -4418,7 +4418,7 @@ def test_dry_run_displays_configured_fallback_mapping(pd, monkeypatch, tmp_path,
     )
     out = capsys.readouterr().out
     assert rc == 0
-    assert "폴백: harness=claude model=opus reasoning=high" in out
+    assert "대체 하네스·모델: harness=claude model=opus reasoning=high" in out
     assert fake.calls == []
 
 
@@ -4452,7 +4452,7 @@ def test_quota_failure_loud_fallback_and_reply_provenance(
     captured = capsys.readouterr()
     assert rc == 0
     assert [call["harness"] for call in fake.calls] == ["codex", "claude"]
-    assert "폴백: codex→claude(opus) — 사유: 한도/레이트리밋" in captured.err
+    assert "대체 동작: codex→claude(opus) — 사유: 한도/레이트리밋" in captured.err
     assert "실행 provenance: fallback=claude(model=opus)" in captured.out
     assert captured.out.rstrip().endswith("폴백 완료")
     raw = list(outdir.glob("pm_delegate_*.txt"))
@@ -4518,8 +4518,8 @@ def test_fallback_timeout_message_uses_fallback_harness_value(
     captured = capsys.readouterr()
     assert rc == 1
     assert [call["timeout"] for call in fake.calls] == [3600, 14400]
-    assert "폴백 위임 turn 타임아웃(벽시계 백스톱 14400s)" in captured.err
-    assert "폴백 위임 turn 타임아웃(벽시계 백스톱 3600s)" not in captured.err
+    assert "대체 동작 위임 turn 타임아웃(벽시계 백스톱 14400s)" in captured.err
+    assert "대체 동작 위임 turn 타임아웃(벽시계 백스톱 3600s)" not in captured.err
 
 
 def test_completed_must_fix_does_not_fallback(pd, monkeypatch, tmp_path, capsys):
@@ -4547,7 +4547,7 @@ def test_unconfigured_quota_keeps_existing_fail_loud(pd, monkeypatch, tmp_path, 
     )
     assert rc == 1
     assert len(fake.calls) == 1
-    assert "폴백:" not in capsys.readouterr().err
+    assert "대체 동작:" not in capsys.readouterr().err
 
 
 def test_unknown_failure_does_not_fallback(pd, monkeypatch, tmp_path, capsys):
@@ -4561,7 +4561,7 @@ def test_unknown_failure_does_not_fallback(pd, monkeypatch, tmp_path, capsys):
     )
     assert rc == 1
     assert len(fake.calls) == 1
-    assert "폴백:" not in capsys.readouterr().err
+    assert "대체 동작:" not in capsys.readouterr().err
 
 
 def test_fallback_failure_stops_without_chain(pd, monkeypatch, tmp_path, capsys):
@@ -4580,7 +4580,7 @@ def test_fallback_failure_stops_without_chain(pd, monkeypatch, tmp_path, capsys)
     )
     assert rc == 1
     assert len(fake.calls) == 2
-    assert "2차 폴백 없음" in capsys.readouterr().err
+    assert "두 번째 대체 동작 없음" in capsys.readouterr().err
 
 
 def test_cli_full_override_skips_fallback_loudly(pd, monkeypatch, tmp_path, capsys):
@@ -4596,8 +4596,8 @@ def test_cli_full_override_skips_fallback_loudly(pd, monkeypatch, tmp_path, caps
     err = capsys.readouterr().err
     assert rc == 1
     assert [call["harness"] for call in fake.calls] == ["codex"]   # 폴백 미실행
-    assert "폴백 비발동" in err and "CLI 완전지정" in err            # 조용히 넘어가지 않는다
-    assert "폴백: codex→" not in err
+    assert "대체 동작 안 함" in err and "CLI 완전지정" in err            # 조용히 넘어가지 않는다
+    assert "대체 동작: codex→" not in err
 
 
 def test_fallback_identical_to_primary_is_loud_skip(pd, monkeypatch, tmp_path, capsys):
@@ -4617,7 +4617,7 @@ def test_fallback_identical_to_primary_is_loud_skip(pd, monkeypatch, tmp_path, c
     err = capsys.readouterr().err
     assert rc == 1
     assert len(fake.calls) == 1
-    assert "폴백 비발동" in err and "동일(codex/gpt-x)" in err
+    assert "대체 동작 안 함" in err and "동일(codex/gpt-x)" in err
 
 
 class _FakeStallKnobs:
@@ -4756,7 +4756,7 @@ def test_dry_run_shows_fallback_time_budget(pd, monkeypatch, tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert rc == 0
-    assert "폴백 시간 예산: 최악 primary 610s + 폴백 610s = 1220s" in out
+    assert "대체 동작 시간 예산: 최악 primary 610s + 대체 하네스 610s = 1220s" in out
 
 
 def test_dry_run_budget_reflects_opencode_watchdog_retries(pd, monkeypatch, tmp_path, capsys):
@@ -4774,7 +4774,7 @@ def test_dry_run_budget_reflects_opencode_watchdog_retries(pd, monkeypatch, tmp_
     )
     out = capsys.readouterr().out
     assert rc == 0
-    assert "폴백 시간 예산: 최악 primary 810s + 폴백 610s = 1420s" in out
+    assert "대체 동작 시간 예산: 최악 primary 810s + 대체 하네스 610s = 1420s" in out
     assert "opencode 는 첫-이벤트 워치독 재시도분 포함" in out
 
 
@@ -4789,7 +4789,7 @@ def test_dry_run_reports_fallback_skip_reason(pd, monkeypatch, tmp_path, capsys)
     )
     out = capsys.readouterr().out
     assert rc == 0
-    assert "폴백: 비발동 — CLI 완전지정" in out
+    assert "대체 동작: 안 함 — CLI 완전지정" in out
 
 
 def test_help_documents_classification_coverage_boundary(pd):
@@ -4797,9 +4797,9 @@ def test_help_documents_classification_coverage_boundary(pd):
     help_text = delegate_cmd.build_arg_parser().format_help()
     assert "codex 실근거와 claude 2.1.220 실측/바이너리 enum" in help_text
     assert "opencode 1.18.4 provider passthrough 실측" in help_text
-    assert "opencode 무진단 연결/fetch 침묵은 첫-이벤트 stall 축" in help_text
+    assert "opencode 무진단 연결/fetch 침묵은 첫 이벤트 시간 제한(stall)" in help_text
     # 시간 예산 표기는 하네스별 실예산 — "2×timeout" 같은 거짓 단일 계수 금지(codex R2).
-    assert "primary·폴백 각 하네스 예산의 합" in help_text
+    assert "primary·대체 하네스 각 예산의 합" in help_text
     assert "2×timeout" not in help_text
 
 
@@ -4850,7 +4850,7 @@ def test_fallback_raw_points_back_to_primary_raw(pd, monkeypatch, tmp_path, caps
 WARNING_HEADER = "=== ⚠ 위임 범위 밖 변경 ==="
 SCOPE_DEGRADED_HEADER = "=== ⚠ 위임 범위 판정 축 강등 ==="
 ADAPTER_WARNING_HEADER = "=== ⚠ 역할 공통 금지 위반: 어댑터 편집 ==="
-ADAPTER_DEGRADED_HEADER = "=== ⚠ 어댑터 편집 경고 축 강등 ==="
+ADAPTER_DEGRADED_HEADER = "=== ⚠ 어댑터 편집 경고를 판정하지 못해 수준 낮춤 ==="
 TICKET_ID = "T-9999"
 
 
@@ -5623,7 +5623,7 @@ def test_midrun_io_error_does_not_fallback(pd, monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 1                                              # fail-loud 유지
     assert len(fake.calls) == 1                                 # 두 번째 호출 없음
-    assert "폴백:" not in captured.err
+    assert "대체 동작:" not in captured.err
     assert "위임 하네스 실패(rc=1)" in captured.err
     # 사유(호출 후 I/O·자동 폴백 안 함)는 감사 raw 에 박제된다.
     raws = [path.read_text(encoding="utf-8") for path in outdir.glob("pm_delegate_*.txt")]

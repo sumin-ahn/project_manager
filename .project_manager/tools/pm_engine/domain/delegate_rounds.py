@@ -137,19 +137,19 @@ _CLUSTER_BUDGET_ORDER = (
 
 
 _CLUSTER_LEDGER_ABSENT = (
-    "묶음 장부가 없습니다: {cluster} — 고정 라운드 수열은 장부가 소유하고, 준비는 "
+    "묶음 기록이 없습니다: {cluster} — 고정 라운드 수열은 묶음 기록이 소유하고, 준비는 "
     "그 선언만 읽습니다(선언 없는 묶음은 판정 입력이 아니라 정지 사유입니다).\n"
-    "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 장부를 확인하고, "
+    "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 묶음 기록을 확인하고, "
     "없으면 `board.py cluster new <ticket-group> --tickets <T-...> --task <task>`"
     "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가) 으로 선언하세요 — 통합 "
     "브랜치를 둘 코드 트리는 명시가 필수입니다."
 )
 _CLUSTER_BUDGET_UNDECLARED = (
-    "묶음 라운드 예산이 선언되지 않았습니다: {cluster} · 장부 `budget` 의 {key} 가 없거나 "
+    "묶음 라운드 예산이 선언되지 않았습니다: {cluster} · 묶음 기록 `budget` 의 {key} 가 없거나 "
     "정수가 아닙니다\n"
-    "  · 예산은 장부를 만들 때 박습니다(`cluster new` · 발행이 만드는 크기 1 장부도 같은 "
+    "  · 예산은 묶음 기록을 만들 때 박습니다(`cluster new` · 발행이 만드는 크기 1 묶음 기록도 같은 "
     "기본값) — 없는 값을 기본값으로 지어내지 않습니다.\n"
-    "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 확인하고 장부의 "
+    "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 확인하고 묶음 기록의 "
     "`budget` 4키를 채운 뒤 다시 실행하세요."
 )
 

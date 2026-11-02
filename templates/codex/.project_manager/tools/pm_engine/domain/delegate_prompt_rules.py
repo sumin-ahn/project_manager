@@ -10,24 +10,24 @@ from pm_engine.domain import review_form
 # 이 상수를 복제하지 않고 "출력을 그대로 전달"만 지시한다(no-hand-retyping 원칙). 빈틈 보고
 # 형식이 verify 블록·사유 값을 인용하므로 그 상수들 **뒤에** 둔다(문언 drift 0).
 PM_REVIEW_FIX_SCOPE_NOTICE = f"""\
-## 수정 범위 제약 (이 delta 공통)
+## 수정 범위 제약 (위 수락한 지적 공통)
 
 - 위에 나열한 finding ID 와 각 `허용 수정 범위` 안에서만 고친다. 그 밖의 코드·테스트·문서는
   더 나은 방법이 보여도 이번 라운드에서 건드리지 않는다.
-- 처방이나 명세에 빈틈이 있으면 스스로 메우지 않는다. 처방대로 따르면 다른 결함이 생기는
+- 수정 방법이나 명세에 빈틈이 있으면 스스로 메우지 않는다. 수정 방법대로 따르면 다른 결함이 생기는
   상호작용도 빈틈이다. 구현을 멈추고 아래 형식으로 라운드 파일에 적은 뒤 종료한다.
-  보강 처방이 필요하면 현재 티켓을 멈추고 사용자에게 보고한다.
+  수정 방법을 보강해야 하면 현재 티켓을 멈추고 사용자에게 보고한다.
 - 빈틈 보고로 끝난 라운드는 정상 산출이고 성공 종료다. 빈 손으로 끝내지 않으려고
-  처방 밖 구현을 얹지 않는다.
+  수정 방법 밖 구현을 얹지 않는다.
 - `허용 수정 범위`가 `{review_form.PM_REVIEW_PM_OWNED_SCOPE_PREFIX}`로 시작하는 finding은 PM 소유다.
   developer는 구현하지 않고 해당 verify 행을 machine_verifiable=false ·
-  reason={review_form.PM_REVIEW_VERIFY_PM_OWNED_REASON} · expected=<PM 완료 기준 실값>으로 채운다. scope 표식과
-  verify 선언 중 하나만 있으면 회수가 거부된다.
+  reason={review_form.PM_REVIEW_VERIFY_PM_OWNED_REASON} · expected=<PM 완료 기준 실값>으로 채운다. scope 표시와
+  verify 선언 중 하나만 있으면 돌려받기가 거부된다.
 
 빈틈 보고 형식:
-- 대상: 어느 finding ID 의 어느 처방인가
-- 빈틈: 처방이 정하지 않은 지점은 무엇인가
-- 충돌: 처방대로 하면 무엇이 깨지는가 (재현 커맨드·파일:라인·관측값)
+- 대상: 어느 finding ID 의 어느 수정 방법인가
+- 빈틈: 수정 방법이 정하지 않은 지점은 무엇인가
+- 충돌: 수정 방법대로 하면 무엇이 깨지는가 (재현 커맨드·파일:라인·관측값)
 - 대안: 검토한 선택지와 각각의 영향 (권고까지만 쓰고 적용하지 않는다)
 - 기계 선언: 그 ID 의 {review_form.PM_REVIEW_VERIFY_BLOCK} 행을 **지우지 말고** machine_verifiable=false ·
   reason={review_form.PM_REVIEW_VERIFY_GAP_REASON} 로 채운다(expected 에 빈틈 요지 한 줄). 이 행이 없으면
@@ -44,7 +44,7 @@ def _prohibition(adapter_directories: Sequence[str]) -> str:
     )
     return (
         "금지: commit/push/force/reset/rm 등 git 비가역 조작·board 조작·어댑터 디렉토리"
-        f"({adapter_definition}) 수정을 하지 마라(PM 이 결과 회수 후 담당). "
+        f"({adapter_definition}) 수정을 하지 마라(PM 이 결과를 돌려받은 뒤 담당). "
         "결과는 최종 텍스트로 보고하라."
     )
 
@@ -55,7 +55,7 @@ _ROLE_IDENTITIES: dict[str, str] = {
     "researcher":
         "너는 이 프로젝트의 researcher 서브에이전트다 — 조사·분석만 하고 코드를 수정하지 않는다.",
     "architect":
-        "너는 이 프로젝트의 architect 서브에이전트다 — 설계 초안을 낸다(발행은 PM/사용자 게이트).",
+        "너는 이 프로젝트의 architect 서브에이전트다 — 설계 초안을 낸다(발행은 PM 결정과 사용자 승인).",
     "code-reviewer":
         "너는 이 프로젝트의 code-reviewer 서브에이전트다 — 변경을 검토하고 테스트를 실행해 판정한다"
         "(코드를 수정하지 않는다).",

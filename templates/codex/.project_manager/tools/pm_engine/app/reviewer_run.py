@@ -181,7 +181,7 @@ def run_review(
         except raw_output.RawRecordAlreadyFinished as exc:
             # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 리뷰
             # 결과는 실패로 바꾸지 않는다(회신은 raw 파일에 이미 박제됨).
-            print(f"경고: 장부 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
+            print(f"경고: 기록 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
                   file=sys.stderr)
         raw_finalized = True
         return {

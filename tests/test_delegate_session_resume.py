@@ -1094,7 +1094,7 @@ def test_infrastructure_failure_goes_to_fallback_without_a_fresh_rerun(
     assert rc == 0 and len(fake.calls) == 2           # 재사용 1 + 폴백 1 (재실행 0)
     assert [call["harness"] for call in fake.calls] == ["claude", "codex"]
     assert "세션 재사용 실패" not in err               # 재사용 축 오진단 없음
-    assert "폴백: claude→codex" in err
+    assert "대체 동작: claude→codex" in err
     assert _PREAMBLE_MARKER in fake.calls[1]["stdin_text"]   # 폴백은 full payload
 
 
@@ -1157,7 +1157,7 @@ def test_dry_run_previews_the_resume_round_without_sending(pd, monkeypatch, tmp_
 
     assert rc == 0 and fake.calls == []
     assert f"세션 재사용: session_id={SESSION_ID}" in out
-    assert f"장부 레코드={record_id}" in out
+    assert f"raw 출력 기록 항목={record_id}" in out
     assert f"--resume {SESSION_ID}" in out               # argv 미리보기
     assert "직전 지적 A" in out and "해소 주장 본문" in out  # 보낼 본문 = delta
     assert _PREAMBLE_MARKER not in out
@@ -1200,7 +1200,7 @@ def test_absent_ledger_is_reported_before_any_lock_is_taken(pd, tmp_path, capsys
     err = capsys.readouterr().err
 
     assert plan is None
-    assert "세션 재사용 미적용" in err and "raw 장부 없음" in err
+    assert "세션 재사용 미적용" in err and "raw 출력 기록 없음" in err
     assert not out_dir.exists()                      # 디렉터리·lock 신설 0
 
 
@@ -1275,7 +1275,7 @@ def test_delta_payload_consumes_only_structured_fields(pd):
     assert "rev-1" in payload
     missing = delegate_run_rules.build_resume_delta_payload(
         must_fix_items=(), base_rev=None, task_text="본문")
-    assert "장부에 기록 없음" in missing
+    assert "- 기준 rev: 기록 없음" in missing
 
 
 # ══ 실 위임 배선 (ticket·base_rev 가 장부까지 흐르는가) ═══════════════════════
