@@ -289,9 +289,9 @@ def lint_render_leak(home) -> list[tuple[str, str, str]]:
                     cause = (f"@render 관리 path — 출하 템플릿 사본과 불일치"
                              f"({', '.join(drifted_targets)}): 루트 어댑터 수정 후 "
                              "`pm_update --all-targets` 미전파 가능성 (또는 overlay/local.conf 채널 "
-                             "누락·미배선 토큰)")
+                             "누락·미등록 토큰)")
                 else:
-                    cause = "@render 관리 path — overlay/local.conf 채널 누락 또는 미배선 토큰"
+                    cause = "@render 관리 path — overlay/local.conf 채널 누락 또는 미등록 토큰"
                 issues.append((
                     rel_posix, "render-leak",
                     f"render 산출물에 미해소 토큰 잔존: {', '.join(leaked)} ({cause})"))

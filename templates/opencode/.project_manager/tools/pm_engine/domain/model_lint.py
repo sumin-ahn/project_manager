@@ -86,7 +86,7 @@ def lint_same_model(conf: dict[str, str]) -> list[tuple[str, str]]:
                 f"delegate.{label}(model={dev}) 와 delegate.code-reviewer(model={reviewer}) 가 "
                 f"같은 모델로 해소됩니다{via} — 위임은 매번 새 세션이라 전사 공유가 없어 "
                 "generate≠evaluate 자체는 성립하지만, 모델이 다르면 같은 맹점을 공유하지 않아 "
-                "검출력이 는다. 선택 가능하면 서로 다른 모델을 권장한다(모델 선택이 제약된 형상도 "
+                "검출력이 는다. 선택 가능하면 서로 다른 모델을 권장한다(모델 선택이 제약된 구성도 "
                 "정상·하네스 무관·never-block)."
             ))
     return findings

@@ -219,7 +219,7 @@ def find_ticket(home, tid: str) -> tuple[str, Path]:
         canonical = _canonical_ticket_id(result[1])
         if canonical and canonical != tid:
             print(
-                f"⚠ 정확 일치 티켓 없음 — {result[1].name} (canonical {canonical}) 로 폴백",
+                f"⚠ 정확 일치 티켓 없음 — {result[1].name} (canonical {canonical}) 로 대체",
                 file=sys.stderr,
             )
         return result

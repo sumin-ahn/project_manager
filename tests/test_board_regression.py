@@ -873,7 +873,7 @@ def test_scoped_run_writes_no_record_and_no_delta(board, monkeypatch, capsys):
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args(touches="tests/test_board_regression.py")) == 0
 
     out = capsys.readouterr().out
-    assert "push 게이트 아님" in out
+    assert "push 통과 조건 아님" in out
     assert "직전" not in out
     assert _flag(board)["collected"] == 7577, "스코프 실행이 FULL 기록을 덮었다"
 
@@ -952,7 +952,7 @@ def test_run_falls_back_when_recorded_anchor_is_gone(board, monkeypatch, tmp_pat
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO)
-    assert "앵커" in capsys.readouterr().err
+    assert "대상 저장소" in capsys.readouterr().err
 
 
 def test_recorded_anchor_is_absolute(board, monkeypatch, tmp_path):
@@ -1574,7 +1574,7 @@ def test_done_ticket_residue_does_not_downgrade_a_full_run(board, monkeypatch, c
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    assert "강등" not in capsys.readouterr().out
+    assert "수준을 낮춥니다" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
 
@@ -1599,7 +1599,7 @@ def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, ca
     with pytest.raises(ValueError, match="frontmatter 손상"):
         regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args())
     out, _err = capsys.readouterr()
-    assert "강등합니다" not in out
+    assert "수준을 낮춥니다" not in out
     assert fake.calls == []
 
 
@@ -1613,7 +1613,7 @@ def test_full_run_is_downgraded_during_an_active_cycle(board, monkeypatch, capsy
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     out = capsys.readouterr().out
-    assert "활성 리뷰 사이클 [T-0002]" in out and "강등" in out
+    assert "활성 리뷰 사이클 [T-0002]" in out and "수준을 낮춥니다" in out
     assert "--final" in out                       # 수렴 후 FULL 경로를 함께 안내
     assert "regression(scoped, 1 touches)" in out
     assert '-k "pay"' in fake.calls[0]["args"][0]
@@ -1628,7 +1628,7 @@ def test_final_flag_keeps_the_full_gate(board, monkeypatch, capsys):
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args(final=True)) == 0
     out = capsys.readouterr().out
-    assert "강등" not in out
+    assert "수준을 낮춥니다" not in out
     assert "-k" not in fake.calls[0]["args"][0]
     assert _flag(board)["scope"] == "full"        # push 게이트 플래그 기록
 
@@ -1640,7 +1640,7 @@ def test_closed_cycle_runs_full_without_the_flag(board, monkeypatch, capsys):
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    assert "강등" not in capsys.readouterr().out
+    assert "수준을 낮춥니다" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
 
@@ -1653,7 +1653,7 @@ def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: [])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    assert "강등" not in capsys.readouterr().out
+    assert "수준을 낮춥니다" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
 
@@ -1696,7 +1696,7 @@ def test_glob_mismatched_gate_never_downgrades_a_full_run(board, monkeypatch, ca
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     assert regression._active_review_gates(pm_paths.home_at(board.REPO)) == []
-    assert "강등" not in capsys.readouterr().out
+    assert "수준을 낮춥니다" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
 
@@ -1710,7 +1710,7 @@ def test_exact_ticket_gate_still_downgrades(board, monkeypatch, capsys):
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     out = capsys.readouterr().out
-    assert "활성 리뷰 사이클 [T-0036]" in out and "강등" in out
+    assert "활성 리뷰 사이클 [T-0036]" in out and "수준을 낮춥니다" in out
     assert '-k "pay"' in fake.calls[0]["args"][0]     # 본래 티켓의 touches 로 좁힌다
 
 
@@ -1740,7 +1740,7 @@ def test_ticket_id_gate_with_empty_touches_stays_full(board, monkeypatch, capsys
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    assert "강등" not in capsys.readouterr().out
+    assert "수준을 낮춥니다" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
 
@@ -1767,8 +1767,8 @@ def test_one_gate_without_touches_cancels_the_whole_downgrade(
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     out, err = capsys.readouterr()
-    assert "강등합니다" not in out                       # 부분 강등 안내가 뜨지 않는다
-    assert "T-0003" in err and "강등을 취소" in err       # 미해소 게이트를 지목한 사유 1줄
+    assert "수준을 낮춥니다" not in out                       # 부분 강등 안내가 뜨지 않는다
+    assert "T-0003" in err and "수준 낮춤을 취소" in err       # 미해소 게이트를 지목한 사유 1줄
     assert "-k" not in fake.calls[0]["args"][0]         # FULL 그대로 돈다
     assert _flag(board)["scope"] == "full"              # push 게이트 플래그 = FULL
 
@@ -1786,7 +1786,7 @@ def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, cap
     with pytest.raises(ValueError, match="frontmatter 손상"):
         regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args())
     out, _err = capsys.readouterr()
-    assert "강등합니다" not in out
+    assert "수준을 낮춥니다" not in out
     assert fake.calls == []
 
 
@@ -1799,7 +1799,7 @@ def test_all_gates_resolved_still_downgrade_to_the_union(board, monkeypatch, cap
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     out = capsys.readouterr().out
-    assert "활성 리뷰 사이클 [T-0002, T-0003]" in out and "강등합니다" in out
+    assert "활성 리뷰 사이클 [T-0002, T-0003]" in out and "수준을 낮춥니다" in out
     scoped = fake.calls[0]["args"][0]
     assert '-k "ledger or pay"' in scoped               # 두 게이트의 합집합
     assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()           # 강등 실행은 게이트 플래그를 안 쓴다
@@ -1854,7 +1854,7 @@ def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, cap
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args(touches="src/pay.py")) == 0
     out = capsys.readouterr().out
-    assert "강등" not in out and "regression(scoped, 1 touches)" in out
+    assert "수준을 낮춥니다" not in out and "regression(scoped, 1 touches)" in out
 
 
 def test_pre_push_hook_runs_the_final_full_gate(board, monkeypatch):
@@ -2223,7 +2223,7 @@ def test_current_hook_still_downgrades_during_an_active_cycle(
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
 
-    assert "targeted 로 강등합니다" in capsys.readouterr().out
+    assert "targeted 로 수준을 낮춥니다" in capsys.readouterr().out
     assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()
 
 
@@ -2407,9 +2407,9 @@ def test_scalar_touches_cancels_the_downgrade_instead_of_scoping_by_characters(
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
 
     out, err = capsys.readouterr()
-    assert "강등을 취소" in err and "T-0002" in err
+    assert "수준 낮춤을 취소" in err and "T-0002" in err
     assert "형식을 확정하지 못했습니다" in err
-    assert "강등합니다" not in out
+    assert "수준을 낮춥니다" not in out
     assert '-k "' not in fake.calls[0]["args"][0]     # 문자 스코프가 서지 않았다
     assert _flag(board)["scope"] == "full"
 

@@ -618,7 +618,7 @@ def test_rollback_preserves_and_warns_on_post_backfill_root_edit(
     assert ".gitattributes" in _porcelain(board_dir), \
         "보존해야 할 제3자 루트 파일 변경이 index/워킹트리에서 사라짐."
     err = capsys.readouterr().err
-    assert "스냅샷 이후 제3자 변경을 보존했다" in err, err
+    assert "복사본을 뜬 뒤의 제3자 변경을 보존했다" in err, err
     assert "덮어쓰지 않음" in err, err
 
 

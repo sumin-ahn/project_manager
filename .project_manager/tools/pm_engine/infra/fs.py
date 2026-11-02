@@ -474,7 +474,7 @@ def _build_windows_rename_api() -> WindowsRenameApi:
         set_file_information = kernel32.SetFileInformationByHandle
     except AttributeError as exc:      # 이 API 자체가 없는 세대 — 조용히 강등하지 않는다.
         raise AtomicReplaceError(
-            "원자 교체 수단 부재 — 이 Windows 세대에는 SetFileInformationByHandle 이 없어 "
+            "원자 교체 수단 부재 — 이 Windows 버전에는 SetFileInformationByHandle 이 없어 "
             "POSIX 의미 rename 을 쓸 수 없다. `os.replace` 로 내려앉지 않는다: 그 수단은 열린 "
             "리더가 있으면 WinError 5 로 막혀 락-free 읽기 보장을 내지 못한다"
         ) from exc

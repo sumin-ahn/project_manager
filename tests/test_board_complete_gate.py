@@ -890,7 +890,7 @@ def test_cluster_close_binding_requires_closing_ledger(live_board, capsys, monke
         assert board_ticket.cmd_complete(pm_paths.home_at(live_board.REPO), exact) == 1, status
         err = capsys.readouterr().err
         if status == "closed":
-            assert "장부는 closed인데" in err, err
+            assert "묶음 기록은 closed인데" in err, err
         else:
             assert ("closing" in err and f"(현재 {status})" in err
                     and "ticket_finish.py --cluster C-gate" in err), err
@@ -1015,7 +1015,7 @@ def test_cmd_complete_blocks_unchecked_dod_and_keeps_ticket_claimed(
     assert path.exists(), "차단됐는데 티켓이 claimed/ 에서 사라짐"
     assert not list((pm_paths.tickets_dir(pm_paths.home_at(live_board.REPO)) / "done").glob("T-9001*")), \
         "차단됐는데 done/ 으로 이동함"
-    assert "sync gate failed" in err and "DoD 미체크" in err
+    assert "sync check failed" in err and "DoD 미체크" in err
 
 
 def test_cmd_complete_passes_with_checked_and_deferred_dod(live_board):
@@ -1261,7 +1261,7 @@ def test_round_name_violation_is_information_only(live_board, capsys):
     rc = board_ticket.cmd_complete(pm_paths.home_at(live_board.REPO), _complete_args("T-9104"))
 
     assert rc == 1
-    assert "리뷰 잔여를 판정할 수 없습니다" in capsys.readouterr().err
+    assert "남은 리뷰 항목을 판정할 수 없습니다" in capsys.readouterr().err
 
 
 def test_harvested_rounds_in_sequence_pass_the_gate(live_board):

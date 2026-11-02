@@ -744,7 +744,7 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
         lambda path: reads.append(path) or (identity_args.LEDGER_OK, []),
     )
     tree, problem = cluster_code_tree.resolve_code_tree(pm_paths.home_at(REPO), "C-guidance")
-    assert tree is None and "미결속" in problem and "cluster new" in problem
+    assert tree is None and "연결되지 않은" in problem and "cluster new" in problem
     assert reads == [] and ledger == {"branch": None, "base_branch": "main"}
 
     # 기준 브랜치 부재의 기존 단계별 차단도 유지한다.

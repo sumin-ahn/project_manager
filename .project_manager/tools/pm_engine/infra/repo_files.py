@@ -286,7 +286,7 @@ def list_repo_owned_entries(
                 warnings.warn(
                     "repo-owned tracked_only 열거가 빈 결과지만 디스크 subtree는 비어 있지 않음 "
                     f"(checkout={checkout_path}, subtree={norm!r}); git add/ignore 상태와 "
-                    "checkout 루트 정합을 확인하라",
+                    "checkout 루트가 일치하는지 확인하라",
                     RepoFilesEmptyWarning,
                     stacklevel=2,
                 )
@@ -309,7 +309,7 @@ def list_repo_owned_entries(
             else "git ls-files 실패"
         )
         warnings.warn(
-            f"repo-owned 파일 열거가 {reason}로 filesystem 전수 순회에 강등됨 "
+            f"repo-owned 파일 열거가 {reason}로 filesystem 전수 순회로 수준이 낮춰짐 "
             f"(checkout={checkout_path}, subtree={norm!r}, mode={mode}, rc={fallback_rc}); "
             "추적/ignore 보장을 적용할 수 없음",
             RepoFilesFallbackWarning,

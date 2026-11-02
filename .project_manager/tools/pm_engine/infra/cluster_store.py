@@ -94,10 +94,10 @@ def all_clusters_strict(home) -> tuple[list[dict[str, Any]], str | None]:
     for path in sorted(directory.glob(f'{cluster_rules.CLUSTER_ID_PREFIX}*.md')):
         loaded = ticket_store.load_ticket_soft(home, path)
         if loaded is None:
-            return ([], f'cluster 장부를 읽지 못했다: {pm_paths._rel_to_repo(home, path)} — 귀속 유일성을 전수 확인할 수 없어 정지한다(장부를 고친 뒤 다시 실행하라)')
+            return ([], f'묶음 기록 파일을 읽지 못했다: {pm_paths._rel_to_repo(home, path)} — 귀속 유일성을 전수 확인할 수 없어 정지한다(묶음 기록 파일을 고친 뒤 다시 실행하라)')
         fm = loaded[0]
         if not str(fm.get('id') or '').strip():
-            return ([], f'cluster 장부에 id 선언이 없다: {pm_paths._rel_to_repo(home, path)} — 귀속 유일성을 전수 확인할 수 없어 정지한다(장부를 고친 뒤 다시 실행하라)')
+            return ([], f'묶음 기록 파일에 id 선언이 없다: {pm_paths._rel_to_repo(home, path)} — 귀속 유일성을 전수 확인할 수 없어 정지한다(묶음 기록 파일을 고친 뒤 다시 실행하라)')
         out.append(fm)
     return (out, None)
 

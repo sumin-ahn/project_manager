@@ -43,10 +43,10 @@ def _print_read_anchor(home, *, subcommand: str, pm_home: Path | None=None) -> N
         role = 'PM 홈'
     else:
         role = '역할 미상'
-    line = f'repo 앵커: {anchor} ({role})'
+    line = f'대상 저장소: {anchor} ({role})'
     if pm_home is not None:
         inputs = board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]
-        line += f' → PM 입력 앵커: {pm_home} (PM 홈 폴백: {inputs})'
+        line += f' → PM 입력 대상 저장소: {pm_home} (PM 홈 대체 입력: {inputs})'
     print(line, flush=True)
 
 def _guard_worktree_misanchor(home, action: str) -> bool:
@@ -57,7 +57,7 @@ def _guard_worktree_misanchor(home, action: str) -> bool:
     pm_home = pm_paths._pm_home_worktree_misanchor(home)
     if pm_home is None:
         return False
-    print(f'[중단] `{action}` 을(를) worktree(코드 전용) 트리에서 실행했습니다 — board 상태는 PM 홈이 소유합니다. 이대로면 이 worktree 에 stray 티켓/log 를 잘못 만듭니다.\n  → PM 홈에서 실행하세요:  cd {pm_home}\n  (현재 앵커: {anchor})', file=sys.stderr)
+    print(f'[중단] `{action}` 을(를) worktree(코드 전용) 트리에서 실행했습니다 — board 상태는 PM 홈이 소유합니다. 이대로면 이 worktree 에 stray 티켓/log 를 잘못 만듭니다.\n  → PM 홈에서 실행하세요:  cd {pm_home}\n  (현재 대상 저장소: {anchor})', file=sys.stderr)
     return True
 
 def _write_machine_line(text: str) -> None:

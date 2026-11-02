@@ -282,8 +282,8 @@ def test_every_read_subcommand_surfaces_real_worktree_anchor(
     b.main(_read_argv(subcommand))
     first_line = capsys.readouterr().out.splitlines()[0]
     assert first_line == (
-        f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {pm_home} "
-        f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]})"
+        f"대상 저장소: {worktree} (worktree) → PM 입력 대상 저장소: {pm_home} "
+        f"(PM 홈 대체 입력: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND[subcommand]})"
     )
 
 
@@ -308,8 +308,8 @@ def test_show_from_boardless_worktree_reads_single_ledger_owner(
     assert b.main(["show", "T-0100"]) == 0
     captured = capsys.readouterr()
     assert captured.out.splitlines()[0] == (
-        f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {pm_home} "
-        f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
+        f"대상 저장소: {worktree} (worktree) → PM 입력 대상 저장소: {pm_home} "
+        f"(PM 홈 대체 입력: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
     )
     assert "-- T-0100 (done/) --" in captured.out
     assert "ticket not found" not in (captured.out + captured.err)
@@ -407,7 +407,7 @@ def test_worktree_lint_output_equals_pm_home_and_resolves_pm_wiki_targets(
     assert wt_result.err == pm_result.err
     assert "[dangling-wikilink] ADR-0001" not in wt_result.out
     assert wt_result.out.splitlines()[0].endswith(
-        f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['lint']})"
+        f"(PM 홈 대체 입력: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['lint']})"
     )
     assert pm_paths.home_at(b.REPO) == pm_paths.home_at(worktree)
 
@@ -432,7 +432,7 @@ def test_worktree_idea_list_reads_pm_home_idea_content(
     captured = capsys.readouterr()
     assert "PM home idea" in captured.out
     assert "(no ideas)" not in captured.out
-    assert captured.out.splitlines()[0].endswith("(PM 홈 폴백: ideas)")
+    assert captured.out.splitlines()[0].endswith("(PM 홈 대체 입력: ideas)")
 
 
 def _make_unresolvable_worktree(tmp_path: Path) -> Path:
@@ -537,10 +537,10 @@ def test_boardless_worktree_owner_comes_from_its_own_git_declaration(
     assert b.main(["show", "T-0100"]) == 0
     captured = capsys.readouterr()
     assert captured.out.splitlines()[0] == (
-        f"repo 앵커: {worktree} (worktree) → PM 입력 앵커: {git_home} "
-        f"(PM 홈 폴백: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
+        f"대상 저장소: {worktree} (worktree) → PM 입력 대상 저장소: {git_home} "
+        f"(PM 홈 대체 입력: {board_command_rules._READ_PM_INPUTS_BY_SUBCOMMAND['show']})"
     )
-    assert f"PM 입력 앵커: {path_home}" not in captured.out
+    assert f"PM 입력 대상 저장소: {path_home}" not in captured.out
 
 
 def test_read_anchor_labels_only_real_board_owner_as_pm_home(
@@ -550,14 +550,14 @@ def test_read_anchor_labels_only_real_board_owner_as_pm_home(
     pm_home, _worktree = pm_home_worktree
     _isolate_board_module(b, monkeypatch, pm_home)
     assert b.main(["list"]) == 0
-    assert capsys.readouterr().out.splitlines()[0] == f"repo 앵커: {pm_home} (PM 홈)"
+    assert capsys.readouterr().out.splitlines()[0] == f"대상 저장소: {pm_home} (PM 홈)"
 
     plain_clone = pm_home.parent / "plain-clone"
     plain_clone.mkdir()
     _git(["init", "-q", "-b", "main"], plain_clone)
     _isolate_board_module(b, monkeypatch, plain_clone)
     assert b.main(["list"]) == 0
-    assert capsys.readouterr().out.splitlines()[0] == f"repo 앵커: {plain_clone} (역할 미상)"
+    assert capsys.readouterr().out.splitlines()[0] == f"대상 저장소: {plain_clone} (역할 미상)"
 
 
 @pytest.mark.parametrize("subcommand", sorted(board_command_rules._MUTATION_SUBCOMMANDS))
@@ -920,9 +920,9 @@ def test_solo_board_in_same_repo_show_is_unchanged(tmp_path, monkeypatch, capsys
 
     assert b.main(["show", "T-0100"]) == 0
     captured = capsys.readouterr()
-    assert captured.out.splitlines()[0] == f"repo 앵커: {solo} (PM 홈)"
+    assert captured.out.splitlines()[0] == f"대상 저장소: {solo} (PM 홈)"
     assert "-- T-0100 (done/) --" in captured.out
-    assert "PM 홈 폴백" not in captured.out
+    assert "PM 홈 대체 입력" not in captured.out
     assert captured.err == ""
 
 
@@ -1008,7 +1008,7 @@ def test_read_anchor_is_first_line_even_when_stderr_present(tmp_path):
         text=True, encoding="utf-8", errors="replace",
         check=False, stdin=subprocess.DEVNULL,
     ).stdout
-    assert result.stdout.splitlines()[0].startswith("repo 앵커: ")
-    assert merged.splitlines()[0].startswith("repo 앵커: "), (
+    assert result.stdout.splitlines()[0].startswith("대상 저장소: ")
+    assert merged.splitlines()[0].startswith("대상 저장소: "), (
         f"stderr 가 앵커보다 먼저 나왔다(버퍼링 회귀) — 첫 줄: {merged.splitlines()[0]!r}"
     )

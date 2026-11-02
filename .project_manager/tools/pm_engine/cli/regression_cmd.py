@@ -194,7 +194,7 @@ def cmd_regression(home, args: argparse.Namespace) -> int:
             if cycle_touches:
                 touches = cycle_touches
                 print(f"regression: 활성 리뷰 사이클 [{', '.join(gates)}] — FULL 요청을 "
-                      "touches targeted 로 강등합니다 (수렴 후 FULL 은 `regression run --final`).")
+                      "touches targeted 로 수준을 낮춥니다 (마무리 뒤 FULL 은 `regression run --final`).")
         scoped = bool(touches)
         if not scoped:
             regression_flag, mode = regression_store._resolve_regression_flag(home, cwd)
@@ -248,7 +248,7 @@ def cmd_regression(home, args: argparse.Namespace) -> int:
             # 수집 증감도 FULL 게이트 기록의 축이다 — 스코프는 touches 매칭분만 도는 게
             # 정상이라 FULL 기록과 견주면 상시 가짜 증감이 된다(기록을 쓰지도 읽지도 않는다).
             print(f"regression(scoped, {len(touches)} touches): {status} (rc={rc}{rc5_note}) "
-                  "— dev 피드백 · push 게이트 아님")
+                  "— dev 피드백 · push 통과 조건 아님")
             return 0 if status == "pass" else 1
         recorded_rc = rc
         if git._git_head_at(cwd) != expected_head:
@@ -360,7 +360,7 @@ def _livegate_cwd(home, override: str | None = None, session: str | None = None)
         return slot
     sys.exit(
         "[중단] live-test cwd 미해소 — 이 세션의 활성 슬롯을 특정할 수 없다(활성 슬롯이 "
-        "여럿이거나 이 홈이 아직 슬롯 행으로 등록되지 않았다). PM 홈으로 침묵 폴백하면 "
+        "여럿이거나 이 홈이 아직 슬롯 행으로 등록되지 않았다). PM 홈으로 말없이 대체하면 "
         "tests 없는 트리에서 broken slot 을 수집해 false fail 이 되므로 거부한다. "
         "`--task <task>`(폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)로 실행하거나 "
         f"`--cwd <worktree 절대경로>` 로 직접 지정하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
@@ -380,7 +380,7 @@ def _refuse_release_for_engine_drift(home, flag: Path, cwd: str) -> int:
     changes = update_plan.drift_changes(home, home.root)
     if changes is None:
         print("live-test: 경고 — 실행 엔진 사본 drift 판정 불능(upstream 미설정/URL/경로 미존재/"
-              "manifest 부재) — 이 게이트는 이 형상에 적용되지 않는다(무차단). upstream 을 등록하려면 "
+              "manifest 부재) — 이 통과 조건은 이 구성에 적용되지 않는다(무차단). upstream 을 등록하려면 "
               "python3 .project_manager/tools/pm_update.py --dry-run 안내를 따르세요.",
               file=sys.stderr)
         return 0
@@ -466,8 +466,8 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
         # 우회 경로를 현행화하지 못한 상태라 release wave 를 돌리지 않고 fail-closed 한다.
         problems = completion_gate._sync_release_must_fix_marker(home, flag)
     except OSError as exc:
-        print("live-test: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
-              f"({type(exc).__name__}: {exc}). 장부/`.local` 권한을 복구한 뒤 다시 실행하세요.",
+        print("live-test: fail — 남은 must-fix 표시를 원자 갱신할 수 없어 차단 "
+              f"({type(exc).__name__}: {exc}). 기록 파일/`.local` 권한을 복구한 뒤 다시 실행하세요.",
               file=sys.stderr)
         return 1
     if problems:

@@ -169,7 +169,7 @@ def test_read_dispatch_preserves_code_and_pm_home(tmp_path, monkeypatch, capsys)
     assert read_home.board_root == owner_board
     assert read_home.local_conf == owner / ".project_manager" / "local.conf"
     assert read_home.local_dir == owner / ".project_manager" / ".local"
-    assert capsys.readouterr().out.splitlines()[0].startswith(f"repo 앵커: {code_root} (worktree)")
+    assert capsys.readouterr().out.splitlines()[0].startswith(f"대상 저장소: {code_root} (worktree)")
 
     resolutions.append(pm_paths._ReadBoardResolution(pm_paths._board_root_at(code_root), None))
     assert board_cmd._main(base, ["list"]) == 0

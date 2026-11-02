@@ -63,13 +63,13 @@ def _validate_cluster_name(name: str) -> str | None:
     if not text:
         return '클러스터 이름이 비었다'
     if is_auto_cluster_id(text):
-        return f'티켓 ID 모양의 이름은 예약이다: {text!r} — 그 모양은 발행이 만드는 크기 1 장부의 자리다(사람이 선언하는 묶음은 다른 이름을 쓴다)'
+        return f'티켓 ID 모양의 이름은 예약이다: {text!r} — 그 모양은 발행이 만드는 크기 1 묶음 기록의 자리다(사람이 선언하는 묶음은 다른 이름을 쓴다)'
     if len(text) > _CLUSTER_NAME_MAX:
         return f'클러스터 이름이 너무 길다({len(text)}자 · 상한 {_CLUSTER_NAME_MAX})'
     if not _CLUSTER_NAME_RE.match(text):
         return f'클러스터 이름 형식 위반: {text!r} — 영숫자로 시작하고 영숫자·`.`·`_`·`-` 만 쓴다(파일명과 git 브랜치 이름에 그대로 들어간다)'
     if _CLUSTER_NAME_DOUBLE_DOT in text or text.endswith(_CLUSTER_NAME_LOCK_SUFFIX) or text.endswith(_CLUSTER_NAME_DOT_SUFFIX):
-        return f'git 브랜치 이름 금칙: {text!r} — `{cluster_branch_name(text)}` 는 만들 수 없다(이중 점 · `{_CLUSTER_NAME_LOCK_SUFFIX}` 끝 · 점 끝). 장부만 남고 통합 브랜치는 영원히 생기지 않으므로 첫 쓰기 앞에서 거부한다.'
+        return f'git 브랜치 이름 금칙: {text!r} — `{cluster_branch_name(text)}` 는 만들 수 없다(이중 점 · `{_CLUSTER_NAME_LOCK_SUFFIX}` 끝 · 점 끝). 묶음 기록만 남고 통합 브랜치는 영원히 생기지 않으므로 첫 쓰기 앞에서 거부한다.'
     return None
 
 def ticket_cluster(tid: str, fm: dict[str, Any] | None=None) -> str:

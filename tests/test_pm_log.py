@@ -974,7 +974,7 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
     text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None
-    assert "## 진행 중 작업 (장부 실측)" in text
+    assert "## 진행 중 작업 (기록 실측)" in text
     # T-0786 은 collected_at 이 있어 미회수 집계에서 제외된다(1건만).
     assert "돌려받지 않은 라운드 준비 1건: T-0787 architect#1" in text
     assert "미마감 위임 raw 1건:" in text and "delegate/codex" in text
@@ -1045,7 +1045,7 @@ def test_inflight_section_folds_pathological_counts_within_line_and_section_caps
     assert warning is None and text is not None
     assert len(text) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_CHARS
     assert len(text.encode("utf-8")) <= pm_engine.domain.ctx_recovery.SNAPSHOT_MAX_BYTES
-    section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
+    section = text.split("## 진행 중 작업 (기록 실측)\n", 1)[1].split("\n## ", 1)[0]
     for line in section.splitlines():
         assert len(line) <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINE_CHARS
     assert section.count("\n") <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINES
@@ -1128,12 +1128,12 @@ def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tm
     assert headings == [
         pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING,
         "## 전언 경고 (요약 속 단언은 미검증)",
-        "## 장부 포인터",
-        "## 진행 중 작업 (장부 실측)",
+        "## 기록 위치",
+        "## 진행 중 작업 (기록 실측)",
         "## 열린 todo (파일 실측)",
         "## 복구 포인터",
     ]
-    section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
+    section = text.split("## 진행 중 작업 (기록 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert section.count("\n") <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINES
     for line in section.splitlines():
         assert len(line) <= pm_engine.domain.ctx_recovery._INFLIGHT_MAX_LINE_CHARS
@@ -1336,7 +1336,7 @@ def test_snapshot_timeout_returns_identity_and_hearsay_only(tmp_path):
     assert warning is None
     assert text.startswith(pm_engine.domain.ctx_recovery._SNAPSHOT_IDENTITY_HEADING)
     assert pm_engine.domain.ctx_recovery.SNAPSHOT_HEARSAY_WARNING.rstrip("\n") in text
-    assert "## 장부 포인터" not in text and "## 진행 중 작업" not in text
+    assert "## 기록 위치" not in text and "## 진행 중 작업" not in text
     assert "## pm_state" not in text
 
 
@@ -1553,7 +1553,7 @@ def test_cmd_checkpoint_dedup_io_failure_warns_but_appends(
 
     assert pm_engine.cli.log.cmd_checkpoint(home, args) == 0
     captured = capsys.readouterr()
-    assert "dedup 장부 I/O 실패" in captured.err
+    assert "dedup 기록 I/O 실패" in captured.err
     assert len(log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]) == 1
 
 

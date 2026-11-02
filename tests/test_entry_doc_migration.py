@@ -693,5 +693,5 @@ def test_finding_printer_migrated_backup(pm_update, capsys):
         {"status": "migrated", "matched_generation": 0, "jsonc_updated": True,
          "backup_rel": ".pm_import_backups/2026-07-21"}, dry_run=False)
     out = capsys.readouterr().out
-    assert "세대 마이그레이션 전환" in out
+    assert "버전 마이그레이션 전환" in out
     assert ".pm_import_backups/2026-07-21" in out

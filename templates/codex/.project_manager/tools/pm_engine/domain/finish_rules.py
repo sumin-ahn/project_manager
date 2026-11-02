@@ -343,24 +343,24 @@ class StatusObservationError(Exception):
 # 판정 기준(통합 브랜치)을 해소하지 못한 실행은 멈춘다 — 측정 폭·사설 참조·잔여 인구가 모두
 # 그 기준을 입력으로 받으므로, 다른 기준으로 접으면 세 판정이 각자 다른 것을 본다.
 _INTEGRATION_TIP_UNDECLARED = (
-    "{ticket} 묶음 장부가 통합 브랜치(base_branch)를 선언하지 않았다 — 완료 기록의 측정 폭·"
-    "사설 참조 판정·잔여 인구가 그 기준을 입력으로 받는다. `board.py cluster show <묶음>` 으로 "
-    "장부를 확인하고 `base_branch` 를 채운 뒤 다시 실행하라."
+    "{ticket} 묶음 기록이 통합 브랜치(base_branch)를 선언하지 않았다 — 완료 기록의 측정 폭·"
+    "사설 참조 판정·남은 변경 인구가 그 기준을 입력으로 받는다. `board.py cluster show <묶음>` 으로 "
+    "묶음 기록을 확인하고 `base_branch` 를 채운 뒤 다시 실행하라."
 )
 _INTEGRATION_TIP_UNRESOLVED = (
-    "{ticket} 장부가 선언한 통합 브랜치 {branch} 가 이 코드 트리에 없다 ({tree}) — 판정 기준을 "
-    "해소하지 못했다. 장부의 통합 브랜치 이름과 이 트리의 브랜치를 대조하라."
+    "{ticket} 묶음 기록이 선언한 통합 브랜치 {branch} 가 이 코드 트리에 없다 ({tree}) — 판정 기준을 "
+    "해소하지 못했다. 묶음 기록의 통합 브랜치 이름과 이 트리의 브랜치를 대조하라."
 )
 _RESIDUAL_POPULATION_UNRESOLVED = (
-    "{ticket} 통합 브랜치 tip 으로 커밋된 인구를 읽지 못했다 ({tip}) — 잔여 판정 인구가 성립"
+    "{ticket} 통합 브랜치 tip 으로 커밋된 인구를 읽지 못했다 ({tip}) — 남은 변경 판정 인구가 성립"
     "하지 않는다. 이 트리에서 그 브랜치가 해소되는지 확인하라."
 )
 _UNBORN_BASELINE_GUARD_OFF = (
-    "{ticket} 기준선 없음 — 장부가 선언한 통합 브랜치 {branch} 가 이 트리가 든 그 브랜치이고 "
-    "커밋이 0이다. 잴 표면(기준선·HEAD)이 없어 이 축의 가드를 끕니다(측정 불가 = 가드 off)."
+    "{ticket} 기준선 없음 — 묶음 기록이 선언한 통합 브랜치 {branch} 가 이 트리가 든 그 브랜치이고 "
+    "커밋이 0이다. 잴 범위(기준선·HEAD)가 없어 이 기준의 가드를 끕니다(측정 불가 = 가드 off)."
 )
 _UNBORN_SKELETON_NOTE = (
-    "{ticket} 기준선 없음(커밋 0) — 선언 스코프 밖 {count}건은 이 티켓의 잔여가 아니라 아직 "
+    "{ticket} 기준선 없음(커밋 0) — 선언 스코프 밖 {count}건은 이 티켓의 남은 변경이 아니라 아직 "
     "아무도 커밋하지 않은 뼈대다(차단하지 않음). 뼈대를 저장소에 실으려면 `git add -A` 로 "
     "따로 커밋하라."
 )
@@ -395,7 +395,7 @@ def _touch_claims_path(touch: str, changed_path: str) -> bool:
 
 def _self_axis_block(ticket_id: str, new_failed: list[str], output: str) -> str:
     """자기 축 신규 red 차단 문자열 — `run()` 이 `[중단]` 접두로 그대로 낸다."""
-    lines = [f"자기 축 회귀 신규 실패 — {ticket_id}"]
+    lines = [f"자기 점검 회귀 신규 실패 — {ticket_id}"]
     lines += [f"  ✗ {node}" for node in new_failed]
     tail = "\n".join(output.rstrip().splitlines()[-20:])
     if tail:

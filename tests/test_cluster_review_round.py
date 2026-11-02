@@ -2000,7 +2000,7 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
                       lambda path: reads.append(path) or (_ for _ in ()).throw(
                           AssertionError("unbound lease read")))
         tree, problem = cluster_code_tree.resolve_code_tree(pm_paths.home_at(board.REPO), _CLUSTER)
-        assert tree is None and "미결속" in problem
+        assert tree is None and "연결되지 않은" in problem
     assert reads == []
     identity = argparse.Namespace(task="main", repo=None if task_only else "proj", slot=None if task_only else 1)
     with pytest.raises(delegate_errors.DelegateError, match="cluster new"):

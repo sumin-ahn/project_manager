@@ -225,10 +225,10 @@ def _task_command_card_lines(
         "### 이 세션 커맨드 카드 (task 모드·정체성 채움·--help 불요·단일 진실)"
     )
     lines.append(
-        f"정체성: task=`{task_name}` 단일 축 — 보유 슬롯은 장부에서 자동 수령·log/pm_state 는 task 앵커. 보드/리스 조작은 `--task {task_name}` 명시(정체성=에이전트 맥락·도구엔 명시 전달)."
+        f"정체성: task=`{task_name}` 단일 기준 — 보유 슬롯은 슬롯 대여 기록에서 자동 수령·log/pm_state 는 task 별로 둔다. 보드/대여 조작은 `--task {task_name}` 명시(정체성=에이전트 맥락·도구엔 명시 전달)."
     )
     lines.append(
-        "> wave 운영은 스킬로 invoke·backbone 직접호출 금지 → pm_role §스킬 우선 운영 규율"
+        "> 묶음 운영은 스킬로 invoke·backbone 직접호출 금지 → pm_role §스킬 우선 운영 규율"
     )
     lines.append("")
     lines.append("# 내 작업 보기 (read-only 조회·직접 — 자기 공간 우선)")
@@ -293,7 +293,7 @@ def _task_command_card_lines(
         )
     )
     lines.append("")
-    lines.append("# wave 운영 (스킬로 invoke — backbone CLI 엔진은 직접 금지)")
+    lines.append("# 묶음 운영 (스킬로 invoke — backbone CLI 엔진은 직접 금지)")
     lines.append(
         skill(
             "/pm-cluster-claim T-NNNN",
@@ -302,7 +302,7 @@ def _task_command_card_lines(
     )
     lines.append(engine(_C_BOARD_CLUSTER_NEW, suffix=ti))
     lines.append(
-        "  ⚠ <ticket-group> 은 새로 짓는 묶음 이름이다(영숫자·`.`·`_`·`-`, 예: `login-fix`). 티켓 ID 모양(`T-NNNN`)은 발행이 만든 크기 1 장부(`C-T-NNNN`)의 자리라 거부되고, 그 장부는 새 묶음이 흡수한다."
+        "  ⚠ <ticket-group> 은 새로 짓는 묶음 이름이다(영숫자·`.`·`_`·`-`, 예: `login-fix`). 티켓 ID 모양(`T-NNNN`)은 발행이 만든 크기 1 묶음 기록(`C-T-NNNN`)의 자리라 거부되고, 그 묶음 기록은 새 묶음에 합쳐진다."
     )
     lines.append(
         "  ⚠ cluster new 는 지목한 폴더의 현재 브랜치를 base_branch(머지 대상)로 적고 묶음 브랜치 task/<ticket-group> 을 만든다: task 의 폴더가 1개면 그 폴더(`--task` 만), 2개 이상이면 `--repo <repo> --slot <N>` 으로 그 저장소의 통합 폴더를 지목한다."
@@ -371,7 +371,7 @@ def _task_command_card_lines(
     lines.append(
         cmd(
             _C_ADDITIONAL_REVIEWER,
-            "추가 리뷰어 교차검증 게이트 — 직접(래핑 스킬 없음)·reviewer 병행",
+            "추가 리뷰어 교차검증 — 직접(래핑 스킬 없음)·reviewer 병행",
         )
     )
     lines.append("")

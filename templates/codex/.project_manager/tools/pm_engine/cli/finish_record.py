@@ -36,7 +36,7 @@ LOG_SKELETON_TEMPLATE = """\
 ## [{date}] {entry_type} | [[{ticket_id}]] — {title}{task_tag}
 
 - <!-- PM: 무엇을·왜 서술 -->
-- 테스트: 회귀 {new_total} / {new_total} (실측 · 직전 대비 delta 는 PM 서술).
+- 테스트: 회귀 {new_total} / {new_total} (실측 · 직전 대비 차이는 PM 서술).
 - board: done {board_before}→{board_after}.
 """
 
@@ -417,7 +417,7 @@ class TicketFinisher:
         ]
         if absorbed_raw:
             lines.append(
-                f"  같은 폭 흡수분 raw 목록({len(absorbed_raw)}건 · 한 라운드로 정리):"
+                f"  같은 폭에서 받아 반영한 raw 목록({len(absorbed_raw)}건 · 한 라운드로 정리):"
             )
             lines += [
                 f"    · {path}:{line} {token} (git blame {sha})"
@@ -443,7 +443,7 @@ class TicketFinisher:
         lines = [f"완료 조건(DoD) 미마감 — {ticket_id} ({len(problems)}건)"]
         lines += [f"  ✗ {problem}" for problem in problems]
         lines.append(f"  · 각 항목을 {forms} 로 마감하라." if forms else "")
-        lines.append("  · board.py complete 의 게이트와 **같은 판정**이다 — "
+        lines.append("  · board.py complete 의 통과 조건과 **같은 판정**이다 — "
                      "log/current.md 스켈레톤을 남기기 전에 미리 묻는다.")
         return "\n".join(line for line in lines if line)
 
@@ -712,7 +712,7 @@ class TicketFinisher:
         갈래(원인 문장이 이미 별도 헤더)가 이 본문을 공유한다."""
         lines: list[str] = []
         if unstaged:
-            lines.append("  미스테이지 잔여 (이 커밋에 안 실린다):")
+            lines.append("  남은 미스테이지 변경 (이 커밋에 안 실린다):")
             lines += self._fold_residual_lines(unstaged)
         if staged_out:
             lines.append("  스코프 밖 staged (내 변경이 아닌데 커밋에 실린다):")
@@ -721,7 +721,7 @@ class TicketFinisher:
             lines.append("  통합 미반영 커밋 (커밋됐지만 어느 티켓도 선언하지 않았다):")
             lines += self._fold_residual_lines(committed)
         lines.append(
-            "  처방: (1) 내 작업 누락이면 ticket `touches` 를 보강해 재실행하고, (2) 남의 "
+            "  해결 방법: (1) 내 작업 누락이면 ticket `touches` 를 보강해 재실행하고, (2) 남의 "
             "변경이면 그 변경을 소유한 티켓의 `touches` 에 선언하라 — 커밋은 회피 수단이 "
             "아니다(커밋된 변경도 같은 인구로 판정한다)."
         )
@@ -773,7 +773,7 @@ class TicketFinisher:
                 run_git_stdout_at=self._run_git_stdout_at_fn)
         except (OSError, RuntimeError) as exc:
             print(
-                f"  ⚠ 자기 축 회귀 판정 skip — {ticket_id}: baseline 판정 실패({exc})",
+                f"  ⚠ 자기 점검 회귀 판정 skip — {ticket_id}: baseline 판정 실패({exc})",
                 file=sys.stderr,
             )
             return None
@@ -800,7 +800,7 @@ class TicketFinisher:
         inherited = sorted(work_failed & base_failed)
         if inherited:
             print(
-                f"  ⚠ 자기 축 회귀 경고 — {ticket_id}: base 에서 이미 red 인 실패뿐이다"
+                f"  ⚠ 자기 점검 회귀 경고 — {ticket_id}: base 에서 이미 red 인 실패뿐이다"
                 f"({', '.join(inherited)}) — 차단하지 않는다.",
                 file=sys.stderr,
             )
@@ -1234,7 +1234,7 @@ class TicketFinisher:
                 # 판정기가 죽은 경우 — 조용한 no-op 금지(stage 0 이 '정상 완료'로 보인다).
                 label = f"[{plan.label}] " if multi_repo else ""
                 print(f"\n  ⚠ {label}stage 스코프를 산출하지 못했다 — {scope_error}. "
-                      "이번 repo에서는 아무것도 stage 하지 않는다. 아래 잔여 목록을 보고 "
+                      "이번 repo에서는 아무것도 stage 하지 않는다. 아래 남은 변경 목록을 보고 "
                       "PM 이 직접 `git add <경로>` 하라.", file=sys.stderr)
             # add 는 스코프 중 작업 트리에 있는 파일만 받는다(신규·수정). 선언한 삭제는 add 하지 않고
             # 커밋이 경로로 기록한다 — 미리 `git rm` 한 경로는 add 가 rc 128 로 거부하고, add 로 지운
@@ -1272,9 +1272,9 @@ class TicketFinisher:
                                                label=plan.label if multi_repo else "")
 
         # ── 5. 잔여 PM 작업 출력 ─────────────────────────────────────
-        print("\n[5/5] PM 이 손으로 할 잔여 작업:")
+        print("\n[5/5] PM 이 손으로 할 남은 일:")
         print("  log/current.md 서술 불릿 채우기 — <!-- PM: 무엇을·왜 서술 --> 를 실제 내용으로 교체")
-        print("  status.md 모듈 행(상태 + 비고) — 변경된 모듈 행 판정을 architect/PM 이 직접 갱신 (테스트 수는 박제 안 함)")
+        print("  status.md 모듈 행(상태 + 비고) — 변경된 모듈 행 판정을 architect/PM 이 직접 갱신 (테스트 수는 기록하지 않음)")
         # 단일 repo 출력은 기존 커밋 안내 문구를 byte-compatible하게 보존한다. 두 repo 계획일 때만
         # cwd별 안내로 확장해 PM 홈 성공이 task worktree 누락을 가리지 못하게 한다.
         if close:
@@ -1309,7 +1309,7 @@ class TicketFinisher:
             staged_out, unstaged = self._dirty_summary
             tail = ""
             if unstaged or staged_out:
-                tail = (f" ⚠ 미스테이지 잔여 {unstaged}건 · 스코프 밖 staged {staged_out}건 "
+                tail = (f" ⚠ 남은 미스테이지 변경 {unstaged}건 · 스코프 밖 staged {staged_out}건 "
                         "— 위 [4/5] 목록 확인.")
             print(f"\n[완료] {ticket_id} 기록 완료.{tail}")
 
@@ -1354,11 +1354,11 @@ class TicketFinisher:
         self._dirty_summary = (old_staged + len(staged_out), old_unstaged + len(unstaged))
         prefix = f"[{label}] " if label else ""
         if not staged_out and not unstaged:
-            print(f"  ✓ {prefix}스코프 밖 잔여 변경 없음 (staged·미스테이지 모두)")
+            print(f"  ✓ {prefix}스코프 밖 남은 변경 없음 (staged·미스테이지 모두)")
             return
         if unstaged:
             self._print_dirty_block(
-                f"\n  ⚠ {prefix}미스테이지 잔여 {len(unstaged)}건 — **이 커밋에 안 실린다**. 내 작업 "
+                f"\n  ⚠ {prefix}남은 미스테이지 변경 {len(unstaged)}건 — **이 커밋에 안 실린다**. 내 작업 "
                 "누락이면 ticket `touches` 를 보강해 다시 stage 하라(남의 WIP 면 그대로 둔다):",
                 unstaged)
         if staged_out:

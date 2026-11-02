@@ -15,10 +15,10 @@ from pm_engine.infra import areas_store, fs, pm_paths
 # `prefix=` 로 네임스페이스를 받던 채택자가 조용히 무prefix(`T-NNNN`)로 바뀐다. 처방은 init
 # 재실행 한 번이라 차단하지 않고 상시 가시화만 한다.
 AREAS_REPO_UNREGISTERED_NOTICE = (
-    "areas.md 에 이 clone 의 repo 행이 없다(등록 0 = 구 형상) — `board.py init` 을 한 번 다시 "
+    "areas.md 에 이 clone 의 repo 행이 없다(등록 0 = 옛 구성) — `board.py init` 을 한 번 다시 "
     "실행하면 repo 행이 등록된다(`--prefix <카테고리> --area <설명>` 을 주면 그 카테고리로, "
     "안 주면 빈 prefix 칼럼 = 무prefix `T-NNNN` 로). per-clone local.conf 의 `session=`/"
-    "`prefix=` 는 더 이상 읽지 않는다 — 세션은 lease 장부, prefix 는 areas.md 가 단일 진실이다."
+    "`prefix=` 는 더 이상 읽지 않는다 — 세션은 슬롯 대여 기록, prefix 는 areas.md 가 단일 진실이다."
 )
 
 
@@ -96,7 +96,7 @@ def lint_areas_merge_union(home) -> list[tuple[str, str, str]]:
     else:
         attrs, targets = home.root / ".gitattributes", gitattributes_rules._INLINE_AREAS_ATTR_TARGETS
         fix = (f"`{pm_paths._rel_to_repo(home, attrs)}` 에 `.project_manager/areas.md merge=union` 을 "
-               "추가하라(inline 형상의 선언 위치).")
+               "추가하라(inline 구성의 선언 위치).")
     try:
         text = fs.read_text_shared(attrs, encoding="utf-8") if attrs.is_file() else ""
     except (OSError, UnicodeError):  # 읽기 실패·비-UTF8 은 무발화(advisory 가 lint 를 깨지 않는다).

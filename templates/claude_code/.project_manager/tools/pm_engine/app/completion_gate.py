@@ -30,7 +30,7 @@ _TARGET_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 def _unresolved_must_fix_data(home, data: object, ledger: Path) -> list[str]:
     """파싱된 라운드 장부의 미해소 must-fix 차단 사유 (writer/reader 공용)."""
     if not isinstance(data, dict):
-        return ["  · 라운드 장부 형식 오류(최상위가 매핑이 아님) — 잔여 must-fix 를 확인할 수 "
+        return ["  · 라운드 기록 형식 오류(최상위가 매핑이 아님) — 남은 must-fix 를 확인할 수 "
                 "없어 차단합니다"]
     problems: list[str] = []
     for gate, entry in sorted(data.items()):
@@ -64,8 +64,8 @@ def _unresolved_must_fix_gates(home, ledger: Path) -> list[str]:
     try:
         data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError) as exc:
-        return [f"  · 라운드 장부를 읽지 못했습니다 ({type(exc).__name__}: {exc}) — 잔여 "
-                "must-fix 를 확인할 수 없어 차단합니다 (장부 수리 후 재실행)"]
+        return [f"  · 라운드 기록을 읽지 못했습니다 ({type(exc).__name__}: {exc}) — 남은 "
+                "must-fix 를 확인할 수 없어 차단합니다 (기록 파일을 고친 뒤 재실행)"]
     return _unresolved_must_fix_data(home, data, ledger)
 
 
@@ -122,8 +122,8 @@ def _livegate_check(home, args: argparse.Namespace) -> int:
         # 옛 clear 를 새 blocked 위에 덮지 않도록 둘 다 review_rounds.lock 을 공유한다.
         problems = _sync_release_must_fix_marker(home, flag)
     except OSError as exc:
-        print("live-test: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
-              f"({type(exc).__name__}: {exc}). 장부/`.local` 권한을 복구한 뒤 다시 실행하세요.",
+        print("live-test: fail — 남은 must-fix 표시를 원자 갱신할 수 없어 차단 "
+              f"({type(exc).__name__}: {exc}). 기록 파일/`.local` 권한을 복구한 뒤 다시 실행하세요.",
               file=sys.stderr)
         return 1
     if problems:

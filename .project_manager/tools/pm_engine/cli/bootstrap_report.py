@@ -74,7 +74,7 @@ def format_blocking_lint_warning(
         def build_error_lines(selected: list[str]) -> list[str]:
             omitted = max(len(raw_nonblank) - len(selected), 0)
             lines = [
-                f"[경고] board lint gate 실행/출력 파싱 실패 (rc={rc_label}) — blocking 비0 신호는 유지됨",
+                f"[경고] board lint 통과 조건 실행/출력 파싱 실패 (rc={rc_label}) — blocking 비0 신호는 유지됨",
                 f"오류 excerpt {len(selected)}줄:",
                 *selected,
             ]
@@ -348,7 +348,7 @@ def _build_markdown(
                 if body:
                     lines.append(body)
         else:
-            lines.append("(대시보드 부재 — 현행 lease 목록 폴백)")
+            lines.append("(대시보드 부재 — 현행 lease 목록으로 대체)")
             for other in dashboard_others["others"]:
                 lines.append(f"- `{other['session']}` · `{other['slot']}`")
         lines.append("")

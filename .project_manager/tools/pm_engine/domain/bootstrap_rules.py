@@ -96,7 +96,7 @@ def parse_lint_counts(lint_output: str) -> tuple[int, int] | None:
     return None
 
 
-_LINT_HOOK_GENERATION_RESULT = "pre-push 훅 세대 차단 (board.py init 재실행)"
+_LINT_HOOK_GENERATION_RESULT = "pre-push 훅 버전 차단 (board.py init 재실행)"
 
 
 def _clip_utf8(text: str, byte_limit: int) -> str:

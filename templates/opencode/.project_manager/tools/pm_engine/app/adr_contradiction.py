@@ -168,7 +168,7 @@ def build_prompt(new_adr_id: str, new_adr_title: str, new_adr_text: str, scope: 
     '옛 결정을 전제로 쓰인 서술이 새 결정과 모순되게 남았나'를 LLM 이 대조하도록 요청한다. 판정은
     사람이므로 후보 제시까지만 요구한다(false-positive 는 사람이 거른다)."""
     lines: list[str] = [
-        "당신은 결정(ADR) 개정 직후의 **잔여 모순 서술**을 찾는 검토자다. 방금 아래 결정이 발행/개정됐다.",
+        "당신은 결정(ADR) 개정 직후의 **남은 모순 서술**을 찾는 검토자다. 방금 아래 결정이 발행/개정됐다.",
         "옛 결정을 전제로 쓰인 다른 문서의 서술이 이 새 결정과 **모순되게 남았는지** 후보를 찾아라.",
         "판정은 사람이 하므로 확실치 않아도 후보로 제시하라(오탐은 사람이 거른다).",
         "",
@@ -176,7 +176,7 @@ def build_prompt(new_adr_id: str, new_adr_title: str, new_adr_text: str, scope: 
         "",
         new_adr_text.strip(),
         "",
-        "## 개정 대상을 참조하는 문서 (이 범위만 대조·잔여 모순은 참조 줄이 아닌 다른 문단일 수 있다)",
+        "## 개정 대상을 참조하는 문서 (이 범위만 대조·남은 모순은 참조 줄이 아닌 다른 문단일 수 있다)",
         "",
     ]
     for hit in scope:
@@ -190,7 +190,7 @@ def build_prompt(new_adr_id: str, new_adr_title: str, new_adr_text: str, scope: 
     lines += [
         "## 출력",
         "",
-        "각 문서 excerpt 전체를 새 결정과 대조하라(참조 줄뿐 아니라 다른 문단·절의 잔여 모순도 찾아라).",
+        "각 문서 excerpt 전체를 새 결정과 대조하라(참조 줄뿐 아니라 다른 문단·절의 남은 모순도 찾아라).",
         "모순 후보를 다음 형식으로 한 줄씩 출력하라:",
         "  - [<파일경로>] <옛 결정을 전제로 남은 서술> — <새 결정과 어떻게 모순되나>",
         f"모순 후보가 하나도 없으면 정확히 `{NO_CONTRADICTIONS}` 한 줄만 출력하라.",
@@ -260,9 +260,9 @@ def format_advisory(new_adr_id: str, target_ids: Iterable[str], result: LintResu
     tids = ", ".join(str(t) for t in target_ids)
     if not result.scope:
         return (f"[모순 lint] {new_adr_id} 개정 대상({tids})을 참조하는 문서가 없음 "
-                "— 잔여 모순 스코프 없음.")
+                "— 남은 모순 스코프 없음.")
     header = (f"[모순 lint] {new_adr_id} 가 개정한 결정({tids})을 참조하는 문서 "
-              f"{len(result.scope)}개 — 새 결정과 모순되는 잔여 서술이 있는지 대조하라(판정=사람·차단 아님):")
+              f"{len(result.scope)}개 — 새 결정과 모순되는 남은 서술이 있는지 대조하라(판정=사람·차단 아님):")
     lines = [header]
     for hit in result.scope:
         lines.append(f"  · {hit.path}  (참조: {', '.join(hit.matched_ids)})")
@@ -277,7 +277,7 @@ def format_advisory(new_adr_id: str, target_ids: Iterable[str], result: LintResu
         # 온전히 안내한다(codex suggestion·pm_adr 플래그 신설은 과설계로 회피). scope 는 verb 무관이라
         # 모든 대상을 --amends 로 넘겨도 동일 프롬프트가 재생성된다.
         amends_flags = " ".join(f"--amends {t}" for t in target_ids)
-        lines.append("  탐지 = LLM(기본 dry·미호출). 위 문서를 새 결정과 대조해 잔여 모순을 확인하라.")
+        lines.append("  탐지 = LLM(기본 dry·미호출). 위 문서를 새 결정과 대조해 남은 모순을 확인하라.")
         lines.append(f"  프롬프트 재생성: python3 .project_manager/tools/contradiction_lint.py "
                      f"--new-adr {new_adr_id} {amends_flags} --show-prompt")
     return "\n".join(lines)

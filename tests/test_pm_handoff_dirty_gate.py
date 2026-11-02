@@ -230,7 +230,7 @@ def test_clean_tree_passes_and_appends_entry(hf, tmp_path, monkeypatch, capsys):
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "[0/7] dirty-tree 게이트" in out
+    assert "[0/7] dirty-tree 통과 조건" in out
     assert "✓ clean" in out
     assert "PM 2차" in log_file.read_text(encoding="utf-8")
 
@@ -256,7 +256,7 @@ def test_dirty_tree_blocks_with_rc1_and_file_list(hf, tmp_path, monkeypatch, cap
 
     assert rc == 1
     captured = capsys.readouterr()
-    assert "미커밋 잔여 2건" in captured.out
+    assert "남은 미커밋 변경 2건" in captured.out
     assert ".claude/agents/developer.md" in captured.out
     assert "docs/new-note.md" in captured.out
     assert "[중단]" in captured.err
@@ -332,7 +332,7 @@ def test_dirty_block_does_not_close_task_session(hf, tmp_path, monkeypatch, caps
 
     assert rc == 1
     # rc 1 의 유래가 게이트임을 메시지로 고정(다른 중단과 혼동 금지).
-    assert "핸드오프 시작 시점에 미커밋 잔여" in capsys.readouterr().err
+    assert "핸드오프 시작 시점에 남은 미커밋 변경" in capsys.readouterr().err
     assert pool.released == []          # pid=0 기록 = 첫 장부 mutation — 도달하지 않았다.
     assert log_file.read_bytes() == before
 
@@ -451,7 +451,7 @@ def test_force_handoff_does_not_pass_pm_home_changes(hf, tmp_path, monkeypatch, 
     assert rc == 1
     captured = capsys.readouterr()
     assert "--force-handoff 무시 — 커밋 안 한 변경이 있는 슬롯 없음" in captured.out
-    assert "핸드오프 시작 시점에 미커밋 잔여 2건" in captured.err
+    assert "핸드오프 시작 시점에 남은 미커밋 변경 2건" in captured.err
     assert log_file.read_bytes() == before
 
 
@@ -549,7 +549,7 @@ def test_submodule_dirty_blocks_and_lists_parent_relative_paths(hf, tmp_path, mo
     captured = capsys.readouterr()
     assert ".project_manager/board/tickets/_template.md" in captured.out
     assert "vendor/outer/inner/notes/leftover.md" in captured.out
-    assert "미커밋 잔여 2건" in captured.out
+    assert "남은 미커밋 변경 2건" in captured.out
 
 
 def test_gitlink_pin_drift_blocks_via_ignore_submodules_none(hf, tmp_path, monkeypatch, capsys):
@@ -810,7 +810,7 @@ def test_env_noninteractive_does_not_degrade_gate(hf, tmp_path, monkeypatch, env
     rc = _run_handoff(inst, dry_run=False, skip_pytest=True)
 
     assert rc == 1
-    assert "핸드오프 시작 시점에 미커밋 잔여" in capsys.readouterr().err
+    assert "핸드오프 시작 시점에 남은 미커밋 변경" in capsys.readouterr().err
     assert log_file.read_bytes() == before
 
 
@@ -978,7 +978,7 @@ def test_unstampable_ack_blocks_handoff(hf, tmp_path, monkeypatch, capsys):
                   ack_dirty="사유")
 
     assert rc == 1
-    assert "박제할 수 없다" in capsys.readouterr().err
+    assert "기록할 수 없다" in capsys.readouterr().err
     assert log_file.read_bytes() == before
 
 
@@ -996,7 +996,7 @@ def test_dry_run_previews_dirty_without_blocking(hf, tmp_path, monkeypatch, caps
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "미커밋 잔여 2건" in out
+    assert "남은 미커밋 변경 2건" in out
     assert "[dry-run] 판정 결과 미리보기" in out
     assert log_file.read_bytes() == before
 
@@ -1032,7 +1032,7 @@ def test_unborn_head_tree_is_judged_by_untracked(hf, tmp_path, monkeypatch, caps
 
     assert rc == 1
     captured = capsys.readouterr()
-    assert "미커밋 잔여 2건" in captured.out
+    assert "남은 미커밋 변경 2건" in captured.out
     assert "판정 불가" not in captured.err
 
 
@@ -1056,7 +1056,7 @@ def test_unborn_head_all_staged_is_dirty(hf, tmp_path, monkeypatch, capsys):
 
     assert rc == 1
     captured = capsys.readouterr()
-    assert "미커밋 잔여 2건" in captured.out
+    assert "남은 미커밋 변경 2건" in captured.out
     assert "sub/b.md" in captured.out
     assert "판정 불가" not in captured.err
     assert log_file.read_bytes() == before

@@ -168,11 +168,11 @@ def _registered_lease_slot(slot: str, repo: str, leases_file: Path) -> bool:
     try:
         data = json.loads(fs.read_text_shared(leases_file, encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise RepoCoordinateError(f"worktree lease 장부가 없다: {leases_file}") from exc
+        raise RepoCoordinateError(f"슬롯 대여 기록 파일이 없다: {leases_file}") from exc
     except (OSError, json.JSONDecodeError) as exc:
-        raise RepoCoordinateError(f"worktree lease 장부를 읽을 수 없다: {leases_file}: {exc}") from exc
+        raise RepoCoordinateError(f"슬롯 대여 기록 파일을 읽을 수 없다: {leases_file}: {exc}") from exc
     if not isinstance(data, dict) or not isinstance(data.get("leases", []), list):
-        raise RepoCoordinateError(f"worktree lease 장부 형식이 잘못됐다: {leases_file}")
+        raise RepoCoordinateError(f"슬롯 대여 기록 파일 형식이 잘못됐다: {leases_file}")
 
     matches = [
         row for row in data.get("leases", [])
@@ -225,7 +225,7 @@ def normalize_repo_path(
     )
     if not _registered_lease_slot(slot, repo, ledger):
         raise RepoCoordinateError(
-            f"touches slot 불일치: 선언={slot!r}, lease 장부의 지속 slot↔repo 매핑에 "
+            f"touches slot 불일치: 선언={slot!r}, 슬롯 대여 기록의 지속 slot↔repo 매핑에 "
             f"일치 항목 없음 ({ledger})"
         )
     slot_path = root / slot

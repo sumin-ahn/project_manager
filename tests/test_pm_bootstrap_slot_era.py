@@ -177,7 +177,7 @@ def test_format_freshness_offline_behind0_is_undetermined_not_latest(bootstrap):
     """offline(fetch 실패)·behind 0 → '최신' 이 아니라 '판정불가 — 스냅샷일 수 있음' (핵심 fix)."""
     scope = {"fetched": False, "detached": False, "behind": 0, "ahead": 0, "note": None}
     line = git_freshness._format_freshness(scope)
-    assert "판정불가 — 스냅샷일 수 있음" in line
+    assert "판정불가 — 옛 복사본일 수 있음" in line
     assert "최신" not in line          # stale 스냅샷을 최신으로 오신뢰 금지
     # [[T-0960]] AT-009 — 실패 원인을 offline 으로 단정하지 않고 사용자가 다시 돌려 볼 명령을 말한다
     # (origin 이 없는 새 홈에서도 같은 줄이 나간다).
@@ -189,7 +189,7 @@ def test_format_freshness_offline_upstream_none_is_undetermined(bootstrap):
     """offline·upstream 미상(behind None) → 판정불가 (upstream 없음 단정도 금지)."""
     scope = {"fetched": False, "detached": False, "behind": None, "ahead": None, "note": None}
     line = git_freshness._format_freshness(scope)
-    assert "판정불가 — 스냅샷일 수 있음" in line
+    assert "판정불가 — 옛 복사본일 수 있음" in line
 
 
 def test_format_freshness_offline_behind_positive_still_shows_behind(bootstrap):

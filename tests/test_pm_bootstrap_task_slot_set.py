@@ -329,7 +329,7 @@ def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, monkeyp
     inst = _make(bootstrap, tmp_path, pool, board_fn=board_fn, monkeypatch=monkeypatch)
     assert inst.run(task="mytask") == 1
     captured = capsys.readouterr()
-    assert "보유 슬롯 장부 조회 실패" in captured.err
+    assert "보유 슬롯 대여 기록 조회 실패" in captured.err
     assert "실제 0슬롯으로 간주하지 않고" in captured.err
     assert "PM bootstrap dump" not in captured.out
     assert board_calls == []
@@ -363,7 +363,7 @@ def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, monkeyp
     assert inst.run(task="mytask") == 1
 
     captured = capsys.readouterr()
-    assert "보유 슬롯 장부 조회 실패" in captured.err
+    assert "보유 슬롯 대여 기록 조회 실패" in captured.err
     assert "실제 0슬롯으로 간주하지 않고" in captured.err
     assert ledger.read_bytes() == before
     assert board_calls == []

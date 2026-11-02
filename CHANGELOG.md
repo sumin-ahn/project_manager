@@ -29,6 +29,13 @@
 - Codex 훅 기능 이름 `git-anchor`·`ctx-nudge-userpromptsubmit` 을 `git-check`·`ctx-warn-userpromptsubmit` 으로 바꿨다. `pm_orch_codex.py --hook-features` 출력과 훅 대체 경고에 보이는 이름이고 동작은 그대로다.
 - 훅 안내 글의 지어낸 말을 평어로 바꿨다. git 명령 검사 사유의 `실행 앵커=`·`repo 앵커=` 는 `실행 대상 저장소=`·`대상 저장소=`, ctx 안내의 `checkpoint 골격` 은 `checkpoint 빈 양식`, 압축 뒤 복구 요약의 `미회수 라운드 준비`·`(장부: …)` 는 `돌려받지 않은 라운드 준비`·`(기록 파일: …)` 다. `pm_log.py checkpoint` 가 쓰는 빈 양식 줄은 `- 구간: <직전 기록 경계 이후>` 이고, `pm_log.py init` 이 새로 만드는 `log/current.md` 머리말은 "`log/archive/` 에 옮겨져 확정된다" 로 끝난다. 이미 쓴 log 의 옛 글은 고칠 필요가 없다. 새로 설치하는 채택자의 훅 설정 파일 설명 글(Claude `.claude/settings.json` 의 `_comment`, Codex `.codex/config.toml` 주석, OpenCode `.opencode/opencode.jsonc` 주석)과, 갱신이 덮는 Codex `.codex/rules/default.rules` 의 주석도 같은 평어로 바꿨다. 설정 값과 규칙은 그대로다.
 - 위임·리뷰·라운드를 다루는 엔진 출력(`pm_delegate.py`·`additional_reviewer.py` 의 출력·오류·도움말, `board.py` 가 내는 리뷰·설계 판정 안내, 위임·추가 리뷰어 프롬프트 안내)에서 지어낸 말을 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어로 바꿨다. 위임 라운드 결과를 받는 일은 "돌려받기", 엔진이 상태를 적는 파일은 "기록", 추가 리뷰어가 라운드를 세는 티켓은 "리뷰 집계 티켓", 라운드 파일에 미리 써 두는 틀은 "빈 양식" 이라고 쓴다. 동작·종료 코드·명령 이름·플래그·설정 키·파일 형식은 그대로다. 엔진이 디스크의 파일과 글자 그대로 맞대는 글(라운드 파일 빈 양식의 절 제목·안내 주석·자리표시, 티켓 `## 설계` 절의 항목 이름)은 바꾸지 않았으므로, 갱신 전에 만든 빈 양식 라운드와 기존 티켓은 그대로 읽힌다.
+- 보드·묶음 종결·회귀·핸드오프·로그·부트스트랩 명령의 안내·경고·오류 문구와 도움말, 새로 만드는 log entry·ADR·log archive·slot 대시보드·board `.gitattributes`·`.gitignore` 의 양식 문구에서 지어낸 말을 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어로 바꿨다(예: 장부 → 묶음 기록·슬롯 대여 기록, 잔여 → 남은 변경, 게이트 → 통과 조건, 결속 → 연결, 앵커 → 대상 저장소, 박제 → 기록, 봉인 → 확정). 명령·플래그·종료 코드·JSON 키·기록 파일 형식은 그대로다. 출력 글을 읽던 도구는 아래 값이 바뀐 것을 확인한다.
+  - `board.py` 읽기 명령(`list`·`show`·`lint` 등)의 첫 줄 `repo 앵커: <경로> (<역할>)` → `대상 저장소: <경로> (<역할>)`. PM 홈 입력을 읽을 때 덧붙는 ` → PM 입력 앵커: <PM 홈> (PM 홈 폴백: <입력>)` → ` → PM 입력 대상 저장소: <PM 홈> (PM 홈 대체 입력: <입력>)`.
+  - `pm_bootstrap.py --json` 의 `board.lint` 가 lint 출력을 읽지 못했을 때의 값 `gate error (unparsed)` → `check error (unparsed)`.
+  - `pm_log.py snapshot` 의 절 제목 `## 장부 포인터`·`## 진행 중 작업 (장부 실측)` → `## 기록 위치`·`## 진행 중 작업 (기록 실측)`.
+  - `.project_manager/wiki/log/dashboard.md` 슬롯 절의 줄 `- wave:` → `- 세션 요약:`. 이미 있는 절은 그 슬롯의 다음 핸드오프가 절을 다시 쓸 때 바뀐다.
+  - 묶음 종결 1단계 이름 `기계 확인 생성·리뷰 게이트 처분` → `기계 확인 생성·리뷰 집계 티켓 처분`(`/pm-cluster-finish` 상세 문서의 단계 표도 같다).
+  - handoff entry 의 `- 이 세션 박제 entries:` 줄과 티켓 설계 절 항목 이름 `표면 상한` 은 그대로다. 이미 쓰인 log·ADR·archive·board 설정 파일의 옛 문구는 고치지 않는다.
 
 ### Removed
 

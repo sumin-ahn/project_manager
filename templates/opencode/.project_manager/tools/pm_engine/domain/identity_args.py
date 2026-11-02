@@ -77,7 +77,7 @@ def add_identity_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--task", metavar="이름", default=None,
-        help="task 이름 — 작업 단위 정체성 축이며 정체성 해소 체인 "
+        help="task 이름 — 작업 단위 정체성 기준이며 정체성 해소 체인 "
              "전반이 소비한다. 포맷 자유(prefix 아님)·`<등록 repo>_<N>` 예약 패턴은 거부. "
              "repo/slot과의 조합 허용 여부는 소비 도구 계약을 따른다. pm_bootstrap/"
              "pm_handoff에서는 task 단독만 허용하고 보유 슬롯 집합을 자동 해소한다.",
@@ -185,7 +185,7 @@ def no_work_folder_remedy() -> str:
             "먼저 만들어라.")
 
 
-NO_WORK_FOLDER_REMEDY = "이 홈의 lease 장부에 행이 하나도 없으면 " + no_work_folder_remedy()
+NO_WORK_FOLDER_REMEDY = "이 홈의 슬롯 대여 기록에 행이 하나도 없으면 " + no_work_folder_remedy()
 
 
 # 장부 읽기 축의 판정값 — "못 읽었다"를 **부재**와 **손상**으로 가른다(합치면 실제로 행을

@@ -341,7 +341,7 @@ def test_show_assembles_the_spec_and_the_rounds_in_ordinal_order(board_env, caps
     assert out.index("--- 01-developer ---") < out.index("--- 02-code-reviewer")
     assert "실제 구현 산출." in out
     assert "--- 02-code-reviewer (산출 없음) ---" in out
-    assert "미회수 1건: 02-code-reviewer.md" in out
+    assert "돌려받지 않은 라운드 1건: 02-code-reviewer.md" in out
 
 
 def _harvested_review_text(finding_id: str = "F-001") -> str:
@@ -387,7 +387,7 @@ def test_show_keeps_marking_a_parallel_round_unharvested(board_env, capsys):
     assert "--- 01-code-reviewer ---" in out and "(산출 없음)" not in out.split(
         "--- 02-code-reviewer")[0].split("--- 01-code-reviewer")[1]
     assert "--- 02-code-reviewer (산출 없음) ---" in out
-    assert "미회수 1건: 02-code-reviewer.md" in out
+    assert "돌려받지 않은 라운드 1건: 02-code-reviewer.md" in out
 
 
 @requires_git
@@ -401,7 +401,7 @@ def test_show_without_rounds_prints_only_the_spec(board_env, capsys):
     out = capsys.readouterr().out
     assert "-- T-1016 (open/) --" in out
     tail = out.split("-- T-1016 (open/) --", 1)[1]
-    assert "-- 라운드" not in tail and "미회수" not in tail
+    assert "-- 라운드" not in tail and "돌려받지 않은" not in tail
     assert "--- 0" not in tail, "라운드 구분선이 없는데 렌더됨"
 
 

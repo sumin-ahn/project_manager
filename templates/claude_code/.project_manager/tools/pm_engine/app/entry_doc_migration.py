@@ -548,15 +548,15 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
         verb = "전환 예정" if dry_run else "전환"
         gen = result.get("matched_generation")
         tail = " + opencode.jsonc instructions 배열 추가" if result.get("jsonc_updated") else ""
-        print(f"→ 진입 doc 세대 마이그레이션 {verb} — 구형 미수정 opencode AGENTS.md "
-              f"(세대 #{gen})를 신형 공통 코어로 교체{tail}.")
+        print(f"→ 진입 doc 버전 마이그레이션 {verb} — 구형 미수정 opencode AGENTS.md "
+              f"(버전 #{gen})를 신형 공통 코어로 교체{tail}.")
         if dry_run:
             print("    (원본은 .pm_import_backups/<DATE>/ 에 백업 예정·적용 안 함)")
         elif result.get("backup_rel"):
             src = "AGENTS.md·opencode.jsonc" if result.get("jsonc_updated") else "AGENTS.md"
             print(f"    백업: {result['backup_rel']}/ (원본 {src})")
     elif status == "loud_manual":
-        print("⚠️  진입 doc 세대 마이그레이션 — 구형 opencode AGENTS.md 를 감지했으나 커스텀 흔적"
+        print("⚠️  진입 doc 버전 마이그레이션 — 구형 opencode AGENTS.md 를 감지했으나 커스텀 흔적"
               "(FILL·손편집)이 있어 자동 전환하지 않는다(무손).")
         print("    신형(공통 코어 + .opencode/pm-instructions.md + opencode.jsonc instructions)으로 "
               "수동 병합하려면:")
@@ -567,4 +567,4 @@ def _print_entry_doc_migration_finding(result: dict, *, dry_run: bool = False) -
     elif status == "recovered":
         verb = "추가 예정" if dry_run else "추가"
         print("→ 진입 doc — opencode.jsonc `instructions` 배열에 .opencode/pm-instructions.md "
-              f"{verb}(신형 정합·idempotent 복구).")
+              f"{verb}(신형과 일치·idempotent 복구).")

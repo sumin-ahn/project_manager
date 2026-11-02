@@ -432,8 +432,8 @@ def test_finish_survives_gitignored_touches(tf, tmp_path, monkeypatch, capsys):
     assert ".project_manager/local.conf" not in staged
     assert "local.conf" not in out.split("[5/5]")[0].split("✓ git add")[-1] \
         if "✓ git add" in out else True         # stage 목록에 ignored 경로가 없다
-    assert "[5/5] PM 이 손으로 할 잔여 작업" in out    # loud 채널이 살아 있다
-    assert "스코프 밖 잔여 변경 없음" in out or "미스테이지 잔여" in out
+    assert "[5/5] PM 이 손으로 할 남은 일" in out    # loud 채널이 살아 있다
+    assert "스코프 밖 남은 변경 없음" in out or "남은 미스테이지 변경" in out
 
 
 @requires_git
@@ -878,7 +878,7 @@ def test_finish_does_not_misreport_own_non_ascii_paths(tf, tmp_path, monkeypatch
     assert "스코프 밖 staged" not in out, f"자기가 stage 한 한글 경로를 남의 것으로 오보: {out}"
     assert "git restore --staged" not in out
     assert "\\3" not in out, "8진 이스케이프가 그대로 출력됨(복붙 불가)"
-    assert "스코프 밖 잔여 변경 없음" in out
+    assert "스코프 밖 남은 변경 없음" in out
 
 
 @requires_git
@@ -899,7 +899,7 @@ def test_finish_reports_preexisting_staged_out_of_scope(tf, tmp_path, monkeypatc
     assert "스코프 밖 staged" in out, "사전 staged 누출이 보고에서 안 보임(거짓 안심)"
     assert "roadmap.md" in out
     assert "git restore --staged" in out             # remedy 동봉
-    assert "잔여 변경 없음" not in out
+    assert "남은 변경 없음" not in out
 
 
 # ── 축 2: 누락 (under-stage) ────────────────────────────────────────────
@@ -1114,7 +1114,7 @@ def test_finish_excludes_pm_home_root_dirty_from_the_block(tf, tmp_path, monkeyp
     out = capsys.readouterr().out
     assert "[중단]" not in out
     assert _TOUCHED_FILE in _staged(root)
-    assert "미스테이지 잔여" in out and "roadmap.md" in out   # PM 홈 잔여는 여전히 loud(비차단)
+    assert "남은 미스테이지 변경" in out and "roadmap.md" in out   # PM 홈 잔여는 여전히 loud(비차단)
 
 
 @requires_git
@@ -1126,11 +1126,11 @@ def test_finish_reports_residual_dirty_loud(tf, tmp_path, monkeypatch, capsys):
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
     out = capsys.readouterr().out
-    assert "미스테이지 잔여" in out
+    assert "남은 미스테이지 변경" in out
     assert "roadmap.md" in out and "other-spike.md" in out
     assert "0002-other-draft.md" in out and "other-page.md" in out
     # 마지막 줄에서 한 번 더 재고지 — [4/5] 보고가 이후 8줄에 묻히지 않게(loud 강화).
-    assert "[완료] T-0001 기록 완료. ⚠ 미스테이지 잔여" in out
+    assert "[완료] T-0001 기록 완료. ⚠ 남은 미스테이지 변경" in out
 
 
 @requires_git
@@ -1142,8 +1142,8 @@ def test_finish_reports_clean_when_nothing_left(tf, tmp_path, monkeypatch, capsy
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
     out = capsys.readouterr().out
-    assert "스코프 밖 잔여 변경 없음" in out
-    assert "⚠ 미스테이지 잔여" not in out
+    assert "스코프 밖 남은 변경 없음" in out
+    assert "⚠ 남은 미스테이지 변경" not in out
 
 
 @requires_git

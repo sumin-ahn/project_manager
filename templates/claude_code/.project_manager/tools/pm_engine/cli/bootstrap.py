@@ -203,7 +203,7 @@ class PmBootstrap:
             bootstrap_rules._LINT_HOOK_GENERATION_RESULT
             if hook_generation_blocked
             else (
-                "gate error (unparsed)"
+                "check error (unparsed)"
                 if lint_parse_failed
                 else bootstrap_report.parse_lint_result(lint_output)
             )
@@ -506,7 +506,7 @@ class PmBootstrap:
             )
         except Exception as exc:
             print(
-                f"[중단·소유권 재검증] task 슬롯 {slot!r} 장부 조회 실패 — {exc}. {action}을 실행하지 않습니다.",
+                f"[중단·소유권 재검증] task 슬롯 {slot!r} 대여 기록 조회 실패 — {exc}. {action}을 실행하지 않습니다.",
                 file=sys.stderr,
             )
             raise SystemExit(1) from exc
@@ -837,7 +837,7 @@ class PmBootstrap:
         if pm_home is None:
             return False
         print(
-            f"[중단·0단계] 부트스트랩을 worktree(코드 전용) 트리에서 실행했습니다 — 세션 상태는 PM 홈이 소유합니다. 이대로면 이 worktree 를 세션 진실로 잘못 dump 합니다.\n  → PM 홈에서 실행하세요:  cd {pm_home}\n  (현재 엔진 앵커: {self._home.root})",
+            f"[중단·0단계] 부트스트랩을 worktree(코드 전용) 트리에서 실행했습니다 — 세션 상태는 PM 홈이 소유합니다. 이대로면 이 worktree 를 세션 진실로 잘못 dump 합니다.\n  → PM 홈에서 실행하세요:  cd {pm_home}\n  (현재 대상 저장소: {self._home.root})",
             file=sys.stderr,
         )
         return True
@@ -975,7 +975,7 @@ class PmBootstrap:
         lines = [
             f"{indent}이전 세션이 하던 것(읽기만·복원 표시):",
             f"{indent}- claim 중인 티켓: {_join(claimed)}",
-            f"{indent}- 미회수 위임 준비: {_join(runs)}",
+            f"{indent}- 돌려받지 않은 위임 준비: {_join(runs)}",
             f"{indent}- 서술 pm_state: {pm_state or '(없음)'}",
             f"{indent}- 마지막 기록: {last_log or '(없음)'}",
             f"{indent}- 보유 작업 폴더: {_join(slots)}",
@@ -1044,7 +1044,7 @@ class PmBootstrap:
             return None
         except Exception as exc:
             print(
-                f"[중단] task {task!r} 생성/재개 중 pm_state 보장에 실패했습니다 — {exc}. task 장부만 있는 반쪽 상태로 진행하지 않습니다.",
+                f"[중단] task {task!r} 생성/재개 중 pm_state 보장에 실패했습니다 — {exc}. task 기록만 있는 반쪽 상태로 진행하지 않습니다.",
                 file=sys.stderr,
             )
             raise
@@ -1076,7 +1076,7 @@ class PmBootstrap:
             return list(resolved)
         except (OSError, ValueError) as exc:
             print(
-                f"[중단·진입검증] task {task!r} 보유 슬롯 장부 조회 실패 — {exc}. 실제 0슬롯으로 간주하지 않고 부분 dump 없이 중단합니다.",
+                f"[중단·진입검증] task {task!r} 보유 슬롯 대여 기록 조회 실패 — {exc}. 실제 0슬롯으로 간주하지 않고 부분 dump 없이 중단합니다.",
                 file=sys.stderr,
             )
             return None
@@ -1157,7 +1157,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--task",
         metavar="이름",
         required=True,
-        help="task 이름 — 세션 정체성이다. 부트스트랩의 유일한 진입이며 보유 작업 폴더는 장부에서 자동 수령한다(슬롯 대여·편입은 pm-config alloc/worktree add 소관).",
+        help="task 이름 — 세션 정체성이다. 부트스트랩의 유일한 진입이며 보유 작업 폴더는 슬롯 대여 기록에서 자동 수령한다(슬롯 대여·편입은 pm-config alloc/worktree add 소관).",
     )
     parser.add_argument(
         "--json",

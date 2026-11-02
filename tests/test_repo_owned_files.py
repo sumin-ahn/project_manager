@@ -735,7 +735,7 @@ def test_pm_import_non_git_dest_fallback_warning_is_visible(tmp_path, monkeypatc
 
     with pytest.warns(
         repo_files.RepoFilesFallbackWarning,
-        match="filesystem 전수 순회에 강등",
+        match="filesystem 전수 순회로 수준이 낮춰짐",
     ):
         assert import_fill._resolve_fill_scope(dest, None) == {Path("copied.md")}
 

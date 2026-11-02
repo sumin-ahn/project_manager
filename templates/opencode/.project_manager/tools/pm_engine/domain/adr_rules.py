@@ -99,7 +99,7 @@ _BODY_TEMPLATE = """
 
 ## References
 
-- <참고: sealed spike·관련 ADR·메모리 — PM 서술.>
+- <참고: 확정된 spike·관련 ADR·메모리 — PM 서술.>
 """
 
 
@@ -386,7 +386,7 @@ def move_or_append_backref_row(text: str, *, target_num: int, new_id: str, verb:
 _DECIDE_LOG_TEMPLATE = """\
 ## [{date}] decide | [[{adr_id}]] — {title}
 
-- <!-- PM: 결정 요약·발단·게이트·메타 서술 -->
+- <!-- PM: 결정 요약·발단·사용자 승인·메타 서술 -->
 """
 
 

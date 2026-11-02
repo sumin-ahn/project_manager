@@ -26,7 +26,7 @@ def _guard_worktree_misanchor(home) -> bool:
         "board·git)는 PM 홈이 소유합니다. 이대로면 이 worktree 에 stray log/티켓을 "
         "잘못 만듭니다.\n"
         f"  → PM 홈에서 실행하세요:  cd {pm_home}\n"
-        f"  (현재 앵커: {home.root})",
+        f"  (현재 대상 저장소: {home.root})",
         file=sys.stderr,
     )
     return True
@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--cluster",
         metavar="C-<ticket-group>",
         default=None,
-        help="묶음 종결(close) — 기계 확인·게이트 처분·티켓별 완료 기록·커밋·재배치·머지·"
+        help="묶음 종결(close) — 기계 확인·리뷰 집계 티켓 처분·티켓별 완료 기록·커밋·재배치·머지·"
              "board 기록을 고정 순서로 실행한다. 실패 지점에서 멈추고, 다시 "
              "실행하면 끝난 단계는 건너뛴다(재실행이 곧 재개).",
     )
@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--reconcile-integrated", action="store_true",
-        help="이미 all-done인 open cluster를 제품 git evidence 검증 뒤 장부만 복구한다.",
+        help="이미 all-done인 open cluster를 제품 git evidence 검증 뒤 묶음 기록만 복구한다.",
     )
     parser.add_argument(
         "--integrated-rev", action="append", default=[], metavar="T-NNNN=<git-rev>",
@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--legacy-base-rev", action="append", default=[], metavar="T-NNNN=<git-rev>",
-        help="claimed_rev 없는 legacy 멤버의 명시 anchor commit.",
+        help="claimed_rev 없는 legacy 멤버의 명시 기준 커밋.",
     )
     parser.add_argument(
         "--user-ack", default=None, metavar="C-<ticket-group>",

@@ -200,7 +200,7 @@ def test_prefix_surface_matrix_calls_shared_loader(board, pm_config, monkeypatch
     assert calls == [surface] * expected_calls
     captured = capsys.readouterr()
     if not known and user_ack == target:
-        assert "[승인 감사]" in captured.out and "값-결속" in captured.out
+        assert "[승인 감사]" in captured.out and "에 연결됨" in captured.out
     elif not known:
         assert "1순위: 사용자에게" in captured.err
         assert "현재 카테고리" in captured.err
@@ -467,7 +467,7 @@ def test_case_variant_conflict_is_deterministic_and_lists_every_source(board, mo
     err = outputs[0]
     assert "'AAA' ← areas.md" in err
     assert "'aaa' ← 기발행 티켓" in err
-    assert "정리 처방" in err and "임의 변형 선택" in err
+    assert "해결 방법" in err and "임의 변형 선택" in err
 
     monkeypatch.setattr(areas_registry, "known_prefixes", real_known_prefixes)
     assert _new(board, "AaA", "AaA") == 1
@@ -493,7 +493,7 @@ def test_cheap_case_conflict_preserves_known_sources_when_ticket_scan_is_broken(
     err = capsys.readouterr().err
     assert "case 변형이 2개 이상" in err
     assert "'AAA' ← areas.md" in err
-    assert "'aaa' ← task 장부" in err
+    assert "'aaa' ← task 기록" in err
     assert "소스 미상" not in err
     assert "읽지 못한 티켓" in err
 

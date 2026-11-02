@@ -2494,7 +2494,7 @@ def test_capture_affected_prints_current_truth_replacement_rule(
     assert dm.main(["capture", "--touches", "src/a/x.py"]) == 0
     out = capsys.readouterr().out
     assert "영향 페이지" in out
-    assert "delta" in out and "log/ADR" in out
+    assert "세션별 차이를 덧붙이지 마라" in out and "log/ADR" in out
 
 
 def test_capture_directory_leading_wildcard_is_affected_without_gap(

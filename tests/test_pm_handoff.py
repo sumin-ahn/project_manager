@@ -2194,7 +2194,7 @@ def test_run_task_mode_blocks_before_log_when_task_intent_record_absent(hf, tmp_
     )
     assert rc == 1
     assert pool.task_pid_calls == ["mytask"]
-    assert "장부에 없음" in capsys.readouterr().err
+    assert "기록에 없음" in capsys.readouterr().err
     assert not handoff._log_file.exists()
 
 
@@ -2546,7 +2546,7 @@ def test_task_slots_resolution_exception_fails_before_persistent_records(hf, mon
         dry_run=False, skip_pytest=False, user_ack="mytask"
     ) == 1
     captured = capsys.readouterr()
-    assert "보유 슬롯 장부 해소 실패" in captured.err
+    assert "보유 슬롯 대여 기록 해소 실패" in captured.err
     assert "실제 0슬롯으로 간주하지 않습니다" in captured.err
     assert not handoff._log_file.exists()
     assert not handoff._dashboard_file.exists()
@@ -2695,7 +2695,7 @@ def test_task_resnap_records_all_held_slots(hf, monkeypatch, tmp_path, capsys):
     assert rc == 0
     # 보유 전 슬롯 각각 record_git_snapshot(base 미전달·T-0388 프리미티브 재사용).
     assert pool.snap_calls == [("work/a_1", {}), ("work/b_1", {})]
-    assert "[재스냅] task 보유 슬롯" in capsys.readouterr().out
+    assert "[상태 다시 기록] task 보유 슬롯" in capsys.readouterr().out
 
 
 def test_task_resnap_rechecks_owner_before_snapshot(hf, monkeypatch, tmp_path, capsys):
@@ -2724,7 +2724,7 @@ def test_task_resnap_zero_held_slots_skips(hf, monkeypatch, tmp_path, capsys):
     )
     assert rc == 0
     assert pool.snap_calls == []
-    assert "재스냅 대상 없음" in capsys.readouterr().out
+    assert "상태 다시 기록 대상 없음" in capsys.readouterr().out
 
 
 def test_task_resnap_dry_run_previews_all_slots(hf, monkeypatch, tmp_path, capsys):
@@ -2738,8 +2738,8 @@ def test_task_resnap_dry_run_previews_all_slots(hf, monkeypatch, tmp_path, capsy
     assert rc == 0
     assert pool.snap_calls == []
     out = capsys.readouterr().out
-    assert "[dry-run] git 재스냅 예고: work/a_1" in out
-    assert "[dry-run] git 재스냅 예고: work/b_1" in out
+    assert "[dry-run] git 상태 다시 기록 예고: work/a_1" in out
+    assert "[dry-run] git 상태 다시 기록 예고: work/b_1" in out
 
 
 def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path, monkeypatch):
@@ -2919,7 +2919,7 @@ def test_handoff_surfaces_unfinished_raw_records(hf, monkeypatch, tmp_path, caps
 
     out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger, monkeypatch=monkeypatch)
 
-    assert f"이 장부 기준: {ledger}" in out, (
+    assert f"이 기록 파일 기준: {ledger}" in out, (
         f"판정 범위(어느 장부를 봤나) 표기 누락 — '0건'이 전 장부 0건으로 읽힌다:\n{out}")
     assert "⚠ 미마감 raw 2건" in out, f"미마감 건수 미표면화:\n{out}"
     assert "pm_delegate.py raw --unfinished" in out, "전체 조회 경로 안내 누락"
@@ -2947,7 +2947,7 @@ def test_handoff_reports_clean_raw_ledger(hf, monkeypatch, tmp_path, capsys):
     out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=ledger, monkeypatch=monkeypatch)
 
     assert "미마감 raw 없음" in out
-    assert f"이 장부 기준: {ledger}" in out, "0건 보고에도 판정 범위 표기가 있어야 한다"
+    assert f"이 기록 파일 기준: {ledger}" in out, "0건 보고에도 판정 범위 표기가 있어야 한다"
     assert "⚠ 미마감 raw" not in out
 
 
@@ -2968,7 +2968,7 @@ def test_handoff_raw_sweep_reports_missing_ledger(hf, monkeypatch, tmp_path, cap
     out = _run_handoff_out(hf, tmp_path, capsys,
                            raw_ledger_file=tmp_path / "없는장부.json", monkeypatch=monkeypatch)
 
-    assert "raw 장부 없음" in out
+    assert "raw 출력 기록 없음" in out
 
 
 def _write_named_ledger(directory: Path, *, unfinished: int) -> Path:
@@ -2989,11 +2989,11 @@ def test_handoff_names_peer_ledgers_with_their_unfinished_count(hf, monkeypatch,
     out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=primary,
                            peer_raw_ledger_files=(peer,), monkeypatch=monkeypatch)
 
-    line = next(l for l in out.splitlines() if "사본 장부" in l)
+    line = next(l for l in out.splitlines() if "다른 엔진 사본의 raw 출력 기록 파일" in l)
     assert str(peer) in line, f"사본 장부 경로가 안 실림: {line!r}"
     assert "미마감 2건" in line, f"사본 장부 건수가 안 실림: {line!r}"
     assert "범위 밖" in line, f"통합 조회가 아님을 밝히지 않음: {line!r}"
-    assert f"이 장부 기준: {primary}" in out          # 판정 장부 표기는 그대로
+    assert f"이 기록 파일 기준: {primary}" in out          # 판정 장부 표기는 그대로
 
 
 def test_handoff_stays_silent_about_peers_when_there_are_none(hf, monkeypatch, tmp_path, capsys):
@@ -3001,7 +3001,7 @@ def test_handoff_stays_silent_about_peers_when_there_are_none(hf, monkeypatch, t
     out = _run_handoff_out(hf, tmp_path, capsys,
                            raw_ledger_file=_write_ledger(tmp_path, unfinished=1), monkeypatch=monkeypatch)
 
-    assert "사본 장부" not in out
+    assert "다른 엔진 사본의 raw 출력 기록 파일" not in out
 
 
 def test_peer_ledger_line_propagates_corrupt_copy_read_failure(hf, monkeypatch, tmp_path, capsys):
@@ -3016,7 +3016,7 @@ def test_peer_ledger_line_propagates_corrupt_copy_read_failure(hf, monkeypatch, 
     with pytest.raises(ValueError):
         _run_task_handoff(handoff)
 
-    assert f"사본 장부 {broken}" not in capsys.readouterr().out
+    assert f"다른 엔진 사본의 raw 출력 기록 파일 {broken}" not in capsys.readouterr().out
 
 
 def test_peer_ledger_discovery_reuses_the_delegate_query_rule(hf, tmp_path, monkeypatch):

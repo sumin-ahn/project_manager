@@ -60,13 +60,13 @@ _CLOSE_BOARD_MESSAGE = "{unit} board — {title}"
 
 
 _CLOSE_INTEGRATION_UNDECLARED = (
-    "{cluster} 장부가 통합 브랜치(base_branch)를 선언하지 않았다 — 재배치·머지의 대상이 "
-    "그 선언이다. `board.py cluster show {cluster}` 로 장부를 확인하고 `base_branch` 를 채운 "
+    "{cluster} 묶음 기록이 통합 브랜치(base_branch)를 선언하지 않았다 — 재배치·머지의 대상이 "
+    "그 선언이다. `board.py cluster show {cluster}` 로 묶음 기록을 확인하고 `base_branch` 를 채운 "
     "뒤 다시 실행하라."
 )
 
 _CLOSE_INTEGRATION_BRANCH_MISSING = (
-    "통합 브랜치 {integration} 를 이 코드 트리에서 찾지 못했다 ({tree}) — 장부가 선언한 "
+    "통합 브랜치 {integration} 를 이 코드 트리에서 찾지 못했다 ({tree}) — 묶음 기록이 선언한 "
     "이름과 이 트리의 브랜치를 대조하라."
 )
 
@@ -91,7 +91,7 @@ _CLOSE_TICKET_NOT_CLAIMED = (
 )
 
 _CLOSE_OPEN_ALL_DONE = (
-    "{cluster} 장부는 open 인데 멤버 {members} 가 이미 전부 done 이다 — 정상 종결은 이 "
+    "{cluster} 묶음 기록은 open 인데 멤버 {members} 가 이미 전부 done 이다 — 정상 종결은 이 "
     "반쪽 상태를 닫지 않는다(그 완료 기록은 이 파이프라인이 만든 것이 아니라 커밋·재배치·머지가 "
     "무엇을 근거로 도는지 알 수 없다). 이미 통합된 commit 을 명시하는 복구 문으로 닫는다:\n"
     "  python3 .project_manager/tools/ticket_finish.py --cluster {cluster} "
@@ -116,7 +116,7 @@ class ClusterCloser:
     # `run()`·`preflight()` 가 이 3-튜플을 언팩하므로 선언을 빠뜨린 단계를 추가하면 그 자리에서
     # `ValueError` 다(별도 가드 장치 없음).
     STEPS: tuple[tuple[str, str, str | None], ...] = (
-        ("resolve", "기계 확인 생성·리뷰 게이트 처분", "_pre_resolve"),
+        ("resolve", "기계 확인 생성·리뷰 집계 티켓 처분", "_pre_resolve"),
         ("record", "티켓별 완료 기록", "_pre_record"),
         ("commit", "슬롯 커밋", None),
         ("rebase", "통합 브랜치로 재배치", "_pre_rebase"),
@@ -316,7 +316,7 @@ class ClusterCloser:
         current = (out or "").strip() if rc == 0 else ""
         if current == source:
             return None
-        return (f"이 코드 트리가 든 브랜치({current or 'detached HEAD'})가 장부의 묶음 브랜치 "
+        return (f"이 코드 트리가 든 브랜치({current or 'detached HEAD'})가 묶음 기록이 선언한 묶음 브랜치 "
                 f"{source} 와 다르다 ({tree}) — 종결은 묶음 브랜치를 체크아웃한 슬롯에서 "
                 "돈다(다른 브랜치를 옮기지 않는다).")
 
@@ -362,7 +362,7 @@ class ClusterCloser:
     def _step_resolve(self) -> str | None:
         """리뷰 게이트 처분 — 묶음 표면 `rounds resolve --cluster` 를 한 번 부른다."""
         if not self._pending_gates():
-            print("  처분할 리뷰 잔여 없음 — 건너뜀")
+            print("  처분할 남은 리뷰 항목 없음 — 건너뜀")
             return None
         argv = [
             "rounds", "resolve", "--cluster", self._cluster, "--pm-verified",
@@ -375,7 +375,7 @@ class ClusterCloser:
         for line in out.rstrip().splitlines():
             print(f"  {line}")
         if rc != 0:
-            return (f"리뷰 게이트 처분 실패 (rc={rc}) — `{' '.join(argv)}`. 위 사유를 "
+            return (f"리뷰 집계 티켓 처분 실패 (rc={rc}) — `{' '.join(argv)}`. 위 사유를 "
                     "해소한 뒤 다시 실행하라(앞 단계는 반복하지 않는다).")
         return None
 
@@ -927,7 +927,7 @@ class ClusterCloser:
         tree = self._home.root / self._slot
         try:
             if tree.resolve() == Path(self._home.root).resolve():
-                return None, None, f"제품 git이 PM 홈으로 강등됐다: {tree}"
+                return None, None, f"제품 git 경로가 PM 홈과 같다: {tree}"
         except OSError as exc:
             return None, None, f"선택 제품 경로를 해소하지 못했다: {exc}"
         if not (tree / ".git").is_file():
@@ -939,10 +939,10 @@ class ClusterCloser:
 
         ledger = self._ledger()
         if ledger is None:
-            return None, None, f"묶음 장부를 찾지 못했다: {self._cluster}"
+            return None, None, f"묶음 기록을 찾지 못했다: {self._cluster}"
         ledger_id = self._cluster_id(ledger.get("id"))
         if ledger_id != cluster_id:
-            return None, None, f"장부 id가 대상과 다르다: {ledger_id!r} != {cluster_id!r}"
+            return None, None, f"묶음 기록 id가 대상과 다르다: {ledger_id!r} != {cluster_id!r}"
         board_root = self._home.board_root
         if not (board_root / ".git").exists():
             return None, None, f"recovery는 분리 board-git이 필요하다: {board_root}"
@@ -988,7 +988,7 @@ class ClusterCloser:
             ]
             if declared != cluster_id or owners != [cluster_id]:
                 return None, None, (f"{tid} 양방향 cluster 귀속 불일치 "
-                                    f"(ticket={declared or '없음'}, ledgers={owners})")
+                                    f"(ticket={declared or '없음'}, clusters={owners})")
             revision, problem = self._commit_oid(
                 tree, evidence[tid], label=f"{tid} evidence")
             if problem:
@@ -999,20 +999,20 @@ class ClusterCloser:
                 if tid in legacy:
                     return None, None, f"{tid}는 claimed_rev가 있어 legacy base를 받을 수 없다"
                 anchor, problem = self._commit_oid(
-                    tree, claimed, label=f"{tid} claimed_rev anchor")
+                    tree, claimed, label=f"{tid} claimed_rev 기준 커밋")
                 source = "claimed_rev"
             else:
                 supplied = legacy.get(tid)
                 if supplied is None:
                     return None, None, f"{tid}는 claimed_rev가 없어 --legacy-base-rev가 필수다"
                 anchor, problem = self._commit_oid(
-                    tree, supplied, label=f"{tid} operator legacy anchor")
+                    tree, supplied, label=f"{tid} operator legacy 기준 커밋")
                 source = "operator-supplied"
             if problem:
                 return None, None, problem
             assert anchor is not None
             if not self._is_ancestor(tree, anchor, revision):
-                return None, None, f"{tid} evidence가 anchor 이후가 아니다: {anchor} !<= {revision}"
+                return None, None, f"{tid} evidence가 기준 커밋 이후가 아니다: {anchor} !<= {revision}"
             if not self._is_ancestor(tree, revision, head):
                 return None, None, f"{tid} evidence가 제품 exact HEAD의 조상이 아니다: {revision} !<= {head}"
             normalized_revisions[tid] = revision
@@ -1034,10 +1034,10 @@ class ClusterCloser:
         existing = ledger.get("closure")
         if status == "closed":
             if existing != closure:
-                return None, status, "closed 장부의 closure evidence가 이번 명시 증거와 다르다"
+                return None, status, "closed 묶음 기록의 closure evidence가 이번 명시 증거와 다르다"
         elif status == "open":
             if existing not in (None, closure):
-                return None, status, "open 장부에 다른 closure evidence가 남아 있다"
+                return None, status, "open 묶음 기록에 다른 closure evidence가 남아 있다"
         else:
             return None, status, f"recovery는 open all-done 전용이다 (현재 status={status!r})"
         return closure, status, None
@@ -1104,7 +1104,7 @@ class ClusterCloser:
             pathspec = ledger_path.relative_to(board_root).as_posix()
         except ValueError as exc:
             raise finish_rules._CloseObservationFailure(
-                f"cluster ledger가 board-git 밖을 가리킨다: {ledger_path}") from exc
+                f"묶음 기록 파일이 board-git 밖을 가리킨다: {ledger_path}") from exc
         return bool(self._pending_paths(board_root, [pathspec]))
 
     def _run_reconcile(self) -> int:
@@ -1154,7 +1154,7 @@ class ClusterCloser:
             if needs_board_sync:
                 print("  동일 closure evidence의 미완 board-git 기록을 재개")
             else:
-                print("  동일 closure evidence가 이미 board-git에 기록됨 — 장부 write 건너뜀")
+                print("  동일 closure evidence가 이미 board-git에 기록됨 — 묶음 기록 쓰기 건너뜀")
 
         if needs_board_sync:
             ledger_path = cluster_store.cluster_ledger_path(self._home, self._cluster)

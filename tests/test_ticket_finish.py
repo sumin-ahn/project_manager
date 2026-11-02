@@ -1496,9 +1496,9 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
             '`git commit -m "<메시지>" -- .project_manager/wiki/log/current.md`') in out
     assert (f"[task worktree touches] cwd={worktree}: "
             '`git commit -m "<메시지>" -- tests/test_real_change.py`') in out
-    assert "⚠ [task worktree touches] 미스테이지 잔여 1건" in out
+    assert "⚠ [task worktree touches] 남은 미스테이지 변경 1건" in out
     assert "⚠ [task worktree touches] 스코프 밖 staged 1건" in out
-    assert "[완료] T-0437 기록 완료. ⚠ 미스테이지 잔여 1건 · 스코프 밖 staged 1건" in out
+    assert "[완료] T-0437 기록 완료. ⚠ 남은 미스테이지 변경 1건 · 스코프 밖 staged 1건" in out
 
 
 def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monkeypatch, capsys):
@@ -2038,7 +2038,7 @@ def test_default_dod_preflight_consumes_the_board_gate(tf, tmp_path):
     assert block is not None
     assert "T-1234" in block and "남은 항목" in block
     assert "(이월: <사유·귀속>)" in block                  # 값 형식은 board 소유분
-    assert "board.py complete 의 게이트와 **같은 판정**" in block
+    assert "board.py complete 의 통과 조건과 **같은 판정**" in block
 
 
 def test_default_dod_preflight_passes_a_closed_ticket(tf, tmp_path):

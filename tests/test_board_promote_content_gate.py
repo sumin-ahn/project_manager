@@ -387,7 +387,7 @@ def test_seed_only_architect_round_is_blocking(anchored):
     _seed_round(anchored, "T-0001", "architect", harvested=False)
     issues = _issues(anchored, _body(design_section=_DESIGN_FILLED), design="done")
     assert _kinds(issues) == ["architect-review-pending"], issues
-    assert "시드 그대로" in issues[0][1]
+    assert "빈 양식 그대로" in issues[0][1]
 
 
 def test_harvested_architect_round_passes(anchored):

@@ -70,7 +70,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     # claimed 티켓을 만지는 mutation 4종(complete·block·unclaim·unblock)과 처분(discard)은
     # `claimed_by` 와 실행 세션을 대조한다 — 그래서 claim 과 **같은** 정체성 `--task` 를 받는다
     # (폴더를 고르지 않으므로 위치 인자 `--repo`/`--slot` 은 없다·공용 `add_task_arg`).
-    p = sub.add_parser("complete", help="mv claimed → done (sync gate enforced · 소유자만)")
+    p = sub.add_parser("complete", help="mv claimed → done (sync check enforced · 소유자만)")
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--tests-pass", action="store_true",
                    help="assert the regression suite passes "
@@ -91,7 +91,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("disposition", metavar="|".join(ticket_rules.DISPOSITION_KINDS),
                    choices=ticket_rules.DISPOSITION_KINDS,
-                   help="처분 종류 — merged(다른 티켓으로 흡수) · dropped(취소·폐기)")
+                   help="처분 종류 — merged(다른 티켓에 합침) · dropped(취소·폐기)")
     p.add_argument("--reason", required=True,
                    help="처분 사유 (병합 대상 티켓 ID 도 여기에 적는다)")
     identity_args.add_task_arg(p)
@@ -144,7 +144,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
                    "prefix → 등록 prefix 가 정확히 1개면 그것 / 그래도 미해소면 "
                    "none(무prefix 1급 → legacy T-NNNN)")
     p.add_argument("--user-ack", metavar="<prefix>",
-                   help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
+                   help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값에 정확히 연결)")
     p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf identity.user= / "
                    "git config user.email)")
     # `--task` 필수(created_by = <user>/<task>) · `--repo`/`--slot` 은 그 task 가 보유한 폴더(코드
@@ -153,37 +153,37 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     p.set_defaults(fn=board_ticket.cmd_new)
 
     p = sub.add_parser("promote", help="draft(board-git 미커밋) 티켓을 승격 — 본문 채운 뒤 board-git sync "
-                        "(발행 규율 게이트: board-git 공유 시 `new` 가 미충전 티켓을 draft 로 남긴다)")
+                        "(발행 규율 통과 조건: board-git 공유 시 `new` 가 미충전 티켓을 draft 로 남긴다)")
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=board_ticket.cmd_promote)
 
     # cluster subcommand group — 운영 단위(티켓 묶음) 장부. 쓰기(new)와 조회(show)가 섞여
     # 있으므로 leaf 별로 분류되는 서브그룹으로 둔다(`idea`·`prefix` 와 같은 형상).
-    cluster_p = sub.add_parser("cluster", help="운영 단위(티켓 묶음) 장부")
+    cluster_p = sub.add_parser("cluster", help="운영 단위(티켓 묶음) 기록")
     cluster_sub = cluster_p.add_subparsers(dest="cluster_cmd", required=True)
 
     cp = cluster_sub.add_parser(
-        "new", help="장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료 "
+        "new", help="묶음 기록 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료 "
                     "(코드 트리는 `--task` 의 폴더로 명시 필수·폴더가 2개 이상이면 `--repo/--slot` "
                     "위치 인자 추가 — 없으면 거부)")
     cp.add_argument("name", metavar="<ticket-group>",
-                    help="클러스터 이름(장부 id 는 `C-<ticket-group>` · 통합 브랜치는 `task/<ticket-group>`)")
+                    help="클러스터 이름(묶음 기록 id 는 `C-<ticket-group>` · 통합 브랜치는 `task/<ticket-group>`)")
     cp.add_argument("--tickets", metavar="T-...,T-...", required=True,
-                    help="멤버 티켓 ID 쉼표 구분. 발행이 만든 크기 1 장부는 흡수하고 이미 여러 "
+                    help="멤버 티켓 ID 쉼표 구분. 발행이 만든 크기 1 묶음 기록은 합치고 이미 여러 "
                          "티켓의 묶음에 속한 티켓은 거부한다.")
     cp.add_argument("--spike", metavar="경로",
-                    help="설계 단일 진실 문서 경로 (선택 · 장부에 기록만 한다)")
+                    help="설계 단일 진실 문서 경로 (선택 · 묶음 기록에 적어 두기만 한다)")
     identity_args.add_identity_args(cp)  # 통합 브랜치를 둘 코드 트리 — 명시 필수(claim 과 같은 규칙)
     cp.set_defaults(fn=board_cluster.cmd_cluster)
 
-    cp = cluster_sub.add_parser("show", help="장부 1건 조회(선언값 + 멤버 현재 status)")
+    cp = cluster_sub.add_parser("show", help="묶음 기록 1건 조회(선언값 + 멤버 현재 status)")
     cp.add_argument("name", metavar="<ticket-group>")
     cp.set_defaults(fn=board_cluster.cmd_cluster)
 
     p = sub.add_parser(
         "section-add",
-        help="묶음 장부가 없는 티켓의 다음 라운드를 빈 시드로 예약(슬롯 없는 준비) — "
-             "장부가 있는 티켓의 라운드는 위임 준비(`pm_delegate.py ticket prepare`)가 연다")
+        help="묶음 기록이 없는 티켓의 다음 라운드를 빈 양식으로 예약(슬롯 없는 준비) — "
+             "묶음 기록이 있는 티켓의 라운드는 위임 준비(`pm_delegate.py ticket prepare`)가 연다")
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--role", required=True, choices=round_rules._round_role_choices(),
                    help="라운드 역할(파일명과 기본 절명을 함께 결정)")
@@ -216,7 +216,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     p = sub.add_parser("init", help="clone 당 1회 setup — areas repo 행 등록·pm_state·local.conf·pre-push 훅")
     p.add_argument("--prefix", help="ticket ID 작업 카테고리 (예: PAY). 생략 = 무prefix(T-NNNN·none 카테고리)")
     p.add_argument("--user-ack", metavar="<prefix>",
-                   help="새 prefix 등록에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
+                   help="새 prefix 등록에 대한 사용자 승인 토큰(대상 prefix 값에 정확히 연결)")
     p.add_argument("--area", help="영역 설명 (새 prefix 최초 등록 시 필요)")
     p.add_argument("--owner", help="등록 식별자(registrant·기본: --task 값, 없으면 빈 칸)")
     p.add_argument("--user", help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력). "
@@ -243,10 +243,10 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     p.set_defaults(fn=board_migrate_identity.cmd_migrate_identity)
 
     p = sub.add_parser("regression",
-                       help="회귀 게이트 (run=측정·기록 / check=HEAD green 검증·pre-push 훅용)")
+                       help="회귀 통과 조건 (run=측정·기록 / check=HEAD green 검증·pre-push 훅용)")
     p.add_argument("action", choices=["run", "check"])
     p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test.cmd → Python pytest 병렬 기본)")
-    p.add_argument("--cwd", help="회귀 실행 cwd (seam·기본=이 트리 REPO · 슬롯 자동해소 없음 — "
+    p.add_argument("--cwd", help="회귀 실행 cwd (교체 지점·기본=이 트리 REPO · 슬롯 자동해소 없음 — "
                                  "다른 트리는 여기서 명시)")
     identity_args.add_identity_args(p)  # `--task`(+위치 인자) = 디스패치(M>1 순회 생략)와 그 폴더
     # 실행 · 실행 트리는 REPO(다른 트리는 `--cwd`/`--task` 로 명시) · M>1 홈에서 무명시면
@@ -254,19 +254,19 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     p.add_argument("--ticket", help="이 ticket 의 touches 로 스코프 (dev 빠른 루프·advisory)")
     p.add_argument("--touches", help="comma-separated 파일로 스코프 (advisory)")
     p.add_argument("--final", action="store_true",
-                   help="수렴 후 FULL 게이트 — 활성 리뷰 사이클 중에도 강등하지 않는다 "
+                   help="마무리 뒤 FULL 통과 조건 — 활성 리뷰 사이클 중에도 수준을 낮추지 않는다 "
                         "(pre-push 훅·핸드오프가 쓰는 경로)")
     p.set_defaults(fn=regression_cmd.cmd_regression, _board_subcommand="regression")
 
     p = sub.add_parser("live-test",
-                       help="릴리즈 라이브 게이트 — record=`pytest -m release` "
+                       help="릴리즈 라이브 시험 통과 조건 — record=`pytest -m release` "
                             "실행·수집 pin 강제·기록 / check=보호훅이 HEAD-매칭 green 검증")
     p.add_argument("action", choices=["record", "check"])
     p.add_argument("--rev", help="check 대상 sha (보호훅이 push HEAD 를 넘김·record 는 무시)")
     p.add_argument("--cwd", help="record=pytest 실행 cwd(기본=활성 slot worktree, 빈 값 및 "
                                  "--task/--repo/--slot과 혼합 불가, 경로는 --cwd만 지정) / "
                                  "check=live-test.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "
-                                 "(seam·record↔check 대칭)")
+                                 "(교체 지점·record↔check 대칭)")
     identity_args.add_identity_args(p)  # record 의 task 폴더(M>1 홈에서 cwd 해소·regression 과 동형·
     # 무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요)
     p.set_defaults(fn=regression_cmd.cmd_livegate)
@@ -303,7 +303,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
 
     p = sub.add_parser("lint", help="check depends_on / blocks consistency")
     p.add_argument("--blocking", action="store_true",
-                   help="push 게이트 모드 — 차단 카테고리(dangling/unstable-ref/dependency/"
+                   help="push 통과 조건 모드 — 차단 카테고리(dangling/unstable-ref/dependency/"
                         "thin)에만 종료코드 1, status drift 자문성은 0")
     p.set_defaults(fn=board_lint.cmd_lint)
 
@@ -318,7 +318,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
         "--page", dest="pages", action="append", metavar="REPO_RELATIVE_PATH",
         help="이 현재-진실 문서만 재핀 (REPO 상대경로·복수 지정 가능)")
     p.add_argument("--dry-run", action="store_true",
-                   help="쓰기 0·페이지→repo/full-anchor 매핑 미리보기")
+                   help="쓰기 0·페이지→repo/full OID 매핑 미리보기")
     p.set_defaults(fn=board_repin.cmd_verified_at_repin)
 
     p = sub.add_parser("promote-scope",
@@ -360,7 +360,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
                    help="새 티켓 ID — T-NNNN 또는 T-<prefix>-NNN (발행 문법·legacy prefix 포함)")
     identity_args.add_task_arg(p)  # claim 중 티켓의 소유 세션 확인용
     p.add_argument("--user-ack", metavar="<prefix>",
-                   help="NEW-ID가 새 prefix를 신설할 때 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
+                   help="NEW-ID가 새 prefix를 신설할 때 사용자 승인 토큰(대상 prefix 값에 정확히 연결)")
     p.add_argument("--dry-run", action="store_true", help="규모 preview(N ID·M refs·K 파일)·쓰기 0")
     p.set_defaults(fn=board_prefix.cmd_reid)
 
@@ -377,7 +377,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     pp.add_argument("src", help="원본 카테고리 (또는 none=무prefix)")
     pp.add_argument("dst", help="대상 카테고리 (또는 none=이름 지우기)")
     pp.add_argument("--user-ack", metavar="<prefix>",
-                    help="dst가 새 prefix일 때 사용자 승인 토큰(대상값과 정확히 결속)")
+                    help="dst가 새 prefix일 때 사용자 승인 토큰(대상값에 정확히 연결)")
     pp.add_argument("--dry-run", action="store_true", help="규모 preview(N ID·M refs·K 파일)·쓰기 0")
     pp.set_defaults(fn=board_prefix.cmd_prefix_rename)
 
@@ -391,7 +391,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     pp.add_argument("sources", nargs="+", help="통합할 source 카테고리(들) (또는 none)")
     pp.add_argument("--into", required=True, help="대상 카테고리 (또는 none)")
     pp.add_argument("--user-ack", metavar="<prefix>",
-                    help="--into가 새 prefix일 때 사용자 승인 토큰(대상값과 정확히 결속)")
+                    help="--into가 새 prefix일 때 사용자 승인 토큰(대상값에 정확히 연결)")
     pp.add_argument("--reorder-chronological", action="store_true",
                     help="전체 interleave 재번호(opt-in·고위험 17k refs). 기본=append(대상 max 뒤·기존 번호 무변경)")
     pp.add_argument("--dry-run", action="store_true", help="규모 preview·쓰기 0")
