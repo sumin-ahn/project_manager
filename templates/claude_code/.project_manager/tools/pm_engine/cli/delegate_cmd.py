@@ -46,7 +46,7 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
     """명시한 미마감 raw 장부 레코드를 비정상 종료(rc=-1)로 마감한다."""
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py raw close",
-        description="kill·비정상 종료로 남은 raw 장부 레코드 수동 마감",
+        description="kill·비정상 종료로 남은 raw 출력 기록 항목 수동 마감",
     )
     parser.add_argument("record_ids", nargs="+", metavar="RECORD-ID")
     parser.add_argument(
@@ -59,7 +59,7 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
         "--output-dir",
         default=None,
         metavar="DIR",
-        help="마감할 raw 출력 디렉터리(그 안의 raw_outputs.json 장부)",
+        help="마감할 raw 출력 디렉터리(그 안의 raw_outputs.json 기록 파일)",
     )
     args = parser.parse_args(argv)
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
@@ -77,21 +77,21 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
         row = rows_by_id.get(record_id)
         if row is None:
             print(
-                f"오류: raw 장부 레코드 미발견: {record_id} "
-                f"(장부: {resolved_ledger})",
+                f"오류: raw 출력 기록에 항목 없음: {record_id} "
+                f"(기록 파일: {resolved_ledger})",
                 file=sys.stderr,
             )
             return 1
         if row.get("finished_at") is not None:
             print(
-                f"오류: raw 장부 레코드 이미 마감: {record_id}",
+                f"오류: raw 출력 기록 항목 이미 마감: {record_id}",
                 file=sys.stderr,
             )
             return 1
         pid = row.get("pid")
         if not args.force and raw_output.pid_is_alive(pid):
             print(
-                f"오류: raw 장부 레코드 PID가 실행 중이어서 마감 거부: "
+                f"오류: raw 출력 기록 항목 PID가 실행 중이어서 마감 거부: "
                 f"{record_id} (pid={pid}; 의도한 우회는 --force)",
                 file=sys.stderr,
             )
@@ -99,7 +99,7 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
         started = raw_output._parse_raw_time(row.get("started_at"))
         if started is None:
             print(
-                f"오류: raw 장부 started_at 형식 오류: {record_id}",
+                f"오류: raw 출력 기록 started_at 형식 오류: {record_id}",
                 file=sys.stderr,
             )
             return 1
@@ -129,9 +129,9 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
             print(
                 f"경고: raw 레코드 {record_id}는 완료 보존창"
                 f"({raw_output.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 "
-                "장부에서 제거됨"
+                "기록에서 제거됨"
             )
-    print(f"마감 장부: {resolved_ledger}")
+    print(f"마감 기록 파일: {resolved_ledger}")
     return 0
 
 
@@ -150,7 +150,7 @@ def _print_orphan_raw_summary(
     if summary.count == 0:
         return
     print(
-        f"경고: 장부 미참조 원문 {summary.count}건 {summary.total_bytes}바이트 "
+        f"경고: 기록에 없는 원문 {summary.count}건 {summary.total_bytes}바이트 "
         "(엔진 명명 · 삭제 안 함 · 목록은 아래)"
     )
     shown = summary.paths[:limit]
@@ -168,10 +168,10 @@ def _cmd_raw(home, argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py raw",
         description=(
-            "최근 위임·추가 리뷰 raw 장부 조회; close로 미마감 레코드 수동 마감"
+            "최근 위임·추가 리뷰 raw 출력 기록 조회; close로 미마감 레코드 수동 마감"
         ),
         epilog=(
-            "마감 표면: close <RECORD-ID> ... "
+            "마감 명령: close <RECORD-ID> ... "
             "[--note NOTE] [--force] [--output-dir DIR]"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -184,7 +184,7 @@ def _cmd_raw(home, argv: list[str]) -> int:
         "--output-dir",
         default=None,
         metavar="DIR",
-        help="조회할 raw 출력 디렉토리(그 안의 raw_outputs.json 장부)",
+        help="조회할 raw 출력 디렉토리(그 안의 raw_outputs.json 기록 파일)",
     )
     args = parser.parse_args(argv)
     if args.limit <= 0:
@@ -192,13 +192,13 @@ def _cmd_raw(home, argv: list[str]) -> int:
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
     _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
     resolved_ledger = ledger_path.resolve()
-    print(f"조회 장부: {resolved_ledger}")
+    print(f"조회 기록 파일: {resolved_ledger}")
     for peer_ledger in raw_output._peer_engine_ledgers(
         home, None if home.local_dir.parent.parent == home.root else home.local_dir.parent.parent,
     ):
         if peer_ledger != resolved_ledger:
             print(
-                "경고: 다른 엔진 사본 장부가 있습니다"
+                "경고: 다른 엔진 사본의 raw 출력 기록 파일이 있습니다"
                 f"(이 조회에서는 읽지 않음): {peer_ledger}"
             )
     rows = raw_output.raw_records(
@@ -234,12 +234,12 @@ def _cmd_lint(home, argv: list[str]) -> int:
     안내는 stdout. board lint advisory 훅과 짝을 이루는 명시 진입점."""
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py lint",
-        description="delegate 설정 정합 점검 — 동일-모델 dev/reviewer 경고(never-block).")
+        description="delegate 설정 일치 점검 — 동일-모델 dev/reviewer 경고(never-block).")
     parser.parse_args(argv)  # 현재 플래그 0(미래 확장 여지·미지원 인자는 usage error).
     conf = conf_store.local_config(home)
     findings = model_lint.lint_same_model(conf)
     if not findings:
-        print("delegate lint: 동일-모델 dev/reviewer 경고 없음(설정 정합).")
+        print("delegate lint: 동일-모델 dev/reviewer 경고 없음(설정 일치).")
         return 0
     for _label, detail in findings:
         print(f"경고: {detail}", file=sys.stderr)
@@ -275,7 +275,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     if command == "review":
         parser = argparse.ArgumentParser(
             prog="pm_delegate.py review",
-            description="PM disposition을 적용한 accepted-only reviewer delta",
+            description="PM disposition을 적용해 수락한 리뷰 지적만 추린 목록",
         )
         sub = parser.add_subparsers(dest="review_command", required=True)
         accepted = sub.add_parser(
@@ -284,7 +284,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         _add_review_target_args(accepted)
         disposition = sub.add_parser(
             "disposition-template",
-            help="리뷰 라운드의 미판정 finding ID를 PM disposition 골격으로 렌더",
+            help="리뷰 라운드의 미판정 finding ID를 PM disposition 빈 양식으로 렌더",
         )
         _add_review_target_args(disposition)
         disposition.add_argument(
@@ -297,7 +297,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         )
         verify = sub.add_parser(
             "verify-template",
-            help="accepted finding 의 기계 확인 대상을 pm-review-confirmation-v1 골격으로 렌더",
+            help="accepted finding 의 기계 확인 대상을 pm-review-confirmation-v1 빈 양식으로 렌더",
         )
         _add_review_target_args(verify)
         verify.add_argument(
@@ -326,7 +326,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         return None
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py ticket",
-        description="slot 라운드 파일 준비·PM 홈 board 라운드 회수",
+        description="slot 라운드 파일 준비·PM 홈 board 라운드 돌려받기",
     )
     sub = parser.add_subparsers(dest="ticket_command", required=True)
     prepare = sub.add_parser(
@@ -337,7 +337,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     target.add_argument("--ticket", metavar="T-NNNN")
     target.add_argument(
         "--cluster", metavar="C-<ticket-group>",
-        help="클러스터 장부의 멤버 전부에 라운드를 예약한다(run-dir 1 · 라운드 파일 N)",
+        help="묶음 기록의 멤버 전부에 라운드를 예약한다(run-dir 1 · 라운드 파일 N)",
     )
     prepare.add_argument(
         "--role", required=True,
@@ -359,9 +359,9 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         help=(
             "이미 예약된 순번 N 을 다시 연다(이어 시키는 단계 — 새 순번을 만들지 않는다). "
             "그 순번이 실재하고 역할이 --role 과 같아야 하며, 슬롯 사본은 board 라운드 파일의 "
-            "현재 내용으로 시드된다(회수가 그 파일을 교체하고 지나간 판은 board git 이 갖는다). "
+            "현재 내용을 그대로 받는다(돌려받기가 그 파일을 교체하고 지나간 판은 board git 이 갖는다). "
             f"{delegate_rounds.ABANDON_DISCARD_REASON_FLAG} 로 폐기한 순번을 다시 시키려면 이 값으로 재개방한 "
-            f"뒤 슬롯 사본에서 `{review_form.PM_REVIEW_REFUSED_MARKER}` 표식 줄을 지운다 — 회수는 그 줄을 "
+            f"뒤 슬롯 사본에서 `{review_form.PM_REVIEW_REFUSED_MARKER}` 표시 줄을 지운다 — 돌려받기는 그 줄을 "
             "실은 회신을 거부한다"
         ),
     )
@@ -371,12 +371,12 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     )
     collect.add_argument(
         "--copy", required=True, metavar="ABSPATH",
-        help="라운드 파일 하나 또는 run-dir(디렉터리 인자는 그 run 의 티켓 전부를 회수한다)",
+        help="라운드 파일 하나 또는 run-dir(디렉터리 인자는 그 run 의 티켓 전부를 돌려받는다)",
     )
     collect.add_argument("--cwd", required=True, metavar="ABSPATH")
     abandon = sub.add_parser(
         "abandon",
-        help="kill 로 죽은 예약을 포기 — 장부 행 마감 + board 라운드 정리 + run-dir 닫음",
+        help="kill 로 죽은 예약을 포기 — 기록 행 마감 + board 라운드 정리 + run-dir 닫음",
     )
     abandon.add_argument("--copy", required=True, metavar="ABSPATH")
     abandon.add_argument("--cwd", required=True, metavar="ABSPATH")
@@ -388,24 +388,24 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         delegate_rounds.ABANDON_SUPERSEDED_BY_FLAG, type=int, default=None, dest="superseded_by_ordinal",
         metavar="N",
         help=(
-            "이 라운드는 재실행된 ordinal N 라운드로 대체됐다 — 산출이 시드와 달라도 포기를 "
-            "허용한다(생존 확인은 별도 축 — --assume-dead 필요 여부는 그대로)"
+            "이 라운드는 재실행된 ordinal N 라운드로 대체됐다 — 산출이 빈 양식과 달라도 포기를 "
+            "허용한다(생존 확인은 별도 기준 — --assume-dead 필요 여부는 그대로)"
         ),
     )
     abandon.add_argument(
         delegate_rounds.ABANDON_DISCARD_REASON_FLAG, default=None, dest="discard_reason", metavar="사유",
         help=(
             "이 라운드를 폐기한다(재실행 대체가 아니다) — 산출이 있으면 board 라운드 파일로 "
-            "옮겨 표식을 붙이고, 사본도 board 파일도 없는 행은 이 사유로 장부만 닫는다. "
+            "옮겨 표시를 붙이고, 사본도 board 파일도 없는 행은 이 사유로 기록만 닫는다. "
             f"{delegate_rounds.ABANDON_SUPERSEDED_BY_FLAG} 와 함께 줄 수 없다. 폐기한 순번은 예산 한 칸을 "
             f"계속 차지하므로, 그 단계를 다시 시키려면 {review_state.PREPARE_REOPEN_ORDINAL_FLAG} 로 "
-            f"재개방한 뒤 슬롯 사본에서 `{review_form.PM_REVIEW_REFUSED_MARKER}` 표식 줄을 지운다"
+            f"재개방한 뒤 슬롯 사본에서 `{review_form.PM_REVIEW_REFUSED_MARKER}` 표시 줄을 지운다"
         ),
     )
-    copies = sub.add_parser("copies", help="PM 홈 delegate-rounds 장부 조회")
+    copies = sub.add_parser("copies", help="PM 홈 위임 라운드 기록 조회")
     copies.add_argument("--ticket", default=None, metavar="T-NNNN")
     copies.add_argument(
-        "--uncollected", action="store_true", help="미회수 준비만 표시",
+        "--uncollected", action="store_true", help="돌려받지 않은 준비만 표시",
     )
     return parser
 
@@ -450,7 +450,7 @@ def _reject_cross_role_prepare(home, role: str, tier: str, conf: dict[str, str])
             "--cluster C-<ticket-group>" if role == review_form.INTERNAL_REVIEW_ROLE else "--ticket <T-NNNN>"
         )
         raise delegate_errors.DelegateError(
-            f"cross 역할은 수동 prepare 가 거부됩니다({reason}) — 고아 시드를 만들지 않는다. "
+            f"cross 역할은 수동 prepare 가 거부됩니다({reason}) — 주인 없는 빈 양식을 만들지 않는다. "
             f"이 역할의 위임은 실 실행(pm_delegate.py --role {role} {target} --cwd <worktree> ...)이 "
             "안에서 자동으로 prepare 한다."
         )
@@ -524,22 +524,22 @@ def _cmd_ticket(home, argv: list[str]) -> int:
             owner = pm_paths.resolve_pm_home_for_repo(home.local_dir.parent.parent)
             home = pm_paths.home_at(home.root, pm_home=owner, board_root=pm_paths._board_root_at(owner))
             ledger = delegate_ledger._delegate_rounds_ledger_path(owner)
-            print(f"조회 장부: {ledger}")
+            print(f"조회 기록 파일: {ledger}")
             rows = delegate_ledger.ticket_copy_records(
                 owner, ticket=args.ticket, unharvested=args.uncollected,
             )
-            label = "미회수 라운드 준비" if args.uncollected else "최근 라운드 준비"
+            label = "돌려받지 않은 라운드 준비" if args.uncollected else "최근 라운드 준비"
             if not rows:
                 print(f"{label} 없음")
                 return 0
             print(f"{label} {len(rows)}건")
             for row in rows:
                 if row["collected_at"] is not None:
-                    status = f"회수({row['collected_at']})"
+                    status = f"돌려받음({row['collected_at']})"
                 elif "abandoned_at" in row:
                     status = f"포기({row['abandoned_at']})"
                 else:
-                    status = "미회수"
+                    status = "돌려받지 않음"
                 print(
                     f"{row['prepared_at']} · {status} · {row['ticket']} · "
                     f"role={row['role']} · ordinal={row['ordinal']} · "
@@ -571,7 +571,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
             if args.ticket and not ticket_rules._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             if args.cluster and not delegate_ledger._is_valid_cluster_id(args.cluster):
-                parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
+                parser.error("--cluster는 board 묶음 기록 id 형식이어야 합니다")
             if args.role == review_form.INTERNAL_REVIEW_ROLE and not args.cluster:
                 parser.error("code-reviewer 는 --cluster 로만 준비합니다(리뷰 단위 = 묶음)")
             if args.focus is not None and args.role != review_form.INTERNAL_REVIEW_ROLE:
@@ -633,7 +633,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
             if not abandon_result.converged:
                 # 수렴 단언이 깨진 상태는 rc 로 말한다 — 재호출이 남은 작업을 끝낸다(rollback 없음).
                 print(
-                    "오류: ticket abandon 미수렴 — 같은 명령을 다시 실행하세요: "
+                    "오류: ticket abandon 결과가 아직 일치하지 않음 — 같은 명령을 다시 실행하세요: "
                     f"copy={copy}",
                     file=sys.stderr,
                 )
@@ -700,7 +700,7 @@ def _emit_pm_review_verify_template(template: review_state.PMReviewVerifyTemplat
     for finding_id, source_round, summary in template.gap:
         print(
             f"안내: {finding_id} 는 빈틈 보고(reason={review_form.PM_REVIEW_VERIFY_GAP_REASON}) 상태입니다 — "
-            f"선언 round={source_round} · 요지: {summary} · 보강 처방을 낸 뒤 다음 fix 라운드로 "
+            f"선언 round={source_round} · 요지: {summary} · 수정 방법을 보강한 뒤 다음 fix 라운드로 "
             "보내세요(이번 라운드 무활동은 정상 산출입니다)",
             file=sys.stderr,
         )
@@ -721,8 +721,8 @@ def _emit_pm_review_verify_template(template: review_state.PMReviewVerifyTemplat
     if template.missing:
         print(
             "오류: verify 행이 없는 accepted finding(자리표시자 그대로 포함): "
-            f"{', '.join(template.missing)} — developer 라운드의 검증 골격을 accepted ID "
-            f"전수로 채우세요(처방 빈틈으로 구현하지 않았다면 reason="
+            f"{', '.join(template.missing)} — developer 라운드의 검증 빈 양식을 accepted ID "
+            f"전수로 채우세요(수정 방법의 빈틈으로 구현하지 않았다면 reason="
             f"{review_form.PM_REVIEW_VERIFY_GAP_REASON} 행으로 선언하게 하세요)",
             file=sys.stderr,
         )
@@ -741,7 +741,7 @@ def _cmd_review(home, argv: list[str]) -> int:
     if args.ticket is not None and not ticket_rules._is_valid_ticket_id(args.ticket):
         parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
     if args.cluster is not None and not delegate_ledger._is_valid_cluster_id(args.cluster):
-        parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
+        parser.error("--cluster는 board 묶음 기록 id 형식이어야 합니다")
     if args.ticket is not None:
         return _cmd_review_ticket(home, args, args.ticket)
     try:
@@ -754,7 +754,7 @@ def _cmd_review(home, argv: list[str]) -> int:
     if not members:
         print(
             f"오류: 클러스터 멤버가 없습니다: {args.cluster} — "
-            f"`board.py cluster show {args.cluster}` 로 장부를 확인하세요",
+            f"`board.py cluster show {args.cluster}` 로 묶음 기록을 확인하세요",
             file=sys.stderr,
         )
         return 1
@@ -860,23 +860,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="pm_delegate.py",
         description="역할 위임 채널 (마스터 스위치 delegate.enabled·기본 ON·채널 무관)",
         epilog=(
-            "local.conf loud 폴백 예시(엔진 기본값 아님):\n"
+            "local.conf loud 대체 하네스·모델 예시(엔진 기본값 아님):\n"
             "  delegate.developer.fallback.harness=claude\n"
             "  delegate.developer.fallback.model=opus\n"
             "hard 티어는 delegate.developer.hard.fallback.* 처럼 별도 완전 세트를 설정합니다.\n"
-            "폴백은 인프라 실패(스폰 실패·타임아웃·opencode 첫-이벤트 stall·한도/인증)에만 1회 —\n"
+            "대체 동작은 인프라 실패(스폰 실패·타임아웃·opencode 첫-이벤트 stall·한도/인증)에만 1회 —\n"
             "정상 완료 판정(반려·must-fix)은 대상이 아니고, --harness/--model 완전지정 실행이나\n"
-            "폴백이 primary 와 같은 하네스/모델이면 loud 로 건너뜁니다. 폴백이 발동하면 최악 소요는\n"
-            "primary·폴백 각 하네스 예산의 합입니다 — codex/claude 는 timeout, opencode 는 첫-이벤트\n"
-            "워치독 재시도분(retries×창)이 더 붙습니다. --dry-run 이 실수치를 표시합니다(2차 폴백 없음).\n"
+            "대체 하네스·모델이 primary 와 같으면 loud 로 건너뜁니다. 대체 동작이 일어나면 최악 소요는\n"
+            "primary·대체 하네스 각 예산의 합입니다 — codex/claude 는 timeout, opencode 는 첫-이벤트\n"
+            "워치독 재시도분(retries×창)이 더 붙습니다. --dry-run 이 실수치를 표시합니다(두 번째 대체 동작 없음).\n"
             "실패 분류 커버리지: codex 실근거와 claude 2.1.220 실측/바이너리 enum,\n"
             "opencode 1.18.4 provider passthrough 실측·Anthropic API enum을 편입했습니다.\n"
-            "opencode 무진단 연결/fetch 침묵은 첫-이벤트 stall 축이 커버하며 그 밖은 fail-loud입니다."
+            "opencode 무진단 연결/fetch 침묵은 첫 이벤트 시간 제한(stall)이 맡으며 그 밖은 fail-loud입니다."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--role", required=True, choices=conf_schema.ROLE_CHOICES,
-                        help="위임 역할(권한축 자동 매핑)")
+                        help="위임 역할(권한 기준 자동 매핑)")
     parser.add_argument("--prompt-file", default=None, metavar="PATH",
                         help="PM 이 만든 task 프롬프트 파일(자족·repo 경계 안). "
                              "code-reviewer 묶음 리뷰는 엔진이 프롬프트를 조립하므로 주지 않는다")
@@ -891,11 +891,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning", default=None, metavar="VAL",
                         help="reasoning override(--harness/--model 동반 시만·드라이버별 허용값)")
     parser.add_argument("--timeout", type=int, default=None, metavar="SEC",
-                        help="위임 turn 벽시계 백스톱(초·기본은 하네스 프로필: 클라우드 축 "
-                             "codex/claude 3600 · 로컬 GPU 축 opencode 14400). 주 판정은 무진행이며 "
+                        help="위임 turn 벽시계 백스톱(초·기본은 하네스 프로필: 클라우드 하네스(codex/claude) "
+                             "3600 · 로컬 GPU 하네스(opencode) 14400). 주 판정은 무진행이며 "
                              "배포별 조정은 local.conf harness.<name>.wall_timeout/.idle_timeout")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
-                        help="raw 출력 박제 디렉토리"
+                        help="raw 출력을 적어 둘 디렉터리"
                              "(기본 .project_manager/.local/delegate)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
@@ -906,14 +906,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--focus", default=None, metavar="PATH",
                         help="PM 검토 중점 문단 파일(--cluster 전용) — 조립 프롬프트에 그대로 실린다")
     parser.add_argument("--resume-from", default=None, metavar="T-NNNN|RECORD-ID",
-                        help="직전 위임 세션을 이어받아 delta 만 보낸다(캐시 단가 재적재·도구 "
+                        help="직전 위임 세션을 이어받아 차이만 보낸다(캐시 단가 재적재·도구 "
                              "재읽기 0). 티켓 표기면 그 티켓·같은 역할의 성공 마감 레코드 중 "
-                             "started_at 최신 1건, 아니면 raw 장부 레코드 id 정확일치. 후보가 "
-                             "raw 장부 완료 보존 창 밖이거나 세션 id 형식이 어긋나거나 재개 "
+                             "started_at 최신 1건, 아니면 raw 출력 기록 항목 id 정확일치. 후보가 "
+                             "raw 출력 기록 완료 보존 창 밖이거나 세션 id 형식이 어긋나거나 재개 "
                              "미지원 하네스면 fresh + full payload 로 진행한다(안내 1줄·차단 아님)")
     parser.add_argument("--fresh", default=None, metavar="REASON",
                         help="같은 ticket+role 완료 기록이 있어도 의도적으로 새 세션을 시작한다. "
-                             "비어 있지 않은 사유가 필요하며 raw 장부 레코드에 박제된다")
+                             "비어 있지 않은 사유가 필요하며 raw 출력 기록 항목에 적힌다")
     parser.add_argument("--attach-raw", default=None, metavar="T-NNNN|RECORD-ID",
                         help="지목 raw 마감 레코드의 최종 reply 원문을 합성 프롬프트 말미의 "
                              "'직전 검토 보고 원문' 절에 첨부한다. 티켓 표기면 그 티켓의 최근 "
@@ -948,7 +948,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
                 "--cluster 는 프롬프트를 엔진이 조립한다 — --prompt-file 을 주지 않는다."
             )
         if not delegate_ledger._is_valid_cluster_id(args.cluster):
-            parser.error("--cluster 는 board 클러스터 장부 id 형식이어야 한다.")
+            parser.error("--cluster 는 board 묶음 기록 id 형식이어야 한다.")
     elif args.role == review_form.INTERNAL_REVIEW_ROLE:
         parser.error("code-reviewer 는 --cluster 가 필수다(리뷰 단위 = 묶음).")
     elif args.prompt_file is None:
@@ -1049,7 +1049,7 @@ def _cmd_rounds_resolve_cluster(
     if not members:
         print(
             f"오류: 클러스터 멤버가 없습니다: {cluster} — "
-            f"`board.py cluster show {cluster}` 로 장부를 확인하세요",
+            f"`board.py cluster show {cluster}` 로 묶음 기록을 확인하세요",
             file=sys.stderr,
         )
         return 1
@@ -1075,14 +1075,14 @@ def _cmd_rounds(home, argv: list[str], run_fn: Callable | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py rounds",
         description=(
-            "code-reviewer 리뷰 잔여의 기계 확인 생성·기입. 판정 입력은 리뷰 라운드 파일과 "
+            "code-reviewer 남은 리뷰 지적의 기계 확인 생성·기입. 판정 입력은 리뷰 라운드 파일과 "
             "명세 PM 영역이다."
         ),
     )
     subparsers = parser.add_subparsers(dest="rounds_command", required=True)
     resolve = subparsers.add_parser(
         "resolve",
-        help="묶음 멤버마다 리뷰 잔여를 현재 fix 의 기계 확인으로 기입하고 완료 판정을 연다",
+        help="묶음 멤버마다 남은 리뷰 지적을 현재 fix 의 기계 확인으로 기입하고 완료 판정을 연다",
     )
     resolve.add_argument(
         "--cluster", required=True, metavar="C-<ticket-group>",
@@ -1093,8 +1093,8 @@ def _cmd_rounds(home, argv: list[str], run_fn: Callable | None = None) -> int:
         action="store_true",
         required=True,
         help=(
-            "기계 확인 증거로 해소. 발동 조건(code-reviewer 채널로 스코프): delta 가 정상 "
-            "파싱되고 그 채널 accepted 잔여가 0 이며 판정 표면 finding 수가 리뷰 라운드 잔여 "
+            "기계 확인 증거로 해소. 발동 조건(code-reviewer 채널로 스코프): 수락한 리뷰 지적이 정상 "
+            "파싱되고 그 채널 accepted 남은 지적이 0 이며 판정 범위 finding 수가 리뷰 라운드 남은 지적 "
             "이상이고, accepted 가 있었다면 그 채널 기계 확인이 1건 이상 존재"
         ),
     )
@@ -1105,7 +1105,7 @@ def _cmd_rounds(home, argv: list[str], run_fn: Callable | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     if not delegate_ledger._is_valid_cluster_id(args.cluster):
-        parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
+        parser.error("--cluster는 board 묶음 기록 id 형식이어야 합니다")
     try:
         owner = pm_paths.resolve_pm_home_for_repo(home.root)
         owner_home = pm_paths.home_at(Path(owner).resolve())
@@ -1113,5 +1113,5 @@ def _cmd_rounds(home, argv: list[str], run_fn: Callable | None = None) -> int:
             owner_home, args.cluster, identity=args, run_fn=run_fn,
         )
     except (delegate_errors.DelegateError, OSError, UnicodeError, ValueError) as exc:
-        print(f"오류: 리뷰 잔여 확인 실패: {exc}", file=sys.stderr)
+        print(f"오류: 남은 리뷰 지적 확인 실패: {exc}", file=sys.stderr)
         return 1

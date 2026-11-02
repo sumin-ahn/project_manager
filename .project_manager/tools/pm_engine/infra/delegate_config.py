@@ -81,11 +81,11 @@ def resolve_delegate(
     if not harness or not model:
         if tier == "hard":
             raise delegate_errors.DelegateError(
-                f"hard 프로필 미설정({key}.harness/.model) — normal 강등 금지·명시 설정을 요구한다"
+                f"hard 프로필 미설정({key}.harness/.model) — normal 로 수준 낮춤 금지·명시 설정을 요구한다"
                 ". local.conf 에 hard 티어 세트를 통째로 설정하라."
             )
         raise delegate_errors.DelegateError(
-            f"역할 매핑 미설정({key}.harness/.model) — 조용한 폴백 금지. "
+            f"역할 매핑 미설정({key}.harness/.model) — 말없는 대체 동작 금지. "
             "local.conf 에 delegate.<role>.harness/.model 을 설정하라."
         )
     harness = _validate_harness(harness)
@@ -114,7 +114,7 @@ def resolve_fallback(
         return None
     if not harness or not model:
         raise delegate_errors.DelegateError(
-            f"폴백 매핑 불완전({key}.harness/.model) — 폴백은 원자 tuple 로 명시해야 한다. "
+            f"대체 하네스·모델 설정 불완전({key}.harness/.model) — 대체 하네스·모델은 원자 tuple 로 명시해야 한다. "
             "부분 설정/조용한 기본값은 허용하지 않는다."
         )
     harness = _validate_harness(harness)

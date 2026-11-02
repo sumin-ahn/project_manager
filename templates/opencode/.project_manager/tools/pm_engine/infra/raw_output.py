@@ -143,10 +143,10 @@ def raw_storage_paths(
     anchor = Path(repo)
     if not (anchor / ".project_manager").is_dir():
         raise ValueError(
-            f"raw 저장 위치를 해소하지 못했습니다 — 앵커에 .project_manager 가 없습니다: {anchor}. "
-            "위임 raw 출력과 라운드 장부는 기록이라 임시 위치로 대체하지 않습니다. "
+            f"raw 저장 위치를 해소하지 못했습니다 — 대상 저장소에 .project_manager 가 없습니다: {anchor}. "
+            "위임 raw 출력과 라운드 기록은 보존 대상이라 임시 위치로 대체하지 않습니다. "
             "PM 홈이나 그 lease 에 등록된 슬롯에서 실행하고, 직전에 'PM 홈 해소 실패' 경고가 "
-            "있었다면 worktree lease 장부를 먼저 복구하세요. PM 홈이 아닌 저장소를 대상으로 삼는 "
+            "있었다면 슬롯 대여 기록을 먼저 복구하세요. PM 홈이 아닌 저장소를 대상으로 삼는 "
             "실행이면 --output-dir <DIR> 로 저장 위치를 명시하세요."
         )
     local = anchor / ".project_manager" / ".local"
@@ -176,7 +176,7 @@ def _read_raw_ledger(ledger_path: Path) -> dict:
         return {"version": RAW_LEDGER_VERSION, "records": []}
     data = json.loads(fs.read_text_shared(ledger_path, encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("records"), list):
-        raise ValueError(f"raw 장부 형식 오류: {ledger_path}")
+        raise ValueError(f"raw 출력 기록 형식 오류: {ledger_path}")
     return data
 
 
@@ -334,7 +334,7 @@ def finish_raw_record(
             if isinstance(row, dict) and row.get("id") == record_id:
                 if row.get("finished_at") is not None:
                     raise RawRecordAlreadyFinished(
-                        f"raw 장부 레코드는 이미 마감됨: {record_id}"
+                        f"raw 출력 기록 항목은 이미 마감됨: {record_id}"
                     )
                 row.update({
                     "finished_at": current.astimezone(
@@ -354,7 +354,7 @@ def finish_raw_record(
                 found = True
                 break
         if not found:
-            raise ValueError(f"raw 장부 시작 레코드 미발견: {record_id}")
+            raise ValueError(f"raw 출력 기록에 시작 항목 없음: {record_id}")
         ledger["records"] = _prune_raw_records(ledger["records"], now=current)
         _write_raw_ledger(ledger_path, ledger)
 

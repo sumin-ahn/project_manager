@@ -173,12 +173,12 @@ def resolve_resume_plan(
         return None
     _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
     if not ledger_path.is_file():
-        _resume_unavailable(f"raw 장부 없음({ledger_path}) — 이 위치에 아직 위임 기록이 없음")
+        _resume_unavailable(f"raw 출력 기록 없음({ledger_path}) — 이 위치에 아직 위임 기록이 없음")
         return None
     try:
         rows = raw_output.raw_records(ledger_path)
     except (OSError, ValueError) as exc:
-        _resume_unavailable(f"raw 장부를 읽지 못함({exc})")
+        _resume_unavailable(f"raw 출력 기록을 읽지 못함({exc})")
         return None
     record = delegate_run_rules.select_resume_record(
         rows, selector=selector, role=role, harness=harness,
@@ -188,7 +188,7 @@ def resolve_resume_plan(
         _resume_unavailable(
             delegate_run_rules.resume_unusable_reason(rows, selector=selector, role=role, harness=harness)
             or (f"{selector!r} 의 성공 마감 위임 레코드(role={role}·harness={harness}) 없음 — "
-                "장부 보존 창 밖이거나 아직 없는 라운드")
+                "기록 보존 창 밖이거나 아직 없는 라운드")
         )
         return None
     session_id = record.get(delegate_run_rules.RESUME_FIELD_SESSION_ID)
@@ -368,7 +368,7 @@ def _execute_attempt(
                 )
             except raw_output.RawRecordAlreadyFinished as finish_exc:
                 print(
-                    f"경고: 장부 마감 충돌 — {finish_exc} "
+                    f"경고: 기록 마감 충돌 — {finish_exc} "
                     "(수동 마감 보존·pre-spawn 거부 raw는 기록 시도됨)",
                     file=sys.stderr,
                 )
@@ -469,7 +469,7 @@ def _execute_attempt(
     except raw_output.RawRecordAlreadyFinished as exc:
         # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 실행 결과는
         # 실패로 바꾸지 않는다(회신은 raw 파일에 이미 박제됨).
-        print(f"경고: 장부 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
+        print(f"경고: 기록 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
               file=sys.stderr)
     return delegate_run.DelegateAttempt(
         harness, model, argv, result, raw_path, observed.session_id,
@@ -620,7 +620,7 @@ def _report_cluster_harvest(outcomes: Sequence[delegate_harvest.ClusterHarvestOu
             file=sys.stderr,
         )
     if refused:
-        message = f"묶음 회수 거부 {len(refused)}건: {', '.join(refused)}"
+        message = f"묶음 돌려받기 거부 {len(refused)}건: {', '.join(refused)}"
         if any(outcome.terminal for outcome in outcomes):
             raise delegate_rounds.TerminalFixHarvestError(message)
         raise delegate_errors.DelegateError(message)
@@ -773,7 +773,7 @@ def _execute_and_collect(
                 ),
             )
     except (OSError, delegate_errors.DelegateError) as exc:
-        return fail_loud(f"오류: 위임 실행 준비/raw 박제 실패: {exc}")
+        return fail_loud(f"오류: 위임 실행 준비/raw 출력 기록 실패: {exc}")
 
     # 실패 분류 → 선택적 loud 폴백. rc=0 reply(반려/must-fix 포함)는 분류 함수가 절대 폴백시키지
     # 않는다. 알려지지 않은 rc≠0도 기존 fail-loud로 남는다(오분류 보수 방향).
@@ -787,7 +787,7 @@ def _execute_and_collect(
     if failure_class is not None and fallback is None and fallback_skip is not None:
         # 설정은 있으나 이번 실행에선 폴백을 끈다 — 조용히 지나가지 않는다(loud skip).
         print(
-            f"폴백 비발동: 인프라 실패({failure_class})이지만 {fallback_skip}. "
+            f"대체 동작 안 함: 인프라 실패({failure_class})이지만 {fallback_skip}. "
             "기존 fail-loud 로 진행한다.",
             file=sys.stderr,
         )
@@ -795,13 +795,13 @@ def _execute_and_collect(
     if failure_class is not None and fallback is not None:
         fallback_harness, fallback_model, fallback_reasoning = fallback
         loud = (
-            f"폴백: {harness}→{fallback_harness}({fallback_model}) — "
+            f"대체 동작: {harness}→{fallback_harness}({fallback_model}) — "
             f"사유: {failure_class}"
         )
         print(loud, file=sys.stderr)
         print(
-            f"하네스 {fallback_harness}(model={fallback_model}) 로 폴백 프롬프트 실행 중 "
-            "(과금·1단 폴백).",
+            f"대체 하네스 {fallback_harness}(model={fallback_model}) 로 프롬프트 실행 중 "
+            "(과금·1단 대체 동작).",
             file=sys.stderr,
         )
         advisory = native_advisory(fallback_harness, args.role)
@@ -833,7 +833,7 @@ def _execute_and_collect(
             )
         except (OSError, delegate_errors.DelegateError) as exc:
             return fail_loud(
-                f"오류: 폴백 실행 준비/raw 박제 실패: {exc}. primary raw: {raw_path}")
+                f"오류: 대체 동작 실행 준비/raw 출력 기록 실패: {exc}. primary raw: {raw_path}")
 
         fallback_result = fallback_attempt.result
         fallback_rc = fallback_result.get("returncode", 1)
@@ -844,11 +844,11 @@ def _execute_and_collect(
                 fallback_timeout=(fallback_timeout if fallback_timeout is not None else timeout),
             )
             return fail_loud(
-                f"오류: 폴백 위임 turn 타임아웃({actual_timeout}) — 2차 폴백 없음. "
+                f"오류: 대체 동작 위임 turn 타임아웃({actual_timeout}) — 두 번째 대체 동작 없음. "
                 f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
         if fallback_rc != 0:
             return fail_loud(
-                f"오류: 폴백 하네스 실패(rc={fallback_rc}) — 2차 폴백 없음. "
+                f"오류: 대체 하네스 실패(rc={fallback_rc}) — 두 번째 대체 동작 없음. "
                 f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
         try:
             fallback_reply = (
@@ -856,11 +856,11 @@ def _execute_and_collect(
             )
         except (ValueError, UnicodeError, delegate_errors.DelegateError) as exc:
             return fail_loud(
-                f"오류: 폴백 reply 추출 실패: {exc}. "
+                f"오류: 대체 동작 reply 추출 실패: {exc}. "
                 f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
         if not fallback_reply or not fallback_reply.strip():
             return fail_loud(
-                "오류: 폴백 위임 reply 미추출(빈 출력·파싱 실패) — 2차 폴백 없음. "
+                "오류: 대체 동작 위임 reply 미추출(빈 출력·파싱 실패) — 두 번째 대체 동작 없음. "
                 f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
 
         # stdout 결과에 provenance를 넣어 PM 회수 reply 자체가 폴백 사실을 보존한다.
@@ -885,7 +885,7 @@ def _execute_and_collect(
             f"오류: 위임 turn 타임아웃({actual_timeout}) — 프로세스그룹 종료. raw: {raw_path}")
     if result.get(delegate_run_rules.RUN_RESULT_CLEANUP_FAILED):
         return fail_loud(
-            "오류: 위임 프로세스 정리 실패 — primary가 아직 살아 있을 수 있어 자동 폴백을 "
+            "오류: 위임 프로세스 정리 실패 — primary가 아직 살아 있을 수 있어 자동 대체 동작을 "
             f"실행하지 않습니다(중복 실행·과금·worktree 동시 편집 차단). 사람 확인 필요. raw: {raw_path}")
     if rc != 0:
         return fail_loud(f"오류: 위임 하네스 실패(rc={rc}). raw: {raw_path}")

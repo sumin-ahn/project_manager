@@ -136,7 +136,7 @@ def _abort_pre_spawn_raw(
             raw_path.unlink()
         except OSError as exc:
             print(
-                f"경고: 스폰 전 중단의 raw 선점 정리 실패 ({type(exc).__name__}: {exc}) — "
+                f"경고: 스폰 전 중단에서 먼저 차지한 raw 자리 정리 실패 ({type(exc).__name__}: {exc}) — "
                 f"빈 파일이 남았습니다: {raw_path}",
                 file=sys.stderr,
             )

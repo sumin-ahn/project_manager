@@ -67,7 +67,7 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
         not isinstance(row, dict)
         or not _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS <= set(row) <= _DELEGATE_ROUNDS_LEDGER_FIELDS
     ):
-        raise delegate_errors.DelegateError(f"delegate-rounds 장부 schema 불일치: line={line_number}")
+        raise delegate_errors.DelegateError(f"위임 라운드 기록 schema 불일치: line={line_number}")
     if (
         not isinstance(row["ticket"], str)
         or not ticket_rules._is_valid_ticket_id(row["ticket"])
@@ -114,7 +114,7 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
             isinstance(row["cluster"], str) and _is_valid_cluster_id(row["cluster"])
         ))
     ):
-        raise delegate_errors.DelegateError(f"delegate-rounds 장부 값 형식 불일치: line={line_number}")
+        raise delegate_errors.DelegateError(f"위임 라운드 기록 값 형식 불일치: line={line_number}")
     return dict(row)
 
 
@@ -130,11 +130,11 @@ def _delegate_rounds_ledger_records(pm_home: Path) -> list[dict]:
     except FileNotFoundError:
         return []
     except OSError as exc:
-        raise delegate_errors.DelegateError(f"delegate-rounds 장부 읽기 실패: {path}: {exc}") from exc
+        raise delegate_errors.DelegateError(f"위임 라운드 기록 읽기 실패: {path}: {exc}") from exc
     try:
         text = raw.decode("utf-8")
     except UnicodeError as exc:
-        raise delegate_errors.DelegateError(f"delegate-rounds 장부 비-UTF8: {path}: {exc}") from exc
+        raise delegate_errors.DelegateError(f"위임 라운드 기록 비-UTF8: {path}: {exc}") from exc
     rows: list[dict] = []
     for line_number, line in enumerate(text.splitlines(), 1):
         if not line.strip():
@@ -145,7 +145,7 @@ def _delegate_rounds_ledger_records(pm_home: Path) -> list[dict]:
             )
         except (ValueError, delegate_errors.DelegateError) as exc:
             print(
-                f"경고: delegate-rounds 장부 손상 행 건너뜀: {path}: line={line_number} · {exc}",
+                f"경고: 위임 라운드 기록 손상 행 건너뜀: {path}: line={line_number} · {exc}",
                 file=sys.stderr,
             )
     return rows

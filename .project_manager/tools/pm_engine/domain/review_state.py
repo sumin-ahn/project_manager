@@ -622,7 +622,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> review_form.PMR
         verify_rows = _verify_rows_for_developer_round(round_ordinal)
         if verify_rows is None:
             reason = (
-                "아직 회수되지 않은 developer 라운드입니다(시드 그대로 · 산출 없음)"
+                "아직 돌려받지 않은 developer 라운드입니다(빈 양식 그대로 · 산출 없음)"
                 if round_ordinal in pending_dev_ordinals
                 else "developer 라운드가 아닙니다"
             )
@@ -660,7 +660,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> review_form.PMR
                 raise review_form.PMReviewError(
                     "malformed",
                     f"{review_form.PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}가 round={round_ordinal}의 "
-                    "verify 행과 결속되지 않습니다(id 없음)",
+                    "verify 행과 연결되지 않습니다(id 없음)",
                 )
             pm_owned = review_form._pm_review_is_pm_owned_binding(
                 dispositions.get(row.id), verify_row,
@@ -670,7 +670,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> review_form.PMR
                     raise review_form.PMReviewError(
                         "malformed",
                         f"{review_form.PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}는 "
-                        "machine_verifiable=false 이며 strict pm-owned 이중 결속도 없어 "
+                        "machine_verifiable=false 이며 strict pm-owned 이중 연결도 없어 "
                         "reviewer 확인 전용입니다",
                     )
                 if (
@@ -689,7 +689,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> review_form.PMR
                     raise review_form.PMReviewError(
                         "malformed",
                         f"{review_form.PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}가 round={round_ordinal}의 "
-                        "verify 행과 결속되지 않습니다(command 불일치)",
+                        "verify 행과 연결되지 않습니다(command 불일치)",
                     )
                 if row.status == "resolved" and verify_row.expected not in row.observed:
                     raise review_form.PMReviewError(
@@ -996,17 +996,17 @@ def pm_verified_resolution_input_problem(
         delta = parse_pm_review_delta(ticket_text, rounds)
         template = pm_review_verify_template(ticket_text, rounds)
     except review_form.PMReviewError as exc:
-        return f"delta/verify 입력 파싱 실패[{exc.code}]: {exc}"
+        return f"수락한 지적/verify 입력 파싱 실패[{exc.code}]: {exc}"
     channel_accepted = [
         finding for finding, _disposition in delta.accepted
         if finding.reviewer_role == reviewer_role
     ]
     if not isinstance(surface_floor, int) or isinstance(surface_floor, bool):
-        return f"{reviewer_role} 채널 표면 잔여 하한을 확인할 수 없어 차단합니다(미상)"
+        return f"{reviewer_role} 채널 판정 범위의 남은 지적 하한을 확인할 수 없어 차단합니다(미상)"
     declared = collect_review_finding_declarations(ticket_text, reviewer_role, rounds)
     if len(declared) < surface_floor:
         return (
-            f"{reviewer_role} 채널 판정 표면 finding {len(declared)}건이 잔여 "
+            f"{reviewer_role} 채널 판정 범위 finding {len(declared)}건이 남은 지적 "
             f"{surface_floor}건에 못 미칩니다 — 전건 처분 후 다시 preflight 하세요"
         )
     if not channel_accepted:
@@ -1021,7 +1021,7 @@ def pm_verified_resolution_input_problem(
         return f"final-fix verify 선언이 없습니다: {', '.join(missing)}"
     gaps = sorted(row[0] for row in template.gap if row[0] in accepted_ids)
     if gaps:
-        return f"처방 빈틈 finding은 terminal 확인할 수 없습니다: {', '.join(gaps)}"
+        return f"수정 방법에 빈틈이 있는 finding은 terminal 확인할 수 없습니다: {', '.join(gaps)}"
     reviewer_only = sorted(
         row[0] for row in template.reviewer_required if row[0] in accepted_ids
     )
@@ -1080,20 +1080,20 @@ def pm_verified_evidence_problem(
     try:
         delta = parse_pm_review_delta(ticket_text, rounds)
     except review_form.PMReviewError as exc:
-        return f"delta 파싱 실패[{exc.code}]: {exc}"
+        return f"수락한 지적 파싱 실패[{exc.code}]: {exc}"
     channel_accepted = [
         finding for finding, _disposition in delta.accepted
         if finding.reviewer_role == reviewer_role
     ]
     if channel_accepted:
         remaining = ", ".join(finding.id for finding in channel_accepted)
-        return f"{reviewer_role} 채널 PM 판정 accepted 잔여가 있습니다: {remaining}"
+        return f"{reviewer_role} 채널 PM 판정 accepted 남은 지적이 있습니다: {remaining}"
     declared = collect_review_finding_declarations(ticket_text, reviewer_role, rounds)
     if not isinstance(surface_floor, int) or isinstance(surface_floor, bool):
-        return f"{reviewer_role} 채널 표면 잔여 하한을 확인할 수 없어 차단합니다(미상)"
+        return f"{reviewer_role} 채널 판정 범위의 남은 지적 하한을 확인할 수 없어 차단합니다(미상)"
     if len(declared) < surface_floor:
         return (
-            f"{reviewer_role} 채널 판정 표면 finding {len(declared)}건이 잔여 "
+            f"{reviewer_role} 채널 판정 범위 finding {len(declared)}건이 남은 지적 "
             f"{surface_floor}건에 못 미칩니다 — 전건 처분 후 다시 선언하세요"
         )
     rejected: set[str] = set()
@@ -1186,7 +1186,7 @@ def _pm_review_summary_rows(ticket_text: str, rounds: Sequence) -> list[str]:
         label = f"{item.role}[{item.ordinal}]"
         if (item.role, item.ordinal) in refused:
             # 엔진이 거부한 라운드는 산출 조회만 열고 판정 표면에서는 뺀다.
-            rows.append(f"  {label} 회수 거부(판정 표면 제외)")
+            rows.append(f"  {label} 돌려받기 거부(판정 범위 제외)")
             continue
         try:
             rows.extend(
@@ -1258,7 +1258,7 @@ def _review_residual_problem(residual: ReviewResidual, problem: str) -> str:
         else f"must-fix {residual.must_fix}건"
     )
     message = (
-        f"code-reviewer 리뷰 라운드 {residual.ordinal:02d} 의 잔여 {label} 가 처분·확인되지 "
+        f"code-reviewer 리뷰 라운드 {residual.ordinal:02d} 의 남은 지적 {label} 가 처분·확인되지 "
         f"않았습니다 — {problem}"
     )
     if residual.diagnostic is not None:
@@ -1282,7 +1282,7 @@ def review_completion_problem(ticket_text: str, rounds: Sequence) -> str | None:
             reviewer_role=review_form.INTERNAL_REVIEW_ROLE, surface_floor=residual.must_fix,
         )
     except review_form.PMReviewError as exc:
-        return f"리뷰 잔여 판정 입력 손상[{exc.code}]: {exc}"
+        return f"남은 리뷰 지적 판정 입력 손상[{exc.code}]: {exc}"
     if problem is None:
         return None
     return _review_residual_problem(residual, problem)
@@ -1315,7 +1315,7 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
     last = reviews[-1]
     if last.pending:
         return (
-            f"code-reviewer 리뷰 라운드 {last.ordinal:02d} 를 돌려받지 않았습니다(시드 그대로) — "
+            f"code-reviewer 리뷰 라운드 {last.ordinal:02d} 를 돌려받지 않았습니다(빈 양식 그대로) — "
             "`pm_delegate.py ticket collect --copy <run-dir> --cwd <슬롯>` 로 돌려받으세요"
             "(`pm_delegate.py ticket copies --uncollected` 가 사본 경로를 냅니다)"
         )
@@ -1323,7 +1323,7 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
         residual = review_residual(rounds)
         if residual is None:
             return (
-                "판정 표면에 오른 code-reviewer 리뷰 라운드가 없습니다(전부 폐기) — "
+                "판정 범위에 오른 code-reviewer 리뷰 라운드가 없습니다(전부 폐기) — "
                 f"`pm_delegate.py ticket prepare --cluster C-<ticket-group> --role code-reviewer "
                 f"{PREPARE_REOPEN_ORDINAL_FLAG} {last.ordinal} --cwd <슬롯>` 로 재개방해 "
                 "리뷰를 다시 돌려받으세요"
@@ -1335,7 +1335,7 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
             reviewer_role=review_form.INTERNAL_REVIEW_ROLE, surface_floor=residual.must_fix,
         )
     except review_form.PMReviewError as exc:
-        return f"리뷰 잔여 판정 입력 손상[{exc.code}]: {exc}"
+        return f"남은 리뷰 지적 판정 입력 손상[{exc.code}]: {exc}"
     if problem is None:
         return None
     return _review_residual_problem(residual, problem)

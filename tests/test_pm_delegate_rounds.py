@@ -1204,7 +1204,7 @@ def test_prepare_refuses_a_developer_round_until_the_pm_judgment_is_written(
     rounds_before = sorted(item.name for item in _rounds_dir(pm_home, ticket).iterdir())
     ledger_before = len(_ledger_rows(pm_home))
 
-    with pytest.raises(delegate_errors.DelegateError, match="시드할 수 없습니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="빈 양식을 만들 수 없습니다") as caught:
         delegate_prepare.prepare_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), ticket=ticket, role="developer", cwd=slot, )
 
@@ -1238,7 +1238,7 @@ def test_pending_prepare_guidance_names_the_real_ordinal_and_channel(pd, rounds_
         "scope": "", "prerequisite": "",
     }], ordinal=2)
 
-    with pytest.raises(delegate_errors.DelegateError, match="시드할 수 없습니다") as caught:
+    with pytest.raises(delegate_errors.DelegateError, match="빈 양식을 만들 수 없습니다") as caught:
         delegate_prepare.prepare_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), ticket=ticket, role="developer", cwd=slot, )
 
@@ -2076,11 +2076,31 @@ def test_all_prompt_wires_get_the_same_round_preamble(pd, tmp_path):
     note = delegate_prompt._ticket_copy_preamble(plan)
     assert str(plan.path) in note
     assert delegate_rounds.TICKET_COPY_SPEC_NAME in note and delegate_rounds.TICKET_COPY_ROUNDS_DIRNAME in note
+    assert "(첫 줄 헤더는 그대로 두고 그 아래 빈 양식을 채운다)" in note
+    assert note.endswith("이 파일은 응답과 별개로 종료 시 엔진이 돌려받는다.")
     for prompt in ("full payload", "resume delta", "fallback"):
         assert delegate_prompt._with_ticket_copy_preamble(prompt, plan).startswith(note)
     # 이미 붙은 프롬프트에 두 번 붙지 않는다.
     once = delegate_prompt._with_ticket_copy_preamble("full payload", plan)
     assert delegate_prompt._with_ticket_copy_preamble(once, plan) == once
+
+
+def test_cluster_round_preamble_states_where_each_ticket_writes(pd, tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    plans = tuple(
+        delegate_rounds.TicketCopyPlan(
+            run_dir / ticket / "01-developer.md", run_dir, ticket, "developer", 1,
+            tmp_path / "board" / ticket / "01-developer.md", "d" * 32, "",
+        )
+        for ticket in ("T-3101", "T-3102")
+    )
+    cluster = delegate_rounds.ClusterCopyPlan(run_dir, "C-plain", "d" * 32, "developer", plans)
+    note = delegate_prompt._round_copy_preamble(None, cluster)
+    assert "(첫 줄 헤더는 그대로 두고 그 아래 빈 양식을 채운다)" in note
+    for plan in plans:
+        assert f"- {plan.ticket}: {plan.path}" in note
+    assert note.endswith("이 파일들은 응답과 별개로 종료 시 엔진이 돌려받는다.")
 
 
 # ── 삭제 목록 부재 ────────────────────────────────────────────────────────
@@ -2331,7 +2351,7 @@ def test_harvest_refuses_a_row_whose_binding_does_not_match_the_path(pd, rounds_
 
     before_sync = list(sync_log)
 
-    with pytest.raises(delegate_errors.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
+    with pytest.raises(delegate_errors.DelegateError, match="기록이 인가한 라운드 경로와 불일치"):
         delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot, )
     assert plan.run_dir.exists() and plan.path.exists()
     assert sync_log == before_sync
@@ -2352,7 +2372,7 @@ def test_harvest_refuses_a_row_pointing_outside_or_above_the_run_dir(pd, rounds_
 
     before_sync = list(sync_log)
 
-    with pytest.raises(delegate_errors.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
+    with pytest.raises(delegate_errors.DelegateError, match="기록이 인가한 라운드 경로와 불일치"):
         delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=above, cwd=slot, )
     # 형제 run 과 상위 디렉터리 어느 쪽도 사라지지 않는다.
     assert sibling.run_dir.exists() and plan.run_dir.exists() and above.exists()
@@ -2400,7 +2420,7 @@ def test_corrupt_ledger_lines_are_skipped_loudly_without_losing_other_runs(
     assert delegate_harvest.harvest_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot, ).changed is True
     warning = capsys.readouterr().err
-    assert warning.count("delegate-rounds 장부 손상 행 건너뜀") >= 2
+    assert warning.count("위임 라운드 기록 손상 행 건너뜀") >= 2
 
 
 @pytest.mark.skipif(not posix_mode_supported(), reason="POSIX mode 왕복이 되는 환경 필요")
@@ -2831,7 +2851,7 @@ def test_disposition_template_emits_no_skeleton_for_a_redeclaring_round(
         review_contract.render_pm_review_disposition_template(spec_text, rounds, 2)
 
     assert refused.value.code == "malformed"
-    assert "판정 골격을 내지 않습니다: F-001(티켓 전역 재선언)" in str(refused.value)
+    assert "판정 빈 양식을 내지 않습니다: F-001(티켓 전역 재선언)" in str(refused.value)
     # 부분 골격도, 그 부분 출력을 알리던 경고도 없다 — 채울 값 자체가 나오지 않는다.
     assert "F-002" not in str(refused.value)
     assert "제외한 finding" not in capsys.readouterr().err
@@ -2862,7 +2882,7 @@ def test_disposition_template_emits_no_skeleton_when_every_finding_is_refused(
         review_contract.render_pm_review_disposition_template(spec_text, rounds, 2)
 
     assert refused.value.code == "malformed"
-    assert "판정 골격을 내지 않습니다: F-001(티켓 전역 재선언)" in str(refused.value)
+    assert "판정 빈 양식을 내지 않습니다: F-001(티켓 전역 재선언)" in str(refused.value)
     assert "제외한 finding" not in capsys.readouterr().err
 
 
@@ -2883,7 +2903,7 @@ def test_disposition_template_emits_no_skeleton_for_a_self_confirming_round(
         review_contract.render_pm_review_disposition_template(spec_text, rounds, 1)
 
     assert refused.value.code == "malformed"
-    assert "판정 골격을 내지 않습니다: F-001(같은 라운드 자기-확인)" in str(refused.value)
+    assert "판정 빈 양식을 내지 않습니다: F-001(같은 라운드 자기-확인)" in str(refused.value)
     assert "F-002" not in str(refused.value)
     assert "제외한 finding" not in capsys.readouterr().err
     with pytest.raises(review_form.PMReviewError) as surface:
@@ -3479,7 +3499,7 @@ def test_cleanup_failure_does_not_mask_the_original_rejection(
         )
 
     err = capsys.readouterr().err
-    assert "재앵커" in err, "원 거부 사유가 그대로 나와야 한다"
+    assert "대상 저장소를 다시 잡으세요" in err, "원 거부 사유가 그대로 나와야 한다"
     assert "환불 실패" in err and "정리 폭발" in err, "재시도 안내가 loud 줄로 남아야 한다"
 
     after = (
@@ -3600,7 +3620,7 @@ def test_gate_refund_control_exceptions_do_not_override_the_original_rejection_r
             )
 
         err = capsys.readouterr().err
-        assert "재앵커" in err, f"{label}: 원 거부 사유가 그대로 나와야 한다"
+        assert "대상 저장소를 다시 잡으세요" in err, f"{label}: 원 거부 사유가 그대로 나와야 한다"
         assert "환불 실패" in err and label in err, (
             f"{label}: 정리 실패가 유형과 함께 추가 loud 줄로 붙어야 한다 — err={err}"
         )
@@ -3999,7 +4019,7 @@ def test_design_gate_rejects_a_seed_only_architect_round_then_passes_after_harve
     with pytest.raises(delegate_errors.DelegateError, match="developer 라운드 준비 거부") as caught:
         delegate_prepare.prepare_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), ticket=ticket, role="developer", cwd=slot, )
-    assert "architect 라운드를 회수" in str(caught.value)
+    assert "architect 라운드 돌려받기" in str(caught.value)
     # I8 — 거부는 board·장부에 잔여를 남기지 않는다(시드 architect 라운드 파일 1개만 존재).
     assert sorted(
         item.name for item in _rounds_dir(pm_home, ticket).iterdir()
@@ -4043,7 +4063,7 @@ def test_design_gate_rejects_when_no_evidence_is_on_record(
 
     message = str(caught.value)
     # 사유에 해소 수단 2종이 실린다(architect 회수·done+절 충전). 면제 항목은 폐지됐다.
-    assert "architect 라운드를 회수" in message
+    assert "architect 라운드 돌려받기" in message
     assert "design: done" in message and "설계" in message
     assert "waived" not in message
     assert not _rounds_dir(pm_home, ticket).exists() or list(

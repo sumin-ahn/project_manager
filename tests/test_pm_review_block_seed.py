@@ -406,7 +406,7 @@ def test_legacy_previous_round_prefill_degrades_to_placeholder(pd, capsys):
     )
     payload = _seed_payload(rendered)
     assert [row["id"] for row in payload["confirmations"]] == ["F-NNN"]
-    assert "F-NNN 골격으로 강등" in capsys.readouterr().err
+    assert "F-NNN 자리표시 빈 양식으로 낮춰 만듭니다" in capsys.readouterr().err
 
 
 def test_refused_previous_round_is_not_a_prefill_source(pd):

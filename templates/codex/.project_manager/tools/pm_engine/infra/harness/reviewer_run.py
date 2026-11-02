@@ -96,12 +96,12 @@ def harness_cap_advisory(
         render_missing=None,
         render_invalid=lambda harness, cap_key, raw, required: (
             f"[additional-reviewer] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
-            f"리뷰 실행+재시도별 정리+박제 여유 {required}s 이상을 Bash tool timeout으로 명시하세요."
+            f"리뷰 실행+재시도별 정리+기록 여유 {required}s 이상을 Bash tool timeout으로 명시하세요."
         ),
         render_low=lambda harness, cap_key, cap_seconds, required: (
             f"[additional-reviewer] 경고: {harness} 호출층 최대상한 "
             f"{cap_key}={cap_seconds:g}s < "
-            f"리뷰 실행+재시도별 정리+박제 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
+            f"리뷰 실행+재시도별 정리+기록 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
             "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
         ),
     )
@@ -130,7 +130,7 @@ def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
     else:
         measured = idle_seconds if idle_seconds is not None else silence_seconds
         measured_label = f"{measured:.0f}초" if measured is not None else "관측 불가"
-        head = (f"[리뷰어 타임아웃 — 무진행 임계 {threshold:.0f}초 발화"
+        head = (f"[리뷰어 타임아웃 — 무진행 임계 {threshold:.0f}초 넘음"
                 f" · 실측 침묵 {measured_label}] "
                 f"벽시계 상한 {timeout}초는 미도달. 재시도: `--idle-timeout <초>` 또는 local.conf "
                 f"`{reviewer_budget.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
@@ -450,19 +450,19 @@ def _run_reviewer_ex(
     except ReviewerRunSeamError as exc:
         # 호출 전 bind 실패 — 자식 프로세스는 확실히 시작되지 않았다. 라운드 환불 가능.
         return False, ReviewerOutput(
-            f"[리뷰어 runner seam 계약 오류 — 호출 전 차단: {exc}]"), False
+            f"[리뷰어 runner 교체 지점 계약 오류 — 호출 전 차단: {exc}]"), False
     except TypeError as exc:
         # runner 내부에서 발생한 키워드/시그니처 skew. 판정은 다른 분기와 **같은 우선순위**다 —
         # watchdog 표식이 있으면 그것이 이기고(True→환불·False→환불 금지), 없을 때만 스폰 경계 위치를
         # 본다. 표식을 무시하고 경계 위치만 보면, `Popen` 뒤에 실려 온 TypeError 가 콜백이 아직 안
         # 돈 러너에서 올라올 때 이미 나간 호출이 환불된다.
-        return (False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"),
+        return (False, ReviewerOutput(f"[리뷰어 runner 교체 지점 호출 오류: {exc}]"),
                 _started_after(exc, spawn_reached))
     except (watchdog.ProcessCleanupError, watchdog.StallWatchdogError, OSError, ValueError) as exc:
         if getattr(exc, "process_cleanup_failed", False) is True:
             output = (
                 f"[리뷰어 프로세스 정리 실패: {exc} — 잔존 프로세스 가능성 때문에 자동 재시도/"
-                "폴백 금지, 사람 확인 필요. 부분 산출물 보존]"
+                "대체 동작 금지, 사람 확인 필요. 부분 산출물 보존]"
             )
             if getattr(exc, "output", ""):
                 output += f"\n{exc.output}"

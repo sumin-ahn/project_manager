@@ -262,7 +262,7 @@ def _resolve_ticket_pm_verified(
             raise delegate_errors.DelegateError(f"리뷰 확인 입력 preflight 실패: {preflight_problem}")
         residual = review_state.review_residual(rounds)
         if residual is not None and residual.must_fix == 0:
-            print(f"{ticket}: 처분할 리뷰 잔여 없음(must-fix 0건) — 무대상")
+            print(f"{ticket}: 처분할 남은 리뷰 지적 없음(must-fix 0건) — 무대상")
             return 0
         template = review_state.pm_review_verify_template(spec_text, rounds)
         rows = review_command.run_pm_review_confirmations(template, cwd=tree, run_fn=run_fn)
@@ -292,13 +292,13 @@ def _resolve_ticket_pm_verified(
         completion_problem = review_state.review_completion_problem(spec_text, rounds)
         if completion_problem is not None:
             raise delegate_errors.DelegateError(
-                f"확인 기입 뒤에도 리뷰 잔여가 완료 판정을 막습니다: {completion_problem}"
+                f"확인 기입 뒤에도 남은 리뷰 지적이 완료 판정을 막습니다: {completion_problem}"
             )
     except review_form.PMReviewError as exc:
-        print(f"오류: 리뷰 잔여 확인 실패[{exc.code}]: {ticket}: {exc}", file=sys.stderr)
+        print(f"오류: 남은 리뷰 지적 확인 실패[{exc.code}]: {ticket}: {exc}", file=sys.stderr)
         return 1
     except (delegate_errors.DelegateError, OSError, UnicodeError, ValueError) as exc:
-        print(f"오류: 리뷰 잔여 확인 실패: {ticket}: {exc}", file=sys.stderr)
+        print(f"오류: 남은 리뷰 지적 확인 실패: {ticket}: {exc}", file=sys.stderr)
         return 1
-    print(f"{ticket}: 리뷰 잔여 확인 완료 — 완료 판정의 리뷰 잔여 없음 · PM 홈={owner}")
+    print(f"{ticket}: 남은 리뷰 지적 확인 완료 — 완료 판정의 남은 리뷰 지적 없음 · PM 홈={owner}")
     return 0

@@ -48,7 +48,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 유도 고지의 식별 접두 — 무기록 안내가 처방으로 같은 낱말을 쓰므로 접두로 구분한다.
-_DERIVED_PREFIX = "게이트 자동 유도: --review-ticket"
+_DERIVED_PREFIX = "리뷰 집계 티켓 자동 유도: --review-ticket"
 
 TICKET = "T-" + "0626"
 OTHER_GATE = "T-" + "0626-gate"
@@ -266,7 +266,7 @@ def test_derived_gate_hits_the_convergence_cap_like_an_explicit_one(
     assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 2              # 리뷰어 미호출 (호출 0·과금 0)
     err = capsys.readouterr().err
-    assert "수렴 게이트 차단" in err
+    assert "마무리 통과 조건에서 막힘" in err
     assert "3 → 2" in err
 
 
@@ -289,8 +289,8 @@ def test_paths_only_real_send_requires_gate_or_explicit_opt_out(
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
-    assert "실 호출에는 게이트 회계 지정 또는 명시 opt-out" in err
-    assert "--ticket <T-NNNN>" in err and "--review-ticket <게이트>" in err
+    assert "실 호출에는 리뷰 집계 티켓 지정 또는 명시 opt-out" in err
+    assert "--ticket <T-NNNN>" in err and "--review-ticket <T-NNNN>" in err
     assert "--no-review-ticket" in err
 
 
@@ -323,8 +323,8 @@ def test_paths_only_with_no_gate_sends_and_keeps_the_unaccounted_notice(
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
     assert "`--no-review-ticket` 명시 opt-out" in err
-    assert "리뷰어를 부르면 라운드 장부에" in err
-    assert "라운드 장부에 기록되지 않고" in err
+    assert "리뷰어를 부르면 라운드 기록에" in err
+    assert "라운드 기록에 남지 않고" in err
 
 
 def test_paths_only_dry_run_needs_no_gate(external, monkeypatch, tmp_path, capsys):
@@ -422,8 +422,8 @@ def test_empty_diff_does_not_claim_the_derived_gate_was_ledgered(
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
     assert _DERIVED_PREFIX in err
-    assert "이 실행이 리뷰어를 부르면 라운드 회계가" in err
-    assert "라운드 회계가 이 게이트에 붙습니다" not in err
+    assert "이 실행이 리뷰어를 부르면 라운드 집계가" in err
+    assert "라운드 집계가 이 리뷰 집계 티켓에 붙습니다" not in err
 
 
 def test_dry_run_notice_does_not_claim_this_run_is_ledgered(
@@ -434,7 +434,7 @@ def test_dry_run_notice_does_not_claim_this_run_is_ledgered(
     assert external.main(["--ticket", TICKET, "--dry-run"]) == 0
     err = capsys.readouterr().err
     assert "미리보기라 이번 실행은 기록·집계하지 않고" in err
-    assert "라운드 회계가 이 게이트에 붙습니다). 회계 밖" not in err   # 실행판 확정 문구
+    assert "에 붙습니다). 집계 밖" not in err   # 실행판 확정 문구
 
 
 # ══ ② opt-out (`--no-review-ticket`) ═════════════════════════════════════════════════
@@ -450,7 +450,7 @@ def test_no_gate_opts_out_of_the_ledger_with_a_loud_notice(
     assert _ledger(tmp_path) == {}                # 장부는 만들지 않는다
     err = capsys.readouterr().err
     assert "`--no-review-ticket` 명시 opt-out" in err
-    assert "라운드·wave 예산도 쓰지 않습니다" in err
+    assert "라운드·세션 호출 예산도 쓰지 않습니다" in err
     assert "live-test record" in err               # 릴리즈 차단이 못 본다는 사실까지
     assert _DERIVED_PREFIX not in err
 
@@ -536,7 +536,7 @@ def test_pre_spawn_notice_is_conditional_not_a_sent_claim(
     with pytest.raises(RuntimeError):
         external.main(["--paths", "x.py", "--no-review-ticket"])
     err = capsys.readouterr().err
-    assert "리뷰어를 부르면 라운드 장부에" in err                        # 조건형
+    assert "리뷰어를 부르면 라운드 기록에" in err                        # 조건형
     assert "이번 호출은" not in err                          # 확정형 아님
     assert _ledger(tmp_path) == {}
 
@@ -546,7 +546,7 @@ def test_summary_block_states_the_unaccounted_gate(external, monkeypatch, tmp_pa
     _wire(external, monkeypatch, tmp_path)
 
     assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
-    assert f"게이트: {reviewer_budget._SUMMARY_UNACCOUNTED_GATE}" in capsys.readouterr().out
+    assert f"리뷰 집계 티켓: {reviewer_budget._SUMMARY_UNACCOUNTED_GATE}" in capsys.readouterr().out
 
 
 def test_summary_block_names_the_derived_gate(external, monkeypatch, tmp_path, capsys):
@@ -555,7 +555,7 @@ def test_summary_block_names_the_derived_gate(external, monkeypatch, tmp_path, c
 
     assert external.main(["--ticket", TICKET]) == 0
     out = capsys.readouterr().out
-    assert f"게이트: {TICKET}" in out
+    assert f"리뷰 집계 티켓: {TICKET}" in out
     assert reviewer_budget._SUMMARY_UNACCOUNTED_GATE not in out
 
 
@@ -590,7 +590,7 @@ def test_report_gate_and_no_gate_reaches_report_with_ignore_warning_in_subproces
 
     assert proc.returncode == 0, proc.stderr
     assert "무시합니다" in proc.stderr and "--no-review-ticket" in proc.stderr
-    assert f"게이트 {TICKET}: count=1" in proc.stdout
+    assert f"리뷰 집계 티켓 {TICKET}: count=1" in proc.stdout
 
 
 def test_removed_into_is_rejected_before_gate_no_gate_precedence_in_subprocess(

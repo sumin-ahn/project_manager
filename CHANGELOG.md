@@ -28,6 +28,7 @@
 - 훅 안내 앞머리를 평어로 바꿨다. git 명령 검사 훅의 `[git-anchor/warn]`·`[git-anchor/deny]`·`[git-anchor/허용]`·`[git-anchor/허용 거부]`·`[git-anchor/설치]` 는 `[git-check/warn]` 처럼 `git-check` 로 시작하고, 컨텍스트 사용률 경고의 `[ctx-nudge]`·`[ctx-nudge/강화]`·`[ctx-nudge/최종]` 은 `[ctx-warn]`·`[ctx-warn/강화]`·`[ctx-warn/최종]` 이다. Claude·Codex·OpenCode 가 같은 앞머리를 쓰고, 판정 조건과 `board.py hook-tool`·`hook-context` 응답 키는 그대로다.
 - Codex 훅 기능 이름 `git-anchor`·`ctx-nudge-userpromptsubmit` 을 `git-check`·`ctx-warn-userpromptsubmit` 으로 바꿨다. `pm_orch_codex.py --hook-features` 출력과 훅 대체 경고에 보이는 이름이고 동작은 그대로다.
 - 훅 안내 글의 지어낸 말을 평어로 바꿨다. git 명령 검사 사유의 `실행 앵커=`·`repo 앵커=` 는 `실행 대상 저장소=`·`대상 저장소=`, ctx 안내의 `checkpoint 골격` 은 `checkpoint 빈 양식`, 압축 뒤 복구 요약의 `미회수 라운드 준비`·`(장부: …)` 는 `돌려받지 않은 라운드 준비`·`(기록 파일: …)` 다. `pm_log.py checkpoint` 가 쓰는 빈 양식 줄은 `- 구간: <직전 기록 경계 이후>` 이고, `pm_log.py init` 이 새로 만드는 `log/current.md` 머리말은 "`log/archive/` 에 옮겨져 확정된다" 로 끝난다. 이미 쓴 log 의 옛 글은 고칠 필요가 없다. 새로 설치하는 채택자의 훅 설정 파일 설명 글(Claude `.claude/settings.json` 의 `_comment`, Codex `.codex/config.toml` 주석, OpenCode `.opencode/opencode.jsonc` 주석)과, 갱신이 덮는 Codex `.codex/rules/default.rules` 의 주석도 같은 평어로 바꿨다. 설정 값과 규칙은 그대로다.
+- 위임·리뷰·라운드를 다루는 엔진 출력(`pm_delegate.py`·`additional_reviewer.py` 의 출력·오류·도움말, `board.py` 가 내는 리뷰·설계 판정 안내, 위임·추가 리뷰어 프롬프트 안내)에서 지어낸 말을 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어로 바꿨다. 위임 라운드 결과를 받는 일은 "돌려받기", 엔진이 상태를 적는 파일은 "기록", 추가 리뷰어가 라운드를 세는 티켓은 "리뷰 집계 티켓", 라운드 파일에 미리 써 두는 틀은 "빈 양식" 이라고 쓴다. 동작·종료 코드·명령 이름·플래그·설정 키·파일 형식은 그대로다. 엔진이 디스크의 파일과 글자 그대로 맞대는 글(라운드 파일 빈 양식의 절 제목·안내 주석·자리표시, 티켓 `## 설계` 절의 항목 이름)은 바꾸지 않았으므로, 갱신 전에 만든 빈 양식 라운드와 기존 티켓은 그대로 읽힌다.
 
 ### Removed
 
@@ -58,6 +59,7 @@
 - `pm_log.py ctx-guidance --band …` 를 직접 부르는 스크립트는 `--level` 과 새 값(`warn`·`warn2`)으로 바꾼다. 상태 응답 `level` 의 `nudge`·`nudge2` 를 비교하던 채택자 도구도 `warn`·`warn2` 로 고친다.
 - 갱신할 때 진행 중이던 세션은 같은 사용률 구간의 경고를 한 번 더 받는다. 옛 표시 파일 `.project_manager/.local/ctx-stop/(세션).nudge`·`(세션).nudge2` 는 더 읽지 않으며 지워도 된다.
 - 훅 출력의 앞머리를 글자 그대로 찾던 채택자 스크립트·로컬 규칙·메모는 `[git-anchor/` 를 `[git-check/` 로, `[ctx-nudge` 를 `[ctx-warn` 으로 고친다. `pm_orch_codex.py --hook-features` 의 기능 이름 `git-anchor`·`ctx-nudge-userpromptsubmit` 을 비교하던 도구는 `git-check`·`ctx-warn-userpromptsubmit` 으로 고친다. 옛 앞머리와 옛 이름은 더 나오지 않는다.
+- 위임·리뷰·라운드 출력 문구를 글자 그대로 찾는 채택자 스크립트(예: `조회 장부:`·`미회수`·`wave 예산 소진`·`게이트 ticket:`)는 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 를 보고 새 문구(`조회 기록 파일:`·`돌려받지 않음`·`세션 호출 예산 소진`·`리뷰 집계 티켓:`)로 고친다. 갱신 전에 만든 라운드 파일과 티켓은 옮길 것이 없다.
 
 ## [1.8.3] - 2026-10-30
 

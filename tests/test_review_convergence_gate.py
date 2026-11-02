@@ -228,7 +228,7 @@ def test_default_cap_blocks_the_third_round(external, monkeypatch, tmp_path, cap
     assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 2                    # 리뷰어 미호출 (호출 0)
     err = capsys.readouterr().err
-    assert "수렴 게이트 차단" in err
+    assert "마무리 통과 조건에서 막힘" in err
     assert "3 → 2" in err                         # 판정 근거를 그대로 보여준다
     assert "현재 티켓을 정지" in err and "사용자에게 보고" in err
     assert "--confirm-fix" not in err
@@ -393,7 +393,7 @@ def test_second_concurrent_reservation_is_refused_before_sending(
     assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 0                       # 호출 0
     err = capsys.readouterr().err
-    assert "수렴 게이트 차단" in err
+    assert "마무리 통과 조건에서 막힘" in err
     assert "진행 중 예약 1" in err                    # 판정 근거를 그대로 보여준다
     assert _ledger(tmp_path)["T-0602f"]["count"] == 3   # 거부는 예약을 늘리지 않는다
 

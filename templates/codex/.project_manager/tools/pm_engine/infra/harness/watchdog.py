@@ -1237,7 +1237,7 @@ def run_with_first_event_watchdog(
     headline = (
         f"startup stall 이 {attempts}회 연속 발생"
         if last_axis == TIMEOUT_AXIS_FIRST_EVENT
-        else f"overall watchdog가 {attempts}회 연속 발화"
+        else f"overall watchdog 가 {attempts}회 연속 작동"
     )
     diagnosis = (
         " startup network fetch stall 의심(upstream #13841)."
@@ -1245,7 +1245,7 @@ def run_with_first_event_watchdog(
     )
     exhausted = StallWatchdogError(
         f"{headline}("
-        f"실제 발화: {last_reason}{silence_label}) — 재시도 소진. "
+        f"실제 작동: {last_reason}{silence_label}) — 재시도 소진. "
         f"{diagnosis}".rstrip(),
         timeout_axis=last_axis,
         threshold_seconds=last_threshold,

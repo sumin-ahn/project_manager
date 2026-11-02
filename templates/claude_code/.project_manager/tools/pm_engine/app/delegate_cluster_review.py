@@ -65,7 +65,7 @@ def cluster_review_input(
     fm = cluster_store.load_cluster(home, cluster)
     if fm is None:
         raise delegate_errors.DelegateError(
-            f"클러스터 장부가 없습니다: {cluster} — 리뷰 단위는 선언된 묶음입니다"
+            f"묶음 기록이 없습니다: {cluster} — 리뷰 단위는 선언된 묶음입니다"
             f"(`board.py cluster new <ticket-group> --tickets <T-...> --task <task>`"
             f"(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가) 으로 먼저 "
             f"선언하세요 — 코드 트리는 명시가 필수입니다)"
@@ -74,7 +74,7 @@ def cluster_review_input(
     base_branch = str(fm.get("base_branch") or "").strip()
     if not branch or not base_branch:
         raise delegate_errors.DelegateError(
-            f"묶음 장부에 통합 브랜치 좌표가 없습니다: {cluster} "
+            f"묶음 기록에 통합 브랜치 좌표가 없습니다: {cluster} "
             f"(branch={branch or '—'} · base_branch={base_branch or '—'})"
         )
     members = tuple(cluster_store.cluster_live_members(home, cluster))

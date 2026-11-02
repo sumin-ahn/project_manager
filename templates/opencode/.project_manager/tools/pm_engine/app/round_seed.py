@@ -176,7 +176,7 @@ def verify_rounds(
             problems.append(
                 round_rules.RoundProblem(
                     round_rules.PROBLEM_PENDING,
-                    f"산출 없음(시드 그대로): {round_rules.round_filename(ordinal, role)}",
+                    f"산출 없음(빈 양식 그대로): {round_rules.round_filename(ordinal, role)}",
                 )
             )
     return problems
@@ -242,9 +242,9 @@ def _warn_unharvested_developer_round(rounds: Sequence) -> None:
     )
     print(
         "경고: 리뷰 라운드를 산출 없는 developer 라운드 위에서 준비합니다 — "
-        f"{name} 이 시드 골격 그대로입니다. 리뷰어 입력(`rounds/`)에 실리는 developer 산출 "
+        f"{name} 이 빈 양식 그대로입니다. 리뷰어 입력(`rounds/`)에 실리는 developer 산출 "
         f"라운드: {latest_name}. 결함 클래스 전수·검증 근거·빈틈 보고를 이번 라운드에도 실으려면 "
-        "먼저 `ticket collect` 로 회수한 뒤 다시 준비하세요.",
+        "먼저 `ticket collect` 로 돌려받은 뒤 다시 준비하세요.",
         file=sys.stderr,
     )
 
@@ -309,14 +309,14 @@ def render_ticket_growth_section_seed(
                     # 않는다(잔여 0).
                     raise review_form.PMReviewError(
                         exc.code,
-                        f"판정을 세우지 못해 developer 라운드를 시드할 수 없습니다"
+                        f"판정을 세우지 못해 developer 라운드 빈 양식을 만들 수 없습니다"
                         f"[{exc.code}]: {exc}\n"
                         f"  · {review_form._pm_review_prescription(exc.code, '<T-NNNN>', channels=exc.channels)}",
                     ) from exc
                 # 최초 구현 라운드(리뷰 라운드 없음) 등은 정상 형상이다 — verify fence 없는
                 # 골격으로 강등한다(리뷰 골격 prefill 강등과 동형).
                 print(
-                    f"경고: accepted delta 를 해소할 수 없어 verify 골격 없이 시드합니다: {exc}",
+                    f"경고: 수락한 리뷰 지적을 해소할 수 없어 verify 블록 없는 빈 양식을 만듭니다: {exc}",
                     file=sys.stderr,
                 )
             else:
@@ -330,7 +330,7 @@ def render_ticket_growth_section_seed(
             "## 미해소\n- <남은 질문 또는 없음>\n"
         )
     if role not in review_form.REVIEW_ROLES:
-        raise delegate_errors.DelegateError(f"역할별 라운드 골격 미지원: {role}")
+        raise delegate_errors.DelegateError(f"역할별 라운드 빈 양식 미지원: {role}")
 
     # 리뷰어가 딛고 설 dev 산출이 비어 있는지는 **예약 전** 이 자리에서 낸다 — 리뷰 라운드를
     # 준비하는 세 진입점(`ticket prepare` · cross 위임의 자동 준비 · `board section-add`)이
@@ -359,7 +359,7 @@ def render_ticket_growth_section_seed(
             except delegate_errors.DelegateError as exc:
                 print(
                     f"경고: 직전 {role} 라운드의 finding ID prefill을 해소할 수 없어 "
-                    f"{placeholder_id} 골격으로 강등합니다: ordinal={previous_ordinal} · {exc}",
+                    f"{placeholder_id} 자리표시 빈 양식으로 낮춰 만듭니다: ordinal={previous_ordinal} · {exc}",
                     file=sys.stderr,
                 )
                 confirmation_ids = [placeholder_id]

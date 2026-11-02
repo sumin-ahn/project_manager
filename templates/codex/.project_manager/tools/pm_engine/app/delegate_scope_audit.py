@@ -28,7 +28,7 @@ from pm_engine.infra import ticket_store
 _TOUCH_OVERLAP_HEADER = "=== ⚠ 병렬 위임 touches 겹침 ==="
 _TOUCH_OVERLAP_PRESCRIPTION = (
     "  · 같은 트리 동시 편집은 WIP 를 덮을 수 있다 — 차단하지 않으며 PM 이 판정한다.\n"
-    "  · 처방: 순차 실행 또는 `pm-config worktree add <repo>` 로 슬롯 분리"
+    "  · 해결 방법: 순차 실행 또는 `pm-config worktree add <repo>` 로 슬롯 분리"
 )
 # 진단 목록 표시 상한 — 넘치면 잔여 건수를 병기한다.
 _TOUCH_OVERLAP_DISPLAY_LIMIT = 8
@@ -425,7 +425,7 @@ def report_scope_audit(audit: ScopeAudit, role: str) -> None:
     )
     if adapter_paths is None:
         print(
-            "=== ⚠ 어댑터 편집 경고 축 강등 ===\n"
+            "=== ⚠ 어댑터 편집 경고를 판정하지 못해 수준 낮춤 ===\n"
             "선행 등록부 파생 경로가 0개라 역할 공통 어댑터 수정 금지 위반을 판정할 수 없습니다. "
             "새 목록으로 추측하지 않으며 비차단 진행합니다.",
             file=sys.stderr,

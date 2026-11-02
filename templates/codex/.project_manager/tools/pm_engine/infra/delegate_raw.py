@@ -27,7 +27,7 @@ def cold_reinjection_record(
     _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
     if not ledger_path.is_file():
         print(
-            f"경고: cold 재투입 비용 가드가 raw 장부를 찾지 못해 fail-open 합니다: "
+            f"경고: cold 재투입 비용 가드가 raw 출력 기록을 찾지 못해 fail-open 합니다: "
             f"{ledger_path}",
             file=sys.stderr,
         )
@@ -36,7 +36,7 @@ def cold_reinjection_record(
         rows = raw_output.raw_records(ledger_path)
     except (OSError, UnicodeError, ValueError) as exc:
         print(
-            "경고: cold 재투입 비용 가드가 raw 장부를 읽지 못해 fail-open 합니다: "
+            "경고: cold 재투입 비용 가드가 raw 출력 기록을 읽지 못해 fail-open 합니다: "
             f"{ledger_path} ({type(exc).__name__}: {exc})",
             file=sys.stderr,
         )
@@ -110,12 +110,12 @@ def resolve_attached_raw(
         return None
     _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
     if not ledger_path.is_file():
-        raise delegate_errors.DelegateError(f"--attach-raw raw 장부가 없음: {ledger_path}")
+        raise delegate_errors.DelegateError(f"--attach-raw raw 출력 기록이 없음: {ledger_path}")
     try:
         rows = raw_output.raw_records(ledger_path)
     except (OSError, UnicodeError, ValueError) as exc:
         raise delegate_errors.DelegateError(
-            f"--attach-raw raw 장부 읽기 실패: {ledger_path} "
+            f"--attach-raw raw 출력 기록 읽기 실패: {ledger_path} "
             f"({type(exc).__name__}: {exc})"
         ) from exc
     record = delegate_run_rules.select_attached_raw_record(rows, selector)

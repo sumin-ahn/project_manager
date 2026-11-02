@@ -61,7 +61,7 @@ def _probe_writable_target(path: Path, *, label: str) -> None:
     """
     if not path.is_dir():
         raise delegate_errors.DelegateError(
-            f"{label} 쓰기 대상이 디렉터리가 아님: {path} — 권한을 강등하지 않고 중단합니다."
+            f"{label} 쓰기 대상이 디렉터리가 아님: {path} — 권한을 낮추지 않고 중단합니다."
         )
     probe: Path | None = None
     fd: int | None = None
@@ -76,15 +76,15 @@ def _probe_writable_target(path: Path, *, label: str) -> None:
         except OSError as exc:
             raise delegate_errors.DelegateError(
                 f"{label} 쓰기 대상 실측 실패: {path}: {type(exc).__name__}: {exc} — "
-                "권한을 read-only 로 강등하지 않고 중단합니다."
+                "권한을 read-only 로 낮추지 않고 중단합니다."
             ) from exc
         probe = candidate
         break
     if probe is None:
         raise delegate_errors.DelegateError(
             f"{label} 쓰기 대상 실측 실패: {path}: 프로브 이름이 "
-            f"{_WRITE_PROBE_NAME_ATTEMPTS}회 연속 선점됨: {last_exists} — "
-            "권한을 read-only 로 강등하지 않고 중단합니다."
+            f"{_WRITE_PROBE_NAME_ATTEMPTS}회 연속 다른 쪽이 먼저 차지함: {last_exists} — "
+            "권한을 read-only 로 낮추지 않고 중단합니다."
         )
     delegate_temp._close_transport_fd(fd)
     try:
@@ -123,7 +123,7 @@ def _apply_read_tmp_argv(
         print(
             f"경고: {harness} {role} ticket 사본은 단일-path write 격리를 "
             "보장하지 못합니다. 역할 규약과 위임 전후 git/touches 감사로 변경 범위를 "
-            f"표면화하며 선택한 {harness} target으로 계속 실행합니다.",
+            f"드러내며 선택한 {harness} target으로 계속 실행합니다.",
             file=sys.stderr,
         )
     if mode == "workspace-add-dir":
@@ -162,7 +162,7 @@ def _apply_read_tmp_argv(
         if adjusted[agent_index + 1:agent_index + 2] != [role]:
             raise delegate_errors.DelegateError(
                 "opencode read 역할 argv가 custom 역할 agent와 불일치함 — default agent로 "
-                "강등하지 않는다"
+                "수준을 낮추지 않는다"
             )
     # opencode는 추가-dir 기능이 없어 custom 역할 agent를 그대로 쓰고, ticket-copy reviewer의
     # repo 쓰기 표면은 위 경고와 실행 전후 감사로 loud하게 관리한다.
@@ -447,7 +447,7 @@ def _prepare_attempt_transport(
         print(
             f"경고: {harness} {role}용 격리 temp를 준비하지 못해 ticket 사본의 "
             "단일-path write 격리를 보장하지 못합니다. 역할 규약과 위임 전후 git/touches "
-            f"감사로 변경 범위를 표면화하며 선택한 {harness} target으로 계속 실행합니다.",
+            f"감사로 변경 범위를 드러내며 선택한 {harness} target으로 계속 실행합니다.",
             file=sys.stderr,
         )
     prompt_path: delegate_temp._OpenCodeTransportPrompt | None = None

@@ -264,7 +264,7 @@ def test_pm_verified_completion_gate_rejects_when_accepted_finding_still_pending
 
     assert len(problems) == 1
     assert "code-reviewer 리뷰 라운드 01" in problems[0]
-    assert "accepted 잔여" in problems[0] and "F-001" in problems[0]
+    assert "accepted 남은 지적" in problems[0] and "F-001" in problems[0]
 
 
 def test_review_round_must_fix_blocks_completion_without_internal_ledger(board):

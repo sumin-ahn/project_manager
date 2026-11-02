@@ -454,7 +454,7 @@ def test_unregistered_worktree_fails_loud_for_delegate_and_review(
     monkeypatch.setattr(external, "REPO", worktree)
     assert external.main(["--paths", "seed.txt", "--dry-run"]) == 1
     review_err = capsys.readouterr().err
-    assert "앵커 해소 실패" in review_err
+    assert "대상 저장소 해소 실패" in review_err
     assert "PM 홈을 찾지 못했습니다" in review_err
     assert "board가 필요 없는 실행" not in review_err
 
@@ -492,7 +492,7 @@ def test_unregistered_snapshot_run_fails_before_ledger_raw_or_spawn(
     ]) == 1
 
     err = capsys.readouterr().err
-    assert "앵커 해소 실패" in err and "PM 홈을 찾지 못했습니다" in err
+    assert "대상 저장소 해소 실패" in err and "PM 홈을 찾지 못했습니다" in err
     assert side_effects == []
     assert not output_dir.exists()
     assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
@@ -540,7 +540,7 @@ def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
     ]) == 1
 
     err = capsys.readouterr().err
-    assert "앵커 해소 실패" in err
+    assert "대상 저장소 해소 실패" in err
     assert side_effects == []
     assert not output_dir.exists()
     assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
@@ -564,7 +564,7 @@ def test_unregistered_snapshot_no_gate_and_dry_run_do_not_rescue_the_anchor(
     ):
         assert external.main(argv) == 1, argv
         err = capsys.readouterr().err
-        assert "앵커 해소 실패" in err, argv
+        assert "대상 저장소 해소 실패" in err, argv
 
     assert calls["reviewer"] == 0
     assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
@@ -782,7 +782,7 @@ def test_explicit_paths_do_not_rescue_an_unresolvable_anchor(
         ["--ticket", missing, "--dry-run"],
     ):
         assert external.main(argv) == 1, argv
-        assert "앵커 해소 실패" in capsys.readouterr().err, argv
+        assert "대상 저장소 해소 실패" in capsys.readouterr().err, argv
 
 
 def test_standalone_repo_uses_itself_for_both_tools(tmp_path, monkeypatch, capsys):
@@ -1090,7 +1090,7 @@ def test_ticket_resolution_failure_never_calls_diff(tmp_path, monkeypatch, capsy
     )
     missing_ticket = "T-" + "9998"
     assert external.main(["--ticket", missing_ticket, "--dry-run"]) == 1
-    assert "앵커 해소 실패" in capsys.readouterr().err
+    assert "대상 저장소 해소 실패" in capsys.readouterr().err
 
 
 def test_empty_inline_touches_fails_before_diff(tmp_path, monkeypatch, capsys):
@@ -1110,8 +1110,8 @@ def test_empty_inline_touches_fails_before_diff(tmp_path, monkeypatch, capsys):
 
     assert external.main(["--ticket", empty_ticket, "--dry-run"]) == 1
     err = capsys.readouterr().err
-    assert "touches가 비어" in err
-    assert f"board anchor {home.resolve()}" in err
+    assert "touches 가 비어" in err
+    assert f"board 대상 저장소 {home.resolve()}" in err
     assert "['[]']" not in err
 
 

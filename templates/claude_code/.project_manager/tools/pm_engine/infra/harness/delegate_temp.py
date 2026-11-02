@@ -184,7 +184,7 @@ def _assert_read_tmp_outside_review_surface(attempt_path: Path, cwd: Path) -> No
     if relative[:len(_LOCAL_RUNTIME_PREFIX_PARTS)] == _LOCAL_RUNTIME_PREFIX_PARTS:
         return
     raise delegate_errors.DelegateError(
-        f"read 역할 temp가 검토 표면 안으로 해소되어 거부: {resolved_attempt} "
+        f"read 역할 temp가 검토 범위 안으로 해소되어 거부: {resolved_attempt} "
         f"(worktree={resolved_cwd})"
     )
 

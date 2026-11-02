@@ -586,9 +586,9 @@ def test_cleanup_failure_preserves_partial_raw_and_forbids_fallback_e2e(
         assert "프로세스 정리 실패" in raw
         assert "잔존 프로세스 가능성" in raw
         err = capsys.readouterr().err
-        assert "자동 폴백을 실행하지 않습니다" in err
+        assert "자동 대체 동작을 실행하지 않습니다" in err
         assert "아직 살아 있을 수 있어" in err
-        assert "폴백:" not in err
+        assert "대체 동작:" not in err
     finally:
         if pid_file.exists():
             child_pid = int(pid_file.read_text(encoding="ascii"))
@@ -2223,7 +2223,7 @@ def test_additional_reviewer_cleanup_failure_saves_partial_output(
     raw = result["file"].read_text(encoding="utf-8")
     assert "프로세스 정리 실패" in raw
     assert "잔존 프로세스 가능성" in raw
-    assert "자동 재시도/폴백 금지" in raw
+    assert "자동 재시도/대체 동작 금지" in raw
     assert "HALF REVIEW BEFORE CLEANUP" in raw
     assert "cleanup diagnostic" in raw
 

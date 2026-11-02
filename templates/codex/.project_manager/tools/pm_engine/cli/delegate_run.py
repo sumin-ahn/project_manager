@@ -156,10 +156,10 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
     if fallback is not None:
         if args.harness and args.model:
             fallback_skip = ("CLI 완전지정(--harness/--model)은 설정 미참조 원자 override — "
-                             "설정 폴백을 쓰지 않는다")
+                             "설정한 대체 하네스·모델을 쓰지 않는다")
             fallback = None
         elif (fallback[0], fallback[1]) == (harness, model):
-            fallback_skip = (f"폴백 tuple 이 primary 와 동일({harness}/{model}) — "
+            fallback_skip = (f"대체 하네스·모델 tuple 이 primary 와 동일({harness}/{model}) — "
                              "한도 소진된 같은 채널 재타격 금지")
             fallback = None
 
@@ -268,7 +268,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
             print(
                 "오류: 엔진 코드(.project_manager/tools/) write 위임을 adopter#0 PM 홈 cwd 에서 실행했습니다 —\n"
                 "  import 사본을 수정하면 canonical worktree 와 갈려 stale·false-green 이 납니다.\n"
-                f"  · canonical worktree 로 재앵커하세요:  --cwd {reanchor}\n"
+                f"  · canonical worktree 로 대상 저장소를 다시 잡으세요:  --cwd {reanchor}\n"
                 "  · PM-doc(wiki/ADR/spike) 작업이면 PM 홈 cwd 가 정당합니다 — 그 경우 프롬프트가 엔진 코드\n"
                 "    경로를 write 타깃으로 지목하지 않게 하세요.",
                 file=sys.stderr,
@@ -364,7 +364,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
         # dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
         if args.dry_run:
             print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
-            print(f"role: {args.role} · tier: {tier} · 권한축: {contract.perm_axis(args.role)}")
+            print(f"role: {args.role} · tier: {tier} · 권한 기준: {contract.perm_axis(args.role)}")
             if cluster_sources is not None:
                 review = cluster_sources.review
                 print(
@@ -379,9 +379,9 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                 print("리뷰 라운드 자리: dry-run 은 만들지 않는다(실행 시 준비·부작용 0 계약)")
             print(f"해소: harness={harness} model={model} reasoning={reasoning}")
             if fallback_skip is not None:
-                print(f"폴백: 비발동 — {fallback_skip}")
+                print(f"대체 동작: 안 함 — {fallback_skip}")
             elif fallback is None:
-                print("폴백: 미설정 (인프라 실패 시 기존 fail-loud)")
+                print("대체 하네스·모델: 미설정 (인프라 실패 시 기존 fail-loud)")
             else:
                 fallback_harness, fallback_model, fallback_reasoning = fallback
                 primary_budget = delegate_env._harness_timeout_budget(home, harness, timeout)
@@ -390,17 +390,17 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                     harness, fallback_harness
                 )
                 print(
-                    "폴백: "
+                    "대체 하네스·모델: "
                     f"harness={fallback_harness} model={fallback_model} "
                     f"reasoning={fallback_reasoning} (인프라 실패에만 1회)"
                 )
                 print(
-                    f"폴백 시간 예산: 최악 primary {primary_budget}s + 폴백 {fallback_budget}s = "
-                    f"{primary_budget + fallback_budget}s (2차 폴백 없음{note})"
+                    f"대체 동작 시간 예산: 최악 primary {primary_budget}s + 대체 하네스 {fallback_budget}s = "
+                    f"{primary_budget + fallback_budget}s (두 번째 대체 동작 없음{note})"
                 )
                 print(
                     "  (실행+정리 예산 — 부모 wait/pipe drain을 startup 재시도마다 산입; "
-                    f"진단·raw 박제 여유 {delegate_run_rules._HARNESS_CAP_MARGIN_SEC}s는 호출층 상한에 별도)"
+                    f"진단·raw 출력 기록 여유 {delegate_run_rules._HARNESS_CAP_MARGIN_SEC}s는 호출층 상한에 별도)"
                 )
             print(f"cwd: {cwd}")
             argv_display = delegate_transport._apply_workspace_git_dirs(
@@ -416,7 +416,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                     "세션 재사용: 미적용 — fresh + full payload (사유는 stderr 안내)"
                     if resume is None else
                     f"세션 재사용: session_id={resume.session_id} "
-                    f"· 장부 레코드={resume.record_id} · delta payload 전달 "
+                    f"· raw 출력 기록 항목={resume.record_id} · 차이 payload 전달 "
                     f"(세션 불일치 시 fresh 재실행 1회 = primary 예산 "
                     f"{delegate_env._harness_timeout_budget(home, harness, timeout)}s 추가)"
                 )
