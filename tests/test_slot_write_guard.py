@@ -585,7 +585,7 @@ const boundary = m.createToolBoundary({root, directory:"/h", worktree:"/h", spaw
   contextFor:() => null, acceptContext:async () => {}});
 const args = {filePath: "/h/work/app_2/a.py"};
 for (const tool of ["write", "edit", "apply_patch"]) {
-  await assert.rejects(boundary.before({tool, sessionID:"S"}, {args}), /\[git-anchor\/deny\] x/);
+  await assert.rejects(boundary.before({tool, sessionID:"S"}, {args}), /\[git-check\/deny\] x/);
 }
 // 읽기 도구도 같은 판정 경계를 지난다(선필터 없음) — 판정은 엔진이 한다.
 await boundary.before({tool:"read", sessionID:"S"}, {args});

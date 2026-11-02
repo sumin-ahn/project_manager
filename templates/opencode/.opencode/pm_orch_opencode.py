@@ -99,7 +99,7 @@ class OpencodeCliDriver:
             # 세션 없이 못 돈다. (engine uuid4 인자는 opencode 경로에선 marker 예측에도 안 쓰인다.)
             raise RuntimeError(
                 "[pm-orch] opencode 출력에서 sessionID 를 파싱하지 못했다 — 세션 구동 실패. "
-                "(opencode 는 sid 사전지정 불가라 폴백 불가 · opencode/모델/agent 설정 확인.)"
+                "(opencode 는 sid 사전지정 불가라 대체 동작 불가 · opencode/모델/agent 설정 확인.)"
             )
         self._session_cwd[observed] = cwd  # resume 이 같은 cwd(--dir)로 잇도록 기억.
         self._maybe_mark_ctx(observed, used_tokens)
@@ -196,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--agent", default=DEFAULT_AGENT,
-        help=f"opencode agent(기본 {DEFAULT_AGENT}=PM primary). custom primary 부재 시 build 폴백.",
+        help=f"opencode agent(기본 {DEFAULT_AGENT}=PM primary). custom primary 부재 시 build 로 대체.",
     )
     parser.add_argument(
         "--task", default=None, metavar="이름",

@@ -143,7 +143,7 @@ def _no_open_todo_judgment(home, session: str) -> dict[str, str] | None:
     open_todos = _open_todo_count(home, task)
     if open_todos > 0:
         return None
-    return {'verdict': 'warn', 'cwd_identity': 'non-repo', 'reason': f'task {task} 에 열린 todo 가 없다 — 지금 하는 일이 장부에 없어서 다음 세션도 사용자도 그 일을 못 본다. {git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_NO_OPEN_TODO]}'}
+    return {'verdict': 'warn', 'cwd_identity': 'non-repo', 'reason': f'task {task} 에 열린 todo 가 없다 — 지금 하는 일이 기록에 없어서 다음 세션도 사용자도 그 일을 못 본다. {git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_NO_OPEN_TODO]}'}
 
 def judge_git_anchor(home, session: str, cwd: str, argv: list[str], *, runner: Any=subprocess.run, cwd_certain: bool=True) -> dict[str, str]:
     """raw git 호출의 cwd 안전성을 판정하는 엔진·하네스 중립 seam.
@@ -183,16 +183,16 @@ def judge_git_anchor(home, session: str, cwd: str, argv: list[str], *, runner: A
     if subcommand not in git_policy._GIT_MUTATION_SUBCOMMANDS:
         return {'verdict': 'ok', 'cwd_identity': identity, 'reason': f'git {subcommand or '<missing>'}는 mutation 가드 대상이 아님'}
     if not invocation.anchor_certain:
-        return {'verdict': 'warn', 'cwd_identity': identity, 'reason': 'GIT_DIR/work-tree 지정 또는 변수 -C 로 실제 mutation anchor를 단일 증명할 수 없음'}
+        return {'verdict': 'warn', 'cwd_identity': identity, 'reason': 'GIT_DIR/work-tree 지정 또는 변수 -C 로 실제 mutation 대상 저장소를 단일 증명할 수 없음'}
     if identity == 'slot':
-        return {'verdict': 'ok', 'cwd_identity': identity, 'reason': f'등록된 활성 linked worktree 앵커={repo_root} — git {subcommand} 허용'}
+        return {'verdict': 'ok', 'cwd_identity': identity, 'reason': f'등록된 활성 linked worktree 대상 저장소={repo_root} — git {subcommand} 허용'}
     if identity == 'pm-home' and repo_root is not None and (pm_home is not None):
         dangerous = _dangerous_cross_repo_pathspecs(pm_paths.home_at(pm_home), repo_root, invocation.cwd, git_policy._git_pathspecs(subcommand, invocation.args), runner=runner)
         if dangerous:
             joined = ', '.join(dangerous)
             return {'verdict': 'deny', 'cwd_identity': identity, 'reason': f'PM 홈에서 등록 worktree와 양쪽에 실재하는 코드 경로({joined})를 git {subcommand} 하려 함 — 대상 worktree cwd에서 다시 실행하라'}
     shown = str(repo_root or invocation.cwd)
-    return {'verdict': 'warn', 'cwd_identity': identity, 'reason': f'git {subcommand} 실행 앵커={shown} (정체={identity}) — 의도한 repo인지 확인'}
+    return {'verdict': 'warn', 'cwd_identity': identity, 'reason': f'git {subcommand} 실행 대상 저장소={shown} (정체={identity}) — 의도한 repo인지 확인'}
 
 def _engine_other_copy(cwd_root: Path | None, script_root: Path, script_identity: str, pm_home: Path | None, relative_script: Path, *, runner: Any) -> tuple[Path, Path, str] | None:
     """함께 존재하는 반대편(PM import/canonical) 엔진 사본 하나를 찾는다.
@@ -232,10 +232,10 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
     if details.kind == 'pytest':
         if identity == 'pm-home' and shell_policy._pytest_targets_tests(details.args) and (not (cwd_path / 'tests').is_dir()):
             return {'verdict': 'deny', 'cwd_identity': identity, 'code': 'pm-home-relative-pytest-tests-missing', 'reason': 'PM 홈 cwd에서 pytest tests/를 실행하려 하나 cwd의 tests/ 디렉터리가 실재하지 않음 — 작업 폴더의 시험 경로를 절대경로로 적어 다시 실행하라'}
-        return {'verdict': 'ok', 'cwd_identity': identity, 'reason': 'pytest 호출은 PM 홈 tests/ 오앵커 패턴이 아님'}
+        return {'verdict': 'ok', 'cwd_identity': identity, 'reason': 'pytest 호출은 PM 홈 tests/ 대상 저장소 오인 패턴이 아님'}
     assert details.script is not None
     unexpanded = shell_policy._unexpanded_shell_parameters(details.script)
-    unresolved_reason = f'엔진 호출 경로의 미확장 토큰={', '.join(unexpanded)} — 확장 불가 — 실제 사본 미상; 이 사본의 repo 앵커도 미상' if unexpanded else ''
+    unresolved_reason = f'엔진 호출 경로의 미확장 토큰={', '.join(unexpanded)} — 확장 불가 — 실제 사본 미상; 이 사본의 대상 저장소도 미상' if unexpanded else ''
     unresolved_script_name = Path(details.script.replace('\\', '/')).name
     unresolved_mutation = board_command_rules._board_mutation_subcommand(details.args) if unresolved_script_name == 'board.py' else ''
     if unexpanded:
@@ -250,10 +250,10 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
     relative_script = Path('.project_manager') / 'tools' / script_path.name
     mutation = board_command_rules._board_mutation_subcommand(details.args) if script_path.name == 'board.py' else ''
     if mutation and script_identity in {'slot', 'worktree'}:
-        return {'verdict': 'deny', 'cwd_identity': identity, 'reason': f"board mutation '{mutation}'이 non-PM 엔진 사본 {script_path}를 선택함 — 이 사본의 repo 앵커={script_root} ({script_identity}); board mutation은 PM 홈 사본 {(script_pm_home / relative_script if script_pm_home else relative_script)} 로 실행하라"}
+        return {'verdict': 'deny', 'cwd_identity': identity, 'reason': f"board mutation '{mutation}'이 non-PM 엔진 사본 {script_path}를 선택함 — 이 사본의 대상 저장소={script_root} ({script_identity}); board mutation은 PM 홈 사본 {(script_pm_home / relative_script if script_pm_home else relative_script)} 로 실행하라"}
     if not relative:
-        return {'verdict': 'ok', 'cwd_identity': identity, 'reason': f'절대경로 엔진 사본={script_path}; 이 사본의 repo 앵커={script_root} ({script_identity})'}
-    reason = f'상대경로 엔진 호출의 실행 사본={script_path}; 이 사본의 repo 앵커={script_root} ({script_identity}); board mutation은 PM 홈 사본으로 실행하라'
+        return {'verdict': 'ok', 'cwd_identity': identity, 'reason': f'절대경로 엔진 사본={script_path}; 이 사본의 대상 저장소={script_root} ({script_identity})'}
+    reason = f'상대경로 엔진 호출의 실행 사본={script_path}; 이 사본의 대상 저장소={script_root} ({script_identity}); board mutation은 PM 홈 사본으로 실행하라'
     other = _engine_other_copy(cwd_root, script_root, script_identity, script_pm_home or cwd_pm_home, relative_script, runner=runner)
     if other is not None:
         other_root, other_path, other_identity_key = other

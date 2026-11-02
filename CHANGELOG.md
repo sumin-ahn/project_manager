@@ -25,6 +25,9 @@
 - 스킬 `/pm-wave-claim`·`/pm-wave-finish` 의 이름을 `/pm-cluster-claim`·`/pm-cluster-finish` 로 바꿨다(Codex 는 `$pm-cluster-claim`·`$pm-cluster-finish`, OpenCode 명령 팔레트도 같은 이름). 스킬 내용과 동작은 같고 옛 이름은 없다. 갱신하면 옛 스킬 파일(`.claude/skills/pm-wave-*/`·`.agents/skills/pm-wave-*/`·`.opencode/command/pm-wave-*.md`)은 지우지 않고 `.pm_import_backups/(날짜)/` 로 옮기며, 갱신 출력에 `[퇴역]` 으로 나온다.
 - `pm_log.py ctx-guidance` 의 `--band` 를 `--level` 로, 값 `nudge`·`nudge2` 를 `warn`·`warn2` 로 바꿨다(`final`·`precompact` 는 그대로). 컨텍스트 사용률 구간 이름도 같은 값을 쓴다. 숨김 명령 `board.py hook-context`·`hook-tool` 응답의 `level` 값이 `ok`·`warn`·`warn2`·`stop` 이 되고, 구간마다 경고를 한 번만 내려고 만드는 표시 파일이 `.project_manager/.local/ctx-stop/(세션).warn`·`(세션).warn2` 가 된다. 출하 어댑터(Claude 상태 줄, OpenCode 플러그인, Codex 압축 안내)는 함께 바뀐다. 옛 플래그와 옛 값은 인자 오류(종료 코드 2)다.
 - 설정·설치·갱신·슬롯 쪽 엔진 출력의 지어낸 말을 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어로 바꿨다. `pm-config`(`pm_config.py`)·`pm-update`(`pm_update.py`)·`pm-import`(`pm_import.py`)·`worktree_pool.py` 의 안내·경고·오류·도움말, 보호 브랜치 pre-push 훅과 `board.py init` 이 설치하는 pre-push 훅의 안내가 해당한다. 예를 들어 `리스 장부` 는 `슬롯 대여 기록`, `어댑터 config 원장` 은 `어댑터 설정 기록`, `세대` 는 `버전`, `flavor` 는 `하네스별 판`, `guest` 는 `추가 하네스`, `폴백` 은 `대체`, `정합` 은 `일치`, `배선` 은 `등록` 이고, 보호 훅 안내 머리말 `[pm 라이브 게이트]` 는 `[pm 라이브 시험 통과 조건]` 이다. 명령 이름·플래그·설정 키·파일 형식·종료 코드와 동작은 그대로다. 이 글을 글자 그대로 찾던 스크립트는 새 글로 고친다. `pm-import --new` 가 만드는 `pm_playbook.local.md` 빈 양식과 파사드(`pm-config.sh`·`pm-import.sh`·`pm-update.sh`)의 인터프리터 안내 한 줄은 새로 import 한 사본부터 바뀐다.
+- 훅 안내 앞머리를 평어로 바꿨다. git 명령 검사 훅의 `[git-anchor/warn]`·`[git-anchor/deny]`·`[git-anchor/허용]`·`[git-anchor/허용 거부]`·`[git-anchor/설치]` 는 `[git-check/warn]` 처럼 `git-check` 로 시작하고, 컨텍스트 사용률 경고의 `[ctx-nudge]`·`[ctx-nudge/강화]`·`[ctx-nudge/최종]` 은 `[ctx-warn]`·`[ctx-warn/강화]`·`[ctx-warn/최종]` 이다. Claude·Codex·OpenCode 가 같은 앞머리를 쓰고, 판정 조건과 `board.py hook-tool`·`hook-context` 응답 키는 그대로다.
+- Codex 훅 기능 이름 `git-anchor`·`ctx-nudge-userpromptsubmit` 을 `git-check`·`ctx-warn-userpromptsubmit` 으로 바꿨다. `pm_orch_codex.py --hook-features` 출력과 훅 대체 경고에 보이는 이름이고 동작은 그대로다.
+- 훅 안내 글의 지어낸 말을 평어로 바꿨다. git 명령 검사 사유의 `실행 앵커=`·`repo 앵커=` 는 `실행 대상 저장소=`·`대상 저장소=`, ctx 안내의 `checkpoint 골격` 은 `checkpoint 빈 양식`, 압축 뒤 복구 요약의 `미회수 라운드 준비`·`(장부: …)` 는 `돌려받지 않은 라운드 준비`·`(기록 파일: …)` 다. `pm_log.py checkpoint` 가 쓰는 빈 양식 줄은 `- 구간: <직전 기록 경계 이후>` 이고, `pm_log.py init` 이 새로 만드는 `log/current.md` 머리말은 "`log/archive/` 에 옮겨져 확정된다" 로 끝난다. 이미 쓴 log 의 옛 글은 고칠 필요가 없다. 새로 설치하는 채택자의 훅 설정 파일 설명 글(Claude `.claude/settings.json` 의 `_comment`, Codex `.codex/config.toml` 주석, OpenCode `.opencode/opencode.jsonc` 주석)과, 갱신이 덮는 Codex `.codex/rules/default.rules` 의 주석도 같은 평어로 바꿨다. 설정 값과 규칙은 그대로다.
 
 ### Removed
 
@@ -54,6 +57,7 @@
 - 옛 스킬 파일(`/pm-wave-claim`·`/pm-wave-finish`)을 고쳐 썼다면 `.pm_import_backups/(날짜)/` 의 백업에서 새 스킬(`.claude/skills/pm-cluster-claim/` 등)로 옮겨 적는다. 옮긴 뒤 남는 빈 폴더 `.claude/skills/pm-wave-claim/` 등은 지워도 된다. 스크립트·채택자 소유 문서의 옛 스킬 이름도 새 이름으로 고친다.
 - `pm_log.py ctx-guidance --band …` 를 직접 부르는 스크립트는 `--level` 과 새 값(`warn`·`warn2`)으로 바꾼다. 상태 응답 `level` 의 `nudge`·`nudge2` 를 비교하던 채택자 도구도 `warn`·`warn2` 로 고친다.
 - 갱신할 때 진행 중이던 세션은 같은 사용률 구간의 경고를 한 번 더 받는다. 옛 표시 파일 `.project_manager/.local/ctx-stop/(세션).nudge`·`(세션).nudge2` 는 더 읽지 않으며 지워도 된다.
+- 훅 출력의 앞머리를 글자 그대로 찾던 채택자 스크립트·로컬 규칙·메모는 `[git-anchor/` 를 `[git-check/` 로, `[ctx-nudge` 를 `[ctx-warn` 으로 고친다. `pm_orch_codex.py --hook-features` 의 기능 이름 `git-anchor`·`ctx-nudge-userpromptsubmit` 을 비교하던 도구는 `git-check`·`ctx-warn-userpromptsubmit` 으로 고친다. 옛 앞머리와 옛 이름은 더 나오지 않는다.
 
 ## [1.8.3] - 2026-10-30
 

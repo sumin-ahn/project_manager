@@ -88,7 +88,7 @@ CURRENT_HEADER = """\
 
 > 프로젝트 운영 작업의 시간순 기록. Append-only. 활성 로그는 이 파일(`log/current.md`).
 > 여러 세션/clone 이 동시에 append 해도 OK — `.gitattributes` 의 union merge 가 양쪽 entry 를 보존한다.
-> 오래된 entry 는 `pm_log.py archive` 로 `log/archive/` 에 봉인된다.
+> 오래된 entry 는 `pm_log.py archive` 로 `log/archive/` 에 옮겨져 확정된다.
 > 형식: `## [YYYY-MM-DD] action | subject`
 > Actions: create, update, decide (ADR), ticket, spec, split, handoff, checkpoint, lint
 """
@@ -107,7 +107,7 @@ def build_checkpoint_entry(
         # Consumer grammar: domain.handoff_text._collect_session_entries() 의 task 태그 판별과
         # 동기화한다.
         f"## [{date}] checkpoint{identity_tag} — {trigger}\n\n"
-        "- 구간: <직전 박제 경계 이후>\n"
+        "- 구간: <직전 기록 경계 이후>\n"
         "- 서사: <PM 손>\n"
     )
 
@@ -143,7 +143,7 @@ def _inflight_capped_line(*, prefix: str, content: str, suffix: str) -> str:
 
 def _unharvested_copies_line(rows: list[dict]) -> str:
     """``delegate_ledger.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
-    prefix = "- 미회수 라운드 준비 "
+    prefix = "- 돌려받지 않은 라운드 준비 "
     suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --uncollected`"
     if not rows:
         return _inflight_capped_line(prefix=prefix, content="0건", suffix=suffix)
@@ -158,7 +158,7 @@ def _unfinished_raw_line(rows: list[dict], ledger_path: Path) -> str:
     suffix = " → `python3 .project_manager/tools/pm_delegate.py raw --unfinished`"
     if not rows:
         return _inflight_capped_line(
-            prefix=prefix, content=f"0건 (장부: {ledger_path})", suffix=suffix,
+            prefix=prefix, content=f"0건 (기록 파일: {ledger_path})", suffix=suffix,
         )
     labels = [
         f"{_inflight_safe_text(row.get('started_at'))} "
@@ -166,7 +166,7 @@ def _unfinished_raw_line(rows: list[dict], ledger_path: Path) -> str:
         for row in rows
     ]
     content = (
-        f"{len(rows)}건: {_fold_join(labels, _INFLIGHT_RAW_SHOWN, '건')} (장부: {ledger_path})"
+        f"{len(rows)}건: {_fold_join(labels, _INFLIGHT_RAW_SHOWN, '건')} (기록 파일: {ledger_path})"
     )
     return _inflight_capped_line(prefix=prefix, content=content, suffix=suffix)
 
@@ -195,18 +195,18 @@ def build_ctx_guard_guidance(
     (`ctx.precompact_at_pct`)을 함께 적는다.
     """
     labels = {
-        "warn": "ctx-nudge",
-        "warn2": "ctx-nudge/강화",
-        "final": "ctx-nudge/최종",
+        "warn": "ctx-warn",
+        "warn2": "ctx-warn/강화",
+        "final": "ctx-warn/최종",
         "precompact": "ctx-checkpoint",
     }
     if band not in labels:
-        raise ValueError(f"지원하지 않는 ctx guidance band: {band!r}")
+        raise ValueError(f"지원하지 않는 ctx guidance 구간: {band!r}")
 
     if band == "precompact":
         status = "compaction 경계가 감지됐다. "
         command = (
-            "checkpoint 골격이 생성됐다면 현재 구간·서사 불릿을 보충한다. 골격이 없으면 "
+            "checkpoint 빈 양식이 생성됐다면 현재 구간·서사 불릿을 보충한다. 빈 양식이 없으면 "
             "`python3 .project_manager/tools/pm_log.py checkpoint --task <task> "
             "--trigger compaction`(Windows는 `py -3`)으로 기록한다. "
         )

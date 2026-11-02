@@ -414,11 +414,11 @@ def test_principle_markers_and_errors_are_visible(tmp_path, capsys):
                                      "tool_name": "Bash", "tool_input": {"command": "git push --force"},
                                      "transcript_path": str(transcript)}, home)
     context = output["hookSpecificOutput"]["additionalContext"]
-    assert rc == 0 and "[ctx-nudge/최종]" in context and f"[principle-recall] 판정 실패({DIRECTORY_OPEN_ERROR.__name__}" in context
+    assert rc == 0 and "[ctx-warn/최종]" in context and f"[principle-recall] 판정 실패({DIRECTORY_OPEN_ERROR.__name__}" in context
 
-    assert hooks.claim_notice(home, session="ses-1", text="[git-anchor/warn] 같은 말") == {"status": "claimed"}
-    assert hooks.claim_notice(home, session="ses-1", text="[git-anchor/warn] 같은 말") == {"status": "seen"}
-    assert hooks.claim_notice(home, session="ses-2", text="[git-anchor/warn] 같은 말") == {"status": "claimed"}
+    assert hooks.claim_notice(home, session="ses-1", text="[git-check/warn] 같은 말") == {"status": "claimed"}
+    assert hooks.claim_notice(home, session="ses-1", text="[git-check/warn] 같은 말") == {"status": "seen"}
+    assert hooks.claim_notice(home, session="ses-2", text="[git-check/warn] 같은 말") == {"status": "claimed"}
     membership = root / ".project_manager" / ".local" / "ctx-stop" / "ses-9.git-anchor"
     membership.mkdir(parents=True)
     assert hooks.claim_notice(home, session="ses-9", text="x") == {"status": "unavailable"}
@@ -492,7 +492,7 @@ def test_relay_factories_receive_real_callables_and_values(tmp_path, monkeypatch
     opencode._maybe_mark_ctx("ses-at", opencode._ctx_budget * opencode._precompact_at_pct // 100)
     codex._maybe_mark_ctx("tid-fail", {"input": codex._ctx_budget, "output": 0})
     assert capsys.readouterr().err == (
-        "[pm-orch] opencode ctx marker 박제 실패\n[pm-orch] codex ctx marker 박제 실패\n")
+        "[pm-orch] opencode ctx marker 기록 실패\n[pm-orch] codex ctx marker 기록 실패\n")
     with pytest.raises(ValueError, match="지원하지 않는 하네스"):
         hooks.run_relay(hooks.adapter_home(tmp_path / "claude"), drivers["claude"], harness="gemini",
                         task="t", cwd=str(tmp_path), stdin=None, stdout=None)

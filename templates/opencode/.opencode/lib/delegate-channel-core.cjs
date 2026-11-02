@@ -326,7 +326,7 @@ function makeDelegateChannelPlugin(
           || (judgment.verdict === "deny" && !surface.enforceDeny)
         ) {
           const text = judgment.verdict === "deny"
-            ? `[delegate-channel/warn] advisory 강등: ${judgment.reason}`
+            ? `[delegate-channel/warn] advisory 로 수준 낮춤: ${judgment.reason}`
             : judgment.reason;
           await warnings.publish(sessionID, text);
         }

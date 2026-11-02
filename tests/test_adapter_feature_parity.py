@@ -19,7 +19,7 @@
 
 ## 기능 ID 열거 축 (하네스별 — 이미 노출된 경로만 소비, 새 파서를 만들지 않는다)
   codex    — `.codex/pm_orch_codex.py` 의 `hook_feature_registry()`(디스패처가 기계 소비용으로
-             낸다). raw `feature_id` 는 이벤트별로 갈라져(`ctx-nudge-pretooluse` 등) 있어
+             낸다). raw `feature_id` 는 이벤트별로 갈라져(`ctx-warn-userpromptsubmit` 등) 있어
              `_CODEX_FEATURE_TO_ROW` 로 표의 기능 단위로 묶는다. 매핑에 없는 raw id 는 그대로
              행 이름 취급되어(폴백 identity) 표에 없으면 단언③에 자동으로 걸린다 — "모르는 기능은
              통과" 가 성립하지 않는다.
@@ -104,8 +104,7 @@ ALL = "all"  # 등록 하네스 전수 보유 선언 sentinel.
 _CODEX_FEATURE_TO_ROW = {
     "delegate-channel": "delegate-channel",
     "delegate-channel-subagent": "delegate-channel",
-    "ctx-nudge-pretooluse": "ctx-guard",
-    "ctx-nudge-userpromptsubmit": "ctx-guard",
+    "ctx-warn-userpromptsubmit": "ctx-guard",
     "compaction-checkpoint-pre": "ctx-guard",
     "compaction-guidance": "ctx-guard",
     "compaction-checkpoint-post": "ctx-guard",
@@ -113,7 +112,7 @@ _CODEX_FEATURE_TO_ROW = {
     "principle-recall-pretooluse": "principle-recall",
     "principle-recall-userpromptsubmit": "principle-recall",
     "principle-recall-reset": "principle-recall",
-    "git-anchor": "git-anchor",
+    "git-check": "git-anchor",
 }
 
 # ── claude: (스크립트명, 정렬된 플래그 튜플) → 표의 기능 행(들) ─────────────────

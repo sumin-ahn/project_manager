@@ -1628,7 +1628,7 @@ def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
     pretool_out = json.loads(pretool.stdout)
     hso = pretool_out["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
-    assert "ctx-nudge/최종" in hso["additionalContext"]
+    assert "ctx-warn/최종" in hso["additionalContext"]
     assert "permissionDecision" not in hso and "decision" not in pretool_out
 
     # (2) 같은 사이클 UserPromptSubmit → 채널 공유 `.final` marker 로 중복 없이 통과.

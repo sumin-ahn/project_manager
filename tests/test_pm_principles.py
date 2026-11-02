@@ -747,11 +747,11 @@ def test_codex_merge_hook_envelopes_caps_the_single_answer_early_return_path(cod
 
 
 def test_codex_merge_hook_envelopes_caps_the_combined_multi_answer_path(codex):
-    """짧은 응답(ctx-nudge) + 거의 상한까지 찬 응답(recall) 을 합치면 총합이 상한을 넘긴다
+    """짧은 응답(ctx-warn) + 거의 상한까지 찬 응답(recall) 을 합치면 총합이 상한을 넘긴다
     (리뷰 실측 10,091 재현 — recall 단독 상한과 별개로 합본 뒤 재검사가 없었다). 원문을 그대로
     자르지 않고 생략 표시로 접는다(비차단 — `decision` 키 없음)."""
     cap = codex.CODEX_ADDITIONAL_CONTEXT_MAX_CHARS
-    warn = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "ctx-nudge 안내"}}
+    warn = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "ctx-warn 안내"}}
     recall = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "x" * cap}}
     merged = codex.merge_hook_envelopes([warn, recall])
     combined = merged["hookSpecificOutput"]["additionalContext"]

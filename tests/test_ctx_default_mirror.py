@@ -112,4 +112,4 @@ const m = require("./ctx-guard-core.cjs");
     assert result["contexts"][0] is None, "첫 assistant 관측 전에 ctx 를 실었다"
     assert result["before"] == [], "첫 응답 전에 ctx 안내가 나갔다"
     assert result["contexts"][1]["tokens"] == 150_000 and result["contexts"][1]["boundary"] is None
-    assert len(result["after"]) == 1 and result["after"][0].startswith("[ctx-nudge] 컨텍스트 사용 75%")
+    assert len(result["after"]) == 1 and result["after"][0].startswith("[ctx-warn] 컨텍스트 사용 75%")

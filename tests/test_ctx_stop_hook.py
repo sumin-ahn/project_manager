@@ -74,11 +74,11 @@ def test_recall_and_ctx_band_additional_context_coexist(tmp_path):
     assert rc == 0
     hso = output["hookSpecificOutput"]
     guidance = hso["additionalContext"]
-    assert "ctx-nudge/최종" in guidance
+    assert "ctx-warn/최종" in guidance
     assert "[principle-recall]" in guidance
     assert "강제 push" in guidance
     # 두 문안이 줄바꿈으로 이어붙었다(누적 — 어느 한쪽만 남지 않는다).
-    assert guidance.index("ctx-nudge/최종") < guidance.index("[principle-recall]")
+    assert guidance.index("ctx-warn/최종") < guidance.index("[principle-recall]")
 
 
 def test_recall_alone_when_ctx_band_is_ok(tmp_path):
@@ -113,7 +113,7 @@ def test_missing_registry_leaves_ctx_band_output_unchanged(tmp_path):
     rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
     guidance = output["hookSpecificOutput"]["additionalContext"]
-    assert "ctx-nudge/최종" in guidance
+    assert "ctx-warn/최종" in guidance
     assert "[principle-recall]" not in guidance
 
 
@@ -173,7 +173,7 @@ def test_broken_registry_surfaces_a_non_blocking_warning_in_additional_context(t
 def test_cap_merged_context_at_exact_cap_is_untouched():
     """실제 `_MAX_ADDITIONAL_CONTEXT_CHARS`(10,000) 경계 — 정확히 상한이면 원문 그대로다."""
     stop_hook = _load("ctx_stop_hook")
-    existing = "ctx-nudge/최종 안내"
+    existing = "ctx-warn/최종 안내"
     cap = stop_hook._MAX_ADDITIONAL_CONTEXT_CHARS
     extra = "x" * (cap - len(existing) - 1)  # "\n" 구분자 1자를 뺀 정확한 상한.
     combined = stop_hook._cap_merged_context(existing, extra)
@@ -185,7 +185,7 @@ def test_cap_merged_context_over_by_one_char_is_summarized_not_truncated():
     """상한을 딱 1자 넘기면(10,001) ctx 밴드 안내는 보존하고 recall 쪽만 생략 표시로 접는다
     (원문을 자르지 않는다 — F-006 리뷰 실측 10,091 재현)."""
     stop_hook = _load("ctx_stop_hook")
-    existing = "ctx-nudge/최종 안내"
+    existing = "ctx-warn/최종 안내"
     cap = stop_hook._MAX_ADDITIONAL_CONTEXT_CHARS
     extra = "x" * (cap - len(existing))  # 위 exact-cap 테스트보다 정확히 1자 더 김.
     combined = stop_hook._cap_merged_context(existing, extra)

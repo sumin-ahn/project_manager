@@ -245,7 +245,7 @@ def test_engine_guard_allows_pm_home_pytest_when_tests_exist(topology, argv):
     got = engine_guard.judge_engine_invocation(str(home), argv)
     assert got["verdict"] == "ok"
     assert got["cwd_identity"] == "pm-home"
-    assert "오앵커 패턴이 아님" in got["reason"]
+    assert "대상 저장소 오인 패턴이 아님" in got["reason"]
 
 
 @pytest.mark.parametrize(
@@ -329,7 +329,7 @@ def test_relative_engine_call_warns_on_same_rev_different_bytes(topology):
         copy_state=(
             f"도구 파일 sha256 다름({_sha256(slot_script)} != {_sha256(home_script)}) — "
             f"worktree 사본 {slot_script} 은 커밋 상태(clean) — "
-            "stale import 사본 — 게이트 판정은 canonical 로"
+            "stale import 사본 — 통과 조건 판정은 canonical 로"
         ),
     )
     via_shell = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
@@ -391,7 +391,7 @@ def _expected_engine_verdict(
         "verdict": "warn",
         "cwd_identity": cwd_identity,
         "reason": (
-            f"상대경로 엔진 호출의 실행 사본={script_path}; 이 사본의 repo 앵커={script_root} "
+            f"상대경로 엔진 호출의 실행 사본={script_path}; 이 사본의 대상 저장소={script_root} "
             f"({script_identity}); board mutation은 PM 홈 사본으로 실행하라; "
             f"함께 존재하는 다른 사본={other_path}; {copy_state}"
         ),
@@ -502,7 +502,7 @@ def test_sha_mismatch_with_clean_worktree_copy_reports_stale_import(topology):
         copy_state=(
             f"도구 파일 sha256 다름({_sha256(home_script)} != {_sha256(slot_script)}) — "
             f"worktree 사본 {slot_script} 은 커밋 상태(clean) — "
-            "stale import 사본 — 게이트 판정은 canonical 로"
+            "stale import 사본 — 통과 조건 판정은 canonical 로"
         ),
     )
     assert len(runner.status_calls) == 1
@@ -545,7 +545,7 @@ def test_freshness_git_query_happens_only_when_sha_differs(topology):
         copy_state=(
             f"도구 파일 sha256 다름({_sha256(slot_script)} != {_sha256(home_script)}) — "
             f"worktree 사본 {slot_script} 은 커밋 상태(clean) — "
-            "stale import 사본 — 게이트 판정은 canonical 로"
+            "stale import 사본 — 통과 조건 판정은 canonical 로"
         ),
     )
     assert differs.status_calls == [
@@ -652,7 +652,7 @@ def test_unexpanded_engine_path_reports_unknown_without_changing_deny_axis(topol
         assert f"미확장 토큰={token}" in got["reason"]
         assert "확장 불가 — 실제 사본 미상" in got["reason"]
         assert "실행 사본=" not in got["reason"]
-        assert "repo 앵커=" not in got["reason"]
+        assert "대상 저장소=" not in got["reason"]
 
     denied = cli_hooks.judge_git_anchor_command(cli_hooks.adapter_home(home), "S", 
         str(slot), "python3 $PMH/.project_manager/tools/board.py claim T-0001", main_thread=True,
@@ -661,7 +661,7 @@ def test_unexpanded_engine_path_reports_unknown_without_changing_deny_axis(topol
     assert denied["cwd_identity"] == "slot"
     assert "확장 불가 — 실제 사본 미상" in denied["reason"]
     assert "실행 사본=" not in denied["reason"]
-    assert "repo 앵커=" not in denied["reason"]
+    assert "대상 저장소=" not in denied["reason"]
 
 
 def test_relative_engine_copy_hash_read_failure_is_fail_soft(
@@ -710,7 +710,7 @@ def test_absolute_engine_call_is_ok(topology):
     got = engine_guard.judge_engine_invocation(str(home), ["python3", str(script), "status"])
     assert got["verdict"] == "ok"
     assert f"절대경로 엔진 사본={script}" in got["reason"]
-    assert f"repo 앵커={slot} (slot)" in got["reason"]
+    assert f"대상 저장소={slot} (slot)" in got["reason"]
 
 
 def test_mixed_git_and_engine_calls_use_strongest_judgment(topology):
@@ -1424,7 +1424,7 @@ def test_claude_hook_prefilter_warn_and_deny(monkeypatch, topology):
     plain = driver.git_anchor_hook_evaluate(
         {**base, "tool_input": {"command": "python3 build.py"}}, home
     )["hookSpecificOutput"]
-    assert plain["additionalContext"] == "[git-anchor/warn] fixture"
+    assert plain["additionalContext"] == "[git-check/warn] fixture"
     assert calls == [(str(home), "python3 build.py")]
     warn = driver.git_anchor_hook_evaluate(
         {**base, "tool_input": {"command": "git commit -m x"}}, home
@@ -1523,7 +1523,7 @@ def test_claude_hook_emits_once_per_session_for_identical_message(
     assert driver.run_git_anchor_hook(home) == 0
     first = json.loads(capsys.readouterr().out)[
         "hookSpecificOutput"]["additionalContext"]
-    assert first.startswith("[git-anchor/warn]") and "git commit" in first
+    assert first.startswith("[git-check/warn]") and "git commit" in first
 
     # ① 완전일치 재호출 = 침묵(빈 JSON 도 쓰지 않는다).
     _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-a")
@@ -1534,7 +1534,7 @@ def test_claude_hook_emits_once_per_session_for_identical_message(
     _hook_stdin(monkeypatch, driver, home, "git push", "sess-a")
     assert driver.run_git_anchor_hook(home) == 0
     other = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert other != first and "실행 앵커=" in other
+    assert other != first and "실행 대상 저장소=" in other
 
     # ③ 세션이 다르면 같은 문구도 그 세션의 첫 1회로 발화한다(세션 격리).
     _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-b")
@@ -1615,7 +1615,7 @@ def test_claude_hook_keeps_emitting_when_membership_io_fails(
         assert driver.run_git_anchor_hook(home) == 0
         emitted.append(json.loads(capsys.readouterr().out)[
             "hookSpecificOutput"]["additionalContext"])
-    assert emitted[0].startswith("[git-anchor/warn]")
+    assert emitted[0].startswith("[git-check/warn]")
     assert "git commit" in emitted[0]
     # fail-open 의 핵심: 완전히 같은 문구가 두 번째에도 그대로 발화된다(억제 없음).
     assert emitted[1] == emitted[0]
@@ -1663,11 +1663,11 @@ def test_codex_execpolicy_stays_static_while_the_hook_axis_carries_the_dynamic_g
     실 registry 값을 요구한다(부재를 강제하던 옛 봉인은 배선 시 red 가 나지 않았다)."""
     text = CODEX_RULES.read_text(encoding="utf-8")
     assert "false-deny 0" in text
-    assert "pm_orch_codex.py" in text and "git-anchor" in text
+    assert "pm_orch_codex.py" in text and "git-check" in text
 
     dispatcher = _load("git_anchor_codex_dispatcher_seal", CODEX_DISPATCHER)
     features = [feature for feature in dispatcher.CODEX_HOOK_FEATURES
-                if feature.feature_id == "git-anchor"]
+                if feature.feature_id == "git-check"]
     assert len(features) == 1, dispatcher.CODEX_HOOK_FEATURES
     feature = features[0]
     assert feature.event == "PreToolUse"
@@ -1731,7 +1731,7 @@ def test_codex_live_bash_without_internal_workdir_inherits_central_pytest_deny_e
     for envelope in (first, second):
         assert envelope["decision"] == "block"
         assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert envelope["systemMessage"].startswith("[git-anchor/deny]")
+        assert envelope["systemMessage"].startswith("[git-check/deny]")
         assert envelope["systemMessage"] == envelope["reason"]
     assert first == second
 
@@ -1791,7 +1791,7 @@ const [home, relative, absolute, guidance] = process.argv.slice(1);
  }, contextFor: () => null, acceptContext: async () => {}});
  await assert.rejects(
   boundary.before({tool: "bash", sessionID: "S"}, {args: {command: relative}}),
-  (error) => error.message.startsWith("[git-anchor/deny]") && error.message.endsWith(guidance));
+  (error) => error.message.startsWith("[git-check/deny]") && error.message.endsWith(guidance));
  await boundary.before({tool: "bash", sessionID: "S"}, {args: {command: absolute}});
  assert.deepStrictEqual(toasts, []);
  console.log("PYTEST_RETRY_OK");
@@ -1850,7 +1850,7 @@ def test_codex_bash_axis_deny_matches_the_measured_five_field_envelope(monkeypat
     envelope = dispatcher.git_anchor_hook_evaluate(payload, home)
 
     reason = envelope.get("reason", "")
-    assert reason.startswith("[git-anchor/deny]")
+    assert reason.startswith("[git-check/deny]")
     assert "tests/shared.txt" in reason
     assert envelope == {
         "decision": "block",
@@ -1934,7 +1934,7 @@ def test_codex_bash_axis_warn_is_suppressed_once_per_session(monkeypatch, topolo
     payload["tool_input"] = {"command": "git commit -m x"}
 
     first = dispatcher.git_anchor_hook_evaluate(payload, home)
-    assert first["systemMessage"].startswith("[git-anchor/warn]")
+    assert first["systemMessage"].startswith("[git-check/warn]")
 
     second = dispatcher.git_anchor_hook_evaluate(payload, home)
     assert second == {}  # 완전일치 중복 — 측정된 allow 형태로 침묵.
@@ -2169,7 +2169,7 @@ function reply(git) {
   assert.strictEqual(toasts.length, 2);
   await assert.rejects(
     boundary.before({tool:"bash", sessionID:"A"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}}),
-    /git-anchor\/deny/
+    /git-check\/deny/
   );
 
   const errorToasts = [];
@@ -2182,7 +2182,7 @@ function reply(git) {
   const errorContext = {system: []};
   failing.inject({sessionID:"ERR"}, errorContext);
   assert.strictEqual(errorContext.system.length, 1);
-  assert.match(errorContext.system[0], /git-anchor\/warn/);
+  assert.match(errorContext.system[0], /git-check\/warn/);
   assert.match(errorContext.system[0], /판정 인프라 예외\(fixture boom\)/);
   assert.strictEqual(errorToasts.length, 1);
   console.log("GIT_ANCHOR_CORE_OK");
@@ -2223,13 +2223,13 @@ const repoWithEngine = process.argv[1];
   for (const command of ["echo hello", "git commit -m x"]) {
     await assert.rejects(
       hooks["tool.execute.before"]({tool:"bash", sessionID:"S"}, {args:{command}}),
-      /\[git-anchor\/설치\]/,
+      /\[git-check\/설치\]/,
     );
   }
   const grants = await git.GitAnchorPlugin({directory: repoWithEngine, worktree: repoWithEngine, client});
   await assert.rejects(
     grants["chat.message"]({sessionID:"S"}, {parts:[{type:"text", text:process.argv[2]}]}),
-    /\[git-anchor\/설치\]/,
+    /\[git-check\/설치\]/,
   );
   const context = {system: []};
   await hooks["experimental.chat.system.transform"]({sessionID:"S"}, context);
@@ -2570,7 +2570,7 @@ def test_claude_hook_denies_destructive_slot_git_with_permission_decision(
     output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
     assert output["permissionDecision"] == "deny"
     reason_lines = output["permissionDecisionReason"].splitlines()
-    assert reason_lines[0] == f"[git-anchor/deny] {_STOP_LINE}"
+    assert reason_lines[0] == f"[git-check/deny] {_STOP_LINE}"
     # claude 는 사용자 1회 허용을 쓰는 하네스다 — 세션이 있으면 허용 입력 형식을 안내한다.
     assert reason_lines[1] == _ACTION_ASK_WITH_GRANT
     assert "손 git 브랜치 지우기" in reason_lines[2]
@@ -2595,7 +2595,7 @@ def test_codex_hook_blocks_destructive_slot_git_with_measured_envelope(monkeypat
     envelope = json.loads(stdout.getvalue())
     reason = envelope["reason"]
     # codex 는 1회 허용 수단이 없다 — 사용자가 터미널에서 직접 실행하도록 안내한다.
-    assert reason.splitlines()[:2] == [f"[git-anchor/deny] {_STOP_LINE}", _ACTION_ASK_WITHOUT_GRANT]
+    assert reason.splitlines()[:2] == [f"[git-check/deny] {_STOP_LINE}", _ACTION_ASK_WITHOUT_GRANT]
     assert "손 git 변경 버리기" in reason
     assert envelope == {
         "decision": "block",
@@ -2641,7 +2641,7 @@ const [engineRoot, slot] = process.argv.slice(1);
     hooks["tool.execute.before"](
       {tool:"bash", sessionID:"S"}, {args:{command:"git worktree remove ../product_2", cwd:slot}},
     ),
-    /\[git-anchor\/deny\] 다른 명령으로 같은 일을 하지 마라\. 여기서 멈추고 사용자에게 물어라\.\n사용자에게 슬롯 제거 승인을 묻고[^\n]*\n거부한 호출: 손 git 슬롯 지우기/,
+    /\[git-check\/deny\] 다른 명령으로 같은 일을 하지 마라\. 여기서 멈추고 사용자에게 물어라\.\n사용자에게 슬롯 제거 승인을 묻고[^\n]*\n거부한 호출: 손 git 슬롯 지우기/,
   );
   await hooks["tool.execute.before"](
     {tool:"bash", sessionID:"S"}, {args:{command:"git worktree list", cwd:slot}},
@@ -3084,7 +3084,7 @@ def test_claude_prompt_hook_records_grant_and_bash_consumes_it_once(monkeypatch,
     assert "`git branch -D main`" in granted["additionalContext"]
     passed = run(bash)["hookSpecificOutput"]
     assert "permissionDecision" not in passed
-    assert passed["additionalContext"].startswith(f"[git-anchor/warn] {_GRANTED}")
+    assert passed["additionalContext"].startswith(f"[git-check/warn] {_GRANTED}")
     assert run(bash)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
@@ -3108,7 +3108,7 @@ def test_claude_prompt_hook_blocks_malformed_grant_and_skips_ordinary_prompts(mo
         {**plain, "prompt": "git 허용: git branch -D a && git branch -D b"}, home,
     )
     assert blocked["decision"] == "block"
-    assert blocked["reason"].startswith("[git-anchor/허용 거부] ")
+    assert blocked["reason"].startswith("[git-check/허용 거부] ")
     assert _grant_files(home) == []
 
 
@@ -3189,7 +3189,7 @@ const [engineRoot, slot] = process.argv.slice(1);
   assert.deepStrictEqual(recorded, [["S", slot, "ok\ngit 허용: git branch -D main"]]);
   const context = {system: []};
   await grantHooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
-  assert.match(context.system[0], /\[git-anchor\/허용\].*`git branch -D main`/);
+  assert.match(context.system[0], /\[git-check\/허용\].*`git branch -D main`/);
   await grantHooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", synthetic: true, text: "git 허용: git reset --hard"}]});
   assert.strictEqual(recorded.length, 1);
 
@@ -3212,7 +3212,7 @@ const [engineRoot, slot] = process.argv.slice(1);
   assert.deepStrictEqual(judged, [[["hook-tool", "--session", "S"], slot, "git branch -D main", "git branch -D main"]]);
   await assert.rejects(
     hooks["tool.execute.before"]({tool: "write", sessionID: "S"}, {args: {filePath: slot + "/.project_manager/.local/git-grants/k.json", content: "{}"}}),
-    /\[git-anchor\/deny\] 다른 명령으로 같은 일을 하지 마라\./,
+    /\[git-check\/deny\] 다른 명령으로 같은 일을 하지 마라\./,
   );
   await assert.rejects(
     hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer", prompt: "git 허용: git reset --hard"}}),
@@ -3229,7 +3229,7 @@ const [engineRoot, slot] = process.argv.slice(1);
   };
   assert.throws(
     () => m.recordGrants(engineRoot, "S", slot, "git 허용: x", {spawnSync: failing}),
-    /\[git-anchor\/허용 거부\] \[중단\] 형식 오류/,
+    /\[git-check\/허용 거부\] \[중단\] 형식 오류/,
   );
   assert.deepStrictEqual(calls, [[["git-grant", "--session", "S", "--cwd", slot], "git 허용: x"]]);
   const granted = () => ({status: 0, stdout: JSON.stringify({granted: ["git branch -D main"]}) + "\n", stderr: ""});
@@ -3377,7 +3377,7 @@ const [home, slot] = process.argv.slice(1);
  }, contextFor:() => null, acceptContext:async () => {}});
  const hooks = {'tool.execute.before': boundary.before};
  for (const command of ['git sparse-checkout set src', 'git submodule --quiet update -- status'])
-  await assert.rejects(hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command,cwd:slot}}), /git-anchor\/deny/);
+  await assert.rejects(hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command,cwd:slot}}), /git-check\/deny/);
  for (const command of ['git sparse-checkout list', 'git submodule'])
   await hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command,cwd:slot}});
  const file = path.join(home,'.project_manager','.local','worktree-leases.json');
@@ -3497,7 +3497,7 @@ const [home, slot, session, command, denied] = process.argv.slice(1);
  }, contextFor:() => null, acceptContext:async () => {}});
  const hooks = {'tool.execute.before': boundary.before};
  const run = () => hooks['tool.execute.before']({tool:'bash',sessionID:session},{args:{command,cwd:slot}});
- if (denied === 'true') await assert.rejects(run(), /git-anchor\/deny/);
+ if (denied === 'true') await assert.rejects(run(), /git-check\/deny/);
  else await run();
  console.log('T0931_FOREACH_HOOK_OK');
 })().catch(error => { console.error(error); process.exitCode=1; });

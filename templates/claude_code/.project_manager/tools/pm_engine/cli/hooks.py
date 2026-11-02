@@ -53,7 +53,7 @@ def judge_tool_input(
     for text in git_policy._tool_input_strings(tool_input):
         if git_policy.GIT_GRANT_DIR_NAME in text.replace("\\", "/") or git_policy.GIT_GRANT_LINE.search(text):
             judgment = git_policy._git_grant_forgery_judgment(
-                f"도구 입력에 허용 기록 폴더(`{git_policy.GIT_GRANT_DIR_NAME}`) 또는 줄 머리 허용 표식"
+                f"도구 입력에 허용 기록 폴더(`{git_policy.GIT_GRANT_DIR_NAME}`) 또는 줄 머리 허용 표시"
                 "(`git 허용:`)이 있음"
             )
             judgment["reason"] = git_policy._git_guard_stop_reason(
@@ -78,7 +78,7 @@ def judge_tool_input(
         }
     if todo_warning is not None:
         return todo_warning
-    return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "허용 위조 표식·남의 슬롯 쓰기 없음"}
+    return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "허용 위조 표시·남의 슬롯 쓰기 없음"}
 
 
 def record_git_grants(home: home.Home, session: str, cwd: str, prompt: str) -> list[str]:
@@ -282,7 +282,7 @@ def _check_recall_input(*, session: object, on: object, text: object, main_threa
     _check_type("session", session, (str,))
     _check_type("on", on, (str,))
     if on not in principle_rules.ON_VALUES:
-        raise ValueError(f"지원하지 않는 recall 축: {on!r}")
+        raise ValueError(f"지원하지 않는 recall 기준: {on!r}")
     _check_type("text", text, (str,))
     _check_type("main_thread", main_thread, (bool,))
 
@@ -346,7 +346,7 @@ def _marker_writer(harness: str):
     def write(root: Path, session_id: str) -> bool:
         if relay.write_post_turn_marker(root, session_id):
             return True
-        sys.stderr.write(f"[pm-orch] {harness} ctx marker 박제 실패\n")
+        sys.stderr.write(f"[pm-orch] {harness} ctx marker 기록 실패\n")
         return False
     return write
 

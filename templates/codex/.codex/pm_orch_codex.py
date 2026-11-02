@@ -193,7 +193,7 @@ class CodexCliDriver:
             # 폴백 대신 명시 중단 — relay 는 유효 세션 없이 못 돈다.
             raise RuntimeError(
                 "[pm-orch] codex 출력에서 thread.started.thread_id 를 파싱하지 못했다 — "
-                "세션 구동 실패. (codex 는 thread_id 사전지정 불가라 폴백 불가 · codex/모델 설정 확인.)"
+                "세션 구동 실패. (codex 는 thread_id 사전지정 불가라 대체 동작 불가 · codex/모델 설정 확인.)"
             )
         self._session_cwd[tid] = cwd  # resume 이 같은 cwd(-C)로 잇도록 기억.
         self._maybe_mark_ctx(tid, usage)  # driver-side 기계 ctx 가드.
@@ -605,7 +605,7 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
     ),
     # 세션 안 ctx 넛지는 프롬프트 단위 채널에서 한 번 판정한다.
     CodexHookFeature(
-        feature_id="ctx-nudge-userpromptsubmit",
+        feature_id="ctx-warn-userpromptsubmit",
         event="UserPromptSubmit",
         tool_pattern=None,
         argv=(),
@@ -678,7 +678,7 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         #   git_anchor_hook_evaluate` 와 동형). git-anchor 엔 delegate-channel 처럼 부를 별도
         #   엔진 파일이 없어 `{self}` 로 이 디스패처가 자기 자신을 다시 부른다.
         #   파일 쓰기 도구 apply_patch 도 같은 판정(슬롯 쓰기 주인)을 받는다.
-        feature_id="git-anchor",
+        feature_id="git-check",
         event="PreToolUse",
         tool_pattern="^(Bash|apply_patch)$",
         argv=("{py}", "{self}", GIT_ANCHOR_HOOK_FLAG),
@@ -1025,7 +1025,7 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
     if event not in CODEX_HOOK_ENTRYPOINT_EVENTS:
         # config 가 이 디스패처 세대가 모르는 진입점을 열었다 — 조용히 통과하지 않는다.
         return hook_fallback_envelope(
-            f"dispatch:{event}", "이 디스패처 세대에 없는 진입점 이벤트")
+            f"dispatch:{event}", "이 디스패처 버전에 없는 진입점 이벤트")
     payload, payload_error = _parse_hook_payload(payload_bytes)
     if event in CODEX_COMPACTION_EVENTS and hook_is_subagent(payload):
         # 서브에이전트 압축은 부모와 같은 `session_id` 로 온다 — 기능을 돌리면 부모 task 의 압축
@@ -1142,7 +1142,7 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
     verdict = judgment.get("verdict")
     reason = judgment.get("reason", "git cwd 정체 판정")
     if verdict == "deny":
-        text = f"[git-anchor/deny] {reason}"
+        text = f"[git-check/deny] {reason}"
         return {
             "decision": "block",
             "reason": text,
@@ -1155,7 +1155,7 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
             "suppressOutput": False,
         }
     if verdict == "warn":
-        text = f"[git-anchor/warn] {reason}"
+        text = f"[git-check/warn] {reason}"
         if _git_anchor_duplicate(root, payload, text):
             return {}  # 세션 내 완전일치 중복 — 측정된 allow 형태로 침묵.
         return {"systemMessage": text, "suppressOutput": False}
@@ -1189,7 +1189,7 @@ def run_git_anchor_hook(root: Path, *, stdin=None, stdout=None) -> int:
         envelope = git_anchor_hook_evaluate(payload, root)
     except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash 를 막지 않는다.
         detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-        text = f"[git-anchor/warn] 판정 불가({type(exc).__name__}: {detail}) — cwd를 직접 확인"
+        text = f"[git-check/warn] 판정 불가({type(exc).__name__}: {detail}) — cwd를 직접 확인"
         envelope = {"systemMessage": text, "suppressOutput": False}
     sink.write(json.dumps(envelope, separators=(",", ":")) + "\n")
     sink.flush()

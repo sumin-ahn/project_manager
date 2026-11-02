@@ -631,7 +631,7 @@ def _engine_copy_freshness(
         )
     return (
         f"worktree 사본 {worktree_copy} 은 커밋 상태(clean) — "
-        "stale import 사본 — 게이트 판정은 canonical 로"
+        "stale import 사본 — 통과 조건 판정은 canonical 로"
     )
 
 

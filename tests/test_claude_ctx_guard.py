@@ -367,7 +367,7 @@ def test_hook_stop_userpromptsubmit_injects_final_nudge(stop_hook, tmp_path):
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
     guidance = hso["additionalContext"]
-    assert "ctx-nudge/최종" in guidance
+    assert "ctx-warn/최종" in guidance
     assert "python3 .project_manager/tools/pm_log.py checkpoint --task <task> --trigger compaction" in guidance
     assert "<task>`에는 현재 task 이름" in guidance
     assert "압축은 자동이고 세션은 그대로 이어진다" in guidance
@@ -471,7 +471,7 @@ def test_hook_final_pretooluse_injects_without_permission_decision(stop_hook, tm
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
-    assert "ctx-nudge/최종" in hso["additionalContext"]
+    assert "ctx-warn/최종" in hso["additionalContext"]
     assert "permissionDecision" not in hso and "decision" not in output
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (marker_dir / "sess-pretool.final").exists()
@@ -575,7 +575,7 @@ def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     assert hso["hookEventName"] == "UserPromptSubmit"
     assert "additionalContext" in hso
     assert "python3 .project_manager/tools/pm_log.py checkpoint --task <task>" in hso["additionalContext"]
-    assert "ctx-nudge" in hso["additionalContext"]
+    assert "ctx-warn" in hso["additionalContext"]
     # 비차단: deny/block 아님 (정지 스키마 부재).
     assert "permissionDecision" not in hso
     assert output.get("decision") != "block"
@@ -592,7 +592,7 @@ def test_hook_nudge_pretooluse_injects_and_consumes_cycle(stop_hook, tmp_path):
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
-    assert "ctx-nudge]" in hso["additionalContext"]
+    assert "ctx-warn]" in hso["additionalContext"]
     assert "permissionDecision" not in hso and "decision" not in output
     assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge-ptu.warn").exists()
     stdin["hook_event_name"] = "UserPromptSubmit"
@@ -628,7 +628,7 @@ def test_hook_nudge_independent_from_final(stop_hook, tmp_path):
     }
     rc, output = stop_hook.evaluate(stop_stdin, _home(tmp_path))
     guidance = output["hookSpecificOutput"]["additionalContext"]
-    assert "ctx-nudge/최종" in guidance
+    assert "ctx-warn/최종" in guidance
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (marker_dir / f"{sid}.warn").exists()
     assert (marker_dir / f"{sid}.final").exists()
@@ -740,7 +740,7 @@ def test_hook_nudge_refires_after_boundary_without_ok_observation(
 
     assert rc1 == rc2 == rc3 == rc4 == 0
     assert first is not None and duplicate is None
-    assert "ctx-nudge" in next_cycle["hookSpecificOutput"]["additionalContext"]
+    assert "ctx-warn" in next_cycle["hookSpecificOutput"]["additionalContext"]
     assert duplicate_again is None
 
 
@@ -799,7 +799,7 @@ def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
     assert "additionalContext" in hso
-    assert "ctx-nudge/강화" in hso["additionalContext"]
+    assert "ctx-warn/강화" in hso["additionalContext"]
     assert "python3 .project_manager/tools/pm_log.py checkpoint --task <task>" in hso["additionalContext"]
     # 비차단: deny/block 아님.
     assert "permissionDecision" not in hso
@@ -817,7 +817,7 @@ def test_hook_nudge2_pretooluse_injects_without_permission_decision(stop_hook, t
     assert rc == 0
     hso = output["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
-    assert "ctx-nudge/강화" in hso["additionalContext"]
+    assert "ctx-warn/강화" in hso["additionalContext"]
     assert "permissionDecision" not in hso and "decision" not in output
     assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-n2-ptu.warn2").exists()
 
@@ -844,7 +844,7 @@ def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
         "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
-    assert "ctx-nudge/강화" in output["hookSpecificOutput"]["additionalContext"]
+    assert "ctx-warn/강화" in output["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / "sess-n2-solo.warn2").exists()
     assert not (ctx / "sess-n2-solo.warn").exists()
@@ -859,14 +859,14 @@ def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
     rc1, out1 = stop_hook.evaluate(nudge_stdin, _home(tmp_path))
-    assert "ctx-nudge]" in out1["hookSpecificOutput"]["additionalContext"]  # 1단 표지.
+    assert "ctx-warn]" in out1["hookSpecificOutput"]["additionalContext"]  # 1단 표지.
     # 2단: 같은 세션이 warn2 밴드 진입 (transcript 경로 덮어씀).
     nudge2_stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
     rc2, out2 = stop_hook.evaluate(nudge2_stdin, _home(tmp_path))
-    assert "ctx-nudge/강화" in out2["hookSpecificOutput"]["additionalContext"]
+    assert "ctx-warn/강화" in out2["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / f"{sid}.warn").exists()
     assert (ctx / f"{sid}.warn2").exists()
@@ -886,7 +886,7 @@ def test_hook_nudge2_independent_from_final(stop_hook, tmp_path):
         "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stop_stdin, _home(tmp_path))
-    assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
+    assert "ctx-warn/최종" in output["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / f"{sid}.warn2").exists()
     assert (ctx / f"{sid}.final").exists()

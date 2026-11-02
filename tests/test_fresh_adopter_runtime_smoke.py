@@ -464,8 +464,8 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
 # 결정적으로 커버 — 여기선 *하니스 전달의 라이브 회귀*만(비결정·과금·flaky → PM_ORCH_LIVE on-demand).
 #
 # probe 방식([[verify-real-output-not-just-review]]): 라이브 세션 후 warn 텍스트가 모델에 도달했는지
-# 를 behavioral 관찰한다 — 주입문에만 있는 distinctive 토큰 `ctx-nudge`(1단 `[ctx-nudge]`·2단
-# `[ctx-nudge/최종]` 공통 substring)를 모델이 인용하는지. `.warn` file-marker 는 단언하지 않는다
+# 를 behavioral 관찰한다 — 주입문에만 있는 distinctive 토큰 `ctx-warn`(1단 `[ctx-warn]`·2단
+# `[ctx-warn/최종]` 공통 substring)를 모델이 인용하는지. `.warn` file-marker 는 단언하지 않는다
 # (T-0286 결정: marker 는 훅이 자기 판단용으로 쓸 뿐 도달 증거가 아님).
 #
 # 밴드 강제 = 격리 인스턴스 + per-harness 키([[ctx-guard-live-test-isolate-instance]]): adopter 는
@@ -480,7 +480,7 @@ def _force_nudge_band_conf(dest: Path, harness: str) -> None:
     큰 예산(500K) + 넓은 warn 밴드(쓴 % checkpoint_at 1·precompact_at 99): 실 세션(수천~수만
     토큰)이 stop(used ≥99%)은 절대 못 넘고 warn(used ≥1% = 토큰 ≥5000)엔 안정적으로 진입한다.
     warn2(used ≥96%)엔 안 닿아 soft(1단) 주입이 발화 — 주입 채널은 2단과 동일(Tier1 커버)이라
-    도달 증거로 충분(공통 `ctx-nudge` 토큰). local.conf 파싱은 last-wins 라 append 값이 우선.
+    도달 증거로 충분(공통 `ctx-warn` 토큰). local.conf 파싱은 last-wins 라 append 값이 우선.
     이 값은 훅 판정만 옮긴다 — 설정 파일 반영을 돌리지 않으므로 하네스 압축 지점은 출하 값 그대로다.
     """
     conf_path = dest / ".project_manager" / "local.conf"
@@ -495,13 +495,13 @@ def _force_nudge_band_conf(dest: Path, harness: str) -> None:
 
 
 # probe 프롬프트 공통 꼬리 — 주입문 도달을 **모델-생산 sentinel**(`NUDGE_REACHED`)로 관찰.
-# distinctive 토큰(`ctx-nudge`) 그 자체를 grep 하면 --format json 이 주입문을 stdout 에 직렬화할 때
+# distinctive 토큰(`ctx-warn`) 그 자체를 grep 하면 --format json 이 주입문을 stdout 에 직렬화할 때
 # false-green(주입문 자체를 검출) 이 난다. sentinel 은 주입문·문서엔 없지만 **이 probe 프롬프트엔
 # 있다** — 검증력은 default 포맷이 프롬프트를 stdout 에 echo 하지 않는다는 실측 성질에 의존한다
 # (프롬프트-echo 포맷[--format json]에선 무력화·codex 지적 반영). 그 전제 아래 모델은 컨텍스트에
-# ctx-nudge 가 실재할 때만 NUDGE_REACHED 를 낸다 = 주입이 모델에 도달.
+# ctx-warn 가 실재할 때만 NUDGE_REACHED 를 낸다 = 주입이 모델에 도달.
 _NUDGE_PROBE_TAIL = (
-    "그런 다음, 이번 세션의 시스템 메시지나 추가 컨텍스트에 'ctx-nudge' 라는 토큰이 문자 그대로 "
+    "그런 다음, 이번 세션의 시스템 메시지나 추가 컨텍스트에 'ctx-warn' 라는 토큰이 문자 그대로 "
     "들어와 있는지 확인하라(추측 말고 실제로 있는지만). 있으면 정확히 'NUDGE_REACHED' 한 단어로 "
     "시작해 그 문장을 이어 인용하라. 없으면 정확히 'NO_NUDGE' 라고만 답하라."
 )
@@ -549,7 +549,7 @@ def test_live_opencode_nudge_injection_reaches_model(tmp_path):
     """실 opencode 세션서 graceful warn 주입(experimental.chat.system.transform)이 모델에 도달 (T-0286).
 
     밴드 강제(격리·per-harness 키) → 도구 호출로 2번째 턴 유발 → 그 턴 system[] 에 warn 주입 →
-    모델이 `ctx-nudge` 토큰 인용. probe 관찰(behavioral)이라 LLM phrasing 비결정에 강건(토큰 도달만 본다).
+    모델이 `ctx-warn` 토큰 인용. probe 관찰(behavioral)이라 LLM phrasing 비결정에 강건(토큰 도달만 본다).
     """
     dest = _import_adopter(tmp_path, "opencode")
     _force_nudge_band_conf(dest, "opencode")

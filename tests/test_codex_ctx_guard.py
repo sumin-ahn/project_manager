@@ -978,7 +978,7 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
 def test_ctx_nudge_is_wired_through_the_dispatcher_registry(codex_ctx):
     """프롬프트 진입점 하나에 도구 무관 기능으로 등록되고, 판정은 in-process 다."""
     features = {feature.feature_id: feature for feature in codex_ctx.CODEX_HOOK_FEATURES
-                if feature.feature_id.startswith("ctx-nudge")}
+                if feature.feature_id.startswith("ctx-warn")}
 
     assert {feature.event for feature in features.values()} == {"UserPromptSubmit"}
     for feature in features.values():
@@ -993,7 +993,7 @@ def test_ctx_wiring_adds_nothing_to_the_adopter_hooks_config():
     """`.codex/hooks.json` 은 이 축의 배선을 담지 않는다 — 채택자 재승인 0 (T-0770 DoD)."""
     rendered = HOOKS_JSON.read_text(encoding="utf-8")
 
-    for token in ("ctx-nudge", "ctx-guidance --level warn", "ctx.checkpoint_at_pct",
+    for token in ("ctx-warn", "ctx-guidance --level warn", "ctx.checkpoint_at_pct",
                   "rollout", "transcript_path"):
         assert token not in rendered, token
 
