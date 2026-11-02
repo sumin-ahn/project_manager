@@ -359,7 +359,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         help=(
             "이미 예약된 순번 N 을 다시 연다(이어 시키는 단계 — 새 순번을 만들지 않는다). "
             "그 순번이 실재하고 역할이 --role 과 같아야 하며, 슬롯 사본은 board 라운드 파일의 "
-            "현재 내용으로 빈 양식을 만든다(돌려받기가 그 파일을 교체하고 지나간 판은 board git 이 갖는다). "
+            "현재 내용을 그대로 받는다(돌려받기가 그 파일을 교체하고 지나간 판은 board git 이 갖는다). "
             f"{delegate_rounds.ABANDON_DISCARD_REASON_FLAG} 로 폐기한 순번을 다시 시키려면 이 값으로 재개방한 "
             f"뒤 슬롯 사본에서 `{review_form.PM_REVIEW_REFUSED_MARKER}` 표시 줄을 지운다 — 돌려받기는 그 줄을 "
             "실은 회신을 거부한다"

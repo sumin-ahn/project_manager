@@ -209,7 +209,7 @@ def review_harvest_problem(
     """
     if review_form.pm_review_refused_marker_present(reply_text):
         return (
-            f"엔진 전용 표시({review_form.PM_REVIEW_REFUSED_MARKER})을 회신이 선언했습니다 — 그 줄은 "
+            f"엔진 전용 표시({review_form.PM_REVIEW_REFUSED_MARKER})를 회신이 선언했습니다 — 그 줄은 "
             "라운드를 판정 범위에서 빼므로 산출이 스스로 쓸 수 없습니다"
         )
     problem = validate_review_block(reply_text, reviewer_role=reviewer_role)

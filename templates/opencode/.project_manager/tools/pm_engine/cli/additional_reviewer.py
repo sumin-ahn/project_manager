@@ -91,7 +91,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="리뷰 집계 티켓 처분 선언 — 반려로 끝난 리뷰 집계 티켓의 남은 must-fix 를 어떻게 "
                              "소화했는지 기록에 남기고 종료 (호출 없음). `--pm-verified` "
                              "필수. 라이브 시험 통과 조건(`board.py live-test "
-                             "record`)가 이 선언을 읽어 미처분 남은 지적을 차단한다")
+                             "record`)은 이 선언을 읽어 미처분 남은 지적을 차단한다")
     parser.add_argument("--pm-verified", action="store_true",
                         help="--resolve-review 처분: PM 판정 범위(수락한 리뷰 지적)의 기계 확인 증거로 "
                              "해소 — 재호출 없음(`pm_delegate rounds resolve --pm-verified` "

@@ -434,7 +434,7 @@ def test_dry_run_notice_does_not_claim_this_run_is_ledgered(
     assert external.main(["--ticket", TICKET, "--dry-run"]) == 0
     err = capsys.readouterr().err
     assert "미리보기라 이번 실행은 기록·집계하지 않고" in err
-    assert "라운드 집계가 이 리뷰 집계 티켓에 붙습니다). 집계 밖" not in err   # 실행판 확정 문구
+    assert "에 붙습니다). 집계 밖" not in err   # 실행판 확정 문구
 
 
 # ══ ② opt-out (`--no-review-ticket`) ═════════════════════════════════════════════════
