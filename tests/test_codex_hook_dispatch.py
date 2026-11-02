@@ -1514,8 +1514,8 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
     assert [finding.event for finding in findings] == list(_MIGRATED_EVENTS)
     for finding in findings:
         assert finding.kind == hook_sets.HOOK_ENTRYPOINT_MISSING
-        assert "앞으로 등록될 가드는 발화하지 않는다" in finding.detail
-        assert "한 번도 발화하지 않는다" not in finding.detail
+        assert "앞으로 등록될 가드는 실행되지 않는다" in finding.detail
+        assert "한 번도 실행되지 않는다" not in finding.detail
     # 문구가 참인지의 판정 근거 — 그 채택자에서 옛 커맨드는 지금도 정상 발화한다.
     for event in _MIGRATED_EVENTS:
         returncode, stdout = _run_command_in_tree(

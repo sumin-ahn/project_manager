@@ -45,11 +45,11 @@ def _print_codex_trust_guidance() -> None:
     채택자가 첫 부트스트랩 전에 밟아야 할 trust 2단계 + 검증 커맨드를 눈에 띄게(loud) 안내한다.
     """
     print("")
-    print("⚠️  codex 어댑터 활성화 전 2단계 trust 승인 필요 (미승인 시 위임/훅 미발화):")
+    print("⚠️  codex 어댑터 활성화 전 2단계 trust 승인 필요 (미승인 시 위임/훅이 실행되지 않음):")
     print("  1) 이 디렉토리에서 대화형 `codex` 를 1회 열어 프로젝트 trust 를 수락한다")
     print("     (`.codex/agents/*.toml`·`config.toml` 은 trusted project 한정 로드).")
-    print("  2) codex 안에서 `/hooks` 로 hook trust 를 승인한다 (PreCompact ctx checkpoint 안내 발화 전제).")
-    print("  검증: 대화형 codex 에서 위임 4축(architect/developer/code-reviewer/researcher)이 "
+    print("  2) codex 안에서 `/hooks` 로 hook trust 를 승인한다 (PreCompact ctx checkpoint 안내가 실행되려면 필요).")
+    print("  검증: 대화형 codex 에서 위임 역할 4개(architect/developer/code-reviewer/researcher)가 "
           "스폰 목록에 뜨는지 확인한다.")
     print("  ⚠️ `-c projects.<path>.trust_level=trusted` CLI override 는 안 먹는다(실측) — "
           "위 1) 대화형 승인이 필수다.")
@@ -375,11 +375,11 @@ def _append_guest_render_to_manifest(
     #   복사 시작 전 조기 가드가 맡고, 여기선 직접 호출·TOCTOU 백스톱.
     if not install_files._is_safe_dest_path(dest_root, Path(".project_manager") / "engine.manifest"):
         raise install_files.UnsafeDestPathError(
-            f"add-harness: engine.manifest 경로가 안전하지 않아 guest 등재를 거부합니다 ({manifest}) "
+            f"add-harness: engine.manifest 경로가 안전하지 않아 추가 하네스 등재를 거부합니다 ({manifest}) "
             "— symlink·조상 symlink·repo 밖. 링크를 옮기거나 제거한 뒤 다시 시도하세요(외부 파일 불변).")
     if not manifest.is_file():
         # 등재를 조용히 생략하지 않는다 — 복사됐지만 render/lint 관리 밖임을 명시.
-        print("  ⚠️ engine.manifest 부재 — guest 어댑터가 복사됐으나 render/lint 관리 밖입니다 "
+        print("  ⚠️ engine.manifest 부재 — 추가 하네스 어댑터가 복사됐으나 render/lint 관리 밖입니다 "
               "(manifest-파생 등재 채널 없음).", file=sys.stderr)
         return {"added": [], "removed": []}
     plan = _guest_render_sync_plan(dest_root, guest_lines, adapter_dirs)
@@ -404,7 +404,7 @@ def _append_guest_render_to_manifest(
     missing = [ln.split()[0] for ln in plan["added"] if ln.split()[0] not in after]
     if missing:
         raise RuntimeError(
-            f"add-harness: guest 절 등재가 read_manifest 왕복에 미반영: {missing}")
+            f"add-harness: 추가 하네스 절 등재가 read_manifest 왕복에 미반영: {missing}")
     return {"added": plan["added"], "removed": plan["removed"]}
 
 
@@ -496,7 +496,7 @@ def add_harness(
         raise FileNotFoundError(
             "add-harness: 설치 하네스의 표기 manifest 를 소스에서 찾을 수 없습니다: "
             f"{', '.join(missing_notation_manifests)}. 그 하네스를 독자에서 조용히 빼면 공유 "
-            "문서가 잘못된 단독 표기로 재렌더되므로 복사 전에 중단합니다 — `--from` 이 그 flavor "
+            "문서가 잘못된 단독 표기로 재렌더되므로 복사 전에 중단합니다 — `--from` 이 그 하네스별 판 "
             "template 을 가진 checkout 인지 확인하세요."
         )
     entry_notation_templates = manifest_store._entry_notation_templates_from_manifests(
@@ -581,7 +581,7 @@ def add_harness(
     n_refresh = len(plan) - n_new
     print(f"[pm_import add-harness] {harness} → {dest_root}")
     print(f"  소스: {src_root}/templates/{install_rules.HARNESS_TEMPLATE_DIRS[harness][0]}")
-    print(f"  스코프: 어댑터 네임스페이스 + flavor @render ({adapter_scope} + {root_doc} · "
+    print(f"  스코프: 어댑터 네임스페이스 + 하네스별 판 @render ({adapter_scope} + {root_doc} · "
           f"host 실소유 경로 제외)")
     for a in plan:
         print(a.describe())
@@ -608,11 +608,11 @@ def add_harness(
             install_source._guest_manifest_lines(template_root, adapter_dirs, root_doc, dest_owned),
             adapter_dirs)
         if gsync["added"]:
-            print(f"  engine.manifest guest 절 등재 예정 ({len(gsync['added'])}건):")
+            print(f"  engine.manifest 추가 하네스 절 등재 예정 ({len(gsync['added'])}건):")
             for gl in gsync["added"]:
                 print(f"    + {gl}")
         if gsync["removed"]:
-            print(f"  engine.manifest guest 절 제거 예정 ({len(gsync['removed'])}건·폐기):")
+            print(f"  engine.manifest 추가 하네스 절 제거 예정 ({len(gsync['removed'])}건·폐기):")
             for gp in gsync["removed"]:
                 print(f"    - {gp}")
         print("[dry-run] 적용 안 함 (파일시스템 미변경).")
@@ -639,10 +639,10 @@ def add_harness(
         install_source._guest_manifest_lines(template_root, adapter_dirs, root_doc, dest_owned),
         adapter_dirs)
     if guest_sync["added"]:
-        print(f"  ✓ engine.manifest guest 절 {len(guest_sync['added'])}건 등재: "
+        print(f"  ✓ engine.manifest 추가 하네스 절 {len(guest_sync['added'])}건 등재: "
               f"{', '.join(ln.split()[0] for ln in guest_sync['added'])}")
     if guest_sync["removed"]:
-        print(f"  ✓ engine.manifest guest 절 {len(guest_sync['removed'])}건 제거(폐기 동기): "
+        print(f"  ✓ engine.manifest 추가 하네스 절 {len(guest_sync['removed'])}건 제거(폐기 동기): "
               f"{', '.join(guest_sync['removed'])}")
     # 이번 하네스 template 과 **byte-identical 이라 복사만 생략된**
     #   파일만 처리 대상에 추가한다 — token-form 그대로라 미렌더(토큰 잔존) 잔존의 유일 대상. 경로는
@@ -727,7 +727,7 @@ def add_harness(
     baselined = adapter_accept.record_adapter_baseline(
         dest_root, src_root, recordable, root_identity=root_identity)
     if baselined:
-        print(f"  ✓ 어댑터 config 원장 기록 ({adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()}): "
+        print(f"  ✓ 어댑터 설정 기록 ({adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()}): "
               f"{', '.join(baselined)}")
     # 하네스 사용 한도 반영 — 원장 기록 **뒤**라야 방금 내려놓은 설정 파일이 무편집으로 증언되고
     #   반영 뒤에도 그 판정이 유지된다(`apply_harness_ctx` 원장 규칙). 검사 거부는 ValueError 라

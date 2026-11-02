@@ -31,7 +31,7 @@ for _cand in python3 python; do
     fi
 done
 if [ -z "$PY" ]; then
-    echo "Python 3.11+ 필요 — 지원 인터프리터를 찾지 못해 python으로 폴백합니다." >&2
+    echo "Python 3.11+ 필요 — 지원 인터프리터를 찾지 못해 python 을 대신 씁니다." >&2
     PY=python
 fi
 

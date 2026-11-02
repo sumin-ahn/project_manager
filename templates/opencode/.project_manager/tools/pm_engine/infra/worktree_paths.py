@@ -143,7 +143,7 @@ def _explicit_slot_path(home, repo: str, number: int) -> str:
     resolution = lease_store.slot_path_resolution(repo, number, pm_paths.leases_file(home))
     if resolution.status == identity_args.SLOT_PATH_CONFLICT:
         raise worktree_records.SlotResolutionError(
-            f"대상 슬롯을 특정할 수 없다 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
+            f"대상 슬롯을 특정할 수 없다 — {resolution.detail}. 슬롯 대여 기록을 정리한 뒤 다시 실행하라."
         )
     return resolution.path or f"{repo}_{number}"
 

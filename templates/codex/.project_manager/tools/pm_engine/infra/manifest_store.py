@@ -93,7 +93,7 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
         for flavor, entries in additions:
             chunks.extend([
                 "",
-                f"# ── 선택 flavor 합집합: {flavor} (pm_import/pm_update 생성) ──",
+                f"# ── 선택한 하네스별 판 합집합: {flavor} (pm_import/pm_update 생성) ──",
                 *(manifest_rules._manifest_entry_line(entry) for entry in entries),
             ])
         text = "\n".join(chunks) + "\n"
@@ -373,7 +373,7 @@ def _entry_notation_templates_from_manifests(
             entries = read_manifest(manifest_path)
         except (OSError, UnicodeError, ValueError) as exc:
             raise RuntimeError(
-                "선택된 flavor manifest에서 스킬 표기 context를 해소할 수 없다 — "
+                "선택된 하네스별 판 manifest에서 스킬 표기 context를 해소할 수 없다 — "
                 f"기존 렌더 산출물을 보존하기 위해 동기화를 중단한다: {manifest_path} ({exc})"
             ) from exc
         for entry in entries:
@@ -506,7 +506,7 @@ def _copy_manifest_preserving_guest(
             dst_text, migrated = _migrate_legacy_guest_markers(
                 render_io._normalize_newlines(fs.read_text_shared(dst, encoding="utf-8")))
             if migrated:
-                print("✓ guest 절 마커 세대 마이그레이션 (구 리터럴 → 현행)")
+                print("✓ 추가 하네스 절 마커 버전 이관 (옛 리터럴 → 현행)")
             guest_block = manifest_rules._extract_guest_manifest_block(dst_text)
     except OSError:
         guest_block = None

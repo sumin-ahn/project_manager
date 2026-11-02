@@ -1260,7 +1260,7 @@ def test_iter_source_files_non_git_fallback_lstat_skips_symlink_loudly(
     )
     assert any(
         issubclass(item.category, install_source.SkippedTemplateShippingEntryWarning)
-        and "filesystem 폴백 symlink(lstat" in str(item.message)
+        and "filesystem 대체 경로 symlink(lstat" in str(item.message)
         and "outside-link.txt" in str(item.message)
         for item in caught
     )
@@ -1332,7 +1332,7 @@ def test_main_empty_non_git_template_uses_filesystem_diagnostic(
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert "filesystem 강등 상태" in err
+    assert "filesystem 으로 수준을 낮춘 상태" in err
     assert "소스 디렉토리가 비었는지" in err
     assert "checkout 루트" in err
     assert "git index" not in err
@@ -2315,7 +2315,7 @@ def test_selected_manifest_union_real_marker_conflict_warns(
     install_plan._warn_selected_manifest_union_conflicts(merged)
     err = capsys.readouterr().err
     assert "marker/@source 불일치" in err
-    assert "registry 정규 순서상 첫 flavor" in err
+    assert "registry 정규 순서상 첫 하네스별 판" in err
     assert ".shared/x" in err
 
     # CLI 연결 회귀: prepare 결과의 conflicts가 helper에만 머물지 않고 main 경로에서 소비된다.
@@ -2463,8 +2463,8 @@ def test_legacy_single_harness_without_stray_has_no_cross_flavor_warning(
 
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    assert "미등재 flavor 파일 관측" not in combined
-    assert "타 flavor(" not in combined
+    assert "미등재 하네스별 판 파일 관측" not in combined
+    assert "다른 하네스별 판(" not in combined
     assert "./pm-config.sh add-harness" not in combined
 
 
@@ -2522,7 +2522,7 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     combined = captured.out + captured.err
     assert "설치된 다중 하네스" not in combined
     assert "@source 선언이 없는 legacy manifest" in combined
-    assert f"타 flavor({stray_flavor}) 관리 경로 일부" in combined
+    assert f"다른 하네스별 판({stray_flavor}) 관리 경로 일부" in combined
     assert "어느 동기 채널도 선언하지 않은 출하 파일" in combined
     cli_flavor = "claude" if stray_flavor == "claude_code" else stray_flavor
     assert f"`add-harness {cli_flavor}`는 그 하네스 어댑터만 등재한다" in combined
@@ -2658,8 +2658,8 @@ def test_declared_claude_manifest_with_opencode_tree_warns_without_promoting(
     assert preview["upstream_manifests"] == [claude_manifest]
     assert not preview.get("multi_flavor_recovery")
     diagnostic = capsys.readouterr().err
-    assert "미등재 flavor 파일 관측" in diagnostic
-    assert "선언되지 않은 타 flavor(opencode)" in diagnostic
+    assert "미등재 하네스별 판 파일 관측" in diagnostic
+    assert "선언되지 않은 다른 하네스별 판(opencode)" in diagnostic
     assert "`add-harness opencode`는 그 하네스 어댑터만 등재한다" in diagnostic
     assert "<manager>/pm-import.sh --into <project> --harness all" in diagnostic
 
@@ -2667,7 +2667,7 @@ def test_declared_claude_manifest_with_opencode_tree_warns_without_promoting(
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
     combined = capsys.readouterr()
-    assert "미등재 flavor 파일 관측" in combined.err
+    assert "미등재 하네스별 판 파일 관측" in combined.err
     assert "설치된 다중 하네스의 manifest 누락" not in combined.out
 
 
@@ -2685,13 +2685,13 @@ def test_declared_clean_claude_adopter_has_no_frozen_warning(
 
     preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
     assert preview["upstream_manifests"] == [claude_manifest]
-    assert "미등재 flavor 파일 관측" not in capsys.readouterr().err
+    assert "미등재 하네스별 판 파일 관측" not in capsys.readouterr().err
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
     captured = capsys.readouterr()
-    assert "미등재 flavor 파일 관측" not in captured.err
+    assert "미등재 하네스별 판 파일 관측" not in captured.err
     assert "./pm-config.sh add-harness" not in captured.err
 
 
@@ -2739,7 +2739,7 @@ def test_declared_claude_with_opencode_guest_has_channel_not_frozen_warning(
     combined = captured.out + captured.err
     assert ".opencode/pm_orch_opencode.py" in captured.out, \
         f"stale 어댑터 엔진 파일이 계획에 없다(동기 채널 미작동): {captured.out!r}"
-    assert "미등재 flavor 파일 관측" not in combined, \
+    assert "미등재 하네스별 판 파일 관측" not in combined, \
         f"채널이 생긴 파일에 여전히 frozen 경고(오탐): {combined!r}"
 
 
@@ -2828,7 +2828,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
     preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
     assert preview["upstream_manifests"] == [claude_manifest]
     diagnostic = capsys.readouterr().err
-    assert "미등재 flavor 파일 관측" in diagnostic
+    assert "미등재 하네스별 판 파일 관측" in diagnostic
     assert "<manager>/pm-import.sh --into <project> --harness all --dry-run" in diagnostic
 
     before_dry_run = dest_manifest.read_bytes()
@@ -4985,7 +4985,7 @@ def test_add_harness_dry_run_preview_subtracts_existing(pm_import, tmp_path, cap
     dest = _build_live_instance(pm_import, tmp_path / "preview", "claude")
     add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True, source_root=REPO)  # fresh dry-run
     fresh = capsys.readouterr().out
-    assert "guest 절 등재 예정" in fresh and ".codex/agents" in fresh, fresh
+    assert "추가 하네스 절 등재 예정" in fresh and ".codex/agents" in fresh, fresh
     add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)  # 실제 등재
     capsys.readouterr()
     add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=True, source_root=REPO)  # refresh dry-run
@@ -5924,7 +5924,7 @@ def test_pm_update_run_preserves_edited_adapter_config_and_reports(
         "실 sync 가 채택자 편집을 덮었다(하한선 위반)"
     assert "sync-adapter-config --accept" in captured.err, (
         f"실 sync 에 채널이 배선되지 않음(보고 부재): {captured.err!r}")
-    assert "managed 어댑터 config가 미수렴" in captured.err, (
+    assert "managed 어댑터 config가 아직 일치하지 않는다" in captured.err, (
         f"보존 상태를 rc1 완료 게이트로 올리지 않음: {captured.err!r}")
 
 

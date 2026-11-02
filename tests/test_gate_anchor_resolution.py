@@ -723,7 +723,7 @@ def test_markerless_snapshot_with_corrupt_lease_is_blocked(
     assert not (
         snapshot / ".project_manager" / ".local" / "review_rounds.json"
     ).exists()
-    assert "worktree lease 장부" in capsys.readouterr().err
+    assert "슬롯 대여 기록 파일" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

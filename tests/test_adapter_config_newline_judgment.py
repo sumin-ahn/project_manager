@@ -201,7 +201,7 @@ def test_crlf_checkout_config_is_converged(pm_import, pm_config, tmp_path, capsy
 
     captured = capsys.readouterr()
     assert rc == 0, captured.err
-    assert "수렴 확인" in captured.out
+    assert "일치 확인" in captured.out
     assert (dest / _HOOKS_REL).read_bytes() == before, "--check 가 개행을 뒤집었다"
 
 

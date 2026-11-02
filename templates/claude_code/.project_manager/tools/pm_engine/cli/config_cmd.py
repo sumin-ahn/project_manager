@@ -123,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "각 서브커맨드는 엔진(board.py / worktree_pool.py / pm_update.py)으로 위임하는 "
-            "얇은 배선이다. 슬롯 대여는 `alloc`, 반납은 `release`(`--force` 는 강제 반납)이고 "
+            "얇은 층이다. 슬롯 대여는 `alloc`, 반납은 `release`(`--force` 는 강제 반납)이고 "
             "부트스트랩·핸드오프는 슬롯을 빌리거나 반납하지 않는다. 슬롯에 새 브랜치는 "
             "`task branch`, 있는 브랜치로 전환은 `worktree_pool.py switch` 다."
         ),
@@ -143,8 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
                                  "multi-user 2번째 사용자), 미등록 신규 repo 는 명확 에러"
                                  "(URL 필수·부작용 0).")
     p_repo_add.add_argument("--test", metavar="CMD", default=None,
-                            help="per-repo 테스트 명령 (areas.md test_cmd·회귀 게이트가 worktree 에서 실행). "
-                                 "미지정 시 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로 폴백. "
+                            help="per-repo 테스트 명령 (areas.md test_cmd·회귀 통과 조건이 worktree 에서 실행). "
+                                 "미지정 시 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 를 대신 씀. "
                                  "빌드명령은 worktree add 프롬프트·콘솔 [b] 에서도 설정 가능.")
     p_repo_add.add_argument("--owner", metavar="이름", default=None,
                             help="등록 owner = registrant (기본: local.conf identity.user, "
@@ -158,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
                                  "지정 시 존재 검증(없는 base 거부). worktree add 가 이 base 에서 슬롯 브랜치를 판다.")
     p_repo_add.add_argument("--protected", metavar='"main,develop"', default=None,
                             help="PM 이 자율 commit/push 못 하는 보호 브랜치 목록 (쉼표분리·areas.md "
-                                 "`protected` 칼럼). 미지정 시 빈 칼럼 = 기본값 폴백"
+                                 "`protected` 칼럼). 미지정 시 빈 칼럼 = 기본값으로 대체"
                                  "(main/master/develop). 브랜치 실재는 검증하지 않는다(아직 없는 "
                                  "`release` 선-보호가 정상·bare 에 없으면 경고 1줄). 사후 변경은 "
                                  "`repo protected <name> <목록>`.")
@@ -169,14 +169,14 @@ def build_parser() -> argparse.ArgumentParser:
     # `default` 리터럴 = 칼럼 비움(= DEFAULT_PROTECTED 폴백·"보호 해제" 아님·빈 문자열은 거부).
     p_repo_protected = repo_sub.add_parser(
         "protected",
-        help="보호 브랜치 목록 조회/설정 — 값 없으면 조회(실효값·출처·훅 sidecar 정합), "
-             "값 주면 areas.md 갱신 + 훅 sidecar 정합화",
+        help="보호 브랜치 목록 조회/설정 — 값 없으면 조회(실효값·출처·훅 sidecar 일치), "
+             "값 주면 areas.md 갱신 + 훅 sidecar 일치시킴",
     )
     p_repo_protected.add_argument("name", help="대상 repo 이름 (areas.md 등록된 것)")
     p_repo_protected.add_argument(
         "value", nargs="?", default=None,
         help="설정할 보호목록 (쉼표분리·예 `main,release`) 또는 `default`(칼럼 비움 = "
-             "main/master/develop 기본값 폴백). 생략하면 조회.",
+             "main/master/develop 기본값으로 대체). 생략하면 조회.",
     )
     p_repo_protected.set_defaults(func=config_repo.cmd_repo_protected)
 
@@ -212,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wt_add.add_argument(
         "--user-ack", metavar="<repo>", default=None,
-        help="새 슬롯 생성에 대한 사용자 승인 토큰(대상 repo 값과 정확히 결속). "
+        help="새 슬롯 생성에 대한 사용자 승인 토큰(대상 repo 값에 정확히 연결). "
              "readonly/--task 변형에도 필수.",
     )
     p_wt_add.add_argument("--folders", metavar="<폴더,…>", default=None,
@@ -223,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 명시 user-invoked). orphan worktree(git 측)는 `git worktree remove` 로 사용자가.
     p_wt_prune = wt_sub.add_parser(
         "prune-stale",
-        help="worktree dir 이 사라진 dangling 장부 엔트리 정리 (stale/incomplete·안전)",
+        help="worktree dir 이 사라진 dangling 기록 항목 정리 (stale/incomplete·안전)",
     )
     p_wt_prune.set_defaults(func=config_slots.cmd_worktree_prune_stale)
     # worktree remove <slot> --user-ack <slot> [--user-ack <브랜치> ...] [--force] — 슬롯 통째 제거.
@@ -232,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 승인값 결속 전제. 장부 엔트리 제거로 `add` 가 빈 번호 재사용(번호 skip footgun 종결).
     p_wt_remove = wt_sub.add_parser(
         "remove",
-        help="슬롯 통째 제거 — worktree remove + 브랜치 삭제 판정 + 장부 엔트리 삭제 (사용자 "
+        help="슬롯 통째 제거 — worktree remove + 브랜치 삭제 판정 + 슬롯 대여 기록 항목 삭제 (사용자 "
              "승인값 필수·prune-stale 과 달리 실 worktree 삭제·번호 재사용). ⚠ 합쳐지지 않은 "
              "브랜치는 그 이름의 승인값이 없으면 보존되며 같은 번호 base-경로 재생성을 막는다.",
     )
@@ -244,14 +244,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wt_remove.add_argument(
         "--force", action="store_true",
-        help="점유(활성 리스·사용 중)만 무시하고 제거 — 커밋 안 한 변경·git 미등록 트리는 그래도 거부",
+        help="점유(활성 대여·사용 중)만 무시하고 제거 — 커밋 안 한 변경·git 미등록 트리는 그래도 거부",
     )
     p_wt_remove.set_defaults(func=config_slots.cmd_worktree_remove)
 
     # status | whoami (같은 핸들러) — `--json` 은 status 전용 기계 계약(관리자 읽기 표면).
     p_status = sub.add_parser(
         "status",
-        help="풀/리스 상태 + 이 세션 repo/슬롯/branch (`--json` 으로 기계 현황)",
+        help="풀·대여 상태 + 이 세션 repo/슬롯/branch (`--json` 으로 기계 현황)",
     )
     p_status.add_argument(
         "--json", action="store_true",
@@ -260,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_status.add_argument(
         "--with-board", action="store_true",
-        help="티켓 수·open 목록·lint 판정·회귀/라이브게이트 기록을 함께 낸다 (`--json` 필요·"
+        help="티켓 수·open 목록·lint 판정·회귀/라이브 시험 기록을 함께 낸다 (`--json` 필요·"
              "티켓 전수 스캔이라 느리다).",
     )
     p_status.add_argument(
@@ -279,7 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
              "upstream.path 에서 자동 해소·add-harness 와 같은 규칙·URL 은 로컬 캐시).",
     )
     p_status.set_defaults(func=config_status.cmd_status)
-    p_whoami = sub.add_parser("whoami", help="status 의 별칭 — 이 세션 리스를 머리에 표면")
+    p_whoami = sub.add_parser("whoami", help="status 의 별칭 — 이 세션 대여를 맨 위에 보여 준다")
     p_whoami.set_defaults(func=config_status.cmd_status)
 
     # upstream show | set <value> — upstream 값 조회/전환
@@ -323,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
     p_task_new = task_sub.add_parser(
         "new",
-        help="task 정체성 생성 — 장부 행(닫힘)+pm_state 만 만들고 세션에 안 묶는다"
+        help="task 정체성 생성 — 슬롯 대여 기록의 task 행(닫힘)+pm_state 만 만들고 세션에 안 묶는다"
              f"(진입은 `{lease_store._runtime_skill_entry('pm-bootstrap')} --task <task>` 이 resume 으로 이어받음)",
     )
     p_task_new.add_argument("name", help="생성할 task 이름")
@@ -331,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_task_end = task_sub.add_parser(
         "end",
-        help="task 종료 — claimed 소진 게이트·dirty 게이트·전부 clean 시 일괄 idle 반납 + "
+        help="task 종료 — claimed 소진 통과 조건·dirty 통과 조건·전부 clean 시 일괄 idle 반납 + "
              "서술 폴더 _ended 아카이브 이동(삭제 아님·worktree 미삭제)",
     )
     p_task_end.add_argument("name", help="종료할 task 이름")
@@ -370,7 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_task_prefix.add_argument(
         "--user-ack", metavar="<prefix>", default=None,
-        help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)",
+        help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값에 정확히 연결)",
     )
     p_task_prefix.set_defaults(func=config_tasks.cmd_task_prefix)
 
@@ -445,16 +445,16 @@ def build_parser() -> argparse.ArgumentParser:
     sync_cfg_mode = p_sync_cfg.add_mutually_exclusive_group()
     sync_cfg_mode.add_argument(
         "--list", action="store_true",
-        help="현재 판정(최신/무편집/편집됨/원장부재)을 조회한다 (기본 동작).",
+        help="현재 판정(최신/무편집/편집됨/기록 없음)을 조회한다 (기본 동작).",
     )
     sync_cfg_mode.add_argument(
         "--check", action="store_true",
-        help="managed 대상의 template 내용 + 원장 dest hash 수렴을 읽기 전용으로 검사한다 "
-             "(미수렴/판정 unavailable rc 1·report-only 차이는 비차단).",
+        help="managed 대상의 template 내용 + 기록의 dest hash 일치를 읽기 전용으로 검사한다 "
+             "(불일치/판정 unavailable rc 1·report-only 차이는 비차단).",
     )
     sync_cfg_mode.add_argument(
         "--accept", metavar="RELPATH", default=None,
-        help="그 경로를 백업 후 현행 template 으로 교체하고 원장에 기록한다 "
+        help="그 경로를 백업 후 현행 template 으로 교체하고 어댑터 설정 기록에 올린다 "
              "(보고 모드 탈출 채널·경로는 인스턴스 루트 기준 예 `.codex/hooks.json`).",
     )
     sync_cfg_mode.add_argument(
@@ -512,7 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 토큰을 subparser 로 파싱하지 않는다.
     sub.add_parser(
         "update",
-        help="엔진 갱신 (pm-update 흡수) — 뒤 인자는 pm_update 로 verbatim forward",
+        help="엔진 갱신 (pm-update 를 대신 실행) — 뒤 인자는 pm_update 로 verbatim forward",
         add_help=False,
     )
 
@@ -522,7 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 안 되므로 forward 토큰을 subparser 로 파싱하지 않는다(update 와 동형).
     sub.add_parser(
         "init",
-        help="clone 당 1회 셋업 (board.py init 흡수) — 뒤 인자는 board 로 verbatim forward",
+        help="clone 당 1회 셋업 (board.py init 을 대신 실행) — 뒤 인자는 board 로 verbatim forward",
         add_help=False,
     )
 

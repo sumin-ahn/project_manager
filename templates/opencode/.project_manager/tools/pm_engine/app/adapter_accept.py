@@ -153,7 +153,7 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
     if adapter_baseline._load_adapter_baseline_document(dest_root).status == "newer-schema":
         return AdapterConfigAcceptResult(
             "ledger-blocked", relpath, None, None,
-            f"원장 schema 가 이 엔진(지원 상한 {adapter_baseline.ADAPTER_BASELINE_SCHEMA})보다 새로워 기록할 수 "
+            f"어댑터 설정 기록 schema 가 이 엔진(지원 상한 {adapter_baseline.ADAPTER_BASELINE_SCHEMA})보다 새로워 기록할 수 "
             "없다 — 파일을 바꾸지 않았다(엔진을 갱신한 뒤 다시 실행하라)")
 
     current = adapter_baseline.content_sha256(dest_path)
@@ -179,12 +179,12 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
         except upstream_declarations.SNAPSHOT_READ_ERRORS as exc:
             return AdapterConfigAcceptResult(
                 "raced", relpath, backup, None,
-                f"상류 세대 선언 package 를 다시 읽지 못했다({type(exc).__name__}: {exc}) — 판정한 "
-                "세대를 확인할 수 없어 설치하지 않는다. 다시 실행해 새 판정을 받아라")
+                f"상류 버전 선언 package 를 다시 읽지 못했다({type(exc).__name__}: {exc}) — 판정한 "
+                "버전을 확인할 수 없어 설치하지 않는다. 다시 실행해 새 판정을 받아라")
         if current_generation != expected_generation_sha256:
             return AdapterConfigAcceptResult(
                 "raced", relpath, backup, None,
-                "판정 뒤 상류 세대 선언 package 가 바뀌었다 — 구 선언으로 낸 판정 위에 새 세대를 "
+                "판정 뒤 상류 버전 선언 package 가 바뀌었다 — 옛 선언으로 낸 판정 위에 새 버전을 "
                 "설치하지 않는다. 다시 실행해 새 판정을 받아라")
     payload = fs.read_bytes_shared(template)
     # 두 다이제스트의 축이 다르다. `digest` 는 **설치할 raw bytes** — 게이트가 검사한 template 과의
@@ -196,7 +196,7 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
     if expected_template_sha256 is not None and digest != expected_template_sha256:
         return AdapterConfigAcceptResult(
             "raced", relpath, backup, None,
-            "판정 뒤 상류 template 이 바뀌었다 — 게이트가 검사한 bytes 와 다른 내용을 설치하지 "
+            "판정 뒤 상류 template 이 바뀌었다 — 수용 검사가 확인한 bytes 와 다른 내용을 설치하지 "
             "않는다. 다시 실행해 새 판정을 받아라")
     if not adapter_baseline._atomic_write_dest_bytes(dest_root, Path(relpath), payload,
                                     root_identity=root_identity):
@@ -215,8 +215,8 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
     if not isinstance(entry, dict) or entry.get("sha256") != ledger_digest:
         return AdapterConfigAcceptResult(
             "ledger-failed", relpath, backup, ledger_digest,
-            "파일은 갱신됐으나 원장 기록을 확인하지 못했다 — 다음 동기는 이 파일을 보고 모드로 "
-            "본다(원장 경로의 쓰기 권한을 확인하라)")
+            "파일은 갱신됐으나 어댑터 설정 기록을 확인하지 못했다 — 다음 동기는 이 파일을 보고 모드로 "
+            "본다(기록 파일 경로의 쓰기 권한을 확인하라)")
     return AdapterConfigAcceptResult("accepted", relpath, backup, ledger_digest)
 
 

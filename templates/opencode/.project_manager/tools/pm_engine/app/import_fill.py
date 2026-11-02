@@ -40,16 +40,16 @@ type: playbook-local
 
 > [[pm_playbook]] (엔진 · `pm_update` 가 자동 갱신하는 **순수 방법론**)의 **프로젝트별 칸**.
 > 이 파일은 **인스턴스 소유** — 프레임워크 갱신이 안 건드린다(manifest 밖·tracked).
-> 이 프로젝트의 **누적 wave 학습·도메인 사례**를 여기 적는다 (방법론 일반론은 [[pm_playbook]]).
+> 이 프로젝트의 **누적 묶음 학습·도메인 사례**를 여기 적는다 (방법론 일반론은 [[pm_playbook]]).
 
-## 누적 wave 학습 (이 프로젝트 고유)
+## 누적 묶음 학습 (이 프로젝트 고유)
 
-<!-- TODO: 이 프로젝트에서 정착한 wave 운영 학습·도메인 특수 패턴을 누적한다.
-  실시간 학습 trail 은 log/current.md entry 가 매체 — 여기엔 *정착된* 패턴만 흡수. -->
+<!-- TODO: 이 프로젝트에서 정착한 묶음 운영 학습·도메인 특수 패턴을 누적한다.
+  실시간 학습 trail 은 log/current.md entry 가 매체 — 여기엔 *정착된* 패턴만 받아 적는다. -->
 
 ## 도메인 사례
 
-<!-- TODO: 이 프로젝트 도메인에 특화된 ticket/wave 사례. 없으면 절 삭제. -->
+<!-- TODO: 이 프로젝트 도메인에 특화된 ticket/묶음 사례. 없으면 절 삭제. -->
 """
 
 
@@ -356,7 +356,7 @@ def resolve_opencode_model(
         return ModelResolveResult(
             active=True, path="todo", model=None, changed=0,
             available=available, tty=True, todos=todos,
-            note="대화형 선택 건너뜀 — TODO 폴백.",
+            note="대화형 선택 건너뜀 — TODO 표시로 대체.",
         )
 
     # 3) 비-tty / opencode 부재·조회 실패 → 치환 안 함·TODO 마커(가용목록 인라인 시도)+경고.
@@ -376,7 +376,7 @@ def resolve_opencode_model(
     return ModelResolveResult(
         active=True, path="todo", model=None, changed=0,
         available=available if ok else [], tty=is_tty, todos=todos,
-        note=f"치환 안 함({reason}) — TODO 폴백.",
+        note=f"치환 안 함({reason}) — TODO 표시로 대체.",
     )
 
 
@@ -627,7 +627,7 @@ def _real_harness_runner(
         silence_label = f" · 실측 침묵 {silence:.0f}초" if silence is not None else ""
         kind = "무진행 임계" if axis == idle_axis else "벽시계 백스톱"
         return False, watchdog.format_partial_output(
-            f"[하니스 타임아웃 — {kind} {threshold:.0f}초 발화{silence_label}; "
+            f"[하니스 타임아웃 — {kind} {threshold:.0f}초 도달{silence_label}; "
             "자동 재시도 안 함 — 출력 확인 후 수동 재시도]",
             exc,
         )
@@ -699,7 +699,7 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
     supported = "·".join(install_rules.FILL_CAPABLE_HARNESSES)
     raise ValueError(
         f"_build_runner_argv: 미지원 fill harness {harness!r} — 지원: {supported}. "
-        f"silent 폴백 금지(잘못된 바이너리 호출·오표기 방지·runner 매핑에 명시 등록 필요)."
+        f"말없이 대체하지 않음(잘못된 바이너리 호출·오표기 방지·runner 매핑에 명시 등록 필요)."
     )
 
 
@@ -1034,7 +1034,7 @@ def run_fill(
             mode="auto",
             harness=harness,
             live=False,
-            note="하니스 미구동(게이트 미통과·stub 없음) — 제안 없음. manual 폴백 권장.",
+            note="하니스 미구동(통과 조건 미충족·stub 없음) — 제안 없음. manual 로 대체를 권장.",
         )
 
     # 프롬프트 전달 방식은 FILL_DRIVER_BY_CMD 선언이 정한다. `--file` 전달이면 대상 폴더 안

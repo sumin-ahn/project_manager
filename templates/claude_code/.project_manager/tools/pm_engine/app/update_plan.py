@@ -423,15 +423,15 @@ def _resolve_engine_sync_plan(
         )
         if selfheal["status"] == "legacy_preserved":
             if report:
-                print("  ⚠️ guest 엔진 행은 동기하되 guest 절에는 기록하지 않는다 — 로컬 manifest "
+                print("  ⚠️ 추가 하네스 엔진 행은 동기하되 추가 하네스 절에는 기록하지 않는다 — 로컬 manifest "
                       "불가침(legacy_preserved) 선언을 존중한다. 절 기록은 이 인스턴스가 legacy "
                       "상태를 벗어난 뒤 다음 sync 에서 이뤄진다.", file=sys.stderr)
         else:
             persisted_guest_backfill = [
                 manifest_rules._manifest_entry_line(entry) for entry in guest_backfill]
         if fresh and report:
-            print(f"  guest 엔진 행 {len(fresh)}건 파생 "
-                  f"(flavor: {', '.join(guest_backfill_flavors)}): {', '.join(fresh)}")
+            print(f"  추가 하네스 엔진 행 {len(fresh)}건 파생 "
+                  f"(하네스별 판: {', '.join(guest_backfill_flavors)}): {', '.join(fresh)}")
 
     # --target은 operational 전체 render를 끄되 @render 경로의 호출 표기 토큰만 target 이름으로
     # 조건부 렌더한다. adopter self-update는 선택된 flavor manifest 경로에서 같은 context를 파생한다.

@@ -167,7 +167,7 @@ class EmptyShippingInventoryError(RuntimeError):
         self.subtree = subtree
         self.filesystem_fallback = filesystem_fallback
         diagnosis = (
-            "filesystem 강등 상태이므로 소스 디렉토리가 비었는지와 checkout 루트가 "
+            "filesystem 으로 수준을 낮춘 상태이므로 소스 디렉토리가 비었는지와 checkout 루트가 "
             "올바른지 확인하라"
             if filesystem_fallback
             else "checkout 루트가 올바른지와 git index에 이 경로가 등재됐는지 확인하라"

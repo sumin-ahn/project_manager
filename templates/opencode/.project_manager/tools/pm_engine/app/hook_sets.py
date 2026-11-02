@@ -101,7 +101,7 @@ def hook_set_query_fallback_lines(generation) -> list[str]:
     reasons = getattr(generation, "reasons", ())
     if not reasons:
         return []
-    return ["[경고] 상류 훅 세트 세대 선언을 읽지 못해 설치본 선언으로 판정한다 — 이번 상류가 "
+    return ["[경고] 상류 훅 세트 버전 선언을 읽지 못해 설치본 선언으로 판정한다 — 이번 상류가 "
             "새로 들여오는 플래그·결합 묶음은 이 판정에 보이지 않는다(green 이어도 무판정 구간이 "
             f"있다). {' / '.join(reasons)}"]
 
@@ -255,7 +255,7 @@ def _hook_set_finding(harness: str, spec: adapter_specs.AdapterHookSetSpec, kind
     joined = ", ".join(unmet)
     if kind == HOOK_SET_MISSING_SCRIPT:
         detail = (f"{spec.config_relpath} 이 실행하는 훅 스크립트가 설치돼 있지 않다 "
-                  f"({subject}) — 이 훅은 매 발화마다 실패한다")
+                  f"({subject}) — 이 훅은 실행될 때마다 실패한다")
     else:
         detail = (f"{spec.config_relpath} 이 넘기는 `{subject}` 를 설치된 훅 세트가 "
                   f"지원하지 않는다 ({joined}) — 구 드라이버는 미지원 플래그를 rc2 로 거부하고 "
@@ -385,8 +385,8 @@ def judge_adapter_hook_entrypoints(dest_root: Path, source_root: Path | None = N
                     entrypoint.event, entrypoint.matcher, entrypoint.dispatcher,
                     f"{spec.config_relpath} 에 {entrypoint.event} 범용 진입점"
                     f"(matcher {entrypoint.matcher!r} → {entrypoint.dispatcher})이 없다 — "
-                    f"이 이벤트에 앞으로 등록될 가드는 발화하지 않는다"
-                    f"(옛 직결 배선이 남아 있으면 그 기능 자체는 계속 돈다)"))
+                    f"이 이벤트에 앞으로 등록될 가드는 실행되지 않는다"
+                    f"(옛 직결 등록이 남아 있으면 그 기능 자체는 계속 돈다)"))
                 continue
             gap = _entrypoint_dispatcher_gap(dest_root, entrypoint)
             if gap is not None:
@@ -395,7 +395,7 @@ def judge_adapter_hook_entrypoints(dest_root: Path, source_root: Path | None = N
                     entrypoint.event, entrypoint.matcher, entrypoint.dispatcher,
                     f"설치된 {entrypoint.dispatcher} 가 {entrypoint.event} 진입점이 넘기는 "
                     f"`{entrypoint_invocation(entrypoint)}` 를 감당하지 않는다"
-                    f"(`{gap}` 미보유) — 훅이 매 발화마다 폴백으로 빠져 가드가 무음 통과한다"))
+                    f"(`{gap}` 미보유) — 훅이 실행될 때마다 대체 경로로 빠져 가드가 말없이 통과한다"))
     return out
 
 
@@ -405,7 +405,7 @@ def hook_entrypoint_advisory_lines(
     if finding.kind == HOOK_ENTRYPOINT_STALE_DISPATCHER:
         return [f"pm-update 로 {finding.dispatcher} 를 먼저 받아라"]
     return [f"pm-config sync-adapter-config --accept {finding.config_relpath} "
-            f"(이 엔진 세대의 진입점을 담은 config 로 되돌린다)",
+            f"(이 엔진 버전의 진입점을 담은 config 로 되돌린다)",
             "채택자가 그 이벤트의 훅을 의도적으로 끈 상태면 이 줄은 무시해도 된다(차단 아님)"]
 
 
@@ -415,7 +415,7 @@ def hook_set_remedy_lines(finding: AdapterHookSetFinding) -> list[str]:
     manifest 소유 파일(래퍼·드라이버)은 엔진이 직접 고칠 수 있고, 채택자 소유 config 는 수용
     커맨드가 유일 채널이다. 순서는 항상 **엔진 파일 먼저** — 반대 순서가 지금 닫는 락아웃이다."""
     accept = (f"pm-config sync-adapter-config --accept {finding.config_relpath} "
-              f"(백업 후 이 엔진 세대의 config 로 되돌린다)")
+              f"(백업 후 이 엔진 버전의 config 로 되돌린다)")
     # 지목할 파일이 없는 소견도 있다 — 상류 세대 자체를 못 읽어 **무엇이 미충족인지 열거할 수
     #   없는** blocker(`unmet_paths=()`)가 그렇다. 빈 괄호 `()` 를 붙이면 처방이 깨진 문장으로
     #   보이므로 괄호째 생략한다(사유는 `detail` 이 이미 말한다).
@@ -425,7 +425,7 @@ def hook_set_remedy_lines(finding: AdapterHookSetFinding) -> list[str]:
     if finding.remedy == HOOK_SET_REMEDY_ENGINE_STALE:
         return [engine_first]
     if finding.remedy == HOOK_SET_REMEDY_CONFIG_AHEAD:
-        return [f"{finding.config_relpath} 가 이 엔진 세대보다 앞선 요구를 담고 있다 — {accept}"]
+        return [f"{finding.config_relpath} 가 이 엔진 버전보다 앞선 요구를 담고 있다 — {accept}"]
     return [engine_first, f"그래도 남으면 {accept}"]
 
 
@@ -482,7 +482,7 @@ def hook_set_accept_decision(dest_root: Path, source_root: Path, relpath: str, *
     if generation.declarations is None:
         blocker = AdapterHookSetFinding(
             "-", relpath, HOOK_SET_MISSING_SCRIPT, relpath, (), HOOK_SET_REMEDY_UNKNOWN,
-            f"상류 세대 선언을 읽지 못해 {relpath} 가 요구하는 훅 세대를 검증할 수 없다 "
+            f"상류 버전 선언을 읽지 못해 {relpath} 가 요구하는 훅 버전을 검증할 수 없다 "
             f"({'; '.join(generation.reasons) or '사유 미상'})")
         return HookSetAcceptDecision(
             [blocker], template_sha256, generation.origin, generation.reasons,
@@ -494,12 +494,12 @@ def hook_set_accept_decision(dest_root: Path, source_root: Path, relpath: str, *
     unreadable = [] if generation.origin != HOOK_SET_ORIGIN_UPSTREAM else [
         name for name, value in
         (("상류 config template", template_sha256),
-         ("상류 세대 선언 package", generation.source_sha256))
+         ("상류 버전 선언 package", generation.source_sha256))
         if value is None]
     if unreadable:
         blocker = AdapterHookSetFinding(
             "-", relpath, HOOK_SET_MISSING_SCRIPT, relpath, (), HOOK_SET_REMEDY_UNKNOWN,
-            f"{', '.join(unreadable)} 의 해시를 만들지 못해 판정한 스냅샷을 쓰기 직전에 재확인할 "
+            f"{', '.join(unreadable)} 의 해시를 만들지 못해 판정한 상태 기록을 쓰기 직전에 재확인할 "
             f"수 없다 — 검증 없이 {relpath} 를 교체하지 않는다")
         return HookSetAcceptDecision(
             [blocker], template_sha256, generation.origin, generation.reasons,
@@ -637,7 +637,7 @@ def resolve_hook_set_predicate(home, source_root=None):
     generation = hook_set_declarations(home, source_root)
     if source_root is not None and generation.reasons:
         print(
-            "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 세대로 판정한다 — 이번 상류가 새로 "
+            "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 버전으로 판정한다 — 이번 상류가 새로 "
             f"등재하는 훅 파일은 원자 교체 대상에서 빠진다. {' / '.join(generation.reasons)}",
             file=sys.stderr,
         )

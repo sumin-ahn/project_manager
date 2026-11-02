@@ -58,7 +58,7 @@ def instance_owned_template_delta_lines(
     runner = git_runner if git_runner is not None else upstream_git._real_upstream_git_runner()
     prefix_status, prefix_path = adapter_templates._source_git_path_prefix(source_root, runner)
     if prefix_status == adapter_templates.SOURCE_PREFIX_NOT_GIT:
-        return ["ℹ️  이 소스는 git 이 아니라 세대 판정 비대상."]
+        return ["ℹ️  이 소스는 git 이 아니라 버전 판정 비대상."]
     if prefix_status != adapter_templates.SOURCE_PREFIX_OK:
         return [
             "⚠️  인스턴스 소유 템플릿 기준 해소 불가 — "
@@ -120,7 +120,7 @@ def instance_owned_template_delta_lines(
         findings.append(
             f"⚠️  인스턴스 소유 템플릿 변경 — {target.relpath} · "
             f"+{added}/-{removed}줄 · 첫 차이 {first_diff}줄 · "
-            f"처방(세대 변경; 기존 config 채널 보고는 내용 drift): {remedy}"
+            f"해결 방법(버전 변경; 기존 config 채널 보고는 내용 drift): {remedy}"
         )
 
     prefix: list[str] = []

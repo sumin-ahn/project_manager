@@ -96,7 +96,7 @@ def _render_initial_task_pm_state(template_text: str, date_str: str) -> str:
     anchor = "## 세션 식별 (현재까지 사용된 이름)"
     start = rendered.find(anchor)
     if start < 0:
-        raise ValueError(f"pm_state template에 세션 식별 앵커가 없다: {anchor}")
+        raise ValueError(f"pm_state template에 세션 식별 절 제목이 없다: {anchor}")
     next_header = re.search(r"^##(?!#) ", rendered[start + len(anchor):], re.MULTILINE)
     end = (
         len(rendered)
@@ -116,7 +116,7 @@ def _render_initial_task_pm_state(template_text: str, date_str: str) -> str:
         session_list = "최근 N 차 (sliding window, 기본 3 차):"
         marker_at = section.find(session_list)
         if marker_at < 0:
-            raise ValueError(f"pm_state template에 세션 목록 앵커가 없다: {session_list}")
+            raise ValueError(f"pm_state template에 세션 목록 문구가 없다: {session_list}")
         insert_at = marker_at + len(session_list)
         section = (
             section[:insert_at]

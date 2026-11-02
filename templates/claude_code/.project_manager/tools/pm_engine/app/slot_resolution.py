@@ -61,7 +61,7 @@ def _regression_cwd(
             return str(candidate)
         print(
             f"  ⚠ 명시 슬롯 '{worktree_slot}' 의 worktree 디렉토리가 없다 ({candidate}) — "
-            "REPO 로 폴백한다 (stale 슬롯).",
+            "REPO 를 대신 쓴다 (stale 슬롯).",
             file=sys.stderr,
         )
         return str(repo_root)
@@ -77,7 +77,7 @@ def _regression_cwd(
             return str(candidate)
         print(
             f"  ⚠ 자동해소 슬롯 '{auto.key}' 의 worktree 디렉토리가 없다 ({candidate}) — "
-            "REPO 로 폴백한다 (stale 슬롯).",
+            "REPO 를 대신 쓴다 (stale 슬롯).",
             file=sys.stderr,
         )
     return str(repo_root)
@@ -119,7 +119,7 @@ def _resolve_explicit_identity_slot(
     resolution = lease_store.slot_path_resolution(repo, slot, leases_file)
     if resolution.status == identity_args.SLOT_PATH_CONFLICT:
         return None, (
-            f"[M3] 장부 모순 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
+            f"[M3] 슬롯 대여 기록이 서로 어긋남 — {resolution.detail}. 기록을 정리한 뒤 다시 실행하라."
         )
     return (resolution.path or f"work/{repo}_{slot}"), None
 

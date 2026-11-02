@@ -220,16 +220,16 @@ def _print_manifest_skew_finding(
         for path in new_entries:
             print(f"    + {path}")
         print(
-            "    참고: legacy 보존 모드에서는 대조 기준이 표준판이라 .claude/* 같은 무관 flavor "
+            "    참고: legacy 보존 모드에서는 대조 기준이 표준판이라 .claude/* 같은 무관 하네스별 판 "
             "경로가 포함될 수 있다."
         )
     elif status == "upstream_missing":
         print(
-            "note: upstream engine.manifest 를 읽을 수 없어(구 upstream·부재) manifest 정합 "
+            "note: upstream engine.manifest 를 읽을 수 없어(구 upstream·부재) manifest 일치 "
             "대조를 건너뛴다(fail-soft·현행 유지)."
         )
     elif status == "in_sync" and dry_run:
-        print("manifest 정합 — upstream 신규 등재분 0(baseline 갱신 진행 예정).")
+        print("manifest 일치 — upstream 신규 등재분 0(baseline 갱신 진행 예정).")
 
 
 def _selfprop_upstream_rel(local_entries: list) -> str:
@@ -258,23 +258,23 @@ def _print_frozen_flavor_warning(
     cli_flavor = "claude" if flavor == "claude_code" else flavor
     if declared_manifest:
         lead = (
-            "⚠️ 미등재 flavor 파일 관측 — @source 선택 선언이 있는 manifest와 "
-            f"선언되지 않은 타 flavor({flavor}) 관리 경로 일부가 함께 관측됐다 "
+            "⚠️ 미등재 하네스별 판 파일 관측 — @source 선택 선언이 있는 manifest와 "
+            f"선언되지 않은 다른 하네스별 판({flavor}) 관리 경로 일부가 함께 관측됐다 "
         )
     else:
         lead = (
-            "⚠️ 미등재 flavor 파일 관측 — @source 선언이 없는 legacy manifest와 "
-            f"타 flavor({flavor}) 관리 경로 일부가 함께 관측됐다 "
+            "⚠️ 미등재 하네스별 판 파일 관측 — @source 선언이 없는 legacy manifest와 "
+            f"다른 하네스별 판({flavor}) 관리 경로 일부가 함께 관측됐다 "
         )
     print(
         lead
         + f"({len(observed)}/{len(evidence_paths)}: {', '.join(observed)}). "
         "관측 경로는 **어느 동기 채널도 선언하지 않은 출하 파일**이라 자동 자기치유하지 않는다 "
-        "(`add-harness`로 얹은 어댑터는 guest 절이 렌더물·엔진 파일을 모두 등재하므로 이 경고 "
-        "대상이 아니다). 남는 경우는 절 없이 손으로 복사된 flavor 트리, 사용자 stray 파일, "
-        "아직 어느 flavor도 선언하지 않은 신규 출하 경로다.\n"
+        "(`add-harness`로 얹은 어댑터는 추가 하네스 절이 렌더물·엔진 파일을 모두 등재하므로 이 경고 "
+        "대상이 아니다). 남는 경우는 절 없이 손으로 복사된 하네스별 판 트리, 사용자 stray 파일, "
+        "아직 어느 하네스별 판도 선언하지 않은 신규 출하 경로다.\n"
         f"    `add-harness {cli_flavor}`는 그 하네스 어댑터만 등재한다(엔진 전량 마이그레이션 아님).\n"
-        "    완전 마이그레이션(등록 flavor 전체; 관측 누락에도 안전하나 원치 않는 flavor도 "
+        "    완전 마이그레이션(등록 하네스별 판 전체; 관측 누락에도 안전하나 원치 않는 하네스별 판도 "
         "추가될 수 있으므로 dry-run 검토):\n"
         "      <manager>/pm-import.sh --into <project> --harness all --dry-run\n"
         "      <manager>/pm-import.sh --into <project> --harness all\n"
@@ -349,14 +349,14 @@ def _print_legacy_nonmatch_warning(
             for flavor, observed, evidence_count in observed_by_flavor
         )
     else:
-        shapes = "배타적 flavor 경로 관측 0"
+        shapes = "배타적 하네스별 판 경로 관측 0"
     print(
-        "⚠️ legacy manifest 형상 — @source 선언이 없는 legacy engine.manifest의 "
-        "core 경로 집합이 현행 flavor 후보 중 정확히 하나와 완전 일치하지 않는다. "
-        f"관측 형상: 로컬 core {len(local_core_paths)}행; {shapes}.\n"
-        "    로컬 manifest는 그대로 사용한다(자동 flavor 승격·행 제거·치유 0).\n"
+        "⚠️ legacy manifest 구성 — @source 선언이 없는 legacy engine.manifest의 "
+        "core 경로 집합이 현행 하네스별 판 후보 중 정확히 하나와 완전 일치하지 않는다. "
+        f"관측 구성: 로컬 core {len(local_core_paths)}행; {shapes}.\n"
+        "    로컬 manifest는 그대로 사용한다(자동 하네스별 판 승격·행 제거·치유 0).\n"
         "    `add-harness`는 그 하네스 어댑터만 등재한다(엔진 전량 마이그레이션 아님).\n"
-        "    완전 마이그레이션(등록 flavor 전체; 관측 0개·누락에도 안전하나 원치 않는 flavor도 "
+        "    완전 마이그레이션(등록 하네스별 판 전체; 관측 0개·누락에도 안전하나 원치 않는 하네스별 판도 "
         "추가될 수 있으므로 dry-run 검토):\n"
         "      <manager>/pm-import.sh --into <project> --harness all --dry-run\n"
         "      <manager>/pm-import.sh --into <project> --harness all\n"
@@ -471,7 +471,7 @@ def _selected_upstream_manifests(
             candidate_entries[candidate] = manifest_store.read_manifest(candidate)
         except (OSError, UnicodeError, ValueError) as exc:
             print(
-                f"note: legacy flavor 후보 manifest를 읽을 수 없어 제외한다(fail-soft): "
+                f"note: legacy 하네스별 판 후보 manifest를 읽을 수 없어 제외한다(fail-soft): "
                 f"{candidate} ({exc})",
                 file=sys.stderr,
             )
@@ -497,7 +497,7 @@ def _selected_upstream_manifests(
             selected_declared.append(candidate)
             if not candidate.is_file():
                 print(
-                    "경고: engine.manifest가 선언한 후순위 flavor의 upstream manifest가 없다 — "
+                    "경고: engine.manifest가 선언한 후순위 하네스별 판의 upstream manifest가 없다 — "
                     f"선언을 버리지 않고 로컬 union을 유지한다: {flavor} ({candidate}). "
                     "누락 source가 있으면 apply 전에 중단된다.",
                     file=sys.stderr,
@@ -821,10 +821,10 @@ def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -
         print(
             "⚠️ 설치된 다중 하네스의 manifest 누락(frozen adapter) 감지 — 이 adapter 경로들은 "
             "설치 manifest 밖이라 그동안 pm_update 갱신이 정지돼 있었다. "
-            f"선택 flavor 합집합으로 {verb}: {', '.join(flavors)}. "
+            f"선택한 하네스별 판 합집합으로 {verb}: {', '.join(flavors)}. "
             "복구를 원치 않으면 해당 어댑터 트리를 제거하라."
             + (
-                " engine.manifest의 그 flavor @source 선언도 정리하라."
+                " engine.manifest의 그 하네스별 판 @source 선언도 정리하라."
                 if not selfheal.get("legacy_manifest")
                 else ""
             )
@@ -837,7 +837,7 @@ def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -
         return
     print(
         f"→ engine.manifest {verb} — upstream manifest 를 계획 기준으로 승격 "
-        f"(선택 flavor 합집합·선언 순서 우선): 신규 등재 +{len(added)}"
+        f"(선택한 하네스별 판 합집합·선언 순서 우선): 신규 등재 +{len(added)}"
         + (f", retired-path OLD -{len(retired_removed)}" if retired_removed else "")
     )
     for path in added:
@@ -852,7 +852,7 @@ def _print_manifest_merge_conflicts(selfheal: dict) -> None:
     if not conflicts:
         return
     print(
-        "경고: 선택 manifest 중복 경로의 마커/@source 불일치 — 선언 순서상 첫 flavor를 "
+        "경고: 선택 manifest 중복 경로의 마커/@source 불일치 — 선언 순서상 첫 하네스별 판을 "
         f"우선함 ({len(conflicts)}건): {', '.join(conflicts)}",
         file=sys.stderr,
     )

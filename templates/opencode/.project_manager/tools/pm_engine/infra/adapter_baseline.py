@@ -207,8 +207,8 @@ def _write_adapter_baseline(dest_root: Path, document: dict,
     엔진 형식으로 다시 쓰면 신 엔진의 원장이 통째로 파괴된다(읽기 거부와 쓰기 거부는 짝이어야
     한다). 그 밖의 기록 실패는 경고 후 False 다 — 호출부가 성공을 주장하지 않도록 결과를 확인한다."""
     if _load_adapter_baseline_document(dest_root).status == "newer-schema":
-        print(f"경고: 어댑터 config 원장 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 "
-              f"새로워 갱신하지 않습니다 — 기존 원장을 보존합니다 "
+        print(f"경고: 어댑터 설정 기록 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 "
+              f"새로워 갱신하지 않습니다 — 기존 기록을 보존합니다 "
               f"({Path(dest_root) / ADAPTER_BASELINE_RELPATH}). 엔진을 갱신한 뒤 다시 실행하세요.",
               file=sys.stderr)
         return False
@@ -228,7 +228,7 @@ def _write_adapter_baseline(dest_root: Path, document: dict,
                 "w", newline="\n") as handle:
             handle.write(text)
     except (OSError, install_files.UnsafeDestPathError) as exc:
-        print(f"경고: 어댑터 config 원장을 남기지 못했습니다 "
+        print(f"경고: 어댑터 설정 기록을 남기지 못했습니다 "
               f"({Path(dest_root) / ADAPTER_BASELINE_RELPATH}: {exc}) — 다음 동기가 보고 모드로 "
               f"내려갑니다(파일은 그대로).", file=sys.stderr)
         return False

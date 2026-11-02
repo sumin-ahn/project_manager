@@ -2260,7 +2260,7 @@ def test_protected_push_gate_config_missing_upstream_downgrades_to_self_test(pc,
     assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
         "self-test", "pytest -q")
     err = capsys.readouterr().err.splitlines()
-    assert len(err) == 1 and "upstream.path 축 미해소" in err[0]
+    assert len(err) == 1 and "upstream.path 값을 해소하지 못함" in err[0]
     assert "upstream을 설정" in err[0]
 
 
@@ -2279,7 +2279,7 @@ def test_protected_push_gate_config_url_without_registry_git_downgrades_to_self_
     assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
         "self-test", "go test ./...")
     err = capsys.readouterr().err.splitlines()
-    assert len(err) == 1 and "areas.md git 축 미해소" in err[0]
+    assert len(err) == 1 and "areas.md git 값을 해소하지 못함" in err[0]
     assert "git URL을 등록" in err[0]
 
 
@@ -2310,7 +2310,7 @@ def test_protected_push_gate_trailing_empty_upstream_downgrades_like_upstream_sh
     assert repo_protection._local_conf_value(pm_paths.home_at(pc.REPO), "upstream.path") == ""
     assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
         "self-test", "go test ./...")
-    assert "upstream.path 축 미해소" in capsys.readouterr().err
+    assert "upstream.path 값을 해소하지 못함" in capsys.readouterr().err
 
 
 
@@ -2388,7 +2388,7 @@ def test_status_surfaces_readonly_role(pc, monkeypatch, capsys):
     rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
-    full = out.split("풀 전체 리스 장부")[1]
+    full = out.split("풀 전체 슬롯 대여 기록")[1]
     assert "role=readonly" in full                    # readonly 슬롯 role surface
     # work 슬롯(svc_1) 줄엔 role 표기 없음(기본은 생략).
     svc1_line = next(l for l in full.splitlines() if "work/svc_1" in l)
@@ -2407,9 +2407,9 @@ def test_whoami_highlights_my_lease(pc, monkeypatch, capsys):
     rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="whoami"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "이 세션의 리스:" in out
+    assert "이 세션의 대여:" in out
     # 내 슬롯(svc_1)은 "이 세션의 리스" 절에, other 의 svc_3 은 거기 없음(전체엔 있음).
-    my_section = out.split("풀 전체 리스 장부")[0]
+    my_section = out.split("풀 전체 슬롯 대여 기록")[0]
     assert "work/svc_1" in my_section
     assert "work/svc_3" not in my_section
 
@@ -2420,7 +2420,7 @@ def test_status_empty_pool(pc, monkeypatch, capsys):
     bind_pool(monkeypatch, wp)
     rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
-    assert "리스 없음" in capsys.readouterr().out
+    assert "대여 없음" in capsys.readouterr().out
 
 
 def test_status_unbound_session_surfaces_placeholder(pc, monkeypatch, tmp_path, capsys):
@@ -2440,7 +2440,7 @@ def test_status_unbound_session_surfaces_placeholder(pc, monkeypatch, tmp_path, 
     assert rc == 0
     out = capsys.readouterr().out
     assert "(비바인딩)" in out
-    assert "이 세션의 리스: (없음)" in out   # 남의 세션(other)을 내 것으로 오식별하지 않음
+    assert "이 세션의 대여: (없음)" in out   # 남의 세션(other)을 내 것으로 오식별하지 않음
 
 
 def test_status_shows_live_branch_from_current_branch(pc, monkeypatch, capsys):
@@ -2461,7 +2461,7 @@ def test_status_shows_live_branch_from_current_branch(pc, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "live-feat" in out, "live branch(current_branch) 가 surface 안 됨"
     # 이 세션 리스 줄에도 live branch.
-    my_section = out.split("풀 전체 리스 장부")[0]
+    my_section = out.split("풀 전체 슬롯 대여 기록")[0]
     assert "live-feat" in my_section
     # current_branch 가 슬롯에 대해 호출됐다(저장 필드 대신 live 조회).
     assert ("current_branch", "work/svc_1") in wp.calls
@@ -2854,7 +2854,7 @@ def test_release_unknown_slot_errors(pc, monkeypatch, capsys):
         argparse.Namespace(slot="work/none_0", force=False)
     )
     assert rc == 1
-    assert "리스가 없다" in capsys.readouterr().err
+    assert "대여가 없다" in capsys.readouterr().err
 
 
 
@@ -3360,7 +3360,7 @@ def test_set_test_cmd_missing_slot_errors(pc, monkeypatch, capsys):
     bind_pool(monkeypatch, wp)
     rc = config_slots.cmd_set_test_cmd(pm_paths.home_at(pc.REPO), "work/gone_9", "cmd")
     assert rc == 1
-    assert "리스가 없다" in capsys.readouterr().err
+    assert "대여가 없다" in capsys.readouterr().err
 
 
 

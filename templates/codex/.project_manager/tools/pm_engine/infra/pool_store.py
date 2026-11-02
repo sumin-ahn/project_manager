@@ -62,7 +62,7 @@ def _read_ledger_raw_strict(home) -> dict:
         return {}
     data = json.loads(fs.read_text_shared(pm_paths.leases_file(home), encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("worktree lease 장부 최상위 값이 object가 아님")
+        raise ValueError("슬롯 대여 기록 파일 최상위 값이 object가 아님")
     return data
 
 
@@ -87,11 +87,11 @@ def _read_ledger_strict(home) -> list[worktree_records.Lease]:
     """리스 컬렉션 strict 조회 — 손상/읽기 오류/잘못된 컬렉션·행을 예외로 전파한다."""
     rows = _read_ledger_raw_strict(home).get("leases", [])
     if not isinstance(rows, list):
-        raise ValueError("worktree lease 장부의 'leases' 값이 list가 아님")
+        raise ValueError("슬롯 대여 기록 파일의 'leases' 값이 list가 아님")
     leases: list[worktree_records.Lease] = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
-            raise ValueError(f"worktree lease 장부의 leases[{index}] 값이 object가 아님")
+            raise ValueError(f"슬롯 대여 기록 파일의 leases[{index}] 값이 object가 아님")
         leases.append(worktree_records.Lease.from_dict(row))
     return leases
 
@@ -123,11 +123,11 @@ def _read_tasks_strict(home) -> list[worktree_records.Task]:
     """task 컬렉션 strict 조회 — 장부 손상/읽기 오류/잘못된 행을 예외로 전파한다."""
     rows = _read_ledger_raw_strict(home).get("tasks", [])
     if not isinstance(rows, list):
-        raise ValueError("worktree lease 장부의 'tasks' 값이 list가 아님")
+        raise ValueError("슬롯 대여 기록 파일의 'tasks' 값이 list가 아님")
     tasks: list[worktree_records.Task] = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or not row.get("name"):
-            raise ValueError(f"worktree lease 장부의 tasks[{index}] 값이 유효한 task object가 아님")
+            raise ValueError(f"슬롯 대여 기록 파일의 tasks[{index}] 값이 유효한 task object가 아님")
         tasks.append(worktree_records.Task.from_dict(row))
     return tasks
 
@@ -209,7 +209,7 @@ def slots_for_task_strict(home, name: str) -> list[worktree_records.Lease]:
         claimed_repo, separator, slot_number = identity_args.slot_path_name(slot).rpartition("_")
         if not isinstance(repo, str) or not repo:
             raise ValueError(
-                f"task {name!r} 보유 슬롯 {slot!r}의 repo 값이 비었다 — 장부 행이 불완전하다"
+                f"task {name!r} 보유 슬롯 {slot!r}의 repo 값이 비었다 — 기록 행이 불완전하다"
             )
         if separator and slot_number.isdigit() and claimed_repo != repo:
             raise ValueError(

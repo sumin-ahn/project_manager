@@ -4737,7 +4737,7 @@ def test_generated_hook_adopter_missing_or_empty_test_cmd_fails_closed(
         wp.REPO_HOOKS_DIR / "A" / "pre-push",
         _push_line("refs/heads/main", head), env_override=True, cwd=adopter)
     assert result.returncode != 0
-    expected = "repo 게이트 스코프 미해소" if missing else "자기 검증 명령 미해소"
+    expected = "repo 통과 조건 스코프 미해소" if missing else "자기 검증 명령 미해소"
     assert expected in result.stderr
 
 
@@ -5069,7 +5069,7 @@ def test_generated_hook_git_local_env_query_failure_uses_legacy_fallback(wp, tmp
 def test_install_protected_hook_rejects_legacy_unresolved_mode(wp):
     """신규 설치는 B1 강등 전의 unresolved sidecar를 더 만들 수 없다."""
     _mk_bare_placeholder(wp, "A")
-    with pytest.raises(ValueError, match="알 수 없는 보호 push gate mode"):
+    with pytest.raises(ValueError, match="알 수 없는 보호 push 검사 모드"):
         _install_for_test(wp,
             "A", ["main"], git_runner=FakeGit(), gate_mode="unresolved", test_cmd="true")
 
@@ -6386,7 +6386,7 @@ def test_cmd_record_success_reports_updated_snapshot(wp, monkeypatch, capsys):
     rc = wp.main(["record", "A_1"])   # 접두 생략도 _normalize_slot 이 work/ 붙임.
     assert rc == 0
     out = capsys.readouterr().out
-    assert "도착 스냅 재기록" in out and "v1.3.3" in out
+    assert "도착 상태 다시 기록" in out and "v1.3.3" in out
 
 
 def test_cmd_record_cp949_stdout_does_not_crash_on_checkmark(wp, monkeypatch):
@@ -6417,7 +6417,7 @@ def test_cmd_record_ledger_missing_slot_fails(wp, monkeypatch, capsys):
     monkeypatch.setattr(slot_snapshot, "record_git_snapshot", lambda _home, slot: None)
     rc = wp.main(["record", "A_1"])
     assert rc == 1
-    assert "리스 장부에 없다" in capsys.readouterr().err
+    assert "대여 기록에 없다" in capsys.readouterr().err
 
 
 def test_cmd_record_no_change_fails_loud(wp, monkeypatch, capsys):
@@ -6428,7 +6428,7 @@ def test_cmd_record_no_change_fails_loud(wp, monkeypatch, capsys):
     monkeypatch.setattr(slot_snapshot, "record_git_snapshot", lambda _home, slot: type("_L", (), {"git": same})())
     rc = wp.main(["record", "A_1"])
     assert rc == 1
-    assert "스냅할 수 없다" in capsys.readouterr().err
+    assert "상태를 기록할 수 없다" in capsys.readouterr().err
 
 
 def test_cmd_record_bad_slot_rejected(wp, capsys):
@@ -6661,7 +6661,7 @@ def test_switch_unregistered_slot_refused(wp):
     with pytest.raises(worktree_records.SwitchRefused) as ei:
         branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_9", "task/main", protected=["main"], git_runner=git)
     assert ei.value.reason == "unregistered"
-    assert "리스 장부에 없다" in str(ei.value)
+    assert "대여 기록에 없다" in str(ei.value)
     assert not git.did("checkout")
 
 
@@ -6953,7 +6953,7 @@ def test_cmd_switch_success_reports_what_happened(wp, monkeypatch, capsys):
     rc = wp.main(["switch", "A_1", "task/main"])       # 접두 생략도 _normalize_slot 이 work/ 붙임
     assert rc == 0
     out = capsys.readouterr().out
-    assert "task/main" in out and "스냅 재기록" in out
+    assert "task/main" in out and "상태 다시 기록" in out
     assert pool_store.list_leases(pm_paths.home_at(wp.REPO))[0].git["branch"] == "task/main"
 
 
@@ -8240,7 +8240,7 @@ def test_reopen_task_refuses_active_record_or_folder(wp):
     archive = _archive_task(wp)
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
         pool_store._write_tasks(pm_paths.home_at(wp.REPO), [worktree_records.Task("job", started="t")])
-    with pytest.raises(worktree_records.TaskReopenRefused, match="장부 레코드"):
+    with pytest.raises(worktree_records.TaskReopenRefused, match="기록 행"):
         task_lifecycle.reopen_task(pm_paths.home_at(wp.REPO), "job")
     assert archive.exists()
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
@@ -9705,7 +9705,7 @@ def test_cli_rebase_task_corrupt_ledger_fails_instead_of_zero_targets(wp, capsys
     rc = wp.main(["rebase", "--task", "job"])
 
     assert rc == 1
-    assert "보유 슬롯 장부 조회 실패" in capsys.readouterr().err
+    assert "보유 슬롯 대여 기록 조회 실패" in capsys.readouterr().err
     assert wp.LEASES_FILE.read_text(encoding="utf-8") == payload
 
 

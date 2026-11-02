@@ -177,7 +177,7 @@ def test_config_template_change_points_to_explicit_accept(pm_import, tmp_path):
     assert len(lines) == 1, lines
     assert ".codex/config.toml" in lines[0]
     assert "pm-config sync-adapter-config --accept .codex/config.toml" in lines[0]
-    assert "세대 변경" in lines[0] and "config 채널 보고는 내용 drift" in lines[0]
+    assert "버전 변경" in lines[0] and "config 채널 보고는 내용 drift" in lines[0]
     assert "수동 병합" not in lines[0]
 
 
@@ -349,7 +349,7 @@ def test_non_git_source_is_generation_out_of_scope_not_permanent_unreachable_war
     lines = adapter_report.instance_owned_template_delta_lines(
         dest, source, git_runner=NonGitSource({}))
 
-    assert lines == ["ℹ️  이 소스는 git 이 아니라 세대 판정 비대상."]
+    assert lines == ["ℹ️  이 소스는 git 이 아니라 버전 판정 비대상."]
     assert "기준 해소 불가" not in "\n".join(lines)
 
 
@@ -456,7 +456,7 @@ def test_sync_adapter_config_check_exposes_the_same_delta_lines(
     dest, source, _current = _case(tmp_path)
     expected = [
         "⚠️  인스턴스 소유 템플릿 변경 — AGENTS.md · +2/-1줄 · 첫 차이 1줄 · "
-        "처방(세대 변경; 기존 config 채널 보고는 내용 drift): "
+        "해결 방법(버전 변경; 기존 config 채널 보고는 내용 drift): "
         "현재 파일을 백업한 뒤 수동 병합 또는 ADOPT.md 절차로 재-import"
     ]
     monkeypatch.setattr(
@@ -474,7 +474,7 @@ def test_sync_adapter_config_check_exposes_the_same_delta_lines(
     assert expected[0] in captured.out
     assert captured.out.rstrip().endswith(
         "보존·미수용 managed 파일은 --accept 전까지 매 검사 반복; "
-        "지난 세대는 백업/git 로 확인")
+        "지난 버전은 백업/git 로 확인")
     assert not (dest / ".pm_import_backups").exists(), "--check가 write를 수행했다"
 
 
@@ -494,7 +494,7 @@ def test_pm_update_exit_exposes_final_delta_lines(
         init_git_repo(root, commit="seed")
     expected = [
         "⚠️  인스턴스 소유 템플릿 변경 — AGENTS.md · +2/-1줄 · 첫 차이 1줄 · "
-        "처방(세대 변경; 기존 config 채널 보고는 내용 drift): "
+        "해결 방법(버전 변경; 기존 config 채널 보고는 내용 drift): "
         "현재 파일을 백업한 뒤 수동 병합 또는 ADOPT.md 절차로 재-import"
     ]
     monkeypatch.setattr(pm_update, "REPO", dest)

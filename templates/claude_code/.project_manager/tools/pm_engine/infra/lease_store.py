@@ -220,7 +220,7 @@ def slot_path_resolution(repo: str, number: int, leases_file: Path) -> identity_
     """
     status, rows = _read_lease_rows_status(leases_file)
     if status != identity_args.LEDGER_OK:
-        return identity_args.SlotPathResolution(status, None, f"장부를 읽을 수 없다({leases_file})")
+        return identity_args.SlotPathResolution(status, None, f"슬롯 대여 기록을 읽을 수 없다({leases_file})")
     slots: set[str] = set()
     for row in rows:
         if row.get("repo") != repo:
@@ -241,7 +241,7 @@ def slot_path_resolution(repo: str, number: int, leases_file: Path) -> identity_
     return identity_args.SlotPathResolution(
         identity_args.SLOT_PATH_CONFLICT, None,
         f"repo {repo!r} 슬롯 번호 {number} 를 서로 다른 경로 {len(slots)}개({listing})가 "
-        f"주장한다 — 장부 모순이라 임의 선택하지 않는다")
+        f"주장한다 — 기록이 서로 어긋나 임의로 고르지 않는다")
 
 
 def resolve_actor_workspace(repo: str, leases_file: Path) -> "identity_args.Workspace | None":
@@ -283,9 +283,9 @@ def resolve_actor_workspace(repo: str, leases_file: Path) -> "identity_args.Work
     if len(sessions) > 1:
         listing = ", ".join(sorted(repr(s) for s in sessions))
         raise identity_args.SlotResolutionError(
-            f"repo '{repo}' 슬롯 {rows[0].get('slot')!r} 에 session 이 서로 다른 장부 행이 "
-            f"{len(sessions)}개({listing}) — 장부 모순이라 임의 선택하지 않는다. "
-            f"`--slot <N>` 으로 명시하거나 장부를 정리하라."
+            f"repo '{repo}' 슬롯 {rows[0].get('slot')!r} 에 session 이 서로 다른 기록 행이 "
+            f"{len(sessions)}개({listing}) — 기록이 서로 어긋나 임의로 고르지 않는다. "
+            f"`--slot <N>` 으로 명시하거나 슬롯 대여 기록을 정리하라."
         )
     row = rows[0]
     return identity_args.Workspace(
@@ -347,8 +347,8 @@ def slot_identity_resolution(slot: object, leases_file: Path) -> identity_args.S
         listing = ", ".join(sorted(repr(s) for s in sessions))
         return identity_args.SlotIdentityResolution(
             identity_args.SLOT_IDENTITY_CONFLICT, None,
-            f"슬롯 {slot!r} 에 session 이 서로 다른 장부 행이 {len(sessions)}개({listing}) — "
-            f"장부 모순이라 임의 선택하지 않는다",
+            f"슬롯 {slot!r} 에 session 이 서로 다른 기록 행이 {len(sessions)}개({listing}) — "
+            f"기록이 서로 어긋나 임의로 고르지 않는다",
             fallback=fallback)
     if len(sessions) == 1:
         session = str(next(iter(sessions)))
@@ -362,11 +362,11 @@ def slot_identity_resolution(slot: object, leases_file: Path) -> identity_args.S
     if ledger_status != identity_args.LEDGER_OK:
         return identity_args.SlotIdentityResolution(
             ledger_status, None,
-            f"장부를 읽을 수 없고({leases_file}) 경로 {slot!r} 에도 슬롯 키 마디가 없다",
+            f"슬롯 대여 기록을 읽을 수 없고({leases_file}) 경로 {slot!r} 에도 슬롯 키 마디가 없다",
             fallback=None)
     return identity_args.SlotIdentityResolution(
         identity_args.SLOT_IDENTITY_ROW_ABSENT, None,
-        f"장부에 슬롯 {slot!r} 의 정체성 행이 없고 경로에도 슬롯 키 마디가 없다")
+        f"슬롯 대여 기록에 슬롯 {slot!r} 의 정체성 행이 없고 경로에도 슬롯 키 마디가 없다")
 
 
 def resolve_slot_identity(slot: object, leases_file: Path) -> "identity_args.SlotIdentity | None":
@@ -397,7 +397,7 @@ def resolve_task_workspace(identity: identity_args.Identity, leases_file: Path) 
     task = identity.task
     status, rows = _read_lease_rows_status(leases_file)
     if status != identity_args.LEDGER_OK:
-        raise identity_args.WorkspaceResolutionError(f"task {task!r} 작업공간 장부를 읽을 수 없다: {leases_file} ({status})")
+        raise identity_args.WorkspaceResolutionError(f"task {task!r} 슬롯 대여 기록을 읽을 수 없다: {leases_file} ({status})")
     active = [r for r in rows if r.get("state", "leased") == "leased"]
     held = [r for r in active if r.get("session") == task]
     if identity.kind == "slot":
@@ -427,7 +427,7 @@ def resolve_task_workspace(identity: identity_args.Identity, leases_file: Path) 
         raise identity_args.WorkspaceResolutionError(f"task {task!r} 작업공간의 경로·repo·role을 해소할 수 없다: {row}")
     # 같은 경로를 다른 repo/소유/상태로 주장하는 행도 첫 행으로 덮지 않는다.
     if sum(identity_args.normalize_slot_value(r.get("slot")) == slot for r in rows) != 1:
-        raise identity_args.WorkspaceResolutionError(f"작업공간 {slot}의 장부 행이 중복돼 소유·좌표를 확정할 수 없다")
+        raise identity_args.WorkspaceResolutionError(f"작업공간 {slot}의 기록 행이 중복돼 소유·좌표를 확정할 수 없다")
     numbers = identity_args._row_slot_numbers(repo, row.get("slot"), row.get("session"))
     if identity.kind == "slot" and numbers != {identity.slot}:
         raise identity_args.WorkspaceResolutionError(f"작업공간 {slot}의 repo/slot 번호가 서로 일치하지 않는다")
@@ -490,14 +490,14 @@ def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
     except FileNotFoundError:
         return ()
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise pm_paths.AnchorResolutionError(f"worktree lease 장부 읽기 실패: {ledger} ({exc})") from exc
+        raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 읽기 실패: {ledger} ({exc})") from exc
     rows = data.get("leases") if isinstance(data, dict) else None
     if not isinstance(rows, list):
-        raise pm_paths.AnchorResolutionError(f"worktree lease 장부 형식 오류: {ledger}")
+        raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 형식 오류: {ledger}")
     found: set[Path] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or not isinstance(row.get("slot"), str):
-            raise pm_paths.AnchorResolutionError(f"worktree lease 장부 leases[{index}] 형식 오류: {ledger}")
+            raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 leases[{index}] 형식 오류: {ledger}")
         candidate = (pm_home / row["slot"]).resolve()
         if candidate.is_dir() and (candidate / ".git").exists():
             found.add(candidate)
@@ -605,23 +605,23 @@ def _ledger_registration(home, anchor: Path) -> tuple[bool, str | None]:
     """
     ledger = pm_paths.leases_file(home)
     if not ledger.is_file():
-        return (False, f'{home.root}: worktree lease 장부 없음')
+        return (False, f'{home.root}: 슬롯 대여 기록 파일 없음')
     try:
         data = json.loads(fs.read_text_shared(ledger, encoding='utf-8'))
     except (json.JSONDecodeError, OSError, UnicodeError) as exc:
-        return (False, f'{home.root}: worktree lease 장부를 읽을 수 없음 ({exc})')
+        return (False, f'{home.root}: 슬롯 대여 기록 파일을 읽을 수 없음 ({exc})')
     if not isinstance(data, dict):
-        return (False, f'{home.root}: worktree lease 장부 최상위 값이 object가 아님')
+        return (False, f'{home.root}: 슬롯 대여 기록 파일 최상위 값이 object가 아님')
     rows = data.get('leases')
     if not isinstance(rows, list):
-        return (False, f'{home.root}: worktree lease 장부의 leases 값이 list가 아님')
+        return (False, f'{home.root}: 슬롯 대여 기록 파일의 leases 값이 list가 아님')
     target = anchor.resolve()
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
-            return (False, f'{home.root}: worktree lease 장부 leases[{index}]가 object가 아님')
+            return (False, f'{home.root}: 슬롯 대여 기록 파일 leases[{index}]가 object가 아님')
         slot = row.get('slot')
         if not isinstance(slot, str) or not slot:
-            return (False, f'{home.root}: worktree lease 장부 leases[{index}]의 slot이 유효하지 않음')
+            return (False, f'{home.root}: 슬롯 대여 기록 파일 leases[{index}]의 slot이 유효하지 않음')
         if (home.root / slot).resolve() == target:
             return (True, None)
     return (False, None)

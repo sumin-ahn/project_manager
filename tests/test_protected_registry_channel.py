@@ -399,7 +399,7 @@ def test_protected_get_explicit_value_with_matching_sidecar(pc, monkeypatch, boa
     assert rc == 0
     assert out[0] == "service-a · protected = main"
     assert "출처: 명시" in out[1]
-    assert "✓ 정합" in out[2] and str(hooks / "service-a" / "protected") in out[2]
+    assert "✓ 일치" in out[2] and str(hooks / "service-a" / "protected") in out[2]
 
 
 def test_protected_get_empty_column_surfaces_default_fallback(pc, monkeypatch, board, tmp_path, capsys):
@@ -412,8 +412,8 @@ def test_protected_get_empty_column_surfaces_default_fallback(pc, monkeypatch, b
     config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-b"))
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "service-b · protected = main, master, develop"
-    assert "기본값 폴백" in out[1] and "비어 있음" in out[1]
-    assert "✓ 목록 정합" in out[2]      # bare 부재라 배선은 "확인 불가"(정직 표기)
+    assert "기본값으로 대체" in out[1] and "비어 있음" in out[1]
+    assert "✓ 목록 일치" in out[2]      # bare 부재라 배선은 "확인 불가"(정직 표기)
 
 
 def test_protected_get_drift_surfaces_old_list_and_remedy(pc, monkeypatch, board, tmp_path, capsys):
@@ -522,8 +522,8 @@ def test_protected_get_flags_unwired_hook_despite_fresh_sidecar(pc, monkeypatch,
     config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a"),
                           clone_runner=HooksPathGit())   # hooksPath 미설정
     out = capsys.readouterr().out
-    assert "✓ 정합" not in out, "훅이 안 걸렸는데 정합으로 보고했다(거짓 정합)"
-    assert "⚠ 훅 미배선" in out
+    assert "✓ 일치" not in out, "훅이 안 걸렸는데 정합으로 보고했다(거짓 정합)"
+    assert "⚠ 훅 미등록" in out
     assert "보호 꺼짐" in out
     assert "repo protected service-a main" in out       # 재배선 안내
 
@@ -539,7 +539,7 @@ def test_protected_get_reports_wired_when_hookspath_set(pc, monkeypatch, board, 
         _protected_args("service-a"),
         clone_runner=HooksPathGit(configured=str((hooks / "service-a").resolve())))
     out = capsys.readouterr().out
-    assert "✓ 정합 (목록·hooksPath 배선)" in out
+    assert "✓ 일치 (목록·hooksPath 등록)" in out
 
 
 def test_protected_get_wiring_unknown_is_honest(pc, monkeypatch, board, tmp_path, capsys):
@@ -551,8 +551,8 @@ def test_protected_get_wiring_unknown_is_honest(pc, monkeypatch, board, tmp_path
     bind_board(monkeypatch, board)
     config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-a"))
     out = capsys.readouterr().out
-    assert "✓ 목록 정합 (배선 확인 불가" in out
-    assert "⚠ 훅 미배선" not in out
+    assert "✓ 목록 일치 (등록 확인 불가" in out
+    assert "⚠ 훅 미등록" not in out
 
 
 def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path, monkeypatch, capsys):
@@ -570,7 +570,7 @@ def test_bootstrap_reconciles_when_sidecar_fresh_but_unwired(bootstrap, tmp_path
     assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is True
     assert pool.calls == [("svc", ["main"])]
     err = capsys.readouterr().err
-    assert "core.hooksPath` 배선" in err
+    assert "core.hooksPath` 등록" in err
 
 
 def test_bootstrap_silent_when_content_and_wiring_both_ok(bootstrap, tmp_path, monkeypatch, capsys):
@@ -654,7 +654,7 @@ def test_protected_set_default_literal_clears_column(pc, monkeypatch, board, tmp
     assert rows[0]["protected"] == ""
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == list(areas_rules.DEFAULT_PROTECTED)
     assert pool.calls == [("service-a", list(areas_rules.DEFAULT_PROTECTED))]
-    assert "기본값 폴백" in capsys.readouterr().out
+    assert "기본값으로 대체" in capsys.readouterr().out
 
 
 def test_protected_set_triggers_board_git_sync(pc, monkeypatch, board, tmp_path):
@@ -748,7 +748,7 @@ def test_protected_set_sidecar_failure_is_loud_but_areas_kept(pc, monkeypatch, b
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["release"]
     assert "[경고]" in cap.err and "재실행" in cap.err
     # 실패인데 성공(✓) 알림이 나가면 안 된다 — 거짓 정합 보고 금지(must-fix 클래스).
-    assert "✓ 보호 브랜치 pre-push 훅 정합화" not in cap.out
+    assert "✓ 보호 브랜치 pre-push + pre-commit 훅 갱신" not in cap.out
 
 
 # ── fail-loud (부작용 0) ─────────────────────────────────────────────────────
@@ -980,7 +980,7 @@ def test_bootstrap_reconciles_sidecar_on_drift(bootstrap, tmp_path, capsys, monk
     assert pool.calls == [("svc", ["main", "release"])]
     assert (hooks / "svc" / "protected").read_text(encoding="utf-8").split() == [
         "main", "release"]
-    assert "정합화" in capsys.readouterr().err
+    assert "일치시켰습니다" in capsys.readouterr().err
 
 
 def test_bootstrap_reinstall_preserves_resolved_self_test_contract(bootstrap, tmp_path, monkeypatch):
@@ -1042,8 +1042,8 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(bootstr
     assert bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc') is False
     assert pool.calls == [("svc", ["main", "release"])]      # 시도는 했다
     err = capsys.readouterr().err
-    assert "정합화했습니다" not in err, "실패인데 성공 보고가 나갔다(거짓 정합)"
-    assert "정합화하지 못했습니다" in err
+    assert "일치시켰습니다" not in err, "실패인데 성공 보고가 나갔다(거짓 정합)"
+    assert "일치시키지 못했습니다" in err
     assert "옛 목록" in err and "main" in err                 # 아직 강제되는 목록을 밝힌다
     assert "repo protected svc main,release" in err          # 재실행 커맨드
     # sidecar 는 실제로 stale 그대로다(거짓 보고가 아니라는 실증).
@@ -1064,7 +1064,7 @@ def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, 
     with pytest.raises(RuntimeError, match="hooksPath 설정 실패"):
         bootstrap_slots._reconcile_protected_sidecar(pm_paths.home_at(tmp_path / "home"), 'svc')
     err = capsys.readouterr().err
-    assert "정합화했습니다" not in err
+    assert "일치시켰습니다" not in err
 
 
 def test_bootstrap_no_reconcile_when_in_sync(bootstrap, tmp_path, monkeypatch, capsys):
@@ -1266,7 +1266,7 @@ def test_unwired_guidance_in_fallback_state_offers_default(pc, monkeypatch, boar
     config_repo.cmd_repo_protected(pm_paths.home_at(pc.REPO), _protected_args("service-b"),
                           clone_runner=HooksPathGit())
     out = capsys.readouterr().out
-    assert "⚠ 훅 미배선" in out
+    assert "⚠ 훅 미등록" in out
     assert "repo protected service-b default" in out
     assert "repo protected service-b main,master,develop" not in out
 
@@ -1303,7 +1303,7 @@ def test_install_reporting_funnel_success_and_failure(pc, monkeypatch, capsys):
 
     monkeypatch.setattr(repo_protection, "_install_protected_hook", lambda _home, repo, **_kw: False)
     assert repo_protection._install_protected_hook_reporting(pm_paths.home_at(pc.REPO),
-        "svc", action="정합화", retry="pm-config repo protected svc main,release") is False
+        "svc", action="갱신", retry="pm-config repo protected svc main,release") is False
     cap = capsys.readouterr()
     assert cap.out == "", "실패인데 성공 알림이 나갔다"
     assert "[경고]" in cap.err

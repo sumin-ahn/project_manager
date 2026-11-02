@@ -21,20 +21,20 @@ _ADAPTER_CONFIG_STATUS_LABEL = {
     "in-sync": "최신 (template 과 동일)",
     "unedited": "무편집 — 다음 동기가 자동 갱신",
     "edited": "채택자 편집 — 보존(수용은 --accept)",
-    "unrecorded": "원장 부재 — 보존(수용은 --accept)",
+    "unrecorded": "기록 없음 — 보존(수용은 --accept)",
 }
 # 보고-전용 대상의 override 라벨(그 밖의 status 는 위 공통 라벨을 그대로 쓴다).
 _ADAPTER_CONFIG_REPORT_LABEL = {
     "unedited": "무편집 — 보고 전용(자동 갱신 안 함·수용은 --accept)",
     "edited": "채택자 편집 — 보고 전용(수용은 --accept)",
-    "unrecorded": "원장 부재 — 보고 전용(수용은 --accept)",
+    "unrecorded": "기록 없음 — 보고 전용(수용은 --accept)",
 }
 # 수용 결과 → rc·안내. `accepted` 만 성공이고 나머지는 사유를 그대로 노출한다(거짓 성공 금지).
 _ADAPTER_ACCEPT_FAILURE_HINT = {
     "raced": "다시 실행해 새 판정을 받아라(그 사이 파일이 바뀌었다).",
-    "ledger-blocked": "엔진을 갱신한 뒤 다시 실행하라(원장이 더 새로운 형식이다).",
+    "ledger-blocked": "엔진을 갱신한 뒤 다시 실행하라(어댑터 설정 기록이 더 새로운 형식이다).",
     "write-failed": "경로 권한/디스크 상태를 확인한 뒤 다시 실행하라.",
-    "ledger-failed": "원장 경로 권한을 고친 뒤 다시 실행하라(파일 내용은 이미 상류 값이다).",
+    "ledger-failed": "기록 파일 경로 권한을 고친 뒤 다시 실행하라(파일 내용은 이미 상류 값이다).",
 }
 
 
@@ -59,7 +59,7 @@ def _adapter_accept_order_blocked(decision, relpath: str) -> bool:
     순서를 여기서 기계가 강제한다 — 단건 `--accept` 와 세트 수용이 같은 게이트를 탄다."""
     if not decision.blockers:
         return False
-    print(f"[중단] 어댑터 config 수용 거부 ({relpath}) — 이 세대가 요구하는 훅 파일이 아직 "
+    print(f"[중단] 어댑터 config 수용 거부 ({relpath}) — 이 버전이 요구하는 훅 파일이 아직 "
           "dest 에 설치돼 있지 않다(파일을 바꾸지 않았다).", file=sys.stderr)
     for finding in decision.blockers:
         print(f"  - {finding.detail}", file=sys.stderr)
@@ -106,7 +106,7 @@ def _accept_adapter_config_one(home, dest: Path, source_root: Path,
         return 1
     print(f"✓ 어댑터 config 수용: {relpath} "
           f"(백업 {_dest_relative_label(outcome.backup, dest)})")
-    print("  원장 기록까지 확인했다 — 다음 동기부터 무편집 판정(자동 갱신 궤도)이다.")
+    print("  어댑터 설정 기록까지 확인했다 — 다음 동기부터 무편집 판정(자동 갱신 궤도)이다.")
     note = install_rules.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(relpath)
     if note:
         print(f"  ⚠️ {note}")
@@ -126,7 +126,7 @@ def _accept_adapter_config_one(home, dest: Path, source_root: Path,
 # 실질적으로 `unedited`(원장으로 무편집이 확인된 파일) 하나다.
 _ADAPTER_SET_ACCEPT_EXCLUDED = {
     "edited": "채택자 편집분",
-    "unrecorded": "원장 부재로 편집 여부 판정 불가",
+    "unrecorded": "기록이 없어 편집 여부 판정 불가",
 }
 
 
@@ -155,7 +155,7 @@ def _report_hook_set_findings(home, dest: Path, source_root: Path) -> bool:
     findings = hook_sets.judge_adapter_hook_sets(
         dest, source_root, declarations=generation.declarations)
     for finding in findings:
-        print(f"[중단] 어댑터 훅 세트 세대 불일치({finding.harness}) — {finding.detail}.",
+        print(f"[중단] 어댑터 훅 세트 버전 불일치({finding.harness}) — {finding.detail}.",
               file=sys.stderr)
         for line in hook_sets.hook_set_remedy_lines(finding):
             print(f"    → {line}", file=sys.stderr)
@@ -263,7 +263,7 @@ def cmd_sync_adapter_config(
                 dest, source_root)
         except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 관측 실패는 advisory 로 내고 check 본류는 계속한다.
             delta_lines = [
-                "⚠️  인스턴스 소유 템플릿 세대 판정 unavailable — "
+                "⚠️  인스턴스 소유 템플릿 버전 판정 unavailable — "
                 f"{exc} · 판정 불가(변경 없음 아님)·전량 확인 권장."
             ]
         for line in delta_lines:
@@ -317,25 +317,25 @@ def cmd_sync_adapter_config(
         if not unconverged:
             if hook_set_failed:
                 return _finish_sync_adapter_config(1, check=True)
-            print("✓ managed 어댑터 config 수렴 확인 (template 내용 + 원장 dest hash).")
+            print("✓ managed 어댑터 config 일치 확인 (template 내용 + 기록의 dest hash).")
             return _finish_sync_adapter_config(0, check=True)
-        print("[중단] managed 어댑터 config 미수렴:", file=sys.stderr)
+        print("[중단] managed 어댑터 config 불일치:", file=sys.stderr)
         for judgment, status in unconverged:
             print(f"  - {judgment.relpath}: {status}", file=sys.stderr)
             if status == "unedited":
                 print(
-                    "    → `pm-update`를 재실행해 백업·자동 갱신·원장화를 완료하라.",
+                    "    → `pm-update`를 재실행해 백업·자동 갱신·기록 올림을 완료하라.",
                     file=sys.stderr,
                 )
             elif status == "unrecorded" and judgment.status == "in-sync":
                 print(
-                    "    → 실 `pm-update`를 재실행하면 파일 byte 변경 없이 원장을 backfill한다.",
+                    "    → 실 `pm-update`를 재실행하면 파일 byte 변경 없이 기록을 backfill한다.",
                     file=sys.stderr,
                 )
             else:
                 print(
                     f"    → `{repo_protection._FACADE_PROG} sync-adapter-config --accept "
-                    f"{judgment.relpath}` (백업 후 상류 값 수용·원장화).",
+                    f"{judgment.relpath}` (백업 후 상류 값 수용·기록에 올림).",
                     file=sys.stderr,
                 )
         return _finish_sync_adapter_config(1, check=True)
@@ -349,9 +349,9 @@ def cmd_sync_adapter_config(
 def _finish_sync_adapter_config(rc: int, *, check: bool) -> int:
     """``--check`` 말미에 경로별 세대 요약 수명을 명시한다."""
     if check:
-        print("세대 요약은 기준 원장별 수명 — upstream.rev 전진분은 이후 사라질 수 있고, "
+        print("버전 요약은 기준 기록별 수명 — upstream.rev 전진분은 이후 사라질 수 있고, "
               "보존·미수용 managed 파일은 --accept 전까지 매 검사 반복; "
-              "지난 세대는 백업/git 로 확인")
+              "지난 버전은 백업/git 로 확인")
     return rc
 
 

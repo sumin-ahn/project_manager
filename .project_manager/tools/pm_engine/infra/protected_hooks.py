@@ -47,7 +47,7 @@ from pm_engine.infra import fs, git, pm_paths
 _PROTECTED_PRE_PUSH_HOOK = """\
 #!/bin/sh
 # pm 보호 브랜치 pre-push 가드 — PM 이 보호 브랜치(main 등)에 자율 push 못 하게 +
-# 승인(PM_ALLOW_PROTECTED_PUSH=1)된 protected push 도 릴리즈 라이브 게이트 green 을 추가 요구.
+# 승인(PM_ALLOW_PROTECTED_PUSH=1)된 protected push 도 릴리즈 라이브 시험 통과 조건(green)을 추가 요구.
 # install_protected_hook() 가 설치. 보호목록 = 같은 디렉토리의 sidecar `protected`(줄당 1브랜치).
 case "$0" in
     */*) hook_dir=${0%/*} ;;
@@ -77,9 +77,9 @@ pm_load_protected_branches() {
         return 1
     fi
 
-    # 파일은 cat 한 번으로만 읽고, 종료코드와 그때 얻은 문자열을 같은 스냅샷의 두 축으로 쓴다.
+    # 파일은 cat 한 번으로만 읽고, 종료코드와 그때 얻은 문자열을 같은 복사본의 두 값으로 쓴다.
     # 명령 치환이 후행 개행을 지우므로 셸 builtin printf가 종단 바이트 하나를 붙여 보존한 뒤
-    # 위치로 제거한다. 이 바이트는 성공 표식이 아니다(cat rc는 $?가 단독 담당) — 파일 내용이
+    # 위치로 제거한다. 이 바이트는 성공 표시가 아니다(cat rc는 $?가 단독 담당) — 파일 내용이
     # 같은 바이트를 포함해도 마지막에 훅이 붙인 한 바이트만 제거하므로 위조 채널이 없다.
     protected_snapshot=$(
         cat "$protected_file"
@@ -129,10 +129,10 @@ PM_PROTECTED_SNAPSHOT
 }
 
 # stdin(<localref> <localsha> <remoteref> <remotesha> 줄들)의 각 push ref 를 순회한다. pre-push 는
-# push 전체에 한 번 발화(all-or-nothing) — 보호 ref 를 *전부* 검증하고, 하나라도 실패하면(하드 차단
-# or 라이브 게이트 미green) exit 1 로 push 전체를 거부한다(한 push 에 보호 ref 여러 개면 각 ref 의
-# localsha 로 각각 게이트·미검증 ref 가 green ref 에 편승해 올라가는 것 차단). board.py/인터프리터는
-# 첫 게이트 검증 때 1회 지연 해소한다. stdin 은 파이프 아닌 fd0 직독이라 루프가 현재 셸에서 돌아
+# push 전체에 한 번 실행(all-or-nothing) — 보호 ref 를 *전부* 검증하고, 하나라도 실패하면(하드 차단
+# or 라이브 시험 통과 조건 미충족) exit 1 로 push 전체를 거부한다(한 push 에 보호 ref 여러 개면 각 ref 의
+# localsha 로 각각 검사·미검증 ref 가 green ref 에 편승해 올라가는 것 차단). board.py/인터프리터는
+# 첫 통과 조건 검증 때 1회 지연 해소한다. stdin 은 파이프 아닌 fd0 직독이라 루프가 현재 셸에서 돌아
 # exit·변수 누적이 훅 전체에 반영된다(서브셸 아님).
 board=""
 py=""
@@ -142,7 +142,7 @@ resolved=0
 self_tested_shas=""
 
 # 채택자 명령을 실행할 때 제거할 repository-local Git 환경은 현재 Git 자체에서 유도한다.
-# rev-parse가 고장난/구형 Git에서도 훅 자체가 죽지 않도록, 폴백은 이 기능 도입 당시 훅이
+# rev-parse가 고장난/구형 Git에서도 훅 자체가 죽지 않도록, 대체 목록은 이 기능 도입 당시 훅이
 # 명시적으로 지우던 보수적 7개 목록을 유지한다. 정상 경로 목록을 코드에 복제하지 않는다.
 pm_unset_git_local_env() {
     _pm_git_local_env=$(git rev-parse --local-env-vars 2>/dev/null)
@@ -182,7 +182,7 @@ $branch
         exit 1
     fi
 
-    # 승인됨(PM_ALLOW=1) — repo 형상별 증거 계약. mode sidecar 부재/미해소는 추측 없이 거부한다.
+    # 승인됨(PM_ALLOW=1) — repo 구성별 증거 계약. mode sidecar 부재/미해소는 추측 없이 거부한다.
     gate_mode=""
     self_test_cmd=""
     if [ -f "$gate_contract_file" ]; then
@@ -196,9 +196,9 @@ $branch
             # PM_SKIP_LIVE_TEST는 framework release live-test만 생략한다. adopter self-test에는
             # 적용하지 않아 skip 상시화가 자기 검증까지 무력화하지 않게 한다.
             if [ "$PM_SKIP_LIVE_TEST" = "1" ]; then
-                # 우회 사유는 **라이브 축**(오프라인·라이브 무관 변경·긴급 hotfix)이다. 미해소
-                # must-fix 는 다른 축이라 이 우회의 대상이 아니다. live-test 마지막 reason 은 green
-                # 뒤 새 반려를 못 보므로, 장부 writer가 매 변경에 원자 갱신하는 현행 잔여 표식만
+                # 우회 사유는 **라이브 시험 쪽 사정**(오프라인·라이브 무관 변경·긴급 hotfix)이다. 미해소
+                # must-fix 는 다른 사정이라 이 우회의 대상이 아니다. live-test 마지막 reason 은 green
+                # 뒤 새 반려를 못 보므로, 기록 writer가 매 변경에 원자 갱신하는 현행 남은 must-fix 표시만
                 # 읽는다. Python 해소는 불요지만 `clear` 정확 한 줄 외에는 전부 fail-closed다.
                 mf_engine_root=""
                 [ -f "$engine_root_file" ] && IFS= read -r mf_engine_root < "$engine_root_file"
@@ -216,24 +216,24 @@ $branch
                     } < "$mf_flag"
                 fi
                 if [ "$mf_read_rc" -ne 0 ] || [ "$mf_extra_rc" -eq 0 ] || [ -n "$mf_extra" ]; then
-                    echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — must-fix 잔여 판정 표식을 읽을 수 없음." >&2
-                    echo "  PM_SKIP_LIVE_TEST 는 잔여가 없다는 현행 표식(clear)이 명확할 때만 허용된다 — 부재·손상·판독 실패는 fail-closed." >&2
-                    echo "  장부/환경을 복구하고 표식을 다시 생성하라:" >&2
+                    echo "[pm 라이브 시험 통과 조건] 보호 브랜치 '$branch' push 거부 — 남은 must-fix 판정 표시를 읽을 수 없음." >&2
+                    echo "  PM_SKIP_LIVE_TEST 는 남은 must-fix 가 없다는 현행 표시(clear)가 명확할 때만 허용된다 — 부재·손상·판독 실패는 fail-closed." >&2
+                    echo "  기록/환경을 복구하고 표시를 다시 생성하라:" >&2
                     echo "    board.py live-test record" >&2
                     exit 1
                 fi
                 case "$mf_state" in
                     clear) continue ;;
                     blocked)
-                        echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — 미해소 must-fix 잔여." >&2
-                        echo "  PM_SKIP_LIVE_TEST 는 라이브 축 우회이고 이 차단은 리뷰 잔여 축이다 — 우회 대상이 아니다." >&2
-                        echo "  현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언한 뒤 다시 기록하라:" >&2
-                        echo "    additional_reviewer.py --resolve-review <게이트> --pm-verified" >&2
+                        echo "[pm 라이브 시험 통과 조건] 보호 브랜치 '$branch' push 거부 — 남은 must-fix 있음." >&2
+                        echo "  PM_SKIP_LIVE_TEST 는 라이브 시험을 건너뛰는 우회이고 이 차단은 남은 must-fix 때문이다 — 우회 대상이 아니다." >&2
+                        echo "  현재 티켓 fix의 기계 확인 증거로 리뷰 집계 티켓마다 처분을 선언한 뒤 다시 기록하라:" >&2
+                        echo "    additional_reviewer.py --resolve-review <리뷰 집계 티켓> --pm-verified" >&2
                         echo "    board.py live-test record" >&2
                         exit 1
                         ;;
                     *)
-                        echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — must-fix 잔여 판정 표식 형식 오류('$mf_state')." >&2
+                        echo "[pm 라이브 시험 통과 조건] 보호 브랜치 '$branch' push 거부 — 남은 must-fix 판정 표시 형식 오류('$mf_state')." >&2
                         echo "  허용 형식은 writer가 원자 기록한 clear 또는 blocked 정확 한 줄뿐이다. board.py live-test record를 다시 실행하라." >&2
                         exit 1
                         ;;
@@ -368,16 +368,16 @@ $branch
             continue
             ;;
         *)
-            echo "[pm 보호 가드] repo 게이트 스코프 미해소('$gate_mode') — fail-closed 거부." >&2
+            echo "[pm 보호 가드] repo 통과 조건 스코프 미해소('$gate_mode') — fail-closed 거부." >&2
             echo "  PM 홈 local.conf upstream.path를 확인하고 pm-update 또는 pm-config repo add로 훅을 재설치하라." >&2
             exit 1
             ;;
     esac
 
-    # framework release 라이브 게이트 검증 자원 1회 지연 해소. board.py 는 **PM 홈 엔진**에 있다 — 슬롯 worktree(회사/
+    # framework release 라이브 시험 통과 조건 검증 자원 1회 지연 해소. board.py 는 **PM 홈 엔진**에 있다 — 슬롯 worktree(회사/
     # family checkout)엔 PM 엔진 파일이 없으므로(회사 repo 무영향), 설치자가 훅 옆에 쓴 sidecar
     # `engine-root`(PM 홈 REPO 절대경로 1줄)에서 board.py 를 해소한다. live-test.json 도 그 PM 홈 .local
-    # 소유라 기록 위치와 정합. 인터프리터는 실행검증 폴백(python3->python->py·WindowsApps 가짜
+    # 소유라 기록 위치와 일치. 인터프리터는 실행검증 대체 순서(python3->python->py·WindowsApps 가짜
     # shim 회피) + Python 3.11 하한 검증(pm_engine.MIN_PYTHON).
     # sidecar 부재/경로 무효/인터프리터 부재 = fail-closed 거부(무력화 방지).
     if [ "$resolved" != "1" ]; then
@@ -408,7 +408,7 @@ $branch
             fi
         done
         if [ -z "$board" ] || [ -z "$py" ]; then
-            echo "[pm 라이브 게이트] 게이트 검증 실행 불가 — fail-closed 거부." >&2
+            echo "[pm 라이브 시험 통과 조건] 통과 조건 검증 실행 불가 — fail-closed 거부." >&2
             if [ -z "$board" ]; then
                 echo "  PM 엔진 board.py 를 못 찾았다 (engine-root sidecar='${engine_root}')." >&2
             elif [ -z "$python_floor" ]; then
@@ -416,32 +416,32 @@ $branch
             else
                 echo "  Python 3.11+ 필요, 발견: ${found_versions:-없음}." >&2
             fi
-            echo "  보호 브랜치 push 는 라이브 게이트 green 을 요구한다. 게이트를 못 돌리면 무력화 방지로 거부한다." >&2
-            echo "  라이브-무관 변경(docs 등)·긴급 hotfix 면 우회(현행 must-fix 잔여-무 표식 clear 가 있어야 함 — 부재면 record 1회 선행):" >&2
+            echo "  보호 브랜치 push 는 라이브 시험 통과 조건(green)을 요구한다. 검사를 못 돌리면 무력화 방지로 거부한다." >&2
+            echo "  라이브-무관 변경(docs 등)·긴급 hotfix 면 우회(현행 남은 must-fix 없음 표시 clear 가 있어야 함 — 부재면 record 1회 선행):" >&2
             echo "    PM_SKIP_LIVE_TEST=1 PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
             exit 1
         fi
         resolved=1
     fi
 
-    # 이 보호 ref 의 push sha 로 라이브 게이트 green 검증 (기록 존재·pass·HEAD 일치=rc0·board.py 사유 surface).
+    # 이 보호 ref 의 push sha 로 라이브 시험 통과 조건(green) 검증 (기록 존재·pass·HEAD 일치=rc0·board.py 사유 surface).
     # </dev/null — 다중 ref 루프가 stdin(fd0) 직독이라 board.py 가 stdin 을 소비하면
     # all-or-nothing 순회가 깨진다(현재 안 읽지만 향후 변경 방어).
     "$py" "$board" live-test check --rev "$local_sha" </dev/null
     gate_rc=$?
     if [ "$gate_rc" -ne 0 ]; then
         # rc!=0 — 이 보호 ref 가 미green → push 전체 거부 + 2분기 안내 (환경 복구 vs 우회).
-        echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — 라이브 게이트 미green." >&2
-        echo "  릴리즈(main 머지)는 릴리즈 라이브 wave 가 이 커밋에서 green 이어야 한다(위 사유 참조)." >&2
-        echo "  - 환경 문제(오프라인·LLM 서비스 장애/한도·게이트 오작동)면 — 우회 아님·환경 복구 후 재실행:" >&2
+        echo "[pm 라이브 시험 통과 조건] 보호 브랜치 '$branch' push 거부 — 라이브 시험 통과 조건 미충족(green 아님)." >&2
+        echo "  릴리즈(main 머지)는 릴리즈 라이브 시험 묶음이 이 커밋에서 green 이어야 한다(위 사유 참조)." >&2
+        echo "  - 환경 문제(오프라인·LLM 서비스 장애/한도·통과 조건 검사 오작동)면 — 우회 아님·환경 복구 후 재실행:" >&2
         echo "      board.py live-test record" >&2
-        echo "  - 라이브-무관 변경(docs 등)·긴급 hotfix 면 — 우회(현행 must-fix 잔여-무 표식 clear 필요·부재면 record 1회 선행):" >&2
+        echo "  - 라이브-무관 변경(docs 등)·긴급 hotfix 면 — 우회(현행 남은 must-fix 없음 표시 clear 필요·부재면 record 1회 선행):" >&2
         echo "      PM_SKIP_LIVE_TEST=1 PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
         exit 1
     fi
 done
 
-# 모든 보호 ref 가 게이트 통과(또는 skip)·또는 보호 ref 없음(비보호/tag) → push 통과.
+# 모든 보호 ref 가 통과 조건 충족(또는 skip)·또는 보호 ref 없음(비보호/tag) → push 통과.
 exit 0
 """
 
@@ -602,7 +602,7 @@ def protected_hook_artifacts(home,
     ⚠ bare `core.hooksPath` **배선**은 파일이 아니라 git config 라 이 목록 밖이다 — 판정은
     `protected_hook_wired()`(공용 헬퍼)로 그 축을 따로 본다."""
     if gate_mode not in _PROTECTED_GATE_MODES:
-        raise ValueError(f"알 수 없는 보호 push gate mode: {gate_mode!r}")
+        raise ValueError(f"알 수 없는 보호 push 검사 모드: {gate_mode!r}")
     if not test_cmd.strip() or "\n" in test_cmd or "\r" in test_cmd:
         raise ValueError("보호 push test_cmd는 비어 있지 않은 한 줄이어야 한다")
     if not protected or any(

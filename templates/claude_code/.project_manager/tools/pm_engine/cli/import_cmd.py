@@ -46,7 +46,7 @@ def main(home, argv: list[str] | None = None) -> int:
             "upstream 기록: --from 은 *파일 소스*, --upstream 은 *future update 기록*으로 "
             "디커플된다. local.conf 에 `upstream.path=`(pm_update 가 --from 생략 시 사용) + "
             "`upstream.rev=<commit>`(drift baseline·--from 이 로컬 git checkout 일 때)이 기록된다. "
-            "--upstream 생략 시 --from 으로 폴백하되, --from 이 로컬 clone 이면 origin URL 을 자동도출한다 "
+            "--upstream 생략 시 --from 을 대신 쓰되, --from 이 로컬 clone 이면 origin URL 을 자동도출한다 "
             "(릴리스 추적 기본). 재-import 시 현재 값으로 갱신."
         ),
     )
@@ -64,13 +64,13 @@ def main(home, argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument("--weight", choices=install_rules.WEIGHT_CHOICES, default="full",
-                    help="무게축 (default: full)")
+                    help="설치 무게 (default: full)")
     ap.add_argument("--from", dest="source", default=str(home.root),
                     help="이번 import 의 *파일 소스* checkout 경로 (default: 이 repo 루트). "
                          "엔진/어댑터 파일을 여기서 복사한다.")
     ap.add_argument("--upstream", dest="upstream", default=None,
                     help="future update 기록값(URL 선호) — pm_update 가 --from 생략 시 쓸 upstream. "
-                         "URL|경로 self-describing. 생략 시 --from 으로 폴백하되, --from 이 로컬 "
+                         "URL|경로 self-describing. 생략 시 --from 을 대신 쓰되, --from 이 로컬 "
                          "git clone 이면 `git remote get-url origin` 으로 URL 자동도출(릴리스 추적). "
                          "값은 안전 검증(scheme allowlist·credential 거부·leading-dash)을 통과해야 한다.")
     ap.add_argument("--name", help="{{PROJECT_NAME}} 값 (default: 대상 디렉토리명)")
@@ -261,7 +261,7 @@ def main(home, argv: list[str] | None = None) -> int:
             raise RuntimeError(
                 "설치 하네스의 표기 manifest 를 소스에서 찾을 수 없습니다: "
                 f"{', '.join(missing_notation_manifests)}. 그 하네스를 독자에서 조용히 빼면 "
-                "공유 문서가 잘못된 단독 표기로 재렌더되므로 중단합니다 — `--from` 이 그 flavor "
+                "공유 문서가 잘못된 단독 표기로 재렌더되므로 중단합니다 — `--from` 이 그 하네스별 판 "
                 "template 을 가진 checkout 인지 확인하세요."
             )
         entry_notation_templates = manifest_store._entry_notation_templates_from_manifests(
@@ -391,7 +391,7 @@ def main(home, argv: list[str] | None = None) -> int:
         if cap_warning is not None:
             print(cap_warning, file=sys.stderr)
     if args.fill == "auto":
-        gate = "실구동(게이트 통과)" if live_allowed else "stub/미구동(게이트 미통과 — 안전)"
+        gate = "실구동(통과 조건 충족)" if live_allowed else "stub/미구동(통과 조건 미충족 — 안전)"
         print(f"  fill=auto  harness={fill_harness}  → {gate}")
     else:
         print("  fill=manual  → 자유서술 placeholder 를 TODO 로 표시(하니스 미구동).")
@@ -409,7 +409,7 @@ def main(home, argv: list[str] | None = None) -> int:
             elif stdin_tty:
                 print("    경로: interactive → `opencode models` 번호목록·대화형 선택 후 치환.")
             else:
-                print("    경로: todo → 비-tty(또는 opencode 부재) — 치환 안 함·TODO 마커 폴백.")
+                print("    경로: todo → 비-tty(또는 opencode 부재) — 치환 안 함·TODO 마커로 대체.")
         # MF2: --dry-run = fill 계획 미리보기. 실 하니스 미호출·파일 미변경. auto 면 무엇을
         #      채울지(대상 토큰)·결정된 fill harness·게이트 상태(실구동/manual 폴백)를 출력한다.
         #      복사를 안 하므로 dest 가 아닌 복사 *예정* src(actions)에서 잔존 토큰을 스캔한다.
@@ -422,9 +422,9 @@ def main(home, argv: list[str] | None = None) -> int:
                 print("    채울 대상 토큰: (트리에 자유서술 placeholder 없음 — 처리 불필요)")
             print(f"    fill harness: {fill_harness}")
             if live_allowed:
-                print("    게이트: 통과 → 적용 시 실 하니스 구동(제안 — 사람 검토 전제).")
+                print("    통과 조건: 충족 → 적용 시 실 하니스 구동(제안 — 사람 검토 전제).")
             else:
-                print("    게이트: 미통과(PM_IMPORT_LIVE_HARNESS 미설정) → 적용 시 manual 폴백"
+                print("    통과 조건: 미충족(PM_IMPORT_LIVE_HARNESS 미설정) → 적용 시 manual 로 대체"
                       "(TODO 표시·하니스 미구동).")
         print("[dry-run] 적용 안 함 (파일시스템 미변경).")
         return 0
@@ -461,7 +461,7 @@ def main(home, argv: list[str] | None = None) -> int:
     if merged_manifest_entries:
         print(
             f"✓ engine.manifest 선택 트리 합집합 설치 "
-            f"({len(template_roots)}개 flavor · {merged_manifest_entries}개 관리 경로)"
+            f"({len(template_roots)}개 하네스별 판 · {merged_manifest_entries}개 관리 경로)"
         )
 
     # MF1: 치환 범위 = 이번 run 이 **실제로 복사한** 파일만(복사 안 한 사용자 파일 불가침·
@@ -539,7 +539,7 @@ def main(home, argv: list[str] | None = None) -> int:
     if is_new and args.board_submodule:
         board_rc = install_board.setup_board_submodule(dest_root, args.board_remote)
         if board_rc != 0:
-            print("오류: board submodule 셋업 실패 — import 미완(board 미배선·부분 홈).",
+            print("오류: board submodule 셋업 실패 — import 미완(board 미등록·부분 홈).",
                   file=sys.stderr)
             return board_rc
 
@@ -641,7 +641,7 @@ def main(home, argv: list[str] | None = None) -> int:
     baselined = adapter_accept.record_adapter_baseline(
         dest_root, source_root, recordable, root_identity=root_identity)
     if baselined:
-        print(f"✓ 어댑터 config 원장 기록 ({adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()}): "
+        print(f"✓ 어댑터 설정 기록 ({adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()}): "
               f"{', '.join(baselined)}")
     # 하네스 사용 한도 반영 — add-harness 와 같은 자리(원장 기록 뒤)·같은 규칙. `--into` 재적용이면
     #   보존된 conf 값(예 `ctx.compact_at_pct`)이 여기서 설정 파일에 들어간다.
@@ -664,7 +664,7 @@ def main(home, argv: list[str] | None = None) -> int:
                                root_identity=root_identity)
         if not fill_result.values:
             # 하니스 미구동/실패 → manual 폴백(자유서술이 빈 채로 남지 않게 TODO 표시).
-            print(f"  fill=auto 제안 없음({fill_result.note}) — manual 폴백.")
+            print(f"  fill=auto 제안 없음({fill_result.note}) — manual 로 대체.")
             fill_result = import_fill._run_manual_fill(dest_root, copied_relpaths,
                                            root_identity=root_identity)
     else:

@@ -92,14 +92,14 @@ def pre_push_hook_body(py: str | None = None) -> str:
     interpreter = py if py is not None else python_env._detect_py()
     return (
         "#!/bin/sh\n"
-        "# pm pre-push gate — 회귀 게이트(tests/ 있는 트리만) AND lint 게이트(항상). "
+        "# pm pre-push gate — 회귀 통과 조건(tests/ 있는 트리만) AND lint 통과 조건(항상). "
         "board.py init 이 설치.\n"
         f"{_PM_HOOK_REV_PREFIX}{PM_HOOK_REV}\n"
         "if [ -d tests ]; then\n"
         f"  {interpreter} .project_manager/tools/board.py regression check || \\\n"
         f"    {interpreter} .project_manager/tools/board.py regression run --final || exit 1\n"
         "else\n"
-        '  echo "pre-push: 회귀 게이트 비대상 — 이 트리에 tests/ 없음(PM 홈) · lint 게이트만"\n'
+        '  echo "pre-push: 회귀 통과 조건 비대상 — 이 트리에 tests/ 없음(PM 홈) · lint 통과 조건만"\n'
         "fi\n"
         f"{interpreter} .project_manager/tools/board.py lint --blocking || exit 1\n"
     )
@@ -382,7 +382,7 @@ _STALE_HOOK_REFUSAL = (
     "(Windows 는 py -3)."
 )
 _UNREADABLE_HOOK_REFUSAL = (
-    f"{PM_HOOK_NOTICE_PREFIX}설치된 pre-push 훅을 읽지 못해 세대를 판정할 수 없습니다 "
+    f"{PM_HOOK_NOTICE_PREFIX}설치된 pre-push 훅을 읽지 못해 버전을 판정할 수 없습니다 "
     "({hook}: {error}) — `python3 .project_manager/tools/board.py init` 재실행 후 "
     "다시 시도(Windows 는 py -3)."
 )
@@ -397,8 +397,8 @@ _UNREADABLE_HOOK_REFUSAL = (
 # 통과한 것인지 아예 안 돈 것인지 구분 불가). 그 관측성만 되돌린다.
 # (`_sha_anchor_status` 의 rc≥2 fatal = 환경적 판정불가 규약과 같은 방향이다.)
 _UNRESOLVED_HOOKS_NOTICE = (
-    f"{PM_HOOK_NOTICE_PREFIX}훅 디렉토리를 해소하지 못해 세대 판정을 생략합니다 ({{reason}}) — "
-    "훅을 쓰는 형상이면 git 설정(core.hooksPath 등)을 확인하십시오"
+    f"{PM_HOOK_NOTICE_PREFIX}훅 디렉토리를 해소하지 못해 버전 판정을 생략합니다 ({{reason}}) — "
+    "훅을 쓰는 구성이면 git 설정(core.hooksPath 등)을 확인하십시오"
     "(Windows 경로는 `C:/path/to/hooks` 표기 또는 백슬래시 이스케이프)."
 )
 

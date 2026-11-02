@@ -320,7 +320,7 @@ def test_empty_non_git_manifest_inventory_uses_filesystem_diagnostic(
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert "filesystem 강등 상태" in err
+    assert "filesystem 으로 수준을 낮춘 상태" in err
     assert "소스 디렉토리가 비었는지" in err
     assert "checkout 루트" in err
     assert "git index" not in err
@@ -1258,11 +1258,11 @@ def test_copy_manifest_preserving_guest_migrates_legacy_marker(pm_update, tmp_pa
     assert GUEST_BEGIN_LITERAL_CURRENT in after, "재부착 마커가 현행 리터럴이 아님"
     assert GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 not in after, "옛 리터럴이 잔존(세대 공존)"
     assert ".codex/agents" in after, "guest 절이 사라졌다(이 결함의 본체)"
-    assert "guest 절 마커 세대 마이그레이션" in capsys.readouterr().out, \
+    assert "추가 하네스 절 마커 버전 이관" in capsys.readouterr().out, \
         "조용한 변환(표기 없음)"
     # 재실행 멱등 — 이미 현행이라 마이그레이션 표기가 다시 뜨지 않는다.
     manifest_store._copy_manifest_preserving_guest(sp, dst)
-    assert "guest 절 마커 세대 마이그레이션" not in capsys.readouterr().out
+    assert "추가 하네스 절 마커 버전 이관" not in capsys.readouterr().out
 
 
 def test_plan_manifest_self_prop_updates_on_legacy_guest_marker(pm_update, tmp_path):
@@ -1525,7 +1525,7 @@ def test_guest_engine_backfill_persists_rows_once_then_idempotent(
 
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     first = capsys.readouterr().out
-    assert "guest 엔진 행 2건 파생" in first, f"파생 보고 누락: {first!r}"
+    assert "추가 하네스 엔진 행 2건 파생" in first, f"파생 보고 누락: {first!r}"
 
     entries = _guest_block_entries(pm_update, manifest)
     assert set(entries) == {".opencode/agents", ".opencode/lib",
@@ -1558,8 +1558,8 @@ def test_legacy_guest_first_run_reports_backfill_without_frozen_warning(
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     captured = capsys.readouterr()
 
-    assert "guest 엔진 행 2건 파생" in captured.out, f"파생 보고 누락: {captured.out!r}"
-    assert "미등재 flavor 파일 관측" not in captured.err, \
+    assert "추가 하네스 엔진 행 2건 파생" in captured.out, f"파생 보고 누락: {captured.out!r}"
+    assert "미등재 하네스별 판 파일 관측" not in captured.err, \
         f"등재·동기하는 파일을 같은 run 이 '채널 없음' 으로 경고(자기모순): {captured.err!r}"
     assert "add-harness" not in captured.err, \
         f"불필요한 add-harness 재실행 안내(이미 update 채널이 처리한다): {captured.err!r}"
@@ -1697,7 +1697,7 @@ def test_guest_engine_backfill_not_persisted_when_legacy_preserved(
     captured = capsys.readouterr()
     assert "정확히 하나와 완전 일치하지 않는다" in captured.err, \
         f"픽스처 전제 붕괴 — legacy_preserved 가 아니다: {captured.err!r}"
-    assert "guest 절에는 기록하지 않는다" in captured.err, \
+    assert "추가 하네스 절에는 기록하지 않는다" in captured.err, \
         f"legacy_preserved 안내 누락: {captured.err!r}"
 
     # 파일 동기는 수행 — 동결 사본이 갱신됐다.
@@ -1871,7 +1871,7 @@ def test_selected_manifest_order_is_primary_then_declared_flavors_without_selfpr
     update_manifest._print_manifest_merge_conflicts(result)
     err = capsys.readouterr().err
     assert ".project_manager/engine.manifest" not in err
-    assert "선언 순서상 첫 flavor" not in err
+    assert "선언 순서상 첫 하네스별 판" not in err
 
 
 def test_manifest_merge_conflict_warning_surfaces_real_marker_conflict(
@@ -1889,7 +1889,7 @@ def test_manifest_merge_conflict_warning_surfaces_real_marker_conflict(
 
     update_manifest._print_manifest_merge_conflicts({"merge_conflicts": merged["conflicts"]})
     err = capsys.readouterr().err
-    assert "선언 순서상 첫 flavor" in err
+    assert "선언 순서상 첫 하네스별 판" in err
     assert ".shared/x" in err
 
 
@@ -1949,7 +1949,7 @@ def test_declared_second_flavor_missing_manifest_is_preserved_and_warned(
     assert ".second/a" in manifest.read_text(encoding="utf-8"), \
         "upstream 해소 실패가 로컬 union을 변경함"
     err = capsys.readouterr().err
-    assert "후순위 flavor의 upstream manifest가 없다" in err
+    assert "후순위 하네스별 판의 upstream manifest가 없다" in err
     assert "선언을 버리지 않고 로컬 union을 유지" in err
 
 
@@ -1987,9 +1987,9 @@ def test_declared_manifest_warns_on_undeclared_flavor_tree_without_promoting(
     assert result["upstream_manifests"] == [first]
     assert second not in result["upstream_manifests"]
     err = capsys.readouterr().err
-    assert "미등재 flavor 파일 관측" in err
+    assert "미등재 하네스별 판 파일 관측" in err
     assert "@source 선택 선언이 있는 manifest" in err
-    assert "선언되지 않은 타 flavor(second)" in err
+    assert "선언되지 않은 다른 하네스별 판(second)" in err
     assert "(1/1: .second/a)" in err
     assert "`add-harness second`는 그 하네스 어댑터만 등재한다" in err
     assert "<manager>/pm-import.sh --into <project> --harness all --dry-run" in err
@@ -2040,8 +2040,8 @@ def test_declared_manifest_excludes_guest_paths_but_warns_on_non_guest_file(
     assert result["upstream_manifests"] == [first], \
         "경고는 자동 승격이 아니다 — 선택 목록은 선언된 flavor 그대로여야 한다"
     err = capsys.readouterr().err
-    assert "미등재 flavor 파일 관측" in err
-    assert "선언되지 않은 타 flavor(second)" in err
+    assert "미등재 하네스별 판 파일 관측" in err
+    assert "선언되지 않은 다른 하네스별 판(second)" in err
     assert "(1/1: .second/hook)" in err, \
         f"guest 밖 고유 파일만 evidence여야 한다(guest .second/render 제외): {err!r}"
     assert ".second/render" not in err, \
@@ -2084,7 +2084,7 @@ def test_add_harness_adopter_shape_backfill_silences_frozen_warning(
     update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     err = capsys.readouterr().err
-    assert "미등재 flavor 파일 관측" not in err, \
+    assert "미등재 하네스별 판 파일 관측" not in err, \
         f"이번 실행이 등재·동기할 파일을 '채널 없음' 으로 경고(자기모순): {err!r}"
 
 
@@ -2125,7 +2125,7 @@ def test_frozen_warning_silent_when_all_flavor_paths_are_guest_owned(
     result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["upstream_manifests"] == [first]
-    assert "미등재 flavor 파일 관측" not in capsys.readouterr().err, \
+    assert "미등재 하네스별 판 파일 관측" not in capsys.readouterr().err, \
         "guest가 전부 커버하는 flavor에 오탐 경고(add-harness refresh 채널이 전담)"
 
 
@@ -2190,7 +2190,7 @@ def test_frozen_warning_silent_for_core_directory_covered_flavor_file(
     update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     err = capsys.readouterr().err
-    assert "미등재 flavor 파일 관측" not in err, \
+    assert "미등재 하네스별 판 파일 관측" not in err, \
         f"core 디렉터리 등재가 덮는 파일을 '채널 없음'으로 경고(오탐): {err!r}"
 
     stray = dest / ".codex" / "pm_orch_codex.py"
@@ -2200,7 +2200,7 @@ def test_frozen_warning_silent_for_core_directory_covered_flavor_file(
     update_manifest.resolve_manifest_selfheal(dest, REPO)
 
     err = capsys.readouterr().err
-    assert "미등재 flavor 파일 관측" in err, \
+    assert "미등재 하네스별 판 파일 관측" in err, \
         "어느 등재로도 안 덮이는 타 flavor 파일은 여전히 경고여야 한다"
     assert ".codex/pm_orch_codex.py" in err
     assert ".agents/skills/pm-dev-delegate/SKILL.md" not in err, \
@@ -2226,7 +2226,7 @@ def test_claude_only_adopter_shape_stays_quiet_across_repeat_runs(
         result = update_manifest.resolve_manifest_selfheal(dest, REPO)
         assert result["upstream_manifests"] == [claude]
         err = capsys.readouterr().err
-        assert "미등재 flavor 파일 관측" not in err, \
+        assert "미등재 하네스별 판 파일 관측" not in err, \
             f"{run} 실행에서 claude 단독 채택자 오탐: {err!r}"
 
 
@@ -2259,7 +2259,7 @@ def test_declared_single_flavor_without_other_tree_has_no_frozen_warning(
     result = update_manifest.resolve_manifest_selfheal(dest, source)
 
     assert result["upstream_manifests"] == [first]
-    assert "미등재 flavor 파일 관측" not in capsys.readouterr().err
+    assert "미등재 하네스별 판 파일 관측" not in capsys.readouterr().err
 
 
 def test_unresolvable_source_declaration_disables_legacy_presence_fallback(
@@ -2369,8 +2369,8 @@ def test_legacy_exact_path_set_must_match_exactly_one_candidate(
     assert manifest.read_bytes() == before
     err = capsys.readouterr().err
     assert "정확히 하나와 완전 일치하지 않는다" in err
-    assert "자동 flavor 승격·행 제거·치유 0" in err
-    assert "배타적 flavor 경로 관측 0" in err
+    assert "자동 하네스별 판 승격·행 제거·치유 0" in err
+    assert "배타적 하네스별 판 경로 관측 0" in err
     assert "<manager>/pm-import.sh --into <project> --harness all --dry-run" in err, \
         "관측 flavor가 0개여도 빈 --harness가 아닌 안전한 migration 안내가 필요함"
 
@@ -2707,7 +2707,7 @@ def test_legacy_nonmatch_keeps_manifest_and_updates_declared_local_rows(
     assert rc == 0
     captured = capsys.readouterr()
     assert "정확히 하나와 완전 일치하지 않는다" in captured.err
-    assert "자동 flavor 승격·행 제거·치유 0" in captured.err
+    assert "자동 하네스별 판 승격·행 제거·치유 0" in captured.err
     assert "완전 마이그레이션" in captured.err
     assert "엔진 경로" not in captured.err
     assert "source 에 없음" not in captured.err
@@ -2733,7 +2733,7 @@ def test_empty_legacy_manifest_does_not_promote_arbitrary_flavor(
     err = captured.err
     assert "정확히 하나와 완전 일치하지 않는다" in err
     assert "로컬 core 0행" in err
-    assert "자동 flavor 승격·행 제거·치유 0" in err
+    assert "자동 하네스별 판 승격·행 제거·치유 0" in err
     assert "엔진 경로" not in err
     assert "[new] .claude/agents" not in captured.out, \
         "빈 manifest가 claude_code로 승격돼 .claude 설치 계획을 만들었다"
@@ -7049,7 +7049,7 @@ def test_adapter_config_unrecorded_is_preserved_as_safe_default(
     assert result["updated"] == []
     assert [item["status"] for item in result["preserved"]] == ["unrecorded"]
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _INSTALLED_HOOKS
-    assert "원장 부재" in capsys.readouterr().err
+    assert "기록 없음" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("ledger_state", ["absent", "matching", "stale"])
@@ -7315,7 +7315,7 @@ def test_pm_update_adapter_nonconvergence_is_rc1_without_hiding_engine_result(
 
     captured = capsys.readouterr()
     assert rc == 1
-    assert "managed 어댑터 config가 미수렴" in captured.err
+    assert "managed 어댑터 config가 아직 일치하지 않는다" in captured.err
     assert "sync-adapter-config --accept" in captured.err
     assert "최신 — 변경 없음" not in captured.out, "adapter red를 최신으로 오보고함"
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _EDITED_HOOKS
@@ -7494,7 +7494,7 @@ def test_pm_update_explicit_claude_receipt_ignores_foreign_codex_managed_file(
 
     captured = capsys.readouterr()
     assert "최신 — 변경 없음" in captured.out
-    assert "managed 어댑터 config가 미수렴" not in captured.err
+    assert "managed 어댑터 config가 아직 일치하지 않는다" not in captured.err
     assert foreign.read_text(encoding="utf-8") == foreign_body
 
 
@@ -7533,7 +7533,7 @@ def test_pm_update_partial_managed_dest_blocks_zero_change_revision_convergence(
 
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source)]) == 1
     captured = capsys.readouterr()
-    assert "managed 어댑터 config가 미수렴" in captured.err
+    assert "managed 어댑터 config가 아직 일치하지 않는다" in captured.err
     assert "sync-adapter-config --accept" in captured.err
     assert "최신 — 변경 없음" not in captured.out
     assert conf.read_bytes() == before_conf

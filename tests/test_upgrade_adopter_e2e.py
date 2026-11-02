@@ -258,7 +258,7 @@ _FROZEN_INSTALL_DATE = "2025-11-03"
 _SUBSTITUTED_README_LINE = f"{_ADOPTER_NAME} 프로젝트의 비-코드 산출물 모음 (설치 시 치환된 옛 본문)."
 
 # T-0571 이 마이그레이션 발생 시 내는 표기(조용한 변환 금지) — 티켓 인터페이스가 고정한 문구.
-_MARKER_MIGRATION_NOTICE = "guest 절 마커 세대 마이그레이션"
+_MARKER_MIGRATION_NOTICE = "추가 하네스 절 마커 버전 이관"
 
 _RENDER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 # 스킬 §manifest reconcile 의 선-cp 지시. placeholder(`<cache-or-path>`·`<harness>`)를 포함한
@@ -922,7 +922,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "c5450cb919d2b1ffc7825d3e05cb1a59124529c3890262c4f22abb5384d4e13a"
+_T0585_PM_UPDATE_SHA256 = "d01566fe6f6f9a3c0664c437384ff6eb60902678265044d2ef4dd11ddb5b0618"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1686,7 +1686,7 @@ _ENGINE_PACKAGE_REPLACE_REVERSALS = (
         '                f"{manifest_rules._ENGINE_TRANSFER_STAGE_PREFIX}*·"\n'
         '                f"{manifest_rules._ENGINE_TRANSFER_BACKUP_PREFIX}*)을 확인하라. 패키지 자리가 비었고 "\n'
         '                "완전한 backup 이 있으면 backup 을 패키지 이름으로 되돌린다. 평면 엔진 파일까지 같은 "\n'
-        '                "세대로 맞추려면 원인을 고친 뒤 같은 갱신을 다시 실행한다.", file=sys.stderr)\n',
+        '                "버전으로 맞추려면 원인을 고친 뒤 같은 갱신을 다시 실행한다.", file=sys.stderr)\n',
         "",
     ),
 )
@@ -2711,6 +2711,10 @@ def _t0585_pm_update_source() -> str:
     엔진 전달 순서와 전달 파일 집합도 그대로다. 이관이 만지는 파일은 manifest 밖의
     `.local/delegate-rounds.jsonl` 하나이고 이 시험 자료에는 그 파일이 없어 합성본 sha256 고정값만 바꿨다.
 
+    출력 문구 평어화 — 설정·설치·갱신 쪽 엔진 출력의 지어낸 말(`세대`·`flavor` 등)을 평어로 바꿨다.
+    옛 모양으로 되돌리는 치환이 찾는 기준 문자열 두 곳(`버전으로 맞추려면`·`선택한 하네스별 판 합집합`)을
+    새 글로 맞췄고, 엔진 전달 순서와 전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
+
     T-0963 — 형제 적재 블록이 엔진 패키지 import(`from pm_engine.infra import ...`)로 바뀌고 형제 로더·
     강등 함수(`_load_repo_owned_files`·`_shared_read_api` 일습·`_atomic_replace_or_degrade`·중앙 로더
     선복구 `central_loader_needs_recovery`·`_predeploy_central_loader`)가 사라졌다. 역적용 delta 의
@@ -2910,7 +2914,10 @@ def _install_t0585_updater(dest: Path) -> None:
 # 옛 세대 모양으로 되돌리는 치환이 찾는 기준 문자열은 이 추가 자리 밖이라 그대로 한 곳에서만 맞고,
 # 엔진 전달 순서와 전달 파일 집합도 그대로다. 이관이 만지는 파일은 manifest 밖의
 # `.local/delegate-rounds.jsonl` 하나이고 이 시험 자료에는 그 파일이 없어 합성본 sha256 고정값만 바꿨다.
-_PRE_T0876_PM_UPDATE_SHA256 = "8ffa3a47567a64bd90a5492d10ab45eb01ac5fa1b99b49ffcf0f134954168418"
+# 출력 문구 평어화 — 설정·설치·갱신 쪽 엔진 출력의 지어낸 말(`세대`·`flavor` 등)을 평어로 바꿨다.
+# 옛 모양으로 되돌리는 치환이 찾는 기준 문자열 두 곳(`버전으로 맞추려면`·`선택한 하네스별 판 합집합`)을
+# 새 글로 맞췄고, 엔진 전달 순서와 전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
+_PRE_T0876_PM_UPDATE_SHA256 = "a5d91e0c551f2aacf9746665682f3d45566f56a014b0b3fbc87911a219cd9e4f"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -2994,6 +3001,10 @@ def _pre_t0876_pm_update_source() -> str:
     옛 세대 모양으로 되돌리는 치환이 찾는 기준 문자열은 이 추가 자리 밖이라 그대로 한 곳에서만 맞고,
     엔진 전달 순서와 전달 파일 집합도 그대로다. 이관이 만지는 파일은 manifest 밖의
     `.local/delegate-rounds.jsonl` 하나이고 이 시험 자료에는 그 파일이 없어 합성본 sha256 고정값만 바꿨다.
+
+    출력 문구 평어화 — 설정·설치·갱신 쪽 엔진 출력의 지어낸 말(`세대`·`flavor` 등)을 평어로 바꿨다.
+    옛 모양으로 되돌리는 치환이 찾는 기준 문자열 두 곳(`버전으로 맞추려면`·`선택한 하네스별 판 합집합`)을
+    새 글로 맞췄고, 엔진 전달 순서와 전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
 
     설치 공급자 이동 반영: 렌더·JSONC·등록부 호출을 실제 package 소유자로 전환했다.
     동결 fixture의 렌더 실패 흡수 anchor도 module 인자가 없는 현행 호출 형태로 맞췄다.
@@ -3118,9 +3129,9 @@ def _pre_t0876_pm_update_source() -> str:
     source = source.replace(
         '    retired_removed = selfheal.get("retired_removed", [])\n', "", 1)
     source = source.replace(
-        '        f"(선택 flavor 합집합·선언 순서 우선): 신규 등재 +{len(added)}"\n'
+        '        f"(선택한 하네스별 판 합집합·선언 순서 우선): 신규 등재 +{len(added)}"\n'
         '        + (f", retired-path OLD -{len(retired_removed)}" if retired_removed else "")\n',
-        '        f"(선택 flavor 합집합·선언 순서 우선): 신규 등재 +{len(added)}"\n',
+        '        f"(선택한 하네스별 판 합집합·선언 순서 우선): 신규 등재 +{len(added)}"\n',
         1,
     )
     source = source.replace(
@@ -3334,7 +3345,7 @@ def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
     run2 = _run_adopter_tool(dest, "pm_update.py", "--from", str(REPO))
     assert run2.returncode == 1, (
         f"원장 부재인데 zero-change RUN2가 green\n{run2.stdout}\n{run2.stderr}")
-    assert "managed 어댑터 config가 미수렴" in run2.stderr
+    assert "managed 어댑터 config가 아직 일치하지 않는다" in run2.stderr
     assert "엔진 manifest 변경은 0건" in run2.stderr, \
         "RUN2가 zero-change 경계를 실제로 거치지 않음"
     assert "최신 — 변경 없음" not in run2.stdout
@@ -3354,7 +3365,7 @@ def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
     green_check = _run_adopter_tool(
         dest, "pm_config.py", "sync-adapter-config", "--check", "--from", str(REPO))
     assert green_check.returncode == 0, green_check.stderr
-    assert "수렴 확인" in green_check.stdout
+    assert "일치 확인" in green_check.stdout
 
 
 # ── S6 CRLF 표기 dest 의 zero-change 수렴 (T-0723) ────────────────────────────

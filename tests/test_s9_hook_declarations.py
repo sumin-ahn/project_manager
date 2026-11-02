@@ -216,7 +216,7 @@ def test_snapshot_bytes_and_accept_recheck_bind_every_python_member(tmp_path, mo
         dest, source, _SETTINGS_REL,
         expected_template_sha256=decision.template_sha256,
         expected_generation_sha256=decision.generation_sha256)
-    assert raced.status == "raced" and "세대 선언 package" in raced.detail, raced
+    assert raced.status == "raced" and "버전 선언 package" in raced.detail, raced
     assert (dest / _SETTINGS_REL).read_bytes() == config_before
     assert (ledger.read_bytes() if ledger.exists() else None) == ledger_before
 
@@ -436,7 +436,7 @@ def test_unresolved_package_blocks_accept_and_partial_scope(
     blocked = hook_sets.hook_set_accept_decision(
         dest, source, _SETTINGS_REL,
         declarations=hook_sets.hook_set_declarations(home, source, required=True))
-    assert blocked.blockers and "상류 세대 선언" in blocked.blockers[0].detail, blocked
+    assert blocked.blockers and "상류 버전 선언" in blocked.blockers[0].detail, blocked
     config_before = (dest / _SETTINGS_REL).read_bytes()
 
     # 부분 훅 scope — 상류 세대를 확인할 수 없으면 훅 영역 지목은 쓰기 전에 거부한다.
@@ -445,7 +445,7 @@ def test_unresolved_package_blocks_accept_and_partial_scope(
     peer = (_DRIVER_REL, source / _DRIVER_REL, dest / _DRIVER_REL, "M")
     rc = update_adapters.refuse_partial_hook_set_scope(pm_paths.home_at(pm_update.REPO), [change], [change, peer], source)
     assert rc == 1
-    assert "상류 훅 세트 세대 선언을 확인할 수 없어" in capsys.readouterr().err
+    assert "상류 훅 세트 버전 선언을 확인할 수 없어" in capsys.readouterr().err
     assert (dest / _SETTINGS_REL).read_bytes() == config_before
 
     # 해소된 세대 — 구형 드라이버가 남아 있으면 수용은 엔진 파일 선행을 요구한다.

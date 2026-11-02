@@ -789,7 +789,7 @@ def test_sync_path_reports_mixed_generation_loudly_and_blocks(pm_update, tmp_pat
     assert len(result["findings"]) == 1
     assert update_adapters._adapter_hook_set_gate_failed(result)
     err = capsys.readouterr().err
-    assert "훅 세트 세대 불일치" in err, err
+    assert "훅 세트 버전 불일치" in err, err
     assert _GIT_ANCHOR_FLAG in err and _DRIVER_REL in err, err
     assert "pm-update" in err, "처방 커맨드 부재"
 
@@ -1271,7 +1271,7 @@ def test_check_reports_hook_set_generation_mismatch(pm_config, tmp_path, capsys)
 
     assert rc == 1
     err = capsys.readouterr().err
-    assert "훅 세트 세대 불일치" in err and _GIT_ANCHOR_FLAG in err, err
+    assert "훅 세트 버전 불일치" in err and _GIT_ANCHOR_FLAG in err, err
 
 
 def test_check_sees_hook_sets_even_when_config_channel_is_empty(
@@ -1288,7 +1288,7 @@ def test_check_sees_hook_sets_even_when_config_channel_is_empty(
     out, err = capsys.readouterr()
     assert "채널 대상 없음" in out, out
     assert rc == 1, (out, err)
-    assert "훅 세트 세대 불일치" in err, err
+    assert "훅 세트 버전 불일치" in err, err
 
 
 def test_check_stays_green_when_hook_set_matches(pm_config, tmp_path, capsys):
@@ -1301,7 +1301,7 @@ def test_check_stays_green_when_hook_set_matches(pm_config, tmp_path, capsys):
         _accept_args(source, check=True), dest_root=dest)
 
     assert rc == 0, capsys.readouterr()
-    assert "수렴 확인" in capsys.readouterr().out
+    assert "일치 확인" in capsys.readouterr().out
 
 
 def test_accept_refuses_when_engine_files_are_behind(pm_config, tmp_path, capsys):
@@ -1522,7 +1522,7 @@ def test_accept_gate_is_fail_closed_when_upstream_generation_is_unreadable(
     err = capsys.readouterr().err
     assert rc == 1, err
     assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before
-    assert "수용 거부" in err and "상류 세대 선언" in err, err
+    assert "수용 거부" in err and "상류 버전 선언" in err, err
 
 
 def test_partial_guard_sees_a_coupled_group_only_upstream_knows(
@@ -1576,7 +1576,7 @@ def test_accept_gate_binds_the_declaration_snapshot_too(tmp_path):
         expected_generation_sha256=decision.generation_sha256)
 
     assert outcome.status == "raced", outcome
-    assert "세대 선언" in outcome.detail, outcome.detail
+    assert "버전 선언" in outcome.detail, outcome.detail
     assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before
 
 
@@ -1651,7 +1651,7 @@ def test_partial_guard_is_fail_closed_when_upstream_generation_is_unreadable(
     err = capsys.readouterr().err
     assert rc == 1, err
     assert (dest / _WRAPPER_REL).read_text(encoding="utf-8") == _WRAPPER_OLD
-    assert "상류 훅 세트 세대 선언을 확인할 수 없어" in err, err
+    assert "상류 훅 세트 버전 선언을 확인할 수 없어" in err, err
 
 
 def test_partial_guard_leaves_non_hook_scope_alone_without_upstream(
@@ -1694,7 +1694,7 @@ def test_accept_all_excludes_unrecorded_because_edits_cannot_be_judged(
     assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before, \
         "판정 불가 config 를 세트가 덮었다"
     assert rc == 1, out
-    assert "세트 수용 제외(원장 부재로 편집 여부 판정 불가)" in out, out
+    assert "세트 수용 제외(기록이 없어 편집 여부 판정 불가)" in out, out
     assert f"--accept {_SETTINGS_REL}" in out, "단건 수용 처방 부재"
 
 

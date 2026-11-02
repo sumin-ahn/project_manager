@@ -78,7 +78,7 @@ def _instance_owned_template_delta_lines(
         return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)
     except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 세대 델타 판정 실패만 advisory 줄, 그 밖 전파.
         return [
-            "⚠️  인스턴스 소유 템플릿 세대 판정 unavailable — "
+            "⚠️  인스턴스 소유 템플릿 버전 판정 unavailable — "
             f"{exc} · 판정 불가(변경 없음 아님)·전량 확인 권장."
         ]
 
@@ -259,12 +259,12 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
     for item in result.get("preserved", []):
         reason = {
             "edited": "채택자 편집",
-            "unrecorded": "원장 부재(구세대 설치)",
+            "unrecorded": "기록 없음(옛 버전 설치)",
             "update-failed": "갱신 실패(다음 실행이 재시도)",
             "raced": "판정 뒤 동시 편집 감지",
-            "ledger-blocked": "원장 기록 불가(상위 schema)",
+            "ledger-blocked": "기록 불가(상위 schema)",
             "write-failed": "원자 교체 실패",
-            "ledger-failed": "원장 기록 미확인",
+            "ledger-failed": "기록 미확인",
         }.get(item["status"], item["status"])
         print(f"⚠️  어댑터 config {item['relpath']} — {reason}이라 보존한다 "
               f"({item['summary']}).", file=sys.stderr)
@@ -273,9 +273,9 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
     for item in result.get("degraded", []):
         # 파일은 갱신됐는데 판정 기준(원장)이 안 남은 상태 — 조용히 두면 다음 동기가 이 파일을
         #   영구 보고 모드로 본다. 보존과 섞지 않고 실제 상태 그대로 알린다.
-        print(f"⚠️  어댑터 config {item['relpath']} — 갱신은 됐으나 원장 기록을 확인하지 못했다 "
+        print(f"⚠️  어댑터 config {item['relpath']} — 갱신은 됐으나 어댑터 설정 기록을 확인하지 못했다 "
               f"({item['summary']}).", file=sys.stderr)
-        print(f"    원장 경로 권한을 고친 뒤 `{_ADAPTER_CONFIG_ACCEPT_HINT} {item['relpath']}` 로 "
+        print(f"    기록 파일 경로 권한을 고친 뒤 `{_ADAPTER_CONFIG_ACCEPT_HINT} {item['relpath']}` 로 "
               f"기록을 복구하라(내용은 이미 상류 값이다).", file=sys.stderr)
     # in-sync byte지만 원장 backfill 실패 같은 상태는 preserved/degraded 버킷에 아직 없을 수 있다.
     already_reported = {
@@ -287,15 +287,15 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
                 or item.get("judgment_status") != "in-sync"):
             continue
         print(
-            f"⚠️  어댑터 config {item['relpath']} — 내용은 상류와 같지만 원장 기록이 없어 "
-            "수렴 완료로 볼 수 없다.",
+            f"⚠️  어댑터 config {item['relpath']} — 내용은 상류와 같지만 어댑터 설정 기록이 없어 "
+            "일치했다고 볼 수 없다.",
             file=sys.stderr,
         )
         print(
-            ("    다음 실 pm-update가 파일 byte를 바꾸지 않고 원장을 backfill한다. "
+            ("    다음 실 pm-update가 파일 byte를 바꾸지 않고 기록을 backfill한다. "
              "dry-run 없이 pm-update를 재실행하라."
              if dry_run else
-             f"    원장화하려면: {_ADAPTER_CONFIG_ACCEPT_HINT} {item['relpath']} "
+             f"    기록에 올리려면: {_ADAPTER_CONFIG_ACCEPT_HINT} {item['relpath']} "
              f"(백업 후 확인 · {_ADAPTER_CONFIG_WINDOWS_HINT})"),
             file=sys.stderr,
         )
@@ -399,7 +399,7 @@ def refuse_partial_hook_set_scope(home, scoped_changes, planned_changes,
         declarations=generation.declarations)
     if unverified:
         print(
-            "[중단] 상류 훅 세트 세대 선언을 확인할 수 없어 어댑터 훅 영역의 부분 전파를 거부한다 — "
+            "[중단] 상류 훅 세트 버전 선언을 확인할 수 없어 어댑터 훅 영역의 부분 전파를 거부한다 — "
             f"이 스코프가 결합 묶음을 반쪽만 갱신하는지 검증할 방법이 없다: {', '.join(unverified)}\n"
             "  → 스코프 없이 pm-update 를 돌리거나(전량 전파는 이 가드 대상이 아니다) `--from` 이 "
             "온전한 프레임워크 checkout 인지 확인하라.",
@@ -415,7 +415,7 @@ def refuse_partial_hook_set_scope(home, scoped_changes, planned_changes,
             file=sys.stderr,
         )
         print(
-            "  훅 세트는 한 세대 단위로만 정합이다(래퍼·드라이버·공유 코어). 반쪽 갱신은 "
+            "  훅 세트는 한 버전 단위로만 맞는다(래퍼·드라이버·공유 코어). 반쪽 갱신은 "
             "미지원 플래그 rc2 = 도구 차단을 만든다.\n"
             f"  → 이 묶음을 함께 지목하거나(--paths {' '.join(required)}) 스코프 없이 pm-update 를 "
             "돌려라.",
@@ -434,7 +434,7 @@ def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> N
 
     dry_run 은 문구만 바꾼다(판정 자체가 읽기 전용이라 write 경로와 결과가 같다)."""
     for finding in result.get("findings", []):
-        print(f"⚠️  어댑터 훅 세트 세대 불일치({finding['harness']}) — {finding['detail']}.",
+        print(f"⚠️  어댑터 훅 세트 버전 불일치({finding['harness']}) — {finding['detail']}.",
               file=sys.stderr)
         for line in finding["remedy_lines"]:
             print(f"    → {line}", file=sys.stderr)
@@ -445,7 +445,7 @@ def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> N
         for line in finding["remedy_lines"]:
             print(f"    → {line}", file=sys.stderr)
     if result.get("findings") and dry_run:
-        print("    (dry-run — 판정만 했다. 위 처방을 적용한 뒤 실 pm-update 를 돌려라.)",
+        print("    (dry-run — 판정만 했다. 위 해결 방법을 적용한 뒤 실 pm-update 를 돌려라.)",
               file=sys.stderr)
 
 

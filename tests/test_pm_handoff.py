@@ -1368,7 +1368,7 @@ def test_regression_cwd_explicit_slot_stale_falls_back_to_repo(hf, tmp_path, cap
     result = slot_resolution._regression_cwd(pm_paths.home_at(home.root), "work/foo_2", repo_root=tmp_path)
     assert result == str(tmp_path)
     err = capsys.readouterr().err
-    assert "work/foo_2" in err and "REPO 로 폴백" in err
+    assert "work/foo_2" in err and "REPO 를 대신 쓴다" in err
 
 
 def test_regression_cwd_explicit_slot_existing_dir_not_stale(hf, tmp_path):
@@ -1390,7 +1390,7 @@ def test_regression_cwd_auto_slot_stale_falls_back_like_the_explicit_branch(
     result = slot_resolution._regression_cwd(pm_paths.home_at(home.root), areas_file=areas, leases_file=leases, repo_root=tmp_path)
     assert result == str(tmp_path)
     err = capsys.readouterr().err
-    assert 'project_manager_1' in err and 'REPO 로 폴백' in err, err
+    assert 'project_manager_1' in err and 'REPO 를 대신 쓴다' in err, err
 
 
 # ── ADR-0044 handoff 헤더 세션 정체성 태그 (T-0252) ──────────────────────────────
