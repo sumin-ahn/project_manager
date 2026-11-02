@@ -26,9 +26,9 @@ def resolve_code_tree(home, cluster: str, *, run_git_stdout_at=None) -> tuple[Pa
     raw = (ledger or {}).get("branch")
     key, branch = "branch", (raw.strip() or None) if isinstance(raw, str) else None
     if branch is None:
-        return None, (f"{cluster}는 제품 브랜치 미결속 장부다. 기존 "
+        return None, (f"{cluster}는 제품 브랜치에 연결되지 않은 묶음 기록이다. 기존 "
                       "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
-                      "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시 재결속하라")
+                      "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시적으로 다시 연결하라")
     ledger_status, rows = lease_store._read_lease_rows_status(pm_paths.leases_file(home))
     if ledger_status == identity_args.LEDGER_UNREADABLE:
         raise finish_rules._CloseObservationFailure(

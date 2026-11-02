@@ -243,7 +243,7 @@ def owning_pm_home(anchor: Path) -> Path:
     pm_home = _pm_home_from_common_dir(common_dir)
     if pm_home is None:
         raise PmHomeResolutionError(
-            f"{anchor}: 공용 Git 저장소 {common_dir} 형상에서 소유 PM 홈을 찾지 못했습니다."
+            f"{anchor}: 공용 Git 저장소 {common_dir} 구성에서 소유 PM 홈을 찾지 못했습니다."
         )
     pm_home = pm_home.resolve(strict=False)
     if not (pm_home / ".project_manager").is_dir():

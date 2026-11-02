@@ -231,8 +231,8 @@ def cmd_capture(home, args: argparse.Namespace) -> int:
         print("영향 페이지 (갱신 검토):")
         print(
             "  ※ 갱신 = 현재-진실을 *교체*(지금 유효한 서술로 고쳐 쓰기). "
-            "세션별 delta 를 덧붙이지 마라 — '언제 왜 바뀌었나'는 log/ADR 몫이고 "
-            "페이지는 링크만 건다(domain lint `history` 축)."
+            "세션별 차이를 덧붙이지 마라 — '언제 왜 바뀌었나'는 log/ADR 몫이고 "
+            "페이지는 링크만 건다(domain lint `history` 기준)."
         )
         for page in affected:
             marker = _stale_marker(home, page)

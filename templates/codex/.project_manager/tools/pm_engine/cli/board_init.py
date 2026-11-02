@@ -253,7 +253,7 @@ def cmd_init(home, args: argparse.Namespace) -> int:
         board_sync._board_git_sync_best_effort(home, "init areas 등록", (pm_paths.areas_file(home),))
     print(area_message)
     print("✓ local.conf: py·test_cmd·ctx 비율 (세션·prefix 는 conf 키가 아니다 — "
-          "세션=lease 장부 · prefix=areas.md)")
+          "세션=슬롯 대여 기록 · prefix=areas.md)")
     # 병합 경로가 손대지 않은 기존 키(오타·폐기)도 같은 목록·같은 함수로 표면화한다 —
     # `board.py lint` 를 따로 실행하지 않아도 온보딩 시점에 1줄로 보이게(사본 없음).
     for _, _, detail in conf_lint.lint_local_conf_keys(home):
@@ -269,8 +269,8 @@ def cmd_init(home, args: argparse.Namespace) -> int:
         print(f"✓ pm_state.md 생성 ({pm_paths._rel_to_repo(home, (pm_paths.wiki_dir(home) / "pm_state.template.md"))} 에서)")
     # 미설치면 사유를 `install_pre_push_hook` 이 stderr 에 남긴다 — 여기서는 설치한 자리를 밝힌다.
     if pre_push_hook.install_pre_push_hook(home):
-        print("✓ pre-push 게이트 훅 설치 — 자기 저장소의 .git/hooks "
-              "(lint 게이트는 항상 · 회귀 게이트는 tests/ 있는 트리만)")
+        print("✓ pre-push 훅 설치 — 자기 저장소의 .git/hooks "
+              "(lint 통과 조건은 항상 · 회귀 통과 조건은 tests/ 있는 트리만)")
     # board submodule 이 분리된 형상이면 ignore=all 자동 설정 — design(코드) git 이
     # board PM-commit 으로 오염되지 않게(누출 0). 미분리/git 부재면 no-op(fail-soft·무영향).
     if _configure_board_submodule(home):

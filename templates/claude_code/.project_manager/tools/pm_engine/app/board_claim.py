@@ -92,7 +92,7 @@ def _claim_block_message(ticket_id: str, prefetch: board_git_rules._ClaimPrefetc
                 f"`git -C .project_manager/board rebase --continue` 후 재시도 "
                 f"(offline 아님·네트워크 정상).")
     if prefetch.block == board_git_rules._CLAIM_BLOCK_DETACHED:
-        return (f"board submodule 이 detached HEAD 상태 — {ticket_id} claim 불가(rollback anchor "
+        return (f"board submodule 이 detached HEAD 상태 — {ticket_id} claim 불가(되돌릴 기준 커밋 "
                 f"없음). `git -C .project_manager/board checkout <branch>`(예: main) 로 브랜치에 "
                 f"복귀 후 claim 재시도 (offline 아님·네트워크 정상). detached 에서 이미 쌓인 로컬 "
                 f"commit 이 있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.")
@@ -121,7 +121,7 @@ def _claim_block_message(ticket_id: str, prefetch: board_git_rules._ClaimPrefetc
                 f"— 원인 미상이므로 `git -C .project_manager/board pull --rebase` 를 직접 돌려 "
                 f"출력을 확인하라." + (f" (git: {prefetch.detail})" if prefetch.detail else ""))
     if prefetch.block == board_git_rules._CLAIM_BLOCK_NO_ANCHOR:
-        return (f"board git 의 HEAD 를 확인할 수 없다 — {ticket_id} claim 불가(rollback anchor "
+        return (f"board git 의 HEAD 를 확인할 수 없다 — {ticket_id} claim 불가(되돌릴 기준 커밋 "
                 f"없이는 거짓 소유를 되돌릴 수 없다). `git -C .project_manager/board status` 로 "
                 f"board git 상태를 확인하라.")
     hint = board_git._board_git_dirty_hint(prefetch.dirty) if prefetch.dirty else ""

@@ -61,10 +61,10 @@ def _format_freshness(scope: dict) -> str:
         ahead = scope.get("ahead") or 0
         if behind is None:
             # upstream 미설정/조회불가 — offline 이면 판정불가로 감싼다(fail-soft).
-            parts.append("판정불가 — 스냅샷일 수 있음" if not fetched else "upstream 없음")
+            parts.append("판정불가 — 옛 복사본일 수 있음" if not fetched else "upstream 없음")
         elif behind == 0 and ahead == 0:
             # online 이면 진짜 최신, offline 이면 실측 못 한 stale 스냅샷일 뿐(판정불가).
-            parts.append("판정불가 — 스냅샷일 수 있음" if not fetched else "최신")
+            parts.append("판정불가 — 옛 복사본일 수 있음" if not fetched else "최신")
         else:
             parts.append(f"behind {behind} / ahead {ahead}")
     if scope.get("note"):

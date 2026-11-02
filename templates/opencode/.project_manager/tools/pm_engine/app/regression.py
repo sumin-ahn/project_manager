@@ -116,9 +116,9 @@ def _leased_regression_workspaces(home) -> tuple[identity_args.Workspace, ...]:
     except FileNotFoundError:
         return ()
     except json.JSONDecodeError as exc:
-        raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 장부 JSON 손상: {leases}") from exc
+        raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 슬롯 대여 기록 JSON 손상: {leases}") from exc
     if not isinstance(data, dict) or not isinstance(data.get("leases", []), list):
-        raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 장부 형식 오류: {leases}")
+        raise identity_args.WorkspaceResolutionError(f"회귀 작업공간 슬롯 대여 기록 형식 오류: {leases}")
     found = []
     seen = set()
     for row in data.get("leases", []):
@@ -298,8 +298,8 @@ def _active_review_gates(home) -> list[str]:
 
 def _downgrade_cancelled(gate: str, reason: str) -> tuple[list[str], list[str]]:
     """강등 전체 취소 — 미해소 게이트를 식별하는 사유 1줄 + 빈 결과(호출부가 FULL 로 남긴다)."""
-    print(f"regression: 게이트 {gate} 의 {reason} — 활성 리뷰 사이클 강등을 취소하고 FULL 로 "
-          "실행합니다 (부분 강등은 미해소 게이트 범위를 한 번도 돌지 않는 '가짜 green').",
+    print(f"regression: 리뷰 집계 티켓 {gate} 의 {reason} — 활성 리뷰 사이클의 수준 낮춤을 취소하고 FULL 로 "
+          "실행합니다 (일부만 돌리면 미해소 리뷰 집계 티켓 범위를 한 번도 돌지 않는 '가짜 green').",
           file=sys.stderr)
     return [], []
 
@@ -723,7 +723,7 @@ def _core_record_problem(home, data: dict, anchor: str, head: str, *,
                     or isinstance(data["collected"], bool) or data["collected"] <= 0):
         return "core collection invalid"
     if git._git_head_at(anchor) != head:
-        return "core anchor head mismatch"
+        return "core conf_anchor head mismatch"
     if command != _core_command_at(home, anchor, session, local_dir=local_dir, workspace=workspace):
         return "core command changed"
     return None
@@ -743,7 +743,7 @@ def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
         return ""
     note = " · 수집 0 — 테스트 루트/cwd 확인"
     if not override and not (Path(cwd) / "tests").is_dir():
-        note += (f" · 이 트리에 `tests/` 가 없다({cwd} · 분리 형상 PM 홈) — 코드 트리에서 "
+        note += (f" · 이 트리에 `tests/` 가 없다({cwd} · 분리 구성 PM 홈) — 코드 트리에서 "
                  "실행하거나 `--cwd <코드 트리 절대경로>`/`--task <task>` 으로 지목하라")
     return note
 

@@ -985,7 +985,7 @@ def _harness_ctx_baseline_writable(dest_root: Path) -> None:
     """원장이 이 엔진보다 새 schema 면 `HarnessCtxError` — 반영이 어떤 파일도 쓰기 전에 본다."""
     if adapter_baseline._load_adapter_baseline_document(dest_root).status == "newer-schema":
         raise HarnessCtxError([
-            f"어댑터 config 원장 schema 가 이 엔진(지원 상한 {adapter_baseline.ADAPTER_BASELINE_SCHEMA})보다 새로워 "
+            f"어댑터 설정 기록 schema 가 이 엔진(지원 상한 {adapter_baseline.ADAPTER_BASELINE_SCHEMA})보다 새로워 "
             "기록할 수 없어 설정 파일을 쓰지 않았습니다 — 엔진을 갱신한 뒤 다시 실행하십시오."])
 
 
@@ -1027,7 +1027,7 @@ def _harness_ctx_write(dest_root: Path, changed: dict[str, tuple[str, str]]) -> 
                       or recorded_now[relpath].get("sha256") != digest]
         if unrecorded:
             violations.append(
-                f"{', '.join(unrecorded)} 는 반영했지만 원장 기록을 확인하지 못했습니다 — 원장 경로 "
+                f"{', '.join(unrecorded)} 는 반영했지만 어댑터 설정 기록에서 확인하지 못했습니다 — 기록 파일 경로 "
                 f"({adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()})의 쓰기 권한을 확인한 뒤 다시 실행하십시오.")
     if violations:
         raise HarnessCtxError(violations, written=written)

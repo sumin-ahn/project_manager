@@ -36,12 +36,12 @@ _RELEASE_MUST_FIX_MARKER_NAME = "release-must-fix"
 _RELEASE_MUST_FIX_CLEAR = "clear"
 _RELEASE_MUST_FIX_BLOCKED = "blocked"
 _MUST_FIX_BLOCK_GUIDANCE = (
-    "live-test: fail — 미해소 must-fix 잔여 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
+    "live-test: fail — 미해소로 남은 must-fix {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
     "{items}\n"
-    "  처방 — 현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언하세요:\n"
+    "  해결 방법 — 현재 티켓 fix의 기계 확인 증거로 리뷰 집계 티켓마다 처분을 선언하세요:\n"
     "    python3 .project_manager/tools/additional_reviewer.py "
-    "--resolve-review <게이트> --pm-verified\n"
-    "  라운드 장부: {ledger}"
+    "--resolve-review <리뷰 집계 티켓> --pm-verified\n"
+    "  라운드 기록: {ledger}"
 )
 
 # ── 릴리즈 엔진 사본 drift 차단 (릴리즈 절차의 두 번째 기계 관문 · must-fix 거부 직후) ──
@@ -52,7 +52,7 @@ _LIVEGATE_ENGINE_DRIFT_REASON = "engine-drift"   # fail 기록의 사유 표식(
 _ENGINE_DRIFT_BLOCK_GUIDANCE = (
     "live-test: fail — 실행 엔진 사본이 upstream 과 drift 상태 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
     "{items}\n"
-    "  처방: python3 .project_manager/tools/pm_update.py 로 엔진 사본을 동기한 뒤 재실행하세요."
+    "  해결 방법: python3 .project_manager/tools/pm_update.py 로 엔진 사본을 동기한 뒤 재실행하세요."
 )
 
 

@@ -101,7 +101,7 @@ def build_handoff_prompt_output(home, pm_playbook_text: str, session_num: int | 
     if template is None:
         return (
             "[경고] pm_playbook.md 에서 인계 프롬프트 템플릿을 찾지 못했다. "
-            f"앵커: '{_HANDOFF_PROMPT_SECTION_ANCHOR}'\n"
+            f"찾는 절 제목: '{_HANDOFF_PROMPT_SECTION_ANCHOR}'\n"
             "pm_playbook.md §'다음 PM 세션 부트스트랩 프롬프트 (템플릿)' 을 직접 복사하라."
         )
     template = _select_runtime_bootstrap_notation(template)
@@ -118,6 +118,6 @@ def build_handoff_prompt_output(home, pm_playbook_text: str, session_num: int | 
     )
     footer = (
         f"\n--- 복사 끝 ---\n"
-        f"[참고] 날짜: {date_str}, wave summary: {wave_summary}\n"
+        f"[참고] 날짜: {date_str}, 세션 요약: {wave_summary}\n"
     )
     return header + "```\n" + template + "```" + footer

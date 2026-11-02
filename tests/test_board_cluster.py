@@ -442,7 +442,7 @@ def test_cluster_new_is_loud_when_the_absorbed_ledger_cannot_be_removed(
 
     assert rc == 1
     err = capsys.readouterr().err
-    assert "옛 장부에서" in err and first in err and "중복 귀속" in err
+    assert "옛 묶음 기록에서" in err and first in err and "중복 귀속" in err
     # 옛 장부는 멤버를 그대로 쥐고 있다 — 그 사실이 rc 와 lint 로 함께 보인다.
     assert auto.is_file()
     assert cluster_store.cluster_tickets(cluster_store.load_cluster(pm_paths.home_at(board.REPO), f"C-{first}")) == [first]
@@ -559,7 +559,7 @@ def test_cluster_new_refuses_an_existing_ledger(env, capsys):
     rc = board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args("new", "once", tickets=first))
 
     assert rc == 1
-    assert "이미 있는 클러스터 장부" in capsys.readouterr().err
+    assert "이미 있는 묶음 기록" in capsys.readouterr().err
 
 
 @requires_git
@@ -605,7 +605,7 @@ def test_new_creates_a_size_one_cluster_and_keeps_the_existing_stdout_lines(
     assert stdout_lines[1].startswith("  → fill in 목표 / 완료 조건 / 참고")
     assert all("클러스터" not in line for line in stdout_lines)
     # 추가 고지는 stderr 1줄이다.
-    assert f"크기 1 묶음 장부 생성: C-{tid}" in captured.err
+    assert f"크기 1 묶음 기록 생성: C-{tid}" in captured.err
     ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), f"C-{tid}")
     assert ledger["tickets"] == [tid]
     assert ledger["branch"] is None       # 브랜치 선언은 `cluster new` 의 몫이다.

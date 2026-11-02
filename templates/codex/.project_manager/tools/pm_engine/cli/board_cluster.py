@@ -74,7 +74,7 @@ def _cluster_release_member(home, cluster: str, tid: str) -> Path | None:
         with contextlib.suppress(FileNotFoundError):
             path.unlink()
         if path.exists():
-            raise OSError(f'자동 장부 삭제 뒤에도 파일이 남아 있다: {path}')
+            raise OSError(f'자동 묶음 기록 삭제 뒤에도 파일이 남아 있다: {path}')
         return path
     return cluster_store.dump_cluster(home, fm)
 
@@ -163,7 +163,7 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
     with fs.board_lock(home):
         ledger_path = cluster_store.cluster_ledger_path(home, cluster)
         if ledger_path.exists():
-            print(f'[중단] 이미 있는 클러스터 장부: {pm_paths._rel_to_repo(home, ledger_path)} (멤버 조회는 `cluster show`)', file=sys.stderr)
+            print(f'[중단] 이미 있는 묶음 기록: {pm_paths._rel_to_repo(home, ledger_path)} (멤버 조회는 `cluster show`)', file=sys.stderr)
             return 1
         resolved: list[tuple[str, Path, dict[str, Any], str, str | None]] = []
         drafts: list[str] = []
@@ -186,7 +186,7 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
             resolved.append((tid, path, fm, body, owner))
         tree, base_branch = _cluster_publish_base_branch(home, args)
         if tree is None:
-            print(f'[중단] 코드 트리를 해소하지 못했다 — 정체성 (repo={identity.repo} · slot={identity.slot} · task={identity.task}) 이 리스 장부의 활성 슬롯과 조인되지 않는다. `pm_handoff`/`worktree_pool` 로 슬롯을 확인한 뒤 다시 실행하라.', file=sys.stderr)
+            print(f'[중단] 코드 트리를 해소하지 못했다 — 정체성 (repo={identity.repo} · slot={identity.slot} · task={identity.task}) 이 슬롯 대여 기록의 활성 슬롯과 조인되지 않는다. `pm_handoff`/`worktree_pool` 로 슬롯을 확인한 뒤 다시 실행하라.', file=sys.stderr)
             return 1
         base_branch, refusal = cluster_binding._cluster_new_base_branch(tree, branch, base_branch)
         if refusal is not None:
@@ -203,7 +203,7 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
                 try:
                     released = _cluster_release_member(home, owner, tid)
                 except OSError as exc:
-                    print(f'[중단] 옛 장부에서 {tid} 를 빼지 못했다: {pm_paths._rel_to_repo(home, cluster_store.cluster_ledger_path(home, owner))}: {exc} — {cluster} 와 중복 귀속 상태다. 옛 장부를 정리한 뒤 `lint` 로 확인하라(새 장부·티켓 명세는 이미 갱신됐다).', file=sys.stderr)
+                    print(f'[중단] 옛 묶음 기록에서 {tid} 를 빼지 못했다: {pm_paths._rel_to_repo(home, cluster_store.cluster_ledger_path(home, owner))}: {exc} — {cluster} 와 중복 귀속 상태다. 옛 묶음 기록을 정리한 뒤 `lint` 로 확인하라(새 묶음 기록·티켓 명세는 이미 갱신됐다).', file=sys.stderr)
                     return 1
                 if released is not None:
                     touched.append(released)
@@ -215,7 +215,7 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
     if not ready:
         print('  ⚠ board-git 기록 보류: local-only/uncommitted', file=sys.stderr)
     if drafts:
-        print(f'  ⚠ draft 멤버 {len(drafts)}건({', '.join(drafts)}) — 장부는 공유 board 에 있으나 draft 명세는 승격 전까지 공유되지 않는다(다른 클론에서 멤버 부재 advisory). `promote` 로 승격하라.', file=sys.stderr)
+        print(f'  ⚠ draft 멤버 {len(drafts)}건({', '.join(drafts)}) — 묶음 기록은 공유 board 에 있으나 draft 명세는 승격 전까지 공유되지 않는다(다른 클론에서 멤버 부재 advisory). `promote` 로 승격하라.', file=sys.stderr)
     material = _cluster_overlap_material(home, [(tid, fm.get('touches')) for tid, _path, fm, _body, _owner in resolved], identity.repo or home.root.name)
     for line in material:
         print(line, file=sys.stderr)

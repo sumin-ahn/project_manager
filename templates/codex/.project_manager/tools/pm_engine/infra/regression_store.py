@@ -108,11 +108,11 @@ def _inherit_flag_anchor(home, default_cwd: str, flag: Path | None = None) -> st
     if not _flag_blocks_push(data):
         return default_cwd
     if not Path(anchor).is_dir():
-        print(f"regression: 직전 차단 기록의 앵커({anchor})가 없어 기본 트리에서 재실행 — "
+        print(f"regression: 직전 차단 기록의 대상 저장소({anchor})가 없어 기본 트리에서 재실행 — "
               "그 기록은 이 실행 결과로 덮인다.", file=sys.stderr)
         return default_cwd
-    print(f"regression: 직전 차단 기록의 앵커를 이어받아 실행 → {anchor} "
-          "(다른 트리 green 으로 덮이는 게이트 우회 차단)")
+    print(f"regression: 직전 차단 기록의 대상 저장소를 이어받아 실행 → {anchor} "
+          "(다른 트리 green 으로 덮이는 통과 조건 우회 차단)")
     return os.path.abspath(anchor)
 
 

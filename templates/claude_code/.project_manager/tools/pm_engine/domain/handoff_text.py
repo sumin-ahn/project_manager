@@ -350,7 +350,7 @@ def upsert_dirty_ack_line(entry_text: str, note: str, newline: str = "\n") -> st
         return entry_text[:anchor.start()] + line + newline + entry_text[anchor.start():]
     if not entry_text.strip():
         raise DirtyAckStampError(
-            "기존 handoff entry 가 비어 ack 사유를 박제할 자리가 없다"
+            "기존 handoff entry 가 비어 ack 사유를 기록할 자리가 없다"
         )
     suffix = "" if entry_text.endswith(("\n", "\r")) else newline
     return entry_text + suffix + line + newline
@@ -561,7 +561,7 @@ def update_session_window(
     result = session_history._extract_session_section(pm_state_text)
     if result is None:
         raise ValueError(
-            f"앵커 불일치: '{session_history._SESSION_SECTION_ANCHOR}' 가 pm_state.md 에서 발견되지 않았다."
+            f"절 제목 불일치: '{session_history._SESSION_SECTION_ANCHOR}' 가 pm_state.md 에서 발견되지 않았다."
         )
     section_text, start_offset, end_offset = result
 
@@ -573,7 +573,7 @@ def update_session_window(
         # fail-loud해 추측 편집 금지 경계를 보존한다.
         if identity_args.TASK_PM_STATE_EMPTY_MARKER not in section_text:
             raise ValueError(
-                "앵커 불일치: 세션 식별 절에 기존 pm 세션 entry (- **N차** ...) 가 없다."
+                "절 형식 불일치: 세션 식별 절에 기존 pm 세션 entry (- **N차** ...) 가 없다."
             )
         new_entry_line = _build_new_session_entry(session_num, date_str, wave_summary)
         new_section = section_text.replace(

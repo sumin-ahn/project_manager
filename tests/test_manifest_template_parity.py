@@ -440,7 +440,7 @@ def test_compaction_adapters_reference_engine_builder_without_copying_snapshot_l
         "codex": (TEMPLATE_ROOTS["codex"] / ".codex" / "pm_orch_codex.py",
                   TEMPLATE_ROOTS["codex"] / ".codex" / "hooks.json"),
     }
-    builder_labels = ("## PM 정체성 (compaction 복구)", "## 장부 포인터", "## pm_state 머리", "## 복구 포인터")
+    builder_labels = ("## PM 정체성 (compaction 복구)", "## 기록 위치", "## pm_state 머리", "## 복구 포인터")
     for harness, paths in adapters.items():
         texts = [path.read_text(encoding="utf-8") for path in paths]
         # 토큰은 셸 한 줄(`pm_log.py snapshot`)일 수도 argv 원소 두 개(`"…/pm_log.py", "snapshot"`)

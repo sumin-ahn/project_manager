@@ -27,7 +27,7 @@ _BOARD_GITATTRIBUTES_BLOCK = (
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     f"areas.md merge={gitattributes_rules._AREAS_UNION_DRIVER}\n"
-    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(라운드 회수 bytes·\n"
+    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(라운드 돌려받기 bytes·\n"
     "# 재작성 byte 판정). 엔진의 표기 보존이 근본이고 이 선언은 그 위의 방어층이다.\n"
     + "".join(
         f"*.{extension} text eol=lf\n" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
@@ -71,7 +71,7 @@ _BOARD_DRAFT_IGNORE_FORMS: tuple[str, ...] = (
 
 _BOARD_GITIGNORE_BLOCK = (
     "# tickets/.drafts/ = 미충전 draft 티켓 — 설계상 board-git 미커밋(promote 가 open/ 으로 옮긴다).\n"
-    "# 선언하지 않으면 draft 가 untracked 로 남아 dirty-tree 관측이 매번 미커밋 잔여로 오탐한다.\n"
+    "# 선언하지 않으면 draft 가 untracked 로 남아 dirty-tree 관측이 매번 남은 미커밋 변경으로 오탐한다.\n"
     f"{_BOARD_GIT_DRAFT_IGNORE_PATTERN}\n"
 )
 

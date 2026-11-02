@@ -268,7 +268,7 @@ def test_parse_lint_result_clean_marker_is_line_anchored():
     """
     mod = _load_module()
     poisoned = (
-        "repo 앵커: /home/user/no lint issues/repo (worktree)\n"
+        "대상 저장소: /home/user/no lint issues/repo (worktree)\n"
         "\u26a0\ufe0f  3 lint issue(s):\n"
         "  [render-leak] a.md: x\n"
         "  [render-leak] b.md: y\n"
@@ -276,7 +276,7 @@ def test_parse_lint_result_clean_marker_is_line_anchored():
     )
     assert bootstrap_report.parse_lint_result(poisoned) == "3 warnings"
     # 진짜 clean 은 앵커 줄이 있든 없든 clean.
-    assert bootstrap_report.parse_lint_result("repo 앵커: /home/u/repo (PM 홈)\n\u2713 no lint issues\n") == "clean"
+    assert bootstrap_report.parse_lint_result("대상 저장소: /home/u/repo (PM 홈)\n\u2713 no lint issues\n") == "clean"
     assert bootstrap_report.parse_lint_result("\u2713 no lint issues\n") == "clean"
 
 
@@ -1020,7 +1020,7 @@ def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt(tmp_path)
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
     board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
-    assert board["lint"] == "gate error (unparsed)"
+    assert board["lint"] == "check error (unparsed)"
     assert board["lint_blocking"] is True
     assert board["lint_parse_failed"] is True
     assert board["lint_gate_rc"] == 2
@@ -1060,7 +1060,7 @@ def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint
 
     board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
     assert board["lint_parse_failed"] is True, f"{label}: 파싱 실패를 인지해야 한다"
-    assert board["lint"] == "gate error (unparsed)", f"{label}: clean 으로 위장하면 안 된다"
+    assert board["lint"] == "check error (unparsed)", f"{label}: clean 으로 위장하면 안 된다"
     assert board["lint_blocking"] is True, f"{label}: 모르는 상태는 blocking 으로 surface"
     assert board["lint_gate_rc"] == 0
     assert board["lint_gate_output"] == lint_output
@@ -1573,4 +1573,4 @@ def test_collect_board_keeps_unparsed_for_a_non_hook_lint_failure(tmp_path):
         raise AssertionError(f"예상치 못한 board 호출: {args}")
 
     board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
-    assert board["lint"] == "gate error (unparsed)"
+    assert board["lint"] == "check error (unparsed)"

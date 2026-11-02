@@ -106,31 +106,31 @@ class PmHandoff:
             try:
                 owned = bool(pool_store.lease_owned_by_task_strict(self._home, slot, task))
             except (OSError, ValueError) as exc:
-                print(f"  [중단·소유권 재검증] task 슬롯 {slot!r} 장부 조회 실패 — {exc}. "
-                      "git 재스냅을 실행하지 않습니다.", file=sys.stderr)
+                print(f"  [중단·소유권 재검증] task 슬롯 {slot!r} 대여 기록 조회 실패 — {exc}. "
+                      "git 상태를 다시 기록하지 않습니다.", file=sys.stderr)
                 return False
             if not owned:
                 print(f"  [중단·소유권 재검증] task 슬롯 {slot!r}은 더 이상 "
-                      f"state=leased && session={task!r}가 아닙니다 — git 재스냅 중단. "
+                      f"state=leased && session={task!r}가 아닙니다 — git 상태 다시 기록 중단. "
                       "새 소유자의 lease.git을 덮어쓰지 않습니다.", file=sys.stderr)
                 return False
         before_git = self._lease_git_before(slot)
         lease = slot_snapshot.record_git_snapshot(self._home, slot)
         if lease is None:
-            print(f"  ⚠ slot {slot!r} 리스 장부에 없음 — git 재스냅 skip(무해).", file=sys.stderr)
+            print(f"  ⚠ slot {slot!r} 슬롯 대여 기록에 없음 — git 상태 다시 기록 skip(무해).", file=sys.stderr)
             return True
         after_git = lease.git if isinstance(lease.git, dict) else None
         if after_git is not None and after_git != before_git:
             print(
-                f"  ✓ git 재스냅 기록: {slot} → "
+                f"  ✓ git 상태 다시 기록: {slot} → "
                 f"branch=`{after_git.get('branch')}` head=`{after_git.get('head')}` "
                 "(실갱신·여기 두고 간다)"
             )
         else:
             # 무변경 — 슬롯 live 스냅 불가(worktree 경로 부재 등)로 기존 기록 유지(clobber 방지·무해).
             print(
-                f"  · git 재스냅 무변경: {slot} — 슬롯 live 스냅 불가·기존 기록 유지"
-                "(스냅 불가·차기 0단계는 기존 스냅 기준·무해)."
+                f"  · git 상태 다시 기록 무변경: {slot} — 슬롯 live 상태 기록 불가·기존 기록 유지"
+                "(상태 기록 불가·차기 0단계는 기존 상태 기록 기준·무해)."
             )
         return True
 
@@ -190,7 +190,7 @@ class PmHandoff:
 
         cmp = slot_snapshot.compare_slot_git(self._home, slot)
         if getattr(cmp, "unrecorded", False):
-            return True, "스냅 미기록·보수적 변경 취급"
+            return True, "상태 미기록·보수적 변경 취급"
         if not getattr(cmp, "branch_match", False):
             return True, "branch 변경"
         if getattr(cmp, "head_relation", None) != worktree_records.HEAD_MATCH:
@@ -208,13 +208,13 @@ class PmHandoff:
         (`_record_slot_snapshot`)를 그대로 재사용(판정 재구현 없음). 보유 0개면
         명시 skip. dry_run 은 슬롯별 예고만."""
         slots = self._task_held_slots(task)
-        print("\n[재스냅] task 보유 슬롯 git 재스냅 (집합 전체 두고 간다)...")
+        print("\n[상태 다시 기록] task 보유 슬롯 git 상태 다시 기록 (집합 전체 두고 간다)...")
         if not slots:
-            print(f"  · task {task!r} 보유 슬롯 0개 — 재스냅 대상 없음(무해 skip).")
+            print(f"  · task {task!r} 보유 슬롯 0개 — 상태 다시 기록 대상 없음(무해 skip).")
             return True
         for slot in slots:
             if dry_run:
-                print(f"  [dry-run] git 재스냅 예고: {slot} (실행 생략).")
+                print(f"  [dry-run] git 상태 다시 기록 예고: {slot} (실행 생략).")
             else:
                 if not self._record_slot_snapshot(slot, task=task):
                     return False
@@ -243,7 +243,7 @@ class PmHandoff:
             print(f"  [중단] task 종료 기록 실패 — {exc}.", file=sys.stderr)
             raise
         if task_rec is None:
-            print(f"  [중단] task {task!r} 장부에 없음 — 멱등성 신호를 기록하지 못했다.",
+            print(f"  [중단] task {task!r} 기록에 없음 — 멱등성 신호를 기록하지 못했다.",
                   file=sys.stderr)
             return False
         print(
@@ -350,7 +350,7 @@ class PmHandoff:
         if not changed:
             print(
                 f"  · task {task!r} 보유 {len(slots)}슬롯 전부 무변경 — 변경 슬롯 없음"
-                "(회귀·출하 surface 대상 0·신호 0·push 게이트=pre-push 훅 별도)."
+                "(회귀·출하 surface 대상 0·신호 0·push 통과 조건=pre-push 훅 별도)."
             )
         return changed
 
@@ -372,10 +372,10 @@ class PmHandoff:
             # 그 슬롯을 red 로 차단하고 해소 커맨드를 안내한다.
             if self._slot_worktree_missing(slot):
                 print(
-                    f"\n[중단] task 슬롯 {slot!r} 의 worktree 디렉터리 부재(stale — 장부엔 존재·"
-                    f"{self._home.root / slot}) — REPO 폴백 회귀는 vacuous-pass(엉뚱한 트리 green)이므로 "
+                    f"\n[중단] task 슬롯 {slot!r} 의 worktree 디렉터리 부재(stale — 슬롯 대여 기록엔 존재·"
+                    f"{self._home.root / slot}) — REPO 로 대체한 회귀는 vacuous-pass(엉뚱한 트리 green)이므로 "
                     f"그 슬롯을 red 로 차단한다. `{lease_store._runtime_skill_entry('pm-worktree')} "
-                    "prune-stale`(장부 정리) 또는 "
+                    "prune-stale`(슬롯 대여 기록 정리) 또는 "
                     "사용자에게 슬롯 재생성 승인을 요청하라. 승인한 사용자만 "
                     "`worktree add <repo> --task <task> --user-ack <repo>`를 직접 실행한 뒤 "
                     "재시도한다(세션 자동 실행 금지). "
@@ -454,13 +454,13 @@ class PmHandoff:
         if shipping_hits:
             print(
                 f"  ⚠ 미검증 출하 변경 {len(shipping_hits)}파일 — 릴리즈 전 "
-                "라이브(release wave) 필요: `board.py live-test record`."
+                "라이브 시험 필요: `board.py live-test record`."
             )
             return
         if has_unknown:
             print(
                 "  ⚠ 미검증 출하 변경 가능성 (미push diff 분류 불명·baseline 해소불가) — "
-                "릴리즈 전 라이브(release wave) 확인 필요."
+                "릴리즈 전 라이브 시험 확인 필요."
             )
             return
         print("  출하 변경 없음 (미push diff 가 비-출하·또는 push 없음) — release 라이브 불요.")
@@ -494,14 +494,14 @@ class PmHandoff:
         전 장부 통합 조회는 이 표면의 범위 밖).
         """
         ledger = self._resolve_raw_ledger()
-        print(f"  이 장부 기준: {ledger}")
+        print(f"  이 기록 파일 기준: {ledger}")
         self._report_unfinished_raw(ledger)
         self._report_peer_raw_ledgers(ledger)
 
     def _report_unfinished_raw(self, ledger: Path) -> None:
         """결정 공급 장부 1개의 미마감 판정 — 건수 + 최근 N건 (부재는 사유 1줄 후 skip)."""
         if not ledger.exists():
-            print("  raw 장부 없음 — 미마감 raw 0건.")
+            print("  raw 출력 기록 없음 — 미마감 raw 0건.")
             return
         rows = raw_output.unfinished_raw_records(ledger)
         if not rows:
@@ -537,7 +537,7 @@ class PmHandoff:
         for peer in self._peer_raw_ledgers(primary):
             count = len(raw_output.unfinished_raw_records(peer))
             print(
-                f"  {'⚠ ' if count else ''}사본 장부 {peer} — 미마감 {count}건 "
+                f"  {'⚠ ' if count else ''}다른 엔진 사본의 raw 출력 기록 파일 {peer} — 미마감 {count}건 "
                 "(이 sweep 밖·통합 조회는 범위 밖)."
             )
 
@@ -720,9 +720,9 @@ class PmHandoff:
         except RuntimeError as exc:
             # `_task_held_slots` 는 모든 해소 실패를 RuntimeError 로 감싼다(해소 실패 ≠ 실제 빈 집합).
             print(
-                f"\n[중단] task {task!r} 보유 슬롯 장부 해소 실패 — {exc}. "
+                f"\n[중단] task {task!r} 보유 슬롯 대여 기록 해소 실패 — {exc}. "
                 "실제 0슬롯으로 간주하지 않습니다. "
-                "log/current.md·pm_state·dashboard·git 재스냅 어떤 것도 기록하지 않습니다.",
+                "log/current.md·pm_state·dashboard·git 상태 어떤 것도 기록하지 않습니다.",
                 file=sys.stderr,
             )
             return 1
@@ -755,7 +755,7 @@ class PmHandoff:
         # 재실행이 중복 entry 를 만들지 않는다. 회귀([1/7]) **앞**에 두는 이유는 비용이다:
         # 판정은 git 조회 몇 번(초 단위)인데 회귀는 수 분이라, 뒤에 두면 커밋만 하면 될 PM 이
         # 회귀 한 판을 통째로 기다린 뒤에야 차단 사유를 본다.
-        print("\n[0/7] dirty-tree 게이트 (미커밋 잔여 — 첫 mutation 전 판정)...")
+        print("\n[0/7] dirty-tree 통과 조건 (남은 미커밋 변경 — 첫 mutation 전 판정)...")
         dirty_rc, dirty_ack_note = handoff_dirty._dirty_tree_gate(self._home, ack_dirty=ack_dirty, auto_trigger=auto_trigger, force_handoff=force_handoff, dry_run=dry_run, held_slots=self._task_slots_snapshot[1] if self._task_slots_snapshot is not None and self._task_slots_snapshot[0] == task else (), run_git_fn=self._run_git_fn)
         if dirty_rc != 0:
             return dirty_rc
@@ -795,7 +795,7 @@ class PmHandoff:
         # dry_run 은 git 분류도 건너뛴다(미리보기). 회귀가 돈 **변경-슬롯 각각**에서 surface 한다 —
         # 단일 자동해소가 엉뚱한 트리를 보거나 일부 슬롯의 출하 변경을 놓치는 것을 막는다
         # (집합 1급화 일관·codex must-fix).
-        print("\n[1b/7] 출하 변경 surface (비차단·릴리즈 라이브는 release wave)...")
+        print("\n[1b/7] 출하 변경 surface (비차단·릴리즈 라이브 시험은 따로)...")
         if dry_run:
             print("  [dry-run] 출하 변경 surface skip (미리보기).")
         else:
@@ -884,7 +884,7 @@ class PmHandoff:
                 )
         except handoff_text.DirtyAckStampError as exc:
             print(
-                f"\n[중단] dirty-tree ack 사유를 handoff entry 에 박제할 수 없다 — {exc}. "
+                f"\n[중단] dirty-tree ack 사유를 handoff entry 에 기록할 수 없다 — {exc}. "
                 f"기존 entry 를 복구하거나 `{handoff_text.DIRTY_ACK_ENTRY_LABEL}: {dirty_ack_note}` 를 "
                 "손으로 적은 뒤 재실행하라 (log/current.md 는 건드리지 않았다).",
                 file=sys.stderr,
@@ -905,7 +905,7 @@ class PmHandoff:
                 print("  " + preview.replace("\n", "\n  "))
             else:
                 print(
-                    f"  ✓ 기존 handoff entry 유지·박제 목록 갱신 "
+                    f"  ✓ 기존 handoff entry 유지·entries 목록 갱신 "
                     f"(PM {normalized_session_num}차)"
                 )
         elif dry_run:
@@ -923,7 +923,7 @@ class PmHandoff:
         if entry_count > handoff_text.LOG_ARCHIVE_SUGGEST_THRESHOLD:
             print(
                 f"  ⚠ log/current.md entry {entry_count}개 > {handoff_text.LOG_ARCHIVE_SUGGEST_THRESHOLD} — "
-                f"`pm_log.py archive --before <날짜>` 로 오래된 entry 봉인 권장 "
+                f"`pm_log.py archive --before <날짜>` 로 오래된 entry 를 옮겨 확정하기를 권장 "
                 f"(부트스트랩 읽기 비용 ↓).",
                 file=sys.stdout,
             )
@@ -1072,7 +1072,7 @@ class PmHandoff:
         self._unfinished_raw_step()
 
         # ── 7. 잔여 PM 수동 작업 출력 ──────────────────────────────────────────
-        print("\n[7/7] PM 이 손으로 할 잔여 작업:")
+        print("\n[7/7] PM 이 손으로 할 남은 일:")
         print(
             "  [ ] log/current.md handoff entry 본문 채우기 — lean 3섹션"
             "(읽기범위·메타학습·다음intent)+회귀/incident(회귀 1줄 baseline). "
@@ -1080,8 +1080,8 @@ class PmHandoff:
             f"{lease_store._runtime_skill_entry('pm-bootstrap')} 라이브)."
         )
         print("  [ ] domain capture 검토 — `domain.py capture --tickets \"T-0001,T-0002\"`(이 세션 done ticket ID·콤마분리 또는 공백 나열) 출력 보고 ⚠/gap 페이지 갱신/신설(채록·surface-only).")
-        print("        갱신 = 현재-진실 *교체* — 세션별 delta 를 페이지에 덧붙이지 마라"
-              "('언제 왜 바뀌었나'는 log/ADR 몫·domain lint `history` 축).")
+        print("        갱신 = 현재-진실 *교체* — 세션별 차이를 페이지에 덧붙이지 마라"
+              "('언제 왜 바뀌었나'는 log/ADR 몫·domain lint `history` 기준).")
         print("  [ ] pm_state.md '진행 중인 의사결정' 표 갱신")
         print("  [ ] 열린 todo 정리 — 끝낸 것은 `pm-config task todo done <task> <ID>`. "
               "남은 것은 그대로 다음 세션이 승계한다(등록일이 묵은 정도를 보인다).")
@@ -1094,7 +1094,7 @@ class PmHandoff:
               "<이번 세션에 고친 wiki 문서 경로들>` (Co-Authored-By: Claude 트레일러 포함)")
         # commit 다음 단계가 빠져 있으면 기록은 로컬에만 남는다 — 위 [6/7] ahead 경고와 짝이다.
         print("  [ ] PM 홈 push(private 자율) — commit 후 `git push`. "
-              "보호 브랜치(공개 제품 repo)는 사용자 승인 게이트라 여기서 밀지 마라.")
+              "보호 브랜치(공개 제품 repo)는 사용자 승인이 필요해 여기서 밀지 마라.")
 
         # ── 핸드오프 완료: 보유 슬롯 git 재스냅 ────
         # 기록(log·pm_state) 완료 후 보유 슬롯 **전체**의 live git 을 lease.git 에 재기록한다 —
@@ -1142,11 +1142,11 @@ def require_handoff_user_ack(
     if user_ack == target:
         print(
             f"[승인 감사] pm_handoff: 사용자 승인 토큰이 {description} 대상값 {target!r}에 "
-            "값-결속됨."
+            "연결됨."
         )
         return True
     mismatch = (
-        f" 제공된 값 {user_ack!r}은 대상값 {target!r}에 결속되지 않았다."
+        f" 제공된 값 {user_ack!r}은 대상값 {target!r}에 연결되지 않았다."
         if user_ack is not None
         else ""
     )
@@ -1187,7 +1187,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="<task 이름>",
         default=None,
         help=(
-            "사용자가 명시 승인한 핸드오프 대상값(task 이름)과 정확히 결속하는 토큰. "
+            "사용자가 명시 승인한 핸드오프 대상값(task 이름)에 정확히 연결되는 토큰. "
             "--dry-run 미리보기는 생략 가능."
         ),
     )
@@ -1201,8 +1201,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="사유",
         default=None,
         help=(
-            "dirty-tree 게이트([0/7]) override — 미커밋 잔여를 두고 나가는 **사유**가 필수다"
-            "(bare 플래그·빈 사유 거부). 사유는 단일행으로 평탄화돼 handoff entry 에 박제된다."
+            "dirty-tree 통과 조건([0/7]) override — 남은 미커밋 변경을 두고 나가는 **사유**가 필수다"
+            "(bare 플래그·빈 사유 거부). 사유는 단일행으로 평탄화돼 handoff entry 에 기록된다."
         ),
     )
     parser.add_argument(
@@ -1218,9 +1218,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-trigger",
         action="store_true",
         help=(
-            "사용자가 핸드오프를 명시 지시한 호출부를 위한 호환 신호. dirty-tree 게이트를 "
-            "차단 대신 loud 경고 + 사유 자동 박제로 강등한다. 독자 트리거·승인이 아니며 "
-            "--user-ack 값-결속 계약을 우회하지 않는다."
+            "사용자가 핸드오프를 명시 지시한 호출부를 위한 호환 신호. dirty-tree 통과 조건을 "
+            "차단 대신 loud 경고 + 사유 자동 기록으로 수준을 낮춘다. 독자 트리거·승인이 아니며 "
+            "--user-ack 값 연결 계약을 우회하지 않는다."
         ),
     )
     return parser
@@ -1238,7 +1238,7 @@ def _main(home, argv: list[str] | None=None, *, identity_resolver=None) -> int:
     if args.ack_dirty is not None:
         if not args.ack_dirty.strip():
             parser.error(
-                "--ack-dirty 는 사유가 필수다 — 빈 사유로는 dirty-tree 게이트를 override 할 수 없다."
+                "--ack-dirty 는 사유가 필수다 — 빈 사유로는 dirty-tree 통과 조건을 override 할 수 없다."
             )
         args.ack_dirty = handoff_text.flatten_ack_reason(args.ack_dirty)
 

@@ -211,7 +211,7 @@ _UNREADABLE_SCAN_BLOCK = (
     "[중단] {op}: 읽지 못한 티켓 {count}건이 있어 ID 유일성을 판정할 수 없다 — {sample}\n"
     "  · 못 본 ID 는 곧 clobber 다 — 유일성 검사와 번호 이어붙이기(`start=max(...)`)가 그 ID 를 "
     "모른 채 전진해 다른 티켓을 그 위에 덮어쓴다.\n"
-    "  · 위 경고의 frontmatter 오류를 고친 뒤 다시 실행하라. 조회 표면"
+    "  · 위 경고의 frontmatter 오류를 고친 뒤 다시 실행하라. 조회 명령"
     "(`list`·`prefix list`·`lint`)은 그 티켓만 빼고 계속 동작한다."
 )
 
@@ -256,36 +256,36 @@ def _cheap_prefix_inventory(home) -> tuple[tuple[str, tuple[str, ...]], ...]:
                 ledger = json.loads(fs.read_text_shared(pm_paths.leases_file(home), encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 raise PrefixSourcesUnreadable(
-                    f"task 장부 {pm_paths.leases_file(home)}를 읽을 수 없음: {exc}"
+                    f"task 기록 파일 {pm_paths.leases_file(home)}를 읽을 수 없음: {exc}"
                 ) from exc
             if not isinstance(ledger, dict):
-                raise PrefixSourcesUnreadable("task 장부 최상위 값이 object가 아님")
+                raise PrefixSourcesUnreadable("task 기록 최상위 값이 object가 아님")
             tasks = ledger.get("tasks", [])
             if not isinstance(tasks, list):
-                raise PrefixSourcesUnreadable("task 장부의 tasks 값이 list가 아님")
+                raise PrefixSourcesUnreadable("task 기록의 tasks 값이 list가 아님")
             for index, task in enumerate(tasks):
                 if not isinstance(task, dict) or not task.get("name"):
                     raise PrefixSourcesUnreadable(
-                        f"task 장부 tasks[{index}]가 유효한 task object가 아님"
+                        f"task 기록 tasks[{index}]가 유효한 task object가 아님"
                     )
                 prefix = task.get("prefix")
                 if prefix in (None, ""):
                     continue
                 if not isinstance(prefix, str):
                     raise PrefixSourcesUnreadable(
-                        f"task 장부 tasks[{index}].prefix가 문자열/null이 아님"
+                        f"task 기록 tasks[{index}].prefix가 문자열/null이 아님"
                     )
                 reason = ticket_rules._validate_prefix(prefix)
                 if reason:
                     raise PrefixSourcesUnreadable(
-                        f"task 장부 tasks[{index}].prefix 손상: {reason}"
+                        f"task 기록 tasks[{index}].prefix 손상: {reason}"
                     )
                 task_prefixes.add(prefix)
 
         by_prefix: dict[str, set[str]] = {}
         for source, prefixes in (
             ("areas.md", area_prefixes),
-            ("task 장부", task_prefixes),
+            ("task 기록", task_prefixes),
         ):
             for prefix in prefixes:
                 by_prefix.setdefault(prefix, set()).add(source)
@@ -462,9 +462,9 @@ def _print_prefix_case_conflict(
     print(
         f"[중단] {surface}: prefix {prefix!r}의 case 변형이 2개 이상 존재해 canonical을 "
         f"결정할 수 없다 — {variants}.{incomplete}\n"
-        "  정리 처방: 하나의 canonical case를 고른 뒤 areas.md·task 장부를 "
+        "  해결 방법: 하나의 canonical case를 고른 뒤 areas.md·task 기록을 "
         "그 case로 맞추고, 기발행 티켓은 `board.py prefix rename/merge`로 같은 case에 "
-        "수렴시킨 다음 재실행하라. 임의 변형 선택은 새 ID 네임스페이스를 분할하므로 "
+        "일치시킨 다음 재실행하라. 임의 변형 선택은 새 ID 네임스페이스를 분할하므로 "
         "수행하지 않는다.",
         file=sys.stderr,
     )
@@ -490,7 +490,7 @@ def require_prefix_user_ack(
         return canonical
     if user_ack == prefix:
         print(
-            f"[승인 감사] {surface}: 사용자 승인 토큰이 새 prefix {prefix!r}에 값-결속됨."
+            f"[승인 감사] {surface}: 사용자 승인 토큰이 새 prefix {prefix!r} 값에 연결됨."
         )
         return prefix
 
@@ -499,7 +499,7 @@ def require_prefix_user_ack(
         sorted(known, key=lambda value: (value.lower(), value))
     ) or "(없음)"
     mismatch = (
-        f" 제공된 값 {user_ack!r}은 대상에 결속되지 않았다."
+        f" 제공된 값 {user_ack!r}은 대상에 연결되지 않았다."
         if user_ack is not None
         else ""
     )

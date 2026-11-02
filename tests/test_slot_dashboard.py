@@ -68,7 +68,7 @@ def test_render_section_heading_and_core_lines(hf):
     )
     assert sec.startswith("## project_manager_1\n\n")
     assert "- 차수: PM 52차 (2026-07-10)" in sec
-    assert "- wave: wave A" in sec
+    assert "- 세션 요약: wave A" in sec
     assert sec.endswith("\n") and not sec.endswith("\n\n")
 
 
@@ -107,7 +107,7 @@ def test_render_section_flattens_multiline_wave(hf):
     )
     # 본문에 '## injected' 가 독립 헤딩 줄로 새지 않는다(공백으로 접힘).
     assert "\n## injected heading" not in sec
-    assert "- wave: line1 ## injected heading line2" in sec
+    assert "- 세션 요약: line1 ## injected heading line2" in sec
     # 섹션 헤딩은 자기 것 하나뿐.
     assert sec.count("\n## ") == 0
 
@@ -118,8 +118,8 @@ def test_render_section_char_cap(hf):
     sec = pm_engine.domain.dashboard.render_dashboard_section(
         "project_manager_1", session_num=1, wave_summary=long_wave, date=_DATE
     )
-    wave_line = [l for l in sec.splitlines() if l.startswith("- wave:")][0]
-    value = wave_line[len("- wave: "):]
+    wave_line = [l for l in sec.splitlines() if l.startswith("- 세션 요약:")][0]
+    value = wave_line[len("- 세션 요약: "):]
     assert value.endswith("…")
     assert len(value) <= pm_engine.domain.dashboard.DASHBOARD_LINE_MAX_CHARS
 
@@ -310,7 +310,7 @@ def test_write_dashboard_section_creates_file(hf_repo):
     assert out == _dash_path(hf_repo)
     assert "## project_manager_1" in text
     assert "- 차수: PM 52차 (2026-07-10)" in text
-    assert "- wave: wave 요약 문장" in text
+    assert "- 세션 요약: wave 요약 문장" in text
     assert "- claimed: T-0260" in text
 
 

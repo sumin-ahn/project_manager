@@ -88,20 +88,20 @@ def cmd_archive(home, args: argparse.Namespace) -> int:
         slice_path = (pm_paths.wiki_dir(home) / 'log/archive') / slice_name
         slice_body = (
             f"# Log archive {idx:04d} ({first} ~ {last})\n\n"
-            f"> `pm_log.py archive {mode_line}` 로 current.md 에서 봉인. 수정 금지.\n\n"
+            f"> `pm_log.py archive {mode_line}` 로 current.md 에서 옮겨 확정. 수정 금지.\n\n"
             + "".join(e for _d, e in old)
         )
         new_current = preamble + "".join(e for _d, e in keep)
 
         if args.dry_run:
-            print(f"[dry-run] {_rel(home, slice_path)} 로 {len(old)} entry 봉인, "
+            print(f"[dry-run] {_rel(home, slice_path)} 로 {len(old)} entry 를 옮겨 확정, "
                   f"current.md 는 {len(keep)} entry 유지.")
             return 0
 
         (pm_paths.wiki_dir(home) / 'log/archive').mkdir(parents=True, exist_ok=True)
         slice_path.write_text(slice_body, encoding="utf-8", newline="\n")
         log_store._replace_atomic((pm_paths.wiki_dir(home) / 'log/current.md'), new_current)
-        print(f"✓ {len(old)} entry → {_rel(home, slice_path)} 봉인. "
+        print(f"✓ {len(old)} entry → {_rel(home, slice_path)} 로 옮겨 확정. "
               f"current.md {len(keep)} entry 유지.")
         return 0
 
@@ -115,7 +115,7 @@ def cmd_migrate(home, args: argparse.Namespace) -> int:
     legacy_dst = (pm_paths.wiki_dir(home) / 'log/archive') / "0000-legacy.md"
     if args.dry_run:
         if (pm_paths.wiki_dir(home) / 'log.md').exists():
-            print(f"[dry-run] {_rel(home, pm_paths.wiki_dir(home) / 'log.md')} → {_rel(home, legacy_dst)} 봉인 + "
+            print(f"[dry-run] {_rel(home, pm_paths.wiki_dir(home) / 'log.md')} → {_rel(home, legacy_dst)} 로 옮겨 확정 + "
                   f"{_rel(home, pm_paths.wiki_dir(home) / 'log/current.md')} 생성.")
         else:
             print(f"[dry-run] 기존 log.md 없음 — 빈 {_rel(home, pm_paths.wiki_dir(home) / 'log/current.md')} 만 생성.")
@@ -126,13 +126,13 @@ def cmd_migrate(home, args: argparse.Namespace) -> int:
         legacy_text = log_store._read_text_exact((pm_paths.wiki_dir(home) / 'log.md'))
         sealed = (
             "# Log archive 0000 (legacy — 마이그레이션 이전 단일 log.md)\n\n"
-            "> 구조 전환 전의 기존 `log.md` 를 그대로 봉인. 수정 금지. "
+            "> 구조 전환 전의 기존 `log.md` 를 그대로 옮겨 확정. 수정 금지. "
             "이후 새 entry 는 `log/current.md`.\n\n"
             + legacy_text
         )
         legacy_dst.write_text(sealed, encoding="utf-8", newline="\n")
         (pm_paths.wiki_dir(home) / 'log.md').unlink()
-        print(f"✓ {_rel(home, pm_paths.wiki_dir(home) / 'log.md')} → {_rel(home, legacy_dst)} 봉인.")
+        print(f"✓ {_rel(home, pm_paths.wiki_dir(home) / 'log.md')} → {_rel(home, legacy_dst)} 로 옮겨 확정.")
     else:
         print("기존 log.md 없음 — 빈 current.md 만 생성.")
 
@@ -234,7 +234,7 @@ def cmd_checkpoint(home, args: argparse.Namespace) -> int:
                 return 0
             if claimed is None:
                 print(
-                    "[pm-checkpoint] dedup 장부 I/O 실패 — durable checkpoint 기록은 계속합니다.",
+                    "[pm-checkpoint] dedup 기록 I/O 실패 — durable checkpoint 기록은 계속합니다.",
                     file=sys.stderr,
                 )
         else:
@@ -279,7 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest='cmd', required=True)
     p = sub.add_parser('tail', help='current.md 의 마지막 entry 만 출력')
     p.set_defaults(fn=cmd_tail)
-    p = sub.add_parser('archive', help='entry 를 archive/ 로 봉인 (--before DATE | --keep-last N)')
+    p = sub.add_parser('archive', help='entry 를 archive/ 로 옮겨 확정 (--before DATE | --keep-last N)')
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--before', metavar='YYYY-MM-DD', help='이 날짜 미만의 entry 를 아카이브')
     mode.add_argument('--keep-last', type=_positive_int, metavar='N', help='최근 N entry 만 남기고 나머지(오래된 쪽)를 아카이브')
@@ -291,18 +291,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser('ctx-guidance', help='세 하네스 공용 ctx 연속성 안내 출력 (쓰기 0)')
     p.add_argument('--level', choices=('warn', 'warn2', 'final', 'precompact'), required=True, help='안내 강도/경계 종류')
     p.add_argument('--used-pct', type=int, metavar='N', help='관측 컨텍스트 사용률(사용 한도 대비 쓴 %%)')
-    p.add_argument('--precompact-at-pct', type=int, metavar='N', help='final 밴드의 압축 임박 경고 비율(ctx.precompact_at_pct)')
+    p.add_argument('--precompact-at-pct', type=int, metavar='N', help='final 구간의 압축 임박 경고 비율(ctx.precompact_at_pct)')
     p.add_argument('--json', action='store_true', help='Codex hook envelope(systemMessage/suppressOutput) JSON 하나로 출력')
     p.set_defaults(fn=cmd_ctx_guidance)
-    p = sub.add_parser('checkpoint', help='compaction/manual 경계 보충 박제 골격 append')
+    p = sub.add_parser('checkpoint', help='compaction/manual 경계 보충 기록의 빈 양식 append')
     p.add_argument('--task', metavar='이름', help='checkpoint 귀속 task 이름 (생략 시 --session-id 로 그 세션이 연 task)')
-    p.add_argument('--trigger', choices=('compaction', 'manual'), default='manual', help='박제 계기 (기본값: manual)')
+    p.add_argument('--trigger', choices=('compaction', 'manual'), default='manual', help='기록 계기 (기본값: manual)')
     p.add_argument('--session-id', help='하네스 세션 식별자 (task 판정 입력·compaction dedup 1순위 키)')
     p.add_argument('--boundary-id', help='하네스가 관측한 compaction 경계 식별자')
     p.add_argument('--phase', choices=('pre', 'post'), help='compaction hook phase')
     p.add_argument('--breadcrumb', action='store_true', help='Claude PreCompact breadcrumb를 checkpoint와 같은 PM 홈 append에 포함')
     p.set_defaults(fn=cmd_checkpoint)
-    p = sub.add_parser('snapshot', help='compaction 뒤 재주입할 PM 정체성·장부 포인터 출력')
+    p = sub.add_parser('snapshot', help='compaction 뒤 재주입할 PM 정체성·기록 위치 출력')
     p.add_argument('--session-id', help='하네스 세션 식별자 (그 세션이 연 task 를 찾는다)')
     p.add_argument('--json', action='store_true', help='Codex hook envelope(systemMessage/suppressOutput) JSON 하나로 출력')
     p.set_defaults(fn=cmd_snapshot)

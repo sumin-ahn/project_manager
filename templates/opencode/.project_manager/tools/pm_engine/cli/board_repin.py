@@ -99,5 +99,5 @@ def cmd_verified_at_repin(home, args: argparse.Namespace) -> int:
         print(f"verified-at-repin: 쓰기 실패({failed_text}) — 이미 변경된 파일: {changed_text}",
               file=sys.stderr)
         return 1
-    print(f"{prefix}{updated}개 문서 재핀 (소유 repo={owner}, anchor={sha}).")
+    print(f"{prefix}{updated}개 문서 재핀 (소유 repo={owner}, verified_at={sha}).")
     return 0

@@ -308,7 +308,7 @@ def _architect_round_issues(
     if all(round_seed.round_is_pending(item, ticket_text=body)
            for item in architect_rounds):
         return [(tid, _ARCHITECT_ROUND_KIND,
-                 f"{_ARCHITECT_ROLE} 점검 라운드가 시드 그대로다(산출 없음) — 회수 전에는 "
+                 f"{_ARCHITECT_ROLE} 점검 라운드가 빈 양식 그대로다(산출 없음) — 돌려받기 전에는 "
                  f"승격하지 않는다")]
     return []
 
@@ -339,7 +339,7 @@ def _content_fact_issues(
     if counted:
         issues.append((tid, _UNVERIFIABLE_KIND,
                        "판정불능 — " + " · ".join(counted)
-                       + " (게이트 시야 밖 · 통과로 세지 않는다)"))
+                       + " (통과 조건의 검사 범위 밖 · 통과로 세지 않는다)"))
     return issues
 
 

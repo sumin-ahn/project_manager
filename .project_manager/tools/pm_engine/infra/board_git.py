@@ -33,7 +33,7 @@ def _board_git_root_file_backfill_target(
     이미 선언됨 또는 안전하게 쓸 수 없음이다.
     """
     if name not in board_git_rules._BOARD_GIT_ROOT_FILES:
-        raise ValueError(f"board 루트 배포 파일 seam 밖의 이름: {name}")
+        raise ValueError(f"board 루트 배포 파일 공용 목록 밖의 이름: {name}")
     path = home.board_root / name
     try:
         try:
@@ -244,7 +244,7 @@ def _board_git_root_file_rule_declared(name: str, text: str) -> bool:
         return _board_gitattributes_declared(text)
     if name == ".gitignore":
         return _drafts_ignore_declared(text)
-    raise ValueError(f"board 루트 배포 파일 seam 밖의 이름: {name}")
+    raise ValueError(f"board 루트 배포 파일 공용 목록 밖의 이름: {name}")
 
 
 def _board_git_root_files_need_backfill(home) -> bool:
@@ -385,7 +385,7 @@ def _board_git_restore_root_files(
                 restored.append(name)
                 continue
             if current != expected:
-                print(f"  ⚠ board rollback 이 스냅샷 이후 제3자 변경을 보존했다: {path} "
+                print(f"  ⚠ board rollback 이 복사본을 뜬 뒤의 제3자 변경을 보존했다: {path} "
                       "(engine backfill/원본 어느 쪽과도 달라 덮어쓰지 않음).",
                       file=sys.stderr)
                 continue
@@ -1066,7 +1066,7 @@ def _board_git_root_indexes_safe_to_restore(
         if now == before or now == staged:
             safe.append(name)
             continue
-        print(f"  ⚠ board rollback 이 스냅샷 이후 제3자 index 변경을 보존했다: {rel} "
+        print(f"  ⚠ board rollback 이 복사본을 뜬 뒤의 제3자 index 변경을 보존했다: {rel} "
               "(engine stage/원본 어느 쪽과도 달라 덮어쓰지 않음).", file=sys.stderr)
     return tuple(safe)
 

@@ -69,12 +69,12 @@ def _ledger_section(home, task: str) -> str:
         states[state] = states.get(state, 0) + 1
     task_slots = [label for label, _path in _lease_task_slots(home, task)]
     tickets, counts = _ticket_counts(home)
-    state_text = ", ".join(f"{key} {states[key]}" for key in sorted(states)) or "장부 없음"
+    state_text = ", ".join(f"{key} {states[key]}" for key in sorted(states)) or "기록 없음"
     # 버킷 순서·집합은 `ticket_rules.STATUS_DIRS` 그대로다 — 새 상태는 손대지 않고
     # 뒤에 붙고, 기존 status 표기는 바뀌지 않는다.
     count_text = " / ".join(f"{key} {value}" for key, value in counts.items())
     return (
-        "## 장부 포인터\n"
+        "## 기록 위치\n"
         f"- 활성 tasks ({len(active)}): {', '.join(active) if active else '(없음)'}\n"
         f"- worktree leases: {state_text}\n"
         f"- 현재 task 슬롯: {', '.join(sorted(task_slots)) if task_slots else '(없음)'}\n"
@@ -109,8 +109,8 @@ def _recovery_section(task: str) -> str:
     bootstrap = f"python3 .project_manager/tools/pm_bootstrap.py --task {task}"
     return (
         "## 복구 포인터\n"
-        f"- `{bootstrap}`로 장부를 다시 펼친다.\n"
-        "- 자동 생성된 compaction checkpoint 골격의 구간·서사 불릿은 PM 판단으로 채운다.\n"
+        f"- `{bootstrap}`로 기록을 다시 펼친다.\n"
+        "- 자동 생성된 compaction checkpoint 빈 양식의 구간·서사 불릿은 PM 판단으로 채운다.\n"
         f"- {ctx_recovery.CTX_GUARD_CONTINUITY_GUIDANCE}\n"
     )
 
@@ -237,7 +237,7 @@ def _inflight_section(home, task: str, *, deadline: float, monotonic=time.monoto
     ]
     body_lines = "\n".join(lines).splitlines()
     body = "\n".join(body_lines[:ctx_recovery._INFLIGHT_MAX_LINES])
-    return "## 진행 중 작업 (장부 실측)\n" + body + "\n"
+    return "## 진행 중 작업 (기록 실측)\n" + body + "\n"
 
 
 def build_snapshot(home, session_id: str | None, *, monotonic=time.monotonic) -> tuple[str | None, str | None]:

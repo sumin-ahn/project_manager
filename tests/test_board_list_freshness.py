@@ -115,7 +115,7 @@ def test_freshness_line_offline_undetermined(board, monkeypatch):
     _wire_board_git(board, monkeypatch, fetch_rc=1, ab_out="0\t0")
     line = board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line
     assert line is not None
-    assert "판정불가 — 스냅샷일 수 있음" in line
+    assert "판정불가 — 옛 복사본일 수 있음" in line
     assert "최신" not in line              # offline 은 "최신" 을 주장하지 않는다.
     assert "fetch 실패" in line            # offline 사유 표면.
 

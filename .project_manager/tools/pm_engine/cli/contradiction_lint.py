@@ -27,7 +27,7 @@ def _load_adr(decisions_dir: Path, num: int) -> tuple[str, str]:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="contradiction_lint.py",
-        description="모순 lint — 개정된 결정을 참조하는 문서의 잔여 모순 후보 표면화(advisory).",
+        description="모순 lint — 개정된 결정을 참조하는 문서의 남은 모순 후보를 드러낸다(advisory).",
     )
     p.add_argument("--new-adr", required=True, metavar="ADR-NNNN",
                    help="방금 발행/개정한 새 결정 id (decisions/ 에서 title·본문 로드)")
@@ -56,7 +56,7 @@ def main(home, argv: list[str] | None = None) -> int:
     targets = _parse_ids(args.amends) + _parse_ids(args.supersedes)
     if not targets:
         print("[모순 lint] 개정 대상(--amends/--supersedes) 없음 — 신규 plain 발행은 참조 스코프가 "
-              "없어 no-op(개정만 잔여 모순을 만든다).")
+              "없어 no-op(개정만 남은 모순을 만든다).")
         return 0
     new_id = _parse_ids([args.new_adr])
     new_adr_id = new_id[0] if new_id else args.new_adr

@@ -34,7 +34,7 @@ DASHBOARD_LINE_MAX_CHARS = 200
 
 
 _DASHBOARD_HEADER = (
-    "# slot 대시보드 (수정형·현재-상태 스냅샷·타 슬롯 byte 불변)\n"
+    "# slot 대시보드 (수정형·현재 상태 기록·타 슬롯 byte 불변)\n"
 )
 
 
@@ -91,7 +91,7 @@ def render_dashboard_section(
         max_lines = DASHBOARD_SECTION_MAX_LINES
     body_lines = [
         f"- 차수: PM {handoff_text._normalize_session_num(session_num)}차 ({date})",
-        f"- wave: {_flatten_dashboard_value(wave_summary)}",
+        f"- 세션 요약: {_flatten_dashboard_value(wave_summary)}",
     ]
     if claimed_tickets:
         body_lines.append(

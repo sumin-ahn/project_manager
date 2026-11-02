@@ -163,16 +163,16 @@ def _review_problem(home, tid: str, checker_name: str, spec_text: str | None) ->
     if spec_text is None:
         found = ticket_store.find_ticket_exact(home, tid)
         if found is None:
-            return f"티켓을 찾지 못해 리뷰 잔여를 판정할 수 없습니다: {tid}"
+            return f"티켓을 찾지 못해 남은 리뷰 항목을 판정할 수 없습니다: {tid}"
         try:
             spec_text = fs.read_text_shared(found[1], encoding="utf-8", newline="")
         except (OSError, UnicodeError) as exc:
-            return f"티켓 명세를 읽을 수 없어 리뷰 잔여를 판정할 수 없습니다: {exc}"
+            return f"티켓 명세를 읽을 수 없어 남은 리뷰 항목을 판정할 수 없습니다: {exc}"
     checker = getattr(review_state, checker_name)
     try:
         rounds = round_seed.load_rounds(pm_paths.tickets_dir(home), tid, ticket_text=spec_text)
     except round_rules.RoundsError as exc:
-        return f"리뷰 라운드를 읽지 못해 리뷰 잔여를 판정할 수 없습니다: {exc}"
+        return f"리뷰 라운드를 읽지 못해 남은 리뷰 항목을 판정할 수 없습니다: {exc}"
     return checker(spec_text, rounds)
 
 
@@ -291,7 +291,7 @@ def cmd_complete(home, args: argparse.Namespace) -> int:
             if ledger is not None and str(ledger.get("status") or "").strip() != "closing":
                 owner = cluster_rules.cluster_id_for_name(binding)
                 binding_problem = (
-                    f"묶음 멤버의 완료는 종결 파이프라인 안에서만 한다 — {owner} 장부가 종결 중"
+                    f"묶음 멤버의 완료는 종결 파이프라인 안에서만 한다 — {owner} 묶음 기록이 종결 중"
                     f"(closing)이 아니다(현재 {ledger.get('status')}). "
                     f"`ticket_finish.py --cluster {owner}` 로 닫아라")
         if binding_problem is not None:
@@ -309,7 +309,7 @@ def cmd_complete(home, args: argparse.Namespace) -> int:
         problems = _complete_gate(home,
             args.id, args, body, spec_text=spec_text, ticket_path=path)
         if problems:
-            print(f"cannot complete {args.id}: sync gate failed —", file=sys.stderr)
+            print(f"cannot complete {args.id}: sync check failed —", file=sys.stderr)
             for msg in problems:
                 print(f"  ✗ {msg}", file=sys.stderr)
             return 1
@@ -634,7 +634,7 @@ def cmd_new(home, args: argparse.Namespace) -> int:
                   "(`pm-config task prefix <task> <PFX>`). 새 카테고리가 필요하면 1순위로 사용자에게 "
                   "그 prefix 승인을 요청하라. 승인한 사용자만 부차적으로 "
                   "`board.py init --prefix <PFX> --area <name> --user-ack <PFX>`를 "
-                  "대상값에 결속해 실행한다(세션 자동 부착 금지).",
+                  "대상값에 연결해 실행한다(세션 자동 부착 금지).",
                   file=sys.stderr)
             return 1
 
@@ -659,7 +659,7 @@ def cmd_new(home, args: argparse.Namespace) -> int:
                         or getattr(args, "repo", None) or getattr(args, "slot", None))
     binding_message = ("[중단] 발행의 코드 트리와 기준 브랜치를 task 폴더에서 읽지 못했다 "
                        "(`--task <task>`, task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가). "
-                       "코드 없는 초안은 draft로 작성한 뒤 기존 cluster new로 결속하라.")
+                       "코드 없는 초안은 draft로 작성한 뒤 기존 cluster new로 연결하라.")
     if binding_required:
         tree, base = board_cluster._cluster_publish_base_branch(home, args)
         if not tree or not base:
@@ -756,7 +756,7 @@ def cmd_new(home, args: argparse.Namespace) -> int:
           "(placeholders left in the body fail lint)")
     if cluster_ledger is not None:
         # 기존 stdout 줄은 그대로 두고 생성 사실만 stderr 1줄로 고지한다(크기 1 = 현행 동작).
-        print(f"  ⓘ 크기 1 묶음 장부 생성: {fm['cluster']}", file=sys.stderr)
+        print(f"  ⓘ 크기 1 묶음 기록 생성: {fm['cluster']}", file=sys.stderr)
 
     if is_draft:
         # draft 는 STATUS_DIRS 밖(drafts_dir())에 있어 board.md(STATUS_DIRS 스캔)에도, 다른
@@ -843,7 +843,7 @@ def cmd_promote(home, args: argparse.Namespace) -> int:
             if problem is None:
                 problem = cluster_binding.cluster_complete_binding_problem(home, args.id, fm, str(fm.get('cluster') or ''))
             if problem:
-                print(f"[중단] promote 결속 검증: {problem}", file=sys.stderr)
+                print(f"[중단] promote 연결 검증: {problem}", file=sys.stderr)
                 return 1
         if status == "draft":
             # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.

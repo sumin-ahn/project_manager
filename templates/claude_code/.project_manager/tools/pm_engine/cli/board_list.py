@@ -220,7 +220,7 @@ def cmd_list(home, args: argparse.Namespace) -> int:
             "⚠ 세션격리(strict-exclude): 다중사용자 보드에서 귀속이 미해소되거나 현재 사용자와 "
             "어긋난 티켓을 이 뷰에서 제외했다. 단일 사용자인데 email(git config user.email)을 바꿨다면 "
             "옛 티켓 귀속(old→new)이 어긋나 2인으로 오판된 것 — created_by/claimed_by 를 backfill "
-            "로 정합: `python3 .project_manager/tools/board.py migrate-identity --task <task> --dry-run` "
+            "로 일치시킨다: `python3 .project_manager/tools/board.py migrate-identity --task <task> --dry-run` "
             "(단일-세션 op·다른 세션 claim 중 실행 금지). 진짜 다중사용자면 정체성 설정 "
             "`board init --owner <you>`.",
             file=sys.stderr,
@@ -280,6 +280,6 @@ def cmd_show(home, args: argparse.Namespace) -> int:
             print(summary)
         pending = [item for item in rounds if item.pending]
         if pending:
-            print(f"-- 미회수 {len(pending)}건: "
+            print(f"-- 돌려받지 않은 라운드 {len(pending)}건: "
                   + ", ".join(item.path.name for item in pending) + " --")
     return 0

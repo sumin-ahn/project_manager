@@ -187,8 +187,8 @@ def lint_claim_identity(home) -> list[tuple[str, str, str]]:
         residue_desc = ", ".join(f"{field}={value!r}" for field, value in residue.items())
         issues.append((
             fm.get("id", "?"), "open-claimed-contradiction",
-            f"status=open 인데 {residue_desc} 잔존 — 소유 표식과 상태가 모순이다. 진행 중이 "
-            "아니면 잔존 필드를 지우고, 진행 중이면 claimed/ 로 옮겨 정합시켜라."))
+            f"status=open 인데 {residue_desc} 잔존 — 소유 표시와 상태가 모순이다. 진행 중이 "
+            "아니면 잔존 필드를 지우고, 진행 중이면 claimed/ 로 옮겨 일치시켜라."))
     return issues
 
 
@@ -211,7 +211,7 @@ _LEGACY_GROWTH_MARKERS: tuple[str, ...] = (
 _LEGACY_GROWTH_LINT_KIND = "legacy-growth-section"
 _LEGACY_GROWTH_MIGRATION_HINT = (
     "변환 명령은 v1.8.1 까지 있었다(`board.py rounds migrate`). 절 내용을 라운드 파일로 "
-    "옮기거나 marker·봉인 주석 줄을 지워 본문 텍스트로 남겨라"
+    "옮기거나 `pm-ticket-section`·`pm-ticket-seal` 주석 줄을 지워 본문 텍스트로 남겨라"
 )
 
 
@@ -256,7 +256,7 @@ def lint_rounds(home) -> list[tuple[str, str, str]]:
         if leftovers:
             findings.append((
                 ticket, _ROUND_TEMPORARY_LINT_KIND,
-                f"엔진 임시 파일 잔여 {len(leftovers)}개(교체 중 크래시 의심): "
+                f"남은 엔진 임시 파일 {len(leftovers)}개(교체 중 크래시 의심): "
                 + ", ".join(leftovers),
             ))
     return findings
@@ -284,7 +284,7 @@ def lint_clusters(home) -> list[tuple[str, str, str]]:
             if ticket_store.find_ticket_exact(home, tid) is None:
                 findings.append((
                     cluster, _CLUSTER_MEMBER_LINT_KIND,
-                    f"멤버 티켓 부재: {tid} — 장부가 board 에 없는 티켓을 가리킨다"
+                    f"멤버 티켓 부재: {tid} — 묶음 기록이 board 에 없는 티켓을 가리킨다"
                     "(draft 는 승격 전까지 공유 board 밖이다)",
                 ))
     for tid, declared in sorted(owners.items()):
@@ -349,7 +349,7 @@ def lint_codex_delegate_observations(home) -> list[tuple[str, str, str]]:
         "Codex SubagentStart",
         "codex-delegate-matcher-miss",
         f"일치하는 PreToolUse 처리 기록이 없는 SubagentStart {len(misses)}건 — "
-        f"spawn matcher drift 또는 가드 미발화 가능({sample}{suffix}). "
+        f"spawn matcher drift 또는 가드가 실행되지 않았을 가능성({sample}{suffix}). "
         "append-only 관측은 소비하지 않았으며 native spawn은 사후 관측만 한다.",
     )]
 

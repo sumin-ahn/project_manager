@@ -312,7 +312,7 @@ def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, monkeyp
     tool = pm_engine.cli.handoff.PmHandoff(home)
     assert tool._close_session_records('t1') is False
     assert pool.calls == ['t1']
-    assert '장부에 없음' in capsys.readouterr().err
+    assert '기록에 없음' in capsys.readouterr().err
 
 
 

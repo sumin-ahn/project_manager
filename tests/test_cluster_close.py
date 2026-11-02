@@ -906,7 +906,7 @@ def test_reconcile_reads_the_explicit_slot_not_the_finisher_tree(close_env, caps
 
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
-    assert "PM 홈으로 강등됐다" not in captured.err
+    assert "PM 홈과 같다" not in captured.err
     home = pm_paths.home_at(env.home)
     ledger = cluster_store.load_cluster(home, _CLUSTER)
     assert ledger["status"] == _CLOSED_STATUS
@@ -991,7 +991,7 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
 
     reject("side-branch-evidence", evidence_not_in_head,
            "제품 exact HEAD의 조상이 아니다")
-    reject("evidence-before-anchor", evidence_before_anchor, "anchor 이후가 아니다")
+    reject("evidence-before-anchor", evidence_before_anchor, "기준 커밋 이후가 아니다")
 
     # ── 장부·티켓 상태 ─────────────────────────────────────────────
     def not_all_done(env):
@@ -1049,7 +1049,7 @@ def test_reconcile_integrated_fail_closed_matrix(tf, tmp_path, monkeypatch, caps
     }
     capsys.readouterr()
 
-    reject("pm-home", pm_home_anchor, "PM 홈으로 강등됐다")
+    reject("pm-home", pm_home_anchor, "PM 홈과 같다")
     dirty_env = reject("dirty", dirty_selected_slot, "선택 슬롯이 dirty")
     assert (dirty_env.slot / "dirty.txt").read_text(encoding="utf-8") == "preserve\n"
 
@@ -1257,7 +1257,7 @@ def test_close_of_an_all_discarded_cluster_runs_no_code_step(close_env, capsys):
     # 밟은 단계는 둘 — 코드 네 단계가 목록에서 빠졌다.
     order = [line.split("] ", 1)[1].removesuffix("...") for line in out.splitlines()
              if line.startswith("[") and "/2] " in line]
-    assert order == ["기계 확인 생성·리뷰 게이트 처분", "board·포인터 커밋"], out
+    assert order == ["기계 확인 생성·리뷰 집계 티켓 처분", "board·포인터 커밋"], out
     assert "처분 종결 멤버 1" in out
     assert "작업 트리 →" not in out
     assert env.board_calls == [] and env.delegate_calls == []
@@ -1462,7 +1462,7 @@ def test_close_never_picks_the_pm_home_tree(close_env, capsys):
     captured = capsys.readouterr()
     assert rc == 1, captured.out + captured.err
     assert "[중단] 작업 트리 해소" in captured.err
-    assert "제품 브랜치 미결속" in captured.err
+    assert "제품 브랜치에 연결되지 않은" in captured.err
     assert env.board_calls == [] and env.delegate_calls == []
     assert env.home_log() == home_before
     assert env.ledger()["status"] != _CLOSED_STATUS
@@ -2792,7 +2792,7 @@ def test_status_query_failure_stops_residual_gate_and_report(tf, tmp_path, capsy
     with pytest.raises(finish_rules._CloseObservationFailure, match="작업 트리 상태를 관측하지 못했다"):
         finisher._report_dirty_after_stage((_TOUCH_A,), cwd=tmp_path)
 
-    assert "스코프 밖 잔여 변경 없음" not in capsys.readouterr().out
+    assert "스코프 밖 남은 변경 없음" not in capsys.readouterr().out
 
 
 @requires_git

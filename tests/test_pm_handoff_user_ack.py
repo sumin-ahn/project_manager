@@ -141,7 +141,7 @@ def test_direct_run_mismatched_ack_is_value_bound(monkeypatch, tmp_path, capsys)
     rc = runner.run("alpha", dry_run=False, skip_pytest=True, user_ack="other")
 
     assert rc == 1
-    assert "제공된 값 'other'은 대상값 'alpha'에 결속되지 않았다" in capsys.readouterr().err
+    assert "제공된 값 'other'은 대상값 'alpha'에 연결되지 않았다" in capsys.readouterr().err
 
 
 

@@ -180,23 +180,23 @@ def cluster_complete_binding_problem(home, tid: str, ticket_fm: dict[str, Any], 
     if not owners and declared is None:
         legacy_binding = cluster_rules.cluster_id_for_name(tid)
         if binding is not None and binding != legacy_binding:
-            return f'cluster 결속 {binding}을 검증할 장부가 없다 — 장부 없는 legacy 티켓의 크기 1 해석은 {legacy_binding}이다'
+            return f'cluster 연결 {binding}을 검증할 묶음 기록이 없다 — 묶음 기록 없는 legacy 티켓의 크기 1 해석은 {legacy_binding}이다'
         return None
     if len(owners) != 1:
         owner_ids = [str(row.get('id') or '<id 없음>') for row in owners]
-        return f'cluster ledger owner가 정확히 하나가 아니다: {owner_ids or ['없음']} — 멤버십을 복구한 뒤 묶음 종결을 다시 실행하라'
+        return f'묶음 기록 owner가 정확히 하나가 아니다: {owner_ids or ['없음']} — 멤버십을 복구한 뒤 묶음 종결을 다시 실행하라'
     ledger = owners[0]
     owner_raw = str(ledger.get('id') or '').strip()
     owner = cluster_rules.cluster_id_for_name(owner_raw) if owner_raw else ''
     members = cluster_store.cluster_tickets(ledger)
     if not owner or len(members) != len(set(members)) or (not members):
-        return f'{owner or '<id 없음>'} 장부의 멤버 집합이 비었거나 중복됐다'
+        return f'{owner or '<id 없음>'} 묶음 기록의 멤버 집합이 비었거나 중복됐다'
     if declared != owner:
-        return f'티켓 cluster 역참조({declared or '없음'})와 ledger owner({owner})가 일치하지 않는다'
+        return f'티켓 cluster 역참조({declared or '없음'})와 묶음 기록 owner({owner})가 일치하지 않는다'
     if binding != owner:
-        return f'활성 cluster 멤버는 direct complete할 수 없다 — ticket_finish 묶음 종결의 exact 결속 {owner}가 필요하다'
+        return f'활성 cluster 멤버는 direct complete할 수 없다 — ticket_finish 묶음 종결의 exact 연결 {owner}가 필요하다'
     if str(ledger.get('status') or '').strip() == 'closed':
-        return f'{owner} 장부는 closed인데 {tid}가 claimed다 — 모순을 complete로 덮지 않는다'
+        return f'{owner} 묶음 기록은 closed인데 {tid}가 claimed다 — 모순을 complete로 덮지 않는다'
     for member in members:
         found = ticket_store.find_ticket_exact(home, member)
         if found is None:
@@ -207,7 +207,7 @@ def cluster_complete_binding_problem(home, tid: str, ticket_fm: dict[str, Any], 
             return f'{owner} 멤버 {member}의 cluster 역참조가 일치하지 않는다: {member_cluster or '없음'}'
         member_owners = [str(row.get('id') or '') for row in ledgers if member in cluster_store.cluster_tickets(row)]
         if member_owners != [owner]:
-            return f'{member}가 여러 cluster ledger에 귀속됐다: {member_owners}'
+            return f'{member}가 여러 묶음 기록에 귀속됐다: {member_owners}'
     return None
 
 def cluster_binding_problem(home, cluster: str, *, tree: str | None=None) -> str | None:
@@ -216,12 +216,12 @@ def cluster_binding_problem(home, cluster: str, *, tree: str | None=None) -> str
     branch = str((ledger or {}).get('branch') or '').strip()
     base = str((ledger or {}).get('base_branch') or '').strip()
     if not branch or not base:
-        return f'{cluster}는 제품 브랜치 미결속 장부다. 기존 `board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시 재결속하라'
+        return f'{cluster}는 제품 브랜치에 연결되지 않은 묶음 기록이다. 기존 `board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시적으로 다시 연결하라'
     if tree is not None:
         return None if _cluster_branch_state(tree, branch) is True and _cluster_branch_state(tree, base) is True else f'{cluster}의 branch {branch} 또는 base_branch {base}를 제품 트리 {tree}에서 확인하지 못했다'
     status, rows = lease_store._read_lease_rows_status(pm_paths.leases_file(home))
     if status == identity_args.LEDGER_UNREADABLE:
-        return f'{cluster} 제품 결속을 검증할 대여 기록을 읽지 못했다'
+        return f'{cluster} 제품 연결을 검증할 대여 기록을 읽지 못했다'
     repositories: set[str] = set()
     for row in rows:
         slot = str(row.get('slot') or '').strip()
@@ -238,7 +238,7 @@ def cluster_binding_problem(home, cluster: str, *, tree: str | None=None) -> str
                 return f'{cluster} 제품 저장소 근거를 읽지 못했다: {folder}'
             repositories.add(str((folder / common[1].strip()).resolve()))
     if len(repositories) != 1:
-        return f'{cluster}의 branch {branch}·base_branch {base}를 가진 제품 저장소가 정확히 하나가 아니다 ({len(repositories)}개). 명시 결속을 확인하라'
+        return f'{cluster}의 branch {branch}·base_branch {base}를 가진 제품 저장소가 정확히 하나가 아니다 ({len(repositories)}개). 명시 연결을 확인하라'
     return None
 
 def _cluster_branch_state(tree: str, branch: str) -> bool | None:

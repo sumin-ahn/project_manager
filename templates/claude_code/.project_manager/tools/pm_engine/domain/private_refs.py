@@ -831,8 +831,8 @@ def _data_literal_markers(
         if not _DATA_LITERAL_LINE_RE.match(token.string):
             # 오탈자 표식은 보호를 만들지 못한 채 조용히 지나가 원래 사고를 재현한다.
             raise DataLiteralMarkerError(
-                f"line {index + 1}: 표식으로 보이는 주석이 정확 형태가 아니다 "
-                f"({token.string.strip()!r}) — 라인 표식은 '# {_DATA_LITERAL_MARKER}'"
+                f"line {index + 1}: 표시로 보이는 주석이 정확 형태가 아니다 "
+                f"({token.string.strip()!r}) — 라인 표시는 '# {_DATA_LITERAL_MARKER}'"
                 f"(설명은 그 뒤에), 블록 경계는 단독 라인의 "
                 f"'# {_DATA_LITERAL_MARKER}:begin' / ':end' 만 인정한다"
             )
@@ -895,9 +895,9 @@ def _data_literal_spans(source: str) -> list[tuple[int, int]]:
     lone_carriage_return = _LONE_CARRIAGE_RETURN_RE.search(source)
     if lone_carriage_return is not None:
         raise DataLiteralMarkerError(
-            f"offset {lone_carriage_return.start()}: 표식이 있는 소스에 홀로 선 CR 이 "
+            f"offset {lone_carriage_return.start()}: 표시가 있는 소스에 홀로 선 CR 이 "
             f"있다 — 라인 판정이 어긋나 보호 구간이 의도 밖까지 번진다. "
-            f"표식·경계가 있는 파일은 개행을 LF 로 통일하라"
+            f"표시·경계가 있는 파일은 개행을 LF 로 통일하라"
         )
     records = _line_records(source)
     marked, edges = _data_literal_markers(source, records)

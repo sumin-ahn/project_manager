@@ -429,7 +429,7 @@ def test_run_surfaces_shipping_change_nonblocking(hf, monkeypatch, tmp_path, cap
     out = capsys.readouterr().out
     assert "미검증 출하 변경" in out
     assert "1파일" in out            # tests/ 는 비-출하 제외 → 1파일.
-    assert "release wave" in out
+    assert "라이브 시험" in out
 
 
 def test_run_surfaces_ambiguous_nonblocking(hf, monkeypatch, tmp_path, capsys):
@@ -439,7 +439,7 @@ def test_run_surfaces_ambiguous_nonblocking(hf, monkeypatch, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "분류 불명" in out
-    assert "release wave" in out
+    assert "라이브 시험" in out
 
 
 def test_run_reports_no_shipping_change(hf, monkeypatch, tmp_path, capsys):

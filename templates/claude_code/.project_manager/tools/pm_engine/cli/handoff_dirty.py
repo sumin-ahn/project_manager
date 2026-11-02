@@ -103,25 +103,25 @@ def _dirty_tree_gate(home, *, held_slots, run_git_fn, ack_dirty: str | None, aut
         # 못 본 트리" 는 성공 로그가 아니라 경고다.
         print(
             f"  ⚠ dirty 판정 불가 — {tree} (비-git 트리·git 부재). "
-            "이 트리는 게이트가 보지 못했다.",
+            "이 트리는 통과 조건 검사가 보지 못했다.",
             file=sys.stderr,
         )
     for tree in unresolved_submodules:
         print(
             f"  ⚠ dirty 판정 불가 — {tree} (submodule status --recursive 실패). "
-            "이 앵커의 서브모듈은 게이트가 보지 못했다.",
+            "이 저장소의 서브모듈은 통과 조건 검사가 보지 못했다.",
             file=sys.stderr,
         )
     dirty_count = sum(len(paths) for _tree, paths in dirty)
     if not dirty:
         if ack_dirty:
-            print("  --ack-dirty 무시 — 판정 결과 clean(박제할 잔여 없음).")
+            print("  --ack-dirty 무시 — 판정 결과 clean(기록할 남은 변경 없음).")
         if force_handoff:
             print("  --force-handoff 무시 — 판정 결과 clean(유지할 슬롯 없음).")
         print(f"  ✓ clean — 미커밋/untracked 없음 (판정 트리 {judged_tree_count}개).")
         return 0, None
 
-    print(f"  미커밋 잔여 {dirty_count}건 (판정 트리 {judged_tree_count}개):")
+    print(f"  남은 미커밋 변경 {dirty_count}건 (판정 트리 {judged_tree_count}개):")
     for tree, paths in dirty:
         print(f"  ▷ {tree} — {len(paths)}건:")
         for line in handoff_text._format_dirty_paths(paths):
@@ -164,17 +164,17 @@ def _dirty_tree_gate(home, *, held_slots, run_git_fn, ack_dirty: str | None, aut
               f"{', '.join(kept_slots)}")
 
     if other_count and ack_dirty:
-        print(f"  ⚠ --ack-dirty override — 사유를 handoff entry 에 박제한다: {note}")
+        print(f"  ⚠ --ack-dirty override — 사유를 handoff entry 에 기록한다: {note}")
     elif other_count and auto_trigger:
         print(
             "  ⚠ 사용자 명시 핸드오프 호환 신호(--auto-trigger) — dirty를 차단하지 않고 "
-            "사유를 자동 박제한다: "
-            f"{note} 다음 세션이 이 잔여를 먼저 처리해야 한다.",
+            "사유를 자동 기록한다: "
+            f"{note} 다음 세션이 이 남은 변경을 먼저 처리해야 한다.",
             file=sys.stderr,
         )
     elif other_count:
         print(
-            f"\n[중단] 핸드오프 시작 시점에 미커밋 잔여 {other_count}건 — 핸드오프 불가. "
+            f"\n[중단] 핸드오프 시작 시점에 남은 미커밋 변경 {other_count}건 — 핸드오프 불가. "
             "세션 산출물을 먼저 커밋하라(티켓 산출은 티켓별 커밋이 관례). "
             "의도적으로 두고 나간다면 `--ack-dirty \"<사유>\"` 로 사유를 남겨라. "
             "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
@@ -182,5 +182,5 @@ def _dirty_tree_gate(home, *, held_slots, run_git_fn, ack_dirty: str | None, aut
         )
         return 1, None
     elif ack_dirty:
-        print("  --ack-dirty 무시 — 슬롯 밖 미커밋 잔여 없음(슬롯 쪽은 --force-handoff 몫).")
+        print("  --ack-dirty 무시 — 슬롯 밖 남은 미커밋 변경 없음(슬롯 쪽은 --force-handoff 몫).")
     return 0, note

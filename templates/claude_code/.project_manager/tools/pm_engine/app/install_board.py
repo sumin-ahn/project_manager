@@ -46,7 +46,7 @@ _BOARD_GITATTRIBUTES_SCAFFOLD = (
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     "areas.md merge=union\n"
-    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(라운드 회수 bytes·\n"
+    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(라운드 돌려받기 bytes·\n"
     "# 재작성 byte 판정). 엔진의 표기 보존이 근본이고 이 선언은 그 위의 방어층이다.\n"
     "*.md text eol=lf\n"
     "*.json text eol=lf\n"
@@ -180,7 +180,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
                          ["push", "origin", "HEAD"]):
                 rc, out = _board_setup_git(step, cwd=tmp_clone)
                 if rc != 0:
-                    print(f"오류: board seed `git {step[0]}` 실패 (rc={rc})\n{out.strip()}",
+                    print(f"오류: board 스캐폴드 `git {step[0]}` 실패 (rc={rc})\n{out.strip()}",
                           file=sys.stderr)
                     return rc or 1
         else:
@@ -202,7 +202,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
         except OSError as exc:
             # clone 사본(read-only git object 포함)이 tempdir 에 남는다 — 셋업 결과를 뒤집지
             #   않지만 침묵하지 않는다.
-            print(f"경고: board seed 임시 clone 정리 실패 — 직접 지우세요: {tmp_clone} "
+            print(f"경고: board 스캐폴드 임시 clone 정리 실패 — 직접 지우세요: {tmp_clone} "
                   f"({type(exc).__name__}: {exc})", file=sys.stderr)
 
     # ── 2. submodule add (remote 는 이제 non-empty — checkout 성공) ──
@@ -238,7 +238,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
             print(f"경고: dormant wiki/tickets 제거 실패 — 직접 지우세요: {copied_tickets} "
                   f"({type(exc).__name__}: {exc})", file=sys.stderr)
 
-    label = "신규 스캐폴드 seed+push" if seeded else "기존 board 재사용(합류)"
+    label = "신규 스캐폴드 커밋+push" if seeded else "기존 board 재사용(합류)"
     print(f"✓ board submodule 셋업: {_BOARD_SUBMODULE_PATH} "
           f"(remote={remote_url} · {label} · ignore=all)")
     return 0
