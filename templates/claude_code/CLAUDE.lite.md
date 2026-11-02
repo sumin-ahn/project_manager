@@ -12,7 +12,7 @@
 <!-- pm-bootstrap-preread:start -->
 세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
-1. **이 문서(CLAUDE.md·lite 코어)** — 이미 로드된 프로젝트 규칙·형상.
+1. **이 문서(CLAUDE.md·lite 코어)** — 이미 로드된 프로젝트 규칙·구성.
 2. **현재 정체성의 `pm_state`** — `.project_manager/.local/tasks/<task>/pm_state.md`다(git-ignored).
    신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
@@ -107,5 +107,5 @@ PM workflow skill(`/pm-bootstrap`·`/pm-handoff`·`/pm-cluster-claim`·`/pm-dev-
 ## 막혔을 때 / lazy 참조 (happy-path 밖 → 그때 Read)
 
 - 의존 미완·외부 키 없음 → `board.py block --reason "..."`; 잘못 claim → `board.py unclaim`.
-- 복잡 운영(wave 충돌·incident·핸드오프 심층·멀티-PM clone·결정권한 경계·프레임워크 갱신) → [`.project_manager/wiki/pm_role.md`](.project_manager/wiki/pm_role.md)(정적 운영 매뉴얼) · [`.project_manager/wiki/pm_playbook.md`](.project_manager/wiki/pm_playbook.md)(Wave 패턴·메타 정책) Read.
+- 복잡 운영(묶음 충돌·incident·핸드오프 심층·멀티-PM clone·결정권한 경계·프레임워크 갱신) → [`.project_manager/wiki/pm_role.md`](.project_manager/wiki/pm_role.md)(정적 운영 매뉴얼) · [`.project_manager/wiki/pm_playbook.md`](.project_manager/wiki/pm_playbook.md)(묶음 진행 패턴·메타 정책) Read.
 - 모르는 구조 결정 → [`.project_manager/wiki/decisions/`](.project_manager/wiki/decisions/) 절차로 ADR 작성 후 진행.

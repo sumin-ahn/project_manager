@@ -11,7 +11,7 @@
 
 ## 새 세션 부트스트랩
 
-1. **이 문서** → 형상·구조·핵심 규칙 파악.
+1. **이 문서** → 구성·구조·핵심 규칙 파악.
 2. **방법론**(이 repo 안):
    - [`pm_role.md`](.project_manager/wiki/pm_role.md) — 정적 운영 매뉴얼.
    - [`pm_playbook.md`](.project_manager/wiki/pm_playbook.md) — 위임·하니스 플레이북.
@@ -48,7 +48,7 @@ tests/                 # 엔진 단위테스트 (pytest)
   엔진은 공유.
 - **설계 산출(ADR·roadmap·spike)은 ② PM 홈 `.project_manager/wiki/`**(decisions/·raw/spikes/·roadmap)에
   둔다 — 이 제품 repo 의 wiki 는 엔진 방법론(pm_role·pm_playbook·_template·domain)만. `/spike-new` 로 설계
-  spike 박제는 ② 에서.
+  spike 기록은 ② 에서.
 - **테스트 없이는 끝난 게 아니다.** `python3 -m pytest tests/ -q -n 8`(pytest-xdist 병렬) 통과가
   완료 조건. `-n` 없는 단일 실행도 같은 결과지만 30분+ 걸린다.
 - **작은 단위 분할 → 단계별 검증 · 최소 변경 · 명시적 풀네임.**

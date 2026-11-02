@@ -21,7 +21,7 @@
 - **위임 = 네이티브 `task` tool.** PM 은 dev/architect 역할을 내장 `task` tool 로
   위임한다 — opencode 가 `.opencode/agents/*.md` (`mode: all`) 를 **별도 자식 세션**에서
   구동한다 (fresh 컨텍스트 = 200K 격리 · 자식 model/권한이 subagent 정의대로 — PM 9차 실증).
-  **폴백 = `opencode run` 자식 프로세스** (headless·CI·task tool 미노출 빌드). §2 위임 규약.
+  **대체 동작 = `opencode run` 자식 프로세스** (headless·CI·task tool 미노출 빌드). §2 위임 규약.
 - **엔진 = 공유 python.** PM 운영 로직은 `.project_manager/tools/*.py` (board.py·pm_*.py)에
   있다. PM 은 bash tool 로 이 CLI 를 호출·해석한다. **엔진은 0 수정** — 어댑터(공통 코어
   AGENTS.md·이 지침·`.opencode/`)만 타깃별로 다르다.
@@ -80,7 +80,7 @@ task tool 인자:
 > 별도 프로세스로 실행한다.
 >
 > **위임 가이드** — researcher = bounded fact-gathering(여러 파일·로그·레퍼런스를 훑어 사실·인용·목록 추출).
-> *결론만* 돌려받고, 여러 출처를 가로지르는 synthesis(교차 통찰)는 PM 이 직접 흡수한다(degrade 방지).
+> *결론만* 돌려받고, 여러 출처를 가로지르는 synthesis(교차 통찰)는 PM 이 직접 받아 반영한다(degrade 방지).
 
 ### 2.3 위임 전 사전 조건
 
@@ -88,7 +88,7 @@ task tool 인자:
 - **컨텍스트 예산** — touches 가 대형 파일·광범위 읽기를 요구하면 dev 가 truncation 위험.
   본문이 정확한 함수/라인·패턴 reference 로 읽기를 좁히는지 확인 (안 되면 위임 전 본문 보강·분할).
 - **병렬 위임 시 touches disjoint** — 동시 위임할 ticket 들의 touches 가 완전히 겹치지
-  않을 때만. (task 병렬은 opencode 가 자식 세션을 관리한다. `opencode run` 폴백 경로의
+  않을 때만. (task 병렬은 opencode 가 자식 세션을 관리한다. `opencode run` 대체 동작 경로의
   병렬은 세션 DB 락 가능성 — 미검증·순차 안전, §2.7 노트.)
 
 ### 2.4 위임 프롬프트 (developer)
@@ -124,7 +124,7 @@ C-<ticket-group> --role code-reviewer` 가 낸 `prompt` 파일 경로를 `task`(
 - **reviewer cross-check** — reviewer 도 틀릴 수 있다. should-fix 처리 전 코드 흐름 독립
   점검 · 부정확이면 변경 불필요 + log 영구 기록.
 
-### 2.7 자식 프로세스 진입 (폴백) — `opencode run`
+### 2.7 자식 프로세스 진입 (대체 동작) — `opencode run`
 
 `task` tool 을 못 쓰는 환경 — headless 자동화·CI·task tool 미노출 빌드 — 에서만 동일
 인터페이스를 자식 프로세스로 띄운다:
@@ -135,7 +135,7 @@ opencode run --agent architect    --format json "<architect 프롬프트>"
 opencode run --agent researcher   --format json "<researcher 프롬프트>"
 ```
 
-- 네 역할 카드는 `mode: all`이므로 `run --agent <role>`도 native task와 같은 custom prompt·model·permission을 쓴다. build/plan으로 축약하거나 default agent로 강등하지 않는다.
+- 네 역할 카드는 `mode: all`이므로 `run --agent <role>`도 native task와 같은 custom prompt·model·permission을 쓴다. build/plan으로 축약하거나 default agent로 낮추지 않는다.
 - `--format json` — ANSI escape 회피, 결과를 PM 이 파싱 가능하게.
 - 컨텍스트는 프로세스마다 fresh → 200K 한도를 위임으로 격리. PM 은 exit code + json 결과로
   완료를 인지한다. **병렬 `opencode run` 은 세션 DB 락 가능성 — 미검증·순차 안전**
@@ -145,16 +145,16 @@ opencode run --agent researcher   --format json "<researcher 프롬프트>"
 
 - `AGENTS.md` — harness-neutral 공통 코어(프로젝트 정체성·엔진 호출·완료 기록·결정 권한·안전 가드).
 - `.project_manager/wiki/pm_role.md` — PM 책임·결정 권한·핸드오프 단일 진실
-- `.project_manager/wiki/pm_playbook.md` — Wave 패턴·메타 정책 (필요 시 Read)
+- `.project_manager/wiki/pm_playbook.md` — 묶음 진행 패턴·메타 정책 (필요 시 Read)
 - ADR-0006 (`.project_manager/wiki/decisions/`) — opencode 어댑터 결정 (위임·인코딩·모델·self-driven)
 - ADR-0069 — 진입 doc 공통 코어 + 하네스별 전달 채널 (이 지침의 전달 채널 근거)
 
-## PM-workflow 진입 두 표면
+## PM-workflow 두 진입점
 
-opencode 는 사람 슬래시 팔레트와 모델 스킬 표면을 따로 만든다(1.18.16 실측).
+opencode 는 사람 슬래시 팔레트와 모델 스킬 진입점을 따로 만든다(1.18.16 실측).
 
 - `.opencode/command/*.md` — 팔레트 진입(`/pm-bootstrap` 등 15개). 입력한 인자를 그대로 전달한다.
-- `.claude/skills/<skill>/SKILL.md` — canonical 저작 소스이자 모델 `skill` tool 표면.
+- `.claude/skills/<skill>/SKILL.md` — canonical 저작 소스이자 모델 `skill` tool 이 읽는 파일.
 
-command 파일은 canonical 에서 기계 생성한 사본이라 손으로 편집하지 않는다. 두 표면은 서로를
+command 파일은 canonical 에서 기계 생성한 사본이라 손으로 편집하지 않는다. 두 진입점은 서로를
 대체하지 않으므로 한쪽만 출하하면 나머지 진입이 사라진다.

@@ -12,11 +12,11 @@
 <manager>/pm-config.sh repo add <name> [--git <url>] [--test "<cmd>"]  # repo 등록 + .repos clone (신규=--git 필수 / 기등록 repo 는 --git 없이 areas URL 로 mirror hydrate)
 # 등록 owner 는 --owner, 없으면 local.conf identity.user=, 그것도 없으면 git user.email 이다.
 #   셋 다 없으면 아무것도 하지 않고 멈춘다.
-<manager>/pm-config.sh worktree add <repo> --user-ack <repo>       # 사용자 승인값에 결속된 새 worktree 슬롯 + submodule init
+<manager>/pm-config.sh worktree add <repo> --user-ack <repo>       # 사용자 승인값에 연결된 새 worktree 슬롯 + submodule init
 <manager>/pm-config.sh alloc <repo> --task <task>                  # idle 최소 번호 슬롯을 task 명의로 대여
-<manager>/pm-config.sh status | whoami                             # 풀/리스 + 이 세션 repo/슬롯/branch
+<manager>/pm-config.sh status | whoami                             # 풀/대여 + 이 세션 repo/슬롯/branch
 <manager>/pm-config.sh release <slot> [--force]                    # 작업완료 반납 / 수동 강제(백스톱)
-<manager>/pm-config.sh update [--from <upstream>]                  # 엔진 갱신 (pm-update 흡수)
+<manager>/pm-config.sh update [--from <upstream>]                  # 엔진 갱신 (pm-update 로 받아 반영)
 ```
 
 `worktree add`는 `--readonly`·`--task` 변형을 포함해 물리 슬롯을 늘리므로 항상 사용자가 직접

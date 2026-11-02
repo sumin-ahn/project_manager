@@ -1,7 +1,7 @@
 # Append-only 운영 로그 — 여러 세션/clone 의 동시 append 가 git merge 에서 충돌하지 않도록
 # git 내장 union merge 드라이버를 쓴다 (양쪽 entry 를 모두 보존). 실증: 두 분기의 EOF append 가
-# 충돌 없이 합쳐짐. merge seam 의 전역 시간순은 best-effort — 정확 정렬이 필요해지면 entry
-# 앵커를 ISO timestamp 로 바꿔 재정렬한다.
+# 충돌 없이 합쳐짐. 합친 자리의 전역 시간순은 best-effort — 정확 정렬이 필요해지면 entry
+# 제목을 ISO timestamp 로 바꿔 재정렬한다.
 .project_manager/wiki/log/current.md merge=union
 
 # areas.md = 멀티-PM prefix 레지스트리 (append-only 등록) — 동시 등록이 충돌하지 않게 union.
@@ -9,12 +9,12 @@
 
 # 엔진-소유 트리의 체크아웃 표기를 LF 로 고정한다(방어층). Windows 의
 # core.autocrlf=true 체크아웃은 이 트리를 CRLF 로 바꾸고, 엔진이 자기 파일을 재작성할 때
-# 표기가 뒤집히면 engine.manifest 의 append-only 불변식과 티켓 봉인 입력이 깨진다.
+# 표기가 뒤집히면 engine.manifest 의 append-only 불변식과 티켓 확정 입력이 깨진다.
 # 근본 수정은 엔진의 표기 보존(읽기 정규화 / 쓰기 표기 복원)이고 이 선언은 그 위의 방어층이다.
 # 이 파일은 engine.manifest 로 채택자에도 배포되므로 **엔진-소유 네임스페이스에만** 건다 —
 # 채택자 소유 소스에 우리 표기 정책을 강요하지 않는다. text=auto 라 바이너리는 그대로 둔다.
-# 선두 `**/` 는 깊이 무관 — 출하 사본(`templates/<flavor>/.project_manager/**`)까지 같은 규칙이
-# 걸린다(git check-attr 실측). 슬래시를 포함한 앵커드 표기면 루트 직계만 걸려 사본이 샌다.
+# 선두 `**/` 는 깊이 무관 — 출하 사본(`templates/<harness>/.project_manager/**`)까지 같은 규칙이
+# 걸린다(git check-attr 실측). 슬래시를 포함한 루트 고정 표기면 루트 직계만 걸려 사본이 샌다.
 **/.project_manager/** text=auto eol=lf
 **/.claude/** text=auto eol=lf
 **/.codex/** text=auto eol=lf

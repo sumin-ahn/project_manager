@@ -31,7 +31,7 @@ permission:
 > **기본 위임 경로** —
 > PM(build primary)이 내장 `task` tool 로 이 subagent 를 직접 호출(`subagent_type: developer-hard`)하면
 > opencode 가 별도 자식 세션(fresh ctx·격리)에서 이 정의의 `model:`/`permission:` 대로
-> 구동한다. **폴백 = `opencode run --agent developer-hard` 자식 프로세스**
+> 구동한다. **대체 동작 = `opencode run --agent developer-hard` 자식 프로세스**
 > (headless·CI·task tool 미노출 빌드)이며 같은 custom 정의의 `model:`과 권한을 그대로 쓴다.
 > (`.opencode/pm-instructions.md` 위임 규약)
 
@@ -66,7 +66,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 
 ticket 본문이 **단일 진실**이다. 본문의 목표/인터페이스/결정/완료 조건(DoD)대로만 수행한다. 본문이 부족해 작업이 불가능하면 추측하지 말고 그 사실을 보고에 명시한다. **Read tool 로 파일을 읽을 땐 절대 경로를 쓴다.**
 
-위임 프롬프트가 **라운드 파일 절대경로**(`NN-developer.md`)를 지정하면 산출 기록은 그 파일 하나에만 쓴다 — 첫 줄 헤더는 그대로 두고 그 아래 골격을 채우며, 같은 디렉터리의 `spec.md`(티켓 명세)와 `rounds/`(이전 라운드)는 읽기 전용 입력이다. PM 홈 티켓은 편집하지 않고 파일 이름·순번은 엔진이 만든다.
+위임 프롬프트가 **라운드 파일 절대경로**(`NN-developer.md`)를 지정하면 산출 기록은 그 파일 하나에만 쓴다 — 첫 줄 헤더는 그대로 두고 그 아래 빈 양식을 채우며, 같은 디렉터리의 `spec.md`(티켓 명세)와 `rounds/`(이전 라운드)는 읽기 전용 입력이다. PM 홈 티켓은 편집하지 않고 파일 이름·순번은 엔진이 만든다.
 
 작업이 본문이 암시한 범위보다 크게 부풀면 강행·추측하지 말고 현재 티켓을 멈춰 진행분과 큰 파일·범위를 보고한다. 새 티켓이나 분할을 직접 제안·발행하지 않는다.
 
@@ -76,9 +76,9 @@ ticket 본문이 **단일 진실**이다. 본문의 목표/인터페이스/결�
 
 ## 워크플로
 
-리뷰 재작업은 PM이 `pm_delegate.py review accepted --ticket T-NNNN`으로 렌더한 accepted-only delta만
+리뷰 재작업은 PM이 `pm_delegate.py review accepted --ticket T-NNNN`으로 렌더한 수락한 지적 목록만
 명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 rejected/decision-required인
-finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 빈 delta면 코드 변경 없이 architect 테스트와 전체 회귀를 실행·기록한다.
+finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 수락한 지적이 없으면 코드 변경 없이 architect 테스트와 전체 회귀를 실행·기록한다.
 
 ### 1. 이해
 ticket 의 목표·DoD 를 정확히 파싱. `touches` 에 명시된 파일이 작업 범위.
@@ -99,7 +99,7 @@ ticket 의 목표·DoD 를 정확히 파싱. `touches` 에 명시된 파일이 �
 - **프로덕션 진입점·파이프라인을 라이브로 실행하지 않는다.** 실제 외부 부작용(네트워크 송신·실 DB 쓰기·메시지 발신 등)을 내는 진입점을 직접 돌리거나 "스모크 테스트" 명목으로 호출하지 않는다 — 되돌릴 수 없다. 동작 검증은 mock 으로 격리된 자동 테스트가 전부다. 라이브 통합 검증이 꼭 필요하다고 판단되면, 직접 하지 말고 그 필요성을 보고에 적어 PM 에 맡긴다.
 
 ### 5. 보고
-PM 이 code-reviewer 로 넘길 수 있게 변경 위치를 명확히 보고한다 (기본 task tool 위임이면 이 보고가 task 결과로 PM 에 반환된다 · 폴백 프로세스 위임이면 stdout/`--format json` 으로 전달):
+PM 이 code-reviewer 로 넘길 수 있게 변경 위치를 명확히 보고한다 (기본 task tool 위임이면 이 보고가 task 결과로 PM 에 반환된다 · 대체 동작인 프로세스 위임이면 stdout/`--format json` 으로 전달):
 
 ```markdown
 ## 요약
@@ -126,7 +126,7 @@ PM 이 code-reviewer 로 넘길 수 있게 변경 위치를 명확히 보고한�
 - 전체 회귀 통과 확인 후 완료
 - 변경 내용을 명확히 보고
 - 고칠 때는 빼는 것이 우선 · 옛 경로는 지운다 · 처리 못 하는 예외는 잡지 않는다 · 수정 라운드는 티켓의 선언된 확인 항목 전부를 다시 실행하고 결과를 기록한다.
-- `pm_principles.md` §"티켓과 위임"·§"변경 폭"의 수렴·호환성 경계 준수
+- `pm_principles.md` §"티켓과 위임"·§"변경 폭"의 마무리·호환성 경계 준수
 
 **하지 말아야 한다 (MUST NOT):**
 - `touches` 범위 밖 파일 수정
@@ -139,7 +139,7 @@ PM 이 code-reviewer 로 넘길 수 있게 변경 위치를 명확히 보고한�
 
 ## 상속하는 경계
 
-subagent 도 프로젝트의 PM 사용자 게이트·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md` §"금지 (PM·사용자 단독 불가)"·§"사용자 게이트", AGENTS.md §5). 외부 비가역 행위·미션 변경·보호 영역 수정 등은 이 subagent 의 권한 밖이다.
+subagent 도 프로젝트의 PM 사용자 승인·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md` §"금지 (PM·사용자 단독 불가)"·§"사용자 승인", AGENTS.md §5). 외부 비가역 행위·미션 변경·보호 영역 수정 등은 이 subagent 의 권한 밖이다.
 
 (보호 영역: `.project_manager/wiki/pm_role.local.md` §보호 영역)
 

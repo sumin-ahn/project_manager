@@ -27,7 +27,7 @@ python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(�
 #    (`board.py init` 의 pm_state.md · worktree_pool 의 task pm_state · 사람이 스캐폴드를 복사할 때)이
 #    채운다. 엔진 제외는 *토큰* 단위지만 이 두 파일엔 `{{DATE}}` 외 운영 토큰이 없어 아래처럼 파일
 #    단위로 빼도 등가다. (⑤ 밖의 `{{DATE}}`— status.md·architecture.md·log/current.md 등 manifest
-#    미등재 인스턴스 seed — 는 설치일로 채우는 게 맞다·아래 sed 가 그대로 처리.)
+#    미등재 인스턴스 빈 양식 — 는 설치일로 채우는 게 맞다·아래 sed 가 그대로 처리.)
 #    {{PY}}/{{TEST_CMD}} 는 엔진 문서·어댑터에서 폐기(T-0219 — 문서 표기는 python3 관례·test 명령은
 #    local.conf test.cmd= 노브)·진입 문서 등엔 잔존.
 grep -rlI '{{' . --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=node_modules | \
@@ -66,7 +66,7 @@ python3 .project_manager/tools/board.py list
 
 새 prefix를 처음 만드는 `board.py new --prefix`, `board.py init --prefix`, `pm-config task
 prefix`, `board.py prefix rename/merge`는 사용자가 승인한 대상값과 같은 `--user-ack <prefix>`가
-필요하다. 이미 areas·기발행 티켓·task 장부에 있는 prefix는
+필요하다. 이미 areas·기발행 티켓·task 대여 기록에 있는 prefix는
 대소문자 무관으로 재사용되며 별도 ack가 필요 없다.
 
 치환 후 남은 `{{...}}` 확인 — 위 2)와 **문자 그대로 같은 파이프라인**(파일 단위 `-rlI` + 동일 제외

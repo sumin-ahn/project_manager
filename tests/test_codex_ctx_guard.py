@@ -253,7 +253,7 @@ def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachabil
         "Codex CLI 0.147.0 로컬 바이너리의 hook event enum에서 `PostCompact` 지원을 확인",
         "메인테이너 실측(2026-08-06, codex-cli 0.146.0)",
         "`--oss` 프로브(`reach-probe/`)",
-        "marker 발화를 확인",
+        "marker 실행을 확인",
         "`turn_aborted` 0건·`context_compacted` 기록",
         "후속 turn 정상 계속",
         "stdout JSONL·stderr·rollout·`CODEX_HOME` 전수 grep",
@@ -262,7 +262,7 @@ def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachabil
         # T-0770 라이브 실측: 같은 exec 경로라도 진입점 훅의 additionalContext 는 도달한다.
         "`hookSpecificOutput.additionalContext`는 **모델에 닿는다**",
         "direct TUI 표시는 미검증",
-        "driver 회전 선점이 relay 경로를 실보호",
+        "driver 가 먼저 회전해 relay 경로를 실제로 보호",
         "trusted project와 `/hooks` 승인",
     )
     for anchor in anchors:

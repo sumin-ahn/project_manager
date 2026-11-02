@@ -14,10 +14,10 @@ type: pm-role-local
 {{PROTECTED_PATHS}}
 
 <!-- ↑ 코드 author + ADR 가 필요한 파일/디렉토리로 위 토큰을 치환. 예: src/core/**, 운영 config,
-  한도 상수, immutable 스냅샷 디렉토리, 마이그레이션. (--fill auto 면 초안 자동 생성, manual 이면 직접
+  한도 상수, immutable 상태 기록 디렉토리, 마이그레이션. (--fill auto 면 초안 자동 생성, manual 이면 직접
   치환. 없으면 "없음".) -->
 
-## 사용자 게이트 (사전 동의 필수)
+## 사용자 승인 (사전 동의 필수)
 
 {{USER_GATE_ITEMS}}
 

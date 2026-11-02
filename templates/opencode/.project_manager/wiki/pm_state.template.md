@@ -13,12 +13,12 @@ type: handoff-state
 >
 > [`pm_role.md`](pm_role.md)(정적 운영 매뉴얼)에서 분리한 **휘발성 상태**. 매 핸드오프마다 바뀐다.
 > PM 세션은 정적 매뉴얼(pm_role.md)을 매번 정독하지 않아도, 이 파일만 보면 "지금 어디까지 왔나"를 안다.
-> 일부 절은 `/pm-handoff` (backbone `pm_handoff.py`)가 자동 갱신한다 — 아래 앵커·표 형식을 바꾸면 정규식도 같이.
+> 일부 절은 `/pm-handoff` (backbone `pm_handoff.py`)가 자동 갱신한다 — 아래 찾는 제목·표 형식을 바꾸면 정규식도 같이.
 
 ## 세션 식별 (현재까지 사용된 이름)
 
 > ⚠️ `/pm-handoff` skill (backbone `pm_handoff.py`) 가 이 표를 sliding window 로
-> 자동 정리한다. 표 형식·앵커 (`## 세션 식별 (현재까지 사용된 이름)`) 를
+> 자동 정리한다. 표 형식·찾는 제목 (`## 세션 식별 (현재까지 사용된 이름)`) 를
 > 바꾸면 backbone CLI 의 정규식도 같이 바꿔야 한다.
 > 역할 네이밍 규칙(PM 세션 / 구현 세션 / orchestrator)은 [`pm_role.md`](pm_role.md) §"세션 식별 규칙" 참조.
 

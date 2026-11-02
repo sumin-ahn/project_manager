@@ -31,7 +31,7 @@ CHANGELOG = REPO / "CHANGELOG.md"
 MANAGER_ENTRY_MARK = "**프로젝트 관리자 앱 `pm-manager`**"
 
 SECTION_HEADING = "### 3. CHANGELOG → main push → tag → GitHub Release"
-NEXT_SECTION_HEADING = "### 4. adopter#0 흡수"
+NEXT_SECTION_HEADING = "### 4. adopter#0 받아 반영"
 MANAGER_STEP_NUMBER = 4
 RELEASE_RUNNERS = ("ubuntu-latest", "windows-latest", "macos-latest")
 ASSET_NAMES = ("pm-manager-linux-x86_64", "pm-manager-windows-x86_64.exe",
@@ -258,7 +258,7 @@ def test_release_body_template_contract(card):
     assert "각각 독립된 `text` 코드 블록" in step
     assert "해당 버전 절의 제목과 본문은 그대로 포함" in step
     assert "실제 릴리즈 태그로 채우며" in step and "버전을 일치시킨다" in step
-    assert "과거 릴리즈의 특수 처방" in step and "고정하지 않고" in step
+    assert "과거 릴리즈의 특수 해결 방법" in step and "고정하지 않고" in step
     assert _fenced_commands(step)[-1] == (
         "gh release create vX.Y.Z --notes-file <완성한 릴리즈 본문 파일> --verify-tag")
     assert "<CHANGELOG 해당 절 추출>" not in step
@@ -284,7 +284,7 @@ def test_windows_manual_window_check_contract(card):
     assert "수정으로 커밋이 바뀌면 같은 확인을 다시 실행" in check
     assert "소스 smoke 결과는 live-test 기록에 넣지 않는다" in check
     assert "공개 후 관리자 실행 파일 3종의 CI 확인도 별도로 수행" in check
-    assert "새 기계 게이트·설정 키·우회 옵션은 추가하지 않는다" in check
+    assert "새 기계 통과 조건·설정 키·우회 옵션은 추가하지 않는다" in check
 
 
 @pytest.mark.parametrize("card", SHIPPED_CARDS,

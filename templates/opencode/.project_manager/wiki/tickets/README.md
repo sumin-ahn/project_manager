@@ -48,7 +48,7 @@ python3 .project_manager/tools/board.py unclaim T-NNNN --takeover --reason "소�
 ### 처분으로 종결 · 오처리 복구
 ```bash
 # 구현이 아니라 처분이면 (병합·폐기) — done/ 이 아니라 discarded/ 로 닫는다
-python3 .project_manager/tools/board.py discard T-NNNN merged --reason "T-MMMM 로 흡수"
+python3 .project_manager/tools/board.py discard T-NNNN merged --reason "T-MMMM 에 받아 반영"
 python3 .project_manager/tools/board.py discard T-NNNN dropped --reason "취소 — 대체 ticket 이 처리"
 
 # 잘못 종결했으면 되돌리기 (done/ · discarded/ → open/ · 종결을 빠져나가는 유일한 문)
@@ -105,7 +105,7 @@ tickets/
 3. 활성 슬롯 lease 가 정확히 1개면 그 세션 (단일-lease 유도)
 4. 미해소
 
-lease 장부에 행이 0개면 이 홈엔 아직 작업 폴더가 없는 것이다 — `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만든 뒤 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
+슬롯 대여 기록에 행이 0개면 이 홈엔 아직 작업 폴더가 없는 것이다 — `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만든 뒤 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
 
 ## 보드 새로고침
 
@@ -115,7 +115,7 @@ lease 장부에 행이 0개면 이 홈엔 아직 작업 폴더가 없는 것이�
 ## 한계 (의도된 단순성)
 
 - **분산 락 아님.** 같은 파일시스템 한 클론에서만 atomic. 두 머신이 동시에 쓰면 깨질 수 있음 — 운영상 1 머신 기준.
-- **자동 unclaim 없음.** TTL 기반 회수는 일부러 빼놨다. 사람이 결정.
+- **자동 unclaim 없음.** TTL 기반 자동 반납은 일부러 빼놨다. 사람이 결정.
 - **의존성 그래프 검증.** `depends_on` 은 claim 시점에 한 번 검사. 순환 의존은 `board.py lint` 가 검출.
-- **complete 동기화 게이트.** `board.py complete` 는 `done/` 으로 옮기기 전에 세 축을 확인한다 — `log/current.md` entry · 회귀 통과 (`--tests-pass`) · **DoD 기록**. DoD 축은 본문 `## 완료 조건` 절의 체크박스를 보고 `- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)` 만 통과시킨다 (미체크·사유 없는 이월은 차단). 앞 두 축의 정당한 예외는 `--allow-missing-log` / `--allow-untested` 로 우회하고, DoD 축엔 우회 플래그가 없다 — 이월 표기가 그 자리다. **`## 완료 조건` 절 부재 · 체크박스 0개 (산문 DoD) · 전량 이월도 차단한다** — 전량 이월(체크박스가 전부 사유 있는 `- [>]`)은 완료가 아니라 처분이라, 거부 문구가 `board.py discard` 를 지목한다. 부분 이월(`- [x]` 하나 이상)은 통과한다.
+- **complete 동기화 통과 조건.** `board.py complete` 는 `done/` 으로 옮기기 전에 세 기준을 확인한다 — `log/current.md` entry · 회귀 통과 (`--tests-pass`) · **DoD 기록**. DoD 기준은 본문 `## 완료 조건` 절의 체크박스를 보고 `- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)` 만 통과시킨다 (미체크·사유 없는 이월은 차단). 앞 두 기준의 정당한 예외는 `--allow-missing-log` / `--allow-untested` 로 우회하고, DoD 기준엔 우회 플래그가 없다 — 이월 표기가 그 자리다. **`## 완료 조건` 절 부재 · 체크박스 0개 (산문 DoD) · 전량 이월도 차단한다** — 전량 이월(체크박스가 전부 사유 있는 `- [>]`)은 완료가 아니라 처분이라, 거부 문구가 `board.py discard` 를 지목한다. 부분 이월(`- [x]` 하나 이상)은 통과한다.
 - **thin ticket 차단.** `board.py lint` 는 open/claimed 본문에 `_template.md` placeholder 가 남았거나 표준 섹션 (목표/완료 조건/참고) 이 없으면 실패한다.

@@ -744,7 +744,7 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
         "execpolicy는 argv-only",
         "현재 hook 정의의 hash",
         "시작 시 경고",
-        "host 측 감지 표면",
+        "host 측 감지 수단",
         "--dangerously-bypass-hook-trust",
         "PreToolUse` 4건",
         "`error` 2건",

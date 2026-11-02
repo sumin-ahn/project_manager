@@ -1,6 +1,6 @@
 ---
 name: pm-cluster-finish
-description: "묶음 종결(close) — ticket_finish.py 고정 6단계 wrapper: 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋. 슬롯은 반납하지 않는다. 막는 조건은 첫 부작용 앞 선검사가 전건 보고. 재실행이 곧 재개. 모듈 판정·비고·log/current.md 서술은 PM 손. Triggers: 'T-NNNN 완료', '묶음 종결', 'ticket 정리', 'finish', 'pm-cluster-finish'."
+description: "묶음 종결(close) — ticket_finish.py 고정 6단계 wrapper: 확인 생성·리뷰 집계 티켓 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋. 슬롯은 반납하지 않는다. 막는 조건은 첫 부작용 앞 선검사가 전건 보고. 재실행이 곧 재개. 모듈 판정·비고·log/current.md 서술은 PM 손. Triggers: 'T-NNNN 완료', '묶음 종결', 'ticket 정리', 'finish', 'pm-cluster-finish'."
 audience: pm-internal
 ---
 
@@ -8,7 +8,7 @@ audience: pm-internal
 
 리뷰·fix 를 통과한 묶음의 종결을 `.project_manager/tools/ticket_finish.py` 한 커맨드가 고정 순서로
 실행한다. 순서를 PM 이 규칙으로 지키던 자리를 커맨드가 가져갔으므로 **손 git 은 0**이고, PM 에게
-남는 잔여는 서술(log/current.md)과 모듈 판정(status.md)뿐이다.
+남는 일은 서술(log/current.md)과 모듈 판정(status.md)뿐이다.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
@@ -29,14 +29,14 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN --task <task>
   정상 6단계가 두 상태를 각각 관측·기록한다.
 - **종결은 슬롯을 반납하지 않는다.** 코드 합치기·완료 표시·board 정리만 한다. 슬롯 반납은
   task 종료(`pm-config task end`)나 사용자 반납(`pm-config release`) 때만 한다.
-- 살아 있는 멤버의 작업 트리는 명시 결속한 묶음 `branch`를 체크아웃한 작업 트리 하나다.
+- 살아 있는 멤버의 작업 트리는 명시해 연결한 묶음 `branch`를 체크아웃한 작업 트리 하나다.
   branch 또는 base_branch가 비거나 작업 트리가 없거나 둘 이상이면 첫 부작용 전에 멈춘다.
-  발행이 만든 크기 1 장부에는 branch 가 없으므로 `/pm-cluster-claim` 의 `cluster new` 로 결속하고
+  발행이 만든 크기 1 묶음 기록에는 branch 가 없으므로 `/pm-cluster-claim` 의 `cluster new` 로 연결하고
   `switch` 로 작업 폴더를 옮긴다. 머지는 base_branch 를 체크아웃한 다른 작업 폴더(통합 폴더)에서 된다.
-  PM 홈과 제품의 동명 main만으로 출처를 추측하거나 장부를 자동 덮어쓰지 않는다.
+  PM 홈과 제품의 동명 main만으로 출처를 추측하거나 묶음 기록을 자동 덮어쓰지 않는다.
   task가 슬롯을 몇 개 보유했는지는 작업 트리 선택에 사용하지 않는다.
 - **완료 기록 단위는 묶음 하나다.** 티켓 ID 를 준 호출도 그 티켓의 묶음으로 해소해 같은 파이프라인을
-  탄다(티켓당 별도 코드 경로 0). 묶음을 선언하지 않은 티켓은 board 가 크기 1로 접어 준다.
+  탄다(티켓당 별도 코드 경로 0). 묶음을 선언하지 않은 티켓은 board 가 크기 1 묶음으로 다룬다.
   멤버 중 final-fix 확인 입력이나 완료 조건이 덜 채워진 티켓이 있으면(DoD 미체크 · `touches` 밖 변경 ·
   리뷰 라운드 부재, 단 tier pm-direct 이고 리뷰 라운드 0개면 리뷰 없이 진행) **선검사가 첫 부작용 전에
   전건을 번호와 함께 보고하고 멈춘다** — 그 실행은 board·git·위임 어디에도 손대지 않는다.
@@ -45,7 +45,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN --task <task>
   커맨드를 다시 부르면 끝난 단계는 반복하지 않는다.
 - `--repo <repo> --slot <N>`: 복구 문(`--reconcile-integrated`) 전용이다(복구할 제품 트리 · 둘 다 필수). 정상 종결에 주면 usage error 다.
 - **`--task <task>`** (필수): 종결의 정체성이다(log 머리말 `(task:이름)`·멤버 `claimed_by` 소유 대조). 없으면 첫 쓰기 전에 usage error(rc 2)로 멈춘다 — cwd·단일 활성 task 에서 유도하지 않는다. 작업 트리는 task 대여에서 고르지 않고 묶음 브랜치로 찾는다.
-- **`--no-pytest`**: 회귀를 별도(`/pm-qa` 등)로 이미 측정했을 때 회귀 실행만 skip 한다(board complete는 `--tests-pass` 유지). 코드 트리 해소·사설 참조 측정·stage 는 그대로 그 트리에서 한다. **wave 중 종결은 이 형태가 표준**이며 전량 검증은 릴리즈 절차 1회다.
+- **`--no-pytest`**: 회귀를 별도(`/pm-qa` 등)로 이미 측정했을 때 회귀 실행만 skip 한다(board complete는 `--tests-pass` 유지). 코드 트리 해소·사설 참조 측정·stage 는 그대로 그 트리에서 한다. **묶음 진행 중 종결은 이 형태가 표준**이며 전량 검증은 릴리즈 절차 1회다.
 - **`--dry-run`**: 편집·board·git 없이 어느 단계가 무엇을 할지만 출력한다. 처음 도는 묶음은 switch 를 마친 뒤
   이걸 먼저 본다(switch 전이면 실제 종결과 같이 작업 트리 해소에서 rc 1).
 - **log entry는 티켓당 하나다.** 증거가 이미 확정됐으면 `| [[T-NNNN]] —` heading의 실제 entry를
@@ -53,7 +53,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN --task <task>
   실제 내용으로 **교체**하며 별도 entry를 추가하지 않는다. 상세 순서는 operational-details를 따른다.
 - `--section`: **deprecated no-op**(status.md 합계표 제거, 후방호환 수용만).
 
-이미 direct complete로 멤버만 done이고 장부가 open인 과거 반쪽 상태는 정상 6단계를 재실행하지
+이미 direct complete로 멤버만 done이고 묶음 기록이 open인 과거 반쪽 상태는 정상 6단계를 재실행하지
 않는다. `references/operational-details.md`의 **all-done recovery** 절에 따라 제품 slot·멤버별
-commit·legacy anchor·사용자 승인값을 모두 명시해 reconcile한다. recovery는 merge/rebase/commit/
+commit·legacy 멤버의 기준 커밋·사용자 승인값을 모두 명시해 reconcile한다. recovery는 merge/rebase/commit/
 review resolve를 실행하지 않으며, dirty slot을 reset·stash하지 않는다.

@@ -5,12 +5,12 @@
      한 주제 여러 산출/병렬:  mkdir -p <주제>/ && cp _template.md <주제>/<세션 또는 각도>-$(date +%F).md
             예) cp _template.md web-auth-redesign-2026-06-03.md
   2) 이 주석 블록은 지우고, frontmatter·섹션을 채운다. 빈 섹션은 삭제 가능.
-  3) spike 는 sealed 후 IMMUTABLE — `status: draft` 동안은 편집/세션무관 resume 가능(같은 파일 이어쓰기),
-     합의+사용자 사인오프 시 sealed (<date>). sealed 후 개정은 새 날짜 파일로(vN 누적).
+  3) spike 는 확정 뒤 고치지 않음(IMMUTABLE) — `status: draft` 동안은 편집/세션무관 resume 가능(같은 파일 이어쓰기),
+     합의+사용자 사인오프 시 sealed (<date>). 확정 뒤 개정은 새 날짜 파일로(vN 누적).
   4) 병렬 OK: 파일명이 고유하면 여러 세션이 동시에 떨궈도 충돌 0.
      같은 날 같은 주제가 겹치면 파일명 끝에 -<세션명> 을 붙여 분리.
   5) 이 문서는 "결정"하지 않는다 — 근거 있는 권고 + 초안(ADR/ticket)까지.
-     채택·발행·비준은 PM 이 한다.
+     채택·발행·승인은 PM 이 한다.
 -->
 ---
 title: <한 줄 제목 — 무엇을 설계하는가>
@@ -52,7 +52,7 @@ tags: [design-spike]
 ## 4. ADR 후보 (DRAFT — 발행은 PM)
 
 <!-- 이 설계가 굳히려는 결정을 ADR 본문 초안으로. 번호는 PM 이 발행 시 부여.
-     scope(PM-자율 internal·reversible / 사용자-게이트)와 결정 근거·기각 대안을 적는다. -->
+     scope(PM-자율 internal·reversible / 사용자 승인)와 결정 근거·기각 대안을 적는다. -->
 
 ## 5. ticket 분할안 (DRAFT — 발행은 PM)
 
@@ -68,4 +68,4 @@ tags: [design-spike]
 <!-- 설계 세션(사용자 + Claude)이 합의에 이르면 채우는 절: 합의 날짜 + 사용자 결정 +
      발행한 ADR/ticket 번호 역링크(발행 자체는 스킬 밖). 동시에 위 frontmatter status 를
      sealed (<date>) 로(설계 절 전부 합의 + 사용자 사인오프 시에만), related 에
-     발행물 번호를 추가한다. 사인오프 전엔 draft 로 둔다 — 혼자 봉인 금지. -->
+     발행물 번호를 추가한다. 사인오프 전엔 draft 로 둔다 — 혼자 확정 금지. -->

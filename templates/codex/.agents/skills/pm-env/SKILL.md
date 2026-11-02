@@ -26,7 +26,7 @@ audience: user-entrypoint
 ```
 
 `areas.md` 공유 레지스트리와 per-repo 셋업을 등록한 뒤 worktree 슬롯을 붙인다. `--protected`는 쉼표분리
-보호 브랜치이며, 생략한 빈 칼럼은 **main/master/develop**으로 폴백한다. 사후 변경은 `repo protected`.
+보호 브랜치이며, 생략한 빈 칼럼은 **main/master/develop**으로 대신한다. 사후 변경은 `repo protected`.
 
 ## repo protected
 
@@ -34,15 +34,15 @@ PM이 자율 commit/push할 수 없는 브랜치 목록. `areas.md`의 `protecte
 sidecar는 파생 캐시다.
 
 ```bash
-./pm-config.sh repo protected <repo>                  # 조회 — 실효값 + 출처 + 훅 sidecar 정합
-./pm-config.sh repo protected <repo> "main,release"   # 설정 — areas.md → 훅 sidecar 정합화
+./pm-config.sh repo protected <repo>                  # 조회 — 실효값 + 출처 + 훅 sidecar 일치
+./pm-config.sh repo protected <repo> "main,release"   # 설정 — areas.md → 훅 sidecar 일치시킴
 ./pm-config.sh repo protected <repo> default          # 칼럼 비움 = main/master/develop 기본값 복귀
 ```
 
-- 조회는 실효값·출처(명시/기본값 폴백/미등록)·훅 sidecar 정합의 3줄이다. 기본값 상태와 다른 clone 변경으로
+- 조회는 실효값·출처(명시/기본값으로 대체/미등록)·훅 sidecar 일치의 3줄이다. 기본값 상태와 다른 clone 변경으로
   이 clone 훅만 낡은 drift를 구별하며, drift면 `⚠ 옛 목록(...)`과 재실행 안내가 붙는다.
 - 설정은 **areas.md 먼저, 훅 sidecar 다음** 순서 고정. 변경은 board-git로 즉시 공유되고, 다른 clone은
-  `$pm-bootstrap` 세션 시작 시 drift만 흡수한다.
+  `$pm-bootstrap` 세션 시작 시 drift만 받아 반영한다.
 - **"보호 없음"은 지정 불가**: 빈 문자열은 거부되고 `default`로 안내한다. 브랜치 실재는 검증하지
   않는다. 아직 없는 `release`의 선보호도 정상이지만 bare에 없으면 경고 1줄.
 - `areas.md`에 같은 repo 행이 2개 이상이면 설정을 **부작용 없이 거부**한다. `board.py lint`도
@@ -92,7 +92,7 @@ sync는 폴더 밖의 submodule을 제외하고 꺼냈으나 초기화되지 않
 ## slot status / release / remove
 
 ```bash
-./pm-config.sh status | whoami        # 2축 cockpit — task 상황 + slot 풀·슬롯당 git 요약
+./pm-config.sh status | whoami        # 두 기준 cockpit — task 상황 + slot 풀·슬롯당 git 요약
 ./pm-config.sh release <slot> [--force]        # 작업완료 반납(idle 화·재사용) / --force=점유·소유검사 무시 백스톱
 ./pm-config.sh worktree remove <slot> --user-ack <slot> [--user-ack <브랜치>]... [--force]  # 슬롯 통째 제거(사용자 승인값·번호 재사용)
 ```
@@ -109,15 +109,15 @@ sync는 폴더 밖의 submodule을 제외하고 꺼냈으나 초기화되지 않
 - `remove`는 사용자 승인 행위다. `--user-ack` 값에 입력한 슬롯이 그대로 없으면 rc=1 로 거부한다.
   **세션(LLM)은 이 값을 스스로 붙이지 않는다** — 사용자에게 슬롯 제거 승인을 요청하는 것이 1순위다.
   순서: 커밋 안 한 변경·git 미등록 트리 거부(`--force` 무관) → `git worktree remove` → 브랜치 삭제
-  판정 → 장부 엔트리 삭제(빈 번호 재사용). `--force`는 점유(활성 리스)만 무시하고, 활성 슬롯을
-  회수하면 stderr에 `⚠ 강제 회수`가 나온다.
+  판정 → 기록 항목 삭제(빈 번호 재사용). `--force`는 점유(활성 대여)만 무시하고, 활성 슬롯을
+  반납하면 stderr에 `⚠ … 강제 반납` 경고가 나온다.
 - 브랜치 삭제 판정(슬롯 제거, 앞에서 걸리면 보존): 보호 브랜치·공용 저장소 기본
   브랜치 → 자식 브랜치 있음 → 부모 기록 없음·부모 브랜치 없음 → 부모에 합쳐지지 않은 커밋이 있고
   그 브랜치 이름의 승인값(`--user-ack <브랜치>`)이 없음(커밋 목록·origin 반영 여부 출력) → 그 밖은
   끝 커밋을 다시 확인한 뒤 삭제. 합쳐지지 않은 브랜치를 지울지는 **제거 전에** 사용자에게 묻는다
   (제거 뒤에는 같은 슬롯으로 다시 판정할 수 없다).
-- 제거 구분: 등록 슬롯=`worktree remove <slot> --user-ack <slot>` / worktree 없는 dangling 장부=`worktree
-  prune-stale` / 장부 없는 orphan worktree=사용자 `git worktree remove`. git 미등록 잔재 트리는 엔진이
+- 제거 구분: 등록 슬롯=`worktree remove <slot> --user-ack <slot>` / worktree 없는 dangling 대여 기록=`worktree
+  prune-stale` / 대여 기록 없는 orphan worktree=사용자 `git worktree remove`. git 미등록 잔재 트리는 엔진이
   지우지 않는다 — 사용자가 경로를 확인·삭제한 뒤 `worktree prune-stale`.
 - 보존된 전용 브랜치가 있으면 같은 번호 재생성은 `SlotBranchExists`로 중단된다. 작업 재개는
   **수동 checkout**(`git worktree add <슬롯경로> <브랜치>`·리셋 없음).

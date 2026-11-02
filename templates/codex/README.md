@@ -27,9 +27,9 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
   - **위임 역할** = `.codex/agents/{architect,code-reviewer,developer,developer-hard,researcher}.toml` (아래 §위임).
   - **운영 규율** = canonical 스킬(`.agents/skills`·아래 §스킬).
   - **실행 모델·위임 규약** = `$pm-bootstrap` 커맨드 카드가 하네스 감지(`CODEX_THREAD_ID`/`CODEX_CI`
-    env)로 codex 절을 발화(아래 §PM 시작).
+    env)로 codex 절을 내보낸다(아래 §PM 시작).
   - **부수 이득**: 방법론이 전부 pm_update 갱신 도달 채널(TOML @source·스킬·엔진 카드)에 실려 —
-    instance-owned 진입 doc 의 drift 표면이 codex 엔 애초에 생기지 않는다.
+    instance-owned 진입 doc 의 drift 지점이 codex 엔 애초에 생기지 않는다.
 - **`.codex/config.toml`·`.codex/hooks.json`** (instance-owned·채택자 소유) — ctx checkpoint 안내
   (문서화된 `model_auto_compact_token_limit` + 비차단 PreCompact 구조화 메시지). manifest 밖이라
   byte-copy 전파를 타지 않고, 대신 전용 채널(아래 §어댑터 config 도달 채널)로 도달한다
@@ -39,13 +39,13 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
 
 `model_auto_compact_token_limit`은 auto-compaction을 유발하는 숫자 threshold일 뿐 off 스위치가 아니다.
 `hooks.json`도 compaction을 차단하지 않는다. PreCompact 진입점은 `trigger` 값(`manual`·`auto`)과
-무관하게 checkpoint 골격을 자동 생성한 뒤 JSON `systemMessage` 안내를 내고 transaction을 통과시킨다.
+무관하게 checkpoint 빈 양식을 자동 생성한 뒤 JSON `systemMessage` 안내를 내고 transaction을 통과시킨다.
 Codex CLI 0.147.0 로컬 바이너리의 hook event enum에서 `PostCompact` 지원을 확인했고,
 이 이벤트는 `pm_log.py snapshot --json`의 엔진 소유 최종 텍스트를 `systemMessage` 엔벨로프로
 출력한다.
-`PostCompact` 실발화는 메인테이너 실측(codex-cli 0.147.0)에서 확인했다 — 격리
+`PostCompact` 실제 실행은 메인테이너 실측(codex-cli 0.147.0)에서 확인했다 — 격리
 `CODEX_HOME`에 `model_auto_compact_token_limit`을 낮춰 `codex exec` 1회에서 auto 압축을 유도하자
-`PreCompact` 12회·`PostCompact` 12회가 발화했고 payload의 `trigger`는 전부 `auto`였다
+`PreCompact` 12회·`PostCompact` 12회가 실행됐고 payload의 `trigger`는 전부 `auto`였다
 (캡처본: `tests/fixtures/codex_0_147_0_live_hook_payloads.json`의 `compaction_events`).
 실측된 범위는 이 출력 채널까지다. 그 엔벨로프의 모델 도달은 direct TUI에서 미검증이고
 headless exec에서는 미도달이다(아래 두 항목).
@@ -54,21 +54,21 @@ PowerShell-safe `commandWindows`에서 동일한 checkpoint 의미의 JSON 하�
 단계의 stdout/stderr는 디스패처가 전량 폐기하며 PowerShell 5.x 호환을 위해 명령은 `;`로 분리한다. Windows payload는
 PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않도록 ASCII 안내문을 쓴다.
 
-아래 두 실측은 이벤트별 `^auto$`/`^manual$` matcher 시절의 기록이다 — 현행 배선은 §훅 범용 진입점이 설명하는 진입점 하나다.
+아래 두 실측은 이벤트별 `^auto$`/`^manual$` matcher 시절의 기록이다 — 현행 등록은 §훅 범용 진입점이 설명하는 진입점 하나다.
 
 - direct TUI: 메인테이너 실측(2026-08-06, codex-cli 0.146.0)에서 `^manual$`은 TUI의
   `/compact` 전용임을 확인했다. `systemMessage`의 direct TUI 표시는 미검증이다. trusted project와
-  `/hooks` 승인이 없으면 PreCompact 자체가 조용히 발화하지 않는다.
+  `/hooks` 승인이 없으면 PreCompact 자체가 조용히 실행되지 않는다.
 - headless exec: 같은 메인테이너 실측의 `--oss` 프로브(`reach-probe/`)에서 `^auto$` 비차단
-  훅 marker 발화를 확인했고, `turn_aborted` 0건·`context_compacted` 기록과 후속 turn 정상 계속으로
+  훅 marker 실행을 확인했고, `turn_aborted` 0건·`context_compacted` 기록과 후속 turn 정상 계속으로
   compaction 통과를 확인했다. 단, compaction 훅의 `systemMessage`는 `codex exec`의
   stdout JSONL·stderr·rollout·`CODEX_HOME` 전수 grep 어디에도 나타나지 않았고 모델 자기보고도 음성이었다. 따라서
   **exec 경로에서 `systemMessage` 안내는 모델에 닿지 않는다(관측만 가능)**.
   도달 여부는 **채널별로 다르다** — 진입점 훅(`PreToolUse`·`UserPromptSubmit`)의
   `hookSpecificOutput.additionalContext`는 **모델에 닿는다**. 격리 `CODEX_HOME` 라이브 실측
-  (codex-cli 0.147.0)에서 세션 안 ctx 넛지 문구가 rollout에 `role:"developer"` 입력 레코드로
+  (codex-cli 0.147.0)에서 세션 안 ctx 경고 문구가 rollout에 `role:"developer"` 입력 레코드로
   남고 모델이 그 문구를 verbatim 인용했다. 그래서 세션 안 안내는 `systemMessage`가 아니라
-  이 채널을 쓴다. **단, 이 넛지는 새 thread 첫 turn 은 보호하지 못한다** — 점유의 첫 기록은
+  이 채널을 쓴다. **단, 이 경고는 새 thread 첫 turn 은 보호하지 못한다** — 점유의 첫 기록은
   첫 모델 응답 뒤 `token_count` 라 첫 요청 시점엔 측정치가 없고, 훅 payload 스키마에도 대체
   신호가 없다(라이브 실측). 그 구간은 사용률을 만들어 내지 않고 침묵한다(0%로 오보하지 않음).
   `codex exec resume`·compaction 은 같은 rollout 을 이어 써서 이미 보호되므로, 무방비는 새
@@ -79,7 +79,7 @@ PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않
   보수적 점유 상한으로 쓴다. rollout `token_count.last_token_usage`는 같은 이벤트의 누계 input이 방금
   받은 wire 누계 input과 일치할 때만 더 정밀한 1순위 신호로 채택한다. 이 판정값이 예산의 STOP 경계에
   닿으면 relay driver가 turn 완료 회전 신호를 남기고 Supervisor가 세션을 교체한다. exec에서 소실되는
-  compaction 훅 `systemMessage` 안내 대신 driver 회전 선점이 relay 경로를 실보호한다. 이것이 장기 경로의 **proactive** 기계 가드다.
+  compaction 훅 `systemMessage` 안내 대신 driver 가 먼저 회전해 relay 경로를 실제로 보호한다. 이것이 장기 경로의 **proactive** 기계 가드다.
 
 2026-07-22~23 장기 TUI rollout에서는 `context_compacted`가 네 번 기록됐고, 해당 event stream에
 `hook_started`/`hook_completed` 및 기존 echo tripwire 출력은 없었다. 따라서 이전 echo-only tripwire는
@@ -105,7 +105,7 @@ SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry
 진입점 집합 자체는 릴리즈 간 불변이다. 늘리려면 채택자 config 변경 + 재승인이 다시 필요하므로
 1회 마이그레이션으로만 바꾼다. 진입점이 빠진 채택자는 `pm_update`가 이벤트 이름을 지목해
 알린다(advisory — 훅을 의도적으로 끈 채택자를 차단하지 않는다). 자식 가드가 못 답하거나 설치된
-디스패처가 구세대여도 훅은 rc0 + 완전한 엔벨로프로 끝나고 폴백 사실이 `adapter-fallback`
+디스패처가 옛 버전이어도 훅은 rc0 + 완전한 엔벨로프로 끝나고 대체 동작 사실이 `adapter-fallback`
 마커로 남는다. 도구 호출은 어느 경우에도 막히지 않는다.
 
 진입점 밖에 남은 이벤트는 없다. 열린 matcher 범위 안에서 두 번째 기능을 얹을 때는
@@ -124,13 +124,13 @@ instance-owned 어댑터 config는 manifest 밖이라 byte-copy 전파를 타지
 | `.opencode/opencode.jsonc` | `report` | 동상 |
 
 `report` 세 파일에는 권한 allowlist·모델·threshold 같은 채택자 노브가 실재해 자동 갱신이 그
-값을 지울 수 있다. 그래서 **이 세 파일의 이벤트 배선은 수동 1커맨드로 남는다** —
-`./pm-config.sh sync-adapter-config --accept <경로>`(백업 후 이 엔진 세대의 값으로 교체). 자동화
-대상이 아니라는 것이 결정이며, 상류가 그 파일의 배선을 바꿔도 채택자가 이 커맨드를 칠 때까지
+값을 지울 수 있다. 그래서 **이 세 파일의 이벤트 등록은 수동 1커맨드로 남는다** —
+`./pm-config.sh sync-adapter-config --accept <경로>`(백업 후 이 엔진 버전의 값으로 교체). 자동화
+대상이 아니라는 것이 결정이며, 상류가 그 파일의 등록을 바꿔도 채택자가 이 커맨드를 칠 때까지
 반영되지 않는다. 편집분(`edited`)은 어느 분류에서도 자동 갱신되지 않고 보존된다.
 
 `managed` 갱신 뒤에는 trusted project에서 `/hooks` 승인을 다시 확인한다 — hook trust는 현재 hook
-정의의 hash에 결속되므로 정의가 바뀌면 재승인 전까지 발화하지 않는다.
+정의의 hash에 연결되므로 정의가 바뀌면 재승인 전까지 실행되지 않는다.
 
 ## 채택 (pm_import — 정규 경로)
 
@@ -159,10 +159,10 @@ instance-owned 어댑터 config는 manifest 밖이라 byte-copy 전파를 타지
 ## trust 선행 (codex 고유·2단계·import 직후 1회)
 
 codex 의 `.codex/config.toml`·`.codex/hooks.json`·`.codex/agents/*.toml` 은 **trusted project + hook
-trust 승인** 후에만 로드·발화한다. hook trust는 **현재 hook 정의의 hash**에 결속되므로 새 hook이나
+trust 승인** 후에만 로드·실행한다. hook trust는 **현재 hook 정의의 hash**에 연결되므로 새 hook이나
 변경된 hook은 다시 검토할 때까지 skip된다. 재검토가 필요하면 Codex host가 시작 시 경고하고 `/hooks`에서
 source·상태를 확인해 review/trust하거나 개별 hook을 disable할 수 있다. hook command 자신은 미승인일 때
-아예 실행되지 않으므로 자기 미승인을 감지하거나 차단할 수 없지만, host 측 감지 표면(startup warning·
+아예 실행되지 않으므로 자기 미승인을 감지하거나 차단할 수 없지만, host 측 감지 수단(startup warning·
 `/hooks`)은 존재한다. 승인 전에는 위임 spawn 가드와 PreCompact ctx checkpoint가 설치돼 있어도 무력하다.
 ([공식 review/trust 계약](https://developers.openai.com/codex/hooks#review-and-trust-hooks))
 import/add-harness 직후 1회 수동으로 밟는다:
@@ -170,10 +170,10 @@ import/add-harness 직후 1회 수동으로 밟는다:
 1. 이 디렉토리에서 대화형 `codex` 를 한 번 열어 **프로젝트 trust 를 수락**한다
    (`.codex/agents/*.toml`·`config.toml` 은 trusted project 한정 로드).
 2. codex 안에서 `/hooks` 로 현재 hook 정의와 상태를 확인하고 **hook trust 를 승인**한다
-   (위임 spawn 가드·PreCompact ctx checkpoint 발화 전제).
+   (위임 spawn 가드·PreCompact ctx checkpoint 실행 전제).
 3. 검증 — 위임 스폰 대상 목록에 `architect`/`code-reviewer`/`developer`/`developer-hard`/`researcher` 가 보이면 로드 성공.
 
-격리 `CODEX_HOME`에서 hook 발화만 재현할 때는 `--dangerously-bypass-hook-trust`로 승인 축을 우회할 수
+격리 `CODEX_HOME`에서 hook 실행만 재현할 때는 `--dangerously-bypass-hook-trust`로 훅 신뢰 승인을 건너뛸 수
 있다. 이는 개인 설정을 건드리지 않는 실측용 절차이며, 실제 채택 환경의 `/hooks` 승인을 대신하지 않는다.
 
 > ⚠️ `-c projects.<path>.trust_level=trusted` CLI override 는 **먹지 않는다**(실측) — user config
@@ -191,7 +191,7 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
 - **AGENTS.md 자동 로드** — codex 가 git root→cwd 의 `AGENTS.md` 를 진입으로 병합 로드한다(공통
   코어·`CLAUDE.md` 는 codex 미로드·아래 §주의). 세션은 이 문서대로 board·wiki 를 파악해 PM 을 운영한다.
 - **부트스트랩 카드가 위임 지침** — codex 세션에서 `$pm-bootstrap`을 부르면
-  엔진이 하네스를 감지(`CODEX_THREAD_ID`/`CODEX_CI` env)해 카드 끝에 **codex 절**을 발화한다 — 실행
+  엔진이 하네스를 감지(`CODEX_THREAD_ID`/`CODEX_CI` env)해 카드 끝에 **codex 절**을 내보낸다 — 실행
   모델·위임 규약·trust 힌트가 여기로 전달된다(정적 진입 doc 이 없는 C-v2 구조의 유일 전달 채널).
 
 ## 위임 (transport 규칙 · in-session spawn)
@@ -218,8 +218,8 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
   `hookSpecificOutput.permissionDecision:"deny"` + `systemMessage` + `suppressOutput:false`)를
   출력하게 한 뒤 spawn을 지시했다. 재시도로 `PreToolUse` 4건과 `error` 2건이
   기록됐지만 `SubagentStart`는 0건이라 실제 spawn이 차단됐다. 같은 지시를 allow-only tee hook으로
-  바꾼 대조군(현재 출하 allow와 같은 빈 객체 `{}`)은 `SubagentStart` 1건이 발화했다. 출하 wrapper는
-  이 exact deny 5필드·빈 allow·2필드 fail-open 경고만 통과시키며 다른 shape은 경고로 강등한다.
+  바꾼 대조군(현재 출하 allow와 같은 빈 객체 `{}`)은 `SubagentStart` 1건이 실행됐다. 출하 wrapper는
+  이 exact deny 5필드·빈 allow·2필드 fail-open 경고만 통과시키며 다른 shape은 경고로 낮춘다.
   현재 공식 문서는 PreToolUse의 `suppressOutput`을
   미지원으로 적고 그런 출력은 hook failure 후 tool을 계속한다고 설명하지만, 0.147.0 host 실동작은
   deny를 먼저 적용했다. 따라서 문서 schema만으로 차단 실패를 추론하지 말고 버전별 host를 끝까지
@@ -236,10 +236,10 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
   child start의 `turn_id`가 서로 다르고 spawn에는 `agent_id`가 없으므로, `board.py lint`는 같은
   `session_id`의 선행 allow-spawn을 start와 1:1 대조하고 start 자체는
   `(session_id, turn_id, agent_id)`로 식별한다. 대조가 없는 start를 PM이 읽는 advisory 한 줄로
-  표면화하며, 같은 바이트를 재스캔해도 rename/소비/삭제 없이 같은 결과다. 기록 채널은
+  드러내며, 같은 바이트를 재스캔해도 rename/소비/삭제 없이 같은 결과다. 기록 채널은
   `.project_manager/.local/delegate-channel/codex-observations.jsonl`이고 세그먼트당 256 KiB·활성 파일
   포함 최대 4개로 회전해 디렉터리 크기와 JSONL 개수를 제한한다. hook의 `systemMessage`는 기록 실패
-  때의 부가 시도일 뿐 TUI 도달 보장이 아니며, matcher-miss 보장 표면은 `board.py lint`다.
+  때의 부가 시도일 뿐 TUI 도달 보장이 아니며, matcher-miss 보장 수단은 `board.py lint`다.
 - 대기 도구 `collaborationwait_agent`와 `agent_id`가 동반된 서브에이전트 자신의 도구 호출은 spawn이
   아니므로 matcher와 가드 내부 판정 모두 통과한다.
 - execpolicy는 argv-only라 동적 `task_name` 판정을 구조적으로 수행할 수 없으며, hooks의
@@ -269,7 +269,7 @@ spike-new … 전체는 `.agents/skills/` 디렉토리)은 codex 가 `.agents/sk
 
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 
-루트에서 이 타깃으로 엔진을 동기화한다 (엔진 경로만 덮어씀 — 어댑터 보존·flavor manifest·ADR-0054).
+루트에서 이 타깃으로 엔진을 동기화한다 (엔진 경로만 덮어씀 — 어댑터 보존·하네스별 판 manifest·ADR-0054).
 전체 엔진 변경은 이 타깃만 손으로 골라 실행하지 말고, 루트에서 `--all-targets`로 `templates/` 아래의
 **존재하는 모든 타깃**에 전파한다. 아래 `--target codex`는 이 타깃만 의도적으로 재동기화할 때 쓴다.
 
@@ -292,7 +292,7 @@ python3 .project_manager/tools/pm_update.py --from ../../
 
 - `AGENTS.md` — PM 부트스트랩·엔진 호출(인코딩)·완료 기록·결정·안전 가드 공통 코어
   (= claude_code 의 `CLAUDE.md`·opencode 의 `AGENTS.md`·byte-identical).
-- `.codex/agents/*.toml` — codex 위임 4축 custom agent (in-session spawn·`developer_instructions`).
+- `.codex/agents/*.toml` — codex 위임 네 역할 custom agent (in-session spawn·`developer_instructions`).
 - `.codex/pm_orch_codex.py` — relay 드라이버 (`codex exec --json` thread_id 파싱·`exec resume`).
 - ADR-0070 — codex 어댑터 타깃 + 어댑터 구성 단일 진실 · ADR-0069 — 진입 doc 공통 코어 + 하네스별
   전달 채널 · ADR-0054 — @source 전파 채널 · ADR-0065 — 스킬 단일 소비.
@@ -304,10 +304,10 @@ python3 .project_manager/tools/pm_update.py --from ../../
 
 | 변형 | PreToolUse(spawn) | SubagentStart |
 | --- | ---: | ---: |
-| deny + `suppressOutput: false` (출하 형상) | 1 | 0 |
+| deny + `suppressOutput: false` (출하 구성) | 1 | 0 |
 | deny (`suppressOutput` 제거) | 1 | 0 |
 | allow 대조군 (훅 무출력) | 1 | 1 |
 
 `suppressOutput` 유무는 차단 여부와 무관하다. deny 는 두 변형 모두에서 스폰을 막고, 대조군만
-`SubagentStart` 에 도달한다. 출하 형상을 5필드로 유지하는 이유는 그 bytes 가 측정된 값이기 때문이다.
+`SubagentStart` 에 도달한다. 출하 구성을 5필드로 유지하는 이유는 그 bytes 가 측정된 값이기 때문이다.
 공식 문서 서술과 설치 호스트의 실동작이 갈릴 수 있으므로, 호스트 버전이 오르면 end-to-end 로 재측정한다.

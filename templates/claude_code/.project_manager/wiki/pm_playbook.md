@@ -7,7 +7,7 @@ type: reference
 
 # PM Playbook — 활동별 레퍼런스
 
-> [`pm_role.md`](pm_role.md)의 활동별 상세 레퍼런스. 부트스트랩 시 통째로 읽지 말고 해당 활동(위임 / wave 운영 / ticket 발행·분할 / 핸드오프) 절만 Read 한다.
+> [`pm_role.md`](pm_role.md)의 활동별 상세 레퍼런스. 부트스트랩 시 통째로 읽지 말고 해당 활동(위임 / 묶음 진행 / ticket 발행·분할 / 핸드오프) 절만 Read 한다.
 >
 > ⚙️ **엔진** (`pm_update` 자동 갱신). `python3` 표기는 관례(Windows 는 `py` 런처) · `{{DATE}}` 는 런타임 값으로 이해(리터럴 유지).
 
@@ -68,10 +68,10 @@ type: reference
 
 ### Ticket 본문
 - **self-contained 의무.** 새 세션이 본문만 보고 작업 시작 가능해야. template 만 채워 두면 안 됨.
-- 표준 섹션(7절): 목표 / 인터페이스 / 결정 / 설계 / 완료 조건 / 참고 / 메모. `## 설계` 는 frontmatter `design: required` 인 ticket 만 채운다(`n/a` 는 뼈대 유지·게이트 비대상). 설계 면제 값은 없다 — `required | done | n/a` 세 형식뿐이다.
+- 표준 섹션(7절): 목표 / 인터페이스 / 결정 / 설계 / 완료 조건 / 참고 / 메모. `## 설계` 는 frontmatter `design: required` 인 ticket 만 채운다(`n/a` 는 뼈대 유지·통과 조건 대상 아님). 설계 면제 값은 없다 — `required | done | n/a` 세 형식뿐이다.
 - 참고: spec / ADR / 의존 모듈 / 패턴 reference (이미 done 된 비슷한 ticket).
 - 본문에 정확한 함수/라인·인터페이스·패턴 reference 를 넣어 dev 읽기 범위와 cold subagent 컨텍스트를 제한한다.
-- ticket 크기는 노력 + 컨텍스트 두 축이다. `estimate` 가 small 이어도 touches 에 대형 파일이 있거나 광범위 읽기가 필요하면 **분할하거나** 정확한 함수/라인·패턴 reference 로 pre-digest 한다. 큰 ticket pre-digest 는 architect 위임 후보.
+- ticket 크기는 노력과 컨텍스트 두 기준이다. `estimate` 가 small 이어도 touches 에 대형 파일이 있거나 광범위 읽기가 필요하면 **분할하거나** 정확한 함수/라인·패턴 reference 로 pre-digest 한다. 큰 ticket pre-digest 는 architect 위임 후보.
 
 ### 디렉토리 의미
 [`README.md`](README.md) "디렉토리 의미" 절이 단일 정의처 — 여기서 복제하지 않는다.
@@ -83,9 +83,9 @@ type: reference
 - **문서 예시는 `<placeholder>` 꺾쇠나 코드 span/fence 안에** — 예: `` `[x](decisions/<slug>.md)` ``. lint 가 코드 영역·`<…>` 를 건너뛴다.
 
 ### status.md 정비 (부트스트랩 컨텍스트 경계)
-- status.md 는 **judgment-only**: **활성**(🟡/⬜/🔒) 모듈 판정(상태·비고) + 외부 의존성만. 테스트 수는 박제하지 않는다 — `board.py regression`(pytest) 실측이 단일 진실·history 는 log/current.md.
+- status.md 는 **judgment-only**: **활성**(🟡/⬜/🔒) 모듈 판정(상태·비고) + 외부 의존성만. 테스트 수는 적어 두지 않는다 — `board.py regression`(pytest) 실측이 단일 진실·history 는 log/current.md.
 - ✅ 완성·안정 모듈 행은 `status_done.md` 로 옮긴다.
-- 모듈 상태/비고 content-truth 는 **architect 가 유지·PM 점검**. incident/wave 서술은 log/current.md entry 로.
+- 모듈 상태/비고 content-truth 는 **architect 가 유지·PM 점검**. incident/묶음 서술은 log/current.md entry 로.
 - `board.py lint` 가 ✅ 누적(`status-done-accum`·>30행)을 warn 한다 (차단 아님 — `status_done.md` archive 권고).
 
 ### Super-ticket 분할 절차
@@ -105,13 +105,13 @@ type: reference
 시점에도 self-contained다. 그래서 위임 프롬프트를 bespoke하게 재작성하지 않는다.
 `/pm-dev-delegate`는 `pm_delegate.py ticket prepare|collect --cluster`로 slot
 run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래) 하나에 티켓별 라운드 파일 N개를
-전달·회수한다(슬롯 없이 PM이 직접 채울 자리는 `board.py section-add`가 예약하는데, 그 명령은 **묶음
-장부가 없는 티켓만** 연다 — 장부가 있는 티켓의 라운드는 고정 예산이 지배하므로 위임 준비가 연다).
+전달하고 돌려받는다(슬롯 없이 PM이 직접 채울 자리는 `board.py section-add`가 예약하는데, 그 명령은 **묶음
+기록이 없는 티켓만** 연다 — 묶음 기록이 있는 티켓의 라운드는 고정 예산이 지배하므로 위임 준비가 연다).
 에이전트는 자기
 라운드 파일만 쓰고 명세·이전 라운드는 읽기 전용으로 읽는다. board 상태 전이는 PM 몫이고, 커밋·재배치·
 머지는 묶음 종결(`ticket_finish.py --cluster`)이 실행한다.
 
-> **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 축 분리·touches disjoint·single-source 프롬프트·PM 산출 비준 원칙은 동일하다.
+> **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 역할 분리·touches disjoint·single-source 프롬프트·PM 산출 승인 원칙은 동일하다.
 
 transport 규칙은 한 문장이다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. 리뷰 절차(준비·돌려받기·트리 검사)는 `/pm-dev-delegate`
 리뷰 절에 있다.
@@ -119,14 +119,14 @@ transport 규칙은 한 문장이다. 설계·구현·리뷰·조사는 target �
 `local.conf`의 `delegate.<role>[.<tier>].{harness,model,reasoning}`은 native transport와
 cross transport가 함께 읽는 위임 설정이다. `delegate.enabled`는 위임 전체의 마스터 스위치
 (기본 허용·채널 무관)이고, 끄면 `pm_delegate` 실행·`ticket prepare`·훅이 깔린 하네스의 역할
-spawn이 함께 막힌다. Claude native 카드의 `model:` drift는 가드가 비차단 경고로 표면화하며
+spawn이 함께 막힌다. Claude native 카드의 `model:` drift는 가드가 비차단 경고로 드러내며
 설정·카드를 자동 수정하지 않는다.
 
 ### 방식 A — orchestrator 서브에이전트 (Agent 툴, 권장)
 
 PM 이 `Agent` 툴로 spawn 하고 `subagent_type` 으로 전용 정의를 쓴다:
 
-- **설계(architect)** — `subagent_type: architect` (Opus). idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스. **산출은 PM 이 비준** — 발행·board·idea promote 는 PM.
+- **설계(architect)** — `subagent_type: architect` (Opus). idea 검토·ADR 초안·spec 추출·가설 검증·인터페이스. **산출은 PM 이 승인** — 발행·board·idea promote 는 PM.
 - **구현(developer)** — `subagent_type: developer`
 - **검토(code-reviewer)** — `subagent_type: code-reviewer`. 프롬프트는 엔진이 만든다 — `ticket prepare
   --cluster C-<ticket-group> --role code-reviewer` 가 낸 프롬프트 파일 경로를 넘기고 종료 뒤 돌려받는다
@@ -139,14 +139,14 @@ Idea-00NN 을 promote/kill 분석하고 promote 면 ADR 초안을 내라. (archi
 T-NNNN 을 구현하라. (developer)
 ```
 
-설계 spike 는 PM 이 비준한다. architect 의 ADR/spec/idea-promote 초안·권고를 검토해 PM 이 ADR 발행 / `board.py idea promote` / spec 승격 / log entry 를 한다. 구현은 ticket 으로 발행해 developer 에 위임한다.
+설계 spike 는 PM 이 승인한다. architect 의 ADR/spec/idea-promote 초안·권고를 검토해 PM 이 ADR 발행 / `board.py idea promote` / spec 승격 / log entry 를 한다. 구현은 ticket 으로 발행해 developer 에 위임한다.
 
 **board.py claim/complete 와 status.md/log/current.md 갱신은 orchestrator(PM)가 한다** — 서브에이전트는 구현/검토만.
 
 ⚠️ 리뷰 검토 중점 문단(`--focus`)에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 적는다.
 
-**검토 루프:** 단계 준비·회수는 `/pm-dev-delegate`, 확인 생성과 종결은 `ticket_finish.py --cluster`가
-수행한다(종결이 `pm_delegate.py rounds resolve --cluster C-<ticket-group> --pm-verified` 를 부른다). 수렴 불변식은
+**검토 루프:** 단계 준비·돌려받기는 `/pm-dev-delegate`, 확인 생성과 종결은 `ticket_finish.py --cluster`가
+수행한다(종결이 `pm_delegate.py rounds resolve --cluster C-<ticket-group> --pm-verified` 를 부른다). 마무리 불변식은
 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유한다. 추가 리뷰어는 대상 튜플
 (`additional_reviewer.harness`/`.model`)을 선언한 채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
 증거·제안이며, `review disposition-template`과 `review accepted`가 PM 판정 및 fix 입력을 연결한다.
@@ -156,33 +156,33 @@ code-reviewer는 슬롯에서 `git -C <슬롯> diff <merge-base>..HEAD`로 변�
 
 라운드당 비용(회귀 벽시계 × 에이전트 × 라운드·PM 재작성 토큰)과 라운드 수 자체를 다음 규율로 통제한다.
 
-1. **단계별 테스트 계약 처리.** 계약의 규범 의미는 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. architect/reviewer 라운드 파서가 대상·명령·기대값·음성 사례를 구조화하고, harvest가 계약 명령을 실행해 결과를 기록한다.
+1. **단계별 테스트 계약 처리.** 계약의 규범 의미는 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. architect/reviewer 라운드 파서가 대상·명령·기대값·음성 사례를 구조화하고, 돌려받기가 계약 명령을 실행해 결과를 기록한다.
 2. **검증 근거 지정 의무.** 위임 프롬프트는 "무엇으로 재는지"를 명시한다 — 실제 git 이 만든 산출물, 설치 바이너리에서 추출한 fixture, fake runner 아닌 층의 동작 단언. cold dev 는 트리 기억이 없어 검증 근거를 지정하지 않으면 픽스처를 지어내고(조립 문자열·순환 단언·문자열만 검사), 그 결함이 라운드를 늘린다.
-3. **클래스 전수 열거 의무.** dev 는 구현 전에 결함 클래스의 인스턴스를 진입점·플랫폼·실패 모드·호출 경로 축으로 전수 나열해 보고하고 전부 처리한다. 보고된 형상만 처리한 결과는 미완이다. 전수 열거가 불가능하면 그 사실과 열거 경계를 보고한다. 클래스는 해당 결함의 클래스에 한정하며 티켓 밖 기능으로 스코프를 확대하지 않는다. 완료 보고에는 열거한 인스턴스 목록과 각각의 처리를 포함하며, 목록이 없으면 PM 이 반려한다.
-4. **역방향 확인 의무.** dev 는 고침이 반대 방향 실패를 만들지 않았는지 단언한다. 느슨함을 조인 fix 는 과결속을, 조임을 푼 fix 는 누락을, 차단을 추가한 fix 는 정상 사용 차단을 각각 확인한다.
-5. **finding/disposition 장부.** 블록 스키마의 단일 진실은 엔진 파서 상수이며 엔진이 골격을 공급한다. reviewer는 안정 ID와 must-fix별 수정·테스트 계약을 실값으로 채우고, PM은 `review disposition-template --cluster`가 낸 골격에 전수 disposition을 남긴다. finding 0도 reviewer의 0건 선언 뒤 fix 자리로 진행한다.
-6. **accepted-only delta + 세션 재사용.** `pm_delegate.py review accepted --cluster C-<ticket-group>` 출력만 fix 프롬프트에 붙인다. 미판정·decision-required·계약 누락은 fix 준비를 차단하고 티켓을 정지해 사용자에게 보고한다. fix는 직전 dev 세션에 재사용하는 것이 기본이며 accepted가 0이어도 마지막 테스트·종결 자리로 실행한다.
-7. **라운드 장부 처리.** `cluster_round_sequence`가 예약 전 현재 단계와 예산을 검증하고,
+3. **클래스 전수 열거 의무.** dev 는 구현 전에 결함 클래스의 인스턴스를 진입점·플랫폼·실패 모드·호출 경로 기준으로 전수 나열해 보고하고 전부 처리한다. 보고된 사례만 처리한 결과는 미완이다. 전수 열거가 불가능하면 그 사실과 열거 경계를 보고한다. 클래스는 해당 결함의 클래스에 한정하며 티켓 밖 기능으로 스코프를 확대하지 않는다. 완료 보고에는 열거한 인스턴스 목록과 각각의 처리를 포함하며, 목록이 없으면 PM 이 반려한다.
+4. **역방향 확인 의무.** dev 는 고침이 반대 방향 실패를 만들지 않았는지 단언한다. 느슨함을 조인 fix 는 과하게 막음을, 조임을 푼 fix 는 누락을, 차단을 추가한 fix 는 정상 사용 차단을 각각 확인한다.
+5. **finding/disposition 기록.** 블록 스키마의 단일 진실은 엔진 파서 상수이며 엔진이 빈 양식을 공급한다. reviewer는 안정 ID와 must-fix별 수정·테스트 계약을 실값으로 채우고, PM은 `review disposition-template --cluster`가 낸 빈 양식에 전수 disposition을 남긴다. finding 0도 reviewer의 0건 선언 뒤 fix 자리로 진행한다.
+6. **수락한 지적만 담은 목록 + 세션 재사용.** `pm_delegate.py review accepted --cluster C-<ticket-group>` 출력만 fix 프롬프트에 붙인다. 미판정·decision-required·계약 누락은 fix 준비를 차단하고 티켓을 정지해 사용자에게 보고한다. fix는 직전 dev 세션에 재사용하는 것이 기본이며 accepted가 0이어도 마지막 테스트·종결 자리로 실행한다.
+7. **라운드 기록 처리.** `cluster_round_sequence`가 예약 전 현재 단계와 예산을 검증하고,
    `ticket prepare`가 예약 좌표를 라운드 사본에 기록한다. 수열과 실패 시 행동의 규범은
    [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
 8. **종결 확인 절차.** developer/fix는 inner-loop에 지정 targeted tests를 쓰고 단계 종료 때
    해소된 프로젝트 `test_cmd`를 직접 실행해 라운드 `## 회귀`의 커맨드·`rc=0` 결과를 채운다. 횟수와 red
-   처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. harvest는
+   처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. 돌려받기는
    architect/reviewer 계약 명령과 전체 회귀 기록만 검증하며 full은 다시 실행하지 않는다.
    `ticket_finish.py`의 선검사가 final-fix 확인 입력을 read-only 판정하고, 1단계의
    `rounds resolve --cluster C-<ticket-group> --pm-verified`가 기계/PM-owned terminal 확인을 명세에 기록해
-   게이트를 처분한다. 재현 커맨드의 문법 검사는 엔진의 비파괴 명령
+   리뷰 집계 티켓을 처분한다. 재현 커맨드의 문법 검사는 엔진의 비파괴 명령
    파서가 담당한다.
 9. **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
 
    **유효 집합.**
    - **사용자 명시 지시**: 조건: 사용자가 세션 종료 또는 작업 중단을 명시해 지시한 경우. 결론: 작업 중단 가능.
-   - **사용자 결정 게이트**: 조건: 보호 영역·mission scope·외부 비가역 행위에 사용자 결정이 필요한 게이트에 도달한 경우. 결론: 작업 중단 가능.
+   - **사용자 승인 필요**: 조건: 보호 영역·mission scope·외부 비가역 행위에 사용자 승인이 필요한 일에 도달한 경우. 결론: 작업 중단 가능.
    - **기술적 불가**: 조건: 필요한 자원이 부재하거나 권한이 거부되어 작업을 수행할 수 없는 경우. 결론: 작업 중단 가능.
 
    **무효 집합.**
    - **컨텍스트 잔량**: 조건: 컨텍스트 잔량을 작업 범위나 중단 결정과 함께 관측한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
-   - **라운드·wave 상한**: 조건과 처리의 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
+   - **라운드·예산 상한**: 조건과 처리의 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
    - **티켓 미완**: 조건: 티켓이 아직 미완인 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
    - **남은 작업량**: 조건: 남은 작업량이 많다고 평가한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
    - **세션 자기 판단**: 조건: 세션이 "정확한 상태만 남기겠다"고 자기 판단한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
@@ -193,17 +193,17 @@ code-reviewer는 슬롯에서 `git -C <슬롯> diff <merge-base>..HEAD`로 변�
    - **상한 이후 보고**: 보고 내용은 엔진이 보존한 실패 근거와 현재 티켓 상태를 사용한다.
    - **종료·축소 권한**: 조건: 세션 종료 또는 작업 축소를 결정하는 경우. 결론: 세션 종료·작업 축소는 사용자 지시로만 한다.
 
-wave 중 묶음 종결은 `ticket_finish.py --cluster C-<ticket-group> --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
+묶음 진행 중 종결은 `ticket_finish.py --cluster C-<ticket-group> --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
 
-10. **처방 밖 수정 금지·빈틈은 보고.** fix 라운드에서 고칠 수 있는 것은 `review accepted` 가 낸 finding ID 와
-    각 허용 수정 범위뿐이다. 그 제약과 빈틈 보고 형식은 delta 렌더러가 출력 끝에 함께 싣는다 — 카드·스킬·
+10. **수정 방법 밖 수정 금지·빈틈은 보고.** fix 라운드에서 고칠 수 있는 것은 `review accepted` 가 낸 finding ID 와
+    각 허용 수정 범위뿐이다. 그 제약과 빈틈 보고 형식은 `review accepted` 출력 끝에 함께 실린다 — 카드·스킬·
     프롬프트에 같은 문장을 복제하지 않고, PM 은 렌더된 출력을 발췌하지 않고 그대로 fix 프롬프트에 붙인다.
-    처방대로 따르면 다른 결함이 생기는 상호작용을 developer 가 발견하면 라운드 파일의 빈틈 절에
+    수정 방법대로 따르면 다른 결함이 생기는 상호작용을 developer 가 발견하면 라운드 파일의 빈틈 절에
     기록한다. 이후 처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
 
 ### 추가 리뷰어 교차검증 (대상 튜플을 선언한 채택자)
 
-추가 리뷰어(additional reviewer)는 위임과 **같은 실행 조건**을 받는 역할이다 — 이 역할만 켜고 끄는 스위치는 없다. 대상 튜플(`additional_reviewer.harness`/`.model`)을 선언한 채택자만 code-reviewer 라운드에 이 역할을 병행한다. 역할 이름도 설정 키(`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다. 신규 CLI·모듈·설정·raw 표면의 canonical은 `additional_reviewer`다. 개칭 전 `external_review`는 구 설정 키 이주표와 과거 raw header/prefix 판독을 위한 read-only 호환 이름으로만 남으며, 구 실행 파일도 라운드 role 별칭도 다시 만들지 않는다. 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
+추가 리뷰어(additional reviewer)는 위임과 **같은 실행 조건**을 받는 역할이다 — 이 역할만 켜고 끄는 스위치는 없다. 대상 튜플(`additional_reviewer.harness`/`.model`)을 선언한 채택자만 code-reviewer 라운드에 이 역할을 병행한다. 역할 이름도 설정 키(`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다. 신규 CLI·모듈·설정·raw 인터페이스의 canonical은 `additional_reviewer`다. 개칭 전 `external_review`는 구 설정 키 이주표와 과거 raw header/prefix 판독을 위한 read-only 호환 이름으로만 남으며, 구 실행 파일도 라운드 role 별칭도 다시 만들지 않는다. 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
 
 전제는 `local.conf` 의 원자적 튜플 하나다(선언이 없으면 대상이 없어 fail-loud · 미리보기는 `--dry-run`).
 
@@ -213,20 +213,20 @@ additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-호출마다 비용을 다시 묻지 않는다 — 리뷰마다·상한 재개마다의 승인 절차는 없다. 라운드/wave 상한은 기계적 anti-loop 정지이며 축마다 규율이 다르다:
+호출마다 비용을 다시 묻지 않는다 — 리뷰마다·상한 재개마다의 승인 절차는 없다. 라운드 상한과 세션 호출 예산은 기계적 anti-loop 정지이며 상한마다 규율이 다르다:
 
-- **리뷰 라운드 축(연장 승인 없음)** — 상한 2회(`additional_reviewer.rounds_max`), 직전 라운드 대비 must-fix 증가는 상한 전 조기 차단이다. rc=4면 `--rounds-report`로 장부를 읽고 현재 티켓을 정지해 사용자에게 보고한다. 라운드를 연장하는 승인 플래그는 폐지됐다.
-- **wave 예산 축(재개 ack 유지)** — rc=4 면 `--rounds-report` 로 장부를 읽고 **같은 scope 의 정상 수렴이면 PM 이 자율로 `--reset-session-budget`** 하며 판단 근거를 log 에 남긴다. 예산을 열어도 라운드 축의 수렴 판정은 그대로 닫혀 있다.
+- **리뷰 라운드 상한(연장 승인 없음)** — 상한 2회(`additional_reviewer.rounds_max`), 직전 라운드 대비 must-fix 증가는 상한 전 조기 차단이다. rc=4면 `--rounds-report`로 라운드 기록을 읽고 현재 티켓을 정지해 사용자에게 보고한다. 라운드를 연장하는 승인 플래그는 폐지됐다.
+- **세션 호출 예산(재개 ack 유지)** — rc=4 면 `--rounds-report` 로 라운드 기록을 읽고 **같은 scope 의 정상 마무리면 PM 이 자율로 `--reset-session-budget`** 하며 판단 근거를 log 에 남긴다. 예산을 열어도 리뷰 라운드 상한의 마무리 판정은 그대로 닫혀 있다.
 
-**잔여 must-fix 의 처분(릴리즈 전 필수).** 상한으로 종결된 게이트에 must-fix 가 남았으면 그 잔여를 어떻게 소화했는지 장부에 선언한다. 건수를 읽지 못한 판정 무효 라운드의 잔여는 `0`이 아니라 **미상**이며 똑같이 차단·처분 대상이다. 선언 없는 잔여는 릴리즈가 열리지 않는다(`board.py live-test record` 가 실행 전에 차단·우회 플래그 없음). 보호훅의 `PM_SKIP_LIVE_TEST=1`도 장부 writer가 원자 갱신한 현행 잔여 표식이 명확히 `clear`일 때만 라이브 축을 우회한다. 표식 부재·손상·판독 실패는 잔여 미상이라 fail-closed이며, `board.py live-test record` 1회로 환경과 표식을 먼저 복구한다.
+**남은 must-fix 의 처분(릴리즈 전 필수).** 상한으로 종결된 리뷰 집계 티켓에 must-fix 가 남았으면 남은 must-fix 를 어떻게 소화했는지 라운드 기록에 선언한다. 건수를 읽지 못한 판정 무효 라운드의 남은 must-fix 는 `0`이 아니라 **미상**이며 똑같이 차단·처분 대상이다. 선언 없는 남은 must-fix 가 있으면 릴리즈가 열리지 않는다(`board.py live-test record` 가 실행 전에 차단·우회 플래그 없음). 보호훅의 `PM_SKIP_LIVE_TEST=1`도 라운드 기록 writer가 원자 갱신한 현재 남은 항목 표시가 명확히 `clear`일 때만 라이브 시험을 건너뛴다. 표시 부재·손상·판독 실패는 남은 항목 미상이라 fail-closed이며, `board.py live-test record` 1회로 환경과 표시를 먼저 복구한다.
 
 ```bash
-python3 .project_manager/tools/additional_reviewer.py --resolve-review <게이트> --pm-verified
+python3 .project_manager/tools/additional_reviewer.py --resolve-review <T-NNNN> --pm-verified
 ```
 
-처분은 현재 티켓 fix의 판정 표면과 기계 확인 증거를 재검증하는 `pm-verified` 하나다. 선언은 그때의 라운드에 결속하므로 선언 뒤 새 라운드가 오면 stale로 다시 막힌다. `--resolve-review`는 기록 명령이라 `--dry-run`과 함께 쓰면 rc=1로 거부한다. 상태는 `--rounds-report`의 처분 열(미처분/pm-verified/무대상)로 확인한다.
+처분은 현재 티켓 fix의 판정 범위와 기계 확인 증거를 재검증하는 `pm-verified` 하나다. 선언은 그때의 라운드에 연결되므로 선언 뒤 새 라운드가 오면 stale로 다시 막힌다. `--resolve-review`는 기록 명령이라 `--dry-run`과 함께 쓰면 rc=1로 거부한다. 상태는 `--rounds-report`의 처분 열(미처분/pm-verified/무대상)로 확인한다.
 
-사용자에게 올리는 경우는 중대한 scope 확대·그 밖의 독립적 사용자 게이트 사유다.
+사용자에게 올리는 경우는 중대한 scope 확대·그 밖의 독립적 사용자 승인 사유다.
 
 리뷰어 대상은 구조화 키(`additional_reviewer.harness`·`.model`·`.reasoning`)로만 지정한다 — 옛 `reviewer_cmd` 통짜 커맨드 경로는 없어졌고, 엔진이 채택자 conf 를 대신 고쳐 쓰지 않으므로 그 키가 남아 있으면 소비 지점에서 멈추고 교체를 지목한다.
 
@@ -242,7 +242,7 @@ Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `
   python3 .project_manager/tools/additional_reviewer.py --base <ref> --paths .project_manager/wiki/decisions/ ... --review-ticket <T-NNNN|ADR-NNNN>   # 실 호출은 --review-ticket(또는 --ticket 유도)나 명시적 --no-review-ticket 필수
   ```
 - **diff-only 한계**: 추가 리뷰어는 **diff 만** 본다 (`--adr` 은 ID 참조일 뿐 본문 미포함). ADR 본문이 필요하거나 코드 ticket 이 ADR 을 함께 개정하면 **`--paths` 에 코드 경로(ticket touches)와 ADR/문서 경로를 함께 나열**한다. ⚠️ `--paths` 는 `--ticket` touches 를 *대체*하므로 코드 경로 누락 시 코드 diff 가 리뷰에서 빠진다. 또는 코드(`--ticket`)·설계(`--paths`)를 **별도 실행**한다.
-- 판정: 추가 리뷰어가 must-fix 감지 시 exit 1 (반려). 리뷰어 호출 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 폴백 신호).
+- 판정: 추가 리뷰어가 must-fix 감지 시 exit 1 (반려). 리뷰어 호출 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 로 대신하라는 신호).
 
 ### 방식 B — 독립 구현 세션 (별도 Claude 세션, 수동 spawn)
 
@@ -259,13 +259,13 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 
 세션 정체성은 `claim` 의 **`--task <task>`** 로 준다.
 
-## Wave 패턴
+## 묶음 진행 패턴
 
-**Wave** = 사용자 명시 *"wave 진행"* / *"최대한 많이 진행"* 명령에 PM 이 자율 진행하는 단위. 사용자 신호까지 wave 사이 게이트 없이 계속한다. 한 PM 세션에 보통 1~5 wave, 각 wave 는 1~여러 ticket. 코드 동작·외부 세계 무영향·가역인 PM 자율 영역만; 사용자 게이트 항목이 섞이면 중단하고 결정을 기다린다.
+**묶음 진행** = 사용자 명시 *"묶음 진행"* / *"최대한 많이 진행"* 명령에 PM 이 자율 진행하는 단위. 사용자 신호까지 묶음 사이 사용자 승인 없이 계속한다. 한 PM 세션에 보통 묶음 1~5개, 묶음마다 ticket 1~여러 개. 코드 동작·외부 세계 무영향·가역인 PM 자율 영역만; 사용자 승인 항목이 섞이면 중단하고 결정을 기다린다.
 
-### Wave 구성 (묶음 단계)
+### 묶음 구성 (단계)
 
-wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-dev-delegate` §클러스터 단계 표이고,
+단계 표·커맨드의 단일 진실은 `/pm-dev-delegate` §클러스터 단계 표이고,
 여기서는 각 단계에서 **PM이 판단할 것**만 적는다.
 
 1. **ticket 발행 + 티어 기록** — PM 자율 (pm_role.md §"자율 + 사후 로그"). 본문은 self-contained:
@@ -277,8 +277,8 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
      board 상태 전이·lease·잠금·동시성 중 1개 이상. 상위 developer 프로필을 쓴다.
    - **normal**: 소거법. 애매하면 상향한다.
 2. **묶음 선언 + claim** — `board.py cluster new <ticket-group> --tickets <T-NNNN,T-NNNN> --spike <설계 문서 경로>
-   --task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자 추가)로 이번 wave 의 운영 단위·통합 브랜치·설계 문서를
-   결속한다. 통합 브랜치를 둘 **코드 트리는 명시가 필수**이고, 없으면 첫 쓰기 앞에서 거부된다.
+   --task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자 추가)로 이번 묶음의 운영 단위·통합 브랜치·설계 문서를
+   연결한다. 통합 브랜치를 둘 **코드 트리는 명시가 필수**이고, 없으면 첫 쓰기 앞에서 거부된다.
    그 다음 멤버마다 `/pm-cluster-claim`이
    DoD self-containment·depends_on·placeholder·wikilink dangling을 검증한다. **묶음 판단은 PM 몫**이다 —
    엔진은 touches 겹침·가용 슬롯을 경고만 하고 자동으로 묶지 않는다. 겹침이 있어도 슬롯이 남아 있으면
@@ -286,7 +286,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    claim 뒤 작업 폴더를 `worktree_pool.py switch <slot> task/<ticket-group>`(`<slot>=work/<repo>_<N>`)로 묶음 브랜치에 옮긴다(코드 변경이 없어도 · 작업·종결 전).
 3. **설계(묶음 1회)** — `ticket prepare --cluster --role architect` 로 `01-architect` 를 예약한다.
    설계 단일 진실은 묶음 설계 문서 하나이고 티켓별 라운드 파일에는 그 티켓의 경계 실측·보정이 들어간다.
-   `design: required`는 이 라운드 회수 전 claim/promote 가 rc=1이다. 면제 값은 없다.
+   `design: required`는 이 라운드를 돌려받기 전 claim/promote 가 rc=1이다. 면제 값은 없다.
 4. **구현(티켓당 1회)** — `ticket prepare --cluster --role developer` 로 `02-developer` 를 예약하고
    티켓마다 슬롯에서 돌린다. PM-direct는 PM이 직접 구현·self-review한다. **병렬 시 touches disjoint
    필수**(file 겹침 0).
@@ -298,27 +298,27 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    log/current.md 갱신은 PM 담당 — 그 누락은 developer must-fix 아님"* 을 명시한다. 추가 리뷰어는
    대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)을 선언한 채택자만 같은 시점에
    병행한다(티켓별 채널). PM-direct는 이 단계를 생략한다.
-7. **판정 분기(PM 몫)** — finding 은 증거·제안이며 명령이 아니다. 판정 골격에 전수 판정을 채우고
-   accepted 만 delta 로 내보낸다.
+7. **판정 분기(PM 몫)** — finding 은 증거·제안이며 명령이 아니다. 판정 빈 양식에 전수 판정을 채우고
+   accepted 만 수락한 지적 목록으로 내보낸다.
    - **fix 라운드**: accepted finding 전부를 reviewer 수정·테스트 계약대로 해소한다.
    - **rejected/suggestion**: board 의무로 바꾸지 않고 현재 판정에서 닫는다.
    - **결정 필요**: 목표 확대가 필요하면 board를 쓰지 않고 사용자에게 선택을 요청한다.
-8. **묶음 종결** — `/pm-cluster-finish`(`ticket_finish.py --cluster`)가 기계/PM-owned terminal 확인 생성·게이트 처분 →
+8. **묶음 종결** — `/pm-cluster-finish`(`ticket_finish.py --cluster`)가 기계/PM-owned terminal 확인 생성·리뷰 집계 티켓 처분 →
    티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋을 고정 순서로
    실행한다. 막는 조건은 첫 부작용 앞 선검사가 전건 보고하고, 실패 지점에서 멈추며 재실행이 곧 재개다. **status.md 는 건드리지 않는다**(judgment-only ·
-   테스트 수 박제 ✗).
-9. **PM 손 잔여 + 종결 entry** — log/current.md 스켈레톤 `<!-- PM: 무엇을·왜 -->` 를 실제 서술로 교체 +
+   테스트 수 기록 ✗).
+9. **남은 PM 손작업 + 종결 entry** — log/current.md 스켈레톤 `<!-- PM: 무엇을·왜 -->` 를 실제 서술로 교체 +
    status.md 모듈 행 판정/비고(architect 유지·PM 점검). 묶음 산출 밖 파일(ADR·domain 페이지·status.md)은
    종결 커밋에 실리지 않으므로 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다. 이어서 종결 entry 를
    append 한다 — 패턴: `## [YYYY-MM-DD] complete | <묶음> 종결 — <ticket 목록>`. 본문 = (a) 누적 변경 /
-   (b) 회귀 delta / (c) **메타 학습** / (d) 보드 상태 / (e) 다음 묶음·다음 PM 세션 우선순위.
+   (b) 회귀 차이 / (c) **메타 학습** / (d) 보드 상태 / (e) 다음 묶음·다음 PM 세션 우선순위.
 
-### Wave 메타 학습 누적
+### 묶음 메타 학습 누적
 
-매 wave 의 *(c) 메타 학습*이 다음 wave 판단에 영향을 준다. `log/current.md` 가 실측 학습 누적 매체이며 이 절은 정착 패턴만 흡수한다:
+매 묶음의 *(c) 메타 학습*이 다음 묶음 판단에 영향을 준다. `log/current.md` 가 실측 학습 누적 매체이며 이 절은 정착 패턴만 받아 반영한다:
 
 - **dev 병렬도 안전 조건** — touches disjoint 기본. 공통 통합 파일에 서로 다른 함수 단위 추가는 git auto-merge 가능한 완화 조건.
-- **reviewer 의 데이터·정합성 독립 검증** — 데이터/문서 ticket 은 reviewer fact-check 가 critical.
+- **reviewer 의 데이터·일치 여부 독립 검증** — 데이터/문서 ticket 은 reviewer fact-check 가 critical.
 - **PM should-fix 직접 처리 trade-off** — cycle 시간 절약 vs dev 학습 누락. 1줄·dev 안 도는 영역 기준.
 - **reviewer 분석 cross-check** — PM 이 판정 전 코드 흐름을 독립 점검. 부정확하면 rejected 사유로 남기고 log/current.md 에 영구 기록.
 - **ticket 본문 가설 검증 = PM** — "X 가 silently wrong 위험" 같은 가설은 PM 이 본문 작성 시 (a) 가설 / (b) 코드 흐름상 도달 경로 / (c) fixture 재현을 명시해 검증한다.
@@ -328,27 +328,27 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
 
 board·status·log·로드맵 단일 진실은 PM 1명이 유지하되 잡일을 줄인다:
 
-- **종결 자동화** — 묶음 종결(첫 부작용 앞 선검사 → 기계/PM-owned terminal 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-cluster-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
+- **종결 자동화** — 묶음 종결(첫 부작용 앞 선검사 → 기계/PM-owned terminal 확인 생성·리뷰 집계 티켓 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-cluster-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
 - **상태 분리·복구** — `ticket done`·`cluster closed`를 서로 추론하지 않고, 종결은 슬롯을 반납하지 않는다.
   PM의 direct `board.py complete`는 금지되고 cluster 멤버는 엔진도 첫 write 전에 거부한다. 모든
-  멤버가 done인데 장부만 open인 legacy 반쪽 상태는 `ticket_finish.py --cluster ...
+  멤버가 done인데 묶음 기록만 open인 legacy 반쪽 상태는 `ticket_finish.py --cluster ...
   --reconcile-integrated`에 제품 `--repo/--slot`, 멤버별 evidence, 없는 `claimed_rev`의 explicit
-  legacy anchor, exact `--user-ack`을 모두 줘 graph 검증 뒤 audit만 기록한다. merge/rebase는
+  legacy 멤버의 기준 커밋, exact `--user-ack`을 모두 줘 graph 검증 뒤 audit만 기록한다. merge/rebase는
   실행하지 않고 비선택 dirty slot은 보고·보존한다.
 - **세션 시작·종료 자동화** — `/pm-bootstrap` (세션 시작 dump), `/pm-handoff` (세션 종료 7단계).
 - **dev→review 는 background 우선** — 실행 중 PM은 검토 대상 코드와 board를 바꾸지 않고 현재 티켓의 읽기 전용 근거만 정리한다. 검토 대상 코드 파일 편집은 reviewer `git diff`를 오염시킨다.
 - **회귀 tmp 위생 (worktree 다발 실행 시 필수)** — worktree 병렬 회귀는 pytest run·tmp 를 폭증시킨다. **pytest 쓰는 인스턴스는 `pytest.ini` 에 `tmp_path_retention_policy=failed` + `tmp_path_retention_count=3`** 을 둔다(통과 tmp 즉시 teardown·실패만 보존). `pytest.ini` 는 instance 소유라 엔진이 자동 못 고치므로 채택 시 직접 추가. ⚠️ 중단 run 의 stale `.lock` 이 옛 세션 cleanup 을 skip 하는 pytest+xdist 동작은 패치 불가 — `policy=failed` 로 디스크 영향을 무력화한다. **perf**: worktree 다발 실행에서 `-n auto`(코어수) 워커가 경합하면 `-n N` 또는 `PYTEST_XDIST_AUTO_NUM_WORKERS` 로 캡한다.
 - **ticket fact-gathering 위임** — 파일 목록·cross-ref·grep은 `Explore`/`general-purpose` 서브에이전트에 위임. **목표/결정/DoD 서술은 PM 이 직접** 쓴다.
 - **PM 은 적게 읽는다** — targeted read 우선. 전체 파일 재read 금지.
-- **사용자 첫 turn 결함 evidence = 현재 범위에서 수렴** — 도구·skill·CLI, 테스트 인프라·CI, 부트스트랩 결함 evidence는 현재 사용자가 정한 범위에서 우선 처리하며, 새 board 의무나 목표 확대는 사용자 선택 전 만들지 않는다.
+- **사용자 첫 turn 결함 evidence = 현재 범위에서 마무리** — 도구·skill·CLI, 테스트 인프라·CI, 부트스트랩 결함 evidence는 현재 사용자가 정한 범위에서 우선 처리하며, 새 board 의무나 목표 확대는 사용자 선택 전 만들지 않는다.
 
 ## handoff 철학 (lean handoff)
 
 handoff 는 board/git/log/ADR 에서 파생 가능한 상태를 재열거하지 않고 source 를 가리킨다.
 
-**비파생 salient 레이어와 자동 박제(반드시 포함):**
+**비파생 salient 레이어와 자동 기록(반드시 포함):**
 
-- **(a) 이 세션 박제 entries** — `/pm-handoff`가 직전 자기 handoff 뒤의 complete/checkpoint 헤더를 자동 나열한다. 자기 경계가 없으면 직전 임의 handoff를 경계로 삼고, handoff가 전혀 없으면 `(경계 미해소 — 최근 10건)`과 함께 최근 10건만 싣는다.
+- **(a) `이 세션 박제 entries`** — `/pm-handoff`가 직전 자기 handoff 뒤의 complete/checkpoint 헤더를 자동 나열한다. 자기 경계가 없으면 직전 임의 handoff를 경계로 삼고, handoff가 전혀 없으면 `(경계 미해소 — 최근 10건)`과 함께 최근 10건만 싣는다.
 - **(b) 메타 학습** — ticket 상태에서 도출 불가한 교훈.
 - **(c) 다음 intent**:
   - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
@@ -358,7 +358,7 @@ handoff 는 board/git/log/ADR 에서 파생 가능한 상태를 재열거하지 
 - ❌ board done/open/claimed/blocked **카운트** (→ `board.py list`[무인자=내 스트림·전체는 `--all`]·`/pm-bootstrap` 라이브).
 - ❌ **open ticket ID 목록** (→ `pm_bootstrap` 가 라이브로 출력).
 - ❌ **commit 해시·push 상태** (→ `git log`/`git status`).
-- ❌ **직전 complete entry 산출물 재요약** (→ 자동 박제된 entry 헤더와 인접 원문을 따른다).
+- ❌ **직전 complete entry 산출물 재요약** (→ 자동 기록된 entry 헤더와 인접 원문을 따른다).
 
 금지는 board 상태·ticket 목록·commit·산문을 대량 재열거하는 경우다.
 
@@ -385,7 +385,7 @@ upstream 엔진 개선을 당기는 저빈도 유지보수. **메인테이너가
 /pm-bootstrap
 ```
 
-인계 본문은 log handoff entry 가 단일 진실이다. `/pm-bootstrap` 이 자동 박제 entries·메타 학습·pending intent·회귀/incident를 dump 하므로 프롬프트에 옮겨 적지 않는다.
+인계 본문은 log handoff entry 가 단일 진실이다. `/pm-bootstrap` 이 `이 세션 박제 entries`·메타 학습·pending intent·회귀/incident를 dump 하므로 프롬프트에 옮겨 적지 않는다.
 
 ---
 

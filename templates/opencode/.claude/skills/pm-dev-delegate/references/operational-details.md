@@ -9,20 +9,20 @@
 두거나 정리하는 손절차는 없다.
 
 - **준비**(`ticket prepare --cluster --role code-reviewer` · 교차 `--role code-reviewer --cluster`)는
-  슬롯이 장부의 묶음 브랜치이고 작업 트리 변경(추적 파일 수정·추적 안 된 새 파일)이 0 일 때만
-  통과한다. 거부는 예약 전이라 board 라운드·장부 행이 남지 않는다. 이 거부는 완화 인자가 없다.
+  슬롯이 묶음 기록의 묶음 브랜치이고 작업 트리 변경(추적 파일 수정·추적 안 된 새 파일)이 0 일 때만
+  통과한다. 거부는 예약 전이라 board 라운드·위임 라운드 기록 행이 남지 않는다. 이 거부는 완화 인자가 없다.
 - **돌려받기**(`ticket collect`)는 슬롯 HEAD 가 준비 기록의 `base_rev` 와 같고 작업 트리 변경이 0 일
   때만 통과한다. 무시되는 `.project_manager/.local/` 아래 라운드 파일 변경은 세지 않는다. 거부는
   board 라운드와 run-dir 을 그대로 둔다 — 슬롯을 준비 시점으로 되돌린 뒤 같은 `--copy` 로 다시
-  돌려받는다. 장부 행에 `base_rev` 가 없는 옛 준비는 돌려받지 않는다(`ticket abandon` 뒤 다시 준비).
-- **커밋도 엔진이 한다** — developer 라운드를 돌려받는(harvest) 성공 경로에서 그 슬롯의 코드
+  돌려받는다. 위임 라운드 기록 행에 `base_rev` 가 없는 옛 준비는 돌려받지 않는다(`ticket abandon` 뒤 다시 준비).
+- **커밋도 엔진이 한다** — developer 라운드를 돌려받는 성공 경로에서 그 슬롯의 코드
   변경이 티켓 제목을 문안으로 커밋된다(변경이 없으면 커밋도 없다). 그래서 리뷰를 준비하는 시점의
   트리는 이미 확정돼 있고, PM 이 리뷰 전에 손으로 스테이지·커밋하는 절차는 없다.
 - **범위**는 `merge-base(<통합 브랜치>, <묶음 브랜치>)..<묶음 브랜치>` 의 변경 파일이다.
 - 추가 리뷰어 채널(`additional_reviewer.py`)은 staged diff 기반이라 이 검사와 별개다 — 검토 파일을
   다시 `git add` 한 뒤 실행하는 규율은 그대로다.
 
-## 병렬 wave touches cross-check
+## 병렬 위임 touches cross-check
 
 dev N 동시 spawn 전 disjoint 확인은 **엔진이 계산한다** — 손으로 대조하지 않는다.
 
@@ -34,8 +34,8 @@ dev N 동시 spawn 전 disjoint 확인은 **엔진이 계산한다** — 손으�
     파일의 함수 단위 추가는 완화 조건으로 허용하고, 같은 함수·같은 줄 동시 수정은 차단한다.
   - 블록이 없으면 겹침 0이다. `경고: 병렬 위임 touches 교집합 계산 실패 …` 1줄이 보이면
     판정 불능이므로 그때만 손으로 대조한다.
-  - 판정 축은 `claimed_by` 값 일치다 — 다른 사용자/다른 task 의 claim 은 계산에서 빠진다.
-- 위임 회수 시 `경고: 겹친 파일 변경됨 — 다른 dev 산출 공존 여부를 확인하라: <경로>` 가 나오면
+  - 판정 기준은 `claimed_by` 값 일치다 — 다른 사용자/다른 task 의 claim 은 계산에서 빠진다.
+- 위임 결과를 돌려받을 때 `경고: 겹친 파일 변경됨 — 다른 dev 산출 공존 여부를 확인하라: <경로>` 가 나오면
   그 파일에 두 dev 산출이 공존하는지 확인한 뒤 리뷰/커밋한다.
 - baseline 회귀는 dev cycle 후 한 번에 측정(race 회피).
 
@@ -57,7 +57,7 @@ reviewer 결과를 그대로 믿지 말고 should-fix 전 코드 흐름을 PM이
 
 ## 참고
 
-- `.project_manager/wiki/pm_role.md` — wave 패턴·dev/reviewer cycle·must-fix 분기
+- `.project_manager/wiki/pm_role.md` — 묶음 진행 패턴·dev/reviewer cycle·must-fix 분기
 - `.project_manager/tools/pm_delegate.py` — cross-harness 위임
 - `.claude/agents/developer.md`
 - `.claude/agents/code-reviewer.md`

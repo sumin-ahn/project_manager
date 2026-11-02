@@ -28,7 +28,7 @@ env prefix 없이 호출한다:
 <!-- pm-bootstrap-preread:start -->
 세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
-1. **이 문서(AGENTS.md·공통 코어)** — 이미 로드된 프로젝트 규칙·형상.
+1. **이 문서(AGENTS.md·공통 코어)** — 이미 로드된 프로젝트 규칙·구성.
 2. **현재 정체성의 `pm_state`** — `.project_manager/.local/tasks/<task>/pm_state.md`다(git-ignored).
    신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
@@ -45,12 +45,12 @@ env prefix 없이 호출한다:
 ### 세션 식별
 
 - **task 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <task>`, 종료는 `/pm-handoff`(무인자 · 스킬은 인자를 받지 않는다)만 쓴다. 이 `/…` 표기는 하네스 슬래시 팔레트 진입이며 인자를 그대로 전달한다(팔레트 파일 위치는 어댑터 문서 소관). 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python backbone은 `pm_bootstrap.py --task <task>`·`pm_handoff.py --task <task> --user-ack <값>`을 사용하며, 종료 시 그 값은 PM 이 부트스트랩에서 사용자와 확인한 정체성으로 채운다. task와 repo/slot 혼합 진입은 엔진이 거부한다.
-- 실행 위치 선택은 regression run·live-test record·claim 앵커·new/cluster new 코드 트리·rounds resolve에 한정한다. 다중 작업공간 task는 `--task <task> --repo <repo> --slot <N>`으로 자기 실행 대상을 지정하며 귀속 task는 유지한다. 미소유·타 task·idle·쓰기용 readonly 및 선택 없는 다중 슬롯은 부작용 전에 거부한다. `--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 작업 트리를 찾는다.
+- 실행 위치 선택은 regression run·live-test record·claim 대상 저장소·new/cluster new 코드 트리·rounds resolve에 한정한다. 다중 작업공간 task는 `--task <task> --repo <repo> --slot <N>`으로 자기 실행 대상을 지정하며 귀속 task는 유지한다. 미소유·타 task·idle·쓰기용 readonly 및 선택 없는 다중 슬롯은 부작용 전에 거부한다. `--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 작업 트리를 찾는다.
 - **PM 세션 정체성은 task 이름 하나다.** board 귀속 쓰기(new·claim 등)는 `--task <task>`를 전달한다:
   ```bash
   {{PY}} .project_manager/tools/board.py claim T-NNNN --task <task>   # task 의 폴더가 2개 이상이면 --repo <repo> --slot <N> 추가
   ```
-  `--task`가 없으면 귀속 쓰기는 fail-loud 한다. 조회·소유 대조의 식별 우선순위는 `--task` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias) > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다. lease 장부에 행이 하나도 없는 홈은 아직 작업 폴더가 없는 것이며, `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만든 뒤 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
+  `--task`가 없으면 귀속 쓰기는 fail-loud 한다. 조회·소유 대조의 식별 우선순위는 `--task` > `$PM_SESSION_NAME`(구 `$CLAUDE_SESSION_NAME` deprecated alias) > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다. 슬롯 대여 기록에 행이 하나도 없는 홈은 아직 작업 폴더가 없는 것이며, `pm-config worktree add <repo> --user-ack <repo>` 로 작업 폴더를 만든 뒤 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
 - 위임 식별 라벨: `orch-dev-TNNNN` / `orch-review-TNNNN`.
 
 ### 첫 turn 권장 보고 (부트스트랩 직후)
@@ -91,7 +91,7 @@ ADR/ticket/idea 참조는 ID-wikilink(`[[ADR-NNNN]]`·`[[T-NNNN]]`·`[[idea-NNNN
 PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비용으로·밖으로 내보낼지* 결정한다.
 
 - **자율 + 사후 로그** — 새 ticket 발행/super-ticket 분할/depends_on 변경/block·unblock/spec 추출/일상 ADR(`scope: internal-process`)/위임.
-- **사용자 게이트(사전 동의)** — 미션·핵심 안전 경계/유료·한도 API 대량 호출/키 발급·외부 게시·배포/`scope: mission` ADR. 상세: [[pm_role.local.md]] §사용자 게이트.
+- **사용자 승인(사전 동의)** — 미션·핵심 안전 경계/유료·한도 API 대량 호출/키 발급·외부 게시·배포/`scope: mission` ADR. 상세: [[pm_role.local.md]] §사용자 승인.
 - **금지(PM·사용자 단독 불가)** — 미션 변경/핵심 안전 경계 약화/영구 수동 영역 자동화. 양측 합의+별도 ADR 필요. 상세: [[pm_role.local.md]] §금지.
 
 ## 6. 라이브 외부 행위 안전 가드
@@ -126,7 +126,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 # 핸드오프 (세션 종료)
 {{PY}} .project_manager/tools/pm_handoff.py --dry-run
-# task 사용자 경로 — <값>은 사용자 발화에서 받은 승인값(세션 생성 금지)
+# task 사용자 경로 — <값>은 사용자 메시지에서 받은 승인값(세션 생성 금지)
 {{PY}} .project_manager/tools/pm_handoff.py --task <task> --user-ack <값>
 
 # 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
@@ -143,7 +143,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 |---|---|
 | `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py(공유 엔진 · 0 수정) |
 | `.project_manager/wiki/` | 비-코드 산출물(작업/결정/사양/상태/domain 지식 레이어(§10)/pm_role·pm_state·pm_playbook/log/raw) |
-| PM-workflow 진입 | canonical 스킬 카드 = 모델 tool 표면, 하네스 슬래시 팔레트 사본 = 사람 진입. 사본은 canonical 에서 기계 생성하며 두 표면은 대체 관계가 아니다. |
+| PM-workflow 진입 | canonical 스킬 카드 = 모델 tool 진입점, 하네스 슬래시 팔레트 사본 = 사람 진입. 사본은 canonical 에서 기계 생성하며 두 진입점은 대체 관계가 아니다. |
 | 하네스 어댑터(하네스별 디렉토리) | subagent 정의 + 하네스별 실행 모델·위임 채널 |
 | `AGENTS.md` | 이 파일: PM 부트스트랩·공통 코어 |
 
@@ -169,15 +169,15 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 ```bash
 {{PY}} .project_manager/tools/domain.py list                      # 페이지 카탈로그 (type·covers·stale)
-{{PY}} .project_manager/tools/domain.py affected --ticket T-NNNN  # ticket touches 와 겹치는 covers 페이지 (소환)
+{{PY}} .project_manager/tools/domain.py affected --ticket T-NNNN  # ticket touches 와 겹치는 covers 페이지 (불러오기)
 {{PY}} .project_manager/tools/domain.py capture --tickets T-NNNN  # touch∩covers 갱신 reminder (채록)
 {{PY}} .project_manager/tools/domain.py lint                      # freshness — stale 페이지 검사
 ```
 
-코드 touch → `domain affected`로 겹치는 페이지 소환 → `domain capture` reminder → 채록한다. `covers` 코드가 페이지 `updated` 후 바뀌면 `domain lint`가 **stale** ⚠로 가시화하되 막지는 않는다. PM은 위임 전에 영향 페이지를 dev 프롬프트에 동반하고 완료 때 채록한다.
+코드 touch → `domain affected`로 겹치는 페이지 불러오기 → `domain capture` reminder → 채록한다. `covers` 코드가 페이지 `updated` 후 바뀌면 `domain lint`가 **stale** ⚠로 가시화하되 막지는 않는다. PM은 위임 전에 영향 페이지를 dev 프롬프트에 동반하고 완료 때 채록한다.
 
 ## 참고
 
 - `.project_manager/wiki/pm_role.md` — PM 책임·결정 권한·핸드오프 단일 진실
-- `.project_manager/wiki/pm_playbook.md` — Wave 패턴·메타 정책(필요 시 Read)
+- `.project_manager/wiki/pm_playbook.md` — 묶음 진행 패턴·메타 정책(필요 시 Read)
 - ADR-0006 · ADR-0069 (`.project_manager/wiki/decisions/`) — 진입 doc 공통 코어 + 하네스별 전달 채널 결정

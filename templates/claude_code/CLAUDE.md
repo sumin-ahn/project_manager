@@ -12,7 +12,7 @@
 <!-- pm-bootstrap-preread:start -->
 세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
 
-1. **이 문서** — 자동 로드된 프로젝트 규칙·형상.
+1. **이 문서** — 자동 로드된 프로젝트 규칙·구성.
 2. **현재 정체성의 `pm_state`** — `.project_manager/.local/tasks/<task>/pm_state.md`다(git-ignored).
    신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
@@ -35,7 +35,7 @@ lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다. lease
 없는 것이며 `pm-config worktree add <repo> --user-ack <repo>` 로 만든 뒤
 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
 
-다중 작업공간에서는 claim 앵커·regression run·live-test record·new/cluster new 코드 트리·rounds resolve에만 `--task <task> --repo <repo> --slot <N>`을 함께 준다(`--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다). 자기 task의 소유 슬롯을 명시하고 HEAD·브랜치·test_cmd를 결속한다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish 의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 트리를 찾는다.
+다중 작업공간에서는 claim 대상 저장소·regression run·live-test record·new/cluster new 코드 트리·rounds resolve에만 `--task <task> --repo <repo> --slot <N>`을 함께 준다(`--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다). 자기 task의 소유 슬롯을 명시하고 HEAD·브랜치·test_cmd를 연결한다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish 의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 트리를 찾는다.
 
 외부 의존이 없고 다른 세션이 claim하지 않은 ticket을 고른다:
 
@@ -107,7 +107,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 
 - 엔진 wiki·ticket 은 UTF-8. 파일 IO 는 `encoding="utf-8"`, 콘솔은 `sys.stdout/stderr.reconfigure(encoding="utf-8")` 로 처리하므로 **Windows/CP949·PowerShell 에서도 env prefix 없이** board·log 한글이 동작한다. 외부 파이프·서드파티 도구·구버전 콘솔에서 필요하면 셸별로 PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1` 을 붙인다.
 - **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError) — `cd X && cmd` 금지. 도구 workdir 파라미터나 명령 분리로 실행한다. Windows 루트 facade 는 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요), `./pm-*.sh` 는 bash 용.
-- `{{PY}}` 는 `board.py init` 이 PATH 탐지로 채운다(Windows=`python`·POSIX=`python3`). venv 이면 PM workflow 도구가 `venv/Scripts/python.exe`(Windows)·`venv/bin/python`(POSIX)을 자동 선택하고, 없으면 현재 인터프리터로 폴백한다.
+- `{{PY}}` 는 `board.py init` 이 PATH 탐지로 채운다(Windows=`python`·POSIX=`python3`). venv 이면 PM workflow 도구가 `venv/Scripts/python.exe`(Windows)·`venv/bin/python`(POSIX)을 자동 선택하고, 없으면 현재 인터프리터로 대신한다.
 
 ## 자주 쓰는 명령
 
@@ -130,12 +130,12 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 # 단일 진실은 pm_role.md §"skill 카탈로그" + 각 .claude/skills/pm-*/SKILL.md. 여기에 재나열하지 않는다.
 # log 관리 도구만 여기 (전용 skill 없음):
 {{PY}} .project_manager/tools/pm_log.py tail                       # 마지막 entry 만 (의미단위 읽기)
-{{PY}} .project_manager/tools/pm_log.py archive --before YYYY-MM-DD  # 그 이전 entry 를 log/archive/ 봉인
+{{PY}} .project_manager/tools/pm_log.py archive --before YYYY-MM-DD  # 그 이전 entry 를 log/archive/ 로 옮겨 확정
 {{PY}} .project_manager/tools/pm_log.py migrate                    # 기존 log.md → archive/0000-legacy (도입 1회)
 
 # domain 지식 레이어 (살아있는 프로젝트 지식 — 명령은 아래·살아있는 루프 전체는 프레임워크 가이드 · ADR-0018)
 {{PY}} .project_manager/tools/domain.py list                       # 페이지 카탈로그 (type·covers·stale)
-{{PY}} .project_manager/tools/domain.py affected --ticket T-NNNN   # ticket touches∩covers 페이지 소환
+{{PY}} .project_manager/tools/domain.py affected --ticket T-NNNN   # ticket touches∩covers 페이지 불러오기
 {{PY}} .project_manager/tools/domain.py capture --tickets T-NNNN   # 갱신 reminder (채록)
 {{PY}} .project_manager/tools/domain.py lint                       # freshness — stale 페이지 검사
 ```
