@@ -499,9 +499,9 @@ def _force_nudge_band_conf(dest: Path, harness: str) -> None:
 # false-green(주입문 자체를 검출) 이 난다. sentinel 은 주입문·문서엔 없지만 **이 probe 프롬프트엔
 # 있다** — 검증력은 default 포맷이 프롬프트를 stdout 에 echo 하지 않는다는 실측 성질에 의존한다
 # (프롬프트-echo 포맷[--format json]에선 무력화·codex 지적 반영). 그 전제 아래 모델은 컨텍스트에
-# ctx-warn 가 실재할 때만 NUDGE_REACHED 를 낸다 = 주입이 모델에 도달.
+# ctx-warn 이 실재할 때만 NUDGE_REACHED 를 낸다 = 주입이 모델에 도달.
 _NUDGE_PROBE_TAIL = (
-    "그런 다음, 이번 세션의 시스템 메시지나 추가 컨텍스트에 'ctx-warn' 라는 토큰이 문자 그대로 "
+    "그런 다음, 이번 세션의 시스템 메시지나 추가 컨텍스트에 'ctx-warn' 이라는 토큰이 문자 그대로 "
     "들어와 있는지 확인하라(추측 말고 실제로 있는지만). 있으면 정확히 'NUDGE_REACHED' 한 단어로 "
     "시작해 그 문장을 이어 인용하라. 없으면 정확히 'NO_NUDGE' 라고만 답하라."
 )

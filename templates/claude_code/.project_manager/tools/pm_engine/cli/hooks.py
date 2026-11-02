@@ -54,7 +54,7 @@ def judge_tool_input(
         if git_policy.GIT_GRANT_DIR_NAME in text.replace("\\", "/") or git_policy.GIT_GRANT_LINE.search(text):
             judgment = git_policy._git_grant_forgery_judgment(
                 f"도구 입력에 허용 기록 폴더(`{git_policy.GIT_GRANT_DIR_NAME}`) 또는 줄 머리 허용 표시"
-                "(`git 허용:`)이 있음"
+                "(`git 허용:`)가 있음"
             )
             judgment["reason"] = git_policy._git_guard_stop_reason(
                 [judgment.pop("case")], judgment["reason"], grants_available=False,
