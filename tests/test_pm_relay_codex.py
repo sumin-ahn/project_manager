@@ -565,7 +565,7 @@ def test_codex_maybe_mark_ctx_warns_when_marker_write_fails(
 
     driver._maybe_mark_ctx("tid_fail", _usage_from_wire(orch, input_tokens=900))
 
-    assert capsys.readouterr().err == "[pm-orch] codex ctx marker 박제 실패\n"
+    assert capsys.readouterr().err == "[pm-orch] codex ctx marker 기록 실패\n"
 
 
 def test_codex_maybe_mark_ctx_prefers_rollout_last_turn_usage(

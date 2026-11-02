@@ -215,7 +215,7 @@ def test_stop_wrapper_userpromptsubmit_injects_final_nudge(tmp_path):
     hso = data["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
     guidance = hso["additionalContext"]
-    assert "ctx-nudge/최종" in guidance
+    assert "ctx-warn/최종" in guidance
     assert "pm_log.py checkpoint" in guidance
     assert "압축은 자동이고 세션은 그대로 이어진다" in guidance
     assert "decision" not in data and "permissionDecision" not in hso
@@ -242,7 +242,7 @@ def test_stop_wrapper_pretooluse_injects_and_consumes_final(tmp_path):
     data = json.loads(proc.stdout)
     hso = data["hookSpecificOutput"]
     assert hso["hookEventName"] == "PreToolUse"
-    assert "ctx-nudge/최종" in hso["additionalContext"]
+    assert "ctx-warn/최종" in hso["additionalContext"]
     assert "permissionDecision" not in hso and "decision" not in data
     marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
     assert sorted(path.name for path in marker_dir.iterdir()) == ["sess-ptu.final"]
@@ -270,7 +270,7 @@ def test_stop_wrapper_final_is_idempotent_and_rearms_after_ok(tmp_path):
     proc = _run(claude / _STOP_WRAPPER, stdin, env)
     assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
     data = json.loads(proc.stdout)
-    assert "ctx-nudge/최종" in data["hookSpecificOutput"]["additionalContext"]
+    assert "ctx-warn/최종" in data["hookSpecificOutput"]["additionalContext"]
     marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
     marker = marker_dir / "sess-hp.final"
     assert marker.exists()
@@ -289,7 +289,7 @@ def test_stop_wrapper_final_is_idempotent_and_rearms_after_ok(tmp_path):
     next_cycle = _run(claude / _STOP_WRAPPER, stdin, env)
     assert next_cycle.returncode == 0
     data = json.loads(next_cycle.stdout)
-    assert "ctx-nudge/최종" in data["hookSpecificOutput"]["additionalContext"]
+    assert "ctx-warn/최종" in data["hookSpecificOutput"]["additionalContext"]
     assert marker.exists()
 
 
@@ -335,7 +335,7 @@ def test_stop_wrapper_transcript_form(tmp_path, form):
         data = json.loads(proc.stdout)
         hso = data["hookSpecificOutput"]
         assert hso["hookEventName"] == "UserPromptSubmit"
-        assert "ctx-nudge/최종" in hso["additionalContext"], f"{form} 형식 미발화: {proc.stdout!r}"
+        assert "ctx-warn/최종" in hso["additionalContext"], f"{form} 형식 미발화: {proc.stdout!r}"
         assert "decision" not in data and "permissionDecision" not in hso
         assert marker.exists()
         assert sorted(path.name for path in marker_dir.iterdir()) == [marker.name]
@@ -347,5 +347,5 @@ def test_stop_wrapper_transcript_form(tmp_path, form):
             # 발화했다면(미래 backbone 개선) 유효한 최종 넛지 JSON 이어야 한다 — 깨진 출력만 금지.
             data = json.loads(proc.stdout)
             hso = data["hookSpecificOutput"]
-            assert "ctx-nudge/최종" in hso["additionalContext"]
+            assert "ctx-warn/최종" in hso["additionalContext"]
             assert "decision" not in data and "permissionDecision" not in hso

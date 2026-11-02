@@ -481,7 +481,7 @@ def _git_grant_forgery_in_command(command: str) -> dict[str, str] | None:
     text = command.replace("\\", "/").replace("'", "").replace('"', "")
     if GIT_GRANT_DIR_NAME in text or _GIT_GRANT_MARKER.search(text):
         return _git_grant_forgery_judgment(
-            f"셸 명령에 허용 표식(`git 허용:`) 또는 허용 기록 폴더(`{GIT_GRANT_DIR_NAME}`)가 있음"
+            f"셸 명령에 허용 표시(`git 허용:`) 또는 허용 기록 폴더(`{GIT_GRANT_DIR_NAME}`)가 있음"
         )
     return None
 

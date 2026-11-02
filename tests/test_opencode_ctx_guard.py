@@ -550,7 +550,7 @@ const projectRoot = __PROJECT_ROOT__;
   // SDK 불능은 main·child 어느 쪽으로도 추정하지 않는다 — 원인 경고만 남고 ctx 안내는 없다.
   assert.strictEqual(failureSystem.system.length, 1, "lookup failure must surface a warning");
   assert.ok(failureSystem.system[0].includes("[ctx-guard] 세션 확인 실패(SDK unavailable)"), failureSystem.system[0]);
-  assert.ok(!failureSystem.system[0].includes("[ctx-nudge"), "lookup failure must not be treated as main");
+  assert.ok(!failureSystem.system[0].includes("[ctx-warn"), "lookup failure must not be treated as main");
   assert.strictEqual(failureCalls, 2, "failed lookup must be retried on the next event");
 
   const timeoutID = "ses_lookup_timeout";
@@ -619,7 +619,7 @@ const nudgeEvent = () => ({
   let output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
   assert.strictEqual(output.system.length, 1, "stop band must be absorbed by final warn guidance");
-  assert.ok(output.system[0].includes("[ctx-nudge/최종]"), "stop band did not use final guidance");
+  assert.ok(output.system[0].includes("[ctx-warn/최종]"), "stop band did not use final guidance");
   assert.ok(output.system[0].includes("pm_log.py checkpoint"), "stop-band guidance lacks checkpoint");
   await hooks["tool.execute.before"]({tool:"read", sessionID}, {args:{filePath:"README.md"}});
 
@@ -1043,7 +1043,7 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   const firstOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, firstOutput);
   assert.strictEqual(firstOutput.system.length, 1, "warn2 was not injected once");
-  assert.ok(firstOutput.system[0].includes("[ctx-nudge/강화]"), "wrong first payload");
+  assert.ok(firstOutput.system[0].includes("[ctx-warn/강화]"), "wrong first payload");
   assert.deepStrictEqual(markerPaths(), staged, "warn2 transform deleted snapshot marker");
   assert.strictEqual(fs.readFileSync(staged[0], "utf8"), snapshotPayload);
   assert.deepStrictEqual(receiptPaths(), [], "ownership-released warn created snapshot receipt");
@@ -2204,7 +2204,7 @@ const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
   const freshOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, freshOutput);
   assert.strictEqual(freshOutput.system.length, 1, "old message dirtied re-armed fired state");
-  assert.ok(freshOutput.system[0].includes("[ctx-nudge]"), "fresh-cycle warn did not fire");
+  assert.ok(freshOutput.system[0].includes("[ctx-warn]"), "fresh-cycle warn did not fire");
   console.log("JS_CYCLE_EPOCH_GUARD_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
@@ -2249,9 +2249,9 @@ const nudgeEvent = (sessionID, input) => ({event:{type:"message.updated", proper
   const secondOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:secondID}, secondOutput);
   assert.strictEqual(firstOutput.system.length, 1);
-  assert.ok(firstOutput.system[0].includes("[ctx-nudge]"), "first SID lost its warn payload");
+  assert.ok(firstOutput.system[0].includes("[ctx-warn]"), "first SID lost its warn payload");
   assert.strictEqual(secondOutput.system.length, 1);
-  assert.ok(secondOutput.system[0].includes("[ctx-nudge/강화]"), "second SID lost its warn2 payload");
+  assert.ok(secondOutput.system[0].includes("[ctx-warn/강화]"), "second SID lost its warn2 payload");
   console.log("JS_PENDING_NUDGE_SID_RACE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
@@ -2298,7 +2298,7 @@ const nudgeEvent = (sessionID) => ({
   const mainOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainOutput);
   assert.strictEqual(mainOutput.system.length, 1, "main did not receive its pending warn");
-  assert.ok(mainOutput.system[0].includes("[ctx-nudge]"), "wrong main warn payload");
+  assert.ok(mainOutput.system[0].includes("[ctx-warn]"), "wrong main warn payload");
   assert.ok(mainOutput.system[0].includes("pm_log.py checkpoint"), "checkpoint command missing");
 
   const mainAgain = {system:[]};
@@ -2645,10 +2645,10 @@ def test_t0943_plugin_recorded_model_nudges_other_model_warns(tmp_path):
     assert install_ctx_record(root, _T0943_CONF, harness="opencode", capacity=200000) == SHIPPED_MODEL
     # 밴드 1회 발화는 세션별 durable marker 라 두 실행은 서로 다른 세션으로 본다.
     same = _t0943_plugin_run(root, "ollama", SHIPPED_MODEL_ID, 162000, "t0943-same")  # 81% of E 200,000
-    assert len(same["system"]) == 1 and "[ctx-nudge] 컨텍스트 사용 81%" in same["system"][0]
+    assert len(same["system"]) == 1 and "[ctx-warn] 컨텍스트 사용 81%" in same["system"][0]
     assert not [text for text in same["toasts"] if "[ctx-budget]" in text]
     other = _t0943_plugin_run(root, "openrouter", SHIPPED_MODEL_ID, 162000, "t0943-other")
-    assert len(other["system"]) == 1 and "[ctx-nudge] 컨텍스트 사용 81%" in other["system"][0]
+    assert len(other["system"]) == 1 and "[ctx-warn] 컨텍스트 사용 81%" in other["system"][0]
     warnings = [text for text in other["toasts"] if "[ctx-budget]" in text]
     assert len(warnings) == 1 and "모델이 바뀌었습니다" in warnings[0] and f"openrouter/{SHIPPED_MODEL_ID}" in warnings[0]
 

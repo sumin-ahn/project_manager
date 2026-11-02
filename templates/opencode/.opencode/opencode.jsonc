@@ -9,23 +9,23 @@
     ".opencode/pm-instructions.md"
   ],
   // ctx checkpoint 가드 & 자동 컴팩션: 자동 컴팩션 기본값(켜짐)을 유지한다(`compaction.auto` 를 두지
-  // 않는다). 컨텍스트 한계 대응 모델이 "압축은 허용하고 서사를 미리 박제" 이기 때문이다 — 정상 경로는
-  // 사전 checkpoint 넛지 → native compaction → 사후 checkpoint 안내이고, plugin 이 `session.compacted`
-  // 를 관측해 밴드를 재무장한다(넛지는 압축 사이클당 1회).
-  // ctx-guard 밴드(사용 한도 대비 쓴 `ctx.checkpoint_at_pct`/`ctx.precompact_at_pct` = 기본 70/80)는 전부
-  //   **비차단 안내**다. 최종 밴드도 마지막 checkpoint 넛지로만 소비하고 prompt·도구·compaction 을
-  //   막지 않는다. plugin 산출은 안내문 3종(넛지·2단 강한 넛지·압축 후 안내)뿐이며 핸드오프를 트리거하지
+  // 않는다). 컨텍스트 한계 대응 모델이 "압축은 허용하고 서사를 미리 기록" 이기 때문이다 — 정상 경로는
+  // 사전 checkpoint 경고 → native compaction → 사후 checkpoint 안내이고, plugin 이 `session.compacted`
+  // 를 관측해 구간 경고를 다시 켠다(경고는 압축 사이클당 1회).
+  // ctx-guard 구간(사용 한도 대비 쓴 `ctx.checkpoint_at_pct`/`ctx.precompact_at_pct` = 기본 70/80)은 전부
+  //   **비차단 안내**다. 최종 구간도 마지막 checkpoint 경고로만 소비하고 prompt·도구·compaction 을
+  //   막지 않는다. plugin 산출은 안내문 3종(경고·2단 강한 경고·압축 후 안내)뿐이며 핸드오프를 트리거하지
   //   않는다. 세션을 실제로 교체하는 회전은 relay driver 경로가 담당한다(pm_orch_opencode.py·이 plugin 아님).
   // 전역 자동 컴팩션을 끄면 안 된다: native task 가 만든 자식 세션은 checkpoint 안내를 면제받으므로
   // (Claude sub-session 등가 정책) 자동 컴팩션이 유일한 생존 기제다 — 꺼두면 위임 서브에이전트가
   // 압축도 안내도 없이 컨텍스트 초과로 죽는다. agent 별 compaction 토글은 현재 config 스키마에
-  // 없으므로(per-agent 미지원) "전역 기본 켜짐 + PM 은 압축 전 checkpoint 박제" 가 둘 다 지키는 조합이다.
+  // 없으므로(per-agent 미지원) "전역 기본 켜짐 + PM 은 압축 전 checkpoint 기록" 이 둘 다 지키는 조합이다.
   // 압축 지점(관리 키): 프레임워크가 local.conf 의 opencode 사용 한도(`harness.opencode.ctx_window_tokens`)
   //   와 압축 비율(`ctx.compact_at_pct`)로 최상위 `compaction.reserved`(= 사용 한도 − 압축 지점)와 모델
   //   항목의 `limit` 을 쓴다 — 값은 local.conf 에서 고친다(pm-update·pm-config apply 가 다시 쓴다).
   //   opencode 는 `limit.input` 이 있으면 `input − reserved` 에서 압축한다. 사용 한도는 그 하네스에서
   //   쓰는 모델 중 가장 작은 창 이하로 두십시오 — 사용 한도가 실제 창보다 크면 안내가 압축보다 늦게 온다.
-  // (토큰추적·넛지·checkpoint 안내는 .opencode/plugins/ctx-guard.js 가 autoload 로 담당 — 차단 없음.)
+  // (토큰추적·경고·checkpoint 안내는 .opencode/plugins/ctx-guard.js 가 autoload 로 담당 — 차단 없음.)
   "compaction": {
     "reserved": 20000
   },
@@ -39,7 +39,7 @@
   //   (dynamic ollama 모델은 models.dev 카탈로그 context 부재 → 명시 필수·라이브 실측).
   // ⚠️ output 은 context 보다 충분히 작게 둔다. `limit.input` 이 없는 모델의 자동 컴팩션 트리거가
   //   "입력 > context - output" 이라, output ≥ context 이면 세션이 실제 작업 대신 요약만 무한
-  //   반복한다(라이브 실측·연속 발화).
+  //   반복한다(라이브 실측·연속 실행).
   // 설정 파일에 적힌 모델 전부의 `limit` 을 프레임워크가 local.conf 사용 한도로 쓴다 — context·input 은
   //   사용 한도, `output` 은 있으면 두고 없으면 32000 을 쓴다(opencode 전역 설정에만 적힌 모델도 여기에
   //   `limit` 항목이 생긴다). 설정 파일에 없는 모델(카탈로그 기본값만 쓰는 모델)과 연결 설정이 없는 공급자(모델 목록 밖이고 주소·npm 미설정)의 모델은 대상이 아니다.
@@ -60,7 +60,7 @@
   // 기본(max_lines=2000·max_bytes=51200[50KB])이 task 반환도 절단해, researcher/reviewer 의 큰
   // 보고가 PM 에 온전히 도달하지 못했다. 상한을 올려 큰 서브에이전트 보고를 통과시키되, runaway
   // 출력이 context 를 범람하지 않게 무한이 아닌 적정 상한(12000줄·512KB)을 둔다 — PM 세션은
-  // ctx-guard 가 압축 전 checkpoint 박제를 유도하고, 자식 세션은 자동 컴팩션이 생존을 맡는다.
+  // ctx-guard 가 압축 전 checkpoint 기록을 유도하고, 자식 세션은 자동 컴팩션이 생존을 맡는다.
   // 실사용 보고 크기 보고 조정 가능.
   "tool_output": {
     "max_lines": 12000,

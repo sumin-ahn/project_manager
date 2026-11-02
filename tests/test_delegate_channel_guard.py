@@ -410,7 +410,7 @@ def test_deny_json_schema_and_remediation(guard):
             "permissionDecision": "deny",
             "permissionDecisionReason": (
                 "[delegate-channel/deny] conf 는 opencode/qwen3-coder — "
-                "/pm-dev-delegate 스킬로 위임하라 (실행형 처방: 1) 프롬프트를 "
+                "/pm-dev-delegate 스킬로 위임하라 (실행형 해결 방법: 1) 프롬프트를 "
                 "파일로 저장한 뒤(경로: "
                 "`.project_manager/.local/delegate/manual-researcher-normal-prompt.md`) "
                 f"2) backbone `{delegate_env._prescribed_interpreter()} "

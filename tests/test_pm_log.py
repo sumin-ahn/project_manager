@@ -449,7 +449,7 @@ def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatc
     text = current.read_text(encoding="utf-8")
     assert _ENTRY_A in text
     assert "checkpoint | (task:orch-dev-T0547) — compaction" in text
-    assert "- 구간: <직전 박제 경계 이후>" in text
+    assert "- 구간: <직전 기록 경계 이후>" in text
     assert "- 서사: <PM 손>" in text
     assert len(log_entries.split_entries(text)[1]) == before_count + 1
 
@@ -976,7 +976,7 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
     assert warning is None
     assert "## 진행 중 작업 (장부 실측)" in text
     # T-0786 은 collected_at 이 있어 미회수 집계에서 제외된다(1건만).
-    assert "미회수 라운드 준비 1건: T-0787 architect#1" in text
+    assert "돌려받지 않은 라운드 준비 1건: T-0787 architect#1" in text
     assert "미마감 위임 raw 1건:" in text and "delegate/codex" in text
     assert "claimed 티켓 2건: T-0000-fixture · T-9999-extra" in text
     assert "슬롯 WIP: work/product_1" in text
@@ -990,7 +990,7 @@ def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
     text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
     assert warning is None
-    assert "미회수 라운드 준비 0건" in text
+    assert "돌려받지 않은 라운드 준비 0건" in text
     assert "미마감 위임 raw 0건" in text
     assert "claimed 티켓 1건: T-0000-fixture" in text  # _snapshot_home 기본 claimed=1
     assert "슬롯 WIP: work/product_1" in text

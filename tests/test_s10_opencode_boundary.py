@@ -391,7 +391,7 @@ const root = process.argv[1];
         failure = result["failures"][name]
         assert failure["launches"] == 0, (name, failure)
         assert len(failure["delivered"]) == 1 and needle in failure["delivered"][0], (name, failure)
-        assert "[ctx-nudge" not in failure["delivered"][0], "SDK 불능을 main 으로 처리했다"
+        assert "[ctx-warn" not in failure["delivered"][0], "SDK 불능을 main 으로 처리했다"
 
 
 def _load(path: Path, name: str):
@@ -448,7 +448,7 @@ const [root, commandsText, grantMark] = process.argv.slice(1);
     result = _node(root, script, json.dumps(UNFILTERED), GRANT_MARK)
     assert result["shell"] == [{"count": 1, "shell": command} for command in UNFILTERED]
     assert result["taskLaunches"] == 1
-    assert result["denied"] and result["denied"].startswith("[git-anchor/deny]")
+    assert result["denied"] and result["denied"].startswith("[git-check/deny]")
     assert "허용 줄·허용 기록은 사용자 입력으로만 만든다" in result["denied"]
 
 

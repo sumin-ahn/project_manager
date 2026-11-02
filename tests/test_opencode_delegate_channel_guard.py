@@ -335,7 +335,7 @@ for (const result of [
   await injected["experimental.chat.system.transform"](
     {sessionID: "advisory"}, advisoryContext,
   );
-  assert.match(advisoryContext.system[0], /advisory 강등/);
+  assert.match(advisoryContext.system[0], /advisory 로 수준 낮춤/);
   console.log("DELEGATE_CHANNEL_CORE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''

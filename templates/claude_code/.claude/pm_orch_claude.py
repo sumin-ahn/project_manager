@@ -59,14 +59,14 @@ def _pre_tool_use_output(judgment: dict) -> dict | None:
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": f"[git-anchor/deny] {reason}",
+                "permissionDecisionReason": f"[git-check/deny] {reason}",
             }
         }
     if verdict == "warn":
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
-                "additionalContext": f"[git-anchor/warn] {reason}",
+                "additionalContext": f"[git-check/warn] {reason}",
             }
         }
     return None
@@ -90,7 +90,7 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
         return {
             "decision": "block",
             "reason": (
-                f"[git-anchor/허용 거부] {exc} — `git 허용: <명령 원문>` 한 줄에 한 명령을 값 그대로 "
+                f"[git-check/허용 거부] {exc} — `git 허용: <명령 원문>` 한 줄에 한 명령을 값 그대로 "
                 "적어 다시 보낸다"
             ),
         }
@@ -101,7 +101,7 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": (
-                f"[git-anchor/허용] 사용자가 폴더 {anchor} 에서 다음 명령의 1회 실행을 허용했다: "
+                f"[git-check/허용] 사용자가 폴더 {anchor} 에서 다음 명령의 1회 실행을 허용했다: "
                 f"{listed} — 그 명령을 원문 그대로 한 번만 실행한다"
             ),
         }
@@ -227,7 +227,7 @@ def run_git_anchor_hook(root: Path) -> int:
             "hookSpecificOutput": {
                 # 훅 출력의 이벤트 이름은 발화 이벤트와 같아야 한다(허용 기록 실패도 같은 경고 형태).
                 "hookEventName": "UserPromptSubmit" if event == "UserPromptSubmit" else "PreToolUse",
-                "additionalContext": f"[git-anchor/warn] 판정 불가({exc}) — cwd를 직접 확인",
+                "additionalContext": f"[git-check/warn] 판정 불가({exc}) — cwd를 직접 확인",
             }
         }
     else:
@@ -245,7 +245,7 @@ def _emit_git_anchor_boundary_warn(exc: BaseException) -> int:
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "additionalContext": f"[git-anchor/warn] 판정 불가({exc}) — cwd를 직접 확인",
+            "additionalContext": f"[git-check/warn] 판정 불가({exc}) — cwd를 직접 확인",
         }
     }
     _write_hook_json(output)

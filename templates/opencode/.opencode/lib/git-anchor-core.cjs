@@ -143,10 +143,10 @@ function recordGrants(root, sessionID, cwd, prompt, options = {}) {
     );
     parsed = machineObject(stdout, "git-grant");
   } catch (error) {
-    throw new Error(`[git-anchor/허용 거부] ${errorText(error)}`);
+    throw new Error(`[git-check/허용 거부] ${errorText(error)}`);
   }
   if (!parsed || !Array.isArray(parsed.granted)) {
-    throw new Error("[git-anchor/허용 거부] 허용 기록 결과 JSON 형식 불명");
+    throw new Error("[git-check/허용 거부] 허용 기록 결과 JSON 형식 불명");
   }
   return parsed.granted;
 }
@@ -223,13 +223,13 @@ function createToolBoundary({
     const channel = sessionID || "__global__";
     const cwd = String(args.workdir || args.cwd || directory || worktree || process.cwd());
     // 설치 깨짐은 일시 실패가 아니다 — 판정 엔진이 자기 위치 아래 없으면 경고로 낮추지 않고 막는다.
-    if (!fs.existsSync(board)) throw new Error(`[git-anchor/설치] 판정 엔진 부재: ${board}`);
+    if (!fs.existsSync(board)) throw new Error(`[git-check/설치] 판정 엔진 부재: ${board}`);
     let rootSID;
     try {
       rootSID = await rootSessionID(sessionID);
     } catch (error) {
       await warnings.publish(
-        channel, `[git-anchor/warn] 판정 인프라 예외(세션 확인 실패: ${errorText(error)}) — cwd=${cwd}를 직접 확인`,
+        channel, `[git-check/warn] 판정 인프라 예외(세션 확인 실패: ${errorText(error)}) — cwd=${cwd}를 직접 확인`,
       );
       return;
     }
@@ -255,14 +255,14 @@ function createToolBoundary({
       response = runHookTool(root, rootSID, request, { spawnSync, platform });
     } catch (error) {
       // 판정 인프라 실패 자체가 사용자 명령을 차단하면 never-block 계약을 뒤집는다.
-      await warnings.publish(channel, `[git-anchor/warn] 판정 인프라 예외(${errorText(error)}) — cwd=${cwd}를 직접 확인`);
+      await warnings.publish(channel, `[git-check/warn] 판정 인프라 예외(${errorText(error)}) — cwd=${cwd}를 직접 확인`);
       return;
     }
-    if (response.git.verdict === "deny") throw new Error(`[git-anchor/deny] ${response.git.reason}`);
+    if (response.git.verdict === "deny") throw new Error(`[git-check/deny] ${response.git.reason}`);
     if (response.context) await acceptContext(sessionID, response.context, observed);
     // 세션 경고 채널은 1칸이다 — 앞 경고를 뒤 recall 문구가 덮지 않게 한 문자열로 합친다.
     const notes = [];
-    if (response.git.verdict === "warn") notes.push(`[git-anchor/warn] ${response.git.reason}`);
+    if (response.git.verdict === "warn") notes.push(`[git-check/warn] ${response.git.reason}`);
     if (response.context_error) notes.push(`[ctx-guard] 판정 실패(${response.context_error})`);
     if (response.recall_error) notes.push(`[principle-recall] 판정 실패(${response.recall_error})`);
     if (response.recall && response.recall.text) notes.push(response.recall.text);
@@ -281,7 +281,7 @@ function makeGitAnchorPlugin(recordGrant = recordGrants) {
       "chat.message": async (input, output) => {
         const prompt = userPromptText(output && output.parts);
         if (!GRANT_MARKER.test(prompt)) return;
-        if (!fs.existsSync(BOARD_PY)) throw new Error(`[git-anchor/설치] 판정 엔진 부재: ${BOARD_PY}`);
+        if (!fs.existsSync(BOARD_PY)) throw new Error(`[git-check/설치] 판정 엔진 부재: ${BOARD_PY}`);
         const sessionID = input && input.sessionID;
         const cwd = directory || worktree || process.cwd();
         const granted = await recordGrant(root, sessionID, cwd, prompt);
@@ -289,7 +289,7 @@ function makeGitAnchorPlugin(recordGrant = recordGrants) {
           const listed = granted.map((command) => `\`${command}\``).join(", ");
           await warnings.publish(
             sessionID,
-            `[git-anchor/허용] 사용자가 폴더 ${cwd} 에서 다음 명령의 1회 실행을 허용했다: ${listed} — 그 명령을 원문 그대로 한 번만 실행한다`,
+            `[git-check/허용] 사용자가 폴더 ${cwd} 에서 다음 명령의 1회 실행을 허용했다: ${listed} — 그 명령을 원문 그대로 한 번만 실행한다`,
           );
         }
       },
