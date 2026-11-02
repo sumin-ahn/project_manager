@@ -322,8 +322,8 @@ def _wave_budget(conf: dict[str, str]) -> int:
 
     비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 게이트를
     벽돌로 만들지 않는다)."""
-    default = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
-    raw = reviewer_result._knob_raw(conf, reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
+    default = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY)
+    raw = reviewer_result._knob_raw(conf, reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY)
     if not raw:
         return default
     try:

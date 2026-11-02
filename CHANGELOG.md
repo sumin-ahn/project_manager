@@ -35,12 +35,20 @@
   - `pm_log.py snapshot` 의 절 제목 `## 장부 포인터`·`## 진행 중 작업 (장부 실측)` → `## 기록 위치`·`## 진행 중 작업 (기록 실측)`.
   - `.project_manager/wiki/log/dashboard.md` 슬롯 절의 줄 `- wave:` → `- 세션 요약:`. 이미 있는 절은 그 슬롯의 다음 핸드오프가 절을 다시 쓸 때 바뀐다.
   - 묶음 종결 1단계 이름 `기계 확인 생성·리뷰 게이트 처분` → `기계 확인 생성·리뷰 집계 티켓 처분`(`/pm-cluster-finish` 상세 문서의 단계 표도 같다).
-  - handoff entry 의 `- 이 세션 박제 entries:` 줄과 티켓 설계 절 항목 이름 `표면 상한` 은 그대로다. 이미 쓰인 log·ADR·archive·board 설정 파일의 옛 문구는 고치지 않는다.
-- 출하 문서의 지어낸 말을 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어로 바꿨다. 대상은 스킬, 에이전트 카드, 진입 문서, 방법론(`pm_role.md`·`pm_playbook.md`·`pm_principles.md`), wiki 안내와 빈 양식, README·`ADOPT.md`·`docs/`, manifest·`.gitignore`·`.gitattributes` 주석이다. 동작, 명령 이름·플래그, 설정 키, 파일 형식은 그대로다. 원칙 훅이 띄우는 원칙 글도 새 낱말로 나온다. 엔진이 디스크의 글과 맞대는 티켓 양식 `## 설계` 절의 항목 줄, log handoff 항목 이름 `이 세션 박제 entries`, spike 상태 값 `sealed (<date>)` 는 그대로다.
+  - 티켓 설계 절 항목 이름 `표면 상한` 은 그대로다. 이미 쓰인 log·ADR·archive·board 설정 파일의 옛 문구는 고치지 않는다.
+- 출하 문서의 지어낸 말을 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어로 바꿨다. 대상은 스킬, 에이전트 카드, 진입 문서, 방법론(`pm_role.md`·`pm_playbook.md`·`pm_principles.md`), wiki 안내와 빈 양식, README·`ADOPT.md`·`docs/`, manifest·`.gitignore`·`.gitattributes` 주석이다. 동작, 명령 이름·플래그, 설정 키, 파일 형식은 그대로다. 원칙 훅이 띄우는 원칙 글도 새 낱말로 나온다. 엔진이 디스크의 글과 맞대는 티켓 양식 `## 설계` 절의 항목 줄과 spike 상태 값 `sealed (<date>)` 는 그대로다.
+- 엔진 모듈 다섯 개의 이름을 평어로 바꿨다. `pm_engine/infra/delegate_ledger.py` 는 `delegate_records.py`, `pm_engine/app/delegate_harvest.py` 는 `delegate_collect.py`, `pm_engine/app/reviewer_harvest.py` 는 `reviewer_collect.py`, `pm_engine/app/round_seed.py` 는 `round_form.py`, `pm_engine/app/completion_gate.py` 는 `completion_check.py` 다. 엔진 모듈의 공개 함수·상수 이름에 든 지어낸 말도 평어로 바꿨다(예: `harvest_ticket_copy` 는 `collect_ticket_copy`, `write_ledger` 는 `write_records`). 동작은 같고 옛 이름은 남기지 않는다.
+- 어댑터가 부르는 엔진 함수의 이름을 바꿨다. `pm_engine.cli.hooks.rearm_principles` 는 `reset_principles`, `judge_git_anchor_command` 는 `judge_git_check_command` 다. 출하 어댑터(`pm_orch_claude.py`·`pm_orch_codex.py`)는 같은 갱신이 바꾼다.
+- OpenCode git 명령 검사 플러그인 파일의 이름을 `.opencode/plugins/git-anchor.js`·`.opencode/lib/git-anchor-core.cjs` 에서 `.opencode/plugins/git-check.js`·`.opencode/lib/git-check-core.cjs` 로 바꿨다. 갱신이 옛 두 파일을 백업 폴더로 옮기므로 OpenCode 가 검사 플러그인을 두 번 올리지 않는다.
+- handoff entry 의 세션 기록 줄을 `- 이 세션 박제 entries:` 에서 `- 이 세션 기록 entries:` 로, 기록이 없을 때의 값을 `(이 세션 박제 entry 없음)` 에서 `(이 세션 기록 entry 없음)` 으로 바꿨다. 이미 쓰인 log·archive 의 옛 줄은 고치지 않는다.
+- git 명령 검사 안내를 세션마다 한 번만 내려고 적는 표시 파일이 `.project_manager/.local/ctx-stop/(세션).git-anchor` 에서 `(세션).git-check` 로 바뀐다.
+- `.project_manager/engine.manifest` 의 추가 하네스 구획 표시를 `# >>> pm add-harness guest @render (local·pm_update-preserved) >>>`·`# <<< pm add-harness guest @render (local) <<<` 에서 `# >>> pm add-harness @render (local·pm_update-preserved) >>>`·`# <<< pm add-harness @render (local) <<<` 로 바꿨다. 갱신이 옛 표시를 한 번 옮기고, 엔진은 옛 표시를 읽지 않는다.
+- 추가 리뷰어 처분 명령의 자리 표기를 `--resolve-review <T-NNNN>` 하나로 맞췄다. 보호 브랜치 pre-push 훅과 라이브 시험 거부 안내의 `<리뷰 집계 티켓>` 이 `<T-NNNN>` 이 된다.
 
 ### Removed
 
 - 부르는 곳이 없던 `pm_principles.py rearm` 을 지웠다. 압축 경계에서 규칙을 다시 켜는 일은 세 하네스의 훅이 엔진 함수로 직접 한다(OpenCode 가 이 명령을 부르던 경로는 v1.8.2 에서 없어졌다).
+- 부르는 곳이 없던 숨김 명령 `board.py git-anchor`·`board.py git-tool-input` 을 지웠다. 세 하네스의 git 명령 검사는 엔진 함수를 직접 부른다.
 
 ### Fixed
 
@@ -62,13 +70,19 @@
 - **라이브 시험 명령·환경 변수 이름이 바뀐다.** `board.py livegate record|check`·`board.py lint --gate`·`PM_SKIP_LIVE_GATE` 를 적은 스크립트와 채택자 소유 문서는 `board.py live-test record|check`·`board.py lint --blocking`·`PM_SKIP_LIVE_TEST` 로 고친다. 옛 환경 변수 `PM_SKIP_LIVE_GATE=1` 은 무시되어 라이브 시험 확인이 그대로 요구된다.
 - **옛 라이브 시험 기록은 읽지 않는다.** `.project_manager/.local/livegate.json` 은 남아 있어도 동작에 영향이 없고 지워도 된다. 릴리즈 전에 `board.py live-test record` 로 새로 기록한다.
 - `pm_config.py status --json --with-board` 의 `board.livegate` 를 읽던 도구는 `board.live_test` 를 읽는다.
-- **OpenCode 를 추가 하네스로 붙인 사본(`pm-config add-harness opencode`)은 `.project_manager/engine.manifest` 의 `# >>> pm add-harness guest` 구획에서 두 줄을 고친다.** `.opencode/command/pm-wave-claim.md`·`.opencode/command/pm-wave-finish.md` 행에서 `pm-wave-claim` 을 `pm-cluster-claim` 으로, `pm-wave-finish` 를 `pm-cluster-finish` 로 바꾼다(행마다 경로와 `@source` 두 곳). 갱신 전후 어느 때나 되고, 고친 뒤 갱신하면 `.opencode/command/pm-cluster-claim.md`·`pm-cluster-finish.md` 가 설치된다. 고치지 않으면 새 명령 파일이 설치되지 않고 갱신마다 옛 두 행이 `[skip]` 으로 나온다. 하네스를 하나만 쓰는 사본은 할 일이 없다.
+- **OpenCode 를 추가 하네스로 붙인 사본(`pm-config add-harness opencode`)은 `.project_manager/engine.manifest` 의 `# >>> pm add-harness` 로 시작하는 구획에서 두 줄을 고친다.** `.opencode/command/pm-wave-claim.md`·`.opencode/command/pm-wave-finish.md` 행에서 `pm-wave-claim` 을 `pm-cluster-claim` 으로, `pm-wave-finish` 를 `pm-cluster-finish` 로 바꾼다(행마다 경로와 `@source` 두 곳). 갱신 전후 어느 때나 되고, 고친 뒤 갱신하면 `.opencode/command/pm-cluster-claim.md`·`pm-cluster-finish.md` 가 설치된다. 고치지 않으면 새 명령 파일이 설치되지 않고 갱신마다 옛 두 행이 `[skip]` 으로 나온다. 하네스를 하나만 쓰는 사본은 할 일이 없다.
 - 옛 스킬 파일(`/pm-wave-claim`·`/pm-wave-finish`)을 고쳐 썼다면 `.pm_import_backups/(날짜)/` 의 백업에서 새 스킬(`.claude/skills/pm-cluster-claim/` 등)로 옮겨 적는다. 옮긴 뒤 남는 빈 폴더 `.claude/skills/pm-wave-claim/` 등은 지워도 된다. 스크립트·채택자 소유 문서의 옛 스킬 이름도 새 이름으로 고친다.
 - `pm_log.py ctx-guidance --band …` 를 직접 부르는 스크립트는 `--level` 과 새 값(`warn`·`warn2`)으로 바꾼다. 상태 응답 `level` 의 `nudge`·`nudge2` 를 비교하던 채택자 도구도 `warn`·`warn2` 로 고친다.
 - 갱신할 때 진행 중이던 세션은 같은 사용률 구간의 경고를 한 번 더 받는다. 옛 표시 파일 `.project_manager/.local/ctx-stop/(세션).nudge`·`(세션).nudge2` 는 더 읽지 않으며 지워도 된다.
 - 훅 출력의 앞머리를 글자 그대로 찾던 채택자 스크립트·로컬 규칙·메모는 `[git-anchor/` 를 `[git-check/` 로, `[ctx-nudge` 를 `[ctx-warn` 으로 고친다. `pm_orch_codex.py --hook-features` 의 기능 이름 `git-anchor`·`ctx-nudge-userpromptsubmit` 을 비교하던 도구는 `git-check`·`ctx-warn-userpromptsubmit` 으로 고친다. 옛 앞머리와 옛 이름은 더 나오지 않는다.
 - 위임·리뷰·라운드 출력 문구를 글자 그대로 찾는 채택자 스크립트(예: `조회 장부:`·`미회수`·`wave 예산 소진`·`게이트 ticket:`)는 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 를 보고 새 문구(`조회 기록 파일:`·`돌려받지 않음`·`세션 호출 예산 소진`·`리뷰 집계 티켓:`)로 고친다. 갱신 전에 만든 라운드 파일과 티켓은 옮길 것이 없다.
 - **설치된 채택자 소유 문서는 갱신이 바꾸지 않는다.** 스킬·카드·방법론·빈 양식은 갱신이 새 글로 바꾸지만 `CLAUDE.md`·`AGENTS.md`·`pm_role.local.md` 와 설치된 wiki 문서는 그대로다. 새 문서와 맞추려면 `pm_role.local.md` 의 `## 사용자 게이트 (사전 동의 필수)` 를 `## 사용자 승인 (사전 동의 필수)` 로, `AGENTS.md` 와 lite 로 설치한 `CLAUDE.md` 의 `Wave 패턴·메타 정책` 을 `묶음 진행 패턴·메타 정책` 으로 고친다. 고치지 않아도 동작은 같다(엔진은 이 제목을 읽지 않는다). 출하 문서의 글을 글자 그대로 찾는 채택자 스크립트가 있으면 새 글로 고친다.
+- **추가 하네스 구획 표시는 갱신이 옮긴다.** 추가 하네스를 붙인 사본은 갱신 한 번에 `engine.manifest 의 추가 하네스 구획 표시 2줄을 새 글자로 이동` 한 줄이 나온다. 하네스를 하나만 쓰는 사본은 할 일이 없다.
+- OpenCode git 명령 검사 플러그인(`.opencode/plugins/git-anchor.js`·`.opencode/lib/git-anchor-core.cjs`)을 고쳐 썼다면 `.pm_import_backups/(날짜)/` 의 백업에서 새 파일(`git-check.js`·`git-check-core.cjs`)로 옮겨 적는다.
+- 갱신할 때 진행 중이던 세션은 git 명령 검사 안내를 한 번 더 받을 수 있다. 옛 표시 파일 `.project_manager/.local/ctx-stop/(세션).git-anchor` 는 더 읽지 않으며 지워도 된다.
+- 갱신 전에 핸드오프한 세션이 갱신 뒤 같은 차수로 다시 핸드오프하면 옛 줄을 찾지 못했다는 경고 한 줄을 내고 handoff entry 를 새로 덧붙인다.
+- v1.8.1 이전 엔진이 준비하고 아직 채우지 않은 리뷰 라운드는 갱신 뒤 빈 양식으로 읽히지 않는다. 그런 라운드는 갱신 전에 돌려받거나 버린다(`pm_delegate.py ticket collect`·`ticket abandon`).
+- 엔진 모듈을 직접 import 하던 채택자 스크립트는 새 모듈·함수 이름으로 고친다. 옛 이름에는 별칭이 없다.
 
 ## [1.8.3] - 2026-10-30
 

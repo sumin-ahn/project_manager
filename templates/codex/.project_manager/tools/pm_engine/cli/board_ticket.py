@@ -8,10 +8,10 @@ from pm_engine.app import board_dashboard
 from pm_engine.app import board_sync
 from pm_engine.app import body_lint
 from pm_engine.app import cluster_binding
-from pm_engine.app import completion_gate
+from pm_engine.app import completion_check
 from pm_engine.app import round_maintenance
 from pm_engine.app import wiki_lint
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 from pm_engine.app import ticket_access
 from pm_engine.cli import board_cluster
 from pm_engine.cli import task_args
@@ -170,7 +170,7 @@ def _review_problem(home, tid: str, checker_name: str, spec_text: str | None) ->
             return f"티켓 명세를 읽을 수 없어 남은 리뷰 항목을 판정할 수 없습니다: {exc}"
     checker = getattr(review_state, checker_name)
     try:
-        rounds = round_seed.load_rounds(pm_paths.tickets_dir(home), tid, ticket_text=spec_text)
+        rounds = round_form.load_rounds(pm_paths.tickets_dir(home), tid, ticket_text=spec_text)
     except round_rules.RoundsError as exc:
         return f"리뷰 라운드를 읽지 못해 남은 리뷰 항목을 판정할 수 없습니다: {exc}"
     return checker(spec_text, rounds)
@@ -196,7 +196,7 @@ def _round_completion_problems(home, tid: str, spec_text: str) -> list[str]:
     완료 증거가 성립하지 않는다. 이름 문법 위반과 산출 없는 라운드(시드 그대로)는 정보로만
     낸다 — 미회수는 게이트가 아니라는 결정이고, 판정 코드의 단일 진실은 사이드카 seam 이다.
     """
-    problems = round_seed.verify_rounds(pm_paths.tickets_dir(home), tid, ticket_text=spec_text)
+    problems = round_form.verify_rounds(pm_paths.tickets_dir(home), tid, ticket_text=spec_text)
     blocking_codes = (round_rules.PROBLEM_GAP, round_rules.PROBLEM_DUPLICATE)
     blocking: list[str] = []
     for item in problems:
@@ -246,7 +246,7 @@ def _complete_gate(home, tid: str, args: argparse.Namespace,
     # 3. DoD 전항이 체크(`- [x]`)되었거나 사유와 함께 이월(`- [>] … (이월: …)`)되어야 한다.
     #    미체크 항목이 남은 채 done 이 되면 그 항목은 보드에서 증발한다.
     if body is not None:
-        problems.extend(completion_gate._dod_open_items(body))
+        problems.extend(completion_check._dod_open_items(body))
 
         problems.extend(_round_completion_problems(home,
             tid, body if spec_text is None else spec_text))

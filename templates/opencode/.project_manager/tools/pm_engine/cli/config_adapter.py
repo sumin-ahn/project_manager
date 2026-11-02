@@ -138,7 +138,7 @@ def _warn_hook_set_query_fallback(generation) -> None:
     채택자는 강등된 판정을 정상 판정으로 읽는다 — 차단이 아니라 침묵만 제거한다(mutation 축의
     fail-closed 와 대비).
 
-    **문구는 `app.hook_sets` 단일 진실**(`hook_set_query_fallback_lines` — `hook_set_remedy_lines` 와
+    **문구는 `app.hook_sets` 단일 진실**(`hook_set_query_fallback_lines` — `hook_set_fix_lines` 와
     같은 규약)이다."""
     for line in hook_sets.hook_set_query_fallback_lines(generation):
         print(line, file=sys.stderr)
@@ -157,7 +157,7 @@ def _report_hook_set_findings(home, dest: Path, source_root: Path) -> bool:
     for finding in findings:
         print(f"[중단] 어댑터 훅 세트 버전 불일치({finding.harness}) — {finding.detail}.",
               file=sys.stderr)
-        for line in hook_sets.hook_set_remedy_lines(finding):
+        for line in hook_sets.hook_set_fix_lines(finding):
             print(f"    → {line}", file=sys.stderr)
     return bool(findings)
 
@@ -259,7 +259,7 @@ def cmd_sync_adapter_config(
     # 변경 없음으로 접지 않고 전량 확인을 명시한다.
     if getattr(args, "check", False):
         try:
-            delta_lines = adapter_report.instance_owned_template_delta_lines(
+            delta_lines = adapter_report.instance_owned_template_change_lines(
                 dest, source_root)
         except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 관측 실패는 advisory 로 내고 check 본류는 계속한다.
             delta_lines = [

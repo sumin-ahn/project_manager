@@ -222,7 +222,7 @@ def test_t0934_guidance_execution_real_runtime_and_raw_utf8(tmp_path):
     assert floor.read_bytes() == PM_LOG.with_name("python_floor.py").read_bytes()
     producer = _pm_log_guidance(root, "warn", 75)
     script = r"""
-const m = require("./git-anchor-core.cjs");
+const m = require("./git-check-core.cjs");
 const decision = m.runHookContext(process.argv[1], {session:"ses_t0934", tokens:150000, model:null,
   main_thread:true, boundary:null});
 process.stdout.write(decision.guidance);
@@ -242,7 +242,7 @@ process.stdout.write(decision.guidance);
     assert producer.stdout == payload.encode("utf-8")
     script = r"""
 const ctx = require("./ctx-guard-core.cjs");
-const git = require("./git-anchor-core.cjs");
+const git = require("./git-check-core.cjs");
 const root = process.argv[1];
 let guidanceError = null;
 try {

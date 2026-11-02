@@ -1048,7 +1048,7 @@ def _actionable_matches(text: str) -> list[re.Match[str]]:
     return actionable
 
 
-def line_delta_counts(line: str) -> dict[str, int]:
+def line_difference_counts(line: str) -> dict[str, int]:
     """Count mechanically invalid boundary patterns on one line."""
     return {
         name: sum(1 for _ in pattern.finditer(line))
@@ -1056,10 +1056,10 @@ def line_delta_counts(line: str) -> dict[str, int]:
     }
 
 
-def line_delta(before: str, after: str) -> dict[str, dict[str, int]]:
+def line_difference(before: str, after: str) -> dict[str, dict[str, int]]:
     """Return before/after/delta counts for one changed line."""
-    before_counts = line_delta_counts(before)
-    after_counts = line_delta_counts(after)
+    before_counts = line_difference_counts(before)
+    after_counts = line_difference_counts(after)
     return {
         name: {
             "before": before_counts[name],
@@ -1189,7 +1189,7 @@ def _line_rewrite_plan(text: str) -> tuple[str, int, list[RemovalSpan]]:
     assert cleaned == remove_matched_spans(text)
     if _unsafe_result(text, cleaned):
         return text, 0, []
-    if any(counts["delta"] > 0 for counts in line_delta(text, cleaned).values()):
+    if any(counts["delta"] > 0 for counts in line_difference(text, cleaned).values()):
         return text, 0, []
     return cleaned, sum(span.references for span in spans), spans
 

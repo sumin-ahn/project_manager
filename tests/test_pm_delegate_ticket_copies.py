@@ -32,7 +32,7 @@ from pm_engine.domain import install_rules
 from pm_engine.cli import delegate_cmd
 
 from pm_engine.app import delegate_execute
-from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_collect
 from pm_engine.app import delegate_prepare
 from pm_engine.domain import delegate_rounds
 from pm_engine.domain import review_contract
@@ -58,9 +58,9 @@ import pytest
 from conftest import bind_product_cluster
 
 from conftest import write_cluster_ledger
-from pm_engine.infra import delegate_ledger, pm_paths, raw_output, round_store, ticket_store
+from pm_engine.infra import delegate_records, pm_paths, raw_output, round_store, ticket_store
 from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
-from pm_engine.app import body_lint, round_seed
+from pm_engine.app import body_lint, round_form
 
 from pm_engine.app import board_sync
 from pm_engine.infra import board_git
@@ -262,7 +262,7 @@ def _tickets_root(pm_home: Path) -> Path:
 def _problem_codes(pd, pm_home: Path, ticket: str) -> list[str]:
     return [
         item.code
-        for item in round_seed.verify_rounds(_tickets_root(pm_home), ticket)
+        for item in round_form.verify_rounds(_tickets_root(pm_home), ticket)
     ]
 
 
@@ -301,7 +301,7 @@ def test_t0928_recorded_seed_stays_pending_and_can_be_abandoned(pd, env):
     plan = delegate_prepare.prepare_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9201", role="architect", cwd=slot, )
     assert len(sync_log) == 1
     before = plan.board_path.read_bytes()
-    result = delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot, )
+    result = delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot, )
     assert result.changed is False
     assert plan.board_path.read_bytes() == before
     assert plan.path.is_file()
@@ -343,7 +343,7 @@ def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatc
     monkeypatch.setattr(fs, "board_lock", lock)
     monkeypatch.setattr(round_store, "replace_round", replace)
     _fill(plan.path, "## 실측\n- 설계 완료")
-    result = delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot, )
+    result = delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot, )
     assert result.changed
     assert sync_log == []
     assert "설계 완료" in plan.board_path.read_text(encoding="utf-8")
@@ -471,17 +471,17 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9005", role="code-reviewer", cwd=slot, )
     assert round2.ordinal == round1.ordinal + 1
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-001"]))
-    harvested = delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
+    harvested = delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
     assert harvested.changed is True
 
     # 라운드 1 은 이제 harvest·abandon 양쪽에 막힌다(실측 순환).
     with pytest.raises(delegate_errors.DelegateError, match="finding ID 재선언: F-001"):
-        delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, )
+        delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, )
     with pytest.raises(delegate_errors.DelegateError, match="산출이 있어 포기할 수 없습니다"):
         delegate_prepare.abandon_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, assume_dead=True,
         )
-    stuck = delegate_ledger.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
+    stuck = delegate_records.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
     assert str(round1.path) in [row["copy"] for row in stuck]
 
     capsys.readouterr()
@@ -505,7 +505,7 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     assert "대체-확인" in loud and f"ordinal={round2.ordinal}" in loud
 
     # 표식이 붙은 라운드는 `pending` 을 배제하는 자리에서 함께 빠진다.
-    loaded = round_seed.load_rounds(_tickets_root(pm_home), "T-9005")
+    loaded = round_form.load_rounds(_tickets_root(pm_home), "T-9005")
     assert [(item.ordinal, item.pending) for item in loaded] == [
         (round1.ordinal, False), (round2.ordinal, False)]
     assert review_state._pm_review_refused_rounds(loaded) == {("code-reviewer", round1.ordinal)}
@@ -517,7 +517,7 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     assert "F-001" in review_contract.render_pm_review_disposition_template(spec_text, loaded)
 
     # 값으로 사라짐 — 미회수 목록에 더는 라운드 1 사본이 없다.
-    unharvested = delegate_ledger.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
+    unharvested = delegate_records.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
     assert str(round1.path) not in [row["copy"] for row in unharvested]
     assert unharvested == []          # 라운드 2 는 harvested, 라운드 1 은 abandoned.
 
@@ -534,7 +534,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
     round2 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9006", role="code-reviewer", cwd=slot, )
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-011"]))
-    delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
+    delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
 
     # run-dir 삭제만 실패하도록 주입해 "ledger 는 닫혔지만 run-dir 은 남은" 중간 상태를 만든다.
     real_rmtree = fs.force_rmtree
@@ -563,7 +563,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
 
     assert result.converged is True
     assert not round1.run_dir.exists()
-    unharvested = delegate_ledger.ticket_copy_records(pm_home, ticket="T-9006", unharvested=True)
+    unharvested = delegate_records.ticket_copy_records(pm_home, ticket="T-9006", unharvested=True)
     assert unharvested == []
 
 
@@ -585,7 +585,7 @@ def test_middle_ordinal_abandon_marks_the_preserved_seed_out_of_the_surfaces(
     round2 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9020", role="code-reviewer", cwd=slot, )
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-921"]))
-    delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
+    delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
     assert _problem_codes(pd, pm_home, "T-9020") == ["round-pending"]
 
     result = delegate_prepare.abandon_ticket_copy(
@@ -600,7 +600,7 @@ def test_middle_ordinal_abandon_marks_the_preserved_seed_out_of_the_surfaces(
         "ticket-abandon T-9020 code-reviewer", [round1.board_path],
     )
     assert _problem_codes(pd, pm_home, "T-9020") == []
-    loaded = round_seed.load_rounds(_tickets_root(pm_home), "T-9020")
+    loaded = round_form.load_rounds(_tickets_root(pm_home), "T-9020")
     assert review_state._pm_review_refused_rounds(loaded) == {("code-reviewer", round1.ordinal)}
     assert round_rules.latest_round_of_role(
         loaded, "code-reviewer",
@@ -621,7 +621,7 @@ def test_max_ordinal_abandon_still_deletes_the_board_round_without_a_marker(pd, 
     assert (result.board_removed, result.run_dir_removed) == (True, True)
     assert not only.board_path.exists()
     assert _problem_codes(pd, pm_home, "T-9021") == []
-    assert round_seed.load_rounds(_tickets_root(pm_home), "T-9021") == []
+    assert round_form.load_rounds(_tickets_root(pm_home), "T-9021") == []
 
 
 def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
@@ -640,7 +640,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
     round2 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9022", role="code-reviewer", cwd=slot, )
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-922"]))
-    delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
+    delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
 
     real_rmtree = fs.force_rmtree
     state = {"calls": 0}
@@ -674,7 +674,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
 
 def test_harvest_is_untouched_by_the_superseded_axis(pd):
     """`ticket collect` 는 이 축을 모른다 — finding ID 재선언 거부는 그대로다."""
-    source = inspect.getsource(delegate_harvest.harvest_ticket_copy)
+    source = inspect.getsource(delegate_collect.collect_ticket_copy)
     assert "superseded" not in source
 
 
@@ -727,7 +727,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
     round2 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9009", role="code-reviewer", cwd=slot, )
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-931"]))
-    delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
+    delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
 
     # run-dir 삭제만 실패하도록 주입 — round1 은 이 시점에 산출이 없어(시드 그대로) 마감 행이
     # `superseded_by_ordinal` 없이 정상 닫힌다.
@@ -845,7 +845,7 @@ def test_cli_abandon_wires_the_superseded_by_flag(pd, env, monkeypatch):
     round2 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9007", role="code-reviewer", cwd=slot, )
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-021"]))
-    delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
+    delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
     _cli_ticket_owner(pd, monkeypatch, pm_home)
 
     rc = delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), [
@@ -855,5 +855,5 @@ def test_cli_abandon_wires_the_superseded_by_flag(pd, env, monkeypatch):
 
     assert rc == 0
     assert not round1.run_dir.exists()
-    unharvested = delegate_ledger.ticket_copy_records(pm_home, ticket="T-9007", unharvested=True)
+    unharvested = delegate_records.ticket_copy_records(pm_home, ticket="T-9007", unharvested=True)
     assert unharvested == []

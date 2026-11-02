@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pm_engine.infra import review_diff
-from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_collect
 from pm_engine.app import reviewer_run
 from pm_engine.app import reviewer_scope
 import pm_engine.domain.reviewer_prompt
@@ -23,7 +23,7 @@ import pytest
 from pm_engine.domain import ticket_rules
 from pm_engine.domain import round_rules
 from pm_engine.infra import pm_paths
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -126,9 +126,9 @@ def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
 
     monkeypatch.setattr(reviewer_run, "run_review", _run_review)
     # 이 파일은 프롬프트 입력 축(T-0695)을 소유한다. 산출 회수(T-0696)는 실 board 왕복이 필요한
-    # 별도 축이라 tests/test_additional_reviewer_ticket_harvest.py가 소유하고 여기서는 격리한다.
+    # 별도 축이라 tests/test_additional_reviewer_ticket_collect.py가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
-        reviewer_harvest, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_collect, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
 
 
@@ -448,7 +448,7 @@ def test_ticket_body_selection_skips_rounds_without_output(
     _round(tmp_path, 1, "developer", _round_text("developer", "1라운드 실산출"))
     _round(
         tmp_path, 2, "developer",
-        round_seed.render_round_seed(
+        round_form.render_round_form(
             "developer", ticket.read_text(encoding="utf-8"), today="2026-08-18",
         ),
     )

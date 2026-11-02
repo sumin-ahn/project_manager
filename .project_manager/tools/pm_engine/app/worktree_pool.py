@@ -42,8 +42,8 @@ def alloc(home,
     with pool_store._lease_lock(home):
         leases = pool_store._read_ledger_strict(home)
 
-        def _finalize(lease: worktree_records.Lease, *, write_ledger: bool) -> worktree_records.Lease:
-            if write_ledger:
+        def _finalize(lease: worktree_records.Lease, *, write_records: bool) -> worktree_records.Lease:
+            if write_records:
                 pool_store._write_ledger(home, leases)
             return lease
 
@@ -84,7 +84,7 @@ def alloc(home,
             # pool 대여 — 사람 bind 마커 해제.
             lease.bound = False
             slot_snapshot._apply_git_snapshot(home, lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존).
-            return _finalize(lease, write_ledger=True)
+            return _finalize(lease, write_records=True)
 
         # 4) 풀 소진 — idle 슬롯 없음. 새 슬롯 생성은 fs 행위라 사용자 게이트(호출부).
         raise worktree_records.NeedsCreate(repo)

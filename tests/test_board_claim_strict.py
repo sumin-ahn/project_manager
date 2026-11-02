@@ -1153,7 +1153,7 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
     draft.write_text(_TEMPLATE_TEXT.replace("T-NNNN", "T-0009").replace(
         "status: open", "status: draft"), encoding="utf-8")
     bind_product_cluster(board, "T-0009")
-    ledger_before = cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "bound-t-0009").read_bytes()
+    ledger_before = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "bound-t-0009").read_bytes()
     dirty = _seed_dirty_three(board_dir)
 
     assert board_ticket.cmd_promote(pm_paths.home_at(board.REPO), argparse.Namespace(id="T-0009")) == 0
@@ -1161,7 +1161,7 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
     assert _head_files(board_dir) == {
         "tickets/open/T-0009-draft.md",
     }, f"promote 커밋 스코프가 승격 산출을 넘음: {_head_files(board_dir)}"
-    assert cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "bound-t-0009").read_bytes() == ledger_before
+    assert cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "bound-t-0009").read_bytes() == ledger_before
     after = _porcelain(board_dir)
     for path, code in dirty.items():
         assert after.get(path) == code, f"promote 가 무관 dirty 를 건드림: {path}"

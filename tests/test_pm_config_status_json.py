@@ -28,7 +28,7 @@ from pm_engine.infra import fs
 from pm_engine.cli import config_cmd
 from pm_engine.domain import worktree_records
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import datetime
 import hashlib

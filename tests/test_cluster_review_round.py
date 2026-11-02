@@ -22,7 +22,7 @@ from pm_engine.cli import cluster_close, delegate_cmd, finish_record
 
 from pm_engine.app import delegate_cluster_review
 from pm_engine.infra import delegate_copy_git
-from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_collect
 from pm_engine.app import delegate_prepare
 from pm_engine.infra import review_command
 from pm_engine.domain import review_contract
@@ -60,7 +60,7 @@ from _test_exec import python_argv_command
 from pm_engine.infra import pm_paths
 from pm_engine.infra.harness import delegate_env
 from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
-from pm_engine.infra import delegate_ledger, round_store
+from pm_engine.infra import delegate_records, round_store
 
 from pm_engine.cli import task_args
 from pm_engine.cli import delegate_run as cli_delegate_run
@@ -364,7 +364,7 @@ def test_review_prepare_refuses_a_dirty_slot(pd, review_env, monkeypatch, capsys
         err = capsys.readouterr().err
         assert rc == 1, err
         assert "커밋되지 않은 변경" in err and expected in err
-        assert delegate_ledger.ticket_copy_records(home) == []
+        assert delegate_records.ticket_copy_records(home) == []
         for ticket in _MEMBERS:
             assert not _board_review_round(home, ticket).exists()
 
@@ -378,7 +378,7 @@ def _developer_round(pd, home: Path, ticket: str):
     """dev 라운드 하나를 준비하고 산출을 채운 좌표를 돌려준다."""
     plan = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(home).resolve()), ticket=ticket, role="developer", cwd=home, )
-    command = delegate_harvest._full_regression_command(home)
+    command = delegate_collect._full_regression_command(home)
     text = plan.path.read_text(encoding="utf-8").replace(
         "- 커맨드: `<실행 커맨드>`", f"- 커맨드: `{command}`",
     ).replace(
@@ -410,7 +410,7 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
         encoding="utf-8", newline="\n",
     )
 
-    result = delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(home).resolve()), copy_path=plan.path, cwd=home, )
+    result = delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(home).resolve()), copy_path=plan.path, cwd=home, )
 
     assert result.changed is True
     assert _head_count(home) == before + 1
@@ -449,7 +449,7 @@ def test_developer_round_harvest_without_the_architect_test_leaves_head_alone(
         encoding="utf-8", newline="")
 
     with pytest.raises(delegate_errors.DelegateError, match="architect 필수 테스트 .* 추가·수정되지"):
-        delegate_harvest.harvest_ticket_copy(pm_paths.home_at(Path(home).resolve()), copy_path=plan.path, cwd=slot, )
+        delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(home).resolve()), copy_path=plan.path, cwd=slot, )
 
     assert _head_count(slot) == before
 
@@ -528,7 +528,7 @@ def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
 
     assert rc == 1
     assert "묶음 브랜치가 아닙니다" in capsys.readouterr().err
-    assert delegate_ledger.ticket_copy_records(home) == []
+    assert delegate_records.ticket_copy_records(home) == []
     assert _git(home, "worktree", "list").stdout == worktrees_before
 
 
@@ -700,7 +700,7 @@ def test_cross_review_runs_in_the_slot_and_harvests(pd, review_env, monkeypatch,
     local = home / ".project_manager" / ".local"
     assert not (local / "internal_review_rounds.json").exists()
     assert not (local / "cluster-review-runs.jsonl").exists()
-    rows = delegate_ledger.ticket_copy_records(home)
+    rows = delegate_records.ticket_copy_records(home)
     head = _git(home, "rev-parse", "HEAD").stdout.strip()
     assert {row["ticket"] for row in rows if row["collected_at"]} == set(_MEMBERS)
     assert all(row.get("base_rev") == head for row in rows)
@@ -821,7 +821,7 @@ def test_ticket_prepare_code_reviewer_writes_engine_prompt(
     snapshot = (".claude", ".codex", ".opencode", ".agents")
     real_prompt = delegate_cluster_review.cluster_review_prompt
     def read_registry():
-        assert len(delegate_ledger.ticket_copy_records(home)) == len(_MEMBERS)
+        assert len(delegate_records.ticket_copy_records(home)) == len(_MEMBERS)
         reader_calls.append("read")
         return snapshot
     def observe_prompt(*args, **kwargs):
@@ -850,7 +850,7 @@ def test_ticket_prepare_code_reviewer_writes_engine_prompt(
     assert "### 리뷰 입력 좌표" in prompt and "```sh" in prompt
     assert "```diff" not in prompt and "T-8001 구현" not in prompt
     assert "격리 스냅샷" not in prompt
-    rows = delegate_ledger.ticket_copy_records(home)
+    rows = delegate_records.ticket_copy_records(home)
     assert len(rows) == len(_MEMBERS)
     assert all(row["role"] == "code-reviewer" and row.get("base_rev") == head for row in rows)
     assert all("owner_pid" not in row for row in rows)
@@ -877,7 +877,7 @@ def test_ticket_prepare_review_takes_the_cluster_only(
         delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["prepare", *extra, "--cwd", str(home)])
 
     assert caught.value.code == 2
-    assert delegate_ledger.ticket_copy_records(home) == []
+    assert delegate_records.ticket_copy_records(home) == []
 
     assert reader_calls == []
 
@@ -921,7 +921,7 @@ def test_review_harvest_refuses_when_slot_changed_after_prepare(
     for ticket in _MEMBERS:
         assert _board_review_round(home, ticket).read_bytes() == seeds[ticket]
     assert run_dir.is_dir()
-    assert all(row["collected_at"] is None for row in delegate_ledger.ticket_copy_records(home))
+    assert all(row["collected_at"] is None for row in delegate_records.ticket_copy_records(home))
 
 
 @requires_git
@@ -946,7 +946,7 @@ def test_review_harvest_accepts_round_file_only_change(pd, review_env, monkeypat
     for ticket in _MEMBERS:
         assert review_form.PM_REVIEW_BLOCK in _board_review_round(home, ticket).read_text(
             encoding="utf-8")
-    assert all(row["collected_at"] for row in delegate_ledger.ticket_copy_records(home))
+    assert all(row["collected_at"] for row in delegate_records.ticket_copy_records(home))
 
 
 @requires_git
@@ -1000,7 +1000,7 @@ def test_ticket_prepare_code_reviewer_reopens_the_same_ordinal(
 
     assert {line["ordinal"] for line in reopened} == {3}
     latest = [
-        row for row in delegate_ledger.ticket_copy_records(home)
+        row for row in delegate_records.ticket_copy_records(home)
         if row["run_id"] == Path(reopened[0]["run_dir"]).name
     ]
     assert latest and all(row.get("base_rev") == new_head for row in latest)
@@ -1315,7 +1315,7 @@ def test_written_confirmation_section_round_trips_through_the_parser(pd, tmp_pat
 
     assert section.startswith(review_contract.PM_REVIEW_CONFIRMATION_SECTION)
     assert "<관측값>" not in section and "<resolved|" not in section
-    delta = review_state.parse_pm_review_delta(spec + "\n" + section, rounds)
+    delta = review_state.parse_pm_review_accepted(spec + "\n" + section, rounds)
     assert delta.accepted == ()
     assert review_state.pm_verified_evidence_problem(
         spec + "\n" + section, rounds,
@@ -1344,7 +1344,7 @@ def test_pm_owned_terminal_confirmation_is_generated_without_running_a_command(
     assert row.observed == "PM audit 완료 실값"
 
     confirmed = spec + "\n" + review_contract.render_pm_review_confirmation_section(rows)
-    assert review_state.parse_pm_review_delta(confirmed, rounds).accepted == ()
+    assert review_state.parse_pm_review_accepted(confirmed, rounds).accepted == ()
     assert review_state.pm_verified_evidence_problem(
         confirmed, rounds, reviewer_role="code-reviewer", surface_floor=1,
     ) is None
@@ -1374,7 +1374,7 @@ def test_pm_owned_terminal_confirmation_rejects_scope_verify_spoof(
         }],
     }, ensure_ascii=False, separators=(",", ":"))
     with pytest.raises(review_form.PMReviewError, match="strict pm-owned|PM-owned"):
-        review_state.parse_pm_review_delta(
+        review_state.parse_pm_review_accepted(
             spec + f"\n```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n{forged}\n```\n",
             rounds,
         )
@@ -1413,7 +1413,7 @@ def test_confirmation_is_appended_to_the_pm_area_of_the_spec(pd, review_env):
     assert review_contract.PM_REVIEW_CONFIRMATION_SECTION in text
     # 기입은 명세 PM 영역이다 — frontmatter 는 그대로다.
     assert text.startswith("---\n")
-    assert review_state.parse_pm_review_delta(text, rounds).accepted == ()
+    assert review_state.parse_pm_review_accepted(text, rounds).accepted == ()
 
 
 @requires_git
@@ -1450,7 +1450,7 @@ def test_confirmation_append_merges_missing_pm_owned_row_into_existing_round_ide
     assert [row["id"] for row in blocks[0].value["confirmations"]] == [
         "F-001", "F-003",
     ]
-    assert review_state.parse_pm_review_delta(text, rounds).accepted == ()
+    assert review_state.parse_pm_review_accepted(text, rounds).accepted == ()
 
 
 @pytest.mark.parametrize(("row", "message"), (
@@ -1502,7 +1502,7 @@ def test_design_axis_uses_the_reviewer_machine_test_contract(pd):
         "confirmations": [{"id": "F-001", "status": "resolved",
                            "command": "echo hi", "observed": "hi"}],
     }, ensure_ascii=False, separators=(",", ":"))
-    delta = review_state.parse_pm_review_delta(
+    delta = review_state.parse_pm_review_accepted(
         spec + f"\n```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
         rounds,
     )
@@ -1656,7 +1656,7 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
         text = (tickets / f"{ticket}-review.md").read_text(encoding="utf-8")
         assert f'"command":"{review_form.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND}"' in text
         spec_text, rounds = delegate_changelog._ticket_spec_and_rounds(pm_paths.home_at(home), ticket)
-        assert review_state.parse_pm_review_delta(spec_text, rounds).accepted == ()
+        assert review_state.parse_pm_review_accepted(spec_text, rounds).accepted == ()
         assert review_state.review_completion_problem(spec_text, rounds) is None
     assert "PM-owned terminal 확인 1건 기입" in captured.out
 
@@ -1712,7 +1712,7 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
         assert [row["id"] for row in blocks[0].value["confirmations"]] == [
             "F-001", "F-003",
         ]
-        assert review_state.parse_pm_review_delta(spec_text, rounds).accepted == ()
+        assert review_state.parse_pm_review_accepted(spec_text, rounds).accepted == ()
 
 
 @requires_git
@@ -1774,7 +1774,7 @@ def test_dry_run_previews_the_cluster_without_side_effects(pd, review_env, capsy
     for ticket in _MEMBERS:
         assert f"### 검토 대상 티켓 본문 ({ticket})" in out
     assert _git(home, "worktree", "list").stdout == before
-    assert delegate_ledger.ticket_copy_records(home) == []
+    assert delegate_records.ticket_copy_records(home) == []
 
 
 @requires_git
@@ -1987,7 +1987,7 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
     slot = home / "work/proj_1"
     assert _git(home, "worktree", "add", "-q", str(slot), _BASE_BRANCH).returncode == 0
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [{"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased", "role": "work"}]}), encoding="utf-8")
-    ledger_path = cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), _CLUSTER)
+    ledger_path = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), _CLUSTER)
     ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), _CLUSTER)
     ledger["branch"] = None
     cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger)

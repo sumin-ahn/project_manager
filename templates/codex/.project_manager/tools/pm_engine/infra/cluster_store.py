@@ -57,13 +57,13 @@ def all_clusters(home) -> list[dict[str, Any]]:
     return out
 
 
-def cluster_ledger_path(home, cluster: str) -> Path:
+def cluster_record_path(home, cluster: str) -> Path:
     """장부 파일 경로 — 이름/장부 id 어느 표기로 불러도 같은 파일을 가리킨다."""
     return clusters_dir(home) / f'{cluster_rules.cluster_id_for_name(cluster)}.md'
 
 def load_cluster(home, cluster: str) -> dict[str, Any] | None:
     """장부 frontmatter — 부재는 None, 손상은 경고 1줄 뒤 None(`load_ticket_soft` 동형)."""
-    path = cluster_ledger_path(home, cluster)
+    path = cluster_record_path(home, cluster)
     if not path.is_file():
         return None
     loaded = ticket_store.load_ticket_soft(home, path)
@@ -71,11 +71,11 @@ def load_cluster(home, cluster: str) -> dict[str, Any] | None:
 
 def dump_cluster(home, fm: dict[str, Any]) -> Path:
     """장부를 키 선언 순서로 쓴다 — 본문 없음(라운드 산출은 장부에 담지 않는다)."""
-    ordered: dict[str, Any] = {key: fm.get(key) for key in cluster_rules.CLUSTER_LEDGER_KEYS}
+    ordered: dict[str, Any] = {key: fm.get(key) for key in cluster_rules.CLUSTER_RECORD_KEYS}
     for key, value in fm.items():
         if key not in ordered:
             ordered[key] = value
-    path = cluster_ledger_path(home, str(ordered.get('id') or ''))
+    path = cluster_record_path(home, str(ordered.get('id') or ''))
     ticket_store.dump_ticket(path, ordered, '')
     return path
 

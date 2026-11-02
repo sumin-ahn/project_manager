@@ -9,7 +9,7 @@ from pm_engine.infra import fs
 from pm_engine.infra import pm_paths
 from pm_engine.app import round_maintenance
 from pm_engine.domain import round_rules
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 from pm_engine.infra import round_store
 import sys
 from pm_engine.domain import ticket_rules
@@ -39,8 +39,8 @@ def cmd_section_add(home, args: argparse.Namespace) -> int:
         with fs.open_shared(path, binary=False, encoding='utf-8', newline='') as handle:
             spec_text = handle.read()
     try:
-        existing = round_seed.load_rounds(pm_paths.tickets_dir(home), args.id, ticket_text=spec_text)
-        seed = round_seed.render_round_seed(role, spec_text, today=today, previous_round=round_rules.previous_round_of_role(existing, role), rounds=existing)
+        existing = round_form.load_rounds(pm_paths.tickets_dir(home), args.id, ticket_text=spec_text)
+        seed = round_form.render_round_form(role, spec_text, today=today, previous_round=round_rules.previous_round_of_role(existing, role), rounds=existing)
         round_path = round_store.reserve_round(pm_paths.tickets_dir(home), args.id, role, content=round_rules._round_seed_header_override(seed, label, role, today), lock=fs.board_lock(home))
     except round_rules.RoundsError as exc:
         print(f'cannot section-add: {exc}', file=sys.stderr)

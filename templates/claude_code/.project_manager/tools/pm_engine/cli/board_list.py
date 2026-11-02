@@ -67,7 +67,7 @@ def _print_ticket_remote_mismatch(home, ticket_id: str, local_status: str, *,
     )
 
 from pm_engine.app import cluster_binding
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 from pm_engine.app import ticket_access
 from pm_engine.domain import review_state
 from pm_engine.domain import round_rules
@@ -266,7 +266,7 @@ def cmd_show(home, args: argparse.Namespace) -> int:
     body = fs.read_text_shared(path, encoding="utf-8")
     print(body)
     try:
-        rounds = round_seed.load_rounds(pm_paths.tickets_dir(home), args.id, ticket_text=body)
+        rounds = round_form.load_rounds(pm_paths.tickets_dir(home), args.id, ticket_text=body)
     except round_rules.RoundsError as exc:
         # 표시면은 조회를 막지 않는다 — 사유는 그 자리에 loud 하게 남기고 판정은 lint·
         # 완료 게이트(같은 seam)가 한다.

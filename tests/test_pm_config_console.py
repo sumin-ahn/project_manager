@@ -21,7 +21,7 @@ from pm_engine.cli import config_slots
 from pm_engine.infra import lease_store
 from pm_engine.infra import pm_paths
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import argparse
 import importlib.util
@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import areas_store
 
-from _pool_seams import bind_board
+from _pool_overrides import bind_board
 from pm_engine.cli import config_install
 from pm_engine.cli import config_models
 from pm_engine.cli import config_status

@@ -220,7 +220,7 @@ def cluster_binding_problem(home, cluster: str, *, tree: str | None=None) -> str
     if tree is not None:
         return None if _cluster_branch_state(tree, branch) is True and _cluster_branch_state(tree, base) is True else f'{cluster}의 branch {branch} 또는 base_branch {base}를 제품 트리 {tree}에서 확인하지 못했다'
     status, rows = lease_store._read_lease_rows_status(pm_paths.leases_file(home))
-    if status == identity_args.LEDGER_UNREADABLE:
+    if status == identity_args.RECORD_UNREADABLE:
         return f'{cluster} 제품 연결을 검증할 대여 기록을 읽지 못했다'
     repositories: set[str] = set()
     for row in rows:

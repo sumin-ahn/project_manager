@@ -71,6 +71,6 @@ def record_seen_marker(home, session_id, keys) -> None:
     path.write_text(json.dumps(sorted(existing)), encoding="utf-8", newline="\n")
 
 
-def rearm_seen_marker(home, session_id) -> None:
+def reset_seen_marker(home, session_id) -> None:
     """압축 경계에서 marker 를 지워 다음 사이클에 규칙을 다시 주입 가능하게 한다. 삭제 오류는 올린다."""
     _marker_path(home, session_id).unlink(missing_ok=True)

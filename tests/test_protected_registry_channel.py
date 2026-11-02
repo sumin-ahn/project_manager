@@ -33,7 +33,7 @@ from pm_engine.app import repo_protection
 from pm_engine.domain import areas_rules
 from pm_engine.infra import git, protected_hooks, pm_paths, areas_store
 
-from _pool_seams import bind_board, bind_pool
+from _pool_overrides import bind_board, bind_pool
 
 import argparse
 import importlib.util
@@ -46,7 +46,7 @@ from pm_engine.infra import areas_store, pm_paths
 from pm_engine.app import areas_registry
 from pm_engine.infra import areas_store
 
-from _pool_seams import bind_board
+from _pool_overrides import bind_board
 
 from pm_engine.app import board_sync
 
@@ -117,7 +117,7 @@ class FakePool:
     def __init__(self, hooks_dir: Path, *, ok: bool = True, events: list | None = None,
                  repos_dir: Path | None = None):
         self.REPO_HOOKS_DIR = hooks_dir
-        self.PROTECTED_GATE_CONTRACT_NAME = "gate-contract"
+        self.PROTECTED_CHECK_CONTRACT_NAME = "gate-contract"
         self.calls: list[tuple[str, list[str]]] = []
         self.events = events if events is not None else []
         self._ok = ok
@@ -134,7 +134,7 @@ class FakePool:
         if not self._ok:
             return False
         write_sidecar(self.REPO_HOOKS_DIR, repo, protected)
-        contract = self.REPO_HOOKS_DIR / repo / self.PROTECTED_GATE_CONTRACT_NAME
+        contract = self.REPO_HOOKS_DIR / repo / self.PROTECTED_CHECK_CONTRACT_NAME
         contract.write_text(f"{gate_mode}\n{test_cmd}\n", encoding="utf-8")
         return True
 

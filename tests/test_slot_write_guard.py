@@ -1,8 +1,8 @@
 """슬롯 쓰기 가드 — 세션이 연 task 가 잡은 슬롯에만 쓴다.
 
-판정 단일 진실은 엔진 공개 진입 cli.hooks(`judge_tool_input`·`judge_git_anchor_command`)다. 이 파일은 파일 쓰기·편집
+판정 단일 진실은 엔진 공개 진입 cli.hooks(`judge_tool_input`·`judge_git_check_command`)다. 이 파일은 파일 쓰기·편집
 도구와 패치 도구의 대상 판정, 셸 명령의 슬롯 경고, 부트스트랩 세션 기록, 위임 task 환경변수를 본다.
-git 쓰기 주인 판정은 실제 linked worktree 가 필요해 `test_git_anchor_guard.py` 에 있다.
+git 쓰기 주인 판정은 실제 linked worktree 가 필요해 `test_git_check_guard.py` 에 있다.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
 CLAUDE_DRIVER = REPO / "templates" / "claude_code" / ".claude" / "pm_orch_claude.py"
 CODEX_DISPATCHER = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
-OPEN_CORE = REPO / "templates" / "opencode" / ".opencode" / "lib" / "git-anchor-core.cjs"
+OPEN_CORE = REPO / "templates" / "opencode" / ".opencode" / "lib" / "git-check-core.cjs"
 
 
 def _load(name: str, path: Path):
@@ -261,12 +261,12 @@ def test_delegated_harness_writes_as_the_open_task_it_was_given(home, monkeypatc
 
 def test_shell_command_naming_a_foreign_slot_warns_once_per_slot(home):
     slot_4 = home / "work" / "app_4"
-    got = cli_hooks.judge_git_anchor_command(
+    got = cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-alpha", str(home), f"sed -i s/a/b/ {slot_4}/a.txt {slot_4}/b.txt", main_thread=True,
     )
     assert got["verdict"] == "warn"
     assert got["reason"].count("work/app_4") == 1
-    own = cli_hooks.judge_git_anchor_command(
+    own = cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-alpha", str(home / "work" / "app_1"), f"sed -i s/a/b/ {home}/work/app_1/a.txt", main_thread=True,
     )
     assert own["verdict"] == "ok"
@@ -280,20 +280,20 @@ def test_corrupt_ledger_is_raised_not_read_as_empty(home):
 
 def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(home):
     claims = home / ".project_manager" / ".local" / "task-session-claims"
-    got = cli_hooks.judge_git_anchor_command(
+    got = cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-new", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task gamma", main_thread=True,
     )
     assert got["verdict"] != "deny"
     assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-new"}
-    cli_hooks.judge_git_anchor_command(
+    cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-new", str(home), f"python3 {home}/.project_manager/tools/pm_bootstrap.py --task=delta", main_thread=True,
     )
     assert (claims / "delta.json").is_file()
     # 인자를 정적으로 못 정하거나 세션 ID 가 없으면 남기지 않는다 — 부트스트랩이 기록 없음으로 멈춘다.
-    cli_hooks.judge_git_anchor_command(
+    cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-new", str(home), 'python3 .project_manager/tools/pm_bootstrap.py --task "$NAME"', main_thread=True,
     )
-    cli_hooks.judge_git_anchor_command(
+    cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon", main_thread=True,
     )
     assert sorted(path.name for path in claims.iterdir()) == ["delta.json", "gamma.json"]
@@ -316,7 +316,7 @@ def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(home, t
         "    return _original_atomic_replace(src, dst, *args, **kwargs)\n"), encoding="utf-8")
     claims = other / ".project_manager" / ".local" / "task-session-claims"
 
-    got = cli_hooks.judge_git_anchor_command(
+    got = cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-new", str(other), "python3 .project_manager/tools/pm_bootstrap.py --task gamma", main_thread=True,
     )
 
@@ -327,7 +327,7 @@ def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(home, t
 
 def test_denied_bootstrap_command_records_nothing(home):
     marker = "git " + "허용" + ":"
-    got = cli_hooks.judge_git_anchor_command(
+    got = cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-new", str(home),
         f"python3 .project_manager/tools/pm_bootstrap.py --task gamma; echo '{marker} x'", main_thread=True,
     )
@@ -419,7 +419,7 @@ def test_delegated_slot_denial_hands_back_to_pm(home):
         assert stranger["verdict"] == "deny", main_thread
         assert stranger["reason"].splitlines()[1] == _action(no_task)
         assert write("S-alpha", slot_1 / "a.py")["verdict"] != "deny", main_thread
-        shell = cli_hooks.judge_git_anchor_command(
+        shell = cli_hooks.judge_git_check_command(
             adapter, "S-alpha", str(home), f"sed -i s/a/b/ {slot_2}/a.txt", main_thread=main_thread,
         )
         assert shell["verdict"] == "warn", main_thread
@@ -431,13 +431,13 @@ def test_delegated_bootstrap_is_denied_without_a_session_claim(home):
     adapter = cli_hooks.adapter_home(home)
     claims = home / ".project_manager" / ".local" / "task-session-claims"
     command = "python3 .project_manager/tools/pm_bootstrap.py --task gamma"
-    denied = cli_hooks.judge_git_anchor_command(adapter, "S-alpha", str(home), command, main_thread=False)
+    denied = cli_hooks.judge_git_check_command(adapter, "S-alpha", str(home), command, main_thread=False)
     assert denied["verdict"] == "deny"
     lines = denied["reason"].splitlines()
     assert lines[:2] == [git_policy.GIT_GUARD_STOP_LINE, _action(git_policy._GIT_GUARD_CASE_DELEGATED_TASK)]
     assert "위임받은 에이전트의 task 열기(pm_bootstrap.py --task gamma)" in denied["reason"]
     assert not (claims / "gamma.json").exists()
-    allowed = cli_hooks.judge_git_anchor_command(adapter, "S-alpha", str(home), command, main_thread=True)
+    allowed = cli_hooks.judge_git_check_command(adapter, "S-alpha", str(home), command, main_thread=True)
     assert allowed["verdict"] != "deny"
     assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-alpha"}
 
@@ -567,7 +567,7 @@ def test_opencode_write_tools_reach_the_board_with_session_and_cwd(tmp_path):
         pytest.skip("node 없음")
     script = _OPENCODE_REPLY + r'''
 const assert = require("node:assert");
-const m = require("./git-anchor-core.cjs");
+const m = require("./git-check-core.cjs");
 const path = require("node:path");
 const root = process.argv[1];
 (async () => {
@@ -608,7 +608,7 @@ def test_opencode_child_session_is_judged_as_its_root_session(tmp_path):
         pytest.skip("node 없음")
     script = _OPENCODE_REPLY + r'''
 const assert = require("node:assert");
-const m = require("./git-anchor-core.cjs");
+const m = require("./git-check-core.cjs");
 const root = process.argv[1];
 (async () => {
   const sessions = {C: {id: "C", parentID: "B"}, B: {id: "B", parentID: "A"}, A: {id: "A"}};
@@ -707,7 +707,7 @@ def test_t0931_git_forms_read_write_and_owner_matrix(board, home, monkeypatch, s
         pytest.fail('판정 테스트가 git 변경을 실행했다')
     for number, session in [(1, 'S-alpha'), (2, 'S-alpha'), (3, 'S-alpha'), (4, 'S-alpha'), (1, 'S-missing')]:
         target = home / 'work' / f'app_{number}'
-        result = engine_guard.judge_git_anchor(pm_paths.home_at(home), session, str(target), ['git', subcommand, *args], runner=no_git_mutation)
+        result = engine_guard.judge_git_check(pm_paths.home_at(home), session, str(target), ['git', subcommand, *args], runner=no_git_mutation)
         expected = 'deny' if writes and (number != 1 or session != 'S-alpha') else 'ok'
         assert result['verdict'] == expected, (number, session, result)
     assert git_policy._git_writes_slot(subcommand, args) is writes

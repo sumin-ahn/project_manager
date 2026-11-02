@@ -90,7 +90,7 @@ def _install_core(root: Path) -> Path:
 
 
 # ctx core 가 require 하는 lib 모듈 전부 — 일반 도구 판정 경계(git-anchor)와 그 의존(principle·delegate·warning).
-CORE_DEPENDENCIES = ("ctx-guard-core.cjs", "git-anchor-core.cjs", "principle-recall-core.cjs",
+CORE_DEPENDENCIES = ("ctx-guard-core.cjs", "git-check-core.cjs", "principle-recall-core.cjs",
                      "delegate-channel-core.cjs", "warning-channel-core.cjs")
 ENGINE_TOOLS = REPO / ".project_manager" / "tools"
 

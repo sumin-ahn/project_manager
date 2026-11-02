@@ -714,7 +714,7 @@ def test_idle_none_wall_timeout_is_wrapped_with_actual_diagnostics():
             sleep=clock.advance, log=[].append, poll_interval=1.0,
         )
     exc = excinfo.value
-    assert exc.timeout_axis == watchdog.TIMEOUT_AXIS_WALL
+    assert exc.timeout_axis == watchdog.TIMEOUT_KIND_WALL
     assert exc.threshold_seconds == 50.0
     assert exc.silence_seconds == 40.0
     assert exc.output == "PROGRESS\n"
@@ -766,7 +766,7 @@ def test_wall_clock_backstop_closes_even_while_progressing():
         )
     assert not isinstance(excinfo.value, watchdog.IdleTimeoutExpired)  # 무진행이 아니라 벽시계
     assert isinstance(excinfo.value, watchdog.WallTimeoutExpired)
-    assert excinfo.value.timeout_axis == watchdog.TIMEOUT_AXIS_WALL
+    assert excinfo.value.timeout_axis == watchdog.TIMEOUT_KIND_WALL
     assert excinfo.value.threshold_seconds == 50.0
     assert excinfo.value.silence_seconds == 0.0
     assert excinfo.value.output, "벽시계 kill 도 부분 산출물을 보존해야 한다"
@@ -798,7 +798,7 @@ def test_first_event_stall_behaviour_unchanged_with_idle():
         )
     assert [p.kill_count for p in procs] == [1, 1]
     assert len(logs) == 2 and all("stall watchdog" in m for m in logs)
-    assert excinfo.value.timeout_axis == watchdog.TIMEOUT_AXIS_FIRST_EVENT
+    assert excinfo.value.timeout_axis == watchdog.TIMEOUT_KIND_FIRST_EVENT
     assert excinfo.value.threshold_seconds == 5.0
 
 
@@ -847,7 +847,7 @@ def test_startup_wait_wall_axis_stops_after_first_attempt():
     assert len(launched) == 1
     assert procs[0].kill_count == 1
     assert [proc.kill_count for proc in procs[1:]] == [0, 0]
-    assert exc.timeout_axis == watchdog.TIMEOUT_AXIS_WALL
+    assert exc.timeout_axis == watchdog.TIMEOUT_KIND_WALL
     assert exc.threshold_seconds == 30.0
     assert len(logs) == 1 and "자동 재시도 안 함" in logs[0]
 
@@ -1711,7 +1711,7 @@ def test_fill_startup_stall_preserves_partial_output(pm_import, monkeypatch):
     """opencode startup 재시도 소진도 누적 부분 산출물을 버리지 않는다."""
     fake = _RecordingRelay()
     exc = watchdog.StallWatchdogError(
-        "startup stall", timeout_axis=watchdog.TIMEOUT_AXIS_FIRST_EVENT,
+        "startup stall", timeout_axis=watchdog.TIMEOUT_KIND_FIRST_EVENT,
         threshold_seconds=90, silence_seconds=90,
         output="START-OUT", stderr="START-ERR",
     )
@@ -1731,7 +1731,7 @@ def test_fill_stall_error_reports_wall_axis(pm_import, monkeypatch):
     """startup 창보다 wall deadline이 먼저 발화하면 첫-이벤트 stall로 오진하지 않는다."""
     fake = _RecordingRelay()
     exc = watchdog.StallWatchdogError(
-        "wall first", timeout_axis=watchdog.TIMEOUT_AXIS_WALL,
+        "wall first", timeout_axis=watchdog.TIMEOUT_KIND_WALL,
         threshold_seconds=30, silence_seconds=30,
         output="WALL-OUT", stderr="WALL-ERR",
     )
@@ -1890,7 +1890,7 @@ def test_delegate_wall_clock_timeout_is_labelled_apart_from_idle(
     assert "harness.codex.wall_timeout" in res["stderr"]
     assert delegate_run_rules.RUN_RESULT_IDLE_KILLED not in res
     assert res[delegate_run_rules.RUN_RESULT_SILENCE_SEC] == 12.5
-    assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_AXIS] == watchdog.TIMEOUT_AXIS_WALL
+    assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_KIND] == watchdog.TIMEOUT_KIND_WALL
     assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] == 3700.0
     assert res["stdout"] == "PART"
 

@@ -609,8 +609,8 @@ def test_shipped_current_workflow_guides_do_not_move_review_residue_to_a_new_tic
     assert cards, f"{name}: {stem} 출하 카드 누락"
     retired = (
         "후속 티켓으로", "다음 티켓으로", "별도 티켓으로",
-        "cluster replan", "--resolve-review <게이트> --into",
-        "--resolve-review <게이트> --fixed",
+        "cluster replan", "--resolve-review <T-NNNN> --into",
+        "--resolve-review <T-NNNN> --fixed",
     )
     for card in cards:
         text = card.read_text(encoding="utf-8")
@@ -741,7 +741,7 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     reads = []
     monkeypatch.setattr(
         lease_store, "_read_lease_rows_status",
-        lambda path: reads.append(path) or (identity_args.LEDGER_OK, []),
+        lambda path: reads.append(path) or (identity_args.RECORD_OK, []),
     )
     tree, problem = cluster_code_tree.resolve_code_tree(pm_paths.home_at(REPO), "C-guidance")
     assert tree is None and "연결되지 않은" in problem and "cluster new" in problem

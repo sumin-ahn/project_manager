@@ -252,6 +252,12 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         effective_dest = dest_root if dest_root is not None else home.root
         transferred = 0
 
+    # ── 추가 하네스 구획 표시 이관 — **구획을 읽는 첫 자리(아래 guest 절 해소·계획)보다 먼저**. 엔진은
+    #    새 표시만 읽으므로 옛 표시가 남은 채 계획하면 구획을 못 찾아 상류 사본으로 덮는다. 경계는
+    #    conf 이관과 같다(`--target` 내보내기·`--paths` 부분 전파는 건드리지 않는다).
+    if not args.target and not scope_paths:
+        update_finish.rename_added_harness_markers(effective_dest, write=not args.dry_run)
+
     # ── guest 절 해소(읽기 전용) — 스코프 선검증·계획·기록이 **같은 산출**을 쓴다. 엔진 행은 upstream
     #    flavor 에서 매 실행 재파생하므로, 절에 아직 기록되지 않은 파생분도 이 시점에 확정된다.
     guest_entries = update_manifest._dest_guest_manifest_entries(effective_dest)

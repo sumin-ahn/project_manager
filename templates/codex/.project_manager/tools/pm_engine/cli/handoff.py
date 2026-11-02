@@ -1254,7 +1254,7 @@ def _main(home, argv: list[str] | None=None, *, identity_resolver=None) -> int:
             print(
                 f"[중단] 핸드오프 대상 task 미해소 ({identity_source}) — 이 cwd 를 가진 작업 폴더가 "
                 "없고 활성 task 도 하나가 아니다. `--task <task>` 으로 명시하라. "
-                f"{identity_args.NO_WORK_FOLDER_REMEDY}",
+                f"{identity_args.NO_WORK_FOLDER_FIX}",
                 file=sys.stderr,
             )
             return 1

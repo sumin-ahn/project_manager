@@ -17,7 +17,7 @@ from pathlib import Path
 import sys
 from typing import Callable
 import json
-from pm_engine.infra import delegate_ledger
+from pm_engine.infra import delegate_records
 from pm_engine.domain import worktree_records
 from pm_engine.domain import identity_args
 from pm_engine.domain import session_history
@@ -874,13 +874,13 @@ class PmBootstrap:
 
         준비 사본은 **그 세션이 잡고 있던 작업 폴더 안**에 생긴다(위임의 cwd 가 슬롯이다) —
         PM 홈 아래가 아니다. 그래서 뿌리는 `slots`(보유 작업 폴더 목록)이 준다. 상대 루트는
-        준비 사본을 만드는 쪽(`delegate_ledger.TICKET_COPY_REL_ROOT`)이 소유한다.
+        준비 사본을 만드는 쪽(`delegate_records.TICKET_COPY_REL_ROOT`)이 소유한다.
         """
         rows: list[str] = []
         for slot in slots:
             root = (
                 pm_paths.slot_path(self._home, slot)
-                / delegate_ledger.TICKET_COPY_REL_ROOT
+                / delegate_records.TICKET_COPY_REL_ROOT
             )
             if not root.is_dir():
                 continue

@@ -2,7 +2,7 @@
 
 Python 어댑터가 엔진에서 import 하는 모듈은 이것 하나다. 어댑터는 `adapter_home` 으로 설치 루트의
 Home 을 만들고 git 판정·ctx 판정·원칙 recall·세션 1회 안내·relay 구동 함수를 부른다.
-`board.py git-anchor`·`git-grant`·`git-tool-input`·`hook-context`·`hook-tool` 명령 처리도 이 모듈이
+`board.py git-grant`·`hook-context`·`hook-tool` 명령 처리도 이 모듈이
 소유한다. 판정 규칙은 app.hooks·app.engine_guard·domain.git_policy(git), app.ctx_hooks·
 domain.ctx_recovery(ctx), app.principle_recall(원칙), app.session.relay(세션 회전)가 소유하고, 여기서는
 입력을 검증해 넘기고 relay 협력자를 실제 소유자에서 구성한다.
@@ -102,7 +102,7 @@ def record_git_grants(home: home.Home, session: str, cwd: str, prompt: str) -> l
     return [shlex.join(record["argv"]) for record in records]
 
 
-def judge_git_anchor_command(
+def judge_git_check_command(
     home: home.Home, session: str, cwd: str, command: str, *, main_thread: bool, grants: bool = False,
     runner: Any = subprocess.run,
 ) -> dict[str, str]:
@@ -123,7 +123,7 @@ def judge_git_anchor_command(
     invocations = parsed.invocations
     judgments: list[dict[str, str]] = []
     for call in invocations:
-        judgment = engine_guard.judge_git_anchor(home, session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain)
+        judgment = engine_guard.judge_git_check(home, session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain)
         if (
             not call.certain and judgment["verdict"] != "warn"
             and judgment.get("code") != git_policy.GIT_DESTRUCTIVE_DENY_CODE
@@ -187,19 +187,6 @@ def judge_git_anchor_command(
     return result
 
 
-def cmd_git_anchor(home: home.Home, args: argparse.Namespace) -> int:
-    """하네스 훅용 JSON 판정 표면. 한 줄 JSON만 출력한다.
-
-    ``--grants`` 를 주면 이 엔진 루트의 사용자 1회 허용을 쓸 수 있는 하네스로 판정한다
-    (정확히 같은 명령·같은 세션의 허용 기록이 있으면 소비한다).
-    """
-    judgment = judge_git_anchor_command(
-        home, args.session, args.cwd, args.command, main_thread=True, grants=args.grants,
-    )
-    console.write_machine_line(json.dumps(judgment, ensure_ascii=False))
-    return 0
-
-
 def cmd_git_grant(home: home.Home, args: argparse.Namespace) -> int:
     """사용자 프롬프트 훅 전용 — stdin 프롬프트의 `git 허용:` 줄을 이 엔진 루트의 허용 기록으로 남긴다."""
     prompt = sys.stdin.buffer.read().decode("utf-8")
@@ -211,18 +198,10 @@ def cmd_git_grant(home: home.Home, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_git_tool_input(home: home.Home, args: argparse.Namespace) -> int:
-    """하네스 훅용 — stdin JSON 도구 입력의 판정(허용 위조·슬롯 쓰기 주인)을 한 줄 JSON 으로 출력한다."""
-    tool_input = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-    judgment = judge_tool_input(home, args.session, args.cwd, args.tool, tool_input, main_thread=True)
-    console.write_machine_line(json.dumps(judgment, ensure_ascii=False))
-    return 0
-
-
 # ── ctx 판정·원칙 recall·세션 1회 안내 (어댑터 공개 API) ─────────────────────
 CTX_HARNESSES = ("claude", "codex", "opencode")
 # 세션 1회 안내 멤버십 — namespace 와 문구 sha256 앞 자리 수(문구 전문을 파일에 남기지 않는다).
-NOTICE_NAMESPACE = "git-anchor"
+NOTICE_NAMESPACE = "git-check"
 NOTICE_KEY_CHARS = 16
 _NOTICE_STATUS = {True: "claimed", False: "seen", None: "unavailable"}
 # 기계 JSON 입력 세대와 키 집합 — 누락·추가 키는 업무 실행 전에 거부한다.
@@ -302,10 +281,10 @@ def recall_principles(home: home.Home, *, session: str, on: str, text: str,
     return result
 
 
-def rearm_principles(home: home.Home, *, session: str) -> None:
+def reset_principles(home: home.Home, *, session: str) -> None:
     """세션의 원칙 recall marker 를 지워 다음 사이클에 다시 주입 가능하게 한다."""
     _check_type("session", session, (str,))
-    principle_store.rearm_seen_marker(home, session)
+    principle_store.reset_seen_marker(home, session)
 
 
 def claim_notice(home: home.Home, *, session: str, text: str) -> dict[str, str]:
@@ -466,7 +445,7 @@ def cmd_hook_tool(home: home.Home, args: argparse.Namespace) -> int:
     except (HookWireError, TypeError, ValueError) as exc:
         return _wire_failure("hook-tool", exc)
     if request["shell_command"] is not None:
-        git = judge_git_anchor_command(
+        git = judge_git_check_command(
             home, args.session, request["cwd"], request["shell_command"],
             main_thread=request["main_thread"], grants=True,
         )

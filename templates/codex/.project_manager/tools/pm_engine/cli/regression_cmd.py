@@ -15,7 +15,7 @@ from pm_engine.infra import clock, fs, git, lease_store, pre_push_hook, regressi
 from pm_engine.app import regression
 from pm_engine.cli import task_args
 import subprocess
-from pm_engine.app import completion_gate
+from pm_engine.app import completion_check
 from pm_engine.app import release
 from pm_engine.app import update_plan
 from pm_engine.infra import pm_paths
@@ -71,7 +71,7 @@ def _regression_run_slot(home, args: argparse.Namespace, session: str, cwd: str,
     regression_store._write_regression_flag(flag, record)
     note = " · 수집 0 — 테스트 루트/cwd 확인" if rc == 5 else ""
     print(f"regression[{label}]: {status} (rc={recorded_rc}{note})"
-          f"{pytest_report.collection_delta_text(collected, record['previous_collected'])} "
+          f"{pytest_report.collection_change_text(collected, record['previous_collected'])} "
           f"@ {expected_head[:8]}")
     return 0 if status == "pass" else (rc or 1)
 
@@ -257,7 +257,7 @@ def cmd_regression(home, args: argparse.Namespace) -> int:
                   "collected": collected, "conf_anchor": cwd, "command": cmd, "ts": clock.now_utc()}
         regression_store._write_regression_flag(regression_flag, record)
         print(f"regression: {status} (rc={recorded_rc}{rc5_note})"
-              f"{pytest_report.collection_delta_text(collected, record['previous_collected'])} "
+              f"{pytest_report.collection_change_text(collected, record['previous_collected'])} "
               f"@ {expected_head[:8]}")
         return 0 if status == "pass" else 1
     # action == "check" — pre-push 게이트
@@ -328,7 +328,7 @@ def cmd_regression(home, args: argparse.Namespace) -> int:
         return 1
     # green 줄에도 그 기록이 담은 직전 대비 증감을 붙인다 — 막지 않는 표시다(기록을 읽는
     # 자리이므로 같은 축의 수집수끼리 견준다).
-    delta = pytest_report.collection_delta_text(regression_store._flag_collected(data), data.get("previous_collected"))
+    delta = pytest_report.collection_change_text(regression_store._flag_collected(data), data.get("previous_collected"))
     print(f"regression: green @ {head[:8]}{delta} ✓")
     return 0
 
@@ -363,7 +363,7 @@ def _livegate_cwd(home, override: str | None = None, session: str | None = None)
         "여럿이거나 이 홈이 아직 슬롯 행으로 등록되지 않았다). PM 홈으로 말없이 대체하면 "
         "tests 없는 트리에서 broken slot 을 수집해 false fail 이 되므로 거부한다. "
         "`--task <task>`(폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)로 실행하거나 "
-        f"`--cwd <worktree 절대경로>` 로 직접 지정하라. {identity_args.NO_WORK_FOLDER_REMEDY}"
+        f"`--cwd <worktree 절대경로>` 로 직접 지정하라. {identity_args.NO_WORK_FOLDER_FIX}"
     )
 
 
@@ -464,7 +464,7 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
     try:
         # 장부 판정과 shell 소비 표식을 같은 review_rounds.lock 아래 갱신한다. 표식 쓰기 실패는
         # 우회 경로를 현행화하지 못한 상태라 release wave 를 돌리지 않고 fail-closed 한다.
-        problems = completion_gate._sync_release_must_fix_marker(home, flag)
+        problems = completion_check._sync_release_must_fix_marker(home, flag)
     except OSError as exc:
         print("live-test: fail — 남은 must-fix 표시를 원자 갱신할 수 없어 차단 "
               f"({type(exc).__name__}: {exc}). 기록 파일/`.local` 권한을 복구한 뒤 다시 실행하세요.",
@@ -512,7 +512,7 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
                 platform_commands, cwd, start_head, env,
                 core_passed=True, head_after_core=start_head,
             )
-            provisional = {"head": start_head, "status": "pass", "n": regression.LIVEGATE_RELEASE_PIN,
+            provisional = {"head": start_head, "status": "pass", "n": regression.LIVE_TEST_RELEASE_PIN,
                            "rc": 0, "ts": clock.now_utc(), "cwd": cwd,
                            "platforms": cells, **snapshot}
             if not platforms_passed:
@@ -530,10 +530,10 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
             fs.write_json_atomic(flag, provisional)
         print(f"live-test: fail — {problem}. 릴리즈 차단.", file=sys.stderr)
         return 1
-    print(f"live-test: $ {release.LIVEGATE_TEST_CMD}  (cwd={cwd})")
+    print(f"live-test: $ {release.LIVE_TEST_CMD}  (cwd={cwd})")
     # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    result = subprocess.run(release.LIVEGATE_TEST_CMD, shell=True, cwd=cwd, env=env,
+    result = subprocess.run(release.LIVE_TEST_CMD, shell=True, cwd=cwd, env=env,
                             capture_output=True, text=True,
                             encoding="utf-8", errors="replace")
     rc = result.returncode
@@ -542,7 +542,7 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
         print(output if output.endswith("\n") else output + "\n", end="")
     n = pytest_report._livegate_ran_count(output)
     head = git._git_head_at(cwd)
-    passed = (rc == 0 and n == regression.LIVEGATE_RELEASE_PIN
+    passed = (rc == 0 and n == regression.LIVE_TEST_RELEASE_PIN
               and (not platform_commands or (bool(start_head) and head == start_head)))
     status = "pass" if passed else "fail"
     flag.parent.mkdir(parents=True, exist_ok=True)
@@ -560,21 +560,21 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
     fs.write_json_atomic(flag, record)
     if passed:
         print(f"live-test: pass @ {head[:8] or '?'} "
-              f"(release {n}/{regression.LIVEGATE_RELEASE_PIN} green) ✓")
+              f"(release {n}/{regression.LIVE_TEST_RELEASE_PIN} green) ✓")
         return 0
     if platform_commands and head != start_head:
         reason = f"HEAD drift ({start_head[:8]} → {head[:8] or '?'})"
     elif rc != 0:
         reason = f"release red (rc={rc})"
     else:
-        reason = (f"수집 {n} ≠ pin {regression.LIVEGATE_RELEASE_PIN} — 마커 소실/wrong-cwd 의심"
+        reason = (f"수집 {n} ≠ pin {regression.LIVE_TEST_RELEASE_PIN} — 마커 소실/wrong-cwd 의심"
                   " (수집 위장 차단)")
     print(f"live-test: fail @ {head[:8] or '?'} — {reason}. 릴리즈 차단.", file=sys.stderr)
     return 1
 
 
-def cmd_livegate(home, args: argparse.Namespace) -> int:
+def cmd_live_test(home, args: argparse.Namespace) -> int:
     """record = `pytest -m release` 실행+기록 / check = push HEAD green 검증 (보호훅용)."""
     if args.action == "record":
         return _livegate_record(home, args)
-    return completion_gate._livegate_check(home, args)
+    return completion_check._livegate_check(home, args)

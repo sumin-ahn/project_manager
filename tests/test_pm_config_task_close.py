@@ -11,7 +11,7 @@ from __future__ import annotations
 from pm_engine.cli import config_tasks
 from pm_engine.cli import config_cmd
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import argparse
 import importlib.util

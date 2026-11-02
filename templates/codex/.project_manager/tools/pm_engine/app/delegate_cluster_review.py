@@ -24,7 +24,7 @@ from pm_engine.infra import ticket_store
 #
 # 리뷰 단위는 묶음이다. 같은 하네스(native 서브에이전트)와 다른 하네스(교차 CLI) 두 전송이 같은
 # 준비(`prepare_cluster_review`)·같은 조립(`cluster_review_prompt`)·같은 돌려받기
-# (`harvest_ticket_copy`)를 쓴다. 수단은 전부 기존 것이다:
+# (`collect_ticket_copy`)를 쓴다. 수단은 전부 기존 것이다:
 #   · 프롬프트 = `reviewer_prompt.build_prompt`(맥락 헤더 + 출력 형식 + 티켓 본문 N + 검토
 #     중점 + diff).
 #   · 라운드 자리 = `prepare_cluster_copy`(run-dir 1 · 티켓당 라운드 파일 1 · `base_rev` 기록).

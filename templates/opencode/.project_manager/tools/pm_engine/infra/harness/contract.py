@@ -536,7 +536,7 @@ def opencode_runtime_role_config(role: str) -> str:
     highest-precedence fragment only pins the delegated role's identity, its permissions, and
     how an automatically rejected permission request is handled.
     """
-    perm_axis(role)  # shared role allowlist and wording
+    perm_kind(role)  # shared role allowlist and wording
     # ``edit`` is allowed for every role, researcher included: all participating roles record
     # their own output in the ticket copy's role section, and the shipped opencode researcher
     # card carries the same ``edit: allow`` / ``bash: deny`` axis. This fragment is the
@@ -593,7 +593,7 @@ def with_harness_runtime_role(
 ) -> dict[str, str]:
     """Apply the declared harness runtime-role fragment without caller-side branching."""
     validate_harness(harness)
-    perm_axis(role)
+    perm_kind(role)
     configured = dict(env or {})
     builder = _RUNTIME_ROLE_CONFIG_BUILDERS[harness]
     if builder is not None:
@@ -702,7 +702,7 @@ def validate_reasoning(
     return value
 
 
-def perm_axis(role: str) -> str:
+def perm_kind(role: str) -> str:
     """역할 → 권한축('write' | 'read'). 미등록 역할은 보수적으로 read."""
     return "write" if role in WRITE_ROLES else "read"
 
@@ -727,7 +727,7 @@ def build_codex_argv(
 
     프롬프트는 stdin 주입(argv positional 아님). `cwd` 를 주면 `-C` 로 핀하고, 생략하면 프로세스
     cwd 를 그대로 쓴다(추가 리뷰어는 검토 대상 저장소를 subprocess cwd로 전달한다)."""
-    mode = CODEX_SANDBOX[perm_axis(role)]
+    mode = CODEX_SANDBOX[perm_kind(role)]
     argv = ["codex", "-a", "never", "-s", mode, *CODEX_WORKSPACE_EXEC_OPTIONS]
     if reasoning:
         # `-c` 는 전부 exec 앞에 둔다. exec 뒤에 `-c` 가 하나라도 있으면 codex 가 exec 앞의 `-c`
@@ -828,7 +828,7 @@ def build_opencode_argv(
 ) -> list[str]:
     """opencode argv. 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피)·cwd 는 `--dir`
     로 핀하고, `--agent <role>`로 네이티브와 같은 custom 역할 정의를 선택한다."""
-    perm_axis(role)  # 공용 역할 allowlist 검증(예외 문구 단일 진실).
+    perm_kind(role)  # 공용 역할 allowlist 검증(예외 문구 단일 진실).
     agent = OPENCODE_AGENT[role]
     argv = ["opencode", "run", OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
             "--agent", agent, "--format", "json", "--dir", str(cwd)]

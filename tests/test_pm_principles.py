@@ -471,7 +471,7 @@ def _install_recall_core(root: Path) -> Path:
     """
     lib = root / ".opencode" / "lib"
     lib.mkdir(parents=True, exist_ok=True)
-    for name in ("ctx-guard-core.cjs", "git-anchor-core.cjs", "principle-recall-core.cjs",
+    for name in ("ctx-guard-core.cjs", "git-check-core.cjs", "principle-recall-core.cjs",
                  "delegate-channel-core.cjs", "warning-channel-core.cjs"):
         shutil.copyfile(_OPENCODE_LIB / name, lib / name)
     # 도구 호출 recall 은 일반 도구 판정 경계(`board.py hook-tool`)가 함께 판정한다.

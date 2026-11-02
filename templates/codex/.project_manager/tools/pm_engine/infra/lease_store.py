@@ -98,13 +98,13 @@ def _read_lease_rows_status(leases_file: Path) -> "tuple[str, list[dict]]":
     try:
         exists = leases_file.exists()
     except OSError:
-        return identity_args.LEDGER_UNREADABLE, []
+        return identity_args.RECORD_UNREADABLE, []
     if not exists:
-        return identity_args.LEDGER_MISSING, []
+        return identity_args.RECORD_MISSING, []
     rows = _load_lease_rows(leases_file)
     if rows is None:
-        return identity_args.LEDGER_UNREADABLE, []
-    return identity_args.LEDGER_OK, [row for row in rows if isinstance(row, dict)]
+        return identity_args.RECORD_UNREADABLE, []
+    return identity_args.RECORD_OK, [row for row in rows if isinstance(row, dict)]
 
 
 def leased_sessions(leases_file: Path) -> list[str]:
@@ -219,7 +219,7 @@ def slot_path_resolution(repo: str, number: int, leases_file: Path) -> identity_
     하지 않는다. 쓰기 진입은 이 값을 fail-loud 로 번역한다.
     """
     status, rows = _read_lease_rows_status(leases_file)
-    if status != identity_args.LEDGER_OK:
+    if status != identity_args.RECORD_OK:
         return identity_args.SlotPathResolution(status, None, f"슬롯 대여 기록을 읽을 수 없다({leases_file})")
     slots: set[str] = set()
     for row in rows:
@@ -355,11 +355,11 @@ def slot_identity_resolution(slot: object, leases_file: Path) -> identity_args.S
         repo, number = identity_args._identity_coordinates(session, rows)
         return identity_args.SlotIdentityResolution(
             identity_args.SLOT_IDENTITY_OK,
-            identity_args.SlotIdentity(key=session, slot=slot, source=identity_args.IDENTITY_FROM_LEDGER_SESSION,
+            identity_args.SlotIdentity(key=session, slot=slot, source=identity_args.IDENTITY_FROM_RECORD_SESSION,
                          session=session, repo=repo, number=number))
     if fallback is not None:
         return identity_args.SlotIdentityResolution(identity_args.SLOT_IDENTITY_OK, fallback)
-    if ledger_status != identity_args.LEDGER_OK:
+    if ledger_status != identity_args.RECORD_OK:
         return identity_args.SlotIdentityResolution(
             ledger_status, None,
             f"슬롯 대여 기록을 읽을 수 없고({leases_file}) 경로 {slot!r} 에도 슬롯 키 마디가 없다",
@@ -396,7 +396,7 @@ def resolve_task_workspace(identity: identity_args.Identity, leases_file: Path) 
     """
     task = identity.task
     status, rows = _read_lease_rows_status(leases_file)
-    if status != identity_args.LEDGER_OK:
+    if status != identity_args.RECORD_OK:
         raise identity_args.WorkspaceResolutionError(f"task {task!r} 슬롯 대여 기록을 읽을 수 없다: {leases_file} ({status})")
     active = [r for r in rows if r.get("state", "leased") == "leased"]
     held = [r for r in active if r.get("session") == task]

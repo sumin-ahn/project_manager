@@ -593,7 +593,7 @@ def _platform_record_problem(data: dict, cwd: str, expected_head: str,
         return "aggregate session mismatch"
     if livegate and (
             not isinstance(data.get("n"), int) or isinstance(data.get("n"), bool)
-            or data.get("n") != LIVEGATE_RELEASE_PIN):
+            or data.get("n") != LIVE_TEST_RELEASE_PIN):
         return "live-test collection mismatch"
     if data.get("conf_anchor") != os.path.abspath(cwd):
         return "conf_anchor mismatch"
@@ -888,7 +888,7 @@ def _slot_state_label(session: str, state: str, rc: int | str | None) -> str:
 # (실행=기록·손기록 없음), 보호훅이 `livegate check --rev <sha>` 로 push HEAD 가 green 인지
 # 소비한다. false-green 방어를 위해 rc0 만으로는 부족하고 수집 N==pin 을 함께 요구한다
 # (수집 pin·rc5 vacuous-pass 근절의 원칙을 라이브 채널로 확장).
-LIVEGATE_RELEASE_PIN = 22  # `pytest -m release` 로 돌아야 하는 라이브/사이클 케이스 수.
+LIVE_TEST_RELEASE_PIN = 22  # `pytest -m release` 로 돌아야 하는 라이브/사이클 케이스 수.
 
 
 # ── 회귀 게이트 해소 (per-repo test_cmd) — 두 도구 공용 단일 사본 ─────────

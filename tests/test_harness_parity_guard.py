@@ -184,7 +184,7 @@ DELEGATION_AUTHORITY_SITES: dict[LedgerKey, Site] = {
     ("delegate_scope_audit.py", "report_scope_audit", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("contract.py", "build_claude_argv", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("contract.py", "claude_tools", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("contract.py", "perm_axis", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
+    ("contract.py", "perm_kind", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
     ("delegate_transport.py", "_apply_read_tmp_argv", SANDBOX_DOWNGRADE_LITERAL): Site(
         "역할축 — read 역할 argv 가 들고 온 sandbox 계약을 확인하고 임시 자리만 연다"),
     ("contract.py", "CODEX_SANDBOX", SANDBOX_DOWNGRADE_LITERAL): Site(

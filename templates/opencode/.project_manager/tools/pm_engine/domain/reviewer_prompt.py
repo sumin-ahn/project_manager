@@ -51,7 +51,7 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
     return TicketBodySelection("".join(parts), omitted)
 
 
-# 스폰면 경고 문구 — 준비면(`round_seed._warn_unharvested_developer_round`)과 같은 축을
+# 스폰면 경고 문구 — 준비면(`round_form._warn_unharvested_developer_round`)과 같은 축을
 # 쓰되, 문구는 다르다. 형상 B(앞선 산출 라운드가 있고 최신만 시드)에서 준비면 문구를 그대로
 # 복제하면 "리뷰어 입력에 실리지 않습니다"가 거짓이 된다 — 이 표면은 그렇게 단정하지 않고, 이번
 # 프롬프트에 실제로 실리는 developer 산출 라운드 이름(없으면 "없음")을 값으로 말한다.

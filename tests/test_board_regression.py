@@ -743,28 +743,28 @@ def test_collected_count_none_when_no_summary(board):
 
 def test_collection_delta_text_is_empty_without_a_comparable_previous(board):
     """직전 기록이 없거나 수집수를 못 읽으면 문장이 빈다 — 증감을 지어내지 않는다."""
-    assert pytest_report.collection_delta_text(13323, None) == ""
-    assert pytest_report.collection_delta_text(None, 13323) == ""
-    assert pytest_report.collection_delta_text(None, None) == ""
-    assert pytest_report.collection_delta_text(13323, True) == ""     # bool 은 정수 취급 금지.
+    assert pytest_report.collection_change_text(13323, None) == ""
+    assert pytest_report.collection_change_text(None, 13323) == ""
+    assert pytest_report.collection_change_text(None, None) == ""
+    assert pytest_report.collection_change_text(13323, True) == ""     # bool 은 정수 취급 금지.
 
 
 def test_collection_delta_text_from_zero_previous_shows_difference_only(board):
     """직전 0 이면 비율을 내지 않고 차이만 낸다 (0 나눗셈 금지)."""
-    assert pytest_report.collection_delta_text(12, 0) == " (직전 0 · +12)"
+    assert pytest_report.collection_change_text(12, 0) == " (직전 0 · +12)"
 
 
 def test_collection_delta_text_below_threshold_has_no_alert(board):
     """1% 미만 증감은 숫자만 — 정상 범위의 테스트 add/remove 에 소음을 내지 않는다."""
-    assert pytest_report.collection_delta_text(13334, 13323) == " (직전 13323 · +11)"
-    assert pytest_report.collection_delta_text(13312, 13323) == " (직전 13323 · -11)"
+    assert pytest_report.collection_change_text(13334, 13323) == " (직전 13323 · +11)"
+    assert pytest_report.collection_change_text(13312, 13323) == " (직전 13323 · -11)"
 
 
 def test_collection_delta_text_marks_one_percent(board):
     """1% 이상 증감(증가·감소 모두)은 비율과 경고 표기를 단다 — 임계값은 상수 하나가 소유."""
-    assert pytest_report.COLLECTION_DELTA_ALERT_PCT == 0.01
-    assert pytest_report.collection_delta_text(13500, 13323) == " (직전 13323 · +177 · 1.3% ⚠)"
-    assert pytest_report.collection_delta_text(13300, 13500) == " (직전 13500 · -200 · 1.5% ⚠)"
+    assert pytest_report.COLLECTION_CHANGE_ALERT_PCT == 0.01
+    assert pytest_report.collection_change_text(13500, 13323) == " (직전 13323 · +177 · 1.3% ⚠)"
+    assert pytest_report.collection_change_text(13300, 13500) == " (직전 13500 · -200 · 1.5% ⚠)"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -2982,11 +2982,11 @@ def test_the_delta_is_only_attached_where_the_record_is_read():
     기록의 `collected`(skipped 포함)와 축이 달라 그대로 빼면 가짜 증감이 상시 뜬다.
     """
     source = "".join(path.read_text(encoding="utf-8") for path in engine_python_files(TOOLS))
-    call_sites = source.count("collection_delta_text(")
+    call_sites = source.count("collection_change_text(")
     assert call_sites == 1 + 3, f"증감 표시 자리가 3곳이 아니다(정의 1 + 호출 {call_sites - 1})"
     for name in ("pm_bootstrap.py", "pm_engine/cli/handoff.py"):
         text = (TOOLS / name).read_text(encoding="utf-8")
-        assert "collection_delta_text" not in text, f"{name} 이 다른 축의 숫자로 증감을 냈다"
+        assert "collection_change_text" not in text, f"{name} 이 다른 축의 숫자로 증감을 냈다"
         assert "previous_collected" not in text
 
 

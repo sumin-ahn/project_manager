@@ -1,7 +1,7 @@
 """pm-ticket 스킬 라이브 하네스 테스트 — 실 LLM authoring flow → 실 board 상태 단언 (ADR-0050·T-0366).
 
 `pm-ticket` 스킬(draft→fill→promote flow·얇은 래퍼)은 **LLM-facing 프롬프트**라 backbone pytest
-(`test_board_promote_fill_gate.py`)로는 "게이트가 옳게 도나"만 검증되고 "**실 LLM 이 스킬 읽고
+(`test_board_promote_fill_check.py`)로는 "게이트가 옳게 도나"만 검증되고 "**실 LLM 이 스킬 읽고
 자족적 티켓을 authoring 하나**"는 미검증이다([[ADR-0050]]·[[harness-test-vs-machine-test]]). 이
 파일이 그 갭을 on-demand 라이브 tier 에서 메운다 — fresh import 홈에서 **스킬을 유일 컨텍스트**로
 준 실 LLM(claude + opencode/출하 모델)에게 구체 주제의 티켓을 authoring 시키고, **실 board
@@ -15,7 +15,7 @@
   그대로 두거나 무관 내용으로 채우면 fail).
 
 on-demand — 사용자가 `PM_ORCH_LIVE=1` 로 트리거(비용·flaky 감수). `release` 마커는 **달지 않는다**
-— 릴리즈 게이트 커플드-pin(regression.LIVEGATE_RELEASE_PIN·_RELEASE_TEST_FILES 합산·templates 전파)은
+— 릴리즈 게이트 커플드-pin(regression.LIVE_TEST_RELEASE_PIN·_RELEASE_TEST_FILES 합산·templates 전파)은
 orchestrator 소유라, 이 스킬을 릴리즈 tier 로 승격할지는 PM 결정에 맡긴다(승격 시 `@pytest.mark.
 release` 부착 + pin 14→N 갱신). 기본 skip(env 미설정·바이너리 부재·CI green 불변).
 

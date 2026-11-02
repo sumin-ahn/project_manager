@@ -121,7 +121,7 @@ def test_notice_attaches_once_at_tail_for_accepted_delta(pd):
     disposition = _disposition(pd)
     delta = _delta(pd, [(finding, disposition)])
 
-    rendered = review_contract.render_pm_review_delta("T-TEST", delta)
+    rendered = review_contract.render_pm_review_accepted("T-TEST", delta)
 
     assert rendered.startswith("## PM 이 수락한 리뷰 지적 — T-TEST")
     assert delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE in rendered
@@ -142,7 +142,7 @@ def test_notice_attaches_once_regardless_of_finding_count(pd):
     ]
     delta = _delta(pd, pairs)
 
-    rendered = review_contract.render_pm_review_delta("T-TEST", delta)
+    rendered = review_contract.render_pm_review_accepted("T-TEST", delta)
 
     assert "F-001" in rendered and "F-002" in rendered
     assert rendered.count(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE) == 1
@@ -154,13 +154,13 @@ def test_notice_attaches_once_regardless_of_finding_count(pd):
 @pytest.mark.parametrize("finding_zero", [False, True])
 def test_empty_accepted_delta_stays_empty(pd, finding_zero):
     delta = _delta(pd, [], finding_zero=finding_zero)
-    assert review_contract.render_pm_review_delta("T-TEST", delta) == ""
+    assert review_contract.render_pm_review_accepted("T-TEST", delta) == ""
 
 
 def test_confirmation_resolved_exhaustion_stays_empty(pd):
     """accepted finding 이 이후 라운드의 resolved 확인으로 소진되면 delta.accepted 에서 빠진다.
 
-    이 경로는 렌더러 자체가 아니라 delta 계산(`parse_pm_review_delta`)에서 결정되므로,
+    이 경로는 렌더러 자체가 아니라 delta 계산(`parse_pm_review_accepted`)에서 결정되므로,
     렌더 축과 별개로 실 파서 파이프라인을 태워야 "블록을 무조건 붙이는" 회귀를 못 본다.
     """
 
@@ -186,7 +186,7 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
             "authority": "사양 §허용 범위", "evidence": "F-001 probe rc=1",
             "recommendation": "F-001만 수정",
             "fix_contract": {
-                "location": ".project_manager/tools/pm_delegate.py:parse_pm_review_delta",
+                "location": ".project_manager/tools/pm_delegate.py:parse_pm_review_accepted",
                 "failure": "확인으로 해소된 finding이 accepted delta에 남는다.",
                 "design": "후속 resolved 확인을 소진 처리한다.",
                 "test": "tests/test_fix_round_prescription_scope.py의 delta 소진 회귀",
@@ -213,10 +213,10 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
         }],
     }, ensure_ascii=False, indent=2) + "\n```\n"
 
-    delta = review_state.parse_pm_review_delta(spec, [first, resolved])
+    delta = review_state.parse_pm_review_accepted(spec, [first, resolved])
 
     assert delta.accepted == ()
-    assert review_contract.render_pm_review_delta("T-TEST", delta) == ""
+    assert review_contract.render_pm_review_accepted("T-TEST", delta) == ""
 
 
 # --- 4. 내용 계약(비-vacuous) — 개념 토큰 -------------------------------------

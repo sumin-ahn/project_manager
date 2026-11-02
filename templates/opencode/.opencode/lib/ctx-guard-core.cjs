@@ -15,7 +15,7 @@
 //   (`board.py hook-context`·`hook-tool`)이 한다. 이 모듈은 native 토큰 합산·세션 소유(SDK 부모)·
 //   압축 사이클 epoch·pending 안내·snapshot generation/receipt 전달만 한다.
 //
-// 일반 도구 호출: 이 플러그인의 `tool.execute.before` 하나가 git-anchor-core `createToolBoundary` 를
+// 일반 도구 호출: 이 플러그인의 `tool.execute.before` 하나가 git-check-core `createToolBoundary` 를
 //   통해 git·삭제·도구 입력·ctx·원칙 recall 을 Python 한 번(`board.py hook-tool`)으로 판정한다. 세션의
 //   마지막 토큰 관측을 그 요청에 싣는다. ctx 밴드는 차단하지 않는다.
 
@@ -24,7 +24,7 @@ const path = require("node:path");
 const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 const { supportedPythonCandidates } = require("./delegate-channel-core.cjs");
-const { createToolBoundary, runHookContext } = require("./git-anchor-core.cjs");
+const { createToolBoundary, runHookContext } = require("./git-check-core.cjs");
 
 // 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
 // (pm_import 가 그 깊이를 못박는다) 이는 파이썬 도구의 `Path(__file__).resolve().parents[2]` 와 같은

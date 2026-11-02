@@ -70,7 +70,7 @@ def _neutralize_misanchor_guard(tf, monkeypatch):
     PM-홈 worktree 오실행 가드에 걸린다(실 worktree = 실 linked worktree → 가드 발화). 이 파일은
     가드가 아니라 main() 의 정체성/모호 게이트 등 orthogonal 로직을 검증하므로, 오실행 감지를
     None(미해소)로 격리해 가드를 통과시킨다. 가드 자체의 검증은 전용 파일
-    `test_board_worktree_misanchor_guard.py` 가 담당한다."""
+    `test_board_worktree_wrong_repo_guard.py` 가 담당한다."""
     monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
 
 
@@ -151,7 +151,7 @@ def test_is_pytest_green_no_passed_is_false(tf):
 # 체인 본체는 `regression._resolve_gate_cmd` 단일 사본이고 이 도구는 자기 트리의 `Home` 을 넘겨
 # 위임한다). 단 **솔로/프레임워크 자기 회귀(어느 층도 미해소)는 현행 `pytest tests/ -q` venv
 # 실행을 반드시 보존**(도그푸딩 불변). 층별 우선순위·두 도구 파리티·무prefix 채택자 e2e 는
-# `test_regression_gate_resolution.py` 가 소유하고, 여기서는 이 도구 표면의 계약을 본다.
+# `test_regression_check_resolution.py` 가 소유하고, 여기서는 이 도구 표면의 계약을 본다.
 # 해소 체인이 읽는 패키지 함수(`pm_paths.areas_file`·`areas_store`·`conf_store.local_config`)를
 # 대역으로 갈아끼워 hermetic 하게 검증한다.
 
@@ -1293,7 +1293,7 @@ class _FakeRoundsBoard:
     def ticket_cluster(self, ticket_id, frontmatter):
         return frontmatter.get("cluster") or f"C-{ticket_id}"
 
-    def cluster_ledger_path(self, cluster):
+    def cluster_record_path(self, cluster):
         name = cluster if cluster.startswith("C-") else f"C-{cluster}"
         return self._tickets_dir / "clusters" / f"{name}.md"
 
@@ -2858,7 +2858,7 @@ def test_self_axis_ratchet_guard_list_is_a_subset_of_the_full_test_suite(tf):
     """목록의 각 항목이 `tests/` 안의 실 파일이라는 T10 최소 보증 — 이름만으로 "새 전-트리
     가드" 를 일반적으로 자동판별하는 수단은 이 라운드에서 찾지 못했다(메모 참조). `_guard.py`/
     `_lint.py`/`_e2e.py` 접미사로 시도했더니 이 목록과 무관한 기존 파일 22개가 걸려
-    (`test_git_anchor_guard.py` 류의 좁은 범위 가드) 오탐이었다 — 그 시도는 기각하고 최소
+    (`test_git_check_guard.py` 류의 좁은 범위 가드) 오탐이었다 — 그 시도는 기각하고 최소
     보증만 남긴다."""
     all_test_files = {f"tests/{p.name}" for p in (REPO / "tests").glob("test_*.py")}
     assert set(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES) <= all_test_files
@@ -2950,7 +2950,7 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     _git(env.code, "branch", "-D", _CLUSTER_BRANCH)
     assert board_cluster.cmd_cluster(owner_home, argparse.Namespace(cluster_cmd="new", name="rebound",
         tickets=env.ticket, spike=None, repo="code", slot=1, task="t")) == 0
-    ledger = cluster_store.cluster_ledger_path(owner_home, "rebound")
+    ledger = cluster_store.cluster_record_path(owner_home, "rebound")
     declaration = cluster_store.load_cluster(owner_home, "rebound")
     assert declaration["base_branch"] == _INTEGRATION_BRANCH
     assert cluster_store.cluster_tickets(cluster_store.load_cluster(owner_home, _CLUSTER)) == []

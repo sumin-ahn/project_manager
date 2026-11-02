@@ -503,9 +503,9 @@ def test_release_markers_pinned():
 
     `pytest -m release` 는 마커로 라이브 서브셋을 고른다. 데코레이터 삭제/개명으로 마커가 빠지면 그
     테스트는 조용히 선택에서 빠지고 게이트가 그 부재를 못 본다(pytest strict-marker 는 *오타* 만 잡음).
-    이 파일 스코프로 release 마커 함수 수를 고정한다(test_release_wave `test_release_marker_count_is_
+    이 파일 스코프로 release 마커 함수 수를 고정한다(test_release_cluster `test_release_marker_count_is_
     pinned` 동형·라이브를 의도적으로 늘리면 `_EXPECTED_RELEASE_TESTS` 를 함께 갱신). 이 파일은
-    test_release_wave 의 `_RELEASE_TEST_FILES` 에도 등록돼(11 합산 pin·T-0278) cross-file 로 커버되고,
+    test_release_cluster 의 `_RELEASE_TEST_FILES` 에도 등록돼(11 합산 pin·T-0278) cross-file 로 커버되고,
     여기 자체 pin(=2)으로 이중 방어한다(그 리스트에서 누락돼도 이 파일 마커 소실을 잡는다).
     """
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))

@@ -24,13 +24,13 @@ HOOK_SET_MISSING_SCRIPT = "missing-hook-script"
 HOOK_SET_UNSUPPORTED_FLAG = "unsupported-hook-flag"
 
 
-HOOK_SET_REMEDY_ENGINE_STALE = "engine-stale"     # dest 엔진 파일이 config 보다 구세대
+HOOK_SET_FIX_ENGINE_STALE = "engine-stale"     # dest 엔진 파일이 config 보다 구세대
 
 
-HOOK_SET_REMEDY_CONFIG_AHEAD = "config-ahead"     # config 가 이 엔진 세대 자체보다 앞섬
+HOOK_SET_FIX_CONFIG_AHEAD = "config-ahead"     # config 가 이 엔진 세대 자체보다 앞섬
 
 
-HOOK_SET_REMEDY_UNKNOWN = "unknown"               # 비교 기준(상류 template) 미해소
+HOOK_SET_FIX_UNKNOWN = "unknown"               # 비교 기준(상류 template) 미해소
 
 
 class AdapterHookSetFinding(NamedTuple):
@@ -95,7 +95,7 @@ def hook_set_declarations(home, source_root=None, *, required: bool = False) -> 
 def hook_set_query_fallback_lines(generation) -> list[str]:
     """조회 축 강등 사유 안내 줄 — 상류 선언을 못 읽고 내려간 판정이면 1줄, 아니면 빈 목록.
 
-    문구는 처방(`hook_set_remedy_lines`)과 같은 규약으로 **여기 단일 진실**이다 — pm-update 와
+    문구는 처방(`hook_set_fix_lines`)과 같은 규약으로 **여기 단일 진실**이다 — pm-update 와
     `pm-config --check` 가 같은 상태를 서로 다른 문장으로 말하면 채택자가 두 게이트를 다른 것으로
     읽는다. 조회 축은 관대 계약이라 이 줄은 차단이 아니라 침묵 제거다(mutation 축은 fail-closed)."""
     reasons = getattr(generation, "reasons", ())
@@ -296,11 +296,11 @@ def judge_adapter_hook_sets(dest_root: Path, source_root: Path | None = None,
                           else _hook_set_demands(document, spec, template_root))
         for (kind, subject), unmet in sorted(dest_unmet.items()):
             if template_root is None:
-                remedy = HOOK_SET_REMEDY_UNKNOWN
+                remedy = HOOK_SET_FIX_UNKNOWN
             elif (kind, subject) in template_unmet:
-                remedy = HOOK_SET_REMEDY_CONFIG_AHEAD
+                remedy = HOOK_SET_FIX_CONFIG_AHEAD
             else:
-                remedy = HOOK_SET_REMEDY_ENGINE_STALE
+                remedy = HOOK_SET_FIX_ENGINE_STALE
             out.append(_hook_set_finding(harness, spec, kind, subject, unmet, remedy))
     return out
 
@@ -409,7 +409,7 @@ def hook_entrypoint_advisory_lines(
             "채택자가 그 이벤트의 훅을 의도적으로 끈 상태면 이 줄은 무시해도 된다(차단 아님)"]
 
 
-def hook_set_remedy_lines(finding: AdapterHookSetFinding) -> list[str]:
+def hook_set_fix_lines(finding: AdapterHookSetFinding) -> list[str]:
     """처방 줄 — pm_update 와 pm_config 가 같은 문구를 낸다(처방 사본 0).
 
     manifest 소유 파일(래퍼·드라이버)은 엔진이 직접 고칠 수 있고, 채택자 소유 config 는 수용
@@ -422,9 +422,9 @@ def hook_set_remedy_lines(finding: AdapterHookSetFinding) -> list[str]:
     engine_first = "pm-update 로 훅 세트 엔진 파일을 먼저 받아라"
     if finding.unmet_paths:
         engine_first += f" ({', '.join(finding.unmet_paths)})"
-    if finding.remedy == HOOK_SET_REMEDY_ENGINE_STALE:
+    if finding.remedy == HOOK_SET_FIX_ENGINE_STALE:
         return [engine_first]
-    if finding.remedy == HOOK_SET_REMEDY_CONFIG_AHEAD:
+    if finding.remedy == HOOK_SET_FIX_CONFIG_AHEAD:
         return [f"{finding.config_relpath} 가 이 엔진 버전보다 앞선 요구를 담고 있다 — {accept}"]
     return [engine_first, f"그래도 남으면 {accept}"]
 
@@ -481,7 +481,7 @@ def hook_set_accept_decision(dest_root: Path, source_root: Path, relpath: str, *
         template_sha256 = adapter_baseline.file_sha256(template_path)
     if generation.declarations is None:
         blocker = AdapterHookSetFinding(
-            "-", relpath, HOOK_SET_MISSING_SCRIPT, relpath, (), HOOK_SET_REMEDY_UNKNOWN,
+            "-", relpath, HOOK_SET_MISSING_SCRIPT, relpath, (), HOOK_SET_FIX_UNKNOWN,
             f"상류 버전 선언을 읽지 못해 {relpath} 가 요구하는 훅 버전을 검증할 수 없다 "
             f"({'; '.join(generation.reasons) or '사유 미상'})")
         return HookSetAcceptDecision(
@@ -498,7 +498,7 @@ def hook_set_accept_decision(dest_root: Path, source_root: Path, relpath: str, *
         if value is None]
     if unreadable:
         blocker = AdapterHookSetFinding(
-            "-", relpath, HOOK_SET_MISSING_SCRIPT, relpath, (), HOOK_SET_REMEDY_UNKNOWN,
+            "-", relpath, HOOK_SET_MISSING_SCRIPT, relpath, (), HOOK_SET_FIX_UNKNOWN,
             f"{', '.join(unreadable)} 의 해시를 만들지 못해 판정한 상태 기록을 쓰기 직전에 재확인할 "
             f"수 없다 — 검증 없이 {relpath} 를 교체하지 않는다")
         return HookSetAcceptDecision(
@@ -517,7 +517,7 @@ def hook_set_accept_decision(dest_root: Path, source_root: Path, relpath: str, *
                 _hook_set_demands(document, spec, dest_root,
                                   unknown_supported=False).items()):
             out.append(_hook_set_finding(
-                harness, spec, kind, subject, unmet, HOOK_SET_REMEDY_ENGINE_STALE))
+                harness, spec, kind, subject, unmet, HOOK_SET_FIX_ENGINE_STALE))
     return HookSetAcceptDecision(
         out, template_sha256, generation.origin, generation.reasons,
         generation.source_sha256)

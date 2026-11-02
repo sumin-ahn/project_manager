@@ -30,7 +30,7 @@ from __future__ import annotations
 from pm_engine.infra import review_diff
 from pm_engine.infra import review_rounds
 from pm_engine.domain import reviewer_budget
-from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_collect
 from pm_engine.infra import reviewer_raw
 from pm_engine.app import reviewer_reservation
 from pm_engine.app import reviewer_run
@@ -1045,7 +1045,7 @@ def test_early_refund_never_charges_a_wave_that_was_reset_meanwhile(
     ledger = _round_ledger(repo)
     assert reviewer.calls == []
     assert ledger["T-0590"]["count"] == 0                        # 라운드 count 는 환불
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1        # 새 wave 소비는 그대로
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 1        # 새 wave 소비는 그대로
     assert "세션 호출 예산이 이미 리셋" in err                              # 갈린 축을 조용히 두지 않는다
 
 
@@ -1084,7 +1084,7 @@ def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
     assert not outdir.exists()                               # raw 예약·디렉토리 0
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 0
     assert err.count("라운드 예약 환불") == 1
     assert "추가 리뷰어 실행 중" not in err
 
@@ -1122,7 +1122,7 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
     assert blocker.read_text(encoding="utf-8") == "not a directory\n"  # 남의 파일 불변
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0        # 두 축을 같은 조건으로
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 0        # 두 축을 같은 조건으로
     assert err.count("라운드 예약 환불") == 1                      # 조용히도, 두 번도 아니다
     assert _raw_ledger(repo) == []                               # raw 장부에 남긴 것도 없다
 
@@ -1207,7 +1207,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
     assert reviewer.calls == []                                  # 스폰 0
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 0
     assert ledger["T-0590"]["rounds"] == []
     assert err.count("라운드 예약 환불") == 1
 
@@ -1280,7 +1280,7 @@ def test_failure_after_the_spawn_attempt_keeps_the_reservation(
     assert len(reviewer.calls) == 1                           # 스폰은 실제로 일어났다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1                     # 예약은 그대로 소비
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 1
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
     assert "라운드 예약 환불" not in err
     assert "스폰 전 중단" not in err                            # 스폰 전 롤백 창은 이미 닫혔다
@@ -1310,7 +1310,7 @@ def test_missing_reviewer_binary_refunds_exactly_once_through_finalization(
 
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 0
     assert "라운드 예약 환불" not in err          # 스폰 전 seam 은 이 환불의 소유자가 아니다
     # raw 는 스폰 전 중단이 아니라 **정상 마감**이다(리뷰어를 부르러 갔다 실패한 실행).
     records = _raw_ledger(repo)
@@ -1417,7 +1417,7 @@ def test_a_second_attempt_launch_failure_still_charges_the_first_spawn(
     assert first.kill_count == 1                     # 1회차 자식은 실제로 떴다가 kill 됐다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1, "이미 호출됐을 수 있는 실행이 환불됐다"
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 1
     assert "라운드 예약 환불" not in err
     assert "호출은 일어나지 않았습니다" not in err     # 확정 기동 실패 문구를 쓰면 안 된다
 
@@ -1440,7 +1440,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
 
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 0
     raw = _raw_text(repo)
     assert "실행할 수 없음" in raw and "호출은 일어나지 않았습니다" in raw
 
@@ -1485,7 +1485,7 @@ def test_a_post_spawn_failure_is_never_refunded_whatever_its_type(
     assert len(reviewer.calls) == 1                       # 호출은 실제로 일어났다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 1
     assert "라운드 예약 환불" not in err
 
 
@@ -1605,13 +1605,13 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
         session_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    real_summary = reviewer_harvest.print_summary
+    real_summary = reviewer_collect.print_summary
 
     def _boom(*args, **kwargs):
         raise failure("요약 출력 실패(주입)")
 
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(_missing_binary_runner))
-    monkeypatch.setattr(reviewer_harvest, "print_summary", _boom)
+    monkeypatch.setattr(reviewer_collect, "print_summary", _boom)
     with pytest.raises(failure):
         external.main(["--review-ticket", "T-0590", "--paths", "x.py"])
     err = capsys.readouterr().err
@@ -1619,7 +1619,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     assert reviewer.calls == []                                   # 자식 0
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
     assert ledger["T-0590"]["rounds"] == []                        # 산출도 남기지 않는다
     assert err.count("라운드 예약 환불: 리뷰 집계 티켓") == 1               # 조용히도, 두 번도 아니다
     # raw 는 `run_review` 가 이미 정직하게 닫았다 — 보상 경로가 닫힌 레코드를 다시 덮지 않는다.
@@ -1630,7 +1630,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
 
     # 되돌린 슬롯은 살아 있다 — 세 예산이 모두 1 인데 다음 정상 호출이 그대로 호출된다.
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(reviewer))
-    monkeypatch.setattr(reviewer_harvest, "print_summary", real_summary)
+    monkeypatch.setattr(reviewer_collect, "print_summary", real_summary)
     assert external.main(["--review-ticket", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
     assert len(reviewer.calls) == 1
@@ -1667,7 +1667,7 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
     assert reviewer.calls == []                                   # 자식 0
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 0
     assert err.count("라운드 예약 환불: 리뷰 집계 티켓") == 1               # 정확히 한 번
     records = _raw_ledger(repo)
     assert len(records) == 1
@@ -1721,7 +1721,7 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
     assert saves["n"] == 3                        # 예약 · 마감(실패) · 보상 환불
     ledger = _round_ledger(repo)
     assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 0         # 두 축을 같은 조건으로
     assert ledger["T-0590"]["rounds"] == []                        # 산출도 남기지 않는다
     assert "라운드 기록 마감 실패" in err                            # 실패는 여전히 loud
     assert err.count("라운드 예약 환불: 리뷰 집계 티켓") == 1                # 조용히도, 두 번도 아니다
@@ -1781,7 +1781,7 @@ def test_a_spawned_run_is_not_refunded_when_the_finalization_save_fails(
     assert saves["n"] == 2                                        # 보상 저장은 없다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1                         # 예약은 그대로 소비
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 1
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
     assert "라운드 기록 마감 실패" in err and "미완으로 남아" in err
     assert "라운드 예약 환불" not in err
@@ -1807,7 +1807,7 @@ def test_a_spawned_run_is_never_refunded_by_the_same_failures(
         def _boom(*args, **kwargs):
             raise RuntimeError("요약 출력 실패(주입)")
 
-        monkeypatch.setattr(reviewer_harvest, "print_summary", _boom)
+        monkeypatch.setattr(reviewer_collect, "print_summary", _boom)
     else:
         _break_raw_finish(external, monkeypatch, RuntimeError)
 
@@ -1818,7 +1818,7 @@ def test_a_spawned_run_is_never_refunded_by_the_same_failures(
     assert len(reviewer.calls) == 1                               # 스폰은 실제로 일어났다
     ledger = _round_ledger(repo)
     assert ledger["T-0590"]["count"] == 1                         # 예약은 그대로 소비
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] == 1
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] == 1
     assert [row.get("finished_at") for row in _round_records(repo)] == [None]  # 미완
     assert "라운드 예약 환불" not in err
     assert "스폰 전 중단" not in err                                # 보상 경로도 타지 않는다

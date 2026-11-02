@@ -17,7 +17,7 @@ CLUSTER_STATUSES: tuple[str, ...] = ('open', 'review', 'fix', 'closing', 'closed
 
 CLUSTER_BUDGET_DEFAULT: dict[str, int] = {'architect': 1, 'developer_per_ticket': 1, 'code-reviewer': 1, 'fix': 1}
 
-CLUSTER_LEDGER_KEYS: tuple[str, ...] = ('id', 'tickets', 'base_branch', 'branch', 'spike', 'budget', 'status')
+CLUSTER_RECORD_KEYS: tuple[str, ...] = ('id', 'tickets', 'base_branch', 'branch', 'spike', 'budget', 'status')
 
 _CLUSTER_NAME_RE = re.compile('\\A[A-Za-z0-9][A-Za-z0-9._-]*\\Z')
 

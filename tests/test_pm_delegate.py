@@ -67,7 +67,7 @@ from conftest import write_cluster_ledger
 from pm_engine.infra import raw_output
 from pm_engine.infra.harness import contract, watchdog
 from pm_engine.domain import delegate_errors, model_lint, review_form, review_state, review_verdict, round_rules
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 from pm_engine.cli import delegate_run as cli_delegate_run
 
 REPO = Path(__file__).resolve().parents[1]
@@ -4348,7 +4348,7 @@ def test_startup_watchdog_wall_axis_is_timeout_not_first_event_stall(pd, monkeyp
         timeout=30, harness="opencode",
     )
     assert res["returncode"] == 1 and res["timed_out"] is True
-    assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_AXIS] == "wall"
+    assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_KIND] == "wall"
     assert res[delegate_run_rules.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] == 30.0
     assert delegate_run_rules.RUN_RESULT_STALLED not in res
     assert delegate_run_rules.OPENCODE_STALL_MARKER not in res["stderr"]
@@ -6575,7 +6575,7 @@ def test_t0804_both_axes_unusable_offers_rereview_last(pd, mutate, block_reason)
 
 def test_t0804_seed_only_round_output_stays_unknown(pd):
     """리뷰어가 시드를 그대로 남긴 라운드는 두 축 모두 불능이라 미상이다."""
-    seed = round_seed.render_round_seed(
+    seed = round_form.render_round_form(
         review_form.INTERNAL_REVIEW_ROLE, "---\nid: T-0804\n---\n\n# T-0804 — x\n",
         today="2026-01-02",
     )

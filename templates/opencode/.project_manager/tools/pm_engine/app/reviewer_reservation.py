@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pm_engine.infra import clock
-from pm_engine.app import completion_gate
+from pm_engine.app import completion_check
 from pm_engine.app import release
 from pm_engine.infra import review_rounds
 from pm_engine.domain import reviewer_budget
@@ -50,13 +50,13 @@ def _save_round_ledger(home, ledger: dict) -> None:
     record/check 도 같은 락과 board 공용 판정을 써 stale clear overwrite 를 막는다."""
     path = review_rounds._round_ledger_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    problems = completion_gate._unresolved_must_fix_data(home, ledger, path)
-    livegate_flag = path.with_name("live-test.json")
+    problems = completion_check._unresolved_must_fix_data(home, ledger, path)
+    live_test_flag = path.with_name("live-test.json")
     if problems:
-        release._write_release_must_fix_marker(livegate_flag, problems)
-    review_rounds.write_ledger(path, ledger)
+        release._write_release_must_fix_marker(live_test_flag, problems)
+    review_rounds.write_records(path, ledger)
     if not problems:
-        release._write_release_must_fix_marker(livegate_flag, problems)
+        release._write_release_must_fix_marker(live_test_flag, problems)
 
 
 def _as_int(value: object) -> int:
@@ -79,7 +79,7 @@ def _wave_state(ledger: dict) -> dict:
     승인(`--reset-session-budget`)으로만 열리는 축이라, 손상을 리셋으로 대접하면 장부 한 줄 편집이 승인을
     대신하게 된다. 대신 장부에 남은 라운드 산출 이력으로 소비량을 다시 세고(범위는 wave 시작 시각
     이후, 그것마저 못 믿으면 전체) stderr 한 줄로 무엇을 왜 재계산했는지 고지한다."""
-    raw = ledger.get(reviewer_budget.WAVE_SECTION_KEY)
+    raw = ledger.get(reviewer_budget.SESSION_BUDGET_SECTION_KEY)
     corruption = reviewer_budget._wave_corruption_note(raw)
     state = raw if isinstance(raw, dict) and reviewer_budget._wave_frame_corruption(raw) is None else {}
     started = state.get("started")
@@ -100,7 +100,7 @@ def _wave_state(ledger: dict) -> dict:
         "started": started,
         "spent": spent,
     }
-    ledger[reviewer_budget.WAVE_SECTION_KEY] = normalized
+    ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY] = normalized
     return normalized
 
 
@@ -137,7 +137,7 @@ def _gate_entry_with_retirement(ledger: dict, gate: str) -> tuple[dict, int]:
     반환 둘째 값은 이 호출이 방금 떨군 폐기 필드 원값(0=미검출)이다. 알림·영속 정책은
     호출부 소유다 — mutation/차단 경로(`_reserve_round_budget`)는 감지 즉시 저장 후 1회
     고지하고, 읽기 전용 조회(`render_rounds_report`)는 영속할 수 없는 고지를 하지 않는다."""
-    return review_rounds.normalize_gate_entry(
+    return review_rounds.normalize_review_ticket_entry(
         ledger, gate, reserved_keys=tuple(reviewer_budget._RESERVED_LEDGER_KEYS),
     )
 
@@ -374,7 +374,7 @@ def _reserve_round_budget(
             # 손상 복구(재계산된 spent)는 거부되는 실행에서도 저장한다 — 안 그러면 손상값이
             # 남아 매 실행 같은 경고를 반복하고 장부가 계속 거짓말을 한다. 저장 판정은 정규화와
             # **같은 술어**를 쓴다.
-            wave_repaired = reviewer_budget._wave_corruption_note(ledger.get(reviewer_budget.WAVE_SECTION_KEY)) is not None
+            wave_repaired = reviewer_budget._wave_corruption_note(ledger.get(reviewer_budget.SESSION_BUDGET_SECTION_KEY)) is not None
             wave = _wave_state(ledger)
             # wave 승인 적용 (판정 전). **고지는 아직 하지 않는다** — 재개인지 거부인지는
             # 남은 상한을 다시 본 뒤에야 정해지고, 거부되는 실행이 "재개"를 말하면 rc 4 와

@@ -26,7 +26,7 @@ from pm_engine.app import task_lifecycle
 from pm_engine.domain import worktree_records
 from pm_engine.infra import pool_store
 
-from _pool_seams import bind_board, bind_pool
+from _pool_overrides import bind_board, bind_pool
 
 import importlib.util
 import json
@@ -428,7 +428,7 @@ def test_handoff_skeleton_solo_omits_slot_line(handoff):
     """솔로면 worktree를 생략하고 자동 박제 목록 + 손-채움 신 스키마를 보존한다."""
     sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(session_num=9, date="2026-06-16")
     assert "worktree: slot" not in sk
-    assert "- 이 세션 박제 entries: (이 세션 박제 entry 없음)" in sk
+    assert "- 이 세션 기록 entries: (이 세션 기록 entry 없음)" in sk
     assert "- 메타 학습:" in sk
     assert f"- pending user intent: {pm_engine.domain.handoff_text.PENDING_INTENT_PLACEHOLDER}" in sk
     assert "- 회귀/incident:" in sk

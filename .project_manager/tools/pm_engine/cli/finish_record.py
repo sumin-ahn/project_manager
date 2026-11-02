@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from pm_engine.app import (
-    completion_gate, finish_context, finish_private_refs, regression, slot_resolution, tier_signals,
+    completion_check, finish_context, finish_private_refs, regression, slot_resolution, tier_signals,
 )
 from pm_engine.domain import finish_rules, handoff_text
 from pm_engine.infra import (
@@ -274,7 +274,7 @@ class TicketFinisher:
         """측정 폭의 기준점 — 통합 브랜치와의 merge-base. 해소 실패는 정지다.
 
         사설 참조 판정이 이 한 자리에서 값을 받는다 — 리뷰가 본 표면과 완료 기록이 보는
-        표면이 갈리지 않는다. integration_anchor의 기준점 판정을 직접 사용한다.
+        표면이 갈리지 않는다. integration_base의 기준점 판정을 직접 사용한다.
 
         빈 기준선(커밋 0)에서는 기준선도 HEAD 도 없어 **잴 표면 자체가 없다** — `None` 을
         돌려주고, 호출부가 기존 "측정 불가 = 가드 off + loud 한 줄" 등급으로 접는다(빈 트리
@@ -283,7 +283,7 @@ class TicketFinisher:
         tip = self._integration_tip(ticket_id, code_tree)
         if tip is None:
             return None
-        anchor, reason = review_diff.integration_anchor(code_tree, tip)
+        anchor, reason = review_diff.integration_base(code_tree, tip)
         if reason is not None:
             raise finish_rules._CloseObservationFailure(f"{ticket_id} {reason}")
         return anchor
@@ -428,7 +428,7 @@ class TicketFinisher:
     def _default_dod_block(self, ticket_id: str) -> str | None:
         """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과면 None.
 
-        규칙 소유자는 completion_gate(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
+        규칙 소유자는 completion_check(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
         권위 있는 차단은 여전히 [3/5] `board.py complete` 가 하고, 여기서는 **더 앞에서 한 번 더**
         묻는다. 이 preflight 가 없으면 [2/5] 가 log 스켈레톤을 append 한 *뒤에* [3/5] 가 막아,
         차단될 때마다 stray 스켈레톤이 남고 재실행마다 중복 append 된다(실측).
@@ -436,10 +436,10 @@ class TicketFinisher:
         티켓 부재/손상은 전파한다(log 골격 append 전이라 기록이 남지 않는다)."""
         _status, path = ticket_store.find_ticket(self._home, ticket_id)
         _fm, body = ticket_store.load_ticket(path)
-        problems = completion_gate._dod_open_items(body)
+        problems = completion_check._dod_open_items(body)
         if not problems:
             return None
-        forms = completion_gate._DOD_VALUE_FORMS
+        forms = completion_check._DOD_VALUE_FORMS
         lines = [f"완료 조건(DoD) 미마감 — {ticket_id} ({len(problems)}건)"]
         lines += [f"  ✗ {problem}" for problem in problems]
         lines.append(f"  · 각 항목을 {forms} 로 마감하라." if forms else "")

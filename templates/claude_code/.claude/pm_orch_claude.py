@@ -111,7 +111,7 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
 def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     """Claude 훅 입력을 엔진 공개 판정(`pm_engine.cli.hooks`)에 배선한다.
 
-    PreToolUse(Bash) 는 ``judge_git_anchor_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
+    PreToolUse(Bash) 는 ``judge_git_check_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
     PreToolUse 도구(settings matcher 가 연 쓰기·편집·위임 도구)는 ``judge_tool_input`` 으로(허용 위조·
     슬롯 쓰기 주인), UserPromptSubmit 은 허용 기록으로 보낸다. 세션 ID 는 훅 입력의 ``session_id`` 다.
     서브에이전트 훅 입력(``agent_id`` 있음)은 ``main_thread=False`` 로 판정받는다."""
@@ -141,7 +141,7 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     from pm_engine.cli import hooks
 
     return _pre_tool_use_output(
-        hooks.judge_git_anchor_command(
+        hooks.judge_git_check_command(
             hooks.adapter_home(root), session, anchor, command, main_thread=main_thread,
             grants=bool(session),
         )

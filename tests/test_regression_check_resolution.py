@@ -1,0 +1,588 @@
+"""회귀 게이트 해소 체인 — 4층 우선순위·게이트 종류 판정·두 도구 파리티 (T-0730).
+
+`ticket_finish`·`pm_handoff` 의 회귀 게이트는 다음 순서로 해소한다. 앞선 층이 비어 있지 않은
+값을 주면 거기서 멈춘다:
+
+  1. areas.md 활성 **prefix** 행의 test_cmd   (multi-repo 네임스페이스 형상)
+  2. areas.md 활성 **repo** 행의 test_cmd     (prefix 칼럼이 빈 무prefix 형상)
+  3. local.conf 의 test_cmd                   (per-clone 명시 설정)
+  4. `python_env.default_pytest_cmd()`       (앞 세 층이 다 빈 형상의 기본 게이트)
+
+2·3층이 없으면 무prefix 채택자(현행 `pm-config repo add` 의 기본 등록 형상 — prefix 칼럼이
+빈 값)에서 게이트가 항상 하드코딩 pytest 로 폴백해, `tests/` 가 없는 repo 의 회귀가 **항상
+red** 로 오판된다. 판정도 게이트 종류로 가른다 — pytest 게이트는 기존 요약행(불변), 비-pytest
+게이트는 exit code 0 만 green 이고 rc != 0 은 그대로 중단이다(fail-soft 아님).
+
+체인의 단일 사본은 `regression._resolve_gate_cmd` 이고 두 도구(`cli.finish_record`·`cli.handoff`)는
+자기 트리의 `Home` 을 넘겨 이 함수를 직접 부른다.
+
+해소 체인이 읽는 패키지 함수(`pm_paths.areas_file`·`areas_store`·`conf_store.local_config`·
+`python_env.default_pytest_cmd`)를 stub 으로 갈아끼우면 실 areas.md·local.conf 없이 층별 판정을
+고정할 수 있다. 마지막 절(무prefix 채택자 형상)은 stub 없이 tmp 채택자 홈의 명시 Home 으로
+등록→해소→판정을 끝까지 태운다.
+
+도구는 패키지가 아니므로 importlib 동적 로드 (test_ticket_finish·test_pm_handoff 관용구).
+"""
+from __future__ import annotations
+from pm_engine.cli import config_repo
+
+from pm_engine.infra import pm_paths
+import pm_engine.app.regression
+import pm_engine.cli.handoff
+import pm_engine.domain.handoff_text
+import pm_engine.app.finish_context
+from pm_engine.cli import finish_record
+
+import argparse
+import importlib.util
+from pathlib import Path
+
+import pytest
+from pm_engine.infra import areas_store, conf_store, pm_paths, python_env
+
+from pm_engine.app import areas_registry
+
+from _pool_overrides import bind_board
+
+REPO = Path(__file__).resolve().parents[1]
+TOOLS = REPO / ".project_manager" / "tools"
+
+# 제보 환경(heru)에서 실측된 비-pytest 게이트 — `tests/` 없는 채택자의 실 회귀 명령.
+NON_PYTEST_CMD = "env PYTHONPATH=src .venv/bin/python -m viewer bind"
+PREFIX_ROW_CMD = "pytest tests/ -q --prefix-layer"
+LOCAL_CONF_CMD = "go test ./..."
+# 실 `python_env.default_pytest_cmd()` 가 내는 4층 기본값과 같은 모양.
+BOARD_DEFAULT_CMD = "python3 -m pytest tests/ -q -n auto"
+
+
+def _load_tool(name: str):
+    """도구 모듈을 경로 로드한다 (도구는 패키지가 아니므로 importlib)."""
+    spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def tf():
+    return pm_engine.app.finish_context
+
+
+@pytest.fixture(scope="module")
+def hf():
+    return pm_engine.domain.handoff_text
+
+
+@pytest.fixture(params=["pm_handoff", "ticket_finish"])
+def tool(request, tf, hf):
+    """도구 모듈 — 같은 케이스를 두 도구에 건다."""
+    return tf if request.param == "ticket_finish" else hf
+
+
+class _StubBoard:
+    """board 모듈 대역 — 해소 체인이 실제로 읽는 표면만 흉내낸다."""
+
+    def __init__(self, *, areas_exists=True, rows=(), prefix=None, repos=(),
+                 conf=None):
+        self._areas_exists = areas_exists
+        self._rows = list(rows)
+        self._prefix = prefix
+        self._repos = set(repos)
+        self._conf = dict(conf or {})
+
+    def areas_file(self):
+        exists = self._areas_exists
+
+        class _Path:
+            def exists(self):
+                return exists
+
+        return _Path()
+
+    def id_prefix(self):
+        return self._prefix
+
+    def _areas_row_for_prefix(self, prefix):
+        for row in self._rows:
+            if row.get("prefix") == prefix:
+                return row
+        return None
+
+    def _parse_areas(self):
+        return ([], list(self._rows))
+
+    def registered_repos(self):
+        return set(self._repos)
+
+    def local_config(self):
+        return dict(self._conf)
+
+    def default_pytest_cmd(self):
+        """실 board 와 같은 4층 기본값 — 앞 세 층이 다 비면 체인이 이 값을 낸다."""
+        return BOARD_DEFAULT_CMD
+
+
+def _install_stub(stub, monkeypatch):
+    """해소 체인이 읽는 패키지 함수 자리에 stub 을 꽂는다."""
+    monkeypatch.setattr(pm_paths, "areas_file", lambda _home: stub.areas_file())
+    monkeypatch.setattr(areas_store, "id_prefix", lambda _home, override=None: stub.id_prefix())
+    monkeypatch.setattr(areas_store, "_areas_row_for_prefix",
+                        lambda _home, prefix: stub._areas_row_for_prefix(prefix))
+    monkeypatch.setattr(areas_store, "_parse_areas", lambda _home, path=None: stub._parse_areas())
+    monkeypatch.setattr(areas_store, "registered_repos", lambda _home: stub.registered_repos())
+    monkeypatch.setattr(conf_store, "local_config", lambda _home, repo=None: stub.local_config())
+    monkeypatch.setattr(python_env, "default_pytest_cmd", lambda py=None: stub.default_pytest_cmd())
+
+
+def _resolve(mod, stub, monkeypatch):
+    _install_stub(stub, monkeypatch)
+    return pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
+
+
+# ── 층별 우선순위 ────────────────────────────────────────────────────────
+
+def test_layer1_prefix_row_wins(tool, monkeypatch):
+    """1층 — 활성 prefix 행에 test_cmd 가 있으면 뒤 층을 보지 않는다."""
+    mod = tool
+    stub = _StubBoard(
+        rows=[{"repo": "heru", "prefix": "HERU", "test_cmd": PREFIX_ROW_CMD}],
+        prefix="HERU",
+        repos={"heru"},
+        conf={"test.cmd": LOCAL_CONF_CMD},
+    )
+    assert _resolve(mod, stub, monkeypatch) == PREFIX_ROW_CMD
+
+
+def test_layer2_repo_row_when_prefix_blank(tool, monkeypatch):
+    """2층 — **이 티켓의 회귀 케이스**: prefix 칼럼이 빈 무prefix 형상(현행 repo add 기본).
+
+    `id_prefix()` 가 None 이라 1층이 행에 도달하지 못한다. repo 칼럼으로 찾아야 한다 —
+    이 케이스가 깨지면 `tests/` 없는 채택자의 회귀가 항상 red 로 오판된다.
+    """
+    mod = tool
+    stub = _StubBoard(
+        rows=[{"repo": "heru", "prefix": "", "test_cmd": NON_PYTEST_CMD}],
+        prefix=None,
+        repos={"heru"},
+        conf={"test.cmd": LOCAL_CONF_CMD},
+    )
+    assert _resolve(mod, stub, monkeypatch) == NON_PYTEST_CMD
+
+
+def test_layer2_ambiguous_repo_falls_through(tool, monkeypatch):
+    """2층 — 세션 유도 불가 + 등록 repo 2개 = 모호 → 그 층을 건너뛴다(추측 금지)."""
+    mod = tool
+    stub = _StubBoard(
+        rows=[
+            {"repo": "a", "prefix": "", "test_cmd": "npm test"},
+            {"repo": "b", "prefix": "", "test_cmd": NON_PYTEST_CMD},
+        ],
+        prefix=None,
+        repos={"a", "b"},
+        conf={"test.cmd": LOCAL_CONF_CMD},
+    )
+    assert _resolve(mod, stub, monkeypatch) == LOCAL_CONF_CMD
+
+
+def test_layer3_local_conf_when_areas_absent(tool, monkeypatch):
+    """3층 — areas.md 가 **아예 없는** 형상에서도 local.conf test_cmd 를 읽는다.
+
+    3층이 areas 존재 가드 *안*에 있으면 이 케이스가 솔로 pytest 로 잘못 폴백한다.
+    """
+    mod = tool
+    stub = _StubBoard(areas_exists=False, conf={"test.cmd": LOCAL_CONF_CMD})
+    assert _resolve(mod, stub, monkeypatch) == LOCAL_CONF_CMD
+
+
+def test_layer3_local_conf_when_rows_have_no_test_cmd(tool, monkeypatch):
+    """3층 — prefix 행·repo 행이 있어도 test_cmd 가 빈 값이면 local.conf 로 내려간다."""
+    mod = tool
+    stub = _StubBoard(
+        rows=[{"repo": "heru", "prefix": "HERU", "test_cmd": ""}],
+        prefix="HERU",
+        repos={"heru"},
+        conf={"test.cmd": LOCAL_CONF_CMD},
+    )
+    assert _resolve(mod, stub, monkeypatch) == LOCAL_CONF_CMD
+
+
+def test_layer4_board_default_when_nothing_configured(tool, monkeypatch):
+    """4층 — 앞 세 층이 다 비면 board 기본 pytest 명령이 게이트다.
+
+    해소 예외는 전파한다(바로 아래 테스트가 잡는다).
+    """
+    mod = tool
+    stub = _StubBoard(areas_exists=False, conf={})
+    assert _resolve(mod, stub, monkeypatch) == BOARD_DEFAULT_CMD
+
+
+def test_resolution_exception_is_solo_fallback(tool, monkeypatch):
+    """해소 중 예외는 전파한다 — 기본 pytest 명령으로 조용히 강등하지 않는다."""
+    mod = tool
+
+    class _Boom(_StubBoard):
+        def id_prefix(self):
+            raise RuntimeError("areas 파싱 실패")
+
+    with pytest.raises(RuntimeError, match="areas 파싱 실패"):
+        _resolve(mod, _Boom(repos={"heru"}), monkeypatch)
+
+
+def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):
+    """등록 repo 1개면 count-based 로 2층이 성립한다. `_active_repo_name` 은 session_name 을
+    부르지 않는다 — 부르면 대역의 RuntimeError 가 그대로 터진다."""
+    mod = tool
+
+    class _SessionBoom(_StubBoard):
+        def session_name(self):
+            raise RuntimeError("lease 장부 손상")
+
+    stub = _SessionBoom(
+        rows=[{"repo": "heru", "prefix": "", "test_cmd": NON_PYTEST_CMD}],
+        repos={"heru"},
+    )
+    assert _resolve(mod, stub, monkeypatch) == NON_PYTEST_CMD
+
+
+# ── 게이트 종류 판정 ─────────────────────────────────────────────────────
+
+def test_gate_is_pytest_classification(tool):
+    """None(해소 실패)=솔로 pytest argv → True. pytest 토큰 포함 → True. 그 외 → False."""
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
+    assert mod._gate_is_pytest(None) is True
+    assert mod._gate_is_pytest("pytest tests/ -q") is True
+    assert mod._gate_is_pytest("python3 -m pytest tests/ -q") is True
+    assert mod._gate_is_pytest(NON_PYTEST_CMD) is False
+    assert mod._gate_is_pytest(LOCAL_CONF_CMD) is False
+
+
+def test_non_pytest_gate_green_is_exit_code_only(tool):
+    """비-pytest 게이트는 exit 0 만 green — 요약행이 없어도 green 이다."""
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
+    assert mod._regression_is_green("✅ 매니페스트 검증 통과", 0, NON_PYTEST_CMD) is True
+    assert mod._regression_is_green("", 0, NON_PYTEST_CMD) is True
+
+
+def test_non_pytest_gate_red_is_not_swallowed(tool):
+    """fail-soft 가 아니다 — 비-pytest 게이트도 rc != 0 이면 red."""
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
+    assert mod._regression_is_green("아무 출력", 1, NON_PYTEST_CMD) is False
+    assert mod._regression_is_green("✅ 통과처럼 보이는 출력", 2, NON_PYTEST_CMD) is False
+
+
+def test_pytest_gate_verdict_unchanged(tool):
+    """pytest 게이트 판정은 기존 요약행 경로 그대로(도그푸딩 무회귀)."""
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
+    green = "1472 passed, 24 deselected in 12.34s"
+    assert mod._regression_is_green(green, 0, None) is True
+    assert mod._regression_is_green(green, 0, "pytest tests/ -q") is True
+    # 요약행 없음 → pytest 게이트는 red (exit 0 이어도 파싱 실패는 green 아님).
+    assert mod._regression_is_green("요약행 없는 출력", 0, None) is False
+    # 요약행에 failed 가 있으면 red.
+    assert mod._regression_is_green("5 failed, 1467 passed in 10.00s", 1, None) is False
+
+
+def test_gate_label_shows_solo_argv_for_none(tool):
+    """안내 문구 — 해소 실패(None)는 실제 실행 argv 라벨을 보여준다."""
+    mod = pm_engine.domain.handoff_text  # 두 도구의 게이트 판정 소유자
+    assert mod._gate_label(None) == "pytest tests/ -q -n auto"
+    assert mod._gate_label(NON_PYTEST_CMD) == NON_PYTEST_CMD
+
+
+# ── 두 도구 파리티 (해소·판정이 갈리면 red) ──────────────────────────────
+#
+# 위 케이스는 도구별로 같은 기대값을 단언한다. 아래는 **같은 입력에 두 도구가 같은 답을
+# 낸다**는 관계 자체를 직접 못박는다 — 한쪽만 고친 반쪽 수정이 여기서 걸린다.
+
+_PARITY_BOARDS = {
+    "platform_declared_prefix": _StubBoard(
+        rows=[{"repo":"heru", "prefix":"HERU", "test_cmd":PREFIX_ROW_CMD}],
+        prefix="HERU", repos={"heru"},
+        conf={"test.cmd":LOCAL_CONF_CMD, "qa.platforms":"windows", "test.windows.cmd":"windows-full"}),
+    "platform_missing_command_local": _StubBoard(
+        areas_exists=False, conf={"test.cmd":LOCAL_CONF_CMD, "qa.platforms":"windows"}),
+    "prefix_row": _StubBoard(
+        rows=[{"repo": "heru", "prefix": "HERU", "test_cmd": PREFIX_ROW_CMD}],
+        prefix="HERU", repos={"heru"}, conf={"test.cmd": LOCAL_CONF_CMD}),
+    "repo_row_blank_prefix": _StubBoard(
+        rows=[{"repo": "heru", "prefix": "", "test_cmd": NON_PYTEST_CMD}],
+        prefix=None, repos={"heru"}, conf={"test.cmd": LOCAL_CONF_CMD}),
+    "ambiguous_repos": _StubBoard(
+        rows=[{"repo": "a", "prefix": "", "test_cmd": "npm test"},
+              {"repo": "b", "prefix": "", "test_cmd": NON_PYTEST_CMD}],
+        prefix=None, repos={"a", "b"}, conf={"test.cmd": LOCAL_CONF_CMD}),
+    "areas_absent": _StubBoard(areas_exists=False, conf={"test.cmd": LOCAL_CONF_CMD}),
+    "nothing": _StubBoard(areas_exists=False, conf={}),
+}
+
+_PARITY_EXPECTED = {
+    "platform_declared_prefix": PREFIX_ROW_CMD,
+    "platform_missing_command_local": LOCAL_CONF_CMD,
+    "prefix_row": PREFIX_ROW_CMD,
+    "repo_row_blank_prefix": NON_PYTEST_CMD,
+    "ambiguous_repos": LOCAL_CONF_CMD,
+    "areas_absent": LOCAL_CONF_CMD,
+    "nothing": BOARD_DEFAULT_CMD,
+}
+
+
+@pytest.mark.parametrize("case", sorted(_PARITY_BOARDS))
+def test_resolution_parity_across_tools(tf, hf, monkeypatch, case, tmp_path):
+    '같은 board 에서 두 도구의 해소 결과가 같다 — 그리고 기대값과도 같다(비-vacuous).'
+    home = pm_paths.home_at(tmp_path)
+    stub = _PARITY_BOARDS[case]
+    _install_stub(stub, monkeypatch)
+    assert pm_engine.app.regression._resolve_gate_cmd(home) == _PARITY_EXPECTED[case]
+
+
+@pytest.mark.parametrize(
+    "output,returncode,gate_cmd,expected",
+    [
+        ("1472 passed in 1.00s", 0, None, True),
+        ("1472 passed in 1.00s", 1, None, False),
+        ("요약행 없음", 0, None, False),
+        ("1472 passed in 1.00s", 0, "pytest tests/ -q", True),
+        ("✅ 매니페스트 검증 통과", 0, NON_PYTEST_CMD, True),
+        ("✅ 매니페스트 검증 통과", 1, NON_PYTEST_CMD, False),
+        ("", 0, LOCAL_CONF_CMD, True),
+    ],
+)
+def test_verdict_parity_across_tools(tf, hf, output, returncode, gate_cmd, expected):
+    """green 판정도 두 도구가 같다 — 게이트 종류 분기가 한쪽에만 들어가면 red."""
+    finish_verdict = pm_engine.domain.handoff_text._regression_is_green(output, returncode, gate_cmd)
+    handoff_verdict = pm_engine.domain.handoff_text._regression_is_green(output, returncode, gate_cmd)
+    assert finish_verdict == handoff_verdict, "두 도구의 회귀 판정이 갈렸다"
+    assert finish_verdict is expected
+
+
+def test_gate_surface_parity_across_tools(tf, hf):
+    """두 도구가 같은 이름의 게이트 표면과 같은 라벨 상수를 노출한다."""
+    for name in ("_gate_is_pytest", "_gate_label", "_regression_is_green"):
+        assert callable(getattr(pm_engine.domain.handoff_text, name)), f"handoff_text 에 {name} 부재"
+    gate = pm_engine.domain.handoff_text  # finish_record 의 게이트 판정 소유자
+    assert gate._DEFAULT_GATE_LABEL == pm_engine.domain.handoff_text._DEFAULT_GATE_LABEL
+    assert gate._PYTEST_GATE_TOKEN == pm_engine.domain.handoff_text._PYTEST_GATE_TOKEN
+    for gate_cmd in (None, "pytest tests/ -q", NON_PYTEST_CMD, LOCAL_CONF_CMD):
+        assert gate._gate_is_pytest(gate_cmd) == pm_engine.domain.handoff_text._gate_is_pytest(gate_cmd)
+        assert gate._gate_label(gate_cmd) == pm_engine.domain.handoff_text._gate_label(gate_cmd)
+
+
+# ── 무prefix 채택자 형상 e2e (repo add + tests/ 없음 + 비-pytest 게이트) ──
+#
+# 도그푸딩 형상은 prefix 유도가 서므로 이 결함이 보이지 않았다([[dogfooding-blind-spot-
+# adopter-shape]]). 여기서는 stub 없이 **실 board 모듈**을 tmp 채택자 홈에 묶고, 실제 등록
+# 표면이 쓰는 writer 로 행을 남긴 뒤, 두 도구가 그 행을 읽어 green 판정까지 가는지 본다.
+
+
+class _FakeBoardForRepoAdd:
+    """`pm-config repo add` 의 areas 기록만 관찰하는 board 대역 (부작용 0)."""
+
+    def __init__(self):
+        self.append_calls: list[dict] = []
+
+    def registered_repos(self):
+        return set()
+
+    def registered_prefixes(self):
+        return set()
+
+    def areas_append(self, prefix, area, owner, *, repo=None, git=None,
+                     test_cmd=None, base=None, protected=None, area_owner=None):
+        self.append_calls.append({"prefix": prefix, "repo": repo,
+                                  "test_cmd": test_cmd, "base": base})
+
+    def _repo_protected(self, repo):
+        return ["main", "master", "develop"]
+
+    def _areas_git_url(self, repo):
+        return None
+
+
+class _GitFakeForRepoAdd:
+    """repo add 의 git 호출 대역 — clone/refspec/HEAD 해소만 흉내낸다(네트워크 0)."""
+
+    def __call__(self, argv):
+        if "rev-parse" in argv and "--is-bare-repository" in argv:
+            return 0, "true\n"
+        if "rev-parse" in argv and "--verify" in argv and argv[-1] == "HEAD":
+            return 0, "0123abc\n"
+        if "symbolic-ref" in argv:
+            return 0, "refs/heads/main\n"
+        return 0, ""
+
+
+def test_repo_add_registers_blank_prefix_with_test_cmd(tmp_path, monkeypatch):
+    """`repo add` 는 prefix 를 **빈 값**으로 등록한다 — 이 결함의 전제 형상 못박기.
+
+    prefix=작업 카테고리이지 repo 명이 아니라서 자동시드가 폐지됐다. 그 결과 prefix 칼럼만
+    보는 해소는 채택자 기본 등록 형상에서 행에 도달하지 못한다.
+    """
+    pm_config = _load_tool("pm_config")
+    board = _FakeBoardForRepoAdd()
+    args = argparse.Namespace(name="heru", git="git@h:me/heru.git",
+                              test=NON_PYTEST_CMD, owner="me", base=None)
+    monkeypatch.setattr(pm_config, "REPO", tmp_path)
+    bind_board(monkeypatch, board)
+    rc = config_repo.cmd_repo_add(pm_paths.home_at(pm_config.REPO), args, clone_runner=_GitFakeForRepoAdd(),
+                                repos_dir=tmp_path / ".repos")
+    assert rc == 0
+    assert board.append_calls == [
+        {"prefix": "", "repo": "heru", "test_cmd": NON_PYTEST_CMD, "base": "main"},
+    ]
+
+
+@pytest.fixture
+def adopter_board(tmp_path, monkeypatch):
+    """무prefix 채택자 홈에 묶인 **실** board 모듈 — areas.md 는 실 writer 가 쓴다.
+
+    board.py 의 경로 전역은 import 시점에 실 REPO 로 굳으므로 tmp 로 재지정한다
+    (test_board_per_repo 의 hermetic 관례). `tests/` 는 만들지 않는다 — 채택자 형상.
+    """
+    pm_dir = tmp_path / ".project_manager"
+    (pm_dir / ".local").mkdir(parents=True, exist_ok=True)
+    board = _load_tool("board")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    # 실 PM 세션 env 가 hermetic 해소로 새지 않게 제거(장부/local.conf 만이 세션 소스).
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    # `pm-config repo add` 가 부르는 그 writer 로 등록 — prefix 는 빈 값이다.
+    areas_registry.areas_append(pm_paths.home_at(board.REPO), "", "", "me", repo="heru", git="git@h:me/heru.git",
+                       test_cmd=NON_PYTEST_CMD, base="main", protected="",
+                       area_owner="me@example.com")
+    assert not (tmp_path / "tests").exists()   # 채택자 형상 — pytest 스위트가 없다.
+    return board
+
+
+def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
+                                                         monkeypatch):
+    '실 areas.md(prefix 빈 값)에서 두 도구가 채택자 게이트를 해소한다 — 하드코딩 폴백 아님.'
+    assert areas_store.id_prefix(pm_paths.home_at(adopter_board.REPO)) is None
+    assert areas_store.registered_prefixes(pm_paths.home_at(adopter_board.REPO)) == set()
+    assert areas_store.registered_repos(pm_paths.home_at(adopter_board.REPO)) == {'heru'}
+    home = pm_paths.home_at(adopter_board.REPO)
+    assert pm_engine.app.regression._resolve_gate_cmd(home) == NON_PYTEST_CMD
+
+
+def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_path,
+                                                         monkeypatch, capsys):
+    """채택자 형상 완료 기록 — 비-pytest 게이트가 exit 0 이면 green 으로 완주한다(rc 0).
+
+    수정 전엔 하드코딩 `pytest tests/ -q` 로 폴백해 `tests/` 부재("no tests ran")로 항상
+    red 였다.
+    """
+    log_file = tmp_path / "log.md"
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(adopter_board.REPO),
+        dod_block_fn=lambda tid: None,
+        run_pytest_fn=lambda: (0, "✅ 매니페스트 검증 통과 — 전략 13"),
+        run_board_fn=lambda args: (0, "board ok"),
+        run_git_fn=lambda args: (0, ""),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "채택자 티켓",
+        affected_domain_fn=lambda tid: [],
+        # 잔여 preflight 는 이 테스트의 초점(비-pytest 게이트 green 판정)과 무관하다 — 실
+        # board_py/실 git 을 타지 않게 off 로 그 초점만 남긴다(red 케이스와 같은 배선).
+        residual_block_fn=lambda tid: None,
+        log_file=log_file,
+    )
+    rc = finisher.run("T-0035", section=None, dry_run=False)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert f"green: `{NON_PYTEST_CMD}` (exit 0)" in out
+    assert "테스트 수 미측정" in out
+    assert "[완료] T-0035 기록 완료." in out
+    # 테스트 수는 측정하지 않는다 — log 스켈레톤은 `--no-pytest` 경로와 같은 "?" 를 싣는다.
+    assert "?" in log_file.read_text(encoding="utf-8")
+
+
+def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tmp_path,
+                                                           monkeypatch, capsys):
+    """fail-soft 가 아니다 — 비-pytest 게이트가 rc != 0 이면 기록 전에 중단(rc 1·부작용 0)."""
+    log_file = tmp_path / "log.md"
+    finisher = finish_record.TicketFinisher(
+        pm_paths.home_at(adopter_board.REPO),
+        dod_block_fn=lambda tid: None,
+        run_pytest_fn=lambda: (1, "✗ 매니페스트 검증 실패"),
+        run_board_fn=lambda args: pytest.fail("red 인데 board complete 가 불렸다"),
+        run_git_fn=lambda args: pytest.fail("red 인데 git 이 불렸다"),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "채택자 티켓",
+        affected_domain_fn=lambda tid: [],
+        # 잔여 preflight 는 이 테스트의 초점(비-pytest 게이트 rc 판정)과 무관하다 — 실
+        # board_py/실 git 을 타지 않게 off 로 그 초점만 남긴다.
+        residual_block_fn=lambda tid: None,
+        log_file=log_file,
+    )
+    rc = finisher.run("T-0035", section=None, dry_run=False)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "회귀 red" in err
+    assert f"`{NON_PYTEST_CMD}` (exit 1)" in err
+    assert not log_file.exists()      # log 스켈레톤 append 도 없다.
+
+
+def test_no_prefix_adopter_handoff_verdict_and_command(adopter_board, hf, monkeypatch):
+    '핸드오프도 같은 게이트로 판정하고, 실행은 그 명령을 shell 로 돌린다.'
+    home = pm_paths.home_at(adopter_board.REPO)
+    gate_cmd = pm_engine.app.regression._resolve_gate_cmd(home)
+    assert gate_cmd == NON_PYTEST_CMD
+    assert pm_engine.domain.handoff_text._regression_is_green('✅ 매니페스트 검증 통과', 0, gate_cmd) is True
+    assert pm_engine.domain.handoff_text._regression_is_green('✗ 실패', 1, gate_cmd) is False
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured['cmd'] = cmd
+        captured['shell'] = kwargs.get('shell', False)
+
+        class _Result:
+            returncode = 0
+            stdout = '✅ 매니페스트 검증 통과'
+            stderr = ''
+        return _Result()
+    monkeypatch.setattr(pm_engine.cli.handoff.subprocess, 'run', fake_run)
+    handoff = pm_engine.cli.handoff.PmHandoff(home, venv_python='/venv/bin/python', run_git_fn=lambda args: (0, ''))
+    returncode, output = handoff._default_run_pytest()
+    assert returncode == 0
+    assert captured['cmd'] == NON_PYTEST_CMD
+    assert captured['shell'] is True
+    assert '매니페스트' in output
+
+
+def test_solo_shape_keeps_venv_pytest_argv(hf, monkeypatch, tmp_path):
+    '도그푸딩 불변 — 해소 실패(솔로)면 핸드오프는 현행 venv pytest argv 를 그대로 쓴다.'
+    home = pm_paths.home_at(tmp_path)
+    monkeypatch.setattr(pm_engine.app.regression, '_resolve_gate_cmd', lambda _home: None)
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured['cmd'] = cmd
+        captured['shell'] = kwargs.get('shell', False)
+
+        class _Result:
+            returncode = 0
+            stdout = '1 passed in 0.01s'
+            stderr = ''
+        return _Result()
+    monkeypatch.setattr(pm_engine.cli.handoff.subprocess, 'run', fake_run)
+    handoff = pm_engine.cli.handoff.PmHandoff(home, venv_python='/venv/bin/python', run_git_fn=lambda args: (0, ''))
+    handoff._default_run_pytest()
+    assert captured['cmd'] == ['/venv/bin/python', '-m', 'pytest', 'tests/', '-q', '-n', 'auto']
+    assert captured['shell'] is False
+
+
+@pytest.mark.parametrize("gate_cmd,output,rc,expected", [
+    ("pytest tests/ -q", "3 passed in 0.01s", 0, True),
+    ("pytest tests/ -q", "no summary", 0, False),
+    ("pytest tests/ -q", "3 passed in 0.01s", 1, False),
+    (LOCAL_CONF_CMD, "custom success", 0, True),
+    (LOCAL_CONF_CMD, "custom success", 1, False),
+])
+@pytest.mark.parametrize("platform_command", [None, "windows-full"])
+def test_verdict_parity_across_tools_with_declared_platforms(
+        tf, hf, monkeypatch, gate_cmd, output, rc, expected, platform_command):
+    conf = {"test.cmd":gate_cmd, "qa.platforms":"windows"}
+    if platform_command is not None:
+        conf["test.windows.cmd"] = platform_command
+    stub = _StubBoard(areas_exists=False, conf=conf)
+    _install_stub(stub, monkeypatch)
+    command = pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
+    assert command == gate_cmd
+    assert pm_engine.domain.handoff_text._regression_is_green(output, rc, command) is expected

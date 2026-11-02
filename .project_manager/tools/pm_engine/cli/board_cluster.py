@@ -68,7 +68,7 @@ def _cluster_release_member(home, cluster: str, tid: str) -> Path | None:
         return None
     members = [item for item in cluster_store.cluster_tickets(fm) if item != tid]
     fm['tickets'] = members
-    path = cluster_store.cluster_ledger_path(home, cluster)
+    path = cluster_store.cluster_record_path(home, cluster)
     auto_shape = not members and cluster_rules.is_auto_cluster_id(cluster) is not None and (not fm.get('branch'))
     if auto_shape:
         with contextlib.suppress(FileNotFoundError):
@@ -161,7 +161,7 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
     branch = cluster_rules.cluster_branch_name(cluster)
     touched: list[Path] = []
     with fs.board_lock(home):
-        ledger_path = cluster_store.cluster_ledger_path(home, cluster)
+        ledger_path = cluster_store.cluster_record_path(home, cluster)
         if ledger_path.exists():
             print(f'[중단] 이미 있는 묶음 기록: {pm_paths._rel_to_repo(home, ledger_path)} (멤버 조회는 `cluster show`)', file=sys.stderr)
             return 1
@@ -203,11 +203,11 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
                 try:
                     released = _cluster_release_member(home, owner, tid)
                 except OSError as exc:
-                    print(f'[중단] 옛 묶음 기록에서 {tid} 를 빼지 못했다: {pm_paths._rel_to_repo(home, cluster_store.cluster_ledger_path(home, owner))}: {exc} — {cluster} 와 중복 귀속 상태다. 옛 묶음 기록을 정리한 뒤 `lint` 로 확인하라(새 묶음 기록·티켓 명세는 이미 갱신됐다).', file=sys.stderr)
+                    print(f'[중단] 옛 묶음 기록에서 {tid} 를 빼지 못했다: {pm_paths._rel_to_repo(home, cluster_store.cluster_record_path(home, owner))}: {exc} — {cluster} 와 중복 귀속 상태다. 옛 묶음 기록을 정리한 뒤 `lint` 로 확인하라(새 묶음 기록·티켓 명세는 이미 갱신됐다).', file=sys.stderr)
                     return 1
                 if released is not None:
                     touched.append(released)
-    print(f'created {cluster} ({pm_paths._rel_to_repo(home, cluster_store.cluster_ledger_path(home, cluster))}) — 멤버 {len(members)}: {', '.join(members)}')
+    print(f'created {cluster} ({pm_paths._rel_to_repo(home, cluster_store.cluster_record_path(home, cluster))}) — 멤버 {len(members)}: {', '.join(members)}')
     print(f'  통합 브랜치 {branch} — {branch_note}')
     if spike:
         print(f'  설계 spike: {spike}')
@@ -225,7 +225,7 @@ def _cmd_cluster_show(home, args: argparse.Namespace) -> int:
     """장부 1건 조회 — 선언값 그대로 + 멤버의 현재 status.
 
     브랜치 실재는 재지 않는다 — 이 표면은 트리를 들지 않고, 장부에도 코드 트리를 적는 자리가
-    없어(`CLUSTER_LEDGER_KEYS`) 어느 저장소에서 찾을지 지목할 수 없다.
+    없어(`CLUSTER_RECORD_KEYS`) 어느 저장소에서 찾을지 지목할 수 없다.
     """
     cluster = cluster_rules.cluster_id_for_name(args.name)
     fm = cluster_store.load_cluster(home, cluster)

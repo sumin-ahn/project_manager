@@ -142,7 +142,7 @@ def _guest_marker_source(stripper, ref: str, *, marked: bool) -> str:
     """디스크에 기록되는 guest 마커 선언부 형상을 픽스처로 재현한다."""
     body = [
         f"# 마커 절은 read_manifest 가 무시한다 (local·pm_update-preserved·{ref})",
-        f'_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness guest @render ({ref}) >>>"',
+        f'_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness @render ({ref}) >>>"',
     ]
     if marked:
         body = [_marker(stripper, ":begin"), *body, _marker(stripper, ":end")]
@@ -161,7 +161,7 @@ def test_unmarked_prose_still_loses_the_reference(stripper):
     rewritten, count = stripper.rewrite_python(source)
     assert count == 1
     assert "(local·pm_update-preserved)" in rewritten
-    assert f'"# >>> pm add-harness guest @render ({ref}) >>>"' in rewritten
+    assert f'"# >>> pm add-harness @render ({ref}) >>>"' in rewritten
 
 
 def test_same_line_marker_protects_that_line_only(stripper):

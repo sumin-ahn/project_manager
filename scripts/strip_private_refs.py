@@ -71,7 +71,7 @@ def self_sufficiency_issues(before: str, after: str) -> list[str]:
     for number, (old, new) in enumerate(zip(before_lines, after_lines), 1):
         if old == new:
             continue
-        for name, counts in private_refs.line_delta(old, new).items():
+        for name, counts in private_refs.line_difference(old, new).items():
             if counts["delta"] > 0:
                 issues.append(f"line {number} {name}: +{counts['delta']}")
     return issues
@@ -138,7 +138,7 @@ def _changed_line_records(before: str, after: str, path: str) -> list[dict[str, 
                     "before": old,
                     "after": new,
                     "invariant": line_invariant(old, new),
-                    "delta": private_refs.line_delta(old, new),
+                    "delta": private_refs.line_difference(old, new),
                 }
             )
     return records

@@ -37,7 +37,7 @@ from _win_skip import _can_symlink
 from pm_engine.domain import conf_schema, round_rules, ticket_rules
 from pm_engine.infra import conf_store, doc_page_store, manifest_store, pm_paths, pre_push_hook, python_env, round_store, ticket_store
 from conftest import ensure_product_slot
-from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, doc_staleness, freshness_lint, lint_hooks, round_seed, ticket_lint, wiki_lint, wikilink_lint
+from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, doc_staleness, freshness_lint, lint_hooks, round_form, ticket_lint, wiki_lint, wikilink_lint
 
 from pm_engine.app import board_dashboard
 from pm_engine.app import ticket_access
@@ -3258,7 +3258,7 @@ def test_lint_rounds_surfaces_gap_and_pending(board, monkeypatch, tmp_path):
     _lint_round(board, "T-3001", "01-developer.md",
                 "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
     _lint_round(board, "T-3001", "03-code-reviewer.md",
-                round_seed.render_round_seed(
+                round_form.render_round_form(
                     "code-reviewer", path.read_text(encoding="utf-8"), today="2026-01-02"))
 
     issues = ticket_lint.lint_rounds(pm_paths.home_at(board.REPO))
@@ -3278,7 +3278,7 @@ def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
     """
     _wire_repo(board, monkeypatch, tmp_path)
     path = _lint_ticket(board, "claimed", "T-3020")
-    seed = round_seed.render_round_seed(
+    seed = round_form.render_round_form(
         "code-reviewer", path.read_text(encoding="utf-8"), today=ROUND_DATE)
     marker = review_contract.pm_review_refused_line("code-reviewer")
     _lint_round(board, "T-3020", "01-developer.md",
@@ -3351,7 +3351,7 @@ def test_lint_rounds_keeps_reporting_a_round_without_output_after_a_sibling_land
     )
     _lint_round(
         board, "T-3011", "02-code-reviewer.md",
-        round_seed.render_round_seed("code-reviewer", spec_text, today="2026-01-02"),
+        round_form.render_round_form("code-reviewer", spec_text, today="2026-01-02"),
     )
 
     issues = ticket_lint.lint_rounds(pm_paths.home_at(board.REPO))
@@ -3384,7 +3384,7 @@ def test_lint_rounds_fail_soft_boundary_is_one_ticket(board, monkeypatch, tmp_pa
     _wire_repo(board, monkeypatch, tmp_path)
     path = _lint_ticket(board, "claimed", "T-3013")
     _lint_round(board, "T-3013", "01-developer.md",
-                round_seed.render_round_seed(
+                round_form.render_round_form(
                     "developer", path.read_text(encoding="utf-8"), today="2026-01-02"))
     # 판정 자체가 불가능한 이름(플랫폼 예약 장치명) — seam 이 loud 하게 거부한다.
     unreadable = round_store.rounds_dir(pm_paths.tickets_dir(pm_paths.home_at(board.REPO))) / "CON"

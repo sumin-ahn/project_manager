@@ -30,7 +30,7 @@ from pm_engine.cli import bootstrap_card
 from pm_engine.infra import pm_paths
 
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import argparse
 import importlib.util

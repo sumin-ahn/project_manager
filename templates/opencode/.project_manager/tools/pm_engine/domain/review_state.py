@@ -68,7 +68,7 @@ def _pm_review_refused_rounds(rounds: Sequence) -> set[tuple[str, int]]:
     자리는 둘이다 — 단일 파일 시절의 거부 산출을 옮겨 온 라운드와, 중간 순번이라 board 예약을
     보존한 채 종결한 포기(`abandon_ticket_copy`)다. 역할로 좁히면 뒤의 것이 판독되지 않아 종결된
     라운드가 자리표시 골격째로 표면에 선다. 표식을 실은 회신은 회수가 거부한다
-    (`review_harvest_problem`).
+    (`review_collect_problem`).
     """
     return {
         (item.role, item.ordinal)
@@ -101,7 +101,7 @@ def collect_review_finding_declarations(
 
     `collect_review_finding_ids` 와 시야가 다르다. 저쪽은 ID 재사용을 막으려고 산문 인용까지
     넓게 잡지만(다음 번호가 커질 뿐이다), 이쪽은 confirmation 이 참조할 수 있는 finding 만
-    센다 — 판정 표면 규칙(`parse_pm_review_delta` 의 "confirmation이 선행 finding ID를
+    센다 — 판정 표면 규칙(`parse_pm_review_accepted` 의 "confirmation이 선행 finding ID를
     참조")과 **같은 시야**여야 회수 게이트가 통과시킨 블록이 delta 에서 malformed 가 되지 않는다.
 
     블록 스캔은 라운드 단위 관용 판정이다 — 다른 라운드의 손상이 이 대조를 눈멀게 하면 안 되고,
@@ -354,7 +354,7 @@ def _pm_review_disposition_rows_for_ordinal(
     return value, rows
 
 
-def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> review_form.PMReviewDelta:
+def parse_pm_review_accepted(ticket_text: str, rounds: Sequence) -> review_form.PMReviewDelta:
     """reviewer 제안→PM disposition→확인 상태를 accepted-only delta로 축약한다.
 
     입력은 둘이다 — 명세(`ticket_text`)가 PM disposition 블록의 자리이고, reviewer 블록은
@@ -875,7 +875,7 @@ def pm_review_verify_template(
 
     `round_ordinal` 을 주면 그 developer 라운드 **시점까지의** 누적으로 판정한다(과거 재현).
     """
-    delta = parse_pm_review_delta(ticket_text, rounds)
+    delta = parse_pm_review_accepted(ticket_text, rounds)
     if round_ordinal is not None and not any(
         item.role == "developer" and item.ordinal == round_ordinal for item in rounds
     ):
@@ -952,7 +952,7 @@ def _pm_review_machine_confirmation_count(
 ) -> int:
     """그 채널의 `pm-review-confirmation-v1` machine/PM-owned 확인 행 수(표시면 관용 카운트).
 
-    `pm_verified_evidence_problem` 호출 시점에는 `parse_pm_review_delta` 가 이미 같은
+    `pm_verified_evidence_problem` 호출 시점에는 `parse_pm_review_accepted` 가 이미 같은
     블록들을 엄격 검증했으므로, 여기서는 재검증 없이 개수만 센다. 채널은 **필수**다 — 그
     채널 finding ID 접두(예: `X-`)로 시작하는 확인 행만 세고, 접두를 무시하고 전부 세는
     무스코프 경로는 두지 않는다(다른 채널의 기계 확인이 이 채널 게이트를 여는 구멍이다).
@@ -993,7 +993,7 @@ def pm_verified_resolution_input_problem(
             f"pm-verified preflight 채널이 review 채널이 아닙니다: {reviewer_role!r}",
         )
     try:
-        delta = parse_pm_review_delta(ticket_text, rounds)
+        delta = parse_pm_review_accepted(ticket_text, rounds)
         template = pm_review_verify_template(ticket_text, rounds)
     except review_form.PMReviewError as exc:
         return f"수락한 지적/verify 입력 파싱 실패[{exc.code}]: {exc}"
@@ -1078,7 +1078,7 @@ def pm_verified_evidence_problem(
             f"pm-verified 증거 판정 채널이 review 채널이 아닙니다: {reviewer_role!r}",
         )
     try:
-        delta = parse_pm_review_delta(ticket_text, rounds)
+        delta = parse_pm_review_accepted(ticket_text, rounds)
     except review_form.PMReviewError as exc:
         return f"수락한 지적 파싱 실패[{exc.code}]: {exc}"
     channel_accepted = [

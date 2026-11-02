@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pm_engine.infra import pm_paths
 from pm_engine.domain import reviewer_budget
-from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_collect
 from pm_engine.app import reviewer_run
 import pm_engine.infra.harness.reviewer_run
 
@@ -393,7 +393,7 @@ def test_progress_log_prompt_echo_is_not_contamination(external, tmp_path):
 
 
 def test_print_summary_surfaces_contamination(external, capsys):
-    reviewer_harvest.print_summary({
+    reviewer_collect.print_summary({
         "reviewer": "codex", "ok": True, "output": "판정: 통과",
         "verdict": {"has_must_fix": False, "has_pass": True},
         "contamination": ("옛 리뷰/위임 raw 파일명 인용: additional_reviewer_codex_1.txt",),
@@ -406,7 +406,7 @@ def test_print_summary_surfaces_contamination(external, capsys):
 
 def test_print_summary_unchanged_without_contamination(external, capsys):
     """오염 0건이면 출력은 종전과 동일하다."""
-    reviewer_harvest.print_summary({
+    reviewer_collect.print_summary({
         "reviewer": "codex", "ok": True, "output": "판정: 통과",
         "verdict": {"has_must_fix": False, "has_pass": True},
         "file": None, "failed": False, "started": True,

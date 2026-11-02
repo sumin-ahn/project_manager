@@ -31,7 +31,7 @@ from pm_engine.infra import git, pm_paths, areas_store
 from pm_engine.infra import worktree_paths
 from pm_engine.domain import worktree_records
 
-from _pool_seams import bind_board, bind_pool
+from _pool_overrides import bind_board, bind_pool
 
 import argparse
 import contextlib
@@ -42,7 +42,7 @@ from types import SimpleNamespace
 import pytest
 from pm_engine.infra import areas_store, conf_store, pm_paths
 
-from _pool_seams import bind_board
+from _pool_overrides import bind_board
 from pm_engine.cli import board_cmd
 from pm_engine.cli import config_cmd
 from pm_engine.cli import config_console

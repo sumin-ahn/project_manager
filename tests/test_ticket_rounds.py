@@ -1,4 +1,4 @@
-"""라운드 사이드카(`round_rules`·`round_store`·`round_seed`)의 경로·예약·판정·렌더 계약.
+"""라운드 사이드카(`round_rules`·`round_store`·`round_form`)의 경로·예약·판정·렌더 계약.
 
 소비자(board·pm_delegate·additional_reviewer·ticket_finish)가 붙기 전의 기준선이라 이 파일은
 모듈을 **단독으로** 로드해 실 파일시스템 위에서 검증한다.
@@ -18,8 +18,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from pm_engine.domain import review_form, round_rules
-from pm_engine.infra import delegate_ledger, fs, round_store
-from pm_engine.app import round_seed
+from pm_engine.infra import delegate_records, fs, round_store
+from pm_engine.app import round_form
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -89,7 +89,7 @@ SEED_DATE = "2026-01-02"
 
 
 def _seed(role, *, today=SEED_DATE):
-    return round_seed.render_round_seed(role, TICKET_TEXT, today=today)
+    return round_form.render_round_form(role, TICKET_TEXT, today=today)
 
 
 def _reserve(tickets_dir, ticket, role, *, content=None, today=SEED_DATE):
@@ -203,18 +203,18 @@ def test_parse_round_filename_is_the_inverse_of_round_filename():
 # ── 시드 렌더 (pm_delegate 재사용) ─────────────────────────────────────────
 
 def test_round_seed_is_the_role_header_plus_the_delegate_skeleton():
-    seed = round_seed.render_round_seed("developer", TICKET_TEXT, today="2026-01-02")
+    seed = round_form.render_round_form("developer", TICKET_TEXT, today="2026-01-02")
     assert seed.startswith("## 구현 보충 (developer · 2026-01-02)\n\n")
     assert seed == (
         "## 구현 보충 (developer · 2026-01-02)\n\n"
-        + round_seed.render_ticket_growth_section_seed("developer", TICKET_TEXT)
+        + round_form.render_ticket_growth_section_form("developer", TICKET_TEXT)
     )
 
 
 def test_review_round_seed_carries_the_review_block_skeleton():
-    seed = round_seed.render_round_seed("code-reviewer", TICKET_TEXT, today="2026-01-02")
+    seed = round_form.render_round_form("code-reviewer", TICKET_TEXT, today="2026-01-02")
     assert seed.startswith("## 리뷰 (code-reviewer · 2026-01-02)\n\n")
-    assert round_seed.render_ticket_growth_section_seed(
+    assert round_form.render_ticket_growth_section_form(
         "code-reviewer", TICKET_TEXT
     ) in seed
 
@@ -227,18 +227,18 @@ def test_round_seed_labels_are_the_authority_board_reads():
 
 
 def test_round_roles_match_the_delegate_round_role_authority():
-    assert set(round_rules.ROLES) == set(delegate_ledger.TICKET_COPY_ROLES)
+    assert set(round_rules.ROLES) == set(delegate_records.TICKET_COPY_ROLES)
 
 
 @pytest.mark.parametrize("today", ["2026-1-2", "20260102", "오늘", "", None])
 def test_round_seed_refuses_a_header_date_outside_the_fixed_format(today):
     with pytest.raises(round_rules.RoundsError):
-        round_seed.render_round_seed("developer", TICKET_TEXT, today=today)
+        round_form.render_round_form("developer", TICKET_TEXT, today=today)
 
 
 def test_round_seed_refuses_roles_outside_the_round_role_set():
     with pytest.raises(round_rules.RoundsError):
-        round_seed.render_round_seed("dev", TICKET_TEXT, today="2026-01-02")
+        round_form.render_round_form("dev", TICKET_TEXT, today="2026-01-02")
 
 
 # ── 예약 (채번 + 배타 생성) ────────────────────────────────────────────────
@@ -405,11 +405,11 @@ def test_reopen_round_keeps_the_ordinal_and_replaces_the_file(
     text = first.read_text(encoding="utf-8")
     assert "이어 시킨 산출" in text and "1차 산출" not in text
     assert len(review_contract.parse_architect_tests(text)) == 1
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [(item.ordinal, item.role) for item in loaded] == [
         (1, "architect"), (2, "developer"),
     ]
-    assert [problem.code for problem in round_seed.verify_rounds(
+    assert [problem.code for problem in round_form.verify_rounds(
         tickets_dir, "T-0001", ticket_text=TICKET_TEXT,
     )] == [round_rules.PROBLEM_PENDING]      # 손대지 않은 02 하나뿐 — gap·dup 없음
 
@@ -489,7 +489,7 @@ def test_a_deleted_round_is_restored_from_the_board_git_record(
     recorded = _seed("developer")
     target = tickets_dir / "rounds" / "T-0001" / "02-developer.md"
     target.unlink()
-    assert [problem.code for problem in round_seed.verify_rounds(
+    assert [problem.code for problem in round_form.verify_rounds(
         tickets_dir, "T-0001", ticket_text=TICKET_TEXT,
     )] == [round_rules.PROBLEM_GAP]
 
@@ -497,8 +497,8 @@ def test_a_deleted_round_is_restored_from_the_board_git_record(
         target, recorded + review_contract.pm_review_refused_line("developer") + "\n",
     )
 
-    assert round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [(item.ordinal, item.role) for item in loaded] == [
         (1, "architect"), (2, "developer"), (3, "code-reviewer"),
     ]
@@ -552,11 +552,11 @@ def test_load_verify_and_reserve_survive_the_lockless_harvest_window(
         ]
         assert len(residue) == 1, residue
 
-        loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+        loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
         assert [(item.ordinal, item.role) for item in loaded] == [(1, "developer")]
         assert loaded[0].text != harvested        # 교체 전이라 리더는 옛 내용을 본다
 
-        problems = round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+        problems = round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
         assert [problem.code for problem in problems] == [round_rules.PROBLEM_PENDING]
 
         reserved = round_store.reserve_round(
@@ -583,15 +583,15 @@ def test_stray_dot_prefixed_files_are_not_rounds_and_do_not_break_anything(
     round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n회수\n")
     (path.parent / ".DS_Store").write_bytes(b"\x00")
 
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [item.role for item in loaded] == ["developer"]
-    assert round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
+    assert round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
 
 
 # ── 로드 ───────────────────────────────────────────────────────────────────
 
 def test_load_rounds_of_a_ticket_without_a_rounds_directory_is_empty(tickets_dir):
-    assert round_seed.load_rounds(tickets_dir, "T-0404", ticket_text=TICKET_TEXT) == []
+    assert round_form.load_rounds(tickets_dir, "T-0404", ticket_text=TICKET_TEXT) == []
 
 
 def test_load_rounds_returns_ordinal_order_with_pending_marked(tickets_dir):
@@ -599,7 +599,7 @@ def test_load_rounds_returns_ordinal_order_with_pending_marked(tickets_dir):
     developer = _reserve(tickets_dir, "T-0001", "developer")
     round_store.replace_round(developer, "## 구현 보충 (developer · 2026-01-03)\n\n실제 산출\n")
 
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [(item.ordinal, item.role, item.pending) for item in loaded] == [
         (1, "architect", True),
         (2, "developer", False),
@@ -613,42 +613,42 @@ def test_load_rounds_is_loud_about_an_item_that_breaks_the_name_grammar(tickets_
         "사본\n", encoding="utf-8",
     )
     with pytest.raises(round_rules.RoundsError, match="문법"):
-        round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+        round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
 
 def test_load_rounds_is_loud_about_a_directory_inside_the_rounds_directory(tickets_dir):
     _reserve(tickets_dir, "T-0001", "developer")
     (tickets_dir / "rounds" / "T-0001" / "02-developer.md").mkdir()
     with pytest.raises(round_rules.RoundsError, match="문법"):
-        round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+        round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
 
 # ── 무편집(산출 없음) 판정 ─────────────────────────────────────────────────
 
 def test_untouched_seed_is_pending(tickets_dir):
     _reserve(tickets_dir, "T-0001", "developer")
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
-    assert round_seed.round_is_pending(loaded[0], ticket_text=TICKET_TEXT) is True
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert round_form.round_is_pending(loaded[0], ticket_text=TICKET_TEXT) is True
 
 
 def test_seed_with_only_a_different_header_date_is_still_pending(tickets_dir):
     path = _reserve(tickets_dir, "T-0001", "developer")
     round_store.replace_round(path, _seed("developer", today="2030-12-31"))
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is True
 
 
 def test_seed_with_crlf_line_endings_is_still_pending(tickets_dir):
     path = _reserve(tickets_dir, "T-0001", "developer")
     round_store.replace_round(path, _seed("developer").replace("\n", "\r\n"))
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is True
 
 
 def test_one_character_of_editing_ends_pending(tickets_dir):
     path = _reserve(tickets_dir, "T-0001", "developer")
     round_store.replace_round(path, _seed("developer") + "!")
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is False
 
 
@@ -656,7 +656,7 @@ def test_a_header_that_lost_its_date_is_not_pending(tickets_dir):
     path = _reserve(tickets_dir, "T-0001", "developer")
     seed = _seed("developer")
     round_store.replace_round(path, "## 구현 보충\n" + seed.partition("\n")[2])
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is False
 
 
@@ -667,7 +667,7 @@ def test_a_seed_with_a_custom_header_label_is_still_pending(tickets_dir):
     round_store.replace_round(
         path, "## 구현 보충(2차) (developer · 2026-01-02)\n" + seed.partition("\n")[2],
     )
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is True
 
 
@@ -705,11 +705,11 @@ def test_pending_does_not_flip_when_an_earlier_round_of_the_same_role_is_harvest
 
     round_store.replace_round(first, _reviewer_output("F-001"))
 
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert second.read_bytes() == untouched, "판정 대상 파일이 바뀌었다(테스트 전제 붕괴)"
     assert [(item.ordinal, item.pending) for item in loaded] == [(1, False), (2, True)]
 
-    problems = round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    problems = round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [problem.code for problem in problems] == [round_rules.PROBLEM_PENDING]
     assert "02-code-reviewer.md" in problems[0].detail
     assert "--- 02-code-reviewer (산출 없음) ---" in round_rules.render_rounds_for_show(loaded)
@@ -719,16 +719,16 @@ def test_a_seed_whose_confirmation_ids_are_prefilled_is_pending(tickets_dir):
     """예약이 프리필한 실 finding ID 가 있어도 status·evidence 가 자리표시자면 산출이 없다."""
     first = _reserve(tickets_dir, "T-0001", "code-reviewer")
     round_store.replace_round(first, _reviewer_output("F-007"))
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
-    seed = round_seed.render_round_seed(
+    seed = round_form.render_round_form(
         "code-reviewer", TICKET_TEXT, today="2026-01-04",
         previous_round=round_rules.previous_round_of_role(loaded, "code-reviewer"),
     )
     assert '"id":"F-007"' in seed.replace(" ", ""), "프리필이 일어나지 않았다(전제 붕괴)"
     _reserve(tickets_dir, "T-0001", "code-reviewer", content=seed)
 
-    reloaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    reloaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [(item.ordinal, item.pending) for item in reloaded] == [(1, False), (2, True)]
 
 
@@ -740,7 +740,7 @@ def test_filling_the_confirmation_status_ends_pending(tickets_dir):
     assert filled != seed
     round_store.replace_round(path, filled)
 
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is False
 
 
@@ -750,7 +750,7 @@ def test_a_round_whose_review_block_is_broken_is_not_pending(tickets_dir):
     seed = path.read_text(encoding="utf-8")
     round_store.replace_round(path, seed.replace('"confirmations"', '"confirmations'))
 
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is False
 
 
@@ -758,9 +758,9 @@ def test_a_seed_with_the_next_finding_id_is_still_pending(tickets_dir):
     """다음 finding ID 실값을 실은 새 시드도 산출이 없다 — 판정은 본문 자신의 값으로 재렌더한다."""
     first = _reserve(tickets_dir, "T-0001", "code-reviewer")
     round_store.replace_round(first, _reviewer_output("F-003"))
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
-    seed = round_seed.render_round_seed(
+    seed = round_form.render_round_form(
         "code-reviewer", TICKET_TEXT, today=SEED_DATE,
         previous_round=round_rules.previous_round_of_role(loaded, "code-reviewer"),
         rounds=loaded,
@@ -768,16 +768,16 @@ def test_a_seed_with_the_next_finding_id_is_still_pending(tickets_dir):
     assert '"id":"F-004"' in seed.replace(" ", ""), "다음 ID 주입이 없다(전제 붕괴)"
     _reserve(tickets_dir, "T-0001", "code-reviewer", content=seed)
 
-    reloaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    reloaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [(item.ordinal, item.pending) for item in reloaded] == [(1, False), (2, True)]
     # CRLF 사본도 같은 골격이다.
     crlf = round_rules.Round(*reloaded[1][:3], seed.replace("\n", "\r\n"), False)
-    assert round_seed.round_is_pending(crlf) is True
+    assert round_form.round_is_pending(crlf) is True
     # 한 글자만 채우면 산출이다.
     filled = round_rules.Round(
         *reloaded[1][:3], seed.replace("<resolved|unresolved|regressed>", "resolved"), False,
     )
-    assert round_seed.round_is_pending(filled) is False
+    assert round_form.round_is_pending(filled) is False
 
 
 def test_an_engine_marked_round_is_not_pending_and_not_the_previous_output(
@@ -796,18 +796,18 @@ def test_an_engine_marked_round_is_not_pending_and_not_the_previous_output(
         second, second.read_text(encoding="utf-8") + marker + "\n",
     )
 
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
     assert [(item.ordinal, item.pending) for item in loaded] == [(1, False), (2, False)]
-    assert round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
+    assert round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
     assert round_rules.latest_round_of_role(loaded, "code-reviewer").ordinal == 1
     assert round_rules.previous_round_of_role(loaded, "code-reviewer")[0] == 1
 
 
 def test_the_engine_marker_is_read_for_every_round_role(tickets_dir, delegate):
     """판독은 역할을 가리지 않는다 — 표식이 붙는 자리는 리뷰 채널만이 아니다."""
-    for role in sorted(delegate_ledger.TICKET_COPY_ROLES):
-        ticket = f"T-{9100 + sorted(delegate_ledger.TICKET_COPY_ROLES).index(role)}"
+    for role in sorted(delegate_records.TICKET_COPY_ROLES):
+        ticket = f"T-{9100 + sorted(delegate_records.TICKET_COPY_ROLES).index(role)}"
         landed = _reserve(tickets_dir, ticket, role)
         round_store.replace_round(
             landed,
@@ -820,8 +820,8 @@ def test_the_engine_marker_is_read_for_every_round_role(tickets_dir, delegate):
             + review_contract.pm_review_refused_line(role) + "\n",
         )
 
-        loaded = round_seed.load_rounds(tickets_dir, ticket, ticket_text=TICKET_TEXT)
-        assert round_seed.verify_rounds(tickets_dir, ticket, ticket_text=TICKET_TEXT) == [], role
+        loaded = round_form.load_rounds(tickets_dir, ticket, ticket_text=TICKET_TEXT)
+        assert round_form.verify_rounds(tickets_dir, ticket, ticket_text=TICKET_TEXT) == [], role
         assert round_rules.latest_round_of_role(loaded, role).ordinal == 1, role
 
 
@@ -831,7 +831,7 @@ def test_latest_round_of_role_skips_rounds_without_output(tickets_dir):
     first = _reserve(tickets_dir, "T-0001", "code-reviewer")
     round_store.replace_round(first, _reviewer_output("F-001"))
     _reserve(tickets_dir, "T-0001", "code-reviewer")      # 예약만 (산출 없음)
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
     latest = round_rules.latest_round_of_role(loaded, "code-reviewer")
     assert (latest.ordinal, latest.pending) == (1, False)
@@ -843,7 +843,7 @@ def test_latest_round_of_role_skips_rounds_without_output(tickets_dir):
 def test_previous_round_of_role_ignores_other_roles_and_empty_input(tickets_dir):
     developer = _reserve(tickets_dir, "T-0001", "developer")
     round_store.replace_round(developer, "## 구현 보충 (developer · 2026-01-03)\n\n산출\n")
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
     assert round_rules.previous_round_of_role(loaded, "code-reviewer") is None
     assert round_rules.latest_round_of_role([], "developer") is None
@@ -858,7 +858,7 @@ def test_replace_round_preserves_crlf_bytes_round_trip(tickets_dir):
     round_store.replace_round(path, harvested)
 
     assert path.read_bytes() == harvested.encode("utf-8")
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].text == harvested
 
 
@@ -882,11 +882,11 @@ def test_verify_rounds_is_clean_for_a_harvested_sequence(tickets_dir):
     for role in ("architect", "developer"):
         path = _reserve(tickets_dir, "T-0001", role)
         round_store.replace_round(path, f"## 산출 ({role} · 2026-01-03)\n\n내용\n")
-    assert round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
+    assert round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
 
 
 def test_verify_rounds_of_a_ticket_without_rounds_is_clean(tickets_dir):
-    assert round_seed.verify_rounds(tickets_dir, "T-0404", ticket_text=TICKET_TEXT) == []
+    assert round_form.verify_rounds(tickets_dir, "T-0404", ticket_text=TICKET_TEXT) == []
 
 
 def test_verify_rounds_reports_a_gap_left_by_a_deleted_round(tickets_dir):
@@ -895,14 +895,14 @@ def test_verify_rounds_reports_a_gap_left_by_a_deleted_round(tickets_dir):
         round_store.replace_round(path, f"## 산출 ({role} · 2026-01-03)\n\n내용\n")
     (tickets_dir / "rounds" / "T-0001" / "02-developer.md").unlink()
 
-    problems = round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    problems = round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [problem.code for problem in problems] == [round_rules.PROBLEM_GAP]
     assert "02" in problems[0].detail
 
 
 def test_verify_rounds_reports_a_pending_round_as_information(tickets_dir):
     _reserve(tickets_dir, "T-0001", "developer")
-    problems = round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    problems = round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [problem.code for problem in problems] == [round_rules.PROBLEM_PENDING]
     assert "01-developer.md" in problems[0].detail
 
@@ -921,7 +921,7 @@ def test_verify_rounds_reports_a_name_that_breaks_the_grammar(tickets_dir):
     round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n내용\n")
     (tickets_dir / "rounds" / "T-0001" / "notes.md").write_text("메모\n", encoding="utf-8")
 
-    problems = round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    problems = round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [problem.code for problem in problems] == [round_rules.PROBLEM_NAME]
     assert "notes.md" in problems[0].detail
 
@@ -933,7 +933,7 @@ def test_verify_rounds_reports_two_roles_holding_the_same_ordinal_as_a_duplicate
         (directory / f"01-{role}.md").write_text(
             f"## 산출 ({role} · 2026-01-03)\n\n내용\n", encoding="utf-8",
         )
-    problems = round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    problems = round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [problem.code for problem in problems] == [round_rules.PROBLEM_DUPLICATE]
     assert "01" in problems[0].detail
     assert "architect" in problems[0].detail and "developer" in problems[0].detail
@@ -946,7 +946,7 @@ def test_verify_rounds_does_not_call_a_trailing_gap_when_the_last_round_is_pendi
     round_store.replace_round(path, "## 설계 (architect · 2026-01-03)\n\n내용\n")
     _reserve(tickets_dir, "T-0001", "code-reviewer")
 
-    problems = round_seed.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    problems = round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [problem.code for problem in problems] == [round_rules.PROBLEM_PENDING]
 
 
@@ -959,7 +959,7 @@ def test_render_rounds_for_show_joins_in_ordinal_order_with_pending_marked(
     round_store.replace_round(architect, "## 설계 (architect · 2026-01-03)\n\n설계 산출\n")
     _reserve(tickets_dir, "T-0001", "developer")
 
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     rendered = round_rules.render_rounds_for_show(loaded)
 
     assert rendered.startswith("--- 01-architect ---\n## 설계 (architect · 2026-01-03)")
@@ -974,7 +974,7 @@ def test_render_rounds_for_show_of_nothing_is_empty():
 def test_render_rounds_for_show_terminates_a_round_without_a_trailing_newline(tickets_dir):
     path = _reserve(tickets_dir, "T-0001", "developer")
     round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n마지막 줄")
-    loaded = round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert round_rules.render_rounds_for_show(loaded).endswith("마지막 줄\n")
 
 
@@ -1000,7 +1000,7 @@ def test_reads_and_replacements_go_through_the_shared_file_lock_seam(tickets_dir
     monkeypatch.setattr(seam, "atomic_replace", record_replace)
 
     round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n회수\n")
-    round_seed.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
     assert calls == ["replace", "read"]
 

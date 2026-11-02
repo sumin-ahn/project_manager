@@ -34,7 +34,7 @@ from conftest import anchor_board_module, bind_product_cluster, ensure_product_s
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.domain import design_rules, review_form
-from pm_engine.app import freshness_pin, round_seed
+from pm_engine.app import freshness_pin, round_form
 
 from pm_engine.app import board_claim
 from pm_engine.app import board_dashboard
@@ -260,12 +260,12 @@ def test_section_add_seed_is_the_shared_seam_render(board_env):
     assert board.main(["section-add", "T-1014", "--role", "developer"]) == 0
 
     spec_text = path.read_text(encoding="utf-8")
-    expected = round_seed.render_round_seed(
+    expected = round_form.render_round_form(
         "developer", spec_text, today=datetime.date.today().isoformat())
     written = (_rounds_dir(board_dir, "T-1014") / "01-developer.md").read_text(
         encoding="utf-8")
     assert written == expected
-    loaded = round_seed.load_rounds(pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-1014", ticket_text=spec_text)
+    loaded = round_form.load_rounds(pm_paths.tickets_dir(pm_paths.home_at(board.REPO)), "T-1014", ticket_text=spec_text)
     assert [item.pending for item in loaded] == [True], "예약 직후 라운드는 산출 없음이어야 한다"
 
 

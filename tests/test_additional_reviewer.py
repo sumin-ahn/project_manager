@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from pm_engine.infra import review_diff
 from pm_engine.domain import reviewer_budget
-from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_collect
 from pm_engine.app import reviewer_reservation
 from pm_engine.cli import reviewer_rounds
 from pm_engine.cli import additional_reviewer as cli_additional_reviewer
@@ -58,9 +58,9 @@ from pm_engine.infra.harness import watchdog
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# pm-verified 처분 픽스처의 **형상 빌더는 tests/test_board_livegate.py 가 단일 진실**이다 —
+# pm-verified 처분 픽스처의 **형상 빌더는 tests/test_board_live_test.py 가 단일 진실**이다 —
 # 생산 배선(내부 완료·릴리즈)과 이 CLI 선언면이 같은 형상을 봐야 기준이 다시 갈리지 않는다.
-from test_board_livegate import (  # noqa: E402
+from test_board_live_test import (  # noqa: E402
     _PV_CHANNEL_ADDITIONAL,
     _PV_CHANNEL_INTERNAL,
     _PV_ADDITIONAL_ROLE,
@@ -302,7 +302,7 @@ def test_timeout_cli_nonpositive_usage_error(external, capsys):
 
 def test_print_summary_failure_shows_reason_line(external, capsys):
     """실패 요약의 판정 라인에 실패 사유 1줄(타임아웃 안내 포함)이 병기된다 (T-0467)."""
-    reviewer_harvest.print_summary({
+    reviewer_collect.print_summary({
         "reviewer": "codex", "ok": False, "failed": True, "any_must_fix": False,
         "all_pass": False, "verdict": None, "file": None,
         "output": "[리뷰어 타임아웃 — 900초 초과] 재시도: `--timeout <초>` 또는 "
@@ -1172,7 +1172,7 @@ def test_output_contamination_reads_old_and_new_raw_prefixes(external):
 
 def _wave(external, tmp_path) -> dict:
     """저장된 장부의 wave 절 (절 부재 = 빈 dict)."""
-    return _ledger(external, tmp_path).get(reviewer_budget.WAVE_SECTION_KEY, {})
+    return _ledger(external, tmp_path).get(reviewer_budget.SESSION_BUDGET_SECTION_KEY, {})
 
 
 def _wave_budget_state(external, tmp_path) -> dict:
@@ -1230,7 +1230,7 @@ def test_legacy_ledger_without_wave_section_starts_a_fresh_wave(external):
     state = reviewer_reservation._wave_state(ledger)
     assert (state["started"], state["spent"]) == (None, 0)
     assert isinstance(state["id"], str) and state["id"]
-    assert ledger[reviewer_budget.WAVE_SECTION_KEY] is state
+    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY] is state
 
     corrupt = reviewer_reservation._wave_state({"wave": {"spent": "bad", "started": 7, "id": 9}})
     assert (corrupt["started"], corrupt["spent"]) == (None, 0)
@@ -1247,7 +1247,7 @@ def test_wave_state_keeps_an_existing_generation_id(external):
 
 def test_gate_names_skip_the_reserved_wave_key(external):
     """wave 는 예약 키라 게이트 집계 순회에서 빠진다 (예산 절이 게이트로 보이면 안 된다)."""
-    ledger = {"T-0302": {"count": 1}, reviewer_budget.WAVE_SECTION_KEY: {"spent": 1}}
+    ledger = {"T-0302": {"count": 1}, reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"spent": 1}}
     assert reviewer_budget._gate_names(ledger) == ["T-0302"]
 
 
@@ -1261,7 +1261,7 @@ def test_reserved_gate_name_is_refused_before_any_effect(
         external, monkeypatch, tmp_path, capsys):
     """`--review-ticket wave` 는 리뷰어 호출·장부 접근 전에 거부된다 (호출 0·장부 미생성)."""
     calls = _wire(external, monkeypatch, tmp_path)
-    rc = external.main(["--review-ticket", reviewer_budget.WAVE_SECTION_KEY, "--paths", "x.py"])
+    rc = external.main(["--review-ticket", reviewer_budget.SESSION_BUDGET_SECTION_KEY, "--paths", "x.py"])
     err = capsys.readouterr().err
     assert rc == 1
     assert calls["n"] == 0
@@ -1274,7 +1274,7 @@ def test_reserved_gate_name_is_refused_on_the_report_surface_too(
         external, monkeypatch, tmp_path, capsys):
     """조회면도 같은 이름을 게이트로 부르지 않는다 (한 곳에서 거르는 단일 판정)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--rounds-report", "--review-ticket", reviewer_budget.WAVE_SECTION_KEY]) == 1
+    assert external.main(["--rounds-report", "--review-ticket", reviewer_budget.SESSION_BUDGET_SECTION_KEY]) == 1
     assert "예약 키" in capsys.readouterr().err
 
 
@@ -1289,13 +1289,13 @@ def test_gate_entry_refuses_the_reserved_key_loudly(external):
     """예약 키를 게이트로 정규화하려는 호출은 fail-loud — 두 축의 무언의 상호 덮어쓰기 차단."""
     ledger: dict = {}
     with pytest.raises(ValueError, match="예약 키"):
-        reviewer_reservation._gate_entry(ledger, reviewer_budget.WAVE_SECTION_KEY)
+        reviewer_reservation._gate_entry(ledger, reviewer_budget.SESSION_BUDGET_SECTION_KEY)
     assert ledger == {}
 
 
 def test_wave_state_replaces_a_legacy_gate_entry_loudly(external, capsys):
     """예약 키 자리에 옛 게이트 항목이 있으면 경고 후 wave 절로 대체한다 (조용한 삭제 금지)."""
-    ledger = {reviewer_budget.WAVE_SECTION_KEY: {"count": 4, "records": []}}
+    ledger = {reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"count": 4, "records": []}}
     state = reviewer_reservation._wave_state(ledger)
     assert (state["started"], state["spent"]) == (None, 0)
     err = capsys.readouterr().err
@@ -1324,7 +1324,7 @@ def test_corrupt_wave_spend_is_recomputed_loudly(external, capsys, corrupt):
 
     wave 는 유일한 예산 hard-block 축이라, 조용히 0 으로 접히면 상한이 무통보로 열린다 — 특히
     음수는 예전 `max(0, …)` 보정에서 정상값처럼 통과해 `spent: -1` 한 줄 편집이 승인을 대신했다."""
-    state = reviewer_reservation._wave_state({reviewer_budget.WAVE_SECTION_KEY: corrupt})
+    state = reviewer_reservation._wave_state({reviewer_budget.SESSION_BUDGET_SECTION_KEY: corrupt})
     assert (state["started"], state["spent"]) == (None, 0)   # 이력이 없으면 재계산도 0
     err = capsys.readouterr().err
     assert "재계산" in err and "--reset-session-budget" in err
@@ -1337,7 +1337,7 @@ def test_negative_wave_spent_is_recomputed_from_round_history(external, capsys):
             {"ts": "2026-08-07T01:00:00+00:00"}, {"ts": "2026-08-07T02:00:00+00:00"},
         ]},
         "T-0336": {"count": 1, "rounds": [{"ts": "2026-08-06T23:00:00+00:00"}]},  # wave 이전
-        reviewer_budget.WAVE_SECTION_KEY: {
+        reviewer_budget.SESSION_BUDGET_SECTION_KEY: {
             "id": "gen-1", "started": "2026-08-07T00:00:00+00:00", "spent": -5,
         },
     }
@@ -1354,7 +1354,7 @@ def test_unusable_wave_frame_recomputes_from_all_rounds(external, capsys):
         "T-0335": {"count": 2, "rounds": [
             {"ts": "2026-08-07T01:00:00+00:00"}, {"ts": "2026-08-06T23:00:00+00:00"},
         ]},
-        reviewer_budget.WAVE_SECTION_KEY: "손상",
+        reviewer_budget.SESSION_BUDGET_SECTION_KEY: "손상",
     }
     assert reviewer_reservation._wave_state(ledger)["spent"] == 2
     assert "재계산" in capsys.readouterr().err
@@ -1685,7 +1685,7 @@ def test_negative_wave_spent_does_not_reopen_the_budget(
         assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
     path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     ledger = json.loads(path.read_text(encoding="utf-8"))
-    ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] = -1          # 예산 되돌리기 시도
+    ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] = -1          # 예산 되돌리기 시도
     path.write_text(json.dumps(ledger), encoding="utf-8")
     capsys.readouterr()
 
@@ -1893,7 +1893,7 @@ def test_render_rounds_report_marks_unknown_fields_and_is_read_only(external):
             ],
         },
         "T-0325": {"count": 1},
-        reviewer_budget.WAVE_SECTION_KEY: {"started": "2026-08-07T00:00:00+00:00", "spent": 3},
+        reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"started": "2026-08-07T00:00:00+00:00", "spent": 3},
     }
     snapshot = json.loads(json.dumps(ledger))
 
@@ -2331,7 +2331,7 @@ def test_knob_conf_run_names_no_retired_key(external, monkeypatch, tmp_path, cap
 # ── `--resolve-review --pm-verified` — 추가 리뷰어 채널 처분 CLI (T-0791) ──────────
 # 채널 폐지 뒤에도 additional-reviewer 장부(review_rounds.json)의 반려 잔여를 재호출 없이
 # 종결하는 선언면. 릴리즈 축(`_unresolved_must_fix_data`)의 재검증·채널 격리·실패 경로는
-# `tests/test_board_livegate.py` 가 진다 — 여기는 CLI 선언면 자체(모드 선택·호출 0·장부 불변·
+# `tests/test_board_live_test.py` 가 진다 — 여기는 CLI 선언면 자체(모드 선택·호출 0·장부 불변·
 # v1.7.8 실물 형상의 선언 성공/실패)를 담당한다.
 
 @pytest.fixture
@@ -2354,14 +2354,14 @@ def pm_verified_declare(tmp_path, monkeypatch):
     )
     ledger_path = proj / ".project_manager" / ".local" / "review_rounds.json"
 
-    def write_ledger(ledger: dict) -> None:
+    def write_records(ledger: dict) -> None:
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
         ledger_path.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
 
     return types.SimpleNamespace(
         external=external, board=board_mod, proj=proj,
-        write_ledger=write_ledger,
-        read_ledger=lambda: json.loads(ledger_path.read_text(encoding="utf-8")),
+        write_records=write_records,
+        read_records=lambda: json.loads(ledger_path.read_text(encoding="utf-8")),
         run=lambda *argv: external.main(list(argv)),
     )
 
@@ -2418,11 +2418,11 @@ def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified
     tid = "T-9764"
     entry = _pv_seed_v178_shape(pm_verified_declare.proj, tid)
     before = json.loads(json.dumps(entry))
-    pm_verified_declare.write_ledger({tid: entry})
+    pm_verified_declare.write_records({tid: entry})
     raw_dir = pm_verified_declare.proj / ".project_manager" / ".local" / "review"
 
     assert pm_verified_declare.run("--resolve-review", tid, "--pm-verified") == 0
-    after = pm_verified_declare.read_ledger()[tid]
+    after = pm_verified_declare.read_records()[tid]
     assert after["resolution"]["kind"] == "pm-verified"
     assert after["count"] == before["count"]
     assert "confirm_fix" not in after
@@ -2444,14 +2444,14 @@ def test_pm_verified_declaration_is_refused_with_reason_when_evidence_is_insuffi
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 3)])   # 잔여 3인데 표면은 1건뿐
-    pm_verified_declare.write_ledger({tid: entry})
+    pm_verified_declare.write_records({tid: entry})
 
     rc = pm_verified_declare.run("--resolve-review", tid, "--pm-verified")
     assert rc == 1
     err = capsys.readouterr().err
     assert "1건" in err and "3건" in err
-    assert tid not in pm_verified_declare.read_ledger() or (
-        "resolution" not in pm_verified_declare.read_ledger()[tid]
+    assert tid not in pm_verified_declare.read_records() or (
+        "resolution" not in pm_verified_declare.read_records()[tid]
     )
 
 
@@ -2459,7 +2459,7 @@ def test_rounds_report_shows_pm_verified_disposition_label(pm_verified_declare, 
     """`--rounds-report` 가 pm-verified 처분을 리뷰 통과와 구분되는 고정 어휘로 보여준다."""
     tid = "T-9781"
     entry = _pv_seed_v178_shape(pm_verified_declare.proj, tid)
-    pm_verified_declare.write_ledger({tid: entry})
+    pm_verified_declare.write_records({tid: entry})
     assert pm_verified_declare.run("--resolve-review", tid, "--pm-verified") == 0
     capsys.readouterr()
     assert pm_verified_declare.run("--rounds-report", "--review-ticket", tid) == 0
@@ -2467,23 +2467,23 @@ def test_rounds_report_shows_pm_verified_disposition_label(pm_verified_declare, 
     assert "pm-verified" in out and "reviewer 재투입 없음" in out
 
 
-# ── 채널 격리 양방향 — 추가 선언 CLI 실경로 (형상은 test_board_livegate 빌더 공용) ────
+# ── 채널 격리 양방향 — 추가 선언 CLI 실경로 (형상은 test_board_live_test 빌더 공용) ────
 
 def test_additional_declaration_opens_when_its_own_channel_is_machine_confirmed(
     pm_verified_declare,
 ):
     """혼합 채널 형상에서 추가 채널 X-* 기계 확인이 있으면 이 CLI 선언은 열린다.
 
-    같은 형상에서 **내부 축은 닫힌다**(tests/test_board_livegate.py 의 내부 선언·완료 경로) —
+    같은 형상에서 **내부 축은 닫힌다**(tests/test_board_live_test.py 의 내부 선언·완료 경로) —
     채널 격리는 한쪽을 막는 규칙이 아니라 각 채널이 자기 증거만 본다는 규칙이다."""
     tid = "T-9798"
     entries = _pv_seed_mixed_channel_shape(
         pm_verified_declare.proj, tid, machine_channel=_PV_CHANNEL_ADDITIONAL,
     )
-    pm_verified_declare.write_ledger({tid: entries[_PV_CHANNEL_ADDITIONAL]})
+    pm_verified_declare.write_records({tid: entries[_PV_CHANNEL_ADDITIONAL]})
 
     assert pm_verified_declare.run("--resolve-review", tid, "--pm-verified") == 0
-    assert pm_verified_declare.read_ledger()[tid]["resolution"]["kind"] == "pm-verified"
+    assert pm_verified_declare.read_records()[tid]["resolution"]["kind"] == "pm-verified"
 
 
 def test_additional_declaration_is_refused_when_only_the_internal_channel_is_confirmed(
@@ -2494,13 +2494,13 @@ def test_additional_declaration_is_refused_when_only_the_internal_channel_is_con
     entries = _pv_seed_mixed_channel_shape(
         pm_verified_declare.proj, tid, machine_channel=_PV_CHANNEL_INTERNAL,
     )
-    pm_verified_declare.write_ledger({tid: entries[_PV_CHANNEL_ADDITIONAL]})
+    pm_verified_declare.write_records({tid: entries[_PV_CHANNEL_ADDITIONAL]})
 
     assert pm_verified_declare.run("--resolve-review", tid, "--pm-verified") == 1
     err = capsys.readouterr().err
     assert f"{_PV_ADDITIONAL_ROLE} 채널의 기계 확인" in err
     assert f"{_PV_INTERNAL_ROLE} 채널의 기계 확인" not in err
-    assert "resolution" not in pm_verified_declare.read_ledger()[tid]
+    assert "resolution" not in pm_verified_declare.read_records()[tid]
 
 
 @pytest.mark.parametrize("dry_run", [True, False])

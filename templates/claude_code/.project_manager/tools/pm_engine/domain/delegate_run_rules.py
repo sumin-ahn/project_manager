@@ -163,7 +163,7 @@ RUN_RESULT_SILENCE_SEC = "silence_sec"
 # 무진행 판정으로 죽었는지(벽시계 백스톱과 구분) — 감사 헤더 사유 표기 입력.
 RUN_RESULT_IDLE_KILLED = "idle_killed"
 # 중단 진단은 호출부의 primary/default 값을 재사용하지 않고 워치독이 싣는 실제 발화값을 전달한다.
-RUN_RESULT_TIMEOUT_AXIS = "timeout_axis"
+RUN_RESULT_TIMEOUT_KIND = "timeout_axis"
 RUN_RESULT_TIMEOUT_THRESHOLD_SEC = "timeout_threshold_sec"
 
 # opencode 첫-이벤트 stall 을 stderr 에 찍는 엔진 마커(단일 출처) — 분류기의 백스톱 신호로도 쓴다.
@@ -472,7 +472,7 @@ def select_resume_record(
     return max(matches, key=lambda row: str(row.get("started_at", "")))
 
 
-def build_resume_delta_payload(
+def build_resume_change_payload(
     *, must_fix_items: Sequence[str], base_rev: str | None, task_text: str,
 ) -> str:
     """이어받는 turn 에 보낼 delta payload.

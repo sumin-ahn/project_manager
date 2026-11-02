@@ -243,8 +243,10 @@ assert _REPORTED_GUEST in _GUEST_HARNESSES, (
 # 바뀌어도 이 게이트가 green 이라(참조-only 테스트가 guest 절 소실을 30 여 릴리즈 살린 직접 원인)
 # 여기엔 문자열을 직접 박는다. 마커 세대가 또 바뀌면 이 파일이 red 로 알린다.
 _LEGACY_GUEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>"
-_CURRENT_GUEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
-_GUEST_END_MARKER = "# <<< pm add-harness guest @render (local) <<<"
+_PRE_RENAME_GUEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
+_OLD_GUEST_END = "# <<< pm add-harness guest @render (local) <<<"
+_CURRENT_GUEST_BEGIN = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
+_GUEST_END_MARKER = "# <<< pm add-harness @render (local) <<<"
 # pm:data-literal:end
 
 _ADOPTER_NAME = "Upgrade Adopter"
@@ -257,8 +259,8 @@ _FROZEN_INSTALL_DATE = "2025-11-03"
 # 채택자가 손으로 유지하던 치환 결과(제보 형상) — 상류 산문과 겹치지 않는 픽스처 소유 문장.
 _SUBSTITUTED_README_LINE = f"{_ADOPTER_NAME} 프로젝트의 비-코드 산출물 모음 (설치 시 치환된 옛 본문)."
 
-# T-0571 이 마이그레이션 발생 시 내는 표기(조용한 변환 금지) — 티켓 인터페이스가 고정한 문구.
-_MARKER_MIGRATION_NOTICE = "추가 하네스 절 마커 버전 이관"
+# 갱신이 옛 표시를 옮길 때 내는 안내(조용한 변환 금지)의 고정 부분.
+_MARKER_MIGRATION_NOTICE = "추가 하네스 구획 표시"
 
 _RENDER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 # 스킬 §manifest reconcile 의 선-cp 지시. placeholder(`<cache-or-path>`·`<harness>`)를 포함한
@@ -328,10 +330,12 @@ def _guest_manifest_block(dest: Path) -> str | None:
     엔진 파서를 부르지 않고 리터럴로 직접 훑는다 — 엔진과 같은 함수를 쓰면 마커 리터럴이 통째로
     바뀌어도 게이트가 함께 따라가 결함을 못 본다(이 게이트가 존재하는 이유)."""
     text = _manifest_text(dest)
-    for begin in (_CURRENT_GUEST_BEGIN, _LEGACY_GUEST_BEGIN):
-        if begin in text and _GUEST_END_MARKER in text:
+    for begin, end_marker in ((_CURRENT_GUEST_BEGIN, _GUEST_END_MARKER),
+                              (_PRE_RENAME_GUEST_BEGIN, _OLD_GUEST_END),
+                              (_LEGACY_GUEST_BEGIN, _OLD_GUEST_END)):
+        if begin in text and end_marker in text:
             start = text.index(begin)
-            end = text.index(_GUEST_END_MARKER, start) + len(_GUEST_END_MARKER)
+            end = text.index(end_marker, start) + len(end_marker)
             return text[start:end]
     return None
 
@@ -394,17 +398,19 @@ def _prime_engine_to_canonical(dest: Path) -> None:
             f"엔진 승격 실패 — {rel} 가 canonical 과 다르다(게이트가 옛 엔진을 검증하게 된다)")
 
 
-def _inject_legacy_guest_section(dest: Path) -> None:
-    """현행 guest 절을 **옛 세대 절**로 되돌린다 — 옛 마커 리터럴 + 엔진 행 부재.
+def _inject_old_guest_section(dest: Path, begin: str) -> None:
+    """현행 guest 절을 **옛 표시 절**로 되돌린다 — 주어진 옛 시작 표시와 옛 끝 표시.
 
-    엔진 행(비-`@render`)은 그 세대에 존재하지 않던 채널이므로 함께 지운다. 그 결과가 곧 제보
-    채택자의 디스크 형상이고, 마커 세대 인식(T-0571)과 엔진 행 파생 백필을 함께 태운다."""
+    v1.4.5 시작 표시(`_LEGACY_GUEST_BEGIN`)의 절은 그때 없던 엔진 행(비-`@render`)도 지운다. 그 결과가
+    곧 제보 채택자의 디스크 형상이고, 표시 이관과 엔진 행 파생 백필을 함께 태운다. 표시에서 `guest`
+    를 빼기 전 시작 표시(`_PRE_RENAME_GUEST_BEGIN`)의 절은 표시만 옛 글자다."""
     block = _guest_manifest_block(dest)
     assert block is not None, "픽스처 오류 — add-harness 직후인데 guest 절이 없다"
-    legacy_block = "\n".join([_LEGACY_GUEST_BEGIN, *_guest_render_rows(block), _GUEST_END_MARKER])
+    rows = _guest_render_rows(block) if begin == _LEGACY_GUEST_BEGIN else _guest_rows(block)
+    old_block = "\n".join([begin, *rows, _OLD_GUEST_END])
     text = _manifest_text(dest)
-    _manifest_path(dest).write_text(text.replace(block, legacy_block), encoding="utf-8", newline="\n")
-    assert _LEGACY_GUEST_BEGIN in _manifest_text(dest)
+    _manifest_path(dest).write_text(text.replace(block, old_block), encoding="utf-8", newline="\n")
+    assert begin in _manifest_text(dest)
     assert _CURRENT_GUEST_BEGIN not in _manifest_text(dest)
 
 
@@ -450,13 +456,14 @@ def _build_upgraded_adopter(
 
     ``guest_marker_generation``
       ``"legacy"`` — v1.4.5 세대 guest 절(옛 마커 리터럴 + 엔진 행 부재).
+      ``"pre_rename"`` — 구획 표시에서 `guest` 를 빼기 전(v1.8.3 까지)의 절(옛 표시 + 엔진 행).
       ``"current"`` — 현행 add-harness 가 쓴 그대로의 절(대조군·멱등 축).
     ``substituted`` — 설치 시 값으로 굳은 치환 결과(README 프로젝트명·template 실날짜) 주입 여부.
 
     guest 어댑터 엔진 파일은 두 세대 모두 설치 시점 사본으로 동결한다 — 제보의 실제 증상이
     "설치 이후 상류 변경을 한 번도 못 받았다" 이기 때문이다.
     """
-    assert guest_marker_generation in ("legacy", "current"), guest_marker_generation
+    assert guest_marker_generation in ("legacy", "pre_rename", "current"), guest_marker_generation
     dest = tmp_path / f"upgraded-{host}-{guest}-{guest_marker_generation}"
 
     # ① 현행 엔진으로 설치 + 엔진 사본 canonical 승격(게이트 전제).
@@ -478,7 +485,9 @@ def _build_upgraded_adopter(
 
     # ④ 옛 세대 guest 절로 되돌리기.
     if guest_marker_generation == "legacy":
-        _inject_legacy_guest_section(dest)
+        _inject_old_guest_section(dest, _LEGACY_GUEST_BEGIN)
+    elif guest_marker_generation == "pre_rename":
+        _inject_old_guest_section(dest, _PRE_RENAME_GUEST_BEGIN)
 
     # ⑤ 설치 시 굳은 치환 결과.
     if substituted:
@@ -489,15 +498,22 @@ def _build_upgraded_adopter(
 # ── S1 guest 절 생존 — 옛 마커 채택자의 동기 ──────────────────────────────────
 
 
-@pytest.mark.parametrize("generation", ("legacy", "current"))
-def test_upgrade_adopter_guest_section_survives_sync_and_marker_converges(tmp_path, generation):
+def test_upgrade_adopter_guest_section_survives_sync_and_marker_converges(tmp_path):
     """옛 마커 채택자가 동기 후에도 guest 절을 갖고, 마커가 현행 리터럴로 수렴하며, 재동기가 멱등이다.
 
     결함 형상: guest 절 경계 마커 리터럴이 v1.5.0 구간에 바뀌어, 그 전에 `add-harness` 를 쓴
     채택자가 `pm_update` 를 돌리면 읽기 쪽이 절을 못 알아보고 **경고 없이** 통째로 지웠다
     (렌더/overlay 스캔 커버리지가 그 시점에 끊긴다). 옛 세대(대조군: 현행 세대) 절을 디스크에 두고
-    실 CLI 동기를 태워 절 생존·마커 수렴·멱등을 못박는다.
+    실 CLI 동기를 태워 절 생존·마커 수렴·멱등을 못박는다. 옛 표시 두 가지(v1.4.5, 표시에서 `guest`
+    를 빼기 전)와 현행 표시를 한 시험 안에서 차례로 돈다.
     """
+    for generation in ("legacy", "pre_rename", "current"):
+        generation_root = tmp_path / generation
+        generation_root.mkdir()
+        _check_guest_section_generation(generation_root, generation)
+
+
+def _check_guest_section_generation(tmp_path: Path, generation: str) -> None:
     dest = _build_upgraded_adopter(
         tmp_path, guest_marker_generation=generation, substituted=True)
     before = _guest_manifest_block(dest)
@@ -513,14 +529,15 @@ def test_upgrade_adopter_guest_section_survives_sync_and_marker_converges(tmp_pa
         f"어느 채널에도 안 남는다.\n--- stdout ---\n{result.stdout}")
     # 쓰기는 항상 현행 리터럴 단일 세대다 — 옛 리터럴이 남으면 다음 세대에서 같은 사고가 반복된다.
     assert _CURRENT_GUEST_BEGIN in after, f"guest 절 시작 마커가 현행 리터럴이 아니다:\n{after}"
-    assert _LEGACY_GUEST_BEGIN not in _manifest_text(dest), (
-        "옛 세대 마커가 manifest 에 잔존 — 1 회 마이그레이션이 안 일어났다")
+    for old_marker in (_LEGACY_GUEST_BEGIN, _PRE_RENAME_GUEST_BEGIN, _OLD_GUEST_END):
+        assert old_marker not in _manifest_text(dest), (
+            f"옛 표시가 manifest 에 잔존 — 1 회 이관이 안 일어났다: {old_marker}")
     # 렌더물 행은 add-harness refresh 소유라 동기가 내용을 바꾸지 않는다(경로 집합 보존).
     assert {_row_path(row) for row in _guest_render_rows(after)} == \
         {_row_path(row) for row in render_rows_before}, (
             f"guest 렌더물 행 집합이 동기로 변형됐다\n이전: {render_rows_before}\n이후: {after}")
 
-    if generation == "legacy":
+    if generation in ("legacy", "pre_rename"):
         assert _MARKER_MIGRATION_NOTICE in result.stdout, (
             "옛 리터럴을 현행으로 바꿨는데 표기가 없다(조용한 변환 금지)\n"
             f"--- stdout ---\n{result.stdout}")
@@ -922,7 +939,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "4eb4dd17dae3664d984a6601af61fe32ecd06fd1483ca2335974af9ae4760256"
+_T0585_PM_UPDATE_SHA256 = "45913431c076e42b32eda0dd8dea31fcf51934c245fb3724787e5052a3a15c70"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1102,7 +1119,6 @@ _S9_FLAT_UPDATER_ORDER = (
     ("app/update_render.py", ("_render_text", "render_skill_entry_notation", "_render_skill_entry_text", "_FLAT_COMMAND_DETAIL_LINK", "_flat_command_skill_name", "_FLAT_COMMAND_ARGUMENTS_SECTION", "_render_flat_command_reference", "_CODEX_OPERATIONAL_PATHS", "_codex_operational_skill_name", "_replace_exactly_once", "_render_codex_operational_detail", "_is_text_source", "_rendered_text_matches_dest", "_dest_relative_path", "_render_eq_dst",)),
     ("app/update_plan.py", ("plan", "_EngineSyncNotationContextError", "_resolve_engine_sync_plan", "drift_changes",)),
     ("app/update_manifest.py", ("_retired_manifest_files", "_RETIRED_REPORT_LIST_LIMIT", "_print_retired_manifest_files",)),
-    ("infra/manifest_store.py", ("_migrate_legacy_guest_markers",)),
     ("app/update_manifest.py", ("_manifest_self_prop_needs_update",)),
     ("infra/manifest_store.py", ("_reattach_guest_block", "_prune_guest_block_owned_by_core", "_merge_guest_backfill_lines", "_copy_manifest_preserving_guest",)),
     ("app/update_render.py", ("_RenderOutput", "_render_outputs", "_write_render_outputs", "apply", "_dest_root_for",)),
@@ -1110,7 +1126,7 @@ _S9_FLAT_UPDATER_ORDER = (
     ("infra/shipping_targets.py", ("resolve_target_root", "discover_target_names",)),
     ("app/update_manifest.py", ("_join_guest_channels", "_resolve_planning_manifest", "_resolve_local_manifest",)),
     ("app/entry_doc_migration.py", ("_ENTRY_DOC_MANUAL_TODO_MARKER", "_ENTRY_DOC_OLD_GEN_MARKER", "_ENTRY_DOC_PM_INSTRUCTIONS_REL", "_ENTRY_DOC_BACKUP_DIR", "_ENTRY_DOC_TOKEN_RE", "_OLD_OPENCODE_AGENTS_V1_3_5_B64", "_OLD_OPENCODE_AGENTS_GENERATIONS", "_decode_entry_doc_generation", "_entry_doc_operational_keys", "_build_entry_doc_pattern", "_match_entry_doc_generation", "_render_new_entry_doc", "_scan_array_end", "_find_toplevel_instructions", "_ensure_jsonc_instructions", "_entry_doc_backup_root", "_entry_doc_backup",)),
-    ("app/update_finish.py", ("fill_self_repo_row", "drop_self_lease_rows", "_LEGACY_SLOT_SESSION_RE", "idle_legacy_slot_session_rows", "_DELEGATE_ROUNDS_REL", "_OLD_COLLECTED_KEY_TOKEN", "_NEW_COLLECTED_KEY_TOKEN", "rename_delegate_round_collected_key",)),
+    ("app/update_finish.py", ("fill_self_repo_row", "drop_self_lease_rows", "_LEGACY_SLOT_SESSION_RE", "idle_legacy_slot_session_rows", "_DELEGATE_ROUNDS_REL", "_OLD_COLLECTED_KEY_TOKEN", "_NEW_COLLECTED_KEY_TOKEN", "rename_delegate_round_collected_key", "_OLD_ADDED_HARNESS_MARKERS", "rename_added_harness_markers",)),
     ("app/conf_apply.py", ("ReasoningPruneError", "prune_unavailable_reasoning",)),
     ("app/entry_doc_migration.py", ("migrate_renamed_conf_keys", "migrate_entry_doc", "_print_entry_doc_migration_finding",)),
     ("app/update_adapters.py", ("_ADAPTER_CONFIG_ACCEPT_HINT", "_ADAPTER_CONFIG_LIST_HINT", "_ADAPTER_CONFIG_WINDOWS_HINT", "_ADAPTER_BACKUP_HINT", "_ADAPTER_CONFIG_DEST_CANDIDATES", "_has_adapter_config_candidate", "_instance_owned_template_delta_lines", "_print_instance_owned_template_delta", "sync_adapter_configs", "apply_harness_ctx_limits", "_adapter_config_gate_failed", "_print_adapter_config_finding", "check_adapter_hook_sets", "_change_dest_paths", "refuse_partial_hook_set_scope", "_adapter_hook_set_gate_failed", "_print_adapter_hook_set_finding", "_read_hook_artifact", "_EXEC_BIT_MEANINGFUL", "_hook_artifact_executable", "_protected_hook_in_sync", "reinstall_protected_hooks", "_print_protected_hook_reinstall_finding", "_refuse_missing_sources",)),
@@ -1742,10 +1758,10 @@ _ENGINE_REV_MARKER_REVERSALS = (
         '        raise\n'
     ),
     (
-        '        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)\n'
+        '        return adapter_report.instance_owned_template_change_lines(dest_root, source_root)\n'
         '    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud.\n'
         '        return [\n',
-        '        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)\n'
+        '        return adapter_report.instance_owned_template_change_lines(dest_root, source_root)\n'
         '    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud(표식 skew 는 올린다).\n'
         '        if getattr(exc, "_engine_rev_skew", False):\n'
         '            raise\n'
@@ -1918,11 +1934,11 @@ _EXCEPT_CLEANUP_REVERSALS = (
         '        captured = _match_entry_doc_generation(gen_text, adopter_agents, operational_keys)\n'
     ),
     (
-        '        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)\n'
+        '        return adapter_report.instance_owned_template_change_lines(dest_root, source_root)\n'
         '    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 세대 델타 판정 실패만 advisory 줄, 그 밖 전파.\n'
         '        return [\n'
         ,
-        '        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)\n'
+        '        return adapter_report.instance_owned_template_change_lines(dest_root, source_root)\n'
         '    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud.\n'
         '        return [\n'
     ),
@@ -1991,7 +2007,7 @@ _EXCEPT_CLEANUP_REVERSALS = (
         '        print(line, file=sys.stderr)\n'
         '    findings = hook_sets.judge_adapter_hook_sets(\n'
         '        dest_root, source_root, declarations=generation.declarations)\n'
-        '    remedy_lines = hook_sets.hook_set_remedy_lines\n'
+        '    remedy_lines = hook_sets.hook_set_fix_lines\n'
         '    # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면\n'
         '    #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.\n'
         '    entrypoint_lines = hook_sets.hook_entrypoint_advisory_lines\n'
@@ -2013,7 +2029,7 @@ _EXCEPT_CLEANUP_REVERSALS = (
         '            print(line, file=sys.stderr)\n'
         '        findings = hook_sets.judge_adapter_hook_sets(\n'
         '            dest_root, source_root, declarations=generation.declarations)\n'
-        '        remedy_lines = hook_sets.hook_set_remedy_lines\n'
+        '        remedy_lines = hook_sets.hook_set_fix_lines\n'
         '        # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면\n'
         '        #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.\n'
         '        entrypoint_lines = hook_sets.hook_entrypoint_advisory_lines\n'
@@ -2719,6 +2735,12 @@ def _t0585_pm_update_source() -> str:
     바꿨다. 그 함수가 합성본에 그대로 들어가 sha256 이 바뀌었고, 옛 모양으로 되돌리는 치환이 찾는 기준
     문자열과 엔진 전달 순서·전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
 
+    모듈·공개 이름 평어화 — 추가 하네스 구획 표시를 바꾸면서 옛 표시를 옮기는 함수
+    `rename_added_harness_markers` 를 더하고 `_main` 이 구획을 읽기 전에 부르게 했으며, 적용 단계의 옛 표시
+    이관(`_migrate_legacy_guest_markers`)과 계획 단계의 옛 표시 사유를 지웠다. 공개 이름 바꿈
+    (`instance_owned_template_change_lines`·`hook_set_fix_lines`)은 되돌리는 치환의 기준 문자열에도 같이
+    적용했다. 엔진 전달 순서와 전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
+
     T-0963 — 형제 적재 블록이 엔진 패키지 import(`from pm_engine.infra import ...`)로 바뀌고 형제 로더·
     강등 함수(`_load_repo_owned_files`·`_shared_read_api` 일습·`_atomic_replace_or_degrade`·중앙 로더
     선복구 `central_loader_needs_recovery`·`_predeploy_central_loader`)가 사라졌다. 역적용 delta 의
@@ -2924,7 +2946,12 @@ def _install_t0585_updater(dest: Path) -> None:
 # 출력 문구 평어화(보드·핸드오프 쪽) — 진입 doc 마이그레이션 안내의 `세대`·`정합` 을 `버전`·`일치` 로
 # 바꿨다. 그 함수가 합성본에 그대로 들어가 sha256 이 바뀌었고, 옛 모양으로 되돌리는 치환이 찾는 기준
 # 문자열과 엔진 전달 순서·전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
-_PRE_T0876_PM_UPDATE_SHA256 = "034f80e740f617459f928b6aaf2c5c854d9988f3ca15dc0cc2b47ac6ccdb51b5"
+# 모듈·공개 이름 평어화 — 추가 하네스 구획 표시를 바꾸면서 옛 표시를 옮기는 함수
+# `rename_added_harness_markers` 를 더하고 `_main` 이 구획을 읽기 전에 부르게 했으며, 적용 단계의 옛 표시
+# 이관(`_migrate_legacy_guest_markers`)과 계획 단계의 옛 표시 사유를 지웠다. 공개 이름 바꿈
+# (`instance_owned_template_change_lines`·`hook_set_fix_lines`)은 되돌리는 치환의 기준 문자열에도 같이
+# 적용했다. 엔진 전달 순서와 전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
+_PRE_T0876_PM_UPDATE_SHA256 = "47d278dffc37e57e31504b596eba4ab68686467e74b5d2391aacb06e22e35f78"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -3016,6 +3043,12 @@ def _pre_t0876_pm_update_source() -> str:
     출력 문구 평어화(보드·핸드오프 쪽) — 진입 doc 마이그레이션 안내의 `세대`·`정합` 을 `버전`·`일치` 로
     바꿨다. 그 함수가 합성본에 그대로 들어가 sha256 이 바뀌었고, 옛 모양으로 되돌리는 치환이 찾는 기준
     문자열과 엔진 전달 순서·전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
+
+    모듈·공개 이름 평어화 — 추가 하네스 구획 표시를 바꾸면서 옛 표시를 옮기는 함수
+    `rename_added_harness_markers` 를 더하고 `_main` 이 구획을 읽기 전에 부르게 했으며, 적용 단계의 옛 표시
+    이관(`_migrate_legacy_guest_markers`)과 계획 단계의 옛 표시 사유를 지웠다. 공개 이름 바꿈
+    (`instance_owned_template_change_lines`·`hook_set_fix_lines`)은 되돌리는 치환의 기준 문자열에도 같이
+    적용했다. 엔진 전달 순서와 전달 파일 집합은 그대로라 합성본 sha256 고정값만 바꿨다.
 
     설치 공급자 이동 반영: 렌더·JSONC·등록부 호출을 실제 package 소유자로 전환했다.
     동결 fixture의 렌더 실패 흡수 anchor도 module 인자가 없는 현행 호출 형태로 맞췄다.

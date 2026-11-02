@@ -569,7 +569,7 @@ _RETIRED_ACK_ENGINE_FILES = ("additional_reviewer.py", "reviewer_budget.py")
 _RETIRED_ACK_TEST_FILES = (
     "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(상수·부재 단언)
     "tests/test_additional_reviewer.py",                  # 어느 표면에서도 거부됨을 단언
-    "tests/test_raw_output_ledger.py",                # 폐지 플래그 argv 의 장부 무변경
+    "tests/test_raw_output_records.py",                # 폐지 플래그 argv 의 장부 무변경
 )
 
 
@@ -809,10 +809,10 @@ def test_knob_key_constants_match_the_engine_table():
     core = _additional_reviewer()
     assert (reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY
             == "additional_reviewer.incomplete_rounds_max")
-    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY == "additional_reviewer.session_budget"
+    assert reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY == "additional_reviewer.session_budget"
     assert set(KNOB_KEYS) == {
         reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY,
-        reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY,
+        reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY,
     }
     # 판정 상한은 노브도 축도 아니다 — 키 상수·해소 함수·엔진 기본값이 모두 없다(축 제거).
     assert not hasattr(core, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
@@ -865,4 +865,4 @@ def test_engine_guidance_names_the_knob_keys():
     round_guidance = reviewer_budget._ROUND_LIMIT_GUIDANCE
     assert reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
     assert "additional_reviewer.round_limit" not in round_guidance
-    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in reviewer_budget._WAVE_BUDGET_GUIDANCE
+    assert reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY in reviewer_budget._WAVE_BUDGET_GUIDANCE

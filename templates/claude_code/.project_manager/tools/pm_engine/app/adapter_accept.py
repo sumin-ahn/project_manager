@@ -33,7 +33,7 @@ def record_adapter_baseline(dest_root: Path, source_root: Path, harnesses=None, 
     채택자가 `edited` 오판에 갇힌 채 `--accept` 를 강요받는다. 마이그레이션 항목은 `sha256` 만
     현재 축으로 바꾸고 `recorded_at`·`template_rev` 는 **보존**한다 — 이번 실행이 관측한 건
     "그때 기록한 그 bytes 그대로" 라는 사실 하나뿐이고, 세대 스탬프를 현재로 밀면
-    `instance_owned_template_delta_lines` 가 실제 세대 델타를 침묵시킨다."""
+    `instance_owned_template_change_lines` 가 실제 세대 델타를 침묵시킨다."""
     dest_root = Path(dest_root)
     document = adapter_baseline.read_adapter_baseline(dest_root)
     files = dict(document.get("files") or {})

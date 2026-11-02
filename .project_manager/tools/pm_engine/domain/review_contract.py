@@ -106,7 +106,7 @@ def collect_confirmable_finding_ids(
 ) -> list[str]:
     """확인 라운드가 `confirmations` 에 실을 수 있는 그 채널 ID (정렬).
 
-    배제는 둘이고 리뷰 라운드 시드 프리필(`render_ticket_growth_section_seed`)과 **같은 규칙**
+    배제는 둘이고 리뷰 라운드 시드 프리필(`render_ticket_growth_section_form`)과 **같은 규칙**
     이다: 회수 거부 라운드(판정 표면 밖)와 PM 이 `rejected` 로 판정한 ID(재등장을 표면이
     malformed 로 막는다). 두 채널이 서로 다른 목록을 보면 한쪽 리뷰어가 표면이 거부할 ID 를
     확인 대상으로 받는다.
@@ -181,14 +181,14 @@ def _review_missing_confirmation_targets(
     return sorted(missing)
 
 
-def review_harvest_problem(
+def review_collect_problem(
     reply_text: str, *, ticket_text: str, rounds: Sequence,
     reviewer_role: str = review_form.ADDITIONAL_REVIEWER_ROLE,
 ) -> str | None:
     """리뷰 산출을 라운드로 회수해도 되는지 판정한다 — 위반 사유 또는 None.
 
     두 회수 경로가 이 함수 하나를 부른다: 추가 리뷰어 회수(`additional_reviewer`)와 내부 채널 회수
-    (`harvest_ticket_copy`). 채널이 가르는 것은 finding ID 접두뿐이고 사유·강도는 같다 — 판정
+    (`collect_ticket_copy`). 채널이 가르는 것은 finding ID 접두뿐이고 사유·강도는 같다 — 판정
     표면이 하나라 한쪽만 관대하면 그쪽 산출이 표면을 막는다.
 
     거부한 산출은 판정 표면에 오르지 않되 사라지지도 않는다. 추가 리뷰어 채널은 라운드 파일을
@@ -506,12 +506,12 @@ def render_pm_review_disposition_template(
         raise review_form.PMReviewError("malformed", "finding이 있는 reviewer에 finding_zero disposition")
 
     # 골격의 시야는 대상 라운드 하나인데 판정 표면의 finding ID 유일성은 티켓 전역이다. 두
-    # 시야가 갈리면 골격이 프리필한 ID 를 PM 이 채워도 `parse_pm_review_delta` 가 그 판정을
+    # 시야가 갈리면 골격이 프리필한 ID 를 PM 이 채워도 `parse_pm_review_accepted` 가 그 판정을
     # 되돌려보낸다. 그런 ID 가 하나라도 있으면 **골격을 내지 않는다** — 나머지 ID 만 부분
     # 출력해도 그 골격을 채운 산출은 같은 라운드 때문에 표면이 통째로 거부하므로(왕복 불변식은
     # 복구되지 않고 판정 대상 finding 만 조용히 사라진다) 이 라운드는 여기서 끝낸다.
     # 형상은 둘이다: 선행 같은 채널 라운드가 이미 선언한 ID(재선언), 그리고 이 라운드가 스스로
-    # `confirmations` 에 실은 자기 ID(자기-확인). 판정 표면(`parse_pm_review_delta`)도 같은
+    # `confirmations` 에 실은 자기 ID(자기-확인). 판정 표면(`parse_pm_review_accepted`)도 같은
     # 라운드를 malformed 로 막으므로 두 명령이 같은 상태에 같은 판정을 낸다.
     redeclared = review_state.collect_review_finding_declarations(
         ticket_text, section.role, rounds, before_ordinal=section.ordinal,
@@ -580,7 +580,7 @@ def render_pm_review_disposition_template(
     return f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n" + review_form._pm_review_render_json(payload) + "\n```\n"
 
 
-def render_pm_review_delta(ticket: str, delta: review_form.PMReviewDelta) -> str:
+def render_pm_review_accepted(ticket: str, delta: review_form.PMReviewDelta) -> str:
     """developer prompt에 붙이는 accepted-only 최소 renderer. 0건이면 빈 문자열.
 
     심각도는 블록이 단일 진실이라 여기서 그대로 표기한다 — dev 는 산문을 다시 읽지 않고 이
@@ -861,5 +861,5 @@ def _merge_pm_review_confirmation_section(
         )
     # merge 뒤 full parser가 disposition/verify 이중 결속과 spoof를 최종 판정한다. write는 이
     # 검증 뒤라 conflict/malformed가 원본 일부를 바꾸는 창이 없다.
-    review_state.parse_pm_review_delta(merged_body, rounds)
+    review_state.parse_pm_review_accepted(merged_body, rounds)
     return merged_body, changed

@@ -619,8 +619,8 @@ def _real_harness_runner(
             input_text=input_text,
         )
     except subprocess.TimeoutExpired as exc:
-        wall_axis = watchdog.TIMEOUT_AXIS_WALL
-        idle_axis = watchdog.TIMEOUT_AXIS_IDLE
+        wall_axis = watchdog.TIMEOUT_KIND_WALL
+        idle_axis = watchdog.TIMEOUT_KIND_IDLE
         axis = getattr(exc, "timeout_axis", wall_axis)
         threshold = float(getattr(exc, "threshold_seconds", exc.timeout))
         silence = getattr(exc, "silence_seconds", None)
@@ -638,8 +638,8 @@ def _real_harness_runner(
             axis = getattr(exc, "timeout_axis", None)
             threshold = getattr(exc, "threshold_seconds", None)
             threshold_label = f" {float(threshold):.0f}초" if threshold is not None else ""
-            first_event_axis = watchdog.TIMEOUT_AXIS_FIRST_EVENT
-            idle_axis = watchdog.TIMEOUT_AXIS_IDLE
+            first_event_axis = watchdog.TIMEOUT_KIND_FIRST_EVENT
+            idle_axis = watchdog.TIMEOUT_KIND_IDLE
             if axis == first_event_axis:
                 kind = f"첫-이벤트 stall{threshold_label}"
             elif axis == idle_axis:

@@ -6,7 +6,7 @@ import contextlib
 from pm_engine.infra import delegate_copy_git
 from pm_engine.infra.harness import delegate_env
 from pm_engine.domain import delegate_errors
-from pm_engine.infra import delegate_ledger
+from pm_engine.infra import delegate_records
 from pm_engine.domain import delegate_rounds
 from pm_engine.infra.harness import delegate_temp
 from pm_engine.infra import fs
@@ -49,12 +49,12 @@ def _write_exclusive_file(
 def _append_delegate_rounds_ledger(home, row: dict) -> None:
     """공유 atomic-append seam 으로 0600 장부에 한 행을 덧붙인다(기존 bytes 불변)."""
     pm_home_root = home.local_dir.parent.parent
-    delegate_ledger._delegate_rounds_ledger_row(row, line_number=0)
+    delegate_records._delegate_rounds_ledger_row(row, line_number=0)
     local_dir, local_fd = _secure_machine_dir(
-        pm_home_root, delegate_ledger.DELEGATE_ROUNDS_LEDGER_REL_PATH.parent.parts,
+        pm_home_root, delegate_records.DELEGATE_ROUNDS_RECORD_REL_PATH.parent.parts,
         label="PM 위임 라운드 기록 디렉터리",
     )
-    path = local_dir / delegate_ledger.DELEGATE_ROUNDS_LEDGER_REL_PATH.name
+    path = local_dir / delegate_records.DELEGATE_ROUNDS_RECORD_REL_PATH.name
     try:
         try:
             observed = path.lstat()
@@ -79,7 +79,7 @@ def _delegate_round_record(home, copy_path: Path) -> dict:
     pm_home_root = home.local_dir.parent.parent
     resolved = str(Path(copy_path).resolve())
     matches = [
-        row for row in delegate_ledger._delegate_rounds_ledger_records(pm_home_root)
+        row for row in delegate_records._delegate_rounds_ledger_records(pm_home_root)
         if str(Path(row["copy"]).resolve()) == resolved
     ]
     if not matches:
@@ -152,7 +152,7 @@ def _secure_machine_dir(
 
 def _secure_cluster_run_dir(cwd: Path, cluster: str, run_id: str) -> tuple[Path, int | None]:
     return _secure_machine_dir(
-        cwd, delegate_ledger._cluster_run_relative_dir(cluster, run_id).parts,
+        cwd, delegate_records._cluster_run_relative_dir(cluster, run_id).parts,
         label="티켓 라운드 run-dir",
     )
 
@@ -163,7 +163,7 @@ def _secure_ticket_copy_dir(
 ) -> tuple[Path, int | None]:
     return _secure_machine_dir(
         cwd,
-        (*delegate_ledger._ticket_run_relative_dir(cluster, run_id, ticket).parts, *extra_parts),
+        (*delegate_records._ticket_run_relative_dir(cluster, run_id, ticket).parts, *extra_parts),
         label="티켓 라운드 run-dir",
     )
 
@@ -172,7 +172,7 @@ def _ticket_copy_relative_path(
     cluster: str, run_id: str, ticket: str, filename: str,
 ) -> Path:
     """run-dir 안 한 파일의 cwd 상대 경로 (ignore 검증·경로 예산 단언의 입력)."""
-    return delegate_ledger._ticket_run_relative_dir(cluster, run_id, ticket) / filename
+    return delegate_records._ticket_run_relative_dir(cluster, run_id, ticket) / filename
 
 
 def _parse_check_ignore_verbose_line(line: str) -> tuple[str, str, str] | None:
@@ -404,7 +404,7 @@ def _expected_slot_round_path(cwd: Path, row: dict) -> Path:
     양쪽이 같은 대상으로 접혀 결속 판정이 눈먼다 — 대상 무결성은 chain lstat 과 nofollow 판독이
     따로 본다.
     """
-    return Path(cwd) / delegate_ledger._row_ticket_relative_dir(row) / round_rules.round_filename(
+    return Path(cwd) / delegate_records._row_ticket_relative_dir(row) / round_rules.round_filename(
         row["ordinal"], row["role"],
     )
 
@@ -422,7 +422,7 @@ def _prune_empty_run_dir(ticket_dir: Path) -> None:
     성공하므로 이 정리가 남의 산출을 지울 수 없다(재귀 삭제 아님).
     """
     parent = Path(ticket_dir).parent
-    if not parent.name or parent.name == delegate_ledger.TICKET_COPY_REL_ROOT.name:
+    if not parent.name or parent.name == delegate_records.TICKET_COPY_REL_ROOT.name:
         return
     with contextlib.suppress(OSError):
         parent.rmdir()
@@ -527,7 +527,7 @@ def _cluster_run_rows(home, run_dir: Path) -> list[dict]:
     run_id = run_dir.name
     cluster = run_dir.parent.name
     latest: dict[str, dict] = {}
-    for row in delegate_ledger._delegate_rounds_ledger_records(pm_home_root):
+    for row in delegate_records._delegate_rounds_ledger_records(pm_home_root):
         if row.get("run_id") == run_id and str(row.get("cluster") or "") == cluster:
             latest[row["copy"]] = row
     rows = [

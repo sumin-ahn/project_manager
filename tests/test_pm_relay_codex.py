@@ -927,8 +927,8 @@ def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
     ⚠ stdin close(codex 무기한 대기 방어)는 driver 가 프롬프트를 stdin 으로 쓰고 닫아 박제. 격리 CODEX_HOME(auth
     복사·종료 시 삭제·runner 가 주입). 기본 skip(라이브 env 미설정·CI green 불변). **@release** — codex
     라이브 green 을 릴리즈 pin(수집 N)에 편입한다(ADR-0070 D7·pin 16→17 커플드 sweep: board.py·
-    `test_release_wave._EXPECTED_RELEASE_TESTS`+`_RELEASE_TEST_FILES`·`test_worktree_pool._LIVEGATE_RELEASE_PIN`·
-    `test_board_livegate` 동시 갱신·templates 는 PM 통합 시 pm_update 전파). 이 smoke 가 skip/누락되면
+    `test_release_cluster._EXPECTED_RELEASE_TESTS`+`_RELEASE_TEST_FILES`·`test_worktree_pool._LIVEGATE_RELEASE_PIN`·
+    `test_board_live_test` 동시 갱신·templates 는 PM 통합 시 pm_update 전파). 이 smoke 가 skip/누락되면
     수집<pin 으로 `livegate record` red — codex green 없이 v1.4.0 push 차단(티켓 목표)."""
     home = make_codex_home(tmp_path)
     runner = _CodexHomeRunner(home)

@@ -21,7 +21,7 @@ claim→종결)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0*
   이므로, side-effect 나 실행-횟수만으로는 부족하고 rc 를 봐야 한다. tool_result 는 콜 *전체*의 rc 하나뿐
   이라, lifecycle op 콜은 **단일-op·rc 마스킹 연산자(`||`/`;`/`|`/`&`) 0** 이어야 그 rc 가 곧 op rc 다
   (`claim … || true` 처럼 실패를 은폐하면 red·`&&` 프리픽스만 허용·R5 구조 규칙으로 shell-파싱 견고화 종결).
-- **관측 수단 비대칭(release_wave 위임-관측 비대칭 상속·§test_release_wave.py:170-219)**:
+- **관측 수단 비대칭(release_wave 위임-관측 비대칭 상속·§test_release_cluster.py:170-219)**:
   · **claude = hard** — stream-json 의 Bash tool-call·tool_result 를 파싱해 *실행 커맨드·결과*를 본다.
     각 op 정확-1회·--help(shlex 토큰)·**첫 실행 rc0(is_error)**·side-effect(done)를 전부 hard 단언.
   · **opencode = best-effort** — stream-json 처럼 tool-call/result 를 정밀 노출하지 않아(stdout 스캔뿐)
@@ -68,7 +68,7 @@ from test_fresh_adopter_runtime_smoke import _live_env, _load_pm_import, _ticket
 from _manager_home import install_known_ctx_io
 # release 마커 AST 카운트(자기 파일 pin 가드용) — 마커 소실/개명 방어 도구 재사용. 안내 경로로 첫
 # 작업 폴더를 만든 채택자 픽스처는 full wave 와 공용이다([[T-0956]]).
-from test_release_wave import (
+from test_release_cluster import (
     _MULTIREPO_REPOS, _MULTIREPO_TICKET, _RELEASE_WAVE_TASK, _WAVE_FILE, _WAVE_INTEGRATION_SLOT,
     _WAVE_WORK_SLOT, _assert_multirepo_wave_side_effects, _count_marked_tests,
     _guided_adopter,
@@ -2706,11 +2706,11 @@ def test_run_live_or_timeout_returns_proc_on_success(monkeypatch):
 # 마커가 소실/개명되면 조용히 빠지므로, 이 파일의 release 마커 수를 pin 해 red 로 잡는다.
 # ⚠ 커플드-pin: 이 파일 추가로 release 총 수집 수가 7→9 로 늘었다 — 이 파일 touches 밖의 전역 pin
 #   *5곳*이 함께 9 로 정합돼야 `livegate record`(수집 N==pin)가 통과한다(orchestrator 가 갱신):
-#     (1) test_release_wave._EXPECTED_RELEASE_TESTS  (AST 수집 pin)
-#     (2) test_release_wave._RELEASE_TEST_FILES      (스캔 파일 목록 — 이 파일 포함시켜야 함)
-#     (3) regression.LIVEGATE_RELEASE_PIN            (livegate record 의 수집 게이트 단일 진실)
-#     (4) tests/test_board_livegate.py               (하드코딩 fake 출력/assert 여러 곳 — 7→9)
-#     (5) templates/{claude_code,opencode}/.project_manager/tools/pm_engine/app/regression.py  (pm_update 전파·LIVEGATE_RELEASE_PIN)
+#     (1) test_release_cluster._EXPECTED_RELEASE_TESTS  (AST 수집 pin)
+#     (2) test_release_cluster._RELEASE_TEST_FILES      (스캔 파일 목록 — 이 파일 포함시켜야 함)
+#     (3) regression.LIVE_TEST_RELEASE_PIN            (livegate record 의 수집 게이트 단일 진실)
+#     (4) tests/test_board_live_test.py               (하드코딩 fake 출력/assert 여러 곳 — 7→9)
+#     (5) templates/{claude_code,opencode}/.project_manager/tools/pm_engine/app/regression.py  (pm_update 전파·LIVE_TEST_RELEASE_PIN)
 _EXPECTED_LOCAL_RELEASE_TESTS = 2
 
 
@@ -2720,8 +2720,8 @@ def test_command_card_release_marker_count_is_pinned():
     assert actual == _EXPECTED_LOCAL_RELEASE_TESTS, (
         f"이 파일 `release` 마커 수 {actual} != 기대 {_EXPECTED_LOCAL_RELEASE_TESTS} — 마커 "
         f"소실/개명 의심. 라이브 케이스를 의도적으로 늘렸다면 _EXPECTED_LOCAL_RELEASE_TESTS 와 "
-        f"전역 커플드-pin 5곳(위 주석: test_release_wave._EXPECTED_RELEASE_TESTS·_RELEASE_TEST_FILES·"
-        f"regression.LIVEGATE_RELEASE_PIN·tests/test_board_livegate.py·templates/*/pm_engine/app/regression.py)을 함께 갱신하라."
+        f"전역 커플드-pin 5곳(위 주석: test_release_cluster._EXPECTED_RELEASE_TESTS·_RELEASE_TEST_FILES·"
+        f"regression.LIVE_TEST_RELEASE_PIN·tests/test_board_live_test.py·templates/*/pm_engine/app/regression.py)을 함께 갱신하라."
     )
 
 

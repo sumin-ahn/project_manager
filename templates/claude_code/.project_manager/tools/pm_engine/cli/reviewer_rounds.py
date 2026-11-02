@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 from pm_engine.infra import clock
-from pm_engine.app import completion_gate
+from pm_engine.app import completion_check
 from pm_engine.infra import conf_store
 from pm_engine.infra import pm_paths
 from pm_engine.infra import review_rounds
@@ -63,12 +63,12 @@ def _ordered_round_outcomes(rounds: list) -> list[dict]:
 def _format_gate_resolution(entry: dict) -> str:
     """게이트 처분 열 — `미처분` / `pm-verified` / `무대상`.
 
-    판정은 `review_rounds` 의 게이트 판정(`gate_resolution`·`gate_residual_must_fix`)이 소유한다 —
+    판정은 `review_rounds` 의 게이트 판정(`review_ticket_resolution`·`review_ticket_residual_must_fix`)이 소유한다 —
     릴리즈 차단이 보는 것과 **같은 사실**을 그대로 보여야 이 표로 차단을 미리 예측할 수 있다.
     `무대상` 은 잔여 must-fix 가 없어 처분이 필요 없는 게이트다(통과·suggestion 만 남은 게이트)."""
-    declared = review_rounds.gate_resolution(entry)
+    declared = review_rounds.review_ticket_resolution(entry)
     if declared is None:
-        return "미처분" if review_rounds.gate_has_residual(entry) else "무대상"
+        return "미처분" if review_rounds.review_ticket_has_residual(entry) else "무대상"
     return _describe_resolution(declared)
 
 
@@ -91,7 +91,7 @@ def render_rounds_report(
 
     `wave_budget` 미지정은 레지스트리 기본값이다(호출부가 conf 해소를 못 하는 조회 경로용)."""
     if wave_budget is None:
-        wave_budget = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
+        wave_budget = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY)
     snapshot = dict(ledger)                # 사본 정규화 — 조회가 장부를 고치지 않는다
     wave = reviewer_reservation._wave_state(snapshot)
     lines = [
@@ -148,10 +148,10 @@ def _print_rounds_report(
         # 다른 축) — 예산 표기만 기본값으로 낮추고 그 사실을 알린다.
         print(
             f"경고: local.conf 읽기 실패 ({type(exc).__name__}: {exc}) — 세션 호출 예산 표기를 "
-            f"기본값 {reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)} 로 대체합니다.",
+            f"기본값 {reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY)} 로 대체합니다.",
             file=sys.stderr,
         )
-        wave_budget = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
+        wave_budget = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY)
     print(render_rounds_report(
         review_rounds._load_round_ledger(home),
         ledger_path=review_rounds._round_ledger_path(home),
@@ -219,29 +219,29 @@ def _resolve_gate_command(home, args: argparse.Namespace, ) -> int:
                 gate=gate, ledger=review_rounds._round_ledger_path(home)), file=sys.stderr)
             return 1
         entry = reviewer_reservation._gate_entry(ledger, gate)
-        if not review_rounds.gate_has_residual(entry):
+        if not review_rounds.review_ticket_has_residual(entry):
             # 잔여 없음만 거부한다 — **미상**(판정 무효 라운드)은 릴리즈가 차단하는 축이라
             # 선언도 받아야 한다(둘이 갈리면 차단은 되는데 처분은 못 하는 데드락).
             print(reviewer_budget._RESOLVE_GATE_NO_RESIDUAL_GUIDANCE.format(
-                gate=gate, residual=review_rounds.gate_residual_label(entry)), file=sys.stderr)
+                gate=gate, residual=review_rounds.review_ticket_residual_label(entry)), file=sys.stderr)
             return 1
-        residual = review_rounds.gate_residual_must_fix(entry)
+        residual = review_rounds.review_ticket_residual_must_fix(entry)
         # 추가 리뷰어 채널로 스코프해 판정한다 — board 는 채널과 그 게이트의 장부 항목을
         # 받아 다른 채널의 accepted 잔여·기계 확인은 보지 않는다.
-        detail = completion_gate._pm_verified_evidence_problem(
-            home, gate, channel=completion_gate.GATE_CHANNEL_ADDITIONAL, entry=entry,
+        detail = completion_check._pm_verified_evidence_problem(
+            home, gate, channel=completion_check.CHECK_CHANNEL_ADDITIONAL, entry=entry,
         )
         if detail is not None:
             print(reviewer_budget._RESOLVE_GATE_PM_VERIFIED_GUIDANCE.format(
                 gate=gate, detail=detail), file=sys.stderr)
             return 1
-        residual_label = review_rounds.gate_residual_label(entry)
-        previous = review_rounds.gate_resolution(entry)
+        residual_label = review_rounds.review_ticket_residual_label(entry)
+        previous = review_rounds.review_ticket_resolution(entry)
         declared = {
             "kind": review_rounds.RESOLUTION_PM_VERIFIED,
             "ts": clock.now_utc(),
             "must_fix": residual,
-            **review_rounds.gate_round_binding(entry),
+            **review_rounds.review_ticket_round_binding(entry),
         }
         entry["resolution"] = declared
         reviewer_reservation._save_round_ledger(home, ledger)

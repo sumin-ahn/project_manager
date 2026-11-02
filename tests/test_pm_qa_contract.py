@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from test_board_livegate import t0936_release
+from test_board_live_test import t0936_release
 
 from test_board_regression import (
     _marker as regression_marker,
@@ -120,7 +120,7 @@ def test_t0936_project_full_commands_follow_phase_ownership(
     core = json.loads(pm_paths.regression_flag(pm_paths.home_at(board.REPO)).read_text(encoding="utf-8"))
     pm_paths.regression_flag(pm_paths.home_at(release.board.REPO)).write_text(json.dumps(core), encoding="utf-8")
     monkeypatch.setattr(regression, "_run_regression_cmd", run)
-    from test_board_livegate import _t0936_record, _t0936_check
+    from test_board_live_test import _t0936_record, _t0936_check
     assert _t0936_record(release) == 0 and _t0936_check(release) == 0
     assert [command for command, _cwd, _env in calls] == [full_test_cmd, platform_cmd]
     assert calls[1][2]["PM_QA_PLATFORM"] == "windows"

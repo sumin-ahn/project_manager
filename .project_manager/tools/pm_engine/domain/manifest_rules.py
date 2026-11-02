@@ -263,38 +263,25 @@ def _manifest_marker_key(entry) -> tuple:
 # `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다(판정원 단일 = engine.manifest
 # 최종 뷰 하나). 절의 *값* 은 app.add_harness 가 쓴다(같은 리터럴 공유·아래 상수 블록).
 # pm:data-literal:begin
-# 아래 네 상수는 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
+# 아래 두 상수는 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
 # 이 소스의 산문이 아니다. 따라서 스트립·문구 정리·리팩터 대상이 아니며 한 글자만 달라져도 이미
-# 기록된 채택자 manifest 의 guest 절을 못 읽어 절이 조용히 사라진다. 리터럴을 바꿔야 하면 옛 값을
-# 지우지 말고 `_LEGACY` 튜플에 남겨라 — **읽기는 세대 집합 전체를 받고, 쓰기는 항상 현행 하나만**
-# 낸다(옛 세대는 `_migrate_legacy_guest_markers` 가 다음 sync 에서 1 회 치환한다).
-_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
-_GUEST_MANIFEST_END = "# <<< pm add-harness guest @render (local) <<<"
-_GUEST_MANIFEST_BEGIN_LEGACY: tuple[str, ...] = (
-    "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>",
-)
-# 종료 마커는 아직 세대가 하나뿐이라 비어 있다 — 다음 세대를 대비해 시작 마커와 대칭 구조로 둔다.
-_GUEST_MANIFEST_END_LEGACY: tuple[str, ...] = ()
+# 기록된 채택자 manifest 의 guest 절을 못 읽어 절이 조용히 사라진다. 읽기·쓰기 모두 이 두 상수
+# 하나다. 표시를 바꾸면 갱신 완료 단계(`update_finish.rename_added_harness_markers`)가 계획보다
+# 먼저 옛 표시를 새 표시로 옮기게 한다.
+_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
+_GUEST_MANIFEST_END = "# <<< pm add-harness @render (local) <<<"
 # pm:data-literal:end
-
-# 읽기가 인식하는 세대 집합(현행 + 옛). 쓰기 경로는 이 튜플을 쓰지 않는다(현행 상수 단일).
-_GUEST_MANIFEST_BEGINS = (_GUEST_MANIFEST_BEGIN,) + _GUEST_MANIFEST_BEGIN_LEGACY
-_GUEST_MANIFEST_ENDS = (_GUEST_MANIFEST_END,) + _GUEST_MANIFEST_END_LEGACY
 
 
 def _extract_guest_manifest_block(text: str) -> str | None:
-    """engine.manifest 텍스트의 add-harness guest 절(마커 경계 포함)을 반환 — 없으면 None.
-
-    마커 비교는 **세대 집합 멤버십**이다(현행 + 옛 리터럴) — 옛 세대로 기록된 채택자 manifest 도
-    절을 인식해야 apply 재부착이 그것을 보존한다(단일 리터럴 비교였을 때 guest 절이 경고 없이
-    사라졌다)."""
+    """engine.manifest 텍스트의 add-harness guest 절(마커 경계 포함)을 반환 — 없으면 None."""
     lines = text.splitlines()
     begin = end = None
     for i, line in enumerate(lines):
         s = line.strip()
-        if s in _GUEST_MANIFEST_BEGINS:
+        if s == _GUEST_MANIFEST_BEGIN:
             begin = i
-        elif s in _GUEST_MANIFEST_ENDS and begin is not None:
+        elif s == _GUEST_MANIFEST_END and begin is not None:
             end = i
             break
     if begin is None or end is None or end < begin:
@@ -303,17 +290,14 @@ def _extract_guest_manifest_block(text: str) -> str | None:
 
 
 def _strip_guest_manifest_block(text: str) -> str:
-    """engine.manifest 텍스트에서 guest 절(마커 포함 + 선행 빈 줄)을 제거 — 마커 부재면 원문 그대로.
-
-    마커 비교는 추출과 같은 세대 집합이다 — 읽기 판정이 한쪽만 관용이면 옛 세대 manifest 에서
-    core 경로 집합(`_core_manifest_paths`)이 guest 라인을 core 로 세어 소유권 판정이 어긋난다."""
+    """engine.manifest 텍스트에서 guest 절(마커 포함 + 선행 빈 줄)을 제거 — 마커 부재면 원문 그대로."""
     lines = text.splitlines()
     begin = end = None
     for i, line in enumerate(lines):
         s = line.strip()
-        if s in _GUEST_MANIFEST_BEGINS:
+        if s == _GUEST_MANIFEST_BEGIN:
             begin = i
-        elif s in _GUEST_MANIFEST_ENDS and begin is not None:
+        elif s == _GUEST_MANIFEST_END and begin is not None:
             end = i
             break
     if begin is None or end is None or end < begin:

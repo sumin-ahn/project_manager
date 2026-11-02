@@ -60,7 +60,7 @@ def as_int(value: object) -> int:
         return 0
 
 
-def read_ledger(
+def read_records(
     path: Path | str,
     *,
     warning_sink: Callable[[str], None] | None = None,
@@ -85,7 +85,7 @@ def read_ledger(
     return data if isinstance(data, dict) else {}
 
 
-def write_ledger(path: Path | str, ledger: dict) -> None:
+def write_records(path: Path | str, ledger: dict) -> None:
     """장부 JSON을 같은 디렉터리의 고유 임시 파일을 거쳐 원자 교체한다.
 
     read-modify-write 직렬화는 호출자의 파일락이 보장한다. 여기서는 독자가 부분 JSON을 보지
@@ -121,7 +121,7 @@ def warn_retired_ack_field(gate: str, value: int) -> None:
     )
 
 
-def normalize_gate_entry(
+def normalize_review_ticket_entry(
     ledger: dict,
     gate: str,
     *,
@@ -341,16 +341,16 @@ def describe_pm_verified_resolution(declared: dict) -> str:
 
 
 # ── 장부 위치와 게이트 판정 (회귀 강등·릴리즈 차단·조회 표 공용) ─────────────
-REVIEW_ROUNDS_LEDGER_NAME = "review_rounds.json"
-_REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (additional_reviewer WAVE_SECTION_KEY)
+REVIEW_ROUNDS_RECORD_NAME = "review_rounds.json"
+_REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (additional_reviewer SESSION_BUDGET_SECTION_KEY)
 
 
 def _review_rounds_ledger(home) -> Path:
     """추가 리뷰 라운드 장부 경로 — `home.local_dir` 파생(테스트 격리 추종)."""
-    return home.local_dir / REVIEW_ROUNDS_LEDGER_NAME
+    return home.local_dir / REVIEW_ROUNDS_RECORD_NAME
 
 
-def gate_last_round(entry: dict) -> dict | None:
+def review_ticket_last_round(entry: dict) -> dict | None:
     """게이트의 **마지막 라운드 산출** — 기록이 없으면 None (공용 seam·사본 금지).
 
     "마지막이 어느 라운드인가"를 이 한 곳이 정한다 — append 순서가 아니라 예약 순번이다
@@ -358,7 +358,7 @@ def gate_last_round(entry: dict) -> dict | None:
     잔여 must-fix, 처분 선언의 근거 게이트 통과 여부. 사본을 두면 그 사본이 서로 다른 라운드를
     '최신'이라고 답한다. `rounds` 가 리스트가 아닌 손상 항목은 None 이다 — 이 seam 은 판정을
     돌려줄 뿐이라 손상의 **처분**은 호출부가 정한다(회귀 강등은 fail-open·릴리즈는 fail-closed·
-    `gate_entry_corruption`)."""
+    `review_ticket_entry_corruption`)."""
     rounds = entry.get("rounds")
     if not isinstance(rounds, list):
         return None
@@ -371,14 +371,14 @@ def gate_last_round(entry: dict) -> dict | None:
 def _last_round_verdict(entry: dict) -> int | None:
     """게이트의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
 
-    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `gate_last_round` —
+    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `review_ticket_last_round` —
     additional_reviewer 조회 표와 같은 한 규칙)."""
-    outcome = gate_last_round(entry)
+    outcome = review_ticket_last_round(entry)
     verdict = outcome.get("verdict") if outcome is not None else None
     return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
 
 
-def gate_residual_must_fix(entry: dict) -> int | None:
+def review_ticket_residual_must_fix(entry: dict) -> int | None:
     """마지막 라운드가 남긴 must-fix 잔여 — 3-상태 (공용 seam).
 
     반환은 `0`(잔여 없음) · `N>0`(N 건) · **`None`(미상)** 이다. 미상은 "호출은 됐는데 판정이
@@ -390,7 +390,7 @@ def gate_residual_must_fix(entry: dict) -> int | None:
     다만 **통과(rc 0)로 끝난 라운드의 미상은 비대상(0)** 이다 — 그쪽은 판정이 났고 must-fix 섹션이
     없었을 뿐이라 반려 사실이 없다. suggestion 은 어느 경우에도 이 축에 들어오지 않는다(이월 허용).
     """
-    outcome = gate_last_round(entry)
+    outcome = review_ticket_last_round(entry)
     if outcome is None:
         return 0
     value = outcome.get("must_fix")
@@ -399,18 +399,18 @@ def gate_residual_must_fix(entry: dict) -> int | None:
     return 0 if _last_round_verdict(entry) == 0 else None
 
 
-def gate_has_residual(entry: dict) -> bool:
+def review_ticket_has_residual(entry: dict) -> bool:
     """처분이 필요한 잔여가 있는가 — N>0 **또는 미상** (공용 seam).
 
     릴리즈 차단과 처분 선언(`--resolve-review`)이 이 한 술어를 공유한다. 두 표면이 갈리면 차단은
     되는데 선언은 거부되는 데드락이 난다(미상 게이트가 정확히 그 형상이다)."""
-    residual = gate_residual_must_fix(entry)
+    residual = review_ticket_residual_must_fix(entry)
     return residual is None or residual > 0
 
 
-def gate_residual_label(entry: dict) -> str:
+def review_ticket_residual_label(entry: dict) -> str:
     """잔여 표기 — `N건` / `미상(판정 무효 라운드)` (차단 사유·선언 응답 공용)."""
-    residual = gate_residual_must_fix(entry)
+    residual = review_ticket_residual_must_fix(entry)
     return "미상(판정 무효 라운드)" if residual is None else f"{residual}건"
 
 
@@ -422,7 +422,7 @@ def gate_residual_label(entry: dict) -> str:
 # 시에만 인정된다(추가 리뷰어 release 축이 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
 
 # 처분 표기 어휘 — 선언 응답(additional_reviewer)과 차단 사유(여기)가 같은 말을 쓰게.
-GATE_RESOLUTION_LABELS: dict[str, str] = {
+REVIEW_TICKET_RESOLUTION_LABELS: dict[str, str] = {
     RESOLUTION_PM_VERIFIED: "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)",
 }
 
@@ -431,7 +431,7 @@ _GATE_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
 _MISSING_BINDING = object()   # `round_sequence` 키 부재와 명시 null(정상 값)을 구분하는 표식.
 
 
-def gate_entry_corruption(entry: object) -> str | None:
+def review_ticket_entry_corruption(entry: object) -> str | None:
     """게이트 항목이 **해석 가능한 형상**인지 — 아니면 사유 (정상이면 None·공용 seam).
 
     "존재하는데 읽을 수 없음"은 "잔여 없음"이 아니다. 손상 형상마다 조용한 통과 조각이 생기는 것이
@@ -451,7 +451,7 @@ def gate_entry_corruption(entry: object) -> str | None:
     return None
 
 
-def gate_round_binding(entry: dict) -> dict:
+def review_ticket_round_binding(entry: dict) -> dict:
     """게이트의 **현재 라운드 좌표** — `{round_sequence, rounds}` (선언·검증 공용 seam).
 
     처분은 "그때 그 잔여"에 대한 선언이다. 좌표 없이 게이트 단위로만 남기면 처분 뒤에 새 반려
@@ -460,14 +460,14 @@ def gate_round_binding(entry: dict) -> dict:
     산출 수가 증가를 잡는다."""
     rounds = entry.get("rounds")
     rounds = [row for row in rounds if isinstance(row, dict)] if isinstance(rounds, list) else []
-    last = gate_last_round(entry)
+    last = review_ticket_last_round(entry)
     sequence = last.get("sequence") if last is not None else None
     if isinstance(sequence, bool) or not isinstance(sequence, int):
         sequence = None
     return {"round_sequence": sequence, "rounds": len(rounds)}
 
 
-def gate_resolution(entry: dict) -> dict | None:
+def review_ticket_resolution(entry: dict) -> dict | None:
     """게이트 처분 선언의 해석 — 미선언·형식 불명이면 None(=미처분·공용 seam).
 
     읽을 수 없는 값은 처분이 아니다(fail-closed) — 손상된 한 줄이 릴리즈 차단을 **여는** 방향으로
@@ -501,12 +501,12 @@ def gate_resolution(entry: dict) -> dict | None:
     return declared
 
 
-def gate_resolution_is_stale(entry: dict, declared: dict) -> bool:
+def review_ticket_resolution_is_stale(entry: dict, declared: dict) -> bool:
     """처분이 결속한 라운드 좌표가 **지금 장부와 다른가** (다르면 미처분 취급·공용 seam).
 
     선언 이후 새 라운드가 기록됐다면 그 잔여는 처분되지 않은 새 사실이다. 좌표가 뒤로 간 경우
     (장부 손편집)도 같은 처분이다 — 어느 쪽이든 선언이 가리키던 상태가 아니다."""
-    current = gate_round_binding(entry)
+    current = review_ticket_round_binding(entry)
     return any(current[key] != declared.get(key) for key in _GATE_RESOLUTION_BINDING_KEYS)
 
 
@@ -521,20 +521,20 @@ def _gate_disposition_problem(
 
     순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
     비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
-    → `pm-verified` 발동 증거의 라이브 재검증. 폐지 kind는 `gate_resolution=None`이라
+    → `pm-verified` 발동 증거의 라이브 재검증. 폐지 kind는 `review_ticket_resolution=None`이라
     미처분으로 fail-loud 한다."""
-    corruption = gate_entry_corruption(entry)
+    corruption = review_ticket_entry_corruption(entry)
     if corruption is not None:
         return f"  · {gate}: {corruption} — 남은 must-fix 를 확인할 수 없어 차단합니다"
-    if not gate_has_residual(entry):
+    if not review_ticket_has_residual(entry):
         return None
-    prefix = f"  · {gate}: 최종 라운드 must_fix {gate_residual_label(entry)}"
-    declared = gate_resolution(entry)
+    prefix = f"  · {gate}: 최종 라운드 must_fix {review_ticket_residual_label(entry)}"
+    declared = review_ticket_resolution(entry)
     if declared is None:
         return f"{prefix} · 처분 선언 없음"
-    label = f"{GATE_RESOLUTION_LABELS[declared['kind']]} 선언"
-    if gate_resolution_is_stale(entry, declared):
-        current = gate_round_binding(entry)
+    label = f"{REVIEW_TICKET_RESOLUTION_LABELS[declared['kind']]} 선언"
+    if review_ticket_resolution_is_stale(entry, declared):
+        current = review_ticket_round_binding(entry)
         return (f"{prefix} · {label} 이후 새 라운드가 기록됐습니다 "
                 f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
                 f"#{current['round_sequence']}/{current['rounds']}건) · 새 남은 지적으로 다시 선언하세요")
@@ -564,8 +564,8 @@ def _gate_disposition_problem(
 #     있고, 수렴-형상 게이트(`_convergence_refusal`)의 판정 입력이기도 하다. 게이트 종결 시점의
 #     **처분 선언**(`resolution` — `--resolve-review`)도 같은 항목에 실린다. 처분 선언은 릴리즈
 #     차단(`board.py livegate record`)이 읽는 절이고,
-#     그 값의 해석은 `gate_resolution` 이 소유한다(여기선 구조만 보존).
-#   · wave 축 — 예약 키 `wave`(`WAVE_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 게이트 상한만
+#     그 값의 해석은 `review_ticket_resolution` 이 소유한다(여기선 구조만 보존).
+#   · wave 축 — 예약 키 `wave`(`SESSION_BUDGET_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 게이트 상한만
 #     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 게이트 합계를 이 예산이 묶는다. 두 축이 한
 #     dict 를 공유하므로 **예약 키를 게이트 이름으로 쓰는 것은 기계로 막는다**(`_reserved_gate_error`
 #     가 `--review-ticket` 을 거르고 `_gate_entry` 가 그 키를 fail-loud 로 거부·집계 순회는 건너뛴다).
@@ -602,7 +602,7 @@ def _legacy_round_ledger_path(home) -> Path:
 
 def _read_round_ledger_at(path: Path) -> dict:
     """지정 경로의 라운드 장부를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
-    return read_ledger(path)
+    return read_records(path)
 
 
 def _load_round_ledger(home) -> dict:

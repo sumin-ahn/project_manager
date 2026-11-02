@@ -15,7 +15,7 @@ from typing import NamedTuple
 import difflib
 
 
-def instance_owned_template_delta_lines(
+def instance_owned_template_change_lines(
         dest_root: Path, source_root: Path, *,
         git_runner: install_git.GitRunner | None = None) -> list[str]:
     """instance-owned 파일의 baseline template 세대 ↔ 현행 세대 델타 요약.

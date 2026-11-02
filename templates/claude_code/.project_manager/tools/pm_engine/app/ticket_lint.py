@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 from pm_engine.domain import round_rules, ticket_rules
 from pm_engine.infra import cluster_store, pm_paths, round_store, ticket_store
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 from pm_engine.app import areas_lint
 from pm_engine.app import body_lint
 from pm_engine.app import conf_lint
@@ -241,7 +241,7 @@ def lint_rounds(home) -> list[tuple[str, str, str]]:
             continue
         ticket = entry.name
         try:
-            for problem in round_seed.verify_rounds(pm_paths.tickets_dir(home), ticket):
+            for problem in round_form.verify_rounds(pm_paths.tickets_dir(home), ticket):
                 findings.append((ticket, problem.code, problem.detail))
             leftovers = sorted(
                 item.name for item in entry.iterdir()
@@ -267,7 +267,7 @@ def lint_clusters(home) -> list[tuple[str, str, str]]:
 
     장부는 운영 재료지 push 결함이 아니다 — 보이게만 한다. 판정 입력은 **장부 파일 안에만**
     있다: 이 표면은 인자를 받지 않고 장부에도 코드 트리·repo 를 적는 자리가 없어
-    (`CLUSTER_LEDGER_KEYS`) 통합 브랜치 실재를 잴 트리를 지목할 방법이 없다. 트리를 추측해서
+    (`CLUSTER_RECORD_KEYS`) 통합 브랜치 실재를 잴 트리를 지목할 방법이 없다. 트리를 추측해서
     재면 PM 홈(코드 없는 트리)에서 "브랜치 부재"가 상시 참이 된다 — 그래서 브랜치 실재는
     **트리를 든 표면**(생성 `_cluster_ensure_branch` · 확인 실행 `cli.delegate_cmd._cluster_confirmation_tree` ·
     공용 트리 해소 `app.cluster_code_tree.resolve_code_tree`)만 판정한다.

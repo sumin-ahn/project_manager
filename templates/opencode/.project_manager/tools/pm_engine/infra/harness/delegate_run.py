@@ -288,7 +288,7 @@ def _timeout_failure_result(harness: str, timeout: int,
         "stdout": exc.output or "",
         "stderr": f"{reason} {exc.stderr or ''}".rstrip(),
         "timed_out": True,
-        delegate_run_rules.RUN_RESULT_TIMEOUT_AXIS: timeout_axis,
+        delegate_run_rules.RUN_RESULT_TIMEOUT_KIND: timeout_axis,
         delegate_run_rules.RUN_RESULT_TIMEOUT_THRESHOLD_SEC: threshold,
     }
     if silence_seconds is not None:
@@ -303,7 +303,7 @@ def _timeout_result_summary(result: watchdog.RunResult, *, fallback_timeout: int
 
     주입 runner가 구형 최소 dict만 반환한 경우에만 그 **해당 attempt**의 해소 timeout으로
     폴백한다. primary 값을 fallback 안내에 재사용하지 않는다."""
-    axis = result.get(delegate_run_rules.RUN_RESULT_TIMEOUT_AXIS, "wall")
+    axis = result.get(delegate_run_rules.RUN_RESULT_TIMEOUT_KIND, "wall")
     threshold = result.get(delegate_run_rules.RUN_RESULT_TIMEOUT_THRESHOLD_SEC, fallback_timeout)
     silence = result.get(delegate_run_rules.RUN_RESULT_SILENCE_SEC)
     if axis == "idle":
@@ -366,7 +366,7 @@ def _default_run_fn(
         timeout_axis = getattr(exc, "timeout_axis", None)
         threshold = getattr(exc, "threshold_seconds", None)
         silence = getattr(exc, "silence_seconds", None)
-        if timeout_axis == watchdog.TIMEOUT_AXIS_WALL:
+        if timeout_axis == watchdog.TIMEOUT_KIND_WALL:
             wall_exc = subprocess.TimeoutExpired(
                 argv, threshold if threshold is not None else timeout,
                 output=getattr(exc, "output", "") or "",
@@ -385,7 +385,7 @@ def _default_run_fn(
                   "stderr": f"{delegate_run_rules.OPENCODE_STALL_MARKER} {exc}] {partial_stderr}".rstrip(),
                   "timed_out": False, delegate_run_rules.RUN_RESULT_STALLED: True}
         if timeout_axis is not None:
-            result[delegate_run_rules.RUN_RESULT_TIMEOUT_AXIS] = timeout_axis
+            result[delegate_run_rules.RUN_RESULT_TIMEOUT_KIND] = timeout_axis
         if threshold is not None:
             result[delegate_run_rules.RUN_RESULT_TIMEOUT_THRESHOLD_SEC] = threshold
         if silence is not None:

@@ -8,7 +8,7 @@ from pm_engine.cli import bootstrap_card
 
 from pm_engine.cli import bootstrap as bootstrap_cli
 
-from _pool_seams import bind_board, bind_pool
+from _pool_overrides import bind_board, bind_pool
 
 import importlib.util
 import json

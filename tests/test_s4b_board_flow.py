@@ -11,7 +11,7 @@ def test_cluster_record_does_not_cross_homes(tmp_path):
 
 def test_strict_cluster_read_does_not_turn_corruption_into_empty(tmp_path):
     h = pm_paths.home_at(tmp_path / 'a')
-    p = cluster_store.cluster_ledger_path(h, 'unit'); p.parent.mkdir(parents=True)
+    p = cluster_store.cluster_record_path(h, 'unit'); p.parent.mkdir(parents=True)
     p.write_text('---\nid: [unterminated\n---\n', encoding='utf-8')
     rows, error = cluster_store.all_clusters_strict(h)
     assert rows == [] and error and '전수 확인' in error
@@ -21,7 +21,8 @@ def test_command_classifications_stay_disjoint():
     r=board_command_rules._READ_SUBCOMMANDS
     s=board_command_rules._SIDECAR_SUBCOMMANDS
     assert not (m&r or m&s or r&s)
-    assert 'claim' in m and 'show' in r and 'git-anchor' in s
+    assert 'claim' in m and 'show' in r
+    assert s == frozenset({'regression', 'live-test', 'git-grant', 'hook-context', 'hook-tool'})
 
 def test_no_todo_warning_without_a_ledger_keeps_no_judgment(tmp_path):
     h=pm_paths.home_at(tmp_path / 'a')

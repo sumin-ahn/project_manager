@@ -1189,101 +1189,73 @@ def test_prune_guest_block_ancestor_and_full_promotion(pm_update):
     assert manifest_store._prune_guest_block_owned_by_core(None, ".opencode\n") is None
 
 
-# ── guest 마커 세대 하위호환 (T-0571) ────────────────────────────────────────
-# 아래 세 리터럴은 **엔진 상수를 참조하지 않고 테스트 파일에 직접 박은** 바이트다. 상수를 참조하면
-# 리터럴이 통째로 바뀌어도 테스트가 green 이라(그래서 이 결함이 30여 릴리즈 생존했다) 채택자
-# 디스크에 이미 기록된 형태를 고정하지 못한다. 세대가 늘면 여기에 그 세대 리터럴을 추가한다.
-GUEST_BEGIN_LITERAL_CURRENT = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
-GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 = (
-    "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>")
-GUEST_END_LITERAL = "# <<< pm add-harness guest @render (local) <<<"
+# ── 추가 하네스 구획 표시 ─────────────────────────────────────────────────────
+# 아래 리터럴은 **엔진 상수를 참조하지 않고 테스트 파일에 직접 적은** 바이트다. 상수를 참조하면
+# 리터럴이 통째로 바뀌어도 테스트가 green 이라 채택자 디스크에 이미 기록된 형태를 고정하지 못한다.
+GUEST_BEGIN_LITERAL_CURRENT = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
+GUEST_END_LITERAL = "# <<< pm add-harness @render (local) <<<"
+GUEST_BEGIN_LITERAL_OLD = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
+GUEST_BEGIN_LITERAL_OLDER = "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>"
+GUEST_END_LITERAL_OLD = "# <<< pm add-harness guest @render (local) <<<"
 
 
 def test_guest_marker_literals_match_current_constants(pm_update):
-    """세대 고정 가드: 현행 상수 값 == 테스트에 박은 문자열 리터럴.
-
-    리터럴이 또 바뀌면 이 테스트가 red 로 알린다 — 그때 옛 값을 `_GUEST_MANIFEST_BEGIN_LEGACY`
-    에 추가하고(읽기 관용) 여기 CURRENT 를 갱신하는 것이 정상 절차다."""
+    """새 표시 상수 값 == 테스트에 적은 리터럴, 이관 표 = 옛 표시 세 가지 → 새 표시."""
     assert manifest_rules._GUEST_MANIFEST_BEGIN == GUEST_BEGIN_LITERAL_CURRENT
     assert manifest_rules._GUEST_MANIFEST_END == GUEST_END_LITERAL
-    assert GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 in manifest_rules._GUEST_MANIFEST_BEGIN_LEGACY, \
-        "옛 세대 시작 마커가 legacy 튜플에서 빠졌다(옛 채택자 guest 절이 소실된다)"
-    assert GUEST_BEGIN_LITERAL_CURRENT not in manifest_rules._GUEST_MANIFEST_BEGIN_LEGACY, \
-        "현행 리터럴이 legacy 튜플에 있다(쓰기 단일 세대 위반)"
+    assert update_finish._OLD_ADDED_HARNESS_MARKERS == {
+        GUEST_BEGIN_LITERAL_OLD: GUEST_BEGIN_LITERAL_CURRENT,
+        GUEST_BEGIN_LITERAL_OLDER: GUEST_BEGIN_LITERAL_CURRENT,
+        GUEST_END_LITERAL_OLD: GUEST_END_LITERAL,
+    }
 
 
-def test_extract_guest_block_recognizes_legacy_marker(pm_update):
-    """옛 리터럴로 기록된 manifest 도 guest 절로 인식된다 — 단일 비교였을 때 절이 조용히 사라졌다."""
-    text = ("# m\n.project_manager/tools/board.py\n\n"
-            + GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 + "\n"
-            + ".codex/agents    @render @target-owned\n"
-            + GUEST_END_LITERAL + "\n")
-    block = manifest_rules._extract_guest_manifest_block(text)
-    assert block is not None, "옛 세대 마커를 인식 못 함(guest 절 소실 경로)"
-    assert ".codex/agents" in block
-    # strip 도 같은 세대 집합 — core 경로 집합에 guest 라인이 섞이지 않는다(소유권 판정 정합).
-    assert manifest_rules._core_manifest_paths(text) == {".project_manager/tools/board.py"}
+def test_extract_guest_block_reads_only_current_marker(pm_update):
+    """읽기는 새 표시 하나만 받는다 — 옛 표시 구획은 구획이 아니라 core 주석·행으로 읽힌다."""
+    current = ("# m\n.project_manager/tools/board.py\n\n"
+               + GUEST_BEGIN_LITERAL_CURRENT + "\n"
+               + ".codex/agents    @render @target-owned\n"
+               + GUEST_END_LITERAL + "\n")
+    block = manifest_rules._extract_guest_manifest_block(current)
+    assert block is not None and ".codex/agents" in block
+    assert manifest_rules._core_manifest_paths(current) == {".project_manager/tools/board.py"}
+    for old_begin in (GUEST_BEGIN_LITERAL_OLD, GUEST_BEGIN_LITERAL_OLDER):
+        old = ("# m\n.project_manager/tools/board.py\n\n" + old_begin + "\n"
+               + ".codex/agents    @render @target-owned\n" + GUEST_END_LITERAL_OLD + "\n")
+        assert manifest_rules._extract_guest_manifest_block(old) is None
+        assert manifest_rules._strip_guest_manifest_block(old) == old
+        assert ".codex/agents" in manifest_rules._core_manifest_paths(old)
 
 
-def test_migrate_legacy_guest_markers_replaces_and_is_idempotent(pm_update):
-    """옛 시작 마커 → 현행 리터럴 치환(changed=True) · 현행 입력은 무변경(changed=False)."""
-    legacy = (GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 + "\n.codex/agents    @render @target-owned\n"
-              + GUEST_END_LITERAL + "\n")
-    migrated, changed = manifest_store._migrate_legacy_guest_markers(legacy)
-    assert changed is True
-    assert GUEST_BEGIN_LITERAL_CURRENT in migrated
-    assert GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 not in migrated
-    assert migrated.endswith("\n"), "트레일링 개행이 사라졌다(멱등 비교가 어긋난다)"
-    # 멱등 — 이미 현행이면 재치환 0.
-    again, changed_again = manifest_store._migrate_legacy_guest_markers(migrated)
-    assert changed_again is False and again == migrated
-    # 마커 자체가 없는 텍스트도 무변경.
-    plain = "# m\n.project_manager/tools/board.py\n"
-    assert manifest_store._migrate_legacy_guest_markers(plain) == (plain, False)
+def test_rename_added_harness_markers_moves_old_markers_once(pm_update, tmp_path, capsys):
+    """옛 표시 줄만 새 표시로 바꾸고(개행·다른 줄·권한 그대로) dry-run 은 쓰지 않으며 두 번째는 0줄이다."""
+    for old_begin in (GUEST_BEGIN_LITERAL_OLD, GUEST_BEGIN_LITERAL_OLDER):
+        for newline in ("\n", "\r\n"):
+            dest = tmp_path / f"dest-{len(old_begin)}-{len(newline)}"
+            manifest = dest / ".project_manager" / "engine.manifest"
+            manifest.parent.mkdir(parents=True)
+            rows = ["# m", ".project_manager/tools/board.py", "", old_begin,
+                    ".codex/agents    @render @target-owned", GUEST_END_LITERAL_OLD]
+            before = newline.join(rows) + newline
+            manifest.write_bytes(before.encode("utf-8"))
+            if posix_mode_supported():
+                manifest.chmod(0o640)
 
+            assert update_finish.rename_added_harness_markers(dest, write=False) == 2
+            assert "추가 하네스 구획 표시 2줄을 새 글자로 이동 예정" in capsys.readouterr().out
+            assert manifest.read_bytes() == before.encode("utf-8")
 
-def test_copy_manifest_preserving_guest_migrates_legacy_marker(pm_update, tmp_path, capsys):
-    """옛 리터럴 dest + 신 upstream 왕복 → guest 절 보존 + 결과 마커가 **현행 리터럴** + 1줄 표기."""
-    sp, dst = tmp_path / "up.manifest", tmp_path / "dest.manifest"
-    sp.write_text("# m\n.project_manager/tools/board.py\n", encoding="utf-8")
-    dst.write_text(
-        "# m\n.project_manager/tools/board.py\n\n"
-        + GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 + "\n"
-        + ".codex/agents    @render @target-owned\n"
-        + GUEST_END_LITERAL + "\n", encoding="utf-8")
+            assert update_finish.rename_added_harness_markers(dest, write=True) == 2
+            assert "추가 하네스 구획 표시 2줄을 새 글자로 이동(" in capsys.readouterr().out
+            expected = rows[:3] + [GUEST_BEGIN_LITERAL_CURRENT, rows[4], GUEST_END_LITERAL]
+            assert manifest.read_bytes() == (newline.join(expected) + newline).encode("utf-8")
+            if posix_mode_supported():
+                assert stat.S_IMODE(manifest.stat().st_mode) == 0o640
 
-    manifest_store._copy_manifest_preserving_guest(sp, dst)
-
-    after = dst.read_text(encoding="utf-8")
-    assert GUEST_BEGIN_LITERAL_CURRENT in after, "재부착 마커가 현행 리터럴이 아님"
-    assert GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 not in after, "옛 리터럴이 잔존(세대 공존)"
-    assert ".codex/agents" in after, "guest 절이 사라졌다(이 결함의 본체)"
-    assert "추가 하네스 절 마커 버전 이관" in capsys.readouterr().out, \
-        "조용한 변환(표기 없음)"
-    # 재실행 멱등 — 이미 현행이라 마이그레이션 표기가 다시 뜨지 않는다.
-    manifest_store._copy_manifest_preserving_guest(sp, dst)
-    assert "추가 하네스 절 마커 버전 이관" not in capsys.readouterr().out
-
-
-def test_plan_manifest_self_prop_updates_on_legacy_guest_marker(pm_update, tmp_path):
-    """옛 세대 마커는 core 가 같아도 engine.manifest update 로 계획된다 — apply 가 도는 이 change 가
-    마커 마이그레이션의 유일한 도달 경로다(계획에서 빠지면 옛 세대가 영구 잔존)."""
-    source, dest = tmp_path / "src", tmp_path / "dest"
-    core = "# m\n" + MANIFEST_SELF_REL + "\n"
-    (source / ".project_manager").mkdir(parents=True)
-    (source / ".project_manager" / "engine.manifest").write_text(core, encoding="utf-8")
-    _track_source_tree(source)
-    (dest / ".project_manager").mkdir(parents=True)
-    (dest / ".project_manager" / "engine.manifest").write_text(
-        core.rstrip("\n") + "\n\n" + GUEST_BEGIN_LITERAL_LEGACY_V1_4_3
-        + "\n.codex/agents    @render @target-owned\n" + GUEST_END_LITERAL + "\n",
-        encoding="utf-8")
-    manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
-
-    changes, _missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), source, manifest, dest_root=dest, conf=_local_conf_of(pm_update, dest))
-
-    assert any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
-        "옛 세대 마커 dest 가 계획에 안 실려 마이그레이션이 영영 도달하지 않는다"
+            assert update_finish.rename_added_harness_markers(dest, write=True) == 0
+            assert capsys.readouterr().out == ""
+            assert manifest.read_bytes() == (newline.join(expected) + newline).encode("utf-8")
+    assert update_finish.rename_added_harness_markers(tmp_path / "no-manifest", write=True) == 0
 
 
 def _write_selfprop_dest_manifest(dest: Path, core: str, begin_literal: str) -> Path:
@@ -1295,34 +1267,6 @@ def _write_selfprop_dest_manifest(dest: Path, core: str, begin_literal: str) -> 
         + "\n.codex/agents    @render @target-owned\n" + GUEST_END_LITERAL + "\n",
         encoding="utf-8")
     return manifest
-
-
-def test_plan_multi_harness_manifest_updates_on_legacy_guest_marker(pm_update, tmp_path):
-    """**다중-harness 합집합 분기**(`manifest_source_text`)도 옛 세대 마커를 update 사유로 본다.
-
-    합집합 텍스트는 upstream 실파일이 아니라 인메모리라 별도 분기를 탄다 — 거기에 마커 축이 없으면
-    core 가 같은 다중-harness 채택자는 마이그레이션이 담긴 change 를 영영 못 받아 세대가 잔존한다
-    (단일 flavor 채택자만 수렴하는 형상 의존 결함)."""
-    source, dest = tmp_path / "src", tmp_path / "dest"
-    core = "# m\n" + MANIFEST_SELF_REL + "\n"
-    (source / ".project_manager").mkdir(parents=True)
-    _track_source_tree(source)
-    manifest_file = _write_selfprop_dest_manifest(
-        dest, core, GUEST_BEGIN_LITERAL_LEGACY_V1_4_3)
-    manifest = [manifest_rules.ManifestEntry(MANIFEST_SELF_REL)]
-
-    changes, _missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
-        source, manifest, dest_root=dest, manifest_source_text=core, conf=_local_conf_of(pm_update, dest))
-
-    assert any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
-        "합집합 분기에서 옛 세대 마커 dest 가 계획에 안 실림(마이그레이션 미도달)"
-
-    update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
-
-    after = manifest_file.read_text(encoding="utf-8")
-    assert GUEST_BEGIN_LITERAL_CURRENT in after, "적용 후 마커가 현행 리터럴이 아님"
-    assert GUEST_BEGIN_LITERAL_LEGACY_V1_4_3 not in after, "옛 리터럴 잔존(세대 공존)"
-    assert ".codex/agents" in after, "guest 절이 사라졌다"
 
 
 def test_plan_multi_harness_manifest_no_churn_with_current_marker(pm_update, tmp_path):
@@ -1339,21 +1283,6 @@ def test_plan_multi_harness_manifest_no_churn_with_current_marker(pm_update, tmp
 
     assert not any(str(r).replace("\\", "/") == MANIFEST_SELF_REL for r, _s, _d, _k in changes), \
         f"현행 마커인데 합집합 분기가 영구 update(churn): {changes}"
-
-
-def test_resolve_manifest_selfheal_ignores_legacy_guest_block_and_heals(pm_update, tmp_path):
-    """옛 세대 마커 guest 절도 core 비교에서 제외 — 승격(heal)이 막히지 않는다(영구 diverged 방지)."""
-    source = tmp_path / "src"
-    _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
-    _write_dest_manifest(tmp_path / "dest", [
-        SENTINEL_REL, GUEST_BEGIN_LITERAL_LEGACY_V1_4_3,
-        ".codex/agents    @render @target-owned", GUEST_END_LITERAL])
-
-    result = update_manifest.resolve_manifest_selfheal(tmp_path / "dest", source)
-
-    assert result["status"] == "heal", \
-        f"옛 세대 guest 절이 core 비교를 오염(diverged): {result['status']}"
-    assert ".codex/agents" not in result["removed"], result["removed"]
 
 
 # ── guest 절 엔진 행 동기 채널 (T-0574) ──────────────────────────────────────
@@ -1734,9 +1663,7 @@ def test_guest_source_declarations_do_not_promote_flavor_union(pm_update, tmp_pa
 
 
 def test_copy_manifest_preserving_guest_backfills_and_prunes_promoted(pm_update, tmp_path):
-    """절 재부착이 파생 엔진 행을 기록하고, core 로 승격된 경로는 차감한다 (⑦).
-
-    마커 세대 마이그레이션 → 백필 순서로 조합된다(구 세대 절에도 파생이 도달)."""
+    """절 재부착이 파생 엔진 행을 기록하고, core 로 승격된 경로는 차감한다 (⑦)."""
     upstream = tmp_path / "up.manifest"
     dest_manifest = tmp_path / "dest.manifest"
     upstream.write_text(
@@ -1744,7 +1671,7 @@ def test_copy_manifest_preserving_guest_backfills_and_prunes_promoted(pm_update,
         ".opencode/plugins    @source=templates/opencode/.opencode/plugins\n",
         encoding="utf-8")
     dest_manifest.write_text(
-        "# core\n\n" + GUEST_BEGIN_LITERAL_LEGACY_V1_4_3
+        "# core\n\n" + GUEST_BEGIN_LITERAL_CURRENT
         + "\n.opencode/agents    @render @target-owned"
         + "\n.opencode/plugins    @target-owned\n"
         + GUEST_END_LITERAL + "\n",
@@ -1757,7 +1684,7 @@ def test_copy_manifest_preserving_guest_backfills_and_prunes_promoted(pm_update,
     text = dest_manifest.read_text(encoding="utf-8")
     block = manifest_rules._extract_guest_manifest_block(text)
     assert block is not None and block.startswith(GUEST_BEGIN_LITERAL_CURRENT), \
-        "마커 세대 마이그레이션이 백필 조합에서 유실됐다"
+        "백필 병합 뒤 구획 시작 표시가 사라졌다"
     paths = {line.split()[0] for line in block.splitlines()
              if line.strip() and not line.strip().startswith("#")}
     assert ".opencode/lib" in paths, "파생 엔진 행이 기록되지 않았다"
