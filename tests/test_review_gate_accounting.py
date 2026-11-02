@@ -1,16 +1,16 @@
 """게이트 회계 자동 유도 — `--ticket` 실행의 조용한 무기록 폐쇄 (T-0626).
 
 `additional_reviewer.py` 를 `--ticket`(+`--paths`)만으로 돌리면 리뷰는 정상 호출·과금되면서 라운드
-예약·기록·상한 회계가 전부 생략됐다(`_reserve_round_budget` 첫 분기 = `--gate` 미지정 → 상한 대상
+예약·기록·상한 회계가 전부 생략됐다(`_reserve_round_budget` 첫 분기 = `--review-ticket` 미지정 → 상한 대상
 밖·무기록). 실측(2026-08-10): 하루 8+ 라운드가 장부에 0건이라, 반려 must-fix 가 릴리즈 차단
 표면(`board.py livegate record`)에 도달하지 못했다. 이 파일은 그 함정이 기계로 닫혔음을 단언한다:
 
-  ① 자동 유도 — `--gate` 미지정 `--ticket` 실행은 게이트를 그 티켓으로 유도해 라운드·wave 를
-     기록한다(명시 `--gate` 가 항상 우선·유도 사실은 stderr 1줄). 조회(`--rounds-report`)·기록
-     (`--resolve-gate`) 면은 유도 대상이 아니다 — 거기서 `--gate` 는 필터·무시 목록이다.
-  ② opt-out — 회계 밖 자문 실행은 명시 `--no-gate` 로만 열리고, 무기록·비회계 사실을 loud 로
-     표기한다. `--gate` 와 동시 지정은 부작용 0 지점에서 거부한다.
-  ③ 회귀 무변경 — 명시 `--gate` 실행은 종전 그대로고 폐지 플래그는 파서에서 거부된다.
+  ① 자동 유도 — `--review-ticket` 미지정 `--ticket` 실행은 게이트를 그 티켓으로 유도해 라운드·wave 를
+     기록한다(명시 `--review-ticket` 이 항상 우선·유도 사실은 stderr 1줄). 조회(`--rounds-report`)·기록
+     (`--resolve-review`) 면은 유도 대상이 아니다 — 거기서 `--review-ticket` 은 필터·무시 목록이다.
+  ② opt-out — 회계 밖 자문 실행은 명시 `--no-review-ticket` 으로만 열리고, 무기록·비회계 사실을 loud 로
+     표기한다. `--review-ticket` 과 동시 지정은 부작용 0 지점에서 거부한다.
+  ③ 회귀 무변경 — 명시 `--review-ticket` 실행은 종전 그대로고 폐지 플래그는 파서에서 거부된다.
 
 hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(형제 `test_additional_reviewer.py`·
 `test_review_convergence_gate.py` 동일 규약), PM 홈 해소·touches·extract_diff·run_review 를 주입해
@@ -48,7 +48,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 유도 고지의 식별 접두 — 무기록 안내가 처방으로 같은 낱말을 쓰므로 접두로 구분한다.
-_DERIVED_PREFIX = "게이트 자동 유도: --gate"
+_DERIVED_PREFIX = "게이트 자동 유도: --review-ticket"
 
 TICKET = "T-" + "0626"
 OTHER_GATE = "T-" + "0626-gate"
@@ -220,8 +220,8 @@ def _run_additional_reviewer(project: Path, script: Path, *argv: str) -> subproc
 def _args(**overrides) -> argparse.Namespace:
     """유도 판정이 읽는 인자면만 담은 Namespace (순수 헬퍼 단언용)."""
     base = {
-        "gate": None, "ticket": None, "no_gate": False,
-        "rounds_report": False, "resolve_gate": None, "dry_run": False,
+        "review_ticket": None, "ticket": None, "no_review_ticket": False,
+        "rounds_report": False, "resolve_review": None, "dry_run": False,
     }
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -271,10 +271,10 @@ def test_derived_gate_hits_the_convergence_cap_like_an_explicit_one(
 
 
 def test_explicit_gate_wins_over_the_ticket(external, monkeypatch, tmp_path, capsys):
-    """명시 `--gate` 는 항상 우선 — 유도하지 않고 고지도 내지 않는다 (기존 호출 무변경)."""
+    """명시 `--review-ticket` 은 항상 우선 — 유도하지 않고 고지도 내지 않는다 (기존 호출 무변경)."""
     _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--ticket", TICKET, "--gate", OTHER_GATE]) == 0
+    assert external.main(["--ticket", TICKET, "--review-ticket", OTHER_GATE]) == 0
     ledger = _ledger(tmp_path)
     assert OTHER_GATE in ledger and TICKET not in ledger
     assert _DERIVED_PREFIX not in capsys.readouterr().err
@@ -290,8 +290,8 @@ def test_paths_only_real_send_requires_gate_or_explicit_opt_out(
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
     assert "실 호출에는 게이트 회계 지정 또는 명시 opt-out" in err
-    assert "--ticket <T-NNNN>" in err and "--gate <게이트>" in err
-    assert "--no-gate" in err
+    assert "--ticket <T-NNNN>" in err and "--review-ticket <게이트>" in err
+    assert "--no-review-ticket" in err
 
 
 def test_real_send_help_examples_choose_gate_accounting(external):
@@ -302,7 +302,7 @@ def test_real_send_help_examples_choose_gate_accounting(external):
         for line in cli_additional_reviewer.build_arg_parser().format_help().splitlines()
         if line.strip().startswith(prefix)
     ]
-    non_sending_modes = {"--dry-run", "--rounds-report", "--resolve-gate"}
+    non_sending_modes = {"--dry-run", "--rounds-report", "--resolve-review"}
     real_send_commands = [
         command for command in commands
         if not non_sending_modes.intersection(command)
@@ -310,19 +310,19 @@ def test_real_send_help_examples_choose_gate_accounting(external):
 
     assert real_send_commands
     for command in real_send_commands:
-        assert {"--ticket", "--gate", "--no-gate"}.intersection(command), command
+        assert {"--ticket", "--review-ticket", "--no-review-ticket"}.intersection(command), command
 
 
 def test_paths_only_with_no_gate_sends_and_keeps_the_unaccounted_notice(
         external, monkeypatch, tmp_path, capsys):
-    """`--paths --no-gate` 실 호출은 허용하되 무기록 고지를 유지한다 (T-0631 E2E-2)."""
+    """`--paths --no-review-ticket` 실 호출은 허용하되 무기록 고지를 유지한다 (T-0631 E2E-2)."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+    assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     assert reviewer.calls == 1
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
-    assert "`--no-gate` 명시 opt-out" in err
+    assert "`--no-review-ticket` 명시 opt-out" in err
     assert "리뷰어를 부르면 라운드 장부에" in err
     assert "라운드 장부에 기록되지 않고" in err
 
@@ -362,20 +362,20 @@ def test_a_reserved_ledger_key_ticket_is_refused_before_sending(
 
 
 def test_report_surface_is_not_a_derivation_target(external):
-    """조회면의 `--gate` 는 '한 게이트만 보기' 필터라 유도값이 사용자 선택으로 둔갑하면 안 된다."""
+    """조회면의 `--review-ticket` 은 '한 게이트만 보기' 필터라 유도값이 사용자 선택으로 둔갑하면 안 된다."""
     args = _args(ticket=TICKET, rounds_report=True)
     assert reviewer_reservation._derive_gate_from_ticket(args) == reviewer_budget.GateDerivation()
-    assert args.gate is None
+    assert args.review_ticket is None
 
 
 def test_resolve_gate_surface_is_not_a_derivation_target(external):
-    """처분 선언면의 `--gate` 는 무시 목록 입력이다 — 유도하면 없던 무시 경고가 뜬다."""
-    args = _args(ticket=TICKET, resolve_gate=OTHER_GATE, rounds_report=False)
+    """처분 선언면의 `--review-ticket` 은 무시 목록 입력이다 — 유도하면 없던 무시 경고가 뜬다."""
+    args = _args(ticket=TICKET, resolve_review=OTHER_GATE, rounds_report=False)
     assert reviewer_reservation._derive_gate_from_ticket(args) == reviewer_budget.GateDerivation()
-    assert args.gate is None
-    assert "--gate" not in reviewer_rounds._resolve_gate_ignored_flags(
-        argparse.Namespace(gate=args.gate, no_gate=False, rounds_report=False,
-                           ack_wave=False, force=False))
+    assert args.review_ticket is None
+    assert "--review-ticket" not in reviewer_rounds._resolve_gate_ignored_flags(
+        argparse.Namespace(review_ticket=args.review_ticket, no_review_ticket=False, rounds_report=False,
+                           reset_session_budget=False, force=False))
 
 
 def test_derivation_helper_sets_the_gate_and_returns_one_line(external, capsys):
@@ -384,7 +384,7 @@ def test_derivation_helper_sets_the_gate_and_returns_one_line(external, capsys):
     헬퍼가 직접 찍으면 stderr 첫 줄이 config provenance 라는 계약을 이 고지가 밀어낸다."""
     args = _args(ticket=TICKET)
     derivation = reviewer_reservation._derive_gate_from_ticket(args)
-    assert args.gate == TICKET
+    assert args.review_ticket == TICKET
     assert derivation.refusal is None
     assert derivation.notice.startswith(_DERIVED_PREFIX)
     assert "\n" not in derivation.notice                    # 정확히 1줄
@@ -437,30 +437,30 @@ def test_dry_run_notice_does_not_claim_this_run_is_ledgered(
     assert "라운드 회계가 이 게이트에 붙습니다). 회계 밖" not in err   # 실행판 확정 문구
 
 
-# ══ ② opt-out (`--no-gate`) ═════════════════════════════════════════════════
+# ══ ② opt-out (`--no-review-ticket`) ═════════════════════════════════════════════════
 
 
 def test_no_gate_opts_out_of_the_ledger_with_a_loud_notice(
         external, monkeypatch, tmp_path, capsys):
-    """`--no-gate` 는 유도를 끄고 회계 밖으로 나간다 — 무기록·비회계를 loud 로 표기한다 (DoD)."""
+    """`--no-review-ticket` 은 유도를 끄고 회계 밖으로 나간다 — 무기록·비회계를 loud 로 표기한다 (DoD)."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--ticket", TICKET, "--no-gate"]) == 0
+    assert external.main(["--ticket", TICKET, "--no-review-ticket"]) == 0
     assert reviewer.calls == 1                    # 리뷰 자체는 정상 실행
     assert _ledger(tmp_path) == {}                # 장부는 만들지 않는다
     err = capsys.readouterr().err
-    assert "`--no-gate` 명시 opt-out" in err
+    assert "`--no-review-ticket` 명시 opt-out" in err
     assert "라운드·wave 예산도 쓰지 않습니다" in err
-    assert "livegate record" in err               # 릴리즈 차단이 못 본다는 사실까지
+    assert "live-test record" in err               # 릴리즈 차단이 못 본다는 사실까지
     assert _DERIVED_PREFIX not in err
 
 
 def test_no_gate_with_an_explicit_gate_is_refused_before_sending(
         external, monkeypatch, tmp_path, capsys):
-    """`--gate` + `--no-gate` 는 모순이라 부작용 0 지점에서 거부한다 (경고-만-실행 금지)."""
+    """`--review-ticket` + `--no-review-ticket` 은 모순이라 부작용 0 지점에서 거부한다 (경고-만-실행 금지)."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--gate", OTHER_GATE, "--no-gate", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", OTHER_GATE, "--no-review-ticket", "--paths", "x.py"]) == 1
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
     err = capsys.readouterr().err
@@ -472,7 +472,7 @@ def test_no_gate_rejects_removed_confirm_fix_before_accounting(external, monkeyp
     reviewer = _wire(external, monkeypatch, tmp_path)
 
     with pytest.raises(SystemExit):
-        external.main(["--ticket", TICKET, "--no-gate", "--confirm-fix"])
+        external.main(["--ticket", TICKET, "--no-review-ticket", "--confirm-fix"])
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
     assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
@@ -482,10 +482,10 @@ def test_no_gate_rejects_removed_confirm_fix_before_accounting(external, monkeyp
 
 
 def test_explicit_gate_run_is_unchanged(external, monkeypatch, tmp_path, capsys):
-    """명시 `--gate` 실행은 종전 그대로 기록되고, 새 고지·경고를 얹지 않는다 (DoD)."""
+    """명시 `--review-ticket` 실행은 종전 그대로 기록되고, 새 고지·경고를 얹지 않는다 (DoD)."""
     _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--gate", OTHER_GATE, "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", OTHER_GATE, "--paths", "x.py"]) == 0
     assert _ledger(tmp_path)[OTHER_GATE]["count"] == 1
     err = capsys.readouterr().err
     assert _DERIVED_PREFIX not in err
@@ -534,7 +534,7 @@ def test_pre_spawn_notice_is_conditional_not_a_sent_claim(
 
     monkeypatch.setattr(delegate_env, "build_env", _fail)
     with pytest.raises(RuntimeError):
-        external.main(["--paths", "x.py", "--no-gate"])
+        external.main(["--paths", "x.py", "--no-review-ticket"])
     err = capsys.readouterr().err
     assert "리뷰어를 부르면 라운드 장부에" in err                        # 조건형
     assert "이번 호출은" not in err                          # 확정형 아님
@@ -545,7 +545,7 @@ def test_summary_block_states_the_unaccounted_gate(external, monkeypatch, tmp_pa
     """판정 블록이 회계 밖 사실을 확정형 1줄로 병기한다 (stderr 만으로 두지 않는다)."""
     _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+    assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     assert f"게이트: {reviewer_budget._SUMMARY_UNACCOUNTED_GATE}" in capsys.readouterr().out
 
 
@@ -563,33 +563,33 @@ def test_summary_block_names_the_derived_gate(external, monkeypatch, tmp_path, c
 
 
 def test_report_surface_warns_that_no_gate_is_ignored(external, monkeypatch, tmp_path, capsys):
-    """조회면은 회계가 없으므로 `--no-gate` 도 무시 경고 목록에 든다 (기존 목록 규율과 대칭)."""
+    """조회면은 회계가 없으므로 `--no-review-ticket` 도 무시 경고 목록에 든다 (기존 목록 규율과 대칭)."""
     _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--rounds-report", "--no-gate"]) == 0
+    assert external.main(["--rounds-report", "--no-review-ticket"]) == 0
     err = capsys.readouterr().err
-    assert "무시합니다" in err and "--no-gate" in err
+    assert "무시합니다" in err and "--no-review-ticket" in err
 
 
 def test_resolve_gate_surface_warns_that_no_gate_is_ignored(external):
-    """처분 선언면의 무시 목록에도 `--no-gate` 가 든다 (선언은 호출·예약이 없다)."""
+    """처분 선언면의 무시 목록에도 `--no-review-ticket` 이 든다 (선언은 호출·예약이 없다)."""
     ignored = reviewer_rounds._resolve_gate_ignored_flags(
-        argparse.Namespace(gate=None, no_gate=True, rounds_report=False,
-                           ack_wave=False, force=False))
-    assert ignored == "--no-gate"
+        argparse.Namespace(review_ticket=None, no_review_ticket=True, rounds_report=False,
+                           reset_session_budget=False, force=False))
+    assert ignored == "--no-review-ticket"
 
 
 def test_report_gate_and_no_gate_reaches_report_with_ignore_warning_in_subprocess(tmp_path):
-    """조회면의 `--gate`+병행 시 `--no-gate`는 충돌이 아니라 무시되고 표가 나온다."""
+    """조회면의 `--review-ticket`+병행 시 `--no-review-ticket`은 충돌이 아니라 무시되고 표가 나온다."""
     project, script = _subprocess_project(tmp_path)
     _write_ledger(project, _rejected_ledger())
 
     proc = _run_additional_reviewer(
-        project, script, "--rounds-report", "--gate", TICKET, "--no-gate",
+        project, script, "--rounds-report", "--review-ticket", TICKET, "--no-review-ticket",
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert "무시합니다" in proc.stderr and "--no-gate" in proc.stderr
+    assert "무시합니다" in proc.stderr and "--no-review-ticket" in proc.stderr
     assert f"게이트 {TICKET}: count=1" in proc.stdout
 
 
@@ -602,8 +602,8 @@ def test_removed_into_is_rejected_before_gate_no_gate_precedence_in_subprocess(
     before = (project / ".project_manager" / ".local" / "review_rounds.json").read_bytes()
     proc = _run_additional_reviewer(
         project, script,
-        "--resolve-gate", TICKET, "--into", FOLLOW_UP_TICKET,
-        "--gate", OTHER_GATE, "--no-gate",
+        "--resolve-review", TICKET, "--into", FOLLOW_UP_TICKET,
+        "--review-ticket", OTHER_GATE, "--no-review-ticket",
     )
 
     assert proc.returncode == 2

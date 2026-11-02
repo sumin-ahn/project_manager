@@ -71,8 +71,8 @@ OPENCODE_ONLY_PATHS = {
     ".opencode/command/pm-review.md",
     ".opencode/command/pm-ticket.md",
     ".opencode/command/pm-update.md",
-    ".opencode/command/pm-wave-claim.md",
-    ".opencode/command/pm-wave-finish.md",
+    ".opencode/command/pm-cluster-claim.md",
+    ".opencode/command/pm-cluster-finish.md",
     ".opencode/command/pm-worktree.md",
     ".opencode/command/spike-new.md",
     ".opencode/references/environment-posix.md",
@@ -773,3 +773,25 @@ def test_manifest_ships_engine_package_before_entry_files():
         late = [row for row in entry_rows if row in manifest and manifest.index(row) < package_index]
         missing = [row for row in entry_rows if row not in manifest]
         assert not late and not missing, (path, late, missing)
+
+
+RETIRED_CLUSTER_SKILL_NEW = ".project_manager/tools/pm_engine/cli/bootstrap_card.py"
+RETIRED_CLUSTER_SKILL_OLD = tuple(
+    f"{root}/pm-wave-{kind}/{name}"
+    for root in (".claude/skills", ".agents/skills")
+    for kind in ("claim", "finish")
+    for name in ("SKILL.md", "references/operational-details.md")
+) + (".opencode/command/pm-wave-claim.md", ".opencode/command/pm-wave-finish.md")
+
+
+def test_cluster_skill_rename_retires_old_skill_files_in_all_manifests():
+    """옛 이름 스킬 파일과 OpenCode 명령 파일은 4 manifest 모두 퇴역 지시로만 남고 출하 트리에 없다."""
+    for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
+        declared = retired_paths.parse_retired_path_directives(manifest)
+        for old in RETIRED_CLUSTER_SKILL_OLD:
+            assert (old, RETIRED_CLUSTER_SKILL_NEW) in declared, (manifest, old)
+            assert old not in _manifest_path_set(manifest), manifest
+        retired_paths.validated_retired_path_directives(REPO, [manifest])
+    for root in (REPO, *TEMPLATE_ROOTS.values()):
+        for old in RETIRED_CLUSTER_SKILL_OLD:
+            assert not (root / old).exists(), (root, old)

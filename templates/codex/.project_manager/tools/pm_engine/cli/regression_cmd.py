@@ -359,7 +359,7 @@ def _livegate_cwd(home, override: str | None = None, session: str | None = None)
     if slot:
         return slot
     sys.exit(
-        "[중단] livegate cwd 미해소 — 이 세션의 활성 슬롯을 특정할 수 없다(활성 슬롯이 "
+        "[중단] live-test cwd 미해소 — 이 세션의 활성 슬롯을 특정할 수 없다(활성 슬롯이 "
         "여럿이거나 이 홈이 아직 슬롯 행으로 등록되지 않았다). PM 홈으로 침묵 폴백하면 "
         "tests 없는 트리에서 broken slot 을 수집해 false fail 이 되므로 거부한다. "
         "`--task <task>`(폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)로 실행하거나 "
@@ -379,7 +379,7 @@ def _refuse_release_for_engine_drift(home, flag: Path, cwd: str) -> int:
     """
     changes = update_plan.drift_changes(home, home.root)
     if changes is None:
-        print("livegate: 경고 — 실행 엔진 사본 drift 판정 불능(upstream 미설정/URL/경로 미존재/"
+        print("live-test: 경고 — 실행 엔진 사본 drift 판정 불능(upstream 미설정/URL/경로 미존재/"
               "manifest 부재) — 이 게이트는 이 형상에 적용되지 않는다(무차단). upstream 을 등록하려면 "
               "python3 .project_manager/tools/pm_update.py --dry-run 안내를 따르세요.",
               file=sys.stderr)
@@ -421,20 +421,20 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
     if requested_cwd is not None:
         if any(getattr(args, key, None) is not None for key in ("task", "repo", "slot")):
             sys.exit(
-                "[중단] livegate record의 --cwd는 --task/--repo/--slot과 함께 쓸 수 없다. "
+                "[중단] live-test record의 --cwd는 --task/--repo/--slot과 함께 쓸 수 없다. "
                 "외부 경로 override를 허용하지 않는다. "
                 "경로 핀은 --cwd <경로>만, task 작업공간은 --cwd 없이 "
                 "--task <task> [--repo <repo> --slot <N>]로 실행하라."
             )
         if requested_cwd == "":
-            sys.exit("[중단] livegate record의 --cwd 경로가 비어 있다. 검증할 코드 트리 경로를 지정하라.")
+            sys.exit("[중단] live-test record의 --cwd 경로가 비어 있다. 검증할 코드 트리 경로를 지정하라.")
     # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd 로
     # 고정하고 surface 한다(cwd 비참여·livegate 는 고정 release cmd 라 test_cmd 는 불요).
     if getattr(args, "task", None):
         task_cwd, _ = task_args._resolve_task_workspace_cwd(home, args)
         if getattr(args, "cwd", None) is None:
             args.cwd = task_cwd
-        print(f"livegate: 작업공간(task {args.task}) → {task_cwd}")
+        print(f"live-test: 작업공간(task {args.task}) → {task_cwd}")
     # `--cwd` 명시(릴리즈 readonly 슬롯 핀)면 session 해소 자체를 생략한다 —
     # `_livegate_cwd` 는 override 최우선이라 session 이 불요하다.
     _explicit_cwd = getattr(args, "cwd", None)
@@ -450,7 +450,7 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
         # 보호훅은 활성(hooksPath+engine-root sidecar)인데 engine-root 가 무효(board.py 미해소)
         # → 기록 위치와 훅 read 위치가 갈릴 수 있어 pass 위장을 찍지 않고 fail-loud 거부한다
         # (false-green 백스톱). engine-root sidecar 수리 또는 `pm-config repo add` 재실행.
-        print("livegate: fail — 보호훅 engine-root sidecar 무효 "
+        print("live-test: fail — 보호훅 engine-root sidecar 무효 "
               "(hooksPath 설치됐으나 PM 홈 board.py 미해소) — 기록 위치와 훅 read 위치가 갈릴 수 "
               "있어 거부(false-green 차단). engine-root sidecar 수리 또는 "
               "`pm-config repo add` 재실행. 릴리즈 차단.", file=sys.stderr)
@@ -466,7 +466,7 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
         # 우회 경로를 현행화하지 못한 상태라 release wave 를 돌리지 않고 fail-closed 한다.
         problems = completion_gate._sync_release_must_fix_marker(home, flag)
     except OSError as exc:
-        print("livegate: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
+        print("live-test: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
               f"({type(exc).__name__}: {exc}). 장부/`.local` 권한을 복구한 뒤 다시 실행하세요.",
               file=sys.stderr)
         return 1
@@ -528,9 +528,9 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
         elif provisional["status"] == "pass":
             provisional.update(status="fail", n=0, rc="evidence-drift")
             fs.write_json_atomic(flag, provisional)
-        print(f"livegate: fail — {problem}. 릴리즈 차단.", file=sys.stderr)
+        print(f"live-test: fail — {problem}. 릴리즈 차단.", file=sys.stderr)
         return 1
-    print(f"livegate: $ {release.LIVEGATE_TEST_CMD}  (cwd={cwd})")
+    print(f"live-test: $ {release.LIVEGATE_TEST_CMD}  (cwd={cwd})")
     # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(release.LIVEGATE_TEST_CMD, shell=True, cwd=cwd, env=env,
@@ -559,7 +559,7 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
             record["rc"] = "head-drift"
     fs.write_json_atomic(flag, record)
     if passed:
-        print(f"livegate: pass @ {head[:8] or '?'} "
+        print(f"live-test: pass @ {head[:8] or '?'} "
               f"(release {n}/{regression.LIVEGATE_RELEASE_PIN} green) ✓")
         return 0
     if platform_commands and head != start_head:
@@ -569,7 +569,7 @@ def _livegate_record(home, args: argparse.Namespace) -> int:
     else:
         reason = (f"수집 {n} ≠ pin {regression.LIVEGATE_RELEASE_PIN} — 마커 소실/wrong-cwd 의심"
                   " (수집 위장 차단)")
-    print(f"livegate: fail @ {head[:8] or '?'} — {reason}. 릴리즈 차단.", file=sys.stderr)
+    print(f"live-test: fail @ {head[:8] or '?'} — {reason}. 릴리즈 차단.", file=sys.stderr)
     return 1
 
 

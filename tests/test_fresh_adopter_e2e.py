@@ -64,7 +64,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 _RAW_PM_SKILLS = (
     "pm-adr", "pm-bootstrap", "pm-dev-delegate", "pm-env", "pm-handoff",
     "pm-qa", "pm-regression", "pm-release", "pm-review", "pm-ticket",
-    "pm-update", "pm-wave-claim", "pm-wave-finish", "pm-worktree",
+    "pm-update", "pm-cluster-claim", "pm-cluster-finish", "pm-worktree",
 )
 _RAW_SLASH_ENTRY = re.compile(
     r"(?<![A-Za-z0-9_.>/\-])/(?P<skill>"
@@ -345,7 +345,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     #   pm_import(rglob 전체트리 byte-copy)로만 출하된다 — manifest 미등재·self-update 채널 없음
     #   (@target-owned 등재는 upstream=claude 루트에 .opencode/ 부재라 skip). 진입점 shim
     #   (plugins/ctx-guard.js)이 core(lib/ctx-guard-core.cjs)를 import 하므로, 한쪽만 landing 하면
-    #   opencode 가 플러그인을 로드 못 한다(nudge/stop 死) → 실 출하 산출물에서 *함께* 도착을 못박는다
+    #   opencode 가 플러그인을 로드 못 한다(warn/stop 死) → 실 출하 산출물에서 *함께* 도착을 못박는다
     #   ([[feature-ship-needs-fresh-adopter-gate]] — source parity 로는 실 landing 을 보증 못 함).
     if harness == "opencode":
         shim = dest / ".opencode" / "plugins" / "ctx-guard.js"
@@ -359,11 +359,11 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     #     wikilink·thin·depends 누출은 `_ADVISORY_LINT_KINDS` 밖(blocking)이라 `--gate`(exit≠0)로 잡힌다.
     #     fresh adopter 는 baseline-set(import 가 upstream_rev 기록)·seen-unset(seen 은 pm-update 관찰
     #     때만) 이라 adapter-drift **관찰불가 advisory** 가 발화하는 게 정상이다(never-block·pm-update
-    #     nudge·option-a·T-0305) — advisory 는 `--gate` 를 차단 안 하므로 blocking clean 은 `--gate` 로
+    #     warn·option-a·T-0305) — advisory 는 `--gate` 를 차단 안 하므로 blocking clean 은 `--gate` 로
     #     확인하고, 무인자 lint(advisory 표면화)는 아래에서 actionable 여부만 본다.
-    lint = _board(dest, "lint", "--gate")
+    lint = _board(dest, "lint", "--blocking")
     assert lint.returncode == 0, (
-        f"{harness} adopter blocking lint 비-clean(`--gate` exit≠0) — wiki 출하 doc 에 dangling "
+        f"{harness} adopter blocking lint 비-clean(`--blocking` exit≠0) — wiki 출하 doc 에 dangling "
         f"[[ADR/T]]·thin·depends 누출?\n--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}"
     )
     # 무인자 lint 는 fresh adopter seen-unset 이라 adapter-drift 관찰불가 advisory 로 exit 1(표면화)이
@@ -882,7 +882,7 @@ def _git_init_adopter(dest: Path) -> None:
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path, harness):
-    """실 import 트리에서 `ticket prepare` → 라운드 파일 편집 → `ticket harvest` → `show` 1사이클.
+    """실 import 트리에서 `ticket prepare` → 라운드 파일 편집 → `ticket collect` → `show` 1사이클.
 
     기계층이다(라이브 LLM 0) — 에이전트가 할 편집을 테스트가 직접 한다. 이 사이클이 채택자
     사본에서 돌아야 위임이 성립하므로, 엔진만 고치고 template 전파를 빠뜨리면 여기서 red 다.
@@ -963,10 +963,10 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         encoding="utf-8", newline="",
     )
     design_harvested = _delegate_cli(
-        dest, "ticket", "harvest", "--copy", str(design_round), "--cwd", str(dest),
+        dest, "ticket", "collect", "--copy", str(design_round), "--cwd", str(dest),
     )
     assert design_harvested.returncode == 0, (
-        f"{harness} architect `ticket harvest` 실패(rc={design_harvested.returncode})\n"
+        f"{harness} architect `ticket collect` 실패(rc={design_harvested.returncode})\n"
         f"--- stdout ---\n{design_harvested.stdout}\n--- stderr ---\n{design_harvested.stderr}"
     )
 
@@ -1019,10 +1019,10 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         encoding="utf-8", newline="",
     )
     harvested = _delegate_cli(
-        dest, "ticket", "harvest", "--copy", str(round_file), "--cwd", str(dest),
+        dest, "ticket", "collect", "--copy", str(round_file), "--cwd", str(dest),
     )
     assert harvested.returncode == 0, (
-        f"{harness} `ticket harvest` 실패(rc={harvested.returncode})\n"
+        f"{harness} `ticket collect` 실패(rc={harvested.returncode})\n"
         f"--- stdout ---\n{harvested.stdout}\n--- stderr ---\n{harvested.stderr}"
     )
     assert json.loads(harvested.stdout.strip().splitlines()[-1])["changed"] is True
@@ -1082,7 +1082,7 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
     assert not ghost.exists(), f"{harness}: 대상 전용 모듈이 self-update 뒤에도 남았다"
     assert sentinel.read_bytes() == "# 인스턴스 상태 — 출하하지 않는다\r\n".encode("utf-8")
     assert update_plan._engine_code_plan(pm_paths.home_at(dest), dest, REPO)["changes"] == []
-    lint = _board(dest, "lint", "--gate")
+    lint = _board(dest, "lint", "--blocking")
     assert lint.returncode == 0, (
         f"{harness} post-update board bootstrap failed\nstdout={lint.stdout}\nstderr={lint.stderr}"
     )
@@ -1334,15 +1334,15 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
 
     # seen 미기록 → 관찰불가 advisory 발화 (option-a·T-0305·never-block). fresh adopter 는 항상
     #   baseline-set·seen-unset 이라 첫 lint 가 관찰불가 advisory 를 낸다 — 아직 upstream 미관찰이라
-    #   drift 판정 불가인 *정직한 상태표현*이자 pm-update nudge(silent stale 근절). 과거 silent [] 를 대체.
+    #   drift 판정 불가인 *정직한 상태표현*이자 pm-update warn(silent stale 근절). 과거 silent [] 를 대체.
     observ = _board(dest, "lint")
     assert "adapter-drift" in observ.stdout, f"{harness}: seen 미기록 관찰불가 advisory 미발화\n{observ.stdout}"
     assert "관찰불가" in observ.stdout and "pm-update" in observ.stdout, (
         f"{harness}: 관찰불가 advisory 가 명확·actionable(pm-update 안내) 하지 않음\n{observ.stdout}")
     # never-block — seen-unset 관찰불가도 `--gate` 종료코드 0.
-    observ_gate = _board(dest, "lint", "--gate")
+    observ_gate = _board(dest, "lint", "--blocking")
     assert observ_gate.returncode == 0, (
-        f"{harness}: 관찰불가 advisory 가 `--gate` 차단(never-block 위배·exit {observ_gate.returncode})\n{observ_gate.stdout}")
+        f"{harness}: 관찰불가 advisory 가 `--blocking` 차단(never-block 위배·exit {observ_gate.returncode})\n{observ_gate.stdout}")
 
     # seen≠baseline 주입 → 실 drift 발화(관찰불가 아닌 **방향-중립 불일치** 메시지·T-0413).
     #   lint 는 git 을 안 하므로 두 rev 의 선후를 모른다 — "이후 변경됨" 단정은 관찰값이 baseline 의
@@ -1356,9 +1356,9 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
         f"{harness}: 방향 단정 메시지 잔존(거짓 경보 클래스)\n{fired.stdout}"
 
     # never-block — advisory 라 `--gate` 종료코드 0.
-    gated = _board(dest, "lint", "--gate")
+    gated = _board(dest, "lint", "--blocking")
     assert gated.returncode == 0, (
-        f"{harness}: adapter-drift 가 `--gate` 를 차단(never-block 위배·exit {gated.returncode})\n{gated.stdout}"
+        f"{harness}: adapter-drift 가 `--blocking` 을 차단(never-block 위배·exit {gated.returncode})\n{gated.stdout}"
     )
 
 

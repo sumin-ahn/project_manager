@@ -31,27 +31,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         epilog="""
 예시:
   # 기본 (HEAD 기준 변경, local.conf additional_reviewer.paths/기본 경로) — 회계 밖 실행을 명시
-  python3 .project_manager/tools/additional_reviewer.py --no-gate
+  python3 .project_manager/tools/additional_reviewer.py --no-review-ticket
 
-  # ticket 의 touches 로 경로 결정 (--gate 미지정이면 그 티켓으로 게이트 자동 유도·장부 기록)
+  # ticket 의 touches 로 경로 결정 (--review-ticket 미지정이면 그 티켓으로 게이트 자동 유도·장부 기록)
   python3 .project_manager/tools/additional_reviewer.py --ticket T-0259
 
   # 게이트 회계 밖 자문 실행 (명시 opt-out · 장부 미기록·예산 미소모)
-  python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --no-gate
+  python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --no-review-ticket
 
   # 특정 base 와 경로·게이트 지정
-  python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ tests/ --gate T-NNNN
+  python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ tests/ --review-ticket T-NNNN
 
   # dry-run (좌표·프롬프트만 출력, 호출 안 함 — 비허용이어도 허용)
   python3 .project_manager/tools/additional_reviewer.py --dry-run
 
   # 라운드 장부 조회 (호출 없음 — 게이트별 라운드 수·라운드별 산출·처분·wave spent)
-  python3 .project_manager/tools/additional_reviewer.py --rounds-report --gate T-NNNN
+  python3 .project_manager/tools/additional_reviewer.py --rounds-report --review-ticket T-NNNN
 
   # 게이트 처분 선언 (호출 없음 — 릴리즈 게이트가 읽는 잔여 must-fix 소화 기록)
-  python3 .project_manager/tools/additional_reviewer.py --resolve-gate T-NNNN --pm-verified
+  python3 .project_manager/tools/additional_reviewer.py --resolve-review T-NNNN --pm-verified
   # --pm-verified 는 PM 판정 표면의 기계 확인 증거로 해소한다(재호출 없음).
-  # --resolve-gate 와 --dry-run 조합은 기록 목적과 모순이라 rc1로 거부.
+  # --resolve-review 와 --dry-run 조합은 기록 목적과 모순이라 rc1로 거부.
 
 추가 리뷰어 대상(원자 tuple · 정상 경로):
         additional_reviewer.harness=codex
@@ -68,39 +68,39 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paths", nargs="+", default=None,
                         help="검토 대상 경로 (기본: local.conf additional_reviewer.paths / src tests scripts ...)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
-                        help="ticket ID — touches 로 검토 경로 결정. --gate 미지정이면 이 값이 "
+                        help="ticket ID — touches 로 검토 경로 결정. --review-ticket 미지정이면 이 값이 "
                              "게이트로 자동 유도돼 라운드가 장부에 기록·집계된다")
-    parser.add_argument("--gate", default=None, metavar="T-NNNN",
+    parser.add_argument("--review-ticket", default=None, metavar="T-NNNN",
                         help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키) — 미지정이면 "
                              "--ticket 에서 자동 유도한다(명시 값이 항상 우선)")
-    parser.add_argument("--no-gate", action="store_true",
+    parser.add_argument("--no-review-ticket", action="store_true",
                         help="게이트 회계 opt-out — --ticket 자동 유도를 끄고 라운드 장부 기록·"
                              "라운드/wave 예산 집계 없이 실행한다 (회계 밖 자문 실행·loud 표기 · "
-                             "--gate 와 함께 쓸 수 없음)")
+                             "--review-ticket 과 함께 쓸 수 없음)")
     parser.add_argument("--ack-rounds", action="store_true",
                         help="(폐지됨) 라운드 연장 승인 — 호출하면 아무것도 하지 않고 거부한다. "
                              "현재 티켓의 고정 fix 단계에서 종결해야 한다.")
-    parser.add_argument("--ack-wave", action="store_true",
+    parser.add_argument("--reset-session-budget", action="store_true",
                         help="wave 예산 재개 — wave spent 를 0 으로 리셋 후 재개 "
-                             "(게이트 지정 필수 — --gate 또는 --ticket 유도 · 같은 범위의 "
+                             "(게이트 지정 필수 — --review-ticket 또는 --ticket 유도 · 같은 범위의 "
                              "정상 수렴이면 PM 이 자율 판단)")
     parser.add_argument("--rounds-report", action="store_true",
                         help="라운드 장부 조회 — 게이트별 라운드 수·라운드별 판정/결함 수·처분·wave "
-                             "spent 를 출력하고 종료 (호출 없음·--gate 로 한 게이트만)")
-    parser.add_argument("--resolve-gate", default=None, metavar="T-NNNN",
+                             "spent 를 출력하고 종료 (호출 없음·--review-ticket 으로 한 게이트만)")
+    parser.add_argument("--resolve-review", default=None, metavar="T-NNNN",
                         help="게이트 처분 선언 — 반려로 끝난 게이트의 잔여 must-fix 를 어떻게 "
                              "소화했는지 장부에 남기고 종료 (호출 없음). `--pm-verified` "
-                             "필수. 릴리즈 게이트(`board.py livegate "
+                             "필수. 릴리즈 게이트(`board.py live-test "
                              "record`)가 이 선언을 읽어 미처분 잔여를 차단한다")
     parser.add_argument("--pm-verified", action="store_true",
-                        help="--resolve-gate 처분: PM 판정 표면(리뷰 delta)의 기계 확인 증거로 "
+                        help="--resolve-review 처분: PM 판정 표면(리뷰 delta)의 기계 확인 증거로 "
                              "해소 — 재호출 없음(`pm_delegate rounds resolve --pm-verified` "
                              "와 같은 이름·같은 의미). 발동 조건: 이 채널 accepted 잔여 0·이 채널 "
                              "잔여 must-fix 건수만큼 판정 표면 전건 처분(미판정 0)·이 채널에 "
                              "accepted 가 있었을 때만 기계 확인 1건 이상")
     parser.add_argument("--dry-run", action="store_true",
                         help="좌표·프롬프트만 출력, 리뷰어를 부르지 않음 (빈 diff 면 "
-                             "exit 1). --resolve-gate 는 기록 명령이므로 함께 쓰면 exit 1")
+                             "exit 1). --resolve-review 는 기록 명령이므로 함께 쓰면 exit 1")
     parser.add_argument("--output-dir", default=None, metavar="DIR",
                         help="리뷰 원문 저장 디렉토리"
                              " (기본: .project_manager/.local/review)."
@@ -127,7 +127,7 @@ def main(home, argv: list[str] | None = None) -> int:
     engine_home = pm_paths.home_at(engine_repo)
     # 게이트 이름 검증이 **가장 먼저**다 — 예약 키 충돌은 호출·장부 접근 뒤에 발견하면 이미
     # 두 상한이 서로를 덮어쓴 뒤다(조회면도 같은 이름을 게이트로 부르지 않게 함께 막는다).
-    reserved_gate_error = reviewer_budget._reserved_gate_error(args.gate)
+    reserved_gate_error = reviewer_budget._reserved_gate_error(args.review_ticket)
     if reserved_gate_error is not None:
         print(reserved_gate_error, file=sys.stderr)
         return 1
@@ -141,22 +141,22 @@ def main(home, argv: list[str] | None = None) -> int:
     if gate_derivation.refusal is not None:
         print(gate_derivation.refusal, file=sys.stderr)
         return 1
-    # 처분 인자는 `--resolve-gate` 없이는 뜻이 없다 — 선언할 게이트가 없으면 남길 사실도 없다.
-    if args.pm_verified and not args.resolve_gate:
+    # 처분 인자는 `--resolve-review` 없이는 뜻이 없다 — 선언할 게이트가 없으면 남길 사실도 없다.
+    if args.pm_verified and not args.resolve_review:
         print(
             reviewer_budget._RESOLVE_GATE_REQUIRED_GUIDANCE.format(flag="--pm-verified", value=""),
             file=sys.stderr,
         )
         return 1
-    if args.resolve_gate:
+    if args.resolve_review:
         # 장부 기록 전용면 — 실행 경로(conf 해소·diff 추출)보다 앞에서 끝낸다.
         return reviewer_rounds._resolve_gate_command(engine_home, args)
     if args.rounds_report:
         ignored = ", ".join(
             flag for flag, given in (
-                ("--ack-wave", args.ack_wave),
+                ("--reset-session-budget", args.reset_session_budget),
                 # 조회면은 호출도 예약도 없어 회계 자체가 없다 — opt-out 도 무시 대상이다.
-                ("--no-gate", args.no_gate),
+                ("--no-review-ticket", args.no_review_ticket),
                 ("--dry-run", args.dry_run),
             ) if given
         )
@@ -167,7 +167,7 @@ def main(home, argv: list[str] | None = None) -> int:
             # selector 없는 조회는 여기서 끝낸다 — 장부만 읽으므로 검토 경로가 없거나 diff 가
             # 비어도(빈-diff 가드) 답을 내야 하고, 그러려면 그 게이트들보다 앞서야 한다.
             # selector 를 준 조회는 기록면과 **같은 해소**를 타야 해서 아래 앵커 해소 뒤로 간다.
-            return reviewer_rounds._print_rounds_report(pm_paths.home_at(engine_repo, pm_home=(owner := pm_paths.resolve_pm_home_for_repo(engine_repo)), board_root=pm_paths._board_root_at(owner)), gate=args.gate)
+            return reviewer_rounds._print_rounds_report(pm_paths.home_at(engine_repo, pm_home=(owner := pm_paths.resolve_pm_home_for_repo(engine_repo)), board_root=pm_paths._board_root_at(owner)), gate=args.review_ticket)
     ticket_selected = bool(args.ticket and not args.paths)
     explicit_paths = bool(args.paths)
     ticket_body_source: Path | None = None
@@ -247,7 +247,7 @@ def main(home, argv: list[str] | None = None) -> int:
     if args.rounds_report:
         # selector 를 준 조회 — 기록면이 쓸 장부(diff 소유 PM 홈)를 그대로 읽는다. 여기서 끝내
         # 실행 경로(conf 해소·diff 추출)는 타지 않는다.
-        return reviewer_rounds._print_rounds_report(review_home, gate=args.gate, )
+        return reviewer_rounds._print_rounds_report(review_home, gate=args.review_ticket, )
     if conf is None:
         # 명시 앵커 실행의 config는 여기서 **처음이자 유일하게** 읽는다. 인자 없는 실행은 범위 파생
         # 지점에서 이미 읽었다.
@@ -437,7 +437,7 @@ def main(home, argv: list[str] | None = None) -> int:
             review_home, tree=diff_root, base=diff_result.base, target=diff_result.target,
             changed_paths=diff_result.paths, read_commands=diff_result.read_commands,
             ticket_body=ticket_body, ticket_id=args.ticket,
-            adr_refs=args.adr, gate=args.gate,
+            adr_refs=args.adr, gate=args.review_ticket,
             next_finding_id=reviewer_harvest._next_external_finding_id(review_home, args, ),
             confirmation_ids=[],
         )
@@ -474,9 +474,9 @@ def main(home, argv: list[str] | None = None) -> int:
     # raw 선점보다 **먼저**다 — 이미 상한에 닿은 호출이 raw 자리를 만들었다 지우면 "호출 없이
     # 끝나는 실행은 부작용 0" 규율(dry-run 과 같은 축)을 이 rc 에서만 깨는 것이다.
     # dry-run·조회·처분은 이미 반환했다. 여기까지 온 실행은
-    # 리뷰어를 부르므로, `--gate`(또는 `--ticket` 자동 유도) / 명시 `--no-gate` 중 하나가 반드시
+    # 리뷰어를 부르므로, `--review-ticket`(또는 `--ticket` 자동 유도) / 명시 `--no-review-ticket` 중 하나가 반드시
     # 있어야 한다. 둘 다 없으면 예약·raw·리뷰어 스폰 전 부작용 0 지점에서 fail-loud 한다.
-    if not args.gate and not args.no_gate:
+    if not args.review_ticket and not args.no_review_ticket:
         print(reviewer_budget._GATE_ACCOUNTING_REQUIRED_GUIDANCE, file=sys.stderr)
         return 1
 

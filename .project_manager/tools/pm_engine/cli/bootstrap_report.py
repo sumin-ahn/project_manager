@@ -61,7 +61,7 @@ def format_blocking_lint_warning(
     if representative_limit < 0:
         raise ValueError("representative_limit은 0 이상이어야 한다")
     counts = bootstrap_rules.parse_lint_counts(lint_output)
-    opt_in = "전체 진단(opt-in): `python3 .project_manager/tools/board.py lint --gate`"
+    opt_in = "전체 진단(opt-in): `python3 .project_manager/tools/board.py lint --blocking`"
     if counts is None:
         raw_nonblank = [
             f"  {line}" for line in lint_output.splitlines() if line.strip()

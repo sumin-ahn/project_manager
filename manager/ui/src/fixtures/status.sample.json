@@ -325,7 +325,7 @@
       }
     ],
     "regression": null,
-    "livegate": null
+    "live_test": null
   },
   "adapters": {
     "source": "/projects/framework",

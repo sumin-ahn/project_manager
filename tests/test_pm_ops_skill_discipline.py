@@ -293,7 +293,7 @@ def test_catalog_parse_is_non_vacuous():
     assert cli, "CLI 엔진 skill 이 하나도 파싱되지 않음"
     assert non_cli, "비-CLI(Agent/facade) skill 이 하나도 파싱되지 않음"
     # 대표 매핑이 기대대로 파싱됐다(파서 sanity — sub-op 분해·facade 분류).
-    assert catalog["/pm-wave-claim"] == {
+    assert catalog["/pm-cluster-claim"] == {
         "board.py cluster", "board.py show", "board.py lint", "board.py claim",
         "worktree_pool.py switch",
     }
@@ -337,13 +337,13 @@ def test_card_demotion_guard_is_sensitive_to_drift(bootstrap, *, tmp_path):
     _, base_mismatch = _crosscheck(card, catalog)
     assert not base_mismatch
 
-    # (a) 카드에서 /pm-wave-claim 의 `board.py lint` 강등 줄을 지운다 → forward 불일치.
-    claim_block = _card_skill_block(card.splitlines(), "/pm-wave-claim")
+    # (a) 카드에서 /pm-cluster-claim 의 `board.py lint` 강등 줄을 지운다 → forward 불일치.
+    claim_block = _card_skill_block(card.splitlines(), "/pm-cluster-claim")
     assert claim_block is not None
     drop = next(ln for ln in claim_block if ln.startswith(" ") and "board.py lint" in ln)
     broken_card = "\n".join(ln for ln in card.splitlines() if ln != drop)
     _, mm_card = _crosscheck(broken_card, catalog)
-    assert any(skill == "/pm-wave-claim" for skill, *_ in mm_card), \
+    assert any(skill == "/pm-cluster-claim" for skill, *_ in mm_card), \
         "카드 강등 줄 삭제를 #3 이 잡지 못함(forward 가드 공허)"
 
     # (b) 카탈로그 /pm-handoff 엔진 열을 다른 엔진으로 바꾼다 → /pm-handoff backward 불일치.
@@ -368,7 +368,7 @@ def test_card_skill_precedes_backbone_representative(bootstrap, *, tmp_path):
     """대표 op(claim·handoff)에서 `/pm-…` 스킬 진입이 강등 backbone 줄보다 먼저(primary)."""
     card = _render_card(bootstrap, tmp_path=tmp_path)
     for skill_needle, backbone_needle in (
-        ("/pm-wave-claim", "board.py claim T-NNNN"),
+        ("/pm-cluster-claim", "board.py claim T-NNNN"),
         ("/pm-handoff", "pm_handoff.py"),
     ):
         assert _line_index(card, skill_needle) < _line_index(card, backbone_needle), (

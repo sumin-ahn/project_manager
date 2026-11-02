@@ -67,7 +67,7 @@ def _make_board_fn(list_resp: tuple[int, str], lint_resp: tuple[int, str],
         if args[0] == "list":
             return list_resp
         if args[0] == "lint":
-            assert args == ["lint", "--gate"], f"lint 는 --gate 로 호출해야 함: {args}"
+            assert args == ["lint", "--blocking"], f"lint 는 --blocking 으로 호출해야 함: {args}"
             return lint_resp
         raise AssertionError(f"예상치 못한 board 호출: {args}")
     return _fn

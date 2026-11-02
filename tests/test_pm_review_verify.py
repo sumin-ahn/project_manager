@@ -413,7 +413,7 @@ def test_verify_row_schema_failures(pd, mutate, pattern):
 def test_unreferenced_malformed_verify_row_does_not_block_delta(pd):
     """아직 아무 기계 확인도 참조하지 않은 라운드의 깨진 verify 행은 delta 를 막지 않는다.
 
-    표시면(harvest·review delta·verify-template)이 판정면 엄격 규칙에 전염되지 않는다는
+    표시면(harvest·review accepted·verify-template)이 판정면 엄격 규칙에 전염되지 않는다는
     지연 파싱 설계의 핵심 단언이다."""
     broken_row = _verify_row("F-001")
     broken_row.pop("reason")

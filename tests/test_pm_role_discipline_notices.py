@@ -30,7 +30,7 @@ def test_unticketed_work_confirmation_notice_present():
 def test_no_pytest_test_less_cluster_finish_notice_present():
     """T-0198: test-less done도 `--no-pytest` 묶음 종결 경로로 안내돼 있다."""
     text = _text()
-    assert "/pm-wave-finish" in text
+    assert "/pm-cluster-finish" in text
     assert "ticket_finish.py --cluster ... --no-pytest" in text
 
 

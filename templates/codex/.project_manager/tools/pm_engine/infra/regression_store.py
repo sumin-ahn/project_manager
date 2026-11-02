@@ -178,7 +178,7 @@ def _resolve_livegate_flag(home, cwd: str) -> tuple[Path, str]:
     root = Path(engine_root)
     if not (root / ".project_manager" / "tools" / "board.py").is_file():
         return pm_paths.livegate_flag(home), _LG_BROKEN
-    return root / ".project_manager" / ".local" / "livegate.json", _LG_ENGINE_ROOT
+    return root / ".project_manager" / ".local" / "live-test.json", _LG_ENGINE_ROOT
 
 
 def _resolve_regression_flag(home, cwd: str) -> tuple[Path, str]:

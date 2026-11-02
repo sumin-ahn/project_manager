@@ -121,7 +121,7 @@ def test_cmd_lint_gate_delegate_is_advisory_exit0(board, monkeypatch, capsys):
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
     monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # advisory 격리(gate 산술만).
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
-    rc = board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=True))
+    rc = board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True))
     assert rc == 0                                          # block_count 0 → gate 통과
     out = capsys.readouterr().out
     assert "delegate-same-model" in out                    # 보고엔 표면화(가시성 유지)

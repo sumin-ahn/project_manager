@@ -3969,9 +3969,9 @@ def _run_hook_result(hook_path: Path, stdin: str, *, env_override: bool = False,
     else:
         env.pop("PM_ALLOW_PROTECTED_PUSH", None)
     if skip_live_gate:
-        env["PM_SKIP_LIVE_GATE"] = "1"
+        env["PM_SKIP_LIVE_TEST"] = "1"
     else:
-        env.pop("PM_SKIP_LIVE_GATE", None)
+        env.pop("PM_SKIP_LIVE_TEST", None)
     env.pop("PM_SKIP_SELF_TEST", None)
     env.pop("PM_SELF_TEST_BYPASS_REASON", None)
     if env_extra:
@@ -4006,7 +4006,7 @@ def _protection_env(**overrides: str) -> dict[str, str]:
     env = dict(os.environ)
     for name in (
         "PM_ALLOW_PROTECTED_PUSH",
-        "PM_SKIP_LIVE_GATE",
+        "PM_SKIP_LIVE_TEST",
         "PM_SKIP_SELF_TEST",
         "PM_SELF_TEST_BYPASS_REASON",
         "PM_ALLOW_PROTECTED_COMMIT",
@@ -5651,7 +5651,7 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
 
     # PM_ALLOW + PM_SKIP — _git 헬퍼가 env 를 merge 한다(check=True·통과 기대).
     _git(slot_dir, "push", "server", "main",
-         env={"PM_ALLOW_PROTECTED_PUSH": "1", "PM_SKIP_LIVE_GATE": "1"})
+         env={"PM_ALLOW_PROTECTED_PUSH": "1", "PM_SKIP_LIVE_TEST": "1"})
     # server bare 의 main 이 슬롯 main 으로 전진(승인+skip 이 차단을 풀었다).
     server_main = _git(server, "rev-parse", "main").stdout.strip()
     assert server_main == slot_main, "PM_ALLOW+PM_SKIP push 후 server main 이 전진 안 됨"
@@ -5746,14 +5746,14 @@ def test_commit_helper_strips_inherited_protection_environment(tmp_path, monkeyp
     hook = repo / ".git" / "hooks" / "pre-commit"
     hook.write_text(
         "#!/bin/sh\n"
-        "test -z \"${PM_ALLOW_PROTECTED_PUSH-}${PM_SKIP_LIVE_GATE-}"
+        "test -z \"${PM_ALLOW_PROTECTED_PUSH-}${PM_SKIP_LIVE_TEST-}"
         "${PM_SKIP_SELF_TEST-}${PM_SELF_TEST_BYPASS_REASON-}"
         "${PM_ALLOW_PROTECTED_COMMIT-}\"\n",
         encoding="utf-8",
     )
     hook.chmod(0o755)
     for name in (
-        "PM_ALLOW_PROTECTED_PUSH", "PM_SKIP_LIVE_GATE", "PM_SKIP_SELF_TEST",
+        "PM_ALLOW_PROTECTED_PUSH", "PM_SKIP_LIVE_TEST", "PM_SKIP_SELF_TEST",
         "PM_SELF_TEST_BYPASS_REASON", "PM_ALLOW_PROTECTED_COMMIT",
     ):
         monkeypatch.setenv(name, "leaked")
@@ -5953,7 +5953,7 @@ def _write_livegate(engine_root: Path, *, head: str, status: str = "pass",
     """
     local_dir = engine_root / ".project_manager" / ".local"
     local_dir.mkdir(parents=True, exist_ok=True)
-    (local_dir / "livegate.json").write_text(
+    (local_dir / "live-test.json").write_text(
         json.dumps({"head": head, "status": status, "n": _LIVEGATE_RELEASE_PIN,
                     "rc": rc, "ts": "t"}),
         encoding="utf-8")

@@ -115,7 +115,7 @@ export type BoardSection = {
   open: { id: string; title: string; claimed_by: string | null }[];
   lint: { kind: string; message: string }[];
   regression: Record<string, unknown> | null;
-  livegate: Record<string, unknown> | null;
+  live_test: Record<string, unknown> | null;
 };
 
 export type StatusDocument = {

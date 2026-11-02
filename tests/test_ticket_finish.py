@@ -1206,7 +1206,7 @@ def _capture_main_forward(tf, monkeypatch) -> dict:
 #
 # board 의 complete 는 `claimed_by` 와 실행 세션을 대조한다. ticket_finish 는 자기 정체성을
 # 이미 해소해 두고도 board 에 넘기지 않았다 — 그 상태로 소유 게이트가 켜지면 다중 슬롯
-# 채택자의 `/pm-wave-finish` 주 경로가 "남의 티켓" 으로 전부 거부된다.
+# 채택자의 `/pm-cluster-finish` 주 경로가 "남의 티켓" 으로 전부 거부된다.
 
 
 def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys):

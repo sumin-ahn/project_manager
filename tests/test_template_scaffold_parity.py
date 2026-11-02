@@ -600,7 +600,7 @@ def test_shipped_authoring_and_review_guides_reference_the_canonical_principles(
 
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
 @pytest.mark.parametrize(
-    "stem", ("pm-dev-delegate", "pm-review", "pm-wave-finish", "pm-release"),
+    "stem", ("pm-dev-delegate", "pm-review", "pm-cluster-finish", "pm-release"),
 )
 def test_shipped_current_workflow_guides_do_not_move_review_residue_to_a_new_ticket(
     name: str, stem: str,
@@ -609,8 +609,8 @@ def test_shipped_current_workflow_guides_do_not_move_review_residue_to_a_new_tic
     assert cards, f"{name}: {stem} 출하 카드 누락"
     retired = (
         "후속 티켓으로", "다음 티켓으로", "별도 티켓으로",
-        "cluster replan", "--resolve-gate <게이트> --into",
-        "--resolve-gate <게이트> --fixed",
+        "cluster replan", "--resolve-review <게이트> --into",
+        "--resolve-review <게이트> --fixed",
     )
     for card in cards:
         text = card.read_text(encoding="utf-8")
@@ -677,8 +677,8 @@ def _close_step_table_rows(path: Path) -> list[str]:
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
 def test_shipped_finish_card_carries_engine_close_steps(name: str):
     """출하 종결 카드가 엔진 종결 단계 이름 전수와 단계 수를 싣는다."""
-    cards = _shipped_cards(name, "pm-wave-finish")
-    assert cards, f"{name}: pm-wave-finish 카드 표면 0 — 출하 누락"
+    cards = _shipped_cards(name, "pm-cluster-finish")
+    assert cards, f"{name}: pm-cluster-finish 카드 표면 0 — 출하 누락"
     steps = _close_step_labels()
     for card in cards:
         assert _CLOSE_STEP_COUNT_TOKEN in card.read_text(encoding="utf-8"), (
@@ -687,9 +687,9 @@ def test_shipped_finish_card_carries_engine_close_steps(name: str):
     # 단계 이름은 상세 문서가 싣는다 — 평탄 command 팔레트는 스킬 디렉터리의 상세를 참조하므로
     # 그 타깃이 실제로 출하하는 상세 문서 전부를 한 haystack 으로 본다.
     details = sorted(
-        (TEMPLATES / name).glob("*/skills/pm-wave-finish/references/operational-details.md")
+        (TEMPLATES / name).glob("*/skills/pm-cluster-finish/references/operational-details.md")
     )
-    assert details, f"{name}: pm-wave-finish 상세 문서 0 — 출하 누락"
+    assert details, f"{name}: pm-cluster-finish 상세 문서 0 — 출하 누락"
     haystack = "".join(path.read_text(encoding="utf-8") for path in details)
     missing = [label for label in steps if label not in haystack]
     assert not missing, (
@@ -714,13 +714,13 @@ _CLOSE_SKIP_CLAIM_RE = re.compile(
 def _close_branch_surfaces() -> list[Path]:
     """종결 브랜치 계약을 말하는 카드 표면 전부 — canonical + 출하 사본."""
     paths = [
-        REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
-        REPO / ".claude" / "skills" / "pm-wave-finish" / "references" /
+        REPO / ".claude" / "skills" / "pm-cluster-finish" / "SKILL.md",
+        REPO / ".claude" / "skills" / "pm-cluster-finish" / "references" /
         "operational-details.md",
         REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md",
     ]
     for name in TEMPLATE_NAMES:
-        for stem in ("pm-wave-finish", "pm-dev-delegate"):
+        for stem in ("pm-cluster-finish", "pm-dev-delegate"):
             paths.extend(_shipped_cards(name, stem))
             paths.extend(sorted(
                 (TEMPLATES / name).glob(
@@ -775,7 +775,7 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     stale_sweep = surfaces + [REPO / "CHANGELOG.md"]
     # 계약 문장을 싣는 자리 — 종결 단계표(운영 상세)와 위임 카드 본문(SKILL·command 팔레트).
     finish_details = [p for p in surfaces if p.name == "operational-details.md"
-                      and "pm-wave-finish" in p.as_posix()]
+                      and "pm-cluster-finish" in p.as_posix()]
     delegate_cards = [p for p in surfaces if "pm-dev-delegate" in p.as_posix()
                       and p.name != "operational-details.md"]
     assert len(finish_details) == 1 + len(TEMPLATE_NAMES), finish_details
@@ -822,21 +822,21 @@ def test_completion_guidance_uses_cluster_finish_not_direct_complete():
         assert direct_command.search(text) is None, (
             f"{path.relative_to(REPO)}: 사용자-facing direct board complete 처방 잔존"
         )
-        assert "ticket_finish.py" in text or "/pm-wave-finish" in text, (
+        assert "ticket_finish.py" in text or "/pm-cluster-finish" in text, (
             f"{path.relative_to(REPO)}: 묶음 종결 진입 누락"
         )
 
     finish_surfaces = [
-        REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
-        REPO / ".claude" / "skills" / "pm-wave-finish" / "references" /
+        REPO / ".claude" / "skills" / "pm-cluster-finish" / "SKILL.md",
+        REPO / ".claude" / "skills" / "pm-cluster-finish" / "references" /
         "operational-details.md",
-        TEMPLATES / "opencode" / ".opencode" / "command" / "pm-wave-finish.md",
+        TEMPLATES / "opencode" / ".opencode" / "command" / "pm-cluster-finish.md",
     ]
     for name in TEMPLATE_NAMES:
-        finish_surfaces.extend(_shipped_cards(name, "pm-wave-finish"))
+        finish_surfaces.extend(_shipped_cards(name, "pm-cluster-finish"))
         finish_surfaces.extend(sorted(
             (TEMPLATES / name).glob(
-                "*/skills/pm-wave-finish/references/operational-details.md"
+                "*/skills/pm-cluster-finish/references/operational-details.md"
             )
         ))
     haystack = "\n".join(
@@ -860,17 +860,17 @@ _CLOSE_RELEASE_PHRASES = (
 
 def test_finish_surfaces_say_close_keeps_slots():
     """AT-010: 종결 카드는 슬롯을 반납하지 않는다고 말하고, 반납을 종결 단계로 적은 문구가 없다."""
-    cards = [REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md"]
-    details = [REPO / ".claude" / "skills" / "pm-wave-finish" / "references" /
+    cards = [REPO / ".claude" / "skills" / "pm-cluster-finish" / "SKILL.md"]
+    details = [REPO / ".claude" / "skills" / "pm-cluster-finish" / "references" /
                "operational-details.md"]
     guides = [REPO / ".project_manager" / "wiki" / "pm_role.md",
               REPO / ".project_manager" / "wiki" / "pm_playbook.md"]
     for name in TEMPLATE_NAMES:
-        cards.extend(_shipped_cards(name, "pm-wave-finish"))
+        cards.extend(_shipped_cards(name, "pm-cluster-finish"))
         details.extend(sorted((TEMPLATES / name).glob(
-            "*/skills/pm-wave-finish/references/operational-details.md")))
+            "*/skills/pm-cluster-finish/references/operational-details.md")))
         guides.extend((_wiki(name) / "pm_role.md", _wiki(name) / "pm_playbook.md"))
-    assert TEMPLATES / "opencode" / ".opencode" / "command" / "pm-wave-finish.md" in cards
+    assert TEMPLATES / "opencode" / ".opencode" / "command" / "pm-cluster-finish.md" in cards
     assert len(details) == 1 + len(TEMPLATE_NAMES), details
     for card in cards:
         assert _CLOSE_KEEPS_SLOTS_SENTENCE in card.read_text(encoding="utf-8"), (

@@ -2898,7 +2898,7 @@ def test_targets_engine_code_path_normalization(pd):
         "list --task X",
         "list --status open --tag phase-1 --repo app --slot 2",
         "lint",
-        "lint --gate",
+        "lint --blocking",
     ],
 )
 def test_targets_engine_code_ignores_read_only_board_cli(pd, call):
@@ -3018,7 +3018,7 @@ def test_read_only_launcher_and_placeholder_forms_rc0(
         "idea list",
         "prefix list",
         "regression check",
-        "livegate check",
+        "live-test check",
     ],
 )
 def test_additional_read_only_board_operations_rc0(
@@ -3092,7 +3092,7 @@ def test_read_only_board_reference_with_korean_conjugated_write_rc1(
         "show T-0466",
         "list --all",
         "list --task X",
-        "lint --gate",
+        "lint --blocking",
     ],
 )
 def test_read_only_board_cli_pm_doc_delegation_passes_main(

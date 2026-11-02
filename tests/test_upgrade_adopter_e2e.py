@@ -922,7 +922,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   `reinstall_protected_hooks` 의 dest board 호출 한 줄이 모듈 속성 호출로 바뀌고 머리 import 한 줄이
 #   늘었다. 역적용 delta 의 네 anchor 는 전부 그 구간 밖이라 그대로 유일 해소되고, 배달 경계와 배달
 #   파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "49f1e211d0a5623d434251c7dfb3e55e97ae3e06b82be4b6ee73bb1d71be1a05"
+_T0585_PM_UPDATE_SHA256 = "c5450cb919d2b1ffc7825d3e05cb1a59124529c3890262c4f22abb5384d4e13a"
 # 재핀(2026-09-16): 핸드오프 슬롯 모드 삭제로 pm_update 본문이 바뀌었다 — 옛 대여 행(`<repo>_<N>`
 # session)을 idle 로 옮기는 흡수 말미 1회 마이그레이션이 더해졌을 뿐, 이 테스트가 재는 배달 경계
 # (어댑터 수령·리타이어 delta)는 그대로다. 두 시대착오 부재 단언이 먼저 통과했으므로 세대 재유입이
@@ -1110,7 +1110,7 @@ _S9_FLAT_UPDATER_ORDER = (
     ("infra/shipping_targets.py", ("resolve_target_root", "discover_target_names",)),
     ("app/update_manifest.py", ("_join_guest_channels", "_resolve_planning_manifest", "_resolve_local_manifest",)),
     ("app/entry_doc_migration.py", ("_ENTRY_DOC_MANUAL_TODO_MARKER", "_ENTRY_DOC_OLD_GEN_MARKER", "_ENTRY_DOC_PM_INSTRUCTIONS_REL", "_ENTRY_DOC_BACKUP_DIR", "_ENTRY_DOC_TOKEN_RE", "_OLD_OPENCODE_AGENTS_V1_3_5_B64", "_OLD_OPENCODE_AGENTS_GENERATIONS", "_decode_entry_doc_generation", "_entry_doc_operational_keys", "_build_entry_doc_pattern", "_match_entry_doc_generation", "_render_new_entry_doc", "_scan_array_end", "_find_toplevel_instructions", "_ensure_jsonc_instructions", "_entry_doc_backup_root", "_entry_doc_backup",)),
-    ("app/update_finish.py", ("fill_self_repo_row", "drop_self_lease_rows", "_LEGACY_SLOT_SESSION_RE", "idle_legacy_slot_session_rows",)),
+    ("app/update_finish.py", ("fill_self_repo_row", "drop_self_lease_rows", "_LEGACY_SLOT_SESSION_RE", "idle_legacy_slot_session_rows", "_DELEGATE_ROUNDS_REL", "_OLD_COLLECTED_KEY_TOKEN", "_NEW_COLLECTED_KEY_TOKEN", "rename_delegate_round_collected_key",)),
     ("app/conf_apply.py", ("ReasoningPruneError", "prune_unavailable_reasoning",)),
     ("app/entry_doc_migration.py", ("migrate_renamed_conf_keys", "migrate_entry_doc", "_print_entry_doc_migration_finding",)),
     ("app/update_adapters.py", ("_ADAPTER_CONFIG_ACCEPT_HINT", "_ADAPTER_CONFIG_LIST_HINT", "_ADAPTER_CONFIG_WINDOWS_HINT", "_ADAPTER_BACKUP_HINT", "_ADAPTER_CONFIG_DEST_CANDIDATES", "_has_adapter_config_candidate", "_instance_owned_template_delta_lines", "_print_instance_owned_template_delta", "sync_adapter_configs", "apply_harness_ctx_limits", "_adapter_config_gate_failed", "_print_adapter_config_finding", "check_adapter_hook_sets", "_change_dest_paths", "refuse_partial_hook_set_scope", "_adapter_hook_set_gate_failed", "_print_adapter_hook_set_finding", "_read_hook_artifact", "_EXEC_BIT_MEANINGFUL", "_hook_artifact_executable", "_protected_hook_in_sync", "reinstall_protected_hooks", "_print_protected_hook_reinstall_finding", "_refuse_missing_sources",)),
@@ -1295,6 +1295,32 @@ def _flat_updater_source() -> str:
 # 쌍은 (현행, 그 세대)이고 현행 쪽은 합성본에서 정확히 한 번 해소돼야 한다. 계획·적용·전달·CLI 원문을 고치면
 # 이 쌍을 같은 방식(교체 도입 전 합성본과의 줄 단위 차이)으로 다시 만든다.
 _ENGINE_PACKAGE_REPLACE_REVERSALS = (
+    ('    # 명시 이주 채널(manifest)이 없는 세대를 기존과 같이 fail-soft로\n    # 지나간다(임의 삭제로 추측하지 않음).\n    manifest_paths = retired_paths._retired_directive_manifests(source_root, selfheal)\n',
+     '    manifest_paths = [Path(path) for path in selfheal.get("upstream_manifests", [])]\n    if not manifest_paths:\n        manifest_paths = [Path(source_root) / ".project_manager" / "engine.manifest"]\n    # 구 upstream은 manifest 자체가 없을 수 있다. 명시 이주 채널이 없는\n    # 세대를 기존과 같이 fail-soft로 지나간다(임의 삭제로 추측하지 않음).\n    manifest_paths = [path for path in manifest_paths if path.is_file()]\n'),
+    ('    card_path: str | None = None,\n    *,\n    skill_names: tuple[str, ...],\n) -> str:\n',
+     '    card_path: str | None = None,\n) -> str:\n'),
+    ('        card_path=card_path,\n        skill_names=skill_names,\n    )\n',
+     '        card_path=card_path,\n    )\n'),
+    ('    codex_operational_skill: str | None = None,\n    *,\n    skill_names: tuple[str, ...],\n) -> bool:\n',
+     '    codex_operational_skill: str | None = None,\n) -> bool:\n'),
+    ('        codex_operational_skill, _dest_relative_path(dst, dest_root),\n        skill_names=skill_names,\n    )\n',
+     '        codex_operational_skill, _dest_relative_path(dst, dest_root),\n    )\n'),
+    ('                    skill_names=skill_inventory._installed_skill_entry_names(home),\n',
+     ''),
+    ('def _render_outputs(\n    home, changes: list[tuple], conf: Mapping[str, str], skill_names: tuple[str, ...],\n) -> list[_RenderOutput]:\n',
+     'def _render_outputs(home, changes: list[tuple], conf: Mapping[str, str]) -> list[_RenderOutput]:\n'),
+    ('            skill_names=skill_names,\n',
+     ''),
+    ('    skill_names = update_render._skill_names_after_apply(home, file_changes)\n',
+     ''),
+    ('                        source=str(sp), skill_names=skill_names,\n',
+     '                        source=str(sp), skill_names=skill_inventory._installed_skill_entry_names(home),\n'),
+    ('    _write_render_outputs(_render_outputs(home, render_changes, conf, skill_names))\n',
+     '    _write_render_outputs(_render_outputs(home, render_changes, conf))\n'),
+    ('        return _render_outputs(\n            home, render_changes, values, skill_inventory._installed_skill_entry_names(home))\n',
+     '        return _render_outputs(home, render_changes, values)\n'),
+    ('    if do_retire:\n        retired_old = retired_paths.declared_retired_olds(source_root, selfheal)\n        retired_files = [rel for rel in retired_files if rel not in retired_old]\n',
+     ''),
     (
         '  엔진 패키지(.project_manager/tools/pm_engine)는 파일 단위로 덮지 않고 디렉터리째 바꾼다 — 상류에서\n'
         '  지우거나 이름을 바꾼 모듈과 대상에만 있던 모듈도 사라진다. 출력은 [replace-dir] 한 줄에 추가·변경·삭제\n'
@@ -2679,6 +2705,12 @@ def _t0585_pm_update_source() -> str:
     (source/manifest planning → apply → self-update 순서)와 배달 파일 집합은 무편집이다 — 이관이
     만지는 것은 manifest 밖의 areas.md 한 행뿐이다. 현재화한 것은 기대 SHA 하나뿐이다.
 
+    T-1023 — 갱신 끝 이관 함수 `rename_delegate_round_collected_key`(위임 라운드 기록 파일 행의 키
+    이름 이동)를 더하고 `do_migrate` 세 분기의 `idle_legacy_slot_session_rows(...)` 다음에서 부르게 했다.
+    옛 세대 모양으로 되돌리는 치환이 찾는 기준 문자열은 이 추가 자리 밖이라 그대로 한 곳에서만 맞고,
+    엔진 전달 순서와 전달 파일 집합도 그대로다. 이관이 만지는 파일은 manifest 밖의
+    `.local/delegate-rounds.jsonl` 하나이고 이 시험 자료에는 그 파일이 없어 합성본 sha256 고정값만 바꿨다.
+
     T-0963 — 형제 적재 블록이 엔진 패키지 import(`from pm_engine.infra import ...`)로 바뀌고 형제 로더·
     강등 함수(`_load_repo_owned_files`·`_shared_read_api` 일습·`_atomic_replace_or_degrade`·중앙 로더
     선복구 `central_loader_needs_recovery`·`_predeploy_central_loader`)가 사라졌다. 역적용 delta 의
@@ -2838,6 +2870,15 @@ def _install_t0585_updater(dest: Path) -> None:
     source = source.replace("_load_module_from_path = repo_files.load_module",
                             "from pm_engine.app import areas_registry\n"
                             "_load_module_from_path = repo_files.load_module", 1)
+    # render_adapter 의 skill_names 는 기본값 없는 필수 인자다. 합성본의 render_adapter 호출(한 곳)에
+    # 실행 Home 의 카드 이름 집합을 넣는다.
+    render_call_end = "        card_path=card_path,\n    )\n"
+    assert source.count(render_call_end) == 1
+    source = source.replace(
+        render_call_end,
+        "        card_path=card_path,\n"
+        "        skill_names=skill_inventory._installed_skill_entry_names(home),\n"
+        "    )\n", 1)
     (dest / ".project_manager" / "tools" / "pm_update.py").write_text(
         source, encoding="utf-8", newline="\n")
 
@@ -2864,7 +2905,12 @@ def _install_t0585_updater(dest: Path) -> None:
 # 구간(퇴역 경로 상수·`RetiredPathError` 부터 퇴역 이주 함수까지)은 같다. 전문 SHA 가 이동했다.
 # T-0971: 등록 repo 조회의 패키지 이동으로 `reinstall_protected_hooks` 한 줄과 머리 import 한 줄이
 # 바뀌어 전문 SHA 가 이동했다. 퇴역 경로 delta 의 marker 는 전부 그 구간 밖이라 그대로 유일 해소된다.
-_PRE_T0876_PM_UPDATE_SHA256 = "edd374635473f4ad9ccfc9c59b6a0b5cc0ded321a9a40d182cd6295c140dee32"
+# T-1023 — 갱신 끝 이관 함수 `rename_delegate_round_collected_key`(위임 라운드 기록 파일 행의 키
+# 이름 이동)를 더하고 `do_migrate` 세 분기의 `idle_legacy_slot_session_rows(...)` 다음에서 부르게 했다.
+# 옛 세대 모양으로 되돌리는 치환이 찾는 기준 문자열은 이 추가 자리 밖이라 그대로 한 곳에서만 맞고,
+# 엔진 전달 순서와 전달 파일 집합도 그대로다. 이관이 만지는 파일은 manifest 밖의
+# `.local/delegate-rounds.jsonl` 하나이고 이 시험 자료에는 그 파일이 없어 합성본 sha256 고정값만 바꿨다.
+_PRE_T0876_PM_UPDATE_SHA256 = "8ffa3a47567a64bd90a5492d10ab45eb01ac5fa1b99b49ffcf0f134954168418"
 
 
 def _pre_t0876_pm_update_source() -> str:
@@ -2943,6 +2989,11 @@ def _pre_t0876_pm_update_source() -> str:
     delta(T-0878·T-0876)의 exact-marker 는 그 절 밖이라 그대로 유일 해소되고(marker assert 선통과),
     RUN1 이 검증하는 배달 경계(신 reviewer 설치 → 두 번째 실행의 구 파일 퇴역)도 무편집이다. 이관이
     만지는 것은 manifest 밖의 areas.md 한 행뿐이라 합성본 지문만 갱신했다.
+    T-1023 — 갱신 끝 이관 함수 `rename_delegate_round_collected_key`(위임 라운드 기록 파일 행의 키
+    이름 이동)를 더하고 `do_migrate` 세 분기의 `idle_legacy_slot_session_rows(...)` 다음에서 부르게 했다.
+    옛 세대 모양으로 되돌리는 치환이 찾는 기준 문자열은 이 추가 자리 밖이라 그대로 한 곳에서만 맞고,
+    엔진 전달 순서와 전달 파일 집합도 그대로다. 이관이 만지는 파일은 manifest 밖의
+    `.local/delegate-rounds.jsonl` 하나이고 이 시험 자료에는 그 파일이 없어 합성본 sha256 고정값만 바꿨다.
 
     설치 공급자 이동 반영: 렌더·JSONC·등록부 호출을 실제 package 소유자로 전환했다.
     동결 fixture의 렌더 실패 흡수 anchor도 module 인자가 없는 현행 호출 형태로 맞췄다.
@@ -3405,7 +3456,7 @@ def test_update_release_skill_cards_pin_zero_change_and_adapter_gate_contract():
     for card in release_cards:
         text = card.read_text(encoding="utf-8")
         assert text.count("sync-adapter-config --check") >= 2, card
-        assert "livegate/main push/tag/GitHub Release" in text, card
+        assert "live-test/main push/tag/GitHub Release" in text, card
 
 
 # ── S7 진입점이 열린 채택자에 가드 기능이 **코드만으로** 도달하나 (T-0777) ────────
@@ -3750,6 +3801,37 @@ def test_upgrade_adopter_drops_the_legacy_home_row_on_sync(tmp_path):
     after = ledger.read_bytes()
     _run_pm_update(dest)
     assert ledger.read_bytes() == after, "지울 행이 없는데 재흡수가 장부를 다시 썼다(비멱등)"
+
+
+def test_upgrade_adopter_moves_the_delegate_round_key_on_sync(tmp_path):
+    """갱신이 위임 라운드 기록 파일 행의 옛 키를 collected_at 으로 옮긴다 · 재실행은 바이트 불변."""
+    dest = tmp_path / "legacy-delegate-round-key"
+    assert import_cmd.main(pm_paths.home_at(_PM_IMPORT.REPO),
+        ["--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME, "--fill", "manual"]
+    ) == 0
+    _prime_engine_to_canonical(dest)
+    record_file = dest / ".project_manager" / ".local" / "delegate-rounds.jsonl"
+    record_file.parent.mkdir(parents=True, exist_ok=True)
+    record_file.write_text(
+        '{"board_rel":"tickets/rounds/T-0001/01-developer.md","copy":"/tmp/c/01-developer.md",'
+        '"harvested_at":null,"ordinal":1,"prepared_at":"2026-10-01T00:00:00.000000+00:00",'
+        '"role":"developer","run_id":"' + "a" * 32 + '","ticket":"T-0001"}\n',
+        encoding="utf-8", newline="",
+    )
+
+    # dry-run 은 출력만 한다.
+    before = record_file.read_bytes()
+    preview = _run_pm_update(dest, "--dry-run")
+    assert record_file.read_bytes() == before, "dry-run 이 기록 파일을 고쳤다"
+    assert "collected_at" in _combined_output(preview), _combined_output(preview)
+
+    _run_pm_update(dest)
+    row = json.loads(record_file.read_text(encoding="utf-8"))
+    assert "collected_at" in row and "harvested_at" not in row, row
+
+    after = record_file.read_bytes()
+    _run_pm_update(dest)
+    assert record_file.read_bytes() == after, "옮길 행이 없는데 다시 갱신이 기록 파일을 다시 썼다"
 
 
 # ── 전달/완료 두 프로세스 갱신 (T-0951) ─────────────────────────────────────────────────────────────

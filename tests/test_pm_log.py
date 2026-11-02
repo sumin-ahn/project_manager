@@ -67,7 +67,7 @@ def _redirect_paths(mod, monkeypatch, root: Path):
     return (log_dir, archive_dir)
 
 
-@pytest.mark.parametrize("band", ["nudge", "nudge2", "final", "precompact"])
+@pytest.mark.parametrize("band", ["warn", "warn2", "final", "precompact"])
 def test_ctx_guidance_all_bands_preserve_required_and_forbid_accident_phrase(band):
     """중앙 정책 상수의 필수·금지 표현을 네 band 최종 출력 전체에 고정한다."""
     mod = _load_module(f"pm_log_ctx_policy_{band}")
@@ -938,13 +938,13 @@ def _seed_raw_ledger(pm_home: Path, records: list[dict]) -> Path:
 
 def _delegate_row(
     tmp_path: Path, ticket: str, *, ordinal: int = 1, role: str = "architect",
-    harvested_at: str | None = None, prepared_at: str = "2026-08-21T00:00:00.000000+00:00",
+    collected_at: str | None = None, prepared_at: str = "2026-08-21T00:00:00.000000+00:00",
 ) -> dict:
     return {
         "ticket": ticket, "role": role, "ordinal": ordinal,
         "run_id": "a" * 32, "copy": str(tmp_path / f"{ticket}-{role}-{ordinal}.md"),
         "board_rel": f"wiki/tickets/rounds/{ticket}/{role}-{ordinal}.md",
-        "prepared_at": prepared_at, "harvested_at": harvested_at,
+        "prepared_at": prepared_at, "collected_at": collected_at,
     }
 
 
@@ -965,7 +965,7 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
     pm_home, cwd = _snapshot_home(tmp_path)
     _seed_delegate_rounds(pm_home, [
         _delegate_row(tmp_path, "T-0787"),
-        _delegate_row(tmp_path, "T-0786", harvested_at="2026-08-20T00:00:00.000000+00:00"),
+        _delegate_row(tmp_path, "T-0786", collected_at="2026-08-20T00:00:00.000000+00:00"),
     ])
     _seed_raw_ledger(pm_home, [_raw_record(tmp_path, "r1")])
     claimed_dir = pm_home / ".project_manager" / "board" / "tickets" / "claimed"
@@ -975,7 +975,7 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
 
     assert warning is None
     assert "## 진행 중 작업 (장부 실측)" in text
-    # T-0786 은 harvested_at 이 있어 미회수 집계에서 제외된다(1건만).
+    # T-0786 은 collected_at 이 있어 미회수 집계에서 제외된다(1건만).
     assert "미회수 라운드 준비 1건: T-0787 architect#1" in text
     assert "미마감 위임 raw 1건:" in text and "delegate/codex" in text
     assert "claimed 티켓 2건: T-0000-fixture · T-9999-extra" in text
@@ -1344,7 +1344,7 @@ _T0952_LOGGED_WINDOW_MISMATCH = (
     "## [2026-10-10] checkpoint | (task:main) — compaction\n\n"
     "<!-- ctx-band-check: missed -->\n"
     "> ⚠ [ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼 — 이번 압축 사이클에서 "
-    "nudge/nudge2/final 밴드가 한 번도 발화하지 않음 (설정 600,000 tokens · PreCompact 관측 410,455 tokens).\n"
+    "warn/warn2/final 밴드가 한 번도 발화하지 않음 (설정 600,000 tokens · PreCompact 관측 410,455 tokens).\n"
     "> 처방: `.project_manager/local.conf`의 `harness.claude.ctx_window_tokens`를 "
     "관측 사용량 410,455 tokens 이하로 낮추고 다음 사이클 밴드 발화를 확인.\n\n"
     "- 구간: 변경량 상한 삭제 결정 기록 이후 ~ T-0950 설계 비준.\n"

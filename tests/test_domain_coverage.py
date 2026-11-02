@@ -870,5 +870,5 @@ def test_coverage_finding_flows_through_board_and_gate_stays_zero(
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
 
     assert "coverage" in board_lint._ADVISORY_LINT_KINDS
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1

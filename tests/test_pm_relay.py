@@ -293,11 +293,11 @@ def test_claim_session_once_refuses_reserved_marker_namespaces(orch, tmp_path):
     """예약 marker 이름은 선점 대상이 아니다 — 같은 디렉토리 다른 생산자의 신호 위조 차단.
 
     namespace "done" 을 허용하면 멤버십 파일이 `<sid>.done` 이 되어 회전 marker 와 같은
-    이름이 된다(`stop_marker_present` False→True). nudge·nudge2·final(ctx_stop_hook)·
+    이름이 된다(`stop_marker_present` False→True). warn·warn2·final(ctx_stop_hook)·
     compact-*(pm_log·opencode ctx-guard)도 같은 충돌 축이다.
     """
     reserved = (
-        "done", "nudge", "nudge2", "final",
+        "done", "warn", "warn2", "final",
         "compact-checkpoint", "compact-boundary", "compact-snapshot",
         "compact-snapshot-receipt",
         "done!",  # 안전화 뒤 예약어가 되는 표기도 같은 판정.

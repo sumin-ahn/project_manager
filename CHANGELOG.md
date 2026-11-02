@@ -10,12 +10,49 @@
 
 - 출하 원칙 레지스트리(`.project_manager/wiki/pm_principles.md`) §"티켓과 위임" 에 평어 규칙을 더했다. 엔진·어댑터 폴더(`.claude`·`.codex`·`.opencode`·`.agents`)·티켓·위임 프롬프트·방법론 문서·`CLAUDE.md`·`AGENTS.md` 를 편집하면 Claude·OpenCode 주 세션에 한 번 안내되고, 비유를 한 번 풀어야 뜻이 나오는 지어낸 말 대신 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어를 쓰게 한다. 대응표는 지어낸 말·평어·문맥에 따라 가르는 기준 세 칸이다.
 
+### Changed
+
+- 위임·리뷰 명령 이름을 평어로 바꿨다. `pm_delegate.py ticket harvest` 는 `ticket collect`, `ticket copies --unharvested` 는 `ticket copies --uncollected`, `pm_delegate.py review delta` 는 `review accepted` 다. 인자·출력·종료 코드는 그대로이고 옛 이름은 받지 않는다(인자 오류, 종료 코드 2). 돌려받기가 board 에 남기는 커밋 문구도 `ticket-collect` 로 시작한다.
+- 위임 라운드 기록 파일(`.project_manager/.local/delegate-rounds.jsonl`)의 행 키 `harvested_at` 을 `collected_at` 으로 바꿨다. 엔진은 옛 키 행을 읽지 않고, 갱신이 기존 행을 한 번 옮긴다.
+- Codex 훅 기능 이름 `principle-recall-rearm` 을 `principle-recall-reset` 으로 바꿨다. `pm_orch_codex.py --hook-features` 출력과 훅 대체 경고에 보이는 이름이고 동작은 그대로다.
+- 추가 리뷰어 명령(`additional_reviewer.py`)의 플래그 네 개와 설정 키 하나의 이름을 바꿨다. `--gate` → `--review-ticket`, `--no-gate` → `--no-review-ticket`, `--resolve-gate` → `--resolve-review`, `--ack-wave` → `--reset-session-budget`, `local.conf` 의 `additional_reviewer.wave_budget` → `additional_reviewer.session_budget` 이다. 동작과 기본값(24)은 같다. 옛 플래그는 받지 않고 인자 오류(종료 코드 2)로 끝난다. 도움말·오류 안내와, 보호 브랜치 pre-push 훅이 남은 must-fix 로 push 를 막을 때 내는 안내도 새 이름을 쓴다.
+- 릴리즈 라이브 시험 명령과 lint 차단 플래그의 이름을 바꿨다. 동작은 같고 옛 이름은 받지 않는다(인자 오류, 종료 코드 2).
+  - `board.py livegate record|check` → `board.py live-test record|check`. 출력 접두도 `live-test:` 다.
+  - 보호 브랜치 push 의 라이브 시험 우회 환경 변수 `PM_SKIP_LIVE_GATE` → `PM_SKIP_LIVE_TEST`. 우회 조건(미해소 must-fix 가 없다는 표시가 있을 때만)은 그대로다.
+  - 릴리즈 라이브 시험 기록 파일 `.project_manager/.local/livegate.json` → `.project_manager/.local/live-test.json`.
+  - `board.py lint --gate` → `board.py lint --blocking`. `board.py init` 이 설치하는 pre-push 훅과 `/pm-bootstrap` 도 이 이름으로 lint 를 부른다.
+  - `pm_config.py status --json --with-board` 의 `board.livegate` → `board.live_test`. 관리자 상태 탭도 이 키를 읽는다.
+- 스킬 `/pm-wave-claim`·`/pm-wave-finish` 의 이름을 `/pm-cluster-claim`·`/pm-cluster-finish` 로 바꿨다(Codex 는 `$pm-cluster-claim`·`$pm-cluster-finish`, OpenCode 명령 팔레트도 같은 이름). 스킬 내용과 동작은 같고 옛 이름은 없다. 갱신하면 옛 스킬 파일(`.claude/skills/pm-wave-*/`·`.agents/skills/pm-wave-*/`·`.opencode/command/pm-wave-*.md`)은 지우지 않고 `.pm_import_backups/(날짜)/` 로 옮기며, 갱신 출력에 `[퇴역]` 으로 나온다.
+- `pm_log.py ctx-guidance` 의 `--band` 를 `--level` 로, 값 `nudge`·`nudge2` 를 `warn`·`warn2` 로 바꿨다(`final`·`precompact` 는 그대로). 컨텍스트 사용률 구간 이름도 같은 값을 쓴다. 숨김 명령 `board.py hook-context`·`hook-tool` 응답의 `level` 값이 `ok`·`warn`·`warn2`·`stop` 이 되고, 구간마다 경고를 한 번만 내려고 만드는 표시 파일이 `.project_manager/.local/ctx-stop/(세션).warn`·`(세션).warn2` 가 된다. 출하 어댑터(Claude 상태 줄, OpenCode 플러그인, Codex 압축 안내)는 함께 바뀐다. 옛 플래그와 옛 값은 인자 오류(종료 코드 2)다.
+
+### Removed
+
+- 부르는 곳이 없던 `pm_principles.py rearm` 을 지웠다. 압축 경계에서 규칙을 다시 켜는 일은 세 하네스의 훅이 엔진 함수로 직접 한다(OpenCode 가 이 명령을 부르던 경로는 v1.8.2 에서 없어졌다).
+
 ### Fixed
 
 - PM 홈에 `tests/` 가 없는데 상대 경로로 `pytest tests/…` 를 실행해 훅이 거부할 때, 사유 끝 안내 "대상 worktree의 workdir에서 실행하라" 를 Codex 에서 따르면 같은 거부가 반복되던 결함을 고쳤다. Codex(0.164.0)는 `exec_command` 의 `workdir` 를 훅 입력에 넘기지 않아 훅이 바뀐 실행 위치를 보지 못한다. 이제 안내는 "작업 폴더의 시험 경로를 절대경로로 적어 다시 실행하라" 이고, 그대로 고친 명령은 Claude·Codex·OpenCode 훅을 통과한다. 거부 조건과 `code` 값은 그대로다.
 - 관리자 설정 탭에서 설정 설명·이름, 직접 정함을 끈 칸의 기본값·기본 동작 문구, 목록 칸의 안내·오류 문구, 배지, 왼쪽 메뉴 이름, 묶음 표 설명, 어댑터 파일 표의 경로·거리 칸이 말줄임(…)으로 잘리거나 칸 밖으로 밀려, 창을 넓히거나 마우스를 올려야 읽히던 결함을 고쳤다. 이제 글은 칸 너비에서 줄을 바꿔 모두 보인다. 설정 이름·설명 칸은 고정 너비(18rem)가 아니라 표 너비의 5분의 2라 창을 넓히면 설명 줄 수가 줄고 좁히면 는다. 같은 글을 되풀이하던 마우스 올림 안내는 지웠고, 설명 줄에 마우스를 올리면 설정 키만 보인다.
 - Linux(GNOME)에서 관리자 창이 독·작업 전환기에 앱 아이콘이 아니라 기본 아이콘으로 나오던 결함을 고쳤다. 창 이름(`WM_CLASS`)이 실행 방식에 따라 `__main__.py`(`python3 -m manager`)나 실행 파일 이름으로 달라졌고, 그 이름과 맞는 `.desktop` 파일이 없었기 때문이다. 이제 창 이름은 늘 `pm-manager` 이고, Linux 에서 관리자 창을 열면 `$XDG_DATA_HOME/applications/pm-manager.desktop`(기본 `~/.local/share`)과 아이콘 `$XDG_DATA_HOME/icons/hicolor/256x256/apps/pm-manager.png` 를 둔다. 내용이 같으면 다시 쓰지 않고 실행 파일 위치가 바뀌면 고쳐 쓴다. `.desktop` 파일의 실행 명령은 실행 파일로 띄웠으면 그 파일, `python3 -m manager` 로 띄웠으면 그 인터프리터와 저장소 폴더다. `--smoke`·`--version` 은 파일을 쓰지 않는다. 파일을 쓰지 못하면 표준 출력에 `[경고]` 한 줄을 내고 창은 그대로 연다. Windows·macOS 는 바뀌지 않는다.
   - Linux 관리자 화면의 저장소 폴더가 `~/.local/share/__main__.py/`(`python3 -m manager`)·`~/.local/share/pm-manager-linux-x86_64/`(실행 파일)에서 `~/.local/share/pm-manager/` 로 바뀐다. `--port` 를 고정해 쓰던 경우 화면이 기억한 선택(설정 안 함 항목 보기)이 한 번 초기화된다. 옛 폴더와 `~/.cache` 의 같은 이름 폴더는 지워도 된다.
+- 상류가 새 스킬을 더한 갱신에서 Codex 사본은 같은 갱신이 새로 쓰거나 바꾸는 파일이 그 새 스킬을 부르면 호출 표기(`$pm-…`)가 둘째 갱신에서야 바뀌어, 갱신을 두 번 해야 트리가 맞던 결함을 고쳤다. 이제 같은 갱신이 새로 쓰거나 바꾸는 파일의 호출 표기 렌더는 그 갱신이 처음 쓰는 스킬 파일의 이름도 쓴다. 상류에서 바뀌지 않은 파일의 호출 표기는 그대로 다음 갱신에서 바뀐다.
+- 갱신이 manifest 의 `# pm-retired-path:` 지시로 디렉터리 행 아래 파일을 백업 폴더로 옮길 때, 같은 실행이 그 파일을 `[퇴역]` 줄과 함께 "상류 부재 파일 — 동기는 지우지 않는다" 로도 알리던 결함을 고쳤다. 이제 그 파일은 `[퇴역]` 으로만 나온다.
+
+### 업그레이드 노트
+
+- **명령 이름이 바뀐다.** 채택자 스크립트·로컬 스킬·문서가 `ticket harvest`·`ticket copies --unharvested`·`review delta` 를 부르면 `ticket collect`·`ticket copies --uncollected`·`review accepted` 로 고치고, `pm_principles.py rearm` 호출은 지운다. 출하 스킬·카드·방법론 문서는 갱신이 바꾼다.
+- **위임 라운드 기록 파일은 갱신이 옮긴다.** 갱신 한 번에 기존 행의 `harvested_at` 이 `collected_at` 으로 바뀌고 `위임 라운드 기록 파일의 행 N개에서 키 harvested_at 을 collected_at 으로 이동` 한 줄이 나온다. 준비만 하고 돌려받지 않은 라운드는 갱신 뒤 `ticket collect` 로 그대로 돌려받는다. 옮기는 동안 덧붙인 행은 잃을 수 있으므로 다른 세션의 위임 명령(`ticket prepare`·`ticket collect`·`ticket abandon`·`pm_delegate.py --role`)이 돌지 않을 때 갱신한다.
+- **추가 리뷰어 플래그 이름이 바뀐다.** 옛 플래그(`--gate`·`--no-gate`·`--resolve-gate`·`--ack-wave`)로 `additional_reviewer.py` 를 부르는 스크립트·메모·채택자 소유 문서는 `--review-ticket`·`--no-review-ticket`·`--resolve-review`·`--reset-session-budget` 으로 고친다. 옛 이름에는 별칭이 없다.
+- **설정 키는 갱신이 옮긴다.** `local.conf` 의 `additional_reviewer.wave_budget` 줄은 갱신이 값과 함께 `additional_reviewer.session_budget` 으로 옮긴다(새 키에 이미 값이 있으면 그 값을 남기고 옛 줄만 지운다). 갱신 뒤에 옛 키를 다시 적으면 설정을 읽는 명령이 새 키 이름을 알리며 멈춘다.
+- **보호 브랜치 pre-push 훅은 갱신이 다시 설치한다.** 훅 본문의 안내 문구와 라이브 시험 명령·우회 환경 변수 이름(`live-test check`·`PM_SKIP_LIVE_TEST`)이 바뀌어 갱신이 설치된 훅을 새 본문으로 바꾼다. 리뷰 라운드 기록 파일(`.project_manager/.local/review_rounds.json`)은 형식이 그대로라 옮길 것이 없다.
+- **갱신 뒤 `board.py init` 을 한 번 실행한다.** 이미 설치된 pre-push 훅(`.git/hooks/pre-push`)은 옛 플래그 `lint --gate` 를 불러 push 가 막힌다(`tests/` 가 없는 트리는 `unrecognized arguments: --gate`, `tests/` 가 있는 트리는 "설치된 pre-push 훅이 구버전입니다"). 갱신은 이 훅을 다시 설치하지 않는다.
+- **라이브 시험 명령·환경 변수 이름이 바뀐다.** `board.py livegate record|check`·`board.py lint --gate`·`PM_SKIP_LIVE_GATE` 를 적은 스크립트와 채택자 소유 문서는 `board.py live-test record|check`·`board.py lint --blocking`·`PM_SKIP_LIVE_TEST` 로 고친다. 옛 환경 변수 `PM_SKIP_LIVE_GATE=1` 은 무시되어 라이브 시험 확인이 그대로 요구된다.
+- **옛 라이브 시험 기록은 읽지 않는다.** `.project_manager/.local/livegate.json` 은 남아 있어도 동작에 영향이 없고 지워도 된다. 릴리즈 전에 `board.py live-test record` 로 새로 기록한다.
+- `pm_config.py status --json --with-board` 의 `board.livegate` 를 읽던 도구는 `board.live_test` 를 읽는다.
+- **OpenCode 를 추가 하네스로 붙인 사본(`pm-config add-harness opencode`)은 `.project_manager/engine.manifest` 의 `# >>> pm add-harness guest` 구획에서 두 줄을 고친다.** `.opencode/command/pm-wave-claim.md`·`.opencode/command/pm-wave-finish.md` 행에서 `pm-wave-claim` 을 `pm-cluster-claim` 으로, `pm-wave-finish` 를 `pm-cluster-finish` 로 바꾼다(행마다 경로와 `@source` 두 곳). 갱신 전후 어느 때나 되고, 고친 뒤 갱신하면 `.opencode/command/pm-cluster-claim.md`·`pm-cluster-finish.md` 가 설치된다. 고치지 않으면 새 명령 파일이 설치되지 않고 갱신마다 옛 두 행이 `[skip]` 으로 나온다. 하네스를 하나만 쓰는 사본은 할 일이 없다.
+- 옛 스킬 파일(`/pm-wave-claim`·`/pm-wave-finish`)을 고쳐 썼다면 `.pm_import_backups/(날짜)/` 의 백업에서 새 스킬(`.claude/skills/pm-cluster-claim/` 등)로 옮겨 적는다. 옮긴 뒤 남는 빈 폴더 `.claude/skills/pm-wave-claim/` 등은 지워도 된다. 스크립트·채택자 소유 문서의 옛 스킬 이름도 새 이름으로 고친다.
+- `pm_log.py ctx-guidance --band …` 를 직접 부르는 스크립트는 `--level` 과 새 값(`warn`·`warn2`)으로 바꾼다. 상태 응답 `level` 의 `nudge`·`nudge2` 를 비교하던 채택자 도구도 `warn`·`warn2` 로 고친다.
+- 갱신할 때 진행 중이던 세션은 같은 사용률 구간의 경고를 한 번 더 받는다. 옛 표시 파일 `.project_manager/.local/ctx-stop/(세션).nudge`·`(세션).nudge2` 는 더 읽지 않으며 지워도 된다.
 
 ## [1.8.3] - 2026-10-30
 

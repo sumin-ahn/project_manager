@@ -221,7 +221,7 @@ def _warn_unharvested_developer_round(rounds: Sequence) -> None:
     """리뷰 라운드 준비면의 loud 경고 — **거부가 아니다**(rc=0 · 판정 어휘의 `gap` 분류).
 
     거부하지 않는 근거는 실측이다. 시드 그대로인 라운드 예약을 지우거나 되돌릴 수단이 엔진에
-    없고(`ticket prepare|harvest|copies` 뿐), kill 된 위임이 남긴 시드 developer 라운드를 이고
+    없고(`ticket prepare|collect|copies` 뿐), kill 된 위임이 남긴 시드 developer 라운드를 이고
     가는 티켓이 실재한다 — 거부하면 그 티켓은 리뷰 라운드를 영영 못 연다. 리뷰어를 dev 없이
     돌리는 정당한 경우(코드만 보는 독립 검토)도 있어 판단은 PM 이 한다.
 
@@ -244,7 +244,7 @@ def _warn_unharvested_developer_round(rounds: Sequence) -> None:
         "경고: 리뷰 라운드를 산출 없는 developer 라운드 위에서 준비합니다 — "
         f"{name} 이 시드 골격 그대로입니다. 리뷰어 입력(`rounds/`)에 실리는 developer 산출 "
         f"라운드: {latest_name}. 결함 클래스 전수·검증 근거·빈틈 보고를 이번 라운드에도 실으려면 "
-        "먼저 `ticket harvest` 로 회수한 뒤 다시 준비하세요.",
+        "먼저 `ticket collect` 로 회수한 뒤 다시 준비하세요.",
         file=sys.stderr,
     )
 

@@ -135,7 +135,7 @@ def test_pretooluse_has_no_tool_independent_feature_and_prompt_compact_features_
     by_id = {feature.feature_id: feature for feature in dispatcher.CODEX_HOOK_FEATURES}
     assert by_id["ctx-nudge-userpromptsubmit"].event == "UserPromptSubmit"
     assert by_id["principle-recall-userpromptsubmit"].event == "UserPromptSubmit"
-    assert by_id["principle-recall-rearm"].event == "PostCompact"
+    assert by_id["principle-recall-reset"].event == "PostCompact"
     for feature_id in ("compaction-checkpoint-pre", "compaction-guidance",
                        "compaction-checkpoint-post", "compaction-snapshot"):
         assert feature_id in by_id
@@ -776,7 +776,7 @@ def test_shipped_entrypoint_keeps_spawn_deny_without_pretooluse_ctx_nudge(
     root = _adopter_tree(
         tmp_path, conf_lines=(*_CROSS_CONF, "harness.codex.ctx_window_tokens=20000"))
     rollout = root / "rollout-live.jsonl"
-    # 예산 20000 · 점유 15328 → 사용 77% · 잔여 23% → nudge2 밴드(기존 ctx-nudge 회귀와 같은 수치).
+    # 예산 20000 · 점유 15328 → 사용 77% · 잔여 23% → warn2 밴드(기존 ctx-nudge 회귀와 같은 수치).
     rollout.write_text(
         '{"type":"event_msg","payload":{"type":"token_count","info":'
         '{"last_token_usage":{"input_tokens":15328}}}}\n', encoding="utf-8")
@@ -1156,7 +1156,7 @@ _LEGACY_DIRECT_COMMANDS = {
         'printf \'%s\\n\' \'{"suppressOutput":true}\'; else "$py" '
         '.project_manager/tools/pm_log.py checkpoint --trigger compaction --phase pre '
         '--cwd "$PWD" >/dev/null 2>&1 || true; "$py" .project_manager/tools/pm_log.py '
-        'ctx-guidance --band precompact --json 2>/dev/null || printf \'%s\\n\' '
+        'ctx-guidance --level precompact --json 2>/dev/null || printf \'%s\\n\' '
         '\'{"suppressOutput":true}\'; fi',
     "PostCompact":
         'if command -v python3 >/dev/null 2>&1; then py=python3; elif command -v python '

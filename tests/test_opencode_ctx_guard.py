@@ -526,10 +526,10 @@ const projectRoot = __PROJECT_ROOT__;
       return {data:childCalls === 1 ? {id:childID, parentID:"ses_parent_cache"} : {id:"ses_parent_cache"}};
     },
   }}, directory:projectRoot});
-  const nudge = {event:{type:"message.updated", properties:{info:{
+  const warn = {event:{type:"message.updated", properties:{info:{
     sessionID:childID, role:"assistant", tokens:{input:145000}
   }}}};
-  await childHooks.event(nudge);
+  await childHooks.event(warn);
   await childHooks.event({event:{type:"session.compacted", properties:{sessionID:childID}}});
   const childSystem = {system:[]};
   await childHooks["experimental.chat.system.transform"]({sessionID:childID}, childSystem);
@@ -618,7 +618,7 @@ const nudgeEvent = () => ({
   }}}});
   let output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  assert.strictEqual(output.system.length, 1, "stop band must be absorbed by final nudge guidance");
+  assert.strictEqual(output.system.length, 1, "stop band must be absorbed by final warn guidance");
   assert.ok(output.system[0].includes("[ctx-nudge/최종]"), "stop band did not use final guidance");
   assert.ok(output.system[0].includes("pm_log.py checkpoint"), "stop-band guidance lacks checkpoint");
   await hooks["tool.execute.before"]({tool:"read", sessionID}, {args:{filePath:"README.md"}});
@@ -626,13 +626,13 @@ const nudgeEvent = () => ({
   await hooks.event(nudgeEvent());
   output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  assert.strictEqual(output.system.length, 1, "first-cycle nudge missing");
-  assert.ok(output.system[0].includes("pm_log.py checkpoint"), "nudge is not checkpoint instruction");
+  assert.strictEqual(output.system.length, 1, "first-cycle warn missing");
+  assert.ok(output.system[0].includes("pm_log.py checkpoint"), "warn is not checkpoint instruction");
 
   await hooks.event(nudgeEvent());
   output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  assert.deepStrictEqual(output.system, [], "same-cycle nudge fired twice");
+  assert.deepStrictEqual(output.system, [], "same-cycle warn fired twice");
 
   await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
   output = {system:[]};
@@ -647,7 +647,7 @@ const nudgeEvent = () => ({
   await hooks.event(nudgeEvent());
   output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  assert.strictEqual(output.system.length, 1, "nudge was not re-armed after compaction");
+  assert.strictEqual(output.system.length, 1, "warn was not re-armed after compaction");
   console.log("JS_COMPACTION_REARM_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
@@ -998,11 +998,11 @@ const builder = (value) =>
 
 
 def test_plugin_nudge_overwrite_preserves_snapshot_marker_for_next_transform(tmp_path):
-    """nudge2가 memory 슬롯을 덮어도 snapshot marker는 다음 transform까지 생존한다."""
+    """warn2가 memory 슬롯을 덮어도 snapshot marker는 다음 transform까지 생존한다."""
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — nudge/snapshot marker 간섭 단위 skip")
+        pytest.skip("node 없음 — warn/snapshot marker 간섭 단위 skip")
 
     project_root = _make_ctx_guard_project(tmp_path)
     session_id = "ses_nudge_snapshot_interference"
@@ -1035,18 +1035,18 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   assert.strictEqual(staged.length, 1, "compaction did not stage exactly one marker");
   assert.strictEqual(fs.readFileSync(staged[0], "utf8"), snapshotPayload);
 
-  // nudge2가 memory 슬롯을 덮을 때 snapshot marker 소유권을 놓아야 한다.
+  // warn2가 memory 슬롯을 덮을 때 snapshot marker 소유권을 놓아야 한다.
   await hooks.event({event:{type:"message.updated", properties:{info:{
     sessionID, role:"assistant", tokens:{input:155000}
   }}}});
 
   const firstOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, firstOutput);
-  assert.strictEqual(firstOutput.system.length, 1, "nudge2 was not injected once");
+  assert.strictEqual(firstOutput.system.length, 1, "warn2 was not injected once");
   assert.ok(firstOutput.system[0].includes("[ctx-nudge/강화]"), "wrong first payload");
-  assert.deepStrictEqual(markerPaths(), staged, "nudge2 transform deleted snapshot marker");
+  assert.deepStrictEqual(markerPaths(), staged, "warn2 transform deleted snapshot marker");
   assert.strictEqual(fs.readFileSync(staged[0], "utf8"), snapshotPayload);
-  assert.deepStrictEqual(receiptPaths(), [], "ownership-released nudge created snapshot receipt");
+  assert.deepStrictEqual(receiptPaths(), [], "ownership-released warn created snapshot receipt");
 
   const secondOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, secondOutput);
@@ -1070,7 +1070,7 @@ const receiptPaths = () => fs.readdirSync(markerDir)
     ).replace("__SESSION_ID__", json.dumps(session_id))
     out = _run_node_check(script, project_root)
     assert "JS_NUDGE_SNAPSHOT_MARKER_INTERFERENCE_OK" in out, (
-        f"nudge/snapshot marker 간섭 방지 실패. out={out!r}"
+        f"warn/snapshot marker 간섭 방지 실패. out={out!r}"
     )
 
 
@@ -2166,7 +2166,7 @@ def test_plugin_cycle_epoch_rejects_old_message_after_compaction_rearm(tmp_path)
     """lookup await 중 re-arm이 끼어든 구 메시지는 새 사이클 상태를 덮지 않는다.
 
     epoch guard를 제거한 구 코드에서는 lookup 해제 후 old message.updated가 compacted
-    안내를 nudge로 덮고 fired.nudge를 다시 올려 이 테스트가 red가 된다.
+    안내를 warn로 덮고 fired.warn를 다시 올려 이 테스트가 red가 된다.
     """
     if _NODE is None:
         import pytest
@@ -2204,7 +2204,7 @@ const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
   const freshOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, freshOutput);
   assert.strictEqual(freshOutput.system.length, 1, "old message dirtied re-armed fired state");
-  assert.ok(freshOutput.system[0].includes("[ctx-nudge]"), "fresh-cycle nudge did not fire");
+  assert.ok(freshOutput.system[0].includes("[ctx-nudge]"), "fresh-cycle warn did not fire");
   console.log("JS_CYCLE_EPOCH_GUARD_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
@@ -2217,7 +2217,7 @@ def test_plugin_attributes_pending_nudge_to_sid_captured_before_await(tmp_path):
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — pending nudge SID 경합 단위 skip")
+        pytest.skip("node 없음 — pending warn SID 경합 단위 skip")
 
     project_root = _make_ctx_guard_project(tmp_path)
     script = r'''
@@ -2249,22 +2249,22 @@ const nudgeEvent = (sessionID, input) => ({event:{type:"message.updated", proper
   const secondOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:secondID}, secondOutput);
   assert.strictEqual(firstOutput.system.length, 1);
-  assert.ok(firstOutput.system[0].includes("[ctx-nudge]"), "first SID lost its nudge payload");
+  assert.ok(firstOutput.system[0].includes("[ctx-nudge]"), "first SID lost its warn payload");
   assert.strictEqual(secondOutput.system.length, 1);
-  assert.ok(secondOutput.system[0].includes("[ctx-nudge/강화]"), "second SID lost its nudge2 payload");
+  assert.ok(secondOutput.system[0].includes("[ctx-nudge/강화]"), "second SID lost its warn2 payload");
   console.log("JS_PENDING_NUDGE_SID_RACE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
     out = _run_node_check(script, project_root)
-    assert "JS_PENDING_NUDGE_SID_RACE_OK" in out, f"pending nudge SID 경합 실패. out={out!r}"
+    assert "JS_PENDING_NUDGE_SID_RACE_OK" in out, f"pending warn SID 경합 실패. out={out!r}"
 
 
 def test_plugin_keeps_pending_nudge_per_session_and_exempts_child_injection(tmp_path):
-    """메인 nudge는 자식 system.transform이 소비하지 않고 해당 메인 호출에만 1회 전달된다."""
+    """메인 warn는 자식 system.transform이 소비하지 않고 해당 메인 호출에만 1회 전달된다."""
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — nudge 교차 전달 단위 skip")
+        pytest.skip("node 없음 — warn 교차 전달 단위 skip")
 
     project_root = _make_ctx_guard_project(tmp_path)
     script = r'''
@@ -2293,33 +2293,33 @@ const nudgeEvent = (sessionID) => ({
   await hooks.event(nudgeEvent(mainID));
   const childOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:childID}, childOutput);
-  assert.deepStrictEqual(childOutput.system, [], "child consumed main pending nudge");
+  assert.deepStrictEqual(childOutput.system, [], "child consumed main pending warn");
 
   const mainOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainOutput);
-  assert.strictEqual(mainOutput.system.length, 1, "main did not receive its pending nudge");
-  assert.ok(mainOutput.system[0].includes("[ctx-nudge]"), "wrong main nudge payload");
+  assert.strictEqual(mainOutput.system.length, 1, "main did not receive its pending warn");
+  assert.ok(mainOutput.system[0].includes("[ctx-nudge]"), "wrong main warn payload");
   assert.ok(mainOutput.system[0].includes("pm_log.py checkpoint"), "checkpoint command missing");
 
   const mainAgain = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainAgain);
-  assert.deepStrictEqual(mainAgain.system, [], "main nudge was not consumed exactly once");
+  assert.deepStrictEqual(mainAgain.system, [], "main warn was not consumed exactly once");
 
   await hooks.event(nudgeEvent(childID));
   const childAgain = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:childID}, childAgain);
-  assert.deepStrictEqual(childAgain.system, [], "child event created an exempt nudge");
+  assert.deepStrictEqual(childAgain.system, [], "child event created an exempt warn");
   console.log("JS_NUDGE_SESSION_ISOLATED_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
     out = _run_node_check(script, project_root)
-    assert "JS_NUDGE_SESSION_ISOLATED_OK" in out, f"nudge 세션 격리 실패. out={out!r}"
+    assert "JS_NUDGE_SESSION_ISOLATED_OK" in out, f"warn 세션 격리 실패. out={out!r}"
 
 
 def test_plugin_emits_nudge():
     """넛지(이른 경고) 경로가 있다 — checkpoint_at_pct 이상이면 안내(toast/message)."""
     src = _plugin_src()
-    assert "nudge" in src.lower(), "넛지 로직 없음"
+    assert "warn" in src.lower(), "넛지 로직 없음"
     # toast 경고 경로 (best-effort).
     assert "showToast" in src or "toast" in src.lower(), "넛지 안내(toast) 경로 없음"
 
@@ -2407,7 +2407,7 @@ def test_plugin_requires_cleanly_in_node():
 
 
 def test_plugin_injects_nudge_to_model():
-    """nudge 안내를 모델 컨텍스트에 비차단 주입한다 (toast=사람 / system.transform=모델).
+    """warn 안내를 모델 컨텍스트에 비차단 주입한다 (toast=사람 / system.transform=모델).
 
     chat.message 의 full Part 구성(id/sessionID/messageID 필수)보다 system[] string push 가
     안전 — experimental.chat.system.transform 채택. 엔진 발화 응답에서 pendingNudgeText 세팅 →
@@ -2415,39 +2415,39 @@ def test_plugin_injects_nudge_to_model():
     """
     src = _plugin_src()
     assert "experimental.chat.system.transform" in src, "모델 주입 훅(system.transform) 없음"
-    assert "pendingNudgeText" in src, "nudge 주입 대기 플래그 없음"
+    assert "pendingNudgeText" in src, "warn 주입 대기 플래그 없음"
     assert "output.system.push" in src, "system[] 에 push 하는 주입 경로 없음"
     # 엔진 응답이 발화(emit)면 그 안내를 그대로 pendingNudgeText 에 세팅한다(toast 와 함께).
     assert "if (!decision.emit) return;" in src
-    assert "state.pendingNudgeText = decision.guidance" in src, "nudge 감지 시 중앙 안내 세팅 누락"
+    assert "state.pendingNudgeText = decision.guidance" in src, "warn 감지 시 중앙 안내 세팅 누락"
 
 
 # ── checkpoint 2단(strong·compaction 임박) — 정적 + node 순수 검증 ────────────
-# 2단 임계는 max(precompact_at − 3, checkpoint_at) 파생. fired.nudge2 로 사이클당 1회·1단과 독립.
+# 2단 임계는 max(precompact_at − 3, checkpoint_at) 파생. fired.warn2 로 사이클당 1회·1단과 독립.
 
 
 def test_plugin_injects_nudge2_to_model():
-    """2단(strong)·최종 nudge 도 모델 컨텍스트에 비차단 주입 + 사람용 2단 toast (T-0328).
+    """2단(strong)·최종 warn 도 모델 컨텍스트에 비차단 주입 + 사람용 2단 toast (T-0328).
 
     2단 임계 파생·밴드 판정·안내 문구·사이클당 1회는 엔진이 소유한다. plugin 은 엔진 응답 level 로
     toast 강도만 고르고 같은 pendingNudgeText 채널에 싣는다."""
     src = _plugin_src()
-    for removed in ("NUDGE2_MARGIN_PCT", "nudge2Threshold", "buildNudge2Guidance", "fired.nudge2"):
+    for removed in ("NUDGE2_MARGIN_PCT", "nudge2Threshold", "buildNudge2Guidance", "fired.warn2"):
         assert removed not in src, f"2단 판정 사본 잔존: {removed}"
-    assert 'if (decision.level === "nudge") await notifyNudge(decision.guidance);' in src
+    assert 'if (decision.level === "warn") await notifyNudge(decision.guidance);' in src
     assert "else await notifyNudge2(decision.guidance);" in src, "2단 toast(notifyNudge2) 경로 없음"
-    assert "state.pendingNudgeText = decision.guidance" in src, "nudge2 감지 시 중앙 안내 세팅 누락"
+    assert "state.pendingNudgeText = decision.guidance" in src, "warn2 감지 시 중앙 안내 세팅 누락"
 
 def test_js_nudge2_band_and_guidance(tmp_path):
     """plugin 이 실제 엔진 판정의 4-밴드·2단 임계·안내문을 그대로 모델 채널에 싣는다.
 
-    분모 E=200,000·70/80 기록에서 쓴 % 는 반올림 정수다 — 76%(nudge)·77%(nudge2 = max(80 − 3, 70))·
+    분모 E=200,000·70/80 기록에서 쓴 % 는 반올림 정수다 — 76%(warn)·77%(warn2 = max(80 − 3, 70))·
     80%(final). 안내문은 엔진 `build_ctx_guard_guidance` 와 같은 문자열이다. node 부재 시 skip.
     """
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — 2단 nudge 단위 skip")
+        pytest.skip("node 없음 — 2단 warn 단위 skip")
 
     sys.path.insert(0, str(ENGINE_TOOLS))
     from pm_engine.domain import ctx_recovery
@@ -2480,12 +2480,12 @@ const cases = JSON.parse(process.argv[1]);
 
     assert delivered == {
         "ses_ok": [],
-        "ses_nudge": guidance("nudge", 76),
-        "ses_nudge2": guidance("nudge2", 77),
-        "ses_nudge2_upper": guidance("nudge2", 79),
+        "ses_nudge": guidance("warn", 76),
+        "ses_nudge2": guidance("warn2", 77),
+        "ses_nudge2_upper": guidance("warn2", 79),
         "ses_final": guidance("final", 80),
     }
-    assert delivered["ses_nudge2"] != guidance("nudge", 77), "2단 문구가 1단과 동일 — 강도 구별 없음"
+    assert delivered["ses_nudge2"] != guidance("warn", 77), "2단 문구가 1단과 동일 — 강도 구별 없음"
 
 # ── 5. 라이브-로드 게이트 (T-0283 · 실 opencode autoload · release-tier · 기본 skip) ──
 # 이 게이트의 존재이유: 유닛/정적 테스트는 순수함수(node require)만 봐서, opencode 가 plugin export

@@ -51,7 +51,7 @@ def test_every_pm_qa_report_contract_has_core_and_declared_platform_rows():
         assert "회귀(core):" in text, path
         assert "platform[<name>]:" in text, path
         assert "어느 행이든 red/미실행" in text, path
-        assert "개발 회귀는 core만 실행" in text and "릴리즈 livegate record" in text, path
+        assert "개발 회귀는 core만 실행" in text and "릴리즈 live-test record" in text, path
 
 
 def test_shipped_notation_and_details_document_the_wrapper_protocol():
@@ -144,7 +144,7 @@ def test_t0936_shipped_surfaces_share_phase_contract():
         text = path.read_text(encoding="utf-8")
         assert "현재 플랫폼" in text and "wrapper를 호출하지 않는다" in text, path
         assert "릴리즈 검증 예정" in text and "개발 완료 차단 사유가 아니다" in text, path
-        assert "livegate record" in text and "livegate check" in text, path
+        assert "live-test record" in text and "live-test check" in text, path
         assert "같은 rev" in text and "현재 선언·명령" in text, path
     for path in _RELEASE_SKILLS:
         text = path.read_text(encoding="utf-8")

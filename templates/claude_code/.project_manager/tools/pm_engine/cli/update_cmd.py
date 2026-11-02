@@ -503,6 +503,9 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     # 구 updater가 신 파일·신 updater를 배달한 뒤 다음 changes=0 실행이
     # 실제 퇴역을 닫는다. `--paths`/`--target`은 요청 밖 write라 비발화다.
     do_retire = not args.target and not scope_paths
+    if do_retire:
+        retired_old = retired_paths.declared_retired_olds(source_root, selfheal)
+        retired_files = [rel for rel in retired_files if rel not in retired_old]
 
     # ── 보호 훅 정합 확인 + drift 재설치 — migrate 와 **같은 경계·같은
     #    시퀀싱**(--target 비발화 · changes 0 경로에서도 write · dry-run 은 판정만). changes 로
@@ -550,6 +553,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             entry_doc_migration._print_entry_doc_migration_finding(result, dry_run=args.dry_run)
             update_finish.drop_self_lease_rows(effective_dest, write=not args.dry_run)
             update_finish.idle_legacy_slot_session_rows(effective_dest, write=not args.dry_run)
+            update_finish.rename_delegate_round_collected_key(effective_dest, write=not args.dry_run)
             entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=not args.dry_run)
             update_finish.fill_self_repo_row(effective_dest, write=not args.dry_run)
         if do_reinstall:
@@ -621,6 +625,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             entry_doc_migration._print_entry_doc_migration_finding(result, dry_run=True)
             update_finish.drop_self_lease_rows(effective_dest, write=False)
             update_finish.idle_legacy_slot_session_rows(effective_dest, write=False)
+            update_finish.rename_delegate_round_collected_key(effective_dest, write=False)
             entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=False)
             update_finish.fill_self_repo_row(effective_dest, write=False)
         if do_reinstall:  # 대상 해소만(write=False·무부작용).
@@ -660,6 +665,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         entry_doc_migration._print_entry_doc_migration_finding(result, dry_run=False)
         update_finish.drop_self_lease_rows(effective_dest, write=True)
         update_finish.idle_legacy_slot_session_rows(effective_dest, write=True)
+        update_finish.rename_delegate_round_collected_key(effective_dest, write=True)
         entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=True)
         update_finish.fill_self_repo_row(effective_dest, write=True)
 

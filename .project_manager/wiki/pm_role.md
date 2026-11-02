@@ -48,7 +48,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 **세션 정체성:** 세션 정체성은 task 이름 하나다(`/pm-bootstrap --task <task>`). board 조작에 실리는 정체성도 `--task <task>`이고, 실값은 부트스트랩 커맨드 카드가 채우므로 외우지 않는다. `--repo/--slot`은 정체성이 아니라 작업 폴더 좌표이며, 그 좌표를 직접 지정할 일이 있는 도구에서만 쓴다.
 
-실행 위치 선택은 regression run·livegate record·claim 앵커·new/cluster new의 코드 트리·rounds resolve에 한정한다. task가 작업공간을 여럿 보유하면 `--task <task> --repo <repo> --slot <N>`으로 자기 슬롯을 지정한다. 귀속은 task로 남고 선택한 제품 HEAD·브랜치·test_cmd를 실행과 증거에 결속한다. 미소유·타 task·idle·쓰기용 readonly 또는 선택 없는 다중 슬롯은 첫 부작용 전에 거부한다. 세션 진입·퇴장은 task 단독 입력과 혼합 거부를 유지하고, init·reid는 `--task`만 받으며, finish의 `--repo/--slot`은 복구 문(`--reconcile-integrated`) 전용이다. finish와 내부 확인은 묶음 branch/base_branch로 트리를 찾으며 슬롯을 반납하지 않는다.
+실행 위치 선택은 regression run·live-test record·claim 앵커·new/cluster new의 코드 트리·rounds resolve에 한정한다. task가 작업공간을 여럿 보유하면 `--task <task> --repo <repo> --slot <N>`으로 자기 슬롯을 지정한다. 귀속은 task로 남고 선택한 제품 HEAD·브랜치·test_cmd를 실행과 증거에 결속한다. 미소유·타 task·idle·쓰기용 readonly 또는 선택 없는 다중 슬롯은 첫 부작용 전에 거부한다. 세션 진입·퇴장은 task 단독 입력과 혼합 거부를 유지하고, init·reid는 `--task`만 받으며, finish의 `--repo/--slot`은 복구 문(`--reconcile-integrated`) 전용이다. finish와 내부 확인은 묶음 branch/base_branch로 트리를 찾으며 슬롯을 반납하지 않는다.
 
 ## 찾아가는 법
 
@@ -72,7 +72,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/command로 invoke**한다(claude=Skill 툴, opencode=command). 스킬이 강제하는 읽기범위·메타학습·금지 재열거·우선순위·DoD 자족성 판단을 건너뛰므로 backbone CLI를 직접 호출하지 않는다.
 
-직접 CLI는 래핑 스킬이 없는 op만 허용한다: read-only 조회, release `livegate record`, compaction 보충 기록 `pm_log.py checkpoint`(쓰기·스킬 승격 전까지), 희귀 ID/카테고리 유지보수 `reid`/`prefix`/`migrate-identity`. release/checkpoint 스킬이 생기면 스킬로 승격한다. **스킬이 있는 op은 반드시 스킬로 실행한다.** 실제 인자·정체성 표기는 부트스트랩 카드가 단일 진실이다.
+직접 CLI는 래핑 스킬이 없는 op만 허용한다: read-only 조회, release `live-test record`, compaction 보충 기록 `pm_log.py checkpoint`(쓰기·스킬 승격 전까지), 희귀 ID/카테고리 유지보수 `reid`/`prefix`/`migrate-identity`. release/checkpoint 스킬이 생기면 스킬로 승격한다. **스킬이 있는 op은 반드시 스킬로 실행한다.** 실제 인자·정체성 표기는 부트스트랩 카드가 단일 진실이다.
 
 ## skill 카탈로그
 
@@ -82,15 +82,15 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 |---|---|---|
 | `/pm-bootstrap` | 세션 시작; board·git·차수·log 본문·남은작업 surface | `pm_bootstrap.py` |
 | `/pm-ticket` | 티켓 초안 발행 → architect 점검 라운드(묶음 1회) → 비준·승격 | `board.py new/lint/promote` |
-| `/pm-wave-claim T-NNNN` | 묶음 선언 + DoD self-containment 검증 + 멤버 claim + 작업 폴더 전환 | `board.py cluster/show/lint/claim` · `worktree_pool.py switch` |
+| `/pm-cluster-claim T-NNNN` | 묶음 선언 + DoD self-containment 검증 + 멤버 claim + 작업 폴더 전환 | `board.py cluster/show/lint/claim` · `worktree_pool.py switch` |
 | `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | 묶음 단계 위임 — 설계·리뷰·fix 는 묶음 1회, 개발은 티켓당 1회 | `Agent` 툴 |
 | `/pm-regression` | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
 | `/pm-qa` | 회귀+lint+git 통합 report | `board.py regression/lint` |
-| `/pm-wave-finish` | 묶음 종결 6단계(확인 생성/처분·완료 기록·커밋·재배치·머지·board) + 첫 부작용 앞 선검사 전건 보고; 슬롯 반납·status 미접촉 | `ticket_finish.py` |
+| `/pm-cluster-finish` | 묶음 종결 6단계(확인 생성/처분·완료 기록·커밋·재배치·머지·board) + 첫 부작용 앞 선검사 전건 보고; 슬롯 반납·status 미접촉 | `ticket_finish.py` |
 | `/pm-handoff` | 세션 종료 7단계 | `pm_handoff.py` |
 
 **무코드/개념(ADR·doc·decision) ticket도 종결 단위는 묶음이다.** 별도 검증 근거가 있으면
-`/pm-wave-finish`(`ticket_finish.py --cluster ... --no-pytest`)로 같은 6단계를 실행한다.
+`/pm-cluster-finish`(`ticket_finish.py --cluster ... --no-pytest`)로 같은 6단계를 실행한다.
 `board.py complete`는 6단계 내부 결속 호출이며 PM이 직접 실행하지 않는다.
 
 환경·갱신:
@@ -102,7 +102,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 각 skill의 체크리스트는 `.claude/skills/pm-*/SKILL.md`를 본다.
 
-리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `additional_reviewer`)를 병행한다. 코드: `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-gate` 명시). 전제는 대상 튜플 `additional_reviewer.harness`/`.model`/`.reasoning` 선언이며, 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
+리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `additional_reviewer`)를 병행한다. 코드: `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --review-ticket <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-review-ticket` 명시). 전제는 대상 튜플 `additional_reviewer.harness`/`.model`/`.reasoning` 선언이며, 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
 
 내부 루프의 수렴 불변식은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유하고, 실행 절차는 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"을 따른다.
 
@@ -142,7 +142,7 @@ rc=1), 그 밖의 티켓에는 규범으로 적용한다. **설계 면제 값은
 프롬프트 조립·라운드 자리 예약을 엔진이 한다(PM의 손 git 0 — 구현 산출은 그 라운드를 돌려받을 때
 이미 커밋돼 있다). 리뷰어는 슬롯을 그대로 읽으며, 실행은 다른 역할과 같은 transport 규칙을 따른다. reviewer finding은
 PM 판정 전 증거·제안이며 developer 명령이 아니다. PM은 versioned disposition으로 전수 판정하고
-`pm_delegate.py review delta --cluster`가 accepted-only delta를 렌더한다. 그 출력은 fix 준비의
+`pm_delegate.py review accepted --cluster`가 accepted-only delta를 렌더한다. 그 출력은 fix 준비의
 입력이고, decision-required는 사용자 결정 요청 표면으로 전달된다. 라운드 파일의
 이름·순번은 엔진이 만들며(`section-add`는 **묶음 장부가 없는 티켓**의 슬롯 없는 준비, `ticket prepare`는
 위임용 준비 — 장부가 있는 티켓의 라운드는 고정 예산이 지배하므로 위임 준비만 연다),
@@ -151,23 +151,23 @@ PM 판정 전 증거·제안이며 developer 명령이 아니다. PM은 versione
 에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare --cluster`가 board에 멤버
 전부의 순번을 예약하고 slot run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래) 하나에
 티켓마다 쓸 수 있는 라운드 파일 하나와 읽기 전용 입력(`spec.md`·`rounds/`)을 깐다. 에이전트는 자기
-자리만 채우고 `ticket harvest`가 board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run 닫힘).
+자리만 채우고 `ticket collect`가 board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run 닫힘).
 developer/fix는 라운드 `## 회귀`에 해소된 프로젝트 `test_cmd`와 `rc=0` 결과를 기록하며, 실행 횟수·red
 처리는 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
 회수가 성공하면 엔진이 그 슬롯의 코드 변경을 티켓 제목을 문안으로 커밋한다(변경이 없으면 커밋도
 없다) — 그래서 다음 단계인 리뷰의 입력이 확정된 트리이고 PM의 손 git은 0이다.
 산출이 시드 그대로면 board를 바꾸지 않고 경고만 낸다. draft에서는 architect 역할만 `section-add`와
-prepare/harvest가 허용되며 이 로컬 authoring 경로는 board-git sync를 0회 수행한다.
+prepare/collect가 허용되며 이 로컬 authoring 경로는 board-git sync를 0회 수행한다.
 developer/code-reviewer draft 실행과 blocked/done 전 역할은 예약 전에 거부되고, promote/claim 게이트는
 그대로다. 라운드 디렉터리는 고정 위치라 티켓 상태 이동을 따라가지 않는다. 실 위임에서는
-`/pm-dev-delegate`가 prepare/harvest를 감싼다. **종결은 한 커맨드다** — `ticket_finish.py --cluster`가
+`/pm-dev-delegate`가 prepare/collect를 감싼다. **종결은 한 커맨드다** — `ticket_finish.py --cluster`가
 기계/PM-owned terminal 확인 생성과 게이트 처분·티켓별 완료 기록·커밋·재배치·머지·board 기록을 고정 순서로 실행하고,
 막는 조건은 첫 부작용 앞 선검사가 전건 보고하며, 실패 지점에서 멈추고 재실행이 곧 재개다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만
 소유한다.
 
 `ticket done`·`cluster closed`는 서로 다른 상태이고, 종결은 슬롯을 반납하지 않는다. 모든 멤버만 이미 done이고
 장부가 open인 과거 반쪽 상태는 정상 종결을 재실행하거나 수동으로 status를 편집하지 않는다.
-`/pm-wave-finish` 카드의 all-done recovery가 요구하는 명시 제품 slot·멤버별 commit·legacy anchor·
+`/pm-cluster-finish` 카드의 all-done recovery가 요구하는 명시 제품 slot·멤버별 commit·legacy anchor·
 exact 사용자 승인값을 검증해 `closure.mode=reconciled`로만 닫는다. dirty slot은 보고·보존한다.
 
 티어는 다음 순서의 첫 매치로 PM이 확정해 `board.py tier <T-NNNN> pm-direct|normal|hard`로 기록한다.
@@ -223,7 +223,7 @@ developer·reviewer·추가 리뷰어 없이 PM이 직접 편집할 수 있다. 
 
 PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비용으로·밖으로 내보낼지* 결정한다.
 
-**자율+사후 `log/current.md` 기록:** 사용자가 선택한 목표 안에서 **claim 전** 자족성을 위한 super-ticket 분할(원 티켓을 대체·종결하고 목표 확대 0), `depends_on`·`blocks` 변경, `block`·`unblock`, spec 추출·갱신, 일상 ADR(`scope: internal-process`), 위임·세션 spawn, 추가 리뷰어 wave 예산 상한의 **같은 scope 정상 수렴 ack**(`--ack-wave` — 리뷰 라운드 축엔 재개 ack 자체가 없다).
+**자율+사후 `log/current.md` 기록:** 사용자가 선택한 목표 안에서 **claim 전** 자족성을 위한 super-ticket 분할(원 티켓을 대체·종결하고 목표 확대 0), `depends_on`·`blocks` 변경, `block`·`unblock`, spec 추출·갱신, 일상 ADR(`scope: internal-process`), 위임·세션 spawn, 추가 리뷰어 wave 예산 상한의 **같은 scope 정상 수렴 ack**(`--reset-session-budget` — 리뷰 라운드 축엔 재개 ack 자체가 없다).
 
 **사용자 게이트(사전 동의):** 새 ticket·claim 뒤 분할·현재 목표 확대, [[pm_role.local.md]] §사용자 게이트. 그 밖의 예: 미션·핵심 안전 경계, 유료/한도 API 대량 호출, 키 발급·외부 게시·배포, `scope:mission` ADR. 리뷰 finding·suggestion은 새 ticket 발행 승인이 아니다.
 
@@ -267,7 +267,7 @@ lease 장부에 행이 하나도 없는 홈은 **아직 작업 폴더가 없는 
 
 `local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 귀속 쓰기(new·claim·migrate-identity·unclaim --takeover·정상 종결 `ticket_finish.py`)는 `--task <task>`를 요구하고 없으면 첫 쓰기 전에 **fail-loud**한다. init 의 owner 칸은 `--owner`, 다음 `--task`, 둘 다 없으면 빈 칸이다(환경변수·단일 대여에서 유도하지 않는다). 소유 대조(complete·block·unblock·unclaim·discard·reid)는 `--task` 또는 단일-lease 유도 세션으로 한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
 
-**`list` 스코핑:** `board.py list`의 `--task`/`--mine`/`--all`은 조회 필터다(`--repo`/`--slot`은 받지 않는다). 실행 명령(claim·new·cluster new·regression·livegate)의 `--repo`/`--slot`은 task가 보유한 폴더를 고르는 위치 인자이고 `--task`와 함께일 때만 받는다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
+**`list` 스코핑:** `board.py list`의 `--task`/`--mine`/`--all`은 조회 필터다(`--repo`/`--slot`은 받지 않는다). 실행 명령(claim·new·cluster new·regression·live-test)의 `--repo`/`--slot`은 task가 보유한 폴더를 고르는 위치 인자이고 `--task`와 함께일 때만 받는다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
 
 areas.md에 repo를 정확히 1개 등록한 홈은 `--prefix` 없이도 그 repo의 `T-<prefix>-NNN`로 새 ticket을 발행한다. 기존 `T-NNNN`과 혼합되어도 disjoint라 충돌하지 않는다. repo 2개 이상 홈은 `--prefix` 또는 task prefix(`pm-config task prefix`)가 없으면 `new`가 fail-loud한다.
 
@@ -319,20 +319,20 @@ prefix는 작업 카테고리이며 repo 네임스페이스 전용이 아니고 
   - 범위는 풀 슬롯 worktree `work/<repo>_<N>`다. bare 미러 `.repos/<repo>.git`의 `core.hooksPath`를 공유하는 슬롯에서만 발화하며 PM 홈 clone의 `.git/hooks`에는 미배선이다.
   - `git commit --no-verify`, merge commit(`pre-merge-commit` 소관), rebase/cherry-pick/revert sequencer는 비커버다. 우발 방지용이며 하드 백스톱은 pre-push다.
 - pre-push 훅 `.project_manager/.local/repo-hooks/<repo>/pre-push`은 보호 브랜치 push를 차단한다. PM은 `PM_ALLOW_PROTECTED_PUSH=1`을 스스로 쓰지 않는다(사용자 명시 OK escape hatch). 승인 후 증거 계약은 repo 형상에 따라 두 경로로 갈린다.
-  - **프레임워크 release 경로:** push SHA에 `board.py livegate record`로 기록한 릴리즈 라이브 green을 `livegate check`로 확인한다. `PM_SKIP_LIVE_GATE=1`은 라이브 무관 변경·긴급 hotfix 두 사유만 허용하며 오프라인·API 장애에는 금지(복구 우선).
-  - **채택자 self-test 경로:** areas.md의 repo별 `test_cmd`(없으면 local.conf/default)를 push SHA와 같은 clean checkout에서 실행해 green을 요구한다. 그래서 현재 HEAD가 아닌 rev의 보호 push(예: `git push X HEAD~1:main`)와 보호 브랜치 삭제(`git push X --delete main`)는 검증용 clean HEAD를 고정할 수 없어 거부된다. 유일한 통로는 사용자 명시 승인 하의 감사 우회 `PM_SKIP_SELF_TEST=1 PM_SELF_TEST_BYPASS_REASON='<빈 값이 아닌 사유>' PM_ALLOW_PROTECTED_PUSH=1 git push ...`이며, repo·branch·SHA·dirty 상태·사유가 훅 감사 로그에 남는다. `PM_SKIP_LIVE_GATE`는 이 경로를 생략하지 않는다.
-  - 프레임워크 홈이라도 local.conf `upstream.path`과 areas registry git의 provenance가 미등록·불일치·미해소면 release 증거를 주장하지 않고 **self-test로 강등**한다. 이때 release livegate 기록 대신 areas/local.conf/default의 `test_cmd`가 보호 push 증거가 된다. provenance를 복구하려면 `pm-config upstream set <url|path>`로 검증·기록하고 areas registry git도 같은 upstream identity로 정정한 뒤 훅 계약을 재설치한다. 긴급 통과는 위의 사유 필수 `PM_SKIP_SELF_TEST` 감사 우회만 쓴다.
+  - **프레임워크 release 경로:** push SHA에 `board.py live-test record`로 기록한 릴리즈 라이브 green을 `live-test check`로 확인한다. `PM_SKIP_LIVE_TEST=1`은 라이브 무관 변경·긴급 hotfix 두 사유만 허용하며 오프라인·API 장애에는 금지(복구 우선).
+  - **채택자 self-test 경로:** areas.md의 repo별 `test_cmd`(없으면 local.conf/default)를 push SHA와 같은 clean checkout에서 실행해 green을 요구한다. 그래서 현재 HEAD가 아닌 rev의 보호 push(예: `git push X HEAD~1:main`)와 보호 브랜치 삭제(`git push X --delete main`)는 검증용 clean HEAD를 고정할 수 없어 거부된다. 유일한 통로는 사용자 명시 승인 하의 감사 우회 `PM_SKIP_SELF_TEST=1 PM_SELF_TEST_BYPASS_REASON='<빈 값이 아닌 사유>' PM_ALLOW_PROTECTED_PUSH=1 git push ...`이며, repo·branch·SHA·dirty 상태·사유가 훅 감사 로그에 남는다. `PM_SKIP_LIVE_TEST`는 이 경로를 생략하지 않는다.
+  - 프레임워크 홈이라도 local.conf `upstream.path`과 areas registry git의 provenance가 미등록·불일치·미해소면 release 증거를 주장하지 않고 **self-test로 강등**한다. 이때 release live-test 기록 대신 areas/local.conf/default의 `test_cmd`가 보호 push 증거가 된다. provenance를 복구하려면 `pm-config upstream set <url|path>`로 검증·기록하고 areas registry git도 같은 upstream identity로 정정한 뒤 훅 계약을 재설치한다. 긴급 통과는 위의 사유 필수 `PM_SKIP_SELF_TEST` 감사 우회만 쓴다.
   - 보호목록의 라이브 브랜치는 bootstrap identity surface에 🚫 경고한다.
 - 훅은 `.repos/<repo>.git`의 client-side 가드뿐이며 회사 서버 ref·사용자 clone은 바꾸지 않는다.
 
 ### 릴리즈 절차 (순서)
 
-릴리즈 commit은 release 브랜치에서 하고 `main`은 merge로 받는다. 보호 브랜치에서 직접 commit하지 않는다. merge commit은 pre-commit 훅 비커버이며 push의 pre-push livegate가 게이트한다.
+릴리즈 commit은 release 브랜치에서 하고 `main`은 merge로 받는다. 보호 브랜치에서 직접 commit하지 않는다. merge commit은 pre-commit 훅 비커버이며 push의 pre-push live-test가 게이트한다.
 
-1. **`board.py livegate record`** — 라이브 wave를 실측해 green(수집 pin 충족)을 push 대상 rev에 기록. 손기록하지 않으며 보호훅이 소비한다.
+1. **`board.py live-test record`** — 라이브 wave를 실측해 green(수집 pin 충족)을 push 대상 rev에 기록. 손기록하지 않으며 보호훅이 소비한다.
 2. **CHANGELOG 절 확정** — 루트 `CHANGELOG.md`의 `[Unreleased]`를 `## [X.Y.Z] - YYYY-MM-DD`로 확정. 채택자 관점 Added/Changed/Fixed 3~8줄, ticket 번호·내부 세션 용어 금지. 위에 새 빈 `[Unreleased]` 추가.
    재료는 손으로 모으지 않는다 — `python3 .project_manager/tools/pm_delegate.py changelog material --since <직전 태그>` 가 그 태그 이후 완료된 티켓의 목표·결정·완료 조건을 티켓당 블록(분류 후보·채택자 영향 인용·근거 절)으로 낸다. **분류 확정과 문안은 PM이 쓴다**(도구는 판단하지 않는다).
-3. **main push** — 사용자 승인 + `PM_ALLOW_PROTECTED_PUSH=1`; 훅이 `livegate check` green을 요구.
+3. **main push** — 사용자 승인 + `PM_ALLOW_PROTECTED_PUSH=1`; 훅이 `live-test check` green을 요구.
 4. **annotated tag `vX.Y.Z`** push.
 5. **GitHub Release 생성 (필수 · 태그만으론 릴리즈 아님)** — `gh release create vX.Y.Z --notes-file <CHANGELOG 해당 절 추출> --verify-tag`. tag push와 별개이며 Release 객체 없이는 미완료다. gh 미인증이면 생략하지 말고 사용자에게 넘기며 "릴리즈 미완료"로 명시.
 6. **완결 확인** — `gh release view vX.Y.Z`로 Release 객체 존재를 확인해야 종료.

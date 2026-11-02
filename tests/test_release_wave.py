@@ -367,7 +367,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
 
     board.py 경로를 *주지 않는다* — adopter 가 `entry_doc` 만으로 도구를 찾아 운영해야 통과(= 문서 운영성).
     같은 claimed ticket에서 01 architect→02 developer→03 reviewer→04 developer 순서로
-    prepare→native subagent→harvest를 수행한다. 준비가 예약한 라운드
+    prepare→native subagent→collect를 수행한다. 준비가 예약한 라운드
     파일(`tickets/rounds/<T-NNNN>/NN-<역할>.md`)의 고유 sentinel과 developer의 probe.txt를 side-effect로
     관측한다. `section-add`는 여기서 쓰지 않는다 — 슬롯 없는 준비라 위임 경로와 겹치면 빈 라운드가
     하나 더 예약된다. 기존 Claude/OpenCode full-wave 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
@@ -416,12 +416,12 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "tool works. First, in this main session and before any other board command or delegation, open "
         f"the board task session with `{_WAVE_BOOTSTRAP_COMMAND}`. Only this main session runs "
         "pm_bootstrap.py; subagents never run it, and a subagent that reports a slot write denial hands it "
-        "back to this main session. HARD DELEGATION GATE: the PM main may run board, prepare, and harvest commands but "
+        "back to this main session. HARD DELEGATION GATE: the PM main may run board, prepare, and collect commands but "
         f"must not directly write, edit, cp, or sed any round file body. Call native {delegation_tool} exactly four "
         "times in this order: architect once, developer once, code-reviewer once, developer once. After "
         "each prepare, pass that absolute round path and its complete ROUND contract below to the matching "
         f"{delegation_tool}; do not start the next {delegation_tool} until the current {delegation_tool} "
-        "succeeds and its harvest returns rc=0. "
+        "succeeds and its collect returns rc=0. "
         f"If a {delegation_tool} call is missing or fails, stop without directly substituting for it. "
         f"The code-reviewer {delegation_tool} "
         "prompt must include the nested BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content "
@@ -442,7 +442,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         f"`python3 .project_manager/tools/worktree_pool.py switch {repo}_{_WAVE_WORK_SLOT} {work_branch}`, "
         "(3) execute exactly these four human rounds in order. For every round use pm_delegate.py ticket "
         "prepare with the stated role, pass the returned absolute round file to the matching native "
-        "subagent, then always ticket harvest before advancing. Every ticket prepare and ticket harvest "
+        "subagent, then always ticket collect before advancing. Every ticket prepare and ticket collect "
         f"takes `--cwd` set to the absolute path of the work folder `{work_folder}` under this project "
         "root, and the subagents write code only in that folder:\n"
         "ROUND 01 architect: use replacement/truncation, never append. Preserve the seeded first header "
@@ -480,20 +480,20 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "after the sentinel before replying. "
         "If there is a real defect instead, fill the seeded v3 finding without changing its keys; include "
         "evidence and all fix_contract fields, "
-        f"with test={_WAVE_TEST_FILE}, command=`{_WAVE_TARGETED_COMMAND}`, expected=passed. PM must harvest "
+        f"with test={_WAVE_TEST_FILE}, command=`{_WAVE_TARGETED_COMMAND}`, expected=passed. PM must collect "
         "ROUND 03 and observe rc=0 plus the canonical reviewer content before running ROUND 04 prepare; never "
         "reserve or pre-create ROUND 04 earlier.\n"
-        "PM DISPOSITION: after reviewer harvest, run review disposition-template for the actual reviewer "
+        "PM DISPOSITION: after reviewer collect, run review disposition-template for the actual reviewer "
         "ordinal. Accept only real current-ticket findings. For zero findings, keep dispositions rows at "
         "zero: append only the exact finding-zero block emitted by the template under `## PM 기계 확인` "
         "in the claimed ticket file, never in the canonical ROUND 03 reviewer file or any round file, and "
         "never invent a finding row. Do not search source or help for the block location. Reopen both files "
         "and verify the disposition fence occurs zero times in canonical ROUND 03 and exactly once under "
         "the claimed ticket's `## PM 기계 확인`; only after these counts are true may ROUND 04 prepare run. "
-        "Confirm review delta is empty. Then pass the exact accepted-only delta output to "
+        "Confirm the review accepted output is empty. Then pass the exact accepted-only delta output to "
         "the final developer. Do not create another ticket or reviewer round.\n"
         "ROUND 04 developer (terminal final fix): always prepare and delegate this second developer round, "
-        "even when review delta is empty. Apply every accepted finding, add or modify its required regression "
+        "even when the review accepted output is empty. Apply every accepted finding, add or modify its required regression "
         "test, and fill every preseeded pm-review-verify-v1 row. Run the architect/reviewer targeted commands "
         f"and `{_WAVE_FULL_COMMAND}` yourself. The final body must use the completed sections in exact order "
         "`## 변경 파일`, `## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`, then any "
@@ -503,8 +503,8 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "Before replying, reopen the final file and extract `## 회귀` through the next `## ` heading; "
         f"rewrite and reread unless it has exactly those two rows, contains `{_WAVE_FULL_COMMAND}` once, "
         f"contains neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
-        f"{_GROWTH_PIPELINE[3][1]} exactly once. Harvest once and open no further human round.\n"
-        "(4) after all four harvests, start a fresh board.py show process and verify the exact role order "
+        f"{_GROWTH_PIPELINE[3][1]} exactly once. Collect once and open no further human round.\n"
+        "(4) after all four collects, start a fresh board.py show process and verify the exact role order "
         "architect, developer, code-reviewer, developer and all four sentinels, "
         "(5) do not run a separate resolve command (the closer resolves the review gate). "
         "Do not search source or help for another gate command. Check all ticket DoD "
@@ -1558,7 +1558,7 @@ def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProc
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("claude"),
-    reason="release wave final nudge — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
+    reason="release wave final warn — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
 def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
@@ -1661,20 +1661,20 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "create exactly one ticket" in prompt
     # (2) claim.
     assert "claim it" in prompt
-    # (3) 성장 역할 4자리 + prepare/harvest + developer probe.
+    # (3) 성장 역할 4자리 + prepare/collect + developer probe.
     for role, sentinel in _GROWTH_PIPELINE:
         assert role in prompt and sentinel in prompt
     assert [role for role, _sentinel in _GROWTH_PIPELINE] == [
         "architect", "developer", "code-reviewer", "developer",
     ]
     assert all(f"ROUND {ordinal:02d}" in prompt for ordinal in range(1, 5))
-    assert "ticket prepare" in prompt and "ticket harvest" in prompt
+    assert "ticket prepare" in prompt and "ticket collect" in prompt
     assert PROBE_FILE in prompt and PROBE_TEXT in prompt
     assert _ARCHITECT_TEST_BLOCK in prompt
     assert _WAVE_TEST_FILE in prompt and _WAVE_TARGETED_COMMAND in prompt
     assert _WAVE_FULL_COMMAND in prompt and "Only actual rc=0" in prompt
-    assert "review disposition-template" in prompt and "review delta" in prompt
-    assert "even when review delta is empty" in prompt
+    assert "review disposition-template" in prompt and "review accepted" in prompt
+    assert "even when the review accepted output is empty" in prompt
     assert "BEGIN EXACT ARCHITECT BODY" in prompt
     assert "exact body equality" in prompt
     assert "old skeleton follows the sentinel" in prompt
@@ -1714,7 +1714,7 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert f"{_GROWTH_PIPELINE[1][1]} exactly once" in round02
     assert "BEGIN EXACT REVIEWER BODY" in prompt
     assert "exact body equality, one review block" in prompt
-    assert "harvest ROUND 03 and observe rc=0" in prompt
+    assert "collect ROUND 03 and observe rc=0" in prompt
     assert "never reserve or pre-create ROUND 04 earlier" in prompt
     # (4) 새 프로세스 canonical 재조회.
     assert "fresh board.py show process" in prompt
@@ -1736,7 +1736,7 @@ def test_full_wave_prompt_requires_exact_native_task_sequence():
     contracts = (
         "must not directly write, edit, cp, or sed any round file body",
         "architect once, developer once, code-reviewer once, developer once",
-        "do not start the next Task until the current Task succeeds and its harvest returns rc=0",
+        "do not start the next Task until the current Task succeeds and its collect returns rc=0",
         "If a Task call is missing or fails, stop without directly substituting for it",
         "BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content below verbatim",
         "role counts exactly architect=1, developer=2, code-reviewer=1",

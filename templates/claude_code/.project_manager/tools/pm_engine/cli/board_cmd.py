@@ -258,14 +258,14 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
                         "(pre-push 훅·핸드오프가 쓰는 경로)")
     p.set_defaults(fn=regression_cmd.cmd_regression, _board_subcommand="regression")
 
-    p = sub.add_parser("livegate",
+    p = sub.add_parser("live-test",
                        help="릴리즈 라이브 게이트 — record=`pytest -m release` "
                             "실행·수집 pin 강제·기록 / check=보호훅이 HEAD-매칭 green 검증")
     p.add_argument("action", choices=["record", "check"])
     p.add_argument("--rev", help="check 대상 sha (보호훅이 push HEAD 를 넘김·record 는 무시)")
     p.add_argument("--cwd", help="record=pytest 실행 cwd(기본=활성 slot worktree, 빈 값 및 "
                                  "--task/--repo/--slot과 혼합 불가, 경로는 --cwd만 지정) / "
-                                 "check=livegate.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "
+                                 "check=live-test.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "
                                  "(seam·record↔check 대칭)")
     identity_args.add_identity_args(p)  # record 의 task 폴더(M>1 홈에서 cwd 해소·regression 과 동형·
     # 무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요)
@@ -302,7 +302,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     p.set_defaults(fn=board_dispatch.cmd_refresh)
 
     p = sub.add_parser("lint", help="check depends_on / blocks consistency")
-    p.add_argument("--gate", action="store_true",
+    p.add_argument("--blocking", action="store_true",
                    help="push 게이트 모드 — 차단 카테고리(dangling/unstable-ref/dependency/"
                         "thin)에만 종료코드 1, status drift 자문성은 0")
     p.set_defaults(fn=board_lint.cmd_lint)

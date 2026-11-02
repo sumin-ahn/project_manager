@@ -4,7 +4,7 @@
 직접 검증한다. 무거운 subprocess 호출 없이 순수 로직 + 격리된 tmp 파일만 본다.
 
 비대화 `--trigger` auto-skeleton machinery 는 폐기됐다(ADR-0038 D1·T-0186) — rich 본문은
-nudge tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 죽은 채널이 됐다. 이
+warn tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 죽은 채널이 됐다. 이
 파일은 그 폐기 후 살아남는 축만 검증한다:
   - session-num 추론 (pm_state 세션 window 다음 차수·infer_next_session_num).
   - 대화형 handoff skeleton (박제 entries 자동 목록·메타 학습·pending intent·회귀 1줄).

@@ -144,7 +144,7 @@ def _inflight_capped_line(*, prefix: str, content: str, suffix: str) -> str:
 def _unharvested_copies_line(rows: list[dict]) -> str:
     """``delegate_ledger.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
     prefix = "- 미회수 라운드 준비 "
-    suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested`"
+    suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --uncollected`"
     if not rows:
         return _inflight_capped_line(prefix=prefix, content="0건", suffix=suffix)
     labels = [f"{row['ticket']} {row['role']}#{row['ordinal']}" for row in rows]
@@ -187,7 +187,7 @@ def build_ctx_guard_guidance(
     used_pct: int | None = None,
     precompact_at_pct: int | None = None,
 ) -> str:
-    """세 하네스가 공유하는 ctx nudge/compaction 안내문을 렌더한다.
+    """세 하네스가 공유하는 ctx warn/compaction 안내문을 렌더한다.
 
     동적 사용률은 하네스 관측값(사용 한도 대비 쓴 %)을 그대로 표시하되, 세션 연속성 정책은
     :data:`CTX_GUARD_CONTINUITY_GUIDANCE` 한 상수에서만 온다. 밴드는 표현 강도만
@@ -195,8 +195,8 @@ def build_ctx_guard_guidance(
     (`ctx.precompact_at_pct`)을 함께 적는다.
     """
     labels = {
-        "nudge": "ctx-nudge",
-        "nudge2": "ctx-nudge/강화",
+        "warn": "ctx-nudge",
+        "warn2": "ctx-nudge/강화",
         "final": "ctx-nudge/최종",
         "precompact": "ctx-checkpoint",
     }
@@ -229,7 +229,7 @@ def build_ctx_guard_guidance(
     return f"[{labels[band]}] {status}{command}{CTX_GUARD_CONTINUITY_GUIDANCE}"
 
 
-# 2단 넛지 임계 마진(%p). nudge2 밴드 = max(precompact_at − 이 마진, checkpoint_at) <= 쓴 % <
+# 2단 넛지 임계 마진(%p). warn2 밴드 = max(precompact_at − 이 마진, checkpoint_at) <= 쓴 % <
 # precompact_at 이다. 설정 키를 두지 않고 두 비율에서 파생한다.
 CTX_NUDGE2_MARGIN_PCT = 3
 
@@ -254,13 +254,13 @@ def nudge2_threshold(budget: dict) -> int:
 
 
 def classify(used_pct: int, budget: dict) -> str:
-    """쓴 % → ``ok`` | ``nudge`` | ``nudge2`` | ``stop``. 세 경계는 모두 그 값을 포함한다."""
+    """쓴 % → ``ok`` | ``warn`` | ``warn2`` | ``stop``. 세 경계는 모두 그 값을 포함한다."""
     if used_pct >= budget["precompact_at_pct"]:
         return "stop"
     if used_pct >= nudge2_threshold(budget):
-        return "nudge2"
+        return "warn2"
     if used_pct >= budget["checkpoint_at_pct"]:
-        return "nudge"
+        return "warn"
     return "ok"
 
 

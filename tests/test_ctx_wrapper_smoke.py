@@ -52,7 +52,7 @@ IS_WINDOWS = os.name == "nt"
 
 # transcript 점유 토큰 — 190_000 / 기본 윈도 200_000 = 95% used → 잔여 5 <= stop 20(기본·T-0207) → stop.
 _STOP_INPUT_TOKENS = 190_000
-# statusline ok 밴드 — current_usage 100_000 / 기본 예산 200_000 = 50% used → 잔여 50 > nudge 30 →
+# statusline ok 밴드 — current_usage 100_000 / 기본 예산 200_000 = 50% used → 잔여 50 > warn 30 →
 # ok(회색 `ctx 50%`·정지문구 없음). ADR-0041: 분모=예산·used_tokens=current_usage(물리 window% 폐기).
 _OK_USED_TOKENS = 100_000
 

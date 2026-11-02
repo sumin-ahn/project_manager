@@ -547,7 +547,7 @@ def _t0929_mock_workspaces(board, monkeypatch):
     return rows
 
 
-@pytest.mark.parametrize('consumer', ['regression', 'livegate'])
+@pytest.mark.parametrize('consumer', ['regression', 'live-test'])
 def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
     _t0929_mock_workspaces(board, monkeypatch)
     fake = _install_fake(board, monkeypatch, _FakeRun(0, pytest_summary(22)))
@@ -559,7 +559,7 @@ def test_t0929_consumers_selected_workspace(board, monkeypatch, consumer):
     assert lease_store.session_name(pm_paths.home_at(board.REPO), 'main') == 'main'
 
 
-@pytest.mark.parametrize('consumer', ['regression', 'livegate'])
+@pytest.mark.parametrize('consumer', ['regression', 'live-test'])
 def test_t0929_consumers_readonly_write_refused(board, monkeypatch, consumer):
     rows = _t0929_mock_workspaces(board, monkeypatch)
     rows[-1]['role'] = 'readonly'

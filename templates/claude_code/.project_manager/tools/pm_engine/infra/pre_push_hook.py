@@ -64,7 +64,7 @@ _PM_HOOK_SIGNATURE = "pm pre-push gate"
 
 # 본문 세대 스탬프 — "이 훅이 어느 세대인가"를 파일 자신이 말하게 한다. 게이트 명령을 바꿀 때
 # 이 값을 올리면, 이미 깔린 옛 훅이 스스로 구세대임을 드러낸다.
-PM_HOOK_REV = 3
+PM_HOOK_REV = 4
 _PM_HOOK_REV_PREFIX = "# pm-hook-rev: "
 
 # 설치된 훅에서 인터프리터를 되읽는 규칙 — 채택자의 런처 선택(`py -3.12` 등)이 세대 판정을
@@ -101,12 +101,12 @@ def pre_push_hook_body(py: str | None = None) -> str:
         "else\n"
         '  echo "pre-push: 회귀 게이트 비대상 — 이 트리에 tests/ 없음(PM 홈) · lint 게이트만"\n'
         "fi\n"
-        f"{interpreter} .project_manager/tools/board.py lint --gate || exit 1\n"
+        f"{interpreter} .project_manager/tools/board.py lint --blocking || exit 1\n"
     )
 
 
 def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
-    """**알려진 구세대 본문** 전수 (rev 미표기·rev 2 두 세대) — 정확일치 registry.
+    """**알려진 구세대 본문** 전수 (rev 미표기·rev 2·rev 3 세 버전) — 정확일치 registry.
 
     차단 여부는 이 registry 가 아니라 "현행 본문인가" 하나로 갈린다(비-현행은 전부 차단). registry
     가 가르는 것은 안내의 사유 낱말뿐이다 — 아는 세대면 "구버전", 모르는 본문이면 "엔진이 모르는
@@ -128,6 +128,19 @@ def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
         f"{_PM_HOOK_REV_PREFIX}2\n"
         f"{py} .project_manager/tools/board.py regression check || \\\n"
         f"  {py} .project_manager/tools/board.py regression run --final || exit 1\n"
+        f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
+        # rev 3: lint 줄의 플래그가 `--gate` 이던 본문. 그 플래그가 없어져 이 훅의 lint 줄은
+        # argparse 가 거부한다. 해결 방법은 `board.py init` 재실행 1회다.
+        "#!/bin/sh\n"
+        "# pm pre-push gate — 회귀 게이트(tests/ 있는 트리만) AND lint 게이트(항상). "
+        "board.py init 이 설치.\n"
+        f"{_PM_HOOK_REV_PREFIX}3\n"
+        "if [ -d tests ]; then\n"
+        f"  {py} .project_manager/tools/board.py regression check || \\\n"
+        f"    {py} .project_manager/tools/board.py regression run --final || exit 1\n"
+        "else\n"
+        '  echo "pre-push: 회귀 게이트 비대상 — 이 트리에 tests/ 없음(PM 홈) · lint 게이트만"\n'
+        "fi\n"
         f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
     )
 

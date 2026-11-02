@@ -35,7 +35,7 @@ lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다. lease
 없는 것이며 `pm-config worktree add <repo> --user-ack <repo>` 로 만든 뒤
 `pm-config alloc <repo> --task <task>` 로 task 에 빌린다.
 
-다중 작업공간에서는 claim 앵커·regression run·livegate record·new/cluster new 코드 트리·rounds resolve에만 `--task <task> --repo <repo> --slot <N>`을 함께 준다(`--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다). 자기 task의 소유 슬롯을 명시하고 HEAD·브랜치·test_cmd를 결속한다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish 의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 트리를 찾는다.
+다중 작업공간에서는 claim 앵커·regression run·live-test record·new/cluster new 코드 트리·rounds resolve에만 `--task <task> --repo <repo> --slot <N>`을 함께 준다(`--repo`/`--slot` 은 `--task` 와 함께일 때만 받는 위치 인자다). 자기 task의 소유 슬롯을 명시하고 HEAD·브랜치·test_cmd를 결속한다. bootstrap·handoff·init·reid는 task 단독 입력이고, finish 의 `--repo`/`--slot` 은 복구 문(`--reconcile-integrated`) 전용이며, finish 내부 확인은 묶음 브랜치로 트리를 찾는다.
 
 외부 의존이 없고 다른 세션이 claim하지 않은 ticket을 고른다:
 
@@ -83,7 +83,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
   ```
   pathspec 없는 bare commit 은 남이 stage 한 무관한 변경도 싣는다. ⚠️ **미추적(신규) 파일은 `git add` 선행** — pathspec 에 바로 주면 `error: pathspec '…' did not match any file(s) known to git` 으로 전체 commit 이 rc=1. ⚠️ ticket 이 `claimed/`→`done/` 으로 이동했으면 **옛/새 경로를 함께** 줘야 이동이 커밋된다. 메시지 말미에 `Co-Authored-By: Claude` 트레일러. 시크릿은 `.gitignore` 로 영구 제외.
 
-> **참조 규약**: status·log·ticket·ADR 의 ADR/ticket/idea 참조는 ID-wikilink(`[[ADR-NNNN]]`·`[[T-NNNN]]`·`[[idea-NNNN]]`)만 사용. 생파일명·슬러그 금지(`board.py lint --gate` 강제). 단일 진실은 pm_playbook §참조 규약.
+> **참조 규약**: status·log·ticket·ADR 의 ADR/ticket/idea 참조는 ID-wikilink(`[[ADR-NNNN]]`·`[[T-NNNN]]`·`[[idea-NNNN]]`)만 사용. 생파일명·슬러그 금지(`board.py lint --blocking` 강제). 단일 진실은 pm_playbook §참조 규약.
 
 ## 작업 원칙 (반드시)
 

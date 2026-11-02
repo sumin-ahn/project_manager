@@ -212,7 +212,7 @@ def test_main_pm_home_no_paths_derives_worktree(external, monkeypatch, tmp_path,
     home, worktree = _make_pm_home(tmp_path)
     conf = dict(_ENABLED_CONF)
     exit_code, reviewer_called = _run_main(
-        external, monkeypatch, home, conf, ["--no-gate"],
+        external, monkeypatch, home, conf, ["--no-review-ticket"],
     )
     assert exit_code == 0
     assert reviewer_called is True
@@ -288,7 +288,7 @@ def test_main_pm_home_with_paths_passes_gate(external, monkeypatch, tmp_path, ca
     conf = dict(_ENABLED_CONF)
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, home, conf,
-        ["--paths", ".project_manager/tools/", "--no-gate"],
+        ["--paths", ".project_manager/tools/", "--no-review-ticket"],
     )
     assert reviewer_called is True    # 게이트 미차단 → 리뷰어 진행
     assert exit_code == 0
@@ -303,7 +303,7 @@ def test_main_worktree_shape_no_block(external, monkeypatch, tmp_path, capsys):
     conf = dict(_ENABLED_CONF)
     # worktree 앵커: 실 board 미소유 → 게이트 미발화.
     exit_code, reviewer_called = _run_main(
-        external, monkeypatch, worktree, conf, ["--no-gate"],
+        external, monkeypatch, worktree, conf, ["--no-review-ticket"],
     )
     assert reviewer_called is True
     assert exit_code == 0

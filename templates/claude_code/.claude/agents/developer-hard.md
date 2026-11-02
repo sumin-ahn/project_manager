@@ -33,7 +33,7 @@ ticket 본문이 **단일 진실**이다. 목표/인터페이스/결정/DoD대�
 않는다. 재작업도 이번 위임에 준비된 라운드 파일 하나에만 쓴다. 이 파일은 응답과 별개로 위임 종료
 시 기계 회수된다.
 
-리뷰 재작업은 PM이 `pm_delegate.py review delta --ticket T-NNNN`으로 렌더한 accepted-only delta만
+리뷰 재작업은 PM이 `pm_delegate.py review accepted --ticket T-NNNN`으로 렌더한 accepted-only delta만
 명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 `rejected`/`decision-required`인
 finding은 구현하지 않는다. delta의 finding ID·PM 허용 scope를 벗어나지 않으며, 빈 delta면 코드 변경
 없이도 architect 테스트와 전체 회귀를 실행·기록해 마지막 fix 자리를 완료한다.

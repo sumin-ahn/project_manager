@@ -31,7 +31,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 MACHINE_PATH = ".opencode/node_modules/pkg/index.js"
 SHIPPED_TARGETS = ("claude_code", "codex", "opencode")
-DERIVED_PREFIX = "게이트 자동 유도: --gate"
+DERIVED_PREFIX = "게이트 자동 유도: --review-ticket"
 
 
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
@@ -234,9 +234,9 @@ def test_early_exit_notice_matrix_has_cell_specific_expectations(
     if gate_mode == "derived":
         argv = ["--ticket", "T-0637"]
     elif gate_mode == "no-gate":
-        argv = ["--paths", "src/app.py", "--no-gate"]
+        argv = ["--paths", "src/app.py", "--no-review-ticket"]
     else:
-        argv = ["--paths", "src/app.py", "--gate", "T-0637"]
+        argv = ["--paths", "src/app.py", "--review-ticket", "T-0637"]
 
     assert external.main(argv) == expected_rc
     assert calls == []
@@ -257,7 +257,7 @@ def test_gate_and_anchor_order_remains_unambiguous(external):
     positions = [
         source.index("gate_derivation = reviewer_reservation._derive_gate_from_ticket(args)"),
         source.index("if not diff.strip():"),
-        source.index("if not args.gate and not args.no_gate:"),
+        source.index("if not args.review_ticket and not args.no_review_ticket:"),
         source.index("budget = reviewer_reservation._reserve_round_budget("),
     ]
     assert positions == sorted(positions)
@@ -285,11 +285,11 @@ def test_help_and_shipped_skill_send_examples_choose_gate_accounting(external):
     examples = help_commands + skill_commands
     real_send = [
         command for command in examples
-        if not {"--dry-run", "--rounds-report", "--resolve-gate"}.intersection(command.split())
+        if not {"--dry-run", "--rounds-report", "--resolve-review"}.intersection(command.split())
     ]
     assert help_commands and skill_commands and real_send
     for command in real_send:
-        assert any(flag in command.split() for flag in ("--ticket", "--gate", "--no-gate")), command
+        assert any(flag in command.split() for flag in ("--ticket", "--review-ticket", "--no-review-ticket")), command
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
@@ -311,7 +311,7 @@ def test_invalid_review_input_has_no_side_effects(
         return subprocess.CompletedProcess(argv, 0, text, "")
     monkeypatch.setattr(review_diff, "extract_diff", lambda _home, base, paths: real_extract(_home, base, paths, git))
     output = tmp_path / "must-not-exist"
-    argv = ["--paths", "x.py", "--gate", "T-9001", "--output-dir", str(output)]
+    argv = ["--paths", "x.py", "--review-ticket", "T-9001", "--output-dir", str(output)]
     if failure != "untracked-list":
         argv += ["--base", "missing-ref" if failure == "base" else "base-ref"]
     if dry_run:

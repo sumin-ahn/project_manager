@@ -2,7 +2,7 @@
 
 추가 리뷰(codex)는 과금·호출 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측:
 한 게이트 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다
-([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별 라운드 장부
+([[mechanize-dont-instruct-llm]]): `--review-ticket <T-NNNN>` 별 라운드 장부
 (`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 호출 count 를 쌓고,
 limit(엔진 고정 4)을 넘기면 실행 *전에* 거부(전용 rc
 `EXIT_ROUND_LIMIT_EXCEEDED`)하고 loud 안내를 낸다. **재개 승인 경로는 없다**(T-0593 이 라운드 연장
@@ -10,8 +10,8 @@ limit(엔진 고정 4)을 넘기면 실행 *전에* 거부(전용 rc
 출구는 현재 티켓 정지와 사용자 보고이며, fix 뒤 재리뷰 예약 경로는 없다.
 
 T-0583 이 같은 장부에 두 축을 더한다: 라운드별 **산출**(`rounds` — 판정 rc·must-fix 수) append 와
-게이트별 상한과 **별개**인 wave 단위 총 예산(`wave` 절 · local.conf `additional_reviewer.wave_budget`·
-기본 24 · 소진 시 같은 rc 4 · `--ack-wave` 로만 재개). 조회면은 `--rounds-report`. 기록은 무조건
+게이트별 상한과 **별개**인 wave 단위 총 예산(`wave` 절 · local.conf `additional_reviewer.session_budget`·
+기본 24 · 소진 시 같은 rc 4 · `--reset-session-budget` 으로만 재개). 조회면은 `--rounds-report`. 기록은 무조건
 (파싱 불가는 null·리뷰 비차단)이고 hard 거부는 예산 축뿐이다.
 
 hermetic: REPO 를 tmp 로 monkeypatch 해 장부가 tmp `.local/` 에 격리되게 하고(`_round_ledger_path`
@@ -26,6 +26,7 @@ from pm_engine.domain import reviewer_budget
 from pm_engine.app import reviewer_harvest
 from pm_engine.app import reviewer_reservation
 from pm_engine.cli import reviewer_rounds
+from pm_engine.cli import additional_reviewer as cli_additional_reviewer
 from pm_engine.app import reviewer_run
 from pm_engine.app import reviewer_scope
 import pm_engine.infra.harness.reviewer_run
@@ -636,7 +637,7 @@ def test_valid_json_with_corrupt_records_still_runs_gate(
         encoding="utf-8",
     )
 
-    assert external.main(["--gate", "corrupt-gate", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "corrupt-gate", "--paths", "x.py"]) == 0
     assert calls["n"] == 1
     entry = _ledger(external, tmp_path)["corrupt-gate"]
     assert entry["count"] == 1
@@ -658,7 +659,7 @@ def test_verdict_rounds_no_longer_refuse_the_next_round(
     제거 전에는 5회째가 rc 4 로 거부됐다. 제거 후 남는 티켓 축은 수렴(여기서는 열어 둠)과
     미완(판정 없는 호출)뿐이라, 판정만 쌓인 게이트는 계속 열린다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
-    argv = ["--gate", "T-0100", "--paths", "x.py"]
+    argv = ["--review-ticket", "T-0100", "--paths", "x.py"]
 
     for i in range(1, 6):  # 옛 상한 4 를 넘겨 5회
         assert external.main(argv) == 0, f"round {i} 는 정상이어야 한다"
@@ -756,7 +757,7 @@ def test_blocked_gate_warns_about_the_retired_field_exactly_once_across_repeats(
             {"sequence": 2, "must_fix": 1, "verdict": 1},
         ],
     }}), encoding="utf-8")
-    argv = ["--gate", "T-0620", "--paths", "x.py"]
+    argv = ["--review-ticket", "T-0620", "--paths", "x.py"]
 
     assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     first_err = capsys.readouterr().err
@@ -771,7 +772,7 @@ def test_blocked_gate_warns_about_the_retired_field_exactly_once_across_repeats(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--gate", "T-0317", "--paths", "x.py", "--confirm-fix"],
+        ["--review-ticket", "T-0317", "--paths", "x.py", "--confirm-fix"],
         ["--rounds-report", "--confirm-fix"],
     ],
 )
@@ -801,7 +802,7 @@ def test_ack_rounds_is_refused_and_changes_nothing(
 
     플래그가 다시 통하면 차단 축(수렴·미완)이 사람 승인으로 열리는 옛 구조가 되살아난다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
-    argv = ["--gate", "T-0101", "--paths", "x.py"]
+    argv = ["--review-ticket", "T-0101", "--paths", "x.py"]
     for _ in range(4):
         assert external.main(argv) == 0
     capsys.readouterr()
@@ -833,7 +834,7 @@ def test_dry_run_excluded_from_count(external, monkeypatch, tmp_path):
     """dry-run 은 호출이 없어 라운드가 아니다 — 리뷰어 미호출·장부 미기록(무한 반복 무영향)."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(6):
-        assert external.main(["--gate", "T-0102", "--paths", "x.py", "--dry-run"]) == 0
+        assert external.main(["--review-ticket", "T-0102", "--paths", "x.py", "--dry-run"]) == 0
     assert calls["n"] == 0
     assert _ledger(external, tmp_path) == {}  # 장부 미생성
 
@@ -842,7 +843,7 @@ def test_empty_diff_excluded_from_count(external, monkeypatch, tmp_path):
     """빈-diff 거부(T-0326)는 호출 전 fail 이라 카운트 제외 — 리뷰어 미호출·장부 미기록."""
     calls = _wire(external, monkeypatch, tmp_path, diff="")
     for _ in range(6):
-        assert external.main(["--gate", "T-0103", "--paths", "x.py"]) == 1
+        assert external.main(["--review-ticket", "T-0103", "--paths", "x.py"]) == 1
     assert calls["n"] == 0
     assert _ledger(external, tmp_path) == {}
 
@@ -855,7 +856,7 @@ def test_timeout_uses_separate_incomplete_retry_limit(external, monkeypatch, tmp
     calls = _wire(
         external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=_ROUNDS_MAX_OFF,
     )
-    argv = ["--gate", "T-0104", "--paths", "x.py"]
+    argv = ["--review-ticket", "T-0104", "--paths", "x.py"]
     for i in range(1, 3):
         assert external.main(argv) == 1, f"round {i} 는 FALLBACK(rc=1)"
     assert calls["n"] == 2
@@ -878,7 +879,7 @@ def test_spawn_failure_refunds_reservation(external, monkeypatch, tmp_path):
     단언한다(설치/PATH 문제로 게이트가 막히면 안 된다)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     for _ in range(6):
-        assert external.main(["--gate", "T-0114", "--paths", "x.py"]) == 1
+        assert external.main(["--review-ticket", "T-0114", "--paths", "x.py"]) == 1
     assert calls["n"] == 6                       # 호출은 시도됨(리뷰어 호출)
     assert _ledger(external, tmp_path)["T-0114"]["count"] == 0  # 예약 환불 → never blocked
 
@@ -892,7 +893,7 @@ def test_spawn_failure_refund_is_announced_not_silent(
     실행과 리뷰어를 선언하지 않은 실행이 같은 모양이 된다 — Windows 경로 분해 결함이 30여 릴리즈
     숨어 있던 경로다. 스폰된 실행(호출됐을 수 있음)에는 이 경고가 붙지 않음을 같이 못 박는다."""
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
-    assert external.main(["--gate", "T-0722", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0722", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
 
     assert "라운드 환불" in err
@@ -901,7 +902,7 @@ def test_spawn_failure_refund_is_announced_not_silent(
     assert _ledger(external, tmp_path)["T-0722"]["count"] == 0
 
     _wire(external, monkeypatch, tmp_path, result=_FAIL_STARTED)
-    assert external.main(["--gate", "T-0723", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0723", "--paths", "x.py"]) == 1
     assert "라운드 환불" not in capsys.readouterr().err
     assert _ledger(external, tmp_path)["T-0723"]["count"] == 1
 
@@ -920,7 +921,7 @@ def test_killed_main_leaves_machine_counted_unfinished_record(
     gate = "kill-gate"
     process = multiprocessing.get_context("fork").Process(
         target=external.main,
-        args=(["--gate", gate, "--paths", "x.py"],),
+        args=(["--review-ticket", gate, "--paths", "x.py"],),
     )
     process.start()
     deadline = time.monotonic() + 5
@@ -941,7 +942,7 @@ def test_killed_main_leaves_machine_counted_unfinished_record(
     assert reviewer_reservation._round_counts(entry) == (1, 0, 1)
 
 
-# ── local.conf 노브 · --gate 미지정 · ack-without-gate ──────────────────────
+# ── local.conf 노브 · --review-ticket 미지정 · ack-without-gate ──────────────────────
 
 
 def test_the_retired_round_limit_key_supplies_nothing(
@@ -949,23 +950,23 @@ def test_the_retired_round_limit_key_supplies_nothing(
     """제거된 축의 키를 적어도 판정 라운드는 막히지 않는다 (죽은 키가 되살아나지 않는다)."""
     conf = {**_ROUNDS_MAX_OFF, "additional_reviewer.round_limit": "1"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
-    argv = ["--gate", "T-0105", "--paths", "x.py"]
+    argv = ["--review-ticket", "T-0105", "--paths", "x.py"]
     for _ in range(5):
         assert external.main(argv) == 0
     assert calls["n"] == 5
 
 
 def test_no_gate_is_not_ledgered(external, monkeypatch, tmp_path):
-    """명시 `--no-gate` 실행은 상한 대상 밖 — 무제한 진행·장부 미생성."""
+    """명시 `--no-review-ticket` 실행은 상한 대상 밖 — 무제한 진행·장부 미생성."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(8):
-        assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+        assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     assert calls["n"] == 8
     assert _ledger(external, tmp_path) == {}
 
 
 def test_ack_rounds_without_gate_is_refused_too(external, monkeypatch, tmp_path, capsys):
-    """`--ack-rounds` 는 --gate 유무와 무관하게 거부된다 (폐지는 형상별 예외가 없다)."""
+    """`--ack-rounds` 는 --review-ticket 유무와 무관하게 거부된다 (폐지는 형상별 예외가 없다)."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--ack-rounds", "--paths", "x.py"]) == 1
     assert "폐지" in capsys.readouterr().err
@@ -975,10 +976,10 @@ def test_ack_rounds_without_gate_is_refused_too(external, monkeypatch, tmp_path,
 
 def test_ack_wave_without_gate_still_warns_and_proceeds(
         external, monkeypatch, tmp_path, capsys):
-    """`--ack-wave` 는 종전대로 경고 후 진행 — 리셋할 게이트 장부가 없을 뿐 실행은 정상이다."""
+    """`--reset-session-budget` 은 종전대로 경고 후 진행 — 리셋할 게이트 장부가 없을 뿐 실행은 정상이다."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--ack-wave", "--paths", "x.py", "--no-gate"]) == 0
-    assert "--gate 와 함께" in capsys.readouterr().err
+    assert external.main(["--reset-session-budget", "--paths", "x.py", "--no-review-ticket"]) == 0
+    assert "--review-ticket 과 함께" in capsys.readouterr().err
     assert _ledger(external, tmp_path) == {}
 
 
@@ -988,7 +989,7 @@ def test_ack_wave_without_gate_still_warns_and_proceeds(
 def test_ledger_written_to_local_scratch(external, monkeypatch, tmp_path):
     """장부는 per-clone `.project_manager/.local/review_rounds.json` 에 기록된다 (board 오염 없음)."""
     _wire(external, monkeypatch, tmp_path)
-    external.main(["--gate", "T-0106", "--paths", "x.py"])
+    external.main(["--review-ticket", "T-0106", "--paths", "x.py"])
     ledger_file = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     assert ledger_file.is_file()
     assert json.loads(ledger_file.read_text(encoding="utf-8"))["T-0106"]["count"] == 1
@@ -1053,7 +1054,7 @@ def test_lock_failure_before_send_is_translated_and_blocks_the_send(
     calls = _wire(external, monkeypatch, tmp_path)
     _flaky_round_lock(external, monkeypatch, fail_on=1)
 
-    rc = external.main(["--gate", "T-0565", "--paths", "x.py"])
+    rc = external.main(["--review-ticket", "T-0565", "--paths", "x.py"])
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -1070,7 +1071,7 @@ def test_lock_failure_at_finish_keeps_the_verdict_exit_code(
     calls = _wire(external, monkeypatch, tmp_path)
     _flaky_round_lock(external, monkeypatch, fail_on=2)
 
-    rc = external.main(["--gate", "T-0565", "--paths", "x.py"])
+    rc = external.main(["--review-ticket", "T-0565", "--paths", "x.py"])
 
     err = capsys.readouterr().err
     assert rc == 0                               # 통과 판정 그대로 (락 사정으로 안 뒤집힘)
@@ -1117,7 +1118,7 @@ def test_reserve_check_save_under_single_lock(external, monkeypatch, tmp_path):
             depth["cur"] -= 1
 
     monkeypatch.setattr(review_rounds, "_round_ledger_lock", _instrumented)
-    assert external.main(["--gate", "T-0116", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0116", "--paths", "x.py"]) == 0
     assert depth["max"] == 1          # 재진입/중첩 없음 (예약 구간 원자)
     assert depth["enters"] == 2       # 실행 전 등재 + 종료 시 마감
     assert _ledger(external, tmp_path)["T-0116"]["count"] == 1
@@ -1190,15 +1191,15 @@ def test_wave_budget_default(external):
 
 
 def test_wave_budget_knob_override(external):
-    """local.conf additional_reviewer.wave_budget 노브가 예산을 바꾼다 (채택자 조정)."""
-    assert reviewer_target._wave_budget({"additional_reviewer.wave_budget": "6"}) == 6
-    assert reviewer_target._wave_budget({"additional_reviewer.wave_budget": "0"}) == 0
+    """local.conf additional_reviewer.session_budget 노브가 예산을 바꾼다 (채택자 조정)."""
+    assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "6"}) == 6
+    assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "0"}) == 0
 
 
 def test_wave_budget_garbage_and_negative_fall_back(external):
     """비정수·음수는 기본값으로 fail-soft (라운드 상한 노브와 같은 규칙)."""
-    assert reviewer_target._wave_budget({"additional_reviewer.wave_budget": "x"}) == 24
-    assert reviewer_target._wave_budget({"additional_reviewer.wave_budget": "-3"}) == 24
+    assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "x"}) == 24
+    assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "-3"}) == 24
 
 
 # ── 순수 헬퍼: 구세대 장부 하위호환 (rounds/wave 절 없음) ────────────────────
@@ -1258,14 +1259,14 @@ def test_gate_names_skip_the_reserved_wave_key(external):
 
 def test_reserved_gate_name_is_refused_before_any_effect(
         external, monkeypatch, tmp_path, capsys):
-    """`--gate wave` 는 리뷰어 호출·장부 접근 전에 거부된다 (호출 0·장부 미생성)."""
+    """`--review-ticket wave` 는 리뷰어 호출·장부 접근 전에 거부된다 (호출 0·장부 미생성)."""
     calls = _wire(external, monkeypatch, tmp_path)
-    rc = external.main(["--gate", reviewer_budget.WAVE_SECTION_KEY, "--paths", "x.py"])
+    rc = external.main(["--review-ticket", reviewer_budget.WAVE_SECTION_KEY, "--paths", "x.py"])
     err = capsys.readouterr().err
     assert rc == 1
     assert calls["n"] == 0
     assert _ledger(external, tmp_path) == {}
-    assert "예약 키" in err and "--gate wave" in err
+    assert "예약 키" in err and "--review-ticket wave" in err
     assert "형식 제약은 없습니다" in err     # 하위호환: 자유 이름은 계속 허용
 
 
@@ -1273,14 +1274,14 @@ def test_reserved_gate_name_is_refused_on_the_report_surface_too(
         external, monkeypatch, tmp_path, capsys):
     """조회면도 같은 이름을 게이트로 부르지 않는다 (한 곳에서 거르는 단일 판정)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--rounds-report", "--gate", reviewer_budget.WAVE_SECTION_KEY]) == 1
+    assert external.main(["--rounds-report", "--review-ticket", reviewer_budget.WAVE_SECTION_KEY]) == 1
     assert "예약 키" in capsys.readouterr().err
 
 
 def test_free_form_gate_names_still_work(external, monkeypatch, tmp_path):
     """T-NNNN 이 아닌 실사용 게이트 이름(wave4-b1)은 그대로 동작한다 (형식 강제 없음)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--gate", "wave4-b1", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "wave4-b1", "--paths", "x.py"]) == 0
     assert _ledger(external, tmp_path)["wave4-b1"]["count"] == 1
 
 
@@ -1326,7 +1327,7 @@ def test_corrupt_wave_spend_is_recomputed_loudly(external, capsys, corrupt):
     state = reviewer_reservation._wave_state({reviewer_budget.WAVE_SECTION_KEY: corrupt})
     assert (state["started"], state["spent"]) == (None, 0)   # 이력이 없으면 재계산도 0
     err = capsys.readouterr().err
-    assert "재계산" in err and "--ack-wave" in err
+    assert "재계산" in err and "--reset-session-budget" in err
 
 
 def test_negative_wave_spent_is_recomputed_from_round_history(external, capsys):
@@ -1414,7 +1415,7 @@ def test_must_fix_count_is_null_without_a_valid_verdict(external):
 def test_pass_round_appends_outcome_with_verdict(external, monkeypatch, tmp_path):
     """호출된 라운드는 산출(`ts`·판정 rc·결함 수)이 장부에 append 된다 (DoD)."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
-    assert external.main(["--gate", "T-0303", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0303", "--paths", "x.py"]) == 0
     rounds = _ledger(external, tmp_path)["T-0303"]["rounds"]
     assert len(rounds) == 1
     outcome = rounds[0]
@@ -1427,7 +1428,7 @@ def test_pass_round_appends_outcome_with_verdict(external, monkeypatch, tmp_path
 def test_reject_round_records_the_must_fix_count(external, monkeypatch, tmp_path):
     """반려 라운드는 rc 1 과 함께 실결함 수를 남긴다 — "그 라운드가 결함을 냈나"의 근거."""
     _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER)
-    assert external.main(["--gate", "T-0304", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0304", "--paths", "x.py"]) == 1
     outcome = _ledger(external, tmp_path)["T-0304"]["rounds"][0]
     assert (outcome["verdict"], outcome["must_fix"]) == (1, 2)
 
@@ -1438,7 +1439,7 @@ def test_reject_without_a_must_fix_section_records_null_count(
     answer = "판정: 반려\n\n락 순서가 위험합니다.\n"
     result = {**_REJECT_WITH_ANSWER, "answer": answer, "output": answer}
     _wire(external, monkeypatch, tmp_path, result=result)
-    assert external.main(["--gate", "T-0327", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0327", "--paths", "x.py"]) == 1
     outcome = _ledger(external, tmp_path)["T-0327"]["rounds"][0]
     assert (outcome["verdict"], outcome["must_fix"]) == (1, None)
 
@@ -1446,7 +1447,7 @@ def test_reject_without_a_must_fix_section_records_null_count(
 def test_round_outcome_carries_the_reservation_identity(external, monkeypatch, tmp_path):
     """산출이 예약 identity·시작 시각·실제 diff fingerprint를 실어 라운드↔결과를 잠근다."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
-    assert external.main(["--gate", "T-0328", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0328", "--paths", "x.py"]) == 0
     entry = _ledger(external, tmp_path)["T-0328"]
     outcome, record = entry["rounds"][0], entry["records"][0]
     assert outcome["id"] == record["id"]
@@ -1461,7 +1462,7 @@ def test_unparsable_outcome_is_null_and_does_not_block_the_review(
         external, monkeypatch, tmp_path):
     """산출 파싱 불가(판정 없는 호출)는 null 기록 — 리뷰 판정/rc 는 그대로다 (DoD·fail-soft)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_STARTED)
-    assert external.main(["--gate", "T-0305", "--paths", "x.py"]) == 1  # 판정 rc 보존
+    assert external.main(["--review-ticket", "T-0305", "--paths", "x.py"]) == 1  # 판정 rc 보존
     assert calls["n"] == 1
     outcome = _ledger(external, tmp_path)["T-0305"]["rounds"][0]
     assert outcome["verdict"] == 1
@@ -1471,7 +1472,7 @@ def test_unparsable_outcome_is_null_and_does_not_block_the_review(
 def test_contaminated_round_records_no_defect_count(external, monkeypatch, tmp_path):
     """오염으로 무효화한 판정은 결함 수도 세지 않는다 (판정 표면과 장부가 갈리지 않게)."""
     _wire(external, monkeypatch, tmp_path, result=_CONTAMINATED_WITH_ANSWER)
-    assert external.main(["--gate", "T-0306", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0306", "--paths", "x.py"]) == 1
     outcome = _ledger(external, tmp_path)["T-0306"]["rounds"][0]
     assert outcome["verdict"] == 1 and outcome["must_fix"] is None
 
@@ -1479,7 +1480,7 @@ def test_contaminated_round_records_no_defect_count(external, monkeypatch, tmp_p
 def test_spawn_failure_leaves_no_outcome(external, monkeypatch, tmp_path):
     """호출이 확실히 없던 라운드는 산출도 남기지 않는다 (리뷰어가 아무 말도 하지 않았다)."""
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
-    assert external.main(["--gate", "T-0307", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0307", "--paths", "x.py"]) == 1
     entry = _ledger(external, tmp_path)["T-0307"]
     assert entry["count"] == 0 and entry["rounds"] == []
 
@@ -1497,7 +1498,7 @@ def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
         json.dumps({"T-0309": {"count": 3, "acked_through": 2}}), encoding="utf-8",
     )
 
-    assert external.main(["--gate", "T-0309", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0309", "--paths", "x.py"]) == 0
     entry = _ledger(external, tmp_path)["T-0309"]
     assert entry["count"] == 4                # 옛 count 를 이어 센다 (리셋 없음)
     assert "acked_through" not in entry       # 폐지 필드는 저장에서 떨어진다
@@ -1506,7 +1507,7 @@ def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
     first_err = capsys.readouterr().err
     assert "T-0309" in first_err and "acked_through=2" in first_err
 
-    assert external.main(["--gate", "T-0309", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0309", "--paths", "x.py"]) == 0
     assert calls["n"] == 2
     entry = _ledger(external, tmp_path)["T-0309"]
     assert (entry["count"], reviewer_reservation._round_counts(entry)) == (5, (5, 5, 0))
@@ -1518,24 +1519,24 @@ def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
 
 def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
         external, monkeypatch, tmp_path, capsys):
-    """wave 예산은 게이트를 가로질러 합계로 센다 — 소진 시 rc 4·`--ack-wave` 로만 재개 (DoD)."""
-    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "2"}
+    """wave 예산은 게이트를 가로질러 합계로 센다 — 소진 시 rc 4·`--reset-session-budget` 으로만 재개 (DoD)."""
+    conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for gate in ("T-0310", "T-0311"):         # 서로 다른 게이트 = 각자 라운드 상한은 여유
-        assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
+        assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
     assert _wave(external, tmp_path)["spent"] == 2
     capsys.readouterr()
 
-    rc = external.main(["--gate", "T-0312", "--paths", "x.py"])
+    rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py"])
     assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED   # 라운드 상한과 같은 rc
     assert calls["n"] == 2                            # 리뷰어 미호출 (호출 전 거부)
     err = capsys.readouterr().err
     assert "wave 예산 소진" in err
-    assert "--ack-wave" in err and "예산 리셋" in err
+    assert "--reset-session-budget" in err and "예산 리셋" in err
     assert "--rounds-report" in err                   # 보고 근거 조회면 안내
     assert "T-0312" not in _ledger(external, tmp_path)  # 거부는 아무것도 커밋하지 않는다
 
-    rc = external.main(["--gate", "T-0312", "--paths", "x.py", "--ack-wave"])
+    rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py", "--reset-session-budget"])
     assert rc == 0 and calls["n"] == 3
     assert "wave 예산 승인 재개" in capsys.readouterr().err
     assert _wave(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
@@ -1544,7 +1545,7 @@ def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
 def test_wave_started_marks_the_first_send_and_accumulates(external, monkeypatch, tmp_path):
     """wave.started 는 첫 호출 시각이고 명시 리셋 전까지 누적된다 (세션 자동 감지 없음)."""
     _wire(external, monkeypatch, tmp_path)
-    argv = ["--gate", "T-0313", "--paths", "x.py"]
+    argv = ["--review-ticket", "T-0313", "--paths", "x.py"]
     assert external.main(argv) == 0
     started = _wave(external, tmp_path)["started"]
     assert started and started.endswith("+00:00")
@@ -1560,7 +1561,7 @@ def test_spawn_failure_refunds_the_wave_budget(external, monkeypatch, tmp_path):
     wave 를 진행 중으로 보여주고, 다음 첫 호출이 자기 시각을 못 찍는다."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     for _ in range(6):
-        assert external.main(["--gate", "T-0314", "--paths", "x.py"]) == 1
+        assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 1
     assert calls["n"] == 6
     assert _ledger(external, tmp_path)["T-0314"]["count"] == 0
     # 설치/PATH 문제로 예산이 새지 않는다 + 시작 시각도 복원된다.
@@ -1571,11 +1572,11 @@ def test_refund_keeps_the_wave_start_when_earlier_sends_exist(
         external, monkeypatch, tmp_path):
     """실 호출이 있던 wave 는 환불 후에도 첫 호출 시각을 유지한다 (0 으로 돌아갈 때만 지운다)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--gate", "T-0314", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 0
     started = _wave(external, tmp_path)["started"]
 
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
-    assert external.main(["--gate", "T-0314", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 1
     assert _wave_budget_state(external, tmp_path) == {"started": started, "spent": 1}
 
 
@@ -1600,7 +1601,7 @@ def test_refund_wave_round_ignores_another_generation(external):
 
 def test_refund_skips_a_wave_that_was_reset_mid_flight(
         external, monkeypatch, tmp_path, capsys):
-    """호출 중 `--ack-wave` 로 새 wave 가 열리면 이 실패는 그 예산을 깎지 않는다 (세대 확인).
+    """호출 중 `--reset-session-budget` 으로 새 wave 가 열리면 이 실패는 그 예산을 깎지 않는다 (세대 확인).
 
     다른 실행이 리뷰 도중 승인·리셋한 형상을 리뷰어 스텁 안에서 재현한다 — 예약 구간 락은 이미
     풀린 뒤라 실제 동시 실행과 같은 순서다."""
@@ -1608,14 +1609,14 @@ def test_refund_skips_a_wave_that_was_reset_mid_flight(
     stub_run_review = reviewer_run.run_review
 
     def _reset_wave_then_fail(*args, **kwargs):
-        with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):             # 다른 실행의 `--ack-wave` 대역
+        with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):             # 다른 실행의 `--reset-session-budget` 대역
             ledger = review_rounds._load_round_ledger(pm_paths.home_at(external.REPO))
             reviewer_reservation._spend_wave_round(reviewer_budget._reset_wave(ledger))
             reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), ledger)
         return stub_run_review(*args, **kwargs)
 
     monkeypatch.setattr(reviewer_run, "run_review", _reset_wave_then_fail)
-    assert external.main(["--gate", "T-0326", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0326", "--paths", "x.py"]) == 1
 
     assert _wave(external, tmp_path)["spent"] == 1       # 새 wave 의 소비는 그대로
     assert _ledger(external, tmp_path)["T-0326"]["count"] == 0   # 라운드 count 는 환불됨
@@ -1640,7 +1641,7 @@ def test_refund_is_skipped_when_the_reservation_record_vanishes(
         return stub_run_review(*args, **kwargs)
 
     monkeypatch.setattr(reviewer_run, "run_review", _clear_records_then_fail)
-    assert external.main(["--gate", "T-0332", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0332", "--paths", "x.py"]) == 1
 
     entry = _ledger(external, tmp_path)["T-0332"]
     assert (entry["count"], entry["records"]) == (1, [])   # 환불 대상 없음 → 이중 환불 없음
@@ -1666,7 +1667,7 @@ def test_outcome_keeps_its_sequence_when_records_are_cleared_away(
         return stub_run_review(*args, **kwargs)
 
     monkeypatch.setattr(reviewer_run, "run_review", _clear_records_then_pass)
-    assert external.main(["--gate", "T-0341", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0341", "--paths", "x.py"]) == 0
 
     entry = _ledger(external, tmp_path)["T-0341"]
     assert entry["records"] == []                       # 집계 창이 비워진 형상
@@ -1678,17 +1679,17 @@ def test_outcome_keeps_its_sequence_when_records_are_cleared_away(
 def test_negative_wave_spent_does_not_reopen_the_budget(
         external, monkeypatch, tmp_path, capsys):
     """장부를 `spent: -1` 로 고쳐도 예산은 열리지 않는다 — 손상은 승인을 대신하지 않는다."""
-    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "2"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf, result=_PASS_WITH_ANSWER)
     for gate in ("T-0337", "T-0338"):
-        assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
+        assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
     path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     ledger = json.loads(path.read_text(encoding="utf-8"))
     ledger[reviewer_budget.WAVE_SECTION_KEY]["spent"] = -1          # 예산 되돌리기 시도
     path.write_text(json.dumps(ledger), encoding="utf-8")
     capsys.readouterr()
 
-    rc = external.main(["--gate", "T-0339", "--paths", "x.py"])
+    rc = external.main(["--review-ticket", "T-0339", "--paths", "x.py"])
 
     err = capsys.readouterr().err
     assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED          # 여전히 막힌다
@@ -1705,12 +1706,12 @@ def test_ack_wave_does_not_open_the_gate_round_limit(
     calls = _wire(
         external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=_ROUNDS_MAX_OFF,
     )
-    argv = ["--gate", "T-0315", "--paths", "x.py"]
+    argv = ["--review-ticket", "T-0315", "--paths", "x.py"]
     for _ in range(spend):
         assert external.main(argv) == 1
     capsys.readouterr()
 
-    assert external.main(argv + ["--ack-wave"]) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
+    assert external.main(argv + ["--reset-session-budget"]) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert "미완 라운드 상한 도달" in capsys.readouterr().err
     assert calls["n"] == spend
 
@@ -1721,13 +1722,13 @@ def test_refused_run_leaves_no_gate_entry_in_the_ledger(
 
     항목을 만들어 두면 "라운드를 쓴 적 없는 게이트"가 장부에 나타나 조회 표와 승계 판정이 실제
     소비와 어긋난다 — 정규화 결과는 통과한 실행만 저장한다."""
-    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "2"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for gate in ("T-0330", "T-0331"):
-        assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
+        assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
     capsys.readouterr()
 
-    rc = external.main(["--gate", "T-0332", "--paths", "x.py"])   # wave 예산 소진으로 거부
+    rc = external.main(["--review-ticket", "T-0332", "--paths", "x.py"])   # wave 예산 소진으로 거부
 
     assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert "wave 예산 소진" in capsys.readouterr().err
@@ -1748,27 +1749,27 @@ def _exhaust_both_budgets(external, monkeypatch, tmp_path):
     spend = reviewer_target._incomplete_round_limit({})
     conf = {
         **_ROUNDS_MAX_OFF,                      # 수렴 축은 별도 테스트 소유(미완 축만 본다)
-        "additional_reviewer.wave_budget": str(spend + 1),
+        "additional_reviewer.session_budget": str(spend + 1),
     }
     calls = _wire(
         external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=conf,
     )
     for _ in range(spend):                                              # 게이트 상한 소진
-        assert external.main(["--gate", "T-0330", "--paths", "x.py"]) == 1
-    assert external.main(["--gate", "T-0331", "--paths", "x.py"]) == 1   # wave 예산 소진
+        assert external.main(["--review-ticket", "T-0330", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0331", "--paths", "x.py"]) == 1   # wave 예산 소진
     assert calls["n"] == spend + 1
     return calls
 
 
 def test_wave_approval_survives_a_round_limit_refusal(
         external, monkeypatch, tmp_path, capsys):
-    """게이트가 막아도 `--ack-wave` 리셋은 저장된다 (다음 실행이 그 상태를 이어받는다)."""
+    """게이트가 막아도 `--reset-session-budget` 리셋은 저장된다 (다음 실행이 그 상태를 이어받는다)."""
     spent = reviewer_target._incomplete_round_limit({}) + 1
     calls = _exhaust_both_budgets(external, monkeypatch, tmp_path)
     capsys.readouterr()
 
-    argv = ["--gate", "T-0330", "--paths", "x.py"]
-    assert external.main(argv + ["--ack-wave"]) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
+    argv = ["--review-ticket", "T-0330", "--paths", "x.py"]
+    assert external.main(argv + ["--reset-session-budget"]) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     err = capsys.readouterr().err
     assert "미완 라운드 상한 도달" in err
     assert calls["n"] == spent
@@ -1786,21 +1787,21 @@ def test_dry_run_and_empty_diff_do_not_spend_the_wave_budget(
     """호출 없는 실행(dry-run·빈 diff)은 wave 예산도 쓰지 않는다 (라운드 count 규칙과 동형)."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(3):
-        assert external.main(["--gate", "T-0319", "--paths", "x.py", "--dry-run"]) == 0
+        assert external.main(["--review-ticket", "T-0319", "--paths", "x.py", "--dry-run"]) == 0
     assert calls["n"] == 0
     assert _ledger(external, tmp_path) == {}
 
     _wire(external, monkeypatch, tmp_path, diff="")
-    assert external.main(["--gate", "T-0319", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0319", "--paths", "x.py"]) == 1
     assert _ledger(external, tmp_path) == {}
 
 
 def test_ack_wave_without_gate_warns_and_proceeds(external, monkeypatch, tmp_path, capsys):
-    """`--ack-wave` 를 --gate 없이 쓰면 경고 후 정상 진행 (장부 대상 아님·--ack-rounds 동형)."""
+    """`--reset-session-budget` 을 --review-ticket 없이 쓰면 경고 후 정상 진행 (장부 대상 아님·--ack-rounds 동형)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--ack-wave", "--paths", "x.py", "--no-gate"]) == 0
+    assert external.main(["--reset-session-budget", "--paths", "x.py", "--no-review-ticket"]) == 0
     err = capsys.readouterr().err
-    assert "--ack-wave" in err and "--gate 와 함께" in err
+    assert "--reset-session-budget" in err and "--review-ticket 과 함께" in err
     assert _ledger(external, tmp_path) == {}
 
 
@@ -1810,7 +1811,7 @@ def test_ack_wave_without_gate_warns_and_proceeds(external, monkeypatch, tmp_pat
 def test_rounds_report_dumps_gate_rounds_and_wave(external, monkeypatch, tmp_path, capsys):
     """조회면이 게이트별 라운드 수·라운드별 판정/결함 수·wave spent 를 표로 낸다 (호출 0)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER)
-    assert external.main(["--gate", "T-0320", "--paths", "x.py"]) == 1
+    assert external.main(["--review-ticket", "T-0320", "--paths", "x.py"]) == 1
     capsys.readouterr()
 
     assert external.main(["--rounds-report"]) == 0
@@ -1823,13 +1824,13 @@ def test_rounds_report_dumps_gate_rounds_and_wave(external, monkeypatch, tmp_pat
 
 
 def test_rounds_report_filters_by_gate(external, monkeypatch, tmp_path, capsys):
-    """`--gate` 를 주면 그 게이트만 본다 (다른 게이트는 표에 없다)."""
+    """`--review-ticket` 을 주면 그 게이트만 본다 (다른 게이트는 표에 없다)."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     for gate in ("T-0321", "T-0322"):
-        assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
+        assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
     capsys.readouterr()
 
-    assert external.main(["--rounds-report", "--gate", "T-0321"]) == 0
+    assert external.main(["--rounds-report", "--review-ticket", "T-0321"]) == 0
     out = capsys.readouterr().out
     assert "게이트 T-0321" in out and "T-0322" not in out
 
@@ -1843,7 +1844,7 @@ def test_rounds_report_on_empty_ledger_is_rc_zero(external, monkeypatch, tmp_pat
     assert "wave: spent=0 / 예산 24 · 시작 미시작" in out
     assert "기록된 게이트 없음" in out
 
-    assert external.main(["--rounds-report", "--gate", "T-0323"]) == 0
+    assert external.main(["--rounds-report", "--review-ticket", "T-0323"]) == 0
     assert "게이트 T-0323: 장부에 기록 없음" in capsys.readouterr().out
 
 
@@ -1851,7 +1852,7 @@ def test_rounds_report_with_a_selector_reads_the_recording_anchor(
         external, monkeypatch, tmp_path, capsys):
     """`--paths` 를 준 조회는 기록면과 **같은 해소**를 타 같은 장부를 읽는다 (앵커 갈림 방지)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
-    assert external.main(["--gate", "T-0334", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "T-0334", "--paths", "x.py"]) == 0
     capsys.readouterr()
 
     assert external.main(["--rounds-report", "--paths", "x.py"]) == 0
@@ -1865,16 +1866,16 @@ def test_rounds_report_warns_about_ignored_action_flags(
         external, monkeypatch, tmp_path, capsys):
     """조회 전용면이 행동 플래그를 조용히 무시하지 않는다 (승인이 삼켜졌다고 오인 금지)."""
     calls = _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--rounds-report", "--ack-wave", "--no-gate"]) == 0
+    assert external.main(["--rounds-report", "--reset-session-budget", "--no-review-ticket"]) == 0
     err = capsys.readouterr().err
-    assert "조회 전용" in err and "--ack-wave" in err and "--no-gate" in err
+    assert "조회 전용" in err and "--reset-session-budget" in err and "--no-review-ticket" in err
     assert calls["n"] == 0
     assert _ledger(external, tmp_path) == {}                # 조회는 장부를 고치지 않는다
 
 
 def test_rounds_report_reflects_the_wave_budget_knob(external, monkeypatch, tmp_path, capsys):
     """예산 표기는 해소된 conf 노브를 따른다 (조회와 게이트가 같은 값을 본다)."""
-    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "6"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "6"}
     _wire(external, monkeypatch, tmp_path, conf=conf)
     assert external.main(["--rounds-report"]) == 0
     assert "예산 6" in capsys.readouterr().out
@@ -2199,7 +2200,7 @@ def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
 # 호출이 rc=4 다(판정 상한은 엔진 고정 4 라 여기서 조이는 축이 아니다).
 _ALL_LIMITS_ONE = {
     **_ENABLED_CONF,
-    "additional_reviewer.wave_budget": "1",
+    "additional_reviewer.session_budget": "1",
     "additional_reviewer.incomplete_rounds_max": "1",
 }
 
@@ -2212,7 +2213,7 @@ def test_definite_launch_failure_spends_no_budget_and_a_valid_retry_still_spawns
     failing = _spawn_boundary_runner(raise_after=exc_type("reviewer"))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
-    gate = ["--gate", "T-9001", "--paths", "x.py"]
+    gate = ["--review-ticket", "T-9001", "--paths", "x.py"]
 
     for _ in range(3):
         assert run(gate) == 1, "확정 기동 실패는 FALLBACK(rc=1) — 상한 거부(rc=4)가 아니다"
@@ -2238,7 +2239,7 @@ def test_preparation_failure_before_popen_spends_no_budget(
     failing = _spawn_boundary_runner(raise_before=RuntimeError("워치독 준비 실패"))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
-    gate = ["--gate", "T-9002", "--paths", "x.py"]
+    gate = ["--review-ticket", "T-9002", "--paths", "x.py"]
 
     for _ in range(3):
         with pytest.raises(RuntimeError, match="워치독 준비 실패"):
@@ -2262,7 +2263,7 @@ def test_marked_no_child_seam_error_spends_no_budget(external, monkeypatch, tmp_
         raise_after=_marked(TypeError("watchdog 이 fork 전에 거절"), True))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
-    gate = ["--gate", "T-9004", "--paths", "x.py"]
+    gate = ["--review-ticket", "T-9004", "--paths", "x.py"]
 
     assert run(gate) == 1
     ledger = _ledger(external, tmp_path)
@@ -2282,7 +2283,7 @@ def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp
     failing = _spawn_boundary_runner(raise_after=RuntimeError("드레인 중 오류"))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
-    gate = ["--gate", "T-9003", "--paths", "x.py"]
+    gate = ["--review-ticket", "T-9003", "--paths", "x.py"]
 
     with pytest.raises(RuntimeError, match="드레인 중 오류"):
         run(gate)
@@ -2301,7 +2302,7 @@ def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp
 
 _KNOB_CONF = {
     **_ENABLED_CONF,
-    "additional_reviewer.wave_budget": "1",
+    "additional_reviewer.session_budget": "1",
     "additional_reviewer.incomplete_rounds_max": "1",
 }
 
@@ -2309,7 +2310,7 @@ _KNOB_CONF = {
 def test_knob_keys_drive_the_wave_budget_gate(external, monkeypatch, tmp_path):
     """예산 1 을 적은 conf 는 2회째 호출을 막는다 — 값이 실제로 게이트를 움직인다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_KNOB_CONF)
-    gate = ["--gate", "T-9101", "--paths", "x.py"]
+    gate = ["--review-ticket", "T-9101", "--paths", "x.py"]
 
     assert external.main(gate) == 0
     assert external.main(gate) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
@@ -2320,14 +2321,14 @@ def test_knob_conf_run_names_no_retired_key(external, monkeypatch, tmp_path, cap
     """현재 키만 쓴 conf 는 구표기 이름을 출력에 흘리지 않는다(가르치지 않는다)."""
     _wire(external, monkeypatch, tmp_path, conf=_KNOB_CONF)
 
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+    assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     err = capsys.readouterr().err
     for legacy in ("additional_reviewer_round_limit", "additional_reviewer_round_limit",
                    "additional_reviewer_wave_budget", "additional_reviewer_enabled"):
         assert legacy not in err, legacy
 
 
-# ── `--resolve-gate --pm-verified` — 추가 리뷰어 채널 처분 CLI (T-0791) ──────────
+# ── `--resolve-review --pm-verified` — 추가 리뷰어 채널 처분 CLI (T-0791) ──────────
 # 채널 폐지 뒤에도 additional-reviewer 장부(review_rounds.json)의 반려 잔여를 재호출 없이
 # 종결하는 선언면. 릴리즈 축(`_unresolved_must_fix_data`)의 재검증·채널 격리·실패 경로는
 # `tests/test_board_livegate.py` 가 진다 — 여기는 CLI 선언면 자체(모드 선택·호출 0·장부 불변·
@@ -2335,7 +2336,7 @@ def test_knob_conf_run_names_no_retired_key(external, monkeypatch, tmp_path, cap
 
 @pytest.fixture
 def pm_verified_declare(tmp_path, monkeypatch):
-    """`--resolve-gate --pm-verified` CLI 검증 — 실 티켓 트리 + 실 라운드 파일 + 실 review_rounds.json.
+    """`--resolve-review --pm-verified` CLI 검증 — 실 티켓 트리 + 실 라운드 파일 + 실 review_rounds.json.
 
     `run_review` 호출은 assert 로 막는다 — 선언면이 reviewer 를 스폰하면 이 대역이 즉시 실패시킨다
     (호출 0 계약을 값으로 단언)."""
@@ -2348,7 +2349,7 @@ def pm_verified_declare(tmp_path, monkeypatch):
     monkeypatch.setattr(
         reviewer_run, "run_review",
         lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("--resolve-gate 선언면이 reviewer 를 스폰했다 — 호출 0 계약 위반"),
+            AssertionError("--resolve-review 선언면이 reviewer 를 스폰했다 — 호출 0 계약 위반"),
         ),
     )
     ledger_path = proj / ".project_manager" / ".local" / "review_rounds.json"
@@ -2366,9 +2367,9 @@ def pm_verified_declare(tmp_path, monkeypatch):
 
 
 def test_resolve_gate_mode_guidance_lists_only_pm_verified(external, monkeypatch, tmp_path, capsys):
-    """`--resolve-gate` 처분 미지정 안내는 유일한 `--pm-verified`만 싣는다."""
+    """`--resolve-review` 처분 미지정 안내는 유일한 `--pm-verified`만 싣는다."""
     calls = _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--resolve-gate", "T-0001"]) == 1
+    assert external.main(["--resolve-review", "T-0001"]) == 1
     err = capsys.readouterr().err
     assert "--pm-verified" in err and "--into" not in err and "--fixed" not in err
     assert calls["n"] == 0
@@ -2379,18 +2380,33 @@ def test_resolve_gate_parser_rejects_removed_into_option(
     """폐지한 into 표면은 argparse 단계에서 fail-loud한다."""
     calls = _wire(external, monkeypatch, tmp_path)
     with pytest.raises(SystemExit):
-        external.main(["--resolve-gate", "T-0001", "--into", "T-0002", "--pm-verified"])
+        external.main(["--resolve-review", "T-0001", "--into", "T-0002", "--pm-verified"])
     assert "unrecognized arguments: --into" in capsys.readouterr().err
     assert calls["n"] == 0
 
 
+def test_reviewer_flags_accept_only_the_new_names():
+    """추가 리뷰어 플래그는 새 이름만 받는다. 옛 이름은 별칭 없이 인자 오류(종료 코드 2)다."""
+    parser = cli_additional_reviewer.build_arg_parser()
+    args = parser.parse_args(["--review-ticket", "T-0001", "--reset-session-budget"])
+    assert (args.review_ticket, args.reset_session_budget) == ("T-0001", True)
+    assert parser.parse_args(["--no-review-ticket"]).no_review_ticket is True
+    assert parser.parse_args(["--resolve-review", "T-0001"]).resolve_review == "T-0001"
+    for old, argv in (("--gate", ["--gate", "T-0001"]), ("--no-gate", ["--no-gate"]),
+                      ("--resolve-gate", ["--resolve-gate", "T-0001"]),
+                      ("--ack-wave", ["--ack-wave"])):
+        with pytest.raises(SystemExit) as caught:
+            parser.parse_args(argv)
+        assert caught.value.code == 2, old
+
+
 def test_pm_verified_flag_without_resolve_gate_is_refused(
         external, monkeypatch, tmp_path, capsys):
-    """`--pm-verified` 를 --resolve-gate 없이 쓰면 거부 — 선언할 게이트가 없으면 뜻이 없다."""
+    """`--pm-verified` 를 --resolve-review 없이 쓰면 거부 — 선언할 게이트가 없으면 뜻이 없다."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--pm-verified", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
-    assert "--pm-verified" in err and "--resolve-gate" in err
+    assert "--pm-verified" in err and "--resolve-review" in err
     assert calls["n"] == 0
 
 
@@ -2405,7 +2421,7 @@ def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified
     pm_verified_declare.write_ledger({tid: entry})
     raw_dir = pm_verified_declare.proj / ".project_manager" / ".local" / "review"
 
-    assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 0
+    assert pm_verified_declare.run("--resolve-review", tid, "--pm-verified") == 0
     after = pm_verified_declare.read_ledger()[tid]
     assert after["resolution"]["kind"] == "pm-verified"
     assert after["count"] == before["count"]
@@ -2430,7 +2446,7 @@ def test_pm_verified_declaration_is_refused_with_reason_when_evidence_is_insuffi
     entry = _pv_ledger_entry([_pv_round_outcome(1, 3)])   # 잔여 3인데 표면은 1건뿐
     pm_verified_declare.write_ledger({tid: entry})
 
-    rc = pm_verified_declare.run("--resolve-gate", tid, "--pm-verified")
+    rc = pm_verified_declare.run("--resolve-review", tid, "--pm-verified")
     assert rc == 1
     err = capsys.readouterr().err
     assert "1건" in err and "3건" in err
@@ -2444,9 +2460,9 @@ def test_rounds_report_shows_pm_verified_disposition_label(pm_verified_declare, 
     tid = "T-9781"
     entry = _pv_seed_v178_shape(pm_verified_declare.proj, tid)
     pm_verified_declare.write_ledger({tid: entry})
-    assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 0
+    assert pm_verified_declare.run("--resolve-review", tid, "--pm-verified") == 0
     capsys.readouterr()
-    assert pm_verified_declare.run("--rounds-report", "--gate", tid) == 0
+    assert pm_verified_declare.run("--rounds-report", "--review-ticket", tid) == 0
     out = capsys.readouterr().out
     assert "pm-verified" in out and "reviewer 재투입 없음" in out
 
@@ -2466,7 +2482,7 @@ def test_additional_declaration_opens_when_its_own_channel_is_machine_confirmed(
     )
     pm_verified_declare.write_ledger({tid: entries[_PV_CHANNEL_ADDITIONAL]})
 
-    assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 0
+    assert pm_verified_declare.run("--resolve-review", tid, "--pm-verified") == 0
     assert pm_verified_declare.read_ledger()[tid]["resolution"]["kind"] == "pm-verified"
 
 
@@ -2480,7 +2496,7 @@ def test_additional_declaration_is_refused_when_only_the_internal_channel_is_con
     )
     pm_verified_declare.write_ledger({tid: entries[_PV_CHANNEL_ADDITIONAL]})
 
-    assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 1
+    assert pm_verified_declare.run("--resolve-review", tid, "--pm-verified") == 1
     err = capsys.readouterr().err
     assert f"{_PV_ADDITIONAL_ROLE} 채널의 기계 확인" in err
     assert f"{_PV_INTERNAL_ROLE} 채널의 기계 확인" not in err
@@ -2519,7 +2535,7 @@ def test_internal_patch_size_changes_hash_without_changing_prompt(
                 ),
             )
             patcher.setattr(reviewer_scope, "_resolve_diff_root", lambda *a, **k: tmp_path)
-            argv = ["--paths", "x.py", "--no-gate"] + (["--dry-run"] if dry_run else [])
+            argv = ["--paths", "x.py", "--no-review-ticket"] + (["--dry-run"] if dry_run else [])
             assert external.main(argv) == 0
             output = capsys.readouterr().out
             if dry_run:

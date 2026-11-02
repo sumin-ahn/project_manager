@@ -371,7 +371,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> review_form.PMR
 
     # developer 라운드의 verify 행 내용은 **여기서 파싱하지 않는다** — 아직 아무 기계 확인도
     # 참조하지 않은 라운드의 자리표시자/오류 verify 블록이 delta 전체를 막으면 표시면(harvest·
-    # review delta·verify-template 의 "지금 accepted 가 뭔가" 질의)까지 판정면 엄격 규칙에
+    # review accepted·verify-template 의 "지금 accepted 가 뭔가" 질의)까지 판정면 엄격 규칙에
     # 전염된다. placement(developer 라운드 안에만)는 구조 검사라 여기서 그대로 하고, row 내용
     # 파싱은 아래 `_verify_rows_for_developer_round`(confirmation 결속을 실제로 요구하는
     # 순간)로 미룬다. developer 라운드는 구조 스캔 전용 재-인용을 거쳐야 손대지 않은
@@ -1316,8 +1316,8 @@ def review_resolution_input_problem(ticket_text: str, rounds: Sequence) -> str |
     if last.pending:
         return (
             f"code-reviewer 리뷰 라운드 {last.ordinal:02d} 를 돌려받지 않았습니다(시드 그대로) — "
-            "`pm_delegate.py ticket harvest --copy <run-dir> --cwd <슬롯>` 로 돌려받으세요"
-            "(`pm_delegate.py ticket copies --unharvested` 가 사본 경로를 냅니다)"
+            "`pm_delegate.py ticket collect --copy <run-dir> --cwd <슬롯>` 로 돌려받으세요"
+            "(`pm_delegate.py ticket copies --uncollected` 가 사본 경로를 냅니다)"
         )
     try:
         residual = review_residual(rounds)

@@ -112,8 +112,8 @@ def test_hook_tool_json_contract_and_failures(tmp_path):
     assert ok.stdout.endswith(b"\n") and ok.stdout.count(b"\n") == 1
     response = json.loads(ok.stdout.decode("utf-8"))
     assert set(response) == RESPONSE_KEYS and set(response["context"]) == CONTEXT_KEYS
-    assert (response["context"]["level"], response["context"]["emit"]) == ("nudge2", True)
-    assert response["context"]["guidance"] == _guidance("nudge2", 78)
+    assert (response["context"]["level"], response["context"]["emit"]) == ("warn2", True)
+    assert response["context"]["guidance"] == _guidance("warn2", 78)
     assert response["recall"]["keys"] == ["shell:git\\s+status"]
     assert (response["context_error"], response["recall_error"]) == (None, None)
 
@@ -191,7 +191,7 @@ console.log(JSON.stringify({failures, level: real.context.level, launches: launc
     result = _node(root, script, json.dumps({**request, "recall": None}))
     assert all(result["failures"].values()), result["failures"]
     assert "엔진 오류" in result["failures"]["rc"] and "spawn EACCES" in result["failures"]["spawnError"]
-    assert result["level"] == "nudge2"
+    assert result["level"] == "warn2"
     assert len(result["launches"]) == 1, "실행기 선택에 버전 확인 process 를 띄우지 않는다"
     assert result["launches"][0][-3:] == ["hook-tool", "--session", "ROOT"]
     assert not any(arg.endswith("python_floor.py") for arg in result["launches"][0])
@@ -266,7 +266,7 @@ const tool = Object.assign((definition) => definition, {schema});
 
 
 def test_native_context_policy_and_delivery(tmp_path):
-    """엔진 판정 그대로 — nudge2·final 독립, 0 미재무장·양수 ok 재무장, 재시작·다른 process 억제, 불능 notice."""
+    """엔진 판정 그대로 — warn2·final 독립, 0 미재무장·양수 ok 재무장, 재시작·다른 process 억제, 불능 notice."""
     root = _project(tmp_path)
     script = r"""
 const fs = require("node:fs");
@@ -280,7 +280,7 @@ const ctx = require("./ctx-guard-core.cjs");
   const hooks = await make();
   const sid = "ses_policy";
   const out = {};
-  await observe(hooks, sid, 156000); out.nudge2 = await deliver(hooks, sid); out.nudge2Again = await deliver(hooks, sid);
+  await observe(hooks, sid, 156000); out.warn2 = await deliver(hooks, sid); out.nudge2Again = await deliver(hooks, sid);
   await observe(hooks, sid, 190000); out.final = await deliver(hooks, sid);
   await observe(hooks, sid, 0); await observe(hooks, sid, 190000); out.afterZero = await deliver(hooks, sid);
   await observe(hooks, sid, 4000); await observe(hooks, sid, 156000); out.afterOk = await deliver(hooks, sid);
@@ -295,10 +295,10 @@ const ctx = require("./ctx-guard-core.cjs");
 """
     budget = (root / ".project_manager" / ".local" / "ctx-budget.json").read_bytes()
     result = _node(root, script)
-    assert result["nudge2"] == [_guidance("nudge2", 78)] and result["nudge2Again"] == []
-    assert result["final"] == [_guidance("final", 95)], "nudge2 발화가 final 을 소모했다"
+    assert result["warn2"] == [_guidance("warn2", 78)] and result["nudge2Again"] == []
+    assert result["final"] == [_guidance("final", 95)], "warn2 발화가 final 을 소모했다"
     assert result["afterZero"] == [], "미측정 0 이 밴드를 재무장했다"
-    assert result["afterOk"] == [_guidance("nudge2", 78)], "양수 ok 관측이 밴드를 재무장하지 않았다"
+    assert result["afterOk"] == [_guidance("warn2", 78)], "양수 ok 관측이 밴드를 재무장하지 않았다"
     assert result["restarted"] == [], "plugin 재시작이 같은 세션 밴드를 다시 냈다"
     assert result["notice"] == []
     assert len(result["budgetToasts"]) == 1 and "`pm_config.py apply`" in result["budgetToasts"][0]
@@ -379,7 +379,7 @@ const root = process.argv[1];
     late = result["lateContexts"]
     assert len(late) == 1 and late[0]["tokens"] == 0 and late[0]["boundary"].endswith("-ses_late"), late
     assert len(result["lateDelivered"]) == 1 and result["lateDelivered"][0].startswith("## PM 정체성")
-    assert result["pair"] == {"a": [_guidance("nudge2", 78)], "b": [_guidance("nudge", 75)]}
+    assert result["pair"] == {"a": [_guidance("warn2", 78)], "b": [_guidance("warn", 75)]}
     assert result["childDelivered"] == [] and result["childLaunches"] == 0
     assert not [name for name in _markers(root) if "ses_child" in name]
     assert result["childTool"]["count"] == 1 and result["childTool"]["session"] == "ses_parent"

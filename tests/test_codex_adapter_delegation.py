@@ -52,8 +52,8 @@ CANONICAL_DELEGATE = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md
 # 실제로 갈렸던 세 자리(T-0895) — 회수 절차·fix 라운드 검증 골격·추가 리뷰어 튜플 키.
 SHARED_DELEGATE_FACTS = (
     "native 위임은 raw 장부에는 남지 않지만 라운드 파일에는 남는다",
-    "`ticket harvest --copy ... --cwd ...`로 회수한 뒤에만 재위임한다",
-    "`ticket copies --unharvested`가 미회수 준비를 열거한다",
+    "`ticket collect --copy ... --cwd ...`로 회수한 뒤에만 재위임한다",
+    "`ticket copies --uncollected`가 미회수 준비를 열거한다",
     "fix 라운드면 엔진이 시드한 검증 골격을 accepted ID 전수로 채운다",
     "`additional_reviewer.harness`/`.model`/`.reasoning`",
 )

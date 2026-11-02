@@ -213,7 +213,7 @@ def test_hooks_precompact_allows_compaction_through_one_entrypoint_and_json_stdo
     assert checkpoint.argv[1:] == ("{tools}/pm_log.py", "checkpoint", "--trigger",
                                    "compaction", "--phase", "pre", "--session-id", "{session_id}")
     assert checkpoint.side_effect_only is True, "checkpoint 단계 출력 폐기가 사라졌다"
-    assert guidance.argv[1:] == ("{tools}/pm_log.py", "ctx-guidance", "--band",
+    assert guidance.argv[1:] == ("{tools}/pm_log.py", "ctx-guidance", "--level",
                                  "precompact", "--json")
     assert guidance.side_effect_only is False, "엔벨로프 단계가 답하지 않는다"
     joined = handler["command"]
@@ -739,7 +739,7 @@ def _adopter_root(tmp_path: Path, *, conf: str = "", pm_log_body: str | None = N
 _RECORD_MODEL = "gpt-oss:20b"
 
 
-# 밴드 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (쓴 % 77 → nudge2 밴드).
+# 밴드 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (쓴 % 77 → warn2 밴드).
 _IN_BAND_BUDGET = "harness.codex.ctx_window_tokens=20000\n"
 # 밴드 밖 예산 — 15328 / 60000 = 26%.
 _OUT_OF_BAND_BUDGET = "harness.codex.ctx_window_tokens=60000\n"
@@ -993,7 +993,7 @@ def test_ctx_wiring_adds_nothing_to_the_adopter_hooks_config():
     """`.codex/hooks.json` 은 이 축의 배선을 담지 않는다 — 채택자 재승인 0 (T-0770 DoD)."""
     rendered = HOOKS_JSON.read_text(encoding="utf-8")
 
-    for token in ("ctx-nudge", "ctx-guidance --band nudge", "ctx.checkpoint_at_pct",
+    for token in ("ctx-nudge", "ctx-guidance --level warn", "ctx.checkpoint_at_pct",
                   "rollout", "transcript_path"):
         assert token not in rendered, token
 
@@ -1010,8 +1010,8 @@ def test_band_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
     hook_output = envelope["hookSpecificOutput"]
     assert hook_output["hookEventName"] == "UserPromptSubmit"
     guidance = hook_output["additionalContext"]
-    # 렌더에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → nudge2).
-    assert guidance == ctx_recovery.build_ctx_guard_guidance("nudge2", used_pct=77, precompact_at_pct=80)
+    # 렌더에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → warn2).
+    assert guidance == ctx_recovery.build_ctx_guard_guidance("warn2", used_pct=77, precompact_at_pct=80)
     assert "잔여" not in guidance
     # 비차단 — 어떤 결정 필드도 내지 않는다(ADR-0081 D1·codex 는 allow/ask 자체를 거부한다).
     assert set(envelope) == {"hookSpecificOutput"}
@@ -1052,7 +1052,7 @@ def test_nudge_is_injected_once_per_cycle(codex_ctx, tmp_path):
     assert first != {} and second == {}
     markers = sorted(p.name for p in
                      (root / ".project_manager" / ".local" / "ctx-stop").iterdir())
-    assert markers == ["01a029b8-dd2b-7cc0-aac8-65158e5d120b.nudge2"]
+    assert markers == ["01a029b8-dd2b-7cc0-aac8-65158e5d120b.warn2"]
 
 
 def test_measured_ok_rearms_the_cycle_but_unmeasured_ok_does_not(codex_ctx, tmp_path):
@@ -1262,7 +1262,7 @@ def test_t0943_model_only_hook_input_runs_the_band(codex_ctx, tmp_path):
     envelope = codex_ctx.ctx_nudge_envelope(
         _t0943_hook_input(_write_rollout(tmp_path), root, _RECORD_MODEL), root)
     assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
-        "nudge2", used_pct=77, precompact_at_pct=80)
+        "warn2", used_pct=77, precompact_at_pct=80)
     assert "systemMessage" not in envelope
 
 
@@ -1273,7 +1273,7 @@ def test_t0943_other_model_and_missing_record_use_system_message(codex_ctx, tmp_
     envelope = codex_ctx.ctx_nudge_envelope(
         _t0943_hook_input(rollout, root, "gpt-other"), root)
     assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
-        "nudge2", used_pct=77, precompact_at_pct=80)
+        "warn2", used_pct=77, precompact_at_pct=80)
     assert "모델이 바뀌었습니다" in envelope["systemMessage"] and "gpt-other" in envelope["systemMessage"]
 
     (root / ".project_manager/.local/ctx-budget.json").unlink()

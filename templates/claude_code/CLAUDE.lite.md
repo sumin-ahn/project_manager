@@ -65,9 +65,9 @@
 PM 은 코드를 직접 짜지 않는다: `claim → 설계·구현 위임 → 리뷰 위임 → finish`. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다.
 
 - **dev**: `Agent`(developer)에 위임. 프롬프트 = "T-NNNN 구현. 본문이 단일 진실(`board.py show T-NNNN`). board/status/log 는 PM 담당 — 너는 코드+테스트만."
-- **reviewer**: `Agent`(code-reviewer)에 위임. 프롬프트는 엔진이 만든다 — `pm_delegate.py ticket prepare --cluster C-<ticket-group> --role code-reviewer` 가 낸 프롬프트 파일 경로를 넘기고 종료 뒤 `ticket harvest` 로 돌려받는다. 독립 검토(generate≠evaluate) — must-fix/should-fix/통과·반려.
+- **reviewer**: `Agent`(code-reviewer)에 위임. 프롬프트는 엔진이 만든다 — `pm_delegate.py ticket prepare --cluster C-<ticket-group> --role code-reviewer` 가 낸 프롬프트 파일 경로를 넘기고 종료 뒤 `ticket collect` 로 돌려받는다. 독립 검토(generate≠evaluate) — must-fix/should-fix/통과·반려.
 - **병렬 위임은 touches disjoint 일 때만.** reviewer 도 틀릴 수 있으므로 should-fix 는 PM 이 흐름 cross-check 후 적용.
-- skill 표준 프롬프트: `/pm-wave-claim`·`/pm-dev-delegate`·`/pm-wave-finish`.
+- skill 표준 프롬프트: `/pm-cluster-claim`·`/pm-dev-delegate`·`/pm-cluster-finish`.
 
 ## 5. 완료 기록 (PM 손)
 
@@ -78,7 +78,7 @@ PM 은 코드를 직접 짜지 않는다: `claim → 설계·구현 위임 → �
 `status.md` 모듈 행 갱신 · `log/current.md` entry append · 회귀 `{{TEST_CMD}}` green 확인 · **git commit**은 논리적 체크포인트에서 **경로 명시**:
 `git commit -m "T-NNNN — <요약>" -- <ticket touches> .project_manager/wiki/status.md .project_manager/wiki/log/current.md .project_manager/wiki/tickets/claimed/T-NNNN-<slug>.md .project_manager/wiki/tickets/done/T-NNNN-<slug>.md`
 
-bare commit 은 남이 stage 한 변경까지 싣는다. ticket 이동은 **옛·새 경로 둘 다** 지정. **신규 파일은 `git add` 선행** — 미추적 pathspec 은 `pathspec … did not match` 로 rc=1. 메시지 말미 `Co-Authored-By: Claude` 트레일러. `/pm-wave-finish` 가 스칼라·skeleton·board·stage 를 자동화한다.
+bare commit 은 남이 stage 한 변경까지 싣는다. ticket 이동은 **옛·새 경로 둘 다** 지정. **신규 파일은 `git add` 선행** — 미추적 pathspec 은 `pathspec … did not match` 로 rc=1. 메시지 말미 `Co-Authored-By: Claude` 트레일러. `/pm-cluster-finish` 가 스칼라·skeleton·board·stage 를 자동화한다.
 
 ## 6. 자주 쓰는 명령
 
@@ -91,7 +91,7 @@ bare commit 은 남이 stage 한 변경까지 싣는다. ticket 이동은 **옛�
 {{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run   # 엔진 동기화(메인테이너)
 ```
 
-PM workflow skill(`/pm-bootstrap`·`/pm-handoff`·`/pm-wave-claim`·`/pm-dev-delegate`·`/pm-wave-finish`·`/pm-regression`·`/spike-new`)의 용법·backbone 단일 진실은 [`.claude/skills/`](.claude/skills/) 각 SKILL.md.
+PM workflow skill(`/pm-bootstrap`·`/pm-handoff`·`/pm-cluster-claim`·`/pm-dev-delegate`·`/pm-cluster-finish`·`/pm-regression`·`/spike-new`)의 용법·backbone 단일 진실은 [`.claude/skills/`](.claude/skills/) 각 SKILL.md.
 
 > **Windows/인코딩**: 엔진이 코드로 처리하므로 Windows/CP949·PowerShell 에서도 env 없이 한글이 동작한다. 필요 시 PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`. `{{PY}}` 는 `board.py init` 이 PATH 탐지(Windows=`python`)로 채운다.
 > **PowerShell 5.x `&&` 미지원**(ParseError) — `cd X && cmd` 대신 workdir 파라미터/명령 분리. Windows 진입은 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).

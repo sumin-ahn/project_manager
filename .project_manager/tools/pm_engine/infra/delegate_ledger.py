@@ -27,7 +27,7 @@ DELEGATE_ROUNDS_LEDGER_REL_PATH = (
 )
 _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS: frozenset[str] = frozenset(
     {"ticket", "role", "ordinal", "run_id", "copy", "board_rel", "prepared_at",
-     "harvested_at"}
+     "collected_at"}
 )
 
 # 선택 키 셋은 하위 호환이다(기존 8키 행에는 없다) — `abandoned_at` 은 kill 잔여를 명시적으로
@@ -86,8 +86,8 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
         or not isinstance(row["prepared_at"], str)
         or not row["prepared_at"]
         or not (
-            row["harvested_at"] is None
-            or isinstance(row["harvested_at"], str) and row["harvested_at"]
+            row["collected_at"] is None
+            or isinstance(row["collected_at"], str) and row["collected_at"]
         )
         or ("abandoned_at" in row and not (
             isinstance(row["abandoned_at"], str) and row["abandoned_at"]
@@ -156,7 +156,7 @@ def ticket_copy_records(
 ) -> list[dict]:
     """copy 별 최신 append snapshot 을 prepare 최신순으로 반환한다 (`ticket copies` 입력).
 
-    `unharvested` 는 "아직 처분되지 않은 준비"다 — 회수(`harvested_at`)도 포기(`abandoned_at`)도
+    `unharvested` 는 "아직 처분되지 않은 준비"다 — 회수(`collected_at`)도 포기(`abandoned_at`)도
     거치지 않은 행만 남긴다. 포기된 행을 미회수로 계속 세면 abandon 이 잔여를 지워도 조회면에는
     그대로 남아 정리 수단이 무효로 보인다.
     """
@@ -168,7 +168,7 @@ def ticket_copy_records(
         if (ticket is None or row["ticket"] == ticket)
         and (
             not unharvested
-            or (row["harvested_at"] is None and "abandoned_at" not in row)
+            or (row["collected_at"] is None and "abandoned_at" not in row)
         )
     ]
     return sorted(rows, key=lambda row: row["prepared_at"], reverse=True)

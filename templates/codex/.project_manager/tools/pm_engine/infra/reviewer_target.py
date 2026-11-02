@@ -318,7 +318,7 @@ def _incomplete_round_limit(conf: dict[str, str]) -> int:
 
 
 def _wave_budget(conf: dict[str, str]) -> int:
-    """wave 총 라운드 예산 (local.conf additional_reviewer.wave_budget·미설정은 레지스트리 기본값).
+    """wave 총 라운드 예산 (local.conf additional_reviewer.session_budget·미설정은 레지스트리 기본값).
 
     비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 게이트를
     벽돌로 만들지 않는다)."""

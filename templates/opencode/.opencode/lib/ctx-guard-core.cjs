@@ -413,7 +413,7 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
     if (!decision.emit) return;
     state.pendingNudgeText = decision.guidance;
     state.pendingSnapshotMarker = null;
-    if (decision.level === "nudge") await notifyNudge(decision.guidance);
+    if (decision.level === "warn") await notifyNudge(decision.guidance);
     else await notifyNudge2(decision.guidance);
   }
 

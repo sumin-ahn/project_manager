@@ -51,7 +51,7 @@ def _save_round_ledger(home, ledger: dict) -> None:
     path = review_rounds._round_ledger_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     problems = completion_gate._unresolved_must_fix_data(home, ledger, path)
-    livegate_flag = path.with_name("livegate.json")
+    livegate_flag = path.with_name("live-test.json")
     if problems:
         release._write_release_must_fix_marker(livegate_flag, problems)
     review_rounds.write_ledger(path, ledger)
@@ -71,12 +71,12 @@ def _wave_state(ledger: dict) -> dict:
     `_gate_entry` 와 같은 read→normalize→mutate→write 규약이라 호출부가 그 자리에서 고친 뒤
     저장하면 깨끗한 값이 기록된다.
 
-    `id` 는 **세대 식별자**다. `--ack-wave` 리셋은 새 id 를 발급하므로, 리셋 전에 예약한 실행이
+    `id` 는 **세대 식별자**다. `--reset-session-budget` 리셋은 새 id 를 발급하므로, 리셋 전에 예약한 실행이
     나중에 환불하려 해도 세대가 달라 새 wave 의 예산을 깎지 못한다(예산 우회 차단). id 가 없는
     구세대 절에는 여기서 하나 발급해 심는다 — 이후 모든 예약/환불이 같은 좌표를 쓴다.
 
     손상(비-dict 값·옛 게이트 항목·비정수/음수 spent)은 **소비량을 0 으로 접지 않는다** — 예산은
-    승인(`--ack-wave`)으로만 열리는 축이라, 손상을 리셋으로 대접하면 장부 한 줄 편집이 승인을
+    승인(`--reset-session-budget`)으로만 열리는 축이라, 손상을 리셋으로 대접하면 장부 한 줄 편집이 승인을
     대신하게 된다. 대신 장부에 남은 라운드 산출 이력으로 소비량을 다시 세고(범위는 wave 시작 시각
     이후, 그것마저 못 믿으면 전체) stderr 한 줄로 무엇을 왜 재계산했는지 고지한다."""
     raw = ledger.get(reviewer_budget.WAVE_SECTION_KEY)
@@ -91,7 +91,7 @@ def _wave_state(ledger: dict) -> dict:
         print(
             f"경고: 라운드 장부 {corruption} — wave 소비를 라운드 산출 이력으로 **재계산**했습니다 "
             f"(spent={spent}). 손상은 승인을 대신하지 않습니다 — 새 wave 로 시작하려면 "
-            "`--ack-wave`.",
+            "`--reset-session-budget`.",
             file=sys.stderr,
         )
     wave_id = state.get("id")
@@ -107,7 +107,7 @@ def _wave_state(ledger: dict) -> dict:
 def _spend_wave_round(state: dict) -> None:
     """실 호출 1회를 wave 예산에서 쓴다 — 첫 호출이 wave 시작 시각을 찍는다.
 
-    wave 경계는 명시 리셋(`--ack-wave`)까지 누적한다. 세션 자동 감지는 하지 않는다 — 세션 식별이
+    wave 경계는 명시 리셋(`--reset-session-budget`)까지 누적한다. 세션 자동 감지는 하지 않는다 — 세션 식별이
     이 도구 밖 개념이라 명시 리셋이 단순하고 예측 가능하다."""
     if not state.get("started"):
         state["started"] = clock.now_utc()
@@ -117,7 +117,7 @@ def _spend_wave_round(state: dict) -> None:
 def _refund_wave_round(state: dict, wave_id: str | None) -> bool:
     """예약과 **같은 세대**의 wave 소비만 되돌린다 (라운드 count 환불과 같은 조건).
 
-    세대 확인이 없으면 `--ack-wave` 로 새로 연 wave 의 예산을 옛 실행의 실패가 깎아 예산이 조용히
+    세대 확인이 없으면 `--reset-session-budget` 으로 새로 연 wave 의 예산을 옛 실행의 실패가 깎아 예산이 조용히
     늘어난다(승인 1회로 예산 +N). 세대가 다르면 아무것도 하지 않고 False 를 돌려준다.
 
     소비가 0 으로 돌아가면 시작 시각도 지운다 — `started` 는 **첫 실 호출** 시각이라, 호출이 하나도
@@ -153,7 +153,7 @@ def _gate_entry(ledger: dict, gate: str) -> dict:
 
     예약 키(wave 절)를 게이트로 정규화하려는 호출은 **fail-loud** 다 — 그 자리에 게이트 항목을 쓰면
     같은 항목을 wave 예산이 덮어써 상한·예산이 둘 다 조용히 무력화된다. 정상 경로는 `_main` 이
-    `--gate` 를 이미 거른 뒤라 여기 오지 않는다(불변식을 주석이 아니라 기계로 지킨다).
+    `--review-ticket` 을 이미 거른 뒤라 여기 오지 않는다(불변식을 주석이 아니라 기계로 지킨다).
 
     폐기 필드 감지 여부가 필요한 호출부는 `_gate_entry_with_retirement` 를 대신 쓴다(이
     함수는 그 감지를 조용히 버린다 — 대부분의 호출부는 저장 여부를 스스로 정하지 않는
@@ -270,36 +270,36 @@ def _convergence_refusal(
 def _derive_gate_from_ticket(args) -> reviewer_budget.GateDerivation:
     """`--ticket` 실행의 게이트를 티켓으로 유도한다 (거부 사유가 있으면 그 안내를 돌려준다).
 
-    유도는 **리뷰 실행면에서만** 한다 — 조회(`--rounds-report`)와 기록(`--resolve-gate`) 면은
-    같은 `--gate` 를 각각 '한 게이트만 보기' 필터와 '무시 목록'으로 읽어, 유도값이 사용자가 주지
+    유도는 **리뷰 실행면에서만** 한다 — 조회(`--rounds-report`)와 기록(`--resolve-review`) 면은
+    같은 `--review-ticket` 을 각각 '한 게이트만 보기' 필터와 '무시 목록'으로 읽어, 유도값이 사용자가 주지
     않은 선택으로 둔갑한다(그 두 면은 호출도 예약도 하지 않아 여기서 닫을 구멍이 없다).
 
-    명시 `--gate` 가 항상 이기고, `--no-gate` 는 유도를 끄는 명시 opt-out 이다. 리뷰
+    명시 `--review-ticket` 이 항상 이기고, `--no-review-ticket` 은 유도를 끄는 명시 opt-out 이다. 리뷰
     실행면에서 둘을 함께 주면 한 실행이 "기록한다"와 "기록하지 않는다"를 동시에
     뜻하므로 거부한다. 조회·처분면에서는 둘 다 필터/무시 입력이라 충돌이 아니다.
 
     유도한 이름도 **예약 키 검사를 지난다** — `_gate_entry` 는 예약 키를 hard 예외로 거부하므로,
     거르지 않으면 자유 문자열 티켓 하나가 예약 임계 구역에서 크래시로 나타난다(불변식을 주석이
     아니라 기계로 지킨다)."""
-    opt_out = getattr(args, "no_gate", False)
+    opt_out = getattr(args, "no_review_ticket", False)
     # 조회·처분면을 **충돌 판정보다 먼저** 가른다. 이 두 표면은 실 리뷰를
-    # 호출·예약하지 않아 `--gate`는 필터/무시 입력, `--no-gate`는 무시 경고 대상이다.
+    # 호출·예약하지 않아 `--review-ticket`은 필터/무시 입력, `--no-review-ticket`은 무시 경고 대상이다.
     # 여기서 닫아야 호출부의 각 표면 무시-플래그 처리까지 정상 도달한다.
-    if args.rounds_report or args.resolve_gate:
+    if args.rounds_report or args.resolve_review:
         return reviewer_budget.GateDerivation()
-    if args.gate and opt_out:
-        return reviewer_budget.GateDerivation(refusal=reviewer_budget._GATE_OPT_OUT_CONFLICT_GUIDANCE.format(gate=args.gate))
-    if args.gate or opt_out or not args.ticket:
+    if args.review_ticket and opt_out:
+        return reviewer_budget.GateDerivation(refusal=reviewer_budget._GATE_OPT_OUT_CONFLICT_GUIDANCE.format(gate=args.review_ticket))
+    if args.review_ticket or opt_out or not args.ticket:
         return reviewer_budget.GateDerivation()
     reserved = reviewer_budget._reserved_gate_error(args.ticket, flag="--ticket")
     if reserved is not None:
         return reviewer_budget.GateDerivation(refusal=reserved)
-    args.gate = args.ticket
+    args.review_ticket = args.ticket
     template = (
         reviewer_budget._GATE_DERIVED_DRY_RUN_NOTICE if getattr(args, "dry_run", False)
         else reviewer_budget._GATE_DERIVED_NOTICE
     )
-    return reviewer_budget.GateDerivation(notice=template.format(gate=args.gate))
+    return reviewer_budget.GateDerivation(notice=template.format(gate=args.review_ticket))
 
 
 def _reserve_round_budget(
@@ -314,7 +314,7 @@ def _reserve_round_budget(
     대상 밖).
 
     게이트가 있는지는 이 함수보다 앞에서 정해진다 — `--ticket` 실행은 `_derive_gate_from_ticket`
-    이 게이트를 유도하고, selector 에 티켓이 없으면 실 호출 seam 이 명시 `--no-gate`를
+    이 게이트를 유도하고, selector 에 티켓이 없으면 실 호출 seam 이 명시 `--no-review-ticket`을
     요구한다. 따라서 여기 게이트 없이 오는 실행은 모두 명시 opt-out 이며, loud 표기 뒤
     회계 없이 지난다(조용한 무기록은 반려 must-fix 를 릴리즈 차단 표면에서 지운다).
 
@@ -326,15 +326,15 @@ def _reserve_round_budget(
 
     상한 축은 셋이고 이 순서로 본다: **수렴-형상**(장부 must_fix 추이) → 판정/미완 라운드 상한 →
     wave 예산. 수렴 축을 먼저 보는 이유는 그쪽이 더 좁고 정지 사유가 구체적이기 때문이다.
-    wave 승인(`--ack-wave`)은 **먼저 적용한 뒤** 남은 축을 다시 본다 — 적용해 놓고 저장
+    wave 승인(`--reset-session-budget`)은 **먼저 적용한 뒤** 남은 축을 다시 본다 — 적용해 놓고 저장
     없이 되돌아가면 PM 이 적용한 승인이 조용히 사라진다.
 
     `wall_timeout_sec` 는 이 실행이 해소한 하네스 벽시계 백스톱이다 — 진행 중 예약 합산의 회수
     기준으로 그대로 넘긴다(그 시각을 넘긴 미마감 예약은 실행 중일 수 없다)."""
-    if not args.gate:
+    if not args.review_ticket:
         # wave 승인은 게이트 단위 예산 리셋이므로 대상이 없으면 무시한다.
-        if args.ack_wave:
-            print("경고: --ack-wave 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
+        if args.reset_session_budget:
+            print("경고: --reset-session-budget 은 --review-ticket 과 함께 써야 합니다 (게이트 단위 장부) — 무시.",
                   file=sys.stderr)
         # 호출이 확정된 구간이지만 **아직 스폰 전**이다(환경 준비가 남아 있다) — 그래서 문구는
         # 조건형이고("이 실행이 호출되면"), 확정 표기는 실행이 끝난 뒤 판정 블록의 게이트 줄이
@@ -352,25 +352,25 @@ def _reserve_round_budget(
             # 앵커 이동 1회 승계 — legacy(diff 앵커) 장부의 차단 상태를 그대로 이관한다.
             # 승계분은 판정 *이전에* 저장한다: 차단으로 조기 return 해도 마이그레이션은
             # 남아야 다음 실행이 다시 승계하지 않는다(게이트당 1회).
-            if _inherit_legacy_round_entry(home, ledger, args.gate) is not None:
+            if _inherit_legacy_round_entry(home, ledger, args.review_ticket) is not None:
                 _, legacy_verdicts, legacy_incomplete = _round_counts(
-                    ledger[args.gate]
+                    ledger[args.review_ticket]
                 )
                 print(
                     f"legacy 라운드 장부 승계: {review_rounds._legacy_round_ledger_path(home)} → "
-                    f"{review_rounds._round_ledger_path(home)} · gate={args.gate} "
+                    f"{review_rounds._round_ledger_path(home)} · gate={args.review_ticket} "
                     f"verdicts={legacy_verdicts} incomplete={legacy_incomplete}",
                     file=sys.stderr,
                 )
                 _save_round_ledger(home, ledger)
-            entry, retired_ack = _gate_entry_with_retirement(ledger, args.gate)
+            entry, retired_ack = _gate_entry_with_retirement(ledger, args.review_ticket)
             # F-002 — 폐기 필드 정리는 이 실행이 뒤에서 거부되든 승인되든 **여기서 즉시**
             # 저장하고 1회만 고지한다. 아래 각 차단 분기의 `approved or wave_repaired`
             # 조건에 태우면(그 축은 다른 손상 복구 전용) 이 정리만 저장을 놓쳐 거부가
             # 반복될 때마다 같은 경고가 되풀이된다 — 그 자체가 F-002 결함이었다.
             if retired_ack:
                 _save_round_ledger(home, ledger)
-                review_rounds.warn_retired_ack_field(args.gate, retired_ack)
+                review_rounds.warn_retired_ack_field(args.review_ticket, retired_ack)
             # 손상 복구(재계산된 spent)는 거부되는 실행에서도 저장한다 — 안 그러면 손상값이
             # 남아 매 실행 같은 경고를 반복하고 장부가 계속 거짓말을 한다. 저장 판정은 정규화와
             # **같은 술어**를 쓴다.
@@ -380,7 +380,7 @@ def _reserve_round_budget(
             # 남은 상한을 다시 본 뒤에야 정해지고, 거부되는 실행이 "재개"를 말하면 rc 4 와
             # 어긋난 loud 오보가 된다.
             wave_reset = False
-            if args.ack_wave:
+            if args.reset_session_budget:
                 wave = reviewer_budget._reset_wave(ledger)
                 wave_reset = True
             approved = wave_reset
@@ -402,7 +402,7 @@ def _reserve_round_budget(
                 completed, inflight = _convergence_round_usage(
                     entry, wall_timeout_sec=wall_timeout_sec)
                 print(reviewer_budget._CONVERGENCE_GUIDANCE.format(
-                    gate=args.gate, reason=reviewer_budget._CONVERGENCE_REASONS[convergence],
+                    gate=args.review_ticket, reason=reviewer_budget._CONVERGENCE_REASONS[convergence],
                     rounds=completed + inflight, completed=completed, inflight=inflight,
                     limit=rounds_max,
                     series=reviewer_budget._format_must_fix_series(series),
@@ -421,7 +421,7 @@ def _reserve_round_budget(
                     _save_round_ledger(home, ledger)      # 승인·손상 복구는 거부돼도 남긴다
                 announce(resumed=False)
                 print(reviewer_budget._ROUND_LIMIT_GUIDANCE.format(
-                    gate=args.gate, unacked=total, verdicts=verdicts,
+                    gate=args.review_ticket, unacked=total, verdicts=verdicts,
                     incomplete=incomplete,
                     incomplete_limit=incomplete_limit,
                     ledger=review_rounds._round_ledger_path(home),
@@ -433,7 +433,7 @@ def _reserve_round_budget(
                     _save_round_ledger(home, ledger)
                 announce(resumed=False)
                 print(reviewer_budget._WAVE_BUDGET_GUIDANCE.format(
-                    gate=args.gate, spent=wave["spent"], budget=wave_budget,
+                    gate=args.review_ticket, spent=wave["spent"], budget=wave_budget,
                     started=wave["started"] or "미기록",
                     ledger=review_rounds._round_ledger_path(home)), file=sys.stderr)
                 return reviewer_budget.RoundBudget(refused_rc=reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED)
@@ -449,7 +449,7 @@ def _reserve_round_budget(
             _spend_wave_round(wave)                   # 같은 호출을 wave 예산에서도 차감
             _save_round_ledger(home, ledger)
             return reviewer_budget.RoundBudget(
-                gate=args.gate, round_id=round_id, sequence=record["sequence"],
+                gate=args.review_ticket, round_id=round_id, sequence=record["sequence"],
                 started_at=record["started_at"], target_rev=record["target_rev"],
                 wave_id=wave["id"],                   # 환불은 이 세대에만 유효
             )
@@ -473,7 +473,7 @@ def _refund_reserved_round(ledger: dict, reservation: reviewer_budget.RoundBudge
     한다 — 마감 경로는 같은 임계 구역에서 산출 기록까지 함께 쓰기 때문이다. 환불 조건이 한 군데라
     "환경 준비 실패로 되돌린 예약"과 "스폰 실패로 되돌린 예약"이 서로 다른 규칙을 갖지 않는다.
 
-    wave 는 **예약 시점 세대**만 깎는다: 그 사이 `--ack-wave` 로 새 wave 가 열렸으면 이 실패는 그
+    wave 는 **예약 시점 세대**만 깎는다: 그 사이 `--reset-session-budget` 으로 새 wave 가 열렸으면 이 실패는 그
     예산과 무관하다(깎으면 승인 1회로 예산이 늘어난다). 라운드 count 를 되돌리지 못했으면(레코드가
     그 사이 접힌 경우) 나머지 축도 건드리지 않는다 — 한쪽만 깎으면 축들의 소비가 갈린다."""
     entry = _gate_entry(ledger, reservation.gate)

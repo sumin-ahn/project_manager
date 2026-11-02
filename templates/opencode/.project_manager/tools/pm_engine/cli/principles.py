@@ -1,4 +1,4 @@
-"""판단 원칙 조회·recall·재무장 명령 처리."""
+"""판단 원칙 조회·recall 명령 처리."""
 from __future__ import annotations
 import json
 import argparse
@@ -26,11 +26,6 @@ def main(argv: list[str] | None = None) -> int:
         "count", help="로드된 규칙 수(RECALL/JUDGMENT/파손)를 낸다."
     )
     p_count.add_argument("--root", default=".")
-    p_rearm = sub.add_parser(
-        "rearm", help="세션 marker 를 지워 다음 사이클을 재무장한다."
-    )
-    p_rearm.add_argument("--root", default=".")
-    p_rearm.add_argument("--session", required=True)
     args = parser.parse_args(argv)
     home = pm_paths.home_at(Path(args.root).resolve())
     if args.command == "judge-recall":
@@ -58,9 +53,5 @@ def main(argv: list[str] | None = None) -> int:
                 ensure_ascii=False,
             )
         )
-        return 0
-    if args.command == "rearm":
-        principle_store.rearm_seen_marker(home, args.session)
-        console.write_machine_line(json.dumps({"rearmed": True}, ensure_ascii=False))
         return 0
     return 2

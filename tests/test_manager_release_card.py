@@ -141,8 +141,8 @@ def test_the_manager_step_says_what_to_do_when_a_job_is_red():
 def test_the_smoke_results_are_not_recorded_in_the_livegate():
     text = ROOT_CARD.read_text(encoding="utf-8")
 
-    assert "livegate 기록에 넣지 않는다" in text
-    assert re.search(r"livegate[^\n]*record[^\n]*smoke", text) is None
+    assert "live-test 기록에 넣지 않는다" in text
+    assert re.search(r"live-test[^\n]*record[^\n]*smoke", text) is None
 
 
 # ── ② 출하 사본 전수 대조 (pm_update --all-targets) ──────────────────────────
@@ -232,7 +232,7 @@ def test_the_asset_names_the_card_promises_are_the_ones_the_build_makes():
 
 def _pre_push_section(card: Path) -> str:
     text = card.read_text(encoding="utf-8")
-    start = text.index("### 2. livegate record")
+    start = text.index("### 2. live-test record")
     return text[start:text.index(SECTION_HEADING, start)]
 
 
@@ -282,7 +282,7 @@ def test_windows_manual_window_check_contract(card):
     assert "Windows 버전·검증 커밋 SHA·실행 명령·종료 코드 `rc=0`·`smoke ok` 출력을 보고" in check
     assert "미실행 또는 실패 시 공개 main push 승인 요청을 중단한다" in check
     assert "수정으로 커밋이 바뀌면 같은 확인을 다시 실행" in check
-    assert "소스 smoke 결과는 livegate 기록에 넣지 않는다" in check
+    assert "소스 smoke 결과는 live-test 기록에 넣지 않는다" in check
     assert "공개 후 관리자 실행 파일 3종의 CI 확인도 별도로 수행" in check
     assert "새 기계 게이트·설정 키·우회 옵션은 추가하지 않는다" in check
 

@@ -523,8 +523,8 @@ def test_scaffold_dangling_gate_passes(board, monkeypatch, tmp_path):
                for name, kind, _d in issues
                if name in ("ADR-9999", "idea-9999")), issues
     # gate 는 통과(0), full 은 advisory 라도 1 (현행 계약: full 은 모든 finding 에서 1).
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 def test_wiki_dangling_still_blocks(board, monkeypatch, tmp_path):
@@ -540,7 +540,7 @@ def test_wiki_dangling_still_blocks(board, monkeypatch, tmp_path):
     issues = wikilink_lint.lint_wikilinks(pm_paths.home_at(board.REPO))
     assert any(name == "ADR-9999" and kind == "dangling-wikilink"
                for name, kind, _d in issues), issues
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 1  # 차단 유지.
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 1  # 차단 유지.
 
 
 def test_scaffold_resolving_wikilink_clean_no_advisory(board, monkeypatch, tmp_path):
@@ -675,10 +675,10 @@ def test_gate_zero_on_status_drift_only(board, monkeypatch, tmp_path, capsys):
         ("status.md", "status-done-accum", "활성 매트릭스 ✅ 행 누적"),
     ])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    rc = board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True))
+    rc = board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True))
     assert rc == 0
     # 무인자(full) 는 같은 입력에서 1 (현행 계약 유지).
-    rc_full = board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False))
+    rc_full = board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False))
     assert rc_full == 1
 
 
@@ -694,7 +694,7 @@ def test_gate_one_on_unstable_ref_dangling(board, monkeypatch, tmp_path):
         ("9999-ghost.md", "unstable-ref", "실재 안 함 → [[ADR-9999]]"),
     ])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    rc = board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True))
+    rc = board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True))
     assert rc == 1
 
 
@@ -710,8 +710,8 @@ def test_gate_zero_on_unstable_ref_advice_only(board, monkeypatch, tmp_path):
         ("0007-overlay.md", "unstable-ref-advice", "실재 → [[ADR-0007]] 권고"),
     ])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 # ── ⑥ pre-push 훅 본문에 lint --gate 단계 포함 ────────────────────────────────
@@ -734,7 +734,7 @@ def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     assert pre_push_hook.install_pre_push_hook(pm_paths.home_at(board.REPO)) is True
     text = (hooks / "pre-push").read_text(encoding="utf-8")
-    assert "board.py lint --gate" in text
+    assert "board.py lint --blocking" in text
     # 회귀 단계도 여전히 있어야 한다 (AND).
     assert "regression check" in text
     assert "regression run" in text
@@ -749,7 +749,7 @@ def test_pre_push_hook_idempotent(board, monkeypatch, tmp_path):
     pre_push_hook.install_pre_push_hook(pm_paths.home_at(board.REPO))
     second = (hooks / "pre-push").read_text(encoding="utf-8")
     assert first == second
-    assert second.count("board.py lint --gate") == 1
+    assert second.count("board.py lint --blocking") == 1
 
 
 # ── lint_tickets 합류 (kind 노출 회귀) ────────────────────────────────────────
@@ -912,7 +912,7 @@ def test_lint_scopes_non_string_is_advisory_not_blocking(board, monkeypatch, tmp
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
     # advice 는 떠야 하고(가드 무력화 시 비게 됨), gate 는 0 유지.
     assert "scope-advice" in _kinds(ticket_lint.lint_tickets(pm_paths.home_at(board.REPO)))
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
 
 
 def test_lint_scopes_advice_on_unregistered_repo_when_areas_exists(
@@ -960,8 +960,8 @@ def test_lint_scopes_is_advisory_not_blocking_in_gate(board, monkeypatch, tmp_pa
         ("decisions/0001-x.md", "scope-advice", "family_scope='ghost' 미등록"),
     ])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 def test_scope_advice_in_advisory_kinds(board):
@@ -1168,9 +1168,9 @@ def test_gate_excludes_domain_findings(board, monkeypatch, tmp_path):
         ("이력쌓임", "history", "변경 이력 항목 3개 — …"),
     ])
     # --gate: domain 은 종료코드에 기여 안 함 → 0.
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
     # 무인자(full): 같은 입력에서 1 (보고는 함·현행 계약).
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 def test_domain_lint_kinds_are_registered_advisory(board):
@@ -1396,8 +1396,8 @@ def test_adr_author_gate_does_not_block(board, monkeypatch, tmp_path):
     # adr-author finding 이 실제로 발생함을 먼저 확인.
     assert any(k == "adr-author" for _l, k, _d in wiki_lint.lint_adr_author(pm_paths.home_at(board.REPO)))
     # 그럼에도 gate 는 0 (차단 카테고리 0), full 보고는 1 (issue 존재).
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 def test_adr_author_graceful_no_decisions(board, monkeypatch, tmp_path):
@@ -1694,7 +1694,7 @@ def test_gate_zero_on_unverifiable_only(board, monkeypatch, tmp_path):
         ("codex-adapter.md", "domain-unverifiable", "covers 부재 + sha 미해소"),
     ])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
     # 파생→등재 불변식 — 현 호출부(architecture/status-stale)의 replace 파생 산출이 전부 등재.
     for stale_kind in ("architecture-stale", "status-stale"):
         derived = stale_kind.replace("-stale", "-unverifiable")
@@ -1783,8 +1783,8 @@ def test_freshness_findings_are_advisory_never_block(board, monkeypatch):
         ("status.md", "status-stale", "sha 이후 커밋 있음")])
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [
         ("엔진", "domain-stale", "sha 이후 covers 커밋 있음")])
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0    # 차단 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1   # finding 표면화
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0    # 차단 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1   # finding 표면화
 
 
 def test_lint_tickets_includes_freshness_lints(board, monkeypatch):
@@ -2278,8 +2278,8 @@ _T0463_TOKEN_FORM_MIRRORS = (
     ".claude/skills/pm-dev-delegate/SKILL.md",
     ".claude/skills/pm-handoff/SKILL.md",
     ".claude/skills/pm-ticket/SKILL.md",
-    ".claude/skills/pm-wave-claim/SKILL.md",
-    ".claude/skills/pm-wave-finish/SKILL.md",
+    ".claude/skills/pm-cluster-claim/SKILL.md",
+    ".claude/skills/pm-cluster-finish/SKILL.md",
     ".claude/skills/pm-worktree/SKILL.md",
 )
 
@@ -2767,8 +2767,8 @@ def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch, tmp_path):
     })
     issues = conf_lint.lint_adapter_drift(pm_paths.home_at(board.REPO))
     assert issues and all(k == "adapter-drift" for _n, k, _d in issues)
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 def test_lint_tickets_includes_adapter_drift(board, monkeypatch):
@@ -2824,8 +2824,8 @@ def test_gate_zero_on_areas_duplicate_repo_only(board, monkeypatch, tmp_path):
         monkeypatch.setattr(module, fn, stub)
     issues = ticket_lint.lint_tickets(pm_paths.home_at(board.REPO))
     assert [k for _n, k, _d in issues] == ["areas-duplicate-repo"]
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 def test_lint_tickets_includes_areas_duplicate_repo(board, monkeypatch):
@@ -3682,8 +3682,8 @@ def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypat
     kinds = _kinds(ticket_lint.lint_tickets(pm_paths.home_at(board.REPO)))
 
     assert kinds.count("local-conf-missing-required") == 1, kinds
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0      # never-block
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1     # 무인자는 보인다
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0      # never-block
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1     # 무인자는 보인다
 
 
 def test_no_local_conf_file_reports_no_missing_required(board, monkeypatch, tmp_path):
@@ -3768,8 +3768,8 @@ def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tm
     kinds = _kinds(ticket_lint.lint_tickets(pm_paths.home_at(board.REPO)))
 
     assert kinds.count("local-conf-unreadable") == 1, kinds
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0      # never-block
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1     # 무인자는 보인다
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0      # never-block
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1     # 무인자는 보인다
 
 
 def test_the_real_lint_command_reaches_the_advisory(tmp_path):
@@ -3791,7 +3791,7 @@ def test_the_real_lint_command_reaches_the_advisory(tmp_path):
             [sys.executable, str(inst / ".project_manager" / "tools" / "board.py"), *argv],
             capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(inst))
 
-    plain, gate = lint("lint"), lint("lint", "--gate")
+    plain, gate = lint("lint"), lint("lint", "--blocking")
 
     assert gate.returncode == 0, gate.stderr          # advisory 는 게이트를 막지 않는다
     assert plain.returncode == 1, plain.stderr        # 무인자는 발견이 있으면 1(보고 표면)
@@ -3799,6 +3799,24 @@ def test_the_real_lint_command_reaches_the_advisory(tmp_path):
         assert "local-conf-unreadable" in completed.stdout, completed.stdout
         assert completed.stdout.count("local-conf-unreadable") == 1, completed.stdout
         assert "Traceback" not in completed.stderr, completed.stderr
+
+
+def test_the_old_lint_flag_and_live_test_names_are_rejected(capsys):
+    """옛 `lint --gate`·`livegate` 하위 명령은 별칭 없이 argparse 가 종료 코드 2 로 거부한다."""
+    from pm_engine.cli import board_cmd
+
+    parser = board_cmd.build_parser()
+    with pytest.raises(SystemExit) as old_flag:
+        parser.parse_args(["lint", "--gate"])
+    assert old_flag.value.code == 2
+    assert "unrecognized arguments: --gate" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit) as old_command:
+        parser.parse_args(["livegate", "check", "--rev", "abc"])
+    assert old_command.value.code == 2
+    assert "invalid choice: 'livegate'" in capsys.readouterr().err
+
+    assert parser.parse_args(["lint", "--blocking"]).blocking is True
 
 
 def test_read_seam_uses_the_strict_loader(board, monkeypatch, tmp_path):
@@ -3836,7 +3854,7 @@ def test_status_snapshot_counts_open_rows_and_gate_records(board, monkeypatch, t
     assert snapshot["counts"]["open"] == 1 and snapshot["counts"]["done"] == 1
     assert snapshot["open"] == [{"id": "T-0001", "title": "정상 티켓", "claimed_by": None}]
     assert snapshot["regression"] == {"head": "abc", "status": "pass", "collected": 42}
-    assert snapshot["livegate"] is None, "기록이 없으면 판정도 없다(빈 dict 를 지어내지 않는다)"
+    assert snapshot["live_test"] is None, "기록이 없으면 판정도 없다(빈 dict 를 지어내지 않는다)"
 
 
 def test_status_snapshot_carries_lint_findings_without_failing(board, monkeypatch, tmp_path):
@@ -3851,7 +3869,7 @@ def test_status_snapshot_carries_lint_findings_without_failing(board, monkeypatc
 
     snapshot = board_dashboard.status_snapshot(pm_paths.home_at(board.REPO))
 
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1, "전제: lint 는 이슈를 낸다"
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1, "전제: lint 는 이슈를 낸다"
     assert any(row["kind"] == "unknown" and "T-9999" in row["message"]
                for row in snapshot["lint"]), snapshot["lint"]
     assert all(set(row) == {"kind", "message"} for row in snapshot["lint"])

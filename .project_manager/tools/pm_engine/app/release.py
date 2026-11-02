@@ -36,11 +36,11 @@ _RELEASE_MUST_FIX_MARKER_NAME = "release-must-fix"
 _RELEASE_MUST_FIX_CLEAR = "clear"
 _RELEASE_MUST_FIX_BLOCKED = "blocked"
 _MUST_FIX_BLOCK_GUIDANCE = (
-    "livegate: fail — 미해소 must-fix 잔여 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
+    "live-test: fail — 미해소 must-fix 잔여 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
     "{items}\n"
     "  처방 — 현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언하세요:\n"
     "    python3 .project_manager/tools/additional_reviewer.py "
-    "--resolve-gate <게이트> --pm-verified\n"
+    "--resolve-review <게이트> --pm-verified\n"
     "  라운드 장부: {ledger}"
 )
 
@@ -50,7 +50,7 @@ _MUST_FIX_BLOCK_GUIDANCE = (
 # 같은 이유로 값비싼 라이브 wave **전에** 막고, fail 을 기록까지 한다(같은 HEAD 의 옛 green 잔존 0).
 _LIVEGATE_ENGINE_DRIFT_REASON = "engine-drift"   # fail 기록의 사유 표식(must-fix 축과 구분).
 _ENGINE_DRIFT_BLOCK_GUIDANCE = (
-    "livegate: fail — 실행 엔진 사본이 upstream 과 drift 상태 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
+    "live-test: fail — 실행 엔진 사본이 upstream 과 drift 상태 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
     "{items}\n"
     "  처방: python3 .project_manager/tools/pm_update.py 로 엔진 사본을 동기한 뒤 재실행하세요."
 )

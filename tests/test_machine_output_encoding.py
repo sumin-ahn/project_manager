@@ -225,7 +225,7 @@ def test_pm_log_ctx_guidance_json_payload_is_utf8(capture_console, monkeypatch):
     stream = capture_console()
 
     args = SimpleNamespace(
-        band="warn", used_pct=80.0, precompact_at_pct=95.0, json=True
+        level="warn", used_pct=80.0, precompact_at_pct=95.0, json=True
     )
     assert pm_engine.cli.log.cmd_ctx_guidance(args) == 0
 
@@ -263,7 +263,7 @@ def test_board_git_anchor_hook_json_is_utf8(capture_console, monkeypatch):
 
 
 def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_path):
-    """ticket prepare/harvest 의 경로 JSON(다른 프로세스가 파싱)이 무손실이다."""
+    """ticket prepare/collect 의 경로 JSON(다른 프로세스가 파싱)이 무손실이다."""
     pm_delegate = _load("pm_delegate")
     slot = tmp_path / "슬롯 — 사본"
     slot.mkdir()
@@ -292,7 +292,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     )
 
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, board_root=pm_paths._board_root_at(pm_delegate.REPO)), [
-        "harvest", "--copy", str(plan.path), "--cwd", str(slot),
+        "collect", "--copy", str(plan.path), "--cwd", str(slot),
     ]) == 0
 
     assert _machine_payload(harvest_stream) == {
@@ -456,7 +456,7 @@ def test_human_text_path_of_the_same_command_is_not_utf8(capture_console, monkey
     stream = capture_console()
 
     args = SimpleNamespace(
-        band="warn", used_pct=80.0, precompact_at_pct=95.0, json=False
+        level="warn", used_pct=80.0, precompact_at_pct=95.0, json=False
     )
     assert pm_engine.cli.log.cmd_ctx_guidance(args) == 0
 

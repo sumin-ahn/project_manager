@@ -53,6 +53,7 @@ from pm_engine.infra import conf_store
 from pm_engine.infra import lease_store
 from pm_engine.cli import board_lint
 from pm_engine.app import render_lint
+from pm_engine.app import entry_doc_migration
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -191,8 +192,8 @@ def test_gate_zero_on_unknown_key_only(board, monkeypatch, tmp_path):
     for module, fn, stub in _UNRELATED_LINT_FNS:
         monkeypatch.setattr(module, fn, stub)
 
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 # ── ③ 유입 경로 전수 — 오타·폐기 키·섹션 오기·대소문자 ──────────────────────
@@ -483,7 +484,7 @@ _KEYS_BEFORE_THE_REGISTRY = frozenset({
     "delegate.enabled", "delegate.timeout", "delegate.idle_timeout",
     "additional_reviewer.harness", "additional_reviewer.model",
     "additional_reviewer.reasoning", "additional_reviewer.incomplete_rounds_max",
-    "additional_reviewer.wave_budget", "additional_reviewer.rounds_max",
+    "additional_reviewer.session_budget", "additional_reviewer.rounds_max",
     "additional_reviewer.paths", "additional_reviewer.timeout",
     "additional_reviewer.idle_timeout", "additional_reviewer.progress_signal",
     "ctx.checkpoint_at_pct", "ctx.precompact_at_pct", "ctx.compact_at_pct",
@@ -621,7 +622,7 @@ _MOVED_DEFAULTS = (
     pytest.param("additional_reviewer.rounds_max", "2",
                  lambda c: reviewer_target._review_rounds_max({}), 2,
                  id="reviewer-rounds-max"),
-    pytest.param("additional_reviewer.wave_budget", "24",
+    pytest.param("additional_reviewer.session_budget", "24",
                  lambda c: reviewer_target._wave_budget({}), 24,
                  id="reviewer-wave-budget"),
 )
@@ -1113,6 +1114,24 @@ def _assert_conf_line_is_blocked(conf_module, tmp_path: Path, line: str, key: st
     with pytest.raises(conf_module.LegacyConfKeyError) as caught:
         conf_store.load_checked_readable(path)
     assert f"`{key}` → 제거(대체 키 없음)" in str(caught.value)
+
+
+def test_session_budget_key_rename_moves_on_update_and_stops_on_read(
+        conf_module, keys_document, tmp_path):
+    """세션 호출 예산 키는 이름만 바뀌었다. 옛 키는 읽을 때 새 키를 알리며 멈추고, 갱신이 값을 옮긴다."""
+    old, new = "additional_reviewer.wave_budget", "additional_reviewer.session_budget"
+    assert conf_module.LEGACY_KEY_MAP[old] == new
+    assert conf_module.LEGACY_KEY_MAP["external_review_wave_budget"] == new
+    assert conf_module.LEGACY_KEY_MAP["additional_reviewer_wave_budget"] == new
+    assert conf_module.key_spec(old) is None and conf_module.default_for(new) == "24"
+    assert old not in {row["key"] for row in _rows(keys_document)}
+    path = _write_conf(tmp_path, f"test.cmd=pytest -q\n{old}=6\n")
+    with pytest.raises(conf_module.LegacyConfKeyError) as caught:
+        conf_store.load_checked_readable(path)
+    assert f"`{old}` → `{new}`" in str(caught.value)
+    assert entry_doc_migration.migrate_renamed_conf_keys(tmp_path, write=True) == {old: new}
+    values = conf_store.load(path).values
+    assert values[new] == "6" and old not in values
 
 
 def test_code_reviewer_rounds_max_is_a_removed_key(conf_module, keys_document, tmp_path):

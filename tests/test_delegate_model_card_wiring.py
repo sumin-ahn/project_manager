@@ -32,6 +32,7 @@ from pm_engine.app import adapter_render
 from pm_engine.domain import render_rules
 
 from pm_engine.infra import native_agent_card
+from pm_engine.infra import skill_inventory
 
 import importlib
 import importlib.util
@@ -430,7 +431,7 @@ def test_cards_render_local_conf_values_through_the_real_path(
     for stem in _expected_stems(pm_render):
         relative = _instance_card_path(tree, stem)
         source = tree.directory(REPO) / f"{stem}{tree.suffix}"
-        rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), source, _local_conf_of(pm_update, dest), card_path=relative)
+        rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), source, _local_conf_of(pm_update, dest), card_path=relative, skill_names=skill_inventory._installed_skill_entry_names(pm_paths.home_at(pm_update.REPO)))
         assert "{{" not in rendered, f"{relative}: 미해소 토큰 잔존"
         for field, token in _expected_tokens(pm_render, tree, stem).items():
             line = f"{field}{tree.assignment}\"{expected[token]}\""
@@ -467,7 +468,7 @@ def test_card_conf_mismatch_is_red_on_the_resolution_path(
             original_line, tree.field_line("model", "DELEGATE_MODEL_ARCHITECT")),
         encoding="utf-8",
     )
-    rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), swapped, _local_conf_of(pm_update, dest), card_path=relative)
+    rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), swapped, _local_conf_of(pm_update, dest), card_path=relative, skill_names=skill_inventory._installed_skill_entry_names(pm_paths.home_at(pm_update.REPO)))
     developer_line = f"model{tree.assignment}\"{expected['DELEGATE_MODEL_DEVELOPER']}\""
     assert developer_line not in rendered, (
         "카드 토큰을 다른 역할 것으로 바꿨는데 해소 결과가 그대로다 — 값을 재지 않고 있다"
@@ -503,7 +504,7 @@ def test_unused_profile_neutralizes_model_and_reasoning_together(
     for stem in _expected_stems(pm_render):
         relative = _instance_card_path(tree, stem)
         source = tree.directory(REPO) / f"{stem}{tree.suffix}"
-        rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), source, _local_conf_of(pm_update, dest), card_path=relative)
+        rendered = update_render._render_text(pm_paths.home_at(pm_update.REPO), source, _local_conf_of(pm_update, dest), card_path=relative, skill_names=skill_inventory._installed_skill_entry_names(pm_paths.home_at(pm_update.REPO)))
         assert "{{" not in rendered, f"{relative}: 중화 후에도 토큰 잔존"
         assert not card_fields & _active_card_fields(tree, rendered), (
             f"{relative}: 미사용 프로필인데 {sorted(card_fields)} 중 살아 있는 키가 있다"
@@ -534,7 +535,7 @@ def test_empty_hard_model_fails_loud_with_the_conf_key(render_home, pm_render, p
     with pytest.raises(render_rules.RenderLeakError) as excinfo:
         adapter_render.render_adapter(render_home,
             source, operational, source=".claude/agents/developer-hard.md",
-            empty_keys=empty_keys, card_path=".claude/agents/developer-hard.md",
+            empty_keys=empty_keys, card_path=".claude/agents/developer-hard.md", skill_names=skill_inventory._installed_skill_entry_names(render_home),
         )
     message = str(excinfo.value)
     assert "delegate.developer.hard.model" in message, message

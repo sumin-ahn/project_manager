@@ -301,7 +301,7 @@ def test_renderer_excludes_extensions_paths_and_hyphen_identifiers(render_home, 
     ("source", "expected"),
     (
         ("`/pm-handoff`.", "`$pm-handoff`."),
-        ("`/pm-wave-claim ISSUE-1234`.", "`$pm-wave-claim ISSUE-1234`."),
+        ("`/pm-cluster-claim ISSUE-1234`.", "`$pm-cluster-claim ISSUE-1234`."),
         ("`/pm-handoff.`", "`/pm-handoff.`"),
         ("/pm-handoff.", "$pm-handoff."),
     ),

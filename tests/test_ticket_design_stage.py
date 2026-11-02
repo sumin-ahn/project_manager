@@ -496,8 +496,8 @@ def test_cmd_lint_gate_does_not_block_on_design_pending(board, monkeypatch):
     monkeypatch.setattr(ticket_lint, "lint_tickets",
                         lambda _home: [("T-0001", "design-pending", "설계 절 미충전")])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=False)) == 1
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -560,8 +560,8 @@ def test_cmd_lint_gate_does_not_block_on_design_estimate(board, monkeypatch):
     monkeypatch.setattr(ticket_lint, "lint_tickets",
                         lambda _home: [("T-0001", "design-estimate", "estimate=large 인데 n/a")])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=True)) == 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=False)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=False)) == 1
 
 
 # ════════════════════════════════════════════════════════════════════════

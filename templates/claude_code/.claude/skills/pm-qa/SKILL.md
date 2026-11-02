@@ -1,12 +1,12 @@
 ---
 name: pm-qa
-description: "개발 통합 검증 게이트. core 회귀 결과 재사용, 필요 시 백그라운드 실행, lint·git 확인. 다른 트리 개발을 계속하고 완료·통합 시 결과 확인. 추가 플랫폼 전체는 릴리즈 livegate. Triggers: 통합 검증, qa, 회귀 확인, wave 종료 검증, baseline 측정, pm-qa."
+description: "개발 통합 검증 게이트. core 회귀 결과 재사용, 필요 시 백그라운드 실행, lint·git 확인. 다른 트리 개발을 계속하고 완료·통합 시 결과 확인. 추가 플랫폼 전체는 릴리즈 live-test. Triggers: 통합 검증, qa, 회귀 확인, wave 종료 검증, baseline 측정, pm-qa."
 audience: pm-internal
 ---
 
 # /pm-qa — 통합 검증
 
-개발 core 회귀 결과, lint 및 Git 상태를 확인한다. 추가 플랫폼 전체 검증은 릴리즈 livegate가 소유한다.
+개발 core 회귀 결과, lint 및 Git 상태를 확인한다. 추가 플랫폼 전체 검증은 릴리즈 live-test가 소유한다.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
@@ -38,7 +38,7 @@ audience: pm-internal
 
 - 개발 회귀는 현재 플랫폼의 전체 test_cmd만 실행한다. `qa.platforms`의 wrapper를 호출하지 않는다.
 - 개발 보고의 `platform[<name>]`은 릴리즈 검증 예정 상태이다. 개발 중 플랫폼 미실행은 개발 완료 차단 사유가 아니다.
-- 릴리즈 `livegate record`는 같은 커밋의 core green을 확인한 뒤 선언 플랫폼 전부를 실제 실행한다. 플랫폼 red/미실행은 라이브 테스트 전에 릴리즈를 차단한다. `livegate check`는 같은 rev의 전체 결과와 현재 선언·명령을 재검증한다.
+- 릴리즈 `live-test record`는 같은 커밋의 core green을 확인한 뒤 선언 플랫폼 전부를 실제 실행한다. 플랫폼 red/미실행은 라이브 테스트 전에 릴리즈를 차단한다. `live-test check`는 같은 rev의 전체 결과와 현재 선언·명령을 재검증한다.
 - 새 플랫폼 선택 옵션이나 별도 작업 큐를 만들지 않는다. Windows 전체 검증은 모든 구현·통합 후 릴리즈 직전에 실행한다.
 
 ## 인접 스킬
@@ -46,6 +46,6 @@ audience: pm-internal
 각 스킬의 실행 책임을 정리한다.
 
 - [[pm-regression]]: 백그라운드 core 회귀와 표적 개발 루프.
-- [[pm-wave-finish]]: 검증 결과를 확인한 후보의 종결.
+- [[pm-cluster-finish]]: 검증 결과를 확인한 후보의 종결.
 - [[pm-release]]: 선언 플랫폼 전체와 라이브 릴리즈 게이트.
 - [[pm-bootstrap]]: 세션 진입과 현재 결과 확인.

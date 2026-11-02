@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pm_engine.domain import home
 from pm_engine.domain import render_rules
-from pm_engine.infra import skill_inventory
 from pm_engine.infra.harness import contract
 import os
 
@@ -70,6 +69,7 @@ def render_adapter(
     template_dir: str | tuple[str, ...] | list[str] | None = None,
     delegate_harness: dict[str, str] | None = None,
     card_path: str | None = None,
+    skill_names: tuple[str, ...],
 ) -> str:
     """어댑터 템플릿 → 자족 .md (operational plain replace).
 
@@ -85,6 +85,8 @@ def render_adapter(
 
     template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로
     치환한다. 값은 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 단일 registry에서만 읽는다.
+    skill_names: 호출 표기를 바꿀 스킬 이름 집합. 엔진 호출부는 모두 넘긴다(설치·계획은 실행 Home 의
+    카드, 갱신 적용은 그 갱신이 쓰는 카드까지 더한 집합).
 
     operational 은 행-문맥 무관 plain string replace(omit 없음) → 템플릿 전체에 whole-text
     패스로 적용한다(멱등). 결과는 자족(잔여 `{{...}}`·stray 마커 0) — post-render assertion 이
@@ -101,7 +103,7 @@ def render_adapter(
         }
     result = (
         render_rules.render_skill_entry_notation(
-            template_text, template_dir, skill_names=skill_inventory._installed_skill_entry_names(home), source=source
+            template_text, template_dir, skill_names=skill_names, source=source
         )
         if template_dir is not None
         else template_text

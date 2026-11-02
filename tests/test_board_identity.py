@@ -424,7 +424,7 @@ _T0962_COMMANDS = {
     "new": ["new", "probe"],
     "cluster-new": ["cluster", "new", "grp", "--tickets", "T-0001"],
     "regression-run": ["regression", "run", "--cmd", "true"],
-    "livegate-record": ["livegate", "record"],
+    "live-test-record": ["live-test", "record"],
 }
 _T0962_FORMS = {
     "repo-slot": ["--repo", "proj", "--slot", "1"],

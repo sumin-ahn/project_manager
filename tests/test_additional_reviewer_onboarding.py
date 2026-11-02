@@ -134,7 +134,7 @@ def test_codex_pm_review_card_states_the_caps_without_a_consent_axis():
     for contract in CONVERGENCE_GATE_CONTRACTS:
         assert contract in text, f"수렴 게이트 서술 누락: {contract}"
     # 재개 ack 가 남은 축은 wave 예산 하나 — 라운드 축엔 연장 승인 경로가 없다.
-    assert "--ack-wave" in text
+    assert "--reset-session-budget" in text
     assert RETIRED_ROUND_ACK_FLAG not in text
     # 폐기된 규율: 재개 때마다 사용자 승인을 요구하던 문장.
     assert "사용자가 계속을 승인한 경우에만" not in text
@@ -165,7 +165,7 @@ def test_shared_pm_review_cards_use_active_role_and_the_caps():
         assert "기계적 anti-loop 정지" in text, path
         for contract in CONVERGENCE_GATE_CONTRACTS:
             assert contract in text, (path, contract)
-        assert "--ack-wave" in text, path
+        assert "--reset-session-budget" in text, path
         assert RETIRED_ROUND_ACK_FLAG not in text, path
         assert "사용자가 계속을 승인한 경우에만" not in text, path
         assert "리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻지 않는다" in text, path
@@ -240,7 +240,7 @@ def test_pm_role_makes_cap_ack_autonomous_not_a_cost_gate():
     )
     # 남은 ack 축(wave 예산)이 *자율* 절에 들어 있어야 한다 — 사용자 게이트 절이 아니라.
     autonomous = text.split("**자율+사후")[1].split("**사용자 게이트")[0]
-    assert "--ack-wave" in autonomous
+    assert "--reset-session-budget" in autonomous
     assert "정상 수렴 ack" in autonomous
     # 폐지된 라운드 연장 승인은 자율 목록에서도 문서 전체에서도 사라져야 한다.
     assert RETIRED_ROUND_ACK_FLAG not in text
@@ -254,7 +254,7 @@ def test_pm_role_makes_cap_ack_autonomous_not_a_cost_gate():
 def test_active_docs_have_no_per_round_user_cost_approval_rule():
     """폐기 규율(라운드 재개마다 사용자 비용 승인)이 활성 문서에 남아 있지 않다."""
     retired = (
-        "사용자 승인 후에만 `--ack-wave`",
+        "사용자 승인 후에만 `--reset-session-budget`",
         "승인 없이 `--ack-rounds` 금지",
         "사용자가 계속을 승인한 경우에만",
     )
@@ -707,7 +707,7 @@ RETIRED_SWITCH_KEY = "additional_reviewer.enabled"
 # 판정 라운드 상한은 이 표에 없다 — conf 노브 없이 엔진 고정값 하나다(대체 키 없음).
 _KNOB_RESOLVERS = {
     "additional_reviewer.incomplete_rounds_max": ("_incomplete_round_limit", 2),
-    "additional_reviewer.wave_budget": ("_wave_budget", 24),
+    "additional_reviewer.session_budget": ("_wave_budget", 24),
 }
 KNOB_KEYS = tuple(_KNOB_RESOLVERS)
 
@@ -809,7 +809,7 @@ def test_knob_key_constants_match_the_engine_table():
     core = _additional_reviewer()
     assert (reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY
             == "additional_reviewer.incomplete_rounds_max")
-    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY == "additional_reviewer.wave_budget"
+    assert reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY == "additional_reviewer.session_budget"
     assert set(KNOB_KEYS) == {
         reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY,
         reviewer_budget.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY,

@@ -487,7 +487,7 @@ def test_unregistered_snapshot_run_fails_before_ledger_raw_or_spawn(
     output_dir = tmp_path / "raw"
 
     assert external.main([
-        "--gate", "T-0634", "--paths", "seed.txt",
+        "--review-ticket", "T-0634", "--paths", "seed.txt",
         "--output-dir", str(output_dir),
     ]) == 1
 
@@ -535,7 +535,7 @@ def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
     output_dir = tmp_path / "raw-ticket-snapshot"
 
     assert external.main([
-        "--gate", "T-0634", "--paths", "seed.txt",
+        "--review-ticket", "T-0634", "--paths", "seed.txt",
         "--output-dir", str(output_dir),
     ]) == 1
 
@@ -549,7 +549,7 @@ def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
 def test_unregistered_snapshot_no_gate_and_dry_run_do_not_rescue_the_anchor(
     tmp_path, monkeypatch, capsys,
 ):
-    """`--no-gate`·`--dry-run`·조회도 미해소 앵커를 복구하지 않는다 — 해소가 먼저다."""
+    """`--no-review-ticket`·`--dry-run`·조회도 미해소 앵커를 복구하지 않는다 — 해소가 먼저다."""
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
@@ -558,9 +558,9 @@ def test_unregistered_snapshot_no_gate_and_dry_run_do_not_rescue_the_anchor(
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     for argv in (
-        ["--paths", "seed.txt", "--no-gate", "--output-dir", str(tmp_path / "raw")],
-        ["--gate", "T-0634", "--paths", "seed.txt", "--dry-run"],
-        ["--rounds-report", "--gate", "T-0634", "--paths", "seed.txt"],
+        ["--paths", "seed.txt", "--no-review-ticket", "--output-dir", str(tmp_path / "raw")],
+        ["--review-ticket", "T-0634", "--paths", "seed.txt", "--dry-run"],
+        ["--rounds-report", "--review-ticket", "T-0634", "--paths", "seed.txt"],
     ):
         assert external.main(argv) == 1, argv
         err = capsys.readouterr().err
@@ -589,7 +589,7 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
 
     gate = "T-0643-resolver-seam"
     assert external.main([
-        "--gate", gate, "--paths", "seed.txt",
+        "--review-ticket", gate, "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "resolver-seam-raw"),
     ]) == 0
 
@@ -634,7 +634,7 @@ def test_removed_fixed_disposition_never_touches_the_round_ledger(
     before = ledger_path.read_bytes()
     with pytest.raises(SystemExit):
         external.main([
-            "--resolve-gate", "T-0634-rejected", "--fixed", "T-0634-passed",
+            "--resolve-review", "T-0634-rejected", "--fixed", "T-0634-passed",
         ])
     assert ledger_path.read_bytes() == before
     assert "unrecognized arguments: --fixed" in capsys.readouterr().err
@@ -652,7 +652,7 @@ def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     assert external.main([
-        "--gate", "T-0634-registered", "--paths", "seed.txt",
+        "--review-ticket", "T-0634-registered", "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "raw"),
     ]) == 0
 
@@ -684,7 +684,7 @@ def test_slot_own_ticket_does_not_change_the_owning_pm_home(
 
     gate = "T-0634-registered-ticket"
     assert external.main([
-        "--gate", gate, "--paths", "seed.txt",
+        "--review-ticket", gate, "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "registered-ticket-raw"),
     ]) == 0
 
@@ -715,7 +715,7 @@ def test_markerless_snapshot_with_corrupt_lease_is_blocked(
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     assert external.main([
-        "--gate", "T-0643-markerless-corrupt-ledger", "--paths", "seed.txt",
+        "--review-ticket", "T-0643-markerless-corrupt-ledger", "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "markerless-corrupt-raw"),
     ]) == 1
 

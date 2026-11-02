@@ -92,14 +92,14 @@ def print_summary(result: dict, gate: str | None = None) -> None:
 
 def _harvest_target_ticket(
     home, args, ) -> tuple[str | None, str | None]:
-    """회수 대상 티켓과 (대상이 없을 때의) 사유 — `--ticket` 우선, 없으면 ticket 형상 `--gate`.
+    """회수 대상 티켓과 (대상이 없을 때의) 사유 — `--ticket` 우선, 없으면 ticket 형상 `--review-ticket`.
 
-    문서화된 설계 리뷰 형상은 `--paths … --gate T-NNNN` 이라 `--ticket` 이 비어 있다. 그 실행의
+    문서화된 설계 리뷰 형상은 `--paths … --review-ticket T-NNNN` 이라 `--ticket` 이 비어 있다. 그 실행의
     산출도 그 티켓의 것이므로 같은 회수 규칙을 탄다(자유 문자열 게이트는 대상이 아니다).
     """
     if args.ticket:
         return args.ticket, None
-    gate = getattr(args, "gate", None)
+    gate = getattr(args, "review_ticket", None)
     if not gate:
         return None, None
     if not ticket_rules._is_valid_ticket_id(gate):
@@ -123,7 +123,7 @@ def _harvest_target_ticket_state(
 ) -> _HarvestTargetState | None:
     """회수 대상 티켓의 명세 + 라운드 (대상 없거나 읽기 실패면 None · 실패는 loud).
 
-    프롬프트에 실린 티켓 본문에서 파생하면 문서화된 설계 리뷰 형상(`--paths … --gate T-NNNN`)은
+    프롬프트에 실린 티켓 본문에서 파생하면 문서화된 설계 리뷰 형상(`--paths … --review-ticket T-NNNN`)은
     본문이 실리지 않아 티켓을 못 본다. 대상 해소는 회수 경로와 **같은 함수**를 써서 두 표면이
     갈리지 않게 하고, 프롬프트 실값·확인 근거 대조가 **같은 읽기**를 쓴다.
 
@@ -320,7 +320,7 @@ def _run_review_round(
     # 소유권을 이 seam 으로 되돌려 놨다. 아래 요약·진단·마감이 **끝날 때까지** 그 상태를 유지한다:
     # 여기서 미리 넘기면 요약 출력이 닫힌 stdout 파이프로 죽는 순간(BrokenPipeError) 호출 0·과금 0
     # 인 실행의 예약이 미완으로 남아 `incomplete_limit=1` 형상에서 다음 정상 호출을 막는다.
-    print_summary(result, gate=args.gate)
+    print_summary(result, gate=args.review_ticket)
 
     # 정상 복귀한 호출은 판정 유무와 별개로 종료 마감한다. 프로세스 kill처럼 이 지점에 도달하지
     # 못한 레코드는 finished_at 없이 남아 다음 호출에서 미완 재시도 예산으로 식별된다.
@@ -410,7 +410,7 @@ def _run_review_round(
     rc = reviewer_budget.determine_exit_code(result)
     # 라운드 장부 마감 **뒤**에 회수한다 — 장부는 종전대로 기록되고, 회수 실패는 판정 rc 를
     # 덮지 않고 rc=0 인 실행만 실패로 올린다. 대상은 `--ticket` 또는 보드에 실재하는 ticket
-    # 형상 `--gate` 이고, 대상이 있는데 회수하지 않은 실행은 사유를 반드시 말한다(조용한 누락 금지).
+    # 형상 `--review-ticket` 이고, 대상이 있는데 회수하지 않은 실행은 사유를 반드시 말한다(조용한 누락 금지).
     harvest_ticket, target_problem = _harvest_target_ticket(home, args, )
     if target_problem is not None:
         print(f"경고: 추가 리뷰어 산출 미회수 — {target_problem}", file=sys.stderr)

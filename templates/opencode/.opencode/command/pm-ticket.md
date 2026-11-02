@@ -31,7 +31,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" --task <task> \
 
 - 코드 트리 없는 draft 작성은 허용한다. 발행의 기준은 `--task` 가 보유한 실제 제품 트리에서 해소한다(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 위치 인자를 붙인다). PM 홈·현재 cwd·created_by·단일 슬롯을 근거로 제품 브랜치를 추측하지 않는다.
 - board-git 공유 형상: template placeholder가 남은 새 티켓은 자동으로 **draft**(`tickets/.drafts/`, board-git 미커밋)로 격리되어 다른 슬롯의 pull/handoff에 나타나지 않는다. 별도 flag는 없으며(`--draft` 없음) 미충전이면 draft다.
-- §3 본문 점검 라운드는 `pm_delegate.py ticket prepare|harvest --role architect`로 준비·회수한다 —
+- §3 본문 점검 라운드는 `pm_delegate.py ticket prepare|collect --role architect`로 준비·회수한다 —
   **이 위임 경로만 규범이다**(PM이 자기 초안을 점검한 라운드는 독립 점검이 아니다). `board.py
   section-add <T-NNNN> --role architect`(슬롯 없는 준비 — PM이 직접 채우는 자리)는 hard draft의
   **설계**를 PM이 인라인으로 쓰는 용례다. 이 draft 경로는 board-git sync 0회이며 promote가
@@ -54,7 +54,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" --task <task> \
 - **## 인터페이스**: 만들거나 바꾸는 함수·클래스·CLI·데이터 형식의 시그니처/규격. `"이 ticket 이 만들거나 바꾸는 …"` 뼈대 문장을 제거한다.
 - **## 결정**: 구현 방향 확정 사항(어떤 방식으로/왜). 미정은 `"열린 질문"`. `"구현 방향에 대한 확정 사항 …"` 뼈대 문장을 제거한다.
 - **## 설계**: `design: required`인 티켓만 채운다(references 설계 단계 절). `n/a`면 뼈대를 그대로 둬도 게이트 비대상이다.
-- **## 완료 조건 (DoD)**: 검증 가능한 산출물 체크리스트. `"핵심 산출물 (파일, 동작)"` 뼈대를 제거한다. 완료 시 전항이 `- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`이어야 `board.py complete`가 통과하므로(§`/pm-wave-finish`), 항목은 그 두 형태 중 하나로 마감할 수 있는 단위로 쓴다.
+- **## 완료 조건 (DoD)**: 검증 가능한 산출물 체크리스트. `"핵심 산출물 (파일, 동작)"` 뼈대를 제거한다. 완료 시 전항이 `- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`이어야 `board.py complete`가 통과하므로(§`/pm-cluster-finish`), 항목은 그 두 형태 중 하나로 마감할 수 있는 단위로 쓴다.
 - **## 참고**: 실 경로/ADR/패턴 reference. `architecture 관련 절`·`xxxxx`·`T-XXXX`(패턴 reference)를 실값으로 교체한다. dangling wikilink는 lint가 차단하므로 실재 대상만 링크한다.
 - **## 메모**: 완료 시 채우는 작업 저널이므로 비어도 정상이며 게이트 비대상이다.
 
@@ -72,10 +72,10 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" --task <task> \
 ```bash
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-<ticket-group> --role architect --cwd <worktree 절대경로>
 # 위임(스킬 /pm-dev-delegate §architect 위임) 후 — run-dir 을 주면 티켓 전부를 한 번에 회수한다:
-python3 .project_manager/tools/pm_delegate.py ticket harvest --copy <prepare JSON의 run-dir> --cwd <worktree 절대경로>
+python3 .project_manager/tools/pm_delegate.py ticket collect --copy <prepare JSON의 run-dir> --cwd <worktree 절대경로>
 ```
 
-- draft × architect는 엔진이 이미 허용한다(claim 이전·board-git sync 0회). developer·code-reviewer의 draft 라운드는 거부된다. **PM이 채운 라운드는 이 점검을 충족하지 않는다** — promote는 역할명과 비시드 여부만 보므로 PM이 직접 쓰면 기계는 통과시키지만 초안자==점검자가 되어 3단이 무너진다. 본문 점검은 위 prepare/harvest 위임으로만 하고, `section-add`는 hard draft **설계** 인라인 작성에 쓴다(§1).
+- draft × architect는 엔진이 이미 허용한다(claim 이전·board-git sync 0회). developer·code-reviewer의 draft 라운드는 거부된다. **PM이 채운 라운드는 이 점검을 충족하지 않는다** — promote는 역할명과 비시드 여부만 보므로 PM이 직접 쓰면 기계는 통과시키지만 초안자==점검자가 되어 3단이 무너진다. 본문 점검은 위 prepare/collect 위임으로만 하고, `section-add`는 hard draft **설계** 인라인 작성에 쓴다(§1).
 - 점검 항목: 본문이 인용한 `파일:줄`과 touches 경로의 실재, 묶음 안팎 다른 열린 티켓과의 충돌·의존(cross-module), **최소 수단**(기존 seam 재사용·삭제 대안·새 설정 키/플래그·서브커맨드가 정말 필요한지), 구현 가능하도록 인터페이스·DoD 보정.
 - 회수된 라운드를 PM이 읽고 **바뀐 지점을 확인해 본문에 반영**한 뒤 승격한다(비준). 수렴·호환성 경계는 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"·§"변경 폭"을 따른다. architect 라운드는 1회이며 불완전하면 board를 더 쓰지 않고 사용자에게 보고한다.
 - `design: required|done` 티켓은 이 라운드가 회수·충전되기 전 `promote`가 rc=1로 거부한다. `n/a`는 기계 강제 밖이지만, 다중 티켓을 한 번에 발행할 때와 `estimate: medium` 이상은 규범으로 점검을 받는다.

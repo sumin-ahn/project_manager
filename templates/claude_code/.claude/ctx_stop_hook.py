@@ -6,7 +6,7 @@ Claude Code 가 PreToolUse(도구 실행 전)와 UserPromptSubmit(prompt 처리 
 전용) — 그래서 훅은 ``transcript_path`` JSONL 끝부분을 한 번 읽어 점유 토큰·모델·마지막 압축 경계 uuid 를 얻고
 (``ctx_guard``), 엔진 ``judge_context`` 를 한 번 불러 그 결과를 Claude 훅 출력으로 옮긴다.
 
-밴드(nudge/nudge2/stop) 판정·안내 문구·사이클 marker 선점은 엔진 소유다. 이 훅은 엔진이 발화하라고 한
+밴드(warn/warn2/stop) 판정·안내 문구·사이클 marker 선점은 엔진 소유다. 이 훅은 엔진이 발화하라고 한
 안내만 ``additionalContext`` 로 비차단 주입하고 deny/block/회전 marker 를 만들지 않는다.
 
 압축 감지: PreCompact·PostCompact 입력은 주 세션 압축과 서브에이전트 압축을 구별할 수 없다(둘 다

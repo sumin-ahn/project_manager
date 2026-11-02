@@ -161,7 +161,7 @@ def _print_rounds_report(
     return 0
 
 
-# ── 게이트 처분 선언면 (--resolve-gate) ─────────────────────────────────────
+# ── 게이트 처분 선언면 (--resolve-review) ─────────────────────────────────────
 # 라운드 상한으로 종결된 게이트의 잔여 must-fix가 현재 티켓의 fix에서 기계적으로
 # 닫혔음을 장부에 남기는 기록면이다(호출 없음). 후속 티켓·후속 게이트로 넘기는
 # 처분은 고정 5단계 수렴 계약과 충돌하므로 제공하지 않는다.
@@ -176,24 +176,24 @@ def _resolve_gate_ignored_flags(args: argparse.Namespace) -> str:
     """처분 선언 실행이 무시하는 플래그 목록 (없으면 빈 문자열)."""
     return ", ".join(
         flag for flag, given in (
-            ("--gate", bool(args.gate)),        # 처분 대상은 `--resolve-gate` 가 지정한다
+            ("--review-ticket", bool(args.review_ticket)),        # 처분 대상은 `--resolve-review` 가 지정한다
             # 회계 opt-out 도 선언면에선 뜻이 없다 — 이 실행은 호출도 예약도 하지 않는다.
-            ("--no-gate", bool(getattr(args, "no_gate", False))),
+            ("--no-review-ticket", bool(getattr(args, "no_review_ticket", False))),
             ("--rounds-report", args.rounds_report),
-            ("--ack-wave", args.ack_wave),
+            ("--reset-session-budget", args.reset_session_budget),
         ) if given
     )
 
 
 def _resolve_gate_command(home, args: argparse.Namespace, ) -> int:
-    """`--resolve-gate` 실행면 — 게이트 처분을 장부에 선언한다 (rc 0 = 기록됨).
+    """`--resolve-review` 실행면 — 게이트 처분을 장부에 선언한다 (rc 0 = 기록됨).
 
     거부는 전부 **장부 변경 전**이다 — 선언되지 않은 실행은 장부에 아무 흔적도 남기지 않는다.
     확인→기록은 라운드 예약과 같은 배타락 임계 구역 안에서 한다(동시 실행이 서로의 선언을
     덮어쓰지 않게)."""
     engine_repo = home.root
-    gate = args.resolve_gate
-    reserved = reviewer_budget._reserved_gate_error(gate, flag="--resolve-gate")
+    gate = args.resolve_review
+    reserved = reviewer_budget._reserved_gate_error(gate, flag="--resolve-review")
     if reserved is not None:
         print(reserved, file=sys.stderr)
         return 1
@@ -208,7 +208,7 @@ def _resolve_gate_command(home, args: argparse.Namespace, ) -> int:
         return 1
     ignored = _resolve_gate_ignored_flags(args)
     if ignored:
-        print(f"경고: --resolve-gate 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
+        print(f"경고: --resolve-review 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
               file=sys.stderr)
     owner = pm_paths.resolve_pm_home_for_repo(engine_repo)
     home = pm_paths.home_at(home.root, pm_home=owner, board_root=pm_paths._board_root_at(owner))

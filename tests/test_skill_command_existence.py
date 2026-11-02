@@ -399,7 +399,7 @@ def test_existence_classifier_catches_drift():
     worktree = _load_parser("worktree_pool")
     config = _load_parser("pm_config")
     delegate_ticket, delegate_tokens = _parser_for_command(
-        "pm_delegate", _tokenize("ticket harvest --copy /tmp/c --cwd /tmp/w")
+        "pm_delegate", _tokenize("ticket collect --copy /tmp/c --cwd /tmp/w")
     )
     assert board is not None and handoff is not None
     assert worktree is not None and config is not None
@@ -415,8 +415,12 @@ def test_existence_classifier_catches_drift():
     ]
     # catch/pass — main 선행 dispatch의 중첩 parser도 실행과 같은 표면을 검사한다.
     assert check_command(delegate_ticket, delegate_tokens) == []
-    assert check_command(delegate_ticket, _tokenize("harvest --nonexistent x")) == [
+    assert check_command(delegate_ticket, _tokenize("collect --nonexistent x")) == [
         "미등록 플래그 '--nonexistent'"
+    ]
+    # catch — 이름을 바꾼 옛 서브커맨드는 별칭 없이 거부된다.
+    assert check_command(delegate_ticket, _tokenize("harvest --copy /tmp/c --cwd /tmp/w")) == [
+        "미등록 서브커맨드 'harvest'"
     ]
     # catch — constrained positional(regression action) 오타.
     assert check_command(board, _tokenize("regression runn --ticket T-1")) == [
@@ -496,7 +500,7 @@ def _slash_refs(text: str) -> "set[str]":
 def test_slash_skill_references_exist():
     """스킬 md 의 `/pm-<skill>`/`/spike-<skill>` 상호참조가 실재 스킬/진입점을 가리키는지 (T-0347).
 
-    슬래시는 prose 상호참조(예 "`/pm-wave-finish` 호출 전")로 사는 커맨드 모양이라 md 전문에서
+    슬래시는 prose 상호참조(예 "`/pm-cluster-finish` 호출 전")로 사는 커맨드 모양이라 md 전문에서
     추출한다. 제거·개명된 스킬을 가리키는 dangling 참조를 잡는다.
     """
     valid = _canonical_skill_names()
@@ -523,13 +527,13 @@ def test_slash_classifier_catches_unknown_skill():
     `/pm-…`(`./pm-config.sh`·`pm-import.py`) 오매치는 슬래시로 안 잡히는지 못박는다.
     """
     valid = _canonical_skill_names()
-    assert "pm-wave-finish" in valid
+    assert "pm-cluster-finish" in valid
     assert "pm-bootstrap" in valid
     assert "pm-import" in valid  # 파사드 진입점도 유효.
     assert "pm-nonexistent" not in valid
 
     # 실 슬래시 참조는 추출된다.
-    assert _slash_refs("`/pm-wave-finish` 호출 전 baseline 확인") == {"pm-wave-finish"}
+    assert _slash_refs("`/pm-cluster-finish` 호출 전 baseline 확인") == {"pm-cluster-finish"}
     assert _slash_refs("세션 시작은 `/pm-bootstrap`") == {"pm-bootstrap"}
     # 없는 스킬은 추출되나 유효 집합에 없음 → offender.
     bogus = _slash_refs("`/pm-nonexistent` 로 위임")

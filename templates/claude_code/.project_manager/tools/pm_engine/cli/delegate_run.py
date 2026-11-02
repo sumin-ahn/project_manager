@@ -510,7 +510,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                         result = delegate_harvest.harvest_ticket_copy(
                             home, copy_path=ticket_copy.path, cwd=cwd_repo, )
                         print(
-                            "[pm-delegate] ticket harvest: "
+                            "[pm-delegate] ticket collect: "
                             f"{'applied' if result.changed else 'unchanged'} · "
                             f"sync_ready={str(result.sync_ready).lower()} · "
                             f"copy={ticket_copy.path}",

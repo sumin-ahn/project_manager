@@ -583,15 +583,15 @@ def _delegation_harvest_failure_message(exc: Exception, residue: Path) -> str:
     """cross 위임 종료의 회수 실패 처방 — terminal fix만 복구 루프를 열지 않는다."""
     if isinstance(exc, delegate_rounds.TerminalFixHarvestError):
         return (
-            "오류: 최종 fix ticket harvest 실패 — terminal stop. "
+            "오류: 최종 fix ticket collect 실패 — terminal stop. "
             "board 라운드와 slot run-dir 증거를 그대로 보존했습니다. "
             "현재 티켓 상태와 실패 근거를 사용자에게 보고하세요. "
             f"copy={residue} · {exc}"
         )
     return (
-        "오류: 위임 종료 ticket harvest 실패 — board 라운드와 slot run-dir 을 "
+        "오류: 위임 종료 ticket collect 실패 — board 라운드와 slot run-dir 을 "
         "그대로 보존했습니다. run-dir 을 진단한 뒤 같은 경로로 "
-        "`ticket harvest` 를 다시 부르거나 새 prepare/위임으로 복구하세요. "
+        "`ticket collect` 를 다시 부르거나 새 prepare/위임으로 복구하세요. "
         f"copy={residue} · {exc}"
     )
 
@@ -607,13 +607,13 @@ def _report_cluster_harvest(outcomes: Sequence[delegate_harvest.ClusterHarvestOu
         if outcome.refusal is not None:
             refused.append(outcome.ticket)
             print(
-                f"오류: 위임 종료 ticket harvest 거부: {outcome.ticket}: "
+                f"오류: 위임 종료 ticket collect 거부: {outcome.ticket}: "
                 f"{outcome.refusal}",
                 file=sys.stderr,
             )
             continue
         print(
-            "[pm-delegate] ticket harvest: "
+            "[pm-delegate] ticket collect: "
             f"{'applied' if outcome.result.changed else 'unchanged'} · "
             f"sync_ready={str(outcome.result.sync_ready).lower()} · "
             f"copy={outcome.copy}",

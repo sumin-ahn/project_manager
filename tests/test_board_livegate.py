@@ -1060,10 +1060,10 @@ def test_record_pass_then_check_green_roundtrip(live_board, monkeypatch, capsys)
 
 # ── pm-verified 처분 — 추가 리뷰어(release) 축 채널 스코프 재검증 ──────────────
 # 채널 폐지 뒤에도 additional-reviewer 장부(review_rounds.json)의 반려 잔여를 재호출 없이
-# 종결하는 `--resolve-gate --pm-verified` 처분이 릴리즈 축(`_unresolved_must_fix_data` →
+# 종결하는 `--resolve-review --pm-verified` 처분이 릴리즈 축(`_unresolved_must_fix_data` →
 # `_gate_disposition_problem`)에서 실제로 열리고, `pm-fixed` 는 여전히 막히며, 다른 채널의
 # accepted 잔여가 이 채널 처분을 막지 않는지(채널 격리)를 실 board 트리 + 실 라운드/명세 파일 +
-# 실 review_rounds.json 으로 검증한다. `--resolve-gate --pm-verified` CLI 선언면(호출 0 단언 포함)
+# 실 review_rounds.json 으로 검증한다. `--resolve-review --pm-verified` CLI 선언면(호출 0 단언 포함)
 # 은 `tests/test_additional_reviewer.py` 가 진다.
 
 
@@ -1331,7 +1331,7 @@ def pm_verified_release(tmp_path, monkeypatch):
         complete=lambda gate: _pv_complete(mod, gate),
         record=lambda: regression_cmd.cmd_livegate(pm_paths.home_at(mod.REPO), argparse.Namespace(
             action="record", rev=None, cwd=str(proj), repo=None, slot=None, task=None)),
-        flag=lambda: json.loads((local / "livegate.json").read_text(encoding="utf-8")),
+        flag=lambda: json.loads((local / "live-test.json").read_text(encoding="utf-8")),
     )
 
 
@@ -1777,7 +1777,7 @@ def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, 
         elif defect in ['A-head','L-head']: monkeypatch.setattr(git,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.anchor if defect=='A-head' else f.cwd) else f.head)
         elif defect=='L-missing': f.cwd=f.cwd/'missing'
         elif defect=='A-F': monkeypatch.setattr(regression_store,'_resolve_regression_flag',lambda _home, cwd:(f.anchor/'regression.json',regression_store._LG_ENGINE_ROOT))
-        elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(f.anchor/'livegate.json',regression_store._LG_ENGINE_ROOT))
+        elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(f.anchor/'live-test.json',regression_store._LG_ENGINE_ROOT))
         elif defect=='broken': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.livegate_flag(home),regression_store._LG_BROKEN))
         elif defect=='clone-only':
             engine_home=pm_paths.home_at(f.board.REPO); called=pm_paths.home_at(f.board.REPO, f.anchor)
@@ -1853,7 +1853,7 @@ def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_relea
     pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
     (f.anchor / '.project_manager/local.conf').write_text("test.cmd=core-full\n", encoding="utf-8")
     (f.board.REPO / ".project_manager/local.conf").write_text("test.cmd=core-full\n", encoding="utf-8")
-    flag = f.board.REPO / "cold" / ".project_manager" / ".local/livegate.json"
+    flag = f.board.REPO / "cold" / ".project_manager" / ".local/live-test.json"
     monkeypatch.setattr(regression_store, "_resolve_livegate_flag", lambda _home, cwd: (flag, regression_store._LG_ENGINE_ROOT))
     assert _t0936_record(f) == 0
     assert json.loads(flag.read_text(encoding="utf-8"))["status"] == "pass"
@@ -1916,7 +1916,7 @@ def t0982_board(tmp_path, monkeypatch):
     local.mkdir(parents=True)
     for name, value in {'REPO': home}.items():
         monkeypatch.setattr(board,name,value)
-    flag = local / "livegate.json"
+    flag = local / "live-test.json"
     flag.write_text('{"head":"prior-head","status":"pass"}\n',encoding="utf-8")
     state = types.SimpleNamespace(board=board, home=home, flag=flag, effects=[], waves=[], tasks=[], actual_execution=task_args._execution_actor_session_override)
     def unexpected(*args, **kwargs):
@@ -1948,7 +1948,7 @@ def t0982_board(tmp_path, monkeypatch):
 def test_t0982_cwd_rejects_each_selector_combination_before_effects(t0982_board, selector):
     state = t0982_board
     before = state.flag.read_bytes()
-    args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
+    args = board_cmd.build_parser().parse_args(["live-test","record","--cwd",str(state.home/"readonly"),*selector])
     with pytest.raises(SystemExit) as caught:
         regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args)
     message = str(caught.value)
@@ -1961,7 +1961,7 @@ def test_t0982_cwd_rejects_each_selector_combination_before_effects(t0982_board,
 def test_t0982_supplied_falsey_selectors_are_not_ignored(t0982_board, selector):
     state = t0982_board
     before = state.flag.read_bytes()
-    args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(state.home/"readonly"),*selector])
+    args = board_cmd.build_parser().parse_args(["live-test","record","--cwd",str(state.home/"readonly"),*selector])
     with pytest.raises(SystemExit):
         regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args)
     assert state.effects == [] and state.waves == []
@@ -1971,7 +1971,7 @@ def test_t0982_supplied_falsey_selectors_are_not_ignored(t0982_board, selector):
 def test_t0982_empty_cwd_is_not_an_implicit_workspace(t0982_board):
     state = t0982_board
     before = state.flag.read_bytes()
-    args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",""])
+    args = board_cmd.build_parser().parse_args(["live-test","record","--cwd",""])
     with pytest.raises(SystemExit) as caught:
         regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args)
     assert "--cwd" in str(caught.value) and "비어" in str(caught.value)
@@ -1986,7 +1986,7 @@ def test_t0982_cwd_only_preserves_unleased_readonly_pin(t0982_board, leased):
     pm_paths.leases_file(pm_paths.home_at(state.board.REPO)).write_text(json.dumps({"leases":rows}),encoding="utf-8")
     selected = state.home / "read only"
     selected.mkdir()
-    args = board_cmd.build_parser().parse_args(["livegate","record","--cwd",str(selected)])
+    args = board_cmd.build_parser().parse_args(["live-test","record","--cwd",str(selected)])
     assert regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args) == 0
     assert len(state.waves) == 1 and state.waves[0][1]["cwd"] == str(selected)
     assert state.effects[0] == ("flag",str(selected))
@@ -2004,7 +2004,7 @@ def test_t0982_task_workspace_injection_is_not_explicit_cwd(t0982_board, monkeyp
         state.tasks.append(args.task)
         return str(selected),None
     monkeypatch.setattr(task_args,"_resolve_task_workspace_cwd",resolve)
-    args = board_cmd.build_parser().parse_args(["livegate","record",*selector])
+    args = board_cmd.build_parser().parse_args(["live-test","record",*selector])
     assert regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args) == 0
     assert state.tasks == ["main"] and len(state.waves) == 1
     assert state.waves[0][1]["cwd"] == str(selected)
@@ -2016,7 +2016,7 @@ def test_t0982_selectors_without_task_keep_existing_rejection(t0982_board, monke
     state=t0982_board
     monkeypatch.setattr(task_args,"_execution_actor_session_override",state.actual_execution)
     before=state.flag.read_bytes()
-    args=board_cmd.build_parser().parse_args(["livegate","record",*selector])
+    args=board_cmd.build_parser().parse_args(["live-test","record",*selector])
     with pytest.raises(SystemExit):
         regression_cmd.cmd_livegate(pm_paths.home_at(state.board.REPO), args)
     assert state.effects == [] and state.waves == [] and state.flag.read_bytes() == before

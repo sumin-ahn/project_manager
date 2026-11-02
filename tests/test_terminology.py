@@ -1139,7 +1139,7 @@ def test_plain_word_rule_is_an_edit_recall_rule_pointing_at_the_table():
     ".project_manager/tools/ticket_finish.py",   # 런타임 메시지 최다 보유
     ".project_manager/engine.manifest",          # 확장자 밖 산문(손 정리가 빠뜨렸던 자리)
     ".project_manager/wiki/pm_playbook.md",
-    ".claude/skills/pm-wave-finish/SKILL.md",
+    ".claude/skills/pm-cluster-finish/SKILL.md",
     "README.md",
     "tests/test_ticket_finish.py",               # 메시지 문자열 단언 축
     "templates/codex/AGENTS.md",                 # manifest 밖 어댑터 진입(전파 안 됨)

@@ -11,7 +11,7 @@ statusline stdin·격리 tmp 만 본다. 점유 토큰은 어댑터 native 관�
   3. 훅 — 세 밴드 모두 PreToolUse/UserPromptSubmit additionalContext 비차단 주입 +
      채널 공유 사이클별 marker 멱등.
   4. re-arm — 주 대화 기록의 압축 경계 증가(압축 뒤 첫 주 스레드 훅) 또는 유효한 ok 실측 시
-     `.nudge`/`.nudge2`/`.final` 삭제.
+     `.warn`/`.warn2`/`.final` 삭제.
   5. settings 배선 — PreToolUse·UserPromptSubmit 만 ctx 훅에 연결(압축 이벤트 등록 없음).
   6. 압축 기록(T-0953) — 경계마다 한 번 checkpoint·snapshot, 실패 신호, `agent_id` 면제.
 """
@@ -230,12 +230,12 @@ def test_statusline_render_colors(guard, statusline,tmp_path):
     # ok (used 50 < 70): 회색·checkpoint 문구 없음.
     ok = statusline.build_statusline(_sl(100_000), home=_home(tmp_path))
     assert "\033[90m" in ok and "ctx 50%" in ok and "checkpoint" not in ok
-    # nudge (70 <= used 75 < 77): 노랑·checkpoint 준비.
-    nudge = statusline.build_statusline(_sl(150_000), home=_home(tmp_path))
-    assert "\033[33m" in nudge and "checkpoint 준비" in nudge
-    # nudge2 (77[=max(80-3,70)] <= used 78 < 80): 빨강·checkpoint 권고.
-    nudge2 = statusline.build_statusline(_sl(156_000), home=_home(tmp_path))
-    assert "\033[31m" in nudge2 and "checkpoint 권고" in nudge2
+    # warn (70 <= used 75 < 77): 노랑·checkpoint 준비.
+    warn = statusline.build_statusline(_sl(150_000), home=_home(tmp_path))
+    assert "\033[33m" in warn and "checkpoint 준비" in warn
+    # warn2 (77[=max(80-3,70)] <= used 78 < 80): 빨강·checkpoint 권고.
+    warn2 = statusline.build_statusline(_sl(156_000), home=_home(tmp_path))
+    assert "\033[31m" in warn2 and "checkpoint 권고" in warn2
     # stop (used 92 >= 80): 빨강·checkpoint 최종 알림.
     stop = statusline.build_statusline(_sl(184_000), home=_home(tmp_path))
     assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
@@ -259,11 +259,11 @@ def test_classify_boundaries(guard):
     th = {"checkpoint_at_pct": 80, "precompact_at_pct": 90}
     guard = ctx_recovery  # 밴드 판정 소유자 — 훅·statusLine 은 엔진 공개 진입으로 이 규칙을 쓴다.
     assert guard.classify(50, th) == "ok"
-    assert guard.classify(80, th) == "nudge"    # 쓴 80 == checkpoint_at → nudge (1단).
+    assert guard.classify(80, th) == "warn"    # 쓴 80 == checkpoint_at → warn (1단).
     assert guard.classify(79, th) == "ok"       # 쓴 79 < checkpoint_at → ok.
-    assert guard.classify(86, th) == "nudge"    # 80 <= 86 < 87 → nudge (1단).
-    assert guard.classify(87, th) == "nudge2"   # 쓴 87 == nudge2_threshold → nudge2 (2단).
-    assert guard.classify(89, th) == "nudge2"   # 87 <= 89 < 90 → nudge2 (2단).
+    assert guard.classify(86, th) == "warn"    # 80 <= 86 < 87 → warn (1단).
+    assert guard.classify(87, th) == "warn2"   # 쓴 87 == nudge2_threshold → warn2 (2단).
+    assert guard.classify(89, th) == "warn2"   # 87 <= 89 < 90 → warn2 (2단).
     assert guard.classify(90, th) == "stop"     # 쓴 90 == precompact_at → stop.
     assert guard.classify(91, th) == "stop"     # 쓴 91 > precompact_at → stop.
 
@@ -274,7 +274,7 @@ def test_nudge2_threshold_derivation(guard):
     assert guard.CTX_NUDGE2_MARGIN_PCT == 3
     assert guard.nudge2_threshold({"checkpoint_at_pct": 70, "precompact_at_pct": 80}) == 77
     assert guard.nudge2_threshold({"checkpoint_at_pct": 80, "precompact_at_pct": 90}) == 87
-    # nudge 밴드가 좁으면(precompact_at − 3 < checkpoint_at) checkpoint_at 이 하한 — nudge2 가 ok 영역으로 안 샌다.
+    # warn 밴드가 좁으면(precompact_at − 3 < checkpoint_at) checkpoint_at 이 하한 — warn2 가 ok 영역으로 안 샌다.
     assert guard.nudge2_threshold({"checkpoint_at_pct": 79, "precompact_at_pct": 80}) == 79
     assert guard.nudge2_threshold({"checkpoint_at_pct": 78, "precompact_at_pct": 80}) == 78
 
@@ -427,8 +427,8 @@ def test_hook_final_marker_claim_failure_does_not_inject_and_retries(
 
 def test_hook_atomic_marker_claim_race_loser_does_not_inject(
         stop_hook, tmp_path, monkeypatch):
-    """경쟁 호출이 직전에 marker를 선점하면 `.nudge`/`.nudge2`/`.final` loser는 무주입."""
-    cases = (("nudge", 150_000), ("nudge2", 156_000), ("final", 190_000))
+    """경쟁 호출이 직전에 marker를 선점하면 `.warn`/`.warn2`/`.final` loser는 무주입."""
+    cases = (("warn", 150_000), ("warn2", 156_000), ("final", 190_000))
     real_open = compaction_store.os.open
     claimed = []
 
@@ -455,7 +455,7 @@ def test_hook_atomic_marker_claim_race_loser_does_not_inject(
         assert rc == 0 and output is None
         assert marker.exists()
 
-    assert claimed == ["nudge", "nudge2", "final"]
+    assert claimed == ["warn", "warn2", "final"]
 
 
 def test_hook_final_pretooluse_injects_without_permission_decision(stop_hook, tmp_path):
@@ -496,7 +496,7 @@ def test_hook_session_id_sanitized(stop_hook, tmp_path):
     assert "/" not in ctx_recovery.safe_session_id(stop_hook._session_id({"session_id": "../../etc/passwd"}))
     assert ctx_recovery.safe_session_id(stop_hook._session_id({})) == "unknown"
     marker = compaction_store.ctx_marker_path(_home(tmp_path), stop_hook._session_id(
-        {"session_id": "../../etc/passwd"}), "nudge")
+        {"session_id": "../../etc/passwd"}), "warn")
     assert marker.parent == tmp_path / ".project_manager" / ".local" / "ctx-stop"
 
 
@@ -562,7 +562,7 @@ def test_settings_preserves_unrelated_pretooluse_hook(name):
 
 
 def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
-    # nudge 레벨(used 75 — checkpoint_at 70 <= 75 < nudge2 77) + UserPromptSubmit → additionalContext 비차단 주입.
+    # warn 레벨(used 75 — checkpoint_at 70 <= 75 < warn2 77) + UserPromptSubmit → additionalContext 비차단 주입.
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {
         "transcript_path": str(path),
@@ -579,8 +579,8 @@ def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     # 비차단: deny/block 아님 (정지 스키마 부재).
     assert "permissionDecision" not in hso
     assert output.get("decision") != "block"
-    # nudge marker 만 생성된다.
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge.nudge").exists()
+    # warn marker 만 생성된다.
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge.warn").exists()
 
 
 def test_hook_nudge_pretooluse_injects_and_consumes_cycle(stop_hook, tmp_path):
@@ -594,13 +594,13 @@ def test_hook_nudge_pretooluse_injects_and_consumes_cycle(stop_hook, tmp_path):
     assert hso["hookEventName"] == "PreToolUse"
     assert "ctx-nudge]" in hso["additionalContext"]
     assert "permissionDecision" not in hso and "decision" not in output
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge-ptu.nudge").exists()
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge-ptu.warn").exists()
     stdin["hook_event_name"] = "UserPromptSubmit"
     assert stop_hook.evaluate(stdin, _home(tmp_path)) == (0, None)
 
 
 def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
-    # 같은 세션 두 번 nudge(UserPromptSubmit)여도 주입은 1회 (.nudge marker 가드).
+    # 같은 세션 두 번 warn(UserPromptSubmit)여도 주입은 1회 (.warn marker 가드).
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {
         "transcript_path": str(path),
@@ -619,7 +619,7 @@ def test_hook_nudge_independent_from_final(stop_hook, tmp_path):
     nudge_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     nudge_stdin = {"transcript_path": str(nudge_tx), "session_id": sid,
                    "hook_event_name": "UserPromptSubmit"}
-    stop_hook.evaluate(nudge_stdin, _home(tmp_path))  # nudge 주입.
+    stop_hook.evaluate(nudge_stdin, _home(tmp_path))  # warn 주입.
     stop_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
     stop_stdin = {
         "transcript_path": str(stop_tx),
@@ -630,7 +630,7 @@ def test_hook_nudge_independent_from_final(stop_hook, tmp_path):
     guidance = output["hookSpecificOutput"]["additionalContext"]
     assert "ctx-nudge/최종" in guidance
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    assert (marker_dir / f"{sid}.nudge").exists()
+    assert (marker_dir / f"{sid}.warn").exists()
     assert (marker_dir / f"{sid}.final").exists()
 
 
@@ -638,7 +638,7 @@ def test_hook_ok_rearms_all_cycle_markers(stop_hook, tmp_path):
     sid = "sess-rearm-all"
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
-    for suffix in ("nudge", "nudge2", "final"):
+    for suffix in ("warn", "warn2", "final"):
         (marker_dir / f"{sid}.{suffix}").write_text("fired\n", encoding="utf-8")
     ok = {
         "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 100_000})])),
@@ -647,7 +647,7 @@ def test_hook_ok_rearms_all_cycle_markers(stop_hook, tmp_path):
     }
     rc, output = stop_hook.evaluate(ok, _home(tmp_path))
     assert rc == 0 and output is None
-    assert not any((marker_dir / f"{sid}.{suffix}").exists() for suffix in ("nudge", "nudge2", "final"))
+    assert not any((marker_dir / f"{sid}.{suffix}").exists() for suffix in ("warn", "warn2", "final"))
 
 
 def test_hook_zero_pct_with_raw_tokens_rearms_cycle_markers(stop_hook, tmp_path):
@@ -657,7 +657,7 @@ def test_hook_zero_pct_with_raw_tokens_rearms_cycle_markers(stop_hook, tmp_path)
     sid = "sess-measured-zero-pct"
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
-    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("nudge", "nudge2", "final")]
+    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("warn", "warn2", "final")]
     for marker in markers:
         marker.write_text("fired\n", encoding="utf-8")
 
@@ -680,7 +680,7 @@ def test_hook_unmeasurable_raw_zero_preserves_cycle_markers(
     sid = f"sess-unmeasurable-{measurement}"
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
-    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("nudge", "nudge2", "final")]
+    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("warn", "warn2", "final")]
     for marker in markers:
         marker.write_text("fired\n", encoding="utf-8")
 
@@ -708,7 +708,7 @@ def test_hook_nudge_refires_after_ok_rearm(stop_hook, tmp_path):
             "hook_event_name": "UserPromptSubmit",
         }, _home(tmp_path))
 
-    _, first = evaluate_at(150_000)   # nudge → marker 생성.
+    _, first = evaluate_at(150_000)   # warn → marker 생성.
     _, duplicate = evaluate_at(150_000)
     _, compacted = evaluate_at(100_000)  # ok → marker 삭제(re-arm).
     _, second_cycle = evaluate_at(150_000)
@@ -718,7 +718,7 @@ def test_hook_nudge_refires_after_ok_rearm(stop_hook, tmp_path):
 
 def test_hook_nudge_refires_after_boundary_without_ok_observation(
         stop_hook, tmp_path, monkeypatch):
-    """nudge 뒤 ok 관측 없이 경계가 늘면 첫 주 스레드 훅이 marker를 지워 재상승 넛지를 허용한다."""
+    """warn 뒤 ok 관측 없이 경계가 늘면 첫 주 스레드 훅이 marker를 지워 재상승 넛지를 허용한다."""
     monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a, **_k: None)
     sid = "sess-boundary-rearm"
     transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
@@ -756,7 +756,7 @@ def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
         "hook_event_name": "UserPromptSubmit",
     }
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("nudge", "nudge2", "final")]
+    markers = [marker_dir / f"{sid}.{suffix}" for suffix in ("warn", "warn2", "final")]
 
     rc1, first = stop_hook.evaluate(prompt, _home(tmp_path))
     assert rc1 == 0 and first is not None
@@ -778,17 +778,17 @@ def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
 
 
 # ── 7. 강화 넛지 + 최종 넛지 (ADR-0081) ──────────────────────────────────
-# nudge2 는 checkpoint 즉시 실행을 재안내하고, stop 밴드는 auto-compact 임박을 알리는 최종 넛지다.
-# 별도 `.nudge2`/`.final` marker 로 같은 사이클에서 각 1회 발화한다. 밴드(기본 쓴 % 70/80):
-# nudge2_threshold=77 → 쓴 [77,80) 이 nudge2, [70,77) 이 nudge(1단).
+# warn2 는 checkpoint 즉시 실행을 재안내하고, stop 밴드는 auto-compact 임박을 알리는 최종 넛지다.
+# 별도 `.warn2`/`.final` marker 로 같은 사이클에서 각 1회 발화한다. 밴드(기본 쓴 % 70/80):
+# nudge2_threshold=77 → 쓴 [77,80) 이 warn2, [70,77) 이 warn(1단).
 
 def _nudge2_transcript(tmp_path: Path) -> Path:
-    # 156_000 / 200_000 = 78% used (77 <= 78 < 80) → nudge2 밴드.
+    # 156_000 / 200_000 = 78% used (77 <= 78 < 80) → warn2 밴드.
     return _write_transcript(tmp_path, [("assistant", {"input_tokens": 156_000})])
 
 
 def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
-    # nudge2 레벨(쓴 78 — nudge2_threshold 77 <= 78 < precompact_at 80) + UserPromptSubmit → strong 주입.
+    # warn2 레벨(쓴 78 — nudge2_threshold 77 <= 78 < precompact_at 80) + UserPromptSubmit → strong 주입.
     stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": "sess-nudge2",
@@ -804,13 +804,13 @@ def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     # 비차단: deny/block 아님.
     assert "permissionDecision" not in hso
     assert output.get("decision") != "block"
-    # nudge2 marker 를 생성한다.
+    # warn2 marker 를 생성한다.
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    assert (ctx / "sess-nudge2.nudge2").exists()
+    assert (ctx / "sess-nudge2.warn2").exists()
 
 
 def test_hook_nudge2_pretooluse_injects_without_permission_decision(stop_hook, tmp_path):
-    # nudge2 레벨도 PreToolUse additionalContext 비차단 주입(제결정 없음).
+    # warn2 레벨도 PreToolUse additionalContext 비차단 주입(제결정 없음).
     stdin = {"transcript_path": str(_nudge2_transcript(tmp_path)), "session_id": "sess-n2-ptu",
              "hook_event_name": "PreToolUse"}
     rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
@@ -819,11 +819,11 @@ def test_hook_nudge2_pretooluse_injects_without_permission_decision(stop_hook, t
     assert hso["hookEventName"] == "PreToolUse"
     assert "ctx-nudge/강화" in hso["additionalContext"]
     assert "permissionDecision" not in hso and "decision" not in output
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-n2-ptu.nudge2").exists()
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-n2-ptu.warn2").exists()
 
 
 def test_hook_nudge2_idempotent_single_injection(stop_hook, tmp_path):
-    # 같은 세션 두 번 nudge2(UserPromptSubmit)여도 주입은 1회 (.nudge2 marker 가드).
+    # 같은 세션 두 번 warn2(UserPromptSubmit)여도 주입은 1회 (.warn2 marker 가드).
     stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": "sess-n2-idem",
@@ -836,8 +836,8 @@ def test_hook_nudge2_idempotent_single_injection(stop_hook, tmp_path):
 
 
 def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
-    # 2단은 1단 발화 여부와 독립: 세션이 nudge(1단) 창을 건너뛰고 곧장 nudge2 밴드로 진입해도
-    # 2단은 발화한다 (.nudge2 생성·.nudge 은 미생성 — 1단은 안 거쳤으므로).
+    # 2단은 1단 발화 여부와 독립: 세션이 warn(1단) 창을 건너뛰고 곧장 warn2 밴드로 진입해도
+    # 2단은 발화한다 (.warn2 생성·.warn 은 미생성 — 1단은 안 거쳤으므로).
     stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": "sess-n2-solo",
@@ -846,12 +846,12 @@ def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
     rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert "ctx-nudge/강화" in output["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    assert (ctx / "sess-n2-solo.nudge2").exists()
-    assert not (ctx / "sess-n2-solo.nudge").exists()
+    assert (ctx / "sess-n2-solo.warn2").exists()
+    assert not (ctx / "sess-n2-solo.warn").exists()
 
 
 def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
-    # 세션이 nudge(1단·쓴 75)를 거쳐 nudge2(2단·쓴 78)로 진행 → 두 marker 다 생성·각 문구 구별.
+    # 세션이 warn(1단·쓴 75)를 거쳐 warn2(2단·쓴 78)로 진행 → 두 marker 다 생성·각 문구 구별.
     sid = "sess-both"
     # 1단: 쓴 75 (checkpoint_at 70 <= 75 < nudge2_threshold 77).
     nudge_stdin = {
@@ -860,7 +860,7 @@ def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
     }
     rc1, out1 = stop_hook.evaluate(nudge_stdin, _home(tmp_path))
     assert "ctx-nudge]" in out1["hookSpecificOutput"]["additionalContext"]  # 1단 표지.
-    # 2단: 같은 세션이 nudge2 밴드 진입 (transcript 경로 덮어씀).
+    # 2단: 같은 세션이 warn2 밴드 진입 (transcript 경로 덮어씀).
     nudge2_stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
@@ -868,18 +868,18 @@ def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
     rc2, out2 = stop_hook.evaluate(nudge2_stdin, _home(tmp_path))
     assert "ctx-nudge/강화" in out2["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    assert (ctx / f"{sid}.nudge").exists()
-    assert (ctx / f"{sid}.nudge2").exists()
+    assert (ctx / f"{sid}.warn").exists()
+    assert (ctx / f"{sid}.warn2").exists()
 
 
 def test_hook_nudge2_independent_from_final(stop_hook, tmp_path):
-    # nudge2 marker 가 있어도 stop 밴드의 최종 넛지는 별도로 주입된다.
+    # warn2 marker 가 있어도 stop 밴드의 최종 넛지는 별도로 주입된다.
     sid = "sess-n2-final"
     nudge2_stdin = {
         "transcript_path": str(_nudge2_transcript(tmp_path)),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
-    stop_hook.evaluate(nudge2_stdin, _home(tmp_path))  # nudge2 주입.
+    stop_hook.evaluate(nudge2_stdin, _home(tmp_path))  # warn2 주입.
     stop_stdin = {
         "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])),
         "session_id": sid,
@@ -888,7 +888,7 @@ def test_hook_nudge2_independent_from_final(stop_hook, tmp_path):
     rc, output = stop_hook.evaluate(stop_stdin, _home(tmp_path))
     assert "ctx-nudge/최종" in output["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    assert (ctx / f"{sid}.nudge2").exists()
+    assert (ctx / f"{sid}.warn2").exists()
     assert (ctx / f"{sid}.final").exists()
 
 
@@ -1035,7 +1035,7 @@ def test_t0953_main_hook_after_boundary_runs_checkpoint_and_snapshot_once(
     transcript = _t0953_transcript(tmp_path, [150_000, 1_000, 2_000], [False, True, True])
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
-    for suffix in ("nudge", "final"):
+    for suffix in ("warn", "final"):
         (marker_dir / f"s-1.{suffix}").write_text("fired\n", encoding="utf-8")
     calls: list = []
     monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(calls))
@@ -1052,7 +1052,7 @@ def test_t0953_main_hook_after_boundary_runs_checkpoint_and_snapshot_once(
     assert context.startswith("## PM 정체성 (compaction 복구)")
     assert "permissionDecision" not in output["hookSpecificOutput"]
     assert (marker_dir / f"s-1.compact-{_boundary_uuid(2)}").is_file()
-    assert not (marker_dir / "s-1.nudge").exists() and not (marker_dir / "s-1.final").exists()
+    assert not (marker_dir / "s-1.warn").exists() and not (marker_dir / "s-1.final").exists()
 
     calls.clear()
     rc, output = stop_hook.evaluate(_t0953_pretool(transcript, tmp_path), _home(tmp_path))
@@ -1066,7 +1066,7 @@ def test_t0953_subagent_exemption_uses_agent_id_not_agent_type(stop_hook, tmp_pa
     transcript = _t0953_transcript(tmp_path, [190_000], [True])   # 경계 1개 뒤 95%
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
-    (marker_dir / "s-1.nudge").write_text("fired\n", encoding="utf-8")
+    (marker_dir / "s-1.warn").write_text("fired\n", encoding="utf-8")
     calls: list = []
     monkeypatch.setattr(stop_hook.subprocess, "run", _t0953_fake_run(calls))
 
@@ -1074,7 +1074,7 @@ def test_t0953_subagent_exemption_uses_agent_id_not_agent_type(stop_hook, tmp_pa
     assert stop_hook.evaluate(subagent, _home(tmp_path)) == (0, None)
     assert calls == []
     assert not (marker_dir / f"s-1.compact-{_boundary_uuid(1)}").exists()
-    assert (marker_dir / "s-1.nudge").read_text(encoding="utf-8") == "fired\n"
+    assert (marker_dir / "s-1.warn").read_text(encoding="utf-8") == "fired\n"
     assert not (marker_dir / "s-1.final").exists()
 
     agent_session = _t0953_pretool(transcript, tmp_path, agent_type="pm")

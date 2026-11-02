@@ -3,7 +3,7 @@
 엔진을 좁혀도(T-0425) **문서가 bare `git commit` 을 지시하면 사람 손이 그대로 샌다** — 유출 경로가
 add 와 commit 두 갈래이듯, 표면도 엔진과 문서 두 갈래다. T-0426 이 스킬 문서·방법론 문서·진입 doc
 전 사본의 지시문을 pathspec 형으로 바꿨는데 **그 변경을 무는 테스트가 0 건이었다**: reviewer 가
-pm-wave-finish SKILL 4사본 + pm_playbook 4사본을 옛 버전(bare commit·`git add -A` 명문)으로 되돌리고
+pm-cluster-finish SKILL 4사본 + pm_playbook 4사본을 옛 버전(bare commit·`git add -A` 명문)으로 되돌리고
 전체 회귀를 돌렸더니 **숫자가 그대로였다**. T-0098(폐기 용어 sweep 을 `test_terminology` 로 못박은
 선례)과 같은 패턴으로 닫는다 — 재발하는 규칙은 지식이 아니라 테스트로 못박는다.
 
@@ -230,7 +230,7 @@ def test_surface_covers_every_copy_of_the_pathspec_skills(surfaces):
     red** 라 가드가 정당한 확장을 막는다(reviewer should-fix).
     """
     scanned = {rel for rel, _ in surfaces}
-    for skill in ("pm-wave-finish", "pm-handoff", "pm-adr"):
+    for skill in ("pm-cluster-finish", "pm-handoff", "pm-adr"):
         copies = sorted(rel for rel in scanned if f"/{skill}/SKILL.md" in rel)
         assert len(copies) >= 4, (
             f"{skill} 사본이 4개(루트 + 하네스 3종) 미만 — {len(copies)}개: {copies}")

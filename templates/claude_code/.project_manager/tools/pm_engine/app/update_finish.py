@@ -1,9 +1,10 @@
-"""옛 자체 슬롯·세션 장부와 areas 자기 행의 갱신 후처리 (층: app)."""
+"""옛 자체 슬롯·세션 장부, 위임 라운드 기록 파일 키, areas 자기 행의 갱신 후처리 (층: app)."""
 from __future__ import annotations
 
 from pathlib import Path
 import json
 import re
+import shutil
 from pm_engine.app import areas_registry
 from pm_engine.infra import fs
 from pm_engine.infra import pm_paths
@@ -119,3 +120,41 @@ def idle_legacy_slot_session_rows(effective_dest: Path, *, write: bool) -> int:
             )
             fs.atomic_replace(tmp, ledger)
     return len(moved)
+
+
+# 경로·키 글자를 여기 직접 둔다. 이 갱신기는 dest 의 다른 엔진 사본을 불러오지 않는다
+# (`drop_self_lease_rows` 와 같은 관례).
+_DELEGATE_ROUNDS_REL = Path(".project_manager") / ".local" / "delegate-rounds.jsonl"
+_OLD_COLLECTED_KEY_TOKEN = '"harvested_at":'
+_NEW_COLLECTED_KEY_TOKEN = '"collected_at":'
+
+
+def rename_delegate_round_collected_key(effective_dest: Path, *, write: bool) -> int:
+    """위임 라운드 기록 파일 행의 키 harvested_at 을 collected_at 으로 옮긴다(갱신 끝에 한 번).
+
+    키 이름을 바꾼 갱신이 디스크에 남은 옛 키를 직접 옮긴다. 엔진은 옛 키 행을 읽지 않는다.
+    줄마다 글자 "harvested_at": 를 바꾼다. JSON 문자열 안의 따옴표는 이스케이프되므로 이 글자는
+    키 자리에만 나오고, 읽을 수 없는 행과 나머지 바이트는 그대로 남는다. 같은 폴더 임시 파일에
+    원래 권한을 옮긴 뒤 원자 교체한다. 옮길 행이 없으면 읽기만 하고, write=False 면 출력만 한다.
+    기록 파일 덧붙이기에는 잠금이 없으므로 다른 세션의 위임 명령이 돌지 않을 때 갱신한다는 전제다.
+    돌려주는 값은 옮긴(dry-run 은 옮길) 행 수다.
+    """
+    ledger = Path(effective_dest) / _DELEGATE_ROUNDS_REL
+    if not ledger.is_file():
+        return 0
+    lines = fs.read_text_shared(ledger, encoding="utf-8", newline="").splitlines(keepends=True)
+    moved = sum(1 for line in lines if _OLD_COLLECTED_KEY_TOKEN in line)
+    if moved == 0:
+        return 0
+    prefix = "[dry-run] " if not write else "  ✓ "
+    print(f"{prefix}위임 라운드 기록 파일의 행 {moved}개에서 키 harvested_at 을 collected_at 으로 이동"
+          f"{' 예정' if not write else ''}(키 이름을 바꾼 갱신이 함께 옮긴다).")
+    if write:
+        tmp = ledger.with_name(ledger.name + ".tmp")
+        tmp.write_text(
+            "".join(line.replace(_OLD_COLLECTED_KEY_TOKEN, _NEW_COLLECTED_KEY_TOKEN) for line in lines),
+            encoding="utf-8", newline="",
+        )
+        shutil.copymode(ledger, tmp)
+        fs.atomic_replace(tmp, ledger)
+    return moved

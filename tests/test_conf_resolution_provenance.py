@@ -579,7 +579,7 @@ def test_additional_reviewer_actual_execution_keeps_same_provenance(
         }
 
     monkeypatch.setattr(reviewer_run, "run_review", _run_review)
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
+    assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     err = capsys.readouterr().err
     assert err.splitlines()[0].startswith("[additional-reviewer] config provenance:")
     assert seen["local_conf_path"] == engine / ".project_manager" / "local.conf"

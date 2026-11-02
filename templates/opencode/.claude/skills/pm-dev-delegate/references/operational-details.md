@@ -11,7 +11,7 @@
 - **준비**(`ticket prepare --cluster --role code-reviewer` · 교차 `--role code-reviewer --cluster`)는
   슬롯이 장부의 묶음 브랜치이고 작업 트리 변경(추적 파일 수정·추적 안 된 새 파일)이 0 일 때만
   통과한다. 거부는 예약 전이라 board 라운드·장부 행이 남지 않는다. 이 거부는 완화 인자가 없다.
-- **돌려받기**(`ticket harvest`)는 슬롯 HEAD 가 준비 기록의 `base_rev` 와 같고 작업 트리 변경이 0 일
+- **돌려받기**(`ticket collect`)는 슬롯 HEAD 가 준비 기록의 `base_rev` 와 같고 작업 트리 변경이 0 일
   때만 통과한다. 무시되는 `.project_manager/.local/` 아래 라운드 파일 변경은 세지 않는다. 거부는
   board 라운드와 run-dir 을 그대로 둔다 — 슬롯을 준비 시점으로 되돌린 뒤 같은 `--copy` 로 다시
   돌려받는다. 장부 행에 `base_rev` 가 없는 옛 준비는 돌려받지 않는다(`ticket abandon` 뒤 다시 준비).

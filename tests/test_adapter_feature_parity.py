@@ -112,7 +112,7 @@ _CODEX_FEATURE_TO_ROW = {
     "compaction-snapshot": "ctx-guard",
     "principle-recall-pretooluse": "principle-recall",
     "principle-recall-userpromptsubmit": "principle-recall",
-    "principle-recall-rearm": "principle-recall",
+    "principle-recall-reset": "principle-recall",
     "git-anchor": "git-anchor",
 }
 

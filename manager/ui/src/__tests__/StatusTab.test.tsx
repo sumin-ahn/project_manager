@@ -45,7 +45,7 @@ const LIVEGATE = {
 /** 기록 둘이 실린 보드 — 무거운 절이 그대로 나르는 값이다(화면이 만들지 않는다). */
 function withRecords(): StatusDocument {
   return { ...document_,
-           board: { ...document_.board!, regression: REGRESSION, livegate: LIVEGATE } };
+           board: { ...document_.board!, regression: REGRESSION, live_test: LIVEGATE } };
 }
 
 /** 공용 탭으로 옮긴다 — 픽스처의 슬롯은 어느 task 도 쥐지 않아 전부 그 탭에 선다. */
@@ -136,7 +136,7 @@ describe("현황 탭 읽기 부분", () => {
     expect(regression).toHaveTextContent("회귀 pass · 12882개 수집 · 2026-09-04T07:34:00+00:00");
     expect(regression).not.toHaveAttribute("open");                   // 원문은 열어야 나온다
     // 게이트는 하한이 없는 축이라 수집 수를 `n` 에서 고른다(값 이름이 다르고 판정은 그대로다).
-    expect(screen.getByTestId("record-livegate"))
+    expect(screen.getByTestId("record-live-test"))
       .toHaveTextContent("게이트 pass · 22개 수집 · 2026-09-06T10:42:33+00:00");
     // 접힌 상세 안에는 엔진 원문이 그대로 있다(요약이 지운 축을 잃지 않는다).
     expect(regression).toHaveTextContent("conf_anchor");
@@ -147,7 +147,7 @@ describe("현황 탭 읽기 부분", () => {
 
     expect(document_.board!.regression).toBeNull();
     expect(screen.queryByTestId("record-regression")).toBeNull();
-    expect(screen.queryByTestId("record-livegate")).toBeNull();
+    expect(screen.queryByTestId("record-live-test")).toBeNull();
   });
 });
 

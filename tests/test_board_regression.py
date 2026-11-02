@@ -2591,7 +2591,7 @@ def test_a_push_from_a_tree_without_tests_meets_only_the_lint_gate(
     push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
 
     assert push.returncode == 0, push.stderr
-    assert _gate_calls(tmp_path) == ["lint --gate"]      # 회귀 미실행·lint 는 실행
+    assert _gate_calls(tmp_path) == ["lint --blocking"]      # 회귀 미실행·lint 는 실행
     assert "회귀 게이트 비대상" in (push.stdout + push.stderr)
     assert _remote_has_main(tmp_path, env)
 
@@ -2606,7 +2606,7 @@ def test_a_push_from_a_tree_with_tests_still_meets_the_regression_gate(
     push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
 
     assert push.returncode == 0, push.stderr
-    assert _gate_calls(tmp_path) == ["regression check", "lint --gate"]
+    assert _gate_calls(tmp_path) == ["regression check", "lint --blocking"]
     assert _remote_has_main(tmp_path, env)
 
 
@@ -2637,7 +2637,7 @@ def test_the_lint_gate_still_blocks_a_push_from_a_tree_without_tests(
     push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
 
     assert push.returncode != 0
-    assert _gate_calls(tmp_path) == ["lint --gate"]
+    assert _gate_calls(tmp_path) == ["lint --blocking"]
     assert not _remote_has_main(tmp_path, env)
 
 
@@ -2647,18 +2647,21 @@ def test_the_current_body_masks_the_regression_gate_and_stamps_a_new_rev(board):
     """현행 본문 = `[ -d tests ]` 가림 + 항상 도는 lint + 새 세대 스탬프(설치 훅의 자기 신고)."""
     body = pre_push_hook.pre_push_hook_body("python3")
     assert f"{pre_push_hook._PM_HOOK_REV_PREFIX}{pre_push_hook.PM_HOOK_REV}" in body
-    assert pre_push_hook.PM_HOOK_REV == 3                      # 본문이 바뀌면 세대도 바뀐다
+    assert pre_push_hook.PM_HOOK_REV == 4                      # 본문이 바뀌면 세대도 바뀐다
     assert "if [ -d tests ]; then" in body
     # 회귀 두 줄은 가림 블록 **안**, lint 줄은 블록 **밖**(항상).
     masked = body.split("if [ -d tests ]; then", 1)[1].split("\nfi\n", 1)
     assert "regression check" in masked[0] and "regression run --final" in masked[0]
-    assert masked[1] == "python3 .project_manager/tools/board.py lint --gate || exit 1\n"
+    assert masked[1] == "python3 .project_manager/tools/board.py lint --blocking || exit 1\n"
 
 
 def test_the_previous_generation_is_registered_as_legacy(board):
-    """직전 세대(rev 2 · 트리를 안 보고 항상 회귀)가 registry 에 등재됐다 — 정확일치 2 세대."""
+    """옛 버전(rev 2 · 트리를 안 보고 항상 회귀, rev 3 · lint 플래그가 `--gate`)이 옛 본문 목록에 있다 — 정확일치 3 버전."""
     legacy = pre_push_hook._legacy_pre_push_hook_bodies("python3")
-    assert len(legacy) == 2
+    assert len(legacy) == 3
+    rev3 = next(b for b in legacy if f"{pre_push_hook._PM_HOOK_REV_PREFIX}3" in b)
+    assert "if [ -d tests ]; then" in rev3
+    assert rev3.endswith("python3 .project_manager/tools/board.py lint --gate || exit 1\n")
     rev2 = next(b for b in legacy if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     assert "if [ -d tests ]" not in rev2                # 가림 없이 항상 회귀를 요구하던 본문
     assert "regression run --final" in rev2
@@ -2817,13 +2820,13 @@ def test_a_previous_generation_hook_also_blocks_the_lint_gate(
     # 이 테스트의 판정축(훅 세대)이 아니므로 격리한다.
     monkeypatch.setattr(areas_lint, "lint_areas_repo_unregistered", lambda home: [])
 
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=True)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True)) == 1
 
     assert hook.read_text(encoding="utf-8") == rev2  # 고치지 않는다
     err = capsys.readouterr().err
     assert "구버전" in err and "board.py init" in err
     # 보고 전용 `lint`(무 `--gate`)는 차단 표면이 아니다 — 부착은 게이트 모드에만.
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=False)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=False)) == 0
     assert "구버전" not in capsys.readouterr().err
 
 
@@ -2832,7 +2835,7 @@ def test_the_lint_gate_stays_silent_under_a_current_hook(
     """현행 세대 훅에서는 lint 게이트가 무소음 통과 — 부착이 과차단을 만들지 않는다."""
     _hooked_repo(board, monkeypatch, tmp_path, pre_push_hook.pre_push_hook_body("python3"))
 
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=True)) == 0
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True)) == 0
     assert "구버전" not in capsys.readouterr().err
 
 
@@ -2915,7 +2918,7 @@ def test_the_lint_gate_refusal_carries_the_neutral_prefix(
                 if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     _hooked_repo(board, monkeypatch, tmp_path, rev2)
 
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(gate=True)) == 1
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True)) == 1
 
     err = capsys.readouterr().err
     assert err.startswith(pre_push_hook.PM_HOOK_NOTICE_PREFIX)

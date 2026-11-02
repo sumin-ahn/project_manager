@@ -15,7 +15,7 @@ from pm_engine.infra import compaction_store, conf_store, principle_store
 CTX_RESPONSE_VERSION = 1
 
 # `stop` 밴드는 회전이 아니라 최종 넛지로 소비된다 — 안내 렌더·marker 종류 이름은 `final` 이다.
-_BAND_GUIDANCE = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
+_BAND_GUIDANCE = {"warn": "warn", "warn2": "warn2", "stop": "final"}
 
 
 def _observe(home, harness: str, tokens: int, model: str | None) -> tuple[dict, dict | None]:

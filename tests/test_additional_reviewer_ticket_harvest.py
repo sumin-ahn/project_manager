@@ -3,7 +3,7 @@
 두 축을 소유한다.
   · 회수: `additional_reviewer --ticket` 실행이 끝나면 **엔진이** 산출을 그 티켓의 새
     `additional-reviewer` 라운드 파일(`tickets/rounds/<T>/NN-additional-reviewer.md`)로 기록하고,
-    내부 리뷰어와 같은 `review delta` 표면에 올린다. 내용 검증(블록 부재·스키마 위반·중복·JSON
+    내부 리뷰어와 같은 `review accepted` 표면에 올린다. 내용 검증(블록 부재·스키마 위반·중복·JSON
     손상·finding ID 재선언·표면에 없는 confirmation 대상)에 걸리면 **라운드 파일을 만들지 않고**
     rc≠0 으로 사유를 말한다 — 산출 원문은 raw 에 남는다([[ADR-0090]] · 차등 판정·반사실 프로브
     없음).
@@ -325,7 +325,7 @@ def _run(external, pm_home: Path, *argv: str) -> int:
 def test_rejected_round_lands_as_a_round_file_and_delta_finding(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """(a) 반려 산출이 라운드 파일 하나가 되고 `review delta` 에 X- 가 뜬다."""
+    """(a) 반려 산출이 라운드 파일 하나가 되고 `review accepted` 에 X- 가 뜬다."""
     ticket_path = _seed_board(tmp_path)
     spec_before = ticket_path.read_text(encoding="utf-8")
     reply = _reject_reply(_finding())
@@ -602,7 +602,7 @@ def test_paths_only_run_harvests_nothing(external, monkeypatch, tmp_path):
     before = ticket_path.read_text(encoding="utf-8")
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
-    assert _run(external, tmp_path, "--paths", "x.py", "--no-gate") == 1
+    assert _run(external, tmp_path, "--paths", "x.py", "--no-review-ticket") == 1
     assert _round_paths(tmp_path) == []
     assert ticket_path.read_text(encoding="utf-8") == before
 
@@ -614,7 +614,7 @@ def test_free_form_gate_without_ticket_harvests_nothing(
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
-    assert _run(external, tmp_path, "--gate", "free-gate", "--paths", "x.py") == 1
+    assert _run(external, tmp_path, "--review-ticket", "free-gate", "--paths", "x.py") == 1
     assert _round_paths(tmp_path) == []
 
 
@@ -953,11 +953,11 @@ def test_summary_folds_a_broken_json_block_into_its_own_round_row(pd):
 def test_ticket_shaped_gate_without_ticket_flag_is_harvested(
     external, pd, monkeypatch, tmp_path,
 ):
-    """문서화된 `--paths … --gate T-NNNN` 설계 리뷰 형상도 같은 회수 규칙을 탄다."""
+    """문서화된 `--paths … --review-ticket T-NNNN` 설계 리뷰 형상도 같은 회수 규칙을 탄다."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
-    assert _run(external, tmp_path, "--gate", TICKET, "--paths", "x.py") == 1
+    assert _run(external, tmp_path, "--review-ticket", TICKET, "--paths", "x.py") == 1
     assert [path.name for path in _round_paths(tmp_path)] == [f"01-{ROLE}.md"]
     delta = _delta(pd, tmp_path, _disposition("X-001"))
     assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
@@ -970,7 +970,7 @@ def test_ticket_shaped_gate_missing_from_the_board_says_why(
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
-    assert _run(external, tmp_path, "--gate", "T-9999", "--paths", "x.py") == 1
+    assert _run(external, tmp_path, "--review-ticket", "T-9999", "--paths", "x.py") == 1
     err = capsys.readouterr().err
     assert "미회수" in err and "T-9999" in err
 
@@ -1040,7 +1040,7 @@ def _prompt_next_id(prompt: str) -> str:
 def test_gate_shaped_run_advances_the_finding_id_across_rounds(
     external, pd, monkeypatch, tmp_path,
 ):
-    """본문이 실리지 않는 `--paths … --gate T-NNNN` 형상도 라운드마다 ID 가 전진한다.
+    """본문이 실리지 않는 `--paths … --review-ticket T-NNNN` 형상도 라운드마다 ID 가 전진한다.
 
     출처가 프롬프트용 티켓 본문이면 이 형상은 매 라운드 첫 ID 를 지시해 2라운드가 재선언으로
     거부된다 — 출처는 회수 대상 티켓의 라운드 파일이다.
@@ -1055,7 +1055,7 @@ def test_gate_shaped_run_advances_the_finding_id_across_rounds(
 
     for _round_index in range(3):
         _wire(external, monkeypatch, tmp_path, _reply_following_the_prompt, conf=conf)
-        assert _run(external, tmp_path, "--paths", "x.py", "--gate", TICKET) == 1
+        assert _run(external, tmp_path, "--paths", "x.py", "--review-ticket", TICKET) == 1
 
     assert seen == ["X-001", "X-002", "X-003"]
     assert len(_round_paths(tmp_path)) == 3

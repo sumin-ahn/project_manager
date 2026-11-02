@@ -209,7 +209,7 @@ _READ_ONLY_BOARD_CALL_RE = re.compile(
             )
         )*
         |
-        lint(?:[ \t]+--gate)?
+        lint(?:[ \t]+--blocking)?
         |
         idea[ \t]+list
         |
@@ -217,7 +217,7 @@ _READ_ONLY_BOARD_CALL_RE = re.compile(
         |
         regression[ \t]+check
         |
-        livegate[ \t]+check
+        live-test[ \t]+check
     )
     """,
     re.IGNORECASE | re.VERBOSE,

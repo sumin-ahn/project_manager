@@ -145,7 +145,7 @@ def cmd_migrate(home, args: argparse.Namespace) -> int:
 def cmd_ctx_guidance(args: argparse.Namespace) -> int:
     """ctx 가드 공유 안내를 raw text 또는 Codex hook JSON envelope로 출력한다."""
     text = ctx_recovery.build_ctx_guard_guidance(
-        args.band,
+        args.level,
         used_pct=args.used_pct,
         precompact_at_pct=args.precompact_at_pct,
     )
@@ -289,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--dry-run', action='store_true')
     p.set_defaults(fn=cmd_migrate)
     p = sub.add_parser('ctx-guidance', help='세 하네스 공용 ctx 연속성 안내 출력 (쓰기 0)')
-    p.add_argument('--band', choices=('nudge', 'nudge2', 'final', 'precompact'), required=True, help='안내 강도/경계 종류')
+    p.add_argument('--level', choices=('warn', 'warn2', 'final', 'precompact'), required=True, help='안내 강도/경계 종류')
     p.add_argument('--used-pct', type=int, metavar='N', help='관측 컨텍스트 사용률(사용 한도 대비 쓴 %%)')
     p.add_argument('--precompact-at-pct', type=int, metavar='N', help='final 밴드의 압축 임박 경고 비율(ctx.precompact_at_pct)')
     p.add_argument('--json', action='store_true', help='Codex hook envelope(systemMessage/suppressOutput) JSON 하나로 출력')

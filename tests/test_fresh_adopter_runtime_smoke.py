@@ -44,7 +44,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
-# nudge 주입-도달 on-demand 게이트 (T-0286). release 12-pin 과 **분리** — 이 두 nudge 테스트는
+# warn 주입-도달 on-demand 게이트 (T-0286). release 12-pin 과 **분리** — 이 두 warn 테스트는
 # `@pytest.mark.release` 를 달지 않아(달면 regression.LIVEGATE_RELEASE_PIN·_EXPECTED_RELEASE_TESTS 등
 # touches 밖 전역 pin 이 깨진다) release 게이트에 안 잡히고, 오직 이 env 로만 on-demand 실행된다.
 # (ticket 이 부른 `shipping` marker 는 ADR-0039 로 pytest.ini 에서 등록 제거됨 → 미등록 마커는
@@ -458,14 +458,14 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
                 f"부모의 {var} 이 LLM env 로 누수됨 — 격리 깨짐"
 
 
-# ── graceful nudge 주입-도달 라이브 (probe·on-demand·T-0286·[[ADR-0037]]·[[T-0328]]) ────────────
-# T-0183(PM 59)이 *수동 1회* 관찰한 "nudge 주입이 모델 컨텍스트에 실제 도달" 을 재현 가능한 durable
+# ── graceful warn 주입-도달 라이브 (probe·on-demand·T-0286·[[ADR-0037]]·[[T-0328]]) ────────────
+# T-0183(PM 59)이 *수동 1회* 관찰한 "warn 주입이 모델 컨텍스트에 실제 도달" 을 재현 가능한 durable
 # 자동 테스트로 박제한다. Tier1(test_claude/opencode_ctx_guard)이 주입 스키마·멱등·2단 독립·빌더를
 # 결정적으로 커버 — 여기선 *하니스 전달의 라이브 회귀*만(비결정·과금·flaky → PM_ORCH_LIVE on-demand).
 #
-# probe 방식([[verify-real-output-not-just-review]]): 라이브 세션 후 nudge 텍스트가 모델에 도달했는지
+# probe 방식([[verify-real-output-not-just-review]]): 라이브 세션 후 warn 텍스트가 모델에 도달했는지
 # 를 behavioral 관찰한다 — 주입문에만 있는 distinctive 토큰 `ctx-nudge`(1단 `[ctx-nudge]`·2단
-# `[ctx-nudge/최종]` 공통 substring)를 모델이 인용하는지. `.nudge` file-marker 는 단언하지 않는다
+# `[ctx-nudge/최종]` 공통 substring)를 모델이 인용하는지. `.warn` file-marker 는 단언하지 않는다
 # (T-0286 결정: marker 는 훅이 자기 판단용으로 쓸 뿐 도달 증거가 아님).
 #
 # 밴드 강제 = 격리 인스턴스 + per-harness 키([[ctx-guard-live-test-isolate-instance]]): adopter 는
@@ -475,11 +475,11 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
 
 
 def _force_nudge_band_conf(dest: Path, harness: str) -> None:
-    """adopter local.conf 에 nudge 밴드 강제 conf 를 append (격리·per-harness 키·generic 미변경).
+    """adopter local.conf 에 warn 밴드 강제 conf 를 append (격리·per-harness 키·generic 미변경).
 
-    큰 예산(500K) + 넓은 nudge 밴드(쓴 % checkpoint_at 1·precompact_at 99): 실 세션(수천~수만
-    토큰)이 stop(used ≥99%)은 절대 못 넘고 nudge(used ≥1% = 토큰 ≥5000)엔 안정적으로 진입한다.
-    nudge2(used ≥96%)엔 안 닿아 soft(1단) 주입이 발화 — 주입 채널은 2단과 동일(Tier1 커버)이라
+    큰 예산(500K) + 넓은 warn 밴드(쓴 % checkpoint_at 1·precompact_at 99): 실 세션(수천~수만
+    토큰)이 stop(used ≥99%)은 절대 못 넘고 warn(used ≥1% = 토큰 ≥5000)엔 안정적으로 진입한다.
+    warn2(used ≥96%)엔 안 닿아 soft(1단) 주입이 발화 — 주입 채널은 2단과 동일(Tier1 커버)이라
     도달 증거로 충분(공통 `ctx-nudge` 토큰). local.conf 파싱은 last-wins 라 append 값이 우선.
     이 값은 훅 판정만 옮긴다 — 설정 파일 반영을 돌리지 않으므로 하네스 압축 지점은 출하 값 그대로다.
     """
@@ -487,7 +487,7 @@ def _force_nudge_band_conf(dest: Path, harness: str) -> None:
     conf_path.parent.mkdir(parents=True, exist_ok=True)
     with conf_path.open("a", encoding="utf-8") as fh:
         fh.write(
-            "\n# T-0286 nudge 밴드 강제 (격리·per-harness 키)\n"
+            "\n# T-0286 warn 밴드 강제 (격리·per-harness 키)\n"
             "ctx.checkpoint_at_pct=1\n"
             "ctx.precompact_at_pct=99\n"
             f"harness.{harness}.ctx_window_tokens=500000\n"
@@ -509,16 +509,16 @@ _NUDGE_PROBE_MARKER = "NUDGE_REACHED"  # 모델-생산 sentinel(주입문/문서
 
 
 def _run_opencode_nudge(dest: Path, attempts: int = 2) -> str:
-    """opencode nudge 세션 — 도구 호출로 2번째 모델 턴을 강제(그 턴의 system.transform 이 주입 소비).
+    """opencode warn 세션 — 도구 호출로 2번째 모델 턴을 강제(그 턴의 system.transform 이 주입 소비).
 
     opencode 는 수 분 병리적 task hang(upstream·tool-loop 데드락) 이 있어 timeout + 1회 재시도까지만
     (PM 지침·실측: opencode 1.17.19 + glm-5.2 에서 tool 사용 세션이 0바이트로 걸림·`--pure` 로 플러그인
     빼도 걸림=upstream·플러그인 무관). 그 hang 이 풀린 환경에서만 이 라이브가 통과한다(default-skip 이라
-    회귀 무영향). 메커니즘 자체는 Tier1(실제 엔진 hook-context nudge2 판정·plugin system.transform 전달)
+    회귀 무영향). 메커니즘 자체는 Tier1(실제 엔진 hook-context warn2 판정·plugin system.transform 전달)
     + T-0283 로드게이트 + claude 라이브(동일 채널·주입-도달 실증)로 커버.
 
     NOTE(플래그): `--pure` 는 안 쓴다 — `--pure`=external plugin 미로드라 ctx-guard 플러그인(주입 메커니즘
-    자체)이 안 떠 nudge 가 발화 안 한다(실측). 격리는 fresh import adopter + `--dir <절대>`로 충분.
+    자체)이 안 떠 warn 가 발화 안 한다(실측). 격리는 fresh import adopter + `--dir <절대>`로 충분.
     `--format json` 도 안 쓴다 — json 이벤트 스트림이 *user prompt*(sentinel 포함)를 stdout 에 직렬화해
     false-green(주입 아닌 프롬프트 echo 검출) 이 난다(실측). default 포맷은 모델 rendered 응답만 찍어
     sentinel 검출이 곧 모델 도달이다(prompt echo 없음·실측 BASELINE).
@@ -538,34 +538,34 @@ def _run_opencode_nudge(dest: Path, attempts: int = 2) -> str:
             return (proc.stdout or "") + (proc.stderr or "")
         except subprocess.TimeoutExpired:
             last = f"opencode timeout(>{RUNTIME_TIMEOUT}s·attempt {attempt + 1}/{attempts})"
-    pytest.fail(f"opencode nudge 세션이 모두 timeout — upstream hang 의심. {last}")
+    pytest.fail(f"opencode warn 세션이 모두 timeout — upstream hang 의심. {last}")
 
 
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("opencode"),
-    reason="nudge 주입-도달 on-demand — PM_ORCH_LIVE=1 + opencode CLI(+출하 모델) 필요. 기본 skip·CI green 불변.",
+    reason="warn 주입-도달 on-demand — PM_ORCH_LIVE=1 + opencode CLI(+출하 모델) 필요. 기본 skip·CI green 불변.",
 )
 def test_live_opencode_nudge_injection_reaches_model(tmp_path):
-    """실 opencode 세션서 graceful nudge 주입(experimental.chat.system.transform)이 모델에 도달 (T-0286).
+    """실 opencode 세션서 graceful warn 주입(experimental.chat.system.transform)이 모델에 도달 (T-0286).
 
-    밴드 강제(격리·per-harness 키) → 도구 호출로 2번째 턴 유발 → 그 턴 system[] 에 nudge 주입 →
+    밴드 강제(격리·per-harness 키) → 도구 호출로 2번째 턴 유발 → 그 턴 system[] 에 warn 주입 →
     모델이 `ctx-nudge` 토큰 인용. probe 관찰(behavioral)이라 LLM phrasing 비결정에 강건(토큰 도달만 본다).
     """
     dest = _import_adopter(tmp_path, "opencode")
     _force_nudge_band_conf(dest, "opencode")
     out = _run_opencode_nudge(dest)
     assert _NUDGE_PROBE_MARKER in out, (
-        "opencode nudge 주입이 모델 컨텍스트에 도달하지 못함 (system.transform 미주입/모델 미인용).\n"
+        "opencode warn 주입이 모델 컨텍스트에 도달하지 못함 (system.transform 미주입/모델 미인용).\n"
         f"--- opencode 출력(tail) ---\n{out[-2500:]}"
     )
 
 
 @pytest.mark.skipif(
     not PM_ORCH_LIVE or not shutil.which("claude"),
-    reason="nudge 주입-도달 on-demand — PM_ORCH_LIVE=1 + claude CLI(API 과금) 필요. 기본 skip·CI green 불변.",
+    reason="warn 주입-도달 on-demand — PM_ORCH_LIVE=1 + claude CLI(API 과금) 필요. 기본 skip·CI green 불변.",
 )
 def test_live_claude_nudge_injection_reaches_model(tmp_path):
-    """실 claude 세션서 graceful nudge 주입(UserPromptSubmit additionalContext)이 모델에 도달 (T-0286).
+    """실 claude 세션서 graceful warn 주입(UserPromptSubmit additionalContext)이 모델에 도달 (T-0286).
 
     claude 는 UserPromptSubmit 에서만 주입하고 그 훅은 transcript 의 assistant usage 로 used% 를
     잰다 — fresh -p 의 첫 프롬프트는 transcript 가 비어 used 0(주입 없음). 그래서 (1) seed 로
@@ -573,7 +573,7 @@ def test_live_claude_nudge_injection_reaches_model(tmp_path):
     """
     dest = _import_adopter(tmp_path, "claude")
     _force_nudge_band_conf(dest, "claude")
-    # 1) seed: transcript 축적(첫 UserPromptSubmit=빈 transcript→used 0→nudge 미발화·세션 정상 진행).
+    # 1) seed: transcript 축적(첫 UserPromptSubmit=빈 transcript→used 0→warn 미발화·세션 정상 진행).
     seed = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions",
@@ -585,7 +585,7 @@ def test_live_claude_nudge_injection_reaches_model(tmp_path):
     assert seed.returncode == 0, (
         f"claude seed 실패(rc={seed.returncode}) — transcript 축적 불가.\n{seed.stderr[-1000:]}"
     )
-    # 2) continue: transcript 가 쌓여 이번 UserPromptSubmit 이 nudge 밴드 → additionalContext 주입.
+    # 2) continue: transcript 가 쌓여 이번 UserPromptSubmit 이 warn 밴드 → additionalContext 주입.
     probe = subprocess.run(
         ["claude", "-p", "--continue", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions", "새 도구를 실행하지 마라. " + _NUDGE_PROBE_TAIL],
@@ -594,7 +594,7 @@ def test_live_claude_nudge_injection_reaches_model(tmp_path):
     )
     out = (probe.stdout or "") + (probe.stderr or "")
     assert _NUDGE_PROBE_MARKER in out, (
-        "claude nudge 주입이 모델 컨텍스트에 도달하지 못함 (UserPromptSubmit additionalContext 미도달/미인용).\n"
+        "claude warn 주입이 모델 컨텍스트에 도달하지 못함 (UserPromptSubmit additionalContext 미도달/미인용).\n"
         f"--- claude 출력(tail) ---\n{out[-2500:]}"
     )
 
@@ -683,12 +683,12 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
     #     exit 0). fresh adopter 는 seen-unset 관찰불가 advisory(never-block·option-a)라 blocking 은
     #     `--gate` 로 확인한다(test_fresh_adopter_e2e 동형).
     lint = subprocess.run(
-        [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), "lint", "--gate"],
+        [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), "lint", "--blocking"],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PM_NONINTERACTIVE": "1"},
     )
     assert lint.returncode == 0, (
-        f"codex adopter blocking lint 비-clean(`--gate` exit {lint.returncode}) — 출하 doc dangling "
+        f"codex adopter blocking lint 비-clean(`--blocking` exit {lint.returncode}) — 출하 doc dangling "
         f"[[ADR/T]]·thin 누출?\n--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}")
 
     # (3) 부트스트랩 카드 codex 절 — import 된 채택자 pm_bootstrap 이 codex env 감지 시 실행모델/위임

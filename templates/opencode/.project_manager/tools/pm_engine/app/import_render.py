@@ -277,6 +277,7 @@ def render_managed_files(
                 text,
                 operational=operational,
                 template_dir=context,
+                skill_names=skill_inventory._installed_skill_entry_names(home),
             )
             if file_render
             else render_rules.render_skill_entry_notation(text, context, skill_names=skill_inventory._installed_skill_entry_names(home))
@@ -332,4 +333,6 @@ def render_file(
     호출부(`pm_update`·`pm_import`)의 목적지 판독은 이미 각자 seam 경로를 지난다.
     """
     text = Path(template_path).read_text(encoding="utf-8")
-    return adapter_render.render_adapter(home, text, operational, source=str(template_path))
+    return adapter_render.render_adapter(
+        home, text, operational, source=str(template_path),
+        skill_names=skill_inventory._installed_skill_entry_names(home))

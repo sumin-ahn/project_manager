@@ -13,7 +13,7 @@
    없으면 red.
 4. 불변식 1·2·3 — flat 키 0 · per-harness 단일 문법 · 값 공급 경로 유일.
 5. 교체 안내 — 키 단위 지목 + 모델 자동 이관 없음 + 기본값 변경 1줄(형상 무관) + 채택자 소유 파일 지목.
-6. 위임 마스터 스위치 — off 의 차단 3층과 면제(harvest·copies·--dry-run).
+6. 위임 마스터 스위치 — off 의 차단 3층과 면제(collect·copies·--dry-run).
 7. conf 생성 문자열 — 주석이 설정값을 재진술하지 않는다(손으로 옮겨 적은 값은 반드시 drift 한다).
 
 hermetic: 실 `local.conf` **파일**을 tmp 에 만들어 각 도구가 그 파일을 읽어 해소한 값을 단언한다
@@ -576,7 +576,7 @@ def test_delegation_switch_defaults_to_allow(guard_home, tmp_path):
 
 
 def test_harvest_and_copies_stay_outside_the_switch(tmp_path, capsys):
-    """`harvest`·`copies` 는 게이트 밖이다 — 끄는 순간 진행 중 라운드가 고아가 되면 안 된다."""
+    """`collect`·`copies` 는 게이트 밖이다 — 끄는 순간 진행 중 라운드가 고아가 되면 안 된다."""
     delegate = _load("pm_delegate", "harvest_pm_delegate")
     repo = _delegate_repo(tmp_path, "false")
     delegate.REPO = repo
@@ -659,7 +659,7 @@ def test_delegate_switch_section_is_identical_across_targets():
     sections = {path: _switch_section(path) for path in _DELEGATE_CARDS}
     assert len(set(sections.values())) == 1, [str(p) for p in sections]
     section = next(iter(sections.values()))
-    for contract in ("기본은 허용", "rc=3", "ticket prepare", "harvest", "--dry-run",
+    for contract in ("기본은 허용", "rc=3", "ticket prepare", "ticket collect", "--dry-run",
                      "fail-open", "false-green"):
         assert contract in section, contract
 

@@ -6,8 +6,8 @@ claude Code 가 statusLine 입력 JSON 을 stdin 으로 준다 (``context_window
 넘기고, 돌아온 쓴 %·밴드를 statusline 한 줄로 낸다. 적용 한도 E·임계·밴드 판정은 엔진 소유다.
 
   - ok    : 회색 ctx N%
-  - nudge : 노랑 "ctx N% — checkpoint 준비"
-  - nudge2: 빨강 "ctx N% — checkpoint 권고" (2단 strong)
+  - warn : 노랑 "ctx N% — checkpoint 준비"
+  - warn2: 빨강 "ctx N% — checkpoint 권고" (2단 strong)
   - stop  : 빨강 "ctx N% — checkpoint 최종 알림"
 
 statusLine 은 **흐름을 안 끊는다**(가시화만). marker 를 쓰지 않는다 — 모델-facing 안내는
@@ -29,7 +29,7 @@ _GREY = "\033[90m"
 _YELLOW = "\033[33m"
 _RED = "\033[31m"
 
-_COLOR = {"ok": _GREY, "nudge": _YELLOW, "nudge2": _RED, "stop": _RED}
+_COLOR = {"ok": _GREY, "warn": _YELLOW, "warn2": _RED, "stop": _RED}
 
 
 def render_line(used_pct: int, state: str) -> str:
@@ -37,9 +37,9 @@ def render_line(used_pct: int, state: str) -> str:
     color = _COLOR.get(state, _GREY)
     if state == "stop":
         body = f"ctx {used_pct}% — checkpoint 최종 알림"
-    elif state == "nudge2":
+    elif state == "warn2":
         body = f"ctx {used_pct}% — checkpoint 권고"
-    elif state == "nudge":
+    elif state == "warn":
         body = f"ctx {used_pct}% — checkpoint 준비"
     else:
         body = f"ctx {used_pct}%"

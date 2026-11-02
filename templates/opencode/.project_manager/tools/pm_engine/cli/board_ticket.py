@@ -752,7 +752,7 @@ def cmd_new(home, args: argparse.Namespace) -> int:
     areas_registry.invalidate_known_prefixes_cache()
 
     print(f"created {tid} ({pm_paths._rel_to_repo(home, path)})")
-    print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint --gate` "
+    print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint --blocking` "
           "(placeholders left in the body fail lint)")
     if cluster_ledger is not None:
         # 기존 stdout 줄은 그대로 두고 생성 사실만 stderr 1줄로 고지한다(크기 1 = 현행 동작).
