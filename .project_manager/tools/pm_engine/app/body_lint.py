@@ -13,7 +13,7 @@ from typing import Any
 
 from pm_engine.domain import design_rules, markdown_text, ticket_rules
 from pm_engine.infra import fs, pm_paths, repo_coordinates, repo_files, ticket_store
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 
 
 # Unfilled `_template.md` text — its presence means the ticket is still a stub.
@@ -298,14 +298,14 @@ def _architect_round_issues(
     state = design_rules._design_state(design)
     if state not in (design_rules.DESIGN_REQUIRED, design_rules.DESIGN_DONE):
         return []
-    rounds = round_seed.load_rounds(pm_paths.tickets_dir(home), tid, ticket_text=body)
+    rounds = round_form.load_rounds(pm_paths.tickets_dir(home), tid, ticket_text=body)
     architect_rounds = [item for item in rounds if item.role == _ARCHITECT_ROLE]
     if not architect_rounds:
         return [(tid, _ARCHITECT_ROUND_KIND,
                  f"design: {state} 인데 {_ARCHITECT_ROLE} 점검 라운드가 없다 — 초안을 "
                  f"실측 대조(인용·touches·다른 열린 티켓과의 충돌·최소 수단)로 점검받고 "
                  f"본문에 반영한 뒤 승격하라")]
-    if all(round_seed.round_is_pending(item, ticket_text=body)
+    if all(round_form.round_is_pending(item, ticket_text=body)
            for item in architect_rounds):
         return [(tid, _ARCHITECT_ROUND_KIND,
                  f"{_ARCHITECT_ROLE} 점검 라운드가 빈 양식 그대로다(산출 없음) — 돌려받기 전에는 "

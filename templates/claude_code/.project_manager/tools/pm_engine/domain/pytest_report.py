@@ -10,10 +10,10 @@ import re
 # ── FULL 게이트 수집 증감 (직전 기록 대비 · 막지 않는다) ─────────────────
 # 채택자가 선언하던 수집 하한은 폐지했다 — 스위트 규모의 함수라 선언값이
 # 실측의 절반에 머물러 스위트 절반이 사라져도 통과했다(느슨한 안심). 대신 직전 회귀 기록의
-# 수집수와 이번 수집수의 증감을 회귀 줄에 함께 낸다. 변화율이 `COLLECTION_DELTA_ALERT_PCT`
+# 수집수와 이번 수집수의 증감을 회귀 줄에 함께 낸다. 변화율이 `COLLECTION_CHANGE_ALERT_PCT`
 # 이상이면 눈에 띄게 표시하되 **rc 는 바꾸지 않는다** — 적절한 변경인지는 사람이 판단한다.
 # rc5(수집 0)는 그대로 red 다(하한이 아니라 "테스트가 한 개도 안 돌았다"는 별개 사실).
-COLLECTION_DELTA_ALERT_PCT = 0.01          # 이 비율 이상이면 증감 문장에 경고 표기를 단다.
+COLLECTION_CHANGE_ALERT_PCT = 0.01          # 이 비율 이상이면 증감 문장에 경고 표기를 단다.
 
 # ── pytest 요약행 파서 (엔진 공용 seam) ────────────────────────────────────
 # 요약행은 **끝에서부터** 줄 단위로 찾는다. 캡처된 pytest 출력에는 테스트 자신이 찍은
@@ -130,7 +130,7 @@ def _pytest_summary_tail(output: str) -> str | None:
     return line[match.start():].strip() if match else None
 
 
-def collection_delta_text(collected: int | None, previous: int | None) -> str:
+def collection_change_text(collected: int | None, previous: int | None) -> str:
     """직전 회귀 기록 대비 수집수 증감 문장 — ` (직전 N · +D[ · P% ⚠])` (비교 불가면 빈 문자열).
 
     막는 판정이 아니라 표시다. 스위트가 갑자기 줄었는지(수집 경로 파손·대량 skip) 늘었는지를
@@ -138,7 +138,7 @@ def collection_delta_text(collected: int | None, previous: int | None) -> str:
 
     둘 중 하나라도 정수가 아니면(첫 실행·기록 손상·수집수 파싱 실패) 빈 문자열이다. 증감을
     지어내지 않는다. 직전이 0 이면 비율을 내지 않고 차이만 낸다(0 나눗셈 금지). 변화율이
-    `COLLECTION_DELTA_ALERT_PCT` 이상이면 비율과 경고 표기를 덧붙인다.
+    `COLLECTION_CHANGE_ALERT_PCT` 이상이면 비율과 경고 표기를 덧붙인다.
     """
     if not isinstance(collected, int) or isinstance(collected, bool):
         return ""
@@ -146,7 +146,7 @@ def collection_delta_text(collected: int | None, previous: int | None) -> str:
         return ""
     diff = collected - previous
     body = f" (직전 {previous} · {diff:+d}"
-    if previous and abs(diff) / previous >= COLLECTION_DELTA_ALERT_PCT:
+    if previous and abs(diff) / previous >= COLLECTION_CHANGE_ALERT_PCT:
         return body + f" · {abs(diff) / previous * 100:.1f}% ⚠)"
     return body + ")"
 

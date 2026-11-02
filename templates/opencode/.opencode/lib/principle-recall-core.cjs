@@ -3,7 +3,7 @@
 // 판정은 Python 원칙 recall 단일 진실이 하고, 이 모듈은 도구 이름 → `on` 매핑(`toolSignal`)과 사용자
 // 프롬프트 recall 배선만 소유한다.
 //
-// `on` 4어휘 중 shell/edit/delegate 는 일반 도구 호출 판정(git-anchor-core.cjs `createToolBoundary`)이
+// `on` 4어휘 중 shell/edit/delegate 는 일반 도구 호출 판정(git-check-core.cjs `createToolBoundary`)이
 // `toolSignal` 로 recall 입력을 만들어 `board.py hook-tool` 한 번에 함께 싣는다. prompt 축은 이미 이
 // 저장소에서 검증된 `event` 훅(ctx-guard-core.cjs 의 `message.updated` 배선)을 재사용한다 — 미검증 훅
 // 키를 새로 추가하면 플러그인 로드 자체가 깨질 위험이 있어(opencode 는 알려진 훅 키만 기대), 이미
@@ -90,7 +90,7 @@ function judgeRecall(root, on, text, sessionID, spawnSync = childProcess.spawnSy
       }
     }
   }
-  // 판정 인프라 실패는 비차단 침묵 — recall 은 통과/거부가 없는 편의 채널이라 git-anchor 의
+  // 판정 인프라 실패는 비차단 침묵 — recall 은 통과/거부가 없는 편의 채널이라 git-check 의
   // warn-on-uncertain 계약을 따르지 않는다. 실패 사유는 진단용으로만 싣는다.
   return { count: 0, keys: [], text: "", infra_error: lastError };
 }

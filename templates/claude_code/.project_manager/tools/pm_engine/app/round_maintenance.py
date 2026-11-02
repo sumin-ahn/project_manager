@@ -7,10 +7,10 @@ from pm_engine.app import board_dashboard
 from pm_engine.app import board_sync
 from pm_engine.domain import cluster_rules
 from pm_engine.infra import cluster_store
-from pm_engine.infra import delegate_ledger
+from pm_engine.infra import delegate_records
 from pm_engine.infra import pm_paths
 from pm_engine.domain import round_rules
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 import sys
 from pm_engine.infra import ticket_store
 
@@ -97,12 +97,12 @@ def _round_pending_abandon_command(home, tid: str, ordinal: int, role: str) -> s
     이 (순번, 역할)의 미회수 행 부재·경로 형태 불일치는 해소 불능으로 `None`(호출부가
     `ticket copies --uncollected` 조회 처방으로 대체한다). 장부 조회 예외는 전파한다."""
     owner = _round_pending_ledger_owner(home)
-    rows = delegate_ledger.ticket_copy_records(owner, ticket=tid, unharvested=True)
+    rows = delegate_records.ticket_copy_records(owner, ticket=tid, unharvested=True)
     match = next((row for row in rows if row.get('ordinal') == ordinal and row.get('role') == role), None)
     if match is None:
         return None
     copy_path = Path(match['copy'])
-    relative = delegate_ledger._row_ticket_relative_dir(match) / round_rules.round_filename(match['ordinal'], match['role'])
+    relative = delegate_records._row_ticket_relative_dir(match) / round_rules.round_filename(match['ordinal'], match['role'])
     rel_parts = relative.parts
     if copy_path.parts[-len(rel_parts):] != rel_parts:
         return None
@@ -118,7 +118,7 @@ def _discard_round_pending_notice(home, tid: str) -> None:
     round-dup·round-name 은 완료 게이트가 이미 다루는 축이라 여기서 재확인하지 않는다(discard
     는 그 축을 차단하지 않는다).
     """
-    pending = [item for item in round_seed.load_rounds(pm_paths.tickets_dir(home), tid) if item.pending]
+    pending = [item for item in round_form.load_rounds(pm_paths.tickets_dir(home), tid) if item.pending]
     if not pending:
         return
     first = pending[0]

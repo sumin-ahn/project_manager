@@ -72,17 +72,17 @@ def test_public_git_api_preserves_verdict_and_grant_use(topology):
     home, slot = topology
     anchor = hooks.adapter_home(home)
     assert hooks.adapter_home(str(home)) == anchor
-    assert hooks.judge_git_anchor_command(anchor, "S", str(home), "echo ok", main_thread=True)["verdict"] == "ok"
+    assert hooks.judge_git_check_command(anchor, "S", str(home), "echo ok", main_thread=True)["verdict"] == "ok"
 
-    denied = hooks.judge_git_anchor_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)
+    denied = hooks.judge_git_check_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)
     assert denied["verdict"] == "deny" and denied["code"] == git_policy.GIT_DESTRUCTIVE_DENY_CODE
     assert hooks.record_git_grants(anchor, "S", str(slot), "git 허용: git branch -D main") == [
         "git branch -D main"
     ]
-    assert hooks.judge_git_anchor_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)[
+    assert hooks.judge_git_check_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)[
         "verdict"
     ] == "warn"
-    assert hooks.judge_git_anchor_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)[
+    assert hooks.judge_git_check_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)[
         "verdict"
     ] == "deny"
     assert _grant_files(home) == []

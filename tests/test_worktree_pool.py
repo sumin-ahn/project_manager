@@ -53,10 +53,10 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 SYNC_TIMEOUT = 60
 
-# livegate fixture 의 `n` — regression.LIVEGATE_RELEASE_PIN(릴리즈 wave 케이스 수)의 미러. 이 파일은
+# livegate fixture 의 `n` — regression.LIVE_TEST_RELEASE_PIN(릴리즈 wave 케이스 수)의 미러. 이 파일은
 # 격리 원칙상 board.py 를 import 하지 않으므로(모듈 docstring) 값을 여기 둔다. 판정상 무관하다 —
 # `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은 안 보기 때문(check 채널·green 판정 무관).
-# 값 자체는 regression.LIVEGATE_RELEASE_PIN(=17·T-0278/T-0309/T-0349/T-0400/T-0397/T-0407) 과 schema 충실성 위해 맞춰 둔다(무관하나 혼란 방지).
+# 값 자체는 regression.LIVE_TEST_RELEASE_PIN(=17·T-0278/T-0309/T-0349/T-0400/T-0397/T-0407) 과 schema 충실성 위해 맞춰 둔다(무관하나 혼란 방지).
 _LIVEGATE_RELEASE_PIN = 22
 
 
@@ -4661,12 +4661,12 @@ def test_generated_hooks_do_not_depend_on_path_utilities(wp):
 def test_generated_hook_adopter_self_test_passes_without_release_marker_or_skip(wp, tmp_path):
     """release marker 없는 adopter는 PM_ALLOW만으로 자기 test_cmd green이면 결정적으로 통과."""
     adopter = _init_repo(tmp_path / "adopter-no-release")
-    assert not (adopter / "tests" / "test_release_wave.py").exists()
+    assert not (adopter / "tests" / "test_release_cluster.py").exists()
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
         "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
-        test_cmd="test ! -e tests/test_release_wave.py && printf ok > self-test-ran",
+        test_cmd="test ! -e tests/test_release_cluster.py && printf ok > self-test-ran",
     )
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
 
@@ -5947,7 +5947,7 @@ def _write_livegate(engine_root: Path, *, head: str, status: str = "pass",
 
     `board.py livegate record` 가 쓰는 것과 같은 스키마·같은 위치(board.py REPO=engine_root →
     LOCAL_DIR=engine_root/.project_manager/.local). record 는 실 LLM 이라 안 돌리고 JSON 만 직접 심어
-    훅↔check 통합을 hermetic 히 태운다(head 가 push sha 와 일치하면 green). `n` = regression.LIVEGATE_RELEASE_PIN
+    훅↔check 통합을 hermetic 히 태운다(head 가 push sha 와 일치하면 green). `n` = regression.LIVE_TEST_RELEASE_PIN
     (릴리즈 wave 케이스 수)로 스키마 충실 — 단 `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은
     안 보므로(check 채널) green 판정엔 무관하다.
     """

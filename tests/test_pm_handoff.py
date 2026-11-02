@@ -34,7 +34,7 @@ from pm_engine.infra import pool_store
 from pm_engine.infra import slot_snapshot
 from pm_engine.domain import worktree_records
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import importlib.util
 import json
@@ -1006,7 +1006,7 @@ def test_slot_missing_own_identity_does_not_absorb_legacy_untagged_entries(hf):
 
     assert "T-0001 — 오래된 완료" not in skeleton
     assert "T-0002 — 최근 완료" not in skeleton
-    assert "이 세션 박제 entry 없음" in skeleton
+    assert "이 세션 기록 entry 없음" in skeleton
 
 
 def test_slot_and_solo_exclude_other_task_tagged_entries(hf):
@@ -1040,7 +1040,7 @@ def test_handoff_skeleton_lists_only_collected_entry_headers(hf):
         log_text=_MIXED_SESSION_LOG,
         task="alpha",
     )
-    assert "- 이 세션 박제 entries:\n" in skeleton
+    assert "- 이 세션 기록 entries:\n" in skeleton
     assert "  - ## [2026-08-03] complete | T-0004 — 이번 세션 완료 (task:alpha)" in skeleton
     assert "  - ## [2026-08-04] checkpoint | (task:alpha) — manual" in skeleton
     assert "alpha 본문은 수집하지 않는다" not in skeleton
@@ -1051,7 +1051,7 @@ def test_handoff_skeleton_lists_only_collected_entry_headers(hf):
 def test_handoff_skeleton_marks_empty_session_entries(hf):
     skeleton = pm_engine.domain.handoff_text.build_handoff_log_skeleton(1, date="2026-08-05")
     # 0건이면 경계 표기 없이 없음 문구만 — 빈 목록의 "최근 N건" 서술은 무의미.
-    assert "- 이 세션 박제 entries: (이 세션 박제 entry 없음)" in skeleton
+    assert "- 이 세션 기록 entries: (이 세션 기록 entry 없음)" in skeleton
     assert "경계 미해소" not in skeleton
 
 
@@ -1886,7 +1886,7 @@ def test_same_session_update_preserves_crlf_mixed_pm_body_bytes(hf, tmp_path):
     original = (
         "## [2026-08-07] handoff | PM 7차 → 다음 PM 세션\r\n"
         "\r\n"
-        "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\r\n"
+        "- 이 세션 기록 entries: (이 세션 기록 entry 없음)\r\n"
         "- 메타 학습: 사람이 쓴 한글 본문\r\n"
         "- pending user intent: 혼합 개행은 보존\n"
         "- 회귀/incident: 123 passed / green\r\n"
@@ -1916,7 +1916,7 @@ def test_same_session_update_preserves_pure_crlf_machine_boundary(hf, tmp_path):
     original = (
         "## [2026-08-07] handoff | PM 7차 → 다음 PM 세션\r\n"
         "\r\n"
-        "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\r\n"
+        "- 이 세션 기록 entries: (이 세션 기록 entry 없음)\r\n"
         "- 메타 학습: 순수 CRLF 본문\r\n"
         "- pending user intent: 보존\r\n"
         "- 회귀/incident: green\r\n"
@@ -1997,7 +1997,7 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tm
     assert boot1.returncode == 0, boot1.stdout + boot1.stderr
     # fresh import 직후의 adopter 트리는 **커밋 0**(scaffold 전량 untracked)이라 [0/7]
     # dirty-tree 게이트가 정당하게 차단한다. 이 테스트의 대상은 handoff 재실행 멱등성이므로
-    # 사유를 남겨 통과시킨다(게이트 자체는 test_pm_handoff_dirty_gate.py 가 덮는다).
+    # 사유를 남겨 통과시킨다(게이트 자체는 test_pm_handoff_dirty_check.py 가 덮는다).
     ack = [
         "--ack-dirty", "fresh import scaffold 미커밋 — 멱등성 e2e",
         "--user-ack", "mytask",
@@ -2041,7 +2041,7 @@ def test_malformed_last_handoff_number_falls_back_to_append_with_loud_warning(
     handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), monkeypatch=monkeypatch)
     handoff._log_file.write_text(
         "## [2026-08-07] handoff | PM seven차 (task:mytask) → 다음 PM 세션\n\n"
-        "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\n"
+        "- 이 세션 기록 entries: (이 세션 기록 entry 없음)\n"
         "- 메타 학습: 기존 본문\n",
         encoding="utf-8",
     )
@@ -2429,7 +2429,7 @@ def test_task_regression_red_slot_blocks_handoff(hf, monkeypatch, tmp_path, caps
 # 해소가 areas.md prefix 칼럼만 보면(현행 `repo add` 는 prefix 를 빈 값으로 등록한다) 그 형상
 # 에서 하드코딩 pytest 로 폴백해 회귀가 **항상 red** 로 오판되고 핸드오프가 통째로 막혔다.
 # 여기서는 핸드오프 run() 이 해소된 게이트로 판정하는지(green=exit 0·red=rc≠0)를 본다.
-# 층별 우선순위·두 도구 파리티는 `test_regression_gate_resolution.py` 소유.
+# 층별 우선순위·두 도구 파리티는 `test_regression_check_resolution.py` 소유.
 
 _ADOPTER_GATE_CMD = "env PYTHONPATH=src .venv/bin/python -m viewer bind"
 

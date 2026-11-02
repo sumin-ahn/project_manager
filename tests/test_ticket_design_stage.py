@@ -26,11 +26,11 @@
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`TICKETS_DIR`·`TEMPLATE_FILE` 등)은 import 시점에
 실 repo 절대경로로 굳는다 — tmp 프로젝트로 monkeypatch 재지정해 실 board 를 읽거나 쓰지 않는다
 (test_board_identity.py 의 hermetic 패턴 동형). board-git e2e 는 실 git + bare remote 를 tmp 에
-세우는 test_board_promote_fill_gate.py 패턴을 따르고, git 부재 환경에선 skip 한다.
+세우는 test_board_promote_fill_check.py 패턴을 따르고, git 부재 환경에선 skip 한다.
 """
 from __future__ import annotations
 
-from pm_engine.app import completion_gate
+from pm_engine.app import completion_check
 from pm_engine.cli import board_cmd
 from pm_engine.cli import board_ticket
 
@@ -613,8 +613,8 @@ def test_subtitled_headings_are_sliced_by_the_same_rule():
 
     존재 축 강화가 DoD 슬라이서를 함께 조여 실 템플릿의 DoD 가 통째로 안 보이면 안 된다."""
     body = _body()
-    assert completion_gate._dod_section_texts(body)
-    assert completion_gate._dod_open_items(body), "DoD 미체크 항목을 못 봤다 — 슬라이서 회귀"
+    assert completion_check._dod_section_texts(body)
+    assert completion_check._dod_open_items(body), "DoD 미체크 항목을 못 봤다 — 슬라이서 회귀"
 
 
 # ════════════════════════════════════════════════════════════════════════

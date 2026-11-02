@@ -181,7 +181,7 @@ def _argv(prompt: Path, cwd: Path, out_dir: Path, *extra: str,
 # ── 장부 시드 (실 엔진 경로로 기록 — 대역 장부를 만들지 않는다) ────────────────────
 
 def _recent_seed_time() -> datetime.datetime:
-    """prune 완료/미마감 창(raw_output.RAW_LEDGER_COMPLETED_DAYS·UNFINISHED_DAYS) 안에 항상
+    """prune 완료/미마감 창(raw_output.RAW_RECORD_COMPLETED_DAYS·UNFINISHED_DAYS) 안에 항상
     머무는 시드 기준 시각(고정 달력 날짜 금지)."""
     return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
 
@@ -191,7 +191,7 @@ def _seed_record(ledger_path: Path, *, role: str = _RESUME_ROLE,
                  surface: str = "delegate", harness: str = "claude",
                  finish: bool = True, extra: dict | None = None,
                  start_extra: dict | None = None) -> str:
-    # 장부 prune(raw_output.RAW_LEDGER_COMPLETED_DAYS·UNFINISHED_DAYS) 창 안에 항상 머무는 상대
+    # 장부 prune(raw_output.RAW_RECORD_COMPLETED_DAYS·UNFINISHED_DAYS) 창 안에 항상 머무는 상대
     # 시각. 고정 달력 날짜를 쓰면 그 날짜 + 보존일수가 지나는 순간 시드가 prune 되는 시간폭탄이 된다.
     started = started or _recent_seed_time()
     record_id = raw_output.start_raw_record(
@@ -519,7 +519,7 @@ def test_retention_window_bounds_resume_availability(pd, tmp_path):
     """장부 완료 보존 창 밖 레코드는 정리돼 후보에서 사라진다 — 창 밖 재위임은 자연 fresh."""
     ledger_path = tmp_path / "raw_outputs.json"
     now = datetime.datetime.now(datetime.timezone.utc)
-    stale = now - datetime.timedelta(days=raw_output.RAW_LEDGER_COMPLETED_DAYS + 1)
+    stale = now - datetime.timedelta(days=raw_output.RAW_RECORD_COMPLETED_DAYS + 1)
     _seed_record(ledger_path, started=stale,
                  start_extra={"ticket": TICKET_ID}, extra={"session_id": SESSION_ID})
     # 다음 기록이 정리 규칙을 태운다(장부는 쓰기 시점에 정리된다).
@@ -1268,12 +1268,12 @@ def test_execute_attempt_refuses_resume_id_on_unsupported_harness(pd, tmp_path):
 def test_delta_payload_consumes_only_structured_fields(pd):
     """조립 입력은 장부 필드 + 호출자 원문뿐 — 해소 주장은 파싱하지 않고 그대로 싣는다."""
     claim = "**must-fix:** 이 문장은 엔진이 해석하면 안 된다"
-    payload = delegate_run_rules.build_resume_delta_payload(
+    payload = delegate_run_rules.build_resume_change_payload(
         must_fix_items=["항목 1", "  ", "항목 2"], base_rev="rev-1", task_text=claim)
     assert "1. 항목 1" in payload and "2. 항목 2" in payload   # 빈 항목은 버린다
     assert payload.endswith(claim)                            # 원문 그대로(불투명)
     assert "rev-1" in payload
-    missing = delegate_run_rules.build_resume_delta_payload(
+    missing = delegate_run_rules.build_resume_change_payload(
         must_fix_items=(), base_rev=None, task_text="본문")
     assert "- 기준 rev: 기록 없음" in missing
 

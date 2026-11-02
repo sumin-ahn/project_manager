@@ -28,7 +28,7 @@ import pm_engine.cli.handoff
 import pm_engine.domain.handoff_text
 import pm_engine.infra.handoff_git
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import importlib.util
 import shutil

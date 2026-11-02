@@ -12,7 +12,7 @@ from typing import Any, NamedTuple
 
 
 # raw git mutation 가드도 board dispatch의 mutation 분류와 같은 원칙(한 표 → 모든 소비처)을 쓴다.
-# 하네스별 훅은 이 표를 복제하지 않고 ``judge_git_anchor``/``judge_git_anchor_command``만 호출한다.
+# 하네스별 훅은 이 표를 복제하지 않고 ``judge_git_check``/``judge_git_check_command``만 호출한다.
 _GIT_MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "add", "stage", "commit", "push", "checkout", "restore", "reset",
     "rm", "mv", "clean", "apply", "stash", "branch", "worktree", "switch",

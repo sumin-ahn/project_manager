@@ -510,7 +510,7 @@ def principle_recall_rearm_envelope(payload: dict, root: Path) -> dict:
     PostCompact 는 이미 배선된 entrypoint 이벤트라 이 항목 추가는 config 변경이 필요 없다."""
     from pm_engine.cli import hooks
 
-    hooks.rearm_principles(hooks.adapter_home(root), session=_hook_session_id(payload))
+    hooks.reset_principles(hooks.adapter_home(root), session=_hook_session_id(payload))
     return {}
 
 
@@ -674,7 +674,7 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
     CodexHookFeature(
         # raw git cwd-anchor 가드가 claude_code·opencode 두 타깃엔 배선돼 있었는데 codex 엔
         #   없었다(도그푸딩 사각). 판정은 새로 만들지 않고 세 타깃이 공유하는
-        #   `pm_engine.cli.hooks.judge_git_anchor_command` 를 그대로 부른다(claude `pm_orch_claude.py
+        #   `pm_engine.cli.hooks.judge_git_check_command` 를 그대로 부른다(claude `pm_orch_claude.py
         #   git_anchor_hook_evaluate` 와 동형). git-anchor 엔 delegate-channel 처럼 부를 별도
         #   엔진 파일이 없어 `{self}` 로 이 디스패처가 자기 자신을 다시 부른다.
         #   파일 쓰기 도구 apply_patch 도 같은 판정(슬롯 쓰기 주인)을 받는다.
@@ -1073,7 +1073,7 @@ def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int
 
 
 # ── git-anchor 훅 축 (claude `pm_orch_claude.py --git-anchor-hook` 대칭) ──────────────────────
-# raw git cwd-anchor 판정은 세 하네스가 공유하는 단일 진실 `pm_engine.cli.hooks.judge_git_anchor_command` 다
+# raw git cwd-anchor 판정은 세 하네스가 공유하는 단일 진실 `pm_engine.cli.hooks.judge_git_check_command` 다
 #   (새 판정 로직 없음). 이 절은 codex PreToolUse(Bash) payload 를 그 판정에 배선하고 verdict 를
 #   codex 엔벨로프로 옮기는 자리다 — `.codex/hooks.json` 은 여전히 `--hook-dispatch PreToolUse`
 #   만 알고, 이 기능은 위 `CODEX_HOOK_FEATURES` registry 에 자기 자신을 다시 부르는 항목으로만
@@ -1085,7 +1085,7 @@ GIT_ANCHOR_PATCH_TOOL = "apply_patch"
 
 
 def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
-    """codex PreToolUse payload 를 중앙 판정 seam 에 배선한다 — Bash 는 `judge_git_anchor_command`,
+    """codex PreToolUse payload 를 중앙 판정 seam 에 배선한다 — Bash 는 `judge_git_check_command`,
     apply_patch 는 `judge_tool_input`(슬롯 쓰기 주인·허용 위조). 세션 ID 는 payload `session_id` 다.
     서브에이전트 발화(`hook_is_subagent`)는 `main_thread=False` 로 판정받는다.
 
@@ -1136,7 +1136,7 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
         # 셸 명령 원문은 거르지 않고 전부 엔진 판정에 넘긴다 — 판정 대상인지는 엔진이 정한다.
         from pm_engine.cli import hooks
 
-        judgment = hooks.judge_git_anchor_command(
+        judgment = hooks.judge_git_check_command(
             hooks.adapter_home(root), session, anchor, command, main_thread=not hook_is_subagent(payload),
         )
     verdict = judgment.get("verdict")

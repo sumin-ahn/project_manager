@@ -154,11 +154,6 @@ PM_REVIEW_CONCRETE_FIX_CONTRACT_RULE = (
     _PM_REVIEW_CONCRETE_FIX_VALUE_RULE + " " + PM_REVIEW_FIX_TEST_RULE
 )
 
-# 이 문구를 바꾸기 전에 예약된 review seed도 무편집 상태로 계속 읽어야 한다. 새 항목은
-# 문장을 바꿀 때만 맨 앞에 덧붙인다(CONFIRM scope 문구의 세대 호환과 같은 계약).
-LEGACY_PM_REVIEW_CONCRETE_FIX_CONTRACT_RULES: tuple[str, ...] = (
-    _PM_REVIEW_CONCRETE_FIX_VALUE_RULE,
-)
 PM_REVIEW_VERIFY_PAYLOAD_KEYS: tuple[str, ...] = ("version", "verifications")
 PM_REVIEW_VERIFY_ROW_KEYS: tuple[str, ...] = (
     "id", "machine_verifiable", "command", "expected", "before", "reason",
@@ -257,15 +252,6 @@ CONFIRM_ROUND_SCOPE_RULE = (
     "`findings` 에는 신규 ID 만 쓴다 — 같은 ID 를 양쪽에 실으면 회수가 그 라운드를 거부한다."
 )
 
-# 이 문구를 바꾸기 **전에** 예약돼 아직 회수되지 않은 확인 라운드 시드는 board 에 옛 문장으로
-# 남아 있다. 무편집 판정(`ticket_round_body_is_pending`)이 현재 문구만 대조하면 그 라운드가
-# "산출 있음" 으로 뒤집혀 자리표시자 블록이 실 선언으로 읽히고 티켓 판정 표면을 막는다 —
-# 업그레이드 창을 닫는 대조 후보다. 새 항목은 **문장을 바꿀 때만** 맨 앞에 덧붙인다.
-LEGACY_CONFIRM_ROUND_SCOPE_RULES = (
-    "이 라운드는 직전 must-fix의 해소 확인 전용이다 — 신규 탐색은 그 fix diff로 제한하고, "
-    "신규 발견은 `NEW`로만 분리해 보고한다.",
-)
-
 # 다음 finding ID 안내 — 시드 주석과 사본 프리앰블이 같은 문장 하나를 쓴다(값 출처는
 # `next_review_finding_id` 단일). 추가 리뷰어 채널이 프롬프트 산문으로 싣는 규칙과 같은 축이다.
 NEXT_FINDING_ID_RULE = (
@@ -327,7 +313,7 @@ class PMReviewError(delegate_errors.DelegateError):
     `channels` 는 "pending" 코드에서만 채워지는 구조화 부가 데이터다 — 이 거부가 지목한
     (reviewer_role, ordinal) 쌍 전체(리뷰 라운드 결정). 처방 문구(`_pm_review_prescription`)가
     문자열을 재파싱하지 않고 이 값으로 실행 가능한 `--ordinal`/`--reviewer-role` 커맨드를
-    바로 조립한다. `round_seed._render_round_seed_body` 를 건너면 `str(exc)` 로 문자열화되며
+    바로 조립한다. `round_form._render_round_seed_body` 를 건너면 `str(exc)` 로 문자열화되며
     이 구조는 사라진다 — 그 전(`RoundsError` 로 옮기기 전)에서만 유효하다."""
 
     def __init__(
@@ -343,7 +329,7 @@ class PMReviewError(delegate_errors.DelegateError):
 # 뒤 dev 태만처럼 표면화된다. 그래서 이 두 코드는 강등이 아니라 **거부**다. 범위를 더 넓히지
 # 않는 근거는 실측이다 — 전 코드 거부는 기존 테스트 6건이 red 이고(대부분 `malformed` 리뷰 산출),
 # 이 둘로 좁히면 그 red 가 사라진다. `malformed` 는 리뷰 산출 결함이라 회수 시점이 담당한다.
-PM_REVIEW_SEED_BLOCKING_CODES: frozenset[str] = frozenset(
+PM_REVIEW_FORM_BLOCKING_CODES: frozenset[str] = frozenset(
     {"pending", "decision-required"}
 )
 

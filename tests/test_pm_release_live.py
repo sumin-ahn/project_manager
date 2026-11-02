@@ -4,12 +4,12 @@
 `pm-release` 스킬(T-0349·SKILL.md/opencode command)은 **LLM-facing 프롬프트**라 backbone 기계
 테스트로는 미검증이다(스킬=프롬프트·[[ADR-0050]]·[[harness-test-vs-machine-test]]). 이 파일이 그
 갭을 릴리즈 라이브 tier 에서 메운다 — fresh import 홈에 **합성 green 릴리즈 wave**(N==그 홈 board.py
-`LIVEGATE_RELEASE_PIN` 개의 통과 `@release` 케이스)를 심고, 스킬을 유일 컨텍스트로 준 실 LLM
+`LIVE_TEST_RELEASE_PIN` 개의 통과 `@release` 케이스)를 심고, 스킬을 유일 컨텍스트로 준 실 LLM
 2하네스(claude + opencode/출하 모델)에 릴리즈 pre-push 준비
 시나리오를 시켜 판정한다:
 
   1. **engagement + green(비공허·강판정)** — LLM 이 스킬 step 2(livegate record)를 실제로 실행해
-     `livegate.json` 을 **green**(`status==pass` · 수집 `n==LIVEGATE_RELEASE_PIN` · `rc==0`)으로
+     `livegate.json` 을 **green**(`status==pass` · 수집 `n==LIVE_TEST_RELEASE_PIN` · `rc==0`)으로
      남긴다. ⚠ `board.py livegate record` 는 **실패해도** `status:fail` 파일을 쓰므로(codex R1)
      *존재만* 보면 false-green — 그래서 파일 존재가 아니라 **green 3조건**을 단언한다. 게다가 합성
      wave 는 실 release 테스트처럼 **`PM_ORCH_LIVE_RELEASE` env-gated**(codex R3)라, LLM 이 스킬 핵심
@@ -87,8 +87,8 @@ _LIVEGATE_JSON_REL = Path(".project_manager") / ".local" / "live-test.json"
 
 # 이 파일 release 라이브 케이스 수(claude+opencode) — 마커 소실/개명 시 게이트 selection 에서 조용히
 # 빠지는 것 방어(pin·아래 `test_release_markers_pinned`). 라이브를 의도적으로 늘리면 함께 갱신.
-# ⚠ 이 파일을 test_release_wave `_RELEASE_TEST_FILES` + 전역 pin(regression.LIVEGATE_RELEASE_PIN·
-#   _EXPECTED_RELEASE_TESTS·test_board_livegate·test_worktree_pool·templates/*/board.py)에 등재/합산
+# ⚠ 이 파일을 test_release_cluster `_RELEASE_TEST_FILES` + 전역 pin(regression.LIVE_TEST_RELEASE_PIN·
+#   _EXPECTED_RELEASE_TESTS·test_board_live_test·test_worktree_pool·templates/*/board.py)에 등재/합산
 #   하는 커플드-pin 갱신은 orchestrator 가 wave 종료 시 1회 수행한다 — 그 pin 파일들은 여기서 건드리지
 #   않는다(touches 밖 공유 상수·병렬 wave clobber 회피·T-0344 pair-pin 과 동형).
 _EXPECTED_RELEASE_TESTS = 2
@@ -100,7 +100,7 @@ _GIT = shutil.which("git")
 def _load_home_regression(home: Path):
     """fixture 홈 엔진의 `pm_engine/app/regression.py` 를 로드한다 — livegate 를 실제로 돌리는 그 엔진의 상수를 읽는다.
 
-    `LIVEGATE_RELEASE_PIN`(수집 게이트 pin)을 **하드코딩 14 대신** 이 모듈에서 읽어 미래-정합
+    `LIVE_TEST_RELEASE_PIN`(수집 게이트 pin)을 **하드코딩 14 대신** 이 모듈에서 읽어 미래-정합
     (pin 이 바뀌어도 fixture/단언이 자동 추종·codex must-fix). 워크트리 canonical 이 아니라 *홈* 엔진
     을 읽는 이유: livegate record 를 실행하는 건 홈의 board 이고, orchestrator 가 워크트리/템플릿 pin 을
     동시 갱신 중이어도 홈은 import 시점 템플릿을 반영하므로 홈 기준이 자기-정합이다.
@@ -113,8 +113,8 @@ def _load_home_regression(home: Path):
 
 
 def _home_livegate_pin(home: Path) -> int:
-    """홈 엔진 `regression.LIVEGATE_RELEASE_PIN`(livegate green 에 필요한 수집 케이스 수)."""
-    return int(_load_home_regression(home).LIVEGATE_RELEASE_PIN)
+    """홈 엔진 `regression.LIVE_TEST_RELEASE_PIN`(livegate green 에 필요한 수집 케이스 수)."""
+    return int(_load_home_regression(home).LIVE_TEST_RELEASE_PIN)
 
 
 # ── fixture (fresh import 홈 + 합성 green 릴리즈 wave·hermetic·원격 없음=비가역 차단) ──
@@ -123,7 +123,7 @@ def _setup_home(tmp_path: Path, harness: str) -> Path:
 
     `_import_adopter` 로 harness 홈을 import 한다 — pm_import 는 커밋/원격 없이 `.git`+회귀훅만
     심으므로 홈엔 **git remote 가 없다**(비가역 push 도달 불가·아래 always-run 가드로 고정). 그 위에
-    홈 엔진 `regression.LIVEGATE_RELEASE_PIN` 개의 **통과 `@release` 케이스**(+ 마커 등록 `pytest.ini`)를
+    홈 엔진 `regression.LIVE_TEST_RELEASE_PIN` 개의 **통과 `@release` 케이스**(+ 마커 등록 `pytest.ini`)를
     심어, `board.py livegate record`(=`pytest -m release`)가 수집 N==pin 으로 **genuine green** 을
     찍게 한다 — 이 홈에서 livegate 를 옳게 부르면 green, 미실행/오호출이면 not-green 이라 강판정이
     비공허해진다. 심는 wave 는 로컬 합성이라 실 라이브 wave(과금 subprocess)를 돌리지 않는다.
@@ -801,9 +801,9 @@ def test_release_markers_pinned():
 
     `pytest -m release` 는 마커로 라이브 서브셋을 고른다. 데코레이터 삭제/개명으로 마커가 빠지면 그
     테스트는 조용히 선택에서 빠지고 게이트가 그 부재를 못 본다(pytest strict-marker 는 *오타* 만 잡음).
-    이 파일 스코프로 release 마커 함수 수를 고정한다(test_release_wave `test_release_marker_count_is_
-    pinned`·pm_worktree_live 동형). ⚠ 이 파일을 test_release_wave `_RELEASE_TEST_FILES` 합산 pin +
-    전역 pin(regression.LIVEGATE_RELEASE_PIN 등)에 등재하는 커플드-pin 갱신은 orchestrator 가 wave 종료 시
+    이 파일 스코프로 release 마커 함수 수를 고정한다(test_release_cluster `test_release_marker_count_is_
+    pinned`·pm_worktree_live 동형). ⚠ 이 파일을 test_release_cluster `_RELEASE_TEST_FILES` 합산 pin +
+    전역 pin(regression.LIVE_TEST_RELEASE_PIN 등)에 등재하는 커플드-pin 갱신은 orchestrator 가 wave 종료 시
     수행한다(touches 밖 공유 상수). 라이브를 의도적으로 늘리면 `_EXPECTED_RELEASE_TESTS` 를 함께 갱신.
     """
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))

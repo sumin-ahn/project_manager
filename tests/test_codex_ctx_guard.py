@@ -301,7 +301,7 @@ def test_hooks_warning_is_inline_and_only_calls_engine_script():
             handler = getattr(feature, "handler", None)
             assert handler is not None, f"argv 도 handler 도 없는 기능: {feature}"
             source = inspect.getsource(handler)
-            assert "hooks.rearm_principles(" in source, (
+            assert "hooks.reset_principles(" in source, (
                 f"in-process handler 가 엔진 공개 진입을 쓰지 않음: {feature}")
             continue
         assert feature.argv[0] == "{py}", feature

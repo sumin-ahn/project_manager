@@ -57,8 +57,8 @@ def _claim_compaction(home, session: str, boundary: str | None) -> tuple[bool, s
     if not compaction_store.claim_ctx_marker(home, session, kind):
         return False, None, None
     try:
-        compaction_store.rearm_ctx_cycle(home, session)
-        principle_store.rearm_seen_marker(home, session)
+        compaction_store.reset_ctx_cycle(home, session)
+        principle_store.reset_seen_marker(home, session)
     except BaseException:
         compaction_store.ctx_marker_path(home, session, kind).unlink()
         raise
@@ -70,7 +70,7 @@ def _band_guidance(home, session: str, tokens: int, view: dict, budget: dict) ->
     level = view["level"]
     if level == "ok":
         if tokens > 0:
-            compaction_store.rearm_ctx_cycle(home, session)
+            compaction_store.reset_ctx_cycle(home, session)
         return None
     band = _BAND_GUIDANCE[level]
     guidance = ctx_recovery.build_ctx_guard_guidance(

@@ -795,3 +795,22 @@ def test_cluster_skill_rename_retires_old_skill_files_in_all_manifests():
     for root in (REPO, *TEMPLATE_ROOTS.values()):
         for old in RETIRED_CLUSTER_SKILL_OLD:
             assert not (root / old).exists(), (root, old)
+
+
+RETIRED_GIT_CHECK_PLUGIN_NEW = ".project_manager/tools/pm_engine/cli/hooks.py"
+RETIRED_GIT_CHECK_PLUGIN_OLD = (".opencode/plugins/git-anchor.js", ".opencode/lib/git-anchor-core.cjs")
+
+
+def test_git_check_plugin_rename_retires_old_plugin_files_in_all_manifests():
+    """OpenCode git 명령 검사 플러그인의 옛 두 파일은 4 manifest 모두 퇴역 지시로만 남고 출하 트리에 없다."""
+    for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
+        declared = retired_paths.parse_retired_path_directives(manifest)
+        for old in RETIRED_GIT_CHECK_PLUGIN_OLD:
+            assert (old, RETIRED_GIT_CHECK_PLUGIN_NEW) in declared, (manifest, old)
+            assert old not in _manifest_path_set(manifest), manifest
+        retired_paths.validated_retired_path_directives(REPO, [manifest])
+    for root in (REPO, *TEMPLATE_ROOTS.values()):
+        for old in RETIRED_GIT_CHECK_PLUGIN_OLD:
+            assert not (root / old).exists(), (root, old)
+    assert (TEMPLATE_ROOTS["opencode"] / ".opencode/plugins/git-check.js").is_file()
+    assert (TEMPLATE_ROOTS["opencode"] / ".opencode/lib/git-check-core.cjs").is_file()

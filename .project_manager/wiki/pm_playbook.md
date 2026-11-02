@@ -348,7 +348,7 @@ handoff 는 board/git/log/ADR 에서 파생 가능한 상태를 재열거하지 
 
 **비파생 salient 레이어와 자동 기록(반드시 포함):**
 
-- **(a) `이 세션 박제 entries`** — `/pm-handoff`가 직전 자기 handoff 뒤의 complete/checkpoint 헤더를 자동 나열한다. 자기 경계가 없으면 직전 임의 handoff를 경계로 삼고, handoff가 전혀 없으면 `(경계 미해소 — 최근 10건)`과 함께 최근 10건만 싣는다.
+- **(a) `이 세션 기록 entries`** — `/pm-handoff`가 직전 자기 handoff 뒤의 complete/checkpoint 헤더를 자동 나열한다. 자기 경계가 없으면 직전 임의 handoff를 경계로 삼고, handoff가 전혀 없으면 `(경계 미해소 — 최근 10건)`과 함께 최근 10건만 싣는다.
 - **(b) 메타 학습** — ticket 상태에서 도출 불가한 교훈.
 - **(c) 다음 intent**:
   - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
@@ -385,7 +385,7 @@ upstream 엔진 개선을 당기는 저빈도 유지보수. **메인테이너가
 /pm-bootstrap
 ```
 
-인계 본문은 log handoff entry 가 단일 진실이다. `/pm-bootstrap` 이 `이 세션 박제 entries`·메타 학습·pending intent·회귀/incident를 dump 하므로 프롬프트에 옮겨 적지 않는다.
+인계 본문은 log handoff entry 가 단일 진실이다. `/pm-bootstrap` 이 `이 세션 기록 entries`·메타 학습·pending intent·회귀/incident를 dump 하므로 프롬프트에 옮겨 적지 않는다.
 
 ---
 

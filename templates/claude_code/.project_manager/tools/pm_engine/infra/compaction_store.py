@@ -12,7 +12,7 @@ import uuid
 
 
 # ctx 밴드 marker 종류 — 사이클마다 밴드별로 한 번 선점한다(서로 독립).
-CTX_BAND_MARKER_KINDS = ("warn", "warn2", "final")
+CTX_LEVEL_MARKER_KINDS = ("warn", "warn2", "final")
 # 압축 경계 처리 marker 종류의 접두. 뒤에 경계 ID 의 파일명 안전 키가 붙는다.
 CTX_COMPACTION_MARKER_PREFIX = "compact-"
 
@@ -23,7 +23,7 @@ def _safe_marker_key(value: str) -> str:
 
 def _ctx_marker_kind(kind: str) -> str:
     """ctx marker 종류를 파일명 접미로 — 밴드 셋 또는 ``compact-<경계>``(경계는 안전 키로)."""
-    if kind in CTX_BAND_MARKER_KINDS:
+    if kind in CTX_LEVEL_MARKER_KINDS:
         return kind
     boundary = kind[len(CTX_COMPACTION_MARKER_PREFIX):] if kind.startswith(CTX_COMPACTION_MARKER_PREFIX) else ""
     if not boundary:
@@ -52,9 +52,9 @@ def claim_ctx_marker(home, session: str, kind: str) -> bool:
     return True
 
 
-def rearm_ctx_cycle(home, session: str) -> None:
+def reset_ctx_cycle(home, session: str) -> None:
     """세션의 밴드 marker 셋을 지워 다음 상승 사이클을 연다. 삭제 오류는 그대로 올린다."""
-    for kind in CTX_BAND_MARKER_KINDS:
+    for kind in CTX_LEVEL_MARKER_KINDS:
         ctx_marker_path(home, session, kind).unlink(missing_ok=True)
 
 

@@ -22,7 +22,7 @@ REPO = Path(__file__).resolve().parents[1]
 OPEN_LIB = REPO / "templates" / "opencode" / ".opencode" / "lib"
 OPEN_CORE = OPEN_LIB / "delegate-channel-core.cjs"
 OPEN_WARNING = OPEN_LIB / "warning-channel-core.cjs"
-OPEN_GIT_ANCHOR = OPEN_LIB / "git-anchor-core.cjs"
+OPEN_GIT_ANCHOR = OPEN_LIB / "git-check-core.cjs"
 OPEN_PLUGIN = (
     REPO / "templates" / "opencode" / ".opencode" / "plugins" / "delegate-channel.js"
 )

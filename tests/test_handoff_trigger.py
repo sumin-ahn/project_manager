@@ -25,7 +25,7 @@ from pm_engine.domain import session_history
 from pm_engine.cli import board_init
 
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import importlib.util
 from pathlib import Path
@@ -125,7 +125,7 @@ def test_interactive_skeleton_lists_session_entries(handoff):
     sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(
         session_num=9, date="2026-06-14", log_text=log_text,
     )
-    assert "- 이 세션 박제 entries:\n" in sk
+    assert "- 이 세션 기록 entries:\n" in sk
     assert "  - ## [2026-06-14] complete | T-0547 — 로그 entry 박제" in sk
     assert "  - ## [2026-06-14] checkpoint — compaction 전" in sk
     assert "본문은 목록에 복제하지 않는다." not in sk
@@ -134,7 +134,7 @@ def test_interactive_skeleton_lists_session_entries(handoff):
 def test_interactive_skeleton_marks_no_session_entries(handoff):
     """수집할 박제 entry가 없으면 빈 자동 목록을 명시하고 pending intent는 손-채움으로 둔다."""
     sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(session_num=9, date="2026-06-14")
-    assert "- 이 세션 박제 entries: (이 세션 박제 entry 없음)" in sk
+    assert "- 이 세션 기록 entries: (이 세션 기록 entry 없음)" in sk
     assert f"- pending user intent: {pm_engine.domain.handoff_text.PENDING_INTENT_PLACEHOLDER}" in sk
 
 
@@ -209,7 +209,7 @@ def test_interactive_skeleton_lean_schema(handoff):
     """대화형 handoff skeleton은 자동 목록 + 손-채움 3줄의 신 스키마이고 구 필드는 없다."""
     sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(session_num=9, date="2026-06-14")
     assert sk.startswith("## [2026-06-14] handoff | PM 9차 → 다음 PM 세션")
-    assert "- 이 세션 박제 entries:" in sk
+    assert "- 이 세션 기록 entries:" in sk
     assert "- 메타 학습:" in sk
     assert "- pending user intent:" in sk
     assert "- 회귀/incident:" in sk
@@ -253,7 +253,7 @@ def test_handoff_prompt_template_is_lean(handoff, tmp_path):
     assert template is not None, '프롬프트 템플릿 앵커/코드블록 추출 실패'
     assert '/pm-bootstrap' in template
     assert '당신은' not in template, '2인칭 역할문구 잔존 — bare(T-0193)와 모순'
-    for label in ('이 세션 박제 entries', '메타 학습', 'pending user intent', '회귀/incident'):
+    for label in ('이 세션 기록 entries', '메타 학습', 'pending user intent', '회귀/incident'):
         assert label not in template, f"프롬프트에 인계 라벨 '{label}' 재기술 사족 잔존 (트리거만·T-0180)"
     assert '5~10개 불릿' not in template, "옛 '5~10개 불릿' 재열거 유도 잔존"
     assert 'board 상태 / 진행 중 작업' not in template, "옛 'board 상태' 재열거 유도 잔존"

@@ -142,7 +142,7 @@ def _inflight_capped_line(*, prefix: str, content: str, suffix: str) -> str:
 
 
 def _unharvested_copies_line(rows: list[dict]) -> str:
-    """``delegate_ledger.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
+    """``delegate_records.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
     prefix = "- 돌려받지 않은 라운드 준비 "
     suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --uncollected`"
     if not rows:

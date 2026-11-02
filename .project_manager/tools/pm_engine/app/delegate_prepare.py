@@ -12,7 +12,7 @@ import datetime
 from pm_engine.infra import delegate_copy_git
 from pm_engine.infra import delegate_copy_store
 from pm_engine.domain import delegate_errors
-from pm_engine.infra import delegate_ledger
+from pm_engine.infra import delegate_records
 from pm_engine.domain import delegate_rounds
 from pm_engine.infra import fs
 from pm_engine.domain import markdown_text
@@ -24,7 +24,7 @@ from pm_engine.domain import review_form
 from pm_engine.domain import review_state
 from pm_engine.app import round_maintenance
 from pm_engine.domain import round_rules
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 from pm_engine.infra import round_store
 import sys
 from pm_engine.infra import ticket_store
@@ -37,7 +37,7 @@ def _ticket_round_seed(
     today: str, rounds: Sequence = (),
 ) -> str:
     """이 라운드 파일의 시드 bytes — 렌더 규약은 공용 seam 이 소유한다."""
-    return round_seed.render_round_seed(
+    return round_form.render_round_form(
         role, ticket_text, today=today, previous_round=previous_round, rounds=rounds,
     )
 
@@ -112,7 +112,7 @@ def prepare_cluster_copy(
     아니고, 대신 "그 순번이 있고 역할이 같다"를 예약 seam 이 판정한다.
     요청이 없으면 종전대로 새 순번을 채번한다(암묵 재개방 없음).
     """
-    if role not in delegate_ledger.TICKET_COPY_ROLES - {review_form.ADDITIONAL_REVIEWER_ROLE, "researcher"}:
+    if role not in delegate_records.TICKET_COPY_ROLES - {review_form.ADDITIONAL_REVIEWER_ROLE, "researcher"}:
         raise delegate_errors.DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
     pm_home_root = home.local_dir.parent.parent.resolve()
     cwd = Path(cwd).resolve()
@@ -123,7 +123,7 @@ def prepare_cluster_copy(
         if role in delegate_rounds._BASE_REV_ROLES else ""
     )
     cluster = str(cluster or "").strip()
-    if not delegate_ledger._is_valid_cluster_id(cluster):
+    if not delegate_records._is_valid_cluster_id(cluster):
         raise delegate_errors.DelegateError(f"클러스터 id 형식이 아닙니다: {cluster!r}")
     members = tuple(tickets) if tickets else cluster_store.cluster_live_members(home, cluster)
     if not members:
@@ -154,7 +154,7 @@ def prepare_cluster_copy(
 
     tickets_dir = pm_paths.tickets_dir(home)
     existing_rounds = {
-        ticket: round_seed.load_rounds(tickets_dir, ticket, ticket_text=text)
+        ticket: round_form.load_rounds(tickets_dir, ticket, ticket_text=text)
         for ticket, text in specs.items()
     }
     # 묶음 예산 입력 — 장부가 선언한 고정 수열.
@@ -299,7 +299,7 @@ def prepare_cluster_copy(
                         # 재개방은 순번을 늘리지 않아 수열이 볼 것이 없다 — 이 티켓의
                         # 재확인은 아래 예약 루프의 `reopen_round` 가 최신 스캔으로 낸다.
                         continue
-                    fresh_existing = round_seed.load_rounds(
+                    fresh_existing = round_form.load_rounds(
                         tickets_dir, ticket, ticket_text=specs[ticket],
                     )
                     refusal = delegate_rounds._cluster_budget_refusal(
@@ -532,7 +532,7 @@ def abandon_ticket_copy(
             f"처분 선언은 하나여야 합니다 — {delegate_rounds.ABANDON_SUPERSEDED_BY_FLAG}(재실행 대체)와 "
             f"{delegate_rounds.ABANDON_DISCARD_REASON_FLAG}(폐기)를 함께 줄 수 없습니다"
         )
-    if discard_reason is not None and not delegate_ledger._is_valid_discard_reason(discard_reason):
+    if discard_reason is not None and not delegate_records._is_valid_discard_reason(discard_reason):
         raise delegate_errors.DelegateError(
             f"폐기 사유는 비어 있지 않은 한 줄이어야 합니다: "
             f"{delegate_rounds.ABANDON_DISCARD_REASON_FLAG}={discard_reason!r}"
@@ -552,7 +552,7 @@ def abandon_ticket_copy(
     # chain 검사는 **지울 것이 남아 있을 때만** 한다 — 이미 지운 run-dir 을 다시 요구하면
     # 수렴한 처분의 재호출이 "경로 검사 실패"로 막혀 전진 수렴이 깨진다.
     if os.path.lexists(run_dir):
-        delegate_copy_store._assert_slot_run_dir_chain_is_plain(cwd, delegate_ledger._row_ticket_relative_dir(row))
+        delegate_copy_store._assert_slot_run_dir_chain_is_plain(cwd, delegate_records._row_ticket_relative_dir(row))
     board_path = pm_home_root / Path(*PurePosixPath(row["board_rel"]).parts)
     if board_path.name != expected.name:
         raise delegate_errors.DelegateError(
@@ -571,7 +571,7 @@ def abandon_ticket_copy(
             )
         existing_ordinals = {
             item.ordinal
-            for item in round_seed.load_rounds(pm_paths.tickets_dir(home), row["ticket"])
+            for item in round_form.load_rounds(pm_paths.tickets_dir(home), row["ticket"])
         }
         if superseded_by_ordinal not in existing_ordinals:
             raise delegate_errors.DelegateError(
@@ -677,7 +677,7 @@ def abandon_ticket_copy(
             recorded if isinstance(recorded, int) and not isinstance(recorded, bool) else None
         )
     discarded_recorded: bool = (
-        discard_confirmed_this_call or delegate_ledger._is_valid_discard_reason(row.get("discard_reason"))
+        discard_confirmed_this_call or delegate_records._is_valid_discard_reason(row.get("discard_reason"))
     )
 
     # ── 3단계: board_lock 안 — 최대 순번 재확인 + 최대면 unlink (락 안은 여기까지) ──
@@ -687,7 +687,7 @@ def abandon_ticket_copy(
     unlinked = False
     with fs.board_lock(home):
         if os.path.lexists(board_path):
-            existing = round_seed.load_rounds(pm_paths.tickets_dir(home), row["ticket"])
+            existing = round_form.load_rounds(pm_paths.tickets_dir(home), row["ticket"])
             max_ordinal = max((item.ordinal for item in existing), default=row["ordinal"])
             if not discarded_recorded and row["ordinal"] >= max_ordinal:
                 try:

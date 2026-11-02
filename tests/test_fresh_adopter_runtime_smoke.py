@@ -3,7 +3,7 @@
 
 ADR-0039 D1 이전엔 이 파일이 구 shipping tier(bootstrap·lifecycle·update 6케이스·pm_handoff 자동
 차단)였다. 라이브 tier 를 release 하나로 통합하며 bootstrap/lifecycle 4케이스는
-release full wave(`test_release_wave`·new→claim→위임→complete)가 시나리오 superset 이라 폐기하고,
+release full wave(`test_release_cluster`·new→claim→위임→complete)가 시나리오 superset 이라 폐기하고,
 shipping 고유분인 **pm_update self-update 경로 2케이스**(opencode/claude)만 `release` tier 로 승격했다
 — 이 파일에 남은 라이브 테스트다.
 
@@ -45,7 +45,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # warn 주입-도달 on-demand 게이트 (T-0286). release 12-pin 과 **분리** — 이 두 warn 테스트는
-# `@pytest.mark.release` 를 달지 않아(달면 regression.LIVEGATE_RELEASE_PIN·_EXPECTED_RELEASE_TESTS 등
+# `@pytest.mark.release` 를 달지 않아(달면 regression.LIVE_TEST_RELEASE_PIN·_EXPECTED_RELEASE_TESTS 등
 # touches 밖 전역 pin 이 깨진다) release 게이트에 안 잡히고, 오직 이 env 로만 on-demand 실행된다.
 # (ticket 이 부른 `shipping` marker 는 ADR-0039 로 pytest.ini 에서 등록 제거됨 → 미등록 마커는
 # filterwarnings=error 로 수집 에러라 못 쓴다. env-gated skipif = "게이트 아님·CI green 불변" 동치.)

@@ -257,19 +257,19 @@ def test_sanitize_session_id_matches_hook_rule(orch):
 
 def test_claim_session_once_first_claim_then_duplicate(orch, tmp_path):
     """같은 (세션, namespace, key) 는 첫 호출만 True 고 이후는 False 다."""
-    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "abc123") is True
-    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "abc123") is False
-    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "abc123") is False
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "abc123") is True
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "abc123") is False
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "abc123") is False
 
 
 def test_claim_session_once_isolates_key_session_and_namespace(orch, tmp_path):
     """키·세션·namespace 중 하나만 달라도 별개 선점이다(다른 클래스를 함께 삼키지 않음)."""
-    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "key-a") is True
-    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "key-b") is True
-    assert orch.claim_session_once(tmp_path, "sid-2", "git-anchor", "key-a") is True
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "key-a") is True
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "key-b") is True
+    assert orch.claim_session_once(tmp_path, "sid-2", "git-check", "key-a") is True
     assert orch.claim_session_once(tmp_path, "sid-1", "run-tests", "key-a") is True
     # 각 축은 자기 스코프 안에서만 중복이다.
-    assert orch.claim_session_once(tmp_path, "sid-2", "git-anchor", "key-a") is False
+    assert orch.claim_session_once(tmp_path, "sid-2", "git-check", "key-a") is False
     assert orch.claim_session_once(tmp_path, "sid-1", "run-tests", "key-a") is False
 
 
@@ -277,14 +277,14 @@ def test_claim_session_once_uses_one_membership_file_per_session_namespace(orch,
     """키마다 파일을 만들지 않는다 — 파일 수 = (세션 × namespace) 수·경로는 기존 marker 디렉토리."""
     for index in range(20):
         assert orch.claim_session_once(
-            tmp_path, "sid-1", "git-anchor", f"key-{index}",
+            tmp_path, "sid-1", "git-check", f"key-{index}",
         ) is True
-    assert orch.claim_session_once(tmp_path, "sid-2", "git-anchor", "key-0") is True
+    assert orch.claim_session_once(tmp_path, "sid-2", "git-check", "key-0") is True
 
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     files = sorted(path.name for path in marker_dir.iterdir())
-    assert files == ["sid-1.git-anchor", "sid-2.git-anchor"]
-    assert (marker_dir / "sid-1.git-anchor").read_text(encoding="utf-8").splitlines() == [
+    assert files == ["sid-1.git-check", "sid-2.git-check"]
+    assert (marker_dir / "sid-1.git-check").read_text(encoding="utf-8").splitlines() == [
         f"key-{index}" for index in range(20)
     ]
 
@@ -309,7 +309,7 @@ def test_claim_session_once_refuses_reserved_marker_namespaces(orch, tmp_path):
     assert orch.stop_marker_present(tmp_path, "sid-1") is False
     assert not (tmp_path / orch.MARKER_DIR).exists()
     # 예약어가 아닌 namespace 는 그대로 선점된다(전면 거부 아님).
-    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "k") is True
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "k") is True
 
 
 def test_claim_session_once_returns_none_on_marker_io_failure(orch, tmp_path):
@@ -318,20 +318,20 @@ def test_claim_session_once_returns_none_on_marker_io_failure(orch, tmp_path):
     blocked.mkdir(parents=True)
     (blocked / "ctx-stop").write_text("marker 디렉토리 자리를 파일이 점유\n", encoding="utf-8")
 
-    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "abc123") is None
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "abc123") is None
 
 
 def test_claim_session_once_sanitizes_session_key(orch, tmp_path):
     """세션키는 marker 규약과 같은 안전화를 거친다 — traversal·64자 초과·빈 값."""
-    assert orch.claim_session_once(tmp_path, "../../etc/passwd", "git-anchor", "k") is True
-    assert orch.claim_session_once(tmp_path, "  ", "git-anchor", "k") is True
-    assert orch.claim_session_once(tmp_path, "", "git-anchor", "k") is False  # 빈 값 = unknown
-    assert orch.claim_session_once(tmp_path, "z" * 80, "git-anchor", "k") is True
-    assert orch.claim_session_once(tmp_path, "z" * 64, "git-anchor", "k") is False  # 64자 절단
+    assert orch.claim_session_once(tmp_path, "../../etc/passwd", "git-check", "k") is True
+    assert orch.claim_session_once(tmp_path, "  ", "git-check", "k") is True
+    assert orch.claim_session_once(tmp_path, "", "git-check", "k") is False  # 빈 값 = unknown
+    assert orch.claim_session_once(tmp_path, "z" * 80, "git-check", "k") is True
+    assert orch.claim_session_once(tmp_path, "z" * 64, "git-check", "k") is False  # 64자 절단
 
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert sorted(path.name for path in marker_dir.iterdir()) == [
-        "etcpasswd.git-anchor", "unknown.git-anchor", f"{'z' * 64}.git-anchor",
+        "etcpasswd.git-check", "unknown.git-check", f"{'z' * 64}.git-check",
     ]
 
 

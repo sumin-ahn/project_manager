@@ -199,12 +199,12 @@ def engine_written_paths(home, ticket_id: str, log_file: Path) -> list[Path]:
     # 묶음 장부 — 종결이 status 를 쓰는 소속 장부와, 발행이 만들고 묶음 선언이 흡수(삭제)한 크기 1
     # 장부. 실존·추적 판정은 `git_scope_stageable` 이 한다(흡수 장부는 추적 중일 때만 삭제로 남는다).
     frontmatter, _body = ticket_store.load_ticket(ticket_path)
-    paths.append(cluster_store.cluster_ledger_path(home, cluster_rules.ticket_cluster(ticket_id, frontmatter)))
-    paths.append(cluster_store.cluster_ledger_path(home, ticket_id))
+    paths.append(cluster_store.cluster_record_path(home, cluster_rules.ticket_cluster(ticket_id, frontmatter)))
+    paths.append(cluster_store.cluster_record_path(home, ticket_id))
     return paths
 
 
-def ticket_cluster_ledger(home, ticket_id: str) -> tuple[str | None, dict | None]:
+def ticket_cluster_record(home, ticket_id: str) -> tuple[str | None, dict | None]:
     """티켓과 명시 Home의 장부에서 묶음 ID와 frontmatter를 읽는다.
 
     ticket_cluster 규칙은 cluster_rules, 장부 IO는 cluster_store를 사용한다.
@@ -226,7 +226,7 @@ def _cluster_integration_branch(home, ticket_id: str) -> str | None:
     없다는 사실이고, 이 판독을 쓰는 두 소비자(완료 기록 판정·리뷰 호출 폭)는 그 사실에
     **멈춘다** — 다른 기준으로 접는 갈래가 없다.
     """
-    _cluster, ledger = ticket_cluster_ledger(home, ticket_id)
+    _cluster, ledger = ticket_cluster_record(home, ticket_id)
     # 기준 이름만 있는 옛 singleton은 제품 결속의 증거가 아니다.
     if not str((ledger or {}).get("branch") or "").strip():
         return None
@@ -239,10 +239,10 @@ def _cluster_integration_branch(home, ticket_id: str) -> str | None:
 def _cluster_member_ids(home, ticket_id: str) -> tuple[str, ...]:
     """이 티켓이 속한 묶음의 멤버 티켓 ID (장부 부재는 빈 튜플, 조회 실패는 전파).
 
-    장부 해소는 `ticket_cluster_ledger` 한 벌이고 목록을 읽는 술어는 cluster_store 소유
+    장부 해소는 `ticket_cluster_record` 한 벌이고 목록을 읽는 술어는 cluster_store 소유
     (`cluster_store.cluster_tickets`)다 — 이 도구는 그 둘을 잇기만 한다(멤버 규칙 사본 0).
     """
-    _cluster, ledger = ticket_cluster_ledger(home, ticket_id)
+    _cluster, ledger = ticket_cluster_record(home, ticket_id)
     if not ledger:
         return ()
     members = cluster_store.cluster_tickets(ledger)

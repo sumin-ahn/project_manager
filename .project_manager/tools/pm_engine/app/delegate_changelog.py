@@ -18,7 +18,7 @@ from pm_engine.domain import review_contract
 from pm_engine.app import review_evidence
 from pm_engine.domain import review_form
 from pm_engine.domain import review_state
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 import sys
 from pm_engine.infra import ticket_store
 
@@ -239,7 +239,7 @@ def _ticket_spec_and_rounds(home, ticket: str) -> tuple[str, list]:
         )
     except (OSError, UnicodeError) as exc:
         raise delegate_errors.DelegateError(f"티켓 명세 읽기 실패: {path}: {exc}") from exc
-    return spec_text, round_seed.load_rounds(
+    return spec_text, round_form.load_rounds(
         pm_paths.tickets_dir(home), ticket, ticket_text=spec_text,
     )
 

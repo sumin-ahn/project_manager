@@ -1021,20 +1021,14 @@ def _manifest_self_prop_needs_update(
     분기는 둘이다: upstream 실파일 사본(단일 flavor)과 인메모리 합집합 텍스트(다중-harness). 판정이
     갈리면 한쪽 형상에서만 마이그레이션/갱신이 도달하므로 **한 함수**로 둔다(판정 사본 금지).
 
-    사유 세 가지:
+    사유 두 가지:
     - **core 차이**: dest 는 apply 가 재부착한 guest 절을 갖고 upstream 은 안 가지므로 guest 절을
       차감한 core 로 비교한다(raw 비교면 매 sync 영구 update churn). 트레일링 블랭크는
       `rstrip("\\n")` 로 정규화한다(strip 이 절 앞 빈 줄을 회수하며 생기던 반복 update 를 닫는다).
-    - **옛 세대 guest 마커**: core 가 같아도 그 자체가 update 사유다. 마커 세대 치환은 apply
-      (`_copy_manifest_preserving_guest`) 한 곳에서만 일어나므로, 이 change 가 계획에 안 실리면
-      "다음 sync 한 번으로 세대 수렴" 이 그 형상에서 깨진다.
-    - **절에 없는 파생 엔진 행**: 같은 이유다. 기록 지점이 apply 한 곳뿐이라, core 가 이미 정합한
+    - **절에 없는 파생 엔진 행**: 기록 지점이 apply(`_copy_manifest_preserving_guest`) 한 곳뿐이라, core 가 이미 정합한
       채택자(대다수)에서 self-prop 이 계획에 안 실리면 파생분이 영원히 기록되지 않고 매 실행 추론을
       반복한다. 병합 결과가 현재 절과 같으면(=이미 기록됨) 사유가 아니다(멱등·churn 0).
     """
-    _, legacy_markers = manifest_store._migrate_legacy_guest_markers(dst_text)
-    if legacy_markers:
-        return True
     guest_block = manifest_rules._extract_guest_manifest_block(dst_text)
     if manifest_store._merge_guest_backfill_lines(guest_block, backfill_lines or []) != guest_block:
         return True

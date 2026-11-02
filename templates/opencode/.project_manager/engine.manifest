@@ -34,10 +34,10 @@
 #   domain/pytest_report(pytest 요약행 판독)·infra/pre_push_hook(pre-push 회귀 통과 조건 훅)·
 #   infra/regression_store(회귀·라이브 시험 통과 조건 기록)·infra/clock(현재 시각)·app/regression(회귀 통과 조건
 #   해소·판정)·app/release(라이브 시험 통과 조건 판정)·app/slot_resolution(회귀 작업 폴더 해소)·
-#   cli/regression_cmd(regression 명령)·domain/round_rules·infra/round_store·app/round_seed(라운드 파일
+#   cli/regression_cmd(regression 명령)·domain/round_rules·infra/round_store·app/round_form(라운드 파일
 #   이름 규약·저장·빈 양식과 산출 없음 판정)·domain/review_form·domain/review_state·domain/review_verdict
 #   (리뷰 블록 양식·리뷰 상태 판정·리뷰어 판정 해석)·domain/delegate_errors(위임 오류 형식)·
-#   infra/delegate_ledger(위임 라운드 기록)·domain/design_rules(설계 단계 판정)·domain/markdown_text
+#   infra/delegate_records(위임 라운드 기록)·domain/design_rules(설계 단계 판정)·domain/markdown_text
 #   (마크다운 절·코드 판독)·domain/model_lint(위임 모델 설정 점검)·domain/gitattributes_rules
 #   (.gitattributes 판독)·infra/cluster_store(묶음 기록 읽기)·infra/log_store(운영 log 쓰기)·
 #   app/ticket_lint·app/body_lint·app/wikilink_lint·app/wiki_lint·app/freshness_lint·app/conf_lint·
@@ -112,6 +112,10 @@
 # pm-retired-path: .agents/skills/pm-wave-finish/references/operational-details.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
 # pm-retired-path: .opencode/command/pm-wave-claim.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
 # pm-retired-path: .opencode/command/pm-wave-finish.md -> .project_manager/tools/pm_engine/cli/bootstrap_card.py
+# OpenCode git 명령 검사 플러그인 이름 변경(git-anchor -> git-check): 옛 두 파일을 갱신 때 백업 폴더로 옮긴다.
+#   새 파일은 @source 폴더 행 아래라 새 경로로 쓸 수 없어, 같은 판정을 하는 엔진 cli/hooks.py 를 기준 파일로 둔다.
+# pm-retired-path: .opencode/plugins/git-anchor.js -> .project_manager/tools/pm_engine/cli/hooks.py
+# pm-retired-path: .opencode/lib/git-anchor-core.cjs -> .project_manager/tools/pm_engine/cli/hooks.py
 # pm_principles: 판단 원칙 레지스트리 로더 + recall 판정. 출하층 `wiki/pm_principles.md`
 #   와 PM 홈 로컬층 `wiki/pm_principles.local.md`(미출하·manifest 미등재)를 합성해 세 어댑터가
 #   공유하는 `judge_recall` 하나로 판정한다. stdlib-only. 신설 도구라 등록 필수(미등록=전파 안 됨).

@@ -4,7 +4,7 @@ from __future__ import annotations
 import pm_engine.domain.reviewer_prompt
 from pm_engine.infra import pm_paths
 from pm_engine.domain import round_rules
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 import sys
 
 from pathlib import Path
@@ -92,7 +92,7 @@ def _load_ticket_rounds_for(
     — 리뷰 입력이 반쪽이 된 채로 나가면 안 된다(호출부가 loud 하게 멈춘다).
     """
     try:
-        return round_seed.load_rounds(
+        return round_form.load_rounds(
             pm_paths.tickets_dir(home), ticket_id, ticket_text=ticket_text,
         )
     except round_rules.RoundsError as exc:
@@ -104,16 +104,16 @@ def _load_ticket_rounds_for(
 def _warn_seed_developer_round(rounds: Sequence, *, ticket: str) -> None:
     """추가 리뷰어 스폰면의 loud 경고 — 경고이지 거부가 아니다(rc 는 바꾸지 않는다).
 
-    판정은 준비면(`round_seed._warn_unharvested_developer_round`)이 쓰는 공개 함수
-    `round_seed.unharvested_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 표면이
+    판정은 준비면(`round_form._warn_unharvested_developer_round`)이 쓰는 공개 함수
+    `round_form.unharvested_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 표면이
     어긋난다. `prepare_ticket_body` 한 seam 이 미리보기(`--dry-run`)와 실 스폰을 모두
     지나므로 이 호출 하나가 두 채널을 함께 덮는다.
     """
-    stale = round_seed.unharvested_developer_round(rounds)
+    stale = round_form.unharvested_developer_round(rounds)
     if stale is None:
         return
     name = round_rules.round_filename(stale.ordinal, stale.role)
-    latest = round_rules.latest_round_of_role(rounds, round_seed.REVIEW_SUBJECT_ROLE)
+    latest = round_rules.latest_round_of_role(rounds, round_form.REVIEW_SUBJECT_ROLE)
     latest_name = (
         round_rules.round_filename(latest.ordinal, latest.role)
         if latest is not None else "없음"

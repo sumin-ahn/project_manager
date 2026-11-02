@@ -1,4 +1,4 @@
-"""옛 자체 슬롯·세션 장부, 위임 라운드 기록 파일 키, areas 자기 행의 갱신 후처리 (층: app)."""
+"""옛 자체 슬롯·세션 장부, 위임 라운드 기록 파일 키, 추가 하네스 구획 표시, areas 자기 행의 갱신 후처리 (층: app)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 from pm_engine.app import areas_registry
+from pm_engine.domain import manifest_rules
 from pm_engine.infra import fs
 from pm_engine.infra import pm_paths
 from pm_engine.infra import pool_store
@@ -157,4 +158,50 @@ def rename_delegate_round_collected_key(effective_dest: Path, *, write: bool) ->
         )
         shutil.copymode(ledger, tmp)
         fs.atomic_replace(tmp, ledger)
+    return moved
+
+
+# 채택자 engine.manifest 에 적힌 옛 추가 하네스 구획 표시 → 새 표시. 이미 디스크에 쓰인 바이트다.
+# pm:data-literal:begin
+_OLD_ADDED_HARNESS_MARKERS = {
+    "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>": manifest_rules._GUEST_MANIFEST_BEGIN,
+    "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>": manifest_rules._GUEST_MANIFEST_BEGIN,
+    "# <<< pm add-harness guest @render (local) <<<": manifest_rules._GUEST_MANIFEST_END,
+}
+# pm:data-literal:end
+
+
+def rename_added_harness_markers(effective_dest: Path, *, write: bool) -> int:
+    """engine.manifest 의 옛 추가 하네스 구획 표시를 새 표시로 옮긴다(갱신 완료 단계의 계획 전에 한 번).
+
+    표시를 바꾼 갱신이 디스크에 남은 옛 표시를 직접 옮긴다. 엔진은 새 표시만 읽으므로 계획·적용이
+    구획을 읽기 전에 옮겨야 구획이 남는다. 앞뒤 공백을 뺀 줄이 옛 표시와 같은 줄만 바꾸고 줄 끝
+    개행과 나머지 줄은 그대로 둔다. 같은 폴더 임시 파일에 원래 권한을 옮긴 뒤 원자 교체한다.
+    옮길 줄이 없으면 읽기만 하고, write=False 면 출력만 한다. 돌려주는 값은 옮긴(dry-run 은 옮길)
+    줄 수다.
+    """
+    manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
+    if not manifest.is_file():
+        return 0
+    lines = fs.read_text_shared(manifest, encoding="utf-8", newline="").splitlines(keepends=True)
+    renamed: list[str] = []
+    moved = 0
+    for line in lines:
+        body = line.rstrip("\r\n")
+        new_marker = _OLD_ADDED_HARNESS_MARKERS.get(body.strip())
+        if new_marker is None:
+            renamed.append(line)
+            continue
+        renamed.append(new_marker + line[len(body):])
+        moved += 1
+    if moved == 0:
+        return 0
+    prefix = "[dry-run] " if not write else "  ✓ "
+    print(f"{prefix}engine.manifest 의 추가 하네스 구획 표시 {moved}줄을 새 글자로 이동"
+          f"{' 예정' if not write else ''}(표시를 바꾼 갱신이 함께 옮긴다).")
+    if write:
+        tmp = manifest.with_name(manifest.name + ".tmp")
+        tmp.write_text("".join(renamed), encoding="utf-8", newline="")
+        shutil.copymode(manifest, tmp)
+        fs.atomic_replace(tmp, manifest)
     return moved

@@ -109,10 +109,8 @@ _CODEX_FEATURE_TO_ROW = {
     "compaction-guidance": "ctx-guard",
     "compaction-checkpoint-post": "ctx-guard",
     "compaction-snapshot": "ctx-guard",
-    "principle-recall-pretooluse": "principle-recall",
     "principle-recall-userpromptsubmit": "principle-recall",
     "principle-recall-reset": "principle-recall",
-    "git-check": "git-anchor",
 }
 
 # ── claude: (스크립트명, 정렬된 플래그 튜플) → 표의 기능 행(들) ─────────────────
@@ -120,7 +118,7 @@ _CODEX_FEATURE_TO_ROW = {
 # (claude 는 codex/opencode 처럼 기능별 파일을 안 가른다) — 그래서 두 행에 동시에 기여한다.
 _CLAUDE_HOOK_COMMAND_TO_ROWS = {
     ("ctx_stop_hook.sh", ()): ("ctx-guard", "principle-recall"),
-    ("ctx_stop_hook.sh", ("--git-anchor-hook",)): ("git-anchor",),
+    ("ctx_stop_hook.sh", ("--git-anchor-hook",)): ("git-check",),
     ("delegate_channel_guard_hook.sh", ()): ("delegate-channel",),
     ("precompact_capture_hook.sh", ()): ("ctx-guard",),
 }
@@ -235,7 +233,7 @@ TABLE: dict[str, str | SubsetExpectation] = {
     "ctx-guard": ALL,
     "principle-recall": ALL,
     "delegate-channel": ALL,
-    "git-anchor": ALL,
+    "git-check": ALL,
     # 역할 카드 — 5개 카드가 세 하네스 모두에 출하됐다.
     "architect": ALL,
     "code-reviewer": ALL,
@@ -323,7 +321,7 @@ def test_feature_table_matches_shipped_trees():
 def test_dod_required_rows_are_present_and_classified():
     """DoD 4 — 선행 티켓이 닫은 3건은 `all`, 의도 비대칭 2건과 신규 분류 2건은 intent/defect 분류를
     갖는다(현행 스냅샷 — 결함으로 남는 행은 없다)."""
-    assert TABLE["git-anchor"] == ALL
+    assert TABLE["git-check"] == ALL
     assert TABLE["developer-hard"] == ALL
     assert TABLE["ctx-guard"] == ALL
     for row in ("safe-write", "pm", "lite-root-doc", "statusline"):
@@ -407,9 +405,9 @@ def test_sensitivity_green_path_has_no_false_positive():
 def test_removing_a_shipped_opencode_plugin_trips_red(tmp_path):
     mutated = tmp_path / "templates"
     shutil.copytree(TEMPLATES, mutated)
-    (mutated / "opencode" / ".opencode" / "plugins" / "git-anchor.js").unlink()
+    (mutated / "opencode" / ".opencode" / "plugins" / "git-check.js").unlink()
     violations = _collect_violations(mutated)
-    assert any("git-anchor" in v for v in violations), violations
+    assert any("git-check" in v for v in violations), violations
 
 
 def test_removing_a_shipped_codex_card_trips_red(tmp_path):

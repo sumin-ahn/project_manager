@@ -1,7 +1,7 @@
 from pathlib import Path
 import pytest
 from pm_engine.infra import pm_paths, ticket_store, fs
-from pm_engine.app import ticket_access, board_dashboard, completion_gate
+from pm_engine.app import ticket_access, board_dashboard, completion_check
 from pm_engine.domain import ticket_rules
 
 def make_home(root):
@@ -38,8 +38,8 @@ def test_owned_ticket_without_a_task_is_rejected(tmp_path):
     assert not verdict.ok and verdict.unresolved
 
 def test_dod_distinguishes_checked_and_open_items():
-    assert completion_gate._dod_open_items('## 완료 조건\n- [x] 완료\n') == []
-    assert completion_gate._dod_open_items('## 완료 조건\n- [ ] 미완료\n')
+    assert completion_check._dod_open_items('## 완료 조건\n- [x] 완료\n') == []
+    assert completion_check._dod_open_items('## 완료 조건\n- [ ] 미완료\n')
 
 def test_dashboard_write_uses_the_selected_home(tmp_path):
     a = make_home(tmp_path / 'a'); b = make_home(tmp_path / 'b')

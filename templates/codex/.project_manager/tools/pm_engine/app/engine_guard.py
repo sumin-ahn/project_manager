@@ -145,7 +145,7 @@ def _no_open_todo_judgment(home, session: str) -> dict[str, str] | None:
         return None
     return {'verdict': 'warn', 'cwd_identity': 'non-repo', 'reason': f'task {task} 에 열린 todo 가 없다 — 지금 하는 일이 기록에 없어서 다음 세션도 사용자도 그 일을 못 본다. {git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_NO_OPEN_TODO]}'}
 
-def judge_git_anchor(home, session: str, cwd: str, argv: list[str], *, runner: Any=subprocess.run, cwd_certain: bool=True) -> dict[str, str]:
+def judge_git_check(home, session: str, cwd: str, argv: list[str], *, runner: Any=subprocess.run, cwd_certain: bool=True) -> dict[str, str]:
     """raw git 호출의 cwd 안전성을 판정하는 엔진·하네스 중립 seam.
 
     ``root`` 는 훅이 설치된 PM 홈, ``session`` 은 호출한 하네스 세션 ID 다 — ``root`` 슬롯의 git 쓰기는
@@ -155,7 +155,7 @@ def judge_git_anchor(home, session: str, cwd: str, argv: list[str], *, runner: A
     변경 버리기, 슬롯 지우기·옮기기, 원격 덮어쓰기, 저수준 ref 조작) — 브랜치와 슬롯은 엔진만 만들고
     지운다. 대상을 정적으로 못 정한 호출(``GIT_DIR``·변수 ``-C``·셸 파서가 cwd 를 증명 못 함 =
     ``cwd_certain=False``)은 슬롯·공용 저장소일 수 있으므로 형태만으로 거부한다. 이 deny 는 거부
-    경우(``case``)와 거부한 호출만 싣고, 멈춤 지시·다음 행동 문구는 `judge_git_anchor_command` 가
+    경우(``case``)와 거부한 호출만 싣고, 멈춤 지시·다음 행동 문구는 `judge_git_check_command` 가
     붙인다. (2) PM 홈에서 등록 slot과 교차 실재하는
     코드-root pathspec을 mutation으로 건드리는 실사고 패턴. 그 밖은 warn(정체 주입)이며 비-repo/
     foreign 대상과 판정불가 비파괴 호출은 정상 작업을 막지 않는다. ``cwd_certain`` 은 argv 호출자가

@@ -189,7 +189,7 @@ def main(home, argv: list[str] | None = None) -> int:
     # 티켓용 별도 코드 경로를 남기면 그 경로에서만 장부 기록·포인터 커밋이 빠진다.
     cluster = args.cluster
     if cluster is None:
-        cluster, _ledger = finish_store.ticket_cluster_ledger(home, args.ticket_id)
+        cluster, _ledger = finish_store.ticket_cluster_record(home, args.ticket_id)
         if not cluster:
             print(
                 f"\n[중단] {args.ticket_id} 의 묶음을 해소하지 못했다 ({board_py}) — 완료 "

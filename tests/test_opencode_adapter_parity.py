@@ -38,7 +38,7 @@ HOOK_CORE_DIRS = (
 # 엔진 루트를 자기 위치에서 내야 하는 core (판정·주입·감시 훅). 나머지 core 는 엔진 루트를
 # 쓰지 않는다 — safe-write 의 root 는 write 경로 해소용 context.directory 로 별개 축이다.
 SELF_LOCATED_CORES = (
-    "templates/opencode/.opencode/lib/git-anchor-core.cjs",
+    "templates/opencode/.opencode/lib/git-check-core.cjs",
     "templates/opencode/.opencode/lib/principle-recall-core.cjs",
     "templates/opencode/.opencode/lib/delegate-channel-core.cjs",
     "templates/opencode/.opencode/lib/stall-watchdog-core.cjs",

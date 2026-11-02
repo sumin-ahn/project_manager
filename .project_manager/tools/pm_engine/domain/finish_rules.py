@@ -201,7 +201,7 @@ _SELF_AXIS_FAILED_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILIN
 # 고정된 4개다. 새 항목을 빠뜨리면 tests/test_ticket_finish.py 의 목록 커버리지 회귀가 red 로
 # 잡는다 — 추가 규율을 산문에 적지 않는다.
 _SELF_AXIS_RATCHET_GUARD_FILES = (
-    "tests/test_pm_review_delta.py",
+    "tests/test_pm_review_accepted.py",
     "tests/test_private_context_guard.py",
     "tests/test_public_reference_lint.py",
     "tests/test_upgrade_adopter_e2e.py",

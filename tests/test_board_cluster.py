@@ -7,7 +7,7 @@
   (3) 재개방(`reopen`)도 같은 자리에서 귀속하고, 멤버는 **장부만** 답한다(합성 0).
   (4) 장부 관측(멤버 부재·중복 귀속)은 advisory 로만 보인다(never-block · 장부만 읽는다).
 
-hermetic 패턴은 `test_board_new_draft_gate.py` 와 동형 — 실 board git + bare remote 를 tmp 에
+hermetic 패턴은 `test_board_new_draft_check.py` 와 동형 — 실 board git + bare remote 를 tmp 에
 세우고 board 모듈의 `REPO` 를 그 tmp 로 재앵커한다. 코드 트리 축은 두 형상을 다 세운다:
 `env` 는 PM 홈 자신이 코드 트리인 N=1 채택자(홈 슬롯 행 `slot="."`), `split_env` 는 PM 홈과
 코드 트리가 **다른 디렉터리**인 adopter#0 형상이다. 겹친 형상 하나만 있으면 코드 트리를 PM
@@ -313,7 +313,7 @@ def test_cluster_new_writes_ledger_branch_and_membership(env, capsys):
     assert "replans" not in ledger
     assert ledger["status"] == cluster_rules.CLUSTER_STATUS_OPEN
     # 장부 파일은 STATUS_DIRS 밖 sibling 이다(상태 순회에 섞이지 않는다).
-    assert cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "C-wave") == (
+    assert cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-wave") == (
         board_dir / "tickets" / "clusters" / "C-wave.md")
     # 통합 브랜치가 (명시 정체성이 가리킨) 작업 폴더 코드 git 에 실재하고 기점과 같다.
     code = board.REPO / SLOT
@@ -375,7 +375,7 @@ def test_cluster_new_refuses_when_the_code_tree_is_not_declared(split_env, capsy
     assert "코드 트리를 명시로 받는다" in err
     assert "--repo" in err and "--task" in err
     # 첫 쓰기 앞 거부 — 장부도 브랜치도 멤버 귀속 변경도 없다.
-    assert not cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "C-bare").exists()
+    assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-bare").exists()
     assert cluster_binding._cluster_branch_state(str(board.REPO), "task/bare") is False
     assert cluster_binding._cluster_branch_state(str(code), "task/bare") is False
     assert _ticket_fm(board, first)["cluster"] == f"C-{first}"
@@ -401,13 +401,13 @@ def test_cluster_new_absorbs_the_auto_size_one_ledgers(env, capsys):
     first = _issue_ticket(board, "흡수 대상")
     second = _issue_ticket(board, "흡수 대상 둘")
     capsys.readouterr()
-    assert cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), f"C-{first}").is_file()
+    assert cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), f"C-{first}").is_file()
 
     assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args(
         "new", "absorb", tickets=f"{first},{second}")) == 0
 
-    assert not cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), f"C-{first}").exists()
-    assert not cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), f"C-{second}").exists()
+    assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), f"C-{first}").exists()
+    assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), f"C-{second}").exists()
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-absorb") == (first, second)
     assert cluster_store._cluster_of_record(pm_paths.home_at(board.REPO), first) == "C-absorb"
     # 흡수는 board-git 에도 도달한다 — 빈 자동 장부가 공유 board 에 남지 않는다.
@@ -427,7 +427,7 @@ def test_cluster_new_is_loud_when_the_absorbed_ledger_cannot_be_removed(
     first = _issue_ticket(board, "삭제 실패")
     second = _issue_ticket(board, "삭제 실패 둘")
     capsys.readouterr()
-    auto = cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), f"C-{first}")
+    auto = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), f"C-{first}")
     real_unlink = Path.unlink
 
     def _refuse_unlink(self, *args, **kwargs):
@@ -462,7 +462,7 @@ def test_cluster_new_refuses_unknown_member_without_writing(env, capsys):
 
     assert rc == 2
     assert "ticket not found: T-9999" in capsys.readouterr().err
-    assert not cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "C-ghost").exists()
+    assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-ghost").exists()
     # 거부는 첫 쓰기 앞이다 — 멤버 귀속도 브랜치도 생기지 않는다.
     assert _ticket_fm(board, known)["cluster"] == f"C-{known}"
     assert cluster_binding._cluster_branch_state(str(board.REPO), "task/ghost") is False
@@ -483,7 +483,7 @@ def test_cluster_new_refuses_a_member_of_another_multi_cluster(env, capsys):
 
     assert rc == 1
     assert "이미 다른 묶음의 멤버" in capsys.readouterr().err
-    assert not cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "C-thief").exists()
+    assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-thief").exists()
     assert _ticket_fm(board, first)["cluster"] == "C-owner"
 
 
@@ -541,7 +541,7 @@ def test_cluster_new_refuses_a_name_git_cannot_branch(env, capsys, name):
 
     assert rc == 1
     assert "git 브랜치 이름 금칙" in capsys.readouterr().err
-    assert not cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), f"C-{name}").exists()
+    assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), f"C-{name}").exists()
     assert cluster_binding._cluster_branch_state(
         str(board.REPO), cluster_rules.cluster_branch_name(name)) is not True
     # 멤버 귀속도 그대로다(부분 쓰기 없음).
@@ -719,7 +719,7 @@ def test_reopen_keeps_declared_cluster_and_does_not_touch_ledger(env, capsys):
     assert rc == 0
     assert _ticket_fm(board, "T-0501")["cluster"] == "C-declared"
     assert ledger_path.read_bytes() == before      # status·budget·tickets 전부 불변
-    assert not cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "C-T-0501").exists()
+    assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-T-0501").exists()
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-declared") == ("T-0501", "T-0502")
     # 만지지 않은 파일은 커밋 스코프에도 없다.
     assert all(not name.startswith("tickets/clusters/")
@@ -799,14 +799,14 @@ def test_draft_defers_attribution_until_promote(board, tmp_path, capsys):
     ticket_store.dump_ticket(draft, fm, _TEMPLATE_TEXT.split("---\n", 2)[2]
                       .replace("T-NNNN", tid).replace("<제목>", "미충전"))
     assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args("new", "draft-bound", tickets=tid)) == 0
-    recorded = cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "draft-bound").read_bytes()
+    recorded = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "draft-bound").read_bytes()
     capsys.readouterr()
     assert board_ticket.cmd_promote(pm_paths.home_at(board.REPO), argparse.Namespace(id=tid)) == 0
 
     assert _ticket_fm(board, tid)["cluster"] == "C-draft-bound"
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-draft-bound") == (tid,)
     assert cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-draft-bound")["base_branch"] == _BASE_BRANCH
-    assert cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), "draft-bound").read_bytes() == recorded
+    assert cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "draft-bound").read_bytes() == recorded
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1171,9 +1171,9 @@ def test_t0930_publish_revalidation_preserves_legacy_local_new(board, tmp_path):
     path = _all_ticket_files(board)[0]
     fm, _ = ticket_store.load_ticket(path)
     ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), fm["cluster"])
-    before = (path.read_bytes(), cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), fm["cluster"]).read_bytes())
+    before = (path.read_bytes(), cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), fm["cluster"]).read_bytes())
     assert ledger["base_branch"] == _BASE_BRANCH and ledger["branch"] is None
     assert board_ticket.cmd_promote(pm_paths.home_at(board.REPO), argparse.Namespace(id=fm["id"])) == 0
-    assert (path.read_bytes(), cluster_store.cluster_ledger_path(pm_paths.home_at(board.REPO), fm["cluster"]).read_bytes()) == before
+    assert (path.read_bytes(), cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), fm["cluster"]).read_bytes()) == before
     assert _git(["rev-parse", "HEAD"], tmp_path).stdout == head
     assert pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes() == leases

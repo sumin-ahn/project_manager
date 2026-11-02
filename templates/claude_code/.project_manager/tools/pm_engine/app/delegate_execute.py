@@ -10,7 +10,7 @@ from pm_engine.infra.harness import contract
 from pm_engine.infra import delegate_config
 from pm_engine.infra.harness import delegate_env
 from pm_engine.domain import delegate_errors
-from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_collect
 from pm_engine.app import delegate_prompt
 from pm_engine.domain import delegate_prompt_rules
 from pm_engine.domain import delegate_rounds
@@ -204,7 +204,7 @@ def resolve_resume_plan(
         session_id=session_id,
         record_id=str(record.get("id")),
         ticket=record_ticket if isinstance(record_ticket, str) and record_ticket else None,
-        delta_prompt=delegate_run_rules.build_resume_delta_payload(
+        delta_prompt=delegate_run_rules.build_resume_change_payload(
             must_fix_items=(
                 must_fix_items if isinstance(must_fix_items, list) else ()
             ),
@@ -596,7 +596,7 @@ def _delegation_harvest_failure_message(exc: Exception, residue: Path) -> str:
     )
 
 
-def _report_cluster_harvest(outcomes: Sequence[delegate_harvest.ClusterHarvestOutcome]) -> None:
+def _report_cluster_harvest(outcomes: Sequence[delegate_collect.ClusterHarvestOutcome]) -> None:
     """묶음 회수 결과 요약 — 자리마다 한 줄. 거부가 하나라도 있으면 실패로 올린다.
 
     자리별 독립 회수라 성공한 자리는 그대로 두되, 남은 거부를 성공 rc 로 덮지 않는다

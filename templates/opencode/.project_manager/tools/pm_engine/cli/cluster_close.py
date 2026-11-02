@@ -680,7 +680,7 @@ class ClusterCloser:
         빈 목록으로 접으면 아무것도 기록하지 않은 실행이 성공으로 끝난다."""
         paths: list[Path] = []
         if self._ledger() is not None:
-            paths.append(cluster_store.cluster_ledger_path(self._home, self._cluster))
+            paths.append(cluster_store.cluster_record_path(self._home, self._cluster))
         for tid in self._declared_tickets:
             try:
                 found = ticket_store.find_ticket_exact(self._home, tid)
@@ -1099,7 +1099,7 @@ class ClusterCloser:
     def _reconcile_ledger_pending(self) -> bool:
         """Crash 뒤 closed ledger가 board-git에 아직 미기록인지 관측한다."""
         board_root = self._home.board_root
-        ledger_path = cluster_store.cluster_ledger_path(self._home, self._cluster)
+        ledger_path = cluster_store.cluster_record_path(self._home, self._cluster)
         try:
             pathspec = ledger_path.relative_to(board_root).as_posix()
         except ValueError as exc:
@@ -1157,7 +1157,7 @@ class ClusterCloser:
                 print("  동일 closure evidence가 이미 board-git에 기록됨 — 묶음 기록 쓰기 건너뜀")
 
         if needs_board_sync:
-            ledger_path = cluster_store.cluster_ledger_path(self._home, self._cluster)
+            ledger_path = cluster_store.cluster_record_path(self._home, self._cluster)
             try:
                 block = self._sync_board_git([ledger_path])
             except finish_rules._CloseObservationFailure as failure:

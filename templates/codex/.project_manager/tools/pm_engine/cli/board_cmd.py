@@ -269,25 +269,12 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
                                  "(교체 지점·record↔check 대칭)")
     identity_args.add_identity_args(p)  # record 의 task 폴더(M>1 홈에서 cwd 해소·regression 과 동형·
     # 무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요)
-    p.set_defaults(fn=regression_cmd.cmd_livegate)
-
-    p = sub.add_parser("git-anchor", help=argparse.SUPPRESS)
-    p.add_argument("--session", required=True, help=argparse.SUPPRESS)
-    p.add_argument("--cwd", required=True, help=argparse.SUPPRESS)
-    p.add_argument("--command", required=True, help=argparse.SUPPRESS)
-    p.add_argument("--grants", action="store_true", help=argparse.SUPPRESS)
-    p.set_defaults(fn=hooks.cmd_git_anchor)
+    p.set_defaults(fn=regression_cmd.cmd_live_test)
 
     p = sub.add_parser("git-grant", help=argparse.SUPPRESS)
     p.add_argument("--session", required=True, help=argparse.SUPPRESS)
     p.add_argument("--cwd", required=True, help=argparse.SUPPRESS)
     p.set_defaults(fn=hooks.cmd_git_grant)
-
-    p = sub.add_parser("git-tool-input", help=argparse.SUPPRESS)
-    p.add_argument("--session", required=True, help=argparse.SUPPRESS)
-    p.add_argument("--cwd", required=True, help=argparse.SUPPRESS)
-    p.add_argument("--tool", required=True, help=argparse.SUPPRESS)
-    p.set_defaults(fn=hooks.cmd_git_tool_input)
 
     p = sub.add_parser("hook-context", help=argparse.SUPPRESS)
     p.add_argument("--harness", required=True, choices=hooks.CTX_HARNESSES, help=argparse.SUPPRESS)

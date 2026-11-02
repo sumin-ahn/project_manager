@@ -28,11 +28,11 @@ from pm_engine.infra import fs, lease_store, pm_paths
 # 실측 846B/건·34건/일을 기준으로 90일 보존 시 약 3,060건 2.6MB — 매
 # 위임 시작·마감마다 그 전량을 재기록해도 무리 없는 수준이라 상한을 3,060 여유분을 두고 4096으로
 # 잡는다(무한 보존은 아니다 — 상한 없는 보존은 조회 무력화로 이어진다).
-RAW_LEDGER_VERSION = 1
-RAW_LEDGER_UNFINISHED_DAYS = 30
-RAW_LEDGER_COMPLETED_DAYS = 90
-RAW_LEDGER_MAX_UNFINISHED = 128
-RAW_LEDGER_MAX_COMPLETED = 4096
+RAW_RECORD_VERSION = 1
+RAW_RECORD_UNFINISHED_DAYS = 30
+RAW_RECORD_COMPLETED_DAYS = 90
+RAW_RECORD_MAX_UNFINISHED = 128
+RAW_RECORD_MAX_COMPLETED = 4096
 
 # 고아(장부 미참조) 원문 스캔 대상 파일명 접두 — 엔진이 만든 raw 만 가리킨다. `.local/delegate`에는
 # 이 밖에 PM 수작업 산출(`T-XXXX-*.txt`·`*.md`)이 섞여 있고(실측 74+185건) 스캔
@@ -173,7 +173,7 @@ def _raw_ledger_lock(ledger_path: Path) -> Iterator[None]:
 def _read_raw_ledger(ledger_path: Path) -> dict:
     """장부 부재만 빈 장부로 보고 손상은 fail-loud한다."""
     if not ledger_path.exists():
-        return {"version": RAW_LEDGER_VERSION, "records": []}
+        return {"version": RAW_RECORD_VERSION, "records": []}
     data = json.loads(fs.read_text_shared(ledger_path, encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("records"), list):
         raise ValueError(f"raw 출력 기록 형식 오류: {ledger_path}")
@@ -226,14 +226,14 @@ def _prune_raw_records(
             continue
         is_completed = row.get("finished_at") is not None
         age_limit = (
-            RAW_LEDGER_COMPLETED_DAYS if is_completed else RAW_LEDGER_UNFINISHED_DAYS
+            RAW_RECORD_COMPLETED_DAYS if is_completed else RAW_RECORD_UNFINISHED_DAYS
         )
         if current - started > datetime.timedelta(days=age_limit):
             continue
         (completed if is_completed else unfinished).append(row)
     key = lambda row: str(row.get("started_at", ""))
-    unfinished = sorted(unfinished, key=key, reverse=True)[:RAW_LEDGER_MAX_UNFINISHED]
-    completed = sorted(completed, key=key, reverse=True)[:RAW_LEDGER_MAX_COMPLETED]
+    unfinished = sorted(unfinished, key=key, reverse=True)[:RAW_RECORD_MAX_UNFINISHED]
+    completed = sorted(completed, key=key, reverse=True)[:RAW_RECORD_MAX_COMPLETED]
     return sorted((*unfinished, *completed), key=key)
 
 
@@ -242,7 +242,7 @@ def _prune_raw_records(
 # 예약 규칙으로 쓴다: 시작을 "지금 이 행에 있는 키"로만 막으면 마감 전용 키(finished_at·rc 등)가
 # 시작 시점엔 아직 없어 통과하고, 그러면 시작 extra 가 `finished_at` 을 심어 미마감 sweep 이
 # 죽은 실행을 못 보거나 마감이 그 값을 덮어써 두 표면의 extra 가 서로를 지운다.
-RAW_LEDGER_RESERVED_KEYS: frozenset[str] = frozenset({
+RAW_RECORD_RESERVED_KEYS: frozenset[str] = frozenset({
     "id", "surface", "harness", "model", "role", "attempt", "pid",
     "started_at", "raw_path", "finished_at", "rc", "elapsed_sec", "silence_sec",
     "finish_note",
@@ -271,7 +271,7 @@ def start_raw_record(
     """자식 프로세스 실행 전에 미마감 레코드를 원자 등록하고 record id를 반환한다.
 
     `extra` = 표면별 해소 provenance 의 **추가** 필드(예: 추가 리뷰어의 source/reasoning/command).
-    공통 스키마 키(`RAW_LEDGER_RESERVED_KEYS`)는 덮어쓰지 않는다 — 조회면이 보는 필드 이름의 뜻이
+    공통 스키마 키(`RAW_RECORD_RESERVED_KEYS`)는 덮어쓰지 않는다 — 조회면이 보는 필드 이름의 뜻이
     표면마다 달라지지 않게 한다(마감의 같은 규칙과 **한 표**를 공유한다).
     """
     current = now or datetime.datetime.now(datetime.timezone.utc)
@@ -292,13 +292,13 @@ def start_raw_record(
         "raw_path": str(raw_path.resolve()),
     }
     for key, value in (extra or {}).items():
-        if key not in RAW_LEDGER_RESERVED_KEYS:
+        if key not in RAW_RECORD_RESERVED_KEYS:
             row[key] = value
     with _raw_ledger_lock(ledger_path):
         ledger = _read_raw_ledger(ledger_path)
         records = [item for item in ledger["records"] if isinstance(item, dict)]
         records.append(row)
-        ledger["version"] = RAW_LEDGER_VERSION
+        ledger["version"] = RAW_RECORD_VERSION
         ledger["records"] = _prune_raw_records(records, now=current)
         _write_raw_ledger(ledger_path, ledger)
     return record_id
@@ -349,7 +349,7 @@ def finish_raw_record(
                 if finish_note is not None:
                     row["finish_note"] = finish_note
                 for key, value in (extra or {}).items():
-                    if key not in RAW_LEDGER_RESERVED_KEYS:
+                    if key not in RAW_RECORD_RESERVED_KEYS:
                         row[key] = value
                 found = True
                 break

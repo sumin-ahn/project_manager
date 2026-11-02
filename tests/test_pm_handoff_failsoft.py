@@ -16,7 +16,7 @@ import pm_engine.domain.handoff_text
 
 from pm_engine.domain import session_history
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import importlib.util
 from pathlib import Path
@@ -213,7 +213,7 @@ def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str, *, monkey
     log_file = tmp_path / 'current.md'
     playbook_file = tmp_path / 'pm_playbook.md'
     pm_state = tmp_path / 'pm_state.md'
-    log_file.write_text('# log\n\n## [2026-07-05] handoff | PM 4차 (task:alpha) → 다음 PM 세션\n\n- 이 세션 박제 entries: (이 세션 박제 entry 없음)\n', encoding='utf-8')
+    log_file.write_text('# log\n\n## [2026-07-05] handoff | PM 4차 (task:alpha) → 다음 PM 세션\n\n- 이 세션 기록 entries: (이 세션 기록 entry 없음)\n', encoding='utf-8')
     playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
     pm_state.write_text(state_text, encoding='utf-8')
     bind_pool(monkeypatch, _TaskPool())

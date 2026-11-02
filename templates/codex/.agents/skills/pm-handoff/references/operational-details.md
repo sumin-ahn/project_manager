@@ -16,7 +16,7 @@
 ## 남은 PM 손작업 (CLI 후)
 
 1. **log/current.md handoff entry 본문 서술 (lean 스키마)** — skeleton 의 `<...>` placeholder 를 채운다. 파생 가능한 상태는 source 에 미루고 다음 비파생 salient 레이어만 쓴다.
-   - **이 세션 박제 entries** — 기계 자동(직전 자기 handoff 이후의 complete/checkpoint 헤더
+   - **이 세션 기록 entries** — 기계 자동(직전 자기 handoff 이후의 complete/checkpoint 헤더
      목록·경계 미해소 시 최근 N건 표기). 본문 재요약 금지 — log 원문이 서사의 단일 진실.
    - **메타 학습** — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".
    - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.

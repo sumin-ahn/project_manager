@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 from pm_engine.app import update_finish
-from pm_engine.infra import delegate_ledger
+from pm_engine.infra import delegate_records
 from pm_engine.infra import fs
 
 import json
@@ -76,7 +76,7 @@ def test_rename_moves_only_the_key_through_tmp_and_atomic_replace(tmp_path, caps
     assert moved[2]["discard_reason"] == discard_reason
     if os.name == "posix":
         assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
-    records = delegate_ledger._delegate_rounds_ledger_records(dest)
+    records = delegate_records._delegate_rounds_ledger_records(dest)
     assert [record["ordinal"] for record in records] == [1, 2, 3]
 
 

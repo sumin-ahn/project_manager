@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import areas_store
 
-from _pool_seams import bind_board
+from _pool_overrides import bind_board
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"

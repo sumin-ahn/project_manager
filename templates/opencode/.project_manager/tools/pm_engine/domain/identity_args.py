@@ -174,7 +174,7 @@ def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None
 # 처방 한 줄. 미해소를 조용한 폴백으로 덮지 않으므로, 사용자가 무엇을 하면 되는지는 메시지가
 # 말해야 한다. 문구를 재타이핑하지 않도록 이 모듈이 단일 진실로 들고, 정체성을 해소하는
 # 모듈들이 여기서 가져다 쓴다.
-def no_work_folder_remedy() -> str:
+def no_work_folder_fix() -> str:
     """작업 폴더가 없는 홈에 붙이는 처방 한 줄 — 모든 소비자가 이 한 문장을 쓴다.
 
     repo 를 알면 실 명령으로, 모르면 `<repo>` 자리표시자로 낸다. 부트스트랩·0단계 게이트·
@@ -185,14 +185,14 @@ def no_work_folder_remedy() -> str:
             "먼저 만들어라.")
 
 
-NO_WORK_FOLDER_REMEDY = "이 홈의 슬롯 대여 기록에 행이 하나도 없으면 " + no_work_folder_remedy()
+NO_WORK_FOLDER_FIX = "이 홈의 슬롯 대여 기록에 행이 하나도 없으면 " + no_work_folder_fix()
 
 
 # 장부 읽기 축의 판정값 — "못 읽었다"를 **부재**와 **손상**으로 가른다(합치면 실제로 행을
 # 보유한 홈도 장부가 깨지기만 하면 "행 없음"과 같은 취급을 받는다).
-LEDGER_OK = "ok"                       # 정상 파싱 — rows 가 그 시점 진실.
-LEDGER_MISSING = "ledger-missing"      # 장부 파일 자체가 없다(fresh 홈).
-LEDGER_UNREADABLE = "ledger-unreadable"  # 파일은 있으나 읽기/파싱/스키마 실패(손상).
+RECORD_OK = "ok"                       # 정상 파싱 — rows 가 그 시점 진실.
+RECORD_MISSING = "ledger-missing"      # 장부 파일 자체가 없다(fresh 홈).
+RECORD_UNREADABLE = "ledger-unreadable"  # 파일은 있으나 읽기/파싱/스키마 실패(손상).
 
 
 # ── 경로 마디 안전 술어 (POSIX·Windows 공통·두 축 공유) ────────────────────
@@ -346,7 +346,7 @@ class SlotResolutionError(Exception):
 class SlotPathResolution:
     """번호→경로 해소 결과 — 경로와 **판정 사유**를 함께 나른다.
 
-    `status` 는 `SLOT_PATH_OK`(경로 해소) / `SLOT_PATH_LEDGER_MISSING` / `SLOT_PATH_LEDGER_
+    `status` 는 `SLOT_PATH_OK`(경로 해소) / `SLOT_PATH_RECORD_MISSING` / `SLOT_PATH_LEDGER_
     UNREADABLE` / `SLOT_PATH_ROW_ABSENT`(정상 장부에 그 번호 행 없음) / `SLOT_PATH_CONFLICT`
     (같은 번호를 서로 다른 경로가 주장 — 모호) 중 하나다. 부재/읽기불능/행 부재는 호출부의 기존
     canonical 폴백이 정당하지만 **모순은 폴백 대상이 아니다** — 그 구분이 없으면 "장부를 못
@@ -373,8 +373,8 @@ class SlotPathResolution:
 
 
 SLOT_PATH_OK = "ok"
-SLOT_PATH_LEDGER_MISSING = LEDGER_MISSING
-SLOT_PATH_LEDGER_UNREADABLE = LEDGER_UNREADABLE
+SLOT_PATH_RECORD_MISSING = RECORD_MISSING
+SLOT_PATH_RECORD_UNREADABLE = RECORD_UNREADABLE
 SLOT_PATH_ROW_ABSENT = "row-absent"
 SLOT_PATH_CONFLICT = "conflict"
 
@@ -385,7 +385,7 @@ SLOT_PATH_CONFLICT = "conflict"
 # 파싱했고(`pm_handoff._parse_worktree_slot`·`worktree_pool.slot_pm_state_file`), 그래서 경로에
 # 이름이 없는 슬롯(경로 마디가 없는 행)은 어느 소비자도 해소하지 못했다.
 
-IDENTITY_FROM_LEDGER_SESSION = "ledger-session"   # 장부 행 session 값이 정체성을 줬다.
+IDENTITY_FROM_RECORD_SESSION = "ledger-session"   # 장부 행 session 값이 정체성을 줬다.
 IDENTITY_FROM_SLOT_PATH = "slot-path"             # 장부 정체성 부재 — pool 명명 규약(경로 마디).
 
 
@@ -437,7 +437,7 @@ class SlotIdentityResolution:
       - `SLOT_IDENTITY_OK` — 해소됨(`identity` 비어 있지 않음·어느 층인지는 `identity.source`).
       - `SLOT_IDENTITY_CONFLICT` — 같은 슬롯을 서로 다른 슬롯 키 session 이 주장(**장부 모순**).
         `identity` 는 `None` 이다 — 판정 불능을 판정으로 위장하지 않는다.
-      - `SLOT_IDENTITY_LEDGER_MISSING` / `..._UNREADABLE` / `..._ROW_ABSENT` — 장부가 답을 주지
+      - `SLOT_IDENTITY_RECORD_MISSING` / `..._UNREADABLE` / `..._ROW_ABSENT` — 장부가 답을 주지
         못한 세 사유(부재 / 손상 / 정상인데 그 슬롯 행 없음)이고 경로 규약도 키를 못 줬다.
       - `SLOT_IDENTITY_NO_SLOT` — 입력 슬롯 값 자체가 비었다.
 
@@ -459,8 +459,8 @@ class SlotIdentityResolution:
 
 SLOT_IDENTITY_OK = "ok"
 SLOT_IDENTITY_NO_SLOT = "no-slot"
-SLOT_IDENTITY_LEDGER_MISSING = LEDGER_MISSING
-SLOT_IDENTITY_LEDGER_UNREADABLE = LEDGER_UNREADABLE
+SLOT_IDENTITY_RECORD_MISSING = RECORD_MISSING
+SLOT_IDENTITY_RECORD_UNREADABLE = RECORD_UNREADABLE
 SLOT_IDENTITY_ROW_ABSENT = "row-absent"
 SLOT_IDENTITY_CONFLICT = "conflict"
 

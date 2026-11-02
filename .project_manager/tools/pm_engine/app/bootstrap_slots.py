@@ -290,7 +290,7 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
     True = 재설치를 실제로 수행하고 **성공**함.
     """
     hooks_dir = pm_paths.repo_hooks_dir(home)
-    contract_name = protected_hooks.PROTECTED_GATE_CONTRACT_NAME
+    contract_name = protected_hooks.PROTECTED_CHECK_CONTRACT_NAME
     protected = list(areas_store._repo_protected(home, repo))
     sidecar = Path(hooks_dir) / repo / "protected"
     if not sidecar.is_file():

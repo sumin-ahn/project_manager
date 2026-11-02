@@ -30,7 +30,7 @@ from pm_engine.cli import delegate_cmd
 from pm_engine.cli import hooks as cli_hooks
 
 from pm_engine.app import delegate_execute
-from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_collect
 from pm_engine.app import delegate_prepare
 from pm_engine.domain import delegate_rounds
 
@@ -248,18 +248,18 @@ def test_pm_log_snapshot_json_payload_is_utf8(capture_console, monkeypatch, tmp_
     assert json.loads(raw.decode('utf-8')) == {'systemMessage': LOSSY_SAMPLE, 'suppressOutput': False}
 
 
-def test_board_git_anchor_hook_json_is_utf8(capture_console, monkeypatch):
-    """git-anchor 하네스 훅 판정 JSON(한글 사유)이 cp949 콘솔에서도 무손실이다."""
-    verdict = {"verdict": "deny", "reason": LOSSY_SAMPLE}
+def test_board_git_grant_hook_json_is_utf8(capture_console, monkeypatch):
+    """사용자 1회 허용 기록 하네스 훅 JSON(한글 명령)이 cp949 콘솔에서도 무손실이다."""
     monkeypatch.setattr(
-        cli_hooks, "judge_git_anchor_command", lambda home, session, cwd, command, **_grants: verdict
+        cli_hooks, "record_git_grants", lambda home, session, cwd, prompt: [LOSSY_SAMPLE]
     )
+    monkeypatch.setattr(cli_hooks.sys, "stdin", io.TextIOWrapper(io.BytesIO(b"prompt\n"), encoding="utf-8"))
     stream = capture_console()
 
-    args = SimpleNamespace(session="S", cwd="/repo", command="git commit", grants=False)
-    assert cli_hooks.cmd_git_anchor(cli_hooks.adapter_home("/repo"), args) == 0
+    args = SimpleNamespace(session="S", cwd="/repo")
+    assert cli_hooks.cmd_git_grant(cli_hooks.adapter_home("/repo"), args) == 0
 
-    assert _machine_payload(stream) == verdict
+    assert _machine_payload(stream) == {"granted": [LOSSY_SAMPLE]}
 
 
 def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_path):
@@ -287,7 +287,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
 
     harvest_stream = capture_console()
     monkeypatch.setattr(
-        delegate_harvest, "harvest_ticket_copy",
+        delegate_collect, "collect_ticket_copy",
         lambda _home, **_kwargs: delegate_rounds.TicketHarvestResult(False, True),
     )
 

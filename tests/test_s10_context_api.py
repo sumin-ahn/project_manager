@@ -216,7 +216,7 @@ def test_durable_compaction_is_idempotent(tmp_path, monkeypatch):
         raise PermissionError("seen marker 삭제 불가")
 
     with monkeypatch.context() as patch:
-        patch.setattr(principle_store, "rearm_seen_marker", broken_rearm)
+        patch.setattr(principle_store, "reset_seen_marker", broken_rearm)
         with pytest.raises(PermissionError, match="seen marker 삭제 불가"):
             _judge(root, 0, boundary="00000000-0000-4000-8000-000000000002")
     assert "s-1.compact-00000000-0000-4000-8000-000000000002" not in _markers(root)  # 실패한 경계는 다음 호출이 다시 처리한다.
@@ -388,7 +388,7 @@ def test_principle_markers_and_errors_are_visible(tmp_path, capsys):
     assert "강제 push" in first["text"] and "파손 항목 1건" in first["text"]
     again = hooks.recall_principles(home, **call, main_thread=True)
     assert (again["count"], again["keys"], again["broken"]) == (0, [], 1)
-    hooks.rearm_principles(home, session="ses-1")
+    hooks.reset_principles(home, session="ses-1")
     assert hooks.recall_principles(home, **call, main_thread=True)["count"] == 1
     (wiki / "pm_principles.md").write_text(RULES, encoding="utf-8")
     assert hooks.recall_principles(home, session="ses-2", on="shell", text="ls", main_thread=True) is None
@@ -419,7 +419,7 @@ def test_principle_markers_and_errors_are_visible(tmp_path, capsys):
     assert hooks.claim_notice(home, session="ses-1", text="[git-check/warn] 같은 말") == {"status": "claimed"}
     assert hooks.claim_notice(home, session="ses-1", text="[git-check/warn] 같은 말") == {"status": "seen"}
     assert hooks.claim_notice(home, session="ses-2", text="[git-check/warn] 같은 말") == {"status": "claimed"}
-    membership = root / ".project_manager" / ".local" / "ctx-stop" / "ses-9.git-anchor"
+    membership = root / ".project_manager" / ".local" / "ctx-stop" / "ses-9.git-check"
     membership.mkdir(parents=True)
     assert hooks.claim_notice(home, session="ses-9", text="x") == {"status": "unavailable"}
 

@@ -867,10 +867,10 @@ def _default_watchdog_log(message: str) -> None:
     sys.stderr.flush()
 
 
-TIMEOUT_AXIS_IDLE = "idle"
-TIMEOUT_AXIS_WALL = "wall"
-TIMEOUT_AXIS_FIRST_EVENT = "first-event"
-TIMEOUT_AXIS_ATTR = "timeout_axis"
+TIMEOUT_KIND_IDLE = "idle"
+TIMEOUT_KIND_WALL = "wall"
+TIMEOUT_KIND_FIRST_EVENT = "first-event"
+TIMEOUT_KIND_ATTR = "timeout_axis"
 TIMEOUT_THRESHOLD_ATTR = "threshold_seconds"
 
 
@@ -899,7 +899,7 @@ class IdleTimeoutExpired(WatchdogTimeoutExpired):
     def __init__(self, cmd, timeout, *, idle_seconds: float,
                  output=None, stderr=None) -> None:
         super().__init__(
-            cmd, timeout, timeout_axis=TIMEOUT_AXIS_IDLE, silence_seconds=idle_seconds,
+            cmd, timeout, timeout_axis=TIMEOUT_KIND_IDLE, silence_seconds=idle_seconds,
             output=output, stderr=stderr,
         )
         self.idle_seconds = idle_seconds
@@ -911,7 +911,7 @@ class WallTimeoutExpired(WatchdogTimeoutExpired):
     def __init__(self, cmd, timeout, *, silence_seconds: float | None,
                  output=None, stderr=None) -> None:
         super().__init__(
-            cmd, timeout, timeout_axis=TIMEOUT_AXIS_WALL, silence_seconds=silence_seconds,
+            cmd, timeout, timeout_axis=TIMEOUT_KIND_WALL, silence_seconds=silence_seconds,
             output=output, stderr=stderr,
         )
 
@@ -1152,7 +1152,7 @@ def run_with_first_event_watchdog(
                         # coarse poll로 둘 다 지났더라도 더 이른 first-event 축을 최종 선택한다.
                         wall_expired = False
                         stalled = True
-                        last_axis = TIMEOUT_AXIS_FIRST_EVENT
+                        last_axis = TIMEOUT_KIND_FIRST_EVENT
                         last_threshold = float(first_event_timeout)
                         last_silence = _silence_seconds(proc, now, start)
                         last_reason = f"첫 이벤트 임계 {first_event_timeout:.0f}s 초과"
@@ -1236,12 +1236,12 @@ def run_with_first_event_watchdog(
     )
     headline = (
         f"startup stall 이 {attempts}회 연속 발생"
-        if last_axis == TIMEOUT_AXIS_FIRST_EVENT
+        if last_axis == TIMEOUT_KIND_FIRST_EVENT
         else f"overall watchdog 가 {attempts}회 연속 작동"
     )
     diagnosis = (
         " startup network fetch stall 의심(upstream #13841)."
-        if last_axis == TIMEOUT_AXIS_FIRST_EVENT else ""
+        if last_axis == TIMEOUT_KIND_FIRST_EVENT else ""
     )
     exhausted = StallWatchdogError(
         f"{headline}("

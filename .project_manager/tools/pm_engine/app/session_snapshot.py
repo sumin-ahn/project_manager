@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from pm_engine.domain import ctx_recovery
-from pm_engine.infra import delegate_ledger
+from pm_engine.infra import delegate_records
 import os
 from pm_engine.infra import pm_paths
 from pm_engine.infra import raw_output
@@ -213,14 +213,14 @@ def _wip_slot_line(home, task: str, *, deadline: float, monotonic=time.monotonic
 def _inflight_section(home, task: str, *, deadline: float, monotonic=time.monotonic) -> str:
     """미회수 라운드 준비·미마감 raw·claimed 티켓·슬롯 WIP 을 in-process 조회로 편입한다.
 
-    장부 조회는 subprocess 0(``delegate_ledger.ticket_copy_records``·``raw_output.raw_records``
+    장부 조회는 subprocess 0(``delegate_records.ticket_copy_records``·``raw_output.raw_records``
     in-process 호출) — WIP git 프로브(``_wip_slot_line``)만 유일한 예외(자체 상한). 조회 예외는
     전파해 snapshot 명령이 실패한다.
     각 불릿은 ``_inflight_safe_text``/``_inflight_capped_line`` 으로 이미 단일 줄이지만, 물리
     행 수도 조립 단계에서 실제로 강제한다(``_INFLIGHT_MAX_LINES`` — 선언만
     되고 조립에서 미강제였던 결함).
     """
-    unharvested_rows = delegate_ledger.ticket_copy_records(home.local_dir.parent.parent, unharvested=True)
+    unharvested_rows = delegate_records.ticket_copy_records(home.local_dir.parent.parent, unharvested=True)
     _raw_dir, raw_ledger = raw_output.raw_storage_paths(home.local_dir.parent.parent, "delegate")
     unfinished_raw_rows = raw_output.unfinished_raw_records(raw_ledger, lock=False)
     tickets_dir, _counts = _ticket_counts(home)

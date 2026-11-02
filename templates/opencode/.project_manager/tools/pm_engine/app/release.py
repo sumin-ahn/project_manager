@@ -16,16 +16,16 @@ from pm_engine.infra import clock, fs, git, regression_store, review_rounds
 from pm_engine.app import regression
 
 
-                           # tests/test_release_wave.py `_EXPECTED_RELEASE_TESTS` 와 값 공유.
-LIVEGATE_TEST_CMD = "pytest -m release -q"   # 라이브 릴리즈 wave selection.
+                           # tests/test_release_cluster.py `_EXPECTED_RELEASE_TESTS` 와 값 공유.
+LIVE_TEST_CMD = "pytest -m release -q"   # 라이브 릴리즈 wave selection.
 
 # ── 릴리즈 must-fix 잔여 차단 (릴리즈 절차의 첫 기계 관문) ────────────────
 # "must-fix 잔여가 있으면 릴리즈하지 않는다"를 PM 규율이 아니라 기계 게이트로 박는다. 라운드
 # 상한으로 종결된 게이트의 잔여 must-fix가 현재 티켓 fix에서 닫히지 않은 채 릴리즈 절차가
 # 진행되던 것이 근절 대상이다.
 #
-# 판정 입력은 **장부의 기록 사실**뿐이다 — 최종 라운드의 must_fix 수(`gate_residual_must_fix`),
-# 처분 선언(`gate_resolution`)과 기계 확인 증거다. PM 자의 판정("사소함·엣지")이 들어갈
+# 판정 입력은 **장부의 기록 사실**뿐이다 — 최종 라운드의 must_fix 수(`review_ticket_residual_must_fix`),
+# 처분 선언(`review_ticket_resolution`)과 기계 확인 증거다. PM 자의 판정("사소함·엣지")이 들어갈
 # 자리를 만들지 않는다. 우회 플래그도 없다.
 #
 # 검사 지점이 `livegate record` 인 이유는 그것이 릴리즈 절차의 첫 기계 관문이고 push 보호훅이 그
@@ -40,7 +40,7 @@ _MUST_FIX_BLOCK_GUIDANCE = (
     "{items}\n"
     "  해결 방법 — 현재 티켓 fix의 기계 확인 증거로 리뷰 집계 티켓마다 처분을 선언하세요:\n"
     "    python3 .project_manager/tools/additional_reviewer.py "
-    "--resolve-review <리뷰 집계 티켓> --pm-verified\n"
+    "--resolve-review <T-NNNN> --pm-verified\n"
     "  라운드 기록: {ledger}"
 )
 
@@ -65,7 +65,7 @@ def _release_rounds_ledger(flag: Path) -> Path:
 
     정렬이 성립하는 범위는 **engine-root 모드**(보호훅 활성)다 — 훅 부재 폴백(`_LG_NO_HOOK`)에서는 호출된
     사본의 `.local` 이 곧 장부 위치라 같은 식이 그대로 맞는다(단일-repo 형상)."""
-    return flag.parent / review_rounds.REVIEW_ROUNDS_LEDGER_NAME
+    return flag.parent / review_rounds.REVIEW_ROUNDS_RECORD_NAME
 
 
 def _release_must_fix_marker(flag: Path) -> Path:

@@ -154,13 +154,13 @@ def _resolve_livegate_flag(home, cwd: str) -> tuple[Path, str]:
     board.py 가 실재하면(훅의 `[ -f "$engine_root/.../board.py" ]` fail-closed 게이트와 동일
     검증) `<engine-root>/.project_manager/.local/livegate.json` 을 돌려준다. 반환:
       - (PM 홈 .local livegate.json, `_LG_ENGINE_ROOT`) — 훅 활성·단일 소스.
-      - (`pm_paths.livegate_flag`, `_LG_NO_HOOK`) — livegate 훅 없음(현행 폴백 무변경).
-      - (`pm_paths.livegate_flag`, `_LG_BROKEN`) — 훅 sidecar 는 있으나 engine-root 무효(빈값/board.py
+      - (`pm_paths.live_test_flag`, `_LG_NO_HOOK`) — livegate 훅 없음(현행 폴백 무변경).
+      - (`pm_paths.live_test_flag`, `_LG_BROKEN`) — 훅 sidecar 는 있으나 engine-root 무효(빈값/board.py
         부재). 이땐 훅 read 위치와 기록 위치가 갈릴 수 있어 호출부가 fail-loud 로 거부한다.
     """
     hooks_path = git._git_config_get(cwd, "core.hooksPath")
     if not hooks_path:
-        return pm_paths.livegate_flag(home), _LG_NO_HOOK
+        return pm_paths.live_test_flag(home), _LG_NO_HOOK
     # 상대 `core.hooksPath` 는 git 이 worktree root(=`cwd`) 기준으로 해소한다(프로세스 cwd 아님).
     # 프레임워크 설치는 절대경로라 평시 무영향이나, 수동/상대 설정 방어로 git 시맨틱을 미러.
     hp = Path(hooks_path)
@@ -170,14 +170,14 @@ def _resolve_livegate_flag(home, cwd: str) -> tuple[Path, str]:
     if not sidecar.is_file():
         # `core.hooksPath` 는 있으나 engine-root sidecar 부재 = livegate 보호훅 아님(예: PM 홈
         # 자신의 회귀 훅·채택자 custom 훅) → 훅 부재 폴백(오탐 fail-loud 방지).
-        return pm_paths.livegate_flag(home), _LG_NO_HOOK
+        return pm_paths.live_test_flag(home), _LG_NO_HOOK
     lines = fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
     engine_root = lines[0].strip() if lines else ""
     if not engine_root:
-        return pm_paths.livegate_flag(home), _LG_BROKEN
+        return pm_paths.live_test_flag(home), _LG_BROKEN
     root = Path(engine_root)
     if not (root / ".project_manager" / "tools" / "board.py").is_file():
-        return pm_paths.livegate_flag(home), _LG_BROKEN
+        return pm_paths.live_test_flag(home), _LG_BROKEN
     return root / ".project_manager" / ".local" / "live-test.json", _LG_ENGINE_ROOT
 
 
@@ -192,8 +192,8 @@ def _resolve_regression_flag(home, cwd: str) -> tuple[Path, str]:
     # 불필요하게 늘리지 않고 기존 clone-local 좌표를 그대로 쓴다.
     if not (Path(cwd) / ".git").exists():
         return _regression_flag_for(home, None), _LG_NO_HOOK
-    livegate_flag, mode = _resolve_livegate_flag(home, cwd)
-    local_dir = livegate_flag.parent if mode == _LG_ENGINE_ROOT else home.local_dir
+    live_test_flag, mode = _resolve_livegate_flag(home, cwd)
+    local_dir = live_test_flag.parent if mode == _LG_ENGINE_ROOT else home.local_dir
     return _regression_flag_for(home, None, local_dir=local_dir), mode
 
 

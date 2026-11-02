@@ -6,7 +6,7 @@
 """
 
 import ast
-from pm_engine.app import completion_gate
+from pm_engine.app import completion_check
 from pm_engine.cli import board_cmd
 
 
@@ -253,8 +253,8 @@ def test_tickets_readme_dod_contract_matches_complete_gate():
     """DoD 축 서술이 게이트 실측과 일치한다 — 산문 DoD 면제 문구가 남아 있으면 실패."""
     board = _load_board()
     for label, body in _DOD_BLOCKED_SHAPES.items():
-        assert completion_gate._dod_open_items(body), f"게이트가 {label} 형상을 막지 않는다"
-    assert completion_gate._dod_open_items(_DOD_PASSING_SHAPE) == [], "부분 이월이 막힌다"
+        assert completion_check._dod_open_items(body), f"게이트가 {label} 형상을 막지 않는다"
+    assert completion_check._dod_open_items(_DOD_PASSING_SHAPE) == [], "부분 이월이 막힌다"
 
     for rel in TICKETS_README_COPIES:
         text = _read(rel)

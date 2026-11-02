@@ -31,7 +31,7 @@ from pm_engine.domain import review_state
 # 하고, 이 모듈이 그 표의 사본을 들지 않는다.
 ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY = (
     "additional_reviewer.incomplete_rounds_max")
-ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer.session_budget"
+ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY = "additional_reviewer.session_budget"
 
 ADDITIONAL_REVIEWER_TIMEOUT_KEY = "additional_reviewer.timeout"
 ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY = "additional_reviewer.idle_timeout"
@@ -126,8 +126,8 @@ _VERSIONED_BLOCK_RULES = """\
   필요하면 꺾쇠 없이 `ticket ID`처럼 평문으로 적는다.
 - 유효한 구체값 예: location=`.project_manager/tools/additional_reviewer.py:_VERSIONED_BLOCK_RULES` ·
   failure=`금지어 안내가 parser 목록과 어긋난다` · design=`parser 상수에서 안내를 렌더한다` ·
-  test=`tests/test_additional_reviewer_ticket_harvest.py` ·
-  command=`python3 -m pytest tests/test_additional_reviewer_ticket_harvest.py -q` · expected=`passed`.
+  test=`tests/test_additional_reviewer_ticket_collect.py` ·
+  command=`python3 -m pytest tests/test_additional_reviewer_ticket_collect.py -q` · expected=`passed`.
 - 위 티켓 본문에 이미 있는 블록(지난 라운드 산출·빈 양식)을 회신에 **재인용하지 마라** —
   이 회신에는 네가 이번에 낸 블록 하나만 있어야 한다.
 - 블록이 없거나 스키마를 어기면 엔진이 이 라운드를 돌려받지 않는다(라운드 파일 없음 · 종료코드 ≠ 0).
@@ -427,14 +427,14 @@ def _target_rev_fingerprint(diff: str) -> str:
 
 # ── wave 예산 절 (전 게이트 합계) ───────────────────────────────────────────
 
-WAVE_SECTION_KEY = "wave"
+SESSION_BUDGET_SECTION_KEY = "wave"
 
 # 장부 최상위에서 wave 절이 차지하는 **예약 키** — 게이트 이름으로 쓸 수 없다. 같은 키를 게이트가
 # 쓰면 `_gate_entry` 와 `_wave_state` 가 한 항목을 서로 덮어써 게이트 count 는 저장되지 않고 wave
 # 예산은 매 실행 0 으로 되살아난다(두 상한이 조용히 무력화). 게이트 이름은 형식 강제 대상이 아니라
 # 자유 문자열이 실사용이므로(장부 실측: `wave4-b1`·`wave4-b3r2`) `T-NNNN` 강제 대신 **예약 키만**
 # 거부한다 — 기존 이름은 하나도 깨지지 않고 충돌 가능성만 사라진다.
-_RESERVED_LEDGER_KEYS: frozenset[str] = frozenset({WAVE_SECTION_KEY})
+_RESERVED_LEDGER_KEYS: frozenset[str] = frozenset({SESSION_BUDGET_SECTION_KEY})
 
 # 게이트 항목임을 알아보는 필드 — 예약 키 자리에 이런 항목이 들어 있으면 예약 키 도입 *이전에*
 # 그 이름을 게이트로 쓴 장부다(교체 사실을 조용히 넘기지 않고 알린다).
@@ -477,8 +477,8 @@ def _wave_frame_corruption(raw: object) -> str | None:
     )):
         return None
     if not isinstance(raw, dict):
-        return f"`{WAVE_SECTION_KEY}` 절 형식 오류({type(raw).__name__})"
-    return f"예약 키 `{WAVE_SECTION_KEY}` 자리의 옛 리뷰 집계 티켓 항목"
+        return f"`{SESSION_BUDGET_SECTION_KEY}` 절 형식 오류({type(raw).__name__})"
+    return f"예약 키 `{SESSION_BUDGET_SECTION_KEY}` 자리의 옛 리뷰 집계 티켓 항목"
 
 
 def _wave_spent_corruption(spent: object) -> str | None:
@@ -489,9 +489,9 @@ def _wave_spent_corruption(spent: object) -> str | None:
     if spent is None:
         return None
     if isinstance(spent, bool) or not isinstance(spent, int):
-        return f"`{WAVE_SECTION_KEY}.spent` 값 손상({spent!r})"
+        return f"`{SESSION_BUDGET_SECTION_KEY}.spent` 값 손상({spent!r})"
     if spent < 0:
-        return f"`{WAVE_SECTION_KEY}.spent` 음수({spent})"
+        return f"`{SESSION_BUDGET_SECTION_KEY}.spent` 음수({spent})"
     return None
 
 
@@ -530,15 +530,15 @@ def _recorded_round_outcomes(ledger: dict, *, since: str | None = None) -> int:
 
 def _gate_names(ledger: dict) -> list[str]:
     """장부의 게이트 키만 정렬해 돌려준다 — 예약 키(`wave`)는 게이트가 아니다."""
-    return sorted(key for key in ledger if key != WAVE_SECTION_KEY)
+    return sorted(key for key in ledger if key != SESSION_BUDGET_SECTION_KEY)
 
 
 def _reset_wave(ledger: dict) -> dict:
     """`--reset-session-budget` — ack 시점에 예산을 리셋한다(다음 호출이 새 시작 시각을 찍는다).
 
     새 세대 id 를 발급한다 — 리셋 전에 예약한 실행의 환불이 이 wave 의 예산을 깎지 못하게."""
-    ledger[WAVE_SECTION_KEY] = {"id": _new_wave_id(), "started": None, "spent": 0}
-    return ledger[WAVE_SECTION_KEY]
+    ledger[SESSION_BUDGET_SECTION_KEY] = {"id": _new_wave_id(), "started": None, "spent": 0}
+    return ledger[SESSION_BUDGET_SECTION_KEY]
 
 
 def _round_has_verdict(result: dict) -> bool:

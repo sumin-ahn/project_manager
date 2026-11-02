@@ -6,7 +6,7 @@ import pm_engine.cli.handoff_dirty
 import pm_engine.cli.log
 import pm_engine.cli.handoff
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import importlib.util
 from pathlib import Path

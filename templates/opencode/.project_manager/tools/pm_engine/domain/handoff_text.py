@@ -24,7 +24,7 @@ _LOG_ENTRY_RE = re.compile(r"^## \[\d{4}-\d{2}-\d{2}\]", re.MULTILINE)
 SLIDING_WINDOW_SIZE = 3
 
 
-DIRTY_GATE_LIST_LIMIT = 20
+DIRTY_CHECK_LIST_LIMIT = 20
 
 
 SHIPPING_GLOBS = (
@@ -259,7 +259,7 @@ def _session_entries_text(entries: list[str], boundary_unresolved: bool = False)
     )
     if not entries:
         # 0건이면 경계 표기를 붙이지 않는다 — 빈 목록엔 "최근 N건" 서술이 무의미(혼동만).
-        return " (이 세션 박제 entry 없음)"
+        return " (이 세션 기록 entry 없음)"
     return notice + "\n" + "\n".join(f"  - {header}" for header in entries)
 
 
@@ -290,7 +290,7 @@ def _normalize_session_num(session_num: int | str) -> str:
 HANDOFF_LOG_SKELETON_TEMPLATE = """\
 ## [{date}] handoff | PM {session_num}차{session_tag} → 다음 PM 세션
 
-- 이 세션 박제 entries:{entries}
+- 이 세션 기록 entries:{entries}
 - 메타 학습: <PM 손 — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".>
 - pending user intent: {pending_intent}
 {dirty_ack_line}- 회귀/incident: <PM 손 — 회귀 "N passed / 상태" 1줄(green 도 — baseline) + 비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 재열거만 금지.)>
@@ -400,7 +400,7 @@ _HANDOFF_HEADER_SESSION_RE = re.compile(
 
 
 _SESSION_ENTRIES_BLOCK_RE = re.compile(
-    r"^- 이 세션 박제 entries:[^\n]*"
+    r"^- 이 세션 기록 entries:[^\n]*"
     r"(?:\n  - ## \[[^\n]*)*",
     re.MULTILINE,
 )
@@ -437,7 +437,7 @@ def _prepare_handoff_log_change(
     모호(marker 0/2+)는 현행 append로 보수적 폴백하며 warning 한 줄을 돌려준다.
 
     dirty_ack_note 는 신규 entry(append) skeleton 에만 박힌다 — 같은-세션 갱신 모드는 기계
-    소유 구획('이 세션 박제 entries')만 건드리는 byte-멱등 경로라 본문 줄을 새로 끼우지 않는다.
+    소유 구획('이 세션 기록 entries')만 건드리는 byte-멱등 경로라 본문 줄을 새로 끼우지 않는다.
     """
     normalized_num = _normalize_session_num(session_num)
     candidates = [
@@ -489,7 +489,7 @@ def _prepare_handoff_log_change(
             # dict는 insertion order를 보존해 재실행도 byte-멱등이다.
             entries = list(dict.fromkeys([*old_entries, *fresh_entries]))
             refreshed_block = (
-                "- 이 세션 박제 entries:" + _session_entries_text(entries)
+                "- 이 세션 기록 entries:" + _session_entries_text(entries)
             )
             if block_newline != "\n":
                 refreshed_block = refreshed_block.replace("\n", block_newline)
@@ -514,7 +514,7 @@ def _prepare_handoff_log_change(
             )
             return True, updated, refreshed_block, None
         warning = (
-            "같은-세션 판정 실패 — 기존 handoff의 '이 세션 박제 entries' 구획 경계가 "
+            "같은-세션 판정 실패 — 기존 handoff의 '이 세션 기록 entries' 구획 경계가 "
             f"모호함(marker {len(blocks)}개); 보수적으로 새 entry를 append합니다 "
             "(이중 기록 가능)."
         )
@@ -813,11 +813,11 @@ def flatten_ack_reason(reason: str) -> str:
 
 
 def _format_dirty_paths(paths: list[str]) -> list[str]:
-    """차단/경고 메시지의 경로 열거 줄 목록 — DIRTY_GATE_LIST_LIMIT 초과분은 '… 외 N건' 으로 접는다."""
+    """차단/경고 메시지의 경로 열거 줄 목록 — DIRTY_CHECK_LIST_LIMIT 초과분은 '… 외 N건' 으로 접는다."""
     ordered = sorted(paths)
-    lines = [f"    {path}" for path in ordered[:DIRTY_GATE_LIST_LIMIT]]
-    if len(ordered) > DIRTY_GATE_LIST_LIMIT:
-        lines.append(f"    … 외 {len(ordered) - DIRTY_GATE_LIST_LIMIT}건")
+    lines = [f"    {path}" for path in ordered[:DIRTY_CHECK_LIST_LIMIT]]
+    if len(ordered) > DIRTY_CHECK_LIST_LIMIT:
+        lines.append(f"    … 외 {len(ordered) - DIRTY_CHECK_LIST_LIMIT}건")
     return lines
 
 

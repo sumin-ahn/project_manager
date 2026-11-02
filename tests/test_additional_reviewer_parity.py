@@ -19,7 +19,7 @@ cwd/env 를 보고, 스텁은 sentinel 로 즉시 빠져나와 장부·raw 경�
 from __future__ import annotations
 
 from pm_engine.infra import pm_paths
-from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_collect
 from pm_engine.app import reviewer_run
 
 from pm_engine.infra.harness import delegate_env
@@ -145,7 +145,7 @@ def _capture_run_conditions(external, monkeypatch, *, harness: str,
         harness=harness, model="m",
     )
     with pytest.raises(_Spawned):
-        reviewer_harvest._run_review_round(
+        reviewer_collect._run_review_round(
             pm_paths.home_at(Path(diff_root).resolve()), argparse.Namespace(), conf={}, prompt="p",
             reviewer_cmd=target.command, timeout=1, idle_timeout=1,
             output_dir=output_dir, conf_path=None, profile=None,

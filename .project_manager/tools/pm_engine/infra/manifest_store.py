@@ -395,30 +395,6 @@ def resolve_manifest_for_dest(dest_root: Path, source_root: Path) -> Path:
     raise FileNotFoundError("engine.manifest 없음 (dest·source 둘 다).")
 
 
-def _migrate_legacy_guest_markers(text: str) -> tuple[str, bool]:
-    """옛 세대 guest 마커 라인을 현행 리터럴로 치환 — (치환된 텍스트, 변경 여부).
-
-    마커가 없거나 이미 현행이면 `(text, False)`(멱등). 쓰기 경로는 이 함수를 통과한 뒤에만 절을
-    재부착하므로 디스크에 남는 세대는 항상 하나다(읽기 관용·쓰기 단일)."""
-    lines = text.splitlines()
-    migrated: list[str] = []
-    changed = False
-    for line in lines:
-        s = line.strip()
-        if s in manifest_rules._GUEST_MANIFEST_BEGIN_LEGACY:
-            migrated.append(manifest_rules._GUEST_MANIFEST_BEGIN)
-            changed = True
-        elif s in manifest_rules._GUEST_MANIFEST_END_LEGACY:
-            migrated.append(manifest_rules._GUEST_MANIFEST_END)
-            changed = True
-        else:
-            migrated.append(line)
-    if not changed:
-        return text, False
-    out = "\n".join(migrated)
-    return (out + "\n" if text.endswith("\n") else out), True
-
-
 def _reattach_guest_block(new_text: str, guest_block: str | None) -> str:
     """upstream 사본(new_text) 뒤에 guest 절(guest_block)을 재부착 — block 없으면 new_text 그대로."""
     if not guest_block:
@@ -489,28 +465,16 @@ def _copy_manifest_preserving_guest(
     재부착 전 **upstream core 가 소유하게 된 경로를 guest 절에서 차감**한다(소유권 전환·이중 등재
     방지). guest 절이 없거나(비-add-harness) 전량 승격되면 순수 copy2 와 동일(무영향).
 
-    dest 가 **옛 세대 마커**로 기록돼 있으면 읽기 직전에 현행 리터럴로 1 회 치환한다 — 재부착되는
-    절은 항상 현행 리터럴이라 다음 sync 부터는 단일 세대만 남는다(별도 마이그레이션 커맨드 없이
-    채택자의 다음 `pm_update` 한 번으로 정상화).
-
-    `backfill_lines`(파생 엔진 행)를 주면 **마커 세대 마이그레이션 뒤** 그 절에 병합해 기록한다 —
+    `backfill_lines`(파생 엔진 행)를 주면 그 절에 병합해 기록한다 —
     절을 쓰는 지점이 여기 하나뿐이라 파생분 지속화도 같은 write 에 실린다(`--paths` 선검증이 파일만
-    읽어도 정합). dry-run 은 apply 를 타지 않으므로 자동으로 무기록이다.
-
-    ⚠ 알려진 한계: self-heal 이 `legacy_preserved` 인 코호트는 self-prop 자체가 계획에서 빠지므로
-    (로컬 manifest 불가침) 이 치환이 도달하지 않는다 — 읽기 관용 덕에 동작은 정상이고, 세대 수렴은
-    그 채택자가 legacy 상태를 벗어나는 시점으로 미뤄진다."""
+    읽어도 정합). dry-run 은 apply 를 타지 않으므로 자동으로 무기록이다."""
     guest_block = None
     try:
         if dst.is_file():
-            dst_text, migrated = _migrate_legacy_guest_markers(
-                render_io._normalize_newlines(fs.read_text_shared(dst, encoding="utf-8")))
-            if migrated:
-                print("✓ 추가 하네스 절 마커 버전 이관 (옛 리터럴 → 현행)")
+            dst_text = render_io._normalize_newlines(fs.read_text_shared(dst, encoding="utf-8"))
             guest_block = manifest_rules._extract_guest_manifest_block(dst_text)
     except OSError:
         guest_block = None
-    # 세대 마이그레이션 → 파생 백필 순서(치환된 현행 절 위에 기록·조합 시 절 소실 0).
     guest_block = _merge_guest_backfill_lines(guest_block, backfill_lines or [])
     # `sp` 는 파일 경로이거나 **인메모리 소스**(`_ManifestTextSource`·합집합 manifest)다. 공유
     # 읽기는 실제 파일에만 의미가 있으므로 경로일 때만 seam 을 지난다(아래 `isinstance` 분기와

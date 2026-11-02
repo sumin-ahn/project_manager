@@ -451,7 +451,7 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
     real_run = subprocess.run
 
     def guarded_run(cmd, *args, **kwargs):
-        if cmd == release.LIVEGATE_TEST_CMD:
+        if cmd == release.LIVE_TEST_CMD:
             runner_calls.append(cmd)
         return real_run(cmd, *args, **kwargs)
 
@@ -463,7 +463,7 @@ def test_t0962_slot_selector_without_task_is_refused(board, monkeypatch, command
                    cluster_store.clusters_dir(pm_paths.home_at(board.REPO)))
         files = {path.relative_to(tickets).as_posix(): path.read_bytes()
                  for folder in folders for path in folder.glob("*") if path.is_file()}
-        for flag in (pm_paths.regression_flag(pm_paths.home_at(board.REPO)), pm_paths.livegate_flag(pm_paths.home_at(board.REPO))):
+        for flag in (pm_paths.regression_flag(pm_paths.home_at(board.REPO)), pm_paths.live_test_flag(pm_paths.home_at(board.REPO))):
             files[flag.name] = flag.read_bytes() if flag.exists() else None
         return files
 

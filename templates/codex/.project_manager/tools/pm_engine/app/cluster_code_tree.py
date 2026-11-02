@@ -30,7 +30,7 @@ def resolve_code_tree(home, cluster: str, *, run_git_stdout_at=None) -> tuple[Pa
                       "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
                       "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시적으로 다시 연결하라")
     ledger_status, rows = lease_store._read_lease_rows_status(pm_paths.leases_file(home))
-    if ledger_status == identity_args.LEDGER_UNREADABLE:
+    if ledger_status == identity_args.RECORD_UNREADABLE:
         raise finish_rules._CloseObservationFailure(
             f"대여 기록을 읽지 못했다 ({pm_paths.leases_file(home)}) — 작업 트리를 찾을 곳을 정할 수 없다.")
     # 작업 폴더(실경로 → 대여 행 경로) — git 작업 트리인 것만, 대여 기록 순서대로.

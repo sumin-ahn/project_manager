@@ -240,7 +240,7 @@ def test_new_config_with_old_driver_is_detected_as_lockout(tmp_path):
     assert finding.subject == _GIT_ANCHOR_FLAG
     assert finding.unmet_paths == (_DRIVER_REL,), \
         "래퍼는 신세대인데 드라이버까지 미충족으로 뭉뚱그렸다"
-    assert finding.remedy == hook_sets.HOOK_SET_REMEDY_ENGINE_STALE
+    assert finding.remedy == hook_sets.HOOK_SET_FIX_ENGINE_STALE
 
 
 def test_old_config_with_new_driver_is_not_flagged(tmp_path):
@@ -306,8 +306,8 @@ def test_config_ahead_of_engine_prescribes_accept_not_pm_update(tmp_path):
 
     findings = hook_sets.judge_adapter_hook_sets(dest, source)
 
-    assert [f.remedy for f in findings] == [hook_sets.HOOK_SET_REMEDY_CONFIG_AHEAD], findings
-    lines = " ".join(hook_sets.hook_set_remedy_lines(findings[0]))
+    assert [f.remedy for f in findings] == [hook_sets.HOOK_SET_FIX_CONFIG_AHEAD], findings
+    lines = " ".join(hook_sets.hook_set_fix_lines(findings[0]))
     assert "sync-adapter-config --accept" in lines and _SETTINGS_REL in lines
 
 
@@ -317,7 +317,7 @@ def test_engine_stale_prescribes_pm_update_with_the_unmet_files(tmp_path):
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
 
-    lines = " ".join(hook_sets.hook_set_remedy_lines(
+    lines = " ".join(hook_sets.hook_set_fix_lines(
         hook_sets.judge_adapter_hook_sets(dest, source)[0]))
 
     assert "pm-update" in lines and _DRIVER_REL in lines
@@ -331,8 +331,8 @@ def test_missing_source_root_falls_back_to_both_prescriptions(tmp_path):
 
     findings = hook_sets.judge_adapter_hook_sets(dest, None)
 
-    assert [f.remedy for f in findings] == [hook_sets.HOOK_SET_REMEDY_UNKNOWN]
-    lines = hook_sets.hook_set_remedy_lines(findings[0])
+    assert [f.remedy for f in findings] == [hook_sets.HOOK_SET_FIX_UNKNOWN]
+    lines = hook_sets.hook_set_fix_lines(findings[0])
     assert "pm-update" in lines[0] and "sync-adapter-config --accept" in lines[1]
 
 
@@ -2053,7 +2053,7 @@ def test_remedy_line_omits_empty_parentheses(tmp_path):
     blocker = decision.blockers[0]
     assert blocker.unmet_paths == (), blocker
 
-    lines = hook_sets.hook_set_remedy_lines(blocker)
+    lines = hook_sets.hook_set_fix_lines(blocker)
 
     assert lines and all("()" not in line for line in lines), lines
     assert any("먼저 받아라" in line for line in lines), lines
@@ -2061,7 +2061,7 @@ def test_remedy_line_omits_empty_parentheses(tmp_path):
     stale = hook_sets.judge_adapter_hook_sets(*_make_case(
         tmp_path / "stale", dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD))[0]
-    assert f"({_DRIVER_REL})" in hook_sets.hook_set_remedy_lines(stale)[0]
+    assert f"({_DRIVER_REL})" in hook_sets.hook_set_fix_lines(stale)[0]
 
 
 def test_coupled_hook_set_paths_takes_declarations_keyword_only():

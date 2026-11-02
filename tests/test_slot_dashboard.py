@@ -28,7 +28,7 @@ from pm_engine.cli import bootstrap_report
 from pm_engine.domain import dashboard
 from pm_engine.infra import python_env
 
-from _pool_seams import bind_pool
+from _pool_overrides import bind_pool
 
 import contextlib
 import importlib.util

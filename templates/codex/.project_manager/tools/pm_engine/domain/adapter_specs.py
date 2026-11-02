@@ -11,7 +11,7 @@ from typing import NamedTuple
 # 열리고, 그중 **config 가 앞선 조합만** 락아웃이다(v1.7.0 흡수 실측: 신 settings.json 의
 # `--git-anchor-hook` 을 구 pm_orch_claude.py 가 argparse rc2 로 거부 → PreToolUse rc2 = 도구 차단
 # → Bash 전면 락아웃). 반대 방향(구 config + 신 드라이버)은 훅 미발화라 무해하다
-# (tests/test_git_anchor_guard.py 의 unknown-flag rc0 관용).
+# (tests/test_git_check_guard.py 의 unknown-flag rc0 관용).
 #
 # 판정을 하드코딩 claude 전용으로 두지 않기 위해 검사 대상은 전부 이 표에서만 온다. 등록 하네스
 # 전수가 키를 가져야 하며(가드가 강제), 훅 커맨드를 선언하는 config 가 없는 하네스는 빈
@@ -140,7 +140,7 @@ ADAPTER_HOOK_SET = {
     # opencode 는 훅 커맨드를 선언하는 config 가 없다 — 플러그인은 `.opencode/plugins/`
     #   autoload 라 config 가 호출 형태를 담지 않는다. 판정 대상은 없지만 실행 중 하네스가 읽는
     #   파일이라 원자 write 대상에는 든다. `lib/` 도 함께다 — 플러그인 3종이 로드 시점에
-    #   `../lib/*-core.cjs` 를 즉시 import 하므로(plugins/ctx-guard.js·git-anchor.js·
+    #   `../lib/*-core.cjs` 를 즉시 import 하므로(plugins/ctx-guard.js·git-check.js·
     #   safe-write.js 실측) 코어가 부분 파일이면 플러그인 로드 자체가 깨진다. claude 축이 공유
     #   코어 `ctx_guard.py` 를 넣은 것과 같은 이유다(하네스 간 비대칭 금지).
     "opencode": AdapterHookSetSpec(

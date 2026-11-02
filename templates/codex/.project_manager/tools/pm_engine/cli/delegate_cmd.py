@@ -20,8 +20,8 @@ from pm_engine.app import delegate_cluster_review
 from pm_engine.infra import delegate_config
 from pm_engine.domain import delegate_errors
 from pm_engine.app import delegate_execute
-from pm_engine.app import delegate_harvest
-from pm_engine.infra import delegate_ledger
+from pm_engine.app import delegate_collect
+from pm_engine.infra import delegate_records
 from pm_engine.app import delegate_prepare
 from pm_engine.domain import delegate_rounds
 from pm_engine.domain import delegate_run_rules
@@ -36,7 +36,7 @@ from pm_engine.domain import review_contract
 from pm_engine.domain import review_form
 from pm_engine.domain import review_state
 from pm_engine.domain import round_rules
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 import sys
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import ticket_store
@@ -128,7 +128,7 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
         ):
             print(
                 f"경고: raw 레코드 {record_id}는 완료 보존창"
-                f"({raw_output.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 "
+                f"({raw_output.RAW_RECORD_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 "
                 "기록에서 제거됨"
             )
     print(f"마감 기록 파일: {resolved_ledger}")
@@ -341,7 +341,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     )
     prepare.add_argument(
         "--role", required=True,
-        choices=tuple(sorted((delegate_ledger.TICKET_COPY_ROLES - {review_form.ADDITIONAL_REVIEWER_ROLE, "researcher"}))),
+        choices=tuple(sorted((delegate_records.TICKET_COPY_ROLES - {review_form.ADDITIONAL_REVIEWER_ROLE, "researcher"}))),
         help="code-reviewer 는 --cluster 로만 준비한다(리뷰 단위 = 묶음 · 엔진 프롬프트 파일을 낸다)",
     )
     prepare.add_argument(
@@ -523,9 +523,9 @@ def _cmd_ticket(home, argv: list[str]) -> int:
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             owner = pm_paths.resolve_pm_home_for_repo(home.local_dir.parent.parent)
             home = pm_paths.home_at(home.root, pm_home=owner, board_root=pm_paths._board_root_at(owner))
-            ledger = delegate_ledger._delegate_rounds_ledger_path(owner)
+            ledger = delegate_records._delegate_rounds_ledger_path(owner)
             print(f"조회 기록 파일: {ledger}")
-            rows = delegate_ledger.ticket_copy_records(
+            rows = delegate_records.ticket_copy_records(
                 owner, ticket=args.ticket, unharvested=args.uncollected,
             )
             label = "돌려받지 않은 라운드 준비" if args.uncollected else "최근 라운드 준비"
@@ -570,7 +570,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
                 return 3
             if args.ticket and not ticket_rules._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
-            if args.cluster and not delegate_ledger._is_valid_cluster_id(args.cluster):
+            if args.cluster and not delegate_records._is_valid_cluster_id(args.cluster):
                 parser.error("--cluster는 board 묶음 기록 id 형식이어야 합니다")
             if args.role == review_form.INTERNAL_REVIEW_ROLE and not args.cluster:
                 parser.error("code-reviewer 는 --cluster 로만 준비합니다(리뷰 단위 = 묶음)")
@@ -641,7 +641,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
             return 0
         if copy.is_dir():
             # 디렉터리 인자 = run-dir. 행마다 같은 회수 판정을 통과시키고 결과를 티켓별로 낸다.
-            outcomes = delegate_harvest.harvest_cluster_copy(
+            outcomes = delegate_collect.collect_cluster_copy(
                 home, run_dir=copy, cwd=cwd_repo, )
             for outcome in outcomes:
                 if outcome.refusal is not None:
@@ -666,7 +666,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
                 f"(run-dir={copy})"
             )
             return 1 if refused else 0
-        result = delegate_harvest.harvest_ticket_copy(
+        result = delegate_collect.collect_ticket_copy(
             home, copy_path=copy, cwd=cwd_repo, )
         console.write_machine_line(json.dumps({
             "copy": str(copy.resolve()),
@@ -740,7 +740,7 @@ def _cmd_review(home, argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.ticket is not None and not ticket_rules._is_valid_ticket_id(args.ticket):
         parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
-    if args.cluster is not None and not delegate_ledger._is_valid_cluster_id(args.cluster):
+    if args.cluster is not None and not delegate_records._is_valid_cluster_id(args.cluster):
         parser.error("--cluster는 board 묶음 기록 id 형식이어야 합니다")
     if args.ticket is not None:
         return _cmd_review_ticket(home, args, args.ticket)
@@ -785,10 +785,10 @@ def _cmd_review_ticket(home, args: argparse.Namespace, ticket: str) -> int:
                     ticket_text = handle.read()
             except (OSError, UnicodeError) as exc:
                 raise delegate_errors.DelegateError(f"티켓 읽기 실패: {path}: {exc}") from exc
-            rounds = round_seed.load_rounds(
+            rounds = round_form.load_rounds(
                 pm_paths.tickets_dir(home), ticket, ticket_text=ticket_text,
             )
-            problems = round_seed.verify_rounds(
+            problems = round_form.verify_rounds(
                 pm_paths.tickets_dir(home), ticket, ticket_text=ticket_text,
             )
         # 순번 유일성·연속성이 깨진 상태만 차단한다 — 산출 없음(`round-pending`)과 이름 문법
@@ -814,8 +814,8 @@ def _cmd_review_ticket(home, args: argparse.Namespace, ticket: str) -> int:
             )
             return _emit_pm_review_verify_template(template)
         else:
-            delta = review_state.parse_pm_review_delta(ticket_text, rounds)
-            rendered = review_contract.render_pm_review_delta(ticket, delta)
+            delta = review_state.parse_pm_review_accepted(ticket_text, rounds)
+            rendered = review_contract.render_pm_review_accepted(ticket, delta)
         if rendered:
             sys.stdout.write(rendered)
         return 0
@@ -947,7 +947,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             parser.error(
                 "--cluster 는 프롬프트를 엔진이 조립한다 — --prompt-file 을 주지 않는다."
             )
-        if not delegate_ledger._is_valid_cluster_id(args.cluster):
+        if not delegate_records._is_valid_cluster_id(args.cluster):
             parser.error("--cluster 는 board 묶음 기록 id 형식이어야 한다.")
     elif args.role == review_form.INTERNAL_REVIEW_ROLE:
         parser.error("code-reviewer 는 --cluster 가 필수다(리뷰 단위 = 묶음).")
@@ -1104,7 +1104,7 @@ def _cmd_rounds(home, argv: list[str], run_fn: Callable | None = None) -> int:
         identity_args.parse_identity(args)
     except ValueError as exc:
         parser.error(str(exc))
-    if not delegate_ledger._is_valid_cluster_id(args.cluster):
+    if not delegate_records._is_valid_cluster_id(args.cluster):
         parser.error("--cluster는 board 묶음 기록 id 형식이어야 합니다")
     try:
         owner = pm_paths.resolve_pm_home_for_repo(home.root)

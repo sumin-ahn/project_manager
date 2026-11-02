@@ -2092,7 +2092,7 @@ def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
 #
 # 판정식 자체는 이 파일이 직접 import한 ``domain.private_refs``와 같은 소스다 — 여기서
 # 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter(묶음 장부 포함) 로 재현한다(DI 로
-# git 을 가짜로 만들지 않는다) — 측정 폭의 기준점(``additional_reviewer.integration_anchor``)을
+# git 을 가짜로 만들지 않는다) — 측정 폭의 기준점(``additional_reviewer.integration_base``)을
 # 그대로 태워야 통합 브랜치가 이미 가진 줄 같은 실제 형상이 재현된다.
 #
 # 합성 티켓 ID·참조 문자열은 이 파일의 기존 관례대로 **조각으로 조립**한다. 완전한 사설 ID

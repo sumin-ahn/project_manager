@@ -9,7 +9,7 @@ from pm_engine.infra import pm_paths
 from pm_engine.domain import review_contract
 from pm_engine.domain import review_form
 from pm_engine.app import round_maintenance
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 from pm_engine.infra import ticket_store
 
 
@@ -48,7 +48,7 @@ def append_pm_review_confirmation(
         _status, path = found
         fm, body = ticket_store.load_ticket(path)
         if rounds is None:
-            rounds = round_seed.load_rounds(
+            rounds = round_form.load_rounds(
                 pm_paths.tickets_dir(home), ticket, ticket_text=body,
             )
         merged, changed = review_contract._merge_pm_review_confirmation_section(

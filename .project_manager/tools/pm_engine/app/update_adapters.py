@@ -75,7 +75,7 @@ def _instance_owned_template_delta_lines(
         dest_root: Path, source_root: Path) -> list[str]:
     """세대 델타 관측 채널 — 실패도 변경 없음으로 접지 않는 advisory 한 줄."""
     try:
-        return adapter_report.instance_owned_template_delta_lines(dest_root, source_root)
+        return adapter_report.instance_owned_template_change_lines(dest_root, source_root)
     except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 세대 델타 판정 실패만 advisory 줄, 그 밖 전파.
         return [
             "⚠️  인스턴스 소유 템플릿 버전 판정 unavailable — "
@@ -329,7 +329,7 @@ def check_adapter_hook_sets(home, dest_root: Path, source_root: Path) -> dict:
         print(line, file=sys.stderr)
     findings = hook_sets.judge_adapter_hook_sets(
         dest_root, source_root, declarations=generation.declarations)
-    remedy_lines = hook_sets.hook_set_remedy_lines
+    remedy_lines = hook_sets.hook_set_fix_lines
     # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면
     #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.
     entrypoint_lines = hook_sets.hook_entrypoint_advisory_lines

@@ -29,7 +29,7 @@ from pm_engine.infra import pm_paths
 from pm_engine.domain import worktree_records
 from pm_engine.app import worktree_status
 
-from _pool_seams import bind_board, bind_pool
+from _pool_overrides import bind_board, bind_pool
 
 import importlib.util
 from pathlib import Path

@@ -228,7 +228,7 @@ $branch
                         echo "[pm 라이브 시험 통과 조건] 보호 브랜치 '$branch' push 거부 — 남은 must-fix 있음." >&2
                         echo "  PM_SKIP_LIVE_TEST 는 라이브 시험을 건너뛰는 우회이고 이 차단은 남은 must-fix 때문이다 — 우회 대상이 아니다." >&2
                         echo "  현재 티켓 fix의 기계 확인 증거로 리뷰 집계 티켓마다 처분을 선언한 뒤 다시 기록하라:" >&2
-                        echo "    additional_reviewer.py --resolve-review <리뷰 집계 티켓> --pm-verified" >&2
+                        echo "    additional_reviewer.py --resolve-review <T-NNNN> --pm-verified" >&2
                         echo "    board.py live-test record" >&2
                         exit 1
                         ;;
@@ -547,7 +547,7 @@ exit 0
 _PROTECTED_HOOK_EXECUTABLE_MODE = 0o755
 _PROTECTED_SIDECAR_MODE = 0o644
 _PROTECTED_GATE_MODES = frozenset({"release", "self-test"})
-PROTECTED_GATE_CONTRACT_NAME = "gate-contract"
+PROTECTED_CHECK_CONTRACT_NAME = "gate-contract"
 
 
 class ProtectedHookArtifact(NamedTuple):
@@ -617,7 +617,7 @@ def protected_hook_artifacts(home,
             hook_dir / "protected", "".join(f"{b}\n" for b in protected), False),
         ProtectedHookArtifact(hook_dir / "engine-root", f"{home.root.resolve()}\n", False),
         ProtectedHookArtifact(
-            hook_dir / PROTECTED_GATE_CONTRACT_NAME, gate_contract, False),
+            hook_dir / PROTECTED_CHECK_CONTRACT_NAME, gate_contract, False),
         ProtectedHookArtifact(hook_dir / "pre-push", _PROTECTED_PRE_PUSH_HOOK, True),
         ProtectedHookArtifact(hook_dir / "pre-commit", _PROTECTED_PRE_COMMIT_HOOK, True),
     ]

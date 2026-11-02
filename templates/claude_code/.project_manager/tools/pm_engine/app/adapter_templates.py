@@ -139,7 +139,7 @@ def _template_generation_size(old_lines: list[str], current_lines: list[str]) ->
     return added, removed, first_diff or 1
 
 
-# 소스 checkout 의 git object DB 를 읽는 두 관용구 — 세대 요약(`instance_owned_template_delta_lines`)
+# 소스 checkout 의 git object DB 를 읽는 두 관용구 — 세대 요약(`instance_owned_template_change_lines`)
 # 과 기준 diff(`adapter_config_reports`)가 **같은 읽기**를 공유한다(두 번째 git 경로 신설 0).
 SOURCE_PREFIX_OK = "ok"
 

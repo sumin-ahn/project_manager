@@ -21,8 +21,8 @@ per-clone local.conf(worktree) 의존을 없애 fresh clone/CI/livegate 어디�
 
 **release tier 편입**: codex 방향 1건을 `@pytest.mark.release` + `PM_ORCH_LIVE_RELEASE` 게이트로
 릴리즈 라이브 tier 에 편입한다(codex 라이브 = load-bearing 게이트·test_pm_relay_codex 선례). ⚠
-**커플드 전역 pin**(regression.LIVEGATE_RELEASE_PIN · test_release_wave `_RELEASE_TEST_FILES`/
-`_EXPECTED_RELEASE_TESTS` · test_board_livegate · test_worktree_pool 미러 · templates/*/board.py)에
+**커플드 전역 pin**(regression.LIVE_TEST_RELEASE_PIN · test_release_cluster `_RELEASE_TEST_FILES`/
+`_EXPECTED_RELEASE_TESTS` · test_board_live_test · test_worktree_pool 미러 · templates/*/board.py)에
 이 파일을 **+1 등재**하는 갱신은 **orchestrator 가 wave 종료 시 1회 수행**한다(touches 밖 공유 상수·
 병렬 wave clobber 회피·test_pm_release_live 동형). 이 파일은 **file-local 마커 pin** 만 둔다.
 
@@ -58,7 +58,7 @@ from conftest import (
 )
 from pm_engine.infra import raw_output
 from pm_engine.domain import review_form, review_state
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 from _opencode_model import SHIPPED_MODEL
 
 REPO = Path(__file__).resolve().parents[1]
@@ -237,7 +237,7 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
 def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
     """PM 역할을 fixture에서 수행해 zero/finding reviewer 산출을 04 입력으로 닫는다."""
     ticket_text = source.read_text(encoding="utf-8")
-    rounds = round_seed.load_rounds(
+    rounds = round_form.load_rounds(
         source.parent.parent, ticket, ticket_text=ticket_text,
     )
     rendered = review_contract.render_pm_review_disposition_template(ticket_text, rounds)
@@ -257,11 +257,11 @@ def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
     )
     source.write_text(ticket_text + "\n" + block, encoding="utf-8", newline="")
     updated = source.read_text(encoding="utf-8")
-    updated_rounds = round_seed.load_rounds(
+    updated_rounds = round_form.load_rounds(
         source.parent.parent, ticket, ticket_text=updated,
     )
-    return review_contract.render_pm_review_delta(
-        ticket, review_state.parse_pm_review_delta(updated, updated_rounds),
+    return review_contract.render_pm_review_accepted(
+        ticket, review_state.parse_pm_review_accepted(updated, updated_rounds),
     )
 
 def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
@@ -754,8 +754,8 @@ def test_release_markers_pinned():
     """이 파일 release 마커 수(=1·codex 릴리즈 스모크)를 pin — 마커 소실/개명 시 게이트 selection 누락 방어.
 
     `pytest -m release` 는 마커로 라이브 서브셋을 고른다. 데코레이터 삭제/개명 시 조용히 빠지는 것을
-    file-local 로 잡는다(test_pm_release_live 동형). ⚠ 이 파일을 test_release_wave `_RELEASE_TEST_FILES`
-    합산 + 전역 pin(regression.LIVEGATE_RELEASE_PIN 등)에 등재하는 커플드-pin 갱신은 orchestrator 가 wave
+    file-local 로 잡는다(test_pm_release_live 동형). ⚠ 이 파일을 test_release_cluster `_RELEASE_TEST_FILES`
+    합산 + 전역 pin(regression.LIVE_TEST_RELEASE_PIN 등)에 등재하는 커플드-pin 갱신은 orchestrator 가 wave
     종료 시 수행(touches 밖 공유 상수). 라이브를 의도적으로 늘리면 `_EXPECTED_RELEASE_TESTS` 를 함께 갱신."""
     import ast
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))

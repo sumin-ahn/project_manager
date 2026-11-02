@@ -54,7 +54,7 @@ def regression_flag(home) -> Path:
     return home.local_dir / "regression.json"
 
 
-def livegate_flag(home) -> Path:
+def live_test_flag(home) -> Path:
     """라이브 게이트 기록 경로 (보호 훅이 없는 형상의 기록 위치)."""
     return home.local_dir / "live-test.json"
 

@@ -23,7 +23,7 @@ from pm_engine.cli import delegate_cmd
 
 from pm_engine.infra import delegate_copy_store
 from pm_engine.app import delegate_execute
-from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_collect
 from pm_engine.app import delegate_prepare
 from pm_engine.domain import delegate_rounds
 from pm_engine.infra import fs, pm_paths
@@ -51,8 +51,8 @@ from _git_fixture import remove_git_tree
 from conftest import write_cluster_ledger
 from pm_engine.infra import raw_output
 from pm_engine.domain import delegate_errors, review_form
-from pm_engine.infra import delegate_ledger
-from pm_engine.app import round_seed
+from pm_engine.infra import delegate_records
+from pm_engine.app import round_form
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -230,7 +230,7 @@ def _fill_architect(pd, plan) -> None:
 def _land_architect(pd, env: Env, plan) -> None:
     """고정 수열의 다음 단계 준비가 가능하도록 architect 계약을 실값으로 회수한다."""
     _fill_architect(pd, plan)
-    result = delegate_harvest.harvest_ticket_copy(
+    result = delegate_collect.collect_ticket_copy(
         pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=plan.path, cwd=env.slot, )
     assert result.changed is True
 
@@ -269,7 +269,7 @@ def _write_output(path: Path, marker: str = LIVE_OUTPUT_MARKER) -> None:
 
 def _problem_codes(pd, env: Env, ticket: str) -> list[str]:
     tickets_root = env.pm_home / ".project_manager" / "wiki" / "tickets"
-    return [item.code for item in round_seed.verify_rounds(tickets_root, ticket)]
+    return [item.code for item in round_form.verify_rounds(tickets_root, ticket)]
 
 
 def _assets(plan, env: Env) -> tuple[bool, bytes | None, bool, dict]:
@@ -333,7 +333,7 @@ def test_abandon_closes_all_three_kill_residue_assets(pd, env):
     assert not plan.board_path.exists()
     row = _ledger_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["collected_at"] is None
-    assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8001", unharvested=True) == []
+    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8001", unharvested=True) == []
     assert env.sync_calls[-1][1] == [plan.board_path]
 
 
@@ -360,7 +360,7 @@ def test_abandon_leaves_other_live_runs_untouched(pd, env):
     assert alive.run_dir.exists() and alive.board_path.exists()
     alive_row = [row for row in _ledger_rows(env) if row["ticket"] == "T-8004"][-1]
     assert alive_row["collected_at"] is None and "abandoned_at" not in alive_row
-    assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8004", unharvested=True)[0][
+    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8004", unharvested=True)[0][
         "copy"
     ] == str(alive.path)
 
@@ -688,7 +688,7 @@ def test_middle_ordinal_abandon_is_not_listed_as_unharvested(pd, env):
 
     _abandon(pd, env, first)
 
-    unharvested = delegate_ledger.ticket_copy_records(
+    unharvested = delegate_records.ticket_copy_records(
         env.pm_home, ticket="T-8061", unharvested=True,
     )
     assert [row["ordinal"] for row in unharvested] == [3]
@@ -742,7 +742,7 @@ def test_discard_moves_the_output_into_the_board_round_and_marks_it(pd, env):
     row = _ledger_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
     assert "superseded_by_ordinal" not in row
-    assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8080", unharvested=True) == []
+    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8080", unharvested=True) == []
     assert env.sync_calls[-1] == (
         "ticket-abandon T-8080 architect", [plan.board_path],
     )
@@ -801,7 +801,7 @@ def test_discard_converges_when_both_artifacts_are_gone(pd, env):
     assert (result.board_removed, result.run_dir_removed) == (True, True)
     row = _ledger_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
-    assert delegate_ledger.ticket_copy_records(env.pm_home, ticket="T-8081", unharvested=True) == []
+    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8081", unharvested=True) == []
     assert env.sync_calls == before_sync     # 지운 자산이 없어 커밋할 board 변경도 없다
 
     # 멱등 — 남은 정리가 없는 행의 재호출도 rc 0 이다(선언 인자는 다시 주지 않아도 된다).
@@ -880,7 +880,7 @@ def test_harvest_refuses_an_abandoned_reservation(pd, env):
     _abandon(pd, env, plan)
 
     with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 돌려받을 수 없습니다"):
-        delegate_harvest.harvest_ticket_copy(
+        delegate_collect.collect_ticket_copy(
             pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=plan.path, cwd=env.slot, )
 
 
@@ -898,7 +898,7 @@ def test_reused_ordinal_survives_the_old_runs_harvest(pd, env):
     dead_copy.write_text(dead_text + "\n옛 run 산출\n", encoding="utf-8", newline="")
 
     with pytest.raises(delegate_errors.DelegateError, match="이미 포기된 준비는 돌려받을 수 없습니다"):
-        delegate_harvest.harvest_ticket_copy(
+        delegate_collect.collect_ticket_copy(
             pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=dead_copy, cwd=env.slot, )
 
     assert fresh.board_path.read_bytes() == fresh_bytes
@@ -918,12 +918,12 @@ def _base_row(**overrides) -> dict:
 
 
 def test_ledger_row_accepts_legacy_eight_key_rows(pd):
-    row = delegate_ledger._delegate_rounds_ledger_row(_base_row(), line_number=1)
+    row = delegate_records._delegate_rounds_ledger_row(_base_row(), line_number=1)
     assert "abandoned_at" not in row and "owner_pid" not in row
 
 
 def test_ledger_row_accepts_the_two_optional_keys(pd):
-    row = delegate_ledger._delegate_rounds_ledger_row(
+    row = delegate_records._delegate_rounds_ledger_row(
         _base_row(abandoned_at="2026-08-22T01:00:00+00:00", owner_pid=4242),
         line_number=1,
     )
@@ -932,7 +932,7 @@ def test_ledger_row_accepts_the_two_optional_keys(pd):
 
 
 def test_ledger_row_accepts_a_discard_reason(pd):
-    row = delegate_ledger._delegate_rounds_ledger_row(
+    row = delegate_records._delegate_rounds_ledger_row(
         _base_row(abandoned_at="2026-09-02T01:00:00+00:00",
                   discard_reason="티켓 폐기"),
         line_number=1,
@@ -944,32 +944,32 @@ def test_ledger_row_accepts_a_discard_reason(pd):
 def test_ledger_row_rejects_discard_reasons_without_a_readable_value(pd, bad):
     """사유가 그 처분의 유일한 기록이라 읽을 값이 없는 행은 장부 경계에서 막는다."""
     with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
-        delegate_ledger._delegate_rounds_ledger_row(_base_row(discard_reason=bad), line_number=1)
+        delegate_records._delegate_rounds_ledger_row(_base_row(discard_reason=bad), line_number=1)
 
 
 @pytest.mark.parametrize("bad", [None, ""])
 def test_ledger_row_rejects_null_or_empty_abandoned_at(pd, bad):
     with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
-        delegate_ledger._delegate_rounds_ledger_row(_base_row(abandoned_at=bad), line_number=1)
+        delegate_records._delegate_rounds_ledger_row(_base_row(abandoned_at=bad), line_number=1)
 
 
 @pytest.mark.parametrize("bad", [0, -1, True, "4242", None])
 def test_ledger_row_rejects_owner_pid_values_that_query_as_absent(pd, bad):
     """생존 조회 seam 이 부재로 정규화하는 값은 장부 경계에서 막는다(조용한 퇴화 금지)."""
     with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
-        delegate_ledger._delegate_rounds_ledger_row(_base_row(owner_pid=bad), line_number=1)
+        delegate_records._delegate_rounds_ledger_row(_base_row(owner_pid=bad), line_number=1)
 
 
 def test_ledger_row_still_rejects_unknown_keys(pd):
     with pytest.raises(delegate_errors.DelegateError, match="schema 불일치"):
-        delegate_ledger._delegate_rounds_ledger_row(_base_row(mystery="x"), line_number=1)
+        delegate_records._delegate_rounds_ledger_row(_base_row(mystery="x"), line_number=1)
 
 
 def test_ledger_row_still_rejects_missing_required_keys(pd):
     row = _base_row()
     del row["collected_at"]
     with pytest.raises(delegate_errors.DelegateError, match="schema 불일치"):
-        delegate_ledger._delegate_rounds_ledger_row(row, line_number=1)
+        delegate_records._delegate_rounds_ledger_row(row, line_number=1)
 
 
 def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys):
@@ -984,9 +984,9 @@ def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys
     _fill_architect(pd, owned)
 
     capsys.readouterr()
-    rows = delegate_ledger.ticket_copy_records(env.pm_home)
+    rows = delegate_records.ticket_copy_records(env.pm_home)
     warning = capsys.readouterr().err
-    harvested = delegate_harvest.harvest_ticket_copy(
+    harvested = delegate_collect.collect_ticket_copy(
         pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=owned.path, cwd=env.slot, )
 
     assert "손상" not in warning

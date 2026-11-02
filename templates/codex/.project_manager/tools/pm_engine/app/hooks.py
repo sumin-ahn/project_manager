@@ -37,7 +37,7 @@ def _git_invocation(cwd: str | os.PathLike[str], argv: Sequence[str]) -> git_pol
     모르는 global option은 보수적으로 한 토큰 option으로 취급하고 뒤의 첫 non-option을
     subcommand로 삼는다. ``GIT_DIR``/``GIT_WORK_TREE``·``--git-dir``/``--work-tree``·셸 변수가 든
     ``-C`` 는 실제 대상을 정적으로 정하지 못하므로 ``anchor_certain=False`` 다. 그런 호출은 파괴
-    형태일 때만 거부하고(`judge_git_anchor`) 그 밖에는 warn 으로 흐른다. ``git -C``는 cwd 오인
+    형태일 때만 거부하고(`judge_git_check`) 그 밖에는 warn 으로 흐른다. ``git -C``는 cwd 오인
     판정의 일부라 반복 지정도 순서대로 적용한다.
     """
     tokens = [str(value) for value in argv]

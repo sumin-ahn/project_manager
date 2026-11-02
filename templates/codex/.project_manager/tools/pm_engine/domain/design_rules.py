@@ -184,7 +184,7 @@ def design_evidence_problem(tid: str, ticket_text: str, rounds: Sequence) -> str
     (fail-loud) — architect 실산출이 있어도 마찬가지다. 그래서 파싱·`design` 값 유효성 검사를
     architect shortcut 보다 **먼저** 수행한다: 손상된 명세 위에서는 architect 실산출 근거가 있어도
     판정 자체가 불능이라 통과로 삼킬 수 없다. `rounds` 는 호출자가 이미 로드해 손에 든 것을
-    그대로 받는다(재로드 0) — 시드 seam(`render_ticket_growth_section_seed`)의 developer 분기가
+    그대로 받는다(재로드 0) — 시드 seam(`render_ticket_growth_section_form`)의 developer 분기가
     예약 직전 라운드 전체를 이미 들고 있다. 파싱 소스 식별자에 실 tid 를 싣지 않는 이유는
     `_DESIGN_EVIDENCE_REMEDY` 와 같다 — 이 함수를 부르는 시드 seam 은 실 ticket id 를 모른다.
     """

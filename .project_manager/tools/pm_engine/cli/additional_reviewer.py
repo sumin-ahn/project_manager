@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pm_engine.domain.reviewer_prompt
 import pm_engine.infra.harness.reviewer_run
-from pm_engine.app import reviewer_harvest
+from pm_engine.app import reviewer_collect
 from pm_engine.app import reviewer_prompt
 from pm_engine.app import reviewer_reservation
 from pm_engine.app import reviewer_scope
@@ -396,7 +396,7 @@ def main(home, argv: list[str] | None = None) -> int:
                 review_home, args.ticket, ticket_text=raw_text,
             )
             # 시드 그대로인 developer 라운드 위에서 스폰되는지 loud 표시 — 준비면
-            # (`round_seed._warn_unharvested_developer_round`)과 같은 축(이 seam 은
+            # (`round_form._warn_unharvested_developer_round`)과 같은 축(이 seam 은
             # dry-run·실 스폰 두 호출을 모두 지난다).
             reviewer_prompt._warn_seed_developer_round(rounds, ticket=args.ticket)
             # 입력 선별 — 명세는 전량, 라운드는 역할별 마지막 산출만(파일 선택).
@@ -438,7 +438,7 @@ def main(home, argv: list[str] | None = None) -> int:
             changed_paths=diff_result.paths, read_commands=diff_result.read_commands,
             ticket_body=ticket_body, ticket_id=args.ticket,
             adr_refs=args.adr, gate=args.review_ticket,
-            next_finding_id=reviewer_harvest._next_external_finding_id(review_home, args, ),
+            next_finding_id=reviewer_collect._next_external_finding_id(review_home, args, ),
             confirmation_ids=[],
         )
 
@@ -496,7 +496,7 @@ def main(home, argv: list[str] | None = None) -> int:
     # 스폰 전에 중단하는 실행은 호출이 없으므로 방금 잡은 예약을 그 자리에서 원자 환불한다
     # (마감 시점 `started=False` 환불과 같은 조건·같은 기계). 환불 소유는 이 seam 하나다.
     with reviewer_reservation._PreSpawnReservation(review_home, budget) as reservation:
-        return reviewer_harvest._run_review_round(
+        return reviewer_collect._run_review_round(
             review_home, args, conf=conf, prompt=prompt, reviewer_cmd=reviewer_cmd,
             timeout=timeout, idle_timeout=idle_timeout, output_dir=output_dir,
             conf_path=conf_path, profile=profile,

@@ -51,7 +51,7 @@ import pytest
 import yaml
 
 from _slot_seed import seed_slot
-from pm_engine.app import round_seed
+from pm_engine.app import round_form
 
 from pm_engine.app import ticket_access
 from pm_engine.app import board_sync
@@ -465,7 +465,7 @@ def test_width_excludes_what_the_integration_branch_already_had(external, tmp_pa
     """재배치로 흡수한 분량은 이 작업의 폭이 아니다 — 기준점을 claim 시점 rev 와 대조한다."""
     root, seed = _width_repo(tmp_path)
 
-    anchor, note = review_diff.integration_anchor(root, _INTEGRATION_BRANCH)
+    anchor, note = review_diff.integration_base(root, _INTEGRATION_BRANCH)
     assert note is None
     assert anchor == _rev(root, _INTEGRATION_BRANCH)
 
@@ -483,7 +483,7 @@ def test_width_excludes_what_the_integration_branch_already_had(external, tmp_pa
 def test_both_width_consumers_see_the_same_stage(external, tmp_path):
     """unified diff 원문이 단계 표(`_measure_stages`)가 정한 폭을 본다(정의 지점 하나)."""
     root, seed = _width_repo(tmp_path)
-    anchor, _note = review_diff.integration_anchor(root, _INTEGRATION_BRANCH)
+    anchor, _note = review_diff.integration_base(root, _INTEGRATION_BRANCH)
 
     assert review_diff._measure_stages("HEAD", anchor) == ((anchor, True),)
 
@@ -569,7 +569,7 @@ def test_the_anchor_is_the_merge_base_with_the_integration_branch(external, tmp_
     root, _claim_rev = _wave_repo(tmp_path)
     expected = _git(root, "merge-base", _INTEGRATION, "HEAD").stdout.strip()
 
-    assert review_diff.integration_anchor(root, _INTEGRATION) == (expected, None)
+    assert review_diff.integration_base(root, _INTEGRATION) == (expected, None)
 
 
 @requires_git
@@ -580,7 +580,7 @@ def test_a_branch_absent_from_this_tree_yields_a_loud_reason(external, tmp_path)
     접는다 — 조용한 0 줄(false-green)이 바로 이 축이 닫는 결함이다."""
     root, _claim_rev = _wave_repo(tmp_path)
 
-    anchor, note = review_diff.integration_anchor(root, "task/absent")
+    anchor, note = review_diff.integration_base(root, "task/absent")
 
     assert anchor is None and "해소하지 못했다" in note and "task/absent" in note
 
@@ -588,7 +588,7 @@ def test_a_branch_absent_from_this_tree_yields_a_loud_reason(external, tmp_path)
 @pytest.mark.parametrize("value", ["", "--output=/tmp/x", "zz" * 20])
 def test_an_unresolvable_reference_never_becomes_an_anchor(external, tmp_path, value):
     """빈 값·옵션 모양·존재하지 않는 값은 앵커가 되지 못한다(사유와 함께 멈춘다)."""
-    anchor, note = review_diff.integration_anchor(tmp_path, value)
+    anchor, note = review_diff.integration_base(tmp_path, value)
     assert anchor is None and note
 
 
@@ -1928,7 +1928,7 @@ def test_close_preflight_refuses_a_member_without_a_harvested_review(
     else:
         spec = next((env.board_dir / "tickets" / "claimed").glob(f"{env.ticket}*.md"))
         review.write_text(
-            round_seed.render_round_seed(
+            round_form.render_round_form(
                 "code-reviewer", spec.read_text(encoding="utf-8"), today="2026-01-02"),
             encoding="utf-8")
         expected = "돌려받지 않았습니다"

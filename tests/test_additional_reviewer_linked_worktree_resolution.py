@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from test_gate_anchor_resolution import (
+from test_target_repo_resolution import (
     _git,
     _load,
     _managed_worktree,

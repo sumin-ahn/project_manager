@@ -156,7 +156,7 @@ def test_hook_tool_json_contract_and_failures(tmp_path):
 
     script = r"""
 const assert = require("node:assert");
-const m = require("./git-anchor-core.cjs");
+const m = require("./git-check-core.cjs");
 const root = process.argv[1];
 const request = JSON.parse(process.argv[2]);
 const good = {version: 1, git: {verdict: "ok", cwd_identity: "non-repo", reason: "x"}, context: null,
@@ -206,7 +206,7 @@ const assert = require("node:assert");
 const path = require("node:path");
 const root = process.argv[1];
 const ctx = require("./ctx-guard-core.cjs");
-const git = require("./git-anchor-core.cjs");
+const git = require("./git-check-core.cjs");
 const principle = require("./principle-recall-core.cjs");
 const delegate = require("./delegate-channel-core.cjs");
 const safe = require("./safe-write-core.cjs");
@@ -216,7 +216,7 @@ const tool = Object.assign((definition) => definition, {schema});
 (async () => {
   const client = sdk();
   const input = {client, directory: root, worktree: root};
-  const plugins = [await ctx.CtxGuardPlugin(input), await git.GitAnchorPlugin(input),
+  const plugins = [await ctx.CtxGuardPlugin(input), await git.GitCheckPlugin(input),
     await principle.PrincipleRecallPlugin(input), await delegate.DelegateChannelPlugin(input),
     await safe.makeSafeWritePlugin(tool)(input), await stall.makeStallWatchdogPlugin(client)(input)];
   const befores = plugins.map((plugin) => plugin["tool.execute.before"]).filter(Boolean);
@@ -406,11 +406,11 @@ def test_unfiltered_inputs_reach_central_guard(tmp_path, monkeypatch):
     root = _project(tmp_path)
     calls = []
 
-    def judge_git_anchor_command(home, session, cwd, command, *, main_thread, grants=False):
+    def judge_git_check_command(home, session, cwd, command, *, main_thread, grants=False):
         calls.append((home, cwd, command))
         return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 
-    monkeypatch.setattr(cli_hooks, "judge_git_anchor_command", judge_git_anchor_command)
+    monkeypatch.setattr(cli_hooks, "judge_git_check_command", judge_git_check_command)
     claude = _load(TEMPLATES / "claude_code" / ".claude" / "pm_orch_claude.py", "s10_boundary_claude")
     codex = _load(TEMPLATES / "codex" / ".codex" / "pm_orch_codex.py", "s10_boundary_codex")
     for command in UNFILTERED:

@@ -9,7 +9,7 @@ from typing import Callable
 from pm_engine.cli import delegate_cmd
 from pm_engine.app import delegate_cluster_review
 from pm_engine.app import delegate_execute
-from pm_engine.app import delegate_harvest
+from pm_engine.app import delegate_collect
 from pm_engine.app import delegate_prepare
 from pm_engine.app import delegate_prompt
 from pm_engine.domain import delegate_rounds
@@ -24,7 +24,7 @@ from pm_engine.infra.harness import delegate_temp
 from pm_engine.infra.harness import delegate_transport
 from pm_engine.domain import reviewer_result
 from pm_engine.domain import conf_schema, delegate_errors, install_rules, review_form
-from pm_engine.infra import delegate_ledger, fs, pm_paths
+from pm_engine.infra import delegate_records, fs, pm_paths
 from pm_engine.infra.harness import contract
 
 
@@ -213,7 +213,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                 ticket_copy = cluster_plan.rounds[0]
         except delegate_errors.DelegateError as exc:
             return delegate_execute.fail_loud(f"오류: 묶음 리뷰 준비 실패: {exc}")
-    elif not args.dry_run and effective_ticket and args.role in (delegate_ledger.TICKET_COPY_ROLES - {review_form.ADDITIONAL_REVIEWER_ROLE, "researcher"}):
+    elif not args.dry_run and effective_ticket and args.role in (delegate_records.TICKET_COPY_ROLES - {review_form.ADDITIONAL_REVIEWER_ROLE, "researcher"}):
         try:
             ticket_copy = delegate_prepare.prepare_ticket_copy(
                 home, ticket=effective_ticket, role=args.role, cwd=cwd_repo, owner_pid=os.getpid(),
@@ -364,7 +364,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
         # dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
         if args.dry_run:
             print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
-            print(f"role: {args.role} · tier: {tier} · 권한 기준: {contract.perm_axis(args.role)}")
+            print(f"role: {args.role} · tier: {tier} · 권한 기준: {contract.perm_kind(args.role)}")
             if cluster_sources is not None:
                 review = cluster_sources.review
                 print(
@@ -503,11 +503,11 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                     if cluster_plan is not None:
                         # 묶음은 자리마다 독립 회수다 — 한 자리의 거부가 다른 자리의 교체를
                         # 되돌리지 않는다(회수 판정식은 단일 경로와 같은 하나다).
-                        delegate_execute._report_cluster_harvest(delegate_harvest.harvest_cluster_copy(
+                        delegate_execute._report_cluster_harvest(delegate_collect.collect_cluster_copy(
                             home, run_dir=cluster_plan.run_dir, cwd=cwd_repo,
                             ))
                     else:
-                        result = delegate_harvest.harvest_ticket_copy(
+                        result = delegate_collect.collect_ticket_copy(
                             home, copy_path=ticket_copy.path, cwd=cwd_repo, )
                         print(
                             "[pm-delegate] ticket collect: "

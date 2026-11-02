@@ -201,7 +201,7 @@ def _session_once_path(root: Path, session_id: str, namespace: str) -> Path:
     """세션·namespace 당 멤버십 파일 **1개** 경로.
 
     키마다 파일을 만들지 않는다 — 이 디렉토리를 일괄 정리하는 코드가 없어서
-    (`compaction_store.rearm_ctx_cycle` 은 밴드 marker 3종만 unlink) 키별 파일은 세션당 수백 개가 영구 잔존한다.
+    (`compaction_store.reset_ctx_cycle` 은 밴드 marker 3종만 unlink) 키별 파일은 세션당 수백 개가 영구 잔존한다.
     marker 디렉토리도 새로 만들지 않고 기존 `MARKER_DIR` 을 그대로 쓴다
     (`.project_manager/.gitignore` 의 `.local/` 커버를 상속 — 채택자 `git add -A` 안전).
     namespace 도 세션키와 같은 파일명 안전화를 거쳐 traversal 표기를 경로로 만들지 않는다.
