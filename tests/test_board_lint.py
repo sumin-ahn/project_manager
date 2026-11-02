@@ -3801,6 +3801,24 @@ def test_the_real_lint_command_reaches_the_advisory(tmp_path):
         assert "Traceback" not in completed.stderr, completed.stderr
 
 
+def test_the_old_lint_flag_and_live_test_names_are_rejected(capsys):
+    """옛 `lint --gate`·`livegate` 하위 명령은 별칭 없이 argparse 가 종료 코드 2 로 거부한다."""
+    from pm_engine.cli import board_cmd
+
+    parser = board_cmd.build_parser()
+    with pytest.raises(SystemExit) as old_flag:
+        parser.parse_args(["lint", "--gate"])
+    assert old_flag.value.code == 2
+    assert "unrecognized arguments: --gate" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit) as old_command:
+        parser.parse_args(["livegate", "check", "--rev", "abc"])
+    assert old_command.value.code == 2
+    assert "invalid choice: 'livegate'" in capsys.readouterr().err
+
+    assert parser.parse_args(["lint", "--blocking"]).blocking is True
+
+
 def test_read_seam_uses_the_strict_loader(board, monkeypatch, tmp_path):
     """판독 seam 은 `local_conf.load_strict` 를 부른다 — 삼키는 `load` 로 돌아가면 red."""
     _unreadable_conf(tmp_path)
