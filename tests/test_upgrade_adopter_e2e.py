@@ -2870,6 +2870,15 @@ def _install_t0585_updater(dest: Path) -> None:
     source = source.replace("_load_module_from_path = repo_files.load_module",
                             "from pm_engine.app import areas_registry\n"
                             "_load_module_from_path = repo_files.load_module", 1)
+    # render_adapter 의 skill_names 는 기본값 없는 필수 인자다. 합성본의 render_adapter 호출(한 곳)에
+    # 실행 Home 의 카드 이름 집합을 넣는다.
+    render_call_end = "        card_path=card_path,\n    )\n"
+    assert source.count(render_call_end) == 1
+    source = source.replace(
+        render_call_end,
+        "        card_path=card_path,\n"
+        "        skill_names=skill_inventory._installed_skill_entry_names(home),\n"
+        "    )\n", 1)
     (dest / ".project_manager" / "tools" / "pm_update.py").write_text(
         source, encoding="utf-8", newline="\n")
 

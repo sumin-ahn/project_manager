@@ -330,3 +330,20 @@ def test_ctx_guidance_takes_used_and_precompact_at(pm_log):
         )
         assert refused.returncode == 2, (retired, refused.stdout)
         assert retired[0] in refused.stderr
+
+
+def test_ctx_guidance_rejects_old_band_flag_and_values(pm_log):
+    """옛 플래그 --band 와 옛 값 nudge·nudge2 는 별칭 없이 인자 오류(종료 코드 2)다."""
+    cases = (
+        (["--level", "precompact", "--band", "precompact"], "unrecognized arguments: --band"),
+        (["--level", "nudge"], "invalid choice: 'nudge'"),
+        (["--level", "nudge2"], "invalid choice: 'nudge2'"),
+    )
+    for arguments, expected_error in cases:
+        refused = subprocess.run(
+            [sys.executable, str(PM_LOG), "ctx-guidance", *arguments],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+            env=utf8_child_env(),
+        )
+        assert refused.returncode == 2, (arguments, refused.stdout)
+        assert expected_error in refused.stderr, (arguments, refused.stderr)
