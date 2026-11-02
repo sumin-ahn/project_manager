@@ -1,12 +1,12 @@
 ---
 name: pm-release
-description: "릴리즈 절차 명령어化 — adopter#0 sync 선행 → live-test record(readonly 슬롯 핀·수집 N 확인) → main push(대화 승인·자동 안 함) → tag → gh release create → 관리자 자산 3종 도착 확인(release-manager.yml) → gh release view 완결 확인 → adopter#0 흡수 → audience 라벨. backbone = board.py live-test record/check + pm_update(= pm-update 스킬). 공개 main push 는 사용자 승인 게이트 유지. Triggers: '릴리즈 내', 'release vX.Y.Z', '태그·GitHub Release', 'pm-release'."
+description: "릴리즈 절차 명령어化 — adopter#0 sync 선행 → live-test record(readonly 슬롯 핀·수집 N 확인) → main push(대화 승인·자동 안 함) → tag → gh release create → 관리자 자산 3종 도착 확인(release-manager.yml) → gh release view 완결 확인 → adopter#0 받아 반영 → audience 라벨. backbone = board.py live-test record/check + pm_update(= pm-update 스킬). 공개 main push 는 사용자 승인 유지. Triggers: '릴리즈 내', 'release vX.Y.Z', '태그·GitHub Release', 'pm-release'."
 audience: pm-internal
 ---
 
 # /pm-release — 릴리즈 절차 (순서 고정·명령어化)
 
-기존 엔진 CLI(`board.py live-test record/check` · `pm_update`=[[pm-update]])와 `git`/`gh`를 순서대로 호출한다. **공개 main push는 사용자 승인 게이트를 유지하며 이 스킬이 대신 실행하지 않는다.** 청중은 릴리즈를 내는 PM(`pm-internal`)이다.
+기존 엔진 CLI(`board.py live-test record/check` · `pm_update`=[[pm-update]])와 `git`/`gh`를 순서대로 호출한다. **공개 main push는 사용자 승인를 유지하며 이 스킬이 대신 실행하지 않는다.** 청중은 릴리즈를 내는 PM(`pm-internal`)이다.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
@@ -23,14 +23,14 @@ live-test record 전에 PM 홈을 worktree canonical에 동기해 stale import �
 ./pm-config.sh sync-adapter-config --check --from <worktree-canonical-경로>
 ```
 
-두 번째 명령 rc=0이 adopter#0 흡수 완료 조건이다. red면 live-test/main push/tag/GitHub Release로
-진행하지 않고 `--accept` 또는 pm-update 재실행 처방으로 먼저 수렴시킨다.
+두 번째 명령 rc=0이 adopter#0 받아 반영 완료 조건이다. red면 live-test/main push/tag/GitHub Release로
+진행하지 않고 `--accept` 또는 pm-update 재실행 해결 방법으로 먼저 일치시킨다.
 
 ### 2. live-test record (플랫폼·라이브 검증)
 
-push 대상 rev의 선언 플랫폼 전체와 release live wave를 실측·기록한다. qa.platforms가 선언됐으면 같은 rev의 core green을 먼저 확인하고 플랫폼을 선언 순서대로 실제 실행한다. 플랫폼 red/미실행·수집·HEAD·명령·좌표 불일치는 라이브 테스트 전에 거부한다. 이전 green을 새 실패가 가리지 않게 무효화하며 live-test check도 현재 선언과 같은 rev의 core·플랫폼 결과를 재검증한다.
+push 대상 rev의 선언 플랫폼 전체와 릴리즈 라이브 시험을 실측·기록한다. qa.platforms가 선언됐으면 같은 rev의 core green을 먼저 확인하고 플랫폼을 선언 순서대로 실제 실행한다. 플랫폼 red/미실행·수집·HEAD·명령·좌표 불일치는 라이브 테스트 전에 거부한다. 이전 green을 새 실패가 가리지 않게 무효화하며 live-test check도 현재 선언과 같은 rev의 core·플랫폼 결과를 재검증한다.
 
-Windows 전체 검증은 모든 구현·통합이 끝난 릴리즈 직전에 실행한다. 개발 회귀는 현재 플랫폼의 test_cmd만 백그라운드로 실행하고 다른 작업 트리의 개발을 계속한다. 검증 트리를 동결하고 완료·통합 시 결과를 확인한다. 새 작업 큐나 플랫폼 선택 옵션을 추가하지 않는다. 부트스트랩 0단계가 main 직접 checkout·origin-추적 슬롯 진입을 거부하므로 main 참조 기준면은 readonly 공유 슬롯(detached·origin/main)이다. 이 슬롯은 무리스(unleased)라 `--repo --slot`로 해소되지 않으므로 `--cwd <readonly 슬롯 절대경로>`로 핀한다.
+Windows 전체 검증은 모든 구현·통합이 끝난 릴리즈 직전에 실행한다. 개발 회귀는 현재 플랫폼의 test_cmd만 백그라운드로 실행하고 다른 작업 트리의 개발을 계속한다. 검증 트리를 동결하고 완료·통합 시 결과를 확인한다. 새 작업 큐나 플랫폼 선택 옵션을 추가하지 않는다. 부트스트랩 0단계가 main 직접 checkout·origin-추적 슬롯 진입을 거부하므로 main 참조 기준면은 readonly 공유 슬롯(detached·origin/main)이다. 이 슬롯은 대여 없음(unleased)라 `--repo --slot`로 해소되지 않으므로 `--cwd <readonly 슬롯 절대경로>`로 핀한다.
 
 ```bash
 # main-참조 기준면 = readonly 슬롯(detached·origin/main 추적). PM_ORCH_LIVE_RELEASE=1 필수.
@@ -38,13 +38,13 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py live-test record 
 #   readonly 슬롯 경로는 `pm-config status` 의 role=readonly 행에서 확인(`worktree` 서브커맨드는 add·prune-stale·remove 뿐).
 ```
 
-record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must-fix를 차단한다(rc=1·우회 플래그 없음). 차단되면 현재 티켓 fix의 기계 확인이 끝난 게이트만 `additional_reviewer.py --resolve-review <게이트> --pm-verified`로 선언한다. 다른 티켓이나 근거 게이트로 잔여를 넘기는 처분은 없다. 상태는 `additional_reviewer.py --rounds-report`로 확인하며 `live-test check`도 같은 판정을 반복한다.
+record는 릴리즈 라이브 시험 전에 추가 리뷰 라운드 기록의 미해소 must-fix를 차단한다(rc=1·우회 플래그 없음). 차단되면 현재 티켓 fix의 기계 확인이 끝난 리뷰 집계 티켓만 `additional_reviewer.py --resolve-review <T-NNNN> --pm-verified`로 선언한다. 다른 티켓이나 근거 리뷰 집계 티켓으로 남은 must-fix를 넘기는 처분은 없다. 상태는 `additional_reviewer.py --rounds-report`로 확인하며 `live-test check`도 같은 판정을 반복한다.
 
-- 릴리즈 readonly 기준면은 기존 `--cwd <절대경로>`로 핀한다. 일반 task의 소유 작업공간에서 live-test를 기록하는 경우는 `--task <task> --repo <repo> --slot <N>`으로 실행 대상을 선택한다. task 귀속과 선택한 HEAD·브랜치·test_cmd를 결속한다. 두 경로를 섞거나 다중 슬롯에서 암묵적으로 고르지 않는다.
+- 릴리즈 readonly 기준면은 기존 `--cwd <절대경로>`로 핀한다. 일반 task의 소유 작업공간에서 live-test를 기록하는 경우는 `--task <task> --repo <repo> --slot <N>`으로 실행 대상을 선택한다. task 귀속과 선택한 HEAD·브랜치·test_cmd를 연결한다. 두 경로를 섞거나 다중 슬롯에서 암묵적으로 고르지 않는다.
 - 릴리즈 전 추가 리뷰어 교차검증(`additional_reviewer`)의 `--paths`도 같은 readonly 슬롯 worktree를 가리킨다.
-- `PM_ORCH_LIVE_RELEASE=1`이 없으면 release wave가 skip되어 수집 N=0, record가 fail한다.
+- `PM_ORCH_LIVE_RELEASE=1`이 없으면 릴리즈 라이브 시험이 skip되어 수집 N=0, record가 fail한다.
 - board 출력 `release N/<pin> green ✓`의 N==pin을 눈으로 확인해 보고한다. 다르면 마커 소실·wrong-cwd이므로 fail로 릴리즈를 막는다.
-- live tier는 **release 단일**이고 **3 하네스 실측**이다 — claude·opencode 는 wave 전 구간(부트스트랩~핸드오프·multi-repo·multi-user), codex 는 위임 완주와 relay 마커 정체성 2건으로 커버 깊이가 얕다. opencode 는 회사 기준 버전·격리 `--dir`·출하 `.opencode/opencode.jsonc` 가 선언한 모델로 돈다.
+- live tier는 **release 단일**이고 **3 하네스 실측**이다 — claude·opencode 는 한 묶음 전 구간(부트스트랩~핸드오프·multi-repo·multi-user), codex 는 위임 완주와 relay 마커 정체성 2건으로 커버 깊이가 얕다. opencode 는 회사 기준 버전·격리 `--dir`·출하 `.opencode/opencode.jsonc` 가 선언한 모델로 돈다.
 
 #### Windows 관리자 창 확인 (사람 확인)
 
@@ -59,13 +59,13 @@ python -m manager --smoke --registry "<이번 확인 전용 임시 projects.json
 창 표시와 자동 종료를 확인하고, Windows 버전·검증 커밋 SHA·실행 명령·종료 코드 `rc=0`·`smoke ok` 출력을 보고한다.
 미실행 또는 실패 시 공개 main push 승인 요청을 중단한다. 수정으로 커밋이 바뀌면 같은 확인을 다시 실행한다.
 이 소스 smoke 결과는 live-test 기록에 넣지 않는다. 공개 후 관리자 실행 파일 3종의 CI 확인도 별도로 수행한다.
-새 기계 게이트·설정 키·우회 옵션은 추가하지 않는다.
+새 기계 통과 조건·설정 키·우회 옵션은 추가하지 않는다.
 
 ### 3. CHANGELOG → main push → tag → GitHub Release
 
 먼저 CHANGELOG를 `[Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD`로 확정하고 채택자 관점으로 요약한다. 티켓/내부 세션 용어를 넣지 말고 새 빈 `[Unreleased]`를 만든다.
 
-1. **main push — 사용자 승인 게이트(이 스킬이 자동 실행하지 않는다).** 보호훅은 `live-test check` green을 추가 요구한다. 승인 후 PM이 실행한다.
+1. **main push — 사용자 승인(이 스킬이 자동 실행하지 않는다).** 보호훅은 `live-test check` green을 추가 요구한다. 승인 후 PM이 실행한다.
 
    ```bash
    # 사용자 승인 필요 — 스킬은 이 명령을 대신 돌리지 않는다(보호훅 + live-test 이중 안전).
@@ -84,7 +84,7 @@ python -m manager --smoke --registry "<이번 확인 전용 임시 projects.json
    릴리즈 본문 파일은 설치 프롬프트 → 업데이트 프롬프트 → CHANGELOG `[X.Y.Z]` 절 순서로 작성한다.
    두 프롬프트는 각각 독립된 `text` 코드 블록으로 담고, CHANGELOG 해당 버전 절의 제목과 본문은 그대로 포함한다.
    예제의 `vX.Y.Z`를 실제 릴리즈 태그로 채우며 두 프롬프트의 태그와 CHANGELOG `[X.Y.Z]` 버전을 일치시킨다.
-   과거 릴리즈의 특수 처방(실행 횟수·설정 정리 항목 등)은 고정하지 않고 해당 버전 업그레이드 노트를 따른다.
+   과거 릴리즈의 특수 해결 방법(실행 횟수·설정 정리 항목 등)은 고정하지 않고 해당 버전 업그레이드 노트를 따른다.
 
    설치 프롬프트:
 
@@ -126,7 +126,7 @@ python -m manager --smoke --registry "<이번 확인 전용 임시 projects.json
    gh release view vX.Y.Z                                 # 자산 pm-manager-{linux,windows,macos}-* 3종
    ```
 
-   `--smoke` 세 OS 결과는 live-test 기록에 넣지 않는다(그 스키마는 `pytest -m release` 축이다).
+   `--smoke` 세 OS 결과는 live-test 기록에 넣지 않는다(그 스키마는 `pytest -m release` 기준이다).
    job 성공·실패가 기계 기록이고 이 단계는 그 결과와 자산 3종을 확인한다. job이 red면 릴리즈는
    자산 없이 열린 상태이므로, 사유를 고친 뒤 `gh run rerun --failed <run-id>`로 같은 릴리즈에
    다시 붙인다.
@@ -139,16 +139,16 @@ python -m manager --smoke --registry "<이번 확인 전용 임시 projects.json
 
    GitHub Release는 원격 상태 행위라 live-test·push·tag처럼 기계 강제되지 않으므로 이 확인 뒤 닫는다.
 
-### 4. adopter#0 흡수 ([[pm-update]])
+### 4. adopter#0 받아 반영 ([[pm-update]])
 
-릴리즈 커밋이 worktree canonical에 안착한 뒤 PM 홈에 다시 흡수한다.
+릴리즈 커밋이 worktree canonical에 안착한 뒤 PM 홈에 다시 받아 반영한다.
 
 ```bash
 ./pm-update.sh --from <worktree-canonical-경로>     # 릴리즈된 엔진/방법론을 반영
 ./pm-config.sh sync-adapter-config --check --from <worktree-canonical-경로>
 ```
 
-마지막 `--check` rc=0까지가 adopter#0 흡수 완료다. red 상태를 릴리즈 완료로 기록하지 않는다.
+마지막 `--check` rc=0까지가 adopter#0 받아 반영 완료다. red 상태를 릴리즈 완료로 기록하지 않는다.
 
 ### 5. audience 라벨
 

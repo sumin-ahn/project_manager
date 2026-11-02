@@ -256,7 +256,7 @@ def test_readme_states_that_report_files_stay_a_manual_accept():
         "`.codex/config.toml` | `report`",
         "`.claude/settings.json` | `report`",
         "`.opencode/opencode.jsonc` | `report`",
-        "이 세 파일의 이벤트 배선은 수동 1커맨드로 남는다",
+        "이 세 파일의 이벤트 등록은 수동 1커맨드로 남는다",
         "sync-adapter-config --accept <경로>",
         "자동화 대상이 아니라는 것이 결정이며",
         "편집분(`edited`)은 어느 분류에서도 자동 갱신되지 않고 보존된다",

@@ -160,7 +160,7 @@ def test_pm_instructions_demotes_opencode_run_to_fallback():
     """
     text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
     assert "opencode run" in text, "pm-instructions.md 에서 opencode run 폴백이 사라짐 (강등 ≠ 삭제)"
-    assert "폴백" in text, "pm-instructions.md 에 opencode run 폴백(강등) 문구가 없음 (T-0032·T-0401)"
+    assert "대체 동작" in text, "pm-instructions.md 에 opencode run 대체 동작 문구가 없음 (T-0032·T-0401)"
 
 
 def test_agent_fallback_run_mapping_matches_permission():

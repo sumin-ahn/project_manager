@@ -506,7 +506,7 @@ def test_relay_usage_stop_marker_is_proactive_guard_when_nonblocking_hook_is_obs
     readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
     assert "exec 경로에서 `systemMessage` 안내는 모델에 닿지 않는다(관측만 가능)" in readme
     assert "exec 경로 안내는 모델에 닿지 않는다" not in readme
-    assert "driver 회전 선점이 relay 경로를 실보호" in readme
+    assert "driver 가 먼저 회전해 relay 경로를 실제로 보호" in readme
     assert "**proactive** 기계 가드" in readme
     assert "turn.completed.usage" in readme
 

@@ -18,7 +18,7 @@ design: n/a                  # required | done | n/a — 설계 단계 상태.
                              # 면제 값은 없다 — 설계가 몇 줄이면 몇 줄로 쓰고 done 으로 올린다.
 cluster:                     # C-<ticket-group> — 이 ticket 이 속한 운영 단위(묶음). board.py new 가 자동으로 채운다:
                              # 활성 묶음이 하나면 거기에 귀속, 없으면 `C-<티켓 ID>` 크기 1 묶음을 함께 만든다.
-                             # 비어 있으면 크기 1 묶음으로 읽는다(구세대 ticket 무영향 · board.py cluster show 로 조회).
+                             # 비어 있으면 크기 1 묶음으로 읽는다(옛 버전 ticket 은 영향 없음 · board.py cluster show 로 조회).
 tags: []                     # phase-1, infra 등 분류
 ---
 

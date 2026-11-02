@@ -1,6 +1,6 @@
 ---
 name: pm-adr
-description: "ADR 발행/개정 명령어化 — 번호 자동 채번 + frontmatter scaffold + 개정(amends/supersedes) 대상 ADR 에 lifecycle back-ref(status·amended_by/superseded_by) 발행 시점 자동 기록 + decisions/README.md 색인(Accepted 삽입·개정 대상 Accepted→Amended/Superseded 이동) + log decide entry 를 한 trigger 로 원자화한다. 흩어진 손 단계의 누락 클래스(back-ref 미기록·README 미이동·log 누락)를 명령에서 닫는다. backbone CLI .project_manager/tools/pm_adr.py thin wrapper. Triggers: 'ADR 발행', 'ADR 작성', '결정 박제', 'ADR 개정', 'ADR amend', 'ADR supersede', 'ADR 번호', 'decisions 색인', 'pm-adr'."
+description: "ADR 발행/개정 명령어化 — 번호 자동 채번 + frontmatter scaffold + 개정(amends/supersedes) 대상 ADR 에 lifecycle back-ref(status·amended_by/superseded_by) 발행 시점 자동 기록 + decisions/README.md 색인(Accepted 삽입·개정 대상 Accepted→Amended/Superseded 이동) + log decide entry 를 한 trigger 로 원자화한다. 흩어진 손 단계의 누락 클래스(back-ref 미기록·README 미이동·log 누락)를 명령에서 닫는다. backbone CLI .project_manager/tools/pm_adr.py thin wrapper. Triggers: 'ADR 발행', 'ADR 작성', '결정 기록', 'ADR 개정', 'ADR amend', 'ADR supersede', 'ADR 번호', 'decisions 색인', 'pm-adr'."
 audience: pm-internal
 ---
 
@@ -13,8 +13,8 @@ PM 에이전트가 사용자 지시로 ADR을 발행·개정할 때 `.project_ma
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
-> **mission scope 게이트:** 미션·scope·핵심 안전 경계를 바꾸는 결정(`--scope mission`)은 **사용자
-> 사전 동의 필수** — PM 자율 발행 금지. 이 스킬은 문서 산출을 원자화할 뿐, mission 결정의 승인 게이트를
+> **mission scope 사용자 승인:** 미션·scope·핵심 안전 경계를 바꾸는 결정(`--scope mission`)은 **사용자
+> 사전 동의 필수** — PM 자율 발행 금지. 이 스킬은 문서 산출을 원자화할 뿐, mission 결정의 사용자 승인을
 > 대체하지 않는다.
 
 상황별 산출 해석·후속 작업·동작 경계는 [references/operational-details.md](../../.claude/skills/pm-adr/references/operational-details.md)를 해당 상황에서 읽는다.

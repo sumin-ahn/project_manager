@@ -309,7 +309,7 @@
     ".project_manager/wiki/raw/README.md": [
       {
         "kind": "session_stamp",
-        "hash": "57e02cdf3f3801d163201cee8e87a3d9ffba536548328540ec25583dce8ac107",
+        "hash": "7cf1a4b1ab1c941e3855f133cbbf99bcc42d7864e812b739978d7bbfaceb0c7f",
         "count": 1
       }
     ],
@@ -348,17 +348,17 @@
       },
       {
         "kind": "circled_marker",
+        "hash": "4541071d43c61539ca4134d4ba50c27d021ad796cf2c20ae19be59efacdc526f",
+        "count": 1
+      },
+      {
+        "kind": "circled_marker",
         "hash": "4b4e0e88988591741cce13e9bcae6be9a5926f8d43f80281168973c50c47ebaf",
         "count": 1
       },
       {
         "kind": "circled_marker",
         "hash": "8117826a8fa55377fa2fb6c477adedcac3c2b5e4f543ff864697bc5eaa6d41b7",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a6e8980e7782093de4cfca7a131be6aed0e85274f5523cf0ca1f2dc44a748977",
         "count": 1
       },
       {
@@ -706,7 +706,7 @@
     "templates/claude_code/.project_manager/wiki/raw/README.md": [
       {
         "kind": "session_stamp",
-        "hash": "57e02cdf3f3801d163201cee8e87a3d9ffba536548328540ec25583dce8ac107",
+        "hash": "7cf1a4b1ab1c941e3855f133cbbf99bcc42d7864e812b739978d7bbfaceb0c7f",
         "count": 1
       }
     ],
@@ -1074,7 +1074,7 @@
     "templates/codex/.project_manager/wiki/raw/README.md": [
       {
         "kind": "session_stamp",
-        "hash": "57e02cdf3f3801d163201cee8e87a3d9ffba536548328540ec25583dce8ac107",
+        "hash": "7cf1a4b1ab1c941e3855f133cbbf99bcc42d7864e812b739978d7bbfaceb0c7f",
         "count": 1
       }
     ],
@@ -1127,7 +1127,7 @@
     "templates/opencode/.opencode/agents/architect.md": [
       {
         "kind": "circled_marker",
-        "hash": "578f80dd0e5da28d7233a1824103b8658ced31b9d46f5c07a415b08f5db3030e",
+        "hash": "c84a8ac94aea302ff416da005ebc0c4887a3473cfc9a9b08a07d169b14984e73",
         "count": 2
       },
       {
@@ -1142,12 +1142,17 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "0236e22c1b074fe095c8aeb969f3e9b762fbbaa8d732f622ca5299dc53fda168",
+        "hash": "2c68601134396a8602b3f70c66dbb57c16d4e759fbcfd9ecd25a529735fdcc59",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "2c68601134396a8602b3f70c66dbb57c16d4e759fbcfd9ecd25a529735fdcc59",
+        "hash": "98b9788fc9d59a6cd765a744091a766472074084a4d364e167d36db8cc269081",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "99fae46962277745e30328dd8db303ec3bcbc0fcfab1c5ca1b88fee61a609783",
         "count": 1
       },
       {
@@ -1158,11 +1163,6 @@
       {
         "kind": "session_stamp",
         "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
         "count": 1
       }
     ],
@@ -1206,12 +1206,12 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "73731e4f54b17eba20ce41b9e84b572fb69e8a9689a255833a05010863ab7e58",
+        "hash": "3c9489a57a42d1efc90039dfe3b9cd4a217e9bce1b13a924c8e165dd71499ab4",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "8ace67c77cb341e058879b6c1b99cce6add8fcab57e2b65b6ca9cc9aa6a4cf8f",
+        "hash": "73731e4f54b17eba20ce41b9e84b572fb69e8a9689a255833a05010863ab7e58",
         "count": 1
       },
       {
@@ -1221,12 +1221,12 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
+        "hash": "c1a03df07f3b92baae3df3723db6207d18fc54dfada7490d02a1d52fdf256454",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "d5352a30eb060574b6471e82747a61c38ab7e4c1866b3e7fb754eabadc75f0a3",
+        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       }
     ],
@@ -1248,22 +1248,22 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "786679a4f8cc0fa8544f3c71211264fdb4a34941cd1e56d74e2f936a5efee4d3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "98b9788fc9d59a6cd765a744091a766472074084a4d364e167d36db8cc269081",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "bee2b6446b42bc7749bc08f9659e2df1020d218e968cd21af07221868f2d9c13",
         "count": 1
       },
       {
         "kind": "session_stamp",
         "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f289d3fe17ed10b03359f14fef02da5cc13093f5ded7c17b8600c36bbcd0abbb",
         "count": 1
       }
     ],
@@ -1633,7 +1633,7 @@
     "templates/opencode/.project_manager/wiki/raw/README.md": [
       {
         "kind": "session_stamp",
-        "hash": "57e02cdf3f3801d163201cee8e87a3d9ffba536548328540ec25583dce8ac107",
+        "hash": "7cf1a4b1ab1c941e3855f133cbbf99bcc42d7864e812b739978d7bbfaceb0c7f",
         "count": 1
       }
     ],

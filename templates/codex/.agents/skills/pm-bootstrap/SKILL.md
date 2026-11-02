@@ -41,10 +41,10 @@ python3 .project_manager/tools/pm_bootstrap.py --task <task>
 - 부트스트랩 인자는 `--task <task>`뿐이다. 작업공간은 `$pm-env alloc <repo> --task <task>` 또는 task-aware worktree add로 대여·편입한다.
 - 수집 범위는 이 task가 보유한 작업공간뿐이다(다른 task 슬롯을 고르지 않는다). 보유 0개면 PM 홈, 1개면 그 작업공간, 다중이면 모두를 freshness/opt-in 회귀 범위로 삼고 Git 대표 cwd는 정렬 첫 슬롯으로 surface한다.
 - task identity surface의 정체성 + **prefix 상태(기본=없음)**를 사용자와 확인한다. 변경은 후속 `task prefix` 명령이다.
-- 같은 task가 살아있는 다른 창에서 열려 있으면 `"다른 창에서 열려 있음"`으로 거부한다. 비정상 종료면 자동 회수 후 재개할 수 있고 회수 진입 시 `"다른 창 작업중일 수 있음"` 경고를 surface한다.
+- 같은 task가 살아있는 다른 창에서 열려 있으면 `"다른 창에서 열려 있음"`으로 거부한다. 비정상 종료면 자동으로 이어받아 재개할 수 있고 이어받을 때 `"다른 창 작업중일 수 있음"` 경고를 surface한다.
 - task명은 경로 문자(`/`·`\`·`..`·선행 `.`) 없는 단일 자유 형식이어야 한다. `<등록 repo>_<N>` 슬롯 폴더 이름 패턴은 거부한다.
 
 옵션:
 
 - `--json`: JSON 출력(다른 skill wrapper용).
-- `--with-pytest`: 회귀 opt-in(default skip). 직전 handoff 회귀 숫자가 의심되거나 baseline 재측정 때만 사용한다. 별도 QA skill이 wave 종료 회귀를 맡으면 default skip을 유지한다.
+- `--with-pytest`: 회귀 opt-in(default skip). 직전 handoff 회귀 숫자가 의심되거나 baseline 재측정 때만 사용한다. 별도 QA skill이 묶음 종료 회귀를 맡으면 default skip을 유지한다.

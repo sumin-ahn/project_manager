@@ -14,7 +14,7 @@ status: live
 >
 > **ADR(`decisions/`) = *왜*의 히스토리** (근거 · 현재 구속력 없음). 현재-기준은 이 문서 하나다.
 > 충돌 시 *현재 의도/실측 > 옛 ADR* → 이 문서 갱신 + ADR amend/supersede (요구를 옛 ADR 에 재해석 ✗).
-> **관리 = architect**(코드 대조·라이브 결선/완성 평가 = 설계 노동 · 새 ADR / wave 후 / drift 의심 시 갱신)
+> **관리 = architect**(코드 대조·라이브 결선/완성 평가 = 설계 노동 · 새 ADR / 묶음 종결 뒤 / drift 의심 시 갱신)
 > · **PM = 점검**(저자 아님). 세부 지식은 [`domain/`](domain/README.md) 페이지로(covers→코드 추적), 이 문서는 overview.
 
 ---

@@ -20,10 +20,10 @@ tags: [ideas, backlog]
 ## 파일 규칙
 
 - **디렉토리 = status.** idea 는 `open/` `promoted/` `killed/` 중 하나에 산다
-  (`tickets/` 와 동형). 이 `README.md` 만 `ideas/` 직속 (인덱스).
+  (`tickets/` 와 같은 구조). 이 `README.md` 만 `ideas/` 직속 (인덱스).
 - 파일명: `NNNN-short-slug.md` (4자리 zero-pad, 슬러그는 영문 kebab-case)
 - frontmatter 필수: `id / title / created / updated / type: idea / status / tags`
-- 본문 권장 섹션 (`board.py idea new` 가 골격 생성):
+- 본문 권장 섹션 (`board.py idea new` 가 빈 양식 생성):
   1. 한 줄 요약
   2. 동기 (왜 끌리는가)
   3. 가능한 구현 형태 (high-level)

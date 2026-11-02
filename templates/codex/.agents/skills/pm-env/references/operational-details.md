@@ -9,11 +9,11 @@ task는 슬롯과 직교하는 작업스트림 정체성이다.
 ```bash
 ./pm-config.sh alloc <repo> --task <task> [--folders <폴더,…>]  # idle 슬롯 대여
 ./pm-config.sh release <slot> --task <task>        # task 소유검사 후 반납(내 task 슬롯만)
-./pm-config.sh task end <task>                     # task 종료 — 소진 게이트 + 일괄 반납 + 아카이브
+./pm-config.sh task end <task>                     # task 종료 — 소진 통과 조건 + 일괄 반납 + 아카이브
 ```
 
 - `alloc`은 idle 최소 번호 슬롯을 task 명의(lease session)로 leased 전이한다. idle이 없으면 자동
-  생성하지 않고 사용자에게 슬롯 생성 승인을 요청하라는 처방으로 멈춘다(승인 후 실행 형태는
+  생성하지 않고 사용자에게 슬롯 생성 승인을 요청하라는 해결 방법으로 멈춘다(승인 후 실행 형태는
   `worktree add <repo> --user-ack <repo>`). create/remove(물리층)는 사용자 승인,
   alloc/release(논리층)는 PM 자율. readonly는 대상이 아니다.
 - `release --task`는 슬롯 session이 해당 task 명의가 아니면 거부한다. 커밋 안 한 변경도 거부하며(엔진은
@@ -21,7 +21,7 @@ task는 슬롯과 직교하는 작업스트림 정체성이다.
   clean이면 폴더를 유지한 채 idle 반납한다.
 - `task end`는 해당 task 명의의 claimed 티켓이 남으면 목록을 내고 거부한다. 사용자가 `board complete`
   또는 `board unclaim`(claimed→open)을 판단하며 자동 실행하지 않는다. 보유 작업공간 dirty도 목록과 함께
-  거부한다. 모두 clean이면 슬롯을 삭제하지 않고 일괄 idle 반납, 장부 task 레코드 제거, 서술 폴더를
+  거부한다. 모두 clean이면 슬롯을 삭제하지 않고 일괄 idle 반납, 대여 기록의 task 레코드 제거, 서술 폴더를
   `.local/tasks/_ended/<task>-<날짜>/`로 이동한다. task prefix의 open 티켓은 정보만 표시하고 차단하지 않는다.
 
 ## task prefix
@@ -30,7 +30,7 @@ prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다
 
 ```bash
 ./pm-config.sh task prefix <task> <p>                    # 기존 카테고리 <p> 를 이 task 에 지정/변경
-./pm-config.sh task prefix <task> <p> --user-ack <p>     # 신규 카테고리 신설(사용자 승인값 결속)
+./pm-config.sh task prefix <task> <p> --user-ack <p>     # 신규 카테고리 신설(사용자 승인값 연결)
 ./pm-config.sh task prefix <task> none                   # 해제(무prefix·T-NNNN 로 발행)
 ```
 
@@ -38,7 +38,7 @@ prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다
   `$pm-bootstrap --task`에서만 한다.
 - **신규 카테고리 신설은 사용자 명시 승인이 필요하다.** 대상 라벨이 기존 카테고리 3소스
   (areas.md prefix · 기발행 티켓 prefix · task 지정 prefix)에 없으면 rc=1 로 거부하고
-  현재 카테고리 목록과 승인 요청 처방을 낸다. 같은 게이트가 `board.py new --prefix`·
+  현재 카테고리 목록과 승인 요청 해결 방법을 낸다. 같은 통과 조건이 `board.py new --prefix`·
   `board.py init --prefix`·`board.py prefix rename|merge` 의 새 라벨에도 걸린다. 기존 카테고리
   사용(대소문자만 다른 표기 포함)은 무마찰이다. **세션이 스스로 `--user-ack` 을 붙여 카테고리를
   신설하지 않는다** — 승인 주체는 사용자다.

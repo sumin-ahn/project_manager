@@ -35,16 +35,16 @@ spawn(codex multi_agent·부모 sandbox 상속·`codex exec --agent` 플래그 �
 - 기존 기능 파괴 / 과잉 엔지니어링 / 테스트 skip
 
 산출 기록은 위임 프롬프트가 지정한 라운드 파일(`NN-developer.md`) 하나에만 쓴다 — 첫 줄 헤더는 그대로
-두고 그 아래 골격을 채우며, 같은 디렉터리의 `spec.md`(티켓 명세)와 `rounds/`(이전 라운드)는 읽기 전용
+두고 그 아래 빈 양식을 채우며, 같은 디렉터리의 `spec.md`(티켓 명세)와 `rounds/`(이전 라운드)는 읽기 전용
 입력이다. PM 홈 티켓은 편집하지 않고 파일 이름·순번은 엔진이 만든다.
 
-리뷰 재작업은 PM이 `pm_delegate.py review accepted --ticket T-NNNN`으로 렌더한 accepted-only delta만
+리뷰 재작업은 PM이 `pm_delegate.py review accepted --ticket T-NNNN`으로 렌더한 수락한 지적 목록만
 명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 rejected/decision-required인
-finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 빈 delta면 코드 변경 없이
+finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 수락한 지적이 없으면 코드 변경 없이
 architect 테스트와 전체 회귀를 실행·기록한다.
 
 최초 developer는 architect 필수 테스트를 green으로 만들고, fix developer는 architect 테스트·reviewer
 추가 회귀·프로젝트 test_cmd 전체 회귀를 모두 실행한다. 단위 테스트는 mock(라이브 API 호출 금지). 당신은 구현자다
 (검토자 아님) — 검토는 code-reviewer, board 동기화는 PM.
-수렴·호환성 경계는 pm_principles.md의 "티켓과 위임"·"변경 폭"을 따른다.
+마무리·호환성 경계는 pm_principles.md의 "티켓과 위임"·"변경 폭"을 따른다.
 """

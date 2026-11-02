@@ -1492,7 +1492,7 @@ def test_t0958_delegate_docs_state_switch_after_claim():
              *sorted((REPO / "templates").glob("*/*/command/pm-dev-delegate.md"))]
     assert len(playbooks) > 1 and len(cards) > 1, (playbooks, cards)
     for path in playbooks:
-        section = _markdown_section(path.read_text(encoding="utf-8"), "### Wave 구성 (묶음 단계)")
+        section = _markdown_section(path.read_text(encoding="utf-8"), "### 묶음 구성 (단계)")
         item = section.split("2. **묶음 선언 + claim**", 1)[1].split("\n3. ", 1)[0]
         line = next((row for row in item.splitlines() if _DELEGATE_SWITCH_PHRASES[0] in row), "")
         assert all(phrase in line for phrase in _DELEGATE_SWITCH_PHRASES), (path, item)

@@ -11,7 +11,7 @@ type: status-archive
 > 로드하지 않는다 — 완성 모듈 이력이 필요할 때만 Read.
 >
 > **이동 규칙:** 모듈이 ✅ 완성+테스트 통과·안정화되면 PM 이 status.md 활성 매트릭스에서
-> 이 파일로 **모듈 *판정/비고* 행**을 옮긴다 (wave-finish / handoff 시점). **테스트 수는 박제하지
+> 이 파일로 **모듈 *판정/비고* 행**을 옮긴다 (묶음 종결 / handoff 시점). **테스트 수는 적어 두지
 > 않는다** — pytest 실측이 단일 진실·history 는 log (ADR-0023 · status judgment-only).
 
 <!-- Layer/그룹별로 status.md 와 같은 섹션 구조를 유지한다. 비고는 1줄 — 전체 이력은 log + done ticket. -->

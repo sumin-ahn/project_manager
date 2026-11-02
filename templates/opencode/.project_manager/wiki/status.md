@@ -27,7 +27,7 @@ type: status
 > **멀티-PM:** `area` 열 = 그 모듈을 소유한 영역 prefix(예 `PAY`). 각 영역 PM 은 *자기 행만* 편집 →
 > 서로 다른 hunk 라 git 이 대개 auto-merge. status.md 가 **공유 프로젝트 브리프**다. 단일 PM 이면 area 열은 비워도 됨.
 
-<!-- 진행 중·미구현·외부 대기 모듈만 여기. ✅ 완성+안정 모듈은 status_done.md 로 옮긴다(wave/handoff 시점).
+<!-- 진행 중·미구현·외부 대기 모듈만 여기. ✅ 완성+안정 모듈은 status_done.md 로 옮긴다(묶음 종결·handoff 시점).
      상태·비고 = architect 가 코드 대조로 유지·PM 점검(ADR-0022/0023). 비고는 1줄 — 전체 이력은 log + done ticket.
      테스트 *수*는 적지 않는다(derivable·pytest 실측). ⚠️ ✅ 행 누적 시 board.py lint 가 status_done.md archive 권고. -->
 

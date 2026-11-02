@@ -23,7 +23,7 @@ non-empty 값도 무효화하며, 키가 없거나 파일을 읽을 수 없는 �
 
 ## `/pm-update` Windows 진입 원문
 
-> **Windows 진입**: `./pm-update.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-update.cmd`**(동일 인자·아래 `./pm-config.sh` 참조도 동형 **`.\pm-config.cmd`**).
+> **Windows 진입**: `./pm-update.sh` 는 bash 용 — PowerShell/cmd 에선 **`.\pm-update.cmd`**(동일 인자·아래 `./pm-config.sh` 참조도 같은 방식으로 **`.\pm-config.cmd`**).
 > 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
 > PowerShell 5.x 는 `&&` 체이닝 미지원(ParseError) — `cd X && …` 대신 **도구의 workdir 파라미터**나 명령 분리로 실행한다.
 

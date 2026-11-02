@@ -5,7 +5,7 @@
 wiki/board.md
 
 # dashboard.md = 핸드오프가 런타임 lazy 생성하는 slot 대시보드 파생물 (수정형).
-#   board.md 와 같은 사유 — 파생·현재-상태 스냅샷이라 git-untracked(공개 제품에 이물질 미출하).
+#   board.md 와 같은 사유 — 파생·현재 상태 기록이라 git-untracked(공개 제품에 이물질 미출하).
 wiki/log/dashboard.md
 
 # pm_state.md = 로컬 핸드오프 상태 (pm-init 이 pm_state.template.md 에서 생성).
@@ -20,7 +20,7 @@ local.conf
 #   인스턴스마다 내용이 다른 per-clone 파일이라 공유하지 않는다.
 review_context.local.md
 
-# .local/ = per-clone·per-slot 스크래치 (회귀 게이트 플래그·worktree-leases·slots/<repo>_<N>/pm_state.md).
+# .local/ = per-clone·per-slot 스크래치 (회귀 통과 조건 플래그·worktree-leases·slots/<repo>_<N>/pm_state.md).
 .local/
 
 # 엔진 패키지(tools/pm_engine) 교체의 운영 산출물 — 같은 대상 writer 를 직렬화하는 락(지우지 않고 남는다)과

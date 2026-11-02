@@ -36,6 +36,7 @@
   - `.project_manager/wiki/log/dashboard.md` 슬롯 절의 줄 `- wave:` → `- 세션 요약:`. 이미 있는 절은 그 슬롯의 다음 핸드오프가 절을 다시 쓸 때 바뀐다.
   - 묶음 종결 1단계 이름 `기계 확인 생성·리뷰 게이트 처분` → `기계 확인 생성·리뷰 집계 티켓 처분`(`/pm-cluster-finish` 상세 문서의 단계 표도 같다).
   - handoff entry 의 `- 이 세션 박제 entries:` 줄과 티켓 설계 절 항목 이름 `표면 상한` 은 그대로다. 이미 쓰인 log·ADR·archive·board 설정 파일의 옛 문구는 고치지 않는다.
+- 출하 문서의 지어낸 말을 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어로 바꿨다. 대상은 스킬, 에이전트 카드, 진입 문서, 방법론(`pm_role.md`·`pm_playbook.md`·`pm_principles.md`), wiki 안내와 빈 양식, README·`ADOPT.md`·`docs/`, manifest·`.gitignore`·`.gitattributes` 주석이다. 동작, 명령 이름·플래그, 설정 키, 파일 형식은 그대로다. 원칙 훅이 띄우는 원칙 글도 새 낱말로 나온다. 엔진이 디스크의 글과 맞대는 티켓 양식 `## 설계` 절의 항목 줄, log handoff 항목 이름 `이 세션 박제 entries`, spike 상태 값 `sealed (<date>)` 는 그대로다.
 
 ### Removed
 
@@ -67,6 +68,7 @@
 - 갱신할 때 진행 중이던 세션은 같은 사용률 구간의 경고를 한 번 더 받는다. 옛 표시 파일 `.project_manager/.local/ctx-stop/(세션).nudge`·`(세션).nudge2` 는 더 읽지 않으며 지워도 된다.
 - 훅 출력의 앞머리를 글자 그대로 찾던 채택자 스크립트·로컬 규칙·메모는 `[git-anchor/` 를 `[git-check/` 로, `[ctx-nudge` 를 `[ctx-warn` 으로 고친다. `pm_orch_codex.py --hook-features` 의 기능 이름 `git-anchor`·`ctx-nudge-userpromptsubmit` 을 비교하던 도구는 `git-check`·`ctx-warn-userpromptsubmit` 으로 고친다. 옛 앞머리와 옛 이름은 더 나오지 않는다.
 - 위임·리뷰·라운드 출력 문구를 글자 그대로 찾는 채택자 스크립트(예: `조회 장부:`·`미회수`·`wave 예산 소진`·`게이트 ticket:`)는 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 를 보고 새 문구(`조회 기록 파일:`·`돌려받지 않음`·`세션 호출 예산 소진`·`리뷰 집계 티켓:`)로 고친다. 갱신 전에 만든 라운드 파일과 티켓은 옮길 것이 없다.
+- **설치된 채택자 소유 문서는 갱신이 바꾸지 않는다.** 스킬·카드·방법론·빈 양식은 갱신이 새 글로 바꾸지만 `CLAUDE.md`·`AGENTS.md`·`pm_role.local.md` 와 설치된 wiki 문서는 그대로다. 새 문서와 맞추려면 `pm_role.local.md` 의 `## 사용자 게이트 (사전 동의 필수)` 를 `## 사용자 승인 (사전 동의 필수)` 로, `AGENTS.md`·`AGENTS.lite.md` 의 `Wave 패턴·메타 정책` 을 `묶음 진행 패턴·메타 정책` 으로 고친다. 고치지 않아도 동작은 같다(엔진은 이 제목을 읽지 않는다). 출하 문서의 글을 글자 그대로 찾는 채택자 스크립트가 있으면 새 글로 고친다.
 
 ## [1.8.3] - 2026-10-30
 

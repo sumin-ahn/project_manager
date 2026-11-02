@@ -4,11 +4,11 @@
 
 ## 출력 검증
 
-- **board**: `done / open / claimed / blocked`는 내 세션 스코프(open=내 세션 생성 스트림, claim=내 세션)다. 타 세션분은 기본 dump에 없다. 공유 풀 전체는 `board.py list --all`, 내 전 세션은 `--mine`으로 조회한다. 숫자는 스냅샷이므로 옵션 제시 전 `board.py list --mine`으로 claim 주체를 교차 확인한다(부분 push/오프라인 창).
-- **회귀**: default는 `(skip — handoff entry 참조 · --with-pytest 로 재측정)`. `--with-pytest`면 `N / N passed`; red면 즉시 baseline fix하고 wave 시작을 막는다.
+- **board**: `done / open / claimed / blocked`는 내 세션 스코프(open=내 세션 생성 스트림, claim=내 세션)다. 타 세션분은 기본 dump에 없다. 공유 풀 전체는 `board.py list --all`, 내 전 세션은 `--mine`으로 조회한다. 숫자는 그 시점 상태 기록이므로 옵션 제시 전 `board.py list --mine`으로 claim 주체를 교차 확인한다(부분 push/오프라인 창).
+- **회귀**: default는 `(skip — handoff entry 참조 · --with-pytest 로 재측정)`. `--with-pytest`면 `N / N passed`; red면 즉시 baseline fix하고 묶음 시작을 막는다.
 - **git**: 브랜치, 최근 5 commit, working tree clean 여부. task-only는 task 소유 작업공간만 수집하고 다중 슬롯 대표 cwd·전수 freshness 범위를 표시한다.
 - **차수**: `## PM N차 부트스트랩`. task pm_state 또는 bound slot pm_state의 세션식별 절에서 추론하며 미해소면 placeholder다.
-- **마지막 entry**: `log/current.md` 제목(date·type·title) + 본문 전체를 `<details>`로 dump한다. `handoff`면 직전 PM 종료 정합, `complete`면 wave 진행 중일 수 있다.
+- **마지막 entry**: `log/current.md` 제목(date·type·title) + 본문 전체를 `<details>`로 dump한다. `handoff`면 직전 PM 종료 일치, `complete`면 묶음 진행 중일 수 있다.
 - **열린 todo**: 이 task 의 열린 todo(`.local/tasks/<task>/todo.json`)를 ID·등록일과 함께 surface한다(등록·완료는 `pm-config task todo add|list|done`, 완료는 번호가 아니라 ID 로 지목한다).
 
 ## PM 보고

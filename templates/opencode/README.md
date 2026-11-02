@@ -28,7 +28,7 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
   채널이며 canonical은 이 경로 하나다. 스킬 스캔 비활성화 금지
   (`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정).
 - **`.opencode/command/`** — `/pm-bootstrap` 같은 사람 슬래시 팔레트 진입 15개. opencode 1.18.16
-  실측에서 팔레트는 `{command,commands}/**/*.md`, 스킬은 별도 `skill` tool 표면이므로 둘 다
+  실측에서 팔레트는 `{command,commands}/**/*.md`, 스킬은 별도 `skill` tool 진입점이므로 둘 다
   출하한다. 각 `<name>.md`는 root canonical `.claude/skills/<name>/SKILL.md`에서 `pm_update`가
   기계 생성하며 command 파일을 손으로 편집하지 않는다(T-0674·ADR-0065 개정 대기).
 
@@ -37,7 +37,7 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
 위임 1차는 **opencode 네이티브 `task` tool** 이다 — PM(build primary)이 `task` tool 을
 `subagent_type=developer|architect|code-reviewer|researcher` 로 호출하면 opencode 가 `.opencode/agents/*.md`
 를 별도 자식 세션(fresh 200K 격리·subagent `model:` 대로)에서 구동한다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. `opencode run` 외부
-프로세스는 headless·CI·task tool 미노출 빌드용 **폴백**으로 강등됐다(pm-instructions.md §2.7). 자세한 규약·프롬프트는
+프로세스는 headless·CI·task tool 미노출 빌드용 **대체 동작**으로 낮아졌다(pm-instructions.md §2.7). 자세한 규약·프롬프트는
 `.opencode/pm-instructions.md §2`(공통 코어 `AGENTS.md` 와 함께 자동 로드)가 단일 진실. 결정 근거는 ADR-0006(§3·D2·D3·D5).
 
 ## 채택 (pm_import — 정규 경로)
@@ -64,15 +64,15 @@ opencode 는 모델 placeholder 해소가 필수라 **수동 `cp -r` 은 불완�
 ## Context safety: native compaction + checkpoint
 
 OpenCode의 native compaction을 유지하고 `.opencode/plugins/ctx-guard.js`가 메인 세션의 최신
-`AssistantMessage.tokens`를 관측한다. warn·강화·final 밴드는 다음 model turn의 system context에
+`AssistantMessage.tokens`를 관측한다. warn·강화·final 구간은 다음 model turn의 system context에
 checkpoint 안내를 사이클당 한 번씩 추가할 뿐 prompt, 도구 실행, compaction을
 차단하지 않는다. `session.compacted` 뒤에는 `pm_log.py snapshot` 최종 텍스트를 다음 model turn의
-system context에 verbatim 1회 주입하고 dedup checkpoint 골격을 만든 뒤 다음 사이클을 재무장한다.
+system context에 verbatim 1회 주입하고 dedup checkpoint 빈 양식을 만든 뒤 다음 사이클을 다시 켠다.
 native task가 만든 자식 세션은 checkpoint 안내 대상에서 제외되고 자체 compaction으로 정리된다.
 
-안내를 받은 PM은 현재 ticket 경계를 닫고 수동 checkpoint의 진행·결정·검증 상태를 박제한다.
-압축 경계 골격은 기계 생성되며 PM은 구간·서사 불릿을 채운다. host로 채택한 인스턴스의 plugin은
-`pm_update` 갱신 대상이고, guest로 추가한 plugin은 위 §갱신 채널대로 `add-harness opencode`를
+안내를 받은 PM은 현재 ticket 경계를 닫고 수동 checkpoint의 진행·결정·검증 상태를 기록한다.
+압축 경계 빈 양식은 기계 생성되며 PM은 구간·서사 불릿을 채운다. 기본 하네스로 채택한 인스턴스의 plugin은
+`pm_update` 갱신 대상이고, 추가 하네스로 붙인 plugin은 위 §갱신 채널대로 `add-harness opencode`를
 다시 실행해 갱신한다.
 
 ### 모델 선택 (`{{OPENCODE_PRO_MODEL}}` 해소 · T-0033)
@@ -101,13 +101,13 @@ subagent 카드(architect·developer·developer-hard·code-reviewer·researcher)
 
 ## 갱신 채널 (채택자 관점 · ADR-0058)
 
-도입 후 upstream 프레임워크 변경을 흡수하는 경로는 이 어댑터가 **host 냐 guest 냐**로 갈린다.
+도입 후 upstream 프레임워크 변경을 받아 반영하는 경로는 이 어댑터가 **기본 하네스냐 추가 하네스냐**로 갈린다.
 
-- **opencode 로 채택** (이 템플릿을 import — opencode 가 host) — 엔진과 `.opencode/*` 어댑터가
-  `pm_update`(`./pm-update.sh`)로 전파된다 (flavor manifest·ADR-0054). `AGENTS.md` 는 인스턴스
+- **opencode 로 채택** (이 템플릿을 import — opencode 가 기본 하네스) — 엔진과 `.opencode/*` 어댑터가
+  `pm_update`(`./pm-update.sh`)로 전파된다 (하네스별 판 manifest·ADR-0054). `AGENTS.md` 는 인스턴스
   소유라 유지된다 (claude `CLAUDE.md` 대칭).
-- **claude 인스턴스에 dual-harness 로 얹은 opencode** (`add-harness opencode` — opencode 가 guest) —
-  이 `.opencode/*` 는 host manifest 의 guest 절에 등재돼 `pm_update` 가 함께 전파한다: 렌더물
+- **claude 인스턴스에 두 하네스 구성으로 얹은 opencode** (`add-harness opencode` — opencode 가 추가 하네스) —
+  이 `.opencode/*` 는 기본 하네스 manifest 의 추가 하네스 절에 등재돼 `pm_update` 가 함께 전파한다: 렌더물
   (`@render`·agent 카드 등)은 채택자 `local.conf` 값으로 다시 렌더하고, 엔진 파일은 byte-copy 로
   갱신한다. `add-harness opencode` 재실행은 어댑터 파일이 새로 추가/폐기됐을 때 등재를 갱신하는
   용도다 (기존 인스턴스 위 live-safe·ADR-0048).

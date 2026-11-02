@@ -38,12 +38,12 @@ POLICY_CONCEPTS = {
     "enumerate-all": (("전수 나열",),),
     "report": (("보고",),),
     "close-all": (("전부 처리", "전부 닫"),),
-    "reported-shape-incomplete": (("보고된 형상",), ("미완",)),
+    "reported-shape-incomplete": (("보고된 사례",), ("미완",)),
     "impossible-boundary": (("불가능",), ("경계",)),
     "scope-boundary": (("스코프",), ("티켓 밖",), ("금지", "확대하지 않")),
     "reverse-heading": ((REVERSE_HEADING,),),
     "opposite-failure-assertion": (("반대 방향 실패",), ("단언",)),
-    "tighten-overbinding": (("느슨함",), ("조인",), ("과결속",), ("확인",)),
+    "tighten-overbinding": (("느슨함",), ("조인",), ("과하게 막음",), ("확인",)),
     "loosen-omission": (("조임",), ("푼",), ("누락",), ("확인",)),
     "block-normal-use": (("차단",), ("정상 사용",), ("확인",)),
     "instance-report": (("열거한 인스턴스 목록",), ("각각의 처리",)),
@@ -72,9 +72,9 @@ def _policy_errors(text: str) -> list[str]:
 
     # 의미 반전 백스톱. 개별 의무 항목에서 금지·부정 극성이 나타나면 개념 토큰이 남아도 실패한다.
     polarity_checks = (
-        ("보고된 형상", ("충분", "완료로 본", "미완이 아니")),
+        ("보고된 사례", ("충분", "완료로 본", "미완이 아니")),
         ("반대 방향 실패", ("단언하지 않", "확인하지 않", "확인 불필요")),
-        ("과결속", ("확인하지 않", "확인 불필요", "생략")),
+        ("과하게 막음", ("확인하지 않", "확인 불필요", "생략")),
         ("누락", ("확인하지 않", "확인 불필요", "생략")),
         ("정상 사용", ("확인하지 않", "확인 불필요", "생략")),
     )
@@ -136,8 +136,8 @@ def test_guard_accepts_concept_preserving_rephrases():
 @pytest.mark.parametrize(
     ("before", "after", "expected_error"),
     (
-        ("보고된 형상만 처리한 결과는 미완.", "보고된 형상만 처리해도 충분.", "reported-shape-incomplete"),
-        ("과결속 확인.", "과결속 확인 불필요.", "의미 반전: 과결속"),
+        ("보고된 사례만 처리한 결과는 미완.", "보고된 사례만 처리해도 충분.", "reported-shape-incomplete"),
+        ("과하게 막음 확인.", "과하게 막음 확인 불필요.", "의미 반전: 과하게 막음"),
         ("정상 사용 차단 확인.", "정상 사용 차단 확인 불필요.", "의미 반전: 정상 사용"),
     ),
 )

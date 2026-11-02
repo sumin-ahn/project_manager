@@ -23,27 +23,27 @@
 #   열거·경로 적재기 load_module)·infra/conf_store(local.conf·압축 한도 기록 읽기)·cli/local_conf
 #   (키 표·JSON·어댑터 생성 블록 출력)·domain/git_policy·domain/shell_policy(git·셸 명령 판정 규칙)·
 #   infra/git(git 저장소 조회)·infra/process(실행 플랫폼 argv 분해)·app/hooks(도구 호출 판정 보조)·
-#   domain/identity_args(정체성 인자·슬롯·task 값 판정)·infra/lease_store(리스 장부 읽기)·
+#   domain/identity_args(정체성 인자·슬롯·task 값 판정)·infra/lease_store(슬롯 대여 기록 읽기)·
 #   infra/repo_coordinates(티켓 경로 repo 좌표 정규화)·app/session/relay(세션 자동 회전)·
 #   infra/harness/contract·infra/harness/watchdog(하네스 CLI 계약·자식 프로세스 감시)·
-#   infra/raw_output(원출력 장부·임시 루트)·infra/review_rounds(리뷰 라운드 장부)·
+#   infra/raw_output(raw 출력 기록·임시 루트)·infra/review_rounds(리뷰 라운드 기록)·
 #   domain/manifest_rules(manifest 문법·경로 소유 판정)·infra/manifest_store(manifest 판독·배포 파일 목록)·
 #   domain/upstream_rules(상류 값 URL·경로 분류)·domain/home(실행 기준 경로 값)·infra/pm_paths(PM 홈 경로
 #   해소·소유 PM 홈 유도)·domain/ticket_rules·infra/ticket_store(티켓 문법·조회·읽기)·
 #   domain/areas_rules·infra/areas_store(areas.md 문법·읽기)·infra/python_env(기본 테스트 명령·
 #   Python 하한·인터프리터 탐지)·cli/task_args(실행 정체성 검증·task 작업공간 해소)·
-#   domain/pytest_report(pytest 요약행 판독)·infra/pre_push_hook(pre-push 회귀 게이트 훅)·
-#   infra/regression_store(회귀·라이브 게이트 기록)·infra/clock(현재 시각)·app/regression(회귀 게이트
-#   해소·판정)·app/release(릴리즈 라이브 게이트 판정)·app/slot_resolution(회귀 작업 폴더 해소)·
+#   domain/pytest_report(pytest 요약행 판독)·infra/pre_push_hook(pre-push 회귀 통과 조건 훅)·
+#   infra/regression_store(회귀·라이브 시험 통과 조건 기록)·infra/clock(현재 시각)·app/regression(회귀 통과 조건
+#   해소·판정)·app/release(라이브 시험 통과 조건 판정)·app/slot_resolution(회귀 작업 폴더 해소)·
 #   cli/regression_cmd(regression 명령)·domain/round_rules·infra/round_store·app/round_seed(라운드 파일
-#   이름 규약·저장·시드와 산출 없음 판정)·domain/review_form·domain/review_state·domain/review_verdict
+#   이름 규약·저장·빈 양식과 산출 없음 판정)·domain/review_form·domain/review_state·domain/review_verdict
 #   (리뷰 블록 양식·리뷰 상태 판정·리뷰어 판정 해석)·domain/delegate_errors(위임 오류 형식)·
-#   infra/delegate_ledger(위임 라운드 장부)·domain/design_rules(설계 단계 판정)·domain/markdown_text
+#   infra/delegate_ledger(위임 라운드 기록)·domain/design_rules(설계 단계 판정)·domain/markdown_text
 #   (마크다운 절·코드 판독)·domain/model_lint(위임 모델 설정 점검)·domain/gitattributes_rules
-#   (.gitattributes 판독)·infra/cluster_store(묶음 장부 읽기)·infra/log_store(운영 log 쓰기)·
+#   (.gitattributes 판독)·infra/cluster_store(묶음 기록 읽기)·infra/log_store(운영 log 쓰기)·
 #   app/ticket_lint·app/body_lint·app/wikilink_lint·app/wiki_lint·app/freshness_lint·app/conf_lint·
-#   app/areas_lint(문서 lint 축별)·app/lint_hooks(채택자 lint 훅 실행)·domain/adr_rules·app/adr_issue
-#   (ADR 문서 형식·발행)·app/adr_contradiction(결정 개정 잔여 모순 lint)·domain/doc_pages·domain/doc_drafts
+#   app/areas_lint(문서 lint 기준별)·app/lint_hooks(채택자 lint 훅 실행)·domain/adr_rules·app/adr_issue
+#   (ADR 문서 형식·발행)·app/adr_contradiction(결정 개정 뒤 남은 모순 lint)·domain/doc_pages·domain/doc_drafts
 #   (domain 페이지 문서 규칙·초안 양식)·infra/doc_page_store(domain 페이지 읽기·쓰기)·app/doc_staleness·
 #   app/doc_affected·app/doc_coverage·app/doc_lint(domain 페이지 판정)·app/freshness_pin(verified_at 핀 쓰기).
 .project_manager/tools/pm_engine
@@ -57,7 +57,7 @@
 # pm-retired-path: .project_manager/tools/ticket_rounds.py -> .project_manager/tools/pm_engine/domain/round_rules.py
 .project_manager/tools/board.py
 # pm-retired-path: .project_manager/tools/engine_rev.py -> .project_manager/tools/pm_engine/__init__.py
-# python_floor: 실제 `py <script>` shebang 디스패치와 동형인 Python 3.11 하한 probe.
+# python_floor: 실제 `py <script>` shebang 디스패치와 같은 구조인 Python 3.11 하한 probe.
 .project_manager/tools/python_floor.py
 # domain: v2 도메인 지식 레이어 엔진 (covers 파서·touches∩covers·staleness·freshness lint·capture). domain/ 페이지는 인스턴스 소유(manifest 밖)
 .project_manager/tools/domain.py
@@ -74,10 +74,10 @@
 # pm-retired-path: .project_manager/tools/external_review.py -> .project_manager/tools/additional_reviewer.py
 # pm-retired-path: .project_manager/tools/gate_snapshot.py -> .project_manager/tools/pm_delegate.py
 # pm-retired-path: .claude/precompact_capture_hook.sh -> .project_manager/tools/pm_log.py
-# worktree_pool: repo별 worktree 풀 리스 엔진 (multi-PM 모델). 순수 엔진(git DI seam)
+# worktree_pool: repo별 worktree 풀 대여 엔진 (multi-PM 모델). 순수 엔진(git 교체 지점)
 .project_manager/tools/worktree_pool.py
 # pm_config: multi-PM 셋업/관리 파사드 디스패처. 루트 forwarder pm-config.sh/.cmd 는
-#   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
+#   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 와 같은 구조·manifest 밖)
 .project_manager/tools/pm_config.py
 # local_conf: CLI 진입 파일(--keys·--keys --json), 구현은 pm_engine
 #   (domain/conf_schema·infra/conf_store·cli/local_conf). 관리자가 프로젝트 사본마다 `--keys --json` 으로
@@ -86,20 +86,20 @@
 # delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·자체 고장 fail-open. 래퍼 delegate_channel_guard_hook.sh 는 claude 어댑터층(ADAPTER_HOOK_SET)
 .project_manager/tools/delegate_channel_guard.py
 # delegate_scope: 위임 전/후 porcelain 상태를 비교해 ticket touches 밖 변경을 loud 경고로
-#   표면화하는 비차단 판정기. PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
+#   드러내는 비차단 판정기. PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
 # pm-retired-path: .project_manager/tools/delegate_scope.py -> .project_manager/tools/pm_engine/infra/delegate_scope_git.py
 # pm_adr: ADR 발행/개정 명령어化 backbone (4요소 스키마·lifecycle). 채번·frontmatter
 #   scaffold·개정 대상 back-ref 기록·README 색인·log decide entry 원자화. 신설 도구라 등록 필수
 #   (미등록=전파 안 됨·pm_render 사례). ADR 실경로는 인스턴스 소유(decisions/·manifest 밖·self-location 해소)
 .project_manager/tools/pm_adr.py
 # contradiction_lint: 모순 lint — 결정 개정(amends/supersedes) 시점에 옛 결정을
-#   참조하는 문서의 잔여 모순 후보를 표면화(탐지 LLM DI·기본 dry / 판정 사람·advisory).
-#   pm_adr.py 발행 명령이 트리거로 호출(개정에만 발화).
+#   참조하는 문서의 남은 모순 후보를 드러냄(탐지 LLM DI·기본 dry / 판정 사람·advisory).
+#   pm_adr.py 발행 명령이 트리거로 호출(개정에만 실행).
 .project_manager/tools/contradiction_lint.py
 # pm_delegate: cross-harness 역할 위임 채널 (기본 OFF·delegate.enabled opt-in). 신설 도구라
 #   등록 필수(미등록=전파 안 됨). local.conf delegate.* 매핑은 인스턴스 소유(manifest 밖)
 .project_manager/tools/pm_delegate.py
-# 사설 참조 규칙과 출하 표면은 pm_engine 디렉터리로 배송한다.
+# 사설 참조 규칙과 출하 파일은 pm_engine 디렉터리로 배송한다.
 # pm-retired-path: .project_manager/tools/private_refs.py -> .project_manager/tools/pm_engine/domain/private_refs.py
 # 스킬 이름 변경(pm-wave-* -> pm-cluster-*): 옛 스킬 파일을 갱신 때 백업 폴더로 옮긴다. 새 스킬 파일은
 #   렌더 행이라 NEW 로 쓸 수 없어, 새 스킬 이름을 카드에 싣는 bootstrap_card.py 를 기준 파일로 둔다.
@@ -162,14 +162,14 @@
 # relay 드라이버 (engine-mirror·비-.md 코드라 @render 아님·byte-copy). canonical=templates/codex·루트
 #   부재 → @source remap 으로 전파(frozen 근절·opencode pm_orch_opencode.py 대칭).
 .codex/pm_orch_codex.py     @source=templates/codex/.codex/pm_orch_codex.py
-# 위임 4축 command policy (execpolicy `.rules`·비-.md 코드라 @render 아님·byte-copy). codex 는
+# 위임 네 역할 command policy (execpolicy `.rules`·비-.md 코드라 @render 아님·byte-copy). codex 는
 #   `.codex/rules/` **디렉토리의 `*.rules` 전부**를 로드하므로(0.146.0 실측 — "loaded N .rules files
 #   in <dir>") 채택자 커스텀은 형제 파일(예 `local.rules`)로 분리할 수 있다 → `default.rules` 자체는
 #   프레임워크 소유·전파 대상(AGENTS.md 안전 경계의 기계 강제분이라 상류가 계속 진화시킨다).
 .codex/rules/default.rules  @source=templates/codex/.codex/rules/default.rules
 
 # ── manifest 자기전파 (self-prop·opencode engine.manifest 대칭) ──────────────────
-# codex 채택자가 자기 flavor 매니페스트를 @source 로 byte-copy 받아 위 신 엔트리(및 relay 드라이버)가
+# codex 채택자가 자기 하네스별 판 매니페스트를 @source 로 byte-copy 받아 위 신 엔트리(및 relay 드라이버)가
 #   기존 채택자에 도달한다 — 안 그러면 import 시점 frozen manifest 를 유지해 신 엔트리를 영영 못 배운다.
 .project_manager/engine.manifest    @source=templates/codex/.project_manager/engine.manifest
 

@@ -10,7 +10,7 @@ baseline(local.conf `upstream.rev`)과 cache/경로 HEAD 사이 commit 수 및 �
 ./pm-update.sh --changes --from <cache-or-path>   # commit 수 + 4버킷 분리
 ```
 
-출력 4버킷 (분류 기준은 실 sync의 계획 manifest와 같다 — guest 절 행 합류 포함):
+출력 4버킷 (분류 기준은 실 sync의 계획 manifest와 같다 — 추가 하네스 절 행 합류 포함):
 
 | 버킷 | 뜻 |
 |---|---|
@@ -20,7 +20,7 @@ baseline(local.conf `upstream.rev`)과 cache/경로 HEAD 사이 commit 수 및 �
 | 상류 삭제·rename (동기가 지우지 않음) | upstream에서 사라진 등재 경로. 이어지는 `상류 부재 파일` 보고가 dest에 잔존하는 실물을 나열한다(동기는 지우지 않음·수동 정리 판단) |
 
 - **변경 0**: `--changes`는 미리보기일 뿐이므로 동기를 생략하지 않는다. facade를 한 번 실행해
-  manifest 밖 instance-owned config 수렴 채널을 태운다. v1.8.0 이상 updater는 한 번의 실행이
+  manifest 밖 instance-owned config 일치 채널을 태운다. v1.8.0 이상 updater는 한 번의 실행이
   완료까지 끝내며 두 번째 실행은 **zero-change RUN2** 확인이다. v1.7.13 이하 updater에서 처음
   받을 때는 RUN2가 완료 단계를 실행하고 세 번째 실행이 변경 0을 확인한다.
 - **변경 > 0**: "엔진 영향(이번 동기가 받는 것)" 목록을 PM에게 보고한 뒤 reconcile → sync.
@@ -38,23 +38,23 @@ v1.7.11 updater가 설치된 채택자는 source에서 사라진 구 reviewer �
 ```
 
 두 번째 명령은 설치된 신 updater의 full sync다. 이 한 번이 신 manifest와 replacement를 적용한 뒤
-구 경로를 backup/퇴역하고 baseline을 수렴시킨다. 이 scoped `--paths`는 v1.7.11 물리 rename만의
-bridge이며, 이후 업데이트의 정상 흡수 단위는 항상 full sync다.
+구 경로를 backup/퇴역하고 baseline을 일치시킨다. 이 scoped `--paths`는 v1.7.11 물리 rename만의
+bridge이며, 이후 업데이트를 받아 반영하는 정상 단위는 항상 full sync다.
 
 ### 3. manifest reconcile (pm_update 전·PM 주도·사용자 개입 0)
 
-**기본 경로 = 선-cp 없이 4단계 sync 만 실행한다.** `@source` self-prop 채택자(현행 import 전원)는 엔진이 manifest 신 항목 도달을 스스로 처리한다 — 등재 행이 지워진 채택자도 sync 1회가 행 복구 + 파일 전파 + guest 절 보존을 함께 수행한다(실측 게이트 박제).
+**기본 경로 = 선-cp 없이 4단계 sync 만 실행한다.** `@source` self-prop 채택자(현행 import 전원)는 엔진이 manifest 신 항목 도달을 스스로 처리한다 — 등재 행이 지워진 채택자도 sync 1회가 행 복구 + 파일 전파 + 추가 하네스 절 보존을 함께 수행한다(실측으로 확인해 기록).
 
-수동 cp 는 self-prop 이 없는 구세대 manifest 형상에서만 쓴다:
+수동 cp 는 self-prop 이 없는 옛 버전 manifest 구성에서만 쓴다:
 
 ```bash
 cp <cache-or-path>/templates/<harness>/.project_manager/engine.manifest .project_manager/engine.manifest
 ```
 
 - ⚠️ **루트 manifest가 아니라 `templates/<harness>/` manifest**(`<harness>`=이 채택자의 claude_code | opencode)를 쓴다. 루트는 claude-scoped라 opencode 채택자를 clobber한다.
-- ⚠️ **cp 는 파일 덮어쓰기라 add-harness guest 절이 통째로 사라진다**(보존 로직이 읽을 절이 dest 에 없어짐). cp 를 썼고 guest 하네스가 있다면 **직후 `./pm-config.sh add-harness <guest>` 재실행**으로 절을 되살린다 — sync 출력의 `미등재 flavor 파일 관측` 경고가 같은 복구를 안내한다.
+- ⚠️ **cp 는 파일 덮어쓰기라 add-harness 추가 하네스 절이 통째로 사라진다**(보존 로직이 읽을 절이 dest 에 없어짐). cp 를 썼고 추가 하네스가 있다면 **직후 `./pm-config.sh add-harness <추가 하네스>` 재실행**으로 절을 되살린다 — sync 출력의 `미등재 하네스별 판 파일 관측` 경고가 같은 복구를 안내한다.
 
-### 5. drift 표면화
+### 5. drift 드러내기
 
 ```bash
 python3 .project_manager/tools/board.py lint

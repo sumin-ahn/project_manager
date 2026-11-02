@@ -51,14 +51,14 @@ PM_DEV_DELEGATE = CODEX / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
 CANONICAL_DELEGATE = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
 # 실제로 갈렸던 세 자리(T-0895) — 회수 절차·fix 라운드 검증 골격·추가 리뷰어 튜플 키.
 SHARED_DELEGATE_FACTS = (
-    "native 위임은 raw 장부에는 남지 않지만 라운드 파일에는 남는다",
-    "`ticket collect --copy ... --cwd ...`로 회수한 뒤에만 재위임한다",
-    "`ticket copies --uncollected`가 미회수 준비를 열거한다",
-    "fix 라운드면 엔진이 시드한 검증 골격을 accepted ID 전수로 채운다",
+    "native 위임은 raw 출력 기록에는 남지 않지만 라운드 파일에는 남는다",
+    "`ticket collect --copy ... --cwd ...`로 돌려받은 뒤에만 재위임한다",
+    "`ticket copies --uncollected`가 돌려받지 않은 준비를 열거한다",
+    "fix 라운드면 엔진이 만든 검증 빈 양식을 accepted ID 전수로 채운다",
     "`additional_reviewer.harness`/`.model`/`.reasoning`",
 )
 # canonical 과 정반대였던 옛 주장 — 이 문장은 회수를 건너뛰라는 지시가 된다.
-_RETIRED_NATIVE_LEDGER_CLAIM = "native 위임은 장부에 남지 않는다"
+_RETIRED_NATIVE_LEDGER_CLAIM = "native 위임은 기록에 남지 않는다"
 
 AGENT_NAMES = ("architect", "code-reviewer", "developer", "researcher")
 # developer 2티어(난제=hard) 프로필 — 4 역할 축이 아니라 developer 축의 티어 변주다(T-0448).

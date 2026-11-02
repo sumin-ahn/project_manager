@@ -33,7 +33,7 @@ permission:
 > 이 정의 = Claude Code 타깃의 `.claude/agents/orchestrator` 등가물(opencode 측 PM primary).
 > orchestrator(ADR-0009)가 PM 세션을 **deterministic 하게 spawn** 할 때의 타깃이다 —
 > `opencode run --agent pm` 으로 이 정의의 `model:`(Pro)·`permission:`(PM 쓰기 + 네 역할 task)이
-> 박힌 PM 세션이 뜬다. (회사판이 custom primary 를 안 띄우면 build primary 폴백 — 실행 모델은
+> 박힌 PM 세션이 뜬다. (회사판이 custom primary 를 안 띄우면 build primary 로 대신한다 — 실행 모델은
 > `.opencode/pm-instructions.md` §1.)
 
 ## 운영 단일 진실 = AGENTS.md(공통 코어) + .opencode/pm-instructions.md

@@ -62,7 +62,7 @@ CONVERGENCE_GATE_CONTRACTS = (
     "발산 조기 차단",
     "현재 티켓을 정지",
     "사용자에게 보고",
-    "새 티켓·분할·재설계로 잔여를 넘기지 않는다",
+    "새 티켓·분할·재설계로 남은 항목을 넘기지 않는다",
 )
 
 # 세 하네스의 위임 카드 — claude 는 루트 canonical, codex·opencode 는 타깃 소유 override 다.
@@ -143,7 +143,7 @@ def test_codex_pm_review_card_states_the_caps_without_a_consent_axis():
 def test_codex_pm_review_card_uses_codex_skill_entry_and_active_role_name():
     """codex 판은 `$pm-review` 진입 표기 + 활성 역할 이름(추가 리뷰어)을 쓴다."""
     text = CODEX_PM_REVIEW.read_text(encoding="utf-8")
-    assert "# $pm-review — 추가 리뷰어 교차검증 게이트" in text
+    assert "# $pm-review — 추가 리뷰어 교차검증" in text.splitlines()
     assert "/pm-review —" not in text
     assert "additional reviewer" in text
     for key, value in EXPECTED_DEFAULTS:
@@ -157,7 +157,7 @@ def test_shared_pm_review_cards_use_active_role_and_the_caps():
         details = path.parent / "references" / "operational-details.md"
         if details.is_file():
             text += "\n" + details.read_text(encoding="utf-8")
-        assert "# /pm-review — 추가 리뷰어 교차검증 게이트" in text, path
+        assert "# /pm-review — 추가 리뷰어 교차검증" in text.splitlines(), path
         assert "additional reviewer" in text, path
         assert "additional_reviewer.enabled" not in text, path
         for key, value in EXPECTED_DEFAULTS:
@@ -226,7 +226,7 @@ def test_readme_documents_the_role_without_a_channel_switch():
     text = (REPO / "README.md").read_text(encoding="utf-8")
     assert "additional_reviewer.enabled" not in text
     assert "부르면 도는\n역할" in text
-    assert "채널을 켜고 끄는 스위치도, 이 역할만의 별도 승인 축도 없다" in text
+    assert "채널을 켜고 끄는 스위치도, 이 역할만의 별도 승인 기준도 없다" in text
     for key, value in EXPECTED_DEFAULTS:
         assert f"{key}={value}" in text
     # 폐지된 통짜 커맨드 키를 이름으로 지목한다(무엇이 더 이상 안 읽히는지).
@@ -239,14 +239,14 @@ def test_pm_role_makes_cap_ack_autonomous_not_a_cost_gate():
         encoding="utf-8"
     )
     # 남은 ack 축(wave 예산)이 *자율* 절에 들어 있어야 한다 — 사용자 게이트 절이 아니라.
-    autonomous = text.split("**자율+사후")[1].split("**사용자 게이트")[0]
+    autonomous = text.split("**자율+사후")[1].split("**사용자 승인")[0]
     assert "--reset-session-budget" in autonomous
-    assert "정상 수렴 ack" in autonomous
+    assert "정상 마무리 ack" in autonomous
     # 폐지된 라운드 연장 승인은 자율 목록에서도 문서 전체에서도 사라져야 한다.
     assert RETIRED_ROUND_ACK_FLAG not in text
-    assert "이 역할만의 별도 승인 축은 없다" in text
+    assert "이 역할만의 별도 승인 기준은 없다" in text
     assert "기계적 anti-loop 정지" in text
-    assert "리뷰 라운드 축은 연장 승인이 없고" in text
+    assert "리뷰 라운드 상한은 연장 승인이 없고" in text
     assert "현재 티켓을 정지" in text and "사용자에게 보고" in text
     assert "--confirm-fix" not in text
 

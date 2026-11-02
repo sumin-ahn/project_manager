@@ -80,7 +80,7 @@ def test_domain_skeleton_present(name: str):
 # 같은지 본다(수기 전파라 한 벌만 고치는 drift 가 실제 경로다).
 DOMAIN_README_REL = Path(".project_manager") / "wiki" / "domain" / "README.md"
 DOMAIN_README_MARKERS = (
-    "`history` 축",           # 축 존재
+    "`history` 기준",         # 기준 존재
     '"지금 X다"',              # 판정 한 문장 — 페이지 쪽
     '"언제 X로 바뀌었다"',      # 판정 한 문장 — log 쪽
 )
@@ -135,7 +135,7 @@ DOMAIN_RULE_MARKERS = (
     '"지금 X다"',            # 판정 한 문장 — 페이지 쪽
     '"언제 X로 바뀌었다"',   # 판정 한 문장 — log 쪽
     "갱신은 덧붙이기가 아니라 교체다",
-    "history 축",            # 기계 판정 포인터 (domain.py lint)
+    "history 기준",          # 기계 판정 포인터 (domain.py lint)
 )
 
 
@@ -789,8 +789,8 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
         )
     for path in finish_details + delegate_cards:
         text = path.read_text(encoding="utf-8")
-        assert "미결속" in text and "cluster new" in text, (
-            f"{path.relative_to(REPO)}: 미결속 거부 또는 기존 재결속 안내 누락")
+        assert "연결되지 않은" in text and "cluster new" in text, (
+            f"{path.relative_to(REPO)}: 연결되지 않은 상태 거부 또는 기존 다시 연결 안내 누락")
         assert "branch" in text and "base_branch" in text, (
             f"{path.relative_to(REPO)}: 제품 branch/base_branch 결속 안내 누락")
 

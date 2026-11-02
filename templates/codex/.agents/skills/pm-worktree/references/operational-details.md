@@ -21,7 +21,7 @@
   읽고 쓰기는 PM 홈 wiki에 한다. 슬롯 git mutation은 거부하고 `refresh`(fetch→detach 이동,
   dirty=거부)만 허용한다.
 
-## 잔여 PM 손
+## 남은 PM 손작업
 
 - 각 backbone 명령의 stdout(실행·skip 사유·경고·조회·rebase 요약·재기록 branch/head·전환 형태)을
   읽고 사용자에게 보고한다.

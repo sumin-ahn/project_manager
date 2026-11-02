@@ -129,7 +129,7 @@ PM 은 ticket 을 발행하고, 필요하면 설계 spike 나 ADR 로 결정을 
 /pm-handoff
 ```
 
-이 사용자 발화가 핸드오프의 명시 지시다. 스킬은 발화에서 승인된 task/slot 대상값을 backbone의
+이 사용자 메시지가 핸드오프의 명시 지시다. 스킬은 메시지에서 승인된 task/slot 대상값을 backbone의
 `--user-ack <값>`으로 그대로 전달하며, 세션이 승인값을 만들거나 자동 부착하지 않는다.
 
 세션을 마칠 때는 다음 세션이 이어받을 산출물, 결정, 남은 작업, 테스트와 git 상태가 파일로
@@ -166,7 +166,7 @@ flowchart TB
     Continue -->|세션 종료 · ctx 임계| Handoff
     Pick -. 새 이슈 .-> New["ticket 발행<br/>draft → open"]
     New --> Claim
-    Research -. 설계 불확실 .-> Spike["spike / ADR<br/>옵션 합의 · 결정 박제"]
+    Research -. 설계 불확실 .-> Spike["spike / ADR<br/>옵션 합의 · 결정 기록"]
     Spike --> Dev
     Plan -. 바로 구현 가능 .-> Dev
     Fix -. 실패 .-> Stop["티켓 정지<br/>사용자에게 근거 보고"]
@@ -227,7 +227,7 @@ opencode, codex 중 어느 하네스로 다음 세션을 열어도 같은 board/
 
 ## 작업 흐름
 
-한 wave 에서 PM 은 researcher, architect, developer, code-reviewer 네 축에 일을 나눠 주고
+한 묶음에서 PM 은 researcher, architect, developer, code-reviewer 네 역할에 일을 나눠 주고
 결과를 종합한다. 발표에서는 한 그림에 모두 넣기보다 유즈케이스별로 보면 이해하기 쉽다.
 
 **조사만 필요한 경우**
@@ -270,7 +270,7 @@ sequenceDiagram
     Dev-->>PM: 코드 + 테스트
     PM->>Rev: 독립 검토 (generate ≠ evaluate)
     Rev-->>PM: 승인 / must-fix
-    PM-->>U: wave 완료 보고
+    PM-->>U: 묶음 완료 보고
 ```
 
 **작업 중 배운 것을 남기는 경우**
@@ -280,7 +280,7 @@ sequenceDiagram
     participant PM as PM 세션
     participant Wiki as domain / ADR / log
     PM->>Wiki: 코드 이해는 domain page 에 채록
-    PM->>Wiki: 결정 근거는 ADR 로 박제
+    PM->>Wiki: 결정 근거는 ADR 로 기록
     PM->>Wiki: 세션 연속성은 log/handoff 에 기록
     Wiki-->>PM: 다음 세션의 복원 지점
 ```
@@ -417,7 +417,7 @@ flowchart TB
 
 이게 중요한 이유는 하네스마다 강점과 실패 모드가 다르기 때문이다. PM 대화는 Claude Code 로
 열고, 대용량 산출은 opencode 의 파일-전달 규약과 safe_write 를 쓰고, codex 는 별도 실행 하네스나
-추가 리뷰 게이트로 돌릴 수 있다. 어느 하나가 토큰 한도나 도구 문제에 걸려도 ticket, log, ADR,
+추가 리뷰로 돌릴 수 있다. 어느 하나가 토큰 한도나 도구 문제에 걸려도 ticket, log, ADR,
 domain 지식은 같은 PM 홈에 남아 다른 하네스가 이어받는다.
 
 ```mermaid
@@ -425,7 +425,7 @@ flowchart LR
     Home["공유 PM 홈<br/>board · wiki · engine"]
     Claude["Claude Code<br/>대화형 PM · 설계"]
     OpenCode["opencode<br/>대용량 산출 · safe_write"]
-    Codex["codex<br/>실행 하네스 · 추가 리뷰 게이트"]
+    Codex["codex<br/>실행 하네스 · 추가 리뷰"]
 
     Claude --> Home
     OpenCode --> Home
@@ -485,19 +485,19 @@ v1.7.13 이하 사본은 v1.8.0 을 먼저 거친다. 그 사본을 이 판으�
 
 엔진 코드가 바뀌는 갱신의 `--dry-run` 은 받을 엔진 코드만 보여 준다. 렌더·훅·어댑터 설정 미리보기는 엔진 코드를 받은 뒤 다시 실행하면 나온다. 실패하면 실패 단계와 잔존 키를 보고하며 baseline 이 자동으로 되돌아간다고 안내하지 않는다.
 
-`pm-update` 는 manifest 에 등록된 엔진 파일과 host 하네스 어댑터만 갱신한다. 프로젝트의 board,
-wiki, ticket, log 같은 인스턴스 상태는 덮어쓰지 않는다. 나중에 `add-harness` 로 붙인 guest 하네스
+`pm-update` 는 manifest 에 등록된 엔진 파일과 기본 하네스 어댑터만 갱신한다. 프로젝트의 board,
+wiki, ticket, log 같은 인스턴스 상태는 덮어쓰지 않는다. 나중에 `add-harness` 로 붙인 추가 하네스
 어댑터도 인스턴스 `engine.manifest` 의 전용 구획(마커로 감싼 목록)에 등재돼 관리를 받는다 —
 opencode 를 codex 프로젝트에 붙일 때 opencode 가 소비하는 `.claude/skills` 처럼 어댑터
 네임스페이스 밖 의존물도 그 구획에 함께 등재된다. `pm-update` 는 이 구획을 보존(코어를 덮어쓴 뒤
 재부착)하며, 구획 안 두 종류를 **같은 update 채널**로 전파하되 방식이 갈린다: `@render` 행
 (어댑터 렌더물)은 채택자 `local.conf` 값으로 **다시 렌더**하고, 비-`@render` 엔진 행(`@source=`
-매핑·guest 하네스의 드라이버/훅 등)은 byte-copy 로 갱신한다. 렌더물이므로 guest 어댑터 카드의
+매핑·추가 하네스의 드라이버/훅 등)은 byte-copy 로 갱신한다. 렌더물이므로 추가 하네스 어댑터 카드의
 손편집(예 agent 카드의 `model`)은 다음 `pm-update` 가 `local.conf` 값으로 되돌린다 — 값을 바꾸는
 자리는 카드가 아니라 `local.conf` 의 `delegate.<role>[.<tier>].{model,reasoning}` 이다.
 `add-harness <harness>` 재실행은 그 하네스의 어댑터 파일이 새로 추가/폐기됐을 때(구획 등재 갱신)
-쓰고, 값 반영에는 필요하지 않다. 구세대 구획(엔진 행 미등재)은 다음 `pm-update` 가 flavor 배타
-경로 증거로 엔진 행을 파생·등재해 동결 없이 수렴한다.
+쓰고, 값 반영에는 필요하지 않다. 옛 버전 구획(엔진 행 미등재)은 다음 `pm-update` 가 하네스별 판 배타
+경로 증거로 엔진 행을 파생·등재해 동결 없이 일치한다.
 
 엔진 버전 관리는 별도 `engine.version` 파일이 아니라 git 으로 한다. 릴리즈는 git tag 와
 CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 `upstream.rev` baseline 으로 "어디까지 받았는지"를
@@ -508,16 +508,16 @@ CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 `upstream.rev` baselin
 
 예전 고정 `both` 채택본에서 한쪽 어댑터가 manifest 선언 밖에 남으면 그 트리는 `pm-update` 갱신을 받지
 못한 채 오래된 상태로 동결될 수 있다. 채택자 루트에서 `./pm-update.sh --dry-run`
-(`pm_update --dry-run`)을 실행해 `미등재 flavor 파일 관측` 경고와 관측 형상을 확인한다. legacy
-manifest는 core 경로 집합이 정확히 한 현행 flavor와 완전 일치할 때만 자동 승격한다. 그 밖의
-형상은 flavor 승격·행 제거·치유 없이 로컬 manifest 그대로 갱신하며, 사용자 stray/커스텀 행이면
+(`pm_update --dry-run`)을 실행해 `미등재 하네스별 판 파일 관측` 경고와 관측 구성을 확인한다. legacy
+manifest는 core 경로 집합이 정확히 한 현행 하네스별 판과 완전 일치할 때만 자동 승격한다. 그 밖의
+구성은 하네스별 판 승격·행 제거·치유 없이 로컬 manifest 그대로 갱신하며, 사용자 stray/커스텀 행이면
 경고를 무시할 수 있다.
 
-`pm-update`는 정확히 어느 flavor의 옛 manifest인지 판별되는 경우 그 flavor만 자기치유한다. 고정
-쌍의 누락된 flavor는 사용자 stray 파일과 구별할 수 없어 자동 승격하지 않는다. `add-harness`도 그
+`pm-update`는 정확히 어느 하네스별 판의 옛 manifest인지 판별되는 경우 그 하네스별 판만 자기치유한다. 고정
+쌍의 누락된 하네스별 판은 사용자 stray 파일과 구별할 수 없어 자동 승격하지 않는다. `add-harness`도 그
 하네스 어댑터만 등재하므로 완전 마이그레이션이 아니다. frozen Claude+opencode 채택본을 완전히
 전환하려면 아래 순서를 그대로 실행한다. `--into`는 충돌 파일을 `.pm_import_backups/`에 백업하고
-현재 두 flavor의 manifest 합집합을 설치한다.
+현재 두 하네스별 판의 manifest 합집합을 설치한다.
 
 ```bash
 <manager>/pm-import.sh --into <project> --harness claude,opencode --dry-run
@@ -528,15 +528,15 @@ cd <project> && ./pm-update.sh
 재-import는 커스터마이즈된 `CLAUDE.md`/`AGENTS.md`를 템플릿 판으로 덮을 수 있다. 원본은
 `.pm_import_backups/<날짜>/`에 백업되므로, 진입 문서 커스텀은 그 백업에서 재병합한다.
 
-이 절차 뒤 manifest에는 두 flavor의 `@source` provenance가 들어가므로, 이후 `pm-update`는
-`@render`뿐 아니라 `lib`/`plugins`를 포함한 두 flavor 전체를 갱신한다.
+이 절차 뒤 manifest에는 두 하네스별 판의 `@source` provenance가 들어가므로, 이후 `pm-update`는
+`@render`뿐 아니라 `lib`/`plugins`를 포함한 두 하네스별 판 전체를 갱신한다.
 
 **위임 설정** `delegate.<role>[.<tier>].{harness,model,reasoning}`은 native와 cross 위임이 함께
 읽는 라우팅 단일 진실이다. target harness가 현재 PM 하네스와 같으면 각 하네스의 native agent
 transport를 쓰고, 다르면 `pm_delegate.py` cross transport를 쓴다. `delegate.enabled`는 위임
 전체의 마스터 스위치이고 **기본은 허용**이다(채널 무관). 끄려면 `delegate.enabled=false`를
 명시하며, 그때 막히는 것은 `pm_delegate` 실행(rc=3)·`ticket prepare`(rc=3)·훅이 깔린 하네스의
-역할 spawn(deny)이다 — 훅 등록은 채택자 소유 파일이라 훅을 깔지 않은 형상의 ad-hoc native
+역할 spawn(deny)이다 — 훅 등록은 채택자 소유 파일이라 훅을 깔지 않은 구성의 ad-hoc native
 spawn까지 막지는 못한다. Claude native agent 카드의 `model:`이 설정과 어긋나거나 카드가 손상되면
 가드가 비차단 경고를 내며, 설정이나 카드를 자동으로 고치지 않는다.
 
@@ -550,7 +550,7 @@ codex `model_reasoning_effort` · opencode `variant`)는 전부 `local.conf` 의
 opencode=`provider/model` · codex=사용자 codex config 가 인정하는 문자열). 값 목록을 문서에
 박아 두지 않는다 — 모델은 자주 바뀌어 곧 stale 이 된다. 무인자 `pm-config` 콘솔의
 `[m] 위임 모델 안내`가 **이 환경에 설치된 하네스만** 대상으로 값 형식과 확인 방법을 보여주고,
-조회 수단이 있는 opencode 는 실제 목록을 조회해 보여준다(조회 실패 시 형식 안내로 강등하며 그
+조회 수단이 있는 opencode 는 실제 목록을 조회해 보여준다(조회 실패 시 형식 안내로 낮추며 그
 사실을 말한다). `delegate.model_alias`를 선언해 뒀다면 그 멤버도 함께 보여준다.
 
 ### `local.conf` 설정
@@ -573,7 +573,7 @@ opencode=`provider/model` · codex=사용자 codex config 가 인정하는 문�
 명령 rc가 0이 아니거나 marker가 없거나 둘 이상이면 해당 platform은 red다. VM 기동·접속은
 wrapper 소유이며 board는 이 프로토콜만 검증한다. wrapper는 자기가 만든 것
 (전송 번들·게스트 클론·호스트 임시물)을 **실행 시작에** 치운다 — 정리를 종료 시점에 두면
-중단된 실행에서 그 코드가 돌지 않아 잔여가 계속 쌓인다.
+중단된 실행에서 그 코드가 돌지 않아 남은 것이 계속 쌓인다.
 
 역할 모델을 고를 때는 **generate≠evaluate**가 기준이다. 위임은 매번 새 세션이라 모델이 같아도
 전사 공유가 없지만, `delegate.code-reviewer.model`을 developer와 다르게 두면 맹점을 공유하지 않아
@@ -582,7 +582,7 @@ wrapper 소유이며 board는 이 프로토콜만 검증한다. wrapper는 자�
 한다. 아니면 저장과 위임이 멈추고, 갱신은 그 opencode 줄을 지우고 알린다.
 
 **추가 리뷰어**(additional reviewer) 는 developer·architect·code-reviewer 와 같이 **부르면 도는
-역할**이다 — 채널을 켜고 끄는 스위치도, 이 역할만의 별도 승인 축도 없다. 쓰려면 `local.conf` 에
+역할**이다 — 채널을 켜고 끄는 스위치도, 이 역할만의 별도 승인 기준도 없다. 쓰려면 `local.conf` 에
 아래 대상 튜플을 적는다(없으면 fail-loud).
 
 ```
@@ -591,7 +591,7 @@ additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-무한 반복은 라운드/wave 예산이 기계로 막는다. 프로필은 세 키를 고쳐 교체한다. 리뷰어 대상은 이
+무한 반복은 라운드 상한과 세션 호출 예산이 기계로 막는다. 프로필은 세 키를 고쳐 교체한다. 리뷰어 대상은 이
 구조화 키로만 지정하며, 옛 `reviewer_cmd` 통짜 커맨드는 더 이상 읽히지 않는다.
 
 `local.conf` 키 표기는 **dot notation 하나로 통일**돼 있다(`additional_reviewer.harness`·
@@ -638,7 +638,7 @@ OpenCode의 모델별 `limit`(`input`은 E) 및 `compaction.reserved`(E − P)�
 
 레지스트리와 옛 flat 표기 어느 쪽에도 없는 키(오타·폐기 키)는 조용히 무시되지 않는다 —
 `board.py lint`(그리고 `board.py init` 병합 경로)가 `local-conf-unknown-key` advisory 1줄로
-표면화한다. 필수 키(`runtime.py`·`test.cmd`)가 없으면 같은 자리에서 `local-conf-missing-required`
+드러낸다. 필수 키(`runtime.py`·`test.cmd`)가 없으면 같은 자리에서 `local-conf-missing-required`
 1줄이 뜬다. 둘 다 push 를 막지는 않지만(`lint --blocking` 종료코드 비기여) 무인자 `board.py lint` 는
 그 줄을 보인다. 값을 자동으로 고치지 않으므로 오탈자면 직접 바로잡는다.
 
@@ -657,7 +657,7 @@ flowchart LR
 ```
 
 - **발행** — 티켓은 draft 로 시작한다. 목표와 완료 조건이 채워지기 전에는 공유 보드에
-  올라가지 않는다. 코드 트리 없는 draft 작성은 가능하며, 본문을 채운 뒤 기존 `board.py cluster new`로 실제 제품의 branch/base_branch와 멤버를 결속하고 promote한다. 미결속 승격·실행·종결은 첫 부작용 전에 거부한다. PM 홈과 제품의 동명 main은 결속 근거가 아니며 옛 branch 없는 장부는 같은 명령으로 재결속한다.
+  올라가지 않는다. 코드 트리 없는 draft 작성은 가능하며, 본문을 채운 뒤 기존 `board.py cluster new`로 실제 제품의 branch/base_branch와 멤버를 연결하고 promote한다. 연결되지 않은 상태의 승격·실행·종결은 첫 부작용 전에 거부한다. PM 홈과 제품의 동명 main은 연결 근거가 아니며 옛 branch 없는 묶음 기록은 같은 명령으로 다시 연결한다.
 - **claim** — 세션이 티켓을 잡으면 그 세션 명의로 귀속된다. 이미 잡힌 티켓은 다른 세션이
   잡을 수 없다 (병렬 충돌 방지). `depends_on` 으로 선후를 걸어 두면 선행이 끝나기 전에는
   잡지 않는다.
@@ -669,7 +669,7 @@ flowchart LR
 굳혀야 할 설계 결정은 두 단계로 남긴다.
 
 **Spike** 는 설계 과정의 기록이다. 세션이 혼자 결정하지 않고, 실측한 현황과 옵션을 사용자와
-한 절씩 합의하며 문서로 다듬는다. 합의가 끝나면 봉인해서(sealed) 불변 기록이 되고, 이후
+한 절씩 합의하며 문서로 다듬는다. 합의가 끝나면 확정해서(`sealed`) 불변 기록이 되고, 이후
 개정은 새 파일로 쌓인다.
 
 **ADR**(Architecture Decision Record) 은 spike 에서 굳힌 결정의 요약이다. 무엇을 왜 그렇게
@@ -690,7 +690,7 @@ flowchart LR
 A안으로 가자. 훅은 권고안대로.
 ```
 
-모든 절이 합의되면 사인오프로 봉인(sealed)하고, 굳힌 결정을 ADR 과 구현 티켓으로 발행시킨다:
+모든 절이 합의되면 사인오프로 확정(`sealed`)하고, 굳힌 결정을 ADR 과 구현 티켓으로 발행시킨다:
 
 ```text
 사인오프. ADR 발행하고 구현 티켓으로 쪼개서 진행해줘.
@@ -699,7 +699,7 @@ A안으로 가자. 훅은 권고안대로.
 ### Domain 지식
 
 작업하며 알게 된 도메인 지식은 위키의 domain 페이지로 쌓는다. 페이지는 `covers:` 로 코드
-글롭에 연결돼 있어서, 그 코드를 고치면 관련 페이지가 소환되고, 코드가 페이지보다 새로워지면
+글롭에 연결돼 있어서, 그 코드를 고치면 관련 페이지를 불러오고, 코드가 페이지보다 새로워지면
 stale 표시가 붙는다. 배운 것은 `domain capture` 로 페이지에 적는다. 지식이 정적 문서로
 죽지 않고 코드를 따라 산다.
 
@@ -709,14 +709,14 @@ stale 표시가 붙는다. 배운 것은 `domain capture` 로 페이지에 적�
 
 ### 에이전트 구성
 
-PM 이 메인 세션이고, 일은 네 축의 서브에이전트에 나눠 준다. 만든 주체가 검토하지 않는다는
+PM 이 메인 세션이고, 일은 네 역할의 서브에이전트에 나눠 준다. 만든 주체가 검토하지 않는다는
 분리가 핵심이다.
 
 | 에이전트 | 하는 일 | 하지 않는 일 |
 |---|---|---|
-| PM (메인 세션) | 사용자 지시의 ticket 발행·claim 전 자족성 분할·위임·비준, 보드와 일지 기록. 결정과 종합은 여기서만 한다. | 직접 구현 (위임이 원칙) |
+| PM (메인 세션) | 사용자 지시의 ticket 발행·claim 전 자족성 분할·위임·승인, 보드와 일지 기록. 결정과 종합은 여기서만 한다. | 직접 구현 (위임이 원칙) |
 | researcher | 여러 파일과 레퍼런스를 훑어 사실만 수집해 온다 (read-only). | 코드·문서 수정 |
-| architect | 구현 경계와 developer 필수 테스트 계약을 확정한다. | 결정·발행 (비준은 PM) |
+| architect | 구현 경계와 developer 필수 테스트 계약을 확정한다. | 결정·발행 (승인은 PM) |
 | developer | 최초 구현과 마지막 fix에서 단계별 테스트를 실행한다. | 보드 조작, 일지 갱신 |
 | code-reviewer | 변경을 독립 검토하고 severity와 무관하게 모든 finding에 수정·추가 회귀 계약을 낸다. | 코드 수정 |
 
@@ -741,7 +741,7 @@ opencode 는 `.opencode/agents/<역할>.md`, codex 는 `.codex/agents/<역할>.t
 │       ├── pm_role.md · pm_state.md · pm_playbook.md   # PM 운영 매뉴얼과 인계 상태
 │       ├── log/                #   작업 일지 — current.md + archive/
 │       ├── tickets/            #   open/ claimed/ blocked/ done/ + _template
-│       └── specs/ · ideas/ · raw/                       # 사양 · 아이디어 · 스냅샷
+│       └── specs/ · ideas/ · raw/                       # 사양 · 아이디어 · 상태 기록
 └── (어댑터층)                  # claude_code: .claude/ · opencode: .opencode/ · codex: .codex/ + 진입 문서
 ```
 
@@ -776,7 +776,7 @@ opencode 는 `.opencode/agents/<역할>.md`, codex 는 `.codex/agents/<역할>.t
 
 실전 멀티-에이전트 프로젝트에서 검증하며 발전시키는 운영 프레임워크다. 팀과 프로젝트마다 필요한
 자동화 수준은 다르지만, 되돌리기 어려운 결정(자본, 안전 한도, 비가역 행위 같은 것)은 자동화하지
-않고 사용자 게이트로 남긴다.
+않고 사용자 승인로 남긴다.
 
 ## 라이선스
 
