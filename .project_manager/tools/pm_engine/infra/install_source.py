@@ -164,7 +164,7 @@ class EmptyTemplateShippingInventoryError(RuntimeError):
         self.subtree = subtree
         self.filesystem_fallback = filesystem_fallback
         diagnosis = (
-            "filesystem 강등 상태이므로 소스 디렉토리가 비었는지와 checkout 루트가 "
+            "filesystem 으로 수준을 낮춘 상태이므로 소스 디렉토리가 비었는지와 checkout 루트가 "
             "올바른지 확인하라"
             if filesystem_fallback
             else "checkout 루트가 올바른지와 git index에 출하 파일이 등재됐는지 확인하라"
@@ -202,9 +202,9 @@ def _shippable_template_files(template_root: Path) -> list[Path]:
         "symlink(index mode 120000, 링크 대상 내용을 복사하지 않음)": [],
         "gitlink(index mode 160000, 파일 byte-copy 대상 아님)": [],
         "지원하지 않는 git index mode": [],
-        "filesystem 폴백 symlink(lstat, 링크 대상 내용을 복사하지 않음)": [],
-        "filesystem 폴백 일반 파일이 아닌 엔트리(lstat)": [],
-        "filesystem 폴백 lstat 실패": [],
+        "filesystem 대체 경로 symlink(lstat, 링크 대상 내용을 복사하지 않음)": [],
+        "filesystem 대체 경로 일반 파일이 아닌 엔트리(lstat)": [],
+        "filesystem 대체 경로 lstat 실패": [],
     }
     entries = repo_files.list_repo_owned_entries(
         template_root, ".", mode=repo_files.TRACKED_ONLY
@@ -245,7 +245,7 @@ def _shippable_template_files(template_root: Path) -> list[Path]:
         try:
             fallback_mode = source.lstat().st_mode
         except OSError as exc:
-            skipped["filesystem 폴백 lstat 실패"].append(
+            skipped["filesystem 대체 경로 lstat 실패"].append(
                 f"{rel.as_posix()} ({exc})"
             )
             continue
@@ -253,10 +253,10 @@ def _shippable_template_files(template_root: Path) -> list[Path]:
             accepted.append(source)
         elif stat.S_ISLNK(fallback_mode):
             skipped[
-                "filesystem 폴백 symlink(lstat, 링크 대상 내용을 복사하지 않음)"
+                "filesystem 대체 경로 symlink(lstat, 링크 대상 내용을 복사하지 않음)"
             ].append(rel.as_posix())
         else:
-            skipped["filesystem 폴백 일반 파일이 아닌 엔트리(lstat)"].append(
+            skipped["filesystem 대체 경로 일반 파일이 아닌 엔트리(lstat)"].append(
                 rel.as_posix()
             )
 

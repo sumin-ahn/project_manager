@@ -540,14 +540,14 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
               f"내 소유 open + claim). {_authoritative}.")
     else:
         print("## 세션격리(registry/area_owner 기준): ⚠ degrade-risk (다중사용자·정체성 미해소 — "
-              f"소유 미해소 open 이 `board list --mine` 에서 strict-exclude). remedy: {_remedy}")
+              f"소유 미해소 open 이 `board list --mine` 에서 strict-exclude). 해결 방법: {_remedy}")
 
     if mine:
-        print("## 이 세션의 리스:")
+        print("## 이 세션의 대여:")
         for l in mine:
             print(f"  - {l.slot} (repo={l.repo} · branch={_live_branch(l.slot)})")
     else:
-        print("## 이 세션의 리스: (없음)")
+        print("## 이 세션의 대여: (없음)")
 
     # task 축 — 사람이 명명한 task 별 {보유 작업공간·prefix}. list_tasks
     # + slots_for_task(session==task 명의 leased 슬롯). task 명 집합은 slot 풀 축의 "보유 task"
@@ -558,7 +558,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     task_names = {n for n in (getattr(t, "name", None) for t in tasks) if n}
     print("## task 상황 (사람이 명명한 작업스트림):")
     if not tasks:
-        print("  (task 없음 — 명명한 task 미등록·세션은 아래 풀 축에만 나타남)")
+        print("  (task 없음 — 명명한 task 미등록·세션은 아래 풀 목록에만 나타남)")
     for t in tasks:
         slots = pool_store.slots_for_task(home, t.name) or []
         ws = ", ".join(s.slot for s in slots) or "(보유 작업공간 없음)"
@@ -576,9 +576,9 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
         folders = status.get("folders")
         return summary + (" · 폴더 " + ", ".join(folders) if folders is not None else "")
 
-    print("## slot 풀 (풀 전체 리스 장부 · 슬롯별 state·보유 task·role + git 요약):")
+    print("## slot 풀 (풀 전체 슬롯 대여 기록 · 슬롯별 state·보유 task·role + git 요약):")
     if not leases:
-        print("  (리스 없음 — 아직 worktree 슬롯이 생성되지 않음)")
+        print("  (대여 없음 — 아직 worktree 슬롯이 생성되지 않음)")
     for l in leases:
         # role(work/readonly) — readonly 공유 슬롯은 무소유(session 없음)·detached.
         role = getattr(l, "role", "work")
@@ -619,16 +619,16 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     #   - incomplete = provisional("creating") — worktree add 후 확정 전 중단된 create 흔적.
     recon = pm_engine.app.worktree_pool.reconcile_worktrees(home)
     if recon.orphans or recon.stale or recon.incomplete:
-        print("## ⚠ worktree × 장부 drift (조회 전용 — 자동삭제 안 함·정리는 사용자):")
+        print("## ⚠ worktree × 슬롯 대여 기록 drift (조회 전용 — 자동삭제 안 함·정리는 사용자):")
         for w in recon.orphans:
             print(
-                f"  - [orphan] {w.slot} · git worktree 존재·장부 미등록 "
+                f"  - [orphan] {w.slot} · git worktree 존재·기록 미등록 "
                 "(중단된 create/수동 add 잔존) — 다음 create 번호 충돌·status blind 원인"
             )
         for l in recon.stale:
             print(
-                f"  - [stale] {l.slot} · 장부 등록(state={l.state})·git worktree 없음 "
-                "(dir 삭제/prune) — 장부 잔여"
+                f"  - [stale] {l.slot} · 기록 등록(state={l.state})·git worktree 없음 "
+                "(dir 삭제/prune) — 기록에 남음"
             )
         for l in recon.incomplete:
             print(
@@ -639,7 +639,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
             "  복구:\n"
             "    - orphan worktree(git 측·disk 에 존재·작업 있을 수 있음) → 확인 후 "
             "`git -C .repos/<repo>.git worktree remove <경로>` 로 사용자가 삭제(위임 원칙).\n"
-            "    - stale/incomplete 중 worktree dir 이 사라진 dangling 장부 엔트리 → "
+            "    - stale/incomplete 중 worktree dir 이 사라진 dangling 기록 항목 → "
             "`pm-config worktree prune-stale`(안전·이미 없는 worktree 의 기록만 정리).\n"
             "    - incomplete 인데 worktree 가 남아있으면 위 `git worktree remove` 후 prune-stale."
         )

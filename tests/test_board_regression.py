@@ -2044,7 +2044,7 @@ def test_an_unreadable_hook_is_refused(board, monkeypatch, tmp_path, capsys):
 
     assert fake.calls == []
     err = capsys.readouterr().err
-    assert "세대를 판정할 수 없습니다" in err and "board.py init" in err
+    assert "버전을 판정할 수 없습니다" in err and "board.py init" in err
 
 
 def test_the_refusal_resolves_a_present_hook_without_calling_git(board, monkeypatch, tmp_path):
@@ -2592,7 +2592,7 @@ def test_a_push_from_a_tree_without_tests_meets_only_the_lint_gate(
 
     assert push.returncode == 0, push.stderr
     assert _gate_calls(tmp_path) == ["lint --blocking"]      # 회귀 미실행·lint 는 실행
-    assert "회귀 게이트 비대상" in (push.stdout + push.stderr)
+    assert "회귀 통과 조건 비대상" in (push.stdout + push.stderr)
     assert _remote_has_main(tmp_path, env)
 
 

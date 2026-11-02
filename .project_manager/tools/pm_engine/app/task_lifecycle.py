@@ -247,17 +247,17 @@ def reopen_task(home, name: str, archive: "str | None" = None) -> worktree_recor
         data = pool_store._read_ledger_raw_strict(home)
         rows = data.get("tasks", [])
         if not isinstance(rows, list):
-            raise ValueError("worktree lease 장부의 'tasks' 값이 list가 아님")
+            raise ValueError("슬롯 대여 기록 파일의 'tasks' 값이 list가 아님")
         tasks: list[worktree_records.Task] = []
         for index, row in enumerate(rows):
             if not isinstance(row, dict) or not row.get("name"):
                 raise ValueError(
-                    f"worktree lease 장부의 tasks[{index}] 값이 유효한 task object가 아님"
+                    f"슬롯 대여 기록 파일의 tasks[{index}] 값이 유효한 task object가 아님"
                 )
             tasks.append(worktree_records.Task.from_dict(row))
 
         if any(task.name == name for task in tasks):
-            raise worktree_records.TaskReopenRefused(name, "활성 task 장부 레코드가 이미 존재함")
+            raise worktree_records.TaskReopenRefused(name, "활성 task 기록 행이 이미 존재함")
         active = pm_paths.task_dir(home, name)
         if active.exists() or active.is_symlink():
             raise worktree_records.TaskReopenRefused(name, f"활성 task 폴더가 이미 존재함: {active}")
@@ -301,11 +301,11 @@ def reopen_task(home, name: str, archive: "str | None" = None) -> worktree_recor
             except Exception as rollback_exc:
                 raise worktree_records.TaskReopenRefused(
                     name,
-                    f"장부 replace 실패({write_exc}); 보상 rename도 실패({rollback_exc})",
+                    f"슬롯 대여 기록 파일 replace 실패({write_exc}); 보상 rename도 실패({rollback_exc})",
                     archives=candidates, moved_from=selected, moved_to=active,
                 ) from rollback_exc
             raise worktree_records.TaskReopenRefused(
-                name, f"장부 replace 실패; archive 원위치 보상 완료: {write_exc}",
+                name, f"슬롯 대여 기록 파일 replace 실패; archive 원위치 보상 완료: {write_exc}",
                 archives=candidates, moved_from=selected, moved_to=active,
             ) from write_exc
         return worktree_records.ReopenTaskResult(name, selected, active, task)

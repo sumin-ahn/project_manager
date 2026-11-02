@@ -193,7 +193,7 @@ def _cmd_rebase(home, args) -> int:
             slots = [lease.slot for lease in pool_store.slots_for_task_strict(home, task)]
         except (OSError, ValueError) as exc:  # mutation 대상 해소 실패는 0개 성공이 아님.
             print(
-                f"[중단] task {task!r} 보유 슬롯 장부 조회 실패 — {exc}. "
+                f"[중단] task {task!r} 보유 슬롯 대여 기록 조회 실패 — {exc}. "
                 "rebase 대상을 0개로 간주하지 않는다.",
                 file=sys.stderr,
             )
@@ -215,12 +215,12 @@ def _cmd_rebase(home, args) -> int:
         if r.outcome == worktree_records.REBASE_REBASED:
             n_ok += 1
             print(f"✓ 슬롯 {r.slot} rebase 성공 — 부모 {r.base} 최신 위로 이동 "
-                  f"(head {(r.new_head or '?')[:12]} · 부모 기록 fork·장부 head/recorded_at 갱신).")
+                  f"(head {(r.new_head or '?')[:12]} · 부모 기록 fork·대여 기록 head/recorded_at 갱신).")
         elif r.outcome == worktree_records.REBASE_CONFLICT:
             n_conflict += 1
             print(f"✗ 슬롯 {r.slot} rebase 충돌 — **그 상태 그대로** 두었다(엔진 임의 abort 안 함). "
                   f"해소는 사용자: 슬롯에서 `git rebase --continue`(충돌 해결 후) 또는 `git rebase "
-                  f"--abort`(취소). 부모 기록·장부 미갱신 → 다음 부트스트랩 0단계가 '진행 중' 감지. "
+                  f"--abort`(취소). 부모 기록·대여 기록 미갱신 → 다음 부트스트랩 0단계가 '진행 중' 감지. "
                   f"git: {r.reason}", file=sys.stderr)
         else:
             n_skip += 1
@@ -272,17 +272,17 @@ def _cmd_record(home, args) -> int:
     before_git = before.git if (before is not None and isinstance(before.git, dict)) else None
     lease = slot_snapshot.record_git_snapshot(home, slot)
     if lease is None:
-        print(f"[중단] 슬롯 {slot} 이 리스 장부에 없다 — record 는 등록된 슬롯에만 스냅을 기록한다.",
+        print(f"[중단] 슬롯 {slot} 이 대여 기록에 없다 — record 는 등록된 슬롯에만 git 상태를 기록한다.",
               file=sys.stderr)
         return 1
     after_git = lease.git if isinstance(lease.git, dict) else None
     if after_git is None or after_git == before_git:
         # 스냅 불가(슬롯 worktree 경로 부재 등 → `_apply_git_snapshot` 이 기존 git 보존)·무변경.
-        print(f"[중단] 슬롯 {slot} git 스냅 재기록 실패 — 슬롯 worktree 를 스냅할 수 없다(경로 부재/git 오류). "
+        print(f"[중단] 슬롯 {slot} git 상태 다시 기록 실패 — 슬롯 worktree 의 상태를 기록할 수 없다(경로 부재/git 오류). "
               "슬롯이 실재하는지 확인하라.", file=sys.stderr)
         return 1
-    print(f"✓ 슬롯 {slot} 도착 스냅 재기록: branch=`{after_git.get('branch')}` "
-          f"head=`{(after_git.get('head') or '?')[:12]}` (base 보존·이후 0단계 정합이 이 스냅 기준).")
+    print(f"✓ 슬롯 {slot} 도착 상태 다시 기록: branch=`{after_git.get('branch')}` "
+          f"head=`{(after_git.get('head') or '?')[:12]}` (base 보존·이후 0단계 일치 판정이 이 기록 기준).")
     return 0
 
 
@@ -305,7 +305,7 @@ def _cmd_switch(home, args) -> int:
         return 1
     # 원문이 revspec 이라 다른 이름으로 해소됐으면 성공 보고에도 실값을 싣는다(조용한 오전환 방지).
     asked = f" (입력 `{result.requested}` → 해소)" if result.expanded else ""
-    print(f"✓ 슬롯 {slot} → 기존 브랜치 `{result.branch}`{asked} 전환 + 도착 스냅 재기록 "
+    print(f"✓ 슬롯 {slot} → 기존 브랜치 `{result.branch}`{asked} 전환 + 도착 상태 다시 기록 "
           f"(head=`{(result.head or '?')[:12]}`·원자) — 0단계 재진입이 "
           f"'기록↔live diverged' 로 막히지 않는다.")
     return 0
@@ -370,7 +370,7 @@ def main(home, argv: list[str] | None = None) -> int:
     p_rebase.add_argument("slot", nargs="?", default=None,
                           help="대상 슬롯(단일 지정·`--task` 와 함께 주면 그 task 명의로 이 슬롯만).")
     p_rebase.add_argument("--task", default=None,
-                          help="task 명의(소유검사 축). `<slot>` 없이 주면 "
+                          help="task 명의(소유 검사 기준). `<slot>` 없이 주면 "
                                "그 task 보유 전 슬롯 일괄 rebase.")
     p_rebase.add_argument("--onto", default=None,
                           help="옮길 부모 브랜치(생략 시 기록된 부모 최신·기록 없으면 거부). "
@@ -394,7 +394,7 @@ def main(home, argv: list[str] | None = None) -> int:
     # 때의 명시 재동기 진입 — `record_git_snapshot` 프리미티브의 CLI 노출(감지=기계·해소=사용자).
     p_record = subparsers.add_parser(
         "record",
-        help="슬롯 도착 스냅(lease.git·branch/head)을 live 로 재기록(base 보존) — 0단계 diverged 정당 판단 시 명시 재동기.")
+        help="슬롯 도착 상태 기록(lease.git·branch/head)을 live 로 다시 기록(base 보존) — 0단계 diverged 정당 판단 시 명시 재동기.")
     p_record.add_argument("slot", help="대상 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
 
     # switch <slot> <branch> — 기존 브랜치 전환 + 장부 스냅 재기록을 **원자**로(위치인자 <slot>).
@@ -402,7 +402,7 @@ def main(home, argv: list[str] | None = None) -> int:
     # 전환은 거부하고, 없는 브랜치는 만들지 않는다.
     p_switch = subparsers.add_parser(
         "switch",
-        help="슬롯을 기존 브랜치로 전환 + 도착 스냅 재기록(원자·보호브랜치 거부·브랜치 생성 안 함).")
+        help="슬롯을 기존 브랜치로 전환 + 도착 상태 다시 기록(원자·보호브랜치 거부·브랜치 생성 안 함).")
     p_switch.add_argument("slot", help="대상 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
     p_switch.add_argument("branch", help="전환할 기존 브랜치(없으면 거부 — 새 브랜치는 `pm-config task branch`).")
 

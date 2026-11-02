@@ -80,7 +80,7 @@ def _resolve_task_workspace_cwd(
                 _header, rows = areas_store._parse_areas(home)
                 matching = [row for row in rows if row.get("repo") == ws.repo]
                 if len(matching) > 1:
-                    sys.exit(f"[중단] 선택 repo {ws.repo!r}의 test_cmd 장부가 모호하다")
+                    sys.exit(f"[중단] 선택 repo {ws.repo!r}의 areas.md test_cmd 행이 여럿이라 모호하다")
                 command = (matching[0].get("test_cmd") if matching else None)
                 command = command or conf_store.local_config(home).get("test.cmd") or python_env.default_pytest_cmd()
         if not isinstance(command, str) or not command.strip():
@@ -149,5 +149,5 @@ def _claim_head_rev(home, args: argparse.Namespace) -> str:
     tree = _claim_code_tree(home, args)
     rev = git._git_head_at(tree) if tree else ""
     if not rev:
-        sys.exit(f"[중단] task claim 앵커 HEAD를 읽지 못했다: {tree}")
+        sys.exit(f"[중단] task 작업 폴더의 claim 시점 HEAD를 읽지 못했다: {tree}")
     return rev

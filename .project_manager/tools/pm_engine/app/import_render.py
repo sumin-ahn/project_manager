@@ -301,7 +301,7 @@ def render_managed_files(
     if fallback_rendered:
         print(
             f"  ⚠️ manifest 미소유 인스턴스 wiki {len(fallback_rendered)}건 — 설치 하네스 전체"
-            f"({', '.join(fallback_context)}) 표기로 폴백 렌더: {', '.join(fallback_rendered)}",
+            f"({', '.join(fallback_context)}) 표기로 대신 렌더: {', '.join(fallback_rendered)}",
             file=sys.stderr,
         )
     if swapped:

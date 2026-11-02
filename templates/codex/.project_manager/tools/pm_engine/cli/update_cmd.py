@@ -86,7 +86,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             "upstream= 이 **URL**(릴리스 추적 기본)이면 <dest>/.project_manager/.local/"
             "upstream-cache/ 에 clone(최초)/fetch(이후)한 뒤 그 캐시를 소스로 쓴다 — "
             "clone/fetch 가 실패하면 옛 캐시로 진행하지 않고 명확한 에러로 멈춘다. "
-            "upstream 미등록이거나 그 경로가 부재/디렉토리 아님이어도 명확한 에러로 멈춘다(침묵 폴백 없음)."
+            "upstream 미등록이거나 그 경로가 부재/디렉토리 아님이어도 명확한 에러로 멈춘다(말없이 대체하지 않음)."
         ),
     )
     ap.add_argument("--from", dest="source", required=False, default=None,
@@ -123,7 +123,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             "(.project_manager/tools/) 변경이 남아 있으면 쓰기 전에 거부한다(rc1) — 단 --target·"
             "--all-targets 는 엔진 패키지 경로(.project_manager/tools/pm_engine) 전체를 고르면 그 "
             "패키지 교체를 전파한다(패키지 안 일부만 고르면 rc1). 경로는 repo 루트 상대 "
-            "(파일 또는 디렉토리)다. 전량 흡수가 아니므로 upstream.rev baseline 기록·진입 doc "
+            "(파일 또는 디렉토리)다. 전부 받아 반영하는 것이 아니므로 upstream.rev baseline 기록·진입 doc "
             "마이그레이션·보호 훅 재설치·동기 후 프롬프트는 건너뛴다(부분 전파를 '최신' 으로 "
             "박으면 drift-lint 가 거짓 침묵한다). --target·--all-targets 와 조합 가능하고 "
             "--changes 와는 함께 쓸 수 없다."
@@ -580,8 +580,8 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             print_instance_owned_delta()
             if not args.dry_run and update_adapters._adapter_hook_set_gate_failed(hook_set_check):
                 print(
-                    "[중단] 설치된 훅 세트가 채택자 config 가 요구하는 세대가 아니다 — 위 처방 후 "
-                    "pm-update 를 재실행하라(방치하면 훅이 rc2 로 도구 호출을 막는다).",
+                    "[중단] 설치된 훅 세트가 채택자 config 가 요구하는 버전이 아니다 — 위 해결 방법을 적용한 뒤 "
+                    "pm-update 를 다시 실행하라(방치하면 훅이 rc2 로 도구 호출을 막는다).",
                     file=sys.stderr,
                 )
                 return 1
@@ -590,7 +590,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
                 # "최신/흡수 완료"라고 접으면 release가 false-complete 되므로 baseline 기록도 막는다.
                 print(
                     "[중단] 엔진 manifest 변경은 0건이지만 managed 어댑터 config가 "
-                    "미수렴이다 — 위 처방 후 pm-update를 재실행하고 "
+                    "아직 일치하지 않는다 — 위 해결 방법을 적용한 뒤 pm-update를 다시 실행하고 "
                     "`pm-config sync-adapter-config --check`를 통과시켜라.",
                     file=sys.stderr,
                 )
@@ -690,7 +690,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         if update_adapters._adapter_hook_set_gate_failed(hook_set_check):
             print(
                 f"[중단] 엔진 파일 {change_files}건은 적용됐지만 설치된 훅 세트가 채택자 config "
-                "가 요구하는 세대가 아니다 — 위 처방 후 pm-update 를 재실행하라"
+                "가 요구하는 버전이 아니다 — 위 해결 방법을 적용한 뒤 pm-update 를 다시 실행하라"
                 "(방치하면 훅이 rc2 로 도구 호출을 막는다).",
                 file=sys.stderr,
             )
@@ -700,7 +700,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             # 전체 흡수 baseline·후속 성공 프롬프트만 차단한다.
             print(
                 f"[중단] 엔진 파일 {change_files}건은 적용됐지만 managed 어댑터 config가 "
-                "미수렴이다 — 위 처방 후 pm-update를 재실행하고 "
+                "아직 일치하지 않는다 — 위 해결 방법을 적용한 뒤 pm-update를 다시 실행하고 "
                 "`pm-config sync-adapter-config --check`를 통과시켜라.",
                 file=sys.stderr,
             )
@@ -747,7 +747,7 @@ def main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") -> 
                 f"{manifest_rules._ENGINE_TRANSFER_STAGE_PREFIX}*·"
                 f"{manifest_rules._ENGINE_TRANSFER_BACKUP_PREFIX}*)을 확인하라. 패키지 자리가 비었고 "
                 "완전한 backup 이 있으면 backup 을 패키지 이름으로 되돌린다. 평면 엔진 파일까지 같은 "
-                "세대로 맞추려면 원인을 고친 뒤 같은 갱신을 다시 실행한다.", file=sys.stderr)
+                "버전으로 맞추려면 원인을 고친 뒤 같은 갱신을 다시 실행한다.", file=sys.stderr)
         return 1
     except repo_files.RepoFilesGitError as exc:
         print(

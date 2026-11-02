@@ -94,7 +94,7 @@ def _print_delegate_model_guidance(
         ok, models = runner(source)
         if not ok or not models:
             print(
-                "      ⚠ 목록 조회 실패 — 위 형식 안내로 강등한다(사유는 위 stderr 한 줄). "
+                "      ⚠ 목록 조회 실패 — 위 형식 안내로 수준을 낮춘다(사유는 위 stderr 한 줄). "
                 f"직접 확인: {how_to_check}"
             )
             continue

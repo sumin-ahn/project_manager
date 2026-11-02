@@ -193,7 +193,7 @@ def _warn_selected_manifest_union_conflicts(merged: dict | None) -> None:
         return
     print(
         "경고: 선택 manifest 중복 경로의 marker/@source 불일치 — registry 정규 순서상 "
-        f"첫 flavor를 우선함 ({len(conflicts)}건): {', '.join(conflicts)}",
+        f"첫 하네스별 판을 우선함 ({len(conflicts)}건): {', '.join(conflicts)}",
         file=sys.stderr,
     )
 

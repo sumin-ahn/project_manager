@@ -923,8 +923,8 @@ class SwitchRefused(RuntimeError):
         self.reason = reason
         tail = f" — {detail}" if detail else ""
         msg = {
-            "unregistered": (f"슬롯 {slot!r} 이 리스 장부에 없다 — switch 는 등록된 슬롯에만 "
-                             f"(전환+스냅 재기록을) 수행한다"),
+            "unregistered": (f"슬롯 {slot!r} 이 대여 기록에 없다 — switch 는 등록된 슬롯에만 "
+                             f"(전환+상태 다시 기록을) 수행한다"),
             "protected": (f"슬롯 {slot!r} 을 보호 브랜치로 전환하는 것은 거부한다 — 이 커맨드는 "
                           f"main-참조 상태를 *벗어나는* 전환용이다(보호목록=areas.md `protected`)"),
             "protected-upstream": (f"슬롯 {slot!r} 을 **보호브랜치 원격을 추적하는** 브랜치로 전환하는 것은 "
@@ -939,15 +939,15 @@ class SwitchRefused(RuntimeError):
                       f"흔든다(커밋/stash 후 재시도)"),
             "rebase-in-progress": (f"슬롯 {slot!r} 에 rebase 가 진행 중이라 switch 를 거부한다 — 먼저 "
                                    f"슬롯에서 `git rebase --continue`(충돌 해결 후) 또는 "
-                                   f"`git rebase --abort`(취소)로 해소하라(rebase 선-검사 동형)"),
+                                   f"`git rebase --abort`(취소)로 해소하라(rebase 선-검사와 같은 구조)"),
             "invalid-ref": (f"슬롯 {slot!r} 에 지정한 브랜치명이 git ref 규칙에 어긋나거나 실 브랜치명으로 "
                             f"정규화할 수 없다(`git check-ref-format --branch`) — 다른 이름을 지정하라"),
             "not-found": (f"슬롯 {slot!r} 에 지정한 브랜치가 없다 — switch 는 기존 브랜치 전환만 한다. "
                           f"새 브랜치는 {_TASK_BRANCH_REMEDY} 로 만든다"),
             "git-error": f"슬롯 {slot!r} 브랜치 전환 중 git 오류",
-            "record-failed": (f"슬롯 {slot!r} 브랜치 전환은 됐으나 기록(보존 기록 지우기 또는 장부 스냅 "
+            "record-failed": (f"슬롯 {slot!r} 브랜치 전환은 됐으나 기록(보존 기록 지우기 또는 대여 기록의 git 상태 "
                               f"재기록)에 실패했다 — 이대로면 다음 0단계가 '기록↔live diverged' 로 막는다. "
-                              f"`worktree_pool.py record {slot}` 로 스냅을 재기록하라(보존 기록 지우기 "
+                              f"`worktree_pool.py record {slot}` 로 git 상태를 다시 기록하라(보존 기록 지우기 "
                               f"실패였다면 원인을 해소한 뒤 같은 switch 를 다시 실행한다)"),
         }.get(reason, f"슬롯 {slot!r} switch 거부({reason})")
         super().__init__(msg + tail + "")
@@ -990,7 +990,7 @@ class TaskBranchRefused(RuntimeError):
         self.reason = reason
         tail = f" — {detail}" if detail else ""
         msg = {
-            "unregistered": (f"슬롯 {slot!r} 이 리스 장부에 없다 — task branch 는 등록된 슬롯에만 "
+            "unregistered": (f"슬롯 {slot!r} 이 대여 기록에 없다 — task branch 는 등록된 슬롯에만 "
                              f"브랜치를 만든다"),
             "not-owner": (f"슬롯 {slot!r} 은 이 task 가 대여 중인 슬롯이 아니다 — 새 브랜치는 task 소유 "
                           f"슬롯에서만 만든다"),
@@ -1014,7 +1014,7 @@ class TaskBranchRefused(RuntimeError):
             "parent-missing": (f"슬롯 {slot!r} 에 새 브랜치를 만들 부모 브랜치가 로컬에도 origin 에도 없다 — "
                                f"실재하는 부모 브랜치를 지정하라"),
             "git-error": f"슬롯 {slot!r} 새 브랜치 생성 중 git 오류",
-            "record-failed": (f"슬롯 {slot!r} 에 브랜치는 만들어졌으나 기록(부모 기록 또는 장부 스냅)에 "
+            "record-failed": (f"슬롯 {slot!r} 에 브랜치는 만들어졌으나 기록(부모 기록 또는 대여 기록의 git 상태)에 "
                               f"실패했다 — 이대로면 부모 기록이 빠지거나 다음 0단계가 '기록↔live diverged' "
                               f"로 막는다"),
         }.get(reason, f"슬롯 {slot!r} task branch 거부({reason})")

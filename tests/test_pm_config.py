@@ -384,10 +384,10 @@ def test_sync_adapter_config_check_exit_and_actionable_remedy(
     assert rc == expected_rc
     assert _CHECK_REPORT_REL in captured.out, "report-only 차이가 판정 출력에서 사라짐"
     if remedy is None:
-        assert "수렴 확인" in captured.out
+        assert "일치 확인" in captured.out
     else:
         assert remedy in captured.err, (name, captured.err)
-        assert "미수렴" in captured.err
+        assert "불일치" in captured.err
     after = ledger.read_bytes() if ledger.is_file() else None
     assert after == before, "--check가 원장을 썼다(write 0 계약 위반)"
     assert (dest / _CHECK_HOOKS_REL).read_text(encoding="utf-8") == hooks
@@ -464,7 +464,7 @@ def test_sync_adapter_config_check_report_only_only_missing_managed_template_is_
     assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO),
         args, dest_root=dest) == 0
     out = capsys.readouterr().out
-    assert _CHECK_REPORT_REL in out and "수렴 확인" in out
+    assert _CHECK_REPORT_REL in out and "일치 확인" in out
 
 
 def test_sync_adapter_config_check_partial_managed_dest_missing_template_is_rc1(

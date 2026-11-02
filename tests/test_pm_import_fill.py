@@ -350,7 +350,7 @@ def test_main_auto_without_env_forces_manual(pm_import, tmp_path, monkeypatch, c
     assert rc == 0
     out = capsys.readouterr().out
     # 게이트 미통과 안내 + manual 폴백(TODO 표시).
-    assert "stub/미구동" in out or "게이트 미통과" in out
+    assert "stub/미구동" in out or "통과 조건 미충족" in out
     text = (dest / "CLAUDE.md").read_text(encoding="utf-8")  # ADR-0030: free-form 은 root doc 에(어댑터 아님)
     assert "TODO" in text, "게이트 미통과 manual 폴백인데 TODO 표시가 없음."
 
@@ -929,7 +929,7 @@ def test_dry_run_auto_prints_fill_plan(pm_import, tmp_path, capsys):
     assert "채울 대상 토큰" in out, "dry-run 계획에 대상 토큰 목록이 없음."
     assert "{{PROJECT_CONSTRAINTS}}" in out, "dry-run 계획에 실제 자유서술 토큰이 안 나옴."
     assert "fill harness: claude" in out, "dry-run 계획에 결정된 fill harness 가 없음."
-    assert "게이트" in out, "dry-run 계획에 opt-in 게이트 상태가 없음."
+    assert "통과 조건" in out, "dry-run 계획에 opt-in 게이트 상태가 없음."
 
 
 def test_dry_run_auto_plan_gate_not_passed_states_manual_fallback(pm_import, tmp_path,
@@ -941,7 +941,7 @@ def test_dry_run_auto_plan_gate_not_passed_states_manual_fallback(pm_import, tmp
                          "--fill", "auto", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "미통과" in out and "manual 폴백" in out, \
+    assert "미충족" in out and "manual 로 대체" in out, \
         "게이트 미통과 dry-run 계획이 manual 폴백 상태를 명시하지 않음."
 
 

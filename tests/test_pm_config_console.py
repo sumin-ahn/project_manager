@@ -920,7 +920,7 @@ def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome
     config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO), conf={})
     out = capsys.readouterr().out
 
-    assert "목록 조회 실패" in out and "강등" in out
+    assert "목록 조회 실패" in out and "수준을 낮춘다" in out
     assert "provider/model" in out, "형식 안내까지 사라지면 강등이 아니라 침묵이다"
 
 

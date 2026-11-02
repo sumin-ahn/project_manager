@@ -54,7 +54,7 @@ def _protected_push_gate_config(home,
     if not upstream:
         if report_downgrade:
             print(
-                f"⚠ 보호 push gate 강등({repo}): local.conf upstream.path 축 미해소 — "
+                f"⚠ 보호 push 통과 조건 수준 낮춤({repo}): local.conf upstream.path 값을 해소하지 못함 — "
                 "release 대신 self-test를 사용한다; upstream을 설정하라.",
                 file=sys.stderr,
             )
@@ -68,7 +68,7 @@ def _protected_push_gate_config(home,
         if not repo_git:
             if report_downgrade:
                 print(
-                    f"⚠ 보호 push gate 강등({repo}): areas.md git 축 미해소 — "
+                    f"⚠ 보호 push 통과 조건 수준 낮춤({repo}): areas.md git 값을 해소하지 못함 — "
                     "release 대신 self-test를 사용한다; 해당 repo의 git URL을 등록하라.",
                     file=sys.stderr,
                 )
@@ -260,7 +260,7 @@ def _refresh_protected_gate_contracts(home) -> tuple[list[str], list[str]]:
     attempted, failed = [], []
     for repo in repos:
         attempted.append(repo)
-        if not _install_protected_hook_reporting(home, repo, action="gate 계약으로 (재)설치"):
+        if not _install_protected_hook_reporting(home, repo, action="증거 계약으로 (재)설치"):
             failed.append(repo)
     return attempted, failed
 

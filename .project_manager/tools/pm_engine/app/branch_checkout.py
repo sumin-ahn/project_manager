@@ -296,14 +296,14 @@ def _rerecord_branch_snapshot(home, slot: str, target: str, lease: "Lease", *,
     try:
         updated = slot_snapshot.record_git_snapshot(home, slot, git_runner=git_runner)
     except Exception as exc:  # noqa: BLE001 — must-fix: 장부 IO/권한/락 예외도 안내 채널로 수렴.
-        converted = refuse("record-failed", f"장부 기록 예외: {exc}")
+        converted = refuse("record-failed", f"슬롯 대여 기록 쓰기 예외: {exc}")
         raise converted from exc
     recorded = updated.git if (updated is not None and isinstance(updated.git, dict)) else None
     if recorded is None or recorded == before_git or recorded.get("branch") != target:
         unchanged = recorded is not None and recorded == before_git
         raise refuse("record-failed",
                      f"기록된 branch=`{(recorded or {}).get('branch')}`"
-                     f"{'·무변경(스냅 불가)' if unchanged else ''}")
+                     f"{'·무변경(상태 기록 불가)' if unchanged else ''}")
     return recorded
 
 
@@ -368,7 +368,7 @@ def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None
     expansion = "" if target == branch else f"입력 `{branch}` → `{target}` 로 해소됨(revspec 확장)"
     if expansion:
         # 조용한 오전환 방지 — 사용자가 친 문자열과 실제 대상이 다르면 즉시 고지(거부 경로 포함).
-        print(f"[알림] 슬롯 {slot} switch: {expansion} — 보호목록 검사·전환·장부 기록은 전부 "
+        print(f"[알림] 슬롯 {slot} switch: {expansion} — 보호목록 검사·전환·대여 기록은 전부 "
               f"`{target}` 기준으로 진행한다.", file=sys.stderr)
 
     protected_list = protected if protected is not None else areas_store._repo_protected(home, repo)

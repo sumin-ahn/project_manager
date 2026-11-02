@@ -1414,12 +1414,12 @@ def test_cmd_remove_forced_state_warns_on_stderr(pc, monkeypatch, engine, capsys
     bind_pool(monkeypatch, wp)
     assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(force=True)) == 0
     err = capsys.readouterr().err
-    assert "⚠" in err and "강제 회수" in err and "leased" in err
+    assert "⚠" in err and "강제 반납" in err and "leased" in err
 
     wp = bind_pool(monkeypatch, FakeWP(engine))
     bind_pool(monkeypatch, wp)
     assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 0
-    assert "강제 회수" not in capsys.readouterr().err
+    assert "강제 반납" not in capsys.readouterr().err
 
 
 

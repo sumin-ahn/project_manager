@@ -189,7 +189,7 @@ def cmd_task_end(
     scan = ticket_access.scan_task_tickets(home, user, name, prefix)
     if scan.get("claimed"):
         print(
-            f"[중단] task {name!r} 명의로 claimed 인 티켓이 남아있다 — 종료 거부(소진 게이트):",
+            f"[중단] task {name!r} 명의로 claimed 인 티켓이 남아있다 — 종료 거부(소진 통과 조건):",
             file=sys.stderr,
         )
         for row in scan["claimed"]:
@@ -235,7 +235,7 @@ def cmd_task_end(
     if result.moved_to is not None:
         print(f"✓ 서술 폴더 아카이브 이동(삭제 아님·PM 홈): {result.moved_from} → {result.moved_to}")
     else:
-        print(f"  서술 폴더 없음(.local/tasks/{name}/ 부재) — 장부 task 레코드만 제거.")
+        print(f"  서술 폴더 없음(.local/tasks/{name}/ 부재) — 슬롯 대여 기록의 task 행만 제거.")
 
     # task 지정 prefix 의 open 티켓 = 정보 표시만(차단 안 함·prefix≠경계).
     if scan.get("prefix_open"):
@@ -272,7 +272,7 @@ def cmd_task_reopen(
 
     print(f"✓ task {args.name!r} 동일 정체성 복원: {result.moved_from} → {result.moved_to}")
     print(
-        "  장부 재등록: prefix=None(reset) · 닫힘(종료 기록 상태) · "
+        "  슬롯 대여 기록 재등록: prefix=None(reset) · 닫힘(종료 기록 상태) · "
         f"started={result.task.started}"
     )
     print(
@@ -289,7 +289,7 @@ _TASK_PREFIX_NONE_LITERAL = "none"
 def _todo_missing_task(name: str) -> int:
     """todo 대상 task 가 장부에 없을 때의 단일 안내(세 명령 공용·문구 사본 0)."""
     print(
-        f"[중단] task {name!r} 이(가) 장부에 없다 — todo 는 기존 task 레코드에 달린다. "
+        f"[중단] task {name!r} 이(가) 슬롯 대여 기록에 없다 — todo 는 기존 task 레코드에 달린다. "
         f"먼저 `pm-config task new {name}`(정체성만) 또는 "
         f"`{lease_store._runtime_skill_entry('pm-bootstrap')} --task {name}`(생성+진입) 로 task 를 만들어라.",
         file=sys.stderr,

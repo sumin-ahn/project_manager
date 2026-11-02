@@ -226,7 +226,7 @@ def test_unowned_wiki_gets_installed_harness_context_and_is_loud(render_home, tm
     body = (dest / ".project_manager/wiki/raw/README.md").read_text(encoding="utf-8")
     assert body == "박제는 `$spike-new`(codex) / `/spike-new`(opencode) 스킬이 한다\n"
     err = capsys.readouterr().err
-    assert "폴백" in err and ".project_manager/wiki/raw/README.md" in err, err
+    assert "표기로 대신 렌더" in err and ".project_manager/wiki/raw/README.md" in err, err
 
 
 def test_single_harness_fallback_uses_that_harness_notation(render_home, tmp_path):

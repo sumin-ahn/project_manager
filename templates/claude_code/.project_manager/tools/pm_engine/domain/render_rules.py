@@ -568,7 +568,7 @@ def _assert_no_leak(
         toks = ", ".join("{{" + k + "}}" for k in leaked)
         parts.append(
             f"미해소 토큰 잔존: {toks} — 자족 산출물은 토큰 0 이어야 한다. "
-            f"템플릿 저자가 새 토큰을 넣었거나 local.conf 채널 배선이 누락됐다.")
+            f"템플릿 저자가 새 토큰을 넣었거나 local.conf 채널 등록이 누락됐다.")
         # 빈값(local.conf `<key>=`)이 원인인 leak 은 값을 채우라는 실행가능 힌트를 더한다.
         # empty_keys·leaked 는 둘 다 uppercase token-key → `_local_conf_key` 로 local.conf key 제시.
         empty_leaked = [k for k in (empty_keys or []) if k in leaked]

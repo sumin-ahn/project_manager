@@ -44,7 +44,7 @@ def _render_slots(home) -> None:
     pool_store.list_leases(home) 재사용. 빈 장부면 안내를 표시한다. cmd_status의 풀
     surface 와 같은 데이터 — 콘솔은 build(test_cmd) 칼럼을 강조한다(이 콘솔의 1급 관심사).
     """
-    print("## slots (worktree 풀 리스):")
+    print("## slots (worktree 풀 대여):")
     leases = pool_store.list_leases(home)
     if not leases:
         print("  (슬롯 없음 — [w] 로 추가하라)")

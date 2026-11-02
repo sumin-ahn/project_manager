@@ -330,7 +330,7 @@ ADAPTER_CONFIG_CHANNEL = {
 # managed 갱신 뒤 채택자가 해야 하는 후속 행동 — 자동 갱신이 조용한 기능 비활성화가 되지 않게
 # 갱신 시점에 함께 낸다(codex 는 훅 정의가 바뀌면 세션에서 다시 승인해야 발화한다).
 ADAPTER_CONFIG_REAPPROVAL_NOTE = {
-    ".codex/hooks.json": "codex 세션에서 `/hooks` 로 훅을 다시 승인해야 새 정의가 발화한다",
+    ".codex/hooks.json": "codex 세션에서 `/hooks` 로 훅을 다시 승인해야 새 정의가 실행된다",
 }
 
 

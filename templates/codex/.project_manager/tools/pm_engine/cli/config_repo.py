@@ -99,7 +99,7 @@ def _set_bare_fetch_refspec(bare_path: Path, *, runner: worktree_records.GitRunn
         print(
             f"[경고] bare `git -C {bare_path} fetch origin` 실패 (rc={rc}): {out.strip()[:200]}\n"
             "  refspec 은 설정됨 — 네트워크 복구 후 `git -C <bare> fetch origin` 으로 origin/* 채우면 "
-            "라이브-게이트 baseline(origin/main)이 해소된다.",
+            "라이브 시험 통과 조건의 baseline(origin/main)이 해소된다.",
             file=sys.stderr,
         )
         return
@@ -614,11 +614,11 @@ def _print_protected_status(
 
     cell = repo_protection._areas_protected_cell(home, name)
     if cell is None:
-        print("  출처: 미등록 repo (areas.md 에 그 행이 없음) — DEFAULT_PROTECTED 기본값 폴백")
+        print("  출처: 미등록 repo (areas.md 에 그 행이 없음) — DEFAULT_PROTECTED 기본값으로 대체")
     elif cell.strip():
         print("  출처: 명시 (areas.md `protected` 칼럼)")
     else:
-        print("  출처: 기본값 폴백 (areas.md `protected` 칼럼 비어 있음 — DEFAULT_PROTECTED)")
+        print("  출처: 기본값으로 대체 (areas.md `protected` 칼럼 비어 있음 — DEFAULT_PROTECTED)")
 
     path = protected_hooks._protected_sidecar_path(home, name)
     sidecar = protected_hooks._read_protected_sidecar(home, name)
@@ -637,21 +637,21 @@ def _print_protected_status(
         # 내용 drift 가 지배적 — 배선 여부와 무관하게 재설치가 답이다(재설치가 둘 다 고친다).
         print(f"  훅 sidecar: {path} → {listed}  "
               f"⚠ 옛 목록({', '.join(sidecar) or '없음'}) — 이 clone 의 훅은 아직 옛 값으로 동작")
-        print(f"    → 정합화:  {retry}"
-              f"   (또는 `{lease_store._runtime_skill_entry('pm-bootstrap')}` 이 세션 시작에 자동 정합화)")
+        print(f"    → 일치시키려면:  {retry}"
+              f"   (또는 `{lease_store._runtime_skill_entry('pm-bootstrap')}` 이 세션 시작에 자동으로 일치시킴)")
         return 0
     if wired is False:
         # 내용은 최신인데 배선이 끊긴 부분성공 — sidecar 만 보면 `✓ 정합` 으로 보이는 그 상태.
         print(f"  훅 sidecar: {path} → {listed}  "
-              "⚠ 훅 미배선 — 목록은 최신이나 bare `core.hooksPath` 가 이 디렉토리를 가리키지 "
-              "않아 pre-push·pre-commit 훅이 아예 발화하지 않는다(보호 꺼짐)")
-        print(f"    → 재배선:  {retry}   (멱등·hooksPath 재설정)")
+              "⚠ 훅 미등록 — 목록은 최신이나 bare `core.hooksPath` 가 이 디렉토리를 가리키지 "
+              "않아 pre-push·pre-commit 훅이 아예 실행되지 않는다(보호 꺼짐)")
+        print(f"    → 다시 등록:  {retry}   (멱등·hooksPath 재설정)")
         return 0
     if wired is None:
         print(f"  훅 sidecar: {path} → {listed}  "
-              "✓ 목록 정합 (배선 확인 불가 — bare 부재/git 미해소)")
+              "✓ 목록 일치 (등록 확인 불가 — bare 부재/git 미해소)")
         return 0
-    print(f"  훅 sidecar: {path} → {listed}  ✓ 정합 (목록·hooksPath 배선)")
+    print(f"  훅 sidecar: {path} → {listed}  ✓ 일치 (목록·hooksPath 등록)")
     return 0
 
 
@@ -717,7 +717,7 @@ def cmd_repo_protected(
                 f"[중단] areas.md 에 repo {name!r} 행이 {getattr(exc, 'count', 2)}개 있다(중복) — "
                 "어느 행을 고쳐야 하는지 기계가 정할 수 없다(리졸버는 first-match). 추측해서 한쪽만 "
                 "고치지 않는다(areas.md 미변경·부작용 0). 한 행만 남기고 수동 정리한 뒤 다시 실행하라 "
-                "(`board.py lint` 의 `areas-duplicate-repo` 권고가 같은 상태를 상시 표면화한다).",
+                "(`board.py lint` 의 `areas-duplicate-repo` 권고가 같은 상태를 늘 알린다).",
                 file=sys.stderr,
             )
             return 1
@@ -732,8 +732,8 @@ def cmd_repo_protected(
         print(f"[중단] areas.md 기록 실패 (미변경) — {exc}", file=sys.stderr)
         return 1
 
-    old_surface = old_cell.strip() or "(빈 값 — 기본값 폴백)"
-    new_surface = new_cell or "(빈 값 — 기본값 폴백 main/master/develop)"
+    old_surface = old_cell.strip() or "(빈 값 — 기본값으로 대체)"
+    new_surface = new_cell or "(빈 값 — 기본값으로 대체: main/master/develop)"
     print(f"✓ areas.md `protected` 갱신: {name}  {old_surface} → {new_surface}")
 
     # 3) 파생 sidecar 정합화 — 훅이 *실제로 읽는* 파일. 멱등 재설치(`repo add`·`worktree add` 공용).
@@ -742,7 +742,7 @@ def cmd_repo_protected(
     # 재실행 안내는 방금 비준한 상태 기준 — `default` 로 되돌린 경우엔 `default` 를 안내해야
     # 정확하다(`tokens` 가 빈 리스트라 falsy → 옛 코드는 `repo add` 로 잘못 떨어졌다).
     repo_protection._install_protected_hook_reporting(home,
-        name, action="정합화",
+        name, action="갱신",
         retry=repo_protection.protected_retry_command(home, name))
 
     # 4) board-git best-effort 동기 — 공유 정책 변경은 즉시 공유돼야 값-연결이 산다.

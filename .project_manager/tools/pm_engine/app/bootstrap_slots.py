@@ -184,8 +184,8 @@ def _task_slot_fault(
     repo = getattr(lease, "repo", None) or slot_id.rpartition("/")[2].rsplit("_", 1)[0]
     if not _phase0_slot_folder_exists(home, slot_id):
         return (
-            "stale (장부에 lease 존재·worktree 폴더 부재)",
-            "장부엔 이 슬롯의 task 명의 lease 가 있으나 worktree 디렉터리가 없습니다 — 외부 삭제/미생성(클래스·엉뚱한 트리 vacuous 진입 방지).",
+            "stale (슬롯 대여 기록에 lease 존재·worktree 폴더 부재)",
+            "슬롯 대여 기록엔 이 슬롯의 task 명의 lease 가 있으나 worktree 디렉터리가 없습니다 — 외부 삭제/미생성(클래스·엉뚱한 트리 vacuous 진입 방지).",
             f"{bootstrap_rules._CARD_TOOL_INVOKE}/pm_config.py worktree prune-stale",
         )
     if bootstrap_rules._phase0_incomplete_create(lease):
@@ -319,9 +319,9 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
     if not protected_ok:
         drift_axes.append("보호 브랜치 목록")
     if not contract_ok:
-        drift_axes.append("증거 계약(gate mode/test command)")
+        drift_axes.append("증거 계약(검사 모드·시험 명령)")
     if wired is False:
-        drift_axes.append("bare `core.hooksPath` 배선")
+        drift_axes.append("bare `core.hooksPath` 등록")
     cause = "·".join(drift_axes) + "이 현재 해소값과 달라"
     stale_parts = []
     if not protected_ok:
@@ -329,7 +329,7 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
     if not contract_ok:
         stale_parts.append("옛/미설치 증거 계약")
     if wired is False:
-        stale_parts.append("미배선(훅 미발화)")
+        stale_parts.append("미등록(훅 실행 안 됨)")
     stale_state = "·".join(stale_parts) + " 상태로 동작"
     if wired is False:
         enforcement_state = f"현재 목록({', '.join(protected)})은 강제되지 않습니다"
@@ -346,12 +346,12 @@ def _reconcile_protected_sidecar(home, repo: str) -> bool:
         reason = repo_protection.protected_hook_install_failure_reason(home, repo)
         reason = reason or "install_protected_hook이 원인 미해소 실패를 반환"
         print(
-            f"[경고·0단계] {repo} {cause} 이 clone 의 훅을 **정합화하지 못했습니다** — {reason}. 훅은 아직 {stale_state} 이며, {enforcement_state}.\n  → 재실행:  {repo_protection.protected_retry_command(home, repo)}   (멱등·bare 부재면 `repo add {repo}` 먼저)",
+            f"[경고·0단계] {repo} {cause} 이 clone 의 훅을 **일치시키지 못했습니다** — {reason}. 훅은 아직 {stale_state} 이며, {enforcement_state}.\n  → 재실행:  {repo_protection.protected_retry_command(home, repo)}   (멱등·bare 부재면 `repo add {repo}` 먼저)",
             file=sys.stderr,
         )
         return False
     print(
-        f"[알림·0단계] {repo} {cause} 이 clone 의 훅을 정합화했습니다 — 보호목록={', '.join(protected)}, 계약={gate_mode}.",
+        f"[알림·0단계] {repo} {cause} 이 clone 의 훅을 일치시켰습니다 — 보호목록={', '.join(protected)}, 계약={gate_mode}.",
         file=sys.stderr,
     )
     return True

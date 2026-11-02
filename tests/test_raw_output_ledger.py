@@ -1013,7 +1013,7 @@ def test_unresolvable_pm_home_fails_loud_and_writes_no_raw(
     assert external.main(["--paths", "seed.txt", "--no-review-ticket"]) == 1
 
     err = capsys.readouterr().err
-    assert "앵커 해소 실패" in err and "worktree lease 장부" in err
+    assert "앵커 해소 실패" in err and "슬롯 대여 기록 파일" in err
     assert "board가 필요 없는 실행" not in err
     assert not (
         worktree / ".project_manager" / ".local" / "raw_outputs.json"
@@ -1241,7 +1241,7 @@ def test_corrupt_lease_registered_slot_records_no_round_anywhere(
                  ["--paths", "seed.txt", "--no-review-ticket"]):
         assert external.main(argv) == 1, argv
         err = capsys.readouterr().err
-        assert "앵커 해소 실패" in err and "worktree lease 장부" in err, argv
+        assert "앵커 해소 실패" in err and "슬롯 대여 기록 파일" in err, argv
         assert "게이트 스냅샷 마커" not in err, argv
 
     assert _round_count(worktree, gate) == 0

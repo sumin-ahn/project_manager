@@ -260,7 +260,7 @@ def remove_slot(home,
             if not worktree_paths._is_pool_worktree_slot(home, slot):
                 raise RuntimeError(
                     f"slot {slot!r} 은 git worktree 등록이 없고 그 경로({path})는 pool 슬롯 자리도 "
-                    "아니다 — 지울 등록도 지울 자리도 없어 아무것도 하지 않았다(장부/트리 미변경)."
+                    "아니다 — 지울 등록도 지울 자리도 없어 아무것도 하지 않았다(슬롯 대여 기록/트리 미변경)."
                 )
             raise worktree_records.RemoveRefused(slot, "unregistered-tree", path=path)
 
@@ -281,7 +281,7 @@ def remove_slot(home,
             if worktree_git._worktree_registered(home, path, git_runner=bare_runner):
                 raise RuntimeError(
                     f"git worktree remove failed for {slot!r} (rc={rc}, out={out!r}) — "
-                    "git 등록·장부·브랜치가 그대로다."
+                    "git 등록·슬롯 대여 기록·브랜치가 그대로다."
                 )
             tree_cleaned = path.exists()
             fs.force_rmtree(path)
@@ -568,7 +568,7 @@ def create_slot(home,
                     f"매우 느린 op(대형 repo·느린 디스크/VPN)이면 timeout({timeout_desc}·PM_GIT_TIMEOUT)에 "
                     f"걸렸을 수 있다 — 먼저 사용자에게 repo {repo!r} 슬롯 생성 승인을 "
                     f"요청하라. 승인한 사용자만 터미널에서 `pm-config worktree add {repo} "
-                    f"--user-ack {repo}`를 대상값에 결속해 직접 실행하면 진행상황이 보이고, "
+                    f"--user-ack {repo}`를 대상 값에 맞춰 직접 실행하면 진행상황이 보이고, "
                     f"`PM_GIT_TIMEOUT=none` 으로 무제한 실행할 수 있다(세션 자동 부착 금지)."
                 )
             # add 성공 — fs 에 worktree 존재. 이후 단계(submodule)/interrupt 실패 시 except 가 이 슬롯을

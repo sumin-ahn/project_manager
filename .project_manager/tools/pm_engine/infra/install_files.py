@@ -390,7 +390,7 @@ def _open_dest_root_fd(dest_root: Path, root_identity: tuple | None) -> int:
         if root_identity is not None:
             raise DestRootSwappedError(
                 f"계획 검증 뒤 dest 루트를 열 수 없습니다: {dest_root} ({exc}) — 삭제·깨진 링크·"
-                "비-디렉토리로 바뀐 형상이므로 즉시 전체 중단합니다.") from exc
+                "비-디렉토리로 바뀐 구성이므로 즉시 전체 중단합니다.") from exc
         raise UnsafeDestPathError(f"dest 루트를 해소할 수 없습니다: {dest_root}") from exc
     if root_identity is None:
         return fd

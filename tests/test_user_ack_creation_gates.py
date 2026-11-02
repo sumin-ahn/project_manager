@@ -705,7 +705,7 @@ def test_worktree_add_rejects_ack_bound_to_other_repo(pm_config, monkeypatch, ca
     bind_pool(monkeypatch, pool)
     assert config_slots.cmd_worktree_add(pm_paths.home_at(pm_config.REPO), args) == 1
     assert pool.created == []
-    assert "결속되지 않았다" in capsys.readouterr().err
+    assert "연결되지 않았다" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

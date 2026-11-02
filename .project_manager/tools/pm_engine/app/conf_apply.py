@@ -84,9 +84,9 @@ def _installed_generation_source(dest_root: Path, conf: Mapping[str, str]) -> Pa
     current = upstream_git.read_upstream_rev(source_root)
     if not installed or current != installed:
         raise ConfApplyError([
-            f"렌더 원본({source_root})의 세대 {current or '(알 수 없음)'} 가 설치 세대 `upstream.rev`"
+            f"렌더 원본({source_root})의 버전 {current or '(알 수 없음)'} 가 설치 버전 `upstream.rev`"
             f"({installed or '없음'})와 다릅니다 — `pm-config update`(또는 관리자 갱신 탭 [적용])로 "
-            "설치 세대를 원본에 맞춘 뒤 다시 실행하십시오."])
+            "설치 버전을 원본에 맞춘 뒤 다시 실행하십시오."])
     return source_root
 
 

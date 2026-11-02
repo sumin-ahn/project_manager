@@ -47,10 +47,10 @@ def _require_worktree_add_user_ack(args: argparse.Namespace) -> bool:
     repo = args.repo
     user_ack = getattr(args, "user_ack", None)
     if user_ack == repo:
-        print(f"[승인 감사] worktree add: 사용자 승인 토큰이 repo {repo!r}에 값-결속됨.")
+        print(f"[승인 감사] worktree add: 사용자 승인 토큰이 repo {repo!r} 값에 연결됨.")
         return True
     mismatch = (
-        f" 제공된 값 {user_ack!r}은 repo {repo!r}에 결속되지 않았다."
+        f" 제공된 값 {user_ack!r}은 repo {repo!r} 값에 연결되지 않았다."
         if user_ack is not None
         else ""
     )
@@ -252,11 +252,11 @@ def cmd_worktree_prune_stale(
     pruned = pm_engine.app.worktree_pool.prune_stale_leases(home)
     if pruned:
         print(
-            f"✓ dangling 장부 엔트리 {len(pruned)}개 정리 (worktree 부재·이미 사라진 기록): "
+            f"✓ dangling 기록 항목 {len(pruned)}개 정리 (worktree 부재·이미 사라진 기록): "
             f"{', '.join(pruned)}"
         )
     else:
-        print("정리할 dangling 엔트리 없음 (worktree 부재 장부 엔트리 0).")
+        print("정리할 dangling 항목 없음 (worktree 부재 기록 항목 0).")
     return 0
 
 
@@ -270,7 +270,7 @@ def _require_worktree_remove_user_ack(args: argparse.Namespace) -> bool:
     slot = args.slot
     user_acks = list(getattr(args, "user_ack", None) or [])
     if slot in user_acks:
-        print(f"[승인 감사] worktree remove: 사용자 승인 토큰이 슬롯 {slot!r}에 값-결속됨.")
+        print(f"[승인 감사] worktree remove: 사용자 승인 토큰이 슬롯 {slot!r} 값에 연결됨.")
         return True
     mismatch = (
         f" 제공된 값 {user_acks!r}에 슬롯 {slot!r}이 없다."
@@ -352,7 +352,7 @@ def cmd_worktree_remove(
             print(
                 f"[중단] 슬롯 {args.slot!r} 의 트리 {exc.path} 는 git 이 worktree 로 등록하지 않았다 — "
                 "커밋 안 한 변경을 물을 수 없어 엔진이 지우지 않는다. 사용자가 그 경로를 직접 확인·"
-                "삭제한 뒤 `pm-config worktree prune-stale` 로 장부를 정리하라.",
+                "삭제한 뒤 `pm-config worktree prune-stale` 로 슬롯 대여 기록을 정리하라.",
                 file=sys.stderr,
             )
         return 1
@@ -362,8 +362,8 @@ def cmd_worktree_remove(
 
     if result is None:
         print(
-            f"✓ 슬롯 {args.slot!r} 장부에 없음 — 이미 정리됨(무해). "
-            "orphan worktree(git 측·장부 미등록)는 `git worktree remove` 로 사용자가."
+            f"✓ 슬롯 {args.slot!r}: 대여 기록에 없음 — 이미 정리됨(무해). "
+            "orphan worktree(git 측·기록 미등록)는 `git worktree remove` 로 사용자가."
         )
         return 0
 
@@ -371,12 +371,12 @@ def cmd_worktree_remove(
     # (reviewer should-fix·티켓 결정 §활성 리스 문구 정합). 다른 세션이 쓰던 슬롯일 수 있음을 stderr 로.
     if getattr(result, "forced_state", None):
         print(
-            f"⚠ 활성(state={result.forced_state}) 슬롯 {args.slot!r} 을 강제 회수 "
+            f"⚠ 활성(state={result.forced_state}) 슬롯 {args.slot!r} 을 강제 반납 "
             "(--force override — 다른 세션이 사용 중이었을 수 있다).",
             file=sys.stderr,
         )
 
-    print(f"✓ 슬롯 {args.slot!r} 제거 — worktree remove + 장부 엔트리 삭제(빈 번호 재사용 가능).")
+    print(f"✓ 슬롯 {args.slot!r} 제거 — worktree remove + 기록 항목 삭제(빈 번호 재사용 가능).")
     # git 이 등록만 지우고 트리를 남긴 형상(읽기 전용 잔재 등) — 엔진이 마저 지웠음을 고지한다.
     if result.tree_cleaned:
         print("  git 이 등록만 지우고 남긴 디렉터리 잔재를 엔진이 마저 정리했다.")
@@ -413,7 +413,7 @@ def cmd_set_test_cmd(
         lease = pm_engine.app.worktree_pool.set_test_cmd(home, slot, normalized)
     except KeyError:
         print(
-            f"[중단] 슬롯 {slot!r} 에 대한 리스가 없다 — 새 슬롯이 필요하면 먼저 사용자에게 "
+            f"[중단] 슬롯 {slot!r} 에 대한 대여가 없다 — 새 슬롯이 필요하면 먼저 사용자에게 "
             "생성 승인을 요청하라. 승인한 사용자만 대상 repo와 같은 `--user-ack <repo>`로 "
             "`worktree add`를 직접 실행한다(세션 자동 실행 금지).",
             file=sys.stderr,
@@ -422,7 +422,7 @@ def cmd_set_test_cmd(
     if lease.test_cmd:
         print(f"✓ 슬롯 {slot} 빌드/테스트 명령 설정: {lease.test_cmd!r} (이 슬롯 회귀명령).")
     else:
-        print(f"✓ 슬롯 {slot} 빌드/테스트 명령 해제 — repo areas/local.conf 로 폴백(현행).")
+        print(f"✓ 슬롯 {slot} 빌드/테스트 명령 해제 — repo areas/local.conf 를 대신 씀(현행).")
     return 0
 
 
@@ -457,7 +457,7 @@ def cmd_release(
             )
             return 1
         if lease is None:
-            print(f"✓ 슬롯 {args.slot!r} 장부에 없음 — 이미 정리됨(무해).")
+            print(f"✓ 슬롯 {args.slot!r}: 대여 기록에 없음 — 이미 정리됨(무해).")
         else:
             print(f"✓ 슬롯 {args.slot!r} 강제 반납(idle 화).")
         return 0
@@ -466,7 +466,7 @@ def cmd_release(
     try:
         pm_engine.app.worktree_pool.release(home, args.slot, owner_task=owner_task)
     except KeyError:
-        print(f"[중단] 슬롯 {args.slot!r} 에 대한 리스가 없다.", file=sys.stderr)
+        print(f"[중단] 슬롯 {args.slot!r} 에 대한 대여가 없다.", file=sys.stderr)
         return 1
     except pool_store.ReadonlySlotNotLeasable as exc:
         print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — 반납 대상 아님.
