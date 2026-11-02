@@ -82,7 +82,7 @@
 # pm-retired-path: .project_manager/tools/external_review.py -> .project_manager/tools/additional_reviewer.py
 # pm-retired-path: .project_manager/tools/gate_snapshot.py -> .project_manager/tools/pm_delegate.py
 # pm-retired-path: .claude/precompact_capture_hook.sh -> .project_manager/tools/pm_log.py
-# worktree_pool: multi-PM worktree 풀/슬롯 대여 엔진. 대여 기록(.local/worktree-leases.json)는 per-clone(manifest 밖)
+# worktree_pool: multi-PM worktree 풀/슬롯 대여 엔진. 대여 기록(.local/worktree-leases.json)은 per-clone(manifest 밖)
 .project_manager/tools/worktree_pool.py
 # pm_config: multi-PM 셋업/관리 파사드 디스패처. 루트 forwarder pm-config.sh/.cmd 는
 #   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 와 같은 구조·manifest 밖)

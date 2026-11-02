@@ -111,4 +111,4 @@ touch 코드 담당 `domain/` 페이지(`covers:` 글롭 매칭)가 있으면 PM
 
 ## 상속 경계
 
-`.project_manager/wiki/pm_role.md` §"금지 (PM·사용자 단독 불가)"·§"사용자 승인"를 상속한다. 외부 비가역 행위·미션 변경·보호 영역 수정은 권한 밖이다. 보호 영역은 `.project_manager/wiki/pm_role.local.md` §보호 영역을 따른다. 검토는 code-reviewer, board/문서 동기화는 orchestrator가 한다.
+`.project_manager/wiki/pm_role.md` §"금지 (PM·사용자 단독 불가)"·§"사용자 승인"을 상속한다. 외부 비가역 행위·미션 변경·보호 영역 수정은 권한 밖이다. 보호 영역은 `.project_manager/wiki/pm_role.local.md` §보호 영역을 따른다. 검토는 code-reviewer, board/문서 동기화는 orchestrator가 한다.

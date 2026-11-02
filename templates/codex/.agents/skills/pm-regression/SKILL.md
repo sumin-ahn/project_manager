@@ -1,6 +1,6 @@
 ---
 name: pm-regression
-description: "비차단 백그라운드 회귀 — full 테스트를 run_in_background 로 pre-warm + 완료 알림, red 면 ticket 플래그. push 통과 조건(pre-push 훅)가 green 검증(`tests/` 가 있는 코드 repo 만 · PM 홈 push 는 lint 통과 조건만). dev 빠른 루프는 --ticket touches 스코프. Triggers: '회귀 돌려', '백그라운드 테스트', 'regression', 'pm-regression'."
+description: "비차단 백그라운드 회귀 — full 테스트를 run_in_background 로 pre-warm + 완료 알림, red 면 ticket 플래그. push 통과 조건(pre-push 훅)이 green 검증(`tests/` 가 있는 코드 repo 만 · PM 홈 push 는 lint 통과 조건만). dev 빠른 루프는 --ticket touches 스코프. Triggers: '회귀 돌려', '백그라운드 테스트', 'regression', 'pm-regression'."
 audience: pm-internal
 ---
 

@@ -6,7 +6,7 @@ audience: pm-internal
 
 # $pm-release — 릴리즈 절차 (순서 고정·명령어化)
 
-기존 엔진 CLI(`board.py live-test record/check` · `pm_update`=[[pm-update]])와 `git`/`gh`를 순서대로 호출한다. **공개 main push는 사용자 승인를 유지하며 이 스킬이 대신 실행하지 않는다.** 청중은 릴리즈를 내는 PM(`pm-internal`)이다.
+기존 엔진 CLI(`board.py live-test record/check` · `pm_update`=[[pm-update]])와 `git`/`gh`를 순서대로 호출한다. **공개 main push는 사용자 승인을 유지하며 이 스킬이 대신 실행하지 않는다.** 청중은 릴리즈를 내는 PM(`pm-internal`)이다.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
@@ -30,7 +30,7 @@ live-test record 전에 PM 홈을 worktree canonical에 동기해 stale import �
 
 push 대상 rev의 선언 플랫폼 전체와 릴리즈 라이브 시험을 실측·기록한다. qa.platforms가 선언됐으면 같은 rev의 core green을 먼저 확인하고 플랫폼을 선언 순서대로 실제 실행한다. 플랫폼 red/미실행·수집·HEAD·명령·좌표 불일치는 라이브 테스트 전에 거부한다. 이전 green을 새 실패가 가리지 않게 무효화하며 live-test check도 현재 선언과 같은 rev의 core·플랫폼 결과를 재검증한다.
 
-Windows 전체 검증은 모든 구현·통합이 끝난 릴리즈 직전에 실행한다. 개발 회귀는 현재 플랫폼의 test_cmd만 백그라운드로 실행하고 다른 작업 트리의 개발을 계속한다. 검증 트리를 동결하고 완료·통합 시 결과를 확인한다. 새 작업 큐나 플랫폼 선택 옵션을 추가하지 않는다. 부트스트랩 0단계가 main 직접 checkout·origin-추적 슬롯 진입을 거부하므로 main 참조 기준면은 readonly 공유 슬롯(detached·origin/main)이다. 이 슬롯은 대여 없음(unleased)라 `--repo --slot`로 해소되지 않으므로 `--cwd <readonly 슬롯 절대경로>`로 핀한다.
+Windows 전체 검증은 모든 구현·통합이 끝난 릴리즈 직전에 실행한다. 개발 회귀는 현재 플랫폼의 test_cmd만 백그라운드로 실행하고 다른 작업 트리의 개발을 계속한다. 검증 트리를 동결하고 완료·통합 시 결과를 확인한다. 새 작업 큐나 플랫폼 선택 옵션을 추가하지 않는다. 부트스트랩 0단계가 main 직접 checkout·origin-추적 슬롯 진입을 거부하므로 main 참조 기준면은 readonly 공유 슬롯(detached·origin/main)이다. 이 슬롯은 대여 없음(unleased)이라 `--repo --slot`로 해소되지 않으므로 `--cwd <readonly 슬롯 절대경로>`로 핀한다.
 
 ```bash
 # main-참조 기준면 = readonly 슬롯(detached·origin/main 추적). PM_ORCH_LIVE_RELEASE=1 필수.

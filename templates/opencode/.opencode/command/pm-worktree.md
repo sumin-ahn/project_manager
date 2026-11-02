@@ -1,6 +1,6 @@
 ---
 name: pm-worktree
-description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기·슬롯 git 구성 조회(status·단일/일괄·submodule pin/drift·dirty)·슬롯 부모 브랜치 rebase(단일/일괄·선-검사·충돌 그대로+loud·슬롯 대여 기록 원자 갱신·자동 rebase 없음)·readonly 공유 슬롯 갱신(refresh)·슬롯 lease git 스냅 명시 재동기(record — 0단계 diverged 정당 판단 시)·기존 브랜치 전환 + 스냅 재기록 원자(switch). backbone CLI .project_manager/tools/worktree_pool.py (dev/sync/status/rebase/refresh/record/switch) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', 'worktree status', '슬롯 rebase', 'worktree rebase', '슬롯 부모 변경', 'readonly 슬롯 갱신', 'refresh', '슬롯 재동기', 'record', '슬롯 브랜치 전환', 'worktree switch', 'switch', 'main-참조 해소', 'pm-worktree'."
+description: "worktree/submodule 운영중 관리 — submodule 을 dev 브랜치로 지정(pool selective resync 로부터 보호)·drift 난 detached submodule 을 pin 으로 수동 재동기·슬롯 git 구성 조회(status·단일/일괄·submodule pin/drift·dirty)·슬롯 부모 브랜치 rebase(단일/일괄·선-검사·충돌 그대로+loud·슬롯 대여 기록 원자 갱신·자동 rebase 없음)·readonly 공유 슬롯 갱신(refresh)·슬롯 lease git 상태 기록 명시 재동기(record — 0단계 diverged 정당 판단 시)·기존 브랜치 전환 + 상태 다시 기록 원자(switch). backbone CLI .project_manager/tools/worktree_pool.py (dev/sync/status/rebase/refresh/record/switch) thin wrapper. Triggers: 'submodule dev 지정', 'submodule 작업 중 선언', 'worktree submodule drift 재동기', 'worktree 브랜치 관리', 'worktree status', '슬롯 rebase', 'worktree rebase', '슬롯 부모 변경', 'readonly 슬롯 갱신', 'refresh', '슬롯 재동기', 'record', '슬롯 브랜치 전환', 'worktree switch', 'switch', 'main-참조 해소', 'pm-worktree'."
 audience: pm-internal
 ---
 
@@ -34,7 +34,7 @@ audience: pm-internal
   HEAD를 옮기며, dirty면 조용히 reset하지 않고 거부한다.
 - 부트스트랩 0단계가 보호 브랜치 직접 checkout 또는 보호 브랜치 원격 origin-추적으로 진입을
   거부하면 안내된 `pm-config task branch <명의> <slot> <새 브랜치> --from <부모>`으로 작업
-  브랜치를 만든다. 슬롯 안 새 브랜치는 이 명령으로만 만들며 부모와 도착 스냅이 함께 기록된다.
+  브랜치를 만든다. 슬롯 안 새 브랜치는 이 명령으로만 만들며 부모와 도착 상태 기록이 함께 기록된다.
 
 ## 정체성 / 슬롯
 
@@ -70,7 +70,7 @@ python3 .project_manager/tools/worktree_pool.py rebase --task <task> [--onto <br
 # readonly 공유 슬롯 갱신 (fetch → detached HEAD 이동 + submodule 재동기·dirty=거부+loud)
 python3 .project_manager/tools/worktree_pool.py refresh <slot> [--onto <branch>]
 
-# 슬롯 도착 스냅(lease.git) 명시 재동기 (live 로 재기록·0단계 diverged 정당 판단 시)
+# 슬롯 도착 상태 기록(lease.git) 명시 재동기 (live 로 재기록·0단계 diverged 정당 판단 시)
 python3 .project_manager/tools/worktree_pool.py record <slot>
 
 # 기존 브랜치 전환 + 대여 기록의 브랜치·HEAD 다시 적기 (원자·보호브랜치 거부·새 브랜치는 pm-config task branch)
@@ -111,10 +111,10 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   신호이므로 reset하지 않고 loud 거부한다. 기준 미해소 또는 non-readonly 대상은 rc 1이다.
   readonly 슬롯의 `rebase`/`dev`/`sync`·`release` 는 엔진이 거부하고(대여 대상도 아니다)
   갱신은 `refresh`만 허용한다.
-- `record`: `<slot>` 위치인자. 현재 live branch·head·recorded_at으로 `lease.git` 도착 스냅만 명시
+- `record`: `<slot>` 위치인자. 현재 live branch·head·recorded_at으로 `lease.git` 도착 상태 기록만 명시
   재기록한다(부모 기록은 건드리지 않는다). 부트스트랩 0단계의
   "기록↔live diverged"가 **정당한 의도적 전환·릴리즈 진행 등이라고 사용자가 판단했을 때만** 쓴다.
-  엔진은 자동 재기록하지 않는다. 대여 기록 미등록 슬롯·스냅 불가(슬롯 경로 부재 등)는 조용한 무변경 없이
+  엔진은 자동 재기록하지 않는다. 대여 기록 미등록 슬롯·상태 기록 불가(슬롯 경로 부재 등)는 조용한 무변경 없이
   rc 1이다. 아직 전환 전이면 `record` 대신 `switch`로 전환과 재기록을 함께 한다.
 - `switch`: `<slot> <branch>`로 슬롯을 **기존** 브랜치로 전환하고 같은 호출에서 대여 기록의 branch·head·
   recorded_at을 원자 재기록한다. 없는 브랜치는 만들지 않고 거부한다. 새 브랜치는
@@ -136,8 +136,8 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
 
   브랜치 인자는 git의 실 브랜치명으로 정규화한 뒤 검사·전환·기록에 일관 적용한다. revspec
   (`@{-1}`)도 실명으로 확장하고, 그 실명이 보호목록이면 거부한다. 원문과 다르게 해소되면 "입력
-  `@{-1}` → `main` 으로 해소됨"을 loud 표시한다. 전환 후 대여 기록 IO/권한/락 오류 등으로 스냅 재기록이
-  실패하면 성공으로 위장하지 않고 loud 안내하며, `record <slot>`으로 스냅만 맞춘다. 그대로 두면
+  `@{-1}` → `main` 으로 해소됨"을 loud 표시한다. 전환 후 대여 기록 IO/권한/락 오류 등으로 상태 다시 기록이
+  실패하면 성공으로 위장하지 않고 loud 안내하며, `record <slot>`으로 상태 기록만 맞춘다. 그대로 두면
   다음 0단계가 diverged로 막힌다.
 
 ## 이번 호출 인자
