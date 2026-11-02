@@ -11,7 +11,7 @@ limit(엔진 고정 4)을 넘기면 실행 *전에* 거부(전용 rc
 
 T-0583 이 같은 장부에 두 축을 더한다: 라운드별 **산출**(`rounds` — 판정 rc·must-fix 수) append 와
 게이트별 상한과 **별개**인 wave 단위 총 예산(`wave` 절 · local.conf `additional_reviewer.session_budget`·
-기본 24 · 소진 시 같은 rc 4 · `--reset-session-budget` 로만 재개). 조회면은 `--rounds-report`. 기록은 무조건
+기본 24 · 소진 시 같은 rc 4 · `--reset-session-budget` 으로만 재개). 조회면은 `--rounds-report`. 기록은 무조건
 (파싱 불가는 null·리뷰 비차단)이고 hard 거부는 예산 축뿐이다.
 
 hermetic: REPO 를 tmp 로 monkeypatch 해 장부가 tmp `.local/` 에 격리되게 하고(`_round_ledger_path`
@@ -1519,7 +1519,7 @@ def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
 
 def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
         external, monkeypatch, tmp_path, capsys):
-    """wave 예산은 게이트를 가로질러 합계로 센다 — 소진 시 rc 4·`--reset-session-budget` 로만 재개 (DoD)."""
+    """wave 예산은 게이트를 가로질러 합계로 센다 — 소진 시 rc 4·`--reset-session-budget` 으로만 재개 (DoD)."""
     conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for gate in ("T-0310", "T-0311"):         # 서로 다른 게이트 = 각자 라운드 상한은 여유

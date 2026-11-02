@@ -200,7 +200,7 @@ _MACHINE_MIRROR_RE = re.compile(
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 호출을 이 예산으로 묶는다. 기본 24 는
 # 게이트당 4라운드 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
 # `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf
-# additional_reviewer.session_budget 로 조정 가능.
+# additional_reviewer.session_budget 으로 조정 가능.
 
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
 # 실행 전 거부라 리뷰어는 호출되지 않는다(과금 없음). wave 예산 소진도 같은 축(호출 전

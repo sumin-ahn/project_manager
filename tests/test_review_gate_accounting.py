@@ -8,7 +8,7 @@
   ① 자동 유도 — `--review-ticket` 미지정 `--ticket` 실행은 게이트를 그 티켓으로 유도해 라운드·wave 를
      기록한다(명시 `--review-ticket` 이 항상 우선·유도 사실은 stderr 1줄). 조회(`--rounds-report`)·기록
      (`--resolve-review`) 면은 유도 대상이 아니다 — 거기서 `--review-ticket` 은 필터·무시 목록이다.
-  ② opt-out — 회계 밖 자문 실행은 명시 `--no-review-ticket` 로만 열리고, 무기록·비회계 사실을 loud 로
+  ② opt-out — 회계 밖 자문 실행은 명시 `--no-review-ticket` 으로만 열리고, 무기록·비회계 사실을 loud 로
      표기한다. `--review-ticket` 과 동시 지정은 부작용 0 지점에서 거부한다.
   ③ 회귀 무변경 — 명시 `--review-ticket` 실행은 종전 그대로고 폐지 플래그는 파서에서 거부된다.
 
