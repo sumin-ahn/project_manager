@@ -1,10 +1,10 @@
-"""delegate 설정 표면 — board.py init 산출 + board lint advisory 배선 (T-0446·T-0767).
+"""delegate 설정 범위 — board.py init 산출 + board lint advisory 연결 (T-0446·T-0767).
 
 pm_delegate 판정 로직(lint_same_model)의 단위는 test_pm_delegate.py 에 있다. 이 파일은 board 쪽
-표면을 hermetic 하게 검증한다:
+범위를 hermetic 하게 검증한다:
   ① `board.py init` 이 쓰는 local.conf 에는 **실값만** 있다 — 위임 키 카탈로그·설명 블록은
      출하 문서가 소유하고, 재실행은 기존 사용자 값을 비파괴로 보존한다(T-0767).
-  ② `board.py lint`(lint_delegate)가 pm_delegate 동일-모델 경고를 advisory 로 표면화하고 rc(gate)
+  ② `board.py lint`(lint_delegate)가 pm_delegate 동일-모델 경고를 advisory 로 드러내고 rc(--blocking)
      에 기여하지 않는다(never-block).
 
 hermetic: board.py 모듈 전역(REPO·LOCAL_CONF·AREAS_FILE 등)이 import 시점에 실 repo 절대경로로
@@ -74,7 +74,7 @@ def _init_args(prefix=None, area=None, owner=None, repo=None, slot=None, user=No
                               repo=repo, slot=slot, user=user)
 
 
-# ── ② board lint advisory 배선 ───────────────────────────────────────────────
+# ── ② board lint advisory 연결 ───────────────────────────────────────────────
 
 def test_lint_delegate_surfaces_advisory(board, monkeypatch):
     """dev/reviewer 동일-모델 시 board lint_delegate 가 advisory finding 을 낸다(kind 등재·never-block)."""
@@ -87,7 +87,7 @@ def test_lint_delegate_surfaces_advisory(board, monkeypatch):
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert kind == "delegate-same-model"
-    assert kind in board_lint._ADVISORY_LINT_KINDS               # --gate 종료코드 비기여(never-block)
+    assert kind in board_lint._ADVISORY_LINT_KINDS               # --blocking 종료코드 비기여(never-block)
     assert "generate≠evaluate" in detail
 
 
@@ -108,7 +108,7 @@ def _same_model_conf() -> dict:
 
 
 def test_lint_tickets_wires_delegate(board, monkeypatch):
-    """실제 lint_tickets() 가 delegate 경고를 포함한다(배선 직접 검증·blocking 필터 재구현 아님)."""
+    """실제 lint_tickets() 가 delegate 경고를 포함한다(연결 직접 검증·blocking 필터 재구현 아님)."""
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
     monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # 실 DOMAIN_DIR 스캔 격리.
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
@@ -116,15 +116,15 @@ def test_lint_tickets_wires_delegate(board, monkeypatch):
     assert "delegate-same-model" in kinds
 
 
-def test_cmd_lint_gate_delegate_is_advisory_exit0(board, monkeypatch, capsys):
-    """실제 cmd_lint(--gate) 는 delegate 동일-모델 경고만 있을 때 종료코드 0(advisory·never-block)."""
+def test_cmd_lint_blocking_delegate_is_advisory_exit0(board, monkeypatch, capsys):
+    """실제 cmd_lint(--blocking) 는 delegate 동일-모델 경고만 있을 때 종료코드 0(advisory·never-block)."""
     monkeypatch.setattr(conf_store, "local_config", lambda _home: _same_model_conf())
-    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # advisory 격리(gate 산술만).
+    monkeypatch.setattr(doc_lint, "lint_domain", lambda home: [])  # advisory 격리(--blocking 산술만).
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [])
     rc = board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True))
-    assert rc == 0                                          # block_count 0 → gate 통과
+    assert rc == 0                                          # block_count 0 → --blocking 통과
     out = capsys.readouterr().out
-    assert "delegate-same-model" in out                    # 보고엔 표면화(가시성 유지)
+    assert "delegate-same-model" in out                    # 보고엔 드러냄(가시성 유지)
 
 
 
@@ -149,7 +149,7 @@ def test_init_conf_carries_values_only(board):
     text = pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8")
     for marker in _EXPLANATION_MARKERS:
         assert marker not in text, f"conf 에 설명 블록 잔존: {marker}"
-    # 활성 키는 전부 실값이다 — 위임 축은 한 줄도 없다(기본 허용이라 기록할 값이 없다).
+    # 활성 키는 전부 실값이다 — 위임 키는 한 줄도 없다(기본 허용이라 기록할 값이 없다).
     parsed = conf_store.local_config(pm_paths.home_at(board.REPO))
     assert not [key for key in parsed if key.startswith("delegate.")], parsed
     for key in ("runtime.py", "test.cmd", "project.name",
@@ -160,7 +160,7 @@ def test_init_conf_carries_values_only(board):
 def test_init_conf_has_no_commented_out_key_examples(board):
     """주석 처리된 `KEY=value` 예시가 0이다 — 예시는 값이 아니라 문서다.
 
-    주석 예시는 "설정 0개인 설명"이라 실값과 모순돼도 아무 게이트가 못 본다. 카탈로그가
+    주석 예시는 "설정 0개인 설명"이라 실값과 모순돼도 아무 검사가 못 본다. 카탈로그가
     문서로 갔으므로 conf 의 주석은 파일 정체를 밝히는 머리말뿐이어야 한다.
     """
     board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args())

@@ -24,6 +24,6 @@ def test_command_classifications_stay_disjoint():
     assert 'claim' in m and 'show' in r
     assert s == frozenset({'regression', 'live-test', 'git-grant', 'hook-context', 'hook-tool'})
 
-def test_no_todo_warning_without_a_ledger_keeps_no_judgment(tmp_path):
+def test_no_todo_warning_without_a_records_keeps_no_judgment(tmp_path):
     h=pm_paths.home_at(tmp_path / 'a')
     assert engine_guard._no_open_todo_judgment(h, 'session') is None

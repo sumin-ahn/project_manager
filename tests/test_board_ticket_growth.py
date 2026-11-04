@@ -1,7 +1,7 @@
 """티켓 라운드 예약(section-add)·조회(show)와 위임 tier의 실제 CLI/board-git 계약.
 
 section-add 는 명세 파일을 건드리지 않는다 — 쓰는 것은 `tickets/rounds/<티켓>/NN-<role>.md`
-하나뿐이고, 그래서 lifecycle writer 와의 경합 축은 tier(in-place frontmatter writer)만 남는다.
+하나뿐이고, 그래서 lifecycle writer 와의 경합 대상은 tier(in-place frontmatter writer)만 남는다.
 """
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ _VALID_BODY = (
     "## 결정\n라운드 파일 하나로 왕복한다.\n\n"
     "## 설계\n"
     "- **경계 실측**: 성장 테스트 픽스처\n"
-    "- **불변식**: 이 파일의 축 밖\n"
+    "- **불변식**: 이 파일의 범위 밖\n"
     "- **표면 상한**: 픽스처 1건\n"
     "- **테스트 전략**: 정상·실패 경로\n\n"
     "## 완료 조건 (Definition of Done)\n- [ ] 실제 동작 검증\n\n"
@@ -160,8 +160,8 @@ def _seed_ticket(board_dir: Path, tid: str, status: str, *, tier: str | None = N
     return path
 
 
-def _write_cluster_ledger(board_dir: Path, cluster: str, tickets: list[str]) -> Path:
-    """묶음 장부 1건 — 발행이 만드는 크기 1 장부와 같은 자리·같은 키."""
+def _write_cluster_records(board_dir: Path, cluster: str, tickets: list[str]) -> Path:
+    """묶음 기록 1건 — 발행이 만드는 크기 1 묶음 기록과 같은 자리·같은 키."""
     directory = board_dir / "tickets" / "clusters"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{cluster}.md"
@@ -216,7 +216,7 @@ def test_section_add_reserves_one_round_file_per_call_and_keeps_the_spec_bytes(b
     """역할 3종·label override·같은 역할 재호출이 4개 라운드 파일 + 4개 commit 으로 누적된다.
 
     명세 파일은 **바이트가 그대로**여야 한다 — 라운드는 명세 밖 파일이고, 예약이 명세를 다시
-    쓰면 lifecycle writer 와 같은 자리를 두 writer 가 만지는 옛 형상으로 되돌아간다.
+    쓰면 lifecycle writer 와 같은 자리를 두 writer 가 만지는 옛 구성으로 되돌아간다.
     """
     board, board_dir, bare = board_env
     path = _seed_ticket(board_dir, "T-1001", "open")
@@ -252,8 +252,8 @@ def test_section_add_reserves_one_round_file_per_call_and_keeps_the_spec_bytes(b
 
 
 @requires_git
-def test_section_add_seed_is_the_shared_seam_render(board_env):
-    """시드 bytes 의 단일 진실은 사이드카 seam 이다 (board 가 자기 골격을 따로 렌더하지 않는다)."""
+def test_section_add_form_is_the_shared_render(board_env):
+    """빈 양식 bytes 의 단일 진실은 사이드카 공용 함수다 (board 가 자기 빈 양식을 따로 렌더하지 않는다)."""
     board, board_dir, _bare = board_env
     path = _seed_ticket(board_dir, "T-1014", "open")
 
@@ -292,7 +292,7 @@ def test_section_add_refuses_a_developer_round_until_the_pm_judgment_is_written(
             "fix_contract": {
                 "location": ".project_manager/tools/board.py:cmd_section_add",
                 "failure": "PM disposition 없이 developer 라운드가 열린다.",
-                "design": "accepted-only delta가 확정될 때까지 준비를 거부한다.",
+                "design": "수락한 지적만 담은 목록이 확정될 때까지 준비를 거부한다.",
                 "test": "tests/test_board_ticket_growth.py의 판정 미기입 회귀",
                 "command": "python3 -m pytest tests/test_board_ticket_growth.py -q",
                 "expected": "passed",
@@ -323,14 +323,14 @@ def test_section_add_refuses_a_developer_round_until_the_pm_judgment_is_written(
 
 @requires_git
 def test_show_assembles_the_spec_and_the_rounds_in_ordinal_order(board_env, capsys):
-    """조회는 명세 전문 + 라운드 파일을 순번 순으로 조립하고 미회수 개수를 낸다."""
+    """조회는 명세 전문 + 라운드 파일을 순번 순으로 조립하고 돌려받지 않은 라운드 개수를 낸다."""
     board, board_dir, _bare = board_env
     path = _seed_ticket(board_dir, "T-1015", "claimed")
     assert board.main(["section-add", "T-1015", "--role", "developer"]) == 0
     assert board.main(["section-add", "T-1015", "--role", "code-reviewer"]) == 0
-    harvested = _rounds_dir(board_dir, "T-1015") / "01-developer.md"
-    harvested.write_text(
-        harvested.read_text(encoding="utf-8") + "\n실제 구현 산출.\n", encoding="utf-8")
+    collected = _rounds_dir(board_dir, "T-1015") / "01-developer.md"
+    collected.write_text(
+        collected.read_text(encoding="utf-8") + "\n실제 구현 산출.\n", encoding="utf-8")
 
     assert board.main(["show", "T-1015"]) == 0
 
@@ -344,8 +344,8 @@ def test_show_assembles_the_spec_and_the_rounds_in_ordinal_order(board_env, caps
     assert "돌려받지 않은 라운드 1건: 02-code-reviewer.md" in out
 
 
-def _harvested_review_text(finding_id: str = "F-001") -> str:
-    """회수된 리뷰 라운드 본문 — 자리표시자가 아닌 값이 든 `pm-review-v1` 블록 하나."""
+def _collected_review_text(finding_id: str = "F-001") -> str:
+    """돌려받은 리뷰 라운드 본문 — 자리표시자가 아닌 값이 든 `pm-review-v1` 블록 하나."""
     block = json.dumps({
         "version": 2,
         "findings": [{
@@ -365,11 +365,11 @@ def _harvested_review_text(finding_id: str = "F-001") -> str:
 
 
 @requires_git
-def test_show_keeps_marking_a_parallel_round_unharvested(board_env, capsys):
-    """같은 역할 병렬 2라운드 — 01 회수 뒤에도 손대지 않은 02 는 미회수로 보인다.
+def test_show_keeps_marking_a_parallel_round_uncollected(board_env, capsys):
+    """같은 역할 병렬 2라운드 — 01 을 돌려받은 뒤에도 손대지 않은 02 는 돌려받지 않은 것으로 보인다.
 
     조회의 산출 없음 판정이 다른 라운드의 현재 내용에 기대면 02 가 산출 있는 것으로 읽혀
-    `(산출 없음)`·`미회수` 가 사라지고 요약이 골격을 파싱한다.
+    `(산출 없음)`·`돌려받지 않은 라운드` 표시가 사라지고 요약이 빈 양식을 파싱한다.
     """
     board, board_dir, _bare = board_env
     _seed_ticket(board_dir, "T-1018", "claimed")
@@ -377,7 +377,7 @@ def test_show_keeps_marking_a_parallel_round_unharvested(board_env, capsys):
         assert board.main(["section-add", "T-1018", "--role", "code-reviewer"]) == 0
     second_before = (_rounds_dir(board_dir, "T-1018") / "02-code-reviewer.md").read_bytes()
     first = _rounds_dir(board_dir, "T-1018") / "01-code-reviewer.md"
-    first.write_text(_harvested_review_text("F-001"), encoding="utf-8", newline="")
+    first.write_text(_collected_review_text("F-001"), encoding="utf-8", newline="")
 
     assert board.main(["show", "T-1018"]) == 0
 
@@ -517,17 +517,17 @@ def test_draft_section_add_rejects_non_architect_before_write(board_env, capsys,
     assert "draft×architect" in capsys.readouterr().err
 
 
-def _assert_section_add_refuses_the_ledger_ticket(
+def _assert_section_add_refuses_the_record_ticket(
     board_env, capsys, *, status: str, role: str, tid: str,
 ) -> None:
-    """장부가 있는 티켓에 `section-add` → rc=1 · 첫 쓰기 앞 거부 · 처방 출력.
+    """묶음 기록이 있는 티켓에 `section-add` → rc=1 · 첫 쓰기 앞 거부 · 해결 방법 출력.
 
-    형상(상태·역할)마다 테스트 하나씩 부른다 — 단언은 이 자리 하나가 소유한다.
+    경우(상태·역할)마다 테스트 하나씩 부른다 — 단언은 이 자리 하나가 소유한다.
     """
     board, board_dir, _bare = board_env
     path = (_write_ticket(board_dir, tid, status) if status == "draft"
             else _seed_ticket(board_dir, tid, status))
-    _write_cluster_ledger(board_dir, f"C-{tid}", [tid])
+    _write_cluster_records(board_dir, f"C-{tid}", [tid])
     before_spec = path.read_bytes()
     before_head = _head(board_dir)
 
@@ -541,44 +541,44 @@ def _assert_section_add_refuses_the_ledger_ticket(
 
 
 @requires_git
-def test_section_add_refuses_a_ticket_that_has_a_cluster_ledger(board_env, capsys):
-    """장부가 있는 티켓의 라운드는 위임 준비만 연다 — 고정 예산을 우회하는 표면이 없다.
+def test_section_add_refuses_a_ticket_that_has_a_cluster_records(board_env, capsys):
+    """묶음 기록이 있는 티켓의 라운드는 위임 준비만 연다 — 고정 예산을 우회하는 명령이 없다.
 
     변경 전에는 이 명령이 예산 판정을 거치지 않고 open 티켓의 라운드를 열어, 고정 수열 밖에서
     라운드가 늘어났다. 거부는 첫 쓰기 앞이라 라운드 파일도 commit 도 없다.
     """
-    _assert_section_add_refuses_the_ledger_ticket(
+    _assert_section_add_refuses_the_record_ticket(
         board_env, capsys, status="open", role="developer", tid="T-1015",
     )
 
 
 @requires_git
-def test_section_add_refuses_a_claimed_ticket_that_has_a_cluster_ledger(
+def test_section_add_refuses_a_claimed_ticket_that_has_a_cluster_records(
     board_env, capsys,
 ):
-    """claimed 도 같은 정의역이다 — 상태가 아니라 장부가 표면을 가른다."""
-    _assert_section_add_refuses_the_ledger_ticket(
+    """claimed 도 같은 정의역이다 — 상태가 아니라 묶음 기록이 명령을 가른다."""
+    _assert_section_add_refuses_the_record_ticket(
         board_env, capsys, status="claimed", role="architect", tid="T-1016",
     )
 
 
 @requires_git
-def test_section_add_refuses_a_ledgered_draft_even_for_architect(board_env, capsys):
-    """장부를 얹은 draft 는 draft×architect 예외로도 열리지 않는다.
+def test_section_add_refuses_a_recorded_draft_even_for_architect(board_env, capsys):
+    """묶음 기록을 얹은 draft 는 draft×architect 예외로도 열리지 않는다.
 
-    `cluster new --tickets` 로 사람이 묶은 draft 가 그 형상이다 — 그 티켓의 라운드 수열도
-    고정 예산이 지배하므로 예약 표면은 위임 준비 하나다.
+    `cluster new --tickets` 로 사람이 묶은 draft 가 그 경우다 — 그 티켓의 라운드 수열도
+    고정 예산이 지배하므로 예약 명령은 위임 준비 하나다.
     """
-    _assert_section_add_refuses_the_ledger_ticket(
+    _assert_section_add_refuses_the_record_ticket(
         board_env, capsys, status="draft", role="architect", tid="T-1017",
     )
 
 
 @requires_git
-def test_section_add_on_a_ledgered_ticket_refuses_before_the_loud_spec_read(
+def test_section_add_on_a_recorded_ticket_refuses_before_the_loud_spec_read(
     board_env, capsys,
 ):
-    """장부 판정이 명세 loud 판독 **앞**이다 — 손상 YAML 도 묶음 소유 거부를 받는다.
+    """묶음 기록 판정이 명세 loud 판독 **앞**이다 — 손상 YAML 도 묶음 소유 거부를 받는다.
 
     정의역 판정은 `load_ticket_soft` 로 읽고 거부하므로 `cmd_section_add` 의 `load_ticket`
     까지 가지 않는다. 두 거부 모두 첫 쓰기 앞 rc=1 이라 갈리는 것은 진단 문구뿐이고,
@@ -590,7 +590,7 @@ def test_section_add_on_a_ledgered_ticket_refuses_before_the_loud_spec_read(
     path.write_text(
         f"---\nid: {tid}\ntitle: 손상: 인용 없는 콜론\nstatus: open\n---\n\n# {tid}\n",
         encoding="utf-8", newline="\n")
-    _write_cluster_ledger(board_dir, f"C-{tid}", [tid])
+    _write_cluster_records(board_dir, f"C-{tid}", [tid])
     before_spec = path.read_bytes()
     before_head = _head(board_dir)
 
@@ -607,14 +607,14 @@ def test_section_add_on_a_ledgered_ticket_refuses_before_the_loud_spec_read(
 def test_section_add_still_opens_a_ledgerless_draft_architect_round(
     board_env, monkeypatch, capsys,
 ):
-    """장부가 없는 draft 는 이 명령이 유일한 예약 표면이다(hard draft 설계 인라인 경로).
+    """묶음 기록이 없는 draft 는 이 명령이 유일한 예약 명령이다(hard draft 설계 인라인 경로).
 
-    남의 장부는 판정 입력이 아니다 — 장부가 하나라도 있으면 막는 판정이면 발행된 티켓 하나가
+    남의 묶음 기록은 판정 입력이 아니다 — 묶음 기록이 하나라도 있으면 막는 판정이면 발행된 티켓 하나가
     board 전체의 draft 설계를 막는다.
     """
     board, board_dir, _bare = board_env
     path = _write_ticket(board_dir, "T-1018", "draft")
-    _write_cluster_ledger(board_dir, "C-other", ["T-1019"])
+    _write_cluster_records(board_dir, "C-other", ["T-1019"])
     before_head = _head(board_dir)
     sync_calls = []
     monkeypatch.setattr(
@@ -701,7 +701,7 @@ def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
     이동한다. lock이 빠지면 lifecycle이 먼저 이동/dump한 뒤 replace가 옛 open path를 다시
     만들어 open+blocked/claimed 중복 또는 기록 유실을 즉시 재현한다.
 
-    section-add 는 이 축의 대상이 아니다 — 명세 파일을 쓰지 않고 자기 라운드 파일만 만든다.
+    section-add 는 이 경합의 대상이 아니다 — 명세 파일을 쓰지 않고 자기 라운드 파일만 만든다.
     """
     growth = "tier"
     if not _has_os_file_lock():
@@ -749,7 +749,7 @@ def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
         ["claim", "T-1008", "--task", _CLAIM_TASK, "--user", "test"]
     )
     if lifecycle == "claim":
-        ensure_product_slot(board, task=_CLAIM_TASK)  # claim 앵커 = task 폴더(T-0962)
+        ensure_product_slot(board, task=_CLAIM_TASK)  # claim 대상 저장소 = task 폴더(T-0962)
 
     def run_growth():
         try:
@@ -850,7 +850,7 @@ def test_strict_claim_confirm_or_rollback_excludes_growth_until_finished(
 
     growth_argv = (["section-add", "T-1009", "--role", "developer"]
                    if growth == "section-add" else ["tier", "T-1009", "hard"])
-    ensure_product_slot(board, task=_CLAIM_TASK)  # claim 앵커 = task 폴더(T-0962)
+    ensure_product_slot(board, task=_CLAIM_TASK)  # claim 대상 저장소 = task 폴더(T-0962)
     claim_argv = ["claim", "T-1009", "--task", _CLAIM_TASK, "--user", "test"]
 
     def run_claim():
@@ -896,7 +896,7 @@ def test_strict_claim_confirm_or_rollback_excludes_growth_until_finished(
         assert fm["tier"] == "hard"
 
     # 최종 index/working tree는 clean. reject branch 이력에는 rollback된 claim commit이 없고,
-    # remote racer + growth만 남는다(HEAD exact anchor는 racer pull/growth commit 때문에 달라진다).
+    # remote racer + growth만 남는다(HEAD exact 기준 커밋은 racer pull/growth commit 때문에 달라진다).
     assert _git(["status", "--porcelain"], board_dir).stdout == ""
     subjects = _git(["log", "--format=%s", f"{head_before}..HEAD"], board_dir).stdout.splitlines()
     if push_outcome == "success":
@@ -1012,7 +1012,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
 
     # 직접 파일 sink 호출자를 코드에서 독립 발견한다. 새 writer가 sink를 부르면 아래 reviewed
     # exception 또는 ticket writer 집합에 명시 분류하기 전까지 equality가 red다. helper 간접 호출은
-    # 한 단계(`cmd_claim`→`_cmd_claim_locked`)만 아래에서 별도 결속한다.
+    # 한 단계(`cmd_claim`→`_cmd_claim_locked`)만 아래에서 별도 연결한다.
     ticket_sinks = {"dump_ticket", "dump_ticket_atomic", "_atomic_write_text", "move_ticket"}
     direct_sink_callers = {
         name for name, fn in functions.items()
@@ -1024,7 +1024,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
         "cmd_idea_new",       # ideas/ 전용, ticket lifecycle 대상 아님.
         "_transition_idea",   # ideas/ open→promoted|killed.
         "cmd_promote_scope",  # decisions/specs frontmatter writer.
-        "dump_cluster",       # 클러스터 장부 writer — 명세 파일이 아니라 묶음 장부를 쓴다.
+        "dump_cluster",       # 묶음 기록 writer — 명세 파일이 아니라 묶음 기록을 쓴다.
     }
     discovered_ticket_writers = direct_sink_callers - reviewed_non_ticket_exceptions
     # section-add 는 없다 — 라운드 예약은 명세 파일을 쓰지 않고 자기 라운드 파일만 만든다.
@@ -1032,7 +1032,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
         "cmd_new", "cmd_promote", "_cmd_claim_locked", "cmd_complete", "cmd_block",
         "cmd_unclaim", "cmd_unblock", "cmd_discard", "cmd_reopen", "cmd_tier", "cmd_design",
         "_migrate_tickets_apply",
-        # 묶음 선언이 멤버 명세의 `cluster` 필드를 박는다(board_lock 안 · `cmd_new` 동형).
+        # 묶음 선언이 멤버 명세의 `cluster` 필드를 박는다(board_lock 안 · `cmd_new` 와 같은 방식).
         "_cmd_cluster_new",
     }
     assert direct_sink_callers & reviewed_non_ticket_exceptions == reviewed_non_ticket_exceptions, (
@@ -1055,7 +1055,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
             call_name(node) for node in ast.walk(locks[0]) if isinstance(node, ast.Call)
         ), f"{name} board_lock 안에서 refresh/board-git 재진입"
 
-    # section-add 는 조회 구간만 board_lock 을 잡고, 채번+생성은 seam 에 **진입하지 않은** 락
+    # section-add 는 조회 구간만 board_lock 을 잡고, 채번+생성은 공용 함수에 **진입하지 않은** 락
     # 컨텍스트를 넘겨 그쪽이 잡는다(board_lock 은 재진입이 없다).
     section_add = functions["cmd_section_add"]
     assert len(lock_withs(section_add, "board_lock")) == 1, "조회 구간 락 경계 누락/중복"
@@ -1094,13 +1094,13 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
 
 @requires_git
 def test_promote_ships_the_draft_rounds_with_the_spec(board_env):
-    """draft 의 라운드는 promote 커밋에 함께 실린다 — 예약 자체는 promote 게이트를 막지 않는다."""
+    """draft 의 라운드는 promote 커밋에 함께 실린다 — 예약 자체는 promote 검사를 막지 않는다."""
     board, board_dir, bare = board_env
     path = _write_ticket(board_dir, "T-1007", "draft")
 
     assert board.main(["section-add", "T-1007", "--role", "architect"]) == 0
     assert _round_names(board_dir, "T-1007") == ["01-architect.md"]
-    # `design: done` 은 회수된 점검 라운드도 함께 요구한다 — 시드 그대로면 승격이 막힌다.
+    # `design: done` 은 돌려받은 점검 라운드도 함께 요구한다 — 빈 양식 그대로면 승격이 막힌다.
     round_path = (pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "rounds" / "T-1007" / "01-architect.md")
     round_path.write_text(
         round_path.read_text(encoding="utf-8") + "\n## 경계 실측\n- 실측 대조 근거\n",
@@ -1119,7 +1119,7 @@ def test_promote_ships_the_draft_rounds_with_the_spec(board_env):
 
 
 def test_parser_dispatch_keeps_existing_commands_and_classifies_growth_mutations():
-    """신규 parser 배선이 기존 claim/promote/complete/lint fn dispatch를 바꾸지 않는다."""
+    """신규 parser 등록이 기존 claim/promote/complete/lint fn dispatch를 바꾸지 않는다."""
     board = _load_board()
     existing = {
         ("claim", "T-1"): board_ticket.cmd_claim,
@@ -1167,7 +1167,7 @@ def test_design_cli_records_updates_and_preserves_unrelated_frontmatter(board_en
 @pytest.mark.parametrize("status", ["open", "claimed", "draft"])
 def test_design_allows_every_active_state_including_draft(board_env, status):
     """명시 allowlist의 open/claimed/draft 전 상태가 실제 CLI dispatch로 성공한다
-    (design 은 세 번째 축으로 draft 를 연다 — tier/section-add 와 다른 경계)."""
+    (design 은 세 번째 기준으로 draft 를 연다 — tier/section-add 와 다른 경계)."""
     board, board_dir, _bare = board_env
     tid = "T-1020"
     path = (_write_ticket(board_dir, tid, status) if status == "draft"
@@ -1204,7 +1204,7 @@ def test_design_rejects_non_active_states_without_writes(board_env, capsys, stat
 @requires_git
 def test_design_draft_never_syncs(board_env, monkeypatch, capsys):
     """draft 전환은 `_rounds_mutation_sync_paths` 를 호출하지 않는다 — promote 가 출하를 소유
-    (`cmd_section_add` 의 draft 분기와 동형)."""
+    (`cmd_section_add` 의 draft 분기와 같은 방식)."""
     board, board_dir, _bare = board_env
     path = _write_ticket(board_dir, "T-1022", "draft")
     before_head = _head(board_dir)

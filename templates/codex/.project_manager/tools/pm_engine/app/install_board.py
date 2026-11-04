@@ -15,14 +15,14 @@ import os
 
 # 신규 공유 board 에 스캐폴드하는 상태 디렉토리 — `ticket_rules.STATUS_DIRS` 와 같은 집합(리터럴 · 동치는
 # tests/test_status_dirs_single_truth.py 가 값으로 고정한다).
-_SEEDED_STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done", "discarded")
+_SCAFFOLD_STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done", "discarded")
 
 
 # ── board submodule 셋업 ─────────────────────────────────
 # `--new --board-submodule --board-remote <url>` 은 board(tickets+areas)를 superproject inline 이
 # 아니라 **별도 git submodule**(`.project_manager/board`)로 세운다(board 전용 git·공유
 # remote·`ignore=all`). inline 기본(플래그 없음)은 이 경로를 전혀 타지 않아 완전 무변경(현행 --new
-# 회귀). 공유 remote 의 호스팅/권한 생성은 사용자 게이트 — 엔진은 URL 을 받아 배선만 한다.
+# 회귀). 공유 remote 의 호스팅/권한 생성은 사용자 몫 — 엔진은 URL 을 받아 연결만 한다.
 
 _BOARD_SUBMODULE_PATH = ".project_manager/board"  # 표준 `git submodule add` 은 name == path.
 
@@ -36,10 +36,10 @@ _BOARD_AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base",
                         "protected", "area_owner")
 
 
-# board submodule 의 `.gitattributes` seed — areas.md 동시 등록 안전(양쪽 행 보존)의 배포처.
+# board submodule 의 `.gitattributes` 스캐폴드 — areas.md 동시 등록 안전(양쪽 행 보존)의 배포처.
 # board 는 **별도 git** 이라 superproject 루트 `.gitattributes` 의 `.project_manager/areas.md
-# merge=union` 선언이 닿지 않는다(`check-attr` = unspecified·실측). 신규 board 는 여기서 seed 하고,
-# 이미 만들어진 board 는 board.py `_ensure_board_gitattributes` 가 멱등 backfill 한다(seed 재실행 없음).
+# merge=union` 선언이 닿지 않는다(`check-attr` = unspecified·실측). 신규 board 는 여기서 스캐폴드로 넣고,
+# 이미 만들어진 board 는 board.py `_ensure_board_gitattributes` 가 멱등 backfill 한다(스캐폴드 재실행 없음).
 # 내용은 board._BOARD_GITATTRIBUTES_BLOCK 을 미러한다 — drift 는 test 가 board 를 로드해 대조한다.
 _BOARD_GITATTRIBUTES_SCAFFOLD = (
     "# areas.md = 멀티-PM prefix 레지스트리 — 동시 등록(행 append)이 merge 에서 충돌하지 않도록\n"
@@ -99,7 +99,7 @@ def _cleanup_partial_board(dest_root: Path) -> None:
     원복한다(실패는 삼킴 — 이미 fail-loud 중). --new 는 빈 dest 보장이라 이번 run 이 만든 것뿐 →
     통째 되돌려도 사용자 자산 위험 0. 남은 트리 복사분(wiki/tickets 등)은 유지한다.
 
-    **재시도는 fresh/비운 dest 로** — `setup_board_submodule` 첫 게이트가 `board/` 존재 시 중단하고
+    **재시도는 fresh/비운 dest 로** — `setup_board_submodule` 첫 검사가 `board/` 존재 시 중단하고
     `main` 의 `--new` 가드가 비-빈 dest 를 거부하므로, *같은* dest 재실행은 막힌다. 남은 트리를
     수동 정리(또는 새 경로)한 뒤 재-import 한다.
     """
@@ -107,7 +107,7 @@ def _cleanup_partial_board(dest_root: Path) -> None:
     _board_setup_git(["rm", "-f", "--cached", _BOARD_SUBMODULE_PATH], cwd=dest_root)
     _board_setup_git(["submodule", "deinit", "-f", _BOARD_SUBMODULE_PATH], cwd=dest_root)
     # `.git/modules` 캐시는 git object·packfile 이라 read-only 다 — 맨 rmtree 는 Windows 에서
-    #   실패하고, 그 실패를 삼키면 잔재 때문에 fresh dest 재시도까지 막힌다(실측). 공용 seam 이
+    #   실패하고, 그 실패를 삼키면 잔재 때문에 fresh dest 재시도까지 막힌다(실측). 공용 함수가
     #   속성을 풀고 재시도하며, 그래도 남으면 자리를 알린다(정리 실패로 죽지는 않는다 —
     #   호출부는 이미 fail-loud 중이다).
     for leftover in (board_dir,
@@ -130,10 +130,10 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
     순서(부작용 원자성·부분 홈 최소화):
       1. remote 를 temp 로 clone. **비었으면**(신규 공유 board) 복사된 wiki/tickets 스캐폴드(치환
          완료·open/claimed/blocked/done + _template + README) + canonical areas.md +
-         `.gitattributes`(areas.md merge=union) 를 seed → commit → push. **내용 있으면**
+         `.gitattributes`(areas.md merge=union) 를 스캐폴드로 넣고 → commit → push. **내용 있으면**
          (2번째 유저 합류) skip(기존 board 재사용 — `.gitattributes` 는 board.py 가 backfill).
          (빈 remote 를 *직접* `submodule add` 하면 git 이 checkout 할 커밋이 없어 rc128 로 거부한다 —
-          실측. 그래서 add *전* 에 remote 를 non-empty 로 만들어 두 경로를 수렴시킨다.)
+          실측. 그래서 add *전* 에 remote 를 non-empty 로 만들어 두 경로를 일치시킨다.)
       2. `git submodule add <url> .project_manager/board` — remote 가 non-empty 라 checkout 성공.
       3. `.gitmodules` 에 `ignore = all`(committed·공유 default) 설정 — board PM-commit 이 design(코드)
          git status 를 오염시키지 않게(누출 0). board.py init 이 추가로 `.git/config`
@@ -149,15 +149,15 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
         return 1
     tmp_clone = Path(tempfile.mkdtemp(prefix="pm_board_seed_", dir=raw_output.temp_root(dest_root)))
     try:
-        # ── 1. clone remote → temp; 비었으면 스캐폴드 seed ──
+        # ── 1. clone remote → temp; 비었으면 스캐폴드 넣기 ──
         rc, out = _board_setup_git(["clone", remote_url, str(tmp_clone)], cwd=None)
         if rc != 0:
             print(f"오류: board remote clone 실패 (rc={rc}) — {remote_url}\n{out.strip()}",
                   file=sys.stderr)
             return rc or 1
         rc_head, _ = _board_setup_git(["rev-parse", "--verify", "HEAD"], cwd=tmp_clone)
-        seeded = rc_head != 0  # HEAD 없음 = 커밋 0 = 빈 remote(신규 공유 board).
-        if seeded:
+        scaffolded = rc_head != 0  # HEAD 없음 = 커밋 0 = 빈 remote(신규 공유 board).
+        if scaffolded:
             if not copied_tickets.is_dir():
                 print("오류: 복사된 wiki/tickets 부재 — board 스캐폴드 불가(트리 복사 확인).",
                       file=sys.stderr)
@@ -165,7 +165,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
             shutil.copytree(copied_tickets, tmp_clone / "tickets")
             # ticket_rules.STATUS_DIRS 와 같은 집합 — 처분 종결 `discarded` 포함. 신규 공유
             # board 는 빈 상태 디렉토리도 추적돼야 다른 clone 이 checkout 에서 받는다.
-            for status in _SEEDED_STATUS_DIRS:
+            for status in _SCAFFOLD_STATUS_DIRS:
                 sd = tmp_clone / "tickets" / status
                 sd.mkdir(parents=True, exist_ok=True)
                 (sd / ".gitkeep").touch(exist_ok=True)  # 빈 status dir git 추적(합류 유저 checkout).
@@ -185,8 +185,8 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
                     return rc or 1
         else:
             # 내용 있는 remote(합류) — **실제 board 인지 검증**(codex+reviewer must-fix). 오타/비-board
-            #   URL 을 주면 clone 은 성공하고 seeded=False 로 흘러 아래(try 밖)에서 submodule add + step 4
-            #   가 dormant wiki/tickets 를 무조건 제거 → board/tickets 부재인데 폴백처(wiki/tickets)도
+            #   URL 을 주면 clone 은 성공하고 scaffolded=False 로 흘러 아래(try 밖)에서 submodule add + step 4
+            #   가 dormant wiki/tickets 를 무조건 제거 → board/tickets 부재인데 대체 위치(wiki/tickets)도
             #   삭제 = 깨진 dual-inert board 를 rc0 "완료"로 낸다. add·dest mutation *전*(부작용 0·finally
             #   가 temp 정리)에 tickets/·areas.md 존재로 board 형태를 확인해 명확 실패시킨다.
             if not (tmp_clone / "tickets").is_dir() or not (tmp_clone / "areas.md").exists():
@@ -211,7 +211,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
     if rc != 0:
         print(f"오류: git submodule add 실패 (rc={rc}) — {remote_url}\n{out.strip()}",
               file=sys.stderr)
-        if seeded:
+        if scaffolded:
             # 방금 우리가 remote 를 scaffold+push 했으므로 remote 는 이제 non-empty 다 — fresh dest 로
             #   재시도하면 합류(재사용) 경로를 탄다(빈 remote 초기화 아님·중복 scaffold 없음).
             print("  (remote 는 이미 scaffold 됨 — fresh dest 로 재시도 시 기존 board 합류 경로).",
@@ -238,7 +238,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
             print(f"경고: dormant wiki/tickets 제거 실패 — 직접 지우세요: {copied_tickets} "
                   f"({type(exc).__name__}: {exc})", file=sys.stderr)
 
-    label = "신규 스캐폴드 커밋+push" if seeded else "기존 board 재사용(합류)"
+    label = "신규 스캐폴드 커밋+push" if scaffolded else "기존 board 재사용(합류)"
     print(f"✓ board submodule 셋업: {_BOARD_SUBMODULE_PATH} "
           f"(remote={remote_url} · {label} · ignore=all)")
     return 0
@@ -250,8 +250,8 @@ def _translate_dest_safety_errors(func: Callable) -> Callable:
     """경로 안전 예외를 CLI 경계에서 rc 1 + 친화 메시지로 번역하는 데코레이터(traceback 0).
 
     두 클래스를 모두 잡는다:
-      - `DestRootSwappedError` — dest 루트 자체 교체. 파일 단위 교체는 각 단계가 흡수하지만
-        (그 파일만 제외 + loud) **루트 교체는 어느 단계도 흡수하면 안 된다**(흡수하면 남은
+      - `DestRootSwappedError` — dest 루트 자체 교체. 파일 단위 교체는 각 단계가 받아 처리하지만
+        (그 파일만 제외 + loud) **루트 교체는 어느 단계도 받아 처리하면 안 된다**(받아 처리하면 남은
         단계가 교체된 트리에 계속 쓴다). 실행 전체를 감싸 한 번만 잡고 즉시 끝낸다.
       - `UnsafeDestPathError` — 계획 단계는 각 호출부가 이미 rc1 로 번역하지만, **복사 단계**의
         fd 가드(`CopyAction.run`)도 이 예외를 던질 수 있다. 백스톱이 없으면 그 경로만 traceback
@@ -282,7 +282,7 @@ def run_board_init(dest_root: Path) -> int:
     같은 인터프리터(sys.executable)로 호출 — board.py 는 pyyaml 의존이라 venv 보존 필요.
     비대화형(stdin 비-tty)이면 board.py 는 대화형 질문을 건너뛰고 아무것도 묻지 않는다.
     stdin=DEVNULL 의 isatty() 가 Windows 서 신뢰불가라, env 로
-    `PM_NONINTERACTIVE=1` 을 명시 전달해 결정적으로 skip 시킨다 (isatty 폴백 보조).
+    `PM_NONINTERACTIVE=1` 을 명시 전달해 결정적으로 skip 시킨다 (isatty 대체 보조).
 
     `PYTHONDONTWRITEBYTECODE=1` 도 함께 전달한다— board.py 는 같은 tools/ 디렉토리의
     `pm_engine` 패키지를 import 하는데, 이 실행이 갓 복사된 새 프로젝트 트리 안(`dest_root`)에서

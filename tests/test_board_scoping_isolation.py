@@ -1,18 +1,18 @@
-"""multi-PM 세션 뷰 격리 — composite 게이트 (2 user × 2 slot·실 생성→뷰·T-0304·ADR-0053).
+"""multi-PM 세션 뷰 격리 — composite 검사 (2 user × 2 slot·실 생성→뷰·T-0304·ADR-0053).
 
-이 파일은 multi-PM/multi-USER 격리 불변식(ADR-0053)을 **실제로 태우는** durable 기계 게이트다.
+이 파일은 multi-PM/multi-USER 격리 불변식(ADR-0053)을 **실제로 태우는** durable 기계 검사다.
 `test_board_multipm.py` 의 세션-격리 코어(T-0302)는 `_ticket_is_mine` 을 *hand-seed 한 YAML* 로
 단위 검증하지만, 이 파일은 **각 슬롯/유저가 실 board API 로 티켓을 생성**(`cmd_new`+`cmd_claim`)해
 `created_by`/`claimed_by` 를 실제 스탬프한 뒤 **뷰가 서로 섞이는지**를 검증한다 — 라이브 composite
-(opencode·release tier)와 *동형의 create→view 경로*를 무-LLM 으로 못박는다(사용자 발의·PM 64).
+(opencode·release tier)와 *같은 구조의 create→view 경로*를 무-LLM 으로 못박는다(사용자 발의·PM 64).
 
 검증하는 불변식 (ADR-0053·spike §0·[[ADR-0059]] Decision 10):
   세션 뷰(`--mine`/`--session`/`--slot`/`--task`) 멤버십 = (내 claim) ∪ (내 소유 open).
   타 사용자 미claim open 은 절대 미포함. degrade("전체 open=mine")는 solo(distinct user ≤1)에서만.
-  task 렌즈(`--task <이름>`·T-0365)는 claim 축을 그 task 바인딩(`claimed_by==<user>/<task>`·⑲)으로
+  task 렌즈(`--task <이름>`·T-0365)는 claim 기준을 그 task 바인딩(`claimed_by==<user>/<task>`·⑲)으로
   좁힌 task-aware 대응 — slot 세션값 `<user>/<repo>_<N>` 과 ⑥ 예약으로 기계 판별(추가 필드 0).
 
-명시 cross-contamination 단언 (PM 64 필수 형상):
+명시 cross-contamination 단언 (PM 64 필수 구성):
   (a) alice 세션이 bob 미claim open **미열람**              — session/mine 뷰
   (b) slot1 세션이 slot2 전용 티켓 **미열람**               — session/slot 뷰
   (c) 각자 자기 open+claim **열람**                          — session/mine 뷰
@@ -20,10 +20,10 @@
 
 전 surface: `list --mine`·`list --session`·`list --slot`·`list --task`(T-0365)·bootstrap
 `_collect_board` 카운트(`pm_bootstrap.py` **코드변경 0**·`_ticket_is_mine` 상속 검증) + RED-증명(git
-금지 하에서 monkeypatch 로 pre-fix degrade 를 시뮬해 동일 데이터에서 섞임이 실제로 감지됨을 durable 박제).
+금지 하에서 monkeypatch 로 pre-fix degrade 를 시뮬해 동일 데이터에서 섞임이 실제로 감지됨을 durable 기록).
 
-**hermetic 필수**: board.py 경로 전역을 tmp 프로젝트로 monkeypatch 재지정하고 git 폴백은 stub —
-실 루트의 areas.md·tickets/·local.conf 를 절대 건드리지 않는다(test_board_multipm.py 동형).
+**hermetic 필수**: board.py 경로 전역을 tmp 프로젝트로 monkeypatch 재지정하고 git 대체 조회는 stub —
+실 루트의 areas.md·tickets/·local.conf 를 절대 건드리지 않는다(test_board_multipm.py 와 같은 방식).
 """
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ REAL_AREAS = REPO / ".project_manager" / "areas.md"
 
 
 def _load(name: str):
-    """엔진 모듈을 (패키지 아님) 경로 로드 — 경로 전역이 매번 fresh (test_pm_bootstrap 동형)."""
+    """엔진 모듈을 (패키지 아님) 경로 로드 — 경로 전역이 매번 fresh (test_pm_bootstrap 과 같은 방식)."""
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -67,7 +67,7 @@ def _load(name: str):
 
 
 def _make_project(root: Path) -> None:
-    """tmp 프로젝트 골격 — tickets/{open,claimed,blocked,done}/ + cmd_new 용 _template.md."""
+    """tmp 프로젝트 뼈대 — tickets/{open,claimed,blocked,done}/ + cmd_new 용 _template.md."""
     tickets = root / ".project_manager" / "wiki" / "tickets"
     for status in ("open", "claimed", "blocked", "done"):
         (tickets / status).mkdir(parents=True, exist_ok=True)
@@ -109,7 +109,7 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     local.mkdir(parents=True, exist_ok=True)
-    # 실 PM 세션 env·git config 가 hermetic 테스트로 새지 않게 격리(장부/local.conf 만이 세션·user 소스).
+    # 실 PM 세션 env·git config 가 hermetic 테스트로 새지 않게 격리(기록/local.conf 만이 세션·user 소스).
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
@@ -119,7 +119,7 @@ def board(tmp_path, monkeypatch):
 # ── composite 매트릭스: repo alpha(prefix al·area_owner alice) · beta(prefix be·bob) ──
 # 세션 alpha_1/alpha_2(alice)·beta_1/beta_2(bob). user-first(ADR-0056): querying identity 는 조회
 # 시점 현재 사용자(local.conf user=)·open 소유는 area_owner 로 해소된다(area_owner=open 소유 정의).
-# prefix 는 소문자(`_validate_prefix` 게이트) — repo 명(alpha/beta)과 ID prefix(al/be)는 별개 축.
+# prefix 는 소문자(`_validate_prefix` 검사) — repo 명(alpha/beta)과 ID prefix(al/be)는 별개 기준.
 _COMPOSITE_AREAS = (
     "# Area Registry\n\n"
     "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
@@ -223,7 +223,7 @@ def _seed_composite(board, capsys, *, areas: bool = True) -> types.SimpleNamespa
     """2 user(alice/bob) × 2 slot 각자 open+claim 을 **실 board API** 로 생성한다.
 
     `areas=True` → per-user area 등록(area_owner 운영·소유 1차 = area_owner) · prefix al/be.
-    `areas=False` → 레지스트리 부재(미마이그 채택자) · legacy `T-NNNN` · 소유는 created_by 2차 폴백.
+    `areas=False` → 레지스트리 부재(미마이그 채택자) · legacy `T-NNNN` · 소유는 created_by 2차 대체.
     각 정체성 전환은 `cmd_new`/`cmd_claim` 의 `--session`/`--user` override 로만(local.conf 무관).
     """
     if areas:
@@ -289,7 +289,7 @@ def test_session_view_isolates_users_real_create_to_view(board, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_mine_view_isolates_users_real_create_to_view(board, capsys):
-    """`--mine`(local.conf identity)도 동형 — alice 의 --mine 은 bob 소유 open/claim 을 제외한다."""
+    """`--mine`(local.conf identity)도 같은 방식 — alice 의 --mine 은 bob 소유 open/claim 을 제외한다."""
     comp = _seed_composite(board, capsys)
     _write_conf(board, user="alice", session="alpha_1")
 
@@ -313,7 +313,7 @@ def test_mine_view_isolates_users_real_create_to_view(board, capsys):
 def _claim_task(board, capsys, tid, *, task, user) -> None:
     """실 `cmd_claim --task` 로 task-mode claim (claimed_by=<user>/<task> 스탬프·⑲ claimed_by 재사용).
 
-    `_claim`(slot-mode·`--repo`/`--slot`)의 task 짝 — `--task <이름>` 이 정체성 축이라 claimed_by 의
+    `_claim`(slot-mode·`--repo`/`--slot`)의 task 짝 — `--task <이름>` 이 정체성 기준이라 claimed_by 의
     slot 토큰 자리에 task 이름이 들어간다(`_actor_session_override` 가 task 를 세션 override 로 반환).
     """
     import json
@@ -342,10 +342,10 @@ def _claim_task(board, capsys, tid, *, task, user) -> None:
 
 
 def _seed_task_composite(board, capsys):
-    """slot claim composite 위에 task-mode claim 을 얹어 slot/task 두 축을 한 보드에서 섞는다.
+    """slot claim composite 위에 task-mode claim 을 얹어 slot/task 두 기준을 한 보드에서 섞는다.
 
     alice: slot claim(alpha_1/alpha_2·from _seed_composite) + task 'refactor' claim + open backlog.
-    bob:   slot claim(beta_1/beta_2) + task 'docs' claim + open backlog. 두 축이 공존해야 렌즈가
+    bob:   slot claim(beta_1/beta_2) + task 'docs' claim + open backlog. 두 기준이 공존해야 렌즈가
     서로 안 섞임(기계 판별·⑥)을 실 데이터로 검증할 수 있다.
     """
     comp = _seed_composite(board, capsys)
@@ -363,7 +363,7 @@ def _seed_task_composite(board, capsys):
 def test_task_lens_isolates_by_binding(board, capsys):
     """`--task refactor`(alice) = 이 task 명의 claim + 내 소유 open backlog · 타 user·타 task·slot 미열람.
 
-    (b) claim 축은 claimed_by==<user>/<task> 로 좁혀진다 — alice 의 slot claim(alpha_1/alpha_2)은
+    (b) claim 기준은 claimed_by==<user>/<task> 로 좁혀진다 — alice 의 slot claim(alpha_1/alpha_2)은
     같은 user 라도 task 토큰 불일치(⑥ 판별)라 제외, bob(타 user)·bob task(docs)도 제외. (a) open 은
     ADR-0053 task 대응으로 내 소유 backlog(슬롯무관) 포함.
     """
@@ -404,7 +404,7 @@ def test_list_task_flag_is_consumed_not_silent_noop(board, capsys):
 
 
 def test_task_lens_rejects_reserved_slot_pattern(board, capsys):
-    """read 경로 깔때기 소비(codex must-fix·T-0355 게이트): `--task alpha_1`(슬롯 예약 패턴·⑥) fail-loud.
+    """read 경로 깔때기 소비(codex must-fix·T-0355 검사): `--task alpha_1`(슬롯 예약 패턴·⑥) fail-loud.
 
     cmd_list 가 `_validate_actor_task_or_exit` 를 안 태우면 예약 패턴 task 명이 `_slot_matches` exact
     에서 slot claim `<user>/alpha_1` 을 task claim 처럼 매칭해 ⑥ 기계 판별이 깨진다 — 거부가 그 유출
@@ -433,14 +433,14 @@ def test_task_lens_mutually_exclusive_with_other_scopes(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# surface 4 — bootstrap `_collect_board` 카운트 격리 (A-bootstrap 흡수·코드변경 0)
+# surface 4 — bootstrap `_collect_board` 카운트 격리 (A-bootstrap 합침·코드변경 0)
 # ════════════════════════════════════════════════════════════════════════
 
 def _make_board_runner(board):
-    """pm_bootstrap `run_board_fn` seam 을 **실 board.cmd_list** 로 배선한다(subprocess 없이).
+    """pm_bootstrap `run_board_fn` 교체 지점을 **실 board.cmd_list** 로 연결한다(subprocess 없이).
 
     `_collect_board` 이 부르는 `["list","--mine"]`·`["list","--status","done","--mine"]`·
-    `["lint","--gate"]` 를 dispatch — 격리는 `--mine`(=`_ticket_is_mine`) 가 담당하므로 이 러너가
+    `["lint","--blocking"]` 를 dispatch — 격리는 `--mine`(=`_ticket_is_mine`) 가 담당하므로 이 러너가
     bootstrap 카운트가 그 predicate 를 그대로 상속함을 태운다(pm_bootstrap.py 무변경·ADR-0067 로 옛
     `["list","--all"]` 재조회는 폐기됐으나 러너는 방어적으로 여전히 수용).
     """
@@ -484,12 +484,12 @@ def test_bootstrap_collect_board_inherits_isolation(board, capsys, tmp_path):
 
 # ════════════════════════════════════════════════════════════════════════
 # RED-증명 (git 금지·durable no-git) — pre-fix degrade 를 monkeypatch 로 시뮬해
-# 동일 생성 데이터에서 격리 단언이 실제로 섞임을 잡음을 박제한다. 실 predicate 로는 green
+# 동일 생성 데이터에서 격리 단언이 실제로 섞임을 잡음을 기록한다. 실 predicate 로는 green
 # (위 스위트). ADR-0053 fix(T-0302)는 이미 머지돼 green 이라 git revert 대신 이 시뮬로 catch 검증.
 # ════════════════════════════════════════════════════════════════════════
 
 def _make_pre_fix_is_mine(board):
-    """ADR-0053(T-0302) fix **이전**의 `_ticket_is_mine` 재현 — multi_user 게이트 없이
+    """ADR-0053(T-0302) fix **이전**의 `_ticket_is_mine` 재현 — multi_user 조건 없이
     `my_user is None ∨ not area_owner_in_use` 면 전체 open=mine 으로 degrade(=유출·spike §1)."""
     def _is_mine(_home, status, fm, my_user, my_slot, area_owner_in_use, multi_user,
                  *, slot_scoped=False):
@@ -511,12 +511,12 @@ def test_pre_fix_mine_unmigrated_leaks_red_proof(board, capsys, monkeypatch):
     """RED-증명(T2·`--mine`·미마이그): area_owner 미운영이면 옛 코드는 `not area_owner_in_use →
     return True` 로 전체 open 유출 — 레지스트리 부재 composite 에서 bob open 이 alice --mine 에 섞인다.
 
-    실 predicate(created_by 2차 폴백·multi_user strict)로는 제외됨을 먼저 확인(green)한 뒤, 시뮬로 유출 박제.
+    실 predicate(created_by 2차 대체·multi_user strict)로는 제외됨을 먼저 확인(green)한 뒤, 시뮬로 유출 기록.
     """
     comp = _seed_composite(board, capsys, areas=False)   # 레지스트리 부재 → area_owner 미운영
     _write_conf(board, user="alice", session="alpha_1")
 
-    # green: 실 predicate 는 created_by.user 2차 폴백 + 다중사용자 strict 로 bob open 제외.
+    # green: 실 predicate 는 created_by.user 2차 대체 + 다중사용자 strict 로 bob open 제외.
     assert not (comp.bob_open & set(_view(board, capsys, mine=True)))
 
     # RED: pre-fix degrade(area_owner 미운영 → 전체 open=mine)는 bob open 을 alice --mine 에 유출.

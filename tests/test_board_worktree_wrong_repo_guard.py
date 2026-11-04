@@ -1,7 +1,7 @@
-"""PM-홈 앵커 도구의 worktree cwd 오실행 가드 (T-0345).
+"""PM-홈 기준 도구의 worktree cwd 오실행 가드 (T-0345).
 
 board 계열 도구(`board.py new/promote/claim/complete`·`ticket_finish`)를 PM 홈(②)의 등록
-worktree(`work/<repo>_<N>`) cwd 에서 실행하면 도구가 cwd 기준 자기-앵커(REPO)로 그 worktree
+worktree(`work/<repo>_<N>`) cwd 에서 실행하면 도구가 cwd 기준 자기 대상 저장소(REPO)로 그 worktree
 트리에 조용히 착지해 stray 산출을 낸다 — PM 71 한 세션 3회 실측: (1) `board.py lint` 오경보
 (2) `ticket_finish` 가 stray `wiki/log/current.md` (3) `board.py new` 가 잘못된 ID
 네임스페이스의 stray `T-0001`. worktree(①)는 코드 전용·board 는 PM 홈(②) 소유(ADR-0027).
@@ -83,7 +83,7 @@ def _make_real_board(pm_dir: Path, *, split: bool = True) -> Path:
 
 
 def _make_scaffold_board(pm_dir: Path) -> None:
-    """worktree 출하 형상: wiki/tickets 빈 scaffold (README/.gitkeep 만·실 티켓 0)."""
+    """worktree 출하 구성: wiki/tickets 빈 scaffold (README/.gitkeep 만·실 티켓 0)."""
     base = pm_dir / "wiki" / "tickets"
     for status in ("open", "claimed", "blocked", "done"):
         (base / status).mkdir(parents=True, exist_ok=True)
@@ -92,12 +92,12 @@ def _make_scaffold_board(pm_dir: Path) -> None:
 
 
 def _register_slot(pm_home: Path, worktree: Path, *, slot: str | None = None) -> Path:
-    """worktree_pool 장부 동형으로 슬롯 하나를 등록한다. 상태와 무관하게 경로 등록이 소유 증거다."""
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
+    """worktree_pool 기록과 같은 구조로 슬롯 하나를 등록한다. 상태와 무관하게 경로 등록이 소유 증거다."""
+    record_path = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
     if slot is None:
         slot = str(worktree.relative_to(pm_home))
-    ledger.write_text(
+    record_path.write_text(
         json.dumps(
             {
                 "leases": [
@@ -116,7 +116,7 @@ def _register_slot(pm_home: Path, worktree: Path, *, slot: str | None = None) ->
         + "\n",
         encoding="utf-8",
     )
-    return ledger
+    return record_path
 
 
 def _make_pm_home_with_worktree(
@@ -131,7 +131,7 @@ def _make_pm_home_with_worktree(
     # 저장소(이 worktree)를 답해 PM 홈이 linked worktree 로 오판된다.
     _git(["init", "-q", "-b", "main"], pm_home)
 
-    # ADR-0027 실 형상: 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 있다
+    # ADR-0027 실 구성: 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 있다
     # (`worktree_pool.bare_repo_path`). 슬롯의 `.git` 포인터가 그 자리를 통해 소유 PM 홈을
     # 선언하므로, 소유 판정이 조상 추측 없이 성립한다.
     seed = tmp_path / "product-seed"
@@ -163,7 +163,7 @@ def _fake_runner(git_dir: str, common_dir: str):
 
 
 # board 모듈의 쓰기-타깃 module 상수(REPO 파생이 아니라 import 시점 고정) — REPO 만 monkeypatch
-# 하면 이들은 여전히 실 트리를 가리켜, 게이트가 (회귀로) 미발화하면 실 worktree 를 오염시킨다
+# 하면 이들은 여전히 실 트리를 가리켜, 검사가 (회귀로) 실행되지 않으면 실 worktree 를 오염시킨다
 # (바로 이 티켓이 닫는 클래스가 테스트 자신을 물었던 실제 사례). 아래로 전부 fixture 트리로
 # 재바인딩해 어떤 mutation 이 돌더라도 실 트리 오염 0(hermetic).
 _WRITE_TARGET_CONSTS: dict[str, str] = {}
@@ -172,7 +172,7 @@ _WRITE_TARGET_CONSTS: dict[str, str] = {}
 def _isolate_board_module(b, monkeypatch, root: Path) -> None:
     """board 모듈 REPO + 모든 쓰기-타깃 상수를 fixture `root` 로 격리한다(hermetic).
 
-    게이트가 정상 발화하면 명령이 아예 안 도므로 무의미하지만, 게이트가 회귀로 미발화해도
+    검사가 정상 실행되면 명령이 아예 안 도므로 무의미하지만, 검사가 회귀로 실행되지 않아도
     실 트리 대신 fixture 로만 쓰게 해 테스트가 실 worktree 를 오염시키지 못하게 한다(방어)."""
     pm = root / ".project_manager"
     monkeypatch.setattr(b, "REPO", root)
@@ -205,7 +205,7 @@ def test_has_real_board_legacy_wiki_true(tmp_path):
 
 
 def test_has_real_board_scaffold_only_false(tmp_path):
-    # 빈 scaffold(worktree 출하 형상)는 '실 board' 아님 — 이게 False 여야 worktree 가 flag 됨.
+    # 빈 scaffold(worktree 출하 구성)는 '실 board' 아님 — 이게 False 여야 worktree 가 flag 됨.
     b = _load_board()
     pm = tmp_path / ".project_manager"
     _make_scaffold_board(pm)
@@ -255,7 +255,7 @@ def test_is_linked_worktree_real_pm_home_false(pm_home_worktree):
     assert git._is_linked_worktree(pm_home) is False
 
 
-# ── T-0465 read anchor display ───────────────────────────────────────────
+# ── T-0465 read target repo display ───────────────────────────────────────────
 
 def _read_argv(subcommand: str) -> list[str]:
     """각 read leaf의 최소 실행 argv. 새 read leaf는 이 표가 아니라 parametrize에 먼저 잡힌다."""
@@ -263,16 +263,16 @@ def _read_argv(subcommand: str) -> list[str]:
     if subcommand in {"show", "tier-signals"}:
         argv.append("T-0100")
     if subcommand == "cluster show":
-        argv.append("wave")
+        argv.append("cluster")
     return argv
 
 
 @pytest.mark.parametrize("subcommand", sorted(board_command_rules._READ_SUBCOMMANDS))
 def test_every_read_subcommand_surfaces_real_worktree_anchor(
         pm_home_worktree, monkeypatch, capsys, subcommand):
-    """REPO가 정하는 실제 등록 worktree 앵커를 모든 read dispatch가 첫 줄에 표시한다.
+    """REPO가 정하는 실제 등록 worktree 대상 저장소를 모든 read dispatch가 첫 줄에 표시한다.
 
-    cwd를 바꾸지 않는다. 이 검증 축은 cwd가 아니라 dispatch의 `_READ_SUBCOMMANDS` 전수와
+    cwd를 바꾸지 않는다. 이 검증 기준은 cwd가 아니라 dispatch의 `_READ_SUBCOMMANDS` 전수와
     실제 git worktree 판정이다.
     """
     b = _load_board()
@@ -287,7 +287,7 @@ def test_every_read_subcommand_surfaces_real_worktree_anchor(
     )
 
 
-def test_show_from_boardless_worktree_reads_single_ledger_owner(
+def test_show_from_boardless_worktree_reads_single_record_owner(
         pm_home_worktree, monkeypatch, capsys):
     """실제 빈 worktree 트리에서 show가 PM 홈 티켓을 읽고 선택 홈을 첫 줄에 드러낸다."""
     b = _load_board()
@@ -366,11 +366,11 @@ def test_read_dispatch_redirects_all_pm_owned_inputs_only_during_call(
 
 def test_worktree_lint_output_equals_pm_home_and_resolves_pm_wiki_targets(
         pm_home_worktree, monkeypatch, capsys):
-    """반쪽 재앵커의 실제 오답을 고정한다.
+    """대상 저장소를 반쪽만 바꿔 끼운 경우의 실제 오답을 고정한다.
 
     worktree에는 decisions/가 없고 PM 홈 티켓은 ADR을 참조한다. PM 홈 lint와 worktree
-    폴백 lint의 앵커 첫 줄을 제외한 출력·rc가 완전히 같아야 하며, ADR dangling이 없어야 한다.
-    board 없는 앵커와 PM-only target을 명시 생성하므로 skip/vacuous 경로가 없다.
+    대체 lint의 대상 저장소 첫 줄을 제외한 출력·rc가 완전히 같아야 하며, ADR dangling이 없어야 한다.
+    board 없는 대상 저장소와 PM-only target을 명시 생성하므로 skip/vacuous 경로가 없다.
     """
     b = _load_board()
     pm_home, worktree = pm_home_worktree
@@ -425,7 +425,7 @@ def test_worktree_idea_list_reads_pm_home_idea_content(
     )
     assert not (
         worktree / ".project_manager" / "wiki" / "ideas"
-    ).exists(), "전제 붕괴 — worktree에 ideas가 있어 폴백 내용을 검증할 수 없음"
+    ).exists(), "전제 붕괴 — worktree에 ideas가 있어 대체 내용을 검증할 수 없음"
 
     _isolate_board_module(b, monkeypatch, worktree)
     assert b.main(["idea", "list"]) == 0
@@ -436,7 +436,7 @@ def test_worktree_idea_list_reads_pm_home_idea_content(
 
 
 def _make_unresolvable_worktree(tmp_path: Path) -> Path:
-    """어느 PM 홈의 worktree 도 아닌 앵커 — 공용 저장소 자리가 `<X>/.repos/<repo>.git` 도
+    """어느 PM 홈의 worktree 도 아닌 대상 저장소 — 공용 저장소 자리가 `<X>/.repos/<repo>.git` 도
     `<X>/.git` 도 아니라 소유 PM 홈이 유도되지 않는다(실 board 없는 빈 scaffold)."""
     seed = tmp_path / "vendor-seed"
     seed.mkdir(parents=True)
@@ -447,27 +447,27 @@ def _make_unresolvable_worktree(tmp_path: Path) -> Path:
     bare = tmp_path / "vendor" / "app.git"
     bare.parent.mkdir(parents=True)
     _git(["clone", "-q", "--bare", str(seed), str(bare)], tmp_path)
-    anchor = tmp_path / "vendor-worktree"
-    _git(["worktree", "add", "-q", str(anchor)], bare)
-    _make_scaffold_board(anchor / ".project_manager")
-    return anchor
+    target_repo = tmp_path / "vendor-worktree"
+    _git(["worktree", "add", "-q", str(target_repo)], bare)
+    _make_scaffold_board(target_repo / ".project_manager")
+    return target_repo
 
 
 def test_unresolvable_anchor_read_line_does_not_assert_worktree_role(
         tmp_path, monkeypatch, capsys):
-    """소유 PM 홈이 유도되지 않는 앵커의 read 조회는 `worktree` 역할을 단언하지 않는다.
+    """소유 PM 홈이 유도되지 않는 대상 저장소의 read 조회는 `worktree` 역할을 단언하지 않는다.
 
     해소 실패는 확인된 사실이 아니라 확인의 부재다. 그 부재로 첫 줄이 `(worktree)` 라고
     말하면 확인되지 않은 소속을 양성 판정으로 바꾸는 것이다. 실패한 실행은 read dispatch 에
     들어오지 못하고 `main()` 이 `[중단] …` + rc1 로 번역한다.
     """
     b = _load_board()
-    anchor = _make_unresolvable_worktree(tmp_path)
+    target_repo = _make_unresolvable_worktree(tmp_path)
     assert list(
-        (anchor / ".project_manager" / "wiki" / "tickets").glob("*/*.md")
+        (target_repo / ".project_manager" / "wiki" / "tickets").glob("*/*.md")
     ) == [], "전제 붕괴 — 앵커에 실 티켓이 있음"
 
-    _isolate_board_module(b, monkeypatch, anchor)
+    _isolate_board_module(b, monkeypatch, target_repo)
     assert b.main(["show", "T-0100"]) == 1
     captured = capsys.readouterr()
     assert "(worktree)" not in captured.out
@@ -482,28 +482,28 @@ def test_unresolvable_anchor_mutation_stops_with_guidance_not_traceback(
 
     `main()` 은 CLI 최외곽이라 예외가 여기를 통과하면 사용자는 traceback 을 본다. 번역
     지점을 하나로 모아 read·mutation 이 같은 원인에서 같은 안내를 낸다. 실패는 여전히
-    실패다 — rc1 이고 앵커에 아무것도 쓰지 않는다.
+    실패다 — rc1 이고 대상 저장소에 아무것도 쓰지 않는다.
     """
     b = _load_board()
-    anchor = _make_unresolvable_worktree(tmp_path)
-    _isolate_board_module(b, monkeypatch, anchor)
+    target_repo = _make_unresolvable_worktree(tmp_path)
+    _isolate_board_module(b, monkeypatch, target_repo)
 
     assert b.main(["claim", "T-0100"]) == 1
     captured = capsys.readouterr()
     assert "[중단] 소유 PM 홈을 확정할 수 없습니다" in captured.err
     assert "PM 홈을 찾지 못했습니다" in captured.err
     assert list(
-        (anchor / ".project_manager" / "wiki" / "tickets").glob("*/*.md")
+        (target_repo / ".project_manager" / "wiki" / "tickets").glob("*/*.md")
     ) == [], "미해소 앵커에서 mutation 이 티켓을 만들었다"
 
 
 def test_boardless_worktree_owner_comes_from_its_own_git_declaration(
         tmp_path, monkeypatch, capsys):
-    """다른 홈이 같은 슬롯을 자기 장부에 등재해도 소유자는 슬롯의 `.git` 선언이 정한다.
+    """다른 홈이 같은 슬롯을 자기 기록에 등재해도 소유자는 슬롯의 `.git` 선언이 정한다.
 
-    옛 해소는 경로 조상 축과 git 축을 각각 후보로 세워 두 홈이 모두 '등록'을 주장하면 모호로
+    옛 해소는 경로 조상 기준과 git 기준을 각각 후보로 세워 두 홈이 모두 '등록'을 주장하면 모호로
     막았다. 유도는 후보를 하나만 만든다 — 공용 저장소를 둔 홈이 소유자이고, 경로만 겹치는
-    홈의 장부 등재는 소유권을 만들지 못한다(답이 하나이거나 예외).
+    홈의 기록 등재는 소유권을 만들지 못한다(답이 하나이거나 예외).
     """
     b = _load_board()
     path_home = tmp_path / "path-home"
@@ -531,7 +531,7 @@ def test_boardless_worktree_owner_comes_from_its_own_git_declaration(
     alias.parent.mkdir(parents=True)
     alias.symlink_to(worktree, target_is_directory=True)
     _register_slot(git_home, worktree, slot="work/product_1")
-    assert alias.resolve() == worktree.resolve(), "전제 붕괴 — 두 번째 장부 슬롯이 대상과 다름"
+    assert alias.resolve() == worktree.resolve(), "전제 붕괴 — 두 번째 기록 슬롯이 대상과 다름"
 
     _isolate_board_module(b, monkeypatch, worktree)
     assert b.main(["show", "T-0100"]) == 0
@@ -545,7 +545,7 @@ def test_boardless_worktree_owner_comes_from_its_own_git_declaration(
 
 def test_read_anchor_labels_only_real_board_owner_as_pm_home(
         pm_home_worktree, monkeypatch, capsys):
-    """실 board 소유 PM 홈은 PM 홈, 일반 clone처럼 증거 없는 앵커는 비단언으로 표시한다."""
+    """실 board 소유 PM 홈은 PM 홈, 일반 clone처럼 증거 없는 대상 저장소는 비단언으로 표시한다."""
     b = _load_board()
     pm_home, _worktree = pm_home_worktree
     _isolate_board_module(b, monkeypatch, pm_home)
@@ -562,21 +562,21 @@ def test_read_anchor_labels_only_real_board_owner_as_pm_home(
 
 @pytest.mark.parametrize("subcommand", sorted(board_command_rules._MUTATION_SUBCOMMANDS))
 def test_mutation_dispatch_never_prints_read_anchor(monkeypatch, subcommand):
-    """모든 mutation leaf는 display-only read 앵커를 타지 않는다(rc/차단 경로 불변)."""
+    """모든 mutation leaf는 display-only read 대상 저장소 표시를 타지 않는다(rc/차단 경로 불변)."""
     b = _load_board()
     args = _dispatch_namespace(b, subcommand, lambda _home, _args: 0)
     monkeypatch.setattr(board_cmd, "build_parser", lambda **_kwargs: types.SimpleNamespace(parse_args=lambda _argv: args))
     monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
     monkeypatch.setattr(
-        board_dispatch, "_print_read_anchor",
+        board_dispatch, "_print_read_target_repo",
         lambda _home: pytest.fail(f"mutation {subcommand!r} printed a read anchor"),
     )
     assert b.main([]) == 0
 
 
-# ── _pm_home_worktree_misanchor (anchor 자신의 `.git` 선언 유도) ──────────────
-# 판정 입력은 anchor 의 `.git` 포인터와 유도된 홈의 lease 장부뿐이다 — git subprocess 도,
-# 조상 훑기도 없으므로 runner 주입 축이 사라졌다. 아래는 유도 표의 행 전수다.
+# ── _pm_home_worktree_misanchor (대상 저장소 자신의 `.git` 선언 유도) ──────────────
+# 판정 입력은 대상 저장소의 `.git` 포인터와 유도된 홈의 슬롯 대여 기록뿐이다 — git subprocess 도,
+# 조상 훑기도 없으므로 runner 주입 경로가 사라졌다. 아래는 유도 표의 행 전수다.
 
 def test_detector_flags_registered_two_git_slot(pm_home_worktree):
     """`.repos/<repo>.git` 공용 저장소를 가리키는 등록 슬롯 → 소유 PM 홈."""
@@ -596,7 +596,7 @@ def test_detector_none_when_anchor_is_plain_checkout(tmp_path):
 
 
 def test_detector_none_when_anchor_owns_real_board(tmp_path):
-    """앵커가 *자기* 실 board 소유면 정당(자체 board 사용 존중·flag 안 함)."""
+    """대상 저장소가 *자기* 실 board 소유면 정당(자체 board 사용 존중·flag 안 함)."""
     b = _load_board()
     pm_home, worktree = _make_pm_home_with_worktree(tmp_path)
     _make_real_board(worktree / ".project_manager", split=False)
@@ -616,7 +616,7 @@ def test_detector_none_for_markerless_tree_inside_a_pm_home(tmp_path):
 
 
 def test_detector_fails_loud_when_owning_pm_home_is_unresolvable(tmp_path):
-    """소유 PM 홈을 확정 못 하는 linked worktree 는 자기 앵커로 강등하지 않고 터진다."""
+    """소유 PM 홈을 확정 못 하는 linked worktree 는 자기 대상 저장소로 바꾸지 않고 터진다."""
     b = _load_board()
     source = tmp_path / "foreign-source"
     source.mkdir()
@@ -644,7 +644,7 @@ def test_detector_flags_single_git_slot(tmp_path):
     _git(["add", "-A"], pm_home)
     _git(["commit", "-qm", "seed"], pm_home)
     # board 는 커밋 뒤에 만든다 — 커밋에 실으면 슬롯 checkout 도 실 board 를 갖게 돼
-    # "앵커가 자기 board 소유" 조기 반환이 먼저 걸린다(형상 전제 붕괴).
+    # "대상 저장소가 자기 board 소유" 조기 반환이 먼저 걸린다(구성 전제 붕괴).
     _make_real_board(pm_home / ".project_manager", split=True)
     slot = pm_home / "work" / "product_1"
     slot.parent.mkdir()
@@ -655,15 +655,15 @@ def test_detector_flags_single_git_slot(tmp_path):
 
 
 def test_detector_flags_real_worktree_default_runner(pm_home_worktree):
-    # 실 git worktree + default(실) runner 로 end-to-end detector 발화.
+    # 실 git worktree + default(실) runner 로 end-to-end detector 실행.
     b = _load_board()
     pm_home, worktree = pm_home_worktree
     assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) == pm_home
 
 
-# ── mutation dispatch 게이트: 전 mutation subcommand fail-loud (실 git worktree) ──
+# ── mutation dispatch 검사: 전 mutation subcommand fail-loud (실 git worktree) ──
 
-# 모든 mutation subcommand 의 최소 유효 argv — worktree cwd main() 실행 시 dispatch 게이트가
+# 모든 mutation subcommand 의 최소 유효 argv — worktree cwd main() 실행 시 dispatch 검사가
 # 전수 fail-loud 하는지 확인(실측 사례 2·3 은 이 중 new·ticket_finish; 나머지는 클래스 확장).
 _MUTATION_ARGVS = [
     ["new", "stray 유발"],
@@ -691,7 +691,7 @@ _MUTATION_ARGVS = [
     ["prefix", "strip", "AAA"],
     ["prefix", "merge", "AAA", "--into", "BBB"],
     ["prefix", "delete", "AAA"],
-    ["cluster", "new", "wave", "--tickets", "T-0100"],
+    ["cluster", "new", "sample", "--tickets", "T-0100"],
 ]
 
 
@@ -699,7 +699,7 @@ def _dispatch_namespace(board, subcommand: str, fn):
     """분류 키(`<group> <leaf>` 점표기)를 그대로 되돌려주는 Namespace 를 만든다.
 
     서브그룹 dest 이름은 엔진의 단일 표에서 가져온다 — 여기에 dest 를 손으로 나열하면 새 그룹이
-    생겼을 때 그 leaf 가 이 게이트에서 조용히 top-level 로 접힌다(검증 공회전).
+    생겼을 때 그 leaf 가 이 검사에서 조용히 top-level 로 바뀐다(검증 공회전).
     """
     parts = subcommand.split()
     values = {"cmd": parts[0], "fn": fn}
@@ -720,13 +720,13 @@ def test_mutation_argv_list_covers_all_mutations():
 @pytest.mark.parametrize("argv", _MUTATION_ARGVS, ids=lambda a: " ".join(a[:2]))
 def test_mutation_dispatch_fails_loud_from_worktree(pm_home_worktree, monkeypatch, capsys, argv):
     """모든 mutation subcommand 를 worktree cwd(실 linked worktree)에서 main() 실행 → dispatch
-    게이트가 fail-loud(rc 1)·명령 로직 미실행(stray 산출 0).
+    검사가 fail-loud(rc 1)·명령 로직 미실행(stray 산출 0).
 
-    board 모듈을 fixture 로 완전 격리(_isolate_board_module) — 게이트가 회귀로 미발화해도 실
+    board 모듈을 fixture 로 완전 격리(_isolate_board_module) — 검사가 회귀로 실행되지 않아도 실
     트리 대신 fixture 로만 쓰게 해 테스트가 실 worktree 를 오염시키지 못하게 한다."""
     b = _load_board()
     pm_home, worktree = pm_home_worktree
-    _isolate_board_module(b, monkeypatch, worktree)   # 호출 시점 앵커 = worktree (오실행 재현)
+    _isolate_board_module(b, monkeypatch, worktree)   # 호출 시점 대상 저장소 = worktree (오실행 재현)
     rc = b.main(argv)
     assert rc == 1
     err = capsys.readouterr().err
@@ -747,7 +747,7 @@ def test_new_from_worktree_creates_no_stray_ticket(pm_home_worktree, monkeypatch
     assert rc == 1
     open_dir = worktree / ".project_manager" / "wiki" / "tickets" / "open"
     assert list(open_dir.glob("T-*.md")) == []   # stray 티켓 0
-    # 파생 board.md·드래프트도 안 생김(게이트가 명령 진입 전 차단)
+    # 파생 board.md·드래프트도 안 생김(검사가 명령 진입 전 차단)
     assert not (worktree / ".project_manager" / "wiki" / "board.md").exists()
     capsys.readouterr()
 
@@ -765,20 +765,20 @@ def test_ticket_finish_from_worktree_fails_loud_no_stray_log(pm_home_worktree,
     assert not log_file.exists()   # stray log 0 (기록의 어떤 단계도 착지 전 중단)
 
 
-# ── 실측 사례 (1) lint 오경보: 근본 detect·읽기 경로 무-게이트 ───────────────
+# ── 실측 사례 (1) lint 오경보: 근본 detect·읽기 경로 무검사 ───────────────
 
 def test_lint_falsealarm_root_detected_but_read_paths_ungated(pm_home_worktree, monkeypatch, capsys):
     # 실측 사례 (1·PM 70): worktree cwd `board.py lint` 가 render-leak 등 오경보.
-    # 근본(misanchor)은 이제 detector 가 잡는다. 단 §결정: 읽기 경로(lint 등)는 무-게이트 —
-    # read 는 _MUTATION_SUBCOMMANDS 밖이라 dispatch 게이트가 발화하지 않고 그대로 read-only 동작.
+    # 근본(엉뚱한 저장소)은 이제 detector 가 잡는다. 단 §결정: 읽기 경로(lint 등)는 무검사 —
+    # read 는 _MUTATION_SUBCOMMANDS 밖이라 dispatch 검사가 실행되지 않고 그대로 read-only 동작.
     b = _load_board()
     pm_home, worktree = pm_home_worktree
-    # (a) 근본 misanchor 가 detector 로 식별됨(오경보 명령의 근본은 이제 잡힌다)
+    # (a) 근본 엉뚱한 저장소가 detector 로 식별됨(오경보 명령의 근본은 이제 잡힌다)
     assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) == pm_home
-    # (b) lint(오경보 명령)·기타 read 는 mutation 분류 밖 → dispatch 게이트 미발화(§결정: read 무변경)
+    # (b) lint(오경보 명령)·기타 read 는 mutation 분류 밖 → dispatch 검사 미실행(§결정: read 무변경)
     for name in ("lint", "list", "show"):
         assert name in board_command_rules._READ_SUBCOMMANDS and name not in board_command_rules._MUTATION_SUBCOMMANDS
-    # (c) 행위 확증: worktree 에서 read 명령(list)은 게이트 통과·misanchor 중단 메시지 없음
+    # (c) 행위 확증: worktree 에서 read 명령(list)은 검사 통과·엉뚱한 저장소 중단 메시지 없음
     _isolate_board_module(b, monkeypatch, worktree)
     rc = b.main(["list"])
     out = capsys.readouterr()
@@ -834,9 +834,9 @@ def test_classification_sets_disjoint():
     assert m.isdisjoint(r) and m.isdisjoint(s) and r.isdisjoint(s)
 
 
-def test_dispatch_gate_decision_matches_classification():
-    """dispatch 게이트의 발화 결정(_resolved_subcommand ∈ _MUTATION_SUBCOMMANDS)이 분류대로인지 —
-    mutation 은 발화·read/sidecar 는 미발화. sidecar(regression/livegate)는 *실행 없이* 결정만 확인."""
+def test_dispatch_check_decision_matches_classification():
+    """dispatch 검사의 실행 결정(_resolved_subcommand ∈ _MUTATION_SUBCOMMANDS)이 분류대로인지 —
+    mutation 은 실행·read/sidecar 는 미실행. sidecar(regression/live-test)는 *실행 없이* 결정만 확인."""
     b = _load_board()
 
     def _fires(argv):
@@ -865,7 +865,7 @@ def test_dispatch_gate_decision_matches_classification():
 )
 def test_read_board_resolution_opens_only_read_dispatch(
         monkeypatch, subcommand):
-    """실 등록 leaf 전수에서 PM 홈 board 해소는 read 축에만 열리고 mutation/sidecar는 닫힌다."""
+    """실 등록 leaf 전수에서 PM 홈 board 해소는 read 쪽에만 열리고 mutation/sidecar는 닫힌다."""
     b = _load_board()
     args = _dispatch_namespace(b, subcommand, lambda _home, _args: 0)
     monkeypatch.setattr(board_cmd, "build_parser", lambda **_kwargs: types.SimpleNamespace(parse_args=lambda _argv: args))
@@ -877,7 +877,7 @@ def test_read_board_resolution_opens_only_read_dispatch(
         return pm_paths._ReadBoardResolution(pm_paths._board_root_at(home.root), None)
 
     monkeypatch.setattr(pm_paths, "_resolve_read_board", resolve)
-    monkeypatch.setattr(board_dispatch, "_print_read_anchor", lambda _home,  **_kwargs: None)
+    monkeypatch.setattr(board_dispatch, "_print_read_target_repo", lambda _home,  **_kwargs: None)
     assert b.main([]) == 0
     assert bool(calls) is (subcommand in board_command_rules._READ_SUBCOMMANDS)
 
@@ -885,7 +885,7 @@ def test_read_board_resolution_opens_only_read_dispatch(
 # ── 오탐 0: PM 홈·솔로/standalone 무회귀 ──────────────────────────────────
 
 def test_pm_home_cwd_no_false_positive(tmp_path, monkeypatch, capsys):
-    # PM 홈(실 board 소유·worktree 아님) → detector None·guard 무발화.
+    # PM 홈(실 board 소유·worktree 아님) → detector None·guard 미실행.
     b = _load_board()
     pm_home = tmp_path / "pmhome"
     _make_real_board(pm_home / ".project_manager", split=True)
@@ -910,7 +910,7 @@ def test_solo_standalone_first_ticket_no_false_positive(tmp_path, monkeypatch, c
 
 
 def test_solo_board_in_same_repo_show_is_unchanged(tmp_path, monkeypatch, capsys):
-    """board와 작업 트리가 같은 solo 형상은 동일 repo board를 읽고 폴백 문구를 내지 않는다."""
+    """board와 작업 트리가 같은 solo 구성은 동일 repo board를 읽고 대체 문구를 내지 않는다."""
     b = _load_board()
     solo = tmp_path / "solo"
     (solo / ".project_manager").mkdir(parents=True)
@@ -942,7 +942,7 @@ def test_non_git_tree_no_false_positive(tmp_path):
 
 
 def test_pm_home_cwd_new_proceeds_past_guard(tmp_path, monkeypatch, capsys):
-    # 오탐 0 회귀(dispatch): PM 홈에서 `board.py new` 는 게이트를 통과해 실제로 티켓을 발행한다.
+    # 오탐 0 회귀(dispatch): PM 홈에서 `board.py new` 는 검사를 통과해 실제로 티켓을 발행한다.
     b = _load_board()
     pm_home = tmp_path / "pmhome"
     _make_real_board(pm_home / ".project_manager", split=True)
@@ -954,17 +954,17 @@ def test_pm_home_cwd_new_proceeds_past_guard(tmp_path, monkeypatch, capsys):
                     encoding="utf-8")
     # 발행은 `--task` 와 그 task 폴더(코드 트리·기준 브랜치)가 필요하다(T-0962).
     ensure_product_slot(b, task="pm-home-task")
-    rc = b.main(["new", "정상 발행", "--task", "pm-home-task"])   # 실 CLI 경로(dispatch 게이트 포함)
+    rc = b.main(["new", "정상 발행", "--task", "pm-home-task"])   # 실 CLI 경로(dispatch 검사 포함)
     out = capsys.readouterr()
-    assert rc == 0   # 게이트 통과 → 정상 발행
+    assert rc == 0   # 검사 통과 → 정상 발행
     assert "worktree(코드 전용) 트리에서 실행" not in (out.err + out.out)
     open_dir = pm_home / ".project_manager" / "board" / "tickets" / "open"
     assert len(list(open_dir.glob("T-*.md"))) == 1
 
 
-def test_read_fallback_does_not_weaken_following_mutation_gate(
+def test_read_fallback_does_not_weaken_following_mutation_check(
         pm_home_worktree, monkeypatch, capsys):
-    """같은 모듈에서 read 폴백 직후 mutation을 실행해도 override는 닫히고 stray 생성은 차단된다."""
+    """같은 모듈에서 read 대체 직후 mutation을 실행해도 override는 닫히고 stray 생성은 차단된다."""
     b = _load_board()
     _pm_home, worktree = pm_home_worktree
     _isolate_board_module(b, monkeypatch, worktree)
@@ -980,15 +980,15 @@ def test_read_fallback_does_not_weaken_following_mutation_gate(
 
 
 def test_read_anchor_is_first_line_even_when_stderr_present(tmp_path):
-    """앵커는 **실제 파이프 형상**에서도 첫 줄이다 — stdout 버퍼링 회귀 가드 (T-0465·codex 게이트).
+    """대상 저장소 줄은 **실제 파이프 구성**에서도 첫 줄이다 — stdout 버퍼링 회귀 가드 (T-0465·codex 검사).
 
     in-process `capsys` 테스트는 stdout 버퍼링을 거치지 않아 이 클래스를 구조적으로 못 본다:
     stdout 은 파이프/리다이렉션에서 블록 버퍼링되는데 stderr 는 unbuffered 라, `print(...)` 에
-    `flush=True` 가 없으면 stderr 가 앵커보다 먼저 흘러나온다(실측: `show T-9999 2>&1 | head` 가
+    `flush=True` 가 없으면 stderr 가 대상 저장소 줄보다 먼저 흘러나온다(실측: `show T-9999 2>&1 | head` 가
     not-found 를 선행 출력). 그래서 이 테스트만 **subprocess + stderr 병합**으로 순서를 고정한다.
     """
     # 존재할 수 없는 ID 를 쓴다 — 실재하는 ID 를 쓰면 stderr 가 안 나와 이 테스트가 조용히
-    # 무의미해진다(codex 게이트 지적). 아래에서 rc≠0 과 stderr 비어있지 않음을 함께 단언해,
+    # 무의미해진다(codex 검사 지적). 아래에서 rc≠0 과 stderr 비어있지 않음을 함께 단언해,
     # 전제가 깨지면 통과가 아니라 loud 실패가 되게 한다.
     missing_id = "T-0000-DOES-NOT-EXIST"
     result = subprocess.run(
@@ -1001,7 +1001,7 @@ def test_read_anchor_is_first_line_even_when_stderr_present(tmp_path):
     # 실제 병합 순서를 보려면 stdout·stderr 가 **한 파이프**로 들어와야 한다. `shell=True` +
     # `2>&1` 대신 `stderr=STDOUT` 을 쓴다 — 셸 무의존이라 Windows 에서도 같고 인자 인용 문제도 없다.
     # `encoding` 명시 필수: 자식은 UTF-8 을 내보내는데 text=True 만 주면 로캘 코덱으로 디코딩해
-    # CP949 콘솔에서 한글 앵커가 UnicodeDecodeError 를 낸다(엔진 subprocess 관례와 동일).
+    # CP949 콘솔에서 한글 대상 저장소 줄이 UnicodeDecodeError 를 낸다(엔진 subprocess 관례와 동일).
     merged = subprocess.run(
         [sys.executable, str(BOARD_PY), "show", missing_id],
         cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

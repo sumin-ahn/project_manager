@@ -1,12 +1,12 @@
 """identity_args — 공용 정체성 인자 모듈 단위테스트 (T-0322 · ADR-0057).
 
 엔진 패키지의 `pm_engine.domain.identity_args`(순수 인자 층)와 `pm_engine.infra.lease_store`
-(리스 IO 층)를 import 해 검증한다. 두 층을 각각 hermetic 하게 검증한다:
+(슬롯 대여 IO 층)을 import 해 검증한다. 두 층을 각각 hermetic 하게 검증한다:
 
   - **순수 인자 층**: `add_identity_args`·`parse_identity` — 파일 IO 0. 실 argparse 로 파싱한
     `Namespace` 를 넣어 discriminated `Identity` 해소 규칙 전수(slot/repo/none/fail-loud)를 본다.
-  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers` — `tmp_path` 에
-    `worktree-leases.json` 을 직접 써서(실 장부 미접촉) 흡수된 두 원 구현(board/pm_config
+  - **슬롯 대여 IO 층**: `leased_sessions`·`repo_slot_numbers` — `tmp_path` 에
+    `worktree-leases.json` 을 직접 써서(실 기록 미접촉) 합쳐진 두 원 구현(board/pm_config
     `_leased_sessions` · pm_bootstrap `_repo_slot_numbers`)의 동작이 정확히 보존됐는지 검증한다.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ def ia():
 
 
 def _write_leases(path: Path, entries: list[dict]) -> None:
-    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 동형)."""
+    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 와 같은 구조)."""
     path.write_text(json.dumps({"leases": entries}), encoding="utf-8")
 
 
@@ -62,11 +62,11 @@ def test_add_identity_args_defaults_none_when_omitted(ia):
     ns = _parse(ia, [])
     assert ns.repo is None
     assert ns.slot is None
-    assert ns.task is None  # T-0353 additive 축 — 기본 None(기존 무인자 무영향).
+    assert ns.task is None  # T-0353 additive 인자 — 기본 None(기존 무인자 무영향).
 
 
 def test_add_identity_args_registers_task(ia):
-    # T-0353 — `--task` 축 additive. 슬롯 축과 직교(공존 가능).
+    # T-0353 — `--task` 인자 additive. 슬롯 인자와 직교(공존 가능).
     ns = _parse(ia, ["--task", "payments-refactor"])
     assert ns.task == "payments-refactor"
     assert ns.repo is None and ns.slot is None
@@ -111,7 +111,7 @@ def test_parse_identity_slot_without_repo_fails_loud(ia):
 
 
 def test_parse_identity_slot_below_one_fails_loud(ia):
-    # pm_bootstrap slot≥1 계약 보존 (codex 게이트·test_bootstrap_slot_below_one_rejected 정합) —
+    # pm_bootstrap slot≥1 계약 보존 (codex 검사·test_bootstrap_slot_below_one_rejected 와 일치) —
     # canonical parse_identity 가 slot 0/음수를 수용하면 T-0315 채택 시 회귀.
     for bad in ("0", "-1"):
         ns = _parse(ia, ["--repo", "A", "--slot", bad])
@@ -127,12 +127,12 @@ def test_parse_identity_returns_discriminated_dataclass_not_bare_string(ia):
     assert hasattr(identity, "kind")
 
 
-# ── task 축 귀속 + 예약 패턴 거부 (T-0353·⑥) ─────────────────────────────────
+# ── task 인자 귀속 + 예약 패턴 거부 (T-0353·⑥) ─────────────────────────────────
 
 
-def test_parse_identity_task_is_orthogonal_to_slot_axis(ia):
-    """`--task` 는 slot 축과 직교 — kind 는 repo/slot 로 그대로 결정되고 task 만 실린다(⑥)."""
-    # task 단독 → kind 는 여전히 none(슬롯 축 없음)·task 값만.
+def test_parse_identity_task_is_orthogonal_to_slot(ia):
+    """`--task` 는 slot 인자와 직교 — kind 는 repo/slot 로 그대로 결정되고 task 만 실린다(⑥)."""
+    # task 단독 → kind 는 여전히 none(슬롯 인자 없음)·task 값만.
     idn = ia.parse_identity(_parse(ia, ["--task", "myjob"]))
     assert idn.kind == "none" and idn.task == "myjob"
     assert idn.repo is None and idn.slot is None
@@ -153,7 +153,7 @@ def test_is_reserved_task_name_rejects_registered_repo_slot_pattern(ia):
     # 등록 repo + _정수 → 예약(거부).
     assert ia.is_reserved_task_name("project_manager_1", registered) is True
     assert ia.is_reserved_task_name("finance_12", registered) is True
-    # repo 이름에 언더스코어가 있어도 마지막 _N 을 정확히 매칭(전체 앵커).
+    # repo 이름에 언더스코어가 있어도 마지막 _N 을 정확히 매칭(전체 일치).
     assert ia.is_reserved_task_name("my_repo_3", ["my_repo"]) is True
 
 
@@ -168,7 +168,7 @@ def test_is_reserved_task_name_allows_free_format(ia):
     assert ia.is_reserved_task_name("finance", registered) is False
 
 
-# ── leased_sessions — board/pm_config `_leased_sessions` 흡수 ────────────────
+# ── leased_sessions — board/pm_config `_leased_sessions` 를 합침 ────────────────
 
 
 def test_leased_sessions_returns_only_leased_state(ia, tmp_path):
@@ -191,7 +191,7 @@ def test_leased_sessions_excludes_empty_or_missing_session(ia, tmp_path):
 
 
 def test_leased_sessions_missing_state_key_is_excluded(ia, tmp_path):
-    # board/pm_config 원 `_leased_sessions` 동형 — state 키 부재는 "leased" 로 back-compat 안
+    # board/pm_config 원 `_leased_sessions` 와 같은 방식 — state 키 부재는 "leased" 로 back-compat 안
     # 한다(strict `== "leased"`). repo_slot_numbers 의 back-compat 과 의도된 비대칭(docstring 참고).
     leases = tmp_path / "worktree-leases.json"
     _write_leases(leases, [
@@ -216,7 +216,7 @@ def test_leased_sessions_schema_mismatch_returns_empty(ia, tmp_path):
     assert lease_store.leased_sessions(leases) == []
 
 
-# ── repo_slot_numbers — pm_bootstrap `_repo_slot_numbers` 흡수 ───────────────
+# ── repo_slot_numbers — pm_bootstrap `_repo_slot_numbers` 를 합침 ───────────────
 
 
 def test_repo_slot_numbers_dedup_and_sorted(ia, tmp_path):
@@ -248,7 +248,7 @@ def test_repo_slot_numbers_excludes_idle(ia, tmp_path):
 
 
 def test_repo_slot_numbers_missing_state_key_defaults_leased(ia, tmp_path):
-    # pm_bootstrap 원 구현 동형 back-compat — state 키 부재는 leased 취급(leased_sessions 과 비대칭).
+    # pm_bootstrap 원 구현과 같은 방식의 back-compat — state 키 부재는 leased 취급(leased_sessions 과 비대칭).
     leases = tmp_path / "worktree-leases.json"
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "A_1"},  # state 키 없음
@@ -257,7 +257,7 @@ def test_repo_slot_numbers_missing_state_key_defaults_leased(ia, tmp_path):
 
 
 def test_repo_slot_numbers_no_match_returns_empty_list(ia, tmp_path):
-    # repo 는 실재하나(장부 read 성공) 활성 슬롯 0개 — "읽을 수 없음"(None) 과 구분되는 [].
+    # repo 는 실재하나(기록 read 성공) 활성 슬롯 0개 — "읽을 수 없음"(None) 과 구분되는 [].
     leases = tmp_path / "worktree-leases.json"
     _write_leases(leases, [
         {"slot": "work/B_1", "repo": "B", "session": "B_1", "state": "leased"},
@@ -408,7 +408,7 @@ def test_f6_non_readonly_unowned_slot_still_raises(ia, tmp_path):
 
 
 def test_f6_ignores_idle_slots(ia, tmp_path):
-    """idle(반납) 슬롯은 보유로 안 센다 — leased 만 F6 대상(slots_for_task 정합)."""
+    """idle(반납) 슬롯은 보유로 안 센다 — leased 만 F6 대상(slots_for_task 와 일치)."""
     leases = tmp_path / "worktree-leases.json"
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "job10", "state": "idle"},
@@ -419,7 +419,7 @@ def test_f6_ignores_idle_slots(ia, tmp_path):
 
 
 def test_f6_state_absent_treated_as_leased(ia, tmp_path):
-    """state 키 부재 = leased 로 본다 (worktree_pool.from_dict default·back-compat 정합)."""
+    """state 키 부재 = leased 로 본다 (worktree_pool.from_dict default·back-compat 과 일치)."""
     leases = tmp_path / "worktree-leases.json"
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "job11"},  # state 부재
@@ -429,7 +429,7 @@ def test_f6_state_absent_treated_as_leased(ia, tmp_path):
 
 
 def test_f6_cwd_does_not_participate(ia, tmp_path, monkeypatch):
-    """cwd 비참여(T-0345 불변) — 실행 위치를 어디서 호출하든 장부+명시 인자로만 해소."""
+    """cwd 비참여(T-0345 불변) — 실행 위치를 어디서 호출하든 기록+명시 인자로만 해소."""
     leases = tmp_path / "worktree-leases.json"
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "job12", "state": "leased"},
@@ -453,10 +453,10 @@ def test_task_prefix_reads_from_tasks_collection(ia, tmp_path):
     assert lease_store.task_prefix("job1", leases) == "PAY"
     assert lease_store.task_prefix("job2", leases) is None      # 미설정
     assert lease_store.task_prefix("absent", leases) is None    # 없는 task
-    assert lease_store.task_prefix("job1", tmp_path / "absent.json") is None  # 장부 부재 fail-soft
+    assert lease_store.task_prefix("job1", tmp_path / "absent.json") is None  # 기록 부재 fail-soft
 
 
-# ── validate_task_name — CLI 층 공유 validator (T-0355 게이트 must-fix·깔때기 검증) ──
+# ── validate_task_name — CLI 층 공유 validator (T-0355 검사 must-fix·깔때기 검증) ──
 
 
 @pytest.mark.parametrize("bad", [
@@ -464,7 +464,7 @@ def test_task_prefix_reads_from_tasks_collection(ia, tmp_path):
     ".hidden", "..", ".", "sub/name",
 ])
 def test_validate_task_name_rejects_unsafe(ia, bad):
-    """공백/괄호/path/선행 `.` 등 하류 표면 파손 문자를 fail-loud(InvalidTaskName·ValueError)."""
+    """공백/괄호/path/선행 `.` 등 하류 명령을 망가뜨리는 문자를 fail-loud(InvalidTaskName·ValueError)."""
     with pytest.raises(ia.InvalidTaskName):
         ia.validate_task_name(bad)
     # ValueError 서브클래스라 caller 의 기존 except ValueError 가 잡는다.

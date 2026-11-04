@@ -17,7 +17,7 @@ import re
 #     (per-repo registry registrant)를 overload 하지 않는 *별도* 칼럼이다(codex sug — 의미 충돌 회피).
 # 파싱은 **헤더 행을 읽어 칼럼명→인덱스**로 매핑한다(위치-비의존) — 모든 스키마를 같은
 # 코드로 읽고, 누락 칼럼은 빈 값으로 떨어뜨려 하위호환을 보장한다(`base`/`protected` 칼럼
-# 없는 구 레지스트리 → 행 dict 에 그 키 없음 → `_repo_base`/`_repo_protected` 가 폴백).
+# 없는 구 레지스트리 → 행 dict 에 그 키 없음 → `_repo_base`/`_repo_protected` 가 기본값으로 대체).
 _AREAS_SEP_RE = re.compile(r"^\|[\s:|-]+\|?$")  # markdown 구분선 `|---|---|`
 
 
@@ -38,7 +38,7 @@ def _split_areas_row(line: str) -> list[str] | None:
 # `protected`/`area_owner` 없음)는 이 순서의 *prefix* 다(`repo|prefix|git|test_cmd|owner` 또는
 # …`|base`/…`|protected`). 그래서 헤더보다 셀이 많은 행(구 헤더에 신 칼럼 row 가 append 된
 # *업그레이드* 프로젝트 — `repo add` 가 완전 canonical row 를 더 짧은 헤더에 붙인 경우)을 이
-# canonical 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(게이트가
+# canonical 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(검사가
 # base 에 대해 건 가드를 protected[7칸]→area_owner[8칸]까지 확장).
 _AREAS_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base", "protected",
                   "area_owner")
@@ -49,7 +49,7 @@ def _areas_row_dict(header_cells: list[str], cells: list[str]) -> dict[str, str]
 
     셀 수가 헤더보다 **많으면**(더 넓은 신 스키마 row 를 더 좁은 구 헤더에 append 한 업그레이드
     프로젝트) 헤더를 무시하고 `_AREAS_COLUMNS` 순서로 매핑한다(base/protected/area_owner 유실
-    차단·폭 초과는 `col{i}` 폴백). 그 외는 자기 헤더로 매핑(모자란 셀은 빈 문자열).
+    차단·폭 초과는 `col{i}` 로 대체). 그 외는 자기 헤더로 매핑(모자란 셀은 빈 문자열).
     """
     if len(cells) > len(header_cells):
         return {
@@ -61,12 +61,12 @@ def _areas_row_dict(header_cells: list[str], cells: list[str]) -> dict[str, str]
 
 
 # 보호 브랜치 default (엔진 상수) — areas.md `protected` 칼럼이 미지정/미등록일 때
-# 폴백. PM 이 자율로 commit/push 못 하는 브랜치(pre-push 훅·bootstrap 경고가 이걸 본다).
+# 대체 값. PM 이 자율로 commit/push 못 하는 브랜치(pre-push 훅·bootstrap 경고가 이걸 본다).
 # per-repo override 는 areas.md `protected` 칼럼(쉼표분리·예 `main,develop`).
 DEFAULT_PROTECTED = ("main", "master", "develop")
 
 
-_PROTECTED_DEFAULT_LITERAL = "default"   # 칼럼 비움 = DEFAULT_PROTECTED 폴백(해제 아님).
+_PROTECTED_DEFAULT_LITERAL = "default"   # 칼럼 비움 = DEFAULT_PROTECTED 로 대체(해제 아님).
 
 
 def _validate_protected_tokens(value: str) -> tuple[list[str] | None, str]:

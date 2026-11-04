@@ -67,8 +67,8 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    # user 축 tmp 바인딩 — 소유 대조(T-0781)는 user ∧ slot 이라 픽스처 claim(`me/proj_1`)의
-    # user 를 conf 로 고정해야 한다. git 폴백은 전역 config(실 사용자)를 읽으므로 함께 막는다.
+    # user 기준 tmp 바인딩 — 소유 대조(T-0781)는 user ∧ slot 이라 픽스처 claim(`me/proj_1`)의
+    # user 를 conf 로 고정해야 한다. git 대체 조회는 전역 config(실 사용자)를 읽으므로 함께 막는다.
     (pm / "local.conf").write_text("identity.user=me\n", encoding="utf-8")
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # 홈 git 가드 기본 clean — 환경 git 유무와 무관하게 relabel 이 진행되게(가드 자체는 전용 테스트).
@@ -181,7 +181,7 @@ def test_reid_strips_prefix_reverse(board):
 
 
 def test_reid_accepts_approved_uppercase_prefix(board):
-    """reid 소비 문법은 대문자 legacy prefix를 받고, 신설은 값-결속 승인을 요구한다."""
+    """reid 소비 문법은 대문자 legacy prefix를 받고, 신설은 값이 맞는 승인을 요구한다."""
     _seed_ticket(board, "T-0036")
     rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), _ns("T-0036", "T-PAY-036", user_ack="PAY"))
     assert rc == 0
@@ -231,7 +231,7 @@ def test_reid_preserves_slug_in_filename(board):
 
 def test_reid_numeric_ending_slug_preserves_slug_on_rename(board):
     """codex R2 MF-2: 숫자로 끝나는 legacy slug(`T-0036-fix-123.md`·fm id `T-0036`) reid 시
-    파일명 rename 정확(slug `fix-123` 보존)·frontmatter/본문/wiki 참조 rewrite 정합.
+    파일명 rename 정확(slug `fix-123` 보존)·frontmatter/본문/wiki 참조 rewrite 일치.
 
     파일명-only 파서는 `T-0036-fix-123` 을 prefixed ID 로 오인해 rename 을 누락(파일명↔content
     불일치) → frontmatter `id:` 1차 진실(`_canonical_ticket_id`)로 해소. 이 fix 전엔 파일명이
@@ -541,7 +541,7 @@ def test_reid_home_git_dirty_does_not_block_dry_run(board, monkeypatch, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# board-git 백업 (상속·_prefix_relabel) — reid 라벨 verb 정합
+# board-git 백업 (상속·_prefix_relabel) — reid 라벨 verb 일치
 # ════════════════════════════════════════════════════════════════════════
 
 def test_reid_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
@@ -622,7 +622,7 @@ def test_reid_dry_run_takes_no_lock(board, monkeypatch, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# CLI 배선 — argparse reid 서브커맨드 → cmd_reid 디스패치
+# CLI 연결 — argparse reid 서브커맨드 → cmd_reid 디스패치
 # ════════════════════════════════════════════════════════════════════════
 
 def test_cli_reid_dispatches_to_cmd_reid(board):

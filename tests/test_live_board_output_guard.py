@@ -9,7 +9,7 @@ import conftest as test_config
 
 
 def _make_board_shape(root: Path) -> dict[str, Path]:
-    """wiki/board 분리 양쪽과 파생 board.md가 있는 최소 live board 형상."""
+    """wiki/board 분리 양쪽과 파생 board.md가 있는 최소 live board 구성."""
     paths = {
         "wiki-ticket": (
             root / ".project_manager" / "wiki" / "tickets" / "open"

@@ -1,7 +1,7 @@
-"""promote 내용 검토 게이트 — 본문이 *주장하는 사실* 판정 (형식 게이트와 별개 축).
+"""promote 내용 검토 검사 — 본문이 *주장하는 사실* 판정 (형식 검사와 별개 기준).
 
-형식 게이트(placeholder·thin·설계 절)는 "뼈대가 남았나"만 본다. 이 파일이 고정하는 축은 그
-게이트가 구조적으로 못 보는 것들이다:
+형식 검사(placeholder·thin·설계 절)는 "뼈대가 남았나"만 본다. 이 파일이 고정하는 기준은 그
+검사가 구조적으로 못 보는 것들이다:
 
   1. **touches 실재** — 소유 repo 좌표(`repo_coordinates` 정규화 후 PM 홈 또는 슬롯 worktree)에서
      해소되는가. 부재는 **경고 1줄**이고 차단이 아니다(신설 예정 파일을 먼저 적는 것이 정상 운영).
@@ -9,17 +9,17 @@
      (`wiki/decisions/x.md`)는 소유 트리에서 **유일하게** 해소될 때만 그 파일로 판정하고, 사본이
      여럿이면(그리고 basename 단독 `board.py:120` 이면) 어느 사본인지 확정할 수 없어 **판정불능
      개수**로 센다 — 어느 표기로도 실재 파일이 없으면 판정불능이 아니라 red 다(허위 인용).
-  3. **architect 점검 라운드** — `design: required|done` 티켓은 점검 라운드가 회수·충전되기 전
-     승격이 거부된다(초안 PM → 점검 architect → 비준 PM 3단의 기계 강제 지점). 판정은 라운드
+  3. **architect 점검 라운드** — `design: required|done` 티켓은 점검 라운드를 돌려받아 채우기 전
+     승격이 거부된다(초안 PM → 점검 architect → 승인 PM 3단의 기계 강제 지점). 판정은 라운드
      사이드카 소유(`load_rounds`·`round_is_pending`) 재사용이다.
 
 **양방향**으로 고정한다 — 정상 티켓이 통과하는지(오차단 0)와 결함 티켓이 red 인지(민감도)를 같은
 픽스처 집합에서 단언하고, 판정불능이 red 도 green 도 아닌 **개수**로 세어지는지도 단언한다.
 
-경계: 겹침(다른 활성 티켓과 touches 교집합)은 이 게이트의 축이 **아니다** — 겹치는 티켓의
+경계: 겹침(다른 활성 티켓과 touches 교집합)은 이 검사의 기준이 **아니다** — 겹치는 티켓의
 promote 성공을 명시 단언해 never-block 소유 경계를 코드로 못박는다.
 
-hermetic: board.py 의 경로 전역은 import 시점에 실 repo 로 굳으므로 tmp 홈으로 재앵커한다
+hermetic: board.py 의 경로 전역은 import 시점에 실 repo 로 굳으므로 tmp 홈으로 대상 저장소를 바꿔 끼운다
 (`anchor_board_module`). board-git e2e 는 실 git + bare remote 를 tmp 에 세운다.
 """
 from __future__ import annotations
@@ -59,34 +59,34 @@ _GIT_IDENTITY = {
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
 }
 
-# 새 축이 내는 kind 전수 — 형식 게이트 kind(placeholder·thin·design-pending)와 섞이지 않게
+# 새 기준이 내는 kind 전수 — 형식 검사 kind(placeholder·thin·design-pending)와 섞이지 않게
 # 단언마다 이 집합으로 걸러 본다.
 _NEW_KINDS = frozenset({
     "touches-missing", "citation-unresolved",
     "architect-review-pending", "content-unverifiable"})
 
 # 하위 디렉터리 기준 표기 양방향 픽스처 — (소유 트리에 실제로 두는 경로, 본문이 적는 표기).
-# 두 앵커(`wiki/`·`lib/`)를 함께 도는 이유: 실 board 의 미해소 인용이 문서 축(`wiki/…`)과 코드
-# 축(`lib/…`) 양쪽에서 나왔고, 한쪽만 고정하면 다른 축의 강등을 못 본다.
+# 두 기준 디렉터리(`wiki/`·`lib/`)를 함께 도는 이유: 실 board 의 미해소 인용이 문서 쪽(`wiki/…`)과 코드
+# 쪽(`lib/…`) 양쪽에서 나왔고, 한쪽만 고정하면 다른 쪽의 수준 낮춤을 못 본다.
 _SUBDIR_CITATIONS = [
     (".project_manager/wiki/decisions/0001-x.md", "wiki/decisions/0001-x.md"),
     (".opencode/lib/guard.cjs", "lib/guard.cjs"),
 ]
-# 같은 앵커인데 소유 트리 어디에도 없는 인용 — 이 게이트가 막으려는 허위 인용.
+# 같은 기준 디렉터리인데 소유 트리 어디에도 없는 인용 — 이 검사가 막으려는 허위 인용.
 _SUBDIR_ABSENT = ["wiki/definitely-missing.md", "lib/definitely-missing.cjs"]
 _SUBDIR_IDS = ["wiki", "lib"]
 
 _DESIGN_FILLED = (
     "## 설계\n"
-    "- **경계 실측**: 활성 티켓 전수를 게이트에 태워 오차단 수를 셌다.\n"
-    "- **불변식**: 형식 게이트 판정·메시지는 무변경이다.\n"
-    "- **표면 상한**: 차단은 인용 부재/범위초과와 점검 라운드 미회수 둘뿐.\n"
+    "- **경계 실측**: 활성 티켓 전수를 검사에 태워 오차단 수를 셌다.\n"
+    "- **불변식**: 형식 검사 판정·메시지는 무변경이다.\n"
+    "- **표면 상한**: 차단은 인용 부재/범위초과와 점검 라운드를 돌려받지 않은 경우 둘뿐.\n"
     "- **테스트 전략**: 양방향 픽스처로 red/green 을 고정한다.\n\n")
 
 
 def _load_board():
     spec = importlib.util.spec_from_file_location(
-        "board_content_gate", TOOLS / "board.py")
+        "board_content_check", TOOLS / "board.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -100,17 +100,17 @@ def _body(extra: str = "", *, design_section: str = "") -> str:
     return (
         "# T-0001 — 실 제목\n\n"
         "## 목표\n승격 순간에 본문 사실성을 판정한다.\n\n"
-        "## 인터페이스\n승격 게이트가 인용과 touches 를 함께 본다.\n\n"
+        "## 인터페이스\n승격 검사가 인용과 touches 를 함께 본다.\n\n"
         "## 결정\n부재 touches 는 경고, 범위 밖 인용은 차단.\n\n"
         + design_section +
-        "## 완료 조건 (Definition of Done)\n- [ ] 게이트 + 단위 테스트\n\n"
-        "## 참고\n- 형식 게이트는 `_body_lint_issues` 단일 깔때기\n"
+        "## 완료 조건 (Definition of Done)\n- [ ] 검사 + 단위 테스트\n\n"
+        "## 참고\n- 형식 검사는 `_body_lint_issues` 단일 깔때기\n"
         + extra +
         "\n## 메모\n")
 
 
 def _issues(mod, body, *, touches=None, design=None, tid="T-0001", content_facts=True):
-    """새 축만 남긴 판정 목록 — 형식 게이트 kind 는 걸러낸다."""
+    """새 기준만 남긴 판정 목록 — 형식 검사 kind 는 걸러낸다."""
     found = body_lint._body_lint_issues(pm_paths.home_at(mod.REPO),
         tid, body, design=design, touches=touches, content_facts=content_facts)
     return [(kind, detail) for _tid, kind, detail in found if kind in _NEW_KINDS]
@@ -121,7 +121,7 @@ def _kinds(issues):
 
 
 @pytest.fixture
-def anchored(tmp_path, monkeypatch):
+def retargeted(tmp_path, monkeypatch):
     """board-git 없이 판정 함수만 태우는 tmp 홈 (board 루트 = `.project_manager/board`)."""
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
@@ -140,10 +140,10 @@ def _write(root: Path, relative: str, text: str = "한 줄\n") -> Path:
 
 
 def _register_slot(root: Path, slot: str = "work/demo_1", repo: str = "demo") -> Path:
-    """리스 장부에 지속 slot↔repo 매핑을 심고 그 worktree 디렉터리를 만든다."""
-    ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(
+    """슬롯 대여 기록에 지속 slot↔repo 매핑을 심고 그 worktree 디렉터리를 만든다."""
+    record_path = root / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(
         json.dumps({"leases": [{"slot": slot, "repo": repo, "state": "leased"}]}),
         encoding="utf-8")
     path = root / slot
@@ -155,186 +155,186 @@ def _register_slot(root: Path, slot: str = "work/demo_1", repo: str = "demo") ->
 # 1. touches 실재 — 경고 1줄(never-block) · 좌표는 단일 소유자가 정규화
 # ════════════════════════════════════════════════════════════════════════
 
-def test_touches_in_pm_home_is_silent(anchored, tmp_path):
-    """PM 홈이 소유한 경로(문서 자산)는 무발화 — 정상 티켓 오차단 0."""
+def test_touches_in_pm_home_is_silent(retargeted, tmp_path):
+    """PM 홈이 소유한 경로(문서 자산)는 알리지 않음 — 정상 티켓 오차단 0."""
     _write(tmp_path, ".project_manager/wiki/pm_role.md")
-    assert _issues(anchored, _body(),
+    assert _issues(retargeted, _body(),
                    touches=[".project_manager/wiki/pm_role.md"]) == []
 
 
-def test_touches_only_in_slot_worktree_is_silent(anchored, tmp_path):
+def test_touches_only_in_slot_worktree_is_silent(retargeted, tmp_path):
     """슬롯 worktree 만 소유한 경로(코드·테스트)도 해소된다 — 한 트리만 보면 정상이 부재가 된다."""
     slot = _register_slot(tmp_path)
     _write(slot, "tests/test_engine.py")
-    assert _issues(anchored, _body(), touches=["tests/test_engine.py"]) == []
+    assert _issues(retargeted, _body(), touches=["tests/test_engine.py"]) == []
 
 
-def test_missing_touches_is_one_warning_line_and_never_blocks(anchored, tmp_path):
+def test_missing_touches_is_one_warning_line_and_never_blocks(retargeted, tmp_path):
     """어느 트리에도 없는 touches → 경고 **1줄**이고 그 kind 는 promote 비차단 집합이다."""
-    issues = _issues(anchored, _body(),
+    issues = _issues(retargeted, _body(),
                      touches=["tests/test_new.py", "tools/absent.py"])
     assert _kinds(issues) == ["touches-missing"], (
         f"부재 touches 는 경로 수와 무관하게 1줄이어야 한다: {issues!r}")
     detail = issues[0][1]
     assert "tests/test_new.py" in detail and "tools/absent.py" in detail
     assert "touches-missing" in body_lint._PROMOTE_ADVISORY_KINDS, \
-        "touches 부재가 차단 축으로 승격됨 — 신설 예정 파일 발행이 막힌다."
+        "touches 부재가 차단 기준으로 승격됨 — 신설 예정 파일 발행이 막힌다."
 
 
-def test_worktree_prefixed_touches_resolve_after_normalization(anchored, tmp_path):
+def test_worktree_prefixed_touches_resolve_after_normalization(retargeted, tmp_path):
     """`work/<repo>_<N>/` 접두는 좌표 단일 소유자가 검증·정규화한 뒤 그 워크스페이스에서 찾는다."""
     slot = _register_slot(tmp_path)
     _write(slot, "tools/engine.py")
-    assert _issues(anchored, _body(), touches=["work/demo_1/tools/engine.py"]) == []
+    assert _issues(retargeted, _body(), touches=["work/demo_1/tools/engine.py"]) == []
 
 
-def test_worktree_prefixed_touches_without_ledger_are_unverifiable(anchored, tmp_path):
-    """리스 장부가 없으면 접두를 검증할 수 없다 — red 도 green 도 아닌 판정불능 개수."""
-    issues = _issues(anchored, _body(), touches=["work/demo_1/tools/engine.py"])
+def test_worktree_prefixed_touches_without_records_are_unverifiable(retargeted, tmp_path):
+    """슬롯 대여 기록이 없으면 접두를 검증할 수 없다 — red 도 green 도 아닌 판정불능 개수."""
+    issues = _issues(retargeted, _body(), touches=["work/demo_1/tools/engine.py"])
     assert _kinds(issues) == ["content-unverifiable"], issues
     assert "touches 좌표 1건" in issues[0][1]
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 2. `파일:줄` 인용 — 해소되는 것만 판정 · 판정불능은 개수로 표면화
+# 2. `파일:줄` 인용 — 해소되는 것만 판정 · 판정불능은 개수로 드러냄
 # ════════════════════════════════════════════════════════════════════════
 
-def test_repo_relative_citation_in_range_is_silent(anchored, tmp_path):
-    """실재 파일 + 줄 범위 안 인용은 무발화(오차단 0)."""
+def test_repo_relative_citation_in_range_is_silent(retargeted, tmp_path):
+    """실재 파일 + 줄 범위 안 인용은 알리지 않음(오차단 0)."""
     _write(tmp_path, ".project_manager/tools/board.py", "a\nb\nc\n")
     body = _body("- 근거 `.project_manager/tools/board.py:3`\n")
-    assert _issues(anchored, body) == []
+    assert _issues(retargeted, body) == []
 
 
-def test_citation_beyond_line_count_is_blocking(anchored, tmp_path):
-    """줄 범위를 넘는 인용은 차단 — 실측하지 않고 적은 숫자를 잡는 유일한 축."""
+def test_citation_beyond_line_count_is_blocking(retargeted, tmp_path):
+    """줄 범위를 넘는 인용은 차단 — 실측하지 않고 적은 숫자를 잡는 유일한 기준."""
     _write(tmp_path, ".project_manager/tools/board.py", "a\nb\nc\n")
     body = _body("- 근거 `.project_manager/tools/board.py:41`\n")
-    issues = _issues(anchored, body)
+    issues = _issues(retargeted, body)
     assert _kinds(issues) == ["citation-unresolved"], issues
     assert "3줄" in issues[0][1], "실측 줄 수가 메시지에 없다."
     assert "citation-unresolved" not in body_lint._PROMOTE_ADVISORY_KINDS
 
 
-def test_citation_missing_file_under_existing_anchor_is_blocking(anchored, tmp_path):
-    """앵커 디렉터리는 실재하는데 파일이 없으면 차단 — 환각 경로."""
+def test_citation_missing_file_under_existing_anchor_is_blocking(retargeted, tmp_path):
+    """기준 디렉터리는 실재하는데 파일이 없으면 차단 — 환각 경로."""
     _write(tmp_path, ".project_manager/tools/board.py", "a\n")
     body = _body("- 근거 `.project_manager/tools/absent_module.py:10`\n")
-    assert _kinds(_issues(anchored, body)) == ["citation-unresolved"]
+    assert _kinds(_issues(retargeted, body)) == ["citation-unresolved"]
 
 
-def test_basename_only_citation_is_counted_not_judged(anchored, tmp_path):
-    """basename 단독 인용은 사본이 여럿이라 판정불능 — 개수로만 표면화한다."""
+def test_basename_only_citation_is_counted_not_judged(retargeted, tmp_path):
+    """basename 단독 인용은 사본이 여럿이라 판정불능 — 개수로만 드러낸다."""
     _write(tmp_path, ".project_manager/tools/board.py", "a\n")
     body = _body("- 근거 `board.py:9999`\n")
-    issues = _issues(anchored, body)
+    issues = _issues(retargeted, body)
     assert _kinds(issues) == ["content-unverifiable"], issues
     assert "인용 1건" in issues[0][1]
 
 
 @pytest.mark.parametrize("stored,cited", _SUBDIR_CITATIONS, ids=_SUBDIR_IDS)
 def test_subdirectory_citation_resolving_uniquely_is_silent_in_range(
-        anchored, tmp_path, stored, cited):
+        retargeted, tmp_path, stored, cited):
     """하위 디렉터리 기준 표기라도 소유 트리에서 유일하게 해소되면 통과한다(오차단 0)."""
     _write(tmp_path, stored, "a\nb\nc\n")
-    assert _issues(anchored, _body(f"- 근거 `{cited}:2`\n")) == []
+    assert _issues(retargeted, _body(f"- 근거 `{cited}:2`\n")) == []
 
 
 @pytest.mark.parametrize("stored,cited", _SUBDIR_CITATIONS, ids=_SUBDIR_IDS)
 def test_subdirectory_citation_beyond_line_count_is_blocking(
-        anchored, tmp_path, stored, cited):
+        retargeted, tmp_path, stored, cited):
     """유일 해소는 *판정*으로 이어진다 — 그 파일의 줄 범위를 넘으면 차단이다."""
     _write(tmp_path, stored, "a\nb\nc\n")
-    issues = _issues(anchored, _body(f"- 근거 `{cited}:41`\n"))
+    issues = _issues(retargeted, _body(f"- 근거 `{cited}:41`\n"))
     assert _kinds(issues) == ["citation-unresolved"], issues
     assert "3줄" in issues[0][1], "해소된 파일의 실측 줄 수가 메시지에 없다."
 
 
 @pytest.mark.parametrize("cited", _SUBDIR_ABSENT, ids=_SUBDIR_IDS)
 def test_subdirectory_citation_with_no_file_anywhere_is_blocking(
-        anchored, tmp_path, cited):
-    """어느 표기로도 실재 파일이 없으면 차단 — 판정불능 강등이 허위 인용을 삼키면 안 된다."""
-    for stored, _cited in _SUBDIR_CITATIONS:      # 같은 앵커의 형제 파일은 실재한다
+        retargeted, tmp_path, cited):
+    """어느 표기로도 실재 파일이 없으면 차단 — 판정불능으로 수준 낮춤이 허위 인용을 삼키면 안 된다."""
+    for stored, _cited in _SUBDIR_CITATIONS:      # 같은 기준 디렉터리의 형제 파일은 실재한다
         _write(tmp_path, stored, "a\n")
-    issues = _issues(anchored, _body(f"- 근거 `{cited}:1`\n"))
+    issues = _issues(retargeted, _body(f"- 근거 `{cited}:1`\n"))
     assert _kinds(issues) == ["citation-unresolved"], issues
     assert "citation-unresolved" not in body_lint._PROMOTE_ADVISORY_KINDS
 
 
 def test_subdirectory_citation_with_several_copies_is_counted_not_judged(
-        anchored, tmp_path):
+        retargeted, tmp_path):
     """사본이 여럿이면 어느 파일의 줄 수인지 확정할 수 없다 — 부재 red 와 구분되는 판정불능."""
     slot = _register_slot(tmp_path)
     _write(tmp_path, ".opencode/lib/guard.cjs", "a\n")
     _write(slot, "templates/opencode/.opencode/lib/guard.cjs", "a\n")
-    issues = _issues(anchored, _body("- 근거 `lib/guard.cjs:60`\n"))
+    issues = _issues(retargeted, _body("- 근거 `lib/guard.cjs:60`\n"))
     assert _kinds(issues) == ["content-unverifiable"], issues
 
 
-def test_overlapping_roots_do_not_double_count_the_same_file(anchored, tmp_path):
+def test_overlapping_roots_do_not_double_count_the_same_file(retargeted, tmp_path):
     """PM 홈 ⊃ 슬롯 — 두 트리에서 같은 파일이 보여도 1건이다(중복 계수는 유일 해소를 지운다)."""
     slot = _register_slot(tmp_path)
     _write(slot, "docs/wiki/only-here.md", "a\nb\n")
-    assert _issues(anchored, _body("- 근거 `wiki/only-here.md:2`\n")) == []
-    issues = _issues(anchored, _body("- 근거 `wiki/only-here.md:9`\n"))
+    assert _issues(retargeted, _body("- 근거 `wiki/only-here.md:2`\n")) == []
+    issues = _issues(retargeted, _body("- 근거 `wiki/only-here.md:9`\n"))
     assert _kinds(issues) == ["citation-unresolved"], issues
 
 
-def test_files_inside_pruned_directories_do_not_resolve_a_citation(anchored, tmp_path):
+def test_files_inside_pruned_directories_do_not_resolve_a_citation(retargeted, tmp_path):
     """순회 제외 디렉터리(객체 저장소·캐시)의 동명 파일은 해소 후보가 아니다."""
     _write(tmp_path, ".git/wiki/vendored.md", "a\n")
-    assert _kinds(_issues(anchored, _body("- 근거 `wiki/vendored.md:1`\n"))) \
+    assert _kinds(_issues(retargeted, _body("- 근거 `wiki/vendored.md:1`\n"))) \
         == ["citation-unresolved"]
 
 
-def test_citation_inside_a_code_fence_is_not_judged(anchored, tmp_path):
+def test_citation_inside_a_code_fence_is_not_judged(retargeted, tmp_path):
     """펜스 안 예시 블록의 경로는 본문 인용이 아니다 — 무판정(오탐 0)."""
     body = _body("\n```\n`.project_manager/tools/absent.py:12` 는 예시다\n```\n")
-    assert _issues(anchored, body) == []
+    assert _issues(retargeted, body) == []
 
 
-def test_same_citation_twice_is_judged_once(anchored, tmp_path):
+def test_same_citation_twice_is_judged_once(retargeted, tmp_path):
     """같은 인용이 여러 번 나와도 같은 사실을 여러 줄로 내지 않는다."""
     _write(tmp_path, ".project_manager/tools/board.py", "a\n")
     body = _body("- 근거 `.project_manager/tools/board.py:7`\n"
                  "- 같은 근거 `.project_manager/tools/board.py:7`\n")
-    assert _kinds(_issues(anchored, body)) == ["citation-unresolved"]
+    assert _kinds(_issues(retargeted, body)) == ["citation-unresolved"]
 
 
-def test_off_tree_citation_is_counted_not_judged(anchored, tmp_path):
+def test_off_tree_citation_is_counted_not_judged(retargeted, tmp_path):
     """절대·홈 경로 인용은 repo 좌표가 아니다 — 판정불능 개수."""
     body = _body("- 런북 `/opt/vm/run.sh:3` · `~/vm/win11/README.md:12`\n")
-    issues = _issues(anchored, body)
+    issues = _issues(retargeted, body)
     assert _kinds(issues) == ["content-unverifiable"], issues
     assert "인용 2건" in issues[0][1]
 
 
-def test_unverifiable_advisory_reports_only_nonzero_axes(anchored, tmp_path):
-    """판정불능 문구는 **0 이 아닌 축만** 적는다 — "touches 좌표 0건" 은 판정불능 0 이 아니라
+def test_unverifiable_advisory_reports_only_nonzero_counts(retargeted, tmp_path):
+    """판정불능 문구는 **0 이 아닌 항목만** 적는다 — "touches 좌표 0건" 은 판정불능 0 이 아니라
     touches 를 하나도 못 봤다는 뜻으로 읽혀 정상 티켓을 결함으로 보이게 한다."""
-    # 인용 축만 판정불능(basename 단독) · touches 는 전부 해소된다.
+    # 인용 항목만 판정불능(basename 단독) · touches 는 전부 해소된다.
     _write(tmp_path, ".project_manager/tools/board.py", "a\n")
     citation_only = _issues(
-        anchored, _body("- 근거 `board.py:9999`\n"),
+        retargeted, _body("- 근거 `board.py:9999`\n"),
         touches=[".project_manager/tools/board.py"])
     assert _kinds(citation_only) == ["content-unverifiable"], citation_only
     assert "인용 1건" in citation_only[0][1]
     assert "touches 좌표" not in citation_only[0][1], citation_only[0][1]
 
-    # touches 축만 판정불능(리스 장부 없는 슬롯 접두) · 인용은 0 건.
+    # touches 항목만 판정불능(슬롯 대여 기록 없는 슬롯 접두) · 인용은 0 건.
     touches_only = _issues(
-        anchored, _body(), touches=["work/demo_1/tools/engine.py"])
+        retargeted, _body(), touches=["work/demo_1/tools/engine.py"])
     assert _kinds(touches_only) == ["content-unverifiable"], touches_only
     assert "touches 좌표 1건" in touches_only[0][1]
     assert "인용" not in touches_only[0][1], touches_only[0][1]
 
-    # 두 축 다 0 이면 문구 자체가 없다(발생 조건은 종전 그대로).
+    # 두 항목 다 0 이면 문구 자체가 없다(발생 조건은 종전 그대로).
     assert _issues(
-        anchored, _body("- 근거 `.project_manager/tools/board.py:1`\n"),
+        retargeted, _body("- 근거 `.project_manager/tools/board.py:1`\n"),
         touches=[".project_manager/tools/board.py"]) == []
 
 
-def test_pm_ticket_card_states_the_citation_syntax(anchored, tmp_path):
+def test_pm_ticket_card_states_the_citation_syntax(retargeted, tmp_path):
     """카드 §4 가 인용의 **인식 문법**(백틱 코드 span · 펜스 밖)을 적는다.
 
     해소 규칙(루트 기준 → 하위 디렉터리 기준 → basename 단독은 판정불능)만 적혀 있으면 무엇이
@@ -350,10 +350,10 @@ def test_pm_ticket_card_states_the_citation_syntax(anchored, tmp_path):
 
     # 백틱 없는 좌표는 인용이 아니다(부재 파일이어도 무판정).
     assert _issues(
-        anchored, _body("- 근거 .project_manager/tools/absent.py:12 (백틱 없음)\n")) == []
+        retargeted, _body("- 근거 .project_manager/tools/absent.py:12 (백틱 없음)\n")) == []
     # 백틱 안 좌표는 같은 경로에서 차단 판정을 받는다 — 인식 문법이 실제 판정 입력이다.
     assert _kinds(_issues(
-        anchored, _body("- 근거 `.project_manager/tools/absent.py:12`\n"),
+        retargeted, _body("- 근거 `.project_manager/tools/absent.py:12`\n"),
     )) == ["citation-unresolved"]
 
 
@@ -361,86 +361,86 @@ def test_pm_ticket_card_states_the_citation_syntax(anchored, tmp_path):
 # 3. architect 점검 라운드 — design: required|done 만 대상
 # ════════════════════════════════════════════════════════════════════════
 
-def _seed_round(mod, tid: str, role: str, *, harvested: bool,
+def _seed_round(mod, tid: str, role: str, *, collected: bool,
                 ticket_text: str = "") -> Path:
-    """라운드 파일을 시드하고(엔진 골격) 필요하면 산출로 덮어쓴다."""
+    """라운드 파일을 빈 양식으로 만들고(엔진 빈 양식) 필요하면 산출로 덮어쓴다."""
     directory = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(pm_paths.home_at(mod.REPO)))
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / round_rules.round_filename(1, role)
     seed = round_form.render_round_form(role, ticket_text or _body(), today="2026-01-01")
     path.write_text(seed, encoding="utf-8")
-    if harvested:
+    if collected:
         header = seed.splitlines()[0]
         path.write_text(f"{header}\n\n실측 대조 결과를 적었다.\n", encoding="utf-8")
     return path
 
 
-def test_design_done_without_architect_round_is_blocking(anchored):
+def test_design_done_without_architect_round_is_blocking(retargeted):
     """`design: done` 인데 점검 라운드가 없으면 차단 — 아무도 본문을 안 본 승격을 막는다."""
-    issues = _issues(anchored, _body(design_section=_DESIGN_FILLED), design="done")
+    issues = _issues(retargeted, _body(design_section=_DESIGN_FILLED), design="done")
     assert _kinds(issues) == ["architect-review-pending"], issues
     assert "architect-review-pending" not in body_lint._PROMOTE_ADVISORY_KINDS
 
 
-def test_seed_only_architect_round_is_blocking(anchored):
-    """라운드 파일만 예약하고 시드 그대로면 산출이 없다 — 회수 전에는 통과하지 않는다."""
-    _seed_round(anchored, "T-0001", "architect", harvested=False)
-    issues = _issues(anchored, _body(design_section=_DESIGN_FILLED), design="done")
+def test_seed_only_architect_round_is_blocking(retargeted):
+    """라운드 파일만 예약하고 빈 양식 그대로면 산출이 없다 — 돌려받기 전에는 통과하지 않는다."""
+    _seed_round(retargeted, "T-0001", "architect", collected=False)
+    issues = _issues(retargeted, _body(design_section=_DESIGN_FILLED), design="done")
     assert _kinds(issues) == ["architect-review-pending"], issues
     assert "빈 양식 그대로" in issues[0][1]
 
 
-def test_harvested_architect_round_passes(anchored):
-    """회수·충전된 점검 라운드가 있으면 무발화(정상 흐름 오차단 0)."""
-    _seed_round(anchored, "T-0001", "architect", harvested=True)
-    assert _issues(anchored, _body(design_section=_DESIGN_FILLED), design="done") == []
+def test_collected_architect_round_passes(retargeted):
+    """돌려받아 채운 점검 라운드가 있으면 알리지 않음(정상 흐름 오차단 0)."""
+    _seed_round(retargeted, "T-0001", "architect", collected=True)
+    assert _issues(retargeted, _body(design_section=_DESIGN_FILLED), design="done") == []
 
 
-def test_developer_round_does_not_satisfy_the_review_axis(anchored):
+def test_developer_round_does_not_satisfy_the_review_check(retargeted):
     """다른 역할의 라운드는 점검이 아니다 — 역할로 구분한다(신원 아님).
 
-    seed 대상 티켓 텍스트에 frontmatter(`design: done`)와 충전된 설계 절을 얹는 이유는
-    T-0815 설계 근거 게이트(developer 시드 seam)가 그 둘을 읽어서다 — 이 테스트의 관심사
-    (architect 축과 developer 축의 구분)와는 무관해 근거를 미리 해소한다.
+    미리 넣는 티켓 텍스트에 frontmatter(`design: done`)와 충전된 설계 절을 얹는 이유는
+    T-0815 설계 근거 검사(developer 빈 양식 공용 함수)가 그 둘을 읽어서다 — 이 테스트의 관심사
+    (architect 라운드와 developer 라운드의 구분)와는 무관해 근거를 미리 해소한다.
     """
     _seed_round(
-        anchored, "T-0001", "developer", harvested=True,
+        retargeted, "T-0001", "developer", collected=True,
         ticket_text=(
             "---\nid: T-0001\ndesign: done\n---\n"
             + _body(design_section=_DESIGN_FILLED)
         ),
     )
-    issues = _issues(anchored, _body(design_section=_DESIGN_FILLED), design="done")
+    issues = _issues(retargeted, _body(design_section=_DESIGN_FILLED), design="done")
     assert _kinds(issues) == ["architect-review-pending"], issues
 
 
 @pytest.mark.parametrize("design", [None, "n/a"])
-def test_non_design_tickets_are_not_asked_for_a_review_round(anchored, design):
-    """`n/a`·필드 부재는 설계 단계 비대상 — 점검 라운드 강제가 발화하지 않는다."""
-    assert _issues(anchored, _body(), design=design) == []
+def test_non_design_tickets_are_not_asked_for_a_review_round(retargeted, design):
+    """`n/a`·필드 부재는 설계 단계 비대상 — 점검 라운드 강제가 실행되지 않는다."""
+    assert _issues(retargeted, _body(), design=design) == []
 
 
-def test_design_required_reports_the_review_axis_too(anchored):
-    """`required` 도 같은 축 대상이다(설계 절 충전 여부와 무관하게 점검은 받는다)."""
-    issues = _issues(anchored, _body(design_section=_DESIGN_FILLED), design="required")
+def test_design_required_reports_the_review_check_too(retargeted):
+    """`required` 도 같은 기준 대상이다(설계 절 충전 여부와 무관하게 점검은 받는다)."""
+    issues = _issues(retargeted, _body(design_section=_DESIGN_FILLED), design="required")
     assert _kinds(issues) == ["architect-review-pending"], issues
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 4. 깔때기 격리 — 전역 lint 는 이 축을 켜지 않는다(소급 red 0 · push 게이트 무오염)
+# 4. 깔때기 격리 — 전역 lint 는 이 기준을 켜지 않는다(소급 red 0 · push 검사 무오염)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_content_facts_off_yields_no_new_kinds(anchored, tmp_path):
+def test_content_facts_off_yields_no_new_kinds(retargeted, tmp_path):
     """같은 결함 입력이라도 `content_facts=False` 면 새 kind 가 0 — 기존 호출자 무변경."""
     body = _body("- 근거 `.project_manager/tools/absent.py:10`\n",
                  design_section=_DESIGN_FILLED)
     _write(tmp_path, ".project_manager/tools/board.py", "a\n")
-    assert _issues(anchored, body, touches=["tools/absent.py"], design="done",
+    assert _issues(retargeted, body, touches=["tools/absent.py"], design="done",
                    content_facts=False) == []
 
 
-def test_global_lint_does_not_surface_the_new_kinds(anchored, tmp_path):
-    """`lint_bodies`(→ `lint --gate`)는 open 티켓에 새 kind 를 내지 않는다 — 소급 red 0."""
+def test_global_lint_does_not_surface_the_new_kinds(retargeted, tmp_path):
+    """`lint_bodies`(→ `lint --blocking`)는 open 티켓에 새 kind 를 내지 않는다 — 소급 red 0."""
     ticket = tmp_path / ".project_manager" / "board" / "tickets" / "open" / "T-0002-x.md"
     ticket.parent.mkdir(parents=True, exist_ok=True)
     body = _body("- 근거 `.project_manager/tools/absent.py:10`\n",
@@ -449,7 +449,7 @@ def test_global_lint_does_not_surface_the_new_kinds(anchored, tmp_path):
         "id": "T-0002", "title": "x", "status": "open", "design": "done",
         "touches": ["tools/absent.py"], "depends_on": [], "blocks": [], "tags": [],
     }, body)
-    kinds = {kind for _tid, kind, _detail in body_lint.lint_bodies(pm_paths.home_at(anchored.REPO))}
+    kinds = {kind for _tid, kind, _detail in body_lint.lint_bodies(pm_paths.home_at(retargeted.REPO))}
     assert not (kinds & _NEW_KINDS), f"전역 lint 에 새 kind 가 샜다: {kinds!r}"
 
 
@@ -464,10 +464,10 @@ def _git(argv, cwd):
 
 @pytest.fixture
 def board_git(tmp_path, monkeypatch):
-    """board 가 별도 git(공유 형상)인 hermetic 홈 — draft 격리·promote 게이트가 작동한다."""
+    """board 가 별도 git(공유 구성)인 hermetic 홈 — draft 격리·promote 검사가 작동한다."""
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
-    init_git_repo(tmp_path)      # 인용 색인이 묻는 소유 트리 — `anchored` 와 같은 선언.
+    init_git_repo(tmp_path)      # 인용 색인이 묻는 소유 트리 — `retargeted` 와 같은 선언.
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     board = tmp_path / ".project_manager" / "board"
@@ -496,7 +496,7 @@ _TASK = "binding-task"  # conftest `bind_product_cluster` 의 기본 task
 
 
 def _new_args(**overrides) -> argparse.Namespace:
-    args = dict(title="내용 게이트", touches=None, depends=None, tag=None,
+    args = dict(title="내용 검사", touches=None, depends=None, tag=None,
                 estimate="small", prefix=None, user=None, task=_TASK, design=None)
     args.update(overrides)
     return argparse.Namespace(**args)
@@ -507,7 +507,7 @@ def _draft(board_dir: Path) -> Path:
 
 
 def _fill_draft(mod, board_dir: Path, body: str, **frontmatter) -> str:
-    """draft 를 발행하고 본문·frontmatter 를 케이스 형상으로 덮는다 → 티켓 ID."""
+    """draft 를 발행하고 본문·frontmatter 를 케이스 구성으로 덮는다 → 티켓 ID."""
     assert board_ticket.cmd_new(pm_paths.home_at(mod.REPO), _new_args(**frontmatter.pop("new_args", {}))) == 0
     path = _draft(board_dir)
     fm, _ = ticket_store.load_ticket(path)
@@ -579,10 +579,10 @@ def test_promote_ships_a_subdirectory_citation_that_resolves_uniquely(
 @requires_git
 def test_citation_index_excludes_tracked_but_working_tree_missing_paths(tmp_path, monkeypatch):
     """Git index 에만 있고 디스크엔 없는 인용 대상은 종전 `os.walk` 처럼 차단(citation-unresolved)
-    이지 판정불능 강등이 아니다(code-reviewer F-001).
+    이지 판정불능으로 수준 낮춤이 아니다(code-reviewer F-001).
 
     `repo_owned_files.list_repo_owned_files(..., mode=OWNED)` 의 Git 성공 경로는 working-tree
-    존재를 재검사하지 않는다(symlink·gitlink 를 거짓 탈락시키지 않으려는 그 seam 의 의도적
+    존재를 재검사하지 않는다(symlink·gitlink 를 거짓 탈락시키지 않으려는 그 공용 함수의 의도적
     계약) — `_citation_suffix_index` 소비 쪽에서 `is_file()` 로 한 번 더 걸러야 종전 `os.walk`
     의 물리 존재 의미가 보존된다. 양방향: 실재 tracked 파일과 미추적·비무시 파일 인용은
     그대로 해소된다(OWNED 의 미추적 포함 계약은 안 깨졌다) — 존재 확인이 정탐까지 지우면
@@ -609,7 +609,7 @@ def test_citation_index_excludes_tracked_but_working_tree_missing_paths(tmp_path
     prose = "인용 `wiki/real.md:2` · 인용 `wiki/evidence.md:1` · 인용 `wiki/fresh.md:1`"
     issues, unverifiable = body_lint._citation_issues("T-TEST", prose, (root,))
 
-    assert unverifiable == 0, "tracked-but-missing 은 판정불능 강등이 아니라 차단이어야 한다"
+    assert unverifiable == 0, "tracked-but-missing 은 판정불능으로 수준 낮춤이 아니라 차단이어야 한다"
     kinds = [(kind, detail) for _tid, kind, detail in issues]
     assert len(kinds) == 1, kinds
     kind, detail = kinds[0]
@@ -617,8 +617,8 @@ def test_citation_index_excludes_tracked_but_working_tree_missing_paths(tmp_path
 
 
 @requires_git
-def test_promote_requires_a_harvested_architect_round_then_accepts(board_git, capsys):
-    """`design: done` 은 점검 라운드 회수 전 거부 → 회수 뒤 승격(같은 티켓 red→green)."""
+def test_promote_requires_a_collected_architect_round_then_accepts(board_git, capsys):
+    """`design: done` 은 점검 라운드를 돌려받기 전 거부 → 돌려받은 뒤 승격(같은 티켓 red→green)."""
     board_dir = board_git._board_dir
     tid = _fill_draft(board_git, board_dir, _body(design_section=_DESIGN_FILLED),
                       design="done")
@@ -629,7 +629,7 @@ def test_promote_requires_a_harvested_architect_round_then_accepts(board_git, ca
     assert board_round.cmd_section_add(
         pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid, role="architect", label=None)) == 0
     assert board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid)) == 1, \
-        "시드 그대로인 라운드가 회수로 인정됐다."
+        "빈 양식 그대로인 라운드가 돌려받은 것으로 인정됐다."
     round_path = board_dir / "tickets" / "rounds" / tid / "01-architect.md"
     header = round_path.read_text(encoding="utf-8").splitlines()[0]
     round_path.write_text(f"{header}\n\n인용·touches 를 실측 대조했다.\n", encoding="utf-8")
@@ -641,7 +641,7 @@ def test_promote_requires_a_harvested_architect_round_then_accepts(board_git, ca
 
 @requires_git
 def test_promote_succeeds_when_touches_overlap_another_active_ticket(board_git, tmp_path):
-    """겹침은 이 게이트의 축이 아니다 — 같은 파일을 만지는 티켓의 승격은 성공한다(never-block)."""
+    """겹침은 이 검사의 기준이 아니다 — 같은 파일을 만지는 티켓의 승격은 성공한다(never-block)."""
     board_dir = board_git._board_dir
     _write(tmp_path, ".project_manager/tools/board.py", "a\n")
     existing = board_dir / "tickets" / "open" / "T-0002-x.md"

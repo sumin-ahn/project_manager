@@ -15,11 +15,11 @@ from typing import NamedTuple
 
 # 티켓 상태 디렉토리 — 이 튜플이 조회·렌더·집계·원격 race 판정의 단일 진실이다(board.py 안
 # 소비처는 전부 여기를 순회한다). `discarded` = **처분 종결**(병합·폐기): 구현이 끝나서 닫힌
-# `done` 과 달리 "이 티켓은 다른 티켓으로 흡수됐거나 폐기됐다"는 종결이라, 둘을 같은 디렉토리에
+# `done` 과 달리 "이 티켓은 다른 티켓으로 합쳐졌거나 폐기됐다"는 종결이라, 둘을 같은 디렉토리에
 # 담으면 done 이 "작업 완료" 를 뜻하지 못한다.
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done", "discarded")
 
-# 종결 상태 — 더 이상 진행되지 않는 두 종류(구현 완료 · 처분). 활성 뷰·task 소진 게이트가
+# 종결 상태 — 더 이상 진행되지 않는 두 종류(구현 완료 · 처분). 활성 뷰·task 소진 확인이
 # 이 집합을 뺀다. "done 하나만 종결" 을 가정한 옛 판정은 전부 이 상수를 소비해야 한다.
 TERMINAL_STATUS_DIRS: tuple[str, ...] = ("done", "discarded")
 
@@ -27,7 +27,7 @@ TERMINAL_STATUS_DIRS: tuple[str, ...] = ("done", "discarded")
 ACTIVE_STATUS_DIRS: tuple[str, ...] = tuple(
     status for status in STATUS_DIRS if status not in TERMINAL_STATUS_DIRS)
 
-# 처분 종류(frontmatter `disposition`) — 병합(다른 티켓으로 흡수) · 폐기(취소·대체).
+# 처분 종류(frontmatter `disposition`) — 병합(다른 티켓으로 합침) · 폐기(취소·대체).
 DISPOSITION_MERGED = "merged"
 DISPOSITION_DROPPED = "dropped"
 DISPOSITION_KINDS: tuple[str, ...] = (DISPOSITION_MERGED, DISPOSITION_DROPPED)
@@ -39,7 +39,7 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # 티켓 ID prefix 추출 — `_next_id` ID 발행 규칙의 *정확한 역*:
 #   prefixed = `T-{prefix}-{NNN}` (`_next_id` line 1011·prefix 는 리터럴 삽입·끝 -NNN 은 숫자),
 #   legacy   = `T-{NNNN}`        (`_next_id` line 1013·하이픈 1개·prefix 없음).
-# prefix 문법은 **등록/검증측(`pm_config._REPO_NAME_RE`·`^[A-Za-z0-9][A-Za-z0-9_-]*$`)과 정합**한다
+# prefix 문법은 **등록/검증측(`pm_config._REPO_NAME_RE`·`^[A-Za-z0-9][A-Za-z0-9_-]*$`)과 일치**한다
 # — repo add·init `--prefix` 가 그 패턴으로 prefix 를 검증·등록하므로 소비측도 같은 grammar 여야
 # 한다(소비 grammar 가 등록 grammar 보다 좁으면 `123` 같은 순수-숫자
 # prefix 가 등록은 되는데 소비측에서 legacy 로 오인돼 `_ticket_prefix`/wikilink/bootstrap 이 prefix
@@ -52,7 +52,7 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # legacy 를 prefix 없는 `T-NNNN` 단일 하이픈으로만 내므로 이 하이픈-수 경계가 둘을 정확히 가른다.
 # ID grammar 의 단일 진실 — prefix 마디 본체. `_TICKET_PREFIX_RE` + prefixed-ID 를 매칭하는 다른
 # 파서(`_ticket_id_from_filename`·wikilink lint·bootstrap `_TICKET_ID`)가 *전부* 이 한 조각(또는
-# 동형 grammar)을 쓴다 — grammar drift 방지(round-3 클래스: 한 곳 고치면 같은 가정의 다른
+# 같은 구조의 grammar)을 쓴다 — grammar drift 방지(round-3 클래스: 한 곳 고치면 같은 가정의 다른
 # 파서가 어긋남). `P0`(숫자)·`service-a`(하이픈)·`x_y`(언더스코어)·`123`(순수 숫자) prefix 포섭.
 _TICKET_PREFIX_BODY = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 
@@ -79,7 +79,7 @@ def _fold_lookup(prefix: str, pool: set[str]) -> str | None:
 
     prefix 동일성은 소문자 fold 비교다 — 등록/발행된 canonical case 를 대소문자 무관하게 되찾는다
     (`aaa` 입력 → 등록 `AAA` 반환). 오염된 입력에서도 호출 결과 자체는 프로세스 hash seed에
-    흔들리지 않도록 exact case를 tie-break 키로 정렬한다. 신규-prefix 승인 게이트는 이 helper의
+    흔들리지 않도록 exact case를 tie-break 키로 정렬한다. 신규-prefix 승인 확인은 이 helper의
     단일값 선택에 기대지 않고, fold 변형이 둘 이상이면 출처와 함께 fail-loud한다.
     """
     fold = prefix.lower()
@@ -98,8 +98,8 @@ def _normalized_touches(raw: object) -> list[str] | None:
     그래서 반환은 셋 중 하나다:
       · `list[str]` — 정상 선언(빈 문자열 원소는 걷는다).
       · `[]` — 선언 없음(`None`·빈 목록).
-      · `None` — **형식 불명**. 호출부는 강등을 취소하고 FULL 로 남긴다(강등 fail-closed 규칙과
-        동형 — 스코프를 확정하지 못한 채 좁히면 안 된다).
+      · `None` — **형식 불명**. 호출부는 범위 좁히기를 취소하고 FULL 로 남긴다(범위 좁히기 fail-closed 규칙과
+        같은 방식 — 스코프를 확정하지 못한 채 좁히면 안 된다).
     """
     if raw is None:
         return []
@@ -153,7 +153,7 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 
 
 def _touch_notation(item: str) -> str | None:
-    """접힌 경로를 접두 비교용 표기로 마무리한다(빈 항목은 None)."""
+    """정리한 경로를 접두 비교용 표기로 마무리한다(빈 항목은 None)."""
     value = str(item).strip().rstrip("/")
     return value or None
 
@@ -175,7 +175,7 @@ def _ticket_prefix(tid: str) -> str | None:
     """티켓 ID 에서 네임스페이스 prefix 추출. legacy `T-NNNN`(prefix 없음) → None.
 
     `_next_id` 의 ID 발행 규칙의 역이다: prefixed = `T-<PREFIX>-NNN`, legacy = `T-NNNN`.
-    PREFIX 문법은 등록/검증측(`pm_config._REPO_NAME_RE`·`[A-Za-z0-9][A-Za-z0-9_-]*`)과 정합이라
+    PREFIX 문법은 등록/검증측(`pm_config._REPO_NAME_RE`·`[A-Za-z0-9][A-Za-z0-9_-]*`)과 일치라
     숫자(`P0`)·하이픈(`service-a`)·순수 숫자(`123`)를 포함할 수 있고 그런 ID(`T-P0-001`·
     `T-service-a-001`·`T-123-001`)도 해소된다. legacy 4자리 숫자 ID는 full-ID regex
     가 *내부 하이픈*(prefix-NNN)을 요구하는데 하이픈이 1개뿐이라 매칭 안 됨 → None(구조적 구분).
@@ -278,7 +278,7 @@ def _created_by_user(created_by: str | None) -> str | None:
 
     `created_by` 는 `identity_tag` 산출(`<user>/<slot>`·session 미바인딩 시 user-only·user 미상
     시 슬롯-only) 또는 `migrate-identity` backfill(부재 → *순수 user*·line `_migrate_ticket_fm`)이다.
-    `_ticket_owner` 의 2차 폴백 소유자(area_owner 미해소 시 항상-존재 소유)로 쓴다.
+    `_ticket_owner` 의 2차 대체 소유자(area_owner 미해소 시 항상-존재 소유)로 쓴다.
 
     `_claimed_by_user`(슬롯-only=None)와 갈리는 지점: **`/` 없는 값을 user 로 본다** — backfill 이
     부재 created_by 를 슬롯 없는 순수 user 로 채우므로(다중사용자 보드 migrate-identity 후 흔함) 그
@@ -330,7 +330,7 @@ class _OwnershipVerdict(NamedTuple):
     """소유 대조 결과 — 판정(ok)과 **왜**(owner·session·unresolved)를 함께 나른다.
 
     `owner` = 티켓 `claimed_by` 원값(소유자 없으면 None) · `session` = 이 실행이 해소한 세션 ·
-    `unresolved` = 세션을 해소하지 못해 소유를 증명할 수 없는 경우(=거부·"검사 skip" 폴백 없음).
+    `unresolved` = 세션을 해소하지 못해 소유를 증명할 수 없는 경우(=거부·"검사 skip" 대체 없음).
     거부 문구는 호출 surface 마다 다르지만 판정은 이 하나다.
     """
 
@@ -340,8 +340,8 @@ class _OwnershipVerdict(NamedTuple):
     unresolved: bool
 
 
-def _owner_session_remedy(claimed_by: str) -> str:
-    """소유 task 를 다시 잡는 처방 문장 — 소유 토큰을 `--task` 로 그대로 싣는다(토큰을 분해하지 않는다)."""
+def _owner_session_fix(claimed_by: str) -> str:
+    """소유 task 를 다시 잡는 해결 방법 문장 — 소유 토큰을 `--task` 로 그대로 싣는다(토큰을 분해하지 않는다)."""
     owner_token = claimed_by.rsplit("/", 1)[-1]
     return (f"소유 task 에서 `--task {owner_token}` 로 재실행하라(소유 표기가 옛 슬롯 이름이면 "
             "소유자가 먼저 `board.py migrate-identity --task <task>` 로 옮긴다)")
@@ -352,20 +352,20 @@ def _ownership_rejection(action: str, tid: str,
     """소유 불일치 거부 문구 — 소유자 · unclaim→claim 이동 경로 · takeover 를 함께 낸다.
 
     거부만 하고 끝내면 사람은 그 자리에서 할 수 있는 일이 없다(실사고에서 두 세션이 서로
-    막힌 형상). 문구가 (1) 누구 소유인지 (2) 소유 세션이 살아 있을 때의 정상 이전
+    막힌 상황). 문구가 (1) 누구 소유인지 (2) 소유 세션이 살아 있을 때의 정상 이전
     (3) 소유 세션이 없을 때의 단일 우회(`unclaim --takeover`)를 모두 지목한다.
     """
     owner = verdict.owner or ""
-    remedy = _owner_session_remedy(owner)
+    fix = _owner_session_fix(owner)
     head = (f"[중단] {action} {tid}: 세션 미해소 — 이 티켓은 `{owner}` 소유다"
             if verdict.unresolved else
             f"[중단] {action} {tid}: 이 티켓은 `{owner}` 소유다"
             f"(현재 세션 `{verdict.session}`)")
     lines = [head + "."]
     if verdict.unresolved:
-        lines.append(f"  → {remedy}.")
+        lines.append(f"  → {fix}.")
     else:
-        lines.append(f"  → 이동: {remedy} — `board.py unclaim {tid}` 후 이 "
+        lines.append(f"  → 이동: {fix} — `board.py unclaim {tid}` 후 이 "
                      f"세션에서 `board.py claim {tid} --task <task>`.")
     lines.append(f"  → 소유 세션이 없으면: `board.py unclaim {tid} --takeover "
                  "--reason <사유> --task <task>` (소유만 해제·사유는 티켓 본문과 board-git 에 남는다).")
@@ -373,7 +373,7 @@ def _ownership_rejection(action: str, tid: str,
 
 
 # ID 스캔용 status 튜플 — STATUS_DIRS + draft 격리 디렉토리(`.drafts`). draft 도 이미
-# 발행된 ID(파일명에 박제)이므로 스캔에서 빠지면 promote 전 다음 `new` 가 같은 번호를 재사용해
+# 발행된 ID(파일명에 적어 둠)이므로 스캔에서 빠지면 promote 전 다음 `new` 가 같은 번호를 재사용해
 # 충돌한다. `next_numeric_id` 는 `base_dir / d` 로 순회하므로 디렉토리명 그대로 넣으면 된다.
 _ID_SCAN_STATUSES: tuple[str, ...] = (*STATUS_DIRS, ".drafts")
 
@@ -425,7 +425,7 @@ class TouchFileExpansion(NamedTuple):
     unresolved_directories: tuple[str, ...]
 
 def _canonical_tier_touch(value: str) -> str:
-    """touches 경로를 repo-relative POSIX 표기로 접는다."""
+    """touches 경로를 repo-relative POSIX 표기로 바꾼다."""
     value = value.strip().replace('\\', '/')
     while value.startswith('./'):
         value = value[2:]

@@ -1,13 +1,13 @@
-"""per-repo 테스트/회귀 경로 + cwd seam 단위 테스트 (T-0058·ADR-0014).
+"""per-repo 테스트/회귀 경로 + cwd 교체 지점 단위 테스트 (T-0058·ADR-0014).
 
 ADR-0014 의 실 엔진 개조 — multi-PM 모델에서 회귀가 multi-PM 루트(코드 없음)의 단일 `test_cmd` 를
 `cwd=REPO` 로 돌던 갭(spike §8-4 c) 해소. 이 파일이 검증하는 계약:
 
   1. **areas.md 신 스키마** `| repo | prefix | git | test_cmd | owner |` 파싱 +
      구 스키마 `| prefix | area | owner |` 하위호환 (헤더-인식 파서).
-  2. **`_test_cmd` per-repo 해소** — 활성 prefix 의 areas.md 행 test_cmd → solo 폴백
+  2. **`_test_cmd` per-repo 해소** — 활성 prefix 의 areas.md 행 test_cmd → solo 로 대체
      (local.conf test_cmd → pytest -q).
-  3. **회귀 cwd seam** `_regression_cwd` — 주입(`--cwd`) 시 그 경로, 미주입 시 REPO.
+  3. **회귀 cwd 교체 지점** `_regression_cwd` — 주입(`--cwd`) 시 그 경로, 미주입 시 REPO.
 
 **hermetic 필수**: board.py 의 경로 전역(`AREAS_FILE`·`LOCAL_CONF`·`REPO` 등)은 import
 시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정해 실 루트의
@@ -40,7 +40,7 @@ REAL_AREAS = REPO / ".project_manager" / "areas.md"
 def _area_owner(board, repo):
     """areas.md 그 repo 행의 `area_owner` — 미등록·빈 값·구 스키마면 None.
 
-    엔진의 repo-키 조회는 prefix 축 후임(`_ticket_area_owner`)으로 대체돼 제품에서 빠졌다.
+    엔진의 repo-키 조회는 prefix 기준 후임(`_ticket_area_owner`)으로 대체돼 제품에서 빠졌다.
     쓰기 결과(cmd_init·areas_append·areas_set_cell)를 값으로 확인하려는 이 파일의 단언을
     위해 여기서 직접 읽는다.
     """
@@ -75,7 +75,7 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     # ADR-0040: id_prefix 세션 유도(→ session_name → env $PM_SESSION_NAME)가 _test_cmd 해소에
-    # 끼므로, 실 PM 세션 env 가 hermetic 테스트로 새지 않게 제거(장부/local.conf 만이 세션 소스).
+    # 끼므로, 실 PM 세션 env 가 hermetic 테스트로 새지 않게 제거(기록/local.conf 만이 세션 소스).
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     mod._tmp = tmp_path
@@ -83,17 +83,17 @@ def board(tmp_path, monkeypatch):
 
 
 def _patch_atomic_replace(monkeypatch, module, fake):
-    """엔진이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+    """엔진이 원자 교체에 **실제로 부르는** 함수(`file_lock.atomic_replace`)를 대역으로 바꾼다.
 
-    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 는 그 함수의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
     `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
-    같은 성질이 고정된다. 엔진 패키지가 쓰는 seam 모듈(`pm_engine.infra.fs`)에 건다.
-    반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
+    같은 성질이 고정된다. 엔진 패키지가 쓰는 공용 모듈(`pm_engine.infra.fs`)에 건다.
+    반환값은 그 공용 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
     (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
     """
-    seam = fs
-    monkeypatch.setattr(seam, "atomic_replace", fake)
-    return seam
+    override = fs
+    monkeypatch.setattr(override, "atomic_replace", fake)
+    return override
 
 
 # per-repo 스키마 (ADR-0014·base 없음 — T-0075 이전): | repo | prefix | git | test_cmd | owner |
@@ -202,12 +202,12 @@ def test_registered_prefixes_old_schema_backcompat(board):
 
 
 def test_parse_areas_old_schema_missing_columns_empty(board):
-    """구 스키마 행엔 test_cmd 칼럼이 없으므로 dict 에 그 키가 없다(누락=빈 폴백 대상)."""
+    """구 스키마 행엔 test_cmd 칼럼이 없으므로 dict 에 그 키가 없다(누락=빈 값 대체 대상)."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_OLD_SCHEMA, encoding="utf-8")
     _header, rows = areas_store._parse_areas(pm_paths.home_at(board.REPO))
     assert rows[0]["prefix"] == "PAY"
     assert "test_cmd" not in rows[0]          # 구 스키마엔 칼럼 자체가 없음
-    assert rows[0].get("test_cmd") is None     # → per-repo 해소가 솔로로 폴백
+    assert rows[0].get("test_cmd") is None     # → per-repo 해소가 솔로로 대체
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -235,7 +235,7 @@ def test_areas_append_legacy_call_fills_empty_repo_columns(board):
     row = areas_store._areas_row_for_prefix(pm_paths.home_at(board.REPO), "PAY")
     assert row["repo"] == "PAY"        # repo 미지정 → prefix 를 repo 명으로
     assert row["git"] == ""
-    assert row["test_cmd"] == ""        # 빈 값 → per-repo 해소가 솔로 폴백
+    assert row["test_cmd"] == ""        # 빈 값 → per-repo 해소가 솔로로 대체
     assert row["owner"] == "alice"
 
 
@@ -258,7 +258,7 @@ def test_parse_areas_base_schema_maps_base_column(board):
     header, rows = areas_store._parse_areas(pm_paths.home_at(board.REPO))
     assert header == ["repo", "prefix", "git", "test_cmd", "owner", "base"]
     assert rows[0]["base"] == "develop"   # 명시 base
-    assert rows[1]["base"] == ""          # 빈 base(부분 등록) → _repo_base None 폴백
+    assert rows[1]["base"] == ""          # 빈 base(부분 등록) → _repo_base None 으로 대체
 
 
 def test_parse_areas_old_schema_has_no_base_key(board):
@@ -266,7 +266,7 @@ def test_parse_areas_old_schema_has_no_base_key(board):
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_NEW_SCHEMA, encoding="utf-8")
     _header, rows = areas_store._parse_areas(pm_paths.home_at(board.REPO))
     assert "base" not in rows[0]          # 칼럼 자체가 없음
-    assert rows[0].get("base") is None     # → _repo_base None 폴백(worktree 현행 bare HEAD)
+    assert rows[0].get("base") is None     # → _repo_base None 으로 대체(worktree 현행 bare HEAD)
 
 
 def test_areas_append_writes_base_column(board):
@@ -282,11 +282,11 @@ def test_areas_append_writes_base_column(board):
 
 
 def test_areas_append_base_default_empty(board):
-    """areas_append(base 미지정) → base 칼럼 빈 값 (부분 등록·하위호환·_repo_base None 폴백)."""
+    """areas_append(base 미지정) → base 칼럼 빈 값 (부분 등록·하위호환·_repo_base None 으로 대체)."""
     areas_registry.areas_append(pm_paths.home_at(board.REPO), "PAY", "", "alice", repo="service-a", test_cmd="pytest -q")
     row = areas_store._areas_row_for_prefix(pm_paths.home_at(board.REPO), "PAY")
     assert row["base"] == ""               # base 미지정 → 빈 칼럼
-    assert areas_store._repo_base(pm_paths.home_at(board.REPO), "service-a") is None   # 빈 값 → None 폴백
+    assert areas_store._repo_base(pm_paths.home_at(board.REPO), "service-a") is None   # 빈 값 → None 으로 대체
 
 
 def test_repo_base_resolves_from_areas(board):
@@ -296,7 +296,7 @@ def test_repo_base_resolves_from_areas(board):
 
 
 def test_areas_append_base_to_old_header_preserves_base(board):
-    """업그레이드 프로젝트(구 5칸 헤더) + areas_append(base=) → base 유실 0 (codex T-0075 게이트).
+    """업그레이드 프로젝트(구 5칸 헤더) + areas_append(base=) → base 유실 0 (codex T-0075 검사).
 
     T-0075 이전 areas.md(헤더에 base 칼럼 없음)에 `repo add --base` 가 6칸 row 를 append 하면
     헤더는 5칸 그대로다. 파서가 헤더 길이만큼만 매핑하면 6번째(base) 셀이 유실돼 worktree add 가
@@ -308,7 +308,7 @@ def test_areas_append_base_to_old_header_preserves_base(board):
                        base="develop")
     # 헤더는 5칸 그대로지만 append 된 6칸 row 의 base 가 canonical 매핑으로 보존된다.
     assert areas_store._repo_base(pm_paths.home_at(board.REPO), "service-c") == "develop"
-    # 기존 구 row(base 셀 없음)는 여전히 None 폴백(회귀 0).
+    # 기존 구 row(base 셀 없음)는 여전히 None 으로 대체(회귀 0).
     assert areas_store._repo_base(pm_paths.home_at(board.REPO), "service-a") is None
 
 
@@ -407,7 +407,7 @@ def test_areas_git_url_empty_column_is_none(board):
 
 
 def test_areas_git_url_duplicate_rows_first_match(board):
-    """중복 행이면 first-match (결정론적·_repo_base·_areas_row_for_prefix 동형·T-0291).
+    """중복 행이면 first-match (결정론적·_repo_base·_areas_row_for_prefix 와 같은 방식·T-0291).
 
     같은 repo=같은 URL 이라 실무상 결정론적이지만, 방어적으로 *첫 행* URL 을 반환함을 못박는다.
     """
@@ -423,7 +423,7 @@ def test_areas_git_url_duplicate_rows_first_match(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# areas.md protected 칼럼 (T-0076) — 파싱·default 폴백·하위호환·areas_append·_repo_protected
+# areas.md protected 칼럼 (T-0076) — 파싱·default 로 대체·하위호환·areas_append·_repo_protected
 # ════════════════════════════════════════════════════════════════════════
 
 def test_parse_areas_protected_schema_maps_protected_column(board):
@@ -432,7 +432,7 @@ def test_parse_areas_protected_schema_maps_protected_column(board):
     header, rows = areas_store._parse_areas(pm_paths.home_at(board.REPO))
     assert header == ["repo", "prefix", "git", "test_cmd", "owner", "base", "protected"]
     assert rows[0]["protected"] == "main,develop"   # 명시 protected(쉼표분리)
-    assert rows[1]["protected"] == ""               # 빈 protected → default 폴백
+    assert rows[1]["protected"] == ""               # 빈 protected → default 로 대체
 
 
 def test_default_protected_constant(board):
@@ -447,25 +447,25 @@ def test_repo_protected_resolves_explicit_list(board):
 
 
 def test_repo_protected_empty_column_falls_back_to_default(board):
-    """빈 protected 칼럼(부분 등록) → DEFAULT_PROTECTED 폴백 (T-0076·_repo_base 와 다름)."""
+    """빈 protected 칼럼(부분 등록) → DEFAULT_PROTECTED 로 대체 (T-0076·_repo_base 와 다름)."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_PROTECTED_SCHEMA, encoding="utf-8")
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-b") == ["main", "master", "develop"]
 
 
 def test_repo_protected_old_schema_falls_back_to_default(board):
-    """protected 칼럼 없는 구 레지스트리(base/per-repo) → DEFAULT_PROTECTED 폴백 (하위호환·T-0076)."""
+    """protected 칼럼 없는 구 레지스트리(base/per-repo) → DEFAULT_PROTECTED 로 대체 (하위호환·T-0076)."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_BASE_SCHEMA, encoding="utf-8")  # protected 칼럼 없음
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "master", "develop"]
 
 
 def test_repo_protected_absent_repo_falls_back_to_default(board):
-    """미등록 repo → DEFAULT_PROTECTED 폴백 (안전 기본값·T-0076)."""
+    """미등록 repo → DEFAULT_PROTECTED 로 대체 (안전 기본값·T-0076)."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_PROTECTED_SCHEMA, encoding="utf-8")
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "nope") == ["main", "master", "develop"]
 
 
 def test_repo_protected_no_registry_falls_back_to_default(board):
-    """areas.md 부재(솔로) → DEFAULT_PROTECTED 폴백 (T-0076)."""
+    """areas.md 부재(솔로) → DEFAULT_PROTECTED 로 대체 (T-0076)."""
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "master", "develop"]
 
 
@@ -494,7 +494,7 @@ def test_areas_append_writes_protected_column(board):
 
 
 def test_areas_append_protected_default_empty_falls_back(board):
-    """areas_append(protected 미지정) → 빈 칼럼 + _repo_protected DEFAULT 폴백 (T-0076)."""
+    """areas_append(protected 미지정) → 빈 칼럼 + _repo_protected DEFAULT 로 대체 (T-0076)."""
     areas_registry.areas_append(pm_paths.home_at(board.REPO), "PAY", "", "alice", repo="service-a", test_cmd="pytest -q")
     row = areas_store._areas_row_for_prefix(pm_paths.home_at(board.REPO), "PAY")
     assert row["protected"] == ""                # protected 미지정 → 빈 칼럼
@@ -506,7 +506,7 @@ def test_areas_append_protected_to_base_header_preserves_protected(board):
 
     T-0075 base 헤더(6칸·protected 없음)에 7칸 row 가 append 되면, 헤더 길이만큼만 매핑 시
     7번째(protected) 셀이 유실된다 → `_parse_areas` 가 셀 수 == canonical 폭(7)이면 헤더 무관
-    canonical 매핑(codex T-0075 게이트의 7칸 확장).
+    canonical 매핑(codex T-0075 검사의 7칸 확장).
     """
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_BASE_SCHEMA, encoding="utf-8")  # 구 6칸 base 헤더(protected 없음)
     areas_registry.areas_append(pm_paths.home_at(board.REPO), "ORD", "", "carol",
@@ -514,7 +514,7 @@ def test_areas_append_protected_to_base_header_preserves_protected(board):
                        base="develop", protected="main")
     # 헤더는 6칸 그대로지만 append 된 7칸 row 의 protected 가 canonical 매핑으로 보존된다.
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-c") == ["main"]
-    # 기존 구 base row(protected 셀 없음)는 여전히 DEFAULT 폴백(회귀 0).
+    # 기존 구 base row(protected 셀 없음)는 여전히 DEFAULT 로 대체(회귀 0).
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == ["main", "master", "develop"]
 
 
@@ -555,7 +555,7 @@ def test_repo_area_owner_old_schema_is_none(board):
     """area_owner 칼럼 없는 구 레지스트리(protected/base/per-repo) → None (하위호환·T-0161).
 
     ADR-0014 의 기존 owner 칼럼은 그대로 두고(overload 금지), area_owner 칼럼만 없으므로
-    구 areas.md(7칸 protected·6칸 base·5칸 per-repo)는 무변경 동작 — area_owner None 폴백.
+    구 areas.md(7칸 protected·6칸 base·5칸 per-repo)는 무변경 동작 — area_owner None 으로 대체.
     """
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_PROTECTED_SCHEMA, encoding="utf-8")  # 7칸·area_owner 없음
     assert _area_owner(board, "service-a") is None
@@ -606,7 +606,7 @@ def test_areas_append_area_owner_default_empty(board):
     areas_registry.areas_append(pm_paths.home_at(board.REPO), "PAY", "", "alice", repo="service-a", test_cmd="pytest -q")
     row = areas_store._areas_row_for_prefix(pm_paths.home_at(board.REPO), "PAY")
     assert row["area_owner"] == ""                       # 미지정 → 빈 칼럼
-    assert _area_owner(board, "service-a") is None    # 빈 값 → None 폴백
+    assert _area_owner(board, "service-a") is None    # 빈 값 → None 으로 대체
 
 
 def test_areas_append_area_owner_to_protected_header_preserves(board):
@@ -614,7 +614,7 @@ def test_areas_append_area_owner_to_protected_header_preserves(board):
 
     T-0076 protected 헤더(7칸·area_owner 없음)에 8칸 row 가 append 되면, 헤더 길이만큼만 매핑 시
     8번째(area_owner) 셀이 유실된다 → `_parse_areas` 가 셀 수 > 헤더(7칸 → 8칸 신 row)이면 헤더
-    무관 canonical 매핑(codex T-0075 게이트의 8칸 확장).
+    무관 canonical 매핑(codex T-0075 검사의 8칸 확장).
     """
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_PROTECTED_SCHEMA, encoding="utf-8")  # 구 7칸 protected 헤더(area_owner 없음)
     areas_registry.areas_append(pm_paths.home_at(board.REPO), "ORD", "", "carol",
@@ -622,12 +622,12 @@ def test_areas_append_area_owner_to_protected_header_preserves(board):
                        base="develop", protected="main", area_owner="carol")
     # 헤더는 7칸 그대로지만 append 된 8칸 row 의 area_owner 가 canonical 매핑으로 보존된다.
     assert _area_owner(board, "service-c") == "carol"
-    # 기존 구 protected row(area_owner 셀 없음)는 여전히 None 폴백(회귀 0).
+    # 기존 구 protected row(area_owner 셀 없음)는 여전히 None 으로 대체(회귀 0).
     assert _area_owner(board, "service-a") is None
 
 
 # ════════════════════════════════════════════════════════════════════════
-# _test_cmd — per-repo 해소 + 솔로 폴백
+# _test_cmd — per-repo 해소 + 솔로로 대체
 # ════════════════════════════════════════════════════════════════════════
 
 def test_test_cmd_override_wins(board):
@@ -638,7 +638,7 @@ def test_test_cmd_override_wins(board):
 
 
 def test_test_cmd_solo_no_registry_falls_back_to_local_conf(board):
-    """솔로(areas.md 부재) → local.conf test_cmd 폴백 (100% 하위호환)."""
+    """솔로(areas.md 부재) → local.conf test_cmd 로 대체 (100% 하위호환)."""
     assert not pm_paths.areas_file(pm_paths.home_at(board.REPO)).exists()
     pm_paths.home_at(board.REPO).local_conf.write_text("test.cmd=pytest -q --strict\n", encoding="utf-8")
     assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "pytest -q --strict"
@@ -660,14 +660,14 @@ def test_default_pytest_cmd_keeps_serial_only_when_xdist_is_unavailable(board, m
 
 
 def test_test_cmd_no_prefix_in_multi_mode_falls_back(board):
-    """areas.md 존재하나 활성 prefix 미해소(local.conf prefix 없음) → 솔로 폴백."""
+    """areas.md 존재하나 활성 prefix 미해소(local.conf prefix 없음) → 솔로로 대체."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_NEW_SCHEMA, encoding="utf-8")
     pm_paths.home_at(board.REPO).local_conf.write_text("test.cmd=fallback-cmd\n", encoding="utf-8")  # prefix 없음
     assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "fallback-cmd"
 
 
 def test_test_cmd_empty_areas_test_cmd_falls_back(board):
-    """활성 repo 행은 있으나 test_cmd 칼럼이 빈 값 → 솔로 폴백 (부분 등록 하위호환).
+    """활성 repo 행은 있으나 test_cmd 칼럼이 빈 값 → 솔로로 대체 (부분 등록 하위호환).
 
     구 스키마(test_cmd 칼럼 없음)·`areas_append` 부분 등록(빈 test_cmd) 모두 이 경로.
     """
@@ -678,14 +678,14 @@ def test_test_cmd_empty_areas_test_cmd_falls_back(board):
 
 # ════════════════════════════════════════════════════════════════════════
 # _active_slot_test_cmd / _test_cmd 슬롯 레이어 (T-0066 · ADR-0014 amend)
-# board 는 worktree_pool 을 import 하지 않고 리스 장부 *파일* 을 직접 read.
+# board 는 worktree_pool 을 import 하지 않고 슬롯 대여 기록 *파일* 을 직접 read.
 # ════════════════════════════════════════════════════════════════════════
 
-def _write_ledger(board, *leases):
-    """리스 장부 파일(LEASES_FILE)에 엔트리를 직접 쓴다 (worktree_pool atomic write 동형 스키마).
+def _write_records(board, *leases):
+    """슬롯 대여 기록 파일(LEASES_FILE)에 엔트리를 직접 쓴다 (worktree_pool atomic write 와 같은 스키마).
 
     board 는 worktree_pool 을 import 하지 않으므로 테스트도 import 없이 파일 스키마로만 친다 —
-    `{"leases": [...]}`. 각 엔트리 dict 는 worktree_pool.Lease.to_dict() 와 동형.
+    `{"leases": [...]}`. 각 엔트리 dict 는 worktree_pool.Lease.to_dict() 와 같은 구조.
     """
     import json
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
@@ -700,19 +700,19 @@ def _lease_row(*, slot, repo, session, state="leased", test_cmd=None):
 def test_active_slot_test_cmd_matches_session_leased(board, monkeypatch):
     """활성 슬롯(session 매칭·state=leased)의 test_cmd 를 돌려준다."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me",
+    _write_records(board, _lease_row(slot="work/A_1", repo="A", session="me",
                                     test_cmd="ctest -R hil1"))
     assert regression._active_slot_test_cmd(pm_paths.home_at(board.REPO)) == "ctest -R hil1"
 
 
-def test_active_slot_test_cmd_absent_ledger_returns_none(board):
-    """리스 장부 부재 → None (솔로/multi-PM-미배선 무영향·다음 레이어 폴백)."""
+def test_active_slot_test_cmd_absent_records_returns_none(board):
+    """슬롯 대여 기록 부재 → None (솔로/multi-PM-미연결 무영향·다음 레이어로 대체)."""
     assert not pm_paths.leases_file(pm_paths.home_at(board.REPO)).exists()
     assert regression._active_slot_test_cmd(pm_paths.home_at(board.REPO)) is None
 
 
 def test_active_slot_test_cmd_parse_failure_returns_none(board, monkeypatch):
-    """장부 파싱 실패(손상 JSON) → None (fail-soft·에러로 죽지 않음)."""
+    """기록 파싱 실패(손상 JSON) → None (fail-soft·에러로 죽지 않음)."""
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text("{ not json", encoding="utf-8")
     assert regression._active_slot_test_cmd(pm_paths.home_at(board.REPO)) is None
@@ -727,45 +727,45 @@ def test_test_cmd_slot_layer_wins_over_areas(board, monkeypatch):
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_NEW_SCHEMA, encoding="utf-8")
     pm_paths.home_at(board.REPO).local_conf.write_text("prefix=PAY\n", encoding="utf-8")  # areas → pytest -q
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me",
+    _write_records(board, _lease_row(slot="work/A_1", repo="A", session="me",
                                     test_cmd="make hil2"))
     assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "make hil2"
 
 
 def test_test_cmd_slot_layer_session_mismatch_ignored(board, monkeypatch):
-    """다른 session 의 슬롯은 무시 — areas per-repo(등록 prefix 1개) 로 폴백 (session 매칭 정확성).
+    """다른 session 의 슬롯은 무시 — areas per-repo(등록 prefix 1개) 로 대체 (session 매칭 정확성).
 
-    장부에 leased 슬롯이 있어도 그게 *다른* 세션이면 이 세션의 회귀명령이 아니다.
+    기록에 leased 슬롯이 있어도 그게 *다른* 세션이면 이 세션의 회귀명령이 아니다.
     등록 repo 가 service-a 하나(→ PAY areas → pytest -q)이고 슬롯의 make hil2 는 무시된다.
     """
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_SERVICE_A_ONLY, encoding="utf-8")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="other",
+    _write_records(board, _lease_row(slot="work/A_1", repo="A", session="other",
                                     test_cmd="make hil2"))  # 다른 세션
-    assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "pytest -q"  # areas 폴백(슬롯 무시)
+    assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "pytest -q"  # areas 로 대체(슬롯 무시)
 
 
 def test_test_cmd_slot_layer_non_leased_ignored(board, monkeypatch):
-    """idle 슬롯(state!=leased)은 무시 — areas per-repo(등록 prefix 1개) 로 폴백."""
+    """idle 슬롯(state!=leased)은 무시 — areas per-repo(등록 prefix 1개) 로 대체."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_SERVICE_A_ONLY, encoding="utf-8")
-    _write_ledger(board, _lease_row(slot="work/service-a_1", repo="service-a",
+    _write_records(board, _lease_row(slot="work/service-a_1", repo="service-a",
                                     session="me", state="idle",
                                     test_cmd="make hil2"))
     assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "pytest -q"  # idle 슬롯 무시 → areas(service-a/PAY)
 
 
 def test_test_cmd_slot_layer_empty_test_cmd_falls_back_to_areas(board, monkeypatch):
-    """활성 슬롯은 매칭되나 test_cmd 가 빈/None → areas per-repo(등록 prefix 1개) 폴백 (바인딩 없는 슬롯)."""
+    """활성 슬롯은 매칭되나 test_cmd 가 빈/None → areas per-repo(등록 prefix 1개) 로 대체 (바인딩 없는 슬롯)."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_SERVICE_A_ONLY, encoding="utf-8")
-    _write_ledger(board, _lease_row(slot="work/service-a_1", repo="service-a",
+    _write_records(board, _lease_row(slot="work/service-a_1", repo="service-a",
                                     session="me", test_cmd=None))  # 바인딩 없음
-    assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "pytest -q"  # areas 폴백(service-a/PAY)
+    assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "pytest -q"  # areas 로 대체(service-a/PAY)
 
 
-def test_test_cmd_slot_layer_absent_ledger_falls_back_to_areas(board, monkeypatch):
-    """장부 부재 → 슬롯 레이어 skip, 등록 prefix 1개로 areas per-repo 폴백 (per-repo 정상 동작)."""
+def test_test_cmd_slot_layer_absent_records_falls_back_to_areas(board, monkeypatch):
+    """기록 부재 → 슬롯 레이어 skip, 등록 prefix 1개로 areas per-repo 대체 (per-repo 정상 동작)."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_SERVICE_B_ONLY, encoding="utf-8")  # service-b/ACC → go test ./...
     assert not pm_paths.leases_file(pm_paths.home_at(board.REPO)).exists()
@@ -775,13 +775,13 @@ def test_test_cmd_slot_layer_absent_ledger_falls_back_to_areas(board, monkeypatc
 def test_test_cmd_override_wins_over_slot(board, monkeypatch):
     """--cmd override 가 슬롯 레이어보다 우선 (최상위 우선순위 보존)."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me",
+    _write_records(board, _lease_row(slot="work/A_1", repo="A", session="me",
                                     test_cmd="make hil2"))
     assert regression._test_cmd(pm_paths.home_at(board.REPO), "custom -x") == "custom -x"
 
 
-def test_test_cmd_solo_no_ledger_unaffected(board):
-    """솔로(장부 없음·areas 없음) → local.conf 폴백 — 슬롯 레이어 추가가 솔로 무영향."""
+def test_test_cmd_solo_no_records_unaffected(board):
+    """솔로(기록 없음·areas 없음) → local.conf 로 대체 — 슬롯 레이어 추가가 솔로 무영향."""
     assert not pm_paths.leases_file(pm_paths.home_at(board.REPO)).exists()
     pm_paths.home_at(board.REPO).local_conf.write_text("test.cmd=pytest -q --strict\n", encoding="utf-8")
     assert regression._test_cmd(pm_paths.home_at(board.REPO), None) == "pytest -q --strict"
@@ -794,7 +794,7 @@ def test_test_cmd_slot_layer_distinct_slots_same_repo(board, monkeypatch):
     leased 했으면 A_2 의 test_cmd 가 나와야 한다(A_1 의 다른 세션 명령 아님).
     """
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
-    _write_ledger(
+    _write_records(
         board,
         _lease_row(slot="work/A_1", repo="A", session="peer", test_cmd="make hil1"),
         _lease_row(slot="work/A_2", repo="A", session="me", test_cmd="make hil2"),
@@ -805,12 +805,12 @@ def test_test_cmd_slot_layer_distinct_slots_same_repo(board, monkeypatch):
 # ════════════════════════════════════════════════════════════════════════
 # session_name 해소 층 + default-session END-TO-END (T-0066 must-fix · T-0779 amend)
 # 핵심 회귀 핀: 저장측(worktree_pool._default_session)과 매칭측(lease_store.session_name)이
-# *동형* 이어야 per-slot test_cmd 가 매칭된다. 두 모듈이 공유하는 층은 env 명시와 단일-lease
+# *같은 구조* 여야 per-slot test_cmd 가 매칭된다. 두 모듈이 공유하는 층은 env 명시와 단일-lease
 # 유도뿐이다 — per-clone local.conf `session=` 층은 폐지됐다(T-0779).
 # ════════════════════════════════════════════════════════════════════════
 
 def test_session_name_ignores_local_conf(board, monkeypatch):
-    """lease_store.session_name: env·lease 없음 + conf `session=foo` → None (폴백 폐지·T-0779)."""
+    """lease_store.session_name: env·lease 없음 + conf `session=foo` → None (대체 폐지·T-0779)."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     pm_paths.home_at(board.REPO).local_conf.write_text("session=foo\n", encoding="utf-8")
@@ -825,11 +825,11 @@ def test_session_name_env_is_the_explicit_layer(board, monkeypatch):
 
 
 def _load_wp_for_board(board):
-    """board 와 *같은 tmp 장부/local.conf* 를 공유하도록 worktree_pool 을 바인딩한다.
+    """board 와 *같은 tmp 기록/local.conf* 를 공유하도록 worktree_pool 을 바인딩한다.
 
-    board fixture 가 배선한 LEASES_FILE/LOCAL_CONF/REPO 를 그대로 worktree_pool 전역에
-    꽂아, create_slot(저장측)이 쓴 장부를 regression._active_slot_test_cmd(매칭측)가 읽게 한다 —
-    end-to-end 로 두 모듈의 세션 해소 정합을 친다. board 는 worktree_pool 을 import 하지
+    board fixture 가 연결한 LEASES_FILE/LOCAL_CONF/REPO 를 그대로 worktree_pool 전역에
+    꽂아, create_slot(저장측)이 쓴 기록을 regression._active_slot_test_cmd(매칭측)가 읽게 한다 —
+    end-to-end 로 두 모듈의 세션 해소 일치를 친다. board 는 worktree_pool 을 import 하지
     않으므로(ADR-0013) 테스트가 파일 경로로만 둘을 잇는다.
     """
     spec = importlib.util.spec_from_file_location("wp_e2e", TOOLS / "worktree_pool.py")
@@ -838,7 +838,7 @@ def _load_wp_for_board(board):
     proj = board._tmp
     local = proj / ".project_manager" / ".local"
     wp.REPO = proj
-    wp.LEASES_FILE = pm_paths.leases_file(pm_paths.home_at(board.REPO))              # 같은 장부 파일 공유
+    wp.LEASES_FILE = pm_paths.leases_file(pm_paths.home_at(board.REPO))              # 같은 기록 파일 공유
     wp.LEASES_LOCK = local / "worktree-leases.lock"
     wp.WORK_DIR = proj / "work"
     wp.REPOS_DIR = proj / ".repos"
@@ -889,7 +889,7 @@ def test_default_session_e2e_env_binding_match(board, monkeypatch):
 def test_default_session_e2e_single_lease_derives_over_stale_conf(board, monkeypatch):
     """ADR-0040 D1 — 단일-lease 유도가 stale local.conf 와 어긋나도 매칭측/저장측이 일치.
 
-    장부에 leased 슬롯이 정확히 1개(session=host_pid)면 lease_store.session_name 은 그 lease 에서
+    기록에 leased 슬롯이 정확히 1개(session=host_pid)면 lease_store.session_name 은 그 lease 에서
     유도하므로(stale local.conf session=foo 는 건너뜀·유도값 승), `_active_slot_test_cmd` 의
     session 매칭이 성립해 슬롯 test_cmd 를 돌려준다. T-0066 이 local.conf 레이어 통일로
     패치하던 비대칭은 count-based 유도로 원천 해소됐고, 그 층 자체는 T-0779 가 지웠다.
@@ -899,7 +899,7 @@ def test_default_session_e2e_single_lease_derives_over_stale_conf(board, monkeyp
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     host_pid = f"{socket.gethostname()}-{os.getpid()}"
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A",
+    _write_records(board, _lease_row(slot="work/A_1", repo="A",
                                     session=host_pid, test_cmd="make hil2"))
     pm_paths.home_at(board.REPO).local_conf.write_text("session=foo\n", encoding="utf-8")  # 잔존 구키 — 읽는 층 없음
     assert lease_store.session_name(pm_paths.home_at(board.REPO)) == host_pid              # 단일-lease 유도(local.conf foo 아님)
@@ -908,11 +908,11 @@ def test_default_session_e2e_single_lease_derives_over_stale_conf(board, monkeyp
 
 # ════════════════════════════════════════════════════════════════════════
 # _active_slot_test_cmd fail-soft 가드 — 비-dict/비-list JSON (should-fix·isinstance)
-# 장부 손상이 유효 JSON(list/str/num)이면 `.get`/순회 크래시 → None 폴백.
+# 기록 손상이 유효 JSON(list/str/num)이면 `.get`/순회 크래시 → None 으로 대체.
 # ════════════════════════════════════════════════════════════════════════
 
 def test_active_slot_test_cmd_non_dict_json_returns_none(board, monkeypatch):
-    """장부가 dict 아닌 유효 JSON(list) → None (fail-soft·크래시 안 함)."""
+    """기록이 dict 아닌 유효 JSON(list) → None (fail-soft·크래시 안 함)."""
     import json
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
@@ -921,7 +921,7 @@ def test_active_slot_test_cmd_non_dict_json_returns_none(board, monkeypatch):
 
 
 def test_active_slot_test_cmd_scalar_json_returns_none(board, monkeypatch):
-    """장부가 스칼라 JSON(숫자) → None (fail-soft)."""
+    """기록이 스칼라 JSON(숫자) → None (fail-soft)."""
     import json
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
@@ -940,24 +940,24 @@ def test_active_slot_test_cmd_non_list_leases_returns_none(board, monkeypatch):
 
 # ════════════════════════════════════════════════════════════════════════
 # _active_slot_path — 활성 슬롯 worktree 경로 해소 (T-0122 · ADR-0026)
-# board 는 worktree_pool 을 import 하지 않고 리스 장부 *파일* 을 직접 read.
+# board 는 worktree_pool 을 import 하지 않고 슬롯 대여 기록 *파일* 을 직접 read.
 # ════════════════════════════════════════════════════════════════════════
 
 def test_active_slot_path_matches_session_leased(board, monkeypatch):
     """활성 슬롯(session 매칭·state=leased)의 slot 을 REPO/slot 절대경로로 돌려준다."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me"))
+    _write_records(board, _lease_row(slot="work/A_1", repo="A", session="me"))
     assert regression._active_slot_path(pm_paths.home_at(board.REPO)) == str(board.REPO / "work/A_1")
 
 
-def test_active_slot_path_absent_ledger_returns_none(board):
-    """리스 장부 부재 → None (솔로 무영향·호출부가 REPO 폴백)."""
+def test_active_slot_path_absent_records_returns_none(board):
+    """슬롯 대여 기록 부재 → None (솔로 무영향·호출부가 REPO 로 대체)."""
     assert not pm_paths.leases_file(pm_paths.home_at(board.REPO)).exists()
     assert regression._active_slot_path(pm_paths.home_at(board.REPO)) is None
 
 
 def test_active_slot_path_parse_failure_returns_none(board):
-    """장부 파싱 실패(손상 JSON) → None (fail-soft·에러로 죽지 않음)."""
+    """기록 파싱 실패(손상 JSON) → None (fail-soft·에러로 죽지 않음)."""
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text("{ not json", encoding="utf-8")
     assert regression._active_slot_path(pm_paths.home_at(board.REPO)) is None
@@ -966,28 +966,28 @@ def test_active_slot_path_parse_failure_returns_none(board):
 def test_active_slot_path_session_mismatch_returns_none(board, monkeypatch):
     """다른 session 의 leased 슬롯은 무시 → None (session 매칭 정확성)."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="other"))
+    _write_records(board, _lease_row(slot="work/A_1", repo="A", session="other"))
     assert regression._active_slot_path(pm_paths.home_at(board.REPO)) is None
 
 
 def test_active_slot_path_non_leased_returns_none(board, monkeypatch):
     """idle 슬롯(state!=leased)은 무시 → None."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me", state="idle"))
+    _write_records(board, _lease_row(slot="work/A_1", repo="A", session="me", state="idle"))
     assert regression._active_slot_path(pm_paths.home_at(board.REPO)) is None
 
 
 def test_active_slot_path_empty_slot_returns_none(board, monkeypatch):
-    """매칭 행의 slot 이 비어 있으면 None (다음 레이어[REPO] 폴백)."""
+    """매칭 행의 slot 이 비어 있으면 None (다음 레이어[REPO] 로 대체)."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
-    _write_ledger(board, _lease_row(slot=None, repo="A", session="me"))
+    _write_records(board, _lease_row(slot=None, repo="A", session="me"))
     assert regression._active_slot_path(pm_paths.home_at(board.REPO)) is None
 
 
 def test_active_slot_path_first_match_wins(board, monkeypatch):
     """ambiguous(매칭 다수)는 _active_slot_test_cmd 와 동일 규칙 — 첫 매칭."""
     monkeypatch.setattr(lease_store, "session_name", lambda _home, override=None: "me")
-    _write_ledger(board,
+    _write_records(board,
                   _lease_row(slot="work/A_1", repo="A", session="me"),
                   _lease_row(slot="work/A_2", repo="A", session="me"))
     assert regression._active_slot_path(pm_paths.home_at(board.REPO)) == str(board.REPO / "work/A_1")
@@ -1003,11 +1003,11 @@ def test_active_slot_path_non_dict_json_returns_none(board, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# _regression_cwd — cwd seam (주입 → REPO 기본 · 슬롯 우회 없음)
+# _regression_cwd — cwd 교체 지점 (주입 → REPO 기본 · 슬롯 우회 없음)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_regression_cwd_default_is_repo(board):
-    """미주입+슬롯없음(솔로/multi-PM-미배선) → REPO 기본 (additive·솔로 무변경)."""
+    """미주입+슬롯없음(솔로/multi-PM-미연결) → REPO 기본 (additive·솔로 무변경)."""
     assert not pm_paths.leases_file(pm_paths.home_at(board.REPO)).exists()
     assert regression._regression_cwd(pm_paths.home_at(board.REPO)) == str(board.REPO)
     assert regression._regression_cwd(pm_paths.home_at(board.REPO), None) == str(board.REPO)
@@ -1020,7 +1020,7 @@ def test_regression_cwd_injected_path_wins(board):
 
 
 def test_regression_cwd_empty_string_falls_back_to_repo(board):
-    """빈 문자열 주입은 falsy → REPO 폴백 (seam 의 방어적 기본)."""
+    """빈 문자열 주입은 falsy → REPO 로 대체 (교체 지점의 방어적 기본)."""
     assert regression._regression_cwd(pm_paths.home_at(board.REPO), "") == str(board.REPO)
 
 
@@ -1064,7 +1064,7 @@ def test_areas_set_cell_replaces_existing_value(board):
 
 
 def test_areas_set_cell_fills_empty_column(board):
-    """빈 `protected` 칼럼(기본값 폴백 중)을 명시값으로 채운다 — old 는 빈 문자열."""
+    """빈 `protected` 칼럼(기본값으로 대체 중)을 명시값으로 채운다 — old 는 빈 문자열."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     assert areas_registry.areas_set_cell(pm_paths.home_at(board.REPO), "service-b", "protected", "main,develop") == (
         "", "main,develop")
@@ -1072,7 +1072,7 @@ def test_areas_set_cell_fills_empty_column(board):
 
 
 def test_areas_set_cell_clearing_restores_default_fallback(board):
-    """빈 값으로 되돌리면 `_repo_protected` 가 DEFAULT_PROTECTED 폴백으로 복귀한다."""
+    """빈 값으로 되돌리면 `_repo_protected` 가 다시 DEFAULT_PROTECTED 로 대체한다."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     areas_registry.areas_set_cell(pm_paths.home_at(board.REPO), "service-a", "protected", "")
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == list(areas_rules.DEFAULT_PROTECTED)
@@ -1210,7 +1210,7 @@ def test_areas_set_cell_idempotent_same_value_does_not_write(board, monkeypatch)
 
 
 def test_areas_set_cell_write_is_atomic_and_leaves_no_temp(board):
-    """temp + 원자 교체 seam(`atomic_replace`)으로 교체하고 `.tmp` 잔재를 남기지 않는다 (ADR-0012)."""
+    """temp + 원자 교체 함수(`atomic_replace`)로 교체하고 `.tmp` 잔재를 남기지 않는다 (ADR-0012)."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     areas_registry.areas_set_cell(pm_paths.home_at(board.REPO), "service-a", "protected", "release")
     leftovers = list(pm_paths.areas_file(pm_paths.home_at(board.REPO)).parent.glob("*.tmp"))
@@ -1228,11 +1228,11 @@ def test_areas_set_cell_strips_value(board):
 def test_areas_set_cell_removes_temp_on_write_failure(board, monkeypatch):
     """쓰기 실패로 원자 교체에 못 가도 `.tmp` 잔재를 남기지 않는다(try/finally)."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
-    seam = fs
+    override = fs
 
     def boom(src, dst):
         # Windows 분기가 실패에서 내는 클래스 그대로(OSError 서브클래스).
-        raise seam.AtomicReplaceError("disk full")
+        raise override.AtomicReplaceError("disk full")
 
     _patch_atomic_replace(monkeypatch, board, boom)
     with pytest.raises(OSError):
@@ -1284,7 +1284,7 @@ def test_areas_set_cell_holds_board_lock(board, monkeypatch):
 # ── areas-duplicate-repo lint advisory (ADR-0072·never-block) ────────────────
 
 def test_lint_areas_duplicate_repo_reports_duplicates(board):
-    """중복 repo 행을 advisory 로 표면화한다(자동 병합 없음·사람 판정)."""
+    """중복 repo 행을 advisory 로 드러낸다(자동 병합 없음·사람 판정)."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(
         "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
         "|---|---|---|---|---|---|---|---|\n"
@@ -1306,7 +1306,7 @@ def test_lint_areas_duplicate_repo_clean_registry_is_silent(board):
 
 
 def test_areas_duplicate_repo_is_advisory_never_blocks(board):
-    """kind 가 `_ADVISORY_LINT_KINDS` 등재 — `lint --gate` 종료코드에 기여하지 않는다."""
+    """kind 가 `_ADVISORY_LINT_KINDS` 등재 — `lint --blocking` 종료코드에 기여하지 않는다."""
     assert "areas-duplicate-repo" in board_lint._ADVISORY_LINT_KINDS
 
 

@@ -1,14 +1,14 @@
-"""T-0355 — task-mode 작업공간(F6) 도구 배선 + 해소 절대경로 surface (spike §3b F6·결정 ⑦).
+"""T-0355 — task-mode 작업공간(F6) 도구 연결 + 해소 절대경로 surface (spike §3b F6·결정 ⑦).
 
 lease_store.resolve_task_workspace 의 단위 검증은 test_identity_args.py 가 담당하고, 여기선
-그 F6 해소가 실행-위치 필요 도구(`board.py regression run`·`livegate record`)에
-**배선**돼 (a) 특정 슬롯 worktree **절대경로**로 cwd 를 고정하고 (b) 그 절대경로를 surface 하며
+그 F6 해소가 실행-위치 필요 도구(`board.py regression run`·`live-test record`)에
+**연결**돼 (a) 특정 슬롯 worktree **절대경로**로 cwd 를 고정하고 (b) 그 절대경로를 surface 하며
 (c) cwd 는 해소에 참여하지 않음(T-0345 불변)을 본다. `ticket_finish.py` 는 F6 대상이 아니다 —
 `--task` 는 소유 확인 정체성으로만 가고 작업 트리는 종결이 묶음 기록의 브랜치로 찾는다.
 실 pytest·git 은 절대 기동하지 않는다(subprocess.run 대역·전량 mock — 프로덕션 라이브 실행 금지).
 
-hermetic — board/ticket_finish 의 앵커 전역(`REPO`)이 import 시점에 실 repo 절대경로로 굳으므로
-tmp 프로젝트로 재지정한다(test_board_live_test hermetic 패턴 동류). 경로는 그 앵커의 Home 에서 나온다.
+hermetic — board/ticket_finish 의 대상 저장소 전역(`REPO`)이 import 시점에 실 repo 절대경로로 굳으므로
+tmp 프로젝트로 재지정한다(test_board_live_test hermetic 패턴 동류). 경로는 그 대상 저장소의 Home 에서 나온다.
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def _write_leases(path: Path, entries: list[dict]) -> None:
     path.write_text(json.dumps({"leases": entries}), encoding="utf-8")
 
 
-# ── board.py regression run · livegate record 배선 ───────────────────────────
+# ── board.py regression run · live-test record 연결 ───────────────────────────
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ class _FakeProc:
 
 
 class _FakeRun:
-    """regression run 은 `Popen`(tee), livegate record 는 `run`(캡처) — 양쪽 대역을 겸한다."""
+    """regression run 은 `Popen`(tee), live-test record 는 `run`(캡처) — 양쪽 대역을 겸한다."""
 
     def __init__(self, rc: int = 0, stdout: str = ""):
         self.rc = rc
@@ -105,7 +105,7 @@ class _FakeRun:
 
 
 def _install_fake(board, monkeypatch, fake):
-    """회귀(Popen tee)·livegate(run 캡처) 두 seam 을 같은 대역으로 덮는다 (실 자식 0)."""
+    """회귀(Popen tee)·live-test(run 캡처) 두 교체 지점을 같은 대역으로 덮는다 (실 자식 0)."""
     # 실행 child 대역에 metadata 조회가 섞이지 않게 가짜 Git fixture를 격리한다.
     monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     monkeypatch.setattr(subprocess, "run", fake)
@@ -190,15 +190,15 @@ def _lg_args(task=None, repo=None, slot=None, cwd=None):
     return argparse.Namespace(action="record", rev=None, cwd=cwd, repo=repo, slot=slot, task=task)
 
 
-def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
-    """livegate record --task → F6 슬롯 worktree 절대경로를 cwd 로 고정·surface (release cmd 고정)."""
+def test_live_test_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
+    """live-test record --task → F6 슬롯 worktree 절대경로를 cwd 로 고정·surface (release cmd 고정)."""
     _write_leases(pm_paths.leases_file(pm_paths.home_at(board.REPO)), [
         {"slot": "work/A_2", "repo": "A", "session": "job4", "state": "leased"},
     ])
     (board.REPO / "work/A_2/.git").mkdir(parents=True)
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
-    # engine-root sidecar 해소를 솔로 폴백으로(_resolve_livegate_flag 가 hooksPath 미설정 시 정상).
+    # engine-root sidecar 해소를 솔로 대체 경로로(_resolve_livegate_flag 가 hooksPath 미설정 시 정상).
     regression_cmd.cmd_live_test(pm_paths.home_at(board.REPO), _lg_args(task="job4"))
     expected_cwd = str(board.REPO / "work" / "A_2")
     # 마지막(release) subprocess 호출의 cwd 가 F6 슬롯 절대경로.
@@ -207,7 +207,7 @@ def test_livegate_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
     assert f"작업공간(task job4) → {expected_cwd}" in out
 
 
-def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypatch):
+def test_live_test_record_rejects_task_slot_mix_before_subprocess(board, monkeypatch):
     """task 실행 선택도 bare-slot은 repo 좌표 부재로 거부한다."""
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
@@ -217,8 +217,8 @@ def test_livegate_record_rejects_task_slot_mix_before_subprocess(board, monkeypa
     assert fake.calls == []
 
 
-def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, tmp_path):
-    """task livegate가 task surface를 내면서 타 경로에 green을 기록하는 --cwd 우회를 거부한다."""
+def test_live_test_record_rejects_task_cwd_before_subprocess(board, monkeypatch, tmp_path):
+    """task live-test가 task surface를 내면서 타 경로에 green을 기록하는 --cwd 우회를 거부한다."""
     fake = _FakeRun(0, pytest_summary(18))
     _install_fake(board, monkeypatch, fake)
 
@@ -231,8 +231,8 @@ def test_livegate_record_rejects_task_cwd_before_subprocess(board, monkeypatch, 
     assert not pm_paths.live_test_flag(pm_paths.home_at(board.REPO)).exists()
 
 
-def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_path):
-    """비-task livegate record의 명시 --cwd는 기존처럼 실행·기록 기준 경로로 유지된다."""
+def test_live_test_record_non_task_cwd_remains_override(board, monkeypatch, tmp_path):
+    """비-task live-test record의 명시 --cwd는 기존처럼 실행·기록 기준 경로로 유지된다."""
     target = tmp_path / "readonly"
     target.mkdir()
     fake = _FakeRun(0, pytest_summary(regression.LIVE_TEST_RELEASE_PIN))
@@ -291,7 +291,7 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
         "leases": [],
         "tasks": [{"name": "job5", "prefix": "PAY"}],
     }), encoding="utf-8")
-    # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
+    # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 연결은 전용 계약 사례가 검증한다.
     monkeypatch.setattr(board_cluster, "_cluster_publish_base_branch",
                         lambda _home, args: (str(board.REPO / "product"), "task/main")
                         if getattr(args, "task", None) else (None, None))
@@ -336,7 +336,7 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     """cmd_new 3단 해소 테스트용 공통 stub — id_prefix override 캡처 + 부작용 격리(F5·T-0357)."""
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
-    # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 결속은 전용 계약 사례가 검증한다.
+    # prefix/귀속만 검증한다. 제품 기준 조회는 대역이며 실 Git 연결은 전용 계약 사례가 검증한다.
     monkeypatch.setattr(board_cluster, "_cluster_publish_base_branch",
                         lambda _home, args: (str(board.REPO / "product"), "task/main")
                         if getattr(args, "task", None) else (None, None))
@@ -426,7 +426,7 @@ def test_ticket_finish_task_forwards_identity_only(tf, monkeypatch, capsys):
 
     옛 경로는 task 보유 슬롯에서 작업공간을 골라 같은 task 대여가 둘이면 "통틀어 모호" 로
     멈췄다. 작업 트리는 종결이 묶음 기록의 브랜치로 찾으므로 `TicketFinisher` 에 트리 인자가
-    없고, task 는 board complete 소유 대조(T-0781)의 `--task` 축으로만 간다.
+    없고, task 는 board complete 소유 대조(T-0781)의 `--task` 인자로만 간다.
     """
     _write_leases(pm_paths.leases_file(pm_paths.home_at(tf._proj)), [
         {"slot": "work/A_1", "repo": "A", "session": "job7", "state": "leased"},
@@ -467,9 +467,9 @@ def test_ticket_finish_rejects_task_workspace_pin_mix_before_finisher(
     assert called["finisher"] is False
 
 
-# ── MUST-FIX (T-0355 게이트): 정체성 깔때기 task 명 검증 — 영속 전 fail-loud ──────
+# ── MUST-FIX (T-0355 검사): 정체성 깔때기 task 명 검증 — 영속 전 fail-loud ──────
 # 무검증 task 명이 created_by/claimed_by/lease-session 으로 새는 클래스를 _actor_session_override
-# 깔때기(claim/new/regression/livegate/migrate/reid 공유)에서 한 번에 닫는다. 부작용(파일 write·
+# 깔때기(claim/new/regression/live-test/migrate/reid 공유)에서 한 번에 닫는다. 부작용(파일 write·
 # 기록) 이전 fail-loud + 정상 task 는 통과.
 
 
@@ -587,7 +587,7 @@ def test_t0929_consumers_session_commands_keep_mix_refusal(board, monkeypatch, c
 def test_t0929_consumers_finish_keeps_mix_refusal(tf, monkeypatch):
     _capture_finish_forward(tf, monkeypatch)
     with pytest.raises(SystemExit):
-        tf.main(['--cluster', 'C-wave', '--task', 'main', '--repo', 'A', '--slot', '5'])
+        tf.main(['--cluster', 'C-cluster', '--task', 'main', '--repo', 'A', '--slot', '5'])
 
 
 @pytest.mark.parametrize('name', ['pm_bootstrap', 'pm_handoff'])

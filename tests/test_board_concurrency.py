@@ -4,9 +4,9 @@
 
   1. 동시 `new` → 유일 ID (board_lock 이 `_next_id`+파일생성 구간을 직렬화).
      - 락 무력화(no-op) 시 ID 충돌이 *재현*되는 sensitivity 테스트도 둔다 — 락이 실제로
-       무엇을 막는지 박제(테스트가 락 없이도 통과하면 무의미).
+       무엇을 막는지 기록(테스트가 락 없이도 통과하면 무의미).
   2. 동시 같은 ticket claim → 하나만 성공·나머지 `claim race lost`
-     (기존 `move_ticket` atomic rename 의 원자성 회귀 박제 — 신규 락 아님).
+     (기존 `move_ticket` atomic rename 의 원자성 회귀 기록 — 신규 락 아님).
   3. 크래시 시 락 자동해제 — 락 보유 프로세스가 죽으면 다음 획득자가 막히지 않는다
      (OS flock 특성·stale-lock 없음).
 
@@ -14,7 +14,7 @@
 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 재지정해 실 루트를 절대 건드리지 않는다
 (test_board_multipm.py 의 monkeypatch hermetic 패턴 동류). 동시성 검증은 *별도 프로세스*를
 띄워야 의미가 있으므로, 자식 워커는 tmp 프로젝트 경로를 인자로 받아 board.py 를 새로 로드 후
-경로 전역을 그 tmp 로 재바인딩한다(부모 monkeypatch 는 자식에 상속되지 않으므로 명시 재배선).
+경로 전역을 그 tmp 로 재바인딩한다(부모 monkeypatch 는 자식에 상속되지 않으므로 명시 재연결).
 """
 from __future__ import annotations
 
@@ -53,8 +53,8 @@ TOOLS = REPO / ".project_manager" / "tools"
 REAL_LOCAL_DIR = REPO / ".project_manager" / ".local"
 
 # spawn 워커는 워커마다 board 모듈을 재임포트하므로 부팅비용이 있다. full-suite 반복 실행 시
-# 잔여 스위트의 CPU 포화와 겹치면 6워커 부트+drain 이 옛 30s drain 상한을 드물게 넘겨 flaky
-# 했다(단독 실행은 항상 0.1s pass). 세 축으로 결정적 green 을 만든다:
+# 나머지 스위트의 CPU 포화와 겹치면 6워커 부트+drain 이 옛 30s drain 상한을 드물게 넘겨 flaky
+# 했다(단독 실행은 항상 0.1s pass). 세 가지로 결정적 green 을 만든다:
 #   - WORKERS: 동시 race 노출엔 ≥2 면 충분(같은 ID/같은 ticket 에 다수가 일제 진입하면 race 가
 #     성립) — 4 로 줄여 부팅비용·CPU 압력을 낮춘다. (sensitivity 는 그대로: 락/rename 무력화 시
 #     4 워커로도 충돌이 재현된다.)
@@ -67,12 +67,12 @@ WORKERS = 4
 SYNC_TIMEOUT = 120
 
 
-# ── board 모듈 로드 + tmp 재배선 (부모·자식 공용) ─────────────────────────────
+# ── board 모듈 로드 + tmp 재연결 (부모·자식 공용) ─────────────────────────────
 
 def _load_board_bound(proj: Path):
     """board.py 를 새로 로드하고 모든 경로 전역을 `proj` tmp 프로젝트로 재바인딩한다.
 
-    부모(monkeypatch)와 자식(프로세스 경계로 monkeypatch 미상속) 양쪽에서 같은 배선을
+    부모(monkeypatch)와 자식(프로세스 경계로 monkeypatch 미상속) 양쪽에서 같은 연결을
     쓰도록 함수로 추출. import 시점에 굳은 실 REPO 경로를 tmp 로 전부 덮어쓴다 —
     `.local/board.lock`·`BOARD_FILE`·`TICKETS_DIR` 등 동시성에 관여하는 전역 포함.
     """
@@ -89,7 +89,7 @@ def _load_board_bound(proj: Path):
 
 
 def _make_project(root: Path) -> None:
-    """tmp 프로젝트 골격 — tickets/{open,claimed,blocked,done}/ + _template.md + .local/."""
+    """tmp 프로젝트 뼈대 — tickets/{open,claimed,blocked,done}/ + _template.md + .local/."""
     tickets = root / ".project_manager" / "wiki" / "tickets"
     for status in ("open", "claimed", "blocked", "done"):
         (tickets / status).mkdir(parents=True, exist_ok=True)
@@ -122,7 +122,7 @@ _RACER_TASKS = tuple(f"racer-{i}" for i in range(WORKERS))
 
 @pytest.fixture
 def proj(tmp_path):
-    """tmp 프로젝트 루트 (골격 생성 + 발행 task 폴더)."""
+    """tmp 프로젝트 루트 (뼈대 생성 + 발행 task 폴더)."""
     p = tmp_path / "proj"
     _make_project(p)
     ensure_product_slot(_load_board_bound(p), task=_TASK)
@@ -185,7 +185,7 @@ def _worker_prefix_relabel_after_concurrent_case_write(
 
     fs.board_lock = paused_before_lock
     if bypass_fresh_recheck:
-        # sensitivity control: 이 seam을 제거하면 번호가 겹치지 않는 case-split이 실제 생겨야
+        # sensitivity control: 이 교체 지점을 제거하면 번호가 겹치지 않는 case-split이 실제 생겨야
         # 테스트가 유효하다. production 경로(False)는 원 함수를 그대로 쓴다.
         areas_registry.revalidate_prefix_user_ack = (
             lambda _home, prefix, user_ack, expected, **kwargs: expected
@@ -259,12 +259,12 @@ def _worker_write_concurrent_area_case(
 def _worker_claim(proj_str: str, tid: str, task: str, ready, go, out_q) -> None:
     """동시 claim 워커 — 같은 ticket 을 일제히 claim 시도하고 *claim 성공 여부 + stderr* 를 보고.
 
-    board 의 atomic rename(`os.rename`)이 락이고, **진 쪽은 FileNotFoundError 로 표면화**된다
+    board 의 atomic rename(`os.rename`)이 락이고, **진 쪽은 FileNotFoundError 로 드러난다**
     (board.py move_item docstring·`a lost race surfaces as FileNotFoundError`). 다만
     `cmd_claim` 은 `find_ticket_for_mutation` 으로 open path 를 본 뒤 `load_ticket`→`move_ticket` 순으로
     진행하므로, 패배의 FileNotFoundError 가 `load_ticket` *또는* `move_ticket` 어느 쪽 race
     window 에서든 날 수 있다. **ADR-0012 계약(T-0057)**: 두 window 모두 cmd_claim 안에서
-    `claim race lost`(stderr) + rc=1 로 *깨끗이* 흡수되어야 한다 — 패배자에게 미처리 traceback 이
+    `claim race lost`(stderr) + rc=1 로 *깨끗이* 처리되어야 한다 — 패배자에게 미처리 traceback 이
     새어나오면 계약 위반이다.
 
     그래서 워커는 (결과태그, stderr) 튜플을 보고한다:
@@ -272,7 +272,7 @@ def _worker_claim(proj_str: str, tid: str, task: str, ready, go, out_q) -> None:
       - rc!=0 → ("LOSE", stderr)   # 깨끗한 패배 — 부모가 stderr 에 "claim race lost" 단언
       - cmd_claim 이 던진 모든 예외(FileNotFoundError 포함) → ("EXC", traceback)
         (fix 전: load_ticket race 가 미처리 FileNotFoundError 로 새어 EXC 로 잡힘 = 계약 위반 노출.
-         fix 후: 절대 안 나옴 — 두 window 모두 board 안에서 rc=1 로 흡수.)
+         fix 후: 절대 안 나옴 — 두 window 모두 board 안에서 rc=1 로 처리.)
     워커가 조용히 죽으면 부모 drain 이 행이 되므로 예외도 무조건 보고해 진짜 원인을 드러낸다.
     """
     import contextlib
@@ -299,7 +299,7 @@ def _worker_claim_two_clone(home_str: str, repo_label: str, ready, go, out_q) ->
     `_worker_claim`(같은 홈·공유 락)과 달리 이 워커는 조율의 유일한 권위가 원격 FF push(CAS)
     임을 겨눈다. 패자는 롤백 뒤 `_board_git_refresh_after_rollback` 가 승자 커밋을 pull 해오므로
     (실측 — stale 뷰를 남기지 않는 의도된 동작) "로컬 변경 0" 의 진짜 관측점은 파일 위치가 아니라
-    **패자 자신의 board git working tree 가 dirty 하지 않다**(자기 몫의 잔여 변경이 없다)는
+    **패자 자신의 board git working tree 가 dirty 하지 않다**(자기 몫의 남은 변경이 없다)는
     쪽이다. `git status`/`git rev-parse HEAD` 은 rc 도 함께 보고한다(F-004 — stdout=='' 만으론
     git 자체 실패와 "진짜 clean" 을 구별 못 한다). 결과는 (label, rc, open_존재, claimed_존재,
     git_porcelain_stdout, git_status_rc, head_sha, git_head_rc) 로 보고한다."""
@@ -342,9 +342,9 @@ def _worker_hold_lock(proj_str: str, acquired) -> None:
 
 
 def _has_flock_primitive() -> bool:
-    """OS 배타락 프리미티브(fcntl/msvcrt)가 있는지 — 없으면 board_lock 은 무락 폴백.
+    """OS 배타락 프리미티브(fcntl/msvcrt)가 있는지 — 없으면 board_lock 은 무락으로 대체.
 
-    상호배제를 *전제*하는 결정적 테스트(scan/write mutual-exclusion)는 폴백 환경에선
+    상호배제를 *전제*하는 결정적 테스트(scan/write mutual-exclusion)는 대체 환경에선
     배타성이 없어 비적용 → skip 판정에 쓴다. (크래시-해제 테스트의 `_probe_lock_free` 는
     '지금 락이 잡혀있나'를 보는 다른 용도라 혼용 불가 — 무경합 시점엔 항상 free 다.)
     """
@@ -364,7 +364,7 @@ def _probe_lock_free(lock_path: Path) -> bool:
     """`lock_path` 에 *비차단* 배타락이 잡히는지 본다 (잡으면 즉시 해제). True=락 free.
 
     크래시-자동해제 검증의 비차단 프로브 — 블로킹 thread 없이 락 상태를 결정적으로 관찰한다.
-    POSIX=fcntl LOCK_NB·Windows=msvcrt LK_NBLCK. 프리미티브 없으면(폴백 무락) 항상 free.
+    POSIX=fcntl LOCK_NB·Windows=msvcrt LK_NBLCK. 프리미티브 없으면(무락으로 대체) 항상 free.
     """
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
     try:
@@ -389,7 +389,7 @@ def _probe_lock_free(lock_path: Path) -> bool:
                 return False
         except ImportError:
             pass
-        return True  # 폴백 무락 환경 — 항상 free 로 본다
+        return True  # 무락 대체 환경 — 항상 free 로 본다
     finally:
         os.close(fd)
 
@@ -401,7 +401,7 @@ def _spawn_and_sync(n: int, target, args_factory) -> tuple[list, mp.Queue]:
 
     Returns (procs, out_q). 호출부가 join + out_q 수거.
     """
-    ctx = mp.get_context("spawn")  # 부모 monkeypatch 비상속 — 자식이 명시 재배선(cross-platform)
+    ctx = mp.get_context("spawn")  # 부모 monkeypatch 비상속 — 자식이 명시 재연결(cross-platform)
     ready = ctx.Queue()
     go = ctx.Event()
     out_q = ctx.Queue()
@@ -477,10 +477,10 @@ def test_concurrent_new_yields_unique_ids(proj):
 def test_prefix_relabel_rechecks_canonical_after_concurrent_process_write(
     proj, monkeypatch, bypass_fresh_recheck, expected,
 ):
-    """두 실제 세션의 선판정→타 case 발행→lock 취득 interleaving을 전/후로 박제한다.
+    """두 실제 세션의 선판정→타 case 발행→lock 취득 interleaving을 전/후로 기록한다.
 
     source 번호를 003으로 두고 concurrent `FRESH`는 001을 발행해, collision 가드가 우연히
-    막아주는 형상을 피한다. fresh 재검증이 없으면 `FRESH`/`fresh`가 공존하고, production
+    막아주는 구성을 피한다. fresh 재검증이 없으면 `FRESH`/`fresh`가 공존하고, production
     경계에서는 캐시를 버린 lock 안 판정이 rc1·쓰기 0으로 기존 source를 보존해야 한다.
     """
     board = _load_board_bound(proj)
@@ -529,7 +529,7 @@ def test_prefix_relabel_rechecks_canonical_after_concurrent_process_write(
         (True, (0, ["T-fresh-001"])),
         (False, (1, [])),
     ],
-    ids=["sensitivity-derived-prefix-splits", "derived-prefix-fresh-gate-blocks"],
+    ids=["sensitivity-derived-prefix-splits", "derived-prefix-fresh-check-blocks"],
 )
 def test_task_derived_new_rechecks_after_concurrent_area_case_write(
     proj, bypass_fresh_recheck, expected,
@@ -590,9 +590,9 @@ def test_task_derived_new_rechecks_after_concurrent_area_case_write(
 def test_unlocked_id_issuance_collides_deterministically(board, monkeypatch):
     """sensitivity — 락 없이 `_next_id` 를 *읽기만* 하고 파일을 안 만들면 같은 ID 가 나온다.
 
-    `cmd_new` 가 board_lock 으로 막는 정확한 race 를 결정적으로 박제한다: ID 발행(`_next_id`
+    `cmd_new` 가 board_lock 으로 막는 정확한 race 를 결정적으로 기록한다: ID 발행(`_next_id`
     = max+1)과 파일 생성 사이의 틈에 다른 세션이 끼면 같은 ID 를 본다. 락이 이 read→create 를
-    원자로 묶어 충돌을 없앤다. (확률적 spawn race 대신 seam 을 직접 노출 — 빠르고 결정적.)
+    원자로 묶어 충돌을 없앤다. (확률적 spawn race 대신 교체 지점을 직접 노출 — 빠르고 결정적.)
     """
     # 빈 보드 — 두 '세션'이 파일 생성 전에 _next_id 를 각자 읽으면 둘 다 T-0001.
     assert ticket_store._next_id(pm_paths.home_at(board.REPO), None) == "T-0001"
@@ -611,16 +611,16 @@ def test_unlocked_id_issuance_collides_deterministically(board, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 2. 동시 같은 ticket claim → 하나만 성공 (기존 atomic rename 원자성 박제)
+# 2. 동시 같은 ticket claim → 하나만 성공 (기존 atomic rename 원자성 기록)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_concurrent_claim_only_one_wins(proj):
     """N 개 세션이 같은 open ticket 을 동시에 claim → 정확히 하나만 성공·**패배자는 깨끗이 실패**.
 
     `move_ticket` 의 POSIX atomic rename(`os.rename`)이 락 — 진 쪽은 FileNotFoundError 로
-    표면화된다(board.py move_item docstring). 이 *기존* 원자성을 회귀로 박제한다(신규 락 없음).
+    드러난다(board.py move_item docstring). 이 *기존* 원자성을 회귀로 기록한다(신규 락 없음).
 
-    **검증 의미 (T-0057·ADR-0012 계약)** = 두 가지를 동시에 박제한다:
+    **검증 의미 (T-0057·ADR-0012 계약)** = 두 가지를 동시에 기록한다:
       1. *안전성* — 정확히 한 세션만 claim 성공·ticket 은 한 번만 claimed 로 이동(분열·중복 0).
       2. *깨끗한 패배* — 패배자는 **미처리 traceback 없이 rc=1 로 깨끗이 실패**해야 한다(EXC 0).
          패배는 타이밍에 따라 세 가지 *깨끗한* 형태 중 하나로 난다(모두 rc=1·traceback 0):
@@ -628,12 +628,12 @@ def test_concurrent_claim_only_one_wins(proj):
            (b) 조회→`load_ticket` window race → "claim race lost"
            (c) 조회→`move_ticket` window race → "claim race lost"
          fix 전엔 (b) 가 미처리 FileNotFoundError 로 새어 EXC(=계약 위반)로 잡혔다. fix 후엔
-         (b)도 (c)처럼 board 안에서 rc=1 로 흡수된다. 어느 *깨끗한* 형태로 지든 무해하므로 이
-         테스트는 EXC(미처리 traceback)만 fail 로 본다. (b) window 의 결정적 박제 + "claim race
+         (b)도 (c)처럼 board 안에서 rc=1 로 처리된다. 어느 *깨끗한* 형태로 지든 무해하므로 이
+         테스트는 EXC(미처리 traceback)만 fail 로 본다. (b) window 의 결정적 기록 + "claim race
          lost" 메시지 자체는 `test_claim_load_window_race_lost_cleanly`(아래)가 담당한다 —
          확률적 spawn 타이밍에 메시지 문구를 의존하지 않기 위함(이 spawn 테스트의 flake 회피).
     """
-    # seed: open/ 에 claim 대상 ticket 하나.
+    # 미리 넣기: open/ 에 claim 대상 ticket 하나.
     board = _load_board_bound(proj)
     tid = "T-0001"
     path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / f"{tid}-seed.md"
@@ -663,13 +663,13 @@ def test_concurrent_claim_only_one_wins(proj):
     assert len(losers) == n - 1, f"패배자 수 불일치: results={results}"
 
     # 패배자는 모두 *깨끗한* rc=1 패배여야 한다(EXC 위에서 이미 배제). stderr 은 알려진 깨끗한
-    # 패배 메시지(claimed/ 선점 또는 race-lost) 중 하나 — 어느 쪽이든 traceback 0·rc=1.
+    # 패배 메시지(claimed/ 를 먼저 차지함 또는 race-lost) 중 하나 — 어느 쪽이든 traceback 0·rc=1.
     for tag, stderr in losers:
         assert ("claim race lost" in stderr
                 or f"cannot claim {tid}: currently in claimed/" in stderr), (
             f"패배자 stderr 이 알려진 깨끗한 패배 형태가 아님: {stderr!r}")
     # winner 는 어떤 패배 메시지도, traceback 도 내지 않는다(자기 stderr 깨끗). 비-git tmp
-    # 형상이 내는 claim rev 박제 advisory 는 패배가 아니라 측정 폭 안내라 이 단언의 대상이
+    # 구성이 내는 claim rev 기록 advisory 는 패배가 아니라 측정 폭 안내라 이 단언의 대상이
     # 아니다 — 여기서 재는 성질은 "승자가 진 것처럼 보이지 않는다" 이다.
     win_stderr = wins[0][1]
     assert "claim race lost" not in win_stderr and "cannot claim" not in win_stderr, \
@@ -688,8 +688,8 @@ def test_concurrent_claim_only_one_wins(proj):
 # 위 `test_concurrent_claim_only_one_wins`/`test_claim_load_window_race_lost_cleanly` 는 **같은
 # PM 홈**(공유 board_lock)의 race 다. 서로 다른 PM 홈(clone) 2개가 각자 별도 board git 을 갖고
 # 동시에 같은 티켓을 claim 하면 로컬 flock 이 전혀 겹치지 않는다(LOCAL_DIR/BOARD_LOCK 이 clone
-# 마다 다르다) — 조율의 유일한 권위가 원격 FF push(CAS) 하나임을 이 형상만 증명한다. 엔진 트리
-# 복사는 불요(board.py:172 REPO 는 파일 앵커라, CLI subprocess 였다면 clone 마다 9.7MB 엔진
+# 마다 다르다) — 조율의 유일한 권위가 원격 FF push(CAS) 하나임을 이 구성만 증명한다. 엔진 트리
+# 복사는 불요(board.py:172 REPO 는 파일 위치 기준이라, CLI subprocess 였다면 clone 마다 9.7MB 엔진
 # 사본이 필요했다) — `_load_board_bound` 가 board.py 를 새로 로드해 경로 전역을 각 홈으로
 # 재바인딩하는 것만으로 충분하다(위 클로저 재사용).
 
@@ -716,8 +716,8 @@ def _tc_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _tc_seed_bare(tmp_path: Path, name: str) -> Path:
-    """bare remote 를 만들고 "이미 배포된" board 형상(tickets/ + T-0001 + areas.md +
-    .gitattributes/.gitignore)을 push 한다(`test_board_claim_strict.py::_make_board_git` 동형)."""
+    """bare remote 를 만들고 "이미 배포된" board 구성(tickets/ + T-0001 + areas.md +
+    .gitattributes/.gitignore)을 push 한다(`test_board_claim_strict.py::_make_board_git` 과 같은 방식)."""
     bare = tmp_path / name
     _tc_git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     seed = tmp_path / f"{name}-seed"
@@ -729,7 +729,7 @@ def _tc_seed_bare(tmp_path: Path, name: str) -> Path:
         _TWO_CLONE_TICKET_TEXT, encoding="utf-8")
     (seed / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     # `_BOARD_GITATTRIBUTES_BLOCK` 은 REPO 와 무관한 리터럴 상수 — 아무 tmp 로 로드해도 값은 같다
-    # ("이미 배포된" board 형상을 재현해 첫 mutation 의 backfill 잡음을 없앤다).
+    # ("이미 배포된" board 구성을 재현해 첫 mutation 의 backfill 잡음을 없앤다).
     (seed / ".gitattributes").write_text(
         board_git_rules._BOARD_GITATTRIBUTES_BLOCK, encoding="utf-8", newline="\n")
     (seed / ".gitignore").write_text("tickets/.drafts/\n", encoding="utf-8")
@@ -756,7 +756,7 @@ def _tc_home_from_bare(tmp_path: Path, bare: Path, name: str) -> Path:
 def test_two_clones_claim_race_arbitrated_by_remote_push(tmp_path, monkeypatch):
     """두 PM 홈(각자 board git clone)이 동시에 같은 티켓을 claim (I4 — 대칭 불변식).
 
-    승자는 정확히 1 이고 자기 몫을 claimed/ 로 확정한다. 패자는 rc≠0 이고 **자기 몫의 잔여
+    승자는 정확히 1 이고 자기 몫을 claimed/ 로 확정한다. 패자는 rc≠0 이고 **자기 몫의 남은
     변경이 0**(git working tree clean)이다 — 롤백 뒤 `_board_git_refresh_after_rollback` 가
     승자 커밋을 pull 해오므로(stale 뷰 방지가 의도된 동작·`_board_git_claim_rollback` docstring),
     패자 로컬도 결과적으로 claimed/ 를 보게 된다(승자가 옮긴 것이지 패자 자신의 이동이 아니다).
@@ -795,7 +795,7 @@ def test_two_clones_claim_race_arbitrated_by_remote_push(tmp_path, monkeypatch):
         f"패자 `git status --porcelain` 자체가 실패(rc={loser_status_rc}) — "
         "stdout=='' 만으론 clean 을 신뢰 못 한다(F-004).")
     assert loser_porcelain == "", (
-        f"패자 board git working tree 가 dirty — 자기 몫의 잔여 변경이 남음: {loser_porcelain!r}")
+        f"패자 board git working tree 가 dirty — 자기 몫의 남은 변경이 남음: {loser_porcelain!r}")
     assert not loser_open and loser_claimed, (
         "패자 로컬 뷰가 승자의 claimed 이동을 못 따라잡음(rollback 뒤 pull 미반영·stale)")
     assert loser_head_rc == 0, f"패자 `git rev-parse HEAD` 자체가 실패(rc={loser_head_rc})."
@@ -823,15 +823,15 @@ def test_two_clones_claim_race_arbitrated_by_remote_push(tmp_path, monkeypatch):
 
 
 def test_claim_load_window_race_lost_cleanly(monkeypatch, board, capsys):
-    """sensitivity(결정적) — 조회→`load_ticket` 사이 window 의 패배를 깨끗이 흡수.
+    """sensitivity(결정적) — 조회→`load_ticket` 사이 window 의 패배를 깨끗이 처리.
 
     spawn 워커는 부하·타이밍에 따라 `load_ticket` window 가 안 열릴 수 있어(승자가 너무 빨리
     옮기지 *않으면* 패배가 `move_ticket` window 로만 떨어짐) 그 window 의 계약을 *결정적으로*
-    노출하지 못한다. 그래서 그 seam 을 직접 연다: 조회(`find_ticket_for_mutation`)가 open path 를 돌려준 *직후*
+    노출하지 못한다. 그래서 그 교체 지점을 직접 연다: 조회(`find_ticket_for_mutation`)가 open path 를 돌려준 *직후*
     승자가 옮긴 효과로 그 파일을 사라지게 하고 `cmd_claim` 을 호출한다.
 
     ADR-0012(T-0057) 계약: 그 window 에서 `load_ticket(path)` 가 던지는 FileNotFoundError 는
-    미처리 traceback 으로 새지 말고 `claim race lost`(stderr) + rc=1 로 흡수되어야 한다.
+    미처리 traceback 으로 새지 말고 `claim race lost`(stderr) + rc=1 로 처리되어야 한다.
     (계약 fix 를 되돌리면 load_ticket 이 try 밖이라 이 호출이 미처리 FileNotFoundError 로 죽어
      이 테스트가 fail 을 재현한다 = fix 가 load-bearing — `test_unlocked_id_...` 와 동류의
      결정적 sensitivity, 확률적 spawn race 비의존.)
@@ -841,7 +841,7 @@ def test_claim_load_window_race_lost_cleanly(monkeypatch, board, capsys):
     ticket_store.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
                              "depends_on": []}, "# seed\n")
 
-    # mutation 조회 seam 을 래핑해 *반환 직후* open path 를 제거 — 승자가 옮긴(rename out)
+    # mutation 조회 함수를 래핑해 *반환 직후* open path 를 제거 — 승자가 옮긴(rename out)
     # 효과를 결정적으로 재현한다. 이어지는 load_ticket(path) 가 그 사라진 path 를 읽으려다 진다.
     orig_find = ticket_store.find_ticket_for_mutation
 
@@ -908,14 +908,14 @@ def test_claim_critical_section_holds_board_lock(monkeypatch, board):
     """sensitivity(결정적·cross-platform) — claim 의 load→rename 임계구역이 board_lock 을 보유한다.
 
     Windows `os.rename` 비배타(ADR-0012 Amendment·T-0213)를 락으로 대체한 것을 결정적으로
-    박제한다: claim 이 `load_ticket` 을 부르는 순간(=임계구역 *안*) 다른 fd 로 board_lock 을
+    기록한다: claim 이 `load_ticket` 을 부르는 순간(=임계구역 *안*) 다른 fd 로 board_lock 을
     *비차단* 획득하려 하면 실패해야 한다(락 잡힘). `cmd_claim` 에서 `with board_lock()` 을
     걷어내면 프로브가 free 를 봐 이 단언이 FAIL 을 재현한다 = 락이 load-bearing(확률적 spawn
     타이밍 비의존·`test_refresh_board_scan_and_write_are_mutually_exclusive` 동류). flock/msvcrt
-    미지원 폴백 환경은 배타성이 없어 skip.
+    미지원 대체 환경은 배타성이 없어 skip.
     """
     if not _has_flock_primitive():
-        pytest.skip("락 프리미티브 없음(폴백 무락) — 임계구역 락 보유 단언 비적용")
+        pytest.skip("락 프리미티브 없음(무락으로 대체) — 임계구역 락 보유 단언 비적용")
 
     tid = "T-0001"
     path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / f"{tid}-seed.md"
@@ -971,7 +971,7 @@ def test_lock_auto_released_on_holder_crash(proj):
 
     자식이 board_lock 을 잡은 채 멈춘 동안 부모의 *비차단* 프로브는 실패해야 하고(락이
     실제로 잡힘), 자식을 kill 하면 OS 가 락을 해제해 프로브가 성공한다. 블로킹 thread 없이
-    비차단 프로브로 결정적·빠르게 stale-lock 부재를 박제한다.
+    비차단 프로브로 결정적·빠르게 stale-lock 부재를 기록한다.
     """
     board = _load_board_bound(proj)
     lock_path = (pm_paths.home_at(board.REPO).local_dir / "board.lock")
@@ -983,9 +983,9 @@ def test_lock_auto_released_on_holder_crash(proj):
     try:
         assert acquired.wait(timeout=SYNC_TIMEOUT), "자식이 락을 획득하지 못함"
 
-        # 폴백 무락 환경(fcntl/msvcrt 둘 다 없음)에선 배타성이 없으니 이 단언을 건너뛴다.
+        # 무락 대체 환경(fcntl/msvcrt 둘 다 없음)에선 배타성이 없으니 이 단언을 건너뛴다.
         if _probe_lock_free(lock_path):
-            pytest.skip("락 프리미티브 없음(폴백 무락) — 크래시-해제 단언 비적용")
+            pytest.skip("락 프리미티브 없음(무락으로 대체) — 크래시-해제 단언 비적용")
 
         # 자식 보유 중 — 비차단 프로브 실패(락 잡힘).
         assert not _probe_lock_free(lock_path), "자식 보유 중인데 락이 free (배타성 위반)"
@@ -1012,7 +1012,7 @@ def test_lock_auto_released_on_holder_crash(proj):
 # ════════════════════════════════════════════════════════════════════════
 
 def _seed_open_ticket(board, tid: str) -> None:
-    """open/ 에 ticket 하나 seed (refresh_board 가 board.md 에 렌더하도록)."""
+    """open/ 에 ticket 하나 미리 넣기 (refresh_board 가 board.md 에 렌더하도록)."""
     p = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / f"{tid}-seed.md"
     ticket_store.dump_ticket(p, {"id": tid, "title": f"title-{tid}", "status": "open",
                           "depends_on": [], "touches": [], "tags": []}, "# seed\n")
@@ -1064,7 +1064,7 @@ def test_concurrent_refresh_board_reflects_latest_state(proj):
 def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
     """sensitivity(결정적) — refresh_board 의 scan+write 는 다른 refresh 의 write 와 상호배제.
 
-    lost-update 의 핵심 race 를 결정적 seam 으로 박제한다. A 가 scan 을 시작한 직후 멈춘
+    lost-update 의 핵심 race 를 결정적 교체 지점으로 기록한다. A 가 scan 을 시작한 직후 멈춘
     동안(scan-pause), B 가 *더 새로운* 상태(ticket 추가)를 통째 refresh(scan+write) 한다.
     이어 A 가 재개해 자기 write 를 한다.
 
@@ -1074,10 +1074,10 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
         write, A 가 write-lock 잡고 stale(1 ticket) 로 덮어씀 → board.md=1 ticket (FAIL).
 
     스레드로 구동한다(board_lock 은 매 호출 새 fd 를 열어 flock 이 같은 프로세스의 두 fd 도
-    상호배제 — 스레드 간 직렬화가 OS 락으로 결정적). flock 미지원 폴백 환경은 skip.
+    상호배제 — 스레드 간 직렬화가 OS 락으로 결정적). flock 미지원 대체 환경은 skip.
     """
     if not _has_flock_primitive():
-        pytest.skip("락 프리미티브 없음(폴백 무락) — scan/write 상호배제 단언 비적용")
+        pytest.skip("락 프리미티브 없음(무락으로 대체) — scan/write 상호배제 단언 비적용")
 
     _seed_open_ticket(board, "T-0001")  # 초기 상태 S1 = 1 ticket
 
@@ -1089,7 +1089,7 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
 
     def hooked_load(p):
         # A 의 첫 scan load 에서 한 번만 멈춘다(B 가 끼어들 틈을 결정적으로 연다).
-        # state.paused=True 이후엔(=B 의 scan 및 A 의 잔여 scan) 그냥 통과.
+        # state.paused=True 이후엔(=B 의 scan 및 A 의 남은 scan) 그냥 통과.
         fm = orig_load(p)
         if not state["paused"]:
             state["paused"] = True
@@ -1154,11 +1154,11 @@ def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# append_atomic (O_APPEND 원자 추가 — 공용 `file_lock` seam·T-0565)
+# append_atomic (O_APPEND 원자 추가 — 공용 `file_lock` 함수·T-0565)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_append_atomic_creates_and_appends(board, tmp_path):
-    """board 가 바인딩한 seam append — 파일 없으면 생성, 있으면 끝에 원자 추가(덮어쓰기 아님)."""
+    """board 가 바인딩한 공용 함수 append — 파일 없으면 생성, 있으면 끝에 원자 추가(덮어쓰기 아님)."""
     f = tmp_path / "log.md"
     fs.append_atomic(f, "line1\n")
     fs.append_atomic(f, "line2\n")
@@ -1276,5 +1276,5 @@ def test_concurrent_areas_append_from_empty_header_once_all_rows(proj):
 
 # 참고: hermetic 입증 — 실 루트 .local/board.lock 가 테스트로 안 생기는지.
 def test_real_root_local_dir_untouched_by_tmp(board):
-    """tmp-바인딩 board 가 실 루트 .local 을 안 건드리는지 가드(경로 재배선 확인)."""
+    """tmp-바인딩 board 가 실 루트 .local 을 안 건드리는지 가드(경로 재연결 확인)."""
     assert (pm_paths.home_at(board.REPO).local_dir / "board.lock") != REAL_LOCAL_DIR / "board.lock", "BOARD_LOCK 가 tmp 로 재배선 안 됨"

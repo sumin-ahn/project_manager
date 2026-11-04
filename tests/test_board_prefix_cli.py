@@ -83,7 +83,7 @@ def _seed_ticket(board, tid: str, *, created: str = "2026-07-01",
 
     `slug` 는 **case 만 다른 ID 두 건**을 심을 때 필요하다 — 대소문자 무시 파일시스템에서는
     `T-AAA-001-slug.md` 와 `T-aaa-001-slug.md` 가 같은 파일이라 두 번째 쓰기가 첫 번째를 덮어
-    오염 형상 자체가 재현되지 않는다(Windows 실측). slug 를 갈라 두 파일로 심는다.
+    오염 상태 자체가 재현되지 않는다(Windows 실측). slug 를 갈라 두 파일로 심는다.
     """
     path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / status / f"{tid}-{slug}.md"
     ticket_store.dump_ticket(
@@ -127,7 +127,7 @@ def _issued_ids(board) -> set[str]:
 
 def _ns(**kw) -> argparse.Namespace:
     # dst/into 테스트는 승인 여부를 각 callsite가 반드시 선택한다. 헬퍼가
-    # 자동으로 ack를 붙이면 이 파일에 추가되는 후속 거부 테스트가 게이트를 무의식적으로
+    # 자동으로 ack를 붙이면 이 파일에 추가되는 후속 거부 테스트가 승인 확인을 무의식적으로
     # 통과할 수 있다. 신설 경로만 정확한 대상값을 명시하고 기존/no-op/dry-run은 None으로 드러낸다.
     if "dst" in kw or "into" in kw:
         assert "user_ack" in kw, "dst/into test must choose user_ack explicitly"
@@ -239,7 +239,7 @@ def test_detect_collisions_normalizes_zero_pad_width(board):
 
 
 def test_collision_key_normalizes_prefix_and_number(board):
-    """`_collision_key` — 폭 무관 같은 (prefix, 논리번호) 키·malformed 는 문자열 폴백."""
+    """`_collision_key` — 폭 무관 같은 (prefix, 논리번호) 키·malformed 는 문자열로 대체."""
     assert board_prefix._collision_key("T-001") == board_prefix._collision_key("T-0001")
     assert board_prefix._collision_key("T-foo-007") == ("foo", 7)
     assert board_prefix._collision_key("garbage") == "garbage"  # 순번 미파싱 → 리터럴
@@ -445,7 +445,7 @@ def test_apply_file_renames_survives_swap(board):
     board_prefix._apply_file_renames([(a, a.with_name("T-foo-002-slug.md")),
                                (b, b.with_name("T-foo-001-slug.md"))])
     assert _ids_on_disk(board) == {"T-foo-001", "T-foo-002"}
-    # 원본 두 파일이 다 살아남았는지(잔여 tmp 없음).
+    # 원본 두 파일이 다 살아남았는지(남은 tmp 없음).
     open_dir = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open"
     assert sorted(p.name for p in open_dir.glob("*")) == \
         ["T-foo-001-slug.md", "T-foo-002-slug.md"]
@@ -658,7 +658,7 @@ def test_delete_none_rejected(board, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_home_git_dirty_does_not_abort_relabel(board, monkeypatch, capsys):
-    """남의 미커밋 변경이 있어도 relabel 은 진행된다 — 전면 abort 폐기(ADR-0074 D1 동형).
+    """남의 미커밋 변경이 있어도 relabel 은 진행된다 — 전면 abort 폐기(ADR-0074 D1 과 같은 방식).
 
     옛 동작(dirty 면 rc=1 abort)은 "공유 트리를 나 혼자 쓴다"는 가정이라, 멀티-PM 에서 남의
     WIP 하나로 내 prefix 작업이 막혔다. 이제 안내만 내고 진행하며, 커밋 스코프가 격리를 맡는다.
@@ -685,7 +685,7 @@ def test_home_git_dirty_does_not_block_dry_run(board, monkeypatch, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# board-git 백업 commit — 분리 형상은 commit·legacy 는 skip 안내
+# board-git 백업 commit — 분리 구성은 commit·legacy 는 skip 안내
 # ════════════════════════════════════════════════════════════════════════
 
 def test_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
@@ -700,7 +700,7 @@ def test_board_git_backup_commit_when_separated(board, monkeypatch, capsys):
     rc = board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False))
     assert rc == 0
-    # 분리 형상 → board-git 백업 commit 1회(relabel 메시지) + 백업 rev 안내.
+    # 분리 구성 → board-git 백업 commit 1회(relabel 메시지) + 백업 rev 안내.
     assert [msg for msg, _ in calls["commit"]] == ["prefix rename foo → bar"]
     # 스코프 커밋(ADR-0074) — board 전체(None)가 아니라 만진 경로를 넘긴다.
     scoped = {Path(p).name for p in calls["commit"][0][1]}
@@ -858,9 +858,9 @@ def test_relabel_dst_occupied_aborts_before_any_write(board, monkeypatch, capsys
 # 손상 티켓 — 조회는 fail-soft, ID 재부여는 fail-loud (T-0601 R1 must-fix 2)
 # ════════════════════════════════════════════════════════════════════════
 # 손상 frontmatter fail-soft(T-0601 ⑤)를 순회 전체에 걸면 `_scan_prefix_tickets` 를 소비하는
-# mutation 표면이 눈이 먼다: 못 본 ID 는 `_detect_collisions` 유일성 검사와 merge 의
+# mutation 명령이 눈이 먼다: 못 본 ID 는 `_detect_collisions` 유일성 검사와 merge 의
 # `start=max(...)` 에서 빠지고, 그 ID 위로 다른 티켓이 덮인다(중복·clobber). skip 의 의미를
-# 표면별로 가른다 — 조회는 그 한 줄만 빼고 계속, 재부여는 [중단].
+# 명령별로 가른다 — 조회는 그 한 줄만 빼고 계속, 재부여는 [중단].
 
 _BROKEN_TICKET = (
     "---\n"
@@ -879,7 +879,7 @@ def _seed_broken(board, name: str = "T-foo-004-slug.md") -> Path:
 
 
 def test_scan_reports_the_skipped_ticket_to_its_caller(board):
-    """스캔은 skip 을 삼키지 않고 호출부에 돌려준다 — 표면별 판정의 입력이다."""
+    """스캔은 skip 을 삼키지 않고 호출부에 돌려준다 — 명령별 판정의 입력이다."""
     _seed_ticket(board, "T-foo-001")
     broken = _seed_broken(board)
 
@@ -912,7 +912,7 @@ def test_id_reassigning_verbs_abort_on_an_unreadable_ticket(board, capsys, verb,
 
 
 def test_reid_aborts_on_an_unreadable_ticket(board, capsys):
-    """reid 도 같은 축이다 — 손상 티켓의 ID 가 NEW collision 검사에서 빠지면 그 위로 덮는다."""
+    """reid 도 같은 경우다 — 손상 티켓의 ID 가 NEW collision 검사에서 빠지면 그 위로 덮는다."""
     _seed_ticket(board, "T-0036")
     _seed_broken(board)
     before = _ids_on_disk(board)
@@ -947,7 +947,7 @@ def test_read_only_prefix_list_survives_the_unreadable_ticket(board, capsys):
 
 
 def test_healthy_board_is_unaffected(board):
-    """손상 0 인 보드에서는 종전 동작 그대로다 (게이트 추가로 정상 경로가 바뀌지 않는다)."""
+    """손상 0 인 보드에서는 종전 동작 그대로다 (차단 추가로 정상 경로가 바뀌지 않는다)."""
     _seed_ticket(board, "T-foo-001")
     assert board_prefix.cmd_prefix_rename(pm_paths.home_at(board.REPO), _ns(
         src="foo", dst="bar", user_ack="bar", dry_run=False)) == 0
@@ -972,9 +972,9 @@ def _seed_prefixed_only(board, *, status: str = "open"):
 
 
 def test_prefix_glob_first_match_is_the_reproduced_hazard(board, capsys):
-    """재현 — 읽기 seam(`find_ticket`)은 없는 번호를 **다른 티켓**으로 답한다(경고 + 반환).
+    """재현 — 읽기 함수(`find_ticket`)는 없는 번호를 **다른 티켓**으로 답한다(경고 + 반환).
 
-    읽기(`show`)는 그 폴백이 legacy 조회를 살리는 자리라 종전대로 두고, 이동은 아래처럼 막는다."""
+    읽기(`show`)는 그 대체 조회가 legacy 조회를 살리는 자리라 종전대로 두고, 이동은 아래처럼 막는다."""
     path = _seed_prefixed_only(board)
     status, found = ticket_store.find_ticket(pm_paths.home_at(board.REPO), _MISSING_LEGACY_ID)
     assert (status, found) == ("open", path)
@@ -1008,7 +1008,7 @@ def test_state_changing_commands_never_move_a_prefix_only_match(
     """
     path = _seed_prefixed_only(board, status=seeded_status)
     if mutation == "claim":
-        ensure_product_slot(board, task="me")  # claim 은 task 폴더(앵커)를 먼저 해소한다(T-0962)
+        ensure_product_slot(board, task="me")  # claim 은 task 폴더(대상 저장소)를 먼저 해소한다(T-0962)
     args = {
         "block": _ns(id=_MISSING_LEGACY_ID, reason="r"),
         "unclaim": _ns(id=_MISSING_LEGACY_ID),

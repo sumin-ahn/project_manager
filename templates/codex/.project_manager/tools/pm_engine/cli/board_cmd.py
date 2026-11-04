@@ -81,7 +81,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
                    help="bypass the regression check "
                         "(regression-irrelevant ticket)")
     # 보안 capability가 아니라 ClusterCloser의 사고 방지용 exact path-binding이다.
-    # 사용자 완료 표면을 하나로 유지하려 help에서는 감춘다.
+    # 사용자 완료 명령을 하나로 유지하려 help에서는 감춘다.
     p.add_argument("--cluster-close", default=None, help=argparse.SUPPRESS)
     identity_args.add_task_arg(p)   # claim 소유 대조용 세션 해소
     p.set_defaults(fn=board_ticket.cmd_complete)
@@ -157,8 +157,8 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=board_ticket.cmd_promote)
 
-    # cluster subcommand group — 운영 단위(티켓 묶음) 장부. 쓰기(new)와 조회(show)가 섞여
-    # 있으므로 leaf 별로 분류되는 서브그룹으로 둔다(`idea`·`prefix` 와 같은 형상).
+    # cluster subcommand group — 운영 단위(티켓 묶음) 기록. 쓰기(new)와 조회(show)가 섞여
+    # 있으므로 leaf 별로 분류되는 서브그룹으로 둔다(`idea`·`prefix` 와 같은 구성).
     cluster_p = sub.add_parser("cluster", help="운영 단위(티켓 묶음) 기록")
     cluster_sub = cluster_p.add_subparsers(dest="cluster_cmd", required=True)
 
@@ -192,7 +192,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
 
     p = sub.add_parser("tier", help="open/claimed 티켓의 위임 tier 기록·갱신")
     p.add_argument("id", metavar="T-NNNN")
-    # choices를 쓰면 argparse가 rc=2로 선점한다. 계약의 인식 불가 값 rc=1을 cmd_tier가 직접
+    # choices를 쓰면 argparse가 rc=2로 먼저 끝낸다. 계약의 인식 불가 값 rc=1을 cmd_tier가 직접
     # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다.
     p.add_argument("tier", metavar="pm-direct|normal|hard")
     p.set_defaults(fn=board_round.cmd_tier)
@@ -201,7 +201,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
         "design",
         help="open/claimed/draft 티켓의 설계 단계(design:) 값 발행 후 기록·갱신")
     p.add_argument("id", metavar="T-NNNN")
-    # choices를 쓰면 argparse가 rc=2로 선점한다. 계약의 인식 불가 값 rc=1을 cmd_design이 직접
+    # choices를 쓰면 argparse가 rc=2로 먼저 끝낸다. 계약의 인식 불가 값 rc=1을 cmd_design이 직접
     # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다(`_validate_design`).
     p.add_argument("value", metavar=design_rules.DESIGN_VALUE_FORMS)
     p.set_defaults(fn=board_round.cmd_design)
@@ -267,7 +267,7 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
                                  "--task/--repo/--slot과 혼합 불가, 경로는 --cwd만 지정) / "
                                  "check=live-test.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "
                                  "(교체 지점·record↔check 대칭)")
-    identity_args.add_identity_args(p)  # record 의 task 폴더(M>1 홈에서 cwd 해소·regression 과 동형·
+    identity_args.add_identity_args(p)  # record 의 task 폴더(M>1 홈에서 cwd 해소·regression 과 같은 방식·
     # 무명시+leased≥2 는 fail-loud·`--cwd` 우회 불요)
     p.set_defaults(fn=regression_cmd.cmd_live_test)
 
@@ -396,15 +396,15 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
 def _read_home(base: home.Home, subcommand: str) -> home.Home:
     """읽기 명령이 쓸 Home — 코드 root 는 그대로 두고 PM 데이터(board·로컬 입력)만 소유 홈으로 고른다.
 
-    첫 줄 앵커 안내를 함께 출력한다. 소유 홈 유도 실패는 `PmHomeResolutionError` 로 전파된다.
+    첫 줄 대상 저장소 안내를 함께 출력한다. 소유 홈 유도 실패는 `PmHomeResolutionError` 로 전파된다.
     """
     resolution = pm_paths._resolve_read_board(base)
-    board_dispatch._print_read_anchor(
+    board_dispatch._print_read_target_repo(
         base, subcommand=subcommand, pm_home=resolution.home if resolution.home != base.root else None,
     )
     if resolution.home is not None and resolution.home != base.root:
         return pm_paths.home_at(base.root, resolution.home, resolution.root)
-    # 자기 board/standalone은 받은 Home 그대로다. 폴백 문구·경로 재바인딩이 전혀 생기지 않는다.
+    # 자기 board/standalone은 받은 Home 그대로다. 대체 문구·경로 재바인딩이 전혀 생기지 않는다.
     if resolution.root == pm_paths._board_root_at(base.root):
         return base
     # 방어적 경계: 현재 resolver 계약상 home 없는 비local root는 나올 수 없다.
@@ -432,7 +432,7 @@ def main(home: home.Home, argv: list[str] | None = None, *, prog: str = "board.p
     """소유 PM 홈 미확정을 traceback 대신 안내로 번역한다.
 
     소유 PM 홈 유도 실패는 read·mutation 어느 경로에서 나든 같은 원인이므로 번역 지점도
-    하나다 — 실패는 여전히 실패다(rc1·부작용 0). 자기 앵커로 접지 않는다.
+    하나다 — 실패는 여전히 실패다(rc1·부작용 0). 자기 대상 저장소로 바꾸지 않는다.
     """
     try:
         return _main(home, argv, prog=prog)

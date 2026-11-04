@@ -1,24 +1,24 @@
 """user/pm identity 레이어 단위 테스트 (T-0161·ADR-0033 ③·refines ADR-0014).
 
 multi-user 보드 공유의 기반층 — board 산출(ticket frontmatter·areas)에 *누가*(user) 차원을
-박는다. `pm`(슬롯·`session_name`)과 직교하는 user 식별자를 푸는 seam 과, 그 값이 ticket
+박는다. `pm`(슬롯·`session_name`)과 직교하는 user 식별자를 푸는 함수와, 그 값이 ticket
 `created_by`(provenance)·`claimed_by`(assignee) 로 흐르는지 검증한다.
 
 이 파일이 검증하는 계약:
-  1. **user 해소** `user_name` — local.conf `identity.user=` 우선 → `git config user.email` 폴백 →
+  1. **user 해소** `user_name` — local.conf `identity.user=` 우선 → `git config user.email` 대체 →
      둘 다 없으면 None(graceful·fail-soft).
   2. **identity 합성** `identity_tag` — `<user>/<pm-slot>`·user 미상이면 슬롯만(하위호환).
   3. **ticket created_by** — `cmd_new` 가 생성 시 set(provenance).
   4. **ticket claimed_by** — `cmd_claim` 이 user/slot 차원으로 set·구 슬롯-only 값 graceful.
   5. **actor 정체성 인자** `--repo`/`--slot`(ADR-0057) — `cmd_claim` 의 3 해소 케이스(kind=
      slot/repo/none) + `--slot` 단독 fail-loud (T-0314).
-  6. **cmd_block/cmd_unblock 상태-필드 정합**(T-0783) — `block` 은 claimed_by/claimed_at 무접촉
+  6. **cmd_block/cmd_unblock 상태-필드 일치**(T-0783) — `block` 은 claimed_by/claimed_at 무접촉
      (소유는 작업 중단으로 안 풀린다) · `unblock` 은 claimed_by 유무로 목적지(claimed/open)를
      갈라 "open + claimed_by 잔존" 모순을 원천 차단한다. 왕복(block→unblock) 멱등·뷰 멤버십
      보존까지 포함.
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`TICKETS_DIR`·`LEASES_FILE` 등)은
-import 시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정하고 git 폴백은
+import 시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정하고 git 대체 조회는
 `_git_config_email` 을 monkeypatch 해 실 git config/실 루트를 절대 건드리지 않는다
 (test_board_multipm.py·test_board_per_repo.py 의 hermetic 패턴 동류).
 """
@@ -61,7 +61,7 @@ def _load_board():
 
 
 def _make_project(root: Path) -> None:
-    """cmd_new/cmd_claim 가 필요로 하는 tickets 레이아웃 + 최소 template (multipm 동형)."""
+    """cmd_new/cmd_claim 가 필요로 하는 tickets 레이아웃 + 최소 template (multipm 과 같은 방식)."""
     tickets = root / ".project_manager" / "wiki" / "tickets"
     for status in ("open", "claimed", "blocked", "done"):
         (tickets / status).mkdir(parents=True, exist_ok=True)
@@ -89,8 +89,8 @@ def _make_project(root: Path) -> None:
 def board(tmp_path, monkeypatch):
     """fresh board 모듈 + IO 전역을 tmp 프로젝트로 재지정한 hermetic 인스턴스.
 
-    git 폴백(`_git_config_email`)은 기본적으로 None 으로 stub 해 실 git config 를 안 읽는다 —
-    git 폴백 경로를 명시 검증하는 테스트만 그 stub 을 덮는다.
+    git 대체 조회(`_git_config_email`)는 기본적으로 None 으로 stub 해 실 git config 를 안 읽는다 —
+    git 대체 경로를 명시 검증하는 테스트만 그 stub 을 덮는다.
     """
     proj = tmp_path / "proj"
     _make_project(proj)
@@ -105,9 +105,9 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)  # board_lock 의 lock 파일 위치
-    # 기본: git 폴백 미설정(None) — 실 git config 누출 차단. 명시 테스트가 덮는다.
+    # 기본: git 대체 조회 미설정(None) — 실 git config 누출 차단. 명시 테스트가 덮는다.
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
-    # 조회 세션 바인딩은 env 명시 — per-clone conf `session=` 폴백은 폐지됐다(T-0779). 귀속 쓰기
+    # 조회 세션 바인딩은 env 명시 — per-clone conf `session=` 대체는 폐지됐다(T-0779). 귀속 쓰기
     # (new·claim)는 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962).
     monkeypatch.setenv("PM_SESSION_NAME", _TASK)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -134,9 +134,9 @@ def _write_conf(board, **kv) -> None:
 
 
 def _write_leases(board, *rows) -> None:
-    """리스 장부(`LEASES_FILE`)에 (repo, slot 정수) 행을 leased 상태로 쓴다 — `identity_args.
-    resolve_actor_slot` 이 읽는 실 스키마(repo·slot=`work/<repo>_<N>`·session·state) 동형
-    (test_identity_args.py `_write_leases` 동형)."""
+    """슬롯 대여 기록(`LEASES_FILE`)에 (repo, slot 정수) 행을 leased 상태로 쓴다 — `identity_args.
+    resolve_actor_slot` 이 읽는 실 스키마(repo·slot=`work/<repo>_<N>`·session·state)와 같은 구조
+    (test_identity_args.py `_write_leases` 와 같은 방식)."""
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
     leases = [{"repo": r["repo"], "slot": f"work/{r['repo']}_{r['slot']}",
                "session": f"{r['repo']}_{r['slot']}", "state": r.get("state", "leased")}
@@ -145,25 +145,25 @@ def _write_leases(board, *rows) -> None:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# user_name — local.conf 우선 · git 폴백 · graceful None
+# user_name — local.conf 우선 · git 대체 · graceful None
 # ════════════════════════════════════════════════════════════════════════
 
 def test_user_name_local_conf_wins(board, monkeypatch):
-    """local.conf user= 가 있으면 그것(git 폴백보다 우선)."""
+    """local.conf user= 가 있으면 그것(git 대체보다 우선)."""
     _write_conf(board, user="alice")
-    # git 폴백이 다른 값을 줘도 local.conf 가 이긴다.
+    # git 대체 조회가 다른 값을 줘도 local.conf 가 이긴다.
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "bob@x.com")
     assert lease_store.user_name(pm_paths.home_at(board.REPO)) == "alice"
 
 
 def test_user_name_override_wins(board):
-    """명시 override 가 local.conf 보다도 우선(session_name 패턴 동형)."""
+    """명시 override 가 local.conf 보다도 우선(session_name 패턴과 같은 방식)."""
     _write_conf(board, user="alice")
     assert lease_store.user_name(pm_paths.home_at(board.REPO), "carol") == "carol"
 
 
 def test_user_name_falls_back_to_git_email(board, monkeypatch):
-    """local.conf user= 부재 → git config user.email 로 폴백."""
+    """local.conf user= 부재 → git config user.email 로 대체."""
     # local.conf 없음(user 키 부재).
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "dev@example.com")
     assert lease_store.user_name(pm_paths.home_at(board.REPO)) == "dev@example.com"
@@ -176,7 +176,7 @@ def test_user_name_none_when_neither(board):
 
 
 def test_user_name_empty_conf_value_ignored(board, monkeypatch):
-    """local.conf user= 가 빈 값이면 미설정 취급 → git 폴백으로 내려간다."""
+    """local.conf user= 가 빈 값이면 미설정 취급 → git 대체 조회로 내려간다."""
     _write_conf(board, user="")
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: "fallback@x.com")
     assert lease_store.user_name(pm_paths.home_at(board.REPO)) == "fallback@x.com"
@@ -208,7 +208,7 @@ def test_identity_tag_user_slash_slot(board):
 
 def test_identity_tag_slot_only_when_user_unknown(board):
     """user 미상(None)이면 슬롯만 — 기존 슬롯-only 값과 형태 동일(graceful)."""
-    _write_conf(board)  # user 키 없음·git 폴백 None(fixture)
+    _write_conf(board)  # user 키 없음·git 대체 조회 None(fixture)
     assert lease_store.identity_tag(pm_paths.home_at(board.REPO)) == "pm-1"
 
 
@@ -286,7 +286,7 @@ def test_cmd_claim_slot_alone_without_repo_fails_loud(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# cmd_block / cmd_unblock — 상태-필드 정합 (T-0783)
+# cmd_block / cmd_unblock — 상태-필드 일치 (T-0783)
 # ════════════════════════════════════════════════════════════════════════
 #
 # 전이표(실측 대상 전부 — 각 셀은 실 CLI 커맨드(`cmd_block`/`cmd_unblock`)가 실제로 쓴
@@ -350,7 +350,7 @@ def test_open_block_unblock_round_trip_unchanged(board):
 
 
 def test_open_block_unblock_round_trip_is_idempotent_twice(board):
-    """open ↔ blocked 왕복을 두 번 반복해도 매번 open 으로 안정 수렴한다(멱등)."""
+    """open ↔ blocked 왕복을 두 번 반복해도 매번 open 으로 안정적으로 돌아온다(멱등)."""
     _seed_open(board)
     for _ in range(2):
         assert board_ticket.cmd_block(pm_paths.home_at(board.REPO), _block_args()) == 0
@@ -360,7 +360,7 @@ def test_open_block_unblock_round_trip_is_idempotent_twice(board):
 
 
 def test_claimed_block_unblock_round_trip_is_idempotent_twice(board):
-    """claimed(u) ↔ blocked 왕복을 두 번 반복해도 매번 claimed(u) 로 안정 수렴한다(멱등)."""
+    """claimed(u) ↔ blocked 왕복을 두 번 반복해도 매번 claimed(u) 로 안정적으로 돌아온다(멱등)."""
     _write_conf(board, user="alice")
     _seed_open(board)
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 0
@@ -373,7 +373,7 @@ def test_claimed_block_unblock_round_trip_is_idempotent_twice(board):
 
 def test_no_transition_leaves_open_with_claimed_by_residue(board):
     """상태×전이 매트릭스 전수 순회 — 두 경로(open 기원·claimed 기원) 끝에 "open + claimed_by
-    잔존"(I1 위반) 형상이 하나도 없다."""
+    잔존"(I1 위반) 상태가 하나도 없다."""
     _write_conf(board, user="alice")
     _seed_open(board, tid="T-0001")
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args(tid="T-0001")) == 0

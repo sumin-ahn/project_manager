@@ -24,7 +24,7 @@ import sys
 def _configure_board_submodule(home, ) -> bool:
     """board submodule 의 `ignore = all` 을 자동 설정 (누출 0). 멱등·fail-soft.
 
-    board 가 submodule 로 분리(`.project_manager/board/.git` 존재)된 형상에서만 동작한다 —
+    board 가 submodule 로 분리(`.project_manager/board/.git` 존재)된 구성에서만 동작한다 —
     superproject(design·코드 git)에서 `submodule.<path>.ignore all` 을 켜면, board(submodule)가
     PM 운영 commit 으로 전진해도 design 의 `git status`/`git diff` 가 그 gitlink drift 를 숨겨
     routine `git add -A` 가 board 포인터 bump 를 *우발 stage* 하지 않는다(board↔design 누출 0).
@@ -92,14 +92,14 @@ _INIT_REPO_NAME_CANONICAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 def _init_repo_name(home, args: argparse.Namespace) -> str | None:
     """init 이 areas.md 에 등록할 **repo 이름** — `--repo` 명시 > clone 루트 폴더명.
 
-    repo 칼럼은 *이 clone 의 정체성*이고 prefix 칼럼은 *작업 카테고리*다 — 두 축은 섞이지
+    repo 칼럼은 *이 clone 의 정체성*이고 prefix 칼럼은 *작업 카테고리*다 — 두 기준은 섞이지
     않는다. prefix 를 repo 이름으로 승격하면 (a) 무prefix init 이 이미 만든 이 clone 의 행을
     못 찾아 사용자가 승인까지 지불한 `--prefix` 가 조용히 버려지고 (b) 이름이 다르면 한 물리
     repo 가 areas 2행이 되며 (c) 명시 `--repo` 가 조용히 무시된다.
 
     표를 깨는 문자(`|`·개행)나 빈 이름이면 **아무것도 쓰지 않고** None 을 돌려준다(호출부가 rc 1)
-    — 그 경우의 처방은 `--repo <repo>` 명시다. canonical 형식(영숫자 시작·이후 영숫자/`_`/`-`)을
-    벗어난 폴더명은 등록은 하되 1줄로 알린다(폴더 이름 `<repo>_<N>` 가독성·`repo add` 와의 정합).
+    — 그 경우의 해결 방법은 `--repo <repo>` 명시다. canonical 형식(영숫자 시작·이후 영숫자/`_`/`-`)을
+    벗어난 폴더명은 등록은 하되 1줄로 알린다(폴더 이름 `<repo>_<N>` 가독성·`repo add` 와의 일치).
     """
     name = (getattr(args, "repo", None) or (home.root).name or "").strip()
     if not name or any(ch in name for ch in areas_rules._AREAS_CELL_BREAKERS):
@@ -115,17 +115,17 @@ def _init_repo_name(home, args: argparse.Namespace) -> str | None:
 
 
 def cmd_init(home, args: argparse.Namespace) -> int:
-    """clone 당 1회 setup — areas.md repo 행 등록 + local.conf + pm_state + pre-push 게이트 훅.
+    """clone 당 1회 setup — areas.md repo 행 등록 + local.conf + pm_state + pre-push 검사 훅.
 
     multi-PM = N 세션 × M repo 한 개념 — *수가 1이냐 더냐*의 문제이고 N=1·M=1 도 그 부분집합이다.
     그래서 등록 경로가 갈리지 않는다: **`--prefix` 유무와 무관하게** 이 clone 의 repo 행을
-    areas.md 에 항상 등록한다(등록 0 형상 없음 → 해소 체인이 레지스트리에서 끝난다).
+    areas.md 에 항상 등록한다(등록 0 구성 없음 → 해소 체인이 레지스트리에서 끝난다).
 
     `--prefix` 는 협업(다중-사람)용이 아니라 **작업 카테고리** ID 네임스페이스다. 주면 그
     카테고리로 `T-<PREFIX>-NNN` 을, 안 주면 prefix 칼럼이 빈 채(=`none` 카테고리) `T-NNNN` 을
-    발행한다 — 둘 다 1급 형상이라 `--prefix` 는 필수가 아니다(비대화형 온보딩이 인자 0으로 돈다).
+    발행한다 — 둘 다 정식 구성이라 `--prefix` 는 필수가 아니다(비대화형 온보딩이 인자 0으로 돈다).
 
-    **등록 축은 둘이 분리돼 있다** — repo 칼럼 = 이 clone 의 정체성(`--repo` 명시 > 루트 폴더명),
+    **등록 기준은 둘이 분리돼 있다** — repo 칼럼 = 이 clone 의 정체성(`--repo` 명시 > 루트 폴더명),
     prefix 칼럼 = 작업 카테고리(`--prefix`). 멱등 키는 **이 clone 의 repo 행**이다:
       - 행 없음            → 행 1개 append(prefix 칼럼은 `--prefix` 또는 빈 칸).
       - 행 있음·`--prefix` 무 → no-op(행 추가 없음).
@@ -202,7 +202,7 @@ def cmd_init(home, args: argparse.Namespace) -> int:
             if prefix and not args.area:
                 print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
                 return 1
-            # owner = areas.md 등록 식별자(registrant) — 협업 소유자가 아니라 등록 출처 표식.
+            # owner = areas.md 등록 식별자(registrant) — 협업 소유자가 아니라 등록 출처 표시.
             # `--owner` > `--task` > 빈 칼럼(미상) 순이고 환경변수·단일 대여에서 유도하지 않는다.
             owner = args.owner or owner_task or ""
             area_owner = lease_store.user_name(home, getattr(args, "user", None))
@@ -246,7 +246,7 @@ def cmd_init(home, args: argparse.Namespace) -> int:
     areas_registry.invalidate_known_prefixes_cache()
     if wrote_areas:
         # 등록 행은 board git 의 공유 파일이다 — 파일만 쓰고 두면 board 가 dirty 로 남아
-        # (`M areas.md`) 온보딩 다음 단계가 그 잔여를 사용자 편집으로 만난다. `pm-config repo
+        # (`M areas.md`) 온보딩 다음 단계가 그 남은 변경을 사용자 편집으로 만난다. `pm-config repo
         # add`/`repo protected` 와 **같은 스코프 채널**로 이 mutation 이 만진 경로만 기록한다
         # (board 가 별도 git 이 아니면 no-op·best-effort 라 실패해도 init 을 되돌리지 않는다).
         # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock).
@@ -254,7 +254,7 @@ def cmd_init(home, args: argparse.Namespace) -> int:
     print(area_message)
     print("✓ local.conf: py·test_cmd·ctx 비율 (세션·prefix 는 conf 키가 아니다 — "
           "세션=슬롯 대여 기록 · prefix=areas.md)")
-    # 병합 경로가 손대지 않은 기존 키(오타·폐기)도 같은 목록·같은 함수로 표면화한다 —
+    # 병합 경로가 손대지 않은 기존 키(오타·폐기)도 같은 목록·같은 함수로 드러낸다 —
     # `board.py lint` 를 따로 실행하지 않아도 온보딩 시점에 1줄로 보이게(사본 없음).
     for _, _, detail in conf_lint.lint_local_conf_keys(home):
         print(f"  ⚠ {detail}")
@@ -263,15 +263,15 @@ def cmd_init(home, args: argparse.Namespace) -> int:
         #   으로 남아야 pm_update 의 manifest byte-copy 와 진동하지 않는다. 그러니 그 템플릿으로
         #   산출물을 만드는 이 지점이 오늘 날짜를 채운다(task_store.ensure_task_pm_state 의
         #   task pm_state 렌더와 같은 규칙·소유 선언은 pm_import.CONSUMPTION_TIME_TOKENS).
-        seed = fs.read_text_shared((pm_paths.wiki_dir(home) / "pm_state.template.md"), encoding="utf-8").replace(
+        form = fs.read_text_shared((pm_paths.wiki_dir(home) / "pm_state.template.md"), encoding="utf-8").replace(
             "{{DATE}}", datetime.date.today().isoformat())
-        (pm_paths.wiki_dir(home) / "pm_state.md").write_text(seed, encoding="utf-8", newline="\n")
+        (pm_paths.wiki_dir(home) / "pm_state.md").write_text(form, encoding="utf-8", newline="\n")
         print(f"✓ pm_state.md 생성 ({pm_paths._rel_to_repo(home, (pm_paths.wiki_dir(home) / "pm_state.template.md"))} 에서)")
     # 미설치면 사유를 `install_pre_push_hook` 이 stderr 에 남긴다 — 여기서는 설치한 자리를 밝힌다.
     if pre_push_hook.install_pre_push_hook(home):
         print("✓ pre-push 훅 설치 — 자기 저장소의 .git/hooks "
               "(lint 통과 조건은 항상 · 회귀 통과 조건은 tests/ 있는 트리만)")
-    # board submodule 이 분리된 형상이면 ignore=all 자동 설정 — design(코드) git 이
+    # board submodule 이 분리된 구성이면 ignore=all 자동 설정 — design(코드) git 이
     # board PM-commit 으로 오염되지 않게(누출 0). 미분리/git 부재면 no-op(fail-soft·무영향).
     if _configure_board_submodule(home):
         print("✓ board submodule ignore=all 설정 (코드 git 누출 0)")
@@ -283,9 +283,9 @@ def cmd_init(home, args: argparse.Namespace) -> int:
     # 배포는 `_board_git_stage_and_commit`(write→stage→commit 이 한 호출에 닫힘) **단일 채널**로 한다.
     # 완료 안내의 ID 포맷은 **이 clone 에서 `board.py new` 가 실제로 발행할 값**이다 —
     # 등록 결과가 아니라 해소 체인(`cmd_new` 와 같은 `id_prefix`)에서 뽑는다.
-    # 등록이 생략/거부된 형상에서 발행되지 않을 포맷을 성공 메시지로 내던 거짓 안내 차단.
+    # 등록이 생략/거부된 구성에서 발행되지 않을 포맷을 성공 메시지로 내던 거짓 안내 차단.
     issued = areas_store.id_prefix(home, None)
-    # `id_prefix(None)` 의 미해소(None)는 두 형상을 가린다 — (a) 등록 ≤1(count-based 로 곧
+    # `id_prefix(None)` 의 미해소(None)는 두 구성을 가린다 — (a) 등록 ≤1(count-based 로 곧
     # 무prefix `T-NNNN` 이 발행) (b) 등록 ≥2(모호). `cmd_new` 는 후자에서
     # 자신의 ≥2 가드로 fail-loud 하므로 무명시 `T-NNNN` 은 실제로 발행되지 않는다 — 완료 안내가
     # 그 포맷을 성공 메시지로 내면 거짓이다(같은 `registered_prefixes()` 로 `cmd_new` 와 lockstep).
@@ -300,7 +300,7 @@ def cmd_init(home, args: argparse.Namespace) -> int:
         idfmt = f"T-{issued}-NNN" if issued else "T-NNNN (none 카테고리)"
         id_line = f"`board.py new` 로 {idfmt} 발행"
     print(INIT_GUIDE.format(mode=mode, id_line=id_line))
-    # 이 도구는 lease 장부의 writer 가 아니다(단일 writer 규약) — 작업 폴더를 만드는 것은
+    # 이 도구는 lease 기록의 writer 가 아니다(단일 writer 규약) — 작업 폴더를 만드는 것은
     # `pm-config worktree add` 다. 채택자가 그 다음 순서를 모른 채 남지 않도록 상태만 알린다.
     if not lease_store.leased_sessions((pm_paths.leases_file(home))):
         print(

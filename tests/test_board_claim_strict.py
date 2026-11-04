@@ -11,12 +11,12 @@
   - **D1 과차단** — 무관 dirty 3종(staged/unstaged/untracked)에서 claim 이 *성공* 한다.
   - **D2 커밋 누출** — 그 dirty 가 claim/best-effort 커밋에 **실리지 않는다**(경로 스코프).
   - **D3 롤백 파괴** — 롤백 후 dirty 3종이 상태·내용 그대로 남는다(`reset --hard` 폐기).
-  - **D5 오진** — 잔여 차단의 사유가 4분(dirty/rebase/offline/upstream 없음)되고 진단에
+  - **D5 오진** — 남은 차단의 사유가 4분(dirty/rebase/offline/upstream 없음)되고 진단에
     behind·막고 있는 파일이 나온다.
   - **D6 고아 claim** — push 가 예외로 끝나도 원격 tip 을 재확인해 성공이면 롤백하지 않는다.
   - **직렬화** — board-git mutation 트랜잭션이 별도 flock 으로 상호배제된다.
 
-hermetic 패턴은 `test_board_git_sync.py` 와 동형(실 board git + bare remote + REPO
+hermetic 패턴은 `test_board_git_sync.py` 와 같은 방식(실 board git + bare remote + REPO
 monkeypatch). git 부재 환경에선 실 git 케이스를 skip 한다.
 """
 from __future__ import annotations
@@ -69,7 +69,7 @@ _GIT_IDENTITY = {
 }
 
 # 5절을 모두 채운(placeholder 0) 템플릿 — `new` 가 draft 격리로 빠지지 않고 곧바로 open/ 에
-# 발행되게 한다(이 파일의 관심사는 draft 게이트가 아니라 *커밋 스코프*다).
+# 발행되게 한다(이 파일의 관심사는 draft 검사가 아니라 *커밋 스코프*다).
 _TEMPLATE_TEXT = (
     "---\n"
     "id: T-NNNN\n"
@@ -119,8 +119,8 @@ def _load_board():
     return mod
 
 
-# "이미 배포된 board" 형상 = **엔진이 쓰는 그 블록 그대로**. 리터럴을 손으로 베끼면 규칙이
-# 넓어질 때 픽스처만 구세대로 남아, 커밋 스코프 단언에 backfill 잡음이 섞인다(T-0709 실측).
+# "이미 배포된 board" 구성 = **엔진이 쓰는 그 블록 그대로**. 리터럴을 손으로 베끼면 규칙이
+# 넓어질 때 픽스처만 옛 버전으로 남아, 커밋 스코프 단언에 backfill 잡음이 섞인다(T-0709 실측).
 _DEPLOYED_BOARD_GITATTRIBUTES = board_git_rules._BOARD_GITATTRIBUTES_BLOCK
 
 
@@ -135,8 +135,8 @@ def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001",
     """`<root>/.project_manager/board/` 에 실 board git 을 만든다 (tickets/ + areas + remote).
 
     `notes.md` 는 **추적 파일**이다 — unstaged dirty 3종 모사에 필요하다(untracked 만으로는
-    `pull --rebase` 가 성공해 잔여 차단 경로를 못 탄다). board 루트 배포 파일
-    (`.gitattributes`·`.gitignore`)은 기본으로 seed 해 **이미 배포된 board** 형상을 만든다 —
+    `pull --rebase` 가 성공해 남은 차단 경로를 못 탄다). board 루트 배포 파일
+    (`.gitattributes`·`.gitignore`)은 기본으로 미리 넣어 **이미 배포된 board** 구성을 만든다 —
     커밋 스코프 단언에 backfill 잡음이 섞이지 않게 하기 위해서다. backfill 자체는
     `test_gitattributes_backfill_rides_scoped_claim_commit`(areas union)과
     `test_board_draft_gitignore.py`(draft ignore)가 따로 본다.
@@ -173,16 +173,16 @@ def _bare(tmp_path: Path, name: str) -> Path:
 def board(tmp_path, monkeypatch):
     """REPO 를 tmp 로 재지정한 fresh board 모듈 (실 루트 미접촉).
 
-    `board_git_lock` 의 락 파일은 REPO 파생 lazy 해소라(별도 seam 없음) 이 monkeypatch 하나로
+    `board_git_lock` 의 락 파일은 REPO 파생 lazy 해소라(별도 교체 지점 없음) 이 monkeypatch 하나로
     함께 tmp 로 따라온다.
     """
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
-    # 정체성 축을 tmp 에 묶는다 — 소유 대조(T-0781)가 user 축을 보므로, 실 clone 의 local.conf
+    # 정체성을 tmp 에 묶는다 — 소유 대조(T-0781)가 user 기준을 보므로, 실 clone 의 local.conf
     # /전역 git email 이 새면 픽스처 claim(`me/…`)과 어긋난다. 정체성은 각 테스트가 `--task` 로
-    # 명시한다 — conf `session=` 폴백은 폐지됐다(T-0779)·슬롯 정체성도 없다(T-0962).
+    # 명시한다 — conf `session=` 대체는 폐지됐다(T-0779)·슬롯 정체성도 없다(T-0962).
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("identity.user=me\n", encoding="utf-8")
@@ -199,7 +199,7 @@ def _claim_args(tid: str = "T-0001") -> argparse.Namespace:
 
 
 def _porcelain(board_dir: Path) -> dict[str, str]:
-    """`path -> 상태코드` 맵 (dirty 3종의 *정확한* 보존을 단언하기 위한 스냅샷)."""
+    """`path -> 상태코드` 맵 (dirty 3종의 *정확한* 보존을 단언하기 위한 상태 기록)."""
     out = _git(["status", "--porcelain"], board_dir).stdout
     result: dict[str, str] = {}
     for line in out.splitlines():
@@ -327,7 +327,7 @@ def test_user_edited_gitattributes_is_not_swept_into_mutation(board, tmp_path):
     """사용자가 편집 중인 `.gitattributes` 는 티켓 mutation 이 **대신 커밋하지 않는다**.
 
     backfill 분은 실어야 하지만(위 테스트), 그렇다고 무조건 pathspec 에 넣으면 남의 미완성
-    편집을 쓸어담는다 — 이 티켓이 닫으려는 누출과 **동형**이다(reviewer). 조건은 "이번 호출의
+    편집을 쓸어담는다 — 이 티켓이 닫으려는 누출과 **같은 구조**다(reviewer). 조건은 "이번 호출의
     backfill 이 실제로 썼는가" 다."""
     bare = _bare(tmp_path, "bare-attrs2")
     board_dir = _make_board_git(tmp_path, remote=bare)   # union 선언이 이미 있다 → backfill no-op.
@@ -367,7 +367,7 @@ def _racing_push(board_mod, tmp_path: Path, bare: Path, *, name: str):
 def test_rollback_preserves_unrelated_dirty_three_kinds(board, tmp_path, monkeypatch):
     """push non-FF 롤백 후 dirty 3종이 **상태·내용 그대로** 남는다 (`reset --hard` 파괴 폐쇄).
 
-    옛 롤백은 anchor 로 hard-reset 해 무관한 미커밋 작업을 통째로 되돌렸다(실측). 신 롤백은
+    옛 롤백은 orig_head 로 hard-reset 해 무관한 미커밋 작업을 통째로 되돌렸다(실측). 신 롤백은
     `reset --soft` + 티켓 역이동·원본 바이트 복원 + 두 경로 재-stage 뿐이다. 이 테스트가 ADR-0073
     간판 결정의 회귀 가드다 — `reset --soft` 를 `--hard` 로 되돌리면 **red 여야 한다**(staged 신규
     파일이 삭제되고 unstaged 편집이 되감기므로)."""
@@ -466,7 +466,7 @@ def test_rollback_restores_absent_board_root_files(
         f"{failure} rollback 뒤 backfill 파일이 워킹트리에 남음."
     after = _porcelain(board_dir)
     assert not any(name in after for name in root_names), \
-        f"{failure} rollback 뒤 루트 파일이 staged/untracked 잔여로 남음: {after}"
+        f"{failure} rollback 뒤 루트 파일이 staged/untracked 변경으로 남음: {after}"
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
         f"{failure} rollback 이 티켓을 open 으로 복원하지 못함."
 
@@ -568,7 +568,7 @@ def test_rollback_removes_a_read_only_backfill_file(board, tmp_path, capsys):
 @requires_git
 def test_rollback_does_not_restore_root_file_without_backfill(
         board, tmp_path, capsys):
-    """이미 정합해 실제 backfill하지 않은 루트 파일은 실패 hook의 후속 편집을 보존한다."""
+    """이미 맞아서 실제 backfill하지 않은 루트 파일은 실패 hook의 후속 편집을 보존한다."""
     bare = _bare(tmp_path, "bare-root-rb-no-backfill")
     board_dir = _make_board_git(tmp_path, remote=bare)
     attrs = board_dir / ".gitattributes"
@@ -586,7 +586,7 @@ def test_rollback_does_not_restore_root_file_without_backfill(
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 1
 
     assert hook_line.strip() in attrs.read_text(encoding="utf-8"), \
-        "실제 backfill하지 않은 .gitattributes를 rollback이 스냅샷으로 덮어씀."
+        "실제 backfill하지 않은 .gitattributes를 rollback이 상태 기록으로 덮어씀."
     assert ".gitattributes" in _porcelain(board_dir), \
         "실패 hook의 루트 파일 index/워킹트리 변경이 rollback에서 사라짐."
     assert "claim race lost" in capsys.readouterr().err
@@ -625,7 +625,7 @@ def test_rollback_preserves_and_warns_on_post_backfill_root_edit(
 @requires_git
 def test_rollback_warns_when_root_file_snapshot_capture_raises_oserror(
         board, tmp_path, monkeypatch, capsys):
-    """snapshot OSError(None)도 restore seam을 지나 loud 경고 후 나머지 rollback을 마친다."""
+    """snapshot OSError(None)도 restore 함수를 지나 loud 경고 후 나머지 rollback을 마친다."""
     bare = _bare(tmp_path, "bare-root-snapshot-oserror")
     board_dir = _make_board_git(tmp_path, remote=bare)
     attrs = board_dir / ".gitattributes"
@@ -634,7 +634,7 @@ def test_rollback_warns_when_root_file_snapshot_capture_raises_oserror(
         for name in board_git_rules._BOARD_GIT_ROOT_FILES
     }
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
-    # 루트 파일 스냅샷 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
+    # 루트 파일 상태 기록 판독은 공유 읽기 함수를 지난다([[T-0729]]) — 주입도 그 자리에 건다.
     real_read_bytes = fs.read_bytes_shared
     failed = {"once": False}
 
@@ -668,11 +668,11 @@ def test_rollback_leaves_head_at_anchor_only_for_own_commit(board, tmp_path):
     """`reset --soft` 는 **HEAD == 내 claim 커밋** 일 때만 — 남의 커밋은 되돌리지 않는다.
 
     ADR-0073 이 명시한 가드다. 직렬화 락이 이 상황을 막지만(같은 clone), 락이 없는 경로(외부
-    도구·수동 git)에서 HEAD 가 내 커밋이 아닐 수 있다 — 그때 무조건 `reset --soft <anchor>` 하면
+    도구·수동 git)에서 HEAD 가 내 커밋이 아닐 수 있다 — 그때 무조건 `reset --soft <orig_head>` 하면
     **남의 커밋을 이력에서 떨어뜨린다**. 가드를 지우면 이 테스트가 red 다."""
     bare = _bare(tmp_path, "bare-guard")
     board_dir = _make_board_git(tmp_path, remote=bare)
-    anchor = board_git._board_git_head(pm_paths.home_at(board.REPO))
+    orig_head = board_git._board_git_head(pm_paths.home_at(board.REPO))
     files = _claim_move(board, board_dir)
     # 다른 주체가 그 사이 board git 에 커밋했다(HEAD ≠ 내 claim 커밋).
     (board_dir / "someone-else.md").write_text("theirs\n", encoding="utf-8")
@@ -680,7 +680,7 @@ def test_rollback_leaves_head_at_anchor_only_for_own_commit(board, tmp_path):
     _git(["commit", "-qm", "someone else's commit"], board_dir)
     foreign_head = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
 
-    board_claim._board_git_claim_rollback(pm_paths.home_at(board.REPO), anchor, files, claim_commit="0" * 40)
+    board_claim._board_git_claim_rollback(pm_paths.home_at(board.REPO), orig_head, files, claim_commit="0" * 40)
 
     assert _git(["rev-parse", "HEAD"], board_dir).stdout.strip() == foreign_head, \
         "HEAD 가 내 claim 커밋이 아닌데 reset 했다 — 남의 커밋을 이력에서 떨어뜨림."
@@ -780,12 +780,12 @@ def test_rollback_warns_loudly_when_view_cannot_refresh(board, tmp_path, monkeyp
 
 
 # ════════════════════════════════════════════════════════════════════════
-# D5 — 잔여 차단은 사유가 정확하다 (dirty / rebase / offline / upstream 없음)
+# D5 — 남은 차단은 사유가 정확하다 (dirty / rebase / offline / upstream 없음)
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
 def test_behind_plus_tracked_dirty_blocks_with_accurate_reason(board, tmp_path, capsys):
-    """`behind>0 ∧ 추적 dirty` = 유일한 잔여 차단 — 사유·behind·막는 파일이 안내에 나온다.
+    """`behind>0 ∧ 추적 dirty` = 유일한 남은 차단 — 사유·behind·막는 파일이 안내에 나온다.
 
     이 조합만 남기는 게 ADR-0073 의 결론이다(정직한 차단). 안내는 **일괄 `add -A` 가 아니라**
     막고 있는 경로를 지목해야 한다 — 공유 board 에서 일괄 커밋은 남의 미완성 편집을 대신
@@ -833,7 +833,7 @@ def test_untracked_path_conflict_is_dirty_not_offline(board, tmp_path, capsys):
 
     git 은 이때 "untracked working tree files would be overwritten" 로 통합을 거부한다. 네트워크
     문제가 아니라 로컬 파일 충돌인데, 옛 분류는 '추적 변경이 없다'는 이유로 **offline** 이라
-    진단하고 네트워크를 확인하라는 틀린 안내를 냈다(D5 잔여·codex must-fix). 분류는 문자열이
+    진단하고 네트워크를 확인하라는 틀린 안내를 냈다(D5 남은 일·codex must-fix). 분류는 문자열이
     아니라 구조(fetch 재시도 성공 = 네트워크 정상)로 한다."""
     bare = _bare(tmp_path, "bare-untracked")
     board_dir = _make_board_git(tmp_path, remote=bare)
@@ -860,7 +860,7 @@ def test_untracked_path_conflict_is_dirty_not_offline(board, tmp_path, capsys):
     assert "offline — board 도달 불가" not in err, f"네트워크 문제로 오진: {err!r}"
     assert "T-0008-t.md" in err, f"막고 있는 파일을 지목하지 않음: {err!r}"
     assert "옮겨라" in err or "옮기" in err, \
-        f"미추적 파일의 처방(커밋 또는 치우기)이 안내되지 않음: {err!r}"
+        f"미추적 파일의 해결 방법(커밋 또는 치우기)이 안내되지 않음: {err!r}"
     assert collide.read_text(encoding="utf-8") == "내 로컬 초안\n", \
         "차단 경로가 사용자의 미추적 파일을 건드림."
 
@@ -869,7 +869,7 @@ def test_untracked_path_conflict_is_dirty_not_offline(board, tmp_path, capsys):
 def test_pull_failure_with_unreachable_remote_is_offline(board, tmp_path, monkeypatch):
     """진짜 도달 불가는 여전히 offline — untracked 오진을 고치면서 반대편이 새지 않는다.
 
-    fetch 재시도 프로브가 분류의 축이다: 원격이 사라졌으면 프로브도 실패하므로 정확히 offline
+    fetch 재시도 프로브가 분류의 기준이다: 원격이 사라졌으면 프로브도 실패하므로 정확히 offline
     이 된다(위 테스트와 **쌍**으로 고정해야 오진이 재유입되지 않는다·codex)."""
     bare = _bare(tmp_path, "bare-realoff")
     board_dir = _make_board_git(tmp_path, remote=bare)
@@ -893,7 +893,7 @@ def test_pull_failure_with_unreachable_remote_is_offline(board, tmp_path, monkey
 def test_unclassifiable_pull_failure_is_not_called_offline(board, tmp_path, capsys, monkeypatch):
     """네트워크 정상 + 미커밋 0 인데 pull 이 실패하면 — offline 이라 **거짓말하지 않는다**.
 
-    사유 4분 어디에도 정직하게 안 들어가는 잔여(액션이 "직접 돌려 원인을 보라" 로 다르다)라
+    사유 4분 어디에도 정직하게 안 들어가는 나머지(액션이 "직접 돌려 원인을 보라" 로 다르다)라
     별도 사유로 두고 git 출력을 함께 낸다."""
     bare = _bare(tmp_path, "bare-unknown")
     _make_board_git(tmp_path, remote=bare)
@@ -937,7 +937,7 @@ def test_mid_rebase_is_first_check_and_advises_rebase(board, tmp_path, capsys):
 
     assert rc == 1, "mid-rebase 인데 claim 이 진행됨 — rebase HEAD 위 커밋 위험."
     err = capsys.readouterr().err
-    assert "rebase" in err and "--abort" in err, f"rebase 처방이 안내되지 않음: {err!r}"
+    assert "rebase" in err and "--abort" in err, f"rebase 해결 방법이 안내되지 않음: {err!r}"
     assert "checkout <branch>" not in err, f"mid-rebase 에 checkout 오안내(2단 오진): {err!r}"
     assert _git(["rev-parse", "HEAD"], board_dir).stdout.strip() == head_before, \
         "mid-rebase 에서 claim 이 커밋을 만듦 — 1순위 선체크 누락."
@@ -956,12 +956,12 @@ def test_missing_upstream_is_its_own_reason_not_offline(board, tmp_path, capsys)
 
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 1
     err = capsys.readouterr().err
-    assert "upstream" in err and "push -u" in err, f"upstream 처방이 안내되지 않음: {err!r}"
+    assert "upstream" in err and "push -u" in err, f"upstream 해결 방법이 안내되지 않음: {err!r}"
     assert "offline — board 도달 불가" not in err, f"offline 으로 오진: {err!r}"
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 선점 감지 — 읽기 전용(로컬 변경 0)
+# 원격이 먼저 차지했는지 감지 — 읽기 전용(로컬 변경 0)
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
@@ -984,7 +984,7 @@ def test_remote_preemption_is_race_lost_without_local_change(board, tmp_path, ca
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
     rc = board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args())
 
-    assert rc == 1, "원격 선점인데 claim 이 성공함 — 중복작업 방지 붕괴."
+    assert rc == 1, "원격이 먼저 차지했는데 claim 이 성공함 — 중복작업 방지 붕괴."
     assert "claim race lost" in capsys.readouterr().err
     assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
         "race-lost 인데 로컬 티켓이 open/ 에 없음(로컬 변경 0 위반)."
@@ -1120,9 +1120,9 @@ def test_best_effort_transitions_commit_only_their_paths(board, tmp_path, mutati
 
 @requires_git
 def test_new_commits_only_the_created_ticket(board, tmp_path):
-    """`new` 커밋엔 방금 만든 티켓과 그 묶음 장부만 담긴다 (무관 dirty 미동반).
+    """`new` 커밋엔 방금 만든 티켓과 그 묶음 기록만 담긴다 (무관 dirty 미동반).
 
-    발행은 운영 단위 귀속을 함께 쓴다 — 크기 1 장부도 board-git 공유 파일이라 같은 스코프
+    발행은 운영 단위 귀속을 함께 쓴다 — 크기 1 묶음 기록도 board-git 공유 파일이라 같은 스코프
     채널로 실린다(스코프가 넓어진 게 아니라 이 발행이 만든 파일이 둘이다).
     """
     bare = _bare(tmp_path, "bare-be-new")
@@ -1153,7 +1153,7 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
     draft.write_text(_TEMPLATE_TEXT.replace("T-NNNN", "T-0009").replace(
         "status: open", "status: draft"), encoding="utf-8")
     bind_product_cluster(board, "T-0009")
-    ledger_before = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "bound-t-0009").read_bytes()
+    records_before = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "bound-t-0009").read_bytes()
     dirty = _seed_dirty_three(board_dir)
 
     assert board_ticket.cmd_promote(pm_paths.home_at(board.REPO), argparse.Namespace(id="T-0009")) == 0
@@ -1161,7 +1161,7 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
     assert _head_files(board_dir) == {
         "tickets/open/T-0009-draft.md",
     }, f"promote 커밋 스코프가 승격 산출을 넘음: {_head_files(board_dir)}"
-    assert cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "bound-t-0009").read_bytes() == ledger_before
+    assert cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "bound-t-0009").read_bytes() == records_before
     after = _porcelain(board_dir)
     for path, code in dirty.items():
         assert after.get(path) == code, f"promote 가 무관 dirty 를 건드림: {path}"
@@ -1213,7 +1213,7 @@ def test_ticket_mutations_pass_scoped_paths():
     `paths` 는 레거시 호출부(pm_config 의 areas.md 갱신) 호환 때문에 선택 인자다. 그래서
     ticket mutation 이 인자를 빠뜨리면 조용히 board 전체를 커밋하는 옛 동작으로 되돌아간다.
     문자열 매칭(`f"` 포함 줄 세기)은 **비-f-string 메시지로 추가된 새 호출부를 못 본다** —
-    호출자 이름 기준 AST 감사로 그 사각을 없앤다."""
+    호출자 이름 기준 AST 감사로 그 놓치는 곳을 없앤다."""
     tree = ast.parse((TOOLS / "board.py").read_text(encoding="utf-8"))
     for source in (Path(areas_registry.__file__),
                    TOOLS / "pm_engine/cli/board_cluster.py",
@@ -1229,7 +1229,7 @@ def test_ticket_mutations_pass_scoped_paths():
              and node.func.attr == "_board_git_sync_best_effort"]
     # 12 = ticket mutation 9(new·promote·complete·discard·reopen·block·unclaim·unblock +
     # section-add/tier 공용 helper) + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git
-    # 의 공유 파일이라 같은 스코프 채널로 기록한다) + `cluster new`(묶음 장부·멤버 명세)
+    # 의 공유 파일이라 같은 스코프 채널로 기록한다) + `cluster new`(묶음 기록·멤버 명세)
     # + 갱신 이관 `fill_self_repo_row`(T-0956 — 자기 행 git·base 채움·areas.md 만).
     # `cluster replan`은 고정 5단계 계약에서 폐지됐다.
     assert len(calls) == 12, \
@@ -1329,19 +1329,19 @@ def test_claim_transaction_runs_inside_board_git_lock(board, tmp_path, monkeypat
 
 
 # ════════════════════════════════════════════════════════════════════════
-# claim 코드 트리 해소 앵커 — 박제 위치·3형상 값 단언·비-git 경고·unclaim 클리어
+# claim 코드 트리 해소 기준 커밋 — 기록 위치·3구성 값 단언·비-git 경고·unclaim 클리어
 # (T-0738 R1 리뷰 F-001·F-003·F-004·F-006)
 #
-# 측정 폭(claim 앵커를 *소비*해 diff 를 재는 쪽)은 `tests/test_ticket_finish.py` 소관이다
-# ("── 측정 폭 = claim 시점 rev 앵커" 절). 여기서는 claim 계약 자체 — **어느 트리의 HEAD 를
-# 박제하는가**(코드 트리 해소 3형상: task 작업공간·`--repo`/`--slot` 슬롯 worktree·솔로) 와
+# 측정 폭(claim 기준 커밋을 *소비*해 diff 를 재는 쪽)은 `tests/test_ticket_finish.py` 소관이다
+# (측정 폭 케이스). 여기서는 claim 계약 자체 — **어느 트리의 HEAD 를
+# 적어 두는가**(코드 트리 해소 3구성: task 작업공간·`--repo`/`--slot` 슬롯 worktree·솔로) 와
 # 해소 실패/무효화 시 필드 상태만 값으로 단언한다. `board` fixture(`anchor_board_module`)는
-# `REPO`/`BOARD_FILE`/`BOARD_LOCK` 만 재앵커하므로, 리스 장부(`LEASES_FILE`)가 필요한 케이스는
-# 여기서 직접 tmp 로 재지정한다(다른 44 케이스는 리스 장부를 안 건드려 그 갭이 안 드러났다).
+# `REPO`/`BOARD_FILE`/`BOARD_LOCK` 만 대상 저장소를 바꿔 끼우므로, 슬롯 대여 기록(`LEASES_FILE`)이 필요한 케이스는
+# 여기서 직접 tmp 로 재지정한다(다른 44 케이스는 슬롯 대여 기록을 안 건드려 그 갭이 안 드러났다).
 # ════════════════════════════════════════════════════════════════════════
 
-def _claim_anchor_leases_file(tmp_path: Path) -> Path:
-    """이 절 전용 리스 장부 경로 — `LEASES_FILE` 를 여기서만 tmp 로 재지정한다."""
+def _claimed_rev_leases_file(tmp_path: Path) -> Path:
+    """이 절 전용 슬롯 대여 기록 경로 — `LEASES_FILE` 를 여기서만 tmp 로 재지정한다."""
     path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -1377,7 +1377,7 @@ def _claimed_ticket(root: Path, tid: str) -> Path:
 
 @requires_git
 def test_claim_anchor_task_shape_stamps_the_slot_worktree_head(board, tmp_path, monkeypatch):
-    """`--task` 형상 — 앵커는 그 task 가 보유한 슬롯 worktree HEAD 다(PM 홈 HEAD 가 아니다)."""
+    """`--task` 구성 — 기준 커밋은 그 task 가 보유한 슬롯 worktree HEAD 다(PM 홈 HEAD 가 아니다)."""
     repo_head = _init_code_git(tmp_path, seed_text="home\n")
     slot_head = _init_code_git(tmp_path / "work" / "proj_1", seed_text="slot\n")
     assert repo_head != slot_head, "fixture 전제: 두 트리의 HEAD 가 달라야 '어느 트리를 쟀나' 를 값으로 가른다."
@@ -1395,7 +1395,7 @@ def test_claim_anchor_task_shape_stamps_the_slot_worktree_head(board, tmp_path, 
 
 @requires_git
 def test_claim_stamps_the_claim_time_code_tree_head(board, tmp_path, monkeypatch):
-    """`claim` 이 그 시점 코드 트리(task 폴더) HEAD 를 `claimed_rev` 로 박제한다."""
+    """`claim` 이 그 시점 코드 트리(task 폴더) HEAD 를 `claimed_rev` 로 적어 둔다."""
     _init_code_git(tmp_path, seed_text="home\n")
     expected = _git(["rev-parse", "HEAD"], tmp_path / "work" / "binding_1").stdout.strip()
     _seed_open_ticket(tmp_path, "T-9013")
@@ -1413,8 +1413,8 @@ def test_claim_stamps_the_claim_time_code_tree_head(board, tmp_path, monkeypatch
 def test_unclaim_clears_the_claimed_rev_anchor(board, tmp_path, monkeypatch):
     """unclaim 은 `claimed_by`/`claimed_at` 과 함께 `claimed_rev` 도 비운다(F-003).
 
-    소유가 풀린 티켓에 옛 claim 의 앵커가 남으면, 다음 claim 이 해소에 실패해도(비-git 등)
-    stale rev 가 앵커로 살아남아 인터페이스의 '필드 생략' 이 깨진다."""
+    소유가 풀린 티켓에 옛 claim 의 기준 커밋이 남으면, 다음 claim 이 해소에 실패해도(비-git 등)
+    stale rev 가 기준 커밋으로 살아남아 인터페이스의 '필드 생략' 이 깨진다."""
     _init_code_git(tmp_path, seed_text="home\n")
     task_head = _git(["rev-parse", "HEAD"], tmp_path / "work" / "binding_1").stdout.strip()
     _seed_open_ticket(tmp_path, "T-9016")
@@ -1433,16 +1433,16 @@ def test_reclaim_without_git_pops_a_stale_claimed_rev_from_a_reused_ticket(
         board, tmp_path, monkeypatch):
     """재사용된 open 티켓의 stale `claimed_rev` 는 claim 뒤 남지 않는다(F-003).
 
-    unclaim 을 거치지 않고 stale 값이 남은 open 티켓(구 claim 주기 재사용) 형상을 직접
+    unclaim 을 거치지 않고 stale 값이 남은 open 티켓(구 claim 주기 재사용) 상태를 직접
     재현한다 — claim 은 task 폴더 HEAD 로 옛 값을 덮고, HEAD 를 못 읽으면 claim 자체가 멈춰
-    stale 값이 claim 앵커로 승격되지 않는다(T-0962: 비-task 의 rev 생략 claim 은 없다)."""
+    stale 값이 claim 기준 커밋으로 승격되지 않는다(T-0962: 비-task 의 rev 생략 claim 은 없다)."""
     path = _seed_open_ticket(tmp_path, "T-9017")
     fm, body = ticket_store.load_ticket(path)
     fm["claimed_rev"] = "a" * 40
     ticket_store.dump_ticket(path, fm, body)
     before = path.read_bytes()
     real_head_at = git._git_head_at
-    # "이 트리에서 git HEAD 를 읽을 수 없다"가 첫 입력이다 — `_git_head_at` seam 으로 명시한다.
+    # "이 트리에서 git HEAD 를 읽을 수 없다"가 첫 입력이다 — `_git_head_at` 교체 지점으로 명시한다.
     monkeypatch.setattr(git, "_git_head_at", lambda _cwd: "")
     with pytest.raises(SystemExit):
         board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(id="T-9017", user="me", task=_TASK))
@@ -1544,6 +1544,6 @@ def test_t0962_attribution_writes_require_task(board, tmp_path, monkeypatch):
     fm, _body = ticket_store.load_ticket(tickets / "claimed" / "T-0001-t.md")
     assert fm["claimed_by"] == "alice/mytask"
     assert fm["claimed_rev"] == head
-    # claim 앵커는 늘 task 폴더 HEAD 다 — 앵커 생략 계약(기본값 None)은 없다(T-0962 리뷰 F-004).
+    # claim 기준 커밋은 늘 task 폴더 HEAD 다 — 기준 커밋 생략 계약(기본값 None)은 없다(T-0962 리뷰 F-004).
     rev_param = inspect.signature(board_ticket._cmd_claim_locked).parameters["claimed_rev"]
     assert rev_param.default is inspect.Parameter.empty

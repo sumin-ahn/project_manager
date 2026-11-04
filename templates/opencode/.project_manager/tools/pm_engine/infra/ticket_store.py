@@ -27,16 +27,16 @@ def _ticket_search_dirs(home) -> list[tuple[str, Path]]:
 def find_ticket_exact(
     home, tid: str, *, search_dirs: Sequence[tuple[str, Path]] | None = None,
 ) -> tuple[str, Path] | None:
-    """canonical ID 가 **정확히** `tid` 인 티켓의 (status, path) — 없으면 None (공용 seam).
+    """canonical ID 가 **정확히** `tid` 인 티켓의 (status, path) — 없으면 None (공용 함수).
 
     `{tid}-*.md` **prefix glob 의 첫 매칭**을 티켓-ID 조회로 쓰면 legacy ID(`T-NNNN`)가 같은
     번호로 시작하는 prefixed ID(`T-NNNN-001`)에 오인 매칭된다 — 어느 쪽이 잡힐지는 디렉토리
-    순서가 정하고, 그 결과 회귀 강등 스코프·완료 게이트가 **무관한 티켓의
+    순서가 정하고, 그 결과 회귀 범위 좁히기·완료 검사가 **무관한 티켓의
     frontmatter** 를 보게 된다(전부 조용한 오판). 그래서 후보 전체를 훑어 frontmatter canonical
     ID(`_canonical_ticket_id`)가 정확히 일치하는 것만 인정한다.
 
-    이 판정을 쓰는 표면이 board 밖에도 있어(추가 리뷰어 티켓 조회·`ticket_finish` 티켓 로드)
-    공용 seam 으로 둔다 — 사본을 만들면 그 사본이 다시 첫-매칭으로 흘러 half-fix 가 재발한다.
+    이 판정을 쓰는 명령이 board 밖에도 있어(추가 리뷰어 티켓 조회·`ticket_finish` 티켓 로드)
+    공용 함수로 둔다 — 사본을 만들면 그 사본이 다시 첫-매칭으로 흘러 half-fix 가 재발한다.
     `search_dirs` 를 주면 그 (status 라벨, 디렉토리) 순서로만 본다 — 다른 PM 홈의 보드를 읽는
     호출부(`additional_reviewer --pm-home`)가 자기 범위를 명시하는 자리다. 미지정이면 이 board 의
     STATUS_DIRS → drafts.
@@ -71,7 +71,7 @@ def _load_ticket_soft_errors() -> tuple[type[Exception], ...]:
 def load_ticket_soft(home, path: Path) -> tuple[dict[str, Any], str] | None:
     """순회용 `load_ticket` — 읽기/파싱 실패면 경고 1줄 뒤 None (그 티켓만 skip).
 
-    frontmatter 가 dict 가 아닌 형상(스칼라·리스트)도 같은 축으로 접는다 — 뒤따르는 `fm.get(...)`
+    frontmatter 가 dict 가 아닌 구성(스칼라·리스트)도 같은 방식으로 처리한다 — 뒤따르는 `fm.get(...)`
     이 AttributeError 로 터지면 fail-soft 가 반쪽이다.
     """
     try:
@@ -90,24 +90,24 @@ def load_ticket_soft(home, path: Path) -> tuple[dict[str, Any], str] | None:
 
 
 def _canonical_ticket_id(path: Path) -> str | None:
-    """티켓의 canonical ID — frontmatter `id:` 1차 진실·파일명 파싱은 폴백 (숫자-slug 모호성 해소).
+    """티켓의 canonical ID — frontmatter `id:` 1차 진실·파일명 파싱은 대체 (숫자-slug 모호성 해소).
 
     파일명 파서(`_ticket_id_from_filename`)는 legacy `T-NNNN` + **숫자로 끝나는 slug**
     (`T-0036-fix-123.md`)를 prefixed ID `T-0036-fix-123` 으로 오인한다(하이픈-마디 grammar 모호성·
     `dump_ticket`/`_next_id` 이 발행 시 확정해 쓰는 frontmatter `id:` 가
     권위 진실이므로 이를 우선하고, 부재/읽기 실패(비-UTF-8·frontmatter 깨짐) 시에만 파일명 파싱으로
-    폴백한다(fail-soft). `_scan_prefix_tickets` 의 `fm.get("id") or …` 와 동형 semantics — 스캔측과
+    대체한다(fail-soft). `_scan_prefix_tickets` 의 `fm.get("id") or …` 와 같은 semantics — 스캔측과
     rename-planning 측이 같은 canonical 해소를 쓰게 해 파일명↔content 불일치를 원천 차단한다.
 
-    **frontmatter 가 매핑이 아닌 형상**(스칼라·리스트)도 같은 축으로 접는다(`load_ticket_soft`
-    규약 — 손상 = 없는 것으로 보고 파일명 폴백). YAML 이 비어 있지 않은 스칼라면 파싱은 성공하고
+    **frontmatter 가 매핑이 아닌 구성**(스칼라·리스트)도 같은 방식으로 처리한다(`load_ticket_soft`
+    규약 — 손상 = 없는 것으로 보고 파일명으로 대체). YAML 이 비어 있지 않은 스칼라면 파싱은 성공하고
     `fm.get` 이 AttributeError 로 터지는데, 이 함수는 정확-일치 조회(`find_ticket_exact`)의
-    후보 순회 안에서 불리므로 그 예외가 **활성 리뷰 판정·강등 판정보다 먼저** 실행을 죽인다
+    후보 순회 안에서 불리므로 그 예외가 **활성 리뷰 판정·범위 좁히기 판정보다 먼저** 실행을 죽인다
     (손상 티켓은 skip 하고 FULL 로 남긴다는 규약이 깨진다).
     """
     try:
         fm, _ = load_ticket(path)
-    except _load_ticket_soft_errors():  # 읽기/파싱 실패는 파일명 폴백(fail-soft·비-UTF-8 등).
+    except _load_ticket_soft_errors():  # 읽기/파싱 실패는 파일명으로 대체(fail-soft·비-UTF-8 등).
         fm = {}
     if not isinstance(fm, dict):
         fm = {}
@@ -154,10 +154,10 @@ def find_ticket_for_mutation(home, tid: str) -> tuple[str, Path]:
     """상태-변경 명령 전용 조회 — canonical ID **정확 일치만** (없으면 FileNotFoundError).
 
     claim/complete/block/unclaim/unblock/promote 와 backfill 쓰기는 조회 결과를 **이동·기록**
-    한다. 그 자리에서 옛 glob 첫-매칭 폴백(`find_ticket`)을 쓰면 없는 번호를 입력했을 때 같은
+    한다. 그 자리에서 옛 glob 첫-매칭 대체 조회(`find_ticket`)를 쓰면 없는 번호를 입력했을 때 같은
     번호로 시작하는 **다른 티켓**(legacy `T-NNNN` 부재 · prefixed `T-NNNN-001` 실재)이 이동한다 —
     경고 한 줄이 나가지만 파일은 이미 옮겨진 뒤다. 되돌리려면 사람이 손으로 상태를 복원해야
-    하므로, 이 축은 경고가 아니라 **차단**이다(불일치 = 미존재).
+    하므로, 이 경우는 경고가 아니라 **차단**이다(불일치 = 미존재).
 
     조회 범위는 `find_ticket_exact` 와 같다 — STATUS_DIRS(전 상태 디렉토리) →
     draft 격리 디렉토리(`drafts_dir()`·pseudo-status `"draft"`). draft 를 찾은 mutation 은
@@ -178,7 +178,7 @@ def find_ticket_for_mutation(home, tid: str) -> tuple[str, Path]:
 def _near_miss_ticket_ids(home, tid: str) -> list[str]:
     """`{tid}-*.md` prefix 로 잡히지만 canonical ID 가 다른 티켓들의 ID (없으면 빈 목록).
 
-    차단 안내 전용이다 — 옛 폴백이 *이동시켰을* 티켓을 이름으로 보여줘 "왜 못 찾았나"가
+    차단 안내 전용이다 — 옛 대체 조회가 *이동시켰을* 티켓을 이름으로 보여줘 "왜 못 찾았나"가
     미스터리로 남지 않게 한다. 조회 자체에는 관여하지 않는다(fail-soft: 읽기 실패는 무시).
     """
     near: list[str] = []
@@ -197,16 +197,16 @@ def find_ticket(home, tid: str) -> tuple[str, Path]:
     **canonical ID 정확 일치가 우선이다**(`find_ticket_exact`) — 그 뒤에야 옛 glob 첫 매칭으로
     떨어진다. 순서가 이렇게 정해진 이유는 `T-NNNN` 과 `T-NNNN-001` 이 공존할 때 첫 매칭이
     디렉토리 순서에 좌우되기 때문이다(호출부는 어느 티켓을 받았는지 모른 채 그 frontmatter 를
-    쓴다). 폴백을 남겨 두는 건 frontmatter `id:` 가 없고 파일명 파서가 모호한 legacy 티켓
+    쓴다). 대체 조회를 남겨 두는 건 frontmatter `id:` 가 없고 파일명 파서가 모호한 legacy 티켓
     (`T-NNNN-<slug>-123.md`)까지 못 찾게 되면 조회 자체가 회귀하기 때문이다 — 정확 일치 후보가
     있으면 언제나 그쪽이고, 없을 때만 종전 동작이다.
 
-    **상태를 바꾸는 명령은 이 함수를 쓰지 않는다** — 폴백이 답한 남의 티켓을 그대로 옮기기
+    **상태를 바꾸는 명령은 이 함수를 쓰지 않는다** — 대체 조회가 답한 남의 티켓을 그대로 옮기기
     때문이다(경고를 봤을 땐 이미 이동한 뒤다). 그쪽은 `find_ticket_for_mutation`(정확 일치만)
     이 소유하고, 여기 남는 소비자는 부작용 없는 조회(`show`)뿐이다.
 
     STATUS_DIRS(전 상태 디렉토리)에서 못 찾으면 draft 격리 디렉토리
-    (`drafts_dir()`)를 폴백으로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show` 가 draft 를
+    (`drafts_dir()`)를 대체 위치로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show` 가 draft 를
     조회할 수 있게 한다.
     """
     exact = find_ticket_exact(home, tid)
@@ -214,7 +214,7 @@ def find_ticket(home, tid: str) -> tuple[str, Path]:
         return exact
 
     def _loud_if_mismatch(result: tuple[str, Path]) -> tuple[str, Path]:
-        # 폴백이 남의 티켓을 무음으로 답하는 마지막 표면 가시화 — 차단이 아니라 경고
+        # 대체 조회가 남의 티켓을 무음으로 답하는 경우를 마지막으로 드러낸다 — 차단이 아니라 경고
         # (legacy `id:` 부재 티켓 조회는 유지·정확 후보가 있으면 여기 도달하지 않는다).
         canonical = _canonical_ticket_id(result[1])
         if canonical and canonical != tid:
@@ -239,8 +239,8 @@ def find_idea(home, iid: str) -> tuple[str, Path]:
 
 # 티켓 파일을 **읽어서 다시 쓰는** 경로(lifecycle 이동·frontmatter 갱신)는 본문을
 # LF 로 다루지만, 되쓸 때 표기를 뒤집으면 안 된다. CRLF 체크아웃(Windows `core.autocrlf=true`)
-# 채택자에선 손대지 않은 줄까지 전면 diff 가 되고, 위임 사본 harvest 가 byte 로 재는 "준비 뒤
-# 외부 편집" 판정(pm_delegate)이 내용은 같은데 stale 로 오판해 회수를 거부한다.
+# 채택자에선 손대지 않은 줄까지 전면 diff 가 되고, 위임 사본 돌려받기가 byte 로 재는 "준비 뒤
+# 외부 편집" 판정(pm_delegate)이 내용은 같은데 stale 로 오판해 돌려받기를 거부한다.
 # 진실은 OS 가 아니라 **그 파일의 현재 표기**다 — 플랫폼 분기를 쓰지 않는다.
 DEFAULT_TEXT_NEWLINE = "\n"
 
@@ -281,18 +281,18 @@ def _write_text_keeping_newlines(path: Path, text: str) -> None:
 
 
 def _issued_ticket_id(home, path: Path, fm: dict[str, Any] | None = None) -> str | None:
-    """그 파일이 **발행한 티켓 ID** — frontmatter `id` 가 진실, 미기재/읽기 실패만 파일명 폴백.
+    """그 파일이 **발행한 티켓 ID** — frontmatter `id` 가 진실, 미기재/읽기 실패만 파일명으로 대체.
 
     **파일명은 ID 의 진실이 아니다.** 대소문자 무시 파일시스템(Windows·macOS)에서 `T-AAA-001`
     과 `T-aaa-001` 은 같은 이름이라, 파일명을 진실로 쓰면 발행 ID 의 case 가 그 파일이 어느
     이름으로 먼저 만들어졌는지(또는 체크아웃 때 어떻게 접혔는지)에 따라 뒤집힌다. frontmatter
     는 파일 내용이라 어느 파일시스템에서도 접히지 않는다.
 
-    폴백을 남기는 이유는 clobber 안전이다 — 티켓의 ID 를 통째로 버리면 유일성 판정과 번호
-    이어붙이기가 그 ID 를 모른 채 전진해 그 위에 다른 티켓을 덮어쓴다. 그래서 폴백 조건은 둘이다:
+    대체를 남기는 이유는 clobber 안전이다 — 티켓의 ID 를 통째로 버리면 유일성 판정과 번호
+    이어붙이기가 그 ID 를 모른 채 전진해 그 위에 다른 티켓을 덮어쓴다. 그래서 대체 조건은 둘이다:
     읽기 실패/`id` 부재 · **ID 문법이 아닌 `id` 값**(파일명은 문법을 만족하는데 frontmatter 만
-    깨진 형상에서 번호가 통째로 사라지지 않게). 값은 문자열로 정규화한다(YAML 이 `id: 123` 을
-    int 로 파싱하는 형상 포함).
+    깨진 경우에 번호가 통째로 사라지지 않게). 값은 문자열로 정규화한다(YAML 이 `id: 123` 을
+    int 로 파싱하는 경우 포함).
 
     `fm` 을 이미 읽었으면 넘겨서 재파싱을 피한다(`_scan_prefix_tickets` 순회).
     """
@@ -302,7 +302,7 @@ def _issued_ticket_id(home, path: Path, fm: dict[str, Any] | None = None) -> str
     raw = (fm or {}).get("id")
     tid = str(raw).strip() if raw is not None else ""
     if tid and ticket_rules._ticket_id_number(tid) is None:
-        tid = ""                       # ID 문법 아님 — 진실로 쓸 수 없다(파일명 폴백).
+        tid = ""                       # ID 문법 아님 — 진실로 쓸 수 없다(파일명으로 대체).
     return tid or ticket_rules._ticket_id_from_filename(path.name)
 
 
@@ -329,7 +329,7 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
     """`dump_ticket` 과 같은 바이트를 쓰되 temp 파일 + `fs.atomic_replace` 로 원자 교체한다.
 
     부분쓰기로 티켓 frontmatter 가 깨지는 것을 막는다(worktree_pool `_write_ledger`
-    동형 — tmp 에 전체를 쓰고 같은 디렉토리 안에서 atomic rename). backfill 처럼
+    와 같은 방식 — tmp 에 전체를 쓰고 같은 디렉토리 안에서 atomic rename). backfill 처럼
     *기존* 티켓을 제자리 갱신할 때 쓴다 — 같은 status 디렉토리 안 rename 이라 원자적이다.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -404,7 +404,7 @@ def _next_prefixed_id(home, prefix: str) -> str:
     """
     fold = prefix.lower()
     max_num = 0
-    anchor: tuple[int, str] | None = None   # (최저 번호, 그 ID) — canonical case 의 결정적 출처.
+    lowest_ticket: tuple[int, str] | None = None   # (최저 번호, 그 ID) — canonical case 의 결정적 출처.
     for d in ticket_rules._ID_SCAN_STATUSES:
         for p in (pm_paths.tickets_dir(home) / d).glob("T-*.md"):
             tid = _issued_ticket_id(home, p)
@@ -417,9 +417,9 @@ def _next_prefixed_id(home, prefix: str) -> str:
             if num is None:
                 continue
             max_num = max(max_num, num)
-            if anchor is None or (num, tid) < anchor:
-                anchor = (num, tid)
-    canonical = ticket_rules._ticket_prefix(anchor[1]) if anchor else prefix   # 최초 사용: 입력 case.
+            if lowest_ticket is None or (num, tid) < lowest_ticket:
+                lowest_ticket = (num, tid)
+    canonical = ticket_rules._ticket_prefix(lowest_ticket[1]) if lowest_ticket else prefix   # 최초 사용: 입력 case.
     return f"T-{canonical}-{max_num + 1:03d}"
 
 

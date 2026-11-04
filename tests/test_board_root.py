@@ -5,13 +5,13 @@ board(tickets+areas)를 `.project_manager/board/`(submodule)로 분리할 수 �
 
   - **legacy(board/ 부재) 100% 무변경**: `Home.board_root`·`tickets_dir`·`areas_file` 이 모두 현
     위치(wiki/·areas.md)로 해소된다 → 기존 1688 테스트 green 유지. 이 파일이 그 fallback 을
-    *직접* 단언한다(상수→함수 전환이 legacy 경로를 안 바꿈을 박제).
+    *직접* 단언한다(상수→함수 전환이 legacy 경로를 안 바꿈을 기록).
   - **board/ 존재 시 board 루트**: `.project_manager/board/tickets` 가 dir 이면 board/ 루트로
     갈리고 areas 는 board/ *안*으로(조건분기), wikilink lint 가 board ticket 본문도 스캔한다.
   - **board.py ↔ pm_config 경로 대칭**: pm_config 은 areas 를 board 함수에 위임(자체 해소 0·
     ADR-0013 isolation) → 둘이 같은 파일을 가리킨다(repo add 가 다른 파일 쓰면 보드 깨짐).
   - **A5 누출-0 git 회귀**: hermetic tmp-git 으로 `ignore=all` 의 board↔design 누출 0 구조를
-    박제(board.py 코드 무관·순수 git 동작 — smtest_v3 의 durable 승격).
+    기록(board.py 코드 무관·순수 git 동작 — smtest_v3 의 durable 승격).
 
 **hermetic 필수**: board.py 경로 전역(`REPO` 등)은 import 시점에 실 repo 절대경로로 굳는다 —
 함수 scope 로 매 테스트마다 새 모듈을 로드해 `REPO` 를 tmp 로 재지정한다(다른 board 테스트의
@@ -62,7 +62,7 @@ def board(tmp_path, monkeypatch):
 
 
 def _make_board_dir(root: Path) -> Path:
-    """`.project_manager/board/tickets/{open,...}` 를 만들어 board/ 분리 형상을 모사한다."""
+    """`.project_manager/board/tickets/{open,...}` 를 만들어 board/ 분리 구성을 모사한다."""
     board_dir = root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
         (board_dir / "tickets" / status).mkdir(parents=True, exist_ok=True)
@@ -123,7 +123,7 @@ def test_board_root_ignores_bare_board_dir_without_tickets(board):
     """`board/` 가 있어도 그 안에 `tickets/` 가 없으면 *legacy* 로 본다 (탐지는 tickets dir 실측).
 
     부분/오인 디렉토리(예: board/ 만 mkdir 됨)에 끌려가지 않게 — install_pre_push_hook 의
-    git-path 실측 패턴 동형. 빈 board/ 로는 절대 새 경로로 가지 않는다(graceful)."""
+    git-path 실측 패턴과 같은 방식. 빈 board/ 로는 절대 새 경로로 가지 않는다(graceful)."""
     (board._tmp / ".project_manager" / "board").mkdir(parents=True)
     assert pm_paths.home_at(board.REPO).board_root == board._tmp / ".project_manager" / "wiki"
     assert pm_paths.areas_file(pm_paths.home_at(board.REPO)) == board._tmp / ".project_manager" / "areas.md"
@@ -132,7 +132,7 @@ def test_board_root_ignores_bare_board_dir_without_tickets(board):
 def test_board_root_follows_monkeypatched_repo_lazily(board):
     """board_root 가 *함수*라 REPO monkeypatch 를 매 호출 따라간다 (import-time 굳음 아님).
 
-    상수였다면 실 REPO 에 굳어 hermetic 테스트가 깨진다 — 함수 seam 의 핵심 회귀 박제."""
+    상수였다면 실 REPO 에 굳어 hermetic 테스트가 깨진다 — 함수 교체 지점의 핵심 회귀 기록."""
     # board/ 없을 때 legacy, board/ 만들면 즉시 board 루트 — 같은 모듈 인스턴스에서 동적 전환.
     assert pm_paths.home_at(board.REPO).board_root.name == "wiki"
     _make_board_dir(board._tmp)
@@ -155,7 +155,7 @@ def test_pm_config_delegates_areas_to_board_no_own_constant():
 
     ADR-0013 isolation: pm_config 이 areas 경로를 *독립* 해소하면 board_root 분리 시 board.py
     와 어긋나 repo add(board.areas_append)와 조회(areas_store._parse_areas)가 다른 파일을 본다. 자체
-    상수 부재 = 동형 추종 보장(단일 진실 = pm_paths.areas_file)."""
+    상수 부재 = 같은 방식 추종 보장(단일 진실 = pm_paths.areas_file)."""
     pm_config = _load_pm_config()
     assert not hasattr(pm_config, "AREAS_FILE"), \
         "pm_config 이 자체 AREAS_FILE 을 정의 — board 와 areas 경로가 갈릴 수 있다(repo add 클로버)."
@@ -175,7 +175,7 @@ def test_pm_config_repo_add_writes_board_resolved_areas_legacy(board, tmp_path, 
 
 
 def test_areas_append_follows_board_root_when_separated(board, monkeypatch):
-    """board/ 분리 시 areas_append 가 board/areas.md(board 안)에 쓴다 — 코드 git 오염 0 형상."""
+    """board/ 분리 시 areas_append 가 board/areas.md(board 안)에 쓴다 — 코드 git 오염 0 구성."""
     _make_board_dir(board._tmp)
     (board._tmp / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
     areas_registry.areas_append(pm_paths.home_at(board.REPO), "PAY", "결제", "alice")
@@ -203,7 +203,7 @@ def _wire_wiki(board, root: Path) -> Path:
 def test_collect_wikilink_files_legacy_no_duplicate(board, monkeypatch):
     """legacy(board_root==wiki): tickets_dir() union 이 중복을 안 만든다 (set dedup → no-op).
 
-    legacy 면 tickets_dir() 가 이미 wiki.rglob 에 포함된다 — dedup 으로 중복 0 을 박제."""
+    legacy 면 tickets_dir() 가 이미 wiki.rglob 에 포함된다 — dedup 으로 중복 0 을 기록."""
     wiki = _wire_wiki(board, board._tmp)
     tk = wiki / "tickets" / "open" / "T-0001-x.md"
     tk.write_text("# t\n[[ADR-0001]]\n", encoding="utf-8")
@@ -217,9 +217,9 @@ def test_collect_wikilink_files_includes_board_tickets_when_separated(board):
     """board/ 분리 시 board/tickets 본문이 wikilink 스캔 대상에 union 된다.
 
     board ticket 이 wiki/ 밖으로 빠지면 그 `[[ADR-NNNN]]` 가 wiki-only 스캔에선 안 보여
-    dangling 미검출 — board/tickets 도 스캔함을 박제."""
+    dangling 미검출 — board/tickets 도 스캔함을 기록."""
     _make_board_dir(board._tmp)  # board/tickets/* 생성
-    # wiki/ 는 비어 있어도 됨(설계축만) — 여기선 board ticket 만 둔다.
+    # wiki/ 는 비어 있어도 됨(설계 쪽만) — 여기선 board ticket 만 둔다.
     board_tk = board._tmp / ".project_manager" / "board" / "tickets" / "open" / "T-0009-y.md"
     board_tk.write_text("# t\n[[ADR-9999]]\n", encoding="utf-8")
     files = wikilink_lint._collect_wikilink_files(pm_paths.home_at(board.REPO))
@@ -265,11 +265,11 @@ def test_board_submodule_name_none_without_gitmodules(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# A5 — 누출-0 git 회귀 (형상 회귀·실 git·board.py 코드 무관·smtest_v3 durable 승격)
+# A5 — 누출-0 git 회귀 (구성 회귀·실 git·board.py 코드 무관·smtest_v3 durable 승격)
 # ════════════════════════════════════════════════════════════════════════
-# ADR-0033 ①의 "ignore=all = 코드 git 누출 0" 구조를 *순수 git 동작*으로 박제한다. board.py
+# ADR-0033 ①의 "ignore=all = 코드 git 누출 0" 구조를 *순수 git 동작*으로 기록한다. board.py
 # 함수를 부르지 않고 git 의 submodule ignore=all 행동만 단언한다 — board PM-commit 이 design
-# (코드) git 의 status/add 를 오염하지 않음을 형상 회귀로 못박는다.
+# (코드) git 의 status/add 를 오염하지 않음을 구성 회귀로 못박는다.
 
 def _git(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
@@ -375,7 +375,7 @@ def test_board_submodule_ignore_all_zero_leak(tmp_path):
 # ════════════════════════════════════════════════════════════════════════
 # git 은 훅 위치를 물으면 트리를 걸어올라가 답한다 — 그 답을 그대로 쓰면 상위 저장소나
 # `core.hooksPath` 가 가리키는 보호훅 폴더의 pre-push 를 덮는다(2026-09-03 실측·원본 소실).
-# 판정 입력은 자기 `.git` 디렉터리와 해소된 훅 폴더 **두 값**뿐이라, 형상 4종을 그 두 값으로
+# 판정 입력은 자기 `.git` 디렉터리와 해소된 훅 폴더 **두 값**뿐이라, 구성 4종을 그 두 값으로
 # 직접 세운다(git 미호출·결정적). 실 git 해소를 태우는 end-to-end 는 tests/test_pm_import.py
 # 의 `test_into_non_git_subdir_leaves_parent_hook_untouched` 가 본다.
 
@@ -389,14 +389,14 @@ def _resolved_key(path: Path) -> str:
 
 
 def _git_answers(board, monkeypatch, hooks: Path) -> Path:
-    """git 이 그 훅 폴더를 답한 형상 — 해소는 stub 하고 설치 자리 판정만 태운다."""
+    """git 이 그 훅 폴더를 답한 구성 — 해소는 stub 하고 설치 자리 판정만 태운다."""
     monkeypatch.setattr(pre_push_hook, "_hooks_dir", lambda _home: hooks)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     return hooks
 
 
 def test_hook_installs_under_own_git_dir(board, monkeypatch, capsys):
-    """자기 `.git` 디렉터리 아래로 해소되면 설치한다 (단일 clone 의 기본 형상)."""
+    """자기 `.git` 디렉터리 아래로 해소되면 설치한다 (단일 clone 의 기본 구성)."""
     (board._tmp / ".git").mkdir()
     hooks = _git_answers(board, monkeypatch, board._tmp / ".git" / "hooks")
 
@@ -450,7 +450,7 @@ def test_hook_refuses_hooks_path_outside_own_git(board, monkeypatch, capsys):
 
 
 def test_hook_installs_when_hooks_path_points_inside_own_git(board, monkeypatch):
-    """`core.hooksPath` 가 자기 `.git/hooks` 를 절대경로로 선언한 형상(PM 홈)에서도 설치한다."""
+    """`core.hooksPath` 가 자기 `.git/hooks` 를 절대경로로 선언한 구성(PM 홈)에서도 설치한다."""
     (board._tmp / ".git").mkdir()
     declared = (board._tmp / ".git" / "hooks").resolve()   # git 이 돌려주는 절대경로 선언
     hooks = _git_answers(board, monkeypatch, declared)

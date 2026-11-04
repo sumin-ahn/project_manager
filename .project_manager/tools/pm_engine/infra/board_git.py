@@ -63,7 +63,7 @@ def _board_git_root_file_backfill_target(
 
     has_status = bool(dirty.stdout)
     if info is None:
-        # tracked+부재(status 가 clean 인 skip-worktree 포함) 또는 porcelain 삭제 표식은 사용자가
+        # tracked+부재(status 가 clean 인 skip-worktree 포함) 또는 porcelain 삭제 표시는 사용자가
         # 파일을 없애는 중인 상태다. untracked+부재+status clean 만 신규 배포 대상으로 인정한다.
         if tracked.returncode == 0 or has_status:
             print(f"  ⚠ board {name} backfill 보류 — 추적 파일의 삭제 WIP가 감지됐다. 사용자 "
@@ -123,7 +123,7 @@ def _board_text_attr_targets() -> tuple[str, ...]:
     """LF 커버리지 판정 대상 — 상태 경로 × 확장자 + board 루트 직계 + **라운드 중첩 경로**.
 
     라운드 파일은 상태 디렉토리가 아니라 `tickets/<라운드 디렉터리>/<티켓>/` 아래 산다 —
-    상태 경로만 재던 판정은 그 자리를 못 본다. 디렉터리 이름과 파일명 문법은 사이드카 seam 이
+    상태 경로만 재던 판정은 그 자리를 못 본다. 디렉터리 이름과 파일명 문법은 사이드카 공용 함수가
     소유하므로 여기서 표기를 복제하지 않고 그 표에서 프로브 경로를 만든다.
     """
     probe = f"tickets/{round_store.ROUNDS_DIRNAME}/T-0/{round_rules.round_filename(1, 'developer')}"
@@ -151,9 +151,9 @@ def _board_gitattributes_declared(text: str) -> bool:
 def _ensure_board_gitattributes(home) -> bool:
     """board git 의 union·엔진-소유 텍스트 LF 규칙을 `.gitattributes` 에 **멱등 보강**.
 
-    board 분리 형상에서 areas.md 는 board submodule 안에 살고 루트 선언이 닿지 않아 union 이
-    조용히 사라진다. 신규 board 는 `pm_import.setup_board_submodule` 의 seed 가 이 파일을
-    만들지만 **이미 만들어진 board 엔 seed 가 다시 돌지 않으므로** board git
+    board 분리 구성에서 areas.md 는 board submodule 안에 살고 루트 선언이 닿지 않아 union 이
+    조용히 사라진다. 신규 board 는 `pm_import.setup_board_submodule` 의 스캐폴드가 이 파일을
+    만들지만 **이미 만들어진 board 엔 스캐폴드가 다시 돌지 않으므로** board git
     commit funnel(`_board_git_stage_and_commit`)에서 backfill 한다 — 보강분은 그 commit 에 함께
     실려 pull/push 로 공유 remote·다른 clone 까지 전파된다.
 
@@ -190,7 +190,7 @@ def _ensure_board_gitattributes(home) -> bool:
         fs.append_atomic(target.path, separator + board_git_rules._BOARD_GITATTRIBUTES_BLOCK)
     except (OSError, UnicodeError):
         # IO 실패·비-UTF8 `.gitattributes` — 보강을 포기한다. 이 함수는 ticket mutation 의
-        # commit funnel 에서 불리므로 어떤 예외도 mutation 을 깨선 안 된다(advisory 가 표면화).
+        # commit funnel 에서 불리므로 어떤 예외도 mutation 을 깨선 안 된다(advisory 가 드러낸다).
         return False
     return True
 
@@ -250,7 +250,7 @@ def _board_git_root_file_rule_declared(name: str, text: str) -> bool:
 def _board_git_root_files_need_backfill(home) -> bool:
     """draft-only sync funnel 을 열 루트 backfill 필요 여부 (read-only·fail-open 술어).
 
-    둘 다 이미 정합인 regular file 이면 False 이므로 두 번째 draft 는 commit/pull/push 경로에
+    둘 다 이미 맞는 regular file 이면 False 이므로 두 번째 draft 는 commit/pull/push 경로에
     들어가지 않는다. 부재·비정규·읽기 실패·규칙 누락은 True 로 두어 실제 ensure 가 공용
     git/WIP 판정을 하고 필요한 write 또는 loud 보류를 수행하게 한다.
     """
@@ -275,7 +275,7 @@ def _ensure_board_gitignore(home) -> bool:
     """board git 의 `.gitignore` 에 `tickets/.drafts/` 를 **멱등 보강**.
 
     `_ensure_board_gitattributes` 와 같은 backfill 패턴이다 — 신규 채택자(board scaffold)든 이미
-    만들어진 board(backfill)든 같은 ensure 경로로 수렴하므로 별도 마이그레이션 명령이 없다.
+    만들어진 board(backfill)든 같은 ensure 경로로 모이므로 별도 마이그레이션 명령이 없다.
     호출처도 같은 commit funnel(`_board_git_stage_and_commit`) 하나뿐이다: write→stage→commit 이
     한 호출에 닫혀야 엔진이 만든 파일이 board 에 미커밋으로 눌러앉지 않는다(그러면 이 함수가
     없애려는 바로 그 오탐을 스스로 만든다).
@@ -291,7 +291,7 @@ def _ensure_board_gitignore(home) -> bool:
     """
     root = home.board_root
     if not (root / ".git").exists():
-        return False  # board 미분리(legacy) — no-op(draft 격리는 board-git 형상 전용).
+        return False  # board 미분리(legacy) — no-op(draft 격리는 board-git 구성 전용).
     target = _board_git_root_file_backfill_target(
         home, ".gitignore", _drafts_ignore_declared)
     if target is None:
@@ -303,7 +303,7 @@ def _ensure_board_gitignore(home) -> bool:
         fs.append_atomic(target.path, separator + board_git_rules._BOARD_GITIGNORE_BLOCK)
     except (OSError, UnicodeError):
         # IO 실패·비-UTF8 `.gitignore` — `_ensure_board_gitattributes` 와 같은 fail-soft 규약
-        # (이 축의 실패가 ticket mutation 을 깨선 안 된다).
+        # (이 단계의 실패가 ticket mutation 을 깨선 안 된다).
         return False
     return True
 
@@ -312,9 +312,9 @@ def _board_git_root_files_snapshot(home) -> board_git_rules._BoardGitRootFilesSn
     """엔진 backfill 전 루트 파일 상태와 이후 실제 작성 목록을 캡처할 그릇을 만든다.
 
     strict claim 이 실패하면 index 만 되돌려서는 부족하다. 새 파일은 untracked 로, 기존 파일에
-    append 한 블록은 unstaged 로 남아 다음 ensure 가 no-write 하는 영구 잔여가 된다. 워킹트리
+    append 한 블록은 unstaged 로 남아 다음 ensure 가 no-write 하는 바람에 영구히 남는다. 워킹트리
     바이트도 함께 복원해야 다음 mutation 이 backfill 을 다시 정상 시도할 수 있다. 단, 복원
-    소유권은 이 스냅샷 뒤 `_ensure_board_root_files()` 가 실제로 쓴 파일에만 생긴다.
+    소유권은 이 상태 기록 뒤 `_ensure_board_root_files()` 가 실제로 쓴 파일에만 생긴다.
     """
     snapshot: dict[str, board_git_rules._BoardGitRootFileState] = {}
     for name in board_git_rules._BOARD_GIT_ROOT_FILES:
@@ -338,7 +338,7 @@ def _board_git_root_files_snapshot(home) -> board_git_rules._BoardGitRootFilesSn
 
 def _board_git_expected_backfill_state(
         name: str, before: board_git_rules._BoardGitRootFileState) -> board_git_rules._BoardGitRootFileState | None:
-    """스냅샷 원본에 엔진 블록 하나를 append 한 정확한 워킹트리 상태."""
+    """상태 기록 원본에 엔진 블록 하나를 append 한 정확한 워킹트리 상태."""
     if before.existed and before.contents is None:
         return None
     original = before.contents or b""
@@ -394,7 +394,7 @@ def _board_git_restore_root_files(
                 assert before.contents is not None
                 path.write_bytes(before.contents)
             else:
-                # 맨 `unlink` 는 read-only 속성 파일을 Windows 에서 거부한다 — 공용 seam 이
+                # 맨 `unlink` 는 read-only 속성 파일을 Windows 에서 거부한다 — 공용 함수가
                 #   속성을 풀고 재시도해 backfill 잔재가 워킹트리에 눌러앉지 않게 한다.
                 fs.force_unlink(path, missing_ok=True)
             restored.append(name)
@@ -419,8 +419,8 @@ def _board_git_enabled(home) -> bool:
     True 면 ticket mutation 이 board git 에 commit/pull/push 한다. False 면 sync 전부
     no-op(legacy·git 부재) — `Home.board_root` 가 wiki/ 를 가리키는 legacy 에선
     `wiki/.git` 가 없어 자동으로 False(superproject git 은 REPO 루트에 산다). board/ 분리
-    형상에서만 `board/.git`(submodule git 파일/디렉토리)이 존재한다. git 바이너리 부재면
-    분리 형상이라도 no-op(fail-soft·sync 불능).
+    구성에서만 `board/.git`(submodule git 파일/디렉토리)이 존재한다. git 바이너리 부재면
+    분리 구성이라도 no-op(fail-soft·sync 불능).
     """
     if shutil.which("git") is None:
         return False
@@ -432,7 +432,7 @@ def _board_git_lock_file(home) -> Path:
 
     `BOARD_LOCK` 처럼 import-time 상수로 굳히지 않고 **REPO 추종 lazy 해소**로 둔다(`Home.board_root`
     선례) — hermetic 테스트는 `REPO` 를 monkeypatch 하므로 락 파일이 자동으로 tmp 로 따라간다.
-    별도 상수 seam 을 하나 더 두면 그걸 잊은 새 테스트가 실 루트에 락 파일을 쓴다.
+    별도 상수 교체 지점을 하나 더 두면 그걸 잊은 새 테스트가 실 루트에 락 파일을 쓴다.
     """
     return home.root / ".project_manager" / ".local" / "board-git.lock"
 
@@ -482,7 +482,7 @@ def _board_git_head_detached(home) -> bool:
     **fail-soft**: 예외(timeout·git 소실)·rc==0(attached)·rc==128(fatal) 모두 False — 판정
     실패는 현행 경로(detached 가드 미발동)로 흘려보낸다. 거짓 detached 판정이 정상
     sync/claim 을 막는 것보다, 판정 불능 시 현행 동작 유지가 보수적이다(dirty 선체크의
-    fail-soft clean 취급과 동형).
+    fail-soft clean 취급과 같은 방식).
     """
     try:
         r = git._board_git(home, ["symbolic-ref", "-q", "HEAD"])
@@ -500,7 +500,7 @@ def _board_git_status_porcelain(home) -> str:
 
     **dirty 판정의 단일 원천**이다 — 목록/추적여부 분해(`_board_git_dirty_entries`·
     `_board_git_has_tracked_changes`)는 이 출력을 파싱만 한다. dirty 는 claim 을
-    막는 조건이 아니라 (a) 원격이 앞섰을 때 통합 가능성 판정과 (b) 잔여 차단 진단의 재료다.
+    막는 조건이 아니라 (a) 원격이 앞섰을 때 통합 가능성 판정과 (b) 남은 차단 진단의 재료다.
 
     `_BOARD_GIT_DRAFT_PATHSPEC` 으로 `tickets/.drafts/`(미충전 draft)를 제외한다 —
     draft 는 board-git 관점에서 아예 존재하지 않는 것처럼 보여야 한다(진단 목록에도 안 나온다).
@@ -553,7 +553,7 @@ def _board_git_has_tracked_changes(home) -> bool:
 def _board_git_rebase_in_progress(home) -> bool:
     """board git 이 rebase 진행 중(충돌 미해소)인가 — `.git/rebase-merge`·`rebase-apply` 존재.
 
-    mid-rebase 는 detached 의 부분집합이지만 **처방이 다르다**(`rebase --abort/--continue` vs
+    mid-rebase 는 detached 의 부분집합이지만 **해결 방법이 다르다**(`rebase --abort/--continue` vs
     `checkout <branch>`)
     먼저 갈라야 한다. 그리고 이 선체크가 **어떤 board-git mutation 보다도 앞**이어야 한다:
     mid-rebase 에서 `git commit -- <paths>` 는 rc=0 으로 **detached rebase HEAD 위에** 커밋을
@@ -602,7 +602,7 @@ def _board_git_upstream(home) -> board_git_rules._BoardGitUpstream | None:
 def _board_git_fetch(home, remote: str) -> bool:
     """원격 상태를 추적 ref 로 당긴다 — **읽기 전용**(워킹트리·HEAD 미접촉). 성공 True.
 
-    선점 감지를 `pull --rebase` 대신 fetch+ls-tree 로 하는 근거가 이것이다 — dirty 든 behind 든
+    원격이 먼저 차지했는지 감지를 `pull --rebase` 대신 fetch+ls-tree 로 하는 근거가 이것이다 — dirty 든 behind 든
     로컬 상태와 무관하게 원격을 볼 수 있고, 실패해도 로컬 변경이 0 이다.
     """
     try:
@@ -612,9 +612,9 @@ def _board_git_fetch(home, remote: str) -> bool:
 
 
 def _board_git_remote_ticket_status(home, tracking: str, ticket_id: str) -> str | None:
-    """원격 트리에서 그 티켓이 놓인 status 디렉토리 (없으면 None) — 읽기 전용 선점 감지.
+    """원격 트리에서 그 티켓이 놓인 status 디렉토리 (없으면 None) — 읽기 전용으로 원격이 먼저 차지했는지 감지.
 
-    `git ls-tree -r --name-only <tracking> -- tickets/` 로 **원격 스냅샷을 직접** 읽는다. 로컬
+    `git ls-tree -r --name-only <tracking> -- tickets/` 로 **원격 트리를 직접** 읽는다. 로컬
     통합(pull) 성공에 의존하지 않으므로 dirty·behind 와 무관하게 판정된다 — 옛 판정(winner 를
     로컬로 끌어와야 보임)보다 **등가 이상**이다. `-z` 로 NUL 구분 raw 경로를 받는다
     (한글 파일명이 core.quotepath 8진 이스케이프로 나와 매칭을 놓치는 것을 막는다).
@@ -637,7 +637,7 @@ def _board_git_remote_ticket_status(home, tracking: str, ticket_id: str) -> str 
 def _board_git_behind(home, tracking: str) -> int | None:
     """원격이 로컬보다 앞선 커밋 수 (`HEAD..<tracking>`) — **계산 불가면 None**(판정불가).
 
-    옛 구현은 예외·rc≠0·비정수를 전부 0 으로 접었다. **차단 판단**에는 그 폴백이 보수적이지만
+    옛 구현은 예외·rc≠0·비정수를 전부 0 으로 바꿨다. **차단 판단**에는 그 대체 값이 보수적이지만
     (behind 를 모르면 "원격이 안 앞섬" 으로 보고 차단하지 않는다 — 소유 확정 권위는 어차피
     push CAS 다), **진단 문구**에서는 계산 불능과 실제 0 이 구별되지 않아 "원격보다 0 커밋
     뒤처진 상태" 라는 거짓 실측 진술이 나왔다. 그래서 값은 known/unknown 을 보존하고, 차단
@@ -659,8 +659,8 @@ def _board_git_behind(home, tracking: str) -> int | None:
 def _board_git_remote_tip(home, upstream: board_git_rules._BoardGitUpstream) -> str | None:
     """원격 브랜치 tip SHA (`git ls-remote`) — 네트워크 1왕복·로컬 ref 미의존.
 
-    `_board_git_remote_has_commit` 의 폴백 경로다(fetch 불가 시). tip 동일성만으로는 "내 커밋이
-    원격에 있는가" 를 절반만 답한다 — 그래서 기본 술어가 아니라 폴백이다.
+    `_board_git_remote_has_commit` 의 대체 경로다(fetch 불가 시). tip 동일성만으로는 "내 커밋이
+    원격에 있는가" 를 절반만 답한다 — 그래서 기본 술어가 아니라 대체 경로다.
     """
     try:
         r = git._board_git(home, ["ls-remote", upstream.remote, upstream.merge_ref])
@@ -680,7 +680,7 @@ def _board_git_remote_has_commit(home, upstream: board_git_rules._BoardGitUpstre
     아니지만 소유는 확정된 상태다 — 동일성으로 보면 그 경우를 롤백해 고아를 다시 만든다.
 
     `fetch`(읽기 전용) 후 `merge-base --is-ancestor` 로 판정하고, fetch 가 불가하면
-    `ls-remote` tip 동일성으로 **폴백**한다(정확도는 낮지만 "확정된 것을 롤백" 은 막는다).
+    `ls-remote` tip 동일성으로 **대체**한다(정확도는 낮지만 "확정된 것을 롤백" 은 막는다).
     판정 불가는 False = 롤백(거짓 소유보다 안전한 방향).
     """
     try:
@@ -717,7 +717,7 @@ def _board_git_scope_pathspec(home, paths: Sequence[Path], *,
       - `root_files` 로 준 board 루트 파일(`_BOARD_GIT_ROOT_FILES` 부분집합)만 덧붙인다 —
         **이번 호출의 backfill 이 실제로 쓴 것**(`_ensure_board_root_files()` 반환)만 온다.
         무조건 붙이면 사용자가 편집 중인 `.gitattributes`/`.gitignore` 를 아무 티켓 mutation 이
-        대신 커밋해 스코프 커밋이 닫으려는 누출과 **동형** 이 된다(reviewer). 반대로 backfill
+        대신 커밋해 스코프 커밋이 닫으려는 누출과 **같은 구조** 가 된다(reviewer). 반대로 backfill
         분을 빼면 그 파일이 영구 미커밋으로 남아 배포(areas union·draft ignore)가 무력화되므로,
         "썼으면 싣는다" 가 정확한 조건이다. 파일 부재 시엔 붙이지 않는다(`add` rc=128 fatal 방지).
     반환이 비면 커밋할 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
@@ -760,13 +760,13 @@ def _board_git_stage_and_commit(
     rename 경로로 스코프됐다. 하위호환(모듈 밖 호출부·테스트)으로만 남긴다.
     **호출부는 반드시 경로를 준다.**
 
-    새 커밋 생성 판정은 rc 가 아니라 **`HEAD != anchor`** 다 — 부분 커밋은 pathspec 이 아무것도
+    새 커밋 생성 판정은 rc 가 아니라 **`HEAD != before`** 다 — 부분 커밋은 pathspec 이 아무것도
     못 잡으면 rc 가 애매한데, claim 은 "커밋을 못 내면 거짓 소유"라 커밋 *사실* 을
     확인해야 한다. 반환 True = 새 commit 생성.
 
     stage 직전 board 루트 배포 파일(`areas.md merge=union` 선언 · draft 격리 `.gitignore`)을 멱등
     보강한다. **이번 호출이 실제로 보강한 파일만** pathspec 에 넣는다 — 무조건 넣으면 사용자가
-    편집 중인 그 파일을 이 mutation 이 대신 커밋한다(스코프 커밋이 닫는 누출과 동형).
+    편집 중인 그 파일을 이 mutation 이 대신 커밋한다(스코프 커밋이 닫는 누출과 같은 구조).
     """
     wrote_root_files = _ensure_board_root_files(home)
     if root_files_written is not None:
@@ -822,12 +822,12 @@ def _board_git_uncommitted_scope(
     entries = git.git_parse_porcelain_z(result.stdout)
     # pathspec 자체를 보존해야 porcelain rename의 새 경로만으로 old 삭제를 잃지 않는다.
     # root_files 는 이번 commit funnel 이 실제 쓴 이름만 오므로 빈 ticket pathspec인 첫 draft도
-    # 정확히 진단하면서, 이미 정합인 루트 파일/사용자 WIP는 이번 실패 범위에 끌어오지 않는다.
+    # 정확히 진단하면서, 이미 맞는 루트 파일/사용자 WIP는 이번 실패 범위에 끌어오지 않는다.
     return board_git_rules._BoardGitUncommittedScope(entries, tuple(pathspec))
 
 
 def _board_git_pull_rebase(home) -> subprocess.CompletedProcess:
-    """board git 을 remote 최신화 (`pull --rebase`) — 선점/원격 변경을 로컬에 반영."""
+    """board git 을 remote 최신화 (`pull --rebase`) — 원격이 먼저 차지한 것/원격 변경을 로컬에 반영."""
     return git._board_git(home, ["pull", "--rebase"])
 
 
@@ -849,16 +849,16 @@ def _classify_pull_failure(home, upstream: board_git_rules._BoardGitUpstream,
     옛 분류는 "추적 변경이 있나" 만 보고 나머지를 전부 offline 으로 흘렸다. 그런데 git 은
     **원격에서 새로 들어오는 파일과 같은 경로에 로컬 untracked 파일이 있으면** pull 을 거부한다
     ("untracked working tree files would be overwritten") — 네트워크가 아니라 **로컬 파일 충돌**
-    인데 "offline · 도달 불가" 로 진단하고 네트워크를 확인하라는 틀린 안내를 냈다(D5 잔여).
+    인데 "offline · 도달 불가" 로 진단하고 네트워크를 확인하라는 틀린 안내를 냈다(D5 남은 일).
 
-    판정 축을 git 메시지가 아니라 **관측 가능한 상태** 로 잡는다(로케일·git 버전 무관):
+    판정 기준을 git 메시지가 아니라 **관측 가능한 상태** 로 잡는다(로케일·git 버전 무관):
       1. rebase 진행 중인가(`.git/rebase-merge`) → 충돌 → `--abort/--continue`.
       2. **원격에 여전히 닿는가**(fetch 재시도·읽기 전용) → 안 닿으면 그때만 offline 이다.
          이 프로브가 오분류 방향을 안전한 쪽으로 기울인다 — 진짜 offline 은 fetch 도 실패하므로
          정확히 offline 이 되고, 네트워크가 살아 있는데 pull 만 실패한 경우는 **결코 offline 이라
          부르지 않는다**(회색지대 = pull 순간만 끊겼다 살아난 경우인데, 그때 안내는 "정리 후
          재시도" 라 재시도하면 성공한다).
-      3. 닿는데 미커밋 파일이 있다 → **dirty 로 흡수**한다. untracked 충돌과 추적 dirty 는 사용자
+      3. 닿는데 미커밋 파일이 있다 → **dirty 로 합친다**. untracked 충돌과 추적 dirty 는 사용자
          액션이 같기 때문이다 — *그 파일을 커밋하거나 치워라*(사용자에게 필요한 건 분류 개수가
          아니라 할 일). 안내는 `??` 항목이 있으면 "옮기거나 지워라" 를 함께 낸다.
       4. 닿고 미커밋도 없다 → 원인 미상. 이건 위 셋 중 어디에도 정직하게 못 넣으므로(액션이
@@ -913,7 +913,7 @@ def _board_git_index_pathspec(home, paths: Sequence[Path], *,
                               root_files: Sequence[str] = ()) -> tuple[str, ...]:
     """index snapshot/restore pathspec — 부재한 루트 파일도 이름으로 포함한다.
 
-    일반 commit pathspec 은 실제로 쓴 루트 파일만 받지만, rollback 사전 스냅샷은 아직 생성되지
+    일반 commit pathspec 은 실제로 쓴 루트 파일만 받지만, rollback 사전 상태 기록은 아직 생성되지
     않은 파일의 **부재**도 기억해야 한다. 그래서 존재 여부로 거르는
     `_board_git_scope_pathspec(..., root_files=...)` 와 별도인 이 작은 경계를 둔다.
     """
@@ -949,7 +949,7 @@ def _board_git_index_snapshot(
         return {}
     try:
         r = git._board_git(home, ["ls-files", "--stage", "-z", "--", *pathspec])
-    except (OSError, subprocess.SubprocessError):  # 캡처 실패는 None(보수적 폴백).
+    except (OSError, subprocess.SubprocessError):  # 캡처 실패는 None(보수적 대체).
         return None
     if r.returncode != 0:
         return None
@@ -1097,17 +1097,17 @@ def _board_git_freshness(home) -> board_git_rules._BoardFreshness:
     """board submodule freshness 를 부트스트랩과 **같은 판정**으로 1줄 만든다 (없으면 line=None).
 
     board 비-git(legacy·`_board_git_enabled()` False)이면
-    `line=None`·`verified=False`(표면화 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
+    `line=None`·`verified=False`(안내 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
     detached/dirty/ahead·behind 를 board-git 공급자로 수집해, git_freshness의
     `_format_freshness`로 포맷한다 — **판정 단일화**(중복 0). list
-    는 read-only 라 pull 하지 않는다(부트스트랩의 자동 ff-pull 과 달리 표면화만·never-block).
-    offline(fetch 실패)이면 remote-tracking 스냅샷을 "최신"으로 주장하지 않고 "판정불가 —
-    스냅샷일 수 있음"으로 fail-soft.
+    는 read-only 라 pull 하지 않는다(부트스트랩의 자동 ff-pull 과 달리 안내만·never-block).
+    offline(fetch 실패)이면 remote-tracking 상태를 "최신"으로 주장하지 않고 "판정불가 —
+    옛 복사본일 수 있음"으로 fail-soft.
     """
     # 비-git 홈에서는 원격 조회를 생략한다.
     if not _board_git_enabled(home):
         return board_git_rules._BoardFreshness(None, False)
-    # fetch 전 TTL 가드: 직전 fetch 가 TTL 이내면 재사용(원격 실측된 스냅샷이라
+    # fetch 전 TTL 가드: 직전 fetch 가 TTL 이내면 재사용(원격 실측된 상태라
     # fetched=True)·fetch 생략. 아니면 advisory 짧은 timeout(5s)으로 fetch(offline 이면 fail-soft).
     if _board_fetch_head_fresh(home, board_git_rules._FRESHNESS_FETCH_TTL_SECONDS):
         fetched = True
