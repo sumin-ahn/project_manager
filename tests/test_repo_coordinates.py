@@ -16,9 +16,9 @@ def coords():
 
 def _write_lease(
         root: Path, slot: str, *, repo: str = "project_manager", state: str = "leased") -> Path:
-    ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    records = root / ".project_manager" / ".local" / "worktree-leases.json"
+    records.parent.mkdir(parents=True)
+    records.write_text(
         json.dumps({
             "leases": [{
                 "slot": slot,
@@ -29,31 +29,31 @@ def _write_lease(
         }),
         encoding="utf-8",
     )
-    return ledger
+    return records
 
 
 def test_normalize_repo_path_strips_only_registered_live_slot(coords, tmp_path):
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = _write_lease(tmp_path, slot)
+    records = _write_lease(tmp_path, slot)
 
     assert coords.normalize_repo_path(
         f"{slot}/src/change.py",
         pm_root=tmp_path,
-        leases_file=ledger,
+        leases_file=records,
     ) == "src/change.py"
 
 
 def test_normalize_repo_path_slot_mismatch_fails_loud(coords, tmp_path):
     registered = "work/project_manager_1"
     (tmp_path / registered).mkdir(parents=True)
-    ledger = _write_lease(tmp_path, registered)
+    records = _write_lease(tmp_path, registered)
 
     with pytest.raises(coords.RepoCoordinateError, match="slot 불일치"):
         coords.normalize_repo_path(
             "work/project_manager_2/src/change.py",
             pm_root=tmp_path,
-            leases_file=ledger,
+            leases_file=records,
         )
 
 
@@ -67,13 +67,13 @@ def test_normalize_repo_path_non_worktree_path_passes_unchanged(coords, tmp_path
 
 
 def test_normalize_repo_path_idle_slot_keeps_persistent_repo_ownership(coords, tmp_path):
-    """handoff --done 뒤 idle이어도 장부 slot↔repo 소유 관계와 디렉토리가 남으면 유효하다."""
+    """handoff --done 뒤 idle이어도 대여 기록 slot↔repo 소유 관계와 디렉토리가 남으면 유효하다."""
     slot = "work/project_manager_2"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = _write_lease(tmp_path, slot, state="idle")
+    records = _write_lease(tmp_path, slot, state="idle")
 
     normalized = coords.normalize_repo_path(
-        f"{slot}/src/change.py", pm_root=tmp_path, leases_file=ledger)
+        f"{slot}/src/change.py", pm_root=tmp_path, leases_file=records)
     assert normalized == "src/change.py"
     assert normalized.repo == "project_manager"
     assert normalized.owner == "upstream"
@@ -92,9 +92,9 @@ def test_normalize_repo_path_canonicalizes_separator_and_leading_dot(
         coords, tmp_path, written, expected):
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = _write_lease(tmp_path, slot)
+    records = _write_lease(tmp_path, slot)
     assert coords.normalize_repo_path(
-        written, pm_root=tmp_path, leases_file=ledger) == expected
+        written, pm_root=tmp_path, leases_file=records) == expected
 
 
 @pytest.mark.parametrize(
@@ -110,18 +110,18 @@ def test_normalize_repo_path_rejects_whole_slot_with_or_without_trailing_slash(
     """두 표기를 같은 fail-loud 판정으로 모아 광역 slot stage 선언을 막는다."""
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = _write_lease(tmp_path, slot)
+    records = _write_lease(tmp_path, slot)
     with pytest.raises(coords.RepoCoordinateError, match="slot 전체"):
-        coords.normalize_repo_path(written, pm_root=tmp_path, leases_file=ledger)
+        coords.normalize_repo_path(written, pm_root=tmp_path, leases_file=records)
 
 
-def test_normalize_repo_path_rejects_traversal_at_coordinate_seam(coords, tmp_path):
+def test_normalize_repo_path_rejects_traversal_at_coordinate_normalization(coords, tmp_path):
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = _write_lease(tmp_path, slot)
+    records = _write_lease(tmp_path, slot)
     with pytest.raises(coords.RepoCoordinateError, match="traversal"):
         coords.normalize_repo_path(
-            f"{slot}/../../outside.py", pm_root=tmp_path, leases_file=ledger)
+            f"{slot}/../../outside.py", pm_root=tmp_path, leases_file=records)
 
 
 @pytest.mark.parametrize(
@@ -137,10 +137,10 @@ def test_normalize_repo_path_rejects_non_relative_coordinates(
     """접두 뒤 absolute/drive/UNC 표기는 repo 상대 좌표로 반환하지 않는다."""
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = _write_lease(tmp_path, slot)
+    records = _write_lease(tmp_path, slot)
     with pytest.raises(coords.RepoCoordinateError, match=message):
         coords.normalize_repo_path(
-            f"{slot}/{relative}", pm_root=tmp_path, leases_file=ledger)
+            f"{slot}/{relative}", pm_root=tmp_path, leases_file=records)
 
 
 

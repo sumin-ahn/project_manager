@@ -42,10 +42,10 @@ def judge_tool_input(
     """셸이 아닌 도구(파일 쓰기·편집·위임 등) 입력 판정 — 허용 위조, 그리고 슬롯 쓰기 주인.
 
     허용 기록 폴더 이름이 어느 값에든 있으면(파일 경로·patch 본문) 기록 파일 쓰기로, 줄 머리에
-    허용 표식이 있으면(파일 내용·위임 프롬프트) 중첩 세션 프롬프트로 허용을 만들려는 시도로 본다.
+    허용 표시가 있으면(파일 내용·위임 프롬프트) 중첩 세션 프롬프트로 허용을 만들려는 시도로 본다.
     파일 쓰기·편집 도구의 대상이 `home.root`(훅이 설치된 PM 홈) 슬롯 안이면 이 세션 task 가 잡은
     슬롯일 때만 통과한다. 그리고 대상이 어디든, 이 세션 task 에 **열린 todo 가 없으면** 경고를 붙인다
-    (`_no_open_todo_judgment`·막지는 않는다) — 무엇을 하는 중인지 장부에 없다는 사실을 화면에 올린다.
+    (`_no_open_todo_judgment`·막지는 않는다) — 무엇을 하는 중인지 기록에 없다는 사실을 화면에 올린다.
     거부가 이기고 경고는 거부가 없을 때만 나간다(같은 호출에 두 말을 겹치지 않는다).
     ``main_thread`` 가 거짓(서브에이전트 호출)이면 슬롯 거부의 다음 행동은 PM 에게 돌려주라는 안내다.
     """
@@ -123,7 +123,7 @@ def judge_git_check_command(
     invocations = parsed.invocations
     judgments: list[dict[str, str]] = []
     for call in invocations:
-        judgment = engine_guard.judge_git_check(home, session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.anchor_certain)
+        judgment = engine_guard.judge_git_check(home, session, call.cwd, list(call.argv), runner=runner, cwd_certain=call.target_repo_certain)
         if (
             not call.certain and judgment["verdict"] != "warn"
             and judgment.get("code") != git_policy.GIT_DESTRUCTIVE_DENY_CODE
@@ -145,7 +145,7 @@ def judge_git_check_command(
         judgments.append(judgment)
     for call in parsed.removal_invocations:
         removal = engine_guard.judge_file_removal(
-            call.cwd, call.argv, cwd_certain=call.anchor_certain, runner=runner,
+            call.cwd, call.argv, cwd_certain=call.target_repo_certain, runner=runner,
         )
         if removal is not None:
             judgments.append(removal)
@@ -204,7 +204,7 @@ CTX_HARNESSES = ("claude", "codex", "opencode")
 NOTICE_NAMESPACE = "git-check"
 NOTICE_KEY_CHARS = 16
 _NOTICE_STATUS = {True: "claimed", False: "seen", None: "unavailable"}
-# 기계 JSON 입력 세대와 키 집합 — 누락·추가 키는 업무 실행 전에 거부한다.
+# 기계 JSON 입력 버전과 키 집합 — 누락·추가 키는 업무 실행 전에 거부한다.
 HOOK_WIRE_VERSION = 1
 HOOK_CONTEXT_KEYS = frozenset({"version", "tokens", "model", "main_thread", "boundary"})
 HOOK_TOOL_KEYS = frozenset({
@@ -250,7 +250,7 @@ def context_status(home: home.Home, *, harness: str, tokens: int, model: str | N
 
 def judge_context(home: home.Home, *, harness: str, session: str, tokens: int, model: str | None,
                   main_thread: bool, boundary: str | None = None) -> dict:
-    """ctx 판정 11키 — 밴드 안내 marker 선점과 압축 경계 처리를 포함한다(`app.ctx_hooks.judge_context`)."""
+    """ctx 판정 11키 — 구간 안내 marker 먼저 차지하기와 압축 경계 처리를 포함한다(`app.ctx_hooks.judge_context`)."""
     _check_context_input(harness=harness, session=session, tokens=tokens, model=model,
                          main_thread=main_thread, boundary=boundary)
     return ctx_hooks.judge_context(home, harness=harness, session=session, tokens=tokens, model=model,
@@ -288,7 +288,7 @@ def reset_principles(home: home.Home, *, session: str) -> None:
 
 
 def claim_notice(home: home.Home, *, session: str, text: str) -> dict[str, str]:
-    """세션에서 같은 안내 문구를 처음 내는지 선점한다 — ``{"status": claimed|seen|unavailable}``.
+    """세션에서 같은 안내 문구를 처음 내는지 먼저 차지해 판정한다 — ``{"status": claimed|seen|unavailable}``.
 
     unavailable 은 멤버십 파일을 쓸 수 없다는 뜻이며 호출부는 안내를 그대로 낸다(중복 억제 없음)."""
     _check_type("session", session, (str,))
@@ -369,7 +369,7 @@ class HookWireError(ValueError):
 
 
 def _read_wire_object(keys: frozenset[str]) -> dict:
-    """stdin bytes 를 UTF-8 JSON 객체 하나로 읽고 키 집합·세대를 확인한다."""
+    """stdin bytes 를 UTF-8 JSON 객체 하나로 읽고 키 집합·버전을 확인한다."""
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
@@ -437,7 +437,7 @@ def cmd_hook_tool(home: home.Home, args: argparse.Namespace) -> int:
     """일반 도구 호출 1회의 git 판정·ctx 판정·원칙 recall 을 한 JSON 줄로 낸다.
 
     출력 6키는 version·git·context·context_error·recall·recall_error 다. git 거부면 ctx·recall 을 돌리지
-    않는다(밴드·seen marker 미소비). ctx 의 설정·IO 실패와 recall 의 판독·기록 실패는 git 판정을 보존한 채
+    않는다(구간·seen marker 미소비). ctx 의 설정·IO 실패와 recall 의 판독·기록 실패는 git 판정을 보존한 채
     각 ``*_error`` 로 싣는다. 입력 형식 오류는 rc 2, git 판정 오류는 예외로 올린다(rc 1)."""
     try:
         request = _read_wire_object(HOOK_TOOL_KEYS)

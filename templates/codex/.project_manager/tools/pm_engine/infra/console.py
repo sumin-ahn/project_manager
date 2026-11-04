@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI 콘솔 출력 인코딩을 실행 환경과 정합하는 공용 부트스트랩.
+"""CLI 콘솔 출력 인코딩을 실행 환경과 맞추는 공용 부트스트랩.
 
 Windows 콘솔 codepage와 Python 텍스트 스트림을 함께 맞춘다. 스트림 조작(flush·isatty·
 ``reconfigure``·안내 출력)은 닫히거나 끊긴 스트림, 캡처 스트림, pythonw 의 None 스트림에서
@@ -86,13 +86,13 @@ def _process_state() -> dict[str, Any]:
 
 
 def _probe_os_name() -> str:
-    """Read the interpreter OS family through one injectable seam.
+    """Read the interpreter OS family through one injectable override.
 
     The four Windows-branch functions below (`_set_console_codepage_utf8`,
     `_toolhelp_processes`, `_parent_process_name`, `_powershell_capture_encoding`)
-    each gate on `os.name`. Tests that need the Windows branch on any host
+    each check on `os.name`. Tests that need the Windows branch on any host
     cannot rebind the global `os.name` directly — `pathlib` consults that same
-    global to pick its flavour, and rebinding it mid-test breaks every path
+    global to pick its path variant, and rebinding it mid-test breaks every path
     operation in the process (`NotImplementedError` on a `PosixPath` built
     under a monkeypatched `os.name == "nt"`). Routing the read through this
     function keeps the injection point inside this module instead of on the
@@ -162,7 +162,7 @@ def _toolhelp_processes() -> list[tuple[int, int, str]]:
     """Toolhelp32 snapshot을 ``(pid, parent_pid, exe)`` 목록으로 바꾼다.
 
     ``kernel32`` 인자는 Windows VM 없이도 동일한 ctypes 포인터 경계를 검증하기 위한
-    주입 seam이다. 유효하지 않은 snapshot 핸들은 빈 목록이고, WinAPI 호출 예외는 전파한다.
+    교체 지점이다. 유효하지 않은 snapshot 핸들은 빈 목록이고, WinAPI 호출 예외는 전파한다.
     """
     if _probe_os_name() != "nt":
         return []
@@ -382,13 +382,13 @@ def write_machine_line(text: str, *, stream: Any = None) -> None:
     없으므로 다른 프로세스가 파싱하는 출력(하네스 훅 엔벨로프·``--json`` 페이로드)은 텍스트
     레이어를 건너뛰고 UTF-8 bytes 를 직접 쓴다. 사람이 읽는 ``print`` 경로는 종전대로 둔다.
 
-    ``.buffer`` 가 없는 스트림(테스트 캡처·``io.StringIO``)은 텍스트 write 로 폴백한다 —
-    그 경로는 콘솔 코덱을 타지 않으므로 손실 표면이 아니다.
+    ``.buffer`` 가 없는 스트림(테스트 캡처·``io.StringIO``)은 텍스트 write 로 대신한다 —
+    그 경로는 콘솔 코덱을 타지 않으므로 손실 경로가 아니다.
     """
     target = sys.stdout if stream is None else stream
     if target is None:
         # ``pythonw``/``pyw`` 기동은 표준 스트림이 없다 — 종전 ``print`` 처럼 무출력이 맞다
-        # (여기서 AttributeError 로 죽으면 그 형상에서 CLI 전체가 실패한다).
+        # (여기서 AttributeError 로 죽으면 그 구성에서 CLI 전체가 실패한다).
         return
     line = text + "\n"
     buffer = getattr(target, "buffer", None)
@@ -396,7 +396,7 @@ def write_machine_line(text: str, *, stream: Any = None) -> None:
         target.write(line)
         _flush_quietly(target)
         return
-    # 텍스트 레이어에 남아 있는 사람 출력이 bytes 뒤로 밀리지 않게 먼저 비운다(Windows 실측 축).
+    # 텍스트 레이어에 남아 있는 사람 출력이 bytes 뒤로 밀리지 않게 먼저 비운다(Windows 실측 근거).
     _flush_quietly(target)
     buffer.write(line.encode("utf-8"))
     buffer.flush()
@@ -404,16 +404,16 @@ def write_machine_line(text: str, *, stream: Any = None) -> None:
 
 # ── 보호목록 설정 채널 ────────────────────────────────────
 # areas.md `protected` 칼럼이 **단일 진실**이고 훅 sidecar(`.local/repo-hooks/<repo>/protected`)는
-# 순수 파생 캐시다. 값 변경은 areas → sidecar **순서 고정**(역순이면 훅이 비준되지 않은 목록을
-# 강제한다). "보호 없음" 은 표현 불가 — 빈 값은 항상 `DEFAULT_PROTECTED` 폴백이므로 빈 문자열
+# 순수 파생 캐시다. 값 변경은 areas → sidecar **순서 고정**(역순이면 훅이 승인되지 않은 목록을
+# 강제한다). "보호 없음" 은 표현 불가 — 빈 값은 항상 `DEFAULT_PROTECTED` 로 대신하므로 빈 문자열
 # 지정은 거부하고 `default` 리터럴(칼럼 비움)로 안내한다.
 
 
 def _stdin_is_tty() -> bool:
-    """무인자 분기·프롬프트 게이트용 tty 판정 — stdin·stdout 둘 다 tty 일 때만 True.
+    """무인자 분기·프롬프트 진입 판정용 tty 판정 — stdin·stdout 둘 다 tty 일 때만 True.
 
     파이프/CI(둘 중 하나라도 비-tty)면 False → 콘솔/프롬프트로 안 멈춘다(input() 블록
-    회피·pm_import 비-tty 폴백 패턴 동류). 테스트는 이 헬퍼를 monkeypatch 해 분기를
+    회피·pm_import 비-tty 대체 패턴 동류). 테스트는 이 헬퍼를 monkeypatch 해 분기를
     결정적으로 친다(라이브 tty 없이).
     """
     return bool(

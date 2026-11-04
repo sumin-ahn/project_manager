@@ -693,7 +693,7 @@ def _r8_form(handler: ast.ExceptHandler) -> str:
     if any(isinstance(node, ast.Raise) for node in nodes):
         return "일부만 재전파"
     if any(isinstance(node, ast.Call) and ast.unparse(node.func) == "print" for node in nodes):
-        return "경고로 강등"
+        return "경고로 낮춤"
     return "대입 뒤 진행"
 
 
@@ -797,7 +797,7 @@ _R8_SWALLOW_CASES = {
     "continue": (_R8_INFRA, "def f(xs):\n    for x in xs:\n        try:\n            g(x)\n        except Exception:\n            continue\n",
                  False, _R8_ENTRY_SET, "건너뛰고 계속"),
     "warn-only": (_R8_INFRA, "import sys\ndef f():\n    try:\n        g()\n    except Exception as exc:\n        print(exc, file=sys.stderr)\n",
-                  False, _R8_ENTRY_SET, "경고로 강등"),
+                  False, _R8_ENTRY_SET, "경고로 낮춤"),
     "assign": (_R8_INFRA, "def f():\n    try:\n        value = g()\n    except Exception:\n        value = None\n    return value\n",
                False, _R8_ENTRY_SET, "대입 뒤 진행"),
     "partial-reraise": (_R8_INFRA, "def f(flag):\n    try:\n        g()\n    except Exception as exc:\n        if flag:\n            raise\n        return None\n",

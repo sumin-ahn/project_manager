@@ -1,7 +1,7 @@
 """테스트 픽스처용 canonical pytest 요약행 — 엔진 파서 문법의 단일 출처.
 
 엔진 파서(`pytest_report._pytest_summary_line`)는 요약행을 **문법 완전 일치**로 고른다: 줄머리에서
-outcome 목록이 시작하고 `in <초>s` 로 끝나야 한다. 그 종결 앵커가 있어야 실제 요약 *뒤에* 붙는
+outcome 목록이 시작하고 `in <초>s` 로 끝나야 한다. 그 종결 표시가 있어야 실제 요약 *뒤에* 붙는
 자식 하네스 로그(`child harness: 5 passed in 1.00s`)를 요약으로 오인하지 않는다.
 
 픽스처가 `"1 passed"` 같은 축약 형태를 쓰면 그 순간은 통과하더라도(그 경로가 파서를 안 타면)
@@ -20,7 +20,7 @@ def pytest_summary(passed: int = 1, *, failed: int = 0, skipped: int = 0,
     """canonical `pytest -q` 요약행 — 예: `5 failed, 1467 passed, 24 deselected in 0.01s`.
 
     항목 순서는 실 pytest 표기를 따른다(failed → passed → skipped → deselected). 0 인 항목은
-    싣지 않는다(실 pytest 동형). `newline=False` 면 개행 없이 줄만.
+    싣지 않는다(실 pytest 와 같음). `newline=False` 면 개행 없이 줄만.
     """
     items: list[str] = []
     if failed:

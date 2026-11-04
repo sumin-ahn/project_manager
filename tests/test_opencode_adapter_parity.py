@@ -24,7 +24,7 @@ from pm_engine.cli import update_cmd
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
 # AGENTS.md 는 harness-neutral 공통 코어(ADR-0069·codex 와 byte-parity)라 하네스 고유 경로를
-# 담지 않는다 — 두 표면 서술은 opencode 전용 채널인 pm-instructions.md 와 진입 문서가 진다.
+# 담지 않는다 — 두 쪽 서술은 opencode 전용 채널인 pm-instructions.md 와 진입 문서가 진다.
 DOCS = (
     REPO / "templates" / "opencode" / ".opencode" / "pm-instructions.md",
     REPO / "templates" / "opencode" / "AGENTS.lite.md",
@@ -36,7 +36,7 @@ HOOK_CORE_DIRS = (
     REPO / ".opencode" / "lib",
 )
 # 엔진 루트를 자기 위치에서 내야 하는 core (판정·주입·감시 훅). 나머지 core 는 엔진 루트를
-# 쓰지 않는다 — safe-write 의 root 는 write 경로 해소용 context.directory 로 별개 축이다.
+# 쓰지 않는다 — safe-write 의 root 는 write 경로 해소용 context.directory 로 별개다.
 SELF_LOCATED_CORES = (
     "templates/opencode/.opencode/lib/git-check-core.cjs",
     "templates/opencode/.opencode/lib/principle-recall-core.cjs",
@@ -122,7 +122,7 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     delegated = tmp_path / ".opencode/command/pm-dev-delegate.md"
     assert normalized_bytes(delegated) == _expected_command(delegate, "pm-dev-delegate")
     # 생성 층 자체의 표기 단언 — pm_update는 **신규 사본을 source 표기로** 쓴다(T-0709
-    # `_write_rendered_text`: dest 표기 보존·신규는 source 표기 = byte-copy 동형). "항상 LF"로
+    # `_write_rendered_text`: dest 표기 보존·신규는 source 표기 = byte-copy 와 같음). "항상 LF"로
     # 손으로 적은 기대는 CRLF 체크아웃(`core.autocrlf=true`)에서만 red였다(T-0724 실측). 기대
     # bytes를 source 표기로 되돌려 byte-exact로 본다 — 내용이든 표기든 한 글자만 달라도 red다.
     assert generated.read_bytes() == _expected_command_bytes_on_disk(
@@ -140,10 +140,10 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
 
 def _plan_one_command(pm_update, monkeypatch, source_root: Path, manifest: Path,
                       dest_root: Path):
-    """tmp source(비-git)로 command 사본 1건을 계획한다 — 강등 warning 은 이 축의 관심사 아니다.
+    """tmp source(비-git)로 command 사본 1건을 계획한다 — 수준 낮춤 warning 은 여기 관심사가 아니다.
 
     "source 가 git checkout 이 아니다"는 이 헬퍼의 명시 전제다 — 픽스처 위치가 그 답을 정하지
-    않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    않도록 엔진의 runner 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     """
     repo_files = update_cmd.repo_files
     monkeypatch.setattr(
@@ -160,8 +160,8 @@ def _plan_one_command(pm_update, monkeypatch, source_root: Path, manifest: Path,
 def test_generated_command_copy_takes_source_then_dest_notation(tmp_path, monkeypatch):
     """생성 사본의 개행 표기 = 신규는 **source 표기**, 기존 파일은 **그 파일 표기**(T-0709).
 
-    CRLF 체크아웃에서만 성립하던 축이라 LF 개발기에서는 늘 초록이었다 — CRLF source·CRLF 사본을
-    픽스처로 만들어 이 축을 여기서 실제로 태운다([[guard-must-cover-its-own-surface]]). 내용은
+    CRLF 체크아웃에서만 성립하던 경우라 LF 개발기에서는 늘 초록이었다 — CRLF source·CRLF 사본을
+    픽스처로 만들어 이 경우를 여기서 실제로 태운다([[guard-must-cover-its-own-surface]]). 내용은
     LF 정규화 층의 기대 렌더와 대조하므로 표기가 아니라 내용이 한 글자만 달라져도 red 다.
     """
     pm_update = _load_pm_update()
@@ -207,7 +207,7 @@ def test_generated_command_copy_takes_source_then_dest_notation(tmp_path, monkey
 def test_synced_crlf_command_copy_plans_no_change(tmp_path, monkeypatch):
     """표기만 CRLF인 동기 완료 사본을 다시 계획하면 변경 0이다 (내용 무변경 churn 금지).
 
-    결함 형상([[T-0727]]): 계획의 최소 렌더 분기가 raw bytes로 대조했다. 렌더 산출물은 LF인데
+    결함 모양([[T-0727]]): 계획의 최소 렌더 분기가 raw bytes로 대조했다. 렌더 산출물은 LF인데
     기록은 `_write_rendered_text`가 dest 표기(CRLF)를 보존하므로, CRLF 체크아웃에서는 방금 자기가
     쓴 사본을 다음 계획이 다시 `update`로 올린다. 내용이 상하진 않지만(재기록 후 bytes 동일)
     dry-run이 상시 오탐이고 실제 drift가 그 소음에 묻힌다. `render_enabled=False`(`--target`
@@ -230,7 +230,7 @@ def test_synced_crlf_command_copy_plans_no_change(tmp_path, monkeypatch):
     dest_root = tmp_path / "dest"
     update_render.apply(pm_paths.home_at(pm_update.REPO), _plan_one_command(pm_update, monkeypatch, source_root, manifest, dest_root))
     generated = dest_root / ".opencode" / "command" / "pm-x.md"
-    # 주입 선-단언: 사본이 실제로 CRLF고, LF 렌더층과 byte가 갈려 있어야 이 축이 시험된다.
+    # 주입 선-단언: 사본이 실제로 CRLF고, LF 렌더층과 byte가 갈려 있어야 이 경우가 시험된다.
     assert b"\r\n" in generated.read_bytes(), "픽스처가 CRLF 사본을 만들지 못했다(공허 회귀)"
     assert generated.read_bytes() != _expected_command(skill, "pm-x"), \
         "CRLF 사본이 LF 렌더층과 byte 동일하다 — 이 가드가 시험되지 않는다"
@@ -270,7 +270,7 @@ def test_expected_command_bytes_on_disk_tracks_source_notation(tmp_path):
     """디스크 기대값 헬퍼가 source 표기를 실제로 따라간다 — 판정 helper 자신의 가드.
 
     이 헬퍼가 표기를 늘 LF로 접으면 CRLF 체크아웃에서만 틀린 기대를 만들어, 생성 사본의
-    byte-exact 단언이 그 플랫폼에서만 조용히 뒤집힌다. 표기 두 축과 **내용 1자 drift**를 함께
+    byte-exact 단언이 그 플랫폼에서만 조용히 뒤집힌다. 표기 두 가지와 **내용 1자 drift**를 함께
     못박는다.
     """
     body = "---\nname: pm-x\n---\n본문 (references/operational-details.md)\n"
@@ -327,7 +327,7 @@ def test_opencode_hook_cores_have_no_ancestor_engine_root_search():
         source = core.read_text(encoding="utf-8")
         assert ENGINE_ROOT_DECLARATION in source, f"자기 위치 엔진 루트 선언 없음: {core}"
         bases = set(ENGINE_PATH_BASE_RE.findall(source))
-        # 추출 0건은 통과가 아니라 **무구속**이다 — 그 파일은 이 단언의 사각지대에 있다.
+        # 추출 0건은 통과가 아니라 **무구속**이다 — 그 파일은 이 단언이 놓치는 곳에 있다.
         # 6파일 전부가 엔진 경로를 실제로 조립하므로 공집합이면 추출기가 그 문법을 놓친 것이다.
         assert bases, (
             f"엔진 경로 base 추출 0건 — 이 파일이 검사에서 빠졌다: {core}. "

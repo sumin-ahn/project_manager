@@ -85,7 +85,7 @@ class ClusterCopyPlan(NamedTuple):
     rounds: tuple[TicketCopyPlan, ...]
 
 
-class TicketHarvestResult(NamedTuple):
+class TicketCollectResult(NamedTuple):
     changed: bool
     sync_ready: bool
     # 돌려받기 machine line 의 안정된 key 자리 — verify 판정은 돌려받기 통과 조건

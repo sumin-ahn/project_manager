@@ -7,7 +7,7 @@ worktree(`work/<repo>_<N>`) cwd 에서 실행하면 도구가 cwd 기준 자기 
 네임스페이스의 stray `T-0001`. worktree(①)는 코드 전용·board 는 PM 홈(②) 소유(ADR-0027).
 
 이 테스트는:
-  - detector(`_pm_home_worktree_misanchor`·3중 conjunction)의 정확성(오탐 0),
+  - detector(`_pm_home_worktree_wrong_repo`·3중 conjunction)의 정확성(오탐 0),
   - 쓰기-경로 가드가 실측 3사례를 fail-loud 로 닫음(실 git worktree 재현 픽스처),
   - 읽기 경로(lint)·PM 홈·솔로/standalone·①-자체 board 사용 무회귀
 를 검증한다. 도구는 패키지가 아니므로 importlib 동적 로드(관용구).
@@ -566,7 +566,7 @@ def test_mutation_dispatch_never_prints_read_anchor(monkeypatch, subcommand):
     b = _load_board()
     args = _dispatch_namespace(b, subcommand, lambda _home, _args: 0)
     monkeypatch.setattr(board_cmd, "build_parser", lambda **_kwargs: types.SimpleNamespace(parse_args=lambda _argv: args))
-    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_wrong_repo", lambda _home, _action: False)
     monkeypatch.setattr(
         board_dispatch, "_print_read_target_repo",
         lambda _home: pytest.fail(f"mutation {subcommand!r} printed a read anchor"),
@@ -574,7 +574,7 @@ def test_mutation_dispatch_never_prints_read_anchor(monkeypatch, subcommand):
     assert b.main([]) == 0
 
 
-# ── _pm_home_worktree_misanchor (대상 저장소 자신의 `.git` 선언 유도) ──────────────
+# ── _pm_home_worktree_wrong_repo (대상 저장소 자신의 `.git` 선언 유도) ──────────────
 # 판정 입력은 대상 저장소의 `.git` 포인터와 유도된 홈의 슬롯 대여 기록뿐이다 — git subprocess 도,
 # 조상 훑기도 없으므로 runner 주입 경로가 사라졌다. 아래는 유도 표의 행 전수다.
 
@@ -582,7 +582,7 @@ def test_detector_flags_registered_two_git_slot(pm_home_worktree):
     """`.repos/<repo>.git` 공용 저장소를 가리키는 등록 슬롯 → 소유 PM 홈."""
     b = _load_board()
     pm_home, worktree = pm_home_worktree
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) == pm_home.resolve()
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(worktree)) == pm_home.resolve()
 
 
 def test_detector_none_when_anchor_is_plain_checkout(tmp_path):
@@ -592,7 +592,7 @@ def test_detector_none_when_anchor_is_plain_checkout(tmp_path):
     plain.mkdir()
     _git(["init", "-q", "-b", "main"], plain)
     _make_scaffold_board(plain / ".project_manager")
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(plain)) is None
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(plain)) is None
 
 
 def test_detector_none_when_anchor_owns_real_board(tmp_path):
@@ -600,7 +600,7 @@ def test_detector_none_when_anchor_owns_real_board(tmp_path):
     b = _load_board()
     pm_home, worktree = _make_pm_home_with_worktree(tmp_path)
     _make_real_board(worktree / ".project_manager", split=False)
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) is None
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(worktree)) is None
     assert pm_home.is_dir()
 
 
@@ -611,8 +611,8 @@ def test_detector_none_for_markerless_tree_inside_a_pm_home(tmp_path):
     nested = worktree / ".project_manager" / ".local" / "tmp" / "anchor"
     nested.mkdir(parents=True)
     _make_scaffold_board(nested / ".project_manager")
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(nested)) is None
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(pm_home / 'vendor-tree')) is None
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(nested)) is None
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(pm_home / 'vendor-tree')) is None
 
 
 def test_detector_fails_loud_when_owning_pm_home_is_unresolvable(tmp_path):
@@ -631,7 +631,7 @@ def test_detector_fails_loud_when_owning_pm_home_is_unresolvable(tmp_path):
     _make_scaffold_board(stray / ".project_manager")
 
     with pytest.raises(pm_paths.PmHomeResolutionError, match="PM 홈을 찾지 못했습니다"):
-        pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(stray))
+        pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(stray))
 
 
 def test_detector_flags_single_git_slot(tmp_path):
@@ -651,14 +651,14 @@ def test_detector_flags_single_git_slot(tmp_path):
     _git(["worktree", "add", "-q", str(slot)], pm_home)
     _make_scaffold_board(slot / ".project_manager")
     _register_slot(pm_home, slot)
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(slot)) == pm_home.resolve()
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(slot)) == pm_home.resolve()
 
 
 def test_detector_flags_real_worktree_default_runner(pm_home_worktree):
     # 실 git worktree + default(실) runner 로 end-to-end detector 실행.
     b = _load_board()
     pm_home, worktree = pm_home_worktree
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) == pm_home
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(worktree)) == pm_home
 
 
 # ── mutation dispatch 검사: 전 mutation subcommand fail-loud (실 git worktree) ──
@@ -774,7 +774,7 @@ def test_lint_falsealarm_root_detected_but_read_paths_ungated(pm_home_worktree, 
     b = _load_board()
     pm_home, worktree = pm_home_worktree
     # (a) 근본 엉뚱한 저장소가 detector 로 식별됨(오경보 명령의 근본은 이제 잡힌다)
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(worktree)) == pm_home
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(worktree)) == pm_home
     # (b) lint(오경보 명령)·기타 read 는 mutation 분류 밖 → dispatch 검사 미실행(§결정: read 무변경)
     for name in ("lint", "list", "show"):
         assert name in board_command_rules._READ_SUBCOMMANDS and name not in board_command_rules._MUTATION_SUBCOMMANDS
@@ -869,7 +869,7 @@ def test_read_board_resolution_opens_only_read_dispatch(
     b = _load_board()
     args = _dispatch_namespace(b, subcommand, lambda _home, _args: 0)
     monkeypatch.setattr(board_cmd, "build_parser", lambda **_kwargs: types.SimpleNamespace(parse_args=lambda _argv: args))
-    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_wrong_repo", lambda _home, _action: False)
     calls: list[Path] = []
 
     def resolve(home):
@@ -889,9 +889,9 @@ def test_pm_home_cwd_no_false_positive(tmp_path, monkeypatch, capsys):
     b = _load_board()
     pm_home = tmp_path / "pmhome"
     _make_real_board(pm_home / ".project_manager", split=True)
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(pm_home)) is None
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(pm_home)) is None
     monkeypatch.setattr(b, "REPO", pm_home)
-    assert board_dispatch._guard_worktree_misanchor(pm_paths.home_at(b.REPO), "board.py new") is False
+    assert board_dispatch._guard_worktree_wrong_repo(pm_paths.home_at(b.REPO), "board.py new") is False
     assert capsys.readouterr().err == ""
 
 
@@ -903,9 +903,9 @@ def test_solo_standalone_first_ticket_no_false_positive(tmp_path, monkeypatch, c
     _make_scaffold_board(solo / ".project_manager")
     _git(["init", "-q", "-b", "main"], solo)
     assert git._is_linked_worktree(solo) is False
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(solo)) is None
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(solo)) is None
     monkeypatch.setattr(b, "REPO", solo)
-    assert board_dispatch._guard_worktree_misanchor(pm_paths.home_at(b.REPO), "board.py new") is False
+    assert board_dispatch._guard_worktree_wrong_repo(pm_paths.home_at(b.REPO), "board.py new") is False
     assert capsys.readouterr().err == ""
 
 
@@ -938,7 +938,7 @@ def test_non_git_tree_no_false_positive(tmp_path):
     (plain / ".project_manager").mkdir(parents=True)
     _make_scaffold_board(plain / ".project_manager")
     assert git._is_linked_worktree(plain, runner=_non_git_runner) is False
-    assert pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(plain)) is None
+    assert pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(plain)) is None
 
 
 def test_pm_home_cwd_new_proceeds_past_guard(tmp_path, monkeypatch, capsys):

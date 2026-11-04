@@ -2,24 +2,24 @@
 
 `pm_bootstrap._build_command_card_markdown(identity)` 는 이 세션이 쓸 전 커맨드를 정체성
 (`--repo <repo> --slot <N>`·ADR-0057 canonical — 구 ADR-0043 `--session <repo>_<N>` 을
-supersede) 채운 완성형으로 코드 생성 dump 한다("--help 자체를 안 가게"·사용자 지시). 검증 축:
+supersede) 채운 완성형으로 코드 생성 dump 한다("--help 자체를 안 가게"·사용자 지시). 검증 항목:
 
   - 정체성 실값 보간 — 카드에 `<repo>_<N>` 류 정체성 placeholder 부재(repo/slot 실값만).
   - 사용자 입력(`T-NNNN`·`<PFX>`·`<요약>`)은 placeholder 로 남는다(ADR-0045 §Decision 1).
-  - 숨은 전제 4대장(claim/prefix/livegate/migrate-identity) + reid=홈 git clean 이 해당
+  - 숨은 전제 4대장(claim/prefix/live-test/migrate-identity) + reid=홈 git clean 이 해당
     커맨드 줄 바로 아래 1줄 ⚠ 경고로 인접(ADR-0045 §Decision 2 — 인접성이 학습 보장).
   - "정체성 불요" 절(ticket_finish·additional_reviewer·pm_log·pm_update·domain)·"자기 것 보기"
-    (--mine 우선·전체 보드 강등·ADR-0047)·"찾아가기" 포인터 절 존재.
+    (--mine 우선·전체 보드는 보조·ADR-0047)·"찾아가기" 포인터 절 존재.
   - 솔로(정체성 미해소)는 `--repo`/`--slot` 없는 형태로 분기 · fail-soft(렌더 실패=None).
   - **drift 가드(durable)**: dump 된 board.py/pm_handoff.py 커맨드 전건이 실 CLI argparse 로
-    `parse_args` 가능(카드↔CLI 정합·D1 canonical 못박기). 카드 카피가 CLI 와 어긋나면 red.
+    `parse_args` 가능(카드↔CLI 일치·D1 canonical 못박기). 카드 카피가 CLI 와 어긋나면 red.
     정체성 토큰(`--repo`/`--slot`)은 공용 `identity_args` canonical grammar 로 별도 검증한다
     (board.py/pm_handoff.py 의 실 CLI 채택은 T-0314/T-0316 몫 — 이 가드가 그 병행 롤아웃에
     coupling 되지 않게 구조(subcommand·비-정체성 옵션)와 정체성을 분리 검증한다).
 
 엔진 canonical(루트 .project_manager/tools/*.py)을 importlib 로 직접 검증한다. 카드 렌더는
 순수 함수(identity dict → str)라 대부분 I/O 없이 헬퍼를 직접 호출한다. run() 통합 2건만
-worktree_pool/board/git/log 를 DI mock 으로 hermetic 하게 구동한다(실 장부·git 미접촉).
+worktree_pool/board/git/log 를 DI mock 으로 hermetic 하게 구동한다(실 대여 기록·git 미접촉).
 """
 from __future__ import annotations
 
@@ -61,11 +61,11 @@ def bootstrap():
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_engine_anchor(bootstrap, monkeypatch):
-    """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 (worktree ①에서 로드돼 실 REPO 가 등록
-    worktree 사본으로 보이는 문제 회피·test_pm_bootstrap_lease 동형). 실 board 를 로드해
-    `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가 그 패치본을 받게 한다."""
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home, **_kw: None)
+def _hermetic_engine_target_repo(bootstrap, monkeypatch):
+    """0단계 엔진 대상 저장소 검사(T-0351)를 hermetic 무력화한다 (worktree ①에서 로드돼 실 REPO 가 등록
+    worktree 사본으로 보이는 문제 회피·test_pm_bootstrap_lease 와 같음). 실 board 를 로드해
+    `_pm_home_worktree_wrong_repo`→None 만 패치하고 board=None 경로가 그 패치본을 받게 한다."""
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home, **_kw: None)
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +88,7 @@ def handoff_mod():
     return _load("pm_handoff")
 
 
-# 정체성 dict — lean(멀티-PM) 모드가 카드에 넘기는 형태(`_bind_and_identity` 산출과 동형).
+# 정체성 dict — lean(멀티-PM) 모드가 카드에 넘기는 형태(`_bind_and_identity` 산출과 같음).
 LEAN_IDENTITY = {
     "repo": "project_manager",
     "session": "project_manager_1",
@@ -107,7 +107,7 @@ def _card(bootstrap, identity, *, tmp_path):
 
 
 def test_codex_harness_marker_table_matches_delegate_source(bootstrap):
-    """부트스트랩 복제 선언은 위임 엔진의 codex 축 단일 출처와 정확히 같아야 한다."""
+    """부트스트랩 복제 선언은 위임 엔진의 codex 쪽 단일 출처와 정확히 같아야 한다."""
     assert bootstrap_card._CODEX_HARNESS_SESSION_MARKERS == \
         watchdog.HARNESS_SESSION_MARKERS["codex"]
 
@@ -145,7 +145,7 @@ def _line_containing(card: str, needle: str) -> str:
 # ── 3. 정체성 불요 절 (DoD ①·ADR-0045 §Decision 3) ───────────────────────────
 
 
-# ── 4. 자기 것 보기 가이드 — --mine 우선·전체 보드 강등 (ADR-0047·메모) ────────
+# ── 4. 자기 것 보기 가이드 — --mine 우선·전체 보드는 보조 (ADR-0047·메모) ────────
 
 
 # ── 5. 찾아가기 포인터 절 (사용자 "찾아가는 법 가이드") ────────────────────────
@@ -282,14 +282,14 @@ class _FakeWorktreePool:
     def __init__(self, *, branch: str | None = "feature-x", present_slot: str = "work/X_2"):
         self.NeedsCreate = RuntimeError
         self._branch = branch
-        self._present_slot = present_slot  # 0단계 실재 검사(T-0351)용 idle 시드 슬롯.
+        self._present_slot = present_slot  # 0단계 실재 검사(T-0351)용 idle 슬롯.
 
     def lease_is_open(self, lease):
         """열림 판정은 엔진 규칙 그대로 — 열림 기록(leased + session)이면 열림."""
         return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
 
     def list_leases(self):
-        # 0단계 실재 검사(T-0351) 통과용 idle 시드 — phase-0 는 slot/state/session/extra 만 읽는다.
+        # 0단계 실재 검사(T-0351) 통과용 idle 행 — phase-0 는 slot/state/session/extra 만 읽는다.
         from types import SimpleNamespace
         return [SimpleNamespace(slot=self._present_slot, repo="", session="", state="idle", extra={})]
 
@@ -330,16 +330,16 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, monkeypatch):
     return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=fake_board, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨')), run_git_fn=fake_git, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file)
 
 
-# ── 10. 스킬-우선 재구성 — wave op 스킬 primary·backbone 강등 (T-0280 · ADR-0052) ──
+# ── 10. 스킬-우선 재구성 — 일상 운영 스킬 primary·backbone 보조 줄 (T-0280 · ADR-0052) ──
 
 # 정체성 헤더 직후에 오는 스킬-우선 운영 pointer(규칙/why 는 pm_role — 이유 재설명 없음).
-_SKILL_POINTER = "> wave 운영은 스킬로 invoke·backbone 직접호출 금지 → pm_role §스킬 우선 운영 규율"
+_SKILL_POINTER = "> 일상 운영은 스킬로 invoke·backbone 직접호출 금지 → pm_role §스킬 우선 운영 규율"
 
-# wave op → (스킬 진입 needle, 스킬-고유 강등 CLI 엔진 needle) — 스킬이 강등 엔진 줄보다 먼저/primary.
+# 일상 운영 op → (스킬 진입 needle, 스킬-고유 보조 CLI 엔진 needle) — 스킬이 보조 엔진 줄보다 먼저/primary.
 # needle 은 해당 스킬 아래에서 *처음* 등장하는 CLI 엔진(카탈로그 sub-op 중복 없는 것)이어야 한다.
 # /pm-qa(엔진 regression/lint 가 /pm-cluster-claim·/pm-regression 과 중복)는 전용 block-scope 테스트로
 # 검증(아래 test_card_qa_demotes_regression_and_lint). /pm-dev-delegate(Agent 툴)·/pm-update(facade
-# 셸)는 CLI 강등 줄이 없어 여기서 제외.
+# 셸)는 CLI 보조 줄이 없어 여기서 제외.
 _SKILL_FIRST_OPS = [
     ("/pm-cluster-claim T-NNNN", "board.py claim T-NNNN"),
     ("/pm-regression", "board.py regression run"),
@@ -348,7 +348,7 @@ _SKILL_FIRST_OPS = [
 ]
 
 
-# ── 11. 엔진 귀속 교정 — pm_role 카탈로그 정합 (T-0280 codex must-fix 1~4) ─────────
+# ── 11. 엔진 귀속 교정 — pm_role 카탈로그 일치 (T-0280 codex must-fix 1~4) ─────
 
 
 # ── 12. codex 하네스 카드 절 — env 감지 (T-0405 · ADR-0069/0070 C-v2 · spike §3.5) ──

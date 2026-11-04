@@ -193,7 +193,7 @@ def main(home, argv: list[str] | None = None) -> int:
             ticket_scope_fixture_injected = ticket_body_source is None
             raw_paths = tuple(parsed_touches)
             if not raw_paths:
-                raise pm_paths.AnchorResolutionError(
+                raise pm_paths.TargetRepoResolutionError(
                     f"board 대상 저장소 {engine_pm_home}: ticket {args.ticket} 의 touches 가 비어 있어 "
                     "검토 범위를 확정할 수 없습니다."
                 )
@@ -215,12 +215,12 @@ def main(home, argv: list[str] | None = None) -> int:
             else pm_paths.resolve_pm_home_for_repo(diff_root)
         )
         if ticket_selected and pm_home != engine_pm_home:
-            raise pm_paths.AnchorResolutionError(
+            raise pm_paths.TargetRepoResolutionError(
                 "ticket board 소유 PM 홈과 diff worktree의 lease 소유 PM 홈이 다릅니다: "
                 f"board={engine_pm_home} diff-owner={pm_home}"
             )
         if scope_from_initial_pm_home and pm_home != engine_pm_home:
-            raise pm_paths.AnchorResolutionError(
+            raise pm_paths.TargetRepoResolutionError(
                 "인자 없는 실행의 검토 범위(local.conf additional_reviewer.paths 또는 엔진 고정 기본 경로)를 "
                 "최초 PM 홈에서 파생해 diff_root를 선택했지만, 해소된 diff 소유 PM 홈이 다릅니다. "
                 "config provenance와 실제 호출 범위를 일치시킬 수 없어 호출 전에 중단합니다: "
@@ -236,7 +236,7 @@ def main(home, argv: list[str] | None = None) -> int:
             diff_root=diff_root,
             ticket_selected=ticket_selected,
         )
-    except (pm_paths.AnchorResolutionError, OSError, UnicodeError) as exc:
+    except (pm_paths.TargetRepoResolutionError, OSError, UnicodeError) as exc:
         print(f"오류: 추가 리뷰 대상 저장소 해소 실패 — {exc}", file=sys.stderr)
         return 1
 
@@ -261,7 +261,7 @@ def main(home, argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        except pm_paths.AnchorResolutionError as exc:
+        except pm_paths.TargetRepoResolutionError as exc:
             print(f"오류: 추가 리뷰 대상 저장소 해소 실패 — {exc}", file=sys.stderr)
             return 1
     # 시간 예산은 **해소된 대상의 하네스 프로필**을 따른다 — 대상 command 를 먼저 해소해야
@@ -398,7 +398,7 @@ def main(home, argv: list[str] | None = None) -> int:
             # 빈 양식 그대로인 developer 라운드 위에서 스폰되는지 loud 표시 — 준비면
             # (`round_form._warn_uncollected_developer_round`)과 같은 기준(이 함수는
             # dry-run·실 스폰 두 호출을 모두 지난다).
-            reviewer_prompt._warn_seed_developer_round(rounds, ticket=args.ticket)
+            reviewer_prompt._warn_empty_form_developer_round(rounds, ticket=args.ticket)
             # 입력 선별 — 명세는 전량, 라운드는 역할별 마지막 산출만(파일 선택).
             selection = pm_engine.domain.reviewer_prompt._select_ticket_body_for_review(raw_body, rounds)
             if selection.omitted_rounds > 0:
@@ -407,7 +407,7 @@ def main(home, argv: list[str] | None = None) -> int:
             else:
                 # 생략된 라운드가 없으면 요약 헤더 없이 원문 그대로 — 회귀 불변(DoD (e)).
                 composed_body = selection.text
-        except (pm_paths.AnchorResolutionError, OSError, UnicodeError) as exc:
+        except (pm_paths.TargetRepoResolutionError, OSError, UnicodeError) as exc:
             if args.paths:
                 print(
                     "경고: 명시 --paths가 검토 범위를 소유해 "

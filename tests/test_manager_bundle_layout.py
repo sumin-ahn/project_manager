@@ -7,7 +7,7 @@
 `BUNDLED_TOOLS`) 양쪽에서 잰다.
 
 빌드 자체(`npm ci`·`pyinstaller`)는 여기서 돌리지 않는다 — 네트워크·수 분 소요라 CI job 의
-성공이 그 축이고, 이 회귀는 `manager/ui/dist` 나 `dist/` 없이 돈다(불변식 4).
+성공이 그 기준이고, 이 회귀는 `manager/ui/dist` 나 `dist/` 없이 돈다(불변식 4).
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ git_required = pytest.mark.skipif(shutil.which("git") is None, reason="git 바�
 
 @pytest.fixture
 def unpacked(tmp_path, monkeypatch) -> Path:
-    """frozen 형상 — 번들이 풀린 트리 하나를 세우고 두 표식을 건다."""
+    """frozen 구성 — 번들이 풀린 트리 하나를 세우고 두 표시를 건다."""
     root = tmp_path / "_MEI654321"
     for _source, relative in build.bundle_data_entries(REPO):
         (root / relative).mkdir(parents=True, exist_ok=True)
@@ -82,7 +82,7 @@ def test_every_registered_harness_template_is_bundled():
 
 
 def test_the_development_leftovers_are_not_bundled():
-    """번들은 git 저장소가 아니라 엔진 열거가 filesystem 순회로 강등된다(실측 경고).
+    """번들은 git 저장소가 아니라 엔진 열거가 filesystem 순회로 수준이 낮아진다(실측 경고).
 
     그래서 번들 내용 자체가 곧 출하 인벤토리다 — 개발 잔재는 실을 자리에서 뺀다.
     """
@@ -251,7 +251,7 @@ def test_the_imprint_module_carries_the_build_checkout_upstream_and_nothing_else
     assert namespace["UPSTREAM_URL"] == "git@example.invalid:x/y.git"
     assert [name for name in namespace if not name.startswith("__")] == ["UPSTREAM_URL"]
 
-    # 실제 각인 함수 — origin 은 엔진 seam(upstream_git)으로 읽고 임시 각인 파일에 그 값 하나를 쓴다.
+    # 실제 각인 함수 — origin 은 엔진 함수(upstream_git)로 읽고 임시 각인 파일에 그 값 하나를 쓴다.
     imprint = tmp_path / "in_process_build_info.py"
     monkeypatch.setattr(build, "BUILD_INFO_FILE", imprint)
     monkeypatch.setattr(upstream_git, "_real_upstream_git_runner",

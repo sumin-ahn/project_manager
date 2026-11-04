@@ -317,7 +317,7 @@ def _incomplete_round_limit(conf: dict[str, str]) -> int:
     return value if value >= 0 else default
 
 
-def _wave_budget(conf: dict[str, str]) -> int:
+def _session_budget(conf: dict[str, str]) -> int:
     """세션 호출 예산 총 라운드 (local.conf additional_reviewer.session_budget·미설정은 레지스트리 기본값).
 
     비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 검사를

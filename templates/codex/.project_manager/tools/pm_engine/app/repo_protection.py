@@ -38,7 +38,7 @@ def _repo_registry_git(home, repo: str) -> str | None:
     return None
 
 
-def _protected_push_gate_config(home,
+def _protected_push_check_config(home,
     repo: str, *, report_downgrade: bool = True,
 ) -> tuple[str, str]:
     """repo 보호 push의 증거 계약 `(mode, self_test_cmd)`를 provenance로 해소한다.
@@ -146,9 +146,9 @@ def _install_protected_hook(home, repo: str) -> bool:
     """보호 훅을 설치하고 Home·repo별 최근 실패 사유를 보관한다."""
     _PROTECTED_HOOK_FAILURE_REASONS.pop((home, repo), None)
     protected = areas_store._repo_protected(home, repo)
-    mode, test_cmd = _protected_push_gate_config(home, repo)
+    mode, test_cmd = _protected_push_check_config(home, repo)
     installed = bool(protected_hooks.install_protected_hook(
-        home, repo, protected, gate_mode=mode, test_cmd=test_cmd))
+        home, repo, protected, check_mode=mode, test_cmd=test_cmd))
     if not installed:
         _PROTECTED_HOOK_FAILURE_REASONS[(home, repo)] = (
             "install_protected_hook이 False를 반환(bare 미러 부재 또는 "

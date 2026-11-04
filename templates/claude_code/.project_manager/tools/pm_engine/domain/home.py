@@ -11,7 +11,7 @@ from typing import NamedTuple
 class Home(NamedTuple):
     """실행 기준 경로.
 
-    root: 도구가 설치된 트리(자기 앵커). 상대경로 표시와 git 작업 위치의 기준이다.
+    root: 도구가 설치된 트리(자기 기준). 상대경로 표시와 git 작업 위치의 기준이다.
     board_root: board(tickets·areas) 루트.
     local_dir: 클론별 작업 디렉터리(`.project_manager/.local`).
     local_conf: 클론별 설정 파일(`.project_manager/local.conf`).

@@ -151,7 +151,7 @@ export default function NewProjectDialog({ bridge, onClose, onApplied }: {
              className="mt-2 rounded border border-amber-300 bg-amber-50 p-2">
           <p>새 카테고리 <span className="font-mono">{prefix}</span> 를 만든다 — 승인?</p>
           <p className="text-[11px] text-slate-600">
-            엔진은 새 prefix 신설에 사용자 승인을 요구한다. 승인은 이 값에만 결속된다.
+            엔진은 새 prefix 신설에 사용자 승인을 요구한다. 승인은 이 값에만 연결된다.
           </p>
           <div className="mt-1 flex gap-2">
             <button type="button" data-testid="prefix-approve" onClick={() => void run(prefix)}

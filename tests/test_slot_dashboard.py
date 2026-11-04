@@ -2,15 +2,15 @@
 
 multi-PM 슬롯 간 공유를 *가벼운 수정형 대시보드*로 바꾼다: 핸드오프가 `wiki/log/dashboard.md` 의
 **자기 섹션만 overwrite**(3~5줄 상한·타 슬롯 byte 불변·append 아님), 부트스트랩이 자기 섹션 제외한
-타 PM 섹션을 light dump(대시보드 부재→현행 lease 폴백).
+타 PM 섹션을 light dump(대시보드 부재→현행 lease 대체).
 
-검증 축:
-  - render_dashboard_section: 차수·wave·claimed·다음 3~5줄·개행 평탄화·char cap·max_lines truncate.
+검증 항목:
+  - render_dashboard_section: 차수·요약·claimed·다음 3~5줄·개행 평탄화·char cap·max_lines truncate.
   - upsert_dashboard_section: lazy 생성·자기 섹션 overwrite·**타 슬롯 섹션 byte 불변**·멱등·헤딩 정확매치.
   - parse_dashboard_sections: write/read 경계 대칭·preamble 무시·round-trip.
   - _claimed_tickets_for_session: status-subdir/flat 레이아웃·세션 필터·fail-soft.
   - PmHandoff._write_dashboard_section: 파일 write·자기 섹션 overwrite + 타 섹션 byte 불변(통합).
-  - PmBootstrap._collect_dashboard_others: 자기 제외 dump·lease 폴백·솔로 None·markdown 렌더.
+  - PmBootstrap._collect_dashboard_others: 자기 제외 dump·lease 대체·솔로 None·markdown 렌더.
   - handoff write → bootstrap read 라운드트립(실 DRY parse).
 
 hermetic: 파일/REPO 접촉 테스트는 모듈-레벨 REPO 를 tmp 로 monkeypatch 한 fresh 인스턴스를 쓴다
@@ -62,13 +62,13 @@ def hf():
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_render_section_heading_and_core_lines(hf):
-    """헤딩 `## <session>` + 차수·wave 본문 + 후행 단일 개행."""
+    """헤딩 `## <session>` + 차수·요약 본문 + 후행 단일 개행."""
     sec = pm_engine.domain.dashboard.render_dashboard_section(
-        "project_manager_1", session_num=52, wave_summary="wave A", date=_DATE
+        "project_manager_1", session_num=52, session_summary="요약 A", date=_DATE
     )
     assert sec.startswith("## project_manager_1\n\n")
     assert "- 차수: PM 52차 (2026-07-10)" in sec
-    assert "- 세션 요약: wave A" in sec
+    assert "- 세션 요약: 요약 A" in sec
     assert sec.endswith("\n") and not sec.endswith("\n\n")
 
 
@@ -77,7 +77,7 @@ def test_render_section_claimed_and_next_lines(hf):
     sec = pm_engine.domain.dashboard.render_dashboard_section(
         "project_manager_1",
         session_num=52,
-        wave_summary="wave",
+        session_summary="summary",
         claimed_tickets=["T-0260", "T-0251"],
         next_plan="다음 계획 X",
         date=_DATE,
@@ -87,22 +87,22 @@ def test_render_section_claimed_and_next_lines(hf):
 
 
 def test_render_section_omits_empty_claimed_and_next(hf):
-    """claimed 빈 목록·next_plan None 이면 해당 줄 생략(차수·wave 2줄만)."""
+    """claimed 빈 목록·next_plan None 이면 해당 줄 생략(차수·요약 2줄만)."""
     sec = pm_engine.domain.dashboard.render_dashboard_section(
-        "project_manager_1", session_num=1, wave_summary="w", claimed_tickets=[], date=_DATE
+        "project_manager_1", session_num=1, session_summary="w", claimed_tickets=[], date=_DATE
     )
     body = sec.split("\n\n", 1)[1]
-    assert body.strip().count("\n") == 1  # 차수·wave 2줄
+    assert body.strip().count("\n") == 1  # 차수·요약 2줄
     assert "claimed:" not in sec
     assert "다음:" not in sec
 
 
-def test_render_section_flattens_multiline_wave(hf):
-    """다중행 wave_summary 는 한 줄로 평탄화 — 섹션 경계/추가 줄 위조 차단."""
+def test_render_section_flattens_multiline_session_summary(hf):
+    """다중행 session_summary 는 한 줄로 평탄화 — 섹션 경계/추가 줄 위조 차단."""
     sec = pm_engine.domain.dashboard.render_dashboard_section(
         "project_manager_1",
         session_num=1,
-        wave_summary="line1\n## injected heading\nline2",
+        session_summary="line1\n## injected heading\nline2",
         date=_DATE,
     )
     # 본문에 '## injected' 가 독립 헤딩 줄로 새지 않는다(공백으로 접힘).
@@ -114,12 +114,12 @@ def test_render_section_flattens_multiline_wave(hf):
 
 def test_render_section_char_cap(hf):
     """긴 단일 값은 DASHBOARD_LINE_MAX_CHARS 로 truncate('…' 부착)."""
-    long_wave = "x" * 500
+    long_session_summary = "x" * 500
     sec = pm_engine.domain.dashboard.render_dashboard_section(
-        "project_manager_1", session_num=1, wave_summary=long_wave, date=_DATE
+        "project_manager_1", session_num=1, session_summary=long_session_summary, date=_DATE
     )
-    wave_line = [l for l in sec.splitlines() if l.startswith("- 세션 요약:")][0]
-    value = wave_line[len("- 세션 요약: "):]
+    session_summary_line = [l for l in sec.splitlines() if l.startswith("- 세션 요약:")][0]
+    value = session_summary_line[len("- 세션 요약: "):]
     assert value.endswith("…")
     assert len(value) <= pm_engine.domain.dashboard.DASHBOARD_LINE_MAX_CHARS
 
@@ -129,14 +129,14 @@ def test_render_section_max_lines_truncate(hf):
     sec = pm_engine.domain.dashboard.render_dashboard_section(
         "project_manager_1",
         session_num=1,
-        wave_summary="w",
+        session_summary="w",
         claimed_tickets=["T-1"],
         next_plan="plan",
         max_lines=2,
         date=_DATE,
     )
     body = sec.split("\n\n", 1)[1].rstrip("\n")
-    assert len(body.splitlines()) == 2  # 차수·wave 만 남음
+    assert len(body.splitlines()) == 2  # 차수·요약 만 남음
     assert "claimed:" not in sec
     assert "다음:" not in sec
 
@@ -150,9 +150,9 @@ def test_dashboard_section_max_lines_default_is_three_to_five(hf):
 # upsert_dashboard_section — lazy 생성·overwrite·타 섹션 byte 불변·멱등
 # ══════════════════════════════════════════════════════════════════════════
 
-def _sec(hf, session: str, num: int, wave: str) -> str:
+def _sec(hf, session: str, num: int, session_summary: str) -> str:
     return pm_engine.domain.dashboard.render_dashboard_section(
-        session, session_num=num, wave_summary=wave, date=_DATE
+        session, session_num=num, session_summary=session_summary, date=_DATE
     )
 
 
@@ -164,7 +164,7 @@ def test_upsert_lazy_create_on_empty(hf):
 
 
 def test_upsert_overwrite_own_section_replaces_content(hf):
-    """자기 섹션 재 upsert → 새 내용으로 교체(옛 wave 사라짐·멱등적 갱신)."""
+    """자기 섹션 재 upsert → 새 내용으로 교체(옛 요약 사라짐·멱등적 갱신)."""
     doc = pm_engine.domain.dashboard.upsert_dashboard_section("", "project_manager_1", _sec(hf, "project_manager_1", 1, "OLD"))
     doc2 = pm_engine.domain.dashboard.upsert_dashboard_section(doc, "project_manager_1", _sec(hf, "project_manager_1", 2, "NEW"))
     assert "NEW" in doc2 and "OLD" not in doc2
@@ -181,7 +181,7 @@ def test_upsert_idempotent_same_section(hf):
 def test_upsert_other_section_byte_invariant(hf):
     """자기 섹션 overwrite 시 **타 슬롯 섹션은 byte 불변** (ADR-0047 핵심·못박기)."""
     doc = pm_engine.domain.dashboard.upsert_dashboard_section("", "project_manager_1", _sec(hf, "project_manager_1", 1, "A_old"))
-    doc = pm_engine.domain.dashboard.upsert_dashboard_section(doc, "finance_2", _sec(hf, "finance_2", 5, "B_wave"))
+    doc = pm_engine.domain.dashboard.upsert_dashboard_section(doc, "finance_2", _sec(hf, "finance_2", 5, "B_summary"))
 
     def finance_region(text: str) -> str:
         idx = text.index("## finance_2")
@@ -218,12 +218,12 @@ def test_upsert_append_keeps_existing_sections(hf):
 
 def test_parse_round_trip_two_sections(hf):
     """upsert 로 만든 2섹션 대시보드를 parse → 키·본문 왕복 일치(write/read 대칭)."""
-    doc = pm_engine.domain.dashboard.upsert_dashboard_section("", "project_manager_1", _sec(hf, "project_manager_1", 1, "waveA"))
-    doc = pm_engine.domain.dashboard.upsert_dashboard_section(doc, "finance_2", _sec(hf, "finance_2", 2, "waveB"))
+    doc = pm_engine.domain.dashboard.upsert_dashboard_section("", "project_manager_1", _sec(hf, "project_manager_1", 1, "summaryA"))
+    doc = pm_engine.domain.dashboard.upsert_dashboard_section(doc, "finance_2", _sec(hf, "finance_2", 2, "summaryB"))
     parsed = dict(dashboard.parse_dashboard_sections(doc))
     assert set(parsed) == {"project_manager_1", "finance_2"}
-    assert "waveA" in parsed["project_manager_1"]
-    assert "waveB" in parsed["finance_2"]
+    assert "summaryA" in parsed["project_manager_1"]
+    assert "summaryB" in parsed["finance_2"]
     # 본문은 헤딩 제외·surrounding 빈 줄 제거.
     assert not parsed["project_manager_1"].startswith("\n")
     assert "## project_manager_1" not in parsed["project_manager_1"]
@@ -298,44 +298,44 @@ def _dash_path(home) -> Path:
 
 
 def test_write_dashboard_section_creates_file(hf_repo):
-    """_write_dashboard_section — 대시보드 파일 lazy 생성·차수·wave·claimed 반영."""
+    """_write_dashboard_section — 대시보드 파일 lazy 생성·차수·요약·claimed 반영."""
     # 세션이 claim 한 티켓 1개 배치(claimed 줄 검증).
     _write_ticket(
         hf_repo.root / ".project_manager" / "board" / "tickets" / "claimed" / "T-0260.md",
         "T-0260", "claimed", "me@x/project_manager_1",
     )
     inst = pm_engine.cli.handoff.PmHandoff(hf_repo)
-    out = inst._write_dashboard_section("project_manager_1", 52, "wave 요약 문장", _DATE)
+    out = inst._write_dashboard_section("project_manager_1", 52, "세션 요약 문장", _DATE)
     text = out.read_text(encoding="utf-8")
     assert out == _dash_path(hf_repo)
     assert "## project_manager_1" in text
     assert "- 차수: PM 52차 (2026-07-10)" in text
-    assert "- 세션 요약: wave 요약 문장" in text
+    assert "- 세션 요약: 세션 요약 문장" in text
     assert "- claimed: T-0260" in text
 
 
 def test_write_dashboard_section_overwrites_own_keeps_other(hf_repo):
     """_write_dashboard_section 재실행 → 자기 섹션 overwrite·타 슬롯 섹션 byte 불변(통합)."""
     inst = pm_engine.cli.handoff.PmHandoff(hf_repo)
-    inst._write_dashboard_section("project_manager_1", 51, "waveOld", _DATE)
+    inst._write_dashboard_section("project_manager_1", 51, "summaryOld", _DATE)
     # 타 슬롯 섹션을 파일에 주입.
     dash = _dash_path(hf_repo)
     injected = pm_engine.domain.dashboard.upsert_dashboard_section(
         dash.read_text(encoding="utf-8"),
         "finance_2",
-        pm_engine.domain.dashboard.render_dashboard_section("finance_2", session_num=9, wave_summary="waveFin", date=_DATE),
+        pm_engine.domain.dashboard.render_dashboard_section("finance_2", session_num=9, session_summary="summaryFin", date=_DATE),
     )
     dash.write_text(injected, encoding="utf-8")
     fin_before = injected[injected.index("## finance_2"):]
 
-    inst._write_dashboard_section("project_manager_1", 52, "waveNew", _DATE)
+    inst._write_dashboard_section("project_manager_1", 52, "summaryNew", _DATE)
     after = dash.read_text(encoding="utf-8")
-    assert "waveNew" in after and "waveOld" not in after
+    assert "summaryNew" in after and "summaryOld" not in after
     assert after[after.index("## finance_2"):] == fin_before  # 타 슬롯 byte 불변
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# PmBootstrap._collect_dashboard_others — 자기 제외 dump·lease 폴백·솔로 None
+# PmBootstrap._collect_dashboard_others — 자기 제외 dump·lease 대체·솔로 None
 # ══════════════════════════════════════════════════════════════════════════
 
 def _make_bs(tmp_path, monkeypatch):
@@ -345,9 +345,9 @@ def _make_bs(tmp_path, monkeypatch):
 
 def _write_dashboard(tmp_path, hf, *sections: tuple[str, int, str]) -> Path:
     doc = ""
-    for session, num, wave in sections:
+    for session, num, session_summary in sections:
         doc = pm_engine.domain.dashboard.upsert_dashboard_section(
-            doc, session, pm_engine.domain.dashboard.render_dashboard_section(session, session_num=num, wave_summary=wave, date=_DATE)
+            doc, session, pm_engine.domain.dashboard.render_dashboard_section(session, session_num=num, session_summary=session_summary, date=_DATE)
         )
     path = tmp_path / ".project_manager" / "wiki" / "log" / "dashboard.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -361,19 +361,19 @@ def test_collect_dashboard_others_task_mode_excludes_own_task(tmp_path, monkeypa
     bs = _make_bs(tmp_path, monkeypatch)
     _write_dashboard(
         tmp_path, hf,
-        ("mytask", 3, "mineTaskWave"),
-        ("other-task", 2, "otherTaskWave"),
+        ("mytask", 3, "mineTaskSummary"),
+        ("other-task", 2, "otherTaskSummary"),
     )
     inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     inst._task_name = "mytask"
     result = inst._collect_dashboard_others()
     assert result is not None and result["mode"] == "dashboard"
     assert [o["session"] for o in result["others"]] == ["other-task"]
-    assert "mineTaskWave" not in result["others"][0]["body"]
+    assert "mineTaskSummary" not in result["others"][0]["body"]
 
 
 def test_collect_dashboard_others_task_lease_fallback_excludes_own_task(tmp_path, monkeypatch):
-    """대시보드 부재 lease 폴백도 task 이름을 자기 키로 제외한다."""
+    """대시보드 부재 lease 대체도 task 이름을 자기 키로 제외한다."""
     bs = _make_bs(tmp_path, monkeypatch)
     leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     leases.parent.mkdir(parents=True, exist_ok=True)
@@ -403,11 +403,11 @@ def test_build_markdown_renders_dashboard_others(hf, tmp_path):
     bs = _load("pm_bootstrap")
     inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
     others = {"mode": "dashboard", "others": [
-        {"session": "finance_2", "body": "- 차수: PM 7차 (2026-07-10)\n- wave: finWave"}]}
+        {"session": "finance_2", "body": "- 차수: PM 7차 (2026-07-10)\n- 세션 요약: finSummary"}]}
     md = bootstrap_report._build_markdown(_BOARD, None, _GIT, None, 'ts', None, others, environment=getattr(inst, '_command_environment', None) or python_env._detect_command_environment(pm_paths.home_at(tmp_path)), task_name=getattr(inst, '_task_name', None), state_path=inst._pm_state_display_path())
     assert "### 다른 활성 PM" in md
     assert "**finance_2**" in md
-    assert "finWave" in md
+    assert "finSummary" in md
 
 
 def test_build_markdown_omits_section_when_none(hf, tmp_path):
@@ -419,7 +419,7 @@ def test_build_markdown_omits_section_when_none(hf, tmp_path):
 
 
 def test_build_markdown_lease_fallback_render(hf, tmp_path):
-    """dashboard_others(lease 모드) → 세션·슬롯 목록 폴백 렌더."""
+    """dashboard_others(lease 모드) → 세션·슬롯 목록 대체 렌더."""
     bs = _load("pm_bootstrap")
     inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_git_fn=lambda a: (0, ''))
     others = {"mode": "lease", "others": [{"session": "finance_2", "slot": "work/finance_2"}]}
@@ -458,8 +458,8 @@ def _write_leases(tmp_path, *entries: tuple[str, str]) -> Path:
     return path
 
 
-def test_active_leased_sessions_none_when_ledger_absent(tmp_path, monkeypatch):
-    """_active_leased_sessions — 장부 부재 → None(판정불가)·정상 read → leased 세션 집합."""
+def test_active_leased_sessions_none_when_record_absent(tmp_path, monkeypatch):
+    """_active_leased_sessions — 대여 기록 부재 → None(판정불가)·정상 read → leased 세션 집합."""
     bs = _make_bs(tmp_path, monkeypatch)
     inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     assert bootstrap_history._active_leased_sessions(pm_paths.home_at(tmp_path)) is None
@@ -504,7 +504,7 @@ def test_write_dashboard_reads_fresh_under_lock_no_lost_update(hf_repo):
     보존해야 한다(직렬화·락이 이 read↔write 원자성을 프로세스 간에도 보장)."""
     inst = pm_engine.cli.handoff.PmHandoff(hf_repo)
     inst._write_dashboard_section("project_manager_1", 51, "A_v1", _DATE)   # A
-    inst._write_dashboard_section("finance_2", 7, "B_wave", _DATE)         # B (다른 슬롯)
+    inst._write_dashboard_section("finance_2", 7, "B_summary", _DATE)         # B (다른 슬롯)
     dash = _dash_path(hf_repo)
     b_before = dash.read_text(encoding="utf-8")
     b_region = b_before[b_before.index("## finance_2"):]
@@ -515,7 +515,7 @@ def test_write_dashboard_reads_fresh_under_lock_no_lost_update(hf_repo):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# MF-3 (reviewer) — 대시보드는 git-untracked 파생물(.gitignore 배선)
+# MF-3 (reviewer) — 대시보드는 git-untracked 파생물(.gitignore 등록)
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_dashboard_gitignored():
@@ -549,7 +549,7 @@ class _AllocLease:
 
 
 class _AllocPool:
-    """최소 worktree_pool mock — alloc/release + leased 장부 추적(alloc 순서·lease 누수 테스트)."""
+    """최소 worktree_pool mock — alloc/release + leased 대여 기록 추적(alloc 순서·lease 누수 테스트)."""
 
     class NeedsCreate(Exception):
         def __init__(self, repo):
@@ -611,13 +611,13 @@ def _stub_bootstrap(bs, tmp_path, pool, *, log_text: str='# log\n', monkeypatch)
 
 
 def test_write_dashboard_section_atomic_no_tmp_left(hf_repo):
-    """suggestion: 대시보드 write 는 tmp→os.replace 원자 교체 — tmp 잔여 없음·내용 온전."""
+    """suggestion: 대시보드 write 는 tmp→os.replace 원자 교체 — tmp 남은 파일 없음·내용 온전."""
     inst = pm_engine.cli.handoff.PmHandoff(hf_repo)
-    out = inst._write_dashboard_section("project_manager_1", 5, "atomic wave", _DATE)
+    out = inst._write_dashboard_section("project_manager_1", 5, "atomic summary", _DATE)
     # 원자 교체 완료 후 .tmp 사이드카가 남지 않는다.
     assert not out.with_suffix(out.suffix + ".tmp").exists()
     text = out.read_text(encoding="utf-8")
-    assert "## project_manager_1" in text and "atomic wave" in text
+    assert "## project_manager_1" in text and "atomic summary" in text
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -634,7 +634,7 @@ def test_write_dashboard_section_atomic_no_tmp_left(hf_repo):
 
 def test_render_section_sanitizes_session_key(hf):
     """suggestion1: session 키의 개행/`#` 위조를 안전화 — 가짜 헤딩/섹션 경계 못 만든다."""
-    sec = pm_engine.domain.dashboard.render_dashboard_section("evil\n## injected", session_num=1, wave_summary="w", date=_DATE)
+    sec = pm_engine.domain.dashboard.render_dashboard_section("evil\n## injected", session_num=1, session_summary="w", date=_DATE)
     assert sec.startswith("## evil injected\n")  # 개행 접힘·`#` 마커 제거된 안전 키
     assert sec.count("\n## ") == 0  # 위조 섹션 경계 없음
     assert len(dashboard.parse_dashboard_sections(sec)) == 1  # 단일 섹션
@@ -644,10 +644,10 @@ def test_upsert_render_sanitize_consistent(hf):
     """suggestion1: render 헤딩과 upsert 검색이 같은 정규화 — 같은 raw 키에 일관 overwrite(중복 0)."""
     raw = "slot\nx"
     doc = pm_engine.domain.dashboard.upsert_dashboard_section(
-        "", raw, pm_engine.domain.dashboard.render_dashboard_section(raw, session_num=1, wave_summary="v1", date=_DATE)
+        "", raw, pm_engine.domain.dashboard.render_dashboard_section(raw, session_num=1, session_summary="v1", date=_DATE)
     )
     doc2 = pm_engine.domain.dashboard.upsert_dashboard_section(
-        doc, raw, pm_engine.domain.dashboard.render_dashboard_section(raw, session_num=2, wave_summary="v2", date=_DATE)
+        doc, raw, pm_engine.domain.dashboard.render_dashboard_section(raw, session_num=2, session_summary="v2", date=_DATE)
     )
     assert doc2.count("## slot x") == 1  # 같은 raw 키 → 섹션 1개(중복 안 생김)
     assert "v2" in doc2 and "v1" not in doc2  # overwrite

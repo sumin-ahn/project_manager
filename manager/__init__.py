@@ -17,7 +17,7 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parent
 # 관리자와 함께 배포되는 엔진 사본(제품 repo 의 canonical 트리). 프로젝트 사본의 엔진이 아니다 —
-# 옛 세대 사본의 설정 로더(`pm_engine.infra.conf_store`)로 값을 읽으면 그 세대의 파싱 규칙에 끌려간다.
+# 옛 버전 사본의 설정 로더(`pm_engine.infra.conf_store`)로 값을 읽으면 그 버전의 파싱 규칙에 끌려간다.
 BUNDLED_TOOLS = REPO_ROOT / ".project_manager" / "tools"
 # 번들 엔진 패키지(`pm_engine`)는 일반 import 로 읽는다.
 if str(BUNDLED_TOOLS) not in sys.path:
@@ -58,5 +58,5 @@ class CallError(RuntimeError):
 
 
 def engine_rev() -> str:
-    """번들 엔진 패키지의 세대 값 — 관리자 버전 표기의 단일 진실(자기 버전 상수를 따로 두지 않는다)."""
+    """번들 엔진 패키지의 버전 값 — 관리자 버전 표기의 단일 진실(자기 버전 상수를 따로 두지 않는다)."""
     return pm_engine.ENGINE_REV

@@ -1,4 +1,4 @@
-"""`~`/`~user` 확장 규칙의 값 단언 — `pm_paths._expanded_user_path` (T-0712 축 C).
+"""`~`/`~user` 확장 규칙의 값 단언 — `pm_paths._expanded_user_path` (T-0712 경우 C).
 
 없는 사용자(`~ghost/…`)의 확장은 플랫폼마다 다르게 끝난다: POSIX 는 `pwd` 조회 실패를
 RuntimeError 로 올리고, Windows 는 실재 확인 없이 `C:\\Users\\<name>` 을 조립해 준다. 그래서
@@ -63,6 +63,6 @@ def test_a_missing_user_home_fails_on_both_platforms(modules, monkeypatch, platf
                          [("posix", _posix_expanduser), ("windows", _windows_expanduser)])
 def test_the_current_user_home_is_not_existence_checked(modules, monkeypatch, platform,
                                                         expanduser):
-    """`~`(현재 사용자)에는 실재 검사를 걸지 않는다 — 홈이 아직 없는 정상 형상 과차단 금지."""
+    """`~`(현재 사용자)에는 실재 검사를 걸지 않는다 — 홈이 아직 없는 정상 구성 과차단 금지."""
     for module in modules:
         assert _verdict(module, monkeypatch, expanduser, "~/owner").startswith("ok:")

@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
+from conftest import target_repo_board_module, bind_product_cluster, ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import git, ticket_store
 
@@ -177,7 +177,7 @@ def board(tmp_path, monkeypatch):
     함께 tmp 로 따라온다.
     """
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     # 정체성을 tmp 에 묶는다 — 소유 대조(T-0781)가 user 기준을 보므로, 실 clone 의 local.conf
@@ -1335,7 +1335,7 @@ def test_claim_transaction_runs_inside_board_git_lock(board, tmp_path, monkeypat
 # 측정 폭(claim 기준 커밋을 *소비*해 diff 를 재는 쪽)은 `tests/test_ticket_finish.py` 소관이다
 # (측정 폭 케이스). 여기서는 claim 계약 자체 — **어느 트리의 HEAD 를
 # 적어 두는가**(코드 트리 해소 3구성: task 작업공간·`--repo`/`--slot` 슬롯 worktree·솔로) 와
-# 해소 실패/무효화 시 필드 상태만 값으로 단언한다. `board` fixture(`anchor_board_module`)는
+# 해소 실패/무효화 시 필드 상태만 값으로 단언한다. `board` fixture(`target_repo_board_module`)는
 # `REPO`/`BOARD_FILE`/`BOARD_LOCK` 만 대상 저장소를 바꿔 끼우므로, 슬롯 대여 기록(`LEASES_FILE`)이 필요한 케이스는
 # 여기서 직접 tmp 로 재지정한다(다른 44 케이스는 슬롯 대여 기록을 안 건드려 그 갭이 안 드러났다).
 # ════════════════════════════════════════════════════════════════════════

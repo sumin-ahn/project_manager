@@ -305,7 +305,7 @@ class Lease:
 
     **`extra` (미지 키 보존)**: 이 엔진 버전이 모르는 최상위 키(`task`[T-035x] 등 향후
     additive 키)를 `from_dict` 가 `extra` dict 로 보존하고 `to_dict` 가 재방출한다. 기록 지속은
-    `_read_records`→`_write_ledger`(from_dict→to_dict) 왕복 하나로 모이는데, **신규 키를 모르는
+    `_read_records`→`_write_records`(from_dict→to_dict) 왕복 하나로 모이는데, **신규 키를 모르는
     엔진(adopter#0 import 사본 lag 로 버전 skew 실재)이 아무 op 라도 하면 그 read-modify-write
     왕복에서 *모든 슬롯*의 신규 키가 소실**된다 — base/head 기록이 조용히 날아가면 drift 감지가
     가짜 기준 위에서 돌아 무의미해진다([[robustness-value-connections-before-ship]] silent

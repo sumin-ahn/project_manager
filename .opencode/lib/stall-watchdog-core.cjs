@@ -1,11 +1,11 @@
-// opencode 어댑터 — stall-watchdog 플러그인 core (세션 idle 미완료 감지·처방 넛지).
+// opencode 어댑터 — stall-watchdog 플러그인 core (세션 idle 미완료 감지·해결 안내 경고).
 //
 // 이 파일(CJS)은 stall-watchdog 의 *순수 로직 + 플러그인 팩토리 본체*를 담는다. opencode plugin
 // 진입점은 `../plugins/stall-watchdog.js`(ESM 얇은 shim)이며 거기서 StallWatchdogPlugin 하나만
 // named-export 한다 — opencode 의 plugin 로드 규약(각 plugins/ 파일의 export 를 순회해 *모두 함수*
 // 이길 요구하고 각각을 팩토리로 호출·실측) 때문에, 순수 헬퍼·상수는 plugins/ *바깥*(이 lib/ 모듈)에
 // 둔다(opencode 는 plugins/ 만 스캔·lib/ 는 로드 안 함). node 자가검증 test 는 이 CJS 모듈을
-// require 해 순수 함수(classifyStall·shouldNudge·buildNudge…)를 opencode 런타임 없이 검증한다.
+// require 해 순수 함수(classifyStall·shouldWarn·buildWarn…)를 opencode 런타임 없이 검증한다.
 //
 // ⚠️ 이 core 는 `@opencode-ai/plugin`(tool 헬퍼·zod)을 require 하지 않는다(safe-write-core.cjs 와
 //    동일 계약 — 그 패키지는 opencode 런타임에만 설치되므로 core 가 직접 require 하면 plain node
@@ -17,31 +17,31 @@
 // 무엇 (T-opencode-003):
 //   PM 프라이머리·서브에이전트 공통의 "할 일을 남긴 채 조용히 턴 종료" 멈춤(선행 sweep 실측
 //   NO-WRITE 17/30 · upstream auto-continue 부재 #17471)을 session.idle 이벤트에서 감지해 원인별
-//   처방 넛지를 client.session.prompt() 로 자동 주입한다. "continue" 가 아니라 진단별 행동 지시다.
+//   해결 안내 경고를 client.session.prompt() 로 자동 주입한다. "continue" 가 아니라 진단별 행동 지시다.
 //
 //   신호 3종 (신규 클래스 추가는 티켓 범위 밖):
 //     - declare-no-action : 쓰기/생성 선언("생성하겠습니다", "I'll create...") 후 tool 파트 없음.
 //     - truncated         : 문장 중간 종결 휴리스틱(매달린 괄호·미종결 펜스 등). *단일 신호로는
-//                           넛지하지 않고* 미완료 todo 와 결합될 때만 처방한다(오검출 억제).
+//                           경고하지 않고* 미완료 todo 와 결합될 때만 안내한다(오검출 억제).
 //     - open-todos        : 미완료 todo 잔존 + 결론부 없는 종료.
-//   보수적 트리거: todo 부재 + 결론형 종료 = 정상(사용자 대기) → 넛지하지 않는다. abort 직후 종료도
-//   넛지하지 않는다(사용자 중단 의사 존중 — isAbortOutcome 으로 배제).
+//   보수적 트리거: todo 부재 + 결론형 종료 = 정상(사용자 대기) → 경고하지 않는다. abort 직후 종료도
+//   경고하지 않는다(사용자 중단 의사 존중 — isAbortOutcome 으로 배제).
 //
-// 게이트 (shouldNudge): 연속 무진행 카운터가 MAX_CONSEC(기본 3)에 도달하면 차단한다 — 긴 wave 를
-//   막지 않으려는 상한이 아니라 같은 멈춤에 대한 반복 소음 차단이다(스트릭당 최대 3회 넛지). 실제
+// 반복 차단 (shouldWarn): 연속 무진행 카운터가 MAX_CONSEC(기본 3)에 도달하면 차단한다 — 긴 작업을
+//   막지 않으려는 상한이 아니라 같은 멈춤에 대한 반복 소음 차단이다(스트릭당 최대 3회 경고). 실제
 //   진행(todo 완료 수 변동)이 관측되면 연속 카운터를 리셋한다. 세션 절대 백스톱 MAX_TOTAL(기본 20)
 //   은 휴리스틱 오작동 시 토큰 소방용이다. 사용자 메시지 도착(마지막 assistant 이후 user 메시지,
-//   자기 넛지 [stall-watchdog] 접두 제외 — F-002) 시 워치독을 영구 해제한다.
+//   자기 경고 [stall-watchdog] 접두 제외 — F-002) 시 워치독을 영구 해제한다.
 //
 // 영속화 (핵심 — headless one-shot 모델): `opencode run --continue` 는 프로세스-당-턴 one-shot
-//   (ctx-guard-core.cjs L369 문서화)이라 in-memory 카운터는 매 턴 소멸한다. 그래서 게이트 상태를
+//   (ctx-guard-core.cjs L369 문서화)이라 in-memory 카운터는 매 턴 소멸한다. 그래서 차단 상태를
 //   sessionID 키 durable marker(`<root>/.project_manager/.local/stall-watchdog/state.<sid>.json`,
-//   ctx-guard marker 선례 준용)로 디스크에 영속화해 프로세스 간 유지한다. IO 실패는 전부 흡수한다
-//   (never-block — 관측·넛지 채널 실패가 세션을 막지 않는다). 엔진 root 는 이 파일 자기 위치에서
-//   나오므로(아래 ENGINE_ROOT) 탐색도 미해소 형상도 없다.
+//   ctx-guard marker 선례 준용)로 디스크에 영속화해 프로세스 간 유지한다. IO 실패는 전부 삼킨다
+//   (never-block — 관측·경고 채널 실패가 세션을 막지 않는다). 엔진 root 는 이 파일 자기 위치에서
+//   나오므로(아래 ENGINE_ROOT) 탐색도 미해소 구성도 없다.
 //
 // 진행 감지 v1: todo 기반만(client.session.todo 완료 수 변동). 파일 변경 감지는 비용·경합 불명으로
-//   범위 밖(아키텍트 권고 수용). SDK 표면 실측(@opencode-ai/sdk gen):
+//   범위 밖(아키텍트 권고 수용). SDK 함수 실측(@opencode-ai/sdk gen):
 //     event `session.idle {properties:{sessionID}}` · client.session.messages({sessionID}) ->
 //     Array<{info, parts}> · client.session.todo({sessionID}) -> Array<Todo> ·
 //     client.session.prompt({path:{id},body:{parts:[...]}}) — 메서드명은 prompt(chat 아님·architect must-fix)
@@ -58,25 +58,25 @@ const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 
 // ── 임계값 상수 (core 상단 명시·env override) ────────────────────────────────
 // MAX_CONSEC: 연속 무진행 허용 상한 — 카운터가 이 횟수에 도달하면 차단(스트릭당 최대 이 횟수만큼
-//             넛지·진행 보이면 리셋).
-// MAX_TOTAL : 세션 절대 백스톱 — 누적 넛지 상한(휴리스틱 오작동 시 토큰 소방용).
+//             경고·진행 보이면 리셋).
+// MAX_TOTAL : 세션 절대 백스톱 — 누적 경고 상한(휴리스틱 오작동 시 토큰 소방용).
 const MAX_CONSEC_DEFAULT = 3;
 const MAX_TOTAL_DEFAULT = 20;
 const MAX_CONSEC_ENV = "PM_STALL_WATCHDOG_MAX_CONSEC";
 const MAX_TOTAL_ENV = "PM_STALL_WATCHDOG_MAX_TOTAL";
 const DISABLED_ENV = "PM_STALL_WATCHDOG_DISABLED";
 
-// 넛지 문두 마커 — 자기 주입 넛지는 세션에 user-role 로 기록되므로 실사용자 메시지와 구분하는
-// 표식이다(F-002 — 해제 판정에서 이 접두 user 엔트리를 제외).
-const NUDGE_MARKER_PREFIX = "[stall-watchdog]";
+// 경고 문두 마커 — 자기 주입 경고는 세션에 user-role 로 기록되므로 실사용자 메시지와 구분하는
+// 표시다(F-002 — 해제 판정에서 이 접두 user 엔트리를 제외).
+const WARN_MARKER_PREFIX = "[stall-watchdog]";
 
 // SDK 조회 타임아웃 — messages/todo 역조회가 이벤트 처리를 붙잡지 않게 짧게 제한(ctx-guard 선례).
 const SDK_LOOKUP_TIMEOUT_MS = 5000;
 
-// 마커 위치 — ctx-guard durable marker(.project_manager/.local/ctx-stop/)와 같은 .local 산출물 축.
+// 마커 위치 — ctx-guard durable marker(.project_manager/.local/ctx-stop/)와 같은 .local 산출물 자리.
 const MARKER_DIR_REL = path.join(".project_manager", ".local", "stall-watchdog");
 
-// ── 순수 함수: env override 해소 (>0 정수 sanity·아니면 기본 / safe-write resolvePositiveInt 동형) ──
+// ── 순수 함수: env override 해소 (>0 정수 sanity·아니면 기본 / safe-write resolvePositiveInt 와 같은 규칙) ──
 function resolvePositiveInt(raw, dflt) {
   if (raw === undefined || raw === null) return dflt;
   const n = Number(String(raw).trim());
@@ -120,7 +120,7 @@ function countFences(text) {
 
 // ── 순수 함수: truncated 휴리스틱 (문장 중간 종결 추정 — 약한 신호) ────────────
 // 미종결 펜스(홀수)·매달린 여는 괄호·끝이 이어질 기호(,:+=-*…). 단독으로는 stall 이 아니며
-// classifyStall 에서 미완료 todo 와 결합될 때만 처방된다(정상 답변의 코드블록 종결 오탐 억제).
+// classifyStall 에서 미완료 todo 와 결합될 때만 안내된다(정상 답변의 코드블록 종결 오탐 억제).
 function looksTruncated(text) {
   const t = typeof text === "string" ? text.trim() : "";
   if (!t) return false;
@@ -131,7 +131,7 @@ function looksTruncated(text) {
   return false;
 }
 
-// ── 순수 함수: 결론형 종료 판정 (open-todos 게이트 — 사용자 대기 정상 구분) ────
+// ── 순수 함수: 결론형 종료 판정 (open-todos 조건 — 사용자 대기 정상 구분) ────
 // 종결 문장부호 또는 한국어 종결어미로 끝나거나 닫힌 코드블록으로 끝나면 결론으로 본다.
 function endsConclusively(text) {
   const t = typeof text === "string" ? text.trim() : "";
@@ -186,9 +186,9 @@ function classifyStall(lastAssistantText, pendingTodos, hasToolPartAfter, declCa
   return { stall: false, kind: null };
 }
 
-// ── 순수 함수: abort 직후 판정 (사용자 중단 존중 — 넛지 금지) ─────────────────
-// AssistantMessage.error.name 이 MessageAbortedError 거나 finish 필드에 abort 표식이 있으면
-// 사용자(또는 시스템)가 턴을 중단한 것이다 — 분류 결과와 무관하게 넛지하지 않는다.
+// ── 순수 함수: abort 직후 판정 (사용자 중단 존중 — 경고 금지) ─────────────────
+// AssistantMessage.error.name 이 MessageAbortedError 거나 finish 필드에 abort 표시가 있으면
+// 사용자(또는 시스템)가 턴을 중단한 것이다 — 분류 결과와 무관하게 경고하지 않는다.
 function isAbortOutcome(message) {
   if (!message || typeof message !== "object") return false;
   const errName = message.error && message.error.name;
@@ -196,34 +196,34 @@ function isAbortOutcome(message) {
   return typeof message.finish === "string" && /abort/i.test(message.finish);
 }
 
-// ── 순수 함수: 처방 넛지 문열 (진단별 행동 지시 — deny-and-redirect buildDenyMessage 동철학) ──
-// 3종 문어체는 티켓 계약 그대로 유지한다. 알려지지 않은 kind 는 null(발화 스킵).
-function buildNudge(kind) {
+// ── 순수 함수: 해결 안내 경고 문열 (진단별 행동 지시 — deny-and-redirect buildDenyMessage 와 같은 방식) ──
+// 3종 문어체는 티켓 계약 그대로 유지한다. 알려지지 않은 kind 는 null(경고 생략).
+function buildWarn(kind) {
   if (kind === "declare-no-action") {
     return (
-      NUDGE_MARKER_PREFIX + " 대형 단일 출력 시도로 보인다 — safe_write 16KB 청크(create→append)로 " +
+      WARN_MARKER_PREFIX + " 대형 단일 출력 시도로 보인다 — safe_write 16KB 청크(create→append)로 " +
       "나눠 써라. 반복 내용이면 bash 생성이 낫다."
     );
   }
   if (kind === "truncated") {
-    return NUDGE_MARKER_PREFIX + " 응답이 잘렸다 — 이어서 계속하되 남은 산출은 파일로 써라.";
+    return WARN_MARKER_PREFIX + " 응답이 잘렸다 — 이어서 계속하되 남은 산출은 파일로 써라.";
   }
   if (kind === "open-todos") {
-    return NUDGE_MARKER_PREFIX + " 남은 todo 중 가장 작은 것 하나부터 수행하라.";
+    return WARN_MARKER_PREFIX + " 남은 todo 중 가장 작은 것 하나부터 수행하라.";
   }
   return null;
 }
 
-// ── 게이트 상태 (순수 전이 함수들 — 영속 JSON 의 shape) ──────────────────────
+// ── 반복 차단 상태 (순수 전이 함수들 — 영속 JSON 의 shape) ──────────────────────
 // consecutiveIdle : 연속 무진행(idle stall) 카운터 — 진행 관측 시 리셋.
-// totalNudges     : 세션 누적 넛지 — 절대 백스톱(MAX_TOTAL) 소방용.
+// totalNudges     : 세션 누적 경고 수 — 절대 백스톱(MAX_TOTAL) 소방용.
 // released        : 사용자 메시지 도착으로 영구 해제.
 // lastCompletedCount : 마지막 관측 todo 완료 수 — 진행 감지(v1 todo 기반) 기준선.
 function freshStallState() {
   return { consecutiveIdle: 0, totalNudges: 0, released: false, lastCompletedCount: 0 };
 }
 
-// 영속 값 방어 정규화 — 부분/오염 JSON 을 유효 상태로 접어 게이트 오동작을 막는다.
+// 영속 값 방어 정규화 — 부분/오염 JSON 을 유효 상태로 바꿔 차단 오동작을 막는다.
 function normalizeStallState(raw) {
   const base = freshStallState();
   if (!raw || typeof raw !== "object") return base;
@@ -251,17 +251,17 @@ function releaseWatchdog(state) {
   return { ...normalizeStallState(state), released: true };
 }
 
-function recordNudgeFired(state) {
+function recordWarnFired(state) {
   const s = normalizeStallState(state);
   return { ...s, consecutiveIdle: s.consecutiveIdle + 1, totalNudges: s.totalNudges + 1 };
 }
 
-// ── 핵심 순수 함수: 진행 게이트 ───────────────────────────────────────────────
+// ── 핵심 순수 함수: 반복 차단 판정 ───────────────────────────────────────────────
 // 통과 조건: 해제 안 됨 && 누적 < MAX_TOTAL && 연속 무진행 카운터가 MAX_CONSEC 에 *도달 전*.
-// 카운터가 MAX_CONSEC 에 도달하면 같은 멈춤의 반복 넛지를 차단한다(스트릭당 최대 MAX_CONSEC 회
-// 넛지 — architect AT-001 "연속 무진행 3 차단"). 진행(recordProgress)이 관측돼야 재무장된다.
+// 카운터가 MAX_CONSEC 에 도달하면 같은 멈춤의 반복 경고를 차단한다(스트릭당 최대 MAX_CONSEC 회
+// 경고 — architect AT-001 "연속 무진행 3 차단"). 진행(recordProgress)이 관측돼야 다시 켜진다.
 // limits 미주입 시 process.env 에서 해소한다(기본 3/20).
-function shouldNudge(state, limits) {
+function shouldWarn(state, limits) {
   const s = normalizeStallState(state);
   if (s.released) return false;
   const maxConsec =
@@ -278,7 +278,7 @@ function shouldNudge(state, limits) {
 
 // ── 영속화: sessionID 키 durable marker (ctx-guard stage/receipt 선례 준용) ────
 // 파일명 안전 키 — SID 비-[A-Za-z0-9_-] 제거·96 자 컷(ctx-guard safeCompactionSnapshotSessionKey
-// 동형·pm_log _safe_marker_key 파일명 규약 정합).
+// 와 같은 규칙·pm_log _safe_marker_key 파일명 규약과 일치).
 function safeSessionKey(sessionID) {
   if (typeof sessionID !== "string" || !sessionID.trim()) return null;
   const key = sessionID.trim().replace(/[^A-Za-z0-9_-]/g, "").slice(0, 96);
@@ -298,11 +298,11 @@ function loadStallState(root, sessionID) {
     if (!fs.existsSync(marker)) return freshStallState();
     return normalizeStallState(JSON.parse(fs.readFileSync(marker, "utf-8")));
   } catch {
-    return freshStallState(); // 판독 실패도 흡수 — 게이트는 fail-open(관측 채널이 세션을 막지 않음).
+    return freshStallState(); // 판독 실패도 삼킨다 — 차단 판정은 fail-open(관측 채널이 세션을 막지 않음).
   }
 }
 
-// 원자 기록(temp→rename·0600) — one-shot 프로세스 간 부분 기록 노출 방지. 실패는 false 흡수.
+// 원자 기록(temp→rename·0600) — one-shot 프로세스 간 부분 기록 노출 방지. 실패는 false 로 삼킨다.
 function saveStallState(root, sessionID, state) {
   const marker = stallStatePath(root, sessionID);
   if (!marker) return false;
@@ -326,7 +326,7 @@ function saveStallState(root, sessionID, state) {
   }
 }
 
-// ── SDK guarded 호출 (ctx-guard timeout race 패턴 동형 — 실패·타임아웃은 null 흡수) ──
+// ── SDK guarded 호출 (ctx-guard timeout race 패턴과 같음 — 실패·타임아웃은 null 로 삼킨다) ──
 async function guardedSdkCall(fn, timeoutMs) {
   try {
     let timeoutID;
@@ -345,7 +345,7 @@ async function guardedSdkCall(fn, timeoutMs) {
   }
 }
 
-// RequestResult({data}) 와 벌크 배열 양쪽을 흡수하는 배열 추출 — 불명 형태는 null(처리 skip).
+// RequestResult({data}) 와 벌크 배열 양쪽을 받아들이는 배열 추출 — 불명 형태는 null(처리 skip).
 function extractArray(result) {
   if (result == null) return null;
   if (Array.isArray(result)) return result;
@@ -379,7 +379,7 @@ function hasToolPartAfterText(parts) {
 }
 
 // 마지막 tool 파트 이후의 text 파트 결합 — declare-no-action 선언 스캔 구간(F-001).
-// 도구 실행이 관측되면 그 이전 발화의 선언은 이행된 것 — 그 이후 꼬리 발화만 새 선언 후보다.
+// 도구 실행이 관측되면 그 이전 말의 선언은 이행된 것 — 그 이후 꼬리 말만 새 선언 후보다.
 // tool 파트가 없으면 전체 text 결합(기존 동작과 동일). synthetic·ignored 제외는 extractAssistantText
 // 와 동일 규칙.
 function extractAssistantTextAfterLastTool(parts) {
@@ -396,7 +396,7 @@ function extractAssistantTextAfterLastTool(parts) {
     .trim();
 }
 
-// text 파트 결합 — synthetic(시스템 합성)·ignored 파트는 제외(모델 발화만 판정 대상).
+// text 파트 결합 — synthetic(시스템 합성)·ignored 파트는 제외(모델 말만 판정 대상).
 function extractAssistantText(parts) {
   if (!Array.isArray(parts)) return "";
   return parts
@@ -410,38 +410,38 @@ function extractAssistantText(parts) {
 // ESM shim(../plugins/stall-watchdog.js)이 opencode 가 건네준 ctx.client 로 이 함수를 호출해
 // 만든 팩토리를 재노출한다. 반환값이 opencode autoload 가 호출하는 실제 팩토리.
 
-// 자기 주입 넛지 user 엔트리 판정(F-002) — 첫 text 파트가 NUDGE_MARKER_PREFIX 로 시작하면 워치독이
+// 자기 주입 경고 user 엔트리 판정(F-002) — 첫 text 파트가 WARN_MARKER_PREFIX 로 시작하면 워치독이
 // client.session.prompt 로 넣은 것이다. user-role 로 기록되지만 실사용자 도착이 아니므로 해제 판정에서
-// 제외한다(넛지 턴이 assistant 회신 없이 끊겨도 영구 해제되지 않는다).
-function isSelfNudgeEntry(entry) {
+// 제외한다(경고 턴이 assistant 회신 없이 끊겨도 영구 해제되지 않는다).
+function isSelfWarnEntry(entry) {
   if (!entry || typeof entry !== "object") return false;
   if (!entry.info || entry.info.role !== "user") return false;
   const parts = Array.isArray(entry.parts) ? entry.parts : [];
   const firstText = parts.find(
     (p) => p && p.type === "text" && typeof p.text === "string",
   );
-  return Boolean(firstText) && firstText.text.trimStart().startsWith(NUDGE_MARKER_PREFIX);
+  return Boolean(firstText) && firstText.text.trimStart().startsWith(WARN_MARKER_PREFIX);
 }
 
 function makeStallWatchdogPlugin(client) {
   return async () => {
     const root = ENGINE_ROOT;
 
-    // 넛지 주입 — fire-and-forget(prompt 는 모델 턴을 트리거해 완응까지 수 분 가능). 이벤트 핸들러를
-    // 붙잡지 않게 즉석 호출+흡수. 게이트 소모(delivery 확정 전 기록)는 반복 소음 방지가 우선이다.
+    // 경고 주입 — fire-and-forget(prompt 는 모델 턴을 트리거해 완응까지 수 분 가능). 이벤트 핸들러를
+    // 붙잡지 않게 즉석 호출 후 실패는 삼킨다. 차단 예산 소모(delivery 확정 전 기록)는 반복 소음 방지가 우선이다.
     function firePrompt(sessionID, text) {
       try {
         if (!client || !client.session || typeof client.session.prompt !== "function") return;
         Promise.resolve(
           client.session.prompt({ path: { id: sessionID }, body: { parts: [{ type: "text", text }] } }),
-        ).catch(() => {}); // 주입 실패는 흡수 — never-block(파일 IO 실패 흡수 계약과 동일).
+        ).catch(() => {}); // 주입 실패는 삼킨다 — never-block(파일 IO 실패를 삼키는 계약과 동일).
       } catch {
-        /* 동기 throw 도 흡수. */
+        /* 동기 throw 도 삼킨다. */
       }
     }
 
     return {
-      // ── session.idle 구독: 턴 종료 → 분류 → 게이트 → 처방 주입 ──────────────
+      // ── session.idle 구독: 턴 종료 → 분류 → 반복 차단 → 해결 안내 주입 ──────────────
       event: async ({ event }) => {
         try {
           if (!event || event.type !== "session.idle") return;
@@ -449,7 +449,7 @@ function makeStallWatchdogPlugin(client) {
           const sessionID = event.properties && event.properties.sessionID;
           if (typeof sessionID !== "string" || !sessionID.trim()) return;
 
-          // SDK 조회 2건 — 실패·타임아웃 시 보수적 skip(게이트 예산 소모 없음).
+          // SDK 조회 2건 — 실패·타임아웃 시 보수적 skip(차단 예산 소모 없음).
           const messageList = extractArray(
             await guardedSdkCall(
               () =>
@@ -476,16 +476,16 @@ function makeStallWatchdogPlugin(client) {
           const found = lastAssistantEntry(messageList);
           if (!found) return;
 
-          // abort 직후 종료 — 넛지 금지(사용자 중단 의사). 게이트 예산도 소모하지 않는다.
+          // abort 직후 종료 — 경고 금지(사용자 중단 의사). 차단 예산도 소모하지 않는다.
           if (isAbortOutcome(found.entry.info)) return;
 
           let state = loadStallState(root, sessionID);
 
           // 사용자 메시지 도착(마지막 assistant 이후 user) — 워치독 영구 해제 후 저장.
-          // 자기 넛지([stall-watchdog] 접두)도 user-role 로 기록되지만 실사용자가 아니므로 제외(F-002).
+          // 자기 경고([stall-watchdog] 접두)도 user-role 로 기록되지만 실사용자가 아니므로 제외(F-002).
           const userAfter = messageList
             .slice(found.index + 1)
-            .some((e) => e && e.info && e.info.role === "user" && !isSelfNudgeEntry(e));
+            .some((e) => e && e.info && e.info.role === "user" && !isSelfWarnEntry(e));
           const completedNow = completedTodoCount(todos);
           if (userAfter) {
             saveStallState(root, sessionID, releaseWatchdog(state));
@@ -510,19 +510,19 @@ function makeStallWatchdogPlugin(client) {
             return;
           }
 
-          if (!shouldNudge(state)) {
+          if (!shouldWarn(state)) {
             saveStallState(root, sessionID, state);
             return;
           }
 
-          const text = buildNudge(verdict.kind);
+          const text = buildWarn(verdict.kind);
           if (!text) {
             saveStallState(root, sessionID, state);
             return;
           }
           firePrompt(sessionID, text);
-          // delivery 확정 전 기록 — 주입 유실 시 재시도는 다음 idle 이 담당, 소음 상한은 게이트가 닫는다.
-          saveStallState(root, sessionID, recordNudgeFired(state));
+          // delivery 확정 전 기록 — 주입 유실 시 재시도는 다음 idle 이 담당, 소음 상한은 반복 차단이 닫는다.
+          saveStallState(root, sessionID, recordWarnFired(state));
         } catch {
           /* 관측·판정·영속화 그 무엇도 세션 이벤트 처리를 막지 않는다(never-block). */
         }
@@ -538,8 +538,8 @@ module.exports = {
   makeStallWatchdogPlugin,
   // 순수 결정 로직 (테스트·자가검증용 export).
   classifyStall,
-  buildNudge,
-  shouldNudge,
+  buildWarn,
+  shouldWarn,
   isAbortOutcome,
   declaresWriteIntent,
   countFences,
@@ -551,7 +551,7 @@ module.exports = {
   normalizeStallState,
   recordProgress,
   releaseWatchdog,
-  recordNudgeFired,
+  recordWarnFired,
   safeSessionKey,
   stallStatePath,
   loadStallState,
@@ -562,8 +562,8 @@ module.exports = {
   hasToolPartAfterText,
   extractAssistantText,
   extractAssistantTextAfterLastTool,
-  isSelfNudgeEntry,
-  NUDGE_MARKER_PREFIX,
+  isSelfWarnEntry,
+  WARN_MARKER_PREFIX,
   resolvePositiveInt,
   resolveMaxConsec,
   resolveMaxTotal,

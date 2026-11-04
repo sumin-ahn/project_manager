@@ -49,12 +49,12 @@ def _print_read_target_repo(home, *, subcommand: str, pm_home: Path | None=None)
         line += f' → PM 입력 대상 저장소: {pm_home} (PM 홈 대체 입력: {inputs})'
     print(line, flush=True)
 
-def _guard_worktree_misanchor(home, action: str) -> bool:
+def _guard_worktree_wrong_repo(home, action: str) -> bool:
     """명시 Home이 PM 홈의 등록 worktree이면 안내 후 True를 반환한다.
 
     실행 시점의 Home을 사용하므로 코드 좌표를 import 시점에 고정하지 않는다."""
     target_repo = home.root
-    pm_home = pm_paths._pm_home_worktree_misanchor(home)
+    pm_home = pm_paths._pm_home_worktree_wrong_repo(home)
     if pm_home is None:
         return False
     print(f'[중단] `{action}` 을(를) worktree(코드 전용) 트리에서 실행했습니다 — board 상태는 PM 홈이 소유합니다. 이대로면 이 worktree 에 stray 티켓/log 를 잘못 만듭니다.\n  → PM 홈에서 실행하세요:  cd {pm_home}\n  (현재 대상 저장소: {target_repo})', file=sys.stderr)

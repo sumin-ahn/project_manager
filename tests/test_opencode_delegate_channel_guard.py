@@ -22,7 +22,7 @@ REPO = Path(__file__).resolve().parents[1]
 OPEN_LIB = REPO / "templates" / "opencode" / ".opencode" / "lib"
 OPEN_CORE = OPEN_LIB / "delegate-channel-core.cjs"
 OPEN_WARNING = OPEN_LIB / "warning-channel-core.cjs"
-OPEN_GIT_ANCHOR = OPEN_LIB / "git-check-core.cjs"
+OPEN_GIT_TARGET_REPO = OPEN_LIB / "git-check-core.cjs"
 OPEN_PLUGIN = (
     REPO / "templates" / "opencode" / ".opencode" / "plugins" / "delegate-channel.js"
 )
@@ -38,7 +38,7 @@ def _node() -> str:
 
 
 def _install_core(root: Path, *, with_engine: bool) -> Path:
-    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 형상 그대로.
+    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 구성 그대로.
 
     core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 판정
     엔진의 존재 여부는 이 픽스처 안에서 정해진다.
@@ -185,7 +185,7 @@ def test_opencode_plugin_shape_defaults_and_no_javascript_role_truth():
     assert OPEN_CORE.is_file() and OPEN_WARNING.is_file() and OPEN_PLUGIN.is_file()
     plugin = OPEN_PLUGIN.read_text(encoding="utf-8")
     core = OPEN_CORE.read_text(encoding="utf-8")
-    git_anchor = OPEN_GIT_ANCHOR.read_text(encoding="utf-8")
+    git_target_repo = OPEN_GIT_TARGET_REPO.read_text(encoding="utf-8")
     assert plugin.count("export const") == 1
     assert "DelegateChannelPlugin" in plugin
     assert 'toolName: "task"' in core
@@ -196,7 +196,7 @@ def test_opencode_plugin_shape_defaults_and_no_javascript_role_truth():
     assert 'worktree="/"' in core
     assert "directory || worktree" in core
     assert 'require("./warning-channel-core.cjs")' in core
-    assert 'require("./warning-channel-core.cjs")' in git_anchor
+    assert 'require("./warning-channel-core.cjs")' in git_target_repo
     for role in ROLES:
         assert f'"{role}"' not in core, f"JS must not duplicate Python role literal {role}"
 
@@ -598,7 +598,7 @@ for (const item of cases) {
   const got = core.judgeDelegation(root, root, item.role, null);
   assert.strictEqual(got.verdict, item.expected, JSON.stringify(item));
   assert.strictEqual(got.warning, undefined, got.reason);
-  // 스위치 off 의 처방은 conf 한 줄이다 — CLI 재실행을 권하면 그 실행이 다시 rc=3 이라 순환이다.
+  // 스위치 off 의 해결 방법은 conf 한 줄이다 — CLI 재실행을 권하면 그 실행이 다시 rc=3 이라 순환이다.
   if (got.verdict === "deny" && item.conf["delegate.enabled"] !== "false") {
     assert.match(got.reason, new RegExp(`--cwd ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.ok(!got.reason.includes("<worktree>"));
@@ -629,12 +629,12 @@ console.log(`REAL_PYTHON_PARITY_OK:${cases.length}`);
     assert f"REAL_PYTHON_PARITY_OK:{len(cases)}" in result.stdout
 
 
-def test_opencode_delegate_channel_cwd_axis_prefers_directory_over_root_worktree(tmp_path):
-    """판정 대상 cwd 축은 `directory || worktree || process.cwd()` 순 그대로다.
+def test_opencode_delegate_channel_cwd_source_prefers_directory_over_root_worktree(tmp_path):
+    """판정 대상 cwd 출처는 `directory || worktree || process.cwd()` 순 그대로다.
 
     라이브 1.18.12/1.18.5 프로브에서 worktree="/" 가 관측됐고 1.18.25 바이너리도 worktree!=="/"
     를 특례로 갖는다 — worktree 를 앞세우면 판정이 "/" 를 받는다. 엔진 루트를 자기 위치에서
-    받도록 바꾼 뒤에도 이 축은 payload 그대로여야 한다.
+    받도록 바꾼 뒤에도 이 출처는 payload 그대로여야 한다.
     """
     lib = _install_core(tmp_path / "install", with_engine=True)
     script = r"""
@@ -655,18 +655,18 @@ const m = require("./delegate-channel-core.cjs");
     client: {tui: {showToast: async () => {}}},
   });
   await hooks["tool.execute.before"](
-    {tool: "task", sessionID: "cwd-axis"},
+    {tool: "task", sessionID: "cwd-source"},
     {args: {subagent_type: "prober"}},
   );
   assert.deepStrictEqual(seen, ["/repo"]);
-  console.log("DELEGATE_CWD_AXIS_OK");
+  console.log("DELEGATE_CWD_SOURCE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 """
     result = subprocess.run(
         [_node(), "-e", script], cwd=lib, check=True,
         capture_output=True, text=True, encoding="utf-8",
     )
-    assert "DELEGATE_CWD_AXIS_OK" in result.stdout
+    assert "DELEGATE_CWD_SOURCE_OK" in result.stdout
 
 
 def test_opencode_delegate_channel_blocks_when_guard_engine_absent(tmp_path):
@@ -700,8 +700,8 @@ const repoWithEngine = process.argv[1];
   );
   const context = {system: []};
   await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
-  assert.deepStrictEqual(context.system, [], "차단 대신 경고로 강등됨");
-  assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 강등됨");
+  assert.deepStrictEqual(context.system, [], "차단 대신 경고로 수준이 낮아짐");
+  assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 수준이 낮아짐");
   console.log("DELEGATE_INSTALL_BLOCK_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 """

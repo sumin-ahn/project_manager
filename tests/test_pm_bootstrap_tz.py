@@ -1,8 +1,8 @@
-"""pm_bootstrap 시간대 폴백 + subprocess 인코딩 단위 테스트 (T-0018).
+"""pm_bootstrap 시간대 대체 동작 + subprocess 인코딩 단위 테스트 (T-0018).
 
 두 가지를 deterministic 하게 본다.
  (C4) zoneinfo 조회 실패(tzdata 부재 Windows / zoneinfo 부재 3.8-) 를 강제 시뮬레이션
-       하고, 모듈을 재로드해 KST 가 고정 UTC+9 오프셋으로 폴백하는지 — now(tz=KST) 의
+       하고, 모듈을 재로드해 KST 가 고정 UTC+9 오프셋으로 대체되는지 — now(tz=KST) 의
        타임스탬프가 +09:00 인지 검증한다. (이 머신은 tzdata 가 설치돼 있으므로 실제
        uninstall 대신 zoneinfo.ZoneInfo 를 ZoneInfoNotFoundError 로 throw 하게 monkeypatch.)
  (C3) board.py 를 캡처하는 subprocess.run 이 encoding="utf-8", errors="replace" 를 넘기는지
@@ -31,21 +31,21 @@ BOOTSTRAP_PY = TOOLS / "pm_bootstrap.py"
 
 
 def _load_module(name: str = "pm_bootstrap"):
-    """pm_bootstrap 를 fresh import 한다 (모듈-레벨 try/except 폴백을 재평가하기 위해)."""
+    """pm_bootstrap 를 fresh import 한다 (모듈-레벨 try/except 대체 동작을 재평가하기 위해)."""
     spec = importlib.util.spec_from_file_location(name, BOOTSTRAP_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-# ── C4: KST 시간대 폴백 ────────────────────────────────────────────────────
+# ── C4: KST 시간대 대체 동작 ────────────────────────────────────────────────
 
 def test_kst_falls_back_to_fixed_offset_when_zoneinfo_lookup_fails(monkeypatch):
-    """zoneinfo 조회가 ZoneInfoNotFoundError 로 깨지면 KST 가 고정 UTC+9 폴백이어야 한다.
+    """zoneinfo 조회가 ZoneInfoNotFoundError 로 깨지면 KST 가 고정 UTC+9 대체값이어야 한다.
 
     tzdata 부재 Windows / zoneinfo 부재 3.8- 의 실패 분기를 시뮬레이션한다.
     monkeypatch 로 zoneinfo.ZoneInfo 를 호출 시 ZoneInfoNotFoundError 를 던지게 한 뒤
-    모듈을 fresh exec → 모듈-레벨 try/except 가 폴백 가지를 타도록 강제한다.
+    모듈을 fresh exec → 모듈-레벨 try/except 가 대체 가지를 타도록 강제한다.
     """
     import zoneinfo
 
@@ -59,7 +59,7 @@ def test_kst_falls_back_to_fixed_offset_when_zoneinfo_lookup_fails(monkeypatch):
     isolated_clock = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(isolated_clock)
 
-    # 폴백은 datetime.timezone 의 고정 오프셋이어야 한다 (ZoneInfo 가 아님).
+    # 대체값은 datetime.timezone 의 고정 오프셋이어야 한다 (ZoneInfo 가 아님).
     assert isinstance(isolated_clock.KST, datetime.timezone)
     assert isolated_clock.KST.utcoffset(None) == datetime.timedelta(hours=9)
 
@@ -73,9 +73,9 @@ def test_kst_falls_back_to_fixed_offset_when_zoneinfo_lookup_fails(monkeypatch):
 def test_kst_uses_zoneinfo_when_available():
     """정상 경로(시스템 tz DB/tzdata 존재)에서는 KST 가 **ZoneInfo** 여야 한다 (리눅스/맥 보존).
 
-    UTC+9 만 단언하면 "try/except 가 항상 폴백을 타는" 회귀를 못 잡는다(폴백도 UTC+9 라
+    UTC+9 만 단언하면 "try/except 가 항상 대체 가지를 타는" 회귀를 못 잡는다(대체값도 UTC+9 라
     통과). 그래서 zoneinfo 가 실제로 Asia/Seoul 을 만들 수 있는 환경에서는 KST 가
-    datetime.timezone 폴백이 아니라 zoneinfo.ZoneInfo 인스턴스임을 단언해 정상 경로를 지킨다.
+    datetime.timezone 대체값이 아니라 zoneinfo.ZoneInfo 인스턴스임을 단언해 정상 경로를 지킨다.
     한국은 1988 이후 서머타임 없음 → 어느 경로든 오프셋은 동일 UTC+9. (codex NIT 반영)
     """
     import zoneinfo
@@ -84,13 +84,13 @@ def test_kst_uses_zoneinfo_when_available():
         zoneinfo.ZoneInfo("Asia/Seoul")
         zoneinfo_available = True
     except Exception:
-        zoneinfo_available = False  # tzdata 부재 Windows 등 — 폴백이 정상
+        zoneinfo_available = False  # tzdata 부재 Windows 등 — 대체값이 정상
 
     mod = _load_module()
     now = datetime.datetime.now(tz=clock.KST)
     assert now.utcoffset() == datetime.timedelta(hours=9)
     if zoneinfo_available:
-        # 정상 경로 보존 — 폴백으로 조용히 떨어지지 않았는지 가드.
+        # 정상 경로 보존 — 대체 동작으로 조용히 떨어지지 않았는지 가드.
         assert isinstance(clock.KST, zoneinfo.ZoneInfo)
 
 

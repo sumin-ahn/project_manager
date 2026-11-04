@@ -1,8 +1,8 @@
-"""T-0674 — canonical skill ↔ opencode command 기계 사본 정합 가드.
+"""T-0674 — canonical skill ↔ opencode command 기계 사본 일치 가드.
 
-command는 사람 슬래시 팔레트, skill은 모델 tool 표면이다. 저작 소스는 15건 전부 root
-``.claude/skills/<name>/SKILL.md`` 하나이며 flavor override 는 없다(T-0895). 이 가드는 실 파일
-전수 집합과 기계 생성 정합을 강제한다.
+command는 사람 슬래시 팔레트, skill은 모델 tool 쪽이다. 저작 소스는 15건 전부 root
+``.claude/skills/<name>/SKILL.md`` 하나이며 variant override 는 없다(T-0895). 이 가드는 실 파일
+전수 집합과 기계 생성 일치를 강제한다.
 
 **판정 층(T-0708)**: 기대값·실측값을 모두 `read_bytes()` 로 읽어 개행 표기만 LF로 정규화한
 **내용 동일성**이다(바이트 표기 동일성이 아니다). 체크아웃 표기는 채택자 설정 소관이고, 내용이
@@ -37,7 +37,7 @@ def _commands(root: Path) -> dict[str, Path]:
     return {p.stem: p for p in sorted(root.glob("*.md"))}
 
 
-# 링크 문자열과 렌더·읽기 층의 단일 진실은 공용 seam `_skill_command` 다.
+# 링크 문자열과 렌더·읽기 층의 단일 진실은 공용 함수 `_skill_command` 다.
 _DETAIL_LINK = DETAIL_LINK
 
 
@@ -109,7 +109,7 @@ def test_parity_guard_accepts_exact_generated_copy(tmp_path):
     assert _parity_errors(canonical, commands) == []
 
 
-# ── 개행 표기 축(T-0708) ────────────────────────────────────────────────────────
+# ── 개행 표기 기준(T-0708) ───────────────────────────────────────────────────────
 # CRLF 체크아웃(core.autocrlf=true·Windows)에서 실 파일은 CRLF다. 아래 픽스처가 그 표기를 LF
 # 환경에서도 재현해, 기대값만 텍스트-읽기로 만드는 층 혼합이 되살아나면 여기서 red가 된다.
 

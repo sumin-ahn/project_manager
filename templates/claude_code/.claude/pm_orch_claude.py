@@ -5,7 +5,7 @@
 엔진 공개 진입 `pm_engine.cli.hooks.run_relay` 가 이 클래스에 실제 파서·실행기·회전 판정·marker
 writer 를 공급해 구성한다. 이 파일은 **claude CLI 고유**한 부분만 —
 `claude -p [--session-id <uuid>|--resume <uuid>] --output-format stream-json` 을
-subprocess 로 호출하고 stream-json 을 파싱한다(PoC `run_turn` 골격 재사용).
+subprocess 로 호출하고 stream-json 을 파싱한다(PoC `run_turn` 틀 재사용).
 
 CLI 진입점: `python3 pm_orch_claude.py [--cwd <PM repo root>] [--model opus]`.
 사용자가 이 wrapper 를 띄우면 ctx 한계 도달 시 손 안 대고 새 PM 으로 자동 회전(연속 운영).
@@ -40,10 +40,10 @@ DEFAULT_MODEL = "claude-opus-5"  # PM 세션 기본 = opus (품질 우선·사�
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
 
 
-# 사용자 1회 허용 표식 — 사용자 프롬프트 훅이 허용 기록 진입 여부를 고르는 데만 쓴다.
+# 사용자 1회 허용 표시 — 사용자 프롬프트 훅이 허용 기록 진입 여부를 고르는 데만 쓴다.
 GIT_GRANT_MARKER = r"git[ \t]+허용[ \t]*:"
-# git-anchor 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 엔진이 입력을 본다.
-GIT_ANCHOR_SHELL_TOOL = "Bash"
+# git 명령 검사 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 엔진이 입력을 본다.
+GIT_TARGET_REPO_SHELL_TOOL = "Bash"
 
 
 def _hook_session_id(stdin: dict) -> str:
@@ -81,11 +81,11 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
     if not isinstance(prompt, str) or not re.search(GIT_GRANT_MARKER, prompt):
         return None
     cwd = stdin.get("cwd")
-    anchor = cwd if isinstance(cwd, str) and cwd else str(root)
+    target_repo = cwd if isinstance(cwd, str) and cwd else str(root)
     from pm_engine.cli import hooks
 
     try:
-        granted = hooks.record_git_grants(hooks.adapter_home(root), _hook_session_id(stdin), anchor, prompt)
+        granted = hooks.record_git_grants(hooks.adapter_home(root), _hook_session_id(stdin), target_repo, prompt)
     except ValueError as exc:
         return {
             "decision": "block",
@@ -101,15 +101,15 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": (
-                f"[git-check/허용] 사용자가 폴더 {anchor} 에서 다음 명령의 1회 실행을 허용했다: "
+                f"[git-check/허용] 사용자가 폴더 {target_repo} 에서 다음 명령의 1회 실행을 허용했다: "
                 f"{listed} — 그 명령을 원문 그대로 한 번만 실행한다"
             ),
         }
     }
 
 
-def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
-    """Claude 훅 입력을 엔진 공개 판정(`pm_engine.cli.hooks`)에 배선한다.
+def git_target_repo_hook_evaluate(stdin: dict, root: Path) -> dict | None:
+    """Claude 훅 입력을 엔진 공개 판정(`pm_engine.cli.hooks`)에 연결한다.
 
     PreToolUse(Bash) 는 ``judge_git_check_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
     PreToolUse 도구(settings matcher 가 연 쓰기·편집·위임 도구)는 ``judge_tool_input`` 으로(허용 위조·
@@ -123,15 +123,15 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     if event != "PreToolUse" or not isinstance(tool_input, dict):
         return None
     cwd = stdin.get("cwd")
-    anchor = cwd if isinstance(cwd, str) and cwd else str(root)
+    target_repo = cwd if isinstance(cwd, str) and cwd else str(root)
     session = _hook_session_id(stdin)
     main_thread = not ctx_guard.is_subagent_hook(stdin)
-    if tool != GIT_ANCHOR_SHELL_TOOL:
+    if tool != GIT_TARGET_REPO_SHELL_TOOL:
         from pm_engine.cli import hooks
 
         return _pre_tool_use_output(
             hooks.judge_tool_input(
-                hooks.adapter_home(root), session, anchor, tool, tool_input, main_thread=main_thread,
+                hooks.adapter_home(root), session, target_repo, tool, tool_input, main_thread=main_thread,
             )
         )
     command = tool_input.get("command")
@@ -142,7 +142,7 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
 
     return _pre_tool_use_output(
         hooks.judge_git_check_command(
-            hooks.adapter_home(root), session, anchor, command, main_thread=main_thread,
+            hooks.adapter_home(root), session, target_repo, command, main_thread=main_thread,
             grants=bool(session),
         )
     )
@@ -153,11 +153,11 @@ def _write_hook_json(output: dict) -> None:
 
     Windows 파이프 stdout 은 로케일 코덱(cp949)+``errors=strict`` 다. 판정 사유에는 한글과
     cp949 미매핑 문자(em dash·`✓`·`⚠`)가 실리므로 텍스트 write 는 ``UnicodeEncodeError`` 로
-    죽고 훅 출력이 통째로 사라진다 — bytes 를 직접 써서 그 표면을 없앤다.
+    죽고 훅 출력이 통째로 사라진다 — bytes 를 직접 써서 그 경로를 없앤다.
 
     **형태는 종전 그대로다**: 단일 JSON · 종결 개행 없음(Claude 훅 소비자 계약 §인터페이스).
-    엔진 seam(`pm_engine.infra.console.write_machine_line`)은 한 줄 종결(LF)을 붙이므로
-    이 자리에서 그대로 부르면 바이트 형태가 바뀐다. 그래서 seam 은 **인코딩 정책의 출처로만**
+    엔진 함수(`pm_engine.infra.console.write_machine_line`)는 한 줄 종결(LF)을 붙이므로
+    이 자리에서 그대로 부르면 바이트 형태가 바뀐다. 그래서 그 함수는 **인코딩 정책의 출처로만**
     참조하고(같은 규율: 텍스트 레이어 선-flush → UTF-8 bytes → flush), 쓰기는 표준 라이브러리로
     한다 — 어댑터가 엔진 사본에 묶이지 않는 기존 관례와도 같은 방향이다.
     """
@@ -175,7 +175,7 @@ def _write_hook_json(output: dict) -> None:
     buffer.flush()
 
 
-def _git_anchor_advisory_text(output: dict) -> str | None:
+def _git_target_repo_advisory_text(output: dict) -> str | None:
     """중복 억제 대상인 **비차단** advisory 본문 (아니면 None).
 
     deny 는 `permissionDecision` 으로 도구 실행을 실제로 막는다 — 같은 문구가 반복돼도
@@ -192,17 +192,17 @@ def _git_anchor_advisory_text(output: dict) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
-def _git_anchor_already_emitted(root: Path, payload: dict, output: dict | None) -> bool:
+def _git_target_repo_already_emitted(root: Path, payload: dict, output: dict | None) -> bool:
     """이 세션에서 **문자열이 완전히 같은** advisory 를 이미 냈으면 True (이번 호출은 stdout 0).
 
-    한 번 실린 훅 출력은 그 세션 컨텍스트에 그대로 쌓이므로 같은 문구의 반복 발화는
-    컨텍스트만 태운다(실측 — 발화 1,261회 중 52.7% 가 세션 내 완전일치 중복).
+    한 번 실린 훅 출력은 그 세션 컨텍스트에 그대로 쌓이므로 같은 문구의 반복 출력은
+    컨텍스트만 태운다(실측 — 출력 1,261회 중 52.7% 가 세션 내 완전일치 중복).
     판정 로직·차단 동작은 건드리지 않고 *같은 말을 두 번 하지 않을* 뿐이다.
 
     세션 1회 판정은 엔진 ``claim_notice`` 가 한다(세션키 파일명 안전화·문구 해시 키). ``seen`` 만
-    억제하고 ``unavailable``(멤버십 파일 I/O 실패)·비-advisory 는 False — 발화를 유지한다(fail-open).
+    억제하고 ``unavailable``(멤버십 파일 I/O 실패)·비-advisory 는 False — 출력을 유지한다(fail-open).
     """
-    text = _git_anchor_advisory_text(output) if output is not None else None
+    text = _git_target_repo_advisory_text(output) if output is not None else None
     if text is None:
         return False
     from pm_engine.cli import hooks
@@ -211,7 +211,7 @@ def _git_anchor_already_emitted(root: Path, payload: dict, output: dict | None) 
     return claimed["status"] == "seen"
 
 
-def run_git_anchor_hook(root: Path) -> int:
+def run_git_target_repo_hook(root: Path) -> int:
     """stdin JSON을 읽어 Claude hook JSON을 쓰는 얇은 CLI 모드."""
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -220,28 +220,28 @@ def run_git_anchor_hook(root: Path) -> int:
     if not isinstance(payload, dict):
         payload = {}
     try:
-        output = git_anchor_hook_evaluate(payload, root)
+        output = git_target_repo_hook_evaluate(payload, root)
     except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash를 막지 않는다.
         event = payload.get("hook_event_name") or payload.get("hookEventName")
         output = {
             "hookSpecificOutput": {
-                # 훅 출력의 이벤트 이름은 발화 이벤트와 같아야 한다(허용 기록 실패도 같은 경고 형태).
+                # 훅 출력의 이벤트 이름은 실행된 이벤트와 같아야 한다(허용 기록 실패도 같은 경고 형태).
                 "hookEventName": "UserPromptSubmit" if event == "UserPromptSubmit" else "PreToolUse",
                 "additionalContext": f"[git-check/warn] 판정 불가({exc}) — cwd를 직접 확인",
             }
         }
     else:
         # 세션 내 완전일치 중복은 낼 것을 비운다 — stdout 0바이트(빈 JSON 도 쓰지 않는다).
-        # 판정 인프라 손상 발화(위 except)는 이 게이트를 지나지 않는다(fail-open 무조건 발화).
-        if _git_anchor_already_emitted(root, payload, output):
+        # 판정 인프라 손상 출력(위 except)은 이 중복 억제를 지나지 않는다(fail-open 무조건 출력).
+        if _git_target_repo_already_emitted(root, payload, output):
             output = None
     if output is not None:
         _write_hook_json(output)
     return 0
 
 
-def _emit_git_anchor_boundary_warn(exc: BaseException) -> int:
-    """hook-mode 최외곽 실패를 Claude advisory JSON + rc0으로 강등한다."""
+def _emit_git_target_repo_boundary_warn(exc: BaseException) -> int:
+    """hook-mode 최외곽 실패를 Claude advisory JSON + rc0으로 낮춘다."""
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -256,7 +256,7 @@ class ClaudeCliDriver:
     """`claude -p` subprocess 로 PM 세션을 구동하는 SessionDriver (claude 고유 어댑터).
 
     얇다 — 세션 생명주기/회전/marker 는 엔진 Supervisor 가 쥐고, 이 driver 는 한 turn 의
-    claude CLI 호출 + stream-json 파싱만 한다. PoC run_turn 골격을 메서드로 재사용.
+    claude CLI 호출 + stream-json 파싱만 한다. PoC run_turn 틀을 메서드로 재사용.
     """
 
     def __init__(self, parse_stream_json, *, ctx_budget: int | None = None,
@@ -281,7 +281,7 @@ class ClaudeCliDriver:
         self.model = model
         self.claude_bin = claude_bin
         self.timeout = timeout
-        self.runner = runner  # subprocess.run seam(테스트 stub 가능).
+        self.runner = runner  # subprocess.run 교체 지점(테스트 stub 가능).
         # claude 의 세션 저장은 **cwd-scoped** — `--resume` 는 spawn 과 같은 cwd 에서만 그 세션을
         # 찾는다(다른 cwd 면 "No conversation found"). 따라서 driver 가 세션별 cwd 를 기억해
         # resume 에 재사용한다. 이건 *어댑터*-국소 세션 메타(claude CLI 고유)지 relay
@@ -312,7 +312,7 @@ class ClaudeCliDriver:
         """`-p` 1회성 turn 은 자동 exit(PoC 확증) — 명시 kill 불요. 세션 cwd 메타만 정리."""
         self._session_cwd.pop(session_id, None)
 
-    # ── claude CLI 한 turn (PoC run_turn 골격) ─────────────────────────────────
+    # ── claude CLI 한 turn (PoC run_turn 틀) ─────────────────────────────────
 
     def _turn(self, cwd, prompt, *, session_id=None, resume=None):
         """비대화 claude turn 1회. (observed_session_id, result_text, used_tokens) 반환.
@@ -419,9 +419,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             args = build_parser().parse_args(actual_argv)
             root = ctx_guard.repo_root(Path(__file__).resolve().parent)
-            return run_git_anchor_hook(root)
+            return run_git_target_repo_hook(root)
         except BaseException as exc:
-            return _emit_git_anchor_boundary_warn(exc)
+            return _emit_git_target_repo_boundary_warn(exc)
     parser = build_parser()
     args = parser.parse_args(actual_argv)
     if not args.task:

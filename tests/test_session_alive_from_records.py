@@ -1,13 +1,13 @@
 """세션 살아있음 판정 = 시작 기록과 종료 기록 (T-0920 AT-002).
 
-프로세스 조회로 세션 생존을 판정하던 축을 폐기하고, 판정을 장부의 두 값으로 옮겼다. 이 파일이
+프로세스 조회로 세션 생존을 판정하던 방식을 폐기하고, 판정을 대여 기록의 두 값으로 옮겼다. 이 파일이
 재는 것은 셋이다:
 
   1. **열림/닫힘 두 값** — 작업 폴더는 `state=="leased"` + 점유 `session` 이 열림이고, 그에 대응
      하는 종료 기록(`idle` + 빈 session)이 닫힘이다. 중간 상태·만료 시각은 없다.
   2. **산출 계약** — `status --json` 의 슬롯/task 행에 `pid` 키가 없고 `alive` 는 위 판정 그대로다.
   3. **되살아나지 않음** — 세션 pid 해소 식별자가 소스 전역에서 0이고, `pid_is_alive` 는 엔진이
-     직접 띄운 위임 자식 프로세스를 보는 `pm_delegate` 안에서만 불린다(세션 축 0).
+     직접 띄운 위임 자식 프로세스를 보는 `pm_delegate` 안에서만 불린다(세션 쪽 0).
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from pm_engine.cli import config_status
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# 폐기된 세션 pid 해소 축의 식별자 — 소스 어디에도 남으면 안 된다(다른 이름으로도 살아나지
+# 폐기된 세션 pid 해소 방식의 식별자 — 소스 어디에도 남으면 안 된다(다른 이름으로도 살아나지
 # 않게, 판정 함수 이름을 그대로 텍스트로 잰다).
 _RETIRED_IDENTIFIERS = (
     "session_pid",
@@ -39,14 +39,14 @@ _RETIRED_IDENTIFIERS = (
     "SessionPidUnresolved",
     "_session_pid",
 )
-# `pid_is_alive` 가 남아도 되는 유일한 축 — 엔진이 스스로 띄운 위임 자식 프로세스.
+# `pid_is_alive` 가 남아도 되는 유일한 쪽 — 엔진이 스스로 띄운 위임 자식 프로세스.
 _CHILD_PROCESS_OWNERS = frozenset({"delegate_cmd.py", "delegate_copy_store.py"})
 # 이 파일 자신은 그 식별자들을 문자열로 들고 있으므로 스캔 대상에서 뺀다.
 _SELF = Path(__file__).name
 
 
 def _sources() -> list[Path]:
-    """스캔 대상 — repo-owned 열거 seam 이 낸 `.py` 전부(직접 tree-walk 금지)."""
+    """스캔 대상 — repo-owned 열거 공용 함수가 낸 `.py` 전부(직접 tree-walk 금지)."""
     files: list[Path] = []
     for subtree in (".project_manager/tools", "manager", "tests"):
         files += [path for path in repo_owned_paths(REPO, subtree, mode=OWNED)
@@ -96,7 +96,7 @@ def test_a_readonly_row_is_closed_because_it_has_no_session(wp):
 
 
 def test_the_round_trip_of_a_real_release_flips_the_record(wp, tmp_path, monkeypatch):
-    """실 장부 왕복 — 대여가 열고 반납이 닫는다(값은 두 개뿐)."""
+    """실 대여 기록 왕복 — 대여가 열고 반납이 닫는다(값은 두 개뿐)."""
     monkeypatch.setattr(wp, "REPO", tmp_path)
     local_dir = tmp_path / ".project_manager" / ".local"
     assert pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/proj_1") == tmp_path / "work" / "proj_1"
@@ -192,7 +192,7 @@ def test_no_source_resolves_a_session_pid():
 
 
 def test_pid_liveness_is_only_asked_about_delegate_children():
-    """`pid_is_alive` 호출은 위임 자식 프로세스 축 하나뿐 — 세션 축 호출 0."""
+    """`pid_is_alive` 호출은 위임 자식 프로세스 쪽 하나뿐 — 세션 쪽 호출 0."""
     callers: list[str] = []
     for path in repo_owned_paths(REPO, ".project_manager/tools", mode=OWNED):
         if path.suffix != ".py":
@@ -205,7 +205,7 @@ def test_pid_liveness_is_only_asked_about_delegate_children():
                 if name == "pid_is_alive":
                     callers.append(path.name)
 
-    assert set(callers) == _CHILD_PROCESS_OWNERS, f"세션 축에서 생존을 조회한다: {sorted(set(callers))}"
+    assert set(callers) == _CHILD_PROCESS_OWNERS, f"세션 쪽에서 생존을 조회한다: {sorted(set(callers))}"
     assert len(callers) == 3, "위임 자식 조회 자리 수가 바뀌었다"
 
 
@@ -214,4 +214,4 @@ def test_no_engine_source_reintroduces_a_pool_liveness_helper():
     text = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
 
     assert "_pid_alive" not in text
-    assert "def reclaim_stale" not in text, "자동 회수는 대체하지 않고 지웠다"
+    assert "def reclaim_stale" not in text, "자동 되찾기는 대체하지 않고 지웠다"

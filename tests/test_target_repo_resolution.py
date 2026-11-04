@@ -238,7 +238,7 @@ def _foreign_commondir_worktree(tmp_path: Path) -> Path:
     "shape", ["foreign-commondir", "pm-home-without-project-manager"],
 )
 def test_unregistered_linked_worktree_fails_loud_without_demotion(tmp_path, shape):
-    """소유 PM 홈을 확정 못 하는 두 구성은 `AnchorResolutionError` — 슬롯으로 낮추지 않는다.
+    """소유 PM 홈을 확정 못 하는 두 구성은 `TargetRepoResolutionError` — 슬롯으로 낮추지 않는다.
 
     판정 입력은 대상 저장소의 `.git` commondir 구성과 유도된 홈의 `.project_manager` 실재 둘뿐
     이다. lease 기록은 슬롯 배정 기록이지 소유 증거가 아니라 판정에 들어가지 않는다 —
@@ -251,7 +251,7 @@ def test_unregistered_linked_worktree_fails_loud_without_demotion(tmp_path, shap
     else:
         _source, target_repo = _unregistered_worktree(tmp_path)
 
-    with pytest.raises(pm_paths.AnchorResolutionError) as caught:
+    with pytest.raises(pm_paths.TargetRepoResolutionError) as caught:
         pm_paths.resolve_pm_home_for_repo(target_repo)
     message = str(caught.value)
     assert "PM 홈을 찾지 못했습니다" in message
@@ -331,7 +331,7 @@ def test_pool_less_adopter_worktree_resolves_to_its_main_checkout(tmp_path):
     assert pm_paths.resolve_pm_home_for_repo(worktree) == adopter.resolve()
     assert pm_paths.resolve_pm_home_for_repo(snapshot) == adopter.resolve()
 
-    with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+    with pytest.raises(pm_paths.TargetRepoResolutionError, match="PM 홈을 찾지 못했습니다"):
         pm_paths.resolve_pm_home_for_repo(_foreign_commondir_worktree(tmp_path))
 
 
@@ -518,7 +518,7 @@ def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
     external = _load("additional_reviewer_unregistered_ticket_round_block")
     monkeypatch.setattr(external, "REPO", snapshot)
 
-    with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+    with pytest.raises(pm_paths.TargetRepoResolutionError, match="PM 홈을 찾지 못했습니다"):
         pm_paths.resolve_pm_home_for_repo(snapshot)
 
     side_effects = []
@@ -758,7 +758,7 @@ def test_boardless_review_oracle_is_sensitive_to_unconditional_anchor_error(
     monkeypatch.setattr(external, "REPO", worktree)
 
     def _old_half_fix(target_repo, **kwargs):
-        raise pm_paths.AnchorResolutionError("unconditional anchor error")
+        raise pm_paths.TargetRepoResolutionError("unconditional anchor error")
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", _old_half_fix)
     assert external.main(["--paths", "seed.txt", "--dry-run"]) == 1
@@ -995,7 +995,7 @@ def test_record_row_alone_cannot_claim_a_slot_of_another_repository(tmp_path):
     )
 
     external = _load("additional_reviewer_record_row_alone")
-    with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+    with pytest.raises(pm_paths.TargetRepoResolutionError, match="PM 홈을 찾지 못했습니다"):
         pm_paths.resolve_pm_home_for_repo(worktree)
 
 
@@ -1143,7 +1143,7 @@ def test_ticket_touching_other_registered_slot_names_anchor_mismatch(tmp_path):
     external = _load("additional_reviewer_other_slot")
 
     with pytest.raises(
-        pm_paths.AnchorResolutionError,
+        pm_paths.TargetRepoResolutionError,
         match="ticket touches가 실행 엔진 worktree와 다른 등록 worktree",
     ):
         reviewer_scope._resolve_diff_root(

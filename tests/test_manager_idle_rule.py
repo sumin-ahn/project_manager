@@ -5,7 +5,7 @@
 
 행은 실 명령이 만든 것을 실 `status --json` 으로 읽는다: 아이들 work 슬롯 · 대여된 채 pid 가
 죽은 work 슬롯 · readonly 공유 슬롯 · pid 0 인 task. readonly 슬롯은 `leased`+`pid 0`+
-`alive false` 라 순서가 없으면 "회수 대기" 로 오표시되고, 그러면 공유 슬롯마다 회수 사유가
+`alive false` 라 순서가 없으면 "반납 대기" 로 오표시되고, 그러면 공유 슬롯마다 반납 사유가
 붙는다(변경 동작은 어차피 없지만 사유가 거짓이 된다).
 """
 from __future__ import annotations
@@ -80,7 +80,7 @@ def rows(tmp_path_factory) -> dict[str, dict]:
         run(["release", created])
 
     # 열린 대여 행 = 종료 기록 없이 남은 대여. 반납한 슬롯 하나를 세션 이름으로 다시 잡는다
-    # (장부 IO 는 엔진 것을 그대로 쓴다).
+    # (대여 기록 IO 는 엔진 것을 그대로 쓴다).
     pool = load_pool(home)
     worktree_pool.alloc(pm_paths.home_at(pool.REPO), REPO_NAME, owner_task="demo_9")
 
@@ -118,7 +118,7 @@ def test_only_a_live_session_closes_the_change_actions(rows):
     assert _verdict(rows["task"])["actions"] == "change"          # 닫힌 task
     # 열린 기록은 변경 동작이 닫힌다 — 그 창이 아직 그 자리를 쥐고 있을 수 있다.
     assert _verdict(rows["open"])["actions"] == "disabled"
-    assert _verdict(rows["readonly"])["actions"] == "refresh"     # 변경 축이 아니다
+    assert _verdict(rows["readonly"])["actions"] == "refresh"     # 변경 대상이 아니다
 
 
 def test_a_live_session_row_is_disabled_by_the_same_table():

@@ -44,7 +44,7 @@ def alloc(home,
 
         def _finalize(lease: worktree_records.Lease, *, write_records: bool) -> worktree_records.Lease:
             if write_records:
-                pool_store._write_ledger(home, leases)
+                pool_store._write_records(home, leases)
             return lease
 
         # 3) idle 슬롯 대여 — **최소 번호 우선**(결정론 ⓒ·번호 안정). 같은 repo 의 idle
@@ -132,7 +132,7 @@ def release(home,
         target.session = ""       # 종료 기록 — 이후 `lease_is_open` 은 닫힘으로 읽는다.
         target.git = None    # release 시 정리 — idle 슬롯은 활성 git 기대가 없다(다음 alloc 이 다시 기록).
         target.bound = False  # 명시 반납 = bind 점유 종료 — 사람 bind 마커 해제(git=None 과 같은 teardown).
-        pool_store._write_ledger(home, leases)
+        pool_store._write_records(home, leases)
         return target
 
 
@@ -158,7 +158,7 @@ def force_release(home, slot: str, *, git_runner: worktree_records.GitRunner | N
         target.session = ""       # 종료 기록 — 사용자가 강제로 닫는 경로(엔진 자동 반납 없음).
         target.git = None    # release 시 정리(force 백스톱도 동일·다음 alloc 이 다시 기록).
         target.bound = False  # 강제 반납도 bind 점유 종료 — 사람 bind 마커 해제(release 와 같음).
-        pool_store._write_ledger(home, leases)
+        pool_store._write_records(home, leases)
         return target
 
 
@@ -241,7 +241,7 @@ def remove_slot(home,
         def _drop_record_row() -> None:
             """기록 엔트리 제거 — `add` 가 빈 번호를 재사용(락 보유 구간 안)."""
             leases[:] = [l for l in leases if l.slot != slot]
-            pool_store._write_ledger(home, leases)
+            pool_store._write_records(home, leases)
 
         # 슬롯 트리 부재 — 지울 디렉터리가 없으면 파괴할 것도, 등록을 물을 이유도 없다.
         # prune 이 남은 등록을 정리하고 기록 행만 지운다(dangling 정리·prune-stale 과 겹치는 방어).
@@ -425,7 +425,7 @@ def create_slot(home,
         provisional_recorded = folders is None
         if provisional_recorded:
             leases.append(provisional)
-            pool_store._write_ledger(home, leases)
+            pool_store._write_records(home, leases)
 
         # add 성공(=fs 에 worktree 생성) 여부 — except 청소가 롤백(remove) 대상을 판정한다. add 자체
         # 실패면 지울 worktree 가 없어 remove 를 안 부른다.
@@ -483,7 +483,7 @@ def create_slot(home,
                 sparse_checkout._require_sparse_git(prep_runner, target=slot)
                 sparse_checkout._require_tree_folders(folders, ref, prep_runner, target=slot)
                 leases.append(provisional)
-                pool_store._write_ledger(home, leases)
+                pool_store._write_records(home, leases)
                 provisional_recorded = True
             # worktree add 는 `.repos/<repo>.git` bare 컨텍스트에서 — 슬롯이 그 family repo 의
             # worktree 가 되게 한다. bare repo 도 `git -C <bare> worktree add <abs
@@ -647,7 +647,7 @@ def create_slot(home,
             # detach 한 tip). 작업 슬롯의 부모는 위 git 설정 기록이 진실이라 git 상태 기록이 base 를 두지 않는다.
             # git 상태 기록 예외는 전파한다(아래 청소가 provisional 을 지운다).
             slot_snapshot._apply_git_snapshot(home, provisional, base_branch=base, git_runner=git_runner)
-            pool_store._write_ledger(home, leases)
+            pool_store._write_records(home, leases)
             return provisional
         except BaseException:
             # **중단-안전 청소** — 실패(rc≠0 raise)·예외·KeyboardInterrupt 는 여기서 단일
@@ -663,7 +663,7 @@ def create_slot(home,
             finally:
                 if provisional_recorded:
                     leases[:] = [l for l in leases if l.slot != slot]
-                    pool_store._write_ledger(home, leases)
+                    pool_store._write_records(home, leases)
             raise
 
 
@@ -714,7 +714,7 @@ def prune_stale_leases(home) -> list[str]:
         (leased 재사용·incomplete 정리는 release/사용자 몫.)
 
     조회-전용 reconcile 과 분리한 **명시 user-invoked 프리미티브**(`pm-config worktree prune-stale`)라
-    status 는 여전히 부작용 0 다. `_lease_lock` + `_write_ledger`(atomic·다른 기록 op 와 동일 직렬화).
+    status 는 여전히 부작용 0 다. `_lease_lock` + `_write_records`(atomic·다른 기록 op 와 동일 직렬화).
     fs 존재 판정뿐이라 git 불요(hermetic).
     """
     pruned: list[str] = []
@@ -723,7 +723,7 @@ def prune_stale_leases(home) -> list[str]:
         kept = [l for l in leases if pm_paths.slot_path(home, l.slot).exists()]
         pruned = [l.slot for l in leases if not pm_paths.slot_path(home, l.slot).exists()]
         if pruned:
-            pool_store._write_ledger(home, kept)
+            pool_store._write_records(home, kept)
     return pruned
 
 
@@ -736,7 +736,7 @@ def set_test_cmd(home, slot: str, cmd: str | None) -> worktree_records.Lease:
     CLI 서브커맨드는 만들지 않는다(콘솔 `[b]` + worktree add 프롬프트로 충분·결정 §setter 단순화).
 
     create_slot 의 lease test_cmd 바인딩과 *같은* flock + atomic write 패턴을 재사용한다
-    (`_lease_lock` 으로 read-modify-write 직렬화 → `_write_ledger` atomic replace). 기록에
+    (`_lease_lock` 으로 read-modify-write 직렬화 → `_write_records` atomic replace). 기록에
     슬롯이 없으면 **`KeyError`** raise(침묵 무력화 금지 — 호출부가 명시 안내). 갱신된
     Lease 를 반환한다. `cmd=None` 이면 바인딩 해제(repo areas/local.conf 를 대신 씀·현행).
     """
@@ -746,5 +746,5 @@ def set_test_cmd(home, slot: str, cmd: str | None) -> worktree_records.Lease:
         if target is None:
             raise KeyError(f"no lease for slot {slot!r}")
         target.test_cmd = cmd
-        pool_store._write_ledger(home, leases)
+        pool_store._write_records(home, leases)
         return target

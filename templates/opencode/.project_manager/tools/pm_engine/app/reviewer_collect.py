@@ -106,7 +106,7 @@ def _collect_target_ticket(
         return None, None                     # 자유 문자열 리뷰 집계 티켓 — 돌려받을 대상 아님(조용).
     try:
         round_store._find_ticket_file(home, review_ticket, )
-    except pm_paths.AnchorResolutionError as exc:
+    except pm_paths.TargetRepoResolutionError as exc:
         return None, f"리뷰 집계 티켓 {review_ticket} 를 보드에서 찾지 못해 돌려받지 않았습니다: {exc}"
     return review_ticket, None
 
@@ -143,7 +143,7 @@ def _collect_target_ticket_state(
                 home, ticket, ticket_text=ticket_text,
             ),
         )
-    except (pm_paths.AnchorResolutionError, OSError, UnicodeError) as exc:
+    except (pm_paths.TargetRepoResolutionError, OSError, UnicodeError) as exc:
         print(
             f"경고: {ticket} 본문을 읽지 못했습니다({exc}) — {degraded}",
             file=sys.stderr,
@@ -168,7 +168,7 @@ def _next_external_finding_id(home, args, ) -> str | None:
     )
 
 
-def _harvest_additional_reviewer_section(
+def _collect_additional_reviewer_section(
     home, ticket: str, result: dict, ) -> str | None:
     """추가 리뷰어 산출을 리뷰 집계 티켓의 새 `additional-reviewer` 라운드 파일로 돌려받는다.
 
@@ -403,7 +403,7 @@ def _run_review_round(
                 + ("호출이 없던 라운드라 예약은 되돌렸습니다(상한·세션 호출 예산 미소진)."
                    if refunded else
                    "이 라운드는 미완으로 남아 다음 실행의 재시도 예산에서 세어집니다.")
-                + f" (기록 파일: {review_rounds._round_ledger_path(home)})",
+                + f" (기록 파일: {review_rounds._round_record_path(home)})",
                 file=sys.stderr,
             )
 
@@ -422,7 +422,7 @@ def _run_review_round(
             file=sys.stderr,
         )
     if collect_ticket and started and not result.get("failed"):
-        problem = _harvest_additional_reviewer_section(
+        problem = _collect_additional_reviewer_section(
             home, collect_ticket, result, )
         if problem is not None:
             print(

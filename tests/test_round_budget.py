@@ -47,7 +47,7 @@ from pm_engine.infra import repo_files
 import pytest
 
 from _test_exec import python_argv_command
-from conftest import anchor_board_module
+from conftest import target_repo_board_module
 from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.app import regression
 from pm_engine.domain import delegate_errors, review_form, review_state
@@ -1452,7 +1452,7 @@ _TEMPLATE_TEXT = (
 def board_env(tmp_path, monkeypatch):
     """실 board git + 코드 git — `cluster replan` 이 쓰는 두 저장소."""
     board = _load_tool("board", "board_replan")
-    anchor_board_module(board, tmp_path, monkeypatch)
+    target_repo_board_module(board, tmp_path, monkeypatch)
     (pm_paths.wiki_dir(pm_paths.home_at(board.REPO)) / "board.md").parent.mkdir(parents=True, exist_ok=True)
     (pm_paths.wiki_dir(pm_paths.home_at(board.REPO)) / "board.md").touch()
     for key, value in _GIT_IDENTITY.items():

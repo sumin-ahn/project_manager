@@ -64,10 +64,10 @@ ARCHITECTURE_TAGS = {
 }
 
 
-def _tag(table: dict[str, str], value: str, axis: str) -> str:
+def _tag(table: dict[str, str], value: str, kind: str) -> str:
     if value not in table:
         raise ValueError(
-            f"빌드 대상이 아닌 {axis}: {value!r} (아는 값: {sorted(table)})")
+            f"빌드 대상이 아닌 {kind}: {value!r} (아는 값: {sorted(table)})")
     return table[value]
 
 
@@ -225,7 +225,7 @@ def run_pyinstaller() -> None:
 
     서브프로세스로 부르려면 자기 인터프리터 경로(`sys.executable`)를 써야 하는데, 그 이름은
     관리자 자신을 다시 띄우는 명령(`desktop_entry.py`) 한 자리에만 두고, 회귀가 그 밖의 자리를
-    막는다(번들에서 그것은 관리자 실행 파일 자신이다). in-process 호출은 그 축을 아예 만들지 않는다.
+    막는다(번들에서 그것은 관리자 실행 파일 자신이다). in-process 호출은 그 경로를 아예 만들지 않는다.
     """
     import PyInstaller.__main__
 

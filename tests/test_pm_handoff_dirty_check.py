@@ -1,22 +1,22 @@
-"""pm_handoff dirty-tree 게이트 단위테스트 ([0/7]·T-0609).
+"""pm_handoff dirty-tree 검사 단위테스트 ([0/7]·T-0609).
 
-핸드오프 시작 시점의 불변식 — **실행 앵커 트리는 clean(gitignored 제외)** — 을 기계 차단으로
+핸드오프 시작 시점의 불변식 — **실행 기준 트리는 clean(gitignored 제외)** — 을 기계 차단으로
 고정한다. 계기: 세션 산출 11파일이 미커밋인 채 핸드오프가 완결·커밋·push 됐고 다음 세션
 부트스트랩이 뒤늦게 발견했다([6/7] git status dump 는 보여주기만 하고 차단하지 않는다).
 
 고정하는 성질:
   - clean → 통과(현행 흐름 100% 보존·log skeleton 이 실제로 append 된다).
   - dirty → rc 1 차단 + 파일 목록 열거. **차단 시점이 load-bearing** 이라 log/dashboard·task
-    장부 어떤 mutation 도 일어나지 않았음을 함께 단언한다(재실행 중복 entry 0). 회귀보다도 앞.
+    기록 어떤 mutation 도 일어나지 않았음을 함께 단언한다(재실행 중복 entry 0). 회귀보다도 앞.
   - 판정 범위 = PM 홈 + **활성 worktree 전수**(task 보유 슬롯 / slot·솔로 활성 슬롯). PM 홈
     `.gitignore` 가 `work/` 를 ignore 하므로 슬롯을 따로 안 보면 영영 안 잡힌다.
-  - `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 박제(단일행 평탄화·빈 사유 거부).
-  - `--auto-trigger`(비대화 자동 실행 전용 신호) → 차단 대신 loud 경고 + 사유 자동 박제.
+  - `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 기록(단일행 평탄화·빈 사유 거부).
+  - `--auto-trigger`(비대화 자동 실행 전용 신호) → 차단 대신 loud 경고 + 사유 자동 기록.
   - 같은-세션 재실행 → 기존 entry 에 ack 줄 **멱등 upsert**(콘솔로 흘리지 않는다).
   - `--dry-run` → 판정 결과 미리보기만(차단 없음).
   - unborn HEAD(커밋 0) → 판정 불가가 아니라 **전량 미커밋**으로 판정. 비-git 트리만 비차단 경고.
 
-기계 테스트는 실 회귀 미접촉 — git seam 은 `-C <tree>` 를 읽는 결정론 stub DI, log/playbook/
+기계 테스트는 실 회귀 미접촉 — git 교체 지점은 `-C <tree>` 를 읽는 결정론 stub DI, log/playbook/
 pm_state 는 tmp 주입, `REPO` 는 monkeypatch. 마지막 절만 **실 git 바이너리**로 `--exclude-standard`
 의미(gitignored 제외·staged 신규·tracked 수정)와 unborn HEAD 를 실측한다.
 """
@@ -51,9 +51,9 @@ requires_git_binary = pytest.mark.skipif(
 
 
 def _run_handoff(inst, **kw):
-    """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
+    """핸드오프 실행 — 승인 검사에 정식 승인값을 실어 통과시킨다.
 
-    이 모듈의 축은 dirty-tree 게이트이지 사용자-명시 승인 게이트가 아니다(그 축은
+    이 모듈의 대상은 dirty-tree 검사이지 사용자-명시 승인 검사가 아니다(그 대상은
     ``tests/test_pm_handoff_user_ack.py``가 소유한다). 승인 대상값은 정체성 그 자체, 곧 task
     이름이다 — `_make_handoff` 가 깐 task 행을 쓴다.
     """
@@ -73,14 +73,14 @@ def hf():
     return _load()
 
 
-# ── git seam stub (트리별 dirty 응답) ─────────────────────────────────────────
+# ── git 교체 지점 stub (트리별 dirty 응답) ───────────────────────────────────────
 #
-# 게이트가 트리마다 부르는 명령(실코드 `_dirty_paths_in_tree`·`_unborn_head_dirty_paths` 기준):
+# 검사가 트리마다 부르는 명령(실코드 `_dirty_paths_in_tree`·`_unborn_head_dirty_paths` 기준):
 #   git -C <tree> diff --name-only --ignore-submodules=none HEAD
 #                                                       → tracked 미커밋 + gitlink drift
 #   git -C <tree> ls-files --others --exclude-standard → untracked(gitignored 제외)
 #   git -C <tree> rev-parse --verify --quiet HEAD      → 커밋 유무(unborn 정련·diff 실패 시에만)
-#   git -C <tree> diff --cached --name-only            → index 축(**커밋 0 트리 한정** — 전량
+#   git -C <tree> diff --cached --name-only            → index 기준(**커밋 0 트리 한정** — 전량
 #                                                        `git add` 된 트리를 clean 으로 오판하지
 #                                                        않게 untracked 와 union 한다)
 #   git -C <tree> submodule status --recursive         → 등록된 submodule working tree 전수
@@ -106,7 +106,7 @@ def _git_stub(dirty: dict[str, tuple[list[str], list[str]]] | None = None, *,
     `staged`         = 트리 → `diff --cached --name-only` 목록. **커밋 0 트리에서만 소비된다** —
                        엔진이 그 조회를 unborn 정련 경로에서만 부르기 때문이다(그래서 이 값은
                        `unborn_trees` 와 짝으로 준다).
-    `submodules`      = 앵커 트리 → `submodule status --recursive` 가 열거할 상대경로 전수.
+    `submodules`      = 기준 트리 → `submodule status --recursive` 가 열거할 상대경로 전수.
     `gitlink_drift`   = 트리 → 상위 pin 과 다른 submodule 경로. stub 은 tracked diff 에
                         `--ignore-submodules=none` 이 있을 때만 이를 돌려줘 `ignore = all` override 를
                         모델한다.
@@ -114,7 +114,7 @@ def _git_stub(dirty: dict[str, tuple[list[str], list[str]]] | None = None, *,
     `non_git_trees`  = 모든 조회 rc 128(비-git 트리·판정 불가).
     `unborn_trees`   = 커밋 0 — `diff HEAD` 와 `rev-parse HEAD` 는 실패하고 `diff --cached`·
                        `ls-files` 만 답한다(실 git 의 unborn 동작·아래 실측 테스트가 이 stub
-                       형상을 검증한다).
+                       모양을 검증한다).
     """
     table = dirty or {}
     staged_table = staged or {}
@@ -140,7 +140,7 @@ def _git_stub(dirty: dict[str, tuple[list[str], list[str]]] | None = None, *,
                 return 128, ""
             return 0, "abc123\n"
         if "diff" in args:
-            if "--cached" in args:      # unborn 정련 축 — index 에 올라간 것.
+            if "--cached" in args:      # unborn 정련 기준 — index 에 올라간 것.
                 return 0, _lines(staged_table.get(tree, []))
             if any(".." in arg for arg in args):
                 return 0, ""            # 커밋된-미push 없음([1b] 출하 surface).
@@ -154,7 +154,7 @@ def _git_stub(dirty: dict[str, tuple[list[str], list[str]]] | None = None, *,
 
 
 class _TaskPool:
-    """task membership + 보유 슬롯만 답하고 장부 mutation 호출을 기록하는 최소 seam."""
+    """task membership + 보유 슬롯만 답하고 기록 mutation 호출을 기록하는 최소 교체 지점."""
 
     def __init__(self, slots: tuple[str, ...] = ()):
         self._slots = slots
@@ -165,14 +165,14 @@ class _TaskPool:
         return type("_T", (), {"name": name, "open": False})()
 
     def find_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.find_task(name)
 
     def slots_for_task(self, name):
         return [type("_L", (), {"slot": slot})() for slot in self._slots]
 
     def slots_for_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.slots_for_task(name)
 
     def close_task_session(self, name):
@@ -194,7 +194,7 @@ _TASK_PM_STATE = """# task state
 
 
 def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None, task_mode: bool=False, task: str=TASK):
-    'REPO 를 tmp 로 핀한 hermetic PmHandoff — log/playbook/dashboard 는 tmp 주입.\n\n    `REPO` 핀이 load-bearing 이다: 게이트의 판정 앵커(PM 홈 트리)가 곧 `REPO` 라, 실 repo 를\n    보면 개발 중 작업트리 상태에 따라 결과가 흔들린다(결정성 상실).\n\n    `task_mode=True` 면 **pm_state 를 명시 주입하지 않는다** — 명시 주입은\n    `_pm_state_file_explicit` 를 세워 `task_mode` 를 False 로 만들고, 그러면 task pid=0 기록\n    같은 task 장부 경로가 아예 실행되지 않아 "게이트가 그 앞에서 멈췄다"를 검증할 수 없다.\n    대신 task 서술 공간(`.local/tasks/<task>/pm_state.md`)에 실제 state 를 깔아 준다.\n    '
+    'REPO 를 tmp 로 핀한 hermetic PmHandoff — log/playbook/dashboard 는 tmp 주입.\n\n    `REPO` 핀이 load-bearing 이다: 검사의 판정 기준(PM 홈 트리)이 곧 `REPO` 라, 실 repo 를\n    보면 개발 중 작업트리 상태에 따라 결과가 흔들린다(결정성 상실).\n\n    `task_mode=True` 면 **pm_state 를 명시 주입하지 않는다** — 명시 주입은\n    `_pm_state_file_explicit` 를 세워 `task_mode` 를 False 로 만들고, 그러면 task pid=0 기록\n    같은 task 기록 경로가 아예 실행되지 않아 "검사가 그 앞에서 멈췄다"를 검증할 수 없다.\n    대신 task 서술 공간(`.local/tasks/<task>/pm_state.md`)에 실제 state 를 깔아 준다.\n    '
     home = pm_paths.home_at(tmp_path)
     seed_slot(tmp_path, session=task, tasks=[{'name': task, 'prefix': None}])
     if pool is None:
@@ -202,7 +202,7 @@ def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None, tas
     log_file = tmp_path / 'current.md'
     playbook_file = tmp_path / 'pm_playbook.md'
     log_file.write_text('# log\n', encoding='utf-8')
-    playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
+    playbook_file.write_text('# pm_playbook (no marker)\n', encoding='utf-8')
     kwargs = {}
     if task_mode:
         task_state = tmp_path / '.project_manager' / '.local' / 'tasks' / task / 'pm_state.md'
@@ -223,7 +223,7 @@ _DIRTY_TWO = ([".claude/agents/developer.md"], ["docs/new-note.md"])
 # ── clean 통과 ────────────────────────────────────────────────────────────────
 
 def test_clean_tree_passes_and_appends_entry(hf, tmp_path, monkeypatch, capsys):
-    """clean → rc 0·게이트 통과 표시·[2/7] log skeleton 이 실제로 append 된다."""
+    """clean → rc 0·검사 통과 표시·[2/7] log skeleton 이 실제로 append 된다."""
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=_git_stub())
 
     rc = _run_handoff(inst, dry_run=False, skip_pytest=True)
@@ -246,7 +246,7 @@ def test_clean_tree_entry_has_no_ack_line(hf, tmp_path, monkeypatch):
 # ── dirty 차단 (rc 1 · 파일 목록 · 회귀보다 앞 · 첫 mutation 전) ──────────────
 
 def test_dirty_tree_blocks_with_rc1_and_file_list(hf, tmp_path, monkeypatch, capsys):
-    """dirty → rc 1 + 잔여 파일 목록 열거 + 커밋/`--ack-dirty` 안내."""
+    """dirty → rc 1 + 남은 파일 목록 열거 + 커밋/`--ack-dirty` 안내."""
     inst, _log = _make_handoff(
         hf, tmp_path, monkeypatch,
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
@@ -263,8 +263,8 @@ def test_dirty_tree_blocks_with_rc1_and_file_list(hf, tmp_path, monkeypatch, cap
     assert "--ack-dirty" in captured.err
 
 
-def test_dirty_gate_runs_before_regression(hf, tmp_path, monkeypatch, capsys):
-    """게이트는 회귀([1/7]) **앞**이다 — 차단 시 pytest 는 호출조차 되지 않는다.
+def test_dirty_check_runs_before_regression(hf, tmp_path, monkeypatch, capsys):
+    """검사는 회귀([1/7]) **앞**이다 — 차단 시 pytest 는 호출조차 되지 않는다.
 
     판정은 git 조회 몇 번인데 회귀는 수 분이다. 뒤에 두면 "커밋만 하면 될" PM 이 회귀 한 판을
     통째로 기다린 뒤에야 차단 사유를 본다.
@@ -309,16 +309,16 @@ def test_dirty_rerun_after_block_is_still_first_entry(hf, tmp_path, monkeypatch)
     )
     assert _run_handoff(inst, dry_run=False, skip_pytest=True) == 1
 
-    inst._run_git_fn = _git_stub()      # 잔여를 커밋했다 — 이제 clean.
+    inst._run_git_fn = _git_stub()      # 남은 파일을 커밋했다 — 이제 clean.
     assert _run_handoff(inst, dry_run=False, skip_pytest=True) == 0
 
     assert log_file.read_text(encoding="utf-8").count("handoff | PM 2차") == 1
 
 
-# ── task 장부 무접촉 (task_mode 참 구성 · sensitivity 대조군 포함) ────────────
+# ── task 기록 무접촉 (task_mode 참 구성 · sensitivity 대조군 포함) ────────────
 
 def test_dirty_block_does_not_close_task_session(hf, tmp_path, monkeypatch, capsys):
-    """task 모드 차단은 pid=0 기록(첫 장부 mutation) **전**에 멈춘다."""
+    """task 모드 차단은 pid=0 기록(첫 기록 mutation) **전**에 멈춘다."""
     pool = bind_pool(monkeypatch, _TaskPool())
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
@@ -331,9 +331,9 @@ def test_dirty_block_does_not_close_task_session(hf, tmp_path, monkeypatch, caps
                   skip_pytest=True, task="alpha")
 
     assert rc == 1
-    # rc 1 의 유래가 게이트임을 메시지로 고정(다른 중단과 혼동 금지).
+    # rc 1 의 유래가 이 검사임을 메시지로 고정(다른 중단과 혼동 금지).
     assert "핸드오프 시작 시점에 남은 미커밋 변경" in capsys.readouterr().err
-    assert pool.released == []          # pid=0 기록 = 첫 장부 mutation — 도달하지 않았다.
+    assert pool.released == []          # pid=0 기록 = 첫 기록 mutation — 도달하지 않았다.
     assert log_file.read_bytes() == before
 
 
@@ -346,7 +346,7 @@ _ASK_COMMIT_OR_FORCE = (
 )
 
 
-def test_task_mode_gate_covers_held_slots(hf, tmp_path, monkeypatch, capsys):
+def test_task_mode_check_covers_held_slots(hf, tmp_path, monkeypatch, capsys):
     """PM 홈이 clean 이어도 **보유 슬롯**에 커밋 안 한 변경이 있으면 기록 전에 멈추고 사용자에게 묻게 한다."""
     slot_dir = tmp_path / "work" / "app_1"
     slot_dir.mkdir(parents=True)
@@ -362,7 +362,7 @@ def test_task_mode_gate_covers_held_slots(hf, tmp_path, monkeypatch, capsys):
 
     assert rc == 1
     captured = capsys.readouterr()
-    assert _ASK_COMMIT_OR_FORCE in captured.err       # rc 1 유래 = 슬롯 게이트.
+    assert _ASK_COMMIT_OR_FORCE in captured.err       # rc 1 유래 = 슬롯 검사.
     assert "--force-handoff" in captured.err
     assert str(slot_dir) in captured.out
     assert "src/leftover.py" in captured.out
@@ -422,7 +422,7 @@ def test_ack_dirty_does_not_pass_slot_changes(hf, tmp_path, monkeypatch, capsys)
 
 
 def test_force_handoff_with_home_ack_stamps_both_notes(hf, tmp_path, monkeypatch):
-    """슬롯 변경(`--force-handoff`)과 PM 홈 잔여(`--ack-dirty`)가 함께면 두 사유를 한 줄에 함께 적는다."""
+    """슬롯 변경(`--force-handoff`)과 PM 홈 남은 변경(`--ack-dirty`)가 함께면 두 사유를 한 줄에 함께 적는다."""
     slot_dir = _dirty_slot(tmp_path)
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch, pool=_TaskKeepPool(slots=("work/app_1",)),
@@ -438,7 +438,7 @@ def test_force_handoff_with_home_ack_stamps_both_notes(hf, tmp_path, monkeypatch
 
 
 def test_force_handoff_does_not_pass_pm_home_changes(hf, tmp_path, monkeypatch, capsys):
-    """PM 홈 잔여만 있을 때 `--force-handoff` 는 넘는 수단이 아니다 — 무시 안내 + 기존 차단."""
+    """PM 홈 남은 변경만 있을 때 `--force-handoff` 는 넘는 수단이 아니다 — 무시 안내 + 기존 차단."""
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch, pool=_TaskKeepPool(slots=("work/app_1",)),
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
@@ -489,12 +489,12 @@ def test_cli_force_handoff_flag_defaults_off_and_reaches_run(hf, monkeypatch, tm
 
 
 
-def test_gate_trees_dedup_pm_home_and_stale_slot(hf, tmp_path, monkeypatch):
-    'stale 슬롯(디렉토리 부재)은 `_regression_cwd` 가 REPO 로 폴백 — 중복 판정하지 않는다.'
+def test_check_trees_dedup_pm_home_and_stale_slot(hf, tmp_path, monkeypatch):
+    'stale 슬롯(디렉토리 부재)은 `_regression_cwd` 가 REPO 로 대체 — 중복 판정하지 않는다.'
     home = pm_paths.home_at(tmp_path)
     inst = pm_engine.cli.handoff.PmHandoff(home, run_git_fn=_git_stub())
     inst._task_slots_snapshot = ('alpha', ('work/missing_9',))
-    trees = pm_engine.cli.handoff_dirty._dirty_gate_trees(home, held_slots=inst._task_slots_snapshot[1])
+    trees = pm_engine.cli.handoff_dirty._dirty_check_trees(home, held_slots=inst._task_slots_snapshot[1])
     assert trees == [str(tmp_path)]
 
 
@@ -529,7 +529,7 @@ def test_submodule_discovery_reuses_shared_parser_requests_recursive_and_skips_u
 
 
 def test_submodule_dirty_blocks_and_lists_parent_relative_paths(hf, tmp_path, monkeypatch, capsys):
-    """재귀 열거된 모든 submodule 의 내부 잔여를 앵커 상대경로로 합쳐 차단한다."""
+    """재귀 열거된 모든 submodule 의 내부 남은 변경을 기준 트리 상대경로로 합쳐 차단한다."""
     board = tmp_path / ".project_manager" / "board"
     nested = tmp_path / "vendor" / "outer" / "inner"
     runner = _git_stub(
@@ -553,7 +553,7 @@ def test_submodule_dirty_blocks_and_lists_parent_relative_paths(hf, tmp_path, mo
 
 
 def test_gitlink_pin_drift_blocks_via_ignore_submodules_none(hf, tmp_path, monkeypatch, capsys):
-    """상위 pin ≠ submodule HEAD 는 `ignore = all` 모델에서도 tracked 축이 차단한다."""
+    """상위 pin ≠ submodule HEAD 는 `ignore = all` 모델에서도 tracked 기준이 차단한다."""
     calls: list[list[str]] = []
     runner = _git_stub(
         submodules={str(tmp_path): (".project_manager/board",)},
@@ -572,7 +572,7 @@ def test_gitlink_pin_drift_blocks_via_ignore_submodules_none(hf, tmp_path, monke
 
 
 def test_parent_and_registered_submodule_clean_pass(hf, tmp_path, monkeypatch, capsys):
-    """앵커와 등록 submodule 모두 clean 이면 기존 핸드오프 흐름을 그대로 통과한다."""
+    """기준 트리와 등록 submodule 모두 clean 이면 기존 핸드오프 흐름을 그대로 통과한다."""
     runner = _git_stub(
         submodules={str(tmp_path): (".project_manager/board",)},
     )
@@ -616,8 +616,8 @@ def test_submodule_status_failure_warns_without_blocking(hf, tmp_path, monkeypat
     assert "PM 2차" in log_file.read_text(encoding="utf-8")
 
 
-def test_ignore_all_override_closes_internal_dirty_and_gitlink_axes(hf, tmp_path, monkeypatch, capsys):
-    """`ignore = all` 모델에서도 내부 파일·gitlink drift 두 축을 함께 놓치지 않는다."""
+def test_ignore_all_override_closes_internal_dirty_and_gitlink_kinds(hf, tmp_path, monkeypatch, capsys):
+    """`ignore = all` 모델에서도 내부 파일·gitlink drift 두 기준을 함께 놓치지 않는다."""
     board = tmp_path / ".project_manager" / "board"
     calls: list[list[str]] = []
     runner = _git_stub(
@@ -640,28 +640,28 @@ def test_ignore_all_override_closes_internal_dirty_and_gitlink_axes(hf, tmp_path
     )
 
 
-# ── --ack-dirty override (사유 필수·단일행·entry 박제) ───────────────────────
+# ── --ack-dirty override (사유 필수·단일행·entry 기록) ───────────────────────
 
 def test_ack_dirty_passes_and_stamps_reason(hf, tmp_path, monkeypatch, capsys):
-    """`--ack-dirty "<사유>"` → rc 0 + handoff entry 에 사유·잔여 건수 박제."""
+    """`--ack-dirty "<사유>"` → rc 0 + handoff entry 에 사유·남은 건수 기록."""
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
     rc = _run_handoff(inst, dry_run=False, skip_pytest=True,
-                  ack_dirty="어댑터 사본은 다음 세션 릴리즈 wave 에서 커밋")
+                  ack_dirty="어댑터 사본은 다음 세션 릴리즈 작업에서 커밋")
 
     assert rc == 0
     entry = log_file.read_text(encoding="utf-8")
     assert pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL in entry
-    assert "어댑터 사본은 다음 세션 릴리즈 wave 에서 커밋" in entry
+    assert "어댑터 사본은 다음 세션 릴리즈 작업에서 커밋" in entry
     assert "미커밋 2건" in entry
     assert "--ack-dirty override" in capsys.readouterr().out
 
 
 def test_ack_dirty_on_clean_tree_stamps_nothing(hf, tmp_path, monkeypatch, capsys):
-    """clean 인데 ack 를 줘도 박제하지 않는다 (없는 incident 를 log 에 만들지 않음)."""
+    """clean 인데 ack 를 줘도 기록하지 않는다 (없는 incident 를 log 에 만들지 않음)."""
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=_git_stub())
 
     rc = _run_handoff(inst, dry_run=False, skip_pytest=True,
@@ -756,13 +756,13 @@ def test_cli_flattens_multiline_ack_reason(hf):
     assert pm_engine.domain.handoff_text.flatten_ack_reason(args.ack_dirty) == "앞 뒤"
 
 
-# ── 비대화 자동 트리거 (전용 신호 · 차단 아님 · 사유 자동 박제) ──────────────
+# ── 비대화 자동 트리거 (전용 신호 · 차단 아님 · 사유 자동 기록) ──────────────
 
 def test_auto_trigger_warns_and_stamps_instead_of_blocking(hf, tmp_path, monkeypatch, capsys):
-    """`--auto-trigger` → rc 0 + loud 경고 + 사유 자동 박제.
+    """`--auto-trigger` → rc 0 + loud 경고 + 사유 자동 기록.
 
-    자동 실행 시점 차단은 세션 상태 전체를 잃으므로 강등한다 — 대신 다음 세션이 log 만 읽고
-    잔여를 알도록 사유와 건수를 박제한다.
+    자동 실행 시점 차단은 세션 상태 전체를 잃으므로 경고로 낮춘다 — 대신 다음 세션이 log 만 읽고
+    남은 변경을 알도록 사유와 건수를 기록한다.
     """
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
@@ -778,7 +778,7 @@ def test_auto_trigger_warns_and_stamps_instead_of_blocking(hf, tmp_path, monkeyp
 
 
 def test_auto_trigger_ack_reason_wins_over_default(hf, tmp_path, monkeypatch):
-    """자동 경로여도 명시 `--ack-dirty` 사유가 있으면 사람이 준 사유를 박제한다."""
+    """자동 경로여도 명시 `--ack-dirty` 사유가 있으면 사람이 준 사유를 기록한다."""
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
@@ -794,10 +794,10 @@ def test_auto_trigger_ack_reason_wins_over_default(hf, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("env_value", ["1", "true", "yes", "on"])
-def test_env_noninteractive_does_not_degrade_gate(hf, tmp_path, monkeypatch, env_value, capsys):
-    """범용 비대화 env(`PM_NONINTERACTIVE`)는 강등 신호가 **아니다** — 여전히 차단한다.
+def test_env_noninteractive_does_not_degrade_check(hf, tmp_path, monkeypatch, env_value, capsys):
+    """범용 비대화 env(`PM_NONINTERACTIVE`)는 수준 낮춤 신호가 **아니다** — 여전히 차단한다.
 
-    범용 신호로 강등하면 CI·headless·import 자동화 전반이 게이트를 통째로 우회한다. 강등은
+    범용 신호로 수준을 낮추면 CI·headless·import 자동화 전반이 검사를 통째로 우회한다. 수준 낮춤은
     문서화된 자동 핸드오프 경로만 주는 전용 플래그(`--auto-trigger`)로 좁힌다.
     """
     monkeypatch.setenv("PM_NONINTERACTIVE", env_value)
@@ -891,7 +891,7 @@ def test_upsert_dirty_ack_line_inserts_before_incident(hf):
 
 
 def test_upsert_dirty_ack_line_appends_when_no_anchor(hf):
-    """incident 앵커가 없어도(사람이 지운 entry) 끝에 붙여 박제를 잃지 않는다."""
+    """incident 표시 글이 없어도(사람이 지운 entry) 끝에 붙여 기록을 잃지 않는다."""
     entry = "## [2026-08-09] handoff | PM 2차 → 다음 PM 세션\n\n- 메타 학습: 없음\n"
 
     updated = pm_engine.domain.handoff_text.upsert_dirty_ack_line(entry, "사유")
@@ -953,13 +953,13 @@ def test_same_session_rerun_ack_is_idempotent_on_crlf_log(hf, tmp_path, monkeypa
 
 
 def test_upsert_dirty_ack_line_raises_when_unstampable(hf):
-    """박제할 자리가 전혀 없으면(빈 entry) 조용히 통과시키지 않고 fail-loud."""
+    """기록할 자리가 전혀 없으면(빈 entry) 조용히 통과시키지 않고 fail-loud."""
     with pytest.raises(pm_engine.domain.handoff_text.DirtyAckStampError):
         pm_engine.domain.handoff_text.upsert_dirty_ack_line("   \n", "사유")
 
 
 def test_unstampable_ack_blocks_handoff(hf, tmp_path, monkeypatch, capsys):
-    """박제 불가는 차단이 기본 — rc 1 이고 log 는 무접촉이다."""
+    """기록 불가는 차단이 기본 — rc 1 이고 log 는 무접촉이다."""
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
@@ -1009,18 +1009,18 @@ def test_dry_run_preview_shows_ack_line_in_skeleton(hf, tmp_path, monkeypatch, c
     )
 
     rc = _run_handoff(inst, dry_run=True, skip_pytest=True,
-                  ack_dirty="릴리즈 wave 에서 커밋")
+                  ack_dirty="릴리즈 작업에서 커밋")
 
     assert rc == 0
     assert pm_engine.domain.handoff_text.DIRTY_ACK_ENTRY_LABEL in capsys.readouterr().out
 
 
-# ── 판정 축: unborn HEAD / 비-git / 예외 ─────────────────────────────────────
+# ── 판정 기준: unborn HEAD / 비-git / 예외 ─────────────────────────────────────
 
 def test_unborn_head_tree_is_judged_by_untracked(hf, tmp_path, monkeypatch, capsys):
     """커밋 0(unborn HEAD) → '판정 불가'가 아니라 **전량 미커밋**으로 차단한다.
 
-    `diff HEAD` 는 비교 ref 가 없어 실패하지만 그 트리야말로 게이트가 가장 잡아야 할 상태다.
+    `diff HEAD` 는 비교 ref 가 없어 실패하지만 그 트리야말로 검사가 가장 잡아야 할 상태다.
     """
     inst, _log = _make_handoff(
         hf, tmp_path, monkeypatch,
@@ -1039,8 +1039,8 @@ def test_unborn_head_tree_is_judged_by_untracked(hf, tmp_path, monkeypatch, caps
 def test_unborn_head_all_staged_is_dirty(hf, tmp_path, monkeypatch, capsys):
     """커밋 0인데 **전량 `git add`** 된 트리 → untracked 는 비지만 여전히 dirty 로 차단한다.
 
-    unborn 폴백이 untracked 축만 보면 이 트리가 clean 으로 오판된다 — 아무것도 커밋되지 않은
-    바로 그 상태다. index 축(`diff --cached --name-only`)을 함께 봐야 닫힌다.
+    unborn 대체 판정이 untracked 기준만 보면 이 트리가 clean 으로 오판된다 — 아무것도 커밋되지 않은
+    바로 그 상태다. index 기준(`diff --cached --name-only`)을 함께 봐야 닫힌다.
     """
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
@@ -1063,7 +1063,7 @@ def test_unborn_head_all_staged_is_dirty(hf, tmp_path, monkeypatch, capsys):
 
 
 def test_unborn_head_unions_staged_and_untracked(hf):
-    """unborn 판정 축 = staged ∪ untracked (중복 제거)."""
+    """unborn 판정 기준 = staged ∪ untracked (중복 제거)."""
     runner = _git_stub(
         {"/wt": ([], ["u.md", "dup.md"])},
         staged={"/wt": ["s.md", "dup.md"]},
@@ -1091,7 +1091,7 @@ def test_non_git_tree_warns_on_stderr_without_blocking(hf, tmp_path, monkeypatch
     """비-git 트리(모든 조회 실패) → 차단 대신 stderr 경고 1줄 + 정상 진행.
 
     판정 못 한 트리를 dirty 로 단정하면 비-git 채택자의 정상 핸드오프가 영구 차단된다.
-    경고 채널은 게이트의 다른 판정 메시지와 같은 stderr 다.
+    경고 채널은 검사의 다른 판정 메시지와 같은 stderr 다.
     """
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
@@ -1119,7 +1119,7 @@ def test_dirty_paths_in_tree_failsoft_on_exception(hf):
 
 
 def test_dirty_paths_in_tree_unions_tracked_and_untracked(hf):
-    """판정 축 = tracked 미커밋 ∪ untracked-unignored (출하 surface 와 같은 seam)."""
+    """판정 기준 = tracked 미커밋 ∪ untracked-unignored (출하 판정과 같은 교체 지점)."""
     runner = _git_stub({"/wt": (["a.py"], ["b.md"])})
     assert sorted(pm_engine.infra.handoff_git._dirty_paths_in_tree("/wt", runner)) == ["a.py", "b.md"]
 
@@ -1139,7 +1139,7 @@ def test_dirty_paths_in_tree_none_when_commits_exist_but_diff_fails(hf):
 # ── 목록 접기 (메시지 상한) ───────────────────────────────────────────────────
 
 def test_format_dirty_paths_folds_over_limit(hf):
-    """limit 초과분은 '… 외 N건' 한 줄로 접는다 (수백 건 dump 방지)."""
+    """limit 초과분은 '… 외 N건' 한 줄로 줄인다 (수백 건 dump 방지)."""
     paths = [f"f{index:03d}.md" for index in range(pm_engine.domain.handoff_text.DIRTY_CHECK_LIST_LIMIT + 5)]
 
     lines = pm_engine.domain.handoff_text._format_dirty_paths(paths)
@@ -1155,7 +1155,7 @@ def test_format_dirty_paths_keeps_all_within_limit(hf):
     assert [line.strip() for line in lines] == ["a.md", "b.md"]
 
 
-# ── 실 git 실측 (stub 형상이 진짜 git 과 같은지) ─────────────────────────────
+# ── 실 git 실측 (stub 모양이 진짜 git 과 같은지) ─────────────────────────────
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -1286,9 +1286,9 @@ def test_real_git_unborn_head_reports_untracked(hf, tmp_path):
 
 @requires_git_binary
 def test_real_git_unborn_all_staged_is_dirty(hf, tmp_path):
-    """실 git — 커밋 0 + 전량 `git add` 된 트리도 dirty(staged 축)로 잡힌다.
+    """실 git — 커밋 0 + 전량 `git add` 된 트리도 dirty(staged 기준)로 잡힌다.
 
-    `ls-files --others` 는 빈 목록을 돌려주므로 그 축만 보면 clean 오판이다.
+    `ls-files --others` 는 빈 목록을 돌려주므로 그 기준만 보면 clean 오판이다.
     """
     repo = tmp_path / "staged-unborn"
     repo.mkdir()
@@ -1300,7 +1300,7 @@ def test_real_git_unborn_all_staged_is_dirty(hf, tmp_path):
     (repo / "ignored.txt").write_text("x\n", encoding="utf-8")
     _git("add", ".gitignore", "a.md", "sub/b.md", cwd=repo)
 
-    # 전제 실측: untracked 축은 비어 있다(전량 staged) — 그래도 dirty 여야 한다.
+    # 전제 실측: untracked 기준은 비어 있다(전량 staged) — 그래도 dirty 여야 한다.
     rc_others, out_others = pm_engine.infra.handoff_git._module_run_git(
         ["-C", str(repo), "ls-files", "--others", "--exclude-standard"]
     )
@@ -1313,7 +1313,7 @@ def test_real_git_unborn_all_staged_is_dirty(hf, tmp_path):
 
 @requires_git_binary
 def test_real_git_clean_tree_reports_empty(hf, tmp_path):
-    """실 git — 전부 커밋된 트리는 빈 목록(=clean). 게이트가 통과시킨다."""
+    """실 git — 전부 커밋된 트리는 빈 목록(=clean). 검사가 통과시킨다."""
     repo = tmp_path / "clean"
     repo.mkdir()
     _git("init", "-q", cwd=repo)

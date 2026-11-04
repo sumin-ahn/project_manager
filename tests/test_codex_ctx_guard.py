@@ -1,25 +1,25 @@
-"""codex 어댑터 대화형 ctx 가드 정합 테스트 (T-0406·ADR-0070 D4).
+"""codex 어댑터 대화형 ctx 가드 일치 테스트 (T-0406·ADR-0070 D4).
 
 codex 어댑터의 2층 ctx 가드 중 **대화형 경로**를 여러 층위에서 단언한다 (relay 경로 기계 가드는
 `pm_orch_codex.py` usage 판정·T-0404 소관 — 여기 밖):
 
-  1. config.toml 정합 — `model_auto_compact_token_limit` 숫자 threshold(D4 ②·off 아님)·
+  1. config.toml 일치 — `model_auto_compact_token_limit` 숫자 threshold(D4 ②·off 아님)·
        `[features]` multi_agent/hooks·`[sandbox_workspace_write]` network_access=false ·
        **machine-local 무시 키 부재**(trusted-repo 로드 규칙·spike §1.2).
-  2. hooks.json 정합 — 실 codex 스키마(최상위 `hooks` 래퍼 → 이벤트 → matcher-group → 중첩
+  2. hooks.json 일치 — 실 codex 스키마(최상위 `hooks` 래퍼 → 이벤트 → matcher-group → 중첩
        `hooks[]` → `{type:command, command:<셸 문자열>}`·Claude Code 형 동일)로 `PreCompact` 비차단
        checkpoint 안내(인라인 command string·별도 스크립트 파일 금지) + strict JSON.
        T-0806 이후 압축 두 이벤트의 커맨드는 범용 진입점(`--hook-dispatch <이벤트>`)이고, 어떤
-       기능이 도는지는 디스패처 registry 가 쥔다 — 그래서 checkpoint·안내·snapshot 배선 단언은
+       기능이 도는지는 디스패처 registry 가 쥔다 — 그래서 checkpoint·안내·snapshot 등록 단언은
        hooks.json 이 아니라 그 registry 값을 본다(판정 자체는 같은 값·표기만 옮겨 왔다).
   3. ctx 예산 키 — `board.py init` 스캐폴드가 `harness.codex.ctx_window_tokens` 주석 예시를 claude/opencode
        와 나란히 박는다(relay driver `_maybe_mark_ctx` 예산 원천·ADR-0041 per-harness 키).
 
-미러: `test_opencode_ctx_guard.py`(config/plugin 정합)·`test_board_portability.py` C8(board init).
+미러: `test_opencode_ctx_guard.py`(config/plugin 일치)·`test_board_portability.py` C8(board init).
 
 instance-owned(두 파일 모두 manifest 미등록·미전파·trust 재승인 churn 회피)의 **권위 단언**은
 `test_manifest_template_parity.test_instance_owned_config_not_registered`(T-0402·codex 절 forbidden
-등재) — 이 파일은 그 관심사를 중복하지 않고 대화형 가드 산출물 정합에만 집중한다.
+등재) — 이 파일은 그 관심사를 중복하지 않고 대화형 가드 산출물 일치에만 집중한다.
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ DISPATCHER_PY = REPO / "templates" / "codex" / DISPATCHER_REL
 
 @functools.lru_cache(maxsize=1)
 def _dispatcher():
-    """출하 디스패처 모듈 — 압축 훅의 기능 배선이 사는 곳(T-0806 이후)."""
+    """출하 디스패처 모듈 — 압축 훅의 기능 등록이 사는 곳(T-0806 이후)."""
     spec = importlib.util.spec_from_file_location("pm_orch_codex", DISPATCHER_PY)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -95,7 +95,7 @@ def _entrypoint_handler(event: str) -> dict:
 def _feature_tree(tmp_path: Path, pm_log_body: str) -> Path:
     """출하 디스패처 + 가짜 `pm_log.py` 로 만든 최소 채택자 트리.
 
-    진입점 커맨드를 **그대로** 태우되 장부 CLI 만 가짜로 바꿔, checkpoint 단계의 사람글이
+    진입점 커맨드를 **그대로** 태우되 기록 CLI 만 가짜로 바꿔, checkpoint 단계의 사람글이
     엔벨로프 줄로 새지 않는지를 실행 결과로 본다(옛 `>/dev/null 2>&1` 단언의 승계)."""
     root = tmp_path / "adopter"
     tools = root / ".project_manager" / "tools"
@@ -105,7 +105,7 @@ def _feature_tree(tmp_path: Path, pm_log_body: str) -> Path:
         ignore=shutil.ignore_patterns("__pycache__"),
     )
     (tools / "pm_log.py").write_text(pm_log_body, encoding="utf-8", newline="\n")
-    # 엔진 루트 해소 마커(`repo_root`) — 폴백에 기대지 않고 트리 루트를 값으로 고정한다.
+    # 엔진 루트 해소 마커(`repo_root`) — 대체 경로에 기대지 않고 트리 루트를 값으로 고정한다.
     (tools / "pm_handoff.py").write_text("", encoding="utf-8", newline="\n")
     (root / ".codex").mkdir(parents=True)
     shutil.copy2(DISPATCHER_PY, root / DISPATCHER_REL)
@@ -222,7 +222,7 @@ def test_hooks_precompact_allows_compaction_through_one_entrypoint_and_json_stdo
     assert '\"stopReason\"' not in joined, "비차단 hook에 stopReason이 남음"
     # 엔진/인터프리터 부재에도 유효한 엔벨로프 한 줄이 나가야 한다(옛 fail-soft JSON 승계).
     assert '\"suppressOutput\":false' in joined, "엔진 부재 fail-soft JSON 없음"
-    assert "adapter-fallback" in joined, "폴백 사실을 남기는 마커 없음"
+    assert "adapter-fallback" in joined, "대체 경로로 답한 사실을 남기는 마커 없음"
 
 
 def test_hooks_windows_commands_match_posix_nonblocking_checkpoint_contract():
@@ -244,7 +244,7 @@ def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachabil
     """
     readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
     normalized = " ".join(readme.split())
-    anchors = (
+    readme_markers = (
         "compaction을 차단하지 않는다",
         # T-0770 F-001: 무범위 "모델에 재주입" 을 관측된 출력 채널까지로 좁힌 문안.
         "`pm_log.py snapshot --json`의 엔진 소유 최종 텍스트를 `systemMessage` 엔벨로프로 출력한다",
@@ -265,9 +265,8 @@ def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachabil
         "driver 가 먼저 회전해 relay 경로를 실제로 보호",
         "trusted project와 `/hooks` 승인",
     )
-    for anchor in anchors:
-        assert anchor in normalized, f"README Context safety 앵커 누락: {anchor!r}"
-    assert "PM 게이트 실측 후 확정" not in normalized
+    for marker in readme_markers:
+        assert marker in normalized, f"README Context safety 표시 글 누락: {marker!r}"
     # 옛 무조건 문장(채널 구분 없음)은 T-0770 라이브 실측이 반증했다 — 되살아나면 red.
     assert "exec 경로 안내는 모델에 닿지 않는다" not in normalized
     # T-0770 F-001: PostCompact systemMessage 의 모델 도달은 실측되지 않았다 —
@@ -297,7 +296,7 @@ def test_hooks_warning_is_inline_and_only_calls_engine_script():
     engine_tools = {"{tools}/pm_log.py"}
     for feature in _features("PreCompact") + _features("PostCompact"):
         if not feature.argv:
-            # in-process 재무장은 엔진 공개 진입(`cli.hooks`)의 원칙 재무장을 부른다.
+            # in-process 다시 켜기는 엔진 공개 진입(`cli.hooks`)의 원칙 다시 켜기를 부른다.
             handler = getattr(feature, "handler", None)
             assert handler is not None, f"argv 도 handler 도 없는 기능: {feature}"
             source = inspect.getsource(handler)
@@ -322,7 +321,7 @@ def _all_windows_commands() -> list[tuple[str, str]]:
 def test_windows_interpreter_resolution_prefers_launcher_and_probes_execution():
     """T-0715 — Windows `python3`/`python`은 실행 시 rc 9009로 죽는 WindowsApps shim일 수 있다.
 
-    존재만 확인하고 쓰면 엔진이 한 번도 실행되지 않은 채 fail-soft 폴백(`suppressOutput`)만
+    존재만 확인하고 쓰면 엔진이 한 번도 실행되지 않은 채 fail-soft 대체 출력(`suppressOutput`)만
     나가 ctx 안내와 위임 차단 사유가 사라진다. 런처 `py`를 먼저 보고 후보를 실제 실행해
     확인한 뒤에만 채택한다 (CLAUDE.md Windows 노트).
     """
@@ -360,8 +359,8 @@ def test_hook_commands_pass_no_double_quoted_argument_to_a_native_command():
 
     ``py -3.12 -c 'print("quoted")'`` 가 ``NameError: name 'quoted' is not defined`` 로
     떨어졌다. 큰따옴표를 담은 인라인 스크립트를 native 인자로 넘기면 그 호스트에서 훅은
-    **항상** 실패해 폴백으로 빠지고 가드가 무음 통과한다. 셸 안에서만 쓰이는 문자열
-    (``Write-Output $fallback``)은 이 축이 아니므로 native 인자 표면만 본다.
+    **항상** 실패해 대체 경로로 빠지고 가드가 무음 통과한다. 셸 안에서만 쓰이는 문자열
+    (``Write-Output $fallback``)은 이 검사 대상이 아니므로 native 인자 부분만 본다.
     """
     for event, windows in _all_windows_commands():
         for segment in powershell_native_arguments(windows):
@@ -378,7 +377,7 @@ def test_hook_commands_pass_no_double_quoted_argument_to_a_native_command():
 
 
 def test_powershell_native_argument_scanner_sees_the_regressed_shape():
-    """가드 자신의 시야 검증 — 옛 형태(인라인 스크립트 인자)를 실제로 잡아내는가."""
+    """가드 자신의 검사 범위 검증 — 옛 형태(인라인 스크립트 인자)를 실제로 잡아내는가."""
     regressed = (
         "$py = 'py'; $fallback = '{\"systemMessage\":\"x\",\"suppressOutput\":false}'; "
         "$out = & $py -c 'import json; json.loads(\"{}\")' pre; Write-Output $fallback"
@@ -388,7 +387,7 @@ def test_powershell_native_argument_scanner_sees_the_regressed_shape():
     assert len(segments) == 1
     assert '"' in segments[0]
     assert inline_script_payloads(regressed) == ['import json; json.loads("{}")']
-    # 셸 전용 리터럴($fallback)은 native 인자 표면에 들지 않는다.
+    # 셸 전용 리터럴($fallback)은 native 인자 부분에 들지 않는다.
     assert "systemMessage" not in segments[0]
 
 
@@ -407,7 +406,7 @@ def test_windows_probe_snippet_runs_and_reports_this_interpreter():
 
 
 def test_windows_interpreter_is_never_adopted_without_a_probe():
-    """실행 확인 없이 후보를 그대로 채택하는 배선이 남아 있으면 shim이 다시 선택된다."""
+    """실행 확인 없이 후보를 그대로 채택하는 연결이 남아 있으면 shim이 다시 선택된다."""
     for event, windows in _all_windows_commands():
         for literal in ("$py = 'py'", "$py = 'python3'", "$py = 'python'"):
             assert literal not in windows, f"{event}: {literal}"
@@ -423,7 +422,7 @@ def test_postcompact_wires_snapshot_checkpoint_and_windows_symmetry():
         assert "--hook-dispatch PostCompact" in handler[key], key
         assert DISPATCHER_REL in handler[key], key
     assert "&&" not in handler["commandWindows"]
-    # subprocess 기능만 — in-process 기능(argv 없음·rearm 등)은 이 대칭 검사의 대상이 아니다.
+    # subprocess 기능만 — in-process 기능(argv 없음·reset 등)은 이 대칭 검사의 대상이 아니다.
     checkpoint, snapshot = [f for f in _features("PostCompact") if f.argv]
     assert checkpoint.argv[1:] == ("{tools}/pm_log.py", "checkpoint", "--trigger",
                                    "compaction", "--phase", "post", "--session-id", "{session_id}")
@@ -497,7 +496,7 @@ def test_t0953_run_hook_feature_takes_session_id_from_dispatch_payload(tmp_path)
     assert stdin == b"{}"
 
 
-# 가짜 장부 CLI — checkpoint 단계는 사람글(stdout)과 에러(stderr)를 내고, 엔벨로프 단계만
+# 가짜 기록 CLI — checkpoint 단계는 사람글(stdout)과 에러(stderr)를 내고, 엔벨로프 단계만
 #   JSON 을 낸다. 진입점 산출에 그 사람글이 섞이면 호스트가 엔벨로프를 못 읽는다.
 _FAKE_PM_LOG = (
     "import json, sys\n"
@@ -656,10 +655,10 @@ def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatc
     assert spec is not None and "사용 한도" in spec.description
 
 
-# ── 4. 세션 안 ctx 넛지 (T-0770) ────────────────────────────────
+# ── 4. 세션 안 ctx 경고 (T-0770) ────────────────────────────────
 # codex 어댑터엔 옆에 ctx_guard 모듈이 없어 relay driver 파일(pm_orch_codex.py)이 rollout 점유를
-# 관측하고 엔진 공개 진입(`judge_context`)의 판정을 봉투로 옮긴다. 여기서는 그 축만 본다 — 점유
-# 파서가 실제 rollout bytes 를 읽는지, 밴드 발화가 엔진 안내 원문인지, 밴드 밖·측정 실패가 침묵인지.
+# 관측하고 엔진 공개 진입(`judge_context`)의 판정을 봉투로 옮긴다. 여기서는 그 경로만 본다 — 점유
+# 파서가 실제 rollout bytes 를 읽는지, 구간 안내가 엔진 안내 원문인지, 구간 밖·측정 실패가 침묵인지.
 
 DISPATCHER = CODEX / "pm_orch_codex.py"
 # T-0835 라이브 프로브(architect R1·2026-08-22) 픽스처 — 첫 turn(rollout에 token_count 아직
@@ -687,7 +686,7 @@ LIVE_ROLLOUT_LINES = (
     '{"timestamp":"2026-08-22T13:46:23.944Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"01a029b8-dd49-7d83-bc4d-16f8f0c4062a","last_agent_message":"DONE","started_at":1787406376,"completed_at":1787406383,"duration_ms":7669,"time_to_first_token_ms":3582}}',
 )
 
-# 같은 프로브의 훅 stdin 실값(서브에이전트 발화) — 메인 세션 발화엔 이 두 키가 아예 없다.
+# 같은 프로브의 훅 stdin 실값(서브에이전트 훅 입력) — 메인 세션 훅 입력엔 이 두 키가 아예 없다.
 LIVE_SUBAGENT_KEYS = {"agent_id": "01a029b9-838e-71c2-9f8a-9993158516ac",
                       "agent_type": "default"}
 
@@ -701,7 +700,7 @@ def _load_module(name: str, path: Path):
 
 @pytest.fixture(scope="module")
 def codex_ctx():
-    """훅 축 판정이 사는 codex 어댑터 모듈."""
+    """훅 경로 판정이 사는 codex 어댑터 모듈."""
     return _load_module("pm_orch_codex_ctx", DISPATCHER)
 
 
@@ -739,10 +738,10 @@ def _adopter_root(tmp_path: Path, *, conf: str = "", pm_log_body: str | None = N
 _RECORD_MODEL = "gpt-oss:20b"
 
 
-# 밴드 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (쓴 % 77 → warn2 밴드).
-_IN_BAND_BUDGET = "harness.codex.ctx_window_tokens=20000\n"
-# 밴드 밖 예산 — 15328 / 60000 = 26%.
-_OUT_OF_BAND_BUDGET = "harness.codex.ctx_window_tokens=60000\n"
+# 구간 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (쓴 % 77 → warn2 구간).
+_IN_LEVEL_BUDGET = "harness.codex.ctx_window_tokens=20000\n"
+# 구간 밖 예산 — 15328 / 60000 = 26%.
+_OUT_OF_LEVEL_BUDGET = "harness.codex.ctx_window_tokens=60000\n"
 _STUB_PM_LOG = (
     "import sys\n"
     "sys.stdout.write('ENGINE-GUIDANCE ' + ' '.join(sys.argv[1:]) + '\\n')\n"
@@ -791,7 +790,7 @@ def test_rollout_parser_is_fail_open_for_missing_transcripts(codex_ctx, transcri
 
 
 def test_rollout_parser_ignores_records_without_usable_usage(codex_ctx, tmp_path):
-    """token_count 0건·손상 줄·비정상 값은 0 — 밴드 판정으로 승격하지 않는다."""
+    """token_count 0건·손상 줄·비정상 값은 0 — 구간 판정으로 승격하지 않는다."""
     path = tmp_path / "rollout-noise.jsonl"
     path.write_text(
         '{"type":"event_msg","payload":{"type":"agent_message","message":"hi"}}\n'
@@ -817,12 +816,12 @@ def test_rollout_parser_skips_damaged_lines_to_an_older_usable_record(codex_ctx,
 
 # ── 4.1b 첫 turn: token_count 아직 없음 (T-0835) ────────────────────────────
 # 라이브 프로브(architect R1·2026-08-22)에서 캡처한 새 thread 첫 UserPromptSubmit 시점 rollout —
-# 첫 응답 전이라 token_count 0건이다(§경계 실측). ctx_nudge_envelope 는 이 구간에서 거짓 0%를
-# 만들지 않고 침묵해야 하고(I1), 미측정을 "안전(ok 재무장)"으로 승격하지 않는다(I2).
+# 첫 응답 전이라 token_count 0건이다(§경계 실측). ctx_warn_envelope 는 이 구간에서 거짓 0%를
+# 만들지 않고 침묵해야 하고(I1), 미측정을 "안전(ok 다시 켜기)"으로 승격하지 않는다(I2).
 
 # 압축 직후 codex 가 **명시적으로** 쓰는 last_token_usage.input_tokens=0(측정된 0) — T-0835
 # architect R1 라이브 프로브(model_auto_compact_token_limit=7000 강제 auto 압축) idx 39 verbatim.
-# 미측정(token_count 0건)과 같은 sentinel(0)로 수렴해야 한다(I2').
+# 미측정(token_count 0건)과 같은 sentinel(0)로 모여야 한다(I2').
 LIVE_ZERO_INPUT_TOKEN_COUNT_LINE = (
     '{"timestamp":"2026-08-22T14:37:30.427Z","type":"event_msg","payload":{"type":"token_count",'
     '"info":{"total_token_usage":{"input_tokens":37914,"cached_input_tokens":0,'
@@ -860,9 +859,9 @@ def _record_guidance_renders(monkeypatch) -> list:
     calls = []
     real = ctx_recovery.build_ctx_guard_guidance
 
-    def recording(band, **kwargs):
-        calls.append((band, kwargs))
-        return real(band, **kwargs)
+    def recording(level, **kwargs):
+        calls.append((level, kwargs))
+        return real(level, **kwargs)
 
     monkeypatch.setattr(ctx_recovery, "build_ctx_guard_guidance", recording)
     return calls
@@ -873,11 +872,11 @@ def test_first_turn_without_token_count_is_silent(codex_ctx, tmp_path, monkeypat
 
     존재 검사가 아니라 렌더 호출 리스트가 **비었음**을 값으로 단언한다(=측정 없음을 실측
     0%로 오인해 안내를 만들지 않았다). I1-a·I1-c."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
     calls = _record_guidance_renders(monkeypatch)
 
-    envelope = codex_ctx.ctx_nudge_envelope(_first_turn_payload(rollout, "UserPromptSubmit"), root)
+    envelope = codex_ctx.ctx_warn_envelope(_first_turn_payload(rollout, "UserPromptSubmit"), root)
 
     assert envelope == {}
     assert calls == [], "측정 없음이 엔진 문구 생성을 호출했다 — 0%를 실측치로 오인했다는 뜻"
@@ -888,25 +887,25 @@ def test_first_turn_never_reports_a_usage_percentage(codex_ctx, tmp_path, monkey
 
     감도: 측정 없음을 정상 관측치(used_pct=0)로 바꾸는 회귀가 있으면 `used_pct` 인자가
     새로 나타나 이 단언이 red 가 된다."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
     calls = _record_guidance_renders(monkeypatch)
 
-    envelope = codex_ctx.ctx_nudge_envelope(_first_turn_payload(rollout, "UserPromptSubmit"), root)
+    envelope = codex_ctx.ctx_warn_envelope(_first_turn_payload(rollout, "UserPromptSubmit"), root)
 
     serialized = json.dumps(envelope, ensure_ascii=False)
     assert "%" not in serialized and "컨텍스트 사용" not in serialized
-    assert not any("used_pct" in kwargs for _band, kwargs in calls)
+    assert not any("used_pct" in kwargs for _level, kwargs in calls)
 
 
-def test_unmeasured_first_turn_preserves_existing_band_markers(codex_ctx, tmp_path):
-    """이미 선 밴드 marker 가 있으면(직전 사이클) 첫 turn 측정 실패가 그걸 지우지 않는다(I2).
+def test_unmeasured_first_turn_preserves_existing_level_markers(codex_ctx, tmp_path):
+    """이미 선 구간 marker 가 있으면(직전 사이클) 첫 turn 측정 실패가 그걸 지우지 않는다(I2).
 
-    감도: `ctx_nudge_envelope` 의 `if tokens > 0:` 재무장 가드를 지우면 이 marker 가 사라져
+    감도: `ctx_warn_envelope` 의 `if tokens > 0:` 다시 켜기 가드를 지우면 이 marker 가 사라져
     red 가 된다."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     measured_rollout = _write_rollout(tmp_path)
-    codex_ctx.ctx_nudge_envelope(_payload(measured_rollout), root)
+    codex_ctx.ctx_warn_envelope(_payload(measured_rollout), root)
     marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
     before = sorted(p.name for p in marker_dir.iterdir())
     assert before
@@ -917,26 +916,26 @@ def test_unmeasured_first_turn_preserves_existing_band_markers(codex_ctx, tmp_pa
     first_turn_payload = _first_turn_payload(first_turn_rollout, "UserPromptSubmit")
     first_turn_payload["session_id"] = _payload(measured_rollout)["session_id"]  # 같은 사이클.
 
-    assert codex_ctx.ctx_nudge_envelope(first_turn_payload, root) == {}
+    assert codex_ctx.ctx_warn_envelope(first_turn_payload, root) == {}
     after = sorted(p.name for p in marker_dir.iterdir())
-    assert after == before, "측정 불가(첫 turn)가 기존 marker 를 지웠다 — 재무장 가드 위반"
+    assert after == before, "측정 불가(첫 turn)가 기존 marker 를 지웠다 — 다시 켜기 가드 위반"
 
 
 def test_zero_input_token_count_after_compaction_is_treated_as_unmeasured(codex_ctx, tmp_path):
     """압축 직후 codex 가 명시적으로 쓰는 last_token_usage.input_tokens=0(측정된 0)도 미측정과
-    같은 sentinel(0)로 수렴한다 — 침묵·marker 부재(라이브 실물 idx 39·I2')."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    같은 sentinel(0)로 모인다 — 침묵·marker 부재(라이브 실물 idx 39·I2')."""
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = tmp_path / "rollout-post-compaction.jsonl"
     rollout.write_text(LIVE_ZERO_INPUT_TOKEN_COUNT_LINE + "\n", encoding="utf-8")
 
     assert codex_ctx.rollout_context_tokens(str(rollout)) == 0
-    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    assert codex_ctx.ctx_warn_envelope(_payload(rollout), root) == {}
     assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
 
 
 def test_first_turn_payload_runs_through_the_shipped_entrypoint_silently(codex_ctx, tmp_path):
     """첫 turn payload 를 출하 진입점(`dispatch_hook`)에 그대로 먹여도 합본은 `{}`(I5 확장)."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
 
     for event in ("UserPromptSubmit", "PreToolUse"):
@@ -946,17 +945,17 @@ def test_first_turn_payload_runs_through_the_shipped_entrypoint_silently(codex_c
 
 
 def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
-    """산문(docstring·출하 README)에 첫 turn 한계 문장 앵커가 있고, "첫 turn 도 보호" 류
-    무범위 주장은 없다(I6·claude ctx_guard.py 선례와 동형). 실측 범위(`codex exec`)도
+    """산문(docstring·출하 README)에 첫 turn 한계 문장이 있고, "첫 turn 도 보호" 류
+    무범위 주장은 없다(I6·claude ctx_guard.py 선례와 같은 규칙). 실측 범위(`codex exec`)도
     명시돼야 한다 — 라이브 프로브는 `codex exec`/`exec resume`/auto-compaction 만 쟀고
     direct TUI 는 미실측이라, 그 caveat 없이 결론을 Codex 전체 사실로 쓰면 이 단언이
     red 가 된다(F-002 fix · code-reviewer R4)."""
     readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
     rollout_doc = codex_ctx.rollout_context_tokens.__doc__ or ""
-    docstrings = rollout_doc + (codex_ctx.ctx_nudge_envelope.__doc__ or "")
+    docstrings = rollout_doc + (codex_ctx.ctx_warn_envelope.__doc__ or "")
 
     assert "첫 turn" in readme and "보호하지 못한다" in readme
-    # 한계 문장은 **증거에 앵커**돼 있어야 한다. 그 앵커를 티켓 ID 로 잡으면 출하 산문에
+    # 한계 문장은 **증거에 근거**해 있어야 한다. 그 근거를 티켓 ID 로 잡으면 출하 산문에
     # 사설 참조를 강제하게 되므로(사설 참조 가드와 정면 충돌) 실측 사실 자체로 잡는다 —
     # 무엇으로 쟀는지(라이브 실측)와 어느 버전에서 쟀는지가 산문에 남아야 한다.
     assert "첫 turn" in docstrings
@@ -964,7 +963,7 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
         "첫 turn 한계가 실측 근거(수단·버전) 없이 주장돼 있다")
     for prose in (readme, docstrings):
         assert "첫 turn도 보호" not in prose and "첫 turn을 보호한다" not in prose
-    # F-002: "무방비는 새 thread 첫 요청 1회뿐" 결론은 codex exec 축만 실측했다 — 그 실측
+    # F-002: "무방비는 새 thread 첫 요청 1회뿐" 결론은 codex exec 경로만 실측했다 — 그 실측
     # 범위 한정과 direct TUI 미실측 caveat 가 README·rollout_context_tokens docstring
     # 양쪽에 있어야 한다(빠지면 이 티켓 산출 자체가 실측 범위를 넘어선 주장이 된다).
     for prose, label in ((readme, "README"), (rollout_doc, "rollout_context_tokens docstring")):
@@ -973,7 +972,7 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
             f"{label}: direct TUI 미실측 caveat 부재")
 
 
-# ── 4.3 배선: registry 한 줄이고 채택자 config 는 무변경 ──────────────────────
+# ── 4.3 등록: registry 한 줄이고 채택자 config 는 무변경 ──────────────────────
 
 def test_ctx_nudge_is_wired_through_the_dispatcher_registry(codex_ctx):
     """프롬프트 진입점 하나에 도구 무관 기능으로 등록되고, 판정은 in-process 다."""
@@ -983,14 +982,14 @@ def test_ctx_nudge_is_wired_through_the_dispatcher_registry(codex_ctx):
     assert {feature.event for feature in features.values()} == {"UserPromptSubmit"}
     for feature in features.values():
         assert feature.tool_pattern is None, feature
-        assert feature.handler is codex_ctx.ctx_nudge_envelope, feature
+        assert feature.handler is codex_ctx.ctx_warn_envelope, feature
         assert feature.event in codex_ctx.CODEX_HOOK_ENTRYPOINT_EVENTS, feature
     exposed = {item["feature_id"] for item in codex_ctx.hook_feature_registry()["features"]}
     assert set(features) <= exposed
 
 
 def test_ctx_wiring_adds_nothing_to_the_adopter_hooks_config():
-    """`.codex/hooks.json` 은 이 축의 배선을 담지 않는다 — 채택자 재승인 0 (T-0770 DoD)."""
+    """`.codex/hooks.json` 은 이 경로의 등록을 담지 않는다 — 채택자 재승인 0 (T-0770 DoD)."""
     rendered = HOOKS_JSON.read_text(encoding="utf-8")
 
     for token in ("ctx-warn", "ctx-guidance --level warn", "ctx.checkpoint_at_pct",
@@ -998,56 +997,55 @@ def test_ctx_wiring_adds_nothing_to_the_adopter_hooks_config():
         assert token not in rendered, token
 
 
-# ── 4.4 밴드 발화·침묵·멱등 (판정 함수) ──────────────────────────────────────
+# ── 4.4 구간 안내·침묵·멱등 (판정 함수) ──────────────────────────────────────
 
-def test_band_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
-    """밴드 안에서는 엔진 공유 안내 렌더 결과를 **그대로** additionalContext 로 낸다."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+def test_level_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
+    """구간 안에서는 엔진 공유 안내 렌더 결과를 **그대로** additionalContext 로 낸다."""
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
 
-    envelope = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+    envelope = codex_ctx.ctx_warn_envelope(_payload(rollout), root)
 
     hook_output = envelope["hookSpecificOutput"]
     assert hook_output["hookEventName"] == "UserPromptSubmit"
     guidance = hook_output["additionalContext"]
-    # 렌더에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → warn2).
+    # 렌더에 넘긴 구간·수치가 실측 판정값이다(15328/20000 = 77% → warn2).
     assert guidance == ctx_recovery.build_ctx_guard_guidance("warn2", used_pct=77, precompact_at_pct=80)
-    assert "잔여" not in guidance
     # 비차단 — 어떤 결정 필드도 내지 않는다(ADR-0081 D1·codex 는 allow/ask 자체를 거부한다).
     assert set(envelope) == {"hookSpecificOutput"}
     assert "permissionDecision" not in hook_output and "decision" not in envelope
 
 
-def test_out_of_band_traffic_is_silent(codex_ctx, tmp_path):
-    """밴드 밖은 빈 엔벨로프 — 이 기능이 합본에 기여하는 바이트가 0이다."""
-    root = _adopter_root(tmp_path, conf=_OUT_OF_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+def test_out_of_level_traffic_is_silent(codex_ctx, tmp_path):
+    """구간 밖은 빈 엔벨로프 — 이 기능이 합본에 기여하는 바이트가 0이다."""
+    root = _adopter_root(tmp_path, conf=_OUT_OF_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
 
-    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    assert codex_ctx.ctx_warn_envelope(_payload(rollout), root) == {}
     assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
 
 
 @pytest.mark.parametrize("transcript", (None, "/no/such/rollout.jsonl", "tokenless"))
 def test_measurement_failure_is_silent_fail_open(codex_ctx, tmp_path, transcript):
-    """transcript null·부재·token_count 0건 3형상 — 빈 엔벨로프(가드가 세션을 막지 않는다)."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    """transcript null·부재·token_count 0건 세 경우 — 빈 엔벨로프(가드가 세션을 막지 않는다)."""
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     if transcript == "tokenless":
         path = tmp_path / "rollout-tokenless.jsonl"
         path.write_text('{"type":"event_msg","payload":{"type":"agent_message"}}\n',
                         encoding="utf-8")
         transcript = str(path)
 
-    assert codex_ctx.ctx_nudge_envelope(_payload(tmp_path, transcript_path=transcript),
+    assert codex_ctx.ctx_warn_envelope(_payload(tmp_path, transcript_path=transcript),
                                         root) == {}
 
 
 def test_nudge_is_injected_once_per_cycle(codex_ctx, tmp_path):
-    """같은 사이클 2회 호출 시 두 번째는 침묵 — marker 선점(멱등·claude 규약 재사용)."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    """같은 사이클 2회 호출 시 두 번째는 침묵 — marker 먼저 차지하기(멱등·claude 규약 재사용)."""
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
 
-    first = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
-    second = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+    first = codex_ctx.ctx_warn_envelope(_payload(rollout), root)
+    second = codex_ctx.ctx_warn_envelope(_payload(rollout), root)
 
     assert first != {} and second == {}
     markers = sorted(p.name for p in
@@ -1055,53 +1053,53 @@ def test_nudge_is_injected_once_per_cycle(codex_ctx, tmp_path):
     assert markers == ["01a029b8-dd2b-7cc0-aac8-65158e5d120b.warn2"]
 
 
-def test_measured_ok_rearms_the_cycle_but_unmeasured_ok_does_not(codex_ctx, tmp_path):
-    """재무장은 **실측된 ok**(점유>0)에서만 — 측정 실패는 marker 를 보존한다."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+def test_measured_ok_resets_the_cycle_but_unmeasured_ok_does_not(codex_ctx, tmp_path):
+    """다시 켜기는 **실측된 ok**(점유>0)에서만 — 측정 실패는 marker 를 보존한다."""
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
-    codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+    codex_ctx.ctx_warn_envelope(_payload(rollout), root)
     marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
     assert list(marker_dir.iterdir())
 
-    # 측정 불가(transcript 부재)는 ok 로 보이지만 재무장하지 않는다.
-    codex_ctx.ctx_nudge_envelope(_payload(rollout, transcript_path=None), root)
+    # 측정 불가(transcript 부재)는 ok 로 보이지만 다시 켜지 않는다.
+    codex_ctx.ctx_warn_envelope(_payload(rollout, transcript_path=None), root)
     assert list(marker_dir.iterdir())
 
-    # 예산이 커져 실측 ok 로 돌아오면(압축 후 형상) 다음 상승 사이클이 열린다.
-    (root / ".project_manager" / "local.conf").write_text(_OUT_OF_BAND_BUDGET,
+    # 예산이 커져 실측 ok 로 돌아오면(압축 후 상태) 다음 상승 사이클이 열린다.
+    (root / ".project_manager" / "local.conf").write_text(_OUT_OF_LEVEL_BUDGET,
                                                           encoding="utf-8")
     # UserPromptSubmit 은 압축 한도 기록 불일치를 systemMessage 로 알린다.
-    stale_envelope = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+    stale_envelope = codex_ctx.ctx_warn_envelope(_payload(rollout), root)
     assert set(stale_envelope) == {"systemMessage"}
     assert stale_envelope["systemMessage"].startswith("[ctx-budget]")
-    assert list(marker_dir.iterdir())  # 입력 변경 후 stale 기록으로 재무장하지 않는다.
+    assert list(marker_dir.iterdir())  # 입력 변경 후 stale 기록으로 다시 켜지 않는다.
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(root, harness="codex", model=_RECORD_MODEL)
-    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    assert codex_ctx.ctx_warn_envelope(_payload(rollout), root) == {}
     assert not list(marker_dir.iterdir())
 
 
 def test_subagent_hook_calls_are_exempt(codex_ctx, tmp_path):
-    """서브에이전트 발화는 면제 — 부모 사이클 marker 를 소비하지 않는다(라이브 키 실값).
+    """서브에이전트 훅 입력은 면제 — 부모 사이클 marker 를 소비하지 않는다(라이브 키 실값).
 
     라이브 실측: 서브에이전트 훅 payload 의 `session_id` 는 **부모와 같고** `agent_id`/
     `agent_type` 만 추가된다. 면제가 없으면 서브에이전트가 부모의 사이클 주입권을 가져간다."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
 
-    assert codex_ctx.ctx_nudge_envelope(_payload(rollout, **LIVE_SUBAGENT_KEYS), root) == {}
+    assert codex_ctx.ctx_warn_envelope(_payload(rollout, **LIVE_SUBAGENT_KEYS), root) == {}
     assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
-    # 감도: 같은 payload 에서 서브에이전트 키만 빼면 발화한다.
-    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) != {}
+    # 감도: 같은 payload 에서 서브에이전트 키만 빼면 안내가 나간다.
+    assert codex_ctx.ctx_warn_envelope(_payload(rollout), root) != {}
 
 
 def test_unrelated_hook_events_are_not_touched(codex_ctx, tmp_path):
-    """주입 채널은 UserPromptSubmit 뿐 — 밴드 안이어도 PreToolUse·PostToolUse 에서는 판정 자체를 하지 않는다."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    """주입 채널은 UserPromptSubmit 뿐 — 구간 안이어도 PreToolUse·PostToolUse 에서는 판정 자체를 하지 않는다."""
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
 
     for event in ("PreToolUse", "PostToolUse"):
-        assert codex_ctx.ctx_nudge_envelope(
+        assert codex_ctx.ctx_warn_envelope(
             _payload(rollout, hook_event_name=event, **_TOOL_EVENT_KEYS), root) == {}, event
     assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
 
@@ -1109,8 +1107,8 @@ def test_unrelated_hook_events_are_not_touched(codex_ctx, tmp_path):
 # ── 4.5 디스패처 합본·출하 CLI (침묵이 실제로 침묵인가) ──────────────────────
 
 def test_dispatcher_merges_the_nudge_without_touching_other_features(codex_ctx, tmp_path):
-    """UserPromptSubmit에서 ctx 넛지만 답하면 그대로 나가고 자식은 안 뜬다."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    """UserPromptSubmit에서 ctx 경고만 답하면 그대로 나가고 자식은 안 뜬다."""
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
     spawned = []
 
@@ -1127,9 +1125,9 @@ def test_dispatcher_merges_the_nudge_without_touching_other_features(codex_ctx, 
     assert spawned == [], "도구 무관 판정이 매 호출마다 자식 프로세스를 띄웠다"
 
 
-def test_dispatcher_stays_byte_identical_to_the_pass_shape_out_of_band(codex_ctx, tmp_path):
-    """밴드 밖 합본은 이 가드가 없던 때와 같은 통과 형태(`{}`)다 — 새 잡음 0."""
-    root = _adopter_root(tmp_path, conf=_OUT_OF_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+def test_dispatcher_stays_byte_identical_to_the_pass_shape_out_of_level(codex_ctx, tmp_path):
+    """구간 밖 합본은 이 가드가 없던 때와 같은 통과 형태(`{}`)다 — 새 잡음 0."""
+    root = _adopter_root(tmp_path, conf=_OUT_OF_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
 
     assert codex_ctx.dispatch_hook(
@@ -1143,14 +1141,14 @@ def test_dispatcher_stays_byte_identical_to_the_pass_shape_out_of_band(codex_ctx
 
 
 @pytest.mark.parametrize("conf,expected_prefix", (
-    (_IN_BAND_BUDGET, '{"hookSpecificOutput"'),
-    (_OUT_OF_BAND_BUDGET, "{}"),
+    (_IN_LEVEL_BUDGET, '{"hookSpecificOutput"'),
+    (_OUT_OF_LEVEL_BUDGET, "{}"),
 ))
 def test_shipped_cli_emits_one_line_and_rc0(tmp_path, conf, expected_prefix):
-    """출하 CLI(`--hook-dispatch`)를 실제로 태운다 — rc0 + 한 줄, 밴드 밖은 `{}` 뿐."""
+    """출하 CLI(`--hook-dispatch`)를 실제로 태운다 — rc0 + 한 줄, 구간 밖은 `{}` 뿐."""
     root = _adopter_root(tmp_path, conf=conf, pm_log_body=_STUB_PM_LOG)
     # 출하 레이아웃 그대로 — 디스패처는 `<root>/.codex/` 에 설치되고 `repo_root` 는 그 자리의
-    # 부모다. flat 배치로 두면 이 테스트가 출하 형상이 아닌 것을 태운다.
+    # 부모다. flat 배치로 두면 이 테스트가 출하 구성이 아닌 것을 태운다.
     dispatcher = root / ".codex" / "pm_orch_codex.py"
     dispatcher.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(DISPATCHER, dispatcher)
@@ -1170,7 +1168,7 @@ def test_shipped_cli_emits_one_line_and_rc0(tmp_path, conf, expected_prefix):
 
 
 # ── 4.6 `{self}` = 실행 중인 파일 자신 (root 파생 재구성 아님·T-0845) ──────────────
-# git-anchor 는 delegate-channel 처럼 부를 별도 엔진 파일이 없어 디스패처가 `{self}` 로 자기
+# git-check 는 delegate-channel 처럼 부를 별도 엔진 파일이 없어 디스패처가 `{self}` 로 자기
 # 자신을 다시 부른다. 옛 구현은 그 좌표를 `root / ".codex" / "pm_orch_codex.py"` 로 **재구성**
 # 했다 — 출하 레이아웃(`<root>/.codex/pm_orch_codex.py`)에서는 우연히 같은 값이라 통과했지만,
 # flat 레이아웃(`<root>/pm_orch_codex.py`)에서는 존재하지 않는 경로를 가리켰다. 두 레이아웃을
@@ -1208,7 +1206,7 @@ def test_self_expands_to_the_running_file_in_both_layouts(tmp_path, label):
 
 @pytest.mark.parametrize("label", ("flat", "shipped"))
 def test_self_child_spawn_succeeds_in_both_layouts_without_adapter_fallback(tmp_path, label):
-    """git-anchor 자식을 실제로 스폰 — flat·출하 두 레이아웃 모두 rc0·adapter-fallback 0(T-0845).
+    """git-check 자식을 실제로 스폰 — flat·출하 두 레이아웃 모두 rc0·adapter-fallback 0(T-0845).
 
     출하 CLI 를 그대로 태운다(`--hook-dispatch PreToolUse`) — mock runner 는 self 경로가 실재하지
     않아도 통과시키므로 여기서는 진짜 자식 프로세스로 재야 결함이 드러난다."""
@@ -1226,7 +1224,7 @@ def test_self_child_spawn_succeeds_in_both_layouts_without_adapter_fallback(tmp_
     stdout = completed.stdout.decode("ascii")
     assert len(completed.stdout.splitlines()) == 1
     assert "adapter-fallback" not in stdout, f"{label}: {stdout}"
-    assert stdout.strip() == "{}"  # 밴드 미측정(transcript 없음)·git-anchor 무관 커맨드 → 침묵.
+    assert stdout.strip() == "{}"  # 구간 미측정(transcript 없음)·git 검사 무관 커맨드 → 침묵.
 
 
 def test_self_reconstructed_from_root_would_miss_the_flat_layout(tmp_path):
@@ -1256,10 +1254,10 @@ def _t0943_hook_input(rollout: Path, root: Path, model: str) -> dict:
     return payload
 
 
-def test_t0943_model_only_hook_input_runs_the_band(codex_ctx, tmp_path):
-    """`model` 만 있는 실제 입력이 기록 모델과 같으면 밴드 판정이 돈다(경고 없음)."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
-    envelope = codex_ctx.ctx_nudge_envelope(
+def test_t0943_model_only_hook_input_runs_the_level(codex_ctx, tmp_path):
+    """`model` 만 있는 실제 입력이 기록 모델과 같으면 구간 판정이 돈다(경고 없음)."""
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
+    envelope = codex_ctx.ctx_warn_envelope(
         _t0943_hook_input(_write_rollout(tmp_path), root, _RECORD_MODEL), root)
     assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
         "warn2", used_pct=77, precompact_at_pct=80)
@@ -1268,16 +1266,16 @@ def test_t0943_model_only_hook_input_runs_the_band(codex_ctx, tmp_path):
 
 def test_t0943_other_model_and_missing_record_use_system_message(codex_ctx, tmp_path):
     """다른 모델은 판정을 계속하며 `systemMessage` 경고, 기록이 없으면 `systemMessage` 오류."""
-    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    root = _adopter_root(tmp_path, conf=_IN_LEVEL_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
-    envelope = codex_ctx.ctx_nudge_envelope(
+    envelope = codex_ctx.ctx_warn_envelope(
         _t0943_hook_input(rollout, root, "gpt-other"), root)
     assert envelope["hookSpecificOutput"]["additionalContext"] == ctx_recovery.build_ctx_guard_guidance(
         "warn2", used_pct=77, precompact_at_pct=80)
     assert "모델이 바뀌었습니다" in envelope["systemMessage"] and "gpt-other" in envelope["systemMessage"]
 
     (root / ".project_manager/.local/ctx-budget.json").unlink()
-    envelope = codex_ctx.ctx_nudge_envelope(
+    envelope = codex_ctx.ctx_warn_envelope(
         _t0943_hook_input(rollout, root, _RECORD_MODEL), root)
     assert set(envelope) == {"systemMessage"}
     assert envelope["systemMessage"].startswith("[ctx-budget]") and "`pm_config.py apply`" in envelope["systemMessage"]

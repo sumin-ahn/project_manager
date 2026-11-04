@@ -111,7 +111,7 @@ def test_posix_prefers_python3(monkeypatch, board):
     assert "py" not in tried  # POSIX 후보에 py 가 아예 없음
 
 
-# ── 4. 아무 후보도 통과 못 함 (which 전부 None) → "python3" 리터럴 폴백 ──────
+# ── 4. 아무 후보도 통과 못 함 (which 전부 None) → "python3" 리터럴로 대신 ──────
 
 def test_literal_fallback_when_nothing_passes(monkeypatch, board):
     _patch(monkeypatch, board, name="nt", present=set(), runs=set())
@@ -119,7 +119,7 @@ def test_literal_fallback_when_nothing_passes(monkeypatch, board):
 
 
 def test_literal_fallback_when_present_but_all_dead(monkeypatch, board):
-    """존재는 하나 전부 실행 실패(죽은 shim) → 폴백 'python3'."""
+    """존재는 하나 전부 실행 실패(죽은 shim) → 'python3' 로 대신."""
     _patch(monkeypatch, board, name="nt",
            present={"py", "python3", "python"}, runs=set())
     assert python_env._detect_py() == "python3"

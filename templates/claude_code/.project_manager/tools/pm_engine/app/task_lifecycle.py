@@ -366,7 +366,7 @@ def end_task(home, name: str, *, git_runner: worktree_records.GitRunner | None =
             lease.bound = False  # task 종료 = bind 점유 종료 — 사람 bind 마커 해제(release 와 같은 lifecycle).
             released.append(lease.slot)
         if released:
-            pool_store._write_ledger(home, leases)
+            pool_store._write_records(home, leases)
 
         # 2b) 기록의 task 레코드 제거(같은 락·형제 leases 는 위에서 이미 반영됨).
         pool_store._write_tasks(home, [task for task in tasks if task.name != name])

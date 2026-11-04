@@ -1,13 +1,13 @@
-"""opencode 어댑터 ctx checkpoint plugin 정합 테스트 (T-0551·ADR-0081 Decision 1·3).
+"""opencode 어댑터 ctx checkpoint plugin 일치 테스트 (T-0551·ADR-0081 Decision 1·3).
 
 opencode plugin(`.opencode/plugins/ctx-guard.js`)이 컨텍스트 토큰을 추적해 임계 도달 시
-checkpoint 박제를 안내하고, `session.compacted`를 병행 관측해 count·re-arm·압축 후 안내를
+checkpoint 기록을 안내하고, `session.compacted`를 병행 관측해 count·re-arm·압축 후 안내를
 수행하며, await 중 re-arm된 새 사이클을 구 메시지가 덮지 않는 것을 여러 층위에서 단언한다:
 
-  1. config 정합  — opencode.jsonc 가 `compaction.auto:false`를 재도입하지 않고, 모델 limit 의
+  1. config 일치  — opencode.jsonc 가 `compaction.auto:false`를 재도입하지 않고, 모델 limit 의
        output < context 제약을 만족한다.
-  2. plugin 정합  — event 토큰추적·session.compacted 병행 신호·차단/marker 제거·checkpoint 문구.
-  3. node 동작    — 밴드 판정, 세션별 관측 count·re-arm·안내, cycle epoch 경합 방지.
+  2. plugin 일치  — event 토큰추적·session.compacted 병행 신호·차단/marker 제거·checkpoint 문구.
+  3. node 동작    — 구간 판정, 세션별 관측 count·re-arm·안내, cycle epoch 경합 방지.
   4. 라이브 로드 — (T-0283·release-tier·`PM_OPENCODE_LIVE=1`+opencode 바이너리) 실 opencode 헤드리스가
        플러그인을 autoload 성공(로드 실패 로그 부재 + factory 실행 마커)하는지 실측. 기본 skip(CI green 불변).
 
@@ -15,7 +15,7 @@ checkpoint 박제를 안내하고, `session.compacted`를 병행 관측해 count
 이길 요구·각각을 팩토리로 호출한다 — CJS `module.exports`(객체/단일함수)는 거부되고 비함수 export(상수)
 하나로도 로드 실패. 그래서 진입점 `plugins/ctx-guard.js` 는 ESM 으로 팩토리 하나만 export 하는 얇은 shim
 이고, 순수 헬퍼·상수·팩토리 본체는 plugins/ *바깥* CJS 모듈 `lib/ctx-guard-core.cjs`(opencode 미스캔·node
-require 대상)에 둔다. 정적/순수 검증은 그 core 를, autoload 규약은 라이브 로드 게이트가 본다.
+require 대상)에 둔다. 정적/순수 검증은 그 core 를, autoload 규약은 라이브 로드 검사가 본다.
 
 JS 로직의 SDK wiring 은 mock client 로 결정적으로 검증한다.
 """
@@ -76,7 +76,7 @@ def _shim_src() -> str:
 
 
 def _install_core(root: Path) -> Path:
-    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 형상 그대로.
+    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 구성 그대로.
 
     core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 소스
     트리에서 require 하면 root 가 `templates/opencode` 가 되어 마커·conf·pm_log subprocess 가
@@ -89,7 +89,7 @@ def _install_core(root: Path) -> Path:
     return lib
 
 
-# ctx core 가 require 하는 lib 모듈 전부 — 일반 도구 판정 경계(git-anchor)와 그 의존(principle·delegate·warning).
+# ctx core 가 require 하는 lib 모듈 전부 — 일반 도구 판정 경계(git-check)와 그 의존(principle·delegate·warning).
 CORE_DEPENDENCIES = ("ctx-guard-core.cjs", "git-check-core.cjs", "principle-recall-core.cjs",
                      "delegate-channel-core.cjs", "warning-channel-core.cjs")
 ENGINE_TOOLS = REPO / ".project_manager" / "tools"
@@ -286,10 +286,10 @@ def _snapshot_receipt(root: Path, session_id: str, generation: str) -> Path:
     return _snapshot_marker_dir(root) / f"compact-snapshot-receipt.{key}.{generation}"
 
 
-# ── 1. config 정합: 기본 compaction + 모델 limit 제약 ───────────────────────
+# ── 1. config 일치: 기본 compaction + 모델 limit 제약 ───────────────────────
 
 def test_accumulate_tokens_prefers_total_with_sum_fallback():
-    """plugin 판정도 driver 파서와 동일하게 total 우선 + 합산 폴백 (T-0557 통일)."""
+    """plugin 판정도 driver 파서와 동일하게 total 우선 + 합산 대체 (T-0557 통일)."""
     script = (
         "const m = require(\"./ctx-guard-core.cjs\");"
         "const a = m.accumulateTokens({total: 500, input: 1, output: 1});"
@@ -329,7 +329,7 @@ def test_config_does_not_disable_auto_compaction():
 
 
 def test_config_model_limits_keep_output_below_context():
-    """명시한 모든 모델 limit 은 output < context — 컴팩션 무한 루프 형상 차단.
+    """명시한 모든 모델 limit 은 output < context — 컴팩션 무한 루프 구성 차단.
 
     자동 컴팩션 트리거가 "입력 > context - output" 이라 output ≥ context 면 조건이 항상 참이 되어
     세션이 실제 작업 대신 요약만 반복한다(라이브 실측). 값 가드 + 그 근거 주석의 존재를 함께 본다.
@@ -349,7 +349,7 @@ def test_config_model_limits_keep_output_below_context():
             )
             assert output < context, (
                 f"{provider_name}/{model_name}: limit.output({output}) 이 "
-                f"limit.context({context}) 이상 — 컴팩션이 매 턴 발화해 요약만 반복함"
+                f"limit.context({context}) 이상 — 컴팩션이 매 턴 실행돼 요약만 반복함"
             )
     assert checked_limits, "출하 모델에 검증할 limit 설정이 없음"
     # 왜(주석) 정적 확인 — 채택자가 자기 모델 엔트리를 더할 때 이 제약을 읽게 한다.
@@ -365,7 +365,7 @@ def test_config_keeps_existing_permission_guard():
     assert bash.get("rm *") == "deny", "기존 deny 가드 손실 (T-0011·T-0160 회귀)"
 
 
-# ── 2. plugin 정합: 파일 존재 + 필수 호출/구조 ──────────────────────────────
+# ── 2. plugin 일치: 파일 존재 + 필수 호출/구조 ──────────────────────────────
 
 def test_plugin_file_exists():
     """진입점 shim 이 .opencode/plugins/ 에·core 모듈이 .opencode/lib/ 에 존재 (T-0283 분리)."""
@@ -382,7 +382,7 @@ def test_plugin_entry_is_esm_single_function_export():
     호출한다 — CJS `module.exports`(객체·단일함수 불문)는 거부('Plugin export is not a function')
     되고 비함수 export(상수)·헬퍼 함수까지 플러그인으로 오인한다. 이 회귀(T-0283 원 버그)를 막는
     durable 정적 가드: 진입점이 (1) CJS module.exports 를 쓰지 않고 (2) core 를 import 하며
-    (3) 정확히 하나의 export 문(팩토리 CtxGuardPlugin)만 갖는다. (실 autoload 는 라이브 게이트가 봄.)
+    (3) 정확히 하나의 export 문(팩토리 CtxGuardPlugin)만 갖는다. (실 autoload 는 라이브 검사가 봄.)
     """
     shim = _shim_src()
     # 주석(//...) 줄을 제외한 실 코드만 검사 (설명 주석에 규약 언급이 있어 오탐 방지).
@@ -413,7 +413,7 @@ def test_ctx_guard_shim_and_core_co_present_in_source_tree():
     함께 실재한다. shim 이 core 를 import 하므로 한쪽만 있으면 로드가 깨진다.
 
     ⚠️ 이건 *소스 트리* precheck 일 뿐 — load-bearing 커플링 단언(실 출하 산출물 co-presence)은
-    fresh pm_import 산출물에서 본다(test_fresh_adopter_e2e·[[feature-ship-needs-fresh-adopter-gate]]).
+    fresh pm_import 산출물에서 본다(test_fresh_adopter_e2e·새 채택자 설치로 확인하는 규칙).
     어댑터 파일은 manifest 미등재 pm_import(rglob 전체트리)로만 출하되므로(self-update 채널 없음),
     "함께 landing" 은 import 산출물에서 검증해야 실효다."""
     assert PLUGIN_FILE.exists(), f"진입점 shim 없음: {PLUGIN_FILE}"
@@ -429,9 +429,9 @@ def test_plugin_subscribes_message_events():
 
 
 def test_plugin_removes_stop_consumers_and_allowlist():
-    """stop 판정은 엔진이 하고 plugin 은 deny/throw/marker/allow-list 소비 표면을 두지 않는다.
+    """stop 판정은 엔진이 하고 plugin 은 deny/throw/marker/allow-list 소비 경로를 두지 않는다.
 
-    일반 도구 before 는 판정 경계(`createToolBoundary`) 하나뿐이다 — ctx 밴드로 도구를 막는 분기는 없다."""
+    일반 도구 before 는 판정 경계(`createToolBoundary`) 하나뿐이다 — ctx 구간으로 도구를 막는 분기는 없다."""
     src = _plugin_src()
     assert src.count('"tool.execute.before"') == 1, "일반 도구 before 는 하나여야 한다"
     assert '"tool.execute.before": boundary.before' in src, "일반 도구 before 가 판정 경계가 아니다"
@@ -446,7 +446,7 @@ def test_plugin_removes_stop_consumers_and_allowlist():
         "ctx-stop handoff triggered",
         "computeCtxState",
     ):
-        assert removed not in src, f"폐기된 stop 소비 표면 잔존: {removed}"
+        assert removed not in src, f"폐기된 stop 소비 경로 잔존: {removed}"
 
 
 def test_plugin_subscribes_compaction_events_with_local_observation_count():
@@ -473,7 +473,7 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
 # ── 2c. ctx 예산 (ADR-0041 · T-0943): 압축 한도 기록 · modelLimit 폐기 ─────────
 
 def test_plugin_reads_budget_and_ratios_from_the_engine_record():
-    """분모 E·두 비율·밴드는 엔진(`board.py hook-context`)이 압축 한도 기록에서 판정한다 — 플러그인은
+    """분모 E·두 비율·구간은 엔진(`board.py hook-context`)이 압축 한도 기록에서 판정한다 — 플러그인은
     local.conf 를 읽거나 비율·구표기를 해석하지 않고 토큰·모델 관측만 넘긴다(T-0943 · 설계 Q1)."""
     src = _plugin_src()
     assert "runHookContext(root, { session: sessionID, tokens, model, main_thread: true, boundary: null })" in src
@@ -484,7 +484,7 @@ def test_plugin_reads_budget_and_ratios_from_the_engine_record():
 
 
 def test_plugin_uses_engine_budget_not_model_limit():
-    """정지/넛지 분모가 모델 물리한도 조회가 아니라 기록의 적용 한도다 (ADR-0041)."""
+    """정지/경고 분모가 모델 물리한도 조회가 아니라 기록의 적용 한도다 (ADR-0041)."""
     src = _plugin_src()
     # 물리한도 조회(modelLimit·cachedLimit·config.providers)가 완전히 폐기됐다.
     assert "modelLimit" not in src, "modelLimit() 폐기 안 됨 (ADR-0041 물리한도 개념 제거 위반)"
@@ -493,16 +493,16 @@ def test_plugin_uses_engine_budget_not_model_limit():
 
 
 def test_plugin_has_idempotency_guard():
-    """밴드 1회 발화는 엔진 durable marker 가 맡고, plugin 은 세션별 관측·compaction 사이클만 분리한다."""
+    """구간 안내 1회는 엔진 durable marker 가 맡고, plugin 은 세션별 관측·compaction 사이클만 분리한다."""
     src = _plugin_src()
     assert re.search(r"sessionStates\s*=\s*new Map", src), "세션별 상태 Map 없음"
-    assert "fired." not in src, "밴드 발화 기억을 plugin 메모리에 두면 재시작·다른 process 에서 다시 발화한다"
+    assert "fired." not in src, "구간 안내 기억을 plugin 메모리에 두면 재시작·다른 process 에서 다시 나간다"
     assert re.search(r"session\.observation\s*=\s*null", src), "compaction 후 옛 관측 폐기 없음"
     assert re.search(r"cycleEpoch\s*\+=\s*1", src), "compaction re-arm cycle epoch 증가 없음"
 
 
 def test_plugin_exempts_native_subsessions_and_caches_lookup_outcomes(tmp_path):
-    """native task 자식은 밴드·compaction·모델 주입 모두 면제하며 lookup 을 캐시한다."""
+    """native task 자식은 구간·compaction·모델 주입 모두 면제하며 lookup 을 캐시한다."""
     if _NODE is None:
         import pytest
 
@@ -579,7 +579,7 @@ const projectRoot = __PROJECT_ROOT__;
     assert "JS_SUBSESSION_GUARD_OK" in out, f"sub-session SDK mock 단위 실패. out={out!r}"
 
 
-def test_plugin_compacted_counts_rearms_and_injects_post_notice(tmp_path):
+def test_plugin_compacted_counts_resets_and_injects_post_notice(tmp_path):
     """compacted는 로컬 count만 증가하고 re-arm·횟수 없는 사후 안내를 병행한다."""
     if _NODE is None:
         import pytest
@@ -592,7 +592,7 @@ const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 const projectRoot = __PROJECT_ROOT__;
 const sessionID = "ses_compaction_cycle";
-const nudgeEvent = () => ({
+const warnEvent = () => ({
   event: {type:"message.updated", properties:{info:{
     sessionID, role:"assistant", tokens:{input:145000}
   }}}
@@ -607,7 +607,7 @@ const nudgeEvent = () => ({
     tui:{showToast: async (toast) => { toasts.push(toast.body.message); }},
   }, directory:projectRoot});
 
-  // 일반 도구 before 는 판정 경계 하나뿐이다 — stop 밴드로 도구를 막지 않는다(아래 before 호출).
+  // 일반 도구 before 는 판정 경계 하나뿐이다 — stop 구간으로 도구를 막지 않는다(아래 before 호출).
   assert.deepStrictEqual(
     Object.keys(hooks).sort(),
     ["event", "experimental.chat.system.transform", "tool.execute.before"].sort(),
@@ -618,18 +618,18 @@ const nudgeEvent = () => ({
   }}}});
   let output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  assert.strictEqual(output.system.length, 1, "stop band must be absorbed by final warn guidance");
-  assert.ok(output.system[0].includes("[ctx-warn/최종]"), "stop band did not use final guidance");
-  assert.ok(output.system[0].includes("pm_log.py checkpoint"), "stop-band guidance lacks checkpoint");
+  assert.strictEqual(output.system.length, 1, "stop level must be absorbed by final warn guidance");
+  assert.ok(output.system[0].includes("[ctx-warn/최종]"), "stop level did not use final guidance");
+  assert.ok(output.system[0].includes("pm_log.py checkpoint"), "stop-level guidance lacks checkpoint");
   await hooks["tool.execute.before"]({tool:"read", sessionID}, {args:{filePath:"README.md"}});
 
-  await hooks.event(nudgeEvent());
+  await hooks.event(warnEvent());
   output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
   assert.strictEqual(output.system.length, 1, "first-cycle warn missing");
   assert.ok(output.system[0].includes("pm_log.py checkpoint"), "warn is not checkpoint instruction");
 
-  await hooks.event(nudgeEvent());
+  await hooks.event(warnEvent());
   output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
   assert.deepStrictEqual(output.system, [], "same-cycle warn fired twice");
@@ -644,15 +644,15 @@ const nudgeEvent = () => ({
   assert.ok(toasts.some((text) => text.includes("compaction 경계가 감지됐다")), "human toast missing");
   assert.ok(toasts.every((text) => !/compaction\s+\d+회/.test(text)), "toast exposed count");
 
-  await hooks.event(nudgeEvent());
+  await hooks.event(warnEvent());
   output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
   assert.strictEqual(output.system.length, 1, "warn was not re-armed after compaction");
-  console.log("JS_COMPACTION_REARM_OK");
+  console.log("JS_COMPACTION_RESET_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
     out = _run_node_check(script, project_root)
-    assert "JS_COMPACTION_REARM_OK" in out, f"compaction 병행 신호 실패. out={out!r}"
+    assert "JS_COMPACTION_RESET_OK" in out, f"compaction 병행 신호 실패. out={out!r}"
 
 
 def test_plugin_compaction_snapshot_failure_keeps_model_facing_fallback(tmp_path):
@@ -1005,7 +1005,7 @@ def test_plugin_nudge_overwrite_preserves_snapshot_marker_for_next_transform(tmp
         pytest.skip("node 없음 — warn/snapshot marker 간섭 단위 skip")
 
     project_root = _make_ctx_guard_project(tmp_path)
-    session_id = "ses_nudge_snapshot_interference"
+    session_id = "ses_warn_snapshot_interference"
     marker_dir = _snapshot_marker_dir(project_root)
     script = r'''
 const m = require("./ctx-guard-core.cjs");
@@ -1063,13 +1063,13 @@ const receiptPaths = () => fs.readdirSync(markerDir)
     1,
     "snapshot payload delivery count was not exactly one",
   );
-  console.log("JS_NUDGE_SNAPSHOT_MARKER_INTERFERENCE_OK");
+  console.log("JS_WARN_SNAPSHOT_MARKER_INTERFERENCE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
         "__MARKER_DIR__", json.dumps(str(marker_dir))
     ).replace("__SESSION_ID__", json.dumps(session_id))
     out = _run_node_check(script, project_root)
-    assert "JS_NUDGE_SNAPSHOT_MARKER_INTERFERENCE_OK" in out, (
+    assert "JS_WARN_SNAPSHOT_MARKER_INTERFERENCE_OK" in out, (
         f"warn/snapshot marker 간섭 방지 실패. out={out!r}"
     )
 
@@ -1475,7 +1475,7 @@ fs.writeFileSync = (target,...args) => {
   try {await hooks["experimental.chat.system.transform"]({sessionID:d.sid},output);}
   finally {fs.linkSync=native.link; fs.unlinkSync=native.unlink; fs.readFileSync=native.read; fs.writeFileSync=native.write;}
   assert.strictEqual(calls.link,d.scenario === "old_gc" ? 0 : 1);
-  if (d.scenario !== "empty") assert.strictEqual(injected,true,"failure seam was not reached");
+  if (d.scenario !== "empty") assert.strictEqual(injected,true,"failure override was not reached");
   const delivered=["cleanup","receipt"].includes(d.scenario);
   assert.deepStrictEqual(output.system,delivered ? [d.payload] : []);
   const receipts=fs.readdirSync(path.dirname(d.source)).filter((n)=>n.startsWith("compact-snapshot-receipt."));
@@ -1697,10 +1697,10 @@ const both=(suffix)=>fs.readdirSync(rendezvousDir).filter(n=>n.endsWith(suffix))
     winner = next(result for result in results if result["wonLatest"])
     loser = next(result for result in results if not result["wonLatest"])
     assert winner["output"] == [latest_payload]
-    assert winner["oldExistsAfterTransform"] is False, "선점 승자가 구 generation을 GC하지 않음"
-    assert loser["output"] == [], "latest 선점 패배자가 old snapshot을 stale 주입함"
+    assert winner["oldExistsAfterTransform"] is False, "차지 승자가 구 generation을 GC하지 않음"
+    assert loser["output"] == [], "latest 차지에 진 쪽이 old snapshot을 stale 주입함"
     assert loser["oldExistsAfterTransform"] is False, "latest claim 전에 old GC가 끝나지 않음"
-    assert loser["receiptWrites"] == 0, "선점 패배 actor가 receipt를 작성함"
+    assert loser["receiptWrites"] == 0, "차지에 진 actor가 receipt를 작성함"
     assert winner["receiptWrites"] == 1
     assert sum(len(result["output"]) for result in results) == 1
     if schedule in {"fence_held", "source_removed", "cleanup"}:
@@ -1721,7 +1721,7 @@ const both=(suffix)=>fs.readdirSync(rendezvousDir).filter(n=>n.endsWith(suffix))
 
 @pytest.mark.parametrize("schedule", ["simultaneous", "fence_held", "source_removed", "cleanup", "free_run"])
 def test_plugin_snapshot_claim_real_process_race_has_one_winner_and_loser_skips_without_receipt(tmp_path, schedule):
-    assert _NODE is not None, "Node가 있어야 실제 프로세스 선점을 검증할 수 있다"
+    assert _NODE is not None, "Node가 있어야 실제 프로세스 간 먼저 차지하기를 검증할 수 있다"
     for iteration in range(3 if schedule == "free_run" else 1):
         results = _snapshot_claim_real_process_pair(tmp_path / str(iteration), schedule)
         assert sum(row["wonLatest"] for row in results) == 1, json.dumps(results, ensure_ascii=False)
@@ -2046,7 +2046,7 @@ console.log("JS_COMPACTION_SNAPSHOT_SESSION_OK");
 
 
 def test_compaction_boundary_id_remains_unique_after_plugin_restart():
-    """같은 SID·같은 millisecond에도 재로드 뒤 UUID 축이 달라 marker를 재사용하지 않는다."""
+    """같은 SID·같은 millisecond에도 재로드 뒤 UUID 부분이 달라 marker를 재사용하지 않는다."""
     if _NODE is None:
         import pytest
 
@@ -2162,7 +2162,7 @@ const sessionID = "ses_unawaited_compacted";
     assert "JS_COMPACTED_SYNC_STAGE_OK" in out, f"compacted 동기 적재 경합 실패. out={out!r}"
 
 
-def test_plugin_cycle_epoch_rejects_old_message_after_compaction_rearm(tmp_path):
+def test_plugin_cycle_epoch_rejects_old_message_after_compaction_reset(tmp_path):
     """lookup await 중 re-arm이 끼어든 구 메시지는 새 사이클 상태를 덮지 않는다.
 
     epoch guard를 제거한 구 코드에서는 lookup 해제 후 old message.updated가 compacted
@@ -2179,7 +2179,7 @@ const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 const projectRoot = __PROJECT_ROOT__;
 const sessionID = "ses_cycle_epoch";
-const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
+const warnEvent = () => ({event:{type:"message.updated", properties:{info:{
   sessionID, role:"assistant", tokens:{input:145000}
 }}}});
 
@@ -2189,7 +2189,7 @@ const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
     get: () => new Promise((resolve) => { resolveLookup = resolve; }),
   }}, directory:projectRoot});
 
-  const oldMessage = hooks.event(nudgeEvent());
+  const oldMessage = hooks.event(warnEvent());
   assert.strictEqual(typeof resolveLookup, "function", "lookup await boundary was not reached");
   const compacted = hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
   resolveLookup({data:{id:sessionID}});
@@ -2200,7 +2200,7 @@ const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
   assert.strictEqual(output.system.length, 1, "compacted notice was lost");
   assert.ok(output.system[0].includes("## PM 정체성 (compaction 복구)"), "old message overwrote snapshot");
 
-  await hooks.event(nudgeEvent());
+  await hooks.event(warnEvent());
   const freshOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, freshOutput);
   assert.strictEqual(freshOutput.system.length, 1, "old message dirtied re-armed fired state");
@@ -2213,7 +2213,7 @@ const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
 
 
 def test_plugin_attributes_pending_nudge_to_sid_captured_before_await(tmp_path):
-    """await 순서가 뒤집혀도 pendingNudgeText는 event 진입 때 캡처한 SID에 귀속된다."""
+    """await 순서가 뒤집혀도 pendingWarnText는 event 진입 때 캡처한 SID에 귀속된다."""
     if _NODE is None:
         import pytest
 
@@ -2227,7 +2227,7 @@ const projectRoot = __PROJECT_ROOT__;
 const firstID = "ses_race_first";
 const secondID = "ses_race_second";
 const resolvers = new Map();
-const nudgeEvent = (sessionID, input) => ({event:{type:"message.updated", properties:{info:{
+const warnEvent = (sessionID, input) => ({event:{type:"message.updated", properties:{info:{
   sessionID, role:"assistant", tokens:{input}
 }}}});
 
@@ -2236,8 +2236,8 @@ const nudgeEvent = (sessionID, input) => ({event:{type:"message.updated", proper
     get: ({path:{id}}) => new Promise((resolve) => resolvers.set(id, resolve)),
   }}, directory:projectRoot});
 
-  const first = hooks.event(nudgeEvent(firstID, 145000));
-  const second = hooks.event(nudgeEvent(secondID, 155000));
+  const first = hooks.event(warnEvent(firstID, 145000));
+  const second = hooks.event(warnEvent(secondID, 155000));
   assert.ok(resolvers.has(firstID) && resolvers.has(secondID), "both SID lookups must be pending");
   resolvers.get(secondID)({data:{id:secondID}});
   await second;
@@ -2252,11 +2252,11 @@ const nudgeEvent = (sessionID, input) => ({event:{type:"message.updated", proper
   assert.ok(firstOutput.system[0].includes("[ctx-warn]"), "first SID lost its warn payload");
   assert.strictEqual(secondOutput.system.length, 1);
   assert.ok(secondOutput.system[0].includes("[ctx-warn/강화]"), "second SID lost its warn2 payload");
-  console.log("JS_PENDING_NUDGE_SID_RACE_OK");
+  console.log("JS_PENDING_WARN_SID_RACE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
     out = _run_node_check(script, project_root)
-    assert "JS_PENDING_NUDGE_SID_RACE_OK" in out, f"pending warn SID 경합 실패. out={out!r}"
+    assert "JS_PENDING_WARN_SID_RACE_OK" in out, f"pending warn SID 경합 실패. out={out!r}"
 
 
 def test_plugin_keeps_pending_nudge_per_session_and_exempts_child_injection(tmp_path):
@@ -2271,9 +2271,9 @@ def test_plugin_keeps_pending_nudge_per_session_and_exempts_child_injection(tmp_
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 const projectRoot = __PROJECT_ROOT__;
-const mainID = "ses_main_nudge";
-const childID = "ses_child_nudge";
-const nudgeEvent = (sessionID) => ({
+const mainID = "ses_main_warn";
+const childID = "ses_child_warn";
+const warnEvent = (sessionID) => ({
   event: {type:"message.updated", properties:{info:{
     sessionID, role:"assistant", tokens:{input:145000}
   }}}
@@ -2290,7 +2290,7 @@ const nudgeEvent = (sessionID) => ({
     directory:projectRoot,
   });
 
-  await hooks.event(nudgeEvent(mainID));
+  await hooks.event(warnEvent(mainID));
   const childOutput = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:childID}, childOutput);
   assert.deepStrictEqual(childOutput.system, [], "child consumed main pending warn");
@@ -2305,23 +2305,23 @@ const nudgeEvent = (sessionID) => ({
   await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainAgain);
   assert.deepStrictEqual(mainAgain.system, [], "main warn was not consumed exactly once");
 
-  await hooks.event(nudgeEvent(childID));
+  await hooks.event(warnEvent(childID));
   const childAgain = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID:childID}, childAgain);
   assert.deepStrictEqual(childAgain.system, [], "child event created an exempt warn");
-  console.log("JS_NUDGE_SESSION_ISOLATED_OK");
+  console.log("JS_WARN_SESSION_ISOLATED_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
     out = _run_node_check(script, project_root)
-    assert "JS_NUDGE_SESSION_ISOLATED_OK" in out, f"warn 세션 격리 실패. out={out!r}"
+    assert "JS_WARN_SESSION_ISOLATED_OK" in out, f"warn 세션 격리 실패. out={out!r}"
 
 
 def test_plugin_emits_nudge():
-    """넛지(이른 경고) 경로가 있다 — checkpoint_at_pct 이상이면 안내(toast/message)."""
+    """경고(이른 경고) 경로가 있다 — checkpoint_at_pct 이상이면 안내(toast/message)."""
     src = _plugin_src()
-    assert "warn" in src.lower(), "넛지 로직 없음"
+    assert "warn" in src.lower(), "경고 로직 없음"
     # toast 경고 경로 (best-effort).
-    assert "showToast" in src or "toast" in src.lower(), "넛지 안내(toast) 경로 없음"
+    assert "showToast" in src or "toast" in src.lower(), "경고 안내(toast) 경로 없음"
 
 
 # ── 3. 순수 결정 로직 자가검증 (node 있으면) ─────────────────────────────────
@@ -2358,8 +2358,8 @@ def _run_node_check(
 def test_plugin_pure_logic_node_selfcheck():
     """node 로 plugin 의 순수 결정 로직을 자가검증 (이벤트/opencode 런타임 없이).
 
-    검증: 토큰 누적 · 판정 사본(밴드·예산·설정·문구)과 비율 기본값 대체 함수 부재(T-0943).
-    node 부재 시 skip (정적 검증으로 게이트).
+    검증: 토큰 누적 · 판정 사본(구간·예산·설정·문구)과 비율 기본값 대체 함수 부재(T-0943).
+    node 부재 시 skip (정적 검증으로 대신).
     """
     if _NODE is None:
         import pytest
@@ -2370,13 +2370,13 @@ def test_plugin_pure_logic_node_selfcheck():
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 
-// export 표면 — native 관측 헬퍼와 팩토리만. 밴드·예산·설정·문구 판정은 엔진이 소유한다.
+// export 범위 — native 관측 헬퍼와 팩토리만. 구간·예산·설정·문구 판정은 엔진이 소유한다.
 for (const fn of ["accumulateTokens","CtxGuardPlugin"]) {
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
 }
 for (const removed of ["resolveThresholds","resolveBudget","CHECKPOINT_AT_PCT_DEFAULT","CTX_WINDOW_TOKENS_DEFAULT",
-                       "parseLocalConf","loadLocalConf","readBudget","computeCtxState","nudge2Threshold",
-                       "buildNudgeGuidance","buildEngineCtxGuidance","NUDGE2_MARGIN_PCT"]) {
+                       "parseLocalConf","loadLocalConf","readBudget","computeCtxState",
+                       "buildEngineCtxGuidance"]) {
   assert.strictEqual(m[removed], undefined, "removed export present: " + removed);
 }
 
@@ -2410,16 +2410,16 @@ def test_plugin_injects_nudge_to_model():
     """warn 안내를 모델 컨텍스트에 비차단 주입한다 (toast=사람 / system.transform=모델).
 
     chat.message 의 full Part 구성(id/sessionID/messageID 필수)보다 system[] string push 가
-    안전 — experimental.chat.system.transform 채택. 엔진 발화 응답에서 pendingNudgeText 세팅 →
+    안전 — experimental.chat.system.transform 채택. 엔진이 안내를 낸 응답에서 pendingWarnText 세팅 →
     다음 모델 호출에 1회 소비.
     """
     src = _plugin_src()
     assert "experimental.chat.system.transform" in src, "모델 주입 훅(system.transform) 없음"
-    assert "pendingNudgeText" in src, "warn 주입 대기 플래그 없음"
+    assert "pendingWarnText" in src, "warn 주입 대기 플래그 없음"
     assert "output.system.push" in src, "system[] 에 push 하는 주입 경로 없음"
-    # 엔진 응답이 발화(emit)면 그 안내를 그대로 pendingNudgeText 에 세팅한다(toast 와 함께).
+    # 엔진 응답이 안내(emit)면 그 안내를 그대로 pendingWarnText 에 세팅한다(toast 와 함께).
     assert "if (!decision.emit) return;" in src
-    assert "state.pendingNudgeText = decision.guidance" in src, "warn 감지 시 중앙 안내 세팅 누락"
+    assert "state.pendingWarnText = decision.guidance" in src, "warn 감지 시 중앙 안내 세팅 누락"
 
 
 # ── checkpoint 2단(strong·compaction 임박) — 정적 + node 순수 검증 ────────────
@@ -2429,17 +2429,17 @@ def test_plugin_injects_nudge_to_model():
 def test_plugin_injects_nudge2_to_model():
     """2단(strong)·최종 warn 도 모델 컨텍스트에 비차단 주입 + 사람용 2단 toast (T-0328).
 
-    2단 임계 파생·밴드 판정·안내 문구·사이클당 1회는 엔진이 소유한다. plugin 은 엔진 응답 level 로
-    toast 강도만 고르고 같은 pendingNudgeText 채널에 싣는다."""
+    2단 임계 파생·구간 판정·안내 문구·사이클당 1회는 엔진이 소유한다. plugin 은 엔진 응답 level 로
+    toast 강도만 고르고 같은 pendingWarnText 채널에 싣는다."""
     src = _plugin_src()
-    for removed in ("NUDGE2_MARGIN_PCT", "nudge2Threshold", "buildNudge2Guidance", "fired.warn2"):
+    for removed in ("fired.warn2",):
         assert removed not in src, f"2단 판정 사본 잔존: {removed}"
-    assert 'if (decision.level === "warn") await notifyNudge(decision.guidance);' in src
-    assert "else await notifyNudge2(decision.guidance);" in src, "2단 toast(notifyNudge2) 경로 없음"
-    assert "state.pendingNudgeText = decision.guidance" in src, "warn2 감지 시 중앙 안내 세팅 누락"
+    assert 'if (decision.level === "warn") await notifyWarn(decision.guidance);' in src
+    assert "else await notifyWarn2(decision.guidance);" in src, "2단 toast(notifyWarn2) 경로 없음"
+    assert "state.pendingWarnText = decision.guidance" in src, "warn2 감지 시 중앙 안내 세팅 누락"
 
-def test_js_nudge2_band_and_guidance(tmp_path):
-    """plugin 이 실제 엔진 판정의 4-밴드·2단 임계·안내문을 그대로 모델 채널에 싣는다.
+def test_js_warn2_level_and_guidance(tmp_path):
+    """plugin 이 실제 엔진 판정의 4구간·2단 임계·안내문을 그대로 모델 채널에 싣는다.
 
     분모 E=200,000·70/80 기록에서 쓴 % 는 반올림 정수다 — 76%(warn)·77%(warn2 = max(80 − 3, 70))·
     80%(final). 안내문은 엔진 `build_ctx_guard_guidance` 와 같은 문자열이다. node 부재 시 skip.
@@ -2453,8 +2453,8 @@ def test_js_nudge2_band_and_guidance(tmp_path):
     from pm_engine.domain import ctx_recovery
 
     project_root = _make_ctx_guard_project(tmp_path)
-    cases = [("ses_ok", 138_000), ("ses_nudge", 153_000), ("ses_nudge2", 154_000),
-             ("ses_nudge2_upper", 158_000), ("ses_final", 160_000)]
+    cases = [("ses_ok", 138_000), ("ses_warn", 153_000), ("ses_warn2", 154_000),
+             ("ses_warn2_upper", 158_000), ("ses_final", 160_000)]
     script = r"""
 const m = require("./ctx-guard-core.cjs");
 const cases = JSON.parse(process.argv[1]);
@@ -2475,20 +2475,20 @@ const cases = JSON.parse(process.argv[1]);
     out = _run_node_check(script, project_root, [json.dumps(cases), str(project_root)])
     delivered = json.loads(out)
 
-    def guidance(band, used):
-        return [ctx_recovery.build_ctx_guard_guidance(band, used_pct=used, precompact_at_pct=80)]
+    def guidance(level, used):
+        return [ctx_recovery.build_ctx_guard_guidance(level, used_pct=used, precompact_at_pct=80)]
 
     assert delivered == {
         "ses_ok": [],
-        "ses_nudge": guidance("warn", 76),
-        "ses_nudge2": guidance("warn2", 77),
-        "ses_nudge2_upper": guidance("warn2", 79),
+        "ses_warn": guidance("warn", 76),
+        "ses_warn2": guidance("warn2", 77),
+        "ses_warn2_upper": guidance("warn2", 79),
         "ses_final": guidance("final", 80),
     }
-    assert delivered["ses_nudge2"] != guidance("warn", 77), "2단 문구가 1단과 동일 — 강도 구별 없음"
+    assert delivered["ses_warn2"] != guidance("warn", 77), "2단 문구가 1단과 동일 — 강도 구별 없음"
 
-# ── 5. 라이브-로드 게이트 (T-0283 · 실 opencode autoload · release-tier · 기본 skip) ──
-# 이 게이트의 존재이유: 유닛/정적 테스트는 순수함수(node require)만 봐서, opencode 가 plugin export
+# ── 5. 라이브 로드 검사 (T-0283 · 실 opencode autoload · release-tier · 기본 skip) ──
+# 이 검사의 존재이유: 유닛/정적 테스트는 순수함수(node require)만 봐서, opencode 가 plugin export
 # 형식(CJS 객체)을 거부해 *한 번도 로드 안 되던* 갭을 못 잡았다(T-0283). 실 opencode 를 헤드리스로
 # 띄워 로드 성공을 실측 단언한다 — release-tier·on-demand(`PM_OPENCODE_LIVE=1`), CI/기본 regression 은
 # opencode 바이너리 부재로 skip(green 불변). node 도 필요(shim→core import 는 bun 이 처리하나 skip 조건 대칭).
@@ -2502,11 +2502,11 @@ _LOAD_MARKER = "[ctx-guard] plugin factory loaded"
 _LOAD_FAIL = "failed to load plugin"
 _EXPORT_NOT_FN = "Plugin export is not a function"
 
-import pytest  # noqa: E402  (라이브 게이트 데코레이터용 — 이 지점 이후만 사용)
+import pytest  # noqa: E402  (라이브 검사 데코레이터용 — 이 지점 이후만 사용)
 
 _live_skip = pytest.mark.skipif(
     not PM_OPENCODE_LIVE or _OPENCODE_BIN is None or _NODE is None,
-    reason="라이브 로드 게이트 — PM_OPENCODE_LIVE=1 + opencode/node CLI 필요(기본 skip·CI green 불변).",
+    reason="라이브 로드 검사 — PM_OPENCODE_LIVE=1 + opencode/node CLI 필요(기본 skip·CI green 불변).",
 )
 
 
@@ -2547,11 +2547,11 @@ def _stage_opencode_project(root: Path, plugin_body: str | None = None) -> Path:
 
 @_live_skip
 def test_live_opencode_loads_ctx_guard_plugin(tmp_path):
-    """실 opencode 헤드리스가 출하 ctx-guard 플러그인을 autoload 성공하는지 실측 (T-0283 핵심 게이트).
+    """실 opencode 헤드리스가 출하 ctx-guard 플러그인을 autoload 성공하는지 실측 (T-0283 핵심 검사).
 
     단언: (1) "failed to load plugin" 부재 (2) "Plugin export is not a function" 부재
     (3) factory 실행 마커 존재 = 플러그인이 실제로 로드되고 팩토리가 돌았다. 유닛 green 만으론
-    못 잡던 갭(실 세션 로드 실패)을 이 게이트가 닫는다.
+    못 잡던 갭(실 세션 로드 실패)을 이 검사가 닫는다.
     """
     td = tmp_path / "live-load"
     td.mkdir()
@@ -2569,11 +2569,11 @@ def test_live_opencode_loads_ctx_guard_plugin(tmp_path):
 
 
 @_live_skip
-def test_live_gate_rejects_broken_object_export(tmp_path):
-    """sensitivity 대조군: T-0283 원 버그 형태(CJS 객체 export)를 심으면 이 게이트가 *실제로* 로드 실패를
+def test_live_check_rejects_broken_object_export(tmp_path):
+    """sensitivity 대조군: T-0283 원 버그 형태(CJS 객체 export)를 심으면 이 검사가 *실제로* 로드 실패를
     잡는지 실측 — false-green(무조건 통과) 방지. 대조군 진입점만 교체하고 core 는 그대로 둔다.
 
-    이 대조군이 없으면 게이트가 opencode 로그 형식 변화 등으로 조용히 무력화돼도 초록으로 통과할 수 있다.
+    이 대조군이 없으면 검사가 opencode 로그 형식 변화 등으로 조용히 무력화돼도 초록으로 통과할 수 있다.
     """
     broken = (
         "// T-0283 원 버그 재현(대조군) — CJS 객체 export = opencode 가 함수 아니라며 로드 거부.\n"
@@ -2586,7 +2586,7 @@ def test_live_gate_rejects_broken_object_export(tmp_path):
     _stage_opencode_project(td, plugin_body=broken)
     log = _run_opencode_load(str(td))
     assert _LOAD_FAIL in log or _EXPORT_NOT_FN in log, (
-        "게이트 무력화 위험 — 깨진 CJS 객체 export 를 opencode 가 로드 실패로 보고하지 않았다 "
+        "검사 무력화 위험 — 깨진 CJS 객체 export 를 opencode 가 로드 실패로 보고하지 않았다 "
         f"(로그 형식 변화?). 로그 꼬리:\n{log[-2500:]}"
     )
     assert _LOAD_MARKER not in log, (
@@ -2622,7 +2622,7 @@ const [providerID, modelID, input, sessionID] = [process.argv[1], process.argv[2
 
 
 def _t0943_project(tmp_path: Path) -> Path:
-    """설치 형상의 최소 트리 — pm_log 는 받은 인자를 그대로 내는 대역(안내 문구에 밴드·% 가 보인다)."""
+    """설치 구성의 최소 트리 — pm_log 는 받은 인자를 그대로 내는 대역(안내 문구에 구간·% 가 보인다)."""
     root = _make_ctx_guard_project(tmp_path, snapshot=False)
     (root / ".project_manager" / "tools" / "pm_log.py").write_text(
         "import sys\nsys.stdout.write(' '.join(sys.argv[1:]))\n", encoding="utf-8")
@@ -2639,11 +2639,11 @@ def _t0943_plugin_run(root: Path, provider: str, model: str, tokens: int, sessio
 
 @pytest.mark.skipif(_NODE is None, reason="node 없음")
 def test_t0943_plugin_recorded_model_nudges_other_model_warns(tmp_path):
-    """기록에 있는 `provider/model` 이면 경고 없이 넛지, 다른 모델이면 같은 넛지에 toast 경고 한 번."""
+    """기록에 있는 `provider/model` 이면 경고 없이 안내, 다른 모델이면 같은 안내에 toast 경고 한 번."""
     from test_harness_ctx_limits import install_ctx_record
     root = _t0943_project(tmp_path)
     assert install_ctx_record(root, _T0943_CONF, harness="opencode", capacity=200000) == SHIPPED_MODEL
-    # 밴드 1회 발화는 세션별 durable marker 라 두 실행은 서로 다른 세션으로 본다.
+    # 구간 안내 1회는 세션별 durable marker 라 두 실행은 서로 다른 세션으로 본다.
     same = _t0943_plugin_run(root, "ollama", SHIPPED_MODEL_ID, 162000, "t0943-same")  # 81% of E 200,000
     assert len(same["system"]) == 1 and "[ctx-warn] 컨텍스트 사용 81%" in same["system"][0]
     assert not [text for text in same["toasts"] if "[ctx-budget]" in text]
@@ -2655,7 +2655,7 @@ def test_t0943_plugin_recorded_model_nudges_other_model_warns(tmp_path):
 
 @pytest.mark.skipif(_NODE is None, reason="node 없음")
 def test_t0943_plugin_missing_record_toasts_error(tmp_path):
-    """기록이 없으면 toast 로 오류를 알리고(무음 반환 아님) 넛지는 만들지 않는다. 대기 결속 상태는 없다."""
+    """기록이 없으면 toast 로 오류를 알리고(무음 반환 아님) 안내는 만들지 않는다. 대기 연결 상태는 없다."""
     root = _t0943_project(tmp_path)
     (root / ".project_manager" / "local.conf").write_text("", encoding="utf-8")
     shutil.copyfile(REPO / ".project_manager" / "tools" / "local_conf.py",
@@ -2667,4 +2667,4 @@ def test_t0943_plugin_missing_record_toasts_error(tmp_path):
     assert result["system"] == []
     errors = [text for text in result["toasts"] if "[ctx-budget]" in text]
     assert len(errors) == 1 and "압축 한도 기록이 없습니다" in errors[0] and "`pm_config.py apply`" in errors[0]
-    assert "pendingBandBinding" not in _plugin_src() and "observedIdentity" not in _plugin_src()
+    assert "observedIdentity" not in _plugin_src()

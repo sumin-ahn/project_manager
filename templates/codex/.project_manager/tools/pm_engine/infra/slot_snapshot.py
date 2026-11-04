@@ -91,7 +91,7 @@ def record_git_snapshot(home, slot: str, *, base_branch: "str | None" = None,
     alloc·create 는 자기 lock 안에서 `_apply_git_snapshot` 을 인라인 호출하지만,
     핸드오프("여기 두고 간다")·rebase·switch·refresh 처럼 lifecycle op 밖에서 git 상태 기록을 남기는 호출부를
     위한 standalone 진입점이다. `base_branch` 는 readonly 전용(refresh — 따라갈 부모 브랜치 재기록).
-    `_lease_lock`+`_write_ledger`(atomic) — alloc/release 와 동일한 read-modify-write
+    `_lease_lock`+`_write_records`(atomic) — alloc/release 와 동일한 read-modify-write
     직렬화. 기록에 슬롯이 없으면 None(무해). 갱신된 Lease 반환."""
     with pool_store._lease_lock(home):
         leases = pool_store._read_records_strict(home)
@@ -99,7 +99,7 @@ def record_git_snapshot(home, slot: str, *, base_branch: "str | None" = None,
         if target is None:
             return None
         _apply_git_snapshot(home, target, base_branch=base_branch, git_runner=git_runner)
-        pool_store._write_ledger(home, leases)
+        pool_store._write_records(home, leases)
         return target
 
 

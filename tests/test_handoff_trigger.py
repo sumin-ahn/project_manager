@@ -4,13 +4,13 @@
 직접 검증한다. 무거운 subprocess 호출 없이 순수 로직 + 격리된 tmp 파일만 본다.
 
 비대화 `--trigger` auto-skeleton machinery 는 폐기됐다(ADR-0038 D1·T-0186) — rich 본문은
-warn tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 박제 경로가 죽은 채널이 됐다. 이
-파일은 그 폐기 후 살아남는 축만 검증한다:
+warn tier(ADR-0037)가 담당하므로 얇은 자동 skeleton 기록 경로가 죽은 채널이 됐다. 이
+파일은 그 폐기 후 살아남는 부분만 검증한다:
   - session-num 추론 (pm_state 세션 window 다음 차수·infer_next_session_num).
-  - 대화형 handoff skeleton (박제 entries 자동 목록·메타 학습·pending intent·회귀 1줄).
+  - 대화형 handoff skeleton (기록 entries 자동 목록·메타 학습·pending intent·회귀 1줄).
   - ctx 임계 config 기본값(30/20·T-0207 상향) + reader + board.py init 기록.
   - 대화형 run() 경로 회귀 불변 (인계 프롬프트 stdout·log 미오염·프롬프트 템플릿 lean).
-  - task 핸드오프 intent (장부 pid 0 기록 · 기록 실패는 log 무접촉 fail-loud).
+  - task 핸드오프 intent (대여 기록 pid 0 기록 · 기록 실패는 log 무접촉 fail-loud).
 """
 from __future__ import annotations
 
@@ -58,14 +58,14 @@ def board():
     return _load("board")
 
 
-# pm_state.md 세션 식별 절 최소 fixture (앵커·entry·포인터 형식 유지) ───────────
+# pm_state.md 세션 식별 절 최소 fixture (표시 글·entry·포인터 형식 유지) ───────────
 _PM_STATE_FIXTURE = """\
 # PM State
 
 ## 세션 식별 (현재까지 사용된 이름)
 
 최근 N 차 (sliding window, 기본 3 차):
-  - **4차** (2026-06-14 · 직전 wave): 직전 PM 세션.
+  - **4차** (2026-06-14 · 직전 세션 요약): 직전 PM 세션.
   - 이전 차 (PM 1차~3차) = `log/current.md` handoff entry 단일 진실.
 
 ## 진행 중인 의사결정
@@ -83,7 +83,7 @@ _PM_STATE_NO_ENTRY = """\
 """
 
 
-# pm_playbook.md §부트스트랩 프롬프트 코드블록 최소 fixture (앵커·코드블록 형식 유지) ──
+# pm_playbook.md §부트스트랩 프롬프트 코드블록 최소 fixture (표시 글·코드블록 형식 유지) ──
 # T-0180 — 프롬프트는 트리거로 축소(역할 framing + /pm-bootstrap). 인계 본문(읽기 범위·
 # 메타 학습·다음 intent·회귀/incident) 손-채움 블록은 폐기 — 부트스트랩이 log entry 에서 dump.
 _PM_PLAYBOOK_FIXTURE = """\
@@ -100,24 +100,24 @@ _PM_PLAYBOOK_FIXTURE = """\
 """
 
 
-# ── 1. 세션-차수 자동 추론 헬퍼 (대화형 --session-num 대체 seam) ────────────────
+# ── 1. 세션-차수 자동 추론 헬퍼 (대화형 --session-num 대체 함수) ────────────────
 
 def test_infer_next_session_num(handoff):
     assert session_history.infer_next_session_num(_PM_STATE_FIXTURE) == 5
     # entry 없음 → placeholder.
     assert session_history.infer_next_session_num(_PM_STATE_NO_ENTRY) == session_history.TRIGGER_SESSION_PLACEHOLDER
-    # 앵커 자체 없음 → placeholder.
+    # 표시 글 자체 없음 → placeholder.
     assert session_history.infer_next_session_num("# no section") == session_history.TRIGGER_SESSION_PLACEHOLDER
 
 
-# ── 2. 대화형 skeleton — 박제 entries 자동 목록 + 신 스키마 ───────────────────
+# ── 2. 대화형 skeleton — 기록 entries 자동 목록 + 신 스키마 ───────────────────
 
 def test_interactive_skeleton_lists_session_entries(handoff):
-    """대화형 skeleton 이 직전 솔로 handoff 뒤의 박제 entry 헤더를 자동 목록화한다."""
+    """대화형 skeleton 이 직전 솔로 handoff 뒤의 기록 entry 헤더를 자동 목록화한다."""
     log_text = """\
 ## [2026-06-13] handoff | PM 8차 → 다음 PM 세션
 
-## [2026-06-14] complete | T-0547 — 로그 entry 박제
+## [2026-06-14] complete | T-0547 — 로그 entry 기록
 본문은 목록에 복제하지 않는다.
 
 ## [2026-06-14] checkpoint — compaction 전
@@ -126,13 +126,13 @@ def test_interactive_skeleton_lists_session_entries(handoff):
         session_num=9, date="2026-06-14", log_text=log_text,
     )
     assert "- 이 세션 기록 entries:\n" in sk
-    assert "  - ## [2026-06-14] complete | T-0547 — 로그 entry 박제" in sk
+    assert "  - ## [2026-06-14] complete | T-0547 — 로그 entry 기록" in sk
     assert "  - ## [2026-06-14] checkpoint — compaction 전" in sk
     assert "본문은 목록에 복제하지 않는다." not in sk
 
 
 def test_interactive_skeleton_marks_no_session_entries(handoff):
-    """수집할 박제 entry가 없으면 빈 자동 목록을 명시하고 pending intent는 손-채움으로 둔다."""
+    """수집할 기록 entry가 없으면 빈 자동 목록을 명시하고 pending intent는 손-채움으로 둔다."""
     sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(session_num=9, date="2026-06-14")
     assert "- 이 세션 기록 entries: (이 세션 기록 entry 없음)" in sk
     assert f"- pending user intent: {pm_engine.domain.handoff_text.PENDING_INTENT_PLACEHOLDER}" in sk
@@ -155,7 +155,7 @@ def test_interactive_skeleton_task_entries_are_scoped(handoff):
 
 
 def test_thread_tail_adapter_interface_is_absent(handoff):
-    """폐기된 thread-tail 추출 경로가 API·CLI·헬퍼/상수 표면에 남지 않는다."""
+    """폐기된 thread-tail 추출 경로가 API·CLI·헬퍼/상수 어디에도 남지 않는다."""
     import inspect
 
     assert "thread_tail" not in inspect.signature(pm_engine.domain.handoff_text.build_handoff_log_skeleton).parameters
@@ -228,7 +228,7 @@ def test_interactive_main_unresolved_identity_is_rc1(handoff, tmp_path):
 
 
 def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, monkeypatch, tmp_path, capsys):
-    '대화형 run() 불변 — 인계 프롬프트는 [5/7] stdout 로만 나가고 log entry 에 박제하지 않는다.\n\n    run() 은 모델이 살아 있어 stdout 가 권위적이다 — log 파일은 인계 프롬프트 헤더를\n    포함하지 않아야 한다(경로 분리·불변).\n    '
+    '대화형 run() 불변 — 인계 프롬프트는 [5/7] stdout 로만 나가고 log entry 에 기록하지 않는다.\n\n    run() 은 모델이 살아 있어 stdout 가 권위적이다 — log 파일은 인계 프롬프트 헤더를\n    포함하지 않아야 한다(경로 분리·불변).\n    '
     home = pm_paths.home_at(tmp_path)
     log_file = tmp_path / 'current.md'
     state_file = tmp_path / 'pm_state.md'
@@ -236,7 +236,7 @@ def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, monkeypatch, tmp
     log_file.write_text('# log\n', encoding='utf-8')
     state_file.write_text(_PM_STATE_FIXTURE, encoding='utf-8')
     playbook_file.write_text(_PM_PLAYBOOK_FIXTURE, encoding='utf-8')
-    bind_pool(monkeypatch, _TaskLedgerStub(SimpleNamespace(name='alpha', open=False)))
+    bind_pool(monkeypatch, _TaskRecordsStub(SimpleNamespace(name='alpha', open=False)))
     inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (0, pytest_summary()), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_state_file=state_file, pm_playbook_file=playbook_file, dashboard_file=tmp_path / 'dashboard.md')
     rc = inst.run('alpha', dry_run=False, skip_pytest=True, user_ack='alpha')
     assert rc == 0
@@ -246,11 +246,11 @@ def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, monkeypatch, tmp
 
 
 def test_handoff_prompt_template_is_lean(handoff, tmp_path):
-    "인계 프롬프트 템플릿(pm_playbook.md §부트스트랩 프롬프트)이 트리거(역할 framing +\n    /pm-bootstrap)로 축소돼 있고, 옛 'board 상태 … 5~10개 불릿' 재열거 유도가 없다\n    (T-0180 트리거화·ADR-0008 lean).\n\n    lean handoff 스키마(박제 entries·메타 학습·pending intent·회귀/incident)의 거처는 *log entry\n    skeleton*(`HANDOFF_LOG_SKELETON_TEMPLATE`·test_pm_bootstrap_lease 가 가드)이지 이 프롬프트가\n    아니다 — 부트스트랩이 그 log entry 를 dump 하므로(T-0179) 프롬프트가 같은 라벨을 재기술하면\n    중복 사족이고, 다음 PM 이 부트스트랩 실패 시에도 그 서술대로 수동 재구성·과잉 보고하게 유도한다.\n    그래서 라벨 재기술의 *부재*를 가드한다(과거엔 반대로 존재를 강제해 사족을 박제했음).\n    "
+    "인계 프롬프트 템플릿(pm_playbook.md §부트스트랩 프롬프트)이 트리거(역할 framing +\n    /pm-bootstrap)로 축소돼 있고, 옛 'board 상태 … 5~10개 불릿' 재열거 유도가 없다\n    (T-0180 트리거화·ADR-0008 lean).\n\n    lean handoff 스키마(기록 entries·메타 학습·pending intent·회귀/incident)의 거처는 *log entry\n    skeleton*(`HANDOFF_LOG_SKELETON_TEMPLATE`·test_pm_bootstrap_lease 가 가드)이지 이 프롬프트가\n    아니다 — 부트스트랩이 그 log entry 를 dump 하므로(T-0179) 프롬프트가 같은 라벨을 재기술하면\n    중복 사족이고, 다음 PM 이 부트스트랩 실패 시에도 그 서술대로 수동 재구성·과잉 보고하게 유도한다.\n    그래서 라벨 재기술의 *부재*를 가드한다(과거엔 반대로 존재를 강제해 사족을 고정했음).\n    "
     home = pm_paths.home_at(REPO)
     text = (pm_paths.wiki_dir(home) / 'pm_playbook.md').read_text(encoding='utf-8')
     template = pm_engine.cli.handoff_prompt.extract_handoff_prompt_template(text)
-    assert template is not None, '프롬프트 템플릿 앵커/코드블록 추출 실패'
+    assert template is not None, '프롬프트 템플릿 표시 글/코드블록 추출 실패'
     assert '/pm-bootstrap' in template
     assert '당신은' not in template, '2인칭 역할문구 잔존 — bare(T-0193)와 모순'
     for label in ('이 세션 기록 entries', '메타 학습', 'pending user intent', '회귀/incident'):
@@ -260,14 +260,14 @@ def test_handoff_prompt_template_is_lean(handoff, tmp_path):
 
 
 # ── 5. 세션 종료 기록 — 이 세션이 연 기록을 한 자리에서 닫는다 (거동 핀) ──────────
-# 판정 축이 "세션이 열려 있나"라, 세션이 끝나는 자리(핸드오프)는 그 세션이 연 기록을 전부 닫아야
+# 판정 기준이 "세션이 열려 있나"라, 세션이 끝나는 자리(핸드오프)는 그 세션이 연 기록을 전부 닫아야
 # 한다 — task 행(`open=False`)과 슬롯 행(`session` 비움)이다. 안 닫으면 다음 진입이 같은 자리를
 # "열려 있음"으로 읽어 매번 확인을 요구한다. 그래서 이 기록은 log 쓰기 **전에** 성공해야 하는
-# load-bearing 신호다. 기록 자리는 worktree_pool 의 write 프리미티브 둘이고 핸드오프는 장부를
-# 직접 쓰지 않는다. **대여는 닫지 않는다** — 슬롯은 두고 간다(반납은 `--done` 축).
+# load-bearing 신호다. 기록 자리는 worktree_pool 의 write 프리미티브 둘이고 핸드오프는 대여 기록을
+# 직접 쓰지 않는다. **대여는 닫지 않는다** — 슬롯은 두고 간다(반납은 `--done` 몫).
 
 
-class _TaskLedgerStub:
+class _TaskRecordsStub:
     """종료 기록 프리미티브 둘만 흉내내는 최소 대역 — 호출 인자와 반환을 남긴다."""
 
     def __init__(self, record) -> None:
@@ -278,14 +278,14 @@ class _TaskLedgerStub:
         return SimpleNamespace(name=name)
 
     def find_task_strict(self, name: str):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.find_task(name)
 
     def slots_for_task(self, name: str):
         return []
 
     def slots_for_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.slots_for_task(name)
 
     def close_task_session(self, name: str):
@@ -296,18 +296,18 @@ class _TaskLedgerStub:
 def test_task_handoff_closes_the_record_through_the_pool_primitive(handoff, monkeypatch, capsys, tmp_path):
     'task 모드는 그 task 레코드를 닫고(open=False) 성공을 보고한다.'
     home = pm_paths.home_at(tmp_path)
-    pool = bind_pool(monkeypatch, _TaskLedgerStub(SimpleNamespace(name='t1', open=False)))
+    pool = bind_pool(monkeypatch, _TaskRecordsStub(SimpleNamespace(name='t1', open=False)))
     bind_pool(monkeypatch, pool)
     tool = pm_engine.cli.handoff.PmHandoff(home)
     assert tool._close_session_records('t1') is True
-    assert pool.calls == ['t1'], '장부 write 는 그 프리미티브 한 번뿐이다'
+    assert pool.calls == ['t1'], '대여 기록 write 는 그 프리미티브 한 번뿐이다'
     assert '닫힘' in capsys.readouterr().out
 
 
 def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, monkeypatch, capsys, tmp_path):
-    '장부에 그 task 가 없으면 신호를 못 남긴 것이다 — 성공으로 접지 않는다(log 무접촉).'
+    '대여 기록에 그 task 가 없으면 신호를 못 남긴 것이다 — 성공으로 바꾸지 않는다(log 무접촉).'
     home = pm_paths.home_at(tmp_path)
-    pool = bind_pool(monkeypatch, _TaskLedgerStub(None))
+    pool = bind_pool(monkeypatch, _TaskRecordsStub(None))
     bind_pool(monkeypatch, pool)
     tool = pm_engine.cli.handoff.PmHandoff(home)
     assert tool._close_session_records('t1') is False
@@ -319,7 +319,7 @@ def test_task_handoff_intent_without_a_task_record_is_fail_loud(handoff, monkeyp
 
 def test_no_stale_handoff_guidance_across_tree():
     """루트 + 템플릿(pm_update 동기화분 + 어댑터 미러)의 handoff 가이드 파일에 옛 verbose 문구가
-    남지 않았는지 (ADR-0008·codex 게이트 회귀 방지). opencode의 skill 미러와
+    남지 않았는지 (ADR-0008·codex 리뷰 회귀 방지). opencode의 skill 미러와
     canonical에서 생성한 command 사본을 모두 가드한다(T-0674)."""
     candidates = [
         REPO / ".project_manager/wiki/pm_playbook.md",

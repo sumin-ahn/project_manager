@@ -49,17 +49,17 @@ def _configure(tmp_path: Path, monkeypatch, state: str, mod=None) -> None:
         conf.write_text("runtime.py=ignored\nruntime.py=\n", encoding="utf-8")
     elif state == "read-error":
         conf.write_text("runtime.py=ignored\n", encoding="utf-8")
-        # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
+        # conf 판독은 공유 읽기 함수를 지난다([[T-0729]]) — 주입도 그 자리에 건다.
         # `Path.read_text` 에 걸면 엔진이 그 호출을 더는 하지 않아 이 케이스가 공허해진다.
-        seam = fs
-        original = seam.read_text_shared
+        override = fs
+        original = override.read_text_shared
 
         def _read_text(path, *args, **kwargs):
             if Path(path) == conf:
                 raise OSError("unreadable local.conf")
             return original(path, *args, **kwargs)
 
-        monkeypatch.setattr(seam, "read_text_shared", _read_text)
+        monkeypatch.setattr(override, "read_text_shared", _read_text)
     else:  # pragma: no cover - parametrization is closed above.
         raise AssertionError(state)
 
@@ -81,7 +81,7 @@ def _command_suffixes(card: str) -> list[str]:
 def test_environment_matrix_16(
     tmp_path, monkeypatch, os_case: str, config_state: str
 ):
-    """4 OS × 4 config states = the complete finite surface (card mode axis is gone)."""
+    """4 OS × 4 config states = the complete finite surface (card mode option is gone)."""
     mod = _load()
     _configure(tmp_path, monkeypatch, config_state, mod)
     system, os_name, label, default_argv, policy = OS_CASES[os_case]
@@ -156,10 +156,10 @@ def test_configured_launcher_is_one_argv_token_not_shell_parsed(tmp_path):
     assert source == "local-conf"
 
 
-def test_os_name_probe_seam_is_what_the_label_resolver_reads(monkeypatch):
-    """os_name 판정은 모듈 seam 하나를 지난다 — 전역 변이 없이 양쪽 분기를 태운다.
+def test_os_name_probe_override_is_what_the_label_resolver_reads(monkeypatch):
+    """os_name 판정은 모듈 교체 지점 하나를 지난다 — 전역 변이 없이 양쪽 분기를 태운다.
 
-    seam 을 소비하지 않으면 주입한 `nt` 가 무시되고 호스트 값이 그대로 나오므로, 이 단언이
+    교체 지점을 소비하지 않으면 주입한 `nt` 가 무시되고 호스트 값이 그대로 나오므로, 이 단언이
     "주입이 실제로 판정에 닿는다"의 근거가 된다(두 OS 에서 같은 성질).
     """
     mod = _load()
@@ -178,8 +178,8 @@ def test_platform_probe_exception_fails_soft_to_other(monkeypatch, tmp_path):
         raise RuntimeError("probe failed")
 
     monkeypatch.setattr(python_env.platform, "system", _boom)
-    # 엔진의 os_name 프로브 seam 에 건다 — 전역 `os.name` 을 바꾸면 이 프로세스의 pathlib 이
-    # 그 값으로 flavour 를 고르느라 Windows 호스트에서 경로 연산 자체가 무너진다.
+    # 엔진의 os_name 프로브 교체 지점에 건다 — 전역 `os.name` 을 바꾸면 이 프로세스의 pathlib 이
+    # 그 값으로 경로 규칙을 고르느라 Windows 호스트에서 경로 연산 자체가 무너진다.
     monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
     with pytest.raises(RuntimeError, match="probe failed"):
         python_env._detect_command_environment(pm_paths.home_at(tmp_path))
@@ -193,11 +193,11 @@ def test_platform_probe_exception_fails_soft_to_other(monkeypatch, tmp_path):
         ("Darwin", ("macos", ("python3",), "and-if")),
     ],
 )
-def test_real_platform_seam_is_mockable(monkeypatch, tmp_path, system, expected):
+def test_real_platform_override_is_mockable(monkeypatch, tmp_path, system, expected):
     """The production no-argument probe consumes stdlib platform, without subprocess."""
     mod = _load()
     monkeypatch.setattr(python_env.platform, "system", lambda: system)
-    # 같은 이유로 전역 `os.name` 이 아니라 엔진 seam 을 갈아끼운다(Windows 에서 pathlib 보존).
+    # 같은 이유로 전역 `os.name` 이 아니라 엔진 교체 지점을 갈아끼운다(Windows 에서 pathlib 보존).
     monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
     environment = python_env._detect_command_environment(pm_paths.home_at(tmp_path))
     assert (

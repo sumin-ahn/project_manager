@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Repo가 소유한 파일 엔트리를 git 우선으로 열거하는 공용 seam.
+"""Repo가 소유한 파일 엔트리를 git 우선으로 열거하는 공용 함수.
 
 소비자는 필요한 집합을 의미로 선언한다.
 
 * ``tracked_only``: 추적분만. adopter에게 전파하는 출하 경로용.
 * ``owned``: 추적분 + 미추적·비무시 파일. gap/검사 경로용.
 
-git 바이너리가 없거나 checkout이 저장소가 아니면 파일시스템 순회로 폴백한다. 이때는
-ignore와 추적 여부 보장이 사라지므로 ``RepoFilesFallbackWarning``을 반드시 표면화한다.
+git 바이너리가 없거나 checkout이 저장소가 아니면 파일시스템 순회로 대신한다. 이때는
+ignore와 추적 여부 보장이 사라지므로 ``RepoFilesFallbackWarning``을 반드시 드러낸다.
 그 밖의 TRACKED_ONLY 실패(구 git의 옵션 미지원·손상 index·unmerged)는 추적정보가 있는데
-폴백해 누출하지 않도록 loud 실패한다.
+대신 판정해 누출하지 않도록 loud 실패한다.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ _GIT_BINARY_MISSING_RC = 127
 
 
 class RepoFilesFallbackWarning(RuntimeWarning):
-    """git 추적/ignore 보장이 사라져 filesystem 전수 순회로 강등됐다는 loud 신호."""
+    """git 추적/ignore 보장이 사라져 filesystem 전수 순회로 수준이 낮아졌다는 loud 신호."""
 
 
 class RepoFilesEmptyWarning(RuntimeWarning):
@@ -98,7 +98,7 @@ class RepoOwnedEntry(NamedTuple):
 # | worktree_pool      | 1           | stdout + stderr              | 동적·captured 유한 cap | 상속   |
 #
 # 차이는 각 소비처의 기존 계약이다. 아래 옵션은 새 정책이 아니라 이 세 의미를 그대로 옮기기 위한
-# 호환 축이다. worktree_pool의 console-visible runner와 보호훅 셸 git 환경 격리는 대상이 아니다.
+# 호환 옵션이다. worktree_pool의 console-visible runner와 보호훅 셸 git 환경 격리는 대상이 아니다.
 def real_git_runner(
         cwd: Path,
         *,
@@ -111,7 +111,7 @@ def real_git_runner(
 ) -> GitRunner:
     """정책 옵션을 보존해 ``git -C <cwd>``를 실행하는 공용 captured runner.
 
-    ``which``/``run`` 주입은 기존 소비처의 monkeypatch seam을 보존한다. 제품 호출부는 각
+    ``which``/``run`` 주입은 기존 소비처의 monkeypatch 교체 지점을 보존한다. 제품 호출부는 각
     모듈의 ``shutil.which``/``subprocess.run``을 넘기며, 테스트 외 동작은 stdlib 그대로다.
     """
     which_git = which if which is not None else shutil.which
@@ -158,7 +158,7 @@ def _real_git_runner(cwd: Path) -> GitRunner:
     """repo 소유 파일 열거용 ``git -C <cwd>`` runner.
 
     성공은 stdout만, 실패는 진단 문자열을 반환한다. rc 127은 git 실행 파일 부재를 뜻하는
-    seam 예약값이며, 그 밖의 실패는 실제 git rc를 보존한다. 주입 runner도 이 규약과
+    교체 지점 예약값이며, 그 밖의 실패는 실제 git rc를 보존한다. 주입 runner도 이 규약과
     ``rev-parse --git-dir``의 rc 128=비-repo 경계를 따라야 한다.
     """
     return real_git_runner(
@@ -235,9 +235,9 @@ def list_repo_owned_entries(
     거짓 탈락시킨다.
 
     git 바이너리 부재(rc 127) 또는 실패 뒤 ``rev-parse --git-dir``가 rc 128인 경우는
-    추적정보 자체가 없는 비-git 배포 사본이므로 양 mode 모두 filesystem 폴백한다.
+    추적정보 자체가 없는 비-git 배포 사본이므로 양 mode 모두 filesystem 순회로 대신한다.
     주입 ``git_runner``도 rc 127=git 부재, 구조 프로브 rc 128=비-repo 규약을 지켜야 한다.
-    프로브 rc 0은 원 실패 진단 문구와 무관하게 저장소가 있는 것으로 판정한다. 폴백은
+    프로브 rc 0은 원 실패 진단 문구와 무관하게 저장소가 있는 것으로 판정한다. 대체 순회는
     추적/ignore 의미를 보장할 수 없어 경고가 계약의 일부다. TRACKED_ONLY의 그 밖의 실패는
     추적정보가 있는 상태에서 누출하지 않도록 loud 실패한다. runner 호출 자체의 예외(시간 초과
     등)는 mode 와 무관하게 ``RepoFilesGitError`` 로 올린다.

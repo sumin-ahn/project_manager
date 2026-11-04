@@ -3,9 +3,9 @@
 두 클래스를 tests/**/*.py AST 로 전수 스캔한다:
 
   (a) 전역 `os.name` 변이 — `setattr(os, "name", ...)`/`monkeypatch.setattr(<mod>.os,
-      "name", ...)`/`os.name = ...` 는 Windows 에서 pathlib 이 그 값으로 flavour 를
+      "name", ...)`/`os.name = ...` 는 Windows 에서 pathlib 이 그 값으로 경로 규칙을
       고르므로, 변이 중 `PosixPath`/`WindowsPath` 생성이 `NotImplementedError` 로 죽는다.
-      모듈 seam(`_probe_os_name()` 류)을 patch 해야 한다.
+      모듈 교체 지점(`_probe_os_name()` 류)을 patch 해야 한다.
   (b) python 자식 subprocess 를 `text=True`/`universal_newlines=True` 만으로 읽고
       `encoding=` 미명시 — Windows cp949 콘솔 코덱의 `_readerthread` 가 UTF-8 산출을
       디코드하다 죽어 `stdout=None` 이 된다.
@@ -103,7 +103,7 @@ def _python_child_missing_encoding_lines(source: str, *, filename: str) -> list[
 
 
 def test_tests_do_not_mutate_the_global_os_name():
-    """tests/ 어디에도 전역 `os.name` 변이가 없다 — 모듈 seam patch 로만 분기를 태운다."""
+    """tests/ 어디에도 전역 `os.name` 변이가 없다 — 모듈 교체 지점 patch 로만 분기를 태운다."""
     offenders: list[str] = []
     for path in sorted(TESTS.rglob("*.py")):
         source = path.read_text(encoding="utf-8")

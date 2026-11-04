@@ -43,7 +43,7 @@ OS_DEFAULT_ARGV = {"posix": ("python3",), "nt": ("py", "-3")}
 
 @pytest.fixture
 def unpacked(tmp_path, monkeypatch) -> Path:
-    """frozen 형상 — 번들이 풀린 트리 하나를 세우고 두 표식을 건다."""
+    """frozen 구성 — 번들이 풀린 트리 하나를 세우고 두 표시를 건다."""
     root = tmp_path / "_MEI123456"
     (root / ".project_manager" / "tools").mkdir(parents=True)
     (root / "templates").mkdir()

@@ -2,7 +2,7 @@
 
 압축 기록은 압축 이벤트(PreCompact·PostCompact)가 아니라 주 스레드 훅(PreToolUse·UserPromptSubmit,
 `agent_id` 없음)이 한다. 그 훅이 주 대화 기록 끝부분의 마지막 압축 경계 uuid 를 보고 경계마다 한 번 PM 홈
-log/current.md 에 breadcrumb 와 checkpoint 골격을 남기고 엔진 snapshot 을 주입한다. 기록 task 는
+log/current.md 에 breadcrumb 와 checkpoint 빈 양식을 남기고 엔진 snapshot 을 주입한다. 기록 task 는
 훅 입력 `session_id` 와 같은 `session` 을 가진 task 기록이다. 계약:
   ① 열린 task 가 여럿인 PM 홈 루트 세션도 그 세션 task 로 기록·주입한다(경계당 1회).
   ② 서브에이전트 압축(압축 이벤트·`agent_id` 입력)은 주 세션 상태를 바꾸지 않는다.
@@ -30,7 +30,7 @@ BREADCRUMB_MARKER = "auto-compact 발생 — 압축은 자동이고 세션은 �
 CHECKPOINT_HEADER = "checkpoint | (task:main) — compaction"
 FAILURE_PREFIX = "[ctx-checkpoint] 압축 기록 실패:"
 
-# PM 홈 실측(설계 3.5절) 형상의 task 기록 — 열린 task 3개, 세션 ID 는 각자 다르다.
+# PM 홈 실측(설계 3.5절) 구성의 task 기록 — 열린 task 3개, 세션 ID 는 각자 다르다.
 _THREE_TASKS = (("main", "s-main"), ("hermes", "s-hermes"), ("guard-check", "ses_guard"))
 
 # 래퍼가 sh 없으면 돌릴 수 없다 — 그런 환경(드묾)은 skip(hermetic·crash 금지).
@@ -49,7 +49,7 @@ def _make_repo(root: Path, *, with_log: bool, tasks=_THREE_TASKS) -> Path:
         shutil.copy2(CLAUDE / name, claude_dir / name)
     (claude_dir / "ctx_stop_hook.sh").chmod(0o755)
     shutil.copytree(TOOLS, root / ".project_manager" / "tools")
-    (root / ".project_manager" / "local.conf").write_text("# test root anchor\n", encoding="utf-8")
+    (root / ".project_manager" / "local.conf").write_text("# test root marker\n", encoding="utf-8")
     local = root / ".project_manager" / ".local"
     for name, _session in tasks:
         state = local / "tasks" / name / "pm_state.md"
@@ -72,7 +72,7 @@ def _make_repo(root: Path, *, with_log: bool, tasks=_THREE_TASKS) -> Path:
 
 
 def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "product") -> None:
-    """슬롯이 소유 PM 홈을 선언하는 `.git` 포인터를 세운다(`worktree_pool` 실 형상)."""
+    """슬롯이 소유 PM 홈을 선언하는 `.git` 포인터를 세운다(`worktree_pool` 실 구성)."""
     git_dir = pm_home / ".repos" / f"{repo}.git" / "worktrees" / worktree.name
     git_dir.mkdir(parents=True, exist_ok=True)
     (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
@@ -83,7 +83,7 @@ _BOUNDARY_UUID = "00000000-0000-4000-8000-0000000000a1"
 
 
 def _compact_boundary() -> dict:
-    """주 대화 기록의 압축 경계 항목(설계 3.3절 실측 형상)."""
+    """주 대화 기록의 압축 경계 항목(설계 3.3절 실측 모양)."""
     return {
         "type": "system", "subtype": "compact_boundary", "isSidechain": False,
         "uuid": _BOUNDARY_UUID,
@@ -158,9 +158,9 @@ def test_t0953_pm_home_root_session_with_three_tasks_records_and_injects(tmp_pat
 def test_t0953_subagent_compaction_leaves_main_state_untouched(tmp_path):
     """서브에이전트 압축의 압축 이벤트·`agent_id` 도구 호출은 주 세션 상태를 바꾸지 않는다(AT-012).
 
-    2026-10-10 06:20Z 형상: 압축 이벤트 입력은 주 세션 ID·주 대화 기록으로 오고, 경계는
-    서브에이전트 기록에만 남는다. 주 대화 기록은 최종 밴드(이미 `.final` 소비)라 마지막 주 스레드
-    훅도 ok 재무장 없이 아무것도 바꾸지 않는다."""
+    2026-10-10 06:20Z 실측: 압축 이벤트 입력은 주 세션 ID·주 대화 기록으로 오고, 경계는
+    서브에이전트 기록에만 남는다. 주 대화 기록은 최종 구간(이미 `.final` 소비)라 마지막 주 스레드
+    훅도 ok 다시 켜기 없이 아무것도 바꾸지 않는다."""
     hook = _make_repo(tmp_path, with_log=True)
     slot = tmp_path / "work" / "product_1"
     slot.mkdir(parents=True)
@@ -270,7 +270,7 @@ def test_graceful_skip_when_log_absent(tmp_path):
 def test_hook_never_writes_to_an_enclosing_pm_home(tmp_path):
     """감싸는 PM 홈이 있어도 훅은 자기 트리에만 기록한다 — 위치는 판정 입력이 아니다.
 
-    2026-08-31 실측에서 실 PM 홈 `wiki/log/current.md` 에 108줄이 들어간 경로와 같은 형상이다:
+    2026-08-31 실측에서 실 PM 홈 `wiki/log/current.md` 에 108줄이 들어간 경로와 같은 구성이다:
     등록 슬롯 안쪽의 마커 없는 트리에서 훅을 돌리면, 조상 훑기가 살아 있을 때 바깥 PM 홈이
     소유자로 뽑혀 그쪽 log 에 append 된다.
     """
@@ -279,9 +279,9 @@ def test_hook_never_writes_to_an_enclosing_pm_home(tmp_path):
     slot.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, slot)
     shutil.copytree(TOOLS, pm_home / ".project_manager" / "tools")
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(json.dumps({
+    records = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    records.parent.mkdir(parents=True, exist_ok=True)
+    records.write_text(json.dumps({
         "leases": [{"slot": "work/product_1", "state": "leased", "session": "main"}],
         "tasks": [{"name": "main", "session": "s-main"}],
     }), encoding="utf-8")
@@ -290,7 +290,7 @@ def test_hook_never_writes_to_an_enclosing_pm_home(tmp_path):
     home_log.write_text("## [2026-01-01] handoff | PM 홈 기존 entry\n", encoding="utf-8")
     home_log_before = home_log.read_bytes()
 
-    inner = slot / ".project_manager" / ".local" / "tmp" / "anchor"
+    inner = slot / ".project_manager" / ".local" / "tmp" / "inner"
     hook = _make_repo(inner, with_log=True)
     transcript = _write_jsonl(inner / "s-main.jsonl", [_compact_boundary(), _usage(1_000)])
 

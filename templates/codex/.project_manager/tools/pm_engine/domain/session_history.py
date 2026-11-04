@@ -5,38 +5,38 @@ import re
 
 TRIGGER_SESSION_PLACEHOLDER = "?"
 # 공백·괄호·여백이 다른 세션 식별 헤더도 정규화해 판독한다.
-_SESSION_SECTION_ANCHOR = "## 세션 식별 (현재까지 사용된 이름)"
-_SESSION_ANCHOR_NORMALIZED = "세션식별"
-_ANCHOR_STRIP_CHARS = frozenset("#()（）")
-_PM_SESSION_ANCHOR_RE = re.compile("^  - \\*\\*(\\d+차)\\*\\*[^\\n]*$", re.MULTILINE)
+_SESSION_SECTION_MARKER = "## 세션 식별 (현재까지 사용된 이름)"
+_SESSION_MARKER_NORMALIZED = "세션식별"
+_MARKER_STRIP_CHARS = frozenset("#()（）")
+_PM_SESSION_MARKER_RE = re.compile("^  - \\*\\*(\\d+차)\\*\\*[^\\n]*$", re.MULTILINE)
 
 
 def _normalize_h2_header(line: str) -> str:
     """h2 헤더 줄에서 '#'·공백(전각/반각/탭/CR)·괄호(전각/반각)를 제거한 정규화 문자열."""
     return "".join(
-        (ch for ch in line if not ch.isspace() and ch not in _ANCHOR_STRIP_CHARS)
+        (ch for ch in line if not ch.isspace() and ch not in _MARKER_STRIP_CHARS)
     )
 
 
 def _extract_session_section(pm_state_text: str) -> tuple[str, int, int] | None:
     """pm_state.md 에서 세션 식별 절 텍스트와 그 시작·끝 위치를 반환한다.
 
-    앵커 탐색은 정확 str.find 이 아니라 정규화 부분일치다 — '##' 로 시작하는 h2 헤더 줄
+    표시 글 탐색은 정확 str.find 이 아니라 정규화 부분일치다 — '##' 로 시작하는 h2 헤더 줄
     (### 이상 제외)을 라인 스캔해, '#'·공백·괄호를 제거한 정규화 문자열이 '세션식별' 을
-    포함하는 줄을 절 시작 후보로 본다(공백/괄호/여백 변형 흡수). 매치 실패 시 None.
+    포함하는 줄을 절 시작 후보로 본다(공백/괄호/여백 변형 허용). 매치 실패 시 None.
 
     후보가 여럿이면 **pm 세션 entry(`- **N차**`)를 가진 첫 절을 우선**하고, 전부 없으면
-    첫 후보로 폴백한다 — '## 세션 식별 규칙' 같은 설명-절이 실제 window 절보다 앞에 있을
+    첫 후보로 대신한다 — '## 세션 식별 규칙' 같은 설명-절이 실제 window 절보다 앞에 있을
     때 빈 절을 오선택해 window 미갱신(fail-soft 스킵)·오염되는 것을 막는다
     reviewer should-fix).
 
-    반환: (section_text, start_offset, end_offset) 또는 None (앵커 불일치).
+    반환: (section_text, start_offset, end_offset) 또는 None (표시 글 불일치).
     end_offset 는 다음 ## 또는 ### 헤더 직전 위치 (혹은 파일 끝).
     """
 
     def _section_bounds(m: re.Match) -> tuple[str, int, int]:
-        after_anchor = pm_state_text[m.end() :]
-        next_header = re.search("^###? ", after_anchor, re.MULTILINE)
+        after_marker = pm_state_text[m.end() :]
+        next_header = re.search("^###? ", after_marker, re.MULTILINE)
         end_offset = (
             len(pm_state_text) if next_header is None else m.end() + next_header.start()
         )
@@ -45,13 +45,13 @@ def _extract_session_section(pm_state_text: str) -> tuple[str, int, int] | None:
     candidates = [
         m
         for m in re.finditer("^##(?!#).*$", pm_state_text, re.MULTILINE)
-        if _SESSION_ANCHOR_NORMALIZED in _normalize_h2_header(m.group(0))
+        if _SESSION_MARKER_NORMALIZED in _normalize_h2_header(m.group(0))
     ]
     if not candidates:
         return None
     for m in candidates:
         section = _section_bounds(m)
-        if _PM_SESSION_ANCHOR_RE.search(section[0]):
+        if _PM_SESSION_MARKER_RE.search(section[0]):
             return section
     return _section_bounds(candidates[0])
 
@@ -61,7 +61,7 @@ def _find_pm_session_entries(section_text: str) -> list[re.Match]:
 
     차수 순으로 정렬해 반환한다.
     """
-    matches = list(_PM_SESSION_ANCHOR_RE.finditer(section_text))
+    matches = list(_PM_SESSION_MARKER_RE.finditer(section_text))
 
     def _session_num(m: re.Match) -> int:
         return int(m.group(1).replace("차", ""))
@@ -104,7 +104,7 @@ def infer_next_task_session_num(
     """task의 다음 차수를 state와 task-tagged log에서 함께 복구한다.
 
     state 세션 window의 최고차+1과 `log/current.md`의 동일 `(task:<name>)` handoff를 함께
-    본다. 정상 handoff가 task 장부에 종료 기록(`session` 비움)을 남긴 뒤 bootstrap 없이 재실행된 경우
+    본다. 정상 handoff가 task 대여 기록에 종료 기록(`session` 비움)을 남긴 뒤 bootstrap 없이 재실행된 경우
     (`task_released=True`)에는 마지막 log 차수를 그대로 반환해 같은 세션 갱신 모드로 들어간다.
     release가 log보다 먼저 영속되므로 log append 뒤 state 기록 전에 중단된 반쪽 상태도 같은
     경로로 복구된다. 다음 정상 세션은 bootstrap의 `bind_task`가 기록을 다시 열므로 N+1이다.

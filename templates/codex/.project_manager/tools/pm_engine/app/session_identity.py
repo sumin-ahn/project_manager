@@ -54,7 +54,7 @@ def resolve_snapshot_identity(home, cwd: Path) -> tuple[str | None, str]:
     압축 경로(checkpoint·snapshot)는 이 함수를 부르지 않는다 — 그 경로는 `resolve_session_task`
     하나로 판정한다.
 
-    두 층이 전부다 — "장부가 아무 말도 없으면 이 홈은 단일 정체성"이라는 층은 없다(그 추론은
+    두 층이 전부다 — "기록이 아무 말도 없으면 이 홈은 단일 정체성"이라는 층은 없다(그 추론은
     실제로 슬롯을 여럿 쓰는 홈에서 오귀속이었다). 세션은 자기 작업 폴더에서 돌고 그 폴더가 곧
     lease 행이라 첫 층이 답을 준다. 작업 폴더가 없는 홈 루트 세션은 이름 붙일 세션이 없으므로
     미해소가 정답이고, 그 사실을 경고로 말한다(조용한 생략 아님).
@@ -99,15 +99,15 @@ def resolve_session_task(home, session_id: str | None) -> tuple[str | None, str 
     without_rows = session_identity.session_task((), session_id)
     if without_rows[1] == session_identity.SESSION_TASK_REASON_NO_SESSION:
         return without_rows
-    ledger = pm_paths.leases_file(home)
+    records = pm_paths.leases_file(home)
     try:
-        text = fs.read_text_shared(ledger, encoding="utf-8")
+        text = fs.read_text_shared(records, encoding="utf-8")
     except FileNotFoundError:
         return without_rows
     data = json.loads(text)
     if not isinstance(data, dict):
-        raise ValueError(f"{ledger}: task 기록 파일 최상위가 JSON 객체가 아님")
+        raise ValueError(f"{records}: task 기록 파일 최상위가 JSON 객체가 아님")
     rows = data.get("tasks", [])
     if not isinstance(rows, list):
-        raise ValueError(f"{ledger}: task 기록 `tasks` 가 목록이 아님")
+        raise ValueError(f"{records}: task 기록 `tasks` 가 목록이 아님")
     return session_identity.session_task(rows, session_id)

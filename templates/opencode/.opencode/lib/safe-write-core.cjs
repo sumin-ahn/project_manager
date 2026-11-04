@@ -12,15 +12,15 @@
 //    런타임에만 설치되므로 core 가 직접 import 하면 node 자가검증(plain node require)이 깨진다.
 //    대신 ESM shim 이 `tool` 을 import 해 `makeSafeWritePlugin(tool)` 로 주입한다(팩토리 커링).
 //
-// 무엇 (3층 가드·업계 수렴 리서치):
+// 무엇 (3층 가드·업계 공통 방식 리서치):
 //   opencode 1.17.x~1.18.x 는 대용량 write/edit 를 조용히 절단·유실한다(OUTPUT_TOKEN_MAX=32000
 //   하드코딩·silent truncation·auto-continue 부재·upstream #18108/#19604/#17471 미해결). 어댑터층
 //   3층 가드로 닫는다:
 //     1) deny-and-redirect (tool.execute.before): write/edit 의 대형 args 가 DENY_BYTES 초과 시
 //        throw — 에러 메시지가 모델-facing 행동 지시(기존 파일=edit 문자열-치환으로 나눠라 /
-//        신규 파일=safe_write 로 16KB chunk create→append). 업계 수렴(Claude Code·Gemini·Cline·
+//        신규 파일=safe_write 로 16KB chunk create→append). 업계 공통 방식(Claude Code·Gemini·Cline·
 //        aider 전부 대형 재작성→문자열-치환 diff 유도·aider 실측 lazy 누락 3배 감소).
-//     2) safe_write custom tool: 신규-대형-파일 갭 전용(anchor 부재로 edit 불가한 케이스). 16KB
+//     2) safe_write custom tool: 신규-대형-파일 갭 전용(기준 글 부재로 edit 불가한 케이스). 16KB
 //        chunk 상한을 도구가 강제(초과 거부)·create(신규)→append(이어쓰기) 순으로 쌓고 누적
 //        바이트/라인/개행 종단 여부를 보고(모델이 진행·청크 경계 상태 파악). apply_patch 로
 //        redirect 하지 않는다 — patch 문법은
@@ -33,7 +33,7 @@
 //    잡는다 — 완성된 tool call 이 애초에 도착하지 않는다(before 훅은 완성된 args 를 전제). 완화 =
 //    limit.output 명시(3) + deny(1)로 대형 시도 자체 억제. upstream 미해결(#18108 root-cause·
 //    #19604 write silent fail ~1000줄·#17471 auto-continue open·fix PR 전부 closed-unmerged·후속 추적).
-// ⚠️ 범위: 이 가드는 write/edit tool 만 가로챈다 — bash heredoc/echo·apply_patch 등 타 쓰기 표면은
+// ⚠️ 범위: 이 가드는 write/edit tool 만 가로챈다 — bash heredoc/echo·apply_patch 등 타 쓰기 경로는
 //    범위 밖(티켓 결정·redirect 대상은 edit·safe_write 둘뿐). safe_write 는 raw fs 라 아래 root
 //    containment(assertContainedPath·realpath)로 프로젝트 밖 쓰기를 봉쇄한다(opencode 권한계층 우회 방어).
 //
@@ -51,7 +51,7 @@ const path = require("node:path");
 //   네이티브 허용으로 풀어 그 구간의 프로토콜 강제 마찰을 제거.
 // CHUNK_BYTES: safe_write 한 chunk 상한(도구가 강제). 16KB — 조건부 채택: UTF-8 multibyte
 //   경계·quote/backslash 많은 코드 내용이 정확히 16,384B 에서 완성 args 로 도달하는 node
-//   자가검증(test_opencode_safe_write.py 경계 자가검증) 통과. 라이브 6런 게이트는 티켓 DoD(PM).
+//   자가검증(test_opencode_safe_write.py 경계 자가검증) 통과. 라이브 6런 확인은 티켓 DoD(PM).
 // 회사/모델별 튜닝: 각 env override(PM_SAFE_WRITE_DENY_BYTES·PM_SAFE_WRITE_CHUNK_BYTES).
 const DENY_BYTES = 64 * 1024; // 65536
 const CHUNK_BYTES = 16 * 1024; // 16384
@@ -295,11 +295,11 @@ function safeWrite(root, filePath, content, mode, chunkBytes) {
   const exists = fs.existsSync(target);
   const v = validateSafeWrite(content, mode, exists, chunkBytes);
   if (!v.ok) throw new Error("[safe-write] " + v.message);
-  // ── 경계 접착 방지 강제 게이트(line-aligned 계약 · T-opencode-002 라이브 실측) ──────────────
+  // ── 경계 접착 방지 강제 검사(line-aligned 계약 · T-opencode-002 라이브 실측) ──────────────
   // 경계 피드백(응답 경고)만으로는 glm류가 반복 무시해 접착 손상이 계속됐다(T-opencode-002 라이브
   // run2-glm-A: 경고 5회 무시·8/12 헤더 접착). 완화를 강제로 승격: append 시 대상 파일이
   // 개행 없이 끝나고 이번 조각도 개행으로 시작하지 않으면 거부한다 — 줄 단위 텍스트 chunk
-  // 전용 계약상 mid-line 이어붙임은 범위 밖이며, 거부 메시지가 정확한 처방을 준다.
+  // 전용 계약상 mid-line 이어붙임은 범위 밖이며, 거부 메시지가 정확한 해결 방법을 준다.
   if (mode === "append" && exists) {
     const prev = fs.readFileSync(target, "utf-8");
     if (prev.length > 0 && !prev.endsWith("\n") && !content.startsWith("\n")) {
@@ -335,7 +335,7 @@ function safeWrite(root, filePath, content, mode, chunkBytes) {
     }
   } else {
     // append 도 커널 강제 O_NOFOLLOW — leaf lstat 선검사↔여기 사이 symlink 로 교체되는 TOCTOU 를
-    // 닫는다(create 의 "wx" 와 동형). O_APPEND 로 이어쓰기, symlink leaf 면 ELOOP 로 거부.
+    // 닫는다(create 의 "wx" 와 같은 방식). O_APPEND 로 이어쓰기, symlink leaf 면 ELOOP 로 거부.
     let fd;
     try {
       fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
@@ -355,7 +355,7 @@ function safeWrite(root, filePath, content, mode, chunkBytes) {
   }
   const full = fs.readFileSync(target, "utf-8");
   const totalBytes = byteLength(full);
-  // 줄 수 = 개행 개수 + (마지막 개행 없는 잔여줄 1). 빈 파일은 0.
+  // 줄 수 = 개행 개수 + (마지막 개행 없는 남은 줄 1). 빈 파일은 0.
   const totalLines = full.length === 0 ? 0 : full.split("\n").length - (full.endsWith("\n") ? 1 : 0);
   // endsWithNewline: 청크 경계 피드백 — false 면 다음 조각이 \n 으로 시작해야 줄 단위 계약이 유지된다.
   return {

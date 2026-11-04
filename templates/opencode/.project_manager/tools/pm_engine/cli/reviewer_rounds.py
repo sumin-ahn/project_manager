@@ -142,7 +142,7 @@ def _print_rounds_report(
     selector 유무에 따른 소유자 해소는 호출부가 담당한다.
     """
     try:
-        session_budget = reviewer_target._wave_budget(conf_store.local_config(home))
+        session_budget = reviewer_target._session_budget(conf_store.local_config(home))
     except (OSError, UnicodeError) as exc:
         # 조회는 호출이 없어 conf 판독 실패로 막을 이유가 없다(호출 경로의 fail-closed 와
         # 다른 기준) — 예산 표기만 기본값으로 낮추고 그 사실을 알린다.
@@ -154,7 +154,7 @@ def _print_rounds_report(
         session_budget = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY)
     print(render_rounds_report(
         review_rounds._load_round_records(home),
-        record_path=review_rounds._round_ledger_path(home),
+        record_path=review_rounds._round_record_path(home),
         review_ticket=review_ticket,
         session_budget=session_budget,
     ))
@@ -216,7 +216,7 @@ def _resolve_review_command(home, args: argparse.Namespace, ) -> int:
         round_records = review_rounds._load_round_records(home)
         if review_ticket not in round_records:
             print(reviewer_budget._RESOLVE_REVIEW_UNKNOWN_GUIDANCE.format(
-                review_ticket=review_ticket, record_path=review_rounds._round_ledger_path(home)), file=sys.stderr)
+                review_ticket=review_ticket, record_path=review_rounds._round_record_path(home)), file=sys.stderr)
             return 1
         entry = reviewer_reservation._review_ticket_entry(round_records, review_ticket)
         if not review_rounds.review_ticket_has_residual(entry):
@@ -249,5 +249,5 @@ def _resolve_review_command(home, args: argparse.Namespace, ) -> int:
         print(f"이전 처분 선언을 교체합니다: {_describe_resolution(previous)}", file=sys.stderr)
     print(f"리뷰 집계 티켓 처분 선언: {review_ticket} · 남은 must_fix {residual_label} · "
           f"{_describe_resolution(declared)}")
-    print(f"  · 기록 파일: {review_rounds._round_ledger_path(home)}")
+    print(f"  · 기록 파일: {review_rounds._round_record_path(home)}")
     return 0

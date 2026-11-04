@@ -16,11 +16,11 @@ from pm_engine.infra import task_store
 from pm_engine.infra import worktree_paths
 
 
-def _git_anchor_identity(anchor: Path, *, runner: Any=subprocess.run, slot_home: Path | None=None) -> tuple[str, Path | None, Path | None]:
-    """(public identity, git root, owning PM home)를 기존 misanchor seam으로 해소한다."""
-    root = git._git_repo_root(anchor, runner=runner)
+def _git_target_repo_identity(target_repo: Path, *, runner: Any=subprocess.run, slot_home: Path | None=None) -> tuple[str, Path | None, Path | None]:
+    """(public identity, git root, owning PM home)를 기존 wrong-repo 판정 함수로 해소한다."""
+    root = git._git_repo_root(target_repo, runner=runner)
     if root is None:
-        shared = git._shared_repository_root(anchor, runner=runner)
+        shared = git._shared_repository_root(target_repo, runner=runner)
         if shared is not None:
             return ('shared-repo', shared, shared.parent.parent)
         return ('non-repo', None, None)
@@ -32,7 +32,7 @@ def _git_anchor_identity(anchor: Path, *, runner: Any=subprocess.run, slot_home:
             parent = slot_home / containing[0]['slot']
             if root != parent.resolve() and (not (slot_home / 'work').is_symlink()) and (not parent.is_symlink()):
                 return ('foreign', root, None)
-    pm_home = pm_paths._pm_home_worktree_misanchor(pm_paths.home_at(root))
+    pm_home = pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(root))
     if pm_home is not None:
         registered_slots = worktree_paths._registered_slot_paths(pm_paths.home_at(pm_home), runner=runner)
         return ('slot' if root in registered_slots else 'worktree', root, pm_home)
@@ -74,7 +74,7 @@ def _dangerous_cross_repo_pathspecs(home, repo_root: Path, path_base: Path, path
         except ValueError:
             continue
         parts = normalized.parts
-        if not parts or parts[0] not in git_policy._GIT_ANCHOR_DENY_ROOTS:
+        if not parts or parts[0] not in git_policy._GIT_TARGET_REPO_DENY_ROOTS:
             continue
         if not local.exists():
             continue
@@ -91,20 +91,20 @@ def judge_file_removal(cwd: str, argv: Sequence[str], *, cwd_certain: bool=True,
     shape = shell_policy._file_removal_shape(argv)
     if shape is None:
         return None
-    anchor = Path(cwd).expanduser().resolve()
+    target_repo = Path(cwd).expanduser().resolve()
     shown = ' '.join(argv)
-    identity, _root, cwd_home = _git_anchor_identity(anchor, runner=runner)
+    identity, _root, cwd_home = _git_target_repo_identity(target_repo, runner=runner)
     homes: set[Path] = {cwd_home} if cwd_home is not None else set()
     resolved: list[tuple[Path, str]] = []
     for target in shape.targets:
-        path, contents = hooks._removal_path(anchor, target.token, cwd_certain=cwd_certain)
+        path, contents = hooks._removal_path(target_repo, target.token, cwd_certain=cwd_certain)
         if path is None:
             if not shape.unresolved_is_destructive:
                 continue
             return {'verdict': 'deny', 'cwd_identity': identity, 'code': git_policy.GIT_DESTRUCTIVE_DENY_CODE, 'case': git_policy._GIT_GUARD_CASE_FOLDER_UNKNOWN, 'reason': f'대상 경로를 정적으로 풀 수 없는 파일 {shape.verb} — `{shown}` (대상 `{target.token}` 이 슬롯·공용 저장소일 수 있음)'}
         scope = 'contents' if contents and target.scope == 'self' else target.scope
         resolved.append((path, scope))
-        _identity, _target_root, target_home = _git_anchor_identity(hooks._nearest_existing_directory(path), runner=runner)
+        _identity, _target_root, target_home = _git_target_repo_identity(hooks._nearest_existing_directory(path), runner=runner)
         if target_home is not None:
             homes.add(target_home)
     entries = [entry for data_home in sorted(homes) for entry in hooks._protected_removal_entries(data_home)]
@@ -123,20 +123,20 @@ def _open_todo_count(home, task: str) -> int:
 def _no_open_todo_judgment(home, session: str) -> dict[str, str] | None:
     """열린 todo 가 없는 세션의 파일 쓰기 **경고** — 경고할 근거가 없으면 `None`.
 
-    "무엇을 하는 중인지" 가 장부에 없으면 다음 세션도 사용자도 그 일을 못 본다. 그래서 파일 쓰기
+    "무엇을 하는 중인지" 가 기록에 없으면 다음 세션도 사용자도 그 일을 못 본다. 그래서 파일 쓰기
     호출마다 그 사실을 화면에 올린다. **막지는 않는다** — 셸(`sed -i`·리다이렉션)은 이 판정을 타지
-    않아 막아도 우회로가 남고, 나머지 여덟 판정과 달리 이 축은 "명령이 위험한가" 가 아니라 "일을
+    않아 막아도 우회로가 남고, 나머지 여덟 판정과 달리 이 판정은 "명령이 위험한가" 가 아니라 "일을
     적었나" 라서 1회 허용 기전(명령 argv 에 묶인다)에도 얹히지 않는다.
 
     task 를 해소할 수 없으면(부트스트랩 전·하네스 밖·PM 홈 아님) 아무 말도 하지 않는다. 그 경우는
     슬롯 주인 판정(`_slot_write_judgment`)이 이미 거부한다 — 같은 사실을 두 번 말하지 않는다.
-    장부가 **있는데** 형식이 틀리면 `_slot_ledger_rows` 가 올린다(빈 장부로 흘려 통과시키지 않는
+    기록이 **있는데** 형식이 틀리면 `_slot_record_rows` 가 올린다(빈 기록으로 흘려 통과시키지 않는
     슬롯 판정과 같은 규율).
     """
     data_home = home.local_dir.parent.parent
     if not pm_paths.leases_file(home).is_file():
         return None
-    _leases, tasks = hooks._slot_ledger_rows(data_home)
+    _leases, tasks = hooks._slot_record_rows(data_home)
     task, _unresolved = hooks._session_task(session, tasks)
     if task is None:
         return None
@@ -146,7 +146,7 @@ def _no_open_todo_judgment(home, session: str) -> dict[str, str] | None:
     return {'verdict': 'warn', 'cwd_identity': 'non-repo', 'reason': f'task {task} 에 열린 todo 가 없다 — 지금 하는 일이 기록에 없어서 다음 세션도 사용자도 그 일을 못 본다. {git_policy._GIT_GUARD_ACTION_LINES[git_policy._GIT_GUARD_CASE_NO_OPEN_TODO]}'}
 
 def judge_git_check(home, session: str, cwd: str, argv: list[str], *, runner: Any=subprocess.run, cwd_certain: bool=True) -> dict[str, str]:
-    """raw git 호출의 cwd 안전성을 판정하는 엔진·하네스 중립 seam.
+    """raw git 호출의 cwd 안전성을 판정하는 엔진·하네스 중립 공용 함수.
 
     ``root`` 는 훅이 설치된 PM 홈, ``session`` 은 호출한 하네스 세션 ID 다 — ``root`` 슬롯의 git 쓰기는
     그 세션 task 가 잡은 슬롯일 때만 통과한다(`_slot_write_judgment`).
@@ -164,13 +164,13 @@ def judge_git_check(home, session: str, cwd: str, argv: list[str], *, runner: An
     invocation = hooks._git_invocation(cwd, argv)
     if invocation is None:
         return {'verdict': 'ok', 'cwd_identity': 'non-repo', 'reason': 'git 호출이 아님'}
-    identity, repo_root, pm_home = _git_anchor_identity(invocation.cwd, runner=runner, slot_home=Path(home.root))
-    target_certain = cwd_certain and invocation.anchor_certain
+    identity, repo_root, pm_home = _git_target_repo_identity(invocation.cwd, runner=runner, slot_home=Path(home.root))
+    target_certain = cwd_certain and invocation.target_repo_certain
     containing = hooks.slot_containing(home.root, repo_root) if repo_root is not None else None
     if identity in git_policy._GIT_PROTECTED_IDENTITIES or containing is not None or (not target_certain):
         resolved = hooks._git_alias_resolved(invocation, runner=runner) if target_certain else invocation
-        target_certain = target_certain and resolved.anchor_certain
-        form = hooks._git_destructive_form(resolved.subcommand, resolved.args, ref_anchor=invocation.cwd if target_certain else None, runner=runner)
+        target_certain = target_certain and resolved.target_repo_certain
+        form = hooks._git_destructive_form(resolved.subcommand, resolved.args, ref_target_repo=invocation.cwd if target_certain else None, runner=runner)
         if form is not None:
             where = f'대상={repo_root or invocation.cwd} (정체={identity})' if target_certain else '대상을 정적으로 정할 수 없어 슬롯·공용 저장소일 수 있음'
             shown = ' '.join(('git', resolved.subcommand, *resolved.args))
@@ -182,7 +182,7 @@ def judge_git_check(home, session: str, cwd: str, argv: list[str], *, runner: An
     subcommand = invocation.subcommand
     if subcommand not in git_policy._GIT_MUTATION_SUBCOMMANDS:
         return {'verdict': 'ok', 'cwd_identity': identity, 'reason': f'git {subcommand or '<missing>'}는 mutation 가드 대상이 아님'}
-    if not invocation.anchor_certain:
+    if not invocation.target_repo_certain:
         return {'verdict': 'warn', 'cwd_identity': identity, 'reason': 'GIT_DIR/work-tree 지정 또는 변수 -C 로 실제 mutation 대상 저장소를 단일 증명할 수 없음'}
     if identity == 'slot':
         return {'verdict': 'ok', 'cwd_identity': identity, 'reason': f'등록된 활성 linked worktree 대상 저장소={repo_root} — git {subcommand} 허용'}
@@ -199,7 +199,7 @@ def _engine_other_copy(cwd_root: Path | None, script_root: Path, script_identity
 
     세 번째 값은 그 사본의 **정체 해소 키**다 — ``cwd`` 는 호출 cwd 의 이미 측정된 정체를
     그대로 쓰라는 뜻이고, ``slot``/``pm-home`` 은 후보를 고를 때 이미 확정된 정체다. 방향
-    판정(어느 사본이 뒤졌는지)이 추가 앵커 조회 없이 두 사본의 정체를 갖게 하는 자리다.
+    판정(어느 사본이 뒤졌는지)이 추가 대상 저장소 조회 없이 두 사본의 정체를 갖게 하는 자리다.
     """
     candidates: list[tuple[Path, str]] = []
     if script_identity == 'pm-home' and pm_home is not None:
@@ -216,16 +216,16 @@ def _engine_other_copy(cwd_root: Path | None, script_root: Path, script_identity
     return None
 
 def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess.run) -> dict[str, str]:
-    """엔진/pytest 호출의 사본·소유 앵커를 판정한다.
+    """엔진/pytest 호출의 사본·소유 대상 저장소를 판정한다.
 
     deny는 PM 홈에 대상 ``tests/``가 없는 pytest 호출과 non-PM 엔진 사본의 board
-    mutation 두 축뿐이다. 상대 엔진 경로는 실행 사본의 절대경로와 반대편 사본의
+    mutation 두 기준뿐이다. 상대 엔진 경로는 실행 사본의 절대경로와 반대편 사본의
     도구 파일 sha256 비교를 warn으로 주입한다. sha 가 다를 때만 ``_engine_copy_freshness``
     가 방향(어느 사본이 뒤졌는지)을 worktree git 상태로 1회 판정하며, 판정이 서지 않으면
     단정하지 않는다.
     """
     cwd_path = Path(cwd).expanduser().resolve()
-    identity, cwd_root, cwd_pm_home = _git_anchor_identity(cwd_path, runner=runner)
+    identity, cwd_root, cwd_pm_home = _git_target_repo_identity(cwd_path, runner=runner)
     details = shell_policy._engine_invocation_details(cwd, argv)
     if details is None:
         return {'verdict': 'ok', 'cwd_identity': identity, 'reason': '엔진/pytest 호출이 아님'}
@@ -246,7 +246,7 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
     relative = not script_token.is_absolute()
     script_path = (cwd_path / script_token).resolve() if relative else script_token.resolve()
     script_root = script_path.parents[2]
-    script_identity, _resolved_root, script_pm_home = _git_anchor_identity(script_root, runner=runner)
+    script_identity, _resolved_root, script_pm_home = _git_target_repo_identity(script_root, runner=runner)
     relative_script = Path('.project_manager') / 'tools' / script_path.name
     mutation = board_command_rules._board_mutation_subcommand(details.args) if script_path.name == 'board.py' else ''
     if mutation and script_identity in {'slot', 'worktree'}:

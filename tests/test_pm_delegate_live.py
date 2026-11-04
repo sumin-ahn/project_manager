@@ -54,7 +54,7 @@ from pm_engine.domain import conf_schema
 
 from conftest import (
     codex_auth_available, current_branch, drop_codex_auth, make_codex_home,
-    write_cluster_ledger,
+    write_cluster_records,
 )
 from pm_engine.infra import raw_output
 from pm_engine.domain import review_form, review_state
@@ -228,7 +228,7 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
     source = tickets / f"{ticket}-live-cross-growth.md"
     source.write_text(_growth_ticket_text(ticket), encoding="utf-8")
     # 라운드 준비는 묶음 기록의 예산·브랜치 선언을 읽는다 — 크기 1 기록을 함께 깐다.
-    write_cluster_ledger(
+    write_cluster_records(
         repo / ".project_manager" / "wiki", ticket, base_branch=base_branch,
         branch=_GROWTH_CLUSTER_BRANCH)
     return repo, source

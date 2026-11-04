@@ -1,4 +1,4 @@
-"""canonical skill → opencode flat command 사본 정합의 공용 판정 seam (T-0674·T-0708).
+"""canonical skill → opencode flat command 사본 일치의 공용 판정 함수 (T-0674·T-0708).
 
 **판정 층**: 양쪽을 `read_bytes()` 로 읽고 개행 표기만 LF로 정규화한 **내용 동일성**이다. 체크아웃
 표기(`core.autocrlf`)는 채택자 설정 소관이라 같은 내용이 표기만 달라 red가 되면 안 되고, 내용이 한

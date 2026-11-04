@@ -284,12 +284,12 @@ class FakeWorktreePool:
             raise self._task_branch_raises
         return SimpleNamespace(slot=slot, branch=branch, head="abc1234567890", requested=branch)
 
-    def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
+    def install_protected_hook(self, repo, protected, *, check_mode, test_cmd):
         # 보호 브랜치 pre-push 훅 (재)설치 대역 (T-0076) — repo·protected 목록을 기록해
         # repo add/worktree add 가 보호 훅 설치를 호출하는 연결을 결정적으로 검증한다.
         # True 반환(bare 존재 시 설치 성공·실 install_protected_hook 계약과 같은 방식).
         self.calls.append(("install_protected_hook", repo, list(protected)))
-        self.last_protected_check = (gate_mode, test_cmd)
+        self.last_protected_check = (check_mode, test_cmd)
         return True
 
     def set_test_cmd(self, slot, cmd):
@@ -1930,7 +1930,7 @@ def test_repo_add_registers_protected_column_empty(pc, monkeypatch, tmp_path):
 def test_install_protected_hook_helper_fail_soft_on_exception(pc, monkeypatch):
     """_install_protected_hook — install 예외는 전파한다(False 로 낮추지 않는다)."""
     class _BoomWp:
-        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
+        def install_protected_hook(self, repo, protected, *, check_mode, test_cmd):
             raise RuntimeError("boom")
     bind_board(monkeypatch, FakeBoard())
     bind_pool(monkeypatch, _BoomWp())
@@ -1943,7 +1943,7 @@ def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
         pc, monkeypatch, tmp_path, capsys, action):
     """A1/B4 경계 — 일반 설치 예외는 두 생성 명령 모두를 실패시킨다(원인 문구는 예외에 남는다)."""
     class _BoomWp(FakeWorktreePool):
-        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
+        def install_protected_hook(self, repo, protected, *, check_mode, test_cmd):
             raise RuntimeError("ordinary install failure")
 
     pool = bind_pool(monkeypatch, _BoomWp())
@@ -2031,8 +2031,8 @@ class _RecordingInstaller:
     def __init__(self):
         self.calls: list[tuple] = []
 
-    def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
-        self.calls.append((repo, list(protected), gate_mode, test_cmd))
+    def install_protected_hook(self, repo, protected, *, check_mode, test_cmd):
+        self.calls.append((repo, list(protected), check_mode, test_cmd))
         return True
 
 
@@ -2067,7 +2067,7 @@ def test_install_protected_hook_keeps_existing_user_home_resolving(pc, tmp_path,
     assert repo_protection._install_protected_hook(pm_paths.home_at(pc.REPO),
         "svc", ) is True
     assert repo_protection.protected_hook_install_failure_reason(pm_paths.home_at(pc.REPO), "svc") is None
-    assert [(repo, gate_mode) for repo, _protected, gate_mode, _cmd in installer.calls] == [
+    assert [(repo, check_mode) for repo, _protected, check_mode, _cmd in installer.calls] == [
         ("svc", "self-test")]
 
 
@@ -2119,7 +2119,7 @@ def test_protected_push_check_config_keeps_framework_self_repo_release_check(pc,
     )
     monkeypatch.setattr(pc, "REPO", home)
 
-    assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
+    assert repo_protection._protected_push_check_config(pm_paths.home_at(pc.REPO), "svc") == (
         "release", "python -m pytest tests/ -q")
 
 
@@ -2136,7 +2136,7 @@ def test_protected_push_check_config_routes_adopter_to_repo_test_cmd(pc, tmp_pat
     monkeypatch.setattr(areas_store, "_parse_areas", lambda _home, path=None: (
         ["repo", "test_cmd"], [{"repo": "svc", "test_cmd": "go test ./..."}]))
 
-    assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
+    assert repo_protection._protected_push_check_config(pm_paths.home_at(pc.REPO), "svc") == (
         "self-test", "go test ./...")
 
 
@@ -2153,7 +2153,7 @@ def test_protected_push_check_config_url_identity_keeps_framework_release(pc, tm
     board = bind_board(monkeypatch, FakeBoard(repo_gits={"svc": "git@github.com:acme/framework.git"}))
     _write_repo_gits(pc.REPO, board._repo_gits)
 
-    assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
+    assert repo_protection._protected_push_check_config(pm_paths.home_at(pc.REPO), "svc") == (
         "release", "pytest -q")
 
 
@@ -2228,7 +2228,7 @@ def test_protected_push_check_config_file_transport_collision_is_adopter_self_te
     board = bind_board(monkeypatch, FakeBoard(repo_gits={"svc": "https://github.com/acme/framework.git"}))
     _write_repo_gits(pc.REPO, board._repo_gits)
 
-    assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
+    assert repo_protection._protected_push_check_config(pm_paths.home_at(pc.REPO), "svc") == (
         "self-test", "pytest -q")
 
 
@@ -2245,7 +2245,7 @@ def test_protected_push_check_config_scp_without_user_keeps_framework_release(pc
     board = bind_board(monkeypatch, FakeBoard(repo_gits={"svc": "git@github.com:acme/framework.git"}))
     _write_repo_gits(pc.REPO, board._repo_gits)
 
-    assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
+    assert repo_protection._protected_push_check_config(pm_paths.home_at(pc.REPO), "svc") == (
         "release", "pytest -q")
 
 
@@ -2257,7 +2257,7 @@ def test_protected_push_check_config_missing_upstream_downgrades_to_self_test(pc
     conf.write_text("test.cmd=pytest -q\n", encoding="utf-8")
     monkeypatch.setattr(pc, "REPO", home)
 
-    assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
+    assert repo_protection._protected_push_check_config(pm_paths.home_at(pc.REPO), "svc") == (
         "self-test", "pytest -q")
     err = capsys.readouterr().err.splitlines()
     assert len(err) == 1 and "upstream.path 값을 해소하지 못함" in err[0]
@@ -2276,7 +2276,7 @@ def test_protected_push_check_config_url_without_registry_git_downgrades_to_self
     monkeypatch.setattr(pc, "REPO", home)
 
     bind_board(monkeypatch, FakeBoard(repo_gits={}))
-    assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
+    assert repo_protection._protected_push_check_config(pm_paths.home_at(pc.REPO), "svc") == (
         "self-test", "go test ./...")
     err = capsys.readouterr().err.splitlines()
     assert len(err) == 1 and "areas.md git 값을 해소하지 못함" in err[0]
@@ -2308,7 +2308,7 @@ def test_protected_push_check_trailing_empty_upstream_downgrades_like_upstream_s
     board = bind_board(monkeypatch, FakeBoard(repo_gits={"svc": "https://github.com/acme/framework.git"}))
 
     assert repo_protection._local_conf_value(pm_paths.home_at(pc.REPO), "upstream.path") == ""
-    assert repo_protection._protected_push_gate_config(pm_paths.home_at(pc.REPO), "svc") == (
+    assert repo_protection._protected_push_check_config(pm_paths.home_at(pc.REPO), "svc") == (
         "self-test", "go test ./...")
     assert "upstream.path 값을 해소하지 못함" in capsys.readouterr().err
 

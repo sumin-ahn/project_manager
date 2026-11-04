@@ -184,9 +184,9 @@ def pm_update(_pm_update_cli, monkeypatch):
 @pytest.fixture(autouse=True)
 def _known_install_capacity_fixture(monkeypatch):
     """설치·반영의 모델 한도 조회(`app.harness_ctx`)를 고정 값으로 바꾼다(설치·갱신이 같은 함수를 지난다)."""
-    from _manager_home import known_ctx_seams
+    from _manager_home import known_ctx_overrides
     from pm_engine.app import harness_ctx
-    for name,override in known_ctx_seams(capacity=200000,context=232000).items():
+    for name,override in known_ctx_overrides(capacity=200000,context=232000).items():
         monkeypatch.setattr(harness_ctx,name,override)
 
 
@@ -4678,7 +4678,7 @@ def test_add_harness_added_harness_registration_within_namespace_or_variant_rend
     놓쳐 PM 스킬 파손 = R25 MF). 새 경계 = **하네스별 판 `@render` 선언 자체** — 등재 경로는 (a) 추가 하네스
     namespace 안이거나 (b) `added` 하네스별 판이 `@render` 로 선언한 경로다(그 밖 = 하네스별 판 미선언 유입 0).
     host 실소유 차감(R17)은 그 위에 얹혀 더 좁힐 뿐(claude host + opencode 는 `.claude/skills` host-소유라
-    미등재 — codex↔claude host 대조는 `test_add_harness_opencode_guest_cross_ns_skills_by_host`).
+    미등재 — codex↔claude host 대조는 `test_add_harness_opencode_added_harness_cross_ns_skills_by_host`).
 
     **T-0574 로 상한이 넓어졌다**: 절은 이제 렌더물(`@render`)뿐 아니라 **엔진 행**(비-`@render`·
     update 채널)도 담는다. 엔진 행 후보는 복사 술어(`_in_adapter_namespace`)를 그대로 태워 뽑으므로
@@ -4920,7 +4920,7 @@ def test_add_harness_codex_registers_dual_namespace_added_harness_render(pm_impo
 
 
 @pytest.mark.parametrize("host,expect_registered", [("codex", True), ("claude", False)])
-def test_add_harness_opencode_guest_cross_ns_skills_by_host(
+def test_add_harness_opencode_added_harness_cross_ns_skills_by_host(
         pm_import, pm_update, tmp_path, host, expect_registered):
     """opencode 추가 하네스의 **cross-ns `.claude/skills`**(ADR-0065 네이티브 소비·`.opencode` 밖) 처리는
     host 실소유에 달렸다 (T-0456 R25 MF — codex R18 지시가 기능 요건으로 반전·red-첫).

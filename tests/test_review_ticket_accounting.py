@@ -140,7 +140,7 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
     # 돌려받기(T-0696)는 실 보드 왕복이 필요한 별도 기준이라 여기서는 격리한다 — 그 회귀는
     # tests/test_additional_reviewer_ticket_collect.py 가 소유한다(run_review stub 과 같은 결).
     monkeypatch.setattr(
-        reviewer_collect, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_collect, "_collect_additional_reviewer_section", lambda *_a, **_k: None,
     )
     reviewer = _Reviewer(series if series is not None else [0])
     monkeypatch.setattr(reviewer_run, "run_review", reviewer)
@@ -496,13 +496,13 @@ def test_removed_confirm_fix_does_not_open_a_derived_review_ticket(external, mon
     reviewer = _wire(external, monkeypatch, tmp_path, series=[2])
     argv = ["--ticket", TICKET]
     assert external.main(argv) == 1
-    before = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).read_bytes()
+    before = review_rounds._round_record_path(pm_paths.home_at(external.REPO)).read_bytes()
     capsys.readouterr()
 
     with pytest.raises(SystemExit):
         external.main(argv + ["--confirm-fix"])
     assert reviewer.calls == 1
-    assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).read_bytes() == before
+    assert review_rounds._round_record_path(pm_paths.home_at(external.REPO)).read_bytes() == before
     assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
 
 

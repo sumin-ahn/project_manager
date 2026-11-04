@@ -1,4 +1,4 @@
-"""T-0091 — opencode 어댑터 진입문서 v2 정합 회귀 가드.
+"""T-0091 — opencode 어댑터 진입문서 v2 일치 회귀 가드.
 
 v2 재설계(ADR-0017~0020)가 도입한 변경이 opencode 어댑터 진입문서(AGENTS.md·
 AGENTS.lite.md)에 반영돼 있는지 단언한다. diff-scoped 리뷰의 *부재맹점*(기능은
@@ -11,7 +11,7 @@ harness-neutral 공통 코어로 축소하고, opencode-고유 실행 모델(§0
 를 본다(코어/이관 분리). domain 사용법(a)·PM_SESSION_NAME(c)·안전가드 등 harness-neutral 항은
 AGENTS.md 공통 코어에 잔류한다.
 
-검사 축:
+검사 항목:
   (a) domain 지식 레이어 사용법(ADR-0018) — CLI 4명령이 AGENTS.md 공통 코어에 문서화돼 있다.
   (b) relay 네이밍(ADR-0020) — PM 세션을 spawn 하는 supervisor 가 relay 로 표기(pm-instructions.md).
       ⚠️ orchestrator(PM-conductor)는 ADR-0020 이 *유지*하기로 했으므로 0 을 요구하지 않는다.
@@ -74,12 +74,12 @@ def test_agents_lite_points_to_domain():
     assert "domain" in text, "AGENTS.lite.md 에 domain 포인터가 없음 (T-0091)"
 
 
-# ── architecture.md 1순위 배선 (ADR-0022·T-0105) ─────────────────────────────
+# ── architecture.md 1순위 등록 (ADR-0022·T-0105) ─────────────────────────────
 
 def test_agents_lite_links_architecture():
     """AGENTS.lite.md도 architecture.md의 현재-진실 지위를 링크로 보존한다.
 
-    T-0102 가 full AGENTS.md 에만 배선하고 lite 진입문서를 놓쳤던 것(잔여)을 못박는다 —
+    T-0102 가 full AGENTS.md 에만 등록하고 lite 진입문서를 놓쳤던 것(남은 일)을 못박는다 —
     시작 시 통독 대상은 아니지만 필요 시 읽을 현재 아키텍처 단일 진실 포인터는 유지한다.
     """
     text = AGENTS_LITE_MD.read_text(encoding="utf-8")
@@ -105,7 +105,7 @@ def test_opencode_architect_mentions_architecture_content_truth():
     """opencode architect 산출물 섹션에 architecture.md content-truth 유지 bullet(ADR-0022)이 있다.
 
     `.claude` architect 파리티 — opencode architect 의 "위임받는 설계 spike 유형" 목록에
-    architecture.md content-truth 유지 bullet 이 있어야 한다 (T-0105 잔여 배선).
+    architecture.md content-truth 유지 bullet 이 있어야 한다 (T-0105 남은 등록).
     문자열 *존재*가 아니라 **산출물 섹션 안의 bullet** 을 단언한다 — frontmatter·경계절의
     동일 문자열로 통과하던 약점(T-0105 리뷰)을 닫음.
     """
@@ -131,16 +131,16 @@ def test_opencode_architect_lists_domain_author_deliverable():
     )
 
 
-# ── researcher subagent 파리티 (gather 축 · ADR-0019 · T-0106) ────────────────
+# ── researcher subagent 파리티 (gather 역할 · ADR-0019 · T-0106) ────────────────
 
 def test_opencode_researcher_exists():
-    """opencode researcher subagent(gather 축)가 존재한다.
+    """opencode researcher subagent(gather 역할)가 존재한다.
 
     claude_code 에는 `.claude/agents/researcher.md` 가 있는데 opencode 어댑터엔 통째로
-    빠져 있던 갭(gather 축)을 못박는다 — 4축 subagent 파리티 (ADR-0019·T-0106).
+    빠져 있던 갭(gather 역할)을 못박는다 — 4역할 subagent 파리티 (ADR-0019·T-0106).
     """
     assert RESEARCHER_MD.exists(), (
-        f"opencode researcher subagent 없음: {RESEARCHER_MD} (gather 축 부재 · ADR-0019·T-0106)"
+        f"opencode researcher subagent 없음: {RESEARCHER_MD} (gather 역할 부재 · ADR-0019·T-0106)"
     )
 
 
@@ -148,7 +148,7 @@ def test_opencode_researcher_writes_only_its_ticket_section():
     """researcher는 native/cross 공용 custom agent이며 Bash를 기계적으로 거부한다.
 
     `edit: allow` 는 "모든 참여 역할이 자기 산출을 티켓 절로 남긴다"(ADR-0089·T-0696)의 최소
-    수단이다. opencode 축은 역할 agent permission 이 편집 자체를 기계로 켜고 끄는 자리이며,
+    수단이다. opencode 쪽은 역할 agent permission 이 편집 자체를 기계로 켜고 끄는 자리이며,
     범위(사본의 자기 절)는 카드 문구가 지시한다. bash·task 는 계속 deny 다.
     """
     fm = _load_agent_frontmatter(RESEARCHER_MD)
@@ -168,14 +168,14 @@ def test_opencode_researcher_writes_only_its_ticket_section():
 
 
 def test_pm_instructions_lists_researcher_subagent_type():
-    """pm-instructions.md §2 위임 규약이 researcher 를 subagent_type 으로 언급한다 (gather 축 · T-0106).
+    """pm-instructions.md §2 위임 규약이 researcher 를 subagent_type 으로 언급한다 (gather 역할 · T-0106).
 
     ADR-0069·T-0401: 위임 규약(§3)이 AGENTS.md 공통 코어에서 pm-instructions.md 로 이관됐다 —
     §2.1 후보 나열 + §2.2 매핑 표에 researcher 행이 있어야 PM 이 gather 위임을 쓸 수 있다.
     """
     text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
     assert "`researcher`" in text, (
-        "pm-instructions.md §2 에 researcher 가 subagent_type 으로 나열되지 않음 (gather 축 누락 · T-0106)"
+        "pm-instructions.md §2 에 researcher 가 subagent_type 으로 나열되지 않음 (gather 역할 누락 · T-0106)"
     )
     # §2.2 매핑 표 행이 gather 성격을 명시하는지.
     assert "researcher | `researcher`" in text, (
@@ -183,8 +183,8 @@ def test_pm_instructions_lists_researcher_subagent_type():
     )
 
 
-# ── pm-dev-delegate 출하 표면(skill tool + slash command·T-0674) ─────────────
-# 두 표면은 모두 root canonical 에서 기계 생성되며 command는 평탄 좌표 링크만 기계 rewrite한다.
+# ── pm-dev-delegate 출하 진입(skill tool + slash command·T-0674) ─────────────
+# 두 진입은 모두 root canonical 에서 기계 생성되며 command는 평탄 좌표 링크만 기계 rewrite한다.
 
 
 def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
@@ -198,7 +198,7 @@ def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
     assert PM_DEV_DELEGATE_CANONICAL.is_file(), (
         f"canonical pm-dev-delegate 스킬 없음: {PM_DEV_DELEGATE_CANONICAL}")
     assert PM_DEV_DELEGATE_COMMAND.is_file(), "opencode pm-dev-delegate 슬래시 command 누락"
-    # 판정 층은 공용 seam(LF 정규화 bytes 내용 동일성·T-0708) — 기대·실측을 한 곳에서 읽어
+    # 판정 층은 공용 함수(LF 정규화 bytes 내용 동일성·T-0708) — 기대·실측을 한 곳에서 읽어
     # 체크아웃 개행 표기와 무관하게, 내용 1자 차이는 red로 판정한다.
     assert command_matches_skill(
         PM_DEV_DELEGATE_CANONICAL, "pm-dev-delegate", PM_DEV_DELEGATE_COMMAND,
@@ -232,7 +232,7 @@ def test_canonical_delegate_card_routes_every_harness_to_its_native_channel():
 
 
 def test_opencode_pm_dev_delegate_no_framework_wikilink():
-    """pm-dev-delegate 출하 두 표면이 framework ADR/ticket 을 wikilink 하지 않는다.
+    """pm-dev-delegate 출하 두 진입이 framework ADR/ticket 을 wikilink 하지 않는다.
 
     어댑터/채택자 트리엔 그 ADR/ticket 파일이 없어 `[[…]]`는 dangling 이다."""
     for path in (PM_DEV_DELEGATE_MIRROR, PM_DEV_DELEGATE_COMMAND):
@@ -286,7 +286,7 @@ def test_opencode_entry_docs_no_framework_wikilink():
 # ── (d) 공통 코어 / 이관 분리 (ADR-0069·T-0401) ───────────────────────────────
 # @render 파일의 free-form 토큰(활성화 시 omit→채택자 안전 라인 소실·ADR-0030) — pm-instructions.md
 # 는 @render 라 이 토큰들을 담으면 render 시 _assert_no_leak 가 hard-fail 한다(test_adapter_free_form_free
-# 동형 불변식을 이 단일 파일에도 lock-in — RENDER_SCOPED_DIRS 는 디렉토리만 스캔해 이 단일 파일을 놓침).
+# 같은 불변식을 이 단일 파일에도 lock-in — RENDER_SCOPED_DIRS 는 디렉토리만 스캔해 이 단일 파일을 놓침).
 _FREEFORM_TOKENS = ("{{PROJECT_CONSTRAINTS}}", "{{PROTECTED_PATHS}}", "{{USER_GATE_ITEMS}}")
 
 
@@ -314,7 +314,7 @@ def test_agents_md_is_thin_common_core():
         "## 4. 작업 완료 기록",             # 완료 기록
         "## 5. PM 결정 권한",               # 결정 권한
         "## 6. 라이브 외부 행위 안전 가드",  # 안전 가드
-        "### 프로젝트 고유 제약",           # @render agent 가 참조하는 named anchor
+        "### 프로젝트 고유 제약",           # @render agent 가 참조하는 제목 표시 글
     ):
         assert core in text, f"AGENTS.md 공통 코어 절 '{core}' 누락 (ADR-0069·T-0401)"
     # harness-neutral — 특정 하네스 어휘는 별도 전달 채널에만 둔다.
@@ -335,10 +335,10 @@ def test_pm_instructions_has_execution_model_and_delegation():
         "재시작",            # config 1회 로드 캐싱 노트
         "위임 규약",         # §2 위임 규약
         "subagent_type",     # role 매핑
-        "opencode run",      # §2.7 폴백
+        "opencode run",      # §2.7 대체 경로
     ):
         assert marker in text, f"pm-instructions.md 에 이관 전문 마커 '{marker}' 누락 (ADR-0069·T-0401)"
-    # 위임 규약 subsection 이 온전히(2.1~2.7) 이관됐는지 — 대표 앵커.
+    # 위임 규약 subsection 이 온전히(2.1~2.7) 이관됐는지 — 대표 표시 글.
     for sub in ("### 2.1", "### 2.2", "### 2.7"):
         assert sub in text, f"pm-instructions.md 에 위임 규약 subsection '{sub}' 누락 (§3 전체 이관 · T-0401)"
 
@@ -368,19 +368,19 @@ def test_opencode_jsonc_registers_pm_instructions():
         "opencode.jsonc instructions 배열에 .opencode/pm-instructions.md 미등록 — 이관 지침이 로드 안 됨 (T-0401)")
 
 
-# ── (e) blast-radius 재발 가드 — 사라진 AGENTS.md 앵커 참조 0 (T-0401 리뷰 must-fix) ──────────
+# ── (e) blast-radius 재발 가드 — 사라진 AGENTS.md 절 참조 0 (T-0401 리뷰 must-fix) ──────────
 # §0(실행 모델)·§3(위임 규약)이 pm-instructions.md 로 이관됐다. 출하 opencode 문서가 그 사라진
-# 앵커를 "위임/실행 단일 진실"로 계속 가리키면 채택자가 없는 섹션으로 안내된다. 이 클래스는 "red
+# 절을 "위임/실행 단일 진실"로 계속 가리키면 채택자가 없는 섹션으로 안내된다. 이 클래스는 "red
 # 없는 prose drift"라 리뷰 전까지 어떤 테스트도 못 잡았다 → grep 기반 durable 가드로 닫는다.
 # 정규식은 과단속 방지로 정확히: "AGENTS.md" 와 "§0"/"§3" 이 같은 참조 맥락(15자 내 근접)으로 붙은
-# 경우만. 매칭 제외(정당): ADR-0006 §3·spike §3.2(AGENTS.md 아닌 앵커)·AGENTS.md §1/§5/§10(유효 앵커).
-_STALE_AGENTS_ANCHOR_RE = re.compile(r"AGENTS\.md[^\n]{0,15}§\s*[03](?![0-9])")
+# 경우만. 매칭 제외(정당): ADR-0006 §3·spike §3.2(AGENTS.md 아닌 절)·AGENTS.md §1/§5/§10(유효 절).
+_STALE_AGENTS_MARKER_RE = re.compile(r"AGENTS\.md[^\n]{0,15}§\s*[03](?![0-9])")
 
 
 def test_no_shipped_opencode_doc_points_to_removed_agents_anchors():
-    """출하 opencode md 전수에 사라진 `AGENTS.md §0`(실행모델)/`§3`(위임규약) 앵커 참조 0 (ADR-0069·T-0401 리뷰 must-fix).
+    """출하 opencode md 전수에 사라진 `AGENTS.md §0`(실행모델)/`§3`(위임규약) 절 참조 0 (ADR-0069·T-0401 리뷰 must-fix).
 
-    §0·§3 이 pm-instructions.md(§1 실행·§2 위임)로 이관됐으므로, 어떤 출하 문서도 그 앵커를
+    §0·§3 이 pm-instructions.md(§1 실행·§2 위임)로 이관됐으므로, 어떤 출하 문서도 그 절을
     "단일 진실"로 가리키면 안 된다(채택자가 없는 섹션으로 안내됨). AGENTS.lite.md 는 이번 범위 밖
     (자족 압축 설계·인라인 위임 §3 유지)이라 제외한다.
     """
@@ -394,25 +394,25 @@ def test_no_shipped_opencode_doc_points_to_removed_agents_anchors():
         if p.name == "AGENTS.lite.md":
             continue  # 코디네이터 명시 범위 밖 (자족 압축·인라인 §3)
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            if _STALE_AGENTS_ANCHOR_RE.search(line):
+            if _STALE_AGENTS_MARKER_RE.search(line):
                 offenders.append(f"{p.relative_to(REPO).as_posix()}:{i}: {line.strip()}")
     assert not offenders, (
-        "출하 opencode 문서가 이관된 AGENTS.md 앵커(§0 실행모델·§3 위임규약)를 계속 가리킴 — "
+        "출하 opencode 문서가 이관된 AGENTS.md 절(§0 실행모델·§3 위임규약)을 계속 가리킴 — "
         "`.opencode/pm-instructions.md` §1(실행)·§2(위임)로 리다이렉트하라 (ADR-0069·T-0401 리뷰 must-fix):\n  "
         + "\n  ".join(offenders))
 
 
 def test_stale_agents_anchor_guard_is_sensitive():
-    """sensitivity — 가드 정규식이 stale 앵커를 실제로 잡고 정당 참조는 안 잡는다(non-vacuous·과단속 방지).
+    """sensitivity — 가드 정규식이 stale 절 참조를 실제로 잡고 정당 참조는 안 잡는다(non-vacuous·과단속 방지).
 
-    catch: `AGENTS.md §3`/`§0`/`§3.7`(이관된 앵커). pass: ADR/spike §3·AGENTS.md §1/§5/§10(유효)·
+    catch: `AGENTS.md §3`/`§0`/`§3.7`(이관된 절). pass: ADR/spike §3·AGENTS.md §1/§5/§10(유효)·
     pm-instructions.md §2·AGENTS.md 공통 코어(§ 미인접).
     """
     catch = (
         "자세한 규약은 `AGENTS.md §3` 가 단일 진실",
-        "build primary 폴백 — AGENTS.md §0.",
+        "build primary 대체 — AGENTS.md §0.",
         "위임 규약 단일 진실 = `AGENTS.md §3`",
-        "AGENTS.md §3.7 폴백",
+        "AGENTS.md §3.7 대체",
     )
     passes = (
         "결정 근거는 ADR-0006(§3·D2)",
@@ -423,6 +423,6 @@ def test_stale_agents_anchor_guard_is_sensitive():
         "`AGENTS.md` 공통 코어와 함께 자동 로드",
     )
     for s in catch:
-        assert _STALE_AGENTS_ANCHOR_RE.search(s), f"stale 앵커 미검출(vacuous 위험): {s!r}"
+        assert _STALE_AGENTS_MARKER_RE.search(s), f"stale 절 참조 미검출(vacuous 위험): {s!r}"
     for s in passes:
-        assert not _STALE_AGENTS_ANCHOR_RE.search(s), f"정당 참조 오검출(과단속): {s!r}"
+        assert not _STALE_AGENTS_MARKER_RE.search(s), f"정당 참조 오검출(과단속): {s!r}"

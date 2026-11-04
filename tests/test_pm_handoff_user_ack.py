@@ -1,4 +1,4 @@
-"""T-0648 pm_handoff 사용자-명시 값-결속 ack 게이트."""
+"""T-0648 pm_handoff 사용자-명시 값 연결 ack 검사."""
 from __future__ import annotations
 
 from pm_engine.infra import pm_paths
@@ -25,20 +25,20 @@ def _load_handoff():
 
 
 class _TaskPool:
-    """task membership·보유 슬롯만 답하는 최소 seam — 승인 게이트 앞의 장부 조회를 통과시킨다."""
+    """task membership·보유 슬롯만 답하는 최소 교체 지점 — 승인 검사 앞의 기록 조회를 통과시킨다."""
 
     def find_task(self, name):
         return type("_T", (), {"name": name})()
 
     def find_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.find_task(name)
 
     def slots_for_task(self, name):
         return []
 
     def slots_for_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.slots_for_task(name)
 
 
@@ -114,7 +114,7 @@ def test_direct_run_missing_ack_is_rejected_before_pipeline(monkeypatch, tmp_pat
     runner = pm_engine.cli.handoff.PmHandoff(home, pm_state_file=tmp_path / 'pm_state.md')
     monkeypatch.setattr(
         pm_engine.cli.handoff_dirty,
-        "_dirty_tree_gate",
+        "_dirty_tree_check",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("ack 뒤 pipeline 진입 금지")),
     )
 
@@ -134,7 +134,7 @@ def test_direct_run_mismatched_ack_is_value_bound(monkeypatch, tmp_path, capsys)
     runner = pm_engine.cli.handoff.PmHandoff(home, pm_state_file=tmp_path / 'pm_state.md')
     monkeypatch.setattr(
         pm_engine.cli.handoff_dirty,
-        "_dirty_tree_gate",
+        "_dirty_tree_check",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("mismatch 뒤 pipeline 진입 금지")),
     )
 
@@ -150,7 +150,7 @@ def test_direct_run_mismatched_ack_is_value_bound(monkeypatch, tmp_path, capsys)
 
 
 
-def test_compaction_checkpoint_parser_has_no_handoff_ack_gate():
+def test_compaction_checkpoint_parser_has_no_handoff_ack_check():
     spec = importlib.util.spec_from_file_location("t0648_pm_log_checkpoint", PM_LOG)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

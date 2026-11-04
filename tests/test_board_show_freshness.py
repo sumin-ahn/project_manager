@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import remove_git_tree
-from conftest import anchor_board_module
+from conftest import target_repo_board_module
 
 from pm_engine.app import board_claim
 from pm_engine.domain import board_git_rules
@@ -108,7 +108,7 @@ def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001") -> Path:
 def board(tmp_path, monkeypatch):
     """REPO 를 tmp 로 재지정한 fresh board 모듈 (실 루트 미접촉)."""
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     return mod

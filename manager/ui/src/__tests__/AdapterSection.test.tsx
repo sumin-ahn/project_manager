@@ -182,7 +182,7 @@ describe("어댑터 절", () => {
 });
 
 describe("전체 보기 매트릭스", () => {
-  it("칸 값은 거리이고 채널 없는 파일은 거리 축이 없다", () => {
+  it("칸 값은 거리이고 채널 없는 파일은 거리 값이 없다", () => {
     expect(cellText(EDITED_DOCUMENT, EDITED.path)).toBe("3");
     expect(cellText(EDITED_DOCUMENT, DOCUMENT.path)).toBe("검사 없음");
     expect(cellText(EDITED_DOCUMENT, ".codex/config.toml")).toBe("없음");

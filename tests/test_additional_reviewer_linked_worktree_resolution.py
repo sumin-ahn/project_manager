@@ -116,7 +116,7 @@ def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
     _git(unrelated, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
     external = _load("additional_reviewer_shape_c_unrelated")
-    with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
+    with pytest.raises(pm_paths.TargetRepoResolutionError, match="PM 홈을 찾지 못했습니다"):
         pm_paths.resolve_pm_home_for_repo(snapshot)
 
 

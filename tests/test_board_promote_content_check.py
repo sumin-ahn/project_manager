@@ -20,7 +20,7 @@
 promote 성공을 명시 단언해 never-block 소유 경계를 코드로 못박는다.
 
 hermetic: board.py 의 경로 전역은 import 시점에 실 repo 로 굳으므로 tmp 홈으로 대상 저장소를 바꿔 끼운다
-(`anchor_board_module`). board-git e2e 는 실 git + bare remote 를 tmp 에 세운다.
+(`target_repo_board_module`). board-git e2e 는 실 git + bare remote 를 tmp 에 세운다.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ import pytest
 
 from _git_fixture import init_git_repo
 
-from conftest import anchor_board_module, bind_product_cluster
+from conftest import target_repo_board_module, bind_product_cluster
 from pm_engine.infra import pm_paths, round_store, ticket_store
 from pm_engine.domain import round_rules
 from pm_engine.app import body_lint, round_form
@@ -124,7 +124,7 @@ def _kinds(issues):
 def retargeted(tmp_path, monkeypatch):
     """board-git 없이 판정 함수만 태우는 tmp 홈 (board 루트 = `.project_manager/board`)."""
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     # 인용 색인은 `git ls-files` 로 소유 트리를 묻는다 — 홈이 자기 checkout 이라고 선언하지
     # 않으면 픽스처가 앉아 있는 저장소가 답해(추적 안 된 트리라) 색인이 0건이 된다.
     init_git_repo(tmp_path)
@@ -466,7 +466,7 @@ def _git(argv, cwd):
 def board_git(tmp_path, monkeypatch):
     """board 가 별도 git(공유 구성)인 hermetic 홈 — draft 격리·promote 검사가 작동한다."""
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     init_git_repo(tmp_path)      # 인용 색인이 묻는 소유 트리 — `retargeted` 와 같은 선언.
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)

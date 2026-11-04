@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module, ensure_product_slot
+from conftest import target_repo_board_module, ensure_product_slot
 from pm_engine.infra import cluster_store, pm_paths, round_store, ticket_store
 from pm_engine.app import round_form
 
@@ -115,7 +115,7 @@ def _make_board_git(root: Path, *, remote: Path) -> Path:
 @pytest.fixture
 def board(tmp_path, monkeypatch):
     mod = _load_tool("board")
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     (pm_paths.wiki_dir(pm_paths.home_at(mod.REPO)) / "board.md").parent.mkdir(parents=True, exist_ok=True)
     (pm_paths.wiki_dir(pm_paths.home_at(mod.REPO)) / "board.md").touch()
     for key, val in _GIT_IDENTITY.items():

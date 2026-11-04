@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from _test_exec import python_argv_command
-from conftest import write_cluster_ledger
+from conftest import write_cluster_records
 from pm_engine.infra import repo_coordinates
 from pm_engine.domain import ticket_rules
 from pm_engine.domain import delegate_errors
@@ -212,7 +212,7 @@ def _overlap_workspace(
         ticket_path.write_text(text, encoding="utf-8", newline="\n")
         # 발행이 티켓마다 크기 1 묶음 기록을 만든다 — 준비는 라운드 예산을 그 기록에서만
         # 읽으므로 픽스처 board 도 같은 파일을 갖는다.
-        write_cluster_ledger(
+        write_cluster_records(
             board_root, ticket_id, base_branch="task/main", rounds=rounds,
         )
 

@@ -1,18 +1,18 @@
-"""claude 어댑터 ctx compaction-native 넛지 단위 테스트 (T-0550).
+"""claude 어댑터 ctx compaction-native 경고 단위 테스트 (T-0550).
 
 어댑터 스크립트(templates/claude_code/.claude/ctx_guard·ctx_statusline·ctx_stop_hook)를
 importlib 로 직접 로드해 검증한다. 라이브 claude·subprocess 호출 없이 가짜 transcript JSONL·가짜
-statusline stdin·격리 tmp 만 본다. 점유 토큰은 어댑터 native 관측(ctx_guard)이, 쓴 %·밴드·marker 는
+statusline stdin·격리 tmp 만 본다. 점유 토큰은 어댑터 native 관측(ctx_guard)이, 쓴 %·구간·marker 는
 엔진 공개 진입(`cli.hooks`)과 그 소유자(conf_store·domain.ctx_recovery·infra.compaction_store)가 낸다.
 
-검증 축:
+검증 항목:
   1. 분모·임계 — 압축 한도 기록(E·비율)과 세션 모델 확인(T-0943).
-  2. statusLine — context_window → used % (current_usage 단일 소스·ADR-0041) + 색/문구 넛지.
-  3. 훅 — 세 밴드 모두 PreToolUse/UserPromptSubmit additionalContext 비차단 주입 +
+  2. statusLine — context_window → used % (current_usage 단일 소스·ADR-0041) + 색/문구 경고.
+  3. 훅 — 세 구간 모두 PreToolUse/UserPromptSubmit additionalContext 비차단 주입 +
      채널 공유 사이클별 marker 멱등.
   4. re-arm — 주 대화 기록의 압축 경계 증가(압축 뒤 첫 주 스레드 훅) 또는 유효한 ok 실측 시
      `.warn`/`.warn2`/`.final` 삭제.
-  5. settings 배선 — PreToolUse·UserPromptSubmit 만 ctx 훅에 연결(압축 이벤트 등록 없음).
+  5. settings 등록 — PreToolUse·UserPromptSubmit 만 ctx 훅에 연결(압축 이벤트 등록 없음).
   6. 압축 기록(T-0953) — 경계마다 한 번 checkpoint·snapshot, 실패 신호, `agent_id` 면제.
 """
 from __future__ import annotations
@@ -98,7 +98,7 @@ def test_git_anchor_routes_new_command_classes_to_central_judgment(
         "cwd": str(tmp_path),
         "tool_input": {"command": command},
     }
-    assert driver.git_anchor_hook_evaluate(payload, tmp_path) is None
+    assert driver.git_target_repo_hook_evaluate(payload, tmp_path) is None
     assert calls == [(cli_hooks.adapter_home(tmp_path), str(tmp_path), command, False)]
 
 
@@ -166,7 +166,7 @@ def test_load_local_config_missing(guard, tmp_path):
     assert conf_store.local_config(_home(tmp_path / "elsewhere")) == {}
 
 
-# ── 2. statusLine: context_window → used % (분모=예산·ADR-0041) + 넛지 ────────
+# ── 2. statusLine: context_window → used % (분모=예산·ADR-0041) + 경고 ────────
 
 def test_statusline_used_pct_current_usage(guard):
     # used_tokens = current_usage(input+cache 합) / 예산.
@@ -180,7 +180,7 @@ def test_statusline_used_pct_current_usage(guard):
 
 def test_statusline_current_usage_null_with_stale_total_input_is_zero(guard):
     # codex T-0234 must-fix: current_usage null(post-/compact) + 누적성 total_input 잔존 →
-    # 폴백하면 과대 표시→넛지 오판정. 반드시 0% graceful.
+    # 대신 쓰면 과대 표시→경고 오판정. 반드시 0% graceful.
     sl = {"context_window": {"current_usage": None, "total_input_tokens": 150_000}}
     assert _statusline_pct(guard, sl, 200_000) == 0
 
@@ -224,7 +224,7 @@ def test_statusline_no_signal_zero(guard):
 
 
 def test_statusline_render_colors(guard, statusline,tmp_path):
-    # conf={} → 예산 200K 기본·기본 임계(쓴 % 70/80). current_usage 토큰으로 밴드 구성.
+    # conf={} → 예산 200K 기본·기본 임계(쓴 % 70/80). current_usage 토큰으로 구간 구성.
     def _sl(tokens):
         return {"context_window": {"current_usage": {"input_tokens": tokens}}}
     # ok (used 50 < 70): 회색·checkpoint 문구 없음.
@@ -242,7 +242,7 @@ def test_statusline_render_colors(guard, statusline,tmp_path):
 
 
 def test_statusline_render_colors_respects_budget_override(guard, statusline,tmp_path):
-    # 하네스 오버라이드로 예산이 커지면 같은 토큰이 낮은 %로 표시(표시=밴드 일관·per-harness).
+    # 하네스 오버라이드로 예산이 커지면 같은 토큰이 낮은 %로 표시(표시=구간 일관·per-harness).
     sl = {"context_window": {"current_usage": {"input_tokens": 184_000}}}
     # 기본 200K: 92% used → stop(빨강).
     stop = statusline.build_statusline(sl, home=_home(tmp_path))
@@ -255,14 +255,14 @@ def test_statusline_render_colors_respects_budget_override(guard, statusline,tmp
 
 
 def test_classify_boundaries(guard):
-    # nudge2_threshold = max(precompact_at − CTX_NUDGE2_MARGIN_PCT, checkpoint_at) = max(87, 80) = 87.
+    # warn2_threshold = max(precompact_at − CTX_WARN2_MARGIN_PCT, checkpoint_at) = max(87, 80) = 87.
     th = {"checkpoint_at_pct": 80, "precompact_at_pct": 90}
-    guard = ctx_recovery  # 밴드 판정 소유자 — 훅·statusLine 은 엔진 공개 진입으로 이 규칙을 쓴다.
+    guard = ctx_recovery  # 구간 판정 소유자 — 훅·statusLine 은 엔진 공개 진입으로 이 규칙을 쓴다.
     assert guard.classify(50, th) == "ok"
     assert guard.classify(80, th) == "warn"    # 쓴 80 == checkpoint_at → warn (1단).
     assert guard.classify(79, th) == "ok"       # 쓴 79 < checkpoint_at → ok.
     assert guard.classify(86, th) == "warn"    # 80 <= 86 < 87 → warn (1단).
-    assert guard.classify(87, th) == "warn2"   # 쓴 87 == nudge2_threshold → warn2 (2단).
+    assert guard.classify(87, th) == "warn2"   # 쓴 87 == warn2_threshold → warn2 (2단).
     assert guard.classify(89, th) == "warn2"   # 87 <= 89 < 90 → warn2 (2단).
     assert guard.classify(90, th) == "stop"     # 쓴 90 == precompact_at → stop.
     assert guard.classify(91, th) == "stop"     # 쓴 91 > precompact_at → stop.
@@ -271,12 +271,12 @@ def test_classify_boundaries(guard):
 def test_nudge2_threshold_derivation(guard):
     # 2단 임계 = precompact_at − margin(3), checkpoint_at 으로 하한 (config 노브 신설 없이 파생).
     guard = ctx_recovery  # 마진·임계 파생의 단일 소유자.
-    assert guard.CTX_NUDGE2_MARGIN_PCT == 3
-    assert guard.nudge2_threshold({"checkpoint_at_pct": 70, "precompact_at_pct": 80}) == 77
-    assert guard.nudge2_threshold({"checkpoint_at_pct": 80, "precompact_at_pct": 90}) == 87
-    # warn 밴드가 좁으면(precompact_at − 3 < checkpoint_at) checkpoint_at 이 하한 — warn2 가 ok 영역으로 안 샌다.
-    assert guard.nudge2_threshold({"checkpoint_at_pct": 79, "precompact_at_pct": 80}) == 79
-    assert guard.nudge2_threshold({"checkpoint_at_pct": 78, "precompact_at_pct": 80}) == 78
+    assert guard.CTX_WARN2_MARGIN_PCT == 3
+    assert guard.warn2_threshold({"checkpoint_at_pct": 70, "precompact_at_pct": 80}) == 77
+    assert guard.warn2_threshold({"checkpoint_at_pct": 80, "precompact_at_pct": 90}) == 87
+    # warn 구간이 좁으면(precompact_at − 3 < checkpoint_at) checkpoint_at 이 하한 — warn2 가 ok 영역으로 안 샌다.
+    assert guard.warn2_threshold({"checkpoint_at_pct": 79, "precompact_at_pct": 80}) == 79
+    assert guard.warn2_threshold({"checkpoint_at_pct": 78, "precompact_at_pct": 80}) == 78
 
 
 # ── 3. 훅: transcript 토큰합 → used % + deny ───────────────────────────────
@@ -355,7 +355,7 @@ def _stop_transcript(tmp_path: Path) -> Path:
 
 
 def test_hook_stop_userpromptsubmit_injects_final_nudge(stop_hook, tmp_path):
-    # stop 밴드는 block/deny 대신 additionalContext 최종 넛지를 주입한다.
+    # stop 구간은 block/deny 대신 additionalContext 최종 경고를 주입한다.
     stdin = {
         "transcript_path": str(_stop_transcript(tmp_path)),
         "session_id": "sess-final",
@@ -378,7 +378,7 @@ def test_hook_stop_userpromptsubmit_injects_final_nudge(stop_hook, tmp_path):
 
 
 def test_hook_final_nudge_idempotent_within_cycle(stop_hook, tmp_path):
-    """같은 상승 사이클의 stop 밴드에서는 `.final` 넛지를 한 번만 주입한다."""
+    """같은 상승 사이클의 stop 구간에서는 `.final` 경고를 한 번만 주입한다."""
     stdin = {
         "transcript_path": str(_stop_transcript(tmp_path)),
         "session_id": "sess-final-idem",
@@ -401,7 +401,7 @@ def test_hook_no_transcript_passes(stop_hook, tmp_path):
 def test_hook_final_marker_claim_failure_does_not_inject_and_retries(
         stop_hook, tmp_path, monkeypatch):
     # marker 를 만들 수 없으면 무출력 성공으로 삼키지 않고 원인 예외가 올라간다(엔진 marker 저장소).
-    # 파일이 없으면 다음 호출에서 다시 선점할 수 있다.
+    # 파일이 없으면 다음 호출에서 다시 차지할 수 있다.
     stdin = {
         "transcript_path": str(_stop_transcript(tmp_path)),
         "session_id": "sess-heal",
@@ -427,13 +427,13 @@ def test_hook_final_marker_claim_failure_does_not_inject_and_retries(
 
 def test_hook_atomic_marker_claim_race_loser_does_not_inject(
         stop_hook, tmp_path, monkeypatch):
-    """경쟁 호출이 직전에 marker를 선점하면 `.warn`/`.warn2`/`.final` loser는 무주입."""
+    """경쟁 호출이 직전에 marker를 먼저 차지하면 `.warn`/`.warn2`/`.final` 에 진 쪽은 무주입."""
     cases = (("warn", 150_000), ("warn2", 156_000), ("final", 190_000))
     real_open = compaction_store.os.open
     claimed = []
 
     def competing_open(path, flags, mode=0o777):
-        # marker 선점의 O_EXCL 시점에 경쟁 호출이 같은 marker를 먼저 생성한 상황을 결정적으로 재현한다.
+        # marker 차지의 O_EXCL 시점에 경쟁 호출이 같은 marker를 먼저 생성한 상황을 결정적으로 재현한다.
         fd = real_open(path, flags, mode)
         compaction_store.os.close(fd)
         claimed.append(Path(path).suffix.removeprefix("."))
@@ -523,9 +523,9 @@ def test_statusline_main_empty_stdin(statusline, monkeypatch, capsys, tmp_path):
     assert rc == 0 and "ctx 0%" in out
 
 
-# ── 5. settings 배선 (statusLine·UserPromptSubmit 훅) ─────────────────────
+# ── 5. settings 등록 (statusLine·UserPromptSubmit 훅) ─────────────────────
 
-# T-0202: statusLine·UserPromptSubmit 배선은 래퍼(.sh) 경유 — 래퍼가 인터프리터를 self-resolve
+# T-0202: statusLine·UserPromptSubmit 등록은 래퍼(.sh) 경유 — 래퍼가 인터프리터를 self-resolve
 #   (python3→python) 후 대응 .py 를 exec(stdin/args/rc 투명). settings.json 이 .py 를 직접 부르지
 #   않아 {{PY}} 치환토큰·절대경로가 사라진다(portable-by-construction). 래퍼→.py 링크는
 #   test_claude_adapter_parity.test_new_wrappers_self_contained 가 커버.
@@ -549,7 +549,7 @@ def test_settings_wires_pretooluse_hook(name):
 @pytest.mark.parametrize("name", ["settings.json"])
 def test_settings_preserves_unrelated_pretooluse_hook(name):
     # ctx 가드와 무관한 훅(위임 채널 가드·Agent matcher)이 같은 이벤트에 공존한다
-    # (회귀 — ctx 배선이 남의 훅을 덮지 않음. 옛 축이던 PostToolUse 회귀 훅은 T-0771 로 폐지).
+    # (회귀 — ctx 등록이 남의 훅을 덮지 않음. 옛 기준이던 PostToolUse 회귀 훅은 T-0771 로 폐지).
     data = json.loads((CLAUDE / name).read_text(encoding="utf-8"))
     pre = data["hooks"]["PreToolUse"]
     agent = [m for m in pre if m.get("matcher") == "Agent"]
@@ -558,7 +558,7 @@ def test_settings_preserves_unrelated_pretooluse_hook(name):
     assert any("delegate_channel_guard_hook.sh" in c for c in cmds)
 
 
-# ── 6. compaction-native 넛지 + 사이클 재무장 (ADR-0081) ──────────────────
+# ── 6. compaction-native 경고 + 사이클 다시 켜기 (ADR-0081) ──────────────────
 
 
 def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
@@ -566,7 +566,7 @@ def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {
         "transcript_path": str(path),
-        "session_id": "sess-nudge",
+        "session_id": "sess-warn",
         "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
@@ -580,13 +580,13 @@ def test_hook_nudge_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     assert "permissionDecision" not in hso
     assert output.get("decision") != "block"
     # warn marker 만 생성된다.
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge.warn").exists()
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-warn.warn").exists()
 
 
 def test_hook_nudge_pretooluse_injects_and_consumes_cycle(stop_hook, tmp_path):
-    # PreToolUse 가 먼저 발화하면 비차단 주입하고 채널 공유 marker 를 소비한다.
+    # PreToolUse 가 먼저 실행되면 비차단 주입하고 채널 공유 marker 를 소비한다.
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
-    stdin = {"transcript_path": str(path), "session_id": "sess-nudge-ptu",
+    stdin = {"transcript_path": str(path), "session_id": "sess-warn-ptu",
              "hook_event_name": "PreToolUse"}
     rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0
@@ -594,7 +594,7 @@ def test_hook_nudge_pretooluse_injects_and_consumes_cycle(stop_hook, tmp_path):
     assert hso["hookEventName"] == "PreToolUse"
     assert "ctx-warn]" in hso["additionalContext"]
     assert "permissionDecision" not in hso and "decision" not in output
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-nudge-ptu.warn").exists()
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-warn-ptu.warn").exists()
     stdin["hook_event_name"] = "UserPromptSubmit"
     assert stop_hook.evaluate(stdin, _home(tmp_path)) == (0, None)
 
@@ -604,7 +604,7 @@ def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
     path = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     stdin = {
         "transcript_path": str(path),
-        "session_id": "sess-nudge-idem",
+        "session_id": "sess-warn-idem",
         "hook_event_name": "UserPromptSubmit",
     }
     rc1, out1 = stop_hook.evaluate(stdin, _home(tmp_path))
@@ -614,12 +614,12 @@ def test_hook_nudge_idempotent_single_injection(stop_hook, tmp_path):
 
 
 def test_hook_nudge_independent_from_final(stop_hook, tmp_path):
-    # 1단 marker 가 있어도 stop 밴드의 최종 비차단 넛지는 별도로 발화한다.
-    sid = "sess-nudge-final"
-    nudge_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
-    nudge_stdin = {"transcript_path": str(nudge_tx), "session_id": sid,
+    # 1단 marker 가 있어도 stop 구간의 최종 비차단 경고는 별도로 나간다.
+    sid = "sess-warn-final"
+    warn_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
+    warn_stdin = {"transcript_path": str(warn_tx), "session_id": sid,
                    "hook_event_name": "UserPromptSubmit"}
-    stop_hook.evaluate(nudge_stdin, _home(tmp_path))  # warn 주입.
+    stop_hook.evaluate(warn_stdin, _home(tmp_path))  # warn 주입.
     stop_tx = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
     stop_stdin = {
         "transcript_path": str(stop_tx),
@@ -634,8 +634,8 @@ def test_hook_nudge_independent_from_final(stop_hook, tmp_path):
     assert (marker_dir / f"{sid}.final").exists()
 
 
-def test_hook_ok_rearms_all_cycle_markers(stop_hook, tmp_path):
-    sid = "sess-rearm-all"
+def test_hook_ok_resets_all_cycle_markers(stop_hook, tmp_path):
+    sid = "sess-reset-all"
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
     for suffix in ("warn", "warn2", "final"):
@@ -650,8 +650,8 @@ def test_hook_ok_rearms_all_cycle_markers(stop_hook, tmp_path):
     assert not any((marker_dir / f"{sid}.{suffix}").exists() for suffix in ("warn", "warn2", "final"))
 
 
-def test_hook_zero_pct_with_raw_tokens_rearms_cycle_markers(stop_hook, tmp_path):
-    """1M 예산의 raw 4K는 정수 0%여도 유효 측정이므로 ok 사이클을 재무장한다."""
+def test_hook_zero_pct_with_raw_tokens_resets_cycle_markers(stop_hook, tmp_path):
+    """1M 예산의 raw 4K는 정수 0%여도 유효 측정이므로 ok 사이클을 다시 켠다."""
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path, {"harness.claude.ctx_window_tokens": "1000000"})
     sid = "sess-measured-zero-pct"
@@ -676,7 +676,7 @@ def test_hook_zero_pct_with_raw_tokens_rearms_cycle_markers(stop_hook, tmp_path)
 @pytest.mark.parametrize("measurement", ["absent", "unreadable", "usage-missing"])
 def test_hook_unmeasurable_raw_zero_preserves_cycle_markers(
         stop_hook, tmp_path, measurement):
-    """raw 0 폴백은 측정불가이므로 현재 사이클 marker를 보존한다."""
+    """raw 0 은 측정불가이므로 현재 사이클 marker를 보존한다."""
     sid = f"sess-unmeasurable-{measurement}"
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     marker_dir.mkdir(parents=True)
@@ -697,8 +697,8 @@ def test_hook_unmeasurable_raw_zero_preserves_cycle_markers(
     assert all(marker.exists() for marker in markers)
 
 
-def test_hook_nudge_refires_after_ok_rearm(stop_hook, tmp_path):
-    sid = "sess-rearm-cycle"
+def test_hook_warn_refires_after_ok_reset(stop_hook, tmp_path):
+    sid = "sess-reset-cycle"
 
     def evaluate_at(tokens):
         return stop_hook.evaluate({
@@ -718,9 +718,9 @@ def test_hook_nudge_refires_after_ok_rearm(stop_hook, tmp_path):
 
 def test_hook_nudge_refires_after_boundary_without_ok_observation(
         stop_hook, tmp_path, monkeypatch):
-    """warn 뒤 ok 관측 없이 경계가 늘면 첫 주 스레드 훅이 marker를 지워 재상승 넛지를 허용한다."""
+    """warn 뒤 ok 관측 없이 경계가 늘면 첫 주 스레드 훅이 marker를 지워 재상승 경고를 허용한다."""
     monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a, **_k: None)
-    sid = "sess-boundary-rearm"
+    sid = "sess-boundary-reset"
     transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])
     prompt = {
         "transcript_path": str(transcript),
@@ -746,7 +746,7 @@ def test_hook_nudge_refires_after_boundary_without_ok_observation(
 
 def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
         stop_hook, tmp_path, monkeypatch):
-    """경계 뒤 첫 prompt는 marker를 재무장하고 old usage로 재생성하지 않으며 새 usage를 기다린다."""
+    """경계 뒤 첫 prompt는 marker를 다시 켜고 old usage로 재생성하지 않으며 새 usage를 기다린다."""
     monkeypatch.setattr(stop_hook, "_compaction_output", lambda *_a, **_k: None)
     sid = "sess-boundary-wait"
     transcript = _write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])
@@ -777,21 +777,21 @@ def test_hook_boundary_waits_for_postboundary_usage_before_refiring(
     assert markers[-1].exists()
 
 
-# ── 7. 강화 넛지 + 최종 넛지 (ADR-0081) ──────────────────────────────────
-# warn2 는 checkpoint 즉시 실행을 재안내하고, stop 밴드는 auto-compact 임박을 알리는 최종 넛지다.
-# 별도 `.warn2`/`.final` marker 로 같은 사이클에서 각 1회 발화한다. 밴드(기본 쓴 % 70/80):
-# nudge2_threshold=77 → 쓴 [77,80) 이 warn2, [70,77) 이 warn(1단).
+# ── 7. 강화 경고 + 최종 경고 (ADR-0081) ──────────────────────────────────
+# warn2 는 checkpoint 즉시 실행을 재안내하고, stop 구간은 auto-compact 임박을 알리는 최종 경고다.
+# 별도 `.warn2`/`.final` marker 로 같은 사이클에서 각 1회 나간다. 구간(기본 쓴 % 70/80):
+# warn2_threshold=77 → 쓴 [77,80) 이 warn2, [70,77) 이 warn(1단).
 
-def _nudge2_transcript(tmp_path: Path) -> Path:
-    # 156_000 / 200_000 = 78% used (77 <= 78 < 80) → warn2 밴드.
+def _warn2_transcript(tmp_path: Path) -> Path:
+    # 156_000 / 200_000 = 78% used (77 <= 78 < 80) → warn2 구간.
     return _write_transcript(tmp_path, [("assistant", {"input_tokens": 156_000})])
 
 
 def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
-    # warn2 레벨(쓴 78 — nudge2_threshold 77 <= 78 < precompact_at 80) + UserPromptSubmit → strong 주입.
+    # warn2 레벨(쓴 78 — warn2_threshold 77 <= 78 < precompact_at 80) + UserPromptSubmit → strong 주입.
     stdin = {
-        "transcript_path": str(_nudge2_transcript(tmp_path)),
-        "session_id": "sess-nudge2",
+        "transcript_path": str(_warn2_transcript(tmp_path)),
+        "session_id": "sess-warn2",
         "hook_event_name": "UserPromptSubmit",
     }
     rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
@@ -806,12 +806,12 @@ def test_hook_nudge2_userpromptsubmit_injects(guard, stop_hook, tmp_path):
     assert output.get("decision") != "block"
     # warn2 marker 를 생성한다.
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
-    assert (ctx / "sess-nudge2.warn2").exists()
+    assert (ctx / "sess-warn2.warn2").exists()
 
 
 def test_hook_nudge2_pretooluse_injects_without_permission_decision(stop_hook, tmp_path):
     # warn2 레벨도 PreToolUse additionalContext 비차단 주입(제결정 없음).
-    stdin = {"transcript_path": str(_nudge2_transcript(tmp_path)), "session_id": "sess-n2-ptu",
+    stdin = {"transcript_path": str(_warn2_transcript(tmp_path)), "session_id": "sess-n2-ptu",
              "hook_event_name": "PreToolUse"}
     rc, output = stop_hook.evaluate(stdin, _home(tmp_path))
     assert rc == 0
@@ -825,7 +825,7 @@ def test_hook_nudge2_pretooluse_injects_without_permission_decision(stop_hook, t
 def test_hook_nudge2_idempotent_single_injection(stop_hook, tmp_path):
     # 같은 세션 두 번 warn2(UserPromptSubmit)여도 주입은 1회 (.warn2 marker 가드).
     stdin = {
-        "transcript_path": str(_nudge2_transcript(tmp_path)),
+        "transcript_path": str(_warn2_transcript(tmp_path)),
         "session_id": "sess-n2-idem",
         "hook_event_name": "UserPromptSubmit",
     }
@@ -836,10 +836,10 @@ def test_hook_nudge2_idempotent_single_injection(stop_hook, tmp_path):
 
 
 def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
-    # 2단은 1단 발화 여부와 독립: 세션이 warn(1단) 창을 건너뛰고 곧장 warn2 밴드로 진입해도
-    # 2단은 발화한다 (.warn2 생성·.warn 은 미생성 — 1단은 안 거쳤으므로).
+    # 2단은 1단 실행 여부와 독립: 세션이 warn(1단) 창을 건너뛰고 곧장 warn2 구간으로 진입해도
+    # 2단은 나간다 (.warn2 생성·.warn 은 미생성 — 1단은 안 거쳤으므로).
     stdin = {
-        "transcript_path": str(_nudge2_transcript(tmp_path)),
+        "transcript_path": str(_warn2_transcript(tmp_path)),
         "session_id": "sess-n2-solo",
         "hook_event_name": "UserPromptSubmit",
     }
@@ -853,19 +853,19 @@ def test_hook_nudge2_fires_independent_of_nudge1(stop_hook, tmp_path):
 def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
     # 세션이 warn(1단·쓴 75)를 거쳐 warn2(2단·쓴 78)로 진행 → 두 marker 다 생성·각 문구 구별.
     sid = "sess-both"
-    # 1단: 쓴 75 (checkpoint_at 70 <= 75 < nudge2_threshold 77).
-    nudge_stdin = {
+    # 1단: 쓴 75 (checkpoint_at 70 <= 75 < warn2_threshold 77).
+    warn_stdin = {
         "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 150_000})])),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
-    rc1, out1 = stop_hook.evaluate(nudge_stdin, _home(tmp_path))
+    rc1, out1 = stop_hook.evaluate(warn_stdin, _home(tmp_path))
     assert "ctx-warn]" in out1["hookSpecificOutput"]["additionalContext"]  # 1단 표지.
-    # 2단: 같은 세션이 warn2 밴드 진입 (transcript 경로 덮어씀).
-    nudge2_stdin = {
-        "transcript_path": str(_nudge2_transcript(tmp_path)),
+    # 2단: 같은 세션이 warn2 구간 진입 (transcript 경로 덮어씀).
+    warn2_stdin = {
+        "transcript_path": str(_warn2_transcript(tmp_path)),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
-    rc2, out2 = stop_hook.evaluate(nudge2_stdin, _home(tmp_path))
+    rc2, out2 = stop_hook.evaluate(warn2_stdin, _home(tmp_path))
     assert "ctx-warn/강화" in out2["hookSpecificOutput"]["additionalContext"]
     ctx = tmp_path / ".project_manager" / ".local" / "ctx-stop"
     assert (ctx / f"{sid}.warn").exists()
@@ -873,13 +873,13 @@ def test_hook_nudge1_then_nudge2_both_fire(stop_hook, tmp_path):
 
 
 def test_hook_nudge2_independent_from_final(stop_hook, tmp_path):
-    # warn2 marker 가 있어도 stop 밴드의 최종 넛지는 별도로 주입된다.
+    # warn2 marker 가 있어도 stop 구간의 최종 경고는 별도로 주입된다.
     sid = "sess-n2-final"
-    nudge2_stdin = {
-        "transcript_path": str(_nudge2_transcript(tmp_path)),
+    warn2_stdin = {
+        "transcript_path": str(_warn2_transcript(tmp_path)),
         "session_id": sid, "hook_event_name": "UserPromptSubmit",
     }
-    stop_hook.evaluate(nudge2_stdin, _home(tmp_path))  # warn2 주입.
+    stop_hook.evaluate(warn2_stdin, _home(tmp_path))  # warn2 주입.
     stop_stdin = {
         "transcript_path": str(_write_transcript(tmp_path, [("assistant", {"input_tokens": 190_000})])),
         "session_id": sid,
@@ -901,7 +901,7 @@ def test_settings_auto_compact_enabled_true():
 
 @pytest.fixture(autouse=True)
 def _ctx_record(tmp_path):
-    """밴드 판정·표시의 분모 — tmp_path 에 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록."""
+    """구간 판정·표시의 분모 — tmp_path 에 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록."""
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path)
 
@@ -947,8 +947,8 @@ def test_t0943_statusline_model_check_and_record_error(statusline, tmp_path):
 
 
 def test_t0943_hook_real_input_fields_nudge_and_model_warning(stop_hook, tmp_path):
-    """훅 — 모델 없는 실제 입력에 transcript 사용량 항목의 모델로 확인한다. 같으면 80% 넛지, 다르면
-    UserPromptSubmit `systemMessage` 경고(넛지는 그대로)."""
+    """훅 — 모델 없는 실제 입력에 transcript 사용량 항목의 모델로 확인한다. 같으면 80% 경고, 다르면
+    UserPromptSubmit `systemMessage` 경고(경고 안내는 그대로)."""
     from test_harness_ctx_limits import install_ctx_record
     model = install_ctx_record(tmp_path, _T0943_CONF, capacity=200000)
     transcript = _t0943_model_transcript(tmp_path, 162000, model)               # 81%
@@ -974,7 +974,7 @@ def test_t0943_hook_missing_record_is_reported(stop_hook, tmp_path, capsys):
 
 
 # ── T-0953 압축 기록: 경계 감지·서브에이전트 면제·실패 신호 ──────────────────────
-# 훅 입력 필드는 Claude Code 2.1.290·2.1.293 실측 형상이다(설계 3.1절): 주 스레드 PreToolUse 는
+# 훅 입력 필드는 Claude Code 2.1.290·2.1.293 실측 모양이다(설계 3.1절): 주 스레드 PreToolUse 는
 #   `agent_id` 가 없고, 서브에이전트 도구 호출은 `agent_id`·`agent_type` 이 있으며 `session_id`·
 #   `transcript_path` 는 주 세션 값과 같다. 압축 경계는 주 대화 기록의
 #   `{"type":"system","subtype":"compact_boundary"}` 항목이다(설계 3.3절).
@@ -1030,7 +1030,7 @@ def _t0953_engine_calls(calls: list) -> list:
 
 def test_t0953_main_hook_after_boundary_runs_checkpoint_and_snapshot_once(
         stop_hook, tmp_path, monkeypatch):
-    """경계 N 이 늘면 첫 주 스레드 훅이 한 번 재무장·checkpoint·snapshot 을 한다(AT-007)."""
+    """경계 N 이 늘면 첫 주 스레드 훅이 한 번 다시 켜기·checkpoint·snapshot 을 한다(AT-007)."""
     _t0953_engine(tmp_path)
     transcript = _t0953_transcript(tmp_path, [150_000, 1_000, 2_000], [False, True, True])
     marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"

@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 
 def _normalized_newlines(text: str) -> str:
-    """개행 표기만 LF 로 접는다 — 표기 차이를 내용 변경으로 읽지 않기 위해서다."""
+    """개행 표기만 LF 로 바꾼다 — 표기 차이를 내용 변경으로 읽지 않기 위해서다."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -22,7 +22,7 @@ def _section_text(body: str, heading: str, *, exact: bool = False) -> str | None
     예시 체크박스도 함께 사라진다.
 
     DoD 판정과 설계 절 판정이 같은 슬라이서를 쓴다 — 절 경계 규칙이 두 벌이면 한쪽만 펜스를
-    보거나 한쪽만 본문 전체를 스캔하는 절반 배선이 생긴다.
+    보거나 한쪽만 본문 전체를 스캔하는 절반 적용이 생긴다.
 
     `exact` 면 헤딩 줄이 그 이름 자체이거나 **괄호 부제만** 뒤에 붙어야 절 시작이다
     (`## 설계` · `## 설계 (DRAFT — 초안)`). 자유 접두 일치는 `## 설계` 같은 짧은 이름에서 다른
@@ -41,7 +41,7 @@ def _section_texts(body: str, heading: str, *, exact: bool = False) -> list[str]
     같은 이름의 절이 두 번 나오는 본문에서 첫 절만 보면, 앞에 빈(또는 전부 체크된) 절을 하나 두고
     뒤 절에 미체크 항목을 남기는 우회가 성립한다. 판정이 '있는 항목 전부'여야 하는 소비자
     (DoD 마감 검사)는 이 함수로 **합산**한다. 절 경계·펜스 제거 규칙은 `_section_text` 와 같은
-    한 지점이다(두 벌이면 한쪽만 펜스를 보는 절반 배선이 생긴다).
+    한 지점이다(두 벌이면 한쪽만 펜스를 보는 절반 적용이 생긴다).
     """
     lines = _FENCED_CODE_RE.sub("", body).splitlines()
     if exact:
@@ -60,7 +60,7 @@ def _section_texts(body: str, heading: str, *, exact: bool = False) -> list[str]
 
 
 # 코드 span/fence 안의 *예시* 링크·wikilink 는 실제 참조가 아니므로 스캔 전 제거(오탐 0).
-# 문서가 "나쁜 예시"로 `[x](decisions/9999-ghost.md)` 를 코드로 보여줘도 게이트를 막지 않게 한다.
+# 문서가 "나쁜 예시"로 `[x](decisions/9999-ghost.md)` 를 코드로 보여줘도 검사를 막지 않게 한다.
 # fenced(``` … ``` · ~~~ … ~~~) 를 먼저(여러 줄·비-greedy), 그 다음 inline(`…`·한 줄) 을 지운다.
 _FENCED_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")

@@ -12,7 +12,7 @@ from pm_engine.infra import conf_store, fs, pm_paths
 # adapter-drift baseline 의 두 local.conf 키.
 # 한 키가 baseline 과 현재-관찰을 겸하면 race/자기비교라 *분리*한다:
 #   - upstream.rev      : baseline — 마지막 성공 sync 의 upstream revision (pm_import·pm_update 가 기록).
-#   - upstream.seen_rev : 현재 관찰값 — 형상 무관하게 app.upstream_revisions.record_upstream_revs 단일 writer 가
+#   - upstream.seen_rev : 현재 관찰값 — 구성 무관하게 app.upstream_revisions.record_upstream_revs 단일 writer 가
 #                         sync 시 baseline 과 *함께* 기록(동기 시점 소스 checkout rev = 관찰값 · URL 은
 #                         그 실행이 clone/fetch 한 캐시 HEAD·경로는 그 checkout HEAD).
 _DRIFT_BASELINE_KEY = "upstream.rev"
@@ -32,7 +32,7 @@ def lint_adapter_drift(home) -> list[tuple[str, str, str]]:
     의 **2개 키**만 비교한다 —
 
       - `upstream.rev`      (baseline·마지막 성공 sync·pm_import/pm_update 가 기록)
-      - `upstream.seen_rev` (현재 관찰값·형상 무관·pm_update 가 sync 시 baseline 과 함께 기록하는
+      - `upstream.seen_rev` (현재 관찰값·구성 무관·pm_update 가 sync 시 baseline 과 함께 기록하는
         동기 시점 소스 checkout rev)
 
     둘 다 존재하고 **다르면** drift 1 finding(두 rev 불일치 = adapter-layer 가 낡았을 수 있음). 한 키 2역
@@ -40,7 +40,7 @@ def lint_adapter_drift(home) -> list[tuple[str, str, str]]:
     않으므로(rev 문자열 비교뿐) 두 rev 의 선후를 알 수 없다. 관찰값이 baseline 의 *조상*(옛 반영에서 남은 값)인
     경우까지 "upstream 이 baseline 이후 변경됨"이라 단정하면 거짓 경보다(정상 반영 직후 늘
     뜬다). 선후를 알려고 런타임 git ancestor 판정을 넣지 않고, 기록 시점 일치
-    (app.upstream_revisions.record_upstream_revs 가 형상 무관하게 두 키 동시 기록)으로 원천 해소한다.
+    (app.upstream_revisions.record_upstream_revs 가 구성 무관하게 두 키 동시 기록)으로 원천 해소한다.
 
     scope: 대상 = manifest-제외 adapter-layer(settings.json·루트 doc·
     facade·진입문서·local.conf — adopter config·전파 채널 없음) / 제외 = instance-state(status·

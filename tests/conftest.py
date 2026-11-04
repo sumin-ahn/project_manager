@@ -31,7 +31,7 @@
    이 캡처 하네스가 UTF-8 reader 임을 선언받는 탈출구를 갖고 있다
    (`pm_engine.infra.console._utf8_reader_requested()` — `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`). 그
    탈출구는 자식 env 가 아니라 **호출하는 프로세스 자신의** `os.environ` 을 읽으므로, pytest
-   자기 프로세스에 직접 심어야 발화한다. 아래 ④ 가 모듈 로드 시점(=pytest 프로세스 기동 시점)에
+   자기 프로세스에 직접 심어야 효과가 난다. 아래 ④ 가 모듈 로드 시점(=pytest 프로세스 기동 시점)에
    1회 선언한다 — Windows 캡처 전환 자체를 검증하는 `tests/test_console_encoding.py` 는
    `_install_windows()` 헬퍼가 테스트별로 이 값을 `monkeypatch.delenv` 해 지우므로 충돌하지 않는다.
    **불변식(F-002)**: 이 선언은 `os.environ` 대입이라 이 프로세스가 스폰하는 자식에게도
@@ -58,7 +58,7 @@ import pytest
 # 곧 이 pytest 프로세스의 기동 시점이라 어떤 테스트보다도 먼저 선언되고, xdist 워커도 이 파일을
 # 각자 독립 프로세스에서 import 하므로 워커마다 동일하게 선언된다. `_utf8_reader_requested()`
 # 는 `os.environ` 을 직접 읽으므로(모듈 재로드·`cache=False` 두 번 로드와 무관), 여기서 한 번
-# 심으면 그 뒤 어떤 경로로 `configure_console_utf8()` 이 호출돼도 값으로 발화한다.
+# 심으면 그 뒤 어떤 경로로 `configure_console_utf8()` 이 호출돼도 값으로 효과가 난다.
 os.environ["PYTHONUTF8"] = "1"
 
 # 엔진 패키지(`pm_engine`)를 일반 import 로 읽도록 tools 경로를 1회 넣는다(평면 엔진 파일과 같은 규칙).
@@ -66,7 +66,7 @@ _TOOLS_DIR = str(Path(__file__).resolve().parents[1] / ".project_manager" / "too
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 # 한 프로세스의 `pm_engine` 은 하나다. 먼저 이 checkout 의 패키지를 적재해 두어야 tmp 사본 평면 파일을
-# 경로 적재해도 그 사본 트리(통과 뒤 지워지는 tmp_path)의 패키지에 결속되지 않는다.
+# 경로 적재해도 그 사본 트리(통과 뒤 지워지는 tmp_path)의 패키지에 묶이지 않는다.
 import pm_engine.infra  # noqa: E402,F401
 from pm_engine.cli import board_cluster
 from pm_engine.domain import cluster_rules
@@ -98,8 +98,8 @@ _TEMPDIR_ENV_KEYS = ("TMPDIR", "TEMP", "TMP")
 
 # 위임·추가리뷰 raw 의 **기본 목적지**는 tempdir 가 아니라 해소된 repo 의
 # `.project_manager/.local/` 하위다. 그래서 tempdir 격리만으로는 부족하다 — 기본 경로를 밟는
-# 테스트는 tempdir 가 아니라 **실 작업 트리 안**에 raw 를 쓰고, 위 세션 스냅샷은 그것을 보지
-# 못한다. 감시 축을 하나 더 세워 두 목적지를 함께 닫는다(tempdir + repo 기본 경로).
+# 테스트는 tempdir 가 아니라 **실 작업 트리 안**에 raw 를 쓰고, 위 세션 상태 기록은 그것을 보지
+# 못한다. 감시 대상을 하나 더 세워 두 목적지를 함께 닫는다(tempdir + repo 기본 경로).
 # 이 경로는 *이 checkout* 소유라 다른 PM 프로세스(자기 PM 홈에 쓴다)의 동시 출력과 섞이지 않는다 —
 # 전역 tempdir 감시가 flaky 했던 원인이 여기엔 없다.
 _REPO_ROOT_FOR_RAW_GUARD = Path(__file__).resolve().parent.parent
@@ -112,10 +112,10 @@ _REPO_RAW_OUTPUT_DIRS = (
 )
 _REPO_RAW_OUTPUT_FILES = (
     Path(".project_manager") / ".local" / "raw_outputs.json",
-    # 장부 잠금 파일도 세션이 남기면 누출이다 — 정상 종료면 잠금은 해제되지만 파일 자체가
+    # 기록 잠금 파일도 세션이 남기면 누출이다 — 정상 종료면 잠금은 해제되지만 파일 자체가
     # 새로 생겼다는 사실이 "이 세션이 기본 경로를 밟았다"는 증거다.
     Path(".project_manager") / ".local" / "raw_outputs.json.lock",
-    # 슬롯 대여·task·열린 todo 장부. 이 루트(=작업 트리)의 사본만 본다 — PM 홈의 실 장부는
+    # 슬롯 대여·task·열린 todo 기록. 이 루트(=작업 트리)의 사본만 본다 — PM 홈의 실 기록은
     # 다른 세션이 슬롯을 대여·반납하며 정상적으로 바꾸는 파일이라, 그걸 감시하면 남의 정상
     # 동작이 이 세션의 실패로 둔갑한다.
     Path(".project_manager") / ".local" / "worktree-leases.json",
@@ -130,18 +130,18 @@ _REPO_LIVE_BOARD_OUTPUT_ROOTS = (
 
 def _snapshot_repo_raw_outputs(
         repo_root: Path) -> dict[Path, tuple[int, int, int, int]]:
-    """repo 기본 raw 목적지(디렉토리 직계 파일 + 장부 파일)의 파일 정체를 스냅샷한다.
+    """repo 기본 raw 목적지(디렉토리 직계 파일 + 기록 파일)의 파일 정체를 기록해 둔다.
 
-    디렉토리/파일 부재는 정상(빈 스냅샷) — 신규 생성 자체가 델타로 잡힌다.
+    디렉토리/파일 부재는 정상(빈 기록) — 신규 생성 자체가 차이로 잡힌다.
 
     `delegate/` 디렉토리는 raw 외에 **쓰고-지우는 중간 산출**(opencode 프롬프트 파일)도 만들 수
-    있다. 정상 경로는 unlink 로 지우므로 델타에 남지 않고, 남았다면 그것 자체가 누출 신호다 —
+    있다. 정상 경로는 unlink 로 지우므로 차이에 남지 않고, 남았다면 그것 자체가 누출 신호다 —
     특정 접두어로 좁히지 않고 디렉토리의 직계 파일 전부를 본다.
 
-    직계 열거(`iterdir`)로 충분하다 — raw 박제는 목적지 디렉토리에 **평평하게** 파일을 만든다
+    직계 열거(`iterdir`)로 충분하다 — raw 기록은 목적지 디렉토리에 **평평하게** 파일을 만든다
     (`pm_delegate_<harness>_<pid>_<uuid>.txt`·`additional_reviewer_<reviewer>_<ts>.txt`). 재귀 walk 는
-    공용 repo-owned 열거 seam 을 우회하는 형태가 되고, 감시 대상은 git-ignored 산출물이라 그 seam 의
-    tracked-only 의미와도 맞지 않는다. 하위 디렉토리가 생기는 설계 변경이 오면 그때 seam 을 태운다.
+    공용 repo-owned 열거 함수를 우회하는 형태가 되고, 감시 대상은 git-ignored 산출물이라 그 함수의
+    tracked-only 의미와도 맞지 않는다. 하위 디렉토리가 생기는 설계 변경이 오면 그때 그 함수를 태운다.
     """
     snapshot: dict[Path, tuple[int, int, int, int]] = {}
     candidates: list[Path] = [repo_root / rel for rel in _REPO_RAW_OUTPUT_FILES]
@@ -165,7 +165,7 @@ def _snapshot_repo_raw_outputs(
 
 def _snapshot_repo_board_outputs(
         repo_root: Path) -> dict[Path, tuple[int, int, int, int]]:
-    """라이브 board가 소유하는 두 루트 아래 모든 파일 정체를 스냅샷한다.
+    """라이브 board가 소유하는 두 루트 아래 모든 파일 정체를 기록해 둔다.
 
     산출 파일명을 나열하지 않고 소유 루트를 단일 진실로 둔다. 따라서 ``wiki/board.md`` 같은
     파생 출력과 이후 추가되는 board 산출도 자동으로 감시 대상이 된다. 테스트 픽스처는 pytest
@@ -196,21 +196,21 @@ def _assert_repo_board_outputs_unchanged(
     before: dict[Path, tuple[int, int, int, int]],
     after: dict[Path, tuple[int, int, int, int]],
 ) -> None:
-    """동일 live board의 전후 스냅샷에 신규·변경·삭제가 없음을 단언한다."""
+    """동일 live board의 전후 기록에 신규·변경·삭제가 없음을 단언한다."""
     changed = sorted(
         path for path in (before.keys() | after.keys())
         if before.get(path) != after.get(path)
     )
     assert not changed, (
         "테스트 세션이 실 작업 트리의 live board 산출을 만들거나 변경했습니다 — "
-        "REPO/BOARD_FILE 을 모두 pytest tmp_path로 재앵커하세요:\n"
+        "REPO/BOARD_FILE 을 모두 pytest tmp_path로 다시 잡으세요:\n"
         + "\n".join(f"  - {path}" for path in changed)
     )
 
 
 def _snapshot_project_temp_outputs(
         root: Path) -> dict[Path, tuple[int, int, int, int]]:
-    """프로젝트가 지정 tempdir에 만드는 이름 있는 산출물의 경로와 파일 정체를 스냅샷한다.
+    """프로젝트가 지정 tempdir에 만드는 이름 있는 산출물의 경로와 파일 정체를 기록해 둔다.
 
     additional_reviewer 파일명은 초 단위라 기존 파일을 덮어쓸 수 있다. 경로 집합만 비교하지 않고
     inode/mtime/size도 함께 기록해 같은 이름 덮어쓰기도 신규 tempdir 쓰기로 판정한다.
@@ -325,31 +325,31 @@ def _name_the_live_render_polluter():
 
     세션 스코프 오염 가드(`_forbid_real_tempdir_project_outputs`)는 누가 썼는지는 못 짚어
     범인 추적이 이분탐색이 된다. 감시 대상을 렌더 산출 두 개로 좁히면 테스트당 stat 두 번이라
-    상시 켜 둘 수 있다. 재앵커 누락은 `conftest.anchor_board_module` 로 닫는다."""
+    상시 켜 둘 수 있다. 다시 잡기 누락은 `conftest.target_repo_board_module` 로 닫는다."""
     before = _live_render_identity()
     yield
     after = _live_render_identity()
     changed = sorted(str(path) for path, ident in after.items() if before.get(path) != ident)
     assert not changed, (
         "이 테스트가 실 작업 트리의 렌더 산출을 갱신했습니다 — board 모듈을 "
-        "`conftest.anchor_board_module(mod, tmp_path, monkeypatch)` 로 재앵커하세요:\n  "
+        "`conftest.target_repo_board_module(mod, tmp_path, monkeypatch)` 로 다시 잡으세요:\n  "
         + "\n  ".join(changed))
 
 
-def anchor_board_module(mod, tmp_path, monkeypatch) -> None:
-    """board의 실행 앵커를 임시 Home에 고정한다."""
+def target_repo_board_module(mod, tmp_path, monkeypatch) -> None:
+    """board의 실행 대상 저장소를 임시 Home에 고정한다."""
     monkeypatch.setattr(mod, "REPO", tmp_path)
 
 
 
-# ── 묶음 장부 픽스처 (완료 기록·리뷰 폭 판정의 입력) ──────────────────────────
+# ── 묶음 기록 픽스처 (완료 기록·리뷰 폭 판정의 입력) ──────────────────────────
 #
-# 엔진은 판정 기준(통합 브랜치)을 묶음 장부 `base_branch` 에서만 읽고, 선언이 없으면 다른
-# 기준으로 접지 않고 멈춘다. 실 board 에서는 티켓 발행이 크기 1 장부를 만들며 그 값을 박는다 —
+# 엔진은 판정 기준(통합 브랜치)을 묶음 기록 `base_branch` 에서만 읽고, 선언이 없으면 다른
+# 기준으로 바꾸지 않고 멈춘다. 실 board 에서는 티켓 발행이 크기 1 기록을 만들며 그 값을 박는다 —
 # 픽스처 board 도 같은 파일을 가져야 완료 기록·리뷰 폭 판정이 성립한다. 파일 하나를 여러 테스트
 # 파일이 각자 재타이핑하면 스키마가 갈리므로 여기 한 곳에 둔다.
 #
-# 장부 `budget` 4키는 라운드 역할 **수열**이기도 하다 — 준비는 그 수열이 말하는 순서로만
+# 기록 `budget` 4키는 라운드 역할 **수열**이기도 하다 — 준비는 그 수열이 말하는 순서로만
 # 다음 라운드를 연다. 그래서 픽스처는 자기가 실제로 예약할 단계를 선언해야 하고, 선언하지
 # 않은 단계(값 0)는 건너뛴다.
 _CLUSTER_BUDGET_STAGES: tuple[tuple[str, str], ...] = (
@@ -364,11 +364,11 @@ _CLUSTER_BUDGET_DEFAULT: dict[str, int] = {
 
 
 def cluster_budget_for(roles) -> dict[str, int]:
-    """예약할 라운드 역할 순서를 장부 `budget` 4키로 옮긴다.
+    """예약할 라운드 역할 순서를 기록 `budget` 4키로 옮긴다.
 
     수열이 곧 허용 순서라, 계획을 단계에 그리디로 배분한다 — 같은 역할이 이어지면 그 단계의
     수가 늘고, 역할이 바뀌면 그 역할이 나오는 다음 단계로 넘어간다. 수열로 표현할 수 없는
-    순서는 여기서 바로 실패한다: 장부가 선언할 수 없는 계획을 테스트가 조용히 기대하지 않게
+    순서는 여기서 바로 실패한다: 기록이 선언할 수 없는 계획을 테스트가 조용히 기대하지 않게
     한다.
     """
     budget = {key: 0 for _role, key in _CLUSTER_BUDGET_STAGES}
@@ -380,20 +380,20 @@ def cluster_budget_for(roles) -> dict[str, int]:
         if stage == len(_CLUSTER_BUDGET_STAGES):
             stage_roles = tuple(item for item, _key in _CLUSTER_BUDGET_STAGES)
             raise AssertionError(
-                f"장부 예산 수열로 선언할 수 없는 라운드 순서다: {tuple(roles)} — "
+                f"묶음 기록 예산 수열로 선언할 수 없는 라운드 순서다: {tuple(roles)} — "
                 f"{role!r} 를 그 자리에 둘 단계가 없다(단계 순서 {stage_roles})")
         budget[_CLUSTER_BUDGET_STAGES[stage][1]] += 1
     return budget
 
 
-def write_cluster_ledger(
+def write_cluster_records(
     board_dir: Path, tickets, *, base_branch: str, cluster: str | None = None,
     branch: str | None = None, rounds=None,
 ) -> Path:
     """`<board_dir>/tickets/clusters/<묶음>.md` 를 쓴다 — 멤버·기준 브랜치·예산 선언.
 
     `cluster` 를 생략하면 크기 1 묶음(`C-<티켓>`)이다 — 티켓 frontmatter 에 `cluster` 필드가
-    없는 픽스처가 읽히는 그 이름이라, 명세를 건드리지 않고 장부만 얹으면 된다.
+    없는 픽스처가 읽히는 그 이름이라, 명세를 건드리지 않고 기록만 얹으면 된다.
     `rounds` 는 이 묶음이 예약할 라운드 역할 순서다 — 생략하면 단계마다 1건씩(기본 수열).
     """
     members = [tickets] if isinstance(tickets, str) else list(tickets)
@@ -419,7 +419,7 @@ def write_cluster_ledger(
 
 
 def current_branch(root: Path) -> str:
-    """그 git 트리의 현재 브랜치 — 픽스처 장부의 `base_branch` 실값."""
+    """그 git 트리의 현재 브랜치 — 픽스처 기록의 `base_branch` 실값."""
     result = subprocess.run(
         ["git", "-C", str(root), "symbolic-ref", "--quiet", "--short", "HEAD"],
         capture_output=True, text=True, encoding="utf-8", check=True)
@@ -440,7 +440,7 @@ _CODEX_AMBIENT_MARKERS = (
 def _neutralize_codex_ambient_markers(request, monkeypatch):
     """모든 기계 테스트에 codex-미감지 env baseline 을 준다.
 
-    라이브 게이트(`@pytest.mark.release`) 테스트는 실 codex 를 격리 CODEX_HOME env 로 명시 스폰하므로
+    라이브 시험(`@pytest.mark.release`)은 실 codex 를 격리 CODEX_HOME env 로 명시 스폰하므로
     부모 프로세스의 ambient 마커에 의존/간섭하지 않는다 — 중화가 그 의도를 흐리지 않게 제외한다."""
     if request.node.get_closest_marker("release") is not None:
         return
@@ -470,7 +470,7 @@ _CODEX_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE")
 
 
 def codex_auth_available() -> bool:
-    """실 codex auth 토큰(`~/.codex/auth.json`)이 있나 — 라이브 skipif 게이트에 합류(없으면 graceful skip)."""
+    """실 codex auth 토큰(`~/.codex/auth.json`)이 있나 — 라이브 skipif 조건에 합류(없으면 graceful skip)."""
     return _CODEX_AUTH.is_file()
 
 
@@ -529,7 +529,7 @@ def run_codex_exec(prompt: str, cwd: Path, home: Path, *, model: str | None = No
 # (실측: 엔진 합성 이름 `_project_manager_repo_owned_files:<path>` · 테스트 사본 이름
 # `file_lock_under_test`).
 #
-# 이름을 되살리는 대신 되살리기 실패를 낮춰 받는 **한 겹**으로 닫는다. 이름 해소는 표면을 못 덮는다 —
+# 이름을 되살리는 대신 되살리기 실패를 낮춰 받는 **한 겹**으로 닫는다. 이름 해소는 모든 경우를 못 덮는다 —
 # 테스트의 `spec_from_file_location` 호출부 192 파일이 제각각 이름을 붙여 규칙이 없다. 그리고 잃는
 # 정보도 없다 — 경고 필터·`pytest.warns` 판정은 이미 워커에서 그 클래스로 끝났고, 컨트롤러가 하는
 # 일은 요약 표시뿐이라 원 모듈명·클래스명·메시지를 본문 문자열로 보존하면 표시가 그대로 남는다.
@@ -602,9 +602,9 @@ def ensure_product_slot(board, *, repo="binding", number=1, task="binding-task")
     path = board.REPO / f"work/{repo}_{number}"
     if not (path / ".git").exists():
         init_git_repo(path, commit="product binding fixture")
-    ledger = board.REPO / ".project_manager/.local/worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    data = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {"leases": []}
+    records = board.REPO / ".project_manager/.local/worktree-leases.json"
+    records.parent.mkdir(parents=True, exist_ok=True)
+    data = json.loads(records.read_text(encoding="utf-8")) if records.exists() else {"leases": []}
     rows = data.setdefault("leases", [])
     slot = path.relative_to(board.REPO).as_posix()
     tasks = data.setdefault("tasks", [])
@@ -613,12 +613,12 @@ def ensure_product_slot(board, *, repo="binding", number=1, task="binding-task")
     if not any(row.get("slot") == slot for row in rows):
         rows.append({"slot": slot, "repo": repo, "session": task,
                      "state": "leased", "role": "work"})
-    ledger.write_text(json.dumps(data), encoding="utf-8")
+    records.write_text(json.dumps(data), encoding="utf-8")
     return path
 
 
 def bind_product_cluster(board, ticket, *, repo="binding", number=1, task="binding-task"):
-    """기존 cluster new로 정상 제품·멤버 결속을 준비한다. 검증 대역은 사용하지 않는다."""
+    """기존 cluster new로 정상 제품·멤버 연결을 준비한다. 검증 대역은 사용하지 않는다."""
     import argparse
     import contextlib
     import io

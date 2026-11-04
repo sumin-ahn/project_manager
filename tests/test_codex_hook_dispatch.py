@@ -11,8 +11,8 @@
   - 진입점 집합은 hooks.json·디스패처·엔진 역방향 선언 **세 곳에서 같은 값**이다(선언 두 벌 금지).
   - 진입점 뒤 분기가 옛 matcher 판정을 값으로 보존한다(스폰만 위임 가드로 간다).
   - 걸리는 기능이 없으면 자식 프로세스를 하나도 안 띄운다(진입점이 넓어진 비용 상한).
-  - 기능 고장·구세대 디스패처·디스패처 부재 어느 경우에도 **도구 호출이 막히지 않는다**
-    (rc0 + 완전한 엔벨로프 · 폴백 사실은 마커로 남는다).
+  - 기능 고장·구버전 디스패처·디스패처 부재 어느 경우에도 **도구 호출이 막히지 않는다**
+    (rc0 + 완전한 엔벨로프 · 대체 출력 사실은 마커로 남는다).
 
 판정 근거는 조립한 문자열이 아니라 **출하 hooks.json 의 커맨드를 실제 셸로 실행한 rc/출력**이다.
 """
@@ -152,8 +152,8 @@ def test_every_registered_feature_has_a_shipped_entrypoint(dispatcher):
 def test_no_hook_event_is_left_outside_the_entrypoint_set():
     """출하 config 의 **모든** 이벤트가 진입점 뒤에 있다 (T-0806).
 
-    하나라도 직결 배선으로 남으면 그 이벤트의 두 번째 기능이 채택자 config 변경 + `/hooks`
-    재승인을 다시 부른다 — 이 배선이 없애려던 마찰이 그 이벤트에서만 되살아난다."""
+    하나라도 직결 등록으로 남으면 그 이벤트의 두 번째 기능이 채택자 config 변경 + `/hooks`
+    재승인을 다시 부른다 — 이 등록 방식이 없애려던 마찰이 그 이벤트에서만 되살아난다."""
     events = _hooks()
 
     assert set(events) == {"PreToolUse", "UserPromptSubmit", "PostToolUse",
@@ -167,7 +167,7 @@ def test_no_hook_event_is_left_outside_the_entrypoint_set():
         for key in ("command", "commandWindows"):
             assert DISPATCHER_REL in handler[key], (event, key)
             assert f"--hook-dispatch {event}" in handler[key], (event, key)
-    # 옛 직결 커맨드의 잔재가 남으면 같은 이벤트가 두 경로로 발화한다.
+    # 옛 직결 커맨드의 잔재가 남으면 같은 이벤트가 두 경로로 실행된다.
     for event, groups in events.items():
         for group in groups:
             for handler in group["hooks"]:
@@ -193,7 +193,7 @@ def test_timeout_layers_are_ordered_supervisor_dispatcher_host(dispatcher, guard
 def test_feature_registry_is_exposed_as_machine_readable_json():
     """`--hook-features` 가 등록 기능 ID 목록을 기계 판독 형태로 낸다.
 
-    배선이 디스패처 뒤로 들어가면 config 파싱으로는 기능을 열거할 수 없다 — 파리티 가드가
+    등록이 디스패처 뒤로 들어가면 config 파싱으로는 기능을 열거할 수 없다 — 파리티 가드가
     소비할 입력이 이 출력이다."""
     completed = subprocess.run(
         [sys.executable, str(DISPATCHER_PY), "--hook-features"],
@@ -229,7 +229,7 @@ def test_readme_documents_the_universal_entrypoint_and_feature_registry(dispatch
     """출하 README가 exact PreToolUse와 나머지 범용 진입점을 설명한다."""
     readme = " ".join(README.read_text(encoding="utf-8").split())
 
-    for anchor in (
+    for marker in (
         "`PreToolUse`의 native matcher는 exact `^(Bash|apply_patch|collaborationspawn_agent)$`",
         "나머지 다섯 이벤트만 `.*`",
         "대기·일반 도구는 PreToolUse 디스패처 프로세스를 시작하지 않는다",
@@ -241,18 +241,18 @@ def test_readme_documents_the_universal_entrypoint_and_feature_registry(dispatch
         "진입점 집합 자체는 릴리즈 간 불변",
         "adapter-fallback",
     ):
-        assert anchor in readme, anchor
+        assert marker in readme, marker
     # 옛 산문(“pm_update가 덮지 않는다” 로 끝나던 수동 병합 안내)이 남으면 채널 설명이 두 벌이다.
     assert "`.codex/hooks.json`은 instance-owned라 `pm_update`가 덮지 않는다" not in readme
 
 
 def test_readme_states_that_report_files_stay_a_manual_accept():
-    """`report` 3파일의 이벤트 배선이 수동 `--accept` 로 남는다는 사실이 출하 문서에 있다.
+    """`report` 3파일의 이벤트 등록이 수동 `--accept` 로 남는다는 사실이 출하 문서에 있다.
 
     닫지 않기로 한 것도 결정이다 — 산문에 없으면 채택자는 그 파일이 자동으로 따라온다고 읽는다."""
     readme = " ".join(README.read_text(encoding="utf-8").split())
 
-    for anchor in (
+    for marker in (
         "`.codex/config.toml` | `report`",
         "`.claude/settings.json` | `report`",
         "`.opencode/opencode.jsonc` | `report`",
@@ -261,7 +261,7 @@ def test_readme_states_that_report_files_stay_a_manual_accept():
         "자동화 대상이 아니라는 것이 결정이며",
         "편집분(`edited`)은 어느 분류에서도 자동 갱신되지 않고 보존된다",
     ):
-        assert anchor in readme, anchor
+        assert marker in readme, marker
 
 
 # ── 진입점 뒤 분기 (옛 matcher 판정 보존) ────────────────────────────────────
@@ -321,7 +321,7 @@ def test_only_matching_features_spawn_a_child(dispatcher, tmp_path):
 
 def test_events_without_registered_features_answer_the_measured_allow_shape(
         dispatcher, tmp_path):
-    """기능이 아직 없는 진입점도 유효한 통과 엔벨로프를 낸다(진입점만 먼저 여는 형상)."""
+    """기능이 아직 없는 진입점도 유효한 통과 엔벨로프를 낸다(진입점만 먼저 여는 구성)."""
     runner = _RecordingRunner()
 
     for event in ("UserPromptSubmit", "PostToolUse"):
@@ -334,7 +334,7 @@ def test_unparsable_payload_still_runs_tool_agnostic_features(dispatcher, guard,
     """payload 를 못 읽어도 도구 무관 기능은 돌고, 도구 판별 기능은 **경고**로 남는다.
 
     도구 판별 기능이 안 도는 것은 보수적 처분이라 맞다. 그 사실이 통과와 같은 값(`{}`)으로
-    나가면 가드가 꺼진 형상과 구별되지 않는다 — 옛 배선에서 같은 입력에 가드 자식이 내던
+    나가면 가드가 꺼진 구성과 구별되지 않는다 — 옛 등록에서 같은 입력에 가드 자식이 내던
     경고를 여기서 낸다."""
     runner = _RecordingRunner()
     agnostic = dispatcher.CodexHookFeature(
@@ -350,13 +350,13 @@ def test_unparsable_payload_still_runs_tool_agnostic_features(dispatcher, guard,
     assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
     assert "delegate-channel" in envelope["systemMessage"]
-    assert len(runner.calls) == 1, "판별식 있는 기능이 미지 payload 에 발화했다"
+    assert len(runner.calls) == 1, "판별식 있는 기능이 미지 payload 에 실행됐다"
 
 
 # ── 판정 불능 vs 정상 미매칭 (조용한 실패 금지 · T-0777 불변식 4) ────────────
-# 옛 배선은 hooks.json matcher 가 호스트 쪽에서 판별했고, 판별 근거가 없는 입력은 가드 자식이
+# 옛 등록은 hooks.json matcher 가 호스트 쪽에서 판별했고, 판별 근거가 없는 입력은 가드 자식이
 # 경고로 냈다(실측: 빈 stdin·`{}`·파손 JSON 모두 rc0 경고 엔벨로프). 판별이 진입점 뒤로 옮겨
-# 온 뒤에도 그 의미가 남아야 한다 — 아래는 "못 판정했다" 와 "안 걸렸다" 가 같은 값으로 접히지
+# 온 뒤에도 그 의미가 남아야 한다 — 아래는 "못 판정했다" 와 "안 걸렸다" 가 같은 값으로 바뀌지
 # 않는지를 고정한다. 등급은 종전대로 rc0·차단 0 이다(경고만 복원·승격 아님).
 
 
@@ -406,7 +406,7 @@ def test_broken_registry_pattern_is_undecidable_not_a_pass(dispatcher, guard,
 
 
 def test_old_matcher_equivalence_is_preserved_without_new_noise(dispatcher, tmp_path):
-    """옛 exact matcher 의 판정 동치 — 일치만 발화하고 불일치·경계는 **조용하다**.
+    """옛 exact matcher 의 판정 동치 — 일치만 실행하고 불일치·경계는 **조용하다**.
 
     이 fix 는 경고를 더하는 방향이라, 정상 경로가 같이 시끄러워지면 그게 곧 새 결함이다."""
     feature = _delegate_feature(dispatcher)
@@ -452,7 +452,7 @@ def test_route_names_the_three_outcomes(dispatcher):
 
 
 def test_unknown_entrypoint_event_is_loud_not_silent(dispatcher, guard, tmp_path):
-    """config 가 이 세대에 없는 진입점을 열면 조용히 통과하지 않는다."""
+    """config 가 이 버전에 없는 진입점을 열면 조용히 통과하지 않는다."""
     envelope = dispatcher.dispatch_hook("Stop", b"{}", tmp_path,
                                         runner=_RecordingRunner())
 
@@ -511,7 +511,7 @@ def test_multiple_advisories_merge_without_inventing_a_decision(dispatcher):
     assert merged["suppressOutput"] is False
 
 
-# ── T-0824: `hookSpecificOutput.additionalContext` 축 — deny/advisory 동시 발화에서
+# ── T-0824: `hookSpecificOutput.additionalContext` 필드 — deny/advisory 동시 출력에서
 #   조용히 사라지던 안내를 합본에 싣는다 ────────────────────────────────────
 
 _CTX = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -519,7 +519,7 @@ _CTX = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
 
 
 def test_deny_and_additional_context_coexist_in_one_envelope(dispatcher):
-    """deny 기능과 ctx 안내가 같은 이벤트에서 동시 발화해도 둘 다 합본에 실린다.
+    """deny 기능과 ctx 안내가 같은 이벤트에서 동시에 나와도 둘 다 합본에 실린다.
 
     codex 0.147.0 라이브 실측(`.project_manager/board/tickets/rounds/T-0834/01-architect.md`
     §5)이 이 조합을 codex 가 실제로 차단 집행 + 안내 주입 동거로 처리함을 확인했다 — 그 판정을
@@ -530,7 +530,7 @@ def test_deny_and_additional_context_coexist_in_one_envelope(dispatcher):
     assert merged["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert merged["hookSpecificOutput"]["permissionDecisionReason"] == merged["systemMessage"]
     assert merged["hookSpecificOutput"]["additionalContext"] == "fixture ctx guidance"
-    assert merged["systemMessage"] == "fixture deny"  # ctx 는 systemMessage 축에 안 실린다.
+    assert merged["systemMessage"] == "fixture deny"  # ctx 는 systemMessage 필드에 안 실린다.
     assert _DENY["hookSpecificOutput"] == {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
         "permissionDecisionReason": "fixture deny"}, "입력 엔벨로프를 제자리 변형했다"
@@ -577,8 +577,8 @@ def test_non_string_additional_context_is_a_loud_warning_not_a_silent_drop(dispa
 
 def test_unhandled_hook_specific_output_key_is_a_loud_warning_not_a_silent_drop(dispatcher):
     """base 가 아닌 응답의 `hookSpecificOutput` 이 합본 규칙 없는 키(예: `updatedInput`)를 실으면
-    조용히 버리지 않고 마커로 남는다 — 이 라운드가 배선하는 것은 `additionalContext` 축 하나뿐이고
-    (T-0824 PM 비준 결정 5) 나머지 이벤트별 output 스키마 허용키는 값을 실어 오는 대신 이 마커로
+    조용히 버리지 않고 마커로 남는다 — 이 라운드가 연결하는 것은 `additionalContext` 필드 하나뿐이고
+    (T-0824 PM 승인 결정 5) 나머지 이벤트별 output 스키마 허용키는 값을 실어 오는 대신 이 마커로
     유실 사실이 드러난다."""
     updated_input = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                              "updatedInput": {"x": 1}}}
@@ -616,13 +616,13 @@ def test_merged_pretooluse_envelope_keys_stay_within_the_extracted_output_schema
         sorted(merged["hookSpecificOutput"])
 
 
-# ── F-0824-CR01 (code-reviewer 라운드 2 must-fix): 최상위 허용키도 같은 fail-loud 축 ──────
+# ── F-0824-CR01 (code-reviewer 라운드 2 must-fix): 최상위 허용키도 같은 fail-loud 규칙 ──────
 
 def test_unhandled_top_level_key_is_a_loud_warning_not_a_silent_drop(dispatcher):
     """base 가 아닌 응답의 최상위 허용키(`continue`·`stopReason`·`decision`·`reason`)가 합본
     규칙 없이 버려지면 조용히 스킵하지 않고 마커로 남는다 — reviewer 재현 그대로(F-0824-CR01).
 
-    codex 0.147.0 추출 스키마의 PreToolUse output 최상위 허용키에 이 넷이 모두 있다. 처방대로
+    codex 0.147.0 추출 스키마의 PreToolUse output 최상위 허용키에 이 넷이 모두 있다. 수정 방법대로
     **값을 새로 합성하지 않고** 유실 사실만 경고로 남긴다."""
     stop_case = dispatcher.merge_hook_envelopes([_ADVISORY, {"stopReason": "fixture stop"}])
     continue_case = dispatcher.merge_hook_envelopes([_ADVISORY, {"continue": False}])
@@ -645,7 +645,7 @@ def test_unhandled_top_level_key_is_a_loud_warning_not_a_silent_drop(dispatcher)
 
 def test_base_items_own_top_level_keys_are_not_flagged_unhandled(dispatcher):
     """base 로 선택된 응답 자신의 최상위 키(`decision`·`reason`)는 유실이 아니라 경고 대상이
-    아니다 — F-0824-CR01 처방이 3번 규칙(base 보존)을 깨지 않는지 확인."""
+    아니다 — F-0824-CR01 수정 방법이 3번 규칙(base 보존)을 깨지 않는지 확인."""
     merged = dispatcher.merge_hook_envelopes([_DENY, _ADVISORY])
 
     assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER not in merged["systemMessage"]
@@ -655,7 +655,7 @@ def test_base_items_own_top_level_keys_are_not_flagged_unhandled(dispatcher):
 
 def test_merged_deny_and_ctx_envelope_carries_no_new_unhandled_key_warning(dispatcher):
     """실제 등록 생산자(deny·ctx)의 합본에는 이 fix 가 새로 만든 경고가 안 실린다 — 최상위 키
-    축 확장이 정상 트래픽 경고 소음을 0으로 유지한다는 값 근거(F-0824-CR01 처방 제약)."""
+    범위 확장이 정상 트래픽 경고 소음을 0으로 유지한다는 값 근거(F-0824-CR01 수정 방법 제약)."""
     merged = dispatcher.merge_hook_envelopes([_DENY, _CTX])
 
     assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER not in merged["systemMessage"]
@@ -665,7 +665,7 @@ def test_merged_deny_and_ctx_envelope_carries_no_new_unhandled_key_warning(dispa
 
 
 def test_feature_failure_degrades_to_a_marked_fallback(dispatcher, guard, tmp_path):
-    """기능 자식이 못 답하면 마커 붙은 2필드 경고로 강등된다(스키마=엔진 상수)."""
+    """기능 자식이 못 답하면 마커 붙은 2필드 경고로 낮춘다(스키마=엔진 상수)."""
     runner = _RecordingRunner(stdout=b"", returncode=3)
 
     envelope = dispatcher.dispatch_hook(
@@ -721,7 +721,7 @@ def test_dispatch_output_is_ascii_safe(dispatcher, tmp_path):
 
 def _adopter_tree(tmp_path: Path, *, conf_lines: tuple[str, ...],
                   dispatcher_body: str | None = None) -> Path:
-    """실 엔진 사본 + 디스패처 + local.conf + 압축 한도 기록으로 codex 채택자 형상을 만든다(기록이 없으면
+    """실 엔진 사본 + 디스패처 + local.conf + 압축 한도 기록으로 codex 채택자 구성을 만든다(기록이 없으면
     UserPromptSubmit 이 다시 적용하라고 알린다)."""
     root = tmp_path / "adopter"
     shutil.copytree(TOOLS, root / ".project_manager" / "tools")
@@ -755,7 +755,7 @@ _CROSS_CONF = ("delegate.enabled=true", "delegate.developer.harness=opencode",
                     reason="POSIX bash wrapper 실행 환경이 아님")
 def test_shipped_entrypoint_runs_the_registered_guard_for_a_spawn_payload(
         guard, tmp_path):
-    """출하 PreToolUse 진입점을 실제 셸로 태우면 스폰 payload 에서 위임 가드가 발화한다."""
+    """출하 PreToolUse 진입점을 실제 셸로 태우면 스폰 payload 에서 위임 가드가 실행된다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
 
     result, elapsed = _run_entrypoint("PreToolUse", root, _spawn_payload())
@@ -772,11 +772,11 @@ def test_shipped_entrypoint_runs_the_registered_guard_for_a_spawn_payload(
                     reason="POSIX bash wrapper 실행 환경이 아님")
 def test_shipped_entrypoint_keeps_spawn_deny_without_pretooluse_ctx_nudge(
         tmp_path):
-    """PreToolUse 스폰 deny는 유지되고 프롬프트 단위 ctx 넛지는 섞이지 않는다."""
+    """PreToolUse 스폰 deny는 유지되고 프롬프트 단위 ctx 경고는 섞이지 않는다."""
     root = _adopter_tree(
         tmp_path, conf_lines=(*_CROSS_CONF, "harness.codex.ctx_window_tokens=20000"))
     rollout = root / "rollout-live.jsonl"
-    # 예산 20000 · 점유 15328 → 사용 77% · 잔여 23% → warn2 밴드(기존 ctx-warn 회귀와 같은 수치).
+    # 예산 20000 · 점유 15328 → 사용 77% · 남은 23% → warn2 구간(기존 ctx-warn 회귀와 같은 수치).
     rollout.write_text(
         '{"type":"event_msg","payload":{"type":"token_count","info":'
         '{"last_token_usage":{"input_tokens":15328}}}}\n', encoding="utf-8")
@@ -816,7 +816,7 @@ def test_shipped_entrypoint_passes_unmatched_payloads_through(
 # ── 판정 불능 회귀를 **출하 커맨드**로 (POSIX·Windows 양쪽) ──────────────────
 # 옛 exact matcher 경로에 같은 입력을 넣으면 rc0 경고 엔벨로프가 나왔다(실측). 진입점 뒤로
 # 판별이 옮겨 온 뒤에도 그 경고가 나오는지를 **실 출하 커맨드 실행**으로 고정한다 — 디스패처
-# 단위 판정만으로는 래퍼가 그 출력을 삼키는 형상을 못 본다.
+# 단위 판정만으로는 래퍼가 그 출력을 삼키는 경우를 못 본다.
 
 _SHIPPED_TOOL_PATTERN = 'tool_pattern="^collaborationspawn_agent$"'
 _BROKEN_TOOL_PATTERN = 'tool_pattern="["'
@@ -834,7 +834,7 @@ def _windows_dispatcher_argv(event: str) -> list[str]:
     """출하 `commandWindows` 가 실제로 부르는 디스패처 호출을 **값에서** 뽑는다.
 
     PowerShell 이 없는 호스트에서도 그 커맨드가 넘기는 argv 자체는 그대로 실행할 수 있다.
-    인터프리터 해소 래퍼(프로브 루프·폴백 분기)는 `test_codex_ctx_guard` 의 정적 파서가 따로
+    인터프리터 해소 래퍼(프로브 루프·대체 분기)는 `test_codex_ctx_guard` 의 정적 파서가 따로
     고정하므로, 여기서 보는 것은 판정 불능 경고가 그 호출로 실제 나오는가다."""
     windows = _entry_handler(event)["commandWindows"]
     invocations = [segment for segment in powershell_native_arguments(windows)
@@ -943,10 +943,10 @@ def test_shipped_entrypoint_stays_quiet_on_normal_traffic(guard, tmp_path, windo
                     reason="POSIX bash wrapper 실행 환경이 아님")
 def test_stale_dispatcher_generation_falls_back_instead_of_locking_out(
         guard, tmp_path):
-    """신 config + 구 디스패처(플래그 미지원)는 **락아웃이 아니라** 폴백이다.
+    """신 config + 구 디스패처(플래그 미지원)는 **락아웃이 아니라** 대체 출력이다.
 
     claude v1.7.0 락아웃은 훅이 rc2 를 그대로 흘려 도구 호출이 통째로 막힌 사건이다. codex
-    진입점은 rc 를 붙잡아 완전한 엔벨로프로 강등하므로 같은 세대 혼합에서도 통과한다 —
+    진입점은 rc 를 붙잡아 완전한 엔벨로프로 낮추므로 같은 버전 혼합에서도 통과한다 —
     대신 그 사실이 마커로 남고 엔진 역방향 가드가 지목한다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF,
                          dispatcher_body="import sys\nraise SystemExit(2)\n")
@@ -973,7 +973,7 @@ def test_adopter_without_the_dispatcher_is_warned_not_blocked(guard, tmp_path):
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
 
 
-# 코드로만 얹는 가드 한 건 — "이후 기능은 registry 한 줄" 이라는 이 배선의 주장 그대로다.
+# 코드로만 얹는 가드 한 건 — "이후 기능은 registry 한 줄" 이라는 이 등록 방식의 주장 그대로다.
 FIXTURE_FEATURE_SNIPPET = (
     "\n# 픽스처: 가드 기능 하나를 코드로만 추가한다(채택자 config 무변경).\n"
     "CODEX_HOOK_FEATURES = CODEX_HOOK_FEATURES + (CodexHookFeature(\n"
@@ -990,17 +990,17 @@ _MAIN_GUARD = 'if __name__ == "__main__":'
 def dispatcher_source_with_fixture_feature() -> str:
     """출하 디스패처 + 픽스처 기능 — `__main__` 가드 **앞**에 넣는다.
 
-    뒤에 붙이면 `raise SystemExit(main())` 이 먼저 돌아 등록문이 실행되지 않는다(그 형상은
+    뒤에 붙이면 `raise SystemExit(main())` 이 먼저 돌아 등록문이 실행되지 않는다(그 구성은
     기능이 안 붙은 것과 구별되지 않는 조용한 false-green 이다)."""
     source = DISPATCHER_PY.read_text(encoding="utf-8")
-    assert source.count(_MAIN_GUARD) == 1, "디스패처 진입 가드 형상이 바뀌었다"
+    assert source.count(_MAIN_GUARD) == 1, "디스패처 진입 가드 모양이 바뀌었다"
     return source.replace(_MAIN_GUARD, FIXTURE_FEATURE_SNIPPET + _MAIN_GUARD)
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
 def test_a_new_feature_needs_no_config_change(tmp_path):
-    """기능을 코드에만 더해도 **같은 출하 config** 로 발화한다 — 이 티켓이 닫는 마찰 자체."""
+    """기능을 코드에만 더해도 **같은 출하 config** 로 실행된다 — 이 티켓이 닫는 마찰 자체."""
     root = _adopter_tree(
         tmp_path, conf_lines=("delegate.enabled=false",),
         dispatcher_body=dispatcher_source_with_fixture_feature())
@@ -1010,12 +1010,12 @@ def test_a_new_feature_needs_no_config_change(tmp_path):
                                         "tool_name": "shell"})
 
     assert result == FIXTURE_FEATURE_ENVELOPE
-    # 같은 트리에서 진입점을 안 거친 이벤트는 그대로다(발화 스코프가 안 넓어졌다).
+    # 같은 트리에서 진입점을 안 거친 이벤트는 그대로다(실행 범위가 안 넓어졌다).
     assert _run_entrypoint("UserPromptSubmit", root,
                            {"hook_event_name": "UserPromptSubmit"})[0] == {}
 
 
-# ── T-0806: 잔여 3 이벤트 이관 — 추출 스키마 대조 · 판정 동치 · 구조 2필드 ────
+# ── T-0806: 남은 3 이벤트 이관 — 추출 스키마 대조 · 판정 동치 · 구조 2필드 ────
 # 이 절의 판정 근거는 **codex 0.147.0 바이너리에 박힌 훅 I/O JSON Schema** 다. 재현(오프라인·
 # 결정적·모델 호출 0):
 #   raw = Path("<codex 바이너리>").read_bytes()
@@ -1106,7 +1106,7 @@ def test_routing_field_is_declared_by_the_event_input_schema(dispatcher,
     """판별식이 있는 기능의 `match_field` 는 그 이벤트가 **실제로 싣는** 필드다.
 
     이 가드가 없으면 payload 에 없는 필드로 라우팅하는 기능이 등록돼도 green 이다 — 그 기능은
-    매 발화마다 판정 불능 경고만 내고 한 번도 안 돈다(T-0806 이 연 축의 결함 클래스)."""
+    매 실행마다 판정 불능 경고만 내고 한 번도 안 돈다(T-0806 이 연 결함 클래스)."""
     checked = 0
     for feature in dispatcher.CODEX_HOOK_FEATURES:
         if feature.tool_pattern is None:
@@ -1126,18 +1126,18 @@ def test_features_that_skip_routing_say_so_because_the_old_matcher_covered_every
     """판별식 None 은 옛 matcher 가 값 공간을 전수 덮었다는 사실의 이관이다.
 
     이관된 세 이벤트의 옛 matcher 는 SubagentStart `.*` 와 압축 `^auto$`+`^manual$`(enum 전수)
-    라 판별이 없었다 — 여기서 새 판별식을 세우면 옛 배선이 발화하던 입력에서 안 도는 기능이
+    라 판별이 없었다 — 여기서 새 판별식을 세우면 옛 등록이 실행되던 입력에서 안 도는 기능이
     생긴다(판정 동치 위반)."""
     for event in _MIGRATED_EVENTS:
         features = [feature for feature in dispatcher.CODEX_HOOK_FEATURES
                     if feature.event == event]
-        assert features, f"{event}: 이관된 기능이 없다 — 진입점만 열리고 배선이 사라졌다"
+        assert features, f"{event}: 이관된 기능이 없다 — 진입점만 열리고 등록이 사라졌다"
         for feature in features:
             assert feature.tool_pattern is None, feature
 
 
 # ── 판정 동치: 옛 직결 커맨드 ↔ 새 진입점 (같은 입력 · 같은 답) ─────────────
-# T-0806 이전 세대의 출하 POSIX 커맨드 원문. 이 문자열이 "전" 이고, 같은 트리에서 같은 stdin 을
+# T-0806 이전 버전의 출하 POSIX 커맨드 원문. 이 문자열이 "전" 이고, 같은 트리에서 같은 stdin 을
 #   먹여 "후"(진입점 커맨드)와 rc·stdout 을 대조한다. 값이 하나라도 갈리면 이관이 동작을 바꾼 것이다.
 _LEGACY_DIRECT_COMMANDS = {
     "SubagentStart":
@@ -1167,7 +1167,7 @@ _LEGACY_DIRECT_COMMANDS = {
         'snapshot --cwd "$PWD" --json 2>/dev/null || printf \'%s\\n\' '
         '\'{"suppressOutput":true}\'; fi',
 }
-# 옛 matcher 집합(그 이벤트가 열던 matcher-group 전수) — 옛 배선 채택자 픽스처의 원문이다.
+# 옛 matcher 집합(그 이벤트가 열던 matcher-group 전수) — 옛 등록 채택자 픽스처의 원문이다.
 _LEGACY_MATCHERS = {"SubagentStart": (".*",),
                     "PreCompact": ("^auto$", "^manual$"),
                     "PostCompact": ("^auto$", "^manual$")}
@@ -1175,7 +1175,7 @@ _LEGACY_TIMEOUT = 10
 
 
 def _legacy_hooks_document() -> dict:
-    """T-0806 이전 형상의 hooks.json — 이관 3 이벤트만 옛 직결 배선으로 되돌린 문서."""
+    """T-0806 이전 구성의 hooks.json — 이관 3 이벤트만 옛 직결 등록으로 되돌린 문서."""
     document = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
     for event, matchers in _LEGACY_MATCHERS.items():
         document["hooks"][event] = [
@@ -1195,7 +1195,7 @@ def _run_command_in_tree(command: str, root: Path, stdin_text: str,
 
 
 def _equivalence_inputs(schemas: dict, event: str) -> list[tuple[str, str]]:
-    """일치·불일치·경계·빈 입력 — 옛 배선이 답하던 입력 공간 전수."""
+    """일치·불일치·경계·빈 입력 — 옛 등록이 답하던 입력 공간 전수."""
     routing = "agent_type" if event == "SubagentStart" else "trigger"
     normal = _synth_payload(schemas, event)
     alternate = dict(normal)
@@ -1215,7 +1215,7 @@ def _equivalence_inputs(schemas: dict, event: str) -> list[tuple[str, str]]:
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
 # PostCompact 는 동치 대조 대상이 아니다 — 아래 `test_post_compact_names_the_unresolved_
-# identity_that_the_old_wiring_hid` 가 그 이벤트의 값(옛=침묵 / 새=미해소 명시)을 따로 박제한다.
+# identity_that_the_old_wiring_hid` 가 그 이벤트의 값(옛=침묵 / 새=미해소 명시)을 따로 고정한다.
 @pytest.mark.parametrize("event", ("SubagentStart", "PreCompact"))
 def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
         tmp_path, hook_io_schema, event):
@@ -1227,7 +1227,7 @@ def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
 
     두 실행은 **다른 트리**에서 돈다(부작용 격리) — PostCompact 엔벨로프에 실리는 snapshot 은
     그 홈 경로를 본문에 담으므로, 트리 경로만 자리표시자로 정규화한 뒤 대조한다(경로 차이는
-    이 판정의 축이 아니다)."""
+    이 판정의 기준이 아니다)."""
     legacy_root = _adopter_tree(tmp_path / "legacy", conf_lines=_CROSS_CONF)
     new_root = _adopter_tree(tmp_path / "new", conf_lines=_CROSS_CONF)
     for tree in (legacy_root, new_root):
@@ -1253,7 +1253,7 @@ def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
                     reason="POSIX bash wrapper 실행 환경이 아님")
 def test_post_compact_names_the_unresolved_identity_that_the_old_wiring_hid(
         guard, tmp_path, hook_io_schema):
-    """PostCompact 만 옛 배선과 값이 갈린다 — 옛것은 침묵, 새것은 미해소를 이름으로 말한다.
+    """PostCompact 만 옛 등록과 값이 갈린다 — 옛것은 침묵, 새것은 미해소를 이름으로 말한다.
 
     옛 직결 커맨드는 snapshot 실패를 `|| printf '{"suppressOutput":true}'` 로 덮어 압축마다
     기록 0건이 성공처럼 보였다. 압축 경로의 정체성은 훅 입력 `session_id` 로 찾은 task 다
@@ -1316,11 +1316,11 @@ def test_compaction_normal_traffic_warns_only_where_identity_is_unresolved(
         assert "decision" not in envelope and "continue" not in envelope, trigger
 
 
-# 장부 CLI 자식을 세는 shim — argv 를 그대로 기록한다.
+# 기록 CLI 자식을 세는 shim — argv 를 그대로 기록한다.
 _COUNTING_PM_LOG = (
     "import json, os, sys\n"
     "argv = list(sys.argv[1:])\n"
-    "with open(os.environ['T0806_CHILD_LEDGER'], 'a', encoding='utf-8') as handle:\n"
+    "with open(os.environ['T0806_CHILD_RECORDS'], 'a', encoding='utf-8') as handle:\n"
     "    handle.write(json.dumps(argv) + '\\n')\n"
     "if 'ctx-guidance' in argv:\n"
     "    print(json.dumps({'systemMessage': 'GUIDANCE', 'suppressOutput': False}))\n"
@@ -1335,12 +1335,12 @@ _COUNTING_PM_LOG = (
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
 @pytest.mark.parametrize("event", ("PreCompact", "PostCompact"))
-def test_compaction_spawns_the_same_ledger_children_as_the_old_wiring(
+def test_compaction_spawns_the_same_record_children_as_the_old_wiring(
         tmp_path, hook_io_schema, event):
-    """압축 1회당 장부 자식 수·동사 순서가 전/후 동일하다 (2건: checkpoint → 엔벨로프).
+    """압축 1회당 기록 자식 수·동사 순서가 전/후 동일하다 (2건: checkpoint → 엔벨로프).
 
-    진입점이 넓어져도 발화 비용이 늘면 안 된다. 정체성 인자는 옛 `--cwd "$PWD"` 에서 훅 입력
-    `session_id` 하나(`--session-id`)로 바뀌었다(T-0953) — 새 배선에 cwd 인자가 없음을 값으로 본다."""
+    진입점이 넓어져도 실행 비용이 늘면 안 된다. 정체성 인자는 옛 `--cwd "$PWD"` 에서 훅 입력
+    `session_id` 하나(`--session-id`)로 바뀌었다(T-0953) — 새 등록에 cwd 인자가 없음을 값으로 본다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
     (root / ".project_manager" / "tools" / "pm_log.py").write_text(
         _COUNTING_PM_LOG, encoding="utf-8", newline="\n")
@@ -1349,12 +1349,12 @@ def test_compaction_spawns_the_same_ledger_children_as_the_old_wiring(
 
     for label, command in (("legacy", _LEGACY_DIRECT_COMMANDS[event]),
                            ("entrypoint", _entry_handler(event)["command"])):
-        ledger = tmp_path / f"{label}-children.jsonl"
-        env = {**os.environ, "T0806_CHILD_LEDGER": str(ledger)}
+        records = tmp_path / f"{label}-children.jsonl"
+        env = {**os.environ, "T0806_CHILD_RECORDS": str(records)}
         returncode, stdout = _run_command_in_tree(command, root, payload, env=env)
         assert returncode == 0, (label, stdout)
         recorded[label] = [json.loads(line)
-                           for line in ledger.read_text(encoding="utf-8").splitlines()]
+                           for line in records.read_text(encoding="utf-8").splitlines()]
 
     assert len(recorded["legacy"]) == 2, recorded["legacy"]
     assert len(recorded["entrypoint"]) == 2, recorded["entrypoint"]
@@ -1376,14 +1376,14 @@ def test_shipped_envelope_keys_stay_within_the_event_output_schema(
     """registry 전 기능·합본 산출의 키가 그 이벤트 output 스키마 허용키의 부분집합이다.
 
     압축 두 이벤트의 output 은 `additionalProperties:false` 에 4키뿐이라, 규격 밖 키를 내면
-    호스트가 엔벨로프를 통째로 거절한다. 런타임 필터를 두는 대신(조용한 강등) 추출 스키마와
+    호스트가 엔벨로프를 통째로 거절한다. 런타임 필터를 두는 대신(말없이 수준 낮춤) 추출 스키마와
     실 산출을 대조해 **넘는 순간 red** 로 만든다."""
     allowed = set(_schema(hook_io_schema, event, "output")["properties"])
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
     payload = _synth_payload(hook_io_schema, event) if _schema(
         hook_io_schema, event, "input") else {"hook_event_name": event}
     if event == "PreToolUse":
-        payload = {**payload, **_spawn_payload()}  # 차단 판정까지 키 표면에 넣는다.
+        payload = {**payload, **_spawn_payload()}  # 차단 판정까지 키 범위에 넣는다.
     payload_bytes = json.dumps(payload).encode("utf-8")
 
     for feature in dispatcher.CODEX_HOOK_FEATURES:
@@ -1402,7 +1402,7 @@ def test_shipped_envelope_keys_stay_within_the_event_output_schema(
 def test_side_effect_only_child_runs_but_never_answers(dispatcher, tmp_path):
     """`side_effect_only` 기능은 자식을 돌리되 rc·stdout 을 판정에 쓰지 않는다.
 
-    같은 자식을 기본 계약으로 등록하면 그 자리에서 폴백 경고가 나온다 — 이 대조가
+    같은 자식을 기본 계약으로 등록하면 그 자리에서 대체 경고가 나온다 — 이 대조가
     "옛 침묵을 값 그대로 보존" 이라는 이 필드의 존재 이유다."""
     noisy_argv = ("{py}", "-c", "import sys; print('사람글'); sys.exit(2)")
     silent = dispatcher.CodexHookFeature(
@@ -1422,9 +1422,9 @@ def test_side_effect_only_child_runs_but_never_answers(dispatcher, tmp_path):
 
 
 def test_side_effect_only_failure_becomes_a_fallback_warning(dispatcher, tmp_path):
-    """부작용 자식의 기동 실패·시간 초과는 침묵하지 않고 원인을 담은 폴백 경고가 된다.
+    """부작용 자식의 기동 실패·시간 초과는 침묵하지 않고 원인을 담은 대체 경고가 된다.
 
-    기록이 아예 남지 않는 실패라 `{}` 로 접으면 압축 checkpoint 가 빠진 사실이 보이지 않는다.
+    기록이 아예 남지 않는 실패라 `{}` 로 바꾸면 압축 checkpoint 가 빠진 사실이 보이지 않는다.
     정상 종료한 자식의 rc·출력을 보지 않는 계약은 `test_side_effect_only_child_runs_but_never_answers` 가 고정한다."""
     missing = dispatcher.CodexHookFeature(
         "fixture-missing", "PostToolUse", None,
@@ -1445,14 +1445,14 @@ def test_side_effect_only_failure_becomes_a_fallback_warning(dispatcher, tmp_pat
 
 
 def test_match_field_routes_on_the_event_specific_field(dispatcher):
-    """`match_field` 가 라우팅 축을 이벤트에 맞춘다 — 축을 `tool_name` 에 고정하면 판정 불능이다.
+    """`match_field` 가 라우팅 필드를 이벤트에 맞춘다 — 필드를 `tool_name` 에 고정하면 판정 불능이다.
 
-    이관된 세 이벤트 payload 에는 `tool_name` 이 없다(스키마 실측). 축이 고정이면 판별식을
+    이관된 세 이벤트 payload 에는 `tool_name` 이 없다(스키마 실측). 필드가 고정이면 판별식을
     가진 기능은 그 이벤트에서 **한 번도** 못 돈다."""
     on_trigger = dispatcher.CodexHookFeature(
         "fixture-trigger", "PreCompact", "^auto$", ("{py}", "-c", "print('{}')"),
         match_field="trigger")
-    fixed_axis = on_trigger._replace(feature_id="fixture-fixed", match_field="tool_name")
+    fixed_feature = on_trigger._replace(feature_id="fixture-fixed", match_field="tool_name")
 
     assert dispatcher._feature_route(on_trigger, {"trigger": "auto"}).decision == \
         dispatcher.CODEX_HOOK_ROUTE_MATCH
@@ -1462,13 +1462,13 @@ def test_match_field_routes_on_the_event_specific_field(dispatcher):
     assert undecidable.decision == dispatcher.CODEX_HOOK_ROUTE_UNDECIDABLE
     assert "trigger 이 없어" in undecidable.detail
 
-    fixed = dispatcher._feature_route(fixed_axis, {"trigger": "auto"})
+    fixed = dispatcher._feature_route(fixed_feature, {"trigger": "auto"})
     assert fixed.decision == dispatcher.CODEX_HOOK_ROUTE_UNDECIDABLE
     assert "tool_name 이 없어" in fixed.detail
 
 
 def test_match_field_reads_the_camel_case_alias_too(dispatcher):
-    """호스트 표기가 camelCase 여도 같은 축으로 읽는다(`tool_name`/`toolName` 판정의 파생)."""
+    """호스트 표기가 camelCase 여도 같은 필드로 읽는다(`tool_name`/`toolName` 판정의 파생)."""
     on_agent = dispatcher.CodexHookFeature(
         "fixture-agent", "SubagentStart", "^default$", ("{py}", "-c", "print('{}')"),
         match_field="agent_type")
@@ -1480,7 +1480,7 @@ def test_match_field_reads_the_camel_case_alias_too(dispatcher):
 
 
 def test_default_field_values_keep_older_positional_construction_working(dispatcher):
-    """신규 2필드는 기본값이 있다 — 위치 인자 4개로 만드는 구세대 사본이 그대로 돈다."""
+    """신규 2필드는 기본값이 있다 — 위치 인자 4개로 만드는 구버전 사본이 그대로 돈다."""
     feature = dispatcher.CodexHookFeature("fixture-positional", "PostToolUse", None,
                                           ("{py}", "-c", "print('{}')"))
 
@@ -1488,18 +1488,18 @@ def test_default_field_values_keep_older_positional_construction_working(dispatc
     assert feature.side_effect_only is False
 
 
-# ── 옛 직결 배선을 유지한 채택자 — 소견 문구가 참인가 (T-0806 문구 교정) ─────
+# ── 옛 직결 등록을 유지한 채택자 — 소견 문구가 참인가 (T-0806 문구 교정) ─────
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
 def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
         pm_import, tmp_path, hook_io_schema):
-    """옛 직결 배선 채택자의 소견은 "앞으로 등록될 가드" 를 말한다 — 그 가드는 계속 돈다.
+    """옛 직결 등록 채택자의 소견은 "앞으로 등록될 가드" 를 말한다 — 그 가드는 계속 돈다.
 
-    옛 문구("이 이벤트에 등록된 가드는 한 번도 발화하지 않는다")는 이 채택자에서 **거짓**이다:
-    같은 트리에서 옛 커맨드를 태우면 가드가 정상 엔벨로프를 낸다. 처방이 거짓 사실을 근거로
-    들면 채택자는 그 처방을 안 믿는다."""
+    옛 문구("이 이벤트에 등록된 가드는 한 번도 실행되지 않는다")는 이 채택자에서 **거짓**이다:
+    같은 트리에서 옛 커맨드를 태우면 가드가 정상 엔벨로프를 낸다. 해결 안내가 거짓 사실을 근거로
+    들면 채택자는 그 안내를 안 믿는다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
     seed_slot(root)
     (root / ".project_manager").mkdir(exist_ok=True)
@@ -1516,7 +1516,7 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
         assert finding.kind == hook_sets.HOOK_ENTRYPOINT_MISSING
         assert "앞으로 등록될 가드는 실행되지 않는다" in finding.detail
         assert "한 번도 실행되지 않는다" not in finding.detail
-    # 문구가 참인지의 판정 근거 — 그 채택자에서 옛 커맨드는 지금도 정상 발화한다.
+    # 문구가 참인지의 판정 근거 — 그 채택자에서 옛 커맨드는 지금도 정상 실행된다.
     for event in _MIGRATED_EVENTS:
         returncode, stdout = _run_command_in_tree(
             _LEGACY_DIRECT_COMMANDS[event], root,
@@ -1527,9 +1527,9 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
         assert "adapter-fallback" not in json.dumps(envelope, ensure_ascii=False), event
 
 
-# ── 라이브 캡처: PostCompact 는 실제로 발화한다 (T-0806 · 2026-08-22) ────────
-# 이 프로젝트는 그동안 PostCompact 실발화를 관측한 적이 없었고(출하 README 자인), 그래서 그
-# 배선의 green 은 "형태 동치" 까지만 증명했다. 격리 `CODEX_HOME` + `model_auto_compact_token_limit`
+# ── 라이브 캡처: PostCompact 는 실제로 실행된다 (T-0806 · 2026-08-22) ────────
+# 이 프로젝트는 그동안 PostCompact 실행을 관측한 적이 없었고(출하 README 자인), 그래서 그
+# 등록의 green 은 "형태 동치" 까지만 증명했다. 격리 `CODEX_HOME` + `model_auto_compact_token_limit`
 # 하향 + tee-only 훅으로 `codex exec` 1회에서 auto 압축 12회를 유도해 payload 를 캡처했다.
 # 캡처본은 fixture 의 `compaction_events` 이고, 아래는 그 실값이 (a) 추출 스키마와 일치하고
 # (b) 출하 진입점을 그대로 통과하는지를 본다 — 합성 payload 만으로는 못 하는 판정이다.
@@ -1549,7 +1549,7 @@ def _live_compaction_payload(event: str) -> dict:
 @pytest.mark.parametrize("event", ("PreCompact", "PostCompact"))
 def test_live_compaction_capture_matches_the_extracted_input_schema(
         hook_io_schema, event):
-    """라이브 캡처 payload 가 추출 input 스키마와 값으로 맞는다(관측 = 실발화 증거)."""
+    """라이브 캡처 payload 가 추출 input 스키마와 값으로 맞는다(관측 = 실제 실행 증거)."""
     document = json.loads(LIVE_PAYLOADS_FIXTURE.read_text(encoding="utf-8"))
     payload = _live_compaction_payload(event)
     schema = _schema(hook_io_schema, event, "input")
@@ -1589,7 +1589,7 @@ def test_live_compaction_payload_runs_through_the_shipped_entrypoint(
 def test_unregistered_home_compaction_is_loud_not_silent(guard, tmp_path, hook_io_schema):
     """정체성 미해소 홈의 PostCompact 는 **경고**로 나온다 — 조용한 통과가 아니다(fail-open 유지).
 
-    등록 행(`slot="."`)이 없는 홈에서는 snapshot 이 낼 텍스트가 없다. 옛 형상은 그 실행을 rc 0 +
+    등록 행(`slot="."`)이 없는 홈에서는 snapshot 이 낼 텍스트가 없다. 옛 구성은 그 실행을 rc 0 +
     무응답 엔벨로프로 끝내 아무 데도 흔적이 없었다(compaction 마다 기록 0건이 성공으로 위장).
     이제 rc 1 · stdout 0줄이라 디스패처가 `adapter-fallback` 마커를 달아 사실을 남긴다 — 세션은
     막지 않는다(rc 0).

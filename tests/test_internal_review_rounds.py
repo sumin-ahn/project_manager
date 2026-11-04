@@ -206,7 +206,7 @@ def test_legacy_unfingerprinted_fixed_resolution_is_unrecognized(pd):
         },
     }
     assert review_rounds.review_ticket_resolution(review_ticket) is None
-    problem = review_rounds._gate_disposition_problem("T-LEGACY-BLOCK", review_ticket)
+    problem = review_rounds._review_ticket_disposition_problem("T-LEGACY-BLOCK", review_ticket)
     assert problem is not None and "처분 선언 없음" in problem
 
 

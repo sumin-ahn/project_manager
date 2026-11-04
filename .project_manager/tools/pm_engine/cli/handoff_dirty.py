@@ -1,4 +1,4 @@
-"""보유 슬롯 스냅샷 기반 dirty gate."""
+"""보유 슬롯 목록 기반 dirty 검사."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,19 +8,19 @@ from pm_engine.app import slot_resolution
 import sys
 
 
-def _dirty_gate_trees(home, *, held_slots) -> list[str]:
-    """게이트가 판정할 실행 앵커 트리 목록 — PM 홈 + **활성 worktree 전수**.
+def _dirty_check_trees(home, *, held_slots) -> list[str]:
+    """검사가 판정할 실행 기준 트리 목록 — PM 홈 + **활성 worktree 전수**.
 
     판정 대상 = PM 홈 + 이 task 가 보유한 슬롯 전수. run() 진입부가 영속 변경 전에 한 번
-    해소해 둔 스냅샷(`_task_slots_snapshot`)을 그대로 쓴다 — 게이트가 장부를 다시 조회해
+    해소해 둔 목록(`_task_slots_snapshot`)을 그대로 쓴다 — 검사가 대여 기록을 다시 조회해
     다른 집합을 보는 비대칭을 만들지 않는다.
     PM 홈 `.gitignore` 는 보통 `work/` 를 ignore 하므로 슬롯 트리는 PM 홈 판정에 **절대**
-    안 잡힌다 — 슬롯을 따로 넣지 않으면 그 트리의 미커밋 산출은 게이트를 통과한다.
-    슬롯 → 트리 변환은 회귀/출하와 같은 `_regression_cwd`(stale 슬롯은 REPO 폴백)라 중복이
+    안 잡힌다 — 슬롯을 따로 넣지 않으면 그 트리의 미커밋 산출은 검사를 통과한다.
+    슬롯 → 트리 변환은 회귀/출하와 같은 `_regression_cwd`(stale 슬롯은 REPO 로 대신)라 중복이
     생길 수 있어 순서 보존 dedup 한다.
 
-    반환한 각 앵커 아래 등록된 submodule working tree 전수도 `_dirty_tree_gate` 가
-    `submodule status --recursive` 로 확장 판정한다. 앵커 목록 자체는 기존 list[str] 계약을
+    반환한 각 트리 아래 등록된 submodule working tree 전수도 `_dirty_tree_check` 가
+    `submodule status --recursive` 로 확장 판정한다. 트리 목록 자체는 기존 list[str] 계약을
     유지해 task/slot 해소와 submodule 열거 책임을 섞지 않는다.
     """
     trees = [str(home.root)]
@@ -36,7 +36,7 @@ def _handoff_slot_trees(home, *, held_slots) -> dict[str, str]:
     """핸드오프가 다룰 슬롯의 트리 → 슬롯 — 커밋 안 한 변경이면 기록 전에 사용자에게 묻는 대상.
 
     대상은 이 task 가 보유한 슬롯 전수(`_task_slots_snapshot`)다. 트리 해소는
-    `_dirty_gate_trees` 와 같은 `_regression_cwd` 이고, 디렉터리가 없어 PM 홈으로 폴백한
+    `_dirty_check_trees` 와 같은 `_regression_cwd` 이고, 디렉터리가 없어 PM 홈으로 대신한
     슬롯은 슬롯 트리가 아니므로 뺀다.
     """
     slot_trees: dict[str, str] = {}
@@ -47,23 +47,23 @@ def _handoff_slot_trees(home, *, held_slots) -> dict[str, str]:
     return slot_trees
 
 
-def _dirty_tree_gate(home, *, held_slots, run_git_fn, ack_dirty: str | None, auto_trigger: bool, force_handoff: bool, dry_run: bool) -> tuple[int, str | None]:
-    """[0/7] 미커밋 잔여를 **첫 mutation 전에** 판정한다. 반환: (rc, entry 박제 사유).
+def _dirty_tree_check(home, *, held_slots, run_git_fn, ack_dirty: str | None, auto_trigger: bool, force_handoff: bool, dry_run: bool) -> tuple[int, str | None]:
+    """[0/7] 남은 미커밋 변경을 **첫 mutation 전에** 판정한다. 반환: (rc, entry 기록 사유).
 
-    rc 1 = 차단(어떤 파일도 건드리지 않은 상태). 잔여는 자리에 따라 둘로 갈린다:
+    rc 1 = 차단(어떤 파일도 건드리지 않은 상태). 남은 변경은 자리에 따라 둘로 갈린다:
       - **핸드오프가 다룰 슬롯**(`_handoff_slot_trees`)의 커밋 안 한 변경 → 사용자에게 "커밋할까요?
         강제 핸드오프할까요?" 를 묻게 하고 멈춘다. 넘는 수단은 `--force-handoff` 하나다 — 통과 +
         entry 에 `커밋 안 한 변경 있음, 슬롯 유지: <slot>` 을 적는다. `--ack-dirty`·`--auto-trigger` 는
         슬롯 쪽 변경을 넘지 않는다.
-      - **그 밖**(PM 홈 등) — `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 박제.
+      - **그 밖**(PM 홈 등) — `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 기록.
         `--auto-trigger`(사용자 명시 핸드오프 호출부 호환 신호) → 차단 대신 loud 경고 +
-        사유 자동 박제. 이 플래그 자체는 실행 승인이나 자동 핸드오프 트리거가 아니다.
+        사유 자동 기록. 이 플래그 자체는 실행 승인이나 자동 핸드오프 트리거가 아니다.
       - `--dry-run` → 판정 결과 미리보기만(차단 없음·기존 dry-run 의미 유지).
     판정 불가 트리(비-git·git 이상)는 비차단 경고 1줄로 stderr surface 한다 — 판정을 못 한
     것을 dirty 로 단정해 정상 핸드오프를 막지 않는다(false-block 회피). 커밋 0(unborn HEAD)은
     판정 불가가 아니라 **전량 미커밋**이라 untracked 목록으로 정상 판정한다.
     """
-    trees = _dirty_gate_trees(home, held_slots=held_slots)
+    trees = _dirty_check_trees(home, held_slots=held_slots)
     dirty: list[tuple[str, list[str]]] = []
     unresolved: list[str] = []
     unresolved_submodules: list[str] = []
@@ -79,7 +79,7 @@ def _dirty_tree_gate(home, *, held_slots, run_git_fn, ack_dirty: str | None, aut
 
         submodules = handoff_git._submodule_paths_in_tree(tree, run_git_fn)
         if submodules is None:
-            # 앵커 자체도 판정 불가면 기존 경고 한 줄이 이미 전체 트리를 대표한다. 앵커는
+            # 기준 트리 자체도 판정 불가면 기존 경고 한 줄이 이미 전체 트리를 대표한다. 기준 트리는
             # 판정됐는데 열거만 실패한 경우에만 별도 경고해 silent skip 을 막는다.
             if tree_paths is not None:
                 unresolved_submodules.append(tree)
@@ -99,7 +99,7 @@ def _dirty_tree_gate(home, *, held_slots, run_git_fn, ack_dirty: str | None, aut
         if paths:
             dirty.append((tree, list(dict.fromkeys(paths))))
     for tree in unresolved:
-        # 게이트의 다른 판정 메시지(차단·강등 경고)와 같은 채널(stderr)로 낸다 — "게이트가
+        # 검사의 다른 판정 메시지(차단·수준 낮춤 경고)와 같은 채널(stderr)로 낸다 — "검사가
         # 못 본 트리" 는 성공 로그가 아니라 경고다.
         print(
             f"  ⚠ dirty 판정 불가 — {tree} (비-git 트리·git 부재). "

@@ -5,7 +5,7 @@
 직접 검증한다. 실 codex 불요 — FakeRunner DI(claude/opencode driver 테스트 패턴)로 subprocess
 폭발 없이 CLI 조립/파싱/ctx 가드만 본다.
 
-검증 축 (ticket DoD):
+검증 항목 (ticket DoD):
   ① parse_codex_json 순수 — thread.started→tid · item.* agent_message→reply · turn.completed.usage
      → usage · 비-JSON/비-dict skip · edge.
   ② driver spawn — 엔진 uuid4 **무시** 하고 출력 파싱 thread_id 반환 · `--json` · `--skip-git-repo-check`
@@ -13,14 +13,14 @@
   ③ driver relay_turn — `resume <tid>` · reply 파싱 · spawn cwd 재사용.
   ④ driver close — 세션 cwd 메타 정리.
   ⑤ fail-soft — timeout·OSError → 빈 reply(루프 생존) · subprocess 폭발 가드.
-  ⑥ driver-side ctx 기계 가드(ADR-0070 D4 ①) — usage 예산 초과 시 stop marker 박제 · 예산 해소
+  ⑥ driver-side ctx 기계 가드(ADR-0070 D4 ①) — usage 예산 초과 시 stop marker 기록 · 예산 해소
      precedence · Supervisor 회전(driver 자신의 가드가 marker → 엔진 무수정 회전).
 
 엔진 Supervisor 재사용(spawn→relay→respawn 회전)은 `test_pm_relay.py` 가 FakeDriver 로 이미 커버 —
-여기선 codex 고유 표면 + codex driver 의 실제 ctx-가드 경로로 회전을 재확인. 엔진 운영코드는
+여기선 codex 고유 범위 + codex driver 의 실제 ctx-가드 경로로 회전을 재확인. 엔진 운영코드는
 무수정(ADR-0009 불변식).
 
-+ live smoke — 실 codex(`@skipif`·기본 skip). 게이트만 둔다 — 본체(연속성·resume·tid==marker·
++ live smoke — 실 codex(`@skipif`·기본 skip). 검사만 둔다 — 본체(연속성·resume·tid==marker·
   과금 수집 N)는 T-0407 몫.
 """
 from __future__ import annotations
@@ -86,9 +86,9 @@ def _codex_stream(tid: str, reply: str, usage: dict | None = None) -> str:
 def _usage_from_wire(orch, **wire) -> dict:
     """wire(`*_tokens` 키·실측 형식)를 **실 파서** 로 정규화해 contract usage 를 얻는다.
 
-    가드 테스트가 파서-정규화 경계를 실제로 타게 해 자기정합 false-green(테스트가 접미사 없는
+    가드 테스트가 파서-정규화 경계를 실제로 타게 해 자기일치 false-green(테스트가 접미사 없는
     contract 키를 직접 지어내 wire→contract 정규화를 건너뛰던 원 결함)을 제거한다 — 정규화가
-    깨지면 used==0 → marker 미박제 → 테스트가 정직하게 실패한다(codex/opencode 리뷰 수렴 결함 방어)."""
+    깨지면 used==0 → marker 미기록 → 테스트가 정직하게 실패한다(codex/opencode 리뷰 마무리 결함 방어)."""
     _, _, usage = contract.parse_codex_json([
         _codex_ev(type="thread.started", thread_id="t"),
         _codex_ev(type="turn.completed", usage=wire),
@@ -149,7 +149,7 @@ def test_parse_codex_extracts_thread_reply_usage(orch):
 
 
 def test_parse_codex_maps_cache_write_input_tokens(orch):
-    """실 wire cache-write 축을 contract 에 보존하되 ctx 점유 합산에는 쓰지 않는다."""
+    """실 wire cache-write 값을 contract 에 보존하되 ctx 점유 합산에는 쓰지 않는다."""
     usage = _usage_from_wire(
         orch, input_tokens=10, cached_input_tokens=4,
         cache_write_input_tokens=3, output_tokens=2,
@@ -261,7 +261,7 @@ def test_parse_codex_usage_takes_last_turn_completed(orch):
 def test_parse_codex_usage_reads_only_tokens_suffix_keys(orch):
     """회귀 가드 — 파서는 **`*_tokens` wire 키만** 읽는다(접미사 없는 키는 0).
 
-    원 결함(codex/opencode 리뷰 수렴): 접미사 없는 `input`/`output` 을 읽어 실 codex 의 `input_tokens`
+    원 결함(codex/opencode 리뷰 마무리): 접미사 없는 `input`/`output` 을 읽어 실 codex 의 `input_tokens`
     를 놓쳐 used==0 → ctx 가드 영구 사멸. 접미사 없는 키만 담긴 usage 는 전부 0 으로 정규화돼야 한다."""
     lines = [
         _codex_ev(type="thread.started", thread_id="t8"),
@@ -334,10 +334,10 @@ def test_codex_driver_spawn_without_engine_type_falls_back_to_tuple(driver_mod):
 
 
 def test_codex_driver_spawn_thread_parse_failure_raises(orch, driver_mod):
-    """thread_id 파싱 실패 = 치명·명시 중단 (opencode sid-fail 동형).
+    """thread_id 파싱 실패 = 치명·명시 중단 (opencode sid-fail 과 같은 구조).
 
-    codex 는 thread_id 사전지정 불가라 uuid 폴백 시 `resume <uuid>` 가 존재하지 않는 세션을
-    가리켜 연속성 침묵 파손 → 폴백 대신 RuntimeError 로 명시 중단(relay 는 유효 세션 없이 못 돈다)."""
+    codex 는 thread_id 사전지정 불가라 uuid 대체 시 `resume <uuid>` 가 존재하지 않는 세션을
+    가리켜 연속성 침묵 파손 → 대체 대신 RuntimeError 로 명시 중단(relay 는 유효 세션 없이 못 돈다)."""
     def fake_run(cmd, **kwargs):
         return _FakeCompleted("no thread here\nplain text")  # 비-JSON → tid None.
 
@@ -480,10 +480,10 @@ def test_codex_driver_does_not_spawn_real_subprocess(orch, driver_mod, monkeypat
     assert driver.relay_turn(tid, "x") == "READY"
 
 
-# ── ⑥ driver-side ctx 기계 가드 (ADR-0070 D4 ①·usage 예산 초과 → marker 박제) ──
+# ── ⑥ driver-side ctx 기계 가드 (ADR-0070 D4 ①·usage 예산 초과 → marker 기록) ──
 
 def test_codex_maybe_mark_ctx_writes_marker_over_budget(orch, driver_mod, tmp_path):
-    """실 wire usage 가 예산 회전점(쓴 % 80 = 압축 임박 경고 기본값)에 도달하면 driver 가 post-turn marker 를 박제 →
+    """실 wire usage 가 예산 회전점(쓴 % 80 = 압축 임박 경고 기본값)에 도달하면 driver 가 post-turn marker 를 기록 →
     supervisor 가 stat 가능(엔진 write_post_turn_marker DI). used = input+output."""
     driver = driver_mod.CodexCliDriver(
         contract.parse_codex_json, spawn_result=relay.SpawnResult, mark_ctx_if_over=relay.mark_ctx_post_turn_if_over, ctx_budget=1000, precompact_at_pct=80,
@@ -500,7 +500,7 @@ def test_relay_usage_stop_marker_is_proactive_guard_when_nonblocking_hook_is_obs
     """compaction 훅 systemMessage는 미도달이므로 relay의 proactive driver 회전이 실보호 경로다.
 
     T-0770 라이브 실측으로 도달 여부가 **채널별로 갈린다**는 사실이 확정됐다 — 진입점 훅의
-    additionalContext 는 모델에 닿고, compaction 훅 systemMessage 는 닿지 않는다. relay 축의
+    additionalContext 는 모델에 닿고, compaction 훅 systemMessage 는 닿지 않는다. relay 쪽의
     근거는 후자 하나이므로 그 채널로 한정해 고정한다(옛 무조건 문장은 재등장 금지).
     """
     readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
@@ -525,7 +525,7 @@ def test_codex_maybe_mark_ctx_noop_under_budget(orch, driver_mod, tmp_path):
 
 
 def test_codex_maybe_mark_ctx_diffs_measured_thread_totals(orch, driver_mod, tmp_path):
-    """프로브 실측 누계 14358→30449→47201은 각 turn 차분만 판정해 조기 발화하지 않는다.
+    """프로브 실측 누계 14358→30449→47201은 각 turn 차분만 판정해 조기 실행하지 않는다.
 
     budget=40000·stop=20의 임계는 32000이다. 구 구현은 세 번째 누계 47201을 turn 점유로
     오독해 marker를 박았으므로 이 테스트가 old-red 회귀 가드다. 실제 차분은 14358, 16091,
@@ -541,16 +541,16 @@ def test_codex_maybe_mark_ctx_diffs_measured_thread_totals(orch, driver_mod, tmp
     assert driver._last_total["tid_probe"] == 47_201
 
 
-def test_codex_maybe_mark_ctx_marks_when_turn_delta_is_over_budget(orch, driver_mod, tmp_path):
+def test_codex_maybe_mark_ctx_marks_when_turn_difference_is_over_budget(orch, driver_mod, tmp_path):
     """누계 자체가 아니라 현 turn 차분이 임계에 닿을 때 엔진 헬퍼가 marker를 박는다."""
     driver = driver_mod.CodexCliDriver(
         contract.parse_codex_json, spawn_result=relay.SpawnResult, mark_ctx_if_over=relay.mark_ctx_post_turn_if_over, ctx_budget=1000, precompact_at_pct=80,
         mark_stop=orch.write_post_turn_marker, root=tmp_path,
     )
-    driver._maybe_mark_ctx("tid_delta", _usage_from_wire(orch, input_tokens=100))
-    assert orch.stop_marker_present(tmp_path, "tid_delta") is False
-    driver._maybe_mark_ctx("tid_delta", _usage_from_wire(orch, input_tokens=900))
-    assert orch.stop_marker_present(tmp_path, "tid_delta") is True
+    driver._maybe_mark_ctx("tid_difference", _usage_from_wire(orch, input_tokens=100))
+    assert orch.stop_marker_present(tmp_path, "tid_difference") is False
+    driver._maybe_mark_ctx("tid_difference", _usage_from_wire(orch, input_tokens=900))
+    assert orch.stop_marker_present(tmp_path, "tid_difference") is True
 
 
 def test_codex_maybe_mark_ctx_warns_when_marker_write_fails(
@@ -570,7 +570,7 @@ def test_codex_maybe_mark_ctx_warns_when_marker_write_fails(
 
 def test_codex_maybe_mark_ctx_prefers_rollout_last_turn_usage(
         orch, driver_mod, tmp_path, monkeypatch):
-    """rollout 누계-input anchor가 wire와 일치하면 마지막 요청 total을 1순위로 쓴다."""
+    """rollout 누계-input 기준값이 wire와 일치하면 마지막 요청 total을 1순위로 쓴다."""
     codex_home = tmp_path / "codex-home"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     _write_rollout(codex_home, "tid_precise", 650, cumulative_input=850)
@@ -590,9 +590,9 @@ def test_codex_maybe_mark_ctx_prefers_rollout_last_turn_usage(
 
 def test_codex_maybe_mark_ctx_stale_rollout_falls_back_and_rotates(
         orch, driver_mod, tmp_path, monkeypatch):
-    """작은 옛 rollout은 누계-input anchor 불일치로 버리고 최신 wire 차분으로 회전한다.
+    """작은 옛 rollout은 누계-input 기준값 불일치로 버리고 최신 wire 차분으로 회전한다.
 
-    old-red: anchor 검증 전에는 stale total=100을 채택해 임계 800 미달로 회전을 억제했다.
+    old-red: 기준값 검증 전에는 stale total=100을 채택해 임계 800 미달로 회전을 억제했다.
     """
     codex_home = tmp_path / "codex-home"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
@@ -608,7 +608,7 @@ def test_codex_maybe_mark_ctx_stale_rollout_falls_back_and_rotates(
     assert orch.stop_marker_present(tmp_path, "tid_stale") is True
 
 
-def test_codex_maybe_mark_ctx_without_rollout_falls_back_to_cumulative_delta(
+def test_codex_maybe_mark_ctx_without_rollout_falls_back_to_cumulative_difference(
         orch, driver_mod, tmp_path, monkeypatch):
     """rollout 파일이 없으면 input+output 누계 차분을 fail-soft 상한 근사로 사용한다."""
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
@@ -627,7 +627,7 @@ def test_codex_maybe_mark_ctx_without_rollout_falls_back_to_cumulative_delta(
 
 def test_codex_maybe_mark_ctx_multicall_turn_uses_precise_rollout_value(
         orch, driver_mod, tmp_path, monkeypatch):
-    """anchor가 맞으면 다중호출 차분보다 rollout의 마지막 요청 점유가 회전을 결정한다."""
+    """기준값이 맞으면 다중호출 차분보다 rollout의 마지막 요청 점유가 회전을 결정한다."""
     codex_home = tmp_path / "codex-home"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     _write_rollout(codex_home, "tid_multicall", 600, cumulative_input=800)
@@ -664,7 +664,7 @@ def test_codex_maybe_mark_ctx_excludes_cached_input(orch, driver_mod, tmp_path):
 
     실측: input_tokens 가 cached_input_tokens 를 포함(input ⊃ cached). used = input+output
     = 500+100 = 600 < 800(정지점). cached 400 을 더하면 1000 ≥ 800 이라 이 가드가 깨지면(누가 cached
-    를 합산하면) marker 가 잘못 박제돼 이 테스트가 실패한다."""
+    를 합산하면) marker 가 잘못 기록돼 이 테스트가 실패한다."""
     driver = driver_mod.CodexCliDriver(
         contract.parse_codex_json, spawn_result=relay.SpawnResult, mark_ctx_if_over=relay.mark_ctx_post_turn_if_over, ctx_budget=1000, precompact_at_pct=80,
         mark_stop=orch.write_post_turn_marker, root=tmp_path,
@@ -703,7 +703,7 @@ def test_codex_maybe_mark_ctx_disabled_without_mark_stop(orch, driver_mod, tmp_p
     driver = driver_mod.CodexCliDriver(
         contract.parse_codex_json, spawn_result=relay.SpawnResult, mark_ctx_if_over=relay.mark_ctx_post_turn_if_over, ctx_budget=1000, precompact_at_pct=80, mark_stop=None, root=tmp_path,
     )
-    # 예외 없이 통과(박제 트리거 자체가 없음).
+    # 예외 없이 통과(기록 트리거 자체가 없음).
     driver._maybe_mark_ctx("tid_y", _usage_from_wire(orch, input_tokens=10 ** 9))
     assert orch.stop_marker_present(tmp_path, "tid_y") is False
 
@@ -711,11 +711,11 @@ def test_codex_maybe_mark_ctx_disabled_without_mark_stop(orch, driver_mod, tmp_p
 # ── 엔진 Supervisor + codex driver 결합 (post-turn 회전·재호출 금지·codex R2 핵심 가드) ──
 
 def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_path):
-    """codex post-turn marker 회전 — turn 실행 *후* 박제라 그 입력을 **재호출하지 않는다**(이중 실행 방지).
+    """codex post-turn marker 회전 — turn 실행 *후* 기록이라 그 입력을 **재호출하지 않는다**(이중 실행 방지).
 
     opencode/claude pre-turn(입력 *처리 전* 차단)은 회전 후 그 입력을 재호출하지만, codex 는 turn 이
     이미 실행·응답됐으므로 Supervisor 가 재호출 없이 회전한다(codex R2 must-fix). marker 는 codex
-    driver 자신의 `_maybe_mark_ctx`(usage 예산 초과 → 엔진 write_post_turn_marker)가 박제 — 통합 경로.
+    driver 자신의 `_maybe_mark_ctx`(usage 예산 초과 → 엔진 write_post_turn_marker)가 기록 — 통합 경로.
     'first' 입력이 정확히 **1회만** relay(부작용 1회)되고 회전이 일어남을 단언. (구 pre-turn 재호출이면
     'first' 가 2회 relay 돼 이 단언이 실패 → 이중 실행 결함을 못박는다.)"""
     relayed = []          # relay 로 전달된 프롬프트 순서(spawn bootstrap 은 제외).
@@ -728,7 +728,7 @@ def test_supervisor_with_codex_driver_post_turn_no_resend(orch, driver_mod, tmp_
         prompt = kwargs["input"]
         relayed.append(prompt)
         tid = cmd[cmd.index("resume") + 1]
-        # 'first' turn 만 예산 초과(실 wire 키) → driver 가 post-turn marker 박제(그 turn 은 이미 실행됨).
+        # 'first' turn 만 예산 초과(실 wire 키) → driver 가 post-turn marker 기록(그 turn 은 이미 실행됨).
         usage = ({"input_tokens": 900, "output_tokens": 100, "reasoning_output_tokens": 0}
                  if prompt == "first" else None)
         return _FakeCompleted(_codex_stream(tid, f"reply:{prompt}", usage=usage))
@@ -758,7 +758,7 @@ def test_supervisor_codex_spawn_marker_rotates_before_first_input(orch, driver_m
     def fake_run(cmd, **kwargs):
         if "resume" not in cmd:  # spawn(bootstrap turn).
             spawn_count["n"] += 1
-            # 첫 spawn 의 bootstrap turn 만 예산 초과 → codex driver 가 post-turn marker 박제.
+            # 첫 spawn 의 bootstrap turn 만 예산 초과 → codex driver 가 post-turn marker 기록.
             usage = ({"input_tokens": 900, "output_tokens": 100, "reasoning_output_tokens": 0}
                      if spawn_count["n"] == 1 else None)
             return _FakeCompleted(_codex_stream(f"tid{spawn_count['n']}", "READY", usage=usage))
@@ -779,7 +779,7 @@ def test_supervisor_codex_spawn_marker_rotates_before_first_input(orch, driver_m
     assert relayed == [("tid2", "input1")]
 
 
-# ── driver CLI 배선 (parser·main·repo_root) ───────────────────────────────────
+# ── driver CLI 연결 (parser·main·repo_root) ───────────────────────────────────
 
 def test_codex_driver_parser_flags(driver_mod):
     parser = driver_mod.build_parser()
@@ -801,8 +801,8 @@ def test_codex_main_without_task_is_refused_before_engine(driver_mod, monkeypatc
     assert "relay 에는 --task <task> 가 필요하다" in capsys.readouterr().err
 
 
-def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatch, tmp_path):
-    """main이 task/local.conf와 엔진 판정·SpawnResult seam을 driver에 명시 주입한다(run_relay 구성)."""
+def test_codex_main_forwards_task_budget_and_engine_overrides(driver_mod, monkeypatch, tmp_path):
+    """main이 task/local.conf와 엔진 판정·SpawnResult 교체 지점을 driver에 명시 주입한다(run_relay 구성)."""
     captured: dict = {}
 
     class _FakeSup:
@@ -813,7 +813,7 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
         def run_loop(self, cwd, in_stream, out_stream):
             return 0
 
-    # local.conf codex 예산·정지임계 주입 확인(해소 precedence 가 main 배선에 실제로 닿음).
+    # local.conf codex 예산·정지임계 주입 확인(해소 precedence 가 main 연결에 실제로 닿음).
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "harness.codex.ctx_window_tokens=333000\nctx.precompact_at_pct=85\n", encoding="utf-8")
@@ -840,9 +840,9 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
 def test_codex_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):
     """repo_root 는 driver 설치 자리(.codex/)의 부모다 — 조상을 훑지 않는다.
 
-    바깥 트리에만 엔진 사본이 있는 중첩 형상에서 조상 훑기는 바깥 루트를 답하고 `.parent`
-    는 자기 루트를 답한다. 어댑터가 위에 있는 남의 PM 홈에 착지하지 않게 하는 축이다
-    (claude ctx_guard.repo_root 동형).
+    바깥 트리에만 엔진 사본이 있는 중첩 구성에서 조상 훑기는 바깥 루트를 답하고 `.parent`
+    는 자기 루트를 답한다. 어댑터가 위에 있는 남의 PM 홈에 착지하지 않게 하는 기준이다
+    (claude ctx_guard.repo_root 와 같음).
     """
     outer = tmp_path / "outer"
     (outer / ".project_manager" / "tools").mkdir(parents=True)
@@ -855,15 +855,15 @@ def test_codex_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):
     assert driver_mod.repo_root(nested) == root.resolve()
 
 
-# ── codex 고유 라이브 실측 (T-0407·codex-cli 0.144.6·gpt-5.5·격리 CODEX_HOME·spike §6 잔여 해소) ──
-# 아래 4건은 라이브(실 codex)로 실측한 결과를 박제한다(코드 주석=실측 로그·재현 커맨드는 보고 참조).
-# 라이브 게이트(relay smoke)의 자동 단언은 spawn→resume·usage 누적이고, 아래는 관측 결과 기록이다.
+# ── codex 고유 라이브 실측 (T-0407·codex-cli 0.144.6·gpt-5.5·격리 CODEX_HOME·spike §6 남은 항목 해소) ──
+# 아래 4건은 라이브(실 codex)로 실측한 결과를 기록한다(코드 주석=실측 로그·재현 커맨드는 보고 참조).
+# 라이브 시험(relay smoke)의 자동 단언은 spawn→resume·usage 누적이고, 아래는 관측 결과 기록이다.
 #
 #   ① skills discovery — codex 는 adopter `.agents/skills/*/SKILL.md`(cwd→root 스캔·trusted project)를
 #      네이티브 발견한다. 실측: canonical 15 스킬 전부 열거(pm-adr·pm-ticket·pm-handoff·pm-review·…·
-#      spike-new). auto-trigger 는 description 매칭 implicit 발화가 기본이나(§6 위험), "나열만 하고
-#      호출 말라" 중립 프롬프트엔 발화 없이 열거만 함(발견≠강제발화). description-매칭 프롬프트의 과대
-#      발화 억제(per-skill allow_implicit_invocation)는 관찰 시 후속 티켓(§6·현 어댑터 기본 미설정).
+#      spike-new). auto-trigger 는 description 매칭 implicit 실행이 기본이나(§6 위험), "나열만 하고
+#      호출 말라" 중립 프롬프트엔 실행 없이 열거만 함(발견≠강제실행). description-매칭 프롬프트의 과대
+#      실행 억제(per-skill allow_implicit_invocation)는 관찰 시 후속 티켓(§6·현 어댑터 기본 미설정).
 #   ② TUI env 마커 — codex shell tool env 에 `CODEX_THREAD_ID=<tid>`·`CODEX_CI=1`·
 #      `CODEX_SANDBOX_NETWORK_DISABLED` 실재(실측 로그 원문 — 앞의 둘만 판정 원천이고 셋째는
 #      T-0887 에서 폐지, 현재 `_is_codex_harness` 마커는 `CODEX_THREAD_ID`·`CODEX_CI` 둘뿐이다).
@@ -876,16 +876,16 @@ def test_codex_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):
 #      현행 PreCompact는 compaction을 통과시키고 checkpoint 기록을 안내한다.
 #   ④ hooks PreCompact 1>&2 셸-실행(T-0406 전제) — codex 는 hooks.json 의 문자열 command 를 **셸로
 #      해석**한다. 실측: `echo … 1> <file>` 셸 리다이렉션이 파일을 생성(content 정확) → 같은 리다이렉션
-#      클래스인 shipped `echo '…' 1>&2` 는 유효(stdout→stderr). **단 hook 은 trust 승인 후에만 발화** —
-#      무승인 exec 에선 hook 미발화, `--dangerously-bypass-hook-trust`(또는 `/hooks` 승인)에서 발화
-#      (D5 trust 2단계 안내 정합·T-0406 hooks.json 유효성 확인).
+#      클래스인 shipped `echo '…' 1>&2` 는 유효(stdout→stderr). **단 hook 은 trust 승인 후에만 실행** —
+#      무승인 exec 에선 hook 미실행, `--dangerously-bypass-hook-trust`(또는 `/hooks` 승인)에서 실행
+#      (D5 trust 2단계 안내 일치·T-0406 hooks.json 유효성 확인).
 
 # ── live smoke (실 codex · 기본 skip · PM_RELAY_LIVE on-demand + release tier · T-0407 본체) ────────
 
 PM_RELAY_LIVE = os.environ.get("PM_RELAY_LIVE") == "1"
-# release tier 게이트 — `livegate record`(release wave·PM_ORCH_LIVE_RELEASE=1)에서 이 smoke 가 돌아야
+# release tier 라이브 시험 — `live-test record`(릴리즈·PM_ORCH_LIVE_RELEASE=1)에서 이 smoke 가 돌아야
 # codex 라이브 green 이 릴리즈 pin(수집 N)에 편입된다(ADR-0070 D7). on-demand(PM_RELAY_LIVE)와 릴리즈
-# (PM_ORCH_LIVE_RELEASE) 둘 중 하나면 실행 — 릴리즈 wave 는 후자만 set 하므로 게이트에 합류시킨다.
+# (PM_ORCH_LIVE_RELEASE) 둘 중 하나면 실행 — 릴리즈는 후자만 set 하므로 라이브 시험에 합류시킨다.
 PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 
 
@@ -915,21 +915,21 @@ class _CodexHomeRunner:
 def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
     """실 codex 1회 e2e (T-0407 본체) — spawn→resume 연속성·driver-파싱 tid==marker tid·usage 누적 실측.
 
-    검증 축:
+    검증 항목:
       - **연속성**: spawn 에서 code word(MANGO77)를 심고 `exec resume <tid>` 로 물으면 같은 세션이
         기억을 반환(resume 이 진짜 세션을 이어감·`-C`+resume 실효·티켓 명세 전제 라이브 확인).
       - **tid==marker**: driver 가 codex 출력에서 파싱한 thread_id 로 marker 를 쓰면 supervisor 가 같은
-        sid 로 stat 성공(sid 예측 성립·엔진 회전 배선 전제).
+        sid 로 stat 성공(sid 예측 성립·엔진 회전 연결 전제).
       - **usage 누적 실측**: spawn·resume 2턴의 `turn.completed.usage.input_tokens`를 대조해
-        input이 누계임(turn2 ⊃ turn1)을 단언한다. driver는 이 누계를 turn별 차분 폴백에 쓰고,
-        rollout 정밀 신호가 있으면 `total_token_usage.input_tokens` 신선도 anchor와 대조한다.
+        input이 누계임(turn2 ⊃ turn1)을 단언한다. driver는 이 누계를 turn별 차분 대체 계산에 쓰고,
+        rollout 정밀 신호가 있으면 `total_token_usage.input_tokens` 신선도 기준값과 대조한다.
 
-    ⚠ stdin close(codex 무기한 대기 방어)는 driver 가 프롬프트를 stdin 으로 쓰고 닫아 박제. 격리 CODEX_HOME(auth
+    ⚠ stdin close(codex 무기한 대기 방어)는 driver 가 프롬프트를 stdin 으로 쓰고 닫아 고정. 격리 CODEX_HOME(auth
     복사·종료 시 삭제·runner 가 주입). 기본 skip(라이브 env 미설정·CI green 불변). **@release** — codex
     라이브 green 을 릴리즈 pin(수집 N)에 편입한다(ADR-0070 D7·pin 16→17 커플드 sweep: board.py·
-    `test_release_cluster._EXPECTED_RELEASE_TESTS`+`_RELEASE_TEST_FILES`·`test_worktree_pool._LIVEGATE_RELEASE_PIN`·
+    `test_release_cluster._EXPECTED_RELEASE_TESTS`+`_RELEASE_TEST_FILES`·`regression.LIVE_TEST_RELEASE_PIN`·
     `test_board_live_test` 동시 갱신·templates 는 PM 통합 시 pm_update 전파). 이 smoke 가 skip/누락되면
-    수집<pin 으로 `livegate record` red — codex green 없이 v1.4.0 push 차단(티켓 목표)."""
+    수집<pin 으로 `live-test record` red — codex green 없이 v1.4.0 push 차단(티켓 목표)."""
     home = make_codex_home(tmp_path)
     runner = _CodexHomeRunner(home)
     workdir = tmp_path / "cwd"
@@ -953,14 +953,14 @@ def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
         # driver-파싱 tid == marker tid: 그 tid 로 쓴 marker 를 supervisor 가 stat(sid 예측 성립).
         assert orch.write_post_turn_marker(tmp_path, observed) is True
         assert orch.stop_marker_present(tmp_path, observed) is True
-        # input_tokens 누적 실측(usage 2턴 대조·runner 기록 stdout): 차분·rollout anchor의 원천.
+        # input_tokens 누적 실측(usage 2턴 대조·runner 기록 stdout): 차분·rollout 기준값의 원천.
         _, _, usage1 = contract.parse_codex_json(runner.stdouts[0].splitlines())
         _, _, usage2 = contract.parse_codex_json(runner.stdouts[1].splitlines())
         assert usage1 and usage2, f"usage 파싱 실패 — usage1={usage1} usage2={usage2}"
         # 실측(T-0407·codex 0.144.6): input은 누적 컨텍스트(turn2가 turn1 포함) → turn2 > turn1.
-        # 판정은 이 누계의 turn 차분을 폴백으로 쓰고, rollout이 있으면 같은 누계 input을 anchor로 삼는다.
+        # 판정은 이 누계의 turn 차분을 대체 계산으로 쓰고, rollout이 있으면 같은 누계 input을 기준값으로 삼는다.
         assert usage2["input"] > usage1["input"], (
             f"input_tokens 가 누적이 아님(per-turn?) — turn1={usage1['input']} turn2={usage2['input']}. "
-            "driver의 누계 차분 폴백과 rollout 신선도 anchor 전제를 재검토해야 한다.")
+            "driver의 누계 차분 대체 계산과 rollout 신선도 기준값 전제를 재검토해야 한다.")
     finally:
         drop_codex_auth(home)  # scratch 에 auth 잔류 방지(라이브 규율).

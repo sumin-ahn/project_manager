@@ -1,6 +1,6 @@
 """PM 홈 경로 해소 (층: infra).
 
-`Home` 을 만드는 곳은 `home_at` 하나다. board 루트 graceful 규칙·areas.md 위치 규칙·대여 장부와 회귀·라이브 게이트
+`Home` 을 만드는 곳은 `home_at` 하나다. board 루트 graceful 규칙·areas.md 위치 규칙·대여 기록과 회귀·라이브 시험
 기록 위치·wiki 문서와 채택자 훅 위치·`~` 확장 규칙과 작업 폴더의 소유 PM 홈 유도(`owning_pm_home`)를 소유한다. 설치 깊이는 고정이고 상향 탐색을
 하지 않는다.
 """
@@ -33,7 +33,7 @@ def home_at(
     """`root` 트리의 실행 기준 경로를 만든다.
 
     `pm_home` 은 PM 입력(클론별 설정·작업 디렉터리)을 읽을 PM 홈, `board_root` 는 board 루트다.
-    둘 다 None 이면 `root` 자신의 것을 쓴다. board read 폴백만 둘을 넘긴다.
+    둘 다 None 이면 `root` 자신의 것을 쓴다. board read 대체 경로만 둘을 넘긴다.
     """
     pm_dir = (pm_home if pm_home is not None else root) / ".project_manager"
     return home.Home(
@@ -45,7 +45,7 @@ def home_at(
 
 
 def leases_file(home) -> Path:
-    """worktree 대여 장부 경로 (`worktree_pool` 의 LEASES_FILE 과 같은 위치)."""
+    """worktree 대여 기록 경로 (`worktree_pool` 의 LEASES_FILE 과 같은 위치)."""
     return home.local_dir / "worktree-leases.json"
 
 
@@ -55,7 +55,7 @@ def regression_flag(home) -> Path:
 
 
 def live_test_flag(home) -> Path:
-    """라이브 게이트 기록 경로 (보호 훅이 없는 형상의 기록 위치)."""
+    """라이브 시험 기록 경로 (보호 훅이 없는 구성의 기록 위치)."""
     return home.local_dir / "live-test.json"
 
 
@@ -100,7 +100,7 @@ def areas_file(home) -> Path:
 
 
 def wiki_dir(home) -> Path:
-    """PM 운영 wiki 루트 — `local_dir` 와 같은 `.project_manager` 아래(read 폴백이면 소유 PM 홈의 것)."""
+    """PM 운영 wiki 루트 — `local_dir` 와 같은 `.project_manager` 아래(read 대체 경로면 소유 PM 홈의 것)."""
     return home.local_dir.parent / "wiki"
 
 
@@ -158,7 +158,7 @@ def _git_common_dir_from_files(repo: Path) -> Path | None:
 
     linked worktree의 ``.git`` 파일은 실제 git-dir을, 그 아래 ``commondir``은 공용
     저장소를 가리킨다. snapshot 빌더의 subprocess 0 계약을 넓히지 않으면서 외부 absolute
-    lease slot도 그 저장소를 소유한 PM 홈으로 역추적할 수 있게 하는 순수 파일 seam이다.
+    lease slot도 그 저장소를 소유한 PM 홈으로 역추적할 수 있게 하는 순수 파일 함수다.
     """
     repo = Path(repo).resolve(strict=False)
     try:
@@ -189,10 +189,10 @@ def _git_common_dir_from_files(repo: Path) -> Path | None:
 
 
 class PmHomeResolutionError(RuntimeError):
-    """anchor 자신의 선언에서 소유 PM 홈을 확정하지 못한 오류."""
+    """대상 저장소 자신의 선언에서 소유 PM 홈을 확정하지 못한 오류."""
 
 
-# 두-git 형상의 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 놓인다 — 슬롯을 만든
+# 두-git 구성의 공유 bare 저장소는 PM 홈 안 `.repos/<repo>.git` 에 놓인다 — 슬롯을 만든
 # 도구(`bare_repo_path` = `pm_config.REPOS_DIR / f"{repo}.git"`)가 써 넣은
 # 자리라 조상 추측이 아니라 선언이다.
 _GIT_DIR_NAME = ".git"
@@ -200,7 +200,7 @@ _BARE_REPOS_DIR_NAME = ".repos"
 
 
 def _pm_home_from_common_dir(common_dir: Path) -> Path | None:
-    """공용 Git 저장소 경로에서 그 저장소를 만든 PM 홈을 되돌린다(선언 형상 2종)."""
+    """공용 Git 저장소 경로에서 그 저장소를 만든 PM 홈을 되돌린다(선언 구성 2종)."""
     if common_dir.name == _GIT_DIR_NAME:
         # `<X>/.git` — 단일-git PM 홈이 자기 checkout 에서 판 worktree.
         return common_dir.parent
@@ -208,54 +208,54 @@ def _pm_home_from_common_dir(common_dir: Path) -> Path | None:
         common_dir.suffix == _GIT_DIR_NAME
         and common_dir.parent.name == _BARE_REPOS_DIR_NAME
     ):
-        # `<X>/.repos/<repo>.git` — worktree 풀이 만든 두-git 슬롯과 그 슬롯에서 판 스냅샷.
+        # `<X>/.repos/<repo>.git` — worktree 풀이 만든 두-git 슬롯과 그 슬롯에서 판 사본.
         return common_dir.parent.parent
     return None
 
 
-def owning_pm_home(anchor: Path) -> Path:
-    """anchor 자신이 들고 있는 선언만으로 소유 PM 홈을 유도한다 — 답은 하나이거나 예외다.
+def owning_pm_home(target_repo: Path) -> Path:
+    """대상 저장소 자신이 들고 있는 선언만으로 소유 PM 홈을 유도한다 — 답은 하나이거나 예외다.
 
-    입력은 anchor 의 `.git` 포인터(슬롯을 만든 도구가 쓴 값) 하나다. 조상 훑기·cwd·환경·
+    입력은 대상 저장소의 `.git` 포인터(슬롯을 만든 도구가 쓴 값) 하나다. 조상 훑기·cwd·환경·
     subprocess 를 쓰지 않으므로 같은 모양의 트리는 파일시스템 어디에 있어도 같은 답을 낸다.
 
-      - `.git` 없음/디렉터리        → anchor 자신 (아무의 linked worktree 도 아니다)
+      - `.git` 없음/디렉터리        → 대상 저장소 자신 (아무의 linked worktree 도 아니다)
       - `.git` 파일 → `<X>/.repos/<repo>.git` 또는 `<X>/.git` → `X`
       - 그 밖의 commondir           → 실패
 
-    유도된 `X` 는 `<X>/.project_manager` 실재를 요구하고, 부재는 실패다 — 못 받으면 anchor
-    자신으로 강등하지 않는다.
+    유도된 `X` 는 `<X>/.project_manager` 실재를 요구하고, 부재는 실패다 — 못 받으면 대상 저장소
+    자신으로 대신하지 않는다.
 
-    lease 장부는 판정 입력이 아니다. 그 파일은 어느 슬롯을 누구에게 빌려줬는지 적는 슬롯 배정
-    원장이지 소유 증거가 아니며, gitignored·per-clone 이라 anchor 의 함수도 아니다. 소유는
-    commondir 형상이 이미 정한다 — `<X>/.repos/<repo>.git` 이면 X 가 그 bare 를 만든 주체이고
+    lease 대여 기록은 판정 입력이 아니다. 그 파일은 어느 슬롯을 누구에게 빌려줬는지 적는 슬롯 배정
+    기록이지 소유 증거가 아니며, gitignored·per-clone 이라 대상 저장소의 함수도 아니다. 소유는
+    commondir 구성이 이미 정한다 — `<X>/.repos/<repo>.git` 이면 X 가 그 bare 를 만든 주체이고
     `<X>/.git` 이면 X 가 main checkout 이다.
     """
-    anchor = Path(anchor).resolve(strict=False)
-    if not (anchor / _GIT_DIR_NAME).is_file():
+    target_repo = Path(target_repo).resolve(strict=False)
+    if not (target_repo / _GIT_DIR_NAME).is_file():
         # 없음(합성 트리·비-git 채택 폴더) · 디렉터리(PM 홈 main checkout·일반 clone).
-        return anchor
-    common_dir = _git_common_dir_from_files(anchor)
+        return target_repo
+    common_dir = _git_common_dir_from_files(target_repo)
     if common_dir is None:
         raise PmHomeResolutionError(
-            f"{anchor}: `.git` 포인터에서 공용 Git 저장소를 읽지 못했습니다."
+            f"{target_repo}: `.git` 포인터에서 공용 Git 저장소를 읽지 못했습니다."
         )
     pm_home = _pm_home_from_common_dir(common_dir)
     if pm_home is None:
         raise PmHomeResolutionError(
-            f"{anchor}: 공용 Git 저장소 {common_dir} 구성에서 소유 PM 홈을 찾지 못했습니다."
+            f"{target_repo}: 공용 Git 저장소 {common_dir} 구성에서 소유 PM 홈을 찾지 못했습니다."
         )
     pm_home = pm_home.resolve(strict=False)
     if not (pm_home / ".project_manager").is_dir():
         raise PmHomeResolutionError(
-            f"{anchor}: 공용 Git 저장소 {common_dir} 의 소유 PM 홈을 찾지 못했습니다 — "
+            f"{target_repo}: 공용 Git 저장소 {common_dir} 의 소유 PM 홈을 찾지 못했습니다 — "
             f"{pm_home} 에 .project_manager 가 없습니다."
         )
     return pm_home
 
 
 def _expanduser_path(path: Path) -> Path:
-    """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
+    """`~`/`~user` 확장의 플랫폼 교체 지점 — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
     return path.expanduser()
 
 
@@ -269,8 +269,8 @@ def _expanded_user_path(value: str) -> Path:
     자리에서 phantom 홈 경로로 raw installer 까지 갔다). `~user` 형태는 **그 사용자 홈의 실재**를
     판정에 넣어 두 플랫폼이 같은 결론에 도달하게 한다.
 
-    `~`(현재 사용자)는 두 플랫폼이 같은 환경변수 축(HOME/USERPROFILE)으로 확장하므로 분기가
-    갈리지 않는다 — 실재 검사를 걸지 않는다(홈 디렉터리가 아직 없는 정상 형상까지 막지 않게).
+    `~`(현재 사용자)는 두 플랫폼이 같은 환경변수 계열(HOME/USERPROFILE)로 확장하므로 분기가
+    갈리지 않는다 — 실재 검사를 걸지 않는다(홈 디렉터리가 아직 없는 정상 구성까지 막지 않게).
     소유 repo 해소(board)·`core.hooksPath` 확장(pre_push_hook)·보호 훅 설치(pm_config)가 이 함수를 쓴다.
     """
     path = Path(value)
@@ -285,27 +285,27 @@ def _expanded_user_path(value: str) -> Path:
     return expanded
 
 
-class AnchorResolutionError(RuntimeError):
-    """명시 입력에서 diff/board/config 앵커를 유일하게 해소하지 못한 오류."""
+class TargetRepoResolutionError(RuntimeError):
+    """명시 입력에서 diff/board/config 대상 저장소를 유일하게 해소하지 못한 오류."""
 
 
-def resolve_pm_home_for_repo(anchor: Path) -> Path:
-    """repo/worktree가 소속된 PM 홈을 anchor 자신의 선언으로 해소한다 — 답은 하나이거나 예외다.
+def resolve_pm_home_for_repo(target_repo: Path) -> Path:
+    """repo/worktree가 소속된 PM 홈을 대상 저장소 자신의 선언으로 해소한다 — 답은 하나이거나 예외다.
 
-    판정 입력은 `owning_pm_home` 유도 하나다: anchor 의 `.git` 포인터가 가리키는 공용
+    판정 입력은 `owning_pm_home` 유도 하나다: 대상 저장소의 `.git` 포인터가 가리키는 공용
     저장소가 소유 PM 홈을 지목하고, 그 홈에 `.project_manager` 가 실재하는지만 확인한다.
     `.git` 이 없거나 디렉터리인 트리(PM 홈 main checkout·일반 clone)는 자기 자신이라는
-    확정된 답이다. 미지 commondir·`.project_manager` 부재는 `AnchorResolutionError` 다 —
-    자기 앵커로 강등해 계속 진행하지 않는다.
+    확정된 답이다. 미지 commondir·`.project_manager` 부재는 `TargetRepoResolutionError` 다 —
+    자기 위치로 대신해 계속 진행하지 않는다.
 
-    앵커가 실 board 를 갖는지는 판정 입력이 아니다. 사본 안에 실 ticket 이 있다는 이유로
-    조기 반환하면, 소유자를 확정하지 못한 트리가 휘발 장부에 라운드를 기록할 수 있다.
+    대상 저장소가 실 board 를 갖는지는 판정 입력이 아니다. 사본 안에 실 ticket 이 있다는 이유로
+    조기 반환하면, 소유자를 확정하지 못한 트리가 휘발 기록에 라운드를 기록할 수 있다.
     """
-    anchor = anchor.resolve()
+    target_repo = target_repo.resolve()
     try:
-        pm_home = owning_pm_home(anchor)
+        pm_home = owning_pm_home(target_repo)
     except PmHomeResolutionError as exc:
-        raise AnchorResolutionError(str(exc)) from exc
+        raise TargetRepoResolutionError(str(exc)) from exc
     return pm_home
 
 
@@ -324,12 +324,12 @@ def bare_repo_path(home, repo: str) -> Path:
 
 
 def task_dir(home, name: str) -> Path:
-    """task 서술 공간 `.local/tasks/<name>/` 경로 (pm_state.md·메타). 기계 상태는 장부·서술만 여기."""
+    """task 서술 공간 `.local/tasks/<name>/` 경로 (pm_state.md·메타). 기계 상태는 대여 기록·서술만 여기."""
     return tasks_dir(home) / name
 
 
 def task_pm_state_file(home, name: str) -> Path:
-    """task 연속성 단일 앵커 `.local/tasks/<name>/pm_state.md` 경로."""
+    """task 연속성 단일 기준 `.local/tasks/<name>/pm_state.md` 경로."""
     return task_dir(home, name) / "pm_state.md"
 
 
@@ -344,7 +344,7 @@ def _task_todo_lock_file(home, name: str) -> Path:
 
 
 def _task_pm_state_template_file(home) -> Path:
-    """task state seed 원천 — 호출 시점 REPO를 따라 hermetic 재배선과 실제 실행을 함께 지원."""
+    """task state seed 원천 — 호출 시점 REPO를 따라 hermetic 재설정과 실제 실행을 함께 지원."""
     return home.root / ".project_manager" / "wiki" / "pm_state.template.md"
 
 
@@ -384,7 +384,7 @@ def _has_real_board(pm_dir: Path) -> bool:
 
     board/ 분리(submodule)면 `board/tickets`, legacy 면 `wiki/tickets` 의 상태
     디렉토리에 실 티켓(`T-*.md`)이 하나라도 있으면 True. 빈 scaffold(README/_template/
-    `.gitkeep` 만 — worktree 출하 형상)는 False: worktree 자신의 scaffold 를 '실 board' 로
+    `.gitkeep` 만 — worktree 출하 구성)는 False: worktree 자신의 scaffold 를 '실 board' 로
     오인해 가드를 무력화하지 않게 한다.
     """
     for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
@@ -397,13 +397,13 @@ def _has_real_board(pm_dir: Path) -> bool:
     return False
 
 
-def _pm_home_worktree_misanchor(home) -> Path | None:
-    """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 면 그 PM 홈 경로를,
+def _pm_home_worktree_wrong_repo(home) -> Path | None:
+    """`target_repo`(도구 자기 위치=REPO)가 **다른 PM 홈의 등록 worktree** 면 그 PM 홈 경로를,
     아니면 None.
 
-    소유 판정은 `owning_pm_home` 유도 하나가 낸다 — anchor 자신이 실 board 를 가지면
-    자기 것이고(자체 board 사용 존중), 그 밖에는 anchor 의 `.git` 선언이 답을 정한다. 유도가
-    실패하면 자기 앵커로 강등하지 않고 그대로 올린다(fail-loud).
+    소유 판정은 `owning_pm_home` 유도 하나가 낸다 — 대상 저장소 자신이 실 board 를 가지면
+    자기 것이고(자체 board 사용 존중), 그 밖에는 대상 저장소의 `.git` 선언이 답을 정한다. 유도가
+    실패하면 자기 위치로 대신하지 않고 그대로 올린다(fail-loud).
     """
     if _has_real_board(home.root / ".project_manager"):
         return None
@@ -412,7 +412,7 @@ def _pm_home_worktree_misanchor(home) -> Path | None:
 
 
 class _ReadBoardResolution(NamedTuple):
-    """read dispatch의 board 해소 결과. home이 None이면 자기 앵커의 board를 그대로 쓴다."""
+    """read dispatch의 board 해소 결과. home이 None이면 자기 위치의 board를 그대로 쓴다."""
 
     root: Path
     home: Path | None
@@ -421,8 +421,8 @@ class _ReadBoardResolution(NamedTuple):
 def _resolve_read_board(home) -> _ReadBoardResolution:
     """read-only board를 uniform 규칙으로 해소한다.
 
-    자기 앵커가 실제 board를 가지면 그대로 쓴다. 그 밖에는 `owning_pm_home` 유도가
-    소유 PM 홈을 낸다 — 유도 결과가 앵커 자신이면 legacy/비분리 graceful 경로를 그대로
+    자기 위치가 실제 board를 가지면 그대로 쓴다. 그 밖에는 `owning_pm_home` 유도가
+    소유 PM 홈을 낸다 — 유도 결과가 대상 저장소 자신이면 legacy/비분리 graceful 경로를 그대로
     보존하고, 다른 홈이면 그 board를 연다. 유도 실패는 여기서 삼키지 않는다 — 같은 실패가
     mutation 경로에서는 traceback, read 경로에서는 안내로 갈리지 않도록 번역은 `main()`
     한 곳이 한다.
@@ -476,22 +476,22 @@ def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) 
     return not ticket_selected and not explicit_paths
 
 
-# ── PM 홈 앵커 재지정 감지 (adopter#0 false-green 게이트) ────────────────
+# ── PM 홈 대상 저장소 재지정 감지 (adopter#0 false-green 검사) ────────────────
 # additional_reviewer 의 import 사본은 PM 홈에 있어 REPO 가 PM 홈으로
 # 해소된다 — 실 코드 변경은 canonical worktree에 있으므로 `git diff` 가 비어 codex 가 "변경
 # 없음"을 통과로 판정하는 false-green 이 난다.
-# board.py `_pm_home_worktree_misanchor`의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
+# board.py `_pm_home_worktree_wrong_repo`의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
 # 잡고, 여긴 PM 홈에서 실행된 추가 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
-# 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 anchor/conf 를
-# 명시 인자로 받아 DI seam 이 된다. 판정 *형태*는 board `_has_real_board` 동형이되 상태 집합은
+# 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 target_repo/conf 를
+# 명시 인자로 받아 DI 교체 지점이 된다. 판정 *형태*는 board `_has_real_board` 와 같은 구조이되 상태 집합은
 # 복제하지 않고 단일 진실(`ticket_rules.STATUS_DIRS`)을 승계한다 — 사본은 새 상태에서 갈린다.
 
 def _owns_real_board(pm_dir: Path) -> bool:
     """`.project_manager` 디렉토리(`pm_dir`)가 실 티켓(`T-*.md`)을 가진 board 를 소유하는가.
 
     board/ 분리면 `board/tickets`, legacy 면 `wiki/tickets` 상태 디렉토리에 실 티켓이
-    하나라도 있으면 True. 빈 scaffold(README/_template 만 — worktree 출하 형상)는 False (worktree
-    자신을 PM 홈으로 오인해 가드 오탐 내지 않게·board.py `_has_real_board` 동형)."""
+    하나라도 있으면 True. 빈 scaffold(README/_template 만 — worktree 출하 구성)는 False (worktree
+    자신을 PM 홈으로 오인해 가드 오탐 내지 않게·board.py `_has_real_board` 와 같은 구조)."""
     for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
         if not base.is_dir():
             continue
@@ -502,20 +502,20 @@ def _owns_real_board(pm_dir: Path) -> bool:
     return False
 
 
-def _canonical_worktree(anchor: Path) -> Path | None:
-    """adopter#0 PM 홈 `anchor` 의 canonical 코드 worktree(재지정 대상) 경로 — 없으면 None.
+def _canonical_worktree(target_repo: Path) -> Path | None:
+    """adopter#0 PM 홈 `target_repo` 의 canonical 코드 worktree(재지정 대상) 경로 — 없으면 None.
 
-    `<anchor>/work/*` 스캔 중 엔진 사본(`.project_manager/tools/additional_reviewer.py`)을 가진 첫
-    디렉토리를 반환한다(슬롯 생성 도구가 쓰는 `work/<name>` 경로 관례와 동형). 없으면
-    None(무관 형상·재지정 대상 없음).
+    `<target_repo>/work/*` 스캔 중 엔진 사본(`.project_manager/tools/additional_reviewer.py`)을 가진 첫
+    디렉토리를 반환한다(슬롯 생성 도구가 쓰는 `work/<name>` 경로 관례와 같은 구조). 없으면
+    None(무관 구성·재지정 대상 없음).
 
     local.conf `upstream.path` 은 재지정 대상 결정에 **쓰지 않는다** — upstream 은 URL 이거나 무관한
     로컬 checkout(`pm_import --from <로컬>`)일 수 있어, 실 board 를
     소유한 정규 채택자에서 stale/무관 checkout 으로 오안내하며 정상 리뷰를 hard-block 한다(빈-diff
     백스톱도 실 diff 가 non-empty 면 무력). `work/` 슬롯 스캔만으로 adopter#0재지정을
     완전 커버하고, upstream 분기는 잉여+오탐만 더한다 — 제거가 동등 커버리지·최소·오탐 0(codex/reviewer
-    이중 게이트 수렴 must-fix)."""
-    work_dir = anchor / "work"
+    이중 리뷰 마무리 must-fix)."""
+    work_dir = target_repo / "work"
     if work_dir.is_dir():
         for sub in sorted(work_dir.iterdir()):
             if (sub / ".project_manager" / "tools" / "additional_reviewer.py").is_file():
@@ -523,18 +523,18 @@ def _canonical_worktree(anchor: Path) -> Path | None:
     return None
 
 
-def _pm_home_reanchor(anchor: Path) -> Path | None:
-    """`anchor`(REPO=도구 자기-앵커)가 adopter#0 PM 홈이면 재지정 대상 worktree 를, 아니면 None.
+def _pm_home_retarget(target_repo: Path) -> Path | None:
+    """`target_repo`(REPO=도구 자기 위치)가 adopter#0 PM 홈이면 재지정 대상 worktree 를, 아니면 None.
 
-    2중 conjunction (오탐 0 지향·fail-soft): (1) anchor 가 실 board 소유(PM 홈) — worktree(코드
-    전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) anchor 아래 canonical
+    2중 conjunction (오탐 0 지향·fail-soft): (1) target_repo 가 실 board 소유(PM 홈) — worktree(코드
+    전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) target_repo 아래 canonical
     코드 worktree(`work/<name>`) 존재. 일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
     None(무영향)."""
     # additional_reviewer.main은 명시 selector 기반 diff_root 해소로 전환되어 이 헬퍼를 호출하지 않는다.
-    # pm_delegate.check_write_target_reanchor가 adopter write-target 보호에 계속 사용하므로 유지한다.
-    if not _owns_real_board(anchor / ".project_manager"):
+    # delegate_execute.check_write_target_retarget 가 adopter write-target 보호에 계속 사용하므로 유지한다.
+    if not _owns_real_board(target_repo / ".project_manager"):
         return None
-    return _canonical_worktree(anchor)
+    return _canonical_worktree(target_repo)
 
 
 def repo_root_from_cwd(cwd: Path | None) -> Path | None:
@@ -542,7 +542,7 @@ def repo_root_from_cwd(cwd: Path | None) -> Path | None:
 
     Git `rev-parse --show-toplevel`을 써 linked worktree의 `.git` 파일과 일반 checkout의
     `.git` 디렉토리를 같은 근거로 본다. 제품 repo에 `.project_manager`를 요구하지
-    않는다. PM 홈은 호출부가 `resolve_pm_home_for_repo`로 lease 장부에서 별도
+    않는다. PM 홈은 호출부가 `resolve_pm_home_for_repo`로 lease 대여 기록에서 별도
     해소한다. cwd 미지정/비-repo면 None이며 divergence 가드는 조용히 skip한다.
     """
     if cwd is None:

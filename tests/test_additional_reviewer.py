@@ -14,7 +14,7 @@ T-0583 이 같은 기록 파일에 두 가지를 더한다: 라운드별 **산�
 기본 24 · 소진 시 같은 rc 4 · `--reset-session-budget` 으로만 재개). 조회면은 `--rounds-report`. 기록은 무조건
 (파싱 불가는 null·리뷰 비차단)이고 hard 거부는 예산 기준뿐이다.
 
-hermetic: REPO 를 tmp 로 monkeypatch 해 기록 파일이 tmp `.local/` 에 격리되게 하고(`_round_ledger_path`
+hermetic: REPO 를 tmp 로 monkeypatch 해 기록 파일이 tmp `.local/` 에 격리되게 하고(`_round_record_path`
 가 호출 시점 REPO 파생·`_tickets_dir` 와 같은 구조), extract_diff·run_review·local_config 를 module-level
 로 주입해 실제 git/codex 없이(호출 0·ADR-0004 opt-in) 검사 분기를 단언한다. 카운트 규칙
 경계(dry-run·빈-diff·리뷰어 실패 제외)는 리뷰어 호출 여부·기록 count 로 격리한다.
@@ -69,7 +69,7 @@ from test_board_live_test import (  # noqa: E402
     _pv_decision,
     _pv_disposition_block,
     _pv_finding,
-    _pv_ledger_entry,
+    _pv_record_entry,
     _pv_pm_verified_resolution,
     _pv_review_block,
     _pv_round_outcome,
@@ -314,7 +314,7 @@ def test_print_summary_failure_shows_reason_line(external, capsys):
     assert "FALLBACK_INTERNAL" in out
 
 
-# ── 순수 헬퍼: 기록 파일 (_round_ledger_path / load / save / _review_ticket_entry) ─────────
+# ── 순수 헬퍼: 기록 파일 (_round_record_path / load / save / _review_ticket_entry) ─────────
 
 
 def test_record_path_derives_from_repo(external, tmp_path, monkeypatch):
@@ -323,11 +323,11 @@ def test_record_path_derives_from_repo(external, tmp_path, monkeypatch):
     기록 위치는 raw 출력 기록 파일과 같은 규칙 — 넘겨받은 Home(엔진 자기 REPO)의 local 디렉터리다.
     """
     monkeypatch.setattr(external, "REPO", tmp_path)
-    assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)) == \
+    assert review_rounds._round_record_path(pm_paths.home_at(external.REPO)) == \
         tmp_path / ".project_manager" / ".local" / "review_rounds.json"
 
     pm_home = tmp_path / "pm-home"
-    assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO, pm_home=pm_home)) == \
+    assert review_rounds._round_record_path(pm_paths.home_at(external.REPO, pm_home=pm_home)) == \
         pm_home / ".project_manager" / ".local" / "review_rounds.json"
 
 
@@ -335,7 +335,7 @@ def test_record_lock_path_follows_the_record_path(external, tmp_path, monkeypatc
     """락 파일은 기록 파일 경로에서 파생된다 — 기록 위치가 갈리면 같은 기록 파일을 두 실행이 동시에 고쳐 쓴다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert review_rounds._round_record_lock_path(pm_paths.home_at(external.REPO)) == \
-        review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).with_name("review_rounds.lock")
+        review_rounds._round_record_path(pm_paths.home_at(external.REPO)).with_name("review_rounds.lock")
 
     pm_home = tmp_path / "pm-home"
     assert review_rounds._round_record_lock_path(pm_paths.home_at(external.REPO, pm_home=pm_home)) == \
@@ -352,14 +352,14 @@ def test_record_save_load_roundtrip(external, tmp_path, monkeypatch):
     """save → load 왕복 일치 · `.local/` 아래 실 파일 생성(디렉토리 자동 생성)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     reviewer_reservation._save_round_records(pm_paths.home_at(external.REPO), {"T-0001": {"count": 3, "records": []}})
-    assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).is_file()
+    assert review_rounds._round_record_path(pm_paths.home_at(external.REPO)).is_file()
     assert review_rounds._load_round_records(pm_paths.home_at(external.REPO)) == {"T-0001": {"count": 3, "records": []}}
 
 
 def test_record_corrupt_falls_back_to_empty(external, tmp_path, monkeypatch):
     """손상 JSON → 빈 dict (regression flag 와 같은 fail-soft — 기록 파일 손상이 검사를 깨지 않음)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
-    path = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))
+    path = review_rounds._round_record_path(pm_paths.home_at(external.REPO))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{ not json", encoding="utf-8")
     assert review_rounds._load_round_records(pm_paths.home_at(external.REPO)) == {}
@@ -780,7 +780,7 @@ def test_removed_confirm_fix_flag_is_rejected_without_side_effects(
         external, monkeypatch, tmp_path, capsys, argv):
     """폐지한 fix 후 재리뷰 플래그는 argparse 에서 거부되고 호출·기록 쓰기가 없다."""
     calls = _wire(external, monkeypatch, tmp_path)
-    record_path = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))
+    record_path = review_rounds._round_record_path(pm_paths.home_at(external.REPO))
     record_path.parent.mkdir(parents=True, exist_ok=True)
     original = b'{"sentinel": {"count": 1}}\n'
     record_path.write_bytes(original)
@@ -1061,7 +1061,7 @@ def test_lock_failure_before_send_is_translated_and_blocks_the_send(
     assert calls["n"] == 0                       # 호출 시도 0
     assert "다른 리뷰 집계 티켓 실행이 기록 락을 보유" in err
     assert "잠시 후 다시 실행" in err
-    assert str(review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))) in err
+    assert str(review_rounds._round_record_path(pm_paths.home_at(external.REPO))) in err
 
 
 def test_lock_failure_at_finish_keeps_the_verdict_exit_code(
@@ -1170,36 +1170,36 @@ def test_output_contamination_reads_old_and_new_raw_prefixes(external):
     )
 
 
-def _session_budget(external, tmp_path) -> dict:
+def _session_budget_state(external, tmp_path) -> dict:
     """저장된 기록 파일의 세션 호출 예산 절 (절 부재 = 빈 dict)."""
     return _read_records(external, tmp_path).get(reviewer_budget.SESSION_BUDGET_SECTION_KEY, {})
 
 
 def _session_budget_progress(external, tmp_path) -> dict:
     """세션 호출 예산 절에서 예산 좌표만 — 버전 `id` 는 매번 새로 발급되므로 값 비교에서 뺀다."""
-    state = dict(_session_budget(external, tmp_path))
+    state = dict(_session_budget_state(external, tmp_path))
     state.pop("id", None)
     return state
 
 
-# ── 순수 헬퍼: 세션 호출 예산 노브 (_wave_budget) ────────────────────────────────
+# ── 순수 헬퍼: 세션 호출 예산 노브 (_session_budget) ────────────────────────────────
 
 
 def test_session_budget_default(external):
     """미설정 → 레지스트리 기본값(24 = 리뷰 집계 티켓 상한 4 × 동시 진행 6티켓 어림)."""
-    assert reviewer_target._wave_budget({}) == 24
+    assert reviewer_target._session_budget({}) == 24
 
 
 def test_session_budget_knob_override(external):
     """local.conf additional_reviewer.session_budget 노브가 예산을 바꾼다 (채택자 조정)."""
-    assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "6"}) == 6
-    assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "0"}) == 0
+    assert reviewer_target._session_budget({"additional_reviewer.session_budget": "6"}) == 6
+    assert reviewer_target._session_budget({"additional_reviewer.session_budget": "0"}) == 0
 
 
 def test_session_budget_garbage_and_negative_fall_back(external):
     """비정수·음수는 기본값으로 fail-soft (라운드 상한 노브와 같은 규칙)."""
-    assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "x"}) == 24
-    assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "-3"}) == 24
+    assert reviewer_target._session_budget({"additional_reviewer.session_budget": "x"}) == 24
+    assert reviewer_target._session_budget({"additional_reviewer.session_budget": "-3"}) == 24
 
 
 # ── 순수 헬퍼: 옛 버전 기록 하위호환 (rounds/세션 호출 예산 절 없음) ────────────────────
@@ -1503,7 +1503,7 @@ def test_old_schema_record_keeps_counting_and_gains_outcomes(
     assert entry["count"] == 4                # 옛 count 를 이어 센다 (리셋 없음)
     assert "acked_through" not in entry       # 폐지 필드는 저장에서 떨어진다
     assert len(entry["rounds"]) == 1          # 산출은 이번 라운드부터
-    assert _session_budget(external, tmp_path)["spent"] == 1
+    assert _session_budget_state(external, tmp_path)["spent"] == 1
     first_err = capsys.readouterr().err
     assert "T-0309" in first_err and "acked_through=2" in first_err
 
@@ -1524,7 +1524,7 @@ def test_session_budget_blocks_across_review_tickets_then_reset_resumes(
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for review_ticket in ("T-0310", "T-0311"):         # 서로 다른 리뷰 집계 티켓 = 각자 라운드 상한은 여유
         assert external.main(["--review-ticket", review_ticket, "--paths", "x.py"]) == 0
-    assert _session_budget(external, tmp_path)["spent"] == 2
+    assert _session_budget_state(external, tmp_path)["spent"] == 2
     capsys.readouterr()
 
     rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py"])
@@ -1539,7 +1539,7 @@ def test_session_budget_blocks_across_review_tickets_then_reset_resumes(
     rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py", "--reset-session-budget"])
     assert rc == 0 and calls["n"] == 3
     assert "세션 호출 예산 승인 재개" in capsys.readouterr().err
-    assert _session_budget(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
+    assert _session_budget_state(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
 
 
 def test_session_budget_started_marks_the_first_send_and_accumulates(external, monkeypatch, tmp_path):
@@ -1547,7 +1547,7 @@ def test_session_budget_started_marks_the_first_send_and_accumulates(external, m
     _wire(external, monkeypatch, tmp_path)
     argv = ["--review-ticket", "T-0313", "--paths", "x.py"]
     assert external.main(argv) == 0
-    started = _session_budget(external, tmp_path)["started"]
+    started = _session_budget_state(external, tmp_path)["started"]
     assert started and started.endswith("+00:00")
 
     assert external.main(argv) == 0
@@ -1573,7 +1573,7 @@ def test_refund_keeps_the_session_budget_start_when_earlier_sends_exist(
     """실 호출이 있던 세션 호출 예산은 환불 후에도 첫 호출 시각을 유지한다 (0 으로 돌아갈 때만 지운다)."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 0
-    started = _session_budget(external, tmp_path)["started"]
+    started = _session_budget_state(external, tmp_path)["started"]
 
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 1
@@ -1618,7 +1618,7 @@ def test_refund_skips_a_session_budget_that_was_reset_mid_flight(
     monkeypatch.setattr(reviewer_run, "run_review", _reset_session_budget_then_fail)
     assert external.main(["--review-ticket", "T-0326", "--paths", "x.py"]) == 1
 
-    assert _session_budget(external, tmp_path)["spent"] == 1       # 새 세션 호출 예산의 소비는 그대로
+    assert _session_budget_state(external, tmp_path)["spent"] == 1       # 새 세션 호출 예산의 소비는 그대로
     assert _read_records(external, tmp_path)["T-0326"]["count"] == 0   # 라운드 count 는 환불됨
     assert "세션 호출 예산이 이미 리셋" in capsys.readouterr().err
 
@@ -1645,7 +1645,7 @@ def test_refund_is_skipped_when_the_reservation_record_vanishes(
 
     entry = _read_records(external, tmp_path)["T-0332"]
     assert (entry["count"], entry["records"]) == (1, [])   # 환불 대상 없음 → 이중 환불 없음
-    assert _session_budget(external, tmp_path)["spent"] == 1         # 세션 호출 예산도 갈리지 않는다
+    assert _session_budget_state(external, tmp_path)["spent"] == 1         # 세션 호출 예산도 갈리지 않는다
     assert "세션 호출 예산이 이미 리셋" not in capsys.readouterr().err   # 버전 오보 경고도 없다
 
 
@@ -1696,7 +1696,7 @@ def test_negative_session_budget_spent_does_not_reopen_the_budget(
     assert calls["n"] == 2                                   # 호출 없음
     assert "음수" in err and "재계산" in err
     assert "세션 호출 예산 소진" in err
-    assert _session_budget(external, tmp_path)["spent"] == 2           # 이력 기반 복원값이 저장된다
+    assert _session_budget_state(external, tmp_path)["spent"] == 2           # 이력 기반 복원값이 저장된다
 
 
 def test_session_budget_reset_does_not_open_the_review_ticket_round_limit(
@@ -1773,7 +1773,7 @@ def test_session_budget_reset_survives_a_round_limit_refusal(
     err = capsys.readouterr().err
     assert "미완 라운드 상한 도달" in err
     assert calls["n"] == spent
-    assert _session_budget(external, tmp_path)["spent"] == 0        # 리셋은 남았다
+    assert _session_budget_state(external, tmp_path)["spent"] == 0        # 리셋은 남았다
     assert "세션 호출 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다
     assert "세션 호출 예산 승인 기록" in err and "거부" in err
 
@@ -1817,7 +1817,7 @@ def test_rounds_report_dumps_review_ticket_rounds_and_session_budget(external, m
     assert external.main(["--rounds-report"]) == 0
     out = capsys.readouterr().out
     assert calls["n"] == 1                                  # 조회는 리뷰어를 부르지 않는다
-    assert str(review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))) in out        # 어느 기록 파일을 읽었는지
+    assert str(review_rounds._round_record_path(pm_paths.home_at(external.REPO))) in out        # 어느 기록 파일을 읽었는지
     assert "세션 호출 예산: spent=1 / 예산 24" in out
     assert "리뷰 집계 티켓 T-0320: count=1" in out
     assert "판정=1(비통과) must_fix=2 suggestions=미상" in out
@@ -1858,7 +1858,7 @@ def test_rounds_report_with_a_selector_reads_the_recording_anchor(
     assert external.main(["--rounds-report", "--paths", "x.py"]) == 0
     out = capsys.readouterr().out
     assert calls["n"] == 1                                  # selector 조회도 호출 없음
-    assert str(review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))) in out
+    assert str(review_rounds._round_record_path(pm_paths.home_at(external.REPO))) in out
     assert "리뷰 집계 티켓 T-0334: count=1" in out
 
 
@@ -2436,7 +2436,7 @@ def test_pm_verified_declaration_is_refused_with_reason_when_evidence_is_insuffi
         1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
-    entry = _pv_ledger_entry([_pv_round_outcome(1, 3)])   # 남은 것 3인데 판정 범위는 1건뿐
+    entry = _pv_record_entry([_pv_round_outcome(1, 3)])   # 남은 것 3인데 판정 범위는 1건뿐
     pm_verified_declare.write_records({tid: entry})
 
     rc = pm_verified_declare.run("--resolve-review", tid, "--pm-verified")

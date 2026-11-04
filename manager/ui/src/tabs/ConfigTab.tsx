@@ -12,7 +12,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 /**
  * 구성 탭 — repo 등록 · 보호 브랜치 · 슬롯 · 하네스 · task 정체성.
  *
- * 여기서 누르는 것은 전부 그 사본의 `pm-config` 명령 하나다. 관리자가 areas.md·장부를 여는
+ * 여기서 누르는 것은 전부 그 사본의 `pm-config` 명령 하나다. 관리자가 areas.md·대여 기록을 여는
  * 자리는 없고, 거부(승인 토큰·dirty·소유검사)는 엔진 문구가 그대로 화면에 온다.
  *
  * 표는 가벼운 절(`status --json`)의 값이고, 동작 뒤에는 그 프로젝트를 다시 읽는다.
@@ -78,7 +78,7 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
   const preserved = status?.preserved_branches ?? [];
   const harnesses = status?.harnesses ?? [];
 
-  // 보호목록 칸의 현재 값 — 사람이 고치기 전에는 장부 값이고, 빈 값은 [설정] 을 열지 않는다
+  // 보호목록 칸의 현재 값 — 사람이 고치기 전에는 기록된 값이고, 빈 값은 [설정] 을 열지 않는다
   // (빈 문자열은 엔진이 거부하고, 칼럼 비움은 `default` 리터럴이다).
   const protectedValue = (repo: RepoRow) =>
     (protectedDraft[repo.repo] ?? repo.protected ?? "").trim();
@@ -204,7 +204,7 @@ function ConfigTabBody({ remote }: { remote: Entry | undefined }) {
         {removeTarget !== null && (
           <ConfirmDialog
             title={`슬롯 ${removeTarget} 을 제거한다 — 승인?`}
-            note={"worktree 와 장부 행을 지웁니다. 커밋 안 한 변경이 있거나 사용 중이면 엔진이 거부합니다. "
+            note={"worktree 와 대여 기록 행을 지웁니다. 커밋 안 한 변경이 있거나 사용 중이면 엔진이 거부합니다. "
                   + "합쳐지지 않은 브랜치는 보존됩니다. 슬롯 제거는 사용자 승인 행위입니다."}
             value={removeTarget}
             onConfirm={(ack) => {

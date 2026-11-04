@@ -15,7 +15,7 @@ const DRY_RUN = [
   "  [update] .project_manager/tools/engine_rev.py",
   "[dry-run] 1 파일 변경 예정 (적용 안 함).",
   "→ 어댑터 config drift(보고 전용) .claude/settings.json — 채택자 133줄 ↔ template 133줄",
-  "⚠️  인스턴스 소유 템플릿 변경 — 처방: pm-config sync-adapter-config --accept",
+  "⚠️  인스턴스 소유 템플릿 변경 — 해결 방법: pm-config sync-adapter-config --accept",
 ].join("\n");
 
 function entry(overrides: Partial<StatusDocument> = {}): Entry {
@@ -65,7 +65,7 @@ describe("현재 ↔ 최신 배지", () => {
   });
 
   it("갱신하면 필요한 설정 줄은 어댑터 절이 받아 온 값으로만 뜬다", () => {
-    // 이 탭이 늘 보는 가벼운 절은 소스를 해소하지 않아 그 축이 null 이다 — 값이 실린 조회는
+    // 이 탭이 늘 보는 가벼운 절은 소스를 해소하지 않아 그 필드가 null 이다 — 값이 실린 조회는
     // 설정 탭 [불러오기] 하나이고, 그 값이 여기까지 온다.
     expect(entry().status!.conf.missing_for_latest).toEqual([]);
     mount(makeBridge(), "v2.0.0", entry());
@@ -106,7 +106,7 @@ describe("미리보기", () => {
       .map((node) => node.textContent);
     expect(highlighted).toEqual([
       "→ 어댑터 config drift(보고 전용) .claude/settings.json — 채택자 133줄 ↔ template 133줄",
-      "⚠️  인스턴스 소유 템플릿 변경 — 처방: pm-config sync-adapter-config --accept",
+      "⚠️  인스턴스 소유 템플릿 변경 — 해결 방법: pm-config sync-adapter-config --accept",
     ]);
   });
 

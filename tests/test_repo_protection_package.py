@@ -18,7 +18,7 @@ def test_hook_artifact_bytes_and_paths_match(tmp_path):
     import hashlib
     home = pm_paths.home_at(tmp_path)
     actual = protected_hooks.protected_hook_artifacts(
-        home, "repo", ["main"], gate_mode="release", test_cmd="pytest -q")
+        home, "repo", ["main"], check_mode="release", test_cmd="pytest -q")
     assert [a.path.name for a in actual] == [
         "protected", "engine-root", "gate-contract", "pre-push", "pre-commit"]
     assert [a.executable for a in actual] == [False, False, False, True, True]
@@ -107,7 +107,7 @@ def test_hook_wiring_does_not_climb_to_an_enclosing_repo(tmp_path):
     pm_paths.bare_repo_path(home, "svc").mkdir(parents=True)
 
     assert protected_hooks.install_protected_hook(
-        home, "svc", ["main"], gate_mode="release", test_cmd="pytest -q") is False
+        home, "svc", ["main"], check_mode="release", test_cmd="pytest -q") is False
     assert protected_hooks.protected_hook_wired(home, "svc") is None
     outer_hooks = subprocess.run(
         ["git", "-C", str(outer), "config", "--get", "core.hooksPath"],

@@ -131,13 +131,13 @@ def check_write_target_retarget(role: str, cwd: Path, prompt: str) -> Path | Non
     """write 역할이 PM 홈 cwd 에서 엔진 코드(import 사본)를 write 타깃하면 대상 저장소로 다시 잡을 worktree 반환.
 
     대상 저장소 다시 잡기는 cwd 자체가 아니라 **쓰기 대상 기준**으로 판정 — PM-doc(wiki/ADR/spike) 작업은 PM 홈 cwd
-    정당. 판정 = pm_paths._pm_home_reanchor(실 board 소유 + `work/*` canonical 보유·파일 존재
+    정당. 판정 = pm_paths._pm_home_retarget(실 board 소유 + `work/*` canonical 보유·파일 존재
     휴리스틱 금지) 재사용. read 역할·비-엔진-코드 타깃·PM 홈 아닌 cwd 는 None(통과)."""
     if role not in delegate_run_rules.WRITE_ROLES:
         return None
     if not delegate_prompt_rules._prompt_targets_engine_code(prompt):
         return None
-    return pm_paths._pm_home_reanchor(cwd)
+    return pm_paths._pm_home_retarget(cwd)
 
 
 def _resume_unavailable(reason: str) -> None:
@@ -532,7 +532,7 @@ def _ticket_cli_owner(home, cwd: Path) -> Path:
         raise delegate_errors.DelegateError(f"--cwd 는 파일시스템 루트가 아닌 git 작업공간이어야 합니다: {resolved}")
     try:
         owner = Path(pm_paths.resolve_pm_home_for_repo(resolved)).resolve()
-    except pm_paths.AnchorResolutionError as exc:
+    except pm_paths.TargetRepoResolutionError as exc:
         raise delegate_errors.DelegateError(f"--cwd 소유 PM 홈 해소 실패: {exc}") from exc
     if pm_paths._owns_real_board(home.root / ".project_manager") and home.root.resolve() != owner:
         raise delegate_errors.DelegateError(

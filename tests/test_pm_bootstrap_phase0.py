@@ -2,16 +2,16 @@
 
 0단계 = dump 를 뿌리기 *전에* "올바른 자리인가"를 기계 검증한다(사용자: "제일 먼저 체크할 건
 내가 올바른 슬롯을 쓰고 있나"). 실패 시 **부분 dump 도 금지**(dump 가 뜨면 PM 이 그것을 세션
-진실로 믿는다). worktree_pool 은 **DI mock** 으로 주입해 hermetic 하다(실 리스 장부·git·work/ 풀
+진실로 믿는다). worktree_pool 은 **DI mock** 으로 주입해 hermetic 하다(실 대여 기록·git·work/ 풀
 미접촉·test_pm_bootstrap_lease 의 DI 패턴 동류).
 
-이 파일이 가진 축(다른 파일과 겹치지 않는 것만):
-  - **엔진 앵커**(무조건·task 바인딩보다 먼저): worktree 사본이면 거부하고 부분 dump 를 막는다.
+이 파일이 가진 검사(다른 파일과 겹치지 않는 것만):
+  - **엔진 대상 저장소**(무조건·task 바인딩보다 먼저): worktree 사본이면 거부하고 부분 dump 를 막는다.
     PM 홈이면 통과하고, 판정은 board 가드에 REPO 로 위임한다. board/가드 부재와 가드 내부
     raise 는 fail-soft 통과(오탐 0).
-  - **main-참조 축 2**(보호 브랜치 원격 origin-추적): 보호 원격(`origin/main`)을 추적하면 거부,
+  - **main-참조 검사 2**(보호 브랜치 원격 origin-추적): 보호 원격(`origin/main`)을 추적하면 거부,
     자기 feature 브랜치(`origin/a5`) 추적은 통과(오탐 0).
-  - **기록↔live**: 같은 브랜치·head 비후손 사유 표면과 재동기 커맨드 실값. compare 미구현 풀은
+  - **기록↔live**: 같은 브랜치·head 비후손 사유 출력과 재동기 커맨드 실값. compare 미구현 풀은
     검사 no-op 로 통과.
   - **readonly 공유 슬롯 예외의 구조적 성립**: task 가 대여하지 않아 보유 집합에 들어오지 못한다.
 
@@ -57,19 +57,19 @@ def bootstrap():
 
 
 class _FakeBoard:
-    """board 대역. 엔진 앵커(`_pm_home_worktree_misanchor`)와 보호목록(`_repo_protected`)을 낸다.
+    """board 대역. 엔진 대상 저장소 검사(`_pm_home_worktree_wrong_repo`)와 보호목록(`_repo_protected`)을 낸다.
 
-    `anchor_pm_home` 이 None 이 아니면 anchor 가 REPO 를 등록 worktree 사본으로 판정한다(거부
-    유발). 앵커 호출 인자를 기록해 "REPO 로 소비" 를 검증한다."""
+    `target_repo_pm_home` 이 None 이 아니면 대상 저장소 검사가 REPO 를 등록 worktree 사본으로 판정한다(거부
+    유발). 검사 호출 인자를 기록해 "REPO 로 소비" 를 검증한다."""
 
-    def __init__(self, *, anchor_pm_home=None, protected=None):
-        self._anchor_pm_home = anchor_pm_home
+    def __init__(self, *, target_repo_pm_home=None, protected=None):
+        self._target_repo_pm_home = target_repo_pm_home
         self._protected = protected if protected is not None else ["main", "master", "develop"]
-        self.anchor_calls: list = []
+        self.target_repo_calls: list = []
 
-    def _pm_home_worktree_misanchor(self, anchor, **_kw):
-        self.anchor_calls.append(anchor)
-        return self._anchor_pm_home
+    def _pm_home_worktree_wrong_repo(self, target_repo, **_kw):
+        self.target_repo_calls.append(target_repo)
+        return self._target_repo_pm_home
 
     def _repo_protected(self, repo):
         return self._protected
@@ -77,9 +77,9 @@ class _FakeBoard:
 
 
 class _RaisingBoard:
-    """앵커 가드가 **내부 raise** 하는 board 대역. phase0 fail-soft 백스톱 검증용."""
+    """대상 저장소 가드가 **내부 raise** 하는 board 대역. phase0 fail-soft 백스톱 검증용."""
 
-    def _pm_home_worktree_misanchor(self, anchor, **_kw):
+    def _pm_home_worktree_wrong_repo(self, target_repo, **_kw):
         raise RuntimeError("가드 내부 버그(예: git 호출 예외)")
 
     def _repo_protected(self, repo):
@@ -88,7 +88,7 @@ class _RaisingBoard:
 
 
 class _Lease:
-    """장부 엔트리 대역. 0단계는 slot/repo/session/state/role 을 읽는다."""
+    """대여 기록 엔트리 대역. 0단계는 slot/repo/session/state/role 을 읽는다."""
 
     def __init__(self, slot, repo, session, *, state="leased", role="work"):
         self.slot = slot
@@ -100,7 +100,7 @@ class _Lease:
 
 
 class _Compare:
-    """compare_slot_git 결과 대역 (T-0350 GitCompareResult 소비 표면·0단계 기록↔live)."""
+    """compare_slot_git 결과 대역 (T-0350 GitCompareResult 소비 쪽·0단계 기록↔live)."""
 
     def __init__(self, *, fail_loud=False, unrecorded=False, branch_match=True,
                  head_relation="match", recorded=None, live=None):
@@ -113,7 +113,7 @@ class _Compare:
 
 
 class _SlotStatus:
-    """slot_status 결과 대역. main-참조 축 2 는 `upstream_ok`·`upstream` 을 소비한다 (T-0276·§F9).
+    """slot_status 결과 대역. main-참조 검사 2 는 `upstream_ok`·`upstream` 을 소비한다 (T-0276·§F9).
 
     `upstream` = `@{upstream}` 해소명(예 `origin/main`·`origin/a5`). 보호 브랜치 원격만 거부한다."""
 
@@ -178,7 +178,7 @@ class _Pool:
         self.slots_for_task_calls: list[str] = []
         self.compare_calls: list[str] = []
 
-    # task 축
+    # task 기준
     def take_task_session_claim(self, name):
         return "s-test"
 
@@ -207,7 +207,7 @@ class _Pool:
         return [_Lease(slot, self._repo_of(slot), name) for slot in self._task_slots]
 
     def slots_for_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.slots_for_task(name)
 
     def _normalize_branch_name(self, branch, *, git_runner):
@@ -237,7 +237,7 @@ class _Pool:
         return self._compare.get(slot, _Compare())
 
     def slot_git_status(self, slot, *, git_runner=None):
-        # 이 스위트는 0단계 게이트만 보므로 parent 없음(None)으로 고정한다(신 계약 모양만 맞춤).
+        # 이 스위트는 0단계 검사만 보므로 parent 없음(None)으로 고정한다(신 계약 모양만 맞춤).
         return {"slot": slot, "branch": self._branches.get(slot, "feature-x"), "head": None,
                 "parent": None, "children": [], "stashes": 0, "submodules": [], "dirty": False}
 
@@ -256,7 +256,7 @@ class _Pool:
 
 
 class _OldPool(_Pool):
-    """기록↔live 판정 결과가 없는 풀. 정합 검사가 None 결과를 '미상'으로 표기함을 본다."""
+    """기록↔live 판정 결과가 없는 풀. 일치 검사가 None 결과를 '미상'으로 표기함을 본다."""
 
     def compare_slot_git(self, slot, *args, **kwargs):
         return None  # 판정 결과 없음 → 기록↔live 미상
@@ -283,7 +283,7 @@ def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):
         if args[:2] == ["log", "--oneline"]:
             return 0, "abc123 subj\n"
         if "show-ref" in args:
-            # remedy 브랜치 후보 존재 검사(T-0412). 이 대역 슬롯엔 브랜치가 없다(rc≠0).
+            # 해결 브랜치 후보 존재 검사(T-0412). 이 대역 슬롯엔 브랜치가 없다(rc≠0).
             return 1, ""
         return 0, ""
 
@@ -292,12 +292,12 @@ def _make(bootstrap, tmp_path, *, board, worktree_pool=None, monkeypatch):
     return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=fake_board, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨')), run_git_fn=fake_git, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file)
 
 
-# ── 1. 엔진 앵커 (무조건·task 바인딩보다 먼저) ────────────────────────────────
+# ── 1. 엔진 대상 저장소 (무조건·task 바인딩보다 먼저) ────────────────────────────
 
 
 def test_anchor_worktree_copy_rejects_before_dump(bootstrap, monkeypatch, tmp_path, capsys):
-    """엔진 앵커가 worktree 사본(등록 pm_home 하위)이면 거부한다. rc 1 · **부분 dump 금지**(stdout 0)."""
-    board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home="/home/x/pm_home"))
+    """엔진 대상 저장소 검사가 worktree 사본(등록 pm_home 하위)이면 거부한다. rc 1 · **부분 dump 금지**(stdout 0)."""
+    board = bind_board(monkeypatch, _FakeBoard(target_repo_pm_home="/home/x/pm_home"))
     pool = bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt"))
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=bind_pool(monkeypatch, pool), monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
@@ -306,20 +306,20 @@ def test_anchor_worktree_copy_rejects_before_dump(bootstrap, monkeypatch, tmp_pa
     assert cap.out == "", "0단계 거부인데 부분 dump 가 떴다(PM 이 세션 진실로 오신뢰)"
     assert "0단계" in cap.err and "worktree" in cap.err
     assert "/home/x/pm_home" in cap.err  # 해소 안내(PM 홈 경로)
-    assert pool.bind_task_calls == [], "앵커 거부인데 task 바인딩이 돌았다(거부가 dump 이전이 아님)"
+    assert pool.bind_task_calls == [], "대상 저장소 거부인데 task 바인딩이 돌았다(거부가 dump 이전이 아님)"
 
 
 def test_anchor_consumes_pm_home_guard_with_repo(bootstrap, monkeypatch, tmp_path, capsys):
-    """앵커는 board T-0345 가드(`_pm_home_worktree_misanchor`)를 REPO 로 **소비**한다(재구현 아님)."""
-    board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home="/home/x/pm_home"))
+    """대상 저장소 검사는 board T-0345 가드(`_pm_home_worktree_wrong_repo`)를 REPO 로 **소비**한다(재구현 아님)."""
+    board = bind_board(monkeypatch, _FakeBoard(target_repo_pm_home="/home/x/pm_home"))
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)
     inst.run(task="mytask")
-    assert board.anchor_calls == [pm_paths.home_at(tmp_path)], "앵커 판정을 REPO 로 board 가드에 위임하지 않음"
+    assert board.target_repo_calls == [pm_paths.home_at(tmp_path)], "대상 저장소 판정을 REPO 로 board 가드에 위임하지 않음"
 
 
 def test_anchor_pm_home_passes(bootstrap, monkeypatch, tmp_path, capsys):
-    """엔진 앵커가 PM 홈(misanchor None)이면 통과한다(rc 0·정상 dump)."""
-    board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home=None))
+    """엔진 대상 저장소 검사가 PM 홈(잘못된 대상 None)이면 통과한다(rc 0·정상 dump)."""
+    board = bind_board(monkeypatch, _FakeBoard(target_repo_pm_home=None))
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
     assert rc == 0
@@ -329,17 +329,17 @@ def test_anchor_pm_home_passes(bootstrap, monkeypatch, tmp_path, capsys):
 
 
 def test_anchor_guard_internal_raise_propagates(bootstrap, monkeypatch, tmp_path, capsys):
-    """앵커 가드(board 헬퍼)가 **내부 raise** 하면 통과값으로 접지 않고 전파한다(dump 전에 멈춘다)."""
+    """대상 저장소 가드(board 헬퍼)가 **내부 raise** 하면 통과값으로 접지 않고 전파한다(dump 전에 멈춘다)."""
     inst = _make(bootstrap, tmp_path, board=_RaisingBoard(),
                  worktree_pool=bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt")), monkeypatch=monkeypatch)
     with pytest.raises(RuntimeError, match="가드 내부 버그"):
         inst.run(task="mytask")
 
 
-# ── 2. main-참조 축 2 — 보호 브랜치 원격 origin-추적 (T-0276·§F9) ──────────────
+# ── 2. main-참조 검사 2 — 보호 브랜치 원격 origin-추적 (T-0276·§F9) ──────────────
 #
-# 축 1(보호 브랜치 직접 checkout)과 해소 커맨드 실값은 test_pm_bootstrap_task_slot_set.py 가
-# 소유한다. 여기서는 그 파일이 태우지 않는 upstream 축(`slot_status.upstream_ok`)만 잰다.
+# 검사 1(보호 브랜치 직접 checkout)과 해소 커맨드 실값은 test_pm_bootstrap_task_slot_set.py 가
+# 소유한다. 여기서는 그 파일이 태우지 않는 upstream 검사(`slot_status.upstream_ok`)만 잰다.
 
 
 def test_protected_upstream_tracking_blocks_entry(bootstrap, monkeypatch, tmp_path, capsys):
@@ -347,13 +347,13 @@ def test_protected_upstream_tracking_blocks_entry(bootstrap, monkeypatch, tmp_pa
 
     브랜치 자체는 비보호(feature-x)여도 upstream 이 보호 브랜치 원격을 가리키면 main-참조다
     (`main`+`origin/main` 슬롯 concern)."""
-    board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home=None, protected=["main"]))
+    board = bind_board(monkeypatch, _FakeBoard(target_repo_pm_home=None, protected=["main"]))
     pool = bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt", task_slots=("work/A_1",),
                  branches={"work/A_1": "feature-x"},
                  upstreams={"work/A_1": "origin/main"}))
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=bind_pool(monkeypatch, pool), monkeypatch=monkeypatch)
     rc = inst.run(task="mytask")
-    assert rc == 1, "보호 브랜치 원격(origin/main) 추적 슬롯이 거부되지 않았다(§F9 축 2 미적용)"
+    assert rc == 1, "보호 브랜치 원격(origin/main) 추적 슬롯이 거부되지 않았다(§F9 검사 2 미적용)"
     cap = capsys.readouterr()
     assert cap.out == "", "거부인데 부분 dump 가 떴다(0단계 계약 위반)"
     assert "main-참조" in cap.err and "origin-추적" in cap.err
@@ -365,7 +365,7 @@ def test_feature_branch_upstream_passes(bootstrap, monkeypatch, tmp_path, capsys
 
     T-0273/0274 로 슬롯이 자기 workstream(`origin/<branch>`)을 추적하는 건 정상이다. §F9 concern 은
     `origin/main` 추적뿐이라 임의 upstream 을 막으면 정상 슬롯이 깨진다(회귀 방어)."""
-    board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home=None, protected=["main"]))
+    board = bind_board(monkeypatch, _FakeBoard(target_repo_pm_home=None, protected=["main"]))
     pool = bind_pool(monkeypatch, _Pool(slot_root=tmp_path / "wt", task_slots=("work/A_1",),
                  branches={"work/A_1": "a5"}, upstreams={"work/A_1": "origin/a5"}))
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=bind_pool(monkeypatch, pool), monkeypatch=monkeypatch)
@@ -377,7 +377,7 @@ def test_feature_branch_upstream_passes(bootstrap, monkeypatch, tmp_path, capsys
     assert "work/A_1 · repo=A · branch=a5" in cap.out
 
 
-# ── 3. 기록↔live 정합 (compare_slot_git 소비·㉒) ──────────────────────────────
+# ── 3. 기록↔live 일치 (compare_slot_git 소비·㉒) ──────────────────────────────
 #
 # 브랜치 변경(branch_match False) 사유와 해소 커맨드는 test_pm_bootstrap_task_slot_set.py 가
 # 소유한다. 여기서는 같은 브랜치·head 비후손 갈래와 compare 미구현 풀만 잰다.
@@ -389,7 +389,7 @@ def test_diverged_head_not_descendant_surfaces_reason_and_record_cmd(bootstrap, 
     `head_relation`/`branch_match` 원값만 보여 주면 PM 이 코드를 정독해야 "왜 diverged 인지" 를
     안다(PM 78 낭비). 근거는 문장으로, 해소는 사용자용 record 커맨드 실값으로 나가야 한다
     (감지는 기계·해소는 사용자·자동 실행 없음)."""
-    board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home=None, protected=[]))
+    board = bind_board(monkeypatch, _FakeBoard(target_repo_pm_home=None, protected=[]))
     pool = bind_pool(monkeypatch, _Pool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",), branches={"work/A_1": "feat"},
         compare={"work/A_1": _Compare(fail_loud=True, branch_match=True, head_relation="diverged",
@@ -409,8 +409,8 @@ def test_diverged_head_not_descendant_surfaces_reason_and_record_cmd(bootstrap, 
 
 
 def test_old_pool_without_compare_passes(bootstrap, monkeypatch, tmp_path, capsys):
-    """compare_slot_git 미구현 풀(구버전)은 정합 검사를 no-op 한다(getattr None·fail-soft·통과)."""
-    board = bind_board(monkeypatch, _FakeBoard(anchor_pm_home=None, protected=[]))
+    """compare_slot_git 미구현 풀(구버전)은 일치 검사를 no-op 한다(getattr None·fail-soft·통과)."""
+    board = bind_board(monkeypatch, _FakeBoard(target_repo_pm_home=None, protected=[]))
     pool = bind_pool(monkeypatch, _OldPool(slot_root=tmp_path / "wt", task_slots=("work/A_1",),
                     branches={"work/A_1": "a5"}))
     inst = _make(bootstrap, tmp_path, board=board, worktree_pool=bind_pool(monkeypatch, pool), monkeypatch=monkeypatch)
@@ -430,18 +430,18 @@ def test_readonly_slot_never_enters_the_task_slot_set(tmp_path, *, monkeypatch):
     옛 0단계는 readonly 슬롯을 만나면 main-참조 거부를 건너뛰는 예외 분기를 따로 뒀다. 지금
     검증 대상은 `slots_for_task`(state=leased 이고 session==task)가 정하고, readonly 행은 무소유
     (session 빈 값)라 그 집합에 못 들어온다. 예외 분기 없이 같은 결과가 나오는 자리라 분기가 아니라
-    이 구조를 잰다. 실 장부 파서로 재고, tmp 장부에만 쓴다(실 풀 미접촉)."""
+    이 구조를 잰다. 실 대여 기록 파서로 재고, tmp 대여 기록에만 쓴다(실 풀 미접촉)."""
     wp = bind_pool(monkeypatch, _load("worktree_pool"))
     local = tmp_path / "local"
-    ledger = local / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    records = local / "worktree-leases.json"
+    records.parent.mkdir(parents=True)
+    records.write_text(
         json.dumps({
             "leases": [
                 # task 명의 작업 슬롯(대여 중).
                 {"slot": "work/A_1", "repo": "A", "session": "mytask",
                  "started": "2026-08-22T00:00:00+00:00", "state": "leased", "bound": True},
-                # readonly 공유 슬롯(무소유·role 이 장부에 남는 유일한 슬롯 종류).
+                # readonly 공유 슬롯(무소유·role 이 대여 기록에 남는 유일한 슬롯 종류).
                 {"slot": "work/A_9", "repo": "A", "session": "",
                  "started": "2026-08-22T00:00:00+00:00", "state": "leased", "role": "readonly"},
             ],
@@ -450,7 +450,7 @@ def test_readonly_slot_never_enters_the_task_slot_set(tmp_path, *, monkeypatch):
         encoding="utf-8",
     )
     for name, value in {
-        "LEASES_FILE": ledger,
+        "LEASES_FILE": records,
         "LEASES_LOCK": local / "worktree-leases.lock",
         "TASKS_DIR": local / "tasks",
         "WORK_DIR": tmp_path / "work",
@@ -461,6 +461,6 @@ def test_readonly_slot_never_enters_the_task_slot_set(tmp_path, *, monkeypatch):
     held = [lease.slot for lease in pool_store.slots_for_task(home, "mytask")]
 
     assert held == ["work/A_1"], "readonly 공유 슬롯이 task 보유 집합에 섞였다(점유 대상이 아니다)"
-    # 빠진 이유가 "장부에 행이 없어서" 가 아님을 같은 장부에서 확인한다(공허한 통과 방지).
+    # 빠진 이유가 "대여 기록에 행이 없어서" 가 아님을 같은 기록에서 확인한다(공허한 통과 방지).
     roles = {lease.slot: lease.role for lease in pool_store.list_leases(home)}
     assert roles == {"work/A_1": "work", "work/A_9": "readonly"}

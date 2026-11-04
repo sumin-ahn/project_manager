@@ -4,16 +4,16 @@
 동기화된다(pm_update 전파). 드리프트 시 채택 프로젝트가 옛/다른 동작을 받는다
 ([[verify-engine-template-propagation]]). v2 머지 전 codex 제안 — 핵심 어댑터 산출물의
 양 트리 parity 를 자동 검증한다:
-  - `settings.json` 훅 집합 비대칭: root=git-anchor PreToolUse 만 / template=PreToolUse·UserPromptSubmit.
+  - `settings.json` 훅 집합 비대칭: root=git 명령 검사 PreToolUse 만 / template=PreToolUse·UserPromptSubmit.
     압축 이벤트 등록은 양쪽 다 없다(T-0953 — 압축 기록은 template 주 스레드 훅이 한다). 양쪽
     auto-compact ON(template 은 T-0458 로 autoCompactEnabled:true).
   - `skills/pm-handoff/SKILL.md`·`skills/pm-dev-delegate/SKILL.md`: byte-identical.
-  - `agents/*.md`: byte-identical(5파일 — 4 역할 축 + developer hard 티어).
+  - `agents/*.md`: byte-identical(5파일 — 4 역할 + developer hard 티어).
 
 **의도된 차이 허용**: 루트 settings 는 ctx 훅(PreToolUse/UserPromptSubmit/statusLine·
 ctx_stop_hook·ctx_statusline)을 *싣지 않는다* — 루트 도그푸딩은 그 훅을 안 쓴다. 그래서
 settings 는 byte-identical 을 강제하지 않고 **등록 훅 집합**을 양쪽에서 고정한다(채택
-프로젝트 폴백 보장·codex must-fix 맥락). stdlib + json. 파일 iterate(hermetic).
+프로젝트 대체 보장·codex must-fix 맥락). stdlib + json. 파일 iterate(hermetic).
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ TEMPLATE_CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 
 # 양 트리에서 byte-identical 이어야 하는 어댑터 산출물 (의도된 차이 없음).
 # 상호 참조: `tests/test_board_lint.py::_T0463_TOKEN_FORM_MIRRORS`(13파일·`.claude/` prefix 포함)가
-# 같은 불변식의 상위집합 — 거긴 이 동일성이 render-leak 면제의 근거라는 축이다. 한쪽 수정 시 같이 본다.
+# 같은 불변식의 상위집합 — 거긴 이 동일성이 render-leak 면제의 근거라는 점이다. 한쪽 수정 시 같이 본다.
 IDENTICAL_RELPATHS = [
     "skills/pm-handoff/SKILL.md",
     "skills/pm-dev-delegate/SKILL.md",
@@ -62,11 +62,11 @@ def test_settings_present_both_trees():
 
 
 def test_hook_registration_sets_asymmetric_both_autocompact_on():
-    """root git-anchor 전용 / template 주 스레드 ctx 훅 비대칭과 auto-compact ON 을 고정(AT-014).
+    """root git 명령 검사 전용 / template 주 스레드 ctx 훅 비대칭과 auto-compact ON 을 고정(AT-014).
 
-    - root(도그푸딩·auto-compact **ON**): PreToolUse(Bash) git-anchor 하나. 압축 체인(PreCompact
+    - root(도그푸딩·auto-compact **ON**): PreToolUse(Bash) git 명령 검사 하나. 압축 체인(PreCompact
       와 루트 훅 사본)은 없다 — 슬롯에서 띄운 위임 세션의 압축을 task 로 오귀속하던 경로다(T-0953).
-    - template(auto-compact **ON**·T-0458): PreToolUse/UserPromptSubmit 넛지와 압축 기록.
+    - template(auto-compact **ON**·T-0458): PreToolUse/UserPromptSubmit 경고와 압축 기록.
       압축 이벤트 입력은 주 세션 압축과 서브에이전트 압축을 가를 수 없어 등록하지 않는다.
     """
     root = json.loads((ROOT_CLAUDE / "settings.json").read_text(encoding="utf-8"))
@@ -78,7 +78,7 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
         f"template 등록 훅 집합 드리프트: {set(tmpl.get('hooks', {}))}"
     )
     assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
-    # root 는 Bash 만, template 은 파일 쓰기·편집·위임 도구 입력(허용 위조)까지 git-anchor 훅에 건다.
+    # root 는 Bash 만, template 은 파일 쓰기·편집·위임 도구 입력(허용 위조)까지 git 명령 검사 훅에 건다.
     for config, label, matcher in (
         (root, "root", "Bash"),
         (tmpl, "template", "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"),
@@ -86,7 +86,7 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
         git_hooks = [entry for entry in config["hooks"]["PreToolUse"]
                      if entry.get("matcher") == matcher
                      and "--git-anchor-hook" in json.dumps(entry)]
-        assert git_hooks, f"{label} PreToolUse({matcher}) git-anchor 훅 누락"
+        assert git_hooks, f"{label} PreToolUse({matcher}) git 명령 검사 훅 누락"
     assert tmpl.get("autoCompactEnabled") is True, (
         "template autoCompactEnabled:true 누락 — 서브에이전트 compaction 허용(T-0458·발단 T-0431)"
     )
@@ -150,7 +150,7 @@ def test_adapter_artifacts_byte_identical():
 
 
 def test_claude_native_ticket_rounds_use_agent_contract_for_hand_spawned_roles():
-    """Agent의 실제 필드와 역할별 라운드 파일 지시를 prepare→harvest 사이에 고정한다.
+    """Agent의 실제 필드와 역할별 라운드 파일 지시를 prepare→collect 사이에 고정한다.
 
     라운드 파일 모델(ADR-0090)에서 각 위임이 쓸 수 있는 파일은 `NN-<역할>.md` 하나뿐이라,
     developer·architect 블록마다 그 역할의 파일 이름과 prepare 출력 경로가 함께 실려야 한다.
@@ -226,7 +226,7 @@ def _executable_lines(shell_text: str) -> str:
 def test_settings_portable_by_construction(tree):
     """settings.json 이 유효 JSON·치환 토큰 0·머신-특정 절대경로 0 (템플릿 + ① 루트 각각).
 
-    - 유효 JSON: Windows 절대경로의 invalid escape(`\\w`·`\\c` 등)를 원천 차단하는 게이트.
+    - 유효 JSON: Windows 절대경로의 invalid escape(`\\w`·`\\c` 등)를 원천 차단하는 검사.
     - 치환 토큰 0: manifest-out 이라 렌더 안 됨 → `{{...}}` 가 있으면 리터럴 잔존해 훅이 깨진다.
     - 절대경로 0: 운영 문자열값(hooks/statusLine·env·permissions)을 구조적 순회해 POSIX '/…'
       (`/tmp`·`/opt` 등 일반 경로 포함)·드라이브 'C:\\…' 를 잡는다 → git 공유·재-import 시 고착 차단.
@@ -242,9 +242,9 @@ def test_settings_portable_by_construction(tree):
 def test_settings_hook_files_exist_and_executable(tree):
     """settings.json 이 가리키는 훅/statusLine 파일이 그 트리에 실재 + `.sh`는 실행비트 (양 트리 대칭).
 
-    참조 경로를 settings.json 파싱으로 동적 추출(하드코딩 목록 아님) — 배선된 훅 파일이 누락되거나
+    참조 경로를 settings.json 파싱으로 동적 추출(하드코딩 목록 아님) — 등록된 훅 파일이 누락되거나
     실행비트를 잃으면(chmod 소실) 여기서 터진다. 템플릿은 import 가 트리를 verbatim 복사하므로 트리
-    정합이 곧 adopter 정합, 루트(①)는 프레임워크 dev 홈 자체의 훅 배선 정합(portable 가드와 같은
+    일치가 곧 adopter 일치, 루트(①)는 프레임워크 dev 홈 자체의 훅 등록 일치(portable 가드와 같은
     `_SETTINGS` parametrize 대칭 — reviewer suggestion).
     """
     text, base = _SETTINGS[tree][0].read_text(encoding="utf-8"), _SETTINGS[tree][1]

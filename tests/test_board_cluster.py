@@ -36,7 +36,7 @@ import pytest
 
 from _git_fixture import remove_git_tree
 from _slot_seed import SLOT, SLOT_REPO, lease_row, seed_slot
-from conftest import anchor_board_module
+from conftest import target_repo_board_module
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import cluster_store, git, pm_paths, ticket_store
 from pm_engine.app import ticket_lint
@@ -139,7 +139,7 @@ def _make_code_git(root: Path) -> None:
 @pytest.fixture
 def board(tmp_path, monkeypatch):
     mod = _load_tool("board")
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     # 코드 트리 해소(`_claim_code_tree`)가 읽는 슬롯 대여 기록도 tmp 로 바꿔 끼운다 — 실 트리의 대여 기록을
     # 읽으면 이 파일의 답이 실행 환경에 따라 바뀐다.
     seed_slot(tmp_path, session=_TASK)

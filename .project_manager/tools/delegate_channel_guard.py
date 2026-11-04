@@ -5,7 +5,7 @@ The decision CLI and hook protocol live in ``pm_engine.cli.delegate_channel_guar
 The argument-based ``decide`` CLI always emits one JSON line and exits successfully,
 including usage and infrastructure failures.  With no arguments, the historical
 Claude ``PreToolUse`` stdin/stdout hook protocol remains intact.  This file only
-configures the console and calls the CLI with the install-anchor Home.
+configures the console and calls the CLI with the Home where the tool is installed.
 """
 import os
 import sys

@@ -1,13 +1,13 @@
-"""opencode 어댑터 위험 bash 명령 permission 가드 정합 테스트 (T-0011).
+"""opencode 어댑터 위험 bash 명령 permission 가드 일치 테스트 (T-0011).
 
 opencode 어댑터의 위험 명령 차단 가드를 두 곳에서 단언한다:
   1. project config  — templates/opencode/.opencode/opencode.jsonc (단일 진실)
   2. agent frontmatter — 실행 역할 developer/architect/code-reviewer/pm
      (coarse `bash: allow` override 차단 — 두 곳 모두 패턴맵이어야 머지 후 deny 가 보존된다)
 
-researcher의 bash 는 위험명령 제외 패턴맵(T-opencode-002·code-reviewer 동형)이며 카드↔fragment parity 를 별도 단언한다. PM은 네 역할 task만 허용한다.
+researcher의 bash 는 위험명령 제외 패턴맵(T-opencode-002·code-reviewer 와 같음)이며 카드↔fragment parity 를 별도 단언한다. PM은 네 역할 task만 허용한다.
 
-claude 어댑터(.claude/settings.json·settings.local.json)의 permissions.deny 와 항목 정합도 단언한다.
+claude 어댑터(.claude/settings.json·settings.local.json)의 permissions.deny 와 항목 일치도 단언한다.
 
 stdlib + pyyaml(엔진이 이미 의존 — board.py) 만 사용. opencode CLI 실행 없이 config 파싱만.
 
@@ -44,7 +44,7 @@ AGENT_FILES = [
     OPENCODE / "agents" / "researcher.md",
 ]
 
-# claude deny 와 정합해야 할 위험 패턴 (rm 일반 · force push · clean -f) — deny 강제.
+# claude deny 와 일치해야 할 위험 패턴 (rm 일반 · force push · clean -f) — deny 강제.
 # `rm *` = 일반 파일 삭제 deny (T-0160 — "파일 삭제는 사용자가 직접"·`rm -rf *` 를 subsume).
 # git push --force* / -f* 는 claude 의 `git push --force *` / `git push -f *` 와
 # 의미 동등 (opencode 는 후행 인자 매칭 위해 `*` 를 공백 없이 붙인다).
@@ -182,7 +182,7 @@ def test_agents_ask_required_patterns():
 
 
 def test_agents_match_project_config():
-    """agent frontmatter 의 bash 패턴맵이 project config 와 정확히 일치한다 (단일 진실 정합)."""
+    """agent frontmatter 의 bash 패턴맵이 project config 와 정확히 일치한다 (단일 진실 일치)."""
     project_bash = _load_project_bash_permission()
     for path in EXEC_AGENT_FILES:
         fm = _load_agent_frontmatter(path)
@@ -195,13 +195,13 @@ def test_agents_match_project_config():
 
 def test_researcher_writes_only_its_ticket_copy_section_without_bash_bypass():
     """researcher 는 성장 티켓 사본의 자기 절을 edit 한다(ADR-0089 전원 참여) — 저장소 read-only 는
-    역할 계약 + harvest 의 자기 절 밖 bytes 일치 강제로 지키고, task 는 deny 로 중첩 위임을 막으며
+    역할 계약 + 돌려받기의 자기 절 밖 bytes 일치 강제로 지키고, task 는 deny 로 중첩 위임을 막으며
     bash 는 위험명령 제외 패턴맵(T-opencode-002)으로 한정한다.
 
     edit/bash/task 기대값은 손기입하지 않고 contract fragment 에서 파생한다 — 카드만 바뀌고
     fragment 가 stale 로 남는 half-fix 를 이 테스트가 놓치지 않게 한다(T-0696 F-014 → T-0745 →
     T-0747 · test_pm_relay.py::test_opencode_runtime_role_fragment_matches_shipped_card_permission
-    과 동일 대조를 이 표면에서도 지킨다)."""
+    과 동일 대조를 이 범위에서도 지킨다)."""
     fm = _load_agent_frontmatter(RESEARCHER)
     assert "tools" not in fm
     permission = fm["permission"]
@@ -218,7 +218,7 @@ def test_researcher_writes_only_its_ticket_copy_section_without_bash_bypass():
 
 
 def test_pm_can_delegate_only_the_four_framework_roles():
-    """PM은 운영 쓰기를 유지하되 task 표면은 architect/dev/reviewer/researcher로 제한한다."""
+    """PM은 운영 쓰기를 유지하되 task 범위는 architect/dev/reviewer/researcher로 제한한다."""
     fm = _load_agent_frontmatter(OPENCODE / "agents" / "pm.md")
     assert "tools" not in fm
     assert fm["permission"]["edit"] == "allow"
@@ -239,13 +239,13 @@ def test_worker_agents_cannot_redelegate_and_use_permission_only():
         assert fm["permission"]["task"] == "deny", path
 
 
-# ── claude 어댑터와의 정합 ──────────────────────────────────────────────────
+# ── claude 어댑터와의 일치 ──────────────────────────────────────────────────
 
 def test_mirrors_claude_settings_deny():
     """opencode 가드가 claude settings.json 의 위험 deny 항목을 (의미적으로) 미러한다.
 
     claude 는 `git push --force *`(공백 포함), opencode 는 `git push --force*`(공백 없음) —
-    후행 인자 매칭 방식 차이일 뿐 같은 명령을 막는다. 패턴 머리(prefix)로 정합을 단언한다.
+    후행 인자 매칭 방식 차이일 뿐 같은 명령을 막는다. 패턴 머리(prefix)로 일치를 단언한다.
     """
     claude_deny = _load_claude_deny("settings.json")
     project_bash = _load_project_bash_permission()

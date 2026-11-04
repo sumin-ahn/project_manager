@@ -41,7 +41,7 @@ _MUST_FIX_BLOCK_GUIDANCE = (
     "  해결 방법 — 현재 티켓 fix의 기계 확인 증거로 리뷰 집계 티켓마다 처분을 선언하세요:\n"
     "    python3 .project_manager/tools/additional_reviewer.py "
     "--resolve-review <T-NNNN> --pm-verified\n"
-    "  라운드 기록: {ledger}"
+    "  라운드 기록: {record_path}"
 )
 
 # ── 릴리즈 엔진 사본 drift 차단 (릴리즈 절차의 두 번째 기계 관문 · must-fix 거부 직후) ──
@@ -56,10 +56,10 @@ _ENGINE_DRIFT_BLOCK_GUIDANCE = (
 )
 
 
-def _release_rounds_ledger(flag: Path) -> Path:
+def _release_rounds_records(flag: Path) -> Path:
     """릴리즈 검사가 읽을 라운드 기록 — live-test.json 과 **같은 `.local`**.
 
-    기록 위치 정렬(`_resolve_livegate_flag`)을 그대로 물려받는다 — 어느 board.py 사본/cwd 로
+    기록 위치 정렬(`_resolve_live_test_flag`)을 그대로 물려받는다 — 어느 board.py 사본/cwd 로
     record 하든 additional_reviewer 가 실제로 쓴 그 기록(소유 PM 홈 `.local/review_rounds.json`)을
     본다. 사본별로 다른 기록을 읽으면 남은 지적이 있는데 "무대상"으로 통과하는 false-green 이 난다.
 
@@ -115,7 +115,7 @@ def _refuse_release_for_must_fix(flag: Path, cwd: str, problems: list[str]) -> i
     })
     print(_MUST_FIX_BLOCK_GUIDANCE.format(
         count=len(problems), items="\n".join(problems),
-        ledger=_release_rounds_ledger(flag)), file=sys.stderr)
+        record_path=_release_rounds_records(flag)), file=sys.stderr)
     return 1
 
 
@@ -174,7 +174,7 @@ def _release_evidence_problem(home, data: dict, flag: Path, rev: str) -> str | N
             return "release coordinates invalid"
         if git._git_head_at(path) != rev:
             return "release head drift"
-    resolved, mode = regression_store._resolve_livegate_flag(home, cwd)
+    resolved, mode = regression_store._resolve_live_test_flag(home, cwd)
     core_resolved, core_mode = regression_store._resolve_regression_flag(home, target_repo)
     if (mode == regression_store._LG_BROKEN or core_mode == regression_store._LG_BROKEN
             or resolved != flag or core_resolved.parent != flag.parent):

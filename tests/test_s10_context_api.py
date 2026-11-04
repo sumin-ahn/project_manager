@@ -87,16 +87,16 @@ def _run_board(board: Path, argv: list[str], stdin: bytes) -> subprocess.Complet
                           env=utf8_child_env(), timeout=120)
 
 
-def test_band_rounding_table(tmp_path):
-    """쓴 % 는 반올림(동률 짝수)·0~100 제한, 밴드 경계는 포함, post-turn 회전은 원시 정수 곱이다."""
+def test_level_rounding_table(tmp_path):
+    """쓴 % 는 반올림(동률 짝수)·0~100 제한, 구간 경계는 포함, post-turn 회전은 원시 정수 곱이다."""
     rounding = {(1, 200): 0, (3, 200): 2, (5, 200): 2, (139, 200): 70, (141, 200): 70, (143, 200): 72,
                 (400_000, E): 100, (0, E): 0, (-5, E): 0, (15_328, 0): 0, (15_328, 20_000): 77}
     assert {pair: ctx_recovery.context_used_pct(*pair) for pair in rounding} == rounding
     table = {69: "ok", 70: "warn", 76: "warn", 77: "warn2", 79: "warn2", 80: "stop", 100: "stop"}
     assert {used: ctx_recovery.classify(used, THRESHOLDS) for used in table} == table
-    assert ctx_recovery.CTX_NUDGE2_MARGIN_PCT == 3
-    assert ctx_recovery.nudge2_threshold({"checkpoint_at_pct": 79, "precompact_at_pct": 80}) == 79
-    # 반올림 백분율은 80% 최종 밴드여도 원시 정수 곱 795*100 < 1000*80 이라 회전하지 않는다.
+    assert ctx_recovery.CTX_WARN2_MARGIN_PCT == 3
+    assert ctx_recovery.warn2_threshold({"checkpoint_at_pct": 79, "precompact_at_pct": 80}) == 79
+    # 반올림 백분율은 80% 최종 구간이어도 원시 정수 곱 795*100 < 1000*80 이라 회전하지 않는다.
     assert ctx_recovery.classify(ctx_recovery.context_used_pct(795, 1000), THRESHOLDS) == "stop"
     assert [ctx_recovery.rotation_due(tokens, 1000, 80) for tokens in (795, 799, 800, 0)] == [
         False, False, True, False]
@@ -143,7 +143,7 @@ def test_statusline_is_read_only(tmp_path):
 
 
 def test_nudge2_and_final_are_independent(tmp_path):
-    """warn·warn2·final 은 사이클당 각자 한 번 — 앞 밴드 발화가 뒤 밴드를 소모하지 않고 건너뛴 밴드도 낸다."""
+    """warn·warn2·final 은 사이클당 각자 한 번 — 앞 구간 출력이 뒤 구간을 소모하지 않고 건너뛴 구간도 낸다."""
     root = _root(tmp_path)
     first = _judge(root, 156_000)
     assert set(first) == DECISION_KEYS
@@ -159,8 +159,8 @@ def test_nudge2_and_final_are_independent(tmp_path):
     assert skipped["emit"] is True and sorted(_markers(root)) == ["s-1.final", "s-1.warn2", "s-2.final"]
 
 
-def test_measured_ok_and_zero_rearm(tmp_path):
-    """양수 ok 실측만 밴드 marker 를 재무장하고, 미측정 0 은 보존한다 — 같은 코드의 두 Home 은 서로 섞이지 않는다."""
+def test_measured_ok_and_zero_reset(tmp_path):
+    """양수 ok 실측만 구간 marker 를 다시 켜고, 미측정 0 은 보존한다 — 같은 코드의 두 Home 은 서로 섞이지 않는다."""
     first, second = _root(tmp_path, "first"), _root(tmp_path, "second")
     assert _judge(first, 150_000)["emit"] is True
     assert _judge(second, 150_000)["emit"] is True  # 다른 Home 의 marker 를 공유하지 않는다.
@@ -196,7 +196,7 @@ def _judge_in_process(root: Path, tokens: int, boundary: str | None) -> dict:
 
 
 def test_durable_compaction_is_idempotent(tmp_path, monkeypatch):
-    """다른 프로세스가 선점한 같은 세션 밴드·경계는 재발화하지 않고, 새 경계만 처리하며 예산 불능에서도 처리한다."""
+    """다른 프로세스가 먼저 차지한 같은 세션 구간·경계는 다시 출력하지 않고, 새 경계만 처리하며 예산 불능에서도 처리한다."""
     root = _root(tmp_path)
     home = hooks.adapter_home(root)
     assert _judge_in_process(root, 150_000, None)["emit"] is True
@@ -205,18 +205,18 @@ def test_durable_compaction_is_idempotent(tmp_path, monkeypatch):
     child = _judge_in_process(root, 0, "00000000-0000-4000-8000-000000000001")
     assert (child["compaction_new"], child["compaction_boundary_id"]) == (True, "00000000-0000-4000-8000-000000000001")
     assert child["compaction_guidance"] == ctx_recovery.build_ctx_guard_guidance("precompact")
-    assert sorted(_markers(root)) == ["s-1.compact-00000000-0000-4000-8000-000000000001"]  # 밴드 marker 셋 재무장.
+    assert sorted(_markers(root)) == ["s-1.compact-00000000-0000-4000-8000-000000000001"]  # 구간 marker 셋 다시 켜기.
     assert principle_store.load_seen_marker(home, "s-1") == set()
     same = _judge(root, 0, boundary="00000000-0000-4000-8000-000000000001")
     assert (same["compaction_new"], same["compaction_guidance"], same["compaction_boundary_id"]) == (
         False, None, None)
-    assert _judge(root, 150_000, boundary="00000000-0000-4000-8000-000000000001")["emit"] is True  # 재무장 뒤 같은 사이클의 다음 상승.
+    assert _judge(root, 150_000, boundary="00000000-0000-4000-8000-000000000001")["emit"] is True  # 다시 켠 뒤 같은 사이클의 다음 상승.
 
-    def broken_rearm(_home, _session):
+    def broken_reset(_home, _session):
         raise PermissionError("seen marker 삭제 불가")
 
     with monkeypatch.context() as patch:
-        patch.setattr(principle_store, "reset_seen_marker", broken_rearm)
+        patch.setattr(principle_store, "reset_seen_marker", broken_reset)
         with pytest.raises(PermissionError, match="seen marker 삭제 불가"):
             _judge(root, 0, boundary="00000000-0000-4000-8000-000000000002")
     assert "s-1.compact-00000000-0000-4000-8000-000000000002" not in _markers(root)  # 실패한 경계는 다음 호출이 다시 처리한다.
@@ -259,14 +259,14 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
             hooks.judge_context(home, **call)
     assert _markers(root) == {}
 
-    def broken_render(band, **_kwargs):
-        raise RuntimeError(f"렌더 실패 {band}")
+    def broken_render(guidance_level, **_kwargs):
+        raise RuntimeError(f"렌더 실패 {guidance_level}")
 
     with monkeypatch.context() as patch:
         patch.setattr(ctx_recovery, "build_ctx_guard_guidance", broken_render)
         with pytest.raises(RuntimeError, match="렌더 실패 warn"):
             _judge(root, 150_000, harness="opencode")
-    assert _markers(root) == {}  # 렌더 실패는 밴드 marker 를 소비하지 않는다.
+    assert _markers(root) == {}  # 렌더 실패는 구간 marker 를 소비하지 않는다.
 
     board = _install_board(root)
     good = _hook_context(board, {"version": 1, "tokens": 150_000, "model": None, "main_thread": True,
@@ -345,7 +345,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
     assert (mismatch.returncode, mismatch.stdout) == (2, b"")
     assert "[hook-tool] 입력 형식 오류" in mismatch.stderr.decode("utf-8")
 
-    # ctx 를 실은 요청은 같은 Home 의 공개 ctx API 와 같은 11키를 싣는다(첫 발화끼리 비교).
+    # ctx 를 실은 요청은 같은 Home 의 공개 ctx API 와 같은 11키를 싣는다(첫 출력끼리 비교).
     observed = {"session": "ses-c", "tokens": 150_000, "model": None, "main_thread": True, "boundary": None}
     with_context = json.loads(_hook_tool(board, {"version": 1, "cwd": str(root), "tool_name": "read",
                                                  "tool_input": {}, "shell_command": None, "main_thread": True,
@@ -374,7 +374,7 @@ def test_config_budget_and_wire_errors_are_visible(tmp_path, monkeypatch):
 
 
 def test_principle_markers_and_errors_are_visible(tmp_path, capsys):
-    """원칙 count·keys·text·broken 과 seen·재무장·서브에이전트 면제, 실제 IO 불능, 안내 1회 3상태를 보인다."""
+    """원칙 count·keys·text·broken 과 seen·다시 켜기·서브에이전트 면제, 실제 IO 불능, 안내 1회 3상태를 보인다."""
     root = tmp_path / "home"
     home = hooks.adapter_home(root)
     wiki = root / ".project_manager" / "wiki"

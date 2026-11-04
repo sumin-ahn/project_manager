@@ -3,23 +3,23 @@
 T-0690 은 PowerShell 이 캡처하는 非tty stdout 을 콘솔 codepage(cp949 등)로 되돌리고, 그
 코덱에 없는 문자를 `pm_translit` 대체표로 치환한다. 치환은 되돌릴 수 없으므로 **다른
 프로세스가 파싱하는 출력**(하네스 훅 엔벨로프·`--json` 페이로드·ticket 사본 capability)이
-그 텍스트 레이어를 지나면 데이터가 사라진다. 검증 축:
+그 텍스트 레이어를 지나면 데이터가 사라진다. 검증 항목:
 
   (a) 콘솔 코덱이 cp949 로 전환된 상태에서 각 호출부의 출력이 UTF-8 bytes 로 나가고,
       cp949 미매핑 문자(`✅ ◦`)와 대체표 무음 치환 문자(`— ✓`)가 왕복 `json.loads` 로
       보존된다. 그 전환 상태는 **실 `configure_console_utf8`** 을 태워 만든다(픽스처가 실
       전환 함수와 기계로 묶인다 · 버퍼링도 실제와 같은 write_through=False).
   (b) 같은 조건에서 **사람 출력**(`print` 경로)은 종전대로 콘솔 코덱으로 나간다 — 두 경로가
-      스트림이 아니라 호출 seam 으로 갈린다는 것이 이 티켓의 결정이다. 사람/기계 출력의
-      **순서**도 지켜진다(seam 의 텍스트 레이어 선-flush).
-  (c) `.buffer` 가 없는 스트림(테스트 캡처·`io.StringIO`)은 텍스트 write 로 폴백하고,
+      스트림이 아니라 호출 함수로 갈린다는 것이 이 티켓의 결정이다. 사람/기계 출력의
+      **순서**도 지켜진다(공용 함수의 텍스트 레이어 선-flush).
+  (c) `.buffer` 가 없는 스트림(테스트 캡처·`io.StringIO`)은 텍스트 write 로 대신하고,
       `sys.stdout is None`(pythonw 기동)은 조용히 무출력이다.
   (d) 정적 가드 — 콘솔 텍스트 레이어로 기계 JSON 을 흘리는 세 형태
       (`print(json.dumps(...))` · 스트림 `json.dump(...)` · stdout 이름 수신자의
-      `.write(json.dumps(...))`)가 가드 시야 전수에서 0 건. 시야 = 엔진 `tools/*.py` +
+      `.write(json.dumps(...))`)가 가드 검사 범위 전수에서 0 건. 검사 범위 = 엔진 `tools/*.py` +
       기계 JSON 을 쓰는 어댑터 훅(`pm_orch_claude.py`). 파일 출력은 `json.dumps` + LF write
       관용구를 쓰므로 이 금지는 파일 경로와 충돌하지 않는다(허용 예외는 상단 상수 + 사유).
-  (e) T-0736 — claude 어댑터 git-anchor 훅이 strict 콘솔 코덱(cp949) 아래서도 UTF-8 bytes 로
+  (e) T-0736 — claude 어댑터 git 명령 검사 훅이 strict 콘솔 코덱(cp949) 아래서도 UTF-8 bytes 로
       쓴다(서브프로세스 실측).
 """
 from __future__ import annotations
@@ -69,7 +69,7 @@ ADAPTER_HOOK = REPO / "templates" / "claude_code" / ".claude" / "pm_orch_claude.
 
 # cp949 대체표(`_TRANSLIT`)가 무음 치환하는 문자(`—`·`✓`)와 표에도 없어 `?` 로 사라지는 문자
 # (`✅`·`◦`)를 한글과 함께 싣는다 — 손실이 나면 왕복이 깨진다.
-LOSSY_SAMPLE = "판정 ✅ 완료 — 잔여 ✓ 항목 ◦ 없음"
+LOSSY_SAMPLE = "판정 ✅ 완료 — 남은 ✓ 항목 ◦ 없음"
 CP949_UNMAPPABLE = ("✅", "◦")
 TRANSLITERATED = {"—": "-", "✓": "v"}
 
@@ -109,7 +109,7 @@ def _install_capture_console(module, monkeypatch):
 
     state = module.console_state()["streams"]["stdout"]
     assert state["selected_encoding"] == "cp949" and state["applied"] is True
-    assert stdout.write_through is False  # 실 캡처와 같은 버퍼링 상태여야 순서 축이 산다.
+    assert stdout.write_through is False  # 실 캡처와 같은 버퍼링 상태여야 순서 검사가 산다.
     return stdout
 
 
@@ -135,8 +135,8 @@ def _machine_payload(stream) -> object:
 
 # ── (a) 호출부별 UTF-8 무손실 ────────────────────────────────────────────────
 
-def test_seam_writes_utf8_bytes_under_a_cp949_console(console_encoding, capture_console):
-    """seam 자체 — cp949 텍스트 레이어를 건너뛰고 UTF-8 bytes 한 줄을 쓴다."""
+def test_console_writer_writes_utf8_bytes_under_a_cp949_console(console_encoding, capture_console):
+    """공용 함수 자체 — cp949 텍스트 레이어를 건너뛰고 UTF-8 bytes 한 줄을 쓴다."""
     stream = capture_console()
     payload = {"systemMessage": LOSSY_SAMPLE, "suppressOutput": False}
 
@@ -149,13 +149,13 @@ def test_seam_writes_utf8_bytes_under_a_cp949_console(console_encoding, capture_
     assert json.loads(raw.decode("utf-8")) == payload
 
 
-def _neutralize_engine_anchor_guard(bootstrap, monkeypatch):
-    """0단계 엔진 앵커 검사를 hermetic 무력화한다(`tests/test_pm_bootstrap.py` 의 autouse 픽스처와
-    동형). 이 파일의 엔진은 등록 슬롯 worktree 에서 로드될 수 있어 실 REPO 가 PM 홈 등록 worktree
-    사본으로 보이면 `[중단·0단계]` 로 dump 전에 끝난다 — 이 테스트의 축은 seam(bytes) 이지 앵커가
-    아니다. 실 board 를 로드해 `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가
+def _neutralize_engine_target_repo_guard(bootstrap, monkeypatch):
+    """0단계 엔진 대상 저장소 검사를 hermetic 무력화한다(`tests/test_pm_bootstrap.py` 의 autouse 픽스처와
+    같은 구조). 이 파일의 엔진은 등록 슬롯 worktree 에서 로드될 수 있어 실 REPO 가 PM 홈 등록 worktree
+    사본으로 보이면 `[중단·0단계]` 로 dump 전에 끝난다 — 이 테스트의 관심은 출력 함수(bytes) 이지 대상 저장소가
+    아니다. 실 board 를 로드해 `_pm_home_worktree_wrong_repo`→None 만 패치하고 board=None 경로가
     그 패치본을 받게 한다."""
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home, **_kw: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home, **_kw: None)
 
 
 def _bind_task_stub(inst, monkeypatch, tmp_path):
@@ -205,7 +205,7 @@ _LOG_TEXT = (
 def test_pm_bootstrap_json_payload_is_utf8(capture_console, tmp_path, monkeypatch):
     """`--json` 부트스트랩 페이로드(로그 본문 포함)가 cp949 콘솔에서도 무손실이다."""
     bootstrap = _load("pm_bootstrap")
-    _neutralize_engine_anchor_guard(bootstrap, monkeypatch)
+    _neutralize_engine_target_repo_guard(bootstrap, monkeypatch)
     inst = _hermetic_bootstrap(bootstrap, tmp_path, _LOG_TEXT)
     _bind_task_stub(inst, monkeypatch, tmp_path)
     stream = capture_console()
@@ -235,10 +235,10 @@ def test_pm_log_ctx_guidance_json_payload_is_utf8(capture_console, monkeypatch):
 
 
 def test_pm_log_snapshot_json_payload_is_utf8(capture_console, monkeypatch, tmp_path):
-    'snapshot 훅 페이로드는 ASCII 이스케이프지만 같은 seam 을 지나 UTF-8 bytes 로 나간다.'
+    'snapshot 훅 페이로드는 ASCII 이스케이프지만 같은 출력 함수를 지나 UTF-8 bytes 로 나간다.'
     home = pm_paths.home_at(tmp_path)
     pm_log = _load('pm_log')
-    monkeypatch.setattr(pm_paths, 'owning_pm_home', lambda anchor: anchor)
+    monkeypatch.setattr(pm_paths, 'owning_pm_home', lambda target_repo: target_repo)
     monkeypatch.setattr(pm_engine.app.session_snapshot, 'build_snapshot', lambda _home, *args, **kwargs: (LOSSY_SAMPLE, ''))
     stream = capture_console()
     args = SimpleNamespace(session_id='s-main', json=True)
@@ -285,17 +285,17 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     }
     assert Path(prepared["copy"]).parent == slot  # 한글·em dash 경로가 그대로 왕복한다.
 
-    harvest_stream = capture_console()
+    collect_stream = capture_console()
     monkeypatch.setattr(
         delegate_collect, "collect_ticket_copy",
-        lambda _home, **_kwargs: delegate_rounds.TicketHarvestResult(False, True),
+        lambda _home, **_kwargs: delegate_rounds.TicketCollectResult(False, True),
     )
 
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pm_delegate.REPO, board_root=pm_paths._board_root_at(pm_delegate.REPO)), [
         "collect", "--copy", str(plan.path), "--cwd", str(slot),
     ]) == 0
 
-    assert _machine_payload(harvest_stream) == {
+    assert _machine_payload(collect_stream) == {
         "copy": str(plan.path.resolve()), "changed": False, "sync_ready": True,
         "verify_missing": [],
     }
@@ -361,12 +361,12 @@ def test_delegate_channel_guard_hook_payloads_are_utf8(
     ) == 0
 
     result = _machine_payload(stream)
-    # deny 사유는 한글 처방 문구다 — cp949 를 탔다면 대체표가 문자를 지웠을 것이다.
+    # deny 사유는 한글 해결 방법 문구다 — cp949 를 탔다면 대체표가 문자를 지웠을 것이다.
     assert "—" in json.dumps(result, ensure_ascii=False)
 
 
-def _break_console_seam_loader(guard, monkeypatch):
-    """가드 패키지 CLI 의 콘솔 seam(`console.write_machine_line`)만 실패시킨다."""
+def _break_console_writer_loader(guard, monkeypatch):
+    """가드 패키지 CLI 의 콘솔 출력 함수(`console.write_machine_line`)만 실패시킨다."""
 
     def _broken_write(*_args, **_kwargs):
         raise RuntimeError("simulated missing console_encoding")
@@ -375,12 +375,12 @@ def _break_console_seam_loader(guard, monkeypatch):
         cli_delegate_channel_guard, "console", SimpleNamespace(write_machine_line=_broken_write))
 
 
-def test_delegate_channel_guard_fallback_line_survives_a_missing_seam(
+def test_delegate_channel_guard_fallback_line_survives_a_missing_console_writer(
     capture_console, monkeypatch, tmp_path
 ):
-    """seam 로드 자체가 실패한 경계도 호스트에 완전한 엔벨로프 한 줄을 준다(fail-open 계약)."""
+    """콘솔 모듈 로드 자체가 실패한 경계도 호스트에 완전한 엔벨로프 한 줄을 준다(fail-open 계약)."""
     guard = _load("delegate_channel_guard")
-    _break_console_seam_loader(guard, monkeypatch)
+    _break_console_writer_loader(guard, monkeypatch)
     stream = capture_console()
     stderr = io.StringIO()
 
@@ -396,16 +396,16 @@ def test_delegate_channel_guard_fallback_line_survives_a_missing_seam(
     text = _written_bytes(stream).decode("utf-8")
     assert text.count("\n") == 1
     assert set(json.loads(text)) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    # 조용한 강등이 아니다 — 원인(seam 로드 실패)이 fail-open 보고에 남는다.
+    # 말없이 수준을 낮추는 것이 아니다 — 원인(콘솔 모듈 로드 실패)이 fail-open 보고에 남는다.
     assert "simulated missing console_encoding" in stderr.getvalue()
 
 
-def test_missing_seam_fallback_still_writes_utf8_bytes(
+def test_missing_console_writer_fallback_still_writes_utf8_bytes(
     capture_console, monkeypatch, tmp_path
 ):
-    """seam 없는 폴백도 UTF-8 bytes 다 — 한글+em dash 사유가 strict cp949 로 유실되지 않는다."""
+    """콘솔 모듈 없는 대체 경로도 UTF-8 bytes 다 — 한글+em dash 사유가 strict cp949 로 유실되지 않는다."""
     guard = _load("delegate_channel_guard")
-    _break_console_seam_loader(guard, monkeypatch)
+    _break_console_writer_loader(guard, monkeypatch)
     stream = capture_console()
 
     assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
@@ -426,9 +426,9 @@ def test_missing_seam_fallback_still_writes_utf8_bytes(
 def test_human_markdown_path_still_goes_through_the_console_codec(
     capture_console, tmp_path, monkeypatch
 ):
-    """같은 부트스트랩의 markdown(사람) 출력은 cp949 로 나간다 — 분리 축은 스트림이 아니라 seam."""
+    """같은 부트스트랩의 markdown(사람) 출력은 cp949 로 나간다 — 분리 기준은 스트림이 아니라 출력 함수."""
     bootstrap = _load("pm_bootstrap")
-    _neutralize_engine_anchor_guard(bootstrap, monkeypatch)
+    _neutralize_engine_target_repo_guard(bootstrap, monkeypatch)
     inst = _hermetic_bootstrap(bootstrap, tmp_path, _LOG_TEXT)
     _bind_task_stub(inst, monkeypatch, tmp_path)
     stream = capture_console()
@@ -492,13 +492,13 @@ def test_machine_line_keeps_the_human_output_order(console_encoding, capture_con
 
 
 def test_order_is_lost_when_the_pre_flush_is_removed(tmp_path, monkeypatch):
-    """감도 실증 — seam 의 선-flush 한 줄을 지우면 기계 줄이 사람 출력 앞으로 밀린다."""
+    """감도 실증 — 출력 함수의 선-flush 한 줄을 지우면 기계 줄이 사람 출력 앞으로 밀린다."""
     source = (TOOLS / "pm_engine" / "infra" / "console.py").read_text(encoding="utf-8")
-    anchor = '    _flush_quietly(target)\n    buffer.write(line.encode("utf-8"))\n'
-    assert source.count(anchor) == 1, "변이 앵커 소실"
+    target_repo = '    _flush_quietly(target)\n    buffer.write(line.encode("utf-8"))\n'
+    assert source.count(target_repo) == 1, "변이 표시 글 소실"
     mutated_path = tmp_path / "console_encoding.py"
     mutated_path.write_text(
-        source.replace(anchor, '    buffer.write(line.encode("utf-8"))\n', 1),
+        source.replace(target_repo, '    buffer.write(line.encode("utf-8"))\n', 1),
         encoding="utf-8",
         newline="\n",
     )
@@ -514,7 +514,7 @@ def test_order_is_lost_when_the_pre_flush_is_removed(tmp_path, monkeypatch):
 # ── (c) `.buffer` 없는 스트림 · 표준 스트림 부재 ─────────────────────────────
 
 def test_stream_without_buffer_falls_back_to_text_write(console_encoding):
-    """`io.StringIO`(테스트 캡처)는 텍스트 write 로 폴백하고 한 줄 계약을 지킨다."""
+    """`io.StringIO`(테스트 캡처)는 텍스트 write 로 대신하고 한 줄 계약을 지킨다."""
     sink = io.StringIO()
     line = json.dumps({"reason": LOSSY_SAMPLE}, ensure_ascii=False)
 
@@ -526,7 +526,7 @@ def test_stream_without_buffer_falls_back_to_text_write(console_encoding):
 def test_default_stream_without_buffer_is_taken_from_sys_stdout(
     console_encoding, monkeypatch
 ):
-    """`stream` 미지정이면 호출 시점의 `sys.stdout` 을 쓴다(캡처 스트림 폴백 포함)."""
+    """`stream` 미지정이면 호출 시점의 `sys.stdout` 을 쓴다(캡처 스트림 대체 포함)."""
     sink = io.StringIO()
     monkeypatch.setattr(sys, "stdout", sink)
 
@@ -565,7 +565,7 @@ STREAM_DUMP_SHAPE = "json.dump(..., stream)"
 STDOUT_WRITE_SHAPE = "<stdout>.write(json.dumps(...))"
 
 # stdout 을 담는 이름들. 엔진은 `sys.stdout` 을 `stdout`/`output_stream` 지역 이름으로 넘겨
-# 쓰므로(delegate_channel_guard) 그 별칭 회귀도 가드 시야에 든다. 파일 handle 쓰기
+# 쓰므로(delegate_channel_guard) 그 별칭 회귀도 가드 검사 범위에 든다. 파일 handle 쓰기
 # (`<파일 handle>.write(json.dumps(...))` — pm_import 등)는 이름이 달라 걸리지 않는다.
 _STDOUT_WRITER_NAMES = frozenset({"sys.stdout", "stdout", "output_stream"})
 
@@ -574,7 +574,7 @@ _STDOUT_WRITER_NAMES = frozenset({"sys.stdout", "stdout", "output_stream"})
 # 파일 출력은 `json.dumps(...)` + LF write 가 엔진의 단일 관용구다.
 ALLOWED_CONSOLE_JSON: dict[tuple[str, str], str] = {}
 
-# 가드 시야 밖 어댑터 스크립트 — `console_encoding` 을 로드하지 않아 T-0690 의 코덱 전환/대체표
+# 가드 검사 범위 밖 어댑터 스크립트 — `console_encoding` 을 로드하지 않아 T-0690 의 코덱 전환/대체표
 # 손실 클래스에 닿지 않는다(제외 근거). 그 전제는 아래 테스트가 기계로 고정한다.
 EXCLUDED_ADAPTER_SCRIPTS = (
     REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py",
@@ -586,7 +586,7 @@ EXCLUDED_ADAPTER_SCRIPTS = (
 
 
 def guarded_sources() -> tuple[Path, ...]:
-    """가드 시야 = 엔진 `tools/*.py` 전수 + 기계 JSON 을 쓰는 어댑터 훅."""
+    """가드 검사 범위 = 엔진 `tools/*.py` 전수 + 기계 JSON 을 쓰는 어댑터 훅."""
     return tuple(engine_python_files(TOOLS)) + (ADAPTER_HOOK,)
 
 
@@ -654,7 +654,7 @@ _TEXT_CANDIDATE = re.compile(
 
 
 def text_scan_candidates(sources) -> tuple[str, ...]:
-    """AST 와 독립된 텍스트 전수 측정 — 같은 표면을 정규식으로 다시 센다.
+    """AST 와 독립된 텍스트 전수 측정 — 같은 범위를 정규식으로 다시 센다.
 
     stdout 계열 `.write(` 는 사람 텍스트 출력에도 쓰이므로 같은 줄의 `json.dump` 유무로 가른다.
     여러 줄에 걸친 호출은 이 측정이 못 보므로(AST 가 상위집합) 텍스트 결과는 하한이다.
@@ -674,30 +674,30 @@ def text_scan_candidates(sources) -> tuple[str, ...]:
 
 
 def test_no_machine_json_goes_through_the_console_text_layer():
-    """가드 시야 전수에서 콘솔 텍스트 레이어로 나가는 기계 JSON 이 0 건이다."""
+    """가드 검사 범위 전수에서 콘솔 텍스트 레이어로 나가는 기계 JSON 이 0 건이다."""
     _scanned, violations = scan_console_json(guarded_sources())
     assert violations == (), "\n".join(violations)
 
 
 def test_guard_view_equals_the_surface_and_matches_an_independent_text_scan():
-    """가드 시야 == 표면(엔진 전수 + 어댑터 훅) · 텍스트 전수 측정과 어긋나지 않는다."""
+    """가드 검사 범위 == 대상 파일(엔진 전수 + 어댑터 훅) · 텍스트 전수 측정과 어긋나지 않는다."""
     scanned, violations = scan_console_json(guarded_sources())
     surface = tuple(
         _display(path) for path in engine_python_files(TOOLS)
     ) + (_display(ADAPTER_HOOK),)
 
     assert scanned == surface
-    assert len(surface) > 1  # 표면 자체가 비면 가드가 공전한다.
-    assert _display(ADAPTER_HOOK) in scanned  # T-0736 — 어댑터 훅이 시야에 있다.
+    assert len(surface) > 1  # 대상 파일 목록 자체가 비면 가드가 공전한다.
+    assert _display(ADAPTER_HOOK) in scanned  # T-0736 — 어댑터 훅이 검사 범위에 있다.
     assert text_scan_candidates(guarded_sources()) == ()
     assert violations == ()
 
 
-def test_excluded_adapter_scripts_do_not_load_the_console_seam():
-    """가드 시야 밖 어댑터 스크립트는 `console_encoding` 을 로드하지 않는다(제외 근거 고정).
+def test_excluded_adapter_scripts_do_not_load_the_console_writer():
+    """가드 검사 범위 밖 어댑터 스크립트는 `console_encoding` 을 로드하지 않는다(제외 근거 고정).
 
     이 단언이 red 가 되는 순간 = 그 어댑터가 코덱 전환을 태우기 시작한 순간이므로, 그때 그
-    파일을 `guarded_sources()` 에 넣어야 한다(가드가 침묵한 채 손실 표면이 생기지 않게).
+    파일을 `guarded_sources()` 에 넣어야 한다(가드가 침묵한 채 손실 경로가 생기지 않게).
     """
     assert EXCLUDED_ADAPTER_SCRIPTS, "제외 목록이 비면 근거 고정이 공전한다"
     for path in EXCLUDED_ADAPTER_SCRIPTS:
@@ -771,7 +771,7 @@ def test_guard_turns_red_when_one_call_site_is_reverted(
     형태는 텍스트 0·AST 1).
     """
     source = (REPO / relative).read_text(encoding="utf-8")
-    assert source.count(current) == 1, "변이 앵커 소실"
+    assert source.count(current) == 1, "변이 표시 글 소실"
     mutated = tmp_path / Path(relative).name
     mutated.write_text(
         source.replace(current, reverted, 1), encoding="utf-8", newline="\n"
@@ -800,7 +800,7 @@ def test_guard_ignores_mentions_in_comments_and_strings(tmp_path):
 
 
 def test_guard_does_not_flag_file_handle_writes(tmp_path):
-    """파일 handle 로 가는 `.write(json.dumps(...))` 는 콘솔 표면이 아니다(오탐 금지)."""
+    """파일 handle 로 가는 `.write(json.dumps(...))` 는 콘솔 출력이 아니다(오탐 금지)."""
     handle_write = tmp_path / "handle.py"
     handle_write.write_text(
         "import json\n"
@@ -816,7 +816,7 @@ def test_guard_does_not_flag_file_handle_writes(tmp_path):
     assert violations == ()
 
 
-# ── (e) T-0736 — claude 어댑터 git-anchor 훅의 strict 코덱 실측 ───────────────
+# ── (e) T-0736 — claude 어댑터 git 명령 검사 훅의 strict 코덱 실측 ───────────────
 
 # cp949 에 없는 기호 + 한글. em dash 는 실측 UnicodeEncodeError 라 텍스트 write 면 훅이 죽는다.
 HOOK_ADVISORY = "판정 — ✓ 확인 ⚠ 주의"
@@ -831,14 +831,14 @@ spec = importlib.util.spec_from_file_location("pm_orch_claude_hook_mode", adapte
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if mode == "evaluate":
-    module.git_anchor_hook_evaluate = lambda payload, root: {
+    module.git_target_repo_hook_evaluate = lambda payload, root: {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "additionalContext": advisory,
         }
     }
-    sys.exit(module.run_git_anchor_hook(Path(root)))
-sys.exit(module._emit_git_anchor_boundary_warn(RuntimeError(advisory)))
+    sys.exit(module.run_git_target_repo_hook(Path(root)))
+sys.exit(module._emit_git_target_repo_boundary_warn(RuntimeError(advisory)))
 """
 
 

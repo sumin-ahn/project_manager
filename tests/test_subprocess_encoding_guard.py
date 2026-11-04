@@ -13,7 +13,7 @@ from pm_engine.infra import git
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 # 배포본(templates/*)의 엔진 사본도 스캔한다 — parity 가드(byte-identical)로 전이 커버되지만,
-# 이 가드 단독으로도 출하물의 로캘 의존 호출 유입을 잡도록 자족화(T-0468 codex 게이트 must-fix).
+# 이 가드 단독으로도 출하물의 로캘 의존 호출 유입을 잡도록 자족화(T-0468 codex 리뷰 must-fix).
 ENGINE_TOOL_DIRS = [TOOLS, *sorted((REPO / "templates").glob("*/.project_manager/tools"))]
 
 
@@ -72,7 +72,7 @@ def test_git_rev_parse_decodes_utf8_path_under_cp949_locale_harness(tmp_path):
 
 
 def test_git_rev_parse_does_not_swallow_unicode_decode_error(tmp_path):
-    """예상 밖 디코딩 오류는 misanchor 가드를 조용히 건너뛰지 않는다."""
+    """예상 밖 디코딩 오류는 잘못된 대상 저장소 가드를 조용히 건너뛰지 않는다."""
 
     def broken_decoder(argv, **kwargs):
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")

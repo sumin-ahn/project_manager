@@ -4,9 +4,9 @@
 annotated 태그의 `^{}` peeled 행은 후보가 아니다. 같은 upstream 을 가진 프로젝트가 N 개여도
 조회는 1회다.
 
-값과 실행이 지나는 자리는 **엔진의 upstream seam** 하나다(관리자 쪽 사본 0) — 값은
+값과 실행이 지나는 자리는 **엔진의 upstream 함수** 하나다(관리자 쪽 사본 0) — 값은
 `upstream_rules.validate_upstream_value` 가 먼저 거르고, git 은 `_real_upstream_git_runner` 가
-비대화 auth·config 격리·`--` 종결로 부른다. 그 두 축을 실 호출의 argv·env 로 실측한다.
+비대화 auth·config 격리·`--` 종결로 부른다. 그 두 가지를 실 호출의 argv·env 로 실측한다.
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def test_the_same_upstream_is_queried_once(bare, observed):
     assert len(observed) == 1, f"같은 upstream 에 ls-remote 를 {len(observed)}회 불렀다"
 
 
-# ── 엔진 seam — 값 검증 · 실행 규약 ──────────────────────────────────────────
+# ── 엔진 upstream 함수 — 값 검증 · 실행 규약 ──────────────────────────────────────────
 
 
 @pytest.mark.parametrize("value", list(REFUSED_VALUES.values()), ids=list(REFUSED_VALUES))

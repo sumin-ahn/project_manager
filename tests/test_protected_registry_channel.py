@@ -127,15 +127,15 @@ class FakePool:
         return self._repos_dir / f"{repo}.git"
 
     def install_protected_hook(
-            self, repo, protected, *, gate_mode, test_cmd, git_runner=None):
+            self, repo, protected, *, check_mode, test_cmd, git_runner=None):
         self.calls.append((repo, list(protected)))
-        self.last_check = (gate_mode, test_cmd)
+        self.last_check = (check_mode, test_cmd)
         self.events.append("sidecar")
         if not self._ok:
             return False
         write_sidecar(self.REPO_HOOKS_DIR, repo, protected)
         contract = self.REPO_HOOKS_DIR / repo / self.PROTECTED_CHECK_CONTRACT_NAME
-        contract.write_text(f"{gate_mode}\n{test_cmd}\n", encoding="utf-8")
+        contract.write_text(f"{check_mode}\n{test_cmd}\n", encoding="utf-8")
         return True
 
 
@@ -947,7 +947,7 @@ class _ReconcileBoard:
             "test_cmd": self._test_cmd,
         }]
 
-    def _pm_home_worktree_misanchor(self, anchor, **_kw):
+    def _pm_home_worktree_wrong_repo(self, anchor, **_kw):
         return None
 
 
@@ -1056,7 +1056,7 @@ def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, 
     write_sidecar(hooks, "svc", ["main"])
 
     class _Boom(FakePool):
-        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd, git_runner=None):
+        def install_protected_hook(self, repo, protected, *, check_mode, test_cmd, git_runner=None):
             raise RuntimeError("hooksPath 설정 실패")
 
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]),
@@ -1102,7 +1102,7 @@ def test_bootstrap_reconcile_failsoft_on_install_exception(bootstrap, tmp_path, 
     write_sidecar(hooks, "svc", ["main"])
 
     class _Boom(FakePool):
-        def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd, git_runner=None):
+        def install_protected_hook(self, repo, protected, *, check_mode, test_cmd, git_runner=None):
             raise RuntimeError("boom")
 
     inst = _reconciler(bootstrap, tmp_path, monkeypatch, board=_ReconcileBoard(["release"]),

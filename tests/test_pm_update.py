@@ -86,9 +86,9 @@ def _load_pm_update():
 @pytest.fixture(autouse=True)
 def _known_native_capacity(monkeypatch):
     """갱신이 부르는 모델 한도 조회(`app.harness_ctx`)를 고정 값(C=1000000, 모델 창 2000000)으로 바꾼다."""
-    from _manager_home import known_ctx_seams
+    from _manager_home import known_ctx_overrides
     from pm_engine.app import harness_ctx
-    for name, override in known_ctx_seams(capacity=1000000, context=2000000).items():
+    for name, override in known_ctx_overrides(capacity=1000000, context=2000000).items():
         monkeypatch.setattr(harness_ctx, name, override)
 
 
@@ -977,7 +977,7 @@ _OPENCODE_VARIANT_MANIFEST = (
 )
 
 
-def _make_guest_framework(root: Path) -> Path:
+def _make_added_harness_framework(root: Path) -> Path:
     """합성 프레임워크 — `templates/{claude_code,opencode}` 최소 manifest + 실 파일.
 
     실 프레임워크와 같이 `tools/pm_engine` package 사본을 둔다 — 훅 세트 버전 선언이 거기 살고,
@@ -1000,7 +1000,7 @@ def _make_guest_framework(root: Path) -> Path:
     return root
 
 
-def _make_legacy_guest_adopter(pm_update, dest: Path, *, core: str | None = None) -> Path:
+def _make_legacy_added_harness_adopter(pm_update, dest: Path, *, core: str | None = None) -> Path:
     """claude host + **legacy 추가 하네스 절**(렌더물 행만·`@source` provenance 없음) 채택자 dest.
 
     엔진 파일 사본은 설치 시점 값으로 얼려 둔다 — 이번 동기가 그것을 갱신해야 한다."""
@@ -1040,7 +1040,7 @@ def test_added_harness_block_rows_keep_channel_markers(pm_update, tmp_path):
     두 행 다 update 채널이 전파하되 **방식**이 갈린다(렌더물=재렌더·엔진 행=byte-copy) — 계획이
     그 방식을 고르려면 경로만이 아니라 마커까지 필요하다."""
     dest = tmp_path / "dest"
-    _make_legacy_guest_adopter(pm_update, dest)
+    _make_legacy_added_harness_adopter(pm_update, dest)
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
@@ -1064,9 +1064,9 @@ def test_added_harness_rows_join_plan_engine_copy_and_render_rerender(
     엔진 행이 빠지면 하네스 계약 코어와 짝인 드라이버가 설치 시점 사본으로 영구 동결되고, 렌더물이
     빠지면 conf 를 바꿔도 그 어댑터가 설치 시점 값으로 남는다(채택자 실측: 카드 model 이 conf 와
     영구 불일치). dry-run 은 그 재렌더를 `[render]` 로 예고한다."""
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    manifest = _make_legacy_guest_adopter(pm_update, dest)
+    manifest = _make_legacy_added_harness_adopter(pm_update, dest)
     # 실 add-harness 가 적는 provenance 를 붙인다 — source 가 해소돼야 재렌더가 실제로 돈다.
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
@@ -1104,9 +1104,9 @@ def test_added_harness_rows_join_plan_engine_copy_and_render_rerender(
 def test_added_harness_block_rebuild_persists_rows_once_then_idempotent(
         pm_update, tmp_path, monkeypatch, capsys):
     """옛 구획(렌더물 행만) → 판 출하 manifest 로 다시 만든 구획이 1회 기록되고 2차 실행은 변경 0."""
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    manifest = _make_legacy_guest_adopter(pm_update, dest)
+    manifest = _make_legacy_added_harness_adopter(pm_update, dest)
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
@@ -1130,9 +1130,9 @@ def test_added_harness_block_rebuild_persists_rows_once_then_idempotent(
 def test_legacy_added_harness_first_run_has_no_frozen_warning(
         pm_update, tmp_path, monkeypatch, capsys):
     """옛 구획 **첫 실행**: 구획을 다시 만들어 그 판 파일을 등재·동기하므로 `미등재 판 파일 관측` 경고가 없다."""
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    _make_legacy_guest_adopter(pm_update, dest)
+    _make_legacy_added_harness_adopter(pm_update, dest)
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
@@ -1148,9 +1148,9 @@ def test_legacy_added_harness_first_run_has_no_frozen_warning(
 def test_added_harness_engine_backfill_dry_run_writes_nothing(
         pm_update, tmp_path, monkeypatch, capsys):
     """dry-run 은 파생만 하고 아무것도 쓰지 않는다 — 무변경 계약 유지 (⑩ 경계)."""
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    manifest = _make_legacy_guest_adopter(pm_update, dest)
+    manifest = _make_legacy_added_harness_adopter(pm_update, dest)
     before_manifest = manifest.read_bytes()
     frozen = dest / ".opencode" / "pm_orch_opencode.py"
     before_driver = frozen.read_bytes()
@@ -1225,9 +1225,9 @@ def test_shipped_manifest_cross_namespace_added_harness_names_no_foreign_variant
 
 def test_added_harness_source_declarations_do_not_promote_variant_union(pm_update, tmp_path):
     """구획 행의 `@source` 는 핵심 manifest 선택으로 새지 않는다 — 핵심은 self-prop 이 가리킨 판뿐이다."""
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    manifest = _make_legacy_guest_adopter(pm_update, dest)
+    manifest = _make_legacy_added_harness_adopter(pm_update, dest)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
             manifest_rules._ADDED_HARNESS_MANIFEST_END,
@@ -1245,9 +1245,9 @@ def test_added_harness_source_declarations_do_not_promote_variant_union(pm_updat
 def test_added_harness_row_missing_upstream_is_released_with_rc0(
         pm_update, tmp_path, monkeypatch, capsys):
     """판 출하 manifest 에 없는 구획 행은 관리에서 빠지고(파일 유지) 갱신은 rc 0 이다."""
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    manifest = _make_legacy_guest_adopter(pm_update, dest)
+    manifest = _make_legacy_added_harness_adopter(pm_update, dest)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
             manifest_rules._ADDED_HARNESS_MANIFEST_END,
@@ -1273,9 +1273,9 @@ def test_scope_paths_accepts_added_harness_engine_row_before_persistence(
 
     선검증은 **파일만** 읽으므로, 영속화 전 첫 실행에서는 파생분이 어느 manifest 에도 없다 —
     합집합에 넣지 않으면 이번 실행이 실제로 전파할 경로를 미등재로 거부한다."""
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    _make_legacy_guest_adopter(pm_update, dest)
+    _make_legacy_added_harness_adopter(pm_update, dest)
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
@@ -4158,9 +4158,9 @@ def test_changes_counts_rebuilt_added_harness_rows_like_the_plan(
     """`--changes` 는 계획과 같은 구획(판 출하 manifest 로 다시 만든 것)으로 분류한다.
 
     다시 만든 구획의 엔진 행·렌더물 행 모두 이번 동기가 받으므로(렌더물은 재렌더) 둘 다 엔진 영향이다."""
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    _make_legacy_guest_adopter(pm_update, dest)
+    _make_legacy_added_harness_adopter(pm_update, dest)
     _write_local_conf(dest, f"upstream.path={framework}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     runner = _make_fake_git_runner(
@@ -5357,9 +5357,9 @@ def test_drift_kinds_are_derived_from_install_artifact_spec(pm_update, tmp_path)
     그 산출물까지 검사한다 — "다음에 또 항목이 샌다" 를 닫는 장치."""
     dest = _make_pm_home(tmp_path / "home")
     update_adapters.reinstall_protected_hooks(dest, write=True)
-    gate_mode, test_cmd = repo_protection._protected_push_gate_config(pm_paths.home_at(dest), "svc")
+    check_mode, test_cmd = repo_protection._protected_push_check_config(pm_paths.home_at(dest), "svc")
     spec = protected_hooks.protected_hook_artifacts(pm_paths.home_at(dest),
-        "svc", ["main", "release"], gate_mode=gate_mode, test_cmd=test_cmd)
+        "svc", ["main", "release"], check_mode=check_mode, test_cmd=test_cmd)
     assert spec, "명세가 비었다(테스트 전제 깨짐)"
 
     for artifact in spec:
@@ -5750,7 +5750,7 @@ def test_paths_scope_accepts_added_harness_clause_path(pm_update, tmp_path, monk
     dest = tmp_path / "added_harness_dest"
     source = tmp_path / "added_harness_source"
     # 구획은 그 판의 출하 manifest 에서 다시 만들어지므로 상류에 opencode 판을 둔다. 어댑터 훅 영역의
-    #   부분 전파 가드가 상류 훅 세트 선언을 읽도록 엔진 패키지 사본도 둔다(`_make_guest_framework` 와 같다).
+    #   부분 전파 가드가 상류 훅 세트 선언을 읽도록 엔진 패키지 사본도 둔다(`_make_added_harness_framework` 와 같다).
     shutil.copytree(TOOLS / "pm_engine", source / ".project_manager" / "tools" / "pm_engine",
                     ignore=shutil.ignore_patterns("__pycache__"))
     _make_upstream_tree(source, {

@@ -66,7 +66,7 @@ const CONF: ConfSection = {
   legacy: [{ key: "delegate_enabled", replacement: "delegate.enabled" }],
   unknown: ["nope.nope"],
   nonstandard: [{ key: "ctx.checkpoint_at_pct", value: "75", default: "70" }],
-  // 값·판정을 늘 나르는 두 조회(가벼운/무거운 절)는 소스를 해소하지 않아 이 축이 null 이다.
+  // 값·판정을 늘 나르는 두 조회(가벼운/무거운 절)는 소스를 해소하지 않아 이 필드가 null 이다.
   missing_for_latest: null,
 };
 /** 소스가 해소된 조회(어댑터 절)의 판정 — 다섯 번째 목록이 실린 유일한 자리다. */
@@ -694,7 +694,7 @@ describe("엔진이 적는 키", () => {
 });
 
 describe("설정 안 함 접기", () => {
-  it("네 축이 전부 참인 행만 접힌다", () => {
+  it("네 기준이 전부 참인 행만 접힌다", () => {
     const row = { key: "some.key", default: null, required: false };
 
     expect(foldable(row, "", new Set())).toBe(true);
@@ -783,7 +783,7 @@ describe("원본 위치", () => {
 });
 
 describe("실패", () => {
-  it("옛 세대 사본이면 값을 지어내지 않고 그 사본의 사유를 보인다", () => {
+  it("옛 버전 사본이면 값을 지어내지 않고 그 사본의 사유를 보인다", () => {
     mounted(makeBridge(), false, null, {
       error: { kind: "old-generation", message: "먼저 갱신하라.", stderr: "", rc: 2 },
     });

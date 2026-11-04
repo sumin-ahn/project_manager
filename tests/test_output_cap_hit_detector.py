@@ -5,12 +5,12 @@ opencode 는 outbound 응답이 출력 cap(32000 토큰·실효 min(limit.output
 감지하지 못한다. 호출층(relay·출력 소비 지점 Supervisor.run_loop)의 cap-hit detector 가 응답이
 cap 근방이면 loud advisory 를 낸다. **advisory·never-block** — 경고+로그만·파이프라인 무중단.
 
-검증 축 (ticket DoD):
-  ① 순수 detector `detect_output_cap_hit` — cap 근방 대형 출력 주입 → 발화 / 정상 크기 → 무발화(오탐 0).
-  ② char 임계 경계(threshold-1 무발화 · threshold 발화) + 근사 token 보수적 상한.
+검증 항목 (ticket DoD):
+  ① 순수 detector `detect_output_cap_hit` — cap 근방 대형 출력 주입 → 감지 / 정상 크기 → 미감지(오탐 0).
+  ② char 임계 경계(threshold-1 미감지 · threshold 감지) + 근사 token 보수적 상한.
   ③ env 노브 `PM_OC_CAP_HIT_THRESHOLD` 해소기 + detector override.
   ④ 경고 문구 `cap_hit_warning_message` 에 파일-전달 규약(T-0337) 안내 포함(파일·경로·safe_write·절단).
-  ⑤ run_loop 배선 — cap 근방 응답 → cap_hit_log 발화 · 정상 응답 → 무발화 · never-block(전체 응답은
+  ⑤ run_loop 연결 — cap 근방 응답 → cap_hit_log 출력 · 정상 응답 → 출력 없음 · never-block(전체 응답은
      그대로 out_stream 에 전달·경고는 stdout 무오염).
 
 전부 결정적(라이브·실 subprocess 의존 0) — 실 opencode 없이 대형 출력을 인메모리로 주입한다.
@@ -29,10 +29,10 @@ def engine():
     return watchdog
 
 
-# ── ① 순수 detector: cap 근방 발화 / 정상 크기 무발화 (오탐 0) ─────────────────────
+# ── ① 순수 detector: cap 근방 감지 / 정상 크기 미감지 (오탐 0) ─────────────────────
 
 def test_detector_fires_on_near_cap_output(engine):
-    """cap 근방 대형 출력(임계 이상)을 주입하면 (True, reason) — silent 절단 의심 발화."""
+    """cap 근방 대형 출력(임계 이상)을 주입하면 (True, reason) — silent 절단 의심 감지."""
     big = "가" * (engine.CAP_HIT_CHAR_THRESHOLD + 500)  # 결정적 대형 출력(한글-dense).
     hit, reason = engine.detect_output_cap_hit(big)
     assert hit is True
@@ -48,14 +48,14 @@ def test_detector_fires_on_near_cap_output(engine):
     "x" * 15000,                     # 15KB — 큰 handoff 요약급이나 임계(34560) 대비 여전히 >2x 아래.
 ])
 def test_detector_no_fire_on_normal_output(engine, normal):
-    """정상 크기 응답(빈~15KB)은 무발화 — 오탐 0(임계 34560 대비 >2x 마진)."""
+    """정상 크기 응답(빈~15KB)은 미감지 — 오탐 0(임계 34560 대비 >2x 마진)."""
     hit, reason = engine.detect_output_cap_hit(normal)
     assert hit is False
     assert reason == ""
 
 
 def test_detector_none_text_no_fire(engine):
-    """None 응답(driver fail-soft 등)은 무발화(graceful)."""
+    """None 응답(driver fail-soft 등)은 미감지(graceful)."""
     hit, reason = engine.detect_output_cap_hit(None)
     assert hit is False and reason == ""
 
@@ -63,7 +63,7 @@ def test_detector_none_text_no_fire(engine):
 # ── ② char 임계 경계 + 근사 상한 ────────────────────────────────────────────────
 
 def test_detector_threshold_boundary(engine):
-    """임계-1 자는 무발화 · 임계 자는 발화(경계 결정성)."""
+    """임계-1 자는 미감지 · 임계 자는 감지(경계 결정성)."""
     thr = engine.CAP_HIT_CHAR_THRESHOLD
     below, _ = engine.detect_output_cap_hit("a" * (thr - 1))
     at, _ = engine.detect_output_cap_hit("a" * thr)
@@ -72,10 +72,10 @@ def test_detector_threshold_boundary(engine):
 
 
 def test_detector_char_threshold_override(engine):
-    """char_threshold 인자 override — 낮추면 작은 출력도 발화(주입 임계)."""
+    """char_threshold 인자 override — 낮추면 작은 출력도 감지(주입 임계)."""
     hit, reason = engine.detect_output_cap_hit("a" * 100, char_threshold=50)
     assert hit is True and "100 자" in reason
-    # 같은 100 자를 기본(34560) 임계로는 무발화.
+    # 같은 100 자를 기본(34560) 임계로는 미감지.
     assert engine.detect_output_cap_hit("a" * 100)[0] is False
 
 
@@ -119,9 +119,9 @@ def test_env_knob_cap_hit_threshold(engine, monkeypatch):
 def test_env_knob_drives_detector_default(engine, monkeypatch):
     """env 노브를 낮추면 detector 기본 임계(char_threshold=None 경로)가 그 값을 쓴다."""
     monkeypatch.setenv("PM_OC_CAP_HIT_THRESHOLD", "500")
-    hit, _ = engine.detect_output_cap_hit("a" * 600)  # 600 ≥ 500 → 발화.
+    hit, _ = engine.detect_output_cap_hit("a" * 600)  # 600 ≥ 500 → 감지.
     assert hit is True
-    assert engine.detect_output_cap_hit("a" * 400)[0] is False  # 400 < 500 → 무발화.
+    assert engine.detect_output_cap_hit("a" * 400)[0] is False  # 400 < 500 → 미감지.
 
 
 # ── ④ 경고 문구에 파일-전달 규약(T-0337) 안내 포함 ──────────────────────────────
@@ -140,12 +140,12 @@ def test_warning_message_carries_file_delivery_convention(engine):
     assert msg.startswith("[pm-orch]")  # loud prefix(다른 driver 진단과 결 일치).
 
 
-# ── ⑤ run_loop 배선 (출력 소비 지점 · never-block · stdout 무오염) ────────────────
+# ── ⑤ run_loop 연결 (출력 소비 지점 · never-block · stdout 무오염) ────────────────
 
 class _ReplyDriver:
     """SessionDriver 더블 — scripted reply 를 순서대로 돌려주고 marker 는 안 박는다(회전 없음).
 
-    cap-hit 배선만 격리 검증 — relay/respawn 이 아니라 *출력 소비 지점* 의 detector 발화를 본다.
+    cap-hit 연결만 격리 검증 — relay/respawn 이 아니라 *출력 소비 지점* 의 detector 감지를 본다.
     실 opencode/subprocess 불요(인메모리)."""
 
     def __init__(self, replies):
@@ -167,7 +167,7 @@ class _ReplyDriver:
 
 
 def test_run_loop_warns_on_near_cap_reply(engine, tmp_path):
-    """cap 근방 응답을 driver 가 돌려주면 run_loop 이 cap_hit_log 로 loud advisory 발화."""
+    """cap 근방 응답을 driver 가 돌려주면 run_loop 이 cap_hit_log 로 loud advisory 출력."""
     big = "가" * (engine.CAP_HIT_CHAR_THRESHOLD + 200)  # 결정적 대형 출력 주입.
     driver = _ReplyDriver([big])
     sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")
@@ -186,14 +186,14 @@ def test_run_loop_warns_on_near_cap_reply(engine, tmp_path):
 
 
 def test_run_loop_no_warn_on_normal_reply(engine, tmp_path):
-    """정상 크기 응답은 무발화 — 오탐 0(사용자-체감 배선 검증)."""
+    """정상 크기 응답은 출력 없음 — 오탐 0(사용자-체감 연결 검증)."""
     driver = _ReplyDriver(["짧은 정상 응답입니다."])
     sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")
     logs: list[str] = []
     out = io.StringIO()
     rc = sup.run_loop("/cwd", io.StringIO("hi\n"), out, cap_hit_log=logs.append)
     assert rc == 0
-    assert logs == []                                   # 무발화.
+    assert logs == []                                   # 출력 없음.
     assert out.getvalue() == "짧은 정상 응답입니다.\n"    # 응답은 정상 전달.
 
 
@@ -210,7 +210,7 @@ def test_run_loop_default_cap_hit_log_is_stderr(engine, tmp_path, capsys):
 
 
 def test_run_loop_cap_hit_never_blocks_rotation(engine, tmp_path):
-    """cap-hit 발화가 이후 turn 진행을 막지 않는다 — 다음 입력도 정상 relay(never-block)."""
+    """cap-hit 출력이 이후 turn 진행을 막지 않는다 — 다음 입력도 정상 relay(never-block)."""
     big = "가" * (engine.CAP_HIT_CHAR_THRESHOLD + 100)
     driver = _ReplyDriver([big, "다음 turn 정상 응답"])
     sup = relay.Supervisor(driver, root=tmp_path, task="demo-task")

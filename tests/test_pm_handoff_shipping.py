@@ -1,12 +1,12 @@
-"""pm_handoff 출하 변경 surface 단위테스트 (ADR-0039 D4·spike live-gate-redesign-2026-07-03).
+"""pm_handoff 출하 변경 알림 단위테스트 (ADR-0039 D4·라이브 시험 재설계 spike 2026-07-03).
 
 핸드오프 [1b/7] step 은 **비차단 surface** 다 — 라이브 테스트를 돌리지 않고 미push diff ∩
-SHIPPING_GLOBS 를 분류해 미검증 출하 변경이 있으면 "릴리즈 전 라이브(release wave) 필요"
+SHIPPING_GLOBS 를 분류해 미검증 출하 변경이 있으면 "릴리즈 전 라이브 시험 필요"
 1줄을 출력하고 핸드오프를 계속한다(rc 무영향). 라이브 LLM 검증(실 하네스 smoke)은
-릴리즈(① main 머지) 단일 지점(release wave)으로 모았다(ADR-0039). 구 차단 게이트
+릴리즈(① main 머지) 단일 지점(릴리즈 라이브 시험)으로 모았다(ADR-0039). 구 차단 검사
 (`_fire_shipping_test`·`_run_shipping_test`·`--shipping-test`/`--no-shipping-test`·outer
 timeout)는 폐지됐다 — 분류기(`_shipping_paths_in_pending_push`·`SHIPPING_GLOBS`)만 존치
-(surface 의 기반·향후 게이트 복원 가능성의 가역 지점).
+(surface 의 기반·향후 검사 복원 가능성의 가역 지점).
 
 모두 hermetic — 실 pytest/LLM 미실행. git diff 는 결정론 `git_runner` stub 으로 갈아끼운다.
 
@@ -16,7 +16,7 @@ timeout)는 폐지됐다 — 분류기(`_shipping_paths_in_pending_push`·`SHIPP
   - run() surface 3-way: hits→경고 1줄·비차단 / unknown→가능성 경고 / 무변경→"출하 변경 없음".
   - 비차단: 출하 변경이 있어도 rc 0 + log skeleton append(중단 안 함). dry-run/회귀-red 경로.
   - 폐지: `--shipping-test`/`--no-shipping-test` 인자 에러 · 차단 심볼 부재.
-  - 정합 가드: SHIPPING_GLOBS ↔ engine.manifest (존치 분류기·drift 차단).
+  - 일치 가드: SHIPPING_GLOBS ↔ engine.manifest (존치 분류기·drift 차단).
   - sensitivity: 분류기 가드 무력화 시 테스트가 실패하는지(non-vacuous).
 
 도구는 패키지가 아니므로 importlib 동적 로드 (test_handoff_trigger 관용구).
@@ -54,24 +54,24 @@ _TASK_PM_STATE = """# task state
 
 
 class _TaskPool:
-    """task 가 슬롯 하나를 쥔 형상 — 회귀 cwd 와 출하 surface 대상이 이 슬롯이다.
+    """task 가 슬롯 하나를 쥔 구성 — 회귀 cwd 와 출하 surface 대상이 이 슬롯이다.
 
-    슬롯은 `seed_slot` 이 실제로 깐 장부 행(`SLOT`·session=TASK)과 같은 값이라, 재스냅 단계의
-    소유권 재검증이 실 장부에서 그대로 통과한다.
+    슬롯은 `seed_slot` 이 실제로 깐 대여 기록 행(`SLOT`·session=TASK)과 같은 값이라, 재스냅 단계의
+    소유권 재검증이 실 대여 기록에서 그대로 통과한다.
     """
 
     def find_task(self, name):
         return type("_T", (), {"name": name, "open": False})()
 
     def find_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.find_task(name)
 
     def slots_for_task(self, name):
         return [type("_L", (), {"slot": SLOT})()]
 
     def slots_for_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.slots_for_task(name)
 
     def close_task_session(self, name):
@@ -103,9 +103,9 @@ requires_git_binary = pytest.mark.skipif(
 
 
 def _run_handoff(inst, **kw):
-    """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
+    """핸드오프 실행 — 승인 검사에 정식 승인값을 실어 통과시킨다.
 
-    이 모듈의 축은 승인 게이트가 아니다(그 축은 ``tests/test_pm_handoff_user_ack.py``가
+    이 모듈의 대상은 승인 검사가 아니다(그 대상은 ``tests/test_pm_handoff_user_ack.py``가
     소유한다). 승인 대상값은 정체성 그 자체, 곧 task 이름이다.
     """
     task = kw.pop("task", TASK)
@@ -126,7 +126,7 @@ def hf():
 
 @pytest.fixture(autouse=True)
 def _registered_home(hf, tmp_path, monkeypatch):
-    '기본 형상 = 등록된 홈(N=1 슬롯 행) — 정체성·회귀 cwd 가 이 장부 행에서 온다.'
+    '기본 구성 = 등록된 홈(N=1 슬롯 행) — 정체성·회귀 cwd 가 이 대여 기록 행에서 온다.'
     home = pm_paths.home_at(tmp_path)
     seed_areas(tmp_path)
     seed_slot(tmp_path, session=TASK, tasks=[{'name': TASK, 'prefix': None}])
@@ -226,7 +226,7 @@ def test_shipping_paths_skips_non_shipping(hf):
     T-0154 정확 경로 글롭 추가(`.project_manager/wiki/tickets/_template.md`·`.gitattributes`
     등) 후에도 ② dev-state wiki(ADR·spike 본문·status·pm_state·log·board)·tests-only 가
     걸리지 않는지 단언한다(과잉발동 회피). ADR-0099 같은 ② wiki 결정/spike 본문은
-    출하가 아니므로 게이트가 false-fire 하면 설계 세션이 무용한 출하 테스트를 돈다.
+    출하가 아니므로 검사가 false-fire 하면 설계 세션이 무용한 출하 테스트를 돈다.
     """
     runner = _git_stub(diff_paths=[
         "tests/test_pm_handoff.py",
@@ -396,13 +396,13 @@ def test_shipping_paths_unknown_when_ls_files_fails(hf):
 
 
 def _make_handoff(hf, tmp_path: Path, *, git_runner, monkeypatch):
-    'git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).\n\n    회귀(step 1)는 green stub. log/playbook 은 tmp, pm_state 는 부재 경로(3·4 skip).\n    git_runner 는 출하-변경 분류용 diff 응답. ADR-0039 D4 이후 [1b/7] 은 비차단 surface 라\n    출하 테스트 실행 seam(구 run_shipping_test_fn)은 없다.\n    '
+    'git_runner 를 DI 한 PmHandoff 를 만든다 (실 파일/회귀 미접촉).\n\n    회귀(step 1)는 green stub. log/playbook 은 tmp, pm_state 는 부재 경로(3·4 skip).\n    git_runner 는 출하-변경 분류용 diff 응답. ADR-0039 D4 이후 [1b/7] 은 비차단 surface 라\n    출하 테스트 실행 교체 지점(구 run_shipping_test_fn)은 없다.\n    '
     home = pm_paths.home_at(tmp_path)
     log_file = tmp_path / 'current.md'
     playbook_file = tmp_path / 'pm_playbook.md'
     pm_state = tmp_path / 'explicit_pm_state.md'
     log_file.write_text('# log\n', encoding='utf-8')
-    playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
+    playbook_file.write_text('# pm_playbook (no marker)\n', encoding='utf-8')
     pm_state.write_text(_TASK_PM_STATE, encoding='utf-8')
     bind_pool(monkeypatch, _TaskPool())
     inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (0, '120 passed in 1.0s\n'), run_git_fn=git_runner, log_file=log_file, pm_playbook_file=playbook_file, pm_state_file=pm_state)
@@ -413,11 +413,11 @@ def _make_handoff(hf, tmp_path: Path, *, git_runner, monkeypatch):
 #
 # [1b/7] 은 라이브 테스트를 돌리지 않고 미push diff ∩ SHIPPING_GLOBS 를 분류해 미검증 출하
 # 변경을 1줄 surface 한다 — 핸드오프를 차단하지 않는다(rc 무영향). 라이브 LLM 검증은
-# 릴리즈(① main 머지) 단일 지점(release wave)으로 모았다(ADR-0039).
+# 릴리즈(① main 머지) 단일 지점(릴리즈 라이브 시험)으로 모았다(ADR-0039).
 
 
 def test_run_surfaces_shipping_change_nonblocking(hf, monkeypatch, tmp_path, capsys):
-    """출하 변경(엔진) → "미검증 출하 변경 N파일 … release wave" 1줄 surface·rc 0(비차단)."""
+    """출하 변경(엔진) → "미검증 출하 변경 N파일 … 라이브 시험 필요" 1줄 출력·rc 0(비차단)."""
     inst = _make_handoff(
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[
@@ -433,7 +433,7 @@ def test_run_surfaces_shipping_change_nonblocking(hf, monkeypatch, tmp_path, cap
 
 
 def test_run_surfaces_ambiguous_nonblocking(hf, monkeypatch, tmp_path, capsys):
-    """baseline 해소불가(분류불명) → "가능성 … 분류 불명 … release wave" surface·rc 0."""
+    """baseline 해소불가(분류불명) → "가능성 … 분류 불명 … 라이브 시험 확인" 출력·rc 0."""
     inst = _make_handoff(hf, tmp_path, git_runner=_git_stub(baseline_ok=False), monkeypatch=monkeypatch)
     rc = _run_handoff(inst, dry_run=False, skip_pytest=False)
     assert rc == 0
@@ -460,7 +460,7 @@ def test_run_reports_no_shipping_change(hf, monkeypatch, tmp_path, capsys):
 def test_run_shipping_surface_never_blocks_handoff(hf, monkeypatch, tmp_path):
     """출하 변경이 있어도 [2/7] log skeleton 이 append 된다 — surface 는 절대 중단 안 함(비차단).
 
-    구 차단 게이트라면 여기서 return 1 로 log 미접촉이었다. 비차단 확증: 출하 변경 hit 이
+    구 차단 검사라면 여기서 return 1 로 log 미접촉이었다. 비차단 확증: 출하 변경 hit 이
     있는데도 핸드오프가 진행돼 log skeleton 이 실제로 써진다.
     """
     inst = _make_handoff(
@@ -498,7 +498,7 @@ def test_run_skips_shipping_surface_when_machine_regression_red(hf, monkeypatch,
     assert "미검증 출하 변경" not in out  # 회귀에서 먼저 중단 → surface 미도달.
 
 
-# ── 폐지: 차단 게이트 CLI 인자·심볼 제거 (ADR-0039 D4·하위호환 없이 즉시) ─────────
+# ── 폐지: 차단 검사 CLI 인자·심볼 제거 (ADR-0039 D4·하위호환 없이 즉시) ─────────
 #
 # 결정 = 하위호환 없이 즉시 에러(내부 도구·채택자 스크립트 의존 없음 확인·ticket 결정).
 
@@ -508,7 +508,7 @@ def test_removed_shipping_test_flags_error(hf, flag):
     """폐지된 `--shipping-test`/`--no-shipping-test` 는 argparse 가 즉시 거부한다(SystemExit)."""
     parser = pm_engine.cli.handoff.build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["--session-num", "5", "--wave-summary", "x", flag])
+        parser.parse_args([flag])
 
 
 def test_removed_shipping_symbols_absent(hf):
@@ -554,7 +554,7 @@ def test_sensitivity_uncommitted_detection_is_load_bearing(hf):
     assert unknown2 is False
 
 
-# ── T-0154: SHIPPING_GLOBS ↔ engine.manifest 정합 가드 (존치 분류기) ────────────
+# ── T-0154: SHIPPING_GLOBS ↔ engine.manifest 일치 가드 (존치 분류기) ────────────
 #
 # 출하 변경 분류(SHIPPING_GLOBS)가 출하 진실(engine.manifest)과 drift 하면 manifest 가
 # 출하한다고 명시한 파일이 어떤 글롭에도 안 잡혀 surface 가 false-skip 한다(미검증 출하
@@ -581,7 +581,7 @@ def _expand_manifest_shipping_paths(
     """engine.manifest 의 출하 경로를 디스크로 전개한다 — 파일은 그대로, 디렉토리는 하위 파일.
 
     한 줄 = 한 경로(repo 루트 기준·'#' 주석). 디렉토리 항목은 출하 의미인 TRACKED_ONLY
-    repo-owned seam으로 전개한다. 반환: repo-rel 경로 set.
+    repo-owned 공용 함수로 전개한다. 반환: repo-rel 경로 set.
     """
     paths: set[str] = set()
     for line in manifest.read_text(encoding="utf-8").splitlines():
@@ -606,7 +606,7 @@ def test_manifest_gap_paths_now_shipping(hf):
 
 
 def test_engine_manifest_subset_of_shipping_globs(hf):
-    """engine.manifest 전개 경로 전부가 SHIPPING_GLOBS 로 커버됨 (정합 가드·manifest→globs 단방향).
+    """engine.manifest 전개 경로 전부가 SHIPPING_GLOBS 로 커버됨 (일치 가드·manifest→globs 단방향).
 
     출하 진실(engine.manifest) ⊆ SHIPPING_GLOBS 커버. 미커버 1개라도 있으면 fail —
     다음 manifest 항목 추가 시 SHIPPING_GLOBS 동기화 누락을 push 전에 잡는다(drift 차단).
@@ -656,11 +656,11 @@ def test_manifest_shipping_inventory_ignores_untracked_inflow(tmp_path):
 
 
 def test_sensitivity_manifest_conformance_guard_is_load_bearing(hf):
-    """정합 가드 sensitivity: 새 정확 경로 글롭 1개를 SHIPPING_GLOBS 에서 제거하면 가드가
+    """일치 가드 sensitivity: 새 정확 경로 글롭 1개를 SHIPPING_GLOBS 에서 제거하면 가드가
     fail 재현하는지(non-vacuous) 직접 확인한다.
 
     정확 경로 글롭 `.project_manager/wiki/tickets/_template.md` 1개 제거 시 그 manifest 갭
-    경로가 다시 미커버가 돼야 한다 → 정합 가드의 단언(uncovered == [])이 무너짐. 모듈 전역 복구.
+    경로가 다시 미커버가 돼야 한다 → 일치 가드의 단언(uncovered == [])이 무너짐. 모듈 전역 복구.
     """
     removed_glob = ".project_manager/wiki/tickets/_template.md"
     orig = pm_engine.domain.handoff_text.SHIPPING_GLOBS
@@ -672,8 +672,8 @@ def test_sensitivity_manifest_conformance_guard_is_load_bearing(hf):
         uncovered = [p for p in expanded if not pm_engine.domain.handoff_text._path_is_shipping(p)]
     finally:
         pm_engine.domain.handoff_text.SHIPPING_GLOBS = orig  # 모듈 전역 복구.
-    # 글롭 무력화하면 그 정확 경로가 미커버로 드러나야 정합 가드가 load-bearing.
+    # 글롭 무력화하면 그 정확 경로가 미커버로 드러나야 일치 가드가 load-bearing.
     assert removed_glob in uncovered, (
-        "글롭 제거 후에도 그 경로가 미커버로 안 드러나면 정합 가드가 vacuous — "
+        "글롭 제거 후에도 그 경로가 미커버로 안 드러나면 일치 가드가 vacuous — "
         f"uncovered={sorted(uncovered)}"
     )

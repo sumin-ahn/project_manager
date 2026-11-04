@@ -1,4 +1,4 @@
-"""컨텍스트 복구 문안·표시 상한과 ctx 사용률·밴드·회전 임계 순수 규칙."""
+"""컨텍스트 복구 문안·표시 상한과 ctx 사용률·구간·회전 임계 순수 규칙."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -59,7 +59,7 @@ SNAPSHOT_HEARSAY_WARNING = (
 )
 
 
-_INFLIGHT_UNHARVESTED_SHOWN = 3
+_INFLIGHT_UNCOLLECTED_SHOWN = 3
 
 
 _INFLIGHT_RAW_SHOWN = 3
@@ -99,7 +99,7 @@ def build_checkpoint_entry(
     trigger: str = "manual",
     date: str | None = None,
 ) -> str:
-    """task 축의 compaction/manual 경계 보충 박제 골격을 만든다."""
+    """task 기준의 compaction/manual 경계 보충 기록 빈 양식을 만든다."""
     if date is None:
         date = datetime.date.today().isoformat()
     identity_tag = f" | ({_TASK_TAG_PREFIX}{task})" if task else ""
@@ -121,7 +121,7 @@ def _inflight_safe_text(value: object) -> str:
 
 
 def _fold_join(items: list[str], shown: int, unit: str) -> str:
-    """앞 ``shown`` 개만 나열하고 나머지는 "외 N<unit>" 로 접는다(절 길이 자기 상한 · tail-drop 비의존)."""
+    """앞 ``shown`` 개만 나열하고 나머지는 "외 N<unit>" 로 줄인다(절 길이 자기 상한 · tail-drop 비의존)."""
     head = items[:shown]
     text = " · ".join(head)
     remaining = len(items) - len(head)
@@ -141,24 +141,24 @@ def _inflight_capped_line(*, prefix: str, content: str, suffix: str) -> str:
     return f"{prefix}{content[:budget]}…{suffix}"
 
 
-def _unharvested_copies_line(rows: list[dict]) -> str:
-    """``delegate_records.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
+def _uncollected_copies_line(rows: list[dict]) -> str:
+    """``delegate_records.ticket_copy_records(uncollected=True)`` 실값 → 돌려받지 않은 라운드 준비 불릿."""
     prefix = "- 돌려받지 않은 라운드 준비 "
     suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --uncollected`"
     if not rows:
         return _inflight_capped_line(prefix=prefix, content="0건", suffix=suffix)
     labels = [f"{row['ticket']} {row['role']}#{row['ordinal']}" for row in rows]
-    content = f"{len(rows)}건: {_fold_join(labels, _INFLIGHT_UNHARVESTED_SHOWN, '건')}"
+    content = f"{len(rows)}건: {_fold_join(labels, _INFLIGHT_UNCOLLECTED_SHOWN, '건')}"
     return _inflight_capped_line(prefix=prefix, content=content, suffix=suffix)
 
 
-def _unfinished_raw_line(rows: list[dict], ledger_path: Path) -> str:
+def _unfinished_raw_line(rows: list[dict], record_path: Path) -> str:
     """``raw_output.unfinished_raw_records(lock=False)`` 실값 → 미마감 위임 raw 불릿(kill 증거)."""
     prefix = "- 미마감 위임 raw "
     suffix = " → `python3 .project_manager/tools/pm_delegate.py raw --unfinished`"
     if not rows:
         return _inflight_capped_line(
-            prefix=prefix, content=f"0건 (기록 파일: {ledger_path})", suffix=suffix,
+            prefix=prefix, content=f"0건 (기록 파일: {record_path})", suffix=suffix,
         )
     labels = [
         f"{_inflight_safe_text(row.get('started_at'))} "
@@ -166,7 +166,7 @@ def _unfinished_raw_line(rows: list[dict], ledger_path: Path) -> str:
         for row in rows
     ]
     content = (
-        f"{len(rows)}건: {_fold_join(labels, _INFLIGHT_RAW_SHOWN, '건')} (기록 파일: {ledger_path})"
+        f"{len(rows)}건: {_fold_join(labels, _INFLIGHT_RAW_SHOWN, '건')} (기록 파일: {record_path})"
     )
     return _inflight_capped_line(prefix=prefix, content=content, suffix=suffix)
 
@@ -182,7 +182,7 @@ def _claimed_tickets_line(ticket_ids: list[str]) -> str:
 
 
 def build_ctx_guard_guidance(
-    band: str,
+    level: str,
     *,
     used_pct: int | None = None,
     precompact_at_pct: int | None = None,
@@ -190,8 +190,8 @@ def build_ctx_guard_guidance(
     """세 하네스가 공유하는 ctx warn/compaction 안내문을 렌더한다.
 
     동적 사용률은 하네스 관측값(사용 한도 대비 쓴 %)을 그대로 표시하되, 세션 연속성 정책은
-    :data:`CTX_GUARD_CONTINUITY_GUIDANCE` 한 상수에서만 온다. 밴드는 표현 강도만
-    다르고 작업 중단·세션 종료를 유도하지 않는다. final 밴드는 압축 임박 경고 비율
+    :data:`CTX_GUARD_CONTINUITY_GUIDANCE` 한 상수에서만 온다. 구간은 표현 강도만
+    다르고 작업 중단·세션 종료를 유도하지 않는다. final 구간은 압축 임박 경고 비율
     (`ctx.precompact_at_pct`)을 함께 적는다.
     """
     labels = {
@@ -200,10 +200,10 @@ def build_ctx_guard_guidance(
         "final": "ctx-warn/최종",
         "precompact": "ctx-checkpoint",
     }
-    if band not in labels:
-        raise ValueError(f"지원하지 않는 ctx guidance 구간: {band!r}")
+    if level not in labels:
+        raise ValueError(f"지원하지 않는 ctx guidance 구간: {level!r}")
 
-    if band == "precompact":
+    if level == "precompact":
         status = "compaction 경계가 감지됐다. "
         command = (
             "checkpoint 빈 양식이 생성됐다면 현재 구간·서사 불릿을 보충한다. 빈 양식이 없으면 "
@@ -214,11 +214,11 @@ def build_ctx_guard_guidance(
         status = ""
         if used_pct is not None:
             status = f"컨텍스트 사용 {used_pct}%"
-            if band == "final" and precompact_at_pct is not None:
+            if level == "final" and precompact_at_pct is not None:
                 status += f" (압축 임박 경고 {precompact_at_pct}% 이상)"
             status += ". "
         checkpoint = "`python3 .project_manager/tools/pm_log.py checkpoint --task <task>"
-        if band == "final":
+        if level == "final":
             checkpoint += " --trigger compaction"
         checkpoint += "`"
         command = (
@@ -226,12 +226,12 @@ def build_ctx_guard_guidance(
             f"{checkpoint}(Windows는 `py -3`)으로 현재 구간·서사를 기록한다. "
             "`<task>`에는 현재 task 이름을 사용한다. "
         )
-    return f"[{labels[band]}] {status}{command}{CTX_GUARD_CONTINUITY_GUIDANCE}"
+    return f"[{labels[level]}] {status}{command}{CTX_GUARD_CONTINUITY_GUIDANCE}"
 
 
-# 2단 넛지 임계 마진(%p). warn2 밴드 = max(precompact_at − 이 마진, checkpoint_at) <= 쓴 % <
+# 2단 경고 임계 마진(%p). warn2 구간 = max(precompact_at − 이 마진, checkpoint_at) <= 쓴 % <
 # precompact_at 이다. 설정 키를 두지 않고 두 비율에서 파생한다.
-CTX_NUDGE2_MARGIN_PCT = 3
+CTX_WARN2_MARGIN_PCT = 3
 
 
 # 세션 키 파일명 길이 상한 — ctx marker·회전 marker·멤버십 파일이 같은 규칙을 쓴다.
@@ -248,16 +248,16 @@ def context_used_pct(tokens: int, budget: int) -> int:
     return max(0, min(100, round(tokens / float(budget) * 100)))
 
 
-def nudge2_threshold(budget: dict) -> int:
-    """2단 넛지 임계(쓴 %) — precompact_at − 마진, checkpoint_at 으로 하한."""
-    return max(budget["precompact_at_pct"] - CTX_NUDGE2_MARGIN_PCT, budget["checkpoint_at_pct"])
+def warn2_threshold(budget: dict) -> int:
+    """2단 경고 임계(쓴 %) — precompact_at − 마진, checkpoint_at 으로 하한."""
+    return max(budget["precompact_at_pct"] - CTX_WARN2_MARGIN_PCT, budget["checkpoint_at_pct"])
 
 
 def classify(used_pct: int, budget: dict) -> str:
     """쓴 % → ``ok`` | ``warn`` | ``warn2`` | ``stop``. 세 경계는 모두 그 값을 포함한다."""
     if used_pct >= budget["precompact_at_pct"]:
         return "stop"
-    if used_pct >= nudge2_threshold(budget):
+    if used_pct >= warn2_threshold(budget):
         return "warn2"
     if used_pct >= budget["checkpoint_at_pct"]:
         return "warn"

@@ -13,7 +13,7 @@ from . import CallError
 
 REGISTRY_DIRECTORY_NAME = "project_manager"
 REGISTRY_FILE_NAME = "projects.json"
-# PM 홈의 표식 — 이 디렉터리가 있어야 사본을 부를 수 있다(엔진·장부·local.conf 가 여기 있다).
+# PM 홈의 표시 — 이 디렉터리가 있어야 사본을 부를 수 있다(엔진·기록·local.conf 가 여기 있다).
 PM_HOME_MARKER = ".project_manager"
 
 
@@ -33,7 +33,7 @@ def registry_path(override: Path | str | None = None, *, os_name: str = os.name)
 
 
 def load(registry: Path | str | None = None) -> list[Path]:
-    """등록된 PM 홈 목록. 파일이 없으면 빈 목록(등록 전 상태는 정상 형상)."""
+    """등록된 PM 홈 목록. 파일이 없으면 빈 목록(등록 전 상태는 정상)."""
     path = registry_path(registry)
     if not path.is_file():
         return []

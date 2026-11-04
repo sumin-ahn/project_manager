@@ -178,7 +178,7 @@ class TicketFinisher:
         """회귀를 실행해 (returncode, stdout+stderr) 반환.
 
         명령 해소:
-          - **해소 성공** — `regression._resolve_gate_cmd`(areas prefix 행 > areas repo 행 >
+          - **해소 성공** — `regression._resolve_check_cmd`(areas prefix 행 > areas repo 행 >
             local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 같은 방식·비-Python repo 수용).
           - **프레임워크 자기 회귀** — 해소 실패면 현행 그대로
             `[venv_python, -m, pytest, tests/, -q, -n, auto]` venv argv.
@@ -189,7 +189,7 @@ class TicketFinisher:
         """
         cwd = (self._regression_cwd if self._regression_cwd is not None
                else slot_resolution._regression_cwd(self._home))
-        per_repo_cmd = regression._resolve_gate_cmd(self._home)
+        per_repo_cmd = regression._resolve_check_cmd(self._home)
         if per_repo_cmd:
             # multi-PM — per-repo test_cmd 문자열을 shell 로(board.py regression run 과 같은 방식).
             result = subprocess.run(
@@ -1120,11 +1120,11 @@ class TicketFinisher:
             new_total: int | str = "?"
         else:
             # 회귀 명령 종류(pytest 스위트 / 해소된 임의 명령)를 먼저 해소한다 — green 판정
-            # 기준과 안내 문구가 여기서 갈린다(`handoff_text._gate_is_pytest`).
-            check_cmd = regression._resolve_gate_cmd(self._home)
+            # 기준과 안내 문구가 여기서 갈린다(`handoff_text._check_is_pytest`).
+            check_cmd = regression._resolve_check_cmd(self._home)
             if dry_run:
                 print(
-                    f"  [dry-run] {handoff_text._gate_label(check_cmd)} 실행 중 "
+                    f"  [dry-run] {handoff_text._check_label(check_cmd)} 실행 중 "
                     "(파일·board·git 편집만 생략)..."
                 )
             returncode, output = self._run_pytest_fn()
@@ -1135,7 +1135,7 @@ class TicketFinisher:
                     "\n[중단] 회귀 red — log/current.md·board·git 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
                 )
-                if handoff_text._gate_is_pytest(check_cmd):
+                if handoff_text._check_is_pytest(check_cmd):
                     print(
                         "원인: pytest 가 실패를 보고했거나 출력 파싱 실패.",
                         file=sys.stderr,
@@ -1147,7 +1147,7 @@ class TicketFinisher:
                     )
                 return 1
 
-            if handoff_text._gate_is_pytest(check_cmd):
+            if handoff_text._check_is_pytest(check_cmd):
                 parsed = finish_rules.parse_pytest_output(output)
                 if parsed is None:
                     print(

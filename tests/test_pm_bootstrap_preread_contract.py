@@ -27,10 +27,10 @@ ENTRY_DOCS = tuple(
 )
 
 def _bootstrap_cards() -> tuple[Path, ...]:
-    """출하 `pm-bootstrap` 스킬 카드 전수 — 카드 구조 가드의 표면 열거를 재사용한다.
+    """출하 `pm-bootstrap` 스킬 카드 전수 — 카드 구조 가드의 카드 열거를 재사용한다.
 
     카드는 **에이전트가 부트스트랩 때 실제로 읽는 문서**라 계약 대조의 1급 대상이다.
-    표면 목록을 여기서 다시 나열하면 하네스 추가 시 갈리므로(이 repo 의 반복 결함 패턴)
+    카드 목록을 여기서 다시 나열하면 하네스 추가 시 갈리므로(이 repo 의 반복 결함 패턴)
     이미 있는 열거기를 소비한다.
     """
     from test_skill_card_structure import _skill_cards
@@ -39,7 +39,7 @@ def _bootstrap_cards() -> tuple[Path, ...]:
         card for card in _skill_cards(REPO)
         if card.parent.name == "pm-bootstrap"
     )
-    assert cards, "pm-bootstrap 카드를 하나도 못 찾았다 — 표면 열거가 깨졌다(vacuous 방지)"
+    assert cards, "pm-bootstrap 카드를 하나도 못 찾았다 — 카드 열거가 깨졌다(vacuous 방지)"
     return cards
 
 

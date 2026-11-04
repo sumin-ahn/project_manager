@@ -314,7 +314,7 @@ def test_engine_fsync_calls_target_writable_descriptors():
 
 
 def test_fsync_guard_sees_every_engine_call_site():
-    """가드 시야 == 실제 표면 — AST 방문 수를 토큰 실측과 파일별로 대조한다."""
+    """가드 검사 범위 == 실제 호출 — AST 방문 수를 토큰 실측과 파일별로 대조한다."""
     by_ast: dict[str, int] = {}
     for filename, _lineno, _writable in _scan_tools():
         by_ast[filename] = by_ast.get(filename, 0) + 1
@@ -324,9 +324,9 @@ def test_fsync_guard_sees_every_engine_call_site():
         if count:
             by_token[path.relative_to(TOOLS).as_posix()] = count
 
-    assert by_ast == by_token, "AST 시야와 토큰 실측이 어긋난다"
-    assert by_ast, "엔진에 fsync 호출이 한 건도 없다 — 내구성 표면 소실"
-    # append 내구성은 공용 seam 이 소유한다 (호출부 재-open 금지·T-0716).
+    assert by_ast == by_token, "AST 검사 범위와 토큰 실측이 어긋난다"
+    assert by_ast, "엔진에 fsync 호출이 한 건도 없다 — 내구성 호출 소실"
+    # append 내구성은 공용 함수가 소유한다 (호출부 재-open 금지·T-0716).
     assert by_ast.get("pm_engine/infra/fs.py") == 1
 
 
@@ -433,19 +433,19 @@ def test_fsync_guard_ignores_mentions_in_comments_and_strings():
     assert _fsync_call_count_by_token(prose) == 0
 
 
-def test_reintroduced_readonly_ledger_sync_is_red():
-    """장부 append 뒤 읽기 전용 재-open sync 를 되살리면 가드가 red 로 잡는다 (감도 실증)."""
+def test_reintroduced_readonly_record_sync_is_red():
+    """기록 append 뒤 읽기 전용 재-open sync 를 되살리면 가드가 red 로 잡는다 (감도 실증)."""
     source = (TOOLS / "pm_engine/infra/delegate_copy_store.py").read_text(encoding="utf-8")
-    ledger_append = source.split("def _append_delegate_rounds_ledger", 1)[1].split(
+    record_append = source.split("def _append_delegate_rounds_record", 1)[1].split(
         "\ndef ", 1
     )[0]
-    assert "fsync" not in ledger_append, (
-        "장부 append 호출부가 자체 sync 를 들고 있다 — 내구성은 append seam 소유다"
+    assert "fsync" not in record_append, (
+        "기록 append 호출부가 자체 sync 를 들고 있다 — 내구성은 append 공용 함수 소유다"
     )
-    anchor = "        fs.append_atomic(path, payload, mode=0o600)\n"
+    marker = "        fs.append_atomic(path, payload, mode=0o600)\n"
     mutated = source.replace(
-        anchor,
-        anchor
+        marker,
+        marker
         + "        sync_fd = os.open(path, os.O_RDONLY)\n"
         + "        try:\n"
         + "            os.fsync(sync_fd)\n"
@@ -453,7 +453,7 @@ def test_reintroduced_readonly_ledger_sync_is_red():
         + "            os.close(sync_fd)\n",
         1,
     )
-    assert mutated != source, "변이 앵커 소실"
+    assert mutated != source, "변이 표시 글 소실"
     assert all(
         writable is True
         for _filename, _lineno, writable in _scan_source(source, "pm_engine/infra/delegate_copy_store.py")

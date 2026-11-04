@@ -421,7 +421,7 @@ def _main(home: home.Home, argv: list[str] | None = None, *, prog: str = "board.
                           | board_command_rules._READ_SUBCOMMANDS
                           | board_command_rules._SIDECAR_SUBCOMMANDS):
         raise ValueError(f"분류되지 않은 board 명령: {subcommand}")
-    if subcommand in board_command_rules._MUTATION_SUBCOMMANDS and board_dispatch._guard_worktree_misanchor(home, f'board.py {subcommand}'):
+    if subcommand in board_command_rules._MUTATION_SUBCOMMANDS and board_dispatch._guard_worktree_wrong_repo(home, f'board.py {subcommand}'):
         return 1
     if subcommand in board_command_rules._READ_SUBCOMMANDS:
         return args.fn(_read_home(home, subcommand), args)

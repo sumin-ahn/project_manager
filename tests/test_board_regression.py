@@ -1523,7 +1523,7 @@ def _write_rounds_records(board, review_tickets: dict) -> None:
         for review_ticket, rounds in review_tickets.items()
     }
     payload[reviewer_budget.SESSION_BUDGET_SECTION_KEY] = {"id": "gen", "started": None, "spent": 0}
-    review_rounds._review_rounds_ledger(pm_paths.home_at(board.REPO)).write_text(json.dumps(payload), encoding="utf-8")
+    review_rounds._review_rounds_records(pm_paths.home_at(board.REPO)).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _ticket_statuses(board, monkeypatch, statuses: dict) -> None:
@@ -1582,7 +1582,7 @@ def test_missing_or_corrupt_records_never_downgrades(board):
     """라운드 기록 부재·손상은 수준을 낮추지 않는다 — 이 판정의 실패가 회귀 통과 조건을 좁히면 안 된다."""
     assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == []
     pm_paths.home_at(board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
-    review_rounds._review_rounds_ledger(pm_paths.home_at(board.REPO)).write_text("{ not json", encoding="utf-8")
+    review_rounds._review_rounds_records(pm_paths.home_at(board.REPO)).write_text("{ not json", encoding="utf-8")
     assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == []
 
 
@@ -1682,7 +1682,7 @@ def test_prefixed_ticket_does_not_answer_for_a_legacy_review_ticket_id(board):
     # glob 은 실제로 오인 매칭한다(차단이 어디서 서는지 못박는다).
     assert ticket_store.find_ticket(pm_paths.home_at(board.REPO), "T-0036")[1].name.startswith("T-0036-001")
 
-    assert regression._gate_ticket(pm_paths.home_at(board.REPO), "T-0036") is None
+    assert regression._find_review_ticket(pm_paths.home_at(board.REPO), "T-0036") is None
     assert regression._review_ticket_is_claimed(pm_paths.home_at(board.REPO), "T-0036") is False
     assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0036") == []     # 무관 touches 로 좁히지 않는다
 
@@ -1724,12 +1724,12 @@ def test_free_form_review_ticket_label_skips_the_ticket_lookup(board, monkeypatc
 
     monkeypatch.setattr(ticket_store, "find_ticket_exact", _find)
     for label in ("group4-b1", "T-*", "T-0036-001-fix", "리뷰", ""):
-        assert regression._gate_ticket(pm_paths.home_at(board.REPO), label) is None
+        assert regression._find_review_ticket(pm_paths.home_at(board.REPO), label) is None
         assert regression._review_ticket_is_claimed(pm_paths.home_at(board.REPO), label) is False
     assert calls == [], f"비-ID 라벨이 보드 조회를 탔다: {calls}"
 
     # canonical ID 는 종전대로 조회한다 (생략 규칙이 정상 리뷰 집계 티켓을 삼키지 않는다).
-    assert regression._gate_ticket(pm_paths.home_at(board.REPO), "T-0036-001") is None
+    assert regression._find_review_ticket(pm_paths.home_at(board.REPO), "T-0036-001") is None
     assert calls == ["T-0036-001"]
 
 
@@ -2444,7 +2444,7 @@ def _records_with_legacy_round(board, review_ticket: str, rounds: list[dict]) ->
     """`sequence` 유무가 섞인 산출을 그대로 심는다 (구기록 정렬 재현용)."""
     pm_paths.home_at(board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
     payload = {review_ticket: {"rounds": rounds}, reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"id": "gen", "started": None, "spent": 0}}
-    review_rounds._review_rounds_ledger(pm_paths.home_at(board.REPO)).write_text(json.dumps(payload), encoding="utf-8")
+    review_rounds._review_rounds_records(pm_paths.home_at(board.REPO)).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_a_sequenceless_old_rejection_is_not_the_latest_round(board, monkeypatch):

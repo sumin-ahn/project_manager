@@ -2,13 +2,13 @@
 
 관리자는 어댑터 파일을 **보고 수용만** 한다 — 판정은 그 사본의 `status --json --with-adapters`
 가 내고, 수용은 그 사본의 `sync-adapter-config --accept` 가 한다. 관리자가 파일을 복사하거나
-백업하지 않는다는 사실을 백업·원장 같은 **엔진만 남기는 흔적**으로 잰다.
+백업하지 않는다는 사실을 백업·기록 같은 **엔진만 남기는 흔적**으로 잰다.
 
 소스는 경로 upstream(이 트리를 커밋 하나로 담은 임시 저장소)으로 해소된다 — 네트워크 0. 이 트리를
 그대로 쓰지 않는 이유: 설치는 작업 트리를 깔고 HEAD 를 설치 기준으로 적으므로, 커밋 전 템플릿
 변경이 있으면 손대지 않은 파일에도 기준 차이가 보인다.
 
-축 넷:
+검사 넷:
   1. `files[]` 의 모양이 둘이다(채널 있는 파일 10필드 / 인스턴스 소유 3필드·키 부재).
   2. 편집이 상태·기능 표·거리·차이 둘에 그대로 나타난다.
   3. 수용은 사본 명령이고, 그 결과는 재조회로 확인된다(관리자의 복사 아님).
@@ -31,7 +31,7 @@ from _manager_home import (
 from manager.bridge import Api
 
 SETTINGS = ".claude/settings.json"
-# 채널 있는 어댑터 config 행이 드는 필드 전부(T-0907 계약) — 화면이 읽는 표면이다.
+# 채널 있는 어댑터 config 행이 드는 필드 전부(T-0907 계약) — 화면이 읽는 범위다.
 CHANNEL_FIELDS = {"path", "harness", "mode", "status", "template_rev", "diff_lines",
                   "diff_vs_baseline", "diff_vs_latest", "features", "distance"}
 # 인스턴스 소유 문서 행 — `mode`·`features` 는 null 이 아니라 **키가 없다**.
@@ -128,7 +128,7 @@ def test_the_section_carries_the_conf_verdict_of_the_same_call(api, pm_home):
 
 
 def test_looking_at_the_adapter_section_writes_nothing(api, pm_home):
-    api.adapters(str(pm_home))                     # 공유 읽기 seam 을 먼저 세운다
+    api.adapters(str(pm_home))                     # 공유 읽기 함수를 먼저 세운다
     before = tree_snapshot(pm_home)
 
     api.adapters(str(pm_home))
@@ -183,7 +183,7 @@ def test_accept_runs_the_copys_command_and_the_requery_confirms_it(api, pm_home,
 
     assert response["rc"] == 0, response["stderr"]
     assert "어댑터 config 수용" in response["stdout"]
-    # 백업과 원장은 **엔진만** 남긴다 — 관리자가 파일을 복사했다면 이 흔적이 없다.
+    # 백업과 기록은 **엔진만** 남긴다 — 관리자가 파일을 복사했다면 이 흔적이 없다.
     backup = re.search(r"\(백업 (.+?)\)", response["stdout"])
     assert backup is not None, response["stdout"]
     assert (pm_home / backup.group(1)).is_file(), "엔진이 말한 백업이 그 자리에 없다"

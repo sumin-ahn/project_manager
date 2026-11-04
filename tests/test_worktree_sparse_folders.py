@@ -446,7 +446,7 @@ def test_folders_require_git_2_36_or_newer(wp):
     assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
-        pool_store._write_ledger(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
+        pool_store._write_records(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                                    state="idle")])
     before = wp.LEASES_FILE.read_bytes()
     old = _RecordingGit(version="git version 2.35.8")
@@ -478,7 +478,7 @@ def test_slot_git_status_reports_the_folders_git_holds(wp, tmp_path):
 def test_cli_status_prints_the_folders_line(wp, monkeypatch, capsys):
     """`worktree_pool.py status` 는 폴더 한 줄 — 목록 또는 `(제한 없음)`."""
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
-        pool_store._write_ledger(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="s", started="t",
+        pool_store._write_records(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="s", started="t",
                                    state="leased")])
     rows = {"work/A_1": ["a", "b"]}
     monkeypatch.setattr(worktree_status, "slot_git_status", lambda _home, slot, **_: {
@@ -613,7 +613,7 @@ def test_classification_failure_refuses_status_and_dev_but_sync_warns(wp, capsys
 
 def test_alloc_full_slot_adds_only_the_sparse_config_probe(wp, monkeypatch):
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
-        pool_store._write_ledger(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t", state="idle")])
+        pool_store._write_records(pm_paths.home_at(wp.REPO), [worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t", state="idle")])
     git = _RecordingGit()
     monkeypatch.setattr(slot_snapshot, "_apply_git_snapshot", lambda _home, *args, **kwargs: git.calls.append(["snapshot"]))
     worktree_pool.alloc(pm_paths.home_at(wp.REPO), "A", owner_task="t", git_runner=git)

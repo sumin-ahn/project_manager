@@ -158,7 +158,7 @@ def _raw_lock_path(record_path: Path) -> Path:
 
 
 @contextlib.contextmanager
-def _raw_ledger_lock(record_path: Path) -> Iterator[None]:
+def _raw_record_lock(record_path: Path) -> Iterator[None]:
     """기록 read-modify-write를 배타 파일락으로 직렬화한다.
 
     플랫폼 분기(POSIX flock·Windows msvcrt·무락 대체 동작)는 공용 `fs` 함수가 소유하고
@@ -294,7 +294,7 @@ def start_raw_record(
     for key, value in (extra or {}).items():
         if key not in RAW_RECORD_RESERVED_KEYS:
             row[key] = value
-    with _raw_ledger_lock(record_path):
+    with _raw_record_lock(record_path):
         raw_data = _read_raw_records(record_path)
         records = [item for item in raw_data["records"] if isinstance(item, dict)]
         records.append(row)
@@ -327,7 +327,7 @@ def finish_raw_record(
     current = now or datetime.datetime.now(datetime.timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=datetime.timezone.utc)
-    with _raw_ledger_lock(record_path):
+    with _raw_record_lock(record_path):
         raw_data = _read_raw_records(record_path)
         found = False
         for row in raw_data["records"]:
@@ -364,12 +364,12 @@ def raw_records(
 ) -> list[dict]:
     """기록 레코드를 최신순으로 반환한다. 빈 기록과 손상 기록을 구분한다.
 
-    `lock=False` 는 배타 파일락(`_raw_ledger_lock`)을 잡지 않고 공유 읽기만 한다 — 쓰기가
+    `lock=False` 는 배타 파일락(`_raw_record_lock`)을 잡지 않고 공유 읽기만 한다 — 쓰기가
     `_write_raw_records` 의 atomic replace 라 항상 완결된 옛/새 파일 중 하나를 본다. compaction
     snapshot 처럼 "빌더는 subprocess·lock 0" 계약을 지키는 조회 전용 호출자용이다.
     """
     if lock:
-        with _raw_ledger_lock(record_path):
+        with _raw_record_lock(record_path):
             raw_data = _read_raw_records(record_path)
     else:
         raw_data = _read_raw_records(record_path)
@@ -431,7 +431,7 @@ def scan_orphan_raw_files(
     )
 
 
-def _peer_engine_ledgers(home, config_repo_override: Path | None) -> tuple[Path, ...]:
+def _peer_engine_records(home, config_repo_override: Path | None) -> tuple[Path, ...]:
     """현재 엔진과 같은 PM 홈 계열의 다른 사본이 소유한 기본 기록을 찾는다.
 
     PM 홈의 실 board + ``work/*`` 관례는 기존 대상 저장소 다시 잡기 판정과 같은 물리 증거다. 후보는 실제

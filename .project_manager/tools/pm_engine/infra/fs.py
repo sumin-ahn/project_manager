@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""동시-쓰기 안전 파일 프리미티브 공용 seam — 엔진 도구가 공유하는 단일 구현.
+"""동시-쓰기 안전 파일 프리미티브 공용 함수 — 엔진 도구가 공유하는 단일 구현.
 
 엔진의 공유 파일 동시성은 두 프리미티브로 이뤄진다 — read-modify-write 파일은 **배타
 파일락**으로 직렬화하고, append-only 파일은 **O_APPEND 원자 추가**로 lost update 를 피한다
 (board.py 의 "보드 동시성" 주석이 둘을 한 쌍으로 기술한다). 도구마다 복제돼 있던 두 구현을
 여기로 승격했다 — 배타락은 board(`board.lock`·`board-git.lock`)·pm_log(`log.lock`)·
-raw_output(raw 장부 `<ledger>.lock`)·pm_handoff(`dashboard.lock`)·worktree_pool(리스 장부
+raw_output(raw 기록 `<record>.lock`)·pm_handoff(`dashboard.lock`)·worktree_pool(대여 기록
 `worktree-leases.lock`)가, O_APPEND 추가는 board(areas 등록)·pm_log(log append)가 각자
-복제하고 있었다. 사본마다 폴백 규칙·fd 수명·권한이 갈라질 수 있다.
+복제하고 있었다. 사본마다 대체 규칙·fd 수명·권한이 갈라질 수 있다.
 
 파일 *경로 규약*과 *권한*은 여전히 호출자가 소유한다 — 도구별 관례
-(`.project_manager/.local/` 격리·자기 파일 옆 `.lock`·raw 장부 0o600)가 다르고 그 결정은 이
-seam 의 관심사가 아니다. 이 모듈은 "주어진 경로에 배타락을 건다"·"주어진 경로에 한 번에
+(`.project_manager/.local/` 격리·자기 파일 옆 `.lock`·raw 기록 0o600)가 다르고 그 결정은 이
+모듈의 관심사가 아니다. 이 모듈은 "주어진 경로에 배타락을 건다"·"주어진 경로에 한 번에
 붙인다"만 책임진다.
 
 그 규칙의 **예외가 local.conf 락 하나**다(`conf_lock_path`·`local_conf_write_lock`). 이 락은 한
@@ -21,33 +21,33 @@ seam 의 관심사가 아니다. 이 모듈은 "주어진 경로에 배타락을
 유도까지 이 한 곳이 소유한다.
 
 계약 (기존 사본들의 동작을 그대로 보존):
-  - 배타(exclusive)·블로킹 획득. 프로세스가 죽으면 OS 가 락을 회수한다(stale lock 없음).
+  - 배타(exclusive)·블로킹 획득. 프로세스가 죽으면 OS 가 락을 해제한다(stale lock 없음).
   - **재진입 금지** — 같은 프로세스가 같은 락을 중첩해 잡으면 flock 재진입 동작이 OS 별로
     달라 정의되지 않는다. 호출부가 중첩 없는 구간으로 설계한다.
-  - 락 프리미티브가 둘 다 없는 희귀 환경은 단일-머신 전제의 무락 폴백 — 락 *파일* 자체는
-    생성되므로 호출 인터페이스는 동일하다. 그 폴백 진입은 **경고로 표면화한다**(조용한 degrade
+  - 락 프리미티브가 둘 다 없는 희귀 환경은 단일-머신 전제의 무락 대체 동작 — 락 *파일* 자체는
+    생성되므로 호출 인터페이스는 동일하다. 그 대체 동작 진입은 **경고로 드러낸다**(조용한 degrade
     금지·`LocklessFallbackWarning`) — 배타 없이 도는 것과 배타가 있는 것은 데이터 안전이 다르다.
   - **무락 진행은 프리미티브 *부재*(import 실패)에만 허용된다.** 프리미티브가 있는데 획득이
     실패하면(예: Windows `LockFileEx` 실패 `OSError`) 삼키지 않고 그대로 올린다 —
     배타성 없는 임계 구역을 성공으로 위장하면 직렬화가 조용히 사라진다. 호출부가 그 예외를
-    조치 문구로 번역한다(additional_reviewer 라운드 장부 = 호출 전 중단·마감은 판정 rc 보존).
+    조치 문구로 번역한다(additional_reviewer 라운드 기록 = 호출 전 중단·마감은 판정 rc 보존).
   - append 는 단일 `os.write` — 부모 디렉토리 생성·상위 직렬화(락)는 호출자 몫이다.
-  - append 의 **내구성(`os.fsync`)도 이 seam 이 소유한다** — 자기가 연 쓰기 가능 fd 위에서 sync
+  - append 의 **내구성(`os.fsync`)도 이 모듈이 소유한다** — 자기가 연 쓰기 가능 fd 위에서 sync
     한 뒤 닫는다. 호출부가 append 뒤에 파일을 다시 열어 sync 하지 않는다(읽기 전용 fd 의 fsync
     는 Windows 가 `[Errno 9] Bad file descriptor` 로 거부한다).
   - append 는 **바이트 그대로** 쓴다 — Windows 의 `os.open` 은 텍스트 모드가 기본이라
     `os.O_BINARY` 를 얹지 않으면 CRT 가 LF 를 CRLF 로 번역한다(T-0711 실측 클래스).
-  - **원자 교체도 이 seam 이 소유한다**(`atomic_replace`) — POSIX 는 `os.replace`, Windows 는
+  - **원자 교체도 이 모듈이 소유한다**(`atomic_replace`) — POSIX 는 `os.replace`, Windows 는
     POSIX 의미 rename(`FileRenameInfoEx`)으로 *같은 의미*를 낸다. 열린 리더가 있어도 교체가
     성공하고, 그 리더는 옛 내용을 끝까지 읽는다. 수단을 못 쓰는 환경은 조용히 `os.replace` 로
     내려앉지 않고 사유와 함께 실패한다(`AtomicReplaceError`).
-  - **그 짝인 공유 읽기도 이 seam 이 소유한다**(`open_shared`·`read_text_shared`·
+  - **그 짝인 공유 읽기도 이 모듈이 소유한다**(`open_shared`·`read_text_shared`·
     `read_bytes_shared`) — 원자 교체 대상 파일을 읽는 지점이 일반 `open` 이면 Windows 는 그
     교체를 WinError 32 로 막아, 쓰기만 바꾼 개선이 0 이 된다(둘은 세트다). POSIX 에서는 내장
     호출과 **글자 그대로 같은 동작**이라 인코딩·개행 인자의 의미가 하나도 바뀌지 않는다.
-  - **삭제도 이 seam 이 소유한다**(`force_rmtree`·`force_unlink`) — read-only 속성을 풀고
+  - **삭제도 이 모듈이 소유한다**(`force_rmtree`·`force_unlink`) — read-only 속성을 풀고
     재시도하되, 끝내 남으면 예외를 올린다. 조용한 잔재를 만들지 않는다.
-  - **소유자 전용 접근 제한도 이 seam 이 소유한다**(`restrict_to_owner`·`owner_only_access`) —
+  - **소유자 전용 접근 제한도 이 모듈이 소유한다**(`restrict_to_owner`·`owner_only_access`) —
     POSIX 는 `chmod 0600/0700`, ACL 플랫폼(Windows)은 `icacls` 로 *같은 보장*을 낸다. 실패는
     조용히 넘어가지 않는다(`AccessRestrictionError`).
   - stdlib 만 사용한다 (외부 `filelock` 의존 금지 — 엔진 런타임 의존은 PyYAML 뿐).
@@ -73,7 +73,7 @@ from typing import NamedTuple
 
 
 
-# 락 파일 기본 권한. 더 좁은 권한이 필요한 호출자는 `mode=` 로 명시한다(raw_output raw 장부=0o600).
+# 락 파일 기본 권한. 더 좁은 권한이 필요한 호출자는 `mode=` 로 명시한다(raw_output raw 기록=0o600).
 DEFAULT_LOCK_MODE = 0o644
 
 # append 로 *새로 생기는* 파일의 기본 권한 (board areas·log/current.md 관례).
@@ -84,13 +84,13 @@ DEFAULT_APPEND_MODE = 0o644
 # POSIX 는 `fcntl.flock`, Windows 는 Win32 **`LockFileEx`**(ctypes)다. Windows 쪽에서 CRT 래퍼
 # `msvcrt.locking(fd, LK_LOCK, 1)` 을 쓰지 않는 이유는 그 함수의 "블로킹"(LK_LOCK)이 커널 대기가
 # 아니라 **유한 재시도**여서, 보유자가 그 안에 놓지 않으면 획득이 실패로 끝나기 때문이다.
-# 이 seam 의 계약상 획득 실패는 삼키지 않고 올라가므로(배타 없는 진행 금지), 그 실패는 곧
-# 호출부 기능 중단이다 — 임계 구역이 그보다 길 수 있는 형상(멀티-PM 리스 장부 write·리뷰 라운드
-# 장부)에서 `flock(LOCK_EX)` 와 같은 무기한 블로킹 획득이 필요하다. `LockFileEx` 는
+# 이 모듈의 계약상 획득 실패는 삼키지 않고 올라가므로(배타 없는 진행 금지), 그 실패는 곧
+# 호출부 기능 중단이다 — 임계 구역이 그보다 길 수 있는 구성(멀티-PM 대여 기록 write·리뷰 라운드
+# 기록)에서 `flock(LOCK_EX)` 와 같은 무기한 블로킹 획득이 필요하다. `LockFileEx` 는
 # `LOCKFILE_FAIL_IMMEDIATELY` 를 빼면 커널이 대기시켜 그 보장을 그대로 낸다.
 #
 # 두 수단은 **같은 Win32 바이트-영역 락**으로 내려간다(CRT `_locking` 은 `LockFile` 래퍼) —
-# 그래서 옛 엔진 사본(msvcrt)과 새 사본(LockFileEx)이 섞인 채택자 형상에서도 같은 영역
+# 그래서 옛 엔진 사본(msvcrt)과 새 사본(LockFileEx)이 섞인 채택자 구성에서도 같은 영역
 # (`[0, LOCK_REGION_BYTES)`)을 두고 서로 배제한다. 영역을 바꾸면 그 상호 배제가 조용히 깨진다.
 
 # Win32 파일 영역 락 플래그(winbase.h).
@@ -104,11 +104,11 @@ LOCK_REGION_BYTES = 1
 # backend 이름 — `lock_backend()` 의 반환값이자 분기 키.
 POSIX_LOCK_BACKEND = "posix"        # fcntl.flock
 WINDOWS_LOCK_BACKEND = "windows"    # Win32 LockFileEx
-NO_LOCK_BACKEND = "none"            # 프리미티브 부재 — 단일-머신 전제 무락 폴백
+NO_LOCK_BACKEND = "none"            # 프리미티브 부재 — 단일-머신 전제 무락 대체 동작
 
 
 class WindowsLockApi(NamedTuple):
-    """Win32 파일 영역 락의 최소 표면 — 정책과 원시 호출을 가르는 **주입 지점**.
+    """Win32 파일 영역 락의 최소 범위 — 정책과 원시 호출을 가르는 **주입 지점**.
 
     분기 정책(어느 영역에·어떤 플래그로 걸고 실패를 어떻게 올리는가)은 순수 파이썬이라
     POSIX 개발기에서도 그대로 태울 수 있어야 한다([[guard-must-cover-its-own-surface]]) —
@@ -148,7 +148,7 @@ def lock_backend() -> str:
 def exclusive_lock_supported() -> bool:
     """현재 플랫폼에 실제 OS 배타락 primitive가 있는지 부수효과 없이 판정한다.
 
-    락 파일 open/acquire는 하지 않는다. 기존 ``acquire_exclusive``의 희귀 플랫폼 무락 폴백은
+    락 파일 open/acquire는 하지 않는다. 기존 ``acquire_exclusive``의 희귀 플랫폼 무락 대체 동작은
     그대로 두고, 배타성 없이는 진행하면 안 되는 보안 경계가 사전에 fail-closed할 때 쓴다.
     """
     return lock_backend() != NO_LOCK_BACKEND
@@ -214,7 +214,7 @@ def _windows_lock_api() -> WindowsLockApi:
 
 
 class LocklessFallbackWarning(RuntimeWarning):
-    """OS 배타락 없이 임계 구역을 진행했다는 loud 신호 (`repo_files` 강등 경고 동형)."""
+    """OS 배타락 없이 임계 구역을 진행했다는 loud 신호 (`repo_files` 수준 낮춤 경고와 같은 구조)."""
 
 
 LOCKLESS_FALLBACK_MESSAGE = (
@@ -225,12 +225,12 @@ LOCKLESS_FALLBACK_MESSAGE = (
 
 
 def _warn_lockless_fallback() -> None:
-    """무락 폴백 진입을 표면화한다 — 조용한 degrade 를 남기지 않는다.
+    """무락 대체 동작 진입을 드러낸다 — 조용한 degrade 를 남기지 않는다.
 
-    엔진의 다른 강등 신호와 같은 수단(`warnings.warn` + 전용 `RuntimeWarning`)을 쓴다.
-    귀속 프레임은 **이 seam 자신**(`stacklevel=2`)이다 — 알리는 사실이 "이 플랫폼에 락
+    엔진의 다른 수준 낮춤 신호와 같은 수단(`warnings.warn` + 전용 `RuntimeWarning`)을 쓴다.
+    귀속 프레임은 **이 모듈 자신**(`stacklevel=2`)이다 — 알리는 사실이 "이 플랫폼에 락
     프리미티브가 없다"는 프로세스 단위 조건이지 특정 호출자의 문제가 아니고, 귀속이 한 곳에
-    고정되면 기본 필터가 프로세스당 한 번으로 접어 장부 op 마다 같은 줄이 쌓이지 않는다.
+    고정되면 기본 필터가 프로세스당 한 번으로 줄여 기록 op 마다 같은 줄이 쌓이지 않는다.
     """
     warnings.warn(LOCKLESS_FALLBACK_MESSAGE, LocklessFallbackWarning, stacklevel=2)
 
@@ -239,7 +239,7 @@ def acquire_exclusive(fd: int) -> None:
     """열린 fd 에 OS 배타락을 건다 (블로킹).
 
     POSIX=`fcntl.flock(LOCK_EX)`·Windows=`LockFileEx(LOCKFILE_EXCLUSIVE_LOCK)`. 둘 다 없는
-    희귀 환경만 단일-머신 전제의 무락 폴백이고, 그 진입은 **경고로 표면화한다**
+    희귀 환경만 단일-머신 전제의 무락 대체 동작이고, 그 진입은 **경고로 드러낸다**
     (`LocklessFallbackWarning`·락 파일 자체는 존재하므로 인터페이스는 동일). 프리미티브가
     *있는데* 획득이 실패하면 무락 진행하지 않고 예외를 그대로 올린다.
     """
@@ -278,7 +278,7 @@ def release_exclusive(fd: int) -> None:
             raise OSError(
                 f"Windows 배타 파일락 해제 실패 — UnlockFileEx WinError {error}")
         return
-    # 무락 폴백 — 풀 락이 없다(진입은 acquire 가 이미 알렸다).
+    # 무락 대체 동작 — 풀 락이 없다(진입은 acquire 가 이미 알렸다).
 
 
 @contextlib.contextmanager
@@ -368,17 +368,17 @@ def append_atomic(
         os.close(fd)
 
 
-# ── 원자 교체 (플랫폼 공용 seam) ─────────────────────────────────────────────
+# ── 원자 교체 (플랫폼 공용 함수) ─────────────────────────────────────────────
 # 엔진의 원자 쓰기 관용구는 "같은 디렉토리 임시 파일에 전체를 쓰고 이름을 바꾼다" 다. 그 관용구가
 # 내는 보장은 둘이다 — (1) 디스크에는 옛 내용 아니면 새 내용만 있고 중간 상태가 없다,
-# (2) 그래서 **락 없는 리더**도 일관 스냅샷을 본다(board 보드 파일·worktree_pool 리스 장부의
+# (2) 그래서 **락 없는 리더**도 일관된 내용을 본다(board 보드 파일·worktree_pool 대여 기록의
 # 락-free 읽기가 그 성질에 명시적으로 기대 있다).
 #
 # `os.replace` 는 POSIX 에서 그 의미를 그대로 내지만 **Windows 에서는 대상이 열려 있으면
 # 실패한다**. 그 플랫폼의 `os.replace` 는 `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` 이고, 리더가
 # 어떤 방식으로 열려 있든(일반 `open()`·`os.open`·`FILE_SHARE_DELETE` 까지) `ERROR_ACCESS_DENIED`
 # (WinError 5) 로 막힌다(Windows 11 build 26200 · Python 3.12.10 실측). 즉 그 플랫폼에서는 위
-# 보장 (2) 가 성립하지 않고, 여러 PM 이 같은 장부를 쓰는 형상에서 리더가 열려 있는 순간의 쓰기가
+# 보장 (2) 가 성립하지 않고, 여러 PM 이 같은 기록을 쓰는 구성에서 리더가 열려 있는 순간의 쓰기가
 # 실패한다.
 #
 # 같은 의미를 내는 Windows 수단은 **POSIX 의미 rename** 하나다 —
@@ -387,11 +387,11 @@ def append_atomic(
 # 실측에서 share-delete 리더와 공존해 교체가 성공했고, 교체 시점에 열려 있던 핸들은 옛 내용을
 # 끝까지 읽었다(같은 순간 디스크는 새 내용). 쓰기 수단과 읽기 수단은 **한 쌍**이다 — 리더가
 # share-delete 로 열지 않으면 이 rename 도 `ERROR_SHARING_VIOLATION`(WinError 32) 로 막히므로,
-# 원자 교체 대상은 이 모듈의 읽기 seam 으로 읽어야 보장이 닫힌다.
+# 원자 교체 대상은 이 모듈의 읽기 함수로 읽어야 보장이 닫힌다.
 #
-# **유한 재시도 폴백은 두지 않는다.** 재시도는 외부 보유자(편집기·백신)에 대한 완화일 뿐 엔진
-# 자신의 리더 문제를 고치지 못하고, 그 자체가 이 축의 결함을 가린다. 수단을 못 쓰는 환경도
-# 조용히 `os.replace` 로 내려앉지 않는다 — 그 강등은 이 seam 이 닫으려는 결함을 그대로 되살리면서
+# **유한 재시도 대체 동작은 두지 않는다.** 재시도는 외부 보유자(편집기·백신)에 대한 완화일 뿐 엔진
+# 자신의 리더 문제를 고치지 못하고, 그 자체가 이 결함을 가린다. 수단을 못 쓰는 환경도
+# 조용히 `os.replace` 로 내려앉지 않는다 — 그 수준 낮춤은 이 모듈이 닫으려는 결함을 그대로 되살리면서
 # 초록으로 보이게 만든다.
 
 # `FILE_INFO_BY_HANDLE_CLASS` 의 `FileRenameInfoEx`(winbase.h). 구 `FileRenameInfo`(=3)는 POSIX
@@ -420,16 +420,16 @@ SHARE_ALL_MODES = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
 OPEN_EXISTING = 3
 FILE_ATTRIBUTE_NORMAL = 0x00000080
 
-# POSIX 의미 rename 을 모르는 세대(Windows 10 1709 미만·구 파일시스템)가 내는 코드.
+# POSIX 의미 rename 을 모르는 버전(Windows 10 1709 미만·구 파일시스템)이 내는 코드.
 ERROR_INVALID_PARAMETER = 87
 
 
 class AtomicReplaceError(OSError):
-    """원자 교체를 POSIX 의미로 수행하지 못했다 — 조용한 강등 대신 loud 신호."""
+    """원자 교체를 POSIX 의미로 수행하지 못했다 — 말없이 수준을 낮추는 대신 loud 신호."""
 
 
 class WindowsRenameApi(NamedTuple):
-    """POSIX 의미 rename 의 최소 표면 — 정책과 원시 호출을 가르는 **주입 지점**.
+    """POSIX 의미 rename 의 최소 범위 — 정책과 원시 호출을 가르는 **주입 지점**.
 
     `WindowsLockApi` 와 같은 이유다 — 어떤 권한/공유 모드로 원본을 열고 어떤 플래그로 이름을
     바꾸며 실패를 어떻게 올리는가는 순수 파이썬 정책이라 POSIX 개발기에서도 그대로 태울 수 있어야
@@ -472,7 +472,7 @@ def _build_windows_rename_api() -> WindowsRenameApi:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     try:
         set_file_information = kernel32.SetFileInformationByHandle
-    except AttributeError as exc:      # 이 API 자체가 없는 세대 — 조용히 강등하지 않는다.
+    except AttributeError as exc:      # 이 API 자체가 없는 버전 — 말없이 수준을 낮추지 않는다.
         raise AtomicReplaceError(
             "원자 교체 수단 부재 — 이 Windows 버전에는 SetFileInformationByHandle 이 없어 "
             "POSIX 의미 rename 을 쓸 수 없다. `os.replace` 로 내려앉지 않는다: 그 수단은 열린 "
@@ -536,7 +536,7 @@ def _windows_rename_api() -> WindowsRenameApi:
 
 
 def _atomic_replace_failure(source: str, target: str, error: int) -> AtomicReplaceError:
-    """Win32 실패코드를 조치 가능한 loud 진단으로 번역한다 (강등 없음)."""
+    """Win32 실패코드를 조치 가능한 loud 진단으로 번역한다 (수준 낮춤 없음)."""
     message = (
         f"원자 교체 실패 — SetFileInformationByHandle(FileRenameInfoEx) "
         f"WinError {error}: {source} → {target}"
@@ -548,7 +548,7 @@ def _atomic_replace_failure(source: str, target: str, error: int) -> AtomicRepla
             "WinError 5 로 막혀 락-free 읽기 보장을 내지 못한다"
         )
     # Win32 코드를 속성으로도 싣는다 — 호출부·프로브가 문자열이 아니라 `winerror`/`errno` 로
-    # 분기할 수 있어야 하고, 원시 `PermissionError` 와 같은 표면(`errno`·`winerror`)을 낸다.
+    # 분기할 수 있어야 하고, 원시 `PermissionError` 와 같은 모양(`errno`·`winerror`)을 낸다.
     exc = AtomicReplaceError(_errno_for_winerror(error), message)
     exc.winerror = error
     return exc
@@ -567,7 +567,7 @@ def atomic_replace(src: Path | str, dst: Path | str) -> None:
     교체 시점에 대상을 열고 있던 리더가 있어도 성공하고(그 리더는 옛 내용을 끝까지 읽는다),
     대상이 없으면 새로 만든다.
 
-    실패는 **삼키지 않는다** — 유한 재시도도, `os.replace` 강등도 없다(`AtomicReplaceError`).
+    실패는 **삼키지 않는다** — 유한 재시도도, `os.replace` 로 낮추기도 없다(`AtomicReplaceError`).
     """
     source = os.fspath(src)
     target = os.fspath(dst)
@@ -590,21 +590,21 @@ def atomic_replace(src: Path | str, dst: Path | str) -> None:
 def write_json_atomic(path: Path, data: dict) -> None:
     """dict → JSON 을 temp + `atomic_replace` 로 원자 교체한다 (crash 시 잔재/부분기록 방지).
 
-    `dump_ticket_atomic` 과 동형 — 같은 디렉토리 안 tmp 에 전체를 쓰고 atomic rename.
+    `dump_ticket_atomic` 과 같은 구조 — 같은 디렉토리 안 tmp 에 전체를 쓰고 atomic rename.
     """
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8", newline="\n")
     atomic_replace(tmp, path)
 
 
-# ── 공유 읽기 (플랫폼 공용 seam) ─────────────────────────────────────────────
+# ── 공유 읽기 (플랫폼 공용 함수) ─────────────────────────────────────────────
 # 원자 교체와 **세트다**. 쓰기만 POSIX 의미 rename 으로 바꿔도 읽는 쪽이 일반 `open()` 이면
 # Windows 는 그 rename 을 WinError 32 로 막는다(실측 표 · [[T-0729]]) — 리더가 공유 삭제를
 # 허용해야 교체가 성공하고, 그 리더는 옛 내용을 끝까지 읽는다. POSIX 의 `open` 은 이미 그
-# 의미라(rename 은 리더를 신경 쓰지 않는다) 이 seam 은 그 플랫폼에서 **내장 호출 그대로**다.
+# 의미라(rename 은 리더를 신경 쓰지 않는다) 이 함수는 그 플랫폼에서 **내장 호출 그대로**다.
 #
-# 그래서 이 seam 의 제1 계약은 "POSIX 에서 기존 호출과 글자 그대로 같은 동작" 이다. 인코딩·개행
-# 인자를 흘리거나 기본값을 바꾸면 v1.7.6 이 막 닫은 축([[T-0709]]·[[T-0710]])이 되살아난다 —
+# 그래서 이 함수의 제1 계약은 "POSIX 에서 기존 호출과 글자 그대로 같은 동작" 이다. 인코딩·개행
+# 인자를 흘리거나 기본값을 바꾸면 v1.7.6 이 막 닫은 결함이 되살아난다 —
 # 전환 대상이 100지점 단위라 의미가 1mm 만 어긋나도 그만큼 곱해진다.
 
 # 읽기 핸들 접근 권한(winnt.h) — 내용만 읽는다.
@@ -616,7 +616,7 @@ GENERIC_READ = 0x80000000
 
 
 class WindowsSharedOpenApi(NamedTuple):
-    """공유 읽기의 최소 원시 표면 — 정책과 원시 호출을 가르는 **주입 지점**.
+    """공유 읽기의 최소 원시 범위 — 정책과 원시 호출을 가르는 **주입 지점**.
 
     `WindowsRenameApi` 와 같은 이유다 — 어떤 접근권한·공유 모드로 열고 그 핸들을 어떤 플래그로
     fd 에 넘기는가는 순수 파이썬 정책이라 POSIX 개발기에서도 그대로 태울 수 있어야 한다.
@@ -634,7 +634,7 @@ def windows_shared_read_platform() -> bool:
     """이 플랫폼이 공유 읽기에 별도 열기 수단을 요구하는가 (**주입 지점**).
 
     `windows_replace_platform` 과 따로 둔다 — 읽기 분기를 주입해 태우는 회귀가 쓰기 분기까지
-    함께 뒤집으면 두 축이 서로를 가린다(한 함수로 묶으면 그 사고가 구조적으로 가능해진다).
+    함께 뒤집으면 두 분기가 서로를 가린다(한 함수로 묶으면 그 사고가 구조적으로 가능해진다).
     """
     return os.name == "nt"
 
@@ -751,18 +751,18 @@ def read_text_shared(
         return handle.read()
 
 
-# ── 강제 삭제 (플랫폼 공용 seam) ─────────────────────────────────────────────
+# ── 강제 삭제 (플랫폼 공용 함수) ─────────────────────────────────────────────
 # 정리 경로가 `shutil.rmtree(..., ignore_errors=True)` 로 실패를 삼키면, 지우지 못한 트리가
 # 채택자 디스크에 그대로 남는데도 rc=0 이 된다. 리뷰어 격리 컨테이너(검토 대상 저장소 사본 +
 # 홈 인증 사본)와 board 롤백의 backfill 파일이 그 자리라 침묵은 그대로 보안·위생 결함이다.
-# 실패 원인은 두 축이다:
+# 실패 원인은 두 가지다:
 #   - **read-only 속성** — git 은 object·packfile 을 read-only 로 만든다. Windows 의 `unlink` 는
 #     그 속성 파일을 거부하고(POSIX 는 부모 디렉토리 쓰기 권한만 본다), 쓰기 권한 없는 디렉토리
 #     안의 항목은 어느 플랫폼에서도 못 지운다.
 #   - **열린 핸들** — Windows 는 열려 있는 파일의 삭제를 거부한다. 이건 속성 해제로 풀리지 않아
 #     짧은 대기 후 재시도만이 수단이고, 무한 대기는 하지 않는다(상한 후 예외).
-# 우리 코드가 파일을 닫지 않아 생긴 잠금이면 재시도로 덮지 않고 그 지점을 고친다 — 이 seam 은
-# 남의 스캐너·인덱서가 잡은 순간적 핸들만 흡수한다.
+# 우리 코드가 파일을 닫지 않아 생긴 잠금이면 재시도로 덮지 않고 그 지점을 고친다 — 이 함수는
+# 남의 스캐너·인덱서가 잡은 순간적 핸들만 받아 넘긴다.
 
 # 트리/파일 하나를 지우기 위해 시도하는 총 횟수(첫 시도 포함).
 FORCE_DELETE_RETRIES = 3
@@ -780,7 +780,7 @@ def _clear_delete_block(path: Path | str, *, dir_fd: int | None = None) -> None:
     symlink 는 건너뛴다 — `os.chmod` 가 링크를 따라가 **대상**의 권한을 바꾸는데, 링크 삭제에는
     대상 권한이 필요 없다(정리하다 남의 파일 권한을 바꾸지 않는다).
 
-    `dir_fd` 를 받으면 경로를 그 디렉토리 fd 기준으로 해소한다 — fd 결속 삭제의 에러 훅은 이
+    `dir_fd` 를 받으면 경로를 그 디렉토리 fd 기준으로 해소한다 — fd 기준 삭제의 에러 훅은 이
     함수에 **성분마다 nofollow 로 연 부모 fd 와 그 직계 이름 하나**를 준다(다단 상대경로를 한
     번에 해소하면 중간 성분의 symlink 를 따라간다). 그래서 여기서 푸는 자리는 그 이름과 부모
     (`.`) 둘뿐이다. `os.lstat` 은 `dir_fd` 를 받지 않으므로 같은 뜻의
@@ -884,9 +884,9 @@ def force_rmtree(
 
     **부재는 성공**이다(정리의 목적은 "없다"이고 경쟁 삭제도 그 목적을 이룬다).
 
-    `dir_fd` 를 주면 삭제를 그 디렉토리 fd 에 결속한다 — 대상은 **그 fd 의 직계 이름**으로만
+    `dir_fd` 를 주면 삭제를 그 디렉토리 fd 에 묶는다 — 대상은 **그 fd 의 직계 이름**으로만
     해소되므로 도중에 부모 경로가 바뀌어도 다른 자리를 지우지 않는다. 호출부는 언제나 전체
-    경로를 주고(진단 문구가 그 값이다) 이름 변환은 이 seam 이 한다.
+    경로를 주고(진단 문구가 그 값이다) 이름 변환은 이 함수가 한다.
     """
     target = Path(path)
     resolved = target.name if dir_fd is not None else target
@@ -941,12 +941,12 @@ def force_unlink(path: Path | str, *, missing_ok: bool = False) -> None:
     ) from last_error
 
 
-# ── 소유자 전용 접근 제한 (플랫폼 공용 seam) ─────────────────────────────────
+# ── 소유자 전용 접근 제한 (플랫폼 공용 함수) ─────────────────────────────────
 # 격리 산출물(리뷰어 임시 홈의 인증 사본·리뷰 샌드박스의 프롬프트 전달 파일·raw 출력)은
 # **다른 사용자에게 읽히면 안 된다**. POSIX 는 `chmod 0600` 이 그 보장을 내지만 Windows 의
 # `chmod` 는 read-only 속성 하나만 만지므로(실측 `S_IMODE`=0o666) 같은 호출이 아무 제한도
 # 걸지 않는다. 플랫폼마다 *수단*이 다를 뿐 걸어야 하는 *보장*은 같으므로, 수단 분기를 이
-# seam 이 소유하고 호출부는 "소유자 전용으로 제한한다" 하나만 말한다.
+# 모듈이 소유하고 호출부는 "소유자 전용으로 제한한다" 하나만 말한다.
 #
 # Windows 수단은 `icacls` 다 — 상속 ACE 를 끊고(`/inheritance:r`) 현재 계정에만 Full 을
 # 준다(`/grant:r`). 판정(`owner_only_access`)은 저장된 플래그가 아니라 **OS 에 되물어**
@@ -1015,7 +1015,7 @@ def _run_acl_command(argv: list[str]) -> tuple[int, str]:
 def current_owner_principal() -> str:
     """현재 계정의 ACL 주체 **이름** (`DOMAIN\\user` · 도메인 없으면 사용자명).
 
-    이름은 SID 조회가 실패했을 때의 폴백이자, ACL 되읽기에서 이름으로 해소돼 출력된 ACE 를
+    이름은 SID 조회가 실패했을 때의 대체 수단이자, ACL 되읽기에서 이름으로 해소돼 출력된 ACE 를
     현재 계정으로 인정하기 위한 대조값이다(적용 주체는 SID 를 우선한다).
     """
     import getpass
@@ -1031,7 +1031,7 @@ def _parse_whoami_sid(output: str) -> str | None:
     """`whoami /user` 출력에서 SID 토큰을 뽑는다 (형식 밖이면 None).
 
     `/fo csv /nh` 는 `"DOMAIN\\user","S-1-5-21-…"` 한 줄이지만, 표 형식으로 떨어져도 SID 토큰
-    자체는 같은 모양이라 **토큰을 찾는다**(포맷 옵션 미지원 세대까지 같은 규칙으로 덮는다).
+    자체는 같은 모양이라 **토큰을 찾는다**(포맷 옵션 미지원 버전까지 같은 규칙으로 덮는다).
     이름이 먼저·SID 가 나중이므로 마지막 토큰을 쓴다.
     """
     matches = _SID_TOKEN_RE.findall(output)
@@ -1041,7 +1041,7 @@ def _parse_whoami_sid(output: str) -> str | None:
 def current_owner_sid(*, runner=None) -> str | None:
     """현재 계정의 SID (`S-1-5-21-…`) — 조회 실패면 None.
 
-    ACL 주체를 이름으로 주면 icacls 가 계정 해소에 실패하는 형상이 실재한다(한국어 Windows 11
+    ACL 주체를 이름으로 주면 icacls 가 계정 해소에 실패하는 구성이 실재한다(한국어 Windows 11
     실측 `rc=1332` = `ERROR_NONE_MAPPED`). SID 는 로케일·도메인 조인 형태·계정명 표기에 무관해
     그 실패면을 아예 없앤다.
     """
@@ -1053,7 +1053,7 @@ def current_owner_sid(*, runner=None) -> str | None:
     try:
         rc, output = run(list(_OWNER_SID_COMMAND))
     except OSError:
-        rc, output = 1, ""      # whoami 부재 — 이름 폴백이 받는다.
+        rc, output = 1, ""      # whoami 부재 — 이름 대체가 받는다.
     if rc == 0:
         sid = _parse_whoami_sid(output)
     if runner is None:
@@ -1062,7 +1062,7 @@ def current_owner_sid(*, runner=None) -> str | None:
 
 
 def owner_grant_principal(*, runner=None) -> str:
-    """`icacls /grant` 에 넘길 주체 표기 — SID 우선(`*S-1-…`), 실패 시 계정 이름 폴백."""
+    """`icacls /grant` 에 넘길 주체 표기 — SID 우선(`*S-1-…`), 실패 시 계정 이름으로 대신."""
     sid = current_owner_sid(runner=runner)
     return f"*{sid}" if sid else current_owner_principal()
 
@@ -1106,7 +1106,7 @@ def _parse_icacls_principals(output: str, path: Path) -> tuple[str, ...]:
 
 
 def _same_principal(candidate: str, owner: str) -> bool:
-    """ACL 주체가 현재 계정인가 — 도메인 표기 차이(`DOMAIN\\me` vs `me`)를 흡수한다.
+    """ACL 주체가 현재 계정인가 — 도메인 표기 차이(`DOMAIN\\me` vs `me`)를 받아 넘긴다.
 
     SID 표기는 백슬래시가 없어 완전 일치로만 맞는다(뒤 컴포넌트 비교가 헐거워지지 않는다).
     """
@@ -1198,7 +1198,7 @@ def board_lock(home) -> Iterator[None]:
     """공유 보드 write 를 직렬화하는 OS 파일락 컨텍스트매니저.
 
     `.project_manager/.local/board.lock` 에 배타 OS 락을 건다. **프로세스가 죽으면
-    OS 가 락을 자동 해제**하므로 stale-lock 이 없다(worktree 리스의 pid-회수와 수명이
+    OS 가 락을 자동 해제**하므로 stale-lock 이 없다(worktree 대여의 pid 반납과 수명이
     다른 이유). 읽기(list/show)는 락을 잡지 않는다 — *변경* 경로만 직렬화한다.
 
     **재진입 금지** — 같은 프로세스가 이 컨텍스트를 중첩하면 안 된다(flock 의 재진입

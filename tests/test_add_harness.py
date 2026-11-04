@@ -63,8 +63,8 @@ def pm_config():
 
 @pytest.fixture(autouse=True)
 def _known_native_capacity(tmp_path,monkeypatch):
-    from _manager_home import known_ctx_seams
-    for name,override in known_ctx_seams(capacity=200000,context=232000).items():
+    from _manager_home import known_ctx_overrides
+    for name,override in known_ctx_overrides(capacity=200000,context=232000).items():
         monkeypatch.setattr(harness_ctx,name,override)
 
 

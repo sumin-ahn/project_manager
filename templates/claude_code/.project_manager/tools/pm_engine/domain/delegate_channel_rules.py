@@ -13,8 +13,8 @@ DELEGATE_ROLES = frozenset(
 DELEGATE_TIERS = frozenset({"normal", "hard"})
 _WORKTREE_PLACEHOLDER = "<worktree>"
 # 훅은 티켓·묶음 컨텍스트를 모른다(Agent 도구 입력엔 ticket 필드가 없다) — 실값을 채울 수
-# 없으므로 사람이 채워 넣을 자리만 처방한다. 대상 인자가 없으면 라운드 파일이 안 생겨 PM 이 수동
-# prepare 로 우회하는데 그 우회가 cross 역할에서 거부된다(두 처방이 서로를 막는 교착). 리뷰는
+# 없으므로 사람이 채워 넣을 자리만 안내한다. 대상 인자가 없으면 라운드 파일이 안 생겨 PM 이 수동
+# prepare 로 우회하는데 그 우회가 cross 역할에서 거부된다(두 안내가 서로를 막는 교착). 리뷰는
 # 묶음 단위(`--cluster`)이고 엔진이 프롬프트를 조립하므로 프롬프트 파일을 받지 않는다.
 _TICKET_PLACEHOLDER = "<T-NNNN>"
 _CLUSTER_PLACEHOLDER = "C-<ticket-group>"

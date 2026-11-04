@@ -1,4 +1,4 @@
-"""세션 장부 관측과 dashboard 락."""
+"""세션 기록 관측과 dashboard 락."""
 from __future__ import annotations
 
 from typing import Iterator
@@ -15,10 +15,10 @@ def _dashboard_lock(home) -> Iterator[None]:
     """대시보드 파일 read-modify-write 를 직렬화하는 OS 파일락 컨텍스트매니저 (MF-2).
 
     `.project_manager/.local/dashboard.lock` 에 배타 OS 락. 프로세스가 죽으면 OS 가 자동
-    해제(stale-lock 없음·worktree_pool `_lease_lock` 동형). **재진입 금지** — 대시보드의 모든
+    해제(stale-lock 없음·worktree_pool `_lease_lock` 와 같은 구조). **재진입 금지** — 대시보드의 모든
     read→upsert→write 가 이 한 구간 안에서 일어나 cross-slot lost update 를 막는다.
 
-    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `fs` seam 이 소유하고
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 대체 동작)는 공용 `fs` 모듈이 소유하고
     (모듈 상단 import 시점 바인딩) 이 도구는 *어느 파일에 거는지*(경로 규약)만 정한다.
     """
     with fs.exclusive_file_lock(pm_paths._dashboard_lock_file(home)):
@@ -48,7 +48,7 @@ def _claimed_tickets_for_session(home, session: str, tickets_dir: Path | None=No
     board tickets(`_tickets_dir()`)가 status-subdir 레이아웃이면 `claimed/` 하위를, flat
     레이아웃이면 `status: claimed` frontmatter 를 대상으로, `claimed_by:`(`<email>/<session>`)의
     `/` 뒤 세션 파트가 `session` 과 같은 티켓의 `id:` 를 모은다. board 를 import 하지 않고
-    (touches 격리·`_registered_repos`/leases 직접 read 동형) frontmatter 를 라인 스캔한다.
+    (touches 격리·`_registered_repos`/leases 직접 read 와 같은 구조) frontmatter 를 라인 스캔한다.
     디렉터리 부재는 빈 목록, 개별 티켓 읽기 OSError 는 그 티켓만 건너뛴다. 그 밖의 예외는 전파한다.
     """
     if tickets_dir is None:

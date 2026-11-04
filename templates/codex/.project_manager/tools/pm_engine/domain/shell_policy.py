@@ -394,13 +394,13 @@ class _ShellGitInvocation(NamedTuple):
     certain: bool
     # 실행 위치(cwd)만의 확실성. ``certain`` 은 여기에 셸 확장(``$``·backtick)까지 없어야 참이다.
     # 파괴 형태 판정은 대상 위치만 필요하므로 이 값을 쓴다(인자 속 변수는 형태 판정이 따로 본다).
-    anchor_certain: bool
+    target_repo_certain: bool
 
 
 class _ShellParseResult(NamedTuple):
     invocations: tuple[_ShellGitInvocation, ...]
     engine_invocations: tuple[_ShellGitInvocation, ...]
-    # 파일 삭제·이동 명령(직접·간접 실행) 호출. ``anchor_certain`` 은 상대 경로를 풀 실행 위치의 확실성이다.
+    # 파일 삭제·이동 명령(직접·간접 실행) 호출. ``target_repo_certain`` 은 상대 경로를 풀 실행 위치의 확실성이다.
     removal_invocations: tuple[_ShellGitInvocation, ...]
     persistent_cd: bool
     uncertain: bool
@@ -412,7 +412,7 @@ class _ShellGitCommand(NamedTuple):
 
     index: int
     certain: bool
-    anchor_env_override: bool
+    target_repo_env_override: bool
 
 
 def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
@@ -439,11 +439,11 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
         return None
 
     index = 0
-    anchor_env_override = False
+    target_repo_env_override = False
     # POSIX assignment word는 command name 앞에 올 수 있다. 이후 임의 argv의 ``git``은
     # echo/printf 데이터일 뿐이므로 절대 실행으로 승격하지 않는다.
     while index < len(values) and _assignment(values[index]):
-        anchor_env_override = anchor_env_override or values[index].startswith(
+        target_repo_env_override = target_repo_env_override or values[index].startswith(
             ("GIT_WORK_TREE=", "GIT_DIR=")
         )
         index += 1
@@ -452,7 +452,7 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
     # command word까지 index를 전진시키고 같은 loop에서 다시 해소한다.
     while index < len(values):
         if _is_git(values[index]):
-            return _ShellGitCommand(index, True, anchor_env_override)
+            return _ShellGitCommand(index, True, target_repo_env_override)
         wrapper = Path(values[index]).name
 
         if wrapper == "env":
@@ -465,7 +465,7 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
                     index += 1
                     continue
                 if _assignment(token):
-                    anchor_env_override = anchor_env_override or token.startswith(
+                    target_repo_env_override = target_repo_env_override or token.startswith(
                         ("GIT_WORK_TREE=", "GIT_DIR=")
                     )
                     index += 1
@@ -480,18 +480,18 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
                 }:
                     if index + 1 >= len(values):
                         return None
-                    # child cwd 변경은 현재 anchor와 같다고 증명할 수 없다.
+                    # child cwd 변경은 현재 대상 저장소와 같다고 증명할 수 없다.
                     if token in {"-C", "--chdir"}:
-                        return _uncertain_git(index + 2, anchor_env_override)
+                        return _uncertain_git(index + 2, target_repo_env_override)
                     index += 2
                     continue
                 if option_phase and token.startswith(("--unset=", "--chdir=", "--argv0=")):
                     if token.startswith("--chdir="):
-                        return _uncertain_git(index + 1, anchor_env_override)
+                        return _uncertain_git(index + 1, target_repo_env_override)
                     index += 1
                     continue
                 if option_phase and token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
+                    return _uncertain_git(index + 1, target_repo_env_override)
                 break
             continue
 
@@ -505,7 +505,7 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
                 if token in {"-v", "-V"}:
                     return None
                 if token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
+                    return _uncertain_git(index + 1, target_repo_env_override)
                 break
             continue
 
@@ -522,7 +522,7 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
                     index += 2
                     continue
                 if token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
+                    return _uncertain_git(index + 1, target_repo_env_override)
                 break
             continue
 
@@ -531,7 +531,7 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
             if index < len(values) and values[index] == "--":
                 index += 1
             elif index < len(values) and values[index].startswith("-"):
-                return _uncertain_git(index + 1, anchor_env_override)
+                return _uncertain_git(index + 1, target_repo_env_override)
             continue
 
         if wrapper == "nice":
@@ -550,7 +550,7 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
                     index += 1
                     continue
                 if token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
+                    return _uncertain_git(index + 1, target_repo_env_override)
                 break
             continue
 
@@ -573,7 +573,7 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
                     index += 1
                     continue
                 if token.startswith("-"):
-                    return _uncertain_git(index + 1, anchor_env_override)
+                    return _uncertain_git(index + 1, target_repo_env_override)
                 break
             if index >= len(values):
                 return None
@@ -586,9 +586,9 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
                 index += 1
             elif index < len(values) and values[index].startswith("-"):
                 # sudo option grammar는 플랫폼별로 넓고 option value가 command처럼 보일 수 있다.
-                return _uncertain_git(index + 1, anchor_env_override)
+                return _uncertain_git(index + 1, target_repo_env_override)
             while index < len(values) and _assignment(values[index]):
-                anchor_env_override = anchor_env_override or values[index].startswith(
+                target_repo_env_override = target_repo_env_override or values[index].startswith(
                     ("GIT_WORK_TREE=", "GIT_DIR=")
                 )
                 index += 1
@@ -599,7 +599,7 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
             # 될 수 있다. 뒤의 git은 argv 데이터일 수도 있어 deny할 수 없지만, mutation 후보를
             # ok로 숨기지도 않고 uncertainty로 surface한다. echo/printf 등 명백한 command의
             # 일반 argv는 이 분기에 오지 않는다.
-            return _uncertain_git(index + 1, anchor_env_override)
+            return _uncertain_git(index + 1, target_repo_env_override)
 
         return None
     return None
@@ -686,7 +686,7 @@ def _shell_engine_command(segment: Sequence[str]) -> tuple[str, ...] | None:
 
 
 def _normalize_shell_line_continuations(command: str) -> str:
-    """quote/heredoc data 밖의 backslash-newline만 POSIX continuation으로 접는다.
+    """quote/heredoc data 밖의 backslash-newline만 POSIX continuation으로 합친다.
 
     heredoc body는 caller가 먼저 제거한다. quote 내부 bytes는 delimiter/data 의미를 보존하기
     위해 그대로 두며, command-word quote fragment 결합은 후속 shlex에 맡긴다.
@@ -733,7 +733,7 @@ _SHELL_WINDOWS_ABSOLUTE_PATH = re.compile(
 
 
 def _protect_shell_windows_path_separators(command: str) -> str:
-    """POSIX shlex가 Windows 절대경로의 ``\\``를 escape로 소비하지 않게 표식한다.
+    """POSIX shlex가 Windows 절대경로의 ``\\``를 escape로 소비하지 않게 표시한다.
 
     이 단계는 정규화하지 않는다. 경로형 토큰임이 드러난 drive/UNC 표기의 구분자만 보존하고,
     실제 ``/`` 변환은 shlex 토큰화 뒤 simple-command가 토큰을 소비할 때 수행한다.
@@ -759,10 +759,10 @@ def _normalize_shell_path_notation(token: str) -> str:
 
 
 def restore_shell_windows_path_separators(token: str) -> str:
-    """보호 표식을 원래 ``\\``로 되돌린다 — **실행용** argv 복원 경로.
+    """보호 표시를 원래 ``\\``로 되돌린다 — **실행용** argv 복원 경로.
 
     판정용 경로는 `_normalize_shell_path_notation` 이 ``/`` 표기로 접지만, 실행 argv 는 채택자가
-    선언한 바이트 그대로여야 한다(표식이 남으면 그 자체가 실행 불가 경로다).
+    선언한 바이트 그대로여야 한다(표시가 남으면 그 자체가 실행 불가 경로다).
     """
     return token.replace(_SHELL_WINDOWS_PATH_SEPARATOR, "\\")
 
@@ -954,7 +954,7 @@ def _shell_without_redirections(segment: Sequence[str]) -> tuple[list[str], bool
     return cleaned, redirected
 
 
-def _shell_gate(operator: str | None, status: bool | None) -> bool | None:
+def _shell_check(operator: str | None, status: bool | None) -> bool | None:
     if operator is None or operator in _SHELL_COMMAND_SEPARATORS - {"&&", "||", "|"}:
         return True
     if operator == "&&":
@@ -986,7 +986,7 @@ def _shell_hidden_target_change(words: Sequence[str]) -> bool:
 
 
 def _shell_removal_calls(
-    anchors: set[Path], cwd_certain: bool, command: Sequence[str],
+    target_repos: set[Path], cwd_certain: bool, command: Sequence[str],
 ) -> list[_ShellGitInvocation]:
     """simple command 하나의 파일 삭제·이동 호출(직접 명령 + 간접 실행 인자 속 호출)."""
     values = [_normalize_shell_path_notation(value) for value in command]
@@ -997,9 +997,9 @@ def _shell_removal_calls(
     indirect, changes_cwd = _shell_indirect_file_removal_argvs(values)
     argvs.extend((argv, cwd_certain and not changes_cwd) for argv in indirect)
     return [
-        _ShellGitInvocation(str(anchor), argv, certain, certain)
+        _ShellGitInvocation(str(target_repo), argv, certain, certain)
         for argv, certain in argvs
-        for anchor in sorted(anchors, key=str)
+        for target_repo in sorted(target_repos, key=str)
     ]
 
 

@@ -10,7 +10,7 @@ import { isError } from "../api";
  * 실패해도 나머지는 그대로 온다(칸에 "오류").
  */
 
-/** 칸 하나 — 채널 없는 파일은 거리 축이 없다. */
+/** 칸 하나 — 채널 없는 파일은 거리 값이 없다. */
 export function cellText(document_: AdapterDocument, file: string): string {
   const row = document_.files.find((entry) => entry.path === file);
   if (row === undefined) return "없음";

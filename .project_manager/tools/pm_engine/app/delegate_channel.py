@@ -1,4 +1,4 @@
-"""위임 채널 처방 문구 (층: app)."""
+"""위임 채널 해결 방법 문구 (층: app)."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -52,7 +52,7 @@ def _claude_native_model_warning(home, role: str, tier: str, model: str) -> str:
     if delegate_channel_rules._is_unrendered_model_token(card_model):
         # 카드가 아직 렌더되지 않았다 — 렌더 소스 트리(프레임워크 루트·templates)이거나 채택자
         # 렌더가 실패한 상태다. 이건 conf 를 고칠 일이 아니라 `pm-update` 로 카드를 다시 렌더할
-        # 일이므로 "불일치" 와 다른 처방을 낸다. 판정은 여전히 fail-open.
+        # 일이므로 "불일치" 와 다른 해결 방법을 낸다. 판정은 여전히 fail-open.
         return (
             f"[delegate-channel/warn] Claude native model 카드 미렌더"
             f"(role={role}, tier={tier}, conf_model={model}, "
@@ -171,7 +171,7 @@ def decide(
             model=model,
         )
 
-    # Row 5: cross-harness native spawn redirects to the ledgered CLI.
+    # Row 5: cross-harness native spawn redirects to the recorded CLI.
     shown_model = model or "(model 미설정)"
     return delegate_channel_rules._result(
         "deny",
@@ -190,13 +190,13 @@ def _is_absolute_path(value: str) -> bool:
     root (``C:\\work`` is absolute there, ``/work`` is drive-relative and
     ``C:\\work`` is not absolute on POSIX).  Anything else keeps the caller on
     the measured fail-open path instead of prescribing an unpastable cwd.  Kept
-    as one injectable seam so the other platform's branch is testable here.
+    as one injectable override so the other platform's branch is testable here.
     """
     return Path(value).is_absolute()
 
 
 def _rendered_prescription_token(value: str) -> str:
-    """Quote one prescription argument with the engine's single shell-render seam.
+    """Quote one prescription argument with the engine's single shell-render function.
 
     The prescription is pasted into the operator's shell, so POSIX quoting on
     Windows turns ``--cwd`` and its path into literal arguments and the command

@@ -57,7 +57,7 @@ import pytest
 
 from conftest import bind_product_cluster
 
-from conftest import write_cluster_ledger
+from conftest import write_cluster_records
 from pm_engine.infra import delegate_records, pm_paths, raw_output, round_store, ticket_store
 from pm_engine.domain import delegate_errors, review_form, review_state, round_rules
 from pm_engine.app import body_lint, round_form
@@ -193,7 +193,7 @@ def _write_spec(
     """명세와 그 티켓의 크기 1 묶음 기록을 함께 쓴다 — `rounds` 가 예약할 역할 순서다."""
     path = tickets / f"{ticket}-supersede.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
-    write_cluster_ledger(
+    write_cluster_records(
         tickets.parent.parent, ticket, base_branch="task/main", rounds=rounds,
     )
     return path
@@ -481,7 +481,7 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
         delegate_prepare.abandon_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, assume_dead=True,
         )
-    stuck = delegate_records.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
+    stuck = delegate_records.ticket_copy_records(pm_home, ticket="T-9005", uncollected=True)
     assert str(round1.path) in [row["copy"] for row in stuck]
 
     capsys.readouterr()
@@ -517,9 +517,9 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     assert "F-001" in review_contract.render_pm_review_disposition_template(spec_text, loaded)
 
     # 값으로 사라짐 — 돌려받지 않은 목록에 더는 라운드 1 사본이 없다.
-    unharvested = delegate_records.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
-    assert str(round1.path) not in [row["copy"] for row in unharvested]
-    assert unharvested == []          # 라운드 2 는 돌려받았고, 라운드 1 은 abandoned.
+    uncollected = delegate_records.ticket_copy_records(pm_home, ticket="T-9005", uncollected=True)
+    assert str(round1.path) not in [row["copy"] for row in uncollected]
+    assert uncollected == []          # 라운드 2 는 돌려받았고, 라운드 1 은 abandoned.
 
     assert _problem_codes(pd, pm_home, "T-9005") == []      # `round-pending` 도 사라진다.
 
@@ -563,8 +563,8 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
 
     assert result.converged is True
     assert not round1.run_dir.exists()
-    unharvested = delegate_records.ticket_copy_records(pm_home, ticket="T-9006", unharvested=True)
-    assert unharvested == []
+    uncollected = delegate_records.ticket_copy_records(pm_home, ticket="T-9006", uncollected=True)
+    assert uncollected == []
 
 
 # ── 보존 빈 양식 표시 ─────────────────────────────────────────────────────────
@@ -855,5 +855,5 @@ def test_cli_abandon_wires_the_superseded_by_flag(pd, env, monkeypatch):
 
     assert rc == 0
     assert not round1.run_dir.exists()
-    unharvested = delegate_records.ticket_copy_records(pm_home, ticket="T-9007", unharvested=True)
-    assert unharvested == []
+    uncollected = delegate_records.ticket_copy_records(pm_home, ticket="T-9007", uncollected=True)
+    assert uncollected == []

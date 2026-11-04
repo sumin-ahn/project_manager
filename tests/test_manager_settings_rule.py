@@ -1,6 +1,6 @@
 """설정 행 접기 규칙 — 화면과 이 테스트가 **같은 규칙표**를 읽는지 (T-0917 AT-001).
 
-접기 판정표는 `manager/ui/src/lib/settings-rows.json` 하나다. 네 축(값 없음 · 필수 아님 ·
+접기 판정표는 `manager/ui/src/lib/settings-rows.json` 하나다. 네 기준(값 없음 · 필수 아님 ·
 기본값 없음 · 배지 없음)이 전부 참인 행만 접히고, 그 판정이 화면 소스에 다시 박히면 두 벌이
 되어 한쪽만 고쳐지는 날 갈린다. 한 줄로 묶는 세트(역할 묶음·교차 검토 묶음)는 엔진이 행마다 준
 `unit` 에서만 나오므로 화면에 역할·티어 목록이 필요 없다.
@@ -92,7 +92,7 @@ def test_the_screen_reads_the_same_rule_file():
 
 
 def test_the_fold_verdict_is_not_written_again_in_the_screen():
-    """네 축을 화면이 다시 적으면 규칙표를 고쳐도 화면이 따라오지 않는다."""
+    """네 기준을 화면이 다시 적으면 규칙표를 고쳐도 화면이 따라오지 않는다."""
     screen = _source(SCREENS[0])
 
     assert "function foldable" not in screen
@@ -113,10 +113,10 @@ def test_the_rule_counts_the_same_badges_the_screen_draws():
     assert drawn == sorted(_rule()["fold"]["marks"])
 
 
-# ── ② 네 축이 실 레지스트리에서 실제로 갈린다 ────────────────────────────────
+# ── ② 네 기준이 실 레지스트리에서 실제로 갈린다 ────────────────────────────────
 
 
-def test_a_row_folds_only_when_all_four_axes_say_so(registry):
+def test_a_row_folds_only_when_all_four_criteria_say_so(registry):
     rows = _rows(registry)
     plain = next(row for row in rows
                  if not row["required"] and row["default"] is None)
@@ -160,7 +160,7 @@ def test_the_screen_groups_rows_by_the_engine_unit_only(registry):
     screen = _source(SCREENS[0])
 
     assert "row.unit" in screen
-    assert "row_unit_family" not in _rule(), "옛 규칙표 축이 남았다"
+    assert "row_unit_family" not in _rule(), "옛 규칙표 키가 남았다"
     for unit in registry["units"]:
         assert unit not in screen, f"세트 이름이 화면에 박혔다: {unit}"
 

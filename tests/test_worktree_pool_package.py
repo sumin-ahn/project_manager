@@ -42,7 +42,7 @@ def test_two_home_records_and_todo_isolation(tmp_path):
         task_store.take_task_session_claim(right, "job")
     assert task_store.take_task_session_claim(left, "job") == "sid"
     with pool_store._lease_lock(left):
-        pool_store._write_ledger(left, [])
+        pool_store._write_records(left, [])
         assert pool_store._read_records_raw_strict(left)["unknown"] == {"keep": 1}
 
 

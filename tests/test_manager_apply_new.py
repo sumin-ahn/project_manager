@@ -3,7 +3,7 @@
 전부 **실물**로 잰다: 번들 소스는 이 트리 자신이고, 만들어지는 PM 홈도 실 엔진 산출이며,
 upstream 값은 실 로컬 bare 다(네트워크 0). 가짜 runner 로 rc 를 지어내지 않는다.
 
-축 여섯:
+검사 여섯:
   1. 세 단계가 순서대로 돌고, 성공한 단계까지의 로그가 항상 돌아온다.
   2. `--upstream` 은 항상 명시된다 — 그 값이 새 프로젝트의 갱신 경로로 그대로 박힌다.
   3. `--user-ack` 는 확인 대화의 반환값에서만 온다(관리자가 스스로 붙이는 자리 0).
@@ -224,7 +224,7 @@ def test_the_ack_value_comes_from_the_confirmation_not_from_the_prefix_field(des
 
 
 def test_the_engine_refuses_a_new_prefix_without_the_ack_in_its_own_words(api, dest, upstream):
-    """관리자가 승인 토큰을 나르는 이유 — 그 게이트가 엔진에 실재한다(실 엔진 실행)."""
+    """관리자가 승인 토큰을 나르는 이유 — 그 승인 검사가 엔진에 실재한다(실 엔진 실행)."""
     _apply(api, dest, upstream)
 
     refused = subprocess.run(

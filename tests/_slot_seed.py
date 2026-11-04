@@ -1,6 +1,6 @@
-"""작업 폴더(슬롯) 행 시드 — hermetic 테스트가 "슬롯이 있는 홈" 형상을 실 장부로 재현한다.
+"""작업 폴더(슬롯) 행 미리 넣기 — hermetic 테스트가 "슬롯이 있는 홈" 구성을 실 대여 기록으로 재현한다.
 
-정체성 해소·핸드오프 승인 대상값·회귀 cwd 가 전부 리스 장부의 슬롯 행에서 오므로, 행이 없는
+정체성 해소·핸드오프 승인 대상값·회귀 cwd 가 전부 대여 기록의 슬롯 행에서 오므로, 행이 없는
 tmp 홈은 "아직 작업 폴더가 없는 홈"이고 귀속 조작이 fail-loud 한다. 이 헬퍼가 그 행 하나를 실
 파일로 깔아 준다(조립 dict 아님).
 
@@ -34,10 +34,10 @@ def lease_row(*, slot: str = SLOT, repo: str = SLOT_REPO,
 
 def seed_slot(repo_root: Path, *, slot: str = SLOT, repo: str = SLOT_REPO,
               session: str = SESSION, tasks: list | None = None) -> Path:
-    """`repo_root` 를 작업 폴더 1개짜리 홈으로 만든다 — lease 장부 파일 경로를 반환한다."""
-    ledger = Path(repo_root) / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(
+    """`repo_root` 를 작업 폴더 1개짜리 홈으로 만든다 — lease 대여 기록 파일 경로를 반환한다."""
+    records = Path(repo_root) / ".project_manager" / ".local" / "worktree-leases.json"
+    records.parent.mkdir(parents=True, exist_ok=True)
+    records.write_text(
         json.dumps(
             {"leases": [lease_row(slot=slot, repo=repo, session=session)],
              "tasks": tasks or []},
@@ -45,11 +45,11 @@ def seed_slot(repo_root: Path, *, slot: str = SLOT, repo: str = SLOT_REPO,
         ) + "\n",
         encoding="utf-8",
     )
-    return ledger
+    return records
 
 
 def seed_areas(repo_root: Path, *, repo: str = SLOT_REPO) -> Path:
-    """`repo_root` 의 areas.md 에 repo 행 1개를 깐다 (등록 repo 정확히 1개 형상)."""
+    """`repo_root` 의 areas.md 에 repo 행 1개를 깐다 (등록 repo 정확히 1개 구성)."""
     areas = Path(repo_root) / ".project_manager" / "areas.md"
     areas.parent.mkdir(parents=True, exist_ok=True)
     areas.write_text(
@@ -63,7 +63,7 @@ def seed_areas(repo_root: Path, *, repo: str = SLOT_REPO) -> Path:
 
 
 # 대역(worktree_pool mock) 풀이 내는 슬롯 경로의 뿌리 — 0단계 실재 검사가 `.exists()` 로
-# 판정하므로 **실재하는** 디렉터리여야 한다(장부 행이 폴더 부재를 대신 통과시키던 예외는
+# 판정하므로 **실재하는** 디렉터리여야 한다(대여 기록 행이 폴더 부재를 대신 통과시키던 예외는
 # 삭제됐다). 임시물은 프로젝트 안 `.project_manager/.local/tmp` 아래에 만든다.
 _FAKE_SLOT_ROOT: "Path | None" = None
 

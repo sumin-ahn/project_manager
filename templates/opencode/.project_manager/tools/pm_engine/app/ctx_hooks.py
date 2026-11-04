@@ -1,7 +1,7 @@
-"""하네스 ctx 관측의 예산·밴드·안내·marker 순서 조정 (층: app).
+"""하네스 ctx 관측의 예산·구간·안내·marker 순서 조정 (층: app).
 
 어댑터가 native 기록에서 얻은 점유 토큰·모델을 받아 압축 한도 기록의 적용 한도 E 와 비율로
-쓴 %·밴드를 정하고, 밴드 안내와 압축 경계 처리 marker 를 선점한다. 사용률·밴드 규칙과 안내 문구는
+쓴 %·구간을 정하고, 구간 안내와 압축 경계 처리 marker 를 먼저 차지한다. 사용률·구간 규칙과 안내 문구는
 `domain.ctx_recovery`, marker 파일은 `infra.compaction_store`, 원칙 recall marker 는
 `infra.principle_store` 가 소유한다. 하네스 JSON 은 읽지 않는다.
 """
@@ -11,11 +11,11 @@ from pm_engine.domain import conf_schema, ctx_recovery
 from pm_engine.infra import compaction_store, conf_store, principle_store
 
 
-# 응답 형식 세대 — 어댑터·JS 가 이 값으로 형식을 확인한다.
+# 응답 형식 버전 — 어댑터·JS 가 이 값으로 형식을 확인한다.
 CTX_RESPONSE_VERSION = 1
 
-# `stop` 밴드는 회전이 아니라 최종 넛지로 소비된다 — 안내 렌더·marker 종류 이름은 `final` 이다.
-_BAND_GUIDANCE = {"warn": "warn", "warn2": "warn2", "stop": "final"}
+# `stop` 구간은 회전이 아니라 최종 경고로 소비된다 — 안내 렌더·marker 종류 이름은 `final` 이다.
+_LEVEL_GUIDANCE = {"warn": "warn", "warn2": "warn2", "stop": "final"}
 
 
 def _observe(home, harness: str, tokens: int, model: str | None) -> tuple[dict, dict | None]:
@@ -47,8 +47,8 @@ def context_status(home, *, harness: str, tokens: int, model: str | None) -> dic
 def _claim_compaction(home, session: str, boundary: str | None) -> tuple[bool, str | None, str | None]:
     """새 압축 경계면 (True, precompact 안내, 기록용 경계 ID), 처리 없음·이미 처리면 (False, None, None).
 
-    안내를 먼저 렌더한 뒤 경계 marker 를 선점하고, 최초 선점이면 밴드 marker 셋과 원칙 recall marker 를
-    재무장한다. 재무장이 실패하면 이번에 선점한 경계 marker 만 지워 다음 호출이 다시 처리하게 하고 원인을
+    안내를 먼저 렌더한 뒤 경계 marker 를 먼저 차지하고, 처음 차지했으면 구간 marker 셋과 원칙 recall marker 를
+    다시 켠다. 다시 켜기가 실패하면 이번에 차지한 경계 marker 만 지워 다음 호출이 다시 처리하게 하고 원인을
     올린다. 경계는 하네스가 관측한 고유값이라 marker 이름과 기록용 경계 ID 에 그대로 쓴다."""
     if boundary is None:
         return False, None, None
@@ -65,18 +65,18 @@ def _claim_compaction(home, session: str, boundary: str | None) -> tuple[bool, s
     return True, guidance, boundary
 
 
-def _band_guidance(home, session: str, tokens: int, view: dict, budget: dict) -> str | None:
-    """밴드 안내를 사이클당 한 번 낸다 — 양수 ok 실측은 재무장, 미측정 0 은 marker 보존."""
+def _level_guidance(home, session: str, tokens: int, view: dict, budget: dict) -> str | None:
+    """구간 안내를 사이클당 한 번 낸다 — 양수 ok 실측은 다시 켜기, 미측정 0 은 marker 보존."""
     level = view["level"]
     if level == "ok":
         if tokens > 0:
             compaction_store.reset_ctx_cycle(home, session)
         return None
-    band = _BAND_GUIDANCE[level]
+    guidance_level = _LEVEL_GUIDANCE[level]
     guidance = ctx_recovery.build_ctx_guard_guidance(
-        band, used_pct=view["used_pct"], precompact_at_pct=budget["precompact_at_pct"],
+        guidance_level, used_pct=view["used_pct"], precompact_at_pct=budget["precompact_at_pct"],
     )
-    return guidance if compaction_store.claim_ctx_marker(home, session, band) else None
+    return guidance if compaction_store.claim_ctx_marker(home, session, guidance_level) else None
 
 
 def judge_context(home, *, harness: str, session: str, tokens: int, model: str | None,
@@ -91,7 +91,7 @@ def judge_context(home, *, harness: str, session: str, tokens: int, model: str |
                 "compaction_guidance": None, "compaction_boundary_id": None}
     compaction_new, compaction_guidance, boundary_id = _claim_compaction(home, session, boundary)
     view, budget = _observe(home, harness, tokens, model)
-    guidance = _band_guidance(home, session, tokens, view, budget) if budget is not None else None
+    guidance = _level_guidance(home, session, tokens, view, budget) if budget is not None else None
     return {
         **view, "guidance": guidance, "emit": guidance is not None,
         "compaction_new": compaction_new, "compaction_guidance": compaction_guidance,

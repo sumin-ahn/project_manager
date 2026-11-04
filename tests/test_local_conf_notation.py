@@ -238,12 +238,12 @@ def test_check_resolution_stops_instead_of_falling_back_to_the_default_suite(tmp
 
     # 실 파일을 읽는 Home 으로 두 도구의 같은 방식 경로를 돌린다(주입 dict 아님).
     with pytest.raises(RuntimeError) as caught:
-        regression._resolve_gate_cmd(pm_paths.home_at(tmp_path))
+        regression._resolve_check_cmd(pm_paths.home_at(tmp_path))
 
     assert type(caught.value).__name__ == "LegacyConfKeyError"
     assert "test_cmd" in str(caught.value)
     # 대체 라벨이 대신 나가지 않았다 — 멈춘 자리에서 무엇을 고칠지 말한다.
-    assert pm_engine.domain.handoff_text._gate_label(None) not in str(caught.value)
+    assert pm_engine.domain.handoff_text._check_label(None) not in str(caught.value)
 
 
 def test_the_exception_text_points_at_adopter_owned_files(tmp_path):

@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module, bind_product_cluster
+from conftest import target_repo_board_module, bind_product_cluster
 from pm_engine.infra import ticket_store
 from pm_engine.app import body_lint
 from pm_engine.infra import pm_paths
@@ -188,7 +188,7 @@ def _template_file_text() -> str:
 @pytest.fixture
 def board_git(tmp_path, monkeypatch):
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     board = tmp_path / ".project_manager" / "board"

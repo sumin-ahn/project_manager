@@ -846,7 +846,7 @@ def test_review_ticket_disposition_problem_rejects_pm_verified_when_not_allowed(
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = review_rounds._gate_disposition_problem("T-0786", entry)
+    problem = review_rounds._review_ticket_disposition_problem("T-0786", entry)
     assert problem is not None and "허용하지 않습니다" in problem
 
 
@@ -858,7 +858,7 @@ def test_review_ticket_disposition_problem_accepts_pm_verified_when_evidence_cle
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = review_rounds._gate_disposition_problem(
+    problem = review_rounds._review_ticket_disposition_problem(
         "T-0786", entry,
         allow_pm_verified=True, pm_verified_problem=lambda: None,
     )
@@ -873,7 +873,7 @@ def test_review_ticket_disposition_problem_surfaces_pm_verified_evidence_failure
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = review_rounds._gate_disposition_problem(
+    problem = review_rounds._review_ticket_disposition_problem(
         "T-0786", entry,
         allow_pm_verified=True,
         pm_verified_problem=lambda: "PM 판정 accepted 남은 것이 있습니다: F-001",

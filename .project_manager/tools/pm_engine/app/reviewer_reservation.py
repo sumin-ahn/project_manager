@@ -23,7 +23,7 @@ def _inherit_legacy_round_entry(home, round_records: dict, review_ticket: str) -
     if review_ticket in round_records:
         return None
     legacy_path = review_rounds._legacy_round_record_path(home)
-    if legacy_path == review_rounds._round_ledger_path(home):
+    if legacy_path == review_rounds._round_record_path(home):
         return None
     legacy = review_rounds._read_round_records_at(legacy_path)
     if review_ticket not in legacy:
@@ -48,7 +48,7 @@ def _save_round_records(home, round_records: dict) -> None:
     두 파일은 한 rename 으로 묶을 수 없으므로 순서가 안전성이다: 새 기록이 blocked 면 표시를 먼저,
     clear 면 기록 파일을 먼저 쓴다. 어느 사이에서 죽어도 false-clear 대신 false-block 만 남는다. live-test
     record/check 도 같은 락과 board 공용 판정을 써 stale clear overwrite 를 막는다."""
-    path = review_rounds._round_ledger_path(home)
+    path = review_rounds._round_record_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     problems = completion_check._unresolved_must_fix_data(home, round_records, path)
     live_test_flag = path.with_name("live-test.json")
@@ -344,7 +344,7 @@ def _reserve_round_budget(
         return reviewer_budget.RoundBudget()
 
     incomplete_limit = reviewer_target._incomplete_round_limit(conf)
-    session_budget = reviewer_target._wave_budget(conf)
+    session_budget = reviewer_target._session_budget(conf)
     rounds_max = reviewer_target._review_rounds_max(conf)
     try:
         with review_rounds._round_record_lock(home):
@@ -358,7 +358,7 @@ def _reserve_round_budget(
                 )
                 print(
                     f"legacy 라운드 기록 승계: {review_rounds._legacy_round_record_path(home)} → "
-                    f"{review_rounds._round_ledger_path(home)} · review-ticket={args.review_ticket} "
+                    f"{review_rounds._round_record_path(home)} · review-ticket={args.review_ticket} "
                     f"verdicts={legacy_verdicts} incomplete={legacy_incomplete}",
                     file=sys.stderr,
                 )
@@ -408,7 +408,7 @@ def _reserve_round_budget(
                     series=reviewer_budget._format_must_fix_series(series),
                     knob=reviewer_budget.REVIEW_ROUNDS_MAX_KEY,
                     default=reviewer_result._conf_default_int(reviewer_budget.REVIEW_ROUNDS_MAX_KEY),
-                    record_path=review_rounds._round_ledger_path(home)), file=sys.stderr)
+                    record_path=review_rounds._round_record_path(home)), file=sys.stderr)
                 return reviewer_budget.RoundBudget(refused_rc=reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED)
 
             # (2) 미완 라운드 상한 (판정 없이 끝난 호출 기준). 호출 횟수만 세던 판정 상한은
@@ -424,7 +424,7 @@ def _reserve_round_budget(
                     review_ticket=args.review_ticket, unacked=total, verdicts=verdicts,
                     incomplete=incomplete,
                     incomplete_limit=incomplete_limit,
-                    record_path=review_rounds._round_ledger_path(home),
+                    record_path=review_rounds._round_record_path(home),
                     count=count), file=sys.stderr)
                 # 예약 없음 (호출 전 거부) — raw 자리도 아직 없다(이 검사가 그보다 앞이다).
                 return reviewer_budget.RoundBudget(refused_rc=reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED)
@@ -435,7 +435,7 @@ def _reserve_round_budget(
                 print(reviewer_budget._SESSION_BUDGET_GUIDANCE.format(
                     review_ticket=args.review_ticket, spent=session_budget_state["spent"], budget=session_budget,
                     started=session_budget_state["started"] or "미기록",
-                    record_path=review_rounds._round_ledger_path(home)), file=sys.stderr)
+                    record_path=review_rounds._round_record_path(home)), file=sys.stderr)
                 return reviewer_budget.RoundBudget(refused_rc=reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED)
             announce(resumed=True)                  # 세 기준을 모두 통과한 뒤에만 "재개"
             round_id = uuid.uuid4().hex
@@ -460,7 +460,7 @@ def _reserve_round_budget(
         print(
             f"오류: 라운드 기록 임계 구역 진입 실패 ({type(exc).__name__}: {exc}) — 다른 "
             "리뷰 집계 티켓 실행이 기록 락을 보유 중일 수 있습니다. 잠시 후 다시 실행하세요 "
-            f"(기록 파일: {review_rounds._round_ledger_path(home)}).",
+            f"(기록 파일: {review_rounds._round_record_path(home)}).",
             file=sys.stderr,
         )
         return reviewer_budget.RoundBudget(refused_rc=1)
@@ -512,7 +512,7 @@ def _release_round_reservation(home, reservation: reviewer_budget.RoundBudget, *
         print(
             f"경고: 라운드 예약 환불 실패 ({type(exc).__name__}: {exc}) — {reason}(으)로 호출 "
             "없이 중단한 실행의 예약이 기록에 남았습니다. 다음 실행의 미완 재시도 예산에서 "
-            f"세어집니다 (기록 파일: {review_rounds._round_ledger_path(home)}).",
+            f"세어집니다 (기록 파일: {review_rounds._round_record_path(home)}).",
             file=sys.stderr,
         )
         return False

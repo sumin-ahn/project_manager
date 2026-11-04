@@ -146,7 +146,7 @@ _LG_NO_HOOK = "no-hook"          # live-test 보호훅 없음 → 호출된 사�
 _LG_BROKEN = "broken"            # 훅 sidecar 존재하나 engine-root 무효 → fail-loud(false-green 차단).
 
 
-def _resolve_livegate_flag(home, cwd: str) -> tuple[Path, str]:
+def _resolve_live_test_flag(home, cwd: str) -> tuple[Path, str]:
     """record 가 기록할 live-test.json 경로 = **push 보호훅이 읽는 파일**로 정렬한다.
 
     보호훅(`_PROTECTED_PRE_PUSH_HOOK`)과 동일 해소를 공유한다 — repo(`cwd`)의 git
@@ -192,7 +192,7 @@ def _resolve_regression_flag(home, cwd: str) -> tuple[Path, str]:
     # 불필요하게 늘리지 않고 기존 clone-local 좌표를 그대로 쓴다.
     if not (Path(cwd) / ".git").exists():
         return _regression_flag_for(home, None), _LG_NO_HOOK
-    live_test_flag, mode = _resolve_livegate_flag(home, cwd)
+    live_test_flag, mode = _resolve_live_test_flag(home, cwd)
     local_dir = live_test_flag.parent if mode == _LG_ENGINE_ROOT else home.local_dir
     return _regression_flag_for(home, None, local_dir=local_dir), mode
 

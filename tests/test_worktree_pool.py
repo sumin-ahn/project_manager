@@ -55,7 +55,7 @@ SYNC_TIMEOUT = 60
 
 # live-test fixture 의 `n` — regression.LIVE_TEST_RELEASE_PIN(릴리즈 묶음 케이스 수)의 미러. 이 파일은
 # 격리 원칙상 board.py 를 import 하지 않으므로(모듈 docstring) 값을 여기 둔다. 판정상 무관하다 —
-# `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은 안 보기 때문(check 채널·green 판정 무관).
+# `_live_test_check` 는 status==pass ∧ head==rev 만 보고 n 은 안 보기 때문(check 채널·green 판정 무관).
 # 값 자체는 regression.LIVE_TEST_RELEASE_PIN(=17·T-0278/T-0309/T-0349/T-0400/T-0397/T-0407) 과 schema 충실성 위해 맞춰 둔다(무관하나 혼란 방지).
 _LIVE_TEST_RELEASE_PIN = 22
 
@@ -89,12 +89,12 @@ def _load_wp_bound(proj: Path):
     return mod
 
 
-def _install_for_test(wp, repo, protected, *, gate_mode="release", test_cmd="pytest -q",
+def _install_for_test(wp, repo, protected, *, check_mode="release", test_cmd="pytest -q",
                       git_runner=None):
     """직접 설치 시험에서 선택한 release 계약."""
     return protected_hooks.install_protected_hook(
         pm_paths.home_at(wp.REPO), repo, protected,
-        gate_mode=gate_mode, test_cmd=test_cmd, git_runner=git_runner)
+        check_mode=check_mode, test_cmd=test_cmd, git_runner=git_runner)
 
 
 @pytest.fixture
@@ -260,13 +260,13 @@ class FakeGit:
 def _seed(wp, *leases):
     """대여 기록에 엔트리를 직접 심는다(테스트 전제 구성)."""
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
-        pool_store._write_ledger(pm_paths.home_at(wp.REPO), list(leases))
+        pool_store._write_records(pm_paths.home_at(wp.REPO), list(leases))
 
 
 def _seed_tasks(wp, *names):
     """기록의 `tasks` 컬렉션에 명명 task 레코드를 심는다 — reclaim/재부착 조인 제외 전제 구성.
 
-    `_write_ledger`(형제 `leases`)와 별개 컬렉션(`_write_tasks`·같은 파일·같은 락). `_seed` 로
+    `_write_records`(형제 `leases`)와 별개 컬렉션(`_write_tasks`·같은 파일·같은 락). `_seed` 로
     leases 를 먼저 심은 뒤 이걸 호출하면 둘 다 보존된다(top-level round-trip). pid 는 판정 무관
     (reclaim 조인은 `session ∈ tasks 이름집합` 만 본다)라 임의(1)."""
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
@@ -1671,7 +1671,7 @@ def test_bare_repo_missing_message_guides_hydrate(wp):
 
 # ════════════════════════════════════════════════════════════════════════
 # set_test_cmd — 기존 슬롯 대여의 test_cmd 갱신 (T-0069 · ADR-0014 amend)
-# flock(_lease_lock) + atomic write(_write_ledger) 재사용 · slot 부재 KeyError.
+# flock(_lease_lock) + atomic write(_write_records) 재사용 · slot 부재 KeyError.
 # 콘솔 [b]·"나중에 변경" 의 엔진 진입점.
 # ════════════════════════════════════════════════════════════════════════
 
@@ -1694,7 +1694,7 @@ def test_set_test_cmd_persists_atomically_through_records(wp):
     """갱신이 기록에 atomic 영속화 — 새 _read_records 가 바뀐 test_cmd 를 본다(flock+atomic).
 
     set_test_cmd 는 create_slot 의 lease test_cmd 바인딩과 같은 `_lease_lock` +
-    `_write_ledger`(tmp→os.replace) 경로를 재사용한다 — 파일에서 재로드해 영속을 확인한다.
+    `_write_records`(tmp→os.replace) 경로를 재사용한다 — 파일에서 재로드해 영속을 확인한다.
     """
     _seed(wp, _lease_tc(wp, slot="work/A_1", repo="A", test_cmd=None))
     worktree_pool.set_test_cmd(pm_paths.home_at(wp.REPO), "work/A_1", "ninja test")
@@ -4072,10 +4072,10 @@ def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, m
     old = {
         artifact.path: artifact.path.read_text(encoding="utf-8")
         for artifact in protected_hooks.protected_hook_artifacts(pm_paths.home_at(wp.REPO),
-            "A", ["main"], gate_mode="release", test_cmd="pytest -q")
+            "A", ["main"], check_mode="release", test_cmd="pytest -q")
     }
     expected = protected_hooks.protected_hook_artifacts(pm_paths.home_at(wp.REPO),
-        "A", ["main", "release"], gate_mode="self-test", test_cmd="go test ./...")
+        "A", ["main", "release"], check_mode="self-test", test_cmd="go test ./...")
     replaced = []
     real_replace = fs.atomic_replace
 
@@ -4091,7 +4091,7 @@ def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, m
 
     _patch_atomic_replace(monkeypatch, inspect_then_replace)
     assert _install_for_test(wp,
-        "A", ["main", "release"], gate_mode="self-test",
+        "A", ["main", "release"], check_mode="self-test",
         test_cmd="go test ./...", git_runner=FakeGit()) is True
     assert replaced == [artifact.path for artifact in expected]
     assert not list((wp.REPO_HOOKS_DIR / "A").glob(".*.tmp"))
@@ -4114,7 +4114,7 @@ def test_install_protected_hook_contract_remains_whole_on_intermediate_failure(
     """
     _mk_bare_placeholder(wp, "A")
     assert _install_for_test(wp,
-        "A", ["main"], gate_mode="self-test", test_cmd="old-test",
+        "A", ["main"], check_mode="self-test", test_cmd="old-test",
         git_runner=FakeGit()) is True
     contract = wp.REPO_HOOKS_DIR / "A" / "gate-contract"
     override = fs
@@ -4129,7 +4129,7 @@ def test_install_protected_hook_contract_remains_whole_on_intermediate_failure(
     _patch_atomic_replace(monkeypatch, fail_once)
     with pytest.raises(OSError, match="injected failure"):
         _install_for_test(wp,
-            "A", ["main"], gate_mode="release", test_cmd="new-test",
+            "A", ["main"], check_mode="release", test_cmd="new-test",
             git_runner=FakeGit())
 
     assert contract.read_text(encoding="utf-8") == expected_contract
@@ -4147,7 +4147,7 @@ def test_install_protected_hook_check_contract_is_keyword_required_and_centraliz
         and node.name == "install_protected_hook")
     kw_defaults = dict(zip(
         (arg.arg for arg in install_def.args.kwonlyargs), install_def.args.kw_defaults))
-    assert kw_defaults["gate_mode"] is None
+    assert kw_defaults["check_mode"] is None
     assert kw_defaults["test_cmd"] is None
 
     pc_tree = ast.parse(Path(repo_protection.__file__).read_text(encoding="utf-8"))
@@ -4160,7 +4160,7 @@ def test_install_protected_hook_check_contract_is_keyword_required_and_centraliz
         and node.func.attr == "install_protected_hook"
     ]
     assert len(install_calls) == 1
-    assert {kw.arg for kw in install_calls[0].keywords} >= {"gate_mode", "test_cmd"}
+    assert {kw.arg for kw in install_calls[0].keywords} >= {"check_mode", "test_cmd"}
 
     # behavior 테스트가 본체다. 이 AST 가드는 정적 direct attribute 호출과 과거 실제 회귀였던
     # getattr 문자열 DI 두 형태의 resolver 우회만 빠르게 잡는다(동적 문자열/alias까지 증명하진 않음).
@@ -4533,7 +4533,7 @@ def test_generated_hook_external_command_absence_fails_closed(
     isolated_bin = _isolated_command_path(tmp_path / f"bin-{missing}", *available)
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="true")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="true")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     env = _protection_env(
         PATH=str(isolated_bin), PM_ALLOW_PROTECTED_PUSH="1")
@@ -4564,7 +4564,7 @@ def test_generated_hook_empty_audit_repo_name_fails_closed(wp, tmp_path):
         tmp_path / "empty-audit-repo-bin", "sh", "cat", "git", "tr", "date")
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="false")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     body = hook.read_text(encoding="utf-8")
     marker = "                repo_name=${hook_dir##*/}\n"
@@ -4607,7 +4607,7 @@ def test_generated_hook_bypass_audit_command_failure_fails_closed(
     broken.chmod(0o755)
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="false")
 
     result = subprocess.run(
         [shutil.which("sh"), str(wp.REPO_HOOKS_DIR / "A" / "pre-push")],
@@ -4665,7 +4665,7 @@ def test_generated_hook_adopter_self_test_passes_without_release_marker_or_skip(
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test",
         test_cmd="test ! -e tests/test_release_cluster.py && printf ok > self-test-ran",
     )
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
@@ -4685,7 +4685,7 @@ def test_generated_hook_adopter_self_test_red_blocks_even_with_live_skip(wp, tmp
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="exit 23")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="exit 23")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
 
     result = _run_hook_result(
@@ -4704,7 +4704,7 @@ def test_generated_hook_adopter_self_test_requires_checkout_at_push_sha(wp, tmp_
     adopter = _init_repo(tmp_path / "adopter-sha-mismatch")
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test",
         test_cmd="printf bad > should-not-run",
     )
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
@@ -4726,7 +4726,7 @@ def test_generated_hook_adopter_missing_or_empty_test_cmd_fails_closed(
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="true")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="true")
     contract_file = wp.REPO_HOOKS_DIR / "A" / "gate-contract"
     if missing:
         contract_file.unlink()
@@ -4750,7 +4750,7 @@ def test_generated_hook_adopter_dirty_worktree_is_rejected_with_exact_reason(wp,
     (adopter / "README.md").write_text("dirty masking change\n", encoding="utf-8")
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="true")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="true")
 
     result = _run_hook_result(
         wp.REPO_HOOKS_DIR / "A" / "pre-push",
@@ -4771,7 +4771,7 @@ def test_generated_hook_adopter_multi_ref_same_sha_runs_self_test_once(wp, tmp_p
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
         "A", ["main", "release"], git_runner=FakeGit(),
-        gate_mode="self-test", test_cmd=cmd)
+        check_mode="self-test", test_cmd=cmd)
     stdin = (
         _push_line("refs/heads/main", head)
         + _push_line("refs/heads/release", head)
@@ -4796,7 +4796,7 @@ def test_generated_hook_adopter_test_cmd_cannot_steal_next_push_ref(wp, tmp_path
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
         "A", ["main", "release"], git_runner=FakeGit(),
-        gate_mode="self-test", test_cmd=cmd)
+        check_mode="self-test", test_cmd=cmd)
     stdin = (
         _push_line("refs/heads/main", head)
         + _push_line("refs/heads/release", different_sha)
@@ -4819,7 +4819,7 @@ def test_generated_hook_adopter_bypass_requires_approval_reason_and_audits(wp, t
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="exit 23")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="exit 23")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     hook_text = hook.read_text(encoding="utf-8")
     assert "printf '%s\\trepo=%s\\tbranch=%s\\tsha=%s\\tdirty=%s\\treason=%s\\n'" in hook_text
@@ -4858,7 +4858,7 @@ def test_generated_hook_adopter_bypass_neutralizes_tab_in_reason(wp, tmp_path):
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="false")
 
     result = _run_hook_result(
         wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
@@ -4896,7 +4896,7 @@ def test_generated_hook_adopter_bypass_status_failure_is_quiet_unknown(wp, tmp_p
     wrapper.chmod(0o755)
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="false")
 
     result = _run_hook_result(
         wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
@@ -4922,7 +4922,7 @@ def test_generated_hook_adopter_bypass_without_git_records_unknown(wp, tmp_path)
         tmp_path / "bypass-no-git-bin", "sh", "cat", "tr", "date")
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="false")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
 
     result = subprocess.run(
@@ -4948,7 +4948,7 @@ def test_generated_hook_adopter_bypass_rejects_symlink_audit_log(wp, tmp_path):
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="false")
     audit = wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log"
     audit.symlink_to(os.devnull)
 
@@ -4969,7 +4969,7 @@ def test_generated_hook_adopter_bypass_rejects_unwritable_audit_log(wp, tmp_path
     head = _git(adopter, "rev-parse", "HEAD").stdout.strip()
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd="false")
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd="false")
     audit = wp.REPO_HOOKS_DIR / "A" / "self-test-bypass.log"
     audit.write_text("existing audit\n", encoding="utf-8")
     audit.chmod(0)
@@ -5011,7 +5011,7 @@ def test_generated_hook_derives_and_unsets_git_local_env_for_status_and_test(wp,
         f"printf ok > {shlex.quote(str(marker))}")
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test", test_cmd=test_cmd)
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test", test_cmd=test_cmd)
 
     result = _run_hook_result(
         wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main", head),
@@ -5050,7 +5050,7 @@ def test_generated_hook_git_local_env_query_failure_uses_legacy_fallback(wp, tmp
     marker = tmp_path / "fallback-test-clean"
     _mk_bare_placeholder(wp, "A")
     _install_for_test(wp,
-        "A", ["main"], git_runner=FakeGit(), gate_mode="self-test",
+        "A", ["main"], git_runner=FakeGit(), check_mode="self-test",
         test_cmd=f'test -z "${{GIT_PREFIX-}}" && printf ok > {shlex.quote(str(marker))}')
 
     result = _run_hook_result(
@@ -5071,7 +5071,7 @@ def test_install_protected_hook_rejects_legacy_unresolved_mode(wp):
     _mk_bare_placeholder(wp, "A")
     with pytest.raises(ValueError, match="알 수 없는 보호 push 검사 모드"):
         _install_for_test(wp,
-            "A", ["main"], git_runner=FakeGit(), gate_mode="unresolved", test_cmd="true")
+            "A", ["main"], git_runner=FakeGit(), check_mode="unresolved", test_cmd="true")
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
@@ -5681,7 +5681,7 @@ def test_real_git_adopter_self_test_unsets_hook_git_environment(proj, tmp_path):
         f'git init -q . && test -d .git && printf ok > {shlex.quote(str(marker))}'
     )
     assert _install_for_test(wp,
-        "A", ["main"], gate_mode="self-test", test_cmd=test_cmd) is True
+        "A", ["main"], check_mode="self-test", test_cmd=test_cmd) is True
 
     _git(slot_dir, "remote", "add", "server", str(server))
     (slot_dir / "change.txt").write_text("self-test push\n", encoding="utf-8")
@@ -5948,7 +5948,7 @@ def _write_live_test(engine_root: Path, *, head: str, status: str = "pass",
     `board.py live-test record` 가 쓰는 것과 같은 스키마·같은 위치(board.py REPO=engine_root →
     LOCAL_DIR=engine_root/.project_manager/.local). record 는 실 LLM 이라 안 돌리고 JSON 만 직접 심어
     훅↔check 통합을 hermetic 히 태운다(head 가 push sha 와 일치하면 green). `n` = regression.LIVE_TEST_RELEASE_PIN
-    (릴리즈 묶음 케이스 수)로 스키마 충실 — 단 `_livegate_check` 는 status==pass ∧ head==rev 만 보고 n 은
+    (릴리즈 묶음 케이스 수)로 스키마 충실 — 단 `_live_test_check` 는 status==pass ∧ head==rev 만 보고 n 은
     안 보므로(check 채널) green 판정엔 무관하다.
     """
     local_dir = engine_root / ".project_manager" / ".local"
@@ -6196,7 +6196,7 @@ def test_from_dict_preserves_unknown_keys_round_trip(wp):
 
 
 def test_read_records_preserves_unknown_keys_through_rewrite(wp):
-    """파일 레벨 — 미지 키 포함 기록을 _read_records→_write_ledger 왕복해도 키 무손실(silent drop 0·T-0350).
+    """파일 레벨 — 미지 키 포함 기록을 _read_records→_write_records 왕복해도 키 무손실(silent drop 0·T-0350).
 
     기록 지속은 이 read-modify-write 왕복 하나로 모이므로(모든 생명주기 op 이 전 대여를 이렇게
     다룸), 이 왕복이 무손실이어야 버전 skew(adopter#0 import 사본 lag)에서 신규 키가 안 날아간다.
@@ -6210,7 +6210,7 @@ def test_read_records_preserves_unknown_keys_through_rewrite(wp):
     wp.LEASES_FILE.write_text(json.dumps(records), encoding="utf-8")
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
         leases = pool_store._read_records(pm_paths.home_at(wp.REPO))
-        pool_store._write_ledger(pm_paths.home_at(wp.REPO), leases)   # read-modify-write 왕복(모든 op 이 이 형태)
+        pool_store._write_records(pm_paths.home_at(wp.REPO), leases)   # read-modify-write 왕복(모든 op 이 이 형태)
         rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     entry = rewritten["leases"][0]
     assert entry["task"] == "myjob"           # 미지 키 생존(구 엔진이 op 해도 안 날아감)
@@ -6233,7 +6233,7 @@ def test_read_records_old_file_without_git_rewrite_lossless(wp):
     wp.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     wp.LEASES_FILE.write_text(json.dumps(records), encoding="utf-8")
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
-        pool_store._write_ledger(pm_paths.home_at(wp.REPO), pool_store._read_records(pm_paths.home_at(wp.REPO)))
+        pool_store._write_records(pm_paths.home_at(wp.REPO), pool_store._read_records(pm_paths.home_at(wp.REPO)))
         rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     assert "git" not in rewritten["leases"][0]
 
@@ -7354,7 +7354,7 @@ def test_task_default_prefix_none(wp):
 
 
 def test_write_records_preserves_sibling_tasks_collection(wp):
-    """`_write_ledger`(leases 만 쓰는 모든 생명주기 op)가 형제 top-level `tasks` 를 보존한다.
+    """`_write_records`(leases 만 쓰는 모든 생명주기 op)가 형제 top-level `tasks` 를 보존한다.
 
     옛 `{"leases": [...]}` 통짜 쓰기는 tasks 를 조용히 드롭했다(silent drop) — top-level round-trip
     (T-0353)이 이를 닫는다. alloc/release/reclaim 등 어떤 leases op 도 tasks 를 안 날려야 한다."""
@@ -7367,7 +7367,7 @@ def test_write_records_preserves_sibling_tasks_collection(wp):
     wp.LEASES_FILE.write_text(json.dumps(records), encoding="utf-8")
     # leases-only 재기록(모든 대여 op 이 이 형태) — tasks·미지 키가 살아남아야.
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
-        pool_store._write_ledger(pm_paths.home_at(wp.REPO), pool_store._read_records(pm_paths.home_at(wp.REPO)))
+        pool_store._write_records(pm_paths.home_at(wp.REPO), pool_store._read_records(pm_paths.home_at(wp.REPO)))
         rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
     assert rewritten["tasks"][0]["name"] == "job1"
     assert rewritten["tasks"][0]["prefix"] == "PAY"

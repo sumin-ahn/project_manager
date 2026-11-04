@@ -113,7 +113,7 @@ def _stamp(instant: datetime.datetime) -> str:
 
 @pytest.fixture
 def material_env(tmp_path, pd, monkeypatch):
-    """PM 홈(board 데이터) + 코드 체크아웃(태그 보유) — 두 좌표가 분리된 실 형상."""
+    """PM 홈(board 데이터) + 코드 체크아웃(태그 보유) — 두 좌표가 분리된 실 구성."""
     home = tmp_path / "home"
     pm_tools = home / ".project_manager" / "tools"
     pm_tools.mkdir(parents=True)
@@ -152,11 +152,11 @@ def _seed_three_done(done: Path, since: datetime.datetime) -> None:
         dod="- [x] 구간 밖 완료 조건",
     ), encoding="utf-8", newline="\n")
     (done / "T-8102-added.md").write_text(_done_ticket_text(
-        "T-8102", title="묶음 장부 신설",
+        "T-8102", title="묶음 기록 신설",
         completed_at=_stamp(since + datetime.timedelta(hours=1)),
-        goal="운영 단위 장부를 신설한다.",
+        goal="운영 단위 기록을 신설한다.",
         decision="채택자 board 스키마는 자동 부여로 마이그레이션한다.",
-        dod="- [x] 장부 생성·귀속·lint",
+        dod="- [x] 기록 생성·귀속·lint",
     ), encoding="utf-8", newline="\n")
     (done / "T-8103-removed.md").write_text(_done_ticket_text(
         "T-8103", title="면제 경로 폐지",
@@ -320,11 +320,11 @@ def test_material_block_carries_id_title_instant_and_source_sections(
     assert pd.main(["changelog", "material", "--since", _TAG]) == 0
 
     out = capsys.readouterr().out
-    assert "## T-8102 — 묶음 장부 신설" in out
+    assert "## T-8102 — 묶음 기록 신설" in out
     assert f"- 완료: {_stamp(since + datetime.timedelta(hours=1))}" in out
-    assert "- 근거 · 목표:\n  운영 단위 장부를 신설한다." in out
+    assert "- 근거 · 목표:\n  운영 단위 기록을 신설한다." in out
     assert "- 근거 · 결정:\n  채택자 board 스키마는 자동 부여로 마이그레이션한다." in out
-    assert "- 근거 · 완료 조건:\n  - [x] 장부 생성·귀속·lint" in out
+    assert "- 근거 · 완료 조건:\n  - [x] 기록 생성·귀속·lint" in out
 
 
 @requires_git
@@ -446,7 +446,7 @@ def test_material_refuses_a_code_checkout_that_is_not_a_local_directory(
 
 
 # ════════════════════════════════════════════════════════════════════════
-# CLI 표면
+# CLI 명령
 # ════════════════════════════════════════════════════════════════════════
 
 def test_changelog_material_surface_is_registered_in_the_public_parser(pd):

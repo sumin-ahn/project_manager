@@ -207,7 +207,7 @@ def _round_completion_problems(home, tid: str, spec_text: str) -> list[str]:
     return blocking
 
 
-def _complete_gate(home, tid: str, args: argparse.Namespace,
+def _complete_check(home, tid: str, args: argparse.Namespace,
                    body: str | None = None, *, spec_text: str | None = None,
                    ticket_path: Path | None = None) -> list[str]:
     """Verify completion housekeeping before a ticket may move to done/.
@@ -306,7 +306,7 @@ def cmd_complete(home, args: argparse.Namespace) -> int:
             return 1
 
         # Sync check — refuse to mark done until housekeeping is verified.
-        problems = _complete_gate(home,
+        problems = _complete_check(home,
             args.id, args, body, spec_text=spec_text, ticket_path=path)
         if problems:
             print(f"cannot complete {args.id}: sync check failed —", file=sys.stderr)

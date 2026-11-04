@@ -4,10 +4,10 @@
 가짜 runner 나 수기 dict 로 판정을 지어내지 않는다 — 이 파일이 지키는 것이 "관리자가 프로젝트
 폴더에 무엇을 하는가" 라서, 그 답은 디스크에서만 나온다.
 
-축 여섯:
+검사 여섯:
   0. 값 조회는 conf 파일 읽기 하나다 — 판정(다섯 목록)은 화면이 이미 들고 있는 가벼운 현황
      조회가 나르므로, 이 조회가 사본 프로세스를 띄우지 않는다.
-  1. 항목 목록의 정본이 **그 사본의** 레지스트리다(사본을 옛 세대로 갈면 그 사실이 드러난다).
+  1. 항목 목록의 정본이 **그 사본의** 레지스트리다(사본을 옛 버전으로 갈면 그 사실이 드러난다).
   2. 저장은 엔진의 유일한 conf writer 를 통과한다 — 공용 락 파일이 서고, 다른 프로세스의
      writer 와 같은 락에 직렬화되며, 그 밖의 파일은 한 개도 바뀌지 않는다.
   3. 저장 뒤 화면 값은 **재조회 결과**다(낙관적 갱신 없음) — 판정은 그 사본이 낸다.
@@ -110,7 +110,7 @@ def pm_home(base_home, tmp_path) -> Path:
 
 @pytest.fixture(scope="module")
 def committed_base_home(tmp_path_factory) -> Path:
-    """커밋 소스로 설치한 PM 홈 한 벌 — 렌더 원본(upstream)이 설치 세대(`upstream.rev`) 그대로다."""
+    """커밋 소스로 설치한 PM 홈 한 벌 — 렌더 원본(upstream)이 설치 버전(`upstream.rev`) 그대로다."""
     root = tmp_path_factory.mktemp("settings-committed")
     source = make_committed_source(root / "source")
     return make_pm_home(root / "demo", upstream=source, source=source)
@@ -179,7 +179,7 @@ def test_an_old_generation_copy_cannot_answer_the_key_list(api, pm_home):
 
 
 def test_a_registry_without_the_choice_fields_is_an_old_generation(api, pm_home):
-    """선택지·권장값이 없는 세대의 산출로 화면을 절반만 그리지 않는다 — 그 사실을 말한다."""
+    """선택지·권장값이 없는 버전의 산출로 화면을 절반만 그리지 않는다 — 그 사실을 말한다."""
     install_previous_generation_key_registry(pm_home)
 
     response = api.conf_keys(str(pm_home))
@@ -234,8 +234,8 @@ def test_the_five_lists_are_the_copys_verdict_not_a_manager_calculation(api, pm_
 
 
 def test_missing_for_latest_is_a_list_once_the_source_is_resolved(api, pm_home):
-    """소스가 해소된 호출(어댑터 절)에서는 같은 축이 배열로 온다 — 모름과 없음이 갈린다."""
-    assert "files" in api.adapters(str(pm_home))          # 소스 해소가 되는 형상인지 먼저 확인
+    """소스가 해소된 호출(어댑터 절)에서는 같은 필드가 배열로 온다 — 모름과 없음이 갈린다."""
+    assert "files" in api.adapters(str(pm_home))          # 소스 해소가 되는 구성인지 먼저 확인
 
     heavy = api.status(str(pm_home), False, True)
 
@@ -270,7 +270,7 @@ def test_a_save_touches_no_other_file_in_the_project(api, pm_home):
 
 
 def test_read_only_calls_write_nothing(api, pm_home):
-    api.conf_values(str(pm_home))                             # 공유 읽기 seam 을 먼저 세운다
+    api.conf_values(str(pm_home))                             # 공유 읽기 함수를 먼저 세운다
     before = tree_snapshot(pm_home)
 
     api.conf_keys(str(pm_home))
@@ -435,6 +435,7 @@ def test_apply_crash_is_not_reported_as_invalid_value(api, pm_home):
     assert "Traceback" in error["stderr"] and "UnicodeDecodeError" in error["stderr"], error
     assert "Traceback" not in error["message"], "화면 알림 문구가 사본의 traceback 이다"
     assert "저장을 끝내지 못했다" in error["message"]
+    assert "모르는 버전이면 먼저 갱신하라" in error["message"]
     assert settings.read_bytes() == settings_before
 
 
@@ -555,7 +556,7 @@ def test_an_alias_harness_comes_back_as_the_copys_own_table(api, pm_home):
 
 def test_a_live_query_that_fails_is_an_error_dict_not_an_empty_list(api, pm_home, tmp_path,
                                                                     monkeypatch):
-    """조회 실패는 실패다 — 0개를 성공으로 접으면 화면이 "고를 것이 없다" 로 보인다."""
+    """조회 실패는 실패다 — 0개를 성공으로 바꾸면 화면이 "고를 것이 없다" 로 보인다."""
     name, _ = _harness_of(pm_home, "live")
     _isolated_path(tmp_path, monkeypatch)
 
@@ -574,7 +575,7 @@ def test_an_unsupported_harness_comes_back_refused(api, pm_home):
 
 
 def test_a_copy_that_does_not_know_the_command_is_an_error_dict(api, pm_home):
-    """옛 세대 사본은 번들 목록으로 대신 답하지 않는다 — 그 사본의 사유가 화면에 간다."""
+    """옛 버전 사본은 번들 목록으로 대신 답하지 않는다 — 그 사본의 사유가 화면에 간다."""
     install_old_generation_engine(pm_home)
     name, _ = _harness_of(pm_home, "alias")
 
@@ -585,8 +586,19 @@ def test_a_copy_that_does_not_know_the_command_is_an_error_dict(api, pm_home):
     assert "delegate" in response["error"]["stderr"]
 
 
+def test_an_old_copy_error_names_the_version_to_update(api, pm_home):
+    """모델 목록을 못 내는 옛 사본의 화면 알림은 '모르는 버전이면 먼저 갱신하라' 로 안내한다."""
+    install_old_generation_engine(pm_home)
+    name, _ = _harness_of(pm_home, "alias")
+
+    error = api.delegate_models(str(pm_home), name)["error"]
+
+    assert error["kind"] == "old-generation"
+    assert "모르는 버전이면 먼저 갱신하라" in error["message"]
+
+
 def test_a_model_query_writes_nothing_in_the_project(api, pm_home, tmp_path, monkeypatch):
-    api.conf_values(str(pm_home))                    # 공유 읽기 seam 을 먼저 세운다
+    api.conf_values(str(pm_home))                    # 공유 읽기 함수를 먼저 세운다
     _isolated_path(tmp_path, monkeypatch)            # live 조회가 실제로 도는 자리까지 태운다
     before = tree_snapshot(pm_home)
 
@@ -660,7 +672,7 @@ def test_t0943_budget_error_and_refused_reread(api, pm_home, _known_ctx_child_re
 
 # ── ⑦ 저장 뒤 렌더 산출물 (T-0945) ─────────────────────────────────────────────
 # 저장은 키와 무관하게 사본 `pm-config apply` 한 번이다 — 렌더 입력 키는 `@render` 산출물을 설치
-# 세대 원본으로 다시 그리고, 반영 전 거부(rc 3)는 `invalid-value` 이며 트리를 바꾸지 않는다.
+# 버전 원본으로 다시 그리고, 반영 전 거부(rc 3)는 `invalid-value` 이며 트리를 바꾸지 않는다.
 
 _ARCHITECT_CARD = Path(".claude") / "agents" / "architect.md"
 

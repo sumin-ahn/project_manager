@@ -623,7 +623,7 @@ _MOVED_DEFAULTS = (
                  lambda c: reviewer_target._review_rounds_max({}), 2,
                  id="reviewer-rounds-max"),
     pytest.param("additional_reviewer.session_budget", "24",
-                 lambda c: reviewer_target._wave_budget({}), 24,
+                 lambda c: reviewer_target._session_budget({}), 24,
                  id="reviewer-session-budget"),
 )
 

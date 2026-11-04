@@ -72,7 +72,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
     cwd_repo = pm_paths._repo_root_for_cwd(cwd)
     try:
         config_repo = pm_paths.resolve_pm_home_for_repo(cwd_repo)
-    except pm_paths.AnchorResolutionError as exc:
+    except pm_paths.TargetRepoResolutionError as exc:
         print(f"오류: --cwd 소유 PM 홈 해소 실패 — {exc}", file=sys.stderr)
         return 1
     home = pm_paths.home_at(engine_home.root, pm_home=config_repo,

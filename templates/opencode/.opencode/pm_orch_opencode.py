@@ -5,7 +5,7 @@
 엔진 공개 진입 `pm_engine.cli.hooks.run_relay` 가 이 클래스에 실제 파서·첫 이벤트 워치독 실행기·
 회전 판정·프롬프트 첨부 협력자를 공급해 구성한다. 이 파일은 **opencode CLI 고유**한 부분만 —
 `opencode run --format json` 을 subprocess 로 호출하고 json 이벤트 스트림을 파싱한다(claude
-`pm_orch_claude.py` 와 동형).
+`pm_orch_claude.py` 와 같은 구조).
 
 CLI 진입점: `python3 pm_orch_opencode.py [--cwd <PM repo root>] [--agent pm]`.
 사용자가 이 wrapper 를 띄우면 ctx 한계 도달 시 손 안 대고 새 PM 으로 자동 회전(연속 운영).
@@ -31,7 +31,7 @@ import tempfile
 from pathlib import Path
 
 OPENCODE_BIN = "opencode"
-DEFAULT_AGENT = "pm"          # PM primary spawn 타깃. build 폴백(`--agent build`).
+DEFAULT_AGENT = "pm"          # PM primary spawn 타깃. 대체 타깃 build(`--agent build`).
 TURN_TIMEOUT_SEC = 600        # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
 
 
@@ -40,7 +40,7 @@ def repo_root(start: Path) -> Path:
 
     어댑터 사본은 항상 ``<root>/.opencode/`` 에 설치되므로 루트는 그 자리의 함수다. 조상을
     훑어 ``.project_manager/tools/pm_handoff.py`` 를 찾으면 driver 가 자기 트리가 아니라 위에
-    있는 남의 PM 홈에 착지한다(claude ctx_guard.repo_root·codex `repo_root` 동형).
+    있는 남의 PM 홈에 착지한다(claude ctx_guard.repo_root·codex `repo_root` 와 같은 규칙).
     """
     return start.resolve().parent
 
@@ -49,7 +49,7 @@ class OpencodeCliDriver:
     """`opencode run` subprocess 로 PM 세션을 구동하는 SessionDriver (opencode 고유 어댑터).
 
     얇다 — 세션 생명주기/회전/marker 는 엔진 Supervisor 가 쥐고, 이 driver 는 한 turn 의
-    opencode CLI 호출 + json 파싱만 한다(claude driver 동형).
+    opencode CLI 호출 + json 파싱만 한다(claude driver 와 같은 구조).
     """
 
     def __init__(self, parse_opencode_json, *, ctx_budget: int | None = None,
@@ -75,7 +75,7 @@ class OpencodeCliDriver:
         self.agent = agent
         self.opencode_bin = opencode_bin
         self.timeout = timeout
-        self.runner = runner  # subprocess.run seam(테스트 stub 가능).
+        self.runner = runner  # subprocess.run 교체 지점(테스트 stub 가능).
         # 프로덕션 runner(엔진 run_relay 가 공급하는 첫 이벤트 워치독 실행기)가 stall 소진 시 던지는 엔진
         # StallWatchdogError 클래스(run_relay 가 주입). None 이면 빈 튜플 → `except ()` 는 아무것도
         # 안 잡는다(FakeRunner 주입 테스트 경로 무영향). fail-loud→turn-level fail-soft 로 수습.
@@ -93,9 +93,9 @@ class OpencodeCliDriver:
         파싱한 sid 를 권위로 반환한다. bootstrap reply 도 SpawnResult 로 보존한다."""
         observed, reply, used_tokens = self._turn(cwd, bootstrap, new_session=True)
         if not observed:
-            # sid 파싱 실패 = 치명 — opencode 는 sid 사전지정 불가라 uuid4 로 폴백하면 그 세션이
+            # sid 파싱 실패 = 치명 — opencode 는 sid 사전지정 불가라 uuid4 로 대신하면 그 세션이
             # *존재하지 않아* 다음 relay_turn 의 `-s <uuid>` 가 "Session not found" → 연속성
-            # 침묵 파손(codex must-fix). 폴백 대신 명시 중단 — relay 는 유효
+            # 침묵 파손(codex must-fix). 대체 대신 명시 중단 — relay 는 유효
             # 세션 없이 못 돈다. (engine uuid4 인자는 opencode 경로에선 marker 예측에도 안 쓰인다.)
             raise RuntimeError(
                 "[pm-orch] opencode 출력에서 sessionID 를 파싱하지 못했다 — 세션 구동 실패. "

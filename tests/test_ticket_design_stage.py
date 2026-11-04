@@ -51,7 +51,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
+from conftest import target_repo_board_module, bind_product_cluster, ensure_product_slot
 from pm_engine.domain import design_rules, round_rules, ticket_rules
 from pm_engine.infra import pm_paths, round_store, ticket_store
 from pm_engine.app import body_lint, lint_hooks
@@ -724,7 +724,7 @@ def _git(argv, cwd):
 def board_git(tmp_path, monkeypatch):
     """board 가 별도 git(공유 구성)인 hermetic 홈 — draft 격리·promote 검사가 작동한다."""
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     board = tmp_path / ".project_manager" / "board"

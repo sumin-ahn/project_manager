@@ -41,9 +41,9 @@ def extract_last_log_entry_body(log_text: str) -> str | None:
 def _session_slot_number(
     home, bound_session: str, leases_file: Path | None = None
 ) -> int | None:
-    """세션 명의가 점유한 슬롯 번호 — **장부 행 값**(`lease_store.session_coordinates`).
+    """세션 명의가 점유한 슬롯 번호 — **대여 기록 행 값**(`lease_store.session_coordinates`).
 
-    장부에 그 세션 명의 행이 없으면 pool 명명 규약(키 분해)으로 폴백한다(그 형상에선 이름이
+    대여 기록에 그 세션 명의 행이 없으면 pool 명명 규약(키 분해)으로 대신 정한다(그 구성에선 이름이
     유일한 진실).
     """
     if leases_file is None:
@@ -60,12 +60,12 @@ def _session_owns_untagged(
     무태그 entry = 태그 도입 이전 로그 → slot-1 귀속(연속성 보존·제로 마이그레이션).
     **slot-2+ 는 무태그를 무시**하고 자기 태그 entry 만 센다(핵심 회귀 가드). 슬롯을 하나만
     쓰는 홈도 그 홈 자신이 1번 슬롯 행이라 같은 규칙 하나로 판정된다 — 별도 특례가 없다.
-    **장부가 그 세션에 준 슬롯 번호가 1**이면 True, 그 외(slot-2+·번호 미해소·정체성 미해소)면
+    **대여 기록이 그 세션에 준 슬롯 번호가 1**이면 True, 그 외(slot-2+·번호 미해소·정체성 미해소)면
     False.
 
     번호를 세션 **이름의 말단**에서 뜯지 않는 이유: 행의 repo/경로와 어긋난 session
     (`repo=A · slot=work/A_1 · session=B_7`)에서 이름은 7 을 주지만 그 세션이 실제로 들고 있는
-    슬롯은 A 의 1번이다(리뷰 F-002 와 같은 축). 장부에 행이 없으면 이름이 유일한 진실이라 종전
+    슬롯은 A 의 1번이다(리뷰 F-002 와 같은 기준). 대여 기록에 행이 없으면 이름이 유일한 진실이라 종전
     파싱과 같은 값이 나온다.
 
     **task 세션(`task:<name>`)은 항상 False** — task 는 자기 태그(`(task:<name>)`) entry 만
@@ -88,7 +88,7 @@ def parse_last_handoff_session_num(
     `bound_session`(`<repo>_<N>`)이 **양성 해소**되면 자기 슬롯 태그 entry 만 필터해 그 중 최고차
     (append-only 로그라 max=최신)를 취한다 — 전역 max 가 아니다("두 슬롯 같은 N차" 해소·slot-2+ 는
     무태그/타 슬롯 무시). **bound 가 None(정체성 미해소)이면 전역 tag-agnostic
-    파싱**으로 폴백한다: fresh clone(lease 부재)에 tracked 로그가 태그를 가져도
+    파싱**으로 대신 정한다: fresh clone(lease 부재)에 tracked 로그가 태그를 가져도
     log-derived 차수를 잃지 않게(user 연속성 surface 와 동일 원리 — 양성 슬롯일 때만
     필터). handoff entry 부재·log 부재 → None, 분할 예외는 전파.
     """
@@ -160,12 +160,12 @@ def last_handoff_header_line(
 
 
 def _read_leased_sessions_slots(home) -> list[tuple[str, str]] | None:
-    """lease 장부에서 leased 엔트리의 `(session, slot)` 목록을 직접 read 한다 (touches 격리).
+    """lease 대여 기록에서 leased 엔트리의 `(session, slot)` 목록을 직접 read 한다 (touches 격리).
 
     session 은 엔트리 `session` 또는 슬롯(`work/<repo>_<N>`→`<repo>_<N>`)에서 유도(대시보드
-    키와 동형). worktree_pool 미import(`lease_store.repo_slot_numbers` 동형·stdlib json). **장부 부재/
-    깨짐/스키마 불일치 → None**("활성 슬롯을 알 수 없음"·MF-1 필터가 no-op 폴백에 씀); 정상
-    read 인데 leased 0개면 `[]`. `_lease_others`(폴백 dump)·`_active_leased_sessions`(교집합
+    키와 같은 구조). worktree_pool 미import(`lease_store.repo_slot_numbers` 와 같은 구조·stdlib json). **대여 기록 부재/
+    깨짐/스키마 불일치 → None**("활성 슬롯을 알 수 없음"·MF-1 필터가 no-op 대체 동작에 씀); 정상
+    read 인데 leased 0개면 `[]`. `_lease_others`(대체 dump)·`_active_leased_sessions`(교집합
     필터) 가 공유한다.
     """
     leases_file = pm_paths.leases_file(home)
@@ -193,7 +193,7 @@ def _read_leased_sessions_slots(home) -> list[tuple[str, str]] | None:
 def _active_leased_sessions(home) -> set[str] | None:
     """활성(leased) 슬롯 세션 키 집합 (MF-1 대시보드 교집합 필터·codex).
 
-    장부 read 성공 → leased 세션 집합. 장부 부재/불가(None) → **None**(활성 여부 판정
+    대여 기록 read 성공 → leased 세션 집합. 대여 기록 부재/불가(None) → **None**(활성 여부 판정
     불가 → 필터 no-op·현행 표시 보존). `--done` release 로 idle 된 슬롯을 이 집합이 배제하므로
     대시보드에 stale 섹션이 남아도 부트스트랩 dump 에서 사라진다 — release 누락/크래시에도
     idle 노출 0(옵션 b·display-robust).
@@ -203,10 +203,10 @@ def _active_leased_sessions(home) -> set[str] | None:
 
 
 def _lease_others(home, task_name) -> list[dict]:
-    """자기 제외 leased 슬롯 목록을 lease 장부에서 직접 read 한다 (대시보드 부재 폴백).
+    """자기 제외 leased 슬롯 목록을 lease 대여 기록에서 직접 read 한다 (대시보드 부재 시 대체 동작).
 
-    `wiki/log/dashboard.md` 부재 시 폴백 — leased 엔트리에서 자기 task 제외분을
-    `[{"session","slot"}]` 로 반환한다. 장부 부재/깨짐/leased 0개는 빈 목록.
+    `wiki/log/dashboard.md` 부재 시 대체 동작 — leased 엔트리에서 자기 task 제외분을
+    `[{"session","slot"}]` 로 반환한다. 대여 기록 부재/깨짐/leased 0개는 빈 목록.
     """
     pairs = _read_leased_sessions_slots(home)
     if not pairs:

@@ -1,10 +1,10 @@
-"""T-0674 — opencode skill tool·slash command 두 진입 표면 가드.
+"""T-0674 — opencode skill tool·slash command 두 진입 가드.
 
 root `.claude/skills/*/SKILL.md`가 15건 전부의 공용 canonical이다 — 하네스별 판이 없으므로
 예외도 없다(T-0895). opencode는 스킬 미러를 모델 `skill` tool로 소비하고, canonical 본문에서
 기계 생성한 `.opencode/command/<name>.md`를 사람 slash 팔레트로 소비한다. 이 legacy
-파일은 스킬 미러 정합, command 채널 존재, 두 표면을 혼동하는 옛 문서
-서술 부재를 보조 검증한다. 전수·byte·manifest 정합은 T-0674 신설 가드가 담당한다.
+파일은 스킬 미러 일치, command 채널 존재, 두 진입을 혼동하는 옛 문서
+서술 부재를 보조 검증한다. 전수·byte·manifest 일치는 T-0674 신설 가드가 담당한다.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _skill_files(base: Path) -> "dict[str, Path]":
     }
 
 
-# ── (a) 스킬 출하 경로 byte-정합 (전파 미러 무결성) ────────────────────────────
+# ── (a) 스킬 출하 경로 byte 일치 (전파 미러 무결성) ────────────────────────────
 
 
 def _neutralize_entry_notation(raw: bytes) -> bytes:
@@ -59,7 +59,7 @@ def _neutralize_entry_notation(raw: bytes) -> bytes:
 
 
 def test_opencode_skill_mirror_matches_canonical_except_entry_notation():
-    """출하 스킬 15건 전부가 root canonical과 정합한다 (진입 표기만 예외).
+    """출하 스킬 15건 전부가 root canonical과 일치한다 (진입 표기만 예외).
 
     opencode 는 스킬 전건을 bare @render(root `.claude/skills`)로 소비한다. 하네스 실행 계약 차이는
     카드 머리의 harness 노트가 지고, 파일을 갈라 담지 않는다(T-0895) — 예외 목록이 비어 있다."""

@@ -1,20 +1,20 @@
 """codex 어댑터 위임 규약 회귀 가드 (T-0402·ADR-0070).
 
-codex 어댑터의 위임 4축은 **`.codex/agents/*.toml` custom agent** 로 표현된다 — claude 의
+codex 어댑터의 위임 4역할은 **`.codex/agents/*.toml` custom agent** 로 표현된다 — claude 의
 `.claude/agents/*.md`·opencode 의 `.opencode/agents/*.md` 에 대응하는 codex 등가물(md→TOML
 재표현·G6). 위임 = codex multi_agent **in-session spawn**(부모 sandbox 상속·`codex exec --agent`
 플래그 부재라 자식 프로세스 위임 없음·D1). PM 은 메인세션이라 `pm.toml` 은 **없다**(load-bearing
 absence·opencode 의 `pm.md` primary 에 해당하는 파일 부재).
 
 이 테스트는 그 어댑터 계약을 회귀 가드한다:
-  (a) `.codex/agents/{architect,code-reviewer,developer,researcher}.toml` 4축 실재 + `pm.toml` 부재.
+  (a) `.codex/agents/{architect,code-reviewer,developer,researcher}.toml` 4역할 실재 + `pm.toml` 부재.
   (b) 각 TOML 이 `tomllib` 로 파싱된다(포맷 유효·triple-quote developer_instructions 안전).
   (c) 필수 필드 3종 `name`/`description`/`developer_instructions` 존재 + `name` == 파일 stem.
   (d) 5장 전부 `model`/`model_reasoning_effort` 가 **local.conf 렌더 토큰**이다 — 리터럴
       모델명이 박히면 채택자의 `delegate.<role>[.hard].{model,reasoning}` 선언이 실행면에
       닿지 못한다(하네스별 예외 없는 하나의 규칙).
-  (e) `sandbox_mode` 존재 + 역할별 값(성장 사본 쓰기 축 developer/architect/code-reviewer=
-      `workspace-write`·순수 읽기 축 researcher=`read-only`).
+  (e) `sandbox_mode` 존재 + 역할별 값(성장 사본 쓰기 역할 developer/architect/code-reviewer=
+      `workspace-write`·순수 읽기 역할 researcher=`read-only`).
   (f) `{{PROJECT_NAME}}` 토큰이 있어 pm_import/pm_update(@render)의 결정적 치환 타깃이 된다.
   (g) developer_instructions 가 공통 코어 `AGENTS.md` 를 부트스트랩 진입으로 참조(D3 C-v2 — codex
       전용 정적 진입 doc 없음·방법론은 공통 코어 + TOML + 스킬로 전달).
@@ -49,7 +49,7 @@ PM_DEV_DELEGATE = CODEX / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
 # codex 는 `subagent_type`/`run_in_background` 를 담을 수 없어(아래 native 필드 가드) 카드를
 # 따로 출하하는 유일한 하네스다. 실행 형식만 갈리고 **사실**은 canonical 과 같아야 한다.
 CANONICAL_DELEGATE = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
-# 실제로 갈렸던 세 자리(T-0895) — 회수 절차·fix 라운드 검증 골격·추가 리뷰어 튜플 키.
+# 실제로 갈렸던 세 자리(T-0895) — 돌려받기 절차·fix 라운드 검증 빈 양식·추가 리뷰어 튜플 키.
 SHARED_DELEGATE_FACTS = (
     "native 위임은 raw 출력 기록에는 남지 않지만 라운드 파일에는 남는다",
     "`ticket collect --copy ... --cwd ...`로 돌려받은 뒤에만 재위임한다",
@@ -57,12 +57,12 @@ SHARED_DELEGATE_FACTS = (
     "fix 라운드면 엔진이 만든 검증 빈 양식을 accepted ID 전수로 채운다",
     "`additional_reviewer.harness`/`.model`/`.reasoning`",
 )
-# canonical 과 정반대였던 옛 주장 — 이 문장은 회수를 건너뛰라는 지시가 된다.
-_RETIRED_NATIVE_LEDGER_CLAIM = "native 위임은 기록에 남지 않는다"
+# canonical 과 정반대였던 옛 주장 — 이 문장은 돌려받기를 건너뛰라는 지시가 된다.
+_RETIRED_NATIVE_RECORD_CLAIM = "native 위임은 기록에 남지 않는다"
 
 AGENT_NAMES = ("architect", "code-reviewer", "developer", "researcher")
-# developer 2티어(난제=hard) 프로필 — 4 역할 축이 아니라 developer 축의 티어 변주다(T-0448).
-# 역할 축과 티어 프로필은 **같은 계약**을 쓴다(T-0766) — 5장 전부 model/reasoning 이 local.conf
+# developer 2티어(난제=hard) 프로필 — 4 역할이 아니라 developer 역할의 티어 변주다(T-0448).
+# 역할과 티어 프로필은 **같은 계약**을 쓴다(T-0766) — 5장 전부 model/reasoning 이 local.conf
 # 렌더 토큰이다. 티어는 그 값이 normal 과 다른 프로필을 가리킬 뿐 규칙이 다르지 않다.
 TIER_PROFILE_NAMES = ("developer-hard",)
 # 카드 stem → 위임 토큰 접미. 손열거 사본이 아니라 stem 파생이라 카드가 늘어도 따라온다.
@@ -89,10 +89,10 @@ def _load(name: str) -> dict:
         return tomllib.load(fh)
 
 
-# ── (a) 4축 실재 + pm.toml 부재 ─────────────────────────────────────────────
+# ── (a) 4역할 실재 + pm.toml 부재 ─────────────────────────────────────────────
 
 def test_agent_toml_files_present():
-    """`.codex/agents/{architect,code-reviewer,developer,researcher}.toml` 4축이 실재한다."""
+    """`.codex/agents/{architect,code-reviewer,developer,researcher}.toml` 4역할이 실재한다."""
     assert AGENTS_DIR.is_dir(), f"codex agents 디렉토리 없음: {AGENTS_DIR}"
     for name in AGENT_NAMES:
         assert _toml_path(name).is_file(), f"codex agent 정의 없음: {_toml_path(name)}"
@@ -111,9 +111,9 @@ def test_no_pm_toml_load_bearing_absence():
 
 
 def test_agent_dir_has_exactly_the_expected_toml_set():
-    """`.codex/agents/` 에 4 역할 축 + developer 티어 프로필만 있고 그 외 TOML 은 없다(pm.toml 등 유입 차단).
+    """`.codex/agents/` 에 4 역할 + developer 티어 프로필만 있고 그 외 TOML 은 없다(pm.toml 등 유입 차단).
 
-    4 역할 축(AGENT_NAMES) + developer-hard 티어 프로필(TIER_PROFILE_NAMES·T-0448)이 예상 집합.
+    4 역할(AGENT_NAMES) + developer-hard 티어 프로필(TIER_PROFILE_NAMES·T-0448)이 예상 집합.
     pm.toml(PM=메인세션·load-bearing absence) 등 스트레이 TOML 유입은 여전히 차단한다."""
     expected = sorted(AGENT_NAMES + TIER_PROFILE_NAMES)
     tomls = sorted(p.stem for p in AGENTS_DIR.glob("*.toml"))
@@ -145,7 +145,7 @@ def test_required_fields_present():
 
 
 def test_name_matches_filename():
-    """각 TOML 의 `name` 이 파일 stem 과 일치한다(codex 스폰 타깃 라벨 정합)."""
+    """각 TOML 의 `name` 이 파일 stem 과 일치한다(codex 스폰 타깃 라벨 일치)."""
     for name in AGENT_NAMES:
         assert _load(name)["name"] == name, (
             f"{name}.toml 의 name 이 파일명과 불일치: {_load(name)['name']!r}"
@@ -188,30 +188,30 @@ def test_model_and_reasoning_are_local_conf_render_tokens():
 # ── developer 2티어(난제=hard) 프로필 계약 (T-0448·spike §3.2) ────────────────
 
 def test_developer_hard_tier_profile_valid_and_overrides_model():
-    """`developer-hard.toml` 티어 프로필이 실재·정합하고 모델·추론을 명시 보유한다.
+    """`developer-hard.toml` 티어 프로필이 실재·일치하고 모델·추론을 명시 보유한다.
 
     hard 는 normal 프로필을 상속하지 않는 별도 완전 세트다 — 두 키가 없으면 native 난제 경로가
-    평시 프로필로 조용히 강등돼 티어 의도가 왜곡된다(fail-loud)."""
+    평시 프로필로 말없이 수준이 낮아져 티어 의도가 왜곡된다(fail-loud)."""
     path = _toml_path("developer-hard")
     assert path.is_file(), f"developer-hard 티어 프로필 없음: {path}"
     with open(path, "rb") as fh:
         data = tomllib.load(fh)
-    # 포맷·필수 필드·name==stem (역할 축과 동일 계약)
+    # 포맷·필수 필드·name==stem (역할과 동일 계약)
     for field in REQUIRED_FIELDS:
         assert field in data and str(data[field]).strip(), f"developer-hard.toml 의 {field!r} 누락/빈값"
     assert data["name"] == "developer-hard", f"name 이 파일 stem 과 불일치: {data['name']!r}"
-    # 쓰기 축(코드 편집) — developer 와 동일
+    # 쓰기 역할(코드 편집) — developer 와 동일
     assert data["sandbox_mode"] == "workspace-write", (
         f"developer-hard sandbox_mode 가 workspace-write 아님: {data['sandbox_mode']!r}"
     )
-    # 티어 프로필도 역할 축과 같은 계약 — model/reasoning 을 conf 렌더 토큰으로 갖는다.
+    # 티어 프로필도 역할과 같은 계약 — model/reasoning 을 conf 렌더 토큰으로 갖는다.
     assert "model" in data and str(data["model"]).strip(), (
         "developer-hard 에 model 없음 — 티어 프로필도 자기 모델을 명시해야 한다"
     )
     assert "model_reasoning_effort" in data and str(data["model_reasoning_effort"]).strip(), (
         "developer-hard 에 model_reasoning_effort override 없음 — 난제는 상향 추론이 필요하다"
     )
-    # @render 치환 타깃 + 공통 코어 진입 (역할 축과 동일)
+    # @render 치환 타깃 + 공통 코어 진입 (역할과 동일)
     blob = data["description"] + "\n" + data["developer_instructions"]
     assert PROJECT_NAME_TOKEN in blob, f"developer-hard 에 {PROJECT_NAME_TOKEN} 토큰 없음 — @render 치환 타깃 상실"
     assert "AGENTS.md" in data["developer_instructions"], (
@@ -222,10 +222,10 @@ def test_developer_hard_tier_profile_valid_and_overrides_model():
 # ── (e) sandbox_mode 존재 + 역할별 값 ───────────────────────────────────────
 
 def test_sandbox_mode_present_and_role_correct():
-    """각 agent 에 `sandbox_mode` 존재 + 역할별 값 정합(쓰기 축 vs 읽기 축).
+    """각 agent 에 `sandbox_mode` 존재 + 역할별 값 일치(쓰기 역할 vs 읽기 역할).
 
     developer/architect = workspace-write(코드·설계 초안 쓰기)· code-reviewer/researcher =
-    workspace-write(성장 티켓 사본의 자기 절만 쓰는 역할 — 저장소 read-only 는 역할 계약·harvest 의
+    workspace-write(성장 티켓 사본의 자기 절만 쓰는 역할 — 저장소 read-only 는 역할 계약·돌려받기의
     자기 절 밖 bytes 일치 강제·git 감사로 제한한다). 순수 read-only sandbox 역할은 남지 않는다."""
     for name in AGENT_NAMES:
         data = _load(name)
@@ -418,7 +418,7 @@ def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
     )
     assert "--role code-reviewer --cluster" in flat, "codex 카드에 교차 리뷰 실행이 없음"
     for stale in ("--background", "cluster wait"):
-        assert stale not in text, f"codex 카드에 지운 리뷰 표면 잔존: {stale}"
+        assert stale not in text, f"codex 카드에 지운 리뷰 절 잔존: {stale}"
     for stale_field in ("subagent_type", "run_in_background"):
         assert stale_field not in text, f"Codex pm-dev-delegate에 타 harness 필드 잔존: {stale_field}"
     assert "비동기로 진행" in text, "spawn 반환 thread의 비동기 운영 규칙 누락"
@@ -427,9 +427,9 @@ def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
 def test_codex_override_states_the_same_delegation_facts_as_canonical():
     """codex 판은 실행 형식만 다르고 위임 사실은 canonical 과 같다 (T-0895).
 
-    옛 codex 판은 `native 위임은 장부에 남지 않는다`고 적어 canonical 과 **정반대**였다 —
-    codex PM 이 kill 된 native 위임의 라운드 파일을 회수하지 않고 재위임하는 경로다(미회수 사본이
-    쌓인다). 같은 결손으로 fix 라운드 검증 골격 지시와 `additional_reviewer.reasoning` 키도
+    옛 codex 판은 `native 위임은 기록에 남지 않는다`고 적어 canonical 과 **정반대**였다 —
+    codex PM 이 kill 된 native 위임의 라운드 파일을 돌려받지 않고 재위임하는 경로다(돌려받지 않은 사본이
+    쌓인다). 같은 결손으로 fix 라운드 검증 빈 양식 지시와 `additional_reviewer.reasoning` 키도
     빠져 있었다. 계약을 canonical 에서도 확인하므로 한쪽만 고친 상태가 통과하지 않는다.
     """
     codex = PM_DEV_DELEGATE.read_text(encoding="utf-8")
@@ -437,8 +437,8 @@ def test_codex_override_states_the_same_delegation_facts_as_canonical():
     for fact in SHARED_DELEGATE_FACTS:
         assert fact in canonical, f"canonical 에 없는 문면을 계약으로 삼았다(가드 stale): {fact}"
         assert fact in codex, f"codex 판이 canonical 사실을 잃음: {fact}"
-    assert _RETIRED_NATIVE_LEDGER_CLAIM not in codex, (
-        "codex 판에 native 회수 불필요 주장 재유입 — 라운드 파일 미회수 재위임 경로"
+    assert _RETIRED_NATIVE_RECORD_CLAIM not in codex, (
+        "codex 판에 native 돌려받기 불필요 주장 재유입 — 라운드 파일 미반환 재위임 경로"
     )
 
 

@@ -328,7 +328,7 @@ def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
 def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
     """`dump_ticket` 과 같은 바이트를 쓰되 temp 파일 + `fs.atomic_replace` 로 원자 교체한다.
 
-    부분쓰기로 티켓 frontmatter 가 깨지는 것을 막는다(worktree_pool `_write_ledger`
+    부분쓰기로 티켓 frontmatter 가 깨지는 것을 막는다(worktree_pool `_write_records`
     와 같은 방식 — tmp 에 전체를 쓰고 같은 디렉토리 안에서 atomic rename). backfill 처럼
     *기존* 티켓을 제자리 갱신할 때 쓴다 — 같은 status 디렉토리 안 rename 이라 원자적이다.
     """

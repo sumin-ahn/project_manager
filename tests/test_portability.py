@@ -89,12 +89,12 @@ def _make_repo(tmp_path: Path, *, venv: bool, nt: bool) -> Path:
 # ── _default_python() — 4조합 (os.name × venv 존재) ────────────────────────
 
 @pytest.mark.parametrize("name", DEFAULT_PYTHON_TOOLS)
-def test_default_python_seam_defaults_to_the_real_interpreter_value(name):
+def test_default_python_override_defaults_to_the_real_interpreter_value(name):
     """세 도구 모두 `_probe_os_name` 기본값이 실 `os.name` 그대로다(T-0741 F-001).
 
     `pm_engine.infra.process`·`pm_engine.infra.console` 은 각자 시험 파일(test_reviewer_argv_platform_split·
     test_console_encoding)에서 이 불변성을 이미 확인한다 — 여기서는
-    pm_bootstrap·pm_handoff·ticket_finish 세 도구가 적재된 상태에서도 그 공용 seam 이 같은
+    pm_bootstrap·pm_handoff·ticket_finish 세 도구가 적재된 상태에서도 그 공용 함수가 같은
     불변성을 지키는지 못 박는다(세 도구 모두 `python_env._default_python(home)` 을 소비한다).
     """
     mod = _load(name)
@@ -122,7 +122,7 @@ def test_default_python_nt_venv_present(monkeypatch, tmp_path, name):
 
 @pytest.mark.parametrize("name", DEFAULT_PYTHON_TOOLS)
 def test_default_python_posix_venv_absent_falls_back(monkeypatch, tmp_path, name):
-    """posix + venv 부재 → sys.executable 폴백."""
+    """posix + venv 부재 → sys.executable 대체."""
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=False, nt=False)
     monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
@@ -132,7 +132,7 @@ def test_default_python_posix_venv_absent_falls_back(monkeypatch, tmp_path, name
 
 @pytest.mark.parametrize("name", DEFAULT_PYTHON_TOOLS)
 def test_default_python_nt_venv_absent_falls_back(monkeypatch, tmp_path, name):
-    """nt + venv 부재 → sys.executable 폴백 (Scripts/python.exe 없음)."""
+    """nt + venv 부재 → sys.executable 대체 (Scripts/python.exe 없음)."""
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=False, nt=True)
     monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
@@ -181,7 +181,7 @@ def test_detect_py_falls_back_to_python(monkeypatch, board):
 
 
 def test_detect_py_literal_fallback_when_neither(monkeypatch, board):
-    """python3·python 둘 다 부재 → 'python3' 리터럴 폴백."""
+    """python3·python 둘 다 부재 → 'python3' 리터럴 대체."""
     monkeypatch.setattr(shutil, "which", lambda cmd: None)
     assert python_env._detect_py() == "python3"
 

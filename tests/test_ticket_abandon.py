@@ -48,7 +48,7 @@ from pm_engine.infra import repo_files
 import pytest
 
 from _git_fixture import remove_git_tree
-from conftest import write_cluster_ledger
+from conftest import write_cluster_records
 from pm_engine.infra import raw_output
 from pm_engine.domain import delegate_errors, review_form
 from pm_engine.infra import delegate_records
@@ -192,7 +192,7 @@ def _write_spec(env: Env, ticket: str, *, rounds=_FIXED_ROUNDS, **kwargs) -> Pat
     """
     path = env.tickets / f"{ticket}-abandon.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
-    write_cluster_ledger(
+    write_cluster_records(
         env.pm_home / ".project_manager" / "wiki", ticket,
         base_branch="task/main", rounds=_FIXED_ROUNDS,
     )
@@ -333,7 +333,7 @@ def test_abandon_closes_all_three_kill_residue_assets(pd, env):
     assert not plan.board_path.exists()
     row = _record_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["collected_at"] is None
-    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8001", unharvested=True) == []
+    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8001", uncollected=True) == []
     assert env.sync_calls[-1][1] == [plan.board_path]
 
 
@@ -360,7 +360,7 @@ def test_abandon_leaves_other_live_runs_untouched(pd, env):
     assert alive.run_dir.exists() and alive.board_path.exists()
     alive_row = [row for row in _record_rows(env) if row["ticket"] == "T-8004"][-1]
     assert alive_row["collected_at"] is None and "abandoned_at" not in alive_row
-    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8004", unharvested=True)[0][
+    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8004", uncollected=True)[0][
         "copy"
     ] == str(alive.path)
 
@@ -572,20 +572,20 @@ def test_record_append_failure_converges_on_the_next_call(pd, env, monkeypatch):
     """2단계(마감 행 append) 실패는 아무것도 지우기 전이다 — 재호출이 처음부터 다시 한다."""
     _write_spec(env, "T-8051")
     plan = _prepare(pd, env, "T-8051")
-    real_append = delegate_copy_store._append_delegate_rounds_ledger
+    real_append = delegate_copy_store._append_delegate_rounds_record
 
     def _boom(pm_home, row):
         if "abandoned_at" in row:
             raise delegate_errors.DelegateError("기록 append 실패 주입")
         return real_append(pm_home, row)
 
-    monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", _boom)
+    monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_record", _boom)
     with pytest.raises(delegate_errors.DelegateError, match="기록 append 실패 주입"):
         _abandon(pd, env, plan)
     assert plan.board_path.exists() and plan.run_dir.exists()
     assert "abandoned_at" not in _record_rows(env)[-1]
 
-    monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", real_append)
+    monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_record", real_append)
     result = _abandon(pd, env, plan)
 
     assert result.converged is True
@@ -688,10 +688,10 @@ def test_middle_ordinal_abandon_is_not_listed_as_unharvested(pd, env):
 
     _abandon(pd, env, first)
 
-    unharvested = delegate_records.ticket_copy_records(
-        env.pm_home, ticket="T-8061", unharvested=True,
+    uncollected = delegate_records.ticket_copy_records(
+        env.pm_home, ticket="T-8061", uncollected=True,
     )
-    assert [row["ordinal"] for row in unharvested] == [3]
+    assert [row["ordinal"] for row in uncollected] == [3]
 
 
 def test_max_ordinal_abandon_leaves_no_gap_for_the_remaining_rounds(pd, env):
@@ -742,7 +742,7 @@ def test_discard_moves_the_output_into_the_board_round_and_marks_it(pd, env):
     row = _record_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
     assert "superseded_by_ordinal" not in row
-    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8080", unharvested=True) == []
+    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8080", uncollected=True) == []
     assert env.sync_calls[-1] == (
         "ticket-abandon T-8080 architect", [plan.board_path],
     )
@@ -801,7 +801,7 @@ def test_discard_converges_when_both_artifacts_are_gone(pd, env):
     assert (result.board_removed, result.run_dir_removed) == (True, True)
     row = _record_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
-    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8081", unharvested=True) == []
+    assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8081", uncollected=True) == []
     assert env.sync_calls == before_sync     # 지운 자산이 없어 커밋할 board 변경도 없다
 
     # 멱등 — 남은 정리가 없는 행의 재호출도 rc 0 이다(선언 인자는 다시 주지 않아도 된다).
@@ -1061,10 +1061,10 @@ def test_cli_copies_query_labels_abandoned_rows(pd, env, monkeypatch, capsys):
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111"]) == 0
     listed = capsys.readouterr().out
     assert delegate_cmd._cmd_ticket(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), ["copies", "--ticket", "T-8111", "--uncollected"]) == 0
-    unharvested = capsys.readouterr().out
+    uncollected = capsys.readouterr().out
 
     assert "포기(" in listed and str(plan.path) in listed
-    assert "돌려받지 않은 라운드 준비 없음" in unharvested
+    assert "돌려받지 않은 라운드 준비 없음" in uncollected
 
 
 # ── I6 락 경계: stub 없이 실 board 호출 그래프를 태우는 교착 회귀 ───────────
@@ -1080,7 +1080,7 @@ def _cli_home(tmp_path: Path, ticket: str) -> Path:
     (tickets / f"{ticket}-abandon.md").write_text(
         _spec_text(ticket), encoding="utf-8", newline="\n",
     )
-    write_cluster_ledger(
+    write_cluster_records(
         home / ".project_manager" / "wiki", ticket,
         base_branch="task/main", rounds=_FIXED_ROUNDS,
     )

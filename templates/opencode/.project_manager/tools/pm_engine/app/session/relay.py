@@ -30,13 +30,13 @@ def ctx_budget(home, harness, session_model):
     return budget["E"], budget["precompact_at_pct"], budget["warning"]
 
 
-# marker 디렉토리 — ctx 밴드 marker(`infra.compaction_store.ctx_marker_path`)와 같은 자리다.
+# marker 디렉토리 — ctx 구간 marker(`infra.compaction_store.ctx_marker_path`)와 같은 자리다.
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 
 # 이 marker 디렉토리는 여러 생산자가 공유한다 — `<세션>.<종류>` 자리를 남이 이미 쓰고 있으면
 # 멤버십 파일이 그 신호를 *위조* 한다(namespace "done" → `<sid>.done` = post-turn 회전 신호).
 #   done                                  · 이 파일 `_marker_path` (회전)
-#   warn · warn2 · final                · infra.compaction_store.ctx_marker_path (사이클 넛지)
+#   warn · warn2 · final                · infra.compaction_store.ctx_marker_path (사이클 경고)
 #   compact-* (경계 처리·checkpoint·boundary·snapshot·snapshot-receipt)
 #                                         · infra.compaction_store · opencode ctx-guard-core.cjs
 RESERVED_MARKER_NAMESPACES = frozenset({"done", "warn", "warn2", "final"})
@@ -155,10 +155,10 @@ def clear_marker(root: Path, session_id: str) -> bool:
 # ── post-turn marker 계약 ────────────────────────────────────────
 # marker 파일 존재 = "이 세션을 다음 입력 전에 회전하라" 는 단일 post-turn 신호.
 # payload는 진단용일 뿐 소비자는 존재만 판정한다.
-# marker 생산자는 turn 완료 후에 신호를 박제한다.
+# marker 생산자는 turn 완료 후에 신호를 적어 둔다.
 # Supervisor 는 payload 를 판독하지 않는다.
 def write_post_turn_marker(root: Path, session_id: str) -> bool:
-    """post-turn 회전 marker 박제(best-effort).
+    """post-turn 회전 marker 적어 두기(best-effort).
 
     파일명/경로는 호환 유지하며 Supervisor는 payload를 판독하지
     않고 존재만을 post-turn 신호로 소비한다. 실패는 fail-soft(relay 무중단)."""
@@ -181,7 +181,7 @@ def mark_ctx_post_turn_if_over(
     precompact_at_pct: int,
     mark=write_post_turn_marker,
 ) -> bool:
-    """turn 사용량이 회전 임계에 닿았으면 post-turn marker 를 박제한다.
+    """turn 사용량이 회전 임계에 닿았으면 post-turn marker 를 적어 둔다.
 
     임계는 ``budget * precompact_at_pct / 100``(압축 임박 경고 = 쓴 %)이며 경계값을 포함한다.
     ``used_tokens <= 0`` 또는 ``budget <= 0`` 은 신호 미주입으로 보아 no-op(False).
@@ -201,7 +201,7 @@ def _session_once_path(root: Path, session_id: str, namespace: str) -> Path:
     """세션·namespace 당 멤버십 파일 **1개** 경로.
 
     키마다 파일을 만들지 않는다 — 이 디렉토리를 일괄 정리하는 코드가 없어서
-    (`compaction_store.reset_ctx_cycle` 은 밴드 marker 3종만 unlink) 키별 파일은 세션당 수백 개가 영구 잔존한다.
+    (`compaction_store.reset_ctx_cycle` 은 구간 marker 3종만 unlink) 키별 파일은 세션당 수백 개가 영구히 남는다.
     marker 디렉토리도 새로 만들지 않고 기존 `MARKER_DIR` 을 그대로 쓴다
     (`.project_manager/.gitignore` 의 `.local/` 커버를 상속 — 채택자 `git add -A` 안전).
     namespace 도 세션키와 같은 파일명 안전화를 거쳐 traversal 표기를 경로로 만들지 않는다.
@@ -214,28 +214,28 @@ def _session_once_path(root: Path, session_id: str, namespace: str) -> Path:
 def claim_session_once(
     root: Path, session_id: str, namespace: str, key: str,
 ) -> bool | None:
-    """``(세션, namespace)`` 스코프에서 ``key`` 를 처음 보는지 선점한다.
+    """``(세션, namespace)`` 범위에서 ``key`` 를 처음 보는지 먼저 차지해 확인한다.
 
-    반환은 3상태다(`infra.compaction_store.claim_compaction_checkpoint` 와 동형) — ``True`` 는 이번 호출이
-    첫 선점, ``False`` 는 같은 세션·namespace 에서 이미 본 키, ``None`` 은 **장부를 쓸 수 없음**
+    반환은 3상태다(`infra.compaction_store.claim_compaction_checkpoint` 와 같은 구조) — ``True`` 는 이번 호출이
+    처음 차지함, ``False`` 는 같은 세션·namespace 에서 이미 본 키, ``None`` 은 **기록을 쓸 수 없음**
     (멤버십 파일 I/O 실패 또는 예약 marker 이름 요청)이다. 호출부가 ``None`` 을 자기 fail
-    방향으로 해석한다(git-anchor 는 fail-open=발화).
+    방향으로 해석한다(git 대상 저장소 검사는 fail-open=실행).
 
     ``namespace`` 가 `RESERVED_MARKER_NAMESPACES`(또는 `compact-` 계열)면 멤버십 파일이 같은
-    디렉토리의 다른 생산자 신호를 위조하므로 **선점하지 않고** ``None`` 을 돌린다 — 예외를 던지지
+    디렉토리의 다른 생산자 신호를 위조하므로 **차지하지 않고** ``None`` 을 돌린다 — 예외를 던지지
     않는 이유는 이 헬퍼의 소비자가 전부 훅 경로라 raise 가 곧 훅 파손이고, 3상태 계약 안에서
-    "장부 사용 불가"로 표현하면 모든 호출부가 이미 가진 fail 방향을 그대로 타기 때문이다.
+    "기록 사용 불가"로 표현하면 모든 호출부가 이미 가진 fail 방향을 그대로 타기 때문이다.
 
     ``key`` 는 불투명한 한 줄 토큰이며 의미(해시·문구)는 호출부가 정한다 — 여기서는 공백류를
-    한 칸으로 접어 한 줄 멤버십을 보장하는 것 외에 해석하지 않는다.
+    한 칸으로 바꿔 한 줄 멤버십을 보장하는 것 외에 해석하지 않는다.
 
     append 는 프로세스 간 원자적이지 않아 경합 시 같은 키가 두 줄 남을 수 있는데, 그 결과는
-    "한 번 더 선점 성공(=발화)" 방향이라 fail-open 과 같다.
+    "한 번 더 차지 성공(=실행)" 방향이라 fail-open 과 같다.
     """
     safe_namespace = ctx_recovery.safe_session_id(namespace if isinstance(namespace, str) else "")
     if (safe_namespace in RESERVED_MARKER_NAMESPACES
             or safe_namespace.startswith(RESERVED_MARKER_NAMESPACE_PREFIX)):
-        return None  # 남의 marker 이름 — 장부를 만들지 않는다(파일도 디렉토리도 미생성).
+        return None  # 남의 marker 이름 — 기록을 만들지 않는다(파일도 디렉토리도 미생성).
     path = _session_once_path(root, session_id, safe_namespace)
     entry = " ".join(str(key).split()) or "unknown"
     try:
@@ -271,7 +271,7 @@ class Supervisor:
         self.driver = driver
         self.root = Path(root)
         # task 정체성(명시 전달)은 재진입 프롬프트에 baked-in 되어 `self.bootstrap` 에
-        # 흡수된다 — 별도 인스턴스 필드로 retain 하지 않는다(stateless 불변식 유지·respawn 은 같은
+        # 받아 반영된다 — 별도 인스턴스 필드로 retain 하지 않는다(stateless 불변식 유지·respawn 은 같은
         # bootstrap 을 재사용해 task 를 자동 forward). bootstrap 명시 override(테스트/커스텀)가 우선,
         # 없으면 task 로 빌드한다(둘 다 없으면 `build_bootstrap_prompt` 가 ValueError).
         self.bootstrap = bootstrap if bootstrap is not None else build_bootstrap_prompt(task)

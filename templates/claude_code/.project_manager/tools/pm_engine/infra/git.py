@@ -19,19 +19,19 @@ from collections.abc import Callable
 from collections.abc import Sequence
 
 
-def _git_repo_root(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
-    root = _git_rev_parse(anchor, "--show-toplevel", runner=runner)
+def _git_repo_root(target_repo: Path, *, runner: Any = subprocess.run) -> Path | None:
+    root = _git_rev_parse(target_repo, "--show-toplevel", runner=runner)
     return Path(root).resolve() if root else None
 
 
-def _shared_repository_root(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
-    """`anchor` 가 PM 홈 공용 저장소(bare `<PM 홈>/.repos/<repo>.git`) 안이면 그 저장소 경로.
+def _shared_repository_root(target_repo: Path, *, runner: Any = subprocess.run) -> Path | None:
+    """`target_repo` 가 PM 홈 공용 저장소(bare `<PM 홈>/.repos/<repo>.git`) 안이면 그 저장소 경로.
 
     bare 저장소는 작업 폴더가 없어 ``--show-toplevel`` 이 실패하므로 git-dir 로 따로 해소한다.
-    형상 규칙은 슬롯 소유 유도(`pm_paths.owning_pm_home`)와 같다 — `.repos` 아래 `.git` 접미
+    구성 규칙은 슬롯 소유 유도(`pm_paths.owning_pm_home`)와 같다 — `.repos` 아래 `.git` 접미
     디렉터리이고 그 위가 `.project_manager` 를 가진 PM 홈이어야 한다.
     """
-    answer = _git_rev_parse(anchor, "--is-bare-repository", "--absolute-git-dir", runner=runner)
+    answer = _git_rev_parse(target_repo, "--is-bare-repository", "--absolute-git-dir", runner=runner)
     lines = answer.splitlines() if answer else []
     if len(lines) != 2 or lines[0] != "true":
         return None
@@ -41,15 +41,15 @@ def _shared_repository_root(anchor: Path, *, runner: Any = subprocess.run) -> Pa
     return git_dir if (git_dir.parent.parent / ".project_manager").is_dir() else None
 
 
-def _git_commit_exists(anchor: Path, name: str, *, runner: Any) -> bool:
+def _git_commit_exists(target_repo: Path, name: str, *, runner: Any) -> bool:
     return _git_rev_parse(
-        anchor, "--verify", "--quiet", f"{name}^{{commit}}", runner=runner,
+        target_repo, "--verify", "--quiet", f"{name}^{{commit}}", runner=runner,
     ) is not None
 
 
-def _git_local_branch_exists(anchor: Path, name: str, *, runner: Any) -> bool:
+def _git_local_branch_exists(target_repo: Path, name: str, *, runner: Any) -> bool:
     return _git_rev_parse(
-        anchor, "--verify", "--quiet", f"refs/heads/{name}", runner=runner,
+        target_repo, "--verify", "--quiet", f"refs/heads/{name}", runner=runner,
     ) is not None
 
 
@@ -73,19 +73,19 @@ def _git_alias_value(invocation: git_policy._GitInvocation, *, runner: Any) -> s
     return (result.stdout or "").strip() or None
 
 
-def _git_command_names(anchor: Path, *, runner: Any) -> frozenset[str]:
+def _git_command_names(target_repo: Path, *, runner: Any) -> frozenset[str]:
     """git 명령 이름(내장 + PATH 의 ``git-*``). alias 가 이 이름을 가리면 git 은 alias 를 무시한다."""
     result = runner(
-        ["git", "-C", str(anchor), "--list-cmds=main,others"],
+        ["git", "-C", str(target_repo), "--list-cmds=main,others"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     )
     return frozenset((result.stdout or "").split())
 
 
 def _git_path_uncommitted(
-    anchor: Path, relative: Path, *, runner: Any = subprocess.run
+    target_repo: Path, relative: Path, *, runner: Any = subprocess.run
 ) -> bool | None:
-    """`anchor` 저장소에서 `relative` 파일이 **미커밋** 상태인지 (git 조회 1회).
+    """`target_repo` 저장소에서 `relative` 파일이 **미커밋** 상태인지 (git 조회 1회).
 
     `git status --porcelain --ignored -- <path>` 의 출력이 있으면 그 사본은 커밋으로 확정되지
     않았다(작업트리 변경·스테이지·미추적·무시됨). git 아님/오류면 None — **판정 불가**이며
@@ -93,7 +93,7 @@ def _git_path_uncommitted(
     """
     try:
         result = runner(
-            ["git", "-C", str(anchor), "status", "--porcelain", "--ignored",
+            ["git", "-C", str(target_repo), "status", "--porcelain", "--ignored",
              "--", relative.as_posix()],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False,
@@ -105,11 +105,11 @@ def _git_path_uncommitted(
     return bool((result.stdout or "").strip())
 
 
-def _git_rev_parse(anchor: Path, *args: str, runner: Any = subprocess.run) -> str | None:
-    """`git -C <anchor> rev-parse <args>` 결과(strip)를 반환. git 아님/오류/빈 값이면 None
-    (fail-soft — standalone·비-git 트리 무영향). `runner` 는 hermetic 테스트 주입 seam."""
+def _git_rev_parse(target_repo: Path, *args: str, runner: Any = subprocess.run) -> str | None:
+    """`git -C <target_repo> rev-parse <args>` 결과(strip)를 반환. git 아님/오류/빈 값이면 None
+    (fail-soft — standalone·비-git 트리 무영향). `runner` 는 hermetic 테스트 주입 교체 지점."""
     try:
-        r = runner(["git", "-C", str(anchor), "rev-parse", *args],
+        r = runner(["git", "-C", str(target_repo), "rev-parse", *args],
                    capture_output=True, text=True, encoding="utf-8",
                    errors="replace", check=False)
     except (OSError, subprocess.SubprocessError):
@@ -120,21 +120,21 @@ def _git_rev_parse(anchor: Path, *args: str, runner: Any = subprocess.run) -> st
     return out or None
 
 
-def _is_linked_worktree(anchor: Path, *, runner: Any = subprocess.run) -> bool:
-    """`anchor` 가 linked git worktree(main checkout 아님)인가.
+def _is_linked_worktree(target_repo: Path, *, runner: Any = subprocess.run) -> bool:
+    """`target_repo` 가 linked git worktree(main checkout 아님)인가.
 
     linked worktree 는 `git rev-parse --git-dir` 가 `<common>/worktrees/<name>` 을 가리켜
     `--git-common-dir`(=`<common>`)와 **다르다**. 일반 checkout·PM 홈은 둘 다 `.git` 로 동일
     (→ False). git 아님/오류면 False(fail-soft — standalone 무영향).
     """
-    git_dir = _git_rev_parse(anchor, "--git-dir", runner=runner)
-    common_dir = _git_rev_parse(anchor, "--git-common-dir", runner=runner)
+    git_dir = _git_rev_parse(target_repo, "--git-dir", runner=runner)
+    common_dir = _git_rev_parse(target_repo, "--git-common-dir", runner=runner)
     if git_dir is None or common_dir is None:
         return False
 
     def _abs(p: str) -> Path:
         pp = Path(p)
-        return pp if pp.is_absolute() else (anchor / pp).resolve()
+        return pp if pp.is_absolute() else (target_repo / pp).resolve()
 
     return _abs(git_dir) != _abs(common_dir)
 
@@ -142,8 +142,8 @@ def _is_linked_worktree(anchor: Path, *, runner: Any = subprocess.run) -> bool:
 def _git_head_at(cwd: str) -> str:
     """주어진 작업 디렉토리의 git HEAD sha 를 반환한다 (실패/비-repo 면 '').
 
-    `_git_head` 는 Home 루트(board 프로세스의 `REPO`) 기준이지만, livegate 기록은 테스트가 실제로
-    돈 **활성 slot worktree**(=`_livegate_cwd`)의 HEAD 를 키로 삼아야 한다 — 보호훅이
+    `_git_head` 는 Home 루트(board 프로세스의 `REPO`) 기준이지만, live-test 기록은 테스트가 실제로
+    돈 **활성 slot worktree**(=`_live_test_cwd`)의 HEAD 를 키로 삼아야 한다 — 보호훅이
     push 하는 sha(=worktree HEAD)와 대조되기 때문. 이 함수가 그 cwd-매개 HEAD 를 낸다.
     """
     r = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"],
@@ -152,7 +152,7 @@ def _git_head_at(cwd: str) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-# board git 호출 timeout — pull/push 는 네트워크 왕복이라 user-email 폴백(5s)보다 길게
+# board git 호출 timeout — pull/push 는 네트워크 왕복이라 user-email 대체 조회(5s)보다 길게
 # 둔다. 환경 이상(hang·offline DNS)에서 무한 대기를 막는 상한(엔진 subprocess 관례).
 _BOARD_GIT_TIMEOUT_SECONDS = 30
 
@@ -166,7 +166,7 @@ def _cluster_current_branch(tree: str) -> str | None:
 
 
 def _git_run(argv: list[str], *, runner=None, repo: Path) -> tuple[int, str] | None:
-    """git 명령의 `(rc, stdout)` 반환·git 부재(PATH 에 없음) → None. runner seam(hermetic 테스트)·미주입
+    """git 명령의 `(rc, stdout)` 반환·git 부재(PATH 에 없음) → None. runner 교체 지점(hermetic 테스트)·미주입
     시 실 subprocess(`git -C repo`). 실행 예외(시간 초과 등)는 전파한다. rev-parse 해소 OID(prefix
     검증용)가 필요한 곳이 쓴다."""
     if runner is None:
@@ -189,7 +189,7 @@ def _git_head(home) -> str:
 def _git_config_get(cwd: str, key: str) -> str | None:
     """`git -C <cwd> config --get <key>` 값 (미설정/비-repo/빈값이면 None).
 
-    인코딩 명시(git path 출력이 cp949 로 디코딩되지 않도록 utf-8·`_hooks_dir` 동형).
+    인코딩 명시(git path 출력이 cp949 로 디코딩되지 않도록 utf-8·`_hooks_dir` 와 같은 구조).
     """
     r = subprocess.run(["git", "-C", cwd, "config", "--get", key],
                        capture_output=True, text=True,
@@ -229,10 +229,10 @@ def _real_clone_runner() -> worktree_records.GitRunner:
 def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
     """Git remote를 transport class + endpoint/path identity로 정규화한다.
 
-    판정 축(코드·테스트 공통 표):
+    판정 기준(코드·테스트 공통 표):
 
     ======================  ================================================
-    입력 축                 identity 규칙
+    입력 종류               identity 규칙
     ======================  ================================================
     ssh/https/scp           같은 ``network`` class로 정규화
     file://                 ``file`` class를 보존(network과 절대 동일 아님)
@@ -265,7 +265,7 @@ def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
             host = (parsed.hostname or "").lower()
             port = parsed.port
         except ValueError:
-            # 잘못된 authority를 유사 remote로 잘못 합치지 않는 안전 방향 폴백.
+            # 잘못된 authority를 유사 remote로 잘못 합치지 않는 안전 방향 대체.
             authority = parsed.netloc.rsplit("@", 1)[-1].lower()
             return (f"invalid-{scheme}", authority, None, normalized_path)
         default_port = {"ssh": 22, "https": 443}.get(scheme)
@@ -355,7 +355,7 @@ def git_scope_pathspec(repo: Path, paths: Sequence[Path], *,
     """이 mutation 이 만진 경로 → `<repo>` pathspec (**스코프 산출 단일 지점**).
 
     규칙 셋을 한 곳에서만 적용한다(경로별로 다시 판정하는 두 번째 구현을 만들지 않는다):
-      1. `repo` **밖** 경로는 제외 — 그 git 이 모르는 파일(예: 두-git 형상에서 코드 worktree
+      1. `repo` **밖** 경로는 제외 — 그 git 이 모르는 파일(예: 두-git 구성에서 코드 worktree
          의 `touches`, board-git 기준의 파생물 `wiki/board.md`).
       2. `exclude_prefixes` 로 시작하는 경로는 제외 — 호출부가 그 repo 고유의 금지 구역을
          준다(board-git 의 `tickets/.drafts/` = 미충전 draft).
@@ -378,7 +378,7 @@ def _git_scope_nested_git(repo: Path, rel: str) -> bool:
 
     `git add -A -- .project_manager/board/tickets/…` 는 그 경로가 서브모듈 *내부* 면
     `fatal: Pathspec '…' is in submodule` 로 rc=128 이 되고 **pathspec 전체가 stage 되지
-    않는다**(board 분리 형상에서 `touches` 에 board 경로를 적으면 finish 가 통째로 중단됐다).
+    않는다**(board 분리 구성에서 `touches` 에 board 경로를 적으면 finish 가 통째로 중단됐다).
     조상 디렉토리 중 `.git` 을 가진 것이 있으면(=별도 git) 그 아래는 상위 repo 의 pathspec 이
     아니므로 미리 거른다. 경로 자신은 제외(repo 루트/대상 자체가 git 인 건 정상).
     """
@@ -394,8 +394,8 @@ def _git_scope_is_directory(repo: Path, rel: str) -> bool:
     """`rel` 이 디렉토리(또는 디렉토리 표기)인가 — 최종 관문의 판정.
 
     worktree 실측(`is_dir()`)에 더해 **끝 슬래시 표기**(`newdir/`)도 디렉토리로 본다: git 의
-    porcelain 이 접어서 낸 untracked 디렉토리가 그 모양이라, 실측만 하면 이미 지워진 경로가
-    빠져나간다. 판정이 애매할 때는 *제외* 가 안전한 방향이다 — 빠지면 잔여 loud 보고에 뜨지만,
+    porcelain 이 묶어서 낸 untracked 디렉토리가 그 모양이라, 실측만 하면 이미 지워진 경로가
+    빠져나간다. 판정이 애매할 때는 *제외* 가 안전한 방향이다 — 빠지면 남은 경로 loud 보고에 뜨지만,
     통과하면 남의 파일이 조용히 실린다.
     """
     return rel.endswith("/") or (Path(repo) / rel).is_dir()
@@ -407,8 +407,8 @@ def _git_scope_ignored(repo: Path, pathspec: Sequence[str],
 
     **`git add` 는 명시 pathspec 이 ignored 면 rc=1 에러다.** 광역 `add -A` 가 ignored 를 조용히
     건너뛰는 것과 다르고, `--ignore-errors` 로도 안 없어진다(reviewer 실측). 그래서 `touches` 에
-    gitignored 경로가 하나만 있어도 stage 가 통째로 죽고, 하필 그 순간 잔여 loud 보고까지 함께
-    사라진다(기록은 이미 절반 진행된 상태). 실형상 도달 가능 — 이 보드의 done 티켓 여러 건이
+    gitignored 경로가 하나만 있어도 stage 가 통째로 죽고, 하필 그 순간 남은 경로 loud 보고까지 함께
+    사라진다(기록은 이미 절반 진행된 상태). 실제 구성에서 도달 가능 — 이 보드의 done 티켓 여러 건이
     `touches: .project_manager/local.conf`(gitignored)를 선언한다.
 
     판정은 `git check-ignore` 로 한다:
@@ -442,7 +442,7 @@ def git_parse_porcelain_z(out: str) -> tuple[tuple[str, str], ...]:
     `-z` 는 인용 자체를 하지 않으므로 원문 경로가 그대로 나온다.
 
     rename/copy(`R`/`C`) 항목은 `<코드> <신규>\\0<원본>\\0` **2토큰**이라 원본 토큰을 소비하고
-    신규 경로를 취한다. 스코프 산출(디렉토리 전개)과 잔여 보고가 **이 함수 하나**를 공유한다.
+    신규 경로를 취한다. 스코프 산출(디렉토리 전개)과 남은 경로 보고가 **이 함수 하나**를 공유한다.
     """
     tokens = out.split("\0")
     entries: list[tuple[str, str]] = []
@@ -473,12 +473,12 @@ def _git_scope_expand_dir(repo: Path, rel: str, run: GitRunner) -> list[str]:
     무엇이 실리는지 **파일 단위로 출력·검증**할 수 있게 한다(변경이 없으면 빈 목록 → 소멸).
 
     `--untracked-files=all` 이 **load-bearing** 이다: 기본값(`normal`)은 새 untracked 디렉토리를
-    `?? newdir/` **한 항목으로 접어서** 낸다 — 그러면 전개 결과가 파일이 아니라 *디렉토리* 라
+    `?? newdir/` **한 항목으로 묶어서** 낸다 — 그러면 전개 결과가 파일이 아니라 *디렉토리* 라
     아래 필터를 그대로 통과해 `git add -A -- newdir/` 가 되고, 막으려던 뭉뚱그리기가 이 경로로
     되살아난다(PM 실 git 재현). `all` 이면 `?? newdir/c.md` 로 파일까지 펼친다.
 
     `-z` + NUL 파싱은 `git_parse_porcelain_z` 한 곳이 담당한다(비-ASCII/공백 경로 인용 문제·
-    rename 2토큰 처리를 두 벌로 만들지 않는다 — 잔여 보고도 같은 함수를 쓴다).
+    rename 2토큰 처리를 두 벌로 만들지 않는다 — 남은 경로 보고도 같은 함수를 쓴다).
     """
     rc, out = run(["status", "--porcelain", "-z", "--untracked-files=all", "--", rel])
     if rc != 0:
@@ -500,7 +500,7 @@ def git_scope_stageable(repo: Path, pathspec: Sequence[str], *,
          경로를 주면 rc=128 fatal 로 죽고 **아무것도 stage 되지 않는다**(→ commit 실패 →
          claim 롤백). 로컬에서 만들어진 뒤 한 번도 커밋되지 않은 티켓이 이동하면 *옛* 경로가
          정확히 그 상태고(detached 구간의 보류 commit), 디자인 git 에선 `touches` 가 이 repo 에
-         없는 경로(두-git 형상의 코드 worktree 경로·오타)를 가리키는 경우가 그렇다. 추적 중인
+         없는 경로(두-git 구성의 코드 worktree 경로·오타)를 가리키는 경우가 그렇다. 추적 중인
          *삭제* 경로는 남긴다(삭제도 커밋돼야 이동이 완성된다).
       4. **gitignored 경로 제거**(`_git_scope_ignored`) — 명시 pathspec 이 ignored 면 `add` 가
          **rc=1 에러**다(광역 `add -A` 와 다르다). 사람이 손으로 적는 `touches` 에 gitignored
@@ -508,14 +508,14 @@ def git_scope_stageable(repo: Path, pathspec: Sequence[str], *,
       5. **최종 관문: 디렉토리는 하나도 반환하지 않는다** — 1의 전개가 *조용히 실패* 해도
          불변식이 유지되게 마지막에 한 번 더 거른다. 실제로 그런 실패가 있었다: `status
          --porcelain` 기본값(`untracked-files=normal`)이 새 untracked 디렉토리를 `?? newdir/`
-         한 항목으로 접어, 전개 결과가 디렉토리인 채 3의 `exists()` 를 통과했다(PM 실 git
+         한 항목으로 묶어, 전개 결과가 디렉토리인 채 3의 `exists()` 를 통과했다(PM 실 git
          재현). **불변식은 전개의 성공에 의존하면 안 된다.**
     """
     run = run_git or (lambda args: _git_scope_run(repo, args))
     expanded: list[str] = []
     for p in pathspec:
         # 전개는 **디렉토리이거나 worktree 에 없는** 경로에 시도한다. 후자가 load-bearing 이다:
-        # 선언한 디렉토리가 *통째로 삭제* 되면 `is_dir()` 이 false 라 옛 게이트는 전개를 건너뛰고,
+        # 선언한 디렉토리가 *통째로 삭제* 되면 `is_dir()` 이 false 라 옛 검사는 전개를 건너뛰고,
         # 이어지는 추적 판정도 `ls-files -- src` 가 `src/a.py` 를 내놔 `src` 와 매칭되지 않아
         # 경로가 통째로 탈락했다 — **선언한 삭제가 커밋에서 조용히 빠졌다**(reviewer 실측).
         # 존재하는 *파일* 은 전개 결과가 자기 자신이라 시도할 이유가 없다(subprocess 절약).
@@ -542,7 +542,7 @@ def git_scope_stageable(repo: Path, pathspec: Sequence[str], *,
 def git_scope_stage_pathspec(repo: Path, paths: Sequence[Path], *,
                              exclude_prefixes: Sequence[str] = (),
                              run_git: GitRunner | None = None) -> tuple[str, ...]:
-    """선언 경로 → 그 repo 에서 실제 stage 가능한 pathspec (스코프+동형 필터 단일 진입).
+    """선언 경로 → 그 repo 에서 실제 stage 가능한 pathspec (스코프+같은 구조 필터 단일 진입).
 
     `git_scope_pathspec`(스코프) → `git_scope_stageable`(미존재/미추적 제거) 순서 고정 —
     두 단계를 따로 부르는 호출부가 순서를 뒤바꾸거나 한쪽을 빼먹지 않게 한 진입점으로 묶는다.
@@ -559,7 +559,7 @@ def git_scope_stage_and_commit(repo: Path, message: str, pathspec: Sequence[str]
 
     `add` 선행은 **필수**다 — `git commit --only -- <새 경로>` 단독은 그 경로가 untracked 라
     `pathspec did not match` 로 실패한다(architect 실측). 커밋이 실제로 생겼는지 판정(HEAD
-    전진)은 호출부 몫이다 — repo 마다 HEAD 조회 seam 이 다르다.
+    전진)은 호출부 몫이다 — repo 마다 HEAD 조회 교체 지점이 다르다.
     """
     run = run_git or (lambda args: _git_scope_run(repo, args))
     run(["add", "-A", "--", *pathspec])

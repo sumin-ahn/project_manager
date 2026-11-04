@@ -34,7 +34,7 @@ def _render_task_pm_state_pointer(path) -> str:
 
 
 def _hook_generation_notice(lint_output: str) -> str | None:
-    """lint gate 출력이 훅 세대 차단이면 그 줄, 아니면 None.
+    """lint --blocking 출력이 훅 버전 차단이면 그 줄, 아니면 None.
 
     판정 접두는 `pre_push_hook.PM_HOOK_NOTICE_PREFIX` 가 소유한다 — 여기 사본을 두면 엔진이
     문구를 바꿀 때 조용히 어긋난다.
@@ -54,8 +54,8 @@ def format_blocking_lint_warning(
 ) -> str:
     """blocking lint의 red 신호는 유지하면서 기본 stderr를 bounded 요약으로 만든다.
 
-    전체 gate 전문은 이미 `lint_output`에 보존되어 있으나 기본 bootstrap 출력에는 총계,
-    blocking 수, 대표 항목만 싣는다. 전체 진단은 안내한 `board.py lint --gate`를 사용자가
+    전체 lint 전문은 이미 `lint_output`에 보존되어 있으나 기본 bootstrap 출력에는 총계,
+    blocking 수, 대표 항목만 싣는다. 전체 진단은 안내한 `board.py lint --blocking`을 사용자가
     명시 실행할 때만 출력한다.
     """
     if representative_limit < 0:
@@ -120,7 +120,7 @@ def parse_lint_result(lint_output: str) -> str:
     "✓ no lint issues" 이면 "clean" 반환.
     경고가 있으면 해당 줄 수를 "N warnings" 형식으로 반환.
 
-    `--gate` 출력은 헤더 `⚠️  N lint issue(s) (M blocking 차단):` 다음에 각 issue
+    `--blocking` 출력은 헤더 `⚠️  N lint issue(s) (M blocking 차단):` 다음에 각 issue
     줄(`✗`/공백 마크 + `[kind] …`)이 온다. issue 줄만 **양성 매칭**한다. 헤더를
     제외 목록으로 관리하면 새 표시 헤더가 추가될 때마다 같은 off-by-one이 재발한다
 
@@ -152,7 +152,7 @@ def _ordered_count_statuses(counts: dict[str, int]) -> list[str]:
 def _board_count_parts(
     counts: dict[str, int], scope_label: str, *, delimiter: str
 ) -> list[str]:
-    """status 별 카운트 조각 — 두 표면(카운트 줄·권장 첫 turn 요약)이 집합·순서를 공유한다.
+    """status 별 카운트 조각 — 두 출력(카운트 줄·권장 첫 turn 요약)이 집합·순서를 공유한다.
 
     `delimiter` 는 status 와 수 사이 표기만 가른다(카운트 줄 `": "` · 요약 문장 `" "`) — 종전
     bytes 를 그대로 두면서 status 집합만 board 파생으로 바꾸기 위한 유일한 차이다.
@@ -173,7 +173,7 @@ def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine")
 
     **open 도 세션 스코프**: 세션 기본 뷰가 open 을 내 세션 생성분만 보이므로
     슬롯무관 공유 backlog 전량·접힘 카운트 폐기) 모든 status 에 같은 `scope_label` 을 붙인다 —
-    옛 `_OPEN_SCOPE_LABEL`(공유 backlog 정정) 축이 소멸(open 이 더는 전역 대기열 수가 아님).
+    옛 `_OPEN_SCOPE_LABEL`(공유 backlog 정정) 구분이 없어졌다(open 이 더는 전역 대기열 수가 아님).
     """
     return "- " + " / ".join(_board_count_parts(counts, scope_label, delimiter=": "))
 
@@ -212,7 +212,7 @@ def _format_stale_warning(handoff_ctx: dict | None) -> str | None:
 
     `handoff_ctx["session_stale"]` 가 True(=`reconcile_session_num` 이 log 우선 max 를 택함)면
     경고 문자열, 아니면 None(줄 생략). per-slot pm_state 가 git-ignored 라 머신 간 미동기임을
-    표면화한다 — final(log 우선) vs state(뒤처진 pm_state 값) 둘 다 담아 진단 가능하게.
+    드러낸다 — final(log 우선) vs state(뒤처진 pm_state 값) 둘 다 담아 진단 가능하게.
     """
     if not handoff_ctx or not handoff_ctx.get("session_stale"):
         return None

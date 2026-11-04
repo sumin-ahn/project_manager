@@ -4,22 +4,22 @@ opencode `run` 이 스타트업 network fetch stall 에 빠지면 `--format json
 **영원히** 멈춘다(PM 70 라이브 실측·upstream #13841). 호출층 워치독이 이를 닫는다: 첫 이벤트가 N초 내
 안 오면 프로세스 그룹째 kill → 재시도(M회) → 소진 시 fail-loud. 무한 hang → 유한 재시도.
 
-검증 축 (ticket DoD):
+검증 항목 (ticket DoD):
   ① 엔진 헬퍼 `run_with_first_event_watchdog` — 주입 popen/clock hermetic(바이너리 불요·CI 상시):
      stall 소진→StallWatchdogError · 재시도 성공 경로 · overall(mid-turn) drain 백스톱 · kill · loud.
   ② env 노브 `PM_OC_FIRST_EVENT_TIMEOUT`/`PM_OC_STALL_RETRIES` 해소기 동작.
-  ③ opencode driver 배선 — run_relay 가 공급한 runner 가 엔진 워치독 호출 · `_turn` 이 stall 소진에
+  ③ opencode driver 연결 — run_relay 가 공급한 runner 가 엔진 워치독 호출 · `_turn` 이 stall 소진에
      loud + fail-soft(stall_error 주입 시) · 미주입 시 전파(sensitivity).
   ④ pm_import `--fill auto` 세 하네스 공용 워치독 경유 · opencode startup 재시도 불변.
    ⑤ **결정적 e2e**(skipif opencode 부재) — 무응답 소켓 서버(연결 수락·응답 0)를 baseURL 로 물린
       스크래치 config·실 opencode 바이너리로 워치독이 kill+재시도+fail-loud 하는지(first-event
       timeout 을 5초로 낮춰 수십 초 내 검증).
 
-T-opencode-003 부터 이 파일은 제2축도 함께 소유한다: stall-watchdog **플러그인**(세션 idle
-미완료 감지·처방 넛지 자동 주입 — templates/opencode/.opencode/{plugins/stall-watchdog.js,
-lib/stall-watchdog-core.cjs}). T-0336 축은 *프로세스* 첫-이벤트 hang, 플러그인 축은 *모델 턴*
+T-opencode-003 부터 이 파일은 둘째 대상도 함께 소유한다: stall-watchdog **플러그인**(세션 idle
+미완료 감지·해결 안내 경고 자동 주입 — templates/opencode/.opencode/{plugins/stall-watchdog.js,
+lib/stall-watchdog-core.cjs}). T-0336 대상은 *프로세스* 첫-이벤트 hang, 플러그인 대상은 *모델 턴*
 미완료 종료로 정반대 멈춤이다. 파일명을 공유하는 건 티켓 touches 가 이 경로를 지정하기 때문이며,
-플러그인 축 검증은 하단 `T-opencode-003` 섹션이 담당한다(기존 ①~⑤ 검증과 독립).
+플러그인 검증은 하단 `T-opencode-003` 섹션이 담당한다(기존 ①~⑤ 검증과 독립).
 """
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ class _FakeProc:
 
 
 def _scripted_popen(procs):
-    """popen seam — 시도마다 다음 스크립트 proc 를 돌려준다."""
+    """popen 교체 함수 — 시도마다 다음 스크립트 proc 를 돌려준다."""
     it = iter(procs)
     return lambda _argv: next(it)
 
@@ -213,7 +213,7 @@ def test_watchdog_fast_exit_without_event_drains():
 
 
 # ── ①b 실 어댑터 (opencode-무관·python3 자식·CI 상시·주입 없는 실 _WatchedPopen/kill 경로) ──
-# hermetic 12건은 전부 주입 popen 이라 실 _WatchedPopen/_kill_process_group 은 opencode-gated e2e
+# hermetic 12건은 전부 주입 popen 이라 실 _WatchedPopen/_kill_process_group 은 opencode 가 있을 때만 도는 e2e
 # 에서만 돌았다(reviewer should-fix). 여기서는 opencode 불요·항상 있는 python3 자식으로 실 어댑터를
 # 낮은 타임아웃(1~2초)에 커버한다.
 
@@ -302,7 +302,7 @@ def test_env_knob_stall_retries(monkeypatch):
     assert watchdog.stall_retries_default() == 2                    # 불량 → 기본.
 
 
-# ── ③ opencode driver 배선 ─────────────────────────────────────────────────────
+# ── ③ opencode driver 연결 ─────────────────────────────────────────────────────
 
 def test_driver_watchdog_runner_calls_engine(monkeypatch, tmp_path):
     """run_relay 가 공급한 OpenCode runner 가 엔진 워치독을 env 노브·overall_timeout 로 호출한다."""
@@ -424,7 +424,7 @@ def _loopback_socket_capability(socket_factory=socket.socket) -> tuple[bool, str
 
     일부 network-off sandbox 는 socket() 자체 또는 loopback bind 를 EPERM 으로 막는다.
     그 환경에서는 실 socket E2E를 skip 하되, 아래의 hermetic watchdog 계약 검증은 계속 실행한다.
-    ``socket_factory`` seam 은 capability 허용/거부 분기를 소켓 없이 고정한다.
+    ``socket_factory`` 교체 지점은 capability 허용/거부 분기를 소켓 없이 고정한다.
     """
     srv = None
     try:
@@ -583,23 +583,23 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
         close()
 
 
-# ── T-opencode-003: stall-watchdog 플러그인 (세션 idle 미완료 감지·처방 넛지) ──────────────
+# ── T-opencode-003: stall-watchdog 플러그인 (세션 idle 미완료 감지·해결 안내 경고) ──────────────
 #
-# 검증 축 (ticket DoD):
+# 검증 항목 (ticket DoD):
 #   ㉠ 파일 존재 + 인스턴스 사본 byte-identical + ESM 로드 규약(shim = 팩토리 단일 named-export,
 #     core 는 lib/ CJS — safe-write 이중구조 선례).
 #   ㉡ core 정적 계약 — @opencode-ai/plugin 비의존(node require 보존)·env 노브 3종·session.idle
-#     구독 + client.session.prompt 주입 배선.
+#     구독 + client.session.prompt 주입 연결.
 #   ㉢ (node 있으면) core 순수 로직 자가검증 — classifyStall 3종 양성/음성(선언+tool 파트 쌍·
 #     interleaved [선언,tool,완료] 완료 턴 F-001 회귀·truncated 단일 신호 억제·결론형 종료 정상)·
-#     isAbortOutcome(abort 직후 넛지 금지)·isSelfNudgeEntry(F-002 자기 넛지 판별)·buildNudge
-#     3종 문어체·shouldNudge 게이트 경계(연속 무진행 3 차단·진행 리셋·백스톱 20·사용자 해제)·env
+#     isAbortOutcome(abort 직후 경고 금지)·isSelfWarnEntry(F-002 자기 경고 판별)·buildWarn
+#     3종 문어체·shouldWarn 반복 차단 경계(연속 무진행 3 차단·진행 리셋·백스톱 20·사용자 해제)·env
 #     override. node 부재 시 skip.
-#   ㉣ (node 있으면) 팩토리 배선 자가검증 — fake client 로 session.idle 구동: 넛지 주입(sessionID+
-#     text parts)·interleaved 완료 턴 넛지 없음(F-001)·연속 차단·abort 면제·todo 진행 리셋·넛지
-#     user 엔트리 비해제(F-002)·사용자 메시지 영구 해제·주입 실패 흡수(never-block)·durable marker
+#   ㉣ (node 있으면) 팩토리 연결 자가검증 — fake client 로 session.idle 구동: 경고 주입(sessionID+
+#     text parts)·interleaved 완료 턴 경고 없음(F-001)·연속 차단·abort 면제·todo 진행 리셋·경고
+#     user 엔트리 비해제(F-002)·사용자 메시지 영구 해제·주입 실패 무시(never-block)·durable marker
 #     영속 확인. node 부재 시 skip.
-#   ㉤ (node 있으면) 게이트 상태 프로세스 간 이어짐 — headless one-shot 모델 대응의 핵심 계약을
+#   ㉤ (node 있으면) 반복 차단 상태 프로세스 간 이어짐 — headless one-shot 모델 대응의 핵심 계약을
 #     별개 node 프로세스 3개(save→load+warn→load)로 실측. node 부재 시 skip.
 
 STALL_OPENCODE = REPO / "templates" / "opencode" / ".opencode"
@@ -621,7 +621,7 @@ def _stall_shim_src() -> str:
 
 
 def _install_stall_core(root: Path) -> Path:
-    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 형상 그대로.
+    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 구성 그대로.
 
     core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 소스
     트리에서 require 하면 세션 마커가 `templates/opencode/.project_manager/.local/` 에 생긴다.
@@ -692,7 +692,7 @@ def test_stall_watchdog_entry_is_esm_single_function_export():
 
 
 def test_stall_watchdog_core_static_contract():
-    """core 정적 계약 — plugin 패키지 비의존·env 노브 3종·상한 기본값·idle/prompt 배선."""
+    """core 정적 계약 — plugin 패키지 비의존·env 노브 3종·상한 기본값·idle/prompt 연결."""
     src = _stall_core_src()
     # node 자가검증 보존 — core 는 @opencode-ai/plugin 을 require/import 하지 않는다(주석 언급 허용).
     assert not re.search(r'(?:require|import)\s*\(?\s*["\']@opencode-ai/plugin["\']', src), (
@@ -707,7 +707,7 @@ def test_stall_watchdog_core_static_contract():
     ):
         assert key in src, f"env 노브 {key} 없음"
     assert '"session.idle"' in src, "session.idle 이벤트 구독 없음"
-    assert "session.prompt" in src, "client.session.prompt 주입 배선 없음"
+    assert "session.prompt" in src, "client.session.prompt 주입 연결 없음"
     assert "makeStallWatchdogPlugin" in src, "커링 팩토리(makeStallWatchdogPlugin) 없음"
 
 
@@ -720,10 +720,10 @@ def test_stall_watchdog_core_requires_cleanly_in_node():
 
 
 def test_stall_watchdog_core_pure_logic_node_selfcheck():
-    """node 로 core 순수 로직 자가검증 — 분류기·처방문·게이트 경계·env override (node 부재 skip).
+    """node 로 core 순수 로직 자가검증 — 분류기·안내문·반복 차단 경계·env override (node 부재 skip).
 
     classifyStall 3종 양성 + 음성(선언 후 tool 파트 있음·결론형 종료=사용자 대기·truncated 단일
-    신호 억제)·abort 면제·buildNudge 3종 문어체·게이트(연속 무진행 3 도달 차단·진행 리셋·백스톱
+    신호 억제)·abort 면제·buildWarn 3종 문어체·반복 차단(연속 무진행 3 도달 차단·진행 리셋·백스톱
     20·사용자 해제·오염 상태 정규화)·env 노브 해소.
     """
     if _NODE is None:
@@ -733,10 +733,10 @@ def test_stall_watchdog_core_pure_logic_node_selfcheck():
 const m = require("./stall-watchdog-core.cjs");
 const assert = require("node:assert");
 
-// export 표면.
-for (const fn of ["classifyStall","buildNudge","shouldNudge","makeStallWatchdogPlugin",
+// export 범위.
+for (const fn of ["classifyStall","buildWarn","shouldWarn","makeStallWatchdogPlugin",
                   "isAbortOutcome","freshStallState","normalizeStallState","recordProgress",
-                  "releaseWatchdog","recordNudgeFired","saveStallState","loadStallState",
+                  "releaseWatchdog","recordWarnFired","saveStallState","loadStallState",
                   "resolveMaxConsec","resolveMaxTotal","isDisabled"]) {
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
 }
@@ -775,7 +775,7 @@ assert.deepStrictEqual(v, {stall:true, kind:"open-todos"});
 // in_progress 도 미완료 산입.
 v = m.classifyStall("계속 진행 중", [{status:"in_progress"}], false);
 assert.deepStrictEqual(v, {stall:true, kind:"open-todos"});
-// truncated 신호 + 미완료 todo 결합 시에만 truncated 처방 (매달린 괄호).
+// truncated 신호 + 미완료 todo 결합 시에만 truncated 안내 (매달린 괄호).
 v = m.classifyStall("코드는 다음과 같다 (", [{status:"pending"}], false);
 assert.deepStrictEqual(v, {stall:true, kind:"truncated"});
 // 미종결 코드블록(홀수 펜스) + 미완료 todo → truncated.
@@ -810,7 +810,7 @@ v = m.classifyStall(
   m.extractAssistantTextAfterLastTool(soloDecl),
 );
 assert.deepStrictEqual(v, {stall:true, kind:"declare-no-action"});
-// 보존 — 마지막 tool 이후 꼬리 발화의 선언(실행 없음)도 양성.
+// 보존 — 마지막 tool 이후 꼬리 말의 선언(실행 없음)도 양성.
 const tailDecl = [{type:"tool"},{type:"text", text:"이제 결과 파일을 생성하겠습니다."}];
 v = m.classifyStall(
   m.extractAssistantText(tailDecl), [],
@@ -825,71 +825,71 @@ assert.strictEqual(v.stall, false);
 assert.strictEqual(m.classifyStall("", [{status:"pending"}], false).stall, false);
 assert.strictEqual(m.classifyStall(null, [], false).stall, false);
 
-// ── isAbortOutcome (abort 직후 넛지 금지) ─────────────────────────────────────
+// ── isAbortOutcome (abort 직후 경고 금지) ─────────────────────────────────────
 assert.strictEqual(m.isAbortOutcome({error:{name:"MessageAbortedError"}}), true);
 assert.strictEqual(m.isAbortOutcome({finish:"abort"}), true);
 assert.strictEqual(m.isAbortOutcome({finish:"stop"}), false);
 assert.strictEqual(m.isAbortOutcome({}), false);
 assert.strictEqual(m.isAbortOutcome(null), false);
 
-// ── isSelfNudgeEntry (F-002 — 자기 넛지 user 엔트리는 실사용자 도착이 아님) ────
-assert.strictEqual(m.isSelfNudgeEntry(
-  {info:{role:"user"}, parts:[{type:"text", text:m.NUDGE_MARKER_PREFIX + " 응답이 잘렸다"}]}), true);
-assert.strictEqual(m.isSelfNudgeEntry(
-  {info:{role:"user"}, parts:[{type:"text", text:"  " + m.NUDGE_MARKER_PREFIX + " x"}]}), true);
-assert.strictEqual(m.isSelfNudgeEntry(
+// ── isSelfWarnEntry (F-002 — 자기 경고 user 엔트리는 실사용자 도착이 아님) ────
+assert.strictEqual(m.isSelfWarnEntry(
+  {info:{role:"user"}, parts:[{type:"text", text:m.WARN_MARKER_PREFIX + " 응답이 잘렸다"}]}), true);
+assert.strictEqual(m.isSelfWarnEntry(
+  {info:{role:"user"}, parts:[{type:"text", text:"  " + m.WARN_MARKER_PREFIX + " x"}]}), true);
+assert.strictEqual(m.isSelfWarnEntry(
   {info:{role:"user"}, parts:[{type:"text", text:"다음은 어떻게 하나요?"}]}), false);
-assert.strictEqual(m.isSelfNudgeEntry({info:{role:"user"}, parts:[]}), false);
-assert.strictEqual(m.isSelfNudgeEntry(
+assert.strictEqual(m.isSelfWarnEntry({info:{role:"user"}, parts:[]}), false);
+assert.strictEqual(m.isSelfWarnEntry(
   {info:{role:"user"}, parts:[{type:"tool"}]}), false);
-assert.strictEqual(m.isSelfNudgeEntry(
-  {info:{role:"assistant"}, parts:[{type:"text", text:m.NUDGE_MARKER_PREFIX + " x"}]}), false);
-assert.strictEqual(m.isSelfNudgeEntry(null), false);
+assert.strictEqual(m.isSelfWarnEntry(
+  {info:{role:"assistant"}, parts:[{type:"text", text:m.WARN_MARKER_PREFIX + " x"}]}), false);
+assert.strictEqual(m.isSelfWarnEntry(null), false);
 
-// ── buildNudge (3종 문어체 고정·unknown null) ─────────────────────────────────
-assert.ok(m.buildNudge("declare-no-action").includes("safe_write"), "선언 처방이 safe_write 청크 유도 아님");
-assert.ok(m.buildNudge("declare-no-action").includes("create→append"));
-assert.ok(m.buildNudge("declare-no-action").includes("bash"), "반복 내용 bash 생성 안내 누락");
-assert.ok(m.buildNudge("truncated").includes("잘렸"), "truncated 처방 문어체 훼손");
-assert.ok(m.buildNudge("truncated").includes("파일로 써라"));
-assert.ok(m.buildNudge("open-todos").includes("가장 작은 것"), "open-todos 처방 문어체 훼손");
-assert.strictEqual(m.buildNudge("bogus"), null);
+// ── buildWarn (3종 문어체 고정·unknown null) ─────────────────────────────────
+assert.ok(m.buildWarn("declare-no-action").includes("safe_write"), "선언 안내가 safe_write 청크 유도 아님");
+assert.ok(m.buildWarn("declare-no-action").includes("create→append"));
+assert.ok(m.buildWarn("declare-no-action").includes("bash"), "반복 내용 bash 생성 안내 누락");
+assert.ok(m.buildWarn("truncated").includes("잘렸"), "truncated 안내 문어체 훼손");
+assert.ok(m.buildWarn("truncated").includes("파일로 써라"));
+assert.ok(m.buildWarn("open-todos").includes("가장 작은 것"), "open-todos 안내 문어체 훼손");
+assert.strictEqual(m.buildWarn("bogus"), null);
 
-// ── shouldNudge 게이트 경계 ───────────────────────────────────────────────────
+// ── shouldWarn 반복 차단 경계 ───────────────────────────────────────────────────
 let s = m.freshStallState();
 assert.deepStrictEqual(s, {consecutiveIdle:0,totalNudges:0,released:false,lastCompletedCount:0});
-assert.strictEqual(m.shouldNudge(s, LIM), true);
+assert.strictEqual(m.shouldWarn(s, LIM), true);
 s.consecutiveIdle = 2;
-assert.strictEqual(m.shouldNudge(s, LIM), true);      // 연속 무진행 2 — 아직 통과.
+assert.strictEqual(m.shouldWarn(s, LIM), true);      // 연속 무진행 2 — 아직 통과.
 s.consecutiveIdle = 3;
-assert.strictEqual(m.shouldNudge(s, LIM), false);     // 연속 무진행 3 도달 — 차단(스트릭당 최대 3회 넛지).
+assert.strictEqual(m.shouldWarn(s, LIM), false);     // 연속 무진행 3 도달 — 차단(스트릭당 최대 3회 경고).
 // 절대 백스톱 20.
 s = m.freshStallState(); s.totalNudges = 19;
-assert.strictEqual(m.shouldNudge(s, LIM), true);
+assert.strictEqual(m.shouldWarn(s, LIM), true);
 s.totalNudges = 20;
-assert.strictEqual(m.shouldNudge(s, LIM), false);
+assert.strictEqual(m.shouldWarn(s, LIM), false);
 // 사용자 해제 — 다른 조건과 무관하게 차단.
 s = m.freshStallState();
-assert.strictEqual(m.shouldNudge(m.releaseWatchdog(s), LIM), false);
+assert.strictEqual(m.shouldWarn(m.releaseWatchdog(s), LIM), false);
 // 진행 감지 리셋 — 연속 카운터만 리셋(누적 백스톱은 유지).
 s = m.freshStallState(); s.consecutiveIdle = 5; s.totalNudges = 7;
 s = m.recordProgress(s, 4);
 assert.strictEqual(s.consecutiveIdle, 0);
 assert.strictEqual(s.lastCompletedCount, 4);
 assert.strictEqual(s.totalNudges, 7);
-assert.strictEqual(m.shouldNudge(s, LIM), true);
-// 넛지 발화 전이 — 두 카운터 동시 증가.
-s = m.recordNudgeFired(m.freshStallState());
+assert.strictEqual(m.shouldWarn(s, LIM), true);
+// 경고 실행 전이 — 두 카운터 동시 증가.
+s = m.recordWarnFired(m.freshStallState());
 assert.strictEqual(s.consecutiveIdle, 1);
 assert.strictEqual(s.totalNudges, 1);
 // limits 미주입 → process.env 해소.
 process.env.PM_STALL_WATCHDOG_MAX_TOTAL = "2";
 s = m.freshStallState(); s.totalNudges = 2;
-assert.strictEqual(m.shouldNudge(s), false);
+assert.strictEqual(m.shouldWarn(s), false);
 delete process.env.PM_STALL_WATCHDOG_MAX_TOTAL;
 s.totalNudges = 1;
-assert.strictEqual(m.shouldNudge(s), true);
-// 오염 영속 값 정규화 — 부분 JSON 이 게이트를 오동작 시키지 않는다.
+assert.strictEqual(m.shouldWarn(s), true);
+// 오염 영속 값 정규화 — 부분 JSON 이 반복 차단을 오동작 시키지 않는다.
 const n = m.normalizeStallState({consecutiveIdle:-5, totalNudges:"x", released:"yes", lastCompletedCount:null});
 assert.strictEqual(n.consecutiveIdle, 0);
 assert.strictEqual(n.totalNudges, 0);
@@ -903,14 +903,14 @@ console.log("STALL_PURE_SELFCHECK_OK");
 
 
 def test_stall_watchdog_factory_wiring_node_selfcheck(tmp_path):
-    """node 로 fake client 팩토리 배선 검증 — idle 구독→분류→게이트→prompt 주입 (opencode 없이).
+    """node 로 fake client 팩토리 연결 검증 — idle 구독→분류→반복 차단→prompt 주입 (opencode 없이).
 
-    session.idle 이벤트를 직접 구동해 넛지 주입 형태({path:{id},body:{parts:[{type:"text"}]}}) — SDK v2 런타임은 path 형태만 유효(2026-08-25 프로브 실측)·연속 무진행
-    3 도달 차단·abort 면제·todo 진행 리셋·사용자 메시지 영구 해제·주입 실패 흡수(never-block)·
+    session.idle 이벤트를 직접 구동해 경고 주입 형태({path:{id},body:{parts:[{type:"text"}]}}) — SDK v2 런타임은 path 형태만 유효(2026-08-25 프로브 실측)·연속 무진행
+    3 도달 차단·abort 면제·todo 진행 리셋·사용자 메시지 영구 해제·주입 실패 무시(never-block)·
     durable marker 영속까지 확인한다. node 부재 시 skip.
     """
     if _NODE is None:
-        pytest.skip("node 없음 — 팩토리 배선 자가검증 skip")
+        pytest.skip("node 없음 — 팩토리 연결 자가검증 skip")
 
     script = r"""
 const m = require("./stall-watchdog-core.cjs");
@@ -954,7 +954,7 @@ function msg(role, parts, extra) {
   await hooks.event({event:{type:"message.updated", properties:{}}});
   assert.strictEqual(prompts.length, 0);
 
-  // ① declare-no-action stall → 넛지 주입 ({path:{id}, body:{parts:[text]}}).
+  // ① declare-no-action stall → 경고 주입 ({path:{id}, body:{parts:[text]}}).
   currentMessages = [msg("assistant", [{type:"text", text:"새 파일을 생성하겠습니다."}])];
   currentTodos = [];
   await idle();
@@ -963,21 +963,21 @@ function msg(role, parts, extra) {
   assert.strictEqual(prompts[0].body.parts[0].type, "text");
   assert.ok(prompts[0].body.parts[0].text.includes("safe_write"));
 
-  // 선언 후 tool 파트가 있으면 정상 — 넛지 증가 없음.
+  // 선언 후 tool 파트가 있으면 정상 — 경고 증가 없음.
   currentMessages = [msg("assistant", [{type:"text", text:"새 파일을 생성하겠습니다."},{type:"tool"}])];
   await idle();
   assert.strictEqual(prompts.length, 1);
 
-  // F-001 회귀 — interleaved [선언, tool, 완료] 다중 text 파트 정상 턴은 넛지하지 않는다.
+  // F-001 회귀 — interleaved [선언, tool, 완료] 다중 text 파트 정상 턴은 경고하지 않는다.
   currentMessages = [msg("assistant", [
     {type:"text", text:"새 파일을 생성하겠습니다."},
     {type:"tool"},
     {type:"text", text:"생성을 완료했습니다."},
   ])];
   await idle();
-  assert.strictEqual(prompts.length, 1, "interleaved 완료 턴에 넛지함 (F-001 오검출)");
+  assert.strictEqual(prompts.length, 1, "interleaved 완료 턴에 경고함 (F-001 오검출)");
 
-  // ② 연속 무진행 게이트 — 같은 멈춤 반복: 스트릭당 3회 넛지 후 차단.
+  // ② 연속 무진행 반복 차단 — 같은 멈춤 반복: 스트릭당 3회 경고 후 차단.
   currentMessages = [msg("assistant", [{type:"text", text:"이어서 작업하고"}])];
   currentTodos = [{content:"a", status:"pending"}];
   await idle();   // open-todos #2 (누적 2).
@@ -989,12 +989,12 @@ function msg(role, parts, extra) {
   assert.strictEqual(st.consecutiveIdle, 3);
   assert.strictEqual(st.totalNudges, 3);
 
-  // ③ abort 직후 종료 — 넛지 금지·게이트 소모 없음.
+  // ③ abort 직후 종료 — 경고 금지·차단 예산 소모 없음.
   currentMessages = [msg("assistant", [{type:"text", text:"이어서 작업하고"}], {error:{name:"MessageAbortedError"}})];
   await idle();
   assert.strictEqual(prompts.length, 3);
 
-  // ④ 진행 감지(todo 완료 수 변동) → 연속 카운터 리셋 후 재무장.
+  // ④ 진행 감지(todo 완료 수 변동) → 연속 카운터 리셋 후 다시 켜짐.
   currentTodos = [{content:"a", status:"completed"},{content:"b", status:"pending"}];
   currentMessages = [msg("assistant", [{type:"text", text:"다음 단계를 시작하고"}])];
   await idle();
@@ -1003,7 +1003,7 @@ function msg(role, parts, extra) {
   assert.strictEqual(st.consecutiveIdle, 1);
   assert.strictEqual(st.lastCompletedCount, 1);
 
-  // F-002 회귀 — 자기 넛지 직후 assistant 회신 없는 idle: [stall-watchdog] 접두 user 엔트리는
+  // F-002 회귀 — 자기 경고 직후 assistant 회신 없는 idle: [stall-watchdog] 접두 user 엔트리는
   // 실사용자 도착이 아니므로 워치독이 영구 해제되지 않는다.
   currentMessages = [
     msg("assistant", [{type:"text", text:"작업을 완료했습니다."}]),
@@ -1011,8 +1011,8 @@ function msg(role, parts, extra) {
   ];
   currentTodos = [];
   await idle();
-  assert.strictEqual(persisted().released, false, "자기 넛지를 사용자 도착으로 오판해 영구 해제함 (F-002)");
-  assert.strictEqual(prompts.length, 4);   // 해제 아님 — 결론형 종료라 stall 도 아니어서 넛지 없음.
+  assert.strictEqual(persisted().released, false, "자기 경고를 사용자 도착으로 오판해 영구 해제함 (F-002)");
+  assert.strictEqual(prompts.length, 4);   // 해제 아님 — 결론형 종료라 stall 도 아니어서 경고 없음.
 
   // ⑤ 사용자 메시지 도착(마지막 assistant 이후 user) → 영구 해제.
   currentMessages = [
@@ -1022,17 +1022,17 @@ function msg(role, parts, extra) {
   await idle();
   assert.strictEqual(persisted().released, true);
   await idle();
-  assert.strictEqual(prompts.length, 4);   // 해제 상태에선 stall 이어도 넛지 없음.
+  assert.strictEqual(prompts.length, 4);   // 해제 상태에선 stall 이어도 경고 없음.
 
-  // ⑥ 주입 실패도 이벤트 처리를 막지 않고(never-block) 게이트는 소모된다.
+  // ⑥ 주입 실패도 이벤트 처리를 막지 않고(never-block) 차단 예산은 소모된다.
   promptShouldThrow = true;
   fs.rmSync(path.join(td, ".project_manager", ".local", "stall-watchdog"), {recursive:true, force:true});
   currentMessages = [msg("assistant", [{type:"text", text:"새 파일을 생성하겠습니다."}])];
   currentTodos = [];
   await idle();                              // firePrompt 예외가 핸들러 밖으로 전파되지 않는다.
-  await new Promise((r) => setTimeout(r, 30)); // 비동기 거부 흡수 시점 대기.
+  await new Promise((r) => setTimeout(r, 30)); // 비동기 거부 무시 시점 대기.
   st = persisted();
-  assert.strictEqual(st.totalNudges, 1);     // delivery 불확실도 게이트 소모(소음 상한 우선).
+  assert.strictEqual(st.totalNudges, 1);     // delivery 불확실도 차단 예산 소모(소음 상한 우선).
 
   console.log("STALL_WIRING_OK");
 })().catch((e) => { console.error(e && e.stack || String(e)); process.exit(1); });
@@ -1041,7 +1041,7 @@ function msg(role, parts, extra) {
         script, {"STALL_WIRING_ROOT": str(tmp_path)}, cwd=_install_stall_core(tmp_path),
     )
     combined = out.stdout + out.stderr
-    assert "STALL_WIRING_OK" in out.stdout, f"팩토리 배선 자가검증 실패. out={combined!r}"
+    assert "STALL_WIRING_OK" in out.stdout, f"팩토리 연결 자가검증 실패. out={combined!r}"
     # 팩토리 구동이 소스 트리에 세션 상태를 쓰지 않는다 (엔진 루트 = 설치 트리).
     assert not (STALL_OPENCODE.parent / ".project_manager" / ".local").exists(), (
         "팩토리 구동이 templates/opencode 소스 트리에 산출물을 남김"
@@ -1049,11 +1049,11 @@ function msg(role, parts, extra) {
 
 
 def test_stall_watchdog_state_persists_across_processes_node_selfcheck(tmp_path):
-    """게이트 상태가 별개 node 프로세스 3개(save→load+넛지→load)에서 이어진다 (headless one-shot 핵심).
+    """반복 차단 상태가 별개 node 프로세스 3개(save→load+경고→load)에서 이어진다 (headless one-shot 핵심).
 
     opencode run 은 프로세스-당-턴 one-shot 이므로 in-memory 카운터는 매 턴 소멸한다 — sessionID 키
     durable marker 로 연속 무진행·백스톱이 프로세스 경계를 넘어 유지되는지 실측. 오염 marker 는
-    fail-open(기본 상태)으로 흡수된다. node 부재 시 skip.
+    fail-open(기본 상태)으로 처리된다. node 부재 시 skip.
     """
     if _NODE is None:
         pytest.skip("node 없음 — 프로세스 간 영속 검증 skip")
@@ -1076,7 +1076,7 @@ const s = m.loadStallState(root, "ses-x");
 if (s.consecutiveIdle !== 2 || s.totalNudges !== 5 || s.lastCompletedCount !== 1) {
   console.error("프로세스 A 가 저장한 상태가 B 에서 다름: " + JSON.stringify(s)); process.exit(1);
 }
-m.saveStallState(root, "ses-x", m.recordNudgeFired(s));
+m.saveStallState(root, "ses-x", m.recordWarnFired(s));
 console.log("PERSIST_B_OK");
 """
     proc_c = r"""
@@ -1084,7 +1084,7 @@ const m = require("./stall-watchdog-core.cjs");
 const root = process.env.STALL_PERSIST_ROOT;
 const s = m.loadStallState(root, "ses-x");
 if (s.consecutiveIdle !== 3 || s.totalNudges !== 6) {
-  console.error("프로세스 B 의 넛지 기록이 C 에서 다름: " + JSON.stringify(s)); process.exit(1);
+  console.error("프로세스 B 의 경고 기록이 C 에서 다름: " + JSON.stringify(s)); process.exit(1);
 }
 console.log("PERSIST_C_OK");
 """
@@ -1096,7 +1096,7 @@ console.log("PERSIST_C_OK");
     assert "PERSIST_B_OK" in out_b.stdout, f"B 적재·재저장 실패: {out_b.stdout!r} {out_b.stderr!r}"
     assert "PERSIST_C_OK" in out_c.stdout, f"C 적재 실패: {out_c.stdout!r} {out_c.stderr!r}"
 
-    # 오염 marker — fail-open(기본 상태) 흡수.
+    # 오염 marker — fail-open(기본 상태)으로 처리.
     marker_dir = root / ".project_manager" / ".local" / "stall-watchdog"
     markers = list(marker_dir.glob("state.*.json"))
     assert len(markers) == 1, f"SID 키 마커가 1개가 아님: {markers}"
@@ -1105,9 +1105,9 @@ console.log("PERSIST_C_OK");
 const m = require("./stall-watchdog-core.cjs");
 const s = m.loadStallState(process.env.STALL_PERSIST_ROOT, "ses-x");
 if (s.consecutiveIdle !== 0 || s.totalNudges !== 0) {
-  console.error("오염 marker 가 기본 상태로 흡수되지 않음: " + JSON.stringify(s)); process.exit(1);
+  console.error("오염 marker 가 기본 상태로 처리되지 않음: " + JSON.stringify(s)); process.exit(1);
 }
 console.log("PERSIST_D_OK");
 """
     out_d = _run_stall_node_script(proc_d, env)
-    assert "PERSIST_D_OK" in out_d.stdout, f"D 오염 흡수 실패: {out_d.stdout!r} {out_d.stderr!r}"
+    assert "PERSIST_D_OK" in out_d.stdout, f"D 오염 처리 실패: {out_d.stdout!r} {out_d.stderr!r}"

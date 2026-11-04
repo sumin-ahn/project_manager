@@ -66,7 +66,7 @@ def observe_codex_pretooluse(
             reason=reason,
             state_dir=state_dir,
         )
-    except OSError as exc:  # 관측 장부 기록 실패는 판정을 바꾸지 않는다(차단 판정 유지 경고).
+    except OSError as exc:  # 관측 기록 실패는 판정을 바꾸지 않는다(차단 판정 유지 경고).
         return _codex_observation_failure(result, exc)
     return codex_envelope._validated_codex_envelope(result)
 
@@ -91,7 +91,7 @@ def observe_codex_subagent_start(
             reason=reason,
             state_dir=state_dir,
         )
-    except OSError as exc:  # 관측 장부 기록 실패는 판정을 바꾸지 않는다(차단 판정 유지 경고).
+    except OSError as exc:  # 관측 기록 실패는 판정을 바꾸지 않는다(차단 판정 유지 경고).
         return _codex_observation_failure(result, exc)
     return codex_envelope._validated_codex_envelope(result)
 
@@ -116,7 +116,7 @@ def _record_supervisor_fallback(
     stdout alone disappears with the turn, and a fallback that looks like a normal
     pass is what let a permanently-failing wrapper hide.  The row also makes the
     unpaired spawn visible to the existing ``board.py lint`` miss scan, because no
-    ``decision_allow`` was ever recorded for it.  A failing ledger write
+    ``decision_allow`` was ever recorded for it.  A failing record write
     propagates; the guard entry point's fail-open reports it with the same
     fallback envelope.
     """

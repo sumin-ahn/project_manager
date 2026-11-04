@@ -406,7 +406,7 @@ def _live_test_record(home, args: argparse.Namespace) -> int:
     슬롯 cwd 해소(`_live_test_cwd` — 활성 slot worktree)로 subprocess 실행 →
     **rc0 그리고 수집 N==pin** 일 때만 `pass @ <worktree HEAD>` 기록. rc!=0 또는 N!=pin 이면
     `fail` 기록 + rc1(사유를 드러낸다). 손기록 경로는 없다(위조/착오 차단). 기록 위치는
-    push 보호훅 read 위치(`_resolve_livegate_flag` — engine-root sidecar)와 정렬해 단일 소스다
+    push 보호훅 read 위치(`_resolve_live_test_flag` — engine-root sidecar)와 정렬해 단일 소스다
     (worktree/PM 홈 어느 board.py 로 돌려도 훅이 읽는 한 파일).
 
     직접 `--cwd`는 단독으로 지정하며 `--task`/`--repo`/`--slot`과 함께 쓰거나 비울 수 없다.
@@ -445,7 +445,7 @@ def _live_test_record(home, args: argparse.Namespace) -> int:
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
     # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
     # release`(라이브 실행)를 헛돌리기 전에 fail-loud 로 조기 거부한다.
-    flag, mode = regression_store._resolve_livegate_flag(home, cwd)
+    flag, mode = regression_store._resolve_live_test_flag(home, cwd)
     if mode == regression_store._LG_BROKEN:
         # 보호훅은 활성(hooksPath+engine-root sidecar)인데 engine-root 가 무효(board.py 미해소)
         # → 기록 위치와 훅 read 위치가 갈릴 수 있어 pass 위장을 찍지 않고 fail-loud 거부한다
@@ -577,4 +577,4 @@ def cmd_live_test(home, args: argparse.Namespace) -> int:
     """record = `pytest -m release` 실행+기록 / check = push HEAD green 검증 (보호훅용)."""
     if args.action == "record":
         return _live_test_record(home, args)
-    return completion_check._livegate_check(home, args)
+    return completion_check._live_test_check(home, args)

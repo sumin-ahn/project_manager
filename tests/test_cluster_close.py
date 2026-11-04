@@ -400,7 +400,7 @@ def test_unresolvable_integration_branch_stops_the_judgment(tf, tmp_path):
 
 def test_cli_takes_exactly_one_close_target(tf, monkeypatch, capsys):
     """완료 기록 대상은 하나다 — 둘 다 주거나 둘 다 없으면 거부한다(부작용 앞)."""
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home: None)
     for argv in ([], [_TICKET, "--cluster", _CLUSTER]):
         with pytest.raises(SystemExit) as excinfo:
             ticket_finish_cli.main(pm_paths.home_at(REPO), argv)
@@ -412,7 +412,7 @@ def test_reconcile_cli_requires_explicit_repo_and_slot_and_rejects_task(
     tf, monkeypatch, capsys,
 ):
     """Recovery selector는 제품 repo+slot 둘 다 명시하며 task/암묵 해소를 받지 않는다."""
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home: None)
     cases = (
         ["--cluster", _CLUSTER, "--reconcile-integrated", "--repo", "code"],
         ["--cluster", _CLUSTER, "--reconcile-integrated", "--task", "main"],
@@ -793,7 +793,7 @@ def _build_close_env(tf, base: Path, monkeypatch) -> _CloseEnv:
     # 판정을 그대로 부르므로(사본 0) 세션이 해소돼야 각 케이스가 재려던 기준만 남는다 — 세션
     # 미해소는 소유 거부라는 다른 기준이다.
     monkeypatch.setenv("PM_SESSION_NAME", "t")
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home: None)
     return _CloseEnv(tf, home, code, slot, board_dir, ticket)
 
 
@@ -1887,7 +1887,7 @@ def test_close_refuses_an_undisposed_review_must_fix_then_passes_after_dispositi
 ):
     """AT-002 — 내부 기록 없이 리뷰 라운드 파일의 미처분 must-fix 가 첫 부작용 앞에서 막힌다.
 
-    판정 입력 이전 전에는 이 구성의 `_pending_gates` 가 빈 목록이라 종결이 그대로 진행했다.
+    판정 입력 이전 전에는 이 구성의 `_pending_review_tickets` 가 빈 목록이라 종결이 그대로 진행했다.
     처분(기각) 기입 뒤에는 같은 종결이 끝까지 간다(정상 사용 차단 없음).
     """
     env = close_env
@@ -2101,7 +2101,7 @@ def test_close_resolves_the_cluster_once(close_env, monkeypatch):
     """처분은 묶음 명령 `rounds resolve --cluster` 한 번이다(티켓별 반복 경로 없음)."""
     env = close_env
     closer = env.closer()
-    monkeypatch.setattr(closer, "_pending_gates", lambda: [env.ticket])
+    monkeypatch.setattr(closer, "_pending_review_tickets", lambda: [env.ticket])
 
     assert closer._step_resolve() is None
     assert env.delegate_calls == [
@@ -2123,7 +2123,7 @@ def test_close_task_identity_is_forwarded_to_resolve_without_ambient_env(
     closer = env.closer(
         task="main", board_identity_args=["--task", "main"],
     )
-    monkeypatch.setattr(closer, "_pending_gates", lambda: [env.ticket])
+    monkeypatch.setattr(closer, "_pending_review_tickets", lambda: [env.ticket])
 
     assert closer._step_resolve() is None
     assert env.delegate_calls == [[
@@ -2673,7 +2673,7 @@ def _unborn_repo(tf, tmp_path: Path, monkeypatch, *,
     _write_cluster_records(board_dir, tickets=(_MEMBER_A,),
                           base_branch=_UNBORN_BRANCH, branch=_UNBORN_BRANCH)
     monkeypatch.setenv("PM_SESSION_NAME", "t")
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home: None)
     return root
 
 

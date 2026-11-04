@@ -2719,9 +2719,9 @@ def test_adapter_drift_key_contract_documents_the_single_writer():
     block = source[start:end]
     assert "def lint_adapter_drift" in block, "블록 좌표가 어긋났다(공허 통과 방지)"
 
-    # 현행 계약: 형상과 무관한 단일 writer 를 이름으로 가리킨다(주석·docstring 양쪽).
+    # 현행 계약: 구성과 무관한 단일 writer 를 이름으로 가리킨다(주석·docstring 양쪽).
     assert block.count("record_upstream_revs") >= 2, block
-    assert block.count("형상 무관") >= 2, block
+    assert block.count("구성 무관") >= 2, block
 
     # 옛 계약 서술 잔존 0 — 되살릴 근거가 남지 않는다.
     for retired in ("pm-update 스킬", "graceful skip", "record_upstream_rev_baseline",

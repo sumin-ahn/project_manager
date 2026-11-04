@@ -221,7 +221,7 @@ class ClusterCloser:
                 f"{tid} 상태를 관측하지 못했다 — {type(exc).__name__}: {exc}") from exc
         return found[0] if found is not None else None
 
-    def _pending_gates(self) -> list[str]:
+    def _pending_review_tickets(self) -> list[str]:
         """처분·확인이 필요한 멤버 — 리뷰 라운드 파일의 남은 지적이 아직 완료 판정을 막는 것."""
         return [tid for tid in self._tickets if board_ticket._review_completion_problem(self._home, tid) is not None]
 
@@ -361,7 +361,7 @@ class ClusterCloser:
 
     def _step_resolve(self) -> str | None:
         """리뷰 통과 조건 처분 — 묶음 명령 `rounds resolve --cluster` 를 한 번 부른다."""
-        if not self._pending_gates():
+        if not self._pending_review_tickets():
             print("  처분할 남은 리뷰 항목 없음 — 건너뜀")
             return None
         argv = [

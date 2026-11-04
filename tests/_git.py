@@ -1,4 +1,4 @@
-"""실 git 픽스처를 사용자 전역 설정과 분리하는 공용 seam."""
+"""실 git 픽스처를 사용자 전역 설정과 분리하는 공용 함수."""
 from __future__ import annotations
 
 import os

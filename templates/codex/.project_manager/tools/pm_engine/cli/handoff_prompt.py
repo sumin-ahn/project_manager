@@ -6,7 +6,7 @@ import re
 from pm_engine.app import session_identity
 
 
-_HANDOFF_PROMPT_SECTION_ANCHOR = "## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
+_HANDOFF_PROMPT_SECTION_MARKER = "## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
 
 
 _CODE_BLOCK_RE = re.compile(r"```\n(.+?)```", re.DOTALL)
@@ -15,19 +15,19 @@ _CODE_BLOCK_RE = re.compile(r"```\n(.+?)```", re.DOTALL)
 def extract_handoff_prompt_template(pm_playbook_text: str) -> str | None:
     """pm_playbook.md 에서 인계 프롬프트 템플릿 코드블록을 추출한다.
 
-    반환: 코드블록 내용 문자열 또는 None (앵커 불일치).
+    반환: 코드블록 내용 문자열 또는 None (표시 글 불일치).
     """
-    anchor_idx = pm_playbook_text.find(_HANDOFF_PROMPT_SECTION_ANCHOR)
-    if anchor_idx == -1:
+    marker_idx = pm_playbook_text.find(_HANDOFF_PROMPT_SECTION_MARKER)
+    if marker_idx == -1:
         return None
 
     # 섹션 이후에서 다음 ## 헤더 전까지
-    after_anchor = pm_playbook_text[anchor_idx + len(_HANDOFF_PROMPT_SECTION_ANCHOR):]
-    next_header = re.search(r"^## ", after_anchor, re.MULTILINE)
+    after_marker = pm_playbook_text[marker_idx + len(_HANDOFF_PROMPT_SECTION_MARKER):]
+    next_header = re.search(r"^## ", after_marker, re.MULTILINE)
     if next_header:
-        section_text = after_anchor[:next_header.start()]
+        section_text = after_marker[:next_header.start()]
     else:
-        section_text = after_anchor
+        section_text = after_marker
 
     match = _CODE_BLOCK_RE.search(section_text)
     if match is None:
@@ -71,8 +71,8 @@ def _inject_task_into_template(template: str, task: str) -> str:
     """복사 블록 템플릿의 bare ``pm-bootstrap`` 호출을 task-qualified 로 치환한다.
 
     task 모드 핸드오프면 트리거를 `/pm-bootstrap --task <task>` 로 치환한다 — 다음 세션이
-    task 앵커로 재개(차수 추론·per-task pm_state 포인터·clean resume 실링크)하게 연속성을
-    보존한다. task가 진입 정체성의 단일 축이고
+    task 기준으로 재개(차수 추론·per-task pm_state 포인터·clean resume 실링크)하게 연속성을
+    보존한다. task가 진입 정체성의 단일 기준이고
     보유 슬롯 집합을 자동 수령하므로 트리거에 슬롯을 열거하지 않는다
     (트리거 = 재개 명령 1:1).
     task 이름은 호출부(`build_handoff_prompt_output`)가 `validate_task_name_engine` 로 삽입 전
@@ -84,16 +84,16 @@ def _inject_task_into_template(template: str, task: str) -> str:
     )
 
 
-def build_handoff_prompt_output(home, pm_playbook_text: str, session_num: int | str, wave_summary: str, date_str: str, task: str) -> str:
+def build_handoff_prompt_output(home, pm_playbook_text: str, session_num: int | str, session_summary: str, date_str: str, task: str) -> str:
     """인계 프롬프트 stdout 출력 문자열을 빌드한다.
 
     pm_playbook.md §부트스트랩 프롬프트 템플릿(역할 framing + `/pm-bootstrap` 트리거)을 그대로
-    포함한다. 부트스트랩이 인계 본문(박제 entries·메타 학습·pending intent·회귀/incident)을
+    포함한다. 부트스트랩이 인계 본문(기록 entries·메타 학습·pending intent·회귀/incident)을
     log handoff entry 에서 자동 dump 하므로, 프롬프트는 더 이상 `<핵심 인계 사항>` 손-채움을
     싣지 않는다
 
     트리거는 `/pm-bootstrap --task <task>` 로 주입한다 — 세션 정체성이 task 하나이고, 다음
-    세션은 진입 시 보유 작업 폴더 집합을 장부에서 자동 수령하므로 트리거에 슬롯을 열거하지
+    세션은 진입 시 보유 작업 폴더 집합을 대여 기록에서 자동 수령하므로 트리거에 슬롯을 열거하지
     않는다. pm_playbook.md 템플릿 파일은 건드리지 않는다 — 치환은 추출된 텍스트 안에서만
     contained.
     """
@@ -101,7 +101,7 @@ def build_handoff_prompt_output(home, pm_playbook_text: str, session_num: int | 
     if template is None:
         return (
             "[경고] pm_playbook.md 에서 인계 프롬프트 템플릿을 찾지 못했다. "
-            f"찾는 절 제목: '{_HANDOFF_PROMPT_SECTION_ANCHOR}'\n"
+            f"찾는 절 제목: '{_HANDOFF_PROMPT_SECTION_MARKER}'\n"
             "pm_playbook.md §'다음 PM 세션 부트스트랩 프롬프트 (템플릿)' 을 직접 복사하라."
         )
     template = _select_runtime_bootstrap_notation(template)
@@ -118,6 +118,6 @@ def build_handoff_prompt_output(home, pm_playbook_text: str, session_num: int | 
     )
     footer = (
         f"\n--- 복사 끝 ---\n"
-        f"[참고] 날짜: {date_str}, 세션 요약: {wave_summary}\n"
+        f"[참고] 날짜: {date_str}, 세션 요약: {session_summary}\n"
     )
     return header + "```\n" + template + "```" + footer

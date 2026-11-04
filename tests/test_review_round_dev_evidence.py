@@ -17,7 +17,7 @@
 `03-code-reviewer`(준비), 그리고 `01-developer`(빈 양식) → `02-code-reviewer`(준비).
 
 [[T-0812]] 가 스폰면(`additional_reviewer.py` 의 `prepare_ticket_body`)에 같은 판정을 등록한다 —
-판정 함수는 `round_form.unharvested_developer_round` 그대로이고, 판정이 둘로 갈리지
+판정 함수는 `round_form.uncollected_developer_round` 그대로이고, 판정이 둘로 갈리지
 않게 두 쪽 구성표(A0/A1/B/C/D/E)를 이 파일 하나에서 고정한다(§스폰면).
 """
 from __future__ import annotations
@@ -54,7 +54,7 @@ from pm_engine.infra import repo_files
 
 import pytest
 
-from conftest import write_cluster_ledger
+from conftest import write_cluster_records
 from pm_engine.domain import delegate_errors
 from pm_engine.infra import pm_paths
 from pm_engine.app import round_form
@@ -206,7 +206,7 @@ def _write_spec(
     path = tickets / f"{ticket}-review-round.md"
     path.write_text(_spec_text(ticket), encoding="utf-8", newline="\n")
     if cluster_record:
-        write_cluster_ledger(
+        write_cluster_records(
             tickets.parent.parent, ticket, base_branch="task/main", rounds=_FIXED_ROUNDS,
         )
     if rounds and rounds[0] == "developer":
@@ -418,7 +418,7 @@ def test_cross_auto_prepare_shares_the_prepare_function(pd, rounds_env, capsys, 
     _prepare(pd, pm_home, slot, ticket, "developer")  # 02-developer.md 를 빈 양식으로 남긴다
     capsys.readouterr()
     # 준비 I1 — 묶음 기록이 통합 브랜치를 선언하고 슬롯이 그 브랜치에 있어야 한다.
-    write_cluster_ledger(
+    write_cluster_records(
         tickets.parent.parent, ticket, base_branch="task/main", branch="task/review",
         rounds=_FIXED_ROUNDS,
     )
@@ -543,12 +543,12 @@ def test_seed_judgment_consumes_the_collect_seed_comparison(pd, rounds_env, caps
         pm_paths.home_at(Path(pm_home).resolve()), copy_path=developer.path, cwd=slot, )
     assert unchanged.changed is False
     # 준비면: 같은 라운드를 빈 양식으로 지목한다.
-    stale = round_form.unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
+    stale = round_form.uncollected_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
     assert stale is not None and stale.ordinal == developer.ordinal
 
     # 반대편도 같이 뒤집힌다 — 돌려받기가 board 를 바꾸면 준비면도 더는 지목하지 않는다.
     _land(pd, pm_home, slot, developer)
-    landed = round_form.unharvested_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
+    landed = round_form.uncollected_developer_round(_loaded_rounds(pd, pm_home, "T-7811"))
     assert landed is None
     capsys.readouterr()
 
@@ -561,9 +561,9 @@ def test_seed_judgment_reads_the_round_pending_flag(pd, rounds_env):
     rounds = _loaded_rounds(pd, pm_home, "T-7812")
 
     assert [item.pending for item in rounds] == [False, True]
-    assert round_form.unharvested_developer_round(rounds) is rounds[1]
+    assert round_form.uncollected_developer_round(rounds) is rounds[1]
     # 같은 목록에서 pending 만 뒤집으면 판정도 뒤집힌다 — 다른 입력을 보지 않는다는 값 단언.
-    assert round_form.unharvested_developer_round(
+    assert round_form.uncollected_developer_round(
         [item._replace(pending=False) for item in rounds]
     ) is None
     assert developer.board_path.exists()
@@ -585,7 +585,7 @@ def test_crlf_seed_round_is_still_judged_as_seed(pd, rounds_env, capsys):
 
 # ── 스폰면([[T-0812]]) — additional_reviewer.py 의 `prepare_ticket_body` 함수 ──────────────
 #
-# 준비면과 기준은 같되(`round_form.unharvested_developer_round` 를 그대로 부른다) 문구는 다르다 — 구성 B
+# 준비면과 기준은 같되(`round_form.uncollected_developer_round` 를 그대로 부른다) 문구는 다르다 — 구성 B
 # 에서 "실리지 않습니다"라고 단정하지 않고, 이번 프롬프트에 실제로 실리는 developer 산출 라운드
 # 이름(없으면 "없음")을 값으로 말한다. 라운드 01-architect 설계의 구성표 6행(A0/A1/B/C/D/E)을
 # 여기서 고정한다.
@@ -612,7 +612,7 @@ def external():
 def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     """스폰면 등록 — REPO 를 `rounds_env` 의 pm_home 에 고정하고 diff 추출만 대체한다.
 
-    실제 판정 함수(`round_form.unharvested_developer_round`) 호출이 검증 대상이다. touches 는
+    실제 판정 함수(`round_form.uncollected_developer_round`) 호출이 검증 대상이다. touches 는
     `rounds_env` 픽스처 티켓이 `touches: []` 로 만들어지므로(§인터페이스 밖) `parse_ticket_touches`
     만 테스트 교체 지점으로 고정한다(기존 `test_plain_list_ticket_scope_is_explicitly_a_test_fixture_override`
     과 같은 기준).
@@ -654,7 +654,7 @@ def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]
 
     monkeypatch.setattr(reviewer_run, "run_review", _run_review)
     monkeypatch.setattr(
-        reviewer_collect, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_collect, "_collect_additional_reviewer_section", lambda *_a, **_k: None,
     )
 
 
@@ -675,7 +675,7 @@ def test_spawn_face_shape_a0_no_developer_round_is_silent(
     assert SPAWN_WARNING_MARK not in captured.err
     assert "--- 01-architect ---" in captured.out
     assert "developer ---" not in captured.out
-    assert round_form.unharvested_developer_round(_loaded_rounds(pd, pm_home, ticket)) is None
+    assert round_form.uncollected_developer_round(_loaded_rounds(pd, pm_home, ticket)) is None
 
 
 def test_spawn_face_shape_a1_seed_only_developer_round_warns(
@@ -787,7 +787,7 @@ def test_spawn_face_real_send_over_a_seed_developer_round_warns_without_seed_bod
 ):
     """실 스폰 1건(구성 A1) — 미리보기와 같은 함수가 실호출 경로도 지나는지 값으로 확인한다.
 
-    스텁 경계는 `run_review`·`_harvest_additional_reviewer_section` 둘뿐이다. rc=0 · stderr 경고 · 프롬프트에 빈 양식 라운드 본문이 실리지 않음을 단언한다.
+    스텁 경계는 `run_review`·`_collect_additional_reviewer_section` 둘뿐이다. rc=0 · stderr 경고 · 프롬프트에 빈 양식 라운드 본문이 실리지 않음을 단언한다.
     """
     pm_home, slot, tickets, _board = rounds_env
     ticket = "T-7826"
@@ -850,20 +850,20 @@ def test_spawn_face_agrees_with_the_preparation_face_across_the_shape_table(
 
     for name, rounds in shapes.items():
         capsys.readouterr()
-        reviewer_prompt._warn_seed_developer_round(rounds, ticket=name)
+        reviewer_prompt._warn_empty_form_developer_round(rounds, ticket=name)
         warned = SPAWN_WARNING_MARK in capsys.readouterr().err
-        judged = round_form.unharvested_developer_round(rounds) is not None
+        judged = round_form.uncollected_developer_round(rounds) is not None
         assert warned == judged, name
 
     # pending 반전 — 판정은 같은 목록의 `pending` 만 본다(다른 입력을 보지 않는다는 값 단언).
     seed_rounds = shapes["A1"]
-    assert round_form.unharvested_developer_round(seed_rounds) is not None
+    assert round_form.uncollected_developer_round(seed_rounds) is not None
     capsys.readouterr()
-    reviewer_prompt._warn_seed_developer_round(seed_rounds, ticket="T-7831")
+    reviewer_prompt._warn_empty_form_developer_round(seed_rounds, ticket="T-7831")
     assert SPAWN_WARNING_MARK in capsys.readouterr().err
 
     flipped = [item._replace(pending=False) for item in seed_rounds]
-    assert round_form.unharvested_developer_round(flipped) is None
+    assert round_form.uncollected_developer_round(flipped) is None
     capsys.readouterr()
-    reviewer_prompt._warn_seed_developer_round(flipped, ticket="T-7831")
+    reviewer_prompt._warn_empty_form_developer_round(flipped, ticket="T-7831")
     assert SPAWN_WARNING_MARK not in capsys.readouterr().err

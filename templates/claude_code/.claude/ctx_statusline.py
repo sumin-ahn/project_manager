@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""claude statusLine — ctx% 표시 + 임계 넛지 (표시 전용).
+"""claude statusLine — ctx% 표시 + 임계 경고 (표시 전용).
 
 claude Code 가 statusLine 입력 JSON 을 stdin 으로 준다 (``context_window`` 포함).
 이 스크립트는 native current_usage 점유 토큰과 ``model.id`` 를 엔진 ``context_status``(읽기 전용)에
-넘기고, 돌아온 쓴 %·밴드를 statusline 한 줄로 낸다. 적용 한도 E·임계·밴드 판정은 엔진 소유다.
+넘기고, 돌아온 쓴 %·구간을 statusline 한 줄로 낸다. 적용 한도 E·임계·구간 판정은 엔진 소유다.
 
   - ok    : 회색 ctx N%
   - warn : 노랑 "ctx N% — checkpoint 준비"
@@ -11,8 +11,8 @@ claude Code 가 statusLine 입력 JSON 을 stdin 으로 준다 (``context_window
   - stop  : 빨강 "ctx N% — checkpoint 최종 알림"
 
 statusLine 은 **흐름을 안 끊는다**(가시화만). marker 를 쓰지 않는다 — 모델-facing 안내는
-ctx_stop_hook.py 가 같은 밴드에서 비차단으로 주입한다.
-배선은 settings.json ``statusLine.command`` 가 이 스크립트를 가리킨다.
+ctx_stop_hook.py 가 같은 구간에서 비차단으로 주입한다.
+등록은 settings.json ``statusLine.command`` 가 이 스크립트를 가리킨다.
 """
 from __future__ import annotations
 

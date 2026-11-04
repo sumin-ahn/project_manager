@@ -7,17 +7,17 @@
 // (opencode 는 plugins/ 만 스캔·lib/ 는 로드 안 함).
 //
 // 무엇:
-//   opencode 세션의 토큰 관측(assistant message.updated)을 엔진 ctx 판정에 넘기고, 엔진이 낸 밴드 안내를
-//   다음 모델 호출 system 에 1회 싣는다. session.compacted 는 압축 경계를 엔진에 넘겨(밴드·원칙 recall
-//   재무장) snapshot·checkpoint 를 기록하고 압축 후 안내를 싣는다.
+//   opencode 세션의 토큰 관측(assistant message.updated)을 엔진 ctx 판정에 넘기고, 엔진이 낸 구간 안내를
+//   다음 모델 호출 system 에 1회 싣는다. session.compacted 는 압축 경계를 엔진에 넘겨(구간·원칙 recall
+//   다시 켜기) snapshot·checkpoint 를 기록하고 압축 후 안내를 싣는다.
 //
-// 판정 소유: 사용 한도·쓴 %·밴드·마진·안내 문구·구표기 설정 거부·중복 발화 marker 는 엔진
+// 판정 소유: 사용 한도·쓴 %·구간·마진·안내 문구·구표기 설정 거부·중복 실행 marker 는 엔진
 //   (`board.py hook-context`·`hook-tool`)이 한다. 이 모듈은 native 토큰 합산·세션 소유(SDK 부모)·
 //   압축 사이클 epoch·pending 안내·snapshot generation/receipt 전달만 한다.
 //
 // 일반 도구 호출: 이 플러그인의 `tool.execute.before` 하나가 git-check-core `createToolBoundary` 를
 //   통해 git·삭제·도구 입력·ctx·원칙 recall 을 Python 한 번(`board.py hook-tool`)으로 판정한다. 세션의
-//   마지막 토큰 관측을 그 요청에 싣는다. ctx 밴드는 차단하지 않는다.
+//   마지막 토큰 관측을 그 요청에 싣는다. ctx 구간 안내는 차단하지 않는다.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -43,7 +43,7 @@ const COMPACTION_FAILURE_PREFIX = "[ctx-checkpoint] 압축 기록 실패: ";
 function accumulateTokens(tokens) {
   if (!tokens || typeof tokens !== "object") return 0;
   // total 우선 — opencode 자체 overflow 판정과 동일(1.18.5 overflow.ts·driver 파서와 통일).
-  // 부재/비양수면 기존 합산 폴백(보수적 상위집합).
+  // 부재/비양수면 기존 합산으로 대신(보수적 상위집합).
   const total = Number(tokens.total);
   if (Number.isFinite(total) && total > 0) return total;
   const input = Number(tokens.input) || 0;
@@ -95,7 +95,7 @@ function buildCompactionSnapshot(root, sessionID, spawnSync = childProcess.spawn
 
 // ── compaction snapshot durable marker (Claude PostCompact 패턴 대칭) ─────────
 // opencode run --continue 는 프로세스-당-턴 one-shot 이므로 턴 말미 session.compacted 에서
-// in-memory pendingNudgeText 만 무장하면 다음 프로세스까지 payload가 살아남지 못한다. PM root의
+// in-memory pendingWarnText 만 무장하면 다음 프로세스까지 payload가 살아남지 못한다. PM root의
 // 기존 ctx-stop 디렉터리(compact-checkpoint.*와 동일)에 SID+generation별 payload를
 // 원자 stage한다. SID 필터/길이는 pm_log.py `_safe_marker_key`의 파일명 규약과
 // 맞추되 marker 채널에서는 빈 결과를 unknown으로 합치지 않고 skip한다.
@@ -236,7 +236,7 @@ function listCompactionSnapshots(root, sessionID) {
         const stat = fs.statSync(marker, { bigint: true });
         if (stat.isFile()) snapshots.push({ marker, generation, mtimeNs: stat.mtimeNs });
       } catch {
-        /* 동시 소비/정리로 사라진 entry는 다음 스냅샷에 맡긴다. */
+        /* 동시 소비/정리로 사라진 entry는 다음 조회에 맡긴다. */
       }
     }
   } catch {
@@ -255,8 +255,8 @@ function takeCompactionSnapshot(root, sessionID) {
   if (!snapshots.length) return null;
   const latest = snapshots[snapshots.length - 1];
   // old를 latest보다 먼저 지워 claim 진행 중 [old]만 관측되는 상태를 만들지 않는다.
-  // old 삭제 뒤 claim 전에 crash해도 latest는 생존한다. 고정 generation 이름의 배타 link가 선점이다.
-  // 선점 패배자는 구 generation 재탐색/fallback 없이 skip한다.
+  // old 삭제 뒤 claim 전에 crash해도 latest는 생존한다. 고정 generation 이름의 배타 link가 먼저 차지하기다.
+  // 차지에 진 쪽은 구 generation 재탐색/fallback 없이 skip한다.
   for (const snapshot of snapshots.slice(0, -1)) {
     try {
       fs.unlinkSync(snapshot.marker);
@@ -278,7 +278,7 @@ function takeCompactionSnapshot(root, sessionID) {
   try {
     fs.unlinkSync(latest.marker);
   } catch {
-    // ENOENT도 전달하지 않는다. 원본 제거에 실패한 선점 fence는 재진입을 막기 위해 남긴다.
+    // ENOENT도 전달하지 않는다. 원본 제거에 실패한 차지 fence는 재진입을 막기 위해 남긴다.
     return null;
   }
   try {
@@ -296,7 +296,7 @@ function takeCompactionSnapshot(root, sessionID) {
 }
 
 function createCompactionBoundaryID(sessionID) {
-  // count는 plugin 재시작 때 0으로 돌아가므로 dedup ID에 쓰지 않는다. UTC+UUID 축을 앞에 두어
+  // count는 plugin 재시작 때 0으로 돌아가므로 dedup ID에 쓰지 않는다. UTC+UUID 를 앞에 두어
   // pm_log의 marker 길이 상한에서도 재시작 불변 유일 성분이 잘리지 않게 한다.
   const utc = new Date().toISOString().replace(/[-:.]/g, "");
   return `opencode-${utc}-${crypto.randomUUID()}-${String(sessionID || "unknown")}`;
@@ -317,7 +317,7 @@ function createCompactionCheckpoint(
 
 // ── plugin 팩토리 (진입점 ../plugins/ctx-guard.js 가 ESM named-export 로 재노출·opencode autoload) ──
 const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
-  // 로드 검증 마커 (env-gated·라이브-로드 게이트 전용·실 세션엔 무음). opencode 는 성공 로드
+  // 로드 검증 마커 (env 로 켬·라이브 로드 검사 전용·실 세션엔 무음). opencode 는 성공 로드
   // 시 positive 로그를 남기지 않아(실측 1.17.18) — factory 실행을 관측하려면 스스로 마커를 낸다.
   // 훅 로직 무관 — CTX_GUARD_LOAD_PROBE 미설정 시 완전 무음(프로덕션 기본).
   if (process.env.CTX_GUARD_LOAD_PROBE) {
@@ -333,7 +333,7 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
     if (!state) {
       state = {
         observation: null,
-        pendingNudgeText: null,
+        pendingWarnText: null,
         pendingSnapshotMarker: null,
         budgetNotice: null,
         compactionCount: 0,
@@ -346,8 +346,8 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
 
   const root = ENGINE_ROOT;
 
-  // 넛지: 사이클당 1회 toast(없으면 무음 — fail-soft).
-  async function notifyNudge(message) {
+  // 경고: 사이클당 1회 toast(없으면 무음 — fail-soft).
+  async function notifyWarn(message) {
     try {
       if (client && client.tui && client.tui.showToast) {
         await client.tui.showToast({
@@ -358,12 +358,12 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
         });
       }
     } catch {
-      /* toast 실패는 무시 — 넛지는 best-effort. */
+      /* toast 실패는 무시 — 경고는 best-effort. */
     }
   }
 
-  // 2단·최종 넛지: 사이클당 1회 강한 toast(compaction 임박). 사람용 2단 표시(없으면 무음).
-  async function notifyNudge2(message) {
+  // 2단·최종 경고: 사이클당 1회 강한 toast(compaction 임박). 사람용 2단 표시(없으면 무음).
+  async function notifyWarn2(message) {
     try {
       if (client && client.tui && client.tui.showToast) {
         await client.tui.showToast({
@@ -374,11 +374,11 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
         });
       }
     } catch {
-      /* toast 실패는 무시 — 넛지는 best-effort. */
+      /* toast 실패는 무시 — 경고는 best-effort. */
     }
   }
 
-  // compaction 직후 사람용 toast. 모델 안내는 pendingNudgeText/system.transform 채널을 병행한다.
+  // compaction 직후 사람용 toast. 모델 안내는 pendingWarnText/system.transform 채널을 병행한다.
   async function notifyCompacted(message) {
     try {
       if (client && client.tui && client.tui.showToast) {
@@ -401,20 +401,20 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
     return { ...state.observation, epoch: state.cycleEpoch };
   }
 
-  // 엔진 ctx 응답을 native 채널로 전달한다 — 기록 알림은 같은 문구를 세션당 한 번 toast, 밴드 안내는
+  // 엔진 ctx 응답을 native 채널로 전달한다 — 기록 알림은 같은 문구를 세션당 한 번 toast, 구간 안내는
   // 다음 모델 호출 system 에 1회. 관측 뒤 압축이 끼었으면(epoch 변화) 옛 사이클 응답은 버린다.
   async function acceptContext(sessionID, decision, observed) {
     const state = sessionState(sessionID);
     if (!state || !observed || observed.epoch !== state.cycleEpoch) return;
     if (decision.notice && state.budgetNotice !== decision.notice) {
       state.budgetNotice = decision.notice;
-      await notifyNudge(`[ctx-budget] ${decision.notice}`);
+      await notifyWarn(`[ctx-budget] ${decision.notice}`);
     }
     if (!decision.emit) return;
-    state.pendingNudgeText = decision.guidance;
+    state.pendingWarnText = decision.guidance;
     state.pendingSnapshotMarker = null;
-    if (decision.level === "warn") await notifyNudge(decision.guidance);
-    else await notifyNudge2(decision.guidance);
+    if (decision.level === "warn") await notifyWarn(decision.guidance);
+    else await notifyWarn2(decision.guidance);
   }
 
   const boundary = createToolBoundary({ root, client, directory, worktree, contextFor, acceptContext });
@@ -440,7 +440,7 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
     // ── 일반 도구 호출 판정: git·삭제·도구 입력·ctx·원칙 recall 을 Python 한 번으로 ────────
     "tool.execute.before": boundary.before,
 
-    // ── 병행 신호: compaction 사후 안내 + 어시스턴트 메시지 임박 밴드 ────────
+    // ── 병행 신호: compaction 사후 안내 + 어시스턴트 메시지 임박 구간 ────────
     event: async ({ event }) => {
       if (!event) return;
 
@@ -455,7 +455,7 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
         // 자식 세션은 snapshot/checkpoint 모두 면제다. 최대 3초 동기 subprocess 전에 판정해
         // 면제 대상 compaction 이벤트가 메인 세션용 snapshot 때문에 멈추지 않게 한다.
         if ((await sessionOwner(sessionID)) !== "main") return;
-        // 압축 경계 ID 를 엔진 ctx 판정(밴드·원칙 recall 재무장)과 checkpoint 에 같은 값으로 넘긴다.
+        // 압축 경계 ID 를 엔진 ctx 판정(구간·원칙 recall 다시 켜기)과 checkpoint 에 같은 값으로 넘긴다.
         const boundaryID = createCompactionBoundaryID(sessionID);
         let compactedGuidance = null;
         try {
@@ -471,7 +471,7 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
         const stagedNotice = stagedSnapshot.ok || !compactedGuidance
           ? stagedSnapshot.text
           : `${stagedSnapshot.text}\n${compactedGuidance}`;
-        session.pendingNudgeText = stagedNotice;
+        session.pendingWarnText = stagedNotice;
         // 같은 payload를 프로세스 경계 너머에도 보존한다. 같은 프로세스의
         // 재-compaction은 새 generation stage 성공 후 자기 구 generation만 정리한다.
         const previousMarker = session.pendingSnapshotMarker;
@@ -492,7 +492,7 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
       const info = event.properties && event.properties.info;
       if (!info) return;
       if (info.role !== "assistant" || !info.tokens) return;
-      // SID는 아래 await들보다 먼저 event-local로 캡처한다(pendingNudgeText 귀속 경합 방지).
+      // SID는 아래 await들보다 먼저 event-local로 캡처한다(pendingWarnText 귀속 경합 방지).
       const sessionID = info.sessionID;
       const session = sessionState(sessionID);
       if (!session) return;
@@ -527,12 +527,12 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
     // experimental.chat.system.transform 은 모델 호출 전 system[] 을 비차단 수정한다(@opencode-ai
     // /plugin Hooks·opencode 1.17.11 타입 확인). chat.message 의 full Part 구성(id/sessionID/
     // messageID 필수)보다 string push 가 안전·정확. ⚠️ experimental namespace — opencode 가 이 surface
-    // 를 바꾸면 *조용히* 주입이 멈출 수 있다. 호환성 게이트 = Tier2
+    // 를 바꾸면 *조용히* 주입이 멈출 수 있다. 호환성 검사 = Tier2
     // 라이브 smoke(버전 회귀 포착)·codex 권고 반영. 변동 시 안정 chat.message 전환 검토.
     // 도구 호출 판정 경고(세션별 1칸)를 먼저 싣는다 — 자식 세션의 경고도 그 세션에 전달한다.
     // 멱등: in-memory payload는 자기가 stage한 generation만 함께 지운다.
-    // 새 프로세스라 in-memory payload가 없으면 최신 marker를 선점·읽기·소거하고,
-    // 그 관측 스냅샷에 함께 있던 구 generation들을 중복 주입 없이 정리한다.
+    // 새 프로세스라 in-memory payload가 없으면 최신 marker를 먼저 차지·읽기·소거하고,
+    // 그 관측 시점에 함께 있던 구 generation들을 중복 주입 없이 정리한다.
     // 자식 세션은 적재와 마찬가지로 marker 소비도 면제한다.
     "experimental.chat.system.transform": async (input, output) => {
       boundary.inject(input, output);
@@ -540,10 +540,10 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
       const session = sessionState(sessionID);
       if (!session) return;
       if ((await sessionOwner(sessionID)) !== "main") return;
-      if (session.pendingNudgeText && output && Array.isArray(output.system)) {
-        output.system.push(session.pendingNudgeText);
+      if (session.pendingWarnText && output && Array.isArray(output.system)) {
+        output.system.push(session.pendingWarnText);
         const ownedMarker = session.pendingSnapshotMarker;
-        session.pendingNudgeText = null;
+        session.pendingWarnText = null;
         session.pendingSnapshotMarker = null;
         if (ownedMarker) {
           const generation = compactionSnapshotGenerationFromMarker(root, sessionID, ownedMarker);

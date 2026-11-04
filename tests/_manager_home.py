@@ -86,14 +86,14 @@ def _run(argv: list[str], *, cwd: Path | None = None,
 
 
 # 모델 한도 조회 교체 지점 두 곳(`_read_harness_ctx_metadata`·`_ctx_claude_threshold`)의 고정 값.
-# 단일 출처는 환경 주입 폴더의 `sitecustomize.py` 다 — 같은 프로세스 교체(`known_ctx_seams`·
+# 단일 출처는 환경 주입 폴더의 `sitecustomize.py` 다 — 같은 프로세스 교체(`known_ctx_overrides`·
 # `install_known_ctx_io`)와 `-c` 자식 스크립트도 그 본문을 그대로 쓴다(교체 설치는 `sitecustomize` 로
 # 읽힐 때만 일어난다).
 _KNOWN_CTX_SITE = Path(__file__).resolve().parent / "_known_ctx_site"
 _KNOWN_CTX_READER_PY = (_KNOWN_CTX_SITE / "sitecustomize.py").read_text(encoding="utf-8")
 
 
-def known_ctx_seams(*, capacity=200000, context=1000000, model="fixture-model") -> dict:
+def known_ctx_overrides(*, capacity=200000, context=1000000, model="fixture-model") -> dict:
     """모델 한도 조회 교체 지점 이름 → 고정 값 함수 (monkeypatch 로 붙인다)."""
     namespace = {}
     exec(_KNOWN_CTX_READER_PY, namespace)
@@ -119,7 +119,7 @@ def install_known_ctx_io(monkeypatch) -> None:
     엔진 package 는 프로세스에 하나라 설치·갱신·설정 어느 진입이 부르든 같은 함수를 지난다.
     conftest 의 `known_ctx_io` fixture 가 이 함수를 부른다."""
     from pm_engine.app import harness_ctx
-    for name, override in known_ctx_seams().items():
+    for name, override in known_ctx_overrides().items():
         monkeypatch.setattr(harness_ctx, name, override)
 
 

@@ -13,7 +13,7 @@ def _ahead_commit_count(
     """PM 홈의 미push commit 수 — (count, baseline ref). 해소 불가면 None, runner 예외는 전파.
 
     `git rev-list --count <baseline>..HEAD` 를 baseline 후보(`_PENDING_PUSH_BASELINE_REFS` —
-    출하 변경 분류와 같은 순서: @{upstream} 우선·origin/main 폴백) 순으로 시도해 첫 성공을 쓴다.
+    출하 변경 분류와 같은 순서: @{upstream} 우선·origin/main 대체) 순으로 시도해 첫 성공을 쓴다.
     detached/upstream 미설정/원격 부재/비수치 출력은 전부 None — 판정을 지어내지 않는다.
     """
     for ref in handoff_text._PENDING_PUSH_BASELINE_REFS:
@@ -53,11 +53,11 @@ def _uncommitted_and_untracked_paths(
       - `git -C <wt> diff --name-only --ignore-submodules=none HEAD`
                                                          → staged+unstaged tracked 변경 + gitlink drift
       - `git -C <wt> ls-files --others --exclude-standard` → untracked 신규파일(.gitignore 제외)
-    tracked 축의 `--ignore-submodules=none` 은 `.gitmodules`/로컬 config 의 `ignore = all` 을
+    tracked 쪽의 `--ignore-submodules=none` 은 `.gitmodules`/로컬 config 의 `ignore = all` 을
     **이 판정에 한해서만** override 한다. 인스턴스 소유 설정은 건드리지 않으면서 submodule HEAD 와
     상위 pin 이 다른 gitlink 를 놓치지 않는다.
     둘 중 하나라도 비-0 종료면 작업트리 상태 불명 → None (호출부가 ambiguous 처리).
-    runner DI seam 경유(hermetic). runner 예외는 전파한다.
+    runner DI 교체 지점 경유(hermetic). runner 예외는 전파한다.
     """
     rc_diff, out_diff = runner(
         ["-C", worktree, "diff", "--name-only", "--ignore-submodules=none", "HEAD"]
@@ -84,7 +84,7 @@ def _shipping_paths_in_pending_push(
 
     pm_handoff [7/7] 체크리스트는 핸드오프 *후* `git commit` 을 안내한다 — 정상 핸드오프
     시점엔 출하 변경이 대개 **working tree(staged/unstaged·미커밋·untracked)** 에 있다.
-    따라서 커밋된-미push 만 보면(diff <baseline>..HEAD) 정상 핸드오프 시 게이트가 발동하지
+    따라서 커밋된-미push 만 보면(diff <baseline>..HEAD) 정상 핸드오프 시 검사가 발동하지
     않는다(must-fix). "지금 push 하면 올라갈 변경 전체"를 union 한다:
       - 커밋된 미push: `git -C <wt> diff --name-only <baseline>..HEAD` (baseline 해소된 경우만)
       - 작업트리 vs HEAD(staged+unstaged tracked·gitlink drift):
@@ -104,7 +104,7 @@ def _shipping_paths_in_pending_push(
       - shipping_hits 비어있고 has_unknown True → ambiguous (호출부 surface).
 
     runner 예외(git 실행 실패·시간 초과)는 전파한다.
-    git_runner DI seam — hermetic 테스트는 결정론 stub 주입. 모든 git 호출은 이 seam 경유.
+    git_runner DI 교체 지점 — hermetic 테스트는 결정론 stub 주입. 모든 git 호출은 이 교체 지점 경유.
     """
     runner = git_runner if git_runner is not None else _module_run_git
 
@@ -164,9 +164,9 @@ def _unborn_head_dirty_paths(
 ) -> list[str] | None:
     """커밋 0(unborn HEAD) 트리의 미커밋 경로 전량 — 조회 실패면 None.
 
-    unborn 에서도 동작하는 두 축을 union 한다. **둘 다 필요하다**:
+    unborn 에서도 동작하는 두 조회를 union 한다. **둘 다 필요하다**:
       - `git -C <tree> diff --cached --name-only` → index 에 올라간 것(staged). `git add` 를
-        마친 트리는 이 축만 답한다.
+        마친 트리는 이 조회만 답한다.
       - `git -C <tree> ls-files --others --exclude-standard` → 아직 add 안 한 것(untracked).
     untracked 만 보면 **전량 staged 인 커밋 0 저장소가 clean 으로 오판**된다(그 트리야말로
     아무것도 커밋되지 않은 상태다). gitignored 는 `--exclude-standard` 가 뺀다 — `--cached` 는
@@ -192,14 +192,14 @@ def _dirty_paths_in_tree(
 ) -> list[str] | None:
     """트리의 미커밋(tracked modified) ∪ untracked-unignored 경로 — 판정 불가면 None.
 
-    정상 경로의 판정 축은 [1b/7] 출하 surface 와 **같은 seam**(`_uncommitted_and_untracked_paths`):
+    정상 경로의 판정 기준은 [1b/7] 출하 surface 와 **같은 함수**(`_uncommitted_and_untracked_paths`):
       - `git -C <tree> diff --name-only --ignore-submodules=none HEAD`
                                                             → tracked 변경 + gitlink drift
       - `git -C <tree> ls-files --others --exclude-standard` → untracked(gitignored 제외)
     `--exclude-standard` 가 "clean 제외 gitignored" 판정 기준을 그대로 만족한다.
 
-    그 seam 이 접어버리는 실패 하나를 여기서 정련한다 — **unborn HEAD**(커밋 0). `diff HEAD` 는
-    비교 ref 가 없어 실패하지만 그 트리는 "전량 미커밋"이라 게이트가 가장 잡아야 할 상태다.
+    그 함수가 뭉개버리는 실패 하나를 여기서 정련한다 — **unborn HEAD**(커밋 0). `diff HEAD` 는
+    비교 ref 가 없어 실패하지만 그 트리는 "전량 미커밋"이라 검사가 가장 잡아야 할 상태다.
     커밋 유무를 `rev-parse --verify HEAD` 로 확인해, 커밋이 없으면 staged ∪ untracked 로 판정한다
     (`_unborn_head_dirty_paths` — 전량 staged 인 트리를 clean 으로 오판하지 않는다).
     커밋이 있는데 diff 가 실패했거나(git 이상) unborn 조회까지 실패(비-git 트리)면 None —
@@ -221,7 +221,7 @@ def _submodule_paths_in_tree(
 ) -> list[str] | None:
     """등록된 재귀 submodule 경로(superproject 상대)를 반환 — 열거 불가면 None.
 
-    `git -C <tree> submodule status --recursive` 하나를 권위로 쓰고, 출력 해석은 동적 로드 seam
+    `git -C <tree> submodule status --recursive` 하나를 권위로 쓰고, 출력 해석은 동적 로드 함수
     submodule_git의 공용 parser로 flag와 공백 경로를 보존한다.
     flag `-` 는 미초기화라 working tree 가 없으므로 제외한다. 부재 경로에서 `git -C` 를 돌리면
     상위 repo 로 올라가 상위 dirty 목록을 중복 반환할 수 있기 때문이다. 빈 출력은 등록된

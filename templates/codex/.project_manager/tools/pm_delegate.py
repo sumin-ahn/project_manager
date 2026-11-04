@@ -13,7 +13,7 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
   · 권한 매핑    — 역할 기준(write=developer/architect·read=researcher/code-reviewer)을 argv/sandbox 로
                   강제하되 보장 수준을 정직 표기.
   · 쓰기 대상 기준 — 엔진 코드(`.project_manager/tools/`) write 위임이 PM 홈 cwd 면 canonical
-                  worktree 로 대상 저장소를 다시 잡으라고 fail-loud(additional_reviewer `_pm_home_reanchor` 재사용).
+                  worktree 로 대상 저장소를 다시 잡으라고 fail-loud(additional_reviewer `_pm_home_retarget` 재사용).
                   allowlist 정제 + prompt-file containment. ack digest는 해소된 primary
                   harness:model과 합성 전문에 연결한다. ack으로 차단을 통과한 실행은 primary 인프라
                   실패여도 대체 하네스로 넘어가지 않는다 — 다른 수신자는 명시 재실행과 별도 승인 판단이 필요하다.
