@@ -1,13 +1,13 @@
-"""Fresh-adopter e2e 게이트 — import → lint clean → ticket 라이프사이클 (파생 3-harness · 기계층).
+"""Fresh-adopter e2e 검사 — import → lint clean → ticket 라이프사이클 (파생 3-harness · 기계층).
 
-[[feature-ship-needs-fresh-adopter-gate]]: diff-scoped 리뷰·root 테스트는 *출하 template* 의
+출하 기능은 새 채택자 설치로 확인한다는 원칙: diff-scoped 리뷰·root 테스트는 *출하 template* 의
 dangling framework wikilink·placeholder 누락·작동 여부를 못 본다(drift-0=engine 만). 이 테스트는
 깨끗한 디렉토리에 파생 HARNESSES 전부를 **실제 import** 해 (a) adopter 인스턴스 `board.py lint` 가 clean
 (adopter 엔 ADR 이 없으니 출하 doc 에 framework `[[ADR-NNNN]]` 가 새면 *여기서* dangling 으로 터진다)
 · (b) ticket new→claim→complete 라이프사이클이 작동함을 못박는다. tests/ 평범 테스트라 매 회귀·매
 push(pre-push 훅)에 자동 포함된다.
 
-**기계층 게이트다.** harness-중립 engine(board·pm_import)만 구동 — 라이브 LLM·네트워크 0(토큰 0·
+**기계층 통과 조건이다.** harness-중립 engine(board·pm_import)만 구동 — 라이브 LLM·네트워크 0(토큰 0·
 결정적). claude/opencode *LLM 이 문서를 읽고 실제 PM 을 운영* 하는 **런타임** 검증은 라이브 harness 가
 필요해 여기서 하지 않는다 (사용자 환경 파일럿 후속 — relay live smoke[`PM_RELAY_LIVE`·skip]와 같은
 클래스). `--fill manual` 이라 `{{OPENCODE_PRO_MODEL}}`·자유서술 placeholder 는 TODO 로 남는 게
@@ -134,18 +134,18 @@ def _raw_unannotated_slash_entries(path: Path) -> list[tuple[int, str]]:
         issues.append((text.count("\n", 0, match.start()) + 1, match.group(0)))
     return issues
 
-def _mark_ledger_closing(dest: Path, tid: str) -> None:
-    """발행이 만든 크기 1 장부의 status 줄을 closing 으로 쓴다 — 종결 파이프라인의 진행 기록 재현([[T-0959]])."""
-    ledger = dest / ".project_manager" / "wiki" / "tickets" / "clusters" / f"C-{tid}.md"
-    text = ledger.read_text(encoding="utf-8")
+def _mark_record_closing(dest: Path, tid: str) -> None:
+    """발행이 만든 크기 1 기록의 status 줄을 closing 으로 쓴다 — 종결 파이프라인의 진행 기록 재현([[T-0959]])."""
+    records = dest / ".project_manager" / "wiki" / "tickets" / "clusters" / f"C-{tid}.md"
+    text = records.read_text(encoding="utf-8")
     assert re.search(r"^status: open$", text, flags=re.M), text
-    ledger.write_text(re.sub(r"^status: open$", "status: closing", text, count=1, flags=re.M), encoding="utf-8")
+    records.write_text(re.sub(r"^status: open$", "status: closing", text, count=1, flags=re.M), encoding="utf-8")
 
 
 def _check_off_dod(dest: Path, tid: str) -> Path:
     """채택자 트리의 claimed 티켓 DoD 를 전항 체크(`- [ ]` → `- [x]`)하고 그 경로를 돌려준다.
 
-    complete 는 DoD 기록 게이트(T-0596)를 통과해야 하고, 출하 `_template.md` 의 DoD 4항은 미체크로
+    complete 는 DoD 기록 통과 조건(T-0596)를 통과해야 하고, 출하 `_template.md` 의 DoD 4항은 미체크로
     시작한다 — 채택자 PM 이 마감 전 손으로 하는 일을 lifecycle 테스트가 그대로 재현한다.
     """
     claimed = dest / ".project_manager" / "wiki" / "tickets" / "claimed"
@@ -230,7 +230,7 @@ def test_fresh_adopter_default_installs_every_registered_harness_adapter(
 
 def test_fresh_adopter_default_folds_shared_agents_entry_to_neutral_source(
         pm_import, tmp_path):
-    """3하네스 기본 공존은 opencode+codex 공유 AGENTS.md를 중립 codex 원본 하나로 접는다."""
+    """3하네스 기본 공존은 opencode+codex 공유 AGENTS.md를 중립 codex 원본 하나로 합친다."""
     dest = tmp_path / "adopter-default-shared-entry"
 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO), [
@@ -250,7 +250,7 @@ def test_fresh_adopter_default_folds_shared_agents_entry_to_neutral_source(
 
 def test_default_import_partial_templates_error_suggests_narrow_harness(
         pm_import, tmp_path, capsys):
-    """무인자=all인데 source가 일부 flavor만 가지면 단일 하네스 탈출구를 함께 안내한다."""
+    """무인자=all인데 source가 일부 하네스별 판만 가지면 단일 하네스 탈출구를 함께 안내한다."""
     source = tmp_path / "partial-framework"
     (source / "templates" / "claude_code").mkdir(parents=True)
 
@@ -271,7 +271,7 @@ def test_default_import_partial_templates_error_suggests_narrow_harness(
 )
 def test_real_install_codex_readable_surfaces_have_no_unannotated_slash_entries(
         pm_import, tmp_path, selection, weight):
-    """실제 import 조합의 Codex 가 읽는 전체 문서 표면을 renderer와 독립 스캐너로 검사한다."""
+    """실제 import 조합의 Codex 가 읽는 전체 문서 범위를 renderer와 독립 스캐너로 검사한다."""
     dest = tmp_path / f"notation-{selection.replace(',', '-')}-{weight}"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", selection, "--name", "Notation Probe",
@@ -346,7 +346,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     #   (@target-owned 등재는 upstream=claude 루트에 .opencode/ 부재라 skip). 진입점 shim
     #   (plugins/ctx-guard.js)이 core(lib/ctx-guard-core.cjs)를 import 하므로, 한쪽만 landing 하면
     #   opencode 가 플러그인을 로드 못 한다(warn/stop 死) → 실 출하 산출물에서 *함께* 도착을 못박는다
-    #   ([[feature-ship-needs-fresh-adopter-gate]] — source parity 로는 실 landing 을 보증 못 함).
+    #   (출하 기능은 새 채택자 설치로 확인한다는 원칙 — source parity 로는 실 landing 을 보증 못 함).
     if harness == "opencode":
         shim = dest / ".opencode" / "plugins" / "ctx-guard.js"
         core = dest / ".opencode" / "lib" / "ctx-guard-core.cjs"
@@ -356,17 +356,17 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
         )
 
     # (a) adopter 인스턴스 blocking lint clean — `.project_manager/wiki/` 트리의 dangling framework
-    #     wikilink·thin·depends 누출은 `_ADVISORY_LINT_KINDS` 밖(blocking)이라 `--gate`(exit≠0)로 잡힌다.
+    #     wikilink·thin·depends 누출은 `_ADVISORY_LINT_KINDS` 밖(blocking)이라 `--blocking`(exit≠0)로 잡힌다.
     #     fresh adopter 는 baseline-set(import 가 upstream_rev 기록)·seen-unset(seen 은 pm-update 관찰
-    #     때만) 이라 adapter-drift **관찰불가 advisory** 가 발화하는 게 정상이다(never-block·pm-update
-    #     warn·option-a·T-0305) — advisory 는 `--gate` 를 차단 안 하므로 blocking clean 은 `--gate` 로
-    #     확인하고, 무인자 lint(advisory 표면화)는 아래에서 actionable 여부만 본다.
+    #     때만) 이라 adapter-drift **관찰불가 advisory** 가 뜨는 게 정상이다(never-block·pm-update
+    #     warn·option-a·T-0305) — advisory 는 `--blocking` 을 차단 안 하므로 blocking clean 은 `--blocking` 으로
+    #     확인하고, 무인자 lint(advisory 드러냄)는 아래에서 actionable 여부만 본다.
     lint = _board(dest, "lint", "--blocking")
     assert lint.returncode == 0, (
         f"{harness} adopter blocking lint 비-clean(`--blocking` exit≠0) — wiki 출하 doc 에 dangling "
         f"[[ADR/T]]·thin·depends 누출?\n--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}"
     )
-    # 무인자 lint 는 fresh adopter seen-unset 이라 adapter-drift 관찰불가 advisory 로 exit 1(표면화)이
+    # 무인자 lint 는 fresh adopter seen-unset 이라 adapter-drift 관찰불가 advisory 로 exit 1(드러냄)이
     #   정상 — advisory 가 명확·actionable(pm-update 안내)인지 확인한다(silent stale 아님·option-a).
     surfaced = _board(dest, "lint")
     assert "관찰불가" in surfaced.stdout and "pm-update" in surfaced.stdout, (
@@ -384,7 +384,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     primary = dest / root_doc
     assert primary.is_file(), f"{harness} primary 진입문서 {root_doc} 미출하 (채택자 루트 doc 부재)"
     docs_to_scan = [primary]
-    # lite 변형만 부재-skip 허용 — full 무게축(codex 포함)은 .lite 미출하가 정상.
+    # lite 변형만 부재-skip 허용 — full 설치 무게(codex 포함)은 .lite 미출하가 정상.
     lite = dest / lite_doc
     if lite.is_file():
         docs_to_scan.append(lite)
@@ -401,14 +401,14 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     lifecycle_dirs = [tickets_root / s for s in _TICKET_STATUS_DIRS]
 
     # 귀속 쓰기(new·claim)는 `--task` 와 그 task 가 보유한 작업 폴더가 필요하다(T-0962) —
-    # `alloc <repo> --task <이름>` 이 남기는 형상(행의 session=task 이름)을 둔다.
+    # `alloc <repo> --task <이름>` 이 남기는 상태(행의 session=task 이름)를 둔다.
     _seed_work_slot(dest, tree="standalone", session=_SMOKE_TASK)
     new = _board(dest, "new", "adopter smoke", "--touches", "README.md", "--task", _SMOKE_TASK)
     assert new.returncode == 0, (
         f"{harness} `board.py new` 실패(rc={new.returncode}) — ticket 상태 스캐폴드 또는 "
         f"mkdir-before-write 계약 회귀.\n--- stderr ---\n{new.stderr}")
 
-    # bare list = 세션 기본 뷰(ADR-0067) — 솔로/무바인딩이면 user-단위 폴백이라 방금 내가 만든 open 이
+    # bare list = 세션 기본 뷰(ADR-0067) — 솔로/무바인딩이면 user-단위 대체 동작이라 방금 내가 만든 open 이
     # 상세로 나온다. 타 세션분은 완전 비노출(접힘 카운트 "그 외 open N건" 줄은 ADR-0067 로 제거됨).
     mine = _board(dest, "list", "--status", "open")
     assert mine.returncode == 0, f"{harness} `board.py list` 실패: {mine.stderr}"
@@ -425,38 +425,38 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     claim = _board(dest, "claim", tid, "--task", _SMOKE_TASK)
     assert claim.returncode == 0, f"{harness} `board.py claim {tid}` 실패: {claim.stderr}"
 
-    # 결속 완료 게이트([[T-0959]]) — 장부가 종결 중(closing)이 아니면 종결 파이프라인 밖의 직접 호출이라
-    # 채택자 사본에서도 쓰기 전에 거부된다. 이후 단언은 종결이 장부를 closing 으로 기록한 상태에서 본다.
+    # 연결 완료 통과 조건([[T-0959]]) — 기록이 종결 중(closing)이 아니면 종결 파이프라인 밖의 직접 호출이라
+    # 채택자 사본에서도 쓰기 전에 거부된다. 이후 단언은 종결이 기록을 closing 으로 기록한 상태에서 본다.
     outside = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
         "--task", _SMOKE_TASK, "--cluster-close", f"C-{tid}",
     )
     assert outside.returncode == 1 and "closing" in outside.stderr, (
-        f"{harness}: 종결 파이프라인 밖 결속 완료가 통과함 — 엔진 사본 동기 누락?\n{outside.stderr}")
+        f"{harness}: 종결 파이프라인 밖 연결 완료가 통과함 — 엔진 사본 동기 누락?\n{outside.stderr}")
     assert list((tickets_root / "claimed").glob(f"{tid}-*.md")), f"{harness}: 거부된 완료가 티켓을 옮겼다"
-    _mark_ledger_closing(dest, tid)
+    _mark_record_closing(dest, tid)
 
-    # 소유 게이트(T-0781) — claim 정체성이 아닌 세션의 complete 는 채택자 사본에서도 거부되고,
+    # 소유 통과 조건(T-0781) — claim 정체성이 아닌 세션의 complete 는 채택자 사본에서도 거부되고,
     # 거부 문구가 이동 경로(unclaim→claim · --takeover)를 지목해야 한다.
     foreign = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
         "--task", "intruder", "--cluster-close", f"C-{tid}",
     )
     assert foreign.returncode != 0, (
-        f"{harness}: 타 세션이 남의 claim 을 complete 했다 — 소유 게이트가 채택자 사본에 없다.\n"
+        f"{harness}: 타 세션이 남의 claim 을 complete 했다 — 소유 검사가 채택자 사본에 없다.\n"
         f"--- stdout ---\n{foreign.stdout}")
     assert all(token in foreign.stderr for token in ("소유", "unclaim", "--takeover")), (
         f"{harness}: 소유 거부 문구가 이동 경로를 안 지목함:\n{foreign.stderr}")
 
-    # DoD 기록 게이트(T-0596) — 출하 template 의 미체크 DoD 로는 complete 가 막혀야 한다.
-    # 채택자 형상에서 게이트가 실제로 무는지 여기서 확인한다(엔진만 고치고 template 전파를
+    # DoD 기록 통과 조건(T-0596) — 출하 template 의 미체크 DoD 로는 complete 가 막혀야 한다.
+    # 채택자 구성에서 검사가 실제로 무는지 여기서 확인한다(엔진만 고치고 template 전파를
     # 빠뜨리면 이 단언이 red — 반쪽 출하 방지). complete 는 claim 과 **같은 정체성**으로 부른다.
     blocked = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
         "--task", _SMOKE_TASK, "--cluster-close", f"C-{tid}",
     )
     assert blocked.returncode != 0, (
-        f"{harness}: 미체크 DoD 인데 complete 가 통과함 — DoD 게이트가 채택자 사본에 없다.\n"
+        f"{harness}: 미체크 DoD 인데 complete 가 통과함 — DoD 검사가 채택자 사본에 없다.\n"
         f"--- stdout ---\n{blocked.stdout}")
     assert "DoD 미체크" in blocked.stderr, (
         f"{harness}: 차단 사유가 DoD 로 안 나옴:\n{blocked.stderr}")
@@ -472,7 +472,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     #      `STATUS_DIRS` 4종이 전부 실존하는지 본다(손-열거 아닌 파생·round4 S 승계). lifecycle 은
     #      open/claimed/done 만 밟으므로 이 단언이 없으면 `blocked` 만 누락된 **반쪽 T-0433 수정**
     #      (또는 board.py 지연-생성만 랜딩해 dir 이 스캐폴드로는 안 오는 경우)이 full green 으로
-    #      축복된다. T-0433 의 DoD 는 A+B+C 전부라, 반쪽 상태에서 red 인 게 정합이다.
+    #      통과해 버린다. T-0433 의 DoD 는 A+B+C 전부라, 반쪽 상태에서 red 인 게 맞다.
     missing_dirs = [d.name for d in lifecycle_dirs if not d.is_dir()]
     assert not missing_dirs, (
         f"{harness} ticket 상태-dir 불완전: {missing_dirs} 미실존 — lifecycle(open→claimed→done)은 "
@@ -482,9 +482,9 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
 
 # ── new→promote→claim→complete 4단계 완주 (T-0784 공백 5) ───────────────────
 # 위 lifecycle 은 new→claim→complete(3단계) — `promote` 를 한 번도 안 밟는다. `new` 가
-# draft 격리로 빠지는 형상은 board-git 활성일 때뿐(`_board_git_enabled()`) 이라, 이 케이스만
+# draft 격리로 빠지는 경우는 board-git 활성일 때뿐(`_board_git_enabled()`) 이라, 이 케이스만
 # 로컬 bare remote 로 `--board-submodule` 을 실제로 세운다(`test_pm_import_board_submodule.py::
-# test_board_ops_target_submodule` 과 동형 셋업 — 이미 통과가 확인된 패턴 재사용). git 부재
+# test_board_ops_target_submodule` 과 같은 구조 셋업 — 이미 통과가 확인된 패턴 재사용). git 부재
 # 환경은 skip.
 
 _GIT_IDENTITY = {
@@ -521,7 +521,7 @@ def _seed_task_dir(dest: Path, name: str) -> Path:
     return task_dir
 
 
-# 5절 전부 채운(placeholder 0) 대체 본문 — draft 를 promote 게이트에 태우기 위한 재작성.
+# 5절 전부 채운(placeholder 0) 대체 본문 — draft 를 promote 검사에 태우기 위한 재작성.
 _FOUR_STEP_FILLED_BODY = (
     "## 목표\n실제 목표 문장이다.\n\n"
     "## 인터페이스\n실제 규격이다.\n\n"
@@ -535,8 +535,8 @@ _FOUR_STEP_FILLED_BODY = (
 def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, monkeypatch):
     """new(draft)→promote→claim→묶음 종결 4단계 완주 — 매 단계 rc·상태 디렉터리를 단언한다.
 
-    완료 축은 출하 사본의 `ticket_finish.py --cluster` 다(X-005). 발행이 모든 티켓을 크기 1
-    장부에 귀속시키므로 결속 없는 direct `board.py complete` 는 채택자 사본에서도 거부돼야
+    완료 조건은 출하 사본의 `ticket_finish.py --cluster` 다(X-005). 발행이 모든 티켓을 크기 1
+    기록에 귀속시키므로 연결 없는 direct `board.py complete` 는 채택자 사본에서도 거부돼야
     하고, 그 거부와 묶음 종결 성공을 같은 케이스에서 함께 본다.
     """
     for key, val in _GIT_IDENTITY.items():
@@ -549,12 +549,12 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         "--board-submodule", "--board-remote", str(bare), "--fill", "manual",
     ])
     assert rc == 0, f"board-submodule import 실패 (rc={rc})"
-    # PM 홈 첫 커밋 — import 직후 홈 git 은 unborn 이라 발행이 장부에 싣는 기준 브랜치가
-    # commit 으로 해소되지 않는다. 채택자의 실제 형상(커밋 있는 홈)을 만들어 준다.
+    # PM 홈 첫 커밋 — import 직후 홈 git 은 unborn 이라 발행이 기록에 싣는 기준 브랜치가
+    # commit 으로 해소되지 않는다. 채택자의 실제 상태(커밋 있는 홈)를 만들어 준다.
     _git(["-c", "advice.addEmbeddedRepo=false", "add", "-A"], dest)
     assert _git(["commit", "-qm", "adopter home seed"], dest).returncode == 0
     # 작업 폴더 행 1개 + 그 폴더를 잡은 task — 귀속 조작(claim·묶음 종결)의 정체성은 task 다.
-    # `alloc <repo> --task <이름>` 이 남기는 형상(행의 session=task 이름 + task 서술 폴더)이다.
+    # `alloc <repo> --task <이름>` 이 남기는 상태(행의 session=task 이름 + task 서술 폴더)다.
     _seed_work_slot(dest, tree="worktree", session=_FOUR_STEP_TASK)
     _seed_task_dir(dest, _FOUR_STEP_TASK)
     board_tickets = dest / ".project_manager" / "board" / "tickets"
@@ -571,7 +571,7 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     assert not list(board_tickets.glob(f"open/{tid}-*.md")), (
         "draft 인데 open/ 에도 나타남 — 격리 실패")
 
-    # promote 게이트(placeholder/thin)를 통과시키려고 frontmatter 는 보존한 채 본문만
+    # promote 통과 조건(placeholder/thin)를 통과시키려고 frontmatter 는 보존한 채 본문만
     # 5절 전부 채운 텍스트로 갈아끼운다(board.py 재로드 없이 순수 텍스트 스플릿).
     raw = draft_path.read_text(encoding="utf-8")
     _blank, frontmatter, _old_body = raw.split("---\n", 2)
@@ -579,7 +579,7 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         f"---\n{frontmatter}---\n\n# {tid} — 4단계 완주 스모크\n\n{_FOUR_STEP_FILLED_BODY}",
         encoding="utf-8", newline="\n")
 
-    # 공유 승격 전에 기존 명령으로 실제 제품 브랜치와 멤버를 명시 결속한다.
+    # 공유 승격 전에 기존 명령으로 실제 제품 브랜치와 멤버를 명시 연결한다.
     declared = _board(dest, "cluster", "new", "four-step", "--tickets", tid,
                       "--task", _FOUR_STEP_TASK)
     assert declared.returncode == 0, declared.stderr
@@ -595,7 +595,7 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
     # 3단계 — claim: open/ → claimed/. 대상 정확히 1개·출발(open/) 0개까지 단언한다(F-003 —
     # 존재만 보면 copy-without-delete 회귀도 green 이 된다). 정체성은 그 홈의 작업 폴더
     # 행을 보유한 task 다 — 4단계 묶음 종결이 같은 행으로 코드 트리와 소유를 해소하므로 두
-    # 단계의 정체성 축이 하나여야 한다(T-0962: claim 은 `--task` 필수).
+    # 단계의 정체성 기준이 하나여야 한다(T-0962: claim 은 `--task` 필수).
     claim = _board(dest, "claim", tid, "--task", _FOUR_STEP_TASK)
     assert claim.returncode == 0, f"claim 실패: {claim.stderr}"
     claimed_matches = list(board_tickets.glob(f"claimed/{tid}-*.md"))
@@ -605,24 +605,24 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         "claim 성공인데 open/ 에 원본이 남음 — copy-without-delete 회귀.")
 
     # DoD 체크 후 4단계 — 묶음 종결: claimed/ → done/. 대상 정확히 1개·출발(claimed/) 0개까지
-    # 단언한다(F-003 — 동형 근거).
+    # 단언한다(F-003 — 같은 구조 근거).
     claimed_path = claimed_matches[0]
     claimed_path.write_text(
         claimed_path.read_text(encoding="utf-8").replace("- [ ] ", "- [x] "),
         encoding="utf-8", newline="\n")
 
-    # 결속 없는 direct complete 는 채택자 사본에서도 거부된다 — 발행이 만든 크기 1 장부의
+    # 연결 없는 direct complete 는 채택자 사본에서도 거부된다 — 발행이 만든 크기 1 기록의
     # 멤버라, 완료 진입은 묶음 종결 하나다.
     direct = _board(
         dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested")
     assert direct.returncode != 0, (
-        f"결속 없는 direct complete 가 통과했다:\n--- stdout ---\n{direct.stdout}")
+        f"연결 없는 direct complete 가 통과했다:\n--- stdout ---\n{direct.stdout}")
     assert "direct complete" in direct.stderr, (
-        f"거부 사유가 묶음 결속 축이 아님:\n{direct.stderr}")
+        f"거부 사유가 묶음 연결 기준이 아님:\n{direct.stderr}")
     assert list(board_tickets.glob(f"claimed/{tid}-*.md")), (
         "거부됐는데 티켓이 claimed/ 를 떠났다")
 
-    # 종결은 멤버마다 돌려받은 리뷰 라운드를 요구한다 — 설계·구현·리뷰를 마친 멤버의 형상
+    # 종결은 멤버마다 돌려받은 리뷰 라운드를 요구한다 — 설계·구현·리뷰를 마친 멤버의 구성
     # (리뷰 판정 = finding 0건 통과)을 라운드 파일로 둔다.
     rounds_dir = board_tickets / "rounds" / tid
     rounds_dir.mkdir(parents=True, exist_ok=True)
@@ -642,9 +642,9 @@ def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, mon
         f"종결 성공인데 done/ 에 정확히 1개가 아님: {done_matches}")
     assert not list(board_tickets.glob(f"claimed/{tid}-*.md")), (
         "종결 성공인데 claimed/ 에 원본이 남음 — copy-without-delete 회귀.")
-    ledger = board_tickets / "clusters" / "C-four-step.md"
-    assert "status: closed" in ledger.read_text(encoding="utf-8"), (
-        f"종결 뒤에도 장부가 닫히지 않았다:\n{ledger.read_text(encoding='utf-8')}")
+    records = board_tickets / "clusters" / "C-four-step.md"
+    assert "status: closed" in records.read_text(encoding="utf-8"), (
+        f"종결 뒤에도 기록이 닫히지 않았다:\n{records.read_text(encoding='utf-8')}")
 
 
 # ── 작업 폴더 없는 fresh 홈 ──────────────────────────────────────────────
@@ -664,7 +664,7 @@ def _seed_task_session_claim(dest: Path, task: str, session: str = "S-1") -> Non
 
 def _seed_work_slot(dest: Path, *, number: int = 1, tree: str | None = None,
                     session: str | None = None) -> str:
-    """`pm-config worktree add` 가 남기는 형상의 최소 재현 — 슬롯 행 + (선택)작업 폴더.
+    """`pm-config worktree add` 가 남기는 상태의 최소 재현 — 슬롯 행 + (선택)작업 폴더.
 
     `tree="standalone"` 은 독립 git 트리(커밋 있는 홈이 필요 없는 경우), `tree="worktree"` 는
     홈 repo 의 실제 worktree(코드 산출·묶음 종결이 홈 이력과 같은 repo 여야 하는 경우)다.
@@ -733,19 +733,19 @@ def test_fresh_adopter_task_entry_dumps_its_work_folder(
     assert slot in got.stdout, got.stdout
 
 
-# ── 라운드 파일 모델 (ADR-0090) — 어댑터 문구 · 준비→회수 1사이클 ─────────────
+# ── 라운드 파일 모델 (ADR-0090) — 어댑터 문구 · 준비→돌려받기 1사이클 ─────────
 # 티켓 산출은 명세 파일 안 역할 절이 아니라 `tickets/rounds/<T-NNNN>/NN-<역할>.md` 라운드 파일
 # 하나다. 어댑터가 옛 모델을 지시하면 에이전트는 존재하지 않는 자리를 찾는다(문서가 곧 실행 지시).
 
-# 단일 파일 컨테이너 시절 어휘 — 위임 문서 표면에 하나라도 남으면 red.
+# 단일 파일 컨테이너 시절 어휘 — 위임 문서 범위에 하나라도 남으면 red.
 #   엔진 `.project_manager/tools/` 는 마이그레이션 진단 문구로 이 낱말을 legitimately 쓰므로
-#   스캔 밖이고, 이 표면은 "에이전트·PM 이 읽고 그대로 실행하는 문서"로 한정한다.
+#   스캔 밖이고, 이 범위는 "에이전트·PM 이 읽고 그대로 실행하는 문서"로 한정한다.
 _ROUND_MODEL_STALE_TOKENS = (
     "pm-ticket-section", "pm-ticket-seal", "seal-backfill",
     "--transfer-from", "--capability-stdin", "ticket-copy", "ticket_copies",
     "자기 절", "역할 절", ".growth",
 )
-# 위임 문서 표면 = 역할 카드 + 위임 스킬/슬래시 command + 위임 스킬 references + opencode PM
+# 위임 문서 범위 = 역할 카드 + 위임 스킬/슬래시 command + 위임 스킬 references + opencode PM
 # 지침 + 방법론 2종 + lite 진입문서.
 _DELEGATION_SKILLS = ("pm-dev-delegate", "pm-ticket")
 _ADAPTER_NAMESPACES = tuple(
@@ -810,15 +810,15 @@ def _template_roots() -> list[Path]:
 def test_delegation_docs_drop_single_file_container_vocabulary():
     """canonical + 3 타깃 위임 문서에 옛 단일 파일 컨테이너 어휘가 0이다 (ADR-0090).
 
-    가드 시야를 표면과 **독립으로 대조**한다 — 파생 글롭이 조용히 줄면(디렉토리 개명·미출하)
+    가드 검사 범위를 실제 범위와 **독립으로 대조**한다 — 파생 글롭이 조용히 줄면(디렉토리 개명·미출하)
     스캔 0으로 vacuous green 이 되므로, 각 루트가 실제로 내놓아야 하는 좌표를 따로 단언한다.
     """
     roots = [REPO, *_template_roots()]
     scanned = {root: _delegation_docs(root) for root in roots}
 
-    # (a) 시야 자기검증 — 루트마다 역할 카드와 위임 스킬/command 를 최소 1개씩 봐야 한다.
+    # (a) 검사 범위 자기검증 — 루트마다 역할 카드와 위임 스킬/command 를 최소 1개씩 봐야 한다.
     for root, docs in scanned.items():
-        assert docs, f"위임 문서 스캔 0건: {root} — 파생 글롭이 표면을 놓쳤다"
+        assert docs, f"위임 문서 스캔 0건: {root} — 파생 글롭이 범위를 놓쳤다"
         relative = {path.relative_to(root).as_posix() for path in docs}
         assert any("/agents/" in rel for rel in relative), (
             f"{root}: 역할 카드가 스캔에 없다 — {sorted(relative)}"
@@ -881,7 +881,7 @@ def _git_init_adopter(dest: Path) -> None:
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
-def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path, harness):
+def test_fresh_adopter_runs_one_round_prepare_collect_cycle(pm_import, tmp_path, harness):
     """실 import 트리에서 `ticket prepare` → 라운드 파일 편집 → `ticket collect` → `show` 1사이클.
 
     기계층이다(라이브 LLM 0) — 에이전트가 할 편집을 테스트가 직접 한다. 이 사이클이 채택자
@@ -904,9 +904,9 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     claim = _board(dest, "claim", tid, "--task", _SMOKE_TASK)
     assert claim.returncode == 0, f"{harness} `board.py claim` 실패: {claim.stderr}"
 
-    # T-0815 설계 근거 게이트 — architect 라운드도 `design: done` 도 없는 신규 티켓은
+    # T-0815 설계 근거 검사 — architect 라운드도 `design: done` 도 없는 신규 티켓은
     # developer 라운드를 준비할 수 없다(면제 경로는 폐지됐다). 이 e2e 의 관심사는 준비→편집→
-    # 회수 왕복이라, 설계 절을 채우고 setter 로 상태를 올려 근거를 갖춘다.
+    # 돌려받기 왕복이라, 설계 절을 채우고 setter 로 상태를 올려 근거를 갖춘다.
     claimed = list((dest / ".project_manager" / "wiki" / "tickets" / "claimed").glob(
         f"{tid}-*.md"))
     assert len(claimed) == 1, f"{harness} claim 뒤 명세 1건이어야 한다: {claimed}"
@@ -915,7 +915,7 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     filled_section = (
         "## 설계\n"
         "- **경계 실측**: 채택자 e2e 픽스처\n"
-        "- **불변식**: 준비→회수 왕복 보존\n"
+        "- **불변식**: 준비→돌려받기 왕복 보존\n"
         "- **표면 상한**: 라운드 파일 1개\n"
         "- **테스트 전략**: 정상 왕복\n\n"
     )
@@ -928,7 +928,7 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     assert design.returncode == 0, f"{harness} `board.py design` 실패: {design.stderr}"
 
     # 라운드 순번이 곧 단계다 — 채택자 사본에서도 구현 라운드 앞에 설계 라운드가 선다.
-    # (묶음은 발행이 만든 크기 1 장부이고, 준비 표면이 티켓 표기든 묶음 표기든 판정은 같다.)
+    # (묶음은 발행이 만든 크기 1 기록이고, 준비 범위가 티켓 표기든 묶음 표기든 판정은 같다.)
     design_prepared = _delegate_cli(
         dest, "ticket", "prepare", "--ticket", tid, "--role", "architect",
         "--cwd", str(dest),
@@ -952,7 +952,7 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
                 "-m", "pytest", "tests/test_round_cycle.py", "-q",
             ),
             "expected": "passed",
-            "negative": "테스트 산출 누락은 developer 회수를 거부한다",
+            "negative": "테스트 산출 누락은 developer 돌려받기를 거부한다",
         }],
     }
     design_round.write_text(
@@ -962,12 +962,12 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         + "\n## 경계 실측\n- 채택자 e2e 실측\n",
         encoding="utf-8", newline="",
     )
-    design_harvested = _delegate_cli(
+    design_collected = _delegate_cli(
         dest, "ticket", "collect", "--copy", str(design_round), "--cwd", str(dest),
     )
-    assert design_harvested.returncode == 0, (
-        f"{harness} architect `ticket collect` 실패(rc={design_harvested.returncode})\n"
-        f"--- stdout ---\n{design_harvested.stdout}\n--- stderr ---\n{design_harvested.stderr}"
+    assert design_collected.returncode == 0, (
+        f"{harness} architect `ticket collect` 실패(rc={design_collected.returncode})\n"
+        f"--- stdout ---\n{design_collected.stdout}\n--- stderr ---\n{design_collected.stderr}"
     )
 
     prepared = _delegate_cli(
@@ -1018,15 +1018,15 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         ) + f"\n{sentinel}\n",
         encoding="utf-8", newline="",
     )
-    harvested = _delegate_cli(
+    collected = _delegate_cli(
         dest, "ticket", "collect", "--copy", str(round_file), "--cwd", str(dest),
     )
-    assert harvested.returncode == 0, (
-        f"{harness} `ticket collect` 실패(rc={harvested.returncode})\n"
-        f"--- stdout ---\n{harvested.stdout}\n--- stderr ---\n{harvested.stderr}"
+    assert collected.returncode == 0, (
+        f"{harness} `ticket collect` 실패(rc={collected.returncode})\n"
+        f"--- stdout ---\n{collected.stdout}\n--- stderr ---\n{collected.stderr}"
     )
-    assert json.loads(harvested.stdout.strip().splitlines()[-1])["changed"] is True
-    assert not run_dir.exists(), f"{harness}: 회수 뒤에도 run-dir 이 남음 — run 이 안 닫혔다"
+    assert json.loads(collected.stdout.strip().splitlines()[-1])["changed"] is True
+    assert not run_dir.exists(), f"{harness}: 돌려받은 뒤에도 run-dir 이 남음 — run 이 안 닫혔다"
 
     board_round = (
         dest / ".project_manager" / "wiki" / "tickets" / "rounds" / tid / round_file.name
@@ -1037,13 +1037,13 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     shown = _board(dest, "show", tid)
     assert shown.returncode == 0, f"{harness} `board.py show` 실패: {shown.stderr}"
     assert sentinel in shown.stdout, (
-        f"{harness}: `show` 가 회수된 라운드를 표시하지 않는다 — 명세만 출력?\n{shown.stdout}"
+        f"{harness}: `show` 가 돌려받은 라운드를 표시하지 않는다 — 명세만 출력?\n{shown.stdout}"
     )
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, harness):
-    """세 flavor 실출하 사본이 중앙 loader를 포함하고 self-update 뒤에도 직접 CLI로 동작한다.
+    """세 하네스별 판 실출하 사본이 중앙 loader를 포함하고 self-update 뒤에도 직접 CLI로 동작한다.
 
     대상 패키지에만 있던 모듈(ghost)은 실제 self-update(전달 + 새 완료 프로세스) 뒤 사라지고, 출하하지
     않는 인스턴스 파일의 바이트는 그대로이며, 다음 엔진 코드 계획은 0 이다."""
@@ -1051,8 +1051,8 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
     ) == 0
-    seam = dest / ".project_manager" / "tools" / "pm_engine" / "infra" / "repo_files.py"
-    assert seam.is_file() and "def load_module(" in seam.read_text(encoding="utf-8")
+    override = dest / ".project_manager" / "tools" / "pm_engine" / "infra" / "repo_files.py"
+    assert override.is_file() and "def load_module(" in override.read_text(encoding="utf-8")
     ghost = dest / ".project_manager" / "tools" / "pm_engine" / "app" / "zz_ghost_module.py"
     ghost.write_text("# 상류에 없는 대상 전용 모듈\n", encoding="utf-8")
     sentinel = dest / ".project_manager" / "wiki" / "zz_instance_sentinel.md"
@@ -1090,7 +1090,7 @@ def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, 
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_harness_templates_ship_ticket_status_scaffold(pm_import, harness):
-    """파생 HARNESSES 축의 모든 template이 README와 상태-dir keep 파일을 출하한다."""
+    """파생 HARNESSES 목록의 모든 template이 README와 상태-dir keep 파일을 출하한다."""
     (template_dir,) = install_rules.HARNESS_TEMPLATE_DIRS[harness]
     tickets = REPO / "templates" / template_dir / ".project_manager" / "wiki" / "tickets"
     assert (tickets / "README.md").is_file(), f"{harness}: tickets/README.md 미출하"
@@ -1098,14 +1098,14 @@ def test_harness_templates_ship_ticket_status_scaffold(pm_import, harness):
                if not (tickets / status / ".gitkeep").is_file()]
     assert not missing, (
         f"{harness}: ticket 상태 스캐폴드 .gitkeep 미출하: {missing} — 새 하네스는 HARNESSES "
-        "파생 축에 자동 편입되어 이 가드를 통과해야 한다")
+        "파생 목록에 자동 편입되어 이 가드를 통과해야 한다")
 
 
 def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import, tmp_path):
     """상태 dir가 없어도 new→block→unblock→claim→complete→reopen→discard가 자가 복구한다.
 
     처분 종결(`discarded/`·T-0781)까지 포함해 STATUS_DIRS 전수를 lifecycle 로 되살린다 —
-    채택자 트리에서 신규 종결 디렉토리가 실제로 만들어지는지가 이 축의 관측 지점이다.
+    채택자 트리에서 신규 종결 디렉토리가 실제로 만들어지는지가 이 검사의 관측 지점이다.
 
     Sensitivity: dump_ticket 또는 move_item의 mkdir-before-write를 되돌리면 이 fixture는
     즉시 FileNotFoundError로 red가 된다.
@@ -1128,8 +1128,8 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     assert unblock.returncode == 0, unblock.stderr
     claim = _board(dest, "claim", tid, "--task", _SMOKE_TASK)
     assert claim.returncode == 0, claim.stderr
-    _check_off_dod(dest, tid)   # DoD 기록 게이트(T-0596) — 미체크면 complete 가 막힌다.
-    _mark_ledger_closing(dest, tid)   # 결속 완료는 종결 중 장부에서만([[T-0959]])
+    _check_off_dod(dest, tid)   # DoD 기록 통과 조건(T-0596) — 미체크면 complete 가 막힌다.
+    _mark_record_closing(dest, tid)   # 연결 완료는 종결 중 기록에서만([[T-0959]])
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
     done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log",
                   "--allow-untested", "--task", _SMOKE_TASK,
@@ -1145,9 +1145,9 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
 
 # ── 멀티-유저 훅 경로 portability 가드 (T-0191 · v1.0.x 운영버그 #5) ──────────────
 # import 가 {{PROJECT_ROOT}} 를 절대경로로 박으면 git-공유 시 다른 머신에서 훅이 깨진다
-# (alice 절대경로 커밋 → bob pull → 그 경로 없음 → 훅 무음 실패·ctx-stop 안전게이트 死).
+# (alice 절대경로 커밋 → bob pull → 그 경로 없음 → 훅 무음 실패·ctx-stop 안전검사 死).
 # settings.json 훅/PreCompact 은 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} 를 쓰므로 *렌더된*
-# 결과에 절대경로/{{PROJECT_ROOT}} 가 남으면 안 된다(fresh-adopter 게이트).
+# 결과에 절대경로/{{PROJECT_ROOT}} 가 남으면 안 된다(fresh-adopter 검사).
 
 def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
     """claude import 후 settings.json 에 절대경로·{{PROJECT_ROOT}} 잔존 0."""
@@ -1163,10 +1163,10 @@ def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
     assert "{{PROJECT_ROOT}}" not in settings_text, (
         "settings.json 에 미치환 {{PROJECT_ROOT}} 잔존 — portable 형이 아님")
     assert dest_abs not in settings_text, (
-        f"settings.json 에 import 절대경로({dest_abs}) 박제 — git 공유 시 다른 머신서 훅 깨짐. "
+        f"settings.json 에 import 절대경로({dest_abs}) 기록 — git 공유 시 다른 머신서 훅 깨짐. "
         "$CLAUDE_PROJECT_DIR 를 써라.")
 
-    # settings.json 훅 명령(hooks.*)은 런타임 머신별 해소를 쓴다 (절대경로 미박제).
+    # settings.json 훅 명령(hooks.*)은 런타임 머신별 해소를 쓴다 (절대경로 미기록).
     data = json.loads(settings_text)
     hook_cmds = [
         h.get("command", "")
@@ -1185,7 +1185,7 @@ def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
 # `../opencode/README.md` 상대링크)라 adopter 트리에선 dangling. adopter 로 복사되면 안 된다.
 # 하위 `.project_manager/wiki/*/README.md`(wiki 구조 안내)는 adopter-facing 이라 유지.
 
-# 축 = 등록된 단일 하네스 + registry 파생 ``all``. README 미출하 불변식은 import 모드와 무관하게
+# 선택 목록 = 등록된 단일 하네스 + registry 파생 ``all``. README 미출하 불변식은 import 모드와 무관하게
 # 성립하므로(top README는 어느 선택으로도 출하 금지) 전체 선택까지 태운다. 임의 콤마 조합의
 # 순서/중복/합집합은 ``test_pm_import``의 집합 parser·e2e가 담당한다.
 _README_HARNESS_ARGS = (*HARNESSES, "all")
@@ -1216,8 +1216,8 @@ def test_fresh_adopter_excludes_framework_internal_readme(pm_import, tmp_path, h
             f"{harness}: {md.relative_to(dest)} 에 프레임워크-상대 dangling 링크 잔존")
 
 
-def test_readme_axis_is_derived_and_covers_all_keyword():
-    """README 미출하 축이 등록 하네스와 파생 전체 선택을 커버함을 못박는다.
+def test_readme_set_is_derived_and_covers_all_keyword():
+    """README 미출하 검사가 등록 하네스와 파생 전체 선택을 커버함을 못박는다.
 
     codex 는 정당 대상(templates/codex/README.md 존재하나 top README 미출하·wiki README 유지·
     dangling 0·실측). 파생이라 새 단일 하네스/콤보 키가 자동 편입된다(T-0434 가짜-하네스 패턴).
@@ -1229,7 +1229,7 @@ def test_readme_axis_is_derived_and_covers_all_keyword():
 # ── 출하 @render 스킬/command materialize 가드 (T-0142/T-0143 — 신규 스킬 회귀) ──────
 # `board.py lint` clean 은 파일 *부재* 를 못 잡는다(없어도 clean). 출하 스킬이 fresh import 에서
 # 조용히 누락/미렌더되는 회귀를 source 템플릿 트리 기준 전수 대조로 박는다. PM 33 에서 신규
-# pm-update/pm-env 스킬을 추가하며 ephemeral smoke 로만 확인했던 갭의 durable 화 ([[feature-ship-needs-fresh-adopter-gate]]).
+# pm-update/pm-env 스킬을 추가하며 ephemeral smoke 로만 확인했던 갭의 durable 화 (출하 기능은 새 채택자 설치로 확인한다는 원칙).
 # operational 토큰(import 가 *항상* 해소)만 검사 — free-form·{{OPENCODE_PRO_MODEL}} 는 manual fill TODO 라 제외.
 
 _OPERATIONAL_TOKENS = re.compile(r"\{\{(?:PY|PROJECT_NAME|PROJECT_TAGLINE|TEST_CMD)\}\}")
@@ -1246,7 +1246,7 @@ _RENDER_SKILL_SRC = {
 _NEW_SKILLS = {h: {"pm-update", "pm-env"} for h in _RENDER_SKILL_SRC}
 _OPENCODE_COMMAND_SRC = REPO / "templates" / "opencode" / ".opencode" / "command"
 
-# 하네스 축은 파생(HARNESSES)이되 스킬 소스 경로는 하네스별 config(트리 remap 이 달라 손으로 못 지움).
+# 하네스 목록은 파생(HARNESSES)이되 스킬 소스 경로는 하네스별 config(트리 remap 이 달라 손으로 못 지움).
 #   신규 하네스가 _RENDER_SKILL_SRC 를 안 채우면 collection 이 loud 로 죽어 편입을 강제한다.
 assert set(HARNESSES) <= set(_RENDER_SKILL_SRC), (
     f"신규 하네스가 _RENDER_SKILL_SRC 에 미등록: {set(HARNESSES) - set(_RENDER_SKILL_SRC)}")
@@ -1313,14 +1313,14 @@ def test_fresh_adopter_render_skills_materialize(pm_import, tmp_path, harness):
             assert not _OPERATIONAL_TOKENS.findall(command.read_text(encoding="utf-8"))
 
 
-# ── adapter-drift lint real-file 발화 가드 (T-0141 — 실 local.conf 경로) ───────────
+# ── adapter-drift lint real-file 경고 가드 (T-0141 — 실 local.conf 경로) ───────────
 # unit(test_board_lint)은 local_config() 를 stub 한다. 이 테스트는 *실제 import 된* local.conf 의
-# 2키(upstream_rev baseline=import 기록 · upstream_seen_rev 주입)로 drift-lint 가 발화하고
-# `--gate` 는 never-block(exit 0) 임을 real-file 경로로 박는다.
+# 2키(upstream_rev baseline=import 기록 · upstream_seen_rev 주입)로 drift-lint 가 경고를 내고
+# `--blocking` 은 never-block(exit 0) 임을 real-file 경로로 박는다.
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, harness):
-    """실 local.conf 2키로 adapter-drift advisory 발화 + never-block (전 하네스·engine 중립)."""
+    """실 local.conf 2키로 adapter-drift advisory 표시 + never-block (전 하네스·engine 중립)."""
     dest = tmp_path / f"adopter-{harness}"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
@@ -1332,37 +1332,37 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
     assert any(l.startswith("upstream.rev=") for l in conf_txt.splitlines()), \
         f"{harness}: import 가 upstream_rev baseline 미기록 (drift-lint 입력 부재)"
 
-    # seen 미기록 → 관찰불가 advisory 발화 (option-a·T-0305·never-block). fresh adopter 는 항상
+    # seen 미기록 → 관찰불가 advisory 표시 (option-a·T-0305·never-block). fresh adopter 는 항상
     #   baseline-set·seen-unset 이라 첫 lint 가 관찰불가 advisory 를 낸다 — 아직 upstream 미관찰이라
     #   drift 판정 불가인 *정직한 상태표현*이자 pm-update warn(silent stale 근절). 과거 silent [] 를 대체.
     observ = _board(dest, "lint")
-    assert "adapter-drift" in observ.stdout, f"{harness}: seen 미기록 관찰불가 advisory 미발화\n{observ.stdout}"
+    assert "adapter-drift" in observ.stdout, f"{harness}: seen 미기록 관찰불가 advisory 안 뜸\n{observ.stdout}"
     assert "관찰불가" in observ.stdout and "pm-update" in observ.stdout, (
         f"{harness}: 관찰불가 advisory 가 명확·actionable(pm-update 안내) 하지 않음\n{observ.stdout}")
-    # never-block — seen-unset 관찰불가도 `--gate` 종료코드 0.
-    observ_gate = _board(dest, "lint", "--blocking")
-    assert observ_gate.returncode == 0, (
-        f"{harness}: 관찰불가 advisory 가 `--blocking` 차단(never-block 위배·exit {observ_gate.returncode})\n{observ_gate.stdout}")
+    # never-block — seen-unset 관찰불가도 `--blocking` 종료코드 0.
+    observ_blocking = _board(dest, "lint", "--blocking")
+    assert observ_blocking.returncode == 0, (
+        f"{harness}: 관찰불가 advisory 가 `--blocking` 차단(never-block 위배·exit {observ_blocking.returncode})\n{observ_blocking.stdout}")
 
-    # seen≠baseline 주입 → 실 drift 발화(관찰불가 아닌 **방향-중립 불일치** 메시지·T-0413).
+    # seen≠baseline 주입 → 실 drift 경고(관찰불가 아닌 **방향-중립 불일치** 메시지·T-0413).
     #   lint 는 git 을 안 하므로 두 rev 의 선후를 모른다 — "이후 변경됨" 단정은 관찰값이 baseline 의
     #   조상일 때 거짓이라 폐기됐다(② 실측). 불일치 사실 + 양쪽 rev 만 알린다.
     conf.write_text(conf_txt + "upstream.seen_rev=ffff0000baselinedifferent\n", encoding="utf-8", newline="\n")
     fired = _board(dest, "lint")
-    assert "adapter-drift" in fired.stdout, f"{harness}: 인위 drift 인데 adapter-drift 미발화\n{fired.stdout}"
+    assert "adapter-drift" in fired.stdout, f"{harness}: 인위 drift 인데 adapter-drift 안 뜸\n{fired.stdout}"
     assert "불일치" in fired.stdout and "관찰불가" not in fired.stdout, \
         f"{harness}: 실 drift(방향-중립 불일치) 메시지 부재\n{fired.stdout}"
     assert "이후 변경됨" not in fired.stdout, \
         f"{harness}: 방향 단정 메시지 잔존(거짓 경보 클래스)\n{fired.stdout}"
 
-    # never-block — advisory 라 `--gate` 종료코드 0.
-    gated = _board(dest, "lint", "--blocking")
-    assert gated.returncode == 0, (
-        f"{harness}: adapter-drift 가 `--blocking` 을 차단(never-block 위배·exit {gated.returncode})\n{gated.stdout}"
+    # never-block — advisory 라 `--blocking` 종료코드 0.
+    blocking = _board(dest, "lint", "--blocking")
+    assert blocking.returncode == 0, (
+        f"{harness}: adapter-drift 가 `--blocking` 을 차단(never-block 위배·exit {blocking.returncode})\n{blocking.stdout}"
     )
 
 
-# ── import 된 adopter settings.json portable + 훅 배선 실재 (T-0202 · claude harness) ──
+# ── import 된 adopter settings.json portable + 훅 등록 실재 (T-0202 · claude harness) ──
 # settings.json + 훅 래퍼(.sh)·스크립트(.py)는 engine.manifest **밖**(인스턴스 소유)이라 pm_import 가
 # 토큰 치환 없이 *verbatim 복사* 한다(render 채널 부재·A안 portable-by-construction). 이 층은 그 복사본이
 # (a) 유효 JSON·치환 토큰 0·머신-특정 절대경로 0 + (b) settings.json 이 가리키는 훅 파일이 adopter 트리에
@@ -1385,9 +1385,9 @@ def test_fresh_adopter_settings_portable_and_hooks_wired(pm_import, tmp_path):
     json.loads(text)  # invalid escape(Windows 절대경로) 시 raise
     failures = portability_failures(text)
     assert not failures, f"import 된 settings.json portable-by-construction 위반: {failures}"
-    # import 절대경로 박제 없음 — dest 경로가 새면 git 공유 시 다른 머신서 훅 깨짐(명시 belt-and-suspenders).
+    # import 절대경로 기록 없음 — dest 경로가 새면 git 공유 시 다른 머신서 훅 깨짐(명시 belt-and-suspenders).
     assert str(dest.resolve()) not in text, (
-        "import 된 settings.json 에 import 절대경로 박제 — git 공유 시 다른 머신서 훅 깨짐")
+        "import 된 settings.json 에 import 절대경로 기록 — git 공유 시 다른 머신서 훅 깨짐")
 
     # (b) 훅/statusLine 참조 파일이 adopter 트리에 실재 + `.sh` 실행비트 (${CLAUDE_PROJECT_DIR}/ 제거).
     refs = referenced_hook_paths(text)
@@ -1403,21 +1403,21 @@ def test_fresh_adopter_settings_portable_and_hooks_wired(pm_import, tmp_path):
 # ── add-harness 라이브-안전 e2e: 어댑터 네임스페이스만 추가·기존 트리 바이트 불변 (T-0271 · ADR-0048) ──
 # raw 재-import 의 파괴성(실측 5-file clobber: wiki/engine/claude/CLAUDE.md 를 덮음)이 재발하지 않음을
 # *전체 트리 diff* 로 못박는다. 단위 테스트(test_pm_import·T-0269)는 대표 파일 3~4개를 spot-check 하지만,
-# 이 e2e 는 fresh import 된 실 인스턴스의 전 트리를 스냅샷 → add-harness → 재스냅샷 해 (a) 추가된 relpath
+# 이 e2e 는 fresh import 된 실 인스턴스의 전 트리를 복사본으로 뜨고 → add-harness → 다시 떠서 (a) 추가된 relpath
 # 가 추가 harness 어댑터 네임스페이스(.opencode/** ∪ AGENTS.md) 밖으로 한 개도 안 새고 · (b) 기존 relpath
 # (wiki `.project_manager/**`·엔진·타 harness `.claude/**`·root doc)가 바이트 단위 불변·0 삭제임을 전수
-# 대조한다. add-harness 는 render-only(라이브 LLM 0·`opencode models` seam 은 pm_import fixture 가 stub)라
+# 대조한다. add-harness 는 render-only(라이브 LLM 0·`opencode models` 교체 지점은 pm_import fixture 가 stub)라
 # 결정적 — 최초 import 와 동일 in-process 경로로 구동한다(운영 진입 `pm_config add-harness` 는 별 subprocess
-# 라 stub 미상속·live 조회 위험 → 이 게이트의 hermetic 계약과 맞지 않는다).
+# 라 stub 미상속·live 조회 위험 → 이 검사의 hermetic 계약과 맞지 않는다).
 
 # 어댑터 네임스페이스 상한(추가 relpath ⊆ 이 집합). 값 shape = `(adapter_dirs: tuple, root_doc)` —
-# 엔진 `pm_import.ADD_HARNESS_ADAPTER` 와 동형(ADR-0070 D5·비준 2026-07-21)이되 **파생**(손-복제
+# 엔진 `pm_import.ADD_HARNESS_ADAPTER` 와 같은 방식(ADR-0070 D5·승인 2026-07-21)이되 **파생**(손-복제
 # 아님·T-0453·아래 _derive_ns_bound). codex 는 어댑터 네임스페이스가 **둘**(`.codex`+`.agents`)이라
 # dirs-튜플로 일반화하고 claude/opencode 는 단일-원소. claude add 의 @render 제외(.claude/agents·
 # skills)는 추가 파일을 *줄일* 뿐이라 subset 단언엔 무영향 — 상한 predicate 로 충분하다.
 def _derive_ns_bound(adapter_dirs, root_doc):
     """T-0429 파생 API(`HARNESS_ADAPTER_DIRS`·`HARNESS_ROOT_DOC`)를 per-harness `(adapter_dirs,
-    root_doc)` 상한으로 재조합 — 엔진 ADD_HARNESS_ADAPTER 와 동형이되 손-복제가 아니라 파생이라
+    root_doc)` 상한으로 재조합 — 엔진 ADD_HARNESS_ADAPTER 와 같은 구조이되 손-복제가 아니라 파생이라
     새 하네스가 자동 편입된다(손-복제였으면 4번째서 KeyError·T-0453)."""
     return {h: (adapter_dirs[h], root_doc[h]) for h in adapter_dirs}
 
@@ -1425,18 +1425,18 @@ def _derive_ns_bound(adapter_dirs, root_doc):
 _ADD_HARNESS_NS_BOUND = _derive_ns_bound(HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC)
 
 
-# 스냅샷 제외 트리 컴포넌트 — VCS/캐시 산출물 + pm_import 백업. `.pm_import_backups/` 는 add-harness 가
+# 복사본 제외 트리 컴포넌트 — VCS/캐시 산출물 + pm_import 백업. `.pm_import_backups/` 는 add-harness 가
 # root doc(AGENTS.md) 충돌을 만나 backup+copy 할 때 생기는 **안전 아티팩트**다 (⚠ add-harness 경로는
-# 백업 폴더 안 `.gitignore` 가 git 에는 무시시키지만 스냅샷은 파일 트리를 직접 읽으므로 따로 뺀다) —
+# 백업 폴더 안 `.gitignore` 가 git 에는 무시시키지만 복사본은 파일 트리를 직접 읽으므로 따로 뺀다) —
 # opencode↔codex 는 공통 코어 AGENTS.md 가 byte-identical 이라, git-미커밋 fresh 채택자에선 git-safe
 # skip 이 아니라 backup+identical-rewrite 로 처리된다(라이브 클로버 아님·백업이 원본 보존·재기록은
-# 동일 바이트). 백업 아티팩트는 어댑터 네임스페이스도 실 트리도 아니라 스냅샷에서 뺀다 — *실* 파일
+# 동일 바이트). 백업 아티팩트는 어댑터 네임스페이스도 실 트리도 아니라 복사본에서 뺀다 — *실* 파일
 # (AGENTS.md)의 바이트 불변은 아래 (3) 이 그대로 검증하므로 라이브-안전 판정력은 유지된다.
 _SNAPSHOT_EXCLUDE_PARTS = ("__pycache__", ".git", ".pm_import_backups")
 
 
 def _snapshot_tree(root: Path) -> dict[str, bytes]:
-    """트리의 모든 파일 relpath(posix) → 바이트 스냅샷 (__pycache__·.git·백업 등 산출물 제외)."""
+    """트리의 모든 파일 relpath(posix) → 바이트 복사본 (__pycache__·.git·백업 등 산출물 제외)."""
     snap: dict[str, bytes] = {}
     for p in root.rglob("*"):
         if not p.is_file():
@@ -1458,12 +1458,12 @@ def _in_adapter_ns_bound(rel: str, added_harness: str) -> bool:
 
 
 def _add_harness_order_pairs(harnesses) -> list[tuple[str, str]]:
-    """base ≠ added 전 순서쌍(N×(N−1)) — add-harness 라이브-안전 e2e 축.
+    """base ≠ added 전 순서쌍(N×(N−1)) — add-harness 라이브-안전 e2e 검사.
 
-    파생 축 HARNESSES(T-0429)의 순열 — 손-열거 6쌍을 대체한다(T-0434). 하네스 3종이면 6쌍
+    파생 목록 HARNESSES(T-0429)의 순열 — 손-열거 6쌍을 대체한다(T-0434). 하네스 3종이면 6쌍
     (claude↔opencode = 1차 실측 clobber + 대칭 · claude↔codex = 진입 doc 상이·신규 추가 ·
-    opencode↔codex = 공통 코어 AGENTS.md byte-수렴 skip), 4종이면 12쌍으로 **자동** 확장된다.
-    test_pm_import.py `_ADD_HARNESS_APPLY_PAIRS` 와 동일 idiom(같은 파생원·의미 축).
+    opencode↔codex = 공통 코어 AGENTS.md byte-일치 skip), 4종이면 12쌍으로 **자동** 확장된다.
+    test_pm_import.py `_ADD_HARNESS_APPLY_PAIRS` 와 동일 idiom(같은 파생원·의미 단위).
     """
     return [(base, added) for base in harnesses for added in harnesses if base != added]
 
@@ -1480,8 +1480,8 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     2차(opencode→claude)는 대칭 검증. codex(세 번째 하네스·ADR-0070)는 양방향 편입([[cross-cutting-
     breaking-blast-radius]] — dual-namespace `.codex`+`.agents`·claude/opencode 공존 미가드 방지):
     claude↔codex 는 진입 doc 이 상이(신규 추가)하고, opencode↔codex 는 공통 코어 `AGENTS.md` 가
-    byte-identical 이라 add-harness 가 그 root doc 을 git-safe skip(수렴)하는 게 정상 — 아래 sanity 가
-    "신규 추가 또는 byte-identical 무변" 둘 다 허용해 그 수렴을 함께 못박는다(D3 C-v2).
+    byte-identical 이라 add-harness 가 그 root doc 을 git-safe skip(일치)하는 게 정상 — 아래 sanity 가
+    "신규 추가 또는 byte-identical 무변" 둘 다 허용해 그 일치를 함께 못박는다(D3 C-v2).
     """
     dest = tmp_path / f"adopter-{base}-add-{added}"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
@@ -1489,18 +1489,18 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     )
     assert rc == 0, f"{base} import 실패 (rc={rc})"
 
-    # add-harness 직전 전체 트리 바이트 스냅샷.
+    # add-harness 직전 전체 트리 바이트 복사본.
     before = _snapshot_tree(dest)
-    # 공허참 방지 — 스냅샷이 실제로 라이브-파괴 원천(wiki dev-state·엔진·base 어댑터)을 담았다.
+    # 공허참 방지 — 복사본이 실제로 라이브-파괴 원천(wiki dev-state·엔진·base 어댑터)을 담았다.
     assert any(r.startswith(".project_manager/wiki/") for r in before), \
-        f"{base}: 스냅샷에 wiki dev-state 부재 (공허 테스트?)"
-    assert ".project_manager/tools/board.py" in before, f"{base}: 스냅샷에 엔진 board.py 부재"
+        f"{base}: 복사본에 wiki dev-state 부재 (공허 테스트?)"
+    assert ".project_manager/tools/board.py" in before, f"{base}: 복사본에 엔진 board.py 부재"
     base_dirs, base_doc = _ADD_HARNESS_NS_BOUND[base]
     assert base_doc in before and any(r.startswith(d + "/") for d in base_dirs for r in before), \
-        f"{base}: 스냅샷에 base 어댑터({'/'.join(base_dirs)}/**·{base_doc}) 부재"
+        f"{base}: 복사본에 base 어댑터({'/'.join(base_dirs)}/**·{base_doc}) 부재"
 
-    # 라이브-안전 add-harness — render-only·hermetic(models seam = pm_import fixture stub). 소스는
-    # 명시 REPO(=프레임워크 checkout·채택자의 `--from`/path upstream 과 동형). T-0282 이후 add-harness
+    # 라이브-안전 add-harness — render-only·hermetic(models 교체 지점 = pm_import fixture stub). 소스는
+    # 명시 REPO(=프레임워크 checkout·채택자의 `--from`/path upstream 과 같은 방식). T-0282 이후 add-harness
     # 는 소스를 명시 --from > dest upstream(path) > dest(templates) 순으로 해소하는데, fresh 인스턴스는
     # upstream 을 *URL*(origin)로 기록하므로 자동 해소 대상이 아니다 — 채택자는 로컬 checkout 을 명시한다.
     # 이 e2e 의 초점은 소스 해소가 아니라 복사 스코프/바이트 불변이라 REPO 를 명시해 결정화한다.
@@ -1515,20 +1515,20 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     # (1) 삭제 0 — 기존 파일이 사라지면 안 된다.
     assert not removed_rels, f"{base}→{added}: add-harness 가 기존 파일 삭제: {sorted(removed_rels)}"
 
-    # (2) 추가된 relpath ⊆ (추가 harness 어댑터 네임스페이스 ∪ flavor `@render` 선언·cross-ns 의존물)
-    #   — 그 밖(flavor 미선언)은 한 개도 안 샌다([[T-0456]] R25). opencode flavor 의 `.claude/skills`
+    # (2) 추가된 relpath ⊆ (추가 harness 어댑터 네임스페이스 ∪ 하네스별 판 `@render` 선언·cross-ns 의존물)
+    #   — 그 밖(하네스별 판 미선언)은 한 개도 안 샌다([[T-0456]] R25). opencode 하네스별 판의 `.claude/skills`
     #   (ADR-0065 네이티브 소비·`.opencode` 밖)는 codex host(미소유)에 반드시 복사되므로(R18→R25 반전)
-    #   namespace 상한만으론 오탐 — flavor 선언 경로를 상한에 포함한다. claude host + opencode 는
-    #   `.claude/skills` 가 host-소유(before 에 이미 존재)라 added_rels 밖이고, flavor 미선언 stray 는
+    #   namespace 상한만으론 오탐 — 하네스별 판 선언 경로를 상한에 포함한다. claude host + opencode 는
+    #   `.claude/skills` 가 host-소유(before 에 이미 존재)라 added_rels 밖이고, 하네스별 판 미선언 stray 는
     #   여전히 red 라 clobber 탐지력은 유지된다.
-    cross_ns_allowed = install_source._flavor_render_relpaths(
+    cross_ns_allowed = install_source._variant_render_relpaths(
         REPO / "templates" / install_rules.HARNESS_TEMPLATE_DIRS[added][0])
     outside = sorted(
         r for r in added_rels
         if not _in_adapter_ns_bound(r, added)
         and not any(r == p or r.startswith(p + "/") for p in cross_ns_allowed))
     assert outside == [], (
-        f"{base}→{added}: add-harness 가 네임스페이스·flavor @render 밖 파일 추가(라이브-안전 위반): {outside}")
+        f"{base}→{added}: add-harness 가 네임스페이스·하네스별 판 @render 밖 파일 추가(라이브-안전 위반): {outside}")
     # sanity — 어댑터가 실제로 추가됐다(스코프가 맞는 트리를 잡았다는 방증).
     add_dirs, add_doc = _ADD_HARNESS_NS_BOUND[added]
     # 공유 root doc은 추가 뒤 두 하네스가 실제로 읽으므로 서로 다른 진입 표기를 병기한다.
@@ -1545,19 +1545,19 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
         f"{base}→{added}: 어댑터 dir({'/'.join(add_dirs)}/**) 미추가"
 
     # (3) 기존 relpath 바이트 불변. manifest와 설치 하네스가 함께 읽는 표기 문서만 예외다.
-    #   단 **`engine.manifest` 는 예외**([[T-0456]]): add-harness 가 자기가 레이다운한 guest 어댑터의
+    #   단 **`engine.manifest` 는 예외**([[T-0456]]): add-harness 가 자기가 레이다운한 추가 하네스 어댑터의
     #   `@render` 를 인스턴스 manifest 에 **append-only 등재**한다(dev-state metadata·네임스페이스 밖이나
-    #   T-0456 이 sanction — manifest-파생 overlay 스캔·render 가 guest 를 커버하게 하는 근본 배선).
+    #   T-0456 이 sanction — manifest-파생 overlay 스캔·render 가 추가 하네스를 커버하게 하는 근본 등록).
     #   그 한 파일만 예외로 빼고 나머지 clobber 0 을 유지하며, manifest 변경은 append-only(기존 내용
-    #   보존)만 허용한다(guest 라인 없는 added=claude 는 무변도 정상).
-    #   **설치 기록도 예외**다: add-harness 는 자기가 추가한 하네스를 인스턴스 설치 기록에 박제해,
+    #   보존)만 허용한다(추가 하네스 라인 없는 added=claude 는 무변도 정상).
+    #   **설치 기록도 예외**다: add-harness 는 자기가 추가한 하네스를 인스턴스 설치 기록에 적어,
     #   이후 판정(`installed_harnesses`·pm_update 표기 독자)이 증거 추론 대신 그 기록을 읽게 한다
     #   (dev-state metadata·manifest 와 같은 성질). 이 파일의 변경은 아래에서 "하네스 목록이 정확히
     #   base∪added 로 늘었는가" 로 못박는다(허용만 하면 그 파일의 탐지력이 0 이 된다).
-    #   **어댑터 config 원장도 같은 예외**다(T-0585): add-harness 는 자기가 레이다운한 instance-owned
-    #   config 의 template 해시를 원장에 남겨, 다음 동기가 "채택자가 손댔는가" 를 판정할 수 있게 한다
+    #   **어댑터 config 기록도 같은 예외**다(T-0585): add-harness 는 자기가 레이다운한 instance-owned
+    #   config 의 template 해시를 기록에 남겨, 다음 동기가 "채택자가 손댔는가" 를 판정할 수 있게 한다
     #   (dev-state metadata·설치 기록과 같은 성질). 보존된 편집분은 애초에 기록되지 않으므로 이 예외가
-    #   clobber 를 가리지 않는다 — 원장의 기록 규칙 자체는 `test_pm_import.py` 의 절이 못박는다.
+    #   clobber 를 가리지 않는다 — 기록의 기록 규칙 자체는 `test_pm_import.py` 의 절이 못박는다.
     _MANIFEST_REL = ".project_manager/engine.manifest"
     _RECEIPT_REL = install_receipt.INSTALL_RECEIPT_RELPATH.as_posix()
     _BASELINE_REL = adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()
@@ -1570,7 +1570,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
         ".project_manager/wiki/tickets/_template.md",
         ".project_manager/wiki/raw/spikes/_template.md",
         ".project_manager/wiki/domain/_template.md",
-        # manifest 미소유 출하 seed + 템플릿이 만든 인스턴스 파일도 같은 표기 축이다(T-0541):
+        # manifest 미소유 출하 seed + 템플릿이 만든 인스턴스 파일도 같은 표기 규칙이다(T-0541):
         #   하네스를 추가하면 이 둘도 두 독자 표기로 재렌더된다(계획 표시·백업 후 변경). 옛 코드는
         #   이들만 canonical 표기로 남겨 다중 하네스 인스턴스에 잘못된 호출법을 출하했다.
         ".project_manager/wiki/raw/README.md",
@@ -1585,7 +1585,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
         and r not in notation_shared
     )
     assert changed == [], (
-        f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest·설치 기록·config 원장 "
+        f"{base}→{added}: add-harness 가 기존 파일을 변경(engine.manifest·설치 기록·config 기록 "
         f"외·byte diff≠0·clobber 재발): {changed}")
 
     # 압축 한도 기록에는 추가 하네스 항목이 생기고 기존 하네스 항목은 그대로다.
@@ -1617,12 +1617,12 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
         assert len(before_lines) == len(after_lines), \
             f"{base}→{added}: {rel} 줄 수 변화 — 표기 렌더 외 변경(치환·fill 오염?)"
         diff_lines = [a for b, a in zip(before_lines, after_lines) if b != a]
-        assert diff_lines, f"{base}→{added}: {rel} 바이트만 다르고 줄 diff 0(정합 붕괴)"
+        assert diff_lines, f"{base}→{added}: {rel} 바이트만 다르고 줄 diff 0(일치 붕괴)"
         for line in diff_lines:
             assert f"({base})" in line and f"({added})" in line, (
                 f"{base}→{added}: {rel} 의 변경 줄이 병기 표기가 아님(표기 외 변경): {line}")
     if mixed_notation:
-        # 비공허 — 표기가 갈리는 조합에서는 두 축이 반드시 따라온다(옛 코드는 둘 다 안 따라왔다).
+        # 비공허 — 표기가 갈리는 조합에서는 두 쪽이 반드시 따라온다(옛 코드는 둘 다 안 따라왔다).
         #   ① 템플릿 생성 산출물(pm_state.md) ② manifest 미소유 출하 seed(raw/README.md·base 가
         #   출하하는 경우만 존재). 둘 중 하나라도 빼면 이 e2e 가 red 가 된다(변이 실측).
         state_rel = ".project_manager/wiki/pm_state.md"
@@ -1640,7 +1640,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
             f"{base}→{added}: engine.manifest 변경이 append-only 아님(기존 내용 훼손·T-0456 위반)")
 
 
-# Windows 체크아웃(`core.autocrlf=true`)이 CRLF 로 바꾸는 텍스트 확장자 — 이 게이트가 그 형상을
+# Windows 체크아웃(`core.autocrlf=true`)이 CRLF 로 바꾸는 텍스트 확장자 — 이 검사가 그 경우를
 # Linux 에서 재현할 때 상류·채택자 **양쪽**에 같은 집합을 적용한다(한쪽만 바꾸면 byte-copy 채널이
 # 정상 동작으로 diff 를 내 판정이 흐려진다).
 _CRLF_CHECKOUT_SUFFIXES = (
@@ -1648,7 +1648,7 @@ _CRLF_CHECKOUT_SUFFIXES = (
 
 
 def _to_crlf(path: Path) -> bytes:
-    """그 파일을 CRLF 체크아웃 형상으로 바꾸고 bytes 를 돌려준다 (Windows `core.autocrlf=true`)."""
+    """그 파일을 CRLF 체크아웃 구성으로 바꾸고 bytes 를 돌려준다 (Windows `core.autocrlf=true`)."""
     raw = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
     path.write_bytes(raw)
     return raw
@@ -1663,12 +1663,12 @@ def test_add_harness_preserves_crlf_manifest_notation(pm_import, tmp_path):
     """CRLF 체크아웃 manifest 도 **append-only + 표기 보존** (T-0709).
 
     Windows 채택자는 `core.autocrlf=true` + `.gitattributes` 무규칙이라 워킹트리 전 파일이 CRLF 다
-    (`git ls-files --eol` = `i/lf w/crlf`). 옛 코드는 guest 절 등재에서 manifest 를 universal-newline
+    (`git ls-files --eol` = `i/lf w/crlf`). 옛 코드는 추가 하네스 절 등재에서 manifest 를 universal-newline
     으로 읽고 `newline="\\n"` 으로 되써, 우리가 append 한 절 말고 **파일 전체**가 LF 로 뒤집혔다 —
     `after.startswith(before)`(T-0456 append-only 바이트 불변식)가 그 자리에서 깨지고 채택자
-    워킹트리엔 손대지 않은 줄까지 전면 diff 가 났다. 이 게이트는 그 형상을 Linux 에서 재현한다.
+    워킹트리엔 손대지 않은 줄까지 전면 diff 가 났다. 이 검사는 그 경우를 Linux 에서 재현한다.
 
-    claude→opencode 는 실측 clobber 시나리오이자 guest 절이 실제로 등재되는 쌍이다(등재 0 이면
+    claude→opencode 는 실측 clobber 시나리오이자 추가 하네스 절이 실제로 등재되는 쌍이다(등재 0 이면
     표기 판정이 공허해지므로 아래에서 변경 자체를 단언한다)."""
     dest = tmp_path / "adopter-crlf-manifest"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
@@ -1677,69 +1677,69 @@ def test_add_harness_preserves_crlf_manifest_notation(pm_import, tmp_path):
 
     manifest = dest / ".project_manager" / "engine.manifest"
     before = _to_crlf(manifest)
-    assert _stray_lf(before) == 0, "픽스처가 CRLF 단일 표기를 못 만들었다(공허 게이트)"
+    assert _stray_lf(before) == 0, "픽스처가 CRLF 단일 표기를 못 만들었다(공허 검사)"
 
     assert add_harness.add_harness(ENGINE_HOME, dest, "opencode", dry_run=False, source_root=REPO), \
         "add-harness plan 이 비어 있다"
 
     after = manifest.read_bytes()
-    assert after != before, "guest 절 등재가 아예 없다 — 표기 판정이 공허해진다"
+    assert after != before, "추가 하네스 절 등재가 아예 없다 — 표기 판정이 공허해진다"
     assert after.startswith(before), (
         "CRLF manifest 의 변경이 append-only 아님(기존 bytes 훼손·T-0456 위반)")
     assert _stray_lf(after) == 0, (
         "add-harness 가 CRLF manifest 를 LF 로 뒤집었다(표기 비보존 재발) — "
-        "덧붙이는 guest 절도 그 파일 표기로 렌더돼야 한다")
+        "덧붙이는 추가 하네스 절도 그 파일 표기로 렌더돼야 한다")
 
 
-def _guest_block_rows(dest: Path) -> list:
+def _added_harness_block_rows(dest: Path) -> list:
     """dest engine.manifest 의 추가 하네스 구획 행(ManifestEntry) — 엔진 파서로 구획만 읽는다."""
     text = (dest / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
-    block = manifest_rules._extract_guest_manifest_block(text) or ""
+    block = manifest_rules._extract_added_harness_manifest_block(text) or ""
     return [entry for entry in map(manifest_rules._parse_manifest_line, block.splitlines()) if entry]
 
 
-def _guest_engine_rows(pm_update, dest: Path) -> dict[str, object]:
-    """dest guest 절의 **엔진 행**(비-`@render`) → {경로: ManifestEntry}."""
+def _added_harness_engine_rows(pm_update, dest: Path) -> dict[str, object]:
+    """dest 추가 하네스 절의 **엔진 행**(비-`@render`) → {경로: ManifestEntry}."""
     return {
         str(entry).replace("\\", "/"): entry
-        for entry in _guest_block_rows(dest)
+        for entry in _added_harness_block_rows(dest)
         if not getattr(entry, "render", False)
     }
 
 
-def _guest_render_paths(pm_update, dest: Path) -> list[str]:
-    """dest guest 절의 **렌더물 행**(`@render`) 경로 — 재렌더 채널 대상."""
+def _added_harness_render_paths(pm_update, dest: Path) -> list[str]:
+    """dest 추가 하네스 절의 **렌더물 행**(`@render`) 경로 — 재렌더 채널 대상."""
     return sorted(
         str(entry).replace("\\", "/")
-        for entry in _guest_block_rows(dest)
+        for entry in _added_harness_block_rows(dest)
         if getattr(entry, "render", False)
     )
 
 
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_PAIRS)
-def test_add_harness_guest_engine_files_sync_on_pm_update(
+def test_add_harness_added_harness_engine_files_sync_on_pm_update(
         pm_import, pm_update, tmp_path, monkeypatch, base, added):
-    """add-harness 로 얹은 guest 하네스의 **엔진 파일**이 pm-update 로 상류와 수렴한다 (T-0574 ⑬).
+    """add-harness 로 얹은 추가 하네스 하네스의 **엔진 파일**이 pm-update 로 상류와 일치한다 (T-0574 ⑬).
 
-    결함 형상: add-harness 는 복사만 하고 manifest 에 안 올렸고, 등재 유일분(`@render` 행)마저
+    결함 구성: add-harness 는 복사만 하고 manifest 에 안 올렸고, 등재 유일분(`@render` 행)마저
     update 계획에서 전량 차감돼 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드가 설치
     시점 사본으로 영구 동결됐다(하네스 계약 코어와 짝인 engine-mirror → 코어↔드라이버 skew).
 
     전 순서쌍에서: 채택자 사본을 stale 로 만들고 self-update → (a) 엔진 파일이 upstream 과 **byte
     일치** · (b) 어댑터 렌더물도 같은 채널로 **재렌더**(stale 사본 소멸) · (c) 어느 manifest 에도
     없는 instance-owned 설정은 byte **불변**."""
-    dest = tmp_path / f"guest-engine-{base}-{added}"
+    dest = tmp_path / f"added-harness-engine-{base}-{added}"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"]
     ) == 0
     add_harness.add_harness(ENGINE_HOME, dest, added, dry_run=False, source_root=REPO)
 
-    engine_rows = _guest_engine_rows(pm_update, dest)
-    assert engine_rows, f"{base}->{added}: guest 엔진 행 미등재(동기 채널 부재)"
+    engine_rows = _added_harness_engine_rows(pm_update, dest)
+    assert engine_rows, f"{base}->{added}: 추가 하네스 엔진 행 미등재(동기 채널 부재)"
 
     # 상류 대응이 실재하는 좌표를 stale 로 만든다 — 이번 동기가 실제로 덮는지 본다. 디렉토리
-    #   엔트리는 직계 파일만 본다(하위 트리 전수 순회는 `_snapshot_tree` 축이 담당).
-    stale_marker = "# STALE ADOPTER COPY (guest engine sync gate)\n"
+    #   엔트리는 직계 파일만 본다(하위 트리 전수 순회는 `_snapshot_tree` 함수가 담당).
+    stale_marker = "# STALE ADOPTER COPY (added harness engine sync check)\n"
     compared: dict[str, Path] = {}
     for rel, entry in engine_rows.items():
         source_path = REPO / (getattr(entry, "source_rel", None) or rel)
@@ -1756,14 +1756,14 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
                 continue
             compared[mirror.relative_to(dest).as_posix()] = source
             mirror.write_text(stale_marker, encoding="utf-8", newline="\n")
-    assert compared, f"{base}->{added}: 대조 가능한 guest 엔진 파일 0(공허 게이트)"
+    assert compared, f"{base}->{added}: 대조 가능한 추가 하네스 엔진 파일 0(공허 검사)"
 
-    # 불변이어야 할 축 — 어댑터 렌더물(guest `@render`)과 instance-owned 설정. 전 트리 스냅샷
+    # 불변이어야 할 대상 — 어댑터 렌더물(추가 하네스 `@render`)과 instance-owned 설정. 전 트리 복사본
     #   (`_snapshot_tree`)으로 잡아 "그 경로 아래 아무것도 안 바뀌었다" 를 파일 단위로 확인한다.
-    #   `ADD_HARNESS_CREATE_IF_ABSENT` 만 쓰면 claude/opencode 가 빈 집합이라 instance-owned 축이
+    #   `ADD_HARNESS_CREATE_IF_ABSENT` 만 쓰면 claude/opencode 가 빈 집합이라 instance-owned 대상이
     #   codex 2쌍에서만 실효한다 — 어느 manifest 에도 없는 실 설정 파일을 **채택자 로컬 내용으로**
-    #   심어 6쌍 전부에서 byte 불변을 단언한다(전파 대상 아님을 못박는 축).
-    #   심는 내용은 설치본 앞에 로컬 표식 주석을 붙인 문서다 — update 가 읽고 관리 키(사용 한도
+    #   심어 6쌍 전부에서 byte 불변을 단언한다(전파 대상 아님을 못박는 검사).
+    #   심는 내용은 설치본 앞에 로컬 표시 주석을 붙인 문서다 — update 가 읽고 관리 키(사용 한도
     #   반영)만 쓰는 파일이므로 문서로 읽혀야 하고, 설치가 이미 반영한 값이라 그 쓰기도 0 이다.
     local_config_marker = "// LOCAL ADOPTER CONFIG (must not be touched by update)\n"
     planted = []
@@ -1773,17 +1773,17 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
             target.write_text(local_config_marker + target.read_text(encoding="utf-8"),
                               encoding="utf-8", newline="\n")
             planted.append(rel)
-    assert planted, f"{base}->{added}: instance-owned 설정 심기 0(공허 축)"
+    assert planted, f"{base}->{added}: instance-owned 설정 심기 0(공허 검사)"
     instance_owned = sorted({*install_rules.ADD_HARNESS_CREATE_IF_ABSENT[added], *planted})
 
-    # 렌더물 축 — guest `@render` 아래 실 파일도 stale 로 만든다. 렌더물은 conf 파생이라 update 가
+    # 렌더물 대상 — 추가 하네스 `@render` 아래 실 파일도 stale 로 만든다. 렌더물은 conf 파생이라 update 가
     #   다시 렌더해야 하고(설치 시점 사본 동결 금지), 손편집은 그때 되돌아간다.
-    render_paths = _guest_render_paths(pm_update, dest)
+    render_paths = _added_harness_render_paths(pm_update, dest)
     stale_render = sorted(
         rel for rel in _snapshot_tree(dest)
         if any(rel == p or rel.startswith(p + "/") for p in render_paths)
     )
-    assert stale_render, f"{base}->{added}: guest 렌더물 파일 0(공허 축)"
+    assert stale_render, f"{base}->{added}: 추가 하네스 렌더물 파일 0(공허 검사)"
     for rel in stale_render:
         (dest / rel).write_text(stale_marker, encoding="utf-8", newline="\n")
     before = _snapshot_tree(dest)
@@ -1792,7 +1792,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
         return rel in instance_owned
 
     assert any(_untouchable(rel) for rel in before), \
-        f"{base}->{added}: 불변 축 대상 0(공허 대조)"
+        f"{base}->{added}: 불변 대상 0(공허 대조)"
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
@@ -1804,7 +1804,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
         rel for rel, source in compared.items()
         if after.get(rel) != source.read_bytes())
     assert unsynced == [], (
-        f"{base}->{added}: guest 엔진 파일이 상류와 수렴하지 않음(영구 동결): {unsynced}")
+        f"{base}->{added}: 추가 하네스 엔진 파일이 상류와 일치하지 않음(영구 동결): {unsynced}")
     changed = sorted(
         rel for rel, payload in before.items()
         if _untouchable(rel) and after.get(rel) != payload)
@@ -1814,13 +1814,13 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
         rel for rel in stale_render
         if after.get(rel) == stale_marker.encode("utf-8"))
     assert frozen_render == [], (
-        f"{base}->{added}: guest 렌더물이 재렌더를 못 받아 설치 시점 사본으로 동결: {frozen_render}")
+        f"{base}->{added}: 추가 하네스 렌더물이 재렌더를 못 받아 설치 시점 사본으로 동결: {frozen_render}")
 
 
 def test_add_harness_pairs_are_derived_permutation():
-    """add-harness e2e 쌍이 파생 축 HARNESSES 순열(N×(N−1))임을 못박는다 — 손-열거 6쌍 아님(T-0434).
+    """add-harness e2e 쌍이 파생 목록 HARNESSES 순열(N×(N−1))임을 못박는다 — 손-열거 6쌍 아님(T-0434).
 
-    실축(HARNESSES=3종)은 6쌍이되, 가짜 4번째 하네스 축이면 12쌍으로 자동 확장·4번째가 base·added
+    실제 목록(HARNESSES=3종)은 6쌍이되, 가짜 4번째 하네스 목록이면 12쌍으로 자동 확장·4번째가 base·added
     양방향으로 편입된다(T-0429 가짜-하네스 패턴 재사용). production `_add_harness_order_pairs` 를
     그대로 태워 constant 와 test 가 어긋나지 않는다.
     """
@@ -1834,25 +1834,25 @@ def test_add_harness_pairs_are_derived_permutation():
     assert ("fourth", HARNESSES[0]) in got and (HARNESSES[0], "fourth") in got
 
 
-def test_add_harness_ns_bound_is_derived_and_covers_pair_axis():
-    """어댑터 네임스페이스 상한이 파생이고 add-harness 쌍 축 전 하네스를 커버함을 못박는다 —
+def test_add_harness_ns_bound_is_derived_and_covers_pair_set():
+    """어댑터 네임스페이스 상한이 파생이고 add-harness 쌍 목록 전 하네스를 커버함을 못박는다 —
     손-복제였으면 4번째서 KeyError(T-0453 이 마감한 커플링·[[cross-cutting-breaking-blast-radius]]).
 
-    (a) 파생 값이 T-0429 파생원과 일치(shape·값 보존·엔진 ADD_HARNESS_ADAPTER 동형) · (b)
+    (a) 파생 값이 T-0429 파생원과 일치(shape·값 보존·엔진 ADD_HARNESS_ADAPTER 와 같은 방식) · (b)
     `_ADD_HARNESS_PAIRS` 의 모든 하네스가 상한에 존재(KeyError 0) · (c) 가짜 4번째 하네스가
     파생원에 추가되면 상한도 자동 편입(T-0434 가짜-하네스 검증 패턴 재사용).
     """
-    # (a) 값 보존 — 파생이 엔진 상수와 동형.
+    # (a) 값 보존 — 파생이 엔진 상수와 같은 방식.
     for h in HARNESSES:
         adapter_dirs, root_doc = _ADD_HARNESS_NS_BOUND[h]
         assert adapter_dirs == HARNESS_ADAPTER_DIRS[h]
         assert root_doc == HARNESS_ROOT_DOC[h]
-    # (b) 쌍 축 전 하네스가 상한에 존재 — add-harness 파라미터가 KeyError 없이 돈다.
+    # (b) 쌍 목록 전 하네스가 상한에 존재 — add-harness 파라미터가 KeyError 없이 돈다.
     #     ⚠ load-bearing 은 이 (b)다 — (a)는 파생값을 같은 파생원과 비교라 값-tautological.
     #     실 decay(신규 하네스가 상한에 안 옴)는 (b)가 red 로 잡는다(리뷰어 sensitivity 실측).
     pair_harnesses = {h for pair in _ADD_HARNESS_PAIRS for h in pair}
     assert pair_harnesses <= set(_ADD_HARNESS_NS_BOUND), (
-        f"쌍 축 하네스가 네임스페이스 상한에 없음(KeyError 위험): "
+        f"쌍 목록 하네스가 네임스페이스 상한에 없음(KeyError 위험): "
         f"{pair_harnesses - set(_ADD_HARNESS_NS_BOUND)}")
     # (c) 가짜 4번째 하네스 → 파생원에 있으면 상한도 자동 편입(손-복제였으면 수동 추가 필요).
     #     adapter_dirs 값 = dir 명 튜플(HARNESS_ADAPTER_DIRS[h] shape) — 예 (".fourth",).
@@ -1863,14 +1863,14 @@ def test_add_harness_ns_bound_is_derived_and_covers_pair_axis():
     assert set(HARNESSES) < set(fake_bound)
 
 
-# ── T-0308: fresh opencode 채택자 drift-0 e2e (pm_import↔pm_update 전파 게이트·B-freshadopter) ──
+# ── T-0308: fresh opencode 채택자 drift-0 e2e (pm_import↔pm_update 전파 검사·B-freshadopter) ──
 # T-0305 의 self-update e2e(test_pm_update.py)는 ManifestEntry/plan/apply 레벨이다. 이 층은 그와 상보인
 # **fresh-adopter 각도**: 실 pm_import 로 opencode 채택자를 만들고 → 엔진(프레임워크) 어댑터/드라이버를
 # mutate → 실 pm_update self-update(main())로 채택자에 전파됨을 못박고, 동시에 pm_import 렌더 산출 ==
 # pm_update 렌더 산출(drift-0·[[verify-engine-template-propagation]])임을 입증한다. hermetic: 라이브 LLM
-# 0(--opencode-model 결정적 치환·models seam 은 pm_import fixture stub)·네트워크 0(read_upstream_rev
+# 0(--opencode-model 결정적 치환·models 교체 지점은 pm_import fixture stub)·네트워크 0(read_upstream_rev
 # stub·framework 는 비-git)·라이브 하니스 0. [[release-run-all-three-tiers]] 의 machine half — T-0304 라이브
-# composite 와 축이 다르다(재현 가능·on-demand 아님).
+# composite 와 방식이 다르다(재현 가능·on-demand 아님).
 #
 # 채택자가 opencode self-update 를 돌리려면 local.conf 에 harness.opencode.pro_model 이 있어야 한다 — @render 가
 # `{{OPENCODE_PRO_MODEL}}` 를 재유도하는데 미보유면 pm_render._assert_no_leak 가 크래시(자족 산출물 위반).
@@ -1922,10 +1922,10 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     framework = _build_opencode_framework(tmp_path)
 
     # hermetic self-update: read_upstream_rev(라이브 git baseline)를 stub + pm_update 가 이 stub 된
-    #   pm_import 를 쓰게 배선(서브프로세스/네트워크 0·framework 는 비-git 이라 어차피 None 이지만 명시 격리).
+    #   pm_import 를 쓰게 등록(서브프로세스/네트워크 0·framework 는 비-git 이라 어차피 None 이지만 명시 격리).
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
-    # fresh opencode 채택자 — 결정적 모델 flag(라이브 opencode 미실행·models seam 은 fixture stub).
+    # fresh opencode 채택자 — 결정적 모델 flag(라이브 opencode 미실행·models 교체 지점은 fixture stub).
     dest = tmp_path / "adopter-opencode"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", "opencode", "--name", "Adopter",
@@ -1943,18 +1943,18 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     def _self_update() -> int:
         return update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)])
 
-    # 전파 대상 스냅샷: `.opencode`(agents/command/lib/plugins/pm_orch) +
+    # 전파 대상 복사본: `.opencode`(agents/command/lib/plugins/pm_orch) +
     # `.claude/skills`(모델 skill tool) 두 채널 전부 — 공허참 방지 sanity 포함.
     before = _snapshot_tree(dest / ".opencode")
     before_skills = _snapshot_tree(dest / ".claude" / "skills")
     assert any(r.startswith("agents/") for r in before), \
-        "opencode 어댑터 스냅샷에 agents 부재(공허 테스트?)"
+        "opencode 어댑터 복사본에 agents 부재(공허 테스트?)"
     assert "lib/ctx-guard-core.cjs" in before, \
-        "engine-mirror driver(ctx-guard-core.cjs) 스냅샷 부재 — T-0305 lib 전파 대상 확인 불가"
+        "engine-mirror driver(ctx-guard-core.cjs) 복사본 부재 — T-0305 lib 전파 대상 확인 불가"
     assert "command/pm-env.md" in before, \
-        "opencode 슬래시 command 스냅샷 부재(T-0674 전파 표면 확인 불가)"
+        "opencode 슬래시 command 복사본 부재(T-0674 전파 범위 확인 불가)"
     assert "pm-env/SKILL.md" in before_skills, \
-        "PM-workflow 스킬 스냅샷에 pm-env/SKILL.md 부재(skill tool 채널 미출하·공허 테스트?)"
+        "PM-workflow 스킬 복사본에 pm-env/SKILL.md 부재(skill tool 채널 미출하·공허 테스트?)"
 
     # (B) drift-0 — mutate 전 self-update 는 `.opencode/**`·`.claude/skills/**` 를 한 바이트도 안 바꾼다.
     #     같은 소스(framework)에서 pm_import 가 낸 산출과 pm_update 가 낸 산출이 byte-identical 이면 재기록 0.
@@ -1998,7 +1998,7 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     #     옛 코드는 렌더 판정을 bytes 로 재고(표기만 달라도 '변경') LF 로 되써, 같은 소스인데
     #     매 sync 가 전파 트리를 통째로 재기록했다(채택자 워킹트리 전면 diff). 판정은 개행
     #     정규화 후, 쓰기는 표기 보존이어야 byte-copy 채널과 렌더 채널이 함께 무변경이 된다.
-    # `.local/` 은 per-clone 런타임 산출(읽기전용 사본 포함)이라 체크아웃 표기 축이 아니다.
+    # `.local/` 은 per-clone 런타임 산출(읽기전용 사본 포함)이라 체크아웃 표기 대상이 아니다.
     crlf_skip = (*_SNAPSHOT_EXCLUDE_PARTS, ".local")
     for root in (framework, dest):
         for path in sorted(root.rglob("*")):
@@ -2014,9 +2014,9 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
-    assert crlf_before, "CRLF 로 바꾼 전파 파일 0 — 공허 게이트"
+    assert crlf_before, "CRLF 로 바꾼 전파 파일 0 — 공허 검사"
     assert any(_stray_lf(payload) == 0 and b"\r\n" in payload
-               for payload in crlf_before.values()), "픽스처가 CRLF 를 못 만들었다(공허 게이트)"
+               for payload in crlf_before.values()), "픽스처가 CRLF 를 못 만들었다(공허 검사)"
     assert _self_update() == 0, "CRLF 채택자 self-update 가 rc0 아님"
     crlf_drift = sorted(
         path.relative_to(dest).as_posix()

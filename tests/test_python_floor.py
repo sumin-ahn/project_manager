@@ -39,7 +39,7 @@ def _fresh_detect_cache(monkeypatch) -> None:
 
 
 def _fake_python(path: Path, *, version: str, supported: bool, selected: str) -> None:
-    """--version / 구 -c / 동형 script probe / 실제 엔진 실행을 구분하는 가짜 인터프리터."""
+    """--version / 구 -c / 같은 구조 script probe / 실제 엔진 실행을 구분하는 가짜 인터프리터."""
     guard_rc = "0" if supported else "1"
     path.write_text(
         "#!/bin/sh\n"
@@ -236,7 +236,7 @@ def test_board_missing_floor_probe_degrades_to_inline_floor_check(
 
     versions["python"] = (2, 7)
     python_env._detect_py.cache_clear()
-    assert python_env._detect_py() == "python3"  # 기존 fail-soft 리터럴 폴백.
+    assert python_env._detect_py() == "python3"  # 기존 fail-soft 리터럴 대체 동작.
     err = capsys.readouterr().err
     assert "하한 probe 부재" in err
     assert "python3=2.7" in err
@@ -304,7 +304,7 @@ def test_posix_facades_report_floor_before_fail_soft_fallback(tmp_path, facade):
         [shutil.which("bash"), str(facade), "--probe"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
-    assert proc.returncode == 0  # 기존 fail-soft python 폴백 계약.
+    assert proc.returncode == 0  # 기존 fail-soft python 대체 동작 계약.
     assert "Python 3.11+ 필요" in proc.stderr
     assert "selected=python-old" in proc.stdout
 
@@ -325,7 +325,7 @@ def test_cmd_facades_probe_every_candidate_before_selection():
                 f'{candidate} "%~dp0.project_manager\\tools\\python_floor.py"' in text
             )
             assert f"{candidate} -c " not in text
-        assert "if not defined PY set" in text  # 전 후보 실패 시 기존 fail-soft 폴백.
+        assert "if not defined PY set" in text  # 전 후보 실패 시 기존 fail-soft 대체 동작.
 
 
 def test_shell_floor_mirrors_engine_constant():

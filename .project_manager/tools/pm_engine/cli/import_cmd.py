@@ -98,7 +98,7 @@ def main(home, argv: list[str] | None = None) -> int:
                          "구조+areas.md 로 초기화 후 push, 내용 있으면 재사용(합류). URL 안전검증 "
                          "(credential-in-url·leading-dash·비허용 scheme 거부).")
     args = ap.parse_args(argv)
-    # 제거 기한에 도달한 legacy harness alias 가 남아 있으면 설치 인자 해석을 막는다(엔진 세대 값).
+    # 제거 기한에 도달한 legacy harness alias 가 남아 있으면 설치 인자 해석을 막는다(엔진 버전 값).
     install_rules._enforce_legacy_harness_alias_deadline(pm_engine.ENGINE_REV)
 
     # --upstream 명시값은 *부작용 전* 입구에서 fail-closed 검증. 나쁜 값
@@ -117,8 +117,8 @@ def main(home, argv: list[str] | None = None) -> int:
 
     # --board-submodule: board 를 별도 git submodule 로 셋업. --new + --board-remote
     #   <url> 필수(공유 board 의 본질=remote·미제공 fail-loud). --new 없이 단독은 거부(범위=신규 홈
-    #   셋업). *부작용 전* 입구에서 fail-closed 검증(--upstream·MF2 git_init 규율 정합). inline 기본
-    #   (플래그 없음)은 이 게이트를 통과해 완전 무변경.
+    #   셋업). *부작용 전* 입구에서 fail-closed 검증(--upstream·MF2 git_init 규율 일치). inline 기본
+    #   (플래그 없음)은 이 검사를 통과해 완전 무변경.
     if args.board_submodule:
         if not is_new:
             print("오류: --board-submodule 은 --new 와 함께만 씁니다 (신규 PM 홈 셋업 범위). "
@@ -156,7 +156,7 @@ def main(home, argv: list[str] | None = None) -> int:
 
     # MF2: --new 는 백업 없이 복사하므로(아래 backup_root=None), 대상이 비어있지 않으면
     #      기존 파일을 무백업 덮을 위험 → 명세(비0=대상 비어있지 않은데 백업 불가)대로 거부.
-    #      dry-run 에서도 동일 판정(계획 전 게이트).
+    #      dry-run 에서도 동일 판정(계획 전 검사).
     if is_new and dest_root.is_dir() and any(dest_root.iterdir()):
         print(
             f"오류: --new 대상이 비어있지 않습니다: {dest_root}. "
@@ -168,7 +168,7 @@ def main(home, argv: list[str] | None = None) -> int:
     # MF2: --into 는 *기존 프로젝트* 가정이다. 미존재/비-디렉토리 경로면, 복사가 디렉토리를
     #      새로 만들고 git init 없이 board.py init 이 성공해 pre-push 훅 없는 불완전 import 가
     #      "완료"된다 → 거부. 새 프로젝트는 git init·디렉토리 생성을 하는 --new 로 안내.
-    #      dry-run 에서도 동일 판정(계획 전 게이트 — --new 가드와 대칭).
+    #      dry-run 에서도 동일 판정(계획 전 검사 — --new 가드와 대칭).
     if not is_new and not dest_root.is_dir():
         print(
             f"오류: --into 대상이 존재하는 디렉토리가 아닙니다: {dest_root}. "
@@ -196,13 +196,13 @@ def main(home, argv: list[str] | None = None) -> int:
 
     # --into 백업을 중앙 디렉토리 `<dest>/.pm_import_backups/<DATE>/` 로 모은다.
     #   --new 는 빈 디렉토리 보장이라 백업 없음(backup_root=None). git_safe = '추적&미변경'
-    #   relpath 집합(또는 None=비-git·판정불가). git 호출 실패는 None→전부 백업(보수적 폴백).
+    #   relpath 집합(또는 None=비-git·판정불가). git 호출 실패는 None→전부 백업(보수적 대체 동작).
     backup_root = None if is_new else dest_root / install_rules.BACKUP_DIR_NAME / today
     git_safe = None if is_new else install_git.git_safe_relpaths(dest_root)
     # dest 루트 신원을 **계획(plan_copy) 앞에서** 고정한다 — 계획 자체가 dest 를 읽으므로, 고정이
     #   계획 뒤면 "계획은 원래 트리에서 세우고 적용은 교체된 트리에서" 라는 어긋남이 남는다.
     #   `--new` 는 아직 트리가 없어 생성 직후에 잡는다. 획득 실패는 fail-loud(복사 전 rc1) —
-    #   None 폴백은 루트 검사를 통째로 끄는 우회가 된다.
+    #   None 대체 동작은 루트 검사를 통째로 끄는 우회가 된다.
     root_identity = None
     if not is_new:
         try:
@@ -277,8 +277,8 @@ def main(home, argv: list[str] | None = None) -> int:
         )
         # AGENTS.md 는 manifest 미등재(instance-owned 루트 doc)라 소유자 매칭으로는 context 가
         #   안 나온다. 독자가 설치 하네스 전체가 아니라 이 진입문서를 읽는 부분집합이므로
-        #   wiki 폴백에 맡기지 않고 그 멤버십을 명시 전달한다 — 단일 하네스도 마찬가지다
-        #   (조용한 skip 0·단일이면 그 하네스 표기라 출하 형상에선 no-op).
+        #   wiki 대체 동작에 맡기지 않고 그 멤버십을 명시 전달한다 — 단일 하네스도 마찬가지다
+        #   (조용한 skip 0·단일이면 그 하네스 표기라 출하 구성에선 no-op).
         if selected_shared_agents:
             entry_notation_templates["AGENTS.md"] = selected_shared_agents
     except (OSError, ValueError, RuntimeError) as exc:
@@ -294,7 +294,7 @@ def main(home, argv: list[str] | None = None) -> int:
         for harness_name in args.harness
         for template_dir in install_rules.HARNESS_TEMPLATE_DIRS[harness_name]
     ]
-    # 폴백 표기 context = 이 인스턴스를 읽는 하네스 전체(기존 설치 + 이번 선택).
+    # 대체 동작 표기 context = 이 인스턴스를 읽는 하네스 전체(기존 설치 + 이번 선택).
     notation_context_dirs = tuple(
         template_dir
         for harness_name in notation_harnesses
@@ -311,10 +311,10 @@ def main(home, argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # 복사 대상이 아닌 **기존 dest 파일**의 재렌더 계획(`--into` 축·`--new` 는 빈 dest 라 0건).
+    # 복사 대상이 아닌 **기존 dest 파일**의 재렌더 계획(`--into` 쪽·`--new` 는 빈 dest 라 0건).
     #   복사가 닿지 않는 두 부류가 여기서 걸린다: (a) 이번 선택 하네스가 출하하지 않는 wiki seed
     #   (기존 하네스가 깔아 둔 것) (b) 템플릿에서 *생성된* 인스턴스 파일(`pm_state.md`). 계획·백업·
-    #   경로 안전을 add-harness 와 같은 경로로 태운다(비파괴 보장 동형).
+    #   경로 안전을 add-harness 와 같은 경로로 태운다(비파괴 보장 방식이 같다).
     copied_dst_relpaths = {a.dst.relative_to(dest_root) for a in actions}
     try:
         existing_rerender_relpaths, existing_backup_blocked = (
@@ -375,7 +375,7 @@ def main(home, argv: list[str] | None = None) -> int:
         print(f"  board submodule: {args.board_remote} → {install_board._BOARD_SUBMODULE_PATH} "
               f"(빈 remote 면 구조 init+push·ignore=all)")
 
-    # fill 단계 계획/게이트 미리보기 (dry-run·실행 공통). 실 하니스 호출 여부는 opt-in 게이트
+    # fill 단계 계획/opt-in 조건 미리보기 (dry-run·실행 공통). 실 하니스 호출 여부는 opt-in 조건
     # (PM_IMPORT_LIVE_HARNESS=1 AND --fill auto)로 결정한다 — 여기서는 의도만 출력한다.
     fill_harness = import_fill._resolve_fill_harness(args.fill_harness, args.harness)
     if args.fill == "auto" and fill_harness not in install_rules.FILL_CAPABLE_HARNESSES:
@@ -391,8 +391,8 @@ def main(home, argv: list[str] | None = None) -> int:
         if cap_warning is not None:
             print(cap_warning, file=sys.stderr)
     if args.fill == "auto":
-        gate = "실구동(통과 조건 충족)" if live_allowed else "stub/미구동(통과 조건 미충족 — 안전)"
-        print(f"  fill=auto  harness={fill_harness}  → {gate}")
+        check = "실구동(통과 조건 충족)" if live_allowed else "stub/미구동(통과 조건 미충족 — 안전)"
+        print(f"  fill=auto  harness={fill_harness}  → {check}")
     else:
         print("  fill=manual  → 자유서술 placeholder 를 TODO 로 표시(하니스 미구동).")
 
@@ -411,7 +411,7 @@ def main(home, argv: list[str] | None = None) -> int:
             else:
                 print("    경로: todo → 비-tty(또는 opencode 부재) — 치환 안 함·TODO 마커로 대체.")
         # MF2: --dry-run = fill 계획 미리보기. 실 하니스 미호출·파일 미변경. auto 면 무엇을
-        #      채울지(대상 토큰)·결정된 fill harness·게이트 상태(실구동/manual 폴백)를 출력한다.
+        #      채울지(대상 토큰)·결정된 fill harness·opt-in 조건 상태(실구동/manual 대체 동작)를 출력한다.
         #      복사를 안 하므로 dest 가 아닌 복사 *예정* src(actions)에서 잔존 토큰을 스캔한다.
         if args.fill == "auto":
             plan_tokens = import_fill._plan_fill_targets(actions)
@@ -450,7 +450,7 @@ def main(home, argv: list[str] | None = None) -> int:
             print(f"오류: {exc}", file=sys.stderr)
             return 1
 
-    # 복사 **직전** 루트 재확인(위 add-harness 와 동형) — 뒤에 두면 첫 쓰기가 교체 트리에 간다.
+    # 복사 **직전** 루트 재확인(위 add-harness 와 같은 방식) — 뒤에 두면 첫 쓰기가 교체 트리에 간다.
     install_files.assert_dest_root_unchanged(dest_root, root_identity)
     # 파일 단위 위반은 그 파일만 빼고 loud(적용 단계 rc 정책) — 루트 교체만 전체 중단.
     copy_outcome = install_files.apply_copy_plan(actions, dest_root, root_identity=root_identity)
@@ -550,7 +550,7 @@ def main(home, argv: list[str] | None = None) -> int:
     #      빈 디렉토리 보장이라 None — 보존할 것 없음).
     # 구표기 conf 는 백업 전에 멈춘다 — 바로 뒤 `board.py init` 이 그 conf 를 읽어 fail-loud 하므로
     # 원인이 traceback 으로만 보이면 채택자가 무엇을 바꿔야 하는지 알 수 없다. 자동 이관은 하지
-    # 않는다(엔진은 채택자 소유 파일을 대신 고쳐 쓰지 않는다) — 키 단위 처방만 낸다.
+    # 않는다(엔진은 채택자 소유 파일을 대신 고쳐 쓰지 않는다) — 키 단위 해결 방법 안내만 낸다.
     if not is_new and install_conf._local_conf_has_blocking_legacy(dest_root):
         print("오류: local.conf 에 구표기 키가 남아 있어 board.py init 을 실행하지 않습니다 "
               "— 엔진 파일은 이미 갱신됐으니 아래대로 키를 바꾸고 같은 명령을 다시 실행하세요.",
@@ -616,7 +616,7 @@ def main(home, argv: list[str] | None = None) -> int:
             print(f"✓ local.conf harness.opencode.pro_model 기록 ({model_result.model})")
 
     # ── 설치 기록(install receipt): 이번 선택 ∪ dest 에 이미 설치돼 있던 하네스(=
-    #    `notation_harnesses`·복사 전에 산출한 그 독자 집합)를 인스턴스 메타에 박제한다. 이후
+    #    `notation_harnesses`·복사 전에 산출한 그 독자 집합)를 인스턴스 메타에 기록한다. 이후
     #    `installed_harnesses`(pm_import 판정·pm_update 표기 독자)는 증거 추론 대신 이 기록을 읽으므로
     #    판별자 파일이 지워져도 독자가 유실되지 않는다. 기록이 없던 구 인스턴스는 `--into` 재-import
     #    가 이 지점에서 backfill 한다(추론 산출을 한 번 원천으로 옮긴다). 복사·render 이후에 두는
@@ -636,14 +636,14 @@ def main(home, argv: list[str] | None = None) -> int:
         print(f"✓ 설치 기록 갱신 ({install_receipt.INSTALL_RECEIPT_RELPATH.as_posix()}): "
               f"{', '.join(recordable)}")
 
-    # instance-owned config 원장 — add-harness 와 같은 기록 시점·같은 규칙(레이다운/일치 확인분만).
+    # instance-owned config 의 어댑터 설정 기록 — add-harness 와 같은 기록 시점·같은 규칙(레이다운/일치 확인분만).
     #   이게 있어야 다음 pm_update 가 "채택자가 손댔는가" 를 판정해 상류 동작 fix 를 안전히 나른다.
     baselined = adapter_accept.record_adapter_baseline(
         dest_root, source_root, recordable, root_identity=root_identity)
     if baselined:
         print(f"✓ 어댑터 설정 기록 ({adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()}): "
               f"{', '.join(baselined)}")
-    # 하네스 사용 한도 반영 — add-harness 와 같은 자리(원장 기록 뒤)·같은 규칙. `--into` 재적용이면
+    # 하네스 사용 한도 반영 — add-harness 와 같은 자리(어댑터 설정 기록을 적은 뒤)·같은 규칙. `--into` 재적용이면
     #   보존된 conf 값(예 `ctx.compact_at_pct`)이 여기서 설정 파일에 들어간다.
     try:
         harness_ctx._print_harness_ctx_apply(dest_root)
@@ -652,8 +652,8 @@ def main(home, argv: list[str] | None = None) -> int:
         return 1
 
     # ── fill 단계: board init·conf sync 직후 hook. 자유서술 placeholder 처리.
-    #    auto + opt-in 게이트 통과 → 하니스 구동 *제안*(파일 미변경, 사람 검토 전제).
-    #    그 외(manual 또는 게이트 미통과) → TODO 표시(채택자 손작업 지점 명시).
+    #    auto + opt-in 조건 충족 → 하니스 구동 *제안*(파일 미변경, 사람 검토 전제).
+    #    그 외(manual 또는 opt-in 조건 미충족) → TODO 표시(채택자 손작업 지점 명시).
     #    MF(비파괴): fill 스캔 범위 = substitute_placeholders 와 동일한 copied_relpaths —
     #    이번 import 가 복사한 파일만. --into 에서 복사 안 한 사용자 파일은 절대 스캔/수정 안 함.
     if args.fill == "auto" and live_allowed:
@@ -663,12 +663,12 @@ def main(home, argv: list[str] | None = None) -> int:
                                copied_relpaths=copied_relpaths,
                                root_identity=root_identity)
         if not fill_result.values:
-            # 하니스 미구동/실패 → manual 폴백(자유서술이 빈 채로 남지 않게 TODO 표시).
+            # 하니스 미구동/실패 → manual 대체 동작(자유서술이 빈 채로 남지 않게 TODO 표시).
             print(f"  fill=auto 제안 없음({fill_result.note}) — manual 로 대체.")
             fill_result = import_fill._run_manual_fill(dest_root, copied_relpaths,
                                            root_identity=root_identity)
     else:
-        # --fill auto 라도 게이트 미통과면 실호출 차단 → manual 강제(안전·토큰 0).
+        # --fill auto 라도 opt-in 조건 미충족이면 실호출 차단 → manual 강제(안전·토큰 0).
         fill_result = import_fill._run_manual_fill(dest_root, copied_relpaths,
                                        root_identity=root_identity)
     import_fill._print_fill_result(fill_result, dry_run=False)
@@ -691,7 +691,7 @@ def main(home, argv: list[str] | None = None) -> int:
     # claude 는 프로젝트 trust 수락 전 settings.json permissions.allow 를 조용히 무시한다.
     if "claude" in args.harness:
         add_harness._print_claude_trust_guidance()
-    # codex 어댑터는 laydown 후 trusted project + hook trust 2단계 승인이 있어야 발화.
+    # codex 어댑터는 laydown 후 trusted project + hook trust 2단계 승인이 있어야 돈다.
     if "codex" in args.harness:
         add_harness._print_codex_trust_guidance()
     return 0

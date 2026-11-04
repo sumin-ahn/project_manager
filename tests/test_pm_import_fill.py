@@ -2,13 +2,13 @@
 
 T-0007 의 기계 단계 위에 얹은 fill 단계를 검증한다. 핵심 안전 계약:
   - 실 하니스(claude/opencode) 바이너리는 절대 호출하지 않는다 — 전부 stub runner(토큰 0).
-  - opt-in 게이트: PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만 실 runner 경로.
+  - opt-in 검사: PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만 실 runner 경로.
     둘 중 하나라도 없으면 실호출 차단(stub/manual 강제) — 토큰·모델 비용 0.
   - 생성물은 *제안* — 자유서술 placeholder 만 채우고 자동 확정 안 함(비가역 회피).
 
-run_fill 의 runner seam(주입 콜러블)으로 명령 조립을 토큰 0 으로 검증한다. main 통합은
-PM_IMPORT_LIVE_HARNESS 환경변수 격리(monkeypatch.delenv/setenv)로 게이트만 검증한다 —
-main 의 auto 경로는 게이트 통과 시 *실* runner 를 부르므로 테스트에서는 게이트를 막아둔다.
+run_fill 의 runner 교체 지점(주입 콜러블)으로 명령 조립을 토큰 0 으로 검증한다. main 통합은
+PM_IMPORT_LIVE_HARNESS 환경변수 격리(monkeypatch.delenv/setenv)로 통과 조건만 검증한다 —
+main 의 auto 경로는 검사 통과 시 *실* runner 를 부르므로 테스트에서는 검사를 막아둔다.
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def pm_import():
 def _hermetic_opencode_models(pm_import, monkeypatch):
     """T-0033: main(--harness opencode) 가 실제 `opencode models` CLI 를 호출하지 않도록
     `_real_models_runner` 를 (False, []) 로 고정 — opencode 설치 환경서도 fill 테스트가 hermetic
-    (미설치 동치 = 모델 토큰 TODO 폴백, fill 단계는 모델 토큰과 무관).
+    (미설치 동치 = 모델 토큰 TODO 대체 동작, fill 단계는 모델 토큰과 무관).
     """
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
 
@@ -66,7 +66,7 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
 # ── stub runner (실 바이너리 미호출 — 토큰 0) ───────────────────────────────
 
 class _StubRunner:
-    """하니스 호출 seam stub — argv 를 기록하고 고정 (성공, 출력) 을 반환한다(토큰 0).
+    """하니스 호출 교체 지점 stub — argv 를 기록하고 고정 (성공, 출력) 을 반환한다(토큰 0).
 
     실 claude/opencode 바이너리를 절대 부르지 않는다 — run_fill 이 조립한 argv·프롬프트만
     포착해 명령 조립을 검증한다. ok=False·json 출력 등 시나리오를 생성자로 지정.
@@ -105,7 +105,7 @@ def test_exposes_fill_symbols(pm_import):
     assert callable(import_fill.run_fill)
     assert install_rules.FILL_CHOICES == ("auto", "manual")
     assert install_rules.FILL_HARNESS_CHOICES == install_rules.REGISTERED_HARNESSES
-    # codex fill runner 매핑 (ADR-0070 D5·silent claude 폴백 소멸).
+    # codex fill runner 매핑 (ADR-0070 D5·silent claude 대체 동작 소멸).
     assert install_rules.CODEX_FILL_CMD == ("codex", "exec")
     assert install_rules.FREE_FORM_TOKENS == FREE_FORM_TOKENS
     assert install_rules.OPENCODE_MODEL_TOKEN == OPENCODE_MODEL_TOKEN
@@ -139,7 +139,7 @@ def test_fill_failure_formatter_preserves_head_for_non_utf8_output(pm_import):
     ("x" * 10000, "x" * 10000),
 ])
 def test_shared_partial_formatter_keeps_all_text_without_truncation(pm_import, output, expected):
-    """없음·짧음·기존 preview 경계·대용량 모두 공용 seam에서 전량 보존한다."""
+    """없음·짧음·기존 preview 경계·대용량 모두 공용 함수에서 전량 보존한다."""
     exc = subprocess.TimeoutExpired(["runner"], 1, output=output)
     rendered = watchdog.format_partial_output("[원 진단]", exc)
     assert expected in rendered
@@ -147,7 +147,7 @@ def test_shared_partial_formatter_keeps_all_text_without_truncation(pm_import, o
 
 
 def test_shared_partial_formatter_keeps_head_when_output_stringification_fails(pm_import):
-    """포맷할 산출물이 고장나면 그 서식 예외가 전파한다(원 진단 head 로 접지 않는다)."""
+    """포맷할 산출물이 고장나면 그 서식 예외가 전파한다(원 진단 head 로 바꾸지 않는다)."""
     class BrokenOutput:
         def __bool__(self):
             return True
@@ -178,7 +178,7 @@ def test_fill_harness_help_lists_and_import_default_are_registry_derived(pm_impo
 
 
 def test_fill_harness_cap_advisory_uses_shared_relay_judgment(pm_import, monkeypatch, tmp_path):
-    """fill은 호출층 상한 부족을 never-block 경고로 표면화한다."""
+    """fill은 호출층 상한 부족을 never-block 경고로 드러낸다."""
     monkeypatch.setenv("CLAUDECODE", "session")
     monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "1")
     warning = import_fill.fill_harness_cap_advisory("claude", tmp_path)
@@ -232,7 +232,7 @@ def test_fill_auto_stub_opencode_excludes_model_token(pm_import, tmp_path, monke
     제안 값에 들어가면 안 된다(중복·환각 제거). 자유서술 3종만 fill 대상이다.
 
     main 의 정상 파이프라인은 substitute_placeholders 직후 resolve_opencode_model 이 돌아
-    토큰을 항상 해소/중화한다(치환 또는 `<provider/model>` 폴백) — 그래서 실 import 완료 트리엔
+    토큰을 항상 해소/중화한다(치환 또는 `<provider/model>` 대체 동작) — 그래서 실 import 완료 트리엔
     리터럴 토큰이 남지 않는다. 이 테스트가 검증하려는 "fill 은 model 토큰을 안 건드린다" 계약은
     **model 해소 전** 시점(substitute 직후)의 실 어댑터 파일(`.opencode/agents/*.md` 의
     `model:` 필드)을 대상으로 해야 하므로, resolve_opencode_model 을 no-op stub 으로 바꿔
@@ -307,24 +307,24 @@ def test_run_manual_fill_marks_only_missing_todo(pm_import, tmp_path):
 
 
 def test_fill_manual_does_not_call_runner(pm_import, tmp_path):
-    """manual 경로는 runner seam 을 절대 건드리지 않는다 — run_fill auto 와 대비."""
+    """manual 경로는 runner 교체 지점을 절대 건드리지 않는다 — run_fill auto 와 대비."""
     dest = _make_imported_tree(pm_import, tmp_path, harness="claude", name="NoRunner")
     # _run_manual_fill 은 runner 인자 자체가 없다(하니스 미구동 보장). 호출만으로 검증.
     result = import_fill._run_manual_fill(dest)
     assert result.runner_calls == [], "manual fill 이 하니스를 호출함."
 
 
-# ── DoD ③: opt-in 게이트 — 환경변수 미설정 시 실호출 차단 ─────────────────────
+# ── DoD ③: opt-in 검사 — 환경변수 미설정 시 실호출 차단 ─────────────────────
 
-def test_gate_blocks_without_env(pm_import, monkeypatch):
+def test_check_blocks_without_env(pm_import, monkeypatch):
     """PM_IMPORT_LIVE_HARNESS 미설정 → --fill auto 라도 _live_harness_allowed False."""
     monkeypatch.delenv("PM_IMPORT_LIVE_HARNESS", raising=False)
     assert import_fill._live_harness_allowed("auto") is False
     assert import_fill._live_harness_allowed("manual") is False
 
 
-def test_gate_requires_both_env_and_auto(pm_import, monkeypatch):
-    """게이트는 env=1 AND mode=auto 동시 충족 시만 통과."""
+def test_check_requires_both_env_and_auto(pm_import, monkeypatch):
+    """검사는 env=1 AND mode=auto 동시 충족 시만 통과."""
     monkeypatch.setenv("PM_IMPORT_LIVE_HARNESS", "1")
     assert import_fill._live_harness_allowed("auto") is True
     # env 만 있고 manual 이면 차단.
@@ -335,24 +335,24 @@ def test_gate_requires_both_env_and_auto(pm_import, monkeypatch):
 
 
 def test_main_auto_without_env_forces_manual(pm_import, tmp_path, monkeypatch, capsys):
-    """main --fill auto + 게이트 미통과(env 없음) → 실호출 차단, manual 폴백(TODO 표시).
+    """main --fill auto + 검사 미통과(env 없음) → 실호출 차단, manual 대체 동작(TODO 표시).
 
     실 runner(_real_harness_runner)가 절대 호출되면 안 된다 — 호출 시 pytest.fail.
     """
     monkeypatch.delenv("PM_IMPORT_LIVE_HARNESS", raising=False)
     monkeypatch.setattr(
         import_fill, "_real_harness_runner",
-        lambda argv, prompt: pytest.fail("게이트 미통과인데 실 하니스가 호출됨 — opt-in 위반."),
+        lambda argv, prompt: pytest.fail("검사 미통과인데 실 하니스가 호출됨 — opt-in 위반."),
     )
     dest = tmp_path / "autonoenv"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "AutoNoEnv",
                          "--fill", "auto"])
     assert rc == 0
     out = capsys.readouterr().out
-    # 게이트 미통과 안내 + manual 폴백(TODO 표시).
+    # 검사 미통과 안내 + manual 대체 동작(TODO 표시).
     assert "stub/미구동" in out or "통과 조건 미충족" in out
     text = (dest / "CLAUDE.md").read_text(encoding="utf-8")  # ADR-0030: free-form 은 root doc 에(어댑터 아님)
-    assert "TODO" in text, "게이트 미통과 manual 폴백인데 TODO 표시가 없음."
+    assert "TODO" in text, "검사 미통과 manual 대체 동작인데 TODO 표시가 없음."
 
 
 def test_run_fill_live_false_no_runner_does_not_call_real(pm_import, tmp_path, monkeypatch):
@@ -363,7 +363,7 @@ def test_run_fill_live_false_no_runner_does_not_call_real(pm_import, tmp_path, m
     )
     dest = _make_imported_tree(pm_import, tmp_path, harness="claude", name="LiveFalse")
     result = import_fill.run_fill(dest, "claude", live=False, runner=None)
-    # 미구동 — 값 없음(제안 없음). note 로 manual 폴백 권장.
+    # 미구동 — 값 없음(제안 없음). note 로 manual 대체 동작 권장.
     assert result.values == {}
     assert result.runner_calls == []
 
@@ -447,25 +447,25 @@ def test_fill_harness_resolution(pm_import, monkeypatch):
     assert import_fill._resolve_fill_harness(None, "opencode") == "opencode"
     assert import_fill._resolve_fill_harness(None, "claude,opencode") == "claude"
     assert import_fill._resolve_fill_harness("opencode", "claude") == "opencode"  # override.
-    # codex 는 standalone — --harness codex → fill harness codex(claude 폴백 아님·ADR-0070 D5).
+    # codex 는 standalone — --harness codex → fill harness codex(claude 대체 동작 아님·ADR-0070 D5).
     assert import_fill._resolve_fill_harness(None, "codex") == "codex"
 
 
-# ── codex fill runner (ADR-0070 D5·silent claude 폴백 소멸·T-0403 재작업) ──────
+# ── codex fill runner (ADR-0070 D5·silent claude 대체 동작 소멸·T-0403 재작업) ──────
 # 과거 버그: `--harness codex --fill auto` 가 codex fill runner 미등록으로 조용히 `claude -p` 로
-# 폴백하고 출력만 harness=codex 로 오표기(PM_IMPORT_LIVE_HARNESS=1 에서 잘못된 바이너리 호출).
+# 대체하고 출력만 harness=codex 로 오표기(PM_IMPORT_LIVE_HARNESS=1 에서 잘못된 바이너리 호출).
 # 수정: codex runner 명시 등록(codex exec --json·stdin DEVNULL·codex JSONL 파서) + 미지원 harness fail-loud.
 
 def test_build_runner_argv_codex(pm_import, tmp_path):
     """codex → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest>`, 프롬프트는 표준 입력
-    (과거 silent `claude -p` 폴백 소멸)."""
+    (과거 silent `claude -p` 대체 동작 소멸)."""
     argv = import_fill._build_runner_argv("codex", tmp_path, None)
     assert argv == ["codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check",
                     "-C", str(tmp_path)]
 
 
 def test_build_runner_argv_unknown_harness_fail_loud(pm_import):
-    """미지원 harness 는 silent claude 폴백이 아니라 fail-loud (잘못된 바이너리 호출·오표기 방지·
+    """미지원 harness 는 silent claude 대체 동작이 아니라 fail-loud (잘못된 바이너리 호출·오표기 방지·
     제4 하네스 재발 방지·ADR-0070 D5)."""
     with pytest.raises(ValueError) as exc:
         import_fill._build_runner_argv("bogus", Path("."), None)
@@ -533,21 +533,21 @@ def test_fill_driver_codex_plain_keeps_stdin_eof_without_incremental_signal(pm_i
     assert prompt_transport == install_rules.FILL_PROMPT_STDIN
 
 
-# ── codex live fill (gated·실 실행은 T-0407·과금) ─────────────────────────────
+# ── codex live fill (blocking·실 실행은 T-0407·과금) ─────────────────────────────
 
-_codex_live_gate = pytest.mark.skipif(
+_codex_live_test = pytest.mark.skipif(
     os.environ.get("PM_IMPORT_LIVE_HARNESS", "").strip() not in ("1", "true", "yes", "on")
     or shutil.which("codex") is None,
     reason="codex live fill — PM_IMPORT_LIVE_HARNESS=1 + codex 바이너리 필요(실 실행은 T-0407·과금).",
 )
 
 
-@_codex_live_gate
+@_codex_live_test
 def test_codex_live_fill_real_binary(pm_import, tmp_path):
-    """[gated·실 실행 T-0407·과금] 실 codex 바이너리로 codex fill — argv=codex exec·harness=codex 라벨.
+    """[blocking·실 실행 T-0407·과금] 실 codex 바이너리로 codex fill — argv=codex exec·harness=codex 라벨.
 
-    게이트(PM_IMPORT_LIVE_HARNESS + codex 설치) 미충족이면 collection 단계에서 skip(일반 서브셋
-    무영향). 충족 시 실 gpt-5.5 구동 — argv 가 codex 커맨드이고 라벨이 정합(claude 오호출 아님)."""
+    통과 조건(PM_IMPORT_LIVE_HARNESS + codex 설치) 미충족이면 collection 단계에서 skip(일반 서브셋
+    무영향). 충족 시 실 gpt-5.5 구동 — argv 가 codex 커맨드이고 라벨이 일치(claude 오호출 아님)."""
     dest = _make_imported_tree(pm_import, tmp_path, harness="codex", name="CodexLive")
     result = import_fill.run_fill(dest, "codex", live=True, copied_relpaths=None)
     assert result.harness == "codex"
@@ -569,7 +569,7 @@ def test_dry_run_auto_does_not_touch_fs(pm_import, tmp_path, capsys):
 
 
 def test_dry_run_auto_does_not_call_real_harness(pm_import, tmp_path, monkeypatch):
-    """--dry-run + --fill auto + 게이트 통과(env 설정)여도 실 하니스 미호출(파일 미변경)."""
+    """--dry-run + --fill auto + 검사 통과(env 설정)여도 실 하니스 미호출(파일 미변경)."""
     monkeypatch.setenv("PM_IMPORT_LIVE_HARNESS", "1")
     monkeypatch.setattr(
         import_fill, "_real_harness_runner",
@@ -597,7 +597,7 @@ def test_fill_runner_failure_is_soft(pm_import, tmp_path):
 
 
 def test_fill_runner_failure_saves_complete_private_raw(pm_import, tmp_path):
-    """긴 stdout 뒤 stderr까지 private raw에 전량 박제하고 note에는 경로만 남긴다."""
+    """긴 stdout 뒤 stderr까지 private raw에 전량 기록하고 note에는 경로만 남긴다."""
     dest = _make_imported_tree(pm_import, tmp_path, harness="claude", name="RawFail")
     output = "[stdout]\n" + ("O" * 6000) + "\n[stderr]\n" + ("E" * 3000)
 
@@ -616,7 +616,7 @@ def test_fill_runner_failure_saves_complete_private_raw(pm_import, tmp_path):
 
 def test_fill_failure_raw_without_dir_fd_or_o_nofollow_saves_path(
         pm_import, monkeypatch, tmp_path):
-    """dir_fd/O_NOFOLLOW가 없는 형상에서도 raw 원문과 반환 경로를 보존한다."""
+    """dir_fd/O_NOFOLLOW가 없는 경우에도 raw 원문과 반환 경로를 보존한다."""
     dest = _make_imported_tree(
         pm_import, tmp_path, harness="claude", name="PortableRaw",
     )
@@ -674,7 +674,7 @@ def test_fill_failure_raw_rechecks_containment_after_file_creation(
 
 def test_fill_runner_failure_exposes_full_output_if_raw_save_fails(
         pm_import, tmp_path, monkeypatch):
-    """raw 박제 실패는 전파한다(설치를 fill 실패 note 로 계속하지 않는다)."""
+    """raw 기록 실패는 전파한다(설치를 fill 실패 note 로 계속하지 않는다)."""
     dest = _make_imported_tree(pm_import, tmp_path, harness="claude", name="RawFallback")
     output = "O" * 600 + "\n[stderr]\nTAIL-ERR"
     monkeypatch.setattr(
@@ -758,18 +758,18 @@ def test_into_manual_fill_does_not_touch_user_file(pm_import, tmp_path):
 
 
 def test_into_auto_stub_fill_does_not_touch_user_file(pm_import, tmp_path, monkeypatch):
-    """--into + auto(게이트 미통과 → manual 폴백): 사용자 파일 불변(실 하니스도 미호출)."""
+    """--into + auto(검사 미통과 → manual 대체 동작): 사용자 파일 불변(실 하니스도 미호출)."""
     monkeypatch.delenv("PM_IMPORT_LIVE_HARNESS", raising=False)
     monkeypatch.setattr(
         import_fill, "_real_harness_runner",
-        lambda argv, prompt: pytest.fail("게이트 미통과인데 실 하니스가 호출됨."),
+        lambda argv, prompt: pytest.fail("검사 미통과인데 실 하니스가 호출됨."),
     )
     dest, user_file, original = _make_into_dest_with_user_file(tmp_path, "into_auto")
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--into", str(dest), "--harness", "claude", "--name", "IntoAuto",
                          "--fill", "auto"])
     assert rc == 0
     assert user_file.read_text(encoding="utf-8") == original, \
-        "auto(manual 폴백) fill 이 복사 안 한 사용자 파일을 수정함(비파괴 위반)."
+        "auto(manual 대체 동작) fill 이 복사 안 한 사용자 파일을 수정함(비파괴 위반)."
 
 
 def test_token_present_scoped_to_copied_relpaths(pm_import, tmp_path):
@@ -778,7 +778,7 @@ def test_token_present_scoped_to_copied_relpaths(pm_import, tmp_path):
     # 빈 copied_relpaths → NOTES.md 의 sentinel 이 있어도 범위 밖이라 미검출.
     assert import_fill._token_present(dest, "{{PROJECT_CONSTRAINTS}}", set()) is False, \
         "copied_relpaths 가 비었는데 사용자 파일 sentinel 을 검출함(범위 한정 실패)."
-    # 폴백(None)에서는 전체 스캔하므로 검출된다(범위 한정 인자가 실제로 작동함을 대비 증명).
+    # 대체 동작(None)에서는 전체 스캔하므로 검출된다(범위 한정 인자가 실제로 작동함을 대비 증명).
     assert import_fill._token_present(dest, "{{PROJECT_CONSTRAINTS}}", None) is True
 
 
@@ -792,15 +792,15 @@ def test_mark_todos_scoped_to_copied_relpaths(pm_import, tmp_path):
         "_mark_todos 가 범위 밖 사용자 파일을 수정함(비파괴 위반)."
 
 
-# ── MF1: 조합 + claude 부재 시 opencode 폴백 (회사 배포 1급 경로) ────────────
+# ── MF1: 조합 + claude 부재 시 opencode 대체 동작 (회사 배포 1급 경로) ────────────
 
 def test_combination_falls_back_to_opencode_when_claude_absent(pm_import, monkeypatch):
-    """조합: claude 바이너리 부재 → opencode 폴백(회사 배포 claude code 없음)."""
+    """조합: claude 바이너리 부재 → opencode 대체 동작(회사 배포 claude code 없음)."""
     # claude 는 PATH 에 없고 opencode 만 있는 상황 stub.
     monkeypatch.setattr(import_fill, "_harness_binary_available",
                         lambda h: h == "opencode")
     assert import_fill._resolve_fill_harness(None, "claude,opencode") == "opencode", \
-        "조합 + claude 부재인데 opencode 로 폴백하지 않음(회사 배포 1급 경로 깨짐)."
+        "조합 + claude 부재인데 opencode 로 대체하지 않음(회사 배포 1급 경로 깨짐)."
 
 
 def test_combination_prefers_claude_when_present(pm_import, monkeypatch):
@@ -809,8 +809,8 @@ def test_combination_prefers_claude_when_present(pm_import, monkeypatch):
     assert import_fill._resolve_fill_harness(None, "claude,opencode") == "claude"
 
 
-def test_combination_all_absent_returns_first_for_gate(pm_import, monkeypatch):
-    """조합의 바이너리가 모두 부재하면 첫 하네스를 반환해 상위 게이트에 위임한다."""
+def test_combination_all_absent_returns_first_for_check(pm_import, monkeypatch):
+    """조합의 바이너리가 모두 부재하면 첫 하네스를 반환해 상위 검사에 위임한다."""
     monkeypatch.setattr(import_fill, "_harness_binary_available", lambda h: False)
     assert import_fill._resolve_fill_harness(None, "claude,opencode") == "claude"
 
@@ -824,7 +824,7 @@ def test_explicit_fill_harness_overrides_binary_detection(pm_import, monkeypatch
 
 
 def test_harness_binary_available_uses_shutil_which(pm_import, monkeypatch):
-    """_harness_binary_available 은 shutil.which 로 탐지(테스트가 patch 가능한 seam)."""
+    """_harness_binary_available 은 shutil.which 로 탐지(테스트가 patch 가능한 교체 지점)."""
     monkeypatch.setattr(shutil, "which",
                         lambda binary: "/usr/bin/claude" if binary == "claude" else None)
     assert import_fill._harness_binary_available("claude") is True
@@ -853,10 +853,10 @@ def test_real_fourth_registry_tree_drives_help_and_binary_resolution(
                     ignore=shutil.ignore_patterns("__pycache__"))
     registry_path = tools_dir / "pm_engine/domain/install_rules.py"
     source = registry_path.read_text(encoding="utf-8")
-    registry_anchor = '    "codex": ("codex",),\n}'
-    assert registry_anchor in source
+    registry_marker = '    "codex": ("codex",),\n}'
+    assert registry_marker in source
     source = source.replace(
-        registry_anchor,
+        registry_marker,
         '    "codex": ("codex",),\n    "fourth": ("fourth_tmpl",),\n}',
         1,
     )
@@ -901,7 +901,7 @@ import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--help"])
 def test_combination_runner_argv_uses_opencode_when_claude_absent(
         pm_import, tmp_path, monkeypatch):
     """end-to-end(stub): 조합 + claude 부재 → run_fill 이 opencode argv 로 조립한다."""
-    # opencode 어댑터 트리를 import 해 토큰이 잔존하게 한다(조합 폴백 시 opencode가 채울 대상).
+    # opencode 어댑터 트리를 import 해 토큰이 잔존하게 한다(조합 대체 동작 시 opencode가 채울 대상).
     dest = _make_imported_tree(pm_import, tmp_path, harness="opencode", name="BothFallback")
     monkeypatch.setattr(import_fill, "_harness_binary_available",
                         lambda h: h == "opencode")
@@ -912,55 +912,55 @@ def test_combination_runner_argv_uses_opencode_when_claude_absent(
     assert len(stub.calls) == 1
     argv, _ = stub.calls[0]
     assert argv[0] == "opencode" and argv[1] == "run", \
-        "조합 폴백인데 opencode runner argv 로 조립되지 않음."
+        "조합 대체 동작인데 opencode runner argv 로 조립되지 않음."
 
 
 # ── MF2: --dry-run + --fill auto → fill 계획 출력 (실호출·파일변경 없음) ────────
 
 def test_dry_run_auto_prints_fill_plan(pm_import, tmp_path, capsys):
-    """--dry-run + --fill auto: 채울 대상 토큰·결정된 harness·게이트 상태를 계획으로 출력."""
+    """--dry-run + --fill auto: 채울 대상 토큰·결정된 harness·검사 상태를 계획으로 출력."""
     dest = tmp_path / "dryplan"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryPlan",
                          "--fill", "auto", "--dry-run"])
     assert rc == 0
     assert not dest.exists(), "--dry-run 인데 대상 디렉토리가 생성됨."
     out = capsys.readouterr().out
-    # 계획에 대상 토큰·fill harness·게이트 상태가 모두 등장.
+    # 계획에 대상 토큰·fill harness·검사 상태가 모두 등장.
     assert "채울 대상 토큰" in out, "dry-run 계획에 대상 토큰 목록이 없음."
     assert "{{PROJECT_CONSTRAINTS}}" in out, "dry-run 계획에 실제 자유서술 토큰이 안 나옴."
     assert "fill harness: claude" in out, "dry-run 계획에 결정된 fill harness 가 없음."
-    assert "통과 조건" in out, "dry-run 계획에 opt-in 게이트 상태가 없음."
+    assert "통과 조건" in out, "dry-run 계획에 opt-in 검사 상태가 없음."
 
 
-def test_dry_run_auto_plan_gate_not_passed_states_manual_fallback(pm_import, tmp_path,
+def test_dry_run_auto_plan_check_not_passed_states_manual_fallback(pm_import, tmp_path,
                                                                   monkeypatch, capsys):
-    """--dry-run + auto + 게이트 미통과(env 없음): 계획이 'manual 폴백' 상태를 명시한다."""
+    """--dry-run + auto + 검사 미통과(env 없음): 계획이 'manual 대체 동작' 상태를 명시한다."""
     monkeypatch.delenv("PM_IMPORT_LIVE_HARNESS", raising=False)
-    dest = tmp_path / "drygate"
-    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryGate",
+    dest = tmp_path / "drycheck"
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryCheck",
                          "--fill", "auto", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "미충족" in out and "manual 로 대체" in out, \
-        "게이트 미통과 dry-run 계획이 manual 폴백 상태를 명시하지 않음."
+        "검사 미통과 dry-run 계획이 manual 대체 동작 상태를 명시하지 않음."
 
 
-def test_dry_run_auto_plan_gate_passed_states_live(pm_import, tmp_path, monkeypatch, capsys):
-    """--dry-run + auto + 게이트 통과(env 설정): 계획이 '적용 시 실 하니스 구동' 을 명시."""
+def test_dry_run_auto_plan_check_passed_states_live(pm_import, tmp_path, monkeypatch, capsys):
+    """--dry-run + auto + 검사 통과(env 설정): 계획이 '적용 시 실 하니스 구동' 을 명시."""
     monkeypatch.setenv("PM_IMPORT_LIVE_HARNESS", "1")
-    # dry-run 이므로 게이트 통과여도 실 하니스는 절대 호출되면 안 된다.
+    # dry-run 이므로 검사 통과여도 실 하니스는 절대 호출되면 안 된다.
     monkeypatch.setattr(
         import_fill, "_real_harness_runner",
         lambda *a, **k: pytest.fail("dry-run 인데 실 하니스가 호출됨."),
     )
-    dest = tmp_path / "drygatepass"
-    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryGatePass",
+    dest = tmp_path / "drycheckpass"
+    rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "DryCheckPass",
                          "--fill", "auto", "--dry-run"])
     assert rc == 0
     assert not dest.exists(), "--dry-run 인데 파일시스템이 변경됨."
     out = capsys.readouterr().out
     assert "통과" in out and "실 하니스 구동" in out, \
-        "게이트 통과 dry-run 계획이 실구동 예정을 명시하지 않음."
+        "검사 통과 dry-run 계획이 실구동 예정을 명시하지 않음."
 
 
 def test_plan_fill_targets_reads_source_files(pm_import, tmp_path):
@@ -1019,7 +1019,7 @@ def test_run_fill_live_binds_dest_cwd_to_real_runner(pm_import, tmp_path, monkey
 
 # ── ADR-0007 / T-0028: pm_playbook.local.md 스텁 생성 + 재-import 비파괴 ─────────
 # 방법론(pm_playbook.md·엔진 synced)과 분리된 *인스턴스 소유* 누적 학습 칸을 import 가
-# 자동 생성하고, 재-import 가 기존 내용을 덮지 않는지 검증한다(루트 T-0027 seam 정합).
+# 자동 생성하고, 재-import 가 기존 내용을 덮지 않는지 검증한다(루트 T-0027 연결 지점 일치).
 
 PM_PLAYBOOK_LOCAL_RELPATH = Path(".project_manager") / "wiki" / "pm_playbook.local.md"
 
@@ -1030,7 +1030,7 @@ def test_import_creates_pm_playbook_local_stub(pm_import, tmp_path):
     stub = dest / PM_PLAYBOOK_LOCAL_RELPATH
     assert stub.is_file(), "import 후 pm_playbook.local.md 스텁이 생성되지 않음."
     text = stub.read_text(encoding="utf-8")
-    # 루트 T-0027 스텁 형식 정합: 프런트매터 type + 역참조 + TODO 절.
+    # 루트 T-0027 스텁 형식 일치: 프런트매터 type + 역참조 + TODO 절.
     assert "type: playbook-local" in text, "스텁 프런트매터 type 누락."
     assert "[[pm_playbook]]" in text, "스텁에 [[pm_playbook]] 역참조 누락."
     assert "TODO" in text, "스텁에 TODO 안내 절 누락."

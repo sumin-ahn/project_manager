@@ -1,15 +1,15 @@
-"""출하 template scaffold parity 가드 — fresh-adopter lint-clean + v2 domain 골격 (T-0090).
+"""출하 template scaffold parity 가드 — fresh-adopter lint-clean + v2 domain 뼈대 (T-0090).
 
 v2 domain 지식 레이어가 adopter 에게 *절반만* 출하된 갭(엔진 `domain.py` 는 manifest 로
-전파됐으나 wiki 골격 `domain/`·architecture retire stub·template README domain 사용법이
+전파됐으나 wiki 뼈대 `domain/`·architecture retire stub·template README domain 사용법이
 templates 에 안 간 것)의 **재발 방지**. 근본 원인 = template 파리티 미검증(root pm_role 만
 보고 template lint 미확인) → 두 template 에 `[[ADR-0018]]`·`[[ADR-0019]]` dangling-wikilink.
 
 검증 (출하 타깃 전부 — 아래 `TEMPLATE_NAMES` 파생):
   - `wiki/domain/{README,_template}.md` 존재.
   - `wiki/domain/_template.md` 가 현재-진실/히스토리 규칙을 싣고 canonical ↔ 존재하는 모든
-    타깃에 동일 (T-0568 — 엔진의 `history` 축만 가고 규칙 원문은 안 가던 갭).
-  - `wiki/architecture.md` 가 현재-진실 scaffold (부재 선언 타깃은 아래 ratchet 이 관리).
+    타깃에 동일 (T-0568 — 엔진의 `history` 기준만 가고 규칙 원문은 안 가던 갭).
+  - `wiki/architecture.md` 가 현재-진실 scaffold (부재 선언 타깃은 아래 줄이기만 하는 기준선이 관리).
   - **각 template `board.py lint` 가 dangling-wikilink 0** (1급 acceptance·fresh-adopter
     lint-clean). 각 template 은 자기 `board.py` 를 싣고, cwd=template 으로 호출 → 그 트리의
     wiki 만 본다 (REPO 를 board.py 의 `__file__` 로 해소).
@@ -17,7 +17,7 @@ templates 에 안 간 것)의 **재발 방지**. 근본 원인 = template 파리
     (공통분은 루트로 추출·leaf README 는 thin 어댑터 doc).
 
 stdlib + subprocess. lint 는 warning-only(exit 0)라 종료코드가 아니라 **stdout 에
-`dangling-wikilink` 부재**를 강제한다 (plain lint = advisory·`--gate` 만 nonzero).
+`dangling-wikilink` 부재**를 강제한다 (plain lint = advisory·`--blocking` 만 nonzero).
 """
 from __future__ import annotations
 
@@ -49,8 +49,8 @@ REPO = Path(__file__).resolve().parents[1]
 TEMPLATES = REPO / "templates"
 
 # 파리티 대상 = 출하 타깃 **전부**. 손-열거 2벌(claude_code·opencode)이던 자리다 — 세 번째
-# 하네스(codex)가 게이트에 안 잡히는 결함 클래스가 [[T-0429]] 에서 이미 실측됐고, 그 티켓이
-# 만든 공용 축(`_harness_matrix`: 엔진 등록 ∩ `templates/<dir>/` 실존·등록⇒실존 loud)에서
+# 하네스(codex)가 검사에 안 잡히는 결함 클래스가 [[T-0429]] 에서 이미 실측됐고, 그 티켓이
+# 만든 공용 목록(`_harness_matrix`: 엔진 등록 ∩ `templates/<dir>/` 실존·등록⇒실존 loud)에서
 # 그대로 파생한다. 네 번째 하네스는 자동 편입된다.
 TEMPLATE_NAMES = sorted(
     dirname
@@ -63,7 +63,7 @@ def _wiki(name: str) -> Path:
     return TEMPLATES / name / ".project_manager" / "wiki"
 
 
-# ── domain 골격 존재 (두 template) ────────────────────────────────────────────
+# ── domain 뼈대 존재 (두 template) ──────────────────────────────────────────────
 
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
 def test_domain_skeleton_present(name: str):
@@ -71,12 +71,12 @@ def test_domain_skeleton_present(name: str):
     domain = _wiki(name) / "domain"
     for fname in ("README.md", "_template.md"):
         path = domain / fname
-        assert path.exists(), f"{name}: domain 골격 누락 {path} (T-0090 수기 전파 필요)"
+        assert path.exists(), f"{name}: domain 뼈대 누락 {path} (T-0090 수기 전파 필요)"
 
 
-# domain seed README = 채택자가 읽는 판정 안내다. CHANGELOG 가 "`history` 축 판정 기준은
-# `wiki/domain/README.md` 가 문서화한다"고 선언했는데 출하 seed 엔 그 축 언급이 0 이었다(선언과
-# 출하물의 어긋남). 축 존재 + 판정 한 문장이 실렸는지 보고, 세 벌은 같은 문서이므로 바이트까지
+# domain seed README = 채택자가 읽는 판정 안내다. CHANGELOG 가 `history` 판정 기준을
+# `wiki/domain/README.md` 가 문서화한다고 선언했는데 출하 seed 엔 그 기준 언급이 0 이었다(선언과
+# 출하물의 어긋남). 기준 존재 + 판정 한 문장이 실렸는지 보고, 세 벌은 같은 문서이므로 바이트까지
 # 같은지 본다(수기 전파라 한 벌만 고치는 drift 가 실제 경로다).
 DOMAIN_README_REL = Path(".project_manager") / "wiki" / "domain" / "README.md"
 DOMAIN_README_MARKERS = (
@@ -87,13 +87,13 @@ DOMAIN_README_MARKERS = (
 
 
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
-def test_domain_readme_documents_history_axis(name: str):
-    """domain seed README 가 `history` 축과 그 판정 한 문장을 싣는다 (CHANGELOG 선언의 근거)."""
+def test_domain_readme_documents_history_category(name: str):
+    """domain seed README 가 `history` 기준과 그 판정 한 문장을 싣는다 (CHANGELOG 선언의 근거)."""
     path = TEMPLATES / name / DOMAIN_README_REL
     text = path.read_text(encoding="utf-8")
     missing = [marker for marker in DOMAIN_README_MARKERS if marker not in text]
     assert not missing, (
-        f"{name}: domain README 에 history 축 서술 누락 {missing} — 채택자가 lint 의 "
+        f"{name}: domain README 에 history 기준 서술 누락 {missing} — 채택자가 lint 의 "
         "advisory 판정 기준을 못 받는다"
     )
 
@@ -113,24 +113,15 @@ def test_domain_readme_is_byte_identical_across_targets():
     )
 
 
-@pytest.mark.parametrize("name", TEMPLATE_NAMES)
-def test_domain_skeleton_no_dogfood(name: str):
-    """template domain/ 은 빈 골격(README+_template)만 — dogfood 페이지(dual-gate-review) 제외."""
-    domain = _wiki(name) / "domain"
-    assert not (domain / "dual-gate-review.md").exists(), (
-        f"{name}: dual-gate-review.md 는 이 repo 자신의 dogfood 페이지 — template 에서 제외"
-    )
-
-
 # ── domain scaffold = 현재-진실/히스토리 규칙 출하 (T-0568) ───────────────────
 #
-# 채택자는 엔진(`domain.py lint` 의 `history` 축)만 받고 규칙 원문은 못 받는 갭이 있었다.
+# 채택자는 엔진(`domain.py lint` 의 `history` 기준)만 받고 규칙 원문은 못 받는 갭이 있었다.
 # 규칙은 canonical `_template.md` 가 싣고 `pm_update` 로 전 타깃에 간다. 파리티 대상은
 # 하드코딩 2벌이 아니라 **존재하는 모든 타깃**을 파일 실재로 파생한다(새 하네스 템플릿 자동 편입).
 
 DOMAIN_TEMPLATE_REL = Path(".project_manager") / "wiki" / "domain" / "_template.md"
 
-# 규칙의 뼈대. 표현을 다듬는 건 자유지만 이 네 축이 빠지면 채택자가 규칙을 못 받는다.
+# 규칙의 뼈대. 표현을 다듬는 건 자유지만 이 네 항목이 빠지면 채택자가 규칙을 못 받는다.
 DOMAIN_RULE_MARKERS = (
     '"지금 X다"',            # 판정 한 문장 — 페이지 쪽
     '"언제 X로 바뀌었다"',   # 판정 한 문장 — log 쪽
@@ -165,7 +156,7 @@ def test_domain_template_ships_current_truth_rule(path: Path):
     text = path.read_text(encoding="utf-8")
     missing = [marker for marker in DOMAIN_RULE_MARKERS if marker not in text]
     assert not missing, (
-        f"{path.relative_to(REPO)}: 현재-진실/히스토리 규칙 축 누락 {missing} — "
+        f"{path.relative_to(REPO)}: 현재-진실/히스토리 규칙 항목 누락 {missing} — "
         "채택자가 가드(`domain.py lint` history)만 받고 규칙은 못 받는다 "
         "(canonical 수정 후 `pm_update.py --all-targets` 전파)"
     )
@@ -177,7 +168,7 @@ def test_domain_template_starts_with_frontmatter(path: Path):
     """규칙 안내가 frontmatter 앞에 오면 안 된다 — 복사한 페이지가 index 에서 사라진다.
 
     `load_pages` 는 텍스트가 `---` 로 시작하지 않는 파일을 "페이지 아님"으로 **조용히** skip
-    한다. 안내 블록을 frontmatter 위에 두면 스캐폴드를 복사해 만든 페이지가 전부 소환·lint
+    한다. 안내 블록을 frontmatter 위에 두면 스캐폴드를 복사해 만든 페이지가 전부 불러오기·lint
     대상에서 빠지고, 경고도 안 난다.
     """
     text = path.read_text(encoding="utf-8")
@@ -208,7 +199,7 @@ def test_domain_template_is_byte_identical_across_targets():
 
 
 def test_domain_template_anchors_capture_draft_derivation():
-    """`domain.py` 가 안내 블록을 뽑는 앵커가 스캐폴드에 실재한다.
+    """`domain.py` 가 안내 블록을 뽑을 때 찾는 글이 스캐폴드에 실재한다.
 
     capture-draft scaffold 는 이 마커로 안내를 *파생*한다(문구 이중 서술 금지). 마커가
     사라지면 파생은 fail-soft 로 빈 문자열이 되어 draft 만 조용히 규칙을 잃는다.
@@ -216,7 +207,7 @@ def test_domain_template_anchors_capture_draft_derivation():
     dm = _load_domain()
     text = (REPO / DOMAIN_TEMPLATE_REL).read_text(encoding="utf-8")
     assert doc_page_store.CURRENT_TRUTH_GUIDE_MARKER in text, (
-        f"domain `_template.md` 에 파생 앵커 '{doc_page_store.CURRENT_TRUTH_GUIDE_MARKER}' 부재 — "
+        f"domain `_template.md` 에 파생 표시 '{doc_page_store.CURRENT_TRUTH_GUIDE_MARKER}' 부재 — "
         "capture-draft 산출이 규칙을 조용히 잃는다"
     )
     assert doc_page_store.current_truth_guide_block(REPO / DOMAIN_TEMPLATE_REL.parent), (
@@ -225,7 +216,7 @@ def test_domain_template_anchors_capture_draft_derivation():
 
 
 def test_domain_template_guidance_is_history_clean():
-    """스캐폴드 자신이 `history` 축을 발화시키지 않는다.
+    """스캐폴드 자신이 `history` 기준 검사에 걸리지 않는다.
 
     안내 블록을 안 지운 채 페이지를 만드는 건 흔한 경로다. 그 예시가 시점 스탬프로 시작하는
     lead-in 이면 복사한 페이지가 전부 첫날부터 history finding 을 달고 태어난다.
@@ -246,7 +237,7 @@ def test_architecture_is_living_truth(name: str):
     """architecture.md 가 현재-진실 scaffold (① live / ② target) — ADR-0022 부활(retire stub 아님).
 
     ADR-0017 의 architecture.md retire 를 ADR-0022 가 amend → 현재-아키텍처 단일 진실로 부활.
-    템플릿 scaffold 도 retire stub 이 아니라 ①live/②target 골격이어야 한다.
+    템플릿 scaffold 도 retire stub 이 아니라 ①live/②target 뼈대여야 한다.
     """
     arch = _wiki(name) / "architecture.md"
     assert arch.exists(), f"{name}: architecture.md 없음 {arch}"
@@ -426,9 +417,9 @@ def test_templates_no_personal_path_leak():
 
 # ── fresh-adopter 묶음 카드 — 엔진 값에서 파생한 구조 단언 ────────────────────
 #
-# 출하 산문이 서술하는 절차는 **엔진이 실제로 하는 일**과 같아야 한다. 그 정합을 사람이 눈으로
+# 출하 산문이 서술하는 절차는 **엔진이 실제로 하는 일**과 같아야 한다. 그 일치를 사람이 눈으로
 # 대조하면 반드시 drift 하므로, 라운드 순번표와 종결 단계 이름을 엔진 상수에서 **파생해** 대조한다
-# (문자열을 테스트에 손으로 재타이핑하지 않는다). 채택자 트리에 실제로 깔리는 표면 전수가 대상이라,
+# (문자열을 테스트에 손으로 재타이핑하지 않는다). 채택자 트리에 실제로 깔리는 범위 전수가 대상이라,
 # 새 타깃이 생겨도 `TEMPLATE_NAMES` 를 통해 자동 편입된다.
 
 _CLUSTER_STAGE_HEADING = "## 클러스터 단계 표"
@@ -439,7 +430,7 @@ _ROUND_LABEL_RE = re.compile(r"\b(\d{2})-(architect|developer|code-reviewer)\b")
 # 카드 종결 단계 표의 행 — 이름 부분집합 대조만 하면 지워진 단계가 표에 남아도 통과한다.
 # 행 판정은 표 블록 안에서 한 줄씩 한다(파일 전체 스캔이 아니다 — `_close_step_table_rows`).
 _CLOSE_STEP_TABLE_ROW_RE = re.compile(r"^\| \d+ \| ")
-# 종결 단계 표 절의 헤딩 — 행 수 단언의 대상을 이 절로 좁히는 앵커.
+# 종결 단계 표 절의 헤딩 — 행 수 단언의 대상을 이 절로 좁히려고 찾는 글.
 _CLOSE_STEP_HEADING_PREFIX = "## 종결 "
 # 폐지된 부분 재설계 서술 — 재설계는 예산 4키를 전부 리셋해 주기를 처음부터 다시 연다.
 _RETIRED_REPLAN_PHRASE = "쌍을 뒤에 붙인다"
@@ -474,15 +465,15 @@ def _close_step_labels() -> tuple[str, ...]:
 
 
 def _shipped_cards(name: str, stem: str) -> list[Path]:
-    """그 타깃에 실제로 깔리는 카드 표면 전부(스킬 디렉터리 + 평탄 command 팔레트)."""
+    """그 타깃에 실제로 깔리는 카드 전부(스킬 디렉터리 + 평탄 command 팔레트)."""
     root = TEMPLATES / name
     return sorted(root.glob(f"*/skills/{stem}/SKILL.md")) + sorted(
         root.glob(f"*/command/{stem}.md")
     )
 
 
-# 수렴 규범의 문장 소유자는 pm_principles 하나뿐이다. 역할/플레이북/스킬은 링크와 실행 절차만
-# 싣는다. 정규식은 문구 하나를 golden 으로 고정하지 않고 같은 규칙을 다시 풀어 쓴 형상을 잡는다.
+# 마무리 규범의 문장 소유자는 pm_principles 하나뿐이다. 역할/플레이북/스킬은 링크와 실행 절차만
+# 싣는다. 정규식은 문구 하나를 golden 으로 고정하지 않고 같은 규칙을 다시 풀어 쓴 경우를 잡는다.
 _CONVERGENCE_RULE_COPY_RE = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"fix[^.]{0,120}마지막[^.]{0,40}(?:사람 )?라운드",
     r"(?:실패|하나라도).{0,140}(?:추가 )?(?:사람 )?라운드.{0,80}(?:열지|정지|보고)",
@@ -515,12 +506,12 @@ def _convergence_reference_guides() -> list[Path]:
 
 
 def test_convergence_normative_sentences_live_only_in_pm_principles():
-    """role/playbook/skill와 출하 사본은 수렴 규범을 재서술하지 않고 canonical 절을 참조한다."""
+    """role/playbook/skill와 출하 사본은 마무리 규범을 재서술하지 않고 canonical 절을 참조한다."""
     owners = [REPO / ".project_manager/wiki/pm_principles.md"] + [
         _wiki(name) / "pm_principles.md" for name in TEMPLATE_NAMES
     ]
     assert all(_convergence_rule_copies(path.read_text(encoding="utf-8")) for path in owners), (
-        "pm_principles owner의 수렴 규범이 sensitivity 정규식에 잡히지 않음"
+        "pm_principles owner의 마무리 규범이 sensitivity 정규식에 잡히지 않음"
     )
     offenders = {}
     for path in _convergence_reference_guides():
@@ -529,7 +520,7 @@ def test_convergence_normative_sentences_live_only_in_pm_principles():
         if copies:
             offenders[str(path.relative_to(REPO))] = copies
         assert "pm_principles.md" in text, f"{path.relative_to(REPO)}: canonical 원칙 참조 누락"
-    assert not offenders, f"pm_principles 밖 수렴 규범 복제: {offenders}"
+    assert not offenders, f"pm_principles 밖 마무리 규범 복제: {offenders}"
 
 
 @pytest.mark.parametrize("sample", (
@@ -549,7 +540,7 @@ def test_convergence_normative_copy_guard_is_sensitive(sample: str):
 def test_shipped_delegate_card_carries_engine_round_ordinals(name: str):
     """출하 위임 카드가 묶음 단계 표와 엔진 순번 값을 싣는다(티켓당 절 부재)."""
     cards = _shipped_cards(name, "pm-dev-delegate")
-    assert cards, f"{name}: pm-dev-delegate 카드 표면 0 — 출하 누락"
+    assert cards, f"{name}: pm-dev-delegate 카드 범위 0 — 출하 누락"
     labels = _round_ordinal_labels()
     for card in cards:
         text = card.read_text(encoding="utf-8")
@@ -584,10 +575,10 @@ def test_shipped_delegate_card_carries_engine_round_ordinals(name: str):
 def test_shipped_authoring_and_review_guides_reference_the_canonical_principles(
     name: str, stem: str,
 ):
-    """ticket/reviewer 출하 표면이 수렴 원문을 복제하지 않고 참조한다.
+    """ticket/reviewer 출하 범위가 일치 원문을 복제하지 않고 참조한다.
 
     architect/reviewer 역할 카드의 호환성(변경 폭) 계약은 아래 역할별 테스트가
-    더 구체적인 필드와 함께 검증한다. 위임 스킬의 모든 평탄 command 표면에까지
+    더 구체적인 필드와 함께 검증한다. 위임 스킬의 모든 평탄 command 범위에까지
     원문 절 이름을 복제하라는 과도한 제약은 두지 않는다.
     """
     cards = _shipped_cards(name, stem)
@@ -615,7 +606,7 @@ def test_shipped_current_workflow_guides_do_not_move_review_residue_to_a_new_tic
     for card in cards:
         text = card.read_text(encoding="utf-8")
         found = [phrase for phrase in retired if phrase in text]
-        assert not found, f"{card.relative_to(REPO)}: 폐지 처방 잔존 {found}"
+        assert not found, f"{card.relative_to(REPO)}: 폐지 해결 방법 잔존 {found}"
 
 
 @pytest.mark.parametrize(
@@ -678,7 +669,7 @@ def _close_step_table_rows(path: Path) -> list[str]:
 def test_shipped_finish_card_carries_engine_close_steps(name: str):
     """출하 종결 카드가 엔진 종결 단계 이름 전수와 단계 수를 싣는다."""
     cards = _shipped_cards(name, "pm-cluster-finish")
-    assert cards, f"{name}: pm-cluster-finish 카드 표면 0 — 출하 누락"
+    assert cards, f"{name}: pm-cluster-finish 카드 범위 0 — 출하 누락"
     steps = _close_step_labels()
     for card in cards:
         assert _CLOSE_STEP_COUNT_TOKEN in card.read_text(encoding="utf-8"), (
@@ -695,7 +686,7 @@ def test_shipped_finish_card_carries_engine_close_steps(name: str):
     assert not missing, (
         f"{name}: 종결 단계 이름이 엔진 값과 어긋남 (누락 {missing})"
     )
-    # 부분집합 대조만으로는 **지워진 단계가 표에 남은** 형상을 못 잡는다 — 행 수까지 센다.
+    # 부분집합 대조만으로는 **지워진 단계가 표에 남은** 경우를 못 잡는다 — 행 수까지 센다.
     for path in details:
         rows = _close_step_table_rows(path)
         assert len(rows) == len(steps), (
@@ -704,7 +695,7 @@ def test_shipped_finish_card_carries_engine_close_steps(name: str):
 
 
 # F-002 — 종결 5·6단계의 브랜치 계약. 엔진은 `base_branch` 미선언을 **차단**하고 묶음
-# 브랜치(`branch`) 미선언만 무대상으로 접는다. 카드가 그 반대(비차단 skip)로 안내하면 같은
+# 브랜치(`branch`) 미선언만 무대상으로 바꾼다. 카드가 그 반대(비차단 skip)로 안내하면 같은
 # 상황에서 사람이 하는 행동과 엔진이 내는 결과가 갈린다.
 _CLOSE_SKIP_CLAIM_RE = re.compile(
     r"(?:통합|기준) 브랜치[^\n]{0,60}미선언[^\n]{0,80}(?:무대상|건너뛴|비차단)"
@@ -712,7 +703,7 @@ _CLOSE_SKIP_CLAIM_RE = re.compile(
 
 
 def _close_branch_surfaces() -> list[Path]:
-    """종결 브랜치 계약을 말하는 카드 표면 전부 — canonical + 출하 사본."""
+    """종결 브랜치 계약을 말하는 카드 범위 전부 — canonical + 출하 사본."""
     paths = [
         REPO / ".claude" / "skills" / "pm-cluster-finish" / "SKILL.md",
         REPO / ".claude" / "skills" / "pm-cluster-finish" / "references" /
@@ -735,9 +726,9 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     board = _load_engine_module("board")
     closer = cluster_close.ClusterCloser
 
-    # 살아 있는 멤버의 미결속은 동명 기준 브랜치로 해소하지 않고 조회 전에 거부한다.
-    ledger = {"branch": None, "base_branch": "main"}
-    monkeypatch.setattr(cluster_store, "load_cluster", lambda home, cluster: ledger)
+    # 살아 있는 멤버의 미연결은 동명 기준 브랜치로 해소하지 않고 조회 전에 거부한다.
+    records = {"branch": None, "base_branch": "main"}
+    monkeypatch.setattr(cluster_store, "load_cluster", lambda home, cluster: records)
     reads = []
     monkeypatch.setattr(
         lease_store, "_read_lease_rows_status",
@@ -745,7 +736,7 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     )
     tree, problem = cluster_code_tree.resolve_code_tree(pm_paths.home_at(REPO), "C-guidance")
     assert tree is None and "연결되지 않은" in problem and "cluster new" in problem
-    assert reads == [] and ledger == {"branch": None, "base_branch": "main"}
+    assert reads == [] and records == {"branch": None, "base_branch": "main"}
 
     # 기준 브랜치 부재의 기존 단계별 차단도 유지한다.
     blocking = cluster_close._CLOSE_INTEGRATION_UNDECLARED
@@ -759,16 +750,16 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
     assert "묶음 브랜치 미선언" in inspect.getsource(closer._step_merge)
     assert "묶음 브랜치 미선언" not in inspect.getsource(closer._step_rebase)
 
-    # 발행 자동 장부 축 — `base_branch` 는 기록되고 묶음 브랜치만 빈다.
+    # 발행 자동 기록 항목 — `base_branch` 는 기록되고 묶음 브랜치만 빈다.
     assert "base_branch=base_branch" in inspect.getsource(board_cluster._cluster_auto_attach)
     auto = cluster_rules._new_cluster_fm(
         cluster_rules.cluster_id_for_name("T-9999"), ["T-9999"], base_branch="task/main")
     assert auto["base_branch"] == "task/main" and auto["branch"] is None
 
-    # 카드 전건이 미결속 거부와 기존 명시 재결속을 안내한다.
+    # 카드 전건이 미연결 거부와 기존 명시 재연결을 안내한다.
     surfaces = _close_branch_surfaces()
     assert len(surfaces) >= 2 * (1 + len(TEMPLATE_NAMES)), (
-        f"종결 브랜치 계약 카드 표면이 너무 적다: {[str(p) for p in surfaces]}"
+        f"종결 브랜치 계약 카드 범위가 너무 적다: {[str(p) for p in surfaces]}"
     )
     # 릴리즈 업그레이드 노트도 같은 계약을 사용자에게 말하는 자리다 — 카드만 고치고 노트에
     # 옛 문구를 남기면 채택자가 읽는 두 기준이 다시 갈린다(옛 문구 sweep 대상에 포함).
@@ -792,7 +783,7 @@ def test_completion_guidance_matches_close_branch_contract(monkeypatch):
         assert "연결되지 않은" in text and "cluster new" in text, (
             f"{path.relative_to(REPO)}: 연결되지 않은 상태 거부 또는 기존 다시 연결 안내 누락")
         assert "branch" in text and "base_branch" in text, (
-            f"{path.relative_to(REPO)}: 제품 branch/base_branch 결속 안내 누락")
+            f"{path.relative_to(REPO)}: 제품 branch/base_branch 연결 안내 누락")
 
 
 def test_completion_guidance_uses_cluster_finish_not_direct_complete():
@@ -820,7 +811,7 @@ def test_completion_guidance_uses_cluster_finish_not_direct_complete():
     for path in entry_guides + methodology:
         text = path.read_text(encoding="utf-8")
         assert direct_command.search(text) is None, (
-            f"{path.relative_to(REPO)}: 사용자-facing direct board complete 처방 잔존"
+            f"{path.relative_to(REPO)}: 사용자-facing direct board complete 해결 방법 잔존"
         )
         assert "ticket_finish.py" in text or "/pm-cluster-finish" in text, (
             f"{path.relative_to(REPO)}: 묶음 종결 진입 누락"

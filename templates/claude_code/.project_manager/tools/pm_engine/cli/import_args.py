@@ -7,7 +7,7 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
 사용:
     pm_import.py (--into <기존프로젝트> | --new <프로젝트>)   # 모드 택1
                  [--harness <harness[,harness...]|all>]      # 어댑터 집합 (default: all)
-                 --weight  {full,lite}                        # 무게축 (default: full)
+                 --weight  {full,lite}                        # 설치 무게 (default: full)
                  [--from <프레임워크-checkout>]               # 소스 (default: 이 repo 루트)
                  [--name <표시이름>]                          # {{PROJECT_NAME}} (default: 디렉토리명)
                  [--fill {auto,manual}]                       # 자유서술 채움 (default: manual)
@@ -28,8 +28,8 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
       codex exec --json)를
       헤드리스 구동해 placeholder 값 + (해당 시) CLAUDE.md/pm_role.local.md 초안을 *제안*한다.
       생성물은 제안일 뿐 — 적용은 사용자 리뷰 전제(비가역 회피). --dry-run 이면 실 하니스를
-      호출하지 않고 fill *계획*(채울 대상 토큰·결정된 harness·opt-in 게이트 상태)만 출력한다
-      (파일 미변경·비용 0 — opt-in 게이트상 dry-run 에서 실호출 금지).
+      호출하지 않고 fill *계획*(채울 대상 토큰·결정된 harness·opt-in 조건 충족 여부)만 출력한다
+      (파일 미변경·비용 0 — opt-in 조건상 dry-run 에서 실호출 금지).
   --into: 기존 충돌 파일은 중앙 디렉토리 .pm_import_backups/<DATE>/<relpath> 에 백업 후 덮음
           (비파괴). 단 git 이 추적 중이고 미변경인 파일은 백업 생략(git 이 복원). --new:
           디렉토리 생성 + git init.
@@ -46,7 +46,7 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
     안 됐다"는 잘못된 신호가 된다 — 백업 자리가 막힌 공유 문서를 재렌더에서 빼고 rc 0 으로 끝내는
     기존 처리와 같은 규칙이다. 계획 단계 위반은 반대다: 아직 아무것도 복사하지 않았으므로 전체를
     rc 1 로 멈춘다(부분 설치 0). dest 루트 자체 교체만 예외로 적용 중에도 즉시 전체 중단이다.
-  - fill 실구동 게이트: 하니스 실구동은 토큰·모델 비용 → 기본 OFF.
+  - fill 실구동 조건: 하니스 실구동은 토큰·모델 비용 → 기본 OFF.
     **실호출은 환경변수 PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만.** 둘 중 하나라도
     없으면 실 runner 를 호출하지 않는다(CI·기본 테스트는 stub). 회사 배포(claude code 없음)는
     opencode 구동 경로 1급 — 혼합이면 등록 순서상 첫 가용 하네스를 택한다.
@@ -55,10 +55,10 @@ opt-in 실 e2e (CI 비포함 — 토큰·모델 비용 발생):
     1) 대상 하니스 바이너리 설치 확인 (@REGISTERED_FILL_BINARIES@ 중 선택한 것이 PATH 에 있어야 함).
     2) 환경변수와 플래그를 *동시* 지정해 실구동:
            PM_IMPORT_LIVE_HARNESS=1 pm_import.py --into <repo> --fill auto [--fill-harness opencode]
-       - 둘 중 하나만 주면 실호출이 차단되고 stub/manual 로 폴백한다(안전).
+       - 둘 중 하나만 주면 실호출이 차단되고 stub/manual 을 대신 쓴다(안전).
     3) 출력된 자유서술 placeholder 값·초안은 *제안*이다 — 사람이 검토 후 손으로 반영한다
        (pm_import 는 자유서술 채움을 자동 확정하지 않는다). --dry-run 은 실 하니스를 호출하지
-       않고 *fill 계획*(채울 토큰·harness·게이트 상태)만 미리 보여준다(파일 미변경).
+       않고 *fill 계획*(채울 토큰·harness·opt-in 조건 상태)만 미리 보여준다(파일 미변경).
 """
 from __future__ import annotations
 

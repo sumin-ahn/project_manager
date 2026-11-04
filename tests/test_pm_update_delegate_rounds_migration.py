@@ -33,12 +33,12 @@ def _line(row: dict) -> str:
     return json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
 
 
-def _write_ledger(dest: Path, lines: list[str]) -> Path:
-    ledger = dest / ".project_manager" / ".local" / "delegate-rounds.jsonl"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text("".join(lines), encoding="utf-8", newline="")
-    os.chmod(ledger, 0o600)
-    return ledger
+def _write_records(dest: Path, lines: list[str]) -> Path:
+    record_path = dest / ".project_manager" / ".local" / "delegate-rounds.jsonl"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text("".join(lines), encoding="utf-8", newline="")
+    os.chmod(record_path, 0o600)
+    return record_path
 
 
 def test_rename_moves_only_the_key_through_tmp_and_atomic_replace(tmp_path, capsys):
@@ -50,7 +50,7 @@ def test_rename_moves_only_the_key_through_tmp_and_atomic_replace(tmp_path, caps
         _row(dest, 3, "2026-10-03T00:00:00.000000+00:00",
              abandoned_at="2026-10-03T00:00:00.000000+00:00", discard_reason=discard_reason),
     ]
-    ledger = _write_ledger(dest, [_line(rows[0]), UNREADABLE_LINE, _line(rows[1]), _line(rows[2])])
+    record_path = _write_records(dest, [_line(rows[0]), UNREADABLE_LINE, _line(rows[1]), _line(rows[2])])
     seen: list[tuple[str, str]] = []
     original = fs.atomic_replace
 
@@ -65,9 +65,9 @@ def test_rename_moves_only_the_key_through_tmp_and_atomic_replace(tmp_path, caps
         fs.atomic_replace = original
 
     assert seen == [("delegate-rounds.jsonl.tmp", "delegate-rounds.jsonl")]
-    assert not (ledger.parent / "delegate-rounds.jsonl.tmp").exists()
+    assert not (record_path.parent / "delegate-rounds.jsonl.tmp").exists()
     assert NEW_KEY in capsys.readouterr().out
-    lines = ledger.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = record_path.read_text(encoding="utf-8").splitlines(keepends=True)
     assert lines[1] == UNREADABLE_LINE
     moved = [json.loads(line) for index, line in enumerate(lines) if index != 1]
     for before, after in zip(rows, moved):
@@ -75,19 +75,19 @@ def test_rename_moves_only_the_key_through_tmp_and_atomic_replace(tmp_path, caps
         assert after[NEW_KEY] == before[OLD_KEY]
     assert moved[2]["discard_reason"] == discard_reason
     if os.name == "posix":
-        assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
+        assert stat.S_IMODE(record_path.stat().st_mode) == 0o600
     records = delegate_records._delegate_rounds_ledger_records(dest)
     assert [record["ordinal"] for record in records] == [1, 2, 3]
 
 
 def test_dry_run_and_idempotent_rerun_do_not_write(tmp_path):
     dest = tmp_path / "home"
-    ledger = _write_ledger(dest, [_line(_row(dest, 1, None)), _line(_row(dest, 2, None))])
-    before = ledger.read_bytes()
+    record_path = _write_records(dest, [_line(_row(dest, 1, None)), _line(_row(dest, 2, None))])
+    before = record_path.read_bytes()
     assert update_finish.rename_delegate_round_collected_key(dest, write=False) == 2
-    assert ledger.read_bytes() == before
+    assert record_path.read_bytes() == before
     assert update_finish.rename_delegate_round_collected_key(dest, write=True) == 2
-    after = ledger.read_bytes()
+    after = record_path.read_bytes()
     assert update_finish.rename_delegate_round_collected_key(dest, write=True) == 0
-    assert ledger.read_bytes() == after
+    assert record_path.read_bytes() == after
     assert update_finish.rename_delegate_round_collected_key(tmp_path / "empty", write=True) == 0

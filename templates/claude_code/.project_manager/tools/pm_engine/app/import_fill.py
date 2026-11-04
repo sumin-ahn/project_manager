@@ -28,7 +28,7 @@ import shlex
 # 단일 소스 = 이 인라인 상수. 루트 pm_playbook.local.md는 manifest 밖이라 템플릿
 # 트리에 안 끼어 *복사로 안 따라온다* → pm_import 가 import 시 직접 *생성*한다. 별도 `_template`
 # 파일을 두지 않는 이유: 그 파일 자체가 manifest/복사 경로에 다시 얽혀 .local 분리 취지와
-# 충돌한다 — stdlib-only 인라인 상수가 가장 단순·일관(루트 스텁 형식과 정합: 프런트매터
+# 충돌한다 — stdlib-only 인라인 상수가 가장 단순·일관(루트 스텁 형식과 일치: 프런트매터
 # type: playbook-local + 인스턴스 소유·manifest 밖 안내 + [[pm_playbook]] 역참조 + TODO 절).
 PM_PLAYBOOK_LOCAL_STUB = """\
 ---
@@ -53,7 +53,7 @@ type: playbook-local
 """
 
 
-# 스텁 대상 경로 (dest_root 기준 relpath). 루트 seam과 동일 위치.
+# 스텁 대상 경로 (dest_root 기준 relpath). 루트 교체 지점과 동일 위치.
 PM_PLAYBOOK_LOCAL_RELPATH = Path(".project_manager") / "wiki" / "pm_playbook.local.md"
 
 
@@ -64,7 +64,7 @@ PM_PLAYBOOK_LOCAL_RELPATH = Path(".project_manager") / "wiki" / "pm_playbook.loc
 # → 치환  3) 없고 비-tty 또는 opencode 부재 → 치환 안 함·TODO 마커(가용목록 인라인)+stderr 경고.
 # `opencode models` 가 실제 가용 모델의 단일 진실 — LLM 추측(fill) 대신 결정적 조회를 쓴다.
 
-# `opencode models` 조회 seam — `()` → (성공 여부, provider/model 목록). 테스트가 stub 주입.
+# `opencode models` 조회 교체 지점 — `()` → (성공 여부, provider/model 목록). 테스트가 stub 주입.
 ModelsRunner = Callable[[], "tuple[bool, list[str]]"]
 
 
@@ -75,10 +75,10 @@ class ModelResolveResult:
       active    : 해소 단계가 동작했는가 (opencode 토큰 잔존 시만 True; claude-only 면 False).
       path      : 'flag' | 'interactive' | 'todo' | 'inactive' — 해소 경로.
       model     : 치환에 쓴 모델 ID (PROVIDER/MODEL) 또는 None(미치환).
-      changed   : {{OPENCODE_PRO_MODEL}} 을 치환한 파일 수 (0 = 미치환·TODO 폴백).
+      changed   : {{OPENCODE_PRO_MODEL}} 을 치환한 파일 수 (0 = 미치환·TODO 대체 동작).
       available : `opencode models` 조회 성공 시 가용 모델 목록 (실패/미조회 시 빈 리스트).
       tty       : 해소 시점 stdin 이 tty 였는가 (대화형 가능 여부).
-      todos     : TODO 폴백에서 마커를 추가한 토큰 목록.
+      todos     : TODO 대체 동작에서 마커를 추가한 토큰 목록.
       note      : 사람 대상 메모 (경고·경로 사유).
 
     plain class (dataclass 아님): FillResult 와 같은 이유 — 테스트가 spec_from_file_location
@@ -115,7 +115,7 @@ def _real_models_runner(source) -> tuple[bool, list[str]]:
 
     조회 실행·판독·시간 상한의 주인은 `contract` 하나다(이 함수에 조회 코드 0). 조회 실패
     (`HarnessContractError` — PATH 부재·rc·timeout·판독 실패·모델 0개)는 그 사유를 stderr 한 줄로 남기고
-    (False, []) 로 돌린다 — 설치를 깨지 않고 형식 안내로 강등하는 이 두 소비자의 계약이다. 그 밖의
+    (False, []) 로 돌린다 — 설치를 깨지 않고 형식 안내로 낮추는 이 두 소비자의 계약이다. 그 밖의
     예외는 잡지 않는다.
     """
     try:
@@ -161,7 +161,7 @@ def _substitute_model_token(
             swapped.append(rel.as_posix())
             continue
         except FileNotFoundError:
-            vanished.append(rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 동형).
+            vanished.append(rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 같은 방식).
             continue
         except (UnicodeDecodeError, OSError):
             continue
@@ -185,7 +185,7 @@ def _prompt_model_choice(models: list[str], stdin) -> str | None:
     """`opencode models` 번호 목록을 출력하고 stdin 에서 선택을 읽어 모델 ID 를 반환.
 
     1-based 번호 목록을 stdout 에 출력하고 stdin 한 줄을 읽는다. 유효한 번호면 해당 모델,
-    빈 입력·범위 밖·비숫자·EOF 면 None(미선택 → 호출자가 TODO 폴백). 테스트는 io.StringIO 를
+    빈 입력·범위 밖·비숫자·EOF 면 None(미선택 → 호출자가 TODO 대체 동작). 테스트는 io.StringIO 를
     stdin 으로 주입해 결정적으로 검증한다(라이브 입력 없음).
     """
     if not models:
@@ -216,9 +216,9 @@ def _mark_model_todos(
     available: list[str],
     root_identity: tuple | None = None,
 ) -> list[str]:
-    """비-tty/opencode 부재 폴백: `model:` 줄을 주석화하고 그 안의 모델 토큰을 중화한다.
+    """비-tty/opencode 부재 대체 동작: `model:` 줄을 주석화하고 그 안의 모델 토큰을 중화한다.
 
-    _mark_todos 폴백을 흡수— 모델 토큰만 대상. 조회 성공 시 가용 모델 목록을 마커에
+    _mark_todos 대체 동작을 합침— 모델 토큰만 대상. 조회 성공 시 가용 모델 목록을 마커에
     인라인해 사람이 바로 고를 수 있게 한다. 비파괴 규칙(이미 TODO/주석인 줄은 건너뜀·
     copied_relpaths 범위 한정). 마크한 토큰([OPENCODE_MODEL_TOKEN] 또는 [])을 반환.
 
@@ -227,13 +227,13 @@ def _mark_model_todos(
     주석화해 YAML frontmatter 에서 `model` 키를 *부재*시킨다 → opencode 가 기본 모델로 agent 를
     구동(graceful degradation).
 
-    미해소 폴백이 주석 줄에 리터럴 `{{OPENCODE_PRO_MODEL}}` 을
+    미해소 대체 동작이 주석 줄에 리터럴 `{{OPENCODE_PRO_MODEL}}` 을
     남기면 render `_assert_no_leak` 가 hard-fail 한다(@render path 산출물에 토큰 0 이어야 함). 그래서
     주석화하면서 토큰을 **형식 힌트 `<provider/model>` 로 중화**한다 → `# model: "<provider/model>"
     # TODO: …`. 채택자는 주석을 해제하고 provider/model 을 채우거나 `--opencode-model` 재import.
 
     실 줄-중화 로직은 `render_rules.neutralize_model_todo`
-    로 옮겨 import(여기·render *이전* 폴백)와 self-update(pm_update 의 @render 재렌더·render_adapter
+    로 옮겨 import(여기·render *이전* 대체 동작)와 self-update(pm_update 의 @render 재렌더·render_adapter
     가 같은 함수 호출) 둘 다 **같은 산출**을 내게 한다(byte-동일·drift 0). 옛 opencode `@source`
     비대칭(update가 미해소 토큰을 leak으로 rc-fail)을 방지한다. 실행 패키지를 직접 호출하므로
     중화 함수를 사용할 수 없으면 실행 실패로 전파한다. 미해소 model 줄을 활성 상태로 출하하지 않는다.
@@ -249,7 +249,7 @@ def _mark_model_todos(
             swapped.append(_rel.as_posix())
             continue
         except FileNotFoundError:
-            vanished.append(_rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 동형).
+            vanished.append(_rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 같은 방식).
             continue
         except (UnicodeDecodeError, OSError):
             continue
@@ -287,12 +287,12 @@ def resolve_opencode_model(
     해소 순서:
       1) model_arg 명시 → 치환. (조회 가능하면 목록 대조해 *경고만*; 목록에 없어도 사용자 의도
          존중·치환 — 회사 사설 모델 등.)
-      2) 없고 stdin tty → `opencode models` 번호목록 출력·선택 입력 → 치환. (선택 안 하면 TODO 폴백.)
+      2) 없고 stdin tty → `opencode models` 번호목록 출력·선택 입력 → 치환. (선택 안 하면 TODO 대체 동작.)
       3) 없고 비-tty(CI·파이프) 또는 opencode 바이너리 부재 → 치환 안 함·TODO 마커(조회 성공 시
          가용목록 인라인)+stderr 경고.
 
-    models_runner: `opencode models` 조회 seam — 테스트 stub 주입(라이브 CLI 미실행). None 이면
-                   실 _real_models_runner. stdin: 대화형 선택 입력 seam — None 이면 sys.stdin.
+    models_runner: `opencode models` 조회 교체 지점 — 테스트 stub 주입(라이브 CLI 미실행). None 이면
+                   실 _real_models_runner. stdin: 대화형 선택 입력 교체 지점 — None 이면 sys.stdin.
     치환은 substitute_placeholders 와 동일한 copied_relpaths 비파괴 범위·_should_substitute 규칙.
     """
     # opencode 토큰이 이번 복사본에 없으면 단계 자체가 무의미(claude-only) — inactive.
@@ -348,7 +348,7 @@ def resolve_opencode_model(
                 available=available, tty=True,
                 note=f"대화형 선택 '{choice}' 로 치환({changed} 파일).",
             )
-        # 선택 안 함(빈 입력·범위 밖) → TODO 폴백.
+        # 선택 안 함(빈 입력·범위 밖) → TODO 대체 동작.
         todos = _mark_model_todos(home, dest_root, copied_relpaths, available,
                                   root_identity=root_identity)
         print("경고: opencode 모델 미선택 — {{OPENCODE_PRO_MODEL}} 을 TODO 로 표시(손으로 채우세요).",
@@ -383,9 +383,9 @@ def resolve_opencode_model(
 # ── fill 단계 (자유서술 placeholder · 하니스 구동 · opt-in) ──────────────────
 # board init·local.conf 동기화 직후의 hook 지점. sed 로 못 채우는 자유서술 placeholder 를
 # 대상 하니스를 헤드리스 구동해 *제안* 한다(auto) / TODO 로 표시한다(manual). 실구동은 토큰·
-# 모델 비용이므로 opt-in 게이트(LIVE_HARNESS_ENV + --fill auto) 뒤로 격리한다.
+# 모델 비용이므로 opt-in 통과 조건(LIVE_HARNESS_ENV + --fill auto) 뒤로 격리한다.
 
-# 하니스 호출 seam — (argv, prompt) → (성공 여부, stdout). 테스트가 stub 주입(토큰 0).
+# 하니스 호출 교체 지점 — (argv, prompt) → (성공 여부, stdout). 테스트가 stub 주입(토큰 0).
 HarnessRunner = Callable[[list[str], str], "tuple[bool, str]"]
 
 
@@ -395,12 +395,12 @@ class FillResult:
     필드:
       mode        : 'auto' (하니스 구동) | 'manual' (TODO 표시).
       harness     : 실제 구동 하니스 ('claude' | 'opencode' | None=manual).
-      live        : 실 하니스를 호출했는가 (opt-in 게이트 통과 시만 True).
+      live        : 실 하니스를 호출했는가 (opt-in 통과 조건 통과 시만 True).
       values      : placeholder token → 채운 값 (auto·stub 모두 채움 — manual 은 빈 dict).
       drafts      : 라벨 → 초안 텍스트 제안 (CLAUDE.md·pm_role.local.md·harness-output 등).
       todos       : manual 에서 TODO 로 남긴 placeholder token 목록.
       runner_calls: 하니스에 보낸 argv 리스트 (명령 조립 검증·로깅용 — stub 도 기록).
-      note        : 사람 대상 메모 (게이트 차단 이유 등).
+      note        : 사람 대상 메모 (통과 조건 차단 이유 등).
 
     plain class (dataclass 아님): 테스트가 spec_from_file_location 로 동적 로드하는데,
     그 경로에선 모듈이 sys.modules 에 없어 dataclass 의 문자열 annotation 해석이 깨진다.
@@ -437,7 +437,7 @@ def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
         if tuple(argv[:len(command)]) != command:
             continue
         # 실행 중 이벤트를 내는 **실제 출력 형식**까지 argv에서 확인한다. 바이너리 접두사만
-        # 맞고 JSON 플래그가 빠진 주입 호출은 평문/종료시 blob일 수 있으므로 증분 신호 축으로
+        # 맞고 JSON 플래그가 빠진 주입 호출은 평문/종료시 blob일 수 있으므로 증분 신호 쪽으로
         # 올리지 않는다(모르는 형식 = idle 판정 없음·가장 관대한 wall).
         if command == install_rules.OPENCODE_FILL_CMD:
             has_json_format = any(
@@ -449,12 +449,12 @@ def _fill_driver(argv: list[str]) -> tuple[str, bool, str | None]:
             if not has_json_format:
                 break
         elif command == install_rules.CODEX_FILL_CMD and "--json" not in argv[len(command):]:
-            # 출력이 평문이면 증분 신호/프로필은 보수적으로 미지 축에 두되, codex의 프롬프트 전달
+            # 출력이 평문이면 증분 신호/프로필은 보수적으로 미지 쪽에 두되, codex의 프롬프트 전달
             # (표준 입력 후 EOF)은 출력 형식과 무관하다.
             return "", False, driver[2]
         return driver
     # 내부 빌더 밖의 주입 호출은 미지 프로필로 보수 처리한다: 신호·프롬프트 전달을 추정하지 않고
-    # 가장 관대한 wall만 적용한다. basename이 알려진 이름이어도 argv 계약이 다르면 미지 축이다.
+    # 가장 관대한 wall만 적용한다. basename이 알려진 이름이어도 argv 계약이 다르면 미지 쪽이다.
     return "", False, None
 
 
@@ -504,7 +504,7 @@ def fill_harness_cap_advisory(harness: str, cwd: Path | str | None) -> str | Non
 
 
 def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Path:
-    """fill 실패 원문을 repo 안 private raw 파일로 이식 가능하게 박제한다."""
+    """fill 실패 원문을 repo 안 private raw 파일로 이식 가능하게 기록한다."""
     return _write_fill_private_file(
         dest_root, f"pm_import_fill_{harness}_{datetime.datetime.now():%Y%m%d_%H%M%S}_", ".txt", output)
 
@@ -619,13 +619,13 @@ def _real_harness_runner(
             input_text=input_text,
         )
     except subprocess.TimeoutExpired as exc:
-        wall_axis = watchdog.TIMEOUT_KIND_WALL
-        idle_axis = watchdog.TIMEOUT_KIND_IDLE
-        axis = getattr(exc, "timeout_axis", wall_axis)
+        wall_kind = watchdog.TIMEOUT_KIND_WALL
+        idle_kind = watchdog.TIMEOUT_KIND_IDLE
+        timeout_kind = getattr(exc, "timeout_axis", wall_kind)
         threshold = float(getattr(exc, "threshold_seconds", exc.timeout))
         silence = getattr(exc, "silence_seconds", None)
         silence_label = f" · 실측 침묵 {silence:.0f}초" if silence is not None else ""
-        kind = "무진행 임계" if axis == idle_axis else "벽시계 백스톱"
+        kind = "무진행 임계" if timeout_kind == idle_kind else "벽시계 백스톱"
         return False, watchdog.format_partial_output(
             f"[하니스 타임아웃 — {kind} {threshold:.0f}초 도달{silence_label}; "
             "자동 재시도 안 함 — 출력 확인 후 수동 재시도]",
@@ -635,14 +635,14 @@ def _real_harness_runner(
         return False, f"[하니스 명령 '{argv[0] if argv else '?'}' 를 찾을 수 없음 — 설치/PATH 확인]"
     except (watchdog.StallWatchdogError, watchdog.ProcessCleanupError, OSError) as exc:  # 하니스 실행 실패만 fill 실패 결과.
         if isinstance(exc, watchdog.StallWatchdogError):
-            axis = getattr(exc, "timeout_axis", None)
+            timeout_kind = getattr(exc, "timeout_axis", None)
             threshold = getattr(exc, "threshold_seconds", None)
             threshold_label = f" {float(threshold):.0f}초" if threshold is not None else ""
-            first_event_axis = watchdog.TIMEOUT_KIND_FIRST_EVENT
-            idle_axis = watchdog.TIMEOUT_KIND_IDLE
-            if axis == first_event_axis:
+            first_event_kind = watchdog.TIMEOUT_KIND_FIRST_EVENT
+            idle_kind = watchdog.TIMEOUT_KIND_IDLE
+            if timeout_kind == first_event_kind:
                 kind = f"첫-이벤트 stall{threshold_label}"
-            elif axis == idle_axis:
+            elif timeout_kind == idle_kind:
                 kind = f"무진행 임계{threshold_label}"
             else:
                 kind = f"벽시계 백스톱{threshold_label}"
@@ -685,8 +685,8 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
     `--dir` 하위). 표준 입력 전달 하네스는 None 이다.
 
     미지원 harness 는 **fail-loud**(ValueError). 과거 codex 가 이 매핑에 없어 조용히 `claude -p`
-    로 폴백해 *잘못된 바이너리*를 호출하고 출력만 harness=codex 로 오표기하던 클래스를 닫는다 —
-    모르는 harness 는 명시 등록을 강제(silent 폴백 금지)."""
+    를 대신 써 *잘못된 바이너리*를 호출하고 출력만 harness=codex 로 오표기하던 클래스를 닫는다 —
+    모르는 harness 는 명시 등록을 강제(silent 대체 동작 금지)."""
     if harness == "claude":
         return [*install_rules.CLAUDE_FILL_CMD]
     if harness == "opencode":
@@ -729,11 +729,11 @@ def _parse_opencode_json(output: str) -> str:
 
 
 def _parse_codex_json(output: str) -> str:
-    """codex `exec --json` JSONL 출력에서 최종 응답 텍스트 추출(fail-soft·_parse_opencode_json 동형).
+    """codex `exec --json` JSONL 출력에서 최종 응답 텍스트 추출(fail-soft·_parse_opencode_json 과 같은 방식).
 
     codex 는 줄당 JSON 이벤트(thread.started·turn.started·item.*·turn.completed·error)를 낸다.
     응답 = `item.type == "agent_message"` 인 item 의 `.text`(마지막 것 = 최종 응답·엔진
-    contract.parse_codex_json 규칙과 정합). JSON 파싱 불가·구조 상이·미발견이면 원문 그대로
+    contract.parse_codex_json 규칙과 일치). JSON 파싱 불가·구조 상이·미발견이면 원문 그대로
     반환(사람이 읽게 — _parse_opencode_json 과 같은 fail-soft). pm_import 자족(형제 파서 미러·
     _parse_opencode_json 선례 + 시그니처/목적 상이 — `contract` 쪽은 orchestration 용 3-튜플
     (thread_id·reply·usage)·여긴 fill 초안용 str·fail-soft. 순환 import 는 어느 쪽이든 없음)."""
@@ -757,9 +757,9 @@ def _parse_codex_json(output: str) -> str:
 
 
 def _live_harness_allowed(mode: str) -> bool:
-    """opt-in 게이트: 실 하니스 호출은 PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만.
+    """opt-in 통과 조건: 실 하니스 호출은 PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만.
 
-    둘 중 하나라도 없으면 False → run_fill 이 실 runner 를 호출하지 않고 stub/manual 로 폴백.
+    둘 중 하나라도 없으면 False → run_fill 이 실 runner 를 호출하지 않고 stub/manual 을 대신 쓴다.
     """
     return mode == "auto" and os.environ.get(install_rules.LIVE_HARNESS_ENV, "").strip() in ("1", "true", "yes", "on")
 
@@ -769,14 +769,14 @@ def _resolve_fill_scope(dest_root: Path, copied_relpaths: set[Path] | None) -> s
 
     copied_relpaths 가 주어지면(main 경로) 그걸 그대로 쓴다 — 이번 import 가 복사한 파일만
     스캔(비파괴). None 이면(run_fill/_run_manual_fill 직접 호출 — 테스트·디버그) dest 트리
-    전체를 폴백 스캔한다. 단, --into main 경로는 *항상* copied_relpaths 를 넘기므로 사용자
-    파일 오염은 발생하지 않는다(이 폴백은 직접 호출자 편의용). 폴백도 COPY_EXCLUDE_DIR_NAMES
+    전체를 대신 스캔한다. 단, --into main 경로는 *항상* copied_relpaths 를 넘기므로 사용자
+    파일 오염은 발생하지 않는다(이 대체 동작은 직접 호출자 편의용). 대체 동작도 COPY_EXCLUDE_DIR_NAMES
     (node_modules·__pycache__·.git)는 제외한다.
     """
     if copied_relpaths is not None:
         return copied_relpaths
-    # 실 import 경로는 항상 copied_relpaths를 넘기므로 여기의 dest 전수 열거는 직접 호출용 폴백에
-    # 한정된다. adopter가 아직 git repo가 아니면 seam이 filesystem 강등 경고를 1회 표면화한다.
+    # 실 import 경로는 항상 copied_relpaths를 넘기므로 여기의 dest 전수 열거는 직접 호출용 대체 동작에
+    # 한정된다. adopter가 아직 git repo가 아니면 열거 공용 함수가 filesystem 방식으로 낮췄다는 경고를 1회 드러낸다.
     # 정상 import에는 노이즈가 없고, 직접 호출자는 추적/ignore 보장 소실을 놓치지 않는다.
     # 이 소비점의 0건은 "채울 파일 없음"이라는 정당 결과이므로 출하용 빈 인벤토리 예외에서 제외한다.
     scope: set[Path] = set()
@@ -784,7 +784,7 @@ def _resolve_fill_scope(dest_root: Path, copied_relpaths: set[Path] | None) -> s
             dest_root, ".", mode=repo_files.OWNED):
         if any(part in install_source.COPY_EXCLUDE_DIR_NAMES for part in rel.parts):
             continue
-        # dest fallback은 텍스트 읽기/수정 소비처다. seam의 gap domain은 symlink/gitlink를
+        # dest fallback은 텍스트 읽기/수정 소비처다. 열거 공용 함수의 gap domain은 symlink/gitlink를
         # 보존하지만 여기서는 링크 추종(특히 repo 밖)과 디렉토리/gitlink·삭제 엔트리를 제외한다.
         path = dest_root / rel
         if path.is_symlink() or not path.is_file():
@@ -810,7 +810,7 @@ def _iter_copied_files(dest_root: Path, copied_relpaths: set[Path],
             continue
         # 선검사는 `lstat` — symlink 를 후보로 통과시켜 소비처의 nofollow fd 가드가 판정하게 한다
         #   (`is_file()` 은 깨진 링크를 조용히 제외하고 정상 링크는 따라간다). 탈락 사유(복사 뒤
-        #   삭제·형상 변화)는 호출부 목록에 실어 요약으로 나가게 한다(조용한 skip 0).
+        #   삭제·모양 변화)는 호출부 목록에 실어 요약으로 나가게 한다(조용한 skip 0).
         anomaly = install_files._copied_scope_anomaly(dest_root, rel)
         if anomaly == "vanished":
             if vanished is not None and rel.as_posix() not in vanished:
@@ -828,7 +828,7 @@ def _fill_targets(dest_root: Path, copied_relpaths: set[Path] | None = None,
     """이번 import 가 복사한 파일에 실제로 남아있는 자유서술 placeholder 토큰 목록.
 
     잔존 grep 으로 판정 — 트리에 없는 토큰은 채울 필요 없음. 스캔 범위는 copied_relpaths
-    (이번 run 복사 파일)로 한정 — 사용자 파일 불가침(비파괴). None 이면 dest 트리 전체 폴백
+    (이번 run 복사 파일)로 한정 — 사용자 파일 불가침(비파괴). None 이면 dest 트리 전체를 대신 스캔
     (직접 호출용 — COPY_EXCLUDE_DIR_NAMES 제외).
 
     {{OPENCODE_PRO_MODEL}} 는 LLM fill 후보가 *아니다* — resolve_opencode_model 의
@@ -898,12 +898,12 @@ def _token_present(
 ) -> bool:
     """이번 import 가 복사한 파일에 token 이 한 파일이라도 남아있는가(비파괴 범위 한정).
 
-    copied_relpaths=None 이면 dest 트리 전체 폴백(COPY_EXCLUDE_DIR_NAMES 제외) — 직접 호출용.
+    copied_relpaths=None 이면 dest 트리 전체를 대신 스캔(COPY_EXCLUDE_DIR_NAMES 제외) — 직접 호출용.
 
     swapped/vanished: 계획 뒤 교체됐거나 사라져 **읽지 못한** relpath 를 담을 리스트(호출부가
     loud 로 보고). 삼키면 "토큰 없음"으로 오판정해 모델 해소가 inactive 로 빠지거나 fill 대상이
     조용히 준다 — 판정 채널이라고 침묵하면 안 되는 이유다(제외는 하되 반드시 알린다). 삭제 경쟁을
-    일반 OSError 로 묶으면 그 축만 무요약이 되므로 교체와 같은 격으로 가른다."""
+    일반 OSError 로 묶으면 그 경우만 무요약이 되므로 교체와 같은 격으로 가른다."""
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
     for _rel, _path in _iter_copied_files(
             dest_root, scan, swapped=swapped, vanished=vanished):
@@ -939,7 +939,7 @@ def _mark_todos(
     실제로 마커를 추가한 토큰 목록을 반환한다.
 
     스캔 범위는 copied_relpaths(이번 run 복사 파일)로 한정 — 복사하지 않은 사용자 파일에는
-    절대 마커를 주입하지 않는다(비파괴 보장). None 이면 dest 트리 전체 폴백(직접 호출용).
+    절대 마커를 주입하지 않는다(비파괴 보장). None 이면 dest 트리 전체를 대신 스캔(직접 호출용).
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
     marked: set[str] = set()
@@ -956,7 +956,7 @@ def _mark_todos(
             swapped.append(_rel.as_posix())
             continue
         except FileNotFoundError:
-            vanished.append(_rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 동형).
+            vanished.append(_rel.as_posix())  # 읽기 전 삭제도 loud 제외(쓰기 쪽과 같은 방식).
             continue
         except (UnicodeDecodeError, OSError):
             continue
@@ -998,12 +998,12 @@ def run_fill(
     """자유서술 placeholder 채움 단계. board init 직후 hook.
 
     dest_root: import 된 대상 트리. harness: 구동 하니스('claude'|'opencode').
-    live=True  → 실 하니스 호출 시도(opt-in 게이트 통과 — main 이 _live_harness_allowed 로 판정).
+    live=True  → 실 하니스 호출 시도(opt-in 통과 조건 통과 — main 이 _live_harness_allowed 로 판정).
     live=False → runner 미호출(stub 경로). runner 가 주입되면(테스트 stub) live=True 와 무관하게
                  그 runner 로 명령을 조립·호출해 *명령 조립* 만 검증한다(토큰 0).
     copied_relpaths: 이번 import 가 복사한 파일 relpath set — fill 스캔 범위를 이 파일들로
                  한정한다(비파괴 보장). None 이면 dest 트리 전체를 스캔(직접 호출용
-                 폴백) — main 은 항상 substitute_placeholders 와 동일 set 을 전달한다.
+                 대체 동작) — main 은 항상 substitute_placeholders 와 동일 set 을 전달한다.
 
     규격(ticket §인터페이스): live=False 면 runner 를 호출하지 않고 stub/manual 경로로 간다.
     여기서 '하니스 미구동'은 *실 바이너리* 미구동을 뜻한다 — 주입 runner(stub)는 항상 안전.
@@ -1029,7 +1029,7 @@ def run_fill(
 
     if effective_runner is None:
         # stub/실호출 모두 없음 → 자유서술 placeholder 값을 채우지 않고 제안만 비움.
-        # (main 은 manual 또는 게이트 미통과 시 이 경로 대신 _run_manual_fill 을 부른다.)
+        # (main 은 manual 또는 통과 조건 미통과 시 이 경로 대신 _run_manual_fill 을 부른다.)
         return FillResult(
             mode="auto",
             harness=harness,
@@ -1087,7 +1087,7 @@ def _run_manual_fill(
     """manual 모드(기본): 하니스 미구동. 자유서술 placeholder 에 TODO 마커 표시만.
 
     copied_relpaths: 이번 import 가 복사한 파일 relpath set — TODO 마킹 범위를 이 파일들로
-    한정한다(비파괴). None 이면 dest 트리 전체 폴백(직접 호출용). main 은 항상 전달한다.
+    한정한다(비파괴). None 이면 dest 트리 전체를 대신 스캔(직접 호출용). main 은 항상 전달한다.
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
     tokens = _fill_targets(dest_root, scan, root_identity=root_identity)
@@ -1114,14 +1114,14 @@ def ensure_pm_playbook_local_stub(dest_root: Path, backup_root: Path | None,
     여기서 PM_PLAYBOOK_LOCAL_STUB(단일 소스 인라인 상수)로 *생성*한다.
 
     비파괴(재-import): 기존 pm_playbook.local.md 가 있으면 덮지 않는다 — 인스턴스가 누적한
-    wave 학습이 손실되면 안 된다(local.conf 백업 철학 MF1·_backup_existing_local_conf 와 동일).
+    작업 학습이 손실되면 안 된다(local.conf 백업 철학 MF1·_backup_existing_local_conf 와 동일).
     구현은 *skip* — 기존 .local 은 manifest 밖·인스턴스 소유라 import 산출 백업과 별개로
     그대로 보존한다(누적 학습 trail 은 사용자 VCS 가 이력 관리). 백업하지 않는 이유: 백업은
     "import 가 덮는 파일"을 위한 것인데 여기선 애초에 덮지 않으므로 백업할 원본 변경이 없다.
 
     쓰기는 **dest 상대 fd 순회**로 한다 — 이 스텁 자리의 조상(`.project_manager/wiki`)이 저장소 밖
     지향 링크로 바뀌어 있으면 경로 `mkdir`+`write_text` 가 링크를 따라 밖에 파일을 만든다. 복사
-    단계가 파일 단위 제외로 **계속 진행**하게 된 뒤로는 그 형상에서도 이 지점에 도달하므로, 여기도
+    단계가 파일 단위 제외로 **계속 진행**하게 된 뒤로는 그 경우에도 이 지점에 도달하므로, 여기도
     같은 fd 규율을 탄다(생성 실패는 loud skip — 스텁은 설치 성공 조건이 아니다).
 
     반환값(사람 대상 상태):
@@ -1160,7 +1160,7 @@ def _harness_binary_available(harness: str) -> bool:
 
     shutil.which 로 탐지한다. 테스트는 monkeypatch(import_fill.shutil.which) 또는 PATH 조작으로
     부재를 stub 한다. registry에 없는 이름은 새 하네스의 등록 누락/호출부 오류이므로 조용히
-    첫 하네스로 폴백하지 않고 fail-loud 한다. 등록됐지만 바이너리가 없는 것은 정상적인
+    첫 하네스를 대신 쓰지 않고 fail-loud 한다. 등록됐지만 바이너리가 없는 것은 정상적인
     환경 가용성 판정(False)이며 ``_resolve_fill_harness``가 다음 등록 후보를 탐색한다.
     """
     if harness not in install_rules.HARNESS_TEMPLATE_DIRS:
@@ -1178,7 +1178,7 @@ def _resolve_fill_harness(
     """fill 구동 하네스 결정. 명시값 우선, 없으면 선택 집합의 첫 가용 하네스를 쓴다.
 
     registry 정규 순서가 결정적 우선순위다(현재 claude→opencode→codex). 선택된 바이너리가 모두
-    없으면 첫 하네스를 그대로 반환해 상위 opt-in 게이트/manual 폴백이 명확히 진단하게 한다.
+    없으면 첫 하네스를 그대로 반환해 상위 opt-in 통과 조건/manual 대체 동작이 명확히 진단하게 한다.
     """
     if fill_harness_arg:
         return fill_harness_arg

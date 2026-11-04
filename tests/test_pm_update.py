@@ -88,8 +88,8 @@ def _known_native_capacity(monkeypatch):
     """갱신이 부르는 모델 한도 조회(`app.harness_ctx`)를 고정 값(C=1000000, 모델 창 2000000)으로 바꾼다."""
     from _manager_home import known_ctx_seams
     from pm_engine.app import harness_ctx
-    for name, seam in known_ctx_seams(capacity=1000000, context=2000000).items():
-        monkeypatch.setattr(harness_ctx, name, seam)
+    for name, override in known_ctx_seams(capacity=1000000, context=2000000).items():
+        monkeypatch.setattr(harness_ctx, name, override)
 
 
 @pytest.fixture(scope="module")
@@ -156,7 +156,7 @@ def _make_upstream_manifest(root: Path, entries: list[str]) -> None:
     """source(upstream) 트리 — 등재 경로별 sentinel 파일 + 그를 담은 engine.manifest.
 
     _make_upstream 의 다-경로 버전 — manifest 에 여러 등재분을 넣어 로컬 manifest 가
-    이 중 일부만 가진 형상을 만든다.
+    이 중 일부만 가진 경우를 만든다.
     """
     for rel in entries:
         f = root / rel
@@ -297,7 +297,7 @@ def test_empty_tracked_manifest_inventory_is_nonzero_in_apply_and_dry_run(
 
 def test_empty_non_git_manifest_inventory_uses_filesystem_diagnostic(
         pm_update, tmp_path, monkeypatch, capsys):
-    """비-git filesystem 강등은 git index 대신 빈 소스 디렉토리·checkout 루트를 안내한다."""
+    """비-git filesystem 으로 낮춘 경로는 git index 대신 빈 소스 디렉토리·checkout 루트를 안내한다."""
     fake_repo = tmp_path / "fake-repo"
     (fake_repo / "templates" / "tgt").mkdir(parents=True)
     source = tmp_path / "unpacked-source"
@@ -307,7 +307,7 @@ def test_empty_non_git_manifest_inventory_uses_filesystem_diagnostic(
     manifest.write_text("ship\n", encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     # "이 source 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처가 어디에 놓이든
-    # 같은 답이 나오도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    # 같은 답이 나오도록 엔진의 runner 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
         update_cmd.repo_files,
         "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
@@ -328,7 +328,7 @@ def test_empty_non_git_manifest_inventory_uses_filesystem_diagnostic(
 
 
 @pytest.mark.parametrize("subtree_state", ["empty", "absent"])
-def test_shipping_inventory_guard_covers_both_silent_seam_shapes(
+def test_shipping_inventory_guard_covers_both_silent_repo_files_shapes(
         pm_update, tmp_path, subtree_state):
     """디스크도 빈 subtree와 subtree 부재 모두 warning 없이 소비점의 명시 판정이 막는다."""
     source = tmp_path / f"source-{subtree_state}"
@@ -389,7 +389,7 @@ def test_omitted_from_uses_local_conf_upstream(pm_update, tmp_path, monkeypatch,
     assert SENTINEL_REL in out, "stored upstream 의 sentinel 이 plan 되지 않음 — 기본값 미사용."
 
 
-# ── ③ 둘 다 없음 → rc!=0 + 명확 에러 (침묵 폴백 금지) ────────────────────────
+# ── ③ 둘 다 없음 → rc!=0 + 명확 에러 (침묵 대체 동작 금지) ────────────────────────
 
 def test_no_from_no_upstream_errors(pm_update, tmp_path, monkeypatch, capsys):
     """--from 도 없고 local.conf upstream= 도 없으면 rc!=0 + 미등록 안내 에러."""
@@ -471,7 +471,7 @@ def test_record_upstream_rev_baseline_records_head(pm_update, tmp_path, monkeypa
     """source 가 git checkout 이면 매 sync 후 upstream_rev=<HEAD> 를 dest local.conf 에 기록.
 
     pm_update 는 git 을 직접 안 부르고 upstream_git.read_upstream_rev(URL 안전 git 호출)를 재사용한다
-    — 그 read 를 monkeypatch 해 라이브 git 없이 baseline 기록 *배선* 을 검증한다(매 sync).
+    — 그 read 를 monkeypatch 해 라이브 git 없이 baseline 기록 *등록* 을 검증한다(매 sync).
     """
     dest = tmp_path / "dest"
     _write_local_conf(dest, "session=pm\nupstream.path=/some/checkout\n")
@@ -537,9 +537,9 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
     assert "upstream.rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
 
 
-# ── T-0413·T-0908: seen(관찰값)은 형상과 무관하게 baseline 과 동시 기록 (거짓 drift 근절) ──
+# ── T-0413·T-0908: seen(관찰값)은 경우와 무관하게 baseline 과 동시 기록 (거짓 drift 근절) ──
 # 동기 시점 소스 checkout 의 rev 가 곧 관찰값이다 — URL 은 엔진이 clone/fetch 한 캐시 HEAD,
-# 경로는 그 checkout HEAD. baseline 만 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도
+# 경로는 그 checkout HEAD. baseline 만 갱신하면 두 키가 영구히 어긋나 정상 갱신 직후에도
 # adapter-drift 가 상시 뜬다(② 실측). 두 키의 writer 는 record_upstream_revs 하나다.
 
 def test_record_upstream_rev_baseline_records_seen_for_path_upstream(
@@ -562,9 +562,9 @@ def test_record_upstream_rev_baseline_records_seen_for_path_upstream(
 
 def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
         pm_update, tmp_path, monkeypatch):
-    """이미 어긋난 채 남은 conf(baseline 신·seen 구)는 다음 sync 1회로 수렴한다(별도 backfill 불요).
+    """이미 어긋난 채 남은 conf(baseline 신·seen 구)는 다음 sync 1회로 일치한다(별도 backfill 불요).
 
-    ② adopter#0 실측 형상(upstream_rev=ddf6f484…·upstream_seen_rev=0ccc0251…=그 조상)의 재현 —
+    ② adopter#0 실측 경우(upstream_rev=ddf6f484…·upstream_seen_rev=0ccc0251…=그 조상)의 재현 —
     set-or-replace 라 그 줄만 제자리 교체되고 주석·타 키는 보존된다.
     """
     dest = tmp_path / "dest"
@@ -585,7 +585,7 @@ def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
     text = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
     conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf["upstream.rev"] == conf["upstream.seen_rev"] == "nextsyncrev9", \
-        f"다음 sync 1회로 수렴 안 됨: {conf!r}"
+        f"다음 sync 1회로 일치 안 됨: {conf!r}"
     assert "# per-clone" in text and conf["runtime.py"] == "python3"  # 주석·타 키 보존
     assert text.count("upstream.seen_rev=") == 1, f"seen 키 중복 append: {text!r}"
 
@@ -612,14 +612,14 @@ def test_record_upstream_rev_baseline_records_seen_for_url_upstream(
     conf = install_conf._read_local_conf(dest / ".project_manager" / "local.conf")
     assert conf["upstream.rev"] == "cacheheadrev"
     assert conf["upstream.seen_rev"] == "cacheheadrev", \
-        f"URL 형상에서 seen 이 옛 관찰값에 굳었다(단일 writer 위반): {conf!r}"
+        f"URL 경우에 seen 이 옛 관찰값에 굳었다(단일 writer 위반): {conf!r}"
 
 
 def test_record_upstream_revs_reports_same_keys_for_both_shapes(
         pm_update, tmp_path, monkeypatch):
-    """반환 `(changed, recorded)` 의 recorded = 이번에 기록한 키 — 두 형상이 같다(단일 writer).
+    """반환 `(changed, recorded)` 의 recorded = 이번에 기록한 키 — 두 경우가 같다(단일 writer).
 
-    형상별 분기가 남아 있으면 URL 인스턴스의 `upstream.seen_rev` 를 아무도 쓰지 않는다.
+    구성별 분기가 남아 있으면 URL 인스턴스의 `upstream.seen_rev` 를 아무도 쓰지 않는다.
     """
     source = tmp_path / "src"
     source.mkdir()
@@ -641,7 +641,7 @@ def test_record_upstream_revs_reports_same_keys_for_both_shapes(
     )
     changed, recorded = upstream_revisions.record_upstream_revs(url_dest, source)
     assert changed is True
-    assert recorded == both, f"URL 형상에서 기록 키가 갈렸다(단일 writer 위반): {recorded!r}"
+    assert recorded == both, f"URL 경우에 기록 키가 갈렸다(단일 writer 위반): {recorded!r}"
 
 
 def test_record_upstream_revs_writes_both_keys_in_single_pass(
@@ -650,7 +650,7 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
 
     중간 중단 시 두 키가 어긋난 채 남는 것이 바로 이 티켓이 없앤 거짓 drift 의 원인이므로,
     분리 write 로 되돌아가면 실패한다(회귀 가드). 감시 지점은 공용 writer 의 임계 구간 본문
-    (`_write_conf_keys_locked`)이다 — 형상 판정·계획·write 가 한 conf 락 안이라 호출부가 그 본문을
+    (`_write_conf_keys_locked`)이다 — 구성 판정·계획·write 가 한 conf 락 안이라 호출부가 그 본문을
     직접 부른다(락 재진입 금지).
     """
     dest = tmp_path / "dest"
@@ -671,7 +671,7 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
 
 
 def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, capsys):
-    """실 sync(경로 upstream) 후 두 키가 같아진다 — 흡수 직후 drift advisory 0 의 조건."""
+    """실 sync(경로 upstream) 후 두 키가 같아진다 — 갱신 직후 drift advisory 0 의 조건."""
     fake_repo = tmp_path / "fake_repo"
     stored = tmp_path / "stored_upstream"
     _make_upstream(stored)
@@ -688,10 +688,10 @@ def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, c
 
 
 def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monkeypatch, capsys):
-    """RUN2(변경 0)도 경로 upstream의 stale seen 값을 baseline과 함께 수렴시킨다.
+    """RUN2(변경 0)도 경로 upstream의 stale seen 값을 baseline과 함께 일치시킨다.
 
     업그레이드 RUN1은 구 엔진으로 실행돼 새 기록 로직을 못 탈 수 있다. RUN2는 새 엔진이나
-    manifest 변경이 없으므로, 이 `not changes` 경로가 수렴 지점이어야 한다(T-0422).
+    manifest 변경이 없으므로, 이 `not changes` 경로가 일치 지점이어야 한다(T-0422).
     """
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "stored_upstream"
@@ -717,7 +717,7 @@ def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monk
 
 
 def test_main_no_changes_with_matching_path_revs_is_quiet(pm_update, tmp_path, monkeypatch, capsys):
-    """정합된 RUN2는 local.conf write·revision 안내를 만들지 않는다."""
+    """일치된 RUN2는 local.conf write·revision 안내를 만들지 않는다."""
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "stored_upstream"
     _make_upstream(source)
@@ -744,7 +744,7 @@ def test_main_no_changes_with_matching_path_revs_is_quiet(pm_update, tmp_path, m
 
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0
     assert local_conf.read_text(encoding="utf-8") == before
-    assert local_conf_writes == [], "정합된 revision인데 local.conf write가 발생했다"
+    assert local_conf_writes == [], "일치된 revision인데 local.conf write가 발생했다"
     assert "local.conf upstream_rev baseline 갱신" not in capsys.readouterr().out
 
 
@@ -772,7 +772,7 @@ def test_main_no_changes_dry_run_does_not_converge_path_revs(
 
 
 def test_main_url_sync_records_both_keys(pm_update, tmp_path, monkeypatch, capsys):
-    """URL 형상 실 sync(캐시를 --from 으로 명시) — 두 키를 함께 기록하고 그렇게 안내한다."""
+    """URL 구성 실 sync(캐시를 --from 으로 명시) — 두 키를 함께 기록하고 그렇게 안내한다."""
     fake_repo = tmp_path / "fake_repo"
     cache = tmp_path / "cache"  # 엔진이 clone/fetch 한 로컬 캐시 checkout.
     _make_upstream(cache)
@@ -799,11 +799,11 @@ NEW_ENGINE_REL = "sentinel/__pm_update_new_engine__.py"
 
 
 def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkeypatch, capsys):
-    """로컬 manifest 가 upstream 과 정합이면 현행대로 upstream_rev baseline 갱신 + skew 경고 없음."""
+    """로컬 manifest 가 upstream 과 일치하면 현행대로 upstream_rev baseline 갱신 + skew 경고 없음."""
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL])
-    _write_dest_manifest(fake_repo, [SENTINEL_REL])  # 정합 로컬 manifest.
+    _write_dest_manifest(fake_repo, [SENTINEL_REL])  # 일치 로컬 manifest.
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
@@ -813,7 +813,7 @@ def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkey
     assert rc == 0
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "insyncrev7", \
-        f"정합 sync 인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
+        f"일치 sync 인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
 
 
 def test_main_stops_when_upstream_manifest_absent(pm_update, tmp_path, monkeypatch, capsys):
@@ -860,7 +860,7 @@ def test_main_target_mode_records_baseline_with_target_manifest(pm_update, tmp_p
 
 
 # ── 출하 manifest 로 계획 (신규 등재분은 갱신 한 번으로 도달한다) ─────────────────
-# manifest 자기전파 엔트리(T-0305) — upstream 이 항상 등재. 회사 실측 형상 재현에 함께 넣어
+# manifest 자기전파 엔트리(T-0305) — upstream 이 항상 등재. 회사 실측 구성 재현에 함께 넣어
 # 로컬 manifest 파일까지 출하본으로 다시 쓰이는지(신규 등재분 반영) 검증한다.
 MANIFEST_SELF_REL = ".project_manager/engine.manifest"
 
@@ -868,50 +868,50 @@ MANIFEST_SELF_REL = ".project_manager/engine.manifest"
 # ── 추가 하네스 구획 표시 ─────────────────────────────────────────────────────
 # 아래 리터럴은 **엔진 상수를 참조하지 않고 테스트 파일에 직접 적은** 바이트다. 상수를 참조하면
 # 리터럴이 통째로 바뀌어도 테스트가 green 이라 채택자 디스크에 이미 기록된 형태를 고정하지 못한다.
-GUEST_BEGIN_LITERAL_CURRENT = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
-GUEST_END_LITERAL = "# <<< pm add-harness @render (local) <<<"
-GUEST_BEGIN_LITERAL_OLD = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
-GUEST_BEGIN_LITERAL_OLDER = "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>"
-GUEST_END_LITERAL_OLD = "# <<< pm add-harness guest @render (local) <<<"
+ADDED_HARNESS_BEGIN_LITERAL_CURRENT = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
+ADDED_HARNESS_END_LITERAL = "# <<< pm add-harness @render (local) <<<"
+ADDED_HARNESS_BEGIN_LITERAL_OLD = "# >>> pm add-harness guest @render (local·pm_update-preserved) >>>"
+ADDED_HARNESS_BEGIN_LITERAL_OLDER = "# >>> pm add-harness guest @render (local·pm_update-preserved·T-0456) >>>"
+ADDED_HARNESS_END_LITERAL_OLD = "# <<< pm add-harness guest @render (local) <<<"
 
 
-def test_guest_marker_literals_match_current_constants(pm_update):
+def test_added_harness_marker_literals_match_current_constants(pm_update):
     """새 표시 상수 값 == 테스트에 적은 리터럴, 이관 표 = 옛 표시 세 가지 → 새 표시."""
-    assert manifest_rules._GUEST_MANIFEST_BEGIN == GUEST_BEGIN_LITERAL_CURRENT
-    assert manifest_rules._GUEST_MANIFEST_END == GUEST_END_LITERAL
+    assert manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN == ADDED_HARNESS_BEGIN_LITERAL_CURRENT
+    assert manifest_rules._ADDED_HARNESS_MANIFEST_END == ADDED_HARNESS_END_LITERAL
     assert update_finish._OLD_ADDED_HARNESS_MARKERS == {
-        GUEST_BEGIN_LITERAL_OLD: GUEST_BEGIN_LITERAL_CURRENT,
-        GUEST_BEGIN_LITERAL_OLDER: GUEST_BEGIN_LITERAL_CURRENT,
-        GUEST_END_LITERAL_OLD: GUEST_END_LITERAL,
+        ADDED_HARNESS_BEGIN_LITERAL_OLD: ADDED_HARNESS_BEGIN_LITERAL_CURRENT,
+        ADDED_HARNESS_BEGIN_LITERAL_OLDER: ADDED_HARNESS_BEGIN_LITERAL_CURRENT,
+        ADDED_HARNESS_END_LITERAL_OLD: ADDED_HARNESS_END_LITERAL,
     }
 
 
-def test_extract_guest_block_reads_only_current_marker(pm_update):
+def test_extract_added_harness_block_reads_only_current_marker(pm_update):
     """읽기는 새 표시 하나만 받는다 — 옛 표시 구획은 구획이 아니라 core 주석·행으로 읽힌다."""
     current = ("# m\n.project_manager/tools/board.py\n\n"
-               + GUEST_BEGIN_LITERAL_CURRENT + "\n"
+               + ADDED_HARNESS_BEGIN_LITERAL_CURRENT + "\n"
                + ".codex/agents    @render @target-owned\n"
-               + GUEST_END_LITERAL + "\n")
-    block = manifest_rules._extract_guest_manifest_block(current)
+               + ADDED_HARNESS_END_LITERAL + "\n")
+    block = manifest_rules._extract_added_harness_manifest_block(current)
     assert block is not None and ".codex/agents" in block
     assert manifest_rules._core_manifest_paths(current) == {".project_manager/tools/board.py"}
-    for old_begin in (GUEST_BEGIN_LITERAL_OLD, GUEST_BEGIN_LITERAL_OLDER):
+    for old_begin in (ADDED_HARNESS_BEGIN_LITERAL_OLD, ADDED_HARNESS_BEGIN_LITERAL_OLDER):
         old = ("# m\n.project_manager/tools/board.py\n\n" + old_begin + "\n"
-               + ".codex/agents    @render @target-owned\n" + GUEST_END_LITERAL_OLD + "\n")
-        assert manifest_rules._extract_guest_manifest_block(old) is None
-        assert manifest_rules._strip_guest_manifest_block(old) == old
+               + ".codex/agents    @render @target-owned\n" + ADDED_HARNESS_END_LITERAL_OLD + "\n")
+        assert manifest_rules._extract_added_harness_manifest_block(old) is None
+        assert manifest_rules._strip_added_harness_manifest_block(old) == old
         assert ".codex/agents" in manifest_rules._core_manifest_paths(old)
 
 
 def test_rename_added_harness_markers_moves_old_markers_once(pm_update, tmp_path, capsys):
     """옛 표시 줄만 새 표시로 바꾸고(개행·다른 줄·권한 그대로) dry-run 은 쓰지 않으며 두 번째는 0줄이다."""
-    for old_begin in (GUEST_BEGIN_LITERAL_OLD, GUEST_BEGIN_LITERAL_OLDER):
+    for old_begin in (ADDED_HARNESS_BEGIN_LITERAL_OLD, ADDED_HARNESS_BEGIN_LITERAL_OLDER):
         for newline in ("\n", "\r\n"):
             dest = tmp_path / f"dest-{len(old_begin)}-{len(newline)}"
             manifest = dest / ".project_manager" / "engine.manifest"
             manifest.parent.mkdir(parents=True)
             rows = ["# m", ".project_manager/tools/board.py", "", old_begin,
-                    ".codex/agents    @render @target-owned", GUEST_END_LITERAL_OLD]
+                    ".codex/agents    @render @target-owned", ADDED_HARNESS_END_LITERAL_OLD]
             before = newline.join(rows) + newline
             manifest.write_bytes(before.encode("utf-8"))
             if posix_mode_supported():
@@ -923,7 +923,7 @@ def test_rename_added_harness_markers_moves_old_markers_once(pm_update, tmp_path
 
             assert update_finish.rename_added_harness_markers(dest, write=True) == 2
             assert "추가 하네스 구획 표시 2줄을 새 글자로 이동(" in capsys.readouterr().out
-            expected = rows[:3] + [GUEST_BEGIN_LITERAL_CURRENT, rows[4], GUEST_END_LITERAL]
+            expected = rows[:3] + [ADDED_HARNESS_BEGIN_LITERAL_CURRENT, rows[4], ADDED_HARNESS_END_LITERAL]
             assert manifest.read_bytes() == (newline.join(expected) + newline).encode("utf-8")
             if posix_mode_supported():
                 assert stat.S_IMODE(manifest.stat().st_mode) == 0o640
@@ -935,24 +935,24 @@ def test_rename_added_harness_markers_moves_old_markers_once(pm_update, tmp_path
 
 
 def _write_selfprop_dest_manifest(dest: Path, core: str, begin_literal: str) -> Path:
-    """dest engine.manifest = core + 지정 세대 마커의 guest 절 (self-prop 분기 픽스처 공용)."""
+    """dest engine.manifest = core + 지정 버전 마커의 추가 하네스 절 (self-prop 분기 픽스처 공용)."""
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         core.rstrip("\n") + "\n\n" + begin_literal
-        + "\n.codex/agents    @render @target-owned\n" + GUEST_END_LITERAL + "\n",
+        + "\n.codex/agents    @render @target-owned\n" + ADDED_HARNESS_END_LITERAL + "\n",
         encoding="utf-8")
     return manifest
 
 
-# ── guest 절 엔진 행 동기 채널 (T-0574) ──────────────────────────────────────
-# guest 절 한 줄의 `@render` 유무가 소유 채널을 가른다: 렌더물=add-harness refresh(plan 제외),
-# 엔진 파일=update 채널(plan 포함·byte-copy). 아래 픽스처는 **실 flavor 디렉토리명**을 쓴다 —
+# ── 추가 하네스 절 엔진 행 동기 채널 (T-0574) ──────────────────────────────────────
+# 추가 하네스 절 한 줄의 `@render` 유무가 소유 채널을 가른다: 렌더물=add-harness refresh(plan 제외),
+# 엔진 파일=update 채널(plan 포함·byte-copy). 아래 픽스처는 **실 하네스별 판 디렉토리명**을 쓴다 —
 # 이름이 실물이어야 pm_import 하네스 registry 로 어댑터 namespace 가 해소된다(가짜 이름은 파생 제외).
 
 _ENGINE_SENTINEL = '# engine v2\n'
 
-_GUEST_FRAMEWORK_FILES = {
+_ADDED_HARNESS_FRAMEWORK_FILES = {
     "templates/claude_code/.claude/ctx_guard.py": "# ctx guard v2\n",
     "templates/opencode/.opencode/lib/relay.js": "// relay v2\n",
     "templates/opencode/.opencode/pm_orch_opencode.py": "# driver v2\n",
@@ -960,13 +960,13 @@ _GUEST_FRAMEWORK_FILES = {
     ".project_manager/tools/board.py": _ENGINE_SENTINEL,
 }
 
-_CLAUDE_FLAVOR_MANIFEST = (
+_CLAUDE_VARIANT_MANIFEST = (
     ".project_manager/tools/board.py\n"
     ".claude/ctx_guard.py    @source=templates/claude_code/.claude/ctx_guard.py\n"
     f"{MANIFEST_SELF_REL}    "
     "@source=templates/claude_code/.project_manager/engine.manifest\n"
 )
-_OPENCODE_FLAVOR_MANIFEST = (
+_OPENCODE_VARIANT_MANIFEST = (
     ".project_manager/tools/board.py\n"
     ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n"
     ".opencode/lib    @source=templates/opencode/.opencode/lib\n"
@@ -980,10 +980,10 @@ _OPENCODE_FLAVOR_MANIFEST = (
 def _make_guest_framework(root: Path) -> Path:
     """합성 프레임워크 — `templates/{claude_code,opencode}` 최소 manifest + 실 파일.
 
-    실 프레임워크와 같이 `tools/pm_engine` package 사본을 둔다 — 훅 세트 세대 선언이 거기 살고,
-    경로 스코프 가드가 상류 세대를 못 읽으면 어댑터 훅 영역 부분 전파를 fail-closed 로 거부한다
+    실 프레임워크와 같이 `tools/pm_engine` package 사본을 둔다 — 훅 세트 버전 선언이 거기 살고,
+    경로 스코프 가드가 상류 버전을 못 읽으면 어댑터 훅 영역 부분 전파를 fail-closed 로 거부한다
     (T-0610). 상류가 온전한 checkout 이라는 전제를 픽스처가 재현해야 그 가드의 정상 경로를 탄다."""
-    for rel, text in _GUEST_FRAMEWORK_FILES.items():
+    for rel, text in _ADDED_HARNESS_FRAMEWORK_FILES.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -991,9 +991,9 @@ def _make_guest_framework(root: Path) -> Path:
                     ignore=shutil.ignore_patterns("__pycache__"))
     (root / ".project_manager" / "engine.manifest").write_text(
         ".project_manager/tools/board.py\n", encoding="utf-8")
-    for flavor, text in (("claude_code", _CLAUDE_FLAVOR_MANIFEST),
-                         ("opencode", _OPENCODE_FLAVOR_MANIFEST)):
-        manifest = root / "templates" / flavor / ".project_manager" / "engine.manifest"
+    for variant, text in (("claude_code", _CLAUDE_VARIANT_MANIFEST),
+                         ("opencode", _OPENCODE_VARIANT_MANIFEST)):
+        manifest = root / "templates" / variant / ".project_manager" / "engine.manifest"
         manifest.parent.mkdir(parents=True, exist_ok=True)
         manifest.write_text(text, encoding="utf-8")
     _track_source_tree(root)
@@ -1001,16 +1001,16 @@ def _make_guest_framework(root: Path) -> Path:
 
 
 def _make_legacy_guest_adopter(pm_update, dest: Path, *, core: str | None = None) -> Path:
-    """claude host + **legacy guest 절**(렌더물 행만·`@source` provenance 없음) 채택자 dest.
+    """claude host + **legacy 추가 하네스 절**(렌더물 행만·`@source` provenance 없음) 채택자 dest.
 
     엔진 파일 사본은 설치 시점 값으로 얼려 둔다 — 이번 동기가 그것을 갱신해야 한다."""
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
-        (core if core is not None else _CLAUDE_FLAVOR_MANIFEST)
-        + "\n" + manifest_rules._GUEST_MANIFEST_BEGIN
+        (core if core is not None else _CLAUDE_VARIANT_MANIFEST)
+        + "\n" + manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN
         + "\n.opencode/agents    @render @target-owned\n"
-        + manifest_rules._GUEST_MANIFEST_END + "\n",
+        + manifest_rules._ADDED_HARNESS_MANIFEST_END + "\n",
         encoding="utf-8")
     for rel, text in (
         (".opencode/lib/relay.js", "// relay v1 (frozen)\n"),
@@ -1025,17 +1025,17 @@ def _make_legacy_guest_adopter(pm_update, dest: Path, *, core: str | None = None
     return manifest
 
 
-def _guest_block_entries(pm_update, manifest: Path) -> dict:
-    """dest guest 절 → {경로: ManifestEntry} (테스트 판독 편의 · 엔진 파서로 구획만 읽는다)."""
-    block = manifest_rules._extract_guest_manifest_block(manifest.read_text(encoding="utf-8")) or ""
+def _added_harness_block_entries(pm_update, manifest: Path) -> dict:
+    """dest 추가 하네스 절 → {경로: ManifestEntry} (테스트 판독 편의 · 엔진 파서로 구획만 읽는다)."""
+    block = manifest_rules._extract_added_harness_manifest_block(manifest.read_text(encoding="utf-8")) or ""
     return {
         str(entry).replace("\\", "/"): entry
         for entry in map(manifest_rules._parse_manifest_line, block.splitlines()) if entry
     }
 
 
-def test_guest_block_rows_keep_channel_markers(pm_update, tmp_path):
-    """guest 절 파싱: 행마다 `@render`/`@target-owned`/`@source` 마커를 그대로 실어 온다.
+def test_added_harness_block_rows_keep_channel_markers(pm_update, tmp_path):
+    """추가 하네스 절 파싱: 행마다 `@render`/`@target-owned`/`@source` 마커를 그대로 실어 온다.
 
     두 행 다 update 채널이 전파하되 **방식**이 갈린다(렌더물=재렌더·엔진 행=byte-copy) — 계획이
     그 방식을 고르려면 경로만이 아니라 마커까지 필요하다."""
@@ -1044,22 +1044,22 @@ def test_guest_block_rows_keep_channel_markers(pm_update, tmp_path):
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            manifest_rules._GUEST_MANIFEST_END,
+            manifest_rules._ADDED_HARNESS_MANIFEST_END,
             ".opencode/lib    @target-owned    "
             "@source=templates/opencode/.opencode/lib\n"
-            + manifest_rules._GUEST_MANIFEST_END),
+            + manifest_rules._ADDED_HARNESS_MANIFEST_END),
         encoding="utf-8")
 
-    entries = _guest_block_entries(pm_update, manifest)
+    entries = _added_harness_block_entries(pm_update, manifest)
     assert set(entries) == {".opencode/agents", ".opencode/lib"}
     assert entries[".opencode/agents"].render and entries[".opencode/agents"].target_owned
     assert not entries[".opencode/lib"].render and entries[".opencode/lib"].target_owned
     assert entries[".opencode/lib"].source_rel == "templates/opencode/.opencode/lib"
 
 
-def test_guest_rows_join_plan_engine_copy_and_render_rerender(
+def test_added_harness_rows_join_plan_engine_copy_and_render_rerender(
         pm_update, tmp_path, monkeypatch, capsys):
-    """guest 절의 두 행이 **같은 update 채널**로 전파된다 — 엔진 행은 byte-copy, 렌더물은 재렌더.
+    """추가 하네스 절의 두 행이 **같은 update 채널**로 전파된다 — 엔진 행은 byte-copy, 렌더물은 재렌더.
 
     엔진 행이 빠지면 하네스 계약 코어와 짝인 드라이버가 설치 시점 사본으로 영구 동결되고, 렌더물이
     빠지면 conf 를 바꿔도 그 어댑터가 설치 시점 값으로 남는다(채택자 실측: 카드 model 이 conf 와
@@ -1080,7 +1080,7 @@ def test_guest_rows_join_plan_engine_copy_and_render_rerender(
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework), "--dry-run"]) == 0
     preview = capsys.readouterr().out
     assert "[render] .opencode/agents/pm.md" in preview, \
-        f"dry-run 이 guest 렌더물 재렌더를 예고하지 않았다: {preview!r}"
+        f"dry-run 이 추가 하네스 렌더물 재렌더를 예고하지 않았다: {preview!r}"
     assert (dest / ".opencode" / "agents" / "pm.md").read_text(
         encoding="utf-8") == "adopter-owned agent\n", "dry-run 이 파일을 바꿨다"
 
@@ -1088,20 +1088,20 @@ def test_guest_rows_join_plan_engine_copy_and_render_rerender(
     out = capsys.readouterr().out
 
     assert (dest / ".opencode" / "lib" / "relay.js").read_text(
-        encoding="utf-8") == "// relay v2\n", "guest 엔진 파일이 동기되지 않았다(영구 동결)"
+        encoding="utf-8") == "// relay v2\n", "추가 하네스 엔진 파일이 동기되지 않았다(영구 동결)"
     assert (dest / ".opencode" / "pm_orch_opencode.py").read_text(
         encoding="utf-8") == "# driver v2\n", "engine-mirror 드라이버가 동기되지 않았다"
     assert (dest / ".opencode" / "agents" / "pm.md").read_text(
         encoding="utf-8") == "upstream agent\n", \
-        "guest 렌더물이 재렌더를 안 받았다(설치 시점 사본 동결·손편집이 conf 를 이긴다)"
+        "추가 하네스 렌더물이 재렌더를 안 받았다(설치 시점 사본 동결·손편집이 conf 를 이긴다)"
     assert "[render] .opencode/agents/pm.md" in out, f"렌더물이 계획에 없다: {out!r}"
 
-    # 멱등 — 수렴 후 재실행은 변경 0(렌더 산출이 안정).
+    # 멱등 — 일치 후 재실행은 변경 0(렌더 산출이 안정).
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     assert "최신 — 변경 없음" in capsys.readouterr().out
 
 
-def test_guest_block_rebuild_persists_rows_once_then_idempotent(
+def test_added_harness_block_rebuild_persists_rows_once_then_idempotent(
         pm_update, tmp_path, monkeypatch, capsys):
     """옛 구획(렌더물 행만) → 판 출하 manifest 로 다시 만든 구획이 1회 기록되고 2차 실행은 변경 0."""
     framework = _make_guest_framework(tmp_path / "fw")
@@ -1113,7 +1113,7 @@ def test_guest_block_rebuild_persists_rows_once_then_idempotent(
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     capsys.readouterr()
 
-    entries = _guest_block_entries(pm_update, manifest)
+    entries = _added_harness_block_entries(pm_update, manifest)
     assert set(entries) == {".opencode/agents", ".opencode/lib",
                             ".opencode/pm_orch_opencode.py"}, entries
     assert entries[".opencode/lib"].source_rel == "templates/opencode/.opencode/lib", \
@@ -1127,7 +1127,7 @@ def test_guest_block_rebuild_persists_rows_once_then_idempotent(
     assert manifest.read_bytes() == after_first, "구획이 매 실행 churn"
 
 
-def test_legacy_guest_first_run_has_no_frozen_warning(
+def test_legacy_added_harness_first_run_has_no_frozen_warning(
         pm_update, tmp_path, monkeypatch, capsys):
     """옛 구획 **첫 실행**: 구획을 다시 만들어 그 판 파일을 등재·동기하므로 `미등재 판 파일 관측` 경고가 없다."""
     framework = _make_guest_framework(tmp_path / "fw")
@@ -1145,7 +1145,7 @@ def test_legacy_guest_first_run_has_no_frozen_warning(
         encoding="utf-8") == "# driver v2\n"
 
 
-def test_guest_engine_backfill_dry_run_writes_nothing(
+def test_added_harness_engine_backfill_dry_run_writes_nothing(
         pm_update, tmp_path, monkeypatch, capsys):
     """dry-run 은 파생만 하고 아무것도 쓰지 않는다 — 무변경 계약 유지 (⑩ 경계)."""
     framework = _make_guest_framework(tmp_path / "fw")
@@ -1160,13 +1160,13 @@ def test_guest_engine_backfill_dry_run_writes_nothing(
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework), "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert ".opencode/pm_orch_opencode.py" in out, \
-        f"dry-run 계획에 guest 엔진 행이 없다(파생 미발화): {out!r}"
-    assert manifest.read_bytes() == before_manifest, "dry-run 이 guest 절을 기록했다"
+        f"dry-run 계획에 추가 하네스 엔진 행이 없다(파생 안 됨): {out!r}"
+    assert manifest.read_bytes() == before_manifest, "dry-run 이 추가 하네스 절을 기록했다"
     assert frozen.read_bytes() == before_driver, "dry-run 이 파일을 덮었다"
 
 
-def test_shipped_manifest_rebuilds_mixed_generation_guest_block(pm_update, tmp_path):
-    """새 세대(provenance 有)·옛 세대(렌더물 행만) 구획 행이 섞여도 두 판 모두 구획으로 다시 만든다.
+def test_shipped_manifest_rebuilds_mixed_generation_added_harness_block(pm_update, tmp_path):
+    """새 버전(provenance 有)·옛 버전(렌더물 행만) 구획 행이 섞여도 두 판 모두 구획으로 다시 만든다.
 
     `.claude/skills` 처럼 여러 판이 함께 선언하는 경로는 판 증거가 아니라 claude_code 를 더하지 않는다.
     출하 manifest 실물 픽스처."""
@@ -1177,18 +1177,18 @@ def test_shipped_manifest_rebuilds_mixed_generation_guest_block(pm_update, tmp_p
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        claude_core + "\n" + manifest_rules._GUEST_MANIFEST_BEGIN
+        claude_core + "\n" + manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN
         + "\n.codex/agents    @render    @target-owned    "
         "@source=templates/codex/.codex/agents"
         + "\n.codex/pm_orch_codex.py    @target-owned    "
         "@source=templates/codex/.codex/pm_orch_codex.py"
         + "\n.opencode/agents    @render @target-owned"
         + "\n.claude/skills    @render @target-owned\n"
-        + manifest_rules._GUEST_MANIFEST_END + "\n",
+        + manifest_rules._ADDED_HARNESS_MANIFEST_END + "\n",
         encoding="utf-8")
 
     shipped = update_manifest.shipped_manifest(dest, REPO)
-    block = manifest_rules._extract_guest_manifest_block(shipped["text"]) or ""
+    block = manifest_rules._extract_added_harness_manifest_block(shipped["text"]) or ""
     paths = {line.split()[0] for line in block.splitlines()
              if line.strip() and not line.startswith("#")}
 
@@ -1198,7 +1198,7 @@ def test_shipped_manifest_rebuilds_mixed_generation_guest_block(pm_update, tmp_p
         REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"]
 
 
-def test_shipped_manifest_cross_namespace_guest_names_no_foreign_flavor(pm_update, tmp_path):
+def test_shipped_manifest_cross_namespace_added_harness_names_no_foreign_variant(pm_update, tmp_path):
     """codex host + opencode 옛 구획(`.claude/skills` 포함) → claude_code 판 행이 생기지 않는다."""
     codex_core = (
         REPO / "templates" / "codex" / ".project_manager" / "engine.manifest"
@@ -1207,10 +1207,10 @@ def test_shipped_manifest_cross_namespace_guest_names_no_foreign_flavor(pm_updat
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        codex_core + "\n" + manifest_rules._GUEST_MANIFEST_BEGIN
+        codex_core + "\n" + manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN
         + "\n.opencode/agents    @render @target-owned"
         + "\n.claude/skills    @render @target-owned\n"
-        + manifest_rules._GUEST_MANIFEST_END + "\n",
+        + manifest_rules._ADDED_HARNESS_MANIFEST_END + "\n",
         encoding="utf-8")
 
     shipped = update_manifest.shipped_manifest(dest, REPO)
@@ -1223,17 +1223,17 @@ def test_shipped_manifest_cross_namespace_guest_names_no_foreign_flavor(pm_updat
     assert {".opencode/lib", ".opencode/pm_orch_opencode.py"} <= paths
 
 
-def test_guest_source_declarations_do_not_promote_flavor_union(pm_update, tmp_path):
+def test_added_harness_source_declarations_do_not_promote_variant_union(pm_update, tmp_path):
     """구획 행의 `@source` 는 핵심 manifest 선택으로 새지 않는다 — 핵심은 self-prop 이 가리킨 판뿐이다."""
     framework = _make_guest_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
     manifest = _make_legacy_guest_adopter(pm_update, dest)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            manifest_rules._GUEST_MANIFEST_END,
+            manifest_rules._ADDED_HARNESS_MANIFEST_END,
             ".opencode/lib    @target-owned    "
             "@source=templates/opencode/.opencode/lib\n"
-            + manifest_rules._GUEST_MANIFEST_END),
+            + manifest_rules._ADDED_HARNESS_MANIFEST_END),
         encoding="utf-8")
 
     shipped = update_manifest.shipped_manifest(dest, framework)
@@ -1242,7 +1242,7 @@ def test_guest_source_declarations_do_not_promote_flavor_union(pm_update, tmp_pa
         framework / "templates" / "claude_code" / ".project_manager" / "engine.manifest"]
 
 
-def test_guest_row_missing_upstream_is_released_with_rc0(
+def test_added_harness_row_missing_upstream_is_released_with_rc0(
         pm_update, tmp_path, monkeypatch, capsys):
     """판 출하 manifest 에 없는 구획 행은 관리에서 빠지고(파일 유지) 갱신은 rc 0 이다."""
     framework = _make_guest_framework(tmp_path / "fw")
@@ -1250,10 +1250,10 @@ def test_guest_row_missing_upstream_is_released_with_rc0(
     manifest = _make_legacy_guest_adopter(pm_update, dest)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            manifest_rules._GUEST_MANIFEST_END,
+            manifest_rules._ADDED_HARNESS_MANIFEST_END,
             ".opencode/retired.py    @target-owned    "
             "@source=templates/opencode/.opencode/retired.py\n"
-            + manifest_rules._GUEST_MANIFEST_END),
+            + manifest_rules._ADDED_HARNESS_MANIFEST_END),
         encoding="utf-8")
     retired = dest / ".opencode" / "retired.py"
     retired.write_text("# 채택자에 남은 옛 파일\n", encoding="utf-8")
@@ -1263,11 +1263,11 @@ def test_guest_row_missing_upstream_is_released_with_rc0(
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(framework)]) == 0
     out = capsys.readouterr().out
     assert "    - .opencode/retired.py" in out, out
-    assert ".opencode/retired.py" not in _guest_block_entries(pm_update, manifest)
+    assert ".opencode/retired.py" not in _added_harness_block_entries(pm_update, manifest)
     assert retired.read_text(encoding="utf-8") == "# 채택자에 남은 옛 파일\n"
 
 
-def test_scope_paths_accepts_guest_engine_row_before_persistence(
+def test_scope_paths_accepts_added_harness_engine_row_before_persistence(
         pm_update, tmp_path, monkeypatch, capsys):
     """`--paths` 가 파생 엔진 행 경로를 오거부하지 않는다 (⑨).
 
@@ -1285,33 +1285,33 @@ def test_scope_paths_accepts_guest_engine_row_before_persistence(
     assert rc == 0, f"파생 엔진 행 경로가 오거부됐다: {captured.err!r}"
     assert (dest / ".opencode" / "pm_orch_opencode.py").read_text(
         encoding="utf-8") == "# driver v2\n"
-    # 렌더물 행도 같은 update 채널이라 스코프로 지정할 수 있다(옛 "guest 절 소속" 오거부 소멸).
+    # 렌더물 행도 같은 update 채널이라 스코프로 지정할 수 있다(옛 "추가 하네스 절 소속" 오거부 소멸).
     rc_render = update_cmd.main(pm_paths.home_at(pm_update.REPO),
         ["--from", str(framework), "--paths", ".opencode/agents"])
-    assert rc_render == 0, "guest 렌더물 경로가 스코프에서 오거부됐다"
+    assert rc_render == 0, "추가 하네스 렌더물 경로가 스코프에서 오거부됐다"
     assert "[미등재]" not in capsys.readouterr().err
 
 
-def test_shipped_manifest_follows_flavor_self_prop_not_root(pm_update, tmp_path):
+def test_shipped_manifest_follows_variant_self_prop_not_root(pm_update, tmp_path):
     """하네스별 판 사본(@source self-prop)은 루트(bare)가 아니라 그 판의 출하 manifest 를 쓴다."""
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])
-    flavor_rel = "templates/claude_code/.project_manager/engine.manifest"
-    flavor_self = f"{MANIFEST_SELF_REL}    @source={flavor_rel}"
+    variant_rel = "templates/claude_code/.project_manager/engine.manifest"
+    variant_self = f"{MANIFEST_SELF_REL}    @source={variant_rel}"
     (source / "templates" / "claude_code" / ".project_manager").mkdir(parents=True, exist_ok=True)
-    (source / flavor_rel).write_text(
-        "\n".join([SENTINEL_REL, NEW_ENGINE_REL, flavor_self]) + "\n", encoding="utf-8")
+    (source / variant_rel).write_text(
+        "\n".join([SENTINEL_REL, NEW_ENGINE_REL, variant_self]) + "\n", encoding="utf-8")
     _track_source_tree(source)
-    _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL, flavor_self])
+    _write_dest_manifest(tmp_path / "dest", [SENTINEL_REL, variant_self])
 
     shipped = update_manifest.shipped_manifest(tmp_path / "dest", source)
 
-    assert shipped["manifests"] == [source / flavor_rel]
-    assert shipped["text"] == (source / flavor_rel).read_text(encoding="utf-8")
+    assert shipped["manifests"] == [source / variant_rel]
+    assert shipped["text"] == (source / variant_rel).read_text(encoding="utf-8")
     assert shipped["released"] == []
 
 
-def test_selected_manifest_order_is_primary_then_declared_flavors_without_selfprop_noise(
+def test_selected_manifest_order_is_primary_then_declared_variants_without_selfprop_noise(
         pm_update, tmp_path, capsys):
     """opencode-primary 합집합 순서는 고정하되 구조상 정상인 self-prop 충돌은 경고하지 않는다."""
     opencode = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
@@ -1332,7 +1332,7 @@ def test_selected_manifest_order_is_primary_then_declared_flavors_without_selfpr
 
 def test_manifest_merge_conflict_warning_surfaces_real_marker_conflict(
         pm_update, tmp_path, capsys):
-    """실 중복 경로의 마커 충돌은 첫 flavor 우선 정책과 함께 stderr에 반드시 발화한다."""
+    """실 중복 경로의 마커 충돌은 첫 하네스별 판 우선 정책과 함께 stderr에 반드시 출력한다."""
     first = tmp_path / "templates" / "first" / ".project_manager" / "engine.manifest"
     second = tmp_path / "templates" / "second" / ".project_manager" / "engine.manifest"
     first.parent.mkdir(parents=True)
@@ -1371,7 +1371,7 @@ def test_manifest_merge_selfprop_ignores_only_source_difference(pm_update, tmp_p
     assert merged["conflicts"] == [MANIFEST_SELF_REL]
 
 
-def test_named_second_flavor_missing_manifest_stops(pm_update, tmp_path):
+def test_named_second_variant_missing_manifest_stops(pm_update, tmp_path):
     """사본 행이 가리킨 후순위 판의 출하 manifest 가 없으면 사본 manifest 로 계속하지 않고 읽기 오류로 멈춘다."""
     source = tmp_path / "source"
     first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
@@ -1401,7 +1401,7 @@ def test_named_second_flavor_missing_manifest_stops(pm_update, tmp_path):
         update_manifest.shipped_manifest(dest, source)
 
 
-def test_declared_manifest_warns_on_undeclared_flavor_tree_without_promoting(
+def test_declared_manifest_warns_on_undeclared_variant_tree_without_promoting(
         pm_update, tmp_path, capsys):
     """manifest 가 가리키지 않는 판의 고유 경로가 디스크에 있으면 경고만 내고 그 판을 더하지 않는다."""
     source = tmp_path / "source"
@@ -1444,17 +1444,17 @@ def test_declared_manifest_warns_on_undeclared_flavor_tree_without_promoting(
 
 def test_add_harness_adopter_shape_rebuild_silences_frozen_warning(
         pm_update, tmp_path, capsys):
-    """claude host + 옛 세대 add-harness codex 구획 — 구획을 다시 만들어 경고 대신 **채널**이 생긴다."""
+    """claude host + 옛 버전 add-harness codex 구획 — 구획을 다시 만들어 경고 대신 **채널**이 생긴다."""
     claude = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
     dest = tmp_path / "dest"
     manifest = _write_dest_manifest(dest, [])
     manifest.write_text(
         claude.read_text(encoding="utf-8")
         + "\n"
-        + manifest_rules._GUEST_MANIFEST_BEGIN
+        + manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN
         + "\n.codex/agents    @render @target-owned"
         + "\n.agents/skills    @render @target-owned\n"
-        + manifest_rules._GUEST_MANIFEST_END
+        + manifest_rules._ADDED_HARNESS_MANIFEST_END
         + "\n",
         encoding="utf-8",
     )
@@ -1471,7 +1471,7 @@ def test_add_harness_adopter_shape_rebuild_silences_frozen_warning(
 
 def test_claude_only_adopter_shape_stays_quiet_across_repeat_runs(
         pm_update, tmp_path, capsys):
-    """claude 단독 채택자(순정 host manifest) — 초회·수렴 두 실행 모두 미등재 판 경고 0.
+    """claude 단독 채택자(순정 host manifest) — 초회·일치 두 실행 모두 미등재 판 경고 0.
 
     opencode manifest 의 파일 단위 override(`.claude/skills/pm-dev-delegate/SKILL.md`)는 host
     `.claude/skills @render` 가 덮는다. opencode 를 설치한 적 없는 채택자에게 경고하지 않는다."""
@@ -1483,7 +1483,7 @@ def test_claude_only_adopter_shape_stays_quiet_across_repeat_runs(
     skill.parent.mkdir(parents=True)
     skill.write_text("# rendered by .claude/skills\n", encoding="utf-8")
 
-    for run in ("초회", "수렴"):
+    for run in ("초회", "일치"):
         shipped = update_manifest.shipped_manifest(dest, REPO)
         update_manifest._print_shipped_manifest_finding(shipped)
         assert shipped["manifests"] == [claude]
@@ -1492,7 +1492,7 @@ def test_claude_only_adopter_shape_stays_quiet_across_repeat_runs(
             f"{run} 실행에서 claude 단독 채택자 오탐: {err!r}"
 
 
-def test_declared_single_flavor_without_other_tree_has_no_frozen_warning(
+def test_declared_single_variant_without_other_tree_has_no_frozen_warning(
         pm_update, tmp_path, capsys):
     """순정 단일 판 사본은 자기 판만 쓰고 미등재 판 경고가 없다."""
     source = tmp_path / "source"
@@ -1525,7 +1525,7 @@ def test_declared_single_flavor_without_other_tree_has_no_frozen_warning(
     assert "미등재 하네스별 판 파일 관측" not in capsys.readouterr().err
 
 
-def test_source_naming_a_flavor_missing_upstream_stops(pm_update, tmp_path):
+def test_source_naming_a_variant_missing_upstream_stops(pm_update, tmp_path):
     """행의 `@source=templates/<판>/` 가 상류에 없는 판을 가리키면 다른 판으로 바꾸지 않고 읽기 오류로 멈춘다."""
     source = tmp_path / "source"
     first = source / "templates" / "first" / ".project_manager" / "engine.manifest"
@@ -1560,14 +1560,14 @@ _RETIRE_OLD = ".project_manager/tools/external_review.py"
 _RETIRE_NEW = ".project_manager/tools/additional_reviewer.py"
 
 
-def _write_retirement_flavor(source, flavor, *, selfprop=False):
-    manifest = source / "templates" / flavor / ".project_manager" / "engine.manifest"
+def _write_retirement_variant(source, variant, *, selfprop=False):
+    manifest = source / "templates" / variant / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True)
     lines = [".shared/a", _RETIRE_NEW]
     if selfprop:
         lines.append(
             f"{MANIFEST_SELF_REL}    "
-            f"@source=templates/{flavor}/.project_manager/engine.manifest"
+            f"@source=templates/{variant}/.project_manager/engine.manifest"
         )
     lines.append(f"# pm-retired-path: {_RETIRE_OLD} -> {_RETIRE_NEW}")
     manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1580,7 +1580,7 @@ def _write_retirement_flavor(source, flavor, *, selfprop=False):
 def test_shipped_manifest_release_list_excludes_retired_old(pm_update, tmp_path):
     """사본에만 있던 행은 관리 해제 목록에 오르되 은퇴 지시의 OLD 는 퇴역 단계 몫이라 빠진다."""
     source = tmp_path / "source"
-    selected = _write_retirement_flavor(source, "selected", selfprop=True)
+    selected = _write_retirement_variant(source, "selected", selfprop=True)
     dest = tmp_path / "dest"
     selfprop = (
         f"{MANIFEST_SELF_REL}    "
@@ -1596,11 +1596,11 @@ def test_shipped_manifest_release_list_excludes_retired_old(pm_update, tmp_path)
     assert shipped["released"] == [".local/unapproved"]
 
 
-def test_declared_flavor_validates_only_selected_retirement_manifests(
+def test_declared_variant_validates_only_selected_retirement_manifests(
         pm_update, tmp_path):
     """은퇴 지시는 사본이 쓰는 판의 출하 manifest 에서만 읽는다 — 관계없는 판의 잘못된 지시는 막지 않는다."""
     source = tmp_path / "source"
-    selected = _write_retirement_flavor(source, "selected", selfprop=True)
+    selected = _write_retirement_variant(source, "selected", selfprop=True)
     unrelated = source / "templates/unrelated/.project_manager/engine.manifest"
     unrelated.parent.mkdir(parents=True)
     unrelated.write_text(
@@ -1625,7 +1625,7 @@ def test_retirement_moves_old_when_local_manifest_already_has_new(
         pm_update, tmp_path):
     """부분 업그레이드의 OLD+NEW 동시 등재도 OLD source-missing 없이 퇴역한다."""
     source = tmp_path / "source"
-    selected = _write_retirement_flavor(source, "selected", selfprop=True)
+    selected = _write_retirement_variant(source, "selected", selfprop=True)
     shared = source / ".shared/a"
     shared.parent.mkdir(parents=True)
     shared.write_text("shared\n", encoding="utf-8")
@@ -1745,7 +1745,7 @@ def test_validated_retirement_rejects_symlink_replacement(pm_update, tmp_path):
         retired_paths.validated_retired_path_directives(source, [manifest])
 
 
-def test_legacy_opencode_manifest_follows_the_opencode_flavor(pm_update, tmp_path):
+def test_legacy_opencode_manifest_follows_the_opencode_variant(pm_update, tmp_path):
     """@source 없는 옛 opencode manifest 는 opencode 고유 경로로 판이 정해져 opencode 출하 manifest 를 쓴다."""
     upstream = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
     local_lines = [
@@ -1765,7 +1765,7 @@ def test_legacy_opencode_manifest_follows_the_opencode_flavor(pm_update, tmp_pat
     assert shipped["text"] == upstream.read_text(encoding="utf-8")
 
 
-def test_bare_self_prop_copy_follows_root_and_named_flavors(
+def test_bare_self_prop_copy_follows_root_and_named_variants(
         pm_update, tmp_path, monkeypatch, capsys):
     """bare self-prop 사본: 루트 출하 manifest 에 행이 가리킨 판을 더해 계획하고 사본에만 있는 행은 관리 해제다."""
     source = tmp_path / "source"
@@ -1820,12 +1820,12 @@ def test_bare_self_prop_copy_follows_root_and_named_flavors(
     assert (dest / ".project_manager/tools/root.py").read_text(encoding="utf-8") == "# root\n"
 
 
-def test_template_manifests_only_declare_their_own_flavor(pm_update):
-    """templates/<f> manifest의 template @source flavor는 언제나 자기 자신뿐이다."""
+def test_template_manifests_only_declare_their_own_variant(pm_update):
+    """templates/<f> manifest의 template @source 하네스별 판은 언제나 자기 자신뿐이다."""
     manifests = sorted(REPO.glob("templates/*/.project_manager/engine.manifest"))
     assert manifests
     for manifest in manifests:
-        flavor = manifest.parents[1].name
+        variant = manifest.parents[1].name
         declared = {
             Path(entry.source_rel.replace("\\", "/")).parts[1]
             for entry in manifest_store.read_manifest(manifest)
@@ -1833,8 +1833,8 @@ def test_template_manifests_only_declare_their_own_flavor(pm_update):
             and len(Path(entry.source_rel.replace("\\", "/")).parts) >= 3
             and Path(entry.source_rel.replace("\\", "/")).parts[0] == "templates"
         }
-        assert declared == {flavor}, \
-            f"{manifest}: 자기 flavor 외 @source 선언 발견: {sorted(declared)}"
+        assert declared == {variant}, \
+            f"{manifest}: 자기 하네스별 판 외 @source 선언 발견: {sorted(declared)}"
 
 
 def test_pm_home_root_manifest_ignores_three_full_stray_adapter_trees(
@@ -1943,10 +1943,10 @@ def test_main_target_mode_plans_with_target_manifest(pm_update, tmp_path, monkey
     assert rc == 0
     # 타깃 manifest 기준이라 NEW_ENGINE_REL 은 전파되지 않는다(의도적 어댑터 비대칭 유지).
     assert not (target_root / NEW_ENGINE_REL).exists(), \
-        "--target 인데 루트-전용 등재분이 타깃으로 새어 전파됨(승격 오발화)"
+        "--target 인데 루트-전용 등재분이 타깃으로 새어 전파됨(잘못된 승격)"
 
 
-def test_main_flavor_copy_follows_flavor_manifest_and_records_baseline(
+def test_main_variant_copy_follows_variant_manifest_and_records_baseline(
         pm_update, tmp_path, monkeypatch, capsys):
     """하네스별 판 사본(@source self-prop)은 루트가 아니라 그 판의 출하 manifest 로 계획한다.
 
@@ -1954,8 +1954,8 @@ def test_main_flavor_copy_follows_flavor_manifest_and_records_baseline(
     기록된다."""
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "src"
-    flavor_rel = "templates/claude_code/.project_manager/engine.manifest"
-    flavor_self = f"{MANIFEST_SELF_REL}    @source={flavor_rel}"
+    variant_rel = "templates/claude_code/.project_manager/engine.manifest"
+    variant_self = f"{MANIFEST_SELF_REL}    @source={variant_rel}"
     root_only_rel = ".project_manager/tools/__pm_update_root_only__.py"
     for rel in (SENTINEL_REL, NEW_ENGINE_REL, root_only_rel):
         f = source / rel
@@ -1964,11 +1964,11 @@ def test_main_flavor_copy_follows_flavor_manifest_and_records_baseline(
     (source / ".project_manager" / "engine.manifest").write_text(
         "\n".join([SENTINEL_REL, root_only_rel, NEW_ENGINE_REL, MANIFEST_SELF_REL]) + "\n",
         encoding="utf-8")
-    (source / flavor_rel).parent.mkdir(parents=True, exist_ok=True)
-    (source / flavor_rel).write_text(
-        "\n".join([SENTINEL_REL, NEW_ENGINE_REL, flavor_self]) + "\n", encoding="utf-8")
+    (source / variant_rel).parent.mkdir(parents=True, exist_ok=True)
+    (source / variant_rel).write_text(
+        "\n".join([SENTINEL_REL, NEW_ENGINE_REL, variant_self]) + "\n", encoding="utf-8")
     _track_source_tree(source)
-    _write_dest_manifest(fake_repo, [SENTINEL_REL, flavor_self])
+    _write_dest_manifest(fake_repo, [SENTINEL_REL, variant_self])
     _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "flavorrev")
@@ -1978,14 +1978,14 @@ def test_main_flavor_copy_follows_flavor_manifest_and_records_baseline(
     assert rc == 0
     assert (fake_repo / NEW_ENGINE_REL).exists(), "판의 신규 등재 파일이 오지 않았다"
     assert not (fake_repo / root_only_rel).exists(), "루트 manifest 로 계획했다"
-    assert (fake_repo / ".project_manager" / "engine.manifest").read_bytes() == (source / flavor_rel).read_bytes()
+    assert (fake_repo / ".project_manager" / "engine.manifest").read_bytes() == (source / variant_rel).read_bytes()
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "flavorrev"
 
 
 # ── URL upstream + --from 생략 → 엔진이 로컬 캐시로 해소 (T-0908) ──
 # 그 계약(clone/fetch·실패 시 무변경·캐시 재사용)은 실 git 산출물로 재는
-# tests/test_pm_update_url_cache.py 가 소유한다. 여기 남는 축은 **명시 --from 이 종전대로
+# tests/test_pm_update_url_cache.py 가 소유한다. 여기 남는 검사는 **명시 --from 이 종전대로
 # 동작한다**는 것뿐이다(아래 두 건).
 
 # ── ADR-0036: engine.version 유령 마커 폐기 가드 (제거 회귀 방지) ──────────────
@@ -1994,7 +1994,7 @@ def test_help_has_no_version_option():
     """`--version` CLI 인자가 폐기됐다(ADR-0036) — --help 출력에 다시 새지 않게 가드.
 
     engine.version 은 vestigial(read 0·no-op) 유령 마커였고, freshness 는 git rev-baseline
-    (upstream_rev↔upstream_seen_rev)이 담당한다. 실 CLI 표면을 subprocess --help 로 검증한다.
+    (upstream_rev↔upstream_seen_rev)이 담당한다. 실 CLI 범위를 subprocess --help 로 검증한다.
     """
     result = subprocess.run(
         [sys.executable, str(TOOLS / "pm_update.py"), "--help"],
@@ -2033,7 +2033,7 @@ def test_url_upstream_explicit_from_local_still_works(pm_update, tmp_path, monke
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "localrev1")
 
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(local_src)])
-    assert rc == 0, f"명시 --from(로컬)인데 URL 게이트가 막음: {capsys.readouterr().err!r}"
+    assert rc == 0, f"명시 --from(로컬)인데 URL 검사가 막음: {capsys.readouterr().err!r}"
 
 
 # ── ⑤ --target 모드: --from 생략 시 *타깃* local.conf 의 upstream 사용 (self-loc 과 일관) ──
@@ -2050,7 +2050,7 @@ def test_target_mode_omitted_from_uses_target_local_conf(pm_update, tmp_path, mo
     target_dir.mkdir(parents=True)
     stored = tmp_path / "target_stored_upstream"
     _make_upstream(stored)
-    # 타깃 자신의 local.conf 에 upstream 등록 (self-loc 의 REPO local.conf 자리와 동형).
+    # 타깃 자신의 local.conf 에 upstream 등록 (self-loc 의 REPO local.conf 자리와 같은 방식).
     _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -2492,7 +2492,7 @@ def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
 
 
 def test_render_write_uses_source_notation_for_new_destination(pm_update, tmp_path):
-    """dest 부재(첫 배달)면 소스 표기를 따른다 — pm_import 의 byte-copy+표기보존 렌더와 동형."""
+    """dest 부재(첫 배달)면 소스 표기를 따른다 — pm_import 의 byte-copy+표기보존 렌더와 같은 방식."""
     source = tmp_path / "source"
     src = source / "card.md"
     src.parent.mkdir(parents=True)
@@ -2535,7 +2535,7 @@ def test_render_comparison_treats_non_utf8_destination_as_update(pm_update, tmp_
     assert dst.read_bytes() == b"$pm-bootstrap\n"
 
 
-def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
+def test_multi_harness_render_preserves_per_entry_variant(pm_update, tmp_path):
     source = tmp_path / "source"
     first = source / "templates" / "opencode" / ".project_manager" / "engine.manifest"
     second = source / "templates" / "codex" / ".project_manager" / "engine.manifest"
@@ -2570,7 +2570,7 @@ def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
     update_render.apply(pm_paths.home_at(pm_update.REPO), broken_changes)
     assert (broken_dest / ".agents/skills/pm-bootstrap/SKILL.md").read_text(
         encoding="utf-8"
-    ).startswith("# /pm-bootstrap"), "전역 flavor 파손 재현이 공허함"
+    ).startswith("# /pm-bootstrap"), "전역 하네스별 판 파손 재현이 공허함"
 
     dest = tmp_path / "dest"
     changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO),
@@ -2589,7 +2589,7 @@ def test_multi_harness_render_preserves_per_entry_flavor(pm_update, tmp_path):
     ).startswith("# $pm-bootstrap")
 
 
-def test_multi_harness_shared_path_combines_selected_flavors(pm_update, tmp_path):
+def test_multi_harness_shared_path_combines_selected_variants(pm_update, tmp_path):
     source = tmp_path / "source"
     first = source / "templates" / "codex" / ".project_manager" / "engine.manifest"
     second = source / "templates" / "opencode" / ".project_manager" / "engine.manifest"
@@ -2623,7 +2623,7 @@ def test_multi_harness_shared_path_combines_selected_flavors(pm_update, tmp_path
     )
 
 
-def test_selected_flavor_manifest_read_failure_is_loud(pm_update, tmp_path):
+def test_selected_variant_manifest_read_failure_is_loud(pm_update, tmp_path):
     source = tmp_path / "source"
     unreadable_shape = (
         source / "templates" / "codex" / ".project_manager" / "engine.manifest"
@@ -2636,11 +2636,11 @@ def test_selected_flavor_manifest_read_failure_is_loud(pm_update, tmp_path):
         )
 
 
-# ── v2 엔진 manifest 정합 (T-0088 — 신규 엔진 등재/개명 누락 가드) ────────────────
+# ── v2 엔진 manifest 일치 (T-0088 — 신규 엔진 등재/개명 누락 가드) ────────────────
 # domain.py 가 manifest 미등재라 templates 에 전파 안 되던 실 버그를 회귀로 박는다.
-# 출하 manifest 전수(root + 3 flavor)가 v2 엔진을 일관되게 담는지 검증. **codex 를 빼면 등재
-# 축이 출하 축보다 좁아** 그 flavor 만의 등재 누락/오등재가 어느 가드에도 안 걸린다(원장 미등재
-# 가드가 그 비대칭을 드러냈다) — 목록은 출하 flavor 를 따라간다.
+# 출하 manifest 전수(root + 3 하네스별 판)이 v2 엔진을 일관되게 담는지 검증. **codex 를 빼면 등재
+# 범위가 출하 범위보다 좁아** 그 하네스별 판 만의 등재 누락/오등재가 어느 가드에도 안 걸린다(기록 미등재
+# 가드가 그 비대칭을 드러냈다) — 목록은 출하 하네스별 판을 따라간다.
 
 _MANIFESTS = [
     REPO / ".project_manager" / "engine.manifest",
@@ -2660,7 +2660,7 @@ def test_v2_engine_in_manifest(pm_update, manifest_path):
 
 # ── pm_import.py manifest 편입 (T-0140·ADR-0032 — PM 31 ⓒ stale 근본 해소) ──────────
 # pm_import.py 가 manifest 미등재(root-only)라 pm_update 가 채택자/템플릿으로 전파 못 해
-# 소리없이 stale 되던 것(PM 31 ⓒ)을 회귀로 박는다. 편입 후 pm_update(채택자 흡수)·
+# 소리없이 stale 되던 것(PM 31 ⓒ)을 회귀로 박는다. 편입 후 pm_update(채택자 갱신)·
 # pm_update --target(템플릿 refresh)가 전파한다. manifest 진화(새 항목이 *기존* 채택자에
 # 도달)는 pm-update 스킬 reconcile(T-0142)·self-list 아님(codex round-2).
 
@@ -2681,7 +2681,7 @@ def test_pm_import_byte_identical_root_templates():
 
     pm_import 의 다중 선택은 공유 엔진파일을 여러 템플릿 트리에서 가져오므로, 두 트리의
     pm_import.py 가 다르면 import 가 mismatch 한다. root 단일 진실 → pm_update --target 전파로
-    byte-identical 유지([[verify-engine-template-propagation]]·test_agents_root_templates_byte_identical 동형).
+    byte-identical 유지([[verify-engine-template-propagation]]·test_agents_root_templates_byte_identical 와 같은 방식).
     """
     root_bytes = (REPO / _PM_IMPORT_REL).read_bytes()
     for harness in ("claude_code", "opencode"):
@@ -2878,7 +2878,7 @@ def test_source_root_rel_uses_marker_else_str(pm_update, tmp_path):
 
 
 def test_source_root_rel_plain_str_fallback(pm_update):
-    """평문 str 항목(레거시 호출·source_rel 속성 부재) → str 그대로(getattr 폴백·후방호환)."""
+    """평문 str 항목(레거시 호출·source_rel 속성 부재) → str 그대로(getattr 대체 동작·후방호환)."""
     assert manifest_rules._source_root_rel(".project_manager/tools/board.py") == \
         ".project_manager/tools/board.py"
 
@@ -2911,7 +2911,7 @@ def test_remap_to_dest_no_marker_passthrough(pm_update):
 
 
 def test_remap_to_dest_normalizes_windows_separators(pm_update):
-    """Windows 역슬래시 relpath 도 posix-normalize 후 치환(_dest_relpath_for 동형)."""
+    """Windows 역슬래시 relpath 도 posix-normalize 후 치환(_dest_relpath_for 와 같은 방식)."""
     assert manifest_rules._remap_to_dest(
         "templates\\opencode\\.opencode\\agents\\architect.md",
         "templates/opencode/.opencode/agents",
@@ -3005,10 +3005,10 @@ def test_plan_specific_override_is_idempotent_not_replaced_by_parent(pm_update, 
     assert changes == []
 
 
-# ── T-0303 통합: @source 전파(self-update·--target no-op)·안전판·render 정합·claude 무영향 ──
+# ── T-0303 통합: @source 전파(self-update·--target no-op)·안전판·render 일치·claude 무영향 ──
 # opencode 채택자의 self-update 가 `.opencode/*` 를 templates/opencode canonical 소스서 전파하는지
 # (과거 @target-owned skip 으로 영영 stale 이던 치명 버그)·진짜 부재 시 rc2 안전판·--target self-copy
-# no-op·claude `.claude/* @render` 무영향·@render+@source 렌더 정합을 실 sync(apply)로 박는다.
+# no-op·claude `.claude/* @render` 무영향·@render+@source 렌더 일치를 실 sync(apply)로 박는다.
 
 def test_self_update_propagates_opencode_adapters_from_templates_source(
         pm_update, tmp_path, monkeypatch, capsys):
@@ -3033,9 +3033,9 @@ def test_self_update_propagates_opencode_adapters_from_templates_source(
     #   출하 manifest 로 계획하므로 상류에도 같은 행의 opencode 판 manifest 를 둔다.
     rows = (".opencode/agents    @render @source=templates/opencode/.opencode/agents\n"
             ".opencode/command   @render @source=templates/opencode/.opencode/command\n")
-    flavor_manifest = stored / "templates" / "opencode" / ".project_manager" / "engine.manifest"
-    flavor_manifest.parent.mkdir(parents=True, exist_ok=True)
-    flavor_manifest.write_text(rows, encoding="utf-8")
+    variant_manifest = stored / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+    variant_manifest.parent.mkdir(parents=True, exist_ok=True)
+    variant_manifest.write_text(rows, encoding="utf-8")
     dest_manifest = fake_repo / ".project_manager" / "engine.manifest"
     dest_manifest.parent.mkdir(parents=True, exist_ok=True)
     dest_manifest.write_text(rows, encoding="utf-8")
@@ -3123,8 +3123,8 @@ def test_claude_render_only_entry_unaffected_by_source_channel(
 
 def test_render_with_source_marker_renders_operational_tokens(
         pm_update, tmp_path, monkeypatch, capsys):
-    """(e) `@render`+`@source` 정합 — @source 로 remap 한 토큰-form 소스를 채택자 local.conf 로 렌더해
-    dest `.opencode/*` 에 자족 산출물을 쓴다(operational 치환·source-remap 후에도 render 배선 정합).
+    """(e) `@render`+`@source` 일치 — @source 로 remap 한 토큰-form 소스를 채택자 local.conf 로 렌더해
+    dest `.opencode/*` 에 자족 산출물을 쓴다(operational 치환·source-remap 후에도 render 등록 일치).
 
     canonical 소스의 `{{PROJECT_NAME}}` 토큰이 채택자 local.conf(project_name=)로 치환돼 dest 에
     착지하는지 실 apply 로 검증(byte-copy 아닌 [render] 표기).
@@ -3136,9 +3136,9 @@ def test_render_with_source_marker_renders_operational_tokens(
     agent_src.write_text("# pm for {{PROJECT_NAME}}\n", encoding="utf-8")
 
     row = ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n"
-    flavor_manifest = stored / "templates" / "opencode" / ".project_manager" / "engine.manifest"
-    flavor_manifest.parent.mkdir(parents=True, exist_ok=True)
-    flavor_manifest.write_text(row, encoding="utf-8")
+    variant_manifest = stored / "templates" / "opencode" / ".project_manager" / "engine.manifest"
+    variant_manifest.parent.mkdir(parents=True, exist_ok=True)
+    variant_manifest.write_text(row, encoding="utf-8")
     dest_manifest = fake_repo / ".project_manager" / "engine.manifest"
     dest_manifest.parent.mkdir(parents=True, exist_ok=True)
     dest_manifest.write_text(row, encoding="utf-8")
@@ -3155,13 +3155,13 @@ def test_render_with_source_marker_renders_operational_tokens(
     landed = fake_repo / ".opencode" / "agents" / "pm.md"
     assert landed.exists(), "@render+@source 산출물이 dest 에 착지하지 않음."
     rendered = landed.read_text(encoding="utf-8")
-    assert rendered == "# pm for AcmePay\n", f"operational 토큰 미치환(source-remap 후 render 정합 실패): {rendered!r}"
+    assert rendered == "# pm for AcmePay\n", f"operational 토큰 미치환(source-remap 후 render 일치 실패): {rendered!r}"
     assert "{{PROJECT_NAME}}" not in rendered, "자족 산출물 위반(토큰 잔존)."
     assert "[render]" in captured.out, "@source+@render 항목이 [render] 로 표기되지 않음(byte-copy 오분기)."
 
 
 # ── T-0146: pm_update --changes — baseline↔HEAD 변경점 요약 (read-only·D5) ────
-# 전부 git_runner 주입(DI seam)으로 hermetic — 라이브 git/네트워크 0. fake_git_runner 가
+# 전부 git_runner 주입(DI 교체 지점)으로 hermetic — 라이브 git/네트워크 0. fake_git_runner 가
 # argv 패턴(rev-parse·cat-file·log·diff)별로 결정적 출력을 돌려준다.
 
 def _make_fake_git_runner(
@@ -3261,7 +3261,7 @@ def test_summarize_classifies_source_mapped_entry_as_engine(pm_update, tmp_path)
     source = tmp_path / "src"
     source.mkdir()
     manifest = _manifest_entries(pm_update, [
-        # 파일 매핑(출하 claude 어댑터 훅 형상).
+        # 파일 매핑(출하 claude 어댑터 훅 경우).
         ".claude/ctx_guard.py    @source=templates/claude_code/.claude/ctx_guard.py",
         # 디렉토리 매핑(하위 파일이 prefix 로 잡혀야 한다).
         ".codex/agents    @render @source=templates/codex/.codex/agents",
@@ -3287,7 +3287,7 @@ def test_summarize_classifies_source_mapped_entry_as_engine(pm_update, tmp_path)
 def test_path_under_manifest_covers_shipped_source_entries(pm_update):
     """출하 claude manifest **실물**의 모든 `@source` 엔트리가 source_rel 좌표로 engine 판정된다.
 
-    실형상 픽스처 — 합성 픽스처가 전부 bare 엔트리라 이 축이 테스트에 아예 없었고(갭), 출하
+    실구성 픽스처 — 합성 픽스처가 전부 bare 엔트리라 이 경우가 테스트에 아예 없었고(갭), 출하
     manifest 의 @source 엔트리 전량이 오분류되는 것을 아무도 못 봤다."""
     shipped = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
     manifest = manifest_store.read_manifest(shipped)
@@ -3302,7 +3302,7 @@ def test_path_under_manifest_covers_shipped_source_entries(pm_update):
 
 
 def test_path_under_manifest_bare_entry_unchanged(pm_update, tmp_path):
-    """source_rel 없는 bare 엔트리는 동작 무변경 — dest 경로 축만으로 판정(회귀 없음)."""
+    """source_rel 없는 bare 엔트리는 동작 무변경 — dest 경로 좌표만으로 판정(회귀 없음)."""
     manifest = _manifest_entries(pm_update, [
         ".project_manager/tools/board.py",   # 파일 항목
         ".claude/agents",                    # 디렉토리 항목
@@ -3316,9 +3316,9 @@ def test_path_under_manifest_bare_entry_unchanged(pm_update, tmp_path):
 
 
 def test_path_under_manifest_respects_specific_source_override(pm_update, tmp_path):
-    """더 구체적인 파일 override 가 있으면 **상위 항목의 source 변경은 그 파일 축에서 비분류**다.
+    """더 구체적인 파일 override 가 있으면 **상위 항목의 source 변경은 그 파일 쪽에서 비분류**다.
 
-    출하 codex 형상: `.agents/skills @source=.claude/skills` 위에
+    출하 codex 구성: `.agents/skills @source=.claude/skills` 위에
     `.agents/skills/pm-dev-delegate/SKILL.md @source=templates/codex/...` 가 얹혀 그 파일만 다른
     source 를 공급한다. plan 은 소유권 우선순위(`_manifest_owner_index`)로 상위 항목의 열거에서 그
     경로를 빼므로, 상위 source 변경을 엔진 영향이라 하면 **읽지도 않을 파일 때문에** 오보한다.
@@ -3342,9 +3342,9 @@ def test_path_under_manifest_respects_specific_source_override(pm_update, tmp_pa
 
 
 def test_path_under_manifest_shipped_codex_override_not_overclassified(pm_update):
-    """출하 codex manifest **실물**에서도 override 축이 지켜진다(실형상 픽스처).
+    """출하 codex manifest **실물**에서도 override 규칙이 지켜진다(실구성 픽스처).
 
-    `.agents/skills` 상위 항목과 그 아래 파일 override 가 동시에 존재하는 유일한 출하 형상이라,
+    `.agents/skills` 상위 항목과 그 아래 파일 override 가 동시에 존재하는 유일한 출하 구성이라,
     합성 픽스처만으로는 실 manifest 순서/마커 조합이 바뀌었을 때를 못 잡는다."""
     shipped = REPO / "templates" / "codex" / ".project_manager" / "engine.manifest"
     manifest = manifest_store.read_manifest(shipped)
@@ -3367,7 +3367,7 @@ def test_path_under_manifest_shipped_codex_override_not_overclassified(pm_update
 
 
 def test_path_under_manifest_mapped_entry_ignores_dest_coordinate(pm_update, tmp_path):
-    """`@source` 매핑 엔트리는 **읽기 좌표만** 엔진 영향이다 (T-0575 축·codex 지적).
+    """`@source` 매핑 엔트리는 **읽기 좌표만** 엔진 영향이다 (T-0575 쪽·codex 지적).
 
     `.codex/agents @source=templates/codex/.codex/agents` 에서 상류 변경이 dest 좌표
     (`.codex/agents/x.md`)로 오면 이번 계획은 그 경로를 읽지 않는다 — 그런데도 분류하면 미리보기가
@@ -3622,7 +3622,7 @@ def test_changes_main_baseline_unreachable(pm_update, tmp_path, monkeypatch, cap
 def test_changes_main_url_upstream_explicit_local_from_works(pm_update, tmp_path, monkeypatch, capsys):
     """local.conf 가 URL 이어도 --changes --from <로컬 checkout> 명시면 그 checkout 을 본다.
 
-    URL 캐시 해소는 stored upstream 분기 한정 — 명시 --from 은 그 분기를 안 탄다(sync 동형).
+    URL 캐시 해소는 stored upstream 분기 한정 — 명시 --from 은 그 분기를 안 탄다(sync 와 같은 방식).
     """
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
@@ -3637,7 +3637,7 @@ def test_changes_main_url_upstream_explicit_local_from_works(pm_update, tmp_path
 
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--changes", "--from", str(source)])
     captured = capsys.readouterr()
-    assert rc == 0, f"명시 --from(로컬)인데 URL 게이트가 막음: {captured.err!r}"
+    assert rc == 0, f"명시 --from(로컬)인데 URL 검사가 막음: {captured.err!r}"
     assert "엔진 영향" in captured.out
 
 
@@ -3705,12 +3705,12 @@ def test_changes_uses_shipped_manifest_not_copy_rows(pm_update, tmp_path, monkey
 def test_changes_falls_back_to_source_manifest_when_no_dest(pm_update, tmp_path, monkeypatch, capsys):
     """dest manifest 부재(fresh-adopter 직전·dest 미생성) → source manifest 로 분류(graceful fallback).
 
-    resolve_manifest_for_dest 의 dest 우선·없으면 source 폴백을 --changes 도 그대로 상속한다.
+    resolve_manifest_for_dest 의 dest 우선·없으면 source 대체 동작을 --changes 도 그대로 상속한다.
     """
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
-    # dest 에는 engine.manifest 없음(local.conf 만) → source manifest 가 폴백 권위.
+    # dest 에는 engine.manifest 없음(local.conf 만) → source manifest 가 대체 동작 권위.
     _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
@@ -3766,7 +3766,7 @@ def _dry_run_plan_targets(pm_update, monkeypatch) -> set[str]:
 
 
 def _selfheal_preview_fixture(pm_update, tmp_path, monkeypatch):
-    """상류가 신규 엔진 파일을 등재했고 로컬 manifest 는 구형인 dest — self-heal 승격 대상 형상.
+    """상류가 신규 엔진 파일을 등재했고 로컬 manifest 는 구형인 dest — self-heal 승격 대상 경우.
 
     dest 는 기존 등재분(SENTINEL)을 upstream 과 byte-동일하게 갖는다 — 이번 계획의 대상이 신규
     등재 파일 하나로 좁혀져야 `--changes` 분류 집합과 계획 대상 집합을 직접 비교할 수 있다.
@@ -3811,7 +3811,7 @@ def test_changes_engine_set_equals_dry_run_plan_targets(
     헬퍼를 공유해도 소비 방식이 갈라지면 잡아야 하므로 함수 동일성이 아니라 **산출 동일성**을
     비교한다(둘 다 실행해 교차 검증). 집합 비교는 **bare manifest 좌표 한정**이다 — `@source`
     채택자는 분류(상류 읽기 경로)와 계획 대상(dest 경로)의 좌표계가 애초에 달라 직접 비교 대상이
-    아니다(그 축은 `test_path_under_manifest_*` 가 소유권까지 따로 검증한다)."""
+    아니다(그 검사는 `test_path_under_manifest_*` 가 소유권까지 따로 검증한다)."""
     fake_repo, _source = _selfheal_preview_fixture(pm_update, tmp_path, monkeypatch)
     runner = _make_fake_git_runner(
         head="head0000", log_lines=["abc1234 신규 도구 등재"],
@@ -4062,7 +4062,7 @@ def test_retired_manifest_files_reports_whole_directory_removed_upstream(
         pm_update, tmp_path):
     """상류 디렉토리 엔트리가 통째로 사라지면 dest 잔존 **전부**를 보고한다.
 
-    옛 판정은 source 디렉토리 부재를 만나면 즉시 continue 해, 가장 크게 잔존하는 형상(디렉토리
+    옛 판정은 source 디렉토리 부재를 만나면 즉시 continue 해, 가장 크게 잔존하는 경우(디렉토리
     통째 은퇴)이 가장 조용했다. `@target-owned` 제외 규칙은 그대로 우선한다 — 그쪽은 상류 부재가
     정상이라 애초에 후보가 아니다."""
     source = tmp_path / "source"
@@ -4072,7 +4072,7 @@ def test_retired_manifest_files_reports_whole_directory_removed_upstream(
     (dest_dir / "nested").mkdir(parents=True)
     (dest_dir / "a.md").write_text("# a\n", encoding="utf-8")
     (dest_dir / "nested" / "b.md").write_text("# b\n", encoding="utf-8")
-    # `@target-owned` 대조군 — 상류 부재가 정상이라 통째 삭제 형상에서도 후보가 아니다.
+    # `@target-owned` 대조군 — 상류 부재가 정상이라 통째 삭제 경우에도 후보가 아니다.
     owned_dir = dest / ".opencode" / "lib"
     owned_dir.mkdir(parents=True)
     (owned_dir / "relay.cjs").write_text("// 타깃 고유\n", encoding="utf-8")
@@ -4088,7 +4088,7 @@ def test_retired_manifest_files_reports_whole_directory_removed_upstream(
     assert retired == [
         f"{RETIRED_DIR_REL}/a.md", f"{RETIRED_DIR_REL}/nested/b.md",
     ], f"상류 디렉토리 통째 소멸 시 dest 잔존이 누락됨: {retired}"
-    # 계획이 공급하는 좌표는 여전히 접힌다(제외 규칙 우선순위 유지).
+    # 계획이 공급하는 좌표는 여전히 바뀐다(제외 규칙 우선순위 유지).
     assert update_manifest._retired_manifest_files(
         source, manifest, dest, {f"{RETIRED_DIR_REL}/a.md"}) == [
         f"{RETIRED_DIR_REL}/nested/b.md"
@@ -4096,7 +4096,7 @@ def test_retired_manifest_files_reports_whole_directory_removed_upstream(
 
 
 def test_retired_manifest_files_skips_deleted_but_indexed_paths(pm_update, tmp_path):
-    """working tree 에서 지웠지만 index 에 남은 경로는 은퇴 후보가 아니다 (T-0577 축·codex 지적).
+    """working tree 에서 지웠지만 index 에 남은 경로는 은퇴 후보가 아니다 (T-0577 쪽·codex 지적).
 
     dest 열거는 `repo_files` OWNED(=git index)라, 삭제-미commit 파일이 계속 후보로 뜬다.
     이 보고의 명제는 "dest 에 잔존한다" 이므로 잔존물이 없으면 보고할 것도 없다 — 없는 파일을
@@ -4153,7 +4153,7 @@ def test_changes_labels_upstream_delete_as_not_removed_by_sync(
     assert "D .claude/skills/spike-new/SKILL.md" in removed_block
 
 
-def test_changes_counts_rebuilt_guest_rows_like_the_plan(
+def test_changes_counts_rebuilt_added_harness_rows_like_the_plan(
         pm_update, tmp_path, monkeypatch, capsys):
     """`--changes` 는 계획과 같은 구획(판 출하 manifest 로 다시 만든 것)으로 분류한다.
 
@@ -4165,7 +4165,7 @@ def test_changes_counts_rebuilt_guest_rows_like_the_plan(
     monkeypatch.setattr(pm_update, "REPO", dest)
     runner = _make_fake_git_runner(
         head="head0000",
-        log_lines=["abc1234 guest 드라이버 교체"],
+        log_lines=["abc1234 추가 하네스 드라이버 교체"],
         diff_lines=[
             "M\ttemplates/opencode/.opencode/pm_orch_opencode.py",   # 엔진 행(update 채널)
             "M\ttemplates/opencode/.opencode/agents/pm.md",          # 렌더물(refresh 채널)
@@ -4187,7 +4187,7 @@ def test_changes_prints_retired_report_for_dangling_pointer(
     """`--changes` 의 "아래 보고 참조" 가 실제 은퇴 보고를 가리킨다 (SF-5).
 
     보고 호출이 없으면 그 헤더는 아무 데도 가리키지 않는 빈 포인터였다. **파일 엔트리 삭제**도
-    같은 채널이 본다 — 상류에서 통째로 사라진 등재가 dest 에 파일로 잔존하는 형상이다."""
+    같은 채널이 본다 — 상류에서 통째로 사라진 등재가 dest 에 파일로 잔존하는 경우다."""
     dest = tmp_path / "dest"
     source = tmp_path / "checkout"
     _make_dir_entry_upstream(source, {f"{RETIRED_DIR_REL}/keep.md": "# keep\n"})
@@ -4197,7 +4197,7 @@ def test_changes_prints_retired_report_for_dangling_pointer(
     dest_dir.mkdir(parents=True)
     (dest_dir / "keep.md").write_text("# keep\n", encoding="utf-8")
     (dest_dir / "retired.md").write_text("# 상류 은퇴\n", encoding="utf-8")
-    # 파일 엔트리 자체가 상류에서 사라진 형상 — dest 엔 잔존한다.
+    # 파일 엔트리 자체가 상류에서 사라진 경우 — dest 엔 잔존한다.
     (dest / ".claude").mkdir(parents=True)
     (dest / ".claude" / "settings-legacy.json").write_text("{}\n", encoding="utf-8")
     _write_local_conf(dest, f"upstream.path={source}\nupstream.rev=base12345678\n")
@@ -4227,16 +4227,16 @@ def test_retired_report_caps_listing_with_remainder_count(pm_update, capsys):
     out = capsys.readouterr().out
     assert f"상류 부재 파일 {limit + 7}건" in out, "총 건수가 잘렸다(정보 손실)"
     assert out.count("adapter/f") == limit, "나열 상한이 적용되지 않았다"
-    assert "외 7건" in out, f"잔여 건수 표기 누락: {out!r}"
+    assert "외 7건" in out, f"남은 건수 표기 누락: {out!r}"
 
 
 def test_retired_scan_does_not_leak_repo_files_fallback_warning(
         pm_update, tmp_path, monkeypatch, recwarn):
-    """비-git dest 은퇴 스캔이 엔진 내부 폴백 경고를 채택자에게 노출하지 않는다 (SF-7).
+    """비-git dest 은퇴 스캔이 엔진 내부 대체 동작 경고를 채택자에게 노출하지 않는다 (SF-7).
 
-    열거는 폴백으로 정상 동작한다 — 진단 보고 하나 때문에 seam 경고 원문을 띄울 이유가 없다."""
+    열거는 대체로 정상 동작한다 — 진단 보고 하나 때문에 열거 함수 경고 원문을 띄울 이유가 없다."""
     source = tmp_path / "source"
-    dest = tmp_path / "dest"  # git repo 아님 → filesystem 폴백 경로.
+    dest = tmp_path / "dest"  # git repo 아님 → filesystem 대체 동작 경로.
     _make_dir_entry_upstream(source, {f"{RETIRED_DIR_REL}/keep.md": "# keep\n"})
     dest_dir = dest / RETIRED_DIR_REL
     dest_dir.mkdir(parents=True)
@@ -4244,7 +4244,7 @@ def test_retired_scan_does_not_leak_repo_files_fallback_warning(
     (dest_dir / "retired.md").write_text("# 상류 은퇴\n", encoding="utf-8")
     manifest = _manifest_entries(pm_update, [RETIRED_DIR_REL], tmp_path)
     # "dest 는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을 정하지
-    # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    # 않도록 엔진의 runner 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
         update_cmd.repo_files,
         "_real_git_runner", lambda _cwd: lambda _argv: (128, ""),
@@ -4252,10 +4252,10 @@ def test_retired_scan_does_not_leak_repo_files_fallback_warning(
 
     assert update_manifest._retired_manifest_files(source, manifest, dest, set()) == [
         f"{RETIRED_DIR_REL}/retired.md"
-    ], "폴백 억제가 열거 자체를 죽였다(보고 0)"
+    ], "대체 동작 억제가 열거 자체를 죽였다(보고 0)"
     leaked = [w for w in recwarn.list
               if type(w.message).__name__ == "RepoFilesFallbackWarning"]
-    assert not leaked, f"엔진 내부 폴백 경고가 raw 노출됨: {[str(w.message) for w in leaked]}"
+    assert not leaked, f"엔진 내부 대체 동작 경고가 raw 노출됨: {[str(w.message) for w in leaked]}"
 
 
 def test_retired_planned_filter_uses_dest_coordinates_only(pm_update, tmp_path):
@@ -4498,11 +4498,11 @@ def test_retired_path_main_dry_run_predicts_install_then_changes_zero_retires(
 
 
 # ── T-0918: v1.7.11 이하 사본의 퇴역 OLD (회귀 고정) ──────────────────────────
-# 그 세대의 manifest 는 퇴역 OLD(`external_review.py`)를 소유하고 새 source 에는 그 파일이 없다.
+# 그 버전의 manifest 는 퇴역 OLD(`external_review.py`)를 소유하고 새 source 에는 그 파일이 없다.
 # 갱신은 사본 manifest 가 아니라 출하 manifest 로 계획하므로 첫 full sync 가 NEW 를 설치하고 OLD 를
 # 은퇴 지시대로 옮긴다.
 _V1711_UPDATER_REL = ".project_manager/tools/pm_update.py"
-# 그 세대 뒤에 상류가 새로 등재한 파일 — 구 manifest 는 이 행을 모른다.
+# 그 버전 뒤에 상류가 새로 등재한 파일 — 구 manifest 는 이 행을 모른다.
 _V1711_NEWER_REL = ".project_manager/tools/__v1711_newer_generation__.py"
 _V1711_NEW_MANIFEST = [
     _V1711_UPDATER_REL, _V1711_NEWER_REL, _RETIRED_REVIEWER_NEW,
@@ -4511,10 +4511,10 @@ _V1711_NEW_MANIFEST = [
 
 
 def _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, name: str):
-    """(source, dest, dest 의 OLD 파일) — 구 사본 형상의 **최소** 재현.
+    """(source, dest, dest 의 OLD 파일) — 구 사본 경우의 **최소** 재현.
 
     실물(v1.7.11 사본)에서 인용하는 사실은 하나다: 그 manifest 가 퇴역 OLD 를 등재하고 퇴역
-    선언은 없다. 파일 내용·나머지 등재는 이 축과 무관하므로 짓지 않는다.
+    선언은 없다. 파일 내용·나머지 등재는 이 검사와 무관하므로 짓지 않는다.
     """
     source = tmp_path / f"{name}_source"
     dest = tmp_path / f"{name}_dest"
@@ -4523,7 +4523,7 @@ def _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, name: str):
         {_V1711_UPDATER_REL: "# new updater\n",
          _V1711_NEWER_REL: "# newer generation\n",
          _RETIRED_REVIEWER_NEW: "new reviewer\n",
-         # 출하 flavor manifest — 구 사본의 manifest 행이 이 판의 고유 경로라 갱신이 이 판으로 계획한다.
+         # 출하 하네스별 판 manifest — 구 사본의 manifest 행이 이 판의 고유 경로라 갱신이 이 판으로 계획한다.
          "templates/claude_code/.project_manager/engine.manifest":
              "\n".join(_V1711_NEW_MANIFEST) + "\n"},
         _V1711_NEW_MANIFEST,
@@ -4559,7 +4559,7 @@ def test_v1711_copy_updater_scope_run_is_refused_by_the_current_updater(
     """B — 현 갱신기는 엔진 코드 변경이 남은 `--paths` 를 쓰기 전에 거부한다(rc 1).
 
     두 단계 bridge 의 1회차(updater 만 `--paths` 로 self-delivery)는 그 사본의 **옛 갱신기**가 돈다.
-    현 갱신기는 엔진 코드를 세대 단위로만 옮기므로 같은 호출이 아무것도 쓰지 않는다. 스코프 밖
+    현 갱신기는 엔진 코드를 버전 단위로만 옮기므로 같은 호출이 아무것도 쓰지 않는다. 스코프 밖
     source-부재가 정상 부분 전파를 막지 않는 것은 `test_paths_scope_is_refused_while_engine_code_is_pending`
     의 두 번째 실행이 덮는다.
     """
@@ -4578,7 +4578,7 @@ def test_v1711_copy_second_full_sync_installs_new_and_retires_old(
         pm_update, tmp_path, monkeypatch):
     """C — 새 manifest 를 든 2회차 full sync 가 NEW 를 설치하고 OLD 를 backup 으로 옮긴다."""
     source, dest, old = _v1711_copy_fixture(pm_update, tmp_path, monkeypatch, "second")
-    # RUN1 이 배달한 새 updater 가 신 manifest 로 계획하는 상태(= 2회차 진입 형상).
+    # RUN1 이 배달한 새 updater 가 신 manifest 로 계획하는 상태(= 2회차 진입 경우).
     _write_dest_manifest(dest, _V1711_NEW_MANIFEST)
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", lambda *a, **k: False)
 
@@ -4642,17 +4642,17 @@ def test_summarize_rename_inside_manifest_keeps_new_path_as_engine(pm_update, tm
 # `.project_manager/board/`(submodule)로 분리된 adopter 에선 _template.md 가
 # `board/tickets/_template.md` 에 산다(board 루트 추종). pm_update 가 dest 를 board_root 로
 # 리매핑하지 않으면 매 sync 가 `wiki/tickets/_template.md` 를 부활시킨다(dead cruft·drift).
-# 아래는 양 형상 hermetic 검증 — board-분리 시 board/, legacy 시 wiki/ (회귀 무영향).
+# 아래는 양 구성 hermetic 검증 — board-분리 시 board/, legacy 시 wiki/ (회귀 무영향).
 
 _TEMPLATE_REL = ".project_manager/wiki/tickets/_template.md"
 _BOARD_TEMPLATE_REL = ".project_manager/board/tickets/_template.md"
 
 
 def _make_board_separated(dest_root: Path) -> None:
-    """dest 를 board-분리 형상으로 — `.project_manager/board/tickets/{open,...}` 생성.
+    """dest 를 board-분리 구성으로 — `.project_manager/board/tickets/{open,...}` 생성.
 
     `pm_paths._board_root_at`·`_is_board_separated` 가 *실측*(board/tickets 가 dir 인가)으로 가르므로,
-    그 디렉토리를 만들어 분리 adopter 를 모사한다(test_board_root._make_board_dir 동형)."""
+    그 디렉토리를 만들어 분리 adopter 를 모사한다(test_board_root._make_board_dir 와 같은 방식)."""
     board_dir = dest_root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
         (board_dir / "tickets" / status).mkdir(parents=True, exist_ok=True)
@@ -4661,8 +4661,8 @@ def _make_board_separated(dest_root: Path) -> None:
 def _make_template_upstream(root: Path) -> None:
     """upstream(source) — manifest 에 wiki/tickets/_template.md 를 엔진으로 등재 + 실 파일.
 
-    ① canonical 형상: upstream 은 항상 `wiki/tickets/_template.md` 에 템플릿을 들고 있다
-    (board-분리는 *dest* 형상이지 upstream 형상이 아니다). source 는 wiki/ 에서 그대로 읽힌다."""
+    ① canonical 구성: upstream 은 항상 `wiki/tickets/_template.md` 에 템플릿을 들고 있다
+    (board-분리는 *dest* 구성이지 upstream 구성이 아니다). source 는 wiki/ 에서 그대로 읽힌다."""
     tmpl = root / _TEMPLATE_REL
     tmpl.parent.mkdir(parents=True, exist_ok=True)
     tmpl.write_text("# ticket 본문 템플릿 (upstream)\n", encoding="utf-8")
@@ -4671,7 +4671,7 @@ def _make_template_upstream(root: Path) -> None:
     _track_source_tree(root)
 
 
-# ── 단위: _is_board_separated 실측 판별 (pm_paths._board_root_at 동형) ────────────
+# ── 단위: _is_board_separated 실측 판별 (pm_paths._board_root_at 와 같은 방식) ────────────
 
 def test_is_board_separated_false_when_no_board_dir(pm_update, tmp_path):
     """board/tickets 부재(legacy·솔로) → _is_board_separated == False."""
@@ -4679,13 +4679,13 @@ def test_is_board_separated_false_when_no_board_dir(pm_update, tmp_path):
 
 
 def test_is_board_separated_true_when_board_tickets_dir(pm_update, tmp_path):
-    """`.project_manager/board/tickets` 가 dir → _is_board_separated == True (분리 형상)."""
+    """`.project_manager/board/tickets` 가 dir → _is_board_separated == True (분리 경우)."""
     _make_board_separated(tmp_path)
     assert manifest_store._is_board_separated(tmp_path) is True
 
 
 def test_is_board_separated_ignores_bare_board_without_tickets(pm_update, tmp_path):
-    """board/ 만 있고 tickets/ 가 없으면 legacy 로 본다 (board_root 의 graceful 실측 동형)."""
+    """board/ 만 있고 tickets/ 가 없으면 legacy 로 본다 (board_root 의 graceful 실측과 같은 방식)."""
     (tmp_path / ".project_manager" / "board").mkdir(parents=True)
     assert manifest_store._is_board_separated(tmp_path) is False
 
@@ -4717,7 +4717,7 @@ def test_dest_relpath_normalizes_windows_separators(pm_update, tmp_path):
     assert manifest_store._dest_relpath_for(win_rel, tmp_path) == _BOARD_TEMPLATE_REL
 
 
-# ── plan 레벨: 양 형상 dst 목적지 (실 복사 없이) ──────────────────────────────
+# ── plan 레벨: 양 구성 dst 목적지 (실 복사 없이) ──────────────────────────────
 
 def test_plan_writes_template_to_board_when_separated(pm_update, tmp_path):
     """board-분리 dest → plan 의 template change dst 가 board/tickets/_template.md (wiki/ 부활 0)."""
@@ -4893,7 +4893,7 @@ def test_self_update_bare_engine_file_propagates(pm_update, tmp_path):
     """bare(root-sourced) 파일 행: 루트 실재분도 self-update 로 전파.
 
     ctx 훅은 @source(ship 템플릿) remap 이지만 엔진 도구 `.project_manager/tools/*.py` 28행은
-    루트에 실재라 bare 등록(agents/skills 동형). bare 엔트리는 source_root/<rel> 을 그대로 읽어
+    루트에 실재라 bare 등록(agents/skills 와 같은 방식). bare 엔트리는 source_root/<rel> 을 그대로 읽어
     dest 로 복사한다."""
     upstream = tmp_path / "framework"
     adopter = tmp_path / "adopter"
@@ -4933,27 +4933,27 @@ def test_source_remapped_hook_missing_source_reports_rc2_class(pm_update, tmp_pa
     assert not any(manifest_rules._entry_target_owned_flag(e) for e in entries)
 
 
-# ── T-0305: manifest 자기전파 flavor 보존 e2e (self-prop 이 flavor 매니페스트 clobber 안 함) ──────
-# self-prop 엔트리(`.project_manager/engine.manifest`)가 3 flavor(root·claude_code·opencode)에 모두
-# 있으므로, `--target <flavor>` sync 가 flavor 매니페스트를 *자기 자신*(claude→claude·op→op)에서
-# 읽어야(=@source remap + resolve_manifest_for_dest dest-우선) 한 flavor 가 다른 flavor 를 덮지 않는다.
+# ── T-0305: manifest 자기전파 하네스별 판 보존 e2e (self-prop 이 하네스별 판 매니페스트 clobber 안 함) ──────
+# self-prop 엔트리(`.project_manager/engine.manifest`)가 3 하네스별 판(root·claude_code·opencode)에 모두
+# 있으므로, `--target <variant>` sync 가 하네스별 판 매니페스트를 *자기 자신*(claude→claude·op→op)에서
+# 읽어야(=@source remap + resolve_manifest_for_dest dest-우선) 한 하네스별 판이 다른 하네스별 판을 덮지 않는다.
 # 만약 claude_code self-prop 이 bare(@source 없음)면 `--target claude_code` 가 source 루트 매니페스트
-# (root flavor)를 읽어 claude 매니페스트를 clobber → flavor 오염. 그 회귀를 e2e 로 박제한다.
+# (root 하네스별 판)을 읽어 claude 매니페스트를 clobber → 하네스별 판 오염. 그 회귀를 e2e 로 기록한다.
 
 
-def _make_flavor_manifest_repo(root: Path) -> None:
-    """fake REPO — root·claude_code·opencode 각 flavor 매니페스트(자기전파 엔트리 + 고유 FLAVOR 마커).
+def _make_variant_manifest_repo(root: Path) -> None:
+    """fake REPO — root·claude_code·opencode 각 하네스별 판 매니페스트(자기전파 엔트리 + 고유 VARIANT 마커).
 
-    각 매니페스트는 self-prop 1줄만 담아 격리한다. root 는 bare(자기 flavor), 템플릿은
-    `@source=templates/<flavor>/...` 로 자기 flavor 를 읽는다(clobber 방지의 핵심)."""
+    각 매니페스트는 self-prop 1줄만 담아 격리한다. root 는 bare(자기 하네스별 판), 템플릿은
+    `@source=templates/<variant>/...` 로 자기 하네스별 판을 읽는다(clobber 방지의 핵심)."""
     specs = {
         root / ".project_manager" / "engine.manifest":
-            "# FLAVOR: root\n.project_manager/engine.manifest\n",
+            "# VARIANT: root\n.project_manager/engine.manifest\n",
         root / "templates" / "claude_code" / ".project_manager" / "engine.manifest":
-            "# FLAVOR: claude\n.project_manager/engine.manifest    "
+            "# VARIANT: claude\n.project_manager/engine.manifest    "
             "@source=templates/claude_code/.project_manager/engine.manifest\n",
         root / "templates" / "opencode" / ".project_manager" / "engine.manifest":
-            "# FLAVOR: opencode\n.project_manager/engine.manifest    "
+            "# VARIANT: opencode\n.project_manager/engine.manifest    "
             "@source=templates/opencode/.project_manager/engine.manifest\n",
     }
     for path, text in specs.items():
@@ -4967,18 +4967,18 @@ def _stub_no_baseline_git(pm_update, monkeypatch) -> None:
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
 
 
-@pytest.mark.parametrize("target,flavor,foreign", [
+@pytest.mark.parametrize("target,variant,foreign", [
     ("claude_code", "claude", "root"),
     ("opencode", "opencode", "root"),
 ])
-def test_self_prop_target_sync_preserves_flavor_manifest(
-        pm_update, tmp_path, monkeypatch, target, flavor, foreign):
-    """`--target <flavor>` 가 flavor 매니페스트를 자기 flavor 로 유지(root/타 flavor 로 clobber 안 함).
+def test_self_prop_target_sync_preserves_variant_manifest(
+        pm_update, tmp_path, monkeypatch, target, variant, foreign):
+    """`--target <variant>` 가 하네스별 판 매니페스트를 자기 하네스별 판으로 유지(root/타 하네스별 판으로 clobber 안 함).
 
-    self-prop 이 `@source=templates/<flavor>/...` + resolve_manifest_for_dest(dest 우선)라 flavor
-    매니페스트를 자기 자신에서 읽는다(self no-op) — bare 였다면 source 루트(root flavor)를 읽어 덮었다."""
+    self-prop 이 `@source=templates/<variant>/...` + resolve_manifest_for_dest(dest 우선)라 하네스별 판
+    매니페스트를 자기 자신에서 읽는다(self no-op) — bare 였다면 source 루트(root 하네스별 판)을 읽어 덮었다."""
     fake_repo = tmp_path / "framework"
-    _make_flavor_manifest_repo(fake_repo)
+    _make_variant_manifest_repo(fake_repo)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     _stub_no_baseline_git(pm_update, monkeypatch)
 
@@ -4989,17 +4989,17 @@ def test_self_prop_target_sync_preserves_flavor_manifest(
     assert rc == 0, f"--target {target} sync 실패 (rc={rc})"
 
     after = dest_manifest.read_text(encoding="utf-8")
-    assert f"FLAVOR: {flavor}" in after, (
-        f"--target {target} 후 {flavor} 매니페스트의 flavor 마커 소실(clobber?): {after!r}")
-    assert f"FLAVOR: {foreign}" not in after, (
-        f"--target {target} 가 {foreign} flavor 매니페스트로 {flavor} 를 clobber(self-prop remap 실패): {after!r}")
-    assert after == before, "flavor 매니페스트가 자기전파에서 변경됨(self no-op 이어야)"
+    assert f"VARIANT: {variant}" in after, (
+        f"--target {target} 후 {variant} 매니페스트의 하네스별 판 마커 소실(clobber?): {after!r}")
+    assert f"VARIANT: {foreign}" not in after, (
+        f"--target {target} 가 {foreign} 하네스별 판 매니페스트로 {variant} 를 clobber(self-prop remap 실패): {after!r}")
+    assert after == before, "하네스별 판 매니페스트가 자기전파에서 변경됨(self no-op 이어야)"
 
 
-def test_self_prop_self_update_preserves_root_flavor(pm_update, tmp_path, monkeypatch):
-    """self-update(--target 없음)는 root(bare) self-prop 으로 root flavor 매니페스트를 유지(② adopter#0)."""
+def test_self_prop_self_update_preserves_root_variant(pm_update, tmp_path, monkeypatch):
+    """self-update(--target 없음)는 root(bare) self-prop 으로 root 하네스별 판 매니페스트를 유지(② adopter#0)."""
     fake_repo = tmp_path / "framework"
-    _make_flavor_manifest_repo(fake_repo)
+    _make_variant_manifest_repo(fake_repo)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     _stub_no_baseline_git(pm_update, monkeypatch)
     _write_local_conf(fake_repo, f"upstream.path={fake_repo}\n")
@@ -5009,7 +5009,7 @@ def test_self_prop_self_update_preserves_root_flavor(pm_update, tmp_path, monkey
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])  # self-location: dest=REPO=fake_repo.
     assert rc == 0
     after = root_manifest.read_text(encoding="utf-8")
-    assert "FLAVOR: root" in after and "FLAVOR: claude" not in after and "FLAVOR: opencode" not in after
+    assert "VARIANT: root" in after and "VARIANT: claude" not in after and "VARIANT: opencode" not in after
     assert after == before, "root self-update 가 root 매니페스트를 변경(self no-op 이어야)"
 
 
@@ -5034,7 +5034,7 @@ _AREAS_ONE_REPO = (
 
 def _make_pm_home(dest_root: Path, *, areas: str | None = _AREAS_ONE_REPO,
                   bare_repos: tuple[str, ...] = ("svc",)) -> Path:
-    """dest 를 **PM 홈 형상**으로 만든다 — 실 엔진 tools 사본 + areas 레지스트리 + 실 bare 미러.
+    """dest 를 **PM 홈 구성**으로 만든다 — 실 엔진 tools 사본 + areas 레지스트리 + 실 bare 미러.
 
     재설치는 dest 엔진(`pm_config`→`board`/`worktree_pool`)을 로드해 돌므로 tools 는 실 사본이어야
     한다(형제 rev 스탬프도 함께 맞는다·T-0397). bare 는 `git init --bare` 실물 — `core.hooksPath`
@@ -5108,7 +5108,7 @@ def test_reinstall_protected_hooks_dry_run_writes_nothing(pm_update, tmp_path):
 def test_reinstall_protected_hooks_bare_absent_is_not_failure(pm_update, tmp_path, capsys):
     """등록됐지만 bare 미러가 없는 repo 는 `no_bare` — 실패 경고가 아니라 요약 1줄 (T-0415).
 
-    게이트할 미러가 없으면 훅도 무의미하다(install 이 no-op). 매 sync 마다 실패 경고를 울리면
+    검사할 미러가 없으면 훅도 무의미하다(install 이 no-op). 매 sync 마다 실패 경고를 울리면
     진짜 실패가 묻힌다 — 그렇다고 침묵하지도 않는다(요약 1줄로 surface)."""
     dest = _make_pm_home(tmp_path / "home", bare_repos=())
     result = update_adapters.reinstall_protected_hooks(dest, write=True)
@@ -5145,7 +5145,7 @@ def test_reinstall_protected_hooks_engine_absent_reports_no_repos(pm_update, tmp
 
 @_git_required
 def test_main_reinstalls_protected_hooks_after_apply(pm_update, tmp_path, monkeypatch, capsys):
-    """실 sync(main) — apply 후 등록 repo 전수 훅 재설치가 실제로 돈다 (T-0415 트리거 배선).
+    """실 sync(main) — apply 후 등록 repo 전수 훅 재설치가 실제로 돈다 (T-0415 트리거 등록).
 
     엔진 업그레이드 = `pm_update` sync 다. 그 경로에 재설치가 안 걸리면 새 훅은 우리 clone 에서만
     돌고 채택자에겐 영영 안 간다(ADR-0071 재설치 트리거 신설 근거)."""
@@ -5180,7 +5180,7 @@ def test_main_dry_run_previews_reinstall_without_installing(pm_update, tmp_path,
 
 @_git_required
 def test_main_target_mode_does_not_reinstall_hooks(pm_update, tmp_path, monkeypatch, capsys):
-    """`--target`(엔진 export)은 재설치 비발화 — templates/<name> 은 PM 홈이 아니다 (경계 일치).
+    """`--target`(엔진 export)은 재설치하지 않는다 — templates/<name> 은 PM 홈이 아니다 (경계 일치).
 
     selfheal/skew/진입 doc 마이그레이션과 같은 경계다. 여기서 재설치가 돌면 export 가 *루트 PM 홈*
     의 훅을 건드리는 월권이 된다."""
@@ -5198,12 +5198,12 @@ def test_main_target_mode_does_not_reinstall_hooks(pm_update, tmp_path, monkeypa
     assert "훅" not in capsys.readouterr().out
 
 
-# ── 트리거는 `changes` 로 게이트되지 않는다 (must-fix·RUN1/RUN2 실측) ──────────────
+# ── 트리거는 `changes` 로 막히지 않는다 (must-fix·RUN1/RUN2 실측) ──────────────
 # 업그레이드 경계에서 sync 를 *실행하는 주체는 dest 의 구 엔진*이다 — 이 기능을 배달하는 sync
 # 자체는 재설치 코드가 없다(RUN 1). 그 다음 실행은 dest 가 신 엔진이지만 엔진이 이미 최신이라
-# `changes == 0` 이다(RUN 2). "changes>0 에서만" 으로 좁히면 두 실행 다 미발화 → 채택자는 다음에
+# `changes == 0` 이다(RUN 2). "changes>0 에서만" 으로 좁히면 두 실행 다 안 돈다 → 채택자는 다음에
 # 우연히 엔진이 또 바뀔 때까지 가드를 못 받는다. 다른 채널도 없다(bootstrap reconcile 은 sidecar
-# 내용/배선만 보고 훅 *본문* 은 pm_update 축 소유·pre-commit 파일 부재는 영구 침묵).
+# 내용/등록만 보고 훅 *본문* 은 pm_update 쪽 소유·pre-commit 파일 부재는 영구 침묵).
 
 
 @_git_required
@@ -5212,7 +5212,7 @@ def test_main_reinstalls_protected_hooks_when_no_changes(pm_update, tmp_path, mo
 
     이게 업그레이드 배달의 실제 착지 지점이다: 배달 sync 는 구 엔진이 실행해 훅을 못 깔고,
     바로 다음 실행이 여기로 온다. 옆의 진입 doc 마이그레이션(`do_migrate`)이 정확히 같은 이유로
-    이 경로에서 write 하는 것과 동형이다."""
+    이 경로에서 write 하는 것과 같은 방식이다."""
     dest = _make_pm_home(tmp_path / "home")
     source = tmp_path / "upstream"
     _make_upstream(source)
@@ -5230,15 +5230,15 @@ def test_main_reinstalls_protected_hooks_when_no_changes(pm_update, tmp_path, mo
     out = capsys.readouterr().out
     assert "최신 — 변경 없음." in out, f"changes 0 경로가 아님(테스트 전제 깨짐): {out!r}"
     assert (_hook_dir(dest, "svc") / "pre-commit").exists(), \
-        "changes 0 이라 훅이 안 깔림 — 업그레이드 배달 다음 실행이 무발화(must-fix 재발)"
+        "changes 0 이라 훅이 안 깔림 — 업그레이드 배달 다음 실행에서도 안 깔림(must-fix 재발)"
     assert "✓ 보호 브랜치 pre-push + pre-commit 훅 (재)설치: svc" in out
 
 
 @_git_required
 def test_main_second_run_is_quiet_when_hooks_in_sync(pm_update, tmp_path, monkeypatch, capsys):
-    """정합이면 **완전히 조용** — 트리거는 계속 돌되 출력만 없다 (반복 노이즈 회피).
+    """일치하면 **완전히 조용** — 트리거는 계속 돌되 출력만 없다 (반복 노이즈 회피).
 
-    노이즈 해법으로 트리거를 끄면 안 되므로(그게 must-fix 였다), 대신 drift 판정이 흡수한다."""
+    노이즈 해법으로 트리거를 끄면 안 되므로(그게 must-fix 였다), 대신 drift 판정이 처리한다."""
     dest = _make_pm_home(tmp_path / "home")
     source = tmp_path / "upstream"
     _make_upstream(source)
@@ -5248,16 +5248,16 @@ def test_main_second_run_is_quiet_when_hooks_in_sync(pm_update, tmp_path, monkey
 
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0          # 1회차 — 설치(changes>0)
     capsys.readouterr()
-    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0          # 2회차 — changes 0 + 훅 정합
+    assert update_cmd.main(pm_paths.home_at(pm_update.REPO), []) == 0          # 2회차 — changes 0 + 훅 일치
     cap = capsys.readouterr()
     assert "훅" not in cap.out and cap.err == "", \
-        f"정합 상태인데 훅 관련 출력이 났다(매 sync 노이즈): {cap.out!r}"
+        f"일치 상태인데 훅 관련 출력이 났다(매 sync 노이즈): {cap.out!r}"
     assert (_hook_dir(dest, "svc") / "pre-commit").exists()
 
 
 @_git_required
 def test_reinstall_protected_hooks_skips_when_in_sync(pm_update, tmp_path, capsys):
-    """정합 판정 — 2회차는 `in_sync`(재설치·출력 0)."""
+    """일치 판정 — 2회차는 `in_sync`(재설치·출력 0)."""
     dest = _make_pm_home(tmp_path / "home")
     assert update_adapters.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"]
     capsys.readouterr()
@@ -5273,7 +5273,7 @@ def test_reinstall_protected_hooks_heals_wiped_hook_dir(pm_update, tmp_path):
     """훅 디렉토리가 통째로 지워진 clone 도 자가치유 (bootstrap reconcile 이 못 덮는 상태).
 
     bootstrap 의 sidecar reconcile 은 sidecar 파일이 없으면 즉시 return 이라 이 상태를 영구
-    침묵한다 — pm_update 축이 유일한 복구 채널이다."""
+    침묵한다 — pm_update 쪽이 유일한 복구 채널이다."""
     dest = _make_pm_home(tmp_path / "home")
     update_adapters.reinstall_protected_hooks(dest, write=True)
     shutil.rmtree(_hook_dir(dest, "svc"))
@@ -5284,7 +5284,7 @@ def test_reinstall_protected_hooks_heals_wiped_hook_dir(pm_update, tmp_path):
 
 @_git_required
 def test_reinstall_protected_hooks_detects_stale_hook_body(pm_update, tmp_path):
-    """설치된 훅 **본문**이 현 엔진 상수와 다르면 drift — 신 훅 배포의 판정축 (T-0415).
+    """설치된 훅 **본문**이 현 엔진 상수와 다르면 drift — 신 훅 배포의 판정 항목 (T-0415).
 
     구 엔진이 깐 pre-push 만 있고 pre-commit 이 없거나 본문이 낡은 상태가 정확히 업그레이드
     경계의 모습이다."""
@@ -5299,7 +5299,7 @@ def test_reinstall_protected_hooks_detects_stale_hook_body(pm_update, tmp_path):
 
 @_git_required
 def test_reinstall_protected_hooks_detects_stale_sidecar(pm_update, tmp_path):
-    """sidecar 보호목록이 areas 실효값과 어긋나도 drift — 두 축(본문·목록) 모두 본다."""
+    """sidecar 보호목록이 areas 실효값과 어긋나도 drift — 두 항목(본문·목록) 모두 본다."""
     dest = _make_pm_home(tmp_path / "home")
     update_adapters.reinstall_protected_hooks(dest, write=True)
     sidecar = _hook_dir(dest, "svc") / "protected"
@@ -5308,12 +5308,12 @@ def test_reinstall_protected_hooks_detects_stale_sidecar(pm_update, tmp_path):
     assert sidecar.read_text(encoding="utf-8").splitlines() == ["main", "release"]
 
 
-# ── 읽기 실패도 drift 로 수렴한다 — 4축 전부 (codex must-fix) ────────────────────
+# ── 읽기 실패도 drift 로 일치한다 — 4항목 전부 (codex must-fix) ────────────────────
 # 판정 함수가 예외를 밖으로 내면 호출부의 fail-soft 가 그걸 `unavailable`(= 재설치 안 함)로
 # 처리해 **깨진 훅이 영영 복구되지 않는다**. `unavailable` 은 "dest 엔진/레지스트리를 못 불렀다"
-# (= 어느 repo 도 못 만진다)를 위한 상태지 "이 repo 의 파일이 깨졌다" 가 아니다. 한 축만 고치면
-# 나머지 축에서 같은 클래스가 남으므로 **네 산출물 각각**을 UTF-8 디코딩 불가 바이트로 깨서
-# 같은 방향(drifted → 재설치 → 복구)으로 수렴하는지 고정한다.
+# (= 어느 repo 도 못 만진다)를 위한 상태지 "이 repo 의 파일이 깨졌다" 가 아니다. 한 항목만 고치면
+# 나머지 항목에서 같은 클래스가 남으므로 **네 산출물 각각**을 UTF-8 디코딩 불가 바이트로 깨서
+# 같은 방향(drifted → 재설치 → 복구)으로 일치하는지 고정한다.
 
 _UNDECODABLE = b"\xff\xfe\x00\x80 broken hook\n"
 
@@ -5338,23 +5338,23 @@ def test_reinstall_protected_hooks_unreadable_artifact_is_drift_not_unavailable(
     assert update_adapters.reinstall_protected_hooks(dest, write=False)["in_sync"] == ["svc"]
 
 
-# ── 실행 비트도 drift 축이다 + 축은 **명세에서 유도**한다 (codex must-fix 2R) ──────
+# ── 실행 비트도 drift 항목이다 + 항목은 **명세에서 유도**한다 (codex must-fix 2R) ──────
 # 본문만 비교하면 `chmod 0644` 된 훅이 `in_sync` 로 오판돼 **보호가 침묵 비활성화**된다(git 이
-# 실행권한 없는 훅을 조용히 건너뛴다). 더 근본은 축 산정 방식 — 판정이 자체 목록을 들면 설치가
-# 자랄 때마다 축이 샌다(읽기 실패 → 실행 비트, 두 라운드 연속 같은 클래스). 그래서 판정은
+# 실행권한 없는 훅을 조용히 건너뛴다). 더 근본은 항목 산정 방식 — 판정이 자체 목록을 들면 설치가
+# 자랄 때마다 항목이 샌다(읽기 실패 → 실행 비트, 두 라운드 연속 같은 클래스). 그래서 판정은
 # `worktree_pool.protected_hook_artifacts`(설치와 **같은 명세**)를 읽고, 아래 테스트도 그 명세를
-# 순회해 축을 **유도**한다 — 명세에 산출물이 추가되면 이 테스트가 자동으로 그것까지 검사한다.
+# 순회해 항목을 **유도**한다 — 명세에 산출물이 추가되면 이 테스트가 자동으로 그것까지 검사한다.
 
 
 
 
 @_git_required
-def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
+def test_drift_kinds_are_derived_from_install_artifact_spec(pm_update, tmp_path):
     """**명세 순회** — 설치 산출물 *하나하나*에 대해 내용 훼손·실행권한 상실이 drift 로 잡힌다.
 
-    축을 손으로 열거하지 않는다: `protected_hook_artifacts` 가 말하는 산출물 전수를 돌며 각
-    축을 친다. install 이 새 산출물을 추가하면(명세에 추가해야 하므로) 이 테스트가 자동으로
-    그 산출물까지 검사한다 — "다음에 또 축이 샌다" 를 닫는 장치."""
+    항목을 손으로 열거하지 않는다: `protected_hook_artifacts` 가 말하는 산출물 전수를 돌며 각
+    항목을 친다. install 이 새 산출물을 추가하면(명세에 추가해야 하므로) 이 테스트가 자동으로
+    그 산출물까지 검사한다 — "다음에 또 항목이 샌다" 를 닫는 장치."""
     dest = _make_pm_home(tmp_path / "home")
     update_adapters.reinstall_protected_hooks(dest, write=True)
     gate_mode, test_cmd = repo_protection._protected_push_gate_config(pm_paths.home_at(dest), "svc")
@@ -5367,7 +5367,7 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
         # ① 내용 훼손 → drift → 재설치로 복구.
         artifact.path.write_text("tampered\n", encoding="utf-8")
         assert update_adapters.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
-            f"{name} 내용 훼손이 drift 로 안 잡힘(미검사 축)"
+            f"{name} 내용 훼손이 drift 로 안 잡힘(미검사 항목)"
         assert artifact.path.read_text(encoding="utf-8") == artifact.content
         # ② 실행권한 상실 → drift → 0755 복구 (실행권한을 요구하는 산출물만).
         if artifact.executable and posix_mode_supported():
@@ -5375,7 +5375,7 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
             assert update_adapters.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
                 f"{name} 실행권한 상실이 drift 로 안 잡힘 — git 이 훅을 조용히 건너뛴다"
             assert artifact.path.stat().st_mode & 0o111, f"{name} 0755 복구 실패"
-        # ③ 전부 정합이면 조용(무한 재설치 회귀 방지).
+        # ③ 전부 일치하면 조용(무한 재설치 회귀 방지).
         assert update_adapters.reinstall_protected_hooks(dest, write=True)["in_sync"] == ["svc"]
 
 
@@ -5387,7 +5387,7 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
 def test_reinstall_protected_hooks_missing_exec_bit_is_drift(pm_update, tmp_path, hook_name):
     """실행 비트만 빠진 훅(본문 동일·`chmod 0644`)도 drift → 재설치 후 0755 복구 (T-0415).
 
-    본문 동일이라 내용 축으로는 절대 안 잡히는 상태다 — 이게 "보호 훅 침묵 비활성화" 의 모습."""
+    본문 동일이라 내용 검사으로는 절대 안 잡히는 상태다 — 이게 "보호 훅 침묵 비활성화" 의 모습."""
     dest = _make_pm_home(tmp_path / "home")
     update_adapters.reinstall_protected_hooks(dest, write=True)
     hook = _hook_dir(dest, "svc") / hook_name
@@ -5398,16 +5398,16 @@ def test_reinstall_protected_hooks_missing_exec_bit_is_drift(pm_update, tmp_path
     assert result["status"] == "done" and result["drifted"] == ["svc"], \
         f"{hook_name} 실행권한 상실이 in_sync 로 오판됨(보호 침묵 비활성)"
     assert hook.stat().st_mode & 0o111, f"{hook_name} 실행권한이 재설치로 복구되지 않음"
-    assert hook.read_text(encoding="utf-8") == body_before   # 본문은 그대로(내용 축 무관)
+    assert hook.read_text(encoding="utf-8") == body_before   # 본문은 그대로(내용 검사 무관)
 
 
 @_git_required
-def test_exec_bit_axis_disabled_on_windows(pm_update, tmp_path, monkeypatch):
-    """Windows 는 실행 비트 축 **비활성** — 거짓 drift 로 매 sync 재설치가 돌지 않는다.
+def test_exec_bit_check_disabled_on_windows(pm_update, tmp_path, monkeypatch):
+    """Windows 는 실행 비트 검사 **비활성** — 거짓 drift 로 매 sync 재설치가 돌지 않는다.
 
     NTFS 엔 POSIX mode 가 없고 `chmod` 는 read-only 플래그만 만진다(`st_mode & 0o111` 이 늘
-    거짓) — 그 축을 그대로 보면 Windows 채택자는 매 pm_update 마다 재설치+출력이 난다.
-    git-for-windows 는 훅을 sh 로 돌리며 실행 비트를 요구하지도 않아 축 자체가 무의미하다.
+    거짓) — 그 검사를 그대로 보면 Windows 채택자는 매 pm_update 마다 재설치+출력이 난다.
+    git-for-windows 는 훅을 sh 로 돌리며 실행 비트를 요구하지도 않아 검사 자체가 무의미하다.
     플랫폼 분기는 상수 하나(`_EXEC_BIT_MEANINGFUL`)라 hermetic 하게 뒤집어 친다."""
     dest = _make_pm_home(tmp_path / "home")
     update_adapters.reinstall_protected_hooks(dest, write=True)
@@ -5416,14 +5416,14 @@ def test_exec_bit_axis_disabled_on_windows(pm_update, tmp_path, monkeypatch):
     monkeypatch.setattr(update_adapters, "_EXEC_BIT_MEANINGFUL", False)   # = Windows
     result = update_adapters.reinstall_protected_hooks(dest, write=True)
     assert result["in_sync"] == ["svc"] and result["drifted"] == [], \
-        "Windows 에서 실행 비트 축이 거짓 drift 를 냈다(매 sync 재설치)"
+        "Windows 에서 실행 비트 검사가 거짓 drift 를 냈다(매 sync 재설치)"
 
 
 @_git_required
 @pytest.mark.parametrize(
     "artifact", ["pre-commit", "pre-push", "protected", "engine-root", "gate-contract"])
 def test_protected_hook_in_sync_never_raises_on_unreadable(pm_update, tmp_path, artifact):
-    """판정 함수 자체의 계약 — 읽기 실패에 예외 대신 `False`(drift) (4축 동형)."""
+    """판정 함수 자체의 계약 — 읽기 실패에 예외 대신 `False`(drift) (4항목과 같은 방식)."""
     dest = _make_pm_home(tmp_path / "home")
     update_adapters.reinstall_protected_hooks(dest, write=True)
     (_hook_dir(dest, "svc") / artifact).write_bytes(_UNDECODABLE)
@@ -5436,15 +5436,15 @@ def test_protected_hook_in_sync_never_raises_on_unreadable(pm_update, tmp_path, 
 
 # ── `--paths` 경로 스코프 (opt-in 부분 전파) ────────────────────────────────
 # 기본 sync 는 manifest 전량이라 all-or-nothing 이다 — 한 파일만 내보내야 할 때 엔진 밖 수동 복사로
-# 우회하면 안전 판정·render 를 통째로 건너뛴다. 이 축이 그 필요를 엔진 안에서 처리한다:
-# 명시 경로만 전파 · manifest 등재분에 한정(미등재 rc1) · 부분 전파라 "전량 흡수" 후속 단계 비발화.
+# 우회하면 안전 판정·render 를 통째로 건너뛴다. 이 검사가 그 필요를 엔진 안에서 처리한다:
+# 명시 경로만 전파 · manifest 등재분에 한정(미등재 rc1) · 부분 전파라 "전량 갱신" 후속 단계는 돌지 않는다.
 
 
 def _make_upstream_tree(root: Path, files: dict, manifest_entries: list) -> None:
     """source(upstream) 트리 — 임의 파일 집합 + 직접 지정한 manifest 등재 목록.
 
     `_make_upstream_manifest` 는 등재 1줄=파일 1개라 **디렉토리 등재**(재귀 동기)를 못 만든다.
-    경로 스코프의 핵심 성질(디렉토리 등재 안에서 파일 하나만 고르기)이 그 형상에서만 재현된다.
+    경로 스코프의 핵심 성질(디렉토리 등재 안에서 파일 하나만 고르기)이 그 경우에만 재현된다.
     """
     for rel, text in files.items():
         target = root / rel
@@ -5592,7 +5592,7 @@ def test_paths_scope_dry_run_writes_nothing(pm_update, tmp_path, monkeypatch, ca
 def test_paths_scope_does_not_record_upstream_baseline(pm_update, tmp_path, monkeypatch):
     """부분 전파는 baseline 을 갱신하지 않는다 — 갱신하면 미전파분이 drift-lint 에서 사라진다.
 
-    같은 형상에서 스코프 없이 돌리면 baseline 이 기록된다(대조군) — 억제가 이 모드 고유임을 못박는다."""
+    같은 경우에 스코프 없이 돌리면 baseline 이 기록된다(대조군) — 억제가 이 모드 고유임을 못박는다."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "baseline")
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: "scopedrev7")
 
@@ -5606,7 +5606,7 @@ def test_paths_scope_does_not_record_upstream_baseline(pm_update, tmp_path, monk
 
 
 def test_paths_scope_skips_whole_instance_steps(pm_update, tmp_path, monkeypatch):
-    """진입 doc 마이그레이션·보호 훅 재설치는 발화하지 않는다 — 요청 밖 write 0."""
+    """진입 doc 마이그레이션·보호 훅 재설치는 돌지 않는다 — 요청 밖 write 0."""
     _dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "steps")
     called: list = []
     monkeypatch.setattr(
@@ -5621,7 +5621,7 @@ def test_paths_scope_skips_whole_instance_steps(pm_update, tmp_path, monkeypatch
 
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/one.md"]) == 0
 
-    assert called == [], f"부분 전파가 전량 흡수 후속 단계를 태웠다: {called}"
+    assert called == [], f"부분 전파가 전량 갱신 후속 단계를 태웠다: {called}"
 
 
 def test_target_mode_never_runs_retired_path_migration(
@@ -5662,7 +5662,7 @@ def test_scope_helpers_normalize_and_match(pm_update):
     """정규화·등재 판정·후보 파생의 단위 규칙(호출부가 의존하는 성질)."""
     normalized, rejected = upstream_changes._normalize_scope_paths(
         [" a/b/ ", "a\\b", "a/b", "", "/abs", "x/../y"])
-    assert normalized == ["a/b"]  # 공백·백슬래시·꼬리 슬래시·중복 접기
+    assert normalized == ["a/b"]  # 공백·백슬래시·꼬리 슬래시·중복 바꾸기
     assert len(rejected) == 3
 
     manifest = ["pkg", "tools/one.py"]
@@ -5687,7 +5687,7 @@ def test_paths_scope_reports_a_missing_source_entry_that_holds_the_request(
         pm_update, tmp_path, monkeypatch, capsys):
     """요청 파일을 담은 등재가 source 에 통째로 없으면 rc2 — '변경 없음' 거짓 성공 0.
 
-    부재 보고는 항목 단위(디렉토리)라 스코프 판정이 단방향이면 그 보고가 접혀 사라진다."""
+    부재 보고는 항목 단위(디렉토리)라 스코프 판정이 단방향이면 그 보고가 바뀌어 사라진다."""
     dest = tmp_path / "missing_dest"
     source = tmp_path / "missing_source"
     _make_upstream_tree(
@@ -5743,12 +5743,12 @@ def test_paths_scope_refusal_writes_nothing_to_dest(
     assert "[미등재]" in capsys.readouterr().err
 
 
-def test_paths_scope_accepts_guest_clause_path(pm_update, tmp_path, monkeypatch, capsys):
-    """guest 절 경로는 정상 스코프 대상이다 — 절의 렌더물도 update 채널이 전파하기 때문이다.
+def test_paths_scope_accepts_added_harness_clause_path(pm_update, tmp_path, monkeypatch, capsys):
+    """추가 하네스 절 경로는 정상 스코프 대상이다 — 절의 렌더물도 update 채널이 전파하기 때문이다.
 
-    옛 판정("guest 절 소속이라 지정 불가")은 렌더물을 계획에서 빼던 시절의 진단이라 소멸했다."""
-    dest = tmp_path / "guest_dest"
-    source = tmp_path / "guest_source"
+    옛 판정("추가 하네스 절 소속이라 지정 불가")은 렌더물을 계획에서 빼던 시절의 진단이라 소멸했다."""
+    dest = tmp_path / "added_harness_dest"
+    source = tmp_path / "added_harness_source"
     # 구획은 그 판의 출하 manifest 에서 다시 만들어지므로 상류에 opencode 판을 둔다. 어댑터 훅 영역의
     #   부분 전파 가드가 상류 훅 세트 선언을 읽도록 엔진 패키지 사본도 둔다(`_make_guest_framework` 와 같다).
     shutil.copytree(TOOLS / "pm_engine", source / ".project_manager" / "tools" / "pm_engine",
@@ -5764,16 +5764,16 @@ def test_paths_scope_accepts_guest_clause_path(pm_update, tmp_path, monkeypatch,
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         "\n".join(_SCOPE_MANIFEST) + "\n"
-        + manifest_rules._GUEST_MANIFEST_BEGIN + "\n"
+        + manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN + "\n"
         + ".opencode/agents @render @target-owned\n"
-        + manifest_rules._GUEST_MANIFEST_END + "\n",
+        + manifest_rules._ADDED_HARNESS_MANIFEST_END + "\n",
         encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", ".opencode/agents"])
 
     err = capsys.readouterr().err
-    assert rc == 0, f"guest 절 경로가 미등재로 거부됐다: {err!r}"
+    assert rc == 0, f"추가 하네스 절 경로가 미등재로 거부됐다: {err!r}"
     assert "[미등재]" not in err, err
 
 
@@ -5782,7 +5782,7 @@ def test_paths_scope_reports_missing_source_for_source_remapped_entry(
     """`@source` 항목을 **upstream 경로**로 지정했는데 그 source 가 없으면 rc2 — 접히지 않는다.
 
     부재 보고는 dest 경로(manifest 경로)로 오므로, 스코프 대조가 dest 좌표만 보면 upstream 경로로
-    지정한 요청이 스코프 밖으로 접혀 "변경 없음 rc0" 라는 거짓 성공이 된다."""
+    지정한 요청이 스코프 밖으로 바뀌어 "변경 없음 rc0" 라는 거짓 성공이 된다."""
     dest = tmp_path / "remap_dest"
     source = tmp_path / "remap_source"
     _make_upstream_tree(
@@ -5797,7 +5797,7 @@ def test_paths_scope_reports_missing_source_for_source_remapped_entry(
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "templates/opencode/.opencode/agents"])
 
     err = capsys.readouterr().err
-    assert rc == 2, f"source 부재가 접혀 성공으로 끝남(err={err!r})"
+    assert rc == 2, f"source 부재가 바뀌어 성공으로 끝남(err={err!r})"
     assert ".opencode/agents" in err, err
 
 
@@ -5806,7 +5806,7 @@ def test_paths_scope_refuses_a_typo_under_a_registered_directory(
     """등재 **디렉토리 안의 오타**는 등재 검증을 통과하지만 대응 파일이 없다 — rc1 로 멈춘다.
 
     `adapterdir/typo.md` 는 `adapterdir` 등재와 겹쳐 소유권 판정을 통과하고, 변경 0 은 "이미 최신"
-    과 구분되지 않는다 → 옛 형상은 아무것도 전파하지 않고 rc0 으로 끝났다(조용한 무전파)."""
+    과 구분되지 않는다 → 옛 경우는 아무것도 전파하지 않고 rc0 으로 끝났다(조용한 무전파)."""
     dest, _source = _scope_fixture(pm_update, tmp_path, monkeypatch, "typo")
 
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--paths", "adapterdir/typo.md"])
@@ -5833,15 +5833,15 @@ def test_paths_scope_accepts_the_manifest_union_self_prop(pm_update, tmp_path, m
     """`engine.manifest` 를 스코프로 지정할 수 있다 — 합집합 분기도 계획 인벤토리에 실린다.
 
     그 분기는 upstream 에 단일 실파일이 없어 인메모리 source 로 계획된다. 인벤토리에서 빠지면
-    유효 변경인데도 "대응 없음" 으로 거부돼(rc1) 스스로 만든 게이트에 막힌다."""
+    유효 변경인데도 "대응 없음" 으로 거부돼(rc1) 스스로 만든 검사에 막힌다."""
     dest = tmp_path / "union_dest"
     source = tmp_path / "union_source"
     _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST + [".project_manager/engine.manifest"])
-    # flavor 합집합 경로 재현 — selfheal 이 여러 upstream manifest 를 계획 기준으로 올린다.
-    for flavor in ("claude_code", "codex"):
-        flavor_manifest = source / "templates" / flavor / ".project_manager" / "engine.manifest"
-        flavor_manifest.parent.mkdir(parents=True, exist_ok=True)
-        flavor_manifest.write_text(
+    # 하네스별 판 합집합 경로 재현 — selfheal 이 여러 upstream manifest 를 계획 기준으로 올린다.
+    for variant in ("claude_code", "codex"):
+        variant_manifest = source / "templates" / variant / ".project_manager" / "engine.manifest"
+        variant_manifest.parent.mkdir(parents=True, exist_ok=True)
+        variant_manifest.write_text(
             "\n".join(_SCOPE_MANIFEST + [".project_manager/engine.manifest"]) + "\n",
             encoding="utf-8")
     _track_source_tree(source)
@@ -5858,14 +5858,14 @@ def test_paths_scope_accepts_the_manifest_union_self_prop(pm_update, tmp_path, m
 def test_paths_scope_accepts_board_separated_remap(pm_update, tmp_path, monkeypatch):
     """board 분리 인스턴스의 리매핑 좌표(`board/tickets/_template.md`)를 등재로 인정한다.
 
-    계획은 그 좌표로 착지시키는데 게이트만 manifest 원문(`wiki/tickets/_template.md`)을 보면,
-    실제 관리 파일을 요청해도 rc1 로 거부된다(스스로 만든 게이트에 막힘)."""
+    계획은 그 좌표로 착지시키는데 검사만 manifest 원문(`wiki/tickets/_template.md`)을 보면,
+    실제 관리 파일을 요청해도 rc1 로 거부된다(스스로 만든 검사에 막힘)."""
     dest = tmp_path / "board_dest"
     source = tmp_path / "board_source"
     template_rel = ".project_manager/wiki/tickets/_template.md"
     board_rel = ".project_manager/board/tickets/_template.md"
     _make_upstream_tree(source, {template_rel: "# ticket 템플릿\n"}, [template_rel])
-    (dest / ".project_manager" / "board" / "tickets").mkdir(parents=True)  # board 분리 형상.
+    (dest / ".project_manager" / "board" / "tickets").mkdir(parents=True)  # board 분리 경우.
     _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     assert manifest_store._is_board_separated(dest), "픽스처 전제(board 분리 판정)"
@@ -5878,7 +5878,7 @@ def test_paths_scope_accepts_board_separated_remap(pm_update, tmp_path, monkeypa
 
 # ── instance-owned 어댑터 config 채널 (T-0585) ────────────────────────────────
 # 채널의 하한선을 못박는 절이다: **채택자 커스텀은 절대 안 덮는다**. 자동 갱신은 "설치가 내려놓은
-# 그대로"(dest 해시 == 원장 해시)인 managed 대상 하나뿐이고, 그 밖은 전부 보존 + 보고다.
+# 그대로"(dest 해시 == 기록 해시)인 managed 대상 하나뿐이고, 그 밖은 전부 보존 + 보고다.
 # 픽스처는 합성 프레임워크다 — 실 template 내용에 의존하면 상류 문구가 바뀔 때마다 이 절이
 # 무관하게 깨진다(채널 동작이 판정 대상이지 특정 파일 본문이 아니다).
 
@@ -5892,12 +5892,12 @@ _EDITED_HOOKS = '{"hooks": {"PreCompact": ["채택자 손편집"]}}\n'
 
 def _make_adapter_config_case(
     tmp_path: Path, *, hooks: str, config: str = _UPSTREAM_CONFIG,
-    ledger: dict | None = None,
+    records: dict | None = None,
 ) -> tuple[Path, Path]:
     """codex 채택자 + 합성 프레임워크 — (dest, source_root).
 
     `installed_harnesses` 는 설치 기록을 진실로 쓰므로 install.json 을 심는다(구조 증거도 함께
-    둬 유령 형상 경고가 판정 출력에 섞이지 않게 한다)."""
+    둬 유령 구성 경고가 판정 출력에 섞이지 않게 한다)."""
     source = tmp_path / "framework"
     template = source / "templates" / "codex"
     (template / ".codex").mkdir(parents=True)
@@ -5913,15 +5913,15 @@ def _make_adapter_config_case(
     (dest / _ADAPTER_CONFIG_REL).write_text(config, encoding="utf-8")
     (dest / ".project_manager" / "install.json").write_text(
         '{"schema": 1, "harnesses": ["codex"]}\n', encoding="utf-8")
-    if ledger is not None:
+    if records is not None:
         (dest / ".project_manager" / "adapter_baseline.json").write_text(
-            json.dumps({"schema": 1, "files": ledger}, ensure_ascii=False, indent=2) + "\n",
+            json.dumps({"schema": 1, "files": records}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8")
     return dest, source
 
 
-def _ledger_entry(text: str) -> dict:
-    """원장 항목 — 그 내용으로 레이다운했다는 기록(해시만 판정에 쓰인다)."""
+def _record_entry(text: str) -> dict:
+    """기록 항목 — 그 내용으로 레이다운했다는 기록(해시만 판정에 쓰인다)."""
     return {
         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "recorded_at": "2026-01-01T00:00:00+09:00",
@@ -5929,20 +5929,20 @@ def _ledger_entry(text: str) -> dict:
     }
 
 
-def _read_ledger(dest: Path) -> dict:
+def _read_records(dest: Path) -> dict:
     path = dest / ".project_manager" / "adapter_baseline.json"
     return json.loads(path.read_text(encoding="utf-8"))["files"] if path.is_file() else {}
 
 
 def test_adapter_config_unedited_is_backed_up_updated_and_rerecorded(
         pm_update, tmp_path, capsys):
-    """무편집(dest 해시 == 원장 해시) managed → 백업 + 현행 template 갱신 + 원장 갱신 + 재승인 안내.
+    """무편집(dest 해시 == 기록 해시) managed → 백업 + 현행 template 갱신 + 기록 갱신 + 재승인 안내.
 
     이게 이 티켓이 여는 채널 전부다 — 상류의 동작 fix(훅 차단→비차단)가 기존 채택자에 도달하는
     유일한 자동 경로. 재승인 안내가 빠지면 훅이 조용히 비활성 상태로 남는다(조용한 degrade)."""
     dest, source = _make_adapter_config_case(
         tmp_path, hooks=_INSTALLED_HOOKS,
-        ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_INSTALLED_HOOKS)})
+        records={_ADAPTER_HOOKS_REL: _record_entry(_INSTALLED_HOOKS)})
 
     result = update_adapters.sync_adapter_configs(dest, source, write=True)
     update_adapters._print_adapter_config_finding(result, dry_run=False)
@@ -5952,18 +5952,18 @@ def test_adapter_config_unedited_is_backed_up_updated_and_rerecorded(
     backup = dest / result["updated"][0]["backup_rel"]
     assert backup.read_text(encoding="utf-8") == _INSTALLED_HOOKS, \
         "덮기 전 값이 백업되지 않음(비파괴 위반)"
-    assert _read_ledger(dest)[_ADAPTER_HOOKS_REL]["sha256"] == hashlib.sha256(
-        _UPSTREAM_HOOKS.encode("utf-8")).hexdigest(), "원장이 새 값으로 갱신되지 않음"
+    assert _read_records(dest)[_ADAPTER_HOOKS_REL]["sha256"] == hashlib.sha256(
+        _UPSTREAM_HOOKS.encode("utf-8")).hexdigest(), "기록이 새 값으로 갱신되지 않음"
     out = capsys.readouterr().out
     assert "/hooks" in out, f"재승인 안내 부재(조용한 훅 비활성화): {out!r}"
 
 
 def test_adapter_config_edited_is_preserved_with_accept_guidance(
         pm_update, tmp_path, capsys):
-    """채택자 편집(dest 해시 != 원장 해시) → 보존 + loud 보고 + 수용 커맨드 안내(갱신 0)."""
+    """채택자 편집(dest 해시 != 기록 해시) → 보존 + loud 보고 + 수용 커맨드 안내(갱신 0)."""
     dest, source = _make_adapter_config_case(
         tmp_path, hooks=_EDITED_HOOKS,
-        ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_INSTALLED_HOOKS)})
+        records={_ADAPTER_HOOKS_REL: _record_entry(_INSTALLED_HOOKS)})
 
     result = update_adapters.sync_adapter_configs(dest, source, write=True)
     update_adapters._print_adapter_config_finding(result, dry_run=False)
@@ -5978,9 +5978,9 @@ def test_adapter_config_edited_is_preserved_with_accept_guidance(
 
 def test_adapter_config_unrecorded_is_preserved_as_safe_default(
         pm_update, tmp_path, capsys):
-    """원장 부재(구세대 채택자) → 판정 불가이므로 보존 + 보고 — 안전 기본값.
+    """기록 부재(옛 버전 채택자) → 판정 불가이므로 보존 + 보고 — 안전 기본값.
 
-    원장이 없다는 건 "손댔는지 모른다" 이지 "안 댔다" 가 아니다. 여기서 덮으면 원장 도입 전
+    기록이 없다는 건 "손댔는지 모른다" 이지 "안 댔다" 가 아니다. 여기서 덮으면 기록 도입 전
     채택자 전원의 커스텀이 업그레이드 한 번에 사라진다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_INSTALLED_HOOKS)
 
@@ -5993,39 +5993,39 @@ def test_adapter_config_unrecorded_is_preserved_as_safe_default(
     assert "기록 없음" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("ledger_state", ["absent", "matching", "stale"])
+@pytest.mark.parametrize("record_state", ["absent", "matching", "stale"])
 def test_adapter_config_report_only_target_is_never_updated(
-        pm_update, tmp_path, capsys, ledger_state):
-    """보고-전용 대상은 **어떤 원장 상태에서도** 갱신되지 않고 파일당 한 줄로만 표기된다.
+        pm_update, tmp_path, capsys, record_state):
+    """보고-전용 대상은 **어떤 기록 상태에서도** 갱신되지 않고 파일당 한 줄로만 표기된다.
 
-    managed 와 갈리는 지점이 여기다 — 원장이 무편집을 증명해도 갱신하지 않는다(그 파일엔 채택자
+    managed 와 갈리는 지점이 여기다 — 기록이 무편집을 증명해도 갱신하지 않는다(그 파일엔 채택자
     노브가 실재해 자동 갱신이 값을 지울 수 있다). 매 sync 반복 표기라 한 줄 상한도 함께 본다."""
     adopter_config = _UPSTREAM_CONFIG + "# 채택자 노브\n"
-    ledger = {
+    records = {
         "absent": None,
-        "matching": {_ADAPTER_CONFIG_REL: _ledger_entry(adopter_config)},
-        "stale": {_ADAPTER_CONFIG_REL: _ledger_entry("다른 세대\n")},
-    }[ledger_state]
+        "matching": {_ADAPTER_CONFIG_REL: _record_entry(adopter_config)},
+        "stale": {_ADAPTER_CONFIG_REL: _record_entry("다른 버전\n")},
+    }[record_state]
     dest, source = _make_adapter_config_case(
-        tmp_path, hooks=_UPSTREAM_HOOKS, config=adopter_config, ledger=ledger)
+        tmp_path, hooks=_UPSTREAM_HOOKS, config=adopter_config, records=records)
 
     result = update_adapters.sync_adapter_configs(dest, source, write=True)
     update_adapters._print_adapter_config_finding(result, dry_run=False)
 
-    assert result["updated"] == [], f"{ledger_state}: 보고-전용 대상을 갱신했다"
+    assert result["updated"] == [], f"{record_state}: 보고-전용 대상을 갱신했다"
     assert [item["relpath"] for item in result["drift"]] == [_ADAPTER_CONFIG_REL]
     assert (dest / _ADAPTER_CONFIG_REL).read_text(encoding="utf-8") == adopter_config
     per_file = [line for line in capsys.readouterr().out.splitlines()
                 if _ADAPTER_CONFIG_REL in line]
-    assert len(per_file) == 1, f"{ledger_state}: 파일당 1줄 상한 위반: {per_file}"
+    assert len(per_file) == 1, f"{record_state}: 파일당 1줄 상한 위반: {per_file}"
 
 
 def test_adapter_config_dry_run_changes_nothing(pm_update, tmp_path, capsys):
-    """dry-run 은 판정만 한다 — 파일도 원장도 안 바뀐다(무변경 계약)."""
+    """dry-run 은 판정만 한다 — 파일도 기록도 안 바뀐다(무변경 계약)."""
     dest, source = _make_adapter_config_case(
         tmp_path, hooks=_INSTALLED_HOOKS,
-        ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_INSTALLED_HOOKS)})
-    before_ledger = _read_ledger(dest)
+        records={_ADAPTER_HOOKS_REL: _record_entry(_INSTALLED_HOOKS)})
+    before_records = _read_records(dest)
 
     result = update_adapters.sync_adapter_configs(dest, source, write=False)
     update_adapters._print_adapter_config_finding(result, dry_run=True)
@@ -6033,32 +6033,32 @@ def test_adapter_config_dry_run_changes_nothing(pm_update, tmp_path, capsys):
     assert [item["relpath"] for item in result["updated"]] == [_ADAPTER_HOOKS_REL], \
         "판정 자체가 사라짐(dry-run 이 무동작이 아니라 무write 여야 한다)"
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _INSTALLED_HOOKS
-    assert _read_ledger(dest) == before_ledger
+    assert _read_records(dest) == before_records
     assert not (dest / ".pm_import_backups").exists(), "dry-run 이 백업을 만들었다"
     assert "갱신 예정" in capsys.readouterr().out
 
 
-def test_adapter_config_in_sync_backfills_ledger_without_touching_file(
+def test_adapter_config_in_sync_backfills_records_without_touching_file(
         pm_update, tmp_path):
-    """이미 상류와 같은 파일은 원장만 뒤늦게 채운다 — 구세대 채택자의 보고 모드 탈출 자동 경로.
+    """이미 상류와 같은 파일은 기록만 뒤늦게 채운다 — 옛 버전 채택자의 보고 모드 탈출 자동 경로.
 
-    backfill 이 없으면 손댄 적 없는 채택자도 원장이 비어 영구 `unrecorded`(보존+보고)에 갇힌다."""
+    backfill 이 없으면 손댄 적 없는 채택자도 기록이 비어 영구 `unrecorded`(보존+보고)에 갇힌다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
-    assert _read_ledger(dest) == {}, "픽스처 전제(원장 부재)"
+    assert _read_records(dest) == {}, "픽스처 전제(기록 부재)"
 
     result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert sorted(result["backfilled"]) == sorted(
         {_ADAPTER_HOOKS_REL, _ADAPTER_CONFIG_REL})
-    assert set(_read_ledger(dest)) == {_ADAPTER_HOOKS_REL, _ADAPTER_CONFIG_REL}
+    assert set(_read_records(dest)) == {_ADAPTER_HOOKS_REL, _ADAPTER_CONFIG_REL}
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _UPSTREAM_HOOKS
     assert not (dest / ".pm_import_backups").exists(), "무변경 파일에 백업을 만들었다"
 
 
 def test_adapter_config_accept_enters_auto_update_track(pm_update, tmp_path):
-    """수용 → 백업 + template 채택 + 원장 기록 → **다음 상류 변경이 자동 갱신**된다.
+    """수용 → 백업 + template 채택 + 기록 쓰기 → **다음 상류 변경이 자동 갱신**된다.
 
-    구세대 채택자가 보고 모드를 빠져나가는 경로 전체를 한 번에 태운다(수용 없이는 영구 보고)."""
+    옛 버전 채택자가 보고 모드를 빠져나가는 경로 전체를 한 번에 태운다(수용 없이는 영구 보고)."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_EDITED_HOOKS)
     assert update_adapters.sync_adapter_configs(dest, source, write=True)["preserved"], \
         "픽스처 전제(수용 전에는 보존+보고)"
@@ -6070,35 +6070,35 @@ def test_adapter_config_accept_enters_auto_update_track(pm_update, tmp_path):
     assert outcome.status == "accepted", outcome.detail
     assert Path(outcome.backup).read_text(encoding="utf-8") == _EDITED_HOOKS
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _UPSTREAM_HOOKS
-    assert _read_ledger(dest)[_ADAPTER_HOOKS_REL]["sha256"] == hashlib.sha256(
+    assert _read_records(dest)[_ADAPTER_HOOKS_REL]["sha256"] == hashlib.sha256(
         _UPSTREAM_HOOKS.encode("utf-8")).hexdigest()
     # 상류가 다시 움직인다 — 이제 무편집 판정이라 자동 갱신 궤도다.
-    next_upstream = '{"hooks": {"PreCompact": ["다음 세대"]}}\n'
+    next_upstream = '{"hooks": {"PreCompact": ["다음 버전"]}}\n'
     (source / "templates" / "codex" / ".codex" / "hooks.json").write_text(
         next_upstream, encoding="utf-8")
 
     result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert [item["relpath"] for item in result["updated"]] == [_ADAPTER_HOOKS_REL], \
-        "수용 후에도 자동 갱신 궤도에 못 들었다(원장 기록 누락)"
+        "수용 후에도 자동 갱신 궤도에 못 들었다(기록 쓰기 누락)"
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == next_upstream
 
 
-def test_adapter_baseline_ledger_is_not_registered_and_not_shipped(pm_update):
-    """원장은 어느 manifest 에도 없고 어느 템플릿 트리에도 출하되지 않는다 (제3 분류).
+def test_adapter_baseline_records_is_not_registered_and_not_shipped(pm_update):
+    """기록은 어느 manifest 에도 없고 어느 템플릿 트리에도 출하되지 않는다 (제3 분류).
 
-    등재하면 byte-copy 가 채택자 원장을 상류 값으로 덮어 "무편집" 판정이 통째로 거짓이 된다.
+    등재하면 byte-copy 가 채택자 기록을 상류 값으로 덮어 "무편집" 판정이 통째로 거짓이 된다.
     동시에 출하물이 아니므로(인스턴스가 런타임에 만드는 상태 파일) **출하-등재 역방향 가드
     (T-0584)의 스캔 대상 밖**이다 — 그 가드에 예외 목록을 둘 이유가 없다는 판정의 근거다."""
-    ledger_rel = adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()
+    record_rel = adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()
     for manifest_path in _MANIFESTS:
         registered = {str(entry).replace("\\", "/")
                       for entry in manifest_store.read_manifest(manifest_path)}
-        assert ledger_rel not in registered, (
-            f"{manifest_path} 가 원장을 등재 — byte-copy 가 채택자 판정 기준을 덮는다")
-    shipped = [flavor for flavor in ("claude_code", "codex", "opencode")
-               if (REPO / "templates" / flavor / ledger_rel).exists()]
-    assert shipped == [], f"원장이 템플릿 트리에 출하됨(인스턴스 상태 파일이어야 한다): {shipped}"
+        assert record_rel not in registered, (
+            f"{manifest_path} 가 기록을 등재 — byte-copy 가 채택자 판정 기준을 덮는다")
+    shipped = [variant for variant in ("claude_code", "codex", "opencode")
+               if (REPO / "templates" / variant / record_rel).exists()]
+    assert shipped == [], f"기록이 템플릿 트리에 출하됨(인스턴스 상태 파일이어야 한다): {shipped}"
 
 
 def test_adapter_config_accept_refuses_when_file_changed_after_judgment(
@@ -6118,17 +6118,17 @@ def test_adapter_config_accept_refuses_when_file_changed_after_judgment(
     assert outcome.status == "raced", outcome
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == concurrent, \
         "동시 편집분을 덮었다(판정-쓰기 레이스 미차단)"
-    assert _read_ledger(dest) == {}, "덮지도 않았는데 원장을 기록했다"
+    assert _read_records(dest) == {}, "덮지도 않았는데 기록을 적었다"
 
 
-def test_adapter_config_accept_reports_ledger_failure_instead_of_success(
+def test_adapter_config_accept_reports_record_failure_instead_of_success(
         pm_update, tmp_path):
-    """원장을 쓸 수 없으면 성공으로 반환하지 않는다 — "자동 갱신 궤도" 거짓 안내 차단.
+    """기록을 쓸 수 없으면 성공으로 반환하지 않는다 — "자동 갱신 궤도" 거짓 안내 차단.
 
     파일 교체는 성공했는데 판정 기준이 안 남으면 다음 동기가 이 파일을 영구 보고 모드로 본다.
     호출부(CLI·동기 채널)가 그 사실을 알아야 사람에게 복구 경로를 낼 수 있다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_EDITED_HOOKS)
-    # 원장 쓰기를 실패시킨다 — 기록 경로를 **디렉토리**로 점유(권한 chmod 는 root 에서 무력).
+    # 기록 쓰기를 실패시킨다 — 기록 경로를 **디렉토리**로 점유(권한 chmod 는 root 에서 무력).
     (dest / ".project_manager" / "adapter_baseline.json").mkdir()
 
     outcome = adapter_accept.accept_adapter_config(
@@ -6142,32 +6142,32 @@ def test_adapter_config_accept_reports_ledger_failure_instead_of_success(
     assert adapter_baseline.read_adapter_baseline(dest).get("files") == {}
 
 
-def test_adapter_config_future_schema_ledger_is_not_overwritten(pm_update, tmp_path):
-    """상위 schema 원장은 **읽기도 쓰기도 거부**한다 — 미래 형식 데이터 무변조 왕복.
+def test_adapter_config_future_schema_records_is_not_overwritten(pm_update, tmp_path):
+    """상위 schema 기록은 **읽기도 쓰기도 거부**한다 — 미래 형식 데이터 무변조 왕복.
 
-    해석 못 하는 문서를 빈 원장으로 접은 뒤 이 엔진 형식으로 다시 쓰면 신 엔진의 기록이 통째로
-    파괴된다(읽기 거부와 쓰기 거부는 짝이어야 한다·설치 기록과 동형)."""
+    해석 못 하는 문서를 빈 기록으로 접은 뒤 이 엔진 형식으로 다시 쓰면 신 엔진의 기록이 통째로
+    파괴된다(읽기 거부와 쓰기 거부는 짝이어야 한다·설치 기록과 같은 방식)."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_INSTALLED_HOOKS)
-    ledger_path = dest / ".project_manager" / "adapter_baseline.json"
+    record_path = dest / ".project_manager" / "adapter_baseline.json"
     future = json.dumps(
         {"schema": 2, "files": {_ADAPTER_HOOKS_REL: {"sha256": "0" * 64,
                                                      "future_field": "미래 엔진 값"}}},
         ensure_ascii=False, indent=2) + "\n"
-    ledger_path.write_text(future, encoding="utf-8")
+    record_path.write_text(future, encoding="utf-8")
 
-    # 판정: 해석 불가 → 빈 원장 취급(=보존 쪽). 기록: 거부.
+    # 판정: 해석 불가 → 빈 기록 취급(=보존 쪽). 기록: 거부.
     assert adapter_baseline.read_adapter_baseline(dest)["files"] == {}
     assert adapter_accept.record_adapter_baseline(dest, source) == []
-    assert ledger_path.read_text(encoding="utf-8") == future, "미래 schema 원장을 덮었다"
+    assert record_path.read_text(encoding="utf-8") == future, "미래 schema 기록을 덮었다"
 
     # 동기 채널·수용도 같은 판정을 받는다 — 파일은 손대지 않고 loud 하게 보존한다.
     result = update_adapters.sync_adapter_configs(dest, source, write=True)
     assert result["updated"] == []
-    assert ledger_path.read_text(encoding="utf-8") == future
+    assert record_path.read_text(encoding="utf-8") == future
     outcome = adapter_accept.accept_adapter_config(dest, source, _ADAPTER_HOOKS_REL)
     assert outcome.status == "ledger-blocked", outcome
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == _INSTALLED_HOOKS, \
-        "원장을 못 쓰는데 파일을 갈아치웠다(다음 동기가 영구 보고 모드로 본다)"
+        "기록을 못 쓰는데 파일을 갈아치웠다(다음 동기가 영구 보고 모드로 본다)"
 
 
 def test_adapter_config_write_is_atomic_replace_not_truncate_in_place(
@@ -6194,16 +6194,16 @@ def test_adapter_config_write_is_atomic_replace_not_truncate_in_place(
     assert leftovers == [], f"임시 파일 잔재: {leftovers}"
 
 
-def test_adapter_config_backfill_is_green_only_after_ledger_verification(
+def test_adapter_config_backfill_is_green_only_after_record_verification(
         pm_update, tmp_path, monkeypatch):
-    """template byte가 같아도 원장 write 실패면 backfilled 성공/green으로 접지 않는다."""
+    """template byte가 같아도 기록 write 실패면 backfilled 성공/green으로 바꾸지 않는다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
     monkeypatch.setattr(adapter_accept, "record_adapter_baseline", lambda *_a, **_kw: [])
 
     result = update_adapters.sync_adapter_configs(dest, source, write=True)
 
     assert result["managed_converged"] is False
-    assert result["backfilled"] == [], "원장 기록 실패를 backfill 성공으로 보고함"
+    assert result["backfilled"] == [], "기록 쓰기 실패를 backfill 성공으로 보고함"
     assert result["blocking"] == [{
         "relpath": _ADAPTER_HOOKS_REL,
         "status": "unrecorded",
@@ -6212,13 +6212,13 @@ def test_adapter_config_backfill_is_green_only_after_ledger_verification(
     assert not (dest / ".project_manager" / "adapter_baseline.json").exists()
 
 
-def test_adapter_config_ledger_exception_is_rc_contract_not_traceback(
+def test_adapter_config_record_exception_is_rc_contract_not_traceback(
         pm_update, tmp_path, monkeypatch):
-    """원장 writer 예외도 파일 적용을 되돌리지 않고 managed red 결과로 번역한다."""
+    """기록 writer 예외도 파일 적용을 되돌리지 않고 managed red 결과로 번역한다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
 
     def _raise(*_args, **_kwargs):
-        raise OSError("ledger disk failure")
+        raise OSError("records disk failure")
 
     monkeypatch.setattr(adapter_accept, "record_adapter_baseline", _raise)
 
@@ -6227,7 +6227,7 @@ def test_adapter_config_ledger_exception_is_rc_contract_not_traceback(
     assert result["managed_converged"] is False
     assert result["blocking"][0]["status"] == "unrecorded"
     assert result["degraded"][0]["status"] == "ledger-failed"
-    assert "ledger disk failure" in result["degraded"][0]["summary"]
+    assert "records disk failure" in result["degraded"][0]["summary"]
 
 
 @pytest.mark.parametrize("has_engine_change", (False, True))
@@ -6236,8 +6236,8 @@ def test_pm_update_adapter_nonconvergence_is_rc1_without_hiding_engine_result(
     """changes 0/양수 모두 adapter 판정이 돌고, managed red는 엔진 적용을 보존한 채 rc1이다."""
     dest, source = _make_adapter_config_case(
         tmp_path, hooks=_EDITED_HOOKS,
-        ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_INSTALLED_HOOKS)})
-    engine_rel = ".project_manager/tools/__adapter_gate_sentinel__.py"
+        records={_ADAPTER_HOOKS_REL: _record_entry(_INSTALLED_HOOKS)})
+    engine_rel = ".project_manager/tools/__adapter_check_sentinel__.py"
     sentinel = source / engine_rel
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("# new engine payload\n", encoding="utf-8")
@@ -6270,7 +6270,7 @@ def test_pm_update_adapter_channel_unavailable_is_rc1(
         pm_update, tmp_path, monkeypatch, capsys):
     """판정 채널 unavailable은 loud 보고뿐 아니라 명령 전체를 non-green으로 만든다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
-    engine_rel = ".project_manager/tools/__adapter_gate_sentinel__.py"
+    engine_rel = ".project_manager/tools/__adapter_check_sentinel__.py"
     sentinel = source / engine_rel
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("# same\n", encoding="utf-8")
@@ -6297,7 +6297,7 @@ def test_pm_update_managed_dest_missing_source_template_is_rc1_without_rev_conve
     """managed 비교 template 부재는 changes=0에서도 rc1이고 최신/revision 완료를 기록하지 않는다."""
     dest, source = _make_adapter_config_case(
         tmp_path, hooks=_UPSTREAM_HOOKS,
-        ledger={_ADAPTER_HOOKS_REL: _ledger_entry(_UPSTREAM_HOOKS)})
+        records={_ADAPTER_HOOKS_REL: _record_entry(_UPSTREAM_HOOKS)})
     (source / "templates" / "codex" / _ADAPTER_HOOKS_REL).unlink()
     engine_rel = ".project_manager/tools/__adapter_missing_template_sentinel__.py"
     sentinel = source / engine_rel
@@ -6317,7 +6317,7 @@ def test_pm_update_managed_dest_missing_source_template_is_rc1_without_rev_conve
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
     def _must_not_converge(*_args, **_kwargs):
-        raise AssertionError("adapter unavailable인데 revision baseline을 수렴시켰다")
+        raise AssertionError("adapter unavailable인데 revision baseline을 일치시켰다")
 
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", _must_not_converge)
 
@@ -6359,9 +6359,9 @@ def test_pm_update_partial_engine_without_adapter_candidates_is_vacuous_green(
 
 
 @pytest.mark.parametrize("kind", ("file", "directory", "broken-symlink"))
-def test_adapter_config_outer_gate_counts_any_existing_path_entry(
+def test_adapter_config_outer_check_counts_any_existing_path_entry(
         pm_update, tmp_path, kind):
-    """외곽 gate가 중앙 판정 전부터 비정상 managed 경로를 조용히 제외하지 않는다."""
+    """외곽 검사가 중앙 판정 전부터 비정상 managed 경로를 조용히 제외하지 않는다."""
     candidate = tmp_path / _ADAPTER_HOOKS_REL
     candidate.parent.mkdir(parents=True)
     if kind == "file":
@@ -6374,7 +6374,7 @@ def test_adapter_config_outer_gate_counts_any_existing_path_entry(
     assert update_adapters._has_adapter_config_candidate(tmp_path) is True
 
 
-def test_adapter_config_outer_gate_candidate_zero_is_false(pm_update, tmp_path):
+def test_adapter_config_outer_check_candidate_zero_is_false(pm_update, tmp_path):
     """순수 partial-engine 트리의 vacuous-green 전제: config 경로 엔트리 0."""
     assert update_adapters._has_adapter_config_candidate(tmp_path) is False
 
@@ -6392,7 +6392,7 @@ def test_adapter_config_outer_candidate_paths_match_channel_declaration(pm_updat
 
 def test_adapter_config_dry_run_in_sync_unrecorded_prescribes_real_backfill(
         pm_update, tmp_path, capsys):
-    """dry-run은 accept 교체가 아니라 다음 실 pm-update의 byte-불변 원장 backfill을 안내한다."""
+    """dry-run은 accept 교체가 아니라 다음 실 pm-update의 byte-불변 기록 backfill을 안내한다."""
     dest, source = _make_adapter_config_case(tmp_path, hooks=_UPSTREAM_HOOKS)
 
     result = update_adapters.sync_adapter_configs(dest, source, write=False)
@@ -6468,7 +6468,7 @@ def test_pm_update_partial_managed_dest_blocks_zero_change_revision_convergence(
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
 
     def _must_not_converge(*_args, **_kwargs):
-        raise AssertionError("partial managed 판정 실패인데 revision baseline을 수렴시켰다")
+        raise AssertionError("partial managed 판정 실패인데 revision baseline을 일치시켰다")
 
     monkeypatch.setattr(upstream_revisions, "converge_upstream_revs", _must_not_converge)
 
@@ -6523,7 +6523,7 @@ CARD_MODEL_TOKENS = {
 }
 # 카드는 **두 트리 모두** 소스다: fresh import 는 templates 사본을 복사하고, 채택자 self-update 는
 # manifest 의 bare `.claude/agents @render`(=<source-root>/.claude/agents)를 읽어 루트 사본을
-# 렌더한다. 한쪽만 토큰-form 이면 그 채널만 정합해진다(byte-identical 가드가 둘을 묶는다).
+# 렌더한다. 한쪽만 토큰-form 이면 그 채널만 일치해진다(byte-identical 가드가 둘을 묶는다).
 CARD_TREES = (
     REPO / ".claude" / "agents",
     REPO / "templates" / "claude_code" / ".claude" / "agents",
@@ -6536,9 +6536,9 @@ CARD_ROLE_CONF_KEYS = {
     "DELEGATE_MODEL_CODE_REVIEWER": "delegate.code-reviewer.model",
 }
 
-# 위임 토큰 표 전체 — 4 역할 축 + developer hard 티어의 모델·추론 각 5키(T-0766: codex 역할
+# 위임 토큰 표 전체 — 4 역할 + developer hard 티어의 모델·추론 각 5키(T-0766: codex 역할
 # 카드가 추론 필드를 갖게 되면서 추론 토큰도 5개가 됐다). 표가 조용히 줄면 그 카드가 영영
-# TODO 로 중화되므로 기대 집합을 못박는다(가드 시야 == 표면).
+# TODO 로 중화되므로 기대 집합을 못박는다(가드 검사 범위 == 노출 범위).
 DELEGATE_CONF_KEYS = {
     **CARD_ROLE_CONF_KEYS,
     "DELEGATE_REASONING_DEVELOPER": "delegate.developer.reasoning",
@@ -6559,10 +6559,10 @@ def _card_model_line(text: str) -> str:
 
 
 def test_delegate_model_tokens_wired_in_both_channels(pm_update):
-    """위임 토큰 전부가 render 채널(OPERATIONAL_KEYS)과 local.conf 채널 양쪽에 배선.
+    """위임 토큰 전부가 render 채널(OPERATIONAL_KEYS)과 local.conf 채널 양쪽에 등록.
 
     한쪽만 있으면 (a) 토큰이 영영 미해소 leak 이거나 (b) conf 값이 아무 산출도 안 바꾼다.
-    배선은 표 하나(`DELEGATE_MODEL_CONF_KEYS`)의 파생이라, 표를 실제로 순회해 검사한다."""
+    등록은 표 하나(`DELEGATE_MODEL_CONF_KEYS`)의 파생이라, 표를 실제로 순회해 검사한다."""
 
     assert render_rules.DELEGATE_MODEL_CONF_KEYS == DELEGATE_CONF_KEYS, \
         "위임 토큰 표가 기대 집합과 갈렸다(역할/티어가 조용히 늘거나 줄었다)"
@@ -6649,9 +6649,9 @@ def test_agent_card_renders_conf_model_through_local_conf(render_home, pm_update
 def test_agent_card_unset_delegate_model_is_graceful_todo(render_home, pm_update, tmp_path):
     """위임 매핑 미설정 채택자 — rc-fail 0·TODO 표기·다른 토큰은 정상 렌더(부분-graceful).
 
-    미설정은 오설정이 아니라 정상 형상이다(local.conf 시드는 delegate.* 를 전부 주석으로 낸다).
+    미설정은 오설정이 아니라 정상 경우다(local.conf 초기 내용은 delegate.* 를 전부 주석으로 낸다).
     한 토큰 미해소가 어댑터 update 전체를 막으면 채택자가 엔진 fix 를 받을 수 없다
-    (`{{OPENCODE_PRO_MODEL}}` 선례와 동형)."""
+    (`{{OPENCODE_PRO_MODEL}}` 선례와 같은 방식)."""
 
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\ndelegate.researcher.model=haiku\n")
@@ -6680,7 +6680,7 @@ def test_agent_card_unset_delegate_model_is_graceful_todo(render_home, pm_update
 
 
 def test_agent_card_empty_delegate_model_is_loud_leak(render_home, pm_update, tmp_path):
-    """`delegate.<role>.model=` 빈값(오설정)은 중화하지 않고 leak 으로 표면화한다."""
+    """`delegate.<role>.model=` 빈값(오설정)은 중화하지 않고 leak 으로 드러낸다."""
 
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\ndelegate.developer.model=\n")
@@ -6721,7 +6721,7 @@ def _card_effort_line(text: str) -> str:
 def test_render_text_claude_cards_render_conf_reasoning(pm_update, tmp_path):
     """claude 카드 5장이 `_render_text` 실 경로로 conf 의 reasoning 을 `effort` 로 싣는다.
 
-    허용집합은 `conf_schema.REASONING_ALLOWED` 배선 그대로다(리터럴 주입 없음). 카드에 effort 가
+    허용집합은 `conf_schema.REASONING_ALLOWED` 등록 그대로다(리터럴 주입 없음). 카드에 effort 가
     없으면 서브에이전트는 PM 세션 effort 를 물려받아 conf 선언이 실행면에 닿지 않는다."""
     dest = tmp_path / "dest"
     _write_local_conf(dest, "project.name=Acme\n" + _ADOPTER0_DELEGATE_CONF)
@@ -6761,10 +6761,10 @@ def test_render_text_rejects_reasoning_outside_harness_ladder(pm_update, tmp_pat
 
 
 def test_apply_writes_claude_card_effort_and_stops_outside_ladder(pm_update, tmp_path):
-    """`apply` 의 렌더 분기도 같은 허용집합 배선을 탄다 — 계획 판정(`_render_text`)과 기록이 갈리지 않는다.
+    """`apply` 의 렌더 분기도 같은 허용집합 등록을 탄다 — 계획 판정(`_render_text`)과 기록이 갈리지 않는다.
 
     conf reasoning 은 카드 effort 로 기록되고, 허용값 밖 값은 계획 단계에서 RenderLeakError 로 멈춰
-    카드를 고치지 않는다(계획의 렌더러는 템플릿과 같은 세대라 렌더 실패를 "변경" 으로 접지 않는다)."""
+    카드를 고치지 않는다(계획의 렌더러는 템플릿과 같은 버전이라 렌더 실패를 "변경" 으로 바꾸지 않는다)."""
     source = tmp_path / "src"
     shutil.copytree(REPO / ".claude" / "agents", source / ".claude" / "agents")
     manifest_file = source / ".project_manager" / "engine.manifest"
@@ -6825,11 +6825,11 @@ def _pin_card_model(card: Path, model: str) -> None:
 
 def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
         pm_update, tmp_path, monkeypatch):
-    """fresh-adopter e2e — conf 모델 ≠ opus 케이스로 도그푸딩 사각을 닫는다.
+    """fresh-adopter e2e — conf 모델 ≠ opus 케이스로 도그푸딩 놓치는 곳을 닫는다.
 
     adopter#0 은 conf 가 opus 라 카드 리터럴과 우연히 일치해 이 결함을 못 봤다
     ([[dogfooding-blind-spot-adopter-shape]]). 체인: fresh import(위임 미설정 → graceful TODO)
-    → local.conf 에 sonnet/haiku 기록 → pm-update 초회·수렴 두 실행 모두 그 값으로 렌더 →
+    → local.conf 에 sonnet/haiku 기록 → pm-update 초회·일치 두 실행 모두 그 값으로 렌더 →
     delegate_channel_guard 경고 0.
     """
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
@@ -6865,7 +6865,7 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
         "채택자 재동기가 리터럴을 되돌린다"
     )
     monkeypatch.setattr(pm_update, "REPO", dest)
-    for run in ("초회", "수렴"):
+    for run in ("초회", "일치"):
         assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0, f"{run} pm-update rc≠0"
         assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "sonnet"', \
             f"{run} 실행 후 카드가 conf 해소값이 아니다"
@@ -6892,23 +6892,23 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     assert json.loads(decided.stdout)["model"] == "sonnet"
 
 
-def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
+def test_added_harness_agent_card_model_follows_delegate_conf_after_absorb(
         pm_update, tmp_path, monkeypatch, capsys):
-    """codex host + claude guest(add-harness) — **흡수 한 번**이면 guest 카드가 conf 값이 된다.
+    """codex host + claude 추가 하네스(add-harness) — **갱신 한 번**이면 추가 하네스 카드가 conf 값이 된다.
 
-    guest 절 렌더물을 계획에서 빼던 동안 이 형상의 카드는 add-harness 를 다시 돌리기 전엔 설치
-    시점 값으로 남았다(채택자 실측: 카드 opus ↔ conf sonnet 상시 경고). host 형상만 보는 e2e 로는
-    안 잡히는 사각이라 guest 형상으로 직접 태운다: dry-run `[render]` 예고 → apply 값 일치 →
+    추가 하네스 절 렌더물을 계획에서 빼던 동안 이 경우의 카드는 add-harness 를 다시 돌리기 전엔 설치
+    시점 값으로 남았다(채택자 실측: 카드 opus ↔ conf sonnet 상시 경고). host 구성만 보는 e2e 로는
+    안 잡히는 놓치는 곳이라 추가 하네스 구성으로 직접 태운다: dry-run `[render]` 예고 → apply 값 일치 →
     재실행 변경 0(멱등).
     """
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
-    dest = tmp_path / "guest-adopter"
+    dest = tmp_path / "added-harness-adopter"
     _import_adopter(dest, "codex")
     add_harness.add_harness(ENGINE_HOME, dest, "claude", dry_run=False, source_root=REPO)
     capsys.readouterr()
     card = dest / ".claude" / "agents" / "developer.md"
-    assert card.is_file(), "claude-as-guest 카드 미복사(픽스처 전제 붕괴)"
+    assert card.is_file(), "claude 추가 하네스 카드 미복사(픽스처 전제 붕괴)"
 
     conf = dest / ".project_manager" / "local.conf"
     conf.write_text(
@@ -6926,24 +6926,24 @@ def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO), "--dry-run"]) == 0
     preview = capsys.readouterr().out
     assert "[render] .claude/agents/developer.md" in preview, \
-        f"dry-run 이 guest 카드 재렌더를 예고하지 않았다: {preview!r}"
+        f"dry-run 이 추가 하네스 카드 재렌더를 예고하지 않았다: {preview!r}"
     assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "opus"', \
         "dry-run 이 파일을 바꿨다(무변경 계약 위반)"
 
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
     assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "sonnet"', \
-        "흡수 후에도 guest 카드가 conf 값이 아니다(add-harness 재실행을 요구하는 옛 형상)"
+        "갱신 후에도 추가 하네스 카드가 conf 값이 아니다(add-harness 재실행을 요구하는 옛 경우)"
 
     settled = card.read_bytes()
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
-    assert card.read_bytes() == settled, "재렌더가 멱등하지 않다(매 흡수 churn)"
+    assert card.read_bytes() == settled, "재렌더가 멱등하지 않다(매 갱신 churn)"
 
 
 def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monkeypatch, capsys):
     """conf 가 다른 하네스를 가리키는 카드는 **값 대신 사유**로 중화된다(미사용 프로필).
 
-    codex host 인데 developer 를 claude 로 위임하는 형상: `.codex/agents/developer-hard.toml` 은
-    이번 형상에서 스폰되지 않으므로 claude 용 모델을 박으면 카드가 conf 와 어긋난 사실을 감춘다.
+    codex host 인데 developer 를 claude 로 위임하는 구성: `.codex/agents/developer-hard.toml` 은
+    이번 설치 구성에서 스폰되지 않으므로 claude 용 모델을 박으면 카드가 conf 와 어긋난 사실을 감춘다.
     렌더는 실패하지 않는다 — 미해소가 update rc 를 바꾸지 않는다."""
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
@@ -7097,7 +7097,7 @@ def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, mo
     assert global_file.read_bytes() == global_before, "opencode 전역 설정을 썼다"
 
 
-# ── T-0945 설정 저장 반영(`apply_conf`) — 키 묶음 표·설치 세대 원본·전부 그린 뒤 쓰기 ─────────
+# ── T-0945 설정 저장 반영(`apply_conf`) — 키 묶음 표·설치 버전 원본·전부 그린 뒤 쓰기 ─────────
 # 실물 PM 홈(`make_committed_source` 커밋 소스로 설치·`upstream.rev` = 소스 HEAD)에서 잰다.
 
 _T0945_ARCHITECT_CARD = ".claude/agents/architect.md"
@@ -7148,9 +7148,9 @@ def test_apply_conf_refusal_leaves_tree_unchanged(pm_update, tmp_path):
 
 
 def test_apply_conf_refuses_render_when_source_moved(pm_update, tmp_path):
-    """AT-003 — 렌더 원본이 설치 세대(`upstream.rev`)와 다르면 렌더 단계가 걸린 저장은 거부(fetch 없음).
+    """AT-003 — 렌더 원본이 설치 버전(`upstream.rev`)와 다르면 렌더 단계가 걸린 저장은 거부(fetch 없음).
 
-    렌더 단계가 걸리지 않는 키(어느 묶음에도 없는 키)의 저장은 원본 세대와 무관하게 local.conf 만 쓴다.
+    렌더 단계가 걸리지 않는 키(어느 묶음에도 없는 키)의 저장은 원본 버전과 무관하게 local.conf 만 쓴다.
     인자 없는 반영도 렌더 단계를 포함하므로 같은 거부다."""
     from _manager_home import _git, tree_snapshot
     home, source = _t0945_home(tmp_path)
@@ -7428,40 +7428,40 @@ def test_apply_conf_lists_models_once_per_save(tmp_path, monkeypatch):
     assert len(calls(fakebin)) - saved == 1, calls(fakebin)
 
 
-_GATE_SNAPSHOT_OLD = ".project_manager/tools/gate_snapshot.py"
-_GATE_SNAPSHOT_NEW = ".project_manager/tools/pm_delegate.py"
+_CHECK_SNAPSHOT_OLD = ".project_manager/tools/gate_snapshot.py"
+_CHECK_SNAPSHOT_NEW = ".project_manager/tools/pm_delegate.py"
 
 
-def test_gate_snapshot_retirement_is_declared_in_every_manifest(pm_update, tmp_path):
+def test_check_snapshot_retirement_is_declared_in_every_manifest(pm_update, tmp_path):
     """AT-022 — 4벌 manifest 가 `gate_snapshot.py` 행 없이 은퇴 지시를 싣고, 옛 행이 남은 채택자는 퇴역 단계가 옮긴다.
 
     지시 없이 행만 지우면 옛 행이 관리 해제(파일 유지)로만 남는다.
     """
     manifests = [
         REPO / ".project_manager" / "engine.manifest",
-        *(REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
-          for flavor in ("claude_code", "codex", "opencode")),
+        *(REPO / "templates" / variant / ".project_manager" / "engine.manifest"
+          for variant in ("claude_code", "codex", "opencode")),
     ]
     for manifest in manifests:
         entries = {str(entry).replace("\\", "/") for entry in manifest_store.read_manifest(manifest)}
-        assert _GATE_SNAPSHOT_OLD not in entries, manifest
-        assert (_GATE_SNAPSHOT_OLD, _GATE_SNAPSHOT_NEW) in (
+        assert _CHECK_SNAPSHOT_OLD not in entries, manifest
+        assert (_CHECK_SNAPSHOT_OLD, _CHECK_SNAPSHOT_NEW) in (
             retired_paths.validated_retired_path_directives(REPO, [manifest])
         ), manifest
 
-    flavor_manifest = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
+    variant_manifest = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
     dest = tmp_path / "dest"
     local = _write_dest_manifest(dest, [])
     local.write_text(
-        flavor_manifest.read_text(encoding="utf-8") + _GATE_SNAPSHOT_OLD + "\n",
+        variant_manifest.read_text(encoding="utf-8") + _CHECK_SNAPSHOT_OLD + "\n",
         encoding="utf-8",
     )
 
     shipped = update_manifest.shipped_manifest(dest, REPO)
 
-    assert shipped["manifests"] == [flavor_manifest]
-    assert _GATE_SNAPSHOT_OLD not in shipped["released"], "은퇴 OLD 가 관리 해제 목록에 올랐다"
-    assert _GATE_SNAPSHOT_OLD in retired_paths.declared_retired_olds(shipped["manifests"])
+    assert shipped["manifests"] == [variant_manifest]
+    assert _CHECK_SNAPSHOT_OLD not in shipped["released"], "은퇴 OLD 가 관리 해제 목록에 올랐다"
+    assert _CHECK_SNAPSHOT_OLD in retired_paths.declared_retired_olds(shipped["manifests"])
 
 
 # ── T-0951 갱신 절차 전환 — 전달 프로세스(엔진 코드만)와 완료 프로세스(나머지) ──────────────────────
@@ -7598,7 +7598,7 @@ def test_completion_handoff_is_validated_before_any_write(
     assert engine_transfer.COMPLETION_ENV not in os.environ, "인계 값이 실행 뒤에 남았다"
 
     if case == "pending_engine_code":
-        # 엔진 패키지의 삭제만 남은 형상도 완료 단계의 엔진 코드 잔존이다 — 쓰기 전에 멈춘다.
+        # 엔진 패키지의 삭제만 남은 구성도 완료 단계의 엔진 코드 잔존이다 — 쓰기 전에 멈춘다.
         dest, source = _t0951_package_case(pm_update, tmp_path / "package", monkeypatch,
                                            dest_extra={"obsolete.py": "# obsolete\n"})
         monkeypatch.setenv(engine_transfer.COMPLETION_ENV, json.dumps(
@@ -7712,8 +7712,8 @@ _T0951_NEXT_GEN = "{{NEXT_GEN_MARK}}"
 
 
 def test_drift_changes_reports_engine_code_before_rendering(pm_update, tmp_path, monkeypatch):
-    """AT-009 — 엔진 코드가 뒤처진 트리의 드리프트는 엔진 코드 목록이다(설치 렌더러로 다음 세대 템플릿을
-    그리지 않는다). 엔진 코드가 맞으면 같은 세대 렌더 실패는 그대로 올라간다."""
+    """AT-009 — 엔진 코드가 뒤처진 트리의 드리프트는 엔진 코드 목록이다(설치 렌더러로 다음 버전 템플릿을
+    그리지 않는다). 엔진 코드가 맞으면 같은 버전 렌더 실패는 그대로 올라간다."""
     files = {**_T0951_FILES, "renderdir/card.md": f"# 카드 {_T0951_NEXT_GEN}\n"}
     dest, _source = _t0951_case(pm_update, tmp_path, monkeypatch, files=files,
                                 manifest=[_T0951_PROBE, "adapterdir", "renderdir    @render"])
@@ -7729,7 +7729,7 @@ def test_drift_changes_reports_engine_code_before_rendering(pm_update, tmp_path,
     assert type(raised.value).__name__ == "RenderLeakError", raised.value
 
     # 엔진 패키지만 뒤처진 트리(삭제만 있음)도 패키지 경로 한 행이고 렌더러를 부르지 않는다. 패키지가
-    #   맞아지면 같은 세대 렌더 실패는 그대로 올라간다.
+    #   맞아지면 같은 버전 렌더 실패는 그대로 올라간다.
     package_dest, _package_source = _t0951_package_case(
         pm_update, tmp_path / "package", monkeypatch,
         files={"renderdir/card.md": f"# 카드 {_T0951_NEXT_GEN}\n"}, manifest=["renderdir    @render"],
@@ -7863,22 +7863,22 @@ def test_retired_directive_old_under_directory_row_is_reported_only_as_retired(
 
 
 # ── 설치된 하네스의 출하 manifest 규칙·대상 폴더 인자·옛 표기 이관 한 자리 ─────────────────────────
-_CLAUDE_FLAVOR_MANIFEST_REL = "templates/claude_code/.project_manager/engine.manifest"
+_CLAUDE_VARIANT_MANIFEST_REL = "templates/claude_code/.project_manager/engine.manifest"
 # 관리 해제 알림의 머리 문구(갱신 출력) — 상류 manifest 에 없는 사본 행은 관리에서만 빠진다.
 _RELEASED_NOTICE = "관리에서 빠지고 파일은 그대로 둔다"
 
 
 def _durable_tree(root: Path) -> dict[str, str]:
-    """엔진 스크래치(`.project_manager/.local/`)를 뺀 트리 스냅샷."""
+    """엔진 스크래치(`.project_manager/.local/`)를 뺀 트리 상태."""
     from _manager_home import tree_snapshot
     return {rel: digest for rel, digest in tree_snapshot(root).items()
             if not rel.startswith(".project_manager/.local")}
 
 
-def _guest_block_rows(dest: Path) -> list[str]:
+def _added_harness_block_rows(dest: Path) -> list[str]:
     """사본 engine.manifest 의 추가 하네스 구획 행 — 원문 줄 그대로."""
     text = (dest / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
-    block = manifest_rules._extract_guest_manifest_block(text) or ""
+    block = manifest_rules._extract_added_harness_manifest_block(text) or ""
     return [line for line in block.splitlines() if line.strip() and not line.lstrip().startswith("#")]
 
 
@@ -7887,13 +7887,13 @@ def test_shipped_manifest_releases_rows_only_in_the_copy_and_keeps_their_files(
     """사본 manifest 에만 있는 행은 관리에서 빠지고 파일은 그대로다. 사본 manifest 는 출하본과 같아진다."""
     source = tmp_path / "src"
     shipped_rows = [".project_manager/tools/board.py",
-                    f".project_manager/engine.manifest @source={_CLAUDE_FLAVOR_MANIFEST_REL}"]
+                    f".project_manager/engine.manifest @source={_CLAUDE_VARIANT_MANIFEST_REL}"]
     board_source = source / ".project_manager" / "tools" / "board.py"
     board_source.parent.mkdir(parents=True)
     board_source.write_text("# board\n", encoding="utf-8")
-    flavor_manifest = source / _CLAUDE_FLAVOR_MANIFEST_REL
-    flavor_manifest.parent.mkdir(parents=True)
-    flavor_manifest.write_text("\n".join(shipped_rows) + "\n", encoding="utf-8")
+    variant_manifest = source / _CLAUDE_VARIANT_MANIFEST_REL
+    variant_manifest.parent.mkdir(parents=True)
+    variant_manifest.write_text("\n".join(shipped_rows) + "\n", encoding="utf-8")
     _track_source_tree(source)
 
     dest = tmp_path / "dest"
@@ -7913,7 +7913,7 @@ def test_shipped_manifest_releases_rows_only_in_the_copy_and_keeps_their_files(
     assert rc == 0, captured.err
     for rel, text in kept.items():
         assert (dest / rel).read_text(encoding="utf-8") == text, rel
-    assert (dest / ".project_manager" / "engine.manifest").read_bytes() == flavor_manifest.read_bytes()
+    assert (dest / ".project_manager" / "engine.manifest").read_bytes() == variant_manifest.read_bytes()
     assert _RELEASED_NOTICE in captured.out, captured.out
     for rel in kept:
         assert f"    - {rel}" in captured.out, captured.out
@@ -7946,13 +7946,13 @@ def test_added_harness_block_is_rebuilt_from_the_shipped_manifest(
     core_paths = manifest_rules._core_manifest_paths(manifest.read_text(encoding="utf-8"))
     adapter_dirs, root_doc = install_rules.ADD_HARNESS_ADAPTER["opencode"]
     expected = sorted(
-        line for line in install_source._guest_manifest_lines(
+        line for line in install_source._added_harness_manifest_lines(
             source / "templates" / "opencode", adapter_dirs, root_doc, core_paths)
         if not manifest_rules._path_owned_by(line.split()[0], core_paths))
-    assert _guest_block_rows(dest) == expected
+    assert _added_harness_block_rows(dest) == expected
     for new, old in renamed.items():
         assert (dest / ".opencode" / "command" / f"{new}.md").is_file(), new
-        assert not any(f"{old}.md" in row for row in _guest_block_rows(dest)), old
+        assert not any(f"{old}.md" in row for row in _added_harness_block_rows(dest)), old
 
 
 def test_completion_moves_old_notation_left_by_an_old_transfer(tmp_path, monkeypatch, capsys):
@@ -7966,12 +7966,12 @@ def test_completion_moves_old_notation_left_by_an_old_transfer(tmp_path, monkeyp
     manifest = dest / ".project_manager" / "engine.manifest"
     old_begin, old_end = (
         next(old for old, new in update_finish._OLD_ADDED_HARNESS_MARKERS.items() if new == current)
-        for current in (manifest_rules._GUEST_MANIFEST_BEGIN, manifest_rules._GUEST_MANIFEST_END))
+        for current in (manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN, manifest_rules._ADDED_HARNESS_MANIFEST_END))
     text = manifest.read_text(encoding="utf-8")
-    guest_rows = _guest_block_rows(dest)
-    assert guest_rows, "픽스처 전제 붕괴 — 추가 하네스 구획이 없다"
-    manifest.write_text(text.replace(manifest_rules._GUEST_MANIFEST_BEGIN, old_begin)
-                        .replace(manifest_rules._GUEST_MANIFEST_END, old_end),
+    added_harness_rows = _added_harness_block_rows(dest)
+    assert added_harness_rows, "픽스처 전제 붕괴 — 추가 하네스 구획이 없다"
+    manifest.write_text(text.replace(manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN, old_begin)
+                        .replace(manifest_rules._ADDED_HARNESS_MANIFEST_END, old_end),
                         encoding="utf-8", newline="\n")
     conf = dest / ".project_manager" / "local.conf"
     conf_text = conf.read_text(encoding="utf-8")
@@ -7988,8 +7988,8 @@ def test_completion_moves_old_notation_left_by_an_old_transfer(tmp_path, monkeyp
     captured = capsys.readouterr()
     assert rc == 0, captured.err
     after = manifest.read_text(encoding="utf-8")
-    assert manifest_rules._GUEST_MANIFEST_BEGIN in after and old_begin not in after
-    rows = _guest_block_rows(dest)
+    assert manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN in after and old_begin not in after
+    rows = _added_harness_block_rows(dest)
     assert rows, "구획 행이 핵심 manifest 로 올라갔다"
     assert all("@target-owned" in row for row in rows if "@render" not in row), rows
     conf_after = conf.read_text(encoding="utf-8")
@@ -8025,7 +8025,7 @@ def test_into_updates_another_home_and_runs_its_completion_without_into(tmp_path
     assert _durable_tree(runner_home) == runner_before
 
 
-def test_a_flavor_named_by_source_but_missing_upstream_stops_before_planning(
+def test_a_variant_named_by_source_but_missing_upstream_stops_before_planning(
         pm_update, tmp_path, monkeypatch, capsys):
     """사본 행이 `@source` 로 가리킨 판의 출하 manifest 가 상류에 없으면 계획 전에 rc 1 이고 사본은 그대로다."""
     from _manager_home import _git, make_committed_source
@@ -8035,16 +8035,16 @@ def test_a_flavor_named_by_source_but_missing_upstream_stops_before_planning(
     _git("clone", "--quiet", "--no-hardlinks", str(complete), str(stripped))
     _git("-C", str(stripped), "rm", "-r", "--quiet", "templates/codex")
     _git("-C", str(stripped), "commit", "--quiet", "-m", "codex 판 없음")
-    guest_copy = tmp_path / "claude-plus-codex"
-    _import_adopter(guest_copy)
-    add_harness.add_harness(ENGINE_HOME, guest_copy, "codex", dry_run=False, source_root=complete)
-    assert any("templates/codex/" in row for row in _guest_block_rows(guest_copy)), \
+    added_harness_copy = tmp_path / "claude-plus-codex"
+    _import_adopter(added_harness_copy)
+    add_harness.add_harness(ENGINE_HOME, added_harness_copy, "codex", dry_run=False, source_root=complete)
+    assert any("templates/codex/" in row for row in _added_harness_block_rows(added_harness_copy)), \
         "픽스처 전제 붕괴 — 구획에 codex 행이 없다"
     codex_copy = tmp_path / "codex-only"
     _import_adopter(codex_copy, "codex")
     capsys.readouterr()
 
-    for copy in (guest_copy, codex_copy):
+    for copy in (added_harness_copy, codex_copy):
         before = _durable_tree(copy)
 
         rc = update_cmd.main(pm_paths.home_at(copy), ["--from", str(stripped)])

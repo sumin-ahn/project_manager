@@ -1,4 +1,4 @@
-"""갱신의 어댑터 설정·훅 세대·보호 훅·완료 게이트 (층: app)."""
+"""갱신의 어댑터 설정·훅 버전·보호 훅·완료 통과 조건 (층: app)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,18 +20,18 @@ from pm_engine.infra import pm_paths
 from pm_engine.infra import protected_hooks
 
 
-# ── instance-owned 어댑터 config 채널 (3-way 원장 + drift 보고) ────────────────
+# ── instance-owned 어댑터 config 채널 (3-way 어댑터 설정 기록 + drift 보고) ────────────────
 # 어댑터 config(`.codex/hooks.json`·`config.toml`·`.claude/settings.json`·`.opencode/opencode.jsonc`)
 # 는 어느 manifest 에도 없어 이 sync 가 안 덮고, add-harness 재실행조차 기존 값이 다르면 byte
 # 보존한다 — 상류의 *동작* fix 가 기존 채택자에 도달할 채널이 0 이었다(훅 차단→비차단 fix 를 든
 # 릴리스가 나간 뒤에도 채택자가 차단판을 그대로 운영한 실측이 이 클래스다).
 #
-# 채널은 두 갈래이고 판정·분류의 단일 진실은 `app.adapter_report` 다(소유 선언 → 채널 분류 → 원장 판정):
-#   managed  무편집(dest 해시 == 원장 해시)이면 백업 후 현행 template 으로 갱신 + 후속 행동 안내.
+# 채널은 두 갈래이고 판정·분류의 단일 진실은 `app.adapter_report` 다(소유 선언 → 채널 분류 → 어댑터 설정 기록 판정):
+#   managed  무편집(dest 해시 == 기록된 해시)이면 백업 후 현행 template 으로 갱신 + 후속 행동 안내.
 #   report   갱신하지 않고 template 대비 drift 만 파일당 한 줄로 표기.
-# 어느 갈래든 **편집분·원장 부재는 무조건 보존**한다(하한선) — 수용은 채택자가 명시 커맨드로 한다.
+# 어느 갈래든 **편집분·기록 없음은 무조건 보존**한다(하한선) — 수용은 채택자가 명시 커맨드로 한다.
 # 채택자가 실제로 칠 커맨드 — Windows 파사드를 병기한다(그 플랫폼엔 `./pm-config.sh` 가 없다·
-#   같은 파일 add-harness 안내의 선례와 동형).
+#   같은 파일 add-harness 안내의 선례와 같은 방식).
 _ADAPTER_CONFIG_ACCEPT_HINT = "./pm-config.sh sync-adapter-config --accept"
 
 
@@ -46,7 +46,7 @@ _ADAPTER_BACKUP_HINT = ".pm_import_backups/<DATE>/"
 
 
 # 채널 판정 전에 적용 여부를 가르는 최소 좌표.
-# "존재하는 managed 대상"만 완료 게이트 대상이라는 계약 경계다. 파일이 하나도 없는 순수
+# "존재하는 managed 대상"만 완료 통과 조건 대상이라는 계약 경계다. 파일이 하나도 없는 순수
 # 엔진 복구 트리는 adapter 채널 unavailable이 아니라 적용 대상 없음(vacuous green)이다.
 _ADAPTER_CONFIG_DEST_CANDIDATES = (
     ".codex/hooks.json", ".codex/config.toml", ".claude/settings.json",
@@ -57,7 +57,7 @@ _ADAPTER_CONFIG_DEST_CANDIDATES = (
 def _has_adapter_config_candidate(dest_root: Path) -> bool:
     """instance-owned config 경로 엔트리가 하나라도 있는가(읽기/쓰기 0).
 
-    regular file만 세면 directory·broken symlink·권한 오류가 외곽 gate에서 채널 실행 자체를
+    regular file만 세면 directory·broken symlink·권한 오류가 외곽 검사에서 채널 실행 자체를
     건너뛴다. 중앙 판정이 unavailable로 올릴 기회를 보존하도록 "부재가 확인된 경우"만 제외한다.
     """
     for relpath in _ADAPTER_CONFIG_DEST_CANDIDATES:
@@ -71,20 +71,20 @@ def _has_adapter_config_candidate(dest_root: Path) -> bool:
     return False
 
 
-def _instance_owned_template_delta_lines(
+def _instance_owned_template_change_lines(
         dest_root: Path, source_root: Path) -> list[str]:
-    """세대 델타 관측 채널 — 실패도 변경 없음으로 접지 않는 advisory 한 줄."""
+    """버전 차이 관측 채널 — 실패도 변경 없음으로 바꾸지 않는 advisory 한 줄."""
     try:
         return adapter_report.instance_owned_template_change_lines(dest_root, source_root)
-    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 세대 델타 판정 실패만 advisory 줄, 그 밖 전파.
+    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 버전 차이 판정 실패만 advisory 줄, 그 밖 전파.
         return [
             "⚠️  인스턴스 소유 템플릿 버전 판정 unavailable — "
             f"{exc} · 판정 불가(변경 없음 아님)·전량 확인 권장."
         ]
 
 
-def _print_instance_owned_template_delta(lines: list[str]) -> None:
-    """파일별 한 줄 출력. 정합이면 ``lines=[]``라 완전 무출력."""
+def _print_instance_owned_template_change(lines: list[str]) -> None:
+    """파일별 한 줄 출력. 일치하면 ``lines=[]``라 완전 무출력."""
     for line in lines:
         print(line)
 
@@ -92,16 +92,16 @@ def _print_instance_owned_template_delta(lines: list[str]) -> None:
 def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
 
-    `write=False`(dry-run)는 판정만 한다(파일·원장 미변경). 판정 채널의 이름 있는 실패(OSError·
+    `write=False`(dry-run)는 판정만 한다(파일·어댑터 설정 기록 미변경). 판정 채널의 이름 있는 실패(OSError·
     ValueError·AdapterConfigChannelUnavailable)는 `status="unavailable"` 로 반환한다. 엔진 파일
-    적용은 되돌리지 않지만 상위 완료 게이트는 이를 non-green 으로 소비한다. 그 밖 예외는 전파한다."""
+    적용은 되돌리지 않지만 상위 완료 통과 조건은 이를 non-green 으로 소비한다. 그 밖 예외는 전파한다."""
     result = {"status": "ok", "updated": [], "preserved": [], "drift": [],
               "backfilled": [], "degraded": [], "blocking": [],
               "managed_converged": False}
     try:
         judgments = adapter_report.judge_adapter_configs(dest_root, source_root)
     except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 판정 채널 실패만 unavailable, 그 밖 전파.
-        # 판정 불가는 `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구한다(이미 착지한
+        # 판정 불가는 `unavailable` 로 내려가 완료 통과 조건이 rc1 로 재실행을 요구한다(이미 착지한
         #   엔진 파일은 그대로 선다).
         return {**result, "status": "unavailable", "reason": str(exc)}
 
@@ -112,8 +112,8 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
     }
     for judgment in judgments:
         if judgment.status == "in-sync":
-            # 이미 상류와 같다 — write 경로가 아래에서 원장을 뒤늦게 채운다. 성공 여부는
-            # 재판정으로 확인한 뒤에만 ``backfilled`` 로 보고한다(원장 write 실패 false-green 금지).
+            # 이미 상류와 같다 — write 경로가 아래에서 어댑터 설정 기록을 뒤늦게 채운다. 성공 여부는
+            # 재판정으로 확인한 뒤에만 ``backfilled`` 로 보고한다(기록 쓰기 실패 false-green 금지).
             continue
         summary = adapter_accept.adapter_config_drift_summary(judgment, dest_root)
         managed = judgment.mode == install_rules.ADAPTER_CONFIG_MANAGED
@@ -122,7 +122,7 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
             if write:
                 try:
                     # 판정 시점 해시를 넘겨 **판정↔쓰기 사이 동시 편집**을 엔진이 재검증하게 한다
-                    #   (raced 면 아무것도 안 덮고 돌아온다). 백업·원자 교체·원장 확인도 그 안이다.
+                    #   (raced 면 아무것도 안 덮고 돌아온다). 백업·원자 교체·어댑터 설정 기록 확인도 그 안이다.
                     accepted = adapter_accept.accept_adapter_config(
                         dest_root, source_root, judgment.relpath,
                         expected_sha256=judgment.dest_sha256)
@@ -165,12 +165,12 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
                 "summary": str(exc),
             })
 
-    # 완료 판정은 **쓰기 후 재판정**이 진실이다. accept가 파일을 바꿨으나 원장을 못 남긴 경우,
+    # 완료 판정은 **쓰기 후 재판정**이 진실이다. accept가 파일을 바꿨으나 어댑터 설정 기록을 못 남긴 경우,
     # in-sync backfill write가 실패한 경우를 모두 여기서 같은 red로 잡는다. dry-run은 현재 상태를
     # 그대로 판정하므로 write 0 계약을 유지한다.
     try:
         final_judgments = adapter_report.judge_adapter_configs(dest_root, source_root)
-    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 재판정 채널 실패만 unavailable(게이트 red), 그 밖 전파.
+    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 재판정 채널 실패만 unavailable(통과 조건 red), 그 밖 전파.
         return {**result, "status": "unavailable", "reason": str(exc)}
     unconverged = adapter_report.unconverged_managed_adapter_configs(final_judgments)
     result["blocking"] = [
@@ -191,9 +191,9 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
 def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
     """local.conf 의 하네스별 사용 한도·압축 비율을 하네스 설정 파일에 반영한다 — 멈추면 False.
 
-    무엇을 어디에 쓰는지·검사·원장 처리는 `app.harness_ctx.apply_harness_ctx` 한 곳이 정하고 여기서는
+    무엇을 어디에 쓰는지·검사·어댑터 설정 기록 처리는 `app.harness_ctx.apply_harness_ctx` 한 곳이 정하고 여기서는
     출력과 멈춤만 맡는다. 어댑터 config 채널(`sync_adapter_configs`) **뒤**에 돈다 — 채널이 템플릿
-    갱신·원장 기록을 끝낸 파일 위에 관리 키를 쓴다. `write=False`(dry-run)는 바뀔 줄만 낸다.
+    갱신·어댑터 설정 기록 쓰기를 끝낸 파일 위에 관리 키를 쓴다. `write=False`(dry-run)는 바뀔 줄만 낸다.
 
     local.conf 에 값 공급을 잃는 옛 키가 남아 있으면 반영을 계산하지 않고 그 사실을 한 줄로 낸다 —
     이 채널은 구표기 conf 를 가진 채택자에게도 엔진 파일을 배달해야 하고(`_read_local_conf`),
@@ -221,8 +221,8 @@ def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
     return True
 
 
-def _adapter_config_gate_failed(result: dict) -> bool:
-    """동기 결과의 managed 완료 게이트 — unavailable/미수렴이면 True."""
+def _adapter_config_check_failed(result: dict) -> bool:
+    """동기 결과의 managed 완료 통과 조건 — unavailable 이거나 불일치하면 True."""
     return (result.get("status") != "ok"
             or not result.get("managed_converged", False))
 
@@ -231,7 +231,7 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
     """어댑터 config 채널 결과 출력 — 변경/보존은 loud, 보고는 파일당 한 줄.
 
     조용한 갱신을 금지하는 게 이 출력의 목적이다: managed 갱신은 채택자가 훅을 다시 승인해야
-    발화하므로 갱신 사실과 후속 행동이 같은 자리에서 보여야 한다. 소견이 없으면(정상·전부 최신)
+    돌므로 갱신 사실과 후속 행동이 같은 자리에서 보여야 한다. 소견이 없으면(정상·전부 최신)
     무출력이지만, **`unavailable` 은 조용히 넘기지 않는다** — 채널이 안 돌았다는 건 상류 동작
     fix 가 이 채택자에 안 갔다는 뜻이라, 침묵하면 그 사실을 알 방법이 아예 없다."""
     status = result.get("status")
@@ -271,13 +271,13 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
         print(f"    상류 값을 받으려면: {_ADAPTER_CONFIG_ACCEPT_HINT} {item['relpath']} "
               f"(백업 후 교체 · {_ADAPTER_CONFIG_WINDOWS_HINT})", file=sys.stderr)
     for item in result.get("degraded", []):
-        # 파일은 갱신됐는데 판정 기준(원장)이 안 남은 상태 — 조용히 두면 다음 동기가 이 파일을
+        # 파일은 갱신됐는데 판정 기준(어댑터 설정 기록)이 안 남은 상태 — 조용히 두면 다음 동기가 이 파일을
         #   영구 보고 모드로 본다. 보존과 섞지 않고 실제 상태 그대로 알린다.
         print(f"⚠️  어댑터 config {item['relpath']} — 갱신은 됐으나 어댑터 설정 기록을 확인하지 못했다 "
               f"({item['summary']}).", file=sys.stderr)
         print(f"    기록 파일 경로 권한을 고친 뒤 `{_ADAPTER_CONFIG_ACCEPT_HINT} {item['relpath']}` 로 "
               f"기록을 복구하라(내용은 이미 상류 값이다).", file=sys.stderr)
-    # in-sync byte지만 원장 backfill 실패 같은 상태는 preserved/degraded 버킷에 아직 없을 수 있다.
+    # in-sync byte지만 기록 backfill 실패 같은 상태는 preserved/degraded 버킷에 아직 없을 수 있다.
     already_reported = {
         item["relpath"] for bucket in ("preserved", "degraded")
         for item in result.get(bucket, [])
@@ -307,21 +307,21 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
               f"`{_ADAPTER_CONFIG_ACCEPT_HINT} <경로>` ({_ADAPTER_CONFIG_WINDOWS_HINT}).")
 
 
-# ── 훅 세트 세대 정합 검사 ───────────────────────────────────
+# ── 훅 세트 버전 일치 검사 ───────────────────────────────────
 # 어댑터 config 채널의 형제다. 채널이 "config 내용이 상류와 같은가" 를 보는 반면, 이 검사는
-# "config 가 요구하는 훅 세대를 **설치된 래퍼/드라이버가 실제로 감당하는가**" 를 본다. 두 축의
-# 갱신 주체가 달라(config = 채택자 소유·엔진 불가침 / 래퍼·드라이버 = manifest 등재) 세대 혼합
+# "config 가 요구하는 훅 버전을 **설치된 래퍼/드라이버가 실제로 감당하는가**" 를 본다. 두 쪽의
+# 갱신 주체가 달라(config = 채택자 소유·엔진 불가침 / 래퍼·드라이버 = manifest 등재) 버전 혼합
 # 창이 구조적으로 열리고, 그중 config 가 앞선 조합은 PreToolUse rc2 = 도구 전면 차단이다
-# (v1.7.0 흡수 실측). 검사는 읽기 전용이고, 판정·처방은 `app.hook_sets` 단일 진실을 그대로 쓴다.
+# (v1.7.0 갱신 반영 실측). 검사는 읽기 전용이고, 판정·해결 방법은 `app.hook_sets` 단일 진실을 그대로 쓴다.
 
 
 def check_adapter_hook_sets(home, dest_root: Path, source_root: Path) -> dict:
-    """훅 세트 세대 정합을 1회 판정한다 — 결과 dict(출력은 호출부·write 0).
+    """훅 세트 버전 일치를 1회 판정한다 — 결과 dict(출력은 호출부·write 0).
 
     판정 예외는 전파한다 — 앞 단계(엔진 파일 적용)는 남고 같은 명령 재실행이 나머지를 수행한다."""
     result: dict = {"findings": [], "entrypoints": []}
-    # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
-    #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
+    # 판정 선언은 **상류 버전**을 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
+    #   모르므로, 그 버전으로 보면 요구를 "선언 밖 플래그" 로 바꿔 green 이 된다. 조회 성격이라
     #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**
     #   (문구는 `hook_sets.hook_set_query_fallback_lines` 단일 진실 — pm-config `--check` 와 같다).
     generation = hook_sets.hook_set_declarations(home, source_root)
@@ -329,24 +329,24 @@ def check_adapter_hook_sets(home, dest_root: Path, source_root: Path) -> dict:
         print(line, file=sys.stderr)
     findings = hook_sets.judge_adapter_hook_sets(
         dest_root, source_root, declarations=generation.declarations)
-    remedy_lines = hook_sets.hook_set_fix_lines
-    # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면
-    #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.
+    fix_lines = hook_sets.hook_set_fix_lines
+    # 역방향 진입점 쪽은 **별도 목록**이다 — 완료 통과 조건이 소비하는 `findings` 에 섞으면
+    #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 갱신 반영이 영구히 막힌다.
     entrypoint_lines = hook_sets.hook_entrypoint_advisory_lines
     entrypoint_findings = hook_sets.judge_adapter_hook_entrypoints(
         dest_root, source_root, declarations=generation.declarations)
     result["findings"] = [
         {"harness": finding.harness, "config_relpath": finding.config_relpath,
          "kind": finding.kind, "subject": finding.subject,
-         "unmet_paths": list(finding.unmet_paths), "remedy": finding.remedy,
-         "detail": finding.detail, "remedy_lines": remedy_lines(finding)}
+         "unmet_paths": list(finding.unmet_paths), "fix": finding.fix,
+         "detail": finding.detail, "fix_lines": fix_lines(finding)}
         for finding in findings
     ]
     result["entrypoints"] = [
         {"harness": finding.harness, "config_relpath": finding.config_relpath,
          "kind": finding.kind, "event": finding.event, "matcher": finding.matcher,
          "dispatcher": finding.dispatcher, "detail": finding.detail,
-         "remedy_lines": entrypoint_lines(finding)}
+         "fix_lines": entrypoint_lines(finding)}
         for finding in entrypoint_findings
     ]
     return result
@@ -361,20 +361,20 @@ def refuse_partial_hook_set_scope(home, scoped_changes, planned_changes,
                                   source_root=None) -> int:
     """경로 스코프가 결합 묶음을 반쪽만 갱신하면 **쓰기 전에** 거부한다 (rc 1·정상이면 0).
 
-    `--paths` 는 어댑터 채널을 끄므로(요청 밖 write 0) 세대 검사가 전무하다 — 래퍼만 옮기고
+    `--paths` 는 어댑터 채널을 끄므로(요청 밖 write 0) 버전 검사가 전무하다 — 래퍼만 옮기고
     드라이버를 두면 "신 래퍼 + 구 드라이버" 락아웃을 손수 만들고도 rc0 다. 엔진 도구 부분 전파
-    경고와는 **다른 축**이다: 저쪽은 rev 혼재를 알리기만 하고, 이쪽은 하네스가 잠기므로 차단한다.
+    경고와는 **다른 쪽**이다: 저쪽은 rev 혼재를 알리기만 하고, 이쪽은 하네스가 잠기므로 차단한다.
 
     입력은 **해소된 계획**이다(원문 `--paths` 표기가 아니라 dest 좌표의 change 목록):
       `scoped_changes`  이번 실행이 실제로 갱신할 change
       `planned_changes` 스코프가 없었다면 갱신됐을 change(= 상류와 다른 것 전수)
     원문 표기를 비교하면 `@source` 상류 좌표(`templates/claude_code/.claude/…`)로 지목한 요청이
-    dest 좌표(`.claude/…`) 선언과 교집합 0 이 되어 검사가 통째로 무발화한다. 계획을 입력으로 삼으면
+    dest 좌표(`.claude/…`) 선언과 교집합 0 이 되어 검사가 통째로 돌지 않는다. 계획을 입력으로 삼으면
     좌표 표기 전반이 한 번에 닫히고, **이미 최신인 형제**는 `planned` 에 없어 거짓 거부도 없다.
 
-    결합 묶음 선언은 **상류 세대**를 쓴다 — 상류가 이번에 들여오는 새 묶음을 설치본 선언은 모르고,
+    결합 묶음 선언은 **상류 버전**을 쓴다 — 상류가 이번에 들여오는 새 묶음을 설치본 선언은 모르고,
     그 첫 전파가 정확히 반쪽 갱신이 나는 자리다. 상류를 못 읽으면 설치본 선언으로 한 번 더 보되,
-    **어댑터 훅 네임스페이스 하위를 건드리는 스코프는 통째로 거부**한다 — 그 세대의 결합을 검증할
+    **어댑터 훅 네임스페이스 하위를 건드리는 스코프는 통째로 거부**한다 — 그 버전의 결합을 검증할
     방법이 없고, 로컬 묶음 membership 으로 좁히면 "상류만 아는 묶음" 이 정확히 그 틈으로 빠진다
     (탈출구는 스코프 없는 전량 pm-update). 훅과 무관한 부분 전파는 종전대로 통과한다.
 
@@ -383,7 +383,7 @@ def refuse_partial_hook_set_scope(home, scoped_changes, planned_changes,
     unverified: tuple[str, ...] = ()
     generation = hook_sets.hook_set_declarations(home, source_root, required=True)
     if generation.declarations is None:
-        # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히
+        # 조회 대체 동작(설치본 선언)으로 판정은 계속한다 — 그 버전이 아는 반쪽 갱신은 여전히
         #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만
         #   있는 묶음은 정의상 로컬이 모르므로, membership 으로 좁히면 지금 닫으려는
         #   케이스가 그대로 빠져나간다. 훅이 사는 **네임스페이스** 하위를 건드리면 전부
@@ -424,25 +424,25 @@ def refuse_partial_hook_set_scope(home, scoped_changes, planned_changes,
     return 1
 
 
-def _adapter_hook_set_gate_failed(result: dict) -> bool:
-    """훅 세트 검사의 완료 게이트 — 불일치가 하나라도 남으면 True."""
+def _adapter_hook_set_check_failed(result: dict) -> bool:
+    """훅 세트 검사의 완료 통과 조건 — 불일치가 하나라도 남으면 True."""
     return bool(result.get("findings"))
 
 
 def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> None:
-    """훅 세트 검사 결과 — 정합이면 무출력, 불일치는 loud 처방(사유 + 실행 커맨드).
+    """훅 세트 검사 결과 — 일치하면 무출력, 불일치는 loud 안내(사유 + 실행 커맨드).
 
     dry_run 은 문구만 바꾼다(판정 자체가 읽기 전용이라 write 경로와 결과가 같다)."""
     for finding in result.get("findings", []):
         print(f"⚠️  어댑터 훅 세트 버전 불일치({finding['harness']}) — {finding['detail']}.",
               file=sys.stderr)
-        for line in finding["remedy_lines"]:
+        for line in finding["fix_lines"]:
             print(f"    → {line}", file=sys.stderr)
-    # 역방향 진입점 축은 advisory 다 — 같은 자리에서 loud 하게 내되 게이트는 안 건드린다.
+    # 역방향 진입점 쪽은 advisory 다 — 같은 자리에서 loud 하게 내되 통과 조건은 안 건드린다.
     for finding in result.get("entrypoints", []):
         print(f"⚠️  어댑터 훅 진입점 누락({finding['harness']}) — {finding['detail']}.",
               file=sys.stderr)
-        for line in finding["remedy_lines"]:
+        for line in finding["fix_lines"]:
             print(f"    → {line}", file=sys.stderr)
     if result.get("findings") and dry_run:
         print("    (dry-run — 판정만 했다. 위 해결 방법을 적용한 뒤 실 pm-update 를 돌려라.)",
@@ -455,15 +455,15 @@ def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> N
 # 디스크에 놓인다. 그런데 기존 설치 트리거는 `repo add`·`worktree add` 둘뿐이었다 — 즉 엔진
 # 업그레이드만 한 채택자는 새 훅(예: pre-commit 가드)을 **영영 못 받는다**(값-연결이
 # 끊긴 채 green·[[robustness-value-connections-before-ship]]). 그래서 매 sync **실행마다** 등록
-# repo 전수 정합 확인 + drift 재설치를 신설한다.
+# repo 전수 일치 확인 + drift 재설치를 신설한다.
 #
-# ⚠ **`changes` 유무로 게이트하지 않는다**(내부/추가 리뷰어 게이트 must-fix·격리 실측): 업그레이드
+# ⚠ **`changes` 유무로 막지 않는다**(내부/추가 리뷰어 리뷰 must-fix·격리 실측): 업그레이드
 # 경계에서 sync 를 *실행하는 주체는 dest 의 구 엔진*이다 — 이 기능을 배달하는 그 sync 자체는
-# 재설치 코드를 갖고 있지도 않다(RUN 1 미발화). 바로 다음 실행은 dest 가 신 엔진이지만
+# 재설치 코드를 갖고 있지도 않다(RUN 1 에서 돌지 않음). 바로 다음 실행은 dest 가 신 엔진이지만
 # `changes == 0` 이라, "changes>0 에서만" 으로 좁히면 **다음에 우연히 엔진이 또 바뀔 때까지**
-# 훅이 안 깔린다(RUN 2 미발화). 그래서 옆의 `migrate_entry_doc` 와 **동형으로** changes 0 경로
-# 에서도 돈다. 노이즈는 트리거를 끄는 대신 **정합이면 조용**(아래 `_protected_hook_in_sync`
-# drift 판정)으로 낮춘다 — sidecar reconcile 의 "비교 우선·정합이면 subprocess 0" 과
+# 훅이 안 깔린다(RUN 2 에서 돌지 않음). 그래서 옆의 `migrate_entry_doc` 와 **같은 방식으로** changes 0 경로
+# 에서도 돈다. 노이즈는 트리거를 끄는 대신 **일치하면 조용**(아래 `_protected_hook_in_sync`
+# drift 판정)으로 낮춘다 — sidecar reconcile 의 "비교 우선·일치하면 subprocess 0" 과
 # 같은 패턴이라 새 개념이 늘지 않는다. 이 판정은 훅 디렉토리가 통째로 지워진 clone 도 덮는다
 # (bootstrap reconcile 은 sidecar 파일이 없으면 즉시 return 이라 그 상태를 영구 침묵한다).
 #
@@ -473,7 +473,7 @@ def _read_hook_artifact(path: Path) -> str | None:
     """설치된 훅 산출물(훅 본문·sidecar) 1개를 읽는다 — 부재/읽기 실패는 **None**.
 
     `_protected_hook_in_sync` 의 유일한 읽기 창구다. 부재와 **읽기 실패**(non-UTF-8 로 깨진
-    본문·권한·IO 오류)를 *같은* None 으로 수렴시키는 게 요점 — 둘 다 "이 파일은 현 엔진 산출물이
+    본문·권한·IO 오류)를 *같은* None 으로 모으는 게 요점 — 둘 다 "이 파일은 현 엔진 산출물이
     아니다" 라는 같은 결론이고, 따라서 같은 해소(재설치)로 가야 한다. 예외를 밖으로 내면 깨진 훅
     본문 하나가 재설치 전에 명령을 멈춰 **깨진 훅이 복구되지 않는다**."""
     try:
@@ -484,16 +484,16 @@ def _read_hook_artifact(path: Path) -> str | None:
         return None            # 깨진 본문(non-UTF-8) — 우리 산출물이 아니다 → 재설치 대상.
 
 
-# 실행 비트 축을 볼 수 있는 플랫폼인가 — POSIX 만. Windows 는 실행 비트 개념이 다르다(NTFS 에
+# 실행 비트를 볼 수 있는 플랫폼인가 — POSIX 만. Windows 는 실행 비트 개념이 다르다(NTFS 에
 # mode 가 없고 `Path.chmod` 는 read-only 플래그만 만진다·`st_mode` 는 항상 0o666/0o444 계열).
-# 거기서 이 축을 보면 **매 sync 거짓 drift → 무한 재설치**가 된다. git-for-windows 는 훅을 sh 로
-# 돌리며 실행 비트를 요구하지도 않으므로 축 자체가 무의미하다. 테스트는 이 상수를 뒤집어
+# 거기서 실행 비트를 보면 **매 sync 거짓 drift → 무한 재설치**가 된다. git-for-windows 는 훅을 sh 로
+# 돌리며 실행 비트를 요구하지도 않으므로 이 검사 자체가 무의미하다. 테스트는 이 상수를 뒤집어
 # Windows 거동을 hermetic 하게 친다(플랫폼 분기 실행 불요).
 _EXEC_BIT_MEANINGFUL = os.name != "nt"
 
 
 def _hook_artifact_executable(path: Path) -> bool:
-    """산출물이 실행 가능한가 — 실행권한 축 (Windows 는 축 비활성이라 항상 True).
+    """산출물이 실행 가능한가 — 실행권한 검사 (Windows 는 이 검사가 꺼져 있어 항상 True).
 
     **없으면 git 이 훅을 조용히 건너뛴다** — 본문만 비교하면 `chmod 0644` 된 훅이 `in_sync` 로
     오판돼 보호가 침묵 비활성화된다. stat 실패(부재·권한)는 `False`(drift·재설치)."""
@@ -543,7 +543,7 @@ def reinstall_protected_hooks(dest_root: Path, *, write: bool) -> dict:
 def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = False) -> None:
     """reinstall_protected_hooks 결과 요약 (per-repo 성공/실패 줄은 repo_protection 깔때기 소관).
 
-    **정합이면 완전히 조용**하다(`in_sync` 만 있는 매 sync 의 정상 경로) — 트리거를 끄지 않고
+    **일치하면 완전히 조용**하다(`in_sync` 만 있는 매 sync 의 정상 경로) — 트리거를 끄지 않고
     출력만 낮춘 게 이 함수다. 등록 repo 0(=`no_repos`)도 조용(걸 대상 없음)."""
     status = result.get("status")
     if status == "no_repos":

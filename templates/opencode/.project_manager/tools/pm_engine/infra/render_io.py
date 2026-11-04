@@ -44,7 +44,7 @@ def _path_newline(path: Path) -> str:
 
 
 def _write_rendered_text(dst: Path, source, rendered: str) -> None:
-    """LF 렌더 산출물을 **dest 의 현재 표기**로 쓴다 (신규 파일은 소스 표기 = byte-copy 동형).
+    """LF 렌더 산출물을 **dest 의 현재 표기**로 쓴다 (신규 파일은 소스 표기 = byte-copy 와 같은 방식).
 
     신규는 소스 표기를 따른다 — pm_import 는 소스를 byte-copy 한 뒤 그 사본을 표기 보존으로
     재렌더하므로, 같은 파일을 sync 가 처음 깔 때도 같은 bytes 가 나와야 두 채널이 안 갈린다.

@@ -12,7 +12,7 @@ from pm_engine.infra import pm_paths
 
 REPO = Path(__file__).resolve().parents[1]
 TARGET_PATTERN = re.compile(r"`templates/([a-z0-9_]+)/`")
-# 타깃 열거를 담는 루트 진입문서 전부 — CLAUDE.md 만 가드하면 README 열거가 재발 사각
+# 타깃 열거를 담는 루트 진입문서 전부 — CLAUDE.md 만 가드하면 README 열거가 재발 놓치는 곳
 # (T-0469 내부 reviewer must-fix). 새 진입문서에 열거를 추가하면 여기에도 등재한다.
 ROOT_ENTRY_DOCS = (REPO / "CLAUDE.md", REPO / "README.md")
 ADOPT_DOC = REPO / "ADOPT.md"
@@ -83,7 +83,7 @@ def _load_pm_update():
 def test_all_targets_discovers_a_new_directory_at_runtime(tmp_path: Path, monkeypatch):
     """`--all-targets`는 고정 목록 없이 새 디렉터리까지 **전부** 자식 호출로 넘긴다.
 
-    파일 부재 확인만으로는 타깃 누락도 통과라(codex 게이트 suggestion) 자식 argv 를 직접
+    파일 부재 확인만으로는 타깃 누락도 통과라(codex 리뷰 suggestion) 자식 argv 를 직접
     기록해 두 타깃 모두 처리됐음을 검증한다."""
     pm_update = _load_pm_update()
     fake_repo = tmp_path / "repo"
@@ -120,7 +120,7 @@ def test_all_targets_rejects_changes_only_options(
     """`--all-targets` + `--changes 전용 옵션` 조합은 실 동기화 대신 명확 에러다.
 
     오사용 검증이 --all-targets 분기보다 뒤면 두 옵션이 자식 argv 에 안 실린 채 조용히
-    무시되고 실 동기화가 돈다(T-0469 codex 게이트 must-fix — 검증 선행이 계약)."""
+    무시되고 실 동기화가 돈다(T-0469 codex 리뷰 must-fix — 검증 선행이 계약)."""
     pm_update = _load_pm_update()
     fake_repo = tmp_path / "repo"
     (fake_repo / "templates" / "alpha").mkdir(parents=True)

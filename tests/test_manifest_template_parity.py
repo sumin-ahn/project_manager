@@ -1,19 +1,19 @@
-"""T-0171 — manifest 경로 집합 정합 + facade 정합 가드.
+"""T-0171 — manifest 경로 집합 일치 + facade 일치 가드.
 
 T-0170 이 manifest/facade 전파 채널 갭을 노출했다. 실측 결론:
   - 갭2(templates manifest "stale") = 실체는 경로 집합 byte-identical, drift 는 주석뿐.
-    → 경로 집합 정합을 못박아 *경로* drift(전파 채널 누락/잉여)는 즉시 fail 시킨다.
+    → 경로 집합 일치를 못박아 *경로* drift(전파 채널 누락/잉여)는 즉시 fail 시킨다.
   - 갭3(pm-update.sh facade 부재) = 진짜 갭. pm_import 가 채택자 루트로 복사하는 facade
     (pm-config·pm-update)가 각 템플릿 트리에 전부 실재해야 채택자에 도달한다.
 
-선례: SHIPPING_GLOBS↔manifest 동형(T-0154)·template_scaffold_parity. 모두 hermetic —
+선례: SHIPPING_GLOBS↔manifest 와 같은 방식(T-0154)·template_scaffold_parity. 모두 hermetic —
 실 파일 존재/내용만 본다(LLM·subprocess 미진입). manifest 파싱은 manifest_store.read_manifest
 재사용(주석·`@마커` 제거를 한 곳에서 — 자체 파서 drift 회피).
 
 historical 주의: 경로-집합 가드(가드 2)는 manifest *경로* 만 비교한다(주석 drift 는 무시 — 갭2
 실체가 주석뿐). 폐기 용어 잔존은 별개 가드(test_terminology·T-0171 범위 확장)가 본다.
 
-T-0176 보강(가드 2b·content 정합): 경로-집합·facade 가드는 공유 엔진 파일의 *내용* drift 를 못
+T-0176 보강(가드 2b·content 일치): 경로-집합·facade 가드는 공유 엔진 파일의 *내용* drift 를 못
 잡는다(전파 누락·구버전 잔존이 회귀를 통과). 공유 엔진(manifest non-render·양 트리 실재)을
 canonical ↔ 각 템플릿 byte-identical 로 강제해 그 갭을 메운다. 어댑터-비대칭(.claude/* vs
 .opencode/*·@render 렌더 항목)은 스코프 밖 — render/target_owned 마커 + 경로 비대칭으로 자동 제외
@@ -48,7 +48,7 @@ CODEX_MANIFEST = REPO / "templates" / "codex" / ".project_manager" / "engine.man
 # 추가/누락되면 fail — 의도적 어댑터 비대칭만 통과시킨다(전파 채널 우발 drift 차단).
 #   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응) — agents·command·lib·plugins·
 #     pm_orch_opencode.py(hook/driver). `.opencode/command/`는 사람 슬래시 팔레트 진입 채널이며
-#     `.claude/skills/<name>/SKILL.md` canonical 에서 파생한 출하 사본이다(정합은
+#     `.claude/skills/<name>/SKILL.md` canonical 에서 파생한 출하 사본이다(일치는
 #     tests/test_skill_command_parity.py 가 강제).
 #   opencode 가 제외: .claude/agents(opencode 는 .opencode/agents)·ctx 훅·회귀 훅·relay 드라이버.
 #     regression.yml 은 이제 어느 채택자 템플릿에도 출하하지 않는다. `.claude/skills` 는 **더 이상 제외 아님** — opencode
@@ -94,7 +94,7 @@ CLAUDE_ONLY_PATHS = {
     ".claude/delegate_channel_guard_hook.sh",
 }
 # codex 트리(ADR-0070)의 정당한 manifest 차이(3-way·화이트리스트). claude_code 대비:
-#   codex 가 추가: .codex/agents(TOML 4축 custom agent·claude .claude/agents 대응) · .agents/skills
+#   codex 가 추가: .codex/agents(TOML 4종 custom agent·claude .claude/agents 대응) · .agents/skills
 #     (codex 네이티브 스킬 네임스페이스 — root `.claude/skills` 를 @source 로 remap·D2) ·
 #     pm-dev-delegate file override(Codex native spawn schema를 shared Claude source와 분리·T-0435) ·
 #     pm-review file override(추가 리뷰어 실 호출의 `exec_command` 건별 egress 승격 절차 — codex 전역
@@ -166,12 +166,12 @@ REOPEN_LIFECYCLE_ENGINE_PATHS = (
 
 # 여러 harness가 같은 대상 relpath를 설치하면 ``plan_copy``는 byte가 다를 때 경고하고
 # registry 첫 트리를 택한다. engine.manifest는 선택 선언의 합집합으로 다시 쓰는 예외라 이
-# 사전 정합 대상에서 뺀다. 한 트리에만 있는 경로는 어댑터 소유일 수 있으므로 여기서 판단하지
+# 사전 일치 대상에서 뺀다. 한 트리에만 있는 경로는 어댑터 소유일 수 있으므로 여기서 판단하지
 # 않는다.
 _IMPORT_MERGED_EXCEPTIONS = {
     ".project_manager/engine.manifest",
     # 단일 설치에서는 각 실제 진입 표기를 갖고, 다중 설치에서는 pm_import의 선언된 중립-source
-    # override + 선택 flavor 병기가 충돌을 해소한다. 다른 공유 relpath는 계속 byte-identity 대상이다.
+    # override + 선택 하네스별 판 병기가 충돌을 해소한다. 다른 공유 relpath는 계속 byte-identity 대상이다.
     "AGENTS.md",
 }
 
@@ -205,7 +205,7 @@ def _shared_import_diffs(template_roots: dict[str, Path]) -> list[str]:
 
     두 트리 이상에 있는 파일만 비교한다. 한 트리 부재는 어댑터-고유 경로일 수 있어 여기서는
     판정하지 않는다. manifest path-set 가드는 등록된 경로만 다루므로, 미등록 출하 relpath의
-    부재 정합은 이 가드 계열의 범위 밖이며 별도 후속 범위다. 같은 경로가 둘 이상에서 출하될
+    부재 일치는 이 가드 계열의 범위 밖이며 별도 후속 범위다. 같은 경로가 둘 이상에서 출하될
     때의 거짓 충돌만 이 가드의 책임이다.
     """
     pm_import = _load_pm_import()
@@ -315,7 +315,7 @@ def test_pm_update_operational_details_ship_the_v171_rename_bridge():
     assert len(set(bridge_sections)) == 1, "harness별 v1.7.11 bridge 계약이 갈렸다"
 
 
-# ── 가드 2: manifest 경로 집합 정합 ──────────────────────────────────────────
+# ── 가드 2: manifest 경로 집합 일치 ──────────────────────────────────────────
 
 
 def test_root_and_claude_manifest_path_sets_identical():
@@ -435,7 +435,7 @@ def test_compaction_adapters_reference_engine_builder_without_copying_snapshot_l
     adapters = {
         "claude": (TEMPLATE_ROOTS["claude_code"] / ".claude" / "ctx_stop_hook.py",),
         "opencode": (TEMPLATE_ROOTS["opencode"] / ".opencode" / "lib" / "ctx-guard-core.cjs",),
-        # codex 는 PostCompact 배선이 진입점 뒤 registry 로 옮겨서(T-0806) builder token 이
+        # codex 는 PostCompact 등록이 진입점 뒤 registry 로 옮겨서(T-0806) builder token 이
         #   hooks.json 이 아니라 디스패처에 산다. 라벨 비복제는 두 파일 모두에서 본다.
         "codex": (TEMPLATE_ROOTS["codex"] / ".codex" / "pm_orch_codex.py",
                   TEMPLATE_ROOTS["codex"] / ".codex" / "hooks.json"),
@@ -444,7 +444,7 @@ def test_compaction_adapters_reference_engine_builder_without_copying_snapshot_l
     for harness, paths in adapters.items():
         texts = [path.read_text(encoding="utf-8") for path in paths]
         # 토큰은 셸 한 줄(`pm_log.py snapshot`)일 수도 argv 원소 두 개(`"…/pm_log.py", "snapshot"`)
-        #   일 수도 있다 — 배선 표기가 아니라 "엔진 builder 를 호출한다" 는 사실을 본다.
+        #   일 수도 있다 — 등록 표기가 아니라 "엔진 builder 를 호출한다" 는 사실을 본다.
         assert any(re.search(r"pm_log\.py\W{0,8}snapshot", text) for text in texts), \
             f"{harness}: builder command token 누락"
         for path, text in zip(paths, texts):
@@ -485,13 +485,13 @@ def test_all_manifests_self_propagate():
     """4 매니페스트 모두 자기 자신(`.project_manager/engine.manifest`)을 전파 대상에 등록 (B-selfprop·OQ-B1·ADR-0070).
 
     없으면 이 파일에 새로 추가한 hook/driver 엔트리(=manifest 진화)가 기존 채택자에 영영 도달하지
-    못한다(import 시점 frozen manifest 영속) → "frozen 근절" 이 성립 불가. 루트는 self-flavor(bare),
-    claude_code/opencode/codex 는 각자 flavor 매니페스트를 @source 로 읽는다(harness-flavor remap)."""
+    못한다(import 시점 frozen manifest 영속) → "frozen 근절" 이 성립 불가. 루트는 자기 판(bare),
+    claude_code/opencode/codex 는 각자 하네스별 판 매니페스트를 @source 로 읽는다(하네스별 판 remap)."""
     for name, manifest in (("root", ROOT_MANIFEST), ("claude_code", CC_MANIFEST),
                            ("opencode", OC_MANIFEST), ("codex", CODEX_MANIFEST)):
         assert SELF_PROP_PATH in _manifest_path_set(manifest), (
             f"{name} manifest 가 자기전파 엔트리({SELF_PROP_PATH}) 미등록 — 신 엔트리가 채택자에 미도달")
-    # claude_code/opencode/codex 는 flavor 매니페스트를 @source 로 읽어야 자기 flavor 를 받는다(교차 오염 방지).
+    # claude_code/opencode/codex 는 하네스별 판 매니페스트를 @source 로 읽어야 자기 하네스별 판을 받는다(교차 오염 방지).
     assert _entry_source_rel(CC_MANIFEST, SELF_PROP_PATH) == \
         "templates/claude_code/.project_manager/engine.manifest"
     assert _entry_source_rel(OC_MANIFEST, SELF_PROP_PATH) == \
@@ -519,7 +519,7 @@ def test_instance_owned_config_not_registered():
         assert not leaked, f"{name} manifest 가 instance-owned config 를 등록(전파 위반): {sorted(leaked)}"
 
 
-# ── 가드 2b: content 정합 (공유 엔진 byte-identical) ─────────────────────────
+# ── 가드 2b: content 일치 (공유 엔진 byte-identical) ─────────────────────────
 
 
 def test_shared_imported_relpaths_are_byte_identical():
@@ -588,11 +588,11 @@ def _expand_manifest_files(base: Path, relpath: str) -> dict[str, Path]:
 
 
 def _engine_content_diffs(template_root: Path, manifest_entries=None) -> list[str]:
-    """canonical(REPO 루트) ↔ template_root 의 *공유 엔진* 파일 byte 차이 리스트 (정합용 helper).
+    """canonical(REPO 루트) ↔ template_root 의 *공유 엔진* 파일 byte 차이 리스트 (일치용 helper).
 
     스코프 = manifest 항목 중 ``@render``/``@target-owned`` 가 아니고(=byte-copy 계약·렌더/타깃소유는
     내용이 갈릴 수 있어 제외) **양 트리에 실재**하는(경로 비대칭은 path-set 가드 소관) 파일. 디렉토리
-    항목은 재귀 파일 단위로 본다. read_manifest(manifest_store) 재사용 — 자체 파서 금지(주석·`@마커` 제거 동형).
+    항목은 재귀 파일 단위로 본다. read_manifest(manifest_store) 재사용 — 자체 파서 금지(주석·`@마커` 제거와 같은 방식).
 
     sensitivity 용으로 ``manifest_entries`` 를 주입할 수 있다(미지정 시 ROOT_MANIFEST 파싱). 반환은
     drift 파일의 rel 경로 + 비대칭은 ``MISSING:`` 접두(양 트리 모두 present 인 디렉토리 내부 누락)."""
@@ -607,9 +607,9 @@ def _engine_content_diffs(template_root: Path, manifest_entries=None) -> list[st
             continue
         rel = str(entry)
         if rel == SELF_PROP_PATH:
-            # 매니페스트 자기전파(B-selfprop·T-0305): 매니페스트는 harness-flavor(루트↔claude_code↔
+            # 매니페스트 자기전파(B-selfprop·T-0305): 매니페스트는 하네스별 판(루트↔claude_code↔
             # opencode 주석/@source 상이)라 공유-엔진 byte-parity 대상이 아니다. path-set·self-prop·
-            # 등록 가드가 구조를 지키고, content 는 flavor-specific 이라 제외한다.
+            # 등록 가드가 구조를 지키고, content 는 하네스별 판마다 달라 제외한다.
             continue
         canon_files = _expand_manifest_files(REPO, rel)
         if not canon_files:
@@ -697,11 +697,11 @@ def test_content_guard_is_sensitive_to_drift(tmp_path):
     assert no_diff == [], f"동일 트리에 false-positive drift 검출 — {no_diff}"
 
 
-# ── 가드 3: facade 정합 (갭3 재발 차단) ──────────────────────────────────────
+# ── 가드 3: facade 일치 (갭3 재발 차단) ──────────────────────────────────────
 
 
 def _missing_facades(template_root: Path) -> list[str]:
-    """template_root 에서 빠진 채택자 facade 파일명 리스트 (정합용 helper)."""
+    """template_root 에서 빠진 채택자 facade 파일명 리스트 (일치용 helper)."""
     missing = []
     for stem in ADOPTER_FACADE_STEMS:
         for ext in FACADE_EXTS:
@@ -713,7 +713,7 @@ def _missing_facades(template_root: Path) -> list[str]:
 def test_each_template_tree_has_all_adopter_facades():
     """pm_import 가 채택자 루트로 복사하는 facade(pm-config·pm-update의 .sh/.cmd)가 각 템플릿 트리에 전부 존재.
 
-    갭3 재발 차단 — ② 가 pm-update.sh 를 못 받은 클래스(facade 누락이 채택자에 전파)를 박제.
+    갭3 재발 차단 — ② 가 pm-update.sh 를 못 받은 클래스(facade 누락이 채택자에 전파)를 기록.
     템플릿 트리 전체가 채택자 루트로 복사되므로(pm_import.plan_copy), facade 가 트리에 없으면
     채택자도 못 받는다."""
     for name, root in TEMPLATE_ROOTS.items():
@@ -777,9 +777,9 @@ def test_manifest_ships_engine_package_before_entry_files():
 
 RETIRED_CLUSTER_SKILL_NEW = ".project_manager/tools/pm_engine/cli/bootstrap_card.py"
 RETIRED_CLUSTER_SKILL_OLD = tuple(
-    f"{root}/pm-wave-{kind}/{name}"
+    f"{root}/{skill}/{name}"
     for root in (".claude/skills", ".agents/skills")
-    for kind in ("claim", "finish")
+    for skill in ("pm-wave-claim", "pm-wave-finish")
     for name in ("SKILL.md", "references/operational-details.md")
 ) + (".opencode/command/pm-wave-claim.md", ".opencode/command/pm-wave-finish.md")
 

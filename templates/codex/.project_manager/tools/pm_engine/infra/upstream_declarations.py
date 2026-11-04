@@ -1,13 +1,13 @@
 """상류 package snapshot 과 훅 선언 하위 프로세스 조회 (층: infra).
 
 상류 트리의 훅 세트 선언(`pm_engine.domain.adapter_specs.ADAPTER_HOOK_SET`)을 읽는 유일한 경로다.
-선언은 상류 package 의 배송 Python 파일 전부를 한 번 읽은 bytes(snapshot)로 결속한다. 그 bytes 만
+선언은 상류 package 의 배송 Python 파일 전부를 한 번 읽은 bytes(snapshot)로 연결한다. 그 bytes 만
 실행 clone 의 임시 트리에 새로 내려놓고 별도 `python -I -B -c` 프로세스에서 선언만 직렬화해 받는다.
-부모는 받은 JSON 을 엄격히 검사한 뒤 자기 `adapter_specs` 값 형식으로 재구성한다 — 다른 세대의 module·
+부모는 받은 JSON 을 엄격히 검사한 뒤 자기 `adapter_specs` 값 형식으로 재구성한다 — 다른 버전의 module·
 클래스 객체를 이 프로세스에 들이지 않는다.
 
 같은 snapshot helper 가 파일 집합·해시 알고리즘을 소유한다. 조회(자식 실행)와 수용 직전 재대조가
-같은 helper 의 digest 를 쓰므로 두 경로의 결속 기준이 갈리지 않는다.
+같은 helper 의 digest 를 쓰므로 두 경로의 연결 기준이 갈리지 않는다.
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ SNAPSHOT_READ_ERRORS = (OSError, repo_files.RepoFilesGitError, manifest_rules.Em
 
 
 class DeclarationWireError(ValueError):
-    """자식이 낸 선언 JSON 이 wire 형식과 다르다(키·타입·중복·잔여 출력)."""
+    """자식이 낸 선언 JSON 이 wire 형식과 다르다(키·타입·중복·남는 출력)."""
 
 
 def _snapshot_digest(payloads: dict[str, bytes]) -> str:

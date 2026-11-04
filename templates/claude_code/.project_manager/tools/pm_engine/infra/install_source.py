@@ -11,7 +11,7 @@ import stat
 import warnings
 
 # 치환 대상 판정은 **제외 사유 기반**이다 — 옛 확장자 allowlist(`(".md", ".json", ".sh", ".py")`)는
-# allowlist 는 "규칙이 적용될 지점을 사람이 열거" 하는 형상이라, 새 하니스가 새 파일
+# allowlist 는 "규칙이 적용될 지점을 사람이 열거" 하는 방식이라, 새 하니스가 새 파일
 # 형식을 들여오면 조용히 미커버로 남는다 — codex(세 번째 하니스)의 `.codex/agents/*.toml` 이 정확히
 # 그렇게 `{{PROJECT_NAME}}` 을 리터럴로 출하했다. 이제 판정은 뒤집혀 "제외 사유가 있는가" 만 본다
 # (`_should_substitute`) → `.yaml`·`.jsonc` 같은 네 번째 하니스의 새 형식도 자동 편입된다.
@@ -39,7 +39,7 @@ ENGINE_METADATA_RELPATHS = frozenset({
 #   소비-시 치환 — 그 템플릿이 *산출물을 만드는 시점*(pm_state 생성·domain 페이지 생성)
 #   상시 토큰    — 엔진 소유 문서가 토큰을 *설명*으로 담는다(엔진 소스·manifest·방법론 문서)
 # 같은 파일을 설치-시와 소비-시가 반대 방향으로 소유하면 **매 sync 마다 진동한다**: 설치가 값으로
-# 굳히고, manifest bare 등재의 byte-copy(`pm_update`)가 다음 흡수에서 토큰-form 으로 되돌린다
+# 굳히고, manifest bare 등재의 byte-copy(`pm_update`)가 다음 갱신에서 토큰-form 으로 되돌린다
 # (채택자 실측). 아래 선언은 소비-시 소유를 명시해 **그 파일의 그 토큰에서만** 설치-시 치환을
 # 끈다 — 같은 파일의 다른 토큰(`{{PROJECT_NAME}}` 등)은 종전대로 설치 시 치환된다
 # (치환 예외 *파일* 목록이 아니다).
@@ -63,7 +63,7 @@ CONSUMPTION_TIME_TOKENS: dict[str, frozenset] = {
 #
 # ⚠️ 파생 기준 manifest 는 **모듈-import 시점(실행 checkout)이 아니라 치환 시점의 dest 인스턴스**
 # (`dest_root/.project_manager/engine.manifest`)다. pm_import 는
-# `--from <다른 framework checkout>` 에서 복사할 수 있어(구버전 로컬 도구가 신버전 upstream 을 흡수하는
+# `--from <다른 framework checkout>` 에서 복사할 수 있어(옛 버전 로컬 도구가 신버전 upstream 을 받는
 # 실 운영 경로), *실제 복사되는 쪽* manifest 가 기준이어야 upstream 진화(신규 직속 방법론 문서)가 자동
 # 편입된다 — 모듈-시점 상수는 실행 checkout 의 manifest 에 묶여 이 보장을 잃는다. 치환은 복사 *이후*
 # 단계라 dest manifest 는 그 시점에 실재한다(manifest = self-prop 복사 대상). 각 치환 call site 는 아래
@@ -98,7 +98,7 @@ def _derive_sed_exclude_relpaths(manifest_path: Path) -> frozenset:
     조건으로, 직속 템플릿(`pm_state.template.md`)은 `_is_template_scaffold` 로 제외된다 — 현재
     산출은 정확히 {pm_role.md, pm_playbook.md, pm_principles.md}.
 
-    manifest 파싱은 manifest_store.read_manifest 재사용(새 파서 신설 없음·_render_managed_relpaths 동형).
+    manifest 파싱은 manifest_store.read_manifest 재사용(새 파서 신설 없음·_render_managed_relpaths 와 같은 방식).
     manifest 부재 → 리터럴 floor SED_EXCLUDE_FLOOR, 파싱 실패는 전파한다(깨진 manifest 로 방법론
     문서를 오치환하지 않는다). 정상
     파싱은 파생 결과를 그대로 반환한다(manifest 가 방법론 문서를 명시적으로 뺐다면 그 판단을 존중)."""
@@ -137,7 +137,7 @@ def _dest_sed_exclude(dest_root: Path) -> frozenset:
 # tracked-only 출하 목록 위에서도 복사 정책과 fill 스캔의 공통 방어를 보존하려고 유지한다.
 # 복사/스캔 제외 디렉토리명 (무겁고 재설치 대상 / stale 산출물 / VCS 메타).
 #   node_modules — opencode 의존성(재설치 대상). __pycache__ — stale 바이트코드(.pyc).
-#   .git — VCS 메타(템플릿엔 없어 복사목록엔 안 끼지만, fill 폴백 전체 스캔이 대형 repo
+#   .git — VCS 메타(템플릿엔 없어 복사목록엔 안 끼지만, fill 대체 동작의 전체 스캔이 대형 repo
 #          .git 을 텍스트 read 하지 않도록 명시 제외 — 낭비 방지·결정론).
 COPY_EXCLUDE_DIR_NAMES = frozenset({"node_modules", "__pycache__", ".git"})
 
@@ -145,7 +145,7 @@ COPY_EXCLUDE_DIR_NAMES = frozenset({"node_modules", "__pycache__", ".git"})
 # 복사 제외 파일 (정확 dst relpath) — adopter 에게 출하하지 않을 프레임워크-repo 내부 문서.
 #   README.md(최상위) — 템플릿 트리의 "어댑터 타깃" 설명서다(프레임워크 상대링크 `../../README.md`·
 #   `../opencode/README.md` 를 담아 adopter 트리에선 dangling·오해 소지). 채택자는 자기 프로젝트
-#   README 를 쓴다 → 프레임워크-내부 doc 를 adopter README 로 박제하지 않는다(다중 선택 충돌도 소거).
+#   README 를 쓴다 → 프레임워크-내부 doc 를 adopter README 로 굳히지 않는다(다중 선택 충돌도 소거).
 #   하위 `.project_manager/wiki/*/README.md`(wiki 구조 안내)는 유지 — 정확 relpath `README.md` 만 제외.
 COPY_EXCLUDE_RELPATHS = frozenset({"README.md"})
 
@@ -189,7 +189,7 @@ def _full_relpath_for_lite(rel: Path) -> Path:
 def _shippable_template_files(template_root: Path) -> list[Path]:
     """repo 출하 엔트리를 링크를 추종하지 않는 일반 파일 목록으로 좁힌다.
 
-    git 인벤토리는 index mode가 진실이므로 일반 파일 mode만 허용한다. 비-git 폴백은 mode를
+    git 인벤토리는 index mode가 진실이므로 일반 파일 mode만 허용한다. 비-git 대체 동작은 mode를
     얻을 수 없어 그 경로에서만 lstat()으로 등가 판정한다. 두 판정을 한 엔트리에 함께 적용하면
     index와 working tree 중 어느 쪽이 출하 계약인지 갈리므로 의도적으로 섞지 않는다.
 
@@ -214,8 +214,8 @@ def _shippable_template_files(template_root: Path) -> list[Path]:
         probe_rc, inside = runner(["rev-parse", "--is-inside-work-tree"])
         filesystem_fallback = not (
             probe_rc == 0 and inside.strip() == "true")
-        # seam의 빈 결과는 부분 subtree 질의에는 유효할 수 있다. 그러나 선택된 템플릿은
-        # 프레임워크 출하 단위이므로 소비 지점에서 직접 막아 warning의 조건부 발화에 기대지 않는다.
+        # 열거 공용 함수의 빈 결과는 부분 subtree 질의에는 유효할 수 있다. 그러나 선택된 템플릿은
+        # 프레임워크 출하 단위이므로 소비 지점에서 직접 막아 warning의 조건부 출력에 기대지 않는다.
         raise EmptyTemplateShippingInventoryError(
             template_root, ".", filesystem_fallback=filesystem_fallback)
     for entry in entries:
@@ -241,7 +241,7 @@ def _shippable_template_files(template_root: Path) -> list[Path]:
             )
             continue
 
-        # filesystem 폴백에는 index mode가 없으므로 여기서만 링크 비추종 lstat 판정을 쓴다.
+        # filesystem 대체에는 index mode가 없으므로 여기서만 링크 비추종 lstat 판정을 쓴다.
         try:
             fallback_mode = source.lstat().st_mode
         except OSError as exc:
@@ -283,9 +283,9 @@ def _iter_source_files(template_root: Path, weight: str = "full"):
     yield 하는 relpath 는 *dst* 기준이므로 lite 모드에선 `X.md` 로 치환돼 나간다 —
     placeholder 치환(copied_relpaths 기준)·다중-tree 충돌 판정이 이 dst relpath 위에서 돈다.
 
-    출하 인벤토리는 공용 repo_files seam의 TRACKED_ONLY 의미를 쓴다. 따라서 유지보수자
+    출하 인벤토리는 공용 repo_files 열거 함수의 TRACKED_ONLY 의미를 쓴다. 따라서 유지보수자
     checkout의 미추적·machine-local 파일은 복사 후보가 아니며, 비-git 소스에서 filesystem
-    폴백할 때는 seam이 RepoFilesFallbackWarning으로 추적 보장 소실을 loud하게 알린다.
+    대체 동작으로 갈 때는 열거 함수가 RepoFilesFallbackWarning으로 추적 보장 소실을 loud하게 알린다.
     COPY_EXCLUDE_*는 추적 여부와 별개인 출하 정책(node_modules·stale bytecode·내부 README)과
     fill 스캔 공통 방어를 위해 그 위에 계속 적용한다. 엔진 패키지 교체가 `.project_manager/tools/`
     바로 아래에 남기는 락·stage·backup 도 추적 여부와 무관하게 제외한다(그 자리를 지우지는 않는다).
@@ -338,9 +338,9 @@ def _is_engine_source(rel: Path) -> bool:
     엔 `{{PROJECT_NAME}}`·`{{OPENCODE_PRO_MODEL}}`·`{{PROJECT_CONSTRAINTS}}` 같은 토큰이 문서로
     등장한다(엔진이 placeholder 메커니즘을 설명하므로). 이 문자열들은 *placeholder 가 아니라
     문서*다 — substitute/fill/token-scan 이 건드리면 (a) 주석이 concrete 값으로 변질 (b) free-form
-    토큰에 `<!-- TODO -->` 주입 (c) `{{OPENCODE_PRO_MODEL}}` 이 claude 트리의 모델-해소 게이트를
+    토큰에 `<!-- TODO -->` 주입 (c) `{{OPENCODE_PRO_MODEL}}` 이 claude 트리의 모델-해소 검사를
     오발(_token_present True → resolve active). 따라서 엔진 소스는 placeholder 처리 전 범위에서
-    제외해 verbatim 으로 둔다 (adapter_render/pm_update 가 토큰을 문서화하며 표면화).
+    제외해 verbatim 으로 둔다 (adapter_render/pm_update 가 토큰을 문서화하며 드러낸다).
 
     rel 은 dest-rel(`​.project_manager/tools/board.py`) 또는 절대/소스 경로(dry-run plan 의
     `action.dst`/`action.src`) 둘 다 올 수 있어 substring 매칭으로 통일한다(`tools/` 트레일링
@@ -362,7 +362,7 @@ def _is_engine_metadata(rel: Path) -> bool:
 def _consumption_time_tokens(rel: Path) -> frozenset:
     """이 파일에서 **설치 시 치환을 하지 않을** 토큰 집합 (소비 시점 소유·`CONSUMPTION_TIME_TOKENS`).
 
-    파일 전체를 제외하는 `_should_substitute` 와 축이 다르다 — 여기서 걸러도 같은 파일의 다른
+    파일 전체를 제외하는 `_should_substitute` 와 기준이 다르다 — 여기서 걸러도 같은 파일의 다른
     operational 토큰은 종전대로 설치 시 치환된다. rel 은 dest-rel 또는 절대/소스 경로 둘 다 올 수
     있어 `_is_engine_metadata` 와 같은 suffix 매칭으로 통일한다."""
     p = rel.as_posix()
@@ -375,8 +375,8 @@ def _consumption_time_tokens(rel: Path) -> frozenset:
 def _should_substitute(rel: Path, exclude_relpaths: frozenset) -> bool:
     """이 파일이 operational placeholder 치환 대상인가 — **제외 사유가 없으면 대상**.
 
-    옛 판정은 확장자 allowlist(`SUBSTITUTE_SUFFIXES`) gate 였다: 열린 집합(하니스가 계속 늘리는
-    파일 형식)을 사람이 열거한 형상이라, codex 가 들여온 `.codex/agents/*.toml` 이 어느 채널도
+    옛 판정은 확장자 allowlist(`SUBSTITUTE_SUFFIXES`) 검사였다: 열린 집합(하니스가 계속 늘리는
+    파일 형식)을 사람이 열거한 방식이라, codex 가 들여온 `.codex/agents/*.toml` 이 어느 채널도
     못 타고 `{{PROJECT_NAME}}` 을 리터럴로 출하했다. 판정을 뒤집어 **닫힌 집합(엔진 소유 자산)의
     제외 사유**만 본다 → 네 번째 하니스의 새 형식(`.yaml`·`.jsonc`)도 자동 편입된다.
 
@@ -443,26 +443,26 @@ def _pm_update_read_manifest(manifest_path: Path) -> list:
 
 
 def _dest_manifest_core_paths(dest_root: Path) -> set[str]:
-    """dest engine.manifest 의 **core**(guest 절 제외) 경로 집합 — add-harness 복사/등재 차감 기준
+    """dest engine.manifest 의 **core**(추가 하네스 절 제외) 경로 집합 — add-harness 복사/등재 차감 기준
     host 가 pm_update 로 이미 관리(소유)하는 경로다.
 
-    옛 flavor-native 판정(`_engine_render_relpaths`)은 *guest flavor* 관점이라 **claude-as-guest** 를
-    놓쳤다 — dest 실소유로 대체한다. guest 절(add-harness 자기 산출·refresh 재복사 대상)은 stripped 라
-    제외 → refresh 가 guest 를 재복사한다. manifest 부재는 빈 set(무차감)."""
+    옛 하네스별 판 기준 판정(`_engine_render_relpaths`)은 *추가 하네스의 판* 관점이라 **claude 추가 하네스** 를
+    놓쳤다 — dest 실소유로 대체한다. 추가 하네스 절(add-harness 자기 산출·refresh 재복사 대상)은 stripped 라
+    제외 → refresh 가 추가 하네스를 재복사한다. manifest 부재는 빈 set(무차감)."""
     manifest = dest_root / ".project_manager" / "engine.manifest"
     if not manifest.is_file():
         return set()
     return manifest_rules._core_manifest_paths(fs.read_text_shared(manifest, encoding="utf-8"))
 
 
-def _flavor_render_relpaths(template_root: Path) -> set[str]:
-    """guest flavor manifest 의 `@render` 선언 경로 **전부** (namespace 무관·host 실소유 미차감·손-열거 0).
+def _variant_render_relpaths(template_root: Path) -> set[str]:
+    """추가 하네스의 판 manifest 의 `@render` 선언 경로 **전부** (namespace 무관·host 실소유 미차감·손-열거 0).
 
-    add-harness 복사/등재 후보의 **단일 출처**: flavor 가 `@render` 로 선언한 경로가 곧
-    그 하네스가 관리하는 footprint 다. 여기엔 **cross-ns 의존물**도 포함된다 — opencode flavor 의
+    add-harness 복사/등재 후보의 **단일 출처**: 하네스별 판이 `@render` 로 선언한 경로가 곧
+    그 하네스가 관리하는 footprint 다. 여기엔 **cross-ns 의존물**도 포함된다 — opencode 하네스별 판의
     `.claude/skills @render`(PM 스킬 채널·네이티브 소비)는 `.opencode` namespace 밖이지만
     opencode 어댑터가 반드시 소비한다. host 실소유 차감은 이 위에 downstream 으로 얹힌다(복사=
-    `_in_adapter_namespace`·등재=`_guest_render_sync_plan`·둘 다 dest 실소유 `_path_owned_by` 기준). manifest
+    `_in_adapter_namespace`·등재=`_added_harness_render_sync_plan`·둘 다 dest 실소유 `_path_owned_by` 기준). manifest
     부재·파싱 실패는 빈 set(무동작)."""
     manifest = template_root / ".project_manager" / "engine.manifest"
     if not manifest.is_file():
@@ -471,32 +471,32 @@ def _flavor_render_relpaths(template_root: Path) -> set[str]:
             if getattr(e, "render", False)}
 
 
-def _guest_manifest_lines(
+def _added_harness_manifest_lines(
         template_root: Path, adapter_dirs: tuple, root_doc: str,
         dest_owned: set[str]) -> list[str]:
-    """add-harness 가 레이다운하는 guest 어댑터의 manifest **후보** 라인 (dest 등재용·손-열거 0).
+    """add-harness 가 레이다운하는 추가 하네스 어댑터의 manifest **후보** 라인 (dest 등재용·손-열거 0).
 
     한 절에 두 종류가 모이고 **한 줄의 `@render` 유무가 소유 채널을 가른다**(새 어휘 0):
 
       - **어댑터 렌더물**(`@render @target-owned [@source=…]`) — 재렌더 전파(update 채널이 conf 로
         다시 렌더한다·손편집은 되돌아간다).
-        후보 = guest flavor manifest 의 `@render` **선언 전부**(`_flavor_render_relpaths` 와 같은
-        판정). flavor `@render` 선언 자체가 이미 경계다 — flavor 는 자기가 관리하는 경로만 `@render`
-        로 선언하므로("flavor 미선언 경로 유입 0" 불변식의 구조적 보장) namespace cap 없이 **cross-ns
+        후보 = 추가 하네스의 판 manifest 의 `@render` **선언 전부**(`_variant_render_relpaths` 와 같은
+        판정). 하네스별 판 `@render` 선언 자체가 이미 경계다 — 하네스별 판은 자기가 관리하는 경로만 `@render`
+        로 선언하므로("하네스별 판 미선언 경로 유입 0" 불변식의 구조적 보장) namespace cap 없이 **cross-ns
         의존물**(opencode 의 `.claude/skills @render` — 네이티브 소비이나 `.opencode` 밖)도 후보다.
       - **엔진 파일**(`@source=… @target-owned`) — pm_update 소유(byte-copy 전파).
-        후보 = flavor manifest 의 **비-`@render`** 엔트리 중 **복사 술어**(`_in_adapter_namespace`)를
+        후보 = 하네스별 판 manifest 의 **비-`@render`** 엔트리 중 **복사 술어**(`_in_adapter_namespace`)를
         통과하는 것. 복사와 같은 술어를 쓰므로 "등재 ⊆ 복사" 가 구조적으로 보장된다 — 별도 판정을
-        두면 claude-as-guest 처럼 복사하지 않은 경로를 등재해 pm_update 가 없던 파일을 만든다.
+        두면 claude 추가 하네스처럼 복사하지 않은 경로를 등재해 pm_update 가 없던 파일을 만든다.
         이 행이 없으면 `.codex/pm_orch_codex.py`·`.opencode/lib`·claude ctx 가드처럼 엔진 패키지(`pm_engine`)
         와 짝인 engine-mirror 가 설치 시점 사본으로 영구 동결된다(코어↔드라이버 skew).
 
-    host 가 이미 소유한 것은 downstream 차감(`_guest_render_sync_plan` 의 `_path_owned_by`·기준
+    host 가 이미 소유한 것은 downstream 차감(`_added_harness_render_sync_plan` 의 `_path_owned_by`·기준
     `_core_manifest_paths`)이 dest 기준으로 정확히 뺀다(엔진 행은 `_in_adapter_namespace` 가 같은
     `dest_owned` 로 여기서 이미 뺀다). 두 종류 모두 host 인스턴스 소유라 `@target-owned` 를 붙인다 —
     렌더물은 재렌더 clobber 계약(MF-2)이다.
     직렬화는 `manifest_rules._manifest_entry_line` 재사용(마커 순서 결정적·손 f-string 금지).
-    flavor manifest 를 읽지 못하면 그 오류가 그대로 올라간다(add-harness·갱신 공통)."""
+    하네스별 판 manifest 를 읽지 못하면 그 오류가 그대로 올라간다(add-harness·갱신 공통)."""
     entries = manifest_store.read_manifest(
         template_root / ".project_manager" / "engine.manifest")
     render_paths = {str(e).replace("\\", "/")

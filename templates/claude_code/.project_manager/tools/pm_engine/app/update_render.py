@@ -41,11 +41,11 @@ _LOCAL_CONF_TO_OPERATIONAL = {
 
 
 def _local_conf_operational_map() -> dict[str, str]:
-    """local.conf key → operational token key — 고정 배선 + **위임 토큰(파생)**.
+    """local.conf key → operational token key — 고정 대응 + **위임 토큰(파생)**.
 
     위임 토큰의 단일 표는 `render_rules.DELEGATE_MODEL_CONF_KEYS`(token→conf key)다. 여기에 사본을
-    두면 새 역할/티어가 한쪽에만 늘어 그 토큰이 조용히 미배선된다(카드가 영영 TODO 로 중화). 표를
-    역전해 쓰므로 표가 자라면 배선도 같이 자란다.
+    두면 새 역할/티어가 한쪽에만 늘어 그 토큰 대응이 조용히 빠진다(카드가 영영 TODO 로 중화). 표를
+    역전해 쓰므로 표가 자라면 대응도 같이 자란다.
 
     실행 패키지의 선언을 직접 소비하며, 적재 오류는 실행 실패로 전파한다.
     """
@@ -59,7 +59,7 @@ def _local_conf_operational_map() -> dict[str, str]:
 def _delegate_harness_from_local_conf(conf: Mapping[str, str]) -> dict[str, str]:
     """위임 token-key → 그 역할/티어의 conf 하네스 — 카드의 **미사용 프로필** 판정 입력.
 
-    카드가 선언하는 하네스(렌더 소스 경로)와 이 값이 다르면 그 카드는 이번 형상에서 스폰되지
+    카드가 선언하는 하네스(렌더 소스 경로)와 이 값이 다르면 그 카드는 이번 설치 구성에서 스폰되지
     않는다 — render 가 값 대신 사유를 중화로 남긴다(`render_rules.unused_delegate_profiles`).
     키 부재/빈값은 담지 않는다(판정 불가 = 현행 거동 유지).
     """
@@ -114,7 +114,7 @@ def _render_text(
     """source 템플릿을 local.conf 값(`conf`)으로 렌더한 텍스트 — `@render` 렌더 규칙의 유일한 구현.
 
     local.conf 의 operational 값을 plain replace 로 채운다(free-form 은 pm_import FILL 채널이
-    canonical home 에서 전담). 결과는 자족(잔여 `{{...}}` 0·assertion).
+    canonical home 에서 전담). 결과는 자족(남은 `{{...}}` 0·assertion).
     호출부(plan·apply·저장 `apply_conf`)가 dst 와 비교/기록한다.
 
     `app.adapter_render` 를 실행 Home(`home`, 카드 렌더의 코드 inventory·조회 위치)으로 직접 호출하며
@@ -198,10 +198,10 @@ def _render_flat_command_reference(text: str, skill_name: str) -> str:
 
     모델 skill은 ``<skill>/SKILL.md`` 옆 ``references/``를 쓰지만 사람 command는
     ``command/<skill>.md``라 같은 상대 링크가 한 공용 파일로 충돌한다. command 산출에만
-    skill 이름을 끼워 넣고 원본 카드와 모델 표면은 그대로 둔다.
+    skill 이름을 끼워 넣고 원본 카드와 모델 쪽 노출은 그대로 둔다.
 
     **인자 전달**: opencode 커맨드 파일은 본문이 곧 프롬프트라 `$ARGUMENTS` 를 적지 않으면
-    사용자가 `/pm-bootstrap --task X` 로 준 인자가 카드에 닿지 않는다(실측). 모델 skill 표면은
+    사용자가 `/pm-bootstrap --task X` 로 준 인자가 카드에 닿지 않는다(실측). 모델 skill 노출은
     하네스가 호출문을 그대로 보여주므로 이 절은 command 사본에만 붙인다.
     """
     count = text.count(_FLAT_COMMAND_DETAIL_LINK)
@@ -291,8 +291,8 @@ def _rendered_text_matches_dest(rendered: str, dst) -> bool:
     """렌더 산출물이 dest 현재 내용과 같은가 — **표기만 다르면 같고, 1자라도 다르면 다르다**.
 
     render 계열 '변경 없음' 판정의 **단일 대조 규칙**이다: 전면 렌더(`@render`)와 호출 표기·flat
-    command·codex operational 최소 렌더가 같은 축을 쓴다. 한쪽만 raw bytes 로 보면 CRLF
-    체크아웃(Windows)에서 그 분기가 **수렴을 보고하지 못한다** — 대조는 raw 인데 쓰기
+    command·codex operational 최소 렌더가 같은 대조 방식을 쓴다. 한쪽만 raw bytes 로 보면 CRLF
+    체크아웃(Windows)에서 그 분기가 **일치를 보고하지 못한다** — 대조는 raw 인데 쓰기
     (`_write_rendered_text`)는 dest 표기를 보존하므로, 내용이 같은 파일이 매 계획에서 `update` 로
     올라오고 재기록 후에도 bytes 가 그대로다. 내용이 상하진 않지만 dry-run 이 상시 오탐이고
     mtime/diff 가 흔들리며 실제 drift 가 그 소음에 묻힌다. 실측 두 계층: `--target`
@@ -301,7 +301,7 @@ def _rendered_text_matches_dest(rendered: str, dst) -> bool:
 
     정규화는 **개행 표기에만** 적용한다. 그 밖의 차이는 그대로 살아 있어 한 글자 변경도 update 다
     (판정을 무디게 만들지 않는다). 읽기 실패·비-UTF8 dest 는 보수적으로 '다름'(False) — plan 이
-    그 path 를 change 로 띄워 apply 가 명확히 실패하게 한다(침묵 폴백 금지)."""
+    그 path 를 change 로 띄워 apply 가 명확히 실패하게 한다(침묵 대체 동작 금지)."""
     try:
         current = fs.read_bytes_shared(dst).decode("utf-8")
     except (OSError, UnicodeDecodeError):
@@ -336,7 +336,7 @@ def _render_eq_dst(
 
     filecmp.cmp(템플릿, dst) 는 render path 에 *틀림*(템플릿은 렌더 산출물과 byte-equal 일 수
     없어 항상 update 오보). 대신 source 를 local.conf 값(`conf`)으로 렌더해 dst 와 비교한다.
-    렌더 실패는 그대로 올라간다 — 계획의 렌더러는 템플릿과 같은 세대다(갱신의 완료 단계는 엔진 코드를
+    렌더 실패는 그대로 올라간다 — 계획의 렌더러는 템플릿과 같은 버전이다(갱신의 완료 단계는 엔진 코드를
     받은 뒤 새 프로세스로 돈다). 대조 규칙 자체는 `_rendered_text_matches_dest` 하나뿐이다(최소 렌더
     분기와 판정 사본 0).
     """
@@ -402,9 +402,9 @@ def apply(home, changes: list[tuple], *, is_hook_set_path=None, package_plan=Non
 
     **훅 세트 파일만 원자 교체**한다 — 하네스가 실행 중에 읽는 파일을 copy2 로 덮으면
     truncate→채움 창에 부분 파일이 실행된다. 그 밖의 파일은 현행 copy2 그대로다(전 파일 확대는
-    이 클래스가 요구하지 않는다). `is_hook_set_path` 는 호출부가 **상류 세대**로 해소해 넘긴다
-    (`resolve_hook_set_predicate`) — 미지정이면 로컬 세대로 폴백하는데, 그 폴백은 이번 실행이
-    새로 추가하는 훅 경로를 모른다(구세대 선언).
+    이 클래스가 요구하지 않는다). `is_hook_set_path` 는 호출부가 **상류 버전**으로 해소해 넘긴다
+    (`resolve_hook_set_predicate`) — 미지정이면 로컬 버전을 대신 쓰는데, 그 대체 동작은 이번 실행이
+    새로 추가하는 훅 경로를 모른다(옛 버전 선언).
     """
     hook_set_path = (is_hook_set_path if is_hook_set_path is not None
                      else hook_sets.resolve_hook_set_predicate(home))

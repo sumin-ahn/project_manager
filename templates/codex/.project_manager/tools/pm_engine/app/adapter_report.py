@@ -1,4 +1,4 @@
-"""어댑터 기능 차이·config 수렴·상류 template 차이 보고 (층: app)."""
+"""어댑터 기능 차이·config 일치·상류 template 차이 보고 (층: app)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,19 +18,19 @@ import difflib
 def instance_owned_template_change_lines(
         dest_root: Path, source_root: Path, *,
         git_runner: install_git.GitRunner | None = None) -> list[str]:
-    """instance-owned 파일의 baseline template 세대 ↔ 현행 세대 델타 요약.
+    """instance-owned 파일의 baseline template 버전 ↔ 현행 버전 차이 요약.
 
     파일별 ``adapter_baseline.json.template_rev``를 우선하고, 항목이 없는 진입문서는 직전
-    ``local.conf upstream.rev``로 폴백한다. 판정은 source checkout의 로컬 object DB만 읽고
+    ``local.conf upstream.rev``를 대신 쓴다. 판정은 source checkout의 로컬 object DB만 읽고
     파일을 쓰거나 자동 병합하지 않는다. 기준이 없거나 도달하지 않으면 그것을 변경 없음으로
-    접지 않고 전량 확인 경고 한 줄로 축약한다.
+    바꾸지 않고 전량 확인 경고 한 줄로 축약한다.
 
-    노출 수명은 경로별 기준 원장을 따른다. 진입 문서처럼 ``upstream.rev``를 폴백하는
+    노출 수명은 경로별 어댑터 설정 기록을 따른다. 진입 문서처럼 ``upstream.rev``를 대신 쓰는
     경로는 성공한 동기 후 기준이 전진해 이후 요약에서 사라질 수 있다. 반면 report-drift·edited
     managed 파일은 보존된 ``adapter_baseline.json.template_rev``가 기준이다. pm-update가
-    무편집 managed 파일을 자동 갱신·원장화한 뒤 이 판정을 호출하면 그 항목은 사라지고, 원장이
+    무편집 managed 파일을 자동 갱신·기록한 뒤 이 판정을 호출하면 그 항목은 사라지고, 기록이
     전진하지 않은 report-drift·edited managed만 명시적 ``--accept`` 전까지 반복된다. 어느 쪽도
-    지난 세대를 복구하는 durable backstop은 아니며, 그 역할은 백업/git이 담당한다.
+    지난 버전을 복구하는 durable backstop은 아니며, 그 역할은 백업/git이 담당한다.
     """
     dest_root = Path(dest_root)
     source_root = Path(source_root)
@@ -40,9 +40,9 @@ def instance_owned_template_change_lines(
     recorded = adapter_baseline.read_adapter_baseline(dest_root).get("files", {})
     fallback_rev = adapter_templates._instance_owned_fallback_rev(dest_root)
     # pm-update는 이 함수를 adapter 채널의 쓰기 후 최종 판정에서 호출한다. dirty source처럼
-    # template_rev만으로 현행 bytes를 정확히 이름 붙일 수 없는 경우에도, managed 파일과 원장이
-    # 모두 현행 template에 수렴했다면 같은 파일에 --accept를 다시 처방하지 않는다. 동기 직전의
-    # unedited/edited·원장 미기록은 converged가 아니므로 기존 처방을 그대로 유지한다.
+    # template_rev만으로 현행 bytes를 정확히 이름 붙일 수 없는 경우에도, managed 파일과 기록이
+    # 모두 현행 template과 일치했다면 같은 파일에 --accept를 다시 안내하지 않는다. 동기 직전의
+    # unedited/edited·기록 없음은 converged가 아니므로 기존 안내를 그대로 유지한다.
     managed_converged: set[str] = set()
     try:
         managed_converged = {
@@ -52,8 +52,8 @@ def instance_owned_template_change_lines(
                 and adapter_config_convergence_status(judgment) == "converged")
         }
     except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable):
-        # 세대 관측이 config 판정 실패를 숨기면 안 된다. 수렴을 증명하지 못한 경우는 아무 항목도
-        # 자동 완료로 접지 않고 아래의 원장 기준 경고/처방을 보존한다.
+        # 버전 관측이 config 판정 실패를 숨기면 안 된다. 일치를 증명하지 못한 경우는 아무 항목도
+        # 자동 완료로 바꾸지 않고 아래의 기록 기준 경고/안내를 보존한다.
         managed_converged = set()
     runner = git_runner if git_runner is not None else upstream_git._real_upstream_git_runner()
     prefix_status, prefix_path = adapter_templates._source_git_path_prefix(source_root, runner)
@@ -108,19 +108,19 @@ def instance_owned_template_change_lines(
             continue
         if target.mode == install_rules.ADAPTER_CONFIG_MANAGED and target.relpath in managed_converged:
             # pm-update의 config 채널이 이미 "이번 동기에서 갱신"을 별도 한 줄로 보고한다.
-            # 여기서는 최종 상태와 모순되는 --accept 재처방을 만들지 않는다.
+            # 여기서는 최종 상태와 모순되는 --accept 재안내를 만들지 않는다.
             continue
         added, removed, first_diff = adapter_templates._template_generation_size(
             old_lines, current_lines)
         if target.mode == install_rules.ADAPTER_CONFIG_NO_CHANNEL:
-            remedy = (
+            fix = (
                 "현재 파일을 백업한 뒤 수동 병합 또는 ADOPT.md 절차로 재-import")
         else:
-            remedy = f"pm-config sync-adapter-config --accept {target.relpath}"
+            fix = f"pm-config sync-adapter-config --accept {target.relpath}"
         findings.append(
             f"⚠️  인스턴스 소유 템플릿 변경 — {target.relpath} · "
             f"+{added}/-{removed}줄 · 첫 차이 {first_diff}줄 · "
-            f"해결 방법(버전 변경; 기존 config 채널 보고는 내용 drift): {remedy}"
+            f"해결 방법(버전 변경; 기존 config 채널 보고는 내용 drift): {fix}"
         )
 
     prefix: list[str] = []
@@ -139,7 +139,7 @@ def instance_owned_template_change_lines(
 
 # ── 어댑터 기능 단위 거리 (읽기 계약 · `pm-config status --json --with-adapters`) ──────
 # 줄 수 차이는 "얼마나" 만 말하고 "무엇이" 를 말하지 않는다. 기능 표는 선언
-# (`ADAPTER_SETTINGS_KEYS` + `ADAPTER_HOOK_SET[...].entrypoints`)과 최신 template 을 축으로
+# (`ADAPTER_SETTINGS_KEYS` + `ADAPTER_HOOK_SET[...].entrypoints`)과 최신 template 을 기준으로
 # 항목별 판정을 낸다. 판정 어휘는 넷뿐이고 그 밖의 상태를 만들지 않는다.
 ADAPTER_FEATURE_SAME = "same"          # 프로젝트 값 == 최신 값.
 
@@ -157,7 +157,7 @@ class AdapterFeature(NamedTuple):
     """기능 표 한 행 — 항목 이름과 양쪽 값 요약, 그리고 판정.
 
     `project`·`latest` 는 **표시용 요약**이다(모음은 원소 수·그 밖은 값 그대로). 판정은 요약이
-    아니라 **원값 동일성**으로 낸다 — 길이만 같고 내용이 다른 allowlist 를 `same` 으로 접지 않는다.
+    아니라 **원값 동일성**으로 낸다 — 길이만 같고 내용이 다른 allowlist 를 `same` 으로 바꾸지 않는다.
     """
     name: str
     project: object
@@ -170,11 +170,11 @@ class AdapterConfigReport(NamedTuple):
 
     `judge_adapter_configs` 의 판정(`mode`·`status`)을 그대로 싣고 표시 어휘를 새로 만들지 않는다.
     `diff_vs_baseline` 은 설치 기준(`template_rev` 시점 template) → 현재 파일이라 **채택자 편집**의
-    크기이고(`added`/`removed` 도 그 축), `diff_vs_latest` 는 현재 파일 → 최신 template 이라
+    크기이고(`added`/`removed` 도 그 기준), `diff_vs_latest` 는 현재 파일 → 최신 template 이라
     **상류 변경**이다. 기준을 해소하지 못하면 `None` 이다(빈 문자열 = 차이 없음과 구분한다).
 
     `status is None` = **선언된 대상인데 판정이 없다**(대개 dest 파일 부재 · template 를 읽지 못한
-    report 대상 포함). 부재를 행이 사라지는 것으로 말하지 않는 축이라(관측 인벤토리는 전수) 같은
+    report 대상 포함). 부재를 행이 사라지는 것으로 말하지 않는 기준이라(관측 인벤토리는 전수) 같은
     사실을 재진술하는 `present` 필드는 두지 않는다 — dest 존재 확인도 여기서 하지 않는다.
     그 행은 `added`/`removed` 도 널이다(잴 기준이 없다 — 0 은 "차이 없음" 이라 다른 사실이다).
     """
@@ -230,9 +230,9 @@ def _hook_event_units(document, entrypoints: tuple = ()) -> dict[str, tuple[str,
     단위는 `"<matcher>:<스크립트 relpath>[ 인자…]"` 다 — 한 이벤트 안에서도 matcher 나 인자가
     다르면 **다른 것이 실행된다**(출하 claude `PreToolUse` 는 `*` 그룹과 `Bash` 그룹이 같은 래퍼를
     다른 인자로 부른다). 스크립트 집합만 보면 그 그룹 하나를 통째로 지워도 집합이 안 변해 표가
-    `same` 으로 접힌다. matcher 없는 그룹의 자리는 빈 문자열이다.
+    `same` 으로 합쳐진다. matcher 없는 그룹의 자리는 빈 문자열이다.
 
-    기능 축은 "이 이벤트에서 무엇이 실행되나" 라 커맨드 문자열이 아니라 **스크립트+인자**가 단위다
+    기능 비교는 "이 이벤트에서 무엇이 실행되나" 라 커맨드 문자열이 아니라 **스크립트+인자**가 단위다
     (인터프리터 표기가 달라도 같은 훅이다). 추출 규칙 **둘 다 엔진 것**이다:
       · argv 분해(`_hook_script_and_arguments`) — 직접 실행·인터프리터 선행 커맨드.
       · 진입점 실재 판정(`_entrypoint_is_present`) — 선언된 진입점 한정.
@@ -295,7 +295,7 @@ _ADAPTER_FEATURE_MANAGED_FILTERS = {
 
 def _adapter_feature_rows(relpath: str, project_document: dict,
                           latest_document: dict) -> tuple[AdapterFeature, ...]:
-    """한 config 파일의 기능 표 — 선언 설정 키 축 + 훅 이벤트 축."""
+    """한 config 파일의 기능 표 — 선언 설정 키 쪽 + 훅 이벤트 쪽."""
     rows: list[AdapterFeature] = []
     for key in install_rules.ADAPTER_SETTINGS_KEYS.get(relpath, ()):
         project_present, project_value = _document_key_value(project_document, key)
@@ -319,7 +319,7 @@ def _adapter_feature_rows(relpath: str, project_document: dict,
     )
     project_events = _hook_event_units(project_document, entrypoints)
     latest_events = dict(_hook_event_units(latest_document, entrypoints))
-    # 이 엔진 세대가 config 에 기대하는 진입점은 template 에 없더라도 최신 축에 든다 — 선언이
+    # 이 엔진 버전이 config 에 기대하는 진입점은 template 에 없더라도 최신 쪽에 든다 — 선언이
     # 곧 "있어야 하는 것" 이고, 그것이 빠진 채택자는 `missing` 으로 보여야 한다.
     for entrypoint in entrypoints:
         merged = set(latest_events.get(entrypoint.event, ()))
@@ -345,10 +345,10 @@ def adapter_config_reports(dest_root: Path, source_root: Path) -> list[AdapterCo
     """instance-owned config 전수의 읽기 보고 (부작용 0 · 판정은 `judge_adapter_configs` 그대로).
 
     관리자(`pm-config status --json --with-adapters`)가 파일별 상태·차이·기능 거리를 한 번에 읽는
-    자리다. 기준(`template_rev` 시점) 내용은 원장에 없으므로 소스 checkout 의 object DB 에서
-    읽는다 — 세대 요약과 **같은 읽기 관용구**(`_source_git_path_prefix`·`_template_blob_at_rev`)를
+    자리다. 기준(`template_rev` 시점) 내용은 어댑터 설정 기록에 없으므로 소스 checkout 의 object DB 에서
+    읽는다 — 버전 요약과 **같은 읽기 관용구**(`_source_git_path_prefix`·`_template_blob_at_rev`)를
     쓰고 새 git 경로를 만들지 않는다. 기준을 해소하지 못한 파일은 `diff_vs_baseline=None` 이며
-    변경 없음으로 접지 않는다.
+    변경 없음으로 바꾸지 않는다.
     """
     dest_root = Path(dest_root)
     source_root = Path(source_root)
@@ -451,7 +451,7 @@ def adapter_config_targets(dest_root: Path, source_root: Path,
 
     대상은 **설치 하네스**(`installed_harnesses`)와 **기존 managed 경로가 지목한 하네스**의
     합집합에서 파생하고 분류(`ADAPTER_CONFIG_CHANNEL`)가 mode 를 준다. 후자는 설치 영수증과 완전
-    adapter shape가 없는 partial recovery에서도 managed 파일 하나를 빈 판정으로 접지 않는
+    adapter shape가 없는 partial recovery에서도 managed 파일 하나를 빈 판정으로 바꾸지 않는
     보수 경계다. report-only 경로만으로는 하네스를 추론하지 않는다.
 
     `none` 분류와 **report-only** template 부재는 대상에서 빠진다. 반면 existing managed dest의
@@ -491,7 +491,7 @@ def adapter_config_targets(dest_root: Path, source_root: Path,
                     raise adapter_baseline.AdapterConfigChannelUnavailable(
                         f"managed 어댑터 config 비교 기준 unavailable: {relpath}의 source template을 "
                         f"읽을 수 없거나 찾을 수 없다 ({template})")
-                continue  # report-only 또는 dest 후보 자체 없음 — 완료 게이트 비차단.
+                continue  # report-only 또는 dest 후보 자체 없음 — 완료 통과 조건 비차단.
             out.append((relpath, harness, mode, template))
     return out
 
@@ -502,8 +502,8 @@ def judge_adapter_configs(dest_root: Path, source_root: Path,
 
     pm_update 의 동기 채널과 `sync-adapter-config --list` 가 같은 판정을 본다(판정 사본 0).
 
-    세 축(dest·template·원장) 모두 `content_sha256` 으로 본다 — 개행 표기만 다른 파일은 같은
-    내용이다(체크아웃 변환을 채택자 편집으로 오판하지 않는다). 원장 대조는 구 축(raw bytes)으로
+    세 대상(dest·template·기록) 모두 `content_sha256` 으로 본다 — 개행 표기만 다른 파일은 같은
+    내용이다(체크아웃 변환을 채택자 편집으로 오판하지 않는다). 기록 대조는 옛 방식(raw bytes)으로
     기록된 항목까지 `_baseline_attests_dest` 로 함께 인정한다(마이그레이션은 기록 쪽 담당)."""
     dest_root = Path(dest_root)
     recorded = adapter_baseline.read_adapter_baseline(dest_root).get("files", {})
@@ -537,11 +537,11 @@ def judge_adapter_configs(dest_root: Path, source_root: Path,
 def adapter_config_convergence_status(judgment: adapter_baseline.AdapterConfigJudgment) -> str:
     """managed config 한 건의 완료 판정 — ``converged`` 또는 실행 가능한 red 상태.
 
-    내용이 template 과 같다는 사실만으로는 미래 자동 갱신 궤도에 들어간 게 아니다. 원장에도
+    내용이 template 과 같다는 사실만으로는 미래 자동 갱신 궤도에 들어간 게 아니다. 기록에도
     **그 dest 해시**가 있어야 완료다. ``judge_adapter_configs`` 의 원시 판정은 표시/3-way 갱신에
-    그대로 쓰고, 완료 게이트만 이 helper가 정규화한다(판정 사본 0).
+    그대로 쓰고, 완료 통과 조건만 이 helper가 정규화한다(판정 사본 0).
 
-    report-only 대상은 채택자 노브라 완료 게이트를 막지 않는다. 호출부는 필요하면 원시
+    report-only 대상은 채택자 노브라 완료 통과 조건을 막지 않는다. 호출부는 필요하면 원시
     ``judgment.status`` 를 계속 출력한다.
     """
     if judgment.mode != install_rules.ADAPTER_CONFIG_MANAGED:
@@ -550,14 +550,14 @@ def adapter_config_convergence_status(judgment: adapter_baseline.AdapterConfigJu
         return judgment.status
     if (not judgment.dest_sha256
             or judgment.baseline_sha256 != judgment.dest_sha256):
-        # 수동 byte 교체 또는 원장 기록 실패. 내용은 같아도 durable 증거가 없으므로 red다.
+        # 수동 byte 교체 또는 기록 쓰기 실패. 내용은 같아도 durable 증거가 없으므로 red다.
         return "unrecorded"
     return "converged"
 
 
 def unconverged_managed_adapter_configs(
         judgments: list[adapter_baseline.AdapterConfigJudgment]) -> list[tuple[adapter_baseline.AdapterConfigJudgment, str]]:
-    """완료 게이트를 막는 managed 판정만 ``(judgment, normalized_status)`` 로 반환."""
+    """완료 통과 조건을 막는 managed 판정만 ``(judgment, normalized_status)`` 로 반환."""
     out = []
     for judgment in judgments:
         status = adapter_config_convergence_status(judgment)

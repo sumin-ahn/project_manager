@@ -77,7 +77,7 @@ def cmd_upstream(
 
     local.conf set-or-replace(conf_schema._set_conf_keys·타 키·주석 보존)·URL 안전 검증(upstream_rules.
     validate_upstream_value)을 재사용한다(중복 0). git_runner 주입으로 hermetic 테스트
-    (라이브 git/실 conf-write 없이 배선·검증 분기 검증).
+    (라이브 git/실 conf-write 없이 연결·검증 분기 검증).
     """
     local_conf = home.local_conf
     action = getattr(args, "upstream_action", None)
@@ -120,9 +120,9 @@ def cmd_upstream(
             file=sys.stderr,
         )
         return 1
-    # upstream은 보호 push gate의 provenance 입력이다. 값이 같아도 끊긴/stale sidecar를
+    # upstream은 보호 push 검사의 provenance 입력이다. 값이 같아도 끊긴/stale sidecar를
     # 자가치유하도록 등록 repo 전수를 중앙 설치 깔때기로 보낸다.
-    repo_protection._refresh_protected_gate_contracts(home)
+    repo_protection._refresh_protected_check_contracts(home)
     kind = upstream_rules.classify_upstream(value)
     print(f"✓ upstream 설정: {value}  ({kind}) — pm_update 가 --from 생략 시 이 값을 쓴다.")
     return 0

@@ -14,7 +14,7 @@ def _checkout(slot_path_: Path, branch: str, *,
 
     `git checkout --no-recurse-submodules <branch>` 하나만 부르고 rc·출력을 그대로 돌려준다(로컬
     브랜치 미존재·타 worktree 점유 등은 rc≠0). 브랜치를 만들지도(`-b`) 리셋하지도(`-B`) 않는다 —
-    옛 `-B` 폴백은 타 worktree 가 점유한 기존 브랜치 ref 를 이 슬롯 HEAD 로 리셋했고, `-b` 폴백은
+    옛 `-B` 대체 동작은 타 worktree 가 점유한 기존 브랜치 ref 를 이 슬롯 HEAD 로 리셋했고, `-b` 대체 동작은
     부모 기록 없는 브랜치를 만들었다. 새 브랜치는 부모를 기록하는 `create_task_branch` 만 만든다.
 
     **`--no-recurse-submodules`**: 사용자 환경(전역
@@ -70,7 +70,7 @@ def _parse_submodule_paths(status_out: str) -> list[str]:
 
 
 def _submodule_dirty(sub: str, runner: worktree_records.GitRunner) -> bool:
-    """submodule 워킹트리에 미커밋 변경(untracked 포함)이 있는지 — `_is_dirty` 동형(sub 컨텍스트).
+    """submodule 워킹트리에 미커밋 변경(untracked 포함)이 있는지 — `_is_dirty` 와 같은 방식(sub 컨텍스트).
 
     superproject-바인딩 runner 로 `git -C <sub> status --porcelain` 을 돌려 그 submodule
     워킹트리를 본다(다중 `-C` = superproject cwd 기준 sub 로 재진입). porcelain 엔트리 라인이
@@ -175,7 +175,7 @@ def _resync_submodules_selective(slot_path_: Path, *, git_runner: worktree_recor
 
     worktree 풀 슬롯의 브랜치를 바꾸면 superproject 는 새 브랜치의 submodule pin 을 가리키지만
     submodule 워킹트리는 이전 pin 그대로라 drift 가 생긴다. 브랜치 전환
-    직후 각 submodule 을 **역할별로** 재동기한다 — 역할은 별도 장부 없이 submodule 의 live git
+    직후 각 submodule 을 **역할별로** 재동기한다 — 역할은 별도 기록 파일 없이 submodule 의 live git
     HEAD 로 판별한다(무스키마·기본 A):
 
       - **on-branch submodule (= dev 역할·`symbolic-ref -q HEAD` rc0)**: **skip**. 사용자가 그
@@ -189,7 +189,7 @@ def _resync_submodules_selective(slot_path_: Path, *, git_runner: worktree_recor
     fail-soft(브랜치 전환은 이미 성공했고 submodule 재동기 실패가 checkout 을 되돌리지 않는다·
     raise 금지): `submodule status` rc≠0(조회 불가)면 no-op 반환. update 실패는 경고만 하고
     drift 잔존을 surface 한다(침묵 무력화 금지). `git_runner` 미주입 시 슬롯 worktree 바인딩
-    `_real_git_runner(slot_path_)` 로 해소(기존 DI seam 패턴·`_is_dirty` 동형) — 모든 submodule
+    `_real_git_runner(slot_path_)` 로 해소(기존 DI 교체 지점 패턴·`_is_dirty` 와 같은 방식) — 모든 submodule
     git 호출을 이 superproject-바인딩 runner + `-C <sub>` 로 돌려 테스트 mock 가능(hermetic).
     """
     runner = git_runner or worktree_git._real_git_runner(slot_path_)
@@ -207,7 +207,7 @@ def _resync_submodules_selective(slot_path_: Path, *, git_runner: worktree_recor
         # 채워진 비활성 submodule은 초기화하지 않는다(공용 active 설정과 작업 보존).
         if kind in ("outside", "populated"):
             continue
-        # 역할 = live git HEAD(장부 없음). on-branch(dev) → 보호(skip).
+        # 역할 = live git HEAD(기록 파일 없음). on-branch(dev) → 보호(skip).
         rc_head, _out = ((1, "") if kind == "uninitialized"
                          else runner(["-C", sub, "symbolic-ref", "-q", "HEAD"]))
         if rc_head == 0:

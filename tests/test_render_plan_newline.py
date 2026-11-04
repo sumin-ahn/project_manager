@@ -1,9 +1,9 @@
-"""render 계열 '변경 없음' 판정의 개행 축 — 표기만 다르면 unchanged, 1자 다르면 update.
+"""render 계열 '변경 없음' 판정의 개행 처리 — 표기만 다르면 unchanged, 1자 다르면 update.
 
-결함 형상([[T-0723]]): 전면 렌더(`@render`) 분기는 개행 정규화 후 대조하는데, 호출 표기·flat
-command·codex operational **최소 렌더** 분기만 raw bytes 로 대조했다. 쓰기 축
+결함 경우([[T-0723]]): 전면 렌더(`@render`) 분기는 개행 정규화 후 대조하는데, 호출 표기·flat
+command·codex operational **최소 렌더** 분기만 raw bytes 로 대조했다. 쓰기 쪽
 (`_write_rendered_text`)은 dest 표기를 보존하므로, CRLF 체크아웃(Windows `core.autocrlf=true`)
-채택자에게는 그 분기가 **영원히 수렴하지 않는다** — 매 sync 가 내용 동일 파일을 update 로 계획하고
+채택자에게는 그 분기가 **영원히 일치하지 않는다** — 매 sync 가 내용 동일 파일을 update 로 계획하고
 같은 상태로 다시 써넣는다. 실측 2건: 공유 wiki 4파일(zero-change RUN2 경계 붕괴)·flat command
 사본 14개.
 
@@ -47,7 +47,7 @@ def _crlf_dest(tmp_path: Path, text: str) -> Path:
 
 
 def test_crlf_dest_with_same_content_is_unchanged(pm_update, tmp_path):
-    """표기만 다른 dest 는 '변경 없음' 이다 — 아니면 sync 가 수렴하지 않는다."""
+    """표기만 다른 dest 는 '변경 없음' 이다 — 아니면 sync 가 일치하지 않는다."""
     dest = _crlf_dest(tmp_path, _RENDERED_LF)
 
     assert update_render._rendered_text_matches_dest(_RENDERED_LF, dest) is True
@@ -71,8 +71,8 @@ def test_crlf_dest_with_different_content_is_still_update(
         f"정규화가 내용 차이({label})까지 삼켰다 — 판정이 무뎌졌다"
 
 
-def test_lf_dest_axis_is_unchanged_by_normalization(pm_update, tmp_path):
-    """LF dest(기존 다수 형상)의 판정은 그대로다 — 같으면 unchanged, 다르면 update."""
+def test_lf_dest_case_is_unchanged_by_normalization(pm_update, tmp_path):
+    """LF dest(기존 다수 경우)의 판정은 그대로다 — 같으면 unchanged, 다르면 update."""
     dest = tmp_path / "dest.md"
     write_lf(dest, _RENDERED_LF)
 
@@ -81,7 +81,7 @@ def test_lf_dest_axis_is_unchanged_by_normalization(pm_update, tmp_path):
 
 
 def test_unreadable_or_binary_dest_is_conservative_difference(pm_update, tmp_path):
-    """읽을 수 없는·비-UTF8 dest 는 '같음' 으로 접지 않는다(침묵 폴백 금지)."""
+    """읽을 수 없는·비-UTF8 dest 는 '같음' 으로 바꾸지 않는다(침묵 대체 동작 금지)."""
     binary = tmp_path / "binary.md"
     binary.write_bytes(b"\xff\xfe\x00\x01")
     missing = tmp_path / "absent.md"
@@ -90,8 +90,8 @@ def test_unreadable_or_binary_dest_is_conservative_difference(pm_update, tmp_pat
     assert update_render._rendered_text_matches_dest(_RENDERED_LF, missing) is False
 
 
-def test_full_render_branch_shares_the_same_comparison_seam(pm_update):
-    """전면 렌더 판정은 이 대조 규칙을 **호출**한다 — 축이 두 벌로 갈리지 않는다."""
+def test_full_render_branch_shares_the_same_comparison_rule(pm_update):
+    """전면 렌더 판정은 이 대조 규칙을 **호출**한다 — 규칙이 두 벌로 갈리지 않는다."""
     source = (TOOLS / "pm_engine" / "app" / "update_render.py").read_text(encoding="utf-8")
     body = source.split("def _render_eq_dst(", 1)[1].split("\ndef ", 1)[0]
     assert "_rendered_text_matches_dest(" in body, \
@@ -99,4 +99,4 @@ def test_full_render_branch_shares_the_same_comparison_seam(pm_update):
     plan_source = (TOOLS / "pm_engine" / "app" / "update_plan.py").read_text(encoding="utf-8")
     plan_body = plan_source.split("\ndef plan(", 1)[1].split("\ndef ", 1)[0]
     assert "!= dst.read_bytes()" not in plan_body, \
-        "plan 의 렌더 분기에 raw bytes 대조가 되살아났다(CRLF 수렴 불가 재발)"
+        "plan 의 렌더 분기에 raw bytes 대조가 되살아났다(CRLF 일치 불가 재발)"

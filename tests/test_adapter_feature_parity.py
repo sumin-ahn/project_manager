@@ -1,9 +1,9 @@
 """어댑터 기능 세트 파리티 가드.
 
-파일 축(경로·내용·facade) 교차 대조는 `test_manifest_template_parity.py`(`OPENCODE_ONLY_PATHS` 등)가
-이미 한다. 그 축이 못 보는 것은 **기능 축**이다 — 가드/훅이 하네스마다 배선됐는가, 역할 카드가
-전 하네스에 출하됐는가, 상태줄 같은 부가 표면이 어디에 있는가. 파일이 전파되는지는 보면서 그
-파일이 구현하는 기능이 실제로 걸려 있는지는 아무 게이트도 안 물었다 — 이 파일은 **등록 하네스
+파일 단위(경로·내용·facade) 교차 대조는 `test_manifest_template_parity.py`(`OPENCODE_ONLY_PATHS` 등)가
+이미 한다. 그 대조가 못 보는 것은 **기능 단위**다 — 가드/훅이 하네스마다 등록됐는가, 역할 카드가
+전 하네스에 출하됐는가, 상태줄 같은 부가 기능이 어디에 있는가. 파일이 전파되는지는 보면서 그
+파일이 구현하는 기능이 실제로 걸려 있는지는 아무 검사도 안 물었다 — 이 파일은 **등록 하네스
 전수**(`_harness_matrix.HARNESSES` 파생)에 대해 명시 표를 실 트리와 대조한다.
 
 ## 표 형태
@@ -17,29 +17,29 @@
   ② `subset` 행의 분류가 `intent:`/`defect:` 접두 없이 비어 있으면 red.
   ③ 표에 없는 기능이 **어느 하네스에서든** 발견되면 red(신규/미분류 기능이 조용히 통과하지 않는다).
 
-## 기능 ID 열거 축 (하네스별 — 이미 노출된 경로만 소비, 새 파서를 만들지 않는다)
+## 기능 ID 열거 (하네스별 — 이미 노출된 경로만 소비, 새 파서를 만들지 않는다)
   codex    — `.codex/pm_orch_codex.py` 의 `hook_feature_registry()`(디스패처가 기계 소비용으로
              낸다). raw `feature_id` 는 이벤트별로 갈라져(`ctx-warn-userpromptsubmit` 등) 있어
              `_CODEX_FEATURE_TO_ROW` 로 표의 기능 단위로 묶는다. 매핑에 없는 raw id 는 그대로
-             행 이름 취급되어(폴백 identity) 표에 없으면 단언③에 자동으로 걸린다 — "모르는 기능은
+             행 이름 취급되어(대체 동작 identity) 표에 없으면 단언③에 자동으로 걸린다 — "모르는 기능은
              통과" 가 성립하지 않는다.
   opencode — `.opencode/plugins/*.js` 파일명(확장자 제거) 자체가 곧 표의 행 이름이다(플러그인
-             1개 = 기능 1개인 이 하네스의 배선 방식 그대로).
+             1개 = 기능 1개인 이 하네스의 등록 방식 그대로).
   claude   — `.claude/settings.json` 의 훅 커맨드. 파싱은 `pm_import.py` 가 이미 갖고 있는
              `_hook_commands`/`_split_hook_command`/`_hook_script_and_arguments`(어댑터 훅 세트
-             세대 판정이 쓰는 것과 같은 함수)를 그대로 재사용한다 — 커맨드 파서를 이 파일이
+             버전 판정이 쓰는 것과 같은 함수)를 그대로 재사용한다 — 커맨드 파서를 이 파일이
              두 번째로 쓰지 않는다. (스크립트명, 플래그 집합) 쌍을 `_CLAUDE_HOOK_COMMAND_TO_ROWS`
              로 표의 기능 단위에 매핑한다.
   역할 카드 — `templates/<하네스>/<1차 어댑터 디렉토리>/agents/*` 파일명(확장자 제거) 그 자체가
              행 이름이다.
   lite 루트 문서 — `_harness_matrix.entry_docs(harness)[1]`(root 문서의 `.lite.md` 변형) 존재.
   상태줄   — claude 만 판정 대상이다(`settings.json.statusLine` 키 존재). opencode·codex 는
-             기계로 확인해도(아래 결정 근거) 사용자 스크립트로 상태줄을 대체하는 설정 표면 자체가
-             없어 raw enumeration 이 애초에 나오지 않는다 — 그래서 opencode/codex 는 이 축에서
-             "found" 가 생기지 않고, "found" 가 없는 축은 단언③이 물을 대상도 없다(비대칭이
+             기계로 확인해도(아래 결정 근거) 사용자 스크립트로 상태줄을 바꿔 끼우는 설정 자체가
+             없어 raw enumeration 이 애초에 나오지 않는다 — 그래서 opencode/codex 는 이 행에서
+             "found" 가 생기지 않고, "found" 가 없는 행은 단언③이 물을 대상도 없다(비대칭이
              표 밖으로 새는 경로가 아니다).
 
-## opencode·codex 상태줄 등가 표면 실측 (착수 시 조사 — intent 분류 근거)
+## opencode·codex 상태줄 등가 설정 실측 (착수 시 조사 — intent 분류 근거)
   - codex: 프로젝트 `templates/codex/.codex/config.toml` 은 `[tui]` 섹션을 싣지 않는다(그 키는
     사용자 홈 `~/.codex/config.toml` 전용). 홈 설정에 `[tui].status_line` 이 있어도 값은
     `model-with-reasoning`·`current-dir`·`context-used`·`weekly-limit` 같은 **고정 토큰**의
@@ -49,22 +49,22 @@
     (`showActivityMeta`·`showModel`·`showCommandHint` 등)이며 외부 커맨드를 실행하는 훅이 아니다
     (`opencode --help` 에도 상태줄 커스터마이즈 서브커맨드 없음).
   결론 — 두 하네스 모두 claude `statusLine.command`(임의 스크립트 실행) 같은 **사용자 스크립트
-  훅**을 제공하지 않는다. 만들 수 있는데 안 만든 결함이 아니라 하네스 자체에 그 표면이 없다 →
+  훅**을 제공하지 않는다. 만들 수 있는데 안 만든 결함이 아니라 하네스 자체에 그 설정이 없다 →
   `intent` 분류.
 
 ## ADAPTER_HOOK_SET 확장 대신 이 파일 하나로 두는 판단
-`pm_import.ADAPTER_HOOK_SET`(`AdapterHookSetSpec`)의 관심사는 **세대 정합**이다 — "채택자
-config 가 부르는 파일이 지금 이 엔진 세대가 기대하는 버전인가"(`flag_support`·`coupled_groups`).
+`pm_import.ADAPTER_HOOK_SET`(`AdapterHookSetSpec`)의 관심사는 **버전 일치**다 — "채택자
+config 가 부르는 파일이 지금 이 엔진 버전이 기대하는 버전인가"(`flag_support`·`coupled_groups`).
 그 표는 파일이 함께 움직여야 하는 **결합 묶음** 단위로 조직돼 있어(예: claude 의 한 결합 묶음이
-ctx 넛지 + precompact 캡처를 이미 한 데 묶는다), 이 티켓이 원하는 **기능 존재 단위**(ctx-guard와
-principle-recall을 별개 행으로 보는 것)와 분할선이 다르다. 거기에 기능 축 필드를 얹으면 "세대
-정합에 쓰는 분할"과 "기능 존재 판정에 쓰는 분할"이 같은 스키마에서 충돌한다(같은 규칙 두 벌은
+ctx 경고 + precompact 캡처를 이미 한 데 묶는다), 이 티켓이 원하는 **기능 존재 단위**(ctx-guard와
+principle-recall을 별개 행으로 보는 것)와 분할선이 다르다. 거기에 기능 단위 필드를 얹으면 "버전
+일치에 쓰는 분할"과 "기능 존재 판정에 쓰는 분할"이 같은 스키마에서 충돌한다(같은 규칙 두 벌은
 반드시 drift 한다). 대신 하네스마다 이미 노출된 기능 열거 경로(`hook_feature_registry`·plugins
 파일명·settings.json 훅 커맨드)를 그대로 소비하면 새 스키마 없이 이 파일 하나로 충분하다 —
 `pm_import.py` 비수정.
 
 hermetic — 실 파일 읽기/JSON 파싱만 한다(하네스 실행·LLM 진입 없음). 민감도는 합성 픽스처로
-증명한다(`test_facade_guard_is_sensitive_to_missing_facade` 류 선례와 동형).
+증명한다(`test_facade_guard_is_sensitive_to_missing_facade` 류 선례와 같은 방식).
 """
 from __future__ import annotations
 
@@ -97,8 +97,8 @@ def subset(harnesses, classification: str) -> SubsetExpectation:
 ALL = "all"  # 등록 하네스 전수 보유 선언 sentinel.
 
 # ── codex: raw feature_id → 표의 기능 행 ────────────────────────────────────
-# `hook_feature_registry()` 가 내는 feature_id 는 이벤트별로 갈라진다(예: ctx 넛지가
-# PreToolUse/UserPromptSubmit 둘로 등록). 여기서 기능 단위로 접는다. 매핑에 없는 새 feature_id는
+# `hook_feature_registry()` 가 내는 feature_id 는 이벤트별로 갈라진다(예: ctx 경고가
+# PreToolUse/UserPromptSubmit 둘로 등록). 여기서 기능 단위로 합친다. 매핑에 없는 새 feature_id는
 # 이 표에 그대로 행 이름 취급되어(fallback identity — 아래 `_codex_hook_rows`) 표 밖으로 새지
 # 않는다.
 _CODEX_FEATURE_TO_ROW = {
@@ -114,7 +114,7 @@ _CODEX_FEATURE_TO_ROW = {
 }
 
 # ── claude: (스크립트명, 정렬된 플래그 튜플) → 표의 기능 행(들) ─────────────────
-# ctx_stop_hook.sh(무플래그)는 ctx 넛지와 판단 원칙 recall 을 한 스크립트 안에서 함께 처리한다
+# ctx_stop_hook.sh(무플래그)는 ctx 경고와 판단 원칙 recall 을 한 스크립트 안에서 함께 처리한다
 # (claude 는 codex/opencode 처럼 기능별 파일을 안 가른다) — 그래서 두 행에 동시에 기여한다.
 _CLAUDE_HOOK_COMMAND_TO_ROWS = {
     ("ctx_stop_hook.sh", ()): ("ctx-guard", "principle-recall"),
@@ -200,7 +200,7 @@ def _lite_doc_present(templates_dir: Path, harness: str) -> bool:
     return (_template_root(templates_dir, harness) / lite_name).is_file()
 
 
-# 하네스별 훅/플러그인 raw 열거 함수 — 축 자체(HARNESSES)는 파생이지만, config 형식이 하네스마다
+# 하네스별 훅/플러그인 raw 열거 함수 — 하네스 목록 자체(HARNESSES)는 파생이지만, config 형식이 하네스마다
 # 구조적으로 다르므로(codex=디스패처 노출·opencode=디렉토리 스캔·claude=JSON 훅 커맨드) 판독기는
 # 하네스별로 갈린다(`pm_import.ADAPTER_HOOK_SET` 이 이미 같은 이유로 하네스별 키를 쓴다). 표에
 # 없는 하네스가 오면(4번째 하네스가 이 판독기 확장 없이 등록되면) loud fail 한다 — 조용한 미검사
@@ -229,7 +229,7 @@ def _harness_actual_features(templates_dir: Path, harness: str) -> frozenset[str
 
 # ── 기능 세트 명시 표 ────────────────────────────────────────────────────────
 TABLE: dict[str, str | SubsetExpectation] = {
-    # 가드/훅 — 세 하네스 모두 배선됐다.
+    # 가드/훅 — 세 하네스 모두 등록됐다.
     "ctx-guard": ALL,
     "principle-recall": ALL,
     "delegate-channel": ALL,
@@ -248,23 +248,23 @@ TABLE: dict[str, str | SubsetExpectation] = {
     ),
     "stall-watchdog": subset(
         {"opencode"},
-        "intent:opencode run auto-continue 부재(upstream open) 대응 세션 idle 미완료 감지·처방 "
-        "넛지 — 턴 완결성 축은 auto-continue 가 있는 하네스에서 무해",
+        "intent:opencode run auto-continue 부재(upstream open) 대응 세션 idle 미완료 감지·해결 방법 "
+        "경고 — 턴 완결성 확인은 auto-continue 가 있는 하네스에서 무해",
     ),
     "pm": subset(
         {"opencode"},
-        "intent:orchestrator 가 PM 세션을 spawn 하는 타깃 카드 — 그 spawn 형상이 opencode 에서만 "
+        "intent:orchestrator 가 PM 세션을 spawn 하는 타깃 카드 — 그 spawn 방식이 opencode 에서만 "
         "동작(카드 frontmatter description 명문)",
     ),
     # 미분류였던 2건 — 착수 시 실측으로 확정.
     "lite-root-doc": subset(
         {"claude", "opencode"},
-        "intent:codex 는 lite 무게축 루트문서를 출하하지 않는다 — lite 변종 부재는 폴백으로 "
-        "선언된 정상 상태(full 무게축 수용)",
+        "intent:codex 는 lite 설치 무게 루트문서를 출하하지 않는다 — lite 변종 부재는 대체 동작으로 "
+        "선언된 정상 상태(full 설치 무게 수용)",
     ),
     "statusline": subset(
         {"claude"},
-        "intent:opencode·codex 모두 사용자 스크립트로 상태줄을 대체하는 설정 표면이 없다(고정 "
+        "intent:opencode·codex 모두 사용자 스크립트로 상태줄을 바꿔 끼우는 설정이 없다(고정 "
         "토큰 나열 또는 내장 표시 토글뿐 — 커스텀 커맨드 훅 부재를 --help/공식 문서로 실측)",
     ),
 }
@@ -320,7 +320,7 @@ def test_feature_table_matches_shipped_trees():
 
 def test_dod_required_rows_are_present_and_classified():
     """DoD 4 — 선행 티켓이 닫은 3건은 `all`, 의도 비대칭 2건과 신규 분류 2건은 intent/defect 분류를
-    갖는다(현행 스냅샷 — 결함으로 남는 행은 없다)."""
+    갖는다(현행 상태 — 결함으로 남는 행은 없다)."""
     assert TABLE["git-check"] == ALL
     assert TABLE["developer-hard"] == ALL
     assert TABLE["ctx-guard"] == ALL
@@ -343,14 +343,14 @@ def test_known_intentional_asymmetries_do_not_leak_into_other_harnesses():
 
 
 def test_missing_tree_is_loud_fail_not_silent_pass():
-    """트리가 없으면(손상·오타 경로) RuntimeError — vacuous green 금지(민감도 선례와 동형)."""
+    """트리가 없으면(손상·오타 경로) RuntimeError — vacuous green 금지(민감도 선례와 같은 방식)."""
     nonexistent = REPO / "templates" / "__nonexistent_for_feature_parity__"
     with pytest.raises(RuntimeError):
         _collect_violations(nonexistent)
 
 
 def test_unregistered_harness_is_loud_fail():
-    """`_HOOK_ROW_READERS` 에 없는 하네스가 축에 섞이면(합성) 조용히 통과하지 않는다."""
+    """`_HOOK_ROW_READERS` 에 없는 하네스가 목록에 섞이면(합성) 조용히 통과하지 않는다."""
     with pytest.raises(RuntimeError):
         _harness_actual_features(TEMPLATES, "__fourth_harness__")
 

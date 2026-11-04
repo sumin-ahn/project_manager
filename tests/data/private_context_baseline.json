@@ -33,7 +33,7 @@
     ".project_manager/tools/pm_engine/app/entry_doc_migration.py": [
       {
         "kind": "decision_label",
-        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "hash": "fe4642b6fb7ddb266dffd29408d8ac0b432fe483c3975436b8c35a1234163ea1",
         "count": 1
       }
     ],
@@ -398,7 +398,7 @@
     "templates/claude_code/.project_manager/tools/pm_engine/app/entry_doc_migration.py": [
       {
         "kind": "decision_label",
-        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "hash": "fe4642b6fb7ddb266dffd29408d8ac0b432fe483c3975436b8c35a1234163ea1",
         "count": 1
       }
     ],
@@ -766,7 +766,7 @@
     "templates/codex/.project_manager/tools/pm_engine/app/entry_doc_migration.py": [
       {
         "kind": "decision_label",
-        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "hash": "fe4642b6fb7ddb266dffd29408d8ac0b432fe483c3975436b8c35a1234163ea1",
         "count": 1
       }
     ],
@@ -1325,7 +1325,7 @@
     "templates/opencode/.project_manager/tools/pm_engine/app/entry_doc_migration.py": [
       {
         "kind": "decision_label",
-        "hash": "90ec4bd67b79627569cd5cb00f0f8afe2bf0b6c489e9e9866085d6437591df54",
+        "hash": "fe4642b6fb7ddb266dffd29408d8ac0b432fe483c3975436b8c35a1234163ea1",
         "count": 1
       }
     ],

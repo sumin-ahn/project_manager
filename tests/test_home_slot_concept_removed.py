@@ -1,14 +1,14 @@
 """PM 홈 자신을 작업 폴더로 등재하던 개념이 소스에서 사라졌는지 (T-0919).
 
-두 축으로 잰다.
+두 가지 방법으로 잰다.
 
   (1) **이름** — 그 개념이 쓰던 식별자가 `.py` 소스 전역에 0회 등장한다. 되살리면 red 다.
   (2) **값** — 갓 만든 홈의 작업 폴더 목록(`pm-config status --json` 의 `slots`)에 홈 자신이
-      없다. 개념이 다른 이름으로 부활해도 값이 잡는다(이름이 아니라 값을 재는 축).
+      없다. 개념이 다른 이름으로 부활해도 값이 잡는다(이름이 아니라 값을 재는 검사).
 
-`.` 행이 이미 박힌 옛 홈을 흡수가 **지우는** 축은 `tests/test_upgrade_adopter_e2e.py` 가
+`.` 행이 이미 박힌 옛 홈을 갱신이 **지우는** 검사는 `tests/test_upgrade_adopter_e2e.py` 가
 소유한다. 그 제거가 **어떻게** 쓰이는지(엔진과 같은 직렬화 구간·원자 교체)는 이 파일이 잰다 —
-장부를 락 밖에서 통째로 덮어쓰면 동시에 도는 alloc·release 와 서로를 보지 못한다.
+대여 기록을 락 밖에서 통째로 덮어쓰면 동시에 도는 alloc·release 와 서로를 보지 못한다.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ _SCAN_SUBTREES = (".project_manager/tools", "tests", "manager")
 
 
 def _python_sources() -> list[Path]:
-    """repo-owned 열거 seam 으로 모은 `.py` — 자체 tree-walk 를 만들지 않는다."""
+    """repo-owned 열거 공용 함수로 모은 `.py` — 자체 tree-walk 를 만들지 않는다."""
     found: list[Path] = []
     for subtree in _SCAN_SUBTREES:
         found += [path for path in repo_owned_paths(REPO, subtree, mode=OWNED)
@@ -67,7 +67,7 @@ def test_removed_identifiers_have_zero_references():
 
 
 def test_retired_test_files_are_gone():
-    """개념 전용 테스트 파일과 옛 시드 파일이 남아 있지 않다."""
+    """개념 전용 테스트 파일과 옛 시험 자료 파일이 남아 있지 않다."""
     assert not (REPO / "tests" / "test_solo_shape_abolished.py").exists()
     assert not (REPO / "tests" / "_home_slot.py").exists()
     assert (REPO / "tests" / "_slot_seed.py").is_file()
@@ -113,30 +113,30 @@ def _load_engine(name: str):
     return module
 
 
-def _seed_ledger(dest: Path, leases: list[dict]) -> Path:
-    ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(
+def _seed_records(dest: Path, leases: list[dict]) -> Path:
+    records = dest / ".project_manager" / ".local" / "worktree-leases.json"
+    records.parent.mkdir(parents=True, exist_ok=True)
+    records.write_text(
         json.dumps({"leases": leases, "tasks": []}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8", newline="\n",
     )
-    return ledger
+    return records
 
 
-def _ledger_slots(ledger: Path) -> list[str]:
-    return [row["slot"] for row in json.loads(ledger.read_text(encoding="utf-8"))["leases"]]
+def _record_slots(records: Path) -> list[str]:
+    return [row["slot"] for row in json.loads(records.read_text(encoding="utf-8"))["leases"]]
 
 
 def test_home_row_migration_writes_under_the_lease_lock(tmp_path):
     """홈 자신 행 제거가 `worktree-leases.lock` 배타 구간 안에서만 일어난다.
 
-    락을 쥔 동안에는 끝나지 않고 장부가 그대로이며, 해제 뒤에는 `.` 행만 사라지고 다른 두 행이
-    보존된다 — 엔진(`worktree_pool._lease_lock`)이 선언한 "장부의 모든 read-modify-write 가 이
+    락을 쥔 동안에는 끝나지 않고 대여 기록이 그대로이며, 해제 뒤에는 `.` 행만 사라지고 다른 두 행이
+    보존된다 — 엔진(`worktree_pool._lease_lock`)이 선언한 "대여 기록의 모든 read-modify-write 가 이
     한 구간" 계약과 같은 자리다.
     """
     pm_update = _load_engine("pm_update")
     dest = tmp_path / "home"
-    ledger = _seed_ledger(dest, [
+    records = _seed_records(dest, [
         {"slot": ".", "session": "home"},
         {"slot": "proj_1", "session": "s1"},
         {"slot": "proj_2", "session": "s2"},
@@ -146,7 +146,7 @@ def test_home_row_migration_writes_under_the_lease_lock(tmp_path):
     dropped: list[int] = []
 
     def holder():
-        with fs.exclusive_file_lock(ledger.parent / "worktree-leases.lock"):
+        with fs.exclusive_file_lock(records.parent / "worktree-leases.lock"):
             held.set()
             release.wait(_RELEASE_WAIT_SECONDS)
 
@@ -161,7 +161,7 @@ def test_home_row_migration_writes_under_the_lease_lock(tmp_path):
     migrate_thread.start()
     try:
         assert not done.wait(_BLOCKED_WAIT_SECONDS), "락을 쥔 동안 마이그레이션이 끝났다"
-        assert _ledger_slots(ledger) == [".", "proj_1", "proj_2"]
+        assert _record_slots(records) == [".", "proj_1", "proj_2"]
     finally:
         release.set()
         holder_thread.join(_RELEASE_WAIT_SECONDS)
@@ -169,4 +169,4 @@ def test_home_row_migration_writes_under_the_lease_lock(tmp_path):
     assert done.wait(_RELEASE_WAIT_SECONDS), "락 해제 뒤에도 마이그레이션이 끝나지 않았다"
     migrate_thread.join(_RELEASE_WAIT_SECONDS)
     assert dropped == [1]
-    assert _ledger_slots(ledger) == ["proj_1", "proj_2"]
+    assert _record_slots(records) == ["proj_1", "proj_2"]

@@ -234,7 +234,7 @@ def test_url_cache_result_matches_explicit_from(pm_update, tmp_path, monkeypatch
     assert _snapshot(auto) == _snapshot(explicit), \
         "URL 자동 해소와 캐시 명시 --from 의 산출물이 다르다"
     assert not _cache_root(explicit).exists(), \
-        "명시 --from 인데 캐시를 또 만들었다(불필요한 네트워크 표면)"
+        "명시 --from 인데 캐시를 또 만들었다(불필요한 네트워크 접근)"
 
 
 def test_second_run_fetches_into_same_cache(pm_update, tmp_path, monkeypatch, capsys):
@@ -282,7 +282,7 @@ def test_clone_failure_is_loud_and_changes_nothing(pm_update, tmp_path, monkeypa
 
     assert rc != 0, "clone 실패인데 rc 0(조용한 진행)"
     err = capsys.readouterr().err
-    assert "캐시 clone 실패" in err, f"실패 사유가 표면화되지 않음: {err!r}"
+    assert "캐시 clone 실패" in err, f"실패 사유가 드러나지 않음: {err!r}"
     assert _snapshot(dest) == before, "clone 실패 실행이 dest 파일을 바꿨다"
     conf = _conf(pm_update, dest)
     assert "upstream.rev" not in conf and "upstream.seen_rev" not in conf, \
@@ -407,7 +407,7 @@ def test_local_source_wins_over_url_cache(tmp_path):
     got = upstream_git._resolve_add_harness_source(dest, "codex", None)
 
     assert got == dest.resolve(), f"로컬 templates 가 있는데 캐시로 갔다: {got}"
-    assert not _cache_root(dest).exists(), "로컬 소스로 끝나는 형상에서 캐시를 만들었다"
+    assert not _cache_root(dest).exists(), "로컬 소스로 끝나는 경우에 캐시를 만들었다"
 
 
 def test_sync_adapter_config_check_resolves_url_upstream(
@@ -417,18 +417,18 @@ def test_sync_adapter_config_check_resolves_url_upstream(
     url = _make_bare(source, tmp_path / "fw.git")
     dest = _imported_codex_instance(tmp_path / "inst", url)
     import hashlib
-    ledger = {"schema": 1, "files": {".codex/hooks.json": {
+    records = {"schema": 1, "files": {".codex/hooks.json": {
         "sha256": hashlib.sha256(_HOOKS.encode("utf-8")).hexdigest(),
         "recorded_at": "2026-01-01T00:00:00+09:00", "template_rev": "old"}}}
     _write(dest / ".project_manager" / "adapter_baseline.json",
-           json.dumps(ledger, indent=2) + "\n")
+           json.dumps(records, indent=2) + "\n")
     args = argparse.Namespace(list=False, check=True, accept=None, source=None)
 
     rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO), args, dest_root=dest)
 
     captured = capsys.readouterr()
     assert "[중단]" not in captured.err, f"URL upstream 소스 미해소로 멈춤: {captured.err!r}"
-    assert rc == 0, f"수렴 형상인데 rc={rc}: {captured.out!r} {captured.err!r}"
+    assert rc == 0, f"일치한 상태인데 rc={rc}: {captured.out!r} {captured.err!r}"
     assert _only_cache(dest).is_dir()
 
 

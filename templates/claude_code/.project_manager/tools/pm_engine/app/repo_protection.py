@@ -14,8 +14,8 @@ def _local_conf_test_cmd(home) -> str | None:
     return _local_conf_value(home, "test.cmd")
 
 
-_PROTECTED_GATE_RELEASE = "release"
-_PROTECTED_GATE_SELF_TEST = "self-test"
+_PROTECTED_CHECK_RELEASE = "release"
+_PROTECTED_CHECK_SELF_TEST = "self-test"
 
 
 def _local_conf_value(home, key: str) -> str | None:
@@ -23,7 +23,7 @@ def _local_conf_value(home, key: str) -> str | None:
 
     `conf_store.local_config()`와 같은 **last-wins**다. 중복 키의 마지막 값이
     비어 있으면 앞의 값을 해제한 것으로 보아 `""`를 반환한다. 동일 파일을
-    `upstream show`와 보호 push gate가 다르게 해석하지 않게 하는 계약이다.
+    `upstream show`와 보호 push 검사가 다르게 해석하지 않게 하는 계약이다.
     """
     conf_file = home.local_conf
     return conf_store.load_checked(conf_file).get(key)
@@ -45,9 +45,9 @@ def _protected_push_gate_config(home,
 
     PM 홈 `local.conf upstream.path=`이 이 홈의 canonical `work/<repo>_<N>` 슬롯 자체거나,
     URL identity가 areas의 repo remote와 같으면 프레임워크 자기 repo라 기존 release
-    livegate를 유지한다. 다른 repo면 areas `test_cmd`(없으면 local.conf/default)로 자기 검증한다.
+    라이브 시험 통과 조건을 유지한다. 다른 repo면 areas `test_cmd`(없으면 local.conf/default)로 자기 검증한다.
     upstream/registry provenance를 판별할 수 없으면 사용자 통제 밖 조건으로 영구 차단하지
-    않고 adopter `self-test`로 강등한다. 증거 명령 자체는 그대로 fail-closed다.
+    않고 adopter `self-test`로 낮춘다. 증거 명령 자체는 그대로 fail-closed다.
     """
     test_cmd = _resolve_repo_test_cmd(home, repo)
     upstream = _local_conf_value(home, "upstream.path")
@@ -58,10 +58,10 @@ def _protected_push_gate_config(home,
                 "release 대신 self-test를 사용한다; upstream을 설정하라.",
                 file=sys.stderr,
             )
-        return _PROTECTED_GATE_SELF_TEST, test_cmd
+        return _PROTECTED_CHECK_SELF_TEST, test_cmd
 
     # URL/scp-like upstream 판별은 upstream_rules.classify_upstream 단일 진실을 쓴다. 여기서 정규식을
-    # 따로 들면 `host:path` 같은 지원 형식이 경로로 갈라져 release gate가 빠진다.
+    # 따로 들면 `host:path` 같은 지원 형식이 경로로 갈라져 release 검사가 빠진다.
     kind = upstream_rules.classify_upstream(upstream)
     if kind == "url":
         repo_git = _repo_registry_git(home, repo)
@@ -72,10 +72,10 @@ def _protected_push_gate_config(home,
                     "release 대신 self-test를 사용한다; 해당 repo의 git URL을 등록하라.",
                     file=sys.stderr,
                 )
-            return _PROTECTED_GATE_SELF_TEST, test_cmd
-        mode = (_PROTECTED_GATE_RELEASE
+            return _PROTECTED_CHECK_SELF_TEST, test_cmd
+        mode = (_PROTECTED_CHECK_RELEASE
                 if git._git_remote_identity(upstream) == git._git_remote_identity(repo_git)
-                else _PROTECTED_GATE_SELF_TEST)
+                else _PROTECTED_CHECK_SELF_TEST)
         return mode, test_cmd
 
     # 경로 해소 실패는 **어떤 값이** 안 풀렸는지와 함께 올린다 — 플랫폼마다 문구가 달라(POSIX
@@ -92,16 +92,16 @@ def _protected_push_gate_config(home,
     work_root = (home.root / "work").resolve()
     name, sep, slot_no = candidate.name.rpartition("_")
     if candidate.parent == work_root and sep and name == repo and slot_no.isdigit():
-        return _PROTECTED_GATE_RELEASE, test_cmd
-    return _PROTECTED_GATE_SELF_TEST, test_cmd
+        return _PROTECTED_CHECK_RELEASE, test_cmd
+    return _PROTECTED_CHECK_SELF_TEST, test_cmd
 
 
 def _default_test_cmd(home) -> str:
-    """worktree add 빌드명령 프롬프트의 최종 폴백값 — local.conf 또는 `python_env` 기본.
+    """worktree add 빌드명령 프롬프트의 최종 대체 값 — local.conf 또는 `python_env` 기본.
 
-    regression._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
-    동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
-    프롬프트 표시값 resolve 의 폴백.
+    regression._test_cmd 의 최종 대체 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
+    같은 방식. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
+    프롬프트 표시값 resolve 의 대체 동작.
     """
     configured = _local_conf_test_cmd(home)
     if configured:
@@ -110,14 +110,14 @@ def _default_test_cmd(home) -> str:
 
 
 def _resolve_repo_test_cmd(home, repo: str) -> str:
-    """프롬프트 `[기본: <X>]` 의 X — 그 repo 가 Enter 시 실제로 폴백할 test_cmd.
+    """프롬프트 `[기본: <X>]` 의 X — 그 repo 가 Enter 시 실제로 대신 쓸 test_cmd.
 
     regression._test_cmd 의 해소 체인을 *그 repo 한정으로* 재현한다 (areas 파서
     `areas_store._parse_areas`/`_areas_row_for_prefix` 재사용):
       1. **활성 repo 의 areas.md test_cmd** — 그 repo(=prefix)의 레지스트리 행에 비어
          있지 않은 `test_cmd` 가 있으면 그것(per-repo 스택·`go test ./...` 등).
-      2. **최종 폴백** — areas 미등록·빈 값이면 `local.conf test.cmd` 또는 `pytest -q`.
-    (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
+      2. **최종 대체 동작** — areas 미등록·빈 값이면 `local.conf test.cmd` 또는 `pytest -q`.
+    (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인을 대신 씀을 투명하게
     보여주는 게 목적이다(must-fix 1 — 슬롯이 areas 보다 우선이라 잘못 덮으면 안 됨).
     """
     _header, rows = areas_store._parse_areas(home)
@@ -159,7 +159,7 @@ def _install_protected_hook(home, repo: str) -> bool:
 def _areas_protected_cell(home, repo: str) -> str | None:
     """areas.md 그 repo 행의 **raw** `protected` 셀 — 행 부재 → None (출처 판정용).
 
-    `areas_store._repo_protected`(폴백 적용된 실효값)와 달리 "명시했나 / 비었나 / 행이 없나"를
+    `areas_store._repo_protected`(대체 동작이 적용된 실효값)와 달리 "명시했나 / 비었나 / 행이 없나"를
     구별해야 조회 출력의 **출처** 줄을 정직하게 낼 수 있다. 행 부재 → None, 파싱 예외는 전파.
     """
     _header, rows = areas_store._parse_areas(home)
@@ -199,18 +199,18 @@ def _warn_missing_protected_branches(home,
 
 
 def protected_retry_command(home, repo: str) -> str:
-    """그 repo 의 보호목록 **재실행 안내 커맨드** — 현재 상태(명시/폴백/미등록) 단일 분기.
+    """그 repo 의 보호목록 **재실행 안내 커맨드** — 현재 상태(명시/기본값 대체/미등록) 단일 분기.
 
     안내는 *실행하면 지금 상태를 그대로 복원*해야 한다. 그런데 상태에 따라 정확한 커맨드가 다르다:
 
-      - **기본값 폴백**(areas `protected` 칼럼이 빈 값) → `repo protected <repo> default`.
+      - **기본값 대체 동작**(areas `protected` 칼럼이 빈 값) → `repo protected <repo> default`.
         여기서 `main,master,develop` 을 **명시 커맨드로 안내하면 안 된다** — 사용자가 그대로
-        실행하면 동작은 같아도 raw cell 의 출처가 "기본값 폴백" → "명시 설정" 으로 바뀐다
+        실행하면 동작은 같아도 raw cell 의 출처가 "기본값 대체 동작" → "명시 설정" 으로 바뀐다
         (안내가 상태를 조용히 바꾼다). 이후 DEFAULT_PROTECTED 가 바뀌어도 안 따라간다.
       - **명시 설정** → `repo protected <repo> <현재 목록>`(그 값 그대로 재적용·멱등).
       - **미등록**(areas 에 행 없음) → 셀을 고칠 대상이 없으니 `repo add <repo>` 가 먼저다.
 
-    이 분기를 **여기 한 곳**에만 둔다 — 조회의 drift/미배선 줄·설정 실패 경고·bootstrap reconcile
+    이 분기를 **여기 한 곳**에만 둔다 — 조회의 drift/미등록 줄·설정 실패 경고·bootstrap reconcile
     실패 경고가 전부 이 함수를 소비한다.
     pm_bootstrap은 이 모듈의 함수를 직접 호출한다.
     """
@@ -255,7 +255,7 @@ def _install_protected_hook_reporting(home,
     return False
 
 
-def _refresh_protected_gate_contracts(home) -> tuple[list[str], list[str]]:
+def _refresh_protected_check_contracts(home) -> tuple[list[str], list[str]]:
     repos = sorted(areas_store.registered_repos(home))
     attempted, failed = [], []
     for repo in repos:

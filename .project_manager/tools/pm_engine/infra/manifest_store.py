@@ -33,17 +33,17 @@ def read_manifest(path: Path) -> list[manifest_rules.ManifestEntry]:
         entry = manifest_rules._parse_manifest_line(line)
         if entry is not None:
             out.append(entry)
-    # 구형·flavor manifest의 물리 행 순서가 남아 있어도 새 updater는 엔진 패키지를 먼저
+    # 구형·하네스별 판 manifest의 물리 행 순서가 남아 있어도 새 updater는 엔진 패키지를 먼저
     # 배포한다. 평면 파일 복사 중 끊겨도 패키지는 이미 완전하다.
     return sorted(out, key=lambda entry: str(entry) != manifest_rules._ENGINE_PACKAGE_REL)
 
 
 def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
-    """선택된 template flavor manifest들을 선언 순서대로 합집합한다.
+    """선택된 template 하네스별 판 manifest들을 선언 순서대로 합집합한다.
 
-    경로가 처음 등장한 선언을 채택한다. 같은 경로가 뒤 flavor에도 있고 마커가 다르면 첫 선언의
+    경로가 처음 등장한 선언을 채택한다. 같은 경로가 뒤 하네스별 판에도 있고 마커가 다르면 첫 선언의
     마커를 유지한다. 이는 ``plan_copy``의 MF3(선택 트리 순서가 결정적 우선순위)와 같은 정책이며,
-    첫 flavor가 다른 flavor의 상위집합이라는 전제는 두지 않는다. 후순위 flavor의 주석/레이아웃은
+    첫 하네스별 판이 다른 하네스별 판의 상위집합이라는 전제는 두지 않는다. 후순위 하네스별 판의 주석/레이아웃은
     의도적으로 합치지 않고 새 관리 경로만 결정적 생성 절에 직렬화한다.
 
     첫 manifest의 주석/레이아웃은 그대로 보존하고, 뒤 manifest에서 새로 추가되는 경로만 생성 절로
@@ -80,18 +80,18 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
                 added_here.append(entry)
         if index and added_here:
             try:
-                flavor = path.parents[1].name
+                variant = path.parents[1].name
             except IndexError:
-                flavor = path.parent.name
-            additions.append((flavor, added_here))
+                variant = path.parent.name
+            additions.append((variant, added_here))
     if len(paths) == 1:
         text = first_text
     else:
         chunks = [first_text.rstrip("\n")]
-        for flavor, entries in additions:
+        for variant, entries in additions:
             chunks.extend([
                 "",
-                f"# ── 선택한 하네스별 판 합집합: {flavor} (pm_import/pm_update 생성) ──",
+                f"# ── 선택한 하네스별 판 합집합: {variant} (pm_import/pm_update 생성) ──",
                 *(manifest_rules._manifest_entry_line(entry) for entry in entries),
             ])
         text = "\n".join(chunks) + "\n"
@@ -106,7 +106,7 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
 def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
     """tracked 출하 목록과 미추적 제외 신호를 만든다.
 
-    ``pm-update`` 출하는 manifest 디렉토리의 byte-copy 채널이다. 따라서 공용 seam의 넓은
+    ``pm-update`` 출하는 manifest 디렉토리의 byte-copy 채널이다. 따라서 공용 열거 함수의 넓은
     domain(gap 검출에 필요한 symlink/gitlink 포함)은 유지하되, 이 소비처에서만 실제 일반
     파일로 좁힌다. git checkout일 때 OWNED와의 차집합 중 같은 일반 파일 판정을 통과한
     미추적 파일 수만 한 줄로 알려 ``git add`` 뒤에만 출하된다는 계약을 숨기지 않는다.
@@ -148,7 +148,7 @@ def _shipping_inventory(repo_files, root: Path, rel: str) -> list:
                     file=sys.stderr,
                 )
     if not tracked:
-        # seam은 coverage·부분 subtree 질의도 쓰므로 빈 결과 자체를 예외로 만들지 않는다.
+        # 열거 함수는 coverage·부분 subtree 질의도 쓰므로 빈 결과 자체를 예외로 만들지 않는다.
         # manifest 경로가 존재해 이 소비점에 도달한 경우만 출하 결함으로 직접 승격한다.
         # 위의 OWNED/check-ignore 진단을 먼저 내 원인 판별 정보도 잃지 않는다.
         raise manifest_rules.EmptyShippingInventoryError(
@@ -233,7 +233,7 @@ def _is_shippable_regular_file(
 def _iter_files(root: Path, rel: str):
     """manifest 엔트리(파일/디렉토리) → (repo 기준 relpath, src 절대경로) 들.
 
-    디렉토리는 repo-owned seam으로 협착하고 symlink/gitlink 등 제외를 loud하게 표면화한다.
+    디렉토리는 repo-owned 열거 함수로 협착하고 symlink/gitlink 등 제외를 loud하게 드러낸다.
     relpath 는 **항상 posix(슬래시) 정규화**한다(`as_posix()`) — 모듈 전체의 슬래시 관례
     (`_path_under_manifest`·`_dest_relpath_for` 는 `.replace("\\","/")` 로 슬래시 전제)과 통일.
     `str(Path.relative_to)` 는 OS-네이티브 구분자라 Windows 에선 역슬래시(`.claude\\agents\\x.md`)
@@ -258,9 +258,9 @@ def _iter_files(root: Path, rel: str):
 
 
 def _is_board_separated(dest_root: Path) -> bool:
-    """dest 가 board-분리 형상인가 — `<dest>/.project_manager/board/tickets` 가 실 dir.
+    """dest 가 board-분리 구조인가 — `<dest>/.project_manager/board/tickets` 가 실 dir.
 
-    `pm_paths._board_root_at` 의 판별과 동형 — pm_update 가 board 를 import 하지 않고
+    `pm_paths._board_root_at` 의 판별과 같은 방식 — pm_update 가 board 를 import 하지 않고
     같은 *실측* probe 로 dest 레이아웃을 가른다. board/tickets 가 없으면 legacy(False·무변경).
     """
     return (Path(dest_root) / ".project_manager" / "board" / "tickets").is_dir()
@@ -312,7 +312,7 @@ def manifest_entry_shipping_inventory(
     ``plan``과 같은 경로로 적용한다. source가 없으면 files는 비고 ``missing=True``이며,
     호출자가 ``target_owned``로 정상적인 전파 제외와 엔진 누락 오류를 구분한다.
 
-    출하 목록을 관찰하는 다른 엔진 기능은 이 seam을 소비해야 한다. manifest 경로를 직접
+    출하 목록을 관찰하는 다른 엔진 기능은 이 열거 함수를 소비해야 한다. manifest 경로를 직접
     ``iterdir``/``rglob``로 전개하면 git ignore, index mode, source remap과 override 의미가
     실제 update 계획에서 다시 갈라진다.
     """
@@ -339,7 +339,7 @@ def _template_dir_from_manifest(
     manifest_path: Path | None,
     source_root: Path,
 ) -> str | None:
-    """flavor manifest 경로에서 `templates/<dir>` context를 파생한다. root manifest면 None."""
+    """하네스별 판 manifest 경로에서 `templates/<dir>` context를 파생한다. root manifest면 None."""
     if manifest_path is None:
         return None
     try:
@@ -355,10 +355,10 @@ def _entry_notation_templates_from_manifests(
     manifest_paths: list[Path],
     source_root: Path,
 ) -> dict[str, tuple[str, ...]]:
-    """선택 manifest의 항목별 flavor 집합을 선언 순서대로 보존한다.
+    """선택 manifest의 항목별 하네스별 판 집합을 선언 순서대로 보존한다.
 
-    서로 다른 경로는 각 flavor 하나를 받고, 같은 물리 경로는 그 파일을 실제로 읽는 flavor를
-    전부 받는다. 선택된 flavor manifest를 읽지 못하면 context만 조용히 버리지 않고 fail-loud한다.
+    서로 다른 경로는 각 하네스별 판 하나를 받고, 같은 물리 경로는 그 파일을 실제로 읽는 하네스별 판을
+    전부 받는다. 선택된 하네스별 판 manifest를 읽지 못하면 context만 조용히 버리지 않고 fail-loud한다.
     로컬 manifest 동기화는 계속하면서 notation context만 유실하면 canonical slash가 codex의 기존
     dollar 산출물을 덮기 때문이다.
     """
@@ -376,10 +376,10 @@ def _entry_notation_templates_from_manifests(
             ) from exc
         for entry in entries:
             rel = str(entry).replace("\\", "/")
-            flavors = contexts.setdefault(rel, [])
-            if template_dir not in flavors:
-                flavors.append(template_dir)
-    return {rel: tuple(flavors) for rel, flavors in contexts.items()}
+            variants = contexts.setdefault(rel, [])
+            if template_dir not in variants:
+                variants.append(template_dir)
+    return {rel: tuple(variants) for rel, variants in contexts.items()}
 
 
 def resolve_manifest_for_dest(dest_root: Path, source_root: Path) -> Path:

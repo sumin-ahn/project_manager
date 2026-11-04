@@ -1,4 +1,4 @@
-"""T-0541 ①⑥ — 출하 wiki relpath 의 manifest 소유권과 표기 폴백 정합.
+"""T-0541 ①⑥ — 출하 wiki relpath 의 manifest 소유권과 표기 대체 동작 일치.
 
 ## 닫는 결함
 `engine.manifest` 어느 엔트리도 소유하지 않는 출하 wiki 문서는 표기 context 를 못 받아
@@ -9,15 +9,15 @@
 manifest 미소유 출하 wiki = **인스턴스 상태 seed**(`status.md`·`log/current.md`·`architecture.md`·
 `raw/README.md` 등)다. manifest 는 upstream 이 관리(=매 sync 덮어씀)하는 경로만 담으므로
 ([[ADR-0001]] 엔진/상태 분리) 이 부류를 등재하면 `pm_update` 가 채택자 상태를 clobber 한다.
-따라서 (b) fail-loud(등재 강제)가 아니라 **(a) 설치 하네스 전체 집합 폴백**이 정답이고,
+따라서 (b) fail-loud(등재 강제)가 아니라 **(a) 설치 하네스 전체 집합 대체**이 정답이고,
 `pm_import._is_notation_fallback_scope` 가 그 범위를 소유한다.
 
 ## 이 파일이 보는 것
-1. 출하 wiki relpath 집합 ↔ manifest 등재 집합의 **path-set parity** — 미등재 출하 파일 원장.
-   신규 미등재 출하 파일이 생기면 red(판정 강제: 인스턴스 seed 면 원장에, framework-managed 면
+1. 출하 wiki relpath 집합 ↔ manifest 등재 집합의 **path-set parity** — 미등재 출하 파일 기록.
+   신규 미등재 출하 파일이 생기면 red(판정 강제: 인스턴스 seed 면 기록에, framework-managed 면
    manifest 에).
-2. 원장 전체가 폴백 범위 안 — ①의 택일과 정합(등재 없이도 표기가 해소된다).
-3. 폴백 렌더 동작·loud 표기·범위 경계(엔진 backbone·루트 진입문서 불가침).
+2. 기록 전체가 대체 동작 범위 안 — ①의 택일과 일치(등재 없이도 표기가 해소된다).
+3. 대체 동작 렌더 동작·loud 표기·범위 경계(엔진 backbone·루트 진입문서 불가침).
 """
 
 from __future__ import annotations
@@ -39,12 +39,12 @@ from pm_engine.app import add_harness
 
 WIKI_PREFIX = ".project_manager/wiki/"
 
-# manifest 미소유 출하 wiki relpath **원장**(세 template 합집합·tracked-only 출하 판정).
+# manifest 미소유 출하 wiki relpath **기록**(세 template 합집합·tracked-only 출하 판정).
 # 전부 인스턴스 상태 seed 라 upstream 관리 대상이 아니며(등재하면 pm_update 가 채택자 상태를
-# 덮는다) 표기는 설치 하네스 전체 집합 폴백으로 해소된다. 새 출하 파일을 여기 넣기 전에
-# 판정하라 — framework 가 관리할 문서면 원장이 아니라 `engine.manifest` 에 등재해야 한다.
-# 유지보수자 checkout 의 미추적 파일은 채택자에게 가지 않으므로 원장 대상이 아니다(tracked-only).
-UNOWNED_SHIPPED_WIKI_LEDGER = frozenset({
+# 덮는다) 표기는 설치 하네스 전체 집합 대체로 해소된다. 새 출하 파일을 여기 넣기 전에
+# 판정하라 — framework 가 관리할 문서면 기록이 아니라 `engine.manifest` 에 등재해야 한다.
+# 유지보수자 checkout 의 미추적 파일은 채택자에게 가지 않으므로 기록 대상이 아니다(tracked-only).
+UNOWNED_SHIPPED_WIKI_RECORDS = frozenset({
     ".project_manager/wiki/architecture.md",
     ".project_manager/wiki/decisions/README.md",
     ".project_manager/wiki/domain/README.md",
@@ -77,7 +77,7 @@ def _shipped_wiki_relpaths(template_dir: str) -> set[str]:
     """template 트리가 실제로 출하하는 wiki relpath.
 
     출하 판정은 production 과 같은 tracked-only 의미다(`_iter_source_files` 의 TRACKED_ONLY) —
-    유지보수자 checkout 의 미추적 파일은 채택자에게 가지 않으므로 원장 대상도 아니다."""
+    유지보수자 checkout 의 미추적 파일은 채택자에게 가지 않으므로 기록 대상도 아니다."""
     root = TEMPLATES / template_dir
     return {
         path.relative_to(root).as_posix()
@@ -112,36 +112,36 @@ def _unowned_shipped_wiki(template_dir: str, extra: tuple[str, ...] = ()) -> set
 
 # ── ⑥ path-set parity ─────────────────────────────────────────────────────────
 
-def test_unowned_shipped_wiki_relpaths_match_declared_ledger():
-    """출하 wiki 중 manifest 미등재인 것의 합집합 == 원장. 신규 미등재 출하 파일이면 red."""
+def test_unowned_shipped_wiki_relpaths_match_declared_records():
+    """출하 wiki 중 manifest 미등재인 것의 합집합 == 기록. 신규 미등재 출하 파일이면 red."""
     union: set[str] = set()
     for harness in HARNESSES:
         union |= _unowned_shipped_wiki(_template_dir(harness))
-    assert union == set(UNOWNED_SHIPPED_WIKI_LEDGER), (
-        "manifest 미등재 출하 wiki 집합이 원장과 다르다 — "
-        f"신규: {sorted(union - set(UNOWNED_SHIPPED_WIKI_LEDGER))} · "
-        f"사라짐: {sorted(set(UNOWNED_SHIPPED_WIKI_LEDGER) - union)}. "
-        "인스턴스 상태 seed 면 원장에 추가하고, framework 관리 문서면 engine.manifest 에 등재하라."
+    assert union == set(UNOWNED_SHIPPED_WIKI_RECORDS), (
+        "manifest 미등재 출하 wiki 집합이 기록과 다르다 — "
+        f"신규: {sorted(union - set(UNOWNED_SHIPPED_WIKI_RECORDS))} · "
+        f"사라짐: {sorted(set(UNOWNED_SHIPPED_WIKI_RECORDS) - union)}. "
+        "인스턴스 상태 seed 면 기록에 추가하고, framework 관리 문서면 engine.manifest 에 등재하라."
     )
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
-def test_each_template_unowned_set_is_within_ledger(harness):
-    """template 별 미등재 집합도 원장 안에 있다(합집합만 보면 template 별 유입을 놓친다)."""
+def test_each_template_unowned_set_is_within_records(harness):
+    """template 별 미등재 집합도 기록 안에 있다(합집합만 보면 template 별 유입을 놓친다)."""
     unowned = _unowned_shipped_wiki(_template_dir(harness))
-    assert unowned <= set(UNOWNED_SHIPPED_WIKI_LEDGER), sorted(
-        unowned - set(UNOWNED_SHIPPED_WIKI_LEDGER)
+    assert unowned <= set(UNOWNED_SHIPPED_WIKI_RECORDS), sorted(
+        unowned - set(UNOWNED_SHIPPED_WIKI_RECORDS)
     )
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_guard_is_red_when_a_new_unregistered_wiki_file_ships(harness):
-    """sensitivity — 신규 미등재 출하 wiki 파일을 주입하면 원장 단언이 red."""
+    """sensitivity — 신규 미등재 출하 wiki 파일을 주입하면 기록 단언이 red."""
     injected = ".project_manager/wiki/newly_shipped_note.md"
     unowned = _unowned_shipped_wiki(_template_dir(harness), extra=(injected,))
     assert injected in unowned
-    assert not unowned <= set(UNOWNED_SHIPPED_WIKI_LEDGER), (
-        "신규 미등재 출하 wiki 파일이 원장 가드를 통과함(⑥ 무효)"
+    assert not unowned <= set(UNOWNED_SHIPPED_WIKI_RECORDS), (
+        "신규 미등재 출하 wiki 파일이 기록 가드를 통과함(⑥ 무효)"
     )
 
 
@@ -164,35 +164,35 @@ def test_manifest_wiki_entries_are_actually_shipped(harness):
     assert not missing, f"{template_dir}: manifest 등재됐으나 미출하 wiki 경로 {missing}"
 
 
-# ── ① 폴백 정합 (원장 ↔ 폴백 범위) ────────────────────────────────────────────
+# ── ① 대체 동작 일치 (기록 ↔ 대체 동작 범위) ────────────────────────────────────────────
 
-def test_every_ledger_entry_is_inside_the_notation_fallback_scope():
-    """원장 전부가 폴백 범위 안 — 등재 없이도 표기가 해소된다(①의 (a) 택일과 정합)."""
+def test_every_record_entry_is_inside_the_notation_fallback_scope():
+    """기록 전부가 대체 동작 범위 안 — 등재 없이도 표기가 해소된다(①의 (a) 택일과 일치)."""
     outside = sorted(
-        rel for rel in UNOWNED_SHIPPED_WIKI_LEDGER
+        rel for rel in UNOWNED_SHIPPED_WIKI_RECORDS
         if not install_files._is_notation_fallback_scope(rel)
     )
-    assert not outside, f"폴백 범위 밖 미등재 출하 wiki: {outside}"
+    assert not outside, f"대체 동작 범위 밖 미등재 출하 wiki: {outside}"
 
 
-def test_production_derives_the_same_unowned_set_as_the_ledger():
-    """add-harness/`--into` 가 재렌더 대상으로 쓰는 **production 파생**이 원장과 일치한다.
+def test_production_derives_the_same_unowned_set_as_the_records():
+    """add-harness/`--into` 가 재렌더 대상으로 쓰는 **production 파생**이 기록과 일치한다.
 
-    가드가 원장을 지키는데 production 이 다른 집합을 쓰면 가드가 공허해진다 — 두 축을 맞물린다."""
+    가드가 기록을 지키는데 production 이 다른 집합을 쓰면 가드가 공허해진다 — 두 쪽을 맞물린다."""
     contexts = {}
     for harness in HARNESSES:
         contexts.update(dict.fromkeys(_manifest_entries(_template_dir(harness)), ()))
     derived = set(add_harness._unowned_shipped_wiki_relpaths(REPO, HARNESSES, contexts))
-    assert derived == set(UNOWNED_SHIPPED_WIKI_LEDGER), (
-        f"production 파생 ≠ 원장 — 초과: {sorted(derived - set(UNOWNED_SHIPPED_WIKI_LEDGER))} · "
-        f"누락: {sorted(set(UNOWNED_SHIPPED_WIKI_LEDGER) - derived)}"
+    assert derived == set(UNOWNED_SHIPPED_WIKI_RECORDS), (
+        f"production 파생 ≠ 기록 — 초과: {sorted(derived - set(UNOWNED_SHIPPED_WIKI_RECORDS))} · "
+        f"누락: {sorted(set(UNOWNED_SHIPPED_WIKI_RECORDS) - derived)}"
     )
 
 
 def test_fallback_scope_excludes_engine_backbone_and_root_entry_docs():
-    """폴백 범위는 인스턴스 wiki 뿐 — 엔진 backbone·루트 진입문서는 독자가 달라 제외한다.
+    """대체 동작 범위는 인스턴스 wiki 뿐 — 엔진 backbone·루트 진입문서는 독자가 달라 제외한다.
 
-    `tools/**` 는 하네스별 표면이 아니고(런타임 표기는 `_runtime_skill_entry` 소관),
+    `tools/**` 는 하네스별 범위가 아니고(런타임 표기는 `_runtime_skill_entry` 소관),
     `AGENTS.md` 는 그 문서를 읽는 하네스 부분집합이 독자라 호출부가 멤버십을 명시 전달한다."""
     assert not install_files._is_notation_fallback_scope(
         ".project_manager/tools/pm_bootstrap.py")
@@ -201,7 +201,7 @@ def test_fallback_scope_excludes_engine_backbone_and_root_entry_docs():
     assert not install_files._is_notation_fallback_scope(".claude/skills/pm-adr/SKILL.md")
 
 
-# ── ① 폴백 렌더 동작 ─────────────────────────────────────────────────────────
+# ── ① 대체 동작 렌더 동작 ─────────────────────────────────────────────────────────
 
 def _seed_instance(tmp_path: Path, wiki_body: str) -> tuple[Path, set[Path], dict]:
     """manifest 소유자가 없는 wiki 문서 하나만 있는 최소 dest 트리."""
@@ -219,27 +219,27 @@ def _seed_instance(tmp_path: Path, wiki_body: str) -> tuple[Path, set[Path], dic
 
 def test_unowned_wiki_gets_installed_harness_context_and_is_loud(render_home, tmp_path, capsys):
     """manifest 미소유 wiki 가 설치 하네스 전체 표기로 렌더되고 그 사실이 loud 하게 남는다."""
-    dest, copied, subs = _seed_instance(tmp_path, "박제는 `/spike-new` 스킬이 한다\n")
+    dest, copied, subs = _seed_instance(tmp_path, "기록은 `/spike-new` 스킬이 한다\n")
     changed = import_render.render_managed_files(render_home,
         dest, subs, copied, installed_notation_context=("codex", "opencode"))
     assert changed == 1
     body = (dest / ".project_manager/wiki/raw/README.md").read_text(encoding="utf-8")
-    assert body == "박제는 `$spike-new`(codex) / `/spike-new`(opencode) 스킬이 한다\n"
+    assert body == "기록은 `$spike-new`(codex) / `/spike-new`(opencode) 스킬이 한다\n"
     err = capsys.readouterr().err
     assert "표기로 대신 렌더" in err and ".project_manager/wiki/raw/README.md" in err, err
 
 
 def test_single_harness_fallback_uses_that_harness_notation(render_home, tmp_path):
-    dest, copied, subs = _seed_instance(tmp_path, "박제는 `/spike-new` 스킬이 한다\n")
+    dest, copied, subs = _seed_instance(tmp_path, "기록은 `/spike-new` 스킬이 한다\n")
     import_render.render_managed_files(render_home,
         dest, subs, copied, installed_notation_context=("codex",))
     assert (dest / ".project_manager/wiki/raw/README.md").read_text(
-        encoding="utf-8") == "박제는 `$spike-new` 스킬이 한다\n"
+        encoding="utf-8") == "기록은 `$spike-new` 스킬이 한다\n"
 
 
 def test_without_fallback_context_the_defect_reproduces(render_home, tmp_path):
-    """sensitivity — 폴백을 되돌리면(context 미전달) 옛 조용한 skip 이 그대로 재현된다."""
-    source = "박제는 `/spike-new` 스킬이 한다\n"
+    """sensitivity — 대체 동작을 되돌리면(context 미전달) 옛 조용한 skip 이 그대로 재현된다."""
+    source = "기록은 `/spike-new` 스킬이 한다\n"
     dest, copied, subs = _seed_instance(tmp_path, source)
     changed = import_render.render_managed_files(render_home, dest, subs, copied)
     assert changed == 0
@@ -248,7 +248,7 @@ def test_without_fallback_context_the_defect_reproduces(render_home, tmp_path):
 
 
 def test_fallback_does_not_touch_engine_backbone_copies(render_home, tmp_path):
-    """엔진 backbone 사본은 폴백 대상이 아니다 — 런타임 안내 문자열이 하네스 표기로 변조되면 안 된다."""
+    """엔진 backbone 사본은 대체 동작 대상이 아니다 — 런타임 안내 문자열이 하네스 표기로 변조되면 안 된다."""
     dest = tmp_path / "inst"
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True)

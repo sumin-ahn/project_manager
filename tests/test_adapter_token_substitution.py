@@ -166,7 +166,7 @@ def test_codex_agent_toml_carries_project_name(imported, agent):
 def test_add_harness_codex_substitutes_toml_via_sed_channel(pm_import, tmp_path):
     """기존 claude 인스턴스에 `add_harness(dest, "codex")` → `.toml` 잔존 0 (sed 채널 단독 커버).
 
-    이 경로의 dest manifest 는 claude flavor 라 `.codex/agents @render` 항목이 **없다** →
+    이 경로의 dest manifest 는 claude 하네스별 판 라 `.codex/agents @render` 항목이 **없다** →
     `render_managed_files` 는 구조적으로 no-op 이고, sed 채널(`substitute_placeholders`)이
     유일한 커버다. import 경로(@render 실재)와 *다른 채널*로 같은 보장을 얻는지 못박는다."""
     dest = tmp_path / "live-instance"
@@ -174,7 +174,7 @@ def test_add_harness_codex_substitutes_toml_via_sed_channel(pm_import, tmp_path)
 
     manifest = (dest / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
     assert ".codex/agents" not in manifest, (
-        "전제 붕괴 — claude flavor manifest 에 .codex/agents 항목이 생겼다면 이 테스트가 "
+        "전제 붕괴 — claude 하네스별 판 manifest 에 .codex/agents 항목이 생겼다면 이 테스트가 "
         "노리는 'render no-op' 경로가 아니다(테스트를 갱신하라).")
 
     buf = io.StringIO()
@@ -192,12 +192,12 @@ def test_add_harness_codex_substitutes_toml_via_sed_channel(pm_import, tmp_path)
 def test_import_codex_declares_toml_render_entry(imported):
     """import 경로는 반대로 `.codex/agents @render` 선언이 실재한다(두 경로의 채널이 다름).
 
-    (c) 의 add-harness 경로가 sed 단독인 것과 대비 — codex flavor manifest 는 @render 를 선언하고,
+    (c) 의 add-harness 경로가 sed 단독인 것과 대비 — codex 하네스별 판 manifest 는 @render 를 선언하고,
     render 채널도 `.toml` 을 다뤄야 한다(아래 render_managed_files 단위 가드)."""
     manifest = (imported["codex"] / ".project_manager" / "engine.manifest").read_text(
         encoding="utf-8")
     assert re.search(r"^\.codex/agents\s+@render", manifest, re.M), (
-        "codex flavor manifest 에 `.codex/agents @render` 선언이 없다 — 결함의 전제가 바뀌었다.")
+        "codex 하네스별 판 manifest 에 `.codex/agents @render` 선언이 없다 — 결함의 전제가 바뀌었다.")
 
 
 def test_render_managed_files_covers_non_md_declared_paths(render_home, pm_import, tmp_path):
@@ -226,7 +226,7 @@ def test_render_managed_files_covers_non_md_declared_paths(render_home, pm_impor
 def test_pm_update_renders_toml_adapter(pm_update, tmp_path, monkeypatch, capsys):
     """채택자 self-update 의 `@render @source` 재전파가 `.toml` 을 byte-copy 로 새게 두지 않는다.
 
-    sed 채널만 고치면 pm_update 가 다음 흡수에서 토큰-form 소스를 그대로 덮어써 결함이 되살아난다
+    sed 채널만 고치면 pm_update 가 다음 갱신에서 토큰-form 소스를 그대로 덮어써 결함이 되살아난다
     (재전파 경로·T-0424 DoD). `test_render_with_source_marker_renders_operational_tokens`
     (`.md`)의 codex TOML 대응."""
     adopter = tmp_path / "adopter"
@@ -236,9 +236,9 @@ def test_pm_update_renders_toml_adapter(pm_update, tmp_path, monkeypatch, capsys
     src.write_text('description = "{{PROJECT_NAME}} 구현 subagent"\n', encoding="utf-8")
     # 갱신은 사본에 설치된 판의 출하 manifest 로 계획한다 — 상류에 같은 행의 codex 판 manifest 를 둔다.
     row = ".codex/agents    @render @source=templates/codex/.codex/agents\n"
-    flavor_manifest = stored / "templates" / "codex" / ".project_manager" / "engine.manifest"
-    flavor_manifest.parent.mkdir(parents=True, exist_ok=True)
-    flavor_manifest.write_text(row, encoding="utf-8")
+    variant_manifest = stored / "templates" / "codex" / ".project_manager" / "engine.manifest"
+    variant_manifest.parent.mkdir(parents=True, exist_ok=True)
+    variant_manifest.write_text(row, encoding="utf-8")
     # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 checkout 이라고 선언한다.
     init_git_repo(stored, commit="seed")
 

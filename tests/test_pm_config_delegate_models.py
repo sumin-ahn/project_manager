@@ -98,7 +98,7 @@ def test_an_alias_harness_answers_from_the_declared_table():
                         "models": list(contract.MODEL_SOURCE["claude"].values), "variants": None}
 
 
-def test_the_response_never_carries_the_free_text_axis(pc, capsys):
+def test_the_response_never_carries_the_free_text_field(pc, capsys):
     """응답 키는 넷뿐이다 — `free_text` 는 레지스트리 `choices` 가 소유한다(두 자리 금지).
 
     두 kind 를 다 본다: alias 는 실 서브프로세스로, live 는 조회 함수 주입으로(라이브 CLI 를
@@ -159,7 +159,7 @@ def test_a_live_harness_without_its_binary_fails_loudly(tmp_path):
     assert completed.returncode == 3, completed.stdout
     assert completed.stdout == ""
     assert "opencode" in completed.stderr
-    assert "PATH 부재" in completed.stderr, "조회 seam 의 사유가 사라졌다"
+    assert "PATH 부재" in completed.stderr, "조회 교체 지점의 사유가 사라졌다"
 
 
 def test_the_live_lookup_reuses_the_relay_model_listing(pc):
@@ -172,7 +172,7 @@ def test_the_live_lookup_reuses_the_relay_model_listing(pc):
 
 
 def test_the_lookup_declares_no_new_timeout_knob():
-    """timeout 축은 기존 `PM_OPENCODE_MODELS_TIMEOUT` 하나다 — 새 env 를 만들지 않는다."""
+    """timeout 설정은 기존 `PM_OPENCODE_MODELS_TIMEOUT` 하나다 — 새 env 를 만들지 않는다."""
     assert "PM_OPENCODE_MODELS_TIMEOUT" not in PM_CONFIG_PY.read_text(encoding="utf-8")
 
 

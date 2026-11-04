@@ -99,7 +99,7 @@ class PackageReplaceError(OSError):
 def _package_tree_state(root: Path) -> dict[str, bytes] | None:
     """대상 패키지의 일반 파일 상태(패키지 상대경로 → 바이트). 대상이 실제로 없을 때만 None.
 
-    캐시·저장소 메타 디렉터리(`repo_files` 의 강등 열거 제외 이름)는 비교·게시 대상이 아니다. 링크·
+    캐시·저장소 메타 디렉터리(`repo_files` 의 filesystem 대체 열거 제외 이름)는 비교·게시 대상이 아니다. 링크·
     reparse point·일반 파일 아닌 항목은 그 이름이어도 통과시키지 않고 `OSError` 로 실패한다."""
     try:
         info = root.lstat()
@@ -136,7 +136,7 @@ def _validate_package_files(
     플랫폼에서 같은 이름으로 접히거나 파일·디렉터리로 겹치면 거부한다. 원천은 링크가 아닌 일반
     파일이어야 한다. 원천 디렉터리 자체도 실제 디렉터리여야 한다(자식 `@source` 원천은 그 밖일 수 있다).
     캐시·저장소 메타 디렉터리(`_package_tree_state` 와 같은 제외 이름) 아래 파일은 추적돼 있어도
-    비교·stage 대상이 아니다 — 대상 쪽에서 보지 않는 파일을 게시하면 다음 계획이 수렴하지 않는다."""
+    비교·stage 대상이 아니다 — 대상 쪽에서 보지 않는 파일을 게시하면 다음 계획이 맞춰지지 않는다."""
     if retired_paths._path_is_link_or_reparse(source_dir) or not source_dir.is_dir():
         raise OSError(f"엔진 패키지 원천이 실제 디렉터리가 아니다: {source_dir}")
     files: list[EnginePackageFile] = []
@@ -294,7 +294,7 @@ def engine_package_delivery(package_plan: EnginePackagePlan) -> Iterator[None]:
 
     구간 본문은 나머지 평면 엔진 파일 전달이다. 본문이 정상 종료하면 이번 호출의 backup 만 정리한다.
     본문의 IO 실패는 새 패키지와 backup 을 남긴 채 `flat-batch` 실패로 올린다(패키지만 되돌리면
-    평면 파일과 세대가 더 어긋난다). 그 밖의 예외에는 보존 경로를 메모로 붙여 원래 예외를 올린다.
+    평면 파일과 버전이 더 어긋난다). 그 밖의 예외에는 보존 경로를 메모로 붙여 원래 예외를 올린다.
     락은 패키지 부모의 고정 파일이며 지우지 않는다. 락 primitive 가 없으면 무락으로 진행하지 않는다."""
     source_dir, dest_dir = package_plan.source_dir, package_plan.dest_dir
 

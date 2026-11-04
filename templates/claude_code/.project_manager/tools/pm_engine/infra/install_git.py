@@ -6,8 +6,8 @@ from typing import Callable
 import shutil
 import subprocess
 
-# `git` 호출 seam — argv(list) → (returncode, stdout). 테스트가 stub 주입(라이브 git 미실행).
-# git_safe_relpaths 가 work tree 판별·추적집합 조회에 사용한다(_real_models_runner 류 결정적 seam).
+# `git` 호출 교체 지점 — argv(list) → (returncode, stdout). 테스트가 stub 주입(라이브 git 미실행).
+# git_safe_relpaths 가 work tree 판별·추적집합 조회에 사용한다(_real_models_runner 류 결정적 교체 지점).
 GitRunner = Callable[[list], "tuple[int, str]"]
 
 
@@ -18,7 +18,7 @@ GIT_SAFE_TIMEOUT_SECONDS = 15
 # ── git-safe 판정 (LLM 아님·결정적) ──────────────────────────────
 # --into 백업 노이즈를 줄이려, git 이 *추적 중이고 미변경*인 파일은 백업 없이 덮는다(git 이
 # 내용을 갖고 있어 복원 가능). 그 외(미추적·dirty·비-git)만 중앙 디렉토리에 백업한다.
-# git 호출은 LLM 아님 — git_runner 주입으로 테스트 결정적(_real_models_runner 류 seam 철학).
+# git 호출은 LLM 아님 — git_runner 주입으로 테스트 결정적(_real_models_runner 류 교체 지점 방식).
 
 
 def _real_git_runner(dest_root: Path) -> GitRunner:
@@ -85,7 +85,7 @@ def git_safe_relpaths(
 
     구현: `git rev-parse --is-inside-work-tree`(work tree 판별) → `ls-files -z`(추적 집합)
     − `status --porcelain -z`(dirty·untracked). 차집합 = 추적&미변경. git_runner 주입으로
-    테스트 결정적(`shutil.which("opencode")`·`_real_models_runner` 동일 seam 철학).
+    테스트 결정적(`shutil.which("opencode")`·`_real_models_runner` 와 같은 교체 지점 방식).
 
     ⚠️ 경로 기준 정규화: `git -C <dest> ls-files` 는 **cwd(=dest_root) 상대**,
     `status --porcelain` 은 **repo-root 상대** 경로를 낸다. dest_root 가 repo 루트가 아닌 *하위

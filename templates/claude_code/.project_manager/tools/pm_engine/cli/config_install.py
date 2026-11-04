@@ -16,14 +16,14 @@ from pm_engine.cli import update_cmd
 
 
 def cmd_update(home, forward_args: list[str]) -> int:
-    """`update [--from ...]` — 엔진 갱신 (pm-update 흡수).
+    """`update [--from ...]` — 엔진 갱신 (pm-update 를 대신 실행).
 
     `cli.update_cmd.main(home, forward_args, prog="pm-config update")` 로 verbatim forward 한다 —
     갱신 CLI 규격의 단일 진실은 update_cmd 이고, 이 서브커맨드는 위임만 한다(중복 구현 0).
     forward_args 는 `update` 뒤의 raw 토큰을 *그대로*(argparse 미가공) 넘긴다 —
     `--from`·`--dry-run` 등 option-like 플래그를 디스패처가 가로채지 않게 `config_cmd._main`
     이 (raw[0]=="update" special-case 로) argparse 를 우회해 이 핸들러로 raw 토큰을 넘긴다.
-    usage 줄의 prog 는 값으로 넘긴다(에이전트가 칠 실 커맨드 `pm-config update` 와 정합).
+    usage 줄의 prog 는 값으로 넘긴다(에이전트가 칠 실 커맨드 `pm-config update` 와 일치).
     """
     return update_cmd.main(home, forward_args, prog=f"{repo_protection._FACADE_PROG} update")
 
@@ -46,12 +46,12 @@ def cmd_add_harness(
     dest 는 명시 `dest_root` 이고, 없으면 *호출 시점*의 `home.root`(pm_config.py 가 사는 인스턴스 루트 —
     harness 를 추가할 라이브 인스턴스)다. 명시 dest 를 Home 으로 덮어쓰지 않는다.
 
-    dest_root 주입으로 hermetic 테스트(실 복사 부작용 없이 위임 배선 검증).
+    dest_root 주입으로 hermetic 테스트(실 복사 부작용 없이 위임 연결 검증).
     """
     dest = dest_root if dest_root is not None else home.root
     # --from(source_root) 은 optional — 생략 시 add_harness 가 dest local.conf upstream.path 에서 어댑터
     # 소스를 자동 해소한다(imported 인스턴스 갭). 기존 Namespace(테스트/구 호출)에 source 가
-    # 없어도 getattr 로 안전하게 None 폴백(하위호환·verbatim forward).
+    # 없어도 getattr 로 안전하게 None 을 대신 씀(하위호환·verbatim forward).
     source_root = getattr(args, "source", None)
     return add_harness.add_harness_cli(
         home, dest, args.harness, dry_run=args.dry_run, source_root=source_root)
@@ -62,10 +62,10 @@ def cmd_apply(home, args, *, dest_root: Path | None = None) -> int:
 
     설정 저장의 유일한 입구다(관리자 저장·[기본값으로] 포함). `--set` 이 있으면 바뀐 키가 걸리는 반영
     단계만, 없으면 모든 단계를 다시 돈다(손으로 고친 local.conf 를 반영할 때). 단계는 사용 한도(하네스
-    설정 파일·압축 한도 기록)와 렌더 입력(`@render` 산출물을 설치 세대 원본으로 다시 그림) 둘이고,
+    설정 파일·압축 한도 기록)와 렌더 입력(`@render` 산출물을 설치 버전 원본으로 다시 그림) 둘이고,
     어느 묶음에도 없는 키는 local.conf 기록만 한다(`app.conf_apply.apply_conf`).
 
-    rc 0 반영(바뀐 줄 0 포함) · 3 반영 전 거부(값 검사·모델 한도 조회·렌더 검사·렌더 원본 세대·옛 키 —
+    rc 0 반영(바뀐 줄 0 포함) · 3 반영 전 거부(값 검사·모델 한도 조회·렌더 검사·렌더 원본 버전·옛 키 —
     local.conf·파생 파일 무변경 · 사유는 stderr) · 1 그 밖의 실패(local.conf 부재, 쓰기 단계 실패,
     처리하지 못한 예외 — 쓰기 단계에서 멈추면 stderr 가 교체한 파일을 적는다) · 2 인자 오류(argparse).
     `--json` 은 한 줄 `{"changed": local.conf 가 바뀌었나, "applied": 반영 줄}` 이다.

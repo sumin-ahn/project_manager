@@ -221,7 +221,7 @@ def _allowed_key_match_counts(
 
     허용은 라인이 아니라 (파일, 함수명, 호출 형태) 심볼이므로, 그 심볼이 원래 가리키던 호출이
     사라지면(리네임·삭제) 0건 죽은 항목이 되고, 같은 함수 안에 같은 형태의 새 미검증 호출이
-    늘면(T-0748 리뷰 민감도 B2) 2건 이상으로 벌어진다 — 정합은 항상 정확히 1건이다.
+    늘면(T-0748 리뷰 민감도 B2) 2건 이상으로 벌어진다 — 일치는 항상 정확히 1건이다.
     """
     counts: dict[tuple[str, str, str], int] = {key: 0 for key in allowed_keys}
     for filename, _lineno, function_name, call_name in unresolved_modes:

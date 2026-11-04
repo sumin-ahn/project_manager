@@ -1,4 +1,4 @@
-"""보호 훅 payload·artifact 생성·설치·배선 조회 (층: infra)."""
+"""보호 훅 payload·artifact 생성·설치·등록 조회 (층: infra)."""
 from __future__ import annotations
 
 import os
@@ -10,32 +10,32 @@ from pm_engine.domain import worktree_records
 from pm_engine.infra import fs, git, pm_paths
 
 
-# ── 보호 브랜치 pre-push 훅 (하드·회사 repo 무영향 / 라이브 게이트 승격) ────
+# ── 보호 브랜치 pre-push 훅 (하드·회사 repo 무영향 / 라이브 통과 조건 승격) ────
 # 훅 = `.project_manager/.local/repo-hooks/<repo>/pre-push`(프레임워크 소유·gitignore).
-# bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리로 set → 슬롯 push 가 이 훅에
-# 게이트된다. **회사 repo 서버/사용자 클론 무변경** — client-side·우리 bare 미러 config 1줄만.
+# bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리로 set → 슬롯 push 가 이 훅의
+# 검사를 받는다. **회사 repo 서버/사용자 클론 무변경** — client-side·우리 bare 미러 config 1줄만.
 #
-# 훅은 *generic* 이다 — 보호목록은 `protected`, repo 형상별 증거 계약은
+# 훅은 *generic* 이다 — 보호목록은 `protected`, repo 종류별 증거 계약은
 # `gate-contract` sidecar에서 읽는다. 계약 파일의 1행은 mode(release/self-test),
 # 2행은 self-test 명령이며 둘은 하나의 원자 교체로 갈린다. 따라서
-# 재설치 중 push가 겹쳐도 서로 다른 세대의 mode/command가 결합하지 않는다.
+# 재설치 중 push가 겹쳐도 서로 다른 버전의 mode/command가 결합하지 않는다.
 # 설치(install_protected_hook)가 sidecar를 채우며, 훅 본문 자체는 repo 무관하게
 # 동일하다. POSIX sh — Windows git 번들 sh 로도 동작.
 #
 # 로직: stdin 의 `<localref> <localsha> <remoteref> <remotesha>` 줄들(=이 push 의 모든 ref)을 순회한다.
-# pre-push 는 push 전체에 한 번 발화하는 all-or-nothing 게이트라 **보호 ref 를 전부 검증**하고 하나라도
+# pre-push 는 push 전체에 한 번 도는 all-or-nothing 검사라 **보호 ref 를 전부 검증**하고 하나라도
 # 실패하면 push 전체를 거부한다(예: `git push main release` 서 main 만 green 이어도 release 가 미검증이면
 # 편승 차단). remote ref (`refs/heads/<b>`)의 `<b>` 가 sidecar 보호목록에 있으면 (그 ref 의 localsha 로) —
 #   - `PM_ALLOW_PROTECTED_PUSH=1` 아니면 하드 차단(echo 안내·exit 1).
-#   - `release`: push SHA의 `board.py livegate check --rev <sha>` rc0을 추가 요구.
-#     `PM_SKIP_LIVE_GATE=1`은 라이브-무관·긴급 변경 한정 우회다. 단 **미해소 must-fix 잔여**는
-#     그 우회의 대상이 아니다. 훅은 장부 writer가 현행화한 `release-must-fix` 한 줄 표식만 읽고,
-#     `clear`가 명확할 때만 우회한다. 표식 부재·손상·읽기 실패는 잔여 미상이라 fail-closed다.
+#   - `release`: push SHA의 `board.py live-test check --rev <sha>` rc0을 추가 요구.
+#     `PM_SKIP_LIVE_TEST=1`은 라이브-무관·긴급 변경 한정 우회다. 단 **미해소 must-fix 가 남았으면**
+#     그 우회의 대상이 아니다. 훅은 라이브 시험 기록 writer가 현행화한 `release-must-fix` 한 줄 표시만 읽고,
+#     `clear`가 명확할 때만 우회한다. 표시 부재·손상·읽기 실패는 남은 must-fix 가 미상이라 fail-closed다.
 #   - `self-test`: 현재 checkout HEAD=push SHA·clean을 고정한 뒤 계약의 repo 테스트
 #     명령을 실행한다. `PM_SKIP_SELF_TEST=1` + 빈 값이 아닌
 #     `PM_SELF_TEST_BYPASS_REASON` 조합만 감사 로그를 남기고 우회한다.
 # 계약/mode 미해소·필요 자원 부재는 fail-closed다. 보호목록을 정상 해소한 뒤의
-# feature(비보호) 브랜치와 목록이 필요 없는 tag push는 통과(exit 0·PM_ALLOW/증거 게이트 무관).
+# feature(비보호) 브랜치와 목록이 필요 없는 tag push는 통과(exit 0·PM_ALLOW/증거 검사 무관).
 #
 # 외부 명령 실패 방향: pre-push의 `cat`(보호목록 I/O 건전성), 비우회 self-test의 `git`·`sh`,
 # 우회 감사의 `tr`·`date`, release의 Python launcher·board.py는 모두 실패 시 거부한다.
@@ -446,8 +446,8 @@ exit 0
 """
 
 # ── 보호 브랜치 pre-commit 훅 (commit-time 강제) ──────────────
-# pre-push 훅과 **같은 배선**을 탄다 — 같은 훅 디렉토리(`.local/repo-hooks/<repo>/`)·같은
-# sidecar `protected`(줄당 1브랜치)·같은 bare `core.hooksPath`(신규 seam 0). 파일 하나가
+# pre-push 훅과 **같은 등록**을 탄다 — 같은 훅 디렉토리(`.local/repo-hooks/<repo>/`)·같은
+# sidecar `protected`(줄당 1브랜치)·같은 bare `core.hooksPath`(신규 연결 지점 0). 파일 하나가
 # 더 놓일 뿐이라 슬롯 worktree 는 재설치 즉시 이 훅을 탄다. 단, sidecar 부재 처리는 의도적으로
 # 비대칭이다: pre-commit은 전 commit 차단의 blast radius를 피하려 통과시키고, 하드 백스톱인
 # pre-push만 보호목록 미해소를 fail-closed로 거부한다.
@@ -455,7 +455,7 @@ exit 0
 # 왜 pre-push 만으론 부족한가: pm_role §보호 브랜치 가드의 "보호 브랜치에 자율 commit 하지
 # 않는다" 는 강제 수단이 push 단계뿐이었고, 부트스트랩 0단계 main-참조 검사는 세션 *진입
 # 시점*만 본다 — 세션 중 보호 브랜치로 checkout 해서 커밋하는 것을 아무 기계도 안 봤다
-# (실측: v1.4.0 wave 11커밋이 전부 `main` 에서).
+# (실측: v1.4.0 묶음 11커밋이 전부 `main` 에서).
 #
 # 로직: sidecar 보호목록에 `git symbolic-ref --short HEAD`(= 현재 브랜치)가 있으면
 # `PM_ALLOW_PROTECTED_COMMIT=1` 이 아닌 한 거부(exit 1). **detached HEAD 는 통과** —
@@ -463,11 +463,11 @@ exit 0
 # 의 readonly carve-out 과 일치). 비보호 브랜치·sidecar 부재도 통과.
 #
 # **비커버(정직한 한계)**: `git commit --no-verify`(실측 통과)·merge 커밋
-# (`pre-merge-commit` 소관·실측 미발화)·rebase/cherry-pick/revert(sequencer 클래스·실측 통과).
-# 이건 우발 방지 가드지 적대적 통제가 아니고, 하드 백스톱은 pre-push(라이브 게이트 포함)가
+# (`pre-merge-commit` 소관·실측 결과 돌지 않음)·rebase/cherry-pick/revert(sequencer 클래스·실측 통과).
+# 이건 우발 방지 가드지 적대적 통제가 아니고, 하드 백스톱은 pre-push(라이브 시험 통과 조건 포함)가
 # 그대로 맡는다. 또 훅은 bare `core.hooksPath` 를 공유하는 **풀 슬롯 worktree** 에만 걸린다
-# (PM 홈 clone 자신은 `.git/hooks` 라 가드 밖). merge 미발화는
-# 설계상 이득 — "release 브랜치에서 커밋 → main 으로 merge → push" 라는 정합 릴리즈 flow 가
+# (PM 홈 clone 자신은 `.git/hooks` 라 가드 밖). merge 에서 돌지 않는 것은
+# 설계상 이득 — "release 브랜치에서 커밋 → main 으로 merge → push" 라는 정상 릴리즈 flow 가
 # escape 없이 통과한다(pm_role §릴리즈 절차).
 _PROTECTED_PRE_COMMIT_HOOK = """\
 #!/bin/sh
@@ -532,11 +532,11 @@ fi
 exit 0
 """
 
-# ── 설치 산출물 명세 — install ↔ 정합 판정의 단일 진실 ────────────────
-# **`install_protected_hook` 이 *쓰는 것*이 곧 drift 축이다.** 설치와 판정(pm_update 의
+# ── 설치 산출물 명세 — install ↔ 일치 판정의 단일 진실 ────────────────
+# **`install_protected_hook` 이 *쓰는 것*이 곧 drift 판정 항목이다.** 설치와 판정(pm_update 의
 # `_protected_hook_in_sync`)이 각자 목록을 들고 있으면 한쪽만 자라 조용히 갈라진다 — 실제로 그
-# 클래스가 연달아 났다(읽기 실패 축 누락 → 다음 라운드 실행권한 축 누락). 그래서 산출물 전수를
-# 이 명세 하나가 소유하고, 설치는 이걸 **써서** 쓰고 판정은 이걸 **읽어서** 본다(축을 열거하지
+# 클래스가 연달아 났다(읽기 실패 항목 누락 → 다음 라운드 실행권한 항목 누락). 그래서 산출물 전수를
+# 이 명세 하나가 소유하고, 설치는 이걸 **써서** 쓰고 판정은 이걸 **읽어서** 본다(항목을 열거하지
 # 않고 유도). 새 산출물을 설치에 추가하려면 이 목록에 넣어야 하고(설치 루프가 순회한다), 그러면
 # 판정도 자동으로 따라간다.
 #
@@ -546,7 +546,7 @@ exit 0
 # 생기면 그 플래그만 True로 바꾸면 판정이 따라온다.
 _PROTECTED_HOOK_EXECUTABLE_MODE = 0o755
 _PROTECTED_SIDECAR_MODE = 0o644
-_PROTECTED_GATE_MODES = frozenset({"release", "self-test"})
+_PROTECTED_CHECK_MODES = frozenset({"release", "self-test"})
 PROTECTED_CHECK_CONTRACT_NAME = "gate-contract"
 
 
@@ -595,13 +595,13 @@ def protected_hook_artifacts(home,
 ) -> list[ProtectedHookArtifact]:
     """`install_protected_hook` 이 쓰는 **파일 전수** + 각 파일의 기대 내용/실행권한.
 
-    설치·정합 판정 공용 단일 진실(위 주석). 반환 순서 = 설치 순서:
-    데이터 sidecar를 먼저 완성하고 generic 훅 본문을 나중에 노출한다. 배선은 이 목록
-    순회 *뒤에* 수행되므로 초기 설치의 미완성 본문이 발화하지 않는다.
+    설치·일치 판정 공용 단일 진실(위 주석). 반환 순서 = 설치 순서:
+    데이터 sidecar를 먼저 완성하고 generic 훅 본문을 나중에 노출한다. 등록은 이 목록
+    순회 *뒤에* 수행되므로 초기 설치의 미완성 본문이 돌지 않는다.
 
-    ⚠ bare `core.hooksPath` **배선**은 파일이 아니라 git config 라 이 목록 밖이다 — 판정은
-    `protected_hook_wired()`(공용 헬퍼)로 그 축을 따로 본다."""
-    if gate_mode not in _PROTECTED_GATE_MODES:
+    ⚠ bare `core.hooksPath` **등록**은 파일이 아니라 git config 라 이 목록 밖이다 — 판정은
+    `protected_hook_wired()`(공용 헬퍼)로 그 항목을 따로 본다."""
+    if gate_mode not in _PROTECTED_CHECK_MODES:
         raise ValueError(f"알 수 없는 보호 push 검사 모드: {gate_mode!r}")
     if not test_cmd.strip() or "\n" in test_cmd or "\r" in test_cmd:
         raise ValueError("보호 push test_cmd는 비어 있지 않은 한 줄이어야 한다")
@@ -611,13 +611,13 @@ def protected_hook_artifacts(home,
             for branch in protected):
         raise ValueError("보호 브랜치 목록은 비어 있지 않은 공백 없는 이름이어야 한다")
     hook_dir = pm_paths.repo_hooks_dir(home) / repo
-    gate_contract = f"{gate_mode}\n{test_cmd}\n"
+    check_contract = f"{gate_mode}\n{test_cmd}\n"
     return [
         ProtectedHookArtifact(
             hook_dir / "protected", "".join(f"{b}\n" for b in protected), False),
         ProtectedHookArtifact(hook_dir / "engine-root", f"{home.root.resolve()}\n", False),
         ProtectedHookArtifact(
-            hook_dir / PROTECTED_CHECK_CONTRACT_NAME, gate_contract, False),
+            hook_dir / PROTECTED_CHECK_CONTRACT_NAME, check_contract, False),
         ProtectedHookArtifact(hook_dir / "pre-push", _PROTECTED_PRE_PUSH_HOOK, True),
         ProtectedHookArtifact(hook_dir / "pre-commit", _PROTECTED_PRE_COMMIT_HOOK, True),
     ]
@@ -639,13 +639,13 @@ def install_protected_hook(
       1. 훅 디렉토리 `.project_manager/.local/repo-hooks/<repo>/` 생성(프레임워크 소유·gitignore).
       2. sidecar 3종 + `pre-push`·`pre-commit`훅(generic·POSIX sh·LF):
          `protected`(보호목록·줄당 1브랜치·**두 훅 공용**)와 `engine-root`(PM 홈 REPO 절대경로
-         1줄·라이브 게이트 board.py 해소용), `gate-contract`(1행 mode,
+         1줄·라이브 시험 통과 조건 board.py 해소용), `gate-contract`(1행 mode,
          2행 adopter 자기 검증 명령). mode/command는 **한 파일·한 번의 원자 교체**로
-         교체되어 재설치 중에도 서로 다른 세대가 결합하지 않는다.
+         교체되어 재설치 중에도 서로 다른 버전이 결합하지 않는다.
       3. bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리(절대경로)로 set
-         → 슬롯 push/commit 이 이 훅들에 게이트된다.
+         → 슬롯 push/commit 이 이 훅들의 검사를 받는다.
 
-    **bare 부재 = no-op·False**(가드) — bare 가 없으면 게이트할 대상이 없다(repo add 가 아직
+    **bare 부재 = no-op·False**(가드) — bare 가 없으면 검사할 대상이 없다(repo add 가 아직
     clone 안 함·bare 원 미생성). 훅/sidecar 도 쓰지 않고 조용히 False(설치 안 함). bare 존재면 설치
     후 True. **회사 repo 무영향** — 모든 write 는 `.project_manager/.local/` + bare config 1줄
     (client-side)·서버 ref/사용자 클론 무변경.
@@ -660,24 +660,24 @@ def install_protected_hook(
     """
     bare = pm_paths.bare_repo_path(home, repo)
     if not bare.exists():
-        return False  # 게이트할 bare 없음 — no-op(repo add 선행 전).
+        return False  # 검사할 bare 없음 — no-op(repo add 선행 전).
 
     hook_dir = pm_paths.repo_hooks_dir(home) / repo
     hook_dir.mkdir(parents=True, exist_ok=True)
 
     # 1~2) 훅·sidecar **전수** write(+실행권한). 멱등 — 매 호출 덮어쓰기(엔진 update 자가치유).
     # 산출물 목록·내용·실행권한은 `protected_hook_artifacts` 단일 진실이다 — 여기서 개별 파일을
-    # 직접 쓰지 않는다(설치와 정합 판정이 갈라지는 클래스 폐쇄·위 명세 주석). 순회 순서 = 명세
+    # 직접 쓰지 않는다(설치와 일치 판정이 갈라지는 클래스 폐쇄·위 명세 주석). 순회 순서 = 명세
     # 순서(protected → engine-root → gate-contract → pre-push → pre-commit)이고,
-    # 배선(3)은 그 뒤다. 데이터를 본문보다 먼저 완성해 초기 설치 중
+    # 등록(3)은 그 뒤다. 데이터를 본문보다 먼저 완성해 초기 설치 중
     # "신 본문 + mode 부재" 하드 차단 창도 만들지 않는다.
     #   - `pre-push`·`pre-commit`: generic 훅 본문·POSIX sh·LF·0755.
     #   - sidecar `protected`: 보호목록(줄당 1브랜치). 목록 변경 시 재설치가 갱신.
-    #   - sidecar `engine-root`: PM 홈 REPO 절대경로 1줄(라이브 게이트 board.py 해소용).
-    #   - sidecar `gate-contract`: repo 형상별 mode + adopter 자기 검증 명령의
+    #   - sidecar `engine-root`: PM 홈 REPO 절대경로 1줄(라이브 시험 통과 조건 board.py 해소용).
+    #   - sidecar `gate-contract`: repo 종류별 mode + adopter 자기 검증 명령의
     #     분할 불가 원자 계약.
     #     설치자는 PM 홈 컨텍스트에서 도므로 REPO 를 안다 — 훅은 슬롯 worktree(회사/family
-    #     checkout·PM 엔진 파일 없음)에서 발화해 self-locate 가 불가하다.
+    #     checkout·PM 엔진 파일 없음)에서 돌아 self-locate 가 불가하다.
     for artifact in protected_hook_artifacts(home,
             repo, protected, gate_mode=gate_mode, test_cmd=test_cmd):
         _atomic_write_protected_artifact(artifact)
@@ -717,30 +717,30 @@ def protected_hook_wired(home,
     """bare `core.hooksPath` 가 이 repo 훅 디렉토리를 가리키는가 — 판정 불가면 None.
 
     **왜 sidecar 만으로는 부족한가**: `install_protected_hook` 은  훅 본문  sidecar 기록
-    bare `core.hooksPath` 배선 순서다. 이 실패하면 **sidecar 는 최신인데 훅은 아예 안 걸린**
-    상태가 된다 — 그런데 sidecar 내용만 보면 "정합" 이라 조회는 `✓` 를 내고 bootstrap reconcile 은
-    영구 침묵한다. 이 티켓이 닫으려던 "값-연결 끊김을 정합하다고 거짓 보고" 와 같은 클래스라
-    **표시/판정 층에서** 이 축을 함께 본다.
+    bare `core.hooksPath` 등록 순서다. 이 실패하면 **sidecar 는 최신인데 훅은 아예 안 걸린**
+    상태가 된다 — 그런데 sidecar 내용만 보면 "일치"라 조회는 `✓` 를 내고 bootstrap reconcile 은
+    영구 침묵한다. 이 티켓이 닫으려던 "값-연결 끊김을 일치하다고 거짓 보고" 와 같은 클래스라
+    **표시/판정 층에서** 이 항목을 함께 본다.
 
     **읽기 전용** — `git --git-dir <bare> config --get core.hooksPath` 를 읽어 `pm_paths.repo_hooks_dir(home)/<repo>` 와
     같은 경로인지 비교만 한다(`install_protected_hook` 은 호출하지 않는다·시그니처/본문 불변).
     경로 비교는 양쪽 `Path.resolve()` — 설치측이 `hook_dir.resolve()` 를 기록하므로 심링크/상대
-    표기 차이를 흡수한다.
+    표기 차이를 없앤다.
 
     반환:
-      - `True`  — 배선됨(훅이 실제로 발화한다).
-      - `False` — hooksPath 가 비었거나 **다른 디렉토리**를 가리킨다(= 훅 미배선·보호 꺼짐).
+      - `True`  — 등록됨(훅이 실제로 돈다).
+      - `False` — hooksPath 가 비었거나 **다른 디렉토리**를 가리킨다(= 훅 미등록·보호 꺼짐).
       - `None`  — 판정 불가(bare 부재·git 실패). 오탐 금지 — 호출부는
         None 을 "모름" 으로 표시하고 `False` 로 단정하지 않는다.
 
     """
     bare = pm_paths.bare_repo_path(home, repo)
     if not bare.exists():
-        return None            # 게이트할 bare 없음 — 배선 여부를 논할 수 없다.
+        return None            # 검사할 bare 없음 — 등록 여부를 논할 수 없다.
     runner = git_runner or git._real_clone_runner()
     rc, out = runner(["--git-dir", str(bare), "config", "--get", "core.hooksPath"])
     if rc != 0:
-        # `--get` 은 키 부재에도 rc≠0(=1) 이다. 키 부재 = 미배선이 맞지만, git 자체가 못
+        # `--get` 은 키 부재에도 rc≠0(=1) 이다. 키 부재 = 미등록이 맞지만, git 자체가 못
         # 도는 경우(바이너리 부재 등)와 구별이 안 되므로 bare 프로브로 갈라낸다.
         probe_rc, _probe = runner(
             ["--git-dir", str(bare), "rev-parse", "--is-bare-repository"])

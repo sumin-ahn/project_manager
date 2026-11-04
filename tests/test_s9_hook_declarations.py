@@ -1,15 +1,15 @@
 """상류 훅 세트 선언의 package snapshot·하위 프로세스 조회 경계.
 
-상류 선언은 상류 엔진 package 의 배송 Python 파일 전체를 한 번 읽은 bytes 로 결속하고, 그 bytes 만
+상류 선언은 상류 엔진 package 의 배송 Python 파일 전체를 한 번 읽은 bytes 로 연결하고, 그 bytes 만
 실행 Home 의 임시 트리에 내려 별도 `python -I -B` 프로세스에서 직렬화해 받는다. 이 파일이 고정하는
 성질:
 
-  - 두 실행 Home·두 상류는 서로의 세대·임시 트리를 섞지 않는다(부모 프로세스 선언 혼입 0).
+  - 두 실행 Home·두 상류는 서로의 버전·임시 트리를 섞지 않는다(부모 프로세스 선언 혼입 0).
   - digest 는 Python 파일의 추가·삭제·이름 변경·내용 변경에 반응하고, 실행된 선언은 해시한 bytes 다.
   - timestamp 유효 `.pyc` 가 해시한 원문을 대신하지 못한다.
   - wire 형식 위반·자식 실패는 사유 있는 미해소이고, 예상하지 못한 오류는 그대로 올라간다.
-  - package 를 해소하지 못하면 수용·부분 전파 게이트가 쓰기 전에 멈춘다.
-  - 임시 트리 정리 실패는 경고만 남기고 이미 얻은 세대를 유지한다.
+  - package 를 해소하지 못하면 수용·부분 전파 검사가 쓰기 전에 멈춘다.
+  - 임시 트리 정리 실패는 경고만 남기고 이미 얻은 버전을 유지한다.
 
 픽스처는 실제 package 사본·실행 Home·snapshot 을 쓴다(저장소 밖 임시 경로).
 """
@@ -49,7 +49,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 _LOCAL_DECLARATION = TOOLS / "pm_engine" / "domain" / "adapter_specs.py"
 
-# 두 상류가 각자만 아는 플래그 — 같은 길이라 두 세대의 선언 파일 bytes 길이가 같다.
+# 두 상류가 각자만 아는 플래그 — 같은 길이라 두 버전의 선언 파일 bytes 길이가 같다.
 _FOREIGN_FLAG_A = "--s9-foreign-gen-a"
 _FOREIGN_FLAG_B = "--s9-foreign-gen-b"
 
@@ -108,7 +108,7 @@ def _flags(generation) -> set[str]:
 
 
 def test_two_homes_keep_foreign_generation_and_temp_separate(tmp_path, monkeypatch):
-    """두 상류의 서로 다른 세대를 두 실행 Home 이 각자 받는다 — 값·임시 트리·상류 트리가 섞이지 않는다."""
+    """두 상류의 서로 다른 버전을 두 실행 Home 이 각자 받는다 — 값·임시 트리·상류 트리가 섞이지 않는다."""
     source_a = tmp_path / "source_a"
     source_b = tmp_path / "source_b"
     _plant_upstream_package(source_a, extra_tail=_flag_declaration_tail(_FOREIGN_FLAG_A))
@@ -184,7 +184,7 @@ def test_snapshot_bytes_and_accept_recheck_bind_every_python_member(tmp_path, mo
     assert upstream_declarations._read_declaration_snapshot(source)[1] == digest
     (package / "domain" / "untracked_extra.py").unlink()
 
-    # 해시 뒤 원천이 바뀌어도 실행되는 선언은 해시한 bytes 다. 다음 조회는 새 세대·새 digest 다.
+    # 해시 뒤 원천이 바뀌어도 실행되는 선언은 해시한 bytes 다. 다음 조회는 새 버전·새 digest 다.
     real_stage = upstream_declarations._stage_snapshot
 
     def _stage_then_replace_source(home, payloads):
@@ -203,13 +203,13 @@ def test_snapshot_bytes_and_accept_recheck_bind_every_python_member(tmp_path, mo
     assert _FOREIGN_FLAG_B in _flags(following) and _FOREIGN_FLAG_A not in _flags(following)
     assert following.source_sha256 == _package_digest(source) != digest
 
-    # 수용 직전 재대조 — 판정한 세대 digest 와 지금 package 가 다르면 쓰지 않는다.
+    # 수용 직전 재대조 — 판정한 버전 digest 와 지금 package 가 다르면 쓰지 않는다.
     decision = hook_sets.hook_set_accept_decision(
         dest, source, _SETTINGS_REL, declarations=following)
     assert decision.blockers == [] and decision.generation_sha256 == following.source_sha256
     config_before = (dest / _SETTINGS_REL).read_bytes()
-    ledger = dest / ".project_manager" / "adapter_baseline.json"
-    ledger_before = ledger.read_bytes() if ledger.exists() else None
+    records = dest / ".project_manager" / "adapter_baseline.json"
+    records_before = records.read_bytes() if records.exists() else None
     (package / "domain" / "s9_late.py").write_text("LATE = 1\n", encoding="utf-8")
     _track(source)
     raced = adapter_accept.accept_adapter_config(
@@ -218,9 +218,9 @@ def test_snapshot_bytes_and_accept_recheck_bind_every_python_member(tmp_path, mo
         expected_generation_sha256=decision.generation_sha256)
     assert raced.status == "raced" and "버전 선언 package" in raced.detail, raced
     assert (dest / _SETTINGS_REL).read_bytes() == config_before
-    assert (ledger.read_bytes() if ledger.exists() else None) == ledger_before
+    assert (records.read_bytes() if records.exists() else None) == records_before
 
-    # template raw hash 결속은 별도 축으로 남아 있다.
+    # template raw hash 연결은 별도 값으로 남아 있다.
     current = hook_sets.hook_set_accept_decision(
         dest, source, _SETTINGS_REL,
         declarations=hook_sets.hook_set_declarations(_home(tmp_path, "run"), source, required=True))
@@ -321,7 +321,7 @@ def test_wire_and_child_failures_remain_explicit(tmp_path, monkeypatch):
         "묶음 원소 비목록": _with_spec(coupled_groups=[".claude/hook.sh"]),
         "nullable 비문자열": _with_spec(entrypoints=[dict(_VALID_SPEC["entrypoints"][0], matcher=3)]),
         "NaN": _wire().replace(b'"version": 1', b'"version": NaN'),
-        "잔여 출력": _wire() + b"\n{}",
+        "남은 출력": _wire() + b"\n{}",
         "UTF-8 아님": b'{"version": 1, "declarations": {"\xff": {}}}',
     }
     for label, payload in rejected.items():
@@ -428,7 +428,7 @@ def test_unresolved_package_blocks_accept_and_partial_scope(
     assert read_failure.declarations is None
     assert "PermissionError" in read_failure.reasons[0], read_failure.reasons
 
-    # mutation 게이트 — 해소 불가 세대로는 수용 판정이 blocker 를 낸다(config 미변경).
+    # mutation 검사 — 해소 불가 버전으로는 수용 판정이 blocker 를 낸다(config 미변경).
     dest, source = _make_case(
         tmp_path / "accept", dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
@@ -439,7 +439,7 @@ def test_unresolved_package_blocks_accept_and_partial_scope(
     assert blocked.blockers and "상류 버전 선언" in blocked.blockers[0].detail, blocked
     config_before = (dest / _SETTINGS_REL).read_bytes()
 
-    # 부분 훅 scope — 상류 세대를 확인할 수 없으면 훅 영역 지목은 쓰기 전에 거부한다.
+    # 부분 훅 scope — 상류 버전을 확인할 수 없으면 훅 영역 지목은 쓰기 전에 거부한다.
     monkeypatch.setattr(pm_update, "REPO", dest)
     change = (_WRAPPER_REL, source / _WRAPPER_REL, dest / _WRAPPER_REL, "M")
     peer = (_DRIVER_REL, source / _DRIVER_REL, dest / _DRIVER_REL, "M")
@@ -448,7 +448,7 @@ def test_unresolved_package_blocks_accept_and_partial_scope(
     assert "상류 훅 세트 버전 선언을 확인할 수 없어" in capsys.readouterr().err
     assert (dest / _SETTINGS_REL).read_bytes() == config_before
 
-    # 해소된 세대 — 구형 드라이버가 남아 있으면 수용은 엔진 파일 선행을 요구한다.
+    # 해소된 버전 — 구형 드라이버가 남아 있으면 수용은 엔진 파일 선행을 요구한다.
     old_dest, resolved_source = _make_case(
         tmp_path / "order", dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD,
@@ -459,7 +459,7 @@ def test_unresolved_package_blocks_accept_and_partial_scope(
         old_dest, resolved_source, _SETTINGS_REL, declarations=resolved)
     assert order.blockers and any(_DRIVER_REL in item.detail for item in order.blockers), order
 
-    # 세트 수용 결속 — 판정한 digest 가 그대로면 설치되고 원장이 그 내용을 기록한다.
+    # 세트 수용 연결 — 판정한 digest 가 그대로면 설치되고 기록이 그 내용을 기록한다.
     (old_dest / _DRIVER_REL).write_text(_DRIVER_NEW, encoding="utf-8")
     accepted_decision = hook_sets.hook_set_accept_decision(
         old_dest, resolved_source, _SETTINGS_REL, declarations=resolved)
@@ -475,7 +475,7 @@ def test_unresolved_package_blocks_accept_and_partial_scope(
 
 
 def test_cleanup_warning_preserves_the_resolved_generation(tmp_path, monkeypatch, capsys):
-    """자식 성공 뒤 임시 트리 정리가 실패해도 세대·digest 는 유지되고 경고에 남은 경로가 나온다."""
+    """자식 성공 뒤 임시 트리 정리가 실패해도 버전·digest 는 유지되고 경고에 남은 경로가 나온다."""
     source = tmp_path / "framework"
     _plant_upstream_package(source, extra_tail=_flag_declaration_tail(_FOREIGN_FLAG_A))
     home, other_home = _home(tmp_path, "run"), _home(tmp_path, "other")

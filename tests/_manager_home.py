@@ -1,6 +1,6 @@
 """관리자 테스트의 실물 픽스처 — 실 `pm_import --new` PM 홈과 실 로컬 bare(네트워크 0).
 
-옛 세대 사본은 흉내가 아니라 **실물**로 만든다: 진짜 PM 홈의 `pm_config.py` 를 `--json` 을
+옛 버전 사본은 흉내가 아니라 **실물**로 만든다: 진짜 PM 홈의 `pm_config.py` 를 `--json` 을
 모르는 실제 스크립트로 갈아 끼우거나 지운다(가짜 runner·monkeypatch 로 rc 를 지어내지 않는다).
 """
 from __future__ import annotations
@@ -26,9 +26,9 @@ TOOLS = REPO / ".project_manager" / "tools"
 # 실 PM 홈·실 bare 를 만드는 픽스처는 전부 git 을 부른다(엔진이 부른다).
 git_required = pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 없음")
 
-# `--json` 을 모르는 옛 세대 사본의 실제 등가물(실측 rc 2 · argparse usage error).
+# `--json` 을 모르는 옛 버전 사본의 실제 등가물(실측 rc 2 · argparse usage error).
 OLD_GENERATION_SCRIPT = '''#!/usr/bin/env python3
-"""옛 세대 pm_config.py — `status` 는 알지만 `--json` 은 모른다."""
+"""옛 버전 pm_config.py — `status` 는 알지만 `--json` 은 모른다."""
 import argparse
 parser = argparse.ArgumentParser(prog="pm-config")
 parser.add_subparsers(dest="command").add_parser("status")
@@ -41,24 +41,24 @@ import time
 time.sleep(30)
 '''
 
-# `--keys` 는 알지만 `--json` 은 모르는 실제 등가물 — T-0911 직전 세대의 `main()` 그대로
+# `--keys` 는 알지만 `--json` 은 모르는 실제 등가물 — T-0911 직전 버전의 `main()` 그대로
 # (`args == ["--keys"]` 완전 일치만 받고 그 밖은 사용법 rc 2).
 OLD_GENERATION_KEY_REGISTRY = '''#!/usr/bin/env python3
-"""옛 세대 local_conf.py — 키 표는 있고 기계 표면(`--json`)은 없다."""
+"""옛 버전 local_conf.py — 키 표는 있고 기계 판독 출력(`--json`)은 없다."""
 import sys
 
 if sys.argv[1:] == ["--keys"]:
-    print("local.conf 키 — 사람 표(옛 세대)")
+    print("local.conf 키 — 사람 표(옛 버전)")
     raise SystemExit(0)
 print("사용법: local_conf.py [--keys | --render-adapter-block <python|js|sh>]", file=sys.stderr)
 raise SystemExit(2)
 '''
 
 
-# 선택지·권장값 이전 세대(schema 1)의 실제 등가물 — `--keys --json` 은 알지만 행에 `choices`·
+# 선택지·권장값 이전 버전(schema 1)의 실제 등가물 — `--keys --json` 은 알지만 행에 `choices`·
 # `recommended` 가 없다. 화면이 그 필드를 읽으므로 관리자는 이 산출을 반쯤 그리지 않는다.
 PREVIOUS_GENERATION_KEY_REGISTRY = '''#!/usr/bin/env python3
-"""한 세대 앞선 local_conf.py — 키 목록은 기계 판독인데 선택지·권장값이 없다."""
+"""한 버전 앞선 local_conf.py — 키 목록은 기계 판독인데 선택지·권장값이 없다."""
 import json
 import sys
 
@@ -119,8 +119,8 @@ def install_known_ctx_io(monkeypatch) -> None:
     엔진 package 는 프로세스에 하나라 설치·갱신·설정 어느 진입이 부르든 같은 함수를 지난다.
     conftest 의 `known_ctx_io` fixture 가 이 함수를 부른다."""
     from pm_engine.app import harness_ctx
-    for name, seam in known_ctx_seams().items():
-        monkeypatch.setattr(harness_ctx, name, seam)
+    for name, override in known_ctx_seams().items():
+        monkeypatch.setattr(harness_ctx, name, override)
 
 
 def known_ctx_env(env: dict | None = None, *, native_bin: Path | None = None,
@@ -249,13 +249,13 @@ def install_slow_engine(pm_home: Path) -> None:
 
 
 def install_old_generation_key_registry(pm_home: Path) -> None:
-    """항목 목록 축의 옛 세대 — 그 사본의 `local_conf.py` 가 `--keys --json` 을 모른다."""
+    """항목 목록 쪽의 옛 버전 — 그 사본의 `local_conf.py` 가 `--keys --json` 을 모른다."""
     (pm_home / ".project_manager" / "tools" / "local_conf.py").write_text(
         OLD_GENERATION_KEY_REGISTRY, encoding="utf-8")
 
 
 def install_previous_generation_key_registry(pm_home: Path) -> None:
-    """항목 목록 축의 한 세대 앞선 사본 — 기계 표면은 있고 선택지·권장값(schema 2)이 없다."""
+    """항목 목록 쪽의 한 버전 앞선 사본 — 기계 판독 출력은 있고 선택지·권장값(schema 2)이 없다."""
     (pm_home / ".project_manager" / "tools" / "local_conf.py").write_text(
         PREVIOUS_GENERATION_KEY_REGISTRY, encoding="utf-8")
 
@@ -336,11 +336,11 @@ def make_upstream_checkout(root: Path, *, source: Path, rev: str = "v9.9.9") -> 
     """설치 소스(`make_committed_source`)의 실 clone 하나 — 엔진 rev 를 `rev` 로 올리고 같은
     이름의 태그를 단다.
 
-    갱신 축의 실물 상류다: `pm-config update` 가 파일을 복사해 갈 작업트리이면서
+    갱신 쪽의 실물 상류다: `pm-config update` 가 파일을 복사해 갈 작업트리이면서
     `git ls-remote --tags` 가 최신 태그를 답하는 저장소다(네트워크 0 · 모듈 단위 픽스처로 한 번만
     만든다). 홈도 같은 `source` 로 설치한다 — 설치 기준 커밋이 이 clone 의 이력에 있고 상류가 홈보다
     rev 하나만 앞선다(이 트리를 직접 clone 하면 커밋 전 변경이 빠져 상류 내용이 홈보다 뒤로 간다).
-    rev 는 엔진 세대 값의 단일 진실(`pm_engine/__init__.py` 의 `ENGINE_REV` 한 줄)을 고쳐 올린다.
+    rev 는 엔진 버전 값의 단일 진실(`pm_engine/__init__.py` 의 `ENGINE_REV` 한 줄)을 고쳐 올린다.
     """
     root.mkdir(parents=True, exist_ok=True)
     checkout = root / "upstream"
@@ -356,7 +356,7 @@ def make_upstream_checkout(root: Path, *, source: Path, rev: str = "v9.9.9") -> 
 
 
 def load_pool(pm_home: Path):
-    """그 홈 사본의 `worktree_pool` 을 로드한다 — 경로 전역이 그 홈으로 굳는다(재배선 0)."""
+    """그 홈 사본의 `worktree_pool` 을 로드한다 — 경로 전역이 그 홈으로 굳는다(다시 연결 0)."""
     target = pm_home / ".project_manager" / "tools" / "worktree_pool.py"
     specification = importlib.util.spec_from_file_location(
         f"_worktree_pool_manager_home:{pm_home}", target)
@@ -369,11 +369,11 @@ def load_pool(pm_home: Path):
 def close_session(pool, session: str) -> None:
     """그 세션의 기록을 닫는다 — 종료 기록(release)이 곧 닫힘이다.
 
-    프로세스 번호로 죽음을 흉내 내던 자리다. 이제 열림/닫힘은 기록 축이라 엔진의 반납
+    프로세스 번호로 죽음을 흉내 내던 자리다. 이제 열림/닫힘은 대여 기록이 정하므로 엔진의 반납
     프리미티브를 그대로 부른다(손으로 JSON 을 쓰지 않는다).
     """
     held = [lease.slot for lease in pool_store.list_leases(pm_paths.home_at(pool.REPO)) if lease.session == session]
-    assert held, f"세션 {session!r} 이 잡은 행이 장부에 없다"
+    assert held, f"세션 {session!r} 이 잡은 행이 대여 기록에 없다"
     for slot in held:
         worktree_pool.force_release(pm_paths.home_at(pool.REPO), slot)
 
