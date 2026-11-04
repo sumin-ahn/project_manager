@@ -1,4 +1,4 @@
-"""정확 티켓·귀속 창·묶음 장부 조회, 이 실행의 산출물 열거 (층: infra)."""
+"""정확 티켓·귀속 창·묶음 기록 조회, 이 실행의 산출물 열거 (층: infra)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,7 +18,7 @@ def get_ticket_title(home, ticket_id: str) -> str:
     """ticket_id 의 title 을 명시 Home 의 티켓에서 읽어온다 (제목 없음은 빈 문자열).
 
     조회는 `_ticket_frontmatter_snapshot` 한 지점을 쓴다 — 제목과 touches 가 서로 다른 파일을
-    보면 마감 로그가 가리키는 티켓과 게이트가 판정한 티켓이 갈린다.
+    보면 마감 로그가 가리키는 티켓과 통과 조건이 판정한 티켓이 갈린다.
     """
     title = _ticket_frontmatter_snapshot(home, ticket_id).get("title")
     return title if isinstance(title, str) and title else ""
@@ -28,10 +28,10 @@ def _ticket_frontmatter_snapshot(home, ticket_id: str) -> dict:
     """ticket frontmatter 를 읽는다 — 티켓 읽기·파싱 실패는 전파한다.
 
     touches 소비처의 단일 해소 지점 — 같은 티켓을 두 번 다르게 찾지 않는다.
-    조회는 공용 정확-일치 seam(`ticket_store.find_ticket_exact`)이다: `{id}-*.md` prefix glob 의
+    조회는 공용 정확-일치 함수(`ticket_store.find_ticket_exact`)다: `{id}-*.md` prefix glob 의
     첫 매칭을 믿으면 `T-NNNN` 과 `T-NNNN-001` 공존 시 **다른 티켓의 touches** 로 완료
-    게이트가 판정한다(조용한 오판). 정확 일치가 없으면 폴백 없이 {} 다 — 판정 입력이 없는 것과
-    무관 티켓으로 판정하는 것 중 전자가 안전하다(게이트는 off 로 떨어질 뿐이다)."""
+    통과 조건이 판정한다(조용한 오판). 정확 일치가 없으면 대체 없이 {} 다 — 판정 입력이 없는 것과
+    무관 티켓으로 판정하는 것 중 전자가 안전하다(통과 조건은 off 로 떨어질 뿐이다)."""
     found = ticket_store.find_ticket_exact(home, ticket_id)
     if found is None:
         return {}
@@ -40,10 +40,10 @@ def _ticket_frontmatter_snapshot(home, ticket_id: str) -> dict:
 
 
 def get_ticket_claimed_rev(home, ticket_id: str) -> str | None:
-    """ticket_id 의 frontmatter `claimed_rev` (없으면 None) — 자기 축 회귀 baseline 입력.
+    """ticket_id 의 frontmatter `claimed_rev` (없으면 None) — 자기 점검 회귀 baseline 입력.
 
-    `board.py claim` 이 claim 시점 코드 트리 HEAD 를 박제한 값이다. 구 티켓(박제 이전)엔
-    없으므로 None 이 정상 형상이고, 그때 그 축을 접는 판정은 소비자가 소유한다."""
+    `board.py claim` 이 claim 시점 코드 트리 HEAD 를 적어 둔 값이다. 옛 티켓(이 기록 이전)엔
+    없으므로 None 이 정상 경우이고, 그때 그 기준을 끄는 판정은 소비자가 소유한다."""
     claimed_rev = _ticket_frontmatter_snapshot(home, ticket_id).get("claimed_rev")
     return claimed_rev.strip() or None if isinstance(claimed_rev, str) else None
 
@@ -51,10 +51,10 @@ def get_ticket_claimed_rev(home, ticket_id: str) -> str | None:
 def get_ticket_claimed_at(home, ticket_id: str) -> str | None:
     """ticket_id 의 frontmatter `claimed_at` (없으면 None) — 귀속 **창**의 시작점.
 
-    `board.py claim` 이 박제하는 UTC ISO 시각이다. 같은 wave 에서 이 시각 이후 완료된 티켓은
+    `board.py claim` 이 적어 두는 UTC ISO 시각이다. 같은 묶음에서 이 시각 이후 완료된 티켓은
     `done/` 으로 옮겨졌어도 아직 같은 트리에 자기 diff 를 남기고 있으므로 귀속 창 안이다.
-    구 티켓(박제 이전)엔 없으므로 None 이 정상 형상이고, 그때 창을 못 정하는 판정은 소비자가
-    소유한다(종전 `claimed/` 만 보는 창으로 접는다)."""
+    옛 티켓(이 기록 이전)엔 없으므로 None 이 정상 경우이고, 그때 창을 못 정하는 판정은 소비자가
+    소유한다(종전 `claimed/` 만 보는 창으로 대체한다)."""
     claimed_at = _ticket_frontmatter_snapshot(home, ticket_id).get("claimed_at")
     return claimed_at.strip() or None if isinstance(claimed_at, str) else None
 
@@ -65,7 +65,7 @@ def get_ticket_touches(home, ticket_id: str) -> list[str]:
     문자열 원소만 취한다(비-문자열 오기는 버림). ticket 부재 → [], 읽기·파싱 실패는 전파한다.
     domain soft 알림 step 이 쓴다.
     """
-    # --touches CLI 와 동형: 각 원소 strip·빈 값/비-문자열 drop (silent-miss 방어).
+    # --touches CLI 와 같은 방식: 각 원소 strip·빈 값/비-문자열 drop (silent-miss 방어).
     return finish_rules._clean_touches(_ticket_frontmatter_snapshot(home, ticket_id).get("touches"))
 
 
@@ -77,7 +77,7 @@ def _done_paths_in_window(home, since: str | None) -> list[Path]:
     보정을 깨뜨리지 않는다(파싱하지 않으므로).
     시각 비교는 domain.finish_rules의 writer-형식 파서(`_parse_utc_iso`)를 사용한다.
     `since`가 형식이 아니면 창을 정할 수 없으므로 `done/`을 보지
-    않는다 — 제외 근거를 줄이는 쪽(잔여 과다 판정)으로 접는 쪽이 안전하다.
+    않는다 — 제외 근거를 줄이는 쪽(남은 변경 과다 판정)으로 바꾸는 쪽이 안전하다.
     """
     if since is None:
         return []
@@ -95,7 +95,7 @@ def _done_paths_in_window(home, since: str | None) -> list[Path]:
                 read_text_shared(path, encoding="utf-8", errors="replace")
             )
         except OSError:
-            continue  # 읽기 실패는 창 밖으로 접는다(제외 근거를 못 쓰니 과다 판정 유지).
+            continue  # 읽기 실패는 창 밖으로 친다(제외 근거를 못 쓰니 과다 판정 유지).
         completed_at = finish_rules._parse_utc_iso(
             finish_rules._fallback_frontmatter_scalar(head, "completed_at")
         )
@@ -110,12 +110,12 @@ def get_in_window_ticket_touches(
     """귀속 창 안 티켓별 touches.
 
     창 = `claimed/` ∪ (`done/` 중 `completed_at >= since`)이고 `since` 는 현재 티켓의
-    `claimed_at` 이다. `claimed/` 만 보면 같은 wave 에서 **먼저 완료된** 티켓이 `done/` 으로
-    옮겨져 보이지 않고, 그 전용 diff 가 뒤 티켓 몫으로 전부 흡수된다(실측: v1.7.8 wave 6장 —
+    `claimed_at` 이다. `claimed/` 만 보면 같은 묶음에서 **먼저 완료된** 티켓이 `done/` 으로
+    옮겨져 보이지 않고, 그 전용 diff 가 뒤 티켓 몫으로 전부 잡힌다(실측: v1.7.8 묶음 6장 —
     마지막 티켓이 잴 때 나머지 넷은 이미 done). `since` 가 없으면 창을 정할 수 없으므로
-    `claimed/` 만 보는 종전 동작으로 접는다.
+    `claimed/` 만 보는 종전 동작으로 대체한다.
 
-    잔여 판정의 다른 멤버 경로(`_sibling_member_scopes`) 입력은 이 스냅샷뿐이다. 새 장부나 설정을 만들지 않고, 보드가 권위 있게 정한
+    남은 변경 판정의 다른 멤버 경로(`_sibling_member_scopes`) 입력은 이 상태 기록뿐이다. 새 기록이나 설정을 만들지 않고, 보드가 권위 있게 정한
     `tickets_dir()/{claimed,done}` 과 각 티켓 frontmatter `touches` 만 읽는다. 디렉터리와
     frontmatter status 가 모두 같은 행만 인정한다. 디렉터리 부재·티켓 읽기/파싱 실패·id/status
     손상은 전파한다(손상된 창으로 귀속을 판정하지 않는다).
@@ -147,7 +147,7 @@ def _round_stage_candidates(tickets_dir: Path, ticket_id: str) -> list[Path]:
     라운드 판정은 문법 단일 소유자 `parse_round_filename` 한 곳에 위임한다 — 접미/접두를
     이 함수가 다시 조합하면(`.md` 접미 + 점-접두 제외 등) 라운드가 아닌 `.md`(예: `notes.md`·
     `01-dev.md`)까지 후보에 실린다(reviewer 실측 — 9개 이름 배치 중 진짜 라운드 2건만
-    통과해야 하는데 4건이 통과). 점-접두 임시 잔여(원자 교체 중간 산출)도 이 문법을 벗어나
+    통과해야 하는데 4건이 통과). 점-접두 임시 남은 파일(원자 교체 중간 산출)도 이 문법을 벗어나
     자연히 걸러지므로 별도 조건이 필요 없다.
     """
     directory = round_store.rounds_dir_for_ticket(ticket_id, tickets_dir)
@@ -168,16 +168,16 @@ def engine_written_paths(home, ticket_id: str, log_file: Path) -> list[Path]:
       - 티켓 파일의 옛/새 경로 · 라운드 사이드카(`tickets/rounds/<id>/*.md`) — 3단계
         `board.py complete` 가 티켓을 `claimed/`→`done/` 로 옮기고, 라운드는
         `round_store.rounds_dir_for_ticket` 가 정하는 고정 위치라 상태 이동을 따라가지
-        않지만 그 실행이 새로 쓴 파일이라 함께 stage 대상이다. **board-git 분리 형상에선
+        않지만 그 실행이 새로 쓴 파일이라 함께 stage 대상이다. **board-git 분리 구성에선
         티켓과 함께 라운드도 제외** 한다: 티켓이 서브모듈(`.project_manager/board/`) 안이라
         상위 repo 의 `git add` 가 `fatal: … is in submodule`(rc=128)로 죽고, 그 이동은
         board-git 이 자기 커밋으로 이미 기록한다(라운드도 같은 서브모듈 트리 안).
-        legacy(board 미분리·**출하 템플릿 기본 형상**)에선 그 이동이 홈 git 에 떨어지므로
+        legacy(board 미분리·**출하 템플릿 기본 구성**)에선 그 이동이 홈 git 에 떨어지므로
         반드시 실어야 한다 — 안 그러면 채택자가 매 finish 마다 손으로 `git add` 해야 한다
         (reviewer 실측).
-      - 묶음 장부(`tickets/clusters/C-*.md`) — 종결이 소속 장부에 `closing`·`closed` 를 쓰고, 묶음
-        선언이 흡수한 크기 1 장부는 지워진 채 남는다. 빠지면 종결 뒤 홈에 미커밋 장부가 남아 첫
-        핸드오프가 멈춘다(legacy 만 · 분리 형상은 board-git 이 커밋한다).
+      - 묶음 기록(`tickets/clusters/C-*.md`) — 종결이 소속 묶음 기록에 `closing`·`closed` 를 쓰고, 묶음
+        선언이 합친 크기 1 묶음 기록은 지워진 채 남는다. 빠지면 종결 뒤 홈에 미커밋 묶음 기록이 남아 첫
+        핸드오프가 멈춘다(legacy 만 · 분리 구성은 board-git 이 커밋한다).
 
     옛 경로는 상태 디렉토리를 몰라도 된다 — 후보(모든 STATUS_DIRS/같은 파일명)를 넣어두면
     실존/추적되지 않는 후보는 `git_scope_stageable` 이 거른다(추적 중인 *삭제* 경로만 남아
@@ -196,8 +196,8 @@ def engine_written_paths(home, ticket_id: str, log_file: Path) -> list[Path]:
     paths.extend(tickets_dir / status / ticket_path.name
                  for status in ticket_rules.STATUS_DIRS)
     paths.extend(_round_stage_candidates(tickets_dir, ticket_id))
-    # 묶음 장부 — 종결이 status 를 쓰는 소속 장부와, 발행이 만들고 묶음 선언이 흡수(삭제)한 크기 1
-    # 장부. 실존·추적 판정은 `git_scope_stageable` 이 한다(흡수 장부는 추적 중일 때만 삭제로 남는다).
+    # 묶음 기록 — 종결이 status 를 쓰는 소속 묶음 기록과, 발행이 만들고 묶음 선언이 합친(삭제한) 크기 1
+    # 묶음 기록. 실존·추적 판정은 `git_scope_stageable` 이 한다(합쳐진 묶음 기록은 추적 중일 때만 삭제로 남는다).
     frontmatter, _body = ticket_store.load_ticket(ticket_path)
     paths.append(cluster_store.cluster_record_path(home, cluster_rules.ticket_cluster(ticket_id, frontmatter)))
     paths.append(cluster_store.cluster_record_path(home, ticket_id))
@@ -205,10 +205,10 @@ def engine_written_paths(home, ticket_id: str, log_file: Path) -> list[Path]:
 
 
 def ticket_cluster_record(home, ticket_id: str) -> tuple[str | None, dict | None]:
-    """티켓과 명시 Home의 장부에서 묶음 ID와 frontmatter를 읽는다.
+    """티켓과 명시 Home의 묶음 기록에서 묶음 ID와 frontmatter를 읽는다.
 
-    ticket_cluster 규칙은 cluster_rules, 장부 IO는 cluster_store를 사용한다.
-    조회 실패는 전파하며 장부 부재는 (묶음 ID, None)이다."""
+    ticket_cluster 규칙은 cluster_rules, 묶음 기록 IO는 cluster_store를 사용한다.
+    조회 실패는 전파하며 묶음 기록 부재는 (묶음 ID, None)이다."""
     found = ticket_store.find_ticket_exact(home, ticket_id)
     frontmatter: dict = {}
     if found is not None:
@@ -221,29 +221,29 @@ def ticket_cluster_record(home, ticket_id: str) -> tuple[str | None, dict | None
 def _cluster_integration_branch(home, ticket_id: str) -> str | None:
     """이 티켓이 속한 묶음의 **통합 브랜치** 이름 (선언 부재는 None, 조회 실패는 전파).
 
-    값의 소유자는 cluster_store의 묶음 장부(`base_branch`)다 — 이 도구는 그 선언을 읽기만 한다.
-    값은 장부를 만들 때 박히므로(발행이 만드는 크기 1 장부 포함) 선언 부재는 판정 입력이
+    값의 소유자는 cluster_store의 묶음 기록(`base_branch`)이다 — 이 도구는 그 선언을 읽기만 한다.
+    값은 묶음 기록을 만들 때 적히므로(발행이 만드는 크기 1 묶음 기록 포함) 선언 부재는 판정 입력이
     없다는 사실이고, 이 판독을 쓰는 두 소비자(완료 기록 판정·리뷰 호출 폭)는 그 사실에
-    **멈춘다** — 다른 기준으로 접는 갈래가 없다.
+    **멈춘다** — 다른 기준으로 대체하는 갈래가 없다.
     """
-    _cluster, ledger = ticket_cluster_record(home, ticket_id)
-    # 기준 이름만 있는 옛 singleton은 제품 결속의 증거가 아니다.
-    if not str((ledger or {}).get("branch") or "").strip():
+    _cluster, records = ticket_cluster_record(home, ticket_id)
+    # 기준 이름만 있는 옛 singleton은 제품 연결의 증거가 아니다.
+    if not str((records or {}).get("branch") or "").strip():
         return None
-    declared = (ledger or {}).get("base_branch")
+    declared = (records or {}).get("base_branch")
     if not isinstance(declared, str):
         return None
     return declared.strip() or None
 
 
 def _cluster_member_ids(home, ticket_id: str) -> tuple[str, ...]:
-    """이 티켓이 속한 묶음의 멤버 티켓 ID (장부 부재는 빈 튜플, 조회 실패는 전파).
+    """이 티켓이 속한 묶음의 멤버 티켓 ID (묶음 기록 부재는 빈 튜플, 조회 실패는 전파).
 
-    장부 해소는 `ticket_cluster_record` 한 벌이고 목록을 읽는 술어는 cluster_store 소유
+    묶음 기록 해소는 `ticket_cluster_record` 한 벌이고 목록을 읽는 술어는 cluster_store 소유
     (`cluster_store.cluster_tickets`)다 — 이 도구는 그 둘을 잇기만 한다(멤버 규칙 사본 0).
     """
-    _cluster, ledger = ticket_cluster_record(home, ticket_id)
-    if not ledger:
+    _cluster, records = ticket_cluster_record(home, ticket_id)
+    if not records:
         return ()
-    members = cluster_store.cluster_tickets(ledger)
+    members = cluster_store.cluster_tickets(records)
     return tuple(str(member).strip() for member in members if str(member).strip())

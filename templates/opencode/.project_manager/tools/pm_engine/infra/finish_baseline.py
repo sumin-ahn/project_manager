@@ -1,4 +1,4 @@
-"""완료 대상 작업 트리 자기 축 회귀의 대상 파일·부분 회귀·baseline 사본 (층: infra)."""
+"""완료 대상 작업 트리 자기 점검 회귀의 대상 파일·부분 회귀·baseline 사본 (층: infra)."""
 from __future__ import annotations
 
 import subprocess
@@ -11,8 +11,8 @@ from pm_engine.domain import finish_rules
 from pm_engine.infra import fs, raw_output
 
 
-def _self_axis_target_files(code_tree: Path, *, run_git_stdout_at) -> set[str]:
-    """대상 tests/*.py 집합 = tracked(staged+unstaged) 변경 ∪ untracked 신규 ∪ ratchet 목록.
+def _self_check_target_files(code_tree: Path, *, run_git_stdout_at) -> set[str]:
+    """대상 tests/*.py 집합 = tracked(staged+unstaged) 변경 ∪ untracked 신규 ∪ 줄이기만 하는 목록.
 
     두 git 명령 모두 순수 읽기다 — index 를 갱신하지 않는다(`git status` 는 stat 캐시를
     건드릴 수 있어 안 쓴다)."""
@@ -20,9 +20,9 @@ def _self_axis_target_files(code_tree: Path, *, run_git_stdout_at) -> set[str]:
         code_tree, ["diff", "--name-only", "HEAD"])
     _rc_u, untracked_out = run_git_stdout_at(
         code_tree, ["ls-files", "-o", "--exclude-standard"])
-    changed = (finish_rules._self_axis_target_paths(tracked_out)
-               | finish_rules._self_axis_target_paths(untracked_out))
-    return changed | set(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES)
+    changed = (finish_rules._self_check_target_paths(tracked_out)
+               | finish_rules._self_check_target_paths(untracked_out))
+    return changed | set(finish_rules._SELF_CHECK_SHRINK_ONLY_GUARD_FILES)
 
 
 def _run_pytest_subset(cwd: Path, files: Sequence[str], *, venv_python) -> tuple[int, str]:

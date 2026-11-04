@@ -22,14 +22,14 @@ from pm_engine.infra import ticket_store
 
 
 def _cluster_auto_attach(home, tid: str, args: argparse.Namespace, *, publish_basis: tuple[str | None, str | None] | None=None) -> tuple[str, Path]:
-    """발행 시점 크기 1 장부 생성 — `(클러스터 id, 장부 경로)`.
+    """발행 시점 크기 1 묶음 기록 생성 — `(클러스터 id, 기록 파일 경로)`.
 
-    새 티켓은 **자기 장부**를 갖는다. 여러 티켓을 한 묶음으로 묶는 것은 사람 선언
+    새 티켓은 **자기 묶음 기록**을 갖는다. 여러 티켓을 한 묶음으로 묶는 것은 사람 선언
     (`cluster new`)이고 엔진은 고르지 않는다 — 활성 묶음에 새 티켓을 자동으로 끼우면 선언한 적
     없는 묶음이 생기고, 그 묶음의 예산·기준 브랜치가 끼워진 티켓의 판정을 대신한다.
 
     명시 제품 기준 브랜치와 예산을 기록한다. branch 선언은 기존 cluster new의 몫이며,
-    실행·종결은 그 명시 결속 전까지 거부한다. 재개방의 무선택 경로는 기준을 추측하지 않는다.
+    실행·종결은 그 명시 연결 전까지 거부한다. 재개방의 무선택 경로는 기준을 추측하지 않는다.
 
     board_lock 보유 전제다(발행·재개방 임계구역 안에서 부른다).
     """
@@ -38,9 +38,9 @@ def _cluster_auto_attach(home, tid: str, args: argparse.Namespace, *, publish_ba
     return (str(fm['id']), cluster_store.dump_cluster(home, fm))
 
 def _cluster_publish_base_branch(home, args: argparse.Namespace) -> tuple[str | None, str | None]:
-    """장부에 박을 `(코드 트리, 기준 브랜치)` — 트리 미해소·브랜치 없는 트리(detached·비-git)는 None.
+    """묶음 기록에 적어 둘 `(코드 트리, 기준 브랜치)` — 트리 미해소·브랜치 없는 트리(detached·비-git)는 None.
 
-    `--task` 가 보유한 폴더만 `_claim_code_tree`로 해소한다. task 가 없으면 제품 결속의 증거가
+    `--task` 가 보유한 폴더만 `_claim_code_tree`로 해소한다. task 가 없으면 제품 연결의 증거가
     없으므로 기준 브랜치를 기록하지 않는다.
     """
     tree = task_args._claim_code_tree(home, args)
@@ -52,15 +52,15 @@ def _cluster_publish_base_branch(home, args: argparse.Namespace) -> tuple[str | 
     return (tree, git._cluster_current_branch(tree) if tree else None)
 
 def _cluster_release_member(home, cluster: str, tid: str) -> Path | None:
-    """흡수된 멤버를 옛 장부에서 뺀다 — 갱신/제거한 경로(해소 불가면 None).
+    """새 묶음으로 옮긴 멤버를 옛 묶음 기록에서 뺀다 — 갱신/제거한 경로(해소 불가면 None).
 
-    발행이 자동으로 만든 크기 1 장부가 비면 그 파일을 지운다: 엔진이 방금 만들고 엔진이 비운
-    산출물이고, 남겨 두면 멤버 0 인 장부가 lint 잡음으로 상주한다. 사람이 선언한 묶음(이름이
-    티켓 ID 가 아니거나 브랜치가 있는 장부)은 비어도 지우지 않는다.
+    발행이 자동으로 만든 크기 1 묶음 기록이 비면 그 파일을 지운다: 엔진이 방금 만들고 엔진이 비운
+    산출물이고, 남겨 두면 멤버 0 인 묶음 기록이 lint 잡음으로 상주한다. 사람이 선언한 묶음(이름이
+    티켓 ID 가 아니거나 브랜치가 있는 묶음 기록)은 비어도 지우지 않는다.
 
     삭제 실패에서 관용하는 것은 **부재(`FileNotFoundError`)뿐**이다 — 이미 없으면 이 호출이
-    원하는 상태라 멱등이다. 그 밖의 삭제 실패는 올린다: 삼키면 옛 장부가 멤버를 그대로 쥔 채
-    새 장부와 티켓 명세만 갱신돼 명령이 성공을 선언한 뒤 중복 귀속이 남는다(조용한 모순).
+    원하는 상태라 멱등이다. 그 밖의 삭제 실패는 올린다: 삼키면 옛 묶음 기록이 멤버를 그대로 쥔 채
+    새 묶음 기록과 티켓 명세만 갱신돼 명령이 성공을 선언한 뒤 중복 귀속이 남는다(조용한 모순).
     삭제 뒤 부재도 확인한다 — 성공 선언의 근거는 반환값이 아니라 파일이 없다는 관측이다.
     """
     fm = cluster_store.load_cluster(home, cluster)
@@ -84,7 +84,7 @@ def _cluster_overlap_material(home, members: Sequence[tuple[str, object]], repo:
     후보에서 멤버 전부를 뺀다 — 멤버끼리의 겹침은 묶음을 반대할 근거가 아니라 묶음의 근거라
     별도 줄로 표기한다(침묵시키면 재료가 준다). 좌표 정규화·비교 규칙 소유자는 발행 재료와
     같다(`repo_coordinates`·`ticket_rules` · 사본 0). 판정불능(형식 불명)은
-    이 축 전체를 침묵으로 접는다 — 차단하지 않되 통과로 위장하지도 않는다(재료 축 그대로).
+    이 기준 전체를 침묵으로 바꾼다 — 차단하지 않되 통과로 위장하지도 않는다(재료 기준 그대로).
     """
     folded: dict[str, tuple[str, ...]] = {}
     for tid, touches in members:
@@ -121,15 +121,15 @@ def _cluster_overlap_material(home, members: Sequence[tuple[str, object]], repo:
     return lines
 
 def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
-    """장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료.
+    """묶음 기록 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료.
 
-    거부 판정은 전부 첫 쓰기 앞에 둔다(부분 생성 없음). 발행이 만든 크기 1 장부는 흡수하고,
+    거부 판정은 전부 첫 쓰기 앞에 둔다(부분 생성 없음). 발행이 만든 크기 1 묶음 기록은 합치고,
     이미 **여러 티켓의** 묶음에 속한 티켓은 옮기지 않는다 — 소속 이동은 사람 판정이라 엔진이
     조용히 하지 않는다.
 
     코드 트리는 **`--task` 가 보유한 폴더로만** 받는다(폴더가 2개 이상이면 `--repo/--slot` 위치
     인자로 고른다) — 이 명령은 git 브랜치를
-    만들고 그 트리의 현재 브랜치를 기점으로 장부에 박는 쓰기라, 트리를 추측하면 엉뚱한
+    만들고 그 트리의 현재 브랜치를 기점으로 묶음 기록에 적어 두는 쓰기라, 트리를 추측하면 엉뚱한
     저장소에 브랜치가 생기고 다른 묶음의 브랜치가 기점으로 실린다.
     """
     reason = cluster_rules._validate_cluster_name(args.name)
@@ -161,9 +161,9 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
     branch = cluster_rules.cluster_branch_name(cluster)
     touched: list[Path] = []
     with fs.board_lock(home):
-        ledger_path = cluster_store.cluster_record_path(home, cluster)
-        if ledger_path.exists():
-            print(f'[중단] 이미 있는 묶음 기록: {pm_paths._rel_to_repo(home, ledger_path)} (멤버 조회는 `cluster show`)', file=sys.stderr)
+        record_path = cluster_store.cluster_record_path(home, cluster)
+        if record_path.exists():
+            print(f'[중단] 이미 있는 묶음 기록: {pm_paths._rel_to_repo(home, record_path)} (멤버 조회는 `cluster show`)', file=sys.stderr)
             return 1
         resolved: list[tuple[str, Path, dict[str, Any], str, str | None]] = []
         drafts: list[str] = []
@@ -222,9 +222,9 @@ def _cmd_cluster_new(home, args: argparse.Namespace) -> int:
     return 0
 
 def _cmd_cluster_show(home, args: argparse.Namespace) -> int:
-    """장부 1건 조회 — 선언값 그대로 + 멤버의 현재 status.
+    """묶음 기록 1건 조회 — 선언값 그대로 + 멤버의 현재 status.
 
-    브랜치 실재는 재지 않는다 — 이 표면은 트리를 들지 않고, 장부에도 코드 트리를 적는 자리가
+    브랜치 실재는 재지 않는다 — 이 명령은 트리를 들지 않고, 묶음 기록에도 코드 트리를 적는 자리가
     없어(`CLUSTER_RECORD_KEYS`) 어느 저장소에서 찾을지 지목할 수 없다.
     """
     cluster = cluster_rules.cluster_id_for_name(args.name)
@@ -252,7 +252,7 @@ def _cmd_cluster_show(home, args: argparse.Namespace) -> int:
     return 0
 
 def cmd_cluster(home, args: argparse.Namespace) -> int:
-    """`cluster new|show` — 고정 5단계 운영 단위 장부의 생성·조회."""
+    """`cluster new|show` — 고정 5단계 운영 단위 묶음 기록의 생성·조회."""
     leaf = getattr(args, 'cluster_cmd', '')
     if leaf == 'new':
         return _cmd_cluster_new(home, args)

@@ -1,6 +1,6 @@
-"""티켓 완료 기록 — 진입 게이트·회귀·log 스켈레톤·board complete·선언 경로 stage (층: cli).
+"""티켓 완료 기록 — 진입 통과 조건·회귀·log 스켈레톤·board complete·선언 경로 stage (층: cli).
 
-`TicketFinisher` 는 subprocess·판정 seam 을 주입받아 기록 순서를 실행한다. 경로 기본값은
+`TicketFinisher` 는 subprocess·판정 교체 지점을 주입받아 기록 순서를 실행한다. 경로 기본값은
 생성 시 명시 Home 에서 해소하고, 판정·조회·측정은 finish_* 소유 모듈을 직접 부른다.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ from pm_engine.infra import (
 # ── 로그 스켈레톤 ───────────────────────────────────────────────────────
 
 # 회귀 baseline 은 *실측* new_total 1줄만 남긴다
-# 합계는 status.md 에 박제하지 않으므로 delta 는 PM 이 서술로 채운다·history 단일 진실=log).
+# 합계는 status.md 에 적어 두지 않으므로 차이는 PM 이 서술로 채운다·history 단일 진실=log).
 # task 태그 sentinel은 pm_log.py·pm_handoff.py의 동명 상수와 미러한다.
 # 모듈 격리를 유지하려고 각 생산자가 상수를 소유한다.
 _TASK_TAG_PREFIX = "task:"
@@ -98,7 +98,7 @@ class TicketFinisher:
         private_ref_block_fn: Callable[[str], str | None] | None = None,
         dod_block_fn: Callable[[str], str | None] | None = None,
         residual_block_fn: Callable[[str], str | None] | None = None,
-        self_axis_block_fn: Callable[[str], str | None] | None = None,
+        self_check_block_fn: Callable[[str], str | None] | None = None,
         log_file: Path | None = None,
         board_py: Path | None = None,
         venv_python: str | Path | None = None,
@@ -113,11 +113,11 @@ class TicketFinisher:
                           else home.root / ".project_manager" / "tools" / "board.py")
         self._venv_python = (venv_python if venv_python is not None
                              else python_env._default_python(home))
-        # 회귀 cwd seam — 분리된 PM 홈엔 tests/ 가 없으므로 회귀는 활성
+        # 회귀 cwd 교체 지점 — 분리된 PM 홈엔 tests/ 가 없으므로 회귀는 활성
         # worktree 슬롯(tests/)에서 돌아야 한다. **즉시 고정하지 않는다** — `regression_cwd`
-        # 명시 주입은 그대로 보존(테스트/명시 override)하되, 미지정이면 `__init__` 시점 박제
+        # 명시 주입은 그대로 보존(테스트/명시 override)하되, 미지정이면 `__init__` 시점에 고정하는
         # 대신 _default_run_pytest 가 런타임에 `slot_resolution._regression_cwd` 로 self-host 슬롯을
-        # 자동해소한다(판정 불능은 Home 루트 폴백).
+        # 자동해소한다(판정 불능은 Home 루트로 대체).
         self._regression_cwd = str(regression_cwd) if regression_cwd else None
         self._task_workspace = Path(task_workspace) if task_workspace else None
 
@@ -136,39 +136,39 @@ class TicketFinisher:
 
         # git 파싱 전용 러너 — **stdout 만** 돌려준다. `_run_git_fn` 은 진단 메시지를 살리려고
         # stdout+stderr 를 합치는데, 그 값을 `status --porcelain`·`ls-files -z` 파서에 먹이면
-        # git 경고 한 줄이 **가짜 잔여 항목**으로 둔갑한다(reviewer). 호출부가 git seam 을 이미
+        # git 경고 한 줄이 **가짜 남은 변경 항목**으로 둔갑한다(reviewer). 호출부가 git 교체 지점을 이미
         # 주입했으면(테스트) 그걸 그대로 써 hermetic 을 깨지 않는다.
         self._run_git_stdout_fn = (run_git_stdout_fn or run_git_fn
                                    or self._default_run_git_stdout)
 
         # git stage 스코프 DI — 기본값은 `touches ∪ 이 실행이 쓴 산출물` 실 해소.
-        # 상태 조회도 같은 seam 으로 둬, 테스트가 stage 판정과 보고를 따로 격리한다.
+        # 상태 조회도 같은 교체 지점으로 둬, 테스트가 stage 판정과 보고를 따로 격리한다.
         self._stage_scope_fn = stage_scope_fn or self._default_stage_scope
         self._status_entries_fn = status_entries_fn or self._default_status_entries
         self._run_git_at_fn = run_git_at_fn or self._default_run_git_at
         # task worktree도 홈과 같은 규칙: 기계 판독(`ls-files -z`/`status --porcelain -z`)에는
-        # stdout만 쓴다. mutation seam은 stderr 진단을 계속 합쳐 호출자에게 보인다.
+        # stdout만 쓴다. mutation 교체 지점은 stderr 진단을 계속 합쳐 호출자에게 보인다.
         self._run_git_stdout_at_fn = run_git_stdout_at_fn or finish_git._default_run_git_stdout_at
         self._status_entries_at_fn = status_entries_at_fn or self._default_status_entries_at
-        # 사설 참조 완료 기록 preflight seam — 차단 사유 문자열 또는 None(통과·경고·판정
-        # 불가). 진입 게이트의 첫 자리다 — 측정 폭(touches ∩ 출하 표면)의 내용(사설 참조)이
-        # 확정 차단감이면 그 뒤의 DoD·잔여 판정을 물을 이유가 없다. 판정식은 domain.private_refs
+        # 사설 참조 완료 기록 preflight 교체 지점 — 차단 사유 문자열 또는 None(통과·경고·판정
+        # 불가). 진입 통과 조건의 첫 자리다 — 측정 폭(touches ∩ 출하 파일)의 내용(사설 참조)이
+        # 확정 차단감이면 그 뒤의 DoD·남은 변경 판정을 물을 이유가 없다. 판정식은 domain.private_refs
         # 소유(사본 0) — 여기서는 측정 폭 재사용 + 호출만 한다.
         self._private_ref_block_fn = private_ref_block_fn or self._default_private_ref_block
-        # DoD 기록 게이트 preflight seam — 차단 사유 문자열 또는 None(통과·판정 불가).
+        # DoD 기록 통과 조건 preflight 교체 지점 — 차단 사유 문자열 또는 None(통과·판정 불가).
         # 규칙 소유자는 board(`_dod_open_items`)이고 여기서는 **더 앞에서 한 번 더** 물을 뿐이다.
         self._dod_block_fn = dod_block_fn or self._default_dod_block
-        # 잔여(코드 트리 dirty ⊄ 선언 스코프) preflight seam — 차단 사유 문자열 또는 None(통과).
+        # 남은 변경(코드 트리 dirty ⊄ 선언 스코프) preflight 교체 지점 — 차단 사유 문자열 또는 None(통과).
         # 판정 인구는 코드 트리뿐이다(PM 홈 dev-state 는 `_home_state_prefixes` 로 구조적 제외).
         self._residual_block_fn = residual_block_fn or self._default_residual_block
-        # 완료 대상 작업 트리 자기 축 회귀 preflight seam — 차단 문자열 또는 None(통과·경고·
+        # 완료 대상 작업 트리 자기 점검 회귀 preflight 교체 지점 — 차단 문자열 또는 None(통과·경고·
         # 판정불가). 판정 트리는 이 완료 대상 작업 트리 자체다(합성 병합 트리를 만들지 않는다).
         # 튜플의 **마지막** 원소로만 붙는다(비용순 — 사설 참조·DoD 는 서브프로세스 0~2회, 이건
         # base 가 red 일 때만 baseline 회귀를 한 번 더 돈다).
-        self._self_axis_block_fn = self_axis_block_fn or self._default_self_axis_block
-        # (스코프 밖 staged, 미스테이지 잔여) 건수 — `[완료]` 줄 재고지용(loud 강화).
+        self._self_check_block_fn = self_check_block_fn or self._default_self_check_block
+        # (스코프 밖 staged, stage 안 된 남은 변경) 건수 — `[완료]` 줄 재고지용(loud 강화).
         self._dirty_summary: tuple[int, int] = (0, 0)
-        # 이 실행에서 이미 낸 loud 사유 키 — 같은 해소를 여러 판정 표면이 공유하므로 중복
+        # 이 실행에서 이미 낸 loud 사유 키 — 같은 해소를 여러 판정 명령이 공유하므로 중복
         # 출력을 막되, 사유가 다르면 각각 낸다(`_warn_once`).
         self._loud_notes: set[str] = set()
 
@@ -179,19 +179,19 @@ class TicketFinisher:
 
         명령 해소:
           - **해소 성공** — `regression._resolve_gate_cmd`(areas prefix 행 > areas repo 행 >
-            local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
+            local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 같은 방식·비-Python repo 수용).
           - **프레임워크 자기 회귀** — 해소 실패면 현행 그대로
             `[venv_python, -m, pytest, tests/, -q, -n, auto]` venv argv.
 
         cwd 는 런타임 해소— 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
         없으면 `slot_resolution._regression_cwd` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
-        worktree 의 tests/ 에서 돌게). 판정 불능은 Home 루트 폴백(현행 보존·additive).
+        worktree 의 tests/ 에서 돌게). 판정 불능은 Home 루트로 대체(현행 보존·additive).
         """
         cwd = (self._regression_cwd if self._regression_cwd is not None
                else slot_resolution._regression_cwd(self._home))
         per_repo_cmd = regression._resolve_gate_cmd(self._home)
         if per_repo_cmd:
-            # multi-PM — per-repo test_cmd 문자열을 shell 로(board.py regression run 과 동형).
+            # multi-PM — per-repo test_cmd 문자열을 shell 로(board.py regression run 과 같은 방식).
             result = subprocess.run(
                 per_repo_cmd,
                 shell=True,
@@ -240,7 +240,7 @@ class TicketFinisher:
 
         **회귀 skip 여부와 독립**이다 — `--no-pytest` 는 [1/5] 회귀 실행만 건너뛴다. 이 트리는
         사설 참조 측정 root·touches 좌표 정규화·PM-direct 재검이 함께 쓰므로, 회귀를
-        안 돌린다고 해소를 건너뛰면 그 소비자들이 PM 홈(분리 형상에선 엔진 import 사본)을 잰다."""
+        안 돌린다고 해소를 건너뛰면 그 소비자들이 PM 홈(분리 구성에선 엔진 import 사본)을 잰다."""
         if self._task_workspace is not None:
             return self._task_workspace
         if self._regression_cwd is not None:
@@ -261,38 +261,38 @@ class TicketFinisher:
         return finish_store.get_ticket_touches(self._home, ticket_id)
 
     def _warn_once(self, key: str, message: str) -> None:
-        """같은 사유를 한 실행에서 **한 번만** 낸다 (조용한 강등 금지 · 중복 출력 금지).
+        """같은 사유를 한 실행에서 **한 번만** 낸다 (조용한 수준 낮춤 금지 · 중복 출력 금지).
 
-        판정 표면 여럿(측정 폭·사설 참조)이 같은 해소를 공유하므로, 해소 실패를 부를 때마다
-        알리면 같은 줄이 표면 수만큼 반복된다."""
+        판정 여럿(측정 폭·사설 참조)이 같은 해소를 공유하므로, 해소 실패를 부를 때마다
+        알리면 같은 줄이 판정 수만큼 반복된다."""
         if key in self._loud_notes:
             return
         self._loud_notes.add(key)
         print(f"  ⚠ {message}", file=sys.stderr)
 
-    def _measurement_anchor(self, ticket_id: str) -> str | None:
+    def _measurement_integration_base(self, ticket_id: str) -> str | None:
         """측정 폭의 기준점 — 통합 브랜치와의 merge-base. 해소 실패는 정지다.
 
-        사설 참조 판정이 이 한 자리에서 값을 받는다 — 리뷰가 본 표면과 완료 기록이 보는
-        표면이 갈리지 않는다. integration_base의 기준점 판정을 직접 사용한다.
+        사설 참조 판정이 이 한 자리에서 값을 받는다 — 리뷰가 본 범위와 완료 기록이 보는
+        범위가 갈리지 않는다. integration_base의 기준점 판정을 직접 사용한다.
 
-        빈 기준선(커밋 0)에서는 기준선도 HEAD 도 없어 **잴 표면 자체가 없다** — `None` 을
-        돌려주고, 호출부가 기존 "측정 불가 = 가드 off + loud 한 줄" 등급으로 접는다(빈 트리
+        빈 기준선(커밋 0)에서는 기준선도 HEAD 도 없어 **잴 범위 자체가 없다** — `None` 을
+        돌려주고, 호출부가 기존 "측정 불가 = 가드 off + loud 한 줄" 등급으로 바꾼다(빈 트리
         sentinel 같은 새 rev 를 만들지 않는다)."""
         code_tree = self._code_tree()
         tip = self._integration_tip(ticket_id, code_tree)
         if tip is None:
             return None
-        anchor, reason = review_diff.integration_base(code_tree, tip)
+        integration_base, reason = review_diff.integration_base(code_tree, tip)
         if reason is not None:
             raise finish_rules._CloseObservationFailure(f"{ticket_id} {reason}")
-        return anchor
+        return integration_base
 
     def _integration_tip(self, ticket_id: str, code_tree: Path) -> str | None:
-        """판정 기준으로 쓸 통합 브랜치 — 장부 선언 ∩ 이 코드 트리 실재.
+        """판정 기준으로 쓸 통합 브랜치 — 묶음 기록 선언 ∩ 이 코드 트리 실재.
 
         선언이 없거나 이 트리에서 해소되지 않으면 **멈춘다**. 이 값은 측정 폭·사설 참조 신규
-        판정·잔여 인구 세 판정의 공통 기준이라, 없는 채로 진행하면 세 판정이 각자 다른 것을
+        판정·남은 변경 인구 세 판정의 공통 기준이라, 없는 채로 진행하면 세 판정이 각자 다른 것을
         보고 갈린다(선언과 실재가 갈린 상태를 통과로 위장하지도 않는다).
 
         **빈 기준선**(`finish_git._unborn_baseline`)은 그 미해소가 아니라 값이 없는 상태라 `None` 이다 —
@@ -315,7 +315,7 @@ class TicketFinisher:
         return branch
 
     def _warn_unborn_baseline(self, ticket_id: str) -> None:
-        """빈 기준선에서 가드를 끈 사실의 단일 loud 표면 — 조용한 통과가 아니다."""
+        """빈 기준선에서 가드를 끈 사실을 알리는 단일 loud 출력 — 조용한 통과가 아니다."""
         branch = finish_store._cluster_integration_branch(self._home, ticket_id) or "(미선언)"
         self._warn_once(
             f"unborn-baseline:{ticket_id}",
@@ -326,8 +326,8 @@ class TicketFinisher:
         """한 티켓의 touches 를 측정 트리 좌표로 옮긴다(정규화 불능이면 None).
 
         PM 홈 좌표(`work/<repo>_<N>/…`)를 그대로 쓰면 측정 트리(코드 worktree)에 그 경로가 없다.
-        정규화 규칙은 stage 경로가 쓰는 공용 `repo_coordinates` seam 그대로다. None 의 처리는
-        호출부가 소유한다(사설 참조는 가드 off, 잔여 판정은 제외 근거 없음, PM 직접 수정 재검은
+        정규화 규칙은 stage 경로가 쓰는 공용 함수 `repo_coordinates` 그대로다. None 의 처리는
+        호출부가 소유한다(사설 참조는 가드 off, 남은 변경 판정은 제외 근거 없음, PM 직접 수정 재검은
         skip 경고).
         """
         if not touches:
@@ -353,9 +353,9 @@ class TicketFinisher:
         새로 들인 유입이라 함께 차단한다. 통합 브랜치가 이미 가진 줄의 raw 는 blame sha 를
         실어 알린다(차단감이 따로 있으면 차단 문구 안에, 없으면 stderr 경고로).
 
-        측정 불가(touches 부재·표면 교집합 없음)는 **가드 off** 다 — 이 축의 실패로
+        측정 불가(touches 부재·출하 파일 교집합 없음)는 **가드 off** 다 — 이 기준의 실패로
         완료 기록을 막지 않는다(hard 차단은 확정 사실에만 건다). 판정
-        기준(통합 브랜치)이 없는 것은 그 축에 들지 않는다 — 기준 없는 판정은 통과가 아니라
+        기준(통합 브랜치)이 없는 것은 그 기준에 들지 않는다 — 기준 없는 판정은 통과가 아니라
         정지다."""
         touches = self._normalize_measured_touches(
             self._measured_ticket_touches(ticket_id))
@@ -371,11 +371,11 @@ class TicketFinisher:
         if integration_tip is None:
             self._warn_unborn_baseline(ticket_id)
             return None
-        anchor = self._measurement_anchor(ticket_id)
+        integration_base = self._measurement_integration_base(ticket_id)
         relative_paths = [path.relative_to(code_tree).as_posix() for path in surface_paths]
         try:
             diff_text = review_diff.measured_diff_text(
-                code_tree, "HEAD", relative_paths, claimed_rev=anchor,
+                code_tree, "HEAD", relative_paths, claimed_rev=integration_base,
             )
         except OSError:
             return None
@@ -394,7 +394,7 @@ class TicketFinisher:
             integration_tip, run_git_stdout_at=self._run_git_stdout_at_fn,
         )
         if not actionable and not novel_raw:
-            # 통합 브랜치가 이미 가진 줄의 raw 만 남음 — 경고만(흡수분·허용분 재작성 실측상
+            # 통합 브랜치가 이미 가진 줄의 raw 만 남음 — 경고만(이미 합친 줄·허용분 재작성 실측상
             # 이 갈래). blame sha 를 실어 1회 읽기로 유입 커밋을 식별할 수 있게 한다.
             for path, line, token, sha in absorbed_raw:
                 print(
@@ -426,14 +426,14 @@ class TicketFinisher:
         return "\n".join(lines)
 
     def _default_dod_block(self, ticket_id: str) -> str | None:
-        """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과면 None.
+        """DoD 기록 통과 조건 preflight 판정 — 차단 사유 문자열, 통과면 None.
 
         규칙 소유자는 completion_check(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
         권위 있는 차단은 여전히 [3/5] `board.py complete` 가 하고, 여기서는 **더 앞에서 한 번 더**
         묻는다. 이 preflight 가 없으면 [2/5] 가 log 스켈레톤을 append 한 *뒤에* [3/5] 가 막아,
         차단될 때마다 stray 스켈레톤이 남고 재실행마다 중복 append 된다(실측).
 
-        티켓 부재/손상은 전파한다(log 골격 append 전이라 기록이 남지 않는다)."""
+        티켓 부재/손상은 전파한다(log 빈 양식 append 전이라 기록이 남지 않는다)."""
         _status, path = ticket_store.find_ticket(self._home, ticket_id)
         _fm, body = ticket_store.load_ticket(path)
         problems = completion_check._dod_open_items(body)
@@ -448,7 +448,7 @@ class TicketFinisher:
         return "\n".join(line for line in lines if line)
 
     def _home_state_prefixes(self, tree: Path) -> tuple[str, ...]:
-        '`tree` 안에 PM 홈 dev-state(board 루트·wiki 루트)가 있으면 그 트리-상대 접두를 낸다.\n\n        새 경로를 여기서 하드코딩하지 않는다 — Home 의 board 루트·`Home wiki` 은 엔진이\n        이미 소유한 PM 홈 값이다. 분리 형상에서는 두 루트가 PM 홈(`self._home`)에 있고 `tree` 는 다른\n        코드 worktree라 결과가 빈 튜플이다(제외 대상 자체가 없다 — 규칙이 약해지지 않는다).\n        임베디드 형상에서는 `tree == self._home.root` 라 둘 다 그 안에 있어, 다른 PM 세션의 wiki WIP 로 내\n        완료가 막히지 않는다. 해소 실패는 빈 튜플(fail-soft·제외 없음 = 판정 인구에 남겨 더\n        엄격한 쪽으로 접는다).'
+        '`tree` 안에 PM 홈 dev-state(board 루트·wiki 루트)가 있으면 그 트리-상대 접두를 낸다.\n\n        새 경로를 여기서 하드코딩하지 않는다 — Home 의 board 루트·`Home wiki` 은 엔진이\n        이미 소유한 PM 홈 값이다. 분리 구성에서는 두 루트가 PM 홈(`self._home`)에 있고 `tree` 는 다른\n        코드 worktree라 결과가 빈 튜플이다(제외 대상 자체가 없다 — 규칙이 약해지지 않는다).\n        임베디드 구성에서는 `tree == self._home.root` 라 둘 다 그 안에 있어, 다른 PM 세션의 wiki WIP 로 내\n        완료가 막히지 않는다. 해소 실패는 빈 튜플(fail-soft·제외 없음 = 판정 인구에 남겨 더\n        엄격한 쪽으로 판정한다).'
         try:
             tree_resolved = tree.resolve()
         except OSError:
@@ -469,20 +469,20 @@ class TicketFinisher:
 
         판정 인구는 `merge-base(<통합 tip>, HEAD)..작업 트리` 다(`_residual_split`) — 커밋
         여부가 판정을 바꾸지 않는다. 인구를 세는 트리는 **코드 트리**(`plan.cwd ==
-        self._code_tree()`)뿐이다 — 분리 형상에서 PM 홈 산출물 계획(cwd=Home 루트)은 다른 실행·
-        다른 PM 세션의 wiki WIP 가 상주하는 공유 표면이라 구조적으로 제외된다. 임베디드
-        형상(코드 트리 자신이 PM 홈)에서는 `_home_state_prefixes` 가 board 루트·wiki 루트만
+        self._code_tree()`)뿐이다 — 분리 구성에서 PM 홈 산출물 계획(cwd=Home 루트)은 다른 실행·
+        다른 PM 세션의 wiki WIP 가 상주하는 공유 범위라 구조적으로 제외된다. 임베디드
+        구성(코드 트리 자신이 PM 홈)에서는 `_home_state_prefixes` 가 board 루트·wiki 루트만
         같은 방식으로 제외한다.
 
-        방향은 묻지 않는다 — 미스테이지 잔여·스코프 밖 staged·통합 미반영 커밋 어느 쪽이든
+        방향은 묻지 않는다 — stage 안 된 남은 변경·스코프 밖 staged·통합 미반영 커밋 어느 쪽이든
         비어 있지 않으면 차단이다(`git add` 나 `git commit` 한 번이 우회로가 되면 안 된다).
         `scope_error`(스코프 산출 실패)도
         차단이다 — 이 실행이 코드 트리에서 아무것도 stage 하지 못한다는 확정 사실이라, 여기서
-        '판정 불가'로 접으면 전량 미머지가 조용히 통과한다. 이때 스코프는 **빈 스코프로
-        읽는다**(아무 경로도 못 덮으므로) — 코드 트리 dirty 전량이 잔여가 되고, PM 홈
-        제외 규칙은 정상 갈래와 동일하게 적용해 잔여 목록·표준 처방을 원인 문장에 동봉한다.
+        '판정 불가'로 바꾸면 전량 미머지가 조용히 통과한다. 이때 스코프는 **빈 스코프로
+        읽는다**(아무 경로도 못 덮으므로) — 코드 트리 dirty 전량이 남은 변경이 되고, PM 홈
+        제외 규칙은 정상 갈래와 동일하게 적용해 남은 변경 목록·표준 해결 방법을 원인 문장에 동봉한다.
 
-        잔여가 없으면 이어서 선언 경로의 변경이 같은 인구에 있는지 본다(`_declared_change_problem`)."""
+        남은 변경이 없으면 이어서 선언 경로의 변경이 같은 인구에 있는지 본다(`_declared_change_problem`)."""
         code_tree = self._code_tree()
         home_prefixes = self._home_state_prefixes(code_tree)
         for plan in self._stage_plans(ticket_id):
@@ -514,8 +514,8 @@ class TicketFinisher:
     def _declared_change_problem(self, ticket_id: str, cwd: Path) -> str | None:
         """선언한 코드 경로의 변경이 이번 종결이 머지할 변경에 하나도 없으면 차단 사유.
 
-        머지할 변경 = `merge-base(<통합 tip>, HEAD)..작업 트리`(커밋분 ∪ 미커밋) — 잔여 판정과 같은
-        인구다. 잔여 판정은 선언 **밖** 변경을 막고, 이 판정은 선언 **안** 변경이 그 인구에 있는지
+        머지할 변경 = `merge-base(<통합 tip>, HEAD)..작업 트리`(커밋분 ∪ 미커밋) — 남은 변경 판정과 같은
+        인구다. 남은 변경 판정은 선언 **밖** 변경을 막고, 이 판정은 선언 **안** 변경이 그 인구에 있는지
         묻는다(switch 전 커밋·다른 폴더 작성·통합 브랜치 직접 커밋은 인구 밖이라 머지 없이 닫혔다).
 
         선언 경로는 분리 코드 트리면 코드 몫, 임베디드면 touches 전부다. 비면(코드 없는 pm-direct·홈에만
@@ -523,7 +523,7 @@ class TicketFinisher:
         루트(board·wiki) 밖이면 코드 몫으로 센다(`_home_new_paths` — 작업 폴더 대신 홈에 쓴 새 파일은 홈
         커밋에만 실려 머지되지 않는다). 판정 단위는 멤버이고 선언 경로 하나라도 인구에 있으면 통과다. 어느 트리에도
         없는 선언(미정 경로)은 홈 변경으로도 충족된다(홈 문서 삭제). 티켓 판독 실패는 전파한다 —
-        빈 touches 로 접으면 "판정 대상 아님" 으로 통과한다."""
+        빈 touches 로 바꾸면 "판정 대상 아님" 으로 통과한다."""
         frontmatter = finish_store._ticket_frontmatter_snapshot(self._home, ticket_id)
         touches = finish_rules._clean_touches(frontmatter.get("touches"))
         home_share: list[str] = []
@@ -564,7 +564,7 @@ class TicketFinisher:
     def _home_new_paths(self, home_only: Sequence[str]) -> list[str]:
         """홈에만 있는 선언 중 홈 git 이 하나도 추적하지 않는 새 경로이고 홈 상태 루트(board·wiki) 밖인 것.
 
-        조회 실패는 관측 실패로 멈춘다(추적 중으로 접으면 그 새 파일이 다시 홈 몫으로 빠진다)."""
+        조회 실패는 관측 실패로 멈춘다(추적 중으로 바꾸면 그 새 파일이 다시 홈 몫으로 빠진다)."""
         state_roots = self._home_state_prefixes(self._home.root)
         candidates = [touch for touch in home_only if not finish_rules.scope_covers(state_roots, touch)]
         if not candidates:
@@ -578,7 +578,7 @@ class TicketFinisher:
                 if not any(finish_rules._touch_claims_path(touch, path) for path in tracked)]
 
     def _observed_status_entries(self, cwd: Path) -> tuple[tuple[str, str], ...]:
-        """그 트리의 워킹트리 상태 — 조회 실패는 관측 실패로 멈춘다(clean 으로 접지 않는다)."""
+        """그 트리의 워킹트리 상태 — 조회 실패는 관측 실패로 멈춘다(clean 으로 바꾸지 않는다)."""
         try:
             return self._status_entries_fn() if cwd == self._home.root else self._status_entries_at_fn(cwd)
         except finish_rules.StatusObservationError as exc:
@@ -592,7 +592,7 @@ class TicketFinisher:
         self, cwd: Path, scope: Sequence[str], home_prefixes: Sequence[str], *,
         ticket_id: str,
     ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-        """잔여 판정 인구를 (스코프 밖 staged, 미스테이지 잔여, 통합 미반영 커밋)로 가른다.
+        """남은 변경 판정 인구를 (스코프 밖 staged, stage 안 된 남은 변경, 통합 미반영 커밋)로 가른다.
 
         인구는 `merge-base(<통합 tip>, HEAD)..작업 트리` = 커밋분 ∪ dirty 다. 산출을 개발자
         라운드가 커밋하는 모델에서 dirty 만 세면 **같은 선언 밖 변경이 커밋 전에는 차단, 커밋
@@ -608,7 +608,7 @@ class TicketFinisher:
         """
         staged_out, unstaged = self._dirty_split(scope, cwd=cwd)
         if self._integration_tip(ticket_id, cwd) is None:
-            # 빈 기준선 — 아직 한 번도 커밋되지 않은 저장소다. 이 게이트가 세는 것은 **이
+            # 빈 기준선 — 아직 한 번도 커밋되지 않은 저장소다. 이 통과 조건이 세는 것은 **이
             # 작업이 만든** 선언 밖 변경인데, 커밋이 0이면 트리의 모든 파일이 미추적이라
             # 뼈대 전부가 인구가 된다(어떤 첫 티켓도 닫히지 않는다). 인구는 이 종결이 커밋할
             # 선언 경로뿐이고, 그 밖은 차단이 아니라 값으로 보고한다.
@@ -633,17 +633,17 @@ class TicketFinisher:
         return staged_out, unstaged, committed
 
     def _sibling_member_scopes(self, ticket_id: str) -> tuple[str, ...]:
-        """같은 묶음 **다른 멤버**가 선언한 경로 — 잔여 판정 인구에서 뺀다.
+        """같은 묶음 **다른 멤버**가 선언한 경로 — 남은 변경 판정 인구에서 뺀다.
 
-        귀속 입력은 귀속 창 스냅샷 하나다
-        (`get_in_window_ticket_touches` · 사본 0) — 멤버 목록은 묶음 장부가, 경로는 그 티켓
+        귀속 입력은 귀속 창 상태 기록 하나다
+        (`get_in_window_ticket_touches` · 사본 0) — 멤버 목록은 묶음 기록이, 경로는 그 티켓
         frontmatter `touches` 가 소유한다. 창 밖 멤버(아직 claim 하지 않은 티켓)는 제외 근거가
         없어 인구에 남는다(과다 차단 쪽 — 선언 누락을 숨기지 않는다).
 
         경로 비교는 `scope_covers` 다(pathspec magic 은 덮지 않는다) — 해소 불능 선언 하나가
-        임의의 커밋을 면제하면 이 게이트가 통째로 무력해진다.
+        임의의 커밋을 면제하면 이 통과 조건이 통째로 무력해진다.
 
-        스냅샷 읽기 실패는 전파한다.
+        상태 기록 읽기 실패는 전파한다.
         """
         members = [member for member in finish_store._cluster_member_ids(self._home, ticket_id)
                    if member != ticket_id]
@@ -668,10 +668,10 @@ class TicketFinisher:
         커밋된 인구의 대조 기준은 stage pathspec 이 아니라 **선언**(`touches` ∪ 그 pathspec)
         이다: 선언한 파일을 지우고 커밋하면 그 경로는 stage 가능 목록에서 빠지지만
         (`git_scope_stageable` — 미존재·미추적 제거) 선언은 그대로다. pathspec 만 보면 선언한
-        삭제가 잔여로 둔갑한다.
+        삭제가 남은 변경으로 둔갑한다.
 
         통합 tip 은 판정 인구의 기준이라 해소하지 못하면 멈춘다(`_integration_tip`) — dirty
-        인구로 접으면 커밋된 선언 밖 변경이 보이지 않는 채로 통과한다.
+        인구로 바꾸면 커밋된 선언 밖 변경이 보이지 않는 채로 통과한다.
         """
         tip = self._integration_tip(ticket_id, cwd)
         if tip is None:
@@ -694,7 +694,7 @@ class TicketFinisher:
     def _residual_block_message(self, ticket_id: str, staged_out: Sequence[str],
                                 unstaged: Sequence[str],
                                 committed: Sequence[str] = ()) -> str:
-        """잔여 차단 안내 — 원인 헤더 + 잔여 목록·처방 본문(`_residual_lines`)."""
+        """남은 변경 차단 안내 — 원인 헤더 + 남은 변경 목록·해결 방법 본문(`_residual_lines`)."""
         detail = (f"미스테이지 {len(unstaged)}건 · 스코프 밖 staged {len(staged_out)}건")
         if committed:
             detail += f" · 통합 미반영 커밋 {len(committed)}건"
@@ -706,7 +706,7 @@ class TicketFinisher:
 
     def _residual_lines(self, staged_out: Sequence[str], unstaged: Sequence[str],
                         committed: Sequence[str] = ()) -> str:
-        """잔여 목록(기존 20줄 접기 규약 재사용) + 처방 2가지 — 헤더 없는 본문만.
+        """남은 변경 목록(기존 20줄 접기 규약 재사용) + 해결 방법 2가지 — 헤더 없는 본문만.
 
         `_residual_block_message`(정상 갈래)와 `_default_residual_block` 의 `scope_error`
         갈래(원인 문장이 이미 별도 헤더)가 이 본문을 공유한다."""
@@ -728,31 +728,31 @@ class TicketFinisher:
         return "\n".join(lines)
 
     def _fold_residual_lines(self, lines: Sequence[str]) -> list[str]:
-        """차단 안내용 잔여 목록 — `_RESIDUAL_DIRTY_PREVIEW_LINES` 접기 규약을 그대로 쓴다."""
+        """차단 안내용 남은 변경 목록 — `_RESIDUAL_DIRTY_PREVIEW_LINES` 접기 규약을 그대로 쓴다."""
         folded = [f"    {line}" for line in lines[:self._RESIDUAL_DIRTY_PREVIEW_LINES]]
         hidden = len(lines) - self._RESIDUAL_DIRTY_PREVIEW_LINES
         if hidden > 0:
             folded.append(f"    … 외 {hidden}건")
         return folded
 
-    # ── 완료 대상 작업 트리 자기 축 회귀 판정 ────────────────────────────
+    # ── 완료 대상 작업 트리 자기 점검 회귀 판정 ────────────────────────────
     # 판정 트리는 완료 대상 작업 트리 자체다. 대상 집합은 이 트리의 변경분(추적+미추적)과
-    # 전-트리 ratchet 가드 목록의 합집합이고, 그 대상을 작업 트리와 claim 시점 baseline
+    # 전-트리 줄이기만 하는 가드 목록의 합집합이고, 그 대상을 작업 트리와 claim 시점 baseline
     # 양쪽에서 돌려 함수 단위 노드 ID 로 신규 실패만 골라낸다. 존재-판정("돌았다") 이 아니라
     # 값-대조("base 대비 늘었다")로 차단한다.
 
-    def _default_self_axis_block(self, ticket_id: str) -> str | None:
+    def _default_self_check_block(self, ticket_id: str) -> str | None:
         """완료 대상 작업 트리에서 base 대비 신규 red 를 판정한다 — 차단 문자열, 통과·판정불가면
         None.
 
-        claim 앵커(board `claimed_rev`)가 없으면(채택자 형상·구 티켓) 비교 기준이 없으므로
-        완전히 무발화다 — 작업 트리 회귀조차 돌리지 않는다. 앵커가 있어도 작업 트리가 green
+        claim 기준 커밋(board `claimed_rev`)이 없으면(채택자 구성·옛 티켓) 비교 기준이 없으므로
+        아무것도 실행하지 않는다 — 작업 트리 회귀조차 돌리지 않는다. 기준 커밋이 있어도 작업 트리가 green
         이면 baseline 은 돌리지 않는다(비용은 red 일 때만 낸다). red 면 baseline 을 claim
         시점으로 materialize 해 같은 대상 집합을 돌리고, 함수 단위 노드 ID 차집합(작업 트리 −
         baseline)이 있으면 차단, 없으면(전부 상속 red) loud 경고만 하고 통과시킨다.
         """
         code_tree = self._code_tree()
-        target_files = finish_baseline._self_axis_target_files(
+        target_files = finish_baseline._self_check_target_files(
             code_tree, run_git_stdout_at=self._run_git_stdout_at_fn)
         if not target_files:
             return None
@@ -765,7 +765,7 @@ class TicketFinisher:
             code_tree, sorted(target_files), venv_python=self._venv_python)
         if work_rc == 0:
             return None  # green — baseline 은 말할 것이 없으므로 돌리지 않는다.
-        work_failed = finish_rules._self_axis_failed_node_ids(work_out)
+        work_failed = finish_rules._self_check_failed_node_ids(work_out)
 
         try:
             baseline_tree = finish_baseline._materialize_tree(
@@ -791,11 +791,11 @@ class TicketFinisher:
                     f"({type(cleanup_exc).__name__}: {cleanup_exc})",
                     file=sys.stderr,
                 )
-        base_failed = finish_rules._self_axis_failed_node_ids(base_out) if base_rc != 0 else set()
+        base_failed = finish_rules._self_check_failed_node_ids(base_out) if base_rc != 0 else set()
 
         new_failed = sorted(work_failed - base_failed)
         if new_failed:
-            return finish_rules._self_axis_block(ticket_id, new_failed, work_out)
+            return finish_rules._self_check_block(ticket_id, new_failed, work_out)
 
         inherited = sorted(work_failed & base_failed)
         if inherited:
@@ -836,7 +836,7 @@ class TicketFinisher:
         """git 명령을 실행해 (returncode, **stdout 만**) 반환 — 기계 파싱용.
 
         `status --porcelain`·`ls-files -z` 출력을 파싱하는 경로는 stderr 가 섞이면 안 된다:
-        git 경고(예: CRLF·advice) 한 줄이 그대로 '잔여 항목'·'추적 경로'로 둔갑한다.
+        git 경고(예: CRLF·advice) 한 줄이 그대로 '남은 변경 항목'·'추적 경로'로 둔갑한다.
         """
         result = subprocess.run(
             ["git"] + args,
@@ -906,15 +906,15 @@ class TicketFinisher:
         판정은 **어느 트리에 실재하는가** 다: 코드 트리에 있으면 코드 트리, 없고 PM 홈에 있으면
         PM 홈(wiki·결정 기록·domain 같은 홈-상주 산출물), 어디에도 없으면 두 계획 모두(신규
         파일이거나 추적 중인 삭제 — 어느 쪽인지는 각 트리의 stage 필터가 판정한다). 두-repo 계획이 코드 몫만 계획하면 홈-상주 touches 가 **어느 repo 에서도 stage 되지
-        않고** 잔여 보고에만 남는다 — 그 경로들은 이미 선언돼 있어 "touches 를 보강하라"는 처방도
+        않고** 남은 변경 보고에만 남는다 — 그 경로들은 이미 선언돼 있어 "touches 를 보강하라"는 해결 방법도
         듣지 않는다. 정규화 불능이면 전부 코드 몫으로 두어 `stage_scope` 가 기존과 같은 fail-loud
         사유를 내게 한다(여기서 삼키지 않는다).
         """
         touches = list(finish_store.get_ticket_touches(self._home, ticket_id))
         if not touches:
             return [], []
-        # 코드 트리 좌표 해소는 측정이 쓰는 공용 seam 을 그대로 쓴다(사본 0·같은 규칙).
-        # 그 seam 의 workspace 가 곧 `_code_tree()` 이므로 여기 코드 트리와 같은 트리다.
+        # 코드 트리 좌표 해소는 측정이 쓰는 공용 함수를 그대로 쓴다(사본 0·같은 규칙).
+        # 그 공용 함수의 workspace 가 곧 `_code_tree()` 이므로 여기 코드 트리와 같은 트리다.
         in_code_tree = self._normalize_measured_touches(touches)
         if in_code_tree is None or len(in_code_tree) != len(touches):
             return touches, []
@@ -930,7 +930,7 @@ class TicketFinisher:
                 home_touches.append(declared)
             else:
                 # 어디에도 실재하지 않는 선언 — 신규 파일일 수도, **추적 중인 삭제**일 수도 있다.
-                # 한쪽으로만 접으면 삭제가 그 트리에서 추적되지 않아 stage 필터에 떨어지고 어느
+                # 한쪽으로만 보내면 삭제가 그 트리에서 추적되지 않아 stage 필터에 떨어지고 어느
                 # 계획에도 안 실린다. 둘 다에 넣어도 각 계획의 필터가 자기 트리에서 추적되는 것만
                 # 남기므로 이중 stage 는 생기지 않는다.
                 code_touches.append(declared)
@@ -942,7 +942,7 @@ class TicketFinisher:
 
         작업 트리에 없는 경로를 index 나 HEAD 가 가지면 status 가 그 삭제(` D`·`D `)를 낸다. 미리
         `git rm` 한 경로(index 에도 없다)까지 한 조회로 본다. 조회 실패는 관측 실패로 멈춘다(미추적으로
-        접으면 삭제가 다른 계획으로 간다)."""
+        보내면 삭제가 다른 계획으로 간다)."""
         candidate = relative.strip()
         if not candidate or candidate.startswith(":(") or any(ch in candidate for ch in "*?["):
             return False
@@ -960,8 +960,8 @@ class TicketFinisher:
         "PM 홈 하위인가" 같은 위치 제약은 두지 않는다: 슬롯 worktree 가 심링크거나 다른
         마운트에 있으면 그 제약이 참이 아니고, 그러면 diff 측정은 코드 트리를 보는데 stage 만
         PM 홈으로 내려앉아 **한 값의 두 소비자가 갈린다**. 해소 자체가 이미 명시 Home 을
-        앵커로 하므로(`_regression_cwd` 가 `repo_root` 를 forward) 트리가 PM 홈과 다르다는 것은
-        곧 분리 형상이라는 뜻이다. 경로 해소 실패는 False(fail-soft·기존 단일 계획 유지)."""
+        기준으로 하므로(`_regression_cwd` 가 `repo_root` 를 forward) 트리가 PM 홈과 다르다는 것은
+        곧 분리 구성이라는 뜻이다. 경로 해소 실패는 False(fail-soft·기존 단일 계획 유지)."""
         try:
             return code_tree.resolve() != Path(home.root).resolve()
         except OSError:
@@ -972,7 +972,7 @@ class TicketFinisher:
 
         NUL 파서는 `finish_git.status_entries` 가 infra.git 의 공용 파서로 공유한다(비-ASCII 경로 실경로화).
 
-        조회 실패는 `strict` 로 올린다 — 잔여 판정·보고(`_dirty_split`)와 종결의 선행 조건
+        조회 실패는 `strict` 로 올린다 — 남은 변경 판정·보고(`_dirty_split`)와 종결의 선행 조건
         관측(`_dirty_paths`)은 그 실패를 clean 과 구별해 정지한다.
         """
         return finish_git.status_entries(self._run_git_stdout_fn,
@@ -986,10 +986,10 @@ class TicketFinisher:
     def _stage_plans(self, ticket_id: str) -> tuple[finish_rules.RepoStagePlan, ...]:
         """실제 stage 와 dry-run 이 공유하는 repo별 계획 단일 진실.
 
-        분기 축은 task 여부가 아니라 **해소된 코드 트리가 PM 홈인가**다 — 코드 트리 소비자
+        분기 기준은 task 여부가 아니라 **해소된 코드 트리가 PM 홈인가**다 — 코드 트리 소비자
         (diff 측정·[4/5] stage·PM-direct 재검)는 전부 `_code_tree()` 하나를 본다. 트리가 PM 홈
-        자신이면(임베디드) 기존 단일 계획이고, 분리 형상(task 작업공간 또는 해소된 슬롯
-        worktree)이면 PM 홈에 log/board 산출물, 코드 트리에 코드 touches 를 각각 둔다. 축을
+        자신이면(임베디드) 기존 단일 계획이고, 분리 구성(task 작업공간 또는 해소된 슬롯
+        worktree)이면 PM 홈에 log/board 산출물, 코드 트리에 코드 touches 를 각각 둔다. 기준을
         task 유무로 두면 슬롯 해소로 온 코드 트리에서 PM 홈의 동명 사본이 stage 된다.
 
         touches 는 **repo 별 몫으로 갈라** 각 계획에 넘긴다(`_split_touches_by_tree`) — 홈에만
@@ -1060,14 +1060,14 @@ class TicketFinisher:
         반환: 0=성공, 1=실패 (중단).
 
         `section` 은 후방호환용으로 받기만 하고 무시한다 — status.md 합계표 섹션 행은
-        제거됐다(judgment-only·테스트 수는 박제 안 함).
+        제거됐다(judgment-only·테스트 수는 기록하지 않음).
 
         `board_identity_args` = 이 실행의 정체성(`--task <task>`)을 board 하위 호출에 그대로
         넘기는 인자다. board 의 complete 가 `claimed_by` 와 실행 task 를 대조하므로, 이 forward 가
         없으면 ticket_finish 경유 완료가 "남의 티켓" 으로 거부된다.
 
         `skip_pytest`(--no-pytest) 는 [1/5] 회귀 단계를 건너뛴다 — 측정은 PM 이 /pm-qa
-        등으로 별도. board complete 는 `--tests-pass` 를 유지한다(pm_handoff `--no-pytest` 동형·
+        등으로 별도. board complete 는 `--tests-pass` 를 유지한다(pm_handoff `--no-pytest` 와 같은 방식·
         회귀 red 아님·skip 로 진행). **회귀 실행만** 건너뛴다 — 코드 트리 해소·diff 측정·
         stage 는 그대로다(`_code_tree`).
 
@@ -1075,7 +1075,7 @@ class TicketFinisher:
         [5/5]의 손작업 안내만 바뀐다(커밋·재배치·머지·board 기록을 종결이 실행하므로 그
         안내가 남으면 이미 기계가 한 일을 사람에게 시킨다). 판정·부작용은 같다.
 
-        `cluster_close`는 ``ClusterCloser``가 넘기는 exact ledger path-binding이다. 인증
+        `cluster_close`는 ``ClusterCloser``가 넘기는 exact record path-binding이다. 인증
         capability가 아니며 public ``board complete``가 묶음 멤버를 반쪽 완료하지 못하게 한다.
         """
         del section  # status 합계표 제거로 더 이상 쓰지 않음(후방호환 수용만).
@@ -1087,20 +1087,20 @@ class TicketFinisher:
         # PM 판정은 권위를 유지한다. 이 재검은 경고만 보이고 이후 rc를 바꾸지 않는다.
         self._warn_pm_direct_conditions(ticket_id)
 
-        # ── 0. 진입 게이트(preflight) — 사설 참조 · DoD 기록 · 코드 트리 잔여 ·
-        # 자기 축 회귀 ────────────────────────────────────
+        # ── 0. 진입 통과 조건(preflight) — 사설 참조 · DoD 기록 · 코드 트리 남은 변경 ·
+        # 자기 점검 회귀 ────────────────────────────────────
         # 넷 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서
         # 막힐 실행은 어떤 부작용(회귀 실행·log append·board·git)도 내지 않아야 한다. 사설
-        # 참조가 첫 자리다 — 측정 폭(touches ∩ 출하 표면)을 diff 축에서 재는 판정이고, 그
-        # 결과가 확정 차단이면 뒤의 DoD·잔여 판정을 물을 이유가 없다. DoD 판정이 [3/5]
+        # 참조가 첫 자리다 — 측정 폭(touches ∩ 출하 파일)을 diff 기준에서 재는 판정이고, 그
+        # 결과가 확정 차단이면 뒤의 DoD·남은 변경 판정을 물을 이유가 없다. DoD 판정이 [3/5]
         # `board.py complete` 안에만 있던 동안에는 차단마다 stray 스켈레톤이 남고 재실행이
-        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다. 잔여 판정(코드 트리 dirty ⊄
+        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다. 남은 변경 판정(코드 트리 dirty ⊄
         # 선언 스코프)도 같은 이유로 여기 있다 — [4/5] stage 뒤라면 board complete 가 이미
-        # 기록된 뒤에야 막혀 되돌릴 수 없다. 자기 축 회귀는 **비용순으로 마지막**이다 — 앞
+        # 기록된 뒤에야 막혀 되돌릴 수 없다. 자기 점검 회귀는 **비용순으로 마지막**이다 — 앞
         # 셋은 서브프로세스 0~2회, 이건 작업 트리가 red 일 때만 pytest 를 최대 2번 돈다
         # (green 이면 0회).
         for preflight in (self._private_ref_block_fn, self._dod_block_fn,
-                          self._residual_block_fn, self._self_axis_block_fn):
+                          self._residual_block_fn, self._self_check_block_fn):
             block = preflight(ticket_id)
             if block:
                 print(f"\n[중단] {block}", file=sys.stderr)
@@ -1112,42 +1112,42 @@ class TicketFinisher:
         print("\n[1/5] 회귀 실행 중...")
         if skip_pytest:
             # --no-pytest — 회귀 측정은 PM 이 별도(/pm-qa 등). board complete 는 --tests-pass 유지
-            # (pm_handoff --no-pytest 동형·red 아님·skip 로 진행). 측정 total 은 log 스켈레톤에서 "?".
+            # (pm_handoff --no-pytest 와 같은 방식·red 아님·skip 로 진행). 측정 total 은 log 스켈레톤에서 "?".
             print(
                 "  [--no-pytest] 회귀 측정 skip — 측정은 별도("
                 f"{lease_store._runtime_skill_entry('pm-qa')} 등). board complete 는 --tests-pass 유지."
             )
             new_total: int | str = "?"
         else:
-            # 게이트 종류(pytest 스위트 / 해소된 임의 명령)를 먼저 해소한다 — green 판정
+            # 회귀 명령 종류(pytest 스위트 / 해소된 임의 명령)를 먼저 해소한다 — green 판정
             # 기준과 안내 문구가 여기서 갈린다(`handoff_text._gate_is_pytest`).
-            gate_cmd = regression._resolve_gate_cmd(self._home)
+            check_cmd = regression._resolve_gate_cmd(self._home)
             if dry_run:
                 print(
-                    f"  [dry-run] {handoff_text._gate_label(gate_cmd)} 실행 중 "
+                    f"  [dry-run] {handoff_text._gate_label(check_cmd)} 실행 중 "
                     "(파일·board·git 편집만 생략)..."
                 )
             returncode, output = self._run_pytest_fn()
             print(output.rstrip())
 
-            if not handoff_text._regression_is_green(output, returncode, gate_cmd):
+            if not handoff_text._regression_is_green(output, returncode, check_cmd):
                 print(
                     "\n[중단] 회귀 red — log/current.md·board·git 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
                 )
-                if handoff_text._gate_is_pytest(gate_cmd):
+                if handoff_text._gate_is_pytest(check_cmd):
                     print(
                         "원인: pytest 가 실패를 보고했거나 출력 파싱 실패.",
                         file=sys.stderr,
                     )
                 else:
                     print(
-                        f"원인: 회귀 명령이 실패했다 — `{gate_cmd}` (exit {returncode}).",
+                        f"원인: 회귀 명령이 실패했다 — `{check_cmd}` (exit {returncode}).",
                         file=sys.stderr,
                     )
                 return 1
 
-            if handoff_text._gate_is_pytest(gate_cmd):
+            if handoff_text._gate_is_pytest(check_cmd):
                 parsed = finish_rules.parse_pytest_output(output)
                 if parsed is None:
                     print(
@@ -1159,10 +1159,10 @@ class TicketFinisher:
                 new_total, deselected = parsed
                 print(f"\n  ✓ green: passed={new_total}, deselected={deselected}")
             else:
-                # 비-pytest 게이트 — 테스트 수 개념이 없으므로 측정하지 않는다("?" ·
-                # `--no-pytest` 경로와 동형). green 근거는 exit 0 이다.
+                # 비-pytest 회귀 명령 — 테스트 수 개념이 없으므로 측정하지 않는다("?" ·
+                # `--no-pytest` 경로와 같은 방식). green 근거는 exit 0 이다.
                 new_total = "?"
-                print(f"\n  ✓ green: `{gate_cmd}` (exit 0) — 테스트 수 미측정")
+                print(f"\n  ✓ green: `{check_cmd}` (exit 0) — 테스트 수 미측정")
 
         # status.md 는 더 이상 갱신하지 않는다.
         # 테스트 수는 위 pytest 실측이 단일 진실·history 는 아래 log skeleton 으로 남는다.
@@ -1220,9 +1220,9 @@ class TicketFinisher:
 
         # ── 4. git stage (선언 경로 스코프) ────────────────────
         # blanket `add -A` 가 아니다 — 이 티켓이 선언한 경로(`touches` ∪ *이 실행이 쓴* 산출물)만
-        # stage 한다. 코드 트리의 스코프 밖 잔여는 preflight `_residual_block_fn` 이 이미 차단했다
+        # stage 한다. 코드 트리의 스코프 밖 남은 변경은 preflight `_residual_block_fn` 이 이미 차단했다
         # (여기 도달했다는 것 자체가 코드 트리는 깨끗하다는 뜻). PM 홈 dev-state(판정 인구 밖) 등
-        # 남는 잔여는 아래 loud 보고로 계속 가시화한다(비차단 — 내가 정리할 수 없는 남의 파일).
+        # 남는 변경은 아래 loud 보고로 계속 가시화한다(비차단 — 내가 정리할 수 없는 남의 파일).
         print("\n[4/5] git stage (선언 경로 스코프)...")
         plans = self._stage_plans(ticket_id)
         multi_repo = len(plans) > 1
@@ -1271,7 +1271,7 @@ class TicketFinisher:
                 self._report_dirty_after_stage(scope, cwd=plan.cwd,
                                                label=plan.label if multi_repo else "")
 
-        # ── 5. 잔여 PM 작업 출력 ─────────────────────────────────────
+        # ── 5. 남은 PM 작업 출력 ─────────────────────────────────────
         print("\n[5/5] PM 이 손으로 할 남은 일:")
         print("  log/current.md 서술 불릿 채우기 — <!-- PM: 무엇을·왜 서술 --> 를 실제 내용으로 교체")
         print("  status.md 모듈 행(상태 + 비고) — 변경된 모듈 행 판정을 architect/PM 이 직접 갱신 (테스트 수는 기록하지 않음)")
@@ -1298,14 +1298,14 @@ class TicketFinisher:
                       f"`git commit -m \"<메시지>\" -- {pathspec}`")
 
         # ── soft 알림: 영향받는 domain 페이지 (비차단) ──────
-        # 정보일 뿐 게이트가 아니다 — 완료 흐름·rc 를 막지 않는다(예외도 삼킨다).
+        # 정보일 뿐 통과 조건이 아니다 — 완료 흐름·rc 를 막지 않는다(예외도 삼킨다).
         # 페이지 적재·매칭 실패로 None을 반환하면 알림을 건너뛴다.
         self._notify_affected_domain(ticket_id)
 
         if dry_run:
             print("\n[dry-run] 완료 — 실제 편집·board·git 는 실행하지 않았다.")
         else:
-            # 잔여 건수를 마지막 줄에 한 번 더 — [4/5] 보고가 이후 출력에 묻히지 않게(loud).
+            # 남은 변경 건수를 마지막 줄에 한 번 더 — [4/5] 보고가 이후 출력에 묻히지 않게(loud).
             staged_out, unstaged = self._dirty_summary
             tail = ""
             if unstaged or staged_out:
@@ -1315,7 +1315,7 @@ class TicketFinisher:
 
         return 0
 
-    # 잔여 보고 최대 줄 수 — 넘으면 "… 외 N건" 으로 접는다(수백 줄 홍수 방지).
+    # 남은 변경 보고 최대 줄 수 — 넘으면 "… 외 N건" 으로 접는다(수백 줄 홍수 방지).
     _RESIDUAL_DIRTY_PREVIEW_LINES = 20
 
     def _print_dirty_block(self, header: str, lines: Sequence[str]) -> None:
@@ -1328,9 +1328,9 @@ class TicketFinisher:
             print(f"      … 외 {hidden}건")
 
     def _dirty_split(self, scope: Sequence[str], *, cwd: Path | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """현재 상태를 (스코프 밖 staged, 미스테이지 잔여)로 가른다 — 조회 실패는 관측 실패로 멈춘다.
+        """현재 상태를 (스코프 밖 staged, stage 안 된 남은 변경)로 가른다 — 조회 실패는 관측 실패로 멈춘다.
 
-        빈 목록으로 접으면 잔여 판정은 잔여 없음으로 통과하고 stage 뒤 보고는 "잔여 변경 없음" 을 낸다."""
+        빈 목록으로 바꾸면 남은 변경 판정은 남은 변경 없음으로 통과하고 stage 뒤 보고는 "남은 변경 없음" 을 낸다."""
         if cwd is None:
             cwd = self._home.root
         return finish_git.split_dirty(self._observed_status_entries(cwd), scope)
@@ -1341,9 +1341,9 @@ class TicketFinisher:
 
     def _report_dirty_after_stage(self, scope: Sequence[str], *, cwd: Path | None = None,
                                   label: str = "") -> None:
-        """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·잔여는 비차단·관측 실패는 정지).
+        """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·남은 변경은 비차단·관측 실패는 정지).
 
-        두 실패 방향을 함께 본다 — 1) **미스테이지 잔여**(under-stage: 스코프가 못 덮은 변경 —
+        두 실패 방향을 함께 본다 — 1) **stage 안 된 남은 변경**(under-stage: 스코프가 못 덮은 변경 —
         내 작업 누락이면 `touches` 를 보강해 다시 stage, 남의 WIP 면 그대로 둔다) 2)
         **스코프 밖 staged**(누출: PM 커밋에 실린다). 좁히기가 만드는 실패를 *조용한 유출* 과
         바꾸지 않는 것이 요점이라, 어느 쪽도 침묵하지 않는다. 결과 건수는 `[완료]` 줄에서

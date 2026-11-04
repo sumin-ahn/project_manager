@@ -1,17 +1,17 @@
-"""클러스터 장부 — `cluster new|show` · 티켓 `cluster` 필드 자동 귀속 · `cluster-*` lint.
+"""클러스터 묶음 기록 — `cluster new|show` · 티켓 `cluster` 필드 자동 귀속 · `cluster-*` lint.
 
 여기서 지키는 성질은 넷이다.
-  (1) `cluster new` 가 장부와 통합 브랜치를 만들고 멤버 티켓에 귀속을 박는다.
-  (2) 발행(`new`)·승격(`promote`)이 그 티켓의 크기 1 장부를 만들고 기준 브랜치·예산을 박는다
+  (1) `cluster new` 가 묶음 기록과 통합 브랜치를 만들고 멤버 티켓에 귀속을 적어 둔다.
+  (2) 발행(`new`)·승격(`promote`)이 그 티켓의 크기 1 묶음 기록을 만들고 기준 브랜치·예산을 적어 둔다
       (활성 묶음에 자동으로 끼우지 않는다 — 묶는 것은 사람 선언뿐).
-  (3) 재개방(`reopen`)도 같은 자리에서 귀속하고, 멤버는 **장부만** 답한다(합성 0).
-  (4) 장부 관측(멤버 부재·중복 귀속)은 advisory 로만 보인다(never-block · 장부만 읽는다).
+  (3) 재개방(`reopen`)도 같은 자리에서 귀속하고, 멤버는 **묶음 기록만** 답한다(합성 0).
+  (4) 묶음 기록 관측(멤버 부재·중복 귀속)은 advisory 로만 보인다(never-block · 묶음 기록만 읽는다).
 
-hermetic 패턴은 `test_board_new_draft_check.py` 와 동형 — 실 board git + bare remote 를 tmp 에
-세우고 board 모듈의 `REPO` 를 그 tmp 로 재앵커한다. 코드 트리 축은 두 형상을 다 세운다:
+hermetic 패턴은 `test_board_new_draft_check.py` 와 같은 방식 — 실 board git + bare remote 를 tmp 에
+세우고 board 모듈의 `REPO` 를 그 tmp 로 바꿔 끼운다. 코드 트리 기준은 두 구성을 다 세운다:
 `env` 는 PM 홈 자신이 코드 트리인 N=1 채택자(홈 슬롯 행 `slot="."`), `split_env` 는 PM 홈과
-코드 트리가 **다른 디렉터리**인 adopter#0 형상이다. 겹친 형상 하나만 있으면 코드 트리를 PM
-홈으로 접는 해소가 정답과 값으로 구분되지 않는다.
+코드 트리가 **다른 디렉터리**인 adopter#0 구성이다. 겹친 구성 하나만 있으면 코드 트리를 PM
+홈으로 바꾸는 해소가 정답과 값으로 구분되지 않는다.
 """
 from __future__ import annotations
 
@@ -65,10 +65,10 @@ _GIT_IDENTITY = {
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
 }
 
-# 코드 트리(통합 브랜치가 사는 git)의 기점 브랜치 — task 세션의 통합 브랜치와 같은 형상.
+# 코드 트리(통합 브랜치가 사는 git)의 기점 브랜치 — task 세션의 통합 브랜치와 같은 구성.
 _BASE_BRANCH = "task/main"
 
-# 발행 즉시 open/ 에 놓이는 채워진 템플릿(placeholder 0) — draft 격리 축을 타지 않는 발행.
+# 발행 즉시 open/ 에 놓이는 채워진 템플릿(placeholder 0) — draft 격리 기준을 타지 않는 발행.
 _TEMPLATE_TEXT = (
     "---\n"
     "id: T-NNNN\n"
@@ -95,7 +95,7 @@ _TEMPLATE_TEXT = (
     "## 메모\n"
 )
 
-# 발행 게이트가 draft 로 남기는 미충전 템플릿(placeholder 그대로).
+# 발행 통과 조건이 draft 로 남기는 미충전 템플릿(placeholder 그대로).
 _DRAFT_TEMPLATE_TEXT = _TEMPLATE_TEXT.replace(
     "## 목표\n실제 목표를 채웠다.", "## 목표\n무엇을 만들 / 바꿀 / 검증할지 1~3 문장."
 ).replace("## 참고\n- 실제 참고 사항", "## 참고\n- 관련 ADR / spec: [[xxxxx]]")
@@ -140,7 +140,7 @@ def _make_code_git(root: Path) -> None:
 def board(tmp_path, monkeypatch):
     mod = _load_tool("board")
     anchor_board_module(mod, tmp_path, monkeypatch)
-    # 코드 트리 해소(`_claim_code_tree`)가 읽는 장부도 tmp 로 재앵커한다 — 실 트리의 리스를
+    # 코드 트리 해소(`_claim_code_tree`)가 읽는 슬롯 대여 기록도 tmp 로 바꿔 끼운다 — 실 트리의 대여 기록을
     # 읽으면 이 파일의 답이 실행 환경에 따라 바뀐다.
     seed_slot(tmp_path, session=_TASK)
     (pm_paths.wiki_dir(pm_paths.home_at(mod.REPO)) / "board.md").parent.mkdir(parents=True, exist_ok=True)
@@ -152,33 +152,33 @@ def board(tmp_path, monkeypatch):
 
 @pytest.fixture
 def env(board, tmp_path):
-    """board git + 코드 git 한 쌍 — 클러스터 축이 쓰는 두 저장소."""
+    """board git + 코드 git 한 쌍 — 클러스터 기준이 쓰는 두 저장소."""
     bare = tmp_path / "bare"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
     _make_code_git(tmp_path)
-    # 장부가 가리키는 작업 폴더에도 같은 기점의 코드 git 을 둔다 — 명시 정체성(`--repo`)은 그
+    # 슬롯 대여 기록이 가리키는 작업 폴더에도 같은 기점의 코드 git 을 둔다 — 명시 정체성(`--repo`)은 그
     # 슬롯 트리로 해소되고, 인자 전무 경로는 종전대로 PM 홈 트리를 본다.
     (tmp_path / SLOT).mkdir(parents=True, exist_ok=True)
     _make_code_git(tmp_path / SLOT)
     return board, board_dir
 
 
-# 분리 형상의 슬롯 수 — 실 PM 홈 장부와 같이 **여러 슬롯이 동시에 대여된** 상태다. 슬롯이
+# 분리 구성의 슬롯 수 — 실 PM 홈 슬롯 대여 기록과 같이 **여러 슬롯이 동시에 대여된** 상태다. 슬롯이
 # 하나뿐이면 세션이 그 행 하나로 유도돼(`session_name` 단일-lease 층) 활성 슬롯이 늘 해소되고,
-# 재발한 형상(세션 미해소 → 코드 없는 PM 홈으로 접힘)이 재현되지 않는다.
+# 재발한 구성(세션 미해소 → 코드 없는 PM 홈으로 바뀜)이 재현되지 않는다.
 _SPLIT_SLOT_COUNT = 2
-# 그 슬롯들이 공유하는 세션 값 — 실 장부와 같이 행마다 같은 값이라 유도가 성립하지 않는다.
+# 그 슬롯들이 공유하는 세션 값 — 실 대여 기록과 같이 행마다 같은 값이라 유도가 성립하지 않는다.
 _SPLIT_SESSION = _TASK
 
 
 @pytest.fixture
 def split_env(board, tmp_path):
-    """PM 홈 ≠ 코드 트리 — 통합 브랜치는 슬롯 worktree 의 git 에만 있다(adopter#0 형상).
+    """PM 홈 ≠ 코드 트리 — 통합 브랜치는 슬롯 worktree 의 git 에만 있다(adopter#0 구성).
 
     PM 홈은 자기 git(브랜치 `main`)이고 코드는 `work/proj_<N>` 슬롯의 별 git(기점 `task/main`)
-    이다. 리스 장부는 그 슬롯들을 대여 중으로 적어 `--repo`/`--slot` 이 코드 트리를 지목하게
-    한다. 겹친 형상(`env`)에서는 PM 홈을 코드 트리로 접어도 답이 같아 결함이 보이지 않는다.
+    이다. 슬롯 대여 기록은 그 슬롯들을 대여 중으로 적어 `--repo`/`--slot` 이 코드 트리를 지목하게
+    한다. 겹친 구성(`env`)에서는 PM 홈을 코드 트리로 바꿔도 답이 같아 결함이 보이지 않는다.
     """
     bare = tmp_path / "bare"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
@@ -261,7 +261,7 @@ def _ticket_fm(board, tid: str) -> dict:
 def _write_legacy_ticket(board_dir: Path, tid: str, *, status: str = "done",
                          cluster: str | None = None,
                          discarded_from: str | None = None) -> Path:
-    """장부 도입 이전 형상의 티켓 — 발행 경로를 타지 않고 `<status>/` 에 직접 놓는다."""
+    """묶음 기록 도입 이전 구성의 티켓 — 발행 경로를 타지 않고 `<status>/` 에 직접 놓는다."""
     text = (_TEMPLATE_TEXT.replace("T-NNNN", tid).replace("<제목>", "구세대")
             .replace("status: open", f"status: {status}"))
     text = (text.replace("cluster:\n", f"cluster: {cluster}\n") if cluster
@@ -288,55 +288,55 @@ def _head_files(board_dir: Path) -> set[str]:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# cluster new — 장부 · 통합 브랜치 · 멤버 귀속
+# cluster new — 묶음 기록 · 통합 브랜치 · 멤버 귀속
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
-def test_cluster_new_writes_ledger_branch_and_membership(env, capsys):
+def test_cluster_new_writes_record_branch_and_membership(env, capsys):
     board, board_dir = env
     first = _issue_ticket(board, "첫 멤버")
     second = _issue_ticket(board, "둘째 멤버")
     capsys.readouterr()
 
     rc = board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args(
-        "new", "wave", tickets=f"{first},{second}", spike="raw/spikes/design.md"))
+        "new", "cluster", tickets=f"{first},{second}", spike="raw/spikes/design.md"))
 
     assert rc == 0
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-wave")
-    assert ledger is not None
-    assert ledger["id"] == "C-wave"
-    assert ledger["tickets"] == [first, second]
-    assert ledger["branch"] == "task/wave"
-    assert ledger["base_branch"] == _BASE_BRANCH
-    assert ledger["spike"] == "raw/spikes/design.md"
-    assert ledger["budget"] == cluster_rules.CLUSTER_BUDGET_DEFAULT
-    assert "replans" not in ledger
-    assert ledger["status"] == cluster_rules.CLUSTER_STATUS_OPEN
-    # 장부 파일은 STATUS_DIRS 밖 sibling 이다(상태 순회에 섞이지 않는다).
-    assert cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-wave") == (
-        board_dir / "tickets" / "clusters" / "C-wave.md")
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-cluster")
+    assert records is not None
+    assert records["id"] == "C-cluster"
+    assert records["tickets"] == [first, second]
+    assert records["branch"] == "task/cluster"
+    assert records["base_branch"] == _BASE_BRANCH
+    assert records["spike"] == "raw/spikes/design.md"
+    assert records["budget"] == cluster_rules.CLUSTER_BUDGET_DEFAULT
+    assert "replans" not in records
+    assert records["status"] == cluster_rules.CLUSTER_STATUS_OPEN
+    # 묶음 기록 파일은 STATUS_DIRS 밖 sibling 이다(상태 순회에 섞이지 않는다).
+    assert cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-cluster") == (
+        board_dir / "tickets" / "clusters" / "C-cluster.md")
     # 통합 브랜치가 (명시 정체성이 가리킨) 작업 폴더 코드 git 에 실재하고 기점과 같다.
     code = board.REPO / SLOT
-    assert cluster_binding._cluster_branch_state(str(code), "task/wave") is True
-    tip = _git(["rev-parse", "task/wave"], code).stdout.strip()
+    assert cluster_binding._cluster_branch_state(str(code), "task/cluster") is True
+    tip = _git(["rev-parse", "task/cluster"], code).stdout.strip()
     base_tip = _git(["rev-parse", _BASE_BRANCH], code).stdout.strip()
     assert tip == base_tip
     # 멤버 티켓 frontmatter 가 같은 묶음을 가리킨다.
-    assert _ticket_fm(board, first)["cluster"] == "C-wave"
-    assert _ticket_fm(board, second)["cluster"] == "C-wave"
-    assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-wave") == (first, second)
-    # 장부와 멤버 명세가 board-git 에 함께 실린다.
+    assert _ticket_fm(board, first)["cluster"] == "C-cluster"
+    assert _ticket_fm(board, second)["cluster"] == "C-cluster"
+    assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-cluster") == (first, second)
+    # 묶음 기록과 멤버 명세가 board-git 에 함께 실린다.
     committed = _git(["show", "--stat", "--name-only", "--format=", "HEAD"],
                      board_dir).stdout
-    assert "tickets/clusters/C-wave.md" in committed, committed
+    assert "tickets/clusters/C-cluster.md" in committed, committed
 
 
 @requires_git
 def test_cluster_new_puts_the_branch_in_the_declared_code_tree(split_env, capsys):
-    """분리 형상 — 통합 브랜치는 **선언된 슬롯의 git** 에 생기고 PM 홈엔 생기지 않는다.
+    """분리 구성 — 통합 브랜치는 **선언된 슬롯의 git** 에 생기고 PM 홈엔 생기지 않는다.
 
     기점도 그 트리에서 읽는다: PM 홈의 현재 브랜치(`main`)가 아니라 코드 트리의 현재
-    브랜치(`task/main`)가 장부에 실린다.
+    브랜치(`task/main`)가 묶음 기록에 실린다.
     """
     board, _board_dir, code = split_env
     first = _issue_ticket(board, "분리 형상 멤버")
@@ -346,9 +346,9 @@ def test_cluster_new_puts_the_branch_in_the_declared_code_tree(split_env, capsys
         "new", "split", tickets=first, repo=SLOT_REPO, slot=1))
 
     assert rc == 0
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-split")
-    assert ledger["branch"] == "task/split"
-    assert ledger["base_branch"] == _BASE_BRANCH
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-split")
+    assert records["branch"] == "task/split"
+    assert records["base_branch"] == _BASE_BRANCH
     assert cluster_binding._cluster_branch_state(str(code), "task/split") is True
     # PM 홈은 코드가 없는 트리다 — 여기에 브랜치가 생기면 아무도 못 쓴다.
     assert cluster_binding._cluster_branch_state(str(board.REPO), "task/split") is False
@@ -360,7 +360,7 @@ def test_cluster_new_puts_the_branch_in_the_declared_code_tree(split_env, capsys
 def test_cluster_new_refuses_when_the_code_tree_is_not_declared(split_env, capsys):
     """정체성 없는 `cluster new` 는 첫 부작용 앞에서 거부한다 — 트리를 추측하지 않는다.
 
-    이 명령은 git 브랜치를 만들고 기점을 장부에 박는 쓰기다. 추측하면 PM 홈(코드 없는 트리)
+    이 명령은 git 브랜치를 만들고 기점을 묶음 기록에 적어 두는 쓰기다. 추측하면 PM 홈(코드 없는 트리)
     에 브랜치가 생기고 그 트리의 현재 브랜치가 기점으로 실린다(재발 5회의 형태).
     """
     board, _board_dir, code = split_env
@@ -374,7 +374,7 @@ def test_cluster_new_refuses_when_the_code_tree_is_not_declared(split_env, capsy
     err = capsys.readouterr().err
     assert "코드 트리를 명시로 받는다" in err
     assert "--repo" in err and "--task" in err
-    # 첫 쓰기 앞 거부 — 장부도 브랜치도 멤버 귀속 변경도 없다.
+    # 첫 쓰기 앞 거부 — 묶음 기록도 브랜치도 멤버 귀속 변경도 없다.
     assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-bare").exists()
     assert cluster_binding._cluster_branch_state(str(board.REPO), "task/bare") is False
     assert cluster_binding._cluster_branch_state(str(code), "task/bare") is False
@@ -395,8 +395,8 @@ def test_cluster_new_help_declares_the_code_tree_requirement(board):
 
 
 @requires_git
-def test_cluster_new_absorbs_the_auto_size_one_ledgers(env, capsys):
-    """발행이 만든 크기 1 장부는 흡수된다 — 빈 자동 장부는 남지 않는다."""
+def test_cluster_new_absorbs_the_auto_size_one_records(env, capsys):
+    """발행이 만든 크기 1 묶음 기록은 합쳐진다 — 빈 자동 묶음 기록은 남지 않는다."""
     board, _board_dir = env
     first = _issue_ticket(board, "흡수 대상")
     second = _issue_ticket(board, "흡수 대상 둘")
@@ -410,19 +410,19 @@ def test_cluster_new_absorbs_the_auto_size_one_ledgers(env, capsys):
     assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), f"C-{second}").exists()
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-absorb") == (first, second)
     assert cluster_store._cluster_of_record(pm_paths.home_at(board.REPO), first) == "C-absorb"
-    # 흡수는 board-git 에도 도달한다 — 빈 자동 장부가 공유 board 에 남지 않는다.
+    # 합침은 board-git 에도 도달한다 — 빈 자동 묶음 기록이 공유 board 에 남지 않는다.
     tracked = _git(["ls-tree", "-r", "--name-only", "HEAD"], _board_dir).stdout
     assert f"tickets/clusters/C-{first}.md" not in tracked, tracked
     assert "tickets/clusters/C-absorb.md" in tracked, tracked
-    # 중복 귀속 advisory 가 생기지 않는다(장부는 하나뿐).
+    # 중복 귀속 advisory 가 생기지 않는다(묶음 기록은 하나뿐).
     kinds = [kind for _id, kind, _detail in ticket_lint.lint_clusters(pm_paths.home_at(board.REPO))]
     assert ticket_lint._CLUSTER_DUPLICATE_LINT_KIND not in kinds
 
 
 @requires_git
-def test_cluster_new_is_loud_when_the_absorbed_ledger_cannot_be_removed(
+def test_cluster_new_is_loud_when_the_absorbed_records_cannot_be_removed(
         env, capsys, monkeypatch):
-    """자동 장부 삭제 실패는 삼키지 않는다 — 삼키면 rc 0 뒤 중복 귀속이 남는다."""
+    """자동 묶음 기록 삭제 실패는 삼키지 않는다 — 삼키면 rc 0 뒤 중복 귀속이 남는다."""
     board, _board_dir = env
     first = _issue_ticket(board, "삭제 실패")
     second = _issue_ticket(board, "삭제 실패 둘")
@@ -443,7 +443,7 @@ def test_cluster_new_is_loud_when_the_absorbed_ledger_cannot_be_removed(
     assert rc == 1
     err = capsys.readouterr().err
     assert "옛 묶음 기록에서" in err and first in err and "중복 귀속" in err
-    # 옛 장부는 멤버를 그대로 쥐고 있다 — 그 사실이 rc 와 lint 로 함께 보인다.
+    # 옛 묶음 기록은 멤버를 그대로 쥐고 있다 — 그 사실이 rc 와 lint 로 함께 보인다.
     assert auto.is_file()
     assert cluster_store.cluster_tickets(cluster_store.load_cluster(pm_paths.home_at(board.REPO), f"C-{first}")) == [first]
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-absorbfail") == (first, second)
@@ -471,8 +471,8 @@ def test_cluster_new_refuses_unknown_member_without_writing(env, capsys):
 @requires_git
 def test_cluster_new_refuses_a_member_of_another_multi_cluster(env, capsys):
     board, _board_dir = env
-    first = _issue_ticket(board, "선점 멤버")
-    second = _issue_ticket(board, "선점 멤버 둘")
+    first = _issue_ticket(board, "먼저 차지한 멤버")
+    second = _issue_ticket(board, "먼저 차지한 멤버 둘")
     third = _issue_ticket(board, "새 묶음 멤버")
     capsys.readouterr()
     assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args(
@@ -532,7 +532,7 @@ def test_cluster_name_predicate_matches_git_refname_rules(env, name, creatable):
 @requires_git
 @pytest.mark.parametrize("name", ("foo..bar", "foo.lock", "foo."))
 def test_cluster_new_refuses_a_name_git_cannot_branch(env, capsys, name):
-    """만들 수 없는 브랜치를 장부에 선언한 채 성공하지 않는다 — 첫 쓰기 앞에서 거부."""
+    """만들 수 없는 브랜치를 묶음 기록에 선언한 채 성공하지 않는다 — 첫 쓰기 앞에서 거부."""
     board, _board_dir = env
     first = _issue_ticket(board, "금칙 이름")
     capsys.readouterr()
@@ -549,7 +549,7 @@ def test_cluster_new_refuses_a_name_git_cannot_branch(env, capsys, name):
 
 
 @requires_git
-def test_cluster_new_refuses_an_existing_ledger(env, capsys):
+def test_cluster_new_refuses_an_existing_records(env, capsys):
     board, _board_dir = env
     first = _issue_ticket(board, "한 번")
     capsys.readouterr()
@@ -588,7 +588,7 @@ def test_cluster_new_separates_internal_overlap_from_outside_overlap(env, capsys
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 크기 1 장부 — 발행 · 승격 · 재개방
+# 크기 1 묶음 기록 — 발행 · 승격 · 재개방
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
@@ -606,18 +606,18 @@ def test_new_creates_a_size_one_cluster_and_keeps_the_existing_stdout_lines(
     assert all("클러스터" not in line for line in stdout_lines)
     # 추가 고지는 stderr 1줄이다.
     assert f"크기 1 묶음 기록 생성: C-{tid}" in captured.err
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), f"C-{tid}")
-    assert ledger["tickets"] == [tid]
-    assert ledger["branch"] is None       # 브랜치 선언은 `cluster new` 의 몫이다.
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), f"C-{tid}")
+    assert records["tickets"] == [tid]
+    assert records["branch"] is None       # 브랜치 선언은 `cluster new` 의 몫이다.
     # 판정 입력 두 값은 발행이 박는다 — 기준 브랜치는 발행 세션이 보는 코드 트리의 브랜치.
-    assert ledger["base_branch"] == _BASE_BRANCH
-    assert ledger["budget"] == cluster_rules.CLUSTER_BUDGET_DEFAULT
+    assert records["base_branch"] == _BASE_BRANCH
+    assert records["budget"] == cluster_rules.CLUSTER_BUDGET_DEFAULT
     assert _ticket_fm(board, tid)["cluster"] == f"C-{tid}"
 
 
 @requires_git
-def test_new_keeps_its_own_ledger_while_a_declared_cluster_is_active(env, capsys):
-    """활성 묶음이 있어도 새 티켓은 자기 장부를 갖는다 — 엔진은 묶지 않는다.
+def test_new_keeps_its_own_records_while_a_declared_cluster_is_active(env, capsys):
+    """활성 묶음이 있어도 새 티켓은 자기 묶음 기록을 갖는다 — 엔진은 묶지 않는다.
 
     자동 합류가 있으면 선언된 묶음이 뒤따르는 발행을 전부 빨아들여, 그 묶음의 예산·기준
     브랜치가 아무도 그렇게 선언한 적 없는 티켓의 판정을 대신한다.
@@ -635,8 +635,8 @@ def test_new_keeps_its_own_ledger_while_a_declared_cluster_is_active(env, capsys
 
 
 @requires_git
-def test_cluster_members_without_ledger_is_empty(env, capsys):
-    """멤버는 장부가 선언한다 — 이름 모양으로 멤버를 합성하지 않는다(구세대 티켓 포함).
+def test_cluster_members_without_records_is_empty(env, capsys):
+    """멤버는 묶음 기록이 선언한다 — 이름 모양으로 멤버를 합성하지 않는다(옛 버전 티켓 포함).
 
     이름 해석(`ticket_cluster`)은 남는다 — 종결 티켓도 자기 묶음 id 는 갖는다. 사라진 것은
     멤버 합성이고, 그 빈 튜플이 조회 부재와 준비 거부의 입력이다.
@@ -651,9 +651,9 @@ def test_cluster_members_without_ledger_is_empty(env, capsys):
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-T-0777") == ()
     # 없는 티켓 ID 모양도 같은 빈 값이다(이름 모양은 입력이 아니다).
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-T-9999") == ()
-    assert ticket_lint.lint_clusters(pm_paths.home_at(board.REPO)) == []      # 장부가 없으니 관측할 것도 없다.
+    assert ticket_lint.lint_clusters(pm_paths.home_at(board.REPO)) == []      # 묶음 기록이 없으니 관측할 것도 없다.
 
-    # 선언된 묶음만 멤버를 답한다 — 멤버가 흡수된 자동 장부 이름도 빈 값이다.
+    # 선언된 묶음만 멤버를 답한다 — 멤버가 다른 묶음으로 옮겨진 자동 묶음 기록 이름도 빈 값이다.
     first = _issue_ticket(board, "선언된 멤버")
     second = _issue_ticket(board, "선언된 멤버 둘")
     assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args(
@@ -665,11 +665,11 @@ def test_cluster_members_without_ledger_is_empty(env, capsys):
 
 
 @requires_git
-def test_reopen_legacy_done_creates_size_one_ledger(env, capsys):
-    """장부 없는 done 티켓의 reopen — open 진입 자리에서 자기 장부를 만든다.
+def test_reopen_legacy_done_creates_size_one_records(env, capsys):
+    """묶음 기록 없는 done 티켓의 reopen — open 진입 자리에서 자기 묶음 기록을 만든다.
 
-    장부 없이 open 으로 돌아오면 라운드 예산·완료 기록이 읽을 선언이 없어 그 티켓은 위임에서
-    멈춘다(장부를 손으로 만들어야 종결되던 실증). 발행·승격과 같은 술어·같은 생성이다.
+    묶음 기록 없이 open 으로 돌아오면 라운드 예산·완료 기록이 읽을 선언이 없어 그 티켓은 위임에서
+    멈춘다(묶음 기록을 손으로 만들어야 종결되던 실증). 발행·승격과 같은 술어·같은 생성이다.
     """
     board, board_dir = env
     _write_legacy_ticket(board_dir, "T-0500")
@@ -681,13 +681,13 @@ def test_reopen_legacy_done_creates_size_one_ledger(env, capsys):
     fm = _ticket_fm(board, "T-0500")
     assert fm["status"] == "open"
     assert fm["cluster"] == "C-T-0500"
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-T-0500")
-    assert ledger["tickets"] == ["T-0500"]
-    assert ledger["base_branch"] is None  # 재개방은 제품 트리를 추측하지 않는다.
-    assert ledger["budget"] == cluster_rules.CLUSTER_BUDGET_DEFAULT
-    assert ledger["status"] == cluster_rules.CLUSTER_STATUS_OPEN
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-T-0500")
+    assert records["tickets"] == ["T-0500"]
+    assert records["base_branch"] is None  # 재개방은 제품 트리를 추측하지 않는다.
+    assert records["budget"] == cluster_rules.CLUSTER_BUDGET_DEFAULT
+    assert records["status"] == cluster_rules.CLUSTER_STATUS_OPEN
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-T-0500") == ("T-0500",)
-    # 장부는 board-git 공유 파일이다 — 같은 커밋 스코프로 실린다(미커밋으로 남으면 다른
+    # 묶음 기록은 board-git 공유 파일이다 — 같은 커밋 스코프로 실린다(미커밋으로 남으면 다른
     # 클론에서 부재다).
     head = _head_files(board_dir)
     assert "tickets/clusters/C-T-0500.md" in head, head
@@ -696,29 +696,29 @@ def test_reopen_legacy_done_creates_size_one_ledger(env, capsys):
 
 
 @requires_git
-def test_reopen_keeps_declared_cluster_and_does_not_touch_ledger(env, capsys):
-    """이미 귀속된 티켓의 reopen 은 장부를 손대지 않는다 — 덮으면 선언이 사라진다.
+def test_reopen_keeps_declared_cluster_and_does_not_touch_records(env, capsys):
+    """이미 귀속된 티켓의 reopen 은 묶음 기록을 손대지 않는다 — 덮으면 선언이 사라진다.
 
-    무조건 귀속하면 같은 이름의 장부가 덮여 `status`·`budget`·`tickets` 가 기본값으로
-    되돌아가고, 사람이 선언한 묶음의 멤버는 자기 이름 장부와 옛 장부에 이중으로 귀속된다.
+    무조건 귀속하면 같은 이름의 묶음 기록이 덮여 `status`·`budget`·`tickets` 가 기본값으로
+    되돌아가고, 사람이 선언한 묶음의 멤버는 자기 이름 묶음 기록과 옛 묶음 기록에 이중으로 귀속된다.
     """
     board, board_dir = env
     _write_legacy_ticket(board_dir, "T-0501", cluster="C-declared")
-    ledger_fm = cluster_rules._new_cluster_fm(
+    record_fm = cluster_rules._new_cluster_fm(
         "C-declared", ["T-0501", "T-0502"], base_branch=_BASE_BRANCH,
         branch="task/declared")
-    ledger_fm["status"] = "closed"
-    ledger_path = cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger_fm)
-    before = ledger_path.read_bytes()
+    record_fm["status"] = "closed"
+    record_path = cluster_store.dump_cluster(pm_paths.home_at(board.REPO), record_fm)
+    before = record_path.read_bytes()
     _git(["add", "-A"], board_dir)
-    _git(["commit", "-qm", "declared ledger"], board_dir)
+    _git(["commit", "-qm", "declared record"], board_dir)
     capsys.readouterr()
 
     rc = board_ticket.cmd_reopen(pm_paths.home_at(board.REPO), _reopen_args("T-0501", "묶음 재작업"))
 
     assert rc == 0
     assert _ticket_fm(board, "T-0501")["cluster"] == "C-declared"
-    assert ledger_path.read_bytes() == before      # status·budget·tickets 전부 불변
+    assert record_path.read_bytes() == before      # status·budget·tickets 전부 불변
     assert not cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "C-T-0501").exists()
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-declared") == ("T-0501", "T-0502")
     # 만지지 않은 파일은 커밋 스코프에도 없다.
@@ -727,24 +727,24 @@ def test_reopen_keeps_declared_cluster_and_does_not_touch_ledger(env, capsys):
 
 
 @requires_git
-def test_reopen_binds_to_an_existing_ledger_without_overwriting_it(env, capsys):
-    """필드는 비었는데 장부가 이미 이 티켓을 담고 있으면 만들지 않고 역참조만 복구한다.
+def test_reopen_binds_to_an_existing_records_without_overwriting_it(env, capsys):
+    """필드는 비었는데 묶음 기록이 이미 이 티켓을 담고 있으면 만들지 않고 역참조만 복구한다.
 
-    구세대 티켓 중에는 종결을 위해 장부를 손으로 만든 자산이 있다(실 board 의 C-T-0866).
-    필드 유무만 보고 같은 이름으로 새 장부를 만들면 그 장부가 기본값으로 덮여
-    `base_branch`·`status`·`close_step` 이 사라지고, 멤버가 여럿이면 나머지 멤버가 장부에서
-    떨어져 나간다. 귀속 판정은 필드와 장부 파일 두 축을 다 본다(`_cluster_of_record`).
+    옛 버전 티켓 중에는 종결을 위해 묶음 기록을 손으로 만든 자산이 있다(실 board 의 C-T-0866).
+    필드 유무만 보고 같은 이름으로 새 묶음 기록을 만들면 그 기록이 기본값으로 덮여
+    `base_branch`·`status`·`close_step` 이 사라지고, 멤버가 여럿이면 나머지 멤버가 묶음 기록에서
+    떨어져 나간다. 귀속 판정은 필드와 묶음 기록 파일 두 기준을 다 본다(`_cluster_of_record`).
     """
     board, board_dir = env
     _write_legacy_ticket(board_dir, "T-0503")
-    ledger_fm = cluster_rules._new_cluster_fm("C-T-0503", ["T-0503"], base_branch="task/main")
-    ledger_fm["status"] = "closed"
-    ledger_fm["close_step"] = "board"
-    ledger_fm["replans"] = []
-    ledger_path = cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger_fm)
-    before = ledger_path.read_bytes()
+    record_fm = cluster_rules._new_cluster_fm("C-T-0503", ["T-0503"], base_branch="task/main")
+    record_fm["status"] = "closed"
+    record_fm["close_step"] = "board"
+    record_fm["replans"] = []
+    record_path = cluster_store.dump_cluster(pm_paths.home_at(board.REPO), record_fm)
+    before = record_path.read_bytes()
     _git(["add", "-A"], board_dir)
-    _git(["commit", "-qm", "hand-made ledger"], board_dir)
+    _git(["commit", "-qm", "hand-made record"], board_dir)
     capsys.readouterr()
 
     rc = board_ticket.cmd_reopen(pm_paths.home_at(board.REPO), _reopen_args("T-0503", "구세대 재작업"))
@@ -753,19 +753,19 @@ def test_reopen_binds_to_an_existing_ledger_without_overwriting_it(env, capsys):
     fm = _ticket_fm(board, "T-0503")
     assert fm["status"] == "open"
     assert fm["cluster"] == "C-T-0503"            # 역참조만 복구한다.
-    assert ledger_path.read_bytes() == before     # base_branch·status·close_step 전부 불변
+    assert record_path.read_bytes() == before     # base_branch·status·close_step 전부 불변
     assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-T-0503") == ("T-0503",)
-    # 장부를 만지지 않았으므로 board-git 커밋 스코프에도 없다.
+    # 묶음 기록을 만지지 않았으므로 board-git 커밋 스코프에도 없다.
     assert all(not name.startswith("tickets/clusters/")
                for name in _head_files(board_dir)), _head_files(board_dir)
 
 
 @requires_git
-def test_reopen_to_draft_creates_no_ledger(env, capsys):
-    """`discarded_from: draft` 복귀는 장부를 만들지 않는다 — 승격이 그 자리를 받는다.
+def test_reopen_to_draft_creates_no_records(env, capsys):
+    """`discarded_from: draft` 복귀는 묶음 기록을 만들지 않는다 — 승격이 그 자리를 받는다.
 
-    draft 명세는 공유 board 밖이라(`cmd_new` 와 같은 규칙) 지금 장부를 만들면 다른 클론에
-    없는 티켓을 가리키는 장부가 공유된다.
+    draft 명세는 공유 board 밖이라(`cmd_new` 와 같은 규칙) 지금 묶음 기록을 만들면 다른 클론에
+    없는 티켓을 가리키는 묶음 기록이 공유된다.
     """
     board, board_dir = env
     _write_legacy_ticket(board_dir, "T-0502", status="discarded", discarded_from="draft")
@@ -782,7 +782,7 @@ def test_reopen_to_draft_creates_no_ledger(env, capsys):
 
 @requires_git
 def test_draft_defers_attribution_until_promote(board, tmp_path, capsys):
-    """draft 는 공유 board 밖이라 승격 자리에서 귀속한다(공유 장부가 유령 멤버를 갖지 않게)."""
+    """draft 는 공유 board 밖이라 승격 자리에서 귀속한다(공유 묶음 기록이 유령 멤버를 갖지 않게)."""
     bare = tmp_path / "bare-draft"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare, template=_DRAFT_TEMPLATE_TEXT)
@@ -820,11 +820,11 @@ def test_lint_reports_member_and_duplicate_as_advisory(env, capsys):
     capsys.readouterr()
     assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args("new", "obs", tickets=first)) == 0
     capsys.readouterr()
-    # 멤버 부재 — 장부가 board 에 없는 티켓을 가리킨다.
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-obs")
-    ledger["tickets"] = [first, "T-9998"]
-    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger)
-    # 중복 귀속 — 다른 장부가 같은 티켓을 멤버로 담는다.
+    # 멤버 부재 — 묶음 기록이 board 에 없는 티켓을 가리킨다.
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-obs")
+    records["tickets"] = [first, "T-9998"]
+    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), records)
+    # 중복 귀속 — 다른 묶음 기록이 같은 티켓을 멤버로 담는다.
     cluster_store.dump_cluster(pm_paths.home_at(board.REPO), cluster_rules._new_cluster_fm("C-shadow", [first]))
 
     findings = ticket_lint.lint_clusters(pm_paths.home_at(board.REPO))
@@ -834,7 +834,7 @@ def test_lint_reports_member_and_duplicate_as_advisory(env, capsys):
         ticket_lint._CLUSTER_MEMBER_LINT_KIND,
         ticket_lint._CLUSTER_DUPLICATE_LINT_KIND,
     }, findings
-    # 두 kind 다 advisory 다 — `lint --gate` 차단 집합에 들지 않는다.
+    # 두 kind 다 advisory 다 — `lint --blocking` 차단 집합에 들지 않는다.
     assert kinds <= board_lint._ADVISORY_LINT_KINDS
     duplicate = [item for item in findings
                  if item[1] == ticket_lint._CLUSTER_DUPLICATE_LINT_KIND][0]
@@ -842,25 +842,25 @@ def test_lint_reports_member_and_duplicate_as_advisory(env, capsys):
 
 
 @requires_git
-def test_lint_clusters_reads_only_the_ledger(split_env, capsys):
-    """lint 는 장부 파일만 읽는다 — 브랜치 실재를 재려면 트리를 추측해야 하기 때문이다.
+def test_lint_clusters_reads_only_the_records(split_env, capsys):
+    """lint 는 묶음 기록 파일만 읽는다 — 브랜치 실재를 재려면 트리를 추측해야 하기 때문이다.
 
-    이 표면은 인자를 받지 않고 장부에도 코드 트리를 적는 자리가 없다. 추측하면 PM 홈(코드
-    없는 트리)에서 "통합 브랜치 부재"가 상시 참이 된다 — 그래서 그 축 자체를 없앴다.
+    이 명령은 인자를 받지 않고 묶음 기록에도 코드 트리를 적는 자리가 없다. 추측하면 PM 홈(코드
+    없는 트리)에서 "통합 브랜치 부재"가 상시 참이 된다 — 그래서 그 기준 자체를 없앴다.
     """
     board, _board_dir, code = split_env
-    first = _issue_ticket(board, "장부만 읽는다")
+    first = _issue_ticket(board, "기록만 읽는다")
     capsys.readouterr()
     assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args(
-        "new", "ledger", tickets=first, repo=SLOT_REPO, slot=1)) == 0
+        "new", "record", tickets=first, repo=SLOT_REPO, slot=1)) == 0
     capsys.readouterr()
-    assert cluster_binding._cluster_branch_state(str(code), "task/ledger") is True
-    # 코드 트리에서 통합 브랜치를 지우고, 멤버 부재 축은 살려 둔다(입력이 장부 안에 있다).
+    assert cluster_binding._cluster_branch_state(str(code), "task/record") is True
+    # 코드 트리에서 통합 브랜치를 지우고, 멤버 부재 기준은 살려 둔다(입력이 묶음 기록 안에 있다).
     _git(["checkout", "-q", _BASE_BRANCH], code)
-    _git(["branch", "-D", "task/ledger"], code)
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-ledger")
-    ledger["tickets"] = [first, "T-9998"]
-    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger)
+    _git(["branch", "-D", "task/record"], code)
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "C-record")
+    records["tickets"] = [first, "T-9998"]
+    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), records)
 
     findings = ticket_lint.lint_clusters(pm_paths.home_at(board.REPO))
 
@@ -886,7 +886,7 @@ def test_cluster_show_renders_the_declared_values(env, capsys):
     assert "-- C-view (open · 멤버 1) --" in out
     assert f"base_branch: {_BASE_BRANCH}" in out
     assert "branch: task/view" in out
-    # 실재 표기는 없다 — 이 표면은 트리를 들지 않는다(선언값 그대로).
+    # 실재 표기는 없다 — 이 명령은 트리를 들지 않는다(선언값 그대로).
     assert "(존재)" not in out and "(부재)" not in out and "판정 불능" not in out
     assert "spike: raw/spikes/x.md" in out
     assert "architect=1" in out and "fix=1" in out
@@ -895,7 +895,7 @@ def test_cluster_show_renders_the_declared_values(env, capsys):
 
 
 @requires_git
-def test_cluster_show_reports_a_missing_ledger(env, capsys):
+def test_cluster_show_reports_a_missing_records(env, capsys):
     board, _board_dir = env
 
     rc = board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args("show", "nope"))
@@ -905,11 +905,11 @@ def test_cluster_show_reports_a_missing_ledger(env, capsys):
 
 
 @requires_git
-def test_cluster_show_without_ledger_is_not_found(env, capsys):
-    """장부 없음은 rc 2 하나다 — 조회가 묶음을 합성하던 rc 0 경로는 없다.
+def test_cluster_show_without_records_is_not_found(env, capsys):
+    """묶음 기록 없음은 rc 2 하나다 — 조회가 묶음을 합성하던 rc 0 경로는 없다.
 
-    티켓이 실재하는 이름(구세대 티켓의 자기 이름)이 그 경로의 입력이었다 — 조회가 선언한 적
-    없는 묶음을 만들어 보이면 준비 표면도 같은 유령을 받는다.
+    티켓이 실재하는 이름(옛 버전 티켓의 자기 이름)이 그 경로의 입력이었다 — 조회가 선언한 적
+    없는 묶음을 만들어 보이면 준비 명령도 같은 유령을 받는다.
     """
     board, board_dir = env
     _write_legacy_ticket(board_dir, "T-0777", status="open")
@@ -939,9 +939,9 @@ def test_t0929_selected_tree_new_and_cluster_anchor(split_env, tmp_path):
     assert fm['created_by'].endswith('/main')
     assert cluster_store.load_cluster(pm_paths.home_at(board.REPO), fm['cluster'])['base_branch'] == base
     assert board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), _cluster_args('new', 'selected', tickets=tid, task='main', slot=2)) == 0
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), 'C-selected')
-    assert ledger['base_branch'] == base
-    assert ledger['branch'] == branch
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), 'C-selected')
+    assert records['base_branch'] == base
+    assert records['branch'] == branch
     assert _git(['show-ref', '--verify', 'refs/heads/task/selected'], slot).returncode == 0
     assert _git(['show-ref', '--verify', 'refs/heads/task/selected'], tmp_path / 'work' / f'{SLOT_REPO}_1').returncode != 0
 
@@ -956,13 +956,13 @@ def test_cluster_new_base_branch_is_the_bundle_parent(split_env, tmp_path, path)
         from pm_engine.app import branch_checkout
         branch_checkout.create_task_branch(home, f'work/{SLOT_REPO}_1', 'task/basis', parent='task/main', owner_task='main', protected=[])
     assert board_cluster.cmd_cluster(home, _cluster_args('new', 'basis', tickets=tid, slot=1)) == 0
-    ledger = cluster_store.load_cluster(home, 'C-basis')
-    assert ledger['branch'] == 'task/basis'
-    assert ledger['base_branch'] == 'task/main'
-    assert ledger['base_branch'] != ledger['branch']
+    records = cluster_store.load_cluster(home, 'C-basis')
+    assert records['branch'] == 'task/basis'
+    assert records['base_branch'] == 'task/main'
+    assert records['base_branch'] != records['branch']
     from pm_engine.infra import branch_store, worktree_git
     parent = branch_store.read_branch_parent('task/basis', git_runner=worktree_git._real_git_runner(slot))
-    assert parent['name'] == ledger['base_branch']
+    assert parent['name'] == records['base_branch']
 
 
 @requires_git
@@ -998,7 +998,7 @@ def test_t0929_selected_tree_failure_before_writes(split_env, tmp_path, monkeypa
         pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(data), encoding='utf-8')
     before = {path: path.read_bytes() for path in _all_ticket_files(board)}
     calls = []
-    monkeypatch.setattr(cluster_store, 'dump_cluster', lambda *a, **k: calls.append('ledger'))
+    monkeypatch.setattr(cluster_store, 'dump_cluster', lambda *a, **k: calls.append('record'))
     monkeypatch.setattr(cluster_binding, '_cluster_ensure_branch', lambda *a: calls.append('branch'))
     with pytest.raises(SystemExit):
         (board_ticket.cmd_new(pm_paths.home_at(board.REPO), args) if consumer == 'new' else board_cluster.cmd_cluster(pm_paths.home_at(board.REPO), args))
@@ -1023,9 +1023,9 @@ def test_t0930_publish_binding(split_env, tmp_path, capsys):
     assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args("명시 제품", repo=SLOT_REPO, slot=1)) == 0
     path = _all_ticket_files(board)[0]
     fm, _ = ticket_store.load_ticket(path)
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), fm["cluster"])
-    assert ledger["base_branch"] == "main"
-    assert ledger["branch"] is None
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), fm["cluster"])
+    assert records["base_branch"] == "main"
+    assert records["branch"] is None
     assert _git(["symbolic-ref", "--short", "HEAD"], tmp_path).stdout.strip() == "main"
 
 
@@ -1041,7 +1041,7 @@ def test_t0930_publish_binding_rejects_parent_git(split_env, tmp_path, marker):
         (slot / ".git").write_text("gitdir: missing-git-dir\n", encoding="utf-8")
     before = (pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes(), _git(["rev-parse", "HEAD"], board_dir).stdout,
               _git(["rev-parse", "HEAD"], tmp_path).stdout)
-    # task 폴더 판독 실패는 중단(SystemExit), 판독 뒤 결속 근거 실패는 rc 1 — 둘 다 거부다.
+    # task 폴더 판독 실패는 중단(SystemExit), 판독 뒤 연결 근거 실패는 rc 1 — 둘 다 거부다.
     try:
         rc = board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args("잘못된 제품 marker", repo=SLOT_REPO, slot=1))
     except SystemExit as exc:
@@ -1063,8 +1063,8 @@ def test_t0930_publish_binding_linked_worktree(split_env, tmp_path):
     assert (linked / ".git").is_file()
     assert board_cluster._cluster_publish_base_branch(pm_paths.home_at(board.REPO), _new_args("linked", repo=SLOT_REPO, slot=3)) == (str(linked), "task/linked")
     assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args("linked", repo=SLOT_REPO, slot=3)) == 0
-    ledger = cluster_store.all_clusters(pm_paths.home_at(board.REPO))[0]
-    assert ledger["base_branch"] == "task/linked" and ledger["branch"] is None
+    records = cluster_store.all_clusters(pm_paths.home_at(board.REPO))[0]
+    assert records["base_branch"] == "task/linked" and records["branch"] is None
 
 
 @requires_git
@@ -1144,10 +1144,10 @@ def test_t0930_publish_revalidation_records_the_validated_final_basis(
     assert observed[0] == (str(slot), _BASE_BRANCH)
     assert len(observed) == 2
     ticket = ticket_store.load_ticket(_all_ticket_files(board)[0])[0]
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), ticket["cluster"])
-    assert ledger["base_branch"] == observed[-1][1]
-    assert ledger["base_branch"] == ("task/final-product" if change else _BASE_BRANCH)
-    assert ledger["branch"] is None
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), ticket["cluster"])
+    assert records["base_branch"] == observed[-1][1]
+    assert records["base_branch"] == ("task/final-product" if change else _BASE_BRANCH)
+    assert records["branch"] is None
     after_branches = _git(["for-each-ref", "--format=%(refname)", "refs/heads"], slot).stdout
     assert after_branches == ("refs/heads/task/final-product\n" + branches if change else branches)
     assert _git(["rev-parse", "HEAD"], board_dir).stdout != head
@@ -1170,9 +1170,9 @@ def test_t0930_publish_revalidation_preserves_legacy_local_new(board, tmp_path):
     assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args("로컬 발행")) == 0
     path = _all_ticket_files(board)[0]
     fm, _ = ticket_store.load_ticket(path)
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), fm["cluster"])
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), fm["cluster"])
     before = (path.read_bytes(), cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), fm["cluster"]).read_bytes())
-    assert ledger["base_branch"] == _BASE_BRANCH and ledger["branch"] is None
+    assert records["base_branch"] == _BASE_BRANCH and records["branch"] is None
     assert board_ticket.cmd_promote(pm_paths.home_at(board.REPO), argparse.Namespace(id=fm["id"])) == 0
     assert (path.read_bytes(), cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), fm["cluster"]).read_bytes()) == before
     assert _git(["rev-parse", "HEAD"], tmp_path).stdout == head

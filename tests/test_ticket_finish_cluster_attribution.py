@@ -1,8 +1,8 @@
-"""T-0790 — 공유 트리 wave 의 귀속 창(claimed ∪ 창 안 done).
+"""T-0790 — 공유 트리 묶음의 귀속 창(claimed ∪ 창 안 done).
 
-같은 worktree 에서 여러 티켓이 동시에 돌면 `claimed/` 만 보는 스냅샷은 같은 wave 에서 **먼저
+같은 worktree 에서 여러 티켓이 동시에 돌면 `claimed/` 만 보는 상태 기록은 같은 묶음에서 **먼저
 완료된** 티켓을 못 본다. 귀속 창은 내 `claimed_at` 이후 완료된 `done/` 티켓을 함께 본다. 이
-창의 소비자는 완료 기록 잔여 판정의 다른 멤버 경로(`_sibling_member_scopes`)다. 이 파일은 실
+창의 소비자는 완료 기록 남은 변경 판정의 다른 멤버 경로(`_sibling_member_scopes`)다. 이 파일은 실
 git 저장소 + 실 board 엔진 사본 + 실 티켓 파일로 창의 구성원과 읽기 실패 보고를 고정한다.
 board 대역은 쓰지 않는다 (실 보드 상태도 읽거나 바꾸지 않는다).
 """
@@ -47,7 +47,7 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
 def _ticket(touches: list[str], *, status: str = "claimed", estimate: str = "small",
             claimed_at: str | None = None, completed_at: str | None = None,
             claimed_rev: str | None = None, broken: bool = False) -> dict:
-    """티켓 한 건의 형상 선언 — 창 축(status·시각)과 표기 축(touches)을 함께 준다."""
+    """티켓 한 건의 구성 선언 — 창 기준(status·시각)과 표기 기준(touches)을 함께 준다."""
     return {
         "touches": touches, "status": status, "estimate": estimate,
         "claimed_at": claimed_at, "completed_at": completed_at,
@@ -60,18 +60,18 @@ def _ticket_text(ticket_id: str, spec: dict) -> str:
               f"status: {spec['status']}"]
     for key in ("claimed_at", "completed_at", "claimed_rev"):
         if spec.get(key):
-            # board writer 와 같은 인용 스칼라 — 인용이 없으면 YAML 이 datetime 으로 접는다.
+            # board writer 와 같은 인용 스칼라 — 인용이 없으면 YAML 이 datetime 으로 바꾼다.
             fields.append(f"{key}: '{spec[key]}'")
     if spec["broken"]:
-        # 실측 손상 형상(인용 없는 콜론) — 전문 파싱이 닿으면 여기서 터진다.
+        # 실측 손상 경우(인용 없는 콜론) — 전문 파싱이 닿으면 여기서 터진다.
         fields.append("design: required: 인용 없는 콜론")
     fields.append("touches:")
     fields += [f"- {touch}" for touch in spec["touches"]]
     fields.append(f"estimate: {spec['estimate']}")
-    return "---\n" + "\n".join(fields) + "\n---\n\n# hermetic wave shape\n"
+    return "---\n" + "\n".join(fields) + "\n---\n\n# hermetic cluster shape\n"
 
 
-def _wave_shape(tmp_path: Path, tickets: dict[str, dict], files: dict[str, int]):
+def _cluster_shape(tmp_path: Path, tickets: dict[str, dict], files: dict[str, int]):
     """실 board 엔진 + 실 창 티켓(claimed/done) + 실 git diff 를 가진 tmp repo.
 
     반환은 `(repo 루트, 변경 전 baseline 커밋)` 이다.
@@ -87,9 +87,9 @@ def _wave_shape(tmp_path: Path, tickets: dict[str, dict], files: dict[str, int])
             _ticket_text(ticket_id, spec), encoding="utf-8")
 
     _git(root, "init", "-q")
-    _git(root, "config", "user.email", "wave-attribution-test@example.invalid")
-    _git(root, "config", "user.name", "wave attribution test")
-    # 판정 기준(통합 브랜치)은 묶음 장부가 소유한다 — 실 board 는 발행이 이 파일을 만든다.
+    _git(root, "config", "user.email", "cluster-attribution-test@example.invalid")
+    _git(root, "config", "user.name", "cluster attribution test")
+    # 판정 기준(통합 브랜치)은 묶음 기록이 소유한다 — 실 board 는 발행이 이 파일을 만든다.
     for ticket_id in tickets:
         write_cluster_ledger(
             root / ".project_manager" / "wiki", ticket_id,
@@ -102,26 +102,26 @@ def _wave_shape(tmp_path: Path, tickets: dict[str, dict], files: dict[str, int])
     # 엔진 사본도 baseline 에 넣어 하네스 복사본이 미커밋 작업물로 안 보이게 한다.
     _git(root, "add", "seed.txt", ".project_manager", *files)
     _git(root, "commit", "-q", "-m", "seed")
-    anchor = _git(root, "rev-parse", "HEAD").stdout.strip()
+    base_rev = _git(root, "rev-parse", "HEAD").stdout.strip()
     for relative, lines in files.items():
         (root / relative).write_text("x\n" * lines, encoding="utf-8")
-    return root, anchor
+    return root, base_rev
 
 
 def _window(root: Path, ticket_id: str):
-    """그 티켓의 귀속 창 스냅샷 — 소비자(`_sibling_member_scopes`)와 같은 입력으로 부른다."""
+    """그 티켓의 귀속 창 상태 기록 — 소비자(`_sibling_member_scopes`)와 같은 입력으로 부른다."""
     home = pm_paths.home_at(root)
     return finish_store.get_in_window_ticket_touches(
         home, since=finish_store.get_ticket_claimed_at(home, ticket_id))
 
 
-# ══ 형상 F — 귀속 창(claimed ∪ 창 안 done) ═════════════════════════════════
+# ══ 구성 F — 귀속 창(claimed ∪ 창 안 done) ═════════════════════════════════
 
 
 @requires_git
 def test_window_includes_done_tickets_completed_after_my_claim(tmp_path):
     """내 claim 이후 완료된 티켓은 아직 같은 트리에 diff 를 남기고 있다 — 창 안이다."""
-    root, _anchor = _wave_shape(
+    root, _base_rev = _cluster_shape(
         tmp_path,
         {"T-1301": _ticket(["tests"], claimed_at=_CLAIMED_AT),
          "T-1302": _ticket(["tests/test_b.py"], status="done",
@@ -158,8 +158,8 @@ def test_window_includes_done_tickets_completed_after_my_claim(tmp_path):
 
 @requires_git
 def test_window_excludes_done_tickets_completed_before_my_claim(tmp_path):
-    """내 claim 이전에 끝난 티켓은 이 wave 의 참여자가 아니다 — 창 밖이다."""
-    root, _anchor = _wave_shape(
+    """내 claim 이전에 끝난 티켓은 이 묶음의 참여자가 아니다 — 창 밖이다."""
+    root, _base_rev = _cluster_shape(
         tmp_path,
         {"T-1311": _ticket(["tests"], claimed_at=_CLAIMED_AT),
          "T-1312": _ticket(["tests/test_b.py"], status="done",
@@ -177,7 +177,7 @@ def test_window_excludes_done_tickets_completed_before_my_claim(tmp_path):
 @requires_git
 def test_missing_claimed_at_folds_to_the_claimed_only_window(tmp_path):
     """`claimed_at` 이 없으면 창을 정할 수 없다 — `claimed/` 만 보는 종전 창."""
-    root, _anchor = _wave_shape(
+    root, _base_rev = _cluster_shape(
         tmp_path,
         {"T-1321": _ticket(["tests"]),
          "T-1322": _ticket(["tests/test_b.py"], status="done",
@@ -193,7 +193,7 @@ def test_missing_claimed_at_folds_to_the_claimed_only_window(tmp_path):
 @requires_git
 def test_out_of_window_broken_ticket_is_never_fully_parsed(tmp_path):
     """창 밖 done 티켓은 frontmatter 머리만 읽는다 — 손상 YAML 이 창을 깨지 않는다."""
-    root, _anchor = _wave_shape(
+    root, _base_rev = _cluster_shape(
         tmp_path,
         {"T-1331": _ticket(["tests"], claimed_at=_CLAIMED_AT),
          "T-1332": _ticket(["tests/test_b.py"], status="done", broken=True,
@@ -209,7 +209,7 @@ def test_out_of_window_broken_ticket_is_never_fully_parsed(tmp_path):
 @requires_git
 def test_in_window_broken_ticket_is_reported_as_a_snapshot_error(tmp_path):
     """창 **안** 티켓이 손상되면 조용히 넘기지 않는다 — 읽기 실패가 전파된다."""
-    root, _anchor = _wave_shape(
+    root, _base_rev = _cluster_shape(
         tmp_path,
         {"T-1341": _ticket(["tests"], claimed_at=_CLAIMED_AT),
          "T-1342": _ticket(["tests/test_b.py"], status="done", broken=True,

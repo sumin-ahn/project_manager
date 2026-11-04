@@ -1,4 +1,4 @@
-"""ticket_finish 공개 CLI — argv 파싱·오실행 가드·정체성 검증·완료 기록/종결 배선 (층: cli)."""
+"""ticket_finish 공개 CLI — argv 파싱·오실행 가드·정체성 검증·완료 기록/종결 연결 (층: cli)."""
 from __future__ import annotations
 
 import argparse
@@ -11,12 +11,12 @@ from pm_engine.infra import areas_store, finish_store, lease_store, pm_paths
 
 
 # ── PM-홈 worktree 오실행 가드 (쓰기-경로 전용) ─────────────────────────
-# ticket_finish 를 PM 홈의 등록 worktree cwd 에서 오실행하면 실행 앵커가 worktree 로 착지해
+# ticket_finish 를 PM 홈의 등록 worktree cwd 에서 오실행하면 실행 기준 위치가 worktree 로 착지해
 # stray `wiki/log/current.md` append(+ board.py complete 오실행)를 낸다. board.py
 # 와 같은 pm_paths detector를 명시 Home으로 호출한다. 판정 오류는 전파하고, 쓰기 단계 전에
 # 등록 worktree 오실행을 거부한다.
 
-def _guard_worktree_misanchor(home) -> bool:
+def _guard_worktree_wrong_repo(home) -> bool:
     """쓰기-경로 진입 가드 — 오실행이면 fail-loud 후 True(차단), 아니면 False(통과)."""
     pm_home = pm_paths._pm_home_worktree_misanchor(home)
     if pm_home is None:
@@ -100,7 +100,7 @@ def main(home, argv: list[str] | None = None) -> int:
 
     # PM-홈 worktree 오실행 가드— 기록의 어떤 부작용(회귀/log append/complete/stage)도
     # 나기 *전에* fail-loud. 읽기 경로 없음(ticket_finish 는 전부 쓰기 기록)이라 진입에서 한 번.
-    if _guard_worktree_misanchor(home):
+    if _guard_worktree_wrong_repo(home):
         return 1
 
     # 완료 기록 단위는 하나다 — 티켓 하나(현행)이거나 묶음 하나(종결)다. 둘 다 주면 어느
@@ -147,10 +147,10 @@ def main(home, argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    # task 명 검증(must-fix 게이트) — board 정체성 깔때기와 **동일 공유 validator**
-    # (`identity_args.validate_task_name`·`task_rules._validate_task_name`과 동형·로직 중복 0)를 소비해,
+    # task 명 검증(must-fix 통과 조건) — board 정체성 깔때기와 **동일 공유 validator**
+    # (`identity_args.validate_task_name`·`task_rules._validate_task_name`과 같은 방식·로직 중복 0)를 소비해,
     # 실행-위치 해소 이전 불법 task 명(traversal/공백/`<repo>_<N>` 예약)을 fail-loud 한다. `--slot`
-    # 검증과 동형으로 `--no-pytest` 무관 **항상** 수행(회귀 skip 여도 정체성 검증은 우회 안 됨). 예약패턴
+    # 검증과 같은 방식으로 `--no-pytest` 무관 **항상** 수행(회귀 skip 여도 정체성 검증은 우회 안 됨). 예약패턴
     # 판정용 registered_repos 는 `areas_store.registered_repos` 로 해소한다(판독 실패는 전파).
     if identity.task:
         registered = areas_store.registered_repos(home)
@@ -168,7 +168,7 @@ def main(home, argv: list[str] | None = None) -> int:
     # 묶음 기록의 브랜치로 찾는다(`app.cluster_code_tree.resolve_code_tree`).
     close_slot: str | None = None
     # board 하위 호출(complete)에 실을 정체성 인자 — task-mode 귀속은 `<user>/<task>` 라 board 도
-    # 같은 축으로 소유를 대조한다. 복구 문은 board 정체성 인자를 싣지 않는다.
+    # 같은 기준으로 소유를 대조한다. 복구 문은 board 정체성 인자를 싣지 않는다.
     board_identity: list[str] = []
     if identity.task:
         board_identity = ["--task", identity.task]
@@ -184,12 +184,12 @@ def main(home, argv: list[str] | None = None) -> int:
     board_py = home.root / ".project_manager" / "tools" / "board.py"
     finisher = finish_record.TicketFinisher(home)
     # 완료 기록 단위는 **묶음 하나**다(특례 없음) — 티켓 하나를 준 호출도 그 티켓의 묶음으로
-    # 해소해 같은 파이프라인으로 보낸다. 묶음을 선언하지 않은 티켓은 board 가 크기 1 로 접어
-    # 주고(마이그레이션 0), 장부가 통합 브랜치를 선언하지 않았으면 판정 기준이 없어 멈춘다.
-    # 티켓용 별도 코드 경로를 남기면 그 경로에서만 장부 기록·포인터 커밋이 빠진다.
+    # 해소해 같은 파이프라인으로 보낸다. 묶음을 선언하지 않은 티켓은 board 가 크기 1 로 해석해
+    # 주고(마이그레이션 0), 묶음 기록이 통합 브랜치를 선언하지 않았으면 판정 기준이 없어 멈춘다.
+    # 티켓용 별도 코드 경로를 남기면 그 경로에서만 묶음 기록 쓰기·포인터 커밋이 빠진다.
     cluster = args.cluster
     if cluster is None:
-        cluster, _ledger = finish_store.ticket_cluster_record(home, args.ticket_id)
+        cluster, _records = finish_store.ticket_cluster_record(home, args.ticket_id)
         if not cluster:
             print(
                 f"\n[중단] {args.ticket_id} 의 묶음을 해소하지 못했다 ({board_py}) — 완료 "

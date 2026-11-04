@@ -1,4 +1,4 @@
-"""클러스터 결속 및 발행 재료 (층: app)."""
+"""클러스터 연결 및 발행 재료 (층: app)."""
 from __future__ import annotations
 
 from typing import Any
@@ -35,7 +35,7 @@ def _publish_overlap_candidates(home, exclude_ids: Sequence[str]) -> list[tuple[
 
     done 은 후보가 아니다(완료된 과거 작업과의 겹침은 판단 재료가 아니다). draft 는
     `board.md`·`list`·board-git 어디에도 안 보이면서 좌표를 이미 점유하므로 포함한다(다른
-    draft 가 이미 board.py 같은 엔진 파일을 touch 하고 있는 형상이 실제로 있었다). 손상
+    draft 가 이미 board.py 같은 엔진 파일을 touch 하고 있는 구성이 실제로 있었다). 손상
     frontmatter 는 `load_ticket_soft` 가 경고 1줄과 함께 skip(fail-soft·rc 불변).
     """
     excluded = frozenset(exclude_ids)
@@ -60,12 +60,12 @@ def _publish_overlap_candidates(home, exclude_ids: Sequence[str]) -> list[tuple[
     return candidates
 
 def _fold_publish_touches(home, items: list[str]) -> tuple[str, ...]:
-    """touches 선언을 발행 시점(`workspace` 없음) 좌표로 접는다 — 검증 실패 항목은 드롭.
+    """touches 선언을 발행 시점(`workspace` 없음) 좌표로 바꾼다 — 검증 실패 항목은 드롭.
 
     `pm_delegate._folded_touch_pairs` 와 같은 정규화 순서(`normalize_repo_path` →
     `canonicalize_path_notation` → `_touch_notation`)이되, 그 함수는 `workspace` 를 무조건
     요구해 발행 시점(claim 이전·workspace 미정)에는 못 쓴다 — `_touches_existence_issues` 와
-    동형으로 `workspace=None`(lease 장부 매핑으로 검증)을 쓴다. 다른 슬롯 선언·미실재 슬롯은
+    같은 방식으로 `workspace=None`(슬롯 대여 기록 매핑으로 검증)을 쓴다. 다른 슬롯 선언·미실재 슬롯은
     항목 단위로 드롭한다(크래시 0).
     """
     folded: list[str] = []
@@ -82,15 +82,15 @@ def _fold_publish_touches(home, items: list[str]) -> tuple[str, ...]:
 def _publish_idle_slot_count(home, repo: str) -> int | None:
     """`repo`(canonical 등록 repo 정체성 — 물리 폴더명 아님)의 가용(idle) 슬롯 수.
 
-    장부 미해소(부재/손상)면 `None`(재료 줄 생략). 데이터 원천은 lease 장부 하나, 읽기는
-    `lease_store.repo_slot_state_counts` 술어 하나뿐이다(board 안에 새 장부 read 를 만들지
+    슬롯 대여 기록 미해소(부재/손상)면 `None`(재료 줄 생략). 데이터 원천은 슬롯 대여 기록 하나, 읽기는
+    `lease_store.repo_slot_state_counts` 술어 하나뿐이다(board 안에 새 기록 read 를 만들지
     않는다). `creating` 은 idle 로 세지 않는다.
 
     `repo` 는 호출부가 이미 해소한 canonical 값을 받는다 — `new` 는 `--repo`/`--slot` 로 명시된
     args 정체성(`identity_args.parse_identity`), `promote` 는 티켓 `created_by` provenance 를
-    `lease_store.session_coordinates` 로 재해소한 장부 등록 repo 다. 물리 폴더명(`REPO.name`)은
-    `--repo` 로 다른 등록명을 공식 지원하는 `new` 형상에서 장부 repo 와 어긋날 수 있어(리뷰 실측),
-    이 함수 안에서 다시 유도하지 않는다 — 새 해소 축을 만들지 않고 호출부의 값을 그대로 쓴다.
+    `lease_store.session_coordinates` 로 재해소한 슬롯 대여 기록 등록 repo 다. 물리 폴더명(`REPO.name`)은
+    `--repo` 로 다른 등록명을 공식 지원하는 `new` 구성에서 기록의 repo 와 어긋날 수 있어(리뷰 실측),
+    이 함수 안에서 다시 유도하지 않는다 — 새 해소 기준을 만들지 않고 호출부의 값을 그대로 쓴다.
     """
     counts = lease_store.repo_slot_state_counts(repo, pm_paths.leases_file(home))
     if counts is None:
@@ -100,7 +100,7 @@ def _publish_idle_slot_count(home, repo: str) -> int | None:
 def _format_publish_overlap_material(per_path: dict[str, set[str]], idle_count: int | None) -> list[str]:
     """경로별 겹침 집계 → stderr 줄 목록. 겹침 0 이면 슬롯 줄까지 포함해 **전부 침묵**(never-block).
 
-    총 줄 수(헤더 + 경로 표시분 + 잔여-요약 1줄(있으면) + 슬롯 줄(있으면))는
+    총 줄 수(헤더 + 경로 표시분 + 남은 수 요약 1줄(있으면) + 슬롯 줄(있으면))는
     `_PUBLISH_OVERLAP_TOTAL_LINE_BUDGET` 을 넘지 않는다 — 슬롯 줄이 붙으면 그만큼 경로 표시
     예산이 줄어든다. `_PUBLISH_OVERLAP_PATH_LIMIT`(8)은 슬롯 줄이 없을 때 도달 가능한 상한이지
     항상 보장되는 값이 아니다(리뷰 F-003).
@@ -134,12 +134,12 @@ def _format_publish_overlap_material(per_path: dict[str, set[str]], idle_count: 
 def _publish_overlap_material(home, tid: str, touches: object, repo: str) -> list[str]:
     """`new`/`promote` 공용 진입점 — touches 겹침 + 가용 슬롯 재료를 stderr 줄 목록으로 렌더.
 
-    `repo` 는 슬롯 재료(`_publish_idle_slot_count`)가 lease 장부를 조회할 canonical 정체성 —
+    `repo` 는 슬롯 재료(`_publish_idle_slot_count`)가 슬롯 대여 기록을 조회할 canonical 정체성 —
     호출부가 이미 해소한 값을 그대로 받는다(이 함수 안에서 유도하지 않는다).
 
     touches 형식 불명은
-    이 축 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
-    동기 사본에서 이 축만 시야 밖이어도 `new`/`promote` 자체는 막지 않는다).
+    이 기준 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
+    동기 사본에서 이 기준만 검사 범위 밖이어도 `new`/`promote` 자체는 막지 않는다).
     """
     own_items = ticket_rules._normalized_touches(touches)
     if not own_items:
@@ -163,20 +163,20 @@ def _publish_overlap_material(home, tid: str, touches: object, repo: str) -> lis
     return _format_publish_overlap_material(nonzero, _publish_idle_slot_count(home, repo))
 
 def cluster_complete_binding_problem(home, tid: str, ticket_fm: dict[str, Any], cluster_close: str | None) -> str | None:
-    """완료 호출이 티켓의 정확한 cluster에 결속되지 않은 이유를 돌려준다.
+    """완료 호출이 티켓의 정확한 cluster에 연결되지 않은 이유를 돌려준다.
 
     ``--cluster-close``는 인증 토큰이 아니라 path-binding이다. 인자·티켓 역참조·유일한
-    ledger owner가 모두 일치하고 장부 전 멤버의 양방향 귀속이 온전할 때만 통과한다.
-    장부도 ``cluster`` 선언도 없는 legacy 티켓은 `ticket_cluster` 의 이름 해석과 **같은
-    규칙**을 쓴다 — 그 티켓의 크기 1 해석 id(`C-` + 티켓 ID)와 정확히 같은 결속만 통과한다.
+    기록 owner가 모두 일치하고 묶음 기록 전 멤버의 양방향 귀속이 온전할 때만 통과한다.
+    묶음 기록도 ``cluster`` 선언도 없는 legacy 티켓은 `ticket_cluster` 의 이름 해석과 **같은
+    규칙**을 쓴다 — 그 티켓의 크기 1 해석 id(`C-` + 티켓 ID)와 정확히 같은 연결만 통과한다.
     """
     binding = cluster_rules.cluster_id_for_name(cluster_close) if cluster_close else None
     declared_raw = str(ticket_fm.get('cluster') or '').strip()
     declared = cluster_rules.cluster_id_for_name(declared_raw) if declared_raw else None
-    ledgers, catalog_problem = cluster_store.all_clusters_strict(home)
+    cluster_records, catalog_problem = cluster_store.all_clusters_strict(home)
     if catalog_problem is not None:
         return catalog_problem
-    owners = [ledger for ledger in ledgers if tid in cluster_store.cluster_tickets(ledger)]
+    owners = [records for records in cluster_records if tid in cluster_store.cluster_tickets(records)]
     if not owners and declared is None:
         legacy_binding = cluster_rules.cluster_id_for_name(tid)
         if binding is not None and binding != legacy_binding:
@@ -185,17 +185,17 @@ def cluster_complete_binding_problem(home, tid: str, ticket_fm: dict[str, Any], 
     if len(owners) != 1:
         owner_ids = [str(row.get('id') or '<id 없음>') for row in owners]
         return f'묶음 기록 owner가 정확히 하나가 아니다: {owner_ids or ['없음']} — 멤버십을 복구한 뒤 묶음 종결을 다시 실행하라'
-    ledger = owners[0]
-    owner_raw = str(ledger.get('id') or '').strip()
+    records = owners[0]
+    owner_raw = str(records.get('id') or '').strip()
     owner = cluster_rules.cluster_id_for_name(owner_raw) if owner_raw else ''
-    members = cluster_store.cluster_tickets(ledger)
+    members = cluster_store.cluster_tickets(records)
     if not owner or len(members) != len(set(members)) or (not members):
         return f'{owner or '<id 없음>'} 묶음 기록의 멤버 집합이 비었거나 중복됐다'
     if declared != owner:
         return f'티켓 cluster 역참조({declared or '없음'})와 묶음 기록 owner({owner})가 일치하지 않는다'
     if binding != owner:
         return f'활성 cluster 멤버는 direct complete할 수 없다 — ticket_finish 묶음 종결의 exact 연결 {owner}가 필요하다'
-    if str(ledger.get('status') or '').strip() == 'closed':
+    if str(records.get('status') or '').strip() == 'closed':
         return f'{owner} 묶음 기록은 closed인데 {tid}가 claimed다 — 모순을 complete로 덮지 않는다'
     for member in members:
         found = ticket_store.find_ticket_exact(home, member)
@@ -205,16 +205,16 @@ def cluster_complete_binding_problem(home, tid: str, ticket_fm: dict[str, Any], 
         member_cluster = str((loaded[0] if loaded else {}).get('cluster') or '').strip()
         if not member_cluster or cluster_rules.cluster_id_for_name(member_cluster) != owner:
             return f'{owner} 멤버 {member}의 cluster 역참조가 일치하지 않는다: {member_cluster or '없음'}'
-        member_owners = [str(row.get('id') or '') for row in ledgers if member in cluster_store.cluster_tickets(row)]
+        member_owners = [str(row.get('id') or '') for row in cluster_records if member in cluster_store.cluster_tickets(row)]
         if member_owners != [owner]:
             return f'{member}가 여러 묶음 기록에 귀속됐다: {member_owners}'
     return None
 
 def cluster_binding_problem(home, cluster: str, *, tree: str | None=None) -> str | None:
-    """명시 장부의 제품 branch/base 결속을 읽기로 검증한다 (추정·재작성 없음)."""
-    ledger = cluster_store.load_cluster(home, cluster)
-    branch = str((ledger or {}).get('branch') or '').strip()
-    base = str((ledger or {}).get('base_branch') or '').strip()
+    """명시 묶음 기록의 제품 branch/base 연결을 읽기로 검증한다 (추정·재작성 없음)."""
+    records = cluster_store.load_cluster(home, cluster)
+    branch = str((records or {}).get('branch') or '').strip()
+    base = str((records or {}).get('base_branch') or '').strip()
     if not branch or not base:
         return f'{cluster}는 제품 브랜치에 연결되지 않은 묶음 기록이다. 기존 `board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시적으로 다시 연결하라'
     if tree is not None:
@@ -249,7 +249,7 @@ def _cluster_branch_state(tree: str, branch: str) -> bool | None:
     return result[0] == 0
 
 def _cluster_new_base_branch(tree: str, branch: str, current: str | None) -> tuple[str | None, str | None]:
-    """`cluster new` 가 장부에 적을 기준 브랜치 — `(기준, None)` 또는 `(None, 멈춤 사유)`.
+    """`cluster new` 가 묶음 기록에 적을 기준 브랜치 — `(기준, None)` 또는 `(None, 멈춤 사유)`.
 
     묶음 브랜치가 이미 있으면 그 부모 기록(`branch.<묶음브랜치>.pm-parent`)이 기준이다. 지목 트리가
     이미 묶음 브랜치에 앉아 있어도(task branch 로 먼저 만든 경로) 통합 브랜치가 기록된다. 아직 없으면
@@ -270,8 +270,8 @@ def _cluster_ensure_branch(tree: str, branch: str, base: str) -> str:
     """통합 브랜치를 만든다(있으면 그대로) — 결과를 사람이 읽는 1줄로 돌려준다.
 
     기준 브랜치 `base` 는 `_cluster_new_base_branch` 가 첫 쓰기 전에 정한 값이다. 브랜치 생성 실패는
-    장부 생성을 막지 않는다 — 이 1줄이 `cluster new` 출력에 그대로 실리고, 그 뒤의 브랜치 부재는
-    **트리를 든 표면**(확인 실행 `cli.delegate_cmd._cluster_confirmation_tree` ·
+    묶음 기록 생성을 막지 않는다 — 이 1줄이 `cluster new` 출력에 그대로 실리고, 그 뒤의 브랜치 부재는
+    **트리를 든 명령**(확인 실행 `cli.delegate_cmd._cluster_confirmation_tree` ·
     공용 트리 해소 `app.cluster_code_tree.resolve_code_tree`)가 자기 자리에서 판정한다(조용한 통과 아님).
     """
     if _cluster_branch_state(tree, branch):
