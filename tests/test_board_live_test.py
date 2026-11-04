@@ -869,7 +869,7 @@ def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
     assert "--repo" in msg and "--cwd" in msg
     # fail-loud 는 값비싼 pytest -m release 를 돌리기 전에 거부해야 한다(cwd 해소 함수·record 앞단).
     assert not any(c["kwargs"].get("shell") for c in fake.calls), \
-        "모호한데도 pytest -m release 를 돌렸다 (fail-loud 가 교체 지점에서 안 막음)"
+        "모호한데도 pytest -m release 를 돌렸다 (fail-loud 가 해소 함수에서 안 막음)"
 
 
 def test_record_write_is_atomic_no_tmp_left(live_board, monkeypatch):

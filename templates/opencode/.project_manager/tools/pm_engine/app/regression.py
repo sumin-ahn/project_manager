@@ -1,6 +1,6 @@
 """회귀 통과 조건 해소와 판정 (층: app).
 
-테스트 명령·실행 위치 해소, 회귀 명령 실행과 출력 중계, 리뷰 사이클의 범위 낮춤, 스위트 없는 트리 거부, 선언 플랫폼
+테스트 명령·실행 위치 해소, 회귀 명령 실행과 출력 중계, 리뷰 사이클의 수준 낮춤, 스위트 없는 트리 거부, 선언 플랫폼
 실행과 기록 일치 판정(수집수 저장 계약 포함), 슬롯별 회귀 상태 판정을 소유한다.
 """
 from __future__ import annotations
@@ -208,7 +208,7 @@ def _regression_cwd(home, override: str | None = None) -> str:
 def _ticket_touches(home, tid: str) -> list[str] | None:
     """회귀 스코프용 티켓 touches — **canonical ID 정확 일치**만 · 확정 실패면 None.
 
-    조회 규칙은 범위 낮춤 판정(`_gate_ticket`)과 같은 한 지점이다 — 판정은 정확 일치로 하고 스코프는
+    조회 규칙은 수준 낮춤 판정(`_gate_ticket`)과 같은 한 지점이다 — 판정은 정확 일치로 하고 스코프는
     glob 첫 매칭으로 읽으면 두 명령이 서로 다른 티켓을 볼 수 있다(무관 touches 로 좁혀진 '가짜
     green'). 티켓을 못 찾으면 빈 목록이고, 호출부는 그때 FULL 로 남긴다(좁히는 방향으로는 안
     틀린다).
@@ -232,9 +232,9 @@ def _scope_args(touches: list[str]) -> str:
     return f'-k "{" or ".join(stems)}"' if stems else ""
 
 
-# ── 회귀 스테이징 (활성 리뷰 사이클 중 full → targeted 로 범위 낮춤) ──────────────────
+# ── 회귀 스테이징 (활성 리뷰 사이클 중 full → targeted 로 수준 낮춤) ──────────────────
 # 리뷰 라운드마다 FULL 회귀를 도는 것이 라운드 비용의 세 번째 요인이었다(실측: 라운드당 full).
-# 리뷰가 아직 닫히지 않은 티켓의 FULL 요청은 그 티켓 touches 로 범위를 낮춘다 — 라운드 중에 필요한
+# 리뷰가 아직 닫히지 않은 티켓의 FULL 요청은 그 티켓 touches 로 수준을 낮춘다 — 라운드 중에 필요한
 # 신호는 "내가 건드린 것이 깨졌나"고, 스위트 전체 green 은 **마무리 뒤 한 번**이면 된다.
 #
 # 판정 입력은 additional_reviewer 의 라운드 기록(`.local/review_rounds.json`)뿐이다. 기록을 읽는
@@ -247,7 +247,7 @@ def _gate_ticket(home, review_ticket: str) -> tuple[str, Path] | None:
 
       (a) `{이름}-*.md` **prefix glob 의 첫 매칭**은 legacy ID(`T-NNNN`)를 같은 번호로 시작하는
          prefixed 티켓(`T-NNNN-001-<slug>.md`)에 오인 매칭시킨다 — 무관한 티켓의 touches 로 FULL
-         회귀가 targeted 로 낮춰지면 그 실행은 '가짜 green'이다. 그래서 조회는 공용 정확-일치
+         회귀가 targeted 로 수준이 낮아지면 그 실행은 '가짜 green'이다. 그래서 조회는 공용 정확-일치
          함수(`find_ticket_exact`)만 쓴다(대체 없음 — 여긴 못 찾으면 FULL 이 안전한 쪽이다).
       (b) 애초에 티켓 ID 문법(`_is_valid_ticket_id`)이 아닌 라벨은 조회 자체를 생략한다 — glob
          메타(`*`·`?`·`[`)가 든 이름이 보드를 훑는 것도, 없는 티켓을 매번 찾는 것도 뜻이 없다.
@@ -276,9 +276,9 @@ def _active_review_tickets(home) -> list[str]:
     """리뷰 사이클이 아직 안 닫힌 리뷰 집계 티켓 이름 (기록 부재/손상이면 빈 목록·fail-soft).
 
     **미마감 = (그 티켓이 현재 claimed) ∧ (마지막 라운드가 통과 rc 0 이 아님).** 두 조건을 함께
-    쓰는 이유는 각자 못 잡는 게 있어서다: 기록만 보면 done 티켓의 옛 반려가 영원히 범위 낮춤을 유발하고
+    쓰는 이유는 각자 못 잡는 게 있어서다: 기록만 보면 done 티켓의 옛 반려가 영원히 수준 낮춤을 유발하고
     (마감 이벤트 부재), status 만 보면 이미 마무리된 claimed 티켓까지 좁힌다. 기록을 못 읽거나 티켓을
-    못 찾으면 범위를 낮추지 않는다 — 이 판정의 실패가 회귀 통과 조건을 좁히면 안 된다(fail-open 이 안전한
+    못 찾으면 수준을 낮추지 않는다 — 이 판정의 실패가 회귀 통과 조건을 좁히면 안 된다(fail-open 이 안전한
     방향이다)."""
     try:
         data = json.loads(fs.read_text_shared(review_rounds._review_rounds_ledger(home), encoding="utf-8"))
@@ -297,7 +297,7 @@ def _active_review_tickets(home) -> list[str]:
 
 
 def _downgrade_cancelled(review_ticket: str, reason: str) -> tuple[list[str], list[str]]:
-    """범위 낮춤 전체 취소 — 미해소 리뷰 집계 티켓을 식별하는 사유 1줄 + 빈 결과(호출부가 FULL 로 남긴다)."""
+    """수준 낮춤 전체 취소 — 미해소 리뷰 집계 티켓을 식별하는 사유 1줄 + 빈 결과(호출부가 FULL 로 남긴다)."""
     print(f"regression: 리뷰 집계 티켓 {review_ticket} 의 {reason} — 활성 리뷰 사이클의 수준 낮춤을 취소하고 FULL 로 "
           "실행합니다 (일부만 돌리면 미해소 리뷰 집계 티켓 범위를 한 번도 돌지 않는 '가짜 green').",
           file=sys.stderr)
@@ -307,11 +307,11 @@ def _downgrade_cancelled(review_ticket: str, reason: str) -> tuple[list[str], li
 def _review_cycle_downgrade(home) -> tuple[list[str], list[str]]:
     """활성 리뷰 사이클의 (리뷰 집계 티켓 목록, 그 티켓들의 touches 합집합).
 
-    touches 를 못 얻으면(자유 문자열 리뷰 집계 티켓·ticket 부재) 범위를 낮추지 않는다 — 스코프를 모르는 채
+    touches 를 못 얻으면(자유 문자열 리뷰 집계 티켓·ticket 부재) 수준을 낮추지 않는다 — 스코프를 모르는 채
     좁히면 아무 테스트도 안 도는 '가짜 green'이 된다.
 
     **확정은 전체 리뷰 집계 티켓 단위다** — 활성 리뷰 집계 티켓 중 하나라도 스코프를 확정하지 못하면 나머지
-    touches 로 부분만 낮추지 않고 범위 낮춤 자체를 취소한다. 부분 낮춤은 미해소 리뷰 집계 티켓이 건드린
+    touches 로 일부만 수준을 낮추지 않고 수준 낮춤 자체를 취소한다. 부분 수준 낮춤은 미해소 리뷰 집계 티켓이 건드린
     범위를 한 번도 돌지 않은 실행에 rc0 을 주는데, 그 green 은 활성 리뷰 집계 티켓 **전부**에 대한
     통과로 읽힌다(false-green). 확정 실패는 세 가지고 전부 같은 취급이다: 형식 미확정(touches 가
     리스트[str] 아님)·빈 touches(선언 없음)·티켓 미해소(`_ticket_touches` 가 빈 목록). 사유 1줄을

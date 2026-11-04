@@ -67,7 +67,7 @@ from test_fresh_adopter_runtime_smoke import _live_env, _load_pm_import, _ticket
 # 설치 구간의 모델 한도 조회 고정(실제 하네스 CLI 미호출).
 from _manager_home import install_known_ctx_io
 # release 마커 AST 카운트(자기 파일 pin 가드용) — 마커 소실/개명 방어 도구 재사용. 안내 경로로 첫
-# 작업 폴더를 만든 채택자 픽스처는 full cluster 시험과 공용이다([[T-0956]]).
+# 작업 폴더를 만든 채택자 픽스처는 전체 묶음 시험과 공용이다([[T-0956]]).
 from test_release_cluster import (
     _MULTIREPO_REPOS, _MULTIREPO_TICKET, _RELEASE_CLUSTER_TASK, _CLUSTER_FILE, _CLUSTER_INTEGRATION_SLOT,
     _CLUSTER_WORK_SLOT, _assert_multirepo_cluster_side_effects, _count_marked_tests,
@@ -151,7 +151,7 @@ def _usability_prompt(card: str) -> str:
     promote)을 시퀀스에서 실제로 밟게 한다. 승격은 카드 줄 순서(묶음 연결 뒤 · [[T-0960]])를 따르므로
     별도 단계로 떼지 않는다 — 떼면 카드 순서와 어긋나 같은 줄을 두 번 실행하게 된다.
     핸드오프는 이 시퀀스에서 제외한다: 세션 종료 op 는 무거운 side-effect(pm_state write·log
-    skeleton)라 첫 시도 판정을 흐리고, 핸드오프 라이브 커버리지는 기존 release full-cluster/hard-stop
+    skeleton)라 첫 시도 판정을 흐리고, 핸드오프 라이브 커버리지는 기존 release 전체 묶음 시험/hard-stop
     계보가 보유한다.
     """
     return (
@@ -1595,7 +1595,7 @@ def test_t0958_multirepo_prompt_follows_card_and_closes_each_repo(tmp_path):
 @pytest.mark.parametrize(
     "shape", ["uncommitted-in-integration-folder", "committed-on-integration-branch", "closed-without-merge"])
 def test_t0958_multirepo_side_effects_reject_unmerged_change(tmp_path, shape):
-    """[[T-0958]] — 바꾼 파일이 종결의 머지로 들어가지 않은 웨이브는 티켓 done·묶음 closed 여도 단언이 거부한다.
+    """[[T-0958]] — 바꾼 파일이 종결의 머지로 들어가지 않은 묶음 시험은 티켓 done·묶음 closed 여도 단언이 거부한다.
 
     6d1c39c9 라이브의 두 구성: 통합 폴더에 커밋하지 않은 파일(폴더 결과는 opencode 와 같다)과 통합 브랜치
     직접 커밋(claude). 두 구성은 예전에 종결이 rc 0 이었고 통합 폴더에 파일이 있어 옛 단언은 통과시켰다.

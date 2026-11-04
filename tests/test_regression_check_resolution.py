@@ -1,17 +1,17 @@
-"""회귀 검사 해소 체인 — 4층 우선순위·검사 종류 판정·두 도구 파리티 (T-0730).
+"""회귀 통과 조건 해소 체인 — 4층 우선순위·통과 조건 종류 판정·두 도구 파리티 (T-0730).
 
-`ticket_finish`·`pm_handoff` 의 회귀 검사는 다음 순서로 해소한다. 앞선 층이 비어 있지 않은
+`ticket_finish`·`pm_handoff` 의 회귀 통과 조건은 다음 순서로 해소한다. 앞선 층이 비어 있지 않은
 값을 주면 거기서 멈춘다:
 
   1. areas.md 활성 **prefix** 행의 test_cmd   (multi-repo 네임스페이스 구성)
   2. areas.md 활성 **repo** 행의 test_cmd     (prefix 칼럼이 빈 무prefix 구성)
   3. local.conf 의 test_cmd                   (per-clone 명시 설정)
-  4. `python_env.default_pytest_cmd()`       (앞 세 층이 다 빈 구성의 기본 검사)
+  4. `python_env.default_pytest_cmd()`       (앞 세 층이 다 빈 구성의 기본 통과 조건)
 
 2·3층이 없으면 무prefix 채택자(현행 `pm-config repo add` 의 기본 등록 구성 — prefix 칼럼이
-빈 값)에서 검사가 항상 하드코딩 pytest 로 대체돼, `tests/` 가 없는 repo 의 회귀가 **항상
-red** 로 오판된다. 판정도 검사 종류로 가른다 — pytest 검사는 기존 요약행(불변), 비-pytest
-검사는 exit code 0 만 green 이고 rc != 0 은 그대로 중단이다(fail-soft 아님).
+빈 값)에서 통과 조건이 항상 하드코딩 pytest 로 대체돼, `tests/` 가 없는 repo 의 회귀가 **항상
+red** 로 오판된다. 판정도 통과 조건 종류로 가른다 — pytest 통과 조건은 기존 요약행(불변), 비-pytest
+통과 조건은 exit code 0 만 green 이고 rc != 0 은 그대로 중단이다(fail-soft 아님).
 
 체인의 단일 사본은 `regression._resolve_gate_cmd` 이고 두 도구(`cli.finish_record`·`cli.handoff`)는
 자기 트리의 `Home` 을 넘겨 이 함수를 직접 부른다.
@@ -47,7 +47,7 @@ from _pool_overrides import bind_board
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# 제보 환경(heru)에서 실측된 비-pytest 검사 — `tests/` 없는 채택자의 실 회귀 명령.
+# 제보 환경(heru)에서 실측된 비-pytest 통과 조건 — `tests/` 없는 채택자의 실 회귀 명령.
 NON_PYTEST_CMD = "env PYTHONPATH=src .venv/bin/python -m viewer bind"
 PREFIX_ROW_CMD = "pytest tests/ -q --prefix-layer"
 LOCAL_CONF_CMD = "go test ./..."
@@ -207,7 +207,7 @@ def test_layer3_local_conf_when_rows_have_no_test_cmd(tool, monkeypatch):
 
 
 def test_layer4_board_default_when_nothing_configured(tool, monkeypatch):
-    """4층 — 앞 세 층이 다 비면 board 기본 pytest 명령이 검사다.
+    """4층 — 앞 세 층이 다 비면 board 기본 pytest 명령이 통과 조건이다.
 
     해소 예외는 전파한다(바로 아래 테스트가 잡는다).
     """
@@ -244,11 +244,11 @@ def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):
     assert _resolve(mod, stub, monkeypatch) == NON_PYTEST_CMD
 
 
-# ── 검사 종류 판정 ─────────────────────────────────────────────────────
+# ── 통과 조건 종류 판정 ─────────────────────────────────────────────────────
 
 def test_check_is_pytest_classification(tool):
     """None(해소 실패)=솔로 pytest argv → True. pytest 토큰 포함 → True. 그 외 → False."""
-    mod = pm_engine.domain.handoff_text  # 두 도구의 검사 판정 소유자
+    mod = pm_engine.domain.handoff_text  # 두 도구의 통과 조건 판정 소유자
     assert mod._gate_is_pytest(None) is True
     assert mod._gate_is_pytest("pytest tests/ -q") is True
     assert mod._gate_is_pytest("python3 -m pytest tests/ -q") is True
@@ -257,26 +257,26 @@ def test_check_is_pytest_classification(tool):
 
 
 def test_non_pytest_check_green_is_exit_code_only(tool):
-    """비-pytest 검사는 exit 0 만 green — 요약행이 없어도 green 이다."""
-    mod = pm_engine.domain.handoff_text  # 두 도구의 검사 판정 소유자
+    """비-pytest 통과 조건은 exit 0 만 green — 요약행이 없어도 green 이다."""
+    mod = pm_engine.domain.handoff_text  # 두 도구의 통과 조건 판정 소유자
     assert mod._regression_is_green("✅ 매니페스트 검증 통과", 0, NON_PYTEST_CMD) is True
     assert mod._regression_is_green("", 0, NON_PYTEST_CMD) is True
 
 
 def test_non_pytest_check_red_is_not_swallowed(tool):
-    """fail-soft 가 아니다 — 비-pytest 검사도 rc != 0 이면 red."""
-    mod = pm_engine.domain.handoff_text  # 두 도구의 검사 판정 소유자
+    """fail-soft 가 아니다 — 비-pytest 통과 조건도 rc != 0 이면 red."""
+    mod = pm_engine.domain.handoff_text  # 두 도구의 통과 조건 판정 소유자
     assert mod._regression_is_green("아무 출력", 1, NON_PYTEST_CMD) is False
     assert mod._regression_is_green("✅ 통과처럼 보이는 출력", 2, NON_PYTEST_CMD) is False
 
 
 def test_pytest_check_verdict_unchanged(tool):
-    """pytest 검사 판정은 기존 요약행 경로 그대로(도그푸딩 무회귀)."""
-    mod = pm_engine.domain.handoff_text  # 두 도구의 검사 판정 소유자
+    """pytest 통과 조건 판정은 기존 요약행 경로 그대로(도그푸딩 무회귀)."""
+    mod = pm_engine.domain.handoff_text  # 두 도구의 통과 조건 판정 소유자
     green = "1472 passed, 24 deselected in 12.34s"
     assert mod._regression_is_green(green, 0, None) is True
     assert mod._regression_is_green(green, 0, "pytest tests/ -q") is True
-    # 요약행 없음 → pytest 검사는 red (exit 0 이어도 파싱 실패는 green 아님).
+    # 요약행 없음 → pytest 통과 조건은 red (exit 0 이어도 파싱 실패는 green 아님).
     assert mod._regression_is_green("요약행 없는 출력", 0, None) is False
     # 요약행에 failed 가 있으면 red.
     assert mod._regression_is_green("5 failed, 1467 passed in 10.00s", 1, None) is False
@@ -284,7 +284,7 @@ def test_pytest_check_verdict_unchanged(tool):
 
 def test_check_label_shows_solo_argv_for_none(tool):
     """안내 문구 — 해소 실패(None)는 실제 실행 argv 라벨을 보여준다."""
-    mod = pm_engine.domain.handoff_text  # 두 도구의 검사 판정 소유자
+    mod = pm_engine.domain.handoff_text  # 두 도구의 통과 조건 판정 소유자
     assert mod._gate_label(None) == "pytest tests/ -q -n auto"
     assert mod._gate_label(NON_PYTEST_CMD) == NON_PYTEST_CMD
 
@@ -348,7 +348,7 @@ def test_resolution_parity_across_tools(tf, hf, monkeypatch, case, tmp_path):
     ],
 )
 def test_verdict_parity_across_tools(tf, hf, output, returncode, check_cmd, expected):
-    """green 판정도 두 도구가 같다 — 검사 종류 분기가 한쪽에만 들어가면 red."""
+    """green 판정도 두 도구가 같다 — 통과 조건 종류 분기가 한쪽에만 들어가면 red."""
     finish_verdict = pm_engine.domain.handoff_text._regression_is_green(output, returncode, check_cmd)
     handoff_verdict = pm_engine.domain.handoff_text._regression_is_green(output, returncode, check_cmd)
     assert finish_verdict == handoff_verdict, "두 도구의 회귀 판정이 갈렸다"
@@ -356,10 +356,10 @@ def test_verdict_parity_across_tools(tf, hf, output, returncode, check_cmd, expe
 
 
 def test_check_surface_parity_across_tools(tf, hf):
-    """두 도구가 같은 이름의 검사 함수와 같은 라벨 상수를 노출한다."""
+    """두 도구가 같은 이름의 통과 조건 함수와 같은 라벨 상수를 노출한다."""
     for name in ("_gate_is_pytest", "_gate_label", "_regression_is_green"):
         assert callable(getattr(pm_engine.domain.handoff_text, name)), f"handoff_text 에 {name} 부재"
-    check = pm_engine.domain.handoff_text  # finish_record 의 검사 판정 소유자
+    check = pm_engine.domain.handoff_text  # finish_record 의 통과 조건 판정 소유자
     assert check._DEFAULT_GATE_LABEL == pm_engine.domain.handoff_text._DEFAULT_GATE_LABEL
     assert check._PYTEST_GATE_TOKEN == pm_engine.domain.handoff_text._PYTEST_GATE_TOKEN
     for check_cmd in (None, "pytest tests/ -q", NON_PYTEST_CMD, LOCAL_CONF_CMD):
@@ -367,7 +367,7 @@ def test_check_surface_parity_across_tools(tf, hf):
         assert check._gate_label(check_cmd) == pm_engine.domain.handoff_text._gate_label(check_cmd)
 
 
-# ── 무prefix 채택자 구성 e2e (repo add + tests/ 없음 + 비-pytest 검사) ──
+# ── 무prefix 채택자 구성 e2e (repo add + tests/ 없음 + 비-pytest 통과 조건) ──
 #
 # 도그푸딩 구성은 prefix 유도가 서므로 이 결함이 보이지 않았다([[dogfooding-blind-spot-
 # adopter-shape]]). 여기서는 stub 없이 **실 board 모듈**을 tmp 채택자 홈에 묶고, 실제 등록
@@ -455,7 +455,7 @@ def adopter_board(tmp_path, monkeypatch):
 
 def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
                                                          monkeypatch):
-    '실 areas.md(prefix 빈 값)에서 두 도구가 채택자 검사를 해소한다 — 하드코딩 대체 아님.'
+    '실 areas.md(prefix 빈 값)에서 두 도구가 채택자 통과 조건을 해소한다 — 하드코딩 대체 아님.'
     assert areas_store.id_prefix(pm_paths.home_at(adopter_board.REPO)) is None
     assert areas_store.registered_prefixes(pm_paths.home_at(adopter_board.REPO)) == set()
     assert areas_store.registered_repos(pm_paths.home_at(adopter_board.REPO)) == {'heru'}
@@ -465,7 +465,7 @@ def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
 
 def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_path,
                                                          monkeypatch, capsys):
-    """채택자 구성 완료 기록 — 비-pytest 검사가 exit 0 이면 green 으로 완주한다(rc 0).
+    """채택자 구성 완료 기록 — 비-pytest 통과 조건이 exit 0 이면 green 으로 완주한다(rc 0).
 
     수정 전엔 하드코딩 `pytest tests/ -q` 로 대체돼 `tests/` 부재("no tests ran")로 항상
     red 였다.
@@ -480,7 +480,7 @@ def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "채택자 티켓",
         affected_domain_fn=lambda tid: [],
-        # 남은 일 preflight 는 이 테스트의 초점(비-pytest 검사 green 판정)과 무관하다 — 실
+        # 남은 일 preflight 는 이 테스트의 초점(비-pytest 통과 조건 green 판정)과 무관하다 — 실
         # board_py/실 git 을 타지 않게 off 로 그 초점만 남긴다(red 케이스와 같은 연결).
         residual_block_fn=lambda tid: None,
         log_file=log_file,
@@ -497,7 +497,7 @@ def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_
 
 def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tmp_path,
                                                            monkeypatch, capsys):
-    """fail-soft 가 아니다 — 비-pytest 검사가 rc != 0 이면 기록 전에 중단(rc 1·부작용 0)."""
+    """fail-soft 가 아니다 — 비-pytest 통과 조건이 rc != 0 이면 기록 전에 중단(rc 1·부작용 0)."""
     log_file = tmp_path / "log.md"
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(adopter_board.REPO),
@@ -508,7 +508,7 @@ def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tm
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "채택자 티켓",
         affected_domain_fn=lambda tid: [],
-        # 남은 일 preflight 는 이 테스트의 초점(비-pytest 검사 rc 판정)과 무관하다 — 실
+        # 남은 일 preflight 는 이 테스트의 초점(비-pytest 통과 조건 rc 판정)과 무관하다 — 실
         # board_py/실 git 을 타지 않게 off 로 그 초점만 남긴다.
         residual_block_fn=lambda tid: None,
         log_file=log_file,
@@ -522,7 +522,7 @@ def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tm
 
 
 def test_no_prefix_adopter_handoff_verdict_and_command(adopter_board, hf, monkeypatch):
-    '핸드오프도 같은 검사로 판정하고, 실행은 그 명령을 shell 로 돌린다.'
+    '핸드오프도 같은 통과 조건으로 판정하고, 실행은 그 명령을 shell 로 돌린다.'
     home = pm_paths.home_at(adopter_board.REPO)
     check_cmd = pm_engine.app.regression._resolve_gate_cmd(home)
     assert check_cmd == NON_PYTEST_CMD

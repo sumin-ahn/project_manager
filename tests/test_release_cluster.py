@@ -1,8 +1,8 @@
-"""릴리즈 테스트(③ tier·`release` marker) — 실 LLM 한 세션이 fresh adopter 에서 full cluster 시험 운영.
+"""릴리즈 테스트(③ tier·`release` marker) — 실 LLM 한 세션이 fresh adopter 에서 전체 묶음 시험 운영.
 
 테스트 3-tier 의 Tier 3(릴리즈). Tier 2(런타임 smoke·`test_fresh_adopter_runtime_smoke`)는 실 LLM 이
 *PM 으로서* ticket 라이프사이클(new→claim→complete)을 운영하는지까지 친다. 이 층은 그 위 — **위임**까지
-포함한 full cluster 시험: PM 세션이 ticket 을 발행·claim 하고 **developer 서브에이전트에 구현을 Task 위임**,
+포함한 전체 묶음 시험: PM 세션이 ticket 을 발행·claim 하고 **developer 서브에이전트에 구현을 Task 위임**,
 **code-reviewer 서브에이전트에 리뷰를 Task 위임**한 뒤 complete 까지 운영하는지, 그리고 **위임이 실제로
 일어났는지**(developer 가 작성한 probe 파일·ticket done 전이)를 검증한다.
 
@@ -61,14 +61,14 @@ from pm_engine.cli import import_cmd
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # claude: sonnet-4-6(API 과금·env override). probe 가 이 모델로 PASS.
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-# opencode: full cluster 시험(claim→위임→complete 동기화 확인)은 *강한* 모델이 필요하다 — gemma4:26b 는
+# opencode: 전체 묶음 시험(claim→위임→complete 동기화 확인)은 *강한* 모델이 필요하다 — gemma4:26b 는
 # complete 의 동기화 확인을 못 넘어 flaky(위임=probe.txt 는 쓰나 ticket 이 claimed 에 머묾·PM 39 실측).
 # 출하 모델(ollama cloud) 강한 모델을 release default 로 쓴다(라이브 실측은
 # 릴리즈 묶음 시험). env override 로 교체 가능.
 from _opencode_model import LIVE_MODEL
 CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")
 
-# full cluster 시험 probe 가 작성하도록 지시하는 산출 파일·내용 — side-effect 단언의 기준(단일 진실).
+# 전체 묶음 시험 probe 가 작성하도록 지시하는 산출 파일·내용 — side-effect 단언의 기준(단일 진실).
 PROBE_FILE = "probe.txt"
 PROBE_TEXT = "hello from dev"
 
@@ -83,7 +83,7 @@ _GROWTH_PIPELINE = (
     (_DEV_SUBAGENT, "LIVE_TICKET_FINAL_FIX_PERSISTED"),
 )
 _CLUSTER_TEST_FILE = "tests/test_release_cluster_probe.py"
-# full cluster 시험의 작업 폴더 구성([[T-0956]]) — task `cluster` 가 작업 폴더 2개를 보유한다. 1번은 base_branch 를
+# 전체 묶음 시험의 작업 폴더 구성([[T-0956]]) — task `cluster` 가 작업 폴더 2개를 보유한다. 1번은 base_branch 를
 # 계속 드는 통합 폴더, 2번은 묶음 브랜치 `task/cluster` 로 전환한 작업 폴더다(커맨드 카드의 통합 폴더 구성).
 _CLUSTER_TASK = "cluster"
 _CLUSTER_NAME = "cluster"
@@ -93,7 +93,7 @@ _CLUSTER_TARGETED_COMMAND = f"python3 -m pytest {_CLUSTER_TEST_FILE} -q -n auto"
 _CLUSTER_FULL_COMMAND = "python3 -m pytest tests/ -q -n auto"
 
 
-# opencode 는 gemma 가 느리고 변동 커 1800s. Claude full-cluster는 고정 4단계+PM disposition
+# opencode 는 gemma 가 느리고 변동 커 1800s. Claude 전체 묶음 시험은 고정 4단계+PM disposition
 # 실측이 600s를 넘겨 기본 900s이고, 환경변수 override는 그대로 유지한다.
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT_DEFAULT = 900
@@ -104,11 +104,11 @@ _CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CODEX_TIMEOUT", "900")
 
 # Claude Code 2.1.241의 non-interactive `-p`는 prompt 문자열 `/compact`를 slash command로
 # dispatch하지 않는다(PreCompact/PostCompact hook 0건 실측). 업무 중 compaction은 억제하고
-# full-cluster 완료 뒤 같은 세션을 낮은 native 경계로 resume해 compaction event를 유도한다.
+# 전체 묶음 시험 완료 뒤 같은 세션을 낮은 native 경계로 resume해 compaction event를 유도한다.
 _CLAUDE_CLUSTER_AUTOCOMPACT_THRESHOLD = "1m"
 _CLAUDE_AUTOCOMPACT_THRESHOLD = "100k"
 
-# T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-cluster
+# T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness 전체 묶음 시험
 # 항목에 결합해 전역 live-test 수 pin/board 소유 범위는 그대로 둔다.
 _COMPACTION_RECOVERY_SENTINEL = "RECOVERED_AFTER_COMPACTION"
 _CLAUDE_COMPACTION_PROBE_PROMPT = (
@@ -204,7 +204,7 @@ def _claude_session_transcript(session_id: str) -> Path:
     return candidates[0]
 
 
-# multi-repo 라이브 웨이브가 여는 board task 이름.
+# multi-repo 라이브 묶음 시험이 여는 board task 이름.
 _RELEASE_CLUSTER_TASK = "release-cluster"
 
 
@@ -215,7 +215,7 @@ def _assert_cluster_session_task(dest: Path, session_id: str) -> None:
     `cluster` 를 열었어야 한다. 행이 없거나 같은 세션 행이 둘이면 압축 기록이 막힌다."""
     resolved = pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(dest), session_id)
     assert resolved == (_CLUSTER_TASK, None), (
-        f"웨이브 세션({session_id})이 연 task 가 `{_CLUSTER_TASK}` 하나가 아니다: {resolved}"
+        f"묶음 시험 세션({session_id})이 연 task 가 `{_CLUSTER_TASK}` 하나가 아니다: {resolved}"
     )
 
 
@@ -358,7 +358,7 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
     )
 
 
-# 웨이브 주 세션이 첫 단계로 실행하는 부트스트랩 — 압축 기록이 이 세션의 task 를 찾는 근거다.
+# 묶음 시험 주 세션이 첫 단계로 실행하는 부트스트랩 — 압축 기록이 이 세션의 task 를 찾는 근거다.
 _CLUSTER_BOOTSTRAP_COMMAND = f"python3 .project_manager/tools/pm_bootstrap.py --task {_CLUSTER_TASK}"
 
 
@@ -370,7 +370,7 @@ def _full_cluster_prompt(entry_doc: str, harness: str) -> str:
     prepare→native subagent→collect를 수행한다. 준비가 예약한 라운드
     파일(`tickets/rounds/<T-NNNN>/NN-<역할>.md`)의 고유 sentinel과 developer의 probe.txt를 side-effect로
     관측한다. `section-add`는 여기서 쓰지 않는다 — 슬롯 없는 준비라 위임 경로와 겹치면 빈 라운드가
-    하나 더 예약된다. 기존 Claude/OpenCode full-cluster 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
+    하나 더 예약된다. 기존 Claude/OpenCode 전체 묶음 시험 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
 
     작업 폴더 구성은 `_guided_adopter(folders=2, task=cluster)` 다([[T-0956]]·커맨드 카드의 통합 폴더 구성):
     1번 폴더가 base_branch 를 계속 드는 통합 폴더, 2번 폴더가 묶음 브랜치 `task/cluster` 로 전환한 작업
@@ -574,7 +574,7 @@ def _integration_file(dest: Path, base: str, relpath: str, repo: str | None = No
 
 
 def _assert_cluster_side_effects(dest: Path, proc: subprocess.CompletedProcess, harness: str) -> None:
-    """full cluster 시험 side-effect 단언 — developer 산출이 통합 브랜치에 머지·ticket 이 done/ 도달.
+    """전체 묶음 시험 side-effect 단언 — developer 산출이 통합 브랜치에 머지·ticket 이 done/ 도달.
 
     probe.txt(내용 'hello from dev') = developer 서브에이전트가 위임받아 구현했다는 증거이고, 그것이
     묶음 `cluster` 의 base_branch(통합 브랜치)에 있어야 종결의 머지까지 끝난 것이다([[T-0956]]·통합 폴더
@@ -591,7 +591,7 @@ def _assert_cluster_side_effects(dest: Path, proc: subprocess.CompletedProcess, 
     )
     probe = _integration_file(dest, base, PROBE_FILE)
     assert probe is not None, (
-        f"실 {harness} full cluster 후 통합 브랜치 {base} 에 {PROBE_FILE} 부재 — developer 위임/구현 "
+        f"실 {harness} 전체 묶음 시험 후 통합 브랜치 {base} 에 {PROBE_FILE} 부재 — developer 위임/구현 "
         "또는 종결 머지 실패.\n" + tail
     )
     assert probe.strip() == PROBE_TEXT, (
@@ -620,7 +620,7 @@ def _assert_cluster_side_effects(dest: Path, proc: subprocess.CompletedProcess, 
     )
     done_tickets = _tickets_in(dest, "done")
     assert done_tickets, (
-        f"실 {harness} 가 ticket 을 done/ 까지 운영하지 못함 — full cluster 미완주.\n"
+        f"실 {harness} 가 ticket 을 done/ 까지 운영하지 못함 — 전체 묶음 시험 미완주.\n"
         f"open={_tickets_in(dest, 'open')} claimed={_tickets_in(dest, 'claimed')}\n" + tail
     )
     ticket_name = sorted(done_tickets)[-1]
@@ -661,7 +661,7 @@ def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) ->
 
     설치 → 기준 커밋 → 안내 명령 `pm-config worktree add <repo> --user-ack <repo>` 를 `folders` 번 →
     `pm-config task new <task>` → `pm-config alloc <repo> --task <task>` 를 `folders` 번. 그 task 가
-    작업 폴더 `folders` 개를 보유한다. 카드 시험(folders=1)과 full cluster 시험(folders=2)이 함께 쓴다.
+    작업 폴더 `folders` 개를 보유한다. 카드 시험(folders=1)과 전체 묶음 시험(folders=2)이 함께 쓴다.
     """
     dest = _import_adopter(tmp_path, harness)
     _guide_folders(dest, task=task, folders=folders)
@@ -674,7 +674,7 @@ def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) ->
     reason="release cluster — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
 def test_release_cluster_claude_full_cluster(tmp_path):
-    """실 claude full cluster 시험 + native auto-compaction이 snapshot을 재주입한다.
+    """실 claude 전체 묶음 시험 + native auto-compaction이 snapshot을 재주입한다.
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
     claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
@@ -711,7 +711,7 @@ def test_release_cluster_claude_full_cluster(tmp_path):
         and _REVIEWER_SUBAGENT in subagent_types
         and subagent_types.count(_DEV_SUBAGENT) >= 2
     ), (
-        f"claude full cluster 에서 위임 미관측 — subagent_type={subagent_types} "
+        f"claude 전체 묶음 시험에서 위임 미관측 — subagent_type={subagent_types} "
         f"(architect 1·developer 2·code-reviewer 1 필요).\n" + tail
     )
 
@@ -774,7 +774,7 @@ def test_release_cluster_codex_native_ticket_growth(tmp_path):
     reason="release cluster — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
 )
 def test_release_cluster_opencode_full_cluster(tmp_path):
-    """실 opencode full cluster 시험 + 강제 native 임계가 snapshot 재주입·checkpoint를 남긴다.
+    """실 opencode 전체 묶음 시험 + 강제 native 임계가 snapshot 재주입·checkpoint를 남긴다.
 
     opencode 의 위임 관측 수단은 claude 의 stream-json `subagent_type` 와 다르다 — PM 36 라이브 probe
     실측 결과 gemma/opencode 는 위임 흔적(subagent_type·'developer'·task)을 출력에 **0** 으로 낸다(비결정).
@@ -804,11 +804,11 @@ def test_release_cluster_opencode_full_cluster(tmp_path):
         cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
-    # side-effect(hard) — full cluster 시험의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
+    # side-effect(hard) — 전체 묶음 시험의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
     _assert_cluster_side_effects(dest, proc, "opencode")
     _assert_cluster_session_task(dest, _opencode_session_id(proc.stdout))
 
-    # full cluster 시험을 정상 context로 완주한 뒤에만 같은 completed session의 native
+    # 전체 묶음 시험을 정상 context로 완주한 뒤에만 같은 completed session의 native
     # compaction 경계를 낮춰, 아래 bounded safe turns로 checkpoint+receipt를 관측한다.
     _force_opencode_compaction_threshold(dest, LIVE_MODEL)
 
@@ -818,7 +818,7 @@ def test_release_cluster_opencode_full_cluster(tmp_path):
     if _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout:
         assert _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout
 
-    # T-0627 release boundary: 현 full-cluster 세션을 이어 안전 크기 turn들을 누적한다. 과거
+    # T-0627 release boundary: 현 전체 묶음 시험 세션을 이어 안전 크기 turn들을 누적한다. 과거
     # turn은 native compaction으로 줄일 수 있지만 현재 prompt는 줄일 수 없으므로 단일 초대형
     # prompt를 쓰지 않는다. 새 checkpoint 증가 뒤에는 snapshot payload가 system[]에 실제 push된
     # generation receipt를 모델 phrasing·in-process marker 수명과 독립적으로 관측한다.
@@ -903,8 +903,8 @@ def test_release_cluster_opencode_full_cluster(tmp_path):
     # sentinel 미등장은 receipt hard 단언을 실패시키지 않으며, 보인 echo는 trace에 보존된다.
 
 
-# ── multi-repo 경로 (multi-PM 셋업 full cluster 시험 · T-0158) ───────────────────────────────────
-# 위 단일-adopter 테스트는 *한* repo 위 full cluster 시험이다. 아래는 그 multi-repo 확장 — multi-PM 셋업
+# ── multi-repo 경로 (multi-PM 셋업 전체 묶음 시험 · T-0158) ───────────────────────────────────
+# 위 단일-adopter 테스트는 *한* repo 위 전체 묶음 시험이다. 아래는 그 multi-repo 확장 — multi-PM 셋업
 # (`pm_config repo add` 2 repo + worktree slot)에서 한 LLM 세션이 공유 보드 위 *여러 repo* 의
 # 묶음 시험을 운영하는지 검증한다. PM 라이브 probe(opencode·ollama cloud 모델·실측 PASS)로 viable 확인
 # 후 그 mechanics 를 옮긴 것이다.
@@ -1002,7 +1002,7 @@ def _import_multipm_home(tmp_path: Path, harness: str,
 
 
 def _multirepo_cluster_home(tmp_path: Path, harness: str) -> Path:
-    """다중 저장소 웨이브 홈 — 저장소마다 작업 폴더 2개(통합 1번·작업 2번)를 웨이브 task 가 보유한다([[T-0958]]).
+    """다중 저장소 묶음 시험 홈 — 저장소마다 작업 폴더 2개(통합 1번·작업 2번)를 묶음 시험 task 가 보유한다([[T-0958]]).
 
     `_import_multipm_home` 이 저장소마다 만든 첫 폴더에 `worktree add` 로 둘째 폴더를 더하고, task 를 만든 뒤
     `alloc` 으로 네 폴더를 모두 빌린다(`_guided_adopter` 와 같은 안내 경로). 코드 변경의 머지는 base_branch 를
@@ -1016,7 +1016,7 @@ def _multirepo_cluster_home(tmp_path: Path, harness: str) -> Path:
     for step in steps:
         proc = _pm_config(home, *step)
         assert proc.returncode == 0, (
-            f"다중 저장소 웨이브 홈 {' '.join(step)} rc={proc.returncode}\n"
+            f"다중 저장소 묶음 시험 홈 {' '.join(step)} rc={proc.returncode}\n"
             f"stdout={proc.stdout[-600:]}\nstderr={proc.stderr[-600:]}"
         )
     return home
@@ -1027,7 +1027,7 @@ _MULTIREPO_TICKET = "<TICKET_ID>"
 
 
 def _multirepo_cluster_commands(repo: str) -> tuple[str, ...]:
-    """저장소 하나의 웨이브 실행 줄 7개 — 카드 줄에 그 저장소 값과 폴더 지목을 채운 것, 카드 순서([[T-0958]]).
+    """저장소 하나의 묶음 시험 실행 줄 7개 — 카드 줄에 그 저장소 값과 폴더 지목을 채운 것, 카드 순서([[T-0958]]).
 
     카드 순서는 new → cluster new → promote → tier → claim → switch → 종결이다([[T-0960]] · board 구성과
     무관한 한 순서). 발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고 switch 는 작업
@@ -1148,12 +1148,12 @@ def _assert_multirepo_cluster_side_effects(home: Path, proc: subprocess.Complete
            "기본 skip·사용자 트리거.",
 )
 def test_release_cluster_multirepo_opencode_full_cluster(tmp_path):
-    """실 opencode(agentic·ollama)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 웨이브를 닫는다.
+    """실 opencode(agentic·ollama)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 묶음 시험을 닫는다.
 
     홈은 `_multirepo_cluster_home`(저장소마다 통합 폴더 1번·작업 폴더 2번을 task 가 보유)이고, 프롬프트
     (`_multirepo_cluster_prompt`)는 부트스트랩 줄 다음에 저장소마다 카드 줄 7개(new·cluster new·promote·tier·
     claim·switch·종결)에 값을 채운 실행 줄과 그 사이 파일 쓰기·완료 조건 체크를 싣는다. direct complete 는
-    프롬프트에 없다([[T-0958]]). 단일 full cluster 시험과 다른 검증 기준이다: 한 세션이 공유 보드 위 저장소별
+    프롬프트에 없다([[T-0958]]). 단일 전체 묶음 시험과 다른 검증 기준이다: 한 세션이 공유 보드 위 저장소별
     prefix(`--prefix <repo>`)와 폴더 지목(`--repo <repo> --slot <N>`)을 바르게 다루는가.
     단언은 결과의 실체만 본다(`_assert_multirepo_cluster_side_effects`): 저장소마다 done 티켓 1개, 그 묶음
     closed 와 base_branch `<repo>_1`, 묶음 브랜치와 통합 브랜치의 cluster-done.txt 내용. 출력 문구 비결정에
@@ -1181,7 +1181,7 @@ def test_release_cluster_multirepo_opencode_full_cluster(tmp_path):
            "기본 skip·사용자 트리거.",
 )
 def test_release_cluster_multirepo_claude_full_cluster(tmp_path):
-    """실 claude(`claude-sonnet-4-6`)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 웨이브를 닫는다.
+    """실 claude(`claude-sonnet-4-6`)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 묶음 시험을 닫는다.
 
     opencode 짝(`test_release_cluster_multirepo_opencode_full_cluster`)과 같은 홈·프롬프트·단언에 단일 claude
     실행 방식(`--allowedTools Bash`·subprocess cwd 존중이라 `--dir` 불요)을 얹은 것이다. 프롬프트는
@@ -1193,8 +1193,8 @@ def test_release_cluster_multirepo_claude_full_cluster(tmp_path):
     home = _multirepo_cluster_home(tmp_path, "claude")
 
     proc = subprocess.run(
-        # `--allowedTools Bash`: 웨이브는 부트스트랩·카드 줄 실행(board.py·worktree_pool.py·ticket_finish.py)과
-        # 파일 쓰기뿐이고 developer·reviewer 위임이 없어 Task 불요(단일 full cluster 시험과 다른 점). claude 는
+        # `--allowedTools Bash`: 묶음 시험은 부트스트랩·카드 줄 실행(board.py·worktree_pool.py·ticket_finish.py)과
+        # 파일 쓰기뿐이고 developer·reviewer 위임이 없어 Task 불요(단일 전체 묶음 시험과 다른 점). claude 는
         # subprocess cwd 를 존중하므로 `--dir` 불요(opencode 와 다른 점). 결과 실체만 단언하므로 stream-json 도 불요.
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--allowedTools", "Bash",
@@ -1263,7 +1263,7 @@ def _multiuser_cluster_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
     `--user-ack <prefix>`를 명시한다. 에이전트가 ack를 자동 추가하는 구성은 테스트하지
     않으며(기계 가드가 금지), 두 번째 `new`는 이미 등록된 prefix를 쓴다. new 두 줄과 claim 줄은
     그 identity 의 `--task <task>` 를 싣는다(귀속 쓰기의 정체성·T-0962 — task 폴더가 1개라 위치 인자 없음).
-    board.py 경로는 준다 — 새 위험 요소는 identity 귀속·뷰 격리이지 문서 운영성이 아니다(단일 full cluster 시험이 커버).
+    board.py 경로는 준다 — 새 위험 요소는 identity 귀속·뷰 격리이지 문서 운영성이 아니다(단일 전체 묶음 시험이 커버).
     """
     blocks = []
     for _repo, prefix, task, user in identities:
@@ -1466,7 +1466,7 @@ def test_release_cluster_multiuser_composite_opencode(tmp_path):
 
 
 # ── compaction-native 마지막 경고 라이브 단언 (ADR-0038 D4/T-D · T-0190) ─────────────────────────
-# 위 묶음 시험은 정상 컨텍스트에서 도는 full cluster 시험이다. 아래는 그 *경계* — 마지막 경고가
+# 위 묶음 시험은 정상 컨텍스트에서 도는 전체 묶음 시험이다. 아래는 그 *경계* — 마지막 경고가
 # 실 claude transcript 위에서 비차단으로 실행되는지를 라이브로 못박는다. 기계 단위 테스트
 # (test_claude_ctx_guard)가 로직을 결정적으로 커버하지만,
 # transcript-slug 탐색·실 transcript 의 100% 판정·래퍼(.sh) exec 실행은 실 하니스 구성에서만
@@ -1650,12 +1650,12 @@ def test_release_cluster_claude_final_warn_driver_marker_contract(tmp_path):
 
 # ── hermetic 단위 가드 (라이브 실행 없이·@release/skipif 무관 — 매 회귀 통과) ──────────────
 # 위 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는 라이브
-# 없이도 돌아 (1) full cluster 시험 프롬프트가 5단계 키워드를 담는지 (2) subagent_type walk 가 stream-json
+# 없이도 돌아 (1) 전체 묶음 시험 프롬프트가 5단계 키워드를 담는지 (2) subagent_type walk 가 stream-json
 # 샘플에서 값을 정확히 추출하는지 — 라이브 미실행 시에도 mechanics 구조를 가드한다(회귀가 잡음).
 
 
 def test_full_cluster_prompt_has_ticket_growth_stages():
-    """full cluster 시험 프롬프트가 고정 01→02→03→04와 실제 테스트 계약을 담는다."""
+    """전체 묶음 시험 프롬프트가 고정 01→02→03→04와 실제 테스트 계약을 담는다."""
     prompt = _full_cluster_prompt("CLAUDE.md", "claude")
     # (1) new — 정확히 1개 ticket 발행 지시.
     assert "create exactly one ticket" in prompt
@@ -1942,7 +1942,7 @@ def test_opencode_forced_compaction_limit_clears_the_post_compaction_input(tmp_p
 def test_opencode_full_cluster_uses_compaction_evidence_from_initial_run(
     tmp_path, monkeypatch,
 ):
-    """full-cluster 안의 checkpoint+receipt 차이면 불필요한 추가 외부 turn을 생략한다."""
+    """전체 묶음 시험 안의 checkpoint+receipt 차이면 불필요한 추가 외부 turn을 생략한다."""
     calls = []
     record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     record_path.parent.mkdir(parents=True)
@@ -2031,7 +2031,7 @@ def test_cluster_session_task_assertion_needs_exactly_one_cluster_row(tmp_path):
 
 
 def test_full_cluster_prompt_opens_the_cluster_task_before_any_delegation():
-    """세 하네스 full cluster 시험 프롬프트가 주 세션 부트스트랩을 첫 위임·티켓 발행보다 먼저 한 번 지시한다."""
+    """세 하네스 전체 묶음 시험 프롬프트가 주 세션 부트스트랩을 첫 위임·티켓 발행보다 먼저 한 번 지시한다."""
     for entry_doc, harness, tool in (("CLAUDE.md", "claude", "Task"), ("AGENTS.md", "codex", "spawn_agent"),
                                      ("AGENTS.md", "opencode", "Task")):
         prompt = _full_cluster_prompt(entry_doc, harness)
@@ -2047,7 +2047,7 @@ def test_cluster_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypa
     """canonical 4라운드는 통과하고 delegate-copy run hash 묶임은 역방향으로 거부한다.
 
     통합 브랜치 판독(`_cluster_base_branch`·`_integration_file`)은 대역으로 바꾼다 — 이 시험이 보는
-    것은 판정 규칙이고, 실제 머지 판독은 라이브 full cluster 시험이 친다.
+    것은 판정 규칙이고, 실제 머지 판독은 라이브 전체 묶음 시험이 친다.
     """
     dest = tmp_path / "adopter-hermetic"
     base = f"{dest.name}_{_CLUSTER_INTEGRATION_SLOT}"

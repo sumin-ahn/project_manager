@@ -119,7 +119,7 @@ def _home_live_test_pin(home: Path) -> int:
 
 # ── fixture (fresh import 홈 + 합성 green 릴리즈 시험·hermetic·원격 없음=비가역 차단) ──
 def _setup_home(tmp_path: Path, harness: str) -> Path:
-    """라이브 fixture — fresh import 홈 + **합성 green 릴리즈 시험** 를 세운다.
+    """라이브 fixture — fresh import 홈 + **합성 green 릴리즈 시험** 을 세운다.
 
     `_import_adopter` 로 harness 홈을 import 한다 — pm_import 는 커밋/원격 없이 `.git`+회귀훅만
     심으므로 홈엔 **git remote 가 없다**(비가역 push 도달 불가·아래 always-run 가드로 고정). 그 위에

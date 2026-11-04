@@ -70,7 +70,7 @@ def board(tmp_path, monkeypatch):
     M>1 테스트만 슬롯 대여 기록을 직접 심는다. env 세션은 제거해 실 PM 세션이 새지 않게 한다.
 
     트리는 **스위트가 있는 코드 트리**가 기본이다(`tests/` 실재) — 이 파일의 대다수 케이스가
-    "자기 스위트를 도는 트리"의 측정·기록·범위 낮춤을 다루기 때문이다. 스위트 없는 트리(분리 구성
+    "자기 스위트를 도는 트리"의 측정·기록·수준 낮춤을 다루기 때문이다. 스위트 없는 트리(분리 구성
     PM 홈)를 요구하는 케이스는 `_without_suite(board)` 로 그 디렉토리를 지우고 시작한다.
     """
     proj = tmp_path / "proj"
@@ -1063,7 +1063,7 @@ def test_stderr_counts_do_not_pollute_parsing(board, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ⑤ M>1 슬롯 순회 — 같은 범위 낮춤이 슬롯 경로에도 연결되고 check 라벨에 사유가 실린다
+# ⑤ M>1 슬롯 순회 — 같은 수준 낮춤이 슬롯 경로에도 연결되고 check 라벨에 사유가 실린다
 # ════════════════════════════════════════════════════════════════════════
 
 def _write_records(board, *sessions: str) -> None:
@@ -1505,13 +1505,13 @@ def test_no_consumer_keeps_local_outcome_regex():
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ⑥ 회귀 스테이징 (T-0593) — 활성 리뷰 사이클 중 FULL → targeted 로 범위 낮춤
+# ⑥ 회귀 스테이징 (T-0593) — 활성 리뷰 사이클 중 FULL → targeted 로 수준 낮춤
 # ════════════════════════════════════════════════════════════════════════
 # 리뷰 라운드마다 FULL 회귀를 도는 것이 라운드 비용의 세 번째 요인이었다. 리뷰가 아직 닫히지 않은
-# 티켓의 FULL 요청은 그 티켓 touches 로 범위를 낮추고, FULL 은 `--final`(마무리 뒤)·핸드오프·pre-push
+# 티켓의 FULL 요청은 그 티켓 touches 로 수준을 낮추고, FULL 은 `--final`(마무리 뒤)·핸드오프·pre-push
 # 경로만 돈다. 판정 입력은 이미 있는 데이터 둘뿐이다(사람 선언 0): 추가 리뷰 라운드 기록 +
 # 보드 티켓 status. 라운드 기록은 append-only 라 자체 마감 이벤트가 없어, **티켓이 현재 claimed 인지**를
-# 함께 봐야 done 티켓의 옛 반려가 영원히 범위 낮춤을 유발하지 않는다(실측: done 10건 남음).
+# 함께 봐야 done 티켓의 옛 반려가 영원히 수준 낮춤을 유발하지 않는다(실측: done 10건 남음).
 
 
 def _write_rounds_records(board, review_tickets: dict) -> None:
@@ -1529,7 +1529,7 @@ def _write_rounds_records(board, review_tickets: dict) -> None:
 def _ticket_statuses(board, monkeypatch, statuses: dict) -> None:
     """보드 티켓 status 대역 — `{ticket_id: status}` 이외의 id 는 부재(None).
 
-    범위 낮춤 판정이 쓰는 조회 함수는 정확-일치(`find_ticket_exact`)다 — 대역도 같은 자리에 건다."""
+    수준 낮춤 판정이 쓰는 조회 함수는 정확-일치(`find_ticket_exact`)다 — 대역도 같은 자리에 건다."""
     def _find_exact(_home, tid, **_kwargs):
         if tid not in statuses:
             return None
@@ -1556,7 +1556,7 @@ def test_active_review_cycle_is_the_last_round_not_a_pass(board, monkeypatch):
 def test_done_ticket_record_residue_never_activates(board, monkeypatch):
     """마감된 티켓의 옛 반려 라운드는 활성으로 세지 않는다 — 라운드 기록에 마감 이벤트가 없어서다.
 
-    이게 없으면 done 티켓이 쌓일수록 `regression run` 이 영구 targeted 로 범위가 낮아진다(실측 10건)."""
+    이게 없으면 done 티켓이 쌓일수록 `regression run` 이 영구 targeted 로 수준이 낮아진다(실측 10건)."""
     _write_rounds_records(board, {
         "T-0001": [(1, 1)], "T-0002": [(1, 1)], "T-0003": [(1, 1)], "T-0004": [(1, 1)],
     })
@@ -1568,7 +1568,7 @@ def test_done_ticket_record_residue_never_activates(board, monkeypatch):
 
 
 def test_done_ticket_residue_does_not_downgrade_a_full_run(board, monkeypatch, capsys):
-    """done 티켓 라운드 기록이 남은 구성에서 FULL 요청은 범위가 낮아지지 않고 통과 조건 플래그를 쓴다 (DoD)."""
+    """done 티켓 라운드 기록이 남은 구성에서 FULL 요청은 수준이 낮아지지 않고 통과 조건 플래그를 쓴다 (DoD)."""
     _write_rounds_records(board, {"T-0001": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0001": "done"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
@@ -1579,7 +1579,7 @@ def test_done_ticket_residue_does_not_downgrade_a_full_run(board, monkeypatch, c
 
 
 def test_missing_or_corrupt_records_never_downgrades(board):
-    """라운드 기록 부재·손상은 범위를 낮추지 않는다 — 이 판정의 실패가 회귀 통과 조건을 좁히면 안 된다."""
+    """라운드 기록 부재·손상은 수준을 낮추지 않는다 — 이 판정의 실패가 회귀 통과 조건을 좁히면 안 된다."""
     assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == []
     pm_paths.home_at(board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
     review_rounds._review_rounds_ledger(pm_paths.home_at(board.REPO)).write_text("{ not json", encoding="utf-8")
@@ -1587,7 +1587,7 @@ def test_missing_or_corrupt_records_never_downgrades(board):
 
 
 def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, capsys):
-    """손상 frontmatter 는 예외로 전파한다 — 회귀를 실행하지 않고, 부분 범위 낮춤도 없다."""
+    """손상 frontmatter 는 예외로 전파한다 — 회귀를 실행하지 않고, 부분 수준 낮춤도 없다."""
     _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
@@ -1604,9 +1604,9 @@ def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, ca
 
 
 def test_full_run_is_downgraded_during_an_active_cycle(board, monkeypatch, capsys):
-    """활성 사이클 중 FULL 요청 → touches targeted 로 범위 낮춤 + 안내 1줄 (DoD).
+    """활성 사이클 중 FULL 요청 → touches targeted 로 수준 낮춤 + 안내 1줄 (DoD).
 
-    범위를 낮춘 실행은 스코프 실행과 같다 — push 통과 조건 플래그를 쓰지 않는다."""
+    수준을 낮춘 실행은 스코프 실행과 같다 — push 통과 조건 플래그를 쓰지 않는다."""
     _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
@@ -1645,7 +1645,7 @@ def test_closed_cycle_runs_full_without_the_flag(board, monkeypatch, capsys):
 
 
 def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
-    """touches 를 모르면 범위를 낮추지 않는다 — 스코프 없는 좁힘은 '가짜 green' 이다.
+    """touches 를 모르면 수준을 낮추지 않는다 — 스코프 없는 좁힘은 '가짜 green' 이다.
 
     리뷰 집계 티켓 이름은 자유 문자열이 실사용이라(`group4-b1`) 티켓이 아닌 리뷰 집계 티켓이 정상적으로 있다."""
     _write_rounds_records(board, {"group4-b1": [(1, 1)]})
@@ -1659,7 +1659,7 @@ def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
 
 # ── 리뷰 집계 티켓 조회는 canonical ID 정확 일치 (T-0602 ③) ────────────────────────
 # codex R2 지적: 자유 문자열 리뷰 집계 티켓을 glob 기반 `find_ticket` 에 그대로 넘긴다 — `T-0036` 이
-# `T-0036-001-*.md` 에 오인 매칭되면 **무관한 티켓의 touches** 로 FULL 회귀 범위가 낮아진다(그 실행은
+# `T-0036-001-*.md` 에 오인 매칭되면 **무관한 티켓의 touches** 로 FULL 회귀 수준이 낮아진다(그 실행은
 # 아무것도 검증하지 않은 '가짜 green'). 아래는 그 구성을 실 파일로 재현하고 차단을 단언한다.
 
 
@@ -1688,7 +1688,7 @@ def test_prefixed_ticket_does_not_answer_for_a_legacy_review_ticket_id(board):
 
 
 def test_glob_mismatched_review_ticket_never_downgrades_a_full_run(board, monkeypatch, capsys):
-    """그 구성에서 FULL 요청은 범위가 낮아지지 않는다 — 무관 touches 로 좁힌 '가짜 green' 폐쇄 (DoD)."""
+    """그 구성에서 FULL 요청은 수준이 낮아지지 않는다 — 무관 touches 로 좁힌 '가짜 green' 폐쇄 (DoD)."""
     _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
                       touches="src/unrelated.py")
     _write_rounds_records(board, {"T-0036": [(1, 1)]})
@@ -1701,7 +1701,7 @@ def test_glob_mismatched_review_ticket_never_downgrades_a_full_run(board, monkey
 
 
 def test_exact_review_ticket_still_downgrades(board, monkeypatch, capsys):
-    """정상 경로 무변경 — canonical ID 가 정확히 일치하면 종전대로 그 touches 로 범위를 낮춘다."""
+    """정상 경로 무변경 — canonical ID 가 정확히 일치하면 종전대로 그 touches 로 수준을 낮춘다."""
     _seed_ticket_file(board, "T-0036", status="claimed", slug="본래-티켓")
     _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
                       touches="src/unrelated.py")
@@ -1734,7 +1734,7 @@ def test_free_form_review_ticket_label_skips_the_ticket_lookup(board, monkeypatc
 
 
 def test_review_ticket_id_with_empty_touches_stays_full(board, monkeypatch, capsys):
-    """canonical ID 리뷰 집계 티켓인데 touches 가 비면 범위를 낮추지 않는다 — 스코프 없는 좁힘 금지(불변)."""
+    """canonical ID 리뷰 집계 티켓인데 touches 가 비면 수준을 낮추지 않는다 — 스코프 없는 좁힘 금지(불변)."""
     _seed_ticket_file(board, "T-0037", status="claimed", slug="빈-touches", touches="")
     _write_rounds_records(board, {"T-0037": [(1, 1)]})
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
@@ -1744,11 +1744,11 @@ def test_review_ticket_id_with_empty_touches_stays_full(board, monkeypatch, caps
     assert _flag(board)["scope"] == "full"
 
 
-# ── 범위 낮춤 확정은 전체 리뷰 집계 티켓 단위 fail-closed (T-0603 ①) ────────────────────────────
+# ── 수준 낮춤 확정은 전체 리뷰 집계 티켓 단위 fail-closed (T-0603 ①) ────────────────────────────
 # codex R3 지적: 활성 리뷰 집계 티켓이 여럿일 때 하나만 touches 를 확정하지 못해도 나머지 touches 로
-# 범위 낮춤이 성사됐다 — 그 실행은 미해소 리뷰 집계 티켓이 건드린 범위를 **한 번도 돌지 않은 채** rc0 을 내고,
+# 수준 낮춤이 성사됐다 — 그 실행은 미해소 리뷰 집계 티켓이 건드린 범위를 **한 번도 돌지 않은 채** rc0 을 내고,
 # 그 green 은 활성 리뷰 집계 티켓 전부에 대한 통과로 읽힌다(false-green). 아래는 두 미해소 구성(빈
-# touches·읽기 실패)을 재현하고 **범위 낮춤 전체 취소**를 단언한다.
+# touches·읽기 실패)을 재현하고 **수준 낮춤 전체 취소**를 단언한다.
 
 
 def _two_active_review_tickets(board, monkeypatch, resolver) -> None:
@@ -1760,21 +1760,21 @@ def _two_active_review_tickets(board, monkeypatch, resolver) -> None:
 
 def test_one_review_ticket_without_touches_cancels_the_whole_downgrade(
         board, monkeypatch, capsys):
-    """리뷰 집계 티켓 하나가 빈 touches 면 다른 리뷰 집계 티켓의 touches 로 부분만 범위를 낮추지 않는다 (DoD)."""
+    """리뷰 집계 티켓 하나가 빈 touches 면 다른 리뷰 집계 티켓의 touches 로 부분만 수준을 낮추지 않는다 (DoD)."""
     _two_active_review_tickets(board, monkeypatch,
                       lambda _home, tid: ["src/pay.py"] if tid == "T-0002" else [])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     out, err = capsys.readouterr()
-    assert "수준을 낮춥니다" not in out                       # 부분 범위 낮춤 안내가 뜨지 않는다
+    assert "수준을 낮춥니다" not in out                       # 부분 수준 낮춤 안내가 뜨지 않는다
     assert "T-0003" in err and "수준 낮춤을 취소" in err       # 미해소 리뷰 집계 티켓을 지목한 사유 1줄
     assert "-k" not in fake.calls[0]["args"][0]         # FULL 그대로 돈다
     assert _flag(board)["scope"] == "full"              # push 통과 조건 플래그 = FULL
 
 
 def test_one_unreadable_review_ticket_cancels_the_whole_downgrade(board, monkeypatch, capsys):
-    """touches 읽기 실패(손상 frontmatter)는 예외로 전파한다 — 나머지 리뷰 집계 티켓으로 부분 범위 낮춤을 하지 않는다."""
+    """touches 읽기 실패(손상 frontmatter)는 예외로 전파한다 — 나머지 리뷰 집계 티켓으로 부분 수준 낮춤을 하지 않는다."""
     def _resolve(_home, tid):
         if tid == "T-0003":
             raise ValueError("frontmatter 손상")
@@ -1791,7 +1791,7 @@ def test_one_unreadable_review_ticket_cancels_the_whole_downgrade(board, monkeyp
 
 
 def test_all_review_tickets_resolved_still_downgrade_to_the_union(board, monkeypatch, capsys):
-    """정상 경로 무변경 — 활성 리뷰 집계 티켓 전부가 touches 를 확정하면 종전대로 합집합으로 범위를 낮춘다."""
+    """정상 경로 무변경 — 활성 리뷰 집계 티켓 전부가 touches 를 확정하면 종전대로 합집합으로 수준을 낮춘다."""
     _two_active_review_tickets(
         board, monkeypatch,
         lambda _home, tid: ["src/pay.py"] if tid == "T-0002" else ["src/record.py"])
@@ -1802,11 +1802,11 @@ def test_all_review_tickets_resolved_still_downgrade_to_the_union(board, monkeyp
     assert "활성 리뷰 사이클 [T-0002, T-0003]" in out and "수준을 낮춥니다" in out
     scoped = fake.calls[0]["args"][0]
     assert '-k "pay or record"' in scoped               # 두 리뷰 집계 티켓의 합집합
-    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()           # 범위를 낮춘 실행은 통과 조건 플래그를 안 쓴다
+    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()           # 수준을 낮춘 실행은 통과 조건 플래그를 안 쓴다
 
 
 # ── 티켓 조회 공용 함수 (T-0603 ④) ──────────────────────────────────────────
-# 정확-일치 판정을 board 공개 함수로 승격했다 — 범위 낮춤(board)·estimate(추가 리뷰어)·완료 통과 조건
+# 정확-일치 판정을 board 공개 함수로 승격했다 — 수준 낮춤(board)·estimate(추가 리뷰어)·완료 통과 조건
 # (ticket_finish)가 **같은 함수**를 쓴다. 사본 판정을 두면 그 사본이 다시 첫-매칭으로 흘러
 # half-fix 가 재발한다(이 클래스의 재발 이력).
 
@@ -1847,7 +1847,7 @@ def test_find_ticket_still_falls_back_when_no_exact_candidate_exists(board):
 
 
 def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, capsys):
-    """명시 스코프(`--ticket`/`--touches`)는 종전 그대로다 (범위 낮춤 판정 자체를 타지 않는다)."""
+    """명시 스코프(`--ticket`/`--touches`)는 종전 그대로다 (수준 낮춤 판정 자체를 타지 않는다)."""
     _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/other.py"])
@@ -1858,7 +1858,7 @@ def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, cap
 
 
 def test_pre_push_hook_runs_the_final_full_check(board, monkeypatch):
-    """훅은 FULL 을 요구한다 — 범위가 낮아지면 통과 조건 플래그가 안 써져 push 가 통과할 수 없다."""
+    """훅은 FULL 을 요구한다 — 수준이 낮아지면 통과 조건 플래그가 안 써져 push 가 통과할 수 없다."""
     # 설치는 자기 `.git` 아래로 해소될 때만 선다(T-0899) — 훅 폴더는 엔진이 만든다.
     (board.REPO / ".git").mkdir(parents=True, exist_ok=True)
     hooks = board.REPO / ".git" / "hooks"
@@ -1872,7 +1872,7 @@ def test_pre_push_hook_runs_the_final_full_check(board, monkeypatch):
 
 # ── 구형 서명 훅 = 차단 (fail-closed) ───────────────────────────────────────
 # 훅 본문은 설치 시점에 고정되므로, 엔진이 통과 조건 명령을 바꿔도 이미 설치된 훅은 옛 명령을 돈다.
-# 실측 클래스: `--final` 없는 구버전 훅이 범위를 낮춘 실행의 rc0 을 push 허가로 읽어 FULL 플래그 없이
+# 실측 클래스: `--final` 없는 구버전 훅이 수준을 낮춘 실행의 rc0 을 push 허가로 읽어 FULL 플래그 없이
 # push 가 열린다. 통과 조건은 그 훅을 고치지 않고 **막는다** — 해결 방법은 `board.py init` 재실행 1회다.
 #
 # 이 군은 옛 자기치유 테스트 군을 **차단 의미로 대체**한 것이다. 케이스 수가 준 만큼 커버리지가
@@ -1937,7 +1937,7 @@ def test_regression_check_refuses_a_legacy_hook_too(board, monkeypatch, tmp_path
 def test_the_check_then_run_sequence_stays_blocked(board, monkeypatch, tmp_path, capsys):
     """훅 본문은 `check || run` **2프로세스**다 — 두 단계 모두 차단으로 끝난다.
 
-    구형 훅이 실행 중인 push 시도에서 2단계 run 이 통과하면(범위를 낮췄든 FULL 이든) 옛 훅이 그 rc0 을
+    구형 훅이 실행 중인 push 시도에서 2단계 run 이 통과하면(수준을 낮췄든 FULL 이든) 옛 훅이 그 rc0 을
     push 허가로 읽는다. 차단은 두 단계에 같은 결론을 주므로 그 창 자체가 없다."""
     _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
@@ -2210,10 +2210,10 @@ def test_a_hook_under_a_custom_hooks_path_is_covered(board, monkeypatch, tmp_pat
 
 def test_current_hook_still_downgrades_during_an_active_cycle(
         board, monkeypatch, tmp_path, capsys):
-    """현재 버전 훅에서는 활성 사이클의 범위 낮춤이 종전대로 돈다 — 차단은 구형 훅에만 걸린다.
+    """현재 버전 훅에서는 활성 사이클의 수준 낮춤이 종전대로 돈다 — 차단은 구형 훅에만 걸린다.
 
-    범위 낮춤이 push 통과 조건을 열지 못하는 근거가 바로 이것이다: 범위를 낮춘 rc0 을 허가로 읽는 훅은 애초에
-    진입에서 막히므로, 여기 남는 범위 낮춤은 항상 `--final` 을 싣는 현행 훅과 짝을 이룬다."""
+    수준 낮춤이 push 통과 조건을 열지 못하는 근거가 바로 이것이다: 수준을 낮춘 rc0 을 허가로 읽는 훅은 애초에
+    진입에서 막히므로, 여기 남는 수준 낮춤은 항상 `--final` 을 싣는 현행 훅과 짝을 이룬다."""
     _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
@@ -2379,7 +2379,7 @@ def test_a_tree_without_git_never_asks_git(board, monkeypatch):
 # ── touches 정규화 = 리스트[str] 강제 (T-0605 ③) ─────────────────────────────
 # codex R5 지적: `touches` 가 YAML 스칼라 문자열이면 `list(...)` 가 **문자 목록**을 만들어
 # `-k "s or r or c ..."` 같은 오염된 스코프가 선다(그 실행의 rc0 은 아무 것도 검증하지 않는다).
-# 형식이 불명이면 범위 낮춤을 취소하고 FULL 로 남긴다(fail-closed).
+# 형식이 불명이면 수준 낮춤을 취소하고 FULL 로 남긴다(fail-closed).
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -2398,7 +2398,7 @@ def test_touches_normalization_forces_a_list_of_strings(board, raw, expected):
 
 def test_scalar_touches_cancels_the_downgrade_instead_of_scoping_by_characters(
         board, monkeypatch, capsys):
-    """스칼라 touches 는 문자 스코프가 아니라 **범위 낮춤 취소 = FULL** 이다 (재현 → 차단·DoD)."""
+    """스칼라 touches 는 문자 스코프가 아니라 **수준 낮춤 취소 = FULL** 이다 (재현 → 차단·DoD)."""
     _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: None)
@@ -2437,7 +2437,7 @@ def test_declared_touches_still_scope_the_run(board, monkeypatch, capsys):
 
 # ── 옛 형식 outcome 정렬 = 신기록보다 앞 (T-0605 ⑥) ──────────────────────────
 # codex R5 지적: `sequence` 없는 구기록을 신기록 **뒤**에 두면, 업그레이드 후 새 통과가 쌓여도
-# 옛 반려가 영원히 '최신'이 되어 마감된 리뷰 집계 티켓이 계속 활성으로 읽힌다(영구 범위 낮춤).
+# 옛 반려가 영원히 '최신'이 되어 마감된 리뷰 집계 티켓이 계속 활성으로 읽힌다(영구 수준 낮춤).
 
 
 def _records_with_legacy_round(board, review_ticket: str, rounds: list[dict]) -> None:

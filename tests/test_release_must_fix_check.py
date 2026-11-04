@@ -153,7 +153,7 @@ def release(tmp_path, monkeypatch):
     return types.SimpleNamespace(board=board, root=root, runner=runner, args=args)
 
 
-def test_unresolved_must_fix_blocks_before_release_cluster(release, capsys):
+def test_unresolved_must_fix_blocks_before_live_run(release, capsys):
     _write_records(release.root, {"T-0610": _rejected_entry()})
     assert regression_cmd.cmd_live_test(pm_paths.home_at(release.board.REPO), release.args) == 1
     assert release.runner.calls == []
@@ -182,7 +182,7 @@ def test_suggestion_only_and_reserved_session_budget_section_do_not_block(releas
     assert len(release.runner.calls) == 1
 
 
-def test_corrupt_review_ticket_entry_fails_closed_before_release_cluster(release, capsys):
+def test_corrupt_review_ticket_entry_fails_closed_before_live_run(release, capsys):
     _write_records(release.root, {"T-0610": {"rounds": "broken"}})
     assert regression_cmd.cmd_live_test(pm_paths.home_at(release.board.REPO), release.args) == 1
     assert release.runner.calls == []
