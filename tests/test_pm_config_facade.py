@@ -328,7 +328,7 @@ class FakeWorktreePool:
         return self._live_branches.get(slot)
 
     def list_tasks(self):
-        # task 기준 대역(T-0361 cockpit·T-0353) — 명명 task 레코드 리스트. 미지정 → [].
+        # task 구획 대역(T-0361 cockpit·T-0353) — 명명 task 레코드 리스트. 미지정 → [].
         self.calls.append(("list_tasks",))
         return self._tasks
 

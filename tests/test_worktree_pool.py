@@ -6,7 +6,7 @@ repo별 worktree 풀의 슬롯 대여 라이프사이클을 검증한다:
   - release: 작업완료 반납 · 커밋 안 한 변경 거부(ReleaseRefused·stash 없음).
   - reclaim_stale: pid 죽은 leased 반납(dirty→stash) · pid 살아있으면 미반납.
   - force_release: 점유 무시 강제 idle 화 · 커밋 안 한 변경은 거부(stash 없음).
-  - 대여 기록 동시쓰기 안전(공용 `file_lock` 교체 지점 배타락·경로 규약만 이 도구 소유) —
+  - 대여 기록 동시쓰기 안전(공용 `file_lock` 모듈 배타락·경로 규약만 이 도구 소유) —
     부모 monkeypatch 비상속 자식 spawn.
   - sensitivity: stale 판정(pid)·풀소진 핵심 로직 무력화 시 fail 재현.
   - **실 git 통합**(hermetic·임시 git repo): create_slot 이 `git worktree add` 로 실제
@@ -17,7 +17,7 @@ import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 재�
 절대 건드리지 않는다(test_board_concurrency.py 의 monkeypatch hermetic 패턴 동류). git DI
 교체 지점(주입 가능 runner)으로 단위테스트는 mock git, 통합테스트만 실 임시 git repo 를 쓴다.
 board.py 는 import 하지 않는다(touches 격리·병렬충돌 회피) — 배타락 자체는 board 와 *같은*
-공용 교체 지점(`file_lock.py`)을 쓰지만 board 모듈 의존은 없다(교체 지점은 형제를 로드하지 않는 leaf).
+공용 모듈(`file_lock.py`)을 쓰지만 board 모듈 의존은 없다(공용 모듈은 형제를 로드하지 않는 leaf).
 """
 from __future__ import annotations
 from pm_engine.app import repo_protection
@@ -2010,8 +2010,8 @@ def test_lease_lock_burns_the_windows_branch_through_the_real_consumer(
 ):
     """대여 기록 락이 **Windows 분기**를 지나는지 POSIX 개발기에서 태운다 (T-0725).
 
-    교체 지점 단위 회귀(`tests/test_file_lock_windows_branch.py`)는 분기 자체를 고정하고, 이 케이스는
-    *소비자* 경로가 그 분기에 실제로 닿는지를 고정한다 — 기록 op 가 락을 우회하면 교체 지점이 아무리
+    공용 잠금 함수 단위 회귀(`tests/test_file_lock_windows_branch.py`)는 분기 자체를 고정하고, 이 케이스는
+    *소비자* 경로가 그 분기에 실제로 닿는지를 고정한다 — 기록 op 가 락을 우회하면 공용 잠금 함수가 아무리
     옳아도 멀티-PM 환경에서 lost update 가 난다. 주입이 no-op 이면 아무것도 시험되지 않으므로
     대역 호출 여부를 먼저 단언한다.
     """
@@ -2545,7 +2545,7 @@ def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_p
 
     # origin 삭제 → `git fetch origin` 이 실패한다(오프라인/소실 시뮬).
     # git object·packfile 은 read-only 라 맨 rmtree 는 Windows 에서 `[WinError 5]` 로 실패한다 —
-    # 엔진 공용 삭제 교체 지점을 그대로 쓴다(속성 해제 후 재시도·못 지우면 loud).
+    # 엔진 공용 삭제 함수을 그대로 쓴다(속성 해제 후 재시도·못 지우면 loud).
     fs.force_rmtree(origin)
 
     lease = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="develop", init_submodules=False)
@@ -3556,7 +3556,7 @@ def test_real_git_runner_caps_none_timeout_to_finite(wp, monkeypatch):
     """captured 러너는 GIT_TIMEOUT_SECONDS=None(PM_GIT_TIMEOUT=none)이어도 유한 캡(silent-hang 차단·codex).
 
     captured 러너는 콘솔에 진행이 안 보여(silent) 무제한이면 network stall(base 파생 `fetch origin`)
-    시 silent hang 한다. None → `_GIT_TIMEOUT_DEFAULT`(유한)로 대체-캡한다. 무제한은 진행이 보이는
+    시 silent hang 한다. None → `_GIT_TIMEOUT_DEFAULT`(유한)를 대신 써 상한을 건다. 무제한은 진행이 보이는
     console-visible worktree-add 러너에만 허용(위 대조 테스트).
     """
     captured = {}
@@ -4033,7 +4033,7 @@ def _write_must_fix_marker(engine_root: Path, state: str = "clear") -> Path:
     엔진 writer(board.py)는 `newline="\\n"` 로 `clear`/`blocked` 정확 한 줄을 원자 기록한다.
     픽스처가 맨 `write_text` 로 쓰면 Windows 에서 `\\n` 이 `os.linesep`(=`\\r\\n`)으로 번역돼
     훅이 `clear\\r` 를 읽고 형식 오류로 fail-closed 한다 — 보호 push e2e 가 Windows 에서만 rc1 로
-    죽던 실측 원인이다. 표시 픽스처는 이 교체 지점 만 쓴다(플랫폼 개행이 섞일 자리를 없앤다).
+    죽던 실측 원인이다. 표시 픽스처는 이 공용 함수만 쓴다(플랫폼 개행이 섞일 자리를 없앤다).
     """
     marker = engine_root / ".project_manager" / ".local" / "release-must-fix"
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -5162,7 +5162,7 @@ def test_generated_hook_multi_ref_rejects_if_any_protected(wp):
 # 보호 브랜치 pre-commit 가드 (T-0415·ADR-0071) — 설치(같은 등록) + 훅 직접 실행
 # ════════════════════════════════════════════════════════════════════════
 # pre-push 와 **같은 훅 디렉토리·같은 sidecar(`protected`)·같은 hooksPath 등록**을 탄다(신규
-# 교체 지점 0). 판정은 `git symbolic-ref --short HEAD` 이므로 훅 직접 실행도 *실 git 작업트리*
+# 신규 장치 0). 판정은 `git symbolic-ref --short HEAD` 이므로 훅 직접 실행도 *실 git 작업트리*
 # 안에서 돌려야 한다(`cwd` = 그 브랜치가 체크아웃된 repo) — 그래서 `_git_required`.
 
 
@@ -6267,7 +6267,7 @@ def test_from_dict_still_drops_legacy_top_level_branch_with_extra_preservation(w
 
 
 def test_snapshot_slot_git_records_branch_head_submodules(wp):
-    """_snapshot_slot_git — live branch(symbolic-ref)·head(rev-parse)·submodule pin 을 git 상태 기록한다."""
+    """_snapshot_slot_git — live branch(symbolic-ref)·head(rev-parse)·submodule pin 을 기록한다."""
     git = FakeGit(head="a5-pay", head_sha=_NEW_SHA,
                   submodule_status_out=" 47da353aa vendor/lib\n")
     snap = slot_snapshot._snapshot_slot_git(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
@@ -6293,7 +6293,7 @@ def test_snapshot_submodule_pins_strips_flag(wp):
 
 
 def test_snapshot_submodule_pins_preserves_space_path(wp):
-    """공백 경로 submodule 도 전체 경로로 git 상태 기록한다 — 경로는 공용 파서 재사용."""
+    """공백 경로 submodule 도 전체 경로로 기록한다 — 경로는 공용 파서 재사용."""
     sha = "47da353aa9d261e231ec9b6bbaf1a1cbc7626d9c"
     git = FakeGit(submodule_status_out=f"+{sha} vendor/my lib (heads/master)\n")
     pins = slot_snapshot._snapshot_submodule_pins(git)
@@ -6331,7 +6331,7 @@ def test_record_git_snapshot_writes_to_records(wp):
 
 
 def test_record_git_snapshot_base_branch_sets_base(wp):
-    """base_branch 주면 base 를 새로 기록(commit=방금 git 상태 기록한 head·readonly 슬롯이 따라가는 브랜치)."""
+    """base_branch 주면 base 를 새로 기록(commit=방금 기록한 head·readonly 슬롯이 따라가는 브랜치)."""
     _seed(wp, worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t",
                        state="leased", role="readonly"))
     git = FakeGit(head=None, head_sha=_NEW_SHA)
@@ -6537,7 +6537,7 @@ class _SwitchGit(FakeGit):
 
 
 def _switch_lease(wp, *, branch="main", head=_OLD_SHA, **kwargs):
-    """switch 대상 슬롯 전제 — 대여 기록의 git 상태(branch/head)이 실린 leased 엔트리."""
+    """switch 대상 슬롯 전제 — 대여 기록의 git 상태(branch/head)가 실린 leased 엔트리."""
     _seed_git_lease(wp, branch=branch, head=head, **kwargs)
 
 
@@ -6896,7 +6896,7 @@ def test_switch_skips_dirty_submodule_with_warning(wp, capsys):
 
 
 def test_switch_records_snapshot_after_resync(wp):
-    """순서 계약 — 전환 → selective resync → git 상태 기록(대여 기록의 git 상태이 resync 뒤 상태를 담는다)."""
+    """순서 계약 — 전환 → selective resync → git 상태 기록(대여 기록의 git 상태가 resync 뒤 상태를 담는다)."""
     _switch_lease(wp)
     git = _SwitchGit(head="main", head_sha=_NEW_SHA, refs=["task/main"], subs={"vendor/sub": ("detached", False)})
     branch_checkout.switch(pm_paths.home_at(wp.REPO), "work/A_1", "task/main", protected=["main"], git_runner=git)
@@ -7247,7 +7247,7 @@ def test_resolve_base_commit_unresolvable_ref_returns_none(wp):
 
 
 def test_apply_git_snapshot_base_branch_records_snapshot_head(wp):
-    """readonly 생성 경로 — base_branch 를 주면 base.commit 은 방금 git 상태 기록한 head(따라가는 브랜치 착지점)."""
+    """readonly 생성 경로 — base_branch 를 주면 base.commit 은 방금 기록한 head(따라가는 브랜치 착지점)."""
     lease = worktree_records.Lease(slot="work/A_1", repo="A", session="", started="t", state="leased",
                      role="readonly")
     git = FakeGit(head=None, head_sha=_NEW_SHA)

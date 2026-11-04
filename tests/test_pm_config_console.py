@@ -847,7 +847,7 @@ def test_distinct_area_owners_upgrade_wider_row(pc, monkeypatch, tmp_path):
     assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 2
 
 
-# ── 위임 모델 안내 (`[m]`) — 설치된 하네스만·조회 실패는 loud 하게 낮춤 ──────────────
+# ── 위임 모델 안내 (`[m]`) — 설치된 하네스만·조회 실패는 알리고 수준을 낮춘다 ──────────────
 # 모델 설정에 검증도 가이드도 없었다: 키 형식은 문서에 있지만 *유효한 값의 목록·확인 방법*이
 # 어디에도 없었다. 위임 시점 검증 함수는 만들지 않고(codex 값은 자유 문자열·alias 미선언
 # 채택자에선 멤버십 검증이 아무것도 잡지 않는다) 이 안내로 비대칭을 닫는다.

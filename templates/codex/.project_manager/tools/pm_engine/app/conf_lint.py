@@ -58,7 +58,7 @@ def lint_adapter_drift(home) -> list[tuple[str, str, str]]:
         드러낸다. advisory 라 `--blocking` 미차단·1줄이라 flood 아님.
     """
     findings: list[tuple[str, str, str]] = []
-    # conf 판독은 lint 조회면의 교체 지점 하나(`_lint_local_conf_read`)로 한다 — 값 소비 계약
+    # conf 판독은 lint 조회의 공용 함수 하나(`_lint_local_conf_read`)로 한다 — 값 소비 계약
     # (`local_config` → `load_checked_readable`)으로 읽으면 판독 실패가 여기서 traceback 이 되어
     # lint 전체가 죽는다(그 상태를 말해 줄 `lint_local_conf_readable` 까지 함께 사라진다).
     # 파일 부재·판독 실패는 빈 목록이고, 못 읽은 사실은 그 한 자리가 1건으로 말한다.
@@ -185,7 +185,7 @@ def _lint_local_conf_read(home):
         raise LocalConfUnreadable(f"{home.local_conf}: {exc}") from exc
 
 
-# 실 local.conf 를 **읽지 못한** 관측 kind — 위 판독 교체 지점 하나가 낸다(값 판정과 배타적).
+# 실 local.conf 를 **읽지 못한** 관측 kind — 위 판독 공용 함수 하나가 낸다(값 판정과 배타적).
 _LOCAL_CONF_UNREADABLE_LINT_KIND = "local-conf-unreadable"
 
 
