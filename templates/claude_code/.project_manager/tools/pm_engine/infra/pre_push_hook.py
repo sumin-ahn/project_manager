@@ -129,7 +129,7 @@ def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
         f"{py} .project_manager/tools/board.py regression check || \\\n"
         f"  {py} .project_manager/tools/board.py regression run --final || exit 1\n"
         f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
-        # rev 3: lint 줄이 지금 `--blocking` 의 옛 플래그 이름을 쓰던 본문. 그 이름이 없어져 이 훅의 lint 줄은
+        # rev 3: lint 줄이 지금의 `--blocking` 대신 옛 플래그(아래 리터럴)를 쓰던 본문. 그 이름이 없어져 이 훅의 lint 줄은
         # argparse 가 거부한다. 해결 방법은 `board.py init` 재실행 1회다.
         "#!/bin/sh\n"
         "# pm pre-push gate — 회귀 게이트(tests/ 있는 트리만) AND lint 게이트(항상). "

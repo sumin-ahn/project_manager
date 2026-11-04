@@ -6118,7 +6118,7 @@ def test_adapter_config_accept_refuses_when_file_changed_after_judgment(
     assert outcome.status == "raced", outcome
     assert (dest / _ADAPTER_HOOKS_REL).read_text(encoding="utf-8") == concurrent, \
         "동시 편집분을 덮었다(판정-쓰기 레이스 미차단)"
-    assert _read_records(dest) == {}, "덮지도 않았는데 기록을 기록했다"
+    assert _read_records(dest) == {}, "덮지도 않았는데 기록을 적었다"
 
 
 def test_adapter_config_accept_reports_record_failure_instead_of_success(

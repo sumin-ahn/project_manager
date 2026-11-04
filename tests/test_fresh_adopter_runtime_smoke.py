@@ -602,7 +602,7 @@ def test_live_claude_nudge_injection_reaches_model(tmp_path):
 # ── codex fresh-adopter 기계 e2e (스캐폴드→lint→부트스트랩 카드→trust 안내·hermetic·T-0408) ────
 # codex(세 번째 하네스·ADR-0070) 신선 채택자 검사의 *기계* 층: 템플릿 사본에서 import →
 # 스캐폴드 트리 단언 → board.py lint clean → import 된 pm_bootstrap 이 codex env 감지 시 카드
-# codex 절을 띄움 → import 출력에 trust loud 2단계 안내. [[feature-ship-needs-fresh-adopter-gate]]
+# codex 절을 띄움 → import 출력에 trust loud 2단계 안내. 출하 기능은 새 채택자 설치로 확인한다는 원칙
 # — diff-scoped 리뷰·source-parity 는 *출하 template* 이 import 파이프라인을 지나 실제로 작동하는지
 # (누락·미렌더·부트스트랩에서 안 뜸)을 못 본다. 라이브 LLM 0(hermetic·결정적·codex CLI 미실행)이라 매
 # 회귀 자동 포함 — codex 라이브 검사(부트스트랩 실 LLM 구동)은 T-0407(별 파일·중복 실행 회피).

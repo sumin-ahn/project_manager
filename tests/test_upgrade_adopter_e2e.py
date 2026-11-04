@@ -400,8 +400,9 @@ def _inject_old_added_harness_section(dest: Path, begin: str) -> None:
     """현행 추가 하네스 절을 **옛 표시 절**로 되돌린다 — 주어진 옛 시작 표시와 옛 끝 표시.
 
     v1.4.5 시작 표시(`_LEGACY_ADDED_HARNESS_BEGIN`)의 절은 그때 없던 엔진 행(비-`@render`)도 지운다. 그 결과가
-    곧 제보 채택자의 디스크 경우이고, 표시 이관과 엔진 행 파생 백필을 함께 태운다. 표시에서 `added_harness`
-    를 빼기 전 시작 표시(`_PRE_RENAME_ADDED_HARNESS_BEGIN`)의 절은 표시만 옛 글자다."""
+    곧 제보 채택자의 디스크 경우이고, 표시 이관과 엔진 행 파생 백필을 함께 태운다.
+    옛 표시 글 `pm add-harness guest` 를 `pm add-harness` 로 바꾸기 전 시작 표시(`_PRE_RENAME_ADDED_HARNESS_BEGIN`)의
+    절은 표시만 옛 글자다."""
     block = _added_harness_manifest_block(dest)
     assert block is not None, "픽스처 오류 — add-harness 직후인데 추가 하네스 절이 없다"
     rows = _added_harness_render_rows(block) if begin == _LEGACY_ADDED_HARNESS_BEGIN else _added_harness_rows(block)
@@ -454,7 +455,7 @@ def _build_upgraded_adopter(
 
     ``added_harness_marker_generation``
       ``"legacy"`` — v1.4.5 버전 추가 하네스 절(옛 마커 리터럴 + 엔진 행 부재).
-      ``"pre_rename"`` — 구획 표시에서 `added_harness` 를 빼기 전(v1.8.3 까지)의 절(옛 표시 + 엔진 행).
+      ``"pre_rename"`` — 옛 표시 글 `pm add-harness guest` 를 `pm add-harness` 로 바꾸기 전(v1.8.3 까지)의 절(옛 표시 + 엔진 행).
       ``"current"`` — 현행 add-harness 가 쓴 그대로의 절(대조군·멱등 기준).
     ``substituted`` — 설치 시 값으로 굳은 치환 결과(README 프로젝트명·template 실날짜) 주입 여부.
 
@@ -502,8 +503,7 @@ def test_upgrade_adopter_added_harness_section_survives_sync_and_marker_converge
     결함 구성: 추가 하네스 절 경계 마커 리터럴이 v1.5.0 구간에 바뀌어, 그 전에 `add-harness` 를 쓴
     채택자가 `pm_update` 를 돌리면 읽기 쪽이 절을 못 알아보고 **경고 없이** 통째로 지웠다
     (렌더/overlay 스캔 커버리지가 그 시점에 끊긴다). 옛 버전(대조군: 현행 버전) 절을 디스크에 두고
-    실 CLI 동기를 태워 절 생존·마커 일치·멱등을 못박는다. 옛 표시 두 가지(v1.4.5, 표시에서 `added_harness`
-    를 빼기 전)와 현행 표시를 한 시험 안에서 차례로 돈다.
+    실 CLI 동기를 태워 절 생존·마커 일치·멱등을 못박는다. 옛 표시 두 가지(v1.4.5, 옛 표시 글 `pm add-harness guest` 를 `pm add-harness` 로 바꾸기 전)와 현행 표시를 한 시험 안에서 차례로 돈다.
     """
     for generation in ("legacy", "pre_rename", "current"):
         generation_root = tmp_path / generation

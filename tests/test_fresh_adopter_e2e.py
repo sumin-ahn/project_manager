@@ -1,6 +1,6 @@
 """Fresh-adopter e2e 검사 — import → lint clean → ticket 라이프사이클 (파생 3-harness · 기계층).
 
-[[feature-ship-needs-fresh-adopter-gate]]: diff-scoped 리뷰·root 테스트는 *출하 template* 의
+출하 기능은 새 채택자 설치로 확인한다는 원칙: diff-scoped 리뷰·root 테스트는 *출하 template* 의
 dangling framework wikilink·placeholder 누락·작동 여부를 못 본다(drift-0=engine 만). 이 테스트는
 깨끗한 디렉토리에 파생 HARNESSES 전부를 **실제 import** 해 (a) adopter 인스턴스 `board.py lint` 가 clean
 (adopter 엔 ADR 이 없으니 출하 doc 에 framework `[[ADR-NNNN]]` 가 새면 *여기서* dangling 으로 터진다)
@@ -346,7 +346,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     #   (@target-owned 등재는 upstream=claude 루트에 .opencode/ 부재라 skip). 진입점 shim
     #   (plugins/ctx-guard.js)이 core(lib/ctx-guard-core.cjs)를 import 하므로, 한쪽만 landing 하면
     #   opencode 가 플러그인을 로드 못 한다(warn/stop 死) → 실 출하 산출물에서 *함께* 도착을 못박는다
-    #   ([[feature-ship-needs-fresh-adopter-gate]] — source parity 로는 실 landing 을 보증 못 함).
+    #   (출하 기능은 새 채택자 설치로 확인한다는 원칙 — source parity 로는 실 landing 을 보증 못 함).
     if harness == "opencode":
         shim = dest / ".opencode" / "plugins" / "ctx-guard.js"
         core = dest / ".opencode" / "lib" / "ctx-guard-core.cjs"
@@ -916,7 +916,7 @@ def test_fresh_adopter_runs_one_round_prepare_collect_cycle(pm_import, tmp_path,
         "## 설계\n"
         "- **경계 실측**: 채택자 e2e 픽스처\n"
         "- **불변식**: 준비→돌려받기 왕복 보존\n"
-        "- **범위 상한**: 라운드 파일 1개\n"
+        "- **표면 상한**: 라운드 파일 1개\n"
         "- **테스트 전략**: 정상 왕복\n\n"
     )
     head, _sep, tail = ticket_body.partition("## 설계\n")
@@ -1229,7 +1229,7 @@ def test_readme_set_is_derived_and_covers_all_keyword():
 # ── 출하 @render 스킬/command materialize 가드 (T-0142/T-0143 — 신규 스킬 회귀) ──────
 # `board.py lint` clean 은 파일 *부재* 를 못 잡는다(없어도 clean). 출하 스킬이 fresh import 에서
 # 조용히 누락/미렌더되는 회귀를 source 템플릿 트리 기준 전수 대조로 박는다. PM 33 에서 신규
-# pm-update/pm-env 스킬을 추가하며 ephemeral smoke 로만 확인했던 갭의 durable 화 ([[feature-ship-needs-fresh-adopter-gate]]).
+# pm-update/pm-env 스킬을 추가하며 ephemeral smoke 로만 확인했던 갭의 durable 화 (출하 기능은 새 채택자 설치로 확인한다는 원칙).
 # operational 토큰(import 가 *항상* 해소)만 검사 — free-form·{{OPENCODE_PRO_MODEL}} 는 manual fill TODO 라 제외.
 
 _OPERATIONAL_TOKENS = re.compile(r"\{\{(?:PY|PROJECT_NAME|PROJECT_TAGLINE|TEST_CMD)\}\}")
@@ -1550,7 +1550,7 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
     #   T-0456 이 sanction — manifest-파생 overlay 스캔·render 가 추가 하네스를 커버하게 하는 근본 등록).
     #   그 한 파일만 예외로 빼고 나머지 clobber 0 을 유지하며, manifest 변경은 append-only(기존 내용
     #   보존)만 허용한다(추가 하네스 라인 없는 added=claude 는 무변도 정상).
-    #   **설치 기록도 예외**다: add-harness 는 자기가 추가한 하네스를 인스턴스 설치 기록에 기록해,
+    #   **설치 기록도 예외**다: add-harness 는 자기가 추가한 하네스를 인스턴스 설치 기록에 적어,
     #   이후 판정(`installed_harnesses`·pm_update 표기 독자)이 증거 추론 대신 그 기록을 읽게 한다
     #   (dev-state metadata·manifest 와 같은 성질). 이 파일의 변경은 아래에서 "하네스 목록이 정확히
     #   base∪added 로 늘었는가" 로 못박는다(허용만 하면 그 파일의 탐지력이 0 이 된다).
@@ -1792,7 +1792,7 @@ def test_add_harness_added_harness_engine_files_sync_on_pm_update(
         return rel in instance_owned
 
     assert any(_untouchable(rel) for rel in before), \
-        f"{base}->{added}: 불변 대상 대상 0(공허 대조)"
+        f"{base}->{added}: 불변 대상 0(공허 대조)"
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")

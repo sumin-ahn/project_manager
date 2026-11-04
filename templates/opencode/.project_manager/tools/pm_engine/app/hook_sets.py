@@ -93,7 +93,7 @@ def hook_set_declarations(home, source_root=None, *, required: bool = False) -> 
 
 
 def hook_set_query_fallback_lines(generation) -> list[str]:
-    """조회 쪽 낮춘 사유 안내 줄 — 상류 선언을 못 읽고 내려간 판정이면 1줄, 아니면 빈 목록.
+    """조회 쪽에서 판정을 낮춘 사유 안내 줄 — 상류 선언을 못 읽고 내려간 판정이면 1줄, 아니면 빈 목록.
 
     문구는 해결 방법(`hook_set_fix_lines`)과 같은 규약으로 **여기 단일 진실**이다 — pm-update 와
     `pm-config --check` 가 같은 상태를 서로 다른 문장으로 말하면 채택자가 두 검사를 다른 것으로

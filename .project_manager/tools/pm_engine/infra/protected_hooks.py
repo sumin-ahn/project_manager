@@ -447,7 +447,7 @@ exit 0
 
 # ── 보호 브랜치 pre-commit 훅 (commit-time 강제) ──────────────
 # pre-push 훅과 **같은 등록**을 탄다 — 같은 훅 디렉토리(`.local/repo-hooks/<repo>/`)·같은
-# sidecar `protected`(줄당 1브랜치)·같은 bare `core.hooksPath`(신규 교체 지점 0). 파일 하나가
+# sidecar `protected`(줄당 1브랜치)·같은 bare `core.hooksPath`(신규 연결 지점 0). 파일 하나가
 # 더 놓일 뿐이라 슬롯 worktree 는 재설치 즉시 이 훅을 탄다. 단, sidecar 부재 처리는 의도적으로
 # 비대칭이다: pre-commit은 전 commit 차단의 blast radius를 피하려 통과시키고, 하드 백스톱인
 # pre-push만 보호목록 미해소를 fail-closed로 거부한다.

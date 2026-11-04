@@ -241,7 +241,7 @@ def _preserve_corrupt_install_receipt(dest_root: Path,
 def record_install_receipt(dest_root: Path, harnesses,
                            root_identity: tuple | None = None, *,
                            template_coordinates: dict | None = None) -> bool:
-    """설치 하네스를 인스턴스 설치 기록에 기록한다 — 내용이 바뀌었으면 True.
+    """설치 하네스를 인스턴스 설치 기록에 적는다 — 내용이 바뀌었으면 True.
 
     기록 시점은 **실제 설치·추가가 일어난 run**(`--new`·`--into`·add-harness 의 적용 경로)뿐이다.
     판정 함수(`installed_harnesses`)는 읽기만 한다 — 거기서 쓰면 dry-run·read-only 갱신 확인 같은

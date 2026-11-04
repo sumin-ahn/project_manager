@@ -14,7 +14,7 @@
      추적만 하면 *신규* 채택자(pm_import 트리 복사)만 받고 *기존* 채택자(pm_update manifest 전파)는
      영영 못 받는다([[T-0473]] 출하 경로 미등재 클래스 선례).
 
-**가드 자신의 sensitivity 도 검증한다**(안 돌려보면 가짜 검사 — [[feature-ship-needs-fresh-adopter-gate]]):
+**가드 자신의 sensitivity 도 검증한다**(안 돌려보면 가짜 검사 — 출하 기능은 새 채택자 설치로 확인한다는 원칙):
 판정 로직을 독립 헬퍼로 떼어 (a) opencode 원본 5줄 본문에 자기-은닉을 실제로 검출하고 (b) 임시 git
 repo 에 미추적 ignore 파일을 심어 ① 이 실제로 잡아내는 걸 각각 단언한다.
 

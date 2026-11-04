@@ -1,4 +1,4 @@
-"""보호목록 설정 채널 — `repo add --protected` · `repo protected` · `repo list` · sidecar 일치화
+"""보호목록 설정 채널 — `repo add --protected` · `repo protected` · `repo list` · sidecar 일치시킴
 (T-0417·ADR-0072).
 
 areas.md `protected` 칼럼이 **단일 진실**이고 훅 sidecar(`.local/repo-hooks/<repo>/protected`)는
@@ -1030,9 +1030,9 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(bootstr
     """**must-fix**: `install_protected_hook` 이 (예외 없이) False 면 성공 알림이 나가면 안 된다.
 
     `install_protected_hook` 은 bare 부재·`core.hooksPath` 설정 실패를 **False 반환**으로 알린다.
-    그걸 무시하고 "일치화했습니다" 를 내면 이 티켓이 닫으려던 값-연결 끊김을 *일치하다고 거짓
+    그걸 무시하고 "일치시켰습니다" 를 내면 이 티켓이 닫으려던 값-연결 끊김을 *일치하다고 거짓
     보고*하는 것 — 사용자가 확인할 이유를 없앤다(원래 문제보다 나쁘다). fail-soft(진입 무차단)는
-    유지하되 실패는 loud: "일치화하지 못했습니다" + 옛 목록 + 재실행 커맨드.
+    유지하되 실패는 loud: "일치시키지 못했습니다" + 옛 목록 + 재실행 커맨드.
     """
     hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
@@ -1051,7 +1051,7 @@ def test_bootstrap_reconcile_failure_is_loud_and_not_reported_as_success(bootstr
 
 
 def test_bootstrap_reconcile_exception_is_loud_too(bootstrap, tmp_path, capsys, monkeypatch):
-    """재설치 raw 예외는 전파한다 — 일치화 성공 문구를 내지 않는다."""
+    """재설치 raw 예외는 전파한다 — 일치 성공 문구를 내지 않는다."""
     hooks = tmp_path / "home" / ".project_manager/.local/repo-hooks"
     write_sidecar(hooks, "svc", ["main"])
 

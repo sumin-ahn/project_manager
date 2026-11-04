@@ -430,7 +430,7 @@ _ROUND_LABEL_RE = re.compile(r"\b(\d{2})-(architect|developer|code-reviewer)\b")
 # 카드 종결 단계 표의 행 — 이름 부분집합 대조만 하면 지워진 단계가 표에 남아도 통과한다.
 # 행 판정은 표 블록 안에서 한 줄씩 한다(파일 전체 스캔이 아니다 — `_close_step_table_rows`).
 _CLOSE_STEP_TABLE_ROW_RE = re.compile(r"^\| \d+ \| ")
-# 종결 단계 표 절의 헤딩 — 행 수 단언의 대상을 이 절로 좁히는 찾을 글.
+# 종결 단계 표 절의 헤딩 — 행 수 단언의 대상을 이 절로 좁히려고 찾는 글.
 _CLOSE_STEP_HEADING_PREFIX = "## 종결 "
 # 폐지된 부분 재설계 서술 — 재설계는 예산 4키를 전부 리셋해 주기를 처음부터 다시 연다.
 _RETIRED_REPLAN_PHRASE = "쌍을 뒤에 붙인다"
@@ -472,7 +472,7 @@ def _shipped_cards(name: str, stem: str) -> list[Path]:
     )
 
 
-# 일치 규범의 문장 소유자는 pm_principles 하나뿐이다. 역할/플레이북/스킬은 링크와 실행 절차만
+# 마무리 규범의 문장 소유자는 pm_principles 하나뿐이다. 역할/플레이북/스킬은 링크와 실행 절차만
 # 싣는다. 정규식은 문구 하나를 golden 으로 고정하지 않고 같은 규칙을 다시 풀어 쓴 경우를 잡는다.
 _CONVERGENCE_RULE_COPY_RE = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"fix[^.]{0,120}마지막[^.]{0,40}(?:사람 )?라운드",
@@ -506,12 +506,12 @@ def _convergence_reference_guides() -> list[Path]:
 
 
 def test_convergence_normative_sentences_live_only_in_pm_principles():
-    """role/playbook/skill와 출하 사본은 일치 규범을 재서술하지 않고 canonical 절을 참조한다."""
+    """role/playbook/skill와 출하 사본은 마무리 규범을 재서술하지 않고 canonical 절을 참조한다."""
     owners = [REPO / ".project_manager/wiki/pm_principles.md"] + [
         _wiki(name) / "pm_principles.md" for name in TEMPLATE_NAMES
     ]
     assert all(_convergence_rule_copies(path.read_text(encoding="utf-8")) for path in owners), (
-        "pm_principles owner의 일치 규범이 sensitivity 정규식에 잡히지 않음"
+        "pm_principles owner의 마무리 규범이 sensitivity 정규식에 잡히지 않음"
     )
     offenders = {}
     for path in _convergence_reference_guides():
@@ -520,7 +520,7 @@ def test_convergence_normative_sentences_live_only_in_pm_principles():
         if copies:
             offenders[str(path.relative_to(REPO))] = copies
         assert "pm_principles.md" in text, f"{path.relative_to(REPO)}: canonical 원칙 참조 누락"
-    assert not offenders, f"pm_principles 밖 일치 규범 복제: {offenders}"
+    assert not offenders, f"pm_principles 밖 마무리 규범 복제: {offenders}"
 
 
 @pytest.mark.parametrize("sample", (
