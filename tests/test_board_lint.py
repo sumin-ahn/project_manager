@@ -773,15 +773,6 @@ def test_lint_tickets_includes_unstable_refs(board, monkeypatch, tmp_path):
 # status.md 를 안 건드린다 → 그 표지 무결성 가드(`lint_status_anchors`·`scalar-anchor-broken`)도
 # 제거됐다. ✅ 누적 권고(`status-done-accum`)와 architecture freshness 는 유지된다.
 
-def test_scalar_anchor_lint_removed(board):
-    """`lint_status_anchors`·`scalar-anchor-broken` kind 는 더 이상 존재하지 않는다(ADR-0023)."""
-    assert not hasattr(board, "lint_status_anchors")
-    assert "scalar-anchor-broken" not in board_lint._ADVISORY_LINT_KINDS  # advisory 도 아님(애초 부재)
-    assert "status-header-bloat" not in board_lint._ADVISORY_LINT_KINDS    # header-bloat 가드도 제거
-    # judgment-only 가드는 보존: ✅ 누적 권고 kind 는 advisory 로 남는다.
-    assert "status-done-accum" in board_lint._ADVISORY_LINT_KINDS
-
-
 def test_lint_status_only_done_accum_now(board, monkeypatch, tmp_path):
     """lint_status 는 ✅ 누적(status-done-accum)만 낸다 — 헤더 scalar 검사 제거 후에도 동작.
 
@@ -886,7 +877,7 @@ def test_lint_scopes_advice_on_broken_format(board, monkeypatch, tmp_path):
 def test_lint_scopes_advice_on_non_string(board, monkeypatch, tmp_path, scope_yaml):
     """비문자열 family_scope(list/dict/int) → scope-advice (형식 오류·자문성·ADR-0015).
 
-    `family_scope()` 헬퍼는 shared 로 fail-soft 로 대체하지만, lint 는 그 형식 오류를
+    `family_scope()` 헬퍼는 shared 로 대체(fail-soft)하지만, lint 는 그 형식 오류를
     조용히 삼키지 않고 원본을 검사해 권고한다.
     """
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
@@ -3816,8 +3807,8 @@ def test_shared_reader_uses_the_strict_loader(board, monkeypatch, tmp_path):
 # CLI 연결은 tests/test_pm_config_status_json.py 가 실 홈에서 end-to-end 로 잰다.
 
 
-def test_status_snapshot_counts_open_rows_and_review_ticket_records(board, monkeypatch, tmp_path):
-    """상태별 수는 `STATUS_DIRS` 다섯 개이고, open 행과 리뷰 집계 티켓 기록이 그대로 실린다."""
+def test_status_snapshot_counts_open_rows_and_check_records(board, monkeypatch, tmp_path):
+    """상태별 수는 `STATUS_DIRS` 다섯 개이고, open 행과 회귀·라이브 시험 기록이 그대로 실린다."""
     _wire_repo(board, monkeypatch, tmp_path)
     local = tmp_path / ".project_manager" / ".local"
     local.mkdir(parents=True, exist_ok=True)

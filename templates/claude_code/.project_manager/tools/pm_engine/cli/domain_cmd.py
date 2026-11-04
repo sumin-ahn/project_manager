@@ -267,12 +267,12 @@ def cmd_capture(home, args: argparse.Namespace) -> int:
 
 
 def cmd_capture_draft(home, args: argparse.Namespace) -> int:
-    """researcher 조사 prose → domain draft 페이지 scaffold (git 무조작·사람 검토가 통과 조건).
+    """researcher 조사 prose → domain draft 페이지 scaffold (git 무조작·사람 검토를 거쳐야 정식 페이지가 된다).
 
     `cmd_capture`(코드→domain·read-only surface)와 **별개** — 이건 조사결과를 draft 페이지로
     *쓴다*(scaffold). 단 frontmatter `status: draft` 라 load_pages 가 index 에서 제외하고,
     git 은 절대 건드리지 않는다(staging 무변화). promote(draft→정식)는 PM 손(status 제거 +
-    `.draft.md`→`.md` rename + git add) — 엔진에 promote 명령이 없다는 것이 통과 조건.
+    `.draft.md`→`.md` rename + git add) — 엔진에 promote 명령이 없어 이 단계는 PM 이 손으로 한다.
 
     --source 읽기 실패(파일 부재 등)는 명시 에러(stderr·rc 1)로 보고한다 — 잘못된 빈 페이지
     생성을 막는다. 성공 시 생성 경로와 promote 안내를 출력하고 rc 0.

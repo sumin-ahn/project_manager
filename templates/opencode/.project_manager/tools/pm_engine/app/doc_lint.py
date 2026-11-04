@@ -163,7 +163,7 @@ def lint_domain_freshness(home, *, runner=None) -> list[tuple[str, str, str]]:
     **관찰불가로 놓치는 곳을 `domain-unverifiable` advisory 로 드러낸다**(거짓 green 근절·
     판정을 억지로 만들지 않고 *검증 불가*임을 정직히 알림):
       - **고정 커밋 판정 선행**(`_sha_pin_status`): `verified_at` 이 유효한 고정 커밋(고정 hex+해소+
-        HEAD 선조)가 아니면 형식 아님/미해소(타-git SHA)/비-선조(descendant·딴 브랜치) 사유로
+        HEAD 선조)이 아니면 형식 아님/미해소(타-git SHA)/비-선조(descendant·딴 브랜치) 사유로
         advisory — `<sha>..HEAD` range 자체가 성립 안 하니 covers 관찰가능성 판정은 하지 않는다.
       - **covers 관찰가능성**(고정 커밋 OK 일 때·`covers_pathspecs`·pin 경계): 미추적 + pin 이후
         차이 0 (never-tracked=`templates/**` 또는 pin *이전* 삭제) → `absent` → advisory.

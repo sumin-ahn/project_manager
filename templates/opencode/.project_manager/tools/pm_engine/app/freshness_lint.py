@@ -252,7 +252,7 @@ def _verified_at_finding(home, doc_file: Path, pathspecs, label: str, kind: str,
     → [](명시 skip — 신규 clone·아직 verified_at 미부여 문서 무영향·false-green 아님).
 
     **고정 커밋 판정**: `verified_at` 이 유효한 backward 고정 커밋
-    (고정 hex + 해소 + HEAD 선조·`_sha_pin_status`)가 아니면 종전엔 `_git_commits_between` 이
+    (고정 hex + 해소 + HEAD 선조·`_sha_pin_status`)이 아니면 종전엔 `_git_commits_between` 이
     rc≠0/빈 range 를 조용한 green 으로 받아들였다. 이제 `{kind 접두}-unverifiable` advisory 로
     드러낸다 — 형식 아님(움직이는 ref·MF2)/미해소(타-git SHA·MF1)/HEAD 선조 아님(descendant·
     딴 브랜치)를 사유 구분(never-block·억지 판정 금지). 고정 커밋 OK 일 때만
