@@ -20,9 +20,9 @@ import sys
 UPSTREAM_GIT_TIMEOUT_SECONDS = 60
 
 
-# URL upstream 캐시 clone/fetch 타임아웃 (초). 조회(ls-remote)와 비용 축이 다르다 — 이 제품
+# URL upstream 캐시 clone/fetch 타임아웃 (초). 조회(ls-remote)와 비용 수준이 다르다 — 이 제품
 # repo 를 `file://` 로 전체 clone 하면 로컬 디스크에서도 2.87초(트리 40MB)고, 원격은 회선에
-# 달렸다. 60초로 자르면 정상 원격 clone 이 중간에 끊긴다(pm_config 의 bare clone 상한과 같은 축).
+# 달렸다. 60초로 자르면 정상 원격 clone 이 중간에 끊긴다(pm_config 의 bare clone 상한과 같은 수준).
 UPSTREAM_CLONE_TIMEOUT_SECONDS = 600
 
 
@@ -38,7 +38,7 @@ _UPSTREAM_GIT_CONFIG_KV = (
     ("protocol.https.allow", "always"),
     ("protocol.ssh.allow", "always"),
     ("protocol.file.allow", "always"),
-    ("http.followRedirects", "false"),  # redirect 추적 차단(잔여 SSRF 표면).
+    ("http.followRedirects", "false"),  # redirect 추적 차단(남은 SSRF 노출면).
 )
 
 
@@ -54,7 +54,7 @@ def _real_upstream_git_runner(*, timeout: int = UPSTREAM_GIT_TIMEOUT_SECONDS) ->
         + `GIT_CONFIG_COUNT` 패턴으로 protocol allowlist(https/ssh/file 만)·credential.helper=
         (빈값) 강제. `_real_git_runner`(로컬 추적집합 조회)와 달리 *네트워크-facing* 이라 격리한다.
       - timeout — 기본값은 조회(ls-remote·rev-parse) 기준 상한이고, 캐시 clone/fetch 처럼
-        비용 축이 다른 호출은 호출부가 `timeout=` 으로 자기 상한을 준다(runner 사본 0).
+        비용 수준이 다른 호출은 호출부가 `timeout=` 으로 자기 상한을 준다(runner 사본 0).
     git 바이너리 부재는 (1, 사유) 로 돌려 호출부가 rc 로 판정한다. 실행 예외(시간 초과 등)는 전파한다.
     """
     git_binary = shutil.which("git")
@@ -70,11 +70,11 @@ def _real_upstream_git_runner(*, timeout: int = UPSTREAM_GIT_TIMEOUT_SECONDS) ->
         env["GIT_CONFIG_SYSTEM"] = os.devnull
         # hardening(codex): 상속된 protocol 우회 env 제거(방어층) — GIT_ALLOW_PROTOCOL 은
         # protocol.allow allowlist 를 우회하고, GIT_PROTOCOL_FROM_USER 는 user-given protocol
-        # 게이트를 푼다. 둘 다 pop 해 우리 GIT_CONFIG allowlist 가 단일 권위가 되게 한다.
+        # 제한을 푼다. 둘 다 pop 해 우리 GIT_CONFIG allowlist 가 단일 권위가 되게 한다.
         env.pop("GIT_ALLOW_PROTOCOL", None)
         env.pop("GIT_PROTOCOL_FROM_USER", None)
         # GIT_CONFIG_COUNT 패턴으로 protocol allowlist·credential.helper=(빈값) 주입(`-c` 동치·
-        # worktree_pool 선례). 기존 env 의 GIT_CONFIG_* 잔여는 우리 카운트로 덮어 결정론 보장
+        # worktree_pool 선례). 기존 env 의 GIT_CONFIG_* 남은 값은 우리 카운트로 덮어 결정론 보장
         # (env 격리는 sub-process[ssh transport]까지 전파돼 argv `-c` 보다 안전 — env 단일 채널).
         config_kv = _UPSTREAM_GIT_CONFIG_KV
         if os.name == "nt":
@@ -150,7 +150,7 @@ UPSTREAM_CACHE_RELDIR = Path(".project_manager") / ".local" / "upstream-cache"
 
 
 # 캐시 디렉터리 이름 = URL 다이제스트 앞 16자. 경로 조립 입력이 URL 이므로 이름에 URL 문자를
-# 그대로 쓰지 않는다(경로 탈출·플랫폼 금지문자 표면 0).
+# 그대로 쓰지 않는다(경로 탈출·플랫폼 금지문자 노출면 0).
 _UPSTREAM_CACHE_NAME_LEN = 16
 
 
@@ -233,7 +233,7 @@ def _resolve_add_harness_source(
       5. 전부 실패              → 친화 FileNotFoundError (actionable).
 
     URL 캐시가 **로컬 소스보다 뒤**인 이유는 네트워크가 마지막 수단이기 때문이다 — dest 자신이
-    프레임워크 checkout 이면 templates/ 가 이미 손 안에 있고, 그 형상에서 clone 을 먼저 걸면
+    프레임워크 checkout 이면 templates/ 가 이미 손 안에 있고, 그 경우에 clone 을 먼저 걸면
     오프라인에서 되던 add-harness 를 새로 막는다. 캐시 clone/fetch 실패는 `UpstreamCacheError`
     로 그대로 올린다(다음 후보로 미끄러지지 않는다 — 받아야 할 상류를 못 받은 것이다).
     """

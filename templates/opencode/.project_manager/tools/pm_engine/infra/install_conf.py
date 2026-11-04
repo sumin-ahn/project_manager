@@ -31,7 +31,7 @@ def _default_test_cmd() -> str:
 
 
 def _force_rmtree(path: Path) -> None:
-    """트리를 **실제로** 지운다 — 공용 seam(`fs.force_rmtree`)·실패는 올린다.
+    """트리를 **실제로** 지운다 — 공용 함수(`fs.force_rmtree`)·실패는 올린다.
 
     `shutil.rmtree(..., ignore_errors=True)` 를 쓰지 않는다: git object·packfile 은 read-only 라
     Windows 에서 삭제가 거부되는데, 그 실패를 삼키면 부분 board·임시 clone 이 채택자 트리에 남고도
@@ -48,7 +48,7 @@ def _write_conf_keys(path: Path, updates: dict[str, str | None]) -> bool:
 
     `conf_schema._set_conf_keys`(텍스트 규칙 소유자)로 모든 갱신 키를 유일화한 뒤 같은 디렉터리의
     임시파일을 원자 교체하여 부분 쓰기를 막는다. 변경이 없어도 reader와 같은 last-wins 파서로
-    postcondition을 확인하며, 불일치는 성공으로 흡수하지 않고 fail-loud한다.
+    postcondition을 확인하며, 불일치는 성공으로 넘기지 않고 fail-loud한다.
 
     읽기→교체→검증 전체가 **전 writer 공용 배타락** 안이다. 이 writer 는 커밋 전 내용을 읽고
     나중에 통째로 갈아끼우므로, 그 사이에 다른 진입이 원자적으로 append 한 결정(추가 리뷰어·
@@ -150,7 +150,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
-        # conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축(app.upstream_revisions.record_upstream_revs
+        # conf 자체가 없는 경우에 락 파일을 만들지 않는 값싼 단축(app.upstream_revisions.record_upstream_revs
         # 와 같은 규약) — "쓰지 않는다" 만 결정하고 어떤 write 계획의 입력도 아니다. 권위 판정은
         # 락 안에서 다시 한다.
         return False
@@ -162,7 +162,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
         current_keys = conf_schema.parse(fs.read_text_shared(local_conf, encoding="utf-8"))
         # board init 이 새로 쓴 local.conf 에 *없는* 기존 사용자 키만 복원(init 값 우선).
         # 사라진 이름(`conf_schema.LEGACY_KEY_MAP`)은 되얹지 않는다 — 재병합이 그것을 되살리면
-        # 그 clone 은 다음 실행부터 구표기 정지로 멈춘다. 판정 원장은 로더 하나다.
+        # 그 clone 은 다음 실행부터 구표기 정지로 멈춘다. 판정 기준은 로더 하나다.
         missing = {key: value for key, value in original_keys.items()
                    if key not in current_keys}
         preserved = {key: value for key, value in missing.items() if not legacy(key)}
@@ -180,11 +180,11 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
 
 
 def _instance_project_name(dest_root: Path) -> str:
-    """라이브 인스턴스의 프로젝트 이름을 local.conf `project.name` 에서 읽는다(없으면 디렉토리명 폴백).
+    """라이브 인스턴스의 프로젝트 이름을 local.conf `project.name` 에서 읽는다(없으면 디렉토리명을 대신 쓴다).
 
     add_harness 의 operational 토큰 치환이 인스턴스의 실제 이름을 존중하도록 —
     최초 import 가 local.conf 에 박아 둔 값을 재사용한다(_parse_conf_keys). local.conf 부재·
-    `project.name` 미설정이면 dest 디렉토리명(main 의 --name 기본값과 동형).
+    `project.name` 미설정이면 dest 디렉토리명(main 의 --name 기본값과 같은 방식).
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if local_conf.is_file():
@@ -290,7 +290,7 @@ def record_opencode_model(dest_root: Path, model: str) -> bool:
     OPENCODE_PRO_MODEL · app.update_render._LOCAL_CONF_TO_OPERATIONAL) 키 부재로 leak assertion 에
     걸려 채택자 렌더가 crash 한다. 따라서 *실제로 모델이 해소된* 경로(flag·interactive)에서만
     그 값을 local.conf 에 박아 둔다 — todo(미해소)는 토큰이 YAML 주석으로 남아 렌더 leak 이
-    없으므로 기록하지 않는다(호출부 게이트). 공용 writer의 중복 정규화·atomic replace·실효값
+    없으므로 기록하지 않는다(호출부가 거른다). 공용 writer의 중복 정규화·atomic replace·실효값
     검증을 거치며 다른 키·주석은 보존한다. local.conf 부재면 graceful skip. 변경 시 True.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"

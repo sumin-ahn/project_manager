@@ -1,13 +1,13 @@
 """render 엔진 단위 테스트 (T-0131·ADR-0028·ADR-0031·§3.2~3.4).
 
-세 표면을 합성 입력(실 템플릿/manifest 무의존)으로 검증한다:
-  1. pm_render.render_adapter — operational plain replace·leak raise·미해소 토큰 표면화.
+세 대상을 합성 입력(실 템플릿/manifest 무의존)으로 검증한다:
+  1. pm_render.render_adapter — operational plain replace·leak raise·미해소 토큰 드러냄.
      (free-form value-fill 기계 = overlay/slot-fill/conditional-omit 은 ADR-0031 로 제거됨 —
       free-form 은 pm_import FILL 채널이 canonical home 에서 전담.)
   2. manifest_store.read_manifest(@render 파싱·후방호환) + plan/apply render 분기(합성 manifest).
-  3. render_lint.lint_render_leak — @render 산출물 한정·활성화 전 무발화·blocking(advisory 밖).
+  3. render_lint.lint_render_leak — @render 산출물 한정·활성화 전 안 걸림·blocking(advisory 밖).
 
-실 트리/네트워크 무의존 — tmp_path 합성 + 모듈 직접 로드(다른 엔진 테스트 패턴 동형).
+실 트리/네트워크 무의존 — tmp_path 합성 + 모듈 직접 로드(다른 엔진 테스트 패턴과 같은 방식).
 """
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def test_operational_missing_key_leaks_not_silently_emptied(render_home, pm_rend
     문자열로 silently 치환하지 않고 토큰을 남겨 RenderLeakError 로 잡는다 (codex·침묵 비움 금지).
 
     회귀: `_fill_operational` 가 `.get(key, "")` 였을 때 미보유 키가 `` 로 *조용히 비워져*
-    탐지 신호가 사라졌다. 미보유 키는 잔존→leak 으로 표면화해야 한다. (OPENCODE_PRO_MODEL 은
+    탐지 신호가 사라졌다. 미보유 키는 잔존→leak 으로 드러내야 한다. (OPENCODE_PRO_MODEL 은
     intentional-TODO 예외라 별도 — test_opencode_pro_model_missing_graceful_todo_not_leak 참조.)
     """
     tpl = "root: {{PROJECT_ROOT}}\n"
@@ -109,7 +109,7 @@ def test_operational_empty_value_leaks_not_silently_emptied(render_home, pm_rend
 
     T-0218 발단(PM 49차 라이브): local.conf `project.name=` 빈값 → 렌더가 `{{PROJECT_NAME}}` 를
     `` 로 silent 치환 → description 이 " 프로젝트"(이름 빈칸)로 커밋·전파. `_assert_no_leak` 는
-    *잔여 토큰* 만 보므로 통과했다. 빈값 항목은 치환하지 않아 토큰이 잔존→leak 으로 표면화해야
+    *남은 토큰* 만 보므로 통과했다. 빈값 항목은 치환하지 않아 토큰이 잔존→leak 으로 드러내야
     한다(silent-empty = leak 클래스·렌더러 이중화·호출자 무관). 에러엔 빈값 힌트가 실린다.
     """
     tpl = "{{PROJECT_NAME}} 프로젝트\n"
@@ -140,7 +140,7 @@ def test_operational_empty_value_hint_only_for_leaked_token(render_home, pm_rend
 
 
 def test_multiple_operational_tokens_one_line_both_resolved(render_home, pm_render):
-    """한 행의 operational 토큰 2개 모두 plain replace 로 해소(whole-text 패스·잔여 토큰 0)."""
+    """한 행의 operational 토큰 2개 모두 plain replace 로 해소(whole-text 패스·남은 토큰 0)."""
     tpl = "{{PROJECT_NAME}}: {{PROJECT_ROOT}}\n"
     out = adapter_render.render_adapter(render_home,
         tpl, operational={"PROJECT_NAME": "acme", "PROJECT_ROOT": "/r"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
@@ -149,7 +149,7 @@ def test_multiple_operational_tokens_one_line_both_resolved(render_home, pm_rend
 
 
 def test_opencode_pro_model_in_operational_keys(pm_render):
-    """OPENCODE_PRO_MODEL ∈ OPERATIONAL_KEYS — opencode 어댑터 토큰이 operational 채널에 배선됨(T-0133)."""
+    """OPENCODE_PRO_MODEL ∈ OPERATIONAL_KEYS — opencode 어댑터 토큰이 operational 채널에 등록됨(T-0133)."""
     assert "OPENCODE_PRO_MODEL" in render_rules.OPERATIONAL_KEYS
 
 
@@ -169,7 +169,7 @@ def test_opencode_pro_model_missing_graceful_todo_not_leak(render_home, pm_rende
     로 graceful 중화된다 (T-0310·불변식 c 예외·import 대칭).
 
     회귀 반전: @source 전파(ADR-0054) 후 opencode 채택자 self-update 가 미해소 토큰을 leak 으로
-    rc-fail(update 전멸)해 릴리즈 라이브 게이트가 포착했다. 이제 import(--fill manual)와 대칭 —
+    rc-fail(update 전멸)해 릴리즈 라이브 통과 조건이 포착했다. 이제 import(--fill manual)와 대칭 —
     model: 줄을 주석화·토큰 제거해 자족 유지하고 채택자-fill 지점만 남긴다(rc0).
     """
     tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\nbody\n'
@@ -192,7 +192,7 @@ def test_leak_assert_integrity_other_token_still_leaks_with_model_todo(render_ho
     with pytest.raises(render_rules.RenderLeakError) as exc:
         adapter_render.render_adapter(render_home, tpl, operational={}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     msg = str(exc.value)
-    # 진짜 미배선 토큰은 leak 목록에 올라 fail-loud.
+    # 진짜 연결 안 된 토큰은 leak 목록에 올라 fail-loud.
     assert "{{GENUINELY_UNWIRED}}" in msg
     # OPENCODE_PRO_MODEL 은 중화됐으므로 leak 목록에 없다(예외만 허용).
     assert "{{OPENCODE_PRO_MODEL}}" not in msg
@@ -200,7 +200,7 @@ def test_leak_assert_integrity_other_token_still_leaks_with_model_todo(render_ho
 
 def test_opencode_pro_model_off_model_line_still_leaks(render_home, pm_render):
     """intentional-TODO 예외는 `model:` 필드 줄 한정 — 산문/헤더의 미해소 OPENCODE_PRO_MODEL 은
-    중화 대상 아님 → 여전히 leak(진짜 미배선·불변식 c·false-green 근절)."""
+    중화 대상 아님 → 여전히 leak(진짜 연결 안 된 토큰·불변식 c·false-green 근절)."""
     tpl = "설명: {{OPENCODE_PRO_MODEL}} 사용 예시\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
         adapter_render.render_adapter(render_home, tpl, operational={}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
@@ -279,13 +279,13 @@ def test_neutralize_model_todo_only_model_field_line(pm_render):
 
 
 def test_render_neutralize_matches_import_fallback_output(render_home, pm_render, pm_import, tmp_path):
-    """pm_import 폴백(_mark_model_todos)과 render_adapter 의 중화가 byte-동일 (단일 진실·T-0310).
+    """pm_import 대체 동작(_mark_model_todos)과 render_adapter 의 중화가 byte-동일 (단일 진실·T-0310).
 
     import 은 pm_render.neutralize_model_todo 에 위임하므로, 같은 model: 템플릿 줄에서 양쪽이
     같은 결과를 내야 self-update 재렌더가 spurious diff 를 안 만든다(import↔update 대칭 lock-in).
     """
     model_tpl = 'model: "{{OPENCODE_PRO_MODEL}}"\n'
-    # import 폴백을 파일에 적용(비-tty·가용목록 없음 경로 = available=[]).
+    # import 대체 동작을 파일에 적용(비-tty·가용목록 없음 경로 = available=[]).
     dest = tmp_path / "adopter"
     rel = Path(".opencode/agents/x.md")
     f = dest / rel
@@ -320,7 +320,7 @@ def test_render_file_leak_reports_source(render_home, pm_render, tmp_path):
 
 
 def test_stray_omit_marker_raises(render_home, pm_render):
-    """옛 free-form drop-section 마커(ADR-0031 제거)가 잔존하면 RenderLeakError(미마이그 표면화).
+    """옛 free-form drop-section 마커(ADR-0031 제거)가 잔존하면 RenderLeakError(미마이그 드러냄).
 
     어댑터는 free-form-free(ADR-0030)라 `<!-- pm:omit-if-empty ... -->` 류 마커가 절대 없어야
     한다 — 잔존하면 미마이그레이션 신호로 무음 출하를 막는다(_assert_no_leak·stray 검출).
@@ -332,10 +332,10 @@ def test_stray_omit_marker_raises(render_home, pm_render):
 
 
 def test_unfilled_operational_token_is_leak_strict(render_home, pm_render):
-    """operational 토큰을 안 채우면(값 미공급) 잔여 리터럴 → RenderLeakError(엄격·자족 산출물).
+    """operational 토큰을 안 채우면(값 미공급) 남은 리터럴 → RenderLeakError(엄격·자족 산출물).
 
     이전 allow-list 는 미해소 operational 을 통과시켰으나, ADR-0028 자족 산출물 = 토큰 0 이므로
-    이제 미해소 토큰은 *침묵 출하 대신* 큰소리로 표면화한다(D17-2 forward-flag 의 fail-loud 근거).
+    이제 미해소 토큰은 *침묵 출하 대신* 큰소리로 드러낸다(D17-2 forward-flag 의 fail-loud 근거).
     """
     tpl = "host: {{PROJECT_NAME}}\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
@@ -344,7 +344,7 @@ def test_unfilled_operational_token_is_leak_strict(render_home, pm_render):
 
 
 def test_filled_operational_token_no_leak(render_home, pm_render):
-    """operational 토큰을 값으로 채우면 잔여 0 → leak 아님(plain replace 정상 경로)."""
+    """operational 토큰을 값으로 채우면 남은 0 → leak 아님(plain replace 정상 경로)."""
     tpl = "host: {{PROJECT_NAME}}\n"
     out = adapter_render.render_adapter(render_home, tpl, operational={"PROJECT_NAME": "acme"}, skill_names=skill_inventory._installed_skill_entry_names(render_home))
     assert out == "host: acme\n"
@@ -356,7 +356,7 @@ def test_freeform_token_left_literal_is_leak(render_home, pm_render):
 
     ADR-0031 로 free-form value-fill 기계가 제거됐다 — free-form 은 pm_import FILL 채널이
     canonical home 에서 전담하므로 어댑터엔 free-form 토큰이 없어야 한다(ADR-0030 free-form-free).
-    잔존하면 엄격 가드가 자족 위반(미마이그레이션)으로 표면화한다.
+    잔존하면 엄격 가드가 자족 위반(미마이그레이션)으로 드러낸다.
     """
     tpl = "보호: {{PROTECTED_PATHS}}\n"
     with pytest.raises(render_rules.RenderLeakError) as exc:
@@ -521,7 +521,7 @@ def test_apply_render_writes_rendered_output(pm_update, tmp_path):
     changes, missing = update_plan.plan(pm_paths.home_at(pm_update.REPO), src, manifest, dest_root=dst, conf=_local_conf_of(pm_update, dst))
     update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
-    # operational 토큰 둘 다 해소·잔여 토큰 0.
+    # operational 토큰 둘 다 해소·남은 토큰 0.
     assert written == "- acme\n- /r\nbody\n"
     assert "{{" not in written
 
@@ -579,25 +579,25 @@ def test_apply_non_render_byte_copies(pm_update, tmp_path):
     assert dst_f.read_text(encoding="utf-8") == "# engine {{NOT_A_RENDER_TOKEN}}\n"
 
 
-# ── 3. render_lint.lint_render_leak — @render 한정·활성화 전 무발화·blocking ───────
+# ── 3. render_lint.lint_render_leak — @render 한정·활성화 전 안 걸림·blocking ───────
 
 def test_render_leak_not_advisory_is_blocking(board):
-    """render-leak 은 `_ADVISORY_LINT_KINDS` 밖 → `--gate` 차단(blocking)."""
+    """render-leak 은 `_ADVISORY_LINT_KINDS` 밖 → `--blocking` 차단(blocking)."""
     assert "render-leak" not in board_lint._ADVISORY_LINT_KINDS
 
 
 def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
-    """@render manifest path 0 → 검사 대상 0 → 무발화 (트리 게이트가 아닌 *본 로직* 검증).
+    """@render manifest path 0 → 검사 대상 0 → 안 걸림 (트리 검사가 아닌 *본 로직* 검증).
 
-    렌더 산출물 트리(local.conf 존재)로 두어 트리 게이트(T-0170)를 통과시킨 뒤, manifest 에
-    @render 항목이 없음 자체로 무발화함을 본다 — local.conf 부재 면제와 *별개*인 경로.
+    렌더 산출물 트리(local.conf 존재)로 두어 트리 검사(T-0170)를 통과시킨 뒤, manifest 에
+    @render 항목이 없음 자체로 걸리지 않음을 본다 — local.conf 부재 면제와 *별개*인 경로.
     """
     # manifest 에 @render 항목이 없는 합성 repo 로 REPO 를 가리킨다.
     fake_repo = tmp_path / "repo"
     m = fake_repo / ".project_manager" / "engine.manifest"
     m.parent.mkdir(parents=True)
     m.write_text(".project_manager/tools/board.py\n.claude/agents\n", encoding="utf-8")
-    # local.conf 존재 → 트리 게이트 통과(이 무발화는 @render 부재 때문이지 트리 면제가 아님).
+    # local.conf 존재 → 트리 검사 통과(이 안 걸림은 @render 부재 때문이지 트리 면제가 아님).
     (fake_repo / ".project_manager" / "local.conf").write_text(
         "project.name=acme\n", encoding="utf-8")
     # 토큰을 가진 어댑터가 있어도 @render 가 아니므로 검사 안 함.
@@ -611,14 +611,14 @@ def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
 def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_path):
     """@render 활성화된 path 산출물에 리터럴 `{{...}}` 잔존 → render-leak finding(blocking).
 
-    렌더 산출물 트리(채택 인스턴스)임을 local.conf 존재로 표시한다 — 트리 게이트(T-0170)는
-    local.conf 부재 트리(토큰-form 소스·① canonical)만 면제하고, 산출물 트리의 leak 발화는 보존.
+    렌더 산출물 트리(채택 인스턴스)임을 local.conf 존재로 표시한다 — 트리 검사(T-0170)는
+    local.conf 부재 트리(토큰-form 소스·① canonical)만 면제하고, 산출물 트리의 leak 실행은 보존.
     """
     fake_repo = tmp_path / "repo"
     m = fake_repo / ".project_manager" / "engine.manifest"
     m.parent.mkdir(parents=True)
     m.write_text(".claude/agents @render\n", encoding="utf-8")
-    # local.conf 존재 → 채택 인스턴스(render 산출물 트리·트리 게이트 통과해 실 leak 검사).
+    # local.conf 존재 → 채택 인스턴스(render 산출물 트리·트리 검사 통과해 실 leak 검사).
     (fake_repo / ".project_manager" / "local.conf").write_text(
         "project.name=acme\n", encoding="utf-8")
     adapter = fake_repo / ".claude/agents/developer.md"
@@ -634,16 +634,16 @@ def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_
 
 
 def test_render_leak_clean_when_render_path_fully_rendered(board, monkeypatch, tmp_path):
-    """@render path 라도 잔여 토큰이 없으면(완전 렌더) finding 0 (산출물 트리에서 검증).
+    """@render path 라도 남은 토큰이 없으면(완전 렌더) finding 0 (산출물 트리에서 검증).
 
-    렌더 산출물 트리(local.conf 존재)로 트리 게이트(T-0170)를 통과시킨 뒤, 완전 렌더된 어댑터엔
-    토큰이 없어 무발화함을 본다 — 트리 면제가 아닌 본 leak-스캔 경로.
+    렌더 산출물 트리(local.conf 존재)로 트리 검사(T-0170)를 통과시킨 뒤, 완전 렌더된 어댑터엔
+    토큰이 없어 걸리지 않음을 본다 — 트리 면제가 아닌 본 leak-스캔 경로.
     """
     fake_repo = tmp_path / "repo"
     m = fake_repo / ".project_manager" / "engine.manifest"
     m.parent.mkdir(parents=True)
     m.write_text(".claude/agents @render\n", encoding="utf-8")
-    # local.conf 존재 → 산출물 트리(트리 게이트 통과·실 스캔이 토큰 0 으로 무발화).
+    # local.conf 존재 → 산출물 트리(트리 검사 통과·실 스캔이 토큰 0 으로 돌지 않음).
     (fake_repo / ".project_manager" / "local.conf").write_text(
         "project.name=acme\n", encoding="utf-8")
     adapter = fake_repo / ".claude/agents/developer.md"
@@ -707,7 +707,7 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
     assert getattr(target[0][2], "render", False) is True
     update_render.apply(pm_paths.home_at(pm_update.REPO), changes)
     written = (dst / rel).read_text(encoding="utf-8")
-    # PROJECT_NAME(local.conf) 해소·잔여 토큰 0.
+    # PROJECT_NAME(local.conf) 해소·남은 토큰 0.
     assert written == "- acme\nbody\n"
     assert "{{" not in written
 
@@ -747,7 +747,7 @@ def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path)
 
     발단: opencode 채택자가 opencode 없이 import → local.conf 에 harness.opencode.pro_model 부재 →
     @source 재렌더(.opencode/agents)가 `{{OPENCODE_PRO_MODEL}}` 을 leak → apply RenderLeakError
-    → self-update 전체 실패(엔진 update 까지 막힘). 이제 중화·rc0 동치(라이브 게이트 포착 회귀).
+    → self-update 전체 실패(엔진 update 까지 막힘). 이제 중화·rc0 동치(라이브 통과 조건 포착 회귀).
     """
     src = tmp_path / "src"
     dst = tmp_path / "dst"
@@ -802,7 +802,7 @@ def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
 # ── 4. 빈값 operational silent-empty 가드 (T-0218·pm_update·pm_import 경로) ────
 
 def test_operational_from_local_conf_excludes_empty_value(pm_update, tmp_path):
-    """local.conf `project.name=`(빈값) → operational dict 에서 제외·empty_keys 로 표면화(T-0218).
+    """local.conf `project.name=`(빈값) → operational dict 에서 제외·empty_keys 로 드러냄(T-0218).
 
     빈값을 그대로 넘기면 렌더가 토큰을 빈 문자열로 silent 치환한다(PM 49차 " 프로젝트" 오염).
     부재와 동일 취급으로 제외 → 토큰 잔존 → render 가 leak 으로 잡는다. 정상값은 무영향(회귀).
@@ -812,7 +812,7 @@ def test_operational_from_local_conf_excludes_empty_value(pm_update, tmp_path):
     _seed_render_dest(dst, local_conf="project.name=\nruntime.py=python3\n")
     operational, empty_keys = update_render._operational_from_local_conf(_local_conf_of(pm_update, dst))
     assert "PROJECT_NAME" not in operational  # 빈값 → dict 에서 제외(부재 동일 취급)
-    assert empty_keys == ["PROJECT_NAME"]  # 빈값 token-key 표면화
+    assert empty_keys == ["PROJECT_NAME"]  # 빈값 token-key 드러냄
     assert operational["PY"] == "python3"  # 정상값은 보존(회귀 무변경)
 
 
@@ -882,7 +882,7 @@ def _seed_render_managed_tree(dest_root: Path, rel: str, body: str) -> None:
 def test_render_managed_files_empty_sub_leaks(render_home, pm_import, tmp_path):
     """pm_import 경로(render_managed_files)도 빈값 sub → RenderLeakError(동일 가드·T-0218 DoD ③).
 
-    subs 의 값이 빈 문자열이면 렌더가 토큰을 silent 로 비우지 않고 leak 으로 표면화해야 한다
+    subs 의 값이 빈 문자열이면 렌더가 토큰을 silent 로 비우지 않고 leak 으로 드러내야 한다
     (호출자 무관 이중화·_fill_operational 방어). render_managed_files 는 leak 을 삼키지 않고
     전파 → 빈 이름이 파일에 기록되지 않는다.
     """
@@ -912,7 +912,7 @@ def test_render_managed_files_normal_sub_renders(render_home, pm_import, tmp_pat
     assert "{{" not in written
 
 
-# ── T-0219 (c): 렌더/sed-fed 어댑터 표면의 머신-가변 토큰 재도입 방지 ─────────
+# ── T-0219 (c): 렌더/sed-fed 어댑터 경로의 머신-가변 토큰 재도입 방지 ─────────
 # {{PY}}/{{TEST_CMD}} 는 폐기(문서=python3 관례+래퍼 self-resolve·test 명령=local.conf 노브 지칭).
 # 이 토큰이 어댑터 소스에 다시 들어오면 per-clone 렌더 왕복(ping-pong)이 재발한다.
 
@@ -928,10 +928,10 @@ _ADAPTER_SURFACES = [
 
 
 def test_adapter_surfaces_no_machine_variant_tokens():
-    """어댑터 소스(렌더/sed 대상 7표면)에 {{PY}}·{{TEST_CMD}} 재도입 금지 (T-0219 (c) 불변식)."""
+    """어댑터 소스(렌더/sed 대상 7곳)에 {{PY}}·{{TEST_CMD}} 재도입 금지 (T-0219 (c) 불변식)."""
     offenders = []
     for surface in _ADAPTER_SURFACES:
-        assert surface.is_dir(), f"어댑터 표면 부재: {surface}"
+        assert surface.is_dir(), f"어댑터 경로 부재: {surface}"
         for md in repo_owned_paths(
             REPO, surface.relative_to(REPO), mode=OWNED
         ):
@@ -983,13 +983,13 @@ def test_card_harness_from_path_uses_first_component(pm_render):
     assert render_rules.card_harness_from_path(".opencode/agents/developer.md") == "opencode"
     # 한 인스턴스가 담은 타 네임스페이스 파일(cross-ns 의존물)도 그 네임스페이스 소속이다.
     assert render_rules.card_harness_from_path(".claude/skills/pm-x/SKILL.md") == "claude"
-    # 판정 불가(어댑터 밖·인메모리 렌더)는 None — 미사용 프로필 규칙이 발화하지 않는다.
+    # 판정 불가(어댑터 밖·인메모리 렌더)는 None — 미사용 프로필 규칙이 돌지 않는다.
     assert render_rules.card_harness_from_path(".project_manager/wiki/README.md") is None
     assert render_rules.card_harness_from_path(None) is None
 
 
 def test_card_harness_ignores_components_outside_instance_root(pm_render):
-    """저장소 **밖** 경로 컴포넌트는 판정에 쓰이지 않는다 (가드 시야 == 판정 표면).
+    """저장소 **밖** 경로 컴포넌트는 판정에 쓰이지 않는다 (가드 검사 범위 == 판정 범위).
 
     체크아웃이 `~/.claude/...` 아래면 절대경로 훑기는 어댑터 밖 파일(공유 wiki·엔진 문서)까지
     claude 로 오분류한다 — 그 오분류는 토큰이 산문으로 번지는 순간 조용한 오중화가 된다."""
@@ -997,7 +997,7 @@ def test_card_harness_ignores_components_outside_instance_root(pm_render):
         "/home/me/.claude/projects/inst/.project_manager/wiki/README.md") is None
     assert render_rules.card_harness_from_path(
         "/home/me/.claude/projects/inst/.codex/agents/developer-hard.toml") is None
-    # 상류 좌표(`templates/<flavor>/…`)도 인스턴스 상대가 아니므로 판정 대상이 아니다.
+    # 상류 좌표(`templates/<variant>/…`)도 인스턴스 상대가 아니므로 판정 대상이 아니다.
     assert render_rules.card_harness_from_path(_CODEX_HARD_SOURCE) is None
 
 
@@ -1149,7 +1149,7 @@ def test_claude_effort_renders_conf_value(render_home, pm_render):
 def test_claude_effort_unresolved_is_neutralized(render_home, pm_render):
     """추론 키 부재(위임 매핑 미설정)는 leak 이 아니라 model 줄과 같은 TODO 중화다.
 
-    채울 값이 없으면 검증도 없다(pm_import 최초 렌더가 이 형상이다).
+    채울 값이 없으면 검증도 없다(pm_import 최초 렌더가 이 경우다).
     """
     out = adapter_render.render_adapter(render_home,
         _CLAUDE_ARCHITECT_TEMPLATE,
@@ -1192,7 +1192,7 @@ def test_unused_profile_skips_reasoning_value_check(render_home, pm_render):
     """미사용 프로필의 추론 값은 이 카드에 실리지 않으므로 이 카드 하네스의 허용값으로 재지 않는다.
 
     opencode 로 가는 역할의 `minimal`(그 모델 variant 일 수 있는 값·claude 허용값 밖)이 claude 카드
-    렌더를 멈추면, 그 역할을 다른 하네스로 보낸 정상 형상에서 갱신 전체가 막힌다.
+    렌더를 멈추면, 그 역할을 다른 하네스로 보낸 정상 경우에 갱신 전체가 막힌다.
     """
     out = adapter_render.render_adapter(render_home,
         _CLAUDE_ARCHITECT_TEMPLATE,
@@ -1211,7 +1211,7 @@ def test_unused_profile_skips_reasoning_value_check(render_home, pm_render):
 
 
 def test_claude_effort_empty_value_is_loud_leak(render_home, pm_render):
-    """`delegate.<role>.reasoning=` 빈값(오설정)은 중화하지 않고 leak 으로 표면화한다."""
+    """`delegate.<role>.reasoning=` 빈값(오설정)은 중화하지 않고 leak 으로 드러낸다."""
     for operational, empty_keys in (
         ({"DELEGATE_MODEL_ARCHITECT": "opus"}, ["DELEGATE_REASONING_ARCHITECT"]),
         ({"DELEGATE_MODEL_ARCHITECT": "opus", "DELEGATE_REASONING_ARCHITECT": ""}, None),

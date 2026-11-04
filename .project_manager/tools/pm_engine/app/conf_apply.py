@@ -63,10 +63,10 @@ def render_input_conf_keys() -> frozenset[str]:
 
 
 def _installed_generation_source(dest_root: Path, conf: Mapping[str, str]) -> Path:
-    """렌더 원본 — 설치 세대(`upstream.rev`)와 같은 커밋의 상류 트리. 다르면 `ConfApplyError`.
+    """렌더 원본 — 설치 버전(`upstream.rev`)와 같은 커밋의 상류 트리. 다르면 `ConfApplyError`.
 
-    fetch 하지 않는다: URL upstream 은 갱신이 받아 둔 캐시 폴더를 그대로 본다. 원본이 설치 세대보다
-    앞서 있으면 카드 본문만 다음 세대로 앞서는 부분 흡수가 되므로 렌더하지 않고 거부한다."""
+    fetch 하지 않는다: URL upstream 은 갱신이 받아 둔 캐시 폴더를 그대로 본다. 원본이 설치 버전보다
+    앞서 있으면 카드 본문만 다음 버전으로 앞서는 부분 반영이 되므로 렌더하지 않고 거부한다."""
     stored = conf.get("upstream.path", "").strip()
     if not stored:
         raise ConfApplyError([
@@ -91,7 +91,7 @@ def _installed_generation_source(dest_root: Path, conf: Mapping[str, str]) -> Pa
 
 
 def _plan_harness_ctx(dest_root: Path, values: dict, opencode_config_dir: Path):
-    """사용 한도 묶음 계획 — 검사·모델 한도 조회·계산과 원장 쓰기 가능 확인. 거부는 `ConfApplyError`."""
+    """사용 한도 묶음 계획 — 검사·모델 한도 조회·계산과 어댑터 설정 기록 쓰기 가능 확인. 거부는 `ConfApplyError`."""
     try:
         changed, lines, entries = harness_ctx._harness_ctx_plan(dest_root, values, opencode_config_dir)
         if changed:
@@ -112,7 +112,7 @@ def _commit_harness_ctx(dest_root: Path, planned) -> tuple[tuple[str, ...], tupl
 
 
 def _plan_render_outputs(home, dest_root: Path, values: dict):
-    """렌더 입력 묶음 계획 — 설치 세대 원본을 확인하고, 제안 값으로 계획한 render change 전부를 메모리에서
+    """렌더 입력 묶음 계획 — 설치 버전 원본을 확인하고, 제안 값으로 계획한 render change 전부를 메모리에서
     그린다. 계획과 그리기는 같은 실행 Home(`home`)을 쓴다. 렌더 거부는 어느 단계에서 발생해도
     `ConfApplyError`로 전파한다."""
     source_root = _installed_generation_source(dest_root, values)
@@ -141,10 +141,10 @@ def _commit_render_outputs(outputs) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def _is_reasoning_profile_key(key: str) -> bool:
-    """추론 값이 있는 프로필(위임 세트·대체 세트·추가 리뷰어)의 선택 축 키(`.harness`·`.model`·`.reasoning`)인가.
+    """추론 값이 있는 프로필(위임 세트·대체 세트·추가 리뷰어)의 선택 키(`.harness`·`.model`·`.reasoning`)인가.
 
-    새 표를 두지 않는다: 레지스트리에서 그 키의 축이 프로필 축(`conf_schema._ROLE_SUFFIXES`)이고 같은 세트의
-    `.reasoning` 키 축이 `reasoning` 인지로 판정한다. 하네스·모델만 바꿔도 남은 추론 값이 그 모델 밖이 될 수
+    새 표를 두지 않는다: 레지스트리에서 그 키의 끝 조각이 프로필 조각(`conf_schema._ROLE_SUFFIXES`)이고 같은 세트의
+    `.reasoning` 키 끝 조각이 `reasoning` 인지로 판정한다. 하네스·모델만 바꿔도 남은 추론 값이 그 모델 밖이 될 수
     있어 셋 다 건다."""
     spec = conf_schema.key_spec(key)
     if spec is None or spec.choices not in conf_schema._ROLE_SUFFIXES:
@@ -154,7 +154,7 @@ def _is_reasoning_profile_key(key: str) -> bool:
 
 
 def _reasoning_values(conf: Mapping[str, str]) -> list[tuple[str, str, str, str | None]]:
-    """값이 있는 추론 키 — (키, 값, 같은 세트의 하네스, 모델). 레지스트리 축이 `reasoning` 인 키(위임 세트·대체
+    """값이 있는 추론 키 — (키, 값, 같은 세트의 하네스, 모델). 레지스트리 끝 조각이 `reasoning` 인 키(위임 세트·대체
     세트·추가 리뷰어)다. 갱신의 정리(`prune_unavailable_reasoning`)와 저장의 확인(`_plan_per_model_reasoning`)이
     같은 열거를 쓰고, 각자 `PER_MODEL_REASONING_HARNESSES` 하네스만 확인한다. 값이 하나도 없으면 레지스트리를
     읽지 않는다(형제 사본이 덜 깔린 갱신 복구 경로에서도 추론 값이 없으면 지나간다)."""
@@ -291,7 +291,7 @@ def prune_unavailable_reasoning(dest_root: Path, conf: Mapping[str, str], *,
                                 write: bool) -> dict[str, str]:
     """모델별 허용값 하네스 프로필의 추론 값 중 그 모델이 받지 않는 값을 local.conf 에서 지우고 알린다.
 
-    대상은 레지스트리 축이 `reasoning` 인 키(위임 세트·대체 세트·추가 리뷰어) 중 값이 있고 같은 세트의
+    대상은 레지스트리 끝 조각이 `reasoning` 인 키(위임 세트·대체 세트·추가 리뷰어) 중 값이 있고 같은 세트의
     하네스가 `contract.PER_MODEL_REASONING_HARNESSES`(opencode)인 것이다. 정적 허용값(claude·codex)은
     대상이 아니다 — 엔진이 정한 값이라 바뀌지 않고, 틀리면 렌더가 멈춘다. 판정은 설치 폴더·이 프로세스
     env 의 모델 목록 조회다(`contract.reasoning_allowed`). 하나라도 판정하지 못하면(조회 실패·모델 값

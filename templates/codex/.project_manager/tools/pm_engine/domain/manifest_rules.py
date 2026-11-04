@@ -1,4 +1,4 @@
-"""engine.manifest 문법·태그·guest 절·경로 소유 판정 (층: domain).
+"""engine.manifest 문법·태그·추가 하네스 절·경로 소유 판정 (층: domain).
 
 갱신기(`pm_update.py`)와 설치기(`pm_import.py`)·사설 참조 판정이 같은 manifest 문법을 읽도록 한
 곳에 둔다. 파일 IO 가 없다.
@@ -95,7 +95,7 @@ def _parse_manifest_line(line: str) -> ManifestEntry | None:
     """manifest 한 줄 → ManifestEntry — 주석·빈 줄은 None.
 
     `read_manifest`(파일 전체)와 사본 manifest 행 파싱(`update_manifest.shipped_manifest`·텍스트 조각)이
-    **같은 한 함수**를 쓴다. 마커 인식이 갈리면 guest 절의 `@render`/엔진 행 구분이 파일 파싱과
+    **같은 한 함수**를 쓴다. 마커 인식이 갈리면 추가 하네스 절의 `@render`/엔진 행 구분이 파일 파싱과
     어긋나 소유 채널 판정이 뒤집힌다(판정 사본 금지)."""
     line = line.strip()
     if not line or line.startswith("#"):
@@ -191,8 +191,8 @@ class EmptyShippingInventoryError(RuntimeError):
 # wiki/tickets/_template.md 를 부활시키지 않는다(drift-0·실 발생 버그 reconcile).
 #
 # `pm_paths._board_root_at` 의 *실측* 판별(`<dest>/.project_manager/board/tickets` 가 dir 인가)을
-# 동형 복제한다 — pm_update 는 stdlib-only(board 미import 결합 회피·_resolve_dest_source 와
-# 동형)이고, 판별은 단일 is_dir() probe 라 `pm_paths._board_root_at` 과 정확히 같다. 어떤 manifest
+# 같은 방식으로 복제한다 — pm_update 는 stdlib-only(board 미import 결합 회피·_resolve_dest_source 와
+# 같은 방식)이고, 판별은 단일 is_dir() probe 라 `pm_paths._board_root_at` 과 정확히 같다. 어떤 manifest
 # 항목이 board-분리 시 board/ 로 옮겨가는지는 아래 `_TEMPLATE_REL`→`_BOARD_TEMPLATE_REL`
 # 매핑(`_dest_relpath_for`)이 단일 진실.
 _TEMPLATE_REL = ".project_manager/wiki/tickets/_template.md"
@@ -210,7 +210,7 @@ def _source_root_rel(entry) -> str:
     기본(마커 부재·source_rel None)은 dest relpath 를 그대로 source-root 상대 읽기 경로로 쓴다
     (오늘 동작·후방호환). `@source=<path>`가 있으면 source_root 아래 그 canonical 경로에서
     읽는다 — dest 기록 경로는 manifest 경로 유지(_remap_to_dest 가 치환). 평문 str 항목(레거시 호출)은
-    source_rel 속성 부재 → str(entry)(getattr 폴백).
+    source_rel 속성 부재 → str(entry)(getattr 대체 동작).
     """
     return getattr(entry, "source_rel", None) or str(entry)
 
@@ -223,7 +223,7 @@ def _remap_to_dest(rel: str, source_rel: str, manifest_path: str) -> str:
     manifest_path(마커 부재·기본)면 무변경(후방호환). 파일 항목(단일)은 yield 가 source_rel 자체라
     manifest_path 로 통째 치환, 디렉토리 항목은 `source_rel/…` 하위를 `manifest_path/…` 로 옮긴다.
     경로 비교는 OS-무관 posix-normalize(_iter_files 가 Windows 에서 `\\` 섞을 수 있음·_dest_relpath_for
-    동형)."""
+    와 같은 방식)."""
     if source_rel == manifest_path:
         return rel
     rel_norm = rel.replace("\\", "/")
@@ -243,9 +243,9 @@ _MANIFEST_SELF_REL = ".project_manager/engine.manifest"
 
 def _manifest_marker_key(entry) -> tuple:
     """ManifestEntry 의 마커 3종(@render/@target-owned/@source)을 비교키 튜플로 — 경로 집합만으론
-    못 잡는 flavor 차이(예: `@source=templates/claude_code/...` vs bare)를 합집합 충돌 판정이 감지하게 한다.
+    못 잡는 하네스별 판 차이(예: `@source=templates/claude_code/...` vs bare)를 합집합 충돌 판정이 감지하게 한다.
 
-    평문 str 항목(레거시)은 getattr 폴백으로 (False, False, None)(마커 없음·후방호환).
+    평문 str 항목(레거시)은 getattr 대체 동작으로 (False, False, None)(마커 없음·후방호환).
     """
     return (
         bool(getattr(entry, "render", False)),
@@ -259,27 +259,27 @@ def _manifest_marker_key(entry) -> tuple:
 # 설치됐다는 선언이고, 갱신은 매번 그 하네스의 출하 manifest 에서 구획을 다시 만들어 manifest 전문을
 # 쓴다(`update_manifest.shipped_manifest`). 마커는 read_manifest 가 '#' 주석으로 무시하고, 절 안의
 # 라인은 `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다. add_harness 와
-# 갱신이 같은 리터럴(아래 상수 블록)과 같은 생성기(`install_source._guest_manifest_lines`)를 쓴다.
+# 갱신이 같은 리터럴(아래 상수 블록)과 같은 생성기(`install_source._added_harness_manifest_lines`)를 쓴다.
 # pm:data-literal:begin
 # 아래 두 상수는 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
 # 이 소스의 산문이 아니다. 따라서 스트립·문구 정리·리팩터 대상이 아니며 한 글자만 달라져도 이미
-# 기록된 채택자 manifest 의 guest 절을 못 읽어 절이 조용히 사라진다. 읽기·쓰기 모두 이 두 상수
+# 기록된 채택자 manifest 의 추가 하네스 절을 못 읽어 절이 조용히 사라진다. 읽기·쓰기 모두 이 두 상수
 # 하나다. 표시를 바꾸면 갱신의 옛 표기 이관 자리(`update_cmd._main`, 상류 해소·계획 앞)에서
 # `update_finish.rename_added_harness_markers` 가 옛 표시를 새 표시로 옮긴다.
-_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
-_GUEST_MANIFEST_END = "# <<< pm add-harness @render (local) <<<"
+_ADDED_HARNESS_MANIFEST_BEGIN = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
+_ADDED_HARNESS_MANIFEST_END = "# <<< pm add-harness @render (local) <<<"
 # pm:data-literal:end
 
 
-def _extract_guest_manifest_block(text: str) -> str | None:
-    """engine.manifest 텍스트의 add-harness guest 절(마커 경계 포함)을 반환 — 없으면 None."""
+def _extract_added_harness_manifest_block(text: str) -> str | None:
+    """engine.manifest 텍스트의 add-harness 추가 하네스 절(마커 경계 포함)을 반환 — 없으면 None."""
     lines = text.splitlines()
     begin = end = None
     for i, line in enumerate(lines):
         s = line.strip()
-        if s == _GUEST_MANIFEST_BEGIN:
+        if s == _ADDED_HARNESS_MANIFEST_BEGIN:
             begin = i
-        elif s == _GUEST_MANIFEST_END and begin is not None:
+        elif s == _ADDED_HARNESS_MANIFEST_END and begin is not None:
             end = i
             break
     if begin is None or end is None or end < begin:
@@ -287,30 +287,30 @@ def _extract_guest_manifest_block(text: str) -> str | None:
     return "\n".join(lines[begin:end + 1])
 
 
-def _strip_guest_manifest_block(text: str) -> str:
-    """engine.manifest 텍스트에서 guest 절(마커 포함 + 선행 빈 줄)을 제거 — 마커 부재면 원문 그대로."""
+def _strip_added_harness_manifest_block(text: str) -> str:
+    """engine.manifest 텍스트에서 추가 하네스 절(마커 포함 + 선행 빈 줄)을 제거 — 마커 부재면 원문 그대로."""
     lines = text.splitlines()
     begin = end = None
     for i, line in enumerate(lines):
         s = line.strip()
-        if s == _GUEST_MANIFEST_BEGIN:
+        if s == _ADDED_HARNESS_MANIFEST_BEGIN:
             begin = i
-        elif s == _GUEST_MANIFEST_END and begin is not None:
+        elif s == _ADDED_HARNESS_MANIFEST_END and begin is not None:
             end = i
             break
     if begin is None or end is None or end < begin:
         return text
     lo = begin
-    while lo > 0 and lines[lo - 1].strip() == "":  # 절 앞 빈 줄 구분자까지 회수(누적 방지)
+    while lo > 0 and lines[lo - 1].strip() == "":  # 절 앞 빈 줄 구분자까지 함께 지운다(누적 방지)
         lo -= 1
     kept = "\n".join(lines[:lo] + lines[end + 1:])
     return kept + "\n" if kept and not kept.endswith("\n") else kept
 
 
 def _core_manifest_paths(text: str) -> set[str]:
-    """manifest 텍스트의 core 경로 집합 (guest 절·마커·주석·빈 줄 제외·마커 떼고 path 만)."""
+    """manifest 텍스트의 core 경로 집합 (추가 하네스 절·마커·주석·빈 줄 제외·마커 떼고 path 만)."""
     out: set[str] = set()
-    for ln in _strip_guest_manifest_block(text).splitlines():
+    for ln in _strip_added_harness_manifest_block(text).splitlines():
         s = ln.strip()
         if s and not s.startswith("#"):
             out.add(s.split()[0].replace("\\", "/"))
@@ -320,7 +320,7 @@ def _core_manifest_paths(text: str) -> set[str]:
 def _path_owned_by(path: str, owner_paths) -> bool:
     """path 가 owner_paths 중 하나에 소유되는가 — **동일**(`path==c`) OR **상위**(`path` 가 `c/` 하위).
 
-    add-harness 등재 차감(pm_import `_guest_render_to_add`)과 갱신의 구획 재생성 차감
+    add-harness 등재 차감(pm_import 의 add-harness 등재 차감 함수)과 갱신의 구획 재생성 차감
     (`update_manifest.shipped_manifest`)이 **공유**하는 소유권 판정(경로-포함·판정
     사본 금지) — core 가 `.opencode`(상위)를 가지면 `.opencode/agents` 도 소유로 본다."""
     p = path.replace("\\", "/")
@@ -330,7 +330,7 @@ def _path_owned_by(path: str, owner_paths) -> bool:
 
 
 # 엔진 코드 접두사 — 이 아래 행이 전달 프로세스가 옮기는 엔진 코드다(`_is_engine_code`). 평면 진입과
-# `pm_engine` 패키지가 한 세대로 맞물려 있으므로 세대 단위로만 옮긴다.
+# `pm_engine` 패키지가 한 버전으로 맞물려 있으므로 버전 단위로만 옮긴다.
 _ENGINE_TOOLS_PREFIX = ".project_manager/tools/"
 
 

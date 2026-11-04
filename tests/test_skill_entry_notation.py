@@ -6,10 +6,10 @@
 * codex: 엔진 멘션 확장 ``$pm-bootstrap``
 * opencode: ``.opencode/command`` 슬래시 팔레트 ``/pm-bootstrap``
 
-opencode 1.18.16 측정에서 skill tool 채널과 command 팔레트은 별개 표면이다.
+opencode 1.18.16 측정에서 skill tool 채널과 command 팔레트은 별개 범위다.
 command 파일은 canonical skill에서 기계 생성하며 빈 자리표시자일 때도 인자를 본문 끝에 추가한다.
 
-조건부 렌더 출하 표면은 다음 한 축이다. 파일 집합은 하네스별 실제 skills root에서
+조건부 렌더 출하 범위는 다음 한 규칙이다. 파일 집합은 하네스별 실제 skills root에서
 ``*/SKILL.md``로 파생하며 현재 각 15개다. 이름 접두사와 무관하게 모든 카드를 포함한다.
 
 ================  ========================================  =========================
@@ -126,7 +126,7 @@ def _shipping_texts(harness: str) -> list[Path]:
         # 확장자 목록을 만들지 않고 board render-leak과 같은 production 판정을 재사용한다.
         if update_render._is_text_source(path)
         # tools 사본은 모든 하네스에 byte-identical인 엔진 backbone이다. 하네스별 어댑터 진입
-        # 표면이 아니며 per-harness 치환 대상이 아니므로 제외한다. hook/config/JS/driver는 포함한다.
+        # 범위가 아니며 per-harness 치환 대상이 아니므로 제외한다. hook/config/JS/driver는 포함한다.
         if ".project_manager/tools" not in path.as_posix()
     )
 
@@ -147,7 +147,7 @@ def _render_channel(harness: str, path: Path) -> str | None:
     * ``manifest`` — manifest 가 선언한 경로(upstream 관리·``@render`` 전파).
     * ``install-fallback`` — manifest **미소유 인스턴스 wiki seed**(``status.md``·
       ``architecture.md``·``raw/README.md`` …). 소유자가 없어 표기 context 를 못 받던 것을
-      설치 하네스 전체 집합 폴백으로 해소한다(엔진 ``_is_notation_fallback_scope`` 가 범위
+      설치 하네스 전체 집합 대체로 해소한다(엔진 ``_is_notation_fallback_scope`` 가 범위
       소유). 이 부류를 manifest 에 등재하는 건 답이 아니다 — 등재하면 ``pm_update`` 가 채택자
       상태를 덮는다(엔진/상태 분리).
 
@@ -205,7 +205,7 @@ def _entry_card_name(harness: str, path: Path) -> str:
     return path.stem if harness == "opencode" else path.parent.name
 
 
-def test_measured_entry_notation_table_covers_derived_harness_axis():
+def test_measured_entry_notation_table_covers_derived_harness_list():
     assert set(_ENTRY_PREFIX) == set(HARNESSES)
     derived_template_dirs = {_template_dir(harness) for harness in HARNESSES}
     assert set(render_rules.SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR) == derived_template_dirs
@@ -494,14 +494,14 @@ def test_every_shipped_wiki_with_skill_entry_has_render_channel(harness):
     assert channels, f"{harness} wiki에 검사할 skill entry가 없다(수집 공허)"
     uncovered = sorted(rel for rel, channel in channels.items() if channel is None)
     assert not uncovered, f"skill entry가 있으나 render channel 밖인 wiki: {uncovered}"
-    # 채널 분포 못박기 — manifest 등재 문서가 폴백으로 미끄러지면 안 된다. 폴백 판정이
+    # 채널 분포 못박기 — manifest 등재 문서가 대체로 미끄러지면 안 된다. 대체 동작 판정이
     # manifest 판정을 통째로 가리면(순서 뒤집힘·등재 경로 소실) 여기서 red.
     assert channels.get(".project_manager/wiki/README.md") == "manifest", (
         f"{harness} wiki/README.md 의 렌더 채널이 manifest 가 아니다: "
         f"{channels.get('.project_manager/wiki/README.md')!r}"
     )
-    # 채널 경계 — wiki 밖 어댑터 표면은 폴백 대상이 아니다(설치 하네스 전체로 렌더하면
-    # 그 하네스만 읽는 문서에 오표기가 박힌다). 폴백이 wiki 밖으로 새면 여기서 red.
+    # 채널 경계 — wiki 밖 어댑터 범위는 대체 동작 대상이 아니다(설치 하네스 전체로 렌더하면
+    # 그 하네스만 읽는 문서에 오표기가 박힌다). 대체 동작이 wiki 밖으로 새면 여기서 red.
     assert _render_channel(harness, root / ".codex" / "hooks.json") != "install-fallback"
     assert _render_channel(harness, root / entry_docs(harness)[0]) != "install-fallback"
 

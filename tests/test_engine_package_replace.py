@@ -4,7 +4,7 @@
 완성 대기 트리(stage)를 만들어 기존 패키지 → backup, stage → 패키지 두 rename 으로 게시한다. 이 파일의
 8노드는 추가·변경·삭제(삭제만 있는 경우 포함)와 다음 계획 0, 경로 범위, dry-run 무쓰기, stage·첫
 rename·게시·되돌리기·평면 묶음·정리 실패, 실제 두 프로세스의 락, 첫 디스크 변경 뒤 엔진 적재 0 과 실제
-새 완료 프로세스를 실측한다. 실패 주입은 os.rename·shutil.copy2·fs 정리·락 seam 에만 한다.
+새 완료 프로세스를 실측한다. 실패 주입은 os.rename·shutil.copy2·fs 정리·락 교체 지점에만 한다.
 """
 from __future__ import annotations
 
@@ -124,8 +124,8 @@ def _fail_rename_on(monkeypatch, failing_calls: set[int], error: OSError) -> lis
 def test_package_inventory_removes_destination_only_modules(tmp_path, monkeypatch):
     """패키지 계획은 출하 목록과 대상 바이트로 추가·변경·삭제를 내고, 교체 뒤 다음 계획은 0 이다.
 
-    삭제만 있는 형상(source 와 바이트가 같은 keep.py + 대상 전용 obsolete.py)도 교체 행 하나다. 캐시
-    디렉터리만 다르면 변화 0 이다. `@source` 자식 override·tracked-only 는 manifest seam 을 따르고,
+    삭제만 있는 경우(source 와 바이트가 같은 keep.py + 대상 전용 obsolete.py)도 교체 행 하나다. 캐시
+    디렉터리만 다르면 변화 0 이다. `@source` 자식 override·tracked-only 는 manifest 공용 함수를 따르고,
     패키지 안 tracked 제외(삭제·symlink·gitlink)는 명시 실패지만 일반 경로의 경고는 그대로다. source
     누락은 rc 2, 빈 출하는 rc 1, 대상 자리가 파일이면 검증 실패다. 같은 source·dest 도 완성 stage 뒤
     게시한다."""
@@ -156,7 +156,7 @@ def test_package_inventory_removes_destination_only_modules(tmp_path, monkeypatc
     (dest / FLAT).write_text("# flat v2\n", encoding="utf-8", newline="\n")
     assert _plan(dest, source)["changes"] == []
 
-    # 삭제만 있는 형상 — 옛 파일 단위 계획은 변경 0·누락 0 이었다.
+    # 삭제만 있는 경우 — 옛 파일 단위 계획은 변경 0·누락 0 이었다.
     dest, source = _case(tmp_path, source_package={"keep.py": "# keep\n"},
                          dest_package={"keep.py": "# keep\n", "obsolete.py": "# obsolete\n"},
                          dest_flat="# flat v2\n", name="delete-only")
@@ -223,7 +223,7 @@ def test_package_inventory_removes_destination_only_modules(tmp_path, monkeypatc
     try:
         os.symlink("keep.py", source / PACKAGE / "link.py")
     except OSError:
-        pass                        # 링크를 만들 수 없는 플랫폼은 이 형상이 생기지 않는다.
+        pass                        # 링크를 만들 수 없는 플랫폼은 이 경우가 생기지 않는다.
     else:
         _git(source, "add", "-A")
         with pytest.raises(package_transfer.PackageReplaceError) as refused:
@@ -586,7 +586,7 @@ def test_package_first_rename_failure_preserves_destination(tmp_path, monkeypatc
     fixed_stage = tools / f"{STAGE_PREFIX}fixed"
     occupied = tools / f"{BACKUP_PREFIX}fixed"
     occupied.mkdir()
-    (occupied / "marker").write_text("앞 세대 복구 자료\n", encoding="utf-8")
+    (occupied / "marker").write_text("앞 버전 복구 자료\n", encoding="utf-8")
 
     def fixed_mkdtemp(**_kwargs):
         fixed_stage.mkdir()
@@ -599,7 +599,7 @@ def test_package_first_rename_failure_preserves_destination(tmp_path, monkeypatc
                                                     package.shipping_files)
     assert failed.value.phase == "first-rename"
     assert isinstance(failed.value.original, FileExistsError)
-    assert (occupied / "marker").read_text(encoding="utf-8") == "앞 세대 복구 자료\n"
+    assert (occupied / "marker").read_text(encoding="utf-8") == "앞 버전 복구 자료\n"
     assert not fixed_stage.exists() and _package_tree(dest / PACKAGE) == DEST_PACKAGE
     shutil.rmtree(occupied)
 
@@ -611,7 +611,7 @@ def test_package_first_rename_failure_preserves_destination(tmp_path, monkeypatc
     assert launched == [] and (dest / FLAT).read_text(encoding="utf-8") == "# flat v1\n"
 
     if os.name == "nt":
-        # 공유 삭제 없이 연 파일 핸들은 그 파일을 담은 디렉터리의 rename 을 막는다(native 실측 축).
+        # 공유 삭제 없이 연 파일 핸들은 그 파일을 담은 디렉터리의 rename 을 막는다(native 실측 결과).
         handle = open(dest / PACKAGE / "keep.py", "rb")
         try:
             with pytest.raises(package_transfer.PackageReplaceError) as failed:
@@ -758,7 +758,7 @@ def test_package_rollback_failure_keeps_recovery_paths(tmp_path, monkeypatch, ca
     shutil.rmtree(dest / PACKAGE)
     os.rename(backup, dest / PACKAGE)
 
-    # backup 정리 실패 세 형상 — 모두 cleanup 실패이고 backup 이 남는다.
+    # backup 정리 실패 세 경우 — 모두 cleanup 실패이고 backup 이 남는다.
     real_rmtree = fs.force_rmtree
     removed: list = []
 
@@ -876,7 +876,7 @@ def test_package_delivery_uses_preloaded_code_and_fresh_completion(tmp_path, mon
     """전달과 일반 적용은 같은 교체 함수를 쓰고, 패키지 → 평면 → backup 정리 → 완료 프로세스 순이다.
 
     첫 디스크 변경 뒤 부모는 pm_engine 을 새로 적재·reload 하지 않는다. 완료 프로세스는 실제 새 프로세스로
-    받은 갱신기를 같은 인터프리터·같은 인자로 띄우고, 새 세대 패키지를 적재하며 인계 값 세 키와 실제 파일
+    받은 갱신기를 같은 인터프리터·같은 인자로 띄우고, 새 버전 패키지를 적재하며 인계 값 세 키와 실제 파일
     합계(패키지 추가·변경·삭제 + 평면)를 받는다. 한글 표준 출력·오류와 0 아닌 rc, 기동 실패가 그대로
     올라온다. 완료 단계에 패키지 변경이 남으면 쓰기 전에 멈춘다."""
     manifest = [PACKAGE, ".project_manager/tools/pm_update.py"]

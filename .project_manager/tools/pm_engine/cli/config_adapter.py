@@ -39,10 +39,10 @@ _ADAPTER_ACCEPT_FAILURE_HINT = {
 
 
 def _adapter_accept_decision(home, dest: Path, source_root: Path, relpath: str):
-    """수용 전 세대 판정 — 막을 사유 + 판정에 쓴 template 해시·선언 snapshot digest.
+    """수용 전 버전 판정 — 막을 사유 + 판정에 쓴 template 해시·선언 snapshot digest.
 
-    **mutation 게이트라 상류 세대 선언으로 판정한다**: 설치본 선언은 상류가 이번에 들여오는 새
-    플래그를 모르므로, 그 위에서 config 를 앞세우면 게이트가 있으나 마나다. 상류를 못 읽으면
+    **mutation 검사라 상류 버전 선언으로 판정한다**: 설치본 선언은 상류가 이번에 들여오는 새
+    플래그를 모르므로, 그 위에서 config 를 앞세우면 검사가 있으나 마나다. 상류를 못 읽으면
     엔진이 fail-closed 로 blocker 를 낸다(모르면 멈춘다)."""
     return hook_sets.hook_set_accept_decision(
         dest, source_root, relpath,
@@ -51,12 +51,12 @@ def _adapter_accept_decision(home, dest: Path, source_root: Path, relpath: str):
 
 
 def _adapter_accept_order_blocked(decision, relpath: str) -> bool:
-    """엔진 파일 선행 순서를 어기는 수용인가 — 어기면 처방을 내고 True(파일 미변경).
+    """엔진 파일 선행 순서를 어기는 수용인가 — 어기면 해결 방법을 내고 True(파일 미변경).
 
-    수용은 dest config 를 상류 세대로 **앞세우는** 행위다. 그 세대가 요구하는 래퍼/드라이버가
+    수용은 dest config 를 상류 버전으로 **앞세우는** 행위다. 그 버전이 요구하는 래퍼/드라이버가
     dest 에 아직 없으면 훅이 미지원 플래그를 rc2 로 거부하고, 그 rc 는 도구 차단으로 번역된다
-    (v1.7.0 흡수 실측 락아웃). 위험 방향은 이쪽 하나뿐이라 "엔진 파일 선행 · config 후행"
-    순서를 여기서 기계가 강제한다 — 단건 `--accept` 와 세트 수용이 같은 게이트를 탄다."""
+    (v1.7.0 갱신 반영 실측 락아웃). 위험 방향은 이쪽 하나뿐이라 "엔진 파일 선행 · config 후행"
+    순서를 여기서 기계가 강제한다 — 단건 `--accept` 와 세트 수용이 같은 검사를 탄다."""
     if not decision.blockers:
         return False
     print(f"[중단] 어댑터 config 수용 거부 ({relpath}) — 이 버전이 요구하는 훅 파일이 아직 "
@@ -70,19 +70,19 @@ def _adapter_accept_order_blocked(decision, relpath: str) -> bool:
 
 def _accept_adapter_config_one(home, dest: Path, source_root: Path,
                                relpath: str, judgments) -> int:
-    """config 한 개 수용 — 선행조건 게이트 → 원자 교체 → rc·안내 (단건·세트 공용 경로).
+    """config 한 개 수용 — 선행조건 검사 → 원자 교체 → rc·안내 (단건·세트 공용 경로).
 
-    단건과 세트가 이 함수 하나만 호출하므로 게이트·백업·경쟁 판정·안내가 갈릴 수 없다."""
+    단건과 세트가 이 함수 하나만 호출하므로 검사·백업·경쟁 판정·안내가 갈릴 수 없다."""
     decision = _adapter_accept_decision(home, dest, source_root, relpath)
     if _adapter_accept_order_blocked(decision, relpath):
         return 1
     # 수용은 **판정을 먼저 받고** 그 시점 해시를 넘긴다 — 판정과 쓰기 사이에 파일이 바뀌면
-    #   엔진이 raced 로 중단한다(검증 없는 덮어쓰기 0). 축은 둘이다: dest(채택자 동시 편집)와
-    #   **template**(게이트가 검사한 bytes 와 실제 복사할 bytes 의 결속) — 후자가 없으면 상류가
-    #   그 사이 바뀌어도 "검사한 세대" 와 다른 내용이 설치된다.
+    #   엔진이 raced 로 중단한다(검증 없는 덮어쓰기 0). 비교 대상은 둘이다: dest(채택자 동시 편집)와
+    #   **template**(검사가 확인한 bytes 와 실제 복사할 bytes 의 연결) — 후자가 없으면 상류가
+    #   그 사이 바뀌어도 "검사한 버전" 와 다른 내용이 설치된다.
     judged = next((item for item in judgments if item.relpath == relpath), None)
     try:
-        # 스냅샷 결속은 **둘이 한 벌**이다(상류 config bytes + 선언 package snapshot digest).
+        # 검사한 상태와의 연결은 **둘이 한 벌**이다(상류 config bytes + 선언 package snapshot digest).
         outcome = adapter_accept.accept_adapter_config(
             dest, source_root, relpath,
             expected_sha256=judged.dest_sha256 if judged is not None else None,
@@ -111,7 +111,7 @@ def _accept_adapter_config_one(home, dest: Path, source_root: Path,
     if note:
         print(f"  ⚠️ {note}")
     if relpath in harness_ctx.HARNESS_CTX_FILES.values():
-        # 템플릿 값으로 돌아간 관리 키에 local.conf 의 사용 한도를 다시 쓴다(원장이 방금 증언한
+        # 템플릿 값으로 돌아간 관리 키에 local.conf 의 사용 한도를 다시 쓴다(어댑터 설정 기록이 방금 증언한
         #   파일이라 반영 뒤에도 무편집 판정이 유지된다). 설치·add-harness 와 같은 한 번이다 —
         #   옛 키가 남은 conf 면 반영을 건너뛰고 알리며, 검사 거부만 rc 1(설정 파일 무변경)이다.
         try:
@@ -123,7 +123,7 @@ def _accept_adapter_config_one(home, dest: Path, source_root: Path,
 
 
 # 세트 수용에서 빼는 판정 → 제외 사유(출력 문구). 여기 없는 판정만 세트가 받는다 —
-# 실질적으로 `unedited`(원장으로 무편집이 확인된 파일) 하나다.
+# 실질적으로 `unedited`(어댑터 설정 기록으로 무편집이 확인된 파일) 하나다.
 _ADAPTER_SET_ACCEPT_EXCLUDED = {
     "edited": "채택자 편집분",
     "unrecorded": "기록이 없어 편집 여부 판정 불가",
@@ -131,11 +131,11 @@ _ADAPTER_SET_ACCEPT_EXCLUDED = {
 
 
 def _warn_hook_set_query_fallback(generation) -> None:
-    """조회 축 강등 사유 표면화 — 상류 선언을 못 읽어 설치본 세대로 판정했다는 사실을 남긴다.
+    """조회 쪽 낮춘 사유를 드러낸다 — 상류 선언을 못 읽어 설치본 버전으로 판정했다는 사실을 남긴다.
 
-    조회 축은 관대 계약이라 차단하지 않는다(판정을 통째로 잃는 것보다 한 세대 뒤 선언으로라도 보는
+    조회 쪽은 관대 계약이라 차단하지 않는다(판정을 통째로 잃는 것보다 한 버전 뒤 선언으로라도 보는
     편이 낫다). 다만 사유까지 버리면 `--check` 가 **상류 전용 플래그를 못 본 채** 무경고 green 이라,
-    채택자는 강등된 판정을 정상 판정으로 읽는다 — 차단이 아니라 침묵만 제거한다(mutation 축의
+    채택자는 낮춰진 판정을 정상 판정으로 읽는다 — 차단이 아니라 침묵만 제거한다(mutation 쪽의
     fail-closed 와 대비).
 
     **문구는 `app.hook_sets` 단일 진실**(`hook_set_query_fallback_lines` — `hook_set_fix_lines` 와
@@ -145,10 +145,10 @@ def _warn_hook_set_query_fallback(generation) -> None:
 
 
 def _report_hook_set_findings(home, dest: Path, source_root: Path) -> bool:
-    """훅 세트 세대 불일치를 stderr 로 내고 하나라도 있으면 True (`--check` 소비·write 0).
+    """훅 세트 버전 불일치를 stderr 로 내고 하나라도 있으면 True (`--check` 소비·write 0).
 
-    판정·처방은 `app.hook_sets` 단일 진실을 그대로 쓴다(pm-update 와 같은 문구). 선언은 **상류
-    세대**를 우선한다(같은 해소 지점) — 조회 성격이라 상류를 못 읽으면 설치본 선언으로 내려가되
+    판정·해결 방법은 `app.hook_sets` 단일 진실을 그대로 쓴다(pm-update 와 같은 문구). 선언은 **상류
+    버전**을 우선한다(같은 해소 지점) — 조회 성격이라 상류를 못 읽으면 설치본 선언으로 내려가되
     **그 사유는 알린다**(무경고 green 금지)."""
     generation = hook_sets.hook_set_declarations(home, source_root)
     _warn_hook_set_query_fallback(generation)
@@ -171,14 +171,14 @@ def _accept_adapter_config_set(home, dest: Path, source_root: Path,
       - **채택자 값이 걸린 판정은 기본 제외**한다. report 모드 대상(settings.json·
          opencode.jsonc·config.toml)에는 권한 allowlist·모델·threshold 같은 실 노브가 들어 있고,
          세트 커맨드 한 번이 그것을 무지목 일괄 교체하면 "채택자 커스텀은 안 덮는다" 하한선이
-         깨진다. 제외 대상은 둘이다 — `edited`(편집이 확인됨)와 `unrecorded`(원장이 없어 편집
-         여부를 **판정할 수 없음**). 후자를 받으면 원장 도입 전 구세대 채택자의 커스텀이 조용히
+         깨진다. 제외 대상은 둘이다 — `edited`(편집이 확인됨)와 `unrecorded`(어댑터 설정 기록이 없어 편집
+         여부를 **판정할 수 없음**). 후자를 받으면 어댑터 설정 기록 도입 전 옛 버전 채택자의 커스텀이 조용히
          사라진다(모르면 덮지 않는다). 둘 다 단건 `--accept <경로>` 로만 받는다(제외 사유를 함께
-         낸다). 결국 세트가 받는 건 `unedited` — 설치가 내려놓은 그대로임이 원장으로 확인된
+         낸다). 결국 세트가 받는 건 `unedited` — 설치가 내려놓은 그대로임이 어댑터 설정 기록으로 확인된
          파일뿐이다.
 
     무엇을 건드릴지 **먼저 전부 보이고** 나서 파일당 수용한다. 파일 1개 단위는 기존 원자 교체를
-    그대로 재사용하고 다중 파일 롤백은 만들지 않는다 — 순서 게이트 + per-file 원자로 관측
+    그대로 재사용하고 다중 파일 롤백은 만들지 않는다 — 순서 검사 + per-file 원자로 관측
     클래스가 닫히므로 상태 기계는 과설계다."""
     candidates = [item for item in judgments if item.status != "in-sync"]
     excluded = [item for item in candidates
@@ -225,19 +225,19 @@ def cmd_sync_adapter_config(
     """`sync-adapter-config [--list | --check | --accept <relpath> | --accept-all]` — config 채널.
 
     이 파일들(`.codex/hooks.json`·`config.toml`·`.claude/settings.json`·`.opencode/opencode.jsonc`)
-    은 manifest 밖이라 pm-update 가 절대 덮지 않는다. 동기는 무편집(원장 일치)인 managed 대상만
+    은 manifest 밖이라 pm-update 가 절대 덮지 않는다. 동기는 무편집(어댑터 설정 기록과 일치)인 managed 대상만
     자동 갱신하고 나머지는 보존+보고한다 — `--accept`(단건)·`--accept-all`(세트)가 그 보존분을
-    채택자가 **명시적으로** 받는 유일한 채널이다(이게 없으면 원장 도입 전 채택자가 영구 보고
-    모드에 갇힌다). 두 경로 모두 수용 전에 훅 세트 선행조건을 같은 게이트로 검사한다
+    채택자가 **명시적으로** 받는 유일한 채널이다(이게 없으면 어댑터 설정 기록 도입 전 채택자가 영구 보고
+    모드에 갇힌다). 두 경로 모두 수용 전에 훅 세트 선행조건을 같은 검사로 확인한다
     (`_adapter_accept_order_blocked` — 엔진 파일 선행 · config 후행).
 
     판정·수용 로직은 `app.adapter_report`·`app.adapter_accept` 단일 진실(`judge_adapter_configs`·
     `accept_adapter_config`)이고
-    여기선 표시와 rc 번역만 한다. dest 는 명시 `dest_root`, 없으면 `home.root`(cmd_add_harness 동형),
+    여기선 표시와 rc 번역만 한다. dest 는 명시 `dest_root`, 없으면 `home.root`(cmd_add_harness 와 같은 방식),
     소스 해소는 add-harness 와 같은 규칙(`--from` > local.conf upstream.path(경로) > dest
     자기전환 > local.conf upstream.path(URL→로컬 캐시 clone/fetch))이다.
 
-    ``--check``의 인스턴스-소유 세대 요약은 경로별 기준 원장을 따른다. 동기가
+    ``--check``의 인스턴스-소유 버전 요약은 경로별 어댑터 설정 기록을 따른다. 동기가
     ``upstream.rev``를 전진시키는 경로는 직후 check에서 사라질 수 있지만, report-drift·
     edited managed 파일은 보존된 파일별 ``template_rev``를 쓰므로 명시적 ``--accept``
     전까지 매 check에 반복된다. 백업/git을 대신하는 durable backstop은 아니다.
@@ -254,24 +254,24 @@ def cmd_sync_adapter_config(
         print(f"[중단] {exc}", file=sys.stderr)
         return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
 
-    # 완료 게이트가 보는 같은 source checkout에서 instance-owned 전량(진입문서 ``none`` 포함)의
-    # 세대 델타도 읽기 전용으로 노출한다. 판정 실패는 config 수렴 rc와 섞지 않는 advisory지만,
-    # 변경 없음으로 접지 않고 전량 확인을 명시한다.
+    # 완료 통과 조건이 보는 같은 source checkout에서 instance-owned 전량(진입문서 ``none`` 포함)의
+    # 버전 차이도 읽기 전용으로 노출한다. 판정 실패는 config 일치 판정 rc와 섞지 않는 advisory지만,
+    # 변경 없음으로 바꾸지 않고 전량 확인을 명시한다.
     if getattr(args, "check", False):
         try:
-            delta_lines = adapter_report.instance_owned_template_change_lines(
+            change_lines = adapter_report.instance_owned_template_change_lines(
                 dest, source_root)
         except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 관측 실패는 advisory 로 내고 check 본류는 계속한다.
-            delta_lines = [
+            change_lines = [
                 "⚠️  인스턴스 소유 템플릿 버전 판정 unavailable — "
                 f"{exc} · 판정 불가(변경 없음 아님)·전량 확인 권장."
             ]
-        for line in delta_lines:
+        for line in change_lines:
             print(line)
 
     try:
         judgments = adapter_report.judge_adapter_configs(dest, source_root)
-    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 판정 채널 unavailable은 완료 게이트 red.
+    except (OSError, ValueError, adapter_baseline.AdapterConfigChannelUnavailable) as exc:  # 판정 채널 unavailable은 완료 통과 조건 red.
         print(f"[중단] 어댑터 config 판정 채널 unavailable: {exc}", file=sys.stderr)
         print(
             "  → `--from <framework checkout>`이 해당 managed template을 포함한 올바른 "
@@ -296,7 +296,7 @@ def cmd_sync_adapter_config(
     if not judgments:
         print("어댑터 config 채널 대상 없음 (설치 하네스의 config 가 없거나 소스에 template 부재).")
         # config 채널 대상이 0 이어도 훅 세트는 따로 볼 수 있다(설치된 훅 + 채택자 settings 는
-        #   실재). 여기서 조용히 green 을 내면 게이트 표면이 통째로 우회된다.
+        #   실재). 여기서 조용히 green 을 내면 통과 조건이 통째로 우회된다.
         if getattr(args, "check", False):
             return _finish_sync_adapter_config(
                 1 if _report_hook_set_findings(home, dest, source_root) else 0,
@@ -310,8 +310,8 @@ def cmd_sync_adapter_config(
     if getattr(args, "check", False):
         # `--check`는 판정만 읽는다(write 0). 완료 판정은 adapter_report helper가 소유하므로
         # pm-update와 이 CLI가 상태를 서로 다르게 해석할 수 없다.
-        # 훅 세트 세대도 **같은 자리에서** 본다 — 스킬 카드가 이 커맨드를 완료 게이트로 지목하는데
-        #   pm-update 가 rc1 로 막는 클래스를 여기서 green 으로 통과시키면 게이트가 갈린다.
+        # 훅 세트 버전도 **같은 자리에서** 본다 — 스킬 카드가 이 커맨드를 완료 통과 조건으로 지목하는데
+        #   pm-update 가 rc1 로 막는 클래스를 여기서 green 으로 통과시키면 통과 조건이 갈린다.
         hook_set_failed = _report_hook_set_findings(home, dest, source_root)
         unconverged = adapter_report.unconverged_managed_adapter_configs(judgments)
         if not unconverged:
@@ -347,7 +347,7 @@ def cmd_sync_adapter_config(
 
 
 def _finish_sync_adapter_config(rc: int, *, check: bool) -> int:
-    """``--check`` 말미에 경로별 세대 요약 수명을 명시한다."""
+    """``--check`` 말미에 경로별 버전 요약 수명을 명시한다."""
     if check:
         print("버전 요약은 기준 기록별 수명 — upstream.rev 전진분은 이후 사라질 수 있고, "
               "보존·미수용 managed 파일은 --accept 전까지 매 검사 반복; "

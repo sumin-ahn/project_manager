@@ -43,7 +43,7 @@ def _load_adapter_config_document(path: Path) -> dict:
 
 # 훅 항목이 커맨드를 싣는 키 — 플랫폼별로 갈린다. codex `hooks.json` 은 POSIX 용 `command` 와
 # Windows 용 `commandWindows` 를 **함께** 싣고, 그 플랫폼에서 실제로 실행되는 건 후자다. 한쪽만
-# 스캔하면 Windows 채택자의 세대 불일치가 통째로 판정 밖이 된다(같은 락아웃, 다른 플랫폼).
+# 스캔하면 Windows 채택자의 버전 불일치가 통째로 판정 밖이 된다(같은 락아웃, 다른 플랫폼).
 _HOOK_COMMAND_KEYS = ("command", "commandWindows")
 
 
@@ -51,10 +51,10 @@ def _hook_event_commands(document) -> dict[str, tuple[tuple[str | None, str], ..
     """config document 의 훅 커맨드를 **이벤트별 (matcher, 커맨드)** 로 — `hooks.<event>[]`.
 
     matcher 는 그 커맨드가 든 그룹의 선언값이고, 키가 없으면 `None` 이다. 커맨드만 실으면 같은
-    스크립트를 다른 matcher 로 부르는 그룹들이 한 값으로 접혀 기능 표가 그 차이를 못 본다.
+    스크립트를 다른 matcher 로 부르는 그룹들이 한 값으로 바뀌어 기능 표가 그 차이를 못 본다.
 
-    claude `settings.json` 과 codex `hooks.json` 이 같은 형상이라 추출 규칙이 하나다. 형상이
-    어긋난 항목은 조용히 건너뛴다(채택자 소유 파일이라 임의 구조가 정상 범위). 세대 판정은
+    claude `settings.json` 과 codex `hooks.json` 이 같은 구조라 추출 규칙이 하나다. 구조가
+    어긋난 항목은 조용히 건너뛴다(채택자 소유 파일이라 임의 구조가 정상 범위). 버전 판정은
     이벤트를 묻지 않고(`_hook_commands`), 기능 표는 이벤트가 곧 행이라 같은 순회를 나눠 쓴다."""
     hooks = document.get("hooks") if isinstance(document, dict) else None
     if not isinstance(hooks, dict):
@@ -139,7 +139,7 @@ def _hook_script_and_arguments(tokens: list[str]) -> tuple[str | None, list[str]
 
 
 def _entrypoint_groups(document, event: str) -> list:
-    """config 의 그 이벤트 matcher-group 목록 (형상이 어긋나면 빈 목록)."""
+    """config 의 그 이벤트 matcher-group 목록 (구조가 어긋나면 빈 목록)."""
     hooks = document.get("hooks") if isinstance(document, dict) else None
     groups = hooks.get(event) if isinstance(hooks, dict) else None
     return [group for group in groups if isinstance(group, dict)] if isinstance(groups, list) else []
@@ -159,7 +159,7 @@ def _command_invokes_entrypoint(command: str, entrypoint: adapter_specs.AdapterH
     """**한 커맨드 문자열**이 디스패처를 그 이벤트로 실제 호출하는가.
 
     디스패처 경로만 보면 실행하지 않는 문자열(`printf .codex/pm_orch_codex.py`)이나 다른
-    이벤트를 부르는 커맨드까지 진입점으로 인정된다 — 발화하지 않는 config 가 소견 0 으로
+    이벤트를 부르는 커맨드까지 진입점으로 인정된다 — 훅을 부르지 않는 config 가 소견 0 으로
     통과하므로, 경로와 호출 값을 **같은 문자열 안에서 함께** 요구한다. 경로 판정이 포함
     여부인 것은 출하 커맨드가 인터프리터 해소를 담은 셸 한 줄(`if command -v python3 …`)이라
     argv 분해로는 스크립트가 안 나오고, 하네스가 해소하는 루트 토큰(`${CLAUDE_PROJECT_DIR}/`)

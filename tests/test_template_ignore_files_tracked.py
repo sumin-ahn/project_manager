@@ -10,11 +10,11 @@
 
   ① 디스크에 있는 템플릿 ignore 파일은 전부 git 추적 대상이어야 한다 (미추적 = 출하 누락).
   ② 어떤 ignore 파일도 자기 자신을 무시하면 안 된다 (자기-은닉 = ① 을 영구히 은폐하는 원인).
-  ③ opencode 어댑터 `.gitignore` 는 출하 경로(opencode flavor engine.manifest)에 실려야 한다 —
+  ③ opencode 어댑터 `.gitignore` 는 출하 경로(opencode 하네스별 판 engine.manifest)에 실려야 한다 —
      추적만 하면 *신규* 채택자(pm_import 트리 복사)만 받고 *기존* 채택자(pm_update manifest 전파)는
      영영 못 받는다([[T-0473]] 출하 경로 미등재 클래스 선례).
 
-**가드 자신의 sensitivity 도 검증한다**(안 돌려보면 가짜 게이트 — [[feature-ship-needs-fresh-adopter-gate]]):
+**가드 자신의 sensitivity 도 검증한다**(안 돌려보면 가짜 검사 — [[feature-ship-needs-fresh-adopter-gate]]):
 판정 로직을 독립 헬퍼로 떼어 (a) opencode 원본 5줄 본문에 자기-은닉을 실제로 검출하고 (b) 임시 git
 repo 에 미추적 ignore 파일을 심어 ① 이 실제로 잡아내는 걸 각각 단언한다.
 
@@ -40,7 +40,7 @@ IGNORE_FILE_NAMES = frozenset({".gitignore", ".npmignore", ".dockerignore"})
 # 의미론은 npm/Docker 소유라 `git check-ignore` 로 판정하면 근거 없는 오탐·누락을 만든다.
 GIT_IGNORE_FILE_NAMES = frozenset({".gitignore"})
 
-# 스캔 제외 디렉토리 — 재설치 산출물·바이트코드·VCS 메타. pm_import.COPY_EXCLUDE_DIR_NAMES 동형.
+# 스캔 제외 디렉토리 — 재설치 산출물·바이트코드·VCS 메타. pm_import.COPY_EXCLUDE_DIR_NAMES 같은 구조.
 SCAN_EXCLUDE_DIR_NAMES = frozenset({"node_modules", "__pycache__", ".git"})
 
 _GIT = shutil.which("git")
@@ -50,7 +50,7 @@ def _is_git_worktree(root: Path) -> bool:
     """`root` 가 실제 git work tree 인지 (능력 탐지·플랫폼/경로 하드코딩 아님).
 
     `git ls-files` 는 work tree 밖에서 **빈 출력 + 비정상 rc** 를 낸다 — 그걸 "전부 미추적" 으로
-    읽으면 비-git 사본(예: 프레임워크 트리를 복사해 만든 e2e 픽스처)에서 가드가 헛발화한다.
+    읽으면 비-git 사본(예: 프레임워크 트리를 복사해 만든 e2e 픽스처)에서 가드가 잘못 걸린다.
     추적 상태를 *판정할 수 없는* 트리는 fail 이 아니라 skip 이 옳다(실 repo 에선 항상 판정 가능).
     """
     if _GIT is None:
@@ -239,12 +239,12 @@ def test_opencode_adapter_gitignore_tracked_and_keeps_artifact_rules(tmp_path):
 
 
 def test_opencode_manifest_registers_adapter_gitignore():
-    """opencode flavor manifest 가 `.opencode/.gitignore` 를 `@source` 로 등록 (출하 경로·T-0492 DoD).
+    """opencode 하네스별 판 manifest 가 `.opencode/.gitignore` 를 `@source` 로 등록 (출하 경로·T-0492 DoD).
 
     추적만 하면 `pm_import`(템플릿 트리 통째 복사)로 **신규** 채택자만 받는다. **기존** 채택자에게
     닿는 채널은 manifest 기반 `pm_update` 전파뿐이라, 미등재면 이미 채택한 사람은 영영 못 받는다
     ([[T-0473]] 출하 경로 미등재 클래스). canonical 이 `templates/opencode/` 라 루트 `.opencode/`
-    부재 비대칭을 잇는 `@source` remap 이 필수다(lib·plugins·pm_orch_opencode.py 동형).
+    부재 비대칭을 잇는 `@source` remap 이 필수다(lib·plugins·pm_orch_opencode.py 와 같은 방식).
     """
     assert _manifest_entry_source(OC_MANIFEST, ".opencode/.gitignore") == \
         "templates/opencode/.opencode/.gitignore", (
@@ -258,7 +258,7 @@ def test_opencode_manifest_registers_adapter_gitignore():
 # 인스턴스 사본(lib/plugins)은 fresh clone 에서 런타임이 즉시 참조할 수 있어야 하고,
 # templates 정본과 같은 내용으로 관리되므로 추적돼야 한다.
 # npm 재생성물(node_modules·package.json·package-lock.json·bun.lock)은 계속 금지다 — 집합 일치
-# 비교라 허용집합 밖 신규 추적 전환은 즉시 발화한다.
+# 비교라 허용집합 밖 신규 추적 전환은 즉시 걸린다.
 ROOT_OPENCODE_TRACKED_ALLOWLIST = frozenset({
     ".opencode/.gitignore",
     ".opencode/lib/safe-write-core.cjs",
@@ -287,7 +287,7 @@ def test_root_opencode_tracks_only_its_gitignore():
 
 @requires_git_binary
 def test_root_opencode_gitignore_matches_template_and_ignores_runtime_artifacts():
-    """루트 판은 템플릿과 동형이고, 런타임 npm 재생성물 4종을 실제 git 의미론으로 무시한다."""
+    """루트 판은 템플릿과 같은 방식이고, 런타임 npm 재생성물 4종을 실제 git 의미론으로 무시한다."""
     root_ignore = REPO / ".opencode" / ".gitignore"
     template_ignore = REPO / "templates" / "opencode" / ".opencode" / ".gitignore"
     assert root_ignore.read_bytes() == template_ignore.read_bytes(), \
@@ -311,12 +311,12 @@ def test_root_opencode_gitignore_matches_template_and_ignores_runtime_artifacts(
         f"{decision.stdout.splitlines()}")
 
 
-# ── sensitivity — 가드가 실제로 도는지 (가짜 게이트 방지) ────────────────────────
+# ── sensitivity — 가드가 실제로 도는지 (가짜 검사 방지) ────────────────────────
 
 
 @requires_git_binary
 def test_self_hiding_detector_catches_opencode_original_body(tmp_path):
-    """자기-은닉 판정이 opencode 원본 5줄 본문을 실제로 잡고, 출하판(4줄)엔 무발화.
+    """자기-은닉 판정이 opencode 원본 5줄 본문을 실제로 잡고, 출하판(4줄)엔 걸리지 않는다.
 
     원본 = opencode `Config.ensureGitignore` 가 써넣는 리터럴
     `["node_modules","package.json","package-lock.json","bun.lock",".gitignore"]`.
@@ -331,7 +331,7 @@ def test_self_hiding_detector_catches_opencode_original_body(tmp_path):
 
 @requires_git_binary
 def test_self_hiding_detector_normalizes_equivalent_forms_and_skips_negation(tmp_path):
-    """git 동치 표기는 잡고, 부정·주석·비동치 이름·선행 공백은 무발화."""
+    """git 동치 표기는 잡고, 부정·주석·비동치 이름·선행 공백은 걸리지 않는다."""
     for variant in ("/.gitignore", "**/.gitignore", ".gitignore  "):
         assert _self_hiding_entries(variant, ".gitignore", tmp_path), f"동치 표기 미검출: {variant!r}"
     for benign in ("!.gitignore", "# .gitignore", ".gitignore.bak", "gitignore", "  .gitignore"):
@@ -361,8 +361,8 @@ def test_self_hiding_detector_follows_git_semantics(body, expected, tmp_path):
 def test_untracked_ignore_guard_is_not_vacuous(tmp_path):
     """가드 ① 이 임시 repo 에 심은 미추적 ignore 파일을 실제로 잡는다 (공허 아님).
 
-    실 결함 형상 그대로 재현 — 자기 자신을 무시하는 `.gitignore` 를 템플릿 트리에 두면 `git status`
-    엔 안 뜨지만 이 가드는 디스크↔`ls-files` 차집합으로 본다. `git add` 후엔 무발화(정상 상태).
+    실 결함 구성 그대로 재현 — 자기 자신을 무시하는 `.gitignore` 를 템플릿 트리에 두면 `git status`
+    엔 안 뜨지만 이 가드는 디스크↔`ls-files` 차집합으로 본다. `git add` 후엔 걸리지 않는다(정상 상태).
     """
     repo = tmp_path / "fake-repo"
     (repo / "templates" / "opencode" / ".opencode").mkdir(parents=True)
@@ -383,4 +383,4 @@ def test_untracked_ignore_guard_is_not_vacuous(tmp_path):
 
     subprocess.run([_GIT, "add", "-f", "templates/opencode/.opencode/.gitignore"],
                    cwd=str(repo), check=True, capture_output=True)
-    assert _untracked_ignore_files(repo, "templates") == [], "추적 전환 후에도 발화(오탐)"
+    assert _untracked_ignore_files(repo, "templates") == [], "추적 전환 후에도 걸림(오탐)"

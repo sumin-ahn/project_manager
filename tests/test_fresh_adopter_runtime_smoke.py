@@ -3,22 +3,22 @@
 
 ADR-0039 D1 이전엔 이 파일이 구 shipping tier(bootstrap·lifecycle·update 6케이스·pm_handoff 자동
 차단)였다. 라이브 tier 를 release 하나로 통합하며 bootstrap/lifecycle 4케이스는
-release full wave(`test_release_cluster`·new→claim→위임→complete)가 시나리오 superset 이라 폐기하고,
+release full 묶음(`test_release_cluster`·new→claim→위임→complete)가 시나리오 superset 이라 폐기하고,
 shipping 고유분인 **pm_update self-update 경로 2케이스**(opencode/claude)만 `release` tier 로 승격했다
 — 이 파일에 남은 라이브 테스트다.
 
 두 테스트는 import → pm_update(self-update) → 실 LLM 이 *post-update* 진입문서로 ticket 발행을 친다.
-import smoke·full wave 가 못 친 update 경로(opencode: .opencode/* @source 재렌더·미해소
+import smoke·full 묶음 가 못 친 update 경로(opencode: .opencode/* @source 재렌더·미해소
 harness.opencode.pro_model 을 intentional-TODO 로 graceful 중화·T-0310 / claude: .claude/* @render 재렌더·
-leak 0)를 커버한다. 비결정·느림·라이브 → release wave 와 같은
-`PM_ORCH_LIVE_RELEASE` 게이트(기본 skip·`PM_ORCH_LIVE_RELEASE=1` 일 때만). 프롬프트에 board.py 경로를
+leak 0)를 커버한다. 비결정·느림·라이브 → release 묶음 와 같은
+`PM_ORCH_LIVE_RELEASE` 통과 조건(기본 skip·`PM_ORCH_LIVE_RELEASE=1` 일 때만). 프롬프트에 board.py 경로를
 *주지 않는다* — adopter 가 문서만으로 board 도구를 찾아 운영해야 통과(= 문서 운영성). side-effect
 (ticket 파일 생성)를 단언하므로 LLM 출력 phrasing 비결정에 강건하다.
 
 이 파일은 그 외 hermetic env 격리 가드(라이브 미실행·매 회귀 통과)도 보유한다 — 라이브 LLM
 subprocess 가 부모 env 통째 상속이 아니라 화이트리스트(`_live_env`)로 뜨는지 단언한다. **양 harness**
 커버: opencode(로컬/cloud ollama=과금 0·`--dir` 핀)·claude(`claude-sonnet-4-6`·API 과금·cwd 존중).
-남는 사용자 게이트는 Windows 플랫폼 특이점(CP949·py 런처·회사 Pro 모델)뿐.
+남는 사용자 검사는 Windows 플랫폼 특이점(CP949·py 런처·회사 Pro 모델)뿐.
 """
 from __future__ import annotations
 
@@ -44,11 +44,11 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 PM_ORCH_LIVE_RELEASE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
-# warn 주입-도달 on-demand 게이트 (T-0286). release 12-pin 과 **분리** — 이 두 warn 테스트는
+# warn 주입-도달 on-demand 검사 (T-0286). release 12-pin 과 **분리** — 이 두 warn 테스트는
 # `@pytest.mark.release` 를 달지 않아(달면 regression.LIVE_TEST_RELEASE_PIN·_EXPECTED_RELEASE_TESTS 등
-# touches 밖 전역 pin 이 깨진다) release 게이트에 안 잡히고, 오직 이 env 로만 on-demand 실행된다.
+# touches 밖 전역 pin 이 깨진다) release 검사에 안 잡히고, 오직 이 env 로만 on-demand 실행된다.
 # (ticket 이 부른 `shipping` marker 는 ADR-0039 로 pytest.ini 에서 등록 제거됨 → 미등록 마커는
-# filterwarnings=error 로 수집 에러라 못 쓴다. env-gated skipif = "게이트 아님·CI green 불변" 동치.)
+# filterwarnings=error 로 수집 에러라 못 쓴다. env-blocking skipif = "검사 아님·CI green 불변" 동치.)
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
 # opencode: 출하 선언 모델(ollama cloud) — 이 박스 로컬 모델 불가(PM 48차)·
 # env override 가능.
@@ -76,7 +76,7 @@ def _live_env(model: str) -> dict[str, str]:
     """LLM subprocess 용 명시 env(화이트리스트) — 부모 env 통째 상속·모델 누수 차단.
 
     필수 환경(PATH/HOME/로케일·LLM 바이너리 동작에 필요)만 부모에서 통과시키고, 테스트가
-    의도한 모델을 `PM_ORCH_LIVE_MODEL` 로 직접 박는다(부모 env 폴백에 의존하지 않음). 부모
+    의도한 모델을 `PM_ORCH_LIVE_MODEL` 로 직접 박는다(부모 env 대체 동작에 의존하지 않음). 부모
     셸에 set 된 PM_ORCH_LIVE_MODEL·PM_ORCH_LIVE_CLAUDE_MODEL·PM_ORCH_LIVE_RELEASE 는 화이트리스트
     밖이라 안 흘러든다 — 누가/어디서 돌려도 같은 모델로 동작(hermetic).
     """
@@ -180,8 +180,8 @@ def _import_adopter(tmp_path: Path, harness: str, *, ctx_model: str = "fixture-m
     from _manager_home import known_ctx_seams
     from pm_engine.app import harness_ctx
     with pytest.MonkeyPatch.context() as patch:
-        for name, seam in known_ctx_seams(model=ctx_model).items():
-            patch.setattr(harness_ctx, name, seam)
+        for name, override in known_ctx_seams(model=ctx_model).items():
+            patch.setattr(harness_ctx, name, override)
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
             ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
         )
@@ -194,9 +194,9 @@ def _board_list_recognizes_ticket(dest: Path) -> bool:
 
     `--all --status all` 로 조회한다 — T-0197 이후 인자 없는 `list` 기본은 활성만 보이고 done 은
     접으며(→ `--status all`), ADR-0066(T-0385) 이후 무인자 기본 뷰는 내 스트림 스코프라 미귀속
-    open 이 "그 외 open N건" 으로 접힌다(→ `--all` 전체 상세). 발행된 ticket 이 *어느 상태·어느
+    open 이 "그 외 open N건" 으로 바뀐다(→ `--all` 전체 상세). 발행된 ticket 이 *어느 상태·어느
     스트림에 있든* 형식적으로 유효한지 확인하는 헬퍼라 전체 상세 뷰가 필요하다(T-0199 계보·
-    v1.3.2 livegate red 근본원인).
+    v1.3.2 라이브 시험 통과 조건 red 근본원인).
     """
     listing = subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"),
@@ -219,7 +219,7 @@ def _tickets_in(dest: Path, status: str) -> set[str]:
 
 # ── 채택자 *update* 경로 라이브 검증 (T-0133·activation 이 update 를 깨지 않는가) ──────────────
 # 아래 두 테스트는 import 와 operate 사이에 *채택자 self-update*(pm_update)를 끼워, 활성화
-# (@render·@target-owned·모델 폴백 중화)가 바꾼 *update 경로*를 라이브로 검증한다:
+# (@render·@target-owned·모델 대체 동작 중화)가 바꾼 *update 경로*를 라이브로 검증한다:
 # import → pm_update(self-update) → 실 LLM 이 *post-update* 진입문서로 ticket 발행. import smoke 가
 # 못 친 update 경로(opencode: .opencode/* @source 재렌더·미해소 모델토큰 graceful 중화 / claude:
 # .claude/* @render 재렌더)를 커버한다(회귀·rc 실측·codex 의 *기계* 검증 위에 *런타임* 층 1개 더).
@@ -231,7 +231,7 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     `--from str(REPO)` = 로컬 worktree 를 명시한다. pm_import 가 기록하는 기본 upstream 은
     릴리즈 추적용 **URL**(git@github.com:…)이고, 엔진은 그 URL 을 캐시로 clone/fetch 해 소스로
     쓴다(T-0908). 이 테스트에서 생략하면 실행이 **github 로 나간다** — 회귀 스위트는 네트워크를
-    타지 않으므로 이 실행이 흡수할 로컬 worktree 를 명시해 hermetic 하게 잡는다(URL 캐시 경로
+    타지 않으므로 이 실행이 받을 로컬 worktree 를 명시해 hermetic 하게 잡는다(URL 캐시 경로
     자체는 로컬 bare + file:// 로 tests/test_pm_update_url_cache.py 가 판정한다).
     """
     return subprocess.run(
@@ -247,7 +247,7 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
 @pytest.mark.release
 @pytest.mark.skipif(
     not PM_ORCH_LIVE_RELEASE or not shutil.which("opencode"),
-    reason="release wave — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
+    reason="release 묶음 — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
 )
 def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     """opencode 채택자가 self-update 후에도 안 깨지고 board 운영 가능 (.opencode/* @source 재렌더 경로)."""
@@ -258,7 +258,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     #    _real_models_runner 를 (False,[]) 스텁) 해 local.conf 에 harness.opencode.pro_model 이 미해소다 —
     #    @source 재렌더가 `{{OPENCODE_PRO_MODEL}}` 을 만나면 T-0310 전엔 leak 으로 rc-fail(update 전멸)
     #    이었다. 이제 render_adapter 가 import 와 대칭으로 intentional-TODO 중화 → rc0(엔진·어댑터 정상
-    #    update·crash/clobber 0). (릴리즈 라이브 게이트가 정확히 이 회귀를 포착한 지점.)
+    #    update·crash/clobber 0). (릴리즈 라이브 통과 조건이 정확히 이 회귀를 포착한 지점.)
     upd = _self_update(dest)
     assert upd.returncode == 0, (
         f"opencode 채택자 pm_update 실패(rc={upd.returncode}) — activation 이 update 경로를 깸.\n"
@@ -298,7 +298,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
 @pytest.mark.release
 @pytest.mark.skipif(
     not PM_ORCH_LIVE_RELEASE or not shutil.which("claude"),
-    reason="release wave — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
+    reason="release 묶음 — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
 def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
     """claude 채택자가 self-update(.claude/* @render 재렌더) 후에도 안 깨지고 board 운영 가능."""
@@ -417,7 +417,7 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
         return real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _spy_run)
-    # 게이트 우회 — 라이브 분기 진입(실 LLM 은 spy 가 막음). which 도 통과시킨다.
+    # 검사 우회 — 라이브 분기 진입(실 LLM 은 spy 가 막음). which 도 통과시킨다.
     # git 은 실물을 그대로 찾는다 — 없는 실행 파일 경로를 git 으로 돌려주면 git 호출이 실행 예외로 끝난다.
     real_which = shutil.which
     monkeypatch.setattr(
@@ -460,7 +460,7 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
 
 # ── graceful warn 주입-도달 라이브 (probe·on-demand·T-0286·[[ADR-0037]]·[[T-0328]]) ────────────
 # T-0183(PM 59)이 *수동 1회* 관찰한 "warn 주입이 모델 컨텍스트에 실제 도달" 을 재현 가능한 durable
-# 자동 테스트로 박제한다. Tier1(test_claude/opencode_ctx_guard)이 주입 스키마·멱등·2단 독립·빌더를
+# 자동 테스트로 기록한다. Tier1(test_claude/opencode_ctx_guard)이 주입 스키마·멱등·2단 독립·빌더를
 # 결정적으로 커버 — 여기선 *하니스 전달의 라이브 회귀*만(비결정·과금·flaky → PM_ORCH_LIVE on-demand).
 #
 # probe 방식([[verify-real-output-not-just-review]]): 라이브 세션 후 warn 텍스트가 모델에 도달했는지
@@ -468,18 +468,18 @@ def test_live_calls_use_isolated_env(monkeypatch, tmp_path):
 # `[ctx-warn/최종]` 공통 substring)를 모델이 인용하는지. `.warn` file-marker 는 단언하지 않는다
 # (T-0286 결정: marker 는 훅이 자기 판단용으로 쓸 뿐 도달 증거가 아님).
 #
-# 밴드 강제 = 격리 인스턴스 + per-harness 키([[ctx-guard-live-test-isolate-instance]]): adopter 는
+# 구간 강제 = 격리 인스턴스 + per-harness 키([[ctx-guard-live-test-isolate-instance]]): adopter 는
 # 별도 import tmp 라 이미 PM 홈과 격리돼 있고, 그 위에 `ctx_window_tokens_<harness>` 만 써 generic
-# `ctx_window_tokens` 를 안 건드린다(자기 claude 세션 hard-stop 무발화). loadConf 프로세스-캐싱은
+# `ctx_window_tokens` 를 안 건드린다(자기 claude 세션 hard-stop 돌지 않음). loadConf 프로세스-캐싱은
 # 매 subprocess(fresh)가 conf 를 새로 읽어 무관 — config 를 spawn *전*에 박는다.
 
 
-def _force_nudge_band_conf(dest: Path, harness: str) -> None:
-    """adopter local.conf 에 warn 밴드 강제 conf 를 append (격리·per-harness 키·generic 미변경).
+def _force_warn_level_conf(dest: Path, harness: str) -> None:
+    """adopter local.conf 에 warn 구간 강제 conf 를 append (격리·per-harness 키·generic 미변경).
 
-    큰 예산(500K) + 넓은 warn 밴드(쓴 % checkpoint_at 1·precompact_at 99): 실 세션(수천~수만
+    큰 예산(500K) + 넓은 warn 구간(쓴 % checkpoint_at 1·precompact_at 99): 실 세션(수천~수만
     토큰)이 stop(used ≥99%)은 절대 못 넘고 warn(used ≥1% = 토큰 ≥5000)엔 안정적으로 진입한다.
-    warn2(used ≥96%)엔 안 닿아 soft(1단) 주입이 발화 — 주입 채널은 2단과 동일(Tier1 커버)이라
+    warn2(used ≥96%)엔 안 닿아 soft(1단) 주입이 일어난다 — 주입 채널은 2단과 동일(Tier1 커버)이라
     도달 증거로 충분(공통 `ctx-warn` 토큰). local.conf 파싱은 last-wins 라 append 값이 우선.
     이 값은 훅 판정만 옮긴다 — 설정 파일 반영을 돌리지 않으므로 하네스 압축 지점은 출하 값 그대로다.
     """
@@ -487,7 +487,7 @@ def _force_nudge_band_conf(dest: Path, harness: str) -> None:
     conf_path.parent.mkdir(parents=True, exist_ok=True)
     with conf_path.open("a", encoding="utf-8") as fh:
         fh.write(
-            "\n# T-0286 warn 밴드 강제 (격리·per-harness 키)\n"
+            "\n# T-0286 warn 구간 강제 (격리·per-harness 키)\n"
             "ctx.checkpoint_at_pct=1\n"
             "ctx.precompact_at_pct=99\n"
             f"harness.{harness}.ctx_window_tokens=500000\n"
@@ -500,32 +500,32 @@ def _force_nudge_band_conf(dest: Path, harness: str) -> None:
 # 있다** — 검증력은 default 포맷이 프롬프트를 stdout 에 echo 하지 않는다는 실측 성질에 의존한다
 # (프롬프트-echo 포맷[--format json]에선 무력화·codex 지적 반영). 그 전제 아래 모델은 컨텍스트에
 # ctx-warn 이 실재할 때만 NUDGE_REACHED 를 낸다 = 주입이 모델에 도달.
-_NUDGE_PROBE_TAIL = (
+_WARN_PROBE_TAIL = (
     "그런 다음, 이번 세션의 시스템 메시지나 추가 컨텍스트에 'ctx-warn' 이라는 토큰이 문자 그대로 "
     "들어와 있는지 확인하라(추측 말고 실제로 있는지만). 있으면 정확히 'NUDGE_REACHED' 한 단어로 "
     "시작해 그 문장을 이어 인용하라. 없으면 정확히 'NO_NUDGE' 라고만 답하라."
 )
-_NUDGE_PROBE_MARKER = "NUDGE_REACHED"  # 모델-생산 sentinel(주입문/문서에 없음) — false-green-proof 도달 판정.
+_WARN_PROBE_MARKER = "NUDGE_REACHED"  # 모델-생산 sentinel(주입문/문서에 없음) — false-green-proof 도달 판정.
 
 
-def _run_opencode_nudge(dest: Path, attempts: int = 2) -> str:
+def _run_opencode_warn(dest: Path, attempts: int = 2) -> str:
     """opencode warn 세션 — 도구 호출로 2번째 모델 턴을 강제(그 턴의 system.transform 이 주입 소비).
 
     opencode 는 수 분 병리적 task hang(upstream·tool-loop 데드락) 이 있어 timeout + 1회 재시도까지만
     (PM 지침·실측: opencode 1.17.19 + glm-5.2 에서 tool 사용 세션이 0바이트로 걸림·`--pure` 로 플러그인
     빼도 걸림=upstream·플러그인 무관). 그 hang 이 풀린 환경에서만 이 라이브가 통과한다(default-skip 이라
     회귀 무영향). 메커니즘 자체는 Tier1(실제 엔진 hook-context warn2 판정·plugin system.transform 전달)
-    + T-0283 로드게이트 + claude 라이브(동일 채널·주입-도달 실증)로 커버.
+    + T-0283 로드검사 + claude 라이브(동일 채널·주입-도달 실증)로 커버.
 
     NOTE(플래그): `--pure` 는 안 쓴다 — `--pure`=external plugin 미로드라 ctx-guard 플러그인(주입 메커니즘
-    자체)이 안 떠 warn 가 발화 안 한다(실측). 격리는 fresh import adopter + `--dir <절대>`로 충분.
+    자체)이 안 떠 warn 이 뜨지 않는다(실측). 격리는 fresh import adopter + `--dir <절대>`로 충분.
     `--format json` 도 안 쓴다 — json 이벤트 스트림이 *user prompt*(sentinel 포함)를 stdout 에 직렬화해
     false-green(주입 아닌 프롬프트 echo 검출) 이 난다(실측). default 포맷은 모델 rendered 응답만 찍어
     sentinel 검출이 곧 모델 도달이다(prompt echo 없음·실측 BASELINE).
     """
     prompt = (
         "먼저 셸 도구로 `python3 .project_manager/tools/board.py list` 를 실행해 보드를 확인하라. "
-        + _NUDGE_PROBE_TAIL
+        + _WARN_PROBE_TAIL
     )
     cmd = ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL, prompt]
     last = ""
@@ -548,13 +548,13 @@ def _run_opencode_nudge(dest: Path, attempts: int = 2) -> str:
 def test_live_opencode_nudge_injection_reaches_model(tmp_path):
     """실 opencode 세션서 graceful warn 주입(experimental.chat.system.transform)이 모델에 도달 (T-0286).
 
-    밴드 강제(격리·per-harness 키) → 도구 호출로 2번째 턴 유발 → 그 턴 system[] 에 warn 주입 →
+    구간 강제(격리·per-harness 키) → 도구 호출로 2번째 턴 유발 → 그 턴 system[] 에 warn 주입 →
     모델이 `ctx-warn` 토큰 인용. probe 관찰(behavioral)이라 LLM phrasing 비결정에 강건(토큰 도달만 본다).
     """
     dest = _import_adopter(tmp_path, "opencode")
-    _force_nudge_band_conf(dest, "opencode")
-    out = _run_opencode_nudge(dest)
-    assert _NUDGE_PROBE_MARKER in out, (
+    _force_warn_level_conf(dest, "opencode")
+    out = _run_opencode_warn(dest)
+    assert _WARN_PROBE_MARKER in out, (
         "opencode warn 주입이 모델 컨텍스트에 도달하지 못함 (system.transform 미주입/모델 미인용).\n"
         f"--- opencode 출력(tail) ---\n{out[-2500:]}"
     )
@@ -569,11 +569,11 @@ def test_live_claude_nudge_injection_reaches_model(tmp_path):
 
     claude 는 UserPromptSubmit 에서만 주입하고 그 훅은 transcript 의 assistant usage 로 used% 를
     잰다 — fresh -p 의 첫 프롬프트는 transcript 가 비어 used 0(주입 없음). 그래서 (1) seed 로
-    transcript 를 쌓고 (2) `--continue` 로 이어, 2번째 UserPromptSubmit 이 밴드에 들어 주입되게 한다.
+    transcript 를 쌓고 (2) `--continue` 로 이어, 2번째 UserPromptSubmit 이 구간에 들어 주입되게 한다.
     """
     dest = _import_adopter(tmp_path, "claude")
-    _force_nudge_band_conf(dest, "claude")
-    # 1) seed: transcript 축적(첫 UserPromptSubmit=빈 transcript→used 0→warn 미발화·세션 정상 진행).
+    _force_warn_level_conf(dest, "claude")
+    # 1) seed: transcript 축적(첫 UserPromptSubmit=빈 transcript→used 0→warn 안 뜸·세션 정상 진행).
     seed = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
          "--dangerously-skip-permissions",
@@ -585,28 +585,28 @@ def test_live_claude_nudge_injection_reaches_model(tmp_path):
     assert seed.returncode == 0, (
         f"claude seed 실패(rc={seed.returncode}) — transcript 축적 불가.\n{seed.stderr[-1000:]}"
     )
-    # 2) continue: transcript 가 쌓여 이번 UserPromptSubmit 이 warn 밴드 → additionalContext 주입.
+    # 2) continue: transcript 가 쌓여 이번 UserPromptSubmit 이 warn 구간 → additionalContext 주입.
     probe = subprocess.run(
         ["claude", "-p", "--continue", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
-         "--dangerously-skip-permissions", "새 도구를 실행하지 마라. " + _NUDGE_PROBE_TAIL],
+         "--dangerously-skip-permissions", "새 도구를 실행하지 마라. " + _WARN_PROBE_TAIL],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=RUNTIME_TIMEOUT, env=_live_env(CLAUDE_MODEL),
     )
     out = (probe.stdout or "") + (probe.stderr or "")
-    assert _NUDGE_PROBE_MARKER in out, (
+    assert _WARN_PROBE_MARKER in out, (
         "claude warn 주입이 모델 컨텍스트에 도달하지 못함 (UserPromptSubmit additionalContext 미도달/미인용).\n"
         f"--- claude 출력(tail) ---\n{out[-2500:]}"
     )
 
 
 # ── codex fresh-adopter 기계 e2e (스캐폴드→lint→부트스트랩 카드→trust 안내·hermetic·T-0408) ────
-# codex(세 번째 하네스·ADR-0070) 신선 채택자 게이트의 *기계* 층: 템플릿 사본에서 import →
+# codex(세 번째 하네스·ADR-0070) 신선 채택자 검사의 *기계* 층: 템플릿 사본에서 import →
 # 스캐폴드 트리 단언 → board.py lint clean → import 된 pm_bootstrap 이 codex env 감지 시 카드
-# codex 절을 발화 → import 출력에 trust loud 2단계 안내. [[feature-ship-needs-fresh-adopter-gate]]
+# codex 절을 띄움 → import 출력에 trust loud 2단계 안내. [[feature-ship-needs-fresh-adopter-gate]]
 # — diff-scoped 리뷰·source-parity 는 *출하 template* 이 import 파이프라인을 지나 실제로 작동하는지
-# (누락·미렌더·부트스트랩 미발화)를 못 본다. 라이브 LLM 0(hermetic·결정적·codex CLI 미실행)이라 매
-# 회귀 자동 포함 — codex 라이브 축(부트스트랩 실 LLM 구동)은 T-0407(별 파일·중복 실행 회피).
-# claude/opencode 동급 기계 게이트는 test_fresh_adopter_e2e.py 에 있고, codex 는 고유분이 커
+# (누락·미렌더·부트스트랩에서 안 뜸)을 못 본다. 라이브 LLM 0(hermetic·결정적·codex CLI 미실행)이라 매
+# 회귀 자동 포함 — codex 라이브 검사(부트스트랩 실 LLM 구동)은 T-0407(별 파일·중복 실행 회피).
+# claude/opencode 동급 기계 검사는 test_fresh_adopter_e2e.py 에 있고, codex 는 고유분이 커
 # (네임스페이스 둘 `.codex`+`.agents`·정적 진입 doc 없음[C-v2]·trust 2단계) 이 전용 시나리오로 못박는다.
 
 _CODEX_AGENT_TOMLS = ("architect", "code-reviewer", "developer", "researcher")
@@ -614,7 +614,7 @@ _CODEX_AGENT_TOMLS = ("architect", "code-reviewer", "developer", "researcher")
 #   root `.claude/skills` 디렉토리 수와 동일해야 한다(전파 채널 = @source·codex 네임스페이스 remap).
 _CODEX_SKILL_COUNT = len(list((REPO / ".claude" / "skills").glob("*/SKILL.md")))
 
-# 부트스트랩 카드에 넘길 합성 정체성 (test_pm_bootstrap_card.LEAN_IDENTITY 동형·순수 함수 입력·I/O 0).
+# 부트스트랩 카드에 넘길 합성 정체성 (test_pm_bootstrap_card.LEAN_IDENTITY 같은 구조·순수 함수 입력·I/O 0).
 #   슬롯 카드 경로(task/readonly 아님)로 렌더돼 끝에 codex 절이 append 된다.
 _CODEX_CARD_IDENTITY = {
     "repo": "adopter", "session": "adopter_1", "slot": "work/adopter_1",
@@ -639,31 +639,31 @@ def _load_adopter_tool(dest: Path, name: str):
 def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, monkeypatch, capsys):
     """codex import → 스캐폴드 트리 → lint clean → 부트스트랩 카드 codex 절 + trust loud 안내 (hermetic).
 
-    codex 신선 채택자 게이트의 기계 e2e — 라이브 LLM 0. (1) 어댑터 스캐폴드가 전부 landing(위임 4축
+    codex 신선 채택자 검사의 기계 e2e — 라이브 LLM 0. (1) 어댑터 스캐폴드가 전부 landing(위임 4종
     TOML·스킬 remap·공통 코어 AGENTS.md·config/hooks·relay·루트 .gitignore) (2) adopter board.py
-    blocking lint clean (3) import 된 pm_bootstrap 이 codex env 감지 시 카드 codex 절 발화(정적 진입
+    blocking lint clean (3) import 된 pm_bootstrap 이 codex env 감지 시 카드 codex 절 표시(정적 진입
     doc 없는 C-v2 에서 카드가 유일 실행모델/위임 전달 채널) (4) import 출력에 trust loud 2단계 안내
     (미승인 시 위임/훅 死·D5). codex CLI 미실행·결정적이라 매 회귀 자동 포함된다.
     """
     dest = _import_adopter(tmp_path, "codex")
     import_out = capsys.readouterr().out
 
-    # (1) 스캐폴드 트리 — 어댑터 4축 TOML·스킬 remap·공통 코어 AGENTS.md·config/hooks·relay·루트 .gitignore.
+    # (1) 스캐폴드 트리 — 어댑터 4종 TOML·스킬 remap·공통 코어 AGENTS.md·config/hooks·relay·루트 .gitignore.
     agents_dir = dest / ".codex" / "agents"
     for name in _CODEX_AGENT_TOMLS:
         toml = agents_dir / f"{name}.toml"
-        assert toml.is_file(), f"codex 위임 축 미landing: {name}.toml"
+        assert toml.is_file(), f"codex 위임 역할 미landing: {name}.toml"
         # (내용 단언·T-0429 ④) 존재(is_file)만 보면 v1.4.0 결함(`.codex/agents/*.toml` 에
-        #   `{{PROJECT_NAME}}` 리터럴 출하)을 놓친다 — "codex fresh-adopter 게이트" 라는 이름이
+        #   `{{PROJECT_NAME}}` 리터럴 출하)을 놓친다 — "codex fresh-adopter 통과 조건" 라는 이름이
         #   커버리지 착시를 만들었다. 채택자가 손에 쥔 .toml 을 **열어** operational 토큰이 실제
         #   치환됐는지 본다: import 는 `--name Adopter` 라 프로젝트명이 박혀야 하고, 미해소 `{{...}}`
         #   토큰 리터럴은 0 이어야 한다(존재만으로는 통과 못 하게 승격).
         text = toml.read_text(encoding="utf-8")
         assert "Adopter" in text, (
-            f"codex {name}.toml 에 프로젝트명 미치환 — {{PROJECT_NAME}} 미해소(내용 게이트 red)")
+            f"codex {name}.toml 에 프로젝트명 미치환 — {{PROJECT_NAME}} 미해소(내용 검사 red)")
         leaked = re.findall(r"\{\{[A-Z_]+\}\}", text)
         assert not leaked, (
-            f"codex {name}.toml 에 미해소 토큰 {sorted(set(leaked))} 리터럴 출하 (v1.4.0 결함 형상)")
+            f"codex {name}.toml 에 미해소 토큰 {sorted(set(leaked))} 리터럴 출하 (v1.4.0 결함 재현)")
     # PM = 메인세션(D1) — opencode 의 pm.md(primary) 에 해당하는 pm.toml 부재가 결정(load-bearing 부재).
     assert not (agents_dir / "pm.toml").exists(), "codex 는 PM=메인세션 — pm.toml 부재가 결정(D1)"
     skills = list((dest / ".agents" / "skills").glob("*/SKILL.md"))
@@ -679,9 +679,9 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
     assert (dest / ".gitignore").is_file(), (
         "codex 채택자에 루트 .gitignore 스캐폴드 미landing (claude/opencode 는 출하·파리티 갭)")
 
-    # (2) 부팅 lint clean — 출하 wiki doc 에 dangling framework `[[ADR/T]]`·thin 누출 0(blocking `--gate`
+    # (2) 부팅 lint clean — 출하 wiki doc 에 dangling framework `[[ADR/T]]`·thin 누출 0(`--blocking`
     #     exit 0). fresh adopter 는 seen-unset 관찰불가 advisory(never-block·option-a)라 blocking 은
-    #     `--gate` 로 확인한다(test_fresh_adopter_e2e 동형).
+    #     `--blocking` 으로 확인한다(test_fresh_adopter_e2e 와 같은 방식).
     lint = subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"), "lint", "--blocking"],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -692,8 +692,8 @@ def test_fresh_codex_adopter_scaffold_lints_clean_and_bootstrap_card(tmp_path, m
         f"[[ADR/T]]·thin 누출?\n--- stdout ---\n{lint.stdout}\n--- stderr ---\n{lint.stderr}")
 
     # (3) 부트스트랩 카드 codex 절 — import 된 채택자 pm_bootstrap 이 codex env 감지 시 실행모델/위임
-    #     지침을 카드로 발화한다(C-v2·정적 진입 doc 없음·카드=유일 전달 채널). env monkeypatch 로 감지를
-    #     켜고 순수 카드 헬퍼(I/O 0·bare `__new__` 인스턴스)를 렌더 — test_pm_bootstrap_card._card 동형.
+    #     지침을 카드로 띄운다(C-v2·정적 진입 doc 없음·카드=유일 전달 채널). env monkeypatch 로 감지를
+    #     켜고 순수 카드 헬퍼(I/O 0·bare `__new__` 인스턴스)를 렌더 — test_pm_bootstrap_card._card 같은 구조.
     bootstrap = _load_adopter_tool(dest, "pm_bootstrap")
     monkeypatch.setenv("CODEX_THREAD_ID", "019f8003-d535-7a10-adopter")
     inst = bootstrap_cli.PmBootstrap.__new__(bootstrap_cli.PmBootstrap)

@@ -79,7 +79,7 @@ def render_adapter(
     delegate_harness: 위임 token-key → conf 의 그 역할/티어 하네스(선택·pm_update 가 local.conf
     에서 해소). 카드 하네스와 다르면 그 토큰은 미사용 프로필이라 값 대신 이유를 중화로 남긴다.
     card_path: 이 산출물의 **인스턴스 상대 경로**(선택·pm_update 가 계획의 dest 좌표를 넘긴다).
-    카드 하네스 판정의 유일한 입력이다 — 미배선이면 미사용 프로필 규칙이 발화하지 않는다.
+    카드 하네스 판정의 유일한 입력이다 — 미등록이면 미사용 프로필 규칙이 돌지 않는다.
     카드에 추론 값을 채울 때 그 값이 카드 하네스·모델의 허용집합(`contract.reasoning_allowed`) 밖이거나
     확인할 수 없으면 RenderLeakError 다(`_check_card_reasoning_values`).
 
@@ -89,9 +89,9 @@ def render_adapter(
     카드, 갱신 적용은 그 갱신이 쓰는 카드까지 더한 집합).
 
     operational 은 행-문맥 무관 plain string replace(omit 없음) → 템플릿 전체에 whole-text
-    패스로 적용한다(멱등). 결과는 자족(잔여 `{{...}}`·stray 마커 0) — post-render assertion 이
+    패스로 적용한다(멱등). 결과는 자족(남은 `{{...}}`·stray 마커 0) — post-render assertion 이
     잔존 시 RenderLeakError(자족 위반). free-form 토큰·omit-marker 는 어댑터에 없어야 하며
-    잔존하면 leak 으로 표면화된다(미마이그레이션 신호).
+    잔존하면 leak 으로 드러난다(미마이그레이션 신호).
     """
     operational = operational or {}
     # 미사용 프로필(카드 하네스 ≠ conf 의 그 역할 하네스)은 **치환 전에** 제외한다 — 값을 먼저
@@ -123,14 +123,14 @@ def render_adapter(
     # 불변식 a: 이미 해소돼 있으면 위 _fill_operational 가 치환해 no-op).
     #   ⚠ **`harness.opencode.pro_model=` 빈값(present-but-empty)은 중화하지 않는다** — 빈값은 미설정이
     #   아니라 *오설정* 신호다(pm_import 는 해소 시에만 이 키를 쓰므로 빈값=손-편집/손상).
-    #   대로 leak 시켜 "값을 채우라" 로 표면화한다. 빈값은
+    #   대로 leak 시켜 "값을 채우라" 로 드러낸다. 빈값은
     #   all_empty 에 실리므로 그때는 중화를 건너뛰어 토큰을 남긴다 → _assert_no_leak 가 잡는다.
     # 그 밖의 미해소 토큰(다른 위치·다른 `{{...}}`)도 계속 fail-loud(불변식 c).
     if render_rules._OPENCODE_MODEL_KEY not in all_empty:
         result, _ = render_rules.neutralize_model_todo(result)
     # 같은 intentional-TODO 규약 — 역할 카드의 `{{DELEGATE_MODEL_<ROLE>}}` 는 local.conf 에
     # `delegate.<role>[.<tier>].model` 이 없는 채택자(위임 매핑 미설정)에서 결정적으로 해소되지
-    # 않는다. 빈값(present-but-empty) 키는 all_empty 로 넘겨 중화에서 빼고 leak 으로 표면화한다
+    # 않는다. 빈값(present-but-empty) 키는 all_empty 로 넘겨 중화에서 빼고 leak 으로 드러낸다
     # (오설정 신호). 미사용 프로필은 해소값 유무와 무관하게 사유 꼬리로 중화한다(위 unused).
     result, _ = render_rules.neutralize_delegate_model_todo(
         result, all_empty,

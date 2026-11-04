@@ -20,7 +20,7 @@ def _pm_install_evidence(source_root: Path) -> tuple[dict[str, set[str]], dict[s
 
     두 번째 dict(전체 출하)는 **귀속 판정**용이다 — 어떤 증거가 다른 하네스에서도 나오는지
     (예 `.claude/skills/pm-*` 는 claude 네임스페이스지만 opencode template 도 출하) 알아야
-    거짓 양성을 막는다. 소스 열거 실패는 그 하네스 빈 집합(호출부가 구조 판정으로 강등)."""
+    거짓 양성을 막는다. 소스 열거 실패는 그 하네스 빈 집합(호출부가 구조 판정으로 낮춘다)."""
     evidence: dict[str, set[str]] = {}
     shipped_all: dict[str, set[str]] = {}
     for name in install_rules.REGISTERED_HARNESSES:
@@ -47,7 +47,7 @@ def _pm_install_evidence(source_root: Path) -> tuple[dict[str, set[str]], dict[s
 
 
 # ── 영속 설치 기록(install receipt) ──────────────────────────────────────────
-# 이 인스턴스에 PM 어댑터를 **실제로 설치한** 하네스 목록을 인스턴스 메타에 박제한다. 증거 추론
+# 이 인스턴스에 PM 어댑터를 **실제로 설치한** 하네스 목록을 인스턴스 메타에 기록한다. 증거 추론
 # (`_pm_install_evidence`)은 구조상 두 방향으로 틀릴 수 있다 — 증거가 둘뿐인 하네스는 그 파일이
 # 함께 사라지면 미검출(표기 유실)이고, 채택자 자작 진입문서는 거짓 양성(표기 소음)이다. 기록이
 # 있으면 그 추론을 아예 안 탄다.
@@ -61,8 +61,8 @@ def _pm_install_evidence(source_root: Path) -> tuple[dict[str, set[str]], dict[s
 #     쓰는 local.conf 의 백업·재병합 왕복도 타지 않는다(재-import 마다 값이 되살아나는 창 없음).
 # 형식은 JSON 한 객체 — `harnesses`와 실제로 레이다운한 instance-owned template 좌표만 의미를
 # 갖는다. 좌표는 dst relpath → `{weight, source}`이고, source는 checkout 기준 POSIX 경로다. 특히
-# lite의 `X.lite.md → X.md` rename을 나중 관측이 full `X.md`로 되짚지 않게 설치 순간 선택을 박제한다.
-# 날짜 등 변하는 값은 넣지 않아 같은 설치 형상이면 매 실행 byte 동일이다(re-import churn 0).
+# lite의 `X.lite.md → X.md` rename을 나중 관측이 full `X.md`로 되짚지 않게 설치 순간 선택을 기록한다.
+# 날짜 등 변하는 값은 넣지 않아 같은 설치 구성이면 매 실행 byte 동일이다(re-import churn 0).
 INSTALL_RECEIPT_RELPATH = Path(".project_manager") / "install.json"
 
 
@@ -105,7 +105,7 @@ def _load_install_receipt_document(dest_root: Path, *,
     try:
         text = install_files.read_dest_text(dest_root, INSTALL_RECEIPT_RELPATH)
     except FileNotFoundError:
-        # 기록 미도입 인스턴스(구 설치·수기 설치) — 호출부가 추론으로 폴백.
+        # 기록 미도입 인스턴스(구 설치·수기 설치) — 호출부가 추론을 대신 쓴다.
         return InstallReceiptDocument(None, "absent")
     except (OSError, install_files.UnsafeDestPathError, UnicodeDecodeError) as exc:
         if not quiet:
@@ -162,7 +162,7 @@ def read_install_receipt(dest_root: Path) -> list[str] | None:
     """인스턴스에 기록된 설치 하네스(registry 정규 순서) — 기록 부재·해독 불가면 `None`.
 
     `None` 은 "기록 없음"이고 빈 목록과 다르다: 호출부는 `None` 일 때만 증거 추론으로 내려간다.
-    깨진 기록(JSON 오류·`harnesses` 부재·상위 schema·등록 하네스 0)도 `None` 로 강등하되 **조용히
+    깨진 기록(JSON 오류·`harnesses` 부재·상위 schema·등록 하네스 0)도 `None` 으로 낮추되 **조용히
     하지 않는다** — 기록을 진실로 쓰던 판정이 침묵으로 추론으로 바뀌면 그 전환을 아무도 못 본다.
     다만 dest 가 아직 없거나(`--new` 계획 단계) `.project_manager/` 가 없는 트리는 정상이라 무음이다.
 
@@ -241,12 +241,12 @@ def _preserve_corrupt_install_receipt(dest_root: Path,
 def record_install_receipt(dest_root: Path, harnesses,
                            root_identity: tuple | None = None, *,
                            template_coordinates: dict | None = None) -> bool:
-    """설치 하네스를 인스턴스 설치 기록에 박제한다 — 내용이 바뀌었으면 True.
+    """설치 하네스를 인스턴스 설치 기록에 기록한다 — 내용이 바뀌었으면 True.
 
     기록 시점은 **실제 설치·추가가 일어난 run**(`--new`·`--into`·add-harness 의 적용 경로)뿐이다.
     판정 함수(`installed_harnesses`)는 읽기만 한다 — 거기서 쓰면 dry-run·read-only 갱신 확인 같은
     무변경 명령이 인스턴스를 고치고, 비-PM 트리에도 기록을 남긴다. 기록이 없던 구 인스턴스는 그래서
-    다음 설치 행위에서 backfill 된다(그 시점의 추론 산출 ∪ 이번 선택을 그대로 박제 — 폴백을 계속
+    다음 설치 행위에서 backfill 된다(그 시점의 추론 산출 ∪ 이번 선택을 그대로 기록 — 대체 동작을 계속
     쌓는 대신 한 번 원천으로 옮긴다). 엔진 동기(pm_update)는 기록 채널이 아니다: 그쪽 dest 는 채택자
     인스턴스일 수도, 출하 템플릿 트리(`--target`)나 프레임워크 checkout 자신일 수도 있어 "설치했다"
     는 사실을 만들 자격이 없다(설치 행위를 한 쪽만 기록한다).
@@ -291,7 +291,7 @@ def record_install_receipt(dest_root: Path, harnesses,
         if name not in install_rules.REGISTERED_HARNESSES and str(name) not in ordered
     ]
     seen_preserved: list[str] = []
-    for name in preserved:  # 중복 접기(원래 순서 유지·byte 안정).
+    for name in preserved:  # 중복 합치기(원래 순서 유지·byte 안정).
         if name not in seen_preserved:
             seen_preserved.append(name)
     existing_coordinates = (existing.document or {}).get(
@@ -373,7 +373,7 @@ def _copied_instance_owned_template_coordinates(
 def _has_adapter_shape(dest_root: Path, harness: str) -> bool:
     """그 하네스 어댑터의 **구조 증거**(네임스페이스 디렉토리 전부 + 루트 진입문서)가 있는가.
 
-    추론 판정의 1단이자 기록 보유 인스턴스의 유령 형상(기록엔 있는데 트리엔 없음) 판별에 함께
+    추론 판정의 1단이자 기록 보유 인스턴스의 유령 상태(기록엔 있는데 트리엔 없음) 판별에 함께
     쓴다 — 두 곳이 같은 판정을 봐야 "무엇을 설치로 보는가"가 갈리지 않는다."""
     adapter_dirs, root_doc = install_rules.ADD_HARNESS_ADAPTER[harness]
     return (all((Path(dest_root) / dirname).is_dir() for dirname in adapter_dirs)
@@ -390,13 +390,13 @@ def _installed_harnesses_with_authority(
 
     판정 순서는 **기록 우선**이다: 영속 설치 기록(`read_install_receipt`)이 있으면 그것이 진실이고
     아래 증거 추론은 아예 타지 않는다 — 판별자 파일이 전부 지워져도 독자 집합이 유실되지 않는다.
-    기록이 없는 인스턴스(기록 도입 전 설치·수기 설치)만 추론으로 폴백하며, 그 인스턴스는 다음
+    기록이 없는 인스턴스(기록 도입 전 설치·수기 설치)만 추론을 대신 쓰며, 그 인스턴스는 다음
     설치 행위(`--into` 재-import·add-harness)가 기록을 backfill 한다.
 
     ⚠ 기록은 **설치 사실**이라 어댑터 파일을 지웠다고 자동 철회되지 않는다 — 제거는 기록을 고치는
     명시 행위여야 한다(현재 제거 채널 없음).
 
-    폴백 판정 2단: (a) 어댑터 네임스페이스 + 루트 진입문서 실재(opencode 가 `.claude/skills` 를 함께
+    대체 동작 판정 2단: (a) 어댑터 네임스페이스 + 루트 진입문서 실재(opencode 가 `.claude/skills` 를 함께
     깔기 때문에 claude 는 `CLAUDE.md` 까지 요구하고 codex 는 두 네임스페이스를 모두 요구한다)
     (b) **PM 자산 실재**(`_pm_install_evidence` 의 증거 집합). (b)가 없으면 일반 프로젝트가 자기
     용도로 가진 `.codex/`·`.agents/`·`AGENTS.md` 를 codex PM 설치로 오인해, PM 카드가 없는
@@ -408,7 +408,7 @@ def _installed_harnesses_with_authority(
     반대 방향 오차(채택자 자작 `CLAUDE.md` + opencode 설치 → claude 도 독자로 셈)는 병기 표기가
     하나 늘 뿐이라 **유실보다 안전하다**(비대칭 판단·거짓 양성 허용).
 
-    ⚠ 폴백의 한계: 증거가 적은 하네스는 그 파일들이 다 지워지면 미검출된다 — opencode 는 증거가
+    ⚠ 대체 동작의 한계: 증거가 적은 하네스는 그 파일들이 다 지워지면 미검출된다 — opencode 는 증거가
     `.opencode/pm-instructions.md`·`pm_orch_opencode.py`·`command/` 뿐이라 그게 다 사라지면 구조 증거가 있어도
     설치로 안 본다. 이 한계는 **기록이 있는 인스턴스에는 없다**(기록이 추론을 대체한다).
 
@@ -416,7 +416,7 @@ def _installed_harnesses_with_authority(
     dest_root = Path(dest_root)
     recorded = read_install_receipt(dest_root)
     if recorded is not None:
-        # 기록이 관측을 덮으므로 **유령 형상**(기록엔 있는데 어댑터 자체가 트리에 없음)은 알린다 —
+        # 기록이 관측을 덮으므로 **유령 상태**(기록엔 있는데 어댑터 자체가 트리에 없음)은 알린다 —
         #   기록은 진실로 쓰되(판정 불변), 사람이 고칠 위치를 함께 준다. 안 알리면 잘못 박힌 기록이
         #   영구히 그 하네스를 독자로 붙든다(제거 채널이 편집뿐이라 더더욱 보여야 한다).
         ghosts = [name for name in recorded if not _has_adapter_shape(dest_root, name)]

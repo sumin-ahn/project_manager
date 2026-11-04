@@ -35,7 +35,7 @@ import tomllib
 
 
 # codex 어댑터(`​.codex/agents/*.toml`·`config.toml`·hooks)는 **trusted project + hook trust 승인
-# 후에만** 발화한다. import/add-harness 직후 신선 인스턴스는 이 2단계가
+# 후에만** 돈다. import/add-harness 직후 신선 인스턴스는 이 2단계가
 # 미승인 상태 — 조용히 두면 위임 subagent 스폰·PreCompact ctx checkpoint 안내가 안 뜬다. `-c projects.<path>.
 # trust_level` CLI override 는 **안 먹으므로** 대화형 승인이 유일 경로다.
 def _print_codex_trust_guidance() -> None:
@@ -120,7 +120,7 @@ def _unowned_shipped_wiki_relpaths(
         source_root: Path, harnesses, notation_contexts: dict) -> list[str]:
     """선택 하네스 template 이 **출하하는** wiki relpath 중 manifest 소유자가 없는 것.
 
-    표기 폴백이 해소하는 그 부류(인스턴스 상태 seed — `status.md`·`log/current.md`·
+    표기 대체 동작이 해소하는 그 부류(인스턴스 상태 seed — `status.md`·`log/current.md`·
     `raw/README.md` …)의 기계 파생이다. 손-열거 0: 출하 인벤토리(`_iter_source_files`·tracked-only)
     에서 wiki 하위를 모으고 manifest 선언(`notation_contexts` 키)이 소유하는 경로를 뺀다.
 
@@ -152,7 +152,7 @@ _WIKI_TEMPLATE_SUFFIX = ".template.md"
 def _generated_template_sibling(rel_posix: str) -> str | None:
     """`wiki/pm_state.template.md` → `wiki/pm_state.md` (템플릿이 만들어 내는 인스턴스 파일).
 
-    `board.py init` 이 이 산출물을 만들고 그 시점 표기가 박제된다 — 나중에 하네스를 추가하면
+    `board.py init` 이 이 산출물을 만들고 그 시점 표기가 기록된다 — 나중에 하네스를 추가하면
     템플릿은 재렌더되는데 산출물은 아무도 안 건드려 옛 표기로 남는다. 손-열거 대신 `*.template.md`
     관례에서 파생한다(`_template.md` 스캐폴드는 1:1 산출물이 아니라 대상 아님)."""
     if not rel_posix.endswith(_WIKI_TEMPLATE_SUFFIX):
@@ -169,9 +169,9 @@ def _notation_rerender_contexts(
       - **manifest 소유 공유 문서** — 둘 이상 하네스가 같은 물리 경로를 읽는 것만(단일이면 그
         하네스 template 이 이미 native 로 깔았다).
       - **manifest 미소유 출하 wiki seed** — 소유자가 없어 `entry_notation_templates` 에 안
-        나타난다. 설치 하네스 전체를 독자로 본다(render 단계 폴백과 같은 의미·같은 값).
+        나타난다. 설치 하네스 전체를 독자로 본다(render 단계 대체 동작과 같은 의미·같은 값).
       - **템플릿이 만들어 낸 인스턴스 파일**(`pm_state.template.md` → `pm_state.md`) — 생성
-        시점 표기가 박제돼 하네스 추가 후 옛 표기로 남는 유일한 파생 산출물이다.
+        시점 표기가 기록돼 하네스 추가 후 옛 표기로 남는 유일한 파생 산출물이다.
     실제로 바뀌는지(무변경 no-op 제외)는 `_shared_notation_rerender_plan` 이 산출 미리보기로
     판정하므로 여기서는 후보만 넓게 모은다.
     """
@@ -209,7 +209,7 @@ def _shared_notation_rerender_plan(
     조용히 skip 하지 않고 **복사 시작 전 fail-loud**(engine.manifest 가드와 같은 성질 — 부분 적용
     0·외부 파일 불변).
 
-    백업 대상 조상도 여기서 검증한다(`plan_copy` 와 동형 — git 추적&미변경은 git 이 복원하므로
+    백업 대상 조상도 여기서 검증한다(`plan_copy` 와 같은 방식 — git 추적&미변경은 git 이 복원하므로
     백업 불요). 백업 자리가 막혀 있으면(예 `.pm_import_backups` 가 일반 파일) **그 파일만 재렌더
     대상에서 빼고 호출부가 loud 하게 알린다** — 백업 못 할 파일은 고치지 않는다(비파괴). 여기서
     전체를 중단하지 않는 이유는 이 재렌더가 *피할 수 있는* 변경이기 때문이다(local.conf 백업은
@@ -273,7 +273,7 @@ def _notation_rerender_changes_file(
     처리 범위에서 빼면 (a) `[rerender]` 계획이 실제 변경만 말하고 (b) 비-git 인스턴스에서
     add-harness 를 재실행해도 이 경로로는 백업이 쌓이지 않는다(멱등).
 
-    판정 축은 **표기 산출**뿐이다 — 잔존 `{{...}}` 를 변경 후보로 세면 토큰을 *설명*으로 담는
+    판정 기준은 **표기 산출**뿐이다 — 잔존 `{{...}}` 를 변경 후보로 세면 토큰을 *설명*으로 담는
     방법론 문서(pm_role·pm_playbook)와 free-form 홈(pm_role.local.md)이 매 실행 재대상이 돼
     멱등이 깨진다(실측: 재실행마다 3건 재계획·백업 누적). 그 문서들의 operational 치환은
     최초 import 가 이미 끝냈고 sed 제외 규칙이 리터럴 유지를 의도한다.
@@ -294,8 +294,8 @@ def _notation_rerender_changes_file(
         source=str(dest_root / rel)) != text
 
 
-def _guest_line_key(line: str) -> tuple:
-    """guest manifest 라인의 **마커-무관 비교 키** = (path, frozenset(markers)).
+def _added_harness_line_key(line: str) -> tuple:
+    """추가 하네스 manifest 라인의 **마커-무관 비교 키** = (path, frozenset(markers)).
 
     공백/마커 순서에 불변이라 `.opencode/agents    @render @target-owned` 와
     `.opencode/agents @target-owned @render` 를 같게 본다. 경로 집합만 비교하면 같은 경로의 **마커
@@ -305,16 +305,16 @@ def _guest_line_key(line: str) -> tuple:
     return (toks[0], frozenset(toks[1:])) if toks else ("", frozenset())
 
 
-def _guest_render_sync_plan(
-        dest_root: Path, guest_lines: list[str], adapter_dirs: tuple) -> dict:
-    """refresh 시 **이 하네스 namespace 의 guest 절 항목을 현재 flavor 와 동기화**한 계획.
+def _added_harness_render_sync_plan(
+        dest_root: Path, added_harness_lines: list[str], adapter_dirs: tuple) -> dict:
+    """refresh 시 **이 하네스 namespace 의 추가 하네스 절 항목을 현재 하네스별 판과 동기화**한 계획.
 
     반환 `{"added": [라인], "removed": [경로], "new_block": str|None, "changed": bool}`.
-    - **이 하네스 namespace(`adapter_dirs`) 항목만** 현행 목표로 교체 — 신규 추가 **+ upstream flavor 에서
-      폐기/`@render` 해제된 stale 제거**. 목표(`guest_lines`)는 렌더물과 엔진 행 **둘 다**라
-      (`_guest_manifest_lines`) 이 동기가 두 채널을 함께 최신화한다.
-    - **타 하네스 guest 항목은 불변**(다른 namespace — 순차 add 로 한 절에 공존).
-    - 목표 = `guest_lines`(flavor·이미 namespace-limited) **−** host 실소유(경로-포함
+    - **이 하네스 namespace(`adapter_dirs`) 항목만** 현행 목표로 교체 — 신규 추가 **+ upstream 하네스별 판에서
+      폐기/`@render` 해제된 stale 제거**. 목표(`added_harness_lines`)는 렌더물과 엔진 행 **둘 다**라
+      (`_added_harness_manifest_lines`) 이 동기가 두 채널을 함께 최신화한다.
+    - **타 하네스 추가 하네스 항목은 불변**(다른 namespace — 순차 add 로 한 절에 공존).
+    - 목표 = `added_harness_lines`(하네스별 판·이미 namespace-limited) **−** host 실소유(경로-포함
       `_path_owned_by`·기준 `_core_manifest_paths`). add·refresh·dry-run preview 가 이 단일 계획을 공유
       (판정 사본 0). manifest 부재는 무동작(changed=False)."""
     empty = {"added": [], "removed": [], "new_block": None, "changed": False}
@@ -322,27 +322,27 @@ def _guest_render_sync_plan(
     if not manifest.is_file():
         return empty
     text = fs.read_text_shared(manifest, encoding="utf-8")
-    block = manifest_rules._extract_guest_manifest_block(text)
+    block = manifest_rules._extract_added_harness_manifest_block(text)
     existing_lines = [
         ln.rstrip() for ln in (block.splitlines() if block else [])
         if ln.strip() and not ln.strip().startswith("#")]
 
-    # 이 하네스가 관리하는 footprint = adapter namespace ∪ **flavor `@render` 선언**(cross-ns 포함).
-    #   guest_lines 는 flavor 후보 전부(`_guest_manifest_lines`·렌더물 + 엔진 행) — 그 경로 집합이 cross-ns
+    # 이 하네스가 관리하는 footprint = adapter namespace ∪ **하네스별 판 `@render` 선언**(cross-ns 포함).
+    #   added_harness_lines 는 하네스별 판 후보 전부(`_added_harness_manifest_lines`·렌더물 + 엔진 행) — 그 경로 집합이 cross-ns
     #   의존물(opencode 의 `.claude/skills`)까지 이 하네스 소유로 판정하게 한다(경로-포함
     #   `_path_owned_by`). namespace-only 판정이면 cross-ns 항목이 target 엔 있는데 existing_this 엔 없어
     #   idempotent refresh 가 매번 changed=True(등재 churn)·타 하네스로 오분류된다(멱등 위반).
-    this_flavor_paths = {ln.split()[0] for ln in guest_lines}
+    this_variant_paths = {ln.split()[0] for ln in added_harness_lines}
 
     def _this_ns(path: str) -> bool:
-        return manifest_rules._path_owned_by(path, this_flavor_paths) or any(
+        return manifest_rules._path_owned_by(path, this_variant_paths) or any(
             path == d.rstrip("/") or path.startswith(d.rstrip("/") + "/")
             for d in adapter_dirs)
 
-    # 목표 = flavor 후보(namespace 무관·cross-ns 포함) − host 실소유. guest_lines 는 이미 flavor-declared.
+    # 목표 = 하네스별 판 후보(namespace 무관·cross-ns 포함) − host 실소유. added_harness_lines 는 이미 하네스별 판에 선언된 경로다.
     core_owned = manifest_rules._core_manifest_paths(text)
     target = sorted(
-        ln for ln in guest_lines if not manifest_rules._path_owned_by(ln.split()[0], core_owned))
+        ln for ln in added_harness_lines if not manifest_rules._path_owned_by(ln.split()[0], core_owned))
     target_paths = {ln.split()[0] for ln in target}
     existing_this_lines = [ln for ln in existing_lines if _this_ns(ln.split()[0])]
     existing_this = {ln.split()[0] for ln in existing_this_lines}
@@ -350,25 +350,25 @@ def _guest_render_sync_plan(
     added = [ln for ln in target if ln.split()[0] not in existing_this]
     removed = sorted(existing_this - target_paths)  # upstream 에서 폐기된 this-ns 경로.
     merged = sorted(set(other_ns + target), key=lambda ln: ln.split()[0])
-    new_block = (manifest_rules._GUEST_MANIFEST_BEGIN + "\n" + "\n".join(merged) + "\n"
-                 + manifest_rules._GUEST_MANIFEST_END) if merged else None
+    new_block = (manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN + "\n" + "\n".join(merged) + "\n"
+                 + manifest_rules._ADDED_HARNESS_MANIFEST_END) if merged else None
     # changed = 경로 추가/제거 **OR 마커 교정**(같은 경로·마커 상이) — 경로 집합만 보면 기존
     #   `.opencode/agents @render` → 목표 `@render @target-owned` 교정을 놓쳐 pm_update rc=2
     #   ). this-ns 기존 라인 ↔ 목표를 마커-무관 키 집합으로 비교한다(merged 는 이미 목표 마커 반영).
-    changed = ({_guest_line_key(ln) for ln in existing_this_lines}
-               != {_guest_line_key(ln) for ln in target})
+    changed = ({_added_harness_line_key(ln) for ln in existing_this_lines}
+               != {_added_harness_line_key(ln) for ln in target})
     return {"added": added, "removed": removed, "new_block": new_block, "changed": changed}
 
 
-def _append_guest_render_to_manifest(
-        dest_root: Path, guest_lines: list[str], adapter_dirs: tuple) -> dict:
-    """dest engine.manifest 의 guest 절을 이 하네스 namespace 에 대해 현재 flavor 와 **동기화**한다
+def _append_added_harness_render_to_manifest(
+        dest_root: Path, added_harness_lines: list[str], adapter_dirs: tuple) -> dict:
+    """dest engine.manifest 의 추가 하네스 절을 이 하네스 namespace 에 대해 현재 하네스별 판과 **동기화**한다
     (신규 등재 **+ 폐기 제거**·타 하네스 불변). 반환 `{"added": [라인], "removed": [경로]}`.
 
-    **단일 guest 절**(마커 하나) 아래 모든 하네스 라인이 모이고, pm_update 가 갱신마다 그 하네스의 출하
-    manifest 에서 구획을 다시 만든다. refresh 가 add-only 였으면 upstream flavor 에서 사라진 경로가 영구 render/lint
+    **단일 추가 하네스 절**(마커 하나) 아래 모든 하네스 라인이 모이고, pm_update 가 갱신마다 그 하네스의 출하
+    manifest 에서 구획을 다시 만든다. refresh 가 add-only 였으면 upstream 하네스별 판에서 사라진 경로가 영구 render/lint
     관리로 남았다. write 후 `read_manifest` **왕복 검증**(조용한 미등재 금지·RuntimeError). dest
-    manifest 부재·무변경(멱등)은 graceful skip. 계획은 `_guest_render_sync_plan`(preview 공유·판정 사본 0)."""
+    manifest 부재·무변경(멱등)은 graceful skip. 계획은 `_added_harness_render_sync_plan`(preview 공유·판정 사본 0)."""
     manifest = dest_root / ".project_manager" / "engine.manifest"
     # 경로 안전: manifest(또는 조상)가 repo-밖 지향 symlink 면 아래 read/write 가 링크를
     #   따라가 외부 파일을 노출/덮는다 — **fail-loud**(조용한 skip 아님). 부분 적용 방지는 add_harness 의
@@ -382,24 +382,24 @@ def _append_guest_render_to_manifest(
         print("  ⚠️ engine.manifest 부재 — 추가 하네스 어댑터가 복사됐으나 render/lint 관리 밖입니다 "
               "(manifest-파생 등재 채널 없음).", file=sys.stderr)
         return {"added": [], "removed": []}
-    plan = _guest_render_sync_plan(dest_root, guest_lines, adapter_dirs)
+    plan = _added_harness_render_sync_plan(dest_root, added_harness_lines, adapter_dirs)
     if not plan["changed"]:
         return {"added": [], "removed": []}  # 멱등 — 이미 동기(재실행 refresh)
     # 판정(절 스트립·블록 조립)은 LF 본문으로, 쓰기는 **이 manifest 의 현재 표기**로 한다 —
-    #   CRLF 체크아웃(Windows `core.autocrlf=true`)에서 LF 로 되쓰면 우리가 append 한 guest 절
+    #   CRLF 체크아웃(Windows `core.autocrlf=true`)에서 LF 로 되쓰면 우리가 append 한 추가 하네스 절
     #   말고도 파일 전체가 뒤집혀 append-only byte 불변식이 깨진다.
     text, newline = install_files.read_text_preserving_newline(manifest)
-    stripped = manifest_rules._strip_guest_manifest_block(text)
+    stripped = manifest_rules._strip_added_harness_manifest_block(text)
     if plan["new_block"]:
         if stripped and not stripped.endswith("\n"):
             stripped += "\n"
         install_files.write_text_preserving_newline(
             manifest, stripped + "\n" + plan["new_block"] + "\n", newline)
     else:
-        # this-ns guest 전량 폐기·타 하네스도 0 → 절 제거.
+        # this-ns 추가 하네스 전량 폐기·타 하네스도 0 → 절 제거.
         install_files.write_text_preserving_newline(manifest, stripped, newline)
     # read_manifest 왕복 검증 (fail-loud·추가분 반영). 대조는 **등재 경로 전량**이다 —
-    #   `@render` 로 좁히면 guest 절의 엔진 행(비-render·update 채널)이 매번 미반영으로 오판된다.
+    #   `@render` 로 좁히면 추가 하네스 절의 엔진 행(비-render·update 채널)이 매번 미반영으로 오판된다.
     after = {str(e).replace("\\", "/") for e in manifest_store.read_manifest(manifest)}
     missing = [ln.split()[0] for ln in plan["added"] if ln.split()[0] not in after]
     if missing:
@@ -418,15 +418,15 @@ def add_harness(
 ) -> list[install_files.CopyAction]:
     """라이브 인스턴스에 두 번째 harness 어댑터를 비파괴로 추가한다.
 
-    스코프 = *추가되는 harness 의 어댑터 네임스페이스 ∪ guest flavor `@render` 선언*(ADD_HARNESS_ADAPTER·
+    스코프 = *추가되는 harness 의 어댑터 네임스페이스 ∪ 추가 하네스의 판 `@render` 선언*(ADD_HARNESS_ADAPTER·
     host 실소유: opencode=`.opencode/**`+`AGENTS.md`(+codex host 엔
     cross-ns `.claude/skills` — opencode 네이티브 소비), claude=`.claude/**`(host-소유 제외)+
     `CLAUDE.md`. **제외**(plan 에 애초에 없음→clobber 불가): `.project_manager/**`(엔진+wiki dev-state)·
-    `engine.manifest`·`.gitignore`·`.gitattributes`·`.github/**`·루트 파사드·다른 harness·flavor 미선언.
+    `engine.manifest`·`.gitignore`·`.gitattributes`·`.github/**`·루트 파사드·다른 harness·하네스별 판 미선언.
 
     구현: `plan_copy` 로 전체 어댑터 트리 plan 을 만든 뒤 `_in_adapter_namespace` predicate(네임스페이스
-    ∪ flavor `@render` − host 실소유)로 **구조적으로 좁힌다** — 반환·적용 plan 에 flavor 미선언 relpath 가
-    0개다(Decision 5 불변식·cross-ns 의존물은 flavor 선언이라 허용).
+    ∪ 하네스별 판 `@render` − host 실소유)로 **구조적으로 좁힌다** — 반환·적용 plan 에 하네스별 판 미선언 relpath 가
+    0개다(Decision 5 불변식·cross-ns 의존물은 하네스별 판 선언이라 허용).
     첫 add=신규 복사(무손실)·재실행=refresh(엔진 관리 어댑터 파일은 중앙 백업 후 덮음·
     instance-owned config는 create-if-absent 보존·`--into` 백업 철학). fill(LLM) 불요 — operational 토큰 치환(substitute_placeholders)·opencode
     모델 결정적 해소(resolve_opencode_model)·자유서술 TODO 표시(_run_manual_fill·비-LLM)만.
@@ -453,8 +453,9 @@ def add_harness(
             f"add_harness: dest 가 존재하는 라이브 인스턴스 디렉토리가 아니다: {dest_root}"
         )
     # engine.manifest 경로 안전 검증 (**복사 시작 전** fail-loud): manifest(또는 조상)가
-    #   repo-밖 지향 symlink 면 이후 read(`_dest_manifest_core_paths`)·write(`_append_guest_render_to_
-    #   manifest`)가 링크를 따라가 외부 파일을 노출/덮는다. 불안전이면 어떤 복사·등재도 시작하지 않는다
+    #   repo-밖 지향 symlink 면 이후 read(`_dest_manifest_core_paths`)·
+    #   write(`_append_added_harness_render_to_manifest`)가 링크를 따라가 외부 파일을 노출/덮는다.
+    #   불안전이면 어떤 복사·등재도 시작하지 않는다
     #   (부분 적용 0). 읽기·쓰기 지점이 같은 경로라 이 단일 가드가 양쪽을 덮는다.
     if not install_files._is_safe_dest_path(dest_root, Path(".project_manager") / "engine.manifest"):
         raise install_files.UnsafeDestPathError(
@@ -474,7 +475,7 @@ def add_harness(
         if candidate in {*preexisting_harnesses, harness}
     )
     # 미등록 표기 하네스는 **복사 시작 전** 거부한다 — 렌더 단계에서 터지면 부분 설치가 남는다
-    #   (main import 게이트와 같은 성질·같은 문구). ValueError 라 add_harness_cli 가 친화
+    #   (main import 검사와 같은 성질·같은 문구). ValueError 라 add_harness_cli 가 친화
     #   메시지 + rc1 로 번역한다(traceback 0).
     unregistered_notation = import_render.unregistered_skill_notation_template_dirs(home,
         [install_rules.HARNESS_TEMPLATE_DIRS[name][0] for name in selected_harnesses])
@@ -509,29 +510,29 @@ def add_harness(
     )
     # main import 와 같은 규칙 — AGENTS.md 는 manifest 미등재라 소유자 매칭으로 context 가 안
     #   나오고, 독자는 이 진입문서를 읽는 하네스 부분집합이다. 단일 멤버여도 명시 전달한다
-    #   (조용한 skip 0·단일이면 그 하네스 표기라 출하 형상에선 no-op).
+    #   (조용한 skip 0·단일이면 그 하네스 표기라 출하 구성에선 no-op).
     if selected_shared_agents:
         entry_notation_templates["AGENTS.md"] = selected_shared_agents
 
     adapter_dirs, root_doc = install_rules.ADD_HARNESS_ADAPTER[harness]
     # 스코프 표시 문자열 — dirs 튜플을 `d/**` 로 합친다(codex=`.codex/** + .agents/**`·단일은 그대로).
     adapter_scope = " + ".join(f"{d}/**" for d in adapter_dirs)
-    # 복사/등재 차감 기준 = **dest(host) 실소유 경로** (guest 절 제외).
-    # 판정(`_engine_render_relpaths`)은 *guest flavor* 관점이라 bare `@render` 를 전부 native 로 봐
-    # **claude-as-guest**(codex/opencode host 에 claude 추가)를 놓쳤다 — claude flavor 의 `.claude/agents`·
+    # 복사/등재 차감 기준 = **dest(host) 실소유 경로** (추가 하네스 절 제외).
+    # 판정(`_engine_render_relpaths`)은 *추가 하네스의 판* 관점이라 bare `@render` 를 전부 native 로 봐
+    # **claude 추가 하네스**(codex/opencode host 에 claude 추가)를 놓쳤다 — claude 하네스별 판의 `.claude/agents`·
     # `.claude/skills` bare @render 가 native 로 차감돼 복사·등재 0 → pm_update 영구 관리 불능. host 가
-    # *실제로* 소유(pm_update 관리)하는 경로만 빼고 나머지는 guest 로 레이다운/등재한다(경로-포함
+    # *실제로* 소유(pm_update 관리)하는 경로만 빼고 나머지는 추가 하네스로 레이다운/등재한다(경로-포함
     # `_path_owned_by`/`_is_render_managed`). opencode host 의 `.claude/skills`(native 소비)처럼
     # host 가 이미 가진 것만 정확히 빠진다.
     dest_owned = install_source._dest_manifest_core_paths(dest_root)
-    # guest flavor 가 `@render` 로 선언한 경로 전부 (cross-ns 의존물 포함) — 복사 스코프가
+    # 추가 하네스의 판이 `@render` 로 선언한 경로 전부 (cross-ns 의존물 포함) — 복사 스코프가
     # namespace 밖이라도 이걸 포함해야 opencode 의 `.claude/skills`(codex host 미소유)가 복사·
-    # 렌더된다(그래야 등재된 guest @render 를 render_managed_files 가 실제 파일에 적용). host 실소유
+    # 렌더된다(그래야 등재된 추가 하네스 @render 를 render_managed_files 가 실제 파일에 적용). host 실소유
     # (dest_owned)는 아래 `_in_adapter_namespace` 가 그 위에서 차감한다(claude host 는 미복사 유지).
-    guest_render_paths = install_source._flavor_render_relpaths(template_root)
+    added_harness_render_paths = install_source._variant_render_relpaths(template_root)
 
     today = datetime.date.today().isoformat()
-    # refresh(재실행)는 네임스페이스 안 기존 어댑터를 중앙 디렉토리에 백업 후 덮는다(--into 동형).
+    # refresh(재실행)는 네임스페이스 안 기존 어댑터를 중앙 디렉토리에 백업 후 덮는다(--into 와 같은 방식).
     # 첫 add 는 신규라 백업 없음. git 추적&미변경은 백업 생략(git 복원 가능).
     backup_root = dest_root / install_rules.BACKUP_DIR_NAME / today
     git_safe = install_git.git_safe_relpaths(dest_root)
@@ -540,7 +541,7 @@ def add_harness(
     #   fail-loud·부분 적용 0) dry-run 표시·백업 범위에 싣는다. 후보는 두 부류다:
     #   manifest 소유 공유 문서(다중 하네스) + **manifest 미소유 출하 wiki seed**. 후자를 빼면
     #   claude 인스턴스에 codex 를 얹었을 때 `wiki/raw/README.md` 가 canonical slash 로 남아
-    #   최초 설치 경로에서 닫은 조용한 degrade 가 이 경로로 되살아난다(add-harness 축 실측).
+    #   최초 설치 경로에서 닫은 조용한 degrade 가 이 경로로 되살아난다(add-harness 쪽 실측).
     installed_notation_context = tuple(
         install_rules.HARNESS_TEMPLATE_DIRS[name][0] for name in selected_harnesses)
     rerender_contexts = _notation_rerender_contexts(
@@ -557,8 +558,8 @@ def add_harness(
         home,
         dest_root, rerender_contexts, backup_root, git_safe, root_identity=root_identity)
 
-    # 전체 어댑터 트리 plan → (네임스페이스 ∪ flavor `@render` − host 실소유)로 구조적 제한(Decision 2·5·
-    # ). 그 밖(엔진·wiki·타 harness·설정·파사드·flavor 미선언)은 필터로 제거돼 plan 에 0개다(불변식).
+    # 전체 어댑터 트리 plan → (네임스페이스 ∪ 하네스별 판 `@render` − host 실소유)로 구조적 제한(Decision 2·5·
+    # ). 그 밖(엔진·wiki·타 harness·설정·파사드·하네스별 판 미선언)은 필터로 제거돼 plan 에 0개다(불변식).
     create_if_absent = install_rules.ADD_HARNESS_CREATE_IF_ABSENT[harness]
     skipped_existing, preserved_different = _existing_create_if_absent_relpaths(
         template_root, dest_root, create_if_absent,
@@ -568,7 +569,7 @@ def add_harness(
         [template_root], dest_root, backup_root, "full", git_safe=git_safe,
         skip_existing_relpaths=skipped_existing,
         include_relpath=lambda rel: install_rules._in_adapter_namespace(
-            rel, adapter_dirs, root_doc, dest_owned, guest_render_paths), backup_dir_name=install_rules.BACKUP_DIR_NAME,
+            rel, adapter_dirs, root_doc, dest_owned, added_harness_render_paths), backup_dir_name=install_rules.BACKUP_DIR_NAME,
     )
 
     # 복사 plan 이 이미 실을 경로는 재렌더 목록에서 뺀다 — 그쪽이 CopyAction 백업 + render 를
@@ -601,11 +602,11 @@ def add_harness(
               "다시 실행하세요.", file=sys.stderr)
 
     if dry_run:
-        # engine.manifest guest `@render` 동기 미리보기 — 추가/제거 예정 둘 다(실제 sync 와 같은 계획·
-        #   `_guest_render_sync_plan` 공유·멱등이면 0건).
-        gsync = _guest_render_sync_plan(
+        # engine.manifest 추가 하네스 `@render` 동기 미리보기 — 추가/제거 예정 둘 다(실제 sync 와 같은 계획·
+        #   `_added_harness_render_sync_plan` 공유·멱등이면 0건).
+        gsync = _added_harness_render_sync_plan(
             dest_root,
-            install_source._guest_manifest_lines(template_root, adapter_dirs, root_doc, dest_owned),
+            install_source._added_harness_manifest_lines(template_root, adapter_dirs, root_doc, dest_owned),
             adapter_dirs)
         if gsync["added"]:
             print(f"  engine.manifest 추가 하네스 절 등재 예정 ({len(gsync['added'])}건):")
@@ -618,10 +619,10 @@ def add_harness(
         print("[dry-run] 적용 안 함 (파일시스템 미변경).")
         return plan
 
-    # ── 적용 ── 스코프(네임스페이스 ∪ flavor `@render` − host 실소유) 안 파일만 복사·토큰 처리
+    # ── 적용 ── 스코프(네임스페이스 ∪ 하네스별 판 `@render` − host 실소유) 안 파일만 복사·토큰 처리
     #   (스코프 밖은 plan 에 없어 불가침).
     # 복사 **직전** 루트 재확인 — 뒤에 두면 첫 mkdir/쓰기가 이미 교체된 트리에 들어간다.
-    #   fd 가드는 *열 파일이 있을 때만* 발화하므로 단계 경계 검사가 false-green(대응 경로 없는
+    #   fd 가드는 *열 파일이 있을 때만* 돌므로 단계 경계 검사가 false-green(대응 경로 없는
     #   교체 트리에서 아무 일도 안 하고 rc0)까지 막는다.
     install_files.assert_dest_root_unchanged(dest_root, root_identity)
     # 파일 단위 위반(경로 교체·계획 뒤 상태 변화)은 그 파일만 빼고 loud 로 알린다 — 적용 단계
@@ -629,24 +630,24 @@ def add_harness(
     copy_outcome = install_files.apply_copy_plan(plan, dest_root, root_identity=root_identity)
     install_files.report_copy_apply_anomalies(copy_outcome)
     copied_relpaths = set(copy_outcome.copied)
-    # guest 어댑터를 dest engine.manifest 에 멱등 등재(렌더물 `@render` + **엔진 행**) —
+    # 추가 하네스 어댑터를 dest engine.manifest 에 멱등 등재(렌더물 `@render` + **엔진 행**) —
     # 인스턴스 manifest 가 "이 인스턴스에서 framework-managed 인 것"의 단일 진실이 되어, 아래
-    # render_managed_files 와 manifest-파생 overlay 스캔이 guest 를 자연 커버하고, 엔진 행은
+    # render_managed_files 와 manifest-파생 overlay 스캔이 추가 하네스를 자연 커버하고, 엔진 행은
     # pm_update 전파 채널을 얻는다(등재 없으면 설치 시점 사본으로 영구 동결).
-    # **render 전에** 등재해야 이번 run 의 render_managed_files 가 guest 를 집는다.
-    guest_sync = _append_guest_render_to_manifest(
+    # **render 전에** 등재해야 이번 run 의 render_managed_files 가 추가 하네스를 집는다.
+    added_harness_sync = _append_added_harness_render_to_manifest(
         dest_root,
-        install_source._guest_manifest_lines(template_root, adapter_dirs, root_doc, dest_owned),
+        install_source._added_harness_manifest_lines(template_root, adapter_dirs, root_doc, dest_owned),
         adapter_dirs)
-    if guest_sync["added"]:
-        print(f"  ✓ engine.manifest 추가 하네스 절 {len(guest_sync['added'])}건 등재: "
-              f"{', '.join(ln.split()[0] for ln in guest_sync['added'])}")
-    if guest_sync["removed"]:
-        print(f"  ✓ engine.manifest 추가 하네스 절 {len(guest_sync['removed'])}건 제거(폐기 동기): "
-              f"{', '.join(guest_sync['removed'])}")
+    if added_harness_sync["added"]:
+        print(f"  ✓ engine.manifest 추가 하네스 절 {len(added_harness_sync['added'])}건 등재: "
+              f"{', '.join(ln.split()[0] for ln in added_harness_sync['added'])}")
+    if added_harness_sync["removed"]:
+        print(f"  ✓ engine.manifest 추가 하네스 절 {len(added_harness_sync['removed'])}건 제거(폐기 동기): "
+              f"{', '.join(added_harness_sync['removed'])}")
     # 이번 하네스 template 과 **byte-identical 이라 복사만 생략된**
     #   파일만 처리 대상에 추가한다 — token-form 그대로라 미렌더(토큰 잔존) 잔존의 유일 대상. 경로는
-    #   template(신뢰)에서 오고 안전 검증(`_is_safe_dest_path`)을 거치며, 타 guest·adopter 자체
+    #   template(신뢰)에서 오고 안전 검증(`_is_safe_dest_path`)을 거치며, 타 추가 하네스·adopter 자체
     #   생성 파일(내용 상이·copied)은 제외된다(과확장 봉쇄). 기존 렌더 파이프 재사용.
     proc_relpaths = copied_relpaths | install_files._byte_identical_skipped(
         template_root, dest_root, copied_relpaths, adapter_dirs,
@@ -681,7 +682,7 @@ def add_harness(
     #   자유서술 토큰에 TODO 마커가 붙는다(콘텐츠 훼손·실측). 이번 run 이 *복사한* 파일만
     #   치환·fill 대상이라는 비파괴 범위(MF1)는 그대로 둔다.
     render_relpaths = proc_relpaths | set(shared_rerender_relpaths)
-    # 라이브 인스턴스의 project_name 은 기존 local.conf 를 존중(없으면 디렉토리명 폴백).
+    # 라이브 인스턴스의 project_name 은 기존 local.conf 를 존중(없으면 디렉토리명을 대신 쓴다).
     project_name = install_conf._instance_project_name(dest_root)
     subs = import_render._substitution_map(project_name, dest_root, today)
     n_subst = import_render.substitute_placeholders(dest_root, subs, proc_relpaths,
@@ -689,8 +690,8 @@ def add_harness(
     # opencode 모델 토큰 결정적 해소(claude-only 는 inactive) — main 흐름과 동일.
     import_fill.resolve_opencode_model(home, dest_root, proc_relpaths, model_arg=None,
                            root_identity=root_identity)
-    # render_managed_files 는 dest 인스턴스 engine.manifest 의 @render path 만 렌더한다 — 위에서 guest
-    # `@render` 를 dest manifest 에 등재했으므로 guest 어댑터도 렌더된다.
+    # render_managed_files 는 dest 인스턴스 engine.manifest 의 @render path 만 렌더한다 — 위에서 추가 하네스
+    # `@render` 를 dest manifest 에 등재했으므로 추가 하네스 어댑터도 렌더된다.
     import_render.render_managed_files(
         home,
         dest_root,
@@ -699,14 +700,14 @@ def add_harness(
         root_identity=root_identity,
         entry_notation_templates=entry_notation_templates,
         # manifest 미소유 wiki seed 는 소유자 매칭으로 context 가 안 나온다 — 설치 하네스 전체를
-        #   폴백 컨텍스트로 넘겨야 위 재렌더 대상이 실제로 병기 표기를 받는다(최초 설치와 같은 채널).
+        #   대체 동작 컨텍스트로 넘겨야 위 재렌더 대상이 실제로 병기 표기를 받는다(최초 설치와 같은 채널).
         installed_notation_context=installed_notation_context,
     )
     # 자유서술 placeholder 는 TODO 표시(비-LLM·main manual 흐름과 동일).
     install_files.assert_dest_root_unchanged(dest_root, root_identity)  # 단계 경계 재확인(위와 같은 이유).
     import_fill._run_manual_fill(dest_root, proc_relpaths, root_identity=root_identity)
     # 설치 기록 — 이번에 추가한 하네스 ∪ 이미 설치돼 있던 하네스(`selected_harnesses`) 중 **실제로
-    #   어댑터가 선 것만** 박제한다(적용 단계에서 전부 제외됐으면 기록이 유령을 만든다). 이후 판정은
+    #   어댑터가 선 것만** 기록한다(적용 단계에서 전부 제외됐으면 기록이 유령을 만든다). 이후 판정은
     #   이 기록을 진실로 쓰므로 판별자 파일이 사라져도 독자 집합이 유실되지 않고, 기록이 없던 구
     #   인스턴스는 여기서 backfill 된다(그 시점 추론 산출이 합집합에 이미 들어 있다).
     recordable, unestablished = install_receipt.established_harnesses(
@@ -721,16 +722,16 @@ def add_harness(
             template_coordinates=template_coordinates):
         print(f"  ✓ 설치 기록 갱신 ({install_receipt.INSTALL_RECEIPT_RELPATH.as_posix()}): "
               f"{', '.join(recordable)}")
-    # instance-owned config 원장 — **레이다운/보존 판정 직후**가 기록 시점이다. 방금 내려놓은
+    # instance-owned config 의 어댑터 설정 기록 — **레이다운/보존 판정 직후**가 기록 시점이다. 방금 내려놓은
     #   (또는 기존 값이 template 과 같음을 확인한) 파일만 들어가고, 보존된 편집분은 안 들어간다
-    #   (원장 부재 = 다음 동기가 보고 모드 = 안전 기본값).
+    #   (기록 없음 = 다음 동기가 보고 모드 = 안전 기본값).
     baselined = adapter_accept.record_adapter_baseline(
         dest_root, src_root, recordable, root_identity=root_identity)
     if baselined:
         print(f"  ✓ 어댑터 설정 기록 ({adapter_baseline.ADAPTER_BASELINE_RELPATH.as_posix()}): "
               f"{', '.join(baselined)}")
-    # 하네스 사용 한도 반영 — 원장 기록 **뒤**라야 방금 내려놓은 설정 파일이 무편집으로 증언되고
-    #   반영 뒤에도 그 판정이 유지된다(`apply_harness_ctx` 원장 규칙). 검사 거부는 ValueError 라
+    # 하네스 사용 한도 반영 — 어댑터 설정 기록을 적은 **뒤**라야 방금 내려놓은 설정 파일이 무편집으로 증언되고
+    #   반영 뒤에도 그 판정이 유지된다(`apply_harness_ctx` 의 기록 규칙). 검사 거부는 ValueError 라
     #   `add_harness_cli` 가 rc 1 로 번역한다.
     harness_ctx._print_harness_ctx_apply(dest_root)
     # 실복사 수를 보고한다(계획 수 아님) — 제외가 있었으면 위 요약이 사유를 이미 말한다.
@@ -768,7 +769,7 @@ def add_harness_cli(
     앞 다섯(ValueError·FileNotFoundError·UpstreamCacheError·FileVsDirConflict·AncestorConflict)과
     `EmptyTemplateShippingInventoryError` 는 add_harness 가 *복사 전*(plan_copy·
     resolve_template_roots·소스 해소·입구 검증)에 던지므로 부분 적용 없이 깨끗한 `오류: …`(stderr) + rc 1 로
-    끝난다(traceback 0·main 동형). **`UnsafeDestPathError` 는 복사 전(계획 경로 안전 가드)뿐 아니라
+    끝난다(traceback 0·main 과 같은 방식). **`UnsafeDestPathError` 는 복사 전(계획 경로 안전 가드)뿐 아니라
     복사 *중*(`CopyAction.run` 의 fd 가드 — 계획 뒤 조상·목적지 교체)에도 나올 수 있다**: 그때는
     그 시점까지의 복사가 남지만 저장소 밖 쓰기는 0이고, 사람이 정리한 뒤 재실행하면 된다.
     `DestRootSwappedError` 도 적용 중에 나올 수 있으며 그 중단은 부분 적용이 아니라 **오염

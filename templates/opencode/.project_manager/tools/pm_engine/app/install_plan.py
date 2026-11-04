@@ -88,7 +88,7 @@ def plan_copy(
             src = source_overrides.get((template_root, rel), src)
             # add_harness처럼 전체 template 중 일부 namespace만 배포할 때는, 범위 밖 파일의
             # conflict/backup/ancestor safety 검증도 만들지 않는다. 최종 action 필터보다 앞에 둬
-            # 무관한 engine 파일이 backup root 검증을 발화시키지 않게 한다.
+            # 무관한 engine 파일이 backup root 검증을 돌리지 않게 한다.
             if include_relpath is not None and not include_relpath(rel):
                 continue
             if rel in seen:
@@ -97,7 +97,7 @@ def plan_copy(
                     # 공유 엔진 등 byte-identical — 한 번만 복사(정상).
                     continue
                 if rel.as_posix() == ".project_manager/engine.manifest":
-                    # 직후 선택 flavor manifest 합집합으로 교체된다. 첫 tree가 최종 결과라는
+                    # 직후 선택 하네스별 판 manifest 합집합으로 교체된다. 첫 tree가 최종 결과라는
                     # 일반 충돌 문구를 내면 사용자에게 거짓을 말하므로 여기서는 경고하지 않는다.
                     continue
                 # 내용이 다른 중복 — 첫 트리(우선) 채택을 명시적으로 경고.
@@ -183,7 +183,7 @@ def _prepare_selected_manifest_union(template_roots: list[Path]) -> dict | None:
 
 
 def _warn_selected_manifest_union_conflicts(merged: dict | None) -> None:
-    """manifest 합집합의 실제 marker 충돌만 stderr에 표면화한다.
+    """manifest 합집합의 실제 marker 충돌만 stderr에 드러낸다.
 
     서로 다른 경로를 선언한 정상 합집합은 ``conflicts``가 비어 완전 무소음이다. 같은 관리 경로의
     @render/@target-owned/@source 의미가 다를 때만 merge 결과가 넣은 경로를 소비한다.
@@ -205,7 +205,7 @@ def _selected_entry_doc_source_overrides(
 ) -> dict[tuple[Path, Path], Path]:
     """공유 자동-load 진입 doc의 조합별 중립 source override를 만든다.
 
-    정책은 ``NEUTRAL_SHARED_ENTRY_DOCS`` 선언만 소비한다. 그룹 전원이 선택됐을 때만 발화하므로
+    정책은 ``NEUTRAL_SHARED_ENTRY_DOCS`` 선언만 소비한다. 그룹 전원이 선택됐을 때만 돌므로
     단일 하네스의 full/lite 선택은 기존 동작을 보존한다.
     """
     selected = set(selected_harnesses)
@@ -224,7 +224,7 @@ def _selected_entry_doc_source_overrides(
             lite_source = neutral_source.with_name(
                 f"{neutral_source.stem}.lite{neutral_source.suffix}"
             )
-            # lite 변종 부재는 선언된 full 호환 폴백이다. 현행 중립 트리에 변종이 없어 정상
+            # lite 변종 부재는 선언된 full 호환 대체 동작이다. 현행 중립 트리에 변종이 없어 정상
             # 조합마다 경고하면 기존 무소음 계약을 깨므로, 실제 선택 source로만 관측 가능하게 둔다.
             if lite_source.is_file() and not lite_source.is_symlink():
                 neutral_source = lite_source

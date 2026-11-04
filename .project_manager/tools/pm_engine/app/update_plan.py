@@ -61,7 +61,7 @@ def plan(
     으로 판정할 수 있다(경로 스코프의 오타 검출 — 별도 재열거 없이 같은 열거를 재사용).
 
     ``dest_inventory_out``은 같은 열거의 **dest 좌표만** 모은다. 은퇴 판정처럼 dest 잔존물과 대조하는
-    소비자는 상류 좌표가 섞이면 우연한 문자열 일치로 후보를 놓치므로(false negative) 좌표축을 나눈다.
+    소비자는 상류 좌표가 섞이면 우연한 문자열 일치로 후보를 놓치므로(false negative) 좌표계를 나눈다.
 
     ``manifest_source_text``는 사본에 쓸 engine.manifest 전문이다(`update_manifest.shipped_manifest`).
     주면 self-prop 행(`.project_manager/engine.manifest`)은 그 전문과 사본 파일을 비교해 계획한다.
@@ -160,7 +160,7 @@ def plan(
             # render 대상 판정 = @render manifest 선언 + **텍스트로 읽히는가**.
             # 옛 `.md` 확장자 하드 필터는 제거했다: 확장자 열거는 manifest 선언을 덮는 중복
             # 판정이라, codex 가 들여온 `.codex/agents/*.toml`(@render 선언 O)이 byte-copy 로
-            # 새어 채택자 트리에 `{{PROJECT_NAME}}` 리터럴을 재전파했다(pm_import 와 동형 결함·
+            # 새어 채택자 트리에 `{{PROJECT_NAME}}` 리터럴을 재전파했다(pm_import 와 같은 결함·
             # 두 채널을 함께 닫는다). 텍스트 아님(바이너리 리소스)은 여전히 byte-copy 로 남는다.
             text_source = update_render._is_text_source(sp)
             file_render = render and text_source
@@ -239,9 +239,9 @@ def plan(
                 )
                 and rendered_entry is not None
             ):
-                # 대조 축은 전면 렌더 분기와 **같은 헬퍼**다 — 여기만 raw bytes 로 보면 CRLF
+                # 대조 방식은 전면 렌더 분기와 **같은 헬퍼**다 — 여기만 raw bytes 로 보면 CRLF
                 #   체크아웃에서 내용 동일 파일이 매 실행 update 로 계획된다(쓰기는 표기 보존이라
-                #   수렴 불가).
+                #   일치 불가).
                 if not update_render._rendered_text_matches_dest(rendered_entry, dst):
                     changes.append((r, sp, dst, "update"))
             elif not filecmp.cmp(sp, dst, shallow=False):
@@ -255,10 +255,10 @@ def _engine_package_inventory(
     """정확한 엔진 패키지 행과 그 아래 자식 행의 실제 출하 목록 — (files, missing).
 
     files 는 (패키지 상대경로, 실제 source Path) 의 정렬 tuple 이고, missing 은 source 가 없는 manifest
-    좌표다. tracked-only 열거·`@source`·가장 구체적인 소유권·dest 리매핑은 `manifest_store` seam 이
+    좌표다. tracked-only 열거·`@source`·가장 구체적인 소유권·dest 리매핑은 `manifest_store` 공용 함수가
     정한다(자식 override 도 그대로 따른다). 패키지 구간에서만 tracked 제외 경고를 명시 실패로 올린다 —
     불완전한 목록으로 기존 패키지를 통째로 바꾸면 빠진 모듈이 지워진다. 패키지 코드에는 순수 byte
-    출하만 있으므로 `@render`·`@target-owned` 표식도 쓰기 전에 거부한다. 거부는 모두
+    출하만 있으므로 `@render`·`@target-owned` 표시도 쓰기 전에 거부한다. 거부는 모두
     `PackageReplaceError(phase="validation")` 다."""
     package_rel = manifest_rules._ENGINE_PACKAGE_REL
     dest_dir = dest_root / package_rel
@@ -299,7 +299,7 @@ def _engine_package_inventory(
 
 
 class _EngineSyncNotationContextError(RuntimeError):
-    """선택된 flavor manifest 에서 notation 템플릿 context 를 해소하지 못함 — 원본 사유를 감싼다.
+    """선택된 하네스별 판 manifest 에서 notation 템플릿 context 를 해소하지 못함 — 원본 사유를 감싼다.
 
     `plan()` 자신이 낼 수 있는 다른 `RuntimeError`(예 `EmptyShippingInventoryError`)와 구분되는
     전용 타입이다 — 호출부(`_main`·`drift_changes`)가 "notation context 실패"만 좁게 받아 처리
@@ -319,7 +319,7 @@ def _resolve_engine_sync_plan(
 
 ) -> dict:
     """계획 manifest → notation 템플릿 해소 → `plan()` 을 한 호출로 묶어 반환하는 **구조화 계획**.
-    `_main`(self-update·`--target` export 공용)과 드리프트 게이트(`drift_changes`)가 이 함수를 실제로
+    `_main`(self-update·`--target` export 공용)과 드리프트 검사(`drift_changes`)가 이 함수를 실제로
     공동 호출한다 — 별도 diff/계획 구현을 두지 않는다. 출력은 없다.
     `conf` 는 `plan()` 의 render path 판정 값이다(저장 `apply_conf` 는 쓰기 전의 제안 값을 넘긴다).
 
@@ -356,8 +356,8 @@ def _resolve_engine_sync_plan(
             effective_dest, source_root, shipped["manifests"])
 
     # --target은 operational 전체 render를 끄되 @render 경로의 호출 표기 토큰만 target 이름으로
-    # 조건부 렌더한다. adopter self-update는 선택된 flavor manifest 경로에서 같은 context를 파생한다.
-    # root canonical manifest는 flavor template가 아니므로 None(기존 `/` token-form 유지).
+    # 조건부 렌더한다. adopter self-update는 선택된 하네스별 판 manifest 경로에서 같은 context를 파생한다.
+    # root canonical manifest는 하네스별 판 template가 아니므로 None(기존 `/` token-form 유지).
     try:
         entry_notation_templates = manifest_store._entry_notation_templates_from_manifests(
             notation_manifests, source_root)
@@ -395,18 +395,18 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
     함수**)으로 간다 — 별도 diff 알고리즘을 두지 않는다(render 설정·notation 인자도
     dry-run 과 동일하게 태운다).
 
-    판정 불능(`None`) — 아래는 전부 같은 "이 형상엔 게이트가 적용되지 않는다"로 수렴한다(거부가
+    판정 불능(`None`) — 아래는 전부 같은 "이 경우엔 검사가 적용되지 않는다"로 모인다(거부가
     아니라 무판정):
       - `local.conf` 자체가 없음(빈 dict 로드 → upstream 키도 없음)
       - upstream 키가 비어 있음(미등록)
-      - upstream 이 URL(릴리스 추적 기본값) — 이 게이트는 lint 경로라 **네트워크 0** 을 유지한다
+      - upstream 이 URL(릴리스 추적 기본값) — 이 검사는 lint 경로라 **네트워크 0** 을 유지한다
         (`pm-config update` 의 URL 캐시를 여기로 넓히지 않는다 — lint 가 네트워크에 의존하게 된다).
-        URL 형상의 실제 흡수는 `pm-update` 가 캐시로 수행한다.
+        URL 인 경우의 실제 갱신 반영은 `pm-update` 가 캐시로 수행한다.
       - upstream 경로가 디렉토리로 존재하지 않음(이동/삭제)
       - manifest 부재(engine_root·source_root 양쪽 다 `engine.manifest` 없음)
-      - 선택된 flavor manifest 를 읽을 수 없음(notation context 해소 실패)
+      - 선택된 하네스별 판 manifest 를 읽을 수 없음(notation context 해소 실패)
       - manifest 등재 source 가 non-`@target-owned` 인데 upstream 에 없음(missing>0) — 확정
-        drift 0 과 판정 불능을 구분한다(버리면 그 형상을 drift 0 으로 오판하는 false-green).
+        drift 0 과 판정 불능을 구분한다(버리면 그 경우를 drift 0 으로 오판하는 false-green).
 
     출력·부작용 0(stdout·파일 쓰기) — `_resolve_engine_sync_plan` 은 출력하지 않는다.
     """
@@ -422,7 +422,7 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
     if not source_root.is_dir():
         return None
     try:
-        # 엔진 코드 행을 먼저 본다 — 엔진 코드가 뒤처진 트리에서 설치 렌더러로 다음 세대 템플릿을
+        # 엔진 코드 행을 먼저 본다 — 엔진 코드가 뒤처진 트리에서 설치 렌더러로 다음 버전 템플릿을
         #   판정하면 그 렌더가 실패한다. 엔진 코드 변경이 있으면 그 목록이 곧 drift 다.
         engine = _engine_code_plan(home, engine_root, source_root)
         if engine["missing"]:
@@ -439,7 +439,7 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
         # `@target-owned` 항목의 source 부재는 정상(타깃 고유 어댑터·엔진 upstream 에 없음) — `_main`
         #   의 skip 판별과 같은 술어(`_entry_target_owned_flag`)를 쓴다(별도 판정 사본 없음). 그 밖의
         #   (non-`@target-owned`) 부재만 판정 불능이다 — 여기까지 `@target-owned` 를 섞으면 정상
-        #   self-update 형상(cross-flavor 어댑터 보유)도 과도하게 "판정 불능" 으로 접힌다.
+        #   self-update 경우(다른 하네스별 판 어댑터 보유)도 과도하게 "판정 불능" 으로 바뀐다.
         owned = {str(entry): manifest_rules._entry_target_owned_flag(entry) for entry in sync_plan["manifest"]}
         if any(not owned.get(rel, False) for rel in missing):
             return None
@@ -450,9 +450,9 @@ def _engine_code_plan(home, effective_dest: Path, source_root: Path) -> dict:
     """엔진 코드 행의 계획 — `{"changes", "missing", "manifest", "shipped", "package_plan"}`.
 
     계획 manifest 는 완료 단계와 같은 규칙(`update_manifest.shipped_manifest`)이고, 계획은 엔진 코드 행만
-    렌더 없이 한다(엔진 코드 행에는 표식이 없어 렌더러를 읽지 않는다). 전달 프로세스가 옮길 대상이고,
-    board 드리프트 검사(`drift_changes`)가 먼저 보는 축이다. `manifest` 는 계획 manifest 전체다(부재
-    판정이 `@target-owned` 표식을 찾는다). 엔진 패키지는 교체 행 하나와 계획 값 `package_plan`(정확한
+    렌더 없이 한다(엔진 코드 행에는 표시가 없어 렌더러를 읽지 않는다). 전달 프로세스가 옮길 대상이고,
+    board 드리프트 검사(`drift_changes`)가 먼저 보는 행이다. `manifest` 는 계획 manifest 전체다(부재
+    판정이 `@target-owned` 표시를 찾는다). 엔진 패키지는 교체 행 하나와 계획 값 `package_plan`(정확한
     패키지 행이 없거나 source 가 없으면 None)으로 나온다 — 패키지에서 삭제만 있어도 변경이고 드리프트다."""
     shipped = update_manifest.shipped_manifest(effective_dest, source_root)
     package_plans: list[engine_transfer.EnginePackagePlan] = []

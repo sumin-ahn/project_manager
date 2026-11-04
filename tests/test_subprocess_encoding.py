@@ -4,7 +4,7 @@
 기본 콘솔 코덱)이 아니라 명시적 UTF-8 로 디코딩하는지를 검증한다. 인코딩 미지정이면
 한글 커밋 메시지·diff·로그를 캡처하다 UnicodeDecodeError 로 크래시한다.
 
-검증 축:
+검증 항목:
   - additional_reviewer: git diff 캡처 + 리뷰어 호출이 encoding="utf-8", errors="replace".
   - pm_import: 하니스 runner + board init 캡처가 encoding 명시.
   - ticket_finish / pm_handoff: _default_run_pytest/board/git 가 encoding 명시.
@@ -141,7 +141,7 @@ def test_extract_diff_passes_utf8_encoding(additional_reviewer):
 
 
 def test_extract_diff_head_path_passes_utf8(additional_reviewer):
-    rec = _Recorder(stdout="")  # 빈 staged/unstaged → HEAD~1 폴백까지 모두 거침
+    rec = _Recorder(stdout="")  # 빈 staged/unstaged → HEAD~1 대체까지 모두 거침
     review_diff.extract_diff(pm_paths.home_at(additional_reviewer.REPO), "HEAD", ["foo.py"], run_fn=rec)
     assert len(rec.calls) >= 2
     for kwargs in rec.calls:
@@ -343,7 +343,7 @@ def _regression_child_call(calls: list[dict]) -> dict:
 
     `cmd_regression` 진입이 띄우는 자식은 회귀 러너 하나가 아니다: 훅이 순수 해소 위치에 없으면
     훅 위치 **권위 해소**(`git rev-parse --git-path hooks`)가 그 앞에서 돈다. 훅을 안 깐 채택자
-    체크아웃이 정확히 그 형상이라(Windows 실측), 첫 호출을 무조건 회귀 자식으로 보면 가드가
+    체크아웃이 정확히 그 구성이라(Windows 실측), 첫 호출을 무조건 회귀 자식으로 보면 가드가
     엉뚱한 자식의 kwargs(`env` 없는 git 질의)를 판정해 상시 red 가 된다.
     """
     shell_calls = [call for call in calls if call.get("shell")]
@@ -360,7 +360,7 @@ def test_regression_run_child_forces_utf8_env(board, monkeypatch, tmp_path,
     scoped 경로(touches 지정)는 자식 실행 직후 반환 → 플래그 파일/_git_head 미경유.
     수정 전(env 미전달)에서는 이 단언이 깨진다.
 
-    **두 형상을 모두 태운다**: 훅 위치가 순수 해소되는 트리(회귀 자식이 유일한 자식)와, 훅이
+    **두 경우를 모두 태운다**: 훅 위치가 순수 해소되는 트리(회귀 자식이 유일한 자식)와, 훅이
     없어 권위 해소 git 질의가 **먼저** 도는 트리(채택자 fresh clone·Windows VM 실측). 후자에서
     가드가 부수 자식을 판정하지 않는지까지 잠근다.
     """
@@ -370,7 +370,7 @@ def test_regression_run_child_forces_utf8_env(board, monkeypatch, tmp_path,
         write_lf(hooks / "pre-push", "#!/bin/sh\nexit 0\n")   # 서명 없는 남의 훅 = 무영향
         monkeypatch.setattr(pre_push_hook, "_pure_hooks_dir", lambda _home: hooks)
     else:
-        # 순수 해소가 위치를 확정 못 하는 형상 — 엔진이 git 에 훅 위치를 묻는다(부수 자식).
+        # 순수 해소가 위치를 확정 못 하는 경우 — 엔진이 git 에 훅 위치를 묻는다(부수 자식).
         monkeypatch.setattr(pre_push_hook, "_pure_hooks_dir", lambda _home: None)
     rec = _RcRecorder()
     monkeypatch.setattr(subprocess, "Popen", rec)
@@ -381,14 +381,14 @@ def test_regression_run_child_forces_utf8_env(board, monkeypatch, tmp_path,
     rc = regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), args)
     assert rc == 0
     assert rec.calls, "pytest 자식 subprocess 호출이 일어나지 않음"
-    # 주입 선-단언 — 의도한 형상이 **실제로** 태워졌는지 먼저 못박는다(형상이 안 서면 가드가
+    # 주입 선-단언 — 의도한 경우가 **실제로** 태워졌는지 먼저 못박는다(경우가 안 서면 가드가
     # 아무것도 시험하지 않는다).
     incidental = [call for call in rec.calls if not call.get("shell")]
     if pre_push_hook_installed:
-        assert incidental == [], f"부수 자식이 없어야 하는 형상인데 떴다: {incidental!r}"
+        assert incidental == [], f"부수 자식이 없어야 하는 구성인데 떴다: {incidental!r}"
     else:
-        assert incidental, "훅 위치 권위 해소(git) 자식이 안 떴다 — 형상이 서지 않음"
-        assert not rec.calls[0].get("shell"), "부수 자식이 회귀 자식보다 먼저여야 형상이 맞다"
+        assert incidental, "훅 위치 권위 해소(git) 자식이 안 떴다 — 경우가 서지 않음"
+        assert not rec.calls[0].get("shell"), "부수 자식이 회귀 자식보다 먼저여야 경우가 맞다"
     child = _regression_child_call(rec.calls)
     env = child.get("env")
     assert env is not None, f"자식에 env 미전달: {child!r}"
@@ -427,7 +427,7 @@ class _FakeKernel32:
 
 
 def _install_fake_ctypes(monkeypatch, console_encoding):
-    """kernel32 조회 seam에 대역을 주입해 OS 무관하게 SetConsole*CP를 관측한다."""
+    """kernel32 조회 교체 지점에 대역을 주입해 OS 무관하게 SetConsole*CP를 관측한다."""
     kernel32 = _FakeKernel32()
     monkeypatch.setattr(console_encoding, "_get_kernel32", lambda: kernel32)
     return kernel32

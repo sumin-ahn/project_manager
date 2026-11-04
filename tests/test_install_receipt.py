@@ -2,16 +2,16 @@
 
 증거 추론(`_pm_install_evidence`)은 구조상 두 방향으로 틀린다: 전용 판별자가 둘뿐인 하네스는 그
 파일이 함께 사라지면 **미검출**(표기 유실)이고, 채택자 자작 진입문서는 **거짓 양성**(표기 소음)이다.
-설치·추가 시점에 사실을 박제하고(`record_install_receipt`) 판정이 그걸 1순위로 읽으면
+설치·추가 시점에 사실을 기록하고(`record_install_receipt`) 판정이 그걸 1순위로 읽으면
 (`installed_harnesses`) 앞의 한계가 기록 보유 인스턴스에서 사라진다.
 
-이 파일이 못박는 축:
+이 파일이 못박는 항목:
   - 기록 시점 — `--new`·`--into`·add-harness 의 **적용 경로**만(계획·질의는 안 쓴다).
   - 기록 소비 — 판정이 기록을 진실로 쓰고(전용 증거 전부 삭제해도 검출 유지) 자기 갱신
-    (`pm_update` 표기 독자 seam)도 같은 판정을 탄다.
-  - 기록 부재 — 구 인스턴스는 추론 폴백 + 다음 설치 행위에서 backfill.
+    (`pm_update` 표기 독자 교체 지점)도 같은 판정을 탄다.
+  - 기록 부재 — 구 인스턴스는 추론으로 대체 동작 + 다음 설치 행위에서 backfill.
   - 기록 위치의 근거 — git 추적(다중 clone 공유)·manifest 미등재(pm_update clobber 면역).
-  - 깨진 기록 — 조용한 강등 0(경고 후 추론 폴백).
+  - 깨진 기록 — 조용한 낮춤 0(경고 후 추론으로 대체 동작).
 
 실 하네스·네트워크 0 — 설치는 tmp_path 안 `--new`/`--into` 이고 opencode 모델 조회는 고정한다.
 """
@@ -94,7 +94,7 @@ def _receipt(pm_import, dest: Path) -> dict:
 
 
 def _drop_receipt(pm_import, dest: Path) -> None:
-    """기록 도입 **이전** 인스턴스 형상 — 어댑터는 그대로 두고 기록만 없앤다."""
+    """기록 도입 **이전** 인스턴스 상태 — 어댑터는 그대로 두고 기록만 없앤다."""
     _receipt_path(pm_import, dest).unlink()
 
 
@@ -135,7 +135,7 @@ def test_planning_paths_do_not_write_a_receipt(pm_import, tmp_path, capsys):
     dest = _new_instance(pm_import, tmp_path / "no_write_on_query", "claude")
     _drop_receipt(pm_import, dest)
 
-    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론으로 대체 동작.
     assert not _receipt_path(pm_import, dest).exists(), "질의가 기록을 만들었다"
 
     capsys.readouterr()
@@ -163,7 +163,7 @@ def test_recording_is_idempotent_for_the_same_set(pm_import, tmp_path):
 # ── 기록 소비: 추론 한계 케이스 폐쇄 ─────────────────────────────────────────
 
 def _erase_exclusive_evidence(dest: Path, harness: str) -> list[str]:
-    """그 하네스 **전용** PM 판별자를 전부 지운다 — 추론이 미검출로 떨어지는 형상."""
+    """그 하네스 **전용** PM 판별자를 전부 지운다 — 추론이 미검출로 떨어지는 경우."""
     erased = []
     for rel in {
         # `.opencode/command` 는 T-0674 로 복원된 전용 증거다(팔레트 사본 채널).
@@ -194,16 +194,16 @@ def test_receipt_keeps_detection_after_every_exclusive_marker_is_gone(
 
     _drop_receipt(pm_import, dest)
     assert install_receipt.installed_harnesses(dest, REPO) == [], \
-        "추론 폴백이 이 형상을 검출하면 이 테스트는 한계 케이스가 아니다"
+        "추론 대체 동작이 이 경우를 검출하면 이 테스트는 한계 케이스가 아니다"
 
 
 def test_self_update_notation_reader_set_follows_the_receipt(
         pm_import, pm_update, tmp_path):
-    """`pm_update` 표기 독자 seam 도 같은 판정을 탄다 — 판정 사본 0.
+    """`pm_update` 표기 독자 교체 지점도 같은 판정을 탄다 — 판정 사본 0.
 
     설치(pm_import)만 기록을 보고 갱신(pm_update)이 추론을 들고 있으면, 다음 자기 갱신이 공유
     문서를 그 하네스 없는 표기로 되돌린다(판정 사본이 만드는 재발 경로)."""
-    dest = _new_instance(pm_import, tmp_path / "update_seam", "opencode")
+    dest = _new_instance(pm_import, tmp_path / "update_override", "opencode")
     _erase_exclusive_evidence(dest, "opencode")
 
     selected = update_manifest._installed_entry_notation_manifests(dest, REPO, [])
@@ -212,7 +212,7 @@ def test_self_update_notation_reader_set_follows_the_receipt(
 
 
 def test_non_pm_tree_stays_undetected_without_a_receipt(pm_import, tmp_path):
-    """비-PM 트리 오검출 0 불변 — 기록이 없으면 추론이 그대로 판정한다(거짓 양성 축 무변)."""
+    """비-PM 트리 오검출 0 불변 — 기록이 없으면 추론이 그대로 판정한다(거짓 양성 판정 무변)."""
     dest = tmp_path / "own_codex"
     (dest / ".codex" / "agents").mkdir(parents=True)
     (dest / ".codex" / "agents" / "my-agent.toml").write_text("model = 'x'\n", encoding="utf-8")
@@ -224,10 +224,10 @@ def test_non_pm_tree_stays_undetected_without_a_receipt(pm_import, tmp_path):
     assert not _receipt_path(pm_import, dest).exists()
 
 
-# ── 기록 부재: 폴백 + 다음 설치 행위에서 backfill ────────────────────────────
+# ── 기록 부재: 추론으로 대체 동작 + 다음 설치 행위에서 backfill ────────────────────────────
 
 def test_legacy_instance_falls_back_then_backfills_on_add_harness(pm_import, tmp_path):
-    """기록 없는 구 인스턴스 → 추론 폴백. add-harness 가 그 산출을 기록으로 옮긴다(원천 정합)."""
+    """기록 없는 구 인스턴스 → 추론으로 대체 동작. add-harness 가 그 산출을 기록으로 옮긴다(원천 일치)."""
     dest = _new_instance(pm_import, tmp_path / "backfill_add", "claude")
     _drop_receipt(pm_import, dest)
 
@@ -293,14 +293,14 @@ def test_update_does_not_clobber_the_receipt(pm_import, pm_update, tmp_path, mon
     assert _receipt_path(pm_import, dest).read_bytes() == before
 
 
-# ── 깨진 기록: 조용한 강등 0 ────────────────────────────────────────────────
+# ── 깨진 기록: 조용한 낮춤 0 ────────────────────────────────────────────────
 
 def test_corrupt_receipt_falls_back_loudly(pm_import, tmp_path, capsys):
     dest = _new_instance(pm_import, tmp_path / "corrupt", "claude")
     _receipt_path(pm_import, dest).write_text("{ not json", encoding="utf-8")
     capsys.readouterr()
 
-    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론으로 대체 동작.
 
     err = capsys.readouterr().err
     assert "설치 기록" in err and "증거 추론" in err, err
@@ -333,12 +333,12 @@ def test_receipt_with_only_unknown_names_is_treated_as_absent(pm_import, tmp_pat
         '{"schema": 1, "harnesses": ["fourth"]}\n', encoding="utf-8")
     capsys.readouterr()
 
-    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론으로 대체 동작.
 
 
 @requires_symlink
 def test_receipt_channel_does_not_follow_a_symlinked_path(pm_import, tmp_path, capsys):
-    """기록 경로가 저장소 밖 지향 symlink 로 바뀌면 읽지도 쓰지도 않는다(loud 폴백).
+    """기록 경로가 저장소 밖 지향 symlink 로 바뀌면 읽지도 쓰지도 않는다(loud 대체 동작).
 
     기록도 dest 파일이라 다른 내용 IO 채널과 같은 fd 규율을 탄다 — 경로 재열기로 밖을 고치지 않는다."""
     dest = _new_instance(pm_import, tmp_path / "linked_receipt", "claude")
@@ -360,7 +360,7 @@ def test_receipt_channel_does_not_follow_a_symlinked_path(pm_import, tmp_path, c
     assert "읽을 수 없어 갱신하지 않습니다" in capsys.readouterr().err
 
 
-# ── 깨진 기록의 남은 두 형상: 빈 목록 · 상위 schema ──────────────────────────
+# ── 깨진 기록의 남은 두 경우: 빈 목록 · 상위 schema ──────────────────────────
 
 def test_empty_harness_list_is_loud_not_silent(pm_import, tmp_path, capsys):
     """`{"harnesses": []}` 는 정상 상태가 아니라 잘린·손상된 기록이다 — 알리고 추론으로 내려간다."""
@@ -369,7 +369,7 @@ def test_empty_harness_list_is_loud_not_silent(pm_import, tmp_path, capsys):
         '{"schema": 1, "harnesses": []}\n', encoding="utf-8")
     capsys.readouterr()
 
-    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백.
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론으로 대체 동작.
 
     err = capsys.readouterr().err
     assert "유효한 하네스가 없어" in err, err
@@ -383,7 +383,7 @@ def test_newer_schema_is_refused_loudly(pm_import, tmp_path, capsys):
         '{"schema": 99, "harnesses": ["codex"]}\n', encoding="utf-8")
     capsys.readouterr()
 
-    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론 폴백(codex 아님).
+    assert install_receipt.installed_harnesses(dest, REPO) == ["claude"]  # 추론으로 대체 동작(codex 아님).
 
     err = capsys.readouterr().err
     assert "schema 99" in err and "엔진을 갱신" in err, err
@@ -406,7 +406,7 @@ def test_unregistered_name_survives_a_rewrite(pm_import, tmp_path):
 
 
 def test_ghost_receipt_entry_is_reported_with_a_fix_path(pm_import, tmp_path, capsys):
-    """기록엔 있는데 어댑터가 없는 유령 형상은 알린다 — 판정은 기록 그대로(진실 우선) 유지.
+    """기록엔 있는데 어댑터가 없는 유령 상태는 알린다 — 판정은 기록 그대로(진실 우선) 유지.
 
     기록이 관측을 덮으므로, 잘못 박힌 기록은 사람이 고치지 않으면 영원히 그 하네스를 독자로 붙든다.
     제거 채널이 파일 편집뿐이라 그 위치를 실값으로 준다."""
@@ -426,7 +426,7 @@ def test_ghost_receipt_entry_is_reported_with_a_fix_path(pm_import, tmp_path, ca
 
 
 def test_receipt_survives_deleted_marker_files_without_ghost_noise(pm_import, tmp_path, capsys):
-    """판별자 파일만 사라진 형상은 유령이 아니다 — 어댑터 구조가 남아 있으면 경고하지 않는다."""
+    """판별자 파일만 사라진 경우는 유령이 아니다 — 어댑터 구조가 남아 있으면 경고하지 않는다."""
     dest = _new_instance(pm_import, tmp_path / "markers_gone", "opencode")
     _erase_exclusive_evidence(dest, "opencode")
     capsys.readouterr()
@@ -468,9 +468,9 @@ def test_add_harness_does_not_destroy_a_newer_schema_receipt(pm_import, tmp_path
 
 
 def test_corrupt_receipt_is_backed_up_before_rewrite(pm_import, tmp_path, capsys):
-    """손상된 기록은 **백업 후** 다시 쓴다 — 부재와 같게 접어 덮으면 원본이 영구 소실된다.
+    """손상된 기록은 **백업 후** 다시 쓴다 — 부재와 같게 바꾸어 덮으면 원본이 영구 소실된다.
 
-    기록 거부만 하면 그 인스턴스는 영영 추론 판정에 머문다 → 백업(포렌식 보존) + 재기록(원천 정합)."""
+    기록 거부만 하면 그 인스턴스는 영영 추론 판정에 머문다 → 백업(포렌식 보존) + 재기록(원천 일치)."""
     dest = _new_instance(pm_import, tmp_path / "corrupt_backup", "claude")
     broken = '{ 깨진 JSON "harnesses": ["claude"]\n'
     _receipt_path(pm_import, dest).write_text(broken, encoding="utf-8")
@@ -504,7 +504,7 @@ def test_record_does_not_emit_judgment_warnings(pm_import, tmp_path, capsys):
     """기록 갱신 실행은 **판정 문구를 내지 않는다** — 이미 읽은 문서에서 보존분을 뽑는다.
 
     갱신 경로가 원본을 다시 읽으면 "증거 추론으로 판정합니다"(판정용 경고)가 기록 실행에서 나가
-    사람이 판정이 강등된 줄로 읽는다(오도)."""
+    사람이 판정이 낮춰진 줄로 읽는다(오도)."""
     dest = _new_instance(pm_import, tmp_path / "no_judgment_noise", "claude")
     _receipt_path(pm_import, dest).write_text("{ 깨진 JSON\n", encoding="utf-8")
     capsys.readouterr()

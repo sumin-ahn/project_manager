@@ -1,4 +1,4 @@
-"""진입 doc 세대 마이그레이션 단위 테스트 (T-0409·ADR-0069).
+"""진입 doc 버전 마이그레이션 단위 테스트 (T-0409·ADR-0069).
 
 구형 채택자의 자족 매뉴얼형 opencode `AGENTS.md` → 신형(공통 코어 + `.opencode/pm-instructions.md`
 + `opencode.jsonc` `instructions` 배열) 조건부 자동 마이그레이션. 판정 = 미수정 여부(치환-불변
@@ -53,8 +53,8 @@ def _load_pm_update():
     return mod
 
 
-# 임베드 세대 수 + 세대 index → git 출하 blob ref (provenance lock). parametrize collection 시점에
-# 필요해 모듈 로드 시 1회 계산. 새 세대 추가 시 _GEN_GIT_REFS 에 그 세대 ref 를 등록해야
+# 임베드 버전 수 + 버전 index → git 출하 blob ref (provenance lock). parametrize collection 시점에
+# 필요해 모듈 로드 시 1회 계산. 새 버전 추가 시 _GEN_GIT_REFS 에 그 버전 ref 를 등록해야
 # test_all_generations_have_provenance_ref 가 통과한다(lock 자동 강제).
 _NUM_GENERATIONS = len(entry_doc_migration._OLD_OPENCODE_AGENTS_GENERATIONS)
 _GEN_GIT_REFS = {0: "0ccc025:templates/opencode/AGENTS.md"}
@@ -74,13 +74,13 @@ def pm_update(_pm_update_cli, monkeypatch):
 
 @pytest.fixture(scope="module")
 def old_gen_text():
-    """임베드 세대 원본(구형 opencode AGENTS.md·토큰 form) 텍스트."""
+    """임베드 버전 원본(구형 opencode AGENTS.md·토큰 form) 텍스트."""
     return entry_doc_migration._decode_entry_doc_generation(
         entry_doc_migration._OLD_OPENCODE_AGENTS_GENERATIONS[0])
 
 
 def _sim_old_adopter(gen_text: str, op: dict, *, manual_markers: bool = True) -> str:
-    """세대 원본 → import 렌더 채택자본 시뮬레이션.
+    """버전 원본 → import 렌더 채택자본 시뮬레이션.
 
     pm_import 의 두 변환을 복제한다: (1) substitute_placeholders — operational 토큰을 값으로 치환,
     (2) _mark_todos(manual·기본) — free-form placeholder 줄 끝에 TODO 마커 덧붙임."""
@@ -151,20 +151,20 @@ def _make_selfupdate_pair(tmp_path: Path, agents: str) -> tuple[Path, Path]:
     return dest, src
 
 
-# ── fingerprint 자산 provenance (전 세대 순회·lock 자동 강제) ────────────────
+# ── fingerprint 자산 provenance (전 버전 순회·lock 자동 강제) ────────────────
 
 @pytest.mark.parametrize("idx", range(_NUM_GENERATIONS))
 def test_generation_decodes_and_structure(pm_update, idx):
-    """각 임베드 세대(zlib+base64)가 온전히 디코드되고 구형 세대 구조를 갖는다."""
+    """각 임베드 버전(zlib+base64)가 온전히 디코드되고 구형 버전 구조를 갖는다."""
     text = entry_doc_migration._decode_entry_doc_generation(
         entry_doc_migration._OLD_OPENCODE_AGENTS_GENERATIONS[idx])
-    assert entry_doc_migration._ENTRY_DOC_OLD_GEN_MARKER in text  # 구형 세대 판별자
+    assert entry_doc_migration._ENTRY_DOC_OLD_GEN_MARKER in text  # 구형 버전 판별자
     assert "{{PROJECT_CONSTRAINTS}}" in text            # free-form 토큰 form 보존
 
 
 @pytest.mark.parametrize("idx,git_ref", sorted(_GEN_GIT_REFS.items()))
 def test_generation_provenance_matches_git(pm_update, idx, git_ref):
-    """각 임베드 세대 == git 출하 blob(무결성 lock·역대 출하본 진위)."""
+    """각 임베드 버전 == git 출하 blob(무결성 lock·역대 출하본 진위)."""
     try:
         git = subprocess.run(
             ["git", "-C", str(REPO), "show", git_ref],
@@ -174,13 +174,13 @@ def test_generation_provenance_matches_git(pm_update, idx, git_ref):
         pytest.skip("git 미가용 — provenance 대조 skip (자산 무결성은 decode 로만 검증)")
     decoded = entry_doc_migration._decode_entry_doc_generation(
         entry_doc_migration._OLD_OPENCODE_AGENTS_GENERATIONS[idx])
-    assert decoded == git, f"임베드 세대 #{idx} 가 git {git_ref} 와 다르다(자산 stale/손상)."
+    assert decoded == git, f"임베드 버전 #{idx} 가 git {git_ref} 와 다르다(자산 stale/손상)."
 
 
 def test_all_generations_have_provenance_ref():
-    """모든 임베드 세대가 git provenance ref 를 갖는다 — 새 세대 추가 시 lock 등록을 강제."""
+    """모든 임베드 버전이 git provenance ref 를 갖는다 — 새 버전 추가 시 lock 등록을 강제."""
     assert set(_GEN_GIT_REFS) == set(range(_NUM_GENERATIONS)), (
-        "새 세대를 _OLD_OPENCODE_AGENTS_GENERATIONS 에 추가하면 _GEN_GIT_REFS 에 그 세대의 "
+        "새 버전을 _OLD_OPENCODE_AGENTS_GENERATIONS 에 추가하면 _GEN_GIT_REFS 에 그 버전의 "
         "git blob ref 를 등록해 provenance lock 을 강제하라.")
 
 
@@ -256,7 +256,7 @@ def test_jsonc_nonstring_element_array_keeps_comma(pm_update):
 
 
 def test_jsonc_empty_array_insert_is_idempotent(pm_update):
-    """빈 배열에 삽입한 산출을 다시 통과시켜도 무변경(멱등) — 세대 왕복에서 중복 등록 없음."""
+    """빈 배열에 삽입한 산출을 다시 통과시켜도 무변경(멱등) — 버전 왕복에서 중복 등록 없음."""
     once, _ = entry_doc_migration._ensure_jsonc_instructions('{\n  "instructions": []\n}\n')
     twice, changed = entry_doc_migration._ensure_jsonc_instructions(once)
     assert not changed and twice == once
@@ -419,7 +419,7 @@ def test_scenario_unmodified_auto_migrate(pm_update, old_gen_text, tmp_path):
     # operational 해소(leak 0) + 채택자 tagline 보존.
     assert "{{PY}}" not in new and "{{PROJECT_NAME}}" not in new
     assert "UNIQUE_TAGLINE_XYZ_12345" in new
-    # free-form 은 pristine 유지(신선 import --fill manual 동형).
+    # free-form 은 pristine 유지(신선 import --fill manual 과 같은 방식).
     assert "{{PROJECT_CONSTRAINTS}}" in new
 
     # 백업 — 원본 AGENTS.md 를 중앙 백업 채널에 보존.
@@ -518,8 +518,8 @@ def test_scenario_partial_recovery(pm_update, tmp_path):
         dest / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8")
 
 
-def test_gate_not_opencode(pm_update, tmp_path):
-    """opencode.jsonc 부재(비-opencode 채택자) → 비발화(not_opencode)."""
+def test_check_not_opencode(pm_update, tmp_path):
+    """opencode.jsonc 부재(비-opencode 채택자) → 실행하지 않음(not_opencode)."""
     dest = tmp_path / "dest"
     (dest / ".project_manager").mkdir(parents=True)
     (dest / "AGENTS.md").write_text("whatever", encoding="utf-8")
@@ -528,7 +528,7 @@ def test_gate_not_opencode(pm_update, tmp_path):
     assert result["status"] == "not_opencode"
 
 
-def test_gate_no_agents(pm_update, tmp_path):
+def test_check_no_agents(pm_update, tmp_path):
     """AGENTS.md 부재 → no_agents(무동작)."""
     dest = tmp_path / "dest"
     (dest / ".opencode").mkdir(parents=True)
@@ -561,10 +561,10 @@ def test_dry_run_no_write(pm_update, old_gen_text, tmp_path):
     assert not (dest / ".pm_import_backups").exists()
 
 
-# ── --target 비발화 (self-update 경로 한정 게이트) ─────────────────────────
+# ── --target 에서는 실행하지 않음 (self-update 경로 한정) ─────────────────────────
 
 def test_target_export_does_not_migrate(pm_update, monkeypatch, capsys):
-    """`--target`(엔진 export)은 진입 doc 마이그레이션을 발화하지 않는다(옛 표기 이관과 같은 경계)."""
+    """`--target`(엔진 export)은 진입 doc 마이그레이션을 돌리지 않는다(옛 표기 이관과 같은 경계)."""
     calls = []
     orig = entry_doc_migration.migrate_entry_doc
 
@@ -575,11 +575,11 @@ def test_target_export_does_not_migrate(pm_update, monkeypatch, capsys):
     monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", _spy)
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--target", "opencode", "--from", str(REPO), "--dry-run"])
     assert rc == 0
-    assert calls == [], "--target 모드에서 migrate_entry_doc 가 호출됐다(비발화 위반)."
+    assert calls == [], "--target 모드에서 migrate_entry_doc 가 호출됐다(실행하지 않음 위반)."
 
 
 def test_self_update_invokes_migration(pm_update, monkeypatch, tmp_path):
-    """self-update(--target 없음) 경로는 migrate_entry_doc 를 발화한다(--target 비발화의 대칭 증거).
+    """self-update(--target 없음) 경로는 migrate_entry_doc 를 실행한다(--target 에서 실행하지 않음의 대칭 증거).
 
     tmp 트리를 source와 self-dest로 격리해 엔진 변경과 파일 쓰기 0을 단언한다.
     opencode.jsonc 부재로 migrate는 not_opencode지만 호출 wiring은 유지한다."""
@@ -627,7 +627,7 @@ def test_migrate_without_local_conf(pm_update, old_gen_text, tmp_path):
 # ── 시퀀싱 (codex R1·전환 write 는 apply(changes) 성공 이후) ────────────────
 
 def test_sequencing_migration_after_apply_success(pm_update, old_gen_text, tmp_path, monkeypatch):
-    """self-update(changes 有) 성공 경로: migrate 전환이 apply(changes) *이후* 발화한다."""
+    """self-update(changes 有) 성공 경로: migrate 전환이 apply(changes) *이후* 돈다."""
     dest, src = _make_selfupdate_pair(tmp_path, _sim_old_adopter(old_gen_text, _SIM_OP))
     config = dest / ".opencode/opencode.jsonc"
     config.write_text(_MINIMAL_OLD_JSONC.replace("{", '{"model":"fixture-provider/fixture-model",', 1), encoding="utf-8")
@@ -650,7 +650,7 @@ def test_sequencing_migration_after_apply_success(pm_update, old_gen_text, tmp_p
 
 
 def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_path, monkeypatch):
-    """apply(changes) 실패 시 전환 write 미발화 — 채택자는 완전한 구형에 남는다(반쪽 상태 방지·R1)."""
+    """apply(changes) 실패 시 전환 write 를 하지 않는다 — 채택자는 완전한 구형에 남는다(반쪽 상태 방지·R1)."""
     old_agents = _sim_old_adopter(old_gen_text, _SIM_OP)
     dest, src = _make_selfupdate_pair(tmp_path, old_agents)
     migrate_writes = []
@@ -671,8 +671,8 @@ def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_pa
     monkeypatch.setattr(entry_doc_migration, "migrate_entry_doc", spy_migrate)
     with pytest.raises(ExpectedApplyFailure, match="apply failed"):
         update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(src)])
-    # 전환 write(write=True) 미발화 — apply 뒤라 도달 못 함.
-    assert True not in migrate_writes, "apply 실패 후 migrate(write=True) 가 발화됐다(반쪽 상태 위험)."
+    # 전환 write(write=True) 는 하지 않는다 — apply 뒤라 도달 못 함.
+    assert True not in migrate_writes, "apply 실패 후 migrate(write=True) 가 실행됐다(반쪽 상태 위험)."
     # 구형 무손 — AGENTS.md·opencode.jsonc 원본 그대로.
     assert (dest / "AGENTS.md").read_text(encoding="utf-8") == old_agents
     assert (dest / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8") == _MINIMAL_OLD_JSONC

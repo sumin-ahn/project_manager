@@ -40,7 +40,7 @@ def _resolve_recorded_template_coordinate(
 
     install.json은 채택자가 편집할 수 있으므로 source를 그대로 현재 파일 read 경로로 쓰지 않는다.
     `templates/<등록 tree>/...` 아래이며 lite rename을 적용한 dst가 관측 대상과 정확히 같을 때만
-    받아들인다. lite weight의 full source는 해당 tree에 lite 변종이 없을 때의 선언된 폴백이라
+    받아들인다. lite weight의 full source는 해당 tree에 lite 변종이 없을 때의 선언된 대체 동작이라
     허용하지만, full weight가 lite source를 가리키는 역조합은 거부한다.
     """
     if not isinstance(coordinate, dict):
@@ -75,7 +75,7 @@ def instance_owned_template_targets(
     ``adapter_config_targets``는 실제 동기 채널이라 ``none``을 의도적으로 제외한다. 이 함수는
     반대로 *관측* 인벤토리이므로 ``INSTANCE_OWNED_ADAPTER_FILES`` 전량을 소비한다. 공존
     opencode+codex의 공유 ``AGENTS.md``는 최초 import와 같은 중립 소유 template(codex) 하나로
-    접어 파일당 한 줄 계약을 지킨다.
+    합쳐 파일당 한 줄 계약을 지킨다.
     """
     dest_root = Path(dest_root)
     source_root = Path(source_root)
@@ -113,7 +113,7 @@ def instance_owned_template_targets(
 
 
 def _instance_owned_fallback_rev(dest_root: Path) -> str | None:
-    """진입문서 등 파일별 원장 rev가 없는 경로의 직전 동기 세대."""
+    """진입문서 등 파일별 어댑터 설정 기록 rev가 없는 경로의 직전 동기 버전."""
     try:
         text = install_files.read_dest_text(
             Path(dest_root), Path(".project_manager") / "local.conf")
@@ -124,7 +124,7 @@ def _instance_owned_fallback_rev(dest_root: Path) -> str | None:
 
 
 def _template_generation_size(old_lines: list[str], current_lines: list[str]) -> tuple[int, int, int]:
-    """template 두 세대의 (+줄, -줄, 첫 차이 current 줄 번호)."""
+    """template 두 버전의 (+줄, -줄, 첫 차이 current 줄 번호)."""
     matcher = difflib.SequenceMatcher(a=old_lines, b=current_lines, autojunk=False)
     added = 0
     removed = 0
@@ -139,15 +139,15 @@ def _template_generation_size(old_lines: list[str], current_lines: list[str]) ->
     return added, removed, first_diff or 1
 
 
-# 소스 checkout 의 git object DB 를 읽는 두 관용구 — 세대 요약(`instance_owned_template_change_lines`)
+# 소스 checkout 의 git object DB 를 읽는 두 관용구 — 버전 요약(`instance_owned_template_change_lines`)
 # 과 기준 diff(`adapter_config_reports`)가 **같은 읽기**를 공유한다(두 번째 git 경로 신설 0).
 SOURCE_PREFIX_OK = "ok"
 
 
-SOURCE_PREFIX_NOT_GIT = "not-git"          # 소스가 git checkout 이 아니다(세대 판정 비대상).
+SOURCE_PREFIX_NOT_GIT = "not-git"          # 소스가 git checkout 이 아니다(버전 판정 비대상).
 
 
-SOURCE_PREFIX_UNRESOLVED = "unresolved"    # 접두를 못 읽거나 비정상 형상(기준 해소 불가).
+SOURCE_PREFIX_UNRESOLVED = "unresolved"    # 접두를 못 읽거나 비정상 모양(기준 해소 불가).
 
 
 def _source_git_path_prefix(
@@ -156,8 +156,8 @@ def _source_git_path_prefix(
 
     영수증의 template 좌표는 `source_root` 상대지만 `show`/`ls-tree` 의 path 는 저장소 최상위
     상대다. source_root 가 상위 저장소의 하위 디렉터리면 접두 없는 조회가 모든 과거 파일을
-    "없음" 으로 오판한다. 접두 자체를 해소하지 못하거나 비정상 형상(개행 포함·절대·`..`)이면
-    전량 추가로 접지 않고 `SOURCE_PREFIX_UNRESOLVED` 로 내린다(판정 불가 ≠ 변경 없음).
+    "없음" 으로 오판한다. 접두 자체를 해소하지 못하거나 비정상 모양(개행 포함·절대·`..`)이면
+    전량 추가로 바꾸지 않고 `SOURCE_PREFIX_UNRESOLVED` 로 내린다(판정 불가 ≠ 변경 없음).
     """
     git_rc, git_out = runner([
         "-C", str(source_root), "rev-parse", "--is-inside-work-tree",
@@ -192,12 +192,12 @@ TEMPLATE_BLOB_OK = "ok"
 TEMPLATE_BLOB_ABSENT = "absent"            # 그 시점 tree 에 경로가 없었다(신규 파일·기존 0줄).
 
 
-TEMPLATE_BLOB_UNRESOLVED = "unresolved"    # 판정 불가(git I/O·손상) — 전량 추가로 접지 않는다.
+TEMPLATE_BLOB_UNRESOLVED = "unresolved"    # 판정 불가(git I/O·손상) — 전량 추가로 바꾸지 않는다.
 
 
 def _template_blob_at_rev(source_root: Path, rev: str, git_relpath: str,
                           runner: install_git.GitRunner) -> tuple[str, str]:
-    """그 rev 시점 template 파일 내용 — (판정, 텍스트). 원장은 내용을 담지 않아 여기서 읽는다.
+    """그 rev 시점 template 파일 내용 — (판정, 텍스트). 어댑터 설정 기록은 내용을 담지 않아 여기서 읽는다.
 
     `git show rev:path` 비0 하나만으로는 과거 경로 부재와 git I/O·timeout·저장소 손상을 구분할 수
     없다. 같은 commit tree 를 별도 조회해 **부재가 증명될 때만** 신규 파일로 본다(그 경우 텍스트는

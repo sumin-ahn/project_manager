@@ -20,7 +20,7 @@ PLAYBOOK_REL = Path(".project_manager") / "wiki" / "pm_playbook.md"
 
 # canonical + `templates/` 아래 **실재하는 모든 타깃**. 손-열거 2벌(claude_code·opencode)이던
 # 자리라 세 번째 하네스(codex)의 사본이 이 가드 밖에 있었다 — 같은 파일이 가는데 한 벌만
-# 검사하지 않는 비대칭이다. 축은 엔진 등록 ∩ 디렉토리 실존에서 파생한다(`_harness_matrix`).
+# 검사하지 않는 비대칭이다. 목록은 엔진 등록 ∩ 디렉토리 실존에서 파생한다(`_harness_matrix`).
 PLAYBOOKS = [REPO / PLAYBOOK_REL] + [
     REPO / "templates" / dirname / PLAYBOOK_REL
     for harness in HARNESSES

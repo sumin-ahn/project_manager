@@ -15,8 +15,8 @@ set -eu
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # 인터프리터 선택 — 후보를 순회하며 *실행+버전검증*으로 채택(엔진 _detect_py 시맨틱과
-# 동형·POSIX 선호순 python3 → python). 존재검증(command -v)만으론 Windows WindowsApps 가짜 shim
-# (command -v 통과·실행 시 Permission denied rc126)을 못 거른다. 전부 실패 시 진단 후 python 폴백
+# 같은 방식·POSIX 선호순 python3 → python). 존재검증(command -v)만으론 Windows WindowsApps 가짜 shim
+# (command -v 통과·실행 시 Permission denied rc126)을 못 거른다. 전부 실패 시 진단 후 python 을 대신 쓴다
 # (기존 파사드 fail-soft 계약 유지).
 # POSIX 후보에는 Windows py 런처의 shebang 간접 디스패치가 없으므로 script probe 대신 -c를 쓴다.
 # (3, 11)은 pm_engine.MIN_PYTHON 미러이며 테스트가 skew 를 차단한다.

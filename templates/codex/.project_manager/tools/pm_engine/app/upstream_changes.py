@@ -25,13 +25,13 @@ def _path_under_manifest(
 
     manifest 한 줄은 파일 또는 디렉토리(repo 루트 기준·재귀). changed 파일이 manifest 의
     파일 항목과 정확히 같거나, manifest 디렉토리 항목 *아래*(posix prefix + `/`)면 이번 동기가
-    덮어쓰는 엔진 경로다. _iter_files 의 디렉토리 재귀 의미와 동형(파일은 `==`·디렉토리는
+    덮어쓰는 엔진 경로다. _iter_files 의 디렉토리 재귀 의미와 같은 방식(파일은 `==`·디렉토리는
     `startswith(d + "/")`). manifest 의 @render/@target-owned 마커는 ManifestEntry 가 이미
     떼어내 path-only 값이라 `str(entry)` 로 순수 경로만 비교한다.
 
     판정 좌표는 **엔트리마다 하나**, 그 엔트리의 *읽기* 좌표다(`_source_root_rel` 공유) — `@source=`
     매핑 엔트리는 상류 경로(예 `.claude/agents @source=templates/claude_code/.claude/agents`),
-    bare 엔트리는 dest 경로(둘이 같다). 상류 변경은 읽기 좌표로 오므로 dest 축만 보면 `@source`
+    bare 엔트리는 dest 경로(둘이 같다). 상류 변경은 읽기 좌표로 오므로 dest 좌표만 보면 `@source`
     엔트리 전부가 "manifest 밖(동기 안 받음)" 으로 오분류되고, 거꾸로 매핑 엔트리에 **dest 좌표까지**
     인정하면 이번 계획이 읽지도 않는 경로(`.codex/agents/x`)를 엔진 영향으로 과분류한다. 이 함수의
     의미가 "이 상류 변경이 이번 동기에 영향을 주는가" 이므로 판정은 읽기 좌표 단일이다.
@@ -40,7 +40,7 @@ def _path_under_manifest(
     항목이 다른 source 를 공급하면(codex `.agents/skills @source=.claude/skills` 위의
     `.agents/skills/<skill>/SKILL.md @source=templates/codex/…`) 그 파일의 실제 source 는 override
     쪽이라, 상위 항목의 source 변경은 그 파일에 도달하지 않는다. plan 이 쓰는 좌표 변환·우선순위
-    seam(`_remap_to_dest`→`_dest_relpath_for`→`_manifest_owner_index` — `manifest_entry_shipping_
+    공용 함수(`_remap_to_dest`→`_dest_relpath_for`→`_manifest_owner_index` — `manifest_entry_shipping_
     inventory` 와 같은 순서·판정 사본 없음)을 그대로 태워, 변경된 경로가 **그 항목의 산출로 실제
     선택될 때만** 엔진으로 분류한다. dest 레이아웃 기준을 주지 않으면 실행 Home 의 루트다.
     """
@@ -66,8 +66,8 @@ def _path_under_manifest(
 # 기본 sync 는 manifest 전량이라 all-or-nothing 이다 — 병렬 작업 중 한 파일만 내보내려면 엔진 밖
 # 수동 복사로 우회하게 된다(그 우회가 안전 판정·render 를 통째로 건너뛴다). 이 옵션은 그 필요를
 # 엔진 안으로 들여 **명시한 경로만** 전파한다. 스코프 판정은 manifest 등재분에 한정하고(미등재는
-# 거부), 부분 전파이므로 "전량 흡수" 를 전제하는 후속 단계(baseline 기록·마이그레이션·훅 재설치)는
-# 발화하지 않는다 — 그것들이 돌면 drift-lint 가 거짓 '최신' 을 말한다.
+# 거부), 부분 전파이므로 "전량 반영" 을 전제하는 후속 단계(baseline 기록·마이그레이션·훅 재설치)는
+# 돌지 않는다 — 그것들이 돌면 drift-lint 가 거짓 '최신' 을 말한다.
 
 def _normalize_scope_paths(raw_paths) -> tuple[list[str], list[str]]:
     """`--paths` 입력을 repo 기준 posix relpath 로 정규화 — (정규화 목록, 거부 사유 목록).
@@ -75,7 +75,7 @@ def _normalize_scope_paths(raw_paths) -> tuple[list[str], list[str]]:
     거부: 빈 값(`.` 자기참조 포함)·절대경로/드라이브·`..` 컴포넌트(스코프가 저장소 밖을 가리키면
     안 된다). **저장하는 값은 정규화 결과**다 — 원본을 저장하면 `./a/b`·`a//b` 같은 동치 표기가
     매칭에서 빗나가 "등재는 통과했는데 아무것도 전파 안 되는" 조용한 rc0 이 된다. 정규화 뒤에
-    중복을 입력 순서대로 접는다(`a/b` 와 `./a/b` 는 한 항목)."""
+    중복을 입력 순서대로 합친다(`a/b` 와 `./a/b` 는 한 항목)."""
     normalized: list[str] = []
     rejected: list[str] = []
     for raw in raw_paths:
@@ -111,7 +111,7 @@ def _unregistered_scope_paths(manifest: list, scope: list[str],
     manifest 항목을 *담는* 상위 디렉토리여도 유효하다. 판정 대상은 세 좌표다 — manifest 의 dest
     경로, `@source` 읽기 경로, 그리고 **dest 레이아웃 리매핑 결과**(`_dest_relpath_for`). 마지막을
     빼면 board 분리 인스턴스에서 실제 관리 파일인 `board/tickets/_template.md` 가 미등재로 거부된다
-    (계획은 그 좌표로 착지시키는데 게이트만 옛 좌표를 본다)."""
+    (계획은 그 좌표로 착지시키는데 검사만 옛 좌표를 본다)."""
     declared: set[str] = set()
     for entry in manifest:
         declared.add(str(entry).replace("\\", "/").strip("/"))
@@ -136,14 +136,14 @@ def _in_scope_paths(rel: str, scope: list[str]) -> bool:
     return any(rel_norm == path or rel_norm.startswith(path + "/") for path in scope)
 
 
-# ── guest 절 엔진 행 파생 백필 ────────────────────────────────────────────────
-# add-harness 가 등재하는 guest 엔진 행은 `@source=templates/<flavor>/…` 로 자기 출처를 들고 있다.
-# 그 채널이 없던 세대에 설치된 채택자의 절엔 렌더물 행뿐이라 provenance 가 없고, 그 코호트의
+# ── 추가 하네스 절 엔진 행 파생 백필 ────────────────────────────────────────────────
+# add-harness 가 등재하는 추가 하네스 엔진 행은 `@source=templates/<variant>/…` 로 자기 출처를 들고 있다.
+# 그 채널이 없던 버전에 설치된 채택자의 절엔 렌더물 행뿐이라 provenance 가 없고, 그 코호트의
 # 엔진 파일(엔진 패키지 `pm_engine` 과 짝인 드라이버·ctx 가드 등)은 add-harness 를 다시 돌리지 않는 한 설치
-# 시점 사본으로 영구 동결된다. 계획 직전에 flavor 를 해소해 upstream flavor manifest 에서 엔진 행을
-# **매 실행 재파생**하면 옛 채택자도 다음 sync 한 번으로 채널을 얻고, upstream 이 flavor 에 엔진
+# 시점 사본으로 영구 동결된다. 계획 직전에 하네스별 판을 해소해 upstream 하네스별 판 manifest 에서 엔진 행을
+# **매 실행 재파생**하면 옛 채택자도 다음 sync 한 번으로 채널을 얻고, upstream 이 하네스별 판에 엔진
 # 파일을 새로 추가해도 재동결되지 않는다. 파생은 읽기 전용이고 기록은 apply 의 절 재부착 한 곳뿐이다.
-_FLAVOR_SOURCE_PREFIX = "templates/"
+_VARIANT_SOURCE_PREFIX = "templates/"
 
 
 def _refuse_unregistered_scope_paths(
@@ -151,9 +151,9 @@ def _refuse_unregistered_scope_paths(
         effective_dest: Path | None = None) -> int:
     """스코프 요청 중 manifest 미등재분을 loud 거부 — 있으면 rc1, 없으면 0.
 
-    미등재 = 오타·인스턴스 소유·아직 manifest 에 안 올린 신규 파일. **guest 절은 사유가 아니다**:
+    미등재 = 오타·인스턴스 소유·아직 manifest 에 안 올린 신규 파일. **추가 하네스 절은 사유가 아니다**:
     절의 렌더물 행도 엔진 행도 update 채널이 전파하므로 계획 manifest 에 실려 있고,
-    따라서 정상 스코프 대상이다(옛 "guest 절 소속이라 지정 불가" 거부는 그 채널 분리와 함께 소멸)."""
+    따라서 정상 스코프 대상이다(옛 "추가 하네스 절 소속이라 지정 불가" 거부는 그 채널 분리와 함께 소멸)."""
     unregistered = _unregistered_scope_paths(manifest, scope, effective_dest)
     if not unregistered:
         return 0
@@ -196,7 +196,7 @@ def summarize_upstream_changes(
     있는* checkout 에서 `git log`/`diff --name-status` 로 집계한다 — **fetch/clone 안 함**
     (네트워크 0). git 안전 계약(argv-list·timeout·GIT_TERMINAL_PROMPT=0·config
     격리)은 upstream_git._real_upstream_git_runner 를 재사용한다(git_runner 미주입 시). 테스트는
-    git_runner 를 주입해 라이브 git 0 으로 결정론을 얻는다(DI seam).
+    git_runner 를 주입해 라이브 git 0 으로 결정론을 얻는다(DI 교체 지점).
 
     `manifest` 는 "무엇이 엔진인가"의 판별 집합 — 호출부가 **sync 와 동일한**
     `update_manifest.shipped_manifest(effective_dest, source)` 의 계획 행을 넘긴다. 이 함수가 자체 로드하지 않는
@@ -218,7 +218,7 @@ def summarize_upstream_changes(
       - `other`: [(code, path)] — manifest 밖 변경(동기 안 받음)
       - `log`: [(sha, subject)] — `git log --oneline baseline..HEAD` (--log 옵션용)
 
-    호출부(main --changes 분기)가 baseline 부재·소스 해소·HEAD==baseline 등 *상위* 게이트를
+    호출부(main --changes 분기)가 baseline 부재·소스 해소·HEAD==baseline 등 *상위* 검사를
     이미 처리한 뒤 진입한다. 여기선 baseline rev 가 checkout 에서 도달 가능한지(rc)만 본다 —
     도달불가(force-push·shallow)면 status='baseline_unreachable'(호출부가 재clone 권고). log/diff
     가 rc≠0(도달가능한데도 git 호출 실패·예외)면 status='summary_failed' — 빈 결과를 "변경 0"으로
@@ -337,7 +337,7 @@ def _resolve_source(args, effective_dest: Path) -> tuple:
         retired_paths.print_conf_migration_notice(effective_dest)
 
     # ── upstream(source) 해소 — 순서: 명시 --from local.conf upstream.path= 에러.
-    #    침묵 폴백 없음. stale(부재/비-디렉토리) 경로는 자동 진행하지 않고 명확한 에러로 멈춘다.
+    #    침묵 대체 동작 없음. stale(부재/비-디렉토리) 경로는 자동 진행하지 않고 명확한 에러로 멈춘다.
     if args.source:
         source_root = Path(args.source).resolve()
     else:

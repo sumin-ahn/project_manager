@@ -74,8 +74,8 @@ def _print_delegate_model_guidance(
     함수는 만들지 않는다(codex 값은 자유 문자열이라 형식 검증이 공허하고, alias 미선언 채택자에선
     멤버십 검증이 아무것도 잡지 않는다) — 이 비대칭은 안내로 닫는다.
 
-    조회 실패(바이너리 부재·rc·timeout·파싱 0)는 형식 안내로 **강등**하되 조용하지 않다:
-    강등 사실을 그 자리에 적고, 실패 사유 자체는 조회 seam 이 stderr 한 줄로 남긴다.
+    조회 실패(바이너리 부재·rc·timeout·파싱 0)는 형식 안내로 **낮추되** 조용하지 않다:
+    낮춘 사실을 그 자리에 적고, 실패 사유 자체는 조회 교체 지점이 stderr 한 줄로 남긴다.
     conf 주입으로 hermetic 테스트(라이브 CLI 미구동).
     """
     model_source = contract.MODEL_SOURCE
@@ -119,7 +119,7 @@ def _print_delegate_model_guidance(
 
 
 def _console_delegate_models(home) -> None:
-    """`[m]` 콘솔 액션 — 모델 안내를 출력만 한다(장부 변경 0)."""
+    """`[m]` 콘솔 액션 — 모델 안내를 출력만 한다(대여 기록 변경 0)."""
     _print_delegate_model_guidance(home)
     return None
 

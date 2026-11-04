@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""실제 스크립트 디스패치와 동형인 Python 런타임 하한 probe.
+"""실제 스크립트 디스패치와 같은 방식의 Python 런타임 하한 probe.
 
 Windows ``py`` 런처는 ``py -c``와 ``py <script>``에 서로 다른 Python을 고를 수 있다.
 이 파일은 엔진 진입점과 같은 shebang을 가지며 Python 2.7에서도 파싱되므로, 후보가 실제

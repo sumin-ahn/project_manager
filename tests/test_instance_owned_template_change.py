@@ -1,4 +1,4 @@
-"""T-0617 — instance-owned 파일의 template 세대 델타 관측 표면."""
+"""T-0617 — instance-owned 파일의 template 버전 차이 관측 출력."""
 from __future__ import annotations
 
 import argparse
@@ -98,7 +98,7 @@ def _case(tmp_path: Path, *, with_baseline: bool = True,
     if with_baseline:
         (dest / ".project_manager" / "local.conf").write_text(
             "upstream.rev=entry-base\n", encoding="utf-8")
-        ledger = {
+        records = {
             "schema": 1,
             "files": {
                 relpath: {
@@ -110,7 +110,7 @@ def _case(tmp_path: Path, *, with_baseline: bool = True,
             },
         }
         (dest / ".project_manager" / "adapter_baseline.json").write_text(
-            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return dest, source, current
 
 
@@ -147,9 +147,9 @@ def _unchanged_history(current: dict[str, str]) -> dict[tuple[str, str], str]:
     }
 
 
-def test_entry_document_template_change_is_loud_with_manual_remedy(
+def test_entry_document_template_change_is_loud_with_manual_fix(
         pm_import, tmp_path):
-    """채널 ``none``인 AGENTS.md도 규모·첫 차이·백업/수동 병합 처방으로 잡힌다."""
+    """채널 ``none``인 AGENTS.md도 규모·첫 차이·백업/수동 병합 안내로 잡힌다."""
     dest, source, current = _case(tmp_path)
     history = _unchanged_history(current)
     history[("entry-base", "templates/codex/AGENTS.md")] = "# Old entry\n\nstable\n"
@@ -165,7 +165,7 @@ def test_entry_document_template_change_is_loud_with_manual_remedy(
 
 
 def test_config_template_change_points_to_explicit_accept(pm_import, tmp_path):
-    """report/managed config 처방은 채택자 명시 수용 커맨드로 분기한다."""
+    """report/managed config 안내는 채택자 명시 수용 커맨드로 분기한다."""
     dest, source, current = _case(tmp_path)
     history = _unchanged_history(current)
     history[("config-base", "templates/codex/.codex/config.toml")] = (
@@ -190,7 +190,7 @@ def test_unchanged_template_generation_is_completely_silent(pm_import, tmp_path)
 
 
 def test_terminal_newline_only_change_is_not_folded_as_unchanged(pm_import, tmp_path):
-    """말미 개행도 template byte 세대 차이다 — ``splitlines()`` 회귀를 막는다."""
+    """말미 개행도 template byte 버전 차이다 — ``splitlines()`` 회귀를 막는다."""
     dest, source, current = _case(tmp_path)
     history = _unchanged_history(current)
     history[("entry-base", "templates/codex/AGENTS.md")] = current["AGENTS.md"].removesuffix("\n")
@@ -203,7 +203,7 @@ def test_terminal_newline_only_change_is_not_folded_as_unchanged(pm_import, tmp_
     assert "+1/-1줄" in lines[0] and "첫 차이 3줄" in lines[0]
 
 
-def test_edited_managed_delta_repeats_until_explicit_accept(pm_import, tmp_path):
+def test_edited_managed_change_repeats_until_explicit_accept(pm_import, tmp_path):
     """report-drift·edited managed 기준은 수용 전엔 두 check 모두 같이 보인다."""
     dest, source, current = _case(tmp_path)
     config_rel = ".codex/config.toml"
@@ -211,8 +211,8 @@ def test_edited_managed_delta_repeats_until_explicit_accept(pm_import, tmp_path)
     history = _unchanged_history(current)
     history[("config-base", "templates/codex/.codex/config.toml")] = (
         "sandbox = 'read-only'\n")
-    ledger = dest / ".project_manager" / "adapter_baseline.json"
-    ledger_before = ledger.read_bytes()
+    records = dest / ".project_manager" / "adapter_baseline.json"
+    records_before = records.read_bytes()
 
     judgments = {item.relpath: item for item in adapter_report.judge_adapter_configs(dest, source)}
     assert judgments[config_rel].status == "edited"
@@ -223,11 +223,11 @@ def test_edited_managed_delta_repeats_until_explicit_accept(pm_import, tmp_path)
 
     assert first == second
     assert len(first) == 1 and config_rel in first[0]
-    assert ledger.read_bytes() == ledger_before, "--check 관측이 원장을 전진시켰다"
+    assert records.read_bytes() == records_before, "--check 관측이 기록을 전진시켰다"
 
 
-def test_converged_managed_delta_does_not_prescribe_accept(pm_import, tmp_path):
-    """현행 template과 원장까지 수렴한 managed는 과거 세대 차이가 있어도 재수용 처방이 없다."""
+def test_converged_managed_change_does_not_prescribe_accept(pm_import, tmp_path):
+    """현행 template과 기록까지 일치한 managed는 과거 버전 차이가 있어도 재수용 안내가 없다."""
     dest, source, current = _case(tmp_path)
     managed_rel = ".codex/hooks.json"
     history = _unchanged_history(current)
@@ -264,7 +264,7 @@ def _lite_entry_case(tmp_path: Path):
 
 def test_lite_entry_uses_recorded_lite_coordinate_and_detects_change(
         pm_import, tmp_path):
-    """lite 설치본은 rename된 dst가 아니라 실제 `AGENTS.lite.md` 두 세대를 비교한다."""
+    """lite 설치본은 rename된 dst가 아니라 실제 `AGENTS.lite.md` 두 버전을 비교한다."""
     dest, source, _current, history = _lite_entry_case(tmp_path)
     history[("entry-base", "templates/codex/AGENTS.lite.md")] = (
         "# Old lite entry\n\nlite stable\n")
@@ -309,7 +309,7 @@ def test_lite_import_receipt_records_actual_renamed_entry_source(pm_import, tmp_
 
 def test_legacy_receipt_without_template_coordinate_is_one_manual_line(
         pm_import, tmp_path):
-    """구 설치본은 full 좌표를 추측해 오탐하지 않고 좌표 미기록 한 줄로 강등한다."""
+    """구 설치본은 full 좌표를 추측해 오탐하지 않고 좌표 미기록 한 줄로 낮춘다."""
     dest, source, current = _case(tmp_path, with_coordinates=False)
 
     lines = adapter_report.instance_owned_template_change_lines(
@@ -322,7 +322,7 @@ def test_legacy_receipt_without_template_coordinate_is_one_manual_line(
 
 
 def test_missing_baseline_is_one_fail_soft_line_not_false_unchanged(pm_import, tmp_path):
-    """원장 rev와 직전 upstream_rev가 모두 없으면 전량 확인 경고 정확히 한 줄."""
+    """기록 rev와 직전 upstream_rev가 모두 없으면 전량 확인 경고 정확히 한 줄."""
     dest, source, _current = _case(tmp_path, with_baseline=False)
 
     lines = adapter_report.instance_owned_template_change_lines(
@@ -336,7 +336,7 @@ def test_missing_baseline_is_one_fail_soft_line_not_false_unchanged(pm_import, t
 
 def test_non_git_source_is_generation_out_of_scope_not_permanent_unreachable_warning(
         pm_import, tmp_path):
-    """path upstream이 비-git이면 매번 실패 경고 대신 세대 판정 비대상 한 줄이다."""
+    """path upstream이 비-git이면 매번 실패 경고 대신 버전 판정 비대상 한 줄이다."""
     dest, source, _current = _case(tmp_path)
 
     class NonGitSource(FakeGenerationGit):
@@ -386,12 +386,12 @@ def test_source_root_subdirectory_uses_git_toplevel_prefix(pm_import, tmp_path):
     ).stdout.strip()
     (dest / ".project_manager" / "local.conf").write_text(
         f"upstream.rev={baseline}\n", encoding="utf-8")
-    ledger_path = dest / ".project_manager" / "adapter_baseline.json"
-    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    for entry in ledger["files"].values():
+    record_path = dest / ".project_manager" / "adapter_baseline.json"
+    records = json.loads(record_path.read_text(encoding="utf-8"))
+    for entry in records["files"].values():
         entry["template_rev"] = baseline
-    ledger_path.write_text(
-        json.dumps(ledger, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    record_path.write_text(
+        json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (nested_source / "templates" / "codex" / ".codex" / "config.toml").write_text(
         "sandbox = 'read-only'\n", encoding="utf-8")
 
@@ -430,7 +430,7 @@ def test_git_prefix_resolution_failure_is_basis_unavailable(pm_import, tmp_path)
 ))
 def test_git_show_error_is_basis_unavailable_not_full_add(
         pm_import, tmp_path, detail):
-    """show I/O·timeout·repo 실패는 tree에 있는 파일을 부재로 접어 전량 추가하지 않는다."""
+    """show I/O·timeout·repo 실패는 tree에 있는 파일을 부재로 바꾸어 전량 추가하지 않는다."""
     dest, source, current = _case(tmp_path)
 
     class GitIOError(FakeGenerationGit):
@@ -450,9 +450,9 @@ def test_git_show_error_is_basis_unavailable_not_full_add(
     assert "인스턴스 소유 템플릿 변경" not in "\n".join(lines)
 
 
-def test_sync_adapter_config_check_exposes_the_same_delta_lines(
+def test_sync_adapter_config_check_exposes_the_same_change_lines(
         pm_import, pm_config, tmp_path, monkeypatch, capsys):
-    """``sync-adapter-config --check``가 공통 세대 요약을 읽기 전용으로 그대로 출력한다."""
+    """``sync-adapter-config --check``가 공통 버전 요약을 읽기 전용으로 그대로 출력한다."""
     dest, source, _current = _case(tmp_path)
     expected = [
         "⚠️  인스턴스 소유 템플릿 변경 — AGENTS.md · +2/-1줄 · 첫 차이 1줄 · "
@@ -478,9 +478,9 @@ def test_sync_adapter_config_check_exposes_the_same_delta_lines(
     assert not (dest / ".pm_import_backups").exists(), "--check가 write를 수행했다"
 
 
-def test_pm_update_exit_exposes_final_delta_lines(
+def test_pm_update_exit_exposes_final_change_lines(
         pm_update, tmp_path, monkeypatch, capsys):
-    """pm-update의 변경 0 종료 경로도 스냅샷 요약을 잃지 않는다."""
+    """pm-update의 변경 0 종료 경로도 버전 요약을 잃지 않는다."""
     source = tmp_path / "source"
     dest = tmp_path / "dest"
     relpath = ".project_manager/tools/sentinel.py"
@@ -499,7 +499,7 @@ def test_pm_update_exit_exposes_final_delta_lines(
     ]
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setattr(
-        update_adapters, "_instance_owned_template_delta_lines",
+        update_adapters, "_instance_owned_template_change_lines",
         lambda _dest, _source: expected,
     )
 
@@ -513,7 +513,7 @@ def test_pm_update_exit_exposes_final_delta_lines(
 
 def test_pm_update_managed_auto_update_does_not_prescribe_accept(
         pm_update, tmp_path, monkeypatch, capsys):
-    """managed 자동 갱신 뒤 최종 요약은 같은 파일에 --accept를 다시 처방하지 않는다."""
+    """managed 자동 갱신 뒤 최종 요약은 같은 파일에 --accept를 다시 안내하지 않는다."""
     source = tmp_path / "source"
     dest = tmp_path / "dest"
     relpath = ".project_manager/tools/sentinel.py"
@@ -539,13 +539,13 @@ def test_pm_update_managed_auto_update_does_not_prescribe_accept(
             "preserved": [], "degraded": [], "blocking": [], "drift": [],
         }
 
-    def final_delta(_dest, _source):
-        assert synced["done"], "세대 요약이 managed 최종 판정보다 먼저 계산됐다"
+    def final_change(_dest, _source):
+        assert synced["done"], "버전 요약이 managed 최종 판정보다 먼저 계산됐다"
         return []
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setattr(update_adapters, "sync_adapter_configs", sync_configs)
-    monkeypatch.setattr(update_adapters, "_instance_owned_template_delta_lines", final_delta)
+    monkeypatch.setattr(update_adapters, "_instance_owned_template_change_lines", final_change)
     monkeypatch.setattr(
         entry_doc_migration, "migrate_entry_doc", lambda *_args, **_kwargs: {"status": "current"})
     monkeypatch.setattr(entry_doc_migration, "_print_entry_doc_migration_finding", lambda *_a, **_k: None)

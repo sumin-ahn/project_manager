@@ -17,28 +17,28 @@ from pm_engine.infra import install_conf
 from pm_engine.infra import install_files
 
 
-# ── 진입 doc 세대 마이그레이션 ────────────────────────────────
+# ── 진입 doc 버전 마이그레이션 ────────────────────────────────
 # 기존 채택자의 구형 진입 doc(자족 매뉴얼형 opencode `AGENTS.md`·~22KiB)을 신형(harness-neutral
-# 공통 코어 + `.opencode/pm-instructions.md` + `opencode.jsonc` `instructions` 배열)으로 수렴시킨다
-# — 2세대 영구 공존 차단(사용자 발의 "신형 전환 선택제=관리 분기"). self-update 흡수 경로 한정이며
-# `--target` 엔진 export 는 비발화(옛 표기 이관과 같은 경계).
+# 공통 코어 + `.opencode/pm-instructions.md` + `opencode.jsonc` `instructions` 배열)으로 일치시킨다
+# — 두 버전 영구 공존 차단(사용자 발의 "신형 전환 선택제=관리 분기"). self-update 갱신 경로 한정이며
+# `--target` 엔진 export 에서는 실행하지 않는다(옛 표기 이관과 같은 경계).
 #
 # 판정 = **미수정 여부 단 하나**(mechanize·추측 0). @render 치환(operational 토큰)·manual-fill TODO
-# 마커가 채택자본을 세대 원본에서 벌려 놓으므로 순수 해시 대조는 불가능하다(ticket 열린 질문). →
+# 마커가 채택자본을 버전 원본에서 벌려 놓으므로 순수 해시 대조는 불가능하다(ticket 열린 질문). →
 # **치환-불변 정규화**로 판정한다: (1) manual-fill 마커(import_fill._mark_todos)를 벗겨 정규화하고,
-# (2) 세대 원본에서 operational 토큰을 줄-경계 wildcard 로, free-form 토큰(`{{PROJECT_CONSTRAINTS}}`)
+# (2) 버전 원본에서 operational 토큰을 줄-경계 wildcard 로, free-form 토큰(`{{PROJECT_CONSTRAINTS}}`)
 # 을 *리터럴*(미채움=pristine 요구)로 둔 패턴에 re.fullmatch 한다. operational=출하 렌더(전 채택자
 # 결정적)라 wildcard(=미수정), free-form=채택자 FILL 영역이라 리터럴 요구(채웠으면 커스텀 흔적→무손
 # loud). 이로써 local.conf 가 tagline/date 를 보존하지 않아도(board.py init 은 `runtime.py`·
-# `test.cmd`·`project.name` 만 기록) 세대 판정이 성립한다 — 재렌더 대조(local.conf 미보유 토큰서 실패)보다 강건.
+# `test.cmd`·`project.name` 만 기록) 버전 판정이 성립한다 — 재렌더 대조(local.conf 미보유 토큰서 실패)보다 강건.
 # 매칭 시 operational 값을 *포획*해 신형 재렌더에 재사용(채택자 tagline 보존).
 
 # import_fill._mark_todos 가 manual-fill 시 free-form placeholder 줄 끝에 덧붙이는 마커 — 정규화로
-# 벗겨낸다(세대 원본엔 없음). pm_import 리터럴과 동일해야 한다(단일 진실·거기서 바뀌면 여기도).
+# 벗겨낸다(버전 원본엔 없음). pm_import 리터럴과 동일해야 한다(단일 진실·거기서 바뀌면 여기도).
 _ENTRY_DOC_MANUAL_TODO_MARKER = " <!-- TODO: 손으로 채우세요 -->"
 
 
-# 구형 opencode AGENTS.md 의 H1 판별자 — 신형 title 은 "PM 어댑터 공통 코어"(이 문자열 부재). 세대
+# 구형 opencode AGENTS.md 의 H1 판별자 — 신형 title 은 "PM 어댑터 공통 코어"(이 문자열 부재). 버전
 # clean-match 실패 시 "구형이나 수정됨(→loud) vs 신형/무관(→no-op)" 을 가르는 기계 신호.
 _ENTRY_DOC_OLD_GEN_MARKER = "# AGENTS.md — opencode PM 어댑터"
 
@@ -52,15 +52,15 @@ _ENTRY_DOC_PM_INSTRUCTIONS_REL = ".opencode/pm-instructions.md"
 _ENTRY_DOC_BACKUP_DIR = ".pm_import_backups"
 
 
-# 어댑터 `{{TOKEN}}` placeholder 스캔 — 세대 패턴 빌드용(operational=wildcard·그 외=리터럴 분류).
+# 어댑터 `{{TOKEN}}` placeholder 스캔 — 버전 패턴 빌드용(operational=wildcard·그 외=리터럴 분류).
 _ENTRY_DOC_TOKEN_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
 
 
-# 역대 출하 opencode AGENTS.md 세대(구형·자족 매뉴얼형)의 *원본* 텍스트 = fingerprint 자산. 채택자
-# 사이트(프레임워크 git history 없음)에서도 자족적으로 세대 판정을 하려면 원본 텍스트가 필요하므로
+# 역대 출하 opencode AGENTS.md 버전(구형·자족 매뉴얼형)의 *원본* 텍스트 = fingerprint 자산. 채택자
+# 사이트(프레임워크 git history 없음)에서도 자족적으로 버전 판정을 하려면 원본 텍스트가 필요하므로
 # (해시만으론 치환-불변 대조 불가·위 근거) 엔진에 임베드한다. zlib+base64 인코딩 — 이스케이프 함정
-# (triple-quote·backslash) 회피 + 콤팩트. 원본 = git `0ccc025`(v1.3.5 출하 세대). provenance 는
-# tests/test_entry_doc_migration.py 가 git blob 과 기계 대조(무결성 lock). 세대 추가 시 아래 튜플에
+# (triple-quote·backslash) 회피 + 콤팩트. 원본 = git `0ccc025`(v1.3.5 출하 버전). provenance 는
+# tests/test_entry_doc_migration.py 가 git blob 과 기계 대조(무결성 lock). 버전 추가 시 아래 튜플에
 # append("역대 출하본" 확장 지점·해시 목록의 텍스트 판).
 _OLD_OPENCODE_AGENTS_V1_3_5_B64 = (
     "eNqtXHtzU0eW/9+fohdmZyUFSTavJF7MFgF2ll1eFZjdmWIpXyFdGw2ypJVkCDXMlgGZNdjZ2BMbZLA98sbEJuNUZCOw2JDa"
@@ -205,12 +205,12 @@ _OLD_OPENCODE_AGENTS_GENERATIONS = (_OLD_OPENCODE_AGENTS_V1_3_5_B64,)
 
 
 def _decode_entry_doc_generation(b64: str) -> str:
-    """임베드된 세대 원본(zlib+base64) → 텍스트."""
+    """임베드된 버전 원본(zlib+base64) → 텍스트."""
     return zlib.decompress(base64.b64decode(b64)).decode("utf-8")
 
 
 def _entry_doc_operational_keys() -> frozenset:
-    """세대 대조에서 wildcard(=출하 렌더)로 볼 operational 토큰 집합 = render_rules.OPERATIONAL_KEYS.
+    """버전 대조에서 wildcard(=출하 렌더)로 볼 operational 토큰 집합 = render_rules.OPERATIONAL_KEYS.
     그 밖의 `{{...}}`(free-form·`{{PROJECT_CONSTRAINTS}}`)은 리터럴(pristine 요구)이다.
     실행 패키지의 토큰 선언을 직접 소비하므로 새 토큰이 소비자마다 누락되지 않는다.
     """
@@ -218,7 +218,7 @@ def _entry_doc_operational_keys() -> frozenset:
 
 
 def _build_entry_doc_pattern(generation_text: str, operational_keys) -> tuple[str, dict]:
-    """세대 원본 → (re.fullmatch 패턴, group→token 맵). operational 토큰은 줄-경계 wildcard 캡처
+    """버전 원본 → (re.fullmatch 패턴, group→token 맵). operational 토큰은 줄-경계 wildcard 캡처
     그룹(`[^\\n]*`), 그 외 `{{...}}`(free-form)는 리터럴, 나머지 텍스트는 re.escape.
 
     operational 값은 출하 렌더라 채택자마다 다르나 미수정 신호(줄 내 값)이므로 `[^\\n]*`. free-form
@@ -245,7 +245,7 @@ def _build_entry_doc_pattern(generation_text: str, operational_keys) -> tuple[st
 def _match_entry_doc_generation(
     generation_text: str, adopter_text: str, operational_keys
 ) -> dict | None:
-    """정규화한 채택자 AGENTS.md 가 세대 원본 구조와 byte-match 하면 포획 operational 값 dict, 아니면 None.
+    """정규화한 채택자 AGENTS.md 가 버전 원본 구조와 byte-match 하면 포획 operational 값 dict, 아니면 None.
 
     정규화 = manual-fill 마커 제거(import_fill._mark_todos). operational 토큰의 복수 occurrence 는
     같은 값이어야 한다(출하 시 uniform 치환) — 불일치면 손편집 신호로 None(안전·loud 로 낙하)."""
@@ -272,7 +272,7 @@ def _render_new_entry_doc(
     잔존(값 미보유) 시 None — 미완 렌더 파일을 쓰지 않는다(안전·loud 로 낙하).
 
     render_adapter(assert_no_leak)는 free-form `{{PROJECT_CONSTRAINTS}}` 에서 raise 하므로 쓰지
-    않는다 — operational 만 채우고 free-form 은 pristine 유지(신선 import --fill manual 과 동형)."""
+    않는다 — operational 만 채우고 free-form 은 pristine 유지(신선 import --fill manual 과 같은 방식)."""
     text = new_template_text
     for key, val in operational.items():
         if val:
@@ -443,9 +443,9 @@ def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str,
 
 
 def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -> dict:
-    """진입 doc 세대 마이그레이션 — self-update 흡수 경로 한정(호출부가 --target 게이트).
+    """진입 doc 버전 마이그레이션 — self-update 갱신 경로 한정(호출부가 --target 을 걸러 낸다).
 
-    구형 미수정 opencode `AGENTS.md`(세대 fingerprint clean-match) → 신형 공통 코어로 자동 교체
+    구형 미수정 opencode `AGENTS.md`(버전 fingerprint clean-match) → 신형 공통 코어로 자동 교체
     (+백업·`opencode.jsonc` instructions 배열 idempotent 추가). 커스텀 흔적(FILL·손편집) → 무손·
     loud 안내. 이미 신형/재실행 → no-op 멱등(부분 전환 시 jsonc instructions 만 복구). `write=False`
     (dry-run)면 판정만 하고 파일을 쓰지 않는다. 반환 dict 는 finding 출력·테스트 단언 공용.
@@ -459,7 +459,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
         "status": "not_opencode", "agents_replaced": False, "jsonc_updated": False,
         "backup_rel": None, "matched_generation": None,
     }
-    # opencode 채택자 게이트 — opencode.jsonc 부재면 비-opencode(claude 등)·비발화.
+    # opencode 채택자 확인 — opencode.jsonc 부재면 비-opencode(claude 등)·실행하지 않음.
     if not jsonc_path.is_file():
         return result
     if not agents_path.is_file():
@@ -469,7 +469,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
     adopter_agents = fs.read_text_shared(agents_path, encoding="utf-8")
     operational_keys = _entry_doc_operational_keys()
 
-    # 세대 clean-match 탐색 (구형 미수정?).
+    # 버전 clean-match 탐색 (구형 미수정?).
     captured = None
     matched_gen = None
     for idx, b64 in enumerate(_OLD_OPENCODE_AGENTS_GENERATIONS):
@@ -483,7 +483,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
         # ── 구형 미수정 → 자동 전환 ─────────────────────────────────────────
         new_tmpl_path = source_root / "templates" / "opencode" / "AGENTS.md"
         if not new_tmpl_path.is_file():
-            # 신형 목적지(source) 부재 — fail-soft(무손·loud 아님·비정상 source 신호는 타 게이트).
+            # 신형 목적지(source) 부재 — fail-soft(무손·loud 아님·비정상 source 신호는 다른 검사가 맡는다).
             result["status"] = "no_new_template"
             return result
         # operational: 포획값(tagline 등 local.conf 미보유분) + local.conf(현재 진실·py/name/test_cmd 우선).
@@ -515,7 +515,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
 
     # ── clean-match 실패 ────────────────────────────────────────────────────
     if _ENTRY_DOC_OLD_GEN_MARKER in adopter_agents:
-        # 구형 세대이나 수정됨(FILL·손편집) → 무손·loud 안내(수동 병합·커스텀 보존).
+        # 구형 버전이나 수정됨(FILL·손편집) → 무손·loud 안내(수동 병합·커스텀 보존).
         result["status"] = "loud_manual"
         return result
     # 신형/무관 — AGENTS.md 미터치. opencode.jsonc instructions 만 idempotent 보장(부분 전환 복구·멱등).

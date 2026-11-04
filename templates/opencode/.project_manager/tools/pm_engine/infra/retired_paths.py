@@ -33,7 +33,7 @@ def print_conf_migration_notice(dest_root: Path) -> None:
 
     엔진 파일은 받게 하고(막으면 채택자가 안내대로 고칠 수단 없이 갇힌다) 값을 실제로 소비하는
     지점에서 fail-loud 한다(§교체 절차). 기본값 변경 1줄은 구표기 잔존 여부와 무관하게 나간다 —
-    키를 아예 설정하지 않은 채택자는 fail-loud 가 잡지 못하는 유일한 형상이기 때문이다.
+    키를 아예 설정하지 않은 채택자는 fail-loud 가 잡지 못하는 유일한 경우이기 때문이다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.exists():
@@ -111,7 +111,7 @@ def validated_retired_path_directives(
 ) -> list[tuple[str, str]]:
     """선택 upstream manifest들의 strict·출하 가능한 retired-path 선언 합집합.
 
-    flavor 선택과 실제 이주가 같은 판정을 소비한다. OLD는 upstream 소유집합에서 빠져 있어야 하고,
+    하네스별 판 선택과 실제 이주가 같은 판정을 소비한다. OLD는 upstream 소유집합에서 빠져 있어야 하고,
     NEW는 선택 manifest 행이 소유(행 경로와 같거나 디렉터리 행 하위·`_path_owned_by`)해야 하며 그 소유
     행이 모두 bare byte-copy 행이고, source_root의 regular file이어야 한다.
     """

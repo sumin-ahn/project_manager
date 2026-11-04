@@ -55,8 +55,8 @@ def classify_upstream(value: str) -> str:
 def validate_upstream_value(value: str) -> tuple[bool, str]:
     """upstream 값의 *순수* 안전 검증 (네트워크 0·도달성은 별도). (ok, reason).
 
-    git 을 호출하기 *전* 입구 가드 — fail-closed(나쁜 값은 거부, silently 기록 금지
-    동형). 검사:
+    git 을 호출하기 *전* 입구 가드 — fail-closed(나쁜 값은 거부, silently 기록 금지와
+    같은 방식). 검사:
       - 빈/공백 거부.
       - leading-dash 거부 — `--upload-pack=...` 류 옵션 오인(argv 첫 위치라도 안전).
       - URL 이면 scheme allowlist(https/ssh/file·git://·http:// 거부) 강제 + credential-in-URL

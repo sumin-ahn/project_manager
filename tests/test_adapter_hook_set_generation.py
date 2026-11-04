@@ -1,19 +1,19 @@
-"""어댑터 훅 세트 세대 정합 (T-0606) — 부분-세대 락아웃 폐쇄.
+"""어댑터 훅 세트 버전 일치 (T-0606) — 부분-버전 락아웃 폐쇄.
 
 claude 훅 세트는 갱신 주체가 둘로 갈린다: `settings.json` 은 채택자 소유라 pm_update 가 못 덮고,
 래퍼(`ctx_stop_hook.sh`)·드라이버(`pm_orch_claude.py`)는 manifest 등재라 pm_update 가 덮는다.
-그래서 "신 settings + 구 드라이버" 세대 혼합 창이 구조적으로 열리고, 그 조합에서 구 드라이버가
-미지원 플래그를 argparse rc2 로 거부하면 PreToolUse rc2 = 도구 전면 차단이다(v1.7.0 흡수 실측·
+그래서 "신 settings + 구 드라이버" 버전 혼합 창이 구조적으로 열리고, 그 조합에서 구 드라이버가
+미지원 플래그를 argparse rc2 로 거부하면 PreToolUse rc2 = 도구 전면 차단이다(v1.7.0 갱신 실측·
 fresh 채택자는 탈출 불능). 이 절이 고정하는 성질:
 
-  - 위험 방향(config 가 앞선 세대)만 검출하고 반대 방향(구 config + 신 드라이버)은 조용하다.
-  - 처방이 두 갈래로 갈린다 — dest 엔진 파일이 뒤처졌으면 pm-update, config 가 이 엔진 세대보다
+  - 위험 방향(config 가 앞선 버전)만 검출하고 반대 방향(구 config + 신 드라이버)은 조용하다.
+  - 해결 방법이 두 갈래로 갈린다 — dest 엔진 파일이 뒤처졌으면 pm-update, config 가 이 엔진 버전보다
      앞섰으면 `sync-adapter-config --accept`.
   - 수용은 엔진 파일 선행을 기계가 강제한다(순서 위반 = 파일 미변경 거부).
   - 동기는 훅 세트 파일을 원자 교체한다(실행 중 하네스의 torn read 창 제거).
 
 픽스처는 합성 트리다 — 실 template 본문에 의존하면 상류 문구가 바뀔 때마다 무관하게 깨진다.
-다만 **출하 template 자기정합**만은 실 트리를 본다(그게 이 클래스의 재발 가드다).
+다만 **출하 template 자기 일치**만은 실 트리를 본다(그게 이 클래스의 재발 가드다).
 """
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ _WRAPPER_REL = ".claude/ctx_stop_hook.sh"
 _DRIVER_REL = ".claude/pm_orch_claude.py"
 _GIT_ANCHOR_FLAG = "--git-anchor-hook"
 
-# 세대 마커는 **플래그 리터럴 보유 여부** 하나다(엔진 판정과 같은 기준). 본문은 최소 형태로 둔다.
+# 버전 마커는 **플래그 리터럴 보유 여부** 하나다(엔진 판정과 같은 기준). 본문은 최소 형태로 둔다.
 _WRAPPER_NEW = (
     '#!/usr/bin/env bash\n'
     'target="$hook_dir/ctx_stop_hook.py"\n'
@@ -107,7 +107,7 @@ def pm_config():
 
 # 출하 template 의 압축 지점 관리 키 값 — 수용 뒤 반영(`harness_ctx.apply_harness_ctx`)은 기본
 #   local.conf 에서 이 값을 그대로 두므로, 합성 settings 도 같은 값을 실어 "수용 결과 == template"
-#   대조가 훅 세트 축만 재게 한다.
+#   대조가 훅 세트만 재게 한다.
 _TEMPLATE_SETTINGS = json.loads(
     (REPO / "templates" / "claude_code" / _SETTINGS_REL).read_text(encoding="utf-8"))
 _MANAGED_SETTINGS = {key: _TEMPLATE_SETTINGS[key] for key in ("autoCompactWindow", "idleCompaction")}
@@ -115,7 +115,7 @@ _MANAGED_SETTINGS = {key: _TEMPLATE_SETTINGS[key] for key in ("autoCompactWindow
 
 def _settings(*, git_anchor: bool, wrapper_rel: str = _WRAPPER_REL,
               flag: str = _GIT_ANCHOR_FLAG) -> str:
-    """claude settings.json — PreToolUse 훅 2건(공통 넛지 + 선택적 git-anchor Bash 매처)."""
+    """claude settings.json — PreToolUse 훅 2건(공통 경고 + 선택적 git-anchor Bash 매처)."""
     groups = [{
         "matcher": "*",
         "hooks": [{"type": "command",
@@ -138,11 +138,11 @@ _UPSTREAM_DECLARATION_REL = _UPSTREAM_PACKAGE_REL + "/domain/adapter_specs.py"
 
 
 def _plant_upstream_package(source: Path, *, extra_tail: str = "") -> Path:
-    """상류 트리에 실제 엔진 package 사본을 놓는다 — 게이트가 **상류 세대 선언**을 읽는 전제.
+    """상류 트리에 실제 엔진 package 사본을 놓는다 — 검사가 **상류 버전 선언**을 읽는 전제.
 
-    실 package 를 그대로 복사해야 "상류 세대 == 현행 선언" 이라는 기본 형상이 되고(게이트 통과),
-    `extra_tail` 로 `domain/adapter_specs.py` 에 선언을 덧붙이면 **상류만 아는 세대**가 된다(설치본은
-    모르는 묶음/경로). 반환값은 선언 파일 경로다. 다시 부르면 package 를 새 세대로 갈아 끼운다."""
+    실 package 를 그대로 복사해야 "상류 버전 == 현행 선언" 이라는 기본 구성이 되고(검사 통과),
+    `extra_tail` 로 `domain/adapter_specs.py` 에 선언을 덧붙이면 **상류만 아는 버전**이 된다(설치본은
+    모르는 묶음/경로). 반환값은 선언 파일 경로다. 다시 부르면 package 를 새 버전으로 갈아 끼운다."""
     target = source / _UPSTREAM_PACKAGE_REL
     if target.exists():
         shutil.rmtree(target)
@@ -168,14 +168,14 @@ def _make_case(tmp_path: Path, *, dest_settings: str, dest_wrapper: str | None,
                dest_driver: str | None, template_settings: str | None = None,
                template_wrapper: str = _WRAPPER_NEW,
                template_driver: str = _DRIVER_NEW,
-               ledger: dict | None = None,
+               records: dict | None = None,
                upstream_tail: str | None = "") -> tuple[Path, Path]:
     """(dest, source) — claude 채택자 + 합성 프레임워크.
 
-    `dest_wrapper`/`dest_driver` 를 None 으로 주면 그 파일이 **설치되지 않은** 형상이다.
-    `ledger` 는 어댑터 원장(설치 시점 해시) — `edited` 판정을 만들려면 dest 와 다른 해시를 준다.
+    `dest_wrapper`/`dest_driver` 를 None 으로 주면 그 파일이 **설치되지 않은** 경우다.
+    `records` 는 어댑터 기록(설치 시점 해시) — `edited` 판정을 만들려면 dest 와 다른 해시를 준다.
     `upstream_tail` 은 상류 선언 파일에 덧붙일 선언(None 이면 package 자체를 놓지 않는다 —
-    상류 세대 미해소 형상)."""
+    상류 버전 미해소 경우)."""
     source = tmp_path / "framework"
     template = source / "templates" / "claude_code"
     (template / ".claude").mkdir(parents=True)
@@ -198,15 +198,15 @@ def _make_case(tmp_path: Path, *, dest_settings: str, dest_wrapper: str | None,
         (dest / _DRIVER_REL).write_text(dest_driver, encoding="utf-8")
     (dest / ".project_manager" / "install.json").write_text(
         '{"schema": 1, "harnesses": ["claude"]}\n', encoding="utf-8")
-    if ledger is not None:
+    if records is not None:
         (dest / ".project_manager" / "adapter_baseline.json").write_text(
-            json.dumps({"schema": 1, "files": ledger}, ensure_ascii=False) + "\n",
+            json.dumps({"schema": 1, "files": records}, ensure_ascii=False) + "\n",
             encoding="utf-8")
     return dest, source
 
 
-def _ledger_entry(text: str) -> dict:
-    """원장 항목 — 설치가 그 내용으로 레이다운했다는 기록(해시만 판정에 쓰인다)."""
+def _record_entry(text: str) -> dict:
+    """기록 항목 — 설치가 그 내용으로 레이다운했다는 기록(해시만 판정에 쓰인다)."""
     return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             "recorded_at": "2026-01-01T00:00:00+09:00", "template_rev": "deadbeef"}
 
@@ -226,7 +226,7 @@ def _write_source_manifest(source: Path, entries: list[str]) -> None:
 def test_new_config_with_old_driver_is_detected_as_lockout(tmp_path):
     """신 settings + 구 드라이버 = 락아웃 조합 → 미지원 플래그로 검출된다.
 
-    이게 v1.7.0 흡수에서 실제로 터진 조합이다. 검출 못 하면 채택자는 Bash 전면 차단 상태로
+    이게 v1.7.0 갱신에서 실제로 터진 조합이다. 검출 못 하면 채택자는 Bash 전면 차단 상태로
     pm-update 를 green 으로 받는다(성공 보고 + 잠긴 하네스)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
@@ -239,12 +239,12 @@ def test_new_config_with_old_driver_is_detected_as_lockout(tmp_path):
     assert finding.kind == hook_sets.HOOK_SET_UNSUPPORTED_FLAG
     assert finding.subject == _GIT_ANCHOR_FLAG
     assert finding.unmet_paths == (_DRIVER_REL,), \
-        "래퍼는 신세대인데 드라이버까지 미충족으로 뭉뚱그렸다"
-    assert finding.remedy == hook_sets.HOOK_SET_FIX_ENGINE_STALE
+        "래퍼는 새 버전인데 드라이버까지 미충족으로 뭉뚱그렸다"
+    assert finding.fix == hook_sets.HOOK_SET_FIX_ENGINE_STALE
 
 
 def test_old_config_with_new_driver_is_not_flagged(tmp_path):
-    """구 settings + 신 드라이버는 훅 미발화라 무해 — 검사가 조용해야 한다(거짓 red 금지)."""
+    """구 settings + 신 드라이버는 훅이 돌지 않아 무해 — 검사가 조용해야 한다(거짓 red 금지)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
@@ -253,7 +253,7 @@ def test_old_config_with_new_driver_is_not_flagged(tmp_path):
 
 
 def test_same_generation_set_is_silent(tmp_path):
-    """양쪽 모두 신세대면 판정이 비어 있다."""
+    """양쪽 모두 새 버전이면 판정이 비어 있다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
@@ -262,7 +262,7 @@ def test_same_generation_set_is_silent(tmp_path):
 
 
 def test_old_wrapper_alone_is_detected(tmp_path):
-    """dispatch 하는 래퍼가 구세대면 그 파일이 미충족으로 잡힌다(체인 전체가 판정 대상)."""
+    """dispatch 하는 래퍼가 옛 버전이면 그 파일이 미충족으로 잡힌다(체인 전체가 판정 대상)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_OLD, dest_driver=_DRIVER_NEW)
@@ -285,7 +285,7 @@ def test_missing_hook_script_is_detected(tmp_path):
 
 
 def test_adopter_own_hook_script_is_out_of_judgment_scope(tmp_path):
-    """채택자 자작 훅은 엔진 소관 밖 — 부재해도 처방하지 않는다(거짓 red 금지)."""
+    """채택자 자작 훅은 엔진 소관 밖 — 부재해도 안내하지 않는다(거짓 red 금지)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False,
                                           wrapper_rel=".claude/my_own_hook.sh"),
@@ -295,9 +295,9 @@ def test_adopter_own_hook_script_is_out_of_judgment_scope(tmp_path):
 
 
 def test_config_ahead_of_engine_prescribes_accept_not_pm_update(tmp_path):
-    """상류 template 조차 그 플래그를 못 주면 config 가 앞선 것 → 처방이 수용 채널로 갈린다.
+    """상류 template 조차 그 플래그를 못 주면 config 가 앞선 것 → 해결 방법이 수용 채널로 갈린다.
 
-    처방이 갈리지 않으면 채택자는 절대 끝나지 않는 pm-update 를 반복한다(엔진엔 줄 게 없다)."""
+    해결 방법이 갈리지 않으면 채택자는 절대 끝나지 않는 pm-update 를 반복한다(엔진엔 줄 게 없다)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_OLD, dest_driver=_DRIVER_OLD,
@@ -306,13 +306,13 @@ def test_config_ahead_of_engine_prescribes_accept_not_pm_update(tmp_path):
 
     findings = hook_sets.judge_adapter_hook_sets(dest, source)
 
-    assert [f.remedy for f in findings] == [hook_sets.HOOK_SET_FIX_CONFIG_AHEAD], findings
+    assert [f.fix for f in findings] == [hook_sets.HOOK_SET_FIX_CONFIG_AHEAD], findings
     lines = " ".join(hook_sets.hook_set_fix_lines(findings[0]))
     assert "sync-adapter-config --accept" in lines and _SETTINGS_REL in lines
 
 
 def test_engine_stale_prescribes_pm_update_with_the_unmet_files(tmp_path):
-    """dest 엔진 파일이 뒤처진 경우의 처방은 pm-update + 미충족 파일 실값이다."""
+    """dest 엔진 파일이 뒤처진 경우의 해결 방법은 pm-update + 미충족 파일 실값이다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
@@ -324,20 +324,20 @@ def test_engine_stale_prescribes_pm_update_with_the_unmet_files(tmp_path):
 
 
 def test_missing_source_root_falls_back_to_both_prescriptions(tmp_path):
-    """비교 기준이 없으면 처방을 단정하지 않는다(엔진 선행을 먼저 권하되 수용 채널도 남긴다)."""
+    """비교 기준이 없으면 해결 방법을 단정하지 않는다(엔진 선행을 먼저 권하되 수용 채널도 남긴다)."""
     dest, _source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
 
     findings = hook_sets.judge_adapter_hook_sets(dest, None)
 
-    assert [f.remedy for f in findings] == [hook_sets.HOOK_SET_FIX_UNKNOWN]
+    assert [f.fix for f in findings] == [hook_sets.HOOK_SET_FIX_UNKNOWN]
     lines = hook_sets.hook_set_fix_lines(findings[0])
     assert "pm-update" in lines[0] and "sync-adapter-config --accept" in lines[1]
 
 
 def test_broken_config_json_is_not_a_finding(tmp_path):
-    """파손된 채택자 config 는 판정 불가일 뿐 훅 세대 red 가 아니다(엉뚱한 처방 금지)."""
+    """파손된 채택자 config 는 판정 불가일 뿐 훅 버전 red 가 아니다(엉뚱한 안내 금지)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
@@ -346,7 +346,7 @@ def test_broken_config_json_is_not_a_finding(tmp_path):
     assert hook_sets.judge_adapter_hook_sets(dest, source) == []
 
 
-# ── 선언 정합 (하드코딩 claude 전용 방지) ─────────────────────────────────────
+# ── 선언 일치 (하드코딩 claude 전용 방지) ─────────────────────────────────────
 
 
 def test_every_registered_harness_declares_a_hook_set():
@@ -373,7 +373,7 @@ def test_flag_support_targets_are_declared_live_files():
 
 
 def test_flag_support_chain_moves_as_one_coupled_group():
-    """플래그 체인은 반드시 한 결합 묶음 안에 있다 — 부분 전파로 갈릴 수 있는 축이 곧 그 체인이다."""
+    """플래그 체인은 반드시 한 결합 묶음 안에 있다 — 부분 전파로 갈릴 수 있는 단위가 곧 그 체인이다."""
     for harness, spec in adapter_specs.ADAPTER_HOOK_SET.items():
         for flag, required in spec.flag_support.items():
             assert any(set(required) <= set(group) for group in spec.coupled_groups), \
@@ -381,7 +381,7 @@ def test_flag_support_chain_moves_as_one_coupled_group():
 
 
 def test_shipped_claude_template_hook_set_is_self_consistent():
-    """출하 template 자체가 세대 정합이다 — settings.json 에 플래그를 더하고 드라이버를 안 고치면 red.
+    """출하 template 자체가 버전이 일치한다 — settings.json 에 플래그를 더하고 드라이버를 안 고치면 red.
 
     합성 픽스처만으로는 실제 출하물의 재발을 못 막는다(이 클래스의 도입 커밋 T-0587 이 정확히
     settings.json + 래퍼 + 드라이버 동시 변경이었다)."""
@@ -396,11 +396,11 @@ def test_shipped_claude_template_hook_set_is_self_consistent():
 
 
 def test_shipped_claude_template_flag_demand_is_not_vacuous(tmp_path):
-    """출하 settings.json 이 **실제로** 세대 플래그를 요구한다 — 요구 0 이면 자기정합 단언이 공허하다.
+    """출하 settings.json 이 **실제로** 버전 플래그를 요구한다 — 요구 0 이면 자기 일치 단언이 공허하다.
 
-    `unmet == {}` 는 요구가 하나도 없을 때도 green 이다. 배선이 진입점 뒤로 접히면서 config 가
-    플래그를 안 넘기게 되면 그 순간 세대 결합 가드(v1.7.0 락아웃 클래스)가 조용히 무력해진다 —
-    구세대 드라이버를 심어 요구가 표면에 뜨는지 본다."""
+    `unmet == {}` 는 요구가 하나도 없을 때도 green 이다. 직결 등록이 진입점 뒤로 합쳐지면서 config 가
+    플래그를 안 넘기게 되면 그 순간 버전 결합 가드(v1.7.0 락아웃 클래스)가 조용히 무력해진다 —
+    옛 버전 드라이버를 심어 요구가 결과에 뜨는지 본다."""
     template_root = REPO / "templates" / "claude_code"
     spec = adapter_specs.ADAPTER_HOOK_SET["claude"]
     document = json.loads(
@@ -408,19 +408,19 @@ def test_shipped_claude_template_flag_demand_is_not_vacuous(tmp_path):
     stale = tmp_path / "stale"
     (stale / ".claude").mkdir(parents=True)
     for relpath in spec.live_files:
-        (stale / relpath).write_text("# 구세대 사본\n", encoding="utf-8")
+        (stale / relpath).write_text("# 옛 버전 사본\n", encoding="utf-8")
 
     unmet = hook_sets._hook_set_demands(document, spec, stale)
 
     assert (hook_sets.HOOK_SET_UNSUPPORTED_FLAG, _GIT_ANCHOR_FLAG) in unmet, \
-        f"출하 settings.json 이 {_GIT_ANCHOR_FLAG} 를 요구하지 않는다(세대 결합 가드 공허): {unmet}"
+        f"출하 settings.json 이 {_GIT_ANCHOR_FLAG} 를 요구하지 않는다(버전 결합 가드 공허): {unmet}"
 
 
 def test_codex_entrypoint_migration_left_claude_wiring_untouched():
-    """codex 진입점 마이그레이션(T-0777)이 claude 배선을 건드리지 않았다.
+    """codex 진입점 마이그레이션(T-0777)이 claude 등록을 건드리지 않았다.
 
-    claude 는 `PreToolUse matcher=*` 진입점을 이미 갖고 있어 흡수 이득이 없고, 기존 `Bash`
-    블록을 지우면 세대 결합 가드가 공허해지며 발화 스코프가 전 도구로 넓어진다. 그래서 이
+    claude 는 `PreToolUse matcher=*` 진입점을 이미 갖고 있어 갱신 이득이 없고, 기존 `Bash`
+    블록을 지우면 버전 결합 가드가 공허해지며 훅이 도는 범위가 전 도구로 넓어진다. 그래서 이
     티켓의 비목표였고, 그 사실을 값으로 고정한다."""
     document = json.loads(
         (REPO / "templates" / "claude_code" / _SETTINGS_REL).read_text(encoding="utf-8"))
@@ -431,32 +431,32 @@ def test_codex_entrypoint_migration_left_claude_wiring_untouched():
     commands = [handler["command"] for group in groups
                 for handler in group["hooks"]]
     assert any(command.endswith(_GIT_ANCHOR_FLAG) for command in commands)
-    # codex 디스패처 표기가 claude config 로 새면 배선 진실이 두 벌이 된다.
+    # codex 디스패처 표기가 claude config 로 새면 등록 진실이 두 벌이 된다.
     for command in commands:
         assert "--hook-dispatch" not in command, command
         assert "pm_orch_codex" not in command, command
 
 
-# ── 역방향 축: 이 엔진 세대가 기대하는 진입점이 config 에 있나 (T-0777) ──────────
+# ── 역방향 검사: 이 엔진 버전이 기대하는 진입점이 config 에 있나 (T-0777) ──────────
 # 위 절들은 **config → 엔진** 방향(config 가 요구하는 것을 설치본이 감당하나)만 본다. 진입점이
 # 아예 없으면 요구가 0 이라 그 방향으로는 영원히 green 이고, 그 상태에서 등록된 가드는 한 번도
-# 발화하지 않는다. 이 절이 반대 방향을 고정한다 — 판정은 advisory 이지 차단이 아니다(config 는
+# 돌지 않는다. 이 절이 반대 방향을 고정한다 — 판정은 advisory 이지 차단이 아니다(config 는
 # 채택자 소유).
 
 _CODEX_HOOKS_REL = ".codex/hooks.json"
 _CODEX_DISPATCHER_REL = ".codex/pm_orch_codex.py"
 _CODEX_DISPATCH_FLAG = "--hook-dispatch"
 # 진입점 이벤트 전수는 **엔진 선언에서 파생**한다 — 여기에 목록을 손으로 두 번째로 두면
-#   T-0806 처럼 집합이 늘 때 픽스처만 옛 세대로 남아 조용히 다른 형상을 검사한다.
+#   T-0806 처럼 집합이 늘 때 픽스처만 옛 버전으로 남아 조용히 다른 경우를 검사한다.
 _CODEX_ENTRYPOINT_EVENTS = tuple(
     entrypoint.event for entrypoint in
     adapter_specs.ADAPTER_HOOK_SET["codex"].entrypoints)
-# 디스패처 세대 마커는 config 가 넘기는 **호출 값**(플래그 + 이벤트 이름) 보유다 — 엔진 판정과
-#   같은 기준이다. 플래그만 알고 그 이벤트는 모르는 세대가 실재하고, 그 조합에서 훅은 매 발화마다
-#   폴백으로 빠진다.
+# 디스패처 버전 마커는 config 가 넘기는 **호출 값**(플래그 + 이벤트 이름) 보유다 — 엔진 판정과
+#   같은 기준이다. 플래그만 알고 그 이벤트는 모르는 버전이 실재하고, 그 조합에서 훅은 매 실행마다
+#   대체로 빠진다.
 _DISPATCHER_NEW = (f'CODEX_HOOK_DISPATCH_FLAG = "{_CODEX_DISPATCH_FLAG}"\n'
                    f'CODEX_HOOK_ENTRYPOINT_EVENTS = {_CODEX_ENTRYPOINT_EVENTS!r}\n')
-# 진입점 집합이 늘기 전 세대 — 플래그는 아는데 새 이벤트는 모른다.
+# 진입점 집합이 늘기 전 버전 — 플래그는 아는데 새 이벤트는 모른다.
 _DISPATCHER_PREVIOUS_EVENT_SET = (
     f'CODEX_HOOK_DISPATCH_FLAG = "{_CODEX_DISPATCH_FLAG}"\n'
     f'CODEX_HOOK_ENTRYPOINT_EVENTS = {_CODEX_ENTRYPOINT_EVENTS[:-1]!r}\n')
@@ -464,7 +464,7 @@ _DISPATCHER_OLD = 'def main(argv=None):\n    return 0\n'
 
 
 def _codex_hooks(events=_CODEX_ENTRYPOINT_EVENTS, *, matcher: str | None = None) -> str:
-    """codex hooks.json — PreToolUse만 안전 도구 exact, 나머지는 범용인 출하 형상."""
+    """codex hooks.json — PreToolUse만 안전 도구 exact, 나머지는 범용인 출하 구성."""
     return json.dumps({"hooks": {
         event: [{
             "matcher": (matcher if matcher is not None else
@@ -496,7 +496,7 @@ def test_entrypoint_declaration_targets_are_declared_live_files():
     """진입점이 부르는 디스패처는 전부 그 하네스의 훅 세트 파일이어야 한다(선언 두 벌 방지).
 
     밖의 경로를 선언하면 "판정은 하는데 동기가 원자 write 하지 않는" 파일이 생긴다 —
-    `flag_support` 축과 같은 근거다."""
+    `flag_support` 쪽과 같은 근거다."""
     seen_any = False
     for harness, spec in adapter_specs.ADAPTER_HOOK_SET.items():
         events = [entrypoint.event for entrypoint in spec.entrypoints]
@@ -518,9 +518,9 @@ def test_entrypoint_declaration_targets_are_declared_live_files():
                           ("opencode", "opencode")))
 def test_shipped_template_satisfies_its_entrypoint_declaration(
         harness, template_dir):
-    """출하 template 이 자기 진입점 선언을 만족한다 — 배선을 지우면 그 자리에서 red.
+    """출하 template 이 자기 진입점 선언을 만족한다 — 등록을 지우면 그 자리에서 red.
 
-    합성 픽스처만으로는 실 출하물의 재발을 못 막는다(claude 축의 자기정합 단언과 같은 근거)."""
+    합성 픽스처만으로는 실 출하물의 재발을 못 막는다(claude 쪽의 자기 일치 단언과 같은 근거)."""
     findings = hook_sets.judge_adapter_hook_entrypoints(
         REPO / "templates" / template_dir, REPO, [harness])
 
@@ -543,14 +543,14 @@ def test_missing_entrypoint_is_reported_with_the_event_named(tmp_path):
 
 
 def test_full_entrypoint_set_is_silent(tmp_path):
-    """세 진입점이 다 있고 디스패처가 그 세대면 소견 0(거짓 red 금지)."""
+    """세 진입점이 다 있고 디스패처가 그 버전이면 소견 0(거짓 red 금지)."""
     dest = _make_codex_case(tmp_path, hooks=_codex_hooks())
 
     assert hook_sets.judge_adapter_hook_entrypoints(dest, None, ["codex"]) == []
 
 
 def test_narrowed_matcher_is_not_a_universal_entrypoint(tmp_path):
-    """matcher 가 값 공간을 다 안 덮으면 진입점이 아니다 — 옛 형상이 green 으로 지나가면 안 된다."""
+    """matcher 가 값 공간을 다 안 덮으면 진입점이 아니다 — 옛 경우가 green 으로 지나가면 안 된다."""
     dest = _make_codex_case(
         tmp_path, hooks=_codex_hooks(matcher="^collaborationspawn_agent$"))
 
@@ -576,8 +576,8 @@ def test_entrypoint_pointing_at_another_command_is_not_credited(tmp_path):
 
 # ── 진입점 판정은 **값 대조**다 (존재가 아니라 호출 값) ──────────────────────
 # 디스패처 경로 부분문자열만 보면, 실행하지 않는 문자열이나 다른 이벤트를 부르는 커맨드까지
-# 진입점으로 인정된다 — 가드는 발화하지 않는데 소견은 0 건인 false-green 이다. 아래 변형들은
-# 그 시야가 실제 표면(어떤 값이 실행되는가)과 어긋나지 않는지를 고정한다.
+# 진입점으로 인정된다 — 가드는 돌지 않는데 소견은 0 건인 false-green 이다. 아래 변형들은
+# 그 검사 범위가 실제 실행 범위(어떤 값이 실행되는가)와 어긋나지 않는지를 고정한다.
 
 
 def _codex_hooks_with_command(event: str, command: str) -> str:
@@ -602,7 +602,7 @@ def _codex_hooks_with_command(event: str, command: str) -> str:
 ))
 def test_entrypoint_that_does_not_actually_fire_is_reported(
         tmp_path, label, command):
-    """실제로 발화하지 않는 커맨드는 진입점으로 인정하지 않는다(값 대조·민감도)."""
+    """실제로 돌지 않는 커맨드는 진입점으로 인정하지 않는다(값 대조·민감도)."""
     dest = _make_codex_case(
         tmp_path, hooks=_codex_hooks_with_command("PreToolUse", command))
 
@@ -662,10 +662,10 @@ def test_shipped_config_is_not_falsely_reported_by_the_value_check(
 
 def test_dispatcher_that_knows_the_flag_but_not_the_event_is_stale(
         tmp_path):
-    """플래그는 알고 그 이벤트는 모르는 디스패처 세대도 stale 이다(값 기준 stale 검사).
+    """플래그는 알고 그 이벤트는 모르는 디스패처 버전도 stale 이다(값 기준 stale 검사).
 
-    진입점 집합이 늘어난 릴리즈의 흡수 창에서 실제로 나오는 형상이고, 그 창에서 훅은 매
-    발화마다 폴백으로 빠진다 — 리터럴 `--hook-dispatch` 존재만 보면 green 으로 지나간다."""
+    진입점 집합이 늘어난 릴리즈를 받는 기간에 실제로 나오는 경우이고, 그 창에서 훅은 매
+    실행마다 대체 동작으로 빠진다 — 리터럴 `--hook-dispatch` 존재만 보면 green 으로 지나간다."""
     dest = _make_codex_case(tmp_path, hooks=_codex_hooks(),
                             dispatcher=_DISPATCHER_PREVIOUS_EVENT_SET)
 
@@ -680,7 +680,7 @@ def test_dispatcher_that_knows_the_flag_but_not_the_event_is_stale(
 
 
 def test_shipped_codex_dispatcher_supports_every_declared_invocation():
-    """출하 디스패처가 출하 config 의 호출 값을 전부 감당한다(자기정합·오탐 0)."""
+    """출하 디스패처가 출하 config 의 호출 값을 전부 감당한다(자기 일치·오탐 0)."""
     template_root = REPO / "templates" / "codex"
 
     for entrypoint in adapter_specs.ADAPTER_HOOK_SET["codex"].entrypoints:
@@ -689,9 +689,9 @@ def test_shipped_codex_dispatcher_supports_every_declared_invocation():
 
 
 def test_stale_dispatcher_behind_a_present_entrypoint_is_reported(tmp_path):
-    """진입점은 있는데 설치된 디스패처가 그 플래그를 모르면 훅이 매번 폴백으로 빠진다.
+    """진입점은 있는데 설치된 디스패처가 그 플래그를 모르면 훅이 매번 대체 동작으로 빠진다.
 
-    config 는 managed 라 자동 갱신되고 디스패처는 manifest 라 pm-update 가 덮는다 — 두 축의
+    config 는 managed 라 자동 갱신되고 디스패처는 manifest 라 pm-update 가 덮는다 — 두 쪽의
     도착 순서가 갈리는 창이 실재하고, 그 창에서 가드는 무음 통과한다."""
     dest = _make_codex_case(tmp_path, hooks=_codex_hooks(),
                             dispatcher=_DISPATCHER_OLD)
@@ -706,7 +706,7 @@ def test_stale_dispatcher_behind_a_present_entrypoint_is_reported(tmp_path):
 
 
 def test_absent_dispatcher_is_reported_not_silently_credited(tmp_path):
-    """디스패처 파일 자체가 없으면 미지원과 같은 판정이다(부재 = 무발화)."""
+    """디스패처 파일 자체가 없으면 미지원과 같은 판정이다(부재 = 돌지 않음)."""
     dest = _make_codex_case(tmp_path, hooks=_codex_hooks(), dispatcher=None)
 
     findings = hook_sets.judge_adapter_hook_entrypoints(dest, None, ["codex"])
@@ -717,7 +717,7 @@ def test_absent_dispatcher_is_reported_not_silently_credited(tmp_path):
 
 
 def test_broken_or_absent_config_yields_no_entrypoint_finding(tmp_path):
-    """config 부재·파손은 어댑터 config 채널이 말하는 상태다 — 여기서 겹쳐 처방하지 않는다."""
+    """config 부재·파손은 어댑터 config 채널이 말하는 상태다 — 여기서 겹쳐 안내하지 않는다."""
     dest = _make_codex_case(tmp_path, hooks="{ 깨진 json")
     assert hook_sets.judge_adapter_hook_entrypoints(dest, None, ["codex"]) == []
 
@@ -727,7 +727,7 @@ def test_broken_or_absent_config_yields_no_entrypoint_finding(tmp_path):
 
 def test_previous_generation_declaration_without_entrypoints_is_silent(
         tmp_path):
-    """진입점 개념이 없던 세대 선언으로 판정하면 조용하다(구세대 형제 강등 경로)."""
+    """진입점 개념이 없던 버전 선언으로 판정하면 조용하다(옛 버전 형제의 낮춤 경로)."""
     dest = _make_codex_case(tmp_path, hooks=_codex_hooks(("PreToolUse",)))
     legacy_spec = SimpleNamespace(
         config_relpath=_CODEX_HOOKS_REL, live_files=(_CODEX_DISPATCHER_REL,),
@@ -739,7 +739,7 @@ def test_previous_generation_declaration_without_entrypoints_is_silent(
 
 def test_sync_path_reports_missing_entrypoint_without_blocking(
         pm_update, tmp_path, capsys):
-    """pm_update 가 진입점 누락을 **지목**하되 완료 게이트는 막지 않는다(advisory)."""
+    """pm_update 가 진입점 누락을 **지목**하되 완료 통과 조건은 막지 않는다(advisory)."""
     dest = _make_codex_case(tmp_path, hooks=_codex_hooks(("PreToolUse",)))
     source = tmp_path / "framework"
     (source / "templates" / "codex" / ".codex").mkdir(parents=True)
@@ -755,13 +755,13 @@ def test_sync_path_reports_missing_entrypoint_without_blocking(
     assert "어댑터 훅 진입점 누락(codex)" in err
     for event in set(_CODEX_ENTRYPOINT_EVENTS) - {"PreToolUse"}:
         assert event in err, event
-    assert not update_adapters._adapter_hook_set_gate_failed(result), \
-        "advisory 축이 완료 게이트를 막았다 — 훅을 끈 채택자의 흡수가 영구히 잠긴다"
+    assert not update_adapters._adapter_hook_set_check_failed(result), \
+        "advisory 쪽이 완료 통과 조건을 막았다 — 훅을 끈 채택자의 갱신이 영구히 잠긴다"
 
 
 def test_sync_path_is_silent_when_every_entrypoint_is_present(
         pm_update, tmp_path, capsys):
-    """진입점이 다 있으면 이 축은 무출력이다(소음 0)."""
+    """진입점이 다 있으면 이 검사는 무출력이다(소음 0)."""
     dest = _make_codex_case(tmp_path, hooks=_codex_hooks())
     source = tmp_path / "framework"
     (source / "templates" / "codex" / ".codex").mkdir(parents=True)
@@ -774,11 +774,11 @@ def test_sync_path_is_silent_when_every_entrypoint_is_present(
     assert "진입점" not in capsys.readouterr().err
 
 
-# ── pm_update 동기 경로 배선 ────────────────────────────────────────────────
+# ── pm_update 동기 경로 연결 ────────────────────────────────────────────────
 
 
 def test_sync_path_reports_mixed_generation_loudly_and_blocks(pm_update, tmp_path, capsys):
-    """혼합 세대는 동기 경로에서 loud 처방 + 완료 게이트 red 다(조용한 통과 금지)."""
+    """혼합 버전은 동기 경로에서 loud 안내 + 완료 통과 조건 red 다(조용한 통과 금지)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
@@ -787,15 +787,15 @@ def test_sync_path_reports_mixed_generation_loudly_and_blocks(pm_update, tmp_pat
     update_adapters._print_adapter_hook_set_finding(result, dry_run=False)
 
     assert len(result["findings"]) == 1
-    assert update_adapters._adapter_hook_set_gate_failed(result)
+    assert update_adapters._adapter_hook_set_check_failed(result)
     err = capsys.readouterr().err
     assert "훅 세트 버전 불일치" in err, err
     assert _GIT_ANCHOR_FLAG in err and _DRIVER_REL in err, err
-    assert "pm-update" in err, "처방 커맨드 부재"
+    assert "pm-update" in err, "해결 방법 커맨드 부재"
 
 
 def test_sync_path_is_silent_when_generations_match(pm_update, tmp_path, capsys):
-    """정합이면 무출력 — 매 sync 마다 우는 경고는 곧 무시된다."""
+    """일치하면 무출력 — 매 sync 마다 우는 경고는 곧 무시된다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
@@ -803,14 +803,14 @@ def test_sync_path_is_silent_when_generations_match(pm_update, tmp_path, capsys)
     result = update_adapters.check_adapter_hook_sets(pm_paths.home_at(pm_update.REPO), dest, source)
     update_adapters._print_adapter_hook_set_finding(result, dry_run=False)
 
-    assert not update_adapters._adapter_hook_set_gate_failed(result)
+    assert not update_adapters._adapter_hook_set_check_failed(result)
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == ""
 
 
 def test_main_sync_run_returns_rc1_on_mixed_generation(pm_update, tmp_path,
                                                        monkeypatch, capsys):
-    """실 동기 실행이 혼합 세대를 rc1 로 낸다 — 배선이 실제로 돌아야 게이트다(엔진 변경 0 경로)."""
+    """실 동기 실행이 혼합 버전을 rc1 로 낸다 — 연결이 실제로 돌아야 검사가 된다(엔진 변경 0 경로)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
@@ -824,12 +824,12 @@ def test_main_sync_run_returns_rc1_on_mixed_generation(pm_update, tmp_path,
     assert "훅 세트" in err and _GIT_ANCHOR_FLAG in err, err
 
 
-def test_main_post_apply_gate_returns_rc1_after_engine_files_land(
+def test_main_post_apply_check_returns_rc1_after_engine_files_land(
         pm_update, tmp_path, monkeypatch, capsys):
-    """엔진 파일을 **실제로 적용한 뒤** 남은 불일치도 rc1 이다 — apply 후 경로의 durable 박제.
+    """엔진 파일을 **실제로 적용한 뒤** 남은 불일치도 rc1 이다 — apply 후 경로의 durable 기록.
 
-    엔진 변경 0 경로만 덮으면 "배달하는 그 실행"(changes>0)에서 게이트가 도는지가 미검증으로
-    남는다 — v1.7.0 흡수에서 락아웃이 터진 자리가 정확히 그 실행이다."""
+    엔진 변경 0 경로만 덮으면 "배달하는 그 실행"(changes>0)에서 검사가 도는지가 미검증으로
+    남는다 — v1.7.0 갱신에서 락아웃이 터진 자리가 정확히 그 실행이다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
@@ -895,8 +895,8 @@ def test_apply_writes_hook_set_atomically_and_others_in_place(pm_update, tmp_pat
 
 
 _NEXT_GENERATION_HOOK_REL = ".claude/next_generation_hook.sh"
-# 다음 세대 package 가 들고 오는 선언 — 선언 자신이 엔진 package 안에 살기 때문에, dest 사본의
-# 선언은 업그레이드 시점에 정의상 한 세대 뒤다.
+# 다음 버전 package 가 들고 오는 선언 — 선언 자신이 엔진 package 안에 살기 때문에, dest 사본의
+# 선언은 업그레이드 시점에 정의상 한 버전 뒤다.
 _UPSTREAM_ADDS_HOOK_PATH = (
     "\n"
     'ADAPTER_HOOK_SET["claude"] = ADAPTER_HOOK_SET["claude"]._replace(\n'
@@ -908,10 +908,10 @@ _UPSTREAM_ADDS_HOOK_PATH = (
 
 def test_apply_uses_source_generation_declaration_not_the_installed_one(
         pm_update, tmp_path, monkeypatch):
-    """이번 세대가 **새로 추가한** 훅 경로도 같은 실행에서 원자 교체된다(구세대 선언 폐쇄).
+    """이번 버전이 **새로 추가한** 훅 경로도 같은 실행에서 원자 교체된다(옛 버전 선언 폐쇄).
 
-    선언을 dest 사본에서 읽으면 원자 write 가 영영 한 세대 늦게 도착한다 — 엔진 package 자체를
-    갱신하는 바로 그 실행에서, 새 세대가 등재한 훅 파일이 copy2 로 떨어진다."""
+    선언을 dest 사본에서 읽으면 원자 write 가 영영 한 버전 늦게 도착한다 — 엔진 package 자체를
+    갱신하는 바로 그 실행에서, 새 버전이 등재한 훅 파일이 copy2 로 떨어진다."""
     source = tmp_path / "framework"
     source.mkdir()
     _plant_upstream_package(source, extra_tail=_UPSTREAM_ADDS_HOOK_PATH)
@@ -926,8 +926,8 @@ def test_apply_uses_source_generation_declaration_not_the_installed_one(
     installed = hook_sets.resolve_hook_set_predicate(pm_paths.home_at(pm_update.REPO))
     incoming = hook_sets.resolve_hook_set_predicate(pm_paths.home_at(pm_update.REPO), source)
     assert not installed(_NEXT_GENERATION_HOOK_REL), \
-        "픽스처 전제 붕괴 — 설치된 세대가 이미 그 경로를 안다"
-    assert incoming(_NEXT_GENERATION_HOOK_REL), "상류 세대 선언이 해소되지 않았다"
+        "픽스처 전제 붕괴 — 설치된 버전이 이미 그 경로를 안다"
+    assert incoming(_NEXT_GENERATION_HOOK_REL), "상류 버전 선언이 해소되지 않았다"
 
     atomic_calls: list[str] = []
     original = engine_copy_io._atomic_copy2
@@ -940,18 +940,18 @@ def test_apply_uses_source_generation_declaration_not_the_installed_one(
     assert atomic_calls == [str(hook_dst)], atomic_calls
     assert hook_dst.read_text(encoding="utf-8") == "# 신 훅\n"
     if os.name != "nt":
-        assert hook_dst.stat().st_ino != hook_inode, "구세대 판정자로 copy2 폴백됐다"
+        assert hook_dst.stat().st_ino != hook_inode, "옛 버전 판정자로 copy2 대체 동작으로 빠졌다"
 
 
 def test_source_generation_predicate_falls_back_to_local_when_absent(
         pm_update, tmp_path):
-    """상류에 선언 package 가 없으면 로컬 세대로 폴백한다(판정 자체를 잃지 않는다)."""
+    """상류에 선언 package 가 없으면 로컬 버전을 대신 쓴다(판정 자체를 잃지 않는다)."""
     source = tmp_path / "framework"
     source.mkdir()
 
     predicate = hook_sets.resolve_hook_set_predicate(pm_paths.home_at(pm_update.REPO), source)
 
-    assert predicate(_WRAPPER_REL), "폴백이 로컬 세대 선언을 못 읽었다"
+    assert predicate(_WRAPPER_REL), "대체 동작이 로컬 버전 선언을 못 읽었다"
     assert not predicate(".project_manager/tools/board.py")
 
 
@@ -962,7 +962,7 @@ def test_partial_scope_over_hook_set_is_refused_before_writing(
         pm_update, tmp_path, monkeypatch, capsys):
     """래퍼만 `--paths` 로 옮기려는 요청은 **쓰기 전에** rc1 이다 — 락아웃을 손수 만들지 않게.
 
-    경로 스코프는 어댑터 채널을 끄므로 세대 검사가 전무하다. 반쪽 갱신을 알리기만 하면(엔진 도구
+    경로 스코프는 어댑터 채널을 끄므로 버전 검사가 전무하다. 반쪽 갱신을 알리기만 하면(엔진 도구
     rev 혼재 경고처럼) 하네스가 잠긴 채로 rc0 성공이 된다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
@@ -995,7 +995,7 @@ def test_partial_scope_in_source_coordinates_is_refused(pm_update, tmp_path,
     """`@source` 상류 좌표로 지목한 부분 요청도 거부된다 — 좌표 표기가 검사를 끄면 안 된다.
 
     `--paths` 는 dest 좌표와 상류 좌표를 모두 유효 지목으로 받는다. 원문 표기를 선언(dest 좌표)과
-    직접 비교하면 상류 좌표 요청은 교집합 0 이라 검사가 통째로 무발화하고, 래퍼만 갱신한 채 rc0 다."""
+    직접 비교하면 상류 좌표 요청은 교집합 0 이라 검사가 통째로 돌지 않고, 래퍼만 갱신한 채 rc0 다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_OLD, dest_driver=_DRIVER_OLD)
@@ -1068,7 +1068,7 @@ def test_uncoupled_hook_file_may_be_propagated_alone():
 
 
 def test_partial_update_inside_a_declared_directory_is_refused():
-    """디렉토리 선언 안의 파일 하나만 옮기는 것도 반쪽 갱신이다(형제 코어가 구세대로 남음)."""
+    """디렉토리 선언 안의 파일 하나만 옮기는 것도 반쪽 갱신이다(형제 코어가 옛 버전으로 남음)."""
     partial = hook_sets.hook_set_partial_update(
         [".opencode/plugins/ctx-guard.js"],
         [".opencode/plugins/ctx-guard.js", ".opencode/lib/ctx-guard-core.cjs"])
@@ -1096,7 +1096,7 @@ def test_reference_outside_declared_coordinate_is_judged_at_its_real_path(
     """settings 가 다른 좌표로 부르는 훅 세트도 **그 자리에서** 판정한다.
 
     제품 루트는 자기 `.claude/` 에 훅이 없어 `templates/claude_code/.claude/…` 를 부른다. 좌표가
-    선언과 다르다고 검사에서 빼면 그 트리는 세대 검사가 통째로 꺼진다(stale 드라이버가 green)."""
+    선언과 다르다고 검사에서 빼면 그 트리는 버전 검사가 통째로 꺼진다(stale 드라이버가 green)."""
     root = tmp_path / "product"
     prefix = "templates/claude_code"
     (root / prefix / ".claude").mkdir(parents=True)
@@ -1110,12 +1110,12 @@ def test_reference_outside_declared_coordinate_is_judged_at_its_real_path(
 
     assert list(unmet) == [(hook_sets.HOOK_SET_UNSUPPORTED_FLAG, _GIT_ANCHOR_FLAG)], unmet
     assert unmet[(hook_sets.HOOK_SET_UNSUPPORTED_FLAG, _GIT_ANCHOR_FLAG)] == (
-        f"{prefix}/{_DRIVER_REL}",), "미충족 경로가 실제 좌표가 아니다(처방이 엉뚱한 파일을 가리킴)"
+        f"{prefix}/{_DRIVER_REL}",), "미충족 경로가 실제 좌표가 아니다(안내가 엉뚱한 파일을 가리킴)"
 
 
 def test_reference_outside_declared_coordinate_is_green_when_generation_matches(
         tmp_path):
-    """같은 토폴로지에서 세대가 맞으면 조용하다(거짓 red 금지)."""
+    """같은 토폴로지에서 버전이 맞으면 조용하다(거짓 red 금지)."""
     root = tmp_path / "product"
     prefix = "templates/claude_code"
     (root / prefix / ".claude").mkdir(parents=True)
@@ -1129,7 +1129,7 @@ def test_reference_outside_declared_coordinate_is_green_when_generation_matches(
 
 
 def test_product_root_settings_reference_is_actually_judged():
-    """이 checkout(제품 루트) 자기 settings.json 의 훅 참조가 **검사 대상 안**이고 정합이다.
+    """이 checkout(제품 루트) 자기 settings.json 의 훅 참조가 **검사 대상 안**이고 일치한다.
 
     루트는 `templates/claude_code/.claude/…` 를 부르는 실 토폴로지다 — 선언 좌표만 보던 판정은 이
     커맨드를 통째로 건너뛰어 stale template 드라이버가 green 이었다. 이 단언이 그 자리를 지킨다."""
@@ -1146,7 +1146,7 @@ def test_product_root_settings_reference_is_actually_judged():
     assert any(prefix for prefix in prefixes if prefix), \
         f"루트 settings 의 훅 참조가 하나도 훅 세트로 해소되지 않았다: {prefixes}"
     assert hook_sets._hook_set_demands(document, spec, REPO) == {}, \
-        "루트 토폴로지가 참조하는 훅 세트가 구세대다"
+        "루트 토폴로지가 참조하는 훅 세트가 옛 버전이다"
 
 
 _ADAPTER_NAMESPACES = (".claude/", ".codex/", ".opencode/", ".agents/")
@@ -1155,8 +1155,8 @@ _ADAPTER_NAMESPACES = (".claude/", ".codex/", ".opencode/", ".agents/")
 _EXECUTABLE_SUFFIXES = (".py", ".sh", ".js", ".cjs")
 
 
-def _flavor_manifests() -> list[Path]:
-    """루트 + 출하 3 flavor 의 engine.manifest (하나만 보면 그 하네스만 가드된다)."""
+def _variant_manifests() -> list[Path]:
+    """루트 + 출하 3 하네스별 판의 engine.manifest (하나만 보면 그 하네스만 가드된다)."""
     roots = [REPO] + [REPO / "templates" / name
                       for name in ("claude_code", "codex", "opencode")]
     return [root / ".project_manager" / "engine.manifest" for root in roots]
@@ -1167,7 +1167,7 @@ def _manifest_executable_entries(manifest_path: Path) -> list[str]:
 
     manifest 한 줄은 파일 또는 디렉토리다(디렉토리는 재귀) — 디렉토리 등재는 `@source` 를 따라
     그 하위의 실행 파일을 펼친다. 그래야 `.opencode/lib`·`.opencode/plugins` 처럼 한 줄이 여러
-    코드 파일을 나르는 등재가 가드에 잡힌다. 열거는 공용 repo-owned seam(tracked-only)이다 —
+    코드 파일을 나르는 등재가 가드에 잡힌다. 열거는 공용 repo-owned 열거 함수(tracked-only)이다 —
     출하되는 건 추적 파일이고, 직접 tree-walk 하면 미추적 잔재가 거짓 red 를 만든다."""
     out: list[str] = []
     for line in manifest_path.read_text(encoding="utf-8").splitlines():
@@ -1194,12 +1194,12 @@ def _manifest_executable_entries(manifest_path: Path) -> list[str]:
 def test_live_hook_set_declaration_covers_shipped_executable_entries():
     """**전 하네스** manifest 가 등재한 어댑터 실행 파일이 전부 원자 write 대상이다.
 
-    claude flavor 만 스캔하던 옛 가드는 opencode `.opencode/lib/*.cjs` 누락을 못 봤다(플러그인이
+    claude 하네스별 판만 스캔하던 옛 가드는 opencode `.opencode/lib/*.cjs` 누락을 못 봤다(플러그인이
     로드 시점에 즉시 import 하는 공유 코어). 하네스 하나만 보는 가드는 나머지 하네스에서 같은
     클래스를 그대로 열어 둔다 — 새 훅/플러그인/코어를 manifest 에만 더하고 선언을 빼먹으면 그
     파일만 조용히 copy2 로 남는다."""
     seen: dict[str, list[str]] = {}
-    for manifest_path in _flavor_manifests():
+    for manifest_path in _variant_manifests():
         for rel in _manifest_executable_entries(manifest_path):
             seen.setdefault(rel, []).append(manifest_path.parent.parent.name)
 
@@ -1208,11 +1208,11 @@ def test_live_hook_set_declaration_covers_shipped_executable_entries():
     assert missing == [], f"manifest 등재 실행 파일이 원자 write 선언 밖이다: {missing}"
 
 
-def test_opencode_shared_core_is_atomic_like_the_claude_axis():
+def test_opencode_shared_core_is_atomic_like_the_claude_side():
     """opencode 플러그인이 즉시 import 하는 공유 코어도 원자 write 대상이다(하네스 비대칭 금지).
 
     플러그인 3종이 로드 시점에 `../lib/*-core.cjs` 를 import 하므로 코어가 부분 파일이면 플러그인
-    로드 자체가 깨진다 — claude 축이 공유 코어(`ctx_guard.py`)를 넣은 것과 같은 근거다."""
+    로드 자체가 깨진다 — claude 쪽이 공유 코어(`ctx_guard.py`)를 넣은 것과 같은 근거다."""
     lib_dir = REPO / "templates" / "opencode" / ".opencode" / "lib"
     cores = sorted(path.name for path in lib_dir.glob("*.cjs"))
 
@@ -1224,7 +1224,7 @@ def test_opencode_shared_core_is_atomic_like_the_claude_axis():
         assert hook_sets.is_live_hook_set_path(f".opencode/plugins/{plugin.name}")
 
 
-# ── 수용 순서 게이트 (엔진 파일 선행 · config 후행) ──────────────────────────
+# ── 수용 순서 검사 (엔진 파일 선행 · config 후행) ──────────────────────────
 
 
 def _accept_args(source: Path, *, accept=None, accept_all=False,
@@ -1235,10 +1235,10 @@ def _accept_args(source: Path, *, accept=None, accept_all=False,
 
 def test_unreadable_hook_file_is_lenient_for_report_but_blocks_mutation(
         pm_config, tmp_path, capsys):
-    """판독 불가 훅 파일: 조회는 관대(거짓 처방 금지)하고 **수용은 차단**(fail-closed)한다.
+    """판독 불가 훅 파일: 조회는 관대(거짓 안내 금지)하고 **수용은 차단**(fail-closed)한다.
 
-    확인되지 않은 파일을 근거로 config 를 새 세대로 앞세우면 그게 곧 락아웃이다 — 조회의 관대함을
-    mutation 게이트가 그대로 상속하면 게이트가 있으나 마나다."""
+    확인되지 않은 파일을 근거로 config 를 새 버전으로 앞세우면 그게 곧 락아웃이다 — 조회의 관대함을
+    mutation 검사가 그대로 상속하면 검사가 있으나 마나다."""
     # dest·template 둘 다 그 플래그를 요구한다 — 조회(dest 요구)와 수용(template 요구)이 **같은
     #   판정 불가 파일**을 보게 해서 두 방향이 실제로 갈리는지 본다(공허한 단언 금지).
     dest, source = _make_case(
@@ -1248,7 +1248,7 @@ def test_unreadable_hook_file_is_lenient_for_report_but_blocks_mutation(
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
 
     assert hook_sets.judge_adapter_hook_sets(dest, source) == [], \
-        "조회 판정이 판정 불가 파일을 red 로 올렸다(거짓 처방)"
+        "조회 판정이 판정 불가 파일을 red 로 올렸다(거짓 안내)"
     rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
 
@@ -1258,9 +1258,9 @@ def test_unreadable_hook_file_is_lenient_for_report_but_blocks_mutation(
 
 
 def test_check_reports_hook_set_generation_mismatch(pm_config, tmp_path, capsys):
-    """`--check` 가 훅 세트 세대 불일치를 red 로 낸다 — pm-update 와 같은 게이트를 본다.
+    """`--check` 가 훅 세트 버전 불일치를 red 로 낸다 — pm-update 와 같은 검사를 본다.
 
-    스킬 카드가 완료 게이트로 지목하는 표면이라, pm-update 가 rc1 로 막는 클래스를 여기서 green
+    스킬 카드가 완료 통과 조건으로 지목하는 명령이라, pm-update 가 rc1 로 막는 클래스를 여기서 green
     으로 통과시키면 릴리즈가 false-complete 된다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
@@ -1276,7 +1276,7 @@ def test_check_reports_hook_set_generation_mismatch(pm_config, tmp_path, capsys)
 
 def test_check_sees_hook_sets_even_when_config_channel_is_empty(
         pm_config, tmp_path, capsys):
-    """config 채널 대상이 0 이어도 훅 세트 red 는 red 다 — 게이트 표면 전체 우회 금지."""
+    """config 채널 대상이 0 이어도 훅 세트 red 는 red 다 — 검사 전체 우회 금지."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
@@ -1292,7 +1292,7 @@ def test_check_sees_hook_sets_even_when_config_channel_is_empty(
 
 
 def test_check_stays_green_when_hook_set_matches(pm_config, tmp_path, capsys):
-    """정합이면 `--check` 는 종전대로 green 이다(가드가 정상 경로를 막지 않는다)."""
+    """일치하면 `--check` 는 종전대로 green 이다(가드가 정상 경로를 막지 않는다)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
@@ -1323,7 +1323,7 @@ def test_accept_refuses_when_engine_files_are_behind(pm_config, tmp_path, capsys
 
 
 def test_accept_proceeds_when_engine_files_are_current(pm_config, tmp_path):
-    """엔진 파일이 이미 그 세대면 수용이 정상 진행된다(게이트가 정상 경로를 막지 않는다)."""
+    """엔진 파일이 이미 그 버전이면 수용이 정상 진행된다(검사가 정상 경로를 막지 않는다)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
@@ -1338,7 +1338,7 @@ def test_accept_proceeds_when_engine_files_are_current(pm_config, tmp_path):
 
 def test_accept_of_absent_config_reports_channel_error_not_order_refusal(
         pm_config, tmp_path, capsys):
-    """dest 에 없는 config 를 수용하려 하면 채널 오류가 그대로 나온다(순서 게이트가 가로채지 않음)."""
+    """dest 에 없는 config 를 수용하려 하면 채널 오류가 그대로 나온다(순서 검사가 가로채지 않음)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
@@ -1352,13 +1352,13 @@ def test_accept_of_absent_config_reports_channel_error_not_order_refusal(
     assert "그 파일이 없다" in err or "채널 대상이 아니다" in err, err
 
 
-def test_accept_all_accepts_the_set_through_the_same_gate(pm_config, tmp_path, capsys):
-    """세트 수용도 파일당 같은 게이트·같은 백업·같은 원자 교체를 탄다."""
+def test_accept_all_accepts_the_set_through_the_same_check(pm_config, tmp_path, capsys):
+    """세트 수용도 파일당 같은 검사·같은 백업·같은 원자 교체를 탄다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
         template_settings=_settings(git_anchor=True),
-        ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
+        records={_SETTINGS_REL: _record_entry(_settings(git_anchor=False))})
 
     rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
@@ -1375,7 +1375,7 @@ def test_accept_all_refuses_blocked_member_without_touching_it(pm_config, tmp_pa
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_OLD, dest_driver=_DRIVER_OLD,
         template_settings=_settings(git_anchor=True),
-        ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
+        records={_SETTINGS_REL: _record_entry(_settings(git_anchor=False))})
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
 
     rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
@@ -1396,7 +1396,7 @@ def test_accept_all_excludes_adopter_edits_and_says_so(pm_config, tmp_path, caps
         tmp_path, dest_settings=edited,
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
         template_settings=_settings(git_anchor=True),
-        ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
+        records={_SETTINGS_REL: _record_entry(_settings(git_anchor=False))})
 
     rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
@@ -1415,7 +1415,7 @@ def test_accept_all_prints_targets_before_touching_them(pm_config, tmp_path, cap
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
         template_settings=_settings(git_anchor=True),
-        ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
+        records={_SETTINGS_REL: _record_entry(_settings(git_anchor=False))})
 
     rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
@@ -1426,9 +1426,9 @@ def test_accept_all_prints_targets_before_touching_them(pm_config, tmp_path, cap
     assert f"  - {_SETTINGS_REL} · claude · " in out, out
 
 
-# ── 세대 선언 소비자 상류-통일 (T-0610) ──────────────────────────────────────
-# 선언 자체가 엔진 package 안에 살기 때문에 설치본 선언은 업그레이드 시점에 정의상 한 세대 뒤다.
-# 게이트가 그 선언으로 판정하면 **상류가 이번에 들여오는 것**을 모른 채 통과한다.
+# ── 버전 선언 소비자 상류-통일 (T-0610) ──────────────────────────────────────
+# 선언 자체가 엔진 package 안에 살기 때문에 설치본 선언은 업그레이드 시점에 정의상 한 버전 뒤다.
+# 검사가 그 선언으로 판정하면 **상류가 이번에 들여오는 것**을 모른 채 통과한다.
 
 _UPSTREAM_ONLY_FLAG = "--upstream-only-hook"
 _UPSTREAM_ADDS_FLAG = (
@@ -1450,15 +1450,15 @@ _UPSTREAM_ADDS_GROUP = (
 )
 
 
-def test_accept_gate_judges_with_upstream_generation_not_installed(
+def test_accept_check_judges_with_upstream_generation_not_installed(
         pm_config, tmp_path, capsys):
-    """상류만 아는 플래그를 요구하는 config 는 수용이 거부된다 — 게이트는 상류 세대로 판정한다.
+    """상류만 아는 플래그를 요구하는 config 는 수용이 거부된다 — 검사는 상류 버전으로 판정한다.
 
-    설치본 선언은 그 플래그를 모르므로 "선언 밖 플래그" 로 접어 게이트가 통과시킨다(있으나 마나).
-    미지원 드라이버 위에 새 config 를 앉히는 게 정확히 이 게이트가 막는 락아웃이다."""
+    설치본 선언은 그 플래그를 모르므로 "선언 밖 플래그" 로 바꾸어 검사가 통과시킨다(있으나 마나).
+    미지원 드라이버 위에 새 config 를 앉히는 게 정확히 이 검사가 막는 락아웃이다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
-        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,  # 신 세대지만 새 플래그는 모름.
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,  # 신 버전이지만 새 플래그는 모름.
         template_settings=_settings(git_anchor=True, flag=_UPSTREAM_ONLY_FLAG),
         upstream_tail=_UPSTREAM_ADDS_FLAG)
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
@@ -1470,19 +1470,19 @@ def test_accept_gate_judges_with_upstream_generation_not_installed(
         _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
 
     assert installed_only.blockers == [], \
-        "픽스처 전제 붕괴 — 설치본 선언이 이미 그 플래그를 안다(상류 축이 무의미)"
+        "픽스처 전제 붕괴 — 설치본 선언이 이미 그 플래그를 안다(상류 쪽이 무의미)"
     assert rc == 1
     assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before, \
-        "상류만 아는 세대 요구를 못 보고 config 를 앞세웠다"
+        "상류만 아는 버전 요구를 못 보고 config 를 앞세웠다"
     err = capsys.readouterr().err
     assert "수용 거부" in err and _UPSTREAM_ONLY_FLAG in err, err
 
 
-def test_accept_gate_binds_checked_template_bytes_to_the_copy(tmp_path):
-    """게이트가 검사한 template bytes 와 실제 복사 bytes 가 다르면 수용이 중단된다.
+def test_accept_check_binds_checked_template_bytes_to_the_copy(tmp_path):
+    """검사가 검사한 template bytes 와 실제 복사 bytes 가 다르면 수용이 중단된다.
 
-    판정↔쓰기 사이에 상류가 바뀌면 "검사한 세대" 와 다른 내용이 설치된다 — dest 동시 편집을 막는
-    `expected_sha256` 의 반대편 축이다."""
+    판정↔쓰기 사이에 상류가 바뀌면 "검사한 버전" 와 다른 내용이 설치된다 — dest 동시 편집을 막는
+    `expected_sha256` 의 반대편 검사이다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
@@ -1492,7 +1492,7 @@ def test_accept_gate_binds_checked_template_bytes_to_the_copy(tmp_path):
         declarations=hook_sets.hook_set_declarations(_run_home(tmp_path), source, required=True))
     assert decision.blockers == [] and decision.template_sha256, decision
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
-    # 판정 뒤 상류가 바뀐다(다른 세대의 config 가 그 자리에 놓임).
+    # 판정 뒤 상류가 바뀐다(다른 버전의 config 가 그 자리에 놓임).
     (source / "templates" / "claude_code" / _SETTINGS_REL).write_text(
         _settings(git_anchor=True, flag=_UPSTREAM_ONLY_FLAG), encoding="utf-8")
 
@@ -1506,9 +1506,9 @@ def test_accept_gate_binds_checked_template_bytes_to_the_copy(tmp_path):
         "검사하지 않은 bytes 가 설치됐다"
 
 
-def test_accept_gate_is_fail_closed_when_upstream_generation_is_unreadable(
+def test_accept_check_is_fail_closed_when_upstream_generation_is_unreadable(
         pm_config, tmp_path, capsys):
-    """상류 세대를 못 읽으면 수용을 거부한다 — mutation 게이트는 모르면 멈춘다(fail-closed)."""
+    """상류 버전을 못 읽으면 수용을 거부한다 — mutation 검사는 모르면 멈춘다(fail-closed)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
@@ -1527,7 +1527,7 @@ def test_accept_gate_is_fail_closed_when_upstream_generation_is_unreadable(
 
 def test_partial_guard_sees_a_coupled_group_only_upstream_knows(
         pm_update, tmp_path, monkeypatch, capsys):
-    """상류만 아는 결합 묶음의 부분 지목도 거부된다 — 가드도 상류 세대로 판정한다.
+    """상류만 아는 결합 묶음의 부분 지목도 거부된다 — 가드도 상류 버전으로 판정한다.
 
     새 묶음을 들여오는 **첫 전파**가 정확히 반쪽 갱신이 나는 자리다(설치본 선언은 그 묶음이 없다)."""
     alpha, beta = _UPSTREAM_ONLY_GROUP
@@ -1538,7 +1538,7 @@ def test_partial_guard_sees_a_coupled_group_only_upstream_knows(
     for rel, text in ((alpha, "# 신 alpha\n"), (beta, "# 신 beta\n")):
         (source / rel).parent.mkdir(parents=True, exist_ok=True)
         (source / rel).write_text(text, encoding="utf-8")
-        (dest / rel).write_text("# 구 세대\n", encoding="utf-8")
+        (dest / rel).write_text("# 구 버전\n", encoding="utf-8")
     _write_source_manifest(source, [alpha, beta])
     monkeypatch.setattr(pm_update, "REPO", dest)
 
@@ -1548,16 +1548,16 @@ def test_partial_guard_sees_a_coupled_group_only_upstream_knows(
 
     err = capsys.readouterr().err
     assert rc == 1, err
-    assert (dest / alpha).read_text(encoding="utf-8") == "# 구 세대\n", \
+    assert (dest / alpha).read_text(encoding="utf-8") == "# 구 버전\n", \
         "거부인데 alpha 가 이미 갱신됐다"
     assert "훅 세트를 반쪽만 갱신한다" in err and beta in err, err
 
 
-def test_accept_gate_binds_the_declaration_snapshot_too(tmp_path):
+def test_accept_check_binds_the_declaration_snapshot_too(tmp_path):
     """선언 소스(상류 package)가 판정 뒤 바뀌면 중단한다 — template 해시만으로는 못 막는다.
 
-    config template 이 그대로여도 상류가 통째로 갱신되면 **구 선언으로 낸 판정** 위에 새 세대가
-    설치된다. 두 해시는 한 벌의 스냅샷이라 어느 쪽이 변해도 raced 다."""
+    config template 이 그대로여도 상류가 통째로 갱신되면 **구 선언으로 낸 판정** 위에 새 버전이
+    설치된다. 두 해시는 한 벌이라 어느 쪽이 변해도 raced 다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
@@ -1567,7 +1567,7 @@ def test_accept_gate_binds_the_declaration_snapshot_too(tmp_path):
         declarations=hook_sets.hook_set_declarations(_run_home(tmp_path), source, required=True))
     assert decision.blockers == [] and decision.generation_sha256, decision
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
-    # config template 은 그대로 두고 **선언 소스만** 새 세대로 바꾼다.
+    # config template 은 그대로 두고 **선언 소스만** 새 버전으로 바꾼다.
     _plant_upstream_package(source, extra_tail=_UPSTREAM_ADDS_FLAG)
 
     outcome = adapter_accept.accept_adapter_config(
@@ -1580,12 +1580,12 @@ def test_accept_gate_binds_the_declaration_snapshot_too(tmp_path):
     assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before
 
 
-def test_accept_gate_blocks_when_snapshot_hash_cannot_be_made(
+def test_accept_check_blocks_when_snapshot_hash_cannot_be_made(
         tmp_path, monkeypatch):
-    """스냅샷 해시를 못 만들면 수용을 막는다 — 결속이 조용히 생략된 채 진행되면 안 된다.
+    """이 해시를 못 만들면 수용을 막는다 — 연결이 조용히 생략된 채 진행되면 안 된다.
 
-    호출부는 `is not None` 으로 결속 인자를 붙이므로, 해시 계산 실패는 "검증 없이 교체" 로
-    번역된다. mutation 축은 모르면 멈춘다(구세대 강등의 **의도적** None 과 구분되는 실패성 None)."""
+    호출부는 `is not None` 으로 연결 인자를 붙이므로, 해시 계산 실패는 "검증 없이 교체" 로
+    번역된다. mutation 쪽은 모르면 멈춘다(옛 버전으로 낮춘 경우의 **의도적** None 과 구분되는 실패성 None)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
@@ -1599,7 +1599,7 @@ def test_accept_gate_blocks_when_snapshot_hash_cannot_be_made(
     decision = hook_sets.hook_set_accept_decision(
         dest, source, _SETTINGS_REL, declarations=generation)
 
-    assert decision.blockers, "해시 부재인데 게이트가 통과시켰다"
+    assert decision.blockers, "해시 부재인데 검사가 통과시켰다"
     assert "재확인할 수" in decision.blockers[0].detail, decision.blockers[0].detail
 
 
@@ -1613,11 +1613,11 @@ def test_partial_guard_refuses_upstream_only_group_when_upstream_is_unreadable(
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
-        upstream_tail=None)  # 상류 선언 package 없음 = 세대 미해소.
+        upstream_tail=None)  # 상류 선언 package 없음 = 버전 미해소.
     for rel in (alpha, beta):
         (source / rel).parent.mkdir(parents=True, exist_ok=True)
-        (source / rel).write_text("# 신 세대\n", encoding="utf-8")
-        (dest / rel).write_text("# 구 세대\n", encoding="utf-8")
+        (source / rel).write_text("# 신 버전\n", encoding="utf-8")
+        (dest / rel).write_text("# 구 버전\n", encoding="utf-8")
     _write_source_manifest(source, [alpha, beta])
     monkeypatch.setattr(pm_update, "REPO", dest)
 
@@ -1627,13 +1627,13 @@ def test_partial_guard_refuses_upstream_only_group_when_upstream_is_unreadable(
 
     err = capsys.readouterr().err
     assert rc == 1, err
-    assert (dest / alpha).read_text(encoding="utf-8") == "# 구 세대\n"
+    assert (dest / alpha).read_text(encoding="utf-8") == "# 구 버전\n"
     assert "어댑터 훅 영역의 부분 전파를 거부한다" in err and alpha in err, err
 
 
 def test_partial_guard_is_fail_closed_when_upstream_generation_is_unreadable(
         pm_update, tmp_path, monkeypatch, capsys):
-    """상류 세대를 못 읽는데 스코프가 훅 파일을 건드리면 거부한다(검증 불가 = 멈춤)."""
+    """상류 버전을 못 읽는데 스코프가 훅 파일을 건드리면 거부한다(검증 불가 = 멈춤)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_OLD, dest_driver=_DRIVER_OLD, upstream_tail=None)
@@ -1656,7 +1656,7 @@ def test_partial_guard_is_fail_closed_when_upstream_generation_is_unreadable(
 
 def test_partial_guard_leaves_non_hook_scope_alone_without_upstream(
         pm_update, tmp_path, monkeypatch, capsys):
-    """훅과 무관한 부분 전파는 상류 세대를 못 읽어도 통과한다 — fail-closed 가 과잉이면 안 된다."""
+    """훅과 무관한 부분 전파는 상류 버전을 못 읽어도 통과한다 — fail-closed 가 과잉이면 안 된다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW, upstream_tail=None)
@@ -1675,17 +1675,17 @@ def test_partial_guard_leaves_non_hook_scope_alone_without_upstream(
 
 def test_accept_all_excludes_unrecorded_because_edits_cannot_be_judged(
         pm_config, tmp_path, capsys):
-    """원장이 없어 편집 여부를 **판정할 수 없는** config 도 세트가 건드리지 않는다.
+    """기록이 없어 편집 여부를 **판정할 수 없는** config 도 세트가 건드리지 않는다.
 
-    원장 도입 전 구세대 채택자는 커스텀을 해 두고도 `unrecorded` 로 보인다 — 세트가 그것을 받으면
+    기록 도입 전 옛 버전 채택자는 커스텀을 해 두고도 `unrecorded` 로 보인다 — 세트가 그것을 받으면
     편집분과 구분 못 한 채 커스텀이 사라진다(모르면 덮지 않는다)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=False),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
-        template_settings=_settings(git_anchor=True))  # 원장 없음 → unrecorded.
+        template_settings=_settings(git_anchor=True))  # 기록 없음 → unrecorded.
     before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
     assert [item.status for item in adapter_report.judge_adapter_configs(dest, source)] \
-        == ["unrecorded"], "픽스처 전제(원장 부재 판정)가 아니다"
+        == ["unrecorded"], "픽스처 전제(기록 부재 판정)가 아니다"
 
     rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, accept_all=True), dest_root=dest)
@@ -1695,7 +1695,7 @@ def test_accept_all_excludes_unrecorded_because_edits_cannot_be_judged(
         "판정 불가 config 를 세트가 덮었다"
     assert rc == 1, out
     assert "세트 수용 제외(기록이 없어 편집 여부 판정 불가)" in out, out
-    assert f"--accept {_SETTINGS_REL}" in out, "단건 수용 처방 부재"
+    assert f"--accept {_SETTINGS_REL}" in out, "단건 수용 안내 부재"
 
 
 def test_accept_all_reports_no_candidates_when_already_in_sync(pm_config, tmp_path, capsys):
@@ -1724,7 +1724,7 @@ def test_build_parser_routes_accept_all_and_excludes_other_modes(pm_config):
         parser.parse_args(["sync-adapter-config", "--accept-all", "--check"])
 
 
-# ── 선언 해시 ↔ 실행 선언 결속 (stale `.pyc` 창 폐쇄) ─────────────────────────
+# ── 선언 해시 ↔ 실행 선언 연결 (stale `.pyc` 창 폐쇄) ─────────────────────────
 _STALE_PYC_FLAG_A = "--t0611-generation-a"
 _STALE_PYC_FLAG_B = "--t0611-generation-b"
 
@@ -1739,7 +1739,7 @@ def _package_digest(source: Path) -> str:
 
 
 def _flag_declaration_tail(flag: str) -> str:
-    """상류 선언에 플래그 하나를 더하는 꼬리 — 두 세대의 **bytes 길이가 같다**(플래그 길이 동일)."""
+    """상류 선언에 플래그 하나를 더하는 꼬리 — 두 버전의 **bytes 길이가 같다**(플래그 길이 동일)."""
     return (
         "\n"
         'ADAPTER_HOOK_SET["claude"] = ADAPTER_HOOK_SET["claude"]._replace(\n'
@@ -1750,21 +1750,21 @@ def _flag_declaration_tail(flag: str) -> str:
 
 
 def test_declaration_load_is_bound_to_the_hashed_bytes(tmp_path):
-    """해시한 bytes 와 **실행된 선언**이 같은 세대다 — timestamp 유효한 stale `.pyc` 폐쇄.
+    """해시한 bytes 와 **실행된 선언**이 같은 버전이다 — timestamp 유효한 stale `.pyc` 폐쇄.
 
-    엔진 전파는 `copy2`(mtime 보존)로 파일을 내려놓으므로, 크기까지 같은 사본이 앞 세대의 유효한
+    엔진 전파는 `copy2`(mtime 보존)로 파일을 내려놓으므로, 크기까지 같은 사본이 앞 버전의 유효한
     `.pyc` 와 짝지어지는 창이 실재한다. 그 창에서 제자리 import 를 하면 "최신 package digest + 구 선언
-    코드" 가 성립해, 게이트가 결속했다고 믿는 스냅샷이 거짓이 된다(수용은 그 digest 를 쓰기 직전에
+    코드" 가 성립해, 검사가 연결했다고 믿는 값이 거짓이 된다(수용은 그 digest 를 쓰기 직전에
     다시 대조하므로 거짓 통과가 그대로 설치된다)."""
     source = tmp_path / "framework"
     upstream = _plant_upstream_package(
         source, extra_tail=_flag_declaration_tail(_STALE_PYC_FLAG_A))
     stat_before = upstream.stat()
-    # 1) A 세대 bytes 의 timestamp `.pyc` 를 실제로 남긴다.
+    # 1) A 버전 bytes 의 timestamp `.pyc` 를 실제로 남긴다.
     cached = Path(py_compile.compile(
         str(upstream), doraise=True,
         invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP))
-    # 2) 같은 크기·같은 mtime 으로 B 세대를 덮는다(전파가 실제로 만드는 형상).
+    # 2) 같은 크기·같은 mtime 으로 B 버전을 덮는다(전파가 실제로 만드는 경우).
     upstream.write_text(
         (TOOLS / "pm_engine" / "domain" / "adapter_specs.py").read_text(encoding="utf-8")
         + _flag_declaration_tail(_STALE_PYC_FLAG_B), encoding="utf-8")
@@ -1785,35 +1785,35 @@ def test_declaration_load_is_bound_to_the_hashed_bytes(tmp_path):
 
     flags = generation.declarations["claude"].flag_support
     assert _STALE_PYC_FLAG_B in flags and _STALE_PYC_FLAG_A not in flags, \
-        "해시한 bytes 가 아니라 캐시된 구 선언 코드가 실행됐다(결속 붕괴)"
+        "해시한 bytes 가 아니라 캐시된 구 선언 코드가 실행됐다(연결 붕괴)"
     assert generation.source_sha256 == _package_digest(source), \
         "digest 가 지금 package bytes 의 것이 아니다"
 
 
-# ── 조회 축 강등 사유 표면화 (차단 아님·침묵만 제거) ─────────────────────────
+# ── 조회 쪽 낮춘 사유 드러냄 (차단 아님·침묵만 제거) ─────────────────────────
 
 
-def test_check_surfaces_the_query_axis_downgrade_reason(pm_config, tmp_path, capsys):
+def test_check_surfaces_the_query_path_downgrade_reason(pm_config, tmp_path, capsys):
     """`--check` 는 상류 선언을 못 읽으면 그 사유를 낸다 — 무경고 green 이 곧 관측 불가다.
 
-    조회 축은 관대 계약이라 rc 는 그대로다(차단은 mutation 축의 몫). 다만 침묵하면 채택자는 상류
+    조회 쪽은 관대 계약이라 rc 는 그대로다(차단은 mutation 쪽의 몫). 다만 침묵하면 채택자는 상류
     전용 플래그를 한 번도 판정받지 못한 green 을 정상 통과로 읽는다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
-        upstream_tail=None)  # 상류 트리에 선언 package 없음 → 로컬 선언으로 강등.
+        upstream_tail=None)  # 상류 트리에 선언 package 없음 → 로컬 선언으로 낮춘다.
 
     rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
         _accept_args(source, check=True), dest_root=dest)
 
     err = capsys.readouterr().err
-    assert rc == 0, err                      # 조회 축은 차단하지 않는다.
-    assert "설치본 선언으로 판정한다" in err, f"강등 사유가 버려졌다: {err!r}"
+    assert rc == 0, err                      # 조회 쪽은 차단하지 않는다.
+    assert "설치본 선언으로 판정한다" in err, f"낮춘 사유가 버려졌다: {err!r}"
     assert "상류 엔진 package 필수 파일 부재" in err, "사유가 없어 무엇을 고쳐야 할지 알 수 없다"
 
 
 def test_check_stays_quiet_when_the_upstream_generation_resolves(pm_config, tmp_path, capsys):
-    """상류 선언이 읽히면 조용하다 — 강등 경고가 상시 울리면 신호가 죽는다."""
+    """상류 선언이 읽히면 조용하다 — 낮춤 경고가 상시 울리면 신호가 죽는다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
@@ -1826,9 +1826,9 @@ def test_check_stays_quiet_when_the_upstream_generation_resolves(pm_config, tmp_
     assert "설치본 선언으로 판정한다" not in err, err
 
 
-def test_sync_check_surfaces_the_query_axis_downgrade_reason(pm_update, tmp_path,
+def test_sync_check_surfaces_the_query_path_downgrade_reason(pm_update, tmp_path,
                                                              capsys):
-    """pm-update 의 세대 검사도 같은 사유를 낸다 — 변경 0 실행이 무경고 green 이면 안 된다."""
+    """pm-update 의 버전 검사도 같은 사유를 낸다 — 변경 0 실행이 무경고 green 이면 안 된다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
@@ -1838,23 +1838,23 @@ def test_sync_check_surfaces_the_query_axis_downgrade_reason(pm_update, tmp_path
 
     err = capsys.readouterr().err
     assert result["findings"] == [], result
-    assert "설치본 선언으로 판정한다" in err, f"강등 사유가 버려졌다: {err!r}"
+    assert "설치본 선언으로 판정한다" in err, f"낮춘 사유가 버려졌다: {err!r}"
     assert "상류 엔진 package 필수 파일 부재" in err, err
 
 
 def test_upstream_declarations_do_not_write_into_the_upstream_tree(tmp_path, monkeypatch):
     """상류 선언을 읽는 조회는 상류 트리에 아무것도 만들지 않는다 — 스테이징 소유자는 실행 clone.
 
-    상류는 읽기 대상이다(읽기 전용 마운트·권한·볼륨 고갈이 실 형상). 자기 임시물을 거기 만들면
-    읽기만 하는 조회가 상류의 쓰기 권한에 매이고, 사유로 강등되게 돼 있는 `required=False` 경로가
+    상류는 읽기 대상이다(읽기 전용 마운트·권한·볼륨 고갈이 실제 상황). 자기 임시물을 거기 만들면
+    읽기만 하는 조회가 상류의 쓰기 권한에 매이고, 사유로 낮춰지게 돼 있는 `required=False` 경로가
     대신 크래시한다 — 다른 상류 실패 모드(파일 부재·읽기 실패·모듈 손상)는 전부 사유로 내려간다."""
     source = tmp_path / "framework"
     _plant_upstream_package(source)
-    anchors: list[Path] = []
+    target_repos: list[Path] = []
     real_temp_root = raw_output.temp_root
 
     def _recorded_temp_root(repo):
-        anchors.append(Path(repo))
+        target_repos.append(Path(repo))
         return real_temp_root(repo)
 
     monkeypatch.setattr(raw_output, "temp_root", _recorded_temp_root)
@@ -1862,9 +1862,9 @@ def test_upstream_declarations_do_not_write_into_the_upstream_tree(tmp_path, mon
 
     assert generation.origin == hook_sets.HOOK_SET_ORIGIN_UPSTREAM, generation.reasons
     assert generation.declarations, generation.reasons
-    assert anchors == [tmp_path / "run_home"], anchors
+    assert target_repos == [tmp_path / "run_home"], target_repos
     assert not (source / ".project_manager" / ".local").exists(), \
-        "읽기만 해야 할 상류 트리에 스테이징을 만들었다(앵커가 상류다)"
+        "읽기만 해야 할 상류 트리에 스테이징을 만들었다(기준 위치가 상류다)"
 
 
 _SELF_UPDATE_PROGRAM = """
@@ -1891,10 +1891,10 @@ print(json.dumps({"declaration": str(declaration.resolve()), "loaded": loaded,
 def test_same_path_generation_is_loaded_from_the_hashed_bytes(tmp_path):
     """상류가 **실행 중인 그 package**여도 선언은 해시한 bytes 에서 읽는다(빠른 경로 특례 없음).
 
-    "자기 자신이면 메모리 적재 선언을 쓴다" 는 단축은 정확히 같은 결속 붕괴를 남긴다: 적재된 선언은
+    "자기 자신이면 메모리 적재 선언을 쓴다" 는 단축은 정확히 같은 연결 붕괴를 남긴다: 적재된 선언은
     import 시점 코드인데 digest 는 지금 디스크 bytes 의 것이다. 자기 갱신 실행은 실행 도중 그 파일을
     덮으므로(pm-update 가 하는 일이 그것이다) 두 시점이 갈리는 창이 상시 열려 있다. 실행 엔진이 곧
-    상류 사본인 형상은 별도 프로세스로 재현한다(이 프로세스의 package 는 하나뿐이다)."""
+    상류 사본인 경우는 별도 프로세스로 재현한다(이 프로세스의 package 는 하나뿐이다)."""
     source = tmp_path / "framework"
     upstream = _plant_upstream_package(
         source, extra_tail=_flag_declaration_tail(_STALE_PYC_FLAG_A))
@@ -1911,9 +1911,9 @@ def test_same_path_generation_is_loaded_from_the_hashed_bytes(tmp_path):
 
     assert observed["declaration"] == str(upstream.resolve()), \
         "픽스처 전제 붕괴 — 상류가 실행 중인 그 파일이 아니다(빠른 경로 미도달)"
-    assert _STALE_PYC_FLAG_A in observed["loaded"], "픽스처 전제(적재 세대 = A)"
+    assert _STALE_PYC_FLAG_A in observed["loaded"], "픽스처 전제(적재 버전 = A)"
     assert _STALE_PYC_FLAG_B in observed["flags"] and _STALE_PYC_FLAG_A not in observed["flags"], \
-        "자기 자신 빠른 경로가 메모리 적재(구) 선언을 신 digest 와 짝지었다(결속 붕괴)"
+        "자기 자신 빠른 경로가 메모리 적재(구) 선언을 신 digest 와 짝지었다(연결 붕괴)"
     assert observed["origin"] == hook_sets.HOOK_SET_ORIGIN_UPSTREAM, observed
     assert observed["digest"] == _package_digest(source), "digest 가 그 bytes 의 것이 아니다"
 
@@ -1923,7 +1923,7 @@ def test_staging_cleanup_failure_does_not_fail_the_declaration_load(
     """스테이징 뒷정리 실패가 상류 로드 실패로 번역되지 않는다 — 선언은 이미 읽혔다.
 
     삭제 실패는 Windows 실 클래스다(핸들 잠금·AV 스캔). 그것을 로드 경계 안에 묶으면 사유 한 줄이
-    `declarations=None` 으로 번역되고, mutation 게이트가 **근거 없이** fail-closed 로 떨어진다."""
+    `declarations=None` 으로 번역되고, mutation 검사가 **근거 없이** fail-closed 로 떨어진다."""
     source = tmp_path / "framework"
     _plant_upstream_package(
         source, extra_tail=_flag_declaration_tail(_STALE_PYC_FLAG_A))
@@ -1950,13 +1950,13 @@ def test_staging_cleanup_failure_does_not_fail_the_declaration_load(
 
 def test_query_fallback_wording_has_one_owner(pm_update, pm_config,
                                               tmp_path, capsys):
-    """강등 안내 문구는 hook_sets 단일 진실이고 두 소비자가 **같은 문장**을 낸다.
+    """낮춤 안내 문구는 hook_sets 단일 진실이고 두 소비자가 **같은 문장**을 낸다.
 
-    사본을 두면 한쪽만 고쳐지고, 채택자는 같은 상태를 서로 다른 말로 듣는다(게이트가 둘로 보인다)."""
+    사본을 두면 한쪽만 고쳐지고, 채택자는 같은 상태를 서로 다른 말로 듣는다(검사가 둘로 보인다)."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
-        upstream_tail=None)  # 상류 선언 package 부재 → 조회 축 강등.
+        upstream_tail=None)  # 상류 선언 package 부재 → 조회 쪽에서 낮춘다.
     owned = hook_sets.hook_set_query_fallback_lines(
         hook_sets.hook_set_declarations(_run_home(tmp_path), source))
     assert owned and "설치본 선언으로 판정한다" in owned[0], owned
@@ -1975,14 +1975,14 @@ def test_query_fallback_wording_has_one_owner(pm_update, pm_config,
 
 # ── 커맨드 표기 커버리지 · 문구·API 정리 (T-0612) ─────────────────────────────
 # 판정 단위는 **실행되는 스크립트와 그 플래그**다. 표기(인터프리터 선행·플랫폼별 키)가 달라도 같은
-# 훅이면 같은 판정을 타야 한다 — 표기 하나로 판정에서 빠지면 그 형상의 채택자만 락아웃을 그대로 받는다.
+# 훅이면 같은 판정을 타야 한다 — 표기 하나로 판정에서 빠지면 그 경우의 채택자만 락아웃을 그대로 받는다.
 
 
 def test_interpreter_prefixed_command_is_judged_like_a_direct_one(tmp_path):
     """`bash <path> --flag` 표기도 직접 실행 표기와 **같은 판정**을 탄다.
 
-    첫 토큰만 보면 인터프리터를 스크립트로 읽어 훅 세트 밖으로 접고, 그 config 의 세대 요구가
-    통째로 판정 밖이 된다(채택자가 표기를 바꿨다는 이유로 게이트가 사라진다)."""
+    첫 토큰만 보면 인터프리터를 스크립트로 읽어 훅 세트 밖으로 바꾸고, 그 config 의 버전 요구가
+    통째로 판정 밖이 된다(채택자가 표기를 바꿨다는 이유로 검사가 사라진다)."""
     direct = _settings(git_anchor=True)
     interpreted = direct.replace(
         "${CLAUDE_PROJECT_DIR}/" + _WRAPPER_REL,
@@ -2016,8 +2016,8 @@ def test_non_interpreter_first_token_keeps_the_direct_reading():
 def test_windows_command_key_is_scanned_like_the_posix_one(tmp_path):
     """`commandWindows` 도 같은 스캔에 든다 — 그 플랫폼에서 실제로 실행되는 커맨드다.
 
-    한쪽만 보면 Windows 채택자의 세대 불일치(같은 락아웃)가 통째로 판정 밖이 된다."""
-    # Windows 쪽만 그 플래그를 넘긴다(플랫폼별로 다른 세대를 부르는 형상) — 인터프리터 선행 표기도
+    한쪽만 보면 Windows 채택자의 버전 불일치(같은 락아웃)가 통째로 판정 밖이 된다."""
+    # Windows 쪽만 그 플래그를 넘긴다(플랫폼별로 다른 버전을 부르는 경우) — 인터프리터 선행 표기도
     #   함께 태운다(두 항목이 같은 스캔·같은 해소를 쓴다).
     document = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{
         "type": "command",
@@ -2039,10 +2039,10 @@ def test_windows_command_key_is_scanned_like_the_posix_one(tmp_path):
         "Windows 커맨드만 요구하는 플래그가 판정에서 빠졌다"
 
 
-def test_remedy_line_omits_empty_parentheses(tmp_path):
-    """지목할 파일이 없는 소견은 빈 괄호 `()` 없이 처방한다 — 깨진 문장을 내지 않는다.
+def test_fix_line_omits_empty_parentheses(tmp_path):
+    """지목할 파일이 없는 소견은 빈 괄호 `()` 없이 안내한다 — 깨진 문장을 내지 않는다.
 
-    상류 세대 미해소 blocker 가 그 형상이다(`unmet_paths=()`) — 무엇이 미충족인지 열거할 수 없다."""
+    상류 버전 미해소 blocker 가 그 경우다(`unmet_paths=()`) — 무엇이 미충족인지 열거할 수 없다."""
     dest, source = _make_case(
         tmp_path, dest_settings=_settings(git_anchor=True),
         dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
@@ -2065,7 +2065,7 @@ def test_remedy_line_omits_empty_parentheses(tmp_path):
 
 
 def test_coupled_hook_set_paths_takes_declarations_keyword_only():
-    """세대 선언은 형제 API 전부와 같이 **kw-only** 다 — 위치인자 표기가 하나만 다르면 안 된다."""
+    """버전 선언은 형제 API 전부와 같이 **kw-only** 다 — 위치인자 표기가 하나만 다르면 안 된다."""
     alpha = adapter_specs.ADAPTER_HOOK_SET["claude"].coupled_groups[0][0]
 
     assert hook_sets.coupled_hook_set_paths([alpha]) == (alpha,)
@@ -2077,9 +2077,9 @@ def test_coupled_hook_set_paths_takes_declarations_keyword_only():
 
 # ── 기능 표(관리자 읽기 계약)가 훅 세트 판정을 바꾸지 않는다 (T-0907·AT-005) ─────
 # `status --json --with-adapters` 의 기능 표는 같은 선언(`ADAPTER_HOOK_SET`)과 같은 실재 판정
-# (`_entrypoint_is_present`)을 소비한다. 그 배선이 들어오면서 훅 커맨드 수집이 이벤트별로
+# (`_entrypoint_is_present`)을 소비한다. 그 등록이 들어오면서 훅 커맨드 수집이 이벤트별로
 # 갈렸는데(`_hook_commands` → `_hook_event_commands` 평탄화), **판정 입력이 한 커맨드라도
-# 달라지면** 세대 게이트가 조용히 다른 것을 보게 된다. 아래는 실 출하 template 으로 그 축을 고정한다.
+# 달라지면** 버전 검사가 조용히 다른 것을 보게 된다. 아래는 실 출하 template 으로 그 대응을 고정한다.
 
 
 def _shipped_hook_configs() -> list[tuple[str, Path, dict]]:
@@ -2096,9 +2096,9 @@ def _shipped_hook_configs() -> list[tuple[str, Path, dict]]:
 
 
 def test_hook_set_spec_fields_are_unchanged_by_the_settings_key_declaration():
-    """설정 키 선언이 `AdapterHookSetSpec` 에 필드로 얹히지 않았다 — 키는 **config 파일** 축이다.
+    """설정 키 선언이 `AdapterHookSetSpec` 에 필드로 얹히지 않았다 — 키는 **config 파일** 단위이다.
 
-    훅 세트 선언에 필드를 더하면 그 선언을 읽는 판정 전부(세대 게이트·원자 write 대상·결합 묶음)가
+    훅 세트 선언에 필드를 더하면 그 선언을 읽는 판정 전부(버전 검사·원자 write 대상·결합 묶음)가
     같은 튜플 모양에 묶인다. 설정 키는 opencode(`config_relpath` 빈 문자열)와 `.codex/config.toml`
     (훅 세트 밖)에 달 자리가 없어 파일 단위 표로 분리했다."""
     assert adapter_specs.AdapterHookSetSpec._fields == (
@@ -2107,9 +2107,9 @@ def test_hook_set_spec_fields_are_unchanged_by_the_settings_key_declaration():
                      for channel in install_rules.ADAPTER_CONFIG_CHANNEL.values()
                      for relpath in channel}
     assert set(install_rules.ADAPTER_SETTINGS_KEYS) <= channel_paths, \
-        "설정 키 선언의 키는 config 파일 relpath 여야 한다(하네스 이름 축 금지)"
+        "설정 키 선언의 키는 config 파일 relpath 여야 한다(하네스 이름 키 금지)"
     assert all(keys for keys in install_rules.ADAPTER_SETTINGS_KEYS.values()), \
-        "빈 키 목록은 그 파일의 기능 축을 통째로 끈다"
+        "빈 키 목록은 그 파일의 기능 쪽을 통째로 끈다"
 
 
 def test_declared_settings_keys_resolve_in_the_shipped_templates():
@@ -2117,9 +2117,9 @@ def test_declared_settings_keys_resolve_in_the_shipped_templates():
 
     선언과 실체가 갈리면 조용히 false-green 이다 — 양쪽 문서에 없는 키는 `_feature_verdict` 가
     None 이라 `_adapter_feature_rows` 가 행 자체를 건너뛰고, 기능 표의 관측 범위와 `distance`
-    분모가 소리 없이 줄어 관리자는 그 축을 "차이 없음" 으로 읽는다. 자기 대조 가드
-    (`test_shipped_config_has_no_feature_distance_against_itself`)는 양쪽 부재를 same 으로 접어
-    이 축을 못 잡는다."""
+    분모가 소리 없이 줄어 관리자는 그 항목을 "차이 없음" 으로 읽는다. 자기 대조 가드
+    (`test_shipped_config_has_no_feature_distance_against_itself`)는 양쪽 부재를 same 으로 바꾸어
+    이 항목을 못 잡는다."""
     template_dir_by_relpath = {
         relpath: install_rules.HARNESS_TEMPLATE_DIRS[harness][0]
         for harness, channel in install_rules.ADAPTER_CONFIG_CHANNEL.items()
@@ -2143,7 +2143,7 @@ def test_declared_settings_keys_resolve_in_the_shipped_templates():
 
 
 def test_event_split_preserves_the_hook_command_inventory():
-    """이벤트별 수집의 평탄화 == 세대 판정이 보던 커맨드 전수(순서 포함) — 실 출하 config 로.
+    """이벤트별 수집의 평탄화 == 버전 판정이 보던 커맨드 전수(순서 포함) — 실 출하 config 로.
 
     커맨드 하나가 빠지면 `_hook_set_demands` 가 그 커맨드의 요구를 못 보고 조용히 통과한다."""
     for harness, template_root, document in _shipped_hook_configs():
@@ -2159,13 +2159,13 @@ def test_event_split_preserves_the_hook_command_inventory():
         assert [command
                 for commands in adapter_documents._hook_event_commands(document).values()
                 for _matcher, command in commands] == expected, harness
-        # 판정 자체도 그대로 조용하다(출하 template 자기정합·claude 축과 같은 근거).
+        # 판정 자체도 그대로 조용하다(출하 template 자기 일치·claude 쪽과 같은 근거).
         assert hook_sets._hook_set_demands(document, adapter_specs.ADAPTER_HOOK_SET[harness],
                                            template_root) == {}, harness
 
 
-def test_feature_axis_reuses_the_entrypoint_presence_judgment():
-    """기능 표의 이벤트 축은 진입점 **실재 판정**을 그대로 쓴다(두 번째 판정 신설 0).
+def test_feature_column_reuses_the_entrypoint_presence_judgment():
+    """기능 표의 이벤트 쪽은 진입점 **실재 판정**을 그대로 쓴다(두 번째 판정 신설 0).
 
     출하 codex 커맨드는 인터프리터 해소를 담은 셸 한 줄이라 argv 분해로는 스크립트가 안 나온다 —
     실재 판정을 병용하지 않으면 손대지 않은 config 도 이벤트마다 다름으로 실린다."""
@@ -2179,14 +2179,14 @@ def test_feature_axis_reuses_the_entrypoint_presence_judgment():
             assert present, f"{harness}:{entrypoint.event} 출하 config 가 진입점을 잃었다"
             unit = f"{entrypoint.matcher or ''}:{entrypoint.dispatcher}"
             assert unit in events.get(entrypoint.event, ()), \
-                f"{harness}:{entrypoint.event} 실재 판정과 기능 축이 갈렸다"
+                f"{harness}:{entrypoint.event} 실재 판정과 기능 쪽이 갈렸다"
     assert seen_any, "진입점 선언이 하나도 없다(공허 가드)"
 
 
-# ── 이벤트 축 단위 = (matcher, 스크립트, 인자) (T-0918·X-1) ────────────────────
+# ── 이벤트 쪽 단위 = (matcher, 스크립트, 인자) (T-0918·X-1) ────────────────────
 # 값이 스크립트 **집합**이던 동안은 출하 claude `PreToolUse` 의 `Bash` 그룹(같은 래퍼를
 # `--git-anchor-hook` 로 부른다)을 통째로 지워도 집합이 안 변해 표가 `same` 으로 접혔다 —
-# 채택자가 git anchor 가드를 잃은 상태가 관리자 화면에서 "차이 없음" 이었다.
+# 채택자가 git-anchor 가드를 잃은 상태가 관리자 화면에서 "차이 없음" 이었다.
 
 _GIT_ANCHOR_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"
 _SHIPPED_CLAUDE_UNITS = {
@@ -2214,7 +2214,7 @@ def test_hook_event_units_keep_matcher_and_arguments():
 def test_removing_one_matcher_group_is_a_feature_difference():
     """출하 settings.json 에서 `Bash` matcher 그룹만 지우면 그 이벤트가 `differs` 다.
 
-    같은 스크립트가 `*` 그룹에도 있으므로 스크립트 집합으로는 안 잡히는 형상이다."""
+    같은 스크립트가 `*` 그룹에도 있으므로 스크립트 집합으로는 안 잡히는 경우다."""
     spec = adapter_specs.ADAPTER_HOOK_SET["claude"]
     latest = json.loads(
         (REPO / "templates" / "claude_code" / spec.config_relpath).read_text(
@@ -2241,7 +2241,7 @@ def test_removing_one_matcher_group_is_a_feature_difference():
 def test_shipped_config_has_no_feature_distance_against_itself():
     """template 과 바이트가 같은 config 의 기능 거리는 0 이다 — 표기 때문에 다름이 생기지 않는다.
 
-    (`pm-config status --json --with-adapters` 의 거리 축·실측 회귀: codex 훅 커맨드 형상에서
+    (`pm-config status --json --with-adapters` 의 거리 계산·실측 회귀: codex 훅 커맨드 모양에
     손대지 않은 `.codex/hooks.json` 이 거리 6 으로 실렸다.)"""
     for harness, channel in install_rules.ADAPTER_CONFIG_CHANNEL.items():
         template_root = REPO / "templates" / install_rules.HARNESS_TEMPLATE_DIRS[harness][0]

@@ -1,4 +1,4 @@
-"""repo-owned 파일 열거 seam과 출하 소비처의 모드 계약 회귀."""
+"""repo-owned 파일 열거 공용 함수와 출하 소비처의 모드 계약 회귀."""
 
 from __future__ import annotations
 
@@ -447,7 +447,7 @@ def test_pm_update_non_git_directory_rc128_warns_and_falls_back(tmp_path, monkey
     ship.mkdir(parents=True)
     (ship / "fallback.txt").write_text("fallback\n", encoding="utf-8")
     # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
-    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    # 정하지 않도록 엔진의 runner 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(
@@ -512,7 +512,7 @@ def test_pm_update_skips_nonregular_index_mode_without_symlink_permission(
 
 
 @pytest.mark.parametrize("index_mode", ["120000", "160000"])
-def test_tracked_only_seam_preserves_special_index_modes(
+def test_tracked_only_listing_preserves_special_index_modes(
         repo_files, tmp_path, index_mode):
     record = (
         f"{index_mode} 1111111111111111111111111111111111111111 0"
@@ -730,7 +730,7 @@ def test_pm_import_non_git_dest_fallback_warning_is_visible(tmp_path, monkeypatc
     dest.mkdir()
     (dest / "copied.md").write_text("copied\n", encoding="utf-8")
     # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
-    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    # 정하지 않도록 엔진의 runner 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(repo_files, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
 
     with pytest.warns(

@@ -277,7 +277,7 @@ def test_main_target_opencode_dry_run(pm_update, tmp_path, monkeypatch, capsys):
 
     source 와 dest 를 모두 tmp_path 하위로 monkeypatch 해 실 REPO 에 영향 없이 검증한다.
     manifest 항목이 source 에 모두 존재하면 missing=0 → changes>0 → dry-run 이므로 rc=0.
-    dry-run 이므로 dest 에 실제 파일이 생성되지 않아야 한다. 엔진 패키지에 잔여 모듈이 있는 세 타깃의
+    dry-run 이므로 dest 에 실제 파일이 생성되지 않아야 한다. 엔진 패키지에 남은 모듈이 있는 세 타깃의
     `--all-targets --dry-run` 도 타깃마다 `[replace-dir]` 한 줄과 파일 수를 보이고 원천·대상에 아무것도
     (락·stage·backup 포함) 쓰지 않는다.
     """

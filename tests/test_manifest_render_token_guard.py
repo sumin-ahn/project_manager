@@ -17,13 +17,13 @@ manifest 에 **bare**(무 `@render`) 로 등재된 경로는 `pm_update` 가 byt
 
 이 파일이 닫는 것:
 
-  (A) 전 flavor manifest(루트 + `templates/*`) 의 bare 등재 파일 **전수 스캔** — 본문 운영 토큰이
+  (A) 전 하네스별 판 manifest(루트 + `templates/*`) 의 bare 등재 파일 **전수 스캔** — 본문 운영 토큰이
       ②·③ 어느 소유 선언에도 안 걸리면 fail(진동 예약).
-  (B) ② 선언 원장(`pm_import.CONSUMPTION_TIME_TOKENS`)과 이 파일의 allow 목록이 정확히 일치하고,
+  (B) ② 선언 목록(`pm_import.CONSUMPTION_TIME_TOKENS`)과 이 파일의 allow 목록이 정확히 일치하고,
       각 소비처가 **실재**한다(소비처가 사라지면 선언이 dangling → red).
   (C) 신규 설치 직후 템플릿 2종의 `{{DATE}}` 가 토큰으로 남는다(같은 파일의 다른 토큰은 무영향).
   (D) ② 소비처가 실제로 돈다 — `ensure_task_pm_state`·`pm_engine.cli.board_init.cmd_init` 산출물의 날짜 = 생성 시각.
-  (E) e2e — import → `pm_update` 왕복 후 대상 문서 byte 불변(진동 0·샌드박스 재현 시나리오 박제).
+  (E) e2e — import → `pm_update` 왕복 후 대상 문서 byte 불변(진동 0·샌드박스 재현 시나리오 기록).
 
 기계 테스트 — 라이브 하니스·네트워크 0(`opencode models` 조회 stub·framework 사본은 비-git).
 """
@@ -63,7 +63,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 PROJECT_NAME = "AcmeProj"
 
-# ② 소비 시점 소유 원장 — 엔진 선언(`pm_import.CONSUMPTION_TIME_TOKENS`)과 **정확히 일치**해야
+# ② 소비 시점 소유 목록 — 엔진 선언(`pm_import.CONSUMPTION_TIME_TOKENS`)과 **정확히 일치**해야
 #   한다(선언이 조용히 늘 수 없다). 값 = 그 토큰을 실제로 채우는 소비처:
 #     "<module>.<symbol>" — 엔진 코드가 산출물 생성 시점에 치환. 가드가 그 모듈에 심볼이 실재하고
 #                           **그 함수 본문이 토큰 리터럴을 다루는지** AST 로 확인한다(no-op 선언 금지).
@@ -124,10 +124,10 @@ def board():
 # ── manifest 인벤토리 (bare 등재가 나르는 파일 전수) ─────────────────────────
 
 
-def _flavor_manifests(pm_import) -> dict[str, Path]:
-    """flavor 이름 → engine.manifest 경로. 루트 + 등록 하네스 템플릿 전수(하드코딩 0).
+def _variant_manifests(pm_import) -> dict[str, Path]:
+    """하네스별 판 이름 → engine.manifest 경로. 루트 + 등록 하네스 템플릿 전수(하드코딩 0).
 
-    축은 엔진 권위 목록(`HARNESS_TEMPLATE_DIRS`)에서 파생한다 — 네 번째 하네스가 추가되면 이
+    목록은 엔진 권위 목록(`HARNESS_TEMPLATE_DIRS`)에서 파생한다 — 네 번째 하네스가 추가되면 이
     매트릭스에 자동 편입된다(손으로 세 번째를 적어 넣던 클래스 회피).
     """
     manifests = {"root": REPO / ".project_manager" / "engine.manifest"}
@@ -141,20 +141,20 @@ def _flavor_manifests(pm_import) -> dict[str, Path]:
 def _bare_entry_files(pm_update, repo_files, manifest_path: Path) -> list[tuple[str, Path]]:
     """(dest relpath, source 절대경로) — bare 등재(=`@render` 아님) 항목이 나르는 파일 전수.
 
-    디렉토리 항목은 canonical seam(`pm_engine.infra.repo_files`)으로 펼친다 — 이 판정의 대상은 "채택자가
+    디렉토리 항목은 공용 함수(`pm_engine.infra.repo_files`)으로 펼친다 — 이 판정의 대상은 "채택자가
     실제로 받는 repo 추적 파일" 이라 출하 인벤토리와 같은 채널이어야 한다(자체 tree-walk 신설 0).
     source 부재(`@target-owned` 등)는 빈 목록이라 자연 제외된다.
 
-    ⚠ **flavor 축이 가르는 것은 경로 멤버십뿐이다** — 어느 flavor manifest 를 읽느냐가 "그 flavor 가
+    ⚠ **하네스별 판 구분이 가르는 것은 경로 멤버십뿐이다** — 어느 하네스별 판 manifest 를 읽느냐가 "그 하네스별 판이
     무엇을 bare 로 등재하는가"를 정할 뿐, 내용은 항상 **REPO(canonical worktree) 기준 bytes** 를 읽는다
     (bare 항목의 source 는 루트 파일이거나 `@source=templates/<harness>/…` 의 그 템플릿 파일이다).
-    각 `templates/<flavor>/` **사본**의 bytes 를 flavor 별로 대조하는 게 아니다 — 그 축(사본 ↔ canonical
+    각 `templates/<variant>/` **사본**의 bytes 를 하네스별 판마다 대조하는 게 아니다 — 그 대조(사본 ↔ canonical
     byte-parity)은 `tests/test_manifest_template_parity.py` 소관이다.
     """
     out: list[tuple[str, Path]] = []
     for entry in manifest_store.read_manifest(manifest_path):
         if entry.render:
-            continue  # @render = 매 sync 재렌더 — 토큰-form 소스가 정상(진동 축 아님)
+            continue  # @render = 매 sync 재렌더 — 토큰-form 소스가 정상(진동 대상 아님)
         dest_rel = str(entry).replace("\\", "/")
         source_rel = (entry.source_rel or str(entry)).replace("\\", "/")
         for shipped in repo_files.list_repo_owned_files(
@@ -196,11 +196,11 @@ def _ownership_violation(pm_import, dest_rel: str, token: str, sed_exclude) -> s
     )
 
 
-# ── (A) 전 flavor 매트릭스 ───────────────────────────────────────────────────
+# ── (A) 전 하네스별 판 매트릭스 ───────────────────────────────────────────────────
 
 
 def test_bare_registered_tokens_have_a_single_owner(pm_import, pm_update, repo_files):
-    """전 flavor manifest 의 bare 등재 파일 전수 × 운영 토큰 전수 — 소유자 없는 토큰 0.
+    """전 하네스별 판 manifest 의 bare 등재 파일 전수 × 운영 토큰 전수 — 소유자 없는 토큰 0.
 
     ticket T-0578 이 닫는 진동 클래스의 본체 가드다. 새 파일이 bare 로 등재되며 토큰을 담으면
     (또는 기존 파일에 토큰이 새로 들어오면) 여기서 red 가 난다.
@@ -208,22 +208,22 @@ def test_bare_registered_tokens_have_a_single_owner(pm_import, pm_update, repo_f
     tokens = _operational_tokens(pm_import)
     violations: list[str] = []
     scanned = 0
-    for flavor, manifest_path in _flavor_manifests(pm_import).items():
-        assert manifest_path.is_file(), f"{flavor} manifest 부재: {manifest_path}"
+    for variant, manifest_path in _variant_manifests(pm_import).items():
+        assert manifest_path.is_file(), f"{variant} manifest 부재: {manifest_path}"
         sed_exclude = install_source._derive_sed_exclude_relpaths(manifest_path)
         for dest_rel, source_path in _bare_entry_files(pm_update, repo_files, manifest_path):
             try:
                 text = source_path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
-                continue  # 바이너리·읽기불가 = 치환 대상 아님(진동 축 밖)
+                continue  # 바이너리·읽기불가 = 치환 대상 아님(진동 대상 밖)
             scanned += 1
             for token in tokens:
                 if token not in text:
                     continue
                 why = _ownership_violation(pm_import, dest_rel, token, sed_exclude)
                 if why:
-                    violations.append(f"[{flavor}] {why}")
-    assert scanned > 0, "bare 등재 파일을 하나도 못 읽었다 — 인벤토리 배선이 깨졌다(공허 가드)."
+                    violations.append(f"[{variant}] {why}")
+    assert scanned > 0, "bare 등재 파일을 하나도 못 읽었다 — 인벤토리 연결이 깨졌다(공허 가드)."
     assert violations == [], "\n".join(violations)
 
 
@@ -235,7 +235,7 @@ def test_bare_registered_tokens_have_a_single_owner(pm_import, pm_update, repo_f
     (".project_manager/wiki/pm_state.template.md", "{{DATE}}", True),
     (".project_manager/wiki/pm_state.template.md", "{{PROJECT_NAME}}", False),
     (".project_manager/wiki/domain/_template.md", "{{DATE}}", True),
-    # 소유자 없음 — 설치가 굳히고 sync 가 되돌리는 진동 형상(이 가드가 잡아야 하는 것).
+    # 소유자 없음 — 설치가 굳히고 sync 가 되돌리는 진동 경우(이 가드가 잡아야 하는 것).
     (".claude/some_adapter_hook.sh", "{{PY}}", False),
     (".project_manager/wiki/README.md", "{{PROJECT_NAME}}", False),
 ])
@@ -252,17 +252,17 @@ def test_ownership_verdict_is_per_file_and_per_token(pm_import, dest_rel, token,
             f"{dest_rel} 의 {token} 이 소유자 없이 떠 있는데 판정이 통과시켰다 — 가드 무력화.")
 
 
-# ── (B) 선언 원장 ↔ 엔진 선언 일치 · 소비처 실재 ────────────────────────────
+# ── (B) 선언 목록 ↔ 엔진 선언 일치 · 소비처 실재 ────────────────────────────
 
 
-def test_engine_declaration_matches_ledger(pm_import):
-    """엔진 선언과 이 파일의 allow 원장이 정확히 일치한다 — 선언이 조용히 늘 수 없다."""
-    ledger = {rel: frozenset(tokens) for rel, tokens in CONSUMPTION_TIME_OWNERS.items()}
+def test_engine_declaration_matches_records(pm_import):
+    """엔진 선언과 이 파일의 allow 목록이 정확히 일치한다 — 선언이 조용히 늘 수 없다."""
+    records = {rel: frozenset(tokens) for rel, tokens in CONSUMPTION_TIME_OWNERS.items()}
     engine = {rel: frozenset(tokens)
               for rel, tokens in install_source.CONSUMPTION_TIME_TOKENS.items()}
-    assert engine == ledger, (
+    assert engine == records, (
         "pm_import.CONSUMPTION_TIME_TOKENS 와 이 파일의 CONSUMPTION_TIME_OWNERS 가 어긋난다 — "
-        "소비 시점 소유를 새로 선언했다면 소비처와 함께 원장에도 적어라(선언만 늘면 진동이 "
+        "소비 시점 소유를 새로 선언했다면 소비처와 함께 목록에도 적어라(선언만 늘면 진동이 "
         "다시 조용해진다).")
 
 
@@ -367,7 +367,7 @@ def test_fresh_install_keeps_consumption_time_token(imported, rel):
     text = path.read_text(encoding="utf-8")
     for token in CONSUMPTION_TIME_OWNERS[rel]:
         assert token in text, (
-            f"{rel} 의 {token} 이 설치 시점에 굳었다 — 소비 시점 소유가 배선되지 않았다.")
+            f"{rel} 의 {token} 이 설치 시점에 굳었다 — 소비 시점 소유가 연결되지 않았다.")
 
 
 def test_readme_has_no_operational_token(imported, pm_import):
@@ -422,7 +422,7 @@ def test_ensure_task_pm_state_renders_creation_date(tmp_path):
     assert "{{DATE}}" not in text, (
         "task pm_state 에 미해소 토큰 잔존 — 소비 시점 치환이 안 돌았다.")
     assert f"created: {datetime.date.today().isoformat()}" in text, (
-        "task pm_state 의 created 가 생성 시각이 아니다(설치일 박제 재발?).")
+        "task pm_state 의 created 가 생성 시각이 아니다(설치일 기록 재발?).")
 
 
 def test_board_init_seeds_pm_state_with_creation_date(board, monkeypatch, tmp_path):
@@ -469,7 +469,7 @@ _ROUNDTRIP_WATCHED = (
 def _build_claude_framework(tmp_path: Path) -> Path:
     """REPO 로부터 claude 프레임워크 사본을 만든다 (import 소스 + self-update 소스 겸용).
 
-    claude flavor manifest 가 참조하는 root-상대 경로 전부를 담는다: 엔진(`.project_manager/`)·
+    claude 하네스별 판 manifest 가 참조하는 root-상대 경로 전부를 담는다: 엔진(`.project_manager/`)·
     claude 템플릿(`templates/claude_code/` — `@source` 어댑터/훅 canonical)·root `.claude/`
     (agents·skills)·`.gitattributes`·`.github/workflows`. REPO 를 손대지 않게
     사본을 쓴다.
@@ -492,10 +492,10 @@ def _build_claude_framework(tmp_path: Path) -> Path:
 
 def test_import_then_update_roundtrip_does_not_oscillate(
         pm_import, pm_update, tmp_path, monkeypatch):
-    """샌드박스 재현 시나리오 박제 — import 직후 bytes 가 `pm_update` 왕복 후에도 그대로다.
+    """샌드박스 재현 시나리오 기록 — import 직후 bytes 가 `pm_update` 왕복 후에도 그대로다.
 
     제보 실측(v1.6.0)의 재현 절차 그대로다: fresh import → self-update → 대상 문서 diff.
-    옛 형상에서는 `wiki/README.md`(`{{PROJECT_NAME}}`)·템플릿 2종(`{{DATE}}`)·claude ctx 래퍼
+    옛 상태에서는 `wiki/README.md`(`{{PROJECT_NAME}}`)·템플릿 2종(`{{DATE}}`)·claude ctx 래퍼
     (`{{PY}}` 주석)가 전부 토큰-form 으로 회귀했다.
 
     비공허 증명은 아래 (2) — 같은 경로를 일부러 값-form 으로 되돌려 두면 `pm_update` 가 upstream
@@ -515,7 +515,7 @@ def test_import_then_update_roundtrip_does_not_oscillate(
     monkeypatch.setattr(pm_update, "REPO", dest)
     before = {rel: (dest / rel).read_bytes() for rel in _ROUNDTRIP_WATCHED}
     for rel, payload in before.items():
-        assert payload, f"{rel} 이 비었다(공허 스냅샷)"
+        assert payload, f"{rel} 이 비었다(공허 복사본)"
 
     # (1) 왕복 불변 — 진동 0.
     with redirect_stdout(io.StringIO()):

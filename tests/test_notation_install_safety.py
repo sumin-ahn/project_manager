@@ -1,10 +1,10 @@
-"""T-0541 ③④⑤ — 표기 렌더 경로의 설치-전 게이트·경로 안전·비파괴 계약.
+"""T-0541 ③④⑤ — 표기 렌더 경로의 설치-전 검사·경로 안전·비파괴 계약.
 
 닫는 결함 셋(전부 "렌더 단계가 복사 뒤라 늦다"의 파생):
 
 ③ 미등록 표기 하네스 — 렌더러는 미등록 하네스 context 를 fail-loud 하는데 그 판정이 복사
    *뒤*라, `--fill manual` 설치는 파일을 다 깔고 나서 `RenderLeakError` 로 죽어 **부분 설치**를
-   남겼다. `--fill auto` 미매핑 하네스 게이트와 같은 성질(설치 전 rc1·traceback 0)을 준다.
+   남겼다. `--fill auto` 미매핑 하네스 검사와 같은 성질(설치 전 rc1·traceback 0)을 준다.
 ④ add-harness 의 기존 공유 문서 재렌더가 `is_file()` 만 보고 대상에 넣어 symlink 를 따라가고
    `..` 도 안 걸렀다 — 저장소 밖 파일이 치환·렌더 대상이 될 수 있었다. `_is_safe_dest_path`
    검증 + **복사 시작 전 거부**.
@@ -131,7 +131,7 @@ def test_into_stops_before_copy_when_a_reader_manifest_is_missing(
          "--from", str(REPO), "--name", "MissingManifest"]) == 0
     claude_marker = dest / ".claude" / "settings.json"
     assert not claude_marker.exists()
-    # 설치된 codex 의 flavor 트리를 소스에서 못 찾는 상황(부분 checkout 동치).
+    # 설치된 codex 의 하네스별 판 트리를 소스에서 못 찾는 상황(부분 checkout 동치).
     monkeypatch.setitem(install_rules.HARNESS_TEMPLATE_DIRS, "codex", ("codex_absent",))
     capsys.readouterr()
 
@@ -152,8 +152,8 @@ def test_add_harness_cli_translates_missing_reader_manifest_to_rc1(
 
     같은 실패를 main 은 rc1 로, add-harness 는 traceback 으로 내던 비대칭을 없앤다."""
     dest = _live_instance(pm_import, tmp_path / "addmissing", "claude")
-    # 설치된 claude 의 flavor 트리를 소스에서 못 찾는 상황(부분 checkout 동치). 표기 registry 에는
-    #   등록해 둬야 미등록-표기 게이트가 아니라 **manifest 부재** 경로를 실제로 태운다.
+    # 설치된 claude 의 하네스별 판 트리를 소스에서 못 찾는 상황(부분 checkout 동치). 표기 registry 에는
+    #   등록해 둬야 미등록-표기 검사가 아니라 **manifest 부재** 경로를 실제로 태운다.
     monkeypatch.setitem(install_rules.HARNESS_TEMPLATE_DIRS, "claude", ("claude_absent",))
     _register_notation(pm_import, monkeypatch, "claude_absent")
     capsys.readouterr()
@@ -169,7 +169,7 @@ def test_add_harness_cli_translates_missing_reader_manifest_to_rc1(
 
 def test_add_harness_stops_before_copy_for_unregistered_notation(
         pm_import, tmp_path, monkeypatch):
-    """add-harness 도 같은 게이트를 복사 전에 탄다 — CLI 는 rc1 로 번역(traceback 0)."""
+    """add-harness 도 같은 검사를 복사 전에 탄다 — CLI 는 rc1 로 번역(traceback 0)."""
     dest = _live_instance(pm_import, tmp_path / "addgate")
     _unregister_notation(
         pm_import, monkeypatch, "codex", "_HARNESS_LABEL_BY_TEMPLATE_DIR")
@@ -359,7 +359,7 @@ def test_add_harness_backs_up_shared_docs_before_rerender(pm_import, tmp_path, c
 
 
 def test_shared_docs_are_not_backed_up_when_git_can_restore(pm_import, tmp_path):
-    """git 추적&미변경 파일은 백업 생략 — plan_copy 의 git-safe 규칙과 동형."""
+    """git 추적&미변경 파일은 백업 생략 — plan_copy 의 git-safe 규칙과 같은 방식."""
     dest = tmp_path / "inst"
     role = dest / ".project_manager" / "wiki" / "pm_role.md"
     role.parent.mkdir(parents=True)
@@ -486,7 +486,7 @@ def test_installed_harnesses_reads_dest_tree(pm_import, tmp_path):
 def test_render_preserves_crlf_line_endings(render_home, pm_import, tmp_path):
     """CRLF wiki 문서를 재렌더해도 줄끝은 CRLF 그대로다 — 표기 외 바이트 변경 0.
 
-    기본 텍스트 IO 는 universal-newlines 라 read/write 왕복만으로 CRLF 가 LF 로 접힌다. 렌더
+    기본 텍스트 IO 는 universal-newlines 라 read/write 왕복만으로 CRLF 가 LF 로 바뀐다. 렌더
     범위가 인스턴스 소유 문서까지 넓어진 뒤에는 그게 Windows 채택자 트리 전체를 뒤집는다."""
     dest = tmp_path / "crlf"
     manifest = dest / ".project_manager" / "engine.manifest"
@@ -494,7 +494,7 @@ def test_render_preserves_crlf_line_endings(render_home, pm_import, tmp_path):
     manifest.write_text(".project_manager/wiki/pm_role.md\n", encoding="utf-8")
     target = dest / ".project_manager" / "wiki" / "raw" / "README.md"
     target.parent.mkdir(parents=True)
-    target.write_bytes("첫 줄\r\n박제는 `/spike-new` 가 한다\r\n끝 줄\r\n".encode("utf-8"))
+    target.write_bytes("첫 줄\r\n기록은 `/spike-new` 가 한다\r\n끝 줄\r\n".encode("utf-8"))
 
     changed = import_render.render_managed_files(render_home,
         dest, {}, {Path(".project_manager/wiki/raw/README.md")},
@@ -515,13 +515,13 @@ def test_render_preserves_lf_line_endings(render_home, pm_import, tmp_path):
     manifest.write_text(".project_manager/wiki/pm_role.md\n", encoding="utf-8")
     target = dest / ".project_manager" / "wiki" / "raw" / "README.md"
     target.parent.mkdir(parents=True)
-    target.write_bytes("박제는 `/spike-new` 가 한다\n".encode("utf-8"))
+    target.write_bytes("기록은 `/spike-new` 가 한다\n".encode("utf-8"))
 
     import_render.render_managed_files(render_home,
         dest, {}, {Path(".project_manager/wiki/raw/README.md")},
         installed_notation_context=("codex",))
 
-    assert target.read_bytes() == "박제는 `$spike-new` 가 한다\n".encode("utf-8")
+    assert target.read_bytes() == "기록은 `$spike-new` 가 한다\n".encode("utf-8")
 
 
 def test_newline_preserving_roundtrip_helpers(pm_import, tmp_path):
@@ -550,13 +550,13 @@ def test_add_harness_does_not_double_backup_copied_shared_doc(pm_import, tmp_pat
 def test_pm_install_evidence_is_derived_and_non_empty(pm_import):
     """등록 하네스 전부가 PM 증거를 갖고, 그 값이 PM 이름 관례를 따른다.
 
-    하나라도 비면 그 하네스는 구조 판정으로 강등돼 오판정이 되살아나므로 여기서 red 로 잡는다.
+    하나라도 비면 그 하네스는 구조 판정으로 낮춰져 오판정이 되살아나므로 여기서 red 로 잡는다.
     production 판정(`installed_harnesses`)이 소비하는 바로 그 함수를 태운다."""
     evidence, shipped_all = install_receipt._pm_install_evidence(REPO)
     assert set(evidence) == set(install_rules.REGISTERED_HARNESSES)
     assert set(shipped_all) == set(install_rules.REGISTERED_HARNESSES)
     for harness, marks in evidence.items():
-        assert marks, f"{harness}: PM 증거 0건(설치 판정이 구조 검사로 강등됨)"
+        assert marks, f"{harness}: PM 증거 0건(설치 판정이 구조 검사로 낮춰짐)"
         assert marks <= shipped_all[harness], f"{harness}: 증거가 출하 집합 밖"
         for rel in marks:
             assert any(part.startswith(("pm-", "pm_")) for part in rel.split("/")), rel
@@ -567,11 +567,11 @@ def test_pm_install_evidence_is_derived_and_non_empty(pm_import):
     )
 
 
-# ⚠ 아래 세 추론 축은 **기록이 없는 인스턴스**(기록 도입 전 설치·수기 설치)의 판정을 잰다 —
+# ⚠ 아래 세 추론 검사는 **기록이 없는 인스턴스**(기록 도입 전 설치·수기 설치)의 판정을 잰다 —
 #   기록이 있으면 그게 진실이라 추론을 아예 안 타므로, 기록을 지워야 이 가드가 공허해지지 않는다.
 
 def _forget_install_receipt(pm_import, dest: Path) -> None:
-    """기록 도입 이전 인스턴스 형상 — 어댑터는 그대로 두고 기록만 없앤다(추론 축 재현)."""
+    """기록 도입 이전 인스턴스 구성 — 어댑터는 그대로 두고 기록만 없앤다(추론 검사 재현)."""
     (dest / install_receipt.INSTALL_RECEIPT_RELPATH).unlink()
 
 
@@ -605,13 +605,13 @@ def test_coexisting_install_survives_a_missing_exclusive_sentinel(pm_import, tmp
 
 
 def test_shared_evidence_counts_as_install_conservatively(pm_import, tmp_path):
-    """(추론 축) 구조 증거 + 공유 PM 자산이면 설치로 본다 — 유실보다 소음을 택하는 비대칭 판단.
+    """(추론 검사) 구조 증거 + 공유 PM 자산이면 설치로 본다 — 유실보다 소음을 택하는 비대칭 판단.
 
     opencode 설치 + 채택자 자작 `CLAUDE.md` 는 claude 도 독자로 세어 병기 표기가 하나 는다
     (소음). 그 반대(귀속으로 빼기)는 공존 인스턴스에서 표기 유실을 만든다.
 
     기록이 있는 인스턴스엔 이 소음 자체가 없다(첫 단언) — 추론의 거짓 양성은 기록 부재에서만 남는
-    잔여이고, 그 잔여는 여전히 유실보다 안전한 쪽으로 기운다(둘째 단언)."""
+    남은이고, 그 남은은 여전히 유실보다 안전한 쪽으로 기운다(둘째 단언)."""
     dest = _live_instance(pm_import, tmp_path / "oc_own_claude_md", "opencode")
     (dest / "CLAUDE.md").write_text("# 우리 팀 claude 메모\n", encoding="utf-8")
     assert (dest / ".claude" / "skills" / "pm-bootstrap" / "SKILL.md").is_file()
@@ -622,7 +622,7 @@ def test_shared_evidence_counts_as_install_conservatively(pm_import, tmp_path):
     _forget_install_receipt(pm_import, dest)
     assert install_receipt.installed_harnesses(dest, REPO) == ["claude", "opencode"]
 
-    # 반대 축은 그대로 — PM 자산이 하나도 없으면(채택자 자기 트리) 여전히 미검출이다.
+    # 반대 경우는 그대로 — PM 자산이 하나도 없으면(채택자 자기 트리) 여전히 미검출이다.
     (dest / "CLAUDE.md").unlink()
     shutil.rmtree(dest / ".claude" / "skills")
     assert install_receipt.installed_harnesses(dest, REPO) == ["opencode"]
@@ -761,7 +761,7 @@ def _swap_to_outside_symlink(path: Path, outside: Path) -> None:
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX 전용 — fd 순회 지원 단언")
 def test_fd_walk_is_active_on_posix(pm_import):
-    """POSIX 에서는 구조적 폐쇄(fd 순회)가 켜져 있어야 한다 — 조용히 재검사 폴백으로 강등되면
+    """POSIX 에서는 구조적 폐쇄(fd 순회)가 켜져 있어야 한다 — 조용히 재검사 대체 동작으로 낮춰지면
     창이 좁아질 뿐 남는다. 지원 판정이 뒤집히면 이 가드가 먼저 red 로 알린다."""
     assert install_files._DEST_FD_WALK_SUPPORTED
 
@@ -807,7 +807,7 @@ def test_dest_root_swap_after_plan_is_refused(pm_import, tmp_path):
     (dest / rel).write_text("`/pm-bootstrap`\n", encoding="utf-8")
     root_identity = install_files.dest_root_identity(dest)
     assert root_identity is not None
-    # 공격자가 dest 루트를 밖의 동형 트리로 바꿔친다.
+    # 공격자가 dest 루트를 밖의 같은 구조 트리로 바꿔친다.
     decoy = tmp_path / "decoy"
     (decoy / rel).parent.mkdir(parents=True)
     (decoy / rel).write_text(_OUTSIDE_TEXT, encoding="utf-8")
@@ -815,19 +815,19 @@ def test_dest_root_swap_after_plan_is_refused(pm_import, tmp_path):
     dest.symlink_to(decoy, target_is_directory=True)
 
     # 파일 단위 교체(`UnsafeDestPathError`)와 **다른 클래스**여야 한다 — 파일 단위 핸들러가
-    #   흡수하면 실행이 계속되고 이후 단계가 교체된 트리에 쓴다.
+    #   삼키면 실행이 계속되고 이후 단계가 교체된 트리에 쓴다.
     assert not issubclass(install_files.DestRootSwappedError, install_files.UnsafeDestPathError)
     with pytest.raises(install_files.DestRootSwappedError, match="dest 루트"):
         install_files.write_dest_text_keeping_newlines(
             dest, rel, "RENDERED\n", root_identity=root_identity)
     assert (decoy / rel).read_text(encoding="utf-8") == _OUTSIDE_TEXT
-    # 고정을 안 주면(옛 동작) 같은 형상에서 밖이 열린다 — 이 가드가 load-bearing 이라는 증거.
+    # 고정을 안 주면(옛 동작) 같은 경우에 밖이 열린다 — 이 가드가 load-bearing 이라는 증거.
     install_files.write_dest_text_keeping_newlines(dest, rel, "RENDERED\n")
     assert (decoy / rel).read_text(encoding="utf-8") == "RENDERED\n"
 
 
 def test_root_identity_failure_is_loud_not_a_disabled_check(pm_import, tmp_path, capsys):
-    """루트 신원 획득 실패는 None 폴백이 아니라 **적용 전 오류**다.
+    """루트 신원 획득 실패는 None 대체 동작이 아니라 **적용 전 오류**다.
 
     None 으로 삼키면 루트 교체 검사가 통째로 꺼진다 — "획득 순간만 해소 불가로 만들고 그 뒤
     교체" 라는 우회가 성립하므로, 못 잡으면 아무것도 열지 않고 멈춘다."""
@@ -852,7 +852,7 @@ def test_root_identity_failure_is_loud_not_a_disabled_check(pm_import, tmp_path,
 @requires_symlink
 def test_planned_target_swapped_to_broken_symlink_fails_the_plan(
         pm_import, tmp_path, monkeypatch):
-    """계획의 `is_file()` 선검사 잔여 — 안전 판정 직후 깨진 symlink 로 바뀌면 옛 코드는 fd 가드에
+    """계획의 `is_file()` 선검사 남은 — 안전 판정 직후 깨진 symlink 로 바뀌면 옛 코드는 fd 가드에
     닿지도 못하고 조용히 제외했다. 이제 lstat 선검사가 링크를 후보로 통과시켜 **계획 단계
     fail-loud**(복사 전 rc1)로 끝난다."""
     dest = tmp_path / "inst"
@@ -882,7 +882,7 @@ def test_backup_absorbs_target_deleted_after_precheck(
     """백업 선검사 뒤 삭제 경쟁도 파일 단위 제외 + loud 다 — 예외로 새면 부분 적용이 남는다.
 
     이 시점엔 복사·manifest 변경이 이미 끝나 있어, `FileNotFoundError` 전파는 곧 부분 적용 잔존이다.
-    렌더 쓰기의 같은 경쟁 처리와 동형(제외 + 재렌더 목록에서 제거 + loud)."""
+    렌더 쓰기의 같은 경쟁 처리와 같은 방식(제외 + 재렌더 목록에서 제거 + loud)."""
     dest = _live_instance(pm_import, tmp_path / "backup_vanish")
     role = dest / ".project_manager" / "wiki" / "pm_role.md"
     original = install_files._is_inplace_edit_candidate
@@ -946,7 +946,7 @@ def test_byte_identical_scope_does_not_follow_a_swapped_link(
 
 
 def _swapped_copied_file(tmp_path: Path, content: str) -> tuple[Path, Path, Path]:
-    """복사 직후 저장소 밖 지향 symlink 로 교체된 '복사분' 파일 형상 — (dest, rel, outside)."""
+    """복사 직후 저장소 밖 지향 symlink 로 교체된 '복사분' 파일 구성 — (dest, rel, outside)."""
     dest = tmp_path / "inst"
     dest.mkdir()
     rel = Path("doc.md")
@@ -1003,9 +1003,9 @@ def test_manual_fill_channel_refuses_swapped_copied_file(pm_import, tmp_path, ca
 @requires_symlink
 def test_root_swap_aborts_the_whole_run_not_just_one_file(
         pm_import, tmp_path, monkeypatch, capsys):
-    """루트 교체는 파일 단위 흡수가 아니라 **즉시 전체 중단**이다.
+    """루트 교체는 파일 단위 처리가 아니라 **즉시 전체 중단**이다.
 
-    흡수하면 이후 단계(치환·fill·board init 등 fd 로 감싸지 못하는 외부 단계 포함)가 교체된
+    삼키면 이후 단계(치환·fill·board init 등 fd 로 감싸지 못하는 외부 단계 포함)가 교체된
     트리에 계속 쓴다. 중단은 부분 적용이 아니라 오염 차단이다 — 대상 트리가 이미 바꿔치기됐다."""
     dest = _live_instance(pm_import, tmp_path / "rootswap")
     decoy = tmp_path / "decoy"
@@ -1069,7 +1069,7 @@ def test_copy_channel_refuses_ancestor_swapped_between_plan_and_copy(
         pm_import, tmp_path, monkeypatch, capsys):
     """계획↔복사 사이 **조상 디렉토리**가 저장소 밖 지향 symlink 로 바뀌면 유출 0.
 
-    옛 형상에서 `dst.parent.mkdir(parents=True)` 가 링크를 따라가 밖에 디렉토리를 만들고
+    옛 경우에 `dst.parent.mkdir(parents=True)` 가 링크를 따라가 밖에 디렉토리를 만들고
     `copy2` 가 그 아래로 파일을 쏟았다(reviewer 실측: 25파일 유출). 이제 디렉토리 생성과 파일
     쓰기가 모두 fd 순회를 타므로 첫 걸음에서 거부된다.
 
@@ -1111,7 +1111,7 @@ def test_copy_channel_refuses_ancestor_swapped_between_plan_and_copy(
 
 @requires_symlink
 def test_dest_file_write_refuses_symlinked_target(pm_import, tmp_path):
-    """복사 목적지가 symlink 로 선점돼 있으면 신규·덮어쓰기 어느 형상에서도 링크를 따라가지 않는다.
+    """복사 목적지가 symlink 로 먼저 차지돼 있으면 신규·덮어쓰기 어느 경우에도 링크를 따라가지 않는다.
 
     옛 `shutil.copy2(src, dst)` 는 링크를 따라가 저장소 밖 파일을 덮었다."""
     dest = tmp_path / "inst"
@@ -1147,7 +1147,7 @@ def test_absent_target_under_symlinked_ancestor_is_not_silently_skipped(
         pm_import, tmp_path):
     """조상이 깨진 symlink 로 교체되면 `lstat` 은 ENOENT 다 — 진짜 부재와 구분해 후보로 통과시킨다.
 
-    삼키면 요구된 loud 제외가 그 축에서만 침묵이 된다. 진짜 부재(조상 정상)는 그대로 조용한 제외."""
+    삼키면 요구된 loud 제외가 그 경우에서만 침묵이 된다. 진짜 부재(조상 정상)는 그대로 조용한 제외."""
     dest = tmp_path / "inst"
     (dest / ".project_manager").mkdir(parents=True)
     rel = Path(".project_manager/wiki/pm_role.md")
@@ -1290,7 +1290,7 @@ def test_safe_dest_roundtrip_preserves_newlines_and_never_creates(pm_import, tmp
 
 @requires_symlink
 def test_recheck_fallback_also_refuses_the_swapped_path(pm_import, tmp_path, monkeypatch):
-    """dir_fd/`O_NOFOLLOW` 미지원 플랫폼 폴백(열기 직전 재검사)도 교체된 경로를 거부한다.
+    """dir_fd/`O_NOFOLLOW` 미지원 플랫폼 대체 동작(열기 직전 재검사)도 교체된 경로를 거부한다.
 
     그 분기는 Linux CI 에서 절대 안 돌아 죽은 코드가 되기 쉬우므로 지원 판정을 꺼서 강제 실행한다."""
     monkeypatch.setattr(install_files, "_DEST_FD_WALK_SUPPORTED", False)
@@ -1386,7 +1386,7 @@ def test_backup_refuses_when_backup_dir_is_swapped_to_outside_link(pm_import, tm
 
 @requires_symlink
 def test_sensitivity_path_based_backup_writes_outside_the_repo(pm_import, tmp_path):
-    """sensitivity — 같은 형상에서 **옛 경로 기반 백업**은 저장소 밖에 내용을 쓴다(회귀 증거).
+    """sensitivity — 같은 경우에 **옛 경로 기반 백업**은 저장소 밖에 내용을 쓴다(회귀 증거).
 
     fd 백업을 되돌리면 이 결과가 실제 동작이 되므로, 위 거부 가드는 load-bearing 이다."""
     dest = tmp_path / "inst"
@@ -1405,7 +1405,7 @@ def test_sensitivity_path_based_backup_writes_outside_the_repo(pm_import, tmp_pa
 
     leaked = outside_dir / "2026-01-01" / rel
     assert leaked.read_text(encoding="utf-8") == "사용자 내용\n", \
-        "옛 경로 기반 백업이 밖으로 안 샜다면 이 형상은 TOCTOU 증거가 아니다"
+        "옛 경로 기반 백업이 밖으로 안 샜다면 이 경우는 TOCTOU 증거가 아니다"
 
 
 @requires_symlink
@@ -1494,13 +1494,13 @@ def test_sensitivity_path_based_render_write_follows_the_swapped_symlink(
     add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False, source_root=REPO)
 
     assert outside.read_text(encoding="utf-8") != _OUTSIDE_TEXT, \
-        "옛 경로 기반 쓰기가 밖을 안 고쳤다면 이 형상은 TOCTOU 증거가 아니다"
+        "옛 경로 기반 쓰기가 밖을 안 고쳤다면 이 경우는 TOCTOU 증거가 아니다"
     assert "(codex)" in outside.read_text(encoding="utf-8")
 
 
 def test_render_absorbs_target_vanishing_between_read_and_write(
         pm_import, tmp_path, monkeypatch, capsys):
-    """읽은 뒤 쓰기 전에 대상이 삭제되면 uncaught 로 터지지 않고 파일 단위 loud 제외로 흡수한다.
+    """읽은 뒤 쓰기 전에 대상이 삭제되면 uncaught 로 터지지 않고 파일 단위 loud 제외로 처리한다.
 
     적용 단계에서 예외가 새면 "경로 예외는 복사 전에만 던진다 → 부분 적용 0" 불변식이 깨진다.
     `O_CREAT` 를 안 주므로 사라진 파일을 되살리지도 않는다."""
@@ -1534,7 +1534,7 @@ def test_render_absorbs_target_vanishing_between_read_and_write(
 @requires_symlink
 def test_into_refuses_swap_between_plan_and_backup(
         pm_import, tmp_path, monkeypatch, capsys):
-    """`--into` 축(두 번째 호출부)도 같은 제외·loud 배선을 탄다 — rc 0·저장소 밖 쓰기 0."""
+    """`--into` 경로(두 번째 호출부)도 같은 제외·loud 보고를 탄다 — rc 0·저장소 밖 쓰기 0."""
     dest = tmp_path / "into_swap"
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO),
         ["--new", str(dest), "--harness", "claude", "--fill", "manual",
@@ -1581,11 +1581,11 @@ def test_unbackupable_shared_doc_is_dropped_from_rerender(pm_import, tmp_path):
     assert blocked == [".project_manager/wiki/pm_role.md"]
 
 
-# ── 교체 축의 남은 파생: 비-일반 파일(FIFO)로의 교체 ─────────────────────────
+# ── 교체 쪽의 남은 파생: 비-일반 파일(FIFO)로의 교체 ─────────────────────────
 # `O_NOFOLLOW` 는 symlink 만 거른다. 계획을 통과한 대상이 FIFO 로 바뀌면 유출이 아니라 **정지**가
 # 된다 — `O_RDONLY` 열기가 writer 를 기다리며 무기한 블록해 설치가 그 자리에 선다. 내용 IO 채널은
 # `O_NONBLOCK` 으로 열고 연 fd 를 `fstat` 해 일반 파일이 아니면 거부한다.
-# 정적 형상(처음부터 FIFO)은 계획 선검사(`_is_inplace_edit_candidate`)가 이미 대상에서 빼므로,
+# 정적 경우(처음부터 FIFO)는 계획 선검사(`_is_inplace_edit_candidate`)가 이미 대상에서 빼므로,
 # 아래 재현은 전부 **선검사 통과 뒤** 교체다(그 창이 이 가드의 대상).
 
 requires_fifo = pytest.mark.skipif(
@@ -1609,7 +1609,7 @@ def _fails_instead_of_hanging(seconds: int = 10):
 
 
 def _fifo_target(pm_import, tmp_path: Path) -> tuple[Path, Path]:
-    """`dest/rel` 자리에 FIFO 가 놓인 인스턴스 형상 — (dest, rel)."""
+    """`dest/rel` 자리에 FIFO 가 놓인 인스턴스 구성 — (dest, rel)."""
     dest = tmp_path / "inst"
     rel = Path(".project_manager/wiki/pm_role.md")
     (dest / rel).parent.mkdir(parents=True)
@@ -1621,7 +1621,7 @@ def _fifo_target(pm_import, tmp_path: Path) -> tuple[Path, Path]:
 @pytest.mark.parametrize("fd_walk", [True, False])
 def test_content_read_refuses_a_fifo_instead_of_blocking(
         pm_import, tmp_path, monkeypatch, fd_walk):
-    """두 읽기 채널(줄끝 보존·universal)이 FIFO 를 거부한다. 폴백 분기(dir_fd 미지원)도 같다."""
+    """두 읽기 채널(줄끝 보존·universal)이 FIFO 를 거부한다. 대체 동작 분기(dir_fd 미지원)도 같다."""
     monkeypatch.setattr(install_files, "_DEST_FD_WALK_SUPPORTED", fd_walk)
     dest, rel = _fifo_target(pm_import, tmp_path)
 
@@ -1634,10 +1634,10 @@ def test_content_read_refuses_a_fifo_instead_of_blocking(
 
 @requires_fifo
 def test_sensitivity_open_without_regular_guard_accepts_a_fifo(pm_import, tmp_path):
-    """sensitivity — 가드를 끄면 같은 형상에서 FIFO fd 가 그대로 열린다(가드가 load-bearing).
+    """sensitivity — 가드를 끄면 같은 경우에 FIFO fd 가 그대로 열린다(가드가 load-bearing).
 
     여기서는 `O_NONBLOCK` 을 손으로 얹어 확인한다. 그 플래그마저 없으면 이 열기는 반환하지 않으므로
-    (블록) 관측 자체가 불가능하다 — 두 축(비-블로킹 열기 + 일반 파일 판정)이 함께 필요한 이유다."""
+    (블록) 관측 자체가 불가능하다 — 두 조건(비-블로킹 열기 + 일반 파일 판정)이 함께 필요한 이유다."""
     dest, rel = _fifo_target(pm_import, tmp_path)
 
     with _fails_instead_of_hanging():
@@ -1712,7 +1712,7 @@ def test_backup_refuses_a_fifo_swapped_after_precheck(pm_import, tmp_path, monke
     assert not (backup_root / rel).exists(), "FIFO 를 백업 대상으로 삼음"
 
 
-# ── dir_fd 미지원 폴백(주로 Windows)의 강제 실행 ────────────────────────────
+# ── dir_fd 미지원 대체 동작(주로 Windows)의 강제 실행 ────────────────────────────
 # 그 분기는 Linux CI 에서 절대 안 돌아 죽은 코드가 되기 쉽다 — 지원 판정을 꺼서 **디렉토리 생성**
 # 경로(`create_parents`·`create_leaf_dir`)와 루트 신원 대조까지 실제로 태운다.
 
@@ -1723,7 +1723,7 @@ def _recheck_fallback(pm_import, monkeypatch):
 
 def test_recheck_fallback_creates_missing_backup_parents(
         pm_import, tmp_path, _recheck_fallback):
-    """폴백 백업도 부재 중간 디렉토리를 만들고 원본 내용을 그대로 옮긴다(create_parents 분기)."""
+    """대체 동작 백업도 부재 중간 디렉토리를 만들고 원본 내용을 그대로 옮긴다(create_parents 분기)."""
     dest = tmp_path / "inst"
     rel = Path(".project_manager/wiki/pm_role.md")
     (dest / rel).parent.mkdir(parents=True)
@@ -1739,7 +1739,7 @@ def test_recheck_fallback_creates_missing_backup_parents(
 @requires_symlink
 def test_recheck_fallback_refuses_symlinked_backup_ancestor(
         pm_import, tmp_path, _recheck_fallback):
-    """폴백에서도 백업 target 조상이 저장소 밖 지향 symlink 면 거부한다(밖에 내용 쓰기 0)."""
+    """대체 동작에서도 백업 target 조상이 저장소 밖 지향 symlink 면 거부한다(밖에 내용 쓰기 0)."""
     dest = tmp_path / "inst"
     rel = Path(".project_manager/wiki/pm_role.md")
     (dest / rel).parent.mkdir(parents=True)
@@ -1755,7 +1755,7 @@ def test_recheck_fallback_refuses_symlinked_backup_ancestor(
 
 
 def test_recheck_fallback_creates_directory_chain(pm_import, tmp_path, _recheck_fallback):
-    """폴백 디렉토리 생성(`_ensure_dest_dir_nofollow`)도 체인을 만든다 — 복사 목적지 준비 경로."""
+    """대체 동작 디렉토리 생성(`_ensure_dest_dir_nofollow`)도 체인을 만든다 — 복사 목적지 준비 경로."""
     dest = tmp_path / "inst"
     dest.mkdir()
 
@@ -1781,7 +1781,7 @@ def test_recheck_fallback_refuses_symlinked_directory_ancestor(
 
 @requires_symlink
 def test_recheck_fallback_refuses_a_swapped_dest_root(pm_import, tmp_path, _recheck_fallback):
-    """폴백에서도 루트 교체는 파일 단위 거부가 아니라 전체 중단 클래스다."""
+    """대체 동작에서도 루트 교체는 파일 단위 거부가 아니라 전체 중단 클래스다."""
     dest = tmp_path / "inst"
     rel = Path(".project_manager/wiki/pm_role.md")
     (dest / rel).parent.mkdir(parents=True)
@@ -1801,7 +1801,7 @@ def test_recheck_fallback_refuses_a_swapped_dest_root(pm_import, tmp_path, _rech
 
 def test_recheck_fallback_ensure_dir_checks_root_identity(
         pm_import, tmp_path, _recheck_fallback):
-    """폴백 디렉토리 생성도 고정한 루트 신원을 확인한다 — 교체된 트리에 체인을 만들지 않는다."""
+    """대체 동작 디렉토리 생성도 고정한 루트 신원을 확인한다 — 교체된 트리에 체인을 만들지 않는다."""
     dest = tmp_path / "inst"
     dest.mkdir()
     other = tmp_path / "other"
@@ -1852,7 +1852,7 @@ def test_symlink_backup_and_unlink_refuse_a_swapped_parent(pm_import, tmp_path, 
 
 @requires_symlink
 def test_symlink_backup_preserves_the_link_itself(pm_import, tmp_path):
-    """정상 형상 회귀 — 링크 백업은 *링크 자체*를 보존하고(대상 파일 불변) 원본 자리는 일반 파일이 된다."""
+    """정상 구성 회귀 — 링크 백업은 *링크 자체*를 보존하고(대상 파일 불변) 원본 자리는 일반 파일이 된다."""
     dest = tmp_path / "inst"
     (dest / "adapter").mkdir(parents=True)
     target = tmp_path / "user_target.md"
@@ -1885,7 +1885,7 @@ def test_symlink_backup_preserves_the_link_itself(pm_import, tmp_path):
 # 위 판정(링크 대상 자체 보존)은 *비교값*만 정규화해도 통과한다 — 그러면 결함이 자리를 옮길 뿐이다.
 # 백업이 다시 심는 대상 문자열(=채택자가 보는 기록값)도 같은 규칙을 타야 한다. Windows 커널은 절대
 # 대상에 `\??\` 를 다시 붙여 저장하므로 *기록된 표기*는 `os.readlink` 로 되읽을 수 없다(관측 상한).
-# 그래서 이 축의 실측은 **Windows 표기를 주입한 POSIX** 에서 한다 — 링크 대상 문자열과 플랫폼
+# 그래서 이 경우의 실측은 **Windows 표기를 주입한 POSIX** 에서 한다 — 링크 대상 문자열과 플랫폼
 # 표기 판정을 직접 넣어 규칙이 실제로 도는지 태운다([[guard-must-cover-its-own-surface]]).
 _WINDOWS_LINK_TARGET = "\\\\?\\C:\\pm\\user_target.md"   # Windows readlink 산출 표기
 _PREFIX_FREE_LINK_TARGET = "C:\\pm\\user_target.md"      # 원본 링크의 사용자-가시 대상
@@ -1904,12 +1904,12 @@ def test_symlink_backup_records_the_link_target_without_the_extended_prefix(
         pm_import, tmp_path, monkeypatch, fd_walk, windows_notation):
     """백업 링크가 심는 대상 표기에서 확장 prefix 를 벗긴다 — 두 백업 전략 모두.
 
-    `windows_notation=False`(POSIX 표기 플랫폼)는 **주입이 load-bearing 임을 못박는 축**이다:
+    `windows_notation=False`(POSIX 표기 플랫폼)는 **주입이 load-bearing 임을 못박는 검사**이다:
     같은 문자열이 POSIX 에서는 정당한 파일명이라 그대로 보존돼야 한다(벗기면 백업 링크가 다른
     곳을 가리킨다). 두 기대값이 갈리므로 규칙을 끄면 한쪽이 반드시 red 다.
     """
     if fd_walk and not install_files._DEST_FD_WALK_SUPPORTED:
-        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 폴백 전략만 실측 대상.")
+        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 대체 전략만 실측 대상.")
     monkeypatch.setattr(install_files, "_DEST_FD_WALK_SUPPORTED", fd_walk)
     monkeypatch.setattr(install_files, "_WINDOWS_PATH_NOTATION", windows_notation)
     dest = tmp_path / "inst"
@@ -1946,9 +1946,9 @@ def test_extended_prefix_stripping_rule_value_table(pm_import, text, expected):
 
 
 @pytest.mark.parametrize("windows_notation", [True, False])
-def test_path_notation_text_is_gated_on_windows_notation(
+def test_path_notation_text_is_checked_on_windows_notation(
         pm_import, monkeypatch, windows_notation):
-    """표기 정규화는 Windows 축에서만 돈다 — POSIX 의 `\\` 는 정당한 파일명 문자다."""
+    """표기 정규화는 Windows 표기에서만 돈다 — POSIX 의 `\\` 는 정당한 파일명 문자다."""
     monkeypatch.setattr(install_files, "_WINDOWS_PATH_NOTATION", windows_notation)
     assert install_files._path_notation_text(_WINDOWS_LINK_TARGET) == (
         _PREFIX_FREE_LINK_TARGET if windows_notation else _WINDOWS_LINK_TARGET)
@@ -1971,9 +1971,9 @@ def test_a_long_link_target_keeps_the_prefix_that_makes_it_usable(pm_import, mon
     assert install_files._path_notation_text(long_target) == deep
 
 
-# ── 루트 교체 계열은 형상과 무관하게 전체 중단 클래스 ────────────────────────
+# ── 루트 교체 계열은 경우와 무관하게 전체 중단 클래스 ────────────────────────
 # 루트가 *교체*(다른 디렉토리)됐을 때만이 아니라 **삭제·깨진 링크·일반 파일**로 바뀌었을 때도
-# 같은 클래스여야 한다 — UnsafeDestPathError·raw OSError 로 새면 파일 단위 핸들러가 흡수해 실행이
+# 같은 클래스여야 한다 — UnsafeDestPathError·raw OSError 로 새면 파일 단위 핸들러가 삼켜 실행이
 # 계속되고, 남은 단계가 교체된 트리에 쓴다.
 
 @requires_symlink
@@ -1992,7 +1992,7 @@ def test_root_replacement_shapes_are_all_root_swap_class(pm_import, tmp_path, sh
 
     with pytest.raises(install_files.DestRootSwappedError):
         install_files.read_dest_text_keeping_newlines(dest, rel, root_identity=root_identity)
-    # 파일 단위 흡수 클래스와 섞이면 안 된다(핸들러가 삼켜 실행이 계속된다).
+    # 파일 단위 처리 클래스와 섞이면 안 된다(핸들러가 삼켜 실행이 계속된다).
     assert not issubclass(install_files.DestRootSwappedError, install_files.UnsafeDestPathError)
 
 
@@ -2004,18 +2004,18 @@ def test_root_open_failure_without_identity_keeps_path_error_class(pm_import, tm
 
 @pytest.mark.parametrize("fd_walk", [True, False], ids=["fd-walk", "path-fallback"])
 @pytest.mark.parametrize("shape", ["absent", "regular_file"])
-def test_root_gate_error_class_is_the_same_on_both_open_strategies(
+def test_root_check_error_class_is_the_same_on_both_open_strategies(
         pm_import, tmp_path, monkeypatch, fd_walk, shape):
     """루트 관문의 오류 **클래스**가 두 열기 전략에서 같다 (플랫폼별로 갈리지 않는다).
 
     fd 순회(POSIX)는 `_open_dest_root_fd` 가 매 호출 루트를 strict 해소해 부재·비-디렉토리를
-    `UnsafeDestPathError` 로 낸다. dir_fd/`O_NOFOLLOW` 미지원 플랫폼(Windows)의 경로 폴백은 그
-    관문이 없어 raw `FileNotFoundError` 를 흘렸다 — 호출부의 흡수 클래스가 플랫폼마다 갈리면
+    `UnsafeDestPathError` 로 낸다. dir_fd/`O_NOFOLLOW` 미지원 플랫폼(Windows)의 경로 대체 동작은 그
+    관문이 없어 raw `FileNotFoundError` 를 흘렸다 — 호출부의 처리 클래스가 플랫폼마다 갈리면
     파일 단위 핸들러가 루트 이상을 삼키는 창이 그 플랫폼에서만 열린다(실측). 능력 플래그를
     **주입해** 두 전략을 같은 자리에서 태운다([[guard-must-cover-its-own-surface]] 규율).
     """
     if fd_walk and not install_files._DEST_FD_WALK_SUPPORTED:
-        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 폴백 전략만 실측 대상.")
+        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 대체 전략만 실측 대상.")
     monkeypatch.setattr(install_files, "_DEST_FD_WALK_SUPPORTED", fd_walk)
     root = tmp_path / "root"
     if shape == "regular_file":
@@ -2027,18 +2027,18 @@ def test_root_gate_error_class_is_the_same_on_both_open_strategies(
 
 @pytest.mark.parametrize("notation", ["lf", "crlf"])
 @pytest.mark.parametrize("fd_walk", [True, False], ids=["fd-walk", "path-fallback"])
-def test_root_gate_does_not_block_a_healthy_root(
+def test_root_check_does_not_block_a_healthy_root(
         pm_import, tmp_path, monkeypatch, fd_walk, notation):
     """관문이 정상 루트를 막지 않는다 — 거부 방향으로만 기울지 않았음을 함께 못박는다.
 
     픽스처는 표기를 **명시해** 쓴다(`write_lf`/`write_crlf`). 플랫폼 기본 텍스트 쓰기는 Windows
-    에서 `\\n` 을 `\\r\\n` 으로 번역하는데 이 읽기 seam 은 표기를 보존하는 게 일이라, 기대값만 LF
+    에서 `\\n` 을 `\\r\\n` 으로 번역하는데 이 읽기 공용 함수는 표기를 보존하는 게 일이라, 기대값만 LF
     리터럴로 손으로 적으면 그 플랫폼에서만 상시 red 가 된다(층 혼합·T-0724 실측 `'본문\\r\\n' ==
-    '본문\\n'`). 기대값을 디스크 bytes 에서 만들고 두 표기를 다 태워 CRLF 축이 LF 개발기에서도
+    '본문\\n'`). 기대값을 디스크 bytes 에서 만들고 두 표기를 다 태워 CRLF 경우가 LF 개발기에서도
     실제로 돌게 한다 — 읽기가 표기를 정규화하면 여기서 red 다.
     """
     if fd_walk and not install_files._DEST_FD_WALK_SUPPORTED:
-        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 폴백 전략만 실측 대상.")
+        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 대체 전략만 실측 대상.")
     monkeypatch.setattr(install_files, "_DEST_FD_WALK_SUPPORTED", fd_walk)
     root = tmp_path / "inst"
     root.mkdir()
@@ -2054,11 +2054,11 @@ def test_root_gate_does_not_block_a_healthy_root(
         f"정상 루트 읽기가 디스크 bytes 와 갈렸다({notation}): {read!r}"
 
 
-# ── 적용 단계 삭제 경쟁도 loud 제외(무요약 축 폐쇄) ──────────────────────────
+# ── 적용 단계 삭제 경쟁도 loud 제외(무요약 경우 폐쇄) ──────────────────────────
 
 def test_substitute_channel_reports_read_time_deletion(
         pm_import, tmp_path, monkeypatch, capsys):
-    """선검사↔읽기 사이 삭제도 요약에 실린다 — 일반 OSError 로 삼키면 그 축만 침묵이 된다."""
+    """선검사↔읽기 사이 삭제도 요약에 실린다 — 일반 OSError 로 삼키면 그 경우만 침묵이 된다."""
     dest = tmp_path / "inst"
     dest.mkdir()
     rel = Path("doc.md")
@@ -2085,7 +2085,7 @@ def test_substitute_channel_reports_read_time_deletion(
 @requires_symlink
 def test_recheck_fallback_handles_symlink_backup_and_unlink(
         pm_import, tmp_path, _recheck_fallback):
-    """dir_fd 미지원 폴백에서도 링크 백업·삭제가 성립한다(정상 형상 + 교체 거부).
+    """dir_fd 미지원 대체 동작에서도 링크 백업·삭제가 성립한다(정상 구성 + 교체 거부).
 
     그 분기는 Linux CI 에서 안 돌아 죽은 코드가 되기 쉬우므로 지원 판정을 꺼서 강제 실행한다."""
     dest = tmp_path / "inst"
@@ -2105,7 +2105,7 @@ def test_recheck_fallback_handles_symlink_backup_and_unlink(
     assert (dest / rel).read_text(encoding="utf-8") == "TEMPLATE\n"
     assert target.read_text(encoding="utf-8") == "사용자 대상\n"
 
-    # 교체 축 — 조상이 저장소 밖 지향 링크면 폴백 재검사가 삭제를 거부한다.
+    # 교체 쪽 — 조상이 저장소 밖 지향 링크면 대체 동작 재검사가 삭제를 거부한다.
     outside_dir = tmp_path / "outside_tree"
     outside_dir.mkdir()
     (outside_dir / "card.md").write_text("밖 파일\n", encoding="utf-8")
@@ -2114,7 +2114,7 @@ def test_recheck_fallback_handles_symlink_backup_and_unlink(
 
     with pytest.raises(install_files.UnsafeDestPathError):
         install_files._unlink_dest_relative_nofollow(dest, rel)
-    assert (outside_dir / "card.md").is_file(), "폴백이 저장소 밖 파일을 지웠다"
+    assert (outside_dir / "card.md").is_file(), "대체 동작이 저장소 밖 파일을 지웠다"
 
 
 # ── 계획 상태 보존: 적용 시점 재관측 금지 ───────────────────────────────────
@@ -2179,7 +2179,7 @@ def test_file_deleted_after_plan_is_not_recreated(pm_import, tmp_path, capsys):
 
 def test_copy_exclusion_keeps_following_channels_on_the_successful_set(
         pm_import, tmp_path, capsys):
-    """제외된 파일은 후속 채널 범위 밖이다 — `copied` 는 성공분만 담는다(치환·fill·기록 정합)."""
+    """제외된 파일은 후속 채널 범위 밖이다 — `copied` 는 성공분만 담는다(치환·fill·기록 일치)."""
     dest = tmp_path / "inst"
     dest.mkdir()
     template = tmp_path / "tree"
@@ -2228,7 +2228,7 @@ def test_playbook_stub_does_not_follow_a_swapped_ancestor(pm_import, tmp_path, c
 
 def test_model_todo_channel_reports_read_time_deletion(render_home,
         pm_import, tmp_path, monkeypatch, capsys):
-    """모델 TODO 채널의 읽기-전 삭제도 요약에 실린다(6번 계약의 잔여 채널)."""
+    """모델 TODO 채널의 읽기-전 삭제도 요약에 실린다(6번 계약의 남은 채널)."""
     dest = tmp_path / "inst"
     dest.mkdir()
     rel = Path("agent.md")
@@ -2341,7 +2341,7 @@ def test_backup_and_write_are_bound_to_one_leaf_identity(
 
     경쟁은 **열린 leaf 를 지우는 방식으로 주입하지 않는다**: Windows 는 열린 파일을 가리키는
     디렉토리 엔트리의 삭제·이름변경을 공유 위반(`WinError 32`)으로 거부하므로 그 기법은 POSIX
-    전용이고, 그 거부는 엔진의 핸들 누수가 아니라 같은 결속을 OS 가 강제하는 것이다. 대신 두
+    전용이고, 그 거부는 엔진의 핸들 누수가 아니라 같은 묶임을 OS 가 강제하는 것이다. 대신 두
     단계로 **같은 상태**를 만든다 — ① 엔진이 leaf 를 열기 직전, 계획 대상 파일을 다른 이름으로
     옮겨 두고 그 파일을 열어 준다(엔진이 쥔 fd = 계획이 본 inode · 경로에는 아직 열린 핸들 0).
     ② 백업 직후 그 경로에 **백업 없는 다른 파일**을 `os.replace` 로 갈아끼운다. 결과(fd=계획
@@ -2492,7 +2492,7 @@ def test_receipt_keeps_preexisting_harness_even_if_files_are_gone(
 def test_copied_scope_absence_is_loud_not_silent(pm_import, tmp_path, capsys):
     """복사분 채널의 **선검사 부재**도 요약에 실린다 — 방금 복사한 파일이 없다는 건 사고다.
 
-    옛 형상은 "대상 아님" 과 "복사 뒤 삭제" 를 같은 조용한 skip 으로 접어, 삭제된 파일이 처리 대상
+    옛 경우는 "대상 아님" 과 "복사 뒤 삭제" 를 같은 조용한 skip 으로 바꾸어, 삭제된 파일이 처리 대상
     에서 빠진 사실이 어디에도 남지 않았다(적용 단계의 유일한 신호가 stderr 요약인데)."""
     dest = tmp_path / "inst"
     dest.mkdir()
@@ -2510,7 +2510,7 @@ def test_copied_scope_absence_is_loud_not_silent(pm_import, tmp_path, capsys):
 
 
 def test_copied_scope_shape_change_is_reported_as_swapped(pm_import, tmp_path, capsys):
-    """실재하지만 편집 대상이 아닌 형상(디렉토리 등)은 교체 축으로 보고한다(부재와 구분)."""
+    """실재하지만 편집 대상이 아닌 경우(디렉토리 등)는 교체 쪽으로 보고한다(부재와 구분)."""
     dest = tmp_path / "inst"
     dest.mkdir()
     rel = Path("became_dir.md")

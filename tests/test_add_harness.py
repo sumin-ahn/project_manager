@@ -1,7 +1,7 @@
 """add-harness 소스 해소 테스트 (T-0282 · ADR-0048 gap).
 
 `pm_config add-harness <harness>` 가 **imported 인스턴스**(scoped-core 사본·`templates/` 부재·
-② PM 홈 형상)에서 어댑터 소스를 못 찾던 갭을 닫는다. 소스 해소 우선순위(add_harness 단일 진실):
+② PM 홈 구조)에서 어댑터 소스를 못 찾던 갭을 닫는다. 소스 해소 우선순위(add_harness 단일 진실):
 
     explicit `--from`  >  dest local.conf upstream(path·templates 보유)  >  dest 자신(templates
     보유·framework-checkout 자기전환)  >  친화 FileNotFoundError
@@ -9,7 +9,7 @@
 URL upstream 은 로컬 소스(경로 upstream·dest 자기전환)가 없을 때 **로컬 캐시 checkout**
 (`resolve_upstream_url_cache` — clone/fetch)으로 해소한다(T-0908). 캐시 실패는 다음 후보로
 미끄러지지 않고 `UpstreamCacheError` 로 멈춘다. 실 clone 산출물 판정은
-`tests/test_pm_update_url_cache.py`(로컬 bare + file://) 소관이고, 여기선 배선과 우선순위만 본다.
+`tests/test_pm_update_url_cache.py`(로컬 bare + file://) 소관이고, 여기선 연결과 우선순위만 본다.
 
 커버:
   - 소스 해소 precedence(_resolve_add_harness_source) — explicit·upstream(절대/상대)·URL 캐시·
@@ -64,13 +64,13 @@ def pm_config():
 @pytest.fixture(autouse=True)
 def _known_native_capacity(tmp_path,monkeypatch):
     from _manager_home import known_ctx_seams
-    for name,seam in known_ctx_seams(capacity=200000,context=232000).items():
-        monkeypatch.setattr(harness_ctx,name,seam)
+    for name,override in known_ctx_seams(capacity=200000,context=232000).items():
+        monkeypatch.setattr(harness_ctx,name,override)
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_opencode_models(monkeypatch):
-    """T-0033 동형 — apply 경로(resolve_opencode_model)가 라이브 `opencode models` CLI 를 치지
+    """T-0033 과 같은 방식 — apply 경로(resolve_opencode_model)가 라이브 `opencode models` CLI 를 치지
     않도록 (False, []) 고정(미설치 동치). 이 파일의 add_harness 는 전부 dry_run 이라 실제로 도달
     하지 않지만 hermetic 보험."""
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
@@ -165,7 +165,7 @@ def test_resolve_source_from_upstream_relative_path(pm_import, tmp_path):
 
 
 def test_resolve_source_url_upstream_failure_is_loud(pm_import, tmp_path):
-    """URL upstream 은 캐시로 해소한다 — 그 캐시를 못 만들면 친화 에러로 접지 않고 멈춘다.
+    """URL upstream 은 캐시로 해소한다 — 그 캐시를 못 만들면 친화 에러로 바꾸지 않고 멈춘다.
 
     옛 계약(URL skip → 말단 FileNotFoundError)은 "소스가 없다" 로 읽혀 채택자가 --from 을 찾게
     했지만, 실제 사유는 "상류를 못 받았다" 다. 도달 불가 `file://`(네트워크 0)로 그 구분을 박는다.
@@ -184,7 +184,7 @@ def test_resolve_source_prefers_dest_self_over_url_cache(pm_import, tmp_path):
 
     assert upstream_git._resolve_add_harness_source(dest, "opencode", None) == dest.resolve()
     assert not (dest / ".project_manager" / ".local" / "upstream-cache").exists(), \
-        "로컬 소스로 끝나는 형상에서 캐시 clone 을 시도했다"
+        "로컬 소스로 끝나는 경우에 캐시 clone 을 시도했다"
 
 
 def test_resolve_source_dest_self_when_has_templates(pm_import, tmp_path):
@@ -206,7 +206,7 @@ def test_resolve_source_friendly_error_when_unresolvable(pm_import, tmp_path):
 
 
 def test_resolve_source_no_local_conf_falls_through(pm_import, tmp_path):
-    """local.conf 부재 + dest templates 부재 → 친화 에러(침묵 폴백 없음)."""
+    """local.conf 부재 + dest templates 부재 → 친화 에러(침묵 대체 동작 없음)."""
     dest = tmp_path / "inst"
     dest.mkdir()
     with pytest.raises(FileNotFoundError):
@@ -285,7 +285,7 @@ def test_add_harness_imported_instance_reports_cache_failure(pm_import, tmp_path
 # `AGENTS.md`(공통 코어). 라이브 호스트(claude 또는 opencode)에 비파괴 추가. AGENTS.md 는 opencode 와
 # byte-identical(공통 코어) → opencode 호스트에선 git-safe skip 으로 무충돌(D3 C-v2 부수 이득).
 
-import shutil as _shutil_for_git       # noqa: E402 — 실 git 가용 게이트(explicit commit 케이스).
+import shutil as _shutil_for_git       # noqa: E402 — 실 git 가용 여부(explicit commit 케이스).
 import subprocess as _sp_for_git       # noqa: E402
 from pm_engine.cli import config_install
 from pm_engine.cli import import_cmd
@@ -327,7 +327,7 @@ def test_add_harness_codex_onto_claude_host_lays_down_adapter(pm_import, tmp_pat
 
 
 def test_add_harness_applies_ctx_values(pm_import, tmp_path, capsys):
-    """T-0923 AT-015 — 더한 하네스의 설정 파일에도 local.conf 사용 한도가 들어간다(원장 기록 뒤).
+    """T-0923 AT-015 — 더한 하네스의 설정 파일에도 local.conf 사용 한도가 들어간다(어댑터 설정 기록을 적은 뒤).
 
     claude 프로젝트에 `ctx.compact_at_pct=85` 를 두고 codex 를 더하면 codex 설정 파일의 압축
     지점이 170000(200000 × 85%), 창이 200000 이다 — 템플릿 값 180000 에 멈추지 않는다."""
@@ -507,7 +507,7 @@ def test_add_harness_backup_on_non_git_adopter_creates_no_gitignore(
     (dest / ".codex" / "agents" / "researcher.toml").write_text("existing agent\n", encoding="utf-8")
     today = datetime.date.today().isoformat()
     # "채택자가 git work tree 가 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을 정하지
-    # 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    # 않도록 엔진의 runner 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(
         install_git, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     add_harness.add_harness(ENGINE_HOME, dest, "codex", dry_run=False)             # source_root=None → upstream 해소
@@ -550,7 +550,7 @@ def test_cmd_add_harness_forwards_source_root(pm_config, monkeypatch):
 
 
 def test_cmd_add_harness_source_defaults_none(pm_config, monkeypatch):
-    """source 미보유 Namespace(구 호출/테스트)도 getattr 폴백으로 source_root=None(하위호환)."""
+    """source 미보유 Namespace(구 호출/테스트)도 getattr 대체 동작으로 source_root=None(하위호환)."""
     fake = _FakePmImport().install(monkeypatch)
     args = argparse.Namespace(harness="opencode", dry_run=False)   # source 없음
     rc = config_install.cmd_add_harness(pm_paths.home_at(pm_config.REPO), args, dest_root=Path("/x"))

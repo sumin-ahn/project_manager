@@ -11,12 +11,12 @@ import re
 #
 # hard 티어(`developer-hard`)는 **별도 완전 세트**다 — normal 프로필을 상속하지 않는다(엔진의
 # 프로필 해소와 같은 규칙). reasoning 토큰은 그 값을 실제로 소비하는 카드가 있는 것만 둔다 —
-# 소비처 없는 토큰은 배선만 늘리고 해소를 못 검증한다. 추론 토큰 소비는 claude `effort`·codex
+# 소비처 없는 토큰은 연결만 늘리고 해소를 못 검증한다. 추론 토큰 소비는 claude `effort`·codex
 # `model_reasoning_effort`·opencode `variant` 이고, 필드 이름은 카드 **형식**이 정한다
 # (CARD_FIELD_TOKEN_PREFIXES).
 #
-# pm_update 는 이 표를 **역전해** local.conf 채널 배선을 만든다(`_local_conf_operational_map`) —
-# 손으로 재타이핑한 사본을 두면 새 역할/티어가 한쪽에만 늘어 조용히 미배선된다.
+# pm_update 는 이 표를 **역전해** local.conf 채널 대응을 만든다(`_local_conf_operational_map`) —
+# 손으로 재타이핑한 사본을 두면 새 역할/티어가 한쪽에만 늘어 조용히 대응이 빠진다.
 DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
     "DELEGATE_MODEL_DEVELOPER": "delegate.developer.model",
     "DELEGATE_REASONING_DEVELOPER": "delegate.developer.reasoning",
@@ -73,9 +73,9 @@ CARD_HARNESS_BY_ADAPTER_DIR: dict[str, str] = {
 #    일부만 보유한다 — DATE·PROJECT_ROOT·PROJECT_TAGLINE 는 init 이 채우지 않을 수 있어
 #    app.update_render._operational_from_local_conf 가 그 token-key 를 dict 에 안 넣는다. 엄격 가드
 #    (_assert_no_leak·토큰 0) 하에선, @render 활성화된 어댑터 파일이 그런 미보유 operational
-#    토큰을 *담고 있으면 렌더가 실패한다 — 그게 옳다*(미해소를 침묵 출하 대신 표면화). 현재
+#    토큰을 *담고 있으면 렌더가 실패한다 — 그게 옳다*(미해소를 침묵 출하 대신 드러낸다). 현재
 #    @render path 0 이라 안 깨진다. 활성화 시점에 그 파일들의 operational 해소(또는
-#    local.conf 채널 확장)를 보장하는 건 몫. 이 엔진은 leak 을 표면화할 뿐 채우지 않는다.
+#    local.conf 채널 확장)를 보장하는 건 몫. 이 엔진은 leak 을 드러낼 뿐 채우지 않는다.
 OPERATIONAL_KEYS: tuple[str, ...] = (
     "PROJECT_NAME",
     "PROJECT_TAGLINE",
@@ -85,7 +85,7 @@ OPERATIONAL_KEYS: tuple[str, ...] = (
     "DATE",
     # opencode 어댑터 전용 — pm_import 가 local.conf 에 harness.opencode.pro_model 을 기록.
     # local.conf 에 해소돼 있으면 여기 operational 채널로 plain replace(정상 치환). *미해소*(채택자가
-    # opencode 없이 import·TODO 폴백)면 leak 이 아니라 intentional-TODO 로 graceful 중화한다
+    # opencode 없이 import·TODO 대체 동작)이면 leak 이 아니라 intentional-TODO 로 graceful 중화한다
     # (neutralize_model_todo·import 대칭) — 아래 render_adapter 참조.
     "OPENCODE_PRO_MODEL",
     # 하네스 agent 카드 전용 — 역할별 위임 모델/추론(`delegate.<role>[.<tier>].*` 해소값).
@@ -98,14 +98,14 @@ OPERATIONAL_KEYS: tuple[str, ...] = (
 )
 
 
-# 잔여 leak 스캔 — 대문자/언더스코어 토큰 (post-render assertion·잔존 시 무조건 raise).
+# 남은 leak 스캔 — 대문자/언더스코어 토큰 (post-render assertion·잔존 시 무조건 raise).
 _ANY_TOKEN_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
 
 
 # stray omit-marker 스캔 — 산출물에 잔존한 옛 free-form drop-section 마커는 무음 출하 금지.
 # `<!-- pm:omit-if-empty KEY -->` 류는
 # 이제 *어느 어댑터에도 없어야 한다*(어댑터 free-form-free). 잔존 시 미마이그레이션
-# 신호로 leak 처리한다(침묵 출하 대신 표면화).
+# 신호로 leak 처리한다(침묵 출하 대신 드러낸다).
 _STRAY_MARKER_RE = re.compile(r"<!--\s*/?pm:omit-if-empty\b[^>]*-->")
 
 
@@ -132,7 +132,7 @@ _MODEL_TODO_PLACEHOLDER = "<provider/model>"
 # 판정은 하나여야 import 와 self-update 가 같은 산출을 낸다. 필드 이름은 CARD_FIELD_TOKEN_PREFIXES
 # 의 합집합에서 파생한다(손열거 사본 0 — 표에 필드가 늘면 중화 대상도 같이 는다). 긴 이름부터
 # 나열해 패턴이 결정적이다. 산문/헤더의 토큰은 비대상(주석화하면 markdown/TOML 이 깨진다) — 그
-# 위치의 미해소 토큰은 계속 `_assert_no_leak` 가 표면화한다.
+# 위치의 미해소 토큰은 계속 `_assert_no_leak` 가 드러낸다.
 _CARD_FIELD_NAMES: tuple[str, ...] = tuple(sorted(
     {field for fields in CARD_FIELD_TOKEN_PREFIXES.values() for field in fields.values()},
     key=lambda field: (-len(field), field),
@@ -168,10 +168,10 @@ def card_harness_from_path(card_path: str | None) -> str | None:
     판정은 상대경로의 **첫 컴포넌트**만 본다 — 어댑터 네임스페이스(`.claude`/`.codex`/
     `.opencode`)는 인스턴스 루트 바로 아래에 있고, 그 밖의 위치에 같은 이름이 나타나면 그건
     네임스페이스 선언이 아니다. 절대경로 전체를 훑으면 체크아웃이 `~/.claude/...` 아래일 때
-    어댑터 밖 파일(공유 wiki·스킬 등)까지 그 하네스로 오분류된다(가드 시야 == 판정 표면).
+    어댑터 밖 파일(공유 wiki·스킬 등)까지 그 하네스로 오분류된다(가드 검사 범위 == 판정 범위).
 
-    경로가 없거나(인메모리 렌더·호출부 미배선) 어댑터 밖이면 None — 그때는 하네스 판정을
-    요구하는 규칙(미사용 프로필)이 발화하지 않고 현행 해소가 그대로 간다.
+    경로가 없거나(인메모리 렌더·호출부가 경로를 넘기지 않음) 어댑터 밖이면 None — 그때는 하네스 판정을
+    요구하는 규칙(미사용 프로필)이 돌지 않고 현행 해소가 그대로 간다.
     """
     adapter_dir = _card_adapter_dir(card_path)
     return CARD_HARNESS_BY_ADAPTER_DIR[adapter_dir] if adapter_dir else None
@@ -197,11 +197,11 @@ def unused_delegate_profiles(
     """이 카드에서 **미사용 프로필**인 위임 토큰 → 그 역할의 conf 하네스.
 
     카드의 하네스(`card_harness_from_path`)와 conf 의 `delegate.<role>[.<tier>].harness` 가
-    다르면 그 카드는 이번 형상에서 스폰되지 않는 프로필이다 — 다른 하네스용 모델 값을 억지로
+    다르면 그 카드는 이번 설치 구성에서 스폰되지 않는 프로필이다 — 다른 하네스용 모델 값을 억지로
     박으면 카드가 conf 와 어긋난 사실(그 역할은 저쪽 하네스로 간다)을 감춘다. 값을 채우는 대신
     intentional-TODO 로 중화하고 이유를 꼬리에 남긴다(rc 불변).
 
-    conf 하네스를 모르면(키 부재) 판정하지 않는다 — 미설정은 오설정이 아니라 정상 형상이고,
+    conf 하네스를 모르면(키 부재) 판정하지 않는다 — 미설정은 오설정이 아니라 정상인 경우이고,
     그때는 model 키가 있으면 그대로 해소한다(현행 거동 보존).
     """
     card_harness = card_harness_from_path(card_path)
@@ -237,7 +237,7 @@ def _delegate_unused_profile_tail(
 ) -> str:
     """미사용 프로필로 중화한 줄의 꼬리 — 값이 아니라 **이유**를 남긴다.
 
-    conf 가 이 역할을 다른 하네스로 보내고 있으므로 이 카드는 이번 형상에서 스폰되지 않는다.
+    conf 가 이 역할을 다른 하네스로 보내고 있으므로 이 카드는 이번 설치 구성에서 스폰되지 않는다.
     채택자가 이 카드를 쓰려면 고칠 곳은 카드가 아니라 local.conf 의 하네스 키다(단일 진실).
     """
     card = f" (이 카드는 {card_harness})" if card_harness else ""
@@ -249,7 +249,7 @@ def _delegate_unused_profile_tail(
 def _model_todo_tail(available: list[str] | None = None) -> str:
     """중화된 `# model:` 줄 꼬리의 TODO 안내(채택자 발견경로). 조회된 가용 모델은 인라인한다.
 
-    pm_import 의 TODO 폴백(_mark_model_todos)과 **byte-동일** 문구여야 한다 — import 와
+    pm_import 의 TODO 대체 동작(_mark_model_todos)과 **byte-동일** 문구여야 한다 — import 와
     self-update 가 같은 산출을 내야 재렌더가 spurious diff 를 안 만든다(단일 진실).
     """
     if available:
@@ -270,7 +270,7 @@ def neutralize_model_todo(
 
     **모델 필드 줄만** 대상이다(`_MODEL_FIELD_LINE_RE`) — 산문/헤더/docstring
     의 토큰(예: README 의 "placeholder `{{OPENCODE_PRO_MODEL}}` 로 출하")은 `# ` prepend 시
-    markdown 이 깨지므로 건드리지 않는다. 그런 위치의 토큰은 render 가 계속 leak 으로 표면화한다.
+    markdown 이 깨지므로 건드리지 않는다. 그런 위치의 토큰은 render 가 계속 leak 으로 드러낸다.
     비파괴·멱등: 이미 `# ` 주석이거나 `TODO` 가 붙은 줄은 재처리 안 함.
 
     반환: (중화된 text, 중화 발생 여부). import(_mark_model_todos)·self-update(render_adapter)
@@ -320,13 +320,13 @@ def neutralize_delegate_model_todo(
     (graceful degradation) — 활성 리터럴 토큰을 모델명으로 출하하는 것보다 안전하다.
 
     미해소 사유는 **local.conf 에 `delegate.<role>.model` 키가 없는 것**(위임 매핑 미설정
-    채택자)이다. 이건 오설정이 아니라 정상 형상이라 leak 으로 rc-fail 하지 않는다 — 한 토큰
-    미해소가 엔진/타 어댑터 update 전체를 막지 않는다(OPENCODE_PRO_MODEL 선례와 동형).
+    채택자)이다. 이건 오설정이 아니라 정상인 경우라 leak 으로 rc-fail 하지 않는다 — 한 토큰
+    미해소가 엔진/타 어댑터 update 전체를 막지 않는다(OPENCODE_PRO_MODEL 선례와 같은 방식).
     ``skip_keys``(빈값이라 호출자가 제외한 token-key)는 중화하지 않고 토큰을 남겨
-    `_assert_no_leak` 가 "값을 채우라" 로 표면화하게 한다.
+    `_assert_no_leak` 가 "값을 채우라" 로 드러내게 한다.
 
     ``unused_profiles``(token-key → conf 하네스)는 **해소값이 있어도** 중화한다 — 그 카드는 conf
-    가 다른 하네스로 보내는 역할이라 이번 형상에서 스폰되지 않는다(미사용 프로필). 꼬리에 사유를
+    가 다른 하네스로 보내는 역할이라 이번 설치 구성에서 스폰되지 않는다(미사용 프로필). 꼬리에 사유를
     남겨 채택자가 고칠 곳이 카드가 아니라 local.conf 임을 지목한다. ``card_harness`` 는 그 안내에
     실을 이 카드의 하네스다.
 
@@ -362,7 +362,7 @@ class RenderLeakError(RuntimeError):
 
 
 # 스킬 호출 표기의 단일 진실. 키는 공개 harness 별칭이 아니라 `templates/` 아래 실 디렉터리명이다.
-# pm_update --all-targets 가 같은 디렉터리 축을 발견해 이 registry에 넘기고, 출하 표기 가드도
+# pm_update --all-targets 가 같은 디렉터리 목록을 발견해 이 registry에 넘기고, 출하 표기 가드도
 # 이 값을 직접 읽는다. 새 template 디렉터리에 canonical 호출 토큰이 있는데 값이 미등록이면 아래
 # renderer가 fail-loud한다(알 수 없는 하네스를 조용히 `/`로 복사하지 않음).
 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR: dict[str, str] = {
@@ -435,7 +435,7 @@ def render_skill_entry_notation(
     template_dirs = tuple(dict.fromkeys(template_dirs))
     if len(template_dirs) > 1:
         # 이미 두 하네스 표기로 병기된 라이브 문서에 세 번째 하네스를 추가하는 경우도 같은
-        # 입력 형태로 합류시킨다. 전체 병기 group만 접어 경로/확장자와 일반 산문은 건드리지 않는다.
+        # 입력 형태로 합류시킨다. 전체 병기 group만 합쳐 경로/확장자와 일반 산문은 건드리지 않는다.
         text = _ANNOTATED_SKILL_ENTRY_GROUP_RE.sub(
             lambda match: f"`/{match.group('skill')}{match.group('args')}`",
             text,
@@ -511,7 +511,7 @@ def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
     미보유 key(dict 부재)는 물론, **값이 빈 문자열인 key 도 치환하지 않는다**(호출자 무관
     이중화·pm_import 경로 포함) — 토큰을 그대로 남겨 _assert_no_leak 가 leak 으로 잡게 한다.
     `.get(key, "")` 나 빈값 치환은 미해소를 *침묵 비움*(예: `project.name=` 빈값 → description 이
-    " 프로젝트")으로 출하해 탐지 신호 자체를 없앤다 — 잔여 토큰보다 더 나쁘다.
+    " 프로젝트")으로 출하해 탐지 신호 자체를 없앤다 — 남은 토큰보다 더 나쁘다.
 
     반환: (치환된 text, 빈값이라 건너뛴 token-key 목록). 후자는 render_adapter 가 _assert_no_leak
     힌트("local.conf `<key>=` 가 빈값 — 값을 채우라")에 싣는다.
@@ -526,7 +526,7 @@ def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
         value = operational[key]
         if value is None or str(value) == "":
             # 빈값 key 도 치환하지 않는다 — silent-empty = leak 클래스. 토큰을 남겨
-            # _assert_no_leak 가 잡되, 빈값 원인임을 힌트로 표면화한다(값을 채우라).
+            # _assert_no_leak 가 잡되, 빈값 원인임을 힌트로 드러낸다(값을 채우라).
             empty_keys.append(key)
             continue
         token = "{{" + key + "}}"
@@ -547,12 +547,12 @@ def _assert_no_leak(
     source: str | None = None,
     empty_keys: list[str] | None = None,
 ) -> None:
-    """렌더 산출물에 잔여 `{{[A-Z_]+}}` 토큰 또는 stray omit-marker 가 있으면 RenderLeakError.
+    """렌더 산출물에 남은 `{{[A-Z_]+}}` 토큰 또는 stray omit-marker 가 있으면 RenderLeakError.
 
-    자족 산출물 = 토큰 0 (allow-list 없음): 잔여 토큰이 *하나라도* 있으면 emission
+    자족 산출물 = 토큰 0 (allow-list 없음): 남은 토큰이 *하나라도* 있으면 emission
     순간 hard-fail. operational 은 plain replace 로 전부 해소돼야 한다 — 미해소(템플릿 저자가
-    넣은 새 `{{FOO}}`·local.conf 미보유 operational·미배선 토큰·옛 free-form 토큰 잔존)를
-    침묵 출하 대신 큰소리로 표면화한다(half-rendered 토큰이 출하되는 것을 막음).
+    넣은 새 `{{FOO}}`·local.conf 미보유 operational·대응이 빠진 토큰·옛 free-form 토큰 잔존)를
+    침묵 출하 대신 큰소리로 드러낸다(half-rendered 토큰이 출하되는 것을 막음).
 
     추가로 stray omit-marker(`<!-- pm:omit-if-empty ... -->`·open 또는 close)가 잔존하면
     같은 에러로 잡는다

@@ -95,7 +95,7 @@ class CopyAction:
             raise PlanStateChangedError(
                 f"계획 시점과 상태가 다릅니다({rel.as_posix()}: 계획 때는 {was}고 지금은 "
                 f"{now}습니다) — 계획에 없던 처리를 하지 않기 위해 이 파일을 건너뜁니다.")
-        # 링크 교체 축(아래 unlink)에서 쓸 leaf 신원 — 상태 확인과 **같은 시점** 값이어야 한다.
+        # 링크 교체 쪽(아래 unlink)에서 쓸 leaf 신원 — 상태 확인과 **같은 시점** 값이어야 한다.
         leaf_identity = (
             _dest_leaf_identity(self.dest_root, rel, root_identity=root_identity)
             if dst_is_symlink else None)
@@ -248,10 +248,10 @@ def write_text_keeping_newlines(path: Path, text: str) -> None:
 
 
 # ── 개행 표기 보존 왕복 ───────────────────────────────────────────────────────
-# 엔진이 자기 소유 파일을 **읽어서 다시 쓰는** 경로(engine.manifest guest 절 동기 등)는 본문을
+# 엔진이 자기 소유 파일을 **읽어서 다시 쓰는** 경로(engine.manifest 추가 하네스 절 동기 등)는 본문을
 # LF 로 다뤄야 판정이 단순한데, 그대로 되쓰면 CRLF 체크아웃 채택자의 파일 전체가 LF 로 뒤집힌다
 # (engine.manifest 의 append-only byte 불변식 위반·손대지 않은 줄까지 전면 diff).
-# 그래서 **판정은 LF 정규화 후, 쓰기는 원본 표기 복원**으로 두 축을 분리한다.
+# 그래서 **판정은 LF 정규화 후, 쓰기는 원본 표기 복원**으로 두 방식을 분리한다.
 # 표기의 진실은 **그 파일의 현재 내용**이다 — 플랫폼(os.linesep)이 아니다. "Windows 면 CRLF" 로
 # 분기하면 `core.autocrlf=false` 로 LF 체크아웃한 Windows 채택자를 반대로 깨뜨린다.
 DEFAULT_TEXT_NEWLINE = "\n"
@@ -273,7 +273,7 @@ def dominant_newline(text: str) -> str:
 
 
 def read_text_preserving_newline(path: Path) -> tuple[str, str]:
-    """`(LF 정규화 본문, 지배 개행)` — 번역 없이 읽고 판정용 본문만 LF 로 접는다.
+    """`(LF 정규화 본문, 지배 개행)` — 번역 없이 읽고 판정용 본문만 LF 로 바꾼다.
 
     쌍인 `write_text_preserving_newline` 에 그 지배 개행을 그대로 넘기면 우리가 바꾸지 않은
     줄의 bytes 가 보존된다(왕복 무변경)."""
@@ -301,16 +301,16 @@ def write_text_preserving_newline(path: Path, text: str, newline: str) -> None:
 #   (1) 복사(`CopyAction.run` — 디렉토리 생성 포함) (2) 중앙 백업 (3) 공유 문서 재렌더
 #   (4) placeholder 치환 (5) opencode 모델 해소 (6) 자유서술 fill(TODO 표시·토큰 판정).
 #   원본(template)은 신뢰 소스라 경로로 읽는다.
-#   ⚠ **여기 없는 dest 쓰기는 여전히 경로 기반이다** — engine.manifest 병합/guest 절 갱신 ·
+#   ⚠ **여기 없는 dest 쓰기는 여전히 경로 기반이다** — engine.manifest 병합/추가 하네스 절 갱신 ·
 #     local.conf 채널(백업·키 기록) · pm_playbook.local 스텁 생성 ·
-#     board submodule scaffold · `--new` 최초 `mkdir`. 이들은 **정적 형상에서 안전**하다(계획 대상이
+#     board submodule scaffold · `--new` 최초 `mkdir`. 이들은 **정적 상태에서 안전**하다(계획 대상이
 #     아니거나·인스턴스 소유라 계획-적용 창 밖이거나·존재하면 덮지 않는다). 그러나 **동적 교체 창
 #     자체는 남는다** — 이 티켓의 범위가 계획-적용 창(위 6채널)이라 그렇게 한정했고, 확장은 별도
 #     판단거리다(조용한 축소가 아니라 명시된 경계).
 #   ⚠ dest 루트 **자체** 교체는 파일 단위가 아니라 전체 중단 클래스다(`DestRootSwappedError`) —
 #     고정한 루트 신원(`dest_root_identity`)을 매 열기에서 fd 로 대조한다.
-#   ⚠ 보장하는 축은 **symlink** 다 — 저장소 안에 미리 만들어 둔 **하드링크**는 같은 inode 라 fd 열기로
-#     구분되지 않으므로 "저장소 밖 파일 불변" 문구는 symlink·경로 탈출 축에 한정된다(범위 밖).
+#   ⚠ 보장하는 범위는 **symlink** 다 — 저장소 안에 미리 만들어 둔 **하드링크**는 같은 inode 라 fd 열기로
+#     구분되지 않으므로 "저장소 밖 파일 불변" 문구는 symlink·경로 탈출에 한정된다(범위 밖).
 _DEST_FD_WALK_SUPPORTED = (
     hasattr(os, "O_NOFOLLOW")
     and hasattr(os, "O_DIRECTORY")
@@ -334,7 +334,7 @@ _DEST_PATH_REFUSAL_REASONS = {
 
 # 비-일반 파일(FIFO·디바이스)에서 **열기 자체가 멈추는** 창을 닫는 플래그. `O_NOFOLLOW` 는 symlink
 # 만 거른다 — 계획 통과 뒤 대상이 FIFO 로 바뀌면 `O_RDONLY` 열기가 writer 를 기다리며 무기한 블록해
-# 설치가 그 자리에 선다(교체 축의 남은 파생: 유출이 아니라 정지). 일반 파일에는 읽기·쓰기 의미가
+# 설치가 그 자리에 선다(교체 쪽의 남은 파생: 유출이 아니라 정지). 일반 파일에는 읽기·쓰기 의미가
 # 없으므로(POSIX) 내용 IO 채널에 상시 얹고, 연 fd 를 `fstat` 해 일반 파일이 아니면 거부한다 —
 # 검사 대상이 **연 fd 자신**이라 재검사 창이 없다. 쓰기 쪽은 열기가 ENXIO 로 먼저 실패한다(위 표).
 _DEST_NONBLOCK_FLAG = getattr(os, "O_NONBLOCK", 0)
@@ -361,7 +361,7 @@ def dest_root_identity(dest_root: Path) -> tuple:
     밖 symlink 로 교체돼도 그 트리를 따라가지 않고 거부한다 — 루트 재해소가 조용히 다른 inode 를
     고르던 창이 닫힌다.
 
-    획득 실패는 **fail-loud** 다(옛 None 폴백 폐기): None 을 돌려주면 루트 검사가 통째로 꺼지므로,
+    획득 실패는 **fail-loud** 다(옛 None 대체 동작 폐기): None 을 돌려주면 루트 검사가 통째로 꺼지므로,
     "획득 순간만 해소 불가로 만들고 그 뒤 교체" 라는 우회가 성립한다. 루트를 못 잡으면 무엇도
     안전하게 열 수 없으니 **적용 전에** 중단한다(호출부가 rc1 로 번역)."""
     try:
@@ -379,7 +379,7 @@ def _open_dest_root_fd(dest_root: Path, root_identity: tuple | None) -> int:
     """dest 루트를 열고 **그 fd 자신**으로 고정 신원을 대조한다 — 실패는 전부 루트 교체 클래스.
 
     루트 해소·열기 실패(삭제·깨진 링크·일반 파일로 교체)를 `UnsafeDestPathError` 나 raw `OSError`
-    로 흘리면 **파일 단위** 핸들러가 그것을 흡수해 실행이 계속되고, 남은 단계가 교체된 트리에
+    로 흘리면 **파일 단위** 핸들러가 그것을 삼켜 실행이 계속되고, 남은 단계가 교체된 트리에
     쓴다(루트 교체는 파일 하나를 빼는 상황이 아니라 대상 트리가 통째로 바뀐 상황이다). 그래서
     고정 신원이 있는 실행에서는 그 계열을 전부 `DestRootSwappedError`(즉시 전체 중단)로 번역한다.
     고정이 없는 호출(질의성 읽기 등)은 대조 기준이 없으므로 옛 경로 오류를 유지한다."""
@@ -439,8 +439,8 @@ def _open_dest_relative_nofollow(
     이 옵션을 쓰지 않는다). 판정 대상이 fd 자신이라 경로 재검사와 달리 검사-사용 창이 없다.
 
     dir_fd/`O_NOFOLLOW` 미지원 플랫폼(주로 Windows)은 **열기 직전 `_is_safe_dest_path` 재검사**로
-    폴백한다 — 창을 syscall 하나로 좁히지만 구조적 폐쇄는 아니다. 그 플랫폼은 symlink 생성 자체가
-    관리자/개발자 모드 권한이라 노출면이 다르며, 폴백임을 여기 명시해 둔다."""
+    대신 쓴다 — 창을 syscall 하나로 좁히지만 구조적 폐쇄는 아니다. 그 플랫폼은 symlink 생성 자체가
+    관리자/개발자 모드 권한이라 노출면이 다르며, 대체 동작임을 여기 명시해 둔다."""
     rel = Path(rel)
     parts = rel.parts
     # 절대경로·드라이브·anchor 는 `dir_fd` 를 **무시**하고 그대로 열린다
@@ -473,8 +473,8 @@ def _open_dest_relative_nofollow(
                 f"경로가 안전하지 않습니다(symlink·조상 symlink·repo 밖): {rel.as_posix()}")
         # **루트 관문은 고정 신원 유무와 무관하다.** fd 순회 플랫폼은 `_open_dest_root_fd` 가 매
         #   호출 루트를 strict 해소하므로(부재·깨진 링크·비-디렉토리 = `UnsafeDestPathError`),
-        #   이 폴백만 관문을 건너뛰면 같은 상황에서 raw `FileNotFoundError` 가 새 나가 호출부의
-        #   흡수 클래스가 플랫폼마다 갈린다(Windows 실측·`_is_safe_dest_path` 는 부재 경로를
+        #   이 대체 동작만 관문을 건너뛰면 같은 상황에서 raw `FileNotFoundError` 가 새 나가 호출부의
+        #   처리 클래스가 플랫폼마다 갈린다(Windows 실측·`_is_safe_dest_path` 는 부재 경로를
         #   lexical 로 통과시킨다). 신원이 있으면 그 계열을 루트 교체 클래스로 승격하고, 없으면
         #   옛 경로 오류 클래스를 그대로 유지한다(질의성 호출 규약).
         try:
@@ -491,7 +491,7 @@ def _open_dest_relative_nofollow(
             target.parent.mkdir(parents=True, exist_ok=True)
         return _regular_or_refuse(os.open(str(target), flags | binary, mode))
     # 루트 열기 + 신원 대조는 한 지점(`_open_dest_root_fd`)이 전담한다 — 해소 실패·비-디렉토리·
-    #   불일치를 전부 **전체 중단 클래스**로 번역해, 파일 단위 핸들러가 루트 교체를 흡수하는 창을
+    #   불일치를 전부 **전체 중단 클래스**로 번역해, 파일 단위 핸들러가 루트 교체를 삼키는 창을
     #   남기지 않는다.
     dir_flags = os.O_RDONLY | os.O_DIRECTORY
     current = _open_dest_root_fd(dest_root, root_identity)
@@ -505,7 +505,7 @@ def _open_dest_relative_nofollow(
                 try:
                     os.mkdir(part, dir_fd=current)
                 except FileExistsError:
-                    pass  # 경쟁 생성 — 아래 재-open 이 판정한다(symlink 로 선점됐으면 거부).
+                    pass  # 경쟁 생성 — 아래 재-open 이 판정한다(symlink 가 먼저 차지했으면 거부).
                 try:
                     nxt = os.open(part, dir_flags | os.O_NOFOLLOW, dir_fd=current)
                 except OSError as retry_exc:
@@ -522,7 +522,7 @@ def _open_dest_relative_nofollow(
             try:
                 os.mkdir(parts[-1], dir_fd=current)
             except FileExistsError:
-                pass  # 경쟁 생성 — 아래 재-open 이 판정한다(symlink 로 선점됐으면 거부).
+                pass  # 경쟁 생성 — 아래 재-open 이 판정한다(symlink 가 먼저 차지했으면 거부).
             try:
                 return _regular_or_refuse(os.open(
                     parts[-1], flags | os.O_NOFOLLOW | binary, mode, dir_fd=current))
@@ -613,7 +613,7 @@ def _ensure_dest_dir_nofollow(dest_root: Path, rel_dir: Path,
         return
     rel_path = Path(*parts)
     if not _DEST_FD_WALK_SUPPORTED:
-        # 폴백(dir_fd 미지원·주로 Windows): 만들기 직전 재검사 — 창을 좁힐 뿐 구조적 폐쇄가 아니다.
+        # 대체 동작(dir_fd 미지원·주로 Windows): 만들기 직전 재검사 — 창을 좁힐 뿐 구조적 폐쇄가 아니다.
         if not _is_safe_dest_path(dest_root, rel_path):
             raise UnsafeDestPathError(
                 f"디렉토리 경로가 안전하지 않습니다(symlink·조상 symlink·repo 밖): "
@@ -647,11 +647,11 @@ def _dest_leaf_identity(dest_root: Path, rel: Path,
 
     **파일 종류(`S_IFMT`)를 신원에 포함**한다: 지우고 곧바로 만들면 커널이 같은 inode 번호를
     재사용할 수 있어 `(dev, ino)` 만으로는 교체를 못 가른다(실측). 종류가 바뀌는 교체(링크→일반
-    파일 등)는 이걸로 확실히 걸린다. 같은 종류로 교체 + inode 재사용은 남는 잔여인데, 그 경우
+    파일 등)는 이걸로 확실히 걸린다. 같은 종류로 교체 + inode 재사용은 남는 경우인데, 그 경우
     지워지는 것도 링크뿐이라 사용자 데이터 손실 클래스가 아니다(명시된 경계)."""
     rel = Path(rel)
     if not _DEST_FD_WALK_SUPPORTED:
-        st = os.lstat(Path(dest_root) / rel)  # 폴백 — 창을 좁힐 뿐(다른 폴백과 동형).
+        st = os.lstat(Path(dest_root) / rel)  # 대체 동작 — 창을 좁힐 뿐(다른 대체 동작과 같은 방식).
         return (st.st_dev, st.st_ino, stat.S_IFMT(st.st_mode))
     dir_fd = _open_dest_dir_nofollow(dest_root, rel.parent, root_identity=root_identity)
     try:
@@ -736,7 +736,7 @@ def _write_dest_file_from_source_nofollow(
     **소스를 먼저 연다** — dest 를 `O_TRUNC` 로 연 뒤 소스 열기가 실패하면 dest 는 비워진 채 남고
     그 fd 는 주인이 없다(누수). 소스가 읽히는 것을 확인한 뒤에만 dest 를 건드린다.
 
-    두 플래그 조합이 **계획 뒤 dest 경쟁**을 그대로 표면화한다: 신규인데 그 사이 생겼으면 EEXIST,
+    두 플래그 조합이 **계획 뒤 dest 경쟁**을 그대로 드러낸다: 신규인데 그 사이 생겼으면 EEXIST,
     기존인데 그 사이 지워졌으면 ENOENT 다. 둘 다 `PlanStateChangedError`(파일 단위 제외)로
     정규화한다 — 그대로 새면 적용 루프가 통째로 죽어 rc 정책이 깨진다. **소스(template) 쪽**
     오류는 정규화하지 않는다(진짜 누락 신호라 그대로 올린다·`src.open` 은 try 밖)."""
@@ -818,7 +818,7 @@ def _copied_scope_anomaly(dest_root: Path, rel: Path) -> str | None:
     이 채널들의 범위는 **이번 run 이 방금 복사한 파일**이라, 대상이 없다는 것은 "원래 대상이 아님"
     이 아니라 복사 뒤 삭제다. 조용히 건너뛰면 그 사실이 어디에도 안 남는다(적용 단계의 유일한
     신호가 stderr 요약이므로). 부재는 `vanished`, 실재하는데 편집 대상이 아니면(디렉토리·FIFO 등
-    형상 변화) `swapped` 로 갈라 호출부가 같은 요약 채널에 싣는다."""
+    모양 변화) `swapped` 로 갈라 호출부가 같은 요약 채널에 싣는다."""
     if _is_inplace_edit_candidate(dest_root, rel):
         return None
     return "swapped" if os.path.lexists(Path(dest_root) / rel) else "vanished"
@@ -828,7 +828,7 @@ def _report_copied_scope_anomalies(
         channel: str, swapped: list[str], vanished: list[str]) -> None:
     """복사분 채널의 파일 단위 제외를 loud 로 알린다(조용한 degrade 금지·채널명 포함).
 
-    루트 교체(`DestRootSwappedError`)는 여기 오지 않는다 — 그건 흡수 대상이 아니라 전체 중단이다."""
+    루트 교체(`DestRootSwappedError`)는 여기 오지 않는다 — 그건 파일 단위 처리 대상이 아니라 전체 중단이다."""
     if swapped:
         print(f"  ⚠️ {channel} 대상 {len(swapped)}건: 복사 뒤 경로를 안전하게 열 수 없어(symlink "
               f"교체·비-디렉토리 컴포넌트) 처리를 건너뜁니다(저장소 밖 파일 불변): "
@@ -863,11 +863,11 @@ def _is_inplace_edit_candidate(dest_root: Path, rel: Path) -> bool:
     조용히 건너뛰었다 — 요구된 "파일 단위 loud 제외" 가 그 경로에서만 침묵으로 바뀐다. 그래서
     여기서는 symlink 를 **후보로 통과**시키고, 실제 판정(거부 + loud)은 fd 가드 한 지점에 맡긴다.
 
-    `lstat` 실패도 errno 로 가른다 — 삼키면 같은 침묵이 조상 축으로 되살아난다:
+    `lstat` 실패도 errno 로 가른다 — 삼키면 같은 침묵이 조상 쪽으로 되살아난다:
       - `ENOENT` + **조상에 symlink 없음** = 진짜 부재 → 조용한 제외(원래 대상이 아니다).
       - `ENOENT` + **조상이 symlink**(깨진 링크로 교체) 또는 `ELOOP`/`ENOTDIR` 류 = 안전 거부
         대상 → 후보로 통과시켜 fd 가드가 loud 로 거른다.
-    조상 순회는 dest 루트 **하위**로 한정한다(루트 자신이 symlink 를 거쳐 있는 정상 형상 —
+    조상 순회는 dest 루트 **하위**로 한정한다(루트 자신이 symlink 를 거쳐 있는 정상인 경우 —
     예 `/tmp`→`/private/tmp` — 을 매 부재 파일마다 거부로 오판하지 않기 위해)."""
     try:
         st = os.lstat(Path(dest_root) / rel)
@@ -892,9 +892,9 @@ def _has_symlink_ancestor(dest_root: Path, rel: Path) -> bool:
 
 
 def _is_notation_fallback_scope(rel_posix: str) -> bool:
-    """manifest 소유자가 없을 때 **설치 하네스 전체 표기**로 폴백해도 되는 relpath 인가.
+    """manifest 소유자가 없을 때 **설치 하네스 전체 표기**를 대신 써도 되는 relpath 인가.
 
-    폴백 대상 = 인스턴스 wiki 하위 전부(설치 하네스 전원이 같은 물리 문서를 읽는 표면).
+    대체 동작 대상 = 인스턴스 wiki 하위 전부(설치 하네스 전원이 같은 물리 문서를 읽는 범위).
     엔진 backbone(`tools/**`)·어댑터 네임스페이스·루트 진입 문서는 독자가 특정 하네스라
     여기 들어오지 않는다(전체 집합으로 렌더하면 오히려 오표기가 된다)."""
     return rel_posix.startswith(install_rules.INSTANCE_SHARED_WIKI_PREFIX)
@@ -935,7 +935,7 @@ def _byte_identical_skipped(
     """이번 하네스 template 과 **byte-identical 이라 복사만 생략된** dest 파일 relpath 집합
     .
 
-    이게 token-form 미렌더 잔존 문제의 **유일한 대상**이다 — 타 guest·adopter 자체 생성 파일(내용 상이·
+    이게 token-form 미렌더 잔존 문제의 **유일한 대상**이다 — 타 추가 하네스·adopter 자체 생성 파일(내용 상이·
     copied)
     조건: (a) 이 하네스 adapter namespace(`adapter_dirs`) 안, (b) 미-copied(copy plan 이 안 실음),
     (c) dest 실존 + template 과 byte-identical, (d) 경로 안전(`_is_safe_dest_path`). 경로는
@@ -1032,7 +1032,7 @@ def _backup_open_fd_nofollow(
                 stat.S_IMODE(src_stat.st_mode), create_parents=True,
                 root_identity=root_identity)
         except FileExistsError:
-            continue  # 순번을 고른 사이 선점됨 — 다음 순번(원본 보존 우선).
+            continue  # 순번을 고른 사이 먼저 차지됨 — 다음 순번(원본 보존 우선).
         with _fdopen_binary(dst_fd, "wb") as dst:
             _stream_fd_into(src_fd, dst)  # 순번 재시도 시 처음부터 다시 흘린다.
             dst.flush()
@@ -1075,10 +1075,10 @@ _EXTENDED_UNC_PREFIX_SLASH = "//?/UNC/"
 _WINDOWS_MAX_PATH_CHARS = 260
 
 
-# 확장 prefix 제거는 **Windows 표기 축**이다 — POSIX 에서는 `\` 가 정당한 파일명 문자라 같은
+# 확장 prefix 제거는 **Windows 표기 전용**이다 — POSIX 에서는 `\` 가 정당한 파일명 문자라 같은
 # 문자열을 벗기면 실재하는 파일명을 망가뜨린다(링크 대상이라면 백업이 다른 곳을 가리킨다).
 # 플랫폼 판정을 모듈 상수로 두어 테스트가 Windows 표기를 다른 플랫폼에서 **주입해** 규칙을 실제로
-# 태울 수 있게 한다(능력 플래그 `_DEST_FD_WALK_SUPPORTED` 와 같은 주입 seam).
+# 태울 수 있게 한다(능력 플래그 `_DEST_FD_WALK_SUPPORTED` 와 같은 주입 교체 지점).
 _WINDOWS_PATH_NOTATION = os.name == "nt"
 
 
@@ -1102,9 +1102,9 @@ def _strip_extended_path_prefix(text: str) -> str:
 def _path_notation_text(path) -> str:
     """경로를 **비교·기록 표기**로 직렬화한다 — Windows 확장 길이 prefix 를 남기지 않는다.
 
-    Windows 표기 축이 아닌 플랫폼에서는 입력 표기를 그대로 둔다(위 `_WINDOWS_PATH_NOTATION`).
-    구분자는 건드리지 않는다 — 이 함수의 축은 prefix 하나이고, POSIX 단일 직렬화가 필요한 자리는
-    `as_posix()` 를 함께 쓴다(장부 표기 축은 pm_handoff·pm_bootstrap 소관).
+    Windows 표기를 쓰지 않는 플랫폼에서는 입력 표기를 그대로 둔다(위 `_WINDOWS_PATH_NOTATION`).
+    구분자는 건드리지 않는다 — 이 함수가 다루는 것은 prefix 하나이고, POSIX 단일 직렬화가 필요한 자리는
+    `as_posix()` 를 함께 쓴다(대여 기록 표기는 pm_handoff·pm_bootstrap 소관).
     """
     text = path if isinstance(path, str) else os.fspath(path)
     if not _WINDOWS_PATH_NOTATION:
@@ -1136,11 +1136,11 @@ def _backup_symlink_nofollow(
     를 symlink 미추종으로 열고 그 안에서 `readlink`/`symlink` 만 한다 — 우리가 쓰는 디렉토리는 연
     fd 에 묶여 이후 경로 교체와 무관하다. 점유 자리는 `_free_backup_path` 순번으로 비켜 간다.
 
-    dir_fd 미지원 플랫폼은 다른 채널과 같은 폴백을 쓴다(직전 재검사 + 경로 조작·창을 좁힐 뿐)."""
+    dir_fd 미지원 플랫폼은 다른 채널과 같은 대체 동작을 쓴다(직전 재검사 + 경로 조작·창을 좁힐 뿐)."""
     src_rel = Path(src_rel)
     if not _DEST_FD_WALK_SUPPORTED:
         # 검사 대상은 **조상**뿐이다 — 이 채널의 원본은 정의상 symlink 라(그 링크를 보존하러 왔다)
-        #   leaf 까지 거부하면 정상 형상이 통째로 막힌다. 조상 링크만 밖을 향하게 만들 수 있다.
+        #   leaf 까지 거부하면 정상인 경우가 통째로 막힌다. 조상 링크만 밖을 향하게 만들 수 있다.
         if not _is_safe_dest_path(dest_root, src_rel.parent):
             raise UnsafeDestPathError(
                 f"백업 원본 조상 경로가 안전하지 않습니다: {src_rel.as_posix()}")
@@ -1150,7 +1150,7 @@ def _backup_symlink_nofollow(
             dest_root, target.relative_to(dest_root).parent, root_identity=root_identity)
         # 옛 `shutil.copy2(follow_symlinks=False)` 와 같은 동작(대상 문자열 재심기 + copystat)을
         #   펼쳐 쓴다 — 그 안의 `os.readlink` 산출이 곧 기록값이라, 표기 정규화를 끼울 자리가
-        #   copy2 안에는 없다(이 폴백 분기가 곧 Windows 경로다).
+        #   copy2 안에는 없다(이 대체 동작 분기가 곧 Windows 경로다).
         source = Path(dest_root) / src_rel
         os.symlink(_preserved_link_target(os.readlink(source)), target)
         shutil.copystat(source, target, follow_symlinks=False)
@@ -1178,7 +1178,7 @@ def _backup_symlink_nofollow(
             try:
                 os.symlink(link_target, target_rel.name, dir_fd=dst_dir_fd)
             except FileExistsError:
-                continue  # 순번을 고른 사이 선점됨 — 다음 순번(원본 보존 우선).
+                continue  # 순번을 고른 사이 먼저 차지됨 — 다음 순번(원본 보존 우선).
             except OSError as exc:
                 _raise_dest_path_refusal(target_rel, exc)
             finally:
@@ -1197,7 +1197,7 @@ def _unlink_dest_relative_nofollow(
     자리에 일반 파일을 놓는 복사 경로가 그 창을 갖고 있었다."""
     rel = Path(rel)
     if not _DEST_FD_WALK_SUPPORTED:
-        # 조상만 검사한다 — 삭제 대상 자신이 symlink 인 것이 이 채널의 정상 형상이고(`os.unlink` 은
+        # 조상만 검사한다 — 삭제 대상 자신이 symlink 인 것이 이 채널의 정상인 경우이고(`os.unlink` 은
         #   링크를 따라가지 않는다), 밖을 가리키게 만드는 건 조상 링크뿐이다.
         if not _is_safe_dest_path(dest_root, rel.parent):
             raise UnsafeDestPathError(
@@ -1242,21 +1242,21 @@ def _backup_before_inplace_edit(
         root_identity: tuple | None = None) -> InplaceBackupOutcome:
     """복사 대상이 아닌 기존 파일을 **변경 직전에** 중앙 백업한다.
 
-    `CopyAction` 백업 규칙과 동형: git 추적&미변경(git_safe)은 git 이 복원 가능하므로 생략하고,
+    `CopyAction` 백업 규칙과 같은 방식: git 추적&미변경(git_safe)은 git 이 복원 가능하므로 생략하고,
     그 밖은 `backup_root/<relpath>`(경로 점유 시 `_free_backup_path` 순번). backup_root=None 이면
     백업 위치가 없어 무동작. 계획 시점의 symlink 는 `_shared_notation_rerender_plan` 이 이미
     거부했고, **계획 뒤 교체·삭제**는 여기서 각각의 목록으로 돌려준다 — 호출부가 재렌더 대상에서
     빼고 loud 하게 알린다(백업 못 하는 파일은 고치지 않는다).
 
     삭제 경쟁(`FileNotFoundError`)을 예외로 흘리지 않는 이유: 이 시점엔 복사·manifest 변경이 이미
-    끝나 있어 예외가 곧 **부분 적용 잔존**이다. 렌더 쓰기의 같은 경쟁 처리와 동형으로 흡수한다."""
+    끝나 있어 예외가 곧 **부분 적용 잔존**이다. 렌더 쓰기의 같은 경쟁 처리와 같은 방식으로 처리한다."""
     if backup_root is None:
         return InplaceBackupOutcome([], [], [])
     done: list[str] = []
     refused: list[str] = []
     vanished: list[str] = []
     for rel in relpaths:
-        # 이 목록은 계획이 **실재를 확인한** 대상이라, 부재·형상 변화는 계획 뒤 사고다 — 조용한
+        # 이 목록은 계획이 **실재를 확인한** 대상이라, 부재·모양 변화는 계획 뒤 사고다 — 조용한
         #   skip 대신 사유별 목록에 실어 호출부가 재렌더에서 빼고 loud 로 알리게 한다.
         anomaly = _copied_scope_anomaly(dest_root, rel)
         if anomaly == "vanished":
@@ -1266,7 +1266,7 @@ def _backup_before_inplace_edit(
             refused.append(rel.as_posix())
             continue
         if git_safe is not None and rel.as_posix() in git_safe:
-            continue  # git 이 복원 가능 — 백업 생략(plan_copy git-safe skip 과 동형).
+            continue  # git 이 복원 가능 — 백업 생략(plan_copy git-safe skip 과 같은 방식).
         try:
             ensure_backup_dir_ignored(dest_root, root_identity=root_identity)
             _backup_to_central_dir_nofollow(

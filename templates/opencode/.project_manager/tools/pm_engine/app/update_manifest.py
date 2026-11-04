@@ -21,11 +21,11 @@ def shipped_manifest(effective_dest: Path, source_root: Path) -> dict:
 
     - 핵심: self-prop 행(`.project_manager/engine.manifest`)이 가리키는 출하 manifest 에, 그것이 덮지
       않는 사본 행이 가리키는 하네스별 판을 더한다. 행은 `@source=templates/<판>/…` 이면 그 판을
-      (상류에 그 판이 없어도 그 판이다), 아니면 그 판에만 있는 경로(`_flavor_exclusive_paths`)에 걸칠
+      (상류에 그 판이 없어도 그 판이다), 아니면 그 판에만 있는 경로(`_variant_exclusive_paths`)에 걸칠
       때 그 판을 가리킨다. 아무 판도 정해지지 않으면 상류 루트 manifest 다(사본 manifest 가 없을 때
       포함).
     - 추가 하네스 구획: 구획 행이 가리키는 판의 구획을 그 판의 출하 manifest 에서 매번 다시 만든다
-      (add-harness 와 같은 생성기 `install_source._guest_manifest_lines`). 핵심이 가진 경로는 뺀다.
+      (add-harness 와 같은 생성기 `install_source._added_harness_manifest_lines`). 핵심이 가진 경로는 뺀다.
 
     파일 존재는 하네스 판정에 쓰지 않는다. 정해지지 않은 판의 고유 경로가 디스크에 있으면 `frozen` 에
     담아 알리기만 한다. 사본에만 있던 행(`released`)은 관리에서 빠지고 파일은 그대로 남는다. 은퇴
@@ -40,19 +40,19 @@ def shipped_manifest(effective_dest: Path, source_root: Path) -> dict:
     local_text = (fs.read_text_shared(dest_manifest, encoding="utf-8")
                   if dest_manifest.is_file() else "")
     core_rows = [row for row in map(manifest_rules._parse_manifest_line,
-                                    manifest_rules._strip_guest_manifest_block(local_text).splitlines()) if row]
-    guest_rows = [row for row in map(manifest_rules._parse_manifest_line,
-                                     (manifest_rules._extract_guest_manifest_block(local_text) or "").splitlines())
+                                    manifest_rules._strip_added_harness_manifest_block(local_text).splitlines()) if row]
+    added_harness_rows = [row for row in map(manifest_rules._parse_manifest_line,
+                                     (manifest_rules._extract_added_harness_manifest_block(local_text) or "").splitlines())
                   if row]
     def shipped_of(name: str) -> Path:
         return source_root / "templates" / name / ".project_manager" / "engine.manifest"
 
-    flavor_paths = {path.parents[1].name: [str(entry).replace("\\", "/") for entry in manifest_store.read_manifest(path)]
+    variant_paths = {path.parents[1].name: [str(entry).replace("\\", "/") for entry in manifest_store.read_manifest(path)]
                     for path in sorted(source_root.glob("templates/*/.project_manager/engine.manifest"),
                                        key=lambda path: path.as_posix())}
-    exclusive = {name: _flavor_exclusive_paths(paths, set().union(*(
-        other for other_name, other in flavor_paths.items() if other_name != name)))
-        for name, paths in flavor_paths.items()}
+    exclusive = {name: _variant_exclusive_paths(paths, set().union(*(
+        other for other_name, other in variant_paths.items() if other_name != name)))
+        for name, paths in variant_paths.items()}
 
     def named(rows: list, covered: set[str]) -> list[str]:
         """덮이지 않은 행이 가리키는 판 — 처음 나온 순서."""
@@ -76,20 +76,20 @@ def shipped_manifest(effective_dest: Path, source_root: Path) -> dict:
     core_paths = {str(entry).replace("\\", "/") for entry in merged["entries"]}
     harness_of = {template_dir: harness for harness, template_dirs in install_rules.HARNESS_TEMPLATE_DIRS.items()
                   for template_dir in template_dirs}
-    guest_lines: dict[str, str] = {}
-    for name in named(guest_rows, core_paths):
+    added_harness_lines: dict[str, str] = {}
+    for name in named(added_harness_rows, core_paths):
         adapter_dirs, root_doc = install_rules.ADD_HARNESS_ADAPTER[harness_of[name]]
-        for line in install_source._guest_manifest_lines(
+        for line in install_source._added_harness_manifest_lines(
                 shipped_of(name).parents[1], adapter_dirs, root_doc, core_paths):
-            guest_lines.setdefault(line.split()[0], line)
-    block = [guest_lines[rel] for rel in sorted(guest_lines)
+            added_harness_lines.setdefault(line.split()[0], line)
+    block = [added_harness_lines[rel] for rel in sorted(added_harness_lines)
              if not manifest_rules._path_owned_by(rel, core_paths)]
     text = merged["text"]
     if block:
-        text = "\n".join([text.rstrip("\n"), "", manifest_rules._GUEST_MANIFEST_BEGIN, *block,
-                          manifest_rules._GUEST_MANIFEST_END, ""])
+        text = "\n".join([text.rstrip("\n"), "", manifest_rules._ADDED_HARNESS_MANIFEST_BEGIN, *block,
+                          manifest_rules._ADDED_HARNESS_MANIFEST_END, ""])
     entries = [*merged["entries"], *map(manifest_rules._parse_manifest_line, block)]
-    local = {str(row).replace("\\", "/") for row in [*core_rows, *guest_rows]}
+    local = {str(row).replace("\\", "/") for row in [*core_rows, *added_harness_rows]}
     shipped = {str(entry).replace("\\", "/") for entry in entries}
     retired_old = retired_paths.declared_retired_olds(merged["paths"])
     frozen = []
@@ -119,8 +119,8 @@ def _print_shipped_manifest_finding(shipped: dict) -> None:
               f"{len(shipped['released'])}개는 관리에서 빠지고 파일은 그대로 둔다:")
         for rel in shipped["released"]:
             print(f"    - {rel}")
-    for flavor, observed, evidence_paths in shipped["frozen"]:
-        _print_frozen_flavor_warning(flavor, observed, evidence_paths)
+    for variant, observed, evidence_paths in shipped["frozen"]:
+        _print_frozen_variant_warning(variant, observed, evidence_paths)
     if shipped["conflicts"]:
         print(
             "경고: 선택 manifest 중복 경로의 마커/@source 불일치 — 선언 순서상 첫 하네스별 판을 "
@@ -129,18 +129,18 @@ def _print_shipped_manifest_finding(shipped: dict) -> None:
         )
 
 
-def _print_frozen_flavor_warning(flavor: str, observed: list[str], evidence_paths: list[str]) -> None:
+def _print_frozen_variant_warning(variant: str, observed: list[str], evidence_paths: list[str]) -> None:
     """engine.manifest 가 가리키지 않는 하네스별 판의 고유 파일이 디스크에 있으면 등재 절차를 안내한다."""
-    cli_flavor = "claude" if flavor == "claude_code" else flavor
+    cli_variant = "claude" if variant == "claude_code" else variant
     print(
         "⚠️ 미등재 하네스별 판 파일 관측 — engine.manifest 가 가리키지 않는 하네스별 판"
-        f"({flavor}) 관리 경로 일부가 디스크에 있다 "
+        f"({variant}) 관리 경로 일부가 디스크에 있다 "
         f"({len(observed)}/{len(evidence_paths)}: {', '.join(observed)}). "
         "관측 경로는 **어느 동기 채널도 선언하지 않은 출하 파일**이라 갱신이 받지 않는다 "
         "(`add-harness`로 얹은 어댑터는 추가 하네스 절이 렌더물·엔진 파일을 모두 등재하므로 이 경고 "
         "대상이 아니다). 남는 경우는 절 없이 손으로 복사된 하네스별 판 트리, 사용자 stray 파일, "
         "아직 어느 하네스별 판도 선언하지 않은 신규 출하 경로다.\n"
-        f"    `add-harness {cli_flavor}`는 그 하네스 어댑터만 등재한다(엔진 전량 마이그레이션 아님).\n"
+        f"    `add-harness {cli_variant}`는 그 하네스 어댑터만 등재한다(엔진 전량 마이그레이션 아님).\n"
         "    완전 마이그레이션(등록 하네스별 판 전체; 관측 누락에도 안전하나 원치 않는 하네스별 판도 "
         "추가될 수 있으므로 dry-run 검토):\n"
         "      <manager>/pm-import.sh --into <project> --harness all --dry-run\n"
@@ -149,21 +149,21 @@ def _print_frozen_flavor_warning(flavor: str, observed: list[str], evidence_path
         "    재-import가 커스터마이즈된 CLAUDE.md/AGENTS.md를 템플릿 판으로 덮을 수 있으니, "
         "진입 문서 커스텀은 .pm_import_backups/<날짜>/ 백업에서 재병합하라.\n"
         f"    복구: 그 하네스를 정식으로 얹어 동기 채널을 만든다 — "
-        f"`./pm-config.sh add-harness {cli_flavor}` (upstream 이 로컬 경로가 아니면 "
+        f"`./pm-config.sh add-harness {cli_variant}` (upstream 이 로컬 경로가 아니면 "
         f"`--from <프레임워크 checkout>` 추가; Windows 는 `.\\pm-config.cmd`).\n"
         "    해당 파일이 stray라면 이 경고를 무시해도 된다.",
         file=sys.stderr,
     )
 
 
-def _flavor_exclusive_paths(entries: list, other_candidate_paths: set[str]) -> list[str]:
+def _variant_exclusive_paths(entries: list, other_candidate_paths: set[str]) -> list[str]:
     """다른 어떤 하네스별 판에도 없는 이 판의 **고유 경로** (선언 순서 보존).
 
     `shipped_manifest` 가 행이 가리키는 판과 미등재 판 관측을 정할 때 쓴다. 고유성이 판정의 핵심이라
     단순 namespace 매칭으로 대체할 수 없다 — 여러 판이 함께 선언하는 cross-ns 경로(opencode 의
     `.claude/skills`)를 고유 경로로 세면 없던 하네스를 인스턴스에 만들어 낸다. manifest destination 은
     파일과 디렉터리 양쪽이므로 exact 문자열뿐 아니라 상·하위 포함도 중첩이다. 예를 들어 공용
-    `.claude/skills`와 판 override `.claude/skills/pm-dev-delegate/SKILL.md`는 같은 설치 표면이라
+    `.claude/skills`와 판 override `.claude/skills/pm-dev-delegate/SKILL.md`는 같은 설치 범위라
     후자를 고유 경로로 세지 않는다."""
     other_paths = {
         str(path).replace("\\", "/") for path in other_candidate_paths
@@ -181,10 +181,10 @@ def _installed_entry_notation_manifests(
     source_root: Path,
     upstream_manifests: list[Path],
 ) -> list[Path]:
-    """core 선택에 더해 실제 설치된 add-harness guest를 표기 context에만 포함한다.
+    """core 선택에 더해 실제 설치된 add-harness 추가 하네스를 표기 context에만 포함한다.
 
-    guest flavor는 계획 manifest 의 **핵심 합집합 밖**이다(구획으로 따로 만든다). 다만 공유
-    wiki를 실제로 읽는 하네스 집합에서는 빠지면 안 되므로, 설치 하네스를 찾아 그 flavor manifest를
+    추가 하네스의 판은 계획 manifest 의 **핵심 합집합 밖**이다(구획으로 따로 만든다). 다만 공유
+    wiki를 실제로 읽는 하네스 집합에서는 빠지면 안 되므로, 설치 하네스를 찾아 그 하네스별 판 manifest를
     context 입력에만 보탠다.
 
     판정은 **install_receipt.installed_harnesses 단일 진실**을 쓴다(구조 판정 사본 금지). 어댑터
@@ -229,7 +229,7 @@ def _retired_manifest_files(
 
     판정 좌표는 dest→source **역방향** 매핑이다 — `_dest_relpath_for`(board-분리 dest remap)와
     `_remap_to_dest`(`@source` source-remap)를 되짚어 upstream 읽기 경로를 만들고 그 실재만 본다.
-    dest 파일 열거는 공용 seam(`repo_files` OWNED = 추적 + 미추적-비ignore)이다. 직접
+    dest 파일 열거는 공용 함수(`repo_files` OWNED = 추적 + 미추적-비ignore)이다. 직접
     rglob 하면 ignore 산출물(`__pycache__` 등)이 후보로 새어 보고가 노이즈에 묻힌다.
 
     ``dest_map`` 은 이번 계획이 훑은 출하 좌표(`plan(inventory_out=…)`) — 상류가 실제로 공급하는
@@ -242,12 +242,12 @@ def _retired_manifest_files(
 
     **상류에서 통째로 사라진 등재도 이 채널이 본다**: dest 에 파일로 잔존하면 그 파일이, 디렉토리로
     잔존하면 그 아래 소유 파일 전부가 후보다. 실 sync 는 plan 의 missing 채널이 rc2 로 먼저 멈춰
-    여기 도달하지 않지만, `--changes`(read-only)에는 그 채널이 없어 이 보고가 유일한 표면이다 —
+    여기 도달하지 않지만, `--changes`(read-only)에는 그 채널이 없어 이 보고가 유일한 알림 자리다 —
     상류가 살아 있는 디렉토리만 스캔하면 "상류 삭제·rename (아래 보고 참조)" 헤더가 빈 포인터가
-    되고, 통째 삭제라는 **가장 크게 잔존하는 형상**이 가장 조용해진다.
+    되고, 통째 삭제라는 **가장 크게 잔존하는 경우**가 가장 조용해진다.
 
     ``dest_map`` 은 **dest 좌표만** 담아야 한다 — `@source` 매핑의 상류 좌표가 섞이면 우연히 같은
-    문자열인 dest 잔존물이 "상류가 공급함" 으로 접혀 보고에서 사라진다(false negative).
+    문자열인 dest 잔존물이 "상류가 공급함" 으로 바뀌어 보고에서 사라진다(false negative).
 
     실패는 fail-soft(빈 목록) — 이 보고는 진단이라 sync 자체를 깨서는 안 된다.
     """
@@ -275,15 +275,15 @@ def _retired_manifest_files(
                 retired.add(dest_rel)
             continue
         # 상류 디렉토리가 **통째로 사라져도** 하위 열거를 건너뛰지 않는다 — 건너뛰면 그 아래 dest
-        #   잔존물 전부가 보고에서 통째 누락된다(가장 크게 잔존하는 형상인데 가장 조용했다). 아래
+        #   잔존물 전부가 보고에서 통째 누락된다(가장 크게 잔존하는 경우인데 가장 조용했다). 아래
         #   per-child source 실재 검사가 자연히 전량을 후보로 만든다. 제외 규칙 우선순위는 그대로다:
         #   `@target-owned` 는 이 루프에 들어오기 전에 이미 빠졌고(source 부재가 정상), 계획이
         #   공급하는 좌표(`planned`)와 dest 미실재 경로도 아래에서 계속 걸러진다.
         try:
             # 열거는 **등재 디렉토리 subtree 로 한정**한다 — dest 전체를 훑으면 비-git dest 의
-            # filesystem 폴백이 채택자 프로젝트 전부를 순회한다(등재 밖은 애초에 판정 대상도 아님).
-            # 비-git dest 의 폴백 경고는 여기서 삼킨다 — 진단 보고 하나 때문에 채택자에게 엔진
-            # 내부 seam 경고 원문을 노출할 이유가 없다(열거 자체는 폴백으로 정상 동작한다).
+            # filesystem 대체 동작이 채택자 프로젝트 전부를 순회한다(등재 밖은 애초에 판정 대상도 아님).
+            # 비-git dest 의 대체 동작 경고는 여기서 삼킨다 — 진단 보고 하나 때문에 채택자에게 엔진
+            # 내부 공용 함수 경고 원문을 노출할 이유가 없다(열거 자체는 대체 동작으로 정상 동작한다).
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", repo_files.RepoFilesFallbackWarning)
                 dest_files = [
