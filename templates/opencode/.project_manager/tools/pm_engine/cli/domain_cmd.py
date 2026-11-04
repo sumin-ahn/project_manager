@@ -1,4 +1,4 @@
-"""domain 레이어 공개 CLI — list·affected·capture·capture-draft·coverage·lint 배선 (층: cli).
+"""domain 레이어 공개 CLI — list·affected·capture·capture-draft·coverage·lint 연결 (층: cli).
 
 domain 페이지·engine.manifest 경로는 넘겨받은 Home 의 PM 홈에서 해소한다.
 """
@@ -15,7 +15,7 @@ from pm_engine.infra import doc_page_store, pm_paths, repo_coordinates, ticket_s
 
 
 # capture에서 디렉토리 touch 하나가 표시하는 gap 상한. 전체 gap API는 자르지 않고,
-# CLI 기본 출력만 접는다(`capture --all-gaps`로 전체 표시).
+# CLI 기본 출력만 줄인다(`capture --all-gaps`로 전체 표시).
 DIRECTORY_GAP_DISPLAY_LIMIT = 15
 
 
@@ -34,7 +34,7 @@ def _normalize_ticket_touches(home, touches: list[str]) -> list[str]:
     """ticket PM-home 좌표를 경로별 advisory 경고와 함께 정규화한다.
 
     접두가 하나도 없으면 좌표 정규화를 건너뛰고 입력을 그대로 돌려준다.
-    조회 표면은 한 경로 오류가 배치를 죽이지 않는다. 오류 경로는 loud
+    조회 명령은 한 경로 오류가 배치를 죽이지 않는다. 오류 경로는 loud
     경고 후 제외하고 나머지를 계속 처리한다(검증 없이 strip하거나 원문을 하류에 넘기지 않음).
     """
     if not any(_has_worktree_touch_prefix(path) for path in touches):
@@ -85,7 +85,7 @@ def _touches_from_ticket(home, ticket_id: str) -> list[str]:
     """ticket_store.load_ticket 으로 ticket frontmatter 의 `touches` 를 읽는다(없으면 []).
 
     ticket 부재/깨짐은 전파한다. frontmatter `touches` 의
-    문자열 원소만 취한다(비-문자열 오기는 방어적으로 버림 — parse_page covers 동형).
+    문자열 원소만 취한다(비-문자열 오기는 방어적으로 버림 — parse_page covers 와 같은 방식).
     """
     _status, path = ticket_store.find_ticket(home, ticket_id)
     fm, _body = ticket_store.load_ticket(path)
@@ -93,7 +93,7 @@ def _touches_from_ticket(home, ticket_id: str) -> list[str]:
     if isinstance(touches, str):
         return [touches.strip()] if touches.strip() else []
     if isinstance(touches, list):
-        # --touches CLI 와 동형: 각 원소 strip·빈 값/비-문자열 drop (silent-miss 방어).
+        # --touches CLI 와 같은 방식: 각 원소 strip·빈 값/비-문자열 drop (silent-miss 방어).
         return [t.strip() for t in touches if isinstance(t, str) and t.strip()]
     return []
 
@@ -132,7 +132,7 @@ def _touches_from_tickets(home, tickets_csv: str) -> list[str]:
     """콤마분리 ticket ID 목록의 touches 를 집계한다 (각각 `_touches_from_ticket`·DRY).
 
     `--tickets T-a,T-b` → 각 ticket frontmatter touches 의 union(발견 순서 보존·dedup).
-    공백 trim·빈 토큰 제거(`--touches` CLI 동형). 부재/깨진 ticket 은 `_touches_from_ticket`
+    공백 trim·빈 토큰 제거(`--touches` CLI 와 같은 방식). 부재/깨진 ticket 은 `_touches_from_ticket`
     에서 전파한다.
     """
     seen: set[str] = set()
@@ -159,14 +159,14 @@ def cmd_capture(home, args: argparse.Namespace) -> int:
          = 후보 신규 페이지. 비면 절 생략.
     둘 다 없으면 `(채록할 domain 변화 없음)`. 정상 좌표에서는 **read-only·exit 0**
     (advisory·작업 무차단). ticket의 worktree 접두가 lease/경로 안전성 검증에 실패하면 해당
-    touch를 stderr 경고 후 제외하고 나머지를 계속 조회한다(exit 0). 쓰기 표면의 stage는 같은
+    touch를 stderr 경고 후 제외하고 나머지를 계속 조회한다(exit 0). 쓰기 명령의 stage는 같은
     좌표 오류를 빈 스코프로 흘리지 않고 명시 오류로 차단한다(fail-loud).
     """
     if args.tickets:
         # --tickets 는 nargs='+' — 공백 나열(T-a T-b)·콤마분리("T-a,T-b") 둘 다 수용한다
         # (CLI 관용·"mechanize don't instruct"·자연스러운 나열이 usage 에러로 실패하던 클래스
         # 소멸). 토큰 리스트를 콤마로 합쳐 기존 콤마-split 집계(_touches_from_tickets)에
-        # 위임 — 콤마-단일-문자열 호환을 그대로 보존한다(join 후 split 이 양형식을 흡수). ticket
+        # 위임 — 콤마-단일-문자열 호환을 그대로 보존한다(join 후 split 이 양형식을 받아들임). ticket
         # ID 는 공백을 안 담으므로 space-split 이 무모호(경로를 받는 --touches 는 콤마 유지·비대칭).
         touches = _touches_from_tickets(home, ",".join(args.tickets))
         try:
@@ -178,7 +178,7 @@ def cmd_capture(home, args: argparse.Namespace) -> int:
             )
             return 1
     else:
-        # --touches a,b,c — affected 동형(콤마분리·공백 trim·빈 토큰 제거).
+        # --touches a,b,c — affected 와 같은 방식(콤마분리·공백 trim·빈 토큰 제거).
         touches = [t.strip() for t in args.touches.split(",") if t.strip()]
 
     pages = doc_page_store.load_pages(pm_paths.domain_dir(home))
@@ -267,12 +267,12 @@ def cmd_capture(home, args: argparse.Namespace) -> int:
 
 
 def cmd_capture_draft(home, args: argparse.Namespace) -> int:
-    """researcher 조사 prose → domain draft 페이지 scaffold (git 무조작·사람 검토 게이트).
+    """researcher 조사 prose → domain draft 페이지 scaffold (git 무조작·사람 검토를 거쳐야 정식 페이지가 된다).
 
     `cmd_capture`(코드→domain·read-only surface)와 **별개** — 이건 조사결과를 draft 페이지로
     *쓴다*(scaffold). 단 frontmatter `status: draft` 라 load_pages 가 index 에서 제외하고,
     git 은 절대 건드리지 않는다(staging 무변화). promote(draft→정식)는 PM 손(status 제거 +
-    `.draft.md`→`.md` rename + git add) — 엔진에 promote 명령 부재가 게이트.
+    `.draft.md`→`.md` rename + git add) — 엔진에 promote 명령이 없어 이 단계는 PM 이 손으로 한다.
 
     --source 읽기 실패(파일 부재 등)는 명시 에러(stderr·rc 1)로 보고한다 — 잘못된 빈 페이지
     생성을 막는다. 성공 시 생성 경로와 promote 안내를 출력하고 rc 0.

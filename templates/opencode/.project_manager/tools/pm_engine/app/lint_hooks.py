@@ -15,7 +15,7 @@ def _run_lint_hooks(home) -> list[tuple[str, str]]:
 
     각 훅 모듈은 `check() -> list[str]`(이슈 detail 문자열)을 노출한다. `check` 미정의는
     stderr 경고 뒤 건너뛰고, 로드/실행 예외는 전파해 lint 가 실패한다. 인스턴스가 엔진 코드를
-    안 건드리고 자기 검사를 더하는 seam — 프레임워크 공통 검사(wikilink 등)는 엔진 내장(lint_wikilinks), 프로젝트 고유 검사는 여기로.
+    안 건드리고 자기 검사를 더하는 교체 지점 — 프레임워크 공통 검사(wikilink 등)는 엔진 내장(lint_wikilinks), 프로젝트 고유 검사는 여기로.
     """
     if not pm_paths.hooks_dir(home).is_dir():
         return []

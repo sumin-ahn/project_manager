@@ -81,7 +81,7 @@ def _verified_at_targets(home, pages: Sequence[str] | None) -> list[Path]:
         except RuntimeError:
             # Python 3.12 의 `Path.resolve()` 는 symlink loop 에 `RuntimeError`("Symlink loop
             # from …") 를 낸다 — 3.13+ 는 같은 상황을 `OSError`(ELOOP) 로 낸다. 어느 하한에서도
-            # 통제되지 않은 traceback 이 나지 않게 두 축을 함께 선택 오류로 정규화한다
+            # 통제되지 않은 traceback 이 나지 않게 두 종류를 함께 선택 오류로 정규화한다
             # (실측: 3.12.3 상호/자기 루프 모두 RuntimeError).
             raise _VerifiedAtPageSelectionError(home.root, raw, "경로 해소 실패(symlink loop)") from None
         if not candidate.is_file():
@@ -172,7 +172,7 @@ def _frontmatter_mapping(text: str) -> dict:
 
 def _freshness_replacement_error(
         original: str, replaced: str, sha: str, owner: str) -> str | None:
-    """repin 변환 전후 YAML 의미와 실소비 파서 정합을 검증한다.
+    """repin 변환 전후 YAML 의미와 실소비 파서 일치를 검증한다.
 
     `_frontmatter_mapping`은 의미 보존 검사용이라 공백 fence/EOF fence도 읽지만, 실제 freshness
     소비자는 `load_ticket`의 엄격한 fence 문법을 쓴다. 최종 결과는 그 파서의 문자열 진입점으로

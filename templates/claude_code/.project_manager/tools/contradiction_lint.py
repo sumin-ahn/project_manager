@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""모순 lint — "결정을 바꾼 순간의 잔여" 탐지.
+"""모순 lint — "결정을 바꾼 순간에 남은 것" 탐지.
 
 결정을 개정(amends/supersedes)하면 옛 결정을 전제로 쓰인 다른 서술(타 ADR·wiki·spike·프롬프트)이
-새 결정과 **모순된 채 남는다**. 기계 lint 전 구간이 clean 인데도 이 잔여는 안 잡힌다.
+새 결정과 **모순된 채 남는다**. 기계 lint 전 구간이 clean 인데도 이렇게 남은 서술은 안 잡힌다.
 병목은 *가드 부재*가 아니라 **인지 시점** — 재정의를 하는 바로 그 순간에 점검해야 놓치지 않는다. 이 lint 는
-그 순간(ADR 발행/개정 명령·pm_adr.py)에 배선돼 발화한다.
+그 순간(ADR 발행/개정 명령·pm_adr.py)에 등록돼 실행된다.
 
 역할 분업:
-  - **탐지 = LLM** — prose 의미 모순은 정규식으로 못 잡는다(LLM 필요). 단 호출은 **DI seam + 기본 dry
-    (미호출)** — 기본은 스코프를 기계로 수집하고 LLM 프롬프트를 산출물로 표면화한다(비용 없음·hermetic).
-    실 LLM 배선이 필요하면 `run_fn` 을 주입한다(additional_reviewer DI 동형).
+  - **탐지 = LLM** — prose 의미 모순은 정규식으로 못 잡는다(LLM 필요). 단 호출은 **DI 교체 지점 + 기본 dry
+    (미호출)** — 기본은 스코프를 기계로 수집하고 LLM 프롬프트를 산출물로 드러낸다(비용 없음·hermetic).
+    실 LLM 연결이 필요하면 `run_fn` 을 주입한다(additional_reviewer DI 와 같은 방식).
   - **판정 = 사람** — 실제 모순인지 판정·해소는 사람(generate≠evaluate). **차단 아님**(advisory·
-    후보 표면화까지가 lint 역할).
+    후보를 드러내는 데까지가 lint 역할).
 
 대상 스코프:
   - 개정된 결정(`target_ids`)을 `[[ADR-NNNN]]` **wikilink 로 참조하는 문서**(back-ref 범위). 전-코퍼스

@@ -43,19 +43,19 @@ def _read(rel: str) -> str:
 
 # ── ② pm-cluster-claim: lint 차단 섹션 수 = _REQUIRED_SECTIONS 길이 ────────────────
 
-WAVE_CLAIM_DOCS = (
+CLUSTER_CLAIM_DOCS = (
     ".claude/skills/pm-cluster-claim/SKILL.md",
     "templates/opencode/.claude/skills/pm-cluster-claim/SKILL.md",
-    "templates/opencode/.opencode/command/pm-cluster-claim.md",  # T-0674 사람 slash 표면
+    "templates/opencode/.opencode/command/pm-cluster-claim.md",  # T-0674 사람 slash 명령
 )
 
 
-def test_wave_claim_docs_match_required_sections():
+def test_cluster_claim_docs_match_required_sections():
     board = _load_board()
     sections = body_lint._REQUIRED_SECTIONS
     n = len(sections)
     names = [s.lstrip("# ").strip() for s in sections]
-    for rel in WAVE_CLAIM_DOCS:
+    for rel in CLUSTER_CLAIM_DOCS:
         text = _read(rel)
         assert "_REQUIRED_SECTIONS" in text, f"{rel}: 상수 참조 서술 누락"
         assert f"{n}개" in text, f"{rel}: lint 차단 섹션 수 '{n}개' 서술이 상수와 어긋남"
@@ -74,7 +74,7 @@ def test_regression_skill_references_only_real_board_subcommands():
     real = set(sub.choices)
     # (옛 tripwire 제거·T-0781) — "board.py 에 reopen 이 없다" 를 전제한 문서 정직표기가
     # 있어 엔진의 `reopen` **부재**를 단언했다. 그 문구는 이후 문서에서 사라졌고(현 md 전수
-    # 검색 0건) 종결 되돌리기 문 `reopen` 이 실제로 생겼다. 남는 축은 아래 loop — 문서가
+    # 검색 0건) 종결 되돌리기 문 `reopen` 이 실제로 생겼다. 남는 확인은 아래 loop — 문서가
     # **없는** 서브커맨드를 부르지 않는지(정직표기의 실제 관측 지점)다.
     text = _read(".claude/skills/pm-regression/SKILL.md")
     for m in re.finditer(r"board\.py (\w[\w-]*)", text):
@@ -135,7 +135,7 @@ def test_ctx_budget_keys_documented_in_full_entry_docs():
 
 
 # ── ⑤ opencode README --opencode-model 예시 = pm_import canonical(옛 예시 잔존 금지) ──
-# T-0265: 같은 플래그를 설명하는 두 표면(pm_import.py `--opencode-model` argparse help /
+# T-0265: 같은 플래그를 설명하는 두 자리(pm_import.py `--opencode-model` argparse help /
 # opencode README §모델 선택 예시)이 서로 다른 모델을 들면 채택자가 폐기된 모델을 복붙한다.
 # canonical = pm_import.py help 의 예시(단일 진실 — 별도 상수 없음). 가드는 "canonical 이
 # 등장한다" 가 아니라 **README 의 --opencode-model 구체 예시가 전부 canonical 과 일치한다**
@@ -177,8 +177,8 @@ def test_opencode_readme_model_example_matches_pm_import():
 # ── ⑤ tickets README: 상태 집합·종결 명령·소유·DoD 계약이 엔진과 같은 말을 한다 ──
 #
 # 이 README 는 `pm_update` 전파 대상이 아니라 **인스턴스 소유** 스캐폴드라 4벌이 손으로 갈린다
-# (루트 + 출하 3타깃). 엔진이 상태·명령·게이트를 바꿔도 이 문서는 조용히 옛 사실을 계속
-# 출하하므로, 서술을 상수·파서·게이트 실행값과 직접 대조한다.
+# (루트 + 출하 3타깃). 엔진이 상태·명령·통과 조건을 바꿔도 이 문서는 조용히 옛 사실을 계속
+# 출하하므로, 서술을 상수·파서·통과 조건 실행값과 직접 대조한다.
 
 TICKETS_README_COPIES = (
     ".project_manager/wiki/tickets/README.md",
@@ -229,18 +229,18 @@ def test_tickets_readme_states_owner_only_mutations():
     """소유 정체성 계약 서술이 실제 소유-대조 커맨드 집합·유일한 이전 경로와 일치한다."""
     board = _load_board()
     source = _read(".project_manager/tools/pm_engine/cli/board_ticket.py")
-    owner_gated = sorted(set(re.findall(
+    owner_checked = sorted(set(re.findall(
         r'_ownership_rejection\("(\w+)"', source)))
-    assert owner_gated, "board.py 에서 소유 대조 커맨드를 못 찾았다 — 가드 시야가 어긋났다"
+    assert owner_checked, "board.py 에서 소유 대조 커맨드를 못 찾았다 — 가드 검사 범위가 어긋났다"
     for rel in TICKETS_README_COPIES:
         text = _read(rel)
-        for cmd in owner_gated:
+        for cmd in owner_checked:
             assert f"`{cmd}`" in text, f"{rel}: 소유 대조 커맨드 `{cmd}` 서술 누락"
         assert "--takeover" in text, f"{rel}: 소유자 부재 이전 경로(--takeover) 안내 누락"
-        assert "claimed_by" in text, f"{rel}: 소유 판정 축(claimed_by) 서술 누락"
+        assert "claimed_by" in text, f"{rel}: 소유 판정 기준(claimed_by) 서술 누락"
 
 
-# complete 게이트의 DoD 축 4형상 — 문서 문장과 게이트 실행값을 같은 테스트에서 대조한다.
+# complete 통과 조건의 DoD 기준 4구성 — 문서 문장과 통과 조건 실행값을 같은 테스트에서 대조한다.
 _DOD_BLOCKED_SHAPES = {
     "절 부재": "# 티켓\n\n## 목표\n옛 형식.\n",
     "체크박스 0개": "## 완료 조건\n\n산문으로만 적은 완료 조건.\n",
@@ -249,25 +249,25 @@ _DOD_BLOCKED_SHAPES = {
 _DOD_PASSING_SHAPE = "## 완료 조건\n\n- [x] 코드\n- [>] 문서 (이월: 후속 귀속)\n"
 
 
-def test_tickets_readme_dod_contract_matches_complete_gate():
-    """DoD 축 서술이 게이트 실측과 일치한다 — 산문 DoD 면제 문구가 남아 있으면 실패."""
+def test_tickets_readme_dod_contract_matches_complete_check():
+    """DoD 기준 서술이 통과 조건 실측과 일치한다 — 산문 DoD 면제 문구가 남아 있으면 실패."""
     board = _load_board()
     for label, body in _DOD_BLOCKED_SHAPES.items():
-        assert completion_check._dod_open_items(body), f"게이트가 {label} 형상을 막지 않는다"
+        assert completion_check._dod_open_items(body), f"통과 조건이 {label} 구성을 막지 않는다"
     assert completion_check._dod_open_items(_DOD_PASSING_SHAPE) == [], "부분 이월이 막힌다"
 
     for rel in TICKETS_README_COPIES:
         text = _read(rel)
         assert "검사 대상이 아니다" not in text, (
-            f"{rel}: 산문 DoD 면제(옛 계약) 문구 잔존 — 게이트는 그 형상을 차단한다")
+            f"{rel}: 산문 DoD 면제(옛 계약) 문구 잔존 — 통과 조건은 그 구성을 차단한다")
         for label in _DOD_BLOCKED_SHAPES:
-            assert label in text, f"{rel}: 차단 형상 '{label}' 서술 누락"
-        assert "부분 이월" in text, f"{rel}: 통과 형상(부분 이월) 서술 누락"
+            assert label in text, f"{rel}: 차단 구성 '{label}' 서술 누락"
+        assert "부분 이월" in text, f"{rel}: 통과 구성(부분 이월) 서술 누락"
 
 
 # ── ⑥ pm-cluster-finish: DoD preflight의 확정/불확정 경로와 log 멱등 계약 ────────
 
-WAVE_FINISH_DOCS = (
+CLUSTER_FINISH_DOCS = (
     ".claude/skills/pm-cluster-finish/SKILL.md",
     "templates/claude_code/.claude/skills/pm-cluster-finish/SKILL.md",
     "templates/codex/.agents/skills/pm-cluster-finish/SKILL.md",
@@ -276,9 +276,9 @@ WAVE_FINISH_DOCS = (
 )
 
 
-def test_wave_finish_docs_distinguish_dod_preflight_outcomes_and_single_log_entry():
+def test_cluster_finish_docs_distinguish_dod_preflight_outcomes_and_single_log_entry():
     """판정 가능 차단과 fail-soft 불확정을 섞지 않고 ticket당 log 하나를 약속한다."""
-    for rel in WAVE_FINISH_DOCS:
+    for rel in CLUSTER_FINISH_DOCS:
         text = _read(rel)
         for phrase in (
             "판정 가능",

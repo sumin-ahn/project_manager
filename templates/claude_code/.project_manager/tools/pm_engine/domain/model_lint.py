@@ -15,7 +15,7 @@ def _lint_role_model(conf: dict[str, str], role: str, tier: str = "normal") -> s
     """lint 용 역할 모델 해소 — 설정 키만 읽고 **fail-loud 하지 않는다**(미설정=None·skip).
 
     resolve_delegate 는 미설정 시 fail-loud 라 lint(설정 점검)엔 부적합하다 — lint 는 강제가
-    아니라 정합 권고이므로 미매핑 역할은 조용히 건너뛴다(경고 대상 아님)."""
+    아니라 일치 권고이므로 미매핑 역할은 조용히 건너뛴다(경고 대상 아님)."""
     key = f"delegate.{role}" + (".hard" if tier == "hard" else "")
     model = (conf.get(f"{key}.model") or "").strip()
     return model or None
@@ -67,9 +67,9 @@ def lint_same_model(conf: dict[str, str]) -> list[tuple[str, str]]:
     **경고가 말하는 것과 말하지 않는 것**: 위임은 stateless 라 dev 와 reviewer 가 매번 별개 세션이고
     전사 공유가 0이다 — 즉 generate≠evaluate(구현하지 않은 주체가 검토)는 **모델이 같아도 성립**한다.
     이 경고는 독립성 위반을 알리는 게 아니라, 같은 모델이면 같은 맹점을 공유해 검출력이 낮아진다는
-    **정도의 문제**를 표면화한다. 모델 선택이 제약된 형상(회사 기준 모델 고정 등)은 정상 운영이며
+    **정도의 문제**를 드러낸다. 모델 선택이 제약된 구성(회사 기준 모델 고정 등)은 정상 운영이며
     이 경고를 해소 못 해도 결함이 아니다. 미설정 역할(reviewer 또는 특정 dev tier)은 조용히 skip(경고 대상 아님). **순수 함수**
-    (I/O·board import 없음) — board lint 가 이 함수를 호출해 advisory 로 표면화한다."""
+    (I/O·board import 없음) — board lint 가 이 함수를 호출해 advisory 로 드러낸다."""
     reviewer = _lint_role_model(conf, "code-reviewer")
     if reviewer is None:
         return []

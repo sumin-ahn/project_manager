@@ -1,7 +1,7 @@
 """T-0426 — PM 에게 지시하는 git mutation 문서에 **경로 스코프**가 살아 있는지 (ADR-0074).
 
 엔진을 좁혀도(T-0425) **문서가 bare `git commit` 을 지시하면 사람 손이 그대로 샌다** — 유출 경로가
-add 와 commit 두 갈래이듯, 표면도 엔진과 문서 두 갈래다. T-0426 이 스킬 문서·방법론 문서·진입 doc
+add 와 commit 두 갈래이듯, 막을 자리도 엔진과 문서 두 갈래다. T-0426 이 스킬 문서·방법론 문서·진입 doc
 전 사본의 지시문을 pathspec 형으로 바꿨는데 **그 변경을 무는 테스트가 0 건이었다**: reviewer 가
 pm-cluster-finish SKILL 4사본 + pm_playbook 4사본을 옛 버전(bare commit·`git add -A` 명문)으로 되돌리고
 전체 회귀를 돌렸더니 **숫자가 그대로였다**. T-0098(폐기 용어 sweep 을 `test_terminology` 로 못박은
@@ -13,9 +13,9 @@ pm-cluster-finish SKILL 4사본 + pm_playbook 4사본을 옛 버전(bare commit�
      한 줄이 같은 문단의 bare 지시를 통째로 사면했다. 지금은 문단이 아니라 **그 언급 자신의 좁은
      창** 만 보고, 산문 증거로 ` -- ` 를 **받지 않는다**(같은 창의 다른 커맨드 것일 수 있다).
   B/C. blanket stage 어휘가 `-A`/`--all`/`.` 뿐이라 **`git add -u`**(추적분 전량)와
-     **`git add -A -- .`**(pathspec 형식만 갖춘 blanket)가 통과했다. 지금은 옵션 축과 pathspec
-     **대상** 축을 함께 봐서 *실제로 blanket 인 형태*를 전부 담는다.
-  D. 스캔이 `SKILL.md` 한정이라 스킬 디렉토리의 다른 `.md`(reference·예시)가 사각이었다. 지금은
+     **`git add -A -- .`**(pathspec 형식만 갖춘 blanket)가 통과했다. 지금은 옵션 기준과 pathspec
+     **대상** 기준을 함께 봐서 *실제로 blanket 인 형태*를 전부 담는다.
+  D. 스캔이 `SKILL.md` 한정이라 스킬 디렉토리의 다른 `.md`(reference·예시)를 놓쳤다. 지금은
      스킬 디렉토리 **전 `.md`** 를 본다.
 
 정당한 예외는 **구조적으로만** 둔다(문자열 allow-list 로 개별 문장을 봐주지 않는다):
@@ -33,7 +33,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
-# ── 스캔 표면 ─────────────────────────────────────────────────────────────
+# ── 스캔 범위 ─────────────────────────────────────────────────────────────
 # PM 이 읽고 **그대로 따라 치는** 문서 전량 — canonical(루트) + 하네스 템플릿 3종.
 # 스킬은 `SKILL.md` 한정이 아니라 **디렉토리 전 `.md`**(reference·예시도 PM 이 읽는다·우회 D).
 # codex 는 스킬 네임스페이스가 `.agents/skills`(ADR-0054 remap)라 양쪽을 다 본다.
@@ -56,7 +56,7 @@ _SURFACE_GLOBS = (
 # 사본이 늘거나(하네스 추가) 글롭이 어긋나 **아무것도 안 읽는 false-green** 을 막는 하한.
 _MIN_SURFACE_FILES = 60
 
-# 산문 언급의 증거를 찾는 창 — 줄바꿈으로 접힌 한 문장을 덮되(실측 최대 ~50자), 옆 문단의
+# 산문 언급의 증거를 찾는 창 — 줄바꿈으로 나뉜 한 문장을 덮되(실측 최대 ~50자), 옆 문단의
 # 무관한 규칙 언급까지 끌어오지 않을 만큼 좁게. 넓히면 우회 A 가 되살아난다.
 _MENTION_WINDOW = 60
 
@@ -72,13 +72,13 @@ _PROHIBITION_PREFIX = re.compile(r"bare\s+`?$")
 
 # `git add` 뒤에 **커맨드 경계**(공백·백틱·줄끝)를 요구한다 — 그래야 산문의 문장부호
 # (`… 산출만 git add.`)를 인자 `.` 로 오독하지 않는다(spike-new 실측 오탐).
-# `git stage` 는 `git add` 의 **정식 git 별칭**이라 같은 축으로 본다 — 별칭으로 우회되면
+# `git stage` 는 `git add` 의 **정식 git 별칭**이라 같은 기준으로 본다 — 별칭으로 우회되면
 # 가드가 막으려는 blanket 이 그대로 통과한다(PM 적대 probe 실측·T-0426 라운드 3).
 _ADD_INVOCATION = re.compile(r"git (?:add|stage)(?=[\s`]|$)[^\n`]*")
-# blanket = 대상을 열거하지 않고 "전부" 를 올리는 형태. 옵션 축과 pathspec 축을 함께 본다.
+# blanket = 대상을 열거하지 않고 "전부" 를 올리는 형태. 옵션 기준과 pathspec 기준을 함께 본다.
 _BLANKET_FLAGS = re.compile(r"(?:^|\s)(-A|--all|-u|--update)(?=\s|$)")
 # "트리 전체" 를 가리키는 pathspec 토큰. `git add -A -- .` 처럼 **형식만 pathspec** 인 형태를
-# 잡으려면 옵션이 아니라 이 대상 축을 봐야 한다(우회 C).
+# 잡으려면 옵션이 아니라 이 대상 기준을 봐야 한다(우회 C).
 _EVERYTHING_TOKENS = frozenset({".", "./", "*", ":/", ":/*"})
 # 쉘 brace expansion — bash 는 전개하지만 dash/sh·PowerShell 은 **미전개**라 그대로
 # `pathspec did not match` rc=1 로 커밋 전체가 죽는다(reviewer 실측·Windows 명시 지원 프로젝트).
@@ -104,7 +104,7 @@ def strip_frontmatter(text: str) -> str:
 
 
 def join_continuations(text: str) -> str:
-    """쉘 줄바꿈 이음(`\\` + 개행)을 한 줄로 접는다 — 여러 줄 pathspec 이 잘려 보이지 않게."""
+    """쉘 줄바꿈 이음(`\\` + 개행)을 한 줄로 합친다 — 여러 줄 pathspec 이 잘려 보이지 않게."""
     return re.sub(r"\\\n\s*", " ", text)
 
 
@@ -117,7 +117,7 @@ def _lineno(text: str, index: int) -> int:
 # ══════════════════════════════════════════════════════════════════════════
 
 def commit_invocation_offenders(rel: str, text: str) -> list[str]:
-    """축 1 — `git commit -…` **호출마다** ` -- <경로>` 가 붙어 있어야 한다.
+    """기준 1 — `git commit -…` **호출마다** ` -- <경로>` 가 붙어 있어야 한다.
 
     per-chunk 가 아니라 per-invocation 이다: 같은 문단의 다른 올바른 커맨드가 bare 호출을
     가려주면 가드가 무뎌진다.
@@ -134,9 +134,9 @@ def commit_invocation_offenders(rel: str, text: str) -> list[str]:
 
 
 def prose_mention_offenders(rel: str, text: str) -> list[str]:
-    """축 2 — 커맨드 형태가 아닌 `git commit` 지시도 **그 언급 자신이** 경로 규칙을 말해야 한다.
+    """기준 2 — 커맨드 형태가 아닌 `git commit` 지시도 **그 언급 자신이** 경로 규칙을 말해야 한다.
 
-    옛 문서가 정확히 이 형태였다(`3. **git commit** — 메시지: …`) — 커맨드가 아니라 축 1 에
+    옛 문서가 정확히 이 형태였다(`3. **git commit** — 메시지: …`) — 커맨드가 아니라 기준 1 에
     안 잡히면서 PM 에겐 "그냥 커밋해라" 로 읽힌다. 판정 단위는 **문단이 아니라 언급 주변의
     좁은 창**이다: 문단 단위 면제는 올바른 예시 한 줄이 같은 문단의 bare 지시를 통째로
     사면해 버린다(reviewer 우회 A). 증거로 ` -- ` 는 받지 않는다 — 다른 커맨드의 것일 수 있다.
@@ -146,7 +146,7 @@ def prose_mention_offenders(rel: str, text: str) -> list[str]:
     for match in _COMMIT_MENTION.finditer(stripped):
         start, end = match.span()
         if _COMMIT_INVOCATION.match(stripped, start):
-            continue                       # 축 1 관할(호출 형태)
+            continue                       # 기준 1 관할(호출 형태)
         before = stripped[max(0, start - _MENTION_WINDOW):start]
         if _PROHIBITION_PREFIX.search(before):
             continue                       # "bare `git commit` 은 …" = 금지 대상 서술
@@ -161,11 +161,11 @@ def prose_mention_offenders(rel: str, text: str) -> list[str]:
 
 
 def blanket_add_offenders(rel: str, text: str) -> list[str]:
-    """축 3 — 대상을 열거하지 않는 **blanket stage** 를 문서가 명문화하지 않는다.
+    """기준 3 — 대상을 열거하지 않는 **blanket stage** 를 문서가 명문화하지 않는다.
 
-    blanket 은 두 축으로 성립한다 — ① 옵션(`-A`·`--all`·`-u`·`--update`: 전량) ②
-    pathspec 대상이 `.`/`./`/`*`/`:/`(트리 전체). 어느 한 축만 보면 새는데, 실제로
-    `git add -u`(옵션 축 누락)와 `git add -A -- .`(pathspec 형식만 갖춘 blanket)가
+    blanket 은 두 기준으로 성립한다 — ① 옵션(`-A`·`--all`·`-u`·`--update`: 전량) ②
+    pathspec 대상이 `.`/`./`/`*`/`:/`(트리 전체). 어느 한 기준만 보면 새는데, 실제로
+    `git add -u`(옵션 기준 누락)와 `git add -A -- .`(pathspec 형식만 갖춘 blanket)가
     옛 가드를 통과했다(reviewer 우회 B·C).
     """
     joined = join_continuations(strip_frontmatter(text))
@@ -189,7 +189,7 @@ def blanket_add_offenders(rel: str, text: str) -> list[str]:
 
 
 def brace_expansion_offenders(rel: str, text: str) -> list[str]:
-    """축 4 — 문서 커맨드에 쉘 brace expansion 을 쓰지 않는다 (이식성).
+    """기준 4 — 문서 커맨드에 쉘 brace expansion 을 쓰지 않는다 (이식성).
 
     bash 는 `{claimed,done}` 을 전개하지만 dash/`sh`·PowerShell 은 **미전개**로 그대로 넘겨
     `pathspec did not match` rc=1 로 커밋 전체가 죽는다(reviewer 실측). 이 프로젝트는
@@ -216,12 +216,12 @@ _CHECKS = (
 def surfaces() -> list[tuple[str, str]]:
     files = surface_files()
     assert len(files) >= _MIN_SURFACE_FILES, (
-        f"스캔 표면이 {len(files)}개뿐 — 글롭이 어긋났거나 트리가 바뀌었다(false-green 방지 하한 "
+        f"스캔 범위가 {len(files)}개뿐 — 글롭이 어긋났거나 트리가 바뀌었다(false-green 방지 하한 "
         f"{_MIN_SURFACE_FILES}). 글롭: {_SURFACE_GLOBS}")
     return [(p.relative_to(REPO).as_posix(), p.read_text(encoding="utf-8")) for p in files]
 
 
-# ── 표면 커버리지 ─────────────────────────────────────────────────────────
+# ── 스캔 범위 커버리지 ─────────────────────────────────────────────────────────
 
 def test_surface_covers_every_copy_of_the_pathspec_skills(surfaces):
     """지시문을 담은 스킬 3종이 **모든 사본**에서 스캔된다 — 한 사본만 보면 sweep 을 못 지킨다.
@@ -257,7 +257,7 @@ def test_surface_scans_non_skill_md_inside_skill_dirs(tmp_path):
     assert "templates/codex/.agents/skills/pm-fake/examples.md" in found, found
 
 
-# ── 실 표면 판정 ──────────────────────────────────────────────────────────
+# ── 실 문서 판정 ──────────────────────────────────────────────────────────
 
 def test_git_commit_invocations_declare_a_pathspec(surfaces):
     offenders = [o for rel, text in surfaces for o in commit_invocation_offenders(rel, text)]
@@ -296,7 +296,7 @@ def test_documented_git_commands_are_portable(surfaces):
 # 예시 커맨드가 이미 있는 문단 **바로 옆**에 bare 지시를 끼워 넣는다. 문단 단위 면제였던 옛
 # 가드는 이 배치에서 통째로 침묵했다.
 _BYPASS_A = """\
-8. **PM 손 잔여** — **git commit — pathspec 명시**. bare `git commit` 은 남이 stage 해 둔
+8. **PM 손 남은 일** — **git commit — pathspec 명시**. bare `git commit` 은 남이 stage 해 둔
    변경까지 싣는다:
    ```
    git commit -m "T-NNNN — <요약>" -- <touches> .project_manager/wiki/log/current.md
@@ -354,7 +354,7 @@ def test_scoped_forms_stay_green():
         "git add .project_manager/wiki/decisions/0001-x.md\n"
         "git add <신규/변경 경로>\n"
         "git add -A -- src/a.py\n"
-        "미리 `git add` 한 staged 상태를 스냅샷한다\n"
+        "미리 `git add` 한 staged 상태를 그대로 기록한다\n"
         "- **비커버**: `git commit --no-verify` · merge 커밋\n"
         "- **git commit — pathspec 명시**: 아래 경로만 싣는다\n"
     )

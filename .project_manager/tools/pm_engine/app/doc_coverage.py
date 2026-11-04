@@ -44,7 +44,7 @@ def engine_tool_paths(manifest_path: Path) -> list[str]:
 
 
 def _coverage_skip_reason(domain_dir: Path, pages: list[dict]) -> str | None:
-    """채택자 wiki의 세 가지 page-0 형상을 구분해 조용하지 않은 skip 사유를 돌려준다."""
+    """채택자 wiki의 세 가지 page-0 구성을 구분해 조용하지 않은 skip 사유를 돌려준다."""
     domain_dir = Path(domain_dir)
     if not domain_dir.is_dir():
         return f"{domain_dir} 디렉토리 없음"
@@ -286,7 +286,7 @@ def _engine_tool_paths_from_manifest(manifest_path: Path) -> list[str]:
         paths.append(rel.as_posix())
 
     # parser와 파일/디렉토리 전개를 모두 update의 canonical 경로에서 가져온다. 여기서는
-    # coverage 제품 정의인 tools/ 직계 Python CLI 협착만 소유한다. flavor manifest의
+    # coverage 제품 정의인 tools/ 직계 Python CLI 협착만 소유한다. 하네스별 판 manifest의
     # @source는 upstream에만 있는 어댑터 source를 정상적으로 가리키므로, destination이 이
     # 분모에 기여할 수 없는 항목은 source 존재 여부까지 검사하지 않는다.
     manifest = manifest_store.read_manifest(manifest_path)

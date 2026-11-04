@@ -33,15 +33,15 @@ def _repo_head_sha(home, repo: Path | None = None) -> str | None:
 
 
 def _canonical_commit_oid(home, sha: str, *, repo: Path | None = None) -> str | None:
-    """`sha` 가 유효한 backward anchor 면 그 **canonical full OID** 를, 아니면 None (repin 쓰기).
+    """`sha` 가 유효한 backward 고정 커밋이면 그 **canonical full OID** 를, 아니면 None (repin 쓰기).
 
     repin 이 **검증에서 얻은 full OID 를 그대로 기록**하게 하는 helper — 입력 축약/
     ref 문자열을 기록하면 (a) 하류 소비자가 다시 해석(canonical 위반) (b) `0123456` 같은 전부-숫자
-    축약은 YAML unquoted 정수 파싱돼 재-lint 서 깨진다. `_sha_anchor_status` 재사용(read/write 대칭·
+    축약은 YAML unquoted 정수 파싱돼 재-lint 서 깨진다. `_sha_pin_status` 재사용(read/write 대칭·
     사본 0): 고정 hex + 고정 SHA 해소(hex-이름 ref 아님) + HEAD 선조면 `(OK, full_oid)` →
     full_oid 반환·아니면 None. 검증 불가(git 부재·rc≥2 → UNKNOWN)도 None — 기록은 확실할 때만 한다."""
-    verdict, full_oid = freshness_lint._sha_anchor_status(home, sha, repo=repo)
-    return full_oid if verdict == freshness_lint._ANCHOR_OK else None
+    verdict, full_oid = freshness_lint._sha_pin_status(home, sha, repo=repo)
+    return full_oid if verdict == freshness_lint._PIN_OK else None
 
 
 def cmd_verified_at_repin(home, args: argparse.Namespace) -> int:

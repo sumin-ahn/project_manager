@@ -82,7 +82,7 @@ class AdrIssuer:
             related=related, tags=tags,
         )
 
-        # 대상 ADR frontmatter back-ref (load-bearing·lint 정합).
+        # 대상 ADR frontmatter back-ref (load-bearing·lint 와 일치).
         target_edits: list[tuple[Path, str]] = []
         for verb, nums in (("amends", amends), ("supersedes", supersedes)):
             for tnum in nums:

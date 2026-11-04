@@ -1,7 +1,7 @@
 """ADR 문서 형식 규칙 (층: domain).
 
-ADR ID·파일명·slug, 새 ADR frontmatter·본문 골격, 대상 ADR 의 수명주기 back-ref 치환, decisions/README.md
-색인 표 갱신, log decide 항목 골격을 소유한다.
+ADR ID·파일명·slug, 새 ADR frontmatter·본문 빈 양식, 대상 ADR 의 수명주기 back-ref 치환, decisions/README.md
+색인 표 갱신, log decide 항목 빈 양식을 소유한다.
 """
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ import re
 import yaml
 
 
-# 개정 동사 → (대상 status, back-ref 필드) 매핑 (lint_adr_lifecycle 와 동형).
+# 개정 동사 → (대상 status, back-ref 필드) 매핑 (lint_adr_lifecycle 와 같은 구조).
 # `refines`(추가·대상 불변)는 back-ref 대상이 아니다 — related 링크만 남기고 대상 미개정.
 _LIFECYCLE_VERBS: dict[str, tuple[str, str]] = {
     "amends": ("amended", "amended_by"),
     "supersedes": ("superseded", "superseded_by"),
 }
 
-# README 섹션 헤더 부분일치 앵커 — `## Accepted (...)` 등. 헤더 뒤 괄호 부연은 무시.
+# README 섹션 헤더 부분일치 표지 — `## Accepted (...)` 등. 헤더 뒤 괄호 부연은 무시.
 _ACCEPTED_HEADER_RE = re.compile(r"^##\s+Accepted\b", re.IGNORECASE)
 _AMENDED_HEADER_RE = re.compile(r"^##\s+Amended\b", re.IGNORECASE)
 _SUPERSEDED_HEADER_RE = re.compile(r"^##\s+Superseded\b", re.IGNORECASE)
@@ -52,7 +52,7 @@ _VALID_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 def validate_slug(slug: str) -> None:
-    """ADR slug(파일명 컴포넌트) 검증 — 위반 시 ValueError(fail-loud·validator 클래스 동형).
+    """ADR slug(파일명 컴포넌트) 검증 — 위반 시 ValueError(fail-loud·validator 클래스와 같은 방식).
 
     path separator(`/`·`\\`)·`..`·공백·선행 `.`·대문자·dot·특수문자를 거부한다(파일 주입/traversal
     방지). `_VALID_SLUG_RE`(영문 소문자 시작·소문자/숫자/하이픈/언더스코어)가 그 도메인을 협소화한다 —
@@ -182,7 +182,7 @@ def build_adr_file(
     related: list[str],
     tags: list[str],
 ) -> str:
-    """신규 ADR 파일 전체 텍스트(frontmatter + 본문 골격)를 빌드한다."""
+    """신규 ADR 파일 전체 텍스트(frontmatter + 본문 빈 양식)를 빌드한다."""
     fm = build_frontmatter(
         title=title, scope=scope, author=author, date=date, status=status,
         amends=amends, supersedes=supersedes, refines=refines,
@@ -200,7 +200,7 @@ def adr_filename(number: int, slug: str) -> str:
 def _split_frontmatter(text: str) -> tuple[str, str] | None:
     """`---\\n...\\n---\\n` frontmatter 블록과 나머지를 분리한다 (없으면 None).
 
-    ticket_store.load_ticket 동형 — 첫 닫는 `---` 로 분리. 반환은 (frontmatter_텍스트, 나머지)."""
+    ticket_store.load_ticket 과 같은 방식 — 첫 닫는 `---` 로 분리. 반환은 (frontmatter_텍스트, 나머지)."""
     if not text.startswith("---\n"):
         return None
     after = text[4:]
@@ -243,7 +243,7 @@ def _apply_backref_to_frontmatter(fm_body: str, new_id: str, want_status: str, b
 
 
 def _parse_flow_list_value(line: str, field: str) -> list[str]:
-    """`field: [a, b]` 또는 `field: a, b` 줄에서 값 리스트를 파싱한다 (bracket·comma 흡수)."""
+    """`field: [a, b]` 또는 `field: a, b` 줄에서 값 리스트를 파싱한다 (bracket·comma 둘 다 받아들임)."""
     val = line.split(":", 1)[1].strip()
     val = val.strip("[]").strip()
     if not val:

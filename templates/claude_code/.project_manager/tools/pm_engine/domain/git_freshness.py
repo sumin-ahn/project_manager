@@ -45,8 +45,8 @@ def _behind_warning(scope: dict) -> str:
 def _format_freshness(scope: dict) -> str:
     """freshness scope 한 줄 표기 — fetch/behind/ahead/상태 + 동기·경고 노트.
 
-    offline(fetch 실패)이면 origin 대비 실측을 못 하므로 remote-tracking 스냅샷을 "최신" 으로
-    주장하지 않는다 — behind 0·upstream 미상은 "판정불가 — 스냅샷일 수 있음" fail-soft
+    offline(fetch 실패)이면 origin 대비 실측을 못 하므로 remote-tracking 복사본을 "최신" 으로
+    주장하지 않는다 — behind 0·upstream 미상은 "판정불가 — 옛 복사본일 수 있음" fail-soft
     stale board 를 "최신" 으로 오신뢰하는 사고 차단. behind>0 은
     fetch 성공/실패 무관하게 로컬이 이미 아는 뒤처짐이라 그대로 표기(경고 note 는 별도 병기).
     """
@@ -63,7 +63,7 @@ def _format_freshness(scope: dict) -> str:
             # upstream 미설정/조회불가 — offline 이면 판정불가로 감싼다(fail-soft).
             parts.append("판정불가 — 옛 복사본일 수 있음" if not fetched else "upstream 없음")
         elif behind == 0 and ahead == 0:
-            # online 이면 진짜 최신, offline 이면 실측 못 한 stale 스냅샷일 뿐(판정불가).
+            # online 이면 진짜 최신, offline 이면 실측 못 한 stale 복사본일 뿐(판정불가).
             parts.append("판정불가 — 옛 복사본일 수 있음" if not fetched else "최신")
         else:
             parts.append(f"behind {behind} / ahead {ahead}")
@@ -75,14 +75,14 @@ def _format_freshness(scope: dict) -> str:
 def freshness_decision(
     *, fetched: bool, detached: bool, dirty: bool | None, ahead: int | None, behind: int | None
 ) -> tuple[str, bool]:
-    """fetch 후 scope 상태 문자열 + ff-pull 수행 여부를 판정한다 (순수 함수·자동 pull 안전 게이트).
+    """fetch 후 scope 상태 문자열 + ff-pull 수행 여부를 판정한다 (순수 함수·자동 pull 안전 통과 조건).
 
     - detached HEAD → ("detached", False) — 재부착은 PM 판단·자동 pull 안 함.
     - behind None (upstream 미설정/조회불가) → ("upstream 없음", False).
     - behind 0 · ahead 0 → ("최신", False).
     - behind 0 · ahead>0 → ("ahead-only", False) — 로컬만 앞섬(push 대기·pull 불요).
     - behind>0 · **안전조건 전부 충족** → ("동기", True) — 자동 ff-pull.
-    - behind>0 · 안전조건 위반 → ("수동 동기 필요", False) — 표면화만.
+    - behind>0 · 안전조건 위반 → ("수동 동기 필요", False) — 보이기만.
 
     **자동 ff-pull 안전조건**(codex must-fix — 하나라도 어기면 자동 pull 금지):
       `fetched is True` — freshness 를 *실측*(fetch 성공)한 상태여야 한다. fetch 실패면
@@ -100,7 +100,7 @@ def freshness_decision(
     if behind == 0:
         return ("ahead-only", False) if ahead_n > 0 else ("최신", False)
     # behind > 0 — 안전조건 전부 충족(fetch 성공·확정 clean·ff 확정)일 때만 자동 동기.
-    # `ahead == 0` 엄격 비교: None(미확인)은 False — ahead_n 폴백을 여기 쓰면 미확인이 0 으로 위장.
+    # `ahead == 0` 엄격 비교: None(미확인)은 False — ahead_n 대체 값을 여기 쓰면 미확인이 0 으로 위장.
     if fetched and dirty is False and ahead == 0:
         return "동기", True
     return "수동 동기 필요", False

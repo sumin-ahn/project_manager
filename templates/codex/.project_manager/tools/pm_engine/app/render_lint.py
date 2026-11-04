@@ -20,7 +20,7 @@ from pm_engine.infra import shipping_targets
 #    adapter_render(post-render assertion) + 이 lint(상시 backstop)가 함께 자족성을 보증한다.
 
 # leak 스캔 토큰 — 대문자/언더스코어 placeholder (`{{PROJECT_NAME}}`·`{{PROTECTED_PATHS}}` 등).
-# render_rules._ANY_TOKEN_RE 와 동형(소문자/공백 토큰은 산문이라 제외·오탐 0).
+# render_rules._ANY_TOKEN_RE 와 같은 구조(소문자/공백 토큰은 산문이라 제외·오탐 0).
 _RENDER_TOKEN_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
 
@@ -28,17 +28,17 @@ def _render_managed_relpaths(home) -> set[str]:
     """engine.manifest 에서 `@render` 태그가 붙은 path 들(repo 기준 relpath·POSIX) — 검사 대상.
 
     manifest_store.read_manifest 를 재사용해 `.render` 플래그가 True 인 항목만 모은다. manifest
-    부재·파싱 실패는 빈 set(검사 대상 0·무발화). manifest 의 @render path 가 디렉토리면 그
+    부재·파싱 실패는 빈 set(검사 대상 0·알림 없음). manifest 의 @render path 가 디렉토리면 그
     하위 출하 어댑터가 전부 산출물이므로 prefix 매칭에 쓴다.
 
-    **트리 성격 게이트 (local.conf 의미론)**: render-leak 은 *렌더
+    **트리 성격 판별 (local.conf 의미론)**: render-leak 은 *렌더
     산출물*(operational 토큰이 concrete 로 치환된 어댑터)의 미해소 토큰을 잡는 가드다. 그런데
     토큰-form *소스 트리*(canonical worktree)는 산출물이 아니라 출하 전 원본이라 토큰이 정상
     이다. local.conf 부재 ⟺ 소스 트리(채택/init 전), 존재 ⟺ 채택 인스턴스(render 산출물 보유)
-    이므로, local.conf 가 파일로 없으면 검사 대상 0(무발화)으로 잘라낸다 — `.opencode`(templates
+    이므로, local.conf 가 파일로 없으면 검사 대상 0(알림 없음)으로 잘라낸다 — `.opencode`(templates
     =소스)가 스캔에서 빠지는 것의 *트리-단위 일반화*. 이로써 루트 manifest 가 `.claude/* @render`
     여도 worktree(local.conf 부재)에선 토큰-form 어댑터를 산출물로 오인하지 않는다.
-    ⚠️ 단 도그푸딩 worktree(adopter#0)는 local.conf 를 **보유**해 이 트리 게이트만으론 부족하다 —
+    ⚠️ 단 도그푸딩 worktree(adopter#0)는 local.conf 를 **보유**해 이 트리 판별만으론 부족하다 —
     그 트리의 토큰-form 출하 원본 면제는 `_template_mirror_report` 가 파일 단위로 보완한다.
     """
     if not (home.root / ".project_manager" / "local.conf").is_file():
@@ -47,15 +47,15 @@ def _render_managed_relpaths(home) -> set[str]:
 
 
 def _manifest_render_relpaths(home) -> set[str]:
-    """engine.manifest 의 `@render` dest 경로 집합 (repo 기준 relpath·POSIX·local.conf 게이트 무관).
+    """engine.manifest 의 `@render` dest 경로 집합 (repo 기준 relpath·POSIX·local.conf 판별 무관).
 
-    순수 manifest 파생 — render-leak(`_render_managed_relpaths` 가 트리성격 게이트 후 호출)의
+    순수 manifest 파생 — render-leak(`_render_managed_relpaths` 가 트리 성격 판별 후 호출)의
     스코프 소스다. 출하 인벤토리(engine.manifest `@render` = 프레임워크가 렌더-관리하는 어댑터
     본문 트리)에서 스코프를 파생하므로, 새 하네스·새 어댑터 항목이 manifest 에 등재되면 자동
     편입된다(손-열거 0). config·hooks·엔진 코드·`node_modules` 등 런타임/설정
     파일은 `@render` 가 아니라 `@source`(byte-copy)/미등재라 이 집합에 애초에 안 든다 — 스코프가
     구조적으로 어댑터 본문으로 좁혀진다. manifest_store.read_manifest 재사용. manifest 부재는 빈
-    set(검사 대상 0·무발화), 판독 예외는 전파한다."""
+    set(검사 대상 0·알림 없음), 판독 예외는 전파한다."""
     managed: set[str] = set()
     for manifest_path in _engine_manifest_paths(home):
         for entry in manifest_store.read_manifest(manifest_path):
@@ -71,14 +71,14 @@ def _engine_manifest_paths(home) -> list[Path]:
     토큰을 잡는 가드다. 그 산출물 트리는 **루트 트리**다 — 채택자는 루트 manifest 가 @render 면
     루트 `.claude/`·`.opencode/` 가 렌더된 산출물이다. 도그푸딩 모노레포(이 repo·canonical)는
     루트 manifest 가 `.claude/* @render` 여도 토큰-form 소스라 산출물이 아니다 — 그 트리-성격
-    판별은 `_render_managed_relpaths` 의 local.conf 게이트가 한다(부재=소스 트리→검사 0
-    render-overlay 의미론). 따라서 이 함수는 manifest *위치*만 정하고, 토큰-form 소스의 무발화는
-    local.conf 게이트가 보장한다 — 다만 local.conf 를 보유한 도그푸딩 worktree 에선 그 게이트가
+    판별은 `_render_managed_relpaths` 의 local.conf 판별이 한다(부재=소스 트리→검사 0
+    render-overlay 의미론). 따라서 이 함수는 manifest *위치*만 정하고, 토큰-form 소스에서 알림이 없음은
+    local.conf 판별이 보장한다 — 다만 local.conf 를 보유한 도그푸딩 worktree 에선 그 판별이
     부족해 파일 단위 보완(`_template_mirror_report` 의 출하-템플릿 mirror 면제)이 붙는다.
 
     ⚠️ `templates/<harness>/` 는 **스캔하지 않는다**: 출하 템플릿은 *token-form 소스*다(`--target`
     이 copy2 로 토큰을 보존). 그 manifest 가 `.claude/agents @render` 여도 그건 *채택자가 import/
-    update 할 때 렌더하라*는 표식이지 템플릿 자신이 렌더 산출물이란 뜻이 아니다 — 템플릿은 늘 토큰을
+    update 할 때 렌더하라*는 표시이지 템플릿 자신이 렌더 산출물이란 뜻이 아니다 — 템플릿은 늘 토큰을
     가지므로 스캔하면 영구 오탐
     "활성화 시 템플릿이 렌더된다"는 오해에 기반했다(템플릿은 렌더되지 않음).
 
@@ -107,15 +107,15 @@ _TEMPLATE_MIRROR_ABSENT = "absent"        # 대응 사본 없음 → 일반 rend
 def _shipping_template_render_scopes(home) -> list[tuple[Path, set[str]]]:
     """면제 후보 = `(출하 템플릿 루트, 그 manifest 의 @render 경로 집합)` 목록.
 
-    세 겹 파생 — 손-열거 0 + 성격 게이트 + 범위 게이트:
-      이름 축 = `infra.shipping_targets.discover_target_names(home)` 재사용(`--all-targets` 가 쓰는
-         그 규칙). 판정 사본을 새로 만들지 않는다(인접 규범 동일). render-leak 판정 축과 같은 실행
+    세 겹 파생 — 손-열거 0 + 성격 판별 + 범위 판별:
+      이름 기준 = `infra.shipping_targets.discover_target_names(home)` 재사용(`--all-targets` 가 쓰는
+         그 규칙). 판정 사본을 새로 만들지 않는다(인접 규범 동일). render-leak 판정 기준과 같은 실행
          Home 을 넘긴다.
-      경로 축 = `infra.shipping_targets.resolve_target_root(home, name)` 재사용 — 단일 path segment 검증 + resolve()
+      경로 기준 = `infra.shipping_targets.resolve_target_root(home, name)` 재사용 — 단일 path segment 검증 + resolve()
          후 parent 가 `templates/` 실경로임을 이중 확인한다(symlink 탈출 거부·거기 이미 있는 검증).
          `templates/alias -> ..` 같은 링크를 막지 않으면 candidate 가 루트 파일 *자기 자신*으로
          해소돼 byte-identical 이 자명 성립 → 전 파일 면제라는 백스톱 붕괴가 난다.
-      성격·범위 축 = `templates/<name>/.project_manager/engine.manifest` 의 **`@render` 선언**.
+      성격·범위 기준 = `templates/<name>/.project_manager/engine.manifest` 의 **`@render` 선언**.
          manifest 존재만으로는 부족하다 — 빈/무관 manifest 를 둔 트리에 같은 바이트 파일을 놓으면
          실 leak 이 면제된다. 그 템플릿이 *렌더-관리한다고 선언한* 경로(`_is_render_managed` 로
          파일 정확일치/디렉토리 prefix 판정) 하위일 때만 면제 근거가 된다. @render 0 개인 트리는
@@ -156,7 +156,7 @@ def _template_mirror_report(home, path: Path, rel_posix: str,
     (`_shipping_template_render_scopes`)가 **@render 로 선언한 경로** 아래 같은 상대경로와
     byte-identical 이면 아직 render 산출물이 아니라 출하할 token-form 원본이다
     (`_TEMPLATE_MIRROR_IDENTICAL` → 면제). 도그푸딩 worktree 는 local.conf 를 보유하므로 트리
-    게이트만으론 이 성격을 가를 수 없다 — 이 파일 단위 판정이 그 보완이다.
+    판별만으론 이 성격을 가를 수 없다 — 이 파일 단위 판정이 그 보완이다.
 
     경로를 손열거하지 않고 템플릿 트리와 상대경로의 대응으로 성격을 파생한다. 한 바이트라도 다르면
     면제하지 않는다(`_TEMPLATE_MIRROR_DIFFERS`) — 템플릿을 가진 트리에서 생긴 실제 half-rendered
@@ -192,7 +192,7 @@ def _template_mirror_report(home, path: Path, rel_posix: str,
     matched = 0                     # 판정 참여 후보 수(@render 선언 + 비-자기참조).
     drifted_targets: list[str] = []  # 그중 drift(내용 불일치·사본 부재·확인 실패·트리 밖 링크) 타깃.
     for template_root, render_managed in scopes:
-        # 그 템플릿이 @render 로 선언한 경로 하위가 아니면 면제 근거가 없다(범위 게이트·비참여).
+        # 그 템플릿이 @render 로 선언한 경로 하위가 아니면 면제 근거가 없다(범위 판별·비참여).
         if not _is_render_managed(rel_posix, render_managed):
             continue
         candidate = template_root / rel_posix
@@ -227,15 +227,15 @@ def _template_mirror_report(home, path: Path, rel_posix: str,
 def lint_render_leak(home) -> list[tuple[str, str, str]]:
     """render 산출물에 리터럴 `{{...}}` 누출 차단 (kind=`render-leak`·blocking).
 
-    `cli.board_lint._ADVISORY_LINT_KINDS` 밖 → `lint --gate` 차단 → pre-push exit 1(dangling-wikilink 미러).
+    `cli.board_lint._ADVISORY_LINT_KINDS` 밖 → `lint --blocking` 차단 → pre-push exit 1(dangling-wikilink 미러).
     half-rendered 토큰은 harness-load 에이전트 지시의 무음 열화라 실결함(경고 아님).
 
-    **트리 성격 무발화 경계**: 검사 대상 = engine.manifest 에서 `@render` 태그가 붙은 path 의
+    **트리 성격에 따른 검사 제외 경계**: 검사 대상 = engine.manifest 에서 `@render` 태그가 붙은 path 의
     산출물뿐(`_render_managed_relpaths`). 그 헬퍼는 local.conf 부재 트리(토큰-form 소스
     canonical)를 검사 0 으로 잘라낸다(local.conf=트리 성격 판별)
-    — 루트 manifest 가 `.claude/* @render` 여도 소스 트리에선 무발화, 채택 인스턴스(local.conf
+    — 루트 manifest 가 `.claude/* @render` 여도 소스 트리에선 알림 없음, 채택 인스턴스(local.conf
     보유·render 산출물)에선 미해소 토큰을 잡는다. **단 도그푸딩 worktree 는 local.conf 를 보유해
-    트리 게이트가 부족하다** — 출하 템플릿과 byte-identical 인 토큰-form 원본은 파일 단위로
+    트리 판별이 부족하다** — 출하 템플릿과 byte-identical 인 토큰-form 원본은 파일 단위로
     면제한다(`_template_mirror_report`). adapter_render의 post-render assertion 과 2중
     backstop — pm_update 가 마지막 도구였는지 무관한 상시 가드.
 
@@ -243,7 +243,7 @@ def lint_render_leak(home) -> list[tuple[str, str, str]]:
     """
     managed = _render_managed_relpaths(home)
     if not managed:
-        return []  # @render path 0 → 검사 대상 0 (활성화 전 무발화).
+        return []  # @render path 0 → 검사 대상 0 (활성화 전 알림 없음).
     # 텍스트 판정은 `app.update_render._is_text_source` 를 **공유**한다: render-leak 은
     # `.md` 뿐 아니라 @render 산출물 하위 *모든 텍스트 파일*(.toml·.json·.yaml·확장자 없는 텍스트
     # 등)의 미해소 토큰을 잡아야 한다 — `.md` 만 스캔하면 새 하니스 형식을 조용히 놓치는 클래스

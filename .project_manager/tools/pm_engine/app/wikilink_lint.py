@@ -49,7 +49,7 @@ def _collect_wikilink_files(home) -> list[Path]:
     각 dir 은 harness 별로 존재 여부가 다르므로(claude 채택자엔 `.opencode` 부재·역도 마찬가지)
     `.is_dir()` 가드로 있을 때만 추가한다.
     """
-    # PM 운영 wiki는 등록 worktree read 폴백에서 소유 PM 홈을 따른다. 루트 README와
+    # PM 운영 wiki는 등록 worktree read 대체 경로에서 소유 PM 홈을 따른다. 루트 README와
     # adapter scaffold는 아래에서 계속 REPO(현재 제품 worktree)를 읽어 코드 lint 의미를 보존한다.
     wiki = pm_paths.wiki_dir(home)
     files: list[Path] = list(wiki.rglob("*.md")) if wiki.is_dir() else []
@@ -107,10 +107,10 @@ def lint_wikilinks(home) -> list[tuple[str, str, str]]:
 
     kind 분류:
       - `dangling-wikilink`          = wiki/·root-doc(CLAUDE.md·README) 의 framework ADR/idea
-        dangling, 그리고 **모든 ticket(`[[T-...]]`) dangling** — `lint --gate` 차단(blocking).
+        dangling, 그리고 **모든 ticket(`[[T-...]]`) dangling** — `lint --blocking` 차단(blocking).
       - `dangling-wikilink-scaffold` = framework ADR/idea dangling 이 *오직* 어댑터 scaffold
         경로(`.claude/{agents,skills}`·`.opencode/{agents,command}`)에서만 등장 — advisory
-        (`_ADVISORY_LINT_KINDS` 등재·`--gate` 미차단). 채택자(framework ADR 부재 다운스트림)의
+        (`_ADVISORY_LINT_KINDS` 등재·`--blocking` 미차단). 채택자(framework ADR 부재 다운스트림)의
         scaffold bracket-ref 는 영구 dangling 이 정상이라 push 를 막으면 안 된다.
     같은 ref 가 scaffold + wiki/root-doc 양쪽에서 dangle 하면 blocking 유지(프레임워크 자기
     문서는 dangle 하면 안 됨). per-occurrence source 경로를 추적해 분기한다(name 별로 ADR/idea
@@ -118,7 +118,7 @@ def lint_wikilinks(home) -> list[tuple[str, str, str]]:
     """
     ticket_ids, adr_nums, idea_nums = _resolve_wikilink_targets(home)
     # name → (is_ticket, [source rel paths]). is_ticket=True 면 항상 blocking,
-    # False(ADR/idea)면 사용처가 전부 scaffold 일 때만 advisory 강등.
+    # False(ADR/idea)면 사용처가 전부 scaffold 일 때만 advisory 로 수준을 낮춘다.
     dangling: dict[str, tuple[bool, list[str]]] = {}
 
     for path in _collect_wikilink_files(home):
@@ -155,7 +155,7 @@ def lint_wikilinks(home) -> list[tuple[str, str, str]]:
         is_ticket, srcs = dangling[name]
         shown = ", ".join(srcs[:3]) + (f" (외 {len(srcs) - 3}개)" if len(srcs) > 3 else "")
         # ticket dangling 은 항상 blocking. ADR/idea 는 사용처가 *전부* scaffold 일 때만
-        # advisory 강등 — 하나라도 wiki/root-doc 이면 framework 자기 문서 dangle 이라 blocking.
+        # advisory 로 수준을 낮춘다 — 하나라도 wiki/root-doc 이면 framework 자기 문서 dangle 이라 blocking.
         scaffold_only = (not is_ticket) and all(_is_scaffold_src(s) for s in srcs)
         if scaffold_only:
             issues.append((name, "dangling-wikilink-scaffold",
@@ -180,10 +180,10 @@ def lint_wikilinks(home) -> list[tuple[str, str, str]]:
 #   (a) `_MD_LINK_TARGET_RE` 로 링크 target 을 추출 — 선택적 `<…>` 꺾쇠·트레일링 `"title"` 허용.
 #   (b) target 에서 fragment(`#…`)·query(`?…`)를 떼고, 외부 URL(`scheme://`)이면 건너뛴 뒤
 #       `_STRUCT_PATH_RE` 로 구조화 경로(decisions/·tickets/<state>/·ideas/<state>/<file>.md)를 매칭.
-# 이렇게 `.md)`·`.md#sec)`·`.md "title")`·앞 경로 유무를 다 흡수하고 외부 URL 오탐(오차단)을 막는다.
+# 이렇게 `.md)`·`.md#sec)`·`.md "title")`·앞 경로 유무를 다 받아들이고 외부 URL 오탐(오차단)을 막는다.
 # `(?:^|/)` 로 segment 경계를 요구해 `mydecisions/` 류 비-경계 매치를 배제. 매핑: decisions→ADR,
 # tickets/<state>→ticket, ideas/<state>→idea (tickets/ideas 는 상태 디렉토리 필수 — README·_template 제외).
-# title 은 CommonMark 3형 모두 흡수 — `"…"`·`'…'`·`(…)`.
+# title 은 CommonMark 3형 모두 받아들인다 — `"…"`·`'…'`·`(…)`.
 _MD_LINK_TARGET_RE = re.compile(
     r"\]\(\s*<?([^)>\s]+)>?(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)")
 
@@ -202,7 +202,7 @@ _STRUCT_PATH_RE = re.compile(
 # 숫자선두 자유어휘 wikilink — `[[NNNN-slug]]`·`[[NNNN]]`·alias `[[NNNN-slug|표시명]]`
 # (ADR/idea 를 ID 아닌 형으로 적은 것). slug 부는 `[^\]|]+`(비-ASCII 포함) — `_slugify` 가 한글
 # slug 를 허용하므로 `[[0001-한글아이디어]]` 도 포착.
-# alias `|표시명` 은 `_WIKILINK_RE` 동작과 동일하게 흡수(codex suggestion).
+# alias `|표시명` 은 `_WIKILINK_RE` 동작과 동일하게 받아들인다(codex suggestion).
 _NUM_LEAD_WIKILINK_RE = re.compile(r"\[\[(\d+)(?:-[^\]|]+)?(?:\|[^\]]+)?\]\]")
 
 
@@ -218,7 +218,7 @@ def lint_unstable_refs(home) -> list[tuple[str, str, str]]:
         등)와 구분 불가 → **불검사**(차단 안 함 · 오탐 0).
 
     kind 분류:
-      - `unstable-ref`        = markdown 경로 링크가 실재 안 함 (환각) — `lint --gate` 차단.
+      - `unstable-ref`        = markdown 경로 링크가 실재 안 함 (환각) — `lint --blocking` 차단.
       - `unstable-ref-advice` = 실재 파일을 슬러그로 가리킴 / 숫자선두 슬러그형 — 작동은 함,
         ID-wikilink 권고만(자문성·차단 안 함).
 
@@ -230,8 +230,8 @@ def lint_unstable_refs(home) -> list[tuple[str, str, str]]:
     found: dict[tuple[str, bool], tuple[str, list[str]]] = {}
 
     def _record(name: str, dangling: bool, detail: str, src: str) -> None:
-        # raw/ 스냅샷(sealed 면 immutable)은 슬러그-경로 *권고*(never-blocks)를 면제한다:
-        # 봉인된 스냅샷의 링크는 고칠 수 없고(immutable) 역사적 인용이라 ID-wikilink 권고가 비실행적이다.
+        # raw/ 복사본(확정(`sealed`)이면 immutable)은 슬러그-경로 *권고*(never-blocks)를 면제한다:
+        # 확정된 복사본의 링크는 고칠 수 없고(immutable) 역사적 인용이라 ID-wikilink 권고가 비실행적이다.
         # dangling(환각·차단)은 유지 — 깨진 구조 링크는 raw 에서도 surface 한다.
         if not dangling and "/raw/" in ("/" + src.replace("\\", "/")):
             return
