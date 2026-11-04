@@ -328,20 +328,11 @@ def retire_manifest_paths(
     return [(old, backup) for old, _new, backup in plan]
 
 
-def _retired_directive_manifests(source_root: Path, selfheal: dict) -> list[Path]:
-    """퇴역 단계가 지시를 읽는 manifest 목록 — 자기치유가 고른 상류 manifest, 없으면 상류 루트
-    manifest. 구 upstream 은 manifest 자체가 없을 수 있어 있는 파일만 남긴다."""
-    manifest_paths = [Path(path) for path in selfheal.get("upstream_manifests", [])]
-    if not manifest_paths:
-        manifest_paths = [Path(source_root) / ".project_manager" / "engine.manifest"]
-    return [path for path in manifest_paths if path.is_file()]
-
-
-def declared_retired_olds(source_root: Path, selfheal: dict) -> set[str]:
-    """퇴역 단계가 옮길 지시 OLD 집합 — 그 파일은 퇴역 단계가 알리므로 상류 부재 보고에서 뺀다."""
+def declared_retired_olds(manifest_paths: list[Path]) -> set[str]:
+    """퇴역 단계가 옮길 지시 OLD 집합 — 그 파일은 퇴역 단계가 알리므로 관리 해제·상류 부재 보고에서 뺀다."""
     return {
         old
-        for path in _retired_directive_manifests(source_root, selfheal)
+        for path in manifest_paths
         for old, _new in parse_retired_path_directives(path)
     }
 
@@ -350,36 +341,18 @@ def _run_retired_path_migration(
     effective_dest: Path,
     source_root: Path,
     manifest: list,
-    selfheal: dict,
+    manifest_paths: list[Path],
     *,
     write: bool,
     changes: list[tuple] | None = None,
 ) -> bool:
-    """retired migration 실행+보고. 실패는 호출부가 baseline 억제로 바꾼다."""
-    # 명시 이주 채널(manifest)이 없는 세대를 기존과 같이 fail-soft로
-    # 지나간다(임의 삭제로 추측하지 않음).
-    manifest_paths = _retired_directive_manifests(source_root, selfheal)
-    if not manifest_paths:
-        return True
-    # legacy_preserved는 로컬 manifest를 의도적으로 승격하지 않은 형상이다.
-    # 그 형상의 계획 manifest가 replacement를 소유하지 않으면 신 파일도
-    # 설치하지 않으므로 퇴역을 유보한다(구 파일 단독 제거 금지).
-    if selfheal.get("status") == "legacy_preserved":
-        owned = {str(entry).replace("\\", "/") for entry in manifest}
-        try:
-            declared = [
-                pair
-                for path in manifest_paths
-                for pair in parse_retired_path_directives(path)
-            ]
-        except (OSError, UnicodeError, RetiredPathError) as exc:
-            print(f"[중단] retired-path 이주 실패 — {exc}", file=sys.stderr)
-            return False
-        if declared and not any(manifest_rules._path_owned_by(new, owned) for _old, new in declared):
-            return True
+    """retired migration 실행+보고 — 지시는 이번 갱신이 쓴 출하 manifest(`manifest_paths`)에서 읽는다.
+    실패는 호출부가 baseline 억제로 바꾼다."""
     try:
+        # 값은 계획의 source 그대로다 — engine.manifest 의 인메모리 전문(`_ManifestTextSource`)은 경로가
+        #   아니지만 퇴역 지시의 replacement 가 될 수 없어 조회되지 않는다.
         prospective = {
-            str(rel).replace("\\", "/"): Path(src)
+            str(rel).replace("\\", "/"): src
             for rel, src, _dst, _kind in (changes or [])
         }
         planned = retire_manifest_paths(

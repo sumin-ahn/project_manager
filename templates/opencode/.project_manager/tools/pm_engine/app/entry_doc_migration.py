@@ -21,7 +21,7 @@ from pm_engine.infra import install_files
 # 기존 채택자의 구형 진입 doc(자족 매뉴얼형 opencode `AGENTS.md`·~22KiB)을 신형(harness-neutral
 # 공통 코어 + `.opencode/pm-instructions.md` + `opencode.jsonc` `instructions` 배열)으로 수렴시킨다
 # — 2세대 영구 공존 차단(사용자 발의 "신형 전환 선택제=관리 분기"). self-update 흡수 경로 한정이며
-# `--target` 엔진 export 는 비발화(skew/selfheal 와 동일 경계).
+# `--target` 엔진 export 는 비발화(옛 표기 이관과 같은 경계).
 #
 # 판정 = **미수정 여부 단 하나**(mechanize·추측 0). @render 치환(operational 토큰)·manual-fill TODO
 # 마커가 채택자본을 세대 원본에서 벌려 놓으므로 순수 해시 대조는 불가능하다(ticket 열린 질문). →
@@ -411,31 +411,24 @@ def _entry_doc_backup(dest_root: Path, rel: str, backup_root: Path) -> None:
 
 
 def migrate_renamed_conf_keys(effective_dest: Path, *, write: bool) -> dict[str, str]:
-    """local.conf 이름 이동의 읽기·계획·쓰기·후조건을 공용 락 안에서 수행한다.
+    """local.conf 이름 이동 — 옮길 키가 있을 때만 공용 락 안에서 다시 읽어 쓴다.
 
-    새 키의 사용자 값과 대체 없는 폐지 키를 보존한다. dry-run은 읽기만 한다.
-    이동 가능한 옛 키 잔류는 완료 실패다. 이미 배달한 엔진 파일은 보존하며 호출부의 완료
-    baseline 기록에는 도달하지 않는다. 설정 판독·기록 실패는 그대로 올라간다.
+    갱신의 옛 표기 이관 자리(`update_cmd._main`)가 계획·상류 해소보다 먼저 부른다. 옮길 키가 없으면
+    읽기만 한다(락 파일도 만들지 않는다). 새 키의 사용자 값과 대체 없는 폐지 키를 보존한다. dry-run은
+    읽기만 한다. 이동 가능한 옛 키 잔류는 완료 실패다. 설정 판독·기록 실패는 그대로 올라간다.
     """
     conf_path = Path(effective_dest) / ".project_manager" / "local.conf"
     if not conf_path.is_file():
         return {}
-    if not write:
-        result = conf_store.load(conf_path)
-        updates = conf_schema.rename_updates(result)
-        if not updates:
-            return {}
-        moved = {old: new for old, new in result.legacy.items()
-                 if new is not None and old in updates}
-    else:
+    result = conf_store.load(conf_path)
+    updates = conf_schema.rename_updates(result)
+    if not updates:
+        return {}
+    moved = {old: new for old, new in result.legacy.items() if new is not None and old in updates}
+    if write:
         with fs.local_conf_write_lock(conf_path):
-            result = conf_store.load(conf_path)
-            updates = conf_schema.rename_updates(result)
-            if not updates:
-                return {}
-            moved = {old: new for old, new in result.legacy.items()
-                     if new is not None and old in updates}
-            install_conf._write_conf_keys_locked(conf_path, updates)
+            install_conf._write_conf_keys_locked(
+                conf_path, conf_schema.rename_updates(conf_store.load(conf_path)))
             remaining = conf_schema.rename_updates(conf_store.load(conf_path))
             if remaining:
                 raise RuntimeError(

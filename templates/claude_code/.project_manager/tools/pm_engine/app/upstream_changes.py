@@ -166,37 +166,6 @@ def _refuse_unregistered_scope_paths(
     return 1
 
 
-def _scope_validation_manifest(effective_dest: Path, source_root: Path) -> list | None:
-    """스코프 **소유권 선검증**용 manifest 합 — dest 것과 source 것의 합집합(best-effort).
-
-    실 계획 manifest 는 manifest 자기치유 판정 뒤에 해소된다. 미등재 요청이 rc1 로 끝나는데
-    그 전에 쓰기가 일어나면 "거부인데 파일이 바뀐다" 가 되므로, 쓰기 전에 읽기만으로 한 번 거른다.
-    이 시점 판정은 **관대해야** 한다(합집합): self-heal 이 upstream 등재분을 계획 기준으로 올리는
-    경우가 있어 dest manifest 만 보면 유효 요청을 오거부한다. 좁은 판정은 계획 확정 뒤 한 번 더
-    돈다. 양쪽 다 못 읽으면 None(선검증 생략 — 정규 경로가 같은 오류를 더 정확히 낸다)."""
-    entries: list = []
-    seen: set[str] = set()
-    candidates = [
-        Path(effective_dest) / ".project_manager" / "engine.manifest",
-        Path(source_root) / ".project_manager" / "engine.manifest",
-    ]
-    found = False
-    for manifest_path in candidates:
-        if not manifest_path.is_file():
-            continue
-        try:
-            parsed = manifest_store.read_manifest(manifest_path)
-        except (OSError, UnicodeDecodeError, ValueError):
-            continue
-        found = True
-        for entry in parsed:
-            key = str(entry).replace("\\", "/").strip("/")
-            if key not in seen:
-                seen.add(key)
-                entries.append(entry)
-    return entries if found else None
-
-
 def _scope_change_candidates(rel: str, source_path, source_root: Path) -> list[str]:
     """한 변경을 스코프에 대볼 후보 경로 — dest relpath + (가능하면) source relpath.
 
@@ -230,8 +199,7 @@ def summarize_upstream_changes(
     git_runner 를 주입해 라이브 git 0 으로 결정론을 얻는다(DI seam).
 
     `manifest` 는 "무엇이 엔진인가"의 판별 집합 — 호출부가 **sync 와 동일한**
-    `_resolve_planning_manifest(effective_dest, source, selfheal)` 로 해소해 넘긴다(self-heal
-    승격분 우선·없으면 dest 우선 로컬 해소·guest 절 채널 분리 포함). 이 함수가 자체 로드하지 않는
+    `update_manifest.shipped_manifest(effective_dest, source)` 의 계획 행을 넘긴다. 이 함수가 자체 로드하지 않는
     이유: 엔진 영향(이번 동기가 받는 것) 분류는 실 sync 가 쓰는 manifest 와 *반드시* 일치해야 하기
     때문(source 단독은 dest 커스터마이즈/--target 에서 어긋난다). 빈 manifest → 전부 'other'
     (graceful·엔진 영향 0 보수 표시).
@@ -338,10 +306,13 @@ def summarize_upstream_changes(
 
 
 def _resolve_dest(home, args) -> tuple:
-    """args(--target) → (rc, dest_root). rc≠0 이면 메시지는 이미 출력됨.
+    """args(--into·--target) → (rc, dest_root). rc≠0 이면 메시지는 이미 출력됨.
 
-    `--target` 지정 시 실행 Home 의 templates/<target>/, 아니면 None(self-location — 호출부가 실행
-    Home 루트를 쓴다). 완료 프로세스는 이 값으로 자기 위치를 정하고 인계 값의 dest 와 대조한다."""
+    `--into` 지정 시 그 PM 홈, `--target` 지정 시 실행 Home 의 templates/<target>/, 아니면
+    None(self-location — 호출부가 실행 Home 루트를 쓴다). 완료 프로세스는 `--into` 없이 뜨므로 이 값으로
+    자기 위치를 정하고 인계 값의 dest 와 대조한다."""
+    if args.into:
+        return 0, Path(args.into).resolve()
     if not args.target:
         return 0, None
     try:

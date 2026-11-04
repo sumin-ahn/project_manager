@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from pm_engine.app import update_manifest
 from pm_engine.app import upstream_changes
+from pm_engine.infra import manifest_store
 from pm_engine.infra import install_conf
 
 
@@ -31,25 +32,16 @@ def _run_changes(home, args) -> int:
         )
         return 0
 
-    # 엔진 영향 판별 manifest 는 **sync 와 동일한** `_resolve_planning_manifest` 로 해소한다
-    # (self-heal 승격 우선·없으면 dest 우선 로컬·둘 다 부재면 source). 실 sync 가 그 manifest 로
+    # 엔진 영향 판별 manifest 는 **sync 와 동일한** 규칙(`update_manifest.shipped_manifest` — 설치된 하네스의
+    # 출하 manifest)이다. `--target` 은 sync 와 같게 타깃 자신의 manifest 다. 실 sync 가 그 manifest 로
     # "무엇이 엔진인가"를 정하므로 --changes 의 "엔진 영향(이번 동기가 받는 것)"도 같은 기준이어야
-    # 한다 — 둘이 반드시 일치해야 한다. self-heal 해소 조건(`--target` 비발화)도 `_main` 과 같다.
-    # 둘 다 부재(fresh-adopter)면 빈 manifest → 전부 'other'(graceful·엔진 영향 0 보수 표시·
-    # summarize_upstream_changes 가 빈 리스트 허용). **read-only 유지** — self-heal 은 판정만 하고
-    # (읽기 전용) 승격 manifest 를 디스크에 쓰지 않는다(쓰기는 실 sync 의 apply 소관).
-    try:
-        selfheal = (
-            None if args.target
-            else update_manifest.resolve_manifest_selfheal(effective_dest, source_root)
-        )
-        if selfheal is not None:
-            # 다중-flavor 합집합의 마커 충돌은 미리보기에서도 알린다 — 실 sync 만 알리면 "미리보기는
-            #   조용했는데 sync 가 경고" 가 되어, 미리보기로 판단하는 채택자가 충돌을 못 본다.
-            update_manifest._print_manifest_merge_conflicts(selfheal)
-        manifest = update_manifest._resolve_planning_manifest(effective_dest, source_root, selfheal)
-    except FileNotFoundError:
-        manifest = []
+    # 한다. 출하 manifest 를 읽지 못하면 sync 와 같게 그 오류로 멈춘다.
+    # **read-only 유지** — 규칙은 판정만 하고 manifest 를 디스크에 쓰지 않는다(쓰기는 실 sync 의 apply).
+    if args.target:
+        manifest = manifest_store.read_manifest(
+            manifest_store.resolve_manifest_for_dest(effective_dest, source_root))
+    else:
+        manifest = update_manifest.shipped_manifest(effective_dest, source_root)["entries"]
 
     summary = upstream_changes.summarize_upstream_changes(
         home, source_root, baseline, manifest, dest_root=effective_dest)

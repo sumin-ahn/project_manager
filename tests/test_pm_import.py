@@ -2468,6 +2468,20 @@ def test_legacy_single_harness_without_stray_has_no_cross_flavor_warning(
     assert "./pm-config.sh add-harness" not in combined
 
 
+def _guest_block_rows(dest: Path) -> list:
+    """dest engine.manifest 의 추가 하네스 구획 행(ManifestEntry) — 엔진 파서로 구획만 읽는다."""
+    text = (dest / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
+    block = manifest_rules._extract_guest_manifest_block(text) or ""
+    return [entry for entry in map(manifest_rules._parse_manifest_line, block.splitlines()) if entry]
+
+
+def _strip_to_legacy_manifest(text: str) -> str:
+    """옛 설치 manifest 형상 — `@source` 선언도 자기 자신 행(`.project_manager/engine.manifest`)도 없다."""
+    return "".join(
+        line for line in re.sub(r"[ \t]+@source=\S+", "", text).splitlines(keepends=True)
+        if line.split("#", 1)[0].split()[:1] != [manifest_rules._MANIFEST_SELF_REL])
+
+
 @pytest.mark.parametrize(
     ("base_harness", "stray_flavor", "stray_rel"),
     [
@@ -2490,11 +2504,9 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     ]) == 0
     capsys.readouterr()
 
-    # 실제 legacy 형상: 선택 provenance가 전무한 구 manifest.
+    # 실제 legacy 형상: 선택 provenance 와 자기 자신 행이 전무한 구 manifest.
     dest_manifest = dest / ".project_manager" / "engine.manifest"
-    legacy_text = re.sub(
-        r"\s+@source=\S+", "", dest_manifest.read_text(encoding="utf-8")
-    )
+    legacy_text = _strip_to_legacy_manifest(dest_manifest.read_text(encoding="utf-8"))
     write_lf(dest_manifest, legacy_text)
 
     stray = dest / stray_rel
@@ -2502,16 +2514,14 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     user_bytes = b"# user-owned stray; must survive\n"
     stray.write_bytes(user_bytes)
 
-    selected = update_manifest.resolve_manifest_selfheal(dest, REPO)
+    shipped = update_manifest.shipped_manifest(dest, REPO)
     selected_flavors = {
         path.parents[1].name
-        for path in selected["upstream_manifests"]
+        for path in shipped["manifests"]
         if len(path.parents) >= 2 and path.parents[2].name == "templates"
     }
     assert stray_flavor not in selected_flavors, \
-        "부분 존재 flavor가 upstream_manifests에 무단 편입됨(all→any mutant)"
-    assert not selected.get("multi_flavor_recovery"), \
-        "부분 존재인데 multi_flavor_recovery가 발화함"
+        "남은 파일만 있는 판이 계획 manifest 에 무단 편입됨"
     capsys.readouterr()
 
     monkeypatch.setattr(pm_update, "REPO", dest)
@@ -2521,8 +2531,7 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     captured = capsys.readouterr()
     combined = captured.out + captured.err
     assert "설치된 다중 하네스" not in combined
-    assert "@source 선언이 없는 legacy manifest" in combined
-    assert f"다른 하네스별 판({stray_flavor}) 관리 경로 일부" in combined
+    assert f"engine.manifest 가 가리키지 않는 하네스별 판({stray_flavor}) 관리 경로 일부" in combined
     assert "어느 동기 채널도 선언하지 않은 출하 파일" in combined
     cli_flavor = "claude" if stray_flavor == "claude_code" else stray_flavor
     assert f"`add-harness {cli_flavor}`는 그 하네스 어댑터만 등재한다" in combined
@@ -2551,17 +2560,13 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
         path for path in candidate_manifests
         if path.parents[1].name == stray_flavor
     )
-    local_core_paths = {
-        str(entry).replace("\\", "/")
-        for entry in manifest_store.read_manifest(dest_manifest)
-    }
     other_paths = set().union(*(
         paths for path, paths in candidate_paths.items()
         if path != stray_manifest
     ))
     evidence_paths = set(update_manifest._flavor_exclusive_paths(
         manifest_store.read_manifest(stray_manifest), other_paths
-    )) - local_core_paths
+    ))
     if stray_flavor == "opencode":
         assert ".claude/skills/pm-dev-delegate/SKILL.md" not in evidence_paths, (
             "공용 .claude/skills 아래 target override를 배타 opencode evidence로 오판함"
@@ -2583,22 +2588,17 @@ def test_legacy_opencode_manifest_provenance_upgrade_avoids_bare_source_rc2(
     ]) == 0
     capsys.readouterr()
     manifest = dest / ".project_manager" / "engine.manifest"
-    manifest.write_text(
-        re.sub(r"\s+@source=\S+", "", manifest.read_text(encoding="utf-8")),
-        encoding="utf-8",
-    )
-    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
-    assert preview["status"] == "heal"
-    assert preview["added"] == []
-    assert preview["provenance_upgrade"] is True
+    manifest.write_text(_strip_to_legacy_manifest(manifest.read_text(encoding="utf-8")), encoding="utf-8")
+    shipped = update_manifest.shipped_manifest(dest, REPO)
+    assert [path.parents[1].name for path in shipped["manifests"]] == ["opencode"]
     capsys.readouterr()
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(REPO)]) == 0
 
-    out = capsys.readouterr().out
-    assert "@source provenance 선언을 upstream 형식으로 승격" in out
+    assert manifest.read_bytes() == (
+        REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest").read_bytes()
     entries = manifest_store.read_manifest(manifest)
     opencode_entries = [e for e in entries if str(e).startswith(".opencode/")]
     assert opencode_entries and all(entry.source_rel for entry in opencode_entries)
@@ -2613,21 +2613,16 @@ def test_legacy_opencode_primary_with_missing_file_heals_in_one_run(
     ]) == 0
     capsys.readouterr()
     manifest = dest / ".project_manager" / "engine.manifest"
-    manifest.write_text(
-        re.sub(r"\s+@source=\S+", "", manifest.read_text(encoding="utf-8")),
-        encoding="utf-8",
-    )
+    manifest.write_text(_strip_to_legacy_manifest(manifest.read_text(encoding="utf-8")), encoding="utf-8")
     victim_rel = Path(".opencode/.gitignore")
     victim = dest / victim_rel
     expected = (REPO / "templates" / "opencode" / victim_rel).read_bytes()
     victim.unlink()
     assert not victim.exists(), "가드 fixture가 manifest 엔트리 경로 자체를 제거하지 못함"
 
-    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
-    assert preview["status"] == "heal"
-    assert preview["provenance_upgrade"] is True
-    assert preview["upstream_manifests"][0].parents[1].name == "opencode", \
-        "누락 파일 때문에 legacy primary가 root manifest로 폴백함"
+    shipped = update_manifest.shipped_manifest(dest, REPO)
+    assert [path.parents[1].name for path in shipped["manifests"]] == ["opencode"], \
+        "누락 파일 때문에 판 판정이 root manifest 로 바뀌었다"
     capsys.readouterr()
 
     monkeypatch.setattr(pm_update, "REPO", dest)
@@ -2654,12 +2649,12 @@ def test_declared_claude_manifest_with_opencode_tree_warns_without_promoting(
     dest_manifest = dest / ".project_manager" / "engine.manifest"
     dest_manifest.write_bytes(claude_manifest.read_bytes())
 
-    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
-    assert preview["upstream_manifests"] == [claude_manifest]
-    assert not preview.get("multi_flavor_recovery")
+    shipped = update_manifest.shipped_manifest(dest, REPO)
+    update_manifest._print_shipped_manifest_finding(shipped)
+    assert shipped["manifests"] == [claude_manifest]
     diagnostic = capsys.readouterr().err
     assert "미등재 하네스별 판 파일 관측" in diagnostic
-    assert "선언되지 않은 다른 하네스별 판(opencode)" in diagnostic
+    assert "engine.manifest 가 가리키지 않는 하네스별 판(opencode)" in diagnostic
     assert "`add-harness opencode`는 그 하네스 어댑터만 등재한다" in diagnostic
     assert "<manager>/pm-import.sh --into <project> --harness all" in diagnostic
 
@@ -2683,8 +2678,9 @@ def test_declared_clean_claude_adopter_has_no_frozen_warning(
         REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
     )
 
-    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
-    assert preview["upstream_manifests"] == [claude_manifest]
+    shipped = update_manifest.shipped_manifest(dest, REPO)
+    update_manifest._print_shipped_manifest_finding(shipped)
+    assert shipped["manifests"] == [claude_manifest]
     assert "미등재 하네스별 판 파일 관측" not in capsys.readouterr().err
 
     monkeypatch.setattr(pm_update, "REPO", dest)
@@ -2721,7 +2717,7 @@ def test_declared_claude_with_opencode_guest_has_channel_not_frozen_warning(
     # 절이 어댑터 엔진 파일을 담는다(채널 존재의 근거).
     guest_engine = {
         str(e).replace("\\", "/")
-        for e in update_manifest._dest_guest_manifest_entries(dest)
+        for e in _guest_block_rows(dest)
         if not getattr(e, "render", False)
     }
     assert ".opencode/pm_orch_opencode.py" in guest_engine, \
@@ -2771,7 +2767,7 @@ def test_codex_rules_converge_on_update_for_main_harness_and_guest(
 
     guest_engine_rows = {
         str(entry).replace("\\", "/")
-        for entry in update_manifest._dest_guest_manifest_entries(guest_dest)
+        for entry in _guest_block_rows(guest_dest)
         if not getattr(entry, "render", False)
     }
     assert rules_rel in guest_engine_rows, (
@@ -2802,7 +2798,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
     dest_manifest = dest / ".project_manager" / "engine.manifest"
     claude_manifest = (
         REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest")
-    legacy_text = re.sub(r"\s+@source=\S+", "", claude_manifest.read_text(encoding="utf-8"))
+    legacy_text = _strip_to_legacy_manifest(claude_manifest.read_text(encoding="utf-8"))
     write_lf(dest_manifest, legacy_text)
     victim_rels = (
         Path(".claude/ctx_guard.py"),
@@ -2825,8 +2821,9 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
         for flavor in dirs
     ])["text"].encode("utf-8")
 
-    preview = update_manifest.resolve_manifest_selfheal(dest, REPO)
-    assert preview["upstream_manifests"] == [claude_manifest]
+    shipped = update_manifest.shipped_manifest(dest, REPO)
+    update_manifest._print_shipped_manifest_finding(shipped)
+    assert shipped["manifests"] == [claude_manifest]
     diagnostic = capsys.readouterr().err
     assert "미등재 하네스별 판 파일 관측" in diagnostic
     assert "<manager>/pm-import.sh --into <project> --harness all --dry-run" in diagnostic
@@ -4735,7 +4732,7 @@ def test_add_harness_registers_flavor_engine_rows(
         f"추가/제거했다면 _GUEST_ENGINE_ROW_COUNT 를 갱신하라: {sorted(expected)}")
 
     add_harness.add_harness(ENGINE_HOME, dest, added, dry_run=False, source_root=REPO)
-    block_entries = update_manifest._dest_guest_manifest_entries(dest)
+    block_entries = _guest_block_rows(dest)
     engine_rows = [e for e in block_entries if not getattr(e, "render", False)]
     got = {str(e).replace("\\", "/") for e in engine_rows}
     assert got == expected, (
@@ -4791,7 +4788,7 @@ def test_render_managed_relpaths_excludes_guest_engine_rows(pm_import, pm_update
     managed = import_render._render_managed_relpaths(dest)
     engine_paths = {
         str(e).replace("\\", "/")
-        for e in update_manifest._dest_guest_manifest_entries(dest)
+        for e in _guest_block_rows(dest)
         if not getattr(e, "render", False)
     }
     assert engine_paths, "픽스처 전제 붕괴 — guest 엔진 행이 하나도 등재되지 않았다"
@@ -5068,11 +5065,9 @@ def test_add_harness_claude_guest_survives_pm_update_roundtrip(pm_import, pm_upd
     assert ".claude/agents" in _guest_block_paths(pm_update, mani), "pm_update 가 claude guest 절 제거(R17 미해소)"
     assert ".claude/agents" in {str(e) for e in manifest_store.read_manifest(mani) if getattr(e, "render", False)}
     # 2차 sync 무churn — engine.manifest 가 plan changes 에 없음.
-    manifest = manifest_store.read_manifest(manifest_store.resolve_manifest_for_dest(oc, REPO))
-    sh = update_manifest.resolve_manifest_selfheal(oc, REPO)
-    if sh["manifest"] is not None:
-        manifest = sh["manifest"]
-    changes, _m = update_plan.plan(pm_paths.home_at(pm_update.REPO), REPO, manifest, dest_root=oc, conf=_local_conf_of(pm_update, oc))
+    shipped = update_manifest.shipped_manifest(oc, REPO)
+    changes, _m = update_plan.plan(pm_paths.home_at(pm_update.REPO), REPO, shipped["entries"], dest_root=oc,
+                                   manifest_source_text=shipped["text"], conf=_local_conf_of(pm_update, oc))
     assert not any(str(r).replace("\\", "/") == ".project_manager/engine.manifest"
                    for r, _s, _d, _k in changes), "claude guest 절로 engine.manifest 영구 churn"
 
@@ -5343,11 +5338,11 @@ def test_pm_update_updates_promoted_guest_path_in_single_run(
         "승격분이 1차 self-update 에서 미갱신(R23 MF-1·guest 필터 과적용)"
 
 
-def test_pm_update_diverged_selfheal_keeps_local_only_core_declaration(
+def test_pm_update_releases_local_only_core_row_and_keeps_its_file(
         pm_import, pm_update, tmp_path, monkeypatch, capsys):
-    """diverged로 승격이 거부되면 로컬 전용 core 선언(과 그 파일)이 보존된다.
+    """사본에만 있는 core 행은 관리에서 빠지고 그 파일은 그대로 남는다.
 
-    guest 렌더물은 이 축이 아니다 — 절이 소유를 선언한 경로라 update 채널이 재렌더한다(아래 단언)."""
+    guest 렌더물은 이 축이 아니다 — 구획이 소유를 선언한 경로라 update 채널이 재렌더한다(아래 단언)."""
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda *a, **k: None)
     fw = tmp_path / "fw-diverged"
     fw.mkdir()
@@ -5383,22 +5378,20 @@ def test_pm_update_diverged_selfheal_keeps_local_only_core_declaration(
     user_bytes = b"# USER GUEST OVERRIDE\n"
     guest_file.write_bytes(user_bytes)
 
-    preview = update_manifest.resolve_manifest_selfheal(dest, fw)
-    assert preview["status"] == "diverged"
-    assert ".local/custom-core" in preview["removed"]
-    assert preview["manifest"] is None
+    shipped = update_manifest.shipped_manifest(dest, fw)
+    assert ".local/custom-core" in shipped["released"]
     capsys.readouterr()
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(fw)]) == 0
 
-    # guest 렌더물은 diverged 여부와 무관하게 update 채널이 재렌더한다(손편집은 되돌아간다).
-    #   이 테스트가 지키는 축은 **local-only core 선언 보존**(승격 거부)이지 guest 파일 불가침이 아니다.
+    # guest 렌더물은 update 채널이 재렌더한다(손편집은 되돌아간다).
     assert guest_file.read_bytes() != user_bytes, \
         "guest 렌더물이 재렌더를 안 받았다(설치 시점 사본 동결)"
     assert (dest / ".local" / "custom-core").read_text(encoding="utf-8") == "custom core\n", \
-        "diverged 로 승격을 거부했는데 로컬 전용 core 파일이 훼손됐다"
+        "관리 해제한 로컬 전용 core 파일이 훼손됐다"
+    assert ".local/custom-core" not in manifest.read_text(encoding="utf-8")
 
 
 def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_path, monkeypatch):

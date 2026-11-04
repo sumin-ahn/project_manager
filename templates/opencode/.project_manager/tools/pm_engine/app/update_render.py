@@ -8,14 +8,13 @@ import contextlib
 import shutil
 from pm_engine.app import adapter_render
 from pm_engine.app import hook_sets
-from pm_engine.domain import manifest_rules
 from pm_engine.domain import render_rules
 from pm_engine.infra import engine_transfer
 from pm_engine.infra import fs
 from pm_engine.infra import install_conf
-from pm_engine.infra import manifest_store
 from pm_engine.infra import render_io
 from pm_engine.infra import skill_inventory
+from pm_engine.infra import update_paths
 
 
 # local.conf key → operational token key(uppercase·render_rules). board.py init 은
@@ -399,9 +398,7 @@ def apply(home, changes: list[tuple], *, is_hook_set_path=None, package_plan=Non
     바뀌지 않는다(앞 단계의 파일·게시한 패키지는 이미 쓰였을 수 있고 되돌리지 않는다). 렌더 값은 dest
     local.conf를 한 번 읽는다.
 
-    engine.manifest self-prop overwrite 는 add-harness guest 절을 재부착한다(위 헬퍼). 그 재부착에
-    함께 기록할 파생 엔진 행은 dst(`_RenderDst.guest_backfill_lines`)가 실어 나른다 — `entry_
-    notation_template` 과 같은 운반 방식이다.
+    engine.manifest 는 계획이 실은 전문(`update_paths._ManifestTextSource`)을 그대로 쓴다.
 
     **훅 세트 파일만 원자 교체**한다 — 하네스가 실행 중에 읽는 파일을 copy2 로 덮으면
     truncate→채움 창에 부분 파일이 실행된다. 그 밖의 파일은 현행 copy2 그대로다(전 파일 확대는
@@ -444,10 +441,8 @@ def apply(home, changes: list[tuple], *, is_hook_set_path=None, package_plan=Non
                         rendered, dst.codex_operational_skill
                     )
                 render_io._write_rendered_text(Path(dst), Path(sp), rendered)
-            elif str(_r).replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL:
-                # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).
-                manifest_store._copy_manifest_preserving_guest(
-                    sp, Path(dst), getattr(dst, "guest_backfill_lines", None))
+            elif isinstance(sp, update_paths._ManifestTextSource):
+                render_io._write_rendered_text(Path(dst), sp, sp.text)
             elif hook_set_path(_r):
                 engine_transfer._atomic_copy2(Path(sp), Path(dst))
             else:

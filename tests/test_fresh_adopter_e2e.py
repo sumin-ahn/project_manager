@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pm_engine.app import import_fill
 from pm_engine.domain import install_rules
+from pm_engine.domain import manifest_rules
 from pm_engine.infra import install_source
 
 import importlib.util
@@ -49,7 +50,6 @@ from pm_engine.infra import adapter_baseline
 from pm_engine.infra import install_receipt
 from pm_engine.infra import upstream_git
 from pm_engine.infra import pm_paths
-from pm_engine.app import update_manifest
 from pm_engine.app import update_plan
 from pm_engine.cli import import_cmd
 from pm_engine.cli import update_cmd
@@ -1691,11 +1691,18 @@ def test_add_harness_preserves_crlf_manifest_notation(pm_import, tmp_path):
         "덧붙이는 guest 절도 그 파일 표기로 렌더돼야 한다")
 
 
+def _guest_block_rows(dest: Path) -> list:
+    """dest engine.manifest 의 추가 하네스 구획 행(ManifestEntry) — 엔진 파서로 구획만 읽는다."""
+    text = (dest / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
+    block = manifest_rules._extract_guest_manifest_block(text) or ""
+    return [entry for entry in map(manifest_rules._parse_manifest_line, block.splitlines()) if entry]
+
+
 def _guest_engine_rows(pm_update, dest: Path) -> dict[str, object]:
     """dest guest 절의 **엔진 행**(비-`@render`) → {경로: ManifestEntry}."""
     return {
         str(entry).replace("\\", "/"): entry
-        for entry in update_manifest._dest_guest_manifest_entries(dest)
+        for entry in _guest_block_rows(dest)
         if not getattr(entry, "render", False)
     }
 
@@ -1704,7 +1711,7 @@ def _guest_render_paths(pm_update, dest: Path) -> list[str]:
     """dest guest 절의 **렌더물 행**(`@render`) 경로 — 재렌더 채널 대상."""
     return sorted(
         str(entry).replace("\\", "/")
-        for entry in update_manifest._dest_guest_manifest_entries(dest)
+        for entry in _guest_block_rows(dest)
         if getattr(entry, "render", False)
     )
 

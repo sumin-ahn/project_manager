@@ -9,6 +9,7 @@
 ### Added
 
 - 출하 원칙 레지스트리(`.project_manager/wiki/pm_principles.md`) §"티켓과 위임" 에 평어 규칙을 더했다. 엔진·어댑터 폴더(`.claude`·`.codex`·`.opencode`·`.agents`)·티켓·위임 프롬프트·방법론 문서·`CLAUDE.md`·`AGENTS.md` 를 편집하면 Claude·OpenCode 주 세션에 한 번 안내되고, 비유를 한 번 풀어야 뜻이 나오는 지어낸 말 대신 `.project_manager/wiki/pm_playbook.md` §"용어 대응표" 의 평어를 쓰게 한다. 대응표는 지어낸 말·평어·문맥에 따라 가르는 기준 세 칸이다.
+- 갱신기에 대상 폴더 인자 `--into <PM 홈>` 을 더했다. 이 갱신기로 다른 PM 홈을 갱신한다(엔진 코드를 그 PM 홈에 옮긴 뒤 그 PM 홈이 받은 갱신기가 완료 단계를 실행한다). 관리자 앱의 갱신 [적용]은 첫 실행에 번들 갱신기 `pm_update.py --into <사본>` 을 쓰므로, upstream 이 URL 인 v1.7.13 이하 사본과 v1.7.8 이하 사본도 [적용]으로 최신판까지 올라간다. 둘째 실행은 이전처럼 사본 자신의 `pm-config update` 다.
 
 ### Changed
 
@@ -44,6 +45,7 @@
 - git 명령 검사 안내를 세션마다 한 번만 내려고 적는 표시 파일이 `.project_manager/.local/ctx-stop/(세션).git-anchor` 에서 `(세션).git-check` 로 바뀐다.
 - `.project_manager/engine.manifest` 의 추가 하네스 구획 표시를 `# >>> pm add-harness guest @render (local·pm_update-preserved) >>>`·`# <<< pm add-harness guest @render (local) <<<` 에서 `# >>> pm add-harness @render (local·pm_update-preserved) >>>`·`# <<< pm add-harness @render (local) <<<` 로 바꿨다. 갱신이 옛 표시를 한 번 옮기고, 엔진은 옛 표시를 읽지 않는다.
 - 추가 리뷰어 처분 명령의 자리 표기를 `--resolve-review <T-NNNN>` 하나로 맞췄다. 보호 브랜치 pre-push 훅과 라이브 시험 거부 안내의 `<리뷰 집계 티켓>` 이 `<T-NNNN>` 이 된다.
+- 갱신은 설치된 하네스가 상류에서 받는 `engine.manifest` 를 그대로 쓴다. 사본의 `engine.manifest` 는 어떤 하네스가 설치됐는지만 알리고 갱신이 상류 판으로 다시 쓴다. 사본 manifest 에만 있던 행은 관리에서 빠지고 그 파일은 그대로 남으며, 갱신 출력에 `→ engine.manifest 를 상류 출하본으로 맞춘다 — 상류 manifest 에 없는 사본 행 N개는 관리에서 빠지고 파일은 그대로 둔다:` 와 경로 목록이 나온다. 추가 하네스 구획은 갱신마다 그 하네스의 상류 manifest 에서 다시 만든다. local.conf 옛 키 이름과 추가 하네스 구획 옛 표시는 갱신 시작 때 한 번 옮긴다. 상류 manifest 를 읽지 못하면 사본 manifest 로 계속하지 않고 멈춘다. 설치된 하네스의 상류 manifest 가 상류에 없을 때(잘못 지정한 `--from` 등)도 그 하네스 행을 건너뛰지 않고 갱신 전에 멈춘다.
 
 ### Removed
 
@@ -58,6 +60,7 @@
   - Linux 관리자 화면의 저장소 폴더가 `~/.local/share/__main__.py/`(`python3 -m manager`)·`~/.local/share/pm-manager-linux-x86_64/`(실행 파일)에서 `~/.local/share/pm-manager/` 로 바뀐다. `--port` 를 고정해 쓰던 경우 화면이 기억한 선택(설정 안 함 항목 보기)이 한 번 초기화된다. 옛 폴더와 `~/.cache` 의 같은 이름 폴더는 지워도 된다.
 - 상류가 새 스킬을 더한 갱신에서 Codex 사본은 같은 갱신이 새로 쓰거나 바꾸는 파일이 그 새 스킬을 부르면 호출 표기(`$pm-…`)가 둘째 갱신에서야 바뀌어, 갱신을 두 번 해야 트리가 맞던 결함을 고쳤다. 이제 같은 갱신이 새로 쓰거나 바꾸는 파일의 호출 표기 렌더는 그 갱신이 처음 쓰는 스킬 파일의 이름도 쓴다. 상류에서 바뀌지 않은 파일의 호출 표기는 그대로 다음 갱신에서 바뀐다.
 - 갱신이 manifest 의 `# pm-retired-path:` 지시로 디렉터리 행 아래 파일을 백업 폴더로 옮길 때, 같은 실행이 그 파일을 `[퇴역]` 줄과 함께 "상류 부재 파일 — 동기는 지우지 않는다" 로도 알리던 결함을 고쳤다. 이제 그 파일은 `[퇴역]` 으로만 나온다.
+- `add-harness opencode` 로 opencode 를 얹은 사본이 갱신 뒤 이름이 바뀐 명령 `pm-cluster-claim`·`pm-cluster-finish` 를 받지 못하던 것을 고쳤다.
 
 ### 업그레이드 노트
 
@@ -83,6 +86,7 @@
 - 갱신 전에 핸드오프한 세션이 갱신 뒤 같은 차수로 다시 핸드오프하면 옛 줄을 찾지 못했다는 경고 한 줄을 내고 handoff entry 를 새로 덧붙인다.
 - v1.8.1 이전 엔진이 준비하고 아직 채우지 않은 리뷰 라운드는 갱신 뒤 빈 양식으로 읽히지 않는다. 그런 라운드는 갱신 전에 돌려받거나 버린다(`pm_delegate.py ticket collect`·`ticket abandon`).
 - 엔진 모듈을 직접 import 하던 채택자 스크립트는 새 모듈·함수 이름으로 고친다. 옛 이름에는 별칭이 없다.
+- 관리자 앱 [적용] 한 번으로 v1.0.0 이후 어느 판의 사본이든 최신판까지 올라간다. [적용]이 `managed 어댑터 config가 아직 일치하지 않는다` 로 멈추면 출력이 가리키는 파일을 설정 탭에서 수용한 뒤 [적용]을 다시 누른다. `사용 한도·압축 비율을 하네스 설정 파일에 반영하지 않았습니다` 로 멈추면 출력이 가리키는 값(v1.0.0·v1.0.1 사본은 `ctx.precompact_at_pct`)을 설정 탭에서 정한 뒤 [적용]을 다시 누른다. v1.7.8 이하 사본의 미리보기는 옛 키 이름 때문에 `오류: upstream 미등록` 으로 끝나지만 [적용]은 키 이름을 먼저 옮기고 진행한다. 갱신 출력의 관리 해제 목록에 나온 파일(예: `.claude/run_tests_hook.sh`)은 지금 판이 쓰지 않으므로 필요 없으면 지운다. 두 번째 하네스를 `add-harness` 구획 없이 설치했던 사본(v1.0.x `--harness both`, v1.4.2 이하 `add-harness`)은 그 하네스가 갱신 대상이 아니라는 경고와 등재 절차(`pm-config add-harness <하네스>`)가 나온다.
 
 ## [1.8.3] - 2026-10-30
 

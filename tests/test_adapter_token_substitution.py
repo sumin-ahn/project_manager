@@ -234,13 +234,17 @@ def test_pm_update_renders_toml_adapter(pm_update, tmp_path, monkeypatch, capsys
     src = stored / "templates" / "codex" / ".codex" / "agents" / "developer.toml"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text('description = "{{PROJECT_NAME}} 구현 subagent"\n', encoding="utf-8")
+    # 갱신은 사본에 설치된 판의 출하 manifest 로 계획한다 — 상류에 같은 행의 codex 판 manifest 를 둔다.
+    row = ".codex/agents    @render @source=templates/codex/.codex/agents\n"
+    flavor_manifest = stored / "templates" / "codex" / ".project_manager" / "engine.manifest"
+    flavor_manifest.parent.mkdir(parents=True, exist_ok=True)
+    flavor_manifest.write_text(row, encoding="utf-8")
     # 출하 인벤토리는 `git ls-files` 가 낸다 — source 트리가 자기 checkout 이라고 선언한다.
     init_git_repo(stored, commit="seed")
 
     dest_manifest = adopter / ".project_manager" / "engine.manifest"
     dest_manifest.parent.mkdir(parents=True, exist_ok=True)
-    dest_manifest.write_text(
-        ".codex/agents    @render @source=templates/codex/.codex/agents\n", encoding="utf-8")
+    dest_manifest.write_text(row, encoding="utf-8")
     conf = adopter / ".project_manager" / "local.conf"
     conf.write_text(
         f"upstream.path={stored}\nproject.name={PROJECT_NAME}\n",

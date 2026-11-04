@@ -1,9 +1,12 @@
 """갱신 탭·새 프로젝트 적용의 브리지 메서드 — `pm-config update` 와 `pm_import.py --new`.
 
 경계 세 줄:
-  - 관리자는 엔진 파일을 복사하지 않는다. 갱신도 적용도 전부 엔진 명령의 서브프로세스다.
-  - `pm-config update` 에 `--from` 을 주지 않는다. 사본이 자기 `upstream.path` 로 소스를
-    해소하고, 그 값이 URL 이면 엔진이 자기 캐시로 clone/fetch 한다(관리자 캐시 0).
+  - 관리자는 엔진 파일을 복사하지 않는다. 갱신도 적용도 전부 엔진 명령의 서브프로세스다. 갱신의
+    첫 실행은 번들 갱신기(`pm_update.py --into <사본>`)라 사본의 엔진이 몇 판이든 같은 갱신기가
+    엔진 코드를 옮기고, 사본이 받은 갱신기가 완료 단계를 실행한다. 둘째 실행은 사본 자신의
+    `pm-config update` 다.
+  - 갱신에 `--from` 을 주지 않는다. 사본의 `upstream.path` 로 소스를 해소하고, 그 값이 URL 이면
+    엔진이 사본 안 캐시로 clone/fetch 한다(관리자 캐시 0).
   - `pm_import.py --new` 에는 **`--upstream` 을 항상 명시**한다. 생략하면 엔진이 `--from` 이
     git checkout 인지로 값을 가르는데 번들은 checkout 이 아니라서, 프로세스와 함께 사라지는
     `/tmp/_MEIxxxxxx` 가 그 프로젝트의 upstream 으로 박힌다(그 프로젝트는 갱신 경로를 잃는다).
@@ -76,11 +79,17 @@ def registered_harnesses() -> list[str]:
 
 
 def update_argv(pm_home: Path, *, dry_run: bool) -> list[str]:
-    """`pm-config update` 한 줄 — `--from` 은 붙이지 않는다(소스는 사본이 해소한다)."""
-    argv = [*runner.interpreter(pm_home), _tool(pm_home, "pm_config.py"), "update"]
+    """번들 갱신기로 그 사본을 갱신하는 한 줄 — `--from` 은 붙이지 않는다(소스는 사본이 해소한다)."""
+    argv = [*runner.interpreter(pm_home),
+            str(bundle_root() / ".project_manager" / "tools" / "pm_update.py"), "--into", str(pm_home)]
     if dry_run:
         argv.append("--dry-run")
     return argv
+
+
+def own_update_argv(pm_home: Path) -> list[str]:
+    """사본 자신의 `pm-config update` 한 줄 — [적용]의 둘째 실행(변경 0건 확인)."""
+    return [*runner.interpreter(pm_home), _tool(pm_home, "pm_config.py"), "update"]
 
 
 def import_argv(target: Path, harness: str, name: str, upstream: str) -> list[str]:
@@ -165,11 +174,11 @@ class UpdateApi:
 
     # ── 갱신 ──────────────────────────────────────────────────────────────
     def update_preview(self, path: str) -> dict:
-        """`pm-config update --dry-run` — 엔진 출력 원문 그대로(요약·파싱 없음)."""
+        """번들 갱신기 `--into <사본> --dry-run` — 엔진 출력 원문 그대로(요약·파싱 없음)."""
         return self._update(path, dry_run=True)
 
     def update_apply(self, path: str) -> dict:
-        """`pm-config update`의 RUN1 배달과 RUN2 완료를 새 프로세스로 실행한다."""
+        """RUN1 번들 갱신기(`--into <사본>`)와 RUN2 사본 자신의 `pm-config update` 를 새 프로세스로 실행한다."""
         return self._update(path, dry_run=False)
 
     def _update(self, path: str, *, dry_run: bool) -> dict:
@@ -180,12 +189,11 @@ class UpdateApi:
             if dry_run:
                 return _completed(_run(home, update_argv(home, dry_run=True),
                                        timeout=UPDATE_TIMEOUT_SECONDS))
-            # v1.8.0 이상 사본: RUN1 이 엔진 코드 전달과 완료 단계를 끝내고 RUN2 는 변경 0건 확인이다.
-            # v1.7.13 이하 사본: RUN1 은 옛 갱신기가 배달만 끝낼 수 있고 RUN2 가 새 갱신기로 완료 단계를
-            # 실행한다. 재시도는 없다.
-            for stage in ("RUN1", "RUN2"):
-                completed = _run(home, update_argv(home, dry_run=False),
-                                 timeout=UPDATE_TIMEOUT_SECONDS)
+            # RUN1 은 번들 갱신기가 엔진 코드를 옮기고 사본이 받은 갱신기가 완료 단계를 끝낸다. RUN2 는
+            # 사본 자신의 갱신기로 변경 0건을 확인한다. 재시도는 없다.
+            for stage, argv in (("RUN1", update_argv(home, dry_run=False)),
+                                ("RUN2", own_update_argv(home))):
+                completed = _run(home, argv, timeout=UPDATE_TIMEOUT_SECONDS)
                 steps.append(_step(stage, completed))
                 if completed.returncode != 0:
                     break
