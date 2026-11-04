@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 228,
+  "count": 220,
   "surface_counts": {
     "markdown": 136,
     "python-non-prose": 20,
-    "python-prose": 72
+    "python-prose": 64
   },
   "entries": [
     {
@@ -170,25 +170,9 @@
     {
       "path": ".project_manager/tools/pm_engine/infra/fs.py",
       "kind": "work_item",
-      "match": "T-0709",
-      "surface": "python-prose",
-      "hash": "d8dd9cb82cb192190827cf2b2e04404e56686ae351dd024775636c2932b10cd4",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_engine/infra/fs.py",
-      "kind": "work_item",
       "match": "T-0710",
       "surface": "python-prose",
       "hash": "cd704fdff1f838e951cc5712d5eee2a82801143daf3811cc0fe7705f75751244",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_engine/infra/fs.py",
-      "kind": "work_item",
-      "match": "T-0710",
-      "surface": "python-prose",
-      "hash": "d8dd9cb82cb192190827cf2b2e04404e56686ae351dd024775636c2932b10cd4",
       "count": 1
     },
     {
@@ -450,25 +434,9 @@
     {
       "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/fs.py",
       "kind": "work_item",
-      "match": "T-0709",
-      "surface": "python-prose",
-      "hash": "d8dd9cb82cb192190827cf2b2e04404e56686ae351dd024775636c2932b10cd4",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/fs.py",
-      "kind": "work_item",
       "match": "T-0710",
       "surface": "python-prose",
       "hash": "cd704fdff1f838e951cc5712d5eee2a82801143daf3811cc0fe7705f75751244",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_engine/infra/fs.py",
-      "kind": "work_item",
-      "match": "T-0710",
-      "surface": "python-prose",
-      "hash": "d8dd9cb82cb192190827cf2b2e04404e56686ae351dd024775636c2932b10cd4",
       "count": 1
     },
     {
@@ -842,25 +810,9 @@
     {
       "path": "templates/codex/.project_manager/tools/pm_engine/infra/fs.py",
       "kind": "work_item",
-      "match": "T-0709",
-      "surface": "python-prose",
-      "hash": "d8dd9cb82cb192190827cf2b2e04404e56686ae351dd024775636c2932b10cd4",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_engine/infra/fs.py",
-      "kind": "work_item",
       "match": "T-0710",
       "surface": "python-prose",
       "hash": "cd704fdff1f838e951cc5712d5eee2a82801143daf3811cc0fe7705f75751244",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_engine/infra/fs.py",
-      "kind": "work_item",
-      "match": "T-0710",
-      "surface": "python-prose",
-      "hash": "d8dd9cb82cb192190827cf2b2e04404e56686ae351dd024775636c2932b10cd4",
       "count": 1
     },
     {
@@ -1458,25 +1410,9 @@
     {
       "path": "templates/opencode/.project_manager/tools/pm_engine/infra/fs.py",
       "kind": "work_item",
-      "match": "T-0709",
-      "surface": "python-prose",
-      "hash": "d8dd9cb82cb192190827cf2b2e04404e56686ae351dd024775636c2932b10cd4",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_engine/infra/fs.py",
-      "kind": "work_item",
       "match": "T-0710",
       "surface": "python-prose",
       "hash": "cd704fdff1f838e951cc5712d5eee2a82801143daf3811cc0fe7705f75751244",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_engine/infra/fs.py",
-      "kind": "work_item",
-      "match": "T-0710",
-      "surface": "python-prose",
-      "hash": "d8dd9cb82cb192190827cf2b2e04404e56686ae351dd024775636c2932b10cd4",
       "count": 1
     },
     {
