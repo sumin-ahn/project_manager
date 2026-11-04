@@ -99,28 +99,29 @@ def _refuse_scope_with_pending_engine_code(changes, *, target: bool = False,
     return 1
 
 
-def _transfer_engine_code(home, args, argv: list[str], scope_paths: list[str]) -> int:
+def _transfer_engine_code(home, args, argv: list[str], scope_paths: list[str],
+                          effective_dest: Path) -> int:
     """전달 프로세스 — 엔진 코드만 옮기고 받은 갱신기를 완료 프로세스로 띄운다(rc 는 그 프로세스의 것).
 
-    대상은 실행 Home(`home`)의 트리다. 상류 해소·manifest 자기치유 판정·엔진 코드 계획은 전부
-    복사 **전**에 끝난다. 엔진 패키지에 변경이 있으면 같은 부모의 락 안에서 패키지를 디렉터리째 먼저
-    교체하고(`package_transfer.engine_package_delivery`), 나머지 평면 엔진 파일을 복사한 뒤 이전 패키지
+    대상은 `effective_dest` 다(실행 Home 의 트리, `--into` 면 그 PM 홈). 완료 프로세스는 대상이 받은
+    갱신기이고 자기 위치가 대상이라 `--into` 없이 같은 인자로 뜬다. 상류 해소·계획 manifest
+    (`update_manifest.shipped_manifest`)·엔진 코드 계획은 전부 복사 **전**에 끝난다. 엔진 패키지에
+    변경이 있으면 같은 부모의 락 안에서 패키지를 디렉터리째 먼저 교체하고(`package_transfer.engine_package_delivery`), 나머지 평면 엔진 파일을 복사한 뒤 이전 패키지
     backup 을 정리한다. 정리까지 성공해야 완료 프로세스를 띄운다 — 교체·복사·정리 실패는
     `PackageReplaceError` 로 올라가 완료 프로세스가 뜨지 않는다. 복사를 시작한 뒤에는 엔진 모듈을 새로
     적재하지 않는다. 인계 파일 수는 평면 행 수 + 패키지의 추가·변경·삭제 파일 수다. `--dry-run` 은 엔진
     코드 변경이 있으면 그 변경만 보여 주고 끝난다(받은 갱신기가 디스크에 없어 렌더·훅·어댑터 미리보기를
     그릴 수 없다). `--paths` 는 엔진 코드 변경이 남아 있으면 어떤 쓰기보다 먼저 거부한다."""
-    rc, _dest_root, source_root = upstream_changes._resolve_dest_source(home, args)
+    rc, source_root = upstream_changes._resolve_source(args, effective_dest)
     if rc:
         return rc
-    effective_dest = home.root
     try:
         engine = update_plan._engine_code_plan(home, effective_dest, source_root)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except retired_paths.RetiredPathError as exc:
-        print(f"[중단] retired-path manifest 자기치유 실패 — {exc}", file=sys.stderr)
+        print(f"[중단] retired-path 지시 판독 실패 — {exc}", file=sys.stderr)
         return 1
     changes = engine["changes"]
     package_plan = engine["package_plan"]
@@ -146,8 +147,10 @@ def _transfer_engine_code(home, args, argv: list[str], scope_paths: list[str]) -
             for _rel, src, dst, _kind in flat_changes:
                 Path(dst).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+    # 완료 프로세스 인자 = 받은 인자에서 `--into <경로>`·`--into=<경로>` 를 뺀 것.
     return _launch_completion(
-        effective_dest, source_root, 0 if args.dry_run else transferred, argv)
+        effective_dest, source_root, 0 if args.dry_run else transferred,
+        [arg for arg, before in zip(argv, ["", *argv]) if "--into" not in (arg.split("=")[0], before)])
 
 
 def _print_engine_changes(changes, package_plan) -> None:

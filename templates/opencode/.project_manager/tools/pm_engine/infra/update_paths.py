@@ -17,7 +17,7 @@ class _RenderDst:
 
     __slots__ = (
         "_path", "render", "entry_notation_template", "flat_command_skill",
-        "codex_operational_skill", "guest_backfill_lines",
+        "codex_operational_skill",
     )
 
     def __init__(
@@ -27,17 +27,12 @@ class _RenderDst:
         entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
         flat_command_skill: str | None = None,
         codex_operational_skill: str | None = None,
-        guest_backfill_lines: list[str] | None = None,
     ) -> None:
         self._path = Path(path)
         self.render = render
         self.entry_notation_template = entry_notation_template
         self.flat_command_skill = flat_command_skill
         self.codex_operational_skill = codex_operational_skill
-        # engine.manifest self-prop 전용 — apply 의 guest 절 재부착에 함께 기록할 파생 엔진 행.
-        #   change tuple 에 실어 나르므로 `apply` 시그니처가 바뀌지 않는다(`entry_notation_template`
-        #   과 같은 운반 방식).
-        self.guest_backfill_lines = guest_backfill_lines
 
     def __fspath__(self) -> str:
         return str(self._path)
@@ -63,17 +58,17 @@ class _RenderDst:
             f"_RenderDst({self._path!r}, render={self.render}, "
             f"entry_notation_template={self.entry_notation_template!r}, "
             f"flat_command_skill={self.flat_command_skill!r}, "
-            f"codex_operational_skill={self.codex_operational_skill!r}, "
-            f"guest_backfill_lines={self.guest_backfill_lines!r})"
+            f"codex_operational_skill={self.codex_operational_skill!r})"
         )
 
 
 class _ManifestTextSource:
-    """선택된 flavor manifest 합집합 텍스트를 change tuple에 싣는 인메모리 source.
+    """사본에 쓸 engine.manifest 전문(`update_manifest.shipped_manifest` 의 text)을 change tuple 에 싣는
+    인메모리 source.
 
-    합집합은 upstream checkout 안의 단일 파일로 존재하지 않는다. 임시 파일을 만들지 않고도
-    plan/apply 4-tuple 계약을 유지하도록 ``read_text``만 제공한다. engine.manifest 전용이며
-    apply의 self-prop 분기가 이 객체를 직접 소비한다.
+    그 전문(출하 manifest 합집합 + 다시 만든 추가 하네스 구획)은 upstream checkout 안의 단일 파일로
+    존재하지 않는다. 임시 파일을 만들지 않고도 plan/apply 4-tuple 계약을 유지하도록 ``read_text``만
+    제공한다. engine.manifest 전용이며 apply 가 이 객체를 직접 쓴다.
     """
 
     __slots__ = ("text",)

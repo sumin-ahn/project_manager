@@ -14,6 +14,7 @@ from pm_engine.infra import engine_transfer
 from pm_engine.infra import fs
 from pm_engine.infra import install_conf
 from pm_engine.infra import manifest_store
+from pm_engine.infra import render_io
 from pm_engine.infra import retired_paths
 from pm_engine.infra import skill_inventory
 from pm_engine.infra import update_paths
@@ -31,7 +32,6 @@ def plan(
     manifest_source_text: str | None = None,
     inventory_out: set[str] | None = None,
     dest_inventory_out: set[str] | None = None,
-    guest_backfill_lines: list[str] | None = None,
     package_plan_out: list[engine_transfer.EnginePackagePlan] | None = None,
     conf: Mapping[str, str],
 
@@ -63,8 +63,8 @@ def plan(
     ``dest_inventory_out``은 같은 열거의 **dest 좌표만** 모은다. 은퇴 판정처럼 dest 잔존물과 대조하는
     소비자는 상류 좌표가 섞이면 우연한 문자열 일치로 후보를 놓치므로(false negative) 좌표축을 나눈다.
 
-    ``guest_backfill_lines``는 apply 가 guest 절에 기록할 파생 엔진 행이다. self-prop 판정에만 쓴다 —
-    기록 지점이 apply 한 곳뿐이라 그 change 가 계획에 없으면 파생분이 영원히 기록되지 않는다.
+    ``manifest_source_text``는 사본에 쓸 engine.manifest 전문이다(`update_manifest.shipped_manifest`).
+    주면 self-prop 행(`.project_manager/engine.manifest`)은 그 전문과 사본 파일을 비교해 계획한다.
 
     manifest 에 정확한 엔진 패키지 행(`manifest_rules._ENGINE_PACKAGE_REL`)이 있으면 그 행과 그 아래
     자식 행은 파일 단위로 계획하지 않는다. 패키지 출하 목록과 대상 트리를 바이트로 비교한 계획 값
@@ -112,30 +112,21 @@ def plan(
                 changes.insert(0, (package_rel, package.source_dir, package.dest_dir, "replace-dir"))
             continue
         if rel.replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL and manifest_source_text is not None:
-            # 선택 flavor 합집합은 upstream에 단일 실파일로 존재하지 않는다. 인메모리 source를
-            # change tuple에 실어 self-prop가 합집합 전체를 설치/갱신하게 한다.
+            # 사본에 쓸 manifest 전문은 upstream 에 단일 실파일로 존재하지 않는다. 인메모리 source 를
+            # change tuple 에 실어 self-prop 가 그 전문을 설치/갱신하게 한다.
             if inventory_out is not None:
                 # 이 분기도 **계획이 다루는 좌표**다 — 빼면 `--paths .project_manager/engine.manifest`
                 #   가 유효 변경인데도 "대응 없음" 으로 거부된다(합집합 경로에만 생기는 갭).
                 inventory_out.add(rel.replace("\\", "/").strip("/"))
             if dest_inventory_out is not None:
                 dest_inventory_out.add(rel.replace("\\", "/").strip("/"))
-            dst = update_paths._RenderDst(
-                effective_dest / rel, False,
-                guest_backfill_lines=guest_backfill_lines)
+            dst = update_paths._RenderDst(effective_dest / rel, False)
             source = update_paths._ManifestTextSource(manifest_source_text)
             if not dst.exists():
                 changes.append((rel, source, dst, "new"))
-            else:
-                try:
-                    # 판정은 단일 flavor 분기와 **같은 헬퍼**다 — guest 절 차감 core 비교 + 옛 세대
-                    #   마커. 여기만 마커 축이 빠지면 다중-harness 형상에서 마커 세대가 영구 잔존한다.
-                    if update_manifest._manifest_self_prop_needs_update(
-                            fs.read_text_shared(Path(dst), encoding="utf-8"), manifest_source_text,
-                            guest_backfill_lines):
-                        changes.append((rel, source, dst, "update"))
-                except (OSError, UnicodeDecodeError):
-                    changes.append((rel, source, dst, "update"))
+            elif render_io._normalize_newlines(
+                    fs.read_text_shared(Path(dst), encoding="utf-8")) != manifest_source_text:
+                changes.append((rel, source, dst, "update"))
             continue
         declared_render = manifest_rules._entry_render_flag(entry)
         item_notation_template = (
@@ -226,12 +217,6 @@ def plan(
                 ),
                 flat_command_skill=flat_command_skill,
                 codex_operational_skill=codex_operational_skill,
-                # guest 절 기록은 self-prop 분기에서만 일어난다 — 전 change 에 실으면 낭비다.
-                guest_backfill_lines=(
-                    guest_backfill_lines
-                    if str(r).replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL
-                    else None
-                ),
             )
             if not dst.exists():
                 changes.append((r, sp, dst, "new"))
@@ -259,18 +244,6 @@ def plan(
                 #   수렴 불가).
                 if not update_render._rendered_text_matches_dest(rendered_entry, dst):
                     changes.append((r, sp, dst, "update"))
-            elif str(r).replace("\\", "/") == manifest_rules._MANIFEST_SELF_REL:
-                # engine.manifest self-prop — 판정(guest 절 차감 core 비교 + 옛 세대 마커)은
-                #   다중-harness 합집합 분기와 **같은 헬퍼**를 쓴다(사유·근거는 그 docstring).
-                try:
-                    if update_manifest._manifest_self_prop_needs_update(
-                            fs.read_text_shared(Path(dst), encoding="utf-8"),
-                            fs.read_text_shared(Path(sp), encoding="utf-8"),
-                            guest_backfill_lines):
-                        changes.append((r, sp, dst, "update"))
-                except (OSError, UnicodeDecodeError):
-                    if not filecmp.cmp(sp, dst, shallow=False):
-                        changes.append((r, sp, dst, "update"))
             elif not filecmp.cmp(sp, dst, shallow=False):
                 changes.append((r, sp, dst, "update"))
     return changes, missing
@@ -340,26 +313,18 @@ def _resolve_engine_sync_plan(
     source_root: Path,
     *,
     target: str | None = None,
-    guest_entries: list | None = None,
-    guest_backfill: list | None = None,
-    guest_backfill_flavors: list[str] | None = None,
     inventory_out: set[str] | None = None,
     dest_inventory_out: set[str] | None = None,
-    report: bool = False,
     conf: Mapping[str, str],
 
 ) -> dict:
-    """manifest 자기치유 → notation 템플릿 해소 → guest backfill 기록 판정 → `plan()` 을 한
-    호출로 묶어 반환하는 **구조화 계획**. `_main`(self-update·`--target` export 공용)과 드리프트
-    게이트(`drift_changes`)가 이 함수를 실제로 공동 호출한다 — 별도 diff/계획 구현을 두지 않는다.
+    """계획 manifest → notation 템플릿 해소 → `plan()` 을 한 호출로 묶어 반환하는 **구조화 계획**.
+    `_main`(self-update·`--target` export 공용)과 드리프트 게이트(`drift_changes`)가 이 함수를 실제로
+    공동 호출한다 — 별도 diff/계획 구현을 두지 않는다. 출력은 없다.
     `conf` 는 `plan()` 의 render path 판정 값이다(저장 `apply_conf` 는 쓰기 전의 제안 값을 넘긴다).
 
-    `guest_entries`/`guest_backfill`/`guest_backfill_flavors` 는 호출부가 이미 해소했으면 넘기고
-    (중복 IO 회피), 없으면(`guest_backfill is None`) 여기서 해소한다.
-
-    `report=True` 면 `_main` 이 기존에 내던 것과 **같은 지점·같은 문구**로 manifest merge conflict·
-    guest backfill 파생 안내를 stdout/stderr 에 낸다. `report=False`(기본값)는 아무것도 출력하지
-    않는다 — `drift_changes` 는 이 값으로 호출해 출력·부작용 0 을 지킨다.
+    계획 manifest 는 self-update 면 `update_manifest.shipped_manifest`(설치된 하네스의 출하 manifest)이고,
+    `--target` 내보내기면 타깃 자신의 manifest 다(타깃 manifest 는 루트와 의도적으로 다르다).
 
     manifest 해소 실패(`FileNotFoundError`)·notation context 해소 실패(`_EngineSyncNotationContextError`
     — `RuntimeError` 서브클래스)는 삼키지 않고 그대로 전파한다 — 호출부마다 처리(에러 메시지+rc2
@@ -372,100 +337,42 @@ def _resolve_engine_sync_plan(
       - "missing": `plan()` 의 non-`@target-owned` source 부재 relpath 리스트 (버리지 않는다 —
         buried 하면 확정 drift 0 과 판정 불능이 뒤섞인다)
       - "manifest": 계획에 쓰인 manifest
-      - "selfheal": `resolve_manifest_selfheal` 결과(`target` 모드는 skip 상수)
-      - "persisted_guest_backfill": apply 가 절에 기록할 manifest-line 리스트(`legacy_preserved`
-        면 None)
+      - "shipped": `update_manifest.shipped_manifest` 결과(`target` 모드는 None)
       - "entry_notation_templates": 계획에 쓰인 notation 템플릿 dict
       - "package_plan": 엔진 패키지 계획 값(`EnginePackagePlan`) — 정확한 패키지 행이 없거나 그 source
         가 없으면(missing 에 남는다) None. 교체 행의 적용·파일 수 계산에 그대로 넘긴다.
     """
-    if guest_entries is None:
-        guest_entries = update_manifest._dest_guest_manifest_entries(effective_dest)
-    if guest_backfill is None:
-        guest_backfill, guest_backfill_flavors = update_manifest._guest_engine_backfill_entries(
-            effective_dest, source_root, guest_entries)
-    elif guest_backfill_flavors is None:
-        guest_backfill_flavors = []
-
-    selfheal: dict = {
-        "status": "skipped", "added": [], "removed": [],
-        "manifest": None, "upstream_manifest": None,
-        "upstream_manifests": [], "manifest_text": None,
-        "merge_conflicts": [],
-    }
-    if not target:
-        # 파생 경로를 함께 넘긴다 — 이번 실행이 등재할 파일을 "채널 없음" 으로 경고하면 같은 run 이
-        #   자기모순을 낸다(legacy 코호트 첫 실행). 이미 해소한 산출이라 재파생도 없다.
-        selfheal = update_manifest.resolve_manifest_selfheal(
-            effective_dest, source_root,
-            guest_backfill_paths={
-                str(entry).replace("\\", "/") for entry in guest_backfill})
-        if report:
-            update_manifest._print_manifest_merge_conflicts(selfheal)
-
-    # 계획 기준 manifest — 승격분 우선·없으면 dest 우선 로컬 해소. `--changes` 미리보기가 **같은
-    #   헬퍼**를 소비한다(판정 사본 0: 미리보기 분류 기준 == 적용 계획 기준). FileNotFoundError 는
-    #   호출부가 처리한다(진입별로 rc 가 다르다 — sync=rc1 에러, drift 게이트=None 판정 불능).
-    manifest = update_manifest._resolve_planning_manifest(
-        effective_dest, source_root, selfheal,
-        guest_entries=guest_entries, guest_backfill=guest_backfill)
-
-    # 파생 엔진 행의 **기록** 여부 — 전파는 아래 `plan()` 이 이미 계획에 싣고, 여기선 절에 남길지만
-    #   정한다. `legacy_preserved`(로컬 manifest 불가침 선언)는 기록만 생략한다(선언 존중·파일
-    #   동기는 유지). 그 밖에는 apply 의 절 재부착에 실어, 다음 실행부터 추론 없이 provenance 로
-    #   해소되게 한다.
-    persisted_guest_backfill: list[str] | None = None
-    if guest_backfill:
-        recorded = {str(entry).replace("\\", "/") for entry in guest_entries}
-        fresh = sorted(
-            str(entry).replace("\\", "/") for entry in guest_backfill
-            if str(entry).replace("\\", "/") not in recorded
-        )
-        if selfheal["status"] == "legacy_preserved":
-            if report:
-                print("  ⚠️ 추가 하네스 엔진 행은 동기하되 추가 하네스 절에는 기록하지 않는다 — 로컬 manifest "
-                      "불가침(legacy_preserved) 선언을 존중한다. 절 기록은 이 인스턴스가 legacy "
-                      "상태를 벗어난 뒤 다음 sync 에서 이뤄진다.", file=sys.stderr)
-        else:
-            persisted_guest_backfill = [
-                manifest_rules._manifest_entry_line(entry) for entry in guest_backfill]
-        if fresh and report:
-            print(f"  추가 하네스 엔진 행 {len(fresh)}건 파생 "
-                  f"(하네스별 판: {', '.join(guest_backfill_flavors)}): {', '.join(fresh)}")
+    if target:
+        shipped = None
+        manifest = manifest_store.read_manifest(
+            manifest_store.resolve_manifest_for_dest(effective_dest, source_root))
+        manifest_text = None
+        notation_manifests: list[Path] = []
+    else:
+        shipped = update_manifest.shipped_manifest(effective_dest, source_root)
+        manifest = shipped["entries"]
+        manifest_text = shipped["text"]
+        notation_manifests = update_manifest._installed_entry_notation_manifests(
+            effective_dest, source_root, shipped["manifests"])
 
     # --target은 operational 전체 render를 끄되 @render 경로의 호출 표기 토큰만 target 이름으로
     # 조건부 렌더한다. adopter self-update는 선택된 flavor manifest 경로에서 같은 context를 파생한다.
     # root canonical manifest는 flavor template가 아니므로 None(기존 `/` token-form 유지).
-    render_enabled = not target
-    entry_notation_template = target if target else None
     try:
-        notation_manifests = (
-            []
-            if target
-            else update_manifest._installed_entry_notation_manifests(
-                effective_dest, source_root, selfheal.get("upstream_manifests") or [])
-        )
-        entry_notation_templates = (
-            {}
-            if target
-            else manifest_store._entry_notation_templates_from_manifests(notation_manifests, source_root)
-        )
+        entry_notation_templates = manifest_store._entry_notation_templates_from_manifests(
+            notation_manifests, source_root)
     except RuntimeError as exc:
         raise _EngineSyncNotationContextError(str(exc)) from exc
 
     package_plans: list[engine_transfer.EnginePackagePlan] = []
     changes, missing = plan(
         home, source_root, manifest, dest_root=effective_dest,
-        render_enabled=render_enabled,
-        entry_notation_template=entry_notation_template,
+        render_enabled=not target,
+        entry_notation_template=target if target else None,
         entry_notation_templates=entry_notation_templates,
-        manifest_source_text=(
-            selfheal.get("manifest_text")
-            if len(selfheal.get("upstream_manifests", [])) > 1 else None
-        ),
+        manifest_source_text=manifest_text,
         inventory_out=inventory_out,
         dest_inventory_out=dest_inventory_out,
-        guest_backfill_lines=persisted_guest_backfill,
         package_plan_out=package_plans,
         conf=conf,
 
@@ -474,8 +381,7 @@ def _resolve_engine_sync_plan(
         "changes": changes,
         "missing": missing,
         "manifest": manifest,
-        "selfheal": selfheal,
-        "persisted_guest_backfill": persisted_guest_backfill,
+        "shipped": shipped,
         "entry_notation_templates": entry_notation_templates,
         "package_plan": package_plans[0] if package_plans else None,
     }
@@ -486,7 +392,7 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
 
     엔진 코드 행(`_engine_code_plan`, 전달 프로세스와 같은 계획)을 먼저 보고, 변경이 있으면 그 목록을
     돌려준다. 없을 때만 `_resolve_engine_sync_plan`(완료 단계 dry-run 이 실제로 호출하는 것과 **같은
-    함수**)으로 간다 — 별도 diff 알고리즘을 두지 않는다(render 설정·notation·guest-backfill 인자도
+    함수**)으로 간다 — 별도 diff 알고리즘을 두지 않는다(render 설정·notation 인자도
     dry-run 과 동일하게 태운다).
 
     판정 불능(`None`) — 아래는 전부 같은 "이 형상엔 게이트가 적용되지 않는다"로 수렴한다(거부가
@@ -502,7 +408,7 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
       - manifest 등재 source 가 non-`@target-owned` 인데 upstream 에 없음(missing>0) — 확정
         drift 0 과 판정 불능을 구분한다(버리면 그 형상을 drift 0 으로 오판하는 false-green).
 
-    출력·부작용 0(stdout·파일 쓰기) — `_resolve_engine_sync_plan(report=False)` 로 호출한다.
+    출력·부작용 0(stdout·파일 쓰기) — `_resolve_engine_sync_plan` 은 출력하지 않는다.
     """
     engine_root = Path(engine_root)
     local_conf = engine_root / ".project_manager" / "local.conf"
@@ -523,7 +429,7 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
             return None
         if engine["changes"]:
             return [str(rel) for rel, _src, _dst, _kind in engine["changes"]]
-        sync_plan = _resolve_engine_sync_plan(home, engine_root, source_root, report=False, conf=conf)
+        sync_plan = _resolve_engine_sync_plan(home, engine_root, source_root, conf=conf)
     except FileNotFoundError:
         return None
     except _EngineSyncNotationContextError:
@@ -541,26 +447,17 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
 
 
 def _engine_code_plan(home, effective_dest: Path, source_root: Path) -> dict:
-    """엔진 코드 행의 계획 — `{"changes", "missing", "manifest", "selfheal", "package_plan"}`.
+    """엔진 코드 행의 계획 — `{"changes", "missing", "manifest", "shipped", "package_plan"}`.
 
-    계획 manifest 해소(guest 절·자기치유·은퇴 지시 검증 포함)는 완료 단계와 같은 함수를 쓰고, 계획은
-    엔진 코드 행만 렌더 없이 한다(엔진 코드 행에는 표식이 없어 렌더러를 읽지 않는다). 전달 프로세스가
-    옮길 대상이고, board 드리프트 검사(`drift_changes`)가 먼저 보는 축이다. `manifest` 는 해소된 계획
-    manifest 전체다(부재 판정이 `@target-owned` 표식을 찾는다). 엔진 패키지는 교체 행 하나와 계획 값
-    `package_plan`(정확한 패키지 행이 없거나 source 가 없으면 None)으로 나온다 — 패키지에서 삭제만
-    있어도 변경이고 드리프트다."""
-    guest_entries = update_manifest._dest_guest_manifest_entries(effective_dest)
-    guest_backfill, _flavors = update_manifest._guest_engine_backfill_entries(
-        effective_dest, source_root, guest_entries)
-    selfheal = update_manifest.resolve_manifest_selfheal(
-        effective_dest, source_root,
-        guest_backfill_paths={str(entry).replace("\\", "/") for entry in guest_backfill})
-    manifest = update_manifest._resolve_planning_manifest(
-        effective_dest, source_root, selfheal,
-        guest_entries=guest_entries, guest_backfill=guest_backfill)
+    계획 manifest 는 완료 단계와 같은 규칙(`update_manifest.shipped_manifest`)이고, 계획은 엔진 코드 행만
+    렌더 없이 한다(엔진 코드 행에는 표식이 없어 렌더러를 읽지 않는다). 전달 프로세스가 옮길 대상이고,
+    board 드리프트 검사(`drift_changes`)가 먼저 보는 축이다. `manifest` 는 계획 manifest 전체다(부재
+    판정이 `@target-owned` 표식을 찾는다). 엔진 패키지는 교체 행 하나와 계획 값 `package_plan`(정확한
+    패키지 행이 없거나 source 가 없으면 None)으로 나온다 — 패키지에서 삭제만 있어도 변경이고 드리프트다."""
+    shipped = update_manifest.shipped_manifest(effective_dest, source_root)
     package_plans: list[engine_transfer.EnginePackagePlan] = []
     changes, missing = plan(
-        home, source_root, [entry for entry in manifest if manifest_rules._is_engine_code(entry)],
+        home, source_root, [entry for entry in shipped["entries"] if manifest_rules._is_engine_code(entry)],
         dest_root=effective_dest, render_enabled=False, package_plan_out=package_plans, conf={})
-    return {"changes": changes, "missing": missing, "manifest": manifest, "selfheal": selfheal,
+    return {"changes": changes, "missing": missing, "manifest": shipped["entries"], "shipped": shipped,
             "package_plan": package_plans[0] if package_plans else None}

@@ -43,7 +43,7 @@ bridge이며, 이후 업데이트를 받아 반영하는 정상 단위는 항상
 
 ### 3. manifest reconcile (pm_update 전·PM 주도·사용자 개입 0)
 
-**기본 경로 = 선-cp 없이 4단계 sync 만 실행한다.** `@source` self-prop 채택자(현행 import 전원)는 엔진이 manifest 신 항목 도달을 스스로 처리한다 — 등재 행이 지워진 채택자도 sync 1회가 행 복구 + 파일 전파 + 추가 하네스 절 보존을 함께 수행한다(실측으로 확인해 기록).
+**기본 경로 = 선-cp 없이 4단계 sync 만 실행한다.** `@source` self-prop 채택자(현행 import 전원)는 엔진이 manifest 신 항목 도달을 스스로 처리한다 — 등재 행이 지워진 채택자도 sync 1회가 행 복구 + 파일 전파 + 추가 하네스 구획 재생성을 함께 수행한다(실측으로 확인해 기록).
 
 수동 cp 는 self-prop 이 없는 옛 버전 manifest 구성에서만 쓴다:
 

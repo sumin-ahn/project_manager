@@ -97,8 +97,7 @@ def test_two_homes_keep_planning_targets_and_render_inputs_separate(tmp_path):
         shipping_targets.resolve_target_root(home_a, "beta")
 
     # 계획 — dest 좌표·inventory·제안 conf 가 각 Home 의 것이다.
-    manifest = update_manifest._resolve_planning_manifest(
-        home_a.root, source, update_manifest.resolve_manifest_selfheal(home_a.root, source))
+    manifest = update_manifest.shipped_manifest(home_a.root, source)["entries"]
     plans = {}
     for home, project in ((home_a, "Alpha"), (home_b, "Beta")):
         inventory: set[str] = set()
@@ -184,7 +183,7 @@ def test_transfer_uses_fresh_completion_without_import_after_copy(tmp_path, monk
 
     home, source = _transfer_case(tmp_path, "dest")
     argv = ["--from", str(source), "--보존-인자"]
-    rc = engine_transfer._transfer_engine_code(home, _args(source), argv, [])
+    rc = engine_transfer._transfer_engine_code(home, _args(source), argv, [], home.root)
     monkeypatch.setattr(builtins, "__import__", real_import)
 
     assert rc == 7, "완료 프로세스의 종료 코드가 그대로 올라오지 않았다"
@@ -205,7 +204,7 @@ def test_transfer_uses_fresh_completion_without_import_after_copy(tmp_path, monk
         case_home, case_source = _transfer_case(tmp_path, name)
         before = _tree(case_home.root)
         assert engine_transfer._transfer_engine_code(
-            case_home, _args(case_source, dry_run=dry_run), [], scope) == expected
+            case_home, _args(case_source, dry_run=dry_run), [], scope, case_home.root) == expected
         assert _tree(case_home.root) == before, f"{name}: 쓰기 전에 멈추지 않았다"
 
     # 인계 값은 정확한 세 필드만 받고, 꺼낸 뒤에는 환경에 남지 않는다.

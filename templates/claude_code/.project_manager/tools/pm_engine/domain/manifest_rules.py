@@ -94,7 +94,7 @@ class ManifestEntry(str):
 def _parse_manifest_line(line: str) -> ManifestEntry | None:
     """manifest 한 줄 → ManifestEntry — 주석·빈 줄은 None.
 
-    `read_manifest`(파일 전체)와 guest 절 파싱(`_dest_guest_manifest_entries`·텍스트 조각)이
+    `read_manifest`(파일 전체)와 사본 manifest 행 파싱(`update_manifest.shipped_manifest`·텍스트 조각)이
     **같은 한 함수**를 쓴다. 마커 인식이 갈리면 guest 절의 `@render`/엔진 행 구분이 파일 파싱과
     어긋나 소유 채널 판정이 뒤집힌다(판정 사본 금지)."""
     line = line.strip()
@@ -237,13 +237,13 @@ def _remap_to_dest(rel: str, source_rel: str, manifest_path: str) -> str:
 
 
 # manifest self-prop 엔트리(채택자 engine.manifest 가 자기 자신을 전파 대상으로 등재한 행)의
-# path — flavor-correct upstream 해소(resolve_manifest_selfheal)와 root 폴백의 단일 기준.
+# path — 사본이 따르는 출하 manifest 를 가리키는 행(`update_manifest.shipped_manifest`)의 단일 기준.
 _MANIFEST_SELF_REL = ".project_manager/engine.manifest"
 
 
 def _manifest_marker_key(entry) -> tuple:
     """ManifestEntry 의 마커 3종(@render/@target-owned/@source)을 비교키 튜플로 — 경로 집합만으론
-    못 잡는 flavor 차이(예: `@source=templates/claude_code/...` vs bare)를 selfheal 이 감지하게 한다.
+    못 잡는 flavor 차이(예: `@source=templates/claude_code/...` vs bare)를 합집합 충돌 판정이 감지하게 한다.
 
     평문 str 항목(레거시)은 getattr 폴백으로 (False, False, None)(마커 없음·후방호환).
     """
@@ -254,20 +254,18 @@ def _manifest_marker_key(entry) -> tuple:
     )
 
 
-# ── add-harness guest @render 절 (engine.manifest self-prop 보존) ──────────────
-# engine.manifest 는 self-prop `@source` 라 apply 가 upstream 사본으로 통째 덮어쓴다(guest 는 로컬-전용
-# → selfheal 'diverged' 도 *파일* overwrite 는 못 막는다·plan 에 self-prop change 가 실린다·실측). 그래서
-# add_harness 가 등재한 guest `@render` 가 1회 update 만에 사라져 렌더/overlay 스캔 커버리지가 끊기던 것을
-# 이 마커 구획으로 닫는다: apply 가 engine.manifest 를 덮기 **전** dest 의 guest 절을
-# 추출 → 덮은 **뒤** 재부착한다. 마커는 read_manifest 가 '#' 주석으로 무시하고, 절 안의 라인은
-# `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다(판정원 단일 = engine.manifest
-# 최종 뷰 하나). 절의 *값* 은 app.add_harness 가 쓴다(같은 리터럴 공유·아래 상수 블록).
+# ── add-harness 추가 하네스 구획 ──────────────────────────────────────────────
+# 사본 engine.manifest 에서 add-harness 로 얹은 하네스의 행을 담는 구획이다. 구획 행은 그 하네스가
+# 설치됐다는 선언이고, 갱신은 매번 그 하네스의 출하 manifest 에서 구획을 다시 만들어 manifest 전문을
+# 쓴다(`update_manifest.shipped_manifest`). 마커는 read_manifest 가 '#' 주석으로 무시하고, 절 안의
+# 라인은 `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다. add_harness 와
+# 갱신이 같은 리터럴(아래 상수 블록)과 같은 생성기(`install_source._guest_manifest_lines`)를 쓴다.
 # pm:data-literal:begin
 # 아래 두 상수는 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
 # 이 소스의 산문이 아니다. 따라서 스트립·문구 정리·리팩터 대상이 아니며 한 글자만 달라져도 이미
 # 기록된 채택자 manifest 의 guest 절을 못 읽어 절이 조용히 사라진다. 읽기·쓰기 모두 이 두 상수
-# 하나다. 표시를 바꾸면 갱신 완료 단계(`update_finish.rename_added_harness_markers`)가 계획보다
-# 먼저 옛 표시를 새 표시로 옮기게 한다.
+# 하나다. 표시를 바꾸면 갱신의 옛 표기 이관 자리(`update_cmd._main`, 상류 해소·계획 앞)에서
+# `update_finish.rename_added_harness_markers` 가 옛 표시를 새 표시로 옮긴다.
 _GUEST_MANIFEST_BEGIN = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
 _GUEST_MANIFEST_END = "# <<< pm add-harness @render (local) <<<"
 # pm:data-literal:end
@@ -322,8 +320,8 @@ def _core_manifest_paths(text: str) -> set[str]:
 def _path_owned_by(path: str, owner_paths) -> bool:
     """path 가 owner_paths 중 하나에 소유되는가 — **동일**(`path==c`) OR **상위**(`path` 가 `c/` 하위).
 
-    add-harness 등재 차감(pm_import `_guest_render_to_add`)과 update 재부착 차감
-    (`_prune_guest_block_owned_by_core`)이 **공유**하는 소유권 판정(경로-포함·판정
+    add-harness 등재 차감(pm_import `_guest_render_to_add`)과 갱신의 구획 재생성 차감
+    (`update_manifest.shipped_manifest`)이 **공유**하는 소유권 판정(경로-포함·판정
     사본 금지) — core 가 `.opencode`(상위)를 가지면 `.opencode/agents` 도 소유로 본다."""
     p = path.replace("\\", "/")
     return any(

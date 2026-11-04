@@ -21,13 +21,12 @@ from pathlib import Path
 import pytest
 
 from _manager_home import (
-    git_required, install_old_generation_engine, make_committed_source, make_pm_home,
+    git_required, make_committed_source, make_pm_home,
     make_upstream_checkout, set_conf_key, tree_snapshot,
 )
 
 from manager import engine_rev
 from manager.bridge import Api
-from manager.bridge_update import update_argv
 from manager import CallError, bridge_update
 
 REPO = Path(__file__).resolve().parents[1]
@@ -139,12 +138,29 @@ def test_update_preview_shows_the_pending_engine_files_in_the_engines_own_words(
 # ── ② 소스는 사본이 해소한다 (`--from` 미부착) ───────────────────────────────
 
 
-def test_the_update_command_never_carries_a_from_flag(pm_home):
-    """`--from` 을 붙이면 관리자 번들이 소스가 되어 사본의 upstream 이 무의미해진다."""
-    for dry_run in (True, False):
-        argv = update_argv(pm_home, dry_run=dry_run)
-        assert "--from" not in argv
-        assert argv[-1] == ("--dry-run" if dry_run else "update")
+def test_update_apply_runs_the_bundled_updater_into_the_copy_first(api, tmp_path, monkeypatch):
+    """[적용]의 첫 실행은 번들 갱신기 `--into <사본>`, 둘째는 사본 자신의 `pm_config.py update` 다.
+
+    미리보기는 번들 갱신기 `--into <사본> --dry-run` 한 번이다. `--from` 을 붙이면 관리자 번들이 소스가
+    되어 사본의 upstream 이 무의미해지므로 어느 실행에도 없다."""
+    (tmp_path / ".project_manager").mkdir()
+    calls = []
+
+    def run(home, argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(bridge_update, "_run", run)
+    bundled = str(bridge_update.bundle_root() / ".project_manager" / "tools" / "pm_update.py")
+
+    assert api.update_apply(str(tmp_path))["rc"] == 0
+    assert api.update_preview(str(tmp_path))["rc"] == 0
+
+    run1, run2, preview = calls
+    assert run1[1:] == [bundled, "--into", str(tmp_path)]
+    assert run2[1:] == [str(tmp_path / ".project_manager" / "tools" / "pm_config.py"), "update"]
+    assert preview[1:] == [bundled, "--into", str(tmp_path), "--dry-run"]
+    assert all("--from" not in argv for argv in calls)
 
 
 def test_the_source_is_the_copys_own_upstream_not_the_manager_bundle(api, pm_home):
@@ -213,16 +229,6 @@ def test_a_failed_update_keeps_the_last_status_value(api, pm_home, tmp_path):
     assert api.update_apply(str(pm_home))["rc"] != 0
 
     assert api.status(str(pm_home))["engine_rev"] == engine_rev()
-
-
-def test_an_old_generation_copy_answers_with_its_own_refusal(api, pm_home):
-    """엔진이 `update` 를 모르면 그 rc 와 문구가 그대로 온다(관리자가 다시 쓰지 않는다)."""
-    install_old_generation_engine(pm_home)
-
-    response = api.update_preview(str(pm_home))
-
-    assert response["rc"] == 2
-    assert "update" in response["stderr"]
 
 
 def test_a_path_that_is_not_a_pm_home_is_an_error_dict(api, tmp_path):

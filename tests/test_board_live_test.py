@@ -409,13 +409,11 @@ def test_drift_changes_none_when_manifest_entry_source_missing(
     assert "[source 에 없음]" in err
 
 
-def test_drift_changes_detects_legacy_add_harness_backfill_manifest_update(
+def test_drift_changes_detects_legacy_add_harness_guest_block_rebuild(
         tmp_path, pm_update_module, monkeypatch, capsys):
-    """실 legacy add-harness 픽스처(추가 하네스 절 provenance 미기록) — 첫 sync 는 파생 추가 하네스 backfill
-    을 절에 기록하며 `.project_manager/engine.manifest` 를 update 한다. `drift_changes` 가 이
-    인자(`added_harness_backfill_lines`)를 놓치면 이 변경을 빠뜨린다(재발 방지 회귀). 같은 픽스처의
-    `.opencode/agents`(`@target-owned`·source 부재)는 판정 불능을 유발하지 않아야 한다
-    (target-owned missing 은 정상 — missing 필터가 방향을 잘못 잡으면 여기서 드러난다)."""
+    """실 legacy add-harness 픽스처(추가 하네스 절 provenance 미기록) — 첫 sync 는 구획을 그 판의 출하
+    manifest 에서 다시 만들어 `.project_manager/engine.manifest` 를 update 한다. `drift_changes` 가
+    이 변경을 빠뜨리지 않아야 하고, 판정 불능(None)이 되지 않아야 한다(재발 방지 회귀)."""
     from test_pm_update import _make_guest_framework, _make_legacy_guest_adopter
 
     framework = _make_guest_framework(tmp_path / "fw")
@@ -426,11 +424,11 @@ def test_drift_changes_detects_legacy_add_harness_backfill_manifest_update(
 
     result = update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest)
     assert result is not None, (
-        "target-owned missing(.opencode/agents) 만으로도 판정 불능이 됐다 — missing 필터가 "
+        "legacy 구획 사본이 판정 불능이 됐다 — missing 필터가 "
         "@target-owned 를 걸러내지 못했다"
     )
     assert manifest_rules._MANIFEST_SELF_REL in result, (
-        "추가 하네스 backfill 로 인한 engine.manifest update 를 drift_changes 가 놓쳤다"
+        "구획 재생성으로 인한 engine.manifest update 를 drift_changes 가 놓쳤다"
     )
 
     monkeypatch.setattr(pm_update_module, "REPO", dest)
@@ -445,7 +443,7 @@ def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_cha
         tmp_path, pm_update_module, monkeypatch, capsys):
     """`main()` 의 self-update 경로와 `drift_changes()` 가 **같은 함수를 실제로 공동 호출**한다는
     것을 사람용 stdout 파싱이 아니라 호출 인자·반환된 구조화 계획으로 직접 잠근다 — legacy
-    add-harness 픽스처(추가 하네스 backfill 경로)에서 두 호출의 `changes`/`missing` 집합이 일치한다."""
+    add-harness 픽스처(구획 재생성 경로)에서 두 호출의 `changes`/`missing` 집합이 일치한다."""
     from test_pm_update import _make_guest_framework, _make_legacy_guest_adopter
 
     framework = _make_guest_framework(tmp_path / "fw")
@@ -480,13 +478,12 @@ def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_cha
     )
     drift_kwargs, drift_plan = calls.pop()
     assert drift_kwargs.get("target") is None
-    assert drift_kwargs.get("report") is False
 
     main_changes = {str(rel) for rel, *_ in main_plan["changes"]}
     drift_changes_set = {str(rel) for rel, *_ in drift_plan["changes"]}
     assert main_changes == drift_changes_set == set(result)
     assert manifest_rules._MANIFEST_SELF_REL in main_changes
-    assert main_plan["missing"] == drift_plan["missing"] == [".opencode/agents"]
+    assert main_plan["missing"] == drift_plan["missing"] == []
 
 
 _NOTATION_WIKI_REL = ".project_manager/wiki/note.md"
@@ -527,7 +524,7 @@ def test_resolve_engine_sync_plan_applies_notation_rewrite_for_target_render_ent
         pm_render_module, source_root, dest_root, rendered=False)
 
     sync_plan = update_plan._resolve_engine_sync_plan(pm_paths.home_at(pm_update_module.REPO),
-        dest_root, source_root, target="codex", report=False, conf=_local_conf_of(pm_update_module, dest_root))
+        dest_root, source_root, target="codex", conf=_local_conf_of(pm_update_module, dest_root))
     changes = {str(rel): (kind, dst) for rel, _src, dst, kind in sync_plan["changes"]}
     assert _NOTATION_WIKI_REL in changes, "notation 토큰이 치환될 파일이 계획에 없다"
     kind, dst = changes[_NOTATION_WIKI_REL]

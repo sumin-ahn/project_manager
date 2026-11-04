@@ -76,23 +76,12 @@ def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
     return record_upstream_revs(dest_root, source_root)[0]
 
 
-def converge_upstream_revs(
-    dest_root: Path, source_root: Path, skew_status: str, skew_new: list[str]
-) -> bool:
-    """sync 뒤 revision 키를 기록·안내한다 — manifest skew 면 기록을 억제하고 False, 아니면 True.
+def converge_upstream_revs(dest_root: Path, source_root: Path) -> None:
+    """sync 뒤 revision 키(`upstream.rev`·`upstream.seen_rev`)를 기록·안내한다.
 
-    manifest skew(로컬 manifest 구형·신규 등재분 미도달)에서 baseline 을 최신으로 박으면 drift-lint
-    가 "최신" 으로 침묵해 신규 엔진 파일 누락을 은폐한다. 반환값을 쓰는 제품 호출자는 없다."""
-    if skew_status == "skew":
-        print(
-            f"→ manifest skew({len(skew_new)}건)로 upstream.rev baseline(+upstream.seen_rev "
-            "관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
-            "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
-            ")."
-        )
-        return False
+    계획 manifest 가 언제나 출하 manifest 라(`update_manifest.shipped_manifest`) 상류가 새로 등재한 행은
+    같은 실행에 도달한다 — 기록을 억제할 형상이 없다."""
     changed, recorded = record_upstream_revs(dest_root, source_root)
     if changed:
         print("✓ local.conf upstream.rev baseline 갱신 (drift-lint 기준점): "
               f"{recorded['upstream.rev']} (+upstream.seen_rev 동시 기록)")
-    return True

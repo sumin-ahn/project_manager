@@ -10,6 +10,8 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
     python3 .project_manager/tools/pm_update.py --from <upstream-checkout> [--dry-run]
     # --from 생략 시 dest local.conf 의 upstream.path= 을 기본으로 쓴다(pm_import 가 자동 기록):
     python3 .project_manager/tools/pm_update.py [--dry-run]
+    # 이 갱신기로 다른 PM 홈을 갱신 (관리자 앱의 [적용]):
+    python3 <갱신기>/.project_manager/tools/pm_update.py --into <PM 홈> [--dry-run]
 
     # 루트(upstream)에서 특정 templates 타깃으로 동기화:
     python3 .project_manager/tools/pm_update.py --from <upstream-checkout> --target <name> [--dry-run]
@@ -45,7 +47,9 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
 결정:
   - merge 아니라 overwrite (엔진은 upstream 단일 진실). 커스터마이즈 가능 문서는 manifest 에서
     제외 — 채택자 customization 은 local.conf(operational)·canonical home(free-form FILL)이 보존.
-  - 어떤 경로를 엔진으로 볼지는 *dest-root 의* engine.manifest 가 정한다(없으면 source 의 것).
+  - 어떤 경로를 엔진으로 볼지는 설치된 하네스의 *출하* engine.manifest 가 정한다. dest-root 의
+    engine.manifest 는 어떤 하네스가 설치됐는지만 알리고, 갱신이 출하본으로 다시 쓴다(`--target` 은
+    타깃 자신의 manifest).
   - stdlib 만. plan/apply 분리로 테스트 결정론.
 """
 from __future__ import annotations
@@ -101,6 +105,15 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             "루트에서 templates/<NAME>/ 타깃으로 동기화. "
             "REPO/templates/<NAME>/ 디렉토리가 존재하면 유효. "
             "생략 시 self-location(스크립트 위치 기준 dest) 사용."
+        ),
+    )
+    target_group.add_argument(
+        "--into",
+        metavar="PM_HOME",
+        help=(
+            "이 갱신기로 다른 PM 홈을 갱신한다(대상 폴더). 엔진 코드를 그 PM 홈에 옮긴 뒤 그 PM 홈이 받은 "
+            "갱신기가 같은 인자로 완료 단계를 실행한다. 상류는 그 PM 홈의 local.conf upstream.path= "
+            "(또는 --from)다. 관리자 앱의 [적용]이 번들 갱신기로 이 인자를 쓴다. 생략 시 self-location."
         ),
     )
     target_group.add_argument(
@@ -227,15 +240,13 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     except engine_transfer.CompletionHandoffError as exc:
         print(f"[중단] 완료 단계 인계 값({engine_transfer.COMPLETION_ENV})이 올바르지 않다: {exc}", file=sys.stderr)
         return 1
-    if handoff is None and not args.target:
-        return engine_transfer._transfer_engine_code(home, args, raw_argv, scope_paths)
+    rc, dest_root = upstream_changes._resolve_dest(home, args)
+    if rc != 0:
+        return rc
+    effective_dest = dest_root if dest_root is not None else home.root
     if handoff is not None:
-        # 완료 프로세스 — 상류를 다시 해소하지 않고(URL 재조회 없음·교체 안내는 전달 프로세스가 냈다)
-        #   인계 값의 source 를 쓴다. 인계 대상이 이 갱신기의 위치와 다르면 쓰기 전에 멈춘다.
-        rc, dest_root = upstream_changes._resolve_dest(home, args)
-        if rc != 0:
-            return rc
-        effective_dest = dest_root if dest_root is not None else home.root
+        # 완료 프로세스 — 인계 값은 어떤 쓰기보다 먼저 검증한다. 상류를 다시 해소하지 않고(URL 재조회
+        #   없음·교체 안내는 전달 프로세스가 냈다) 인계 값의 source 를 쓴다.
         if Path(handoff["dest"]).resolve() != effective_dest.resolve():
             print(f"[중단] 완료 단계 인계 값의 대상({handoff['dest']})이 이 갱신기의 위치"
                   f"({effective_dest})와 다르다.", file=sys.stderr)
@@ -243,53 +254,23 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         source_root = Path(handoff["source"])
         if not upstream_changes._source_dir_exists(source_root, f"완료 단계 인계 값 {engine_transfer.COMPLETION_ENV}"):
             return 1
-        transferred = handoff["transferred"]
-    else:
-        # 내보내기 — dest/source 해소(--target·--from·URL 캐시·stale 가드)는 --changes 와 공유한다.
-        rc, dest_root, source_root = upstream_changes._resolve_dest_source(home, args)
+    # ── 옛 표기 이관(local.conf 키 이름·추가 하네스 구획 표시) — 이 갱신의 단 한 자리다. 상류 해소
+    #    (`upstream.path`)·계획·렌더는 새 표기만 읽으므로 그 어느 것보다 먼저다. 두 프로세스가 모두
+    #    이 자리를 지난다: 전달 프로세스가 옮기면 완료 프로세스에서는 옮길 것이 없고, 전달 프로세스가
+    #    이 자리를 모르는 옛 갱신기였으면 완료 프로세스가 옮긴다. 옮길 것이 없으면 쓰지 않는다.
+    #    `--target` 내보내기·`--paths` 부분 전파는 건드리지 않는다.
+    if not args.target and not scope_paths:
+        entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=not args.dry_run)
+        update_finish.rename_added_harness_markers(effective_dest, write=not args.dry_run)
+    if handoff is None and not args.target:
+        return engine_transfer._transfer_engine_code(home, args, raw_argv, scope_paths, effective_dest)
+    if args.target:
+        # 내보내기 — source 해소(--from·URL 캐시·stale 가드)는 --changes 와 공유한다.
+        rc, source_root = upstream_changes._resolve_source(args, effective_dest)
         if rc != 0:
             return rc
-        effective_dest = dest_root if dest_root is not None else home.root
-        transferred = 0
+    transferred = handoff["transferred"] if handoff is not None else 0
 
-    # ── 추가 하네스 구획 표시 이관 — **구획을 읽는 첫 자리(아래 guest 절 해소·계획)보다 먼저**. 엔진은
-    #    새 표시만 읽으므로 옛 표시가 남은 채 계획하면 구획을 못 찾아 상류 사본으로 덮는다. 경계는
-    #    conf 이관과 같다(`--target` 내보내기·`--paths` 부분 전파는 건드리지 않는다).
-    if not args.target and not scope_paths:
-        update_finish.rename_added_harness_markers(effective_dest, write=not args.dry_run)
-
-    # ── guest 절 해소(읽기 전용) — 스코프 선검증·계획·기록이 **같은 산출**을 쓴다. 엔진 행은 upstream
-    #    flavor 에서 매 실행 재파생하므로, 절에 아직 기록되지 않은 파생분도 이 시점에 확정된다.
-    guest_entries = update_manifest._dest_guest_manifest_entries(effective_dest)
-    guest_backfill, guest_backfill_flavors = update_manifest._guest_engine_backfill_entries(
-        effective_dest, source_root, guest_entries)
-
-    # ── `--paths` 소유권 선검증: **어떤 dest 쓰기보다 먼저**. 미등재 요청은
-    #    rc1 로 끝나는데 그 전에 write 가 일어나면 "거부인데 파일이 바뀐다" 가 된다.
-    #    판정은 읽기만 하고 관대하다(dest∪source manifest 합집합) — 좁은 판정은 계획 확정 뒤 한 번
-    #    더 돈다. manifest 를 못 읽으면 선검증을 생략한다(정규 경로가 같은 오류를 더 정확히 낸다).
-    if scope_paths:
-        early_manifest = upstream_changes._scope_validation_manifest(effective_dest, source_root)
-        if early_manifest is not None:
-            # 파생 엔진 행은 **영속화 전**(첫 실행)엔 어느 파일에도 없다 — 합집합에 넣지 않으면
-            #   이번 실행이 전파할 경로를 "미등재" 로 오거부한다(선검증만 파일을 읽는 비대칭).
-            early_paths = {str(entry).replace("\\", "/") for entry in early_manifest}
-            early_manifest = early_manifest + [
-                entry for entry in guest_backfill
-                if str(entry).replace("\\", "/") not in early_paths
-            ]
-            rc = upstream_changes._refuse_unregistered_scope_paths(
-                early_manifest, scope_paths, effective_dest)
-            if rc:
-                return rc
-
-    # ── manifest 자기치유 (self-update 2-pass) — upstream engine.manifest 를 이번 sync 의
-    #    계획 기준으로 승격해, 로컬 manifest 가 구형이어도 신규 등재분이 한 번의 실행으로 plan→apply
-    #    에 실린다(회사 실측: bare CLI 흡수가 신규 등재분 미도달). manifest 자신도 self-prop 엔트리
-    #라 같은 plan 안에서 로컬 파일이 upstream 판으로 갱신된다(별도 write 불요). upstream
-    #    manifest 부재/읽기 실패는 fail-soft(로컬 유지) — baseline 억제가 그 잔여 경로
-    #    안전망. --target(엔진 export)은 타깃 manifest 가 루트와 의도적으로 달라 승격하지 않는다
-    #    (현행·아래 skew 검출과 동일 경계). 승격 후 skew 는 정의상 0(manifest==upstream).
     # 계획이 훑은 출하 좌표는 두 판정이 함께 쓴다(그래서 스코프 유무와 무관하게 모은다):
     #   - 경로 스코프의 등재 디렉토리 **안의 오타**(`adapterdir/typo.md`) — 등재 검증은 통과하나
     #     대응 파일이 없다. 변경 0 은 "이미 최신" 과 구분되지 않으므로 인벤토리 대응으로 닫는다.
@@ -308,32 +289,28 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         except conf_apply.ReasoningPruneError as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
-    # manifest 자기치유 → notation 템플릿 → guest backfill 기록 판정 → `plan()` 을 한 함수로 묶어
+    # 계획 manifest(설치된 하네스의 출하 manifest) → notation 템플릿 → `plan()` 을 한 함수로 묶어
     #   호출한다 — self-update/`--target` export 경로와 drift 게이트(`drift_changes`)가 **같은
-    #   함수**를 공유한다(복제 금지). `report=True` 는 기존과 같은 지점·같은 문구로 안내를 낸다.
+    #   함수**를 공유한다(복제 금지).
     try:
         sync_plan = update_plan._resolve_engine_sync_plan(
             home, effective_dest, source_root,
             target=args.target,
-            guest_entries=guest_entries,
-            guest_backfill=guest_backfill,
-            guest_backfill_flavors=guest_backfill_flavors,
             inventory_out=plan_inventory,
             dest_inventory_out=plan_dest_inventory,
-            report=True,
             conf=conf,
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except retired_paths.RetiredPathError as exc:
-        print(f"[중단] retired-path manifest 자기치유 실패 — {exc}", file=sys.stderr)
+        print(f"[중단] retired-path 지시 판독 실패 — {exc}", file=sys.stderr)
         return 1
     except update_plan._EngineSyncNotationContextError as exc:
         # 여기 도달한 것만 notation context 해소 실패다(무진단 침묵 금지).
         print(f"오류: {exc}", file=sys.stderr)
         return 2
-    selfheal = sync_plan["selfheal"]
+    shipped = sync_plan["shipped"]
     manifest = sync_plan["manifest"]
     changes, missing = sync_plan["changes"], sync_plan["missing"]
     package_plan = sync_plan["package_plan"]
@@ -354,12 +331,6 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             changes, target=bool(args.target), scope_paths=scope_paths, source_root=source_root)
         if rc:
             return rc
-
-    skew_manifest = None
-    if selfheal["status"] == "legacy_preserved":
-        # self-prop 계획 제외는 `_resolve_planning_manifest` 가 한다(미리보기와 공유). 여기선 skew
-        # 대조 기준만 갈라 둔다 — 대조는 **원문 전체**를 봐야 upstream 신규 등재분을 정상 검출한다.
-        skew_manifest = update_manifest._resolve_local_manifest(effective_dest, source_root)
 
     retired_files = update_manifest._retired_manifest_files(
         source_root, manifest, effective_dest, plan_dest_inventory)
@@ -460,38 +431,14 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         )
         print(f"  [{label}] {r}")
 
+    if shipped is not None:
+        update_manifest._print_shipped_manifest_finding(shipped)
     rc = update_adapters._refuse_missing_sources(missing, manifest)
     if rc:
         return rc
 
-    # ── manifest skew 탐지 — upstream engine.manifest 와 로컬(sync 에 쓰인) manifest
-    #    를 대조해 "로컬에 없는 upstream 신규 등재 경로"(신규 엔진 파일)를 찾는다. 로컬 manifest
-    #    가 구형이면 신규 경로가 이번 sync 로 도달하지 않으므로, 아래 baseline 갱신을 억제해
-    #    drift-lint 가 계속 skew 를 울리게 한다(false-최신 차단). --dry-run 도 동일 대조 결과 표시.
-    #
-    #    **self-update(채택자 흡수) 경로 한정** — `--target`(루트→templates/<name> 엔진 export)은
-    #    타깃별 manifest(templates/*/engine.manifest)가 루트와 *의도적으로* 다르므로(어댑터
-    #    비대칭·@target-owned 등) 대조하면 대량 오탐 + baseline 억제가 된다. --target 은 검출/억제
-    #    를 비발화하고 현행 거동(무조건 baseline 갱신)을 유지한다(codex must-fix).
-    #
-    #    **flavor-correct 대조 기준 통일**: skew 대조 upstream manifest 는 selfheal 이
-    #    해소한 *동일* flavor-correct 경로(`selfheal["upstream_manifest"]`)를 넘긴다 — 안 그러면
-    #    flavor 채택자(@source self-prop)가 치유 후에도 root-only 경로(`.claude/agents` 등)를 skew
-    #    오탐해 baseline 이 억제된다(승격 기준 == 탐지 기준). 승격되면 manifest==flavor
-    #    upstream 이라 skew 는 정의상 0.
-    skew_status, skew_new = (
-        ("skipped", [])
-        if args.target
-        else update_manifest.detect_manifest_skew(
-            skew_manifest if skew_manifest is not None else manifest,
-            source_root,
-            upstream_manifest=selfheal["upstream_manifest"],
-            upstream_manifests=selfheal.get("upstream_manifests"),
-        )
-    )
-
     # ── 진입 doc 세대 마이그레이션 — self-update 흡수 경로 한정 ──
-    #    --target(엔진 export)은 비발화(skew/selfheal 동일 경계). 구형 미수정 opencode AGENTS.md
+    #    --target(엔진 export)은 비발화. 구형 미수정 opencode AGENTS.md
     #    를 신형 공통 코어로 자동 전환(+백업·jsonc idempotent), 수정 흔적 있으면 무손·loud 안내.
     #    AGENTS.md·opencode.jsonc 는 instance-owned(manifest 밖)이라 changes 유무와 독립.
     #
@@ -510,7 +457,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     # 실제 퇴역을 닫는다. `--paths`/`--target`은 요청 밖 write라 비발화다.
     do_retire = not args.target and not scope_paths
     if do_retire:
-        retired_old = retired_paths.declared_retired_olds(source_root, selfheal)
+        retired_old = retired_paths.declared_retired_olds(shipped["manifests"])
         retired_files = [rel for rel in retired_files if rel not in retired_old]
 
     # ── 보호 훅 정합 확인 + drift 재설치 — migrate 와 **같은 경계·같은
@@ -545,10 +492,8 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             print(f"✓ {transferred} 파일 동기화")
         # 잔존 은퇴 파일은 changes 와 독립이다 — "변경 없음" 이 곧 "dest 가 상류와 같다" 는 아니다.
         update_manifest._print_retired_manifest_files(retired_files)
-        update_manifest._print_manifest_selfheal_finding(selfheal, dry_run=args.dry_run)
-        update_manifest._print_manifest_skew_finding(skew_status, skew_new, dry_run=args.dry_run)
         if do_retire and not retired_paths._run_retired_path_migration(
-            effective_dest, source_root, manifest, selfheal,
+            effective_dest, source_root, manifest, shipped["manifests"],
             write=not args.dry_run,
         ):
             return 1
@@ -560,7 +505,6 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             update_finish.drop_self_lease_rows(effective_dest, write=not args.dry_run)
             update_finish.idle_legacy_slot_session_rows(effective_dest, write=not args.dry_run)
             update_finish.rename_delegate_round_collected_key(effective_dest, write=not args.dry_run)
-            entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=not args.dry_run)
             update_finish.fill_self_repo_row(effective_dest, write=not args.dry_run)
         if do_reinstall:
             # **업그레이드 배달 다음 실행이 여기로 온다**(dest 는 신 엔진·changes 0) — 훅이
@@ -607,22 +551,18 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             print("최신 — 변경 없음.")
         # RUN2 수렴 지점: 엔진을 배달한 RUN1은 구 pm_update로 실행될 수 있으므로, 새 엔진의
         # 변경 0 재실행에서도 경로 upstream의 baseline/seen 쌍을 확인한다. dry-run은 기존
-        # 계약대로 local.conf를 절대 쓰지 않는다. manifest skew면 has-changes 경로와 동형으로
-        # 두 키를 함께 억제해 반쪽 상태/거짓 drift를 만들지 않는다.
+        # 계약대로 local.conf를 절대 쓰지 않는다.
         #    `--paths` 는 baseline 을 건드리지 않는다 — 부분 전파를 "여기까지 흡수함" 으로 박으면
         #    나머지 미전파분이 drift-lint 에서 사라진다(거짓 최신).
         if not args.dry_run and not scope_paths:
             # 변경 0 경로에서도 baseline 수렴은 has-changes 경로와 **같은 순서·같은 게이트**다.
-            upstream_revisions.converge_upstream_revs(
-                effective_dest, source_root, skew_status, skew_new)
+            upstream_revisions.converge_upstream_revs(effective_dest, source_root)
         return 0
     if args.dry_run:
         print(f"[dry-run] {change_files} 파일 변경 예정 (적용 안 함).")
         update_manifest._print_retired_manifest_files(retired_files)  # apply 경로와 같은 보고(무write).
-        update_manifest._print_manifest_selfheal_finding(selfheal, dry_run=True)
-        update_manifest._print_manifest_skew_finding(skew_status, skew_new, dry_run=True)
         if do_retire and not retired_paths._run_retired_path_migration(
-            effective_dest, source_root, manifest, selfheal, write=False,
+            effective_dest, source_root, manifest, shipped["manifests"], write=False,
             changes=changes,
         ):
             return 1
@@ -632,7 +572,6 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
             update_finish.drop_self_lease_rows(effective_dest, write=False)
             update_finish.idle_legacy_slot_session_rows(effective_dest, write=False)
             update_finish.rename_delegate_round_collected_key(effective_dest, write=False)
-            entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=False)
             update_finish.fill_self_repo_row(effective_dest, write=False)
         if do_reinstall:  # 대상 해소만(write=False·무부작용).
             hooks = update_adapters.reinstall_protected_hooks(effective_dest, write=False)
@@ -658,13 +597,11 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     # apply 완료를 관측한 뒤에만 구 경로를 옮긴다. 이 게이트가 실패하면
     # 아래 instance migration·upstream.rev baseline 모두에 도달하지 않는다.
     if do_retire and not retired_paths._run_retired_path_migration(
-        effective_dest, source_root, manifest, selfheal, write=True,
+        effective_dest, source_root, manifest, shipped["manifests"], write=True,
     ):
         return 1
 
     update_manifest._print_retired_manifest_files(retired_files)
-    update_manifest._print_manifest_selfheal_finding(selfheal, dry_run=False)
-    update_manifest._print_manifest_skew_finding(skew_status, skew_new, dry_run=False)
     if do_migrate:
         # 전환 write 는 apply(changes) 성공 이후 — 반쪽 상태 방지.
         result = entry_doc_migration.migrate_entry_doc(effective_dest, source_root, write=True)
@@ -672,7 +609,6 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         update_finish.drop_self_lease_rows(effective_dest, write=True)
         update_finish.idle_legacy_slot_session_rows(effective_dest, write=True)
         update_finish.rename_delegate_round_collected_key(effective_dest, write=True)
-        entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=True)
         update_finish.fill_self_repo_row(effective_dest, write=True)
 
     if do_reinstall:
@@ -717,11 +653,8 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     # upstream.rev baseline 갱신 — 매 sync 마다 source(upstream) HEAD 를
     # local.conf 에 박아 drift-lint의 "마지막 동기 이후" 기준점을 최신화한다.
     # `upstream.seen_rev`(현재 관찰값)도 같은 rev 로 함께 기록한다(동기 시점 소스 checkout rev 가
-    # 곧 관찰값·두 키가 어긋난 채 남으면 상시 거짓 drift). 단
-    # **manifest skew**(로컬 manifest 구형·신규 등재분 미도달)면 갱신을 억제한다 —
-    # baseline 을 최신으로 박으면 drift-lint 가 "최신"으로 침묵해 신규 엔진 파일 누락을 은폐한다
-    # (회사 채택자 실측). skew 아님(정합·또는 upstream manifest 부재 fail-soft)이면 현행대로 갱신.
-    # source 는 로컬 checkout 이다(URL upstream 은 이 실행이 만든 캐시 checkout).
+    # 곧 관찰값·두 키가 어긋난 채 남으면 상시 거짓 drift). 계획 manifest 가 출하 manifest 라
+    # 상류가 새로 등재한 행은 이 실행에 도달했다. source 는 로컬 checkout 이다(URL upstream 은 이 실행이 만든 캐시 checkout).
     # best-effort — 기록 실패가 동기화 자체를 무효화하지 않는다(파일은 이미 적용됨). --target
     # 모드는 effective_dest(templates/<name>)의 conf 에 기록(루트 오염 방지).
     # `--paths`(부분 전파)는 baseline 을 건너뛴다 — 요청 경로만 옮긴 실행을 "전량 흡수"
@@ -730,7 +663,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         print("  (경로 스코프 — upstream.rev baseline 을 갱신하지 않는다: 나머지 경로는 "
               "여전히 미전파다.)")
         return 0
-    upstream_revisions.converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
+    upstream_revisions.converge_upstream_revs(effective_dest, source_root)
     return 0
 
 

@@ -2014,11 +2014,6 @@ SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
         "**정적으로 구분되지 않는다**. 렌더는 순수 변환이라 이 판독이 상태를 만들지 않고, 호출부의 "
         "목적지 판독은 이미 seam 을 지난다"
     ),
-    ("pm_engine/infra/manifest_store.py", "_copy_manifest_preserving_guest"): (
-        "`sp` 가 파일 경로가 아니라 **인메모리 소스**(`_ManifestTextSource`·flavor manifest "
-        "합집합)일 수 있는 자리다 — 같은 문에서 `isinstance(sp, Path)` 로 갈라 경로일 때만 seam 을 "
-        "지난다"
-    ),
 }
 
 
