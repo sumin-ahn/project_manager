@@ -1170,14 +1170,14 @@ def test_output_contamination_reads_old_and_new_raw_prefixes(external):
     )
 
 
-def _session_budget(external, tmp_path) -> dict:
+def _session_budget_state(external, tmp_path) -> dict:
     """저장된 기록 파일의 세션 호출 예산 절 (절 부재 = 빈 dict)."""
     return _read_records(external, tmp_path).get(reviewer_budget.SESSION_BUDGET_SECTION_KEY, {})
 
 
 def _session_budget_progress(external, tmp_path) -> dict:
     """세션 호출 예산 절에서 예산 좌표만 — 버전 `id` 는 매번 새로 발급되므로 값 비교에서 뺀다."""
-    state = dict(_session_budget(external, tmp_path))
+    state = dict(_session_budget_state(external, tmp_path))
     state.pop("id", None)
     return state
 
@@ -1503,7 +1503,7 @@ def test_old_schema_record_keeps_counting_and_gains_outcomes(
     assert entry["count"] == 4                # 옛 count 를 이어 센다 (리셋 없음)
     assert "acked_through" not in entry       # 폐지 필드는 저장에서 떨어진다
     assert len(entry["rounds"]) == 1          # 산출은 이번 라운드부터
-    assert _session_budget(external, tmp_path)["spent"] == 1
+    assert _session_budget_state(external, tmp_path)["spent"] == 1
     first_err = capsys.readouterr().err
     assert "T-0309" in first_err and "acked_through=2" in first_err
 
@@ -1524,7 +1524,7 @@ def test_session_budget_blocks_across_review_tickets_then_reset_resumes(
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for review_ticket in ("T-0310", "T-0311"):         # 서로 다른 리뷰 집계 티켓 = 각자 라운드 상한은 여유
         assert external.main(["--review-ticket", review_ticket, "--paths", "x.py"]) == 0
-    assert _session_budget(external, tmp_path)["spent"] == 2
+    assert _session_budget_state(external, tmp_path)["spent"] == 2
     capsys.readouterr()
 
     rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py"])
@@ -1539,7 +1539,7 @@ def test_session_budget_blocks_across_review_tickets_then_reset_resumes(
     rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py", "--reset-session-budget"])
     assert rc == 0 and calls["n"] == 3
     assert "세션 호출 예산 승인 재개" in capsys.readouterr().err
-    assert _session_budget(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
+    assert _session_budget_state(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
 
 
 def test_session_budget_started_marks_the_first_send_and_accumulates(external, monkeypatch, tmp_path):
@@ -1547,7 +1547,7 @@ def test_session_budget_started_marks_the_first_send_and_accumulates(external, m
     _wire(external, monkeypatch, tmp_path)
     argv = ["--review-ticket", "T-0313", "--paths", "x.py"]
     assert external.main(argv) == 0
-    started = _session_budget(external, tmp_path)["started"]
+    started = _session_budget_state(external, tmp_path)["started"]
     assert started and started.endswith("+00:00")
 
     assert external.main(argv) == 0
@@ -1573,7 +1573,7 @@ def test_refund_keeps_the_session_budget_start_when_earlier_sends_exist(
     """실 호출이 있던 세션 호출 예산은 환불 후에도 첫 호출 시각을 유지한다 (0 으로 돌아갈 때만 지운다)."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 0
-    started = _session_budget(external, tmp_path)["started"]
+    started = _session_budget_state(external, tmp_path)["started"]
 
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 1
@@ -1618,7 +1618,7 @@ def test_refund_skips_a_session_budget_that_was_reset_mid_flight(
     monkeypatch.setattr(reviewer_run, "run_review", _reset_session_budget_then_fail)
     assert external.main(["--review-ticket", "T-0326", "--paths", "x.py"]) == 1
 
-    assert _session_budget(external, tmp_path)["spent"] == 1       # 새 세션 호출 예산의 소비는 그대로
+    assert _session_budget_state(external, tmp_path)["spent"] == 1       # 새 세션 호출 예산의 소비는 그대로
     assert _read_records(external, tmp_path)["T-0326"]["count"] == 0   # 라운드 count 는 환불됨
     assert "세션 호출 예산이 이미 리셋" in capsys.readouterr().err
 
@@ -1645,7 +1645,7 @@ def test_refund_is_skipped_when_the_reservation_record_vanishes(
 
     entry = _read_records(external, tmp_path)["T-0332"]
     assert (entry["count"], entry["records"]) == (1, [])   # 환불 대상 없음 → 이중 환불 없음
-    assert _session_budget(external, tmp_path)["spent"] == 1         # 세션 호출 예산도 갈리지 않는다
+    assert _session_budget_state(external, tmp_path)["spent"] == 1         # 세션 호출 예산도 갈리지 않는다
     assert "세션 호출 예산이 이미 리셋" not in capsys.readouterr().err   # 버전 오보 경고도 없다
 
 
@@ -1696,7 +1696,7 @@ def test_negative_session_budget_spent_does_not_reopen_the_budget(
     assert calls["n"] == 2                                   # 호출 없음
     assert "음수" in err and "재계산" in err
     assert "세션 호출 예산 소진" in err
-    assert _session_budget(external, tmp_path)["spent"] == 2           # 이력 기반 복원값이 저장된다
+    assert _session_budget_state(external, tmp_path)["spent"] == 2           # 이력 기반 복원값이 저장된다
 
 
 def test_session_budget_reset_does_not_open_the_review_ticket_round_limit(
@@ -1773,7 +1773,7 @@ def test_session_budget_reset_survives_a_round_limit_refusal(
     err = capsys.readouterr().err
     assert "미완 라운드 상한 도달" in err
     assert calls["n"] == spent
-    assert _session_budget(external, tmp_path)["spent"] == 0        # 리셋은 남았다
+    assert _session_budget_state(external, tmp_path)["spent"] == 0        # 리셋은 남았다
     assert "세션 호출 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다
     assert "세션 호출 예산 승인 기록" in err and "거부" in err
 

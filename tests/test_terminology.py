@@ -1,13 +1,13 @@
 """T-0098 — 폐기 용어 잔존 가드.
 
 ADR-0016 이 solo/team/'우산'/orchestrator 4모드를 **multi-PM(N 세션 × M repo)** 한 개념으로
-통합하며 '우산' 을 multi-PM 의 M>1 케이스로 흡수했다(orchestrator→relay 는 ADR-0020). 그 후
+통합하며 '우산' 을 multi-PM 의 M>1 케이스로 받아 반영했다(orchestrator→relay 는 ADR-0020). 그 후
 용어 sweep 이 누락돼 코드/docs 전반에 '우산'(114건)이 잔존했다(T-0098 에서 제거). 이 가드는
 LIVE 코드·동기 methodology 문서에 폐기 용어가 *다시 새어드는* 회귀를 막는다.
 
-**historical 은 의도적으로 제외** — `log/`·`raw/spikes/`(sealed)·`tickets/done/`·`decisions/`
+**historical 은 의도적으로 제외** — `log/`·`raw/spikes/`(확정된 기록)·`tickets/done/`·`decisions/`
 (ADR 의 '옛 우산' 설명)은 term-of-the-time 기록이라 immutable(ADR-0010 정신). 이 가드는 *현재-
-기술* 표면(엔진 코드·테스트·pm_role·skill·어댑터 진입)만 본다.
+기술* 범위(엔진 코드·테스트·pm_role·skill·어댑터 진입)만 본다.
 
 재발 교훈(메모리): 재발하는 용어/규칙은 지식이 아니라 테스트로 못박는다.
 """
@@ -27,10 +27,10 @@ from _repo_owned_inventory import OWNED, repo_owned_paths
 
 REPO = Path(__file__).resolve().parents[1]
 
-# 폐기 용어 (ADR-0016) — LIVE 표면에 0 이어야 한다.
+# 폐기 용어 (ADR-0016) — LIVE 범위에 0 이어야 한다.
 # 리터럴 분할: 이 가드 파일 자신이 자기 검사에 안 걸리게.
 _RETIRED_TERM = "우" + "산"  # 한국어
-# 영어 표면도 동일 폐기 용어(T-0172) — placeholder/지역변수/함수명/fixture 경로에 잔존했었다.
+# 영어 표기도 동일 폐기 용어(T-0172) — placeholder/지역변수/함수명/fixture 경로에 잔존했었다.
 # 대소문자 무관 검출(소문자화 후 비교) — `Umbrella`·`UMBRELLA` 도 잡는다.
 _RETIRED_TERM_EN = "umb" + "rella"
 
@@ -73,7 +73,7 @@ def _live_files() -> list[Path]:
         REPO / "templates/opencode/.opencode/command/pm-bootstrap.md",  # T-0674 슬래시 사본
         REPO / "templates/claude_code/pm-config.sh",
         REPO / "templates/opencode/pm-config.sh",
-        # `.cmd` Windows 등가물 — `.sh` forwarder 의 짝(동형). manifest 밖 facade 라 `--target`
+        # `.cmd` Windows 등가물 — `.sh` forwarder 의 짝(같은 구조). manifest 밖 facade 라 `--target`
         #   전파 안 됨 → `.sh` 만 보면 `.cmd` 의 잔존을 못 잡는 false-negative (T-0172 must-fix).
         REPO / "templates/claude_code/pm-config.cmd",
         REPO / "templates/opencode/pm-config.cmd",
@@ -88,7 +88,7 @@ def _live_files() -> list[Path]:
         REPO / "pm-config.sh",
         REPO / "pm-import.sh",
         REPO / "pm-update.sh",
-        # 루트 `.cmd` Windows 등가물 (T-0172) — `.sh` 와 동형. 존재하는 것만(f.exists() 필터).
+        # 루트 `.cmd` Windows 등가물 (T-0172) — `.sh` 와 같은 구조. 존재하는 것만(f.exists() 필터).
         REPO / "pm-config.cmd",
         REPO / "pm-import.cmd",
         REPO / "pm-update.cmd",
@@ -109,12 +109,12 @@ def test_no_retired_umbrella_term_in_live_surface():
 
 
 def test_no_retired_umbrella_term_english_in_live_surface():
-    """LIVE 표면에 영어 폐기 용어('umbrella') 0 (ADR-0016·T-0172).
+    """LIVE 범위에 영어 폐기 용어('umbrella') 0 (ADR-0016·T-0172).
 
     한국어 '우산' sweep(T-0098) 후에도 영어 'umbrella' 가 pm_bootstrap.py 지역변수
     (umbrella_lean/alloc)·pm-config.{sh,cmd}/README placeholder(<umbrella>)·테스트
     식별자에 잔존했다. 대소문자 무관 검출. `_live_files` 는 `.sh`/`.cmd` facade 페어를
-    동형으로 스캔한다 — `.cmd`(Windows 짝)만 빠뜨리면 false-negative (T-0172 must-fix).
+    같은 구조로 스캔한다 — `.cmd`(Windows 짝)만 빠뜨리면 false-negative (T-0172 must-fix).
     README.md 는 `_live_files` 가 의도적으로 제외하므로 이 가드 범위 밖이다(line327 한국어
     historical 재정의 + placeholder 둘 다 — README 전체 제외는 T-0171 의 한계, 영어
     placeholder 는 T-0172 에서 손으로 sweep 했다).
@@ -145,11 +145,11 @@ _CARRY_TERM = "car" + "ry"
 
 # 스코프 = canonical **live** 엔진/방법론 source 만.
 #  · templates/**(tools·wiki 사본): pm_update 가 canonical 에서 byte-동기(canonical-clean ⟹
-#    templates-clean·pm_update --dry-run drift-0 게이트가 전파 강제)라 제외 — 안 그러면 canonical
-#    편집과 전파 사이에 false-red. 어댑터 카드(.claude/.opencode)도 별도 편집 표면이라 그쪽
+#    templates-clean·pm_update --dry-run drift-0 검사가 전파 강제)라 제외 — 안 그러면 canonical
+#    편집과 전파 사이에 false-red. 어댑터 카드(.claude/.opencode)도 별도 편집 대상이라 그쪽
 #    정리+전파 후 PM 이 편입(T-0268 follow-up).
 #  · wiki 는 **live methodology 파일만** 본다. log/·tickets/(done·claimed·open·blocked)·
-#    raw/spikes/(sealed)·ideas/·specs/·decisions/ 는 ADR-0010 immutable 기록/작업항목이라 흔한
+#    raw/spikes/(확정된 기록)·ideas/·specs/·decisions/ 는 ADR-0010 immutable 기록/작업항목이라 흔한
 #    영어 동사가 자연히 등장해도 고칠 수 없다 → 형제 _live_files 가 historical 을 안 보는 정신과
 #    동일하게 제외한다. board.md 는 파생 대시보드(git-untracked·ticket 제목 유입)라 제외. 스캐폴드
 #    (_template.md)·domain 지식 페이지는 live methodology 라 포함.
@@ -159,7 +159,7 @@ _CARRY_WIKI_FILES = (
     ".project_manager/wiki/pm_state.template.md",
     ".project_manager/wiki/README.md",
     ".project_manager/wiki/tickets/_template.md",     # ticket 스캐폴드(빈 틀·done 본문 아님)
-    ".project_manager/wiki/raw/spikes/_template.md",  # spike 스캐폴드(sealed spike 아님)
+    ".project_manager/wiki/raw/spikes/_template.md",  # spike 스캐폴드(확정된 spike 아님)
     ".project_manager/wiki/pm_principles.md",         # 판단 원칙 레지스트리 출하층
 )
 _CARRY_WIKI_GLOBS = (
@@ -227,7 +227,7 @@ def test_no_carry_term_in_canonical_source():
 # per-slot pm_state 경로는 명시형 `slots/<repo>_<N>/pm_state.md`(예 `slots/project_manager_1/`)로
 # 가리킨다. 모호한 `slots/<slot>`(placeholder)·`slots/<N>`(= `--slot <N>` 탓에 "숫자 N"으로 오독)은
 # multi-slot PM 이 `.local/slots/<N>/` 를 헛찾게 한다(PM 63 실측). 명시형 = 코드 display 경로
-# (`pm_bootstrap._pm_state_display_path` → `slots/{repo}_{n}/`)·spike 와 정합. 재발을 기계로 못박는다
+# (`pm_bootstrap._pm_state_display_path` → `slots/{repo}_{n}/`)·spike 와 일치. 재발을 기계로 못박는다
 # ([[T-0098]] terminology 가드 선례·재발 용어/규칙은 지식 아닌 테스트로).
 #
 # 스코프 = 사람이 읽는 가이드 문서와 출하 `.gitignore` 산문. 엔진 `.py` 는 제외 — 코드는 T-0298 소관이고
@@ -308,9 +308,9 @@ def test_slot_key_guard_detects_retired_notation_in_shipped_ignore_prose(tmp_pat
 
 
 # ── T-0557: compaction-native 전환 뒤 폐기된 ctx 안전 표기 가드 ─────────────
-# 리터럴은 분할해 이 가드 자체가 자기 검사에 걸리지 않게 한다. CHANGELOG·ADR·sealed spike·
+# 리터럴은 분할해 이 가드 자체가 자기 검사에 걸리지 않게 한다. CHANGELOG·ADR·확정된 spike·
 # log·실 ticket은 시점 기록이라 제외한다. 하네스 namespace는 PM이 직접 관리하는 별도 변경
-# 표면이고, 이 dev 작업의 출하 가드는 canonical 엔진·동기 문서·README와 그 엔진 미러를 본다.
+# 범위이고, 이 dev 작업의 출하 가드는 canonical 엔진·동기 문서·README와 그 엔진 미러를 본다.
 #
 # T-0562: 정확 문자열 매칭이라 표기 변형이 그대로 통과했다 — "hard-stop" 가드가 "hard stop"·
 # "hardstop"·"하드스톱" 을 못 잡았다. 이제 각 항목을 **낱말 표기표**로 선언하고 거기서 변형
@@ -324,7 +324,7 @@ def test_slot_key_guard_detects_retired_notation_in_shipped_ignore_prose(tmp_pat
 #     live 런타임 이름과 겹치는 두 개뿐이고, 각각 사유를 선언한다(선언 강제 =
 #     `test_v160_underscore_exclusion_declares_reason`).
 #  2. 선두 낱말 앞에 합성어 경계를 건다 — 한글 음역(스톱·하드)에는 `(?<![가-힣])`, 영문 표기
-#     에는 `(?<![A-Za-z])`. "백스톱"(출하 표면 250줄)·"backstop"(live 표기) 의 꼬리가 각각
+#     에는 `(?<![A-Za-z])`. "백스톱"(출하 파일 250줄)·"backstop"(live 표기) 의 꼬리가 각각
 #     "스톱 마커"·"stop marker" 로 오탐되는 걸 막는다. 두 문자계에 대칭으로 걸어야 한쪽만
 #     보호되는 비대칭이 안 생긴다. 하이픈으로 끊긴 "non-stop marker" 는 합성어가 아니라
 #     그대로 차단된다(경계는 낱말 문자 바로 뒤만 막는다).
@@ -410,7 +410,7 @@ def _variant_regex(
     """낱말 표기표 → 변형 정규식 (생성 규칙 1~3은 위 절 주석 참조).
 
     `capture_separators=True` 면 낱말 **위치 사이**의 구분자를 그룹으로 잡는다(위치 안 낱말은
-    그대로). 축 태그 진실성 검사(`_matched_separators`)가 쓰는 같은 조립 규칙 — 정규식을 따로
+    그대로). 종류 태그 진실성 검사(`_matched_separators`)가 쓰는 같은 조립 규칙 — 정규식을 따로
     손으로 쓰면 표기표와 드리프트한다.
     """
     optional, required = separator_chars + "*", separator_chars + "+"
@@ -497,8 +497,8 @@ _V160_TEXT_SUFFIXES = {
 }
 _V160_ADAPTER_DIRS = {".claude", ".opencode", ".codex", ".agents"}
 
-# 어댑터 제외의 예외 — ctx 가드/driver/plugin 파일은 v1.6.0 재설계 표면 그 자체라 스코프에
-# 편입한다(T-0557 내부 게이트: 어댑터 일괄 제외는 재유입을 못 잡는다).
+# 어댑터 제외의 예외 — ctx 가드/driver/plugin 파일은 v1.6.0 재설계 대상 그 자체라 스코프에
+# 편입한다(T-0557 내부 검사: 어댑터 일괄 제외는 재유입을 못 잡는다).
 _V160_ADAPTER_INCLUDE_NAMES = {
     "ctx_guard.py", "ctx_stop_hook.py", "ctx_stop_hook.sh", "ctx_statusline.py",
     "ctx_statusline.sh", "pm_orch_claude.py", "pm_orch_codex.py", "pm_orch_opencode.py",
@@ -563,7 +563,7 @@ def _v160_ctx_terminology_offenders(files: list[Path]) -> list[str]:
 
 
 def test_no_retired_ctx_safety_terminology_in_v160_shipping_surface():
-    """compaction-native 출하 표면에 옛 차단·회전 안내가 다시 들어오지 않는다.
+    """compaction-native 출하 파일에 옛 차단·회전 안내가 다시 들어오지 않는다.
 
     T-0562 이후 정확 표기뿐 아니라 변형(구분자·대소문자·한영 혼용)까지 전수 0 이어야 한다.
     """
@@ -601,12 +601,12 @@ def _term_by_canonical(canonical: str) -> _RetiredCtxTerm:
 
 
 def _supported_variant_kinds(term: _RetiredCtxTerm) -> tuple[str, ...]:
-    """그 항목이 실제로 지원하는 변형 축 — 표기표에서 파생한다(손 선언 아님).
+    """그 항목이 실제로 지원하는 변형 종류 — 표기표에서 파생한다(손 선언 아님).
 
-    한글 음역을 표기표에 추가하면 한영 축이 자동으로 생기고, 아래 커버리지 테스트가 그 축의
+    한글 음역을 표기표에 추가하면 한영 종류가 자동으로 생기고, 아래 커버리지 테스트가 그 종류의
     샘플을 요구한다. 표기만 늘리고 샘플은 안 늘리는 drift 를 기계로 막는다.
     """
-    kinds = [_SEPARATOR_KIND]  # 모든 항목이 낱말 2개 이상이라 구분자 축은 항상 있다
+    kinds = [_SEPARATOR_KIND]  # 모든 항목이 낱말 2개 이상이라 구분자 종류는 항상 있다
     if any(_has_latin_letter(word) for word in _iter_spelling_words(term.words)):
         kinds.append(_LETTER_CASE_KIND)
     if any(
@@ -633,18 +633,18 @@ def _matched_separators(term: _RetiredCtxTerm, text: str) -> tuple[str, ...] | N
 
 
 def _is_separator_variant(term: _RetiredCtxTerm, sample: str) -> bool:
-    """샘플이 정규 표기와 **구분자가 다른** 변형인가 — 구분자 축 태그의 진실 조건.
+    """샘플이 정규 표기와 **구분자가 다른** 변형인가 — 구분자 종류 태그의 진실 조건.
 
-    대소문자·한영 축과 달리 구분자 축은 검사 없이 태그만 달려 있었다. 그러면 태그가 실제
-    커버리지와 어긋나도(정규 구분자 그대로인 샘플에 태그를 달아도) 커버리지 테스트가 그 축을
-    충족으로 세어 축 하나가 통째로 미검증으로 남는다.
+    대소문자·한영 종류와 달리 구분자 종류는 검사 없이 태그만 달려 있었다. 그러면 태그가 실제
+    커버리지와 어긋나도(정규 구분자 그대로인 샘플에 태그를 달아도) 커버리지 테스트가 그 종류를
+    충족으로 세어 종류 하나가 통째로 미검증으로 남는다.
     """
     found = _matched_separators(term, sample)
     return found is not None and found != _matched_separators(term, term.canonical)
 
 
 # 보강 전(정확 문자열 매칭) 가드를 그대로 통과하던 변형들 — (정규 표기, 그 샘플이 보이는 변형
-# 축, 출하 표면에 이렇게 새어들 수 있는 문장). 축 태그는 커버리지 테스트가 소비한다.
+# 종류, 출하 파일에 이렇게 새어들 수 있는 문장). 종류 태그는 커버리지 테스트가 소비한다.
 _V160_VARIANT_RED_SAMPLES = (
     ("hard" + "-stop", (_SEPARATOR_KIND, _LETTER_CASE_KIND),
      "잔여 5% 밴드에서 Hard Stop 으로 세션을 끊는다"),
@@ -685,7 +685,7 @@ _V160_RUNTIME_IDENTIFIER_LINES = (
 )
 
 # 표기가 live 합성어의 꼬리와 겹치는 자리 — 가드가 정상 서술을 막으면 안 된다. 한글
-# "백스톱"(출하 표면 250줄)·"현재/잠재 전송" 과 영문 "backstop"(live 표기)이 실제 사례다.
+# "백스톱"(출하 파일 250줄)·"현재/잠재 전송" 과 영문 "backstop"(live 표기)이 실제 사례다.
 _V160_COMPOUND_SAFE_LINES = (
     "현재 전송 중인 프롬프트는 손대지 않는다",
     "잠재 전송량을 미리 계산한다",
@@ -759,9 +759,9 @@ def test_v160_underscore_exclusion_declares_reason(term):
 
 @pytest.mark.parametrize("term", _V160_RETIRED_CTX_TERMS, ids=lambda t: t.canonical)
 def test_v160_every_supported_variant_kind_has_red_sample(term):
-    """항목이 지원하는 변형 축마다 red 샘플이 최소 1개 있어야 한다 (커버리지 강제).
+    """항목이 지원하는 변형 종류마다 red 샘플이 최소 1개 있어야 한다 (커버리지 강제).
 
-    샘플이 들쭉날쭉하면 축 하나가 통째로 미검증으로 남는다(ctx-stop 한글 축이 그랬다).
+    샘플이 들쭉날쭉하면 종류 하나가 통째로 미검증으로 남는다(ctx-stop 한글 종류가 그랬다).
     """
     covered = {
         kind
@@ -770,7 +770,7 @@ def test_v160_every_supported_variant_kind_has_red_sample(term):
         for kind in kinds
     }
     missing = [kind for kind in _supported_variant_kinds(term) if kind not in covered]
-    assert not missing, f"'{term.canonical}' 의 변형 축 샘플 누락: {missing}"
+    assert not missing, f"'{term.canonical}' 의 변형 종류 샘플 누락: {missing}"
 
 
 @pytest.mark.parametrize("term,kinds,sample", _V160_VARIANT_RED_SAMPLES)
@@ -779,7 +779,7 @@ def test_v160_variant_escapes_exact_match_but_guard_blocks(
     """보강 전 정확 매칭이 놓치던 변형을 지금은 차단한다 (T-0562 red 재현).
 
     첫 assert 가 red 상태의 재현이다 — 이 문장은 옛 정확 문자열 규칙(`term in line.lower()`)에
-    안 걸렸다. 이어서 축 태그가 샘플과 맞는지 **세 축 모두** 보고(구분자 축도 기계 확인 —
+    안 걸렸다. 이어서 종류 태그가 샘플과 맞는지 **세 종류 모두** 보고(구분자 종류도 기계 확인 —
     태그만 달고 실제로는 정규 구분자인 샘플은 커버리지를 가짜로 채운다), 마지막에 보강 후
     차단을 확인한다.
     """
@@ -788,11 +788,11 @@ def test_v160_variant_escapes_exact_match_but_guard_blocks(
     )
     if _SEPARATOR_KIND in kinds:
         assert _is_separator_variant(_term_by_canonical(term), sample), (
-            f"구분자 축 태그인데 샘플 구분자가 정규 표기 '{term}' 과 같다: {sample!r}"
+            f"구분자 종류 태그인데 샘플 구분자가 정규 표기 '{term}' 과 같다: {sample!r}"
         )
     if _LETTER_CASE_KIND in kinds:
         assert re.search(r"[A-Z]", sample), (
-            f"대소문자 축 태그인데 샘플에 대문자가 없다: {sample!r}"
+            f"대소문자 종류 태그인데 샘플에 대문자가 없다: {sample!r}"
         )
     if _MIXED_LANGUAGE_KIND in kinds:
         korean = [
@@ -802,7 +802,7 @@ def test_v160_variant_escapes_exact_match_but_guard_blocks(
             if _is_hangul_spelling(word)
         ]
         assert any(word in sample for word in korean), (
-            f"한영 축 태그인데 샘플에 한글 표기({korean})가 없다: {sample!r}"
+            f"한영 종류 태그인데 샘플에 한글 표기({korean})가 없다: {sample!r}"
         )
     offenders = _v160_offenders_for_line(sample, tmp_path, monkeypatch)
     assert any(f":: {term} (" in offender for offender in offenders), (
@@ -811,10 +811,10 @@ def test_v160_variant_escapes_exact_match_but_guard_blocks(
 
 
 def test_v160_separator_kind_truth_check_rejects_a_mistagged_sample():
-    """구분자 축 진실성 검사 자체의 감도 — 정규 구분자 그대로면 그 축 변형이 아니다.
+    """구분자 종류 진실성 검사 자체의 감도 — 정규 구분자 그대로면 그 종류 변형이 아니다.
 
     "STOP 마커" 는 대소문자·한영 변형이지만 구분자는 정규 표기와 같은 공백이다. 이 판정이
-    무뎌지면(항상 참) 위 커버리지 강제가 구분자 축을 가짜로 채운 샘플에 속는다.
+    무뎌지면(항상 참) 위 커버리지 강제가 구분자 종류를 가짜로 채운 샘플에 속는다.
     """
     term = _term_by_canonical("stop" + " marker")
     assert not _is_separator_variant(term, "STOP 마커 가 남아 있으면 회전으로 본다")
@@ -825,7 +825,7 @@ def test_v160_separator_kind_truth_check_rejects_a_mistagged_sample():
 def test_v160_separator_capture_regex_matches_the_same_span(term):
     """구분자 캡처 정규식은 판정 정규식과 **같은 구간**을 잡는다 (조립 규칙 드리프트 방지).
 
-    축 진실성 검사가 판정과 다른 구간을 보면 태그 검증이 엉뚱한 문자열을 근거로 삼는다.
+    종류 진실성 검사가 판정과 다른 구간을 보면 태그 검증이 엉뚱한 문자열을 근거로 삼는다.
     """
     capture = _variant_regex(
         term.words, term.separator_chars, capture_separators=True,
@@ -882,10 +882,10 @@ def test_v160_compound_boundary_does_not_open_a_miss_window(
 
 
 # ── T-0794: 리뷰 루프 서술 가드 (이중 채널 병행=표준 → 단일 reviewer + opt-in 추가 리뷰어) ──
-# v1.7.8 이 리뷰 루프를 reviewer 1회 → PM 판정 delta([[T-0785]]) → PM 기계 확인([[T-0786]]) 으로
+# v1.7.8 이 리뷰 루프를 reviewer 1회 → PM 수락한 지적([[T-0785]]) → PM 기계 확인([[T-0786]]) 으로
 # 기계화했고, 추가 리뷰어는 대상 튜플(`additional_reviewer.harness`/`.model`/`.reasoning`)을 선언한
 # 채택자만 병행하는 채널이다. 그런데 출하 방법론·스킬 산문은 "내부 code-reviewer + 추가 리뷰어
-# (둘 다)"·"표준 리뷰 게이트"로 병행을 *표준*으로 서술해 채택자에게 선언하지 않은 채널을 필수
+# (둘 다)"·"표준 리뷰 통과 조건"로 병행을 *표준*으로 서술해 채택자에게 선언하지 않은 채널을 필수
 # 단계로 읽혔다. "병행을 표준으로 서술"은 의미
 # 판정이 불가능하므로 관측된 표기 4종을 토큰으로 못박는다.
 #
@@ -900,11 +900,11 @@ _REVIEW_LOOP_RETIRED = (
 
 
 def _historical_record(rel: str, *, include_tests: bool = False) -> bool:
-    """그 상대경로가 term-of-the-time 기록(고칠 수 없는 표면)인지 판정한다.
+    """그 상대경로가 term-of-the-time 기록(고칠 수 없는 파일)인지 판정한다.
 
     `_v160_shipping_surface` 의 historical 규칙과 같은 집합에 pm_import 백업을 더한다 —
-    `.pm_import_backups/<날짜>/` 는 흡수 전 스냅샷이라 log·decisions 와 같은 immutable 기록이다.
-    `include_tests` 는 산문 축(테스트는 폐기 표기를 *논의*할 수 있다)과 메시지 축(런타임 문자열을
+    `.pm_import_backups/<날짜>/` 는 받아 반영하기 전 복사본이라 log·decisions 와 같은 immutable 기록이다.
+    `include_tests` 는 산문 범위(테스트는 폐기 표기를 *논의*할 수 있다)과 메시지 범위(런타임 문자열을
     단언하는 테스트가 같은 표기를 들고 있어야 한다)이 갈리는 자리다.
     """
     if rel == "CHANGELOG.md":
@@ -924,12 +924,12 @@ def _historical_record(rel: str, *, include_tests: bool = False) -> bool:
 
 
 def _shipped_text_surface(*, include_tests: bool = False) -> list[Path]:
-    """출하 텍스트 표면 전량(엔진 코드·방법론 문서·어댑터·3타깃 사본·설치자 ignore 산문).
+    """출하 텍스트 파일 전량(엔진 코드·방법론 문서·어댑터·3타깃 사본·설치자 ignore 산문).
 
     `_v160_shipping_surface` 와 텍스트 확장자 집합을 공유하되 어댑터 디렉터리(`.claude`·
     `.opencode`·`.codex`·`.agents`)를 **제외하지 않는다** — 방법론 산문이 사는 자리가 바로 스킬·
     커맨드·에이전트 카드라, v1.6.0 ctx 가드처럼 어댑터를 일괄 제외하면 재유입을 못 잡는다(스킬
-    `references/*.md`·codex `.agents/skills`·opencode `.opencode/command` 가 그 사각이었다).
+    `references/*.md`·codex `.agents/skills`·opencode `.opencode/command` 가 그 놓치는 곳이었다).
     """
     files: list[Path] = []
     for path in repo_owned_paths(REPO, ".", mode=OWNED):
@@ -944,7 +944,7 @@ def _shipped_text_surface(*, include_tests: bool = False) -> list[Path]:
 
 
 def _review_loop_surface() -> list[Path]:
-    """리뷰 루프 서술이 실제로 사는 출하 표면(산문 축 — 테스트 제외)."""
+    """리뷰 루프 서술이 실제로 사는 출하 파일(산문 범위 — 테스트 제외)."""
     return _shipped_text_surface()
 
 
@@ -962,11 +962,11 @@ def _review_loop_offenders(files: list[Path]) -> list[str]:
 
 
 def test_no_retired_review_loop_phrasing_in_shipping_surface():
-    """출하 표면이 추가 리뷰어 병행을 표준 리뷰 게이트로 서술하지 않는다 (T-0794).
+    """출하 파일이 추가 리뷰어 병행을 표준 리뷰 통과 조건으로 서술하지 않는다 (T-0794).
 
-    현행 흐름은 dev → code-reviewer 1회 → PM 판정 delta → dev fix → PM 기계 확인이고, 추가
+    현행 흐름은 dev → code-reviewer 1회 → PM 수락한 지적 → dev fix → PM 기계 확인이고, 추가
     리뷰어는 대상 튜플을 선언한 채택자만 병행한다. 선언하지 않은 채택자가 필수 단계로 읽으면
-    없는 게이트를 기다린다.
+    없는 통과 조건을 기다린다.
     """
     offenders = _review_loop_offenders(_review_loop_surface())
     assert not offenders, (
@@ -976,9 +976,9 @@ def test_no_retired_review_loop_phrasing_in_shipping_surface():
 
 
 def test_review_loop_surface_covers_every_live_channel_mention():
-    """가드 시야가 추가 리뷰어를 언급하는 live 출하 문서 전량을 덮는다 (시야==표면 독립 대조).
+    """가드 검사 범위가 추가 리뷰어를 언급하는 live 출하 문서 전량을 덮는다 (검사 범위==출하 파일 독립 대조).
 
-    표면 열거를 손으로 유지하면 새 스킬·새 하네스 사본이 시야 밖에서 표기를 되살린다. 가드가
+    출하 파일 열거를 손으로 유지하면 새 스킬·새 하네스 사본이 검사 범위 밖에서 표기를 되살린다. 가드가
     보는 집합과, 저장소를 독립으로 훑어 채널을 언급하는 집합을 대조해 차집합 0 을 단언한다.
     """
     view = {path.resolve() for path in _review_loop_surface()}
@@ -998,7 +998,7 @@ def test_review_loop_surface_covers_every_live_channel_mention():
     assert mentions, (
         "채널을 언급하는 live 문서가 0 — 스캔이 무력화됐다(판정 불능은 통과가 아니다)"
     )
-    assert not missed, f"가드 시야 밖에서 채널을 서술하는 출하 문서: {missed}"
+    assert not missed, f"가드 검사 범위 밖에서 채널을 서술하는 출하 문서: {missed}"
 
 
 @pytest.mark.parametrize("relpath", [
@@ -1010,7 +1010,7 @@ def test_review_loop_surface_covers_every_live_channel_mention():
     "templates/claude_code/.project_manager/wiki/pm_playbook.md",
 ])
 def test_review_loop_surface_includes_load_bearing_docs(relpath):
-    """표기가 실제로 잔존했던 자리(canonical·3타깃 사본·어댑터 remap)가 시야 안이다."""
+    """표기가 실제로 잔존했던 자리(canonical·3타깃 사본·어댑터 remap)가 검사 범위 안이다."""
     view = {path.relative_to(REPO).as_posix() for path in _review_loop_surface()}
     assert relpath in view
 
@@ -1058,7 +1058,7 @@ _RETIRED_PLAIN_WORD_KEPT_TEXTS = (
     "pm pre-push gate", "board.py lint --gate || exit 1",
     "green 회귀 AND lint 게이트만 push", "회귀 게이트(tests/ 있는 트리만) AND lint 게이트(항상)",
     "회귀 게이트 비대상 — 이 트리에 tests/ 없음(PM 홈) · lint 게이트만",
-    "pm-wave-claim", "pm-wave-finish", "pm-wave-*", "gate_snapshot.py", "by=harvest",
+    "pm-wave-claim", "pm-wave-finish", "pm-wave-*", "gate_snapshot.py",
     "경로 뒤 설명의 다른 파일은 결속하지 않는다", "같은 ID 를 양쪽에 실으면 회수가 그 라운드를 거부한다",
     "다시 선언하면 이 라운드는 회수되지 않는다", "첫 공백 구분 토큰 하나만 결속한다", "실제 잔여 건수를 기대값으로 쓴다",
     "USER_GATE_ITEMS", "delta|changelog", "(PM 12차) delta ([[T-0467]])",
@@ -1195,7 +1195,7 @@ def test_plain_word_rule_is_an_edit_recall_rule_pointing_at_the_table():
     ".project_manager/wiki/pm_playbook.md",
     ".claude/skills/pm-cluster-finish/SKILL.md",
     "README.md",
-    "tests/test_ticket_finish.py",               # 메시지 문자열 단언 축
+    "tests/test_ticket_finish.py",               # 메시지 문자열 단언 대상
     "templates/codex/AGENTS.md",                 # manifest 밖 어댑터 진입(전파 안 됨)
     "templates/opencode/.opencode/agents/pm.md",
     "templates/claude_code/.project_manager/wiki/tickets/README.md",
@@ -1270,21 +1270,21 @@ def test_retired_plain_word_guard_detects_reintroduction(tmp_path, monkeypatch):
 # ── T-0887: 우리 채널을 '외부'로 부르지 않는다 ─────────────────────────────
 # 사용자는 claude·codex·opencode 를 교차로 쓰고 셋 다에 developer·architect·code-reviewer 를 위임
 # 한다. 그런데 엔진 산문은 추가 리뷰어 채널만 '외부 리뷰어'·'외부 하네스'·'외부 채널'로 불러 같은
-# 등급의 행위자를 바깥 사람처럼 서술했고, 그 호칭이 저장소 거울·임시 홈·별도 동의 축이라는 권한
+# 등급의 행위자를 바깥 사람처럼 서술했고, 그 호칭이 저장소 거울·임시 홈·별도 동의 항목이라는 권한
 # 차등의 근거로 쓰였다(T-0887 이 그 장치를 전부 삭제). 이름이 남으면 차등이 다시 자란다.
 #
 # 같은 이유로 '외부 전송'·'외부 송신'도 폐기한다. 우리가 부르는 하네스로 프롬프트가 가는 것은
-# 이 프레임워크의 정상 동작이고, 그것을 '밖으로 내보낸다'는 별도 위험 축으로 세우는 순간 채널마다
-# 다른 동의·필터·게이트를 붙일 근거가 다시 생긴다. 남는 판단 축은 자기 근거로 부른다 — 라운드·
-# wave 예산이 세는 것은 유료 **호출** 횟수다.
+# 이 프레임워크의 정상 동작이고, 그것을 '밖으로 내보낸다'는 별도 위험 항목으로 세우는 순간 채널마다
+# 다른 동의·필터·검사를 붙일 근거가 다시 생긴다. 남는 판단 항목은 자기 근거로 부른다 — 라운드·
+# 세션 호출 예산이 세는 것은 유료 **호출** 횟수다.
 #
 # 판정 경계: 폐기 대상은 **우리 채널**을 가리키는 말이다 — 리뷰어·하네스·모델·에이전트·채널·
-# 프로세스 같은 행위자 명사와, 그 채널로 나가는 행위를 위험 축으로 세우는 전송/송신. 우리 채널이
+# 프로세스 같은 행위자 명사와, 그 채널로 나가는 행위를 위험 항목으로 세우는 전송/송신. 우리 채널이
 # 아닌 것에는 '외부'가 그대로 남는다 — 저장소 밖 경로, 프로젝트 밖 파일, 기계 밖으로 나가는 행위
-# (`외부 비가역 행위`·`외부 API` 같은 안전 분류). 남의 프로세스가 파일을 바꾸는 축은 `외부 개입`
+# (`외부 비가역 행위`·`외부 API` 같은 안전 분류). 남의 프로세스가 파일을 바꾸는 항목은 `외부 개입`
 # 이라는 별도 표현이 이미 살아 있으므로 '외부 프로세스'는 live 용법이 없다.
 #
-# 시야에 `tests/` 를 넣는다(부기 가드와 같은 축): 런타임 메시지·카드 문구를 문자열로 단언하는
+# 검사 범위에 `tests/` 를 넣는다(지어낸 말 검사와 같은 범위): 런타임 메시지·카드 문구를 문자열로 단언하는
 # 테스트가 있어 메시지와 단언이 같은 표기를 들고 있어야 한다.
 #
 # 리터럴 분할: 이 가드 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
@@ -1307,7 +1307,7 @@ _RETIRED_ACTOR_PHRASES = (
     f"{_RETIRED_OUTSIDER} MF",
     f"{_RETIRED_OUTSIDER} 프로세스",
     f"{_RETIRED_OUTSIDER} codex",
-    f"{_RETIRED_OUTSIDER} 전송",       # 채널 행위를 별도 위험 축으로 세우던 표기
+    f"{_RETIRED_OUTSIDER} 전송",       # 채널 행위를 별도 위험 항목으로 세우던 표기
     f"{_RETIRED_OUTSIDER}전송",
     f"{_RETIRED_OUTSIDER} 송신",
     f"{_RETIRED_OUTSIDER}송신",
@@ -1331,7 +1331,7 @@ def _retired_actor_offenders(files: list[Path]) -> list[str]:
 
 
 def test_no_retired_outsider_naming_of_our_own_actors():
-    """출하 표면 전량이 리뷰어·하네스·모델·채널과 그 호출을 '외부'로 부르지 않는다 (T-0887).
+    """출하 파일 전량이 리뷰어·하네스·모델·채널과 그 호출을 '외부'로 부르지 않는다 (T-0887).
 
     행위자는 역할 이름(추가 리뷰어·위임·하네스)으로, 그 행위는 자기 근거(유료 호출)로 부른다.
     표기가 남으면 채널마다 다른 권한·동의·필터 규칙을 붙일 근거로 다시 쓰인다.
@@ -1351,7 +1351,7 @@ def test_no_retired_outsider_naming_of_our_own_actors():
     ".project_manager/wiki/pm_playbook.md",
     "README.md",
     "docs/portability.md",
-    "tests/test_additional_reviewer_target.py",        # 메시지 단언 축
+    "tests/test_additional_reviewer_target.py",        # 메시지 단언 대상
     "templates/codex/.agents/skills/pm-review/SKILL.md",
     "templates/opencode/.opencode/agents/architect.md",
     "templates/claude_code/.project_manager/tools/additional_reviewer.py",
@@ -1360,7 +1360,7 @@ def test_no_retired_outsider_naming_of_our_own_actors():
     ".opencode/lib/safe-write-core.cjs",
 ])
 def test_outsider_naming_guard_scope_includes_every_sweep_area(relpath):
-    """sweep 이 손댄 축(엔진·역할 카드·스킬·방법론·README·문서·테스트·3타깃 사본)이 시야 안이다."""
+    """sweep 이 손댄 범위(엔진·역할 카드·스킬·방법론·README·문서·테스트·3타깃 사본)이 검사 범위 안이다."""
     view = {path.relative_to(REPO).as_posix()
             for path in _shipped_text_surface(include_tests=True)}
     assert relpath in view
@@ -1377,9 +1377,9 @@ def test_outsider_naming_guard_detects_each_retired_phrase(
     assert _retired_actor_offenders([doc]) == [f"card.md:1 :: {phrase}"]
 
 
-# ── T-0887: 과거 릴리즈 절의 폐지 축에는 무효 표시를 단다 ──────────────
-# CHANGELOG 는 기록이라 원문을 지우지 않는다(용어 가드 시야 밖). 대신 폐지된 축을 설명하는 항목
-# 마다 무효 표시를 달아, 위에서 아래로 읽는 채택자가 없는 스위치·격리·전송 동의 축을 현행으로
+# ── T-0887: 과거 릴리즈 절의 폐지 항목에는 무효 표시를 단다 ──────────────
+# CHANGELOG 는 기록이라 원문을 지우지 않는다(용어 가드 검사 범위 밖). 대신 폐지된 항목을 설명하는 항목
+# 마다 무효 표시를 달아, 위에서 아래로 읽는 채택자가 없는 스위치·격리·전송 동의 항목을 현행으로
 # 오해하지 않게 한다. 판정 단위는 **항목 블록**이다(`- ` 시작 + 이어지는 들여쓰기 줄).
 _RETIRED_OPTION_MARKERS = (
     f"{_RETIRED_OUTSIDER} 리뷰", f"{_RETIRED_OUTSIDER}리뷰",
@@ -1413,7 +1413,7 @@ def _past_release_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
 
 
 def _uninvalidated_retired_option_notes() -> list[str]:
-    """폐지 축을 설명하면서 무효 표시가 없는 과거 릴리즈 항목 전수."""
+    """폐지 항목을 설명하면서 무효 표시가 없는 과거 릴리즈 항목 전수."""
     lines = (REPO / "CHANGELOG.md").read_text(encoding="utf-8").splitlines()
     offenders = []
     for lineno, block in _past_release_blocks(lines):
@@ -1427,13 +1427,13 @@ def _uninvalidated_retired_option_notes() -> list[str]:
 
 
 def test_retired_option_release_notes_carry_an_invalidation_note():
-    """과거 릴리즈 절의 폐지 축 항목이 전부 무효 표시를 달고 있다 (T-0887).
+    """과거 릴리즈 절의 폐지 항목이 전부 무효 표시를 달고 있다 (T-0887).
 
-    원문 서술은 기록이라 지우지 않는다 — 그 축이 지금은 없다는 사실만 항목 끝에 덧붙인다.
+    원문 서술은 기록이라 지우지 않는다 — 그 항목이 지금은 없다는 사실만 항목 끝에 덧붙인다.
     """
     offenders = _uninvalidated_retired_option_notes()
     assert not offenders, (
-        f"폐지 축을 설명하면서 무효 표시가 없는 과거 릴리즈 항목 — `{_INVALIDATION_NOTE}` 를 "
+        f"폐지 항목을 설명하면서 무효 표시가 없는 과거 릴리즈 항목 — `{_INVALIDATION_NOTE}` 를 "
         f"항목 끝에 달라 (T-0887): {offenders}"
     )
 

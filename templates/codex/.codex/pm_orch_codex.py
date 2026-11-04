@@ -741,7 +741,7 @@ def _parse_hook_payload(payload_bytes) -> tuple[dict, str]:
     """훅 payload → (dict, 못 읽은 사유). 사유가 빈 문자열이면 정상 파싱이다.
 
     사유를 값으로 돌려주는 이유는 호출부가 "빈 payload" 와 "못 읽은 payload" 를 구분해야 하기
-    때문이다 — 둘을 같은 빈 dict 로 접으면 판정 불능이 정상 미매칭으로 위장한다."""
+    때문이다 — 둘을 같은 빈 dict 로 바꾸면 판정 불능이 정상 미매칭으로 위장한다."""
     raw = bytes(payload_bytes)
     if not raw.strip():
         return {}, "빈 stdin(payload 없음)"

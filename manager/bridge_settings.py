@@ -93,7 +93,7 @@ def _apply(home: Path, updates: dict) -> dict:
         raise CallError(
             "old-generation",
             "이 사본이 설정 저장을 끝내지 못했다 "
-            "(`pm-config apply` 를 모르는 세대면 먼저 갱신하라).",
+            "(`pm-config apply` 를 모르는 버전이면 먼저 갱신하라).",
             stderr=completed.stderr, rc=completed.returncode)
     try:
         document = json.loads(completed.stdout)
@@ -182,7 +182,7 @@ class SettingsApi:
 
         rc≠0 은 전부 error dict 로 올린다 — 사본이 이 명령을 모르는 경우(rc 2)와 조회가 실패한
         경우(rc 3)를 여기서 가르지 않고 사본의 사유를 그대로 나른다. **빈 목록 성공은 없다**:
-        0개면 사본이 rc 3 으로 답하므로 이 자리에서 빈 목록을 성공으로 접을 길이 없다.
+        0개면 사본이 rc 3 으로 답하므로 이 자리에서 빈 목록을 성공으로 바꿀 길이 없다.
         """
         try:
             home = _pm_home(path)
@@ -193,7 +193,7 @@ class SettingsApi:
                 raise CallError(
                     "old-generation",
                     f"이 사본이 {harness} 모델 목록을 내지 못했다 "
-                    "(`delegate models` 를 모르는 세대면 먼저 갱신하라).",
+                    "(`delegate models` 를 모르는 버전이면 먼저 갱신하라).",
                     stderr=completed.stderr, rc=completed.returncode)
             try:
                 return json.loads(completed.stdout)

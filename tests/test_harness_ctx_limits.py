@@ -1501,7 +1501,7 @@ def _t0949_set_jsonc(root: Path, relpath: str, path: tuple[str, ...], value) -> 
                                   "missing-file", "not-utf8", "not-object", "record-missing"])
 def test_t0949_file_state_matrix(local_conf, tmp_path, monkeypatch, case):
     """T-0949 열거 — 판독 실패·키 없음·bool(AT-002)·같음·다름 밖의 설정 파일 상태. 기록에 없는 경로·다른 키는
-    비교하지 않고, 판독 실패는 차이 없음으로 접히지 않는다. 기록 오류이면 설정 파일을 읽지 않는다."""
+    비교하지 않고, 판독 실패는 차이 없음으로 바뀌지 않는다. 기록 오류이면 설정 파일을 읽지 않는다."""
     root, values = _t0943_applied(local_conf, tmp_path, monkeypatch)
     _t0949_no_lookup(monkeypatch)
     claude, opencode = ".claude/settings.json", ".opencode/opencode.jsonc"

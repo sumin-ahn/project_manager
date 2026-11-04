@@ -435,6 +435,7 @@ def test_apply_crash_is_not_reported_as_invalid_value(api, pm_home):
     assert "Traceback" in error["stderr"] and "UnicodeDecodeError" in error["stderr"], error
     assert "Traceback" not in error["message"], "화면 알림 문구가 사본의 traceback 이다"
     assert "저장을 끝내지 못했다" in error["message"]
+    assert "모르는 버전이면 먼저 갱신하라" in error["message"]
     assert settings.read_bytes() == settings_before
 
 
@@ -555,7 +556,7 @@ def test_an_alias_harness_comes_back_as_the_copys_own_table(api, pm_home):
 
 def test_a_live_query_that_fails_is_an_error_dict_not_an_empty_list(api, pm_home, tmp_path,
                                                                     monkeypatch):
-    """조회 실패는 실패다 — 0개를 성공으로 접으면 화면이 "고를 것이 없다" 로 보인다."""
+    """조회 실패는 실패다 — 0개를 성공으로 바꾸면 화면이 "고를 것이 없다" 로 보인다."""
     name, _ = _harness_of(pm_home, "live")
     _isolated_path(tmp_path, monkeypatch)
 
@@ -583,6 +584,17 @@ def test_a_copy_that_does_not_know_the_command_is_an_error_dict(api, pm_home):
     assert response["error"]["kind"] == "old-generation"
     assert response["error"]["rc"] == 2
     assert "delegate" in response["error"]["stderr"]
+
+
+def test_an_old_copy_error_names_the_version_to_update(api, pm_home):
+    """모델 목록을 못 내는 옛 사본의 화면 알림은 '모르는 버전이면 먼저 갱신하라' 로 안내한다."""
+    install_old_generation_engine(pm_home)
+    name, _ = _harness_of(pm_home, "alias")
+
+    error = api.delegate_models(str(pm_home), name)["error"]
+
+    assert error["kind"] == "old-generation"
+    assert "모르는 버전이면 먼저 갱신하라" in error["message"]
 
 
 def test_a_model_query_writes_nothing_in_the_project(api, pm_home, tmp_path, monkeypatch):

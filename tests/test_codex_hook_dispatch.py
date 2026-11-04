@@ -356,7 +356,7 @@ def test_unparsable_payload_still_runs_tool_agnostic_features(dispatcher, guard,
 # ── 판정 불능 vs 정상 미매칭 (조용한 실패 금지 · T-0777 불변식 4) ────────────
 # 옛 등록은 hooks.json matcher 가 호스트 쪽에서 판별했고, 판별 근거가 없는 입력은 가드 자식이
 # 경고로 냈다(실측: 빈 stdin·`{}`·파손 JSON 모두 rc0 경고 엔벨로프). 판별이 진입점 뒤로 옮겨
-# 온 뒤에도 그 의미가 남아야 한다 — 아래는 "못 판정했다" 와 "안 걸렸다" 가 같은 값으로 접히지
+# 온 뒤에도 그 의미가 남아야 한다 — 아래는 "못 판정했다" 와 "안 걸렸다" 가 같은 값으로 바뀌지
 # 않는지를 고정한다. 등급은 종전대로 rc0·차단 0 이다(경고만 복원·승격 아님).
 
 
@@ -1424,7 +1424,7 @@ def test_side_effect_only_child_runs_but_never_answers(dispatcher, tmp_path):
 def test_side_effect_only_failure_becomes_a_fallback_warning(dispatcher, tmp_path):
     """부작용 자식의 기동 실패·시간 초과는 침묵하지 않고 원인을 담은 대체 경고가 된다.
 
-    기록이 아예 남지 않는 실패라 `{}` 로 접으면 압축 checkpoint 가 빠진 사실이 보이지 않는다.
+    기록이 아예 남지 않는 실패라 `{}` 로 바꾸면 압축 checkpoint 가 빠진 사실이 보이지 않는다.
     정상 종료한 자식의 rc·출력을 보지 않는 계약은 `test_side_effect_only_child_runs_but_never_answers` 가 고정한다."""
     missing = dispatcher.CodexHookFeature(
         "fixture-missing", "PostToolUse", None,
