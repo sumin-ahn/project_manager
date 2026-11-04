@@ -565,7 +565,7 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
     resumed = [row for row in raw_output.raw_records(record_file)
                if row.get("attempt") == delegate_run_rules.RESUME_ATTEMPT]
     assert len(resumed) == 1, f"재개 attempt 레코드 수 이상: {len(resumed)}" + tail
-    assert resumed[0]["resume_matched"] is True, "기록이 세션 불일치를 기록" + tail
+    assert resumed[0]["resume_matched"] is True, "기록에 세션 불일치가 남음" + tail
     assert resumed[0]["session_id"] == first["session_id"]
     raw_text = Path(resumed[0]["raw_path"]).read_text(encoding="utf-8")
     assert first["session_id"] in raw_text, "재개 argv 가 raw 감사 헤더에 없다" + tail

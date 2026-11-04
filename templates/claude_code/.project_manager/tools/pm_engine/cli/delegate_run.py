@@ -262,7 +262,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
 
         # 쓰기 대상 기준으로 대상 저장소를 다시 잡는 검사 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
         # divergence와 같은 cwd repo 해소 입력을 기존 write-target 가드에도 재사용한다. 하위 디렉토리
-        # `--cwd`가 PM 홈 가드를 우회하는 별도 판정기준을 만들지 않는다.
+        # `--cwd`가 PM 홈 가드를 우회하는 별도 판정 기준을 만들지 않는다.
         retarget = delegate_execute.check_write_target_retarget(args.role, cwd_repo or cwd, outgoing_text)
         if retarget is not None:
             print(

@@ -642,7 +642,7 @@ def test_removed_fixed_disposition_never_touches_the_round_record(
 def test_registered_worktree_real_round_still_uses_pm_home_record(
     tmp_path, monkeypatch, capsys,
 ):
-    """유효 lease 등록 worktree의 실 라운드는 종전대로 PM 홈 기록에 기록한다."""
+    """유효 lease 등록 worktree의 실 라운드는 종전대로 PM 홈 기록 파일에 적는다."""
     home, worktree, _ticket = _managed_worktree(tmp_path)
     _enable_additional_review(home)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")

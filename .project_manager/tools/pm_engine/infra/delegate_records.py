@@ -119,7 +119,7 @@ def _delegate_rounds_record_row(row: object, *, line_number: int) -> dict:
 
 
 def _delegate_rounds_ledger_records(pm_home: Path) -> list[dict]:
-    """append-only 기록을 기록 순서대로 읽는다 (부재는 빈 목록 · 손상 행은 경고 후 건너뜀).
+    """append-only 기록을 쓴 순서대로 읽는다 (부재는 빈 목록 · 손상 행은 경고 후 건너뜀).
 
     손상 행 하나가 다른 run 의 돌려받기를 막지 않는다 — 조회는 `copy` 경로 일치로 하고, 그 경로
     행이 손상이면 아래 `_delegate_round_record` 가 "준비 기록 없음" 으로 거부한다(fail-closed).

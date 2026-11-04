@@ -123,7 +123,7 @@ READ_REGRESSION_UNAVAILABLE_NOTE = (
 # 거기 주석에 있다). 이 모듈에 단일 상수를 두지 않는 이유: 값이 두 군데면 규칙이 둘이 되고,
 # 실제로 초기 구현의 단일 기본값(클라우드 표본 기반)이 3시간짜리 로컬 opencode 위임을 죽였다.
 # 해소 순서: `--timeout`(일회성) > local.conf `harness.<name>.wall_timeout` > `delegate.timeout`
-# (범위-flat legacy) > 프로필 선언. 무진행 시간 제한은 `harness.<name>.idle_timeout` >
+# (공통 legacy) > 프로필 선언. 무진행 시간 제한은 `harness.<name>.idle_timeout` >
 # `delegate.idle_timeout` > 프로필 선언.
 # 대체 하네스가 발동하면 primary 소진 후 1회 더 실행한다 — 실행 1회의 최악 소요는 하네스마다 달라서
 # _harness_timeout_budget 이 계산한다(추가 대체 하네스 없음 — 상한은 두 시도 예산의 합으로 닫히고,
@@ -173,7 +173,7 @@ OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
 # (native/cross)로 갈리지 않는다 — 호출을 별도 동의 기준으로 막지 않는다.
 DELEGATE_ENABLED_KEY = "delegate.enabled"
 
-# 범위-flat legacy 시간 노브(하네스 무관·기존 채택자 설정 보존). 하네스별 키
+# 공통 legacy 시간 노브(하네스 무관·기존 채택자 설정 보존). 하네스별 키
 # `harness.<name>.wall_timeout`/`.idle_timeout` 이 설정돼 있으면 그쪽이 이긴다(더 구체적인 선언).
 DELEGATE_TIMEOUT_KEY = "delegate.timeout"
 DELEGATE_IDLE_TIMEOUT_KEY = "delegate.idle_timeout"

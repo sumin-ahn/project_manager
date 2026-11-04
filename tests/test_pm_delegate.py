@@ -6320,7 +6320,7 @@ def _review_completion(pd, text: str) -> str | None:
     return review_state.review_completion_problem("---\nid: T-0804\n---\n# T-0804\n", [review])
 
 
-# 실측(2026-08-22 · PM 홈 board 라운드 파일 → 당시 기록 기록값). 판정 규칙이 이 값을
+# 실측(2026-08-22 · PM 홈 board 라운드 파일 → 당시 기록 값). 판정 규칙이 이 값을
 # 뒤집으면 기존 자산을 잠근 것이다.
 _T0804_RECORDED_ROWS = [
     pytest.param(INTERNAL_ROUND_REJECT_BOTH, 1, 1, id="t0783-round1"),
