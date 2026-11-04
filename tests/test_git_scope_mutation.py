@@ -1,19 +1,19 @@
 """공유 워킹트리 mutation = 선언된 경로 스코프 — **실 git** hermetic 가드 (ADR-0074·T-0425).
 
 이 클래스(디자인 git blanket `add -A`)가 v1.4.1 까지 아무 테스트에도 안 잡힌 이유는 하나다 —
-`tests/test_ticket_finish.py` 가 git seam 을 `run_git_fn=lambda args: (0, "")` 로 주입해
+`tests/test_ticket_finish.py` 가 git 교체 지점을 `run_git_fn=lambda args: (0, "")` 로 주입해
 **argv 를 통째로 버렸다**. 그래서 `add -A`(blanket) 인지 스코프된 pathspec 인지 아무도 보지
 않았다. 그 공백을 닫으려면 mock 이 아니라 **실 git 리포지토리의 산출물(index·HEAD)** 로
-단언해야 한다(`tests/test_board_root.py` A5 · `tests/test_board_git_sync.py` 동형).
+단언해야 한다(`tests/test_board_root.py` A5 · `tests/test_board_git_sync.py` 와 같은 방식).
 
-가드는 **세 축을 다 물어야 한다** — 좁히기는 양쪽으로 무너질 수 있고, 실제로 두 리뷰 게이트가
+가드는 **세 기준을 다 물어야 한다** — 좁히기는 양쪽으로 무너질 수 있고, 실제로 두 리뷰 통과 조건이
 각각 반대편을 찾았다(codex=과다 stage / reviewer=누락·거짓 보고):
   1. **과다** — 스코프 *밖* 남의 것이 실리면 red. 디렉토리 pathspec 은 "선언대로" 이면서 동시에
      "남의 것 포함" 이 성립하는 함정이라, 디렉토리가 pathspec 에 살아남지 못함을 구조로 박는다.
   2. **누락** — 엔진이 *자기가 만든 산출물* 을 빠뜨리면 red. legacy(board 미분리·출하 템플릿
-     기본)와 board 분리 형상 **둘 다** 에서 본다.
+     기본)와 board 분리 구성 **둘 다** 에서 본다.
   3. **거짓 안심** — 보고 채널이 죽었는데 "이상 없음" 이 나오면 red. stage 판정기(board 모듈)가
-     못 뜬 형상에서 stage 0 인데 "잔여 없음" 이 나오던 것이 실측 결함이었다.
+     못 뜬 구성에서 stage 0 인데 "남은 변경 없음" 이 나오던 것이 실측 결함이었다.
 
 **hermetic 필수**: 모듈 경로 전역(`REPO`)은 import 시점에 실 repo 절대경로로 굳으므로 함수
 scope 로 새 모듈을 로드해 tmp 로 재지정한다. 실 git 이 필요한 케이스는 git 부재 환경에서 skip.
@@ -47,7 +47,7 @@ requires_git = pytest.mark.skipif(
     reason="git 바이너리 부재 — 실 git 스코프 가드 skip(순수 프리미티브 단위테스트는 항상 실행).",
 )
 
-# hermetic commit 을 위한 결정적 author/committer (실 사용자 config 불요·test_board_git_sync 동형).
+# hermetic commit 을 위한 결정적 author/committer (실 사용자 config 불요·test_board_git_sync 와 같은 방식).
 _GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
@@ -103,7 +103,7 @@ def board():
 
 
 def test_scope_pathspec_drops_paths_outside_repo(board, tmp_path):
-    """repo 밖 경로는 pathspec 에서 빠진다 (두-git 형상의 코드 worktree touches·파생물)."""
+    """repo 밖 경로는 pathspec 에서 빠진다 (두-git 구성의 코드 worktree touches·파생물)."""
     repo = tmp_path / "home"
     repo.mkdir()
     inside = repo / "wiki" / "a.md"
@@ -199,7 +199,7 @@ def test_scope_stageable_expands_brand_new_untracked_directory(board, tmp_path):
 def test_scope_stageable_expands_deleted_directory(board, tmp_path):
     """**통째로 삭제된** 디렉토리 선언도 파일 단위로 전개된다 — 선언한 삭제가 빠지면 안 된다.
 
-    옛 게이트는 `is_dir()` 로만 전개를 걸어, 디렉토리가 이미 없으면 전개를 건너뛰었다. 이어지는
+    옛 통과 조건은 `is_dir()` 로만 전개를 걸어, 디렉토리가 이미 없으면 전개를 건너뛰었다. 이어지는
     추적 판정도 `ls-files -- src` 가 `src/a.py` 를 내놔 `src` 자체와 매칭되지 않아 경로가 통째로
     탈락 → **scope=()** 로 선언한 삭제가 커밋에서 조용히 빠졌다(reviewer 실측). "선언 경로만
     stage" 는 과다 stage 뿐 아니라 **선언된 삭제 누락 0** 까지여야 성립한다.
@@ -270,7 +270,7 @@ def test_finish_commits_git_rm_staged_deletion_of_declared_paths(tf, tmp_path, m
     """[[T-0959]] Q4 — `git rm` 으로 미리 stage 한 선언 삭제(파일·디렉토리)를 종결이 받아 커밋 pathspec 에 싣는다.
 
     그 경로는 index 에도 작업 트리에도 없어 `git add` 가 rc 128 로 거부한다. 예전에는 stage 범위에서 빠져
-    잔여 판정이 "스코프 밖 staged" 로 거부했다. add 는 작업 트리에 있는 파일만, 커밋은 그 삭제까지 싣는다.
+    남은 변경 판정이 "스코프 밖 staged" 로 거부했다. add 는 작업 트리에 있는 파일만, 커밋은 그 삭제까지 싣는다.
     """
     root = _make_home_repo(tmp_path / "home")
     (root / "src" / "pkg").mkdir(parents=True)
@@ -317,11 +317,11 @@ def test_finish_commits_git_mv_rename_inside_declared_directory(tf, tmp_path, mo
 
 
 @requires_git
-def test_scope_stageable_final_gate_drops_directory_even_if_expansion_fails(monkeypatch, board, tmp_path):
+def test_scope_stageable_final_check_drops_directory_even_if_expansion_fails(monkeypatch, board, tmp_path):
     """전개가 **실패해도** 디렉토리는 최종 반환에 못 남는다 — 불변식이 전개에 의존하지 않는다.
 
     전개를 죽인(빈 목록/디렉토리 반환) 러너를 물려 "다음 번 조용한 전개 실패" 를 모사한다.
-    이번 결함이 정확히 그 형상이었으므로, 같은 클래스가 또 나와도 마지막 관문이 잡아야 한다.
+    이번 결함이 정확히 그 경우였으므로, 같은 클래스가 또 나와도 마지막 관문이 잡아야 한다.
     """
     repo = tmp_path / "r"
     repo.mkdir()
@@ -343,7 +343,7 @@ def test_scope_stageable_final_gate_drops_directory_even_if_expansion_fails(monk
 def test_scope_stageable_drops_paths_inside_nested_git(board, tmp_path):
     """중첩 git(서브모듈) 내부 경로는 제거된다 — 상위 repo `add` 의 rc=128 fatal 방지.
 
-    board 분리 형상에서 `touches` 에 `.project_manager/board/...` 를 적으면 상위 repo 의
+    board 분리 구성에서 `touches` 에 `.project_manager/board/...` 를 적으면 상위 repo 의
     `git add` 가 `fatal: … is in submodule` 로 죽어 **stage 전체가 실패** 했다(그 fatal 은
     finish 를 rc=1 로 중단시킨다). 대조로 raw add 의 fatal 을 같은 트리에서 실측한다.
     """
@@ -411,8 +411,8 @@ def test_finish_survives_gitignored_touches(tf, tmp_path, monkeypatch, capsys):
     """`touches` 에 gitignored 경로가 섞여도 finish 가 죽지 않고 **loud 보고까지 도달**한다.
 
     필터가 없으면 `[4/5] [중단] git add 실패 (rc=1)` 로 rc=1 종료 — board complete 는 이미
-    끝난 절반 상태인데 잔여 loud 보고도 [5/5] 안내도 안 나온다. 이 티켓이 만든 안전장치가
-    가장 필요한 순간에 사라진다(reviewer 실측). 실형상 도달 가능 — 이 보드의 done 티켓 여러
+    끝난 절반 상태인데 남은 변경 loud 보고도 [5/5] 안내도 안 나온다. 이 티켓이 만든 안전장치가
+    가장 필요한 순간에 사라진다(reviewer 실측). 실제 구성에서 도달 가능 — 이 보드의 done 티켓 여러
     건이 `touches: .project_manager/local.conf`(gitignored)를 선언한다.
     """
     root = _make_home_repo(tmp_path / "home")
@@ -460,7 +460,7 @@ def test_scope_stage_pathspec_survives_unmatched_path_in_real_git(board, tmp_pat
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 잔여 판정 (ticket_finish 자체 파서) — index 열 · worktree 열
+# 남은 변경 판정 (ticket_finish 자체 파서) — index 열 · worktree 열
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -486,7 +486,7 @@ def test_split_dirty_scope_covers_declared_directory(tf):
 
 
 def test_split_dirty_excludes_all_project_manager_local_runtime_state(tf):
-    """clone-local 런타임 트리는 파일 종류와 staged 여부에 관계없이 잔여가 아니다."""
+    """clone-local 런타임 트리는 파일 종류와 staged 여부에 관계없이 남은 변경이 아니다."""
     entries = (
         ("??", ".project_manager/.local/log.lock"),
         (" M", ".project_manager/.local/tasks/orch-dev/pm_state.md"),
@@ -502,9 +502,9 @@ def test_split_dirty_excludes_all_project_manager_local_runtime_state(tf):
 
 
 def test_split_dirty_scope_covers_excludes_unstaged_before_stage(tf):
-    """스코프 안의 미스테이지 변경은 잔여가 아니다 — 곧 stage 될 것이다(이 함수를 stage
-    **전** 잔여 preflight 에도 재사용하려면 필요한 조건). 이 필터가 없으면 touches 로 선언한
-    파일 자신의 아직 안 올라간 변경까지 거짓 잔여로 잡힌다.
+    """스코프 안의 미스테이지 변경은 남은 변경이 아니다 — 곧 stage 될 것이다(이 함수를 stage
+    **전** 남은 변경 preflight 에도 재사용하려면 필요한 조건). 이 필터가 없으면 touches 로 선언한
+    파일 자신의 아직 안 올라간 변경까지 거짓 남은 변경으로 잡힌다.
     """
     entries = ((" M", "src/a.py"), ("??", "others/new.md"))
     staged_out, unstaged = finish_git.split_dirty(entries, ("src/a.py",))
@@ -562,11 +562,11 @@ def test_status_entries_reads_non_ascii_paths_as_real_paths(tf, board, tmp_path)
 
 
 @requires_git
-def test_parsing_seam_returns_stdout_only_while_diagnostic_seam_keeps_stderr(
+def test_parsing_runner_returns_stdout_only_while_diagnostic_runner_keeps_stderr(
         tf, tmp_path, monkeypatch):
-    """기계 파싱 seam 은 **stdout 만**, 진단 seam 은 stderr 를 보존한다.
+    """기계 파싱 runner 는 **stdout 만**, 진단 runner 는 stderr 를 보존한다.
 
-    파싱 경로가 stdout+stderr 합본을 먹으면 git 경고 한 줄이 그대로 '잔여 항목'·'추적 경로' 로
+    파싱 경로가 stdout+stderr 합본을 먹으면 git 경고 한 줄이 그대로 '남은 변경 항목'·'추적 경로' 로
     둔갑한다. 관측으로 못박는다 — `git checkout -b` 는 rc=0 인데 안내를 **stderr** 로만 낸다.
     """
     root = _make_home_repo(tmp_path / "home")
@@ -575,18 +575,18 @@ def test_parsing_seam_returns_stdout_only_while_diagnostic_seam_keeps_stderr(
 
     rc_parse, out_parse = finisher._run_git_stdout_fn(["checkout", "-b", "probe-a"])
     assert rc_parse == 0 and out_parse.strip() == "", \
-        f"파싱 seam 에 stderr 가 섞였다(가짜 항목 유입 경로): {out_parse!r}"
+        f"파싱 runner 에 stderr 가 섞였다(가짜 항목 유입 경로): {out_parse!r}"
     rc_diag, out_diag = finisher._run_git_fn(["checkout", "-b", "probe-b"])
     assert rc_diag == 0 and "probe-b" in out_diag, \
-        f"진단 seam 이 stderr 를 잃었다(실패 원인 표시 불가): {out_diag!r}"
+        f"진단 runner 가 stderr 를 잃었다(실패 원인 표시 불가): {out_diag!r}"
 
 
 @requires_git
 def test_status_entries_ignores_stderr_noise_from_git(tf, tmp_path, monkeypatch, capsys):
-    """git 이 stderr 로 낸 잡음이 **잔여 목록에 항목으로 섞이지 않는다** (파싱 seam 사용 확인).
+    """git 이 stderr 로 낸 잡음이 **남은 변경 목록에 항목으로 섞이지 않는다** (파싱 runner 사용 확인).
 
-    두 seam 을 서로 다르게 주입한다 — 합본 seam 에는 stderr 잡음을, 파싱 seam 에는 깨끗한
-    출력을. 보고가 합본 seam 을 쓰면 잡음 줄이 잔여 목록에 뜬다.
+    두 runner 를 서로 다르게 주입한다 — 합본 runner 에는 stderr 잡음을, 파싱 runner 에는 깨끗한
+    출력을. 보고가 합본 runner 를 쓰면 잡음 줄이 남은 변경 목록에 뜬다.
     """
     root = _make_home_repo(tmp_path / "home")
     monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: [])
@@ -596,13 +596,13 @@ def test_status_entries_ignores_stderr_noise_from_git(tf, tmp_path, monkeypatch,
         pm_paths.home_at(root),
         run_pytest_fn=lambda: (0, "1 passed in 0.1s"),
         run_board_fn=lambda args: (0, "ok"),
-        run_git_fn=lambda args: (0, f"{noise}\n M real.md\0"),        # 합본(진단) seam
-        run_git_stdout_fn=lambda args: (0, " M real.md\0"),           # 파싱 seam
+        run_git_fn=lambda args: (0, f"{noise}\n M real.md\0"),        # 합본(진단) runner
+        run_git_stdout_fn=lambda args: (0, " M real.md\0"),           # 파싱 runner
         board_count_fn=lambda: 1,
         ticket_title_fn=lambda tid: "t",
         affected_domain_fn=lambda tid: [],
-        # 잔여 preflight 는 별도 관심사 — 이 테스트의 초점은 잡음 필터링(파싱 seam
-        # 사용)이지 touches 밖 real.md 를 잔여로 차단하는 판정이 아니다. off로 그 초점만 남긴다.
+        # 남은 변경 preflight 는 별도 관심사 — 이 테스트의 초점은 잡음 필터링(파싱 runner
+        # 사용)이지 touches 밖 real.md 를 남은 변경으로 차단하는 판정이 아니다. off로 그 초점만 남긴다.
         residual_block_fn=lambda tid: None,
         dod_block_fn=lambda tid: None,
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
@@ -610,7 +610,7 @@ def test_status_entries_ignores_stderr_noise_from_git(tf, tmp_path, monkeypatch,
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
     out = capsys.readouterr().out
     assert "real.md" in out
-    assert noise not in out, "stderr 잡음이 잔여 목록에 항목으로 섞였다"
+    assert noise not in out, "stderr 잡음이 남은 변경 목록에 항목으로 섞였다"
 
 
 @requires_git
@@ -636,7 +636,7 @@ def test_status_entries_degraded_branch_consumes_rename_tokens(tf):
     """degraded 갈래도 rename **2토큰**을 소비한다 — 원본 토큰이 가짜 항목으로 뜨면 안 된다.
 
     `-z` 의 rename 항목은 `<코드> <신규>\\0<원본>\\0` 이라, 원본 토큰을 안 삼키면 코드 없는
-    (`ol`, `d.md` 같은) 쓰레기 항목이 잔여 목록에 뜬다. 주 파서는 이미 처리한다 — 이 갈래만
+    (`ol`, `d.md` 같은) 쓰레기 항목이 남은 변경 목록에 뜬다. 주 파서는 이미 처리한다 — 이 갈래만
     빠져 있었다.
     """
     out = "R  new.md\0old.md\0 M kept.md\0"
@@ -646,7 +646,7 @@ def test_status_entries_degraded_branch_consumes_rename_tokens(tf):
 
 @requires_git
 def test_status_entries_expands_new_untracked_directory(tf, board, tmp_path):
-    """잔여 보고도 `-uall` — 새 untracked 디렉토리가 `?? dir/` 로 접히면 무엇이 빠졌는지 안 보인다."""
+    """남은 변경 보고도 `-uall` — 새 untracked 디렉토리가 `?? dir/` 로 접히면 무엇이 빠졌는지 안 보인다."""
     repo = tmp_path / "r"
     repo.mkdir()
     _git_init(repo)
@@ -664,7 +664,7 @@ def test_status_entries_expands_new_untracked_directory(tf, board, tmp_path):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ticket_finish stage — 축 1(과다) · 축 2(누락) · 축 3(거짓 안심)
+# ticket_finish stage — 기준 1(과다) · 기준 2(누락) · 기준 3(거짓 안심)
 # ════════════════════════════════════════════════════════════════════════
 #
 # PM 홈 모사 트리를 실 git 으로 세우고 finish 를 돌린다. mock 인 것은 pytest/board CLI/티켓
@@ -679,7 +679,7 @@ _LOG_FILE = ".project_manager/wiki/log/current.md"
 
 
 def _make_home_repo(root: Path) -> Path:
-    """PM 홈 형상(wiki 산출물 + 코드)의 실 git 리포지토리를 만든다 (초기 커밋 clean)."""
+    """PM 홈 구성(wiki 산출물 + 코드)의 실 git 리포지토리를 만든다 (초기 커밋 clean)."""
     wiki = root / ".project_manager" / "wiki"
     for sub in ("log", "decisions", "domain", "raw/spikes"):
         (wiki / sub).mkdir(parents=True, exist_ok=True)
@@ -688,7 +688,7 @@ def _make_home_repo(root: Path) -> Path:
     (wiki / "decisions" / "0001-x.md").write_text("# ADR\n", encoding="utf-8")
     (wiki / "domain" / "core.md").write_text("# domain\n", encoding="utf-8")
     # raw/spikes 를 *추적 상태*로 seed 한다 — git 은 untracked 디렉토리를 `?? dir/` 로 접어
-    # 보고하므로, 디렉토리가 새것이면 잔여 보고에 파일명이 안 뜬다(보고 단언이 무뎌진다).
+    # 보고하므로, 디렉토리가 새것이면 남은 변경 보고에 파일명이 안 뜬다(보고 단언이 무뎌진다).
     (wiki / "raw" / "spikes" / "README.md").write_text("# spikes\n", encoding="utf-8")
     (wiki / "architecture.md").write_text("# arch\n", encoding="utf-8")
     (wiki / "status.md").write_text("# status\n", encoding="utf-8")
@@ -714,11 +714,11 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
 
     tmp 홈의 명시 Home 을 넘기면 (1) 기본 git 러너의 cwd, (2) board 조회
     (`Home.board_root`·`tickets_dir`·`_board_git_enabled()`)가 모두 그 트리를 따라온다.
-    티켓 `touches` 조회와 **묶음 장부의 통합 브랜치 선언**만 stub 한다 — 실 보드가 tmp 에 없을
-    수 있어서다(스코프 계산·필터·실제 `git add`·잔여 판정은 전부 실 코드 경로). 통합 브랜치는
-    잔여 인구의 기준이라 선언이 없으면 엔진이 멈추므로, 이 트리의 실 브랜치를 그 선언 자리에
+    티켓 `touches` 조회와 **묶음 기록의 통합 브랜치 선언**만 stub 한다 — 실 보드가 tmp 에 없을
+    수 있어서다(스코프 계산·필터·실제 `git add`·남은 변경 판정은 전부 실 코드 경로). 통합 브랜치는
+    남은 변경 인구의 기준이라 선언이 없으면 엔진이 멈추므로, 이 트리의 실 브랜치를 그 선언 자리에
     돌려준다. `run_board_fn`/`run_pytest_fn` 은 미지정이면 종전 대역(성공 고정값)이고, poison
-    stub 을 넘기면 "차단된 실행이 이 seam 을 부르지 않는다" 를 값으로 증명하는 데 쓴다.
+    stub 을 넘기면 "차단된 실행이 이 교체 지점을 부르지 않는다" 를 값으로 증명하는 데 쓴다.
     """
     monkeypatch.setattr(finish_store, "get_ticket_touches", lambda home, tid: list(touches))
     monkeypatch.setattr(
@@ -734,14 +734,14 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "스코프 테스트 티켓",
         affected_domain_fn=lambda tid: [],
-        # tmp 홈에 티켓 파일이 없다 — DoD preflight 는 이 파일의 축이 아니라 통과 대역을 둔다.
+        # tmp 홈에 티켓 파일이 없다 — DoD preflight 는 이 파일의 기준이 아니라 통과 대역을 둔다.
         dod_block_fn=lambda tid: None,
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
         **kwargs,
     )
 
 
-# ── 축 1: 과다 stage (누출) ──────────────────────────────────────────────
+# ── 기준 1: 과다 stage (누출) ──────────────────────────────────────────────
 
 @requires_git
 def test_finish_stages_only_declared_paths(tf, tmp_path, monkeypatch, capsys):
@@ -806,7 +806,7 @@ def test_finish_expands_brand_new_untracked_directory_touches(tf, tmp_path, monk
     (fresh / "sub").mkdir()
     (fresh / "sub" / "deep.py").write_text("d = 1\n", encoding="utf-8")
     # `_dirty_the_tree` 는 `_TOUCHED_FILE`(src/a.py) 도 함께 건드린다 — 이 테스트의 선언은
-    # `newpkg` 뿐이라 그건 이 축(디렉토리 전개)과 무관한 잔여다. 잔여 preflight 가 그것까지
+    # `newpkg` 뿐이라 그건 이 기준(디렉토리 전개)과 무관한 남은 변경이다. 남은 변경 preflight 가 그것까지
     # 막지 않도록 touches 에 함께 선언한다(스코프 안으로 옮김·real git 대상 불변).
     finisher = _make_finisher(tf, root, monkeypatch, touches=["newpkg", _TOUCHED_FILE])
 
@@ -816,7 +816,7 @@ def test_finish_expands_brand_new_untracked_directory_touches(tf, tmp_path, monk
     assert "newpkg" not in staged and "newpkg/" not in staged, \
         f"디렉토리가 그대로 stage 됨(뭉뚱그리기 부활): {sorted(staged)}"
     assert {"newpkg/mine.py", "newpkg/sub/deep.py"} <= staged
-    # 선언 디렉토리 *밖* 남의 것은 실리지 않는다(과다 stage 축).
+    # 선언 디렉토리 *밖* 남의 것은 실리지 않는다(과다 stage 기준).
     for outside in (_OTHERS_WIP, _OTHERS_ADR, _OTHERS_DOMAIN, _OTHERS_UNTRACKED):
         assert outside not in staged, f"선언 디렉토리 밖이 stage 됨: {outside}"
     # 무엇이 실렸는지 **파일 단위로** 출력된다(디렉토리 한 줄로 뭉뚱그리지 않는다).
@@ -831,7 +831,7 @@ def test_finish_lists_every_file_inside_declared_new_directory(tf, tmp_path, mon
 
     엔진은 선언 디렉토리 안에서 "내 파일"과 "남의 파일"을 구분할 수단이 없다 — 디렉토리 선언은
     사람이 그은 경계이고, 경계를 좁히는 건 티켓 authoring 의 책임이다(ADR-0074 §Consequences).
-    그래서 이 축의 방어는 *배제* 가 아니라 **가시성** 이다: 접힌 `newpkg/` 한 줄이 아니라 실제
+    그래서 이 기준의 방어는 *배제* 가 아니라 **가시성** 이다: 접힌 `newpkg/` 한 줄이 아니라 실제
     실리는 파일이 전부 출력돼, PM 이 커밋 전에 남의 것을 본다.
     (배제까지 원하면 선언 디렉토리를 **거부** 하는 선택지가 있고, 그건 solo/단일-repo 채택자의
     `touches: [tests/]` 를 통째로 under-stage 시키는 트레이드오프다 — 결정 사항.)
@@ -857,7 +857,7 @@ def test_finish_lists_every_file_inside_declared_new_directory(tf, tmp_path, mon
 
 @requires_git
 def test_finish_does_not_misreport_own_non_ascii_paths(tf, tmp_path, monkeypatch, capsys):
-    """한글 경로를 stage 해 놓고 그걸 "스코프 밖 — 빼라" 로 오보하지 않는다 (판정 입력 정합).
+    """한글 경로를 stage 해 놓고 그걸 "스코프 밖 — 빼라" 로 오보하지 않는다 (판정 입력 일치).
 
     `status --porcelain` 이 비-ASCII 경로를 8진 이스케이프 + 인용으로 내면 그 문자열이
     `scope_covers` 비교에서 스코프와 안 맞아, **방금 자기가 stage 한 파일**을 남의 것으로
@@ -887,7 +887,7 @@ def test_finish_reports_preexisting_staged_out_of_scope(tf, tmp_path, monkeypatc
 
     `add` 만 좁히면 안 닫히는 갈래다(ADR-0074 "add 와 commit 양쪽"): index 에 남의 변경이 이미
     있으면 PM 의 `git commit` 에 그대로 실린다. 옛 보고는 worktree 열만 봐서 이 상태를
-    "잔여 없음" 으로 표시했다 — **loud 보고가 조용한 누출을 가려주는** 형상이었다.
+    "남은 변경 없음" 으로 표시했다 — **loud 보고가 조용한 누출을 가려주는** 경우였다.
     """
     root = _make_home_repo(tmp_path / "home")
     _dirty_the_tree(root)
@@ -898,22 +898,22 @@ def test_finish_reports_preexisting_staged_out_of_scope(tf, tmp_path, monkeypatc
     out = capsys.readouterr().out
     assert "스코프 밖 staged" in out, "사전 staged 누출이 보고에서 안 보임(거짓 안심)"
     assert "roadmap.md" in out
-    assert "git restore --staged" in out             # remedy 동봉
+    assert "git restore --staged" in out             # 해결 방법 동봉
     assert "남은 변경 없음" not in out
 
 
-# ── 축 2: 누락 (under-stage) ────────────────────────────────────────────
+# ── 기준 2: 누락 (under-stage) ────────────────────────────────────────────
 
 def _make_legacy_board(root: Path, tid: str = "T-0001") -> tuple[Path, Path]:
-    """legacy 형상(board 미분리·**출하 템플릿 기본**)의 티켓 트리를 만든다 → (옛 경로, 새 경로)."""
+    """legacy 구성(board 미분리·**출하 템플릿 기본**)의 티켓 트리를 만든다 → (옛 경로, 새 경로)."""
     tickets = root / ".project_manager" / "wiki" / "tickets"
     for status in ("open", "claimed", "done", "blocked"):
         (tickets / status).mkdir(parents=True, exist_ok=True)
     old = tickets / "claimed" / f"{tid}-x.md"
     old.write_text(
         f"---\nid: {tid}\ntitle: t\nstatus: claimed\ntouches: []\n---\n\n# {tid} — t\n\n"
-        # 완료 기록 경로는 DoD 게이트를 지난다 — 이 픽스처의 관측 축은 stage 스코프이므로
-        # 마감된 DoD 를 심어 게이트를 통과시킨다.
+        # 완료 기록 경로는 DoD 통과 조건을 지난다 — 이 픽스처의 관측 기준은 stage 스코프이므로
+        # 마감된 DoD 를 심어 통과 조건을 통과시킨다.
         "## 완료 조건 (Definition of Done)\n- [x] 구현\n",
         encoding="utf-8")
     return old, tickets / "done" / f"{tid}-x.md"
@@ -921,9 +921,9 @@ def _make_legacy_board(root: Path, tid: str = "T-0001") -> tuple[Path, Path]:
 
 @requires_git
 def test_finish_stages_ticket_move_in_legacy_layout(tf, tmp_path, monkeypatch, capsys):
-    """legacy 형상에서 **이 실행이 만든 티켓 이동(claimed→done)** 이 stage 된다 (누락 red).
+    """legacy 구성에서 **이 실행이 만든 티켓 이동(claimed→done)** 이 stage 된다 (누락 red).
 
-    board 미분리 형상에선 티켓 이동이 홈 git 에 떨어진다 — 엔진 자신의 산출물이므로 선언분이다.
+    board 미분리 구성에선 티켓 이동이 홈 git 에 떨어진다 — 엔진 자신의 산출물이므로 선언분이다.
     빠지면 채택자가 매 finish 마다 손으로 `git add` 해야 한다(reviewer 실측 회귀).
     """
     root = _make_home_repo(tmp_path / "home")
@@ -949,7 +949,7 @@ def test_finish_stages_ticket_move_in_legacy_layout(tf, tmp_path, monkeypatch, c
 @requires_git
 def test_finish_skips_submodule_ticket_paths_in_split_layout(tf, tmp_path, monkeypatch,
                                                              capsys):
-    """board 분리(서브모듈) 형상에선 티켓 경로가 스코프에서 빠지고 **fatal 도 안 난다**.
+    """board 분리(서브모듈) 구성에선 티켓 경로가 스코프에서 빠지고 **fatal 도 안 난다**.
 
     티켓이 서브모듈 안이라 상위 repo 의 `add` 가 rc=128 로 죽는다 — 그 이동은 board-git 이
     자기 커밋으로 기록하므로 홈 git 의 선언분이 아니다. `touches` 에 board 경로가 섞여도
@@ -962,12 +962,12 @@ def test_finish_skips_submodule_ticket_paths_in_split_layout(tf, tmp_path, monke
     ticket = board_dir / "tickets" / "done" / "T-0001-x.md"
     ticket.write_text(
         "---\nid: T-0001\ntitle: t\nstatus: done\n---\n\n# T-0001 — t\n\n"
-        # 완료 기록 경로의 DoD 게이트 통과분 — 이 픽스처의 관측 축은 stage 스코프다.
+        # 완료 기록 경로의 DoD 통과 조건을 지나는 상태 — 이 픽스처의 관측 기준은 stage 스코프다.
         "## 완료 조건 (Definition of Done)\n- [x] 구현\n",
         encoding="utf-8")
     _git_init(board_dir)
-    _git_commit_all(board_dir, "board init")         # board/.git 존재 → 분리 형상
-    # 상위 repo 의 index 에 gitlink 를 **기록** 해야 실 형상이다 — 그래야 상위 `add` 가
+    _git_commit_all(board_dir, "board init")         # board/.git 존재 → 분리 구성
+    # 상위 repo 의 index 에 gitlink 를 **기록** 해야 실제 구성이다 — 그래야 상위 `add` 가
     # 서브모듈 내부 경로에 `fatal: … is in submodule`(rc=128) 을 낸다(미기록 중첩 repo 는
     # 그냥 무시돼 이 가드가 *이유 없이* 통과한다 — 실측으로 확인한 함정).
     _git_commit_all(root, "record board gitlink")
@@ -985,7 +985,7 @@ def test_finish_skips_submodule_ticket_paths_in_split_layout(tf, tmp_path, monke
 
 @requires_git
 def test_finish_survives_touches_absent_from_this_repo(tf, tmp_path, monkeypatch, capsys):
-    """이 repo 에 없는 `touches`(두-git 형상의 코드 worktree 경로)가 섞여도 fatal 로 안 죽는다."""
+    """이 repo 에 없는 `touches`(두-git 구성의 코드 worktree 경로)가 섞여도 fatal 로 안 죽는다."""
     root = _make_home_repo(tmp_path / "home")
     (root / _TOUCHED_FILE).write_text("x = 2\n", encoding="utf-8")
     finisher = _make_finisher(
@@ -996,14 +996,14 @@ def test_finish_survives_touches_absent_from_this_repo(tf, tmp_path, monkeypatch
     assert _TOUCHED_FILE in _staged(root)
 
 
-# ── 축 3: 거짓 안심 (보고 채널) ─────────────────────────────────────────
+# ── 기준 3: 거짓 안심 (보고 채널) ─────────────────────────────────────────
 
 @requires_git
 def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, capsys):
     """stage 판정기 예외는 완료 기록을 **차단**한다 — 예외로 전파해 stage 0 을 정상 완료로
     넘기지 않는다. board complete 는 이 갈래에서 불리지 않고, log 스켈레톤도 안 남는다.
 
-    실제 형상: 실행 인터프리터엔 PyYAML 이 없고 venv 엔 있어 board *CLI* 는 성공하는데
+    실제 구성: 실행 인터프리터엔 PyYAML 이 없고 venv 엔 있어 board *CLI* 는 성공하는데
     `import yaml` 하는 board 모듈 로드만 실패한다. `scope_error` 는 '판정 불가'가 아니라 '이
     실행은 코드 트리에서 아무것도 stage 하지 못한다'는 확정 사실이라, board·git 어느 것도
     부르지 않고 기록 전에 거부한다(옛 동작은 여기서 rc=0·stage 0으로 조용히 '기록 완료'였다·
@@ -1027,18 +1027,18 @@ def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, c
     assert log_file.read_text(encoding="utf-8") == log_before, "차단된 실행이 log 를 건드렸다"
 
 
-# ── 잔여 preflight — 실 git 픽스처 5종 ───────────────────────────
+# ── 남은 변경 preflight — 실 git 픽스처 5종 ───────────────────────────
 
 @requires_git
 def test_finish_blocks_on_a_single_unstaged_residual(tf, tmp_path, monkeypatch, capsys):
     """코드 트리에 선언 밖 미스테이지 변경 1건만 있어도 완료 기록을 거부한다 — 신규
-    **untracked**(`??`) 축 · board.py complete 는 불리지 않는다(I1 · (a)).
+    **untracked**(`??`) 기준 · board.py complete 는 불리지 않는다(I1 · (a)).
     """
     root = _make_home_repo(tmp_path / "home")
     (root / "others.py").write_text("o = 1\n", encoding="utf-8")   # 선언 밖 신규 미스테이지 1건
     finisher = _make_finisher(
         tf, root, monkeypatch, touches=[_TOUCHED_FILE],
-        run_board_fn=lambda args: pytest.fail("잔여 1건인데 board complete 가 불렸다"))
+        run_board_fn=lambda args: pytest.fail("남은 변경 1건인데 board complete 가 불렸다"))
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 1
     captured = capsys.readouterr()
@@ -1048,8 +1048,8 @@ def test_finish_blocks_on_a_single_unstaged_residual(tf, tmp_path, monkeypatch, 
 
 @requires_git
 def test_finish_blocks_on_a_tracked_unstaged_residual(tf, tmp_path, monkeypatch, capsys):
-    """이미 **커밋된**(tracked) 선언 밖 파일을 수정만 하고 stage 하지 않은 형상(` M`)도
-    거부한다 — (a)의 신규 untracked(`??`) 축과 별개로 tracked-unstaged 방향을 직접 잠근다
+    """이미 **커밋된**(tracked) 선언 밖 파일을 수정만 하고 stage 하지 않은 경우(` M`)도
+    거부한다 — (a)의 신규 untracked(`??`) 기준과 별개로 tracked-unstaged 방향을 직접 잠근다
     (I1 · (a')).
     """
     root = _make_home_repo(tmp_path / "home")
@@ -1058,7 +1058,7 @@ def test_finish_blocks_on_a_tracked_unstaged_residual(tf, tmp_path, monkeypatch,
     (root / "others.py").write_text("o = 2\n", encoding="utf-8")   # 수정만, stage 안 함 → ` M`
     finisher = _make_finisher(
         tf, root, monkeypatch, touches=[_TOUCHED_FILE],
-        run_board_fn=lambda args: pytest.fail("tracked-unstaged 잔여인데 board complete 가 불렸다"))
+        run_board_fn=lambda args: pytest.fail("tracked-unstaged 가 남았는데 board complete 가 불렸다"))
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 1
     captured = capsys.readouterr()
@@ -1068,12 +1068,12 @@ def test_finish_blocks_on_a_tracked_unstaged_residual(tf, tmp_path, monkeypatch,
 
 @requires_git
 def test_finish_rejects_staged_only_scope_escape(tf, tmp_path, monkeypatch, capsys):
-    """선언 밖 파일을 **미리 `git add` 만** 해 둔 형상도 거부한다 — 방향 한쪽만 보면 `git add`
-    한 번이 preflight 우회로가 된다(I1 · (b) · 스코프 밖 파일을 미리 staged 해 둔 형상의 직접 재현).
+    """선언 밖 파일을 **미리 `git add` 만** 해 둔 경우도 거부한다 — 방향 한쪽만 보면 `git add`
+    한 번이 preflight 우회로가 된다(I1 · (b) · 스코프 밖 파일을 미리 staged 해 둔 경우의 직접 재현).
     """
     root = _make_home_repo(tmp_path / "home")
     (root / "others.py").write_text("o = 1\n", encoding="utf-8")
-    _git(["add", "--", "others.py"], root)          # staged 뿐 — 미스테이지 잔여는 0
+    _git(["add", "--", "others.py"], root)          # staged 뿐 — stage 안 된 남은 변경은 0
     finisher = _make_finisher(
         tf, root, monkeypatch, touches=[_TOUCHED_FILE],
         run_board_fn=lambda args: pytest.fail("스코프 밖 staged 인데 board complete 가 불렸다"))
@@ -1103,7 +1103,7 @@ def test_finish_completes_when_residual_is_zero(tf, tmp_path, monkeypatch, capsy
 @requires_git
 def test_finish_excludes_pm_home_root_dirty_from_the_block(tf, tmp_path, monkeypatch, capsys):
     """PM 홈 dev-state(wiki 루트)만 dirty 면 판정 인구 밖 — 남의 wiki WIP 로 내 완료가 막히지
-    않는다(I2·I3 · (d) · 임베디드 형상 — `_home_state_prefixes`).
+    않는다(I2·I3 · (d) · 임베디드 구성 — `_home_state_prefixes`).
     """
     root = _make_home_repo(tmp_path / "home")
     (root / _TOUCHED_FILE).write_text("x = 2\n", encoding="utf-8")     # 내 작업(스코프 안)
@@ -1114,7 +1114,7 @@ def test_finish_excludes_pm_home_root_dirty_from_the_block(tf, tmp_path, monkeyp
     out = capsys.readouterr().out
     assert "[중단]" not in out
     assert _TOUCHED_FILE in _staged(root)
-    assert "남은 미스테이지 변경" in out and "roadmap.md" in out   # PM 홈 잔여는 여전히 loud(비차단)
+    assert "남은 미스테이지 변경" in out and "roadmap.md" in out   # PM 홈 남은 변경은 여전히 loud(비차단)
 
 
 @requires_git
@@ -1135,7 +1135,7 @@ def test_finish_reports_residual_dirty_loud(tf, tmp_path, monkeypatch, capsys):
 
 @requires_git
 def test_finish_reports_clean_when_nothing_left(tf, tmp_path, monkeypatch, capsys):
-    """스코프가 전부 덮으면 잔여 0 을 명시한다(보고가 항상 나온다 — 침묵 아님)."""
+    """스코프가 전부 덮으면 남은 변경 0 을 명시한다(보고가 항상 나온다 — 침묵 아님)."""
     root = _make_home_repo(tmp_path / "home")
     (root / _TOUCHED_FILE).write_text("x = 2\n", encoding="utf-8")
     finisher = _make_finisher(tf, root, monkeypatch, touches=[_TOUCHED_FILE])
@@ -1217,7 +1217,7 @@ _TICKET_TEXT = (
 
 
 def _make_board_git_home(root: Path, tid: str = "T-foo-001") -> Path:
-    """board 분리 형상(`.project_manager/board/` = 별도 실 git) + wiki 트리를 만든다."""
+    """board 분리 구성(`.project_manager/board/` = 별도 실 git) + wiki 트리를 만든다."""
     board_dir = root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
         (board_dir / "tickets" / status).mkdir(parents=True, exist_ok=True)
@@ -1246,7 +1246,7 @@ def test_relabel_proceeds_with_dirty_home_and_commits_only_touched(tmp_path, mon
     monkeypatch.setattr(board, "REPO", root)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
-    # 홈 git 은 dirty 하다(남의 미커밋 wiki 편집) — 옛 게이트라면 여기서 abort 했다.
+    # 홈 git 은 dirty 하다(남의 미커밋 wiki 편집) — 옛 통과 조건이라면 여기서 abort 했다.
     monkeypatch.setattr(board_prefix, "_home_git_status_porcelain",
                         lambda _home: " M .project_manager/wiki/roadmap.md\n")
     # board 워킹트리에도 무관한 남의 변경을 심는다(추적 수정 + untracked).

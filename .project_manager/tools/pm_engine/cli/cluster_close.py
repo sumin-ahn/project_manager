@@ -17,11 +17,11 @@ from pm_engine.infra import cluster_store, finish_git, fs, git, pm_paths, ticket
 
 # ── close 파이프라인 (묶음 종결) ───────────────────────────────────────────
 #
-# 종결은 순서가 있는 여섯 단계다: 리뷰 게이트 처분(확인 생성) → 티켓별 완료 기록 → 슬롯 커밋 →
+# 종결은 순서가 있는 여섯 단계다: 리뷰 통과 조건 처분(확인 생성) → 티켓별 완료 기록 → 슬롯 커밋 →
 # 통합 브랜치로 재배치 → 머지 → board·포인터 커밋. 사람이 순서를 규칙으로
-# 지키던 자리를 한 커맨드가 가져간다 — 순서가 판정 결과를 바꾸던 축(사설 참조·측정 폭)은 이미
-# 판정 기준 교체로 닫혔으므로, 남은 것은 "빠뜨리지 않는" 축이다(포인터 커밋 누락이 실측된
-# 잔여다).
+# 지키던 자리를 한 커맨드가 가져간다 — 순서가 판정 결과를 바꾸던 기준(사설 참조·측정 폭)은 이미
+# 판정 기준 교체로 닫혔으므로, 남은 것은 "빠뜨리지 않는" 기준이다(포인터 커밋 누락이 실측된
+# 남은 일이다).
 #
 # **종결은 슬롯을 반납하지 않는다.** 슬롯은 task 가 빌리는 것이라 반납은 task 종료
 # (`pm-config task end`)나 사용자 반납(`pm-config release`) 몫이다. 종결이 도는 작업 트리는
@@ -33,24 +33,24 @@ from pm_engine.infra import cluster_store, finish_git, fs, git, pm_paths, ticket
 # 와서야 자기 조건을 보면 한 실행에 차단 사유가 하나씩만 나오고, 첫 완주까지 사람이 같은
 # 명령을 여러 번 친다(실측). 그래서 단계마다 **읽기 전용 선검사**를 선언으로 달고, 실행 전에
 # 그것만 전부 돌려 사유를 누적한다. 편입 기준은 "읽기 전용"이 아니라 **단조성**이다 — 앞
-# 단계가 해소할 수 있는 조건(작업 트리 dirty·log entry 부재·게이트 미처분)을 선검사에 넣으면
+# 단계가 해소할 수 있는 조건(작업 트리 dirty·log entry 부재·리뷰 미처분)을 선검사에 넣으면
 # 정상 실행이 첫 줄에서 막힌다. 실행해야 아는 것(머지 충돌·회귀 red)은 선언에서 `None` 이다.
 #
 # **재실행이 곧 재개다.** 각 단계는 자기 부작용이 이미 있는지 **관측**해서 건너뛴다(티켓이
-# done 인가 · 커밋할 변경이 남았나 · 통합 브랜치의 조상인가). 장부의
+# done 인가 · 커밋할 변경이 남았나 · 통합 브랜치의 조상인가). 묶음 기록의
 # 단계 기록은 그 관측을 대신하지 않는다 — 기록과 실제가 어긋나면(중단·외부 원복) 기록을 믿는
 # 재개는 없는 커밋 위에서 진행한다. 기록은 어디까지 갔는지 사람이 읽는 값이다.
 #
 # 크기 1 묶음도 같은 경로를 탄다(특례 없음) — 티켓 하나짜리 종결이라고 다른 코드가 도는 일은
-# 없다. 발행이 만드는 크기 1 장부는 기준 브랜치(`base_branch`)를 싣고 묶음 브랜치(`branch`)만
-# 비우므로 머지가 **무대상**이다. 기준 브랜치 미선언은 그 축이 아니라 판정 기준의 부재라 정지다.
+# 없다. 발행이 만드는 크기 1 묶음 기록은 기준 브랜치(`base_branch`)를 싣고 묶음 브랜치(`branch`)만
+# 비우므로 머지가 **무대상**이다. 기준 브랜치 미선언은 그 기준이 아니라 판정 기준의 부재라 정지다.
 
-_CLOSE_STEP_KEY = "close_step"            # 장부에 남기는 단계 진행 기록(보조 기록)
+_CLOSE_STEP_KEY = "close_step"            # 묶음 기록에 남기는 단계 진행 기록(보조 기록)
 _CLUSTER_STATUS_OPEN = "open"             # 열거의 소유자는 board — 그 열거 안에 있을 때만 쓴다
 _CLUSTER_STATUS_CLOSING = "closing"
 _CLUSTER_STATUS_CLOSED = "closed"
 # 처분 종결(`ticket_rules.STATUS_DIRS` 안의 값 · 열거의 소유자는 ticket_rules). `done` 과 달리 구현이 끝나서
-# 닫힌 것이 아니라 흡수·폐기로 닫힌 상태다 — 완료 기록 대상도 코드 산출도 없으므로 종결
+# 닫힌 것이 아니라 다른 묶음으로 합쳐지거나 폐기돼 닫힌 상태다 — 완료 기록 대상도 코드 산출도 없으므로 종결
 # 파이프라인의 코드 단계는 이 멤버를 대상으로 삼지 않는다.
 _TICKET_STATUS_DISCARDED = "discarded"
 _CLOSE_BOARD_POINTER_PATH = ".project_manager/board"
@@ -106,8 +106,8 @@ _CLOSE_OPEN_ALL_DONE = (
 class ClusterCloser:
     """묶음 종결(close) — 고정 여섯 단계·상태 관측 기반 멱등 + 첫 부작용 앞 선검사.
 
-    git·board·위임 호출은 전부 `TicketFinisher` 가 이미 들고 있는 seam 을 그대로 쓴다(사본 0).
-    이 클래스가 새로 받는 seam 은 라운드 처분 CLI 하나뿐이다. 슬롯은 반납하지 않는다 — 대여
+    git·board·위임 호출은 전부 `TicketFinisher` 가 이미 들고 있는 교체 지점을 그대로 쓴다(사본 0).
+    이 클래스가 새로 받는 교체 지점은 라운드 처분 CLI 하나뿐이다. 슬롯은 반납하지 않는다 — 대여
     기록은 작업 트리를 찾을 곳을 정하는 데만 읽는다(`app.cluster_code_tree.resolve_code_tree`).
     """
 
@@ -166,15 +166,15 @@ class ClusterCloser:
         self._legacy_base_revision_args = tuple(legacy_base_revisions)
         self._user_ack = user_ack
         self._explicit_slot = explicit_slot
-        # 리뷰 처분 실행 함수. 묶음 표면 rounds resolve --cluster 를 한 번 부른다.
+        # 리뷰 처분 실행 함수. 묶음 명령 rounds resolve --cluster 를 한 번 부른다.
         self._run_delegate_fn = run_delegate_fn or self._default_run_delegate
-        # 장부가 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
-        # 기록 축(무엇을 board 에 남기나·커밋 문안의 단위)은 선언을, 실행 축(완료 기록·커밋·
+        # 묶음 기록이 선언한 멤버 전부와, 그중 코드 단계의 대상이 되는 **살아 있는** 멤버.
+        # 기록 기준(무엇을 board 에 남기나·커밋 문안의 단위)은 선언을, 실행 기준(완료 기록·커밋·
         # 재배치·머지)은 살아 있는 멤버를 본다.
         self._declared_tickets: tuple[str, ...] = ()
         self._tickets: tuple[str, ...] = ()
 
-    # ── 기본 seam 구현 ────────────────────────────────────────────────
+    # ── 기본 교체 지점 구현 ────────────────────────────────────────────────
 
     def _default_run_delegate(self, args: list[str]) -> tuple[int, str]:
         """pm_delegate.py 를 subprocess 로 호출해 (returncode, stdout+stderr) 반환."""
@@ -189,24 +189,24 @@ class ClusterCloser:
     # ── 공용 조회 ─────────────────────────────────────────────────────
 
     def _git(self, cwd: Path, args: list[str]) -> tuple[int, str]:
-        """mutation git — 진단(stderr)을 합쳐 돌려주는 seam 쪽이다."""
+        """mutation git — 진단(stderr)을 합쳐 돌려주는 교체 지점 쪽이다."""
         if cwd == self._home.root:
             return self._finisher._run_git_fn(args)
         return self._finisher._run_git_at_fn(cwd, args)
 
     def _git_stdout(self, cwd: Path, args: list[str]) -> tuple[int, str]:
-        """기계 판독 git — stdout 만 보는 seam(경고 한 줄이 값으로 둔갑하지 않게)."""
+        """기계 판독 git — stdout 만 보는 교체 지점(경고 한 줄이 값으로 둔갑하지 않게)."""
         if cwd == self._home.root:
             return self._finisher._run_git_stdout_fn(args)
         return self._finisher._run_git_stdout_at_fn(cwd, args)
 
-    def _ledger(self) -> dict | None:
-        """묶음 장부 frontmatter (없으면 None — 크기 1 해석은 멤버 조회가 소유한다)."""
+    def _records(self) -> dict | None:
+        """묶음 기록 frontmatter (없으면 None — 크기 1 해석은 멤버 조회가 소유한다)."""
         return cluster_store.load_cluster(self._home, self._cluster)
 
     def _declared_branch(self, key: str) -> str | None:
-        """장부가 선언한 브랜치 이름 (`branch`=묶음 브랜치 · `base_branch`=통합 브랜치)."""
-        value = (self._ledger() or {}).get(key)
+        """묶음 기록이 선언한 브랜치 이름 (`branch`=묶음 브랜치 · `base_branch`=통합 브랜치)."""
+        value = (self._records() or {}).get(key)
         return value.strip() or None if isinstance(value, str) else None
 
     def _ticket_status(self, tid: str) -> str | None:
@@ -222,7 +222,7 @@ class ClusterCloser:
         return found[0] if found is not None else None
 
     def _pending_gates(self) -> list[str]:
-        """처분·확인이 필요한 멤버 — 리뷰 라운드 파일의 잔여가 아직 완료 판정을 막는 것."""
+        """처분·확인이 필요한 멤버 — 리뷰 라운드 파일의 남은 지적이 아직 완료 판정을 막는 것."""
         return [tid for tid in self._tickets if board_ticket._review_completion_problem(self._home, tid) is not None]
 
     def _pending_paths(self, cwd: Path, pathspec: Sequence[str]) -> tuple[str, ...]:
@@ -230,7 +230,7 @@ class ClusterCloser:
 
         커밋 단계가 자기 부작용의 유무를 묻는 관측 지점이다 — 남은 변경이 없으면 이미 커밋된
         것이고, 재실행은 빈 커밋을 만들지 않는다. 조회가 실패하면 **커밋했는지 모르는** 것이라
-        빈 목록(=이미 커밋됨)으로 접지 않는다 — 그렇게 접으면 아무것도 커밋하지 않은 실행이
+        빈 목록(=이미 커밋됨)으로 바꾸지 않는다 — 그렇게 바꾸면 아무것도 커밋하지 않은 실행이
         커밋한 실행과 같은 모양으로 끝난다.
 
         **서브모듈 내부 dirty 는 변경으로 세지 않는다**(`--ignore-submodules=dirty`) — 상위
@@ -259,8 +259,8 @@ class ClusterCloser:
         """`ancestor` 가 `descendant` 의 조상인가 — 판정 불능은 정지.
 
         `git merge-base --is-ancestor` 는 조상이면 rc 0, 아니면 rc 1 이다. 그 밖의 rc(잘못된
-        ref·비-repo)는 답이 아니라 판정 실패이므로 False(=아직 안 들어갔다)로 접지 않는다 —
-        그렇게 접으면 이미 끝난 재배치·머지를 다시 시도한다."""
+        ref·비-repo)는 답이 아니라 판정 실패이므로 False(=아직 안 들어갔다)로 바꾸지 않는다 —
+        그렇게 바꾸면 이미 끝난 재배치·머지를 다시 시도한다."""
         try:
             rc, out = self._git_stdout(
                 cwd, ["merge-base", "--is-ancestor", ancestor, descendant])
@@ -277,7 +277,7 @@ class ClusterCloser:
     def _dirty_paths(self, cwd: Path) -> tuple[str, ...]:
         """그 트리에 남은 변경 전체 (재배치·머지의 선행 조건 관측 · 실패는 정지).
 
-        조회 실패를 빈 목록으로 접으면 **clean 으로 위장**돼 dirty 트리에서 재배치·머지가 돈다."""
+        조회 실패를 빈 목록으로 바꾸면 **clean 으로 위장**돼 dirty 트리에서 재배치·머지가 돈다."""
         try:
             entries = self._finisher._status_entries_at_fn(cwd)
         except Exception as exc:  # noqa: BLE001 — 관측 실패는 정지(clean 위장 금지).
@@ -309,7 +309,7 @@ class ClusterCloser:
     def _wrong_branch_reason(self, tree: Path, source: str) -> str | None:
         """이 코드 트리가 묶음 브랜치를 들고 있는가 — 아니면 사유(다른 브랜치를 옮기지 않는다).
 
-        재배치는 HEAD 를, 머지는 장부가 선언한 브랜치를 옮긴다. 둘이 같은 브랜치가 아니면 이
+        재배치는 HEAD 를, 머지는 묶음 기록이 선언한 브랜치를 옮긴다. 둘이 같은 브랜치가 아니면 이
         슬롯의 작업이 아닌 것을 통합 브랜치에 얹게 되므로 첫 mutation 앞에서 거부한다.
         """
         rc, out = self._git_stdout(tree, ["symbolic-ref", "--quiet", "--short", "HEAD"])
@@ -332,12 +332,12 @@ class ClusterCloser:
         return self._cluster, name
 
     def _plans(self, tid: str) -> tuple[finish_rules.RepoStagePlan | None, finish_rules.RepoStagePlan | None]:
-        """그 티켓의 `(PM 홈 계획, 코드 트리 계획)` — 단일 트리 형상은 같은 계획을 둘 다 준다."""
+        """그 티켓의 `(PM 홈 계획, 코드 트리 계획)` — 단일 트리 구성은 같은 계획을 둘 다 준다."""
         plans = self._finisher._stage_plans(tid)
         home = next((plan for plan in plans if plan.cwd == self._home.root), None)
         code = next((plan for plan in plans if plan.cwd != self._home.root), None)
         if code is None:
-            code = home       # 임베디드 형상 — 코드와 홈이 같은 트리다.
+            code = home       # 임베디드 구성 — 코드와 홈이 같은 트리다.
         return home, code
 
     # ── 단계 ──────────────────────────────────────────────────────────
@@ -360,7 +360,7 @@ class ClusterCloser:
         return problems
 
     def _step_resolve(self) -> str | None:
-        """리뷰 게이트 처분 — 묶음 표면 `rounds resolve --cluster` 를 한 번 부른다."""
+        """리뷰 통과 조건 처분 — 묶음 명령 `rounds resolve --cluster` 를 한 번 부른다."""
         if not self._pending_gates():
             print("  처분할 남은 리뷰 항목 없음 — 건너뜀")
             return None
@@ -382,8 +382,8 @@ class ClusterCloser:
     def _pre_record(self) -> list[str]:
         """완료 기록의 읽기 전용 차단 사유 전건 — 이미 done 인 티켓은 세지 않는다.
 
-        여기 **없는** 것과 그 이유: [1/5] 회귀 red 와 자기 축 회귀는 판정 입력이 pytest 실행
-        결과라 읽기로 답이 나오지 않는다. [2/5] log entry 부재와 리뷰 잔여는 각각 그
+        여기 **없는** 것과 그 이유: [1/5] 회귀 red 와 자기 점검 회귀는 판정 입력이 pytest 실행
+        결과라 읽기로 답이 나오지 않는다. [2/5] log entry 부재와 리뷰의 남은 지적은 각각 그
         append 와 앞 단계(resolve)가 **해소하는** 조건이라 선검사에 넣으면 정상 실행이 첫 줄에서
         막힌다(비단조).
 
@@ -413,7 +413,7 @@ class ClusterCloser:
     def _board_complete_problems(self, tid: str) -> list[str]:
         """`board complete` 가 첫 거부에서 멈추는 판정 셋을 읽기로 **전건** 모은다(사본 0).
 
-        `cmd_complete` 는 결속 → 소유 → 게이트 순서로 첫 거부에서 return 하므로, 그 셋을 여기서
+        `cmd_complete` 는 연결 → 소유 → 통과 조건 순서로 첫 거부에서 return 하므로, 그 셋을 여기서
         각각 불러 누적한다. 소유 판정에는 자기 CLI가 검증한 task와 명시 user=None을 넘긴다.
         """
         found = ticket_store.find_ticket_exact(self._home, tid)
@@ -441,7 +441,7 @@ class ClusterCloser:
         """이 파이프라인이 아직 낼 부작용이 남아 있는가 — 커밋 대상이 하나라도 남았으면 참.
 
         "이미 끝난 단계는 차단 사유가 아니다"의 억제 조건이다. 커밋 전에는 묶음 브랜치가
-        통합 브랜치의 조상이라 **이미 머지된 것처럼 보이는** 형상이 있는데, 그 관측을 그대로
+        통합 브랜치의 조상이라 **이미 머지된 것처럼 보이는** 경우가 있는데, 그 관측을 그대로
         믿으면 선검사가 통과하고 커밋 뒤 머지 단계가 통합 트리 부재로 막힌다.
         """
         for tid in self._tickets:
@@ -533,7 +533,7 @@ class ClusterCloser:
         integration = self._declared_branch("base_branch")
         tree = self._code_tree()
         if finish_git._unborn_baseline(self._git_stdout, tree, integration):
-            # 선언 경로가 비어 앞 단계가 첫 커밋을 만들지 못한 형상 — 기준선도 HEAD 도 없어
+            # 선언 경로가 비어 앞 단계가 첫 커밋을 만들지 못한 경우 — 기준선도 HEAD 도 없어
             # 조상 판정 자체가 성립하지 않는다(그 상태로 물으면 관측 실패로 죽는다).
             print(f"  {integration} 에 커밋이 없다 — 재배치할 것 없음")
             return None
@@ -570,7 +570,7 @@ class ClusterCloser:
         해소하지 않는다) — 그래서 여기 있다. 머지 충돌만 실행해야 아는 것이다.
 
         **이미 머지됐다는 관측은 아직 낼 부작용이 없을 때만 믿는다**(`_has_pipeline_work`).
-        커밋 전에는 묶음 브랜치가 통합 브랜치의 조상이라 끝난 것처럼 보이는 형상이 있다.
+        커밋 전에는 묶음 브랜치가 통합 브랜치의 조상이라 끝난 것처럼 보이는 경우가 있다.
         """
         integration = self._declared_branch("base_branch")
         if not integration:
@@ -603,8 +603,8 @@ class ClusterCloser:
     def _step_merge(self) -> str | None:
         """통합 브랜치 머지 — 통합 브랜치를 가진 트리에서 `--no-ff` 로 받는다.
 
-        묶음 브랜치(`branch`)는 사람이 선언한 묶음만 갖는다(크기 1 자동 장부는 없다) — 그
-        선언이 없으면 받을 브랜치가 없어 무대상이다. 기준 브랜치 미선언은 그 축이 아니라
+        묶음 브랜치(`branch`)는 사람이 선언한 묶음만 갖는다(크기 1 자동 묶음 기록은 없다) — 그
+        선언이 없으면 받을 브랜치가 없어 무대상이다. 기준 브랜치 미선언은 그 기준이 아니라
         판정 기준의 부재라 정지다. 합쳐진 묶음 브랜치는 지우지 않는다 — 작업 트리가 그 브랜치를
         쥔 채 여기 닿으므로 삭제는 늘 거부된다. 브랜치 정리는 슬롯 제거
         (`worktree_pool.remove_slot`) 몫이다."""
@@ -649,14 +649,14 @@ class ClusterCloser:
     def _step_board(self) -> str | None:
         """board-git 기록 + PM 홈 포인터·산출물 커밋 — 두 git 을 한 단계가 닫는다.
 
-        종결 표시(`status=closed`)는 커밋 **대상**이다 — 장부 자신이 board-git 커밋에 실리므로,
+        종결 표시(`status=closed`)는 커밋 **대상**이다 — 묶음 기록 자신이 board-git 커밋에 실리므로,
         표시를 커밋 뒤에 쓰면 board-git 이 그 값을 영영 못 담고 다음 실행마다 그 한 줄을
         커밋하려 든다(재실행 무부작용이 깨진다). 그래서 순서는 표시 → 두 커밋이고, **어느
         커밋이든 실패하면 표시를 되돌린다** — 디스크에 남는 `closed` 는 모든 단계가 전부
         관측된 뒤에만 존재한다.
         """
         paths = self._board_git_paths()
-        previous = self._ledger() or {}
+        previous = self._records() or {}
         prior = (previous.get(_CLOSE_STEP_KEY), previous.get("status"))
         self._record_progress(self.STEPS[-1][0])
         try:
@@ -673,13 +673,13 @@ class ClusterCloser:
         return None
 
     def _board_git_paths(self) -> list[Path]:
-        """board-git 에 기록할 경로 — 묶음 장부 + **선언** 멤버 티켓 명세 (해소 실패는 정지).
+        """board-git 에 기록할 경로 — 묶음 기록 + **선언** 멤버 티켓 명세 (해소 실패는 정지).
 
-        기록 축은 선언이다 — 처분된 멤버도 이 묶음의 멤버라 그 명세가 기록 대상에서 빠지지
+        기록 기준은 선언이다 — 처분된 멤버도 이 묶음의 멤버라 그 명세가 기록 대상에서 빠지지
         않는다. 여기서 하나라도 못 찾으면 이번 종결이 무엇을 기록해야 하는지 모르는 것이다 —
-        빈 목록으로 접으면 아무것도 기록하지 않은 실행이 성공으로 끝난다."""
+        빈 목록으로 바꾸면 아무것도 기록하지 않은 실행이 성공으로 끝난다."""
         paths: list[Path] = []
-        if self._ledger() is not None:
+        if self._records() is not None:
             paths.append(cluster_store.cluster_record_path(self._home, self._cluster))
         for tid in self._declared_tickets:
             try:
@@ -698,9 +698,9 @@ class ClusterCloser:
         return paths
 
     def _sync_board_git(self, paths: Sequence[Path]) -> str | None:
-        """이번 종결이 만진 board 경로를 board-git 에 기록한다(장부·티켓 명세).
+        """이번 종결이 만진 board 경로를 board-git 에 기록한다(묶음 기록·티켓 명세).
 
-        seam 부재는 정지다(기록 채널이 없다는 사실을 성공으로 만들지 않는다). `False` 는
+        교체 지점 부재는 정지다(기록 채널이 없다는 사실을 성공으로 만들지 않는다). `False` 는
         **로컬 커밋이 안 생겼다**는 board 의 확정 보고라 그대로 차단이다 — 그 상태로 포인터를
         커밋하면 board 에 없는 내용을 가리키는 포인터가 남는다(원격 push 실패는 `True` 로
         보고되므로 offline 은 여기서 막히지 않는다).
@@ -719,13 +719,13 @@ class ClusterCloser:
     def _board_pointer_path(self) -> str | None:
         """PM 홈이 board 를 서브모듈로 가리키는가 — 아니면 None(포인터 커밋 무대상).
 
-        서브모듈 포인터는 상위 `git status` 가 보여주지 않는 형상(`ignore = all`)이라 사람이
+        서브모듈 포인터는 상위 `git status` 가 보여주지 않는 구성(`ignore = all`)이라 사람이
         놓치는 자리다 — 그래서 종결이 명시적으로 add 한다. 서브모듈이 아니면 board 파일은
         홈 계획이 이미 덮는다.
 
         빈 출력은 **관측 성공**(그 경로가 인덱스에 없다 = 서브모듈 아님)이고, 조회 실패는
-        판정 불능이라 정지다 — 포인터가 있는데 못 읽은 것을 '무대상' 으로 접으면 실측된 잔여
-        (포인터 커밋 누락)가 그대로 재발한다.
+        판정 불능이라 정지다 — 포인터가 있는데 못 읽은 것을 '무대상' 으로 바꾸면 실측된 남은 일
+        (포인터 커밋 누락)이 그대로 재발한다.
         """
         try:
             rc, out = self._git_stdout(
@@ -781,7 +781,7 @@ class ClusterCloser:
     # ── 진행 기록 ─────────────────────────────────────────────────────
 
     def _record_progress(self, step_key: str) -> None:
-        """장부에 단계 진행을 남긴다 — 관측을 대신하지 않는 보조 기록(기록 실패는 전파)."""
+        """묶음 기록에 단계 진행을 남긴다 — 관측을 대신하지 않는 보조 기록(기록 실패는 전파)."""
         status = (_CLUSTER_STATUS_CLOSED if step_key == self.STEPS[-1][0]
                   else _CLUSTER_STATUS_CLOSING)
         self._write_progress(step_key, status)
@@ -794,22 +794,22 @@ class ClusterCloser:
         self._write_progress(step_key, status)
 
     def _write_progress(self, step_key: str | None, status: str | None) -> None:
-        """장부의 진행 기록 두 값을 쓴다 (기록 실패는 전파한다)."""
+        """묶음 기록의 진행 기록 두 값을 쓴다 (기록 실패는 전파한다)."""
         if self._dry_run:
             return
         with fs.board_lock(self._home):
-            ledger = cluster_store.load_cluster(self._home, self._cluster)
-            if ledger is None:
+            records = cluster_store.load_cluster(self._home, self._cluster)
+            if records is None:
                 return
             if step_key is None:
-                ledger.pop(_CLOSE_STEP_KEY, None)
+                records.pop(_CLOSE_STEP_KEY, None)
             else:
-                ledger[_CLOSE_STEP_KEY] = step_key
+                records[_CLOSE_STEP_KEY] = step_key
             if status is None or status in cluster_rules.CLUSTER_STATUSES:
                 # cluster_rules의 상태 열거에 포함될 때만 쓴다. None은 되돌리기
-                # 전 값이 비어 있던 형상이라 그대로 되돌린다.
-                ledger["status"] = status
-            cluster_store.dump_cluster(self._home, ledger)
+                # 전 값이 비어 있던 경우라 그대로 되돌린다.
+                records["status"] = status
+            cluster_store.dump_cluster(self._home, records)
 
     # ── 실행 ──────────────────────────────────────────────────────────
 
@@ -830,17 +830,17 @@ class ClusterCloser:
         return None
 
     def _open_all_done_block(self) -> str | None:
-        """정상 종결의 첫 부작용 앞 read-only 상태 게이트 — open + 전원 done 은 복구 전용이다.
+        """정상 종결의 첫 부작용 앞 read-only 상태 통과 조건 — open + 전원 done 은 복구 전용이다.
 
-        `open` 장부의 멤버가 전부 done 이면 그 완료 기록은 이 파이프라인이 남긴 것이 아니다
-        (1단계가 성공하는 순간 장부는 `closing` 이 된다). 그 상태로 정상 종결을 시작하면 무엇이
+        `open` 묶음 기록의 멤버가 전부 done 이면 그 완료 기록은 이 파이프라인이 남긴 것이 아니다
+        (1단계가 성공하는 순간 묶음 기록은 `closing` 이 된다). 그 상태로 정상 종결을 시작하면 무엇이
         이미 통합됐는지 모르는 채 커밋·재배치·머지로 들어간다 — 그래서 여기서 멈추고
         증거를 명시하는 복구 문으로 보낸다. `closing` 재개와 `closed` 멱등 관측은 그대로다.
         """
-        ledger = self._ledger()
-        if ledger is None:
+        records = self._records()
+        if records is None:
             return None
-        if str(ledger.get("status") or "").strip() != _CLUSTER_STATUS_OPEN:
+        if str(records.get("status") or "").strip() != _CLUSTER_STATUS_OPEN:
             return None
         # 살아 있는 멤버가 없으면 "그 완료 기록을 누가 남겼나" 라는 질문 자체가 없다 — 기록할
         # 멤버가 0이라 복구 문이 요구하는 통합 commit 증거도 존재하지 않는다.
@@ -868,10 +868,10 @@ class ClusterCloser:
         return mapped, None
 
     def _cluster_id(self, value: str | None) -> str:
-        """이름/장부 id 어느 표기든 board 의 장부 id 하나로 정규화한다 (빈 값은 빈 값).
+        """이름/묶음 기록 id 어느 표기든 board 의 묶음 기록 id 하나로 정규화한다 (빈 값은 빈 값).
 
         정상 종결은 `load_cluster`·`cluster_members` 안에서 이 정규화를 이미 받는다. recovery
-        만 원시 문자열을 비교하면 같은 표기로 부른 호출이 "장부 id 가 다르다"로 멈춘다.
+        만 원시 문자열을 비교하면 같은 표기로 부른 호출이 "묶음 기록 id 가 다르다"로 멈춘다.
         """
         text = str(value or "").strip()
         if not text:
@@ -914,8 +914,8 @@ class ClusterCloser:
     def _validate_reconcile(self) -> tuple[dict | None, str | None, str | None]:
         """Recovery의 전 입력과 제품 graph를 읽는다 — write는 절대 하지 않는다.
 
-        반환은 ``(canonical closure, ledger status, problem)``이다. 호출자가 이 스냅샷을
-        bookend로 두 번 대조한 뒤에만 장부를 쓴다.
+        반환은 ``(canonical closure, record status, problem)``이다. 호출자가 이 상태 기록을
+        bookend로 두 번 대조한 뒤에만 묶음 기록을 쓴다.
         """
         if not self._explicit_slot or not self._slot or self._task is not None:
             return None, None, "recovery는 명시 --repo와 --slot 둘 다 필요하고 --task를 받지 않는다"
@@ -937,16 +937,16 @@ class ClusterCloser:
             return None, None, (f"선택 슬롯이 dirty라 recovery를 거부한다 ({tree} · "
                                 f"{len(dirty)}건: {', '.join(dirty[:5])})")
 
-        ledger = self._ledger()
-        if ledger is None:
+        records = self._records()
+        if records is None:
             return None, None, f"묶음 기록을 찾지 못했다: {self._cluster}"
-        ledger_id = self._cluster_id(ledger.get("id"))
-        if ledger_id != cluster_id:
-            return None, None, f"묶음 기록 id가 대상과 다르다: {ledger_id!r} != {cluster_id!r}"
+        record_id = self._cluster_id(records.get("id"))
+        if record_id != cluster_id:
+            return None, None, f"묶음 기록 id가 대상과 다르다: {record_id!r} != {cluster_id!r}"
         board_root = self._home.board_root
         if not (board_root / ".git").exists():
             return None, None, f"recovery는 분리 board-git이 필요하다: {board_root}"
-        members = tuple(cluster_store.cluster_tickets(ledger))
+        members = tuple(cluster_store.cluster_tickets(records))
         if (not members or len(members) != len(set(members))
                 or members != self._declared_tickets):
             return None, None, f"cluster 멤버 집합이 비었거나 중복·drift했다: {members}"
@@ -970,10 +970,10 @@ class ClusterCloser:
             return None, None, problem
         assert head is not None
         normalized_revisions: dict[str, str] = {}
-        member_anchors: dict[str, dict[str, str]] = {}
-        # 귀속 유일성은 **전 catalog 를 읽었다는 증명** 위에서만 성립한다 — 판독 불능 장부가
+        member_base_revs: dict[str, dict[str, str]] = {}
+        # 귀속 유일성은 **전 catalog 를 읽었다는 증명** 위에서만 성립한다 — 판독 불능 묶음 기록이
         # 하나라도 있으면 그 파일이 중복 귀속일 가능성을 배제하지 못하므로 첫 write 전에 정지한다.
-        ledgers, catalog_problem = cluster_store.all_clusters_strict(self._home)
+        cluster_records, catalog_problem = cluster_store.all_clusters_strict(self._home)
         if catalog_problem is not None:
             return None, None, catalog_problem
         for tid in members:
@@ -983,7 +983,7 @@ class ClusterCloser:
             assert fm is not None
             declared = self._cluster_id(fm.get("cluster"))
             owners = [
-                self._cluster_id(row.get("id")) for row in ledgers
+                self._cluster_id(row.get("id")) for row in cluster_records
                 if tid in cluster_store.cluster_tickets(row)
             ]
             if declared != cluster_id or owners != [cluster_id]:
@@ -998,28 +998,28 @@ class ClusterCloser:
             if claimed:
                 if tid in legacy:
                     return None, None, f"{tid}는 claimed_rev가 있어 legacy base를 받을 수 없다"
-                anchor, problem = self._commit_oid(
+                base_rev, problem = self._commit_oid(
                     tree, claimed, label=f"{tid} claimed_rev 기준 커밋")
                 source = "claimed_rev"
             else:
                 supplied = legacy.get(tid)
                 if supplied is None:
                     return None, None, f"{tid}는 claimed_rev가 없어 --legacy-base-rev가 필수다"
-                anchor, problem = self._commit_oid(
+                base_rev, problem = self._commit_oid(
                     tree, supplied, label=f"{tid} operator legacy 기준 커밋")
                 source = "operator-supplied"
             if problem:
                 return None, None, problem
-            assert anchor is not None
-            if not self._is_ancestor(tree, anchor, revision):
-                return None, None, f"{tid} evidence가 기준 커밋 이후가 아니다: {anchor} !<= {revision}"
+            assert base_rev is not None
+            if not self._is_ancestor(tree, base_rev, revision):
+                return None, None, f"{tid} evidence가 기준 커밋 이후가 아니다: {base_rev} !<= {revision}"
             if not self._is_ancestor(tree, revision, head):
                 return None, None, f"{tid} evidence가 제품 exact HEAD의 조상이 아니다: {revision} !<= {head}"
             normalized_revisions[tid] = revision
-            member_anchors[tid] = {"anchor": anchor, "anchor_source": source}
+            member_base_revs[tid] = {"anchor": base_rev, "anchor_source": source}
 
         expected_legacy = {
-            tid for tid in members if member_anchors[tid]["anchor_source"] == "operator-supplied"
+            tid for tid in members if member_base_revs[tid]["anchor_source"] == "operator-supplied"
         }
         if set(legacy) != expected_legacy:
             return None, None, (f"legacy base mapping 전수성 위반 "
@@ -1028,10 +1028,10 @@ class ClusterCloser:
             "mode": "reconciled",
             "integration_head": head,
             "member_revisions": normalized_revisions,
-            "member_anchors": member_anchors,
+            "member_anchors": member_base_revs,
         }
-        status = str(ledger.get("status") or "").strip()
-        existing = ledger.get("closure")
+        status = str(records.get("status") or "").strip()
+        existing = records.get("closure")
         if status == "closed":
             if existing != closure:
                 return None, status, "closed 묶음 기록의 closure evidence가 이번 명시 증거와 다르다"
@@ -1096,15 +1096,15 @@ class ClusterCloser:
         print(f"  ✓ PM 홈 board pointer 기록 ({message})")
         return None
 
-    def _reconcile_ledger_pending(self) -> bool:
-        """Crash 뒤 closed ledger가 board-git에 아직 미기록인지 관측한다."""
+    def _reconcile_records_pending(self) -> bool:
+        """Crash 뒤 closed 묶음 기록이 board-git에 아직 미기록인지 관측한다."""
         board_root = self._home.board_root
-        ledger_path = cluster_store.cluster_record_path(self._home, self._cluster)
+        record_path = cluster_store.cluster_record_path(self._home, self._cluster)
         try:
-            pathspec = ledger_path.relative_to(board_root).as_posix()
+            pathspec = record_path.relative_to(board_root).as_posix()
         except ValueError as exc:
             raise finish_rules._CloseObservationFailure(
-                f"묶음 기록 파일이 board-git 밖을 가리킨다: {ledger_path}") from exc
+                f"묶음 기록 파일이 board-git 밖을 가리킨다: {record_path}") from exc
         return bool(self._pending_paths(board_root, [pathspec]))
 
     def _run_reconcile(self) -> int:
@@ -1147,7 +1147,7 @@ class ClusterCloser:
             needs_board_sync = True
         else:
             try:
-                needs_board_sync = self._reconcile_ledger_pending()
+                needs_board_sync = self._reconcile_records_pending()
             except finish_rules._CloseObservationFailure as failure:
                 print(f"\n[중단] reconcile board persistence 관측 실패 — {failure}", file=sys.stderr)
                 return 1
@@ -1157,9 +1157,9 @@ class ClusterCloser:
                 print("  동일 closure evidence가 이미 board-git에 기록됨 — 묶음 기록 쓰기 건너뜀")
 
         if needs_board_sync:
-            ledger_path = cluster_store.cluster_record_path(self._home, self._cluster)
+            record_path = cluster_store.cluster_record_path(self._home, self._cluster)
             try:
-                block = self._sync_board_git([ledger_path])
+                block = self._sync_board_git([record_path])
             except finish_rules._CloseObservationFailure as failure:
                 block = f"board-git 기록 관측 실패 — {failure}"
             if block is not None:
@@ -1204,7 +1204,7 @@ class ClusterCloser:
             for reason in getattr(self, precheck)():
                 # 두 단계가 같은 조건을 각자 판정하는 자리가 있다(기준 브랜치 미선언·현재
                 # 브랜치 불일치는 재배치와 머지가 둘 다 본다). 그대로 누적하면 목록의 건수가
-                # 부풀어 사람이 고칠 것을 두 개로 읽는다 — 사유 **본문**으로 접고 먼저 만난
+                # 부풀어 사람이 고칠 것을 두 개로 읽는다 — 사유 **본문**으로 합치고 먼저 만난
                 # 라벨만 남긴다. `_pre_*` 는 각자 독립 판정 그대로다(단계가 서로를 알지 않는다).
                 labelled.setdefault(reason, f"[{label}] {reason}")
         return list(labelled.values())

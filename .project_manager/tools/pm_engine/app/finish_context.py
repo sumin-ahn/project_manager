@@ -82,26 +82,26 @@ def affected_domain_titles(home, ticket_id: str) -> list[tuple[str, bool | None]
 # ── 디자인 git stage 스코프 ─────────────────────────────────────
 #
 # **공유 워킹트리 mutation 은 선언된 경로만 건드린다.**
-# 루트에서 `git add -A` 였다 — 멀티-PM 형상에서 다른 슬롯이 편집 중인 wiki 문서·무관 산출물을
+# 루트에서 `git add -A` 였다 — 멀티-PM 구성에서 다른 슬롯이 편집 중인 wiki 문서·무관 산출물을
 # 통째로 쓸어담아 PM 커밋이 서로 꼬였다(Context·사용자 실사용 보고).
 #
 # 선언원은 둘, 그리고 **둘뿐**이다:
 #   티켓 frontmatter `touches` — 사람이 적은 작업 범위 선언. 이미 있는 파서
 #      (`get_ticket_touches`)를 그대로 쓴다.
 #   **이 실행이 실제로 쓴 산출물** — `log/current.md`(:2단계) + board complete 가 옮긴 티켓
-#      파일(:3단계·legacy 형상 한정·아래 `engine_written_paths`).
+#      파일(:3단계·legacy 구성 한정·아래 `engine_written_paths`).
 #
 # 를 "엔진이 아는 wiki 산출물 디렉토리"(decisions/·domain/·ideas/…)로 넓히지 **않는다**:
 # 그건 `pm_adr`·`domain`·`board idea` 가 **다른 실행** 에서 만든 것이라 이 mutation 의 선언분이
 # 아니고, 디렉토리로 넘기는 순간 그 아래 **남의 미완성 편집까지 함께 stage** 되어 좁힌 척하고 안
 # 좁힌 상태가 된다(codex must-fix). 그것들이 커밋에서 빠지는 건 정상이고, 빠졌다는 사실은 아래
-# **잔여 loud 보고**가 알린다 — 그게 그 보고의 존재 이유다.
+# **남은 경로 loud 보고**가 알린다 — 그게 그 보고의 존재 이유다.
 #
 # gitignored 산출물(per-slot/per-task pm_state·leases·board.md·`.local/`)은 **스코프 산출 단계에서
 # 명시적으로 걸러야 한다**(`git.git_scope_stageable`). `git add` 는 *명시 pathspec* 이 ignored 면
 # rc=1 에러이기 때문이다 — 조용히 건너뛰는 건 광역 `add -A` 일 때뿐이다. 즉 스코프화가 이 성질을
 # 반전시킨다. 안 걸르면 `touches` 에 gitignored 경로가 하나만 있어도
-# board complete 이후 stage 가 통째로 죽고 잔여 loud 보고까지 사라진다.
+# board complete 이후 stage 가 통째로 죽고 남은 경로 loud 보고까지 사라진다.
 
 
 def stage_scope(home, ticket_id: str, log_file: Path,
@@ -117,15 +117,15 @@ def stage_scope(home, ticket_id: str, log_file: Path,
     함수다(스코프 산출·디렉토리 전개·서브모듈/미존재/미추적 제거). 복제하면 다음 사람이 한쪽만
     고친다.
 
-    그 필터가 load-bearing 이다: 두-git 형상에서 `touches` 는 코드 worktree 경로(PM 홈엔 없음)
-    를, board 분리 형상에선 서브모듈 내부 경로를 가리킬 수 있는데, 그대로 pathspec 에 넣으면
+    그 필터가 load-bearing 이다: 두-git 구성에서 `touches` 는 코드 worktree 경로(PM 홈엔 없음)
+    를, board 분리 구성에선 서브모듈 내부 경로를 가리킬 수 있는데, 그대로 pathspec 에 넣으면
     `git add` 가 **rc=128 fatal** 로 죽어 아무것도 stage 되지 않는다.
 
     `touches` 를 주면 board 조회 대신 그 목록을 선언원으로 쓴다 — 두-repo 계획이 티켓 touches 를
     repo 별 몫으로 갈라 각 계획에 자기 몫만 넘기는 데 쓴다(주지 않으면 종전대로 board 조회).
 
     touches 좌표 정규화 실패와 staged 삭제 관측 rc≠0 은 빈 pathspec과 error 사유로 반환하고,
-    호출부가 완료 기록 전에 차단하고 잔여 경로를 함께 보고한다. git scope 공급자의 예외는 전파한다.
+    호출부가 완료 기록 전에 차단하고 남은 경로를 함께 보고한다. git scope 공급자의 예외는 전파한다.
 
     반환 pathspec 은 **커밋 pathspec** 이다 — add 가 받는 경로에 더해 미리 `git rm` 한 선언 삭제를
     싣는다. [4/5] 의 add 는 그중 작업 트리에 있는 파일만 받는다(add 와 커밋의 pathspec 분리).

@@ -22,15 +22,15 @@ def resolve_code_tree(home, cluster: str, *, run_git_stdout_at=None) -> tuple[Pa
     판독 불능·목록 조회 실패는 관측 실패(정지)다.
     """
     runner = run_git_stdout_at or finish_git._default_run_git_stdout_at
-    ledger = cluster_store.load_cluster(home, cluster)
-    raw = (ledger or {}).get("branch")
+    records = cluster_store.load_cluster(home, cluster)
+    raw = (records or {}).get("branch")
     key, branch = "branch", (raw.strip() or None) if isinstance(raw, str) else None
     if branch is None:
         return None, (f"{cluster}는 제품 브랜치에 연결되지 않은 묶음 기록이다. 기존 "
                       "`board.py cluster new <ticket-group> --tickets <티켓들> --task <task>`"
                       "(task 의 폴더가 2개 이상이면 `--repo <repo> --slot <N>` 추가)으로 명시적으로 다시 연결하라")
-    ledger_status, rows = lease_store._read_lease_rows_status(pm_paths.leases_file(home))
-    if ledger_status == identity_args.RECORD_UNREADABLE:
+    record_status, rows = lease_store._read_lease_rows_status(pm_paths.leases_file(home))
+    if record_status == identity_args.RECORD_UNREADABLE:
         raise finish_rules._CloseObservationFailure(
             f"대여 기록을 읽지 못했다 ({pm_paths.leases_file(home)}) — 작업 트리를 찾을 곳을 정할 수 없다.")
     # 작업 폴더(실경로 → 대여 행 경로) — git 작업 트리인 것만, 대여 기록 순서대로.

@@ -1,4 +1,4 @@
-"""클러스터 식별자 및 장부 규칙 (층: domain)."""
+"""클러스터 식별자 및 묶음 기록 규칙 (층: domain)."""
 from __future__ import annotations
 
 from typing import Any
@@ -34,24 +34,24 @@ _CLUSTER_MEMBER_REJECT_STATUSES: tuple[str, ...] = ('done', 'discarded')
 _CLUSTER_INTERNAL_OVERLAP_PATH_LIMIT = 3
 
 def cluster_id_for_name(name: str) -> str:
-    """사람이 준 이름 → 장부 id. 접두를 이미 쓴 입력은 그대로 둔다(입력 표기 둘 다 수용)."""
+    """사람이 준 이름 → 묶음 기록 id. 접두를 이미 쓴 입력은 그대로 둔다(입력 표기 둘 다 수용)."""
     text = str(name or '').strip()
     return text if text.startswith(CLUSTER_ID_PREFIX) else f'{CLUSTER_ID_PREFIX}{text}'
 
 def cluster_name_of(cluster: str) -> str:
-    """장부 id → 이름(접두 제거) — 브랜치 이름과 진단 문구가 쓰는 사람 표기."""
+    """묶음 기록 id → 이름(접두 제거) — 브랜치 이름과 진단 문구가 쓰는 사람 표기."""
     text = str(cluster or '').strip()
     return text[len(CLUSTER_ID_PREFIX):] if text.startswith(CLUSTER_ID_PREFIX) else text
 
 def cluster_branch_name(cluster: str) -> str:
-    """통합 브랜치 이름 — `task/<ticket-group>`(장부 id 접두는 브랜치에 실리지 않는다)."""
+    """통합 브랜치 이름 — `task/<ticket-group>`(묶음 기록 id 접두는 브랜치에 실리지 않는다)."""
     return f'{CLUSTER_BRANCH_PREFIX}{cluster_name_of(cluster)}'
 
 def is_auto_cluster_id(cluster: str) -> str | None:
-    """자동 생성 크기 1 장부인가 — 맞으면 그 티켓 ID, 아니면 None.
+    """자동 생성 크기 1 묶음 기록인가 — 맞으면 그 티켓 ID, 아니면 None.
 
-    이름 자리가 티켓 ID 인 장부는 발행이 만든 크기 1 묶음이다. 이 모양은 **자동 귀속의 자석이
-    아니다** — 그렇지 않으면 먼저 발행된 티켓의 자동 장부가 뒤따르는 발행을 전부 빨아들여
+    이름 자리가 티켓 ID 인 묶음 기록은 발행이 만든 크기 1 묶음이다. 이 모양은 **자동 귀속의 자석이
+    아니다** — 그렇지 않으면 먼저 발행된 티켓의 자동 묶음 기록이 뒤따르는 발행을 전부 빨아들여
     선언하지 않은 묶음이 생긴다. 사람이 선언하는 이름은 이 모양을 쓸 수 없다(아래 sanity).
     """
     name = cluster_name_of(cluster)
@@ -75,11 +75,11 @@ def _validate_cluster_name(name: str) -> str | None:
 def ticket_cluster(tid: str, fm: dict[str, Any] | None=None) -> str:
     """그 티켓이 속한 클러스터 id — **필드 부재는 크기 1**(`C-` + 티켓 ID)로 읽는다.
 
-    구세대 티켓(필드도 장부도 없음)을 마이그레이션 없이 같은 코드 경로에 태우는 규칙이다.
+    옛 버전 티켓(필드도 묶음 기록도 없음)을 마이그레이션 없이 같은 코드 경로에 태우는 규칙이다.
     """
     value = str((fm or {}).get('cluster') or '').strip()
     return value or f'{CLUSTER_ID_PREFIX}{tid}'
 
 def _new_cluster_fm(cluster: str, tickets: Sequence[str], *, base_branch: str | None=None, branch: str | None=None, spike: str | None=None) -> dict[str, Any]:
-    """새 장부 frontmatter — 고정 단계별 1회 예산을 박는다."""
+    """새 묶음 기록 frontmatter — 고정 단계별 1회 예산을 적어 둔다."""
     return {'id': cluster_id_for_name(cluster), 'tickets': list(tickets), 'base_branch': base_branch, 'branch': branch, 'spike': spike, 'budget': dict(CLUSTER_BUDGET_DEFAULT), 'status': CLUSTER_STATUS_OPEN}

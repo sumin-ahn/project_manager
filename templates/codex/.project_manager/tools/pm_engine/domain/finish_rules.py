@@ -28,7 +28,7 @@ class _CloseObservationFailure(Exception):
     """close 단계의 **관측 자체가 실패**했다 — 그 단계에서 정지한다.
 
     "관측했는데 대상이 없다"(커밋할 변경 없음·서브모듈 아님)와 구별한다: 전자는
-    건너뛰기이고 이쪽은 판정 불능이다. 판정 불능을 완료·clean·무대상으로 접으면 그 단계가
+    건너뛰기이고 이쪽은 판정 불능이다. 판정 불능을 완료·clean·무대상으로 바꾸면 그 단계가
     실제로 끝났다는 증거 없이 다음 단계로 넘어가고, 마지막에 남는 것은 근거 없는 종결 기록뿐
     이다. 관측이 신뢰의 뿌리라는 불변식은 이 구분으로만 지켜진다."""
 
@@ -41,7 +41,7 @@ _UTC_ISO_RE = re.compile(
 def _parse_utc_iso(value: object) -> datetime.datetime | None:
     """writer 형식의 ISO-8601 UTC 시각만 datetime 으로 파싱한다 (아니면 None).
 
-    `datetime.fromisoformat` 단독은 공백 separator·offset 생략 등도 받아들인다. 장부 선후는 보안
+    `datetime.fromisoformat` 단독은 공백 separator·offset 생략 등도 받아들인다. 기록 선후는 보안
     경계라 writer 가 내는 `YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00`(`Z`도 동치)만 받고, 실제 달력값과
     UTC offset 을 다시 확인한다. 문자열 사전순 비교는 손상값 `zzz`가 미래로 통하는 구멍이라 쓰지
     않는다."""
@@ -84,7 +84,7 @@ def parse_pytest_output(output: str) -> tuple[int, int] | None:
 
 
 def _clean_touches(value: object) -> list[str]:
-    """frontmatter touches 값을 정규 문자열 목록으로 접는다."""
+    """frontmatter touches 값을 정규 문자열 목록으로 바꾼다."""
     if isinstance(value, str):
         return [value.strip()] if value.strip() else []
     if isinstance(value, list):
@@ -180,7 +180,7 @@ class StageScope(NamedTuple):
 
     빈 `pathspec` 을 두 상태로 갈라 쓴다: **선언이 비었다**(error=None·정상)와 **판정기가
     죽었다**(error=사유). 후자를 조용히 no-op 으로 흘리면 stage 0 인데 아무 말이 없어
-    "기록 끝" 으로 보인다(reviewer 실측 — board 모듈 로드 실패 형상).
+    "기록 끝" 으로 보인다(reviewer 실측 — board 모듈 로드 실패 구성).
     """
     pathspec: tuple[str, ...]
     error: str | None
@@ -193,14 +193,14 @@ class RepoStagePlan(NamedTuple):
     scope: StageScope
 
 
-# ── 완료 대상 작업 트리 자기 축 회귀 판정 helper (순수 함수) ────────────────
-_SELF_AXIS_FAILED_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+# ── 완료 대상 작업 트리 자기 점검 회귀 판정 helper (순수 함수) ────────────────
+_SELF_CHECK_FAILED_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
 
-# 전-트리 ratchet 가드 — 이 목록의 파일은 대상 집합에 항상 들어간다(파일별 매핑이 아니라
-# "완료마다 항상 도는 가드" 정책 목록이다). 실 wave 사고에서 신규 red 를 잡아낸 실측으로
+# 전-트리 줄이기만 하는 시험 파일 목록 — 이 목록의 파일은 대상 집합에 항상 들어간다(파일별 매핑이 아니라
+# "완료마다 항상 도는 가드" 정책 목록이다). 실제 묶음 사고에서 신규 red 를 잡아낸 실측으로
 # 고정된 4개다. 새 항목을 빠뜨리면 tests/test_ticket_finish.py 의 목록 커버리지 회귀가 red 로
 # 잡는다 — 추가 규율을 산문에 적지 않는다.
-_SELF_AXIS_RATCHET_GUARD_FILES = (
+_SELF_CHECK_SHRINK_ONLY_GUARD_FILES = (
     "tests/test_pm_review_accepted.py",
     "tests/test_private_context_guard.py",
     "tests/test_public_reference_lint.py",
@@ -208,7 +208,7 @@ _SELF_AXIS_RATCHET_GUARD_FILES = (
 )
 
 
-def _self_axis_target_paths(path_list_stdout: str) -> set[str]:
+def _self_check_target_paths(path_list_stdout: str) -> set[str]:
     """git 경로 목록 출력(개행 구분)에서 `tests/` 바로 아래 flat `*.py` 만 남긴다.
 
     서브디렉터리(`tests/fixtures/…`)는 pytest 수집 대상이 아니라 제외한다. `git diff
@@ -225,7 +225,7 @@ def _self_axis_target_paths(path_list_stdout: str) -> set[str]:
     return files
 
 
-def _self_axis_failed_node_ids(pytest_output: str) -> set[str]:
+def _self_check_failed_node_ids(pytest_output: str) -> set[str]:
     """pytest `-q` 출력의 `FAILED`/`ERROR` 요약 줄에서 실패한 **테스트 노드 ID** 전체(파일이
     아니라 함수 단위) — base·dev 양쪽에 실패가 있는 파일에서도 신규분만 비교하려면 함수
     단위가 필요하다(파일 단위 비교는 그 신규분을 지운다).
@@ -238,7 +238,7 @@ def _self_axis_failed_node_ids(pytest_output: str) -> set[str]:
     전부 이 반환값에서 나온다. `::` 뒤(파라미터 ID)는 경로가 아니라 pytest 가 만든 표기라
     그대로 둔다."""
     node_ids: set[str] = set()
-    for match in _SELF_AXIS_FAILED_NODE_RE.finditer(pytest_output):
+    for match in _SELF_CHECK_FAILED_NODE_RE.finditer(pytest_output):
         path, separator, parameters = match.group(1).partition("::")
         node_ids.add(path.replace("\\", "/") + separator + parameters)
     return node_ids
@@ -254,7 +254,7 @@ def _dirty_entry_path(line: str) -> str:
     return line[3:]
 
 
-# 잔여 목록에서 **커밋된** 인구를 dirty 줄과 같은 고정폭으로 싣는 표시 — git 의 XY 코드 자리를
+# 남은 변경 목록에서 **커밋된** 인구를 dirty 줄과 같은 고정폭으로 싣는 표시 — git 의 XY 코드 자리를
 # 쓰되 git 이 내지 않는 값이라 두 인구가 한 목록 안에서 구별된다.
 _COMMITTED_ENTRY_CODE = "CM"
 
@@ -262,9 +262,9 @@ _LOCAL_RUNTIME_ROOT = ".project_manager/.local"
 
 
 def _is_local_runtime_path(path: str) -> bool:
-    """clone-local 런타임 상태(`.project_manager/.local/`)인가 — 잔여 인구에서 뺀다.
+    """clone-local 런타임 상태(`.project_manager/.local/`)인가 — 남은 변경 인구에서 뺀다.
 
-    정상 adopter 에서는 gitignore 지만, 최소·격리 repo 에서도 lock·장부·task 상태가 ticket
+    정상 adopter 에서는 gitignore 지만, 최소·격리 repo 에서도 lock·대여 기록·task 상태가 ticket
     산출물 누락으로 오보되지 않게 접두 클래스 전체를 뺀다. 비슷한 이름의 sibling
     (`.project_manager/.locality/`)은 빼지 않는다. dirty 인구와 커밋 인구가 이 한 규칙을
     공유한다 — 사본을 두면 한쪽만 고쳐진다.
@@ -280,9 +280,9 @@ def _is_local_runtime_path(path: str) -> bool:
 _DIFF_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 # blame porcelain 첫 필드 — sha1(40)·sha256(64) 두 오브젝트 형식을 다 받는다.
 _BLAME_SHA_RE = re.compile(r"[0-9a-f]{40,64}")
-# 차단 목록에서 raw 축 유입에 붙는 사유 — actionable(안전 삭제 단위가 잡힌 참조)과 같은 줄
+# 차단 목록에서 raw 기준 유입에 붙는 사유 — actionable(안전 삭제 단위가 잡힌 참조)과 같은 줄
 # 형식을 쓰되, 그 줄이 왜 차단감인지를 값으로 남긴다. 도입 커밋이 아예 없는 줄과, 커밋은
-# 됐지만 아직 통합 브랜치에 없는 줄은 둘 다 이 작업이 새로 들인 유입이고 사람이 볼 처방이
+# 됐지만 아직 통합 브랜치에 없는 줄은 둘 다 이 작업이 새로 들인 유입이고 사람이 볼 해결 방법이
 # 다르다(전자는 그냥 고치면 되고 후자는 어느 커밋을 고쳐야 하는지가 필요하다).
 _PRIVATE_REF_UNCOMMITTED_NOTE = " (미커밋 신규)"
 _PRIVATE_REF_UNMERGED_NOTE = " (통합 미반영 {sha})"
@@ -335,13 +335,13 @@ def _parsed_diff_added_lines(
 class StatusObservationError(Exception):
     """워킹트리 상태 **관측 자체가 실패**했다 — `strict` 소비자만 받는다.
 
-    완료 기록의 잔여 판정·stage 뒤 보고와 종결의 재배치·머지는 그 실패를 clean 과 구별해 멈춘다:
-    빈 목록으로 접으면 dirty 트리가 clean 으로 위장돼 그 위에서 판정·mutation 이 돈다.
+    완료 기록의 남은 변경 판정·stage 뒤 보고와 종결의 재배치·머지는 그 실패를 clean 과 구별해 멈춘다:
+    빈 목록으로 바꾸면 dirty 트리가 clean 으로 위장돼 그 위에서 판정·mutation 이 돈다.
     """
 
 
-# 판정 기준(통합 브랜치)을 해소하지 못한 실행은 멈춘다 — 측정 폭·사설 참조·잔여 인구가 모두
-# 그 기준을 입력으로 받으므로, 다른 기준으로 접으면 세 판정이 각자 다른 것을 본다.
+# 판정 기준(통합 브랜치)을 해소하지 못한 실행은 멈춘다 — 측정 폭·사설 참조·남은 변경 인구가 모두
+# 그 기준을 입력으로 받으므로, 다른 기준으로 바꾸면 세 판정이 각자 다른 것을 본다.
 _INTEGRATION_TIP_UNDECLARED = (
     "{ticket} 묶음 기록이 통합 브랜치(base_branch)를 선언하지 않았다 — 완료 기록의 측정 폭·"
     "사설 참조 판정·남은 변경 인구가 그 기준을 입력으로 받는다. `board.py cluster show <묶음>` 으로 "
@@ -367,7 +367,7 @@ _UNBORN_SKELETON_NOTE = (
 
 
 def _canonical_touch_path(path: str) -> str:
-    """touches 경로를 귀속 비교용 POSIX 상대 표기로 접는다."""
+    """touches 경로를 귀속 비교용 POSIX 상대 표기로 바꾼다."""
     normalized = path.strip().replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
@@ -384,7 +384,7 @@ def _touch_claims_path(touch: str, changed_path: str) -> bool:
     """touches 선언이 변경 파일을 포함하는가.
 
     경로 magic/glob 은 이 작은 귀속기가 Git 과 완전히 같게 해석할 수 없다. 그런 선언을
-    `False` 로 접어 제외하면 현재 티켓 몫을 숨길 수 있으므로, 불확실한 선언은 일치(True)로
+    `False` 로 바꿔 제외하면 현재 티켓 몫을 숨길 수 있으므로, 불확실한 선언은 일치(True)로
     취급한다. 오차는 과다 측정 쪽이다.
     """
     canonical = _canonical_touch_path(touch)
@@ -393,8 +393,8 @@ def _touch_claims_path(touch: str, changed_path: str) -> bool:
     return _touch_contains(canonical, changed_path)
 
 
-def _self_axis_block(ticket_id: str, new_failed: list[str], output: str) -> str:
-    """자기 축 신규 red 차단 문자열 — `run()` 이 `[중단]` 접두로 그대로 낸다."""
+def _self_check_block(ticket_id: str, new_failed: list[str], output: str) -> str:
+    """자기 점검 신규 red 차단 문자열 — `run()` 이 `[중단]` 접두로 그대로 낸다."""
     lines = [f"자기 점검 회귀 신규 실패 — {ticket_id}"]
     lines += [f"  ✗ {node}" for node in new_failed]
     tail = "\n".join(output.rstrip().splitlines()[-20:])

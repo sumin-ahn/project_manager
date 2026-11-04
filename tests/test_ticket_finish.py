@@ -65,20 +65,20 @@ def tf():
 
 
 @pytest.fixture(autouse=True)
-def _neutralize_misanchor_guard(tf, monkeypatch):
+def _neutralize_wrong_repo_guard(tf, monkeypatch):
     """T-0345: 이 테스트 파일은 실 worktree 에서 도는데, `tf.main()` 을 부르는 테스트들이 새
-    PM-홈 worktree 오실행 가드에 걸린다(실 worktree = 실 linked worktree → 가드 발화). 이 파일은
-    가드가 아니라 main() 의 정체성/모호 게이트 등 orthogonal 로직을 검증하므로, 오실행 감지를
+    PM-홈 worktree 오실행 가드에 걸린다(실 worktree = 실 linked worktree → 가드가 걸림). 이 파일은
+    가드가 아니라 main() 의 정체성/모호 판정 등 orthogonal 로직을 검증하므로, 오실행 감지를
     None(미해소)로 격리해 가드를 통과시킨다. 가드 자체의 검증은 전용 파일
     `test_board_worktree_wrong_repo_guard.py` 가 담당한다."""
     monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
 
 
 def _git_seed(root: Path) -> None:
-    """커밋 하나를 가진 실 git 트리를 만든다 — 판정 기준(HEAD)이 해소되는 최소 형상.
+    """커밋 하나를 가진 실 git 트리를 만든다 — 판정 기준(HEAD)이 해소되는 최소 구성.
 
-    완료 기록의 잔여·측정 판정은 코드 트리의 git 상태를 읽는다. 비-git 디렉터리를 코드 트리로
-    주면 그 판정이 기준을 해소하지 못해 멈추므로, 축이 다른 케이스도 트리는 실물로 둔다.
+    완료 기록의 남은 변경·측정 판정은 코드 트리의 git 상태를 읽는다. 비-git 디렉터리를 코드 트리로
+    주면 그 판정이 기준을 해소하지 못해 멈추므로, 관심사가 다른 케이스도 트리는 실물로 둔다.
     """
     identity = ("-c", "user.email=t@e", "-c", "user.name=t")
     subprocess.run(["git", "-C", str(root), "init", "-q"], check=True,
@@ -88,18 +88,18 @@ def _git_seed(root: Path) -> None:
                    capture_output=True, text=True, encoding="utf-8")
 
 
-# 판정 기준 해소의 실제 구현 — 기준 해소 자체를 축으로 삼는 케이스가 대역을 걷어 낼 때 쓴다.
+# 판정 기준 해소의 실제 구현 — 기준 해소 자체를 관심사로 삼는 케이스가 대역을 걷어 낼 때 쓴다.
 _REAL_INTEGRATION_BRANCH = finish_store._cluster_integration_branch
 
 
 @pytest.fixture(autouse=True)
 def _declare_the_integration_basis(tf, monkeypatch):
-    """이 파일의 hermetic 픽스처에는 묶음 장부가 없다 — 판정 기준 선언만 대역으로 세운다.
+    """이 파일의 hermetic 픽스처에는 묶음 기록이 없다 — 판정 기준 선언만 대역으로 세운다.
 
-    엔진은 판정 기준(묶음 장부 `base_branch`)이 없으면 멈춘다. 여기서 검증하는 축은 소프트
+    엔진은 판정 기준(묶음 기록 `base_branch`)이 없으면 멈춘다. 여기서 검증하는 기준은 소프트
     단계·라벨·stage·회귀 흐름이지 그 기준의 해소가 아니므로, **이 트리의 현재 커밋**을 기준으로
-    선언한다(커밋 인구 = 공집합 · 측정 기준점 = HEAD). 기준 해소 자체를 축으로 삼는 케이스는
-    실 장부를 가진 tmp 저장소에서 `_REAL_INTEGRATION_BRANCH` 로 이 대역을 되돌린다."""
+    선언한다(커밋 인구 = 공집합 · 측정 기준점 = HEAD). 기준 해소 자체를 관심사로 삼는 케이스는
+    실 묶음 기록을 가진 tmp 저장소에서 `_REAL_INTEGRATION_BRANCH` 로 이 대역을 되돌린다."""
     monkeypatch.setattr(
         finish_store, "_cluster_integration_branch", lambda _home, _ticket_id: "HEAD")
 
@@ -147,21 +147,21 @@ def test_is_pytest_green_no_passed_is_false(tf):
 # ── 회귀 명령 per-repo 해소 (codex must-fix 1·ADR-0014·T-0730) ────────────────
 #
 # 활성 repo 가 비-Python 이거나 `tests/` 가 없으면 `pytest tests/ -q` 가 틀린다 — 회귀는 그
-# repo 의 test_cmd 를 써야 한다. 해소는 4층이다(prefix 행 > repo 행 > local.conf > 솔로 폴백·
+# repo 의 test_cmd 를 써야 한다. 해소는 4층이다(prefix 행 > repo 행 > local.conf > 솔로 대체·
 # 체인 본체는 `regression._resolve_gate_cmd` 단일 사본이고 이 도구는 자기 트리의 `Home` 을 넘겨
 # 위임한다). 단 **솔로/프레임워크 자기 회귀(어느 층도 미해소)는 현행 `pytest tests/ -q` venv
 # 실행을 반드시 보존**(도그푸딩 불변). 층별 우선순위·두 도구 파리티·무prefix 채택자 e2e 는
-# `test_regression_check_resolution.py` 가 소유하고, 여기서는 이 도구 표면의 계약을 본다.
+# `test_regression_check_resolution.py` 가 소유하고, 여기서는 이 도구 명령의 계약을 본다.
 # 해소 체인이 읽는 패키지 함수(`pm_paths.areas_file`·`areas_store`·`conf_store.local_config`)를
 # 대역으로 갈아끼워 hermetic 하게 검증한다.
 
 
 class _FakeBoard:
-    """board.py 대역 — 해소 체인이 읽는 표면을 흉내낸다(areas 해소 가로채기).
+    """board.py 대역 — 해소 체인이 읽는 함수를 흉내낸다(areas 해소 가로채기).
 
     `areas_file()` = board_root 추종 결과(T-0162 A6) — `regression._resolve_gate_cmd` 의 존재
     가드가 board 모듈 함수로 위임되므로 대역도 그 함수를 제공한다(실재 areas.md 경로 주입).
-    prefix 층 뒤에 repo 행·local.conf 층이 있으므로(T-0730) 그 표면도 대역이 갖는다 — 없으면
+    prefix 층 뒤에 repo 행·local.conf 층이 있으므로(T-0730) 그 함수도 대역이 갖는다 — 없으면
     체인이 AttributeError 로 조기 탈출해 "None 이 나온 이유"가 흐려진다.
     """
 
@@ -204,7 +204,7 @@ def _install_stub(stub, monkeypatch):
 
 
 def test_resolve_per_repo_cmd_solo_no_areas_returns_default(tf, tmp_path, monkeypatch):
-    """솔로 폴백 — areas.md 부재면 4층 기본 명령(`python_env.default_pytest_cmd`)."""
+    """솔로 대체 — areas.md 부재면 4층 기본 명령(`python_env.default_pytest_cmd`)."""
     _install_stub(_FakeBoard(None, None, areas_path=tmp_path / "no-areas.md"), monkeypatch)
     assert regression._resolve_gate_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
 
@@ -218,7 +218,7 @@ def test_resolve_per_repo_cmd_multipm_returns_row_cmd(tf, tmp_path, monkeypatch)
 
 
 def test_resolve_per_repo_cmd_multipm_no_prefix_returns_default(tf, tmp_path, monkeypatch):
-    """multi-PM이라도 활성 prefix 없으면 4층 기본 명령(솔로 폴백 — 현행 보존)."""
+    """multi-PM이라도 활성 prefix 없으면 4층 기본 명령(솔로 대체 — 현행 보존)."""
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
     _install_stub(_FakeBoard(None, None, areas_path=areas), monkeypatch)
@@ -234,10 +234,10 @@ def test_resolve_per_repo_cmd_multipm_empty_test_cmd_returns_default(tf, tmp_pat
 
 
 def test_resolve_per_repo_cmd_blank_prefix_uses_repo_row(tf, tmp_path, monkeypatch):
-    """무prefix 채택자 형상 — prefix 칼럼이 비어도 repo 행의 test_cmd 로 해소한다 (T-0730).
+    """무prefix 채택자 구성 — prefix 칼럼이 비어도 repo 행의 test_cmd 로 해소한다 (T-0730).
 
     현행 `pm-config repo add` 는 prefix 를 빈 값으로 등록하므로 `id_prefix()` 가 None 이다.
-    prefix 층만 보면 올바른 test_cmd 를 담은 행에 도달하지 못해 하드코딩 pytest 로 폴백하고,
+    prefix 층만 보면 올바른 test_cmd 를 담은 행에 도달하지 못해 하드코딩 pytest 로 대체되고,
     `tests/` 가 없는 채택자는 회귀가 항상 red 로 오판된다.
     """
     areas = tmp_path / "areas.md"
@@ -381,7 +381,7 @@ def test_soft_step_domain_absent_prints_no_affected_pages(tf, tmp_path, capsys):
 
 
 def test_soft_step_exception_propagates_before_completion(tf, tmp_path, capsys):
-    """soft 알림 함수의 예외는 삼키지 않고 전파한다(영향 페이지 조회 실패를 '영향 없음'으로 접지 않는다)."""
+    """soft 알림 함수의 예외는 삼키지 않고 전파한다(영향 페이지 조회 실패를 '영향 없음'으로 바꾸지 않는다)."""
     def boom(_tid):
         raise RuntimeError("domain 조회 폭발")
 
@@ -401,8 +401,8 @@ def test_soft_step_exception_propagates_before_completion(tf, tmp_path, capsys):
     assert "[완료] T-1234 기록 완료." not in capsys.readouterr().out
 
 
-def test_dry_run_label_shows_resolved_gate(tf, tmp_path, monkeypatch, capsys):
-    """dry-run 안내는 **실제로 돌 명령**을 보여준다 — 해소된 게이트가 있으면 그 문자열 (T-0730)."""
+def test_dry_run_label_shows_resolved_check(tf, tmp_path, monkeypatch, capsys):
+    """dry-run 안내는 **실제로 돌 명령**을 보여준다 — 해소된 회귀 명령이 있으면 그 문자열 (T-0730)."""
     monkeypatch.setattr(regression, "_resolve_gate_cmd", lambda _home: "go test ./...")
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
@@ -468,7 +468,7 @@ def test_run_does_not_touch_status_md(tf, tmp_path, capsys):
     status_file = tmp_path / "status.md"
     original = "# 현재 진행 상태\n\n| | mod | f.py | 🟡 | judgment-only 비고 |\n"
     status_file.write_text(original, encoding="utf-8")
-    # 모듈 전역 STATUS_FILE 은 이미 제거됐다 — 더 monkeypatch 할 앵커가 없다는 게 핵심.
+    # 모듈 전역 STATUS_FILE 은 이미 제거됐다 — 더 monkeypatch 할 대상이 없다는 게 핵심.
     finisher = _make_finisher(tf, tmp_path, affected=None)
     rc = finisher.run("T-1234", section=None, dry_run=False)
     assert rc == 0
@@ -489,7 +489,7 @@ def test_run_ignores_section_arg(tf, tmp_path, capsys):
 
 
 def test_log_skeleton_reports_measured_total_no_old_total(tf):
-    """log 스켈레톤은 실측 new_total 1줄만 — old_total/delta 박제 없음(ADR-0023·ADR-0008)."""
+    """log 스켈레톤은 실측 new_total 1줄만 — old_total/차이 기록 없음(ADR-0023·ADR-0008)."""
     skeleton = finish_record.build_log_skeleton(
         ticket_id="T-0001", title="t", new_total=42, board_before=1, board_after=2,
     )
@@ -500,21 +500,21 @@ def test_log_skeleton_reports_measured_total_no_old_total(tf):
 def test_log_skeleton_adds_task_tag_when_task_is_resolved(tf):
     """task 완료 entry는 handoff와 같은 sentinel 태그를 헤더 말미에 생산한다."""
     skeleton = finish_record.build_log_skeleton(
-        ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
+        ticket_id="T-0547", title="기록", new_total=42, board_before=1, board_after=2,
         entry_type="feat", date="2026-08-06", task="orch-dev-T0547",
     )
     assert skeleton.splitlines()[0] == (
-        "## [2026-08-06] feat | [[T-0547]] — 박제 (task:orch-dev-T0547)"
+        "## [2026-08-06] feat | [[T-0547]] — 기록 (task:orch-dev-T0547)"
     )
 
 
 def test_log_skeleton_without_task_uses_canonical_ticket_wikilink(tf):
     """정체성 태그와 무관하게 새 완료 entry의 ticket 참조는 canonical wikilink다."""
     skeleton = finish_record.build_log_skeleton(
-        ticket_id="T-0547", title="박제", new_total=42, board_before=1, board_after=2,
+        ticket_id="T-0547", title="기록", new_total=42, board_before=1, board_after=2,
         entry_type="feat", date="2026-08-06",
     )
-    assert skeleton.splitlines()[0] == "## [2026-08-06] feat | [[T-0547]] — 박제"
+    assert skeleton.splitlines()[0] == "## [2026-08-06] feat | [[T-0547]] — 기록"
 
 
 @pytest.mark.parametrize("ticket_marker", ("[[T-0547]]", "T-0547"))
@@ -622,9 +622,9 @@ def test_affected_domain_titles_normalizes_pm_home_worktree_touch(
     """handoff 완료 뒤 idle slot도 지속 소유 매핑으로 정규화해 soft 알림 recall을 보존한다."""
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"","state":"idle"}]}',
         encoding="utf-8",
@@ -667,9 +667,9 @@ def test_affected_domain_titles_bad_coordinate_warns_per_path_and_continues(
     """read-only soft 알림은 한 경로의 귀속 오류 때문에 유효한 나머지를 버리지 않는다."""
     registered = "work/project_manager_1"
     (tmp_path / registered).mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"","state":"idle"}]}',
         encoding="utf-8",
@@ -769,7 +769,7 @@ def test_soft_step_marks_stale_affected_page_with_warning(tf, tmp_path, capsys):
 
 
 def test_affected_domain_titles_stale_exception_propagates(tf, tmp_path, monkeypatch):
-    """page_stale 예외는 전파한다 — 그 페이지를 stale=None(무표시)으로 접지 않는다."""
+    """page_stale 예외는 전파한다 — 그 페이지를 stale=None(무표시)으로 바꾸지 않는다."""
     class _FakeDomain:
         @staticmethod
         def load_pages():
@@ -909,10 +909,10 @@ def test_affected_domain_titles_unresolved_owner_skips_stale_soft_warning(
 # 제거하고 `_default_run_pytest` 가 런타임에 `slot_resolution._regression_cwd`(T-0124·`_auto_slot`
 # 재사용)로 해소한다.
 #
-# seam 주입: `slot_resolution._regression_cwd` 를 areas/leases 를 *명시 인자로* 넘기는 lambda 로
-# 감싸 주입한다(실 장부·areas 미접촉). 또 REPO
+# 교체 지점 주입: `slot_resolution._regression_cwd` 를 areas/leases 를 *명시 인자로* 넘기는 lambda 로
+# 감싸 주입한다(실 슬롯 대여 기록·areas 미접촉). 또 REPO
 # 자체가 `.../work/project_manager_1`(① worktree 에서 pytest 실행)이라 그 suffix 로 self-host
-# 를 단언하면 REPO 폴백과 우연 일치한다 — 슬롯명을 `work/myrepo_7` 로 둬 구조적으로 구별한다.
+# 를 단언하면 REPO 대체와 우연 일치한다 — 슬롯명을 `work/myrepo_7` 로 둬 구조적으로 구별한다.
 
 import json as _selfhost_json  # noqa: E402 — T-0149 테스트 전용 로컬 import
 
@@ -932,16 +932,16 @@ def _write_selfhost_areas(path: Path, repos: list[str]) -> None:
 
 
 def _write_selfhost_leases(path: Path, entries: list[dict]) -> None:
-    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 동형)."""
+    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 와 같은 구조)."""
     path.write_text(_selfhost_json.dumps({"leases": entries}), encoding="utf-8")
 
 
-def _bind_pm_handoff_seams(tf, monkeypatch, areas: Path, leases: Path, repo_root: Path | None = None):
+def _bind_pm_handoff_overrides(tf, monkeypatch, areas: Path, leases: Path, repo_root: Path | None = None):
     """`slot_resolution._regression_cwd` 를 areas/leases(+repo_root) 명시 인자 lambda 로 감싸 주입.
 
     원본 `_regression_cwd` 를 닫아 Home 과 `worktree_slot` 만 받고 areas/leases/repo_root 를
-    *명시 인자로* 넘기는 lambda 로 교체한다 — 실 장부/areas/REPO 미접촉 hermetic 해소의 seam 이다.
-    테스트가 고정한 repo_root 가 있으면 그것이 우선이고(hermetic 앵커), 없으면 호출자가
+    *명시 인자로* 넘기는 lambda 로 교체한다 — 실 슬롯 대여 기록/areas/REPO 미접촉 hermetic 해소의 교체 지점이다.
+    테스트가 고정한 repo_root 가 있으면 그것이 우선이고(hermetic 기준), 없으면 호출자가
     넘긴 Home 의 root(자기 REPO)를 쓴다.
     """
     real = slot_resolution._regression_cwd
@@ -958,8 +958,8 @@ def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypat
 
     이게 깨지면 ② 홈서 ticket_finish 회귀가 tests/ 없는 ② cwd 에서 돌아 "no tests ran" red.
     슬롯명을 `work/myrepo_7` 로 둬 REPO suffix(`work/project_manager_1`)와 구조적으로 구별한다 —
-    REPO 폴백과 우연 일치하지 않아야 self-host 해소를 실제로 단언하는 가드가 된다. 자동해소도
-    명시 슬롯과 같은 존재 검사를 타므로(장부-파일시스템 out-of-sync 대칭 처리) repo_root 를
+    REPO 대체와 우연 일치하지 않아야 self-host 해소를 실제로 단언하는 가드가 된다. 자동해소도
+    명시 슬롯과 같은 존재 검사를 타므로(대여 기록-파일시스템 out-of-sync 대칭 처리) repo_root 를
     tmp_path 로 두고 그 슬롯 디렉토리를 실제로 만든다(hermetic·실 REPO 미접촉).
     """
     areas = tmp_path / "areas.md"
@@ -970,16 +970,16 @@ def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypat
          "session": "myrepo_7", "state": "leased"},
     ])
     (tmp_path / "work" / "myrepo_7").mkdir(parents=True)
-    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases, repo_root=tmp_path)
+    _bind_pm_handoff_overrides(tf, monkeypatch, areas, leases, repo_root=tmp_path)
     result = slot_resolution._regression_cwd(pm_paths.home_at(REPO))
     assert result.replace(os.sep, "/").endswith("work/myrepo_7")
-    assert result != str(tmp_path)  # repo_root 폴백과 구별
+    assert result != str(tmp_path)  # repo_root 대체와 구별
 
 
 def test_regression_cwd_explicit_slot_overrides_auto(tf, tmp_path, monkeypatch):
     """명시 worktree_slot 우선 — auto 판정을 무시하고 그 슬롯 경로 반환.
 
-    L1(ADR-0057 라이더 — stale 슬롯은 REPO 폴백)이 발동하지 않으려면 그 디렉토리가 실존해야
+    L1(ADR-0057 라이더 — stale 슬롯은 REPO 로 대체)이 발동하지 않으려면 그 디렉토리가 실존해야
     하므로, `repo_root` 를 tmp_path 로 둬 `work/foo_2` 를 실제로 만든다.
     """
     areas = tmp_path / "areas.md"
@@ -990,27 +990,27 @@ def test_regression_cwd_explicit_slot_overrides_auto(tf, tmp_path, monkeypatch):
          "session": "myrepo_7", "state": "leased"},
     ])
     (tmp_path / "work" / "foo_2").mkdir(parents=True)
-    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases, repo_root=tmp_path)
+    _bind_pm_handoff_overrides(tf, monkeypatch, areas, leases, repo_root=tmp_path)
     result = slot_resolution._regression_cwd(pm_paths.home_at(REPO), "work/foo_2")
     assert result.replace(os.sep, "/").endswith("work/foo_2")
 
 
 def test_regression_cwd_solo_falls_back_to_repo(tf, tmp_path, monkeypatch):
-    """솔로(areas 부재·모호) → str(REPO) 폴백 (현행 100% 보존·additive)."""
+    """솔로(areas 부재·모호) → str(REPO) 로 대체 (현행 100% 보존·additive)."""
     areas = tmp_path / "areas.md"           # 미생성 → 부재(솔로)
     leases = tmp_path / "worktree-leases.json"
     _write_selfhost_leases(leases, [
         {"slot": "work/myrepo_7", "repo": "myrepo",
          "session": "myrepo_7", "state": "leased"},
     ])
-    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
+    _bind_pm_handoff_overrides(tf, monkeypatch, areas, leases)
     assert slot_resolution._regression_cwd(pm_paths.home_at(REPO)) == str(REPO)
 
 
 def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkeypatch):
     """regression_cwd 미주입 → _default_run_pytest 가 런타임 _regression_cwd() 로 해소.
 
-    __init__ 즉시-고정 버그(REPO 박제) 제거 회귀 가드 — 미주입 시 self-host 슬롯이
+    __init__ 즉시-고정 버그(REPO 고정) 제거 회귀 가드 — 미주입 시 self-host 슬롯이
     cwd 로 들어가야 한다(② 홈서 worktree 회귀). 명시 주입은 다음 두 테스트가 보존 검증.
     """
     captured = {}
@@ -1029,14 +1029,14 @@ def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkey
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python="/venv/bin/python")  # regression_cwd 미주입
     rc, _out = finisher._default_run_pytest()
     assert rc == 0
-    assert captured["cwd"] == "/wt/project_manager_1"  # __init__ 박제 아니라 런타임 해소
+    assert captured["cwd"] == "/wt/project_manager_1"  # __init__ 고정이 아니라 런타임 해소
 
 
-# ── REPO 앵커 상향 탐색 (T-0242·finance_dev 제보 D2·board_root 동형) ──────────────
+# ── REPO 설치 위치 상향 탐색 (T-0242·finance_dev 제보 D2·board_root 와 같은 방식) ──────────────
 #
 # 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다 — `pm_import` 가 그 깊이를 못 박으
 # 므로 REPO 는 상향 탐색이 아니라 `Path(__file__).resolve().parents[2]` 다. 상향 탐색은 합성
-# 트리에서 자기 위의 실 인스턴스를 답으로 주는 부작용만 냈다 (additional_reviewer 동형).
+# 트리에서 자기 위의 실 인스턴스를 답으로 주는 부작용만 냈다 (additional_reviewer 와 같은 방식).
 # 진입 파일의 REPO 식은 R5 문법(tests/test_engine_structure.py)이 고정한다.
 
 
@@ -1046,10 +1046,10 @@ def test_repo_constant_anchors_at_the_install_depth(tf):
     assert tf.REPO == expected
 
 
-# ── _default_python venv 우선 / 부재 폴백 (T-0242 — venv 부재 = 정상 채택자 경로) ────
+# ── _default_python venv 우선 / 부재 시 대체 (T-0242 — venv 부재 = 정상 채택자 경로) ────
 #
 # venv 후보가 존재하면 그대로 우선(도그푸딩 불변·회귀 측정 인터프리터 보존), 없으면
-# sys.executable 폴백(venv 없는 채택자 = 정상 경로). 우선순위 불변을 두 갈래로 박제한다.
+# sys.executable 대체(venv 없는 채택자 = 정상 경로). 우선순위 불변을 두 갈래로 기록한다.
 
 
 def test_default_python_venv_present_is_preferred(tf, tmp_path, monkeypatch):
@@ -1062,16 +1062,16 @@ def test_default_python_venv_present_is_preferred(tf, tmp_path, monkeypatch):
 
 
 def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, monkeypatch):
-    """venv 부재(정상 채택자 경로) → sys.executable 폴백 — 에러 아님, 폴백 분기.
+    """venv 부재(정상 채택자 경로) → sys.executable 로 대체 — 에러 아님, 대체 분기.
 
-    시스템 인터프리터에 pytest 가 깔린 형상은 venv/ 를 안 만든다 → 그 환경 pytest 를 쓴다."""
+    시스템 인터프리터에 pytest 가 깔린 구성은 venv/ 를 안 만든다 → 그 환경 pytest 를 쓴다."""
     assert python_env._default_python(pm_paths.home_at(tmp_path)) == sys.executable
 
 
-# ── 두-git 다중슬롯 seam — --repo/--slot/--no-pytest disambiguation (T-0285·ADR-0027·ADR-0057) ──
+# ── 두-git 다중슬롯 교체 지점 — --repo/--slot/--no-pytest disambiguation (T-0285·ADR-0027·ADR-0057) ──
 #
-# ADR-0027 다중슬롯 형상(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 자동해소가
-# 모호해져 ② 홈(tests/ 부재)으로 폴백 → 회귀 red("no tests ran") → finish 가 *조용히* 차단됐다
+# ADR-0027 다중슬롯 구성(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 자동해소가
+# 모호해져 ② 홈(tests/ 부재)으로 대체 → 회귀 red("no tests ran") → finish 가 *조용히* 차단됐다
 # (라이브 발견·PM 59차). `--repo`/`--slot`(ADR-0057 decomposed) 은 그 슬롯을 disambiguate 하고,
 # `--no-pytest` 는 **회귀 실행만** skip 한다(코드 트리 해소는 그대로 — 사설 참조 측정·stage 가
 # 같은 트리를 쓴다). 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신 fail-loud 로 중단한다.
@@ -1081,9 +1081,9 @@ def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, m
 def test_repo_slot_resolves_explicit_worktree_slot(tf, tmp_path, monkeypatch):
     """(a) --repo/--slot → explicit worktree 슬롯 `work/<repo>_<N>` 결정론적 해소.
 
-    실 `slot_resolution` 을 쓰되 리스 장부 부재(tmp_path Home)라
+    실 `slot_resolution` 을 쓰되 슬롯 대여 기록 부재(tmp_path Home)라
     **M3**(세션↔repo 조인검증)는 검증불가·fail-soft(신뢰) — 결정론적. 회귀 cwd =
-    REPO/<slot>(main 이 `_regression_cwd` forward) — L1(stale→REPO 폴백)이 발동하지 않게
+    REPO/<slot>(main 이 `_regression_cwd` forward) — L1(stale→REPO 대체)이 발동하지 않게
     그 디렉토리를 실제로 만든다.
     """
     home = pm_paths.home_at(tmp_path)
@@ -1096,7 +1096,7 @@ def test_repo_slot_resolves_explicit_worktree_slot(tf, tmp_path, monkeypatch):
 
 
 def test_repo_alone_bypasses_ambiguity(tf, monkeypatch):
-    """--repo(+--slot) 명시는 자동해소 모호 여부와 무관하게 그 슬롯 사용(explicit 우선·모호 게이트 우회).
+    """--repo(+--slot) 명시는 자동해소 모호 여부와 무관하게 그 슬롯 사용(explicit 우선·모호 판정 우회).
 
     이게 분해형 `--repo`/`--slot` 의 존재 이유 — 다중슬롯 모호를 사용자가 직접 disambiguate 한다.
     무인자 경로의 해소 결과와 무관하게 explicit 경로가 short-circuit 한다.
@@ -1111,7 +1111,7 @@ def test_repo_alone_bypasses_ambiguity(tf, monkeypatch):
 # ── M3(라이더) — 세션↔repo 조인 불일치 fail-loud (`slot_resolution._resolve_explicit_identity_slot` 위임) ──
 
 def test_resolve_finish_slot_m3_rejects_repo_join_mismatch(tf, tmp_path, monkeypatch):
-    """명시 --repo/--slot 이 실제 활성 리스와 조인 불일치 → fail-loud(조용히 안 넘김·ADR-0057 M3)."""
+    """명시 --repo/--slot 이 실제 활성 대여와 조인 불일치 → fail-loud(조용히 안 넘김·ADR-0057 M3)."""
     leases = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     leases.parent.mkdir(parents=True)
     leases.write_text(
@@ -1160,7 +1160,7 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
 
 
 def test_main_unresolved_identity_fails_loud_before_regression(tf, monkeypatch, capsys):
-    """(c) 무인자 진입(`--task` 없음) → usage error(rc 2)·`--task` 처방·회귀 미시작.
+    """(c) 무인자 진입(`--task` 없음) → usage error(rc 2)·`--task` 해결 방법·회귀 미시작.
 
     fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 정상 종결의 정체성은
     `--task` 하나이고 cwd·단일 활성 task 에서 유도하지 않는다(T-0962 F-008).
@@ -1205,16 +1205,16 @@ def _capture_main_forward(tf, monkeypatch) -> dict:
 # ── board 정체성 forward (T-0781) ───────────────────────────────────────────
 #
 # board 의 complete 는 `claimed_by` 와 실행 세션을 대조한다. ticket_finish 는 자기 정체성을
-# 이미 해소해 두고도 board 에 넘기지 않았다 — 그 상태로 소유 게이트가 켜지면 다중 슬롯
+# 이미 해소해 두고도 board 에 넘기지 않았다 — 그 상태로 소유 통과 조건이 켜지면 다중 슬롯
 # 채택자의 `/pm-cluster-finish` 주 경로가 "남의 티켓" 으로 전부 거부된다.
 
 
-def test_main_no_pytest_still_gates_unresolved_identity(tf, monkeypatch, capsys):
-    """--no-pytest + `--task` 없음 → usage error(rc 2) + `--task` 처방(회귀 skip 으로 풀리지 않는다).
+def test_main_no_pytest_still_checks_unresolved_identity(tf, monkeypatch, capsys):
+    """--no-pytest + `--task` 없음 → usage error(rc 2) + `--task` 해결 방법(회귀 skip 으로 풀리지 않는다).
 
     옛 규칙은 `--no-pytest` 면 슬롯 해소 자체를 건너뛰었다 — 회귀 cwd 가 pytest 전용 값이던
     시점의 결정이다. 그 뒤 같은 해소 결과(코드 트리)를 사설 참조 측정·[4/5] stage·PM-direct
-    재검이 소비하게 됐으므로, 회귀 skip 이 해소를 우회하면 그 소비자들이 PM 홈(분리 형상에선
+    재검이 소비하게 됐으므로, 회귀 skip 이 해소를 우회하면 그 소비자들이 PM 홈(분리 구성에선
     엔진 import 사본)을 잰다. 그래서 회귀 skip 과 트리 해소를 분리했고, 모호를 푸는 수단은
     `--repo/--slot`·`--task` 명시뿐이다.
     """
@@ -1267,7 +1267,7 @@ def test_main_no_pytest_forwards_the_skip_but_no_code_tree(tf, monkeypatch):
 def test_main_slot_without_repo_rejected(tf, capsys):
     """--slot 단독(--repo 없음) — identity_args.parse_identity 가 ValueError → parser.error(fail-loud).
 
-    (pm_handoff `--slot` 단독 거부 동형 — ADR-0057 uniform 규칙.)
+    (pm_handoff `--slot` 단독 거부와 같은 방식 — ADR-0057 uniform 규칙.)
     """
     with pytest.raises(SystemExit):
         tf.main(["T-1234", "--slot", "4"])
@@ -1327,7 +1327,7 @@ def test_engine_written_paths_includes_existing_round_files(tf, tmp_path, monkey
 
 
 def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_path, monkeypatch):
-    """board-git 분리 형상에선 티켓과 함께 라운드도 stage 후보에서 빠진다(현행 티켓 제외 규칙
+    """board-git 분리 구성에선 티켓과 함께 라운드도 stage 후보에서 빠진다(현행 티켓 제외 규칙
     동일)."""
     tickets_dir, ticket_path = _rounds_home(tf, tmp_path, monkeypatch)
     round_dir = tickets_dir / "rounds" / "T-0753"
@@ -1343,7 +1343,7 @@ def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_p
 
 def test_engine_written_paths_excludes_non_round_and_temporary_files_by_grammar(
         tf, tmp_path, monkeypatch):
-    """라운드 판정은 `parse_round_filename` 문법 하나 — 점-접두 임시 잔여뿐 아니라 라운드가
+    """라운드 판정은 `parse_round_filename` 문법 하나 — 점-접두 임시 남은 파일뿐 아니라 라운드가
     아닌 `.md`(`notes.md`·`01-dev.md`)도 stage 후보 밖이고, 진짜 라운드만 후보에 남는다
     (리뷰 F-002 — `.md` 접미 + 점-접두 제외 조합으로 되돌리면 `notes.md`·`01-dev.md`가 다시
     후보에 실려 이 테스트가 red 가 된다)."""
@@ -1405,7 +1405,7 @@ def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path, 
     tickets_dir = repo / ".project_manager" / "wiki" / "tickets"
     ticket_path = tickets_dir / "claimed" / "T-0753-fake.md"
     ticket_path.parent.mkdir(parents=True)
-    # 종결은 티켓 frontmatter 로 소속 장부를 찾는다 — 손상 티켓은 이제 그대로 실패한다([[T-0959]]).
+    # 종결은 티켓 frontmatter 로 소속 묶음 기록을 찾는다 — 손상 티켓은 이제 그대로 실패한다([[T-0959]]).
     ticket_path.write_text("---\nid: T-0753\nstatus: claimed\n---\n\nticket\n", encoding="utf-8")
     round_dir = tickets_dir / "rounds" / "T-0753"
     round_dir.mkdir(parents=True)
@@ -1475,7 +1475,7 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
                                    (("M ", ".project_manager/wiki/log/current.md"),)),
         status_entries_at_fn=lambda cwd: (status_calls.append(("task", cwd)) or
                                           (("M ", "others.py"), (" M", "missed.py"))),
-        # 잔여 preflight 는 별도 관심사 — 이 테스트의 초점은 두-repo stage 분리·[4/5]
+        # 남은 변경 preflight 는 별도 관심사 — 이 테스트의 초점은 두-repo stage 분리·[4/5]
         # 사후 loud 보고이지 새 preflight 판정이 아니다. off로 그 초점만 남긴다.
         residual_block_fn=lambda ticket_id: None,
         log_file=home / ".project_manager/wiki/log/current.md",
@@ -1578,20 +1578,20 @@ def test_single_ticket_completion_never_deletes_a_branch(tf, tmp_path, monkeypat
     )
 
     assert finisher.run("T-0902", section=None, dry_run=False, skip_pytest=True) == 0
-    assert mutations, "git seam 이 한 번도 안 불렸다(공허한 단언)"
+    assert mutations, "git 교체 지점이 한 번도 안 불렸다(공허한 단언)"
     assert not any(args[:1] == ["branch"] for args in mutations), \
         f"완료 기록이 브랜치를 건드렸다: {mutations!r}"
     capsys.readouterr()
 
 
 def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, monkeypatch):
-    """task worktree의 ls-files/status 파서는 stderr warning이 섞인 mutation seam을 절대 쓰지 않는다."""
+    """task worktree의 ls-files/status 파서는 stderr warning이 섞인 mutation runner를 절대 쓰지 않는다."""
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     parser_calls = []
 
     def mutation_runner(cwd, args):
-        raise AssertionError(f"machine parser가 stderr-합본 mutation seam을 사용함: {args}")
+        raise AssertionError(f"machine parser가 stderr-합본 mutation runner를 사용함: {args}")
 
     def stdout_runner(cwd, args):
         parser_calls.append((cwd, args))
@@ -1620,7 +1620,7 @@ def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, 
 def _write_coordinate_stage_board(monkeypatch, tmp_path, touches: list[str]) -> Path:
     """touches 를 가진 티켓 `T-0473` 과 file-only stage primitive 를 제공하는 hermetic board 루트.
 
-    PM 좌표 앵커(Home.root)와 다른 board 루트를 돌려준다 — 호출부가 `home_at(..., board_root=)` 로
+    PM 좌표 기준 위치(Home.root)와 다른 board 루트를 돌려준다 — 호출부가 `home_at(..., board_root=)` 로
     두 루트를 분리한 Home 을 만든다.
     """
     monkeypatch.setattr(git, "git_scope_stage_pathspec",
@@ -1656,7 +1656,7 @@ def test_task_stage_scope_normalizes_pm_home_touch_and_stages_real_file(
 
 def test_task_stage_scope_worktree_slot_mismatch_fails_loud(
         tf, tmp_path, monkeypatch):
-    """다른 slot 접두를 task workspace에 조용히 귀속하지 않고 stage error로 표면화한다."""
+    """다른 slot 접두를 task workspace에 조용히 귀속하지 않고 stage error로 드러낸다."""
     home = tmp_path / "pm-home"
     workspace = home / "work" / "project_manager_1"
     workspace.mkdir(parents=True)
@@ -1685,7 +1685,7 @@ def test_task_stage_scope_worktree_slot_mismatch_fails_loud(
 )
 def test_task_stage_scope_normalizes_coordinate_notation_variants(
         tf, tmp_path, monkeypatch, touch):
-    """stage 표면도 separator/leading-dot 표기를 같은 실 파일 좌표로 모은다."""
+    """stage 명령도 separator/leading-dot 표기를 같은 실 파일 좌표로 모은다."""
     home = tmp_path / "pm-home"
     workspace = home / "work" / "project_manager_1"
     changed = workspace / "src" / "change.py"
@@ -1767,7 +1767,7 @@ def test_task_stage_scope_rejects_root_or_absolute_before_real_git_stage(
     assert staged == ""
 
 
-# ── 진입 게이트 공용 대역 ───────────────────────────────────────────────────
+# ── 진입 통과 조건 공용 대역 ───────────────────────────────────────────────────
 
 
 def _boom_pytest():
@@ -1777,8 +1777,8 @@ def _boom_pytest():
 # ── 측정 스코프 정규화 · 기계 mirror 제외 (T-0601 ①⑧) ────────────────────────
 #
 # ⑧ PM 홈 좌표 touches(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리에 그 경로가 없어 diff 가 0 이
-#    나온다. 정규화는 stage 경로와 **같은** `repo_coordinates` seam 이다.
-# ① 기계 mirror 제외는 additional_reviewer 측정 seam 이 소유한다 — 완료 기록은 그 판정을 빌려 쓴다.
+#    나온다. 정규화는 stage 경로와 **같은** `repo_coordinates` 공용 함수다.
+# ① 기계 mirror 제외는 additional_reviewer 측정 공용 함수가 소유한다 — 완료 기록은 그 판정을 빌려 쓴다.
 
 
 def test_measured_touches_normalizes_pm_home_coordinates(tf, tmp_path, monkeypatch):
@@ -1793,7 +1793,7 @@ def test_measured_touches_normalizes_pm_home_coordinates(tf, tmp_path, monkeypat
 
 
 def test_measured_touches_leaves_plain_repo_paths_untouched(tf, tmp_path, monkeypatch):
-    """접두 없는 채택자 형상은 normalizer 를 타지 않는다 (경량 판정·현행 무변경)."""
+    """접두 없는 채택자 구성은 normalizer 를 타지 않는다 (경량 판정·현행 무변경)."""
     monkeypatch.setattr(repo_coordinates, "normalize_repo_paths",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("normalizer 미호출")))
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), log_file=tmp_path / "log.md")
@@ -1802,7 +1802,7 @@ def test_measured_touches_leaves_plain_repo_paths_untouched(tf, tmp_path, monkey
 
 
 def test_measured_touches_slot_mismatch_is_unresolved(tf, tmp_path, monkeypatch):
-    """슬롯 불일치는 정규화 불능(None)이다 — 조용한 diff 0 으로 접지 않는다."""
+    """슬롯 불일치는 정규화 불능(None)이다 — 조용한 diff 0 으로 바꾸지 않는다."""
     workspace = tmp_path / "work" / "proj_1"
     workspace.mkdir(parents=True)
 
@@ -1810,7 +1810,7 @@ def test_measured_touches_slot_mismatch_is_unresolved(tf, tmp_path, monkeypatch)
     assert finisher._normalize_measured_touches(["work/other_2/tools/board.py"]) is None
 
 
-# ── DoD 기록 게이트 preflight (T-0601 ②) ─────────────────────────────────────
+# ── DoD 기록 통과 조건 preflight (T-0601 ②) ─────────────────────────────────────
 #
 # DoD 판정이 [3/5] `board.py complete` 안에만 있던 동안에는, 차단될 때마다 [2/5] 가 이미 append 한
 # stray log 스켈레톤이 남고 재실행이 그것을 중복 append 했다(실측). 판정을 append **앞**으로 당겨
@@ -1818,7 +1818,7 @@ def test_measured_touches_slot_mismatch_is_unresolved(tf, tmp_path, monkeypatch)
 
 
 def _dod_finisher(tf, tmp_path, *, dod_block, log_file: Path | None = None):
-    """DoD preflight 만 살아 있는 finisher — 나머지 부작용 seam 은 전부 폭발 대역."""
+    """DoD preflight 만 살아 있는 finisher — 나머지 부작용 교체 지점은 전부 폭발 대역."""
     return finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
         run_pytest_fn=_boom_pytest,
@@ -1854,7 +1854,7 @@ def test_repeated_dod_block_never_duplicates_the_skeleton(tf, tmp_path):
 
 
 def test_dod_preflight_runs_after_the_private_ref(tf, tmp_path, capsys):
-    """진입 게이트 순서 = 사설 참조 → DoD (앞선 거절이 먼저·안내 1개만 뜬다)."""
+    """진입 통과 조건 순서 = 사설 참조 → DoD (앞선 거절이 먼저·안내 1개만 뜬다)."""
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
         run_pytest_fn=_boom_pytest,
@@ -1871,19 +1871,19 @@ def test_dod_preflight_runs_after_the_private_ref(tf, tmp_path, capsys):
 
 
 def test_dry_run_is_also_refused_by_the_dod_preflight(tf, tmp_path):
-    """dry-run 도 같은 거절이다 — 미리보기는 '부작용 없음'이지 '게이트 면제'가 아니다."""
+    """dry-run 도 같은 거절이다 — 미리보기는 '부작용 없음'이지 '통과 조건 면제'가 아니다."""
     finisher = _dod_finisher(tf, tmp_path, dod_block="DoD 미마감")
     assert finisher.run("T-1234", section=None, dry_run=True) == 1
 
 
-# ── 잔여(코드 트리 dirty ⊄ 선언 스코프) preflight ──────────────────
+# ── 남은 변경(코드 트리 dirty ⊄ 선언 스코프) preflight ──────────────────
 #
 # 경고→차단: DoD preflight 와 같은 순서 결함(차단이 [4/5] 안에만 있으면 board complete 가 이미
-# 기록된 뒤에야 막혀 되돌릴 수 없다)을 같은 방식(진입 게이트로 승격)으로 닫는다.
+# 기록된 뒤에야 막혀 되돌릴 수 없다)을 같은 방식(진입 통과 조건으로 승격)으로 닫는다.
 
 
 def _residual_finisher(tf, tmp_path, *, residual_block, log_file: Path | None = None):
-    """잔여 preflight 만 살아 있는 finisher — `_dod_finisher` 동형(나머지 부작용 seam 폭발 대역)."""
+    """남은 변경 preflight 만 살아 있는 finisher — `_dod_finisher` 와 같은 방식(나머지 부작용 교체 지점 폭발 대역)."""
     return finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
         run_pytest_fn=_boom_pytest,
@@ -1899,7 +1899,7 @@ def _residual_finisher(tf, tmp_path, *, residual_block, log_file: Path | None = 
 
 
 def test_residual_preflight_blocks_before_the_log_skeleton(tf, tmp_path, capsys):
-    """잔여 차단 → rc 1 · 회귀/log/board/git 어느 것도 건드리지 않는다(complete 미실행 · DoD)."""
+    """남은 변경 차단 → rc 1 · 회귀/log/board/git 어느 것도 건드리지 않는다(complete 미실행 · DoD)."""
     log_file = tmp_path / "log.md"
     finisher = _residual_finisher(
         tf, tmp_path, log_file=log_file,
@@ -1911,7 +1911,7 @@ def test_residual_preflight_blocks_before_the_log_skeleton(tf, tmp_path, capsys)
 
 
 def test_residual_preflight_runs_after_the_dod_block(tf, tmp_path, capsys):
-    """진입 게이트 순서 = 사설 참조 → DoD → 잔여(더 넓은/앞선 거절이 먼저·안내 1개만 뜬다)."""
+    """진입 통과 조건 순서 = 사설 참조 → DoD → 남은 변경(더 넓은/앞선 거절이 먼저·안내 1개만 뜬다)."""
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
         run_pytest_fn=_boom_pytest,
@@ -1920,17 +1920,17 @@ def test_residual_preflight_runs_after_the_dod_block(tf, tmp_path, capsys):
         affected_domain_fn=lambda tid: [],
         dod_block_fn=lambda tid: "DoD 미마감 — T-1234",
         residual_block_fn=lambda tid: (_ for _ in ()).throw(
-            AssertionError("DoD 차단 뒤에는 잔여 판정을 묻지 않는다")),
+            AssertionError("DoD 차단 뒤에는 남은 변경 판정을 묻지 않는다")),
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
     assert "DoD 미마감" in capsys.readouterr().err
 
 
-def test_preflight_seam_order_is_private_ref_dod_residual_self_axis(tf, tmp_path):
-    """네 진입 게이트 seam 의 호출 배열을 값으로 고정한다 — private_ref → dod → residual →
-    self_axis. residual 이 차단하면 self_axis(poison)는 **불리지 않는다**(순서가 값으로
-    확인되지 않으면 이후 게이트 삽입이 뒤로 밀려도 코드 리뷰로만 잡힌다)."""
+def test_preflight_override_order_is_private_ref_dod_residual_self_check(tf, tmp_path):
+    """네 진입 통과 조건 교체 지점의 호출 배열을 값으로 고정한다 — private_ref → dod → residual →
+    self_check. residual 이 차단하면 self_check(poison)는 **불리지 않는다**(순서가 값으로
+    확인되지 않으면 이후 통과 조건 삽입이 뒤로 밀려도 코드 리뷰로만 잡힌다)."""
     calls: list[str] = []
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
@@ -1939,19 +1939,19 @@ def test_preflight_seam_order_is_private_ref_dod_residual_self_axis(tf, tmp_path
         run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
         private_ref_block_fn=lambda tid: calls.append("private_ref") or None,
         dod_block_fn=lambda tid: calls.append("dod") or None,
-        residual_block_fn=lambda tid: calls.append("residual") or "잔여 1건 — T-1234",
-        self_axis_block_fn=lambda tid: calls.append("self_axis") or None,
+        residual_block_fn=lambda tid: calls.append("residual") or "남은 변경 1건 — T-1234",
+        self_check_block_fn=lambda tid: calls.append("self_check") or None,
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
     assert calls == ["private_ref", "dod", "residual"], (
-        "residual 차단인데 self_axis 가 불렸다"
+        "residual 차단인데 self_check 가 불렸다"
     )
 
 
 def test_residual_preflight_dry_run_is_also_refused(tf, tmp_path):
-    """dry-run 도 같은 거절이다 — 미리보기는 게이트 면제가 아니다."""
-    finisher = _residual_finisher(tf, tmp_path, residual_block="잔여 1건")
+    """dry-run 도 같은 거절이다 — 미리보기는 통과 조건 면제가 아니다."""
+    finisher = _residual_finisher(tf, tmp_path, residual_block="남은 변경 1건")
     assert finisher.run("T-1234", section=None, dry_run=True) == 1
 
 
@@ -1970,7 +1970,7 @@ def test_default_residual_block_treats_scope_error_as_a_block(tf, tmp_path):
 
 
 def test_default_residual_block_passes_when_nothing_is_dirty(tf, tmp_path):
-    """스코프 밖 잔여가 전혀 없으면 None — 정상 완료 흐름은 무영향(역방향 회귀)."""
+    """스코프 밖 남은 변경이 전혀 없으면 None — 정상 완료 흐름은 무영향(역방향 회귀)."""
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
         stage_scope_fn=lambda tid: finish_rules.StageScope(("src/a.py",), None),
@@ -1982,7 +1982,7 @@ def test_default_residual_block_passes_when_nothing_is_dirty(tf, tmp_path):
 
 def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
         tf, tmp_path, monkeypatch, capsys):
-    """분리 형상(두-git)에서 PM 홈 산출물 계획(cwd=REPO)의 잔여는 판정에 안 들어간다 — 다른 PM
+    """분리 구성(두-git)에서 PM 홈 산출물 계획(cwd=REPO)의 남은 변경은 판정에 안 들어간다 — 다른 PM
     세션의 wiki WIP 로 내 완료가 막히지 않는다(I2 · 두-계획 픽스처는
     `test_task_stage_plan_separates_pm_outputs_and_worktree_touches` 재사용).
     """
@@ -2011,7 +2011,7 @@ def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
         board_count_fn=lambda: 0,
         ticket_title_fn=lambda ticket_id: "separated plans",
         affected_domain_fn=lambda ticket_id: [],
-        # 홈 계획은 스코프 밖 잔여 1건(남의 wiki WIP) · 코드 트리 계획은 깨끗하다.
+        # 홈 계획은 스코프 밖 남은 변경 1건(남의 wiki WIP) · 코드 트리 계획은 깨끗하다.
         status_entries_fn=lambda: (("M ", ".project_manager/wiki/roadmap.md"),),
         status_entries_at_fn=lambda cwd: (),
         log_file=home / ".project_manager/wiki/log/current.md",
@@ -2028,8 +2028,8 @@ def _write_dod_board(tmp_path, body: str) -> Path:
     return tmp_path / ".project_manager/tools/board.py"
 
 
-def test_default_dod_preflight_consumes_the_board_gate(tf, tmp_path):
-    """기본 seam 은 board 의 DoD 판정을 그대로 부른다 (규칙 사본 0·값 형식도 board 것)."""
+def test_default_dod_preflight_consumes_the_board_check(tf, tmp_path):
+    """기본 교체 지점은 board 의 DoD 판정을 그대로 부른다 (규칙 사본 0·값 형식도 board 것)."""
     board_py = _write_dod_board(
         tmp_path, "## 완료 조건\n- [x] 한 건\n- [ ] 남은 항목\n")
     finisher = finish_record.TicketFinisher(pm_paths.home_at(tmp_path), log_file=tmp_path / "log.md", board_py=board_py)
@@ -2115,8 +2115,8 @@ def test_pm_direct_warning_is_never_block_and_preserves_finish_rc(
         status_entries_fn=lambda: ((" M", "src/app.py"),),
         stage_scope_fn=lambda _tid: finish_rules.StageScope((), None),
         dod_block_fn=lambda _tid: None,
-        # 잔여 preflight 는 별도 관심사 — 이 fixture의 scope=() + dirty 1건은 PM-direct
-        # 재검용 대역일 뿐 잔여 판정 대상이 아니다. off로 이 테스트의 초점(경고가 rc를 절대
+        # 남은 변경 preflight 는 별도 관심사 — 이 fixture의 scope=() + dirty 1건은 PM-direct
+        # 재검용 대역일 뿐 남은 변경 판정 대상이 아니다. off로 이 테스트의 초점(경고가 rc를 절대
         # 안 바꾼다)만 남긴다.
         residual_block_fn=lambda _tid: None,
         log_file=tmp_path / "log.md",
@@ -2178,35 +2178,35 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
 
 # ── 완료 기록 변경량 상한 없음 (T-0950) ─────────────────────────────────────
 #
-# 작업 크기별 변경 줄 수 상한은 사용자 결정(2026-10-10)으로 지웠다. 아래 형상은 실 git 저장소 +
-# 엔진 사본(claim · 묶음 장부 · 통합 브랜치)으로 옛 small 상한(300줄)을 넘는 변경을 만들고, 진입
-# 게이트의 측정 소비자(사설 참조)가 그대로 도는 채로 완료 기록이 끝나는지 본다.
+# 작업 크기별 변경 줄 수 상한은 사용자 결정(2026-10-10)으로 지웠다. 아래 구성은 실 git 저장소 +
+# 엔진 사본(claim · 묶음 기록 · 통합 브랜치)으로 옛 small 상한(300줄)을 넘는 변경을 만들고, 진입
+# 통과 조건의 측정 소비자(사설 참조)가 그대로 도는 채로 완료 기록이 끝나는지 본다.
 
-_WAVE_INTEGRATION = "task/main"   # 묶음 장부가 선언하는 통합 브랜치(판정 기준)
-_WAVE_TICKET = "T-7301"
-_WAVE_CHANGED_LINES = 400      # claim 뒤 `src/` 에 더한 줄 수 — 옛 small 상한 300 초과
+_CLUSTER_INTEGRATION = "task/main"   # 묶음 기록이 선언하는 통합 브랜치(판정 기준)
+_CLUSTER_TICKET = "T-7301"
+_CLUSTER_CHANGED_LINES = 400      # claim 뒤 `src/` 에 더한 줄 수 — 옛 small 상한 300 초과
 
 
-def _wave_git(root: Path, *args: str) -> subprocess.CompletedProcess:
+def _cluster_git(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(root), *args], check=True,
                           capture_output=True, text=True, encoding="utf-8")
 
 
-def _wave_write(path: Path, lines: int) -> None:
+def _cluster_write(path: Path, lines: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f"line{index}\n" for index in range(lines)),
                     encoding="utf-8")
 
 
-def _wave_ticket(root: Path, ticket_id: str, *, status: str, touch: str) -> Path:
+def _cluster_ticket(root: Path, ticket_id: str, *, status: str, touch: str) -> Path:
     path = (root / ".project_manager" / "board" / "tickets" / status
-            / f"{ticket_id}-wave.md")
+            / f"{ticket_id}-cluster.md")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"---\nid: {ticket_id}\ntitle: wave\nstatus: {status}\n"
+        f"---\nid: {ticket_id}\ntitle: cluster\nstatus: {status}\n"
         "claimed_by: null\nclaimed_at: null\ncompleted_at: null\n"
         f"depends_on: []\nblocks: []\ntouches:\n- {touch}\nestimate: small\n"
-        f"tags: []\n---\n\n# {ticket_id} — wave\n\n## 목표\nx\n",
+        f"tags: []\n---\n\n# {ticket_id} — cluster\n\n## 목표\nx\n",
         encoding="utf-8")
     return path
 
@@ -2214,22 +2214,22 @@ def _wave_ticket(root: Path, ticket_id: str, *, status: str, touch: str) -> Path
 def _load_tool_copy(root: Path, name: str):
     """tmp 저장소 안 엔진 사본을 로드한다 — 그 사본의 REPO 가 곧 이 저장소다(hermetic)."""
     spec = importlib.util.spec_from_file_location(
-        f"wave_{name}", root / ".project_manager" / "tools" / f"{name}.py")
+        f"cluster_{name}", root / ".project_manager" / "tools" / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-def _wave_repo(tmp_path: Path, *, git: bool = True,
-               base_branch: str | None = _WAVE_INTEGRATION):
-    """엔진 사본 + (선택) 실 git 저장소인 솔로 형상 — claim 직전 상태와 board 모듈.
+def _cluster_repo(tmp_path: Path, *, git: bool = True,
+               base_branch: str | None = _CLUSTER_INTEGRATION):
+    """엔진 사본 + (선택) 실 git 저장소인 솔로 구성 — claim 직전 상태와 board 모듈.
 
-    측정 폭 케이스는 코드 트리 해소 자체가 관심사가 아니다(그 축은 F-004 가 별도로 값 단언한다
-    — `test_board_claim_strict.py`) — 여기서는 REPO 가 곧 코드 트리인 **솔로** 형상(인자 전무·
+    측정 폭 케이스는 코드 트리 해소 자체가 관심사가 아니다(그 기준은 F-004 가 별도로 값 단언한다
+    — `test_board_claim_strict.py`) — 여기서는 REPO 가 곧 코드 트리인 **솔로** 구성(인자 전무·
     kind="none")으로 고정해 claim/finish 가 항상 같은 트리를 본다는 전제만 지킨다. local.conf
-    `session=`(solo-legacy 폴백)로 리스 장부/env 없이도 `session_name(required=True)` 가
+    `session=`(solo-legacy 대체)로 슬롯 대여 기록/env 없이도 `session_name(required=True)` 가
     결정론적으로 해소되게 한다."""
-    root = tmp_path / "wave"
+    root = tmp_path / "cluster"
     shutil.copytree(TOOLS, root / ".project_manager" / "tools")
     (root / ".project_manager" / "wiki").mkdir(parents=True, exist_ok=True)
     for status in ("open", "claimed", "blocked", "done"):
@@ -2237,42 +2237,42 @@ def _wave_repo(tmp_path: Path, *, git: bool = True,
             parents=True, exist_ok=True)
     (root / ".project_manager" / "local.conf").write_text(
         "test.cmd=pytest -q\n", encoding="utf-8")
-    _wave_ticket(root, _WAVE_TICKET, status="open", touch="src/")
+    _cluster_ticket(root, _CLUSTER_TICKET, status="open", touch="src/")
     if base_branch is not None:
-        # 판정 기준은 묶음 장부가 소유한다 — 실 board 는 발행이 이 파일을 만든다.
+        # 판정 기준은 묶음 기록이 소유한다 — 실 board 는 발행이 이 파일을 만든다.
         write_cluster_ledger(
-            root / ".project_manager" / "board", _WAVE_TICKET,
-            base_branch=base_branch, branch=f"dev/{_WAVE_TICKET}")
-    _wave_write(root / "src" / "app.py", 5)
-    _wave_write(root / "docs" / "notes.md", 3)
+            root / ".project_manager" / "board", _CLUSTER_TICKET,
+            base_branch=base_branch, branch=f"dev/{_CLUSTER_TICKET}")
+    _cluster_write(root / "src" / "app.py", 5)
+    _cluster_write(root / "docs" / "notes.md", 3)
     if git:
-        _wave_git(root, "init", "-q", "-b", _WAVE_INTEGRATION)
-        _wave_git(root, "config", "user.email", "t@e")
-        _wave_git(root, "config", "user.name", "t")
-        _wave_git(root, "add", "-A")
-        _wave_git(root, "commit", "-qm", "seed")
+        _cluster_git(root, "init", "-q", "-b", _CLUSTER_INTEGRATION)
+        _cluster_git(root, "config", "user.email", "t@e")
+        _cluster_git(root, "config", "user.name", "t")
+        _cluster_git(root, "add", "-A")
+        _cluster_git(root, "commit", "-qm", "seed")
     return root, _load_tool_copy(root, "board")
 
 
-def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
-    # claim 은 `--task` 와 그 task 가 보유한 폴더가 필요하다(T-0962) — 솔로 형상이라 홈 자신이 그
-    # task 의 폴더(장부 행 `slot="."`)다. 다른 축엔 무관심하다.
-    ledger = pm_paths.leases_file(pm_paths.home_at(board.REPO))
-    if not ledger.exists():
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_text(json.dumps({"leases": [
+def _cluster_claim(board, ticket_id: str = _CLUSTER_TICKET) -> int:
+    # claim 은 `--task` 와 그 task 가 보유한 폴더가 필요하다(T-0962) — 솔로 구성이라 홈 자신이 그
+    # task 의 폴더(대여 기록 행 `slot="."`)다. 다른 기준엔 무관심하다.
+    record_path = pm_paths.leases_file(pm_paths.home_at(board.REPO))
+    if not record_path.exists():
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps({"leases": [
             {"slot": ".", "repo": board.REPO.name, "session": "me",
              "state": "leased", "role": "work"}]}), encoding="utf-8")
     return board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(id=ticket_id, user="me", task="me"))
 
 
 def test_completion_has_no_change_size_cap(tmp_path, monkeypatch, capsys):
-    """estimate small 티켓이 선언 경로 안에서 400줄을 바꿔도 진입 게이트가 막지 않는다."""
-    root, board = _wave_repo(tmp_path)
-    assert _wave_claim(board) == 0
-    _wave_git(root, "add", "-A")
-    _wave_git(root, "commit", "-qm", "claim 기록")
-    _wave_write(root / "src" / "app.py", 5 + _WAVE_CHANGED_LINES)
+    """estimate small 티켓이 선언 경로 안에서 400줄을 바꿔도 진입 통과 조건이 막지 않는다."""
+    root, board = _cluster_repo(tmp_path)
+    assert _cluster_claim(board) == 0
+    _cluster_git(root, "add", "-A")
+    _cluster_git(root, "commit", "-qm", "claim 기록")
+    _cluster_write(root / "src" / "app.py", 5 + _CLUSTER_CHANGED_LINES)
     monkeypatch.setattr(finish_store, "_cluster_integration_branch", _REAL_INTEGRATION_BRANCH)
     completed: list[list[str]] = []
     finisher = finish_record.TicketFinisher(
@@ -2281,71 +2281,71 @@ def test_completion_has_no_change_size_cap(tmp_path, monkeypatch, capsys):
         run_board_fn=lambda args: (completed.append(args), (0, "board ok"))[1],
         run_git_fn=lambda args: (0, ""),
         board_count_fn=lambda: 10,
-        ticket_title_fn=lambda tid: "wave",
+        ticket_title_fn=lambda tid: "cluster",
         affected_domain_fn=lambda tid: [],
         dod_block_fn=lambda tid: None,
         residual_block_fn=lambda tid: None,
-        self_axis_block_fn=lambda tid: None,
+        self_check_block_fn=lambda tid: None,
         board_py=root / ".project_manager" / "tools" / "board.py",
         regression_cwd=root,
         log_file=tmp_path / "log.md",
     )
 
-    assert finisher.run(_WAVE_TICKET, section=None, dry_run=False) == 0
+    assert finisher.run(_CLUSTER_TICKET, section=None, dry_run=False) == 0
     captured = capsys.readouterr()
     assert "서킷브레이커" not in captured.out + captured.err
-    assert completed == [["complete", _WAVE_TICKET, "--tests-pass"]]
+    assert completed == [["complete", _CLUSTER_TICKET, "--tests-pass"]]
     assert "diff_cap_block_fn" not in inspect.signature(finish_record.TicketFinisher).parameters
     for name in ("get_ticket_estimate", "DiffAttribution", "_default_diff_cap_block"):
         assert not hasattr(finish_record, name) and not hasattr(finish_record.TicketFinisher, name), name
 
 
-# ── 완료 대상 작업 트리 자기 축 회귀 ─────────────────────────────────────────
+# ── 완료 대상 작업 트리 자기 점검 회귀 ─────────────────────────────────────────
 #
 # 판정 트리는 완료 대상 작업 트리 자체다 — 합성 병합 트리를 만들지 않는다. 대상 파일 집합은
 # 실 git 명령(순수 읽기) 파생이고, baseline 은 claim 시점 커밋을 alternates 로 원 object DB 에
 # 연결해 materialize 한다. 아래는 전부 실 git + 실 pytest 서브프로세스로 검증한다(fake
 # runner·mock 트리 0).
 
-def _axis_git(root: Path, *args: str) -> subprocess.CompletedProcess:
+def _self_check_git(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(root), *args], check=True,
                           capture_output=True, text=True, encoding="utf-8")
 
 
-def _axis_repo(tmp_path: Path) -> Path:
-    """자기 축 회귀용 최소 git 저장소 — `tests/test_axis_a.py` 하나를 가진 base 커밋 1개."""
-    root = tmp_path / "axis"
+def _self_check_repo(tmp_path: Path) -> Path:
+    """자기 점검 회귀용 최소 git 저장소 — `tests/test_self_check_a.py` 하나를 가진 base 커밋 1개."""
+    root = tmp_path / "self_check"
     root.mkdir()
-    _axis_git(root, "init", "-q")
-    _axis_git(root, "config", "user.email", "axis@test")
-    _axis_git(root, "config", "user.name", "axis")
+    _self_check_git(root, "init", "-q")
+    _self_check_git(root, "config", "user.email", "self-check@test")
+    _self_check_git(root, "config", "user.name", "self-check")
     (root / "tests").mkdir()
-    (root / "tests" / "test_axis_a.py").write_text(
+    (root / "tests" / "test_self_check_a.py").write_text(
         "def test_a():\n    assert 1 == 1  # base\n", encoding="utf-8")
-    _axis_git(root, "add", "-A")
-    _axis_git(root, "commit", "-q", "-m", "base")
+    _self_check_git(root, "add", "-A")
+    _self_check_git(root, "commit", "-q", "-m", "base")
     return root
 
 
-def _axis_head(root: Path) -> str:
-    return _axis_git(root, "rev-parse", "HEAD").stdout.strip()
+def _self_check_head(root: Path) -> str:
+    return _self_check_git(root, "rev-parse", "HEAD").stdout.strip()
 
 
-def _axis_write_a(root: Path, body: str) -> None:
-    (root / "tests" / "test_axis_a.py").write_text(body, encoding="utf-8")
+def _self_check_write_a(root: Path, body: str) -> None:
+    (root / "tests" / "test_self_check_a.py").write_text(body, encoding="utf-8")
 
 
-def _axis_commit(root: Path, message: str) -> str:
-    _axis_git(root, "add", "-A")
-    _axis_git(root, "commit", "-q", "-m", message)
-    return _axis_head(root)
+def _self_check_commit(root: Path, message: str) -> str:
+    _self_check_git(root, "add", "-A")
+    _self_check_git(root, "commit", "-q", "-m", message)
+    return _self_check_head(root)
 
 
-def _axis_board_ticket(root: Path, ticket_id: str, claimed_rev: str) -> Path:
+def _self_check_board_ticket(root: Path, ticket_id: str, claimed_rev: str) -> Path:
     """`root` 에 엔진 사본 board.py + `claimed_rev` 를 가진 최소 티켓 파일을 만든다.
 
-    자기 축 판정의 claim 앵커 대조가 board.py 를 통해 이 티켓의 frontmatter 를 읽는다 —
-    실 프로젝트 board 를 건드리지 않는 hermetic 사본(`_wave_repo` 와 같은 패턴)."""
+    자기 점검 판정의 claim 기준 커밋 대조가 board.py 를 통해 이 티켓의 frontmatter 를 읽는다 —
+    실 프로젝트 board 를 건드리지 않는 hermetic 사본(`_cluster_repo` 와 같은 패턴)."""
     tools_dir = root / ".project_manager" / "tools"
     if not tools_dir.exists():
         shutil.copytree(TOOLS, tools_dir)
@@ -2353,9 +2353,9 @@ def _axis_board_ticket(root: Path, ticket_id: str, claimed_rev: str) -> Path:
         (root / ".project_manager" / "board" / "tickets" / status).mkdir(
             parents=True, exist_ok=True)
     path = (root / ".project_manager" / "board" / "tickets" / "claimed"
-            / f"{ticket_id}-axis.md")
+            / f"{ticket_id}-self-check.md")
     path.write_text(
-        f"---\nid: {ticket_id}\ntitle: axis\nstatus: claimed\n"
+        f"---\nid: {ticket_id}\ntitle: self-check\nstatus: claimed\n"
         "claimed_by: me\nclaimed_at: '2026-08-23T00:00:00+00:00'\n"
         f"claimed_rev: {claimed_rev}\ncompleted_at: null\n"
         "depends_on: []\nblocks: []\ntouches:\n- tests/\nestimate: small\n"
@@ -2364,13 +2364,13 @@ def _axis_board_ticket(root: Path, ticket_id: str, claimed_rev: str) -> Path:
     return tools_dir / "board.py"
 
 
-def _axis_finisher(tf, root: Path, board_py: Path):
+def _self_check_finisher(tf, root: Path, board_py: Path):
     return finish_record.TicketFinisher(pm_paths.home_at(root), task_workspace=root, board_py=board_py)
 
 
 # ── 순수 파싱 helper (git/pytest 출력 파싱만 — 서브프로세스 0) ────────────────
 
-def test_self_axis_target_paths_keeps_only_flat_tests_py(tf):
+def test_self_check_target_paths_keeps_only_flat_tests_py(tf):
     listing = "\n".join([
         "tests/test_a.py",
         "tests/fixtures/data.py",
@@ -2378,10 +2378,10 @@ def test_self_axis_target_paths_keeps_only_flat_tests_py(tf):
         "tests/test_b.py",
         "README.md",
     ])
-    assert finish_rules._self_axis_target_paths(listing) == {"tests/test_a.py", "tests/test_b.py"}
+    assert finish_rules._self_check_target_paths(listing) == {"tests/test_a.py", "tests/test_b.py"}
 
 
-def test_self_axis_failed_node_ids_parses_function_level_ids(tf):
+def test_self_check_failed_node_ids_parses_function_level_ids(tf):
     """실패 파싱은 파일이 아니라 **함수 단위 노드 ID** 전체를 남긴다."""
     output = (
         "FAILED tests/test_a.py::test_x - AssertionError\n"
@@ -2389,12 +2389,12 @@ def test_self_axis_failed_node_ids_parses_function_level_ids(tf):
         "ERROR tests/test_c.py - collection error\n"
         "2 failed, 1 error in 0.1s\n"
     )
-    assert finish_rules._self_axis_failed_node_ids(output) == {
+    assert finish_rules._self_check_failed_node_ids(output) == {
         "tests/test_a.py::test_x", "tests/test_b.py::test_y", "tests/test_c.py",
     }
 
 
-def test_self_axis_failed_node_ids_normalizes_the_path_to_posix(tf):
+def test_self_check_failed_node_ids_normalizes_the_path_to_posix(tf):
     """자식이 `os.sep` 표기로 낸 노드 ID 도 경로 부분은 POSIX 표기로 돌려준다(Windows 자식이
     상위 `pytest.ini` 를 rootdir 로 잡으면 역슬래시로 낸다) — `::` 뒤 파라미터 ID 는 경로가
     아니므로 손대지 않는다."""
@@ -2404,254 +2404,254 @@ def test_self_axis_failed_node_ids_normalizes_the_path_to_posix(tf):
         "FAILED tests/test_d.py::test_p[a\\b] - AssertionError\n"
         "2 failed, 1 error in 0.1s\n"
     )
-    assert finish_rules._self_axis_failed_node_ids(output) == {
+    assert finish_rules._self_check_failed_node_ids(output) == {
         "tests/test_a.py::test_x", "tests/test_c.py", "tests/test_d.py::test_p[a\\b]",
     }
 
 
-# ── `_self_axis_target_files` — 대상 집합 산출 ────────────────────────────────
+# ── `_self_check_target_files` — 대상 집합 산출 ────────────────────────────────
 
-def test_self_axis_target_files_unions_tracked_untracked_and_ratchet_list(tf, tmp_path):
-    root = _axis_repo(tmp_path)
-    (root / "tests" / "test_axis_a.py").write_text(
+def test_self_check_target_files_unions_tracked_untracked_and_shrink_only_list(tf, tmp_path):
+    root = _self_check_repo(tmp_path)
+    (root / "tests" / "test_self_check_a.py").write_text(
         "def test_a():\n    assert 2 == 2  # unstaged change\n", encoding="utf-8")
-    (root / "tests" / "test_axis_untracked.py").write_text(
+    (root / "tests" / "test_self_check_untracked.py").write_text(
         "def test_new():\n    assert True\n", encoding="utf-8")
 
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
-    target = finish_baseline._self_axis_target_files(
+    target = finish_baseline._self_check_target_files(
         root, run_git_stdout_at=finisher._run_git_stdout_at_fn)
 
-    assert "tests/test_axis_a.py" in target       # tracked(unstaged) 변경
-    assert "tests/test_axis_untracked.py" in target  # untracked 신규
-    assert set(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES) <= target  # 전-트리 가드 항상 포함
+    assert "tests/test_self_check_a.py" in target       # tracked(unstaged) 변경
+    assert "tests/test_self_check_untracked.py" in target  # untracked 신규
+    assert set(finish_rules._SELF_CHECK_SHRINK_ONLY_GUARD_FILES) <= target  # 전-트리 가드 항상 포함
 
 
-# ── `_default_self_axis_block` 시나리오(T1~T3·T9) ────────────────────────────
+# ── `_default_self_check_block` 시나리오(T1~T3·T9) ────────────────────────────
 
-def test_default_self_axis_block_does_not_block_on_inherited_red_only(
+def test_default_self_check_block_does_not_block_on_inherited_red_only(
         tf, tmp_path, monkeypatch, capsys):
     """T1 — base 에서 이미 red 인 실패뿐이면 rc 0 · loud 경고 1줄 · 차단 없음."""
-    root = _axis_repo(tmp_path)
-    _axis_write_a(root, "def test_a():\n    assert False  # already red at claim time\n")
-    base = _axis_commit(root, "base is red")
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    monkeypatch.setattr(finish_rules, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+    root = _self_check_repo(tmp_path)
+    _self_check_write_a(root, "def test_a():\n    assert False  # already red at claim time\n")
+    base = _self_check_commit(root, "base is red")
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev=base)
+    monkeypatch.setattr(finish_rules, "_SELF_CHECK_SHRINK_ONLY_GUARD_FILES", ("tests/test_self_check_a.py",))
 
-    finisher = _axis_finisher(tf, root, board_py)
-    block = finisher._default_self_axis_block("T-AXIS")
+    finisher = _self_check_finisher(tf, root, board_py)
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is None
     err = capsys.readouterr().err
     assert err.count("\n") == 1
-    assert "경고" in err and "tests/test_axis_a.py::test_a" in err
+    assert "경고" in err and "tests/test_self_check_a.py::test_a" in err
 
 
-def test_default_self_axis_block_blocks_on_new_failure_in_a_file_with_inherited_red(
+def test_default_self_check_block_blocks_on_new_failure_in_a_file_with_inherited_red(
         tf, tmp_path, monkeypatch):
     """T2 — base·dev 양쪽에 실패가 있는 같은 파일에서도 신규분이 함수 단위로 살아남는다
-    (파일 단위 비교였다면 이 신규 실패가 사라졌을 형상)."""
-    root = _axis_repo(tmp_path)
-    (root / "tests" / "test_axis_a.py").write_text(
+    (파일 단위 비교였다면 이 신규 실패가 사라졌을 경우)."""
+    root = _self_check_repo(tmp_path)
+    (root / "tests" / "test_self_check_a.py").write_text(
         "def test_a():\n    assert False  # already red at claim time\n"
         "def test_b():\n    assert True\n",
         encoding="utf-8")
-    base = _axis_commit(root, "base has test_a red")
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    monkeypatch.setattr(finish_rules, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+    base = _self_check_commit(root, "base has test_a red")
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev=base)
+    monkeypatch.setattr(finish_rules, "_SELF_CHECK_SHRINK_ONLY_GUARD_FILES", ("tests/test_self_check_a.py",))
 
-    (root / "tests" / "test_axis_a.py").write_text(
+    (root / "tests" / "test_self_check_a.py").write_text(
         "def test_a():\n    assert False  # still red — inherited\n"
         "def test_b():\n    assert False  # dev broke it — new\n",
         encoding="utf-8")
-    _axis_commit(root, "dev breaks test_b")
+    _self_check_commit(root, "dev breaks test_b")
 
-    finisher = _axis_finisher(tf, root, board_py)
-    block = finisher._default_self_axis_block("T-AXIS")
+    finisher = _self_check_finisher(tf, root, board_py)
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is not None
-    assert "✗ tests/test_axis_a.py::test_b" in block  # 신규분만 ✗ 로 나열된다
-    assert "✗ tests/test_axis_a.py::test_a" not in block  # 상속 red — 신규분에서 빠져야 한다
+    assert "✗ tests/test_self_check_a.py::test_b" in block  # 신규분만 ✗ 로 나열된다
+    assert "✗ tests/test_self_check_a.py::test_a" not in block  # 상속 red — 신규분에서 빠져야 한다
 
 
-def test_default_self_axis_block_costs_nothing_when_the_work_tree_is_green(
+def test_default_self_check_block_costs_nothing_when_the_work_tree_is_green(
         tf, tmp_path, monkeypatch, capsys):
     """T3(역방향 확인 a) — 작업 트리가 green 이면 baseline 은 돌리지 않는다(materialize 0회 ·
     출력 0줄 · 차단 없음)."""
-    root = _axis_repo(tmp_path)
-    base = _axis_head(root)
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    monkeypatch.setattr(finish_rules, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+    root = _self_check_repo(tmp_path)
+    base = _self_check_head(root)
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev=base)
+    monkeypatch.setattr(finish_rules, "_SELF_CHECK_SHRINK_ONLY_GUARD_FILES", ("tests/test_self_check_a.py",))
 
-    finisher = _axis_finisher(tf, root, board_py)
+    finisher = _self_check_finisher(tf, root, board_py)
     monkeypatch.setattr(
         finish_baseline, "_materialize_tree",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("materialize 미호출이어야 한다")))
 
-    block = finisher._default_self_axis_block("T-AXIS")
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is None
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == ""
 
 
-def test_default_self_axis_block_is_silent_when_claimed_rev_is_absent(
+def test_default_self_check_block_is_silent_when_claimed_rev_is_absent(
         tf, tmp_path, monkeypatch, capsys):
-    """T9 — 채택자 형상(claimed_rev 미기록). 출력 0줄 · rc 0 상당 · pytest 실행 0회."""
-    root = _axis_repo(tmp_path)
-    _axis_write_a(root, "def test_a():\n    assert False\n")  # red 라도 비교 기준이 없다
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev="")
-    finisher = _axis_finisher(tf, root, board_py)
+    """T9 — 채택자 구성(claimed_rev 미기록). 출력 0줄 · rc 0 상당 · pytest 실행 0회."""
+    root = _self_check_repo(tmp_path)
+    _self_check_write_a(root, "def test_a():\n    assert False\n")  # red 라도 비교 기준이 없다
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev="")
+    finisher = _self_check_finisher(tf, root, board_py)
     monkeypatch.setattr(
         finish_baseline, "_run_pytest_subset",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("pytest 미호출이어야 한다")))
 
-    block = finisher._default_self_axis_block("T-AXIS")
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is None
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == ""
 
 
-# ── 노드 ID 표기 정규화 — 비교 축·진단문 축 ────────────────────────────────
+# ── 노드 ID 표기 정규화 — 비교 기준·진단문 기준 ────────────────────────────────
 #
 # 자식 pytest 는 rootdir 해소에 따라 같은 실패를 `os.sep` 표기로 낸다(Windows 실측 — 상위
-# `pytest.ini` 를 rootdir 로 잡는 트리에서 `tests\test_axis_a.py::test_a`). 그 표기를 Linux
+# `pytest.ini` 를 rootdir 로 잡는 트리에서 `tests\test_self_check_a.py::test_a`). 그 표기를 Linux
 # 에서도 값으로 재려면 자식 출력 자체를 주입한다. 정규화가 비교 **전에** 걸리지 않으면 표기만
-# 다른 같은 실패가 신규 실패로 둔갑하므로 비교 축과 진단문 축을 따로 본다.
+# 다른 같은 실패가 신규 실패로 둔갑하므로 비교 기준과 진단문 기준을 따로 본다.
 
-_AXIS_BACKSLASH_NODE_A = "tests\\test_axis_a.py::test_a"
-_AXIS_BACKSLASH_NODE_B = "tests\\test_axis_a.py::test_b"
+_SELF_CHECK_BACKSLASH_NODE_A = "tests\\test_self_check_a.py::test_a"
+_SELF_CHECK_BACKSLASH_NODE_B = "tests\\test_self_check_a.py::test_b"
 
 
-def _axis_child_output_runner(code_tree: Path, work_out: str, base_out: str):
+def _self_check_child_output_runner(code_tree: Path, work_out: str, base_out: str):
     """`_run_pytest_subset` 대역 — 작업 트리에는 `work_out`, baseline 트리에는 `base_out`."""
     def _run(cwd: Path, files, *, venv_python) -> tuple[int, str]:
         return 1, (work_out if Path(cwd) == code_tree else base_out)
     return _run
 
 
-def test_default_self_axis_block_does_not_invent_a_new_failure_from_separator_notation(
+def test_default_self_check_block_does_not_invent_a_new_failure_from_separator_notation(
         tf, tmp_path, monkeypatch, capsys):
-    """비교 축 — 작업 트리 자식이 역슬래시 표기로, baseline 자식이 POSIX 표기로 같은 실패를
+    """비교 기준 — 작업 트리 자식이 역슬래시 표기로, baseline 자식이 POSIX 표기로 같은 실패를
     내면 상속 red 다. 정규화가 비교 전에 걸리지 않으면 없는 신규 실패로 차단한다."""
-    root = _axis_repo(tmp_path)
-    base = _axis_head(root)
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+    root = _self_check_repo(tmp_path)
+    base = _self_check_head(root)
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev=base)
 
-    finisher = _axis_finisher(tf, root, board_py)
+    finisher = _self_check_finisher(tf, root, board_py)
     monkeypatch.setattr(
         finish_baseline, "_run_pytest_subset",
-        _axis_child_output_runner(
+        _self_check_child_output_runner(
             finisher._code_tree(),
-            f"FAILED {_AXIS_BACKSLASH_NODE_A} - AssertionError\n1 failed in 0.1s\n",
-            "FAILED tests/test_axis_a.py::test_a - AssertionError\n1 failed in 0.1s\n"))
+            f"FAILED {_SELF_CHECK_BACKSLASH_NODE_A} - AssertionError\n1 failed in 0.1s\n",
+            "FAILED tests/test_self_check_a.py::test_a - AssertionError\n1 failed in 0.1s\n"))
 
-    block = finisher._default_self_axis_block("T-AXIS")
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is None
     err = capsys.readouterr().err
-    assert "경고" in err and "tests/test_axis_a.py::test_a" in err
-    assert _AXIS_BACKSLASH_NODE_A not in err
+    assert "경고" in err and "tests/test_self_check_a.py::test_a" in err
+    assert _SELF_CHECK_BACKSLASH_NODE_A not in err
 
 
-def test_default_self_axis_block_lists_new_failures_in_posix_notation(
+def test_default_self_check_block_lists_new_failures_in_posix_notation(
         tf, tmp_path, monkeypatch):
-    """진단문 축 — 자식이 역슬래시 표기로 낸 신규 실패도 POSIX 표기로 나열하고, 표기만 다른
+    """진단문 기준 — 자식이 역슬래시 표기로 낸 신규 실패도 POSIX 표기로 나열하고, 표기만 다른
     상속 red 는 신규분에서 빠진다."""
-    root = _axis_repo(tmp_path)
-    base = _axis_head(root)
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+    root = _self_check_repo(tmp_path)
+    base = _self_check_head(root)
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev=base)
 
-    finisher = _axis_finisher(tf, root, board_py)
+    finisher = _self_check_finisher(tf, root, board_py)
     monkeypatch.setattr(
         finish_baseline, "_run_pytest_subset",
-        _axis_child_output_runner(
+        _self_check_child_output_runner(
             finisher._code_tree(),
-            f"FAILED {_AXIS_BACKSLASH_NODE_A} - AssertionError\n"
-            f"FAILED {_AXIS_BACKSLASH_NODE_B} - AssertionError\n2 failed in 0.1s\n",
-            "FAILED tests/test_axis_a.py::test_a - AssertionError\n1 failed in 0.1s\n"))
+            f"FAILED {_SELF_CHECK_BACKSLASH_NODE_A} - AssertionError\n"
+            f"FAILED {_SELF_CHECK_BACKSLASH_NODE_B} - AssertionError\n2 failed in 0.1s\n",
+            "FAILED tests/test_self_check_a.py::test_a - AssertionError\n1 failed in 0.1s\n"))
 
-    block = finisher._default_self_axis_block("T-AXIS")
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is not None
-    assert "✗ tests/test_axis_a.py::test_b" in block          # 신규분 — POSIX 표기
-    assert f"✗ {_AXIS_BACKSLASH_NODE_B}" not in block         # 자식 표기 그대로 새지 않는다
-    assert "✗ tests/test_axis_a.py::test_a" not in block      # 표기만 다른 상속 red 는 제외
-    assert f"✗ {_AXIS_BACKSLASH_NODE_A}" not in block
+    assert "✗ tests/test_self_check_a.py::test_b" in block          # 신규분 — POSIX 표기
+    assert f"✗ {_SELF_CHECK_BACKSLASH_NODE_B}" not in block         # 자식 표기 그대로 새지 않는다
+    assert "✗ tests/test_self_check_a.py::test_a" not in block      # 표기만 다른 상속 red 는 제외
+    assert f"✗ {_SELF_CHECK_BACKSLASH_NODE_A}" not in block
 
 
 # ── T4 — untracked 민감도 ─────────────────────────────────────────────────
 
-def test_default_self_axis_block_catches_an_untracked_new_red_test_file(tf, tmp_path):
-    root = _axis_repo(tmp_path)
-    base = _axis_head(root)
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    (root / "tests" / "test_axis_untracked.py").write_text(
+def test_default_self_check_block_catches_an_untracked_new_red_test_file(tf, tmp_path):
+    root = _self_check_repo(tmp_path)
+    base = _self_check_head(root)
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev=base)
+    (root / "tests" / "test_self_check_untracked.py").write_text(
         "def test_new():\n    assert False  # untracked new red\n", encoding="utf-8")
     # 커밋하지 않는다 — untracked 로 남긴다.
 
-    finisher = _axis_finisher(tf, root, board_py)
-    block = finisher._default_self_axis_block("T-AXIS")
+    finisher = _self_check_finisher(tf, root, board_py)
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is not None
-    assert "tests/test_axis_untracked.py::test_new" in block
+    assert "tests/test_self_check_untracked.py::test_new" in block
 
 
 def test_untracked_scan_omission_would_have_missed_the_new_red(tf, tmp_path):
     """민감도(반대 방향) — tracked diff 만 쓰면(`ls-files -o` 산출을 빼면) 같은 untracked red
     가 대상 집합에서 사라진다."""
-    root = _axis_repo(tmp_path)
-    (root / "tests" / "test_axis_untracked.py").write_text(
+    root = _self_check_repo(tmp_path)
+    (root / "tests" / "test_self_check_untracked.py").write_text(
         "def test_new():\n    assert False\n", encoding="utf-8")
 
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
     _rc, tracked_out = finisher._run_git_stdout_at_fn(root, ["diff", "--name-only", "HEAD"])
-    tracked_only = finish_rules._self_axis_target_paths(tracked_out)
-    assert "tests/test_axis_untracked.py" not in tracked_only
+    tracked_only = finish_rules._self_check_target_paths(tracked_out)
+    assert "tests/test_self_check_untracked.py" not in tracked_only
 
-    full = finish_baseline._self_axis_target_files(
+    full = finish_baseline._self_check_target_files(
         root, run_git_stdout_at=finisher._run_git_stdout_at_fn)
-    assert "tests/test_axis_untracked.py" in full  # ls-files -o 를 더하면 잡힌다
+    assert "tests/test_self_check_untracked.py" in full  # ls-files -o 를 더하면 잡힌다
 
 
 # ── T5 — staged 민감도 ───────────────────────────────────────────────────
 
-def test_default_self_axis_block_catches_a_staged_uncommitted_red(tf, tmp_path):
-    root = _axis_repo(tmp_path)
-    base = _axis_head(root)
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    _axis_write_a(root, "def test_a():\n    assert False  # staged, not committed\n")
-    _axis_git(root, "add", "-A")
+def test_default_self_check_block_catches_a_staged_uncommitted_red(tf, tmp_path):
+    root = _self_check_repo(tmp_path)
+    base = _self_check_head(root)
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev=base)
+    _self_check_write_a(root, "def test_a():\n    assert False  # staged, not committed\n")
+    _self_check_git(root, "add", "-A")
 
-    finisher = _axis_finisher(tf, root, board_py)
-    block = finisher._default_self_axis_block("T-AXIS")
+    finisher = _self_check_finisher(tf, root, board_py)
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is not None
-    assert "tests/test_axis_a.py::test_a" in block
+    assert "tests/test_self_check_a.py::test_a" in block
 
 
 def test_head_tree_alone_would_have_missed_the_staged_red(tf, tmp_path):
     """민감도(반대 방향) — HEAD 트리 자체(커밋된 내용)만 보면 이 staged 변경이 안 보인다.
     작업 트리 diff(`git diff --name-only HEAD`)라야 값으로 잡는다."""
-    root = _axis_repo(tmp_path)
-    _axis_write_a(root, "def test_a():\n    assert False  # staged, not committed\n")
-    _axis_git(root, "add", "-A")
+    root = _self_check_repo(tmp_path)
+    _self_check_write_a(root, "def test_a():\n    assert False  # staged, not committed\n")
+    _self_check_git(root, "add", "-A")
 
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
-    rc, out = finisher._run_git_stdout_at_fn(root, ["show", "HEAD:tests/test_axis_a.py"])
+    rc, out = finisher._run_git_stdout_at_fn(root, ["show", "HEAD:tests/test_self_check_a.py"])
     assert rc == 0 and "assert 1 == 1" in out  # HEAD 트리 자체는 여전히 base 내용
 
     _rc2, diff_out = finisher._run_git_stdout_at_fn(root, ["diff", "--name-only", "HEAD"])
-    assert "tests/test_axis_a.py" in finish_rules._self_axis_target_paths(diff_out)
+    assert "tests/test_self_check_a.py" in finish_rules._self_check_target_paths(diff_out)
 
 
-# ── T-0851 — 정리 실패 표면화(호출 형태 검사가 아니라 실제 삭제 실패 주입) ─────
+# ── T-0851 — 정리 실패 드러내기(호출 형태 검사가 아니라 실제 삭제 실패 주입) ─────
 #
 # `test_engine_cleanup_never_swallows_delete_failures`(test_file_lock.py)는 `ignore_errors=True`
 # 호출 형태가 0건임을 AST로만 본다 — "삭제가 실제로 실패했을 때 그 실패가 눈에 보이는가"는
 # 별개 값이다. 아래 둘은 `file_lock.force_rmtree`를 실패하도록 몽키패치해(실제 삭제 실패 주입)
-# 두 정리 지점(`_materialize_tree`의 except 경로·`_default_self_axis_block`의 finally 경로)이
+# 두 정리 지점(`_materialize_tree`의 except 경로·`_default_self_check_block`의 finally 경로)이
 # 각각의 형제 불변식을 지키는지 값으로 본다.
 
 
@@ -2672,8 +2672,8 @@ def _failing_force_rmtree(recorded: list, error: OSError):
 def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_error(
         tf, tmp_path, monkeypatch, capsys):
     """except 경로 — 정리(force_rmtree) 실패가 원래 예외(git archive 실패)를 덮지 않고, 정리
-    실패 자체는 loud 경고로 표면화된다(삼키지 않는다)."""
-    root = _axis_repo(tmp_path)
+    실패 자체는 loud 경고로 드러난다(삼키지 않는다)."""
+    root = _self_check_repo(tmp_path)
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
 
     file_lock = fs
@@ -2695,19 +2695,19 @@ def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_e
         real_force_rmtree(path)
 
 
-def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_failure(
+def test_default_self_check_block_returns_correctly_despite_a_baseline_cleanup_failure(
         tf, tmp_path, monkeypatch, capsys):
     """finally 경로 — baseline 정리 실패가 정상 판정 결과(반환값)를 깨지 않고, 정리 실패
-    자체는 loud 경고로 표면화된다(삼키지 않는다)."""
-    root = _axis_repo(tmp_path)
-    base = _axis_head(root)
-    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
-    # staged, not committed — `_self_axis_target_files`의 `git diff --name-only HEAD`가 직접
-    # 잡는다(ratchet 목록 몽키패치 불필요 · T5 관용구와 동형).
-    _axis_write_a(root, "def test_a():\n    assert False  # new red at finish time\n")
-    _axis_git(root, "add", "-A")
+    자체는 loud 경고로 드러난다(삼키지 않는다)."""
+    root = _self_check_repo(tmp_path)
+    base = _self_check_head(root)
+    board_py = _self_check_board_ticket(root, "T-SELFCHECK", claimed_rev=base)
+    # staged, not committed — `_self_check_target_files`의 `git diff --name-only HEAD`가 직접
+    # 잡는다(줄이기만 하는 목록 몽키패치 불필요 · T5 관용구와 같은 방식).
+    _self_check_write_a(root, "def test_a():\n    assert False  # new red at finish time\n")
+    _self_check_git(root, "add", "-A")
 
-    finisher = _axis_finisher(tf, root, board_py)
+    finisher = _self_check_finisher(tf, root, board_py)
 
     file_lock = fs
     real_force_rmtree = file_lock.force_rmtree
@@ -2716,10 +2716,10 @@ def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_fa
     monkeypatch.setattr(
         file_lock, "force_rmtree", _failing_force_rmtree(attempted, injected))
 
-    block = finisher._default_self_axis_block("T-AXIS")
+    block = finisher._default_self_check_block("T-SELFCHECK")
 
     assert block is not None
-    assert "✗ tests/test_axis_a.py::test_a" in block  # 정리 실패에도 정상 판정 결과가 나온다
+    assert "✗ tests/test_self_check_a.py::test_a" in block  # 정리 실패에도 정상 판정 결과가 나온다
 
     captured = capsys.readouterr()
     assert "baseline 트리 정리 실패" in captured.err
@@ -2732,13 +2732,13 @@ def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_fa
 #
 # F-002 fix — 존재-판정(`git cat-file -e` 직접 확인)이 아니라 값-대조다: alternates 있는/없는
 # 두 baseline 에서 같은 canary 테스트 파일을 **실 pytest** 로 돌려 실패 노드 ID 집합의 차이를
-# 값으로 비교한다(자기 축 판정 본체의 `work_failed - base_failed` 와 같은 형태). canary 의
+# 값으로 비교한다(자기 점검 판정 본체의 `work_failed - base_failed` 와 같은 형태). canary 의
 # 어서션 자체는 `git cat-file -e` 를 쓰지만, 이 테스트가 대조하는 대상은 그 결과를 감싼
 # **pytest 실패 집합**이지 outer 테스트가 git 명령을 직접 확인하는 게 아니다. 옛
 # `test_accident_one_reproduces_on_the_real_merge_preview_tree` 는 병합 미리보기(merge-tree
 # oid materialize) 를 전제로 한 3단계 테스트였고 그 개념 자체가 재설계로 없어졌다 — 지금은
 # canary 파일을 materialize 된 scratch 에 직접 써 넣어(커밋 불필요) 같은 "고립되면 원 이력
-# SHA 를 못 본다" 성질만 남긴다. 같은 테스트에서 직렬 실측 소요도 박제한다(F-001 rejected —
+# SHA 를 못 본다" 성질만 남긴다. 같은 테스트에서 직렬 실측 소요도 기록한다(F-001 rejected —
 # `-n` 은 붙이지 않는다: 권고 집합 직렬도 수 초 수준이라 불필요하고 xdist 미설치 채택자에서
 # `-n` 은 인자 오류로 loud 하게 죽는다).
 
@@ -2766,7 +2766,7 @@ def test_alternates_presence_flips_a_real_pytest_failure_set_by_exactly_one_node
         tf, tmp_path):
     """alternates 있는/없는 baseline 양쪽에서 같은 canary 를 실 pytest 로 돌려 실패 노드 ID
     집합 차이를 값으로 대조한다 — 차집합은 정확히 canary 노드 1건이어야 한다. 같은 실행에서
-    직렬 소요를 박제한다."""
+    직렬 소요를 기록한다."""
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python=sys.executable)
     rc_old, old_out = finisher._run_git_stdout_at_fn(REPO, ["rev-parse", "HEAD~3"])
     assert rc_old == 0
@@ -2795,8 +2795,8 @@ def test_alternates_presence_flips_a_real_pytest_failure_set_by_exactly_one_node
         fs.force_rmtree(off_tree)
     t2 = time.time()
 
-    on_failed = finish_rules._self_axis_failed_node_ids(on_out)
-    off_failed = finish_rules._self_axis_failed_node_ids(off_out)
+    on_failed = finish_rules._self_check_failed_node_ids(on_out)
+    off_failed = finish_rules._self_check_failed_node_ids(off_out)
 
     assert on_rc == 0 and on_failed == set(), on_out
     assert off_rc != 0 and off_failed == {_ALTERNATES_CANARY_NODE}, off_out
@@ -2830,8 +2830,8 @@ def _repo_fingerprint(finisher, root: Path) -> tuple[int, str, str, int]:
     return len(refs_lines), refs_hash, status_hash, loose_count
 
 
-def test_gate_execution_does_not_mutate_the_original_repository(tf):
-    """T7 — 게이트 실행 전후 원 저장소 지문 4종(refs 수·refs 해시·status 해시·loose object
+def test_check_execution_does_not_mutate_the_original_repository(tf):
+    """T7 — 회귀 실행 전후 원 저장소 지문 4종(refs 수·refs 해시·status 해시·loose object
     수) 동일. materialize·alternates 가 원 저장소에 아무 것도 쓰지 않음을 값으로 확인한다."""
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python=sys.executable)
     before = _repo_fingerprint(finisher, REPO)
@@ -2839,44 +2839,44 @@ def test_gate_execution_does_not_mutate_the_original_repository(tf):
     scratch = finish_baseline._materialize_tree(
         pm_paths.home_at(REPO), REPO, "HEAD", run_git_stdout_at=finisher._run_git_stdout_at_fn)
     # `ignore_errors=True` 는 read-only git object 를 남긴다 — baseline scratch 는 이제
-    # 저장소 안 임시 루트에 서므로 남으면 그대로 쌓인다. 엔진과 같은 삭제 seam 을 쓴다.
+    # 저장소 안 임시 루트에 서므로 남으면 그대로 쌓인다. 엔진과 같은 삭제 공용 함수를 쓴다.
     fs.force_rmtree(scratch)
 
     after = _repo_fingerprint(finisher, REPO)
     assert before == after
 
 
-# ── T10 — 전-트리 ratchet 가드 목록 정합 + 신규 가드 커버리지 ─────────────────
+# ── T10 — 전-트리 줄이기만 하는 가드 목록 일치 + 신규 가드 커버리지 ─────────────────
 
-def test_self_axis_ratchet_guard_files_are_real_existing_files(tf):
-    for rel in finish_rules._SELF_AXIS_RATCHET_GUARD_FILES:
+def test_self_check_shrink_only_guard_files_are_real_existing_files(tf):
+    for rel in finish_rules._SELF_CHECK_SHRINK_ONLY_GUARD_FILES:
         assert (REPO / rel).is_file(), f"{rel} 가 실재하지 않는다"
-    assert len(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES) == len(set(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES))
+    assert len(finish_rules._SELF_CHECK_SHRINK_ONLY_GUARD_FILES) == len(set(finish_rules._SELF_CHECK_SHRINK_ONLY_GUARD_FILES))
 
 
-def test_self_axis_ratchet_guard_list_is_a_subset_of_the_full_test_suite(tf):
+def test_self_check_shrink_only_guard_list_is_a_subset_of_the_full_test_suite(tf):
     """목록의 각 항목이 `tests/` 안의 실 파일이라는 T10 최소 보증 — 이름만으로 "새 전-트리
     가드" 를 일반적으로 자동판별하는 수단은 이 라운드에서 찾지 못했다(메모 참조). `_guard.py`/
     `_lint.py`/`_e2e.py` 접미사로 시도했더니 이 목록과 무관한 기존 파일 22개가 걸려
     (`test_git_check_guard.py` 류의 좁은 범위 가드) 오탐이었다 — 그 시도는 기각하고 최소
     보증만 남긴다."""
     all_test_files = {f"tests/{p.name}" for p in (REPO / "tests").glob("test_*.py")}
-    assert set(finish_rules._SELF_AXIS_RATCHET_GUARD_FILES) <= all_test_files
+    assert set(finish_rules._SELF_CHECK_SHRINK_ONLY_GUARD_FILES) <= all_test_files
 
 
 # ── I7 소스 단언 — 통과 시 문구 0줄(pass-phrase 재발 방지) ────────────────────
 
-def test_self_axis_source_never_spells_out_a_pass_phrase(tf):
+def test_self_check_source_never_spells_out_a_pass_phrase(tf):
     source = Path(finish_record.__file__).read_text(encoding="utf-8")
-    start = source.index("_default_self_axis_block")
+    start = source.index("_default_self_check_block")
     end = source.index("def _default_run_board")
     # 판정 본체(finish_record)와 추출된 baseline 실행(finish_baseline)을 함께 본다.
     section = source[start:end] + Path(finish_baseline.__file__).read_text(encoding="utf-8")
-    for banned in ("자기 축 통과", "green 이다", "판정 green", "seam green"):
+    for banned in ("자기 점검 통과", "green 이다", "판정 green", "교체 지점 green"):
         assert banned not in section
 
 
-def test_source_never_calls_merge_tree_for_self_axis_judgment(tf):
+def test_source_never_calls_merge_tree_for_self_check_judgment(tf):
     """I1 — 판정 트리는 완료 대상 작업 트리 자체다. 소스에 `merge-tree` 호출이 없다(합성
     병합 트리를 만들지 않는다는 불변식의 소스 단언)."""
     source = "".join(Path(module.__file__).read_text(encoding="utf-8")
@@ -2884,10 +2884,10 @@ def test_source_never_calls_merge_tree_for_self_axis_judgment(tf):
     assert "merge-tree" not in source
 
 
-# ── preflight 튜플 배선 (순서·`--no-pytest`·DI 기본값) ────────────────────────
+# ── preflight 튜플 연결 (순서·`--no-pytest`·DI 기본값) ────────────────────────
 
-def test_self_axis_preflight_runs_last_after_private_ref_and_dod_pass(tf, tmp_path):
-    # 앞선 preflight(잔여 판정)는 git 을 읽는다 — 막혀야 하는 것은 git 쓰기(add·commit)다.
+def test_self_check_preflight_runs_last_after_private_ref_and_dod_pass(tf, tmp_path):
+    # 앞선 preflight(남은 변경 판정)는 git 을 읽는다 — 막혀야 하는 것은 git 쓰기(add·commit)다.
     git_calls: list[list[str]] = []
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
@@ -2895,52 +2895,52 @@ def test_self_axis_preflight_runs_last_after_private_ref_and_dod_pass(tf, tmp_pa
         run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
         run_git_fn=lambda args: (git_calls.append(list(args)) or (0, "")),
         dod_block_fn=lambda tid: None,
-        self_axis_block_fn=lambda tid: f"자기 축 회귀 신규 실패 — {tid}",
+        self_check_block_fn=lambda tid: f"자기 점검 회귀 신규 실패 — {tid}",
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
     assert not [args for args in git_calls if args and args[0] in ("add", "commit")], git_calls
 
 
-def test_self_axis_preflight_is_never_called_when_dod_blocks(tf, tmp_path):
+def test_self_check_preflight_is_never_called_when_dod_blocks(tf, tmp_path):
     calls: list[str] = []
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
         dod_block_fn=lambda tid: "DoD 미마감",
-        self_axis_block_fn=lambda tid: calls.append(tid) or None,
+        self_check_block_fn=lambda tid: calls.append(tid) or None,
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
     assert calls == []
 
 
-def test_self_axis_preflight_still_fires_with_no_pytest(tf, tmp_path):
-    """T8 — `--no-pytest` 로 [1/5] 회귀를 건너뛰어도 자기 축 preflight 는 그대로 발화한다."""
+def test_self_check_preflight_still_fires_with_no_pytest(tf, tmp_path):
+    """T8 — `--no-pytest` 로 [1/5] 회귀를 건너뛰어도 자기 점검 preflight 는 그대로 실행된다."""
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
         run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 라 미호출")),
         dod_block_fn=lambda tid: None,
-        self_axis_block_fn=lambda tid: f"자기 축 회귀 신규 실패 — {tid}",
+        self_check_block_fn=lambda tid: f"자기 점검 회귀 신규 실패 — {tid}",
         log_file=tmp_path / "log.md",
     )
     assert finisher.run(
         "T-1234", section=None, dry_run=False, skip_pytest=True) == 1
 
 
-def test_self_axis_block_fn_defaults_to_the_real_implementation(tf):
-    """DI 인자 1개 — 미주입이면 `_default_self_axis_block` 이 기본값이다."""
+def test_self_check_block_fn_defaults_to_the_real_implementation(tf):
+    """DI 인자 1개 — 미주입이면 `_default_self_check_block` 이 기본값이다."""
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO))
-    assert finisher._self_axis_block_fn == finisher._default_self_axis_block
+    assert finisher._self_check_block_fn == finisher._default_self_check_block
 
 
 def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
-    from test_cluster_close import _build_close_env, _write_cluster_ledger, _CLUSTER, _CLUSTER_BRANCH, _INTEGRATION_BRANCH, _git, _rev
+    from test_cluster_close import _build_close_env, _write_cluster_records, _CLUSTER, _CLUSTER_BRANCH, _INTEGRATION_BRANCH, _git, _rev
     monkeypatch.setattr(finish_store, "_cluster_integration_branch", _REAL_INTEGRATION_BRANCH)
     env = _build_close_env(_load_module(), tmp_path / "rebound", monkeypatch)
     closer = env.closer()
     owner_home = pm_paths.home_at(env.home)
-    _write_cluster_ledger(env.board_dir, tickets=(env.ticket,), branch=None)
+    _write_cluster_records(env.board_dir, tickets=(env.ticket,), branch=None)
     assert finish_store._cluster_integration_branch(owner_home, env.ticket) is None
     assert closer.run() == 1
     _git(env.slot, "checkout", "--", "src/app.py")
@@ -2950,11 +2950,11 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     _git(env.code, "branch", "-D", _CLUSTER_BRANCH)
     assert board_cluster.cmd_cluster(owner_home, argparse.Namespace(cluster_cmd="new", name="rebound",
         tickets=env.ticket, spike=None, repo="code", slot=1, task="t")) == 0
-    ledger = cluster_store.cluster_record_path(owner_home, "rebound")
+    record_path = cluster_store.cluster_record_path(owner_home, "rebound")
     declaration = cluster_store.load_cluster(owner_home, "rebound")
     assert declaration["base_branch"] == _INTEGRATION_BRANCH
     assert cluster_store.cluster_tickets(cluster_store.load_cluster(owner_home, _CLUSTER)) == []
-    # 재결속 장부를 보존하면서 실제 draft 승격과 claim을 이어 실행한다.
+    # 재연결 묶음 기록을 보존하면서 실제 draft 승격과 claim을 이어 실행한다.
     path = ticket_store.find_ticket_exact(owner_home, env.ticket)[1]
     fm, _ = ticket_store.load_ticket(path)
     from test_board_cluster import _TEMPLATE_TEXT as filled
@@ -2963,9 +2963,9 @@ def test_t0930_rebound_finish(tmp_path, monkeypatch, capsys):
     draft = ticket_store.move_ticket(owner_home, path, ".drafts")
     ticket_store.dump_ticket(draft, fm, body)
     assert board_sync._board_git_sync_best_effort(owner_home, "fixture draft conversion", (path,))
-    before = ledger.read_bytes()
+    before = record_path.read_bytes()
     assert board_ticket.cmd_promote(owner_home, argparse.Namespace(id=env.ticket)) == 0
-    assert ledger.read_bytes() == before
+    assert record_path.read_bytes() == before
     assert board_ticket.cmd_claim(owner_home, argparse.Namespace(id=env.ticket, repo="code", slot=1, task="t")) == 0
     fork = _git(env.slot, "config", f"branch.{declaration['branch']}.pm-fork").stdout.strip()
     assert fork == _rev(env.slot)
@@ -3007,14 +3007,14 @@ def test_t0962_finish_without_task_stops_before_writes(tf, tmp_path, monkeypatch
 
     종결 log 머리말 `(task:이름)`·board complete 소유 대조는 귀속 쓰기라 `--task` 가 필요하다.
     cwd 작업 폴더·단일 활성 task 에서 정체성을 유도하지 않는다 — 대여 기록에 활성 task 가 정확히
-    1개여도(옛 자동 해소가 고르던 형상) 멈춘다. 복구 문(`--reconcile-integrated`)은 이 규칙 밖이다.
+    1개여도(옛 자동 해소가 고르던 경우) 멈춘다. 복구 문(`--reconcile-integrated`)은 이 규칙 밖이다.
     """
     log_file = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     log_file.parent.mkdir(parents=True)
     log_file.write_text("# log\n", encoding="utf-8")
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(json.dumps({
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(json.dumps({
         "leases": [{"slot": "work/proj_1", "repo": "proj", "session": "solo-task",
                     "state": "leased", "role": "work"}],
         "tasks": [{"name": "solo-task"}]}), encoding="utf-8")

@@ -37,8 +37,8 @@ def test_shipped_engine_prose_has_no_mechanically_removable_private_refs():
     )
 
 
-def test_shipped_language_axis_prose_has_no_mechanically_removable_private_refs():
-    """언어 축(셸·JS·TOML·manifest 등) 산문에도 기계 제거 가능한 사설 참조가 0 이어야 한다."""
+def test_shipped_language_prose_has_no_mechanically_removable_private_refs():
+    """언어 기준(셸·JS·TOML·manifest 등) 산문에도 기계 제거 가능한 사설 참조가 0 이어야 한다."""
     offenders: list[str] = []
     for path in private_surface.language_paths(REPO):
         source = path.read_text(encoding="utf-8")
@@ -48,14 +48,14 @@ def test_shipped_language_axis_prose_has_no_mechanically_removable_private_refs(
                 offenders.append(f"{relative}:{span.line}")
     assert not offenders, (
         "Mechanically removable private references must stay out of shipped "
-        f"language-axis prose; count={len(offenders)}, first={offenders[:50]}"
+        f"language prose; count={len(offenders)}, first={offenders[:50]}"
     )
 
 
 def _empty_delimiter_offenders(source: str, *, spans=None) -> list[tuple[int, str]]:
     """산문(주석·docstring) 토큰 안 빈 괄호 잔재를 (line, matched_text) 로 낸다.
 
-    ``spans`` 미지정 시 python 축(``prose_token_spans``) — 언어 축 호출부는 자신의
+    ``spans`` 미지정 시 python 기준(``prose_token_spans``) — 언어 기준 호출부는 자신의
     ``language_prose_spans`` 결과를 넘긴다(판정 사본을 두지 않고 같은 매칭 로직을 공유).
     """
     offenders: list[tuple[int, str]] = []
@@ -74,9 +74,9 @@ def _empty_delimiter_offenders(source: str, *, spans=None) -> list[tuple[int, st
 
 
 def test_shipped_engine_prose_has_no_empty_delimiter_remnants():
-    """스트립 잔재(토큰만 지우고 남은 빈 괄호) 0 — 시야·민감도·실 표면을 한 게이트로 잠근다(T-0810)."""
-    # 시야 == 출하 표면: shipping_paths() 파생 목록이 독립 glob 을 전부 포함해야 한다
-    # (T-0814 의 _engine_surfaces() 개편과 결합을 만들지 않기 위해 이 표면을 직접 소비한다).
+    """스트립 잔재(토큰만 지우고 남은 빈 괄호) 0 — 검사 범위·민감도·실 출하 파일을 한 통과 조건으로 잠근다(T-0810)."""
+    # 검사 범위 == 출하 파일: shipping_paths() 파생 목록이 독립 glob 을 전부 포함해야 한다
+    # (T-0814 의 _engine_surfaces() 개편과 결합을 만들지 않기 위해 이 출하 파일 목록을 직접 소비한다).
     python_paths, _ = private_surface.shipping_paths(REPO)
     python_paths_set = set(python_paths)
     independent_canonical = set(engine_python_files(REPO / ".project_manager/tools"))
@@ -110,7 +110,7 @@ def test_shipped_engine_prose_has_no_empty_delimiter_remnants():
     for sample in negative_samples:
         assert not _empty_delimiter_offenders(sample), f"오탐: {sample!r}"
 
-    # 실 표면 — offender 0 (실패 시 count 와 path:line 표시).
+    # 실 출하 파일 — offender 0 (실패 시 count 와 path:line 표시).
     offenders: list[str] = []
     for path in python_paths:
         source = path.read_text(encoding="utf-8")
@@ -123,8 +123,8 @@ def test_shipped_engine_prose_has_no_empty_delimiter_remnants():
     )
 
 
-def test_shipped_language_axis_prose_has_no_empty_delimiter_remnants():
-    """언어 축 산문에도 토큰 제거 잔재(빈 괄호) 0 — 스트립 잔재 클래스 재유입 금지를 언어 축으로 확장."""
+def test_shipped_language_prose_has_no_empty_delimiter_remnants():
+    """언어 기준 산문에도 토큰 제거 잔재(빈 괄호) 0 — 스트립 잔재 클래스 재유입 금지를 언어 기준으로 확장."""
     offenders: list[str] = []
     for path in private_surface.language_paths(REPO):
         source = path.read_text(encoding="utf-8")
@@ -134,7 +134,7 @@ def test_shipped_language_axis_prose_has_no_empty_delimiter_remnants():
             offenders.append(f"{relative}:{line}")
     assert not offenders, (
         "Empty parentheses left behind by mechanical private-reference removal "
-        f"must stay out of shipped language-axis prose; count={len(offenders)}, first={offenders[:50]}"
+        f"must stay out of shipped language prose; count={len(offenders)}, first={offenders[:50]}"
     )
 
 
@@ -145,7 +145,7 @@ def test_lint_allows_placeholders_and_runtime_data_strings():
     assert private_refs._prose_count(source) == 0
 
 
-# G3 예외 3건 — 채택자가 실제로 읽는 argparse `help=` 문자열이라 데이터 리터럴 표식으로
+# G3 예외 3건 — 채택자가 실제로 읽는 argparse `help=` 문자열이라 데이터 리터럴 표시로
 # 면제하지 않는다(설계 §결정). 스트립 도구·lint 는 문자열 리터럴을 안 건드리므로 대신 이
 # 값 단언으로 재유입을 막는다(§I6).
 _ORCH_DRIVERS_WITH_HELP_EXCEPTION = (
