@@ -1,18 +1,18 @@
-"""리뷰 수렴 게이트 · 폐지 플래그 차단 · 변경량 상한 없음 (T-0593 · T-0950).
+"""리뷰 마무리 통과 조건 · 폐지 플래그 차단 · 변경량 상한 없음 (T-0593 · T-0950).
 
-라운드 상한(T-0457)과 wave 예산(T-0583)은 "몇 번 호출했나"만 셌고 "닫히고 있나"는 묻지 않았다.
-실측 두 형상이 그 공백이다 — 리뷰 12라운드(연장 승인 반복)와 must_fix 3→2→2 평탄. 이 파일은 세
-축을 단언한다:
+라운드 상한(T-0457)과 세션 호출 예산(T-0583)은 "몇 번 호출했나"만 셌고 "닫히고 있나"는 묻지 않았다.
+실측 두 경우가 그 공백이다 — 리뷰 12라운드(연장 승인 반복)와 must_fix 3→2→2 평탄. 이 파일은 세
+가지를 단언한다:
 
-  ① 수렴-형상 게이트 — 라운드 장부의 `rounds[].must_fix` 추이로 판정한다(LLM 판단 0).
+  ① 마무리 조건 검사 — 리뷰 라운드 기록 파일의 `rounds[].must_fix` 추이로 판정한다(LLM 판단 0).
      상한 도달(local.conf `additional_reviewer.rounds_max`·기본 2)·직전 대비 증가(조기 차단)면 rc 4 로 막고,
-     감소 수렴은 그대로 통과시킨다. 상한에서는 현재 티켓을 정지해 사용자에게 보고한다.
-  ② 폐지 플래그 — fix 후 재리뷰 예약 인자는 장부 상태와 무관하게 파서에서 거부한다.
+     감소 마무리는 그대로 통과시킨다. 상한에서는 현재 티켓을 정지해 사용자에게 보고한다.
+  ② 폐지 플래그 — fix 후 재리뷰 예약 인자는 기록 상태와 무관하게 파서에서 거부한다.
   ③ 변경량 상한 없음 — 추가 리뷰어 호출은 변경 줄 수로 거부되지 않는다(사용자 결정 2026-10-10).
      남는 공유 측정(기계 mirror 제외 · 측정 폭의 단계 표 · untracked 포함)은 그 소비자
      `measured_diff_text` 로 단언한다.
 
-hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(`test_additional_reviewer.py` 동형),
+hermetic: REPO 를 tmp 로 monkeypatch 해 기록 파일을 격리하고(`test_additional_reviewer.py` 와 같은 구조),
 extract_diff·run_review·local_config 를 주입해 실제 git/추가 리뷰어 없이(호출 0) 분기를
 단언한다. diff 측정만 실 git 을 쓰는 테스트는 tmp 저장소를 직접 만든다.
 """
@@ -48,7 +48,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
-# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+# 없음) 이 파일의 모든 경우가 그 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
@@ -107,7 +107,7 @@ class _Reviewer:
 
 
 def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None):
-    """main() 을 tmp REPO 로 격리 배선하고 라운드별 must_fix 를 주입한다."""
+    """main() 을 tmp REPO 로 격리 연결하고 라운드별 must_fix 를 주입한다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
         conf_store, 'local_config',
@@ -137,12 +137,12 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None):
     return reviewer
 
 
-def _ledger(tmp_path) -> dict:
+def _read_records(tmp_path) -> dict:
     path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-# ══ ① 순수 헬퍼: 수렴 판정 ═══════════════════════════════════════════════════
+# ══ ① 순수 헬퍼: 마무리 판정 ═══════════════════════════════════════════════════
 
 
 def test_rounds_max_default_and_knob(external):
@@ -158,20 +158,20 @@ def test_rounds_max_garbage_and_negative_fall_back(external):
 
 
 def _entry(external, must_fix_series):
-    """must_fix 추이만 심은 게이트 항목 (예약 순번은 나열 순서 그대로)."""
-    ledger: dict = {"g": {"rounds": [
+    """must_fix 추이만 넣은 리뷰 집계 티켓 항목 (예약 순번은 나열 순서 그대로)."""
+    round_records: dict = {"g": {"rounds": [
         {"sequence": index + 1, "verdict": 0 if value == 0 else 1, "must_fix": value}
         for index, value in enumerate(must_fix_series)
     ]}}
-    return reviewer_reservation._gate_entry(ledger, "g")
+    return reviewer_reservation._review_ticket_entry(round_records, "g")
 
 
 def test_series_reads_reservation_order_not_append_order(external):
     """추이는 **예약 순번** 순이다 — append 순서(완료 순서)로 읽으면 발산이 뒤집혀 보인다."""
-    ledger = {"g": {"rounds": [
+    round_records = {"g": {"rounds": [
         {"sequence": 2, "must_fix": 5}, {"sequence": 1, "must_fix": 1},
     ]}}
-    entry = reviewer_reservation._gate_entry(ledger, "g")
+    entry = reviewer_reservation._review_ticket_entry(round_records, "g")
     assert reviewer_reservation._recorded_must_fix_series(entry) == (1, 5)
 
 
@@ -196,7 +196,7 @@ def test_convergence_blocks_on_increase_before_the_cap(external):
 
 
 def test_convergence_blocks_at_the_cap_with_unresolved_defects(external):
-    """상한 도달 + must_fix 미해소 → 차단 (비감소 3R 형상·DoD)."""
+    """상한 도달 + must_fix 미해소 → 차단 (비감소 3R 경우·DoD)."""
     refusal = reviewer_reservation._convergence_refusal(_entry(external, [3, 2, 2]), 3)
     assert refusal == reviewer_budget.CONVERGENCE_CAP_UNRESOLVED
 
@@ -232,7 +232,7 @@ def test_default_cap_blocks_the_third_round(external, monkeypatch, tmp_path, cap
     assert "3 → 2" in err                         # 판정 근거를 그대로 보여준다
     assert "현재 티켓을 정지" in err and "사용자에게 보고" in err
     assert "--confirm-fix" not in err
-    assert _ledger(tmp_path)["T-0593"]["count"] == 2   # 거부는 장부를 늘리지 않는다
+    assert _read_records(tmp_path)["T-0593"]["count"] == 2   # 거부는 기록을 늘리지 않는다
 
 
 def test_increasing_series_is_blocked_early(external, monkeypatch, tmp_path, capsys):
@@ -257,7 +257,7 @@ def test_converging_series_runs_all_rounds(external, monkeypatch, tmp_path):
     argv = ["--review-ticket", "T-0595", "--paths", "x.py"]
     assert [external.main(argv) for _ in range(3)] == [1, 1, 0]
     assert reviewer.calls == 3
-    entry = _ledger(tmp_path)["T-0595"]
+    entry = _read_records(tmp_path)["T-0595"]
     assert [row["must_fix"] for row in entry["rounds"]] == [3, 1, 0]
 
 
@@ -279,36 +279,36 @@ def test_rounds_max_knob_can_lower_the_cap(external, monkeypatch, tmp_path):
     assert external.main(argv) == 1
     assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 1
-    assert _ledger(tmp_path)["T-0596-lower"]["count"] == 1
+    assert _read_records(tmp_path)["T-0596-lower"]["count"] == 1
 
 
-def test_gate_without_a_ledger_is_untouched(external, monkeypatch, tmp_path):
-    """라운드 장부가 없는 티켓의 첫 라운드는 그대로 진행된다 (정상 경로 무영향·DoD)."""
+def test_review_ticket_without_a_record_is_untouched(external, monkeypatch, tmp_path):
+    """리뷰 라운드 기록이 없는 티켓의 첫 라운드는 그대로 진행된다 (정상 경로 무영향·DoD)."""
     reviewer = _wire(external, monkeypatch, tmp_path, series=[0])
-    assert _ledger(tmp_path) == {}
+    assert _read_records(tmp_path) == {}
     assert external.main(["--review-ticket", "T-0597", "--paths", "x.py"]) == 0
     assert reviewer.calls == 1
 
 
-# ══ ② 폐지한 fix 후 재리뷰 표면 ═══════════════════════════════════════════════
+# ══ ② 폐지한 fix 후 재리뷰 플래그 ═══════════════════════════════════════════════
 
 
-@pytest.mark.parametrize("gate_state", ("empty", "rejected", "passed"))
+@pytest.mark.parametrize("review_ticket_state", ("empty", "rejected", "passed"))
 def test_removed_confirm_fix_flag_is_rejected_before_any_send(
-        external, monkeypatch, tmp_path, capsys, gate_state):
-    """게이트 이력과 무관하게 폐지 플래그는 argparse 에서 거부되고 장부·호출은 불변이다."""
+        external, monkeypatch, tmp_path, capsys, review_ticket_state):
+    """리뷰 집계 티켓 이력과 무관하게 폐지 플래그는 argparse 에서 거부되고 기록·호출은 불변이다."""
     reviewer = _wire(
         external, monkeypatch, tmp_path,
-        series=[0] if gate_state == "passed" else [1],
+        series=[0] if review_ticket_state == "passed" else [1],
     )
     argv = ["--review-ticket", "T-0598", "--paths", "x.py"]
-    if gate_state == "rejected":
+    if review_ticket_state == "rejected":
         assert external.main(argv) == 1
-    elif gate_state == "passed":
+    elif review_ticket_state == "passed":
         assert external.main(argv) == 0
     before_calls = reviewer.calls
-    ledger_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
-    before = ledger_path.read_bytes() if ledger_path.exists() else None
+    record_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    before = record_path.read_bytes() if record_path.exists() else None
     capsys.readouterr()
 
     with pytest.raises(SystemExit):
@@ -316,7 +316,7 @@ def test_removed_confirm_fix_flag_is_rejected_before_any_send(
 
     assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
     assert reviewer.calls == before_calls
-    assert (ledger_path.read_bytes() if ledger_path.exists() else None) == before
+    assert (record_path.read_bytes() if record_path.exists() else None) == before
 
 
 def test_round_records_keep_must_fix_texts_for_audit(
@@ -324,28 +324,28 @@ def test_round_records_keep_must_fix_texts_for_audit(
     """폐지 경로와 무관하게 라운드 기록은 결함 건수와 항목 텍스트를 함께 보존한다."""
     _wire(external, monkeypatch, tmp_path, series=[2])
     assert external.main(["--review-ticket", "T-0602d", "--paths", "x.py"]) == 1
-    entry = _ledger(tmp_path)["T-0602d"]
+    entry = _read_records(tmp_path)["T-0602d"]
     assert entry["rounds"][0]["must_fix"] == 2
     assert entry["records"][0]["must_fix_items"] == ["결함 1", "결함 2"]
 
 
-# ══ ②-b 수렴 상한의 **진행 중 예약** (T-0602 ②) ══════════════════════════════
+# ══ ②-b 마무리 상한의 **진행 중 예약** (T-0602 ②) ══════════════════════════════
 # codex R2 지적: 상한 판정이 완료 `rounds` 만 세고 예약된 실행을 무시한다 — 2완료 상태에서 두
 # 실행이 연속 예약되면 둘 다 통과해 상한 3 인데 4라운드가 호출된다. 미마감 예약을 상한에 더해
 # 그 창을 닫는다(미완 재시도 상한과는 역할이 다르다).
 
 
 def _ago(seconds: float) -> str:
-    """지금으로부터 `seconds` 초 전의 UTC ISO 시각 (장부 표기와 같은 형식)."""
+    """지금으로부터 `seconds` 초 전의 UTC ISO 시각 (기록 표기와 같은 형식)."""
     return (datetime.datetime.now(datetime.timezone.utc)
             - datetime.timedelta(seconds=seconds)).isoformat()
 
 
-def _seed_rounds(tmp_path, gate: str, *, completed: int, inflight: int,
+def _seed_rounds(tmp_path, review_ticket: str, *, completed: int, inflight: int,
                  inflight_age_sec: float = 5) -> None:
-    """완료 산출 `completed` 건 + **미마감 예약** `inflight` 건인 장부를 심는다.
+    """완료 산출 `completed` 건 + **미마감 예약** `inflight` 건인 기록을 넣는다.
 
-    미마감 예약의 나이(`inflight_age_sec`)가 회수 판정 입력이다 — 하네스 벽시계 백스톱을 넘긴
+    미마감 예약의 나이(`inflight_age_sec`)가 정리 판정 입력이다 — 하네스 벽시계 백스톱을 넘긴
     예약은 실행 중일 수 없으므로 상한 합산에서 빠진다."""
     records = [
         {"id": f"done{index}", "sequence": index, "started_at": "2026-08-09T00:00:00+00:00",
@@ -363,19 +363,19 @@ def _seed_rounds(tmp_path, gate: str, *, completed: int, inflight: int,
     ]
     path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({gate: {
+    path.write_text(json.dumps({review_ticket: {
         "count": completed + inflight,
         "sequence": completed + inflight, "records": records, "rounds": rounds,
     }}), encoding="utf-8")
 
 
 def test_inflight_reservation_counts_toward_the_convergence_cap(external, tmp_path):
-    """2완료 + 1예약 = 상한 3 도달 — 완료분만 세면 이 형상이 통과해 4호출이 난다 (순수 판정)."""
+    """2완료 + 1예약 = 상한 3 도달 — 완료분만 세면 이 경우가 통과해 4호출이 난다 (순수 판정)."""
     _seed_rounds(tmp_path, "g", completed=2, inflight=1)
-    ledger = json.loads(
+    round_records = json.loads(
         (tmp_path / ".project_manager" / ".local" / "review_rounds.json").read_text(
             encoding="utf-8"))
-    entry = reviewer_reservation._gate_entry(ledger, "g")
+    entry = reviewer_reservation._review_ticket_entry(round_records, "g")
     assert review_rounds.inflight_reservations(entry) == 1
     assert reviewer_reservation._convergence_round_usage(entry) == (2, 1)
     assert reviewer_reservation._convergence_refusal(entry, 3) == reviewer_budget.CONVERGENCE_CAP_UNRESOLVED
@@ -395,7 +395,7 @@ def test_second_concurrent_reservation_is_refused_before_sending(
     err = capsys.readouterr().err
     assert "마무리 통과 조건에서 막힘" in err
     assert "진행 중 예약 1" in err                    # 판정 근거를 그대로 보여준다
-    assert _ledger(tmp_path)["T-0602f"]["count"] == 3   # 거부는 예약을 늘리지 않는다
+    assert _read_records(tmp_path)["T-0602f"]["count"] == 3   # 거부는 예약을 늘리지 않는다
 
 
 def test_completed_rounds_below_the_cap_still_run(external, monkeypatch, tmp_path):
@@ -409,40 +409,40 @@ def test_completed_rounds_below_the_cap_still_run(external, monkeypatch, tmp_pat
 
 
 def test_fresh_reservation_counts_but_a_timed_out_one_does_not(external, tmp_path):
-    """회수 기준은 **하네스 벽시계 백스톱**이다 — 신선 예약은 세고, 초과 예약은 세지 않는다.
+    """정리 기준은 **하네스 벽시계 백스톱**이다 — 신선 예약은 세고, 초과 예약은 세지 않는다.
 
-    kill·전원차단으로 마감하지 못한 레코드는 영원히 미마감이라, 세면 연장 승인이 없는 수렴 축을
+    kill·전원차단으로 마감하지 못한 레코드는 영원히 미마감이라, 세면 연장 승인이 없는 마무리 기준을
     영구 잠식한다(중단 2회 = 상한 3 이 라운드 1회). 백스톱을 넘긴 예약은 그 시점에 실행 중일 수
-    없으므로 회수한다."""
+    없으므로 정리한다."""
     def _entry(age_sec: float) -> dict:
         _seed_rounds(tmp_path, "g", completed=0, inflight=1, inflight_age_sec=age_sec)
-        ledger = json.loads(
+        round_records = json.loads(
             (tmp_path / ".project_manager" / ".local" / "review_rounds.json").read_text(
                 encoding="utf-8"))
-        return reviewer_reservation._gate_entry(ledger, "g")
+        return reviewer_reservation._review_ticket_entry(round_records, "g")
 
     fresh = _entry(5)
     assert review_rounds.inflight_reservations(fresh, wall_timeout_sec=3600) == 1
     stale = _entry(3600 + 60)
     assert review_rounds.inflight_reservations(stale, wall_timeout_sec=3600) == 0
-    # 백스톱을 안 넘기면 종전대로 전부 센다(회수는 시간 조건 하나뿐).
+    # 백스톱을 안 넘기면 종전대로 전부 센다(정리는 시간 조건 하나뿐).
     assert review_rounds.inflight_reservations(stale) == 1
 
 
-def test_timed_out_reservation_does_not_lock_the_convergence_axis(
+def test_timed_out_reservation_does_not_lock_the_convergence_check(
         external, monkeypatch, tmp_path):
-    """같은 2완료+1예약 형상이라도 그 예약이 **백스톱을 넘겼으면** 라운드는 나간다 (회수 경로).
+    """같은 2완료+1예약 경우라도 그 예약이 **백스톱을 넘겼으면** 라운드는 나간다 (정리 경로).
 
-    신선 예약이면 같은 장부가 차단된다(`test_second_concurrent_reservation_is_refused_before_sending`)
-    — 두 테스트가 회수 기준이 *시간* 하나임을 함께 못박는다. 회수가 없으면 kill 한 번이 상한을
-    영구 잠식한다(연장 승인이 폐지된 축이라 되돌릴 손잡이가 없다)."""
+    신선 예약이면 같은 기록이 차단된다(`test_second_concurrent_reservation_is_refused_before_sending`)
+    — 두 테스트가 정리 기준이 *시간* 하나임을 함께 못박는다. 정리가 없으면 kill 한 번이 상한을
+    영구 잠식한다(연장 승인이 폐지된 기준이라 되돌릴 손잡이가 없다)."""
     conf = {**_REVIEWER_TARGET, "additional_reviewer.rounds_max": "3"}
     reviewer = _wire(external, monkeypatch, tmp_path, series=[1], conf=conf)
     _seed_rounds(tmp_path, "T-0602j", completed=2, inflight=1,
                  inflight_age_sec=3600 * 24)             # 하루 전 예약 = 실행 중일 수 없다
 
     assert external.main(["--review-ticket", "T-0602j", "--paths", "x.py"]) == 1
-    assert reviewer.calls == 1, "회수되지 않은 잔재가 라운드를 잠갔다"
+    assert reviewer.calls == 1, "정리되지 않은 잔재가 라운드를 잠갔다"
 
 
 def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_path):
@@ -459,8 +459,8 @@ def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_p
     _seed_rounds(tmp_path, "T-0602h", completed=2, inflight=0)
     assert external.main(["--review-ticket", "T-0602h", "--paths", "x.py"]) == 1
 
-    entry = _ledger(tmp_path)["T-0602h"]
-    assert review_rounds.inflight_reservations(reviewer_reservation._gate_entry({"g": entry}, "g")) == 0
+    entry = _read_records(tmp_path)["T-0602h"]
+    assert review_rounds.inflight_reservations(reviewer_reservation._review_ticket_entry({"g": entry}, "g")) == 0
     reviewer = _Reviewer([1])
     monkeypatch.setattr(reviewer_run, "run_review", reviewer)
     assert external.main(["--review-ticket", "T-0602h", "--paths", "x.py"]) == 1   # 여전히 열려 있다
@@ -468,13 +468,13 @@ def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_p
 
 
 # ══ ②-c 만료 기준은 **레코드가 소유한다** (T-0604 ④) ═════════════════════════
-# 회수 기준을 "지금 장부를 읽는 호출자의 백스톱"으로 재면, 짧은 timeout 의 후속 호출이 긴
-# timeout 으로 실제 돌고 있는 라운드를 stale 로 접어 상한을 넘겨 예약한다. 예약 시점에 그 실행의
+# 정리 기준을 "지금 기록을 읽는 호출자의 백스톱"으로 재면, 짧은 timeout 의 후속 호출이 긴
+# timeout 으로 실제 돌고 있는 라운드를 stale 로 바꿔 상한을 넘겨 예약한다. 예약 시점에 그 실행의
 # 만료 시각을 레코드에 새기고, 판정은 그 값을 본다. 값 없는 구레코드만 종전 규칙으로 합산한다.
 
 
 def _ahead(seconds: float) -> str:
-    """지금으로부터 `seconds` 초 뒤의 UTC ISO 시각 (장부 표기와 같은 형식)."""
+    """지금으로부터 `seconds` 초 뒤의 UTC ISO 시각 (기록 표기와 같은 형식)."""
     return (datetime.datetime.now(datetime.timezone.utc)
             + datetime.timedelta(seconds=seconds)).isoformat()
 
@@ -506,7 +506,7 @@ def test_a_short_caller_timeout_does_not_expire_a_long_running_reservation(exter
 
 
 def test_an_expired_deadline_is_reclaimed_even_with_a_long_caller_timeout(external):
-    """반대 방향도 레코드가 이긴다 — 만료 시각을 지난 예약은 호출자 백스톱과 무관하게 회수된다."""
+    """반대 방향도 레코드가 이긴다 — 만료 시각을 지난 예약은 호출자 백스톱과 무관하게 정리된다."""
     entry = _inflight_entry(deadline=_ago(1), started_at=_ago(30))
 
     assert review_rounds.inflight_reservations(entry, wall_timeout_sec=3600 * 24) == 0
@@ -530,15 +530,15 @@ def test_an_unreadable_deadline_is_counted_conservatively(external):
     assert review_rounds.inflight_reservations(entry, wall_timeout_sec=3600) == 1
 
 
-def test_a_real_reservation_records_the_deadline_in_the_ledger(
+def test_a_real_reservation_records_the_deadline_in_the_record(
         external, monkeypatch, tmp_path):
-    """실 실행이 만든 예약도 장부에 만료 시각을 남긴다 (`--timeout` 이 그 값의 출처)."""
+    """실 실행이 만든 예약도 기록에 만료 시각을 남긴다 (`--timeout` 이 그 값의 출처)."""
     _wire(external, monkeypatch, tmp_path, series=[0])
 
     assert external.main(
         ["--review-ticket", "T-0604a", "--paths", "x.py", "--timeout", "3600"]) == 0
 
-    record = _ledger(tmp_path)["T-0604a"]["records"][-1]
+    record = _read_records(tmp_path)["T-0604a"]["records"][-1]
     assert record["deadline"] > _ahead(3500) and record["deadline"] < _ahead(3700)
 
 
@@ -551,11 +551,11 @@ def _git_init(root: Path) -> None:
 
 
 def test_reviewer_call_has_no_change_size_cap(external, monkeypatch, tmp_path, capsys):
-    """estimate small 티켓 게이트의 400줄 변경도 리뷰어를 부른다 — 변경 줄 수 거부가 없다."""
+    """estimate small 리뷰 집계 티켓의 400줄 변경도 리뷰어를 부른다 — 변경 줄 수 거부가 없다."""
     real_extract_diff = review_diff.extract_diff
     _wire(external, monkeypatch, tmp_path, series=[0])
     monkeypatch.setattr(review_diff, "extract_diff", real_extract_diff)
-    # 실 티켓 게이트라 라운드 파일 회수가 구조화 블록을 요구한다 — 통과 회신에 빈 블록을 싣는다.
+    # 실 리뷰 집계 티켓이라 라운드 파일 돌려받기가 구조화 블록을 요구한다 — 통과 회신에 빈 블록을 싣는다.
     block = json.dumps({"version": review_form.PM_REVIEW_VERSION, "findings": [],
                         "confirmations": []}, separators=(",", ":"))
     reviewer = _Reviewer([0])
@@ -589,7 +589,7 @@ def test_reviewer_call_has_no_change_size_cap(external, monkeypatch, tmp_path, c
 
 # ── 기계 mirror 제외 (T-0601 ①) ────────────────────────────────────────────
 # `templates/<타깃>/.project_manager/` 는 pm_update 가 기계로 내보내는 엔진 사본이다. 손작업과
-# 같은 대상으로 보면 같은 줄이 출하 타깃 수만큼 다시 잡힌다. mirror 정합은 drift-0 가드가 따로
+# 같은 대상으로 보면 같은 줄이 출하 타깃 수만큼 다시 잡힌다. mirror 일치는 drift-0 가드가 따로
 # 지킨다.
 
 
@@ -614,20 +614,20 @@ def test_machine_mirror_predicate_is_the_single_exclusion_rule(external, path, m
 # `_MACHINE_MIRROR_RE` 는 `.project_manager/` 만 봤다 — 그 밖의 어댑터층(`.claude/`·`.codex/`·
 # `.opencode/`)은 pm_update --all-targets 산출인데도 손작업으로 계상됐다(689줄 실측). 아래는 그
 # 판정이 manifest `@source=` 방향에서 파생됨을 실제 세 출하 manifest 로 고정한다 — 경로 패턴
-# 하드코딩이 아니라는 것과, flavor 가 손으로 관리하는 canonical 원본은 여전히 계상된다는 것.
+# 하드코딩이 아니라는 것과, 하네스별 판이 손으로 관리하는 canonical 원본은 여전히 계상된다는 것.
 
 
 @pytest.mark.parametrize("path, mirrored", [
     # bare(마커 없음) manifest 항목 — 소스는 레포 루트의 같은 상대경로(교차 위치) → 기계 mirror.
     ("templates/opencode/.claude/skills/pm-env/SKILL.md", True),
     ("templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md", True),
-    # `@source=` 가 flavor 자기 자신을 가리키는(self-referential) override — pm_update 가 재생성
-    # 하지 않는 canonical 원본이라 flavor 가 손으로 고친다(결정문 예시와 동형).
+    # `@source=` 가 하네스별 판 자기 자신을 가리키는(self-referential) override — pm_update 가 재생성
+    # 하지 않는 canonical 원본이라 하네스별 판이 손으로 고친다(결정문 예시와 같은 구조).
     ("templates/codex/.agents/skills/pm-dev-delegate/SKILL.md", False),
     ("templates/claude_code/.claude/ctx_guard.py", False),
-    # `@source=` 가 다른 flavor 물리 경로(레포 루트 `.claude/skills`)를 가리키는 진짜 교차 위치.
+    # `@source=` 가 다른 하네스별 판 물리 경로(레포 루트 `.claude/skills`)를 가리키는 진짜 교차 위치.
     ("templates/codex/.agents/skills/pm-adr/SKILL.md", True),
-    # manifest 미등재 — instance/flavor 전용 root doc·config 는 애초에 판정에 들어오지 않는다.
+    # manifest 미등재 — instance/하네스별 판 전용 root doc·config 는 애초에 판정에 들어오지 않는다.
     ("templates/codex/.codex/config.toml", False),
     ("templates/opencode/AGENTS.md", False),
     ("templates/opencode/.opencode/opencode.jsonc", False),
@@ -640,17 +640,17 @@ def test_adapter_layer_mirror_derives_from_manifest_source_direction(external, p
 def test_comment_example_of_a_self_referential_original_is_still_self_referential(external):
     """판정 근거 주석이 예로 든 경로는 지금도 자기참조 원본이어야 한다 (설명↔거동 drift 0).
 
-    주석은 `_TEMPLATES_FLAVOR_RE` 위에서 판정 규칙을 서술하며 "flavor 가 손으로 관리하는 canonical
+    주석은 `_TEMPLATES_VARIANT_RE` 위에서 판정 규칙을 서술하며 "하네스별 판이 손으로 관리하는 canonical
     원본" 의 실례를 하나 든다. manifest 에서 그 override 행이 사라지면 경로 성격이 기계 mirror 로
     뒤집히는데 주석은 옛 성격을 예로 든 채 남는다(T-0895 실측). 예시 경로를 주석에서 뽑아 술어로
     되재 그 drift 를 값으로 막는다 — `<타깃>` 류 자리표시자는 실 경로가 아니라 제외한다."""
     lines = Path(review_diff.__file__).read_text(encoding="utf-8").splitlines()
-    anchor = next(index for index, line in enumerate(lines)
-                  if line.startswith("_TEMPLATES_FLAVOR_RE"))
-    start = anchor
+    marker_index = next(index for index, line in enumerate(lines)
+                        if line.startswith("_TEMPLATES_VARIANT_RE"))
+    start = marker_index
     while start > 0 and lines[start - 1].startswith("#"):
         start -= 1
-    quoted = [path for path in re.findall(r"`(templates/[^`\s]+)`", "\n".join(lines[start:anchor]))
+    quoted = [path for path in re.findall(r"`(templates/[^`\s]+)`", "\n".join(lines[start:marker_index]))
               if "<" not in path]
     assert quoted, "판정 근거 주석이 자기참조 원본의 실 경로 예시를 잃었다"
     for path in quoted:
@@ -661,14 +661,14 @@ def test_comment_example_of_a_self_referential_original_is_still_self_referentia
 def test_adapter_layer_mirror_extends_to_a_new_target_without_code_changes(
     external, tmp_path, monkeypatch,
 ):
-    """새 타깃이 engine.manifest 를 갖추면 패턴 수정 없이 판정에 편입된다 (표면 상한 고정).
+    """새 타깃이 engine.manifest 를 갖추면 패턴 수정 없이 판정에 편입된다 (판정 범위 상한 고정).
 
-    `templates/<타깃>/` 매칭이 flavor 이름을 하드코딩하지 않는다는 것을 실측한다 — REPO 를
-    가짜 flavor(`newtarget`) 하나짜리 tmp 트리로 monkeypatch 하고 bare/자기참조/`@target-owned`
+    `templates/<타깃>/` 매칭이 하네스별 판 이름을 하드코딩하지 않는다는 것을 실측한다 — REPO 를
+    가짜 판(`newtarget`) 하나짜리 tmp 트리로 monkeypatch 하고 bare/자기참조/`@target-owned`
     세 항목을 선언해, 코드 변경 없이 같은 결과 형태가 나오는지 본다.
 
-    `@target-owned` 항목은 F-001(T-0832 라운드3 리뷰) 회귀다 — bare 부모 디렉토리(`.guest`, 그
-    자체로는 mirror) 아래에 더 구체적인 `@target-owned` override(`.guest/manual.md`)를 두어,
+    `@target-owned` 항목은 F-001(T-0832 라운드3 리뷰) 회귀다 — bare 부모 디렉토리(`.added`, 그
+    자체로는 mirror) 아래에 더 구체적인 `@target-owned` override(`.added/manual.md`)를 두어,
     그 override 가 부모의 mirror 판정을 덮고 손작업으로 남는지(측정에서 안 빠지는지) 확인한다."""
     fake_repo = tmp_path / "repo"
     manifest = fake_repo / "templates" / "newtarget" / ".project_manager" / "engine.manifest"
@@ -677,8 +677,8 @@ def test_adapter_layer_mirror_extends_to_a_new_target_without_code_changes(
         "# fake newtarget manifest — AGENTS.md 는 의도적으로 미등재(instance-owned 대칭)\n"
         ".newtarget/agents\n"                                  # bare → 레포 루트 교차 → mirror
         ".newtarget/hooks/guard.py  @source=templates/newtarget/.newtarget/hooks/guard.py\n"
-        ".guest\n"                                              # bare 부모 → 그 자체는 mirror
-        ".guest/manual.md  @target-owned\n"                     # 더 구체적인 target-owned override
+        ".added\n"                                              # bare 부모 → 그 자체는 mirror
+        ".added/manual.md  @target-owned\n"                     # 더 구체적인 target-owned override
         ,
         encoding="utf-8",
     )
@@ -689,9 +689,9 @@ def test_adapter_layer_mirror_extends_to_a_new_target_without_code_changes(
         pm_paths.home_at(external.REPO), "templates/newtarget/.newtarget/hooks/guard.py") is False
     assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/AGENTS.md") is False
     # bare 부모 아래 다른 파일은 여전히 mirror(교차 위치) — override 의 영향이 그 파일 자신으로 좁다.
-    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/.guest/other.md") is True
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/.added/other.md") is True
     # `@target-owned` override 파일은 부모가 mirror 라도 손작업으로 남는다(F-001).
-    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/.guest/manual.md") is False
+    assert review_diff.is_machine_mirror_path(pm_paths.home_at(external.REPO), "templates/newtarget/.added/manual.md") is False
 
     other_home = pm_paths.home_at(tmp_path / "other")
     other_manifest = other_home.root / "templates/newtarget/.project_manager/engine.manifest"
@@ -856,9 +856,9 @@ def _write_ticket(tmp_path, tid: str, frontmatter: str) -> Path:
 
 
 @pytest.mark.parametrize("declared, expected", [
-    ("estimate: small # reviewed", "small"),        # 재현 형상 — YAML 주석 꼬리
+    ("estimate: small # reviewed", "small"),        # 재현 경우 — YAML 주석 꼬리
     ("estimate: small   # 2026-08-09 PM 재판정", "small"),
-    ("estimate: 'small'", "small"),                 # 인용 형상
+    ("estimate: 'small'", "small"),                 # 인용 경우
     ('estimate: "medium"  # quoted', "medium"),
     ("estimate:   large  ", "large"),               # 공백 여백
     ("estimate: [small]", None),                    # 비-문자열 — 값을 지어내지 않는다
@@ -866,7 +866,7 @@ def _write_ticket(tmp_path, tid: str, frontmatter: str) -> Path:
 ])
 def test_estimate_is_read_as_yaml_not_as_a_regex_tail(
         external, tmp_path, monkeypatch, declared, expected):
-    """주석·인용·여백 형상을 YAML 해석으로 읽는다 — 꼬리를 값에 붙이면 board 와 다른 값이 된다."""
+    """주석·인용·여백 경우를 YAML 해석으로 읽는다 — 꼬리를 값에 붙이면 board 와 다른 값이 된다."""
     path = _write_ticket(tmp_path, "T-0910", declared)
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert round_store._parse_estimate_from_file(path) == expected
@@ -875,8 +875,8 @@ def test_estimate_is_read_as_yaml_not_as_a_regex_tail(
 # ══ ③-c 티켓 조회는 canonical ID 정확 일치 (T-0603 ④) ═══════════════════════
 # codex R3 지적: touches 조회(추가 리뷰어)와 티켓 로드(ticket_finish)가 `{id}-*.md` prefix glob
 # **첫 매칭**을 믿는다 — `T-0036` 과 `T-0036-001` 이 공존하면 다른 티켓의 touches 로 검토 범위가
-# 정해지거나(허용/차단이 뒤바뀐다) 완료 게이트가 남의 touches 로 판정한다. 판정을 board 공용
-# seam(`find_ticket_exact`) 하나로 모아 닫았고, 아래는 공존 픽스처에서 **세 소비처**(회귀 강등·
+# 정해지거나(허용/차단이 뒤바뀐다) 완료 통과 조건이 남의 touches 로 판정한다. 판정을 board 공용
+# 함수(`find_ticket_exact`) 하나로 모아 닫았고, 아래는 공존 픽스처에서 **세 소비처**(회귀 수준 낮춤·
 # 리뷰 범위·완료 로드)가 전부 오인 0 임을 한 자리에서 단언한다.
 
 
@@ -899,20 +899,20 @@ def test_prefix_glob_first_match_is_the_reproduced_hazard(tmp_path):
     assert sorted(tickets.glob("T-0036-*.md"))[0].name.startswith("T-0036-001")
 
 
-def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
+def test_three_ticket_consumers_never_answer_with_a_prefixed_ticket(
         external, tmp_path, monkeypatch):
-    """강등 스코프·리뷰 범위·완료 로드가 모두 canonical `T-0036` 을 본다 (오인 0·DoD)."""
+    """수준 낮춤 스코프·리뷰 범위·완료 로드가 모두 canonical `T-0036` 을 본다 (오인 0·DoD)."""
     _coexisting_tickets(tmp_path)
     board = _load("board")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(external, "REPO", tmp_path)
 
-    # ① 회귀 강등 스코프 (board)
+    # ① 회귀 수준 낮춤 스코프 (board)
     assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0036") == ["src/pay.py"]
     assert regression._gate_ticket(pm_paths.home_at(board.REPO), "T-0036")[1].name.startswith("T-0036-본래")
     # ② 리뷰 범위 (추가 리뷰어)
     assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036", ) == ["src/pay.py"]
-    # ③ 완료 게이트 티켓 로드 (ticket_finish)
+    # ③ 완료 통과 조건 티켓 로드 (ticket_finish)
     finish_home = pm_paths.home_at(tmp_path)
     assert finish_store.get_ticket_touches(finish_home, "T-0036") == ["src/pay.py"]
 
@@ -938,7 +938,7 @@ def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
 
 
 def test_slugless_ticket_filename_still_resolves(external, tmp_path, monkeypatch):
-    """슬러그 없는 `T-0040.md` 폴백은 유지된다 — prefix 충돌이 불가능한 정확 이름이다."""
+    """슬러그 없는 `T-0040.md` 대체 조회는 유지된다 — prefix 충돌이 불가능한 정확 이름이다."""
     tickets = tmp_path / ".project_manager" / "board" / "tickets" / "claimed"
     tickets.mkdir(parents=True, exist_ok=True)
     (tickets / "T-0040.md").write_text(
@@ -951,11 +951,11 @@ def test_slugless_ticket_filename_still_resolves(external, tmp_path, monkeypatch
 # ══ ④ 비-매핑 frontmatter 는 조회 경로를 죽이지 않는다 (T-0605 ④) ═══════════
 # codex R5 지적: YAML 이 비어 있지 않은 **스칼라·리스트**면 파싱은 성공하고 `fm.get()` 이
 # AttributeError 로 터진다. 그 예외가 정확-일치 조회(`find_ticket_exact`) 안에서 나면 활성 리뷰
-# 판정·강등 판정보다 먼저 실행이 죽어, "손상 티켓은 skip 하고 FULL 로 남긴다"는 규약이 깨진다.
+# 판정·수준 낮춤 판정보다 먼저 실행이 죽어, "손상 티켓은 skip 하고 FULL 로 남긴다"는 규약이 깨진다.
 
 
 def _write_raw_ticket(tmp_path, name: str, text: str):
-    """티켓 파일을 **원문 그대로** 심는다 (frontmatter 형상 자체가 검증 대상이라 조립하지 않는다)."""
+    """티켓 파일을 **원문 그대로** 심는다 (frontmatter 모양 자체가 검증 대상이라 조립하지 않는다)."""
     tickets = tmp_path / ".project_manager" / "board" / "tickets" / "claimed"
     tickets.mkdir(parents=True, exist_ok=True)
     path = tickets / name
@@ -968,12 +968,12 @@ def _write_raw_ticket(tmp_path, name: str, text: str):
     "- 목록\n- 원소",                   # 리스트
 ])
 def test_non_mapping_frontmatter_never_crashes_the_lookup(tmp_path, monkeypatch, frontmatter):
-    """비-매핑 frontmatter 는 **파일명 폴백**으로 접힌다 — 조회가 예외로 죽지 않는다."""
+    """비-매핑 frontmatter 는 **파일명 대체 조회**로 바뀐다 — 조회가 예외로 죽지 않는다."""
     board = _load("board")
     monkeypatch.setattr(board, "REPO", tmp_path)
     path = _write_raw_ticket(tmp_path, "T-0050-x.md", f"---\n{frontmatter}\n---\n\n# 본문\n")
 
-    assert ticket_store._canonical_ticket_id(path) == "T-0050"      # AttributeError 없이 폴백
+    assert ticket_store._canonical_ticket_id(path) == "T-0050"      # AttributeError 없이 대체 조회
     assert ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), "T-0050") == ("claimed", path)
 
 
@@ -999,7 +999,7 @@ def test_a_broken_ticket_scope_is_unresolved_not_a_crash(tmp_path, monkeypatch):
     assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0052") is None
 
 
-# ══ ⑤ touches 형식 불명 = 강등 취소 (T-0605 ③) ══════════════════════════════
+# ══ ⑤ touches 형식 불명 = 수준 낮춤 취소 (T-0605 ③) ══════════════════════════════
 # 스칼라 문자열 touches 를 `list(...)` 로 펴면 문자 목록이 되어 `-k "s or r or c ..."` 같은
 # 오염된 스코프가 선다. 실 frontmatter 로 그 경로를 재현하고 확정 실패(None)를 단언한다.
 
@@ -1018,9 +1018,9 @@ def test_ticket_touches_forces_a_list_of_strings(tmp_path, monkeypatch, declarat
     assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0053") == expected
 
 
-# ══ ⑥ 구세대 outcome 은 신기록보다 앞 (T-0605 ⑥) ════════════════════════════
+# ══ ⑥ 옛 버전 outcome 은 새 기록보다 앞 (T-0605 ⑥) ════════════════════════════
 # codex R5 지적: `sequence` 없는 구기록을 뒤에 정렬하면 업그레이드 후 새 통과가 기록돼도 옛
-# 반려가 영원히 '최신'이 된다. 정렬 판정은 board 공용 seam 하나가 소유한다(사본 금지).
+# 반려가 영원히 '최신'이 된다. 정렬 판정은 board 공용 함수 하나가 소유한다(사본 금지).
 
 
 def test_legacy_outcomes_sort_before_the_sequenced_ones(external):
@@ -1032,16 +1032,16 @@ def test_legacy_outcomes_sort_before_the_sequenced_ones(external):
 
 def test_an_upgrade_pass_becomes_the_latest_over_a_legacy_rejection(external):
     """구기록 반려 뒤에 신기록 통과가 쌓이면 **최신은 통과**다 — 자격도 닫힌다."""
-    entry = reviewer_reservation._gate_entry({"g": {"rounds": [
-        {"verdict": 1, "must_fix": 2},                       # 구세대 반려(순번 없음)
+    entry = reviewer_reservation._review_ticket_entry({"g": {"rounds": [
+        {"verdict": 1, "must_fix": 2},                       # 옛 버전 반려(순번 없음)
         {"sequence": 1, "verdict": 0, "must_fix": 0},        # 업그레이드 후 통과
     ]}}, "g")
 
     assert reviewer_rounds._ordered_round_outcomes(entry["rounds"])[-1]["verdict"] == 0
 
 
-def test_the_ordering_rule_is_the_shared_board_seam(external):
-    """정렬 규칙의 소유자는 board 공용 seam 이다 — 사본이 생기면 두 표면이 갈린다."""
+def test_the_ordering_rule_is_the_shared_board_function(external):
+    """정렬 규칙의 소유자는 board 공용 함수다 — 사본이 생기면 두 판정이 갈린다."""
     board = _load("board")
     rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
     assert reviewer_rounds._ordered_round_outcomes(rounds) == sorted(

@@ -33,51 +33,51 @@ def run_review(
     경로는 폐지됐다 — 모델을 고정하지 않는 실행은 "어느 모델이 이 판정을 냈는가"를 사후에
     확정할 수 없다. 실행 커맨드는 검증된 `target.command` 에서만 파생한다. argv 를
     직접 조립하고 회신을 **공용 wire 파서**로 추출해 판정에 넣는다 — JSON/스트림 원문을 그대로
-    판정 파서에 넣으면 이벤트 필드에 실린 문구가 판정으로 오독된다. raw 박제는 추출 전 wire
+    판정 파서에 넣으면 이벤트 필드에 실린 문구가 판정으로 오독된다. raw 기록은 추출 전 wire
     (stdout+stderr)를 그대로 보존한다.
     `started` = 자식 프로세스가 스폰됐는가(호출·과금 가능성) — 라운드 카운트 환불
     판정에 쓴다(False = 확실히 호출 전 실패 → 예약 환불). `idle_timeout` = 무진행 상한(None=공유
-    기본) — 타임아웃 시에도 `output` 에 부분 산출물이 실려 `_write_reserved_output` 이 그대로 박제한다.
+    기본) — 타임아웃 시에도 `output` 에 부분 산출물이 실려 `_write_reserved_output` 이 그대로 적어 둔다.
     `cwd`/`env` = 리뷰어 실행 조건(None=호출 프로세스 상속). 정상 경로는 `_main` 이 검토 대상
-    저장소(diff_root)와 위임 채널과 같은 seam 이 조립한 env 를 넘긴다 — 채널이 다르다고 다른
+    저장소(diff_root)와 위임 채널과 같은 공용 함수가 조립한 env 를 넘긴다 — 채널이 다르다고 다른
     cwd·다른 홈을 주지 않는다.
 
     `contamination` = 회신 본문 품질 진단(엇갈린 판정 라인·옛 raw 파일명·전사 경로 인용).
     **하나라도 잡히면** `all_pass` 를 내려 '판정 불명확'(보수적 exit 1)로 만든다 — 이번 판정이
     이 리뷰의 것이라는 보장이 없는 회신에서 통과가 나가는 false-green 을 기계가 막는다.
 
-    `on_spawn_attempt` = 라운드 예약 소유권 이전 seam(기본 None = 종전 동작). 이 함수의 **앞부분**
-    (raw 선점·장부 시작 레코드·구조화 transport·argv/kwargs 준비)과 러너 안의 준비 구간
+    `on_spawn_attempt` = 라운드 예약 소유권 이전 교체 지점(기본 None = 종전 동작). 이 함수의 **앞부분**
+    (raw 자리 차지·기록 시작 레코드·구조화 transport·argv/kwargs 준비)과 러너 안의 준비 구간
     (프로필 해소·워치독 셋업)은 아직 확실히 호출 전이라,
-    거기서 예외로 나가면 콜백은 돌지 않는다 — 호출부의 스폰 전 seam 이 예약을 한 번 환불하고
-    예외는 원본 그대로 다시 던져진다. 나가는 길에 이 함수가 남긴 raw 선점/미마감 레코드도
+    거기서 예외로 나가면 콜백은 돌지 않는다 — 호출부의 스폰 전 함수가 예약을 한 번 환불하고
+    예외는 원본 그대로 다시 던져진다. 나가는 길에 이 함수가 남긴 raw 자리 차지/미마감 레코드도
     함께 닫는다(`_abort_pre_spawn_raw`).
 
-    `on_no_spawn` = 그 이전의 **대칭 반납** seam(기본 None = 종전 동작). 러너가 `started=False`
-    로 돌아오면 자식은 뜬 적이 없다고 판명된 것이라, 회신 파싱·raw 박제·장부 마감 **어느 것도
+    `on_no_spawn` = 그 이전의 **대칭 반납** 교체 지점(기본 None = 종전 동작). 러너가 `started=False`
+    로 돌아오면 자식은 뜬 적이 없다고 판명된 것이라, 회신 파싱·raw 출력 저장·기록 마감 **어느 것도
     하기 전에** 한 번 호출해 소유권을 호출부로 돌려준다. 그 뒤 이 함수의 수합 구간에서 예외로
-    나가면 (1) 호출부의 스폰 전 seam 이 예약을 한 번 환불하고 (2) 여기서 raw 선점/미마감 레코드를
-    같은 보상 경로로 닫는다 — 스폰이 없던 실행이 "떠 있을지 모르는 자식"으로 장부에 남지 않는다.
+    나가면 (1) 호출부의 스폰 전 함수가 예약을 한 번 환불하고 (2) 여기서 raw 자리 차지/미마감 레코드를
+    같은 보상 경로로 닫는다 — 스폰이 없던 실행이 "떠 있을지 모르는 자식"으로 기록에 남지 않는다.
     이미 정상 마감된 레코드는 다시 닫지 않는다(이중 마감 없음). 스폰된 실행(started=True)의 수합
     실패는 종전 보수 규칙 그대로다 — 환불도 보상도 없이 미완으로 남는다.
     """
-    # 실행 커맨드의 소유자는 **대상 하나**다 — 두 입력이 갈리면 시간 프로필·argv·장부 헤더가
+    # 실행 커맨드의 소유자는 **대상 하나**다 — 두 입력이 갈리면 시간 프로필·argv·기록 헤더가
     # 서로 다른 것을 말한다.
     reviewer_cmd = target.command
     name = target.name
     raw_path = reviewer_raw._reserve_output(home, name, output_dir)
-    # ── 여기부터 스폰 시도 seam 까지가 "확실히 호출 전" 구간이다 ──────────
-    # raw 선점(mkdir/open)·장부 시작 레코드·구조화 transport·argv/kwargs 준비가 전부 이 안이고,
+    # ── 여기부터 스폰 시도 교체 지점까지가 "확실히 호출 전" 구간이다 ──────────
+    # raw 자리 차지(mkdir/open)·기록 시작 레코드·구조화 transport·argv/kwargs 준비가 전부 이 안이고,
     # 자식은 아직 없다. 이 구간에서 예외로 나가면 (1) 예약 소유권을 넘기지 않아 호출부의 스폰 전
-    # seam 이 한 번 환불하고, (2) 이 함수가 남긴 raw 선점/미마감 레코드를 정직하게 닫는다.
+    # 함수가 한 번 환불하고, (2) 이 함수가 남긴 raw 자리 차지/미마감 레코드를 정직하게 닫는다.
     # 소유권 이전 시점 자체는 watchdog 워치독이 `Popen` 을 부르기 한 줄 앞이다(그보다 앞이면
     # "스폰할 수도 있는 함수에 들어갔다"는 이유만으로 환불 권리가 사라진다).
     record_id: str | None = None
-    ledger_path: Path | None = None
+    record_path: Path | None = None
     spawn_attempted = False
     # 러너가 "자식 없음"으로 **판명**해 돌아온 뒤인가 — 스폰 시도 창이 다시 열린 상태다.
     no_spawn_proven = False
-    # 장부 레코드를 정상 마감했는가 — 마감 뒤의 실패까지 보상 경로가 다시 닫으면 이중 마감이 된다.
+    # 기록 레코드를 정상 마감했는가 — 마감 뒤의 실패까지 보상 경로가 다시 닫으면 이중 마감이 된다.
     raw_finalized = False
     started_at = time.monotonic()
 
@@ -89,13 +89,13 @@ def run_review(
             on_spawn_attempt()
 
     try:
-        _raw_dir, ledger_path = reviewer_raw._raw_storage(home, output_dir)
-        model = target.ledger_model
-        # 장부 레코드는 raw 헤더·stderr provenance·dry-run 과 **같은 해소 축**을 싣는다 — 그래야
-        # raw 파일이 지워지거나 stderr 를 못 읽어도 "무엇이 어떤 설정으로 나갔는가"가 장부 하나로
-        # 닫힌다. local_conf 는 그 축의 앵커라(어느 conf 가 이 대상을 골랐나) 함께 남긴다.
+        _raw_dir, record_path = reviewer_raw._raw_storage(home, output_dir)
+        model = target.record_model
+        # 기록 레코드는 raw 헤더·stderr provenance·dry-run 과 **같은 해소 값**을 싣는다 — 그래야
+        # raw 파일이 지워지거나 stderr 를 못 읽어도 "무엇이 어떤 설정으로 나갔는가"가 기록 하나로
+        # 닫힌다. local_conf 는 그 값의 기준이라(어느 conf 가 이 대상을 골랐나) 함께 남긴다.
         record_id = raw_output.start_raw_record(
-            ledger_path,
+            record_path,
             surface="additional-reviewer",
             harness=name,
             model=model,
@@ -125,11 +125,11 @@ def run_review(
                 on_spawn_attempt=_spawn_attempt,
             )
             if not started:
-                # ── 스폰 없음 확정 seam ──────────────────────────────────
-                # 러너가 결론적으로 "자식 없음"을 돌려줬다(빈 커맨드·실행 파일 부재·seam 계약
-                # 오류). 스폰 시도 직전에 넘긴 소유권을 **회신 파싱·raw 박제·장부 마감 어느 것도
+                # ── 스폰 없음 확정 교체 지점 ──────────────────────────────────
+                # 러너가 결론적으로 "자식 없음"을 돌려줬다(빈 커맨드·실행 파일 부재·교체 지점 계약
+                # 오류). 스폰 시도 직전에 넘긴 소유권을 **회신 파싱·raw 출력 저장·기록 마감 어느 것도
                 # 하기 전에** 되돌려 놓는다 — 그 뒤 어디서 죽든(요약 출력의 BrokenPipeError 가
-                # 실측 축이다) 호출 0·과금 0 인 실행이 예약을 미완으로 남기지 않는다.
+                # 실측 근거다) 호출 0·과금 0 인 실행이 예약을 미완으로 남기지 않는다.
                 no_spawn_proven = True
                 if on_no_spawn is not None:
                     on_no_spawn()
@@ -139,17 +139,17 @@ def run_review(
         output = pm_engine.infra.harness.reviewer_run._as_reviewer_output(output)
         # 구조화 대상의 회신 채널은 하네스 wire(JSONL/stream)다 — 공용 추출기를 통과한 **최종 회신
         # 텍스트만** 판정·오염 검출에 넣는다. 추출 실패(회신 이벤트 부재·비-문자열·형식 붕괴)는 wire 를
-        # 판정에 흘리지 않고 빈 회신으로 둔다 — 타입 계약은 공용 seam 이 소유하므로 어떤 wire 형상도
-        # 여기서 예외로 터지지 않는다(터지면 raw 박제·장부 마감 전이라 진단 근거가 함께 사라진다).
+        # 판정에 흘리지 않고 빈 회신으로 둔다 — 타입 계약은 공용 함수가 소유하므로 어떤 wire 구성도
+        # 여기서 예외로 터지지 않는다(터지면 raw 출력 저장·기록 마감 전이라 진단 근거가 함께 사라진다).
         #
         # 그리고 **회신이 없으면 리뷰가 없다** — 프로세스가 rc=0 으로 끝났어도 이 실행은 리뷰어의
-        # 판정을 하나도 받지 못했다. 이것을 '성공 → 판정 불명확'으로 두면 rc 는 1 이어도 폴백 신호
+        # 판정을 하나도 받지 못했다. 이것을 '성공 → 판정 불명확'으로 두면 rc 는 1 이어도 대체 리뷰 신호
         # (FALLBACK_INTERNAL)가 없어, PM 이 내부 code-reviewer 로 갈아탈 근거를 못 받는다. 그래서
-        # 실패 축으로 내린다: 요약은 실패 + 사유를 말하고 raw 에 wire 전문이 남는다. 라운드 장부에서의
+        # 실패로 다룬다: 요약은 실패 + 사유를 말하고 raw 에 wire 전문이 남는다. 리뷰 라운드 기록 파일에서의
         # 취급은 종전과 같다(판정 없음 = 미완 라운드 · 호출은 있었으므로 환불 없음).
         answer = output.answer
         reply_extraction_failed = False
-        # usage 관측은 회신 판정과 **분리한 축**이다 — 실패한 리뷰(ok=False)도 토큰을 썼으므로
+        # usage 관측은 회신 판정과 **분리한 값**이다 — 실패한 리뷰(ok=False)도 토큰을 썼으므로
         # ok/rc 에 걸지 않는다. structured 대상에서만 관측한다 — legacy 대상은 임의 실행기라
         # wire 계약이 없다.
         review_usage: dict[str, int] | None = None
@@ -171,7 +171,7 @@ def run_review(
             )
         try:
             raw_output.finish_raw_record(
-                ledger_path,
+                record_path,
                 record_id,
                 rc=int(metrics["rc"]),
                 elapsed_sec=elapsed,
@@ -180,14 +180,14 @@ def run_review(
             )
         except raw_output.RawRecordAlreadyFinished as exc:
             # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 리뷰
-            # 결과는 실패로 바꾸지 않는다(회신은 raw 파일에 이미 박제됨).
+            # 결과는 실패로 바꾸지 않는다(회신은 raw 파일에 이미 기록됨).
             print(f"경고: 기록 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
                   file=sys.stderr)
         raw_finalized = True
         return {
             "reviewer": name,
             "ok": ok,
-            # wire 원문(stdout+stderr)은 그대로 보존한다 — raw 박제·사람 진단 입력.
+            # wire 원문(stdout+stderr)은 그대로 보존한다 — raw 기록·사람 진단 입력.
             "output": output.combined,
             # 판정에 실제로 들어간 회신(구조화 대상은 추출된 최종 텍스트).
             "answer": answer,
@@ -199,7 +199,7 @@ def run_review(
             "failed": not ok,
             "started": started,
             # 오염된 출력은 통과도 반려도 아니다. 반려만 남겨 두면 옛 반려 블록 echo 가 **이번 리뷰의
-            # 반려**로 기록돼(라운드 장부·PM 판단 모두) 리뷰어가 하지 않은 지적을 근거로 일이 돌아간다.
+            # 반려**로 기록돼(리뷰 라운드 기록 파일·PM 판단 모두) 리뷰어가 하지 않은 지적을 근거로 일이 돌아간다.
             "any_must_fix": (
                 ok and verdict["has_must_fix"] and not contamination.contaminated
             ),
@@ -213,10 +213,10 @@ def run_review(
         # 없음"으로 판명해 돌아온 **뒤** — 자식이 뜬 적이 없다. 그 사이(스폰 시도 후·판정 전)의
         # 실패는 종전 보수 규칙 그대로다: 호출됐을 수 있으니 예약도 미마감 레코드도 건드리지
         # 않는다(미마감이 곧 "확인 필요" 진단이다). 정상 마감이 이미 끝난 뒤라면 다시 닫지
-        # 않는다 — 닫힌 레코드를 실패 축으로 덮으면 장부가 두 번째 거짓말을 한다.
+        # 않는다 — 닫힌 레코드를 실패로 덮으면 기록 파일이 두 번째 거짓말을 한다.
         if not spawn_attempted or (no_spawn_proven and not raw_finalized):
             reviewer_raw._abort_pre_spawn_raw(
-                ledger_path, record_id, raw_path,
+                record_path, record_id, raw_path,
                 reason=f"{type(exc).__name__}: {exc}",
                 elapsed=time.monotonic() - started_at,
                 local_conf_path=local_conf_path, resolved_profile=resolved_profile,

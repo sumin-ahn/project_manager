@@ -18,7 +18,7 @@ from pm_engine.infra import round_store
 def build_prompt(
     home, ticket_body: str | None = None,
     adr_refs: list[str] | None = None,
-    gate: str | None = None,
+    review_ticket: str | None = None,
     *,
     tree: Path,
     base: str,
@@ -34,14 +34,14 @@ def build_prompt(
 ) -> str:
     """검토 맥락과 리뷰 입력 좌표로 표준 프롬프트를 생성한다.
 
-    `next_finding_id` 는 회수 대상 티켓에서 읽은 이 채널의 다음 ID 실값이고,
+    `next_finding_id` 는 돌려받을 대상 티켓에서 읽은 이 채널의 다음 ID 실값이고,
     `confirmation_ids` 는 그 티켓에서 확인할 수 있는 ID 실값 목록이다(빈 목록 = 확인 대상 없음).
 
     검토 대상은 티켓 하나(`ticket_body`)이거나 **묶음의 티켓 N**(`ticket_bodies`)이다 — 두
     채널이 이 한 조립기를 쓰고, 본문 절은 같은 표제로 티켓 수만큼 반복된다(크기 1 도 같은 경로).
     `focus` 는 PM 이 준 검토 중점 한 문단이다(내용은 PM 소유 · 엔진은 자리만 만든다).
     `versioned_block` 은 구조화 블록 요구를 이 프롬프트가 소유하는가다 — 산출이 라운드 파일이고
-    그 시드가 이미 채널별 골격·다음 ID 를 들고 있는 경로에서는 끈다(요구가 두 벌이면 갈린다)."""
+    그 빈 양식이 이미 채널별 양식·다음 ID 를 들고 있는 경로에서는 끈다(요구가 두 벌이면 갈린다)."""
     parts: list[str] = [
         round_store._load_review_context(home).rstrip() + "\n\n",
         reviewer_budget._OUTPUT_FORMAT_BLOCK,
@@ -50,11 +50,11 @@ def build_prompt(
         parts.append(reviewer_budget._versioned_block_requirement(next_finding_id, confirmation_ids))
     if adr_refs:
         parts.append(f"관련 ADR: {', '.join(adr_refs)}\n\n")
-    if gate:
-        parts.append(f"리뷰 집계 티켓: {gate}\n\n")
+    if review_ticket:
+        parts.append(f"리뷰 집계 티켓: {review_ticket}\n\n")
     bodies: list[tuple[str | None, str]] = list(ticket_bodies or ())
     if not bodies and ticket_body is not None:
-        bodies = [(ticket_id or gate, ticket_body)]
+        bodies = [(ticket_id or review_ticket, ticket_body)]
     for label_value, body in bodies:
         ticket_label = f" ({label_value})" if label_value else ""
         parts.append(f"### 검토 대상 티켓 본문{ticket_label}\n")
@@ -104,9 +104,9 @@ def _load_ticket_rounds_for(
 def _warn_seed_developer_round(rounds: Sequence, *, ticket: str) -> None:
     """추가 리뷰어 스폰면의 loud 경고 — 경고이지 거부가 아니다(rc 는 바꾸지 않는다).
 
-    판정은 준비면(`round_form._warn_unharvested_developer_round`)이 쓰는 공개 함수
-    `round_form.unharvested_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 표면이
-    어긋난다. `prepare_ticket_body` 한 seam 이 미리보기(`--dry-run`)와 실 스폰을 모두
+    판정은 준비면(`round_form._warn_uncollected_developer_round`)이 쓰는 공개 함수
+    `round_form.unharvested_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 경로가
+    어긋난다. `prepare_ticket_body` 한 공용 함수가 미리보기(`--dry-run`)와 실 스폰을 모두
     지나므로 이 호출 하나가 두 채널을 함께 덮는다.
     """
     stale = round_form.unharvested_developer_round(rounds)
@@ -119,7 +119,7 @@ def _warn_seed_developer_round(rounds: Sequence, *, ticket: str) -> None:
         if latest is not None else "없음"
     )
     print(
-        pm_engine.domain.reviewer_prompt._SPAWN_SEED_DEVELOPER_ROUND_WARNING.format(
+        pm_engine.domain.reviewer_prompt._SPAWN_EMPTY_FORM_DEVELOPER_ROUND_WARNING.format(
             ticket=ticket, name=name, latest=latest_name,
         ),
         file=sys.stderr,

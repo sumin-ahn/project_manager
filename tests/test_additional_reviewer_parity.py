@@ -3,18 +3,18 @@
 claude·codex·opencode 는 같은 등급의 하네스이고, 세 하네스에 developer·architect·code-reviewer 를
 모두 위임한다. 그런데 엔진은 한때 추가 리뷰어 역할에만 저장소 거울·임시 홈·리뷰어 전용 env
 allowlist 를 붙였다 — 같은 행위(저장소 내용을 모델 API 로 보내는 것)를 채널마다 다르게 가둔 것이라
-근거가 없다(PM 이 파일을 읽는 순간 같은 호출이 게이트 없이 일어난다). 그 컨테이너를 지우고 나서
+근거가 없다(PM 이 파일을 읽는 순간 같은 호출이 검사 없이 일어난다). 그 컨테이너를 지우고 나서
 남은 계약은 셋이다:
 
 1. **cwd** — 리뷰어는 검토 대상 저장소(`diff_root`)에서 돈다. 거울 사본 경로가 아니다.
-2. **env** — 위임 채널이 소유한 같은 seam(`pm_delegate.build_env`)이 조립한다. `HOME` 을 임시 홈
+2. **env** — 위임 채널이 소유한 같은 공용 함수(`pm_delegate.build_env`)가 조립한다. `HOME` 을 임시 홈
    으로 덮지 않는다(그 덮어쓰기가 세션 재사용을 막아 라운드마다 전체 payload 를 다시 과금했다).
-3. **심볼 부재** — 거울·임시 홈·리뷰어 전용 env 함수가 모듈에 남아 있지 않다. 남으면 다시 배선된다.
+3. **심볼 부재** — 거울·임시 홈·리뷰어 전용 env 함수가 모듈에 남아 있지 않다. 남으면 다시 연결된다.
 
 그리고 세 하네스가 같은 값을 받는다 — 하나만 달라도 그게 곧 하네스별 권한 차등이다.
 
 hermetic: 자식 프로세스 스폰 0. `run_review` 를 캡처 스텁으로 갈아 끼워 **실제로 넘어가는**
-cwd/env 를 보고, 스텁은 sentinel 로 즉시 빠져나와 장부·raw 경로를 태우지 않는다.
+cwd/env 를 보고, 스텁은 sentinel 로 즉시 빠져나와 기록·raw 경로를 태우지 않는다.
 """
 from __future__ import annotations
 
@@ -60,10 +60,9 @@ RETIRED_REVIEWER_SYMBOLS = (
     "reviewer_env",
     "reviewer_env_keep_extra",
     "_run_isolated_review",
-    # 채널 동의 축
+    # 채널 동의 확인
     "ADDITIONAL_REVIEWER_ENABLED_KEY",
     "_is_enabled",
-    "disabled_gate_notice",
     "enabled_decision_key",
     # 내용 필터(시크릿 denylist·기계 mirror payload 제외)
     "_SECRET_DENYLIST_PATTERNS",
@@ -101,7 +100,7 @@ RETIRED_DELEGATE_SYMBOLS = (
     "codex_egress_provenance",
 )
 
-# 공용 하네스 계약이 두 표면에 공급하던 네트워크 attestation seam.
+# 공용 하네스 계약이 두 경로에 공급하던 네트워크 attestation 함수.
 RETIRED_RELAY_SYMBOLS = (
     "CODEX_EGRESS_MARKER_ENV",
     "CODEX_EGRESS_FLAG",
@@ -127,7 +126,7 @@ def external():
 
 
 class _Spawned(RuntimeError):
-    """캡처 스텁이 스폰 경계에서 즉시 빠져나오는 sentinel — 장부·raw 를 태우지 않는다."""
+    """캡처 스텁이 스폰 경계에서 즉시 빠져나오는 sentinel — 기록·raw 를 태우지 않는다."""
 
 
 def _capture_run_conditions(external, monkeypatch, *, harness: str,
@@ -167,8 +166,8 @@ def test_reviewer_runs_in_the_reviewed_repository(external, monkeypatch, tmp_pat
     assert seen["cwd"] == diff_root
 
 
-def test_reviewer_env_comes_from_the_delegate_seam(external, monkeypatch, tmp_path):
-    """env 는 위임 채널의 seam 이 조립한다 — 리뷰어 전용 allowlist 를 만들지 않는다."""
+def test_reviewer_env_comes_from_the_delegate_function(external, monkeypatch, tmp_path):
+    """env 는 위임 채널의 공용 함수가 조립한다 — 리뷰어 전용 allowlist 를 만들지 않는다."""
     diff_root = tmp_path / "repo"
     diff_root.mkdir()
 
@@ -214,7 +213,7 @@ def test_three_harnesses_get_the_same_cwd_and_home(external, monkeypatch, tmp_pa
 
 @pytest.mark.parametrize("symbol", RETIRED_REVIEWER_SYMBOLS)
 def test_retired_reviewer_symbols_are_gone(external, symbol):
-    """거울·임시 홈·동의 축·내용 필터·attestation 심볼이 모듈에 없다."""
+    """거울·임시 홈·동의 확인·내용 필터·attestation 심볼이 모듈에 없다."""
     assert not hasattr(external, symbol), symbol
 
 
@@ -226,12 +225,12 @@ def test_retired_delegate_symbols_are_gone(symbol):
 
 @pytest.mark.parametrize("symbol", RETIRED_RELAY_SYMBOLS)
 def test_retired_relay_symbols_are_gone(symbol):
-    """공용 드라이버 계약에도 네트워크 attestation seam 이 남아 있지 않다."""
+    """공용 드라이버 계약에도 네트워크 attestation 함수가 남아 있지 않다."""
     assert not hasattr(contract, symbol), symbol
 
 
 def test_no_reviewer_only_conf_keys():
-    """리뷰어 전용 env·홈·필터·스위치 노브가 설정 표면에서 사라졌다 (대체 키 없음)."""
+    """리뷰어 전용 env·홈·필터·스위치 노브가 설정 키에서 사라졌다 (대체 키 없음)."""
     local_conf = conf_schema
 
     for key in ("additional_reviewer.enabled",
@@ -250,7 +249,7 @@ def test_a_leftover_switch_value_changes_nothing(external, monkeypatch, tmp_path
                                                  leftover):
     """옛 스위치 값이 conf 에 남아 있어도 실행 조건이 갈리지 않는다 (마이그레이션 계약).
 
-    켜고 끄는 축 자체가 없어졌다 — 남은 행은 지우면 되고, 지우기 전에도 `true`/`false` 어느
+    켜고 끄는 설정 자체가 없어졌다 — 남은 행은 지우면 되고, 지우기 전에도 `true`/`false` 어느
     값이든 같은 실행 조건이 나온다.
     """
     diff_root = tmp_path / "repo"
@@ -266,7 +265,7 @@ def test_a_leftover_switch_value_changes_nothing(external, monkeypatch, tmp_path
     source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     assert "additional_reviewer.enabled" not in source
 
-    # 옛 값이 실제로 남은 conf 를 만든다 — true/false 어느 값이든 같은 정지 처방이다.
+    # 옛 값이 실제로 남은 conf 를 만든다 — true/false 어느 값이든 같은 정지 해결 방법이다.
     local_conf = conf_schema
     leftover_conf = tmp_path / f"local-{leftover}.conf"
     leftover_conf.write_text(

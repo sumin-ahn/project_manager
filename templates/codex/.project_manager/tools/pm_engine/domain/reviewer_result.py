@@ -55,8 +55,8 @@ def _knob_raw(conf: dict[str, str], key: str) -> str:
 # 뿐이고, raw 파일 접두·모듈 파일 이름 같은 **이미 기록된 산출물에 박힌 기계 식별자만 그대로**
 # 유지한다.
 #
-# 대상은 위임과 동형의 **원자 tuple**(harness+model 동반 필수·reasoning 선택) 하나뿐이다.
-# 모델을 고정하지 않는 자유 문자열 경로는 "어느 모델이 봤는지"를 사후에 알 수 없어 라운드 장부·
+# 대상은 위임과 같은 구조의 **원자 tuple**(harness+model 동반 필수·reasoning 선택) 하나뿐이다.
+# 모델을 고정하지 않는 자유 문자열 경로는 "어느 모델이 봤는지"를 사후에 알 수 없어 리뷰 라운드 기록 파일·
 # raw 감사가 거짓말을 하게 되므로 폐지했다 — tuple 이 없으면 호출하지 않고 fail-loud 다.
 ADDITIONAL_REVIEWER_PREFIX = "additional_reviewer"
 ADDITIONAL_REVIEWER_HARNESS_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.harness"
@@ -69,17 +69,17 @@ ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
 )
 
 REVIEWER_SOURCE_STRUCTURED = "structured"
-# 모델 축의 **예약 sentinel** — 엔진이 "모델이 고정되지 않았다"를 뜻하던 낱말들이다. 구조화
-# 프로필은 정의상 모델을 고정한 tuple 이므로 이 값을 받을 수 없다: 받으면 장부·raw 헤더·stderr 가
+# 모델 값의 **예약 sentinel** — 엔진이 "모델이 고정되지 않았다"를 뜻하던 낱말들이다. 구조화
+# 프로필은 정의상 모델을 고정한 tuple 이므로 이 값을 받을 수 없다: 받으면 기록 파일·raw 헤더·stderr 가
 # "고정했다는 선언"과 "미고정"을 같은 글자로 적어 감사가 자기 모순을 기록한다.
 RESERVED_MODEL_VALUES: frozenset[str] = frozenset({"default", "unpinned-model"})
 
-# 추가 리뷰어의 권한축은 **불변**이다 — 읽기 권위(code-reviewer)로 고정하고 설정으로 올릴 수 없다.
-# 리뷰는 저장소를 고치지 않는다(고치는 것은 위임 developer 축의 일이다).
+# 추가 리뷰어의 권한은 **불변**이다 — 읽기 권위(code-reviewer)로 고정하고 설정으로 올릴 수 없다.
+# 리뷰는 저장소를 고치지 않는다(고치는 것은 위임 developer 의 일이다).
 REVIEWER_ROLE = "code-reviewer"
 
-# 실행 시점에만 정해지는 경로는 세 표면(dry-run·stderr provenance·raw)이 **같은 자리표시자**로
-# 표시한다. 값이 실행마다 달라지는 토큰을 정체 문자열에 넣으면 세 표면이 서로 다른 문자열을
+# 실행 시점에만 정해지는 경로는 세 출력(dry-run·stderr provenance·raw)이 **같은 자리표시자**로
+# 표시한다. 값이 실행마다 달라지는 토큰을 정체 문자열에 넣으면 세 출력이 서로 다른 문자열을
 # 말하게 되고, 그러면 "같은 대상을 말했는가"를 기계가 대조할 수 없다. 실 argv 에는 그 자리에
 # 실제 cwd/프롬프트 파일이 들어간다(opencode 만 해당).
 REVIEWER_CWD_PLACEHOLDER = "<review-cwd>"
@@ -129,9 +129,9 @@ def parse_verdict(output: str) -> dict[str, bool]:
     **통과 인정은 `verdict_words` 가 거른 명시 판정선에서만** 나온다. 본문 아무 곳의 '통과' 토큰을
     통과 근거로 세면 두 가지가 깨진다. (a) 코드펜스에 든 `판정: 통과`(= 검토 대상 diff 나 인용물) +
     본문 `must-fix: 없음` 조합이 파서만 통과시키고 오염 검출은 그 라인을 안 세는 **비대칭**이 생긴다.
-    (b) 형식을 아예 안 지킨 산문("회귀 통과 확인. 문제 없음.")이 통과로 접힌다 — 실측된 형상이다.
+    (b) 형식을 아예 안 지킨 산문("회귀 통과 확인. 문제 없음.")이 통과로 바뀐다 — 실측된 경우다.
     판정선이 하나도 없으면 통과가 아니라 '판정 불명확'(보수적 exit 1)이며, 그 성질은 파서 단독
-    회귀가 소유한다(별도 폴백 분기 없음 — 실측상 no-op 이라 두지 않는다).
+    회귀가 소유한다(별도 대체 분기 없음 — 실측상 no-op 이라 두지 않는다).
     """
     must_fix_items = _extract_must_fix_items(output)
     section_found = bool(_MUST_FIX_SECTION_RE.search(output))
@@ -165,7 +165,7 @@ def parse_verdict(output: str) -> dict[str, bool]:
 # 검사 대상은 **회신 채널만**이다(`ReviewerOutput.answer`) — 진행 로그에는 프롬프트와 diff 원문이
 # 그대로 실려 있어 그것까지 세면 정상 실행이 전부 걸린다(라이브 실측).
 
-# 이 엔진이 만드는 raw 산출물 파일명(`_reserve_output`·pm_delegate 동형). 타임스탬프/pid 자리가
+# 이 엔진이 만드는 raw 산출물 파일명(`_reserve_output`·pm_delegate 와 같은 구조). 타임스탬프/pid 자리가
 # 있어 diff 본문에서 우연히 나오지 않는다 — 인용됐다면 로컬 산출물 디렉터리를 읽었다는 증거다.
 # reviewer/harness 이름에는 `_` 가 들어갈 수 있다(`additional_reviewer_<reviewer>_<타임스탬프>_…`) —
 # 이름 문자에서 `_` 를 빼면 그런 배포의 인용을 통째로 놓친다.
@@ -174,7 +174,7 @@ _RAW_ARTIFACT_RE = re.compile(
     r"[A-Za-z0-9._-]+_\d{4,}[A-Za-z0-9_.-]*\.txt\b"
 )
 # 하네스 세션 전사 저장소(실측 경로만 선언 — 추정 경로는 넣지 않는다). 구분자는 `/`·`\` 양쪽을
-# 받는다 — Windows 형상(`C:\Users\u\.claude\projects\…`)을 못 보면 그 플랫폼에서 백스톱이 없다.
+# 받는다 — Windows 경로(`C:\Users\u\.claude\projects\…`)를 못 보면 그 플랫폼에서 백스톱이 없다.
 _SESSION_TRANSCRIPT_RE = re.compile(
     r"[\w~.:/\\-]*(?:\.claude[/\\]projects|\.codex[/\\]sessions)[/\\][\w.:@/\\-]*"
 )
@@ -197,7 +197,7 @@ class OutputContamination(NamedTuple):
         return len(self._verdict_kinds()) > 1
 
     def _verdict_kinds(self) -> set[str]:
-        """판정 라인 낱말을 파서와 **같은 함수**(`verdict_kind`)로 접는다.
+        """판정 라인 낱말을 파서와 **같은 함수**(`verdict_kind`)로 정규화한다.
 
         허용 토큰이 아닌 판정선(`[통과`·`PASS/REJECT` 같은 템플릿/선택지 echo)은 `unknown` 이라
         고유한 종류로 센다 — 그런 줄이 진짜 판정선과 섞여 있으면 어느 게 이번 판정인지 모른다.
@@ -279,7 +279,7 @@ def format_local_conf_divergence(
     divergence: LocalConfDivergence, *, surface: str, cwd_label: str,
     resolution_note: str | None = None, source_label: str = "실행 엔진",
 ) -> str:
-    """두 호출 표면 공용 never-block loud 경고 문구."""
+    """두 호출 경로 공용 never-block loud 경고 문구."""
     details = "\n".join(f"  · {item}" for item in divergence.differences)
     resolution = resolution_note or (
         f"이번 실행에서는 {source_label} conf가 이깁니다: {divergence.engine_conf_path}\n"

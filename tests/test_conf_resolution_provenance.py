@@ -1,6 +1,6 @@
 """Cross-repo local.conf 분기와 호출 프로필 provenance.
 
-두 호출 표면만 대상으로 한다. REPO 로 Home 을 만드는 진입 파일과 그 패키지 CLI 전수는 아래
+두 호출 경로만 대상으로 한다. REPO 로 Home 을 만드는 진입 파일과 그 패키지 CLI 전수는 아래
 inventory 테스트가 기계로 다시 뽑아, local.conf 로 호출 대상을 고르지 않는 형제의 제외도 명시적으로
 고정한다.
 """
@@ -61,7 +61,7 @@ def _repo(root: Path, conf: dict[str, str] | None) -> Path:
 
 
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
-# 없음) 리뷰 축 형상은 전부 이 세트를 깔고 시작한다.
+# 없음) 리뷰 경우는 전부 이 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
@@ -124,7 +124,7 @@ def _wire_external(external, monkeypatch, engine: Path, target: Path,
     monkeypatch.setattr(external, "REPO", engine)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(engine_conf))
     monkeypatch.setattr(
-        pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: engine,
+        pm_paths, "resolve_pm_home_for_repo", lambda target_repo_root, **kwargs: engine,
     )
     monkeypatch.setattr(
         reviewer_scope, "_resolve_diff_root", lambda *args, **kwargs: target,
@@ -259,7 +259,7 @@ def test_delegate_difference_in_unused_role_is_quiet(
 
 def test_delegate_effective_fallback_uses_derived_config_anchor(
         delegate, monkeypatch, tmp_path, capsys):
-    """폴백 비교도 파생 config repo를 engine 좌표로 사용한다."""
+    """대체 하네스 비교도 파생 config repo를 engine 좌표로 사용한다."""
     engine_conf = _with_researcher_fallback(_delegate_conf(), "opus")
     target_conf = _with_researcher_fallback(_delegate_conf(), "sonnet")
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -316,7 +316,7 @@ def test_delegate_engine_only_fallback_is_quiet(
 
 def test_delegate_target_only_fallback_is_quiet_for_unconfigured_execution(
         delegate, monkeypatch, tmp_path, capsys):
-    """실행 엔진에 폴백이 없는 실행은 대상의 미사용 폴백 차이를 판정하지 않는다."""
+    """실행 엔진에 대체 하네스가 없는 실행은 대상의 미사용 대체 하네스 차이를 판정하지 않는다."""
     engine_conf = _delegate_conf()
     target_conf = _with_researcher_fallback(_delegate_conf(), "opus")
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -654,7 +654,7 @@ def test_delegate_disabled_names_absolute_local_conf(
 
 def test_delegate_subdirectory_cwd_still_triggers_pm_home_reanchor(
         delegate, monkeypatch, tmp_path, capsys):
-    """repo-root 해소값을 재사용해 PM 홈 하위 `--cwd` 우회도 canonical worktree로 재앵커한다."""
+    """repo-root 해소값을 재사용해 PM 홈 하위 `--cwd` 우회도 canonical worktree로 대상 저장소를 다시 잡는다."""
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
@@ -760,21 +760,21 @@ def test_find_repo_root_tool_inventory_and_scope_are_explicit():
         for name, cli in found.items()
     }
     assert "reviewer_cmd" in source["additional_reviewer.py"]
-    # 판정 축은 **conf 키 리터럴**(`"delegate.…"`)이다 — 도구 파일명(`pm_delegate.py`)은 키가
+    # 판정 기준은 **conf 키 리터럴**(`"delegate.…"`)이다 — 도구 파일명(`pm_delegate.py`)은 키가
     # 아니다. 부분 문자열로 재면 CLI 를 subprocess 로 부르는 호출부까지 키 소비로 읽힌다.
     def _reads_delegate_conf_keys(text: str) -> bool:
         return '"delegate.' in text or "'delegate." in text
 
     assert _reads_delegate_conf_keys(
         (TOOLS / "pm_engine/app/delegate_execute.py").read_text(encoding="utf-8"))
-    # 호출 프로필 키를 진입·패키지 CLI 에서 직접 읽는 표면은 추가 리뷰어 하나다.
+    # 호출 프로필 키를 진입·패키지 CLI 에서 직접 읽는 명령은 추가 리뷰어 하나다.
     assert {
         name for name, text in source.items()
         if "reviewer_cmd" in text or _reads_delegate_conf_keys(text)
     } == {"additional_reviewer.py"}
     assert "local.conf" not in source["contradiction_lint.py"]
     # ticket_finish 는 local.conf 를 읽지만 호출 프로필 키/소비자는 없다. local.conf 판독은 명시
-    # Home 을 넘기는 회귀 게이트 해소(`finish_record` → `regression._resolve_gate_cmd`)뿐이다.
+    # Home 을 넘기는 회귀 통과 조건 해소(`finish_record` → `regression._resolve_gate_cmd`)뿐이다.
     finish_sources = {
         name: (TOOLS / name).read_text(encoding="utf-8")
         for name in ("ticket_finish.py", "pm_engine/app/finish_context.py",

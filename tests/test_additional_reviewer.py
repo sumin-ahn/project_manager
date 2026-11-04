@@ -1,23 +1,23 @@
-"""additional_reviewer 라운드 상한 게이트 — codex 게이트 무한 라운드 기계 차단 (T-0457).
+"""additional_reviewer 라운드 상한 검사 — codex 리뷰 무한 라운드 기계 차단 (T-0457).
 
-추가 리뷰(codex)는 과금·호출 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측:
-한 게이트 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다
-([[mechanize-dont-instruct-llm]]): `--review-ticket <T-NNNN>` 별 라운드 장부
+추가 리뷰(codex)는 과금 호출이라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측:
+한 리뷰 집계 티켓 클러스터 25라운드). PM 자의 "마무리 판단"을 기계 판정으로 대체한다
+([[mechanize-dont-instruct-llm]]): `--review-ticket <T-NNNN>` 별 리뷰 라운드 기록 파일
 (`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 호출 count 를 쌓고,
 limit(엔진 고정 4)을 넘기면 실행 *전에* 거부(전용 rc
 `EXIT_ROUND_LIMIT_EXCEEDED`)하고 loud 안내를 낸다. **재개 승인 경로는 없다**(T-0593 이 라운드 연장
-승인을 폐지 — 이 파일의 `--ack-rounds` 리터럴은 전부 "어느 표면에서도 rc=1 로 거부된다"는 단언이다).
+승인을 폐지 — 이 파일의 `--ack-rounds` 리터럴은 전부 "어느 명령에서도 rc=1 로 거부된다"는 단언이다).
 출구는 현재 티켓 정지와 사용자 보고이며, fix 뒤 재리뷰 예약 경로는 없다.
 
-T-0583 이 같은 장부에 두 축을 더한다: 라운드별 **산출**(`rounds` — 판정 rc·must-fix 수) append 와
-게이트별 상한과 **별개**인 wave 단위 총 예산(`wave` 절 · local.conf `additional_reviewer.session_budget`·
+T-0583 이 같은 기록 파일에 두 가지를 더한다: 라운드별 **산출**(`rounds` — 판정 rc·must-fix 수) append 와
+리뷰 집계 티켓별 상한과 **별개**인 세션 호출 예산(`SESSION_BUDGET_SECTION_KEY` 절 · local.conf `additional_reviewer.session_budget`·
 기본 24 · 소진 시 같은 rc 4 · `--reset-session-budget` 으로만 재개). 조회면은 `--rounds-report`. 기록은 무조건
-(파싱 불가는 null·리뷰 비차단)이고 hard 거부는 예산 축뿐이다.
+(파싱 불가는 null·리뷰 비차단)이고 hard 거부는 예산 기준뿐이다.
 
-hermetic: REPO 를 tmp 로 monkeypatch 해 장부가 tmp `.local/` 에 격리되게 하고(`_round_ledger_path`
-가 호출 시점 REPO 파생·`_tickets_dir` 동형), extract_diff·run_review·local_config 를 module-level
-로 주입해 실제 git/codex 없이(호출 0·ADR-0004 opt-in) 게이트 분기를 단언한다. 카운트 규칙
-경계(dry-run·빈-diff·리뷰어 실패 제외)는 리뷰어 호출 여부·장부 count 로 격리한다.
+hermetic: REPO 를 tmp 로 monkeypatch 해 기록 파일이 tmp `.local/` 에 격리되게 하고(`_round_ledger_path`
+가 호출 시점 REPO 파생·`_tickets_dir` 와 같은 구조), extract_diff·run_review·local_config 를 module-level
+로 주입해 실제 git/codex 없이(호출 0·ADR-0004 opt-in) 검사 분기를 단언한다. 카운트 규칙
+경계(dry-run·빈-diff·리뷰어 실패 제외)는 리뷰어 호출 여부·기록 count 로 격리한다.
 """
 from __future__ import annotations
 
@@ -58,8 +58,8 @@ from pm_engine.infra.harness import watchdog
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# pm-verified 처분 픽스처의 **형상 빌더는 tests/test_board_live_test.py 가 단일 진실**이다 —
-# 생산 배선(내부 완료·릴리즈)과 이 CLI 선언면이 같은 형상을 봐야 기준이 다시 갈리지 않는다.
+# pm-verified 처분 픽스처의 **구성 빌더는 tests/test_board_live_test.py 가 단일 진실**이다 —
+# 생산 연결(내부 완료·릴리즈)과 이 CLI 선언면이 같은 구성을 봐야 기준이 다시 갈리지 않는다.
 from test_board_live_test import (  # noqa: E402
     _PV_CHANNEL_ADDITIONAL,
     _PV_CHANNEL_INTERNAL,
@@ -96,27 +96,27 @@ def external():
 
 
 def _patch_atomic_replace(monkeypatch, module, fake):
-    """`module` 이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+    """`module` 이 원자 교체에 **실제로 부르는** 공용 함수(`file_lock.atomic_replace`)를 대역으로 바꾼다.
 
-    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
-    `os.replace` 에 건 주입을 지나지 않는다. 엔진 모듈이 seam 을 받는 형상은 둘이다: import
+    `os.replace` 는 그 함수의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 에 건 주입을 지나지 않는다. 엔진 모듈이 그 함수를 받는 방식은 둘이다: import
     시점 전역(`fs`)과 쓰기 경로 지연 로더(`review_rounds.fs`·
     프로세스 캐시). 그 실제 지점에 걸어야 두 OS 에서 같은 관측이 선다.
     """
-    seam = module.fs
-    monkeypatch.setattr(seam, "atomic_replace", fake)
-    return seam
+    override = module.fs
+    monkeypatch.setattr(override, "atomic_replace", fake)
+    return override
 
 
 def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, tmp_path):
-    """게이트 ID 다음·diff 앞에 전체 티켓 본문이 놓이는 프롬프트 형상을 고정한다."""
+    """리뷰 집계 티켓 ID 다음·diff 앞에 전체 티켓 본문이 놓이는 프롬프트 구성을 고정한다."""
     prompt = reviewer_prompt.build_prompt(
         pm_paths.home_at(tmp_path), tree=tmp_path, base="HEAD", target="INDEX/WORKTREE",
         changed_paths=["x.py"], read_commands=[("git", "-C", str(tmp_path), "diff", "--")],
         ticket_body="## 결정\n확정 설계\n",
         ticket_id="T-0695",
         adr_refs=["ADR-0088"],
-        gate="T-0695",
+        review_ticket="T-0695",
     )
     landmarks = (
         "관련 ADR: ADR-0088",
@@ -159,7 +159,7 @@ def test_harness_cap_advisory_ignores_config_and_unmeasured_keys(external, key):
     ) is None
 
 
-def test_harness_cap_advisory_warns_for_all_nested_session_axes(external, monkeypatch):
+def test_harness_cap_advisory_warns_for_all_nested_session_harnesses(external, monkeypatch):
     """중첩 세션의 공개 호출층 상한을 모두 검사해 경고를 합친다."""
     warning = pm_engine.infra.harness.reviewer_run.harness_cap_advisory(
         {"OPENCODE": "child", "CLAUDECODE": "parent"},
@@ -171,7 +171,7 @@ def test_harness_cap_advisory_warns_for_all_nested_session_axes(external, monkey
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
 
 
-def test_harness_cap_advisory_keeps_claude_axis_with_opencode_config(
+def test_harness_cap_advisory_keeps_claude_harness_with_opencode_config(
         external, monkeypatch):
     """OpenCode 설정 경로가 섞여도 Claude 세션의 호출층 상한을 진단한다."""
     warning = pm_engine.infra.harness.reviewer_run.harness_cap_advisory(
@@ -193,7 +193,7 @@ def test_harness_cap_advisory_accepts_secondary_opencode_session_marker(
 
 
 def test_timeout_output_routes_through_shared_partial_formatter(external, monkeypatch):
-    """리뷰 소비처를 옛 로컬 결합기로 되돌리면 이 seam 감지가 실패한다."""
+    """리뷰 소비처를 옛 로컬 결합기로 되돌리면 이 공용 함수 감지가 실패한다."""
     class Relay:
         @staticmethod
         def format_partial_output(head, exc):
@@ -230,16 +230,16 @@ def test_timeout_output_shared_formatter_policy(external, output, expected):
     assert expected in rendered
 
 
-# ── 판정 라운드 상한: 축 자체가 제거됐다 ────────────────────────────────────
+# ── 판정 라운드 상한: 기준 자체가 제거됐다 ────────────────────────────────────
 
 
-def test_the_verdict_round_limit_axis_is_gone(external):
-    """호출 횟수만 세던 판정 상한은 상수·해소 함수·안내 항목이 모두 없다(축 제거)."""
+def test_the_verdict_round_limit_is_gone(external):
+    """호출 횟수만 세던 판정 상한은 상수·해소 함수·안내 항목이 모두 없다(기준 제거)."""
     assert not hasattr(external, "DEFAULT_ROUND_LIMIT")
     assert not hasattr(external, "_round_limit")
     assert not hasattr(external, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
     assert "판정 상한" not in reviewer_budget._ROUND_LIMIT_GUIDANCE
-    # 남은 티켓 축은 둘이다 — 수렴(must_fix 추이)과 미완(판정 없는 호출).
+    # 남은 티켓 기준은 둘이다 — 마무리(must_fix 추이)와 미완(판정 없는 호출).
     assert reviewer_target._review_rounds_max({}) == 2
     assert reviewer_target._incomplete_round_limit({}) == 2
 
@@ -265,7 +265,7 @@ def _reviewer_cmd(external, conf=None) -> str:
 
 
 def _declared_wall(external) -> int:
-    """해소된 리뷰어(codex 축)의 선언 벽시계 백스톱 — 별도 상수가 아니라 프로필에서 온다."""
+    """해소된 리뷰어(codex 하네스)의 선언 벽시계 백스톱 — 별도 상수가 아니라 프로필에서 온다."""
     return int(reviewer_target.reviewer_profile(pm_paths.home_at(external.REPO), _reviewer_cmd(external), {}).wall_timeout)
 
 
@@ -314,13 +314,13 @@ def test_print_summary_failure_shows_reason_line(external, capsys):
     assert "FALLBACK_INTERNAL" in out
 
 
-# ── 순수 헬퍼: 장부 (_round_ledger_path / load / save / _gate_entry) ─────────
+# ── 순수 헬퍼: 기록 파일 (_round_ledger_path / load / save / _review_ticket_entry) ─────────
 
 
-def test_ledger_path_derives_from_repo(external, tmp_path, monkeypatch):
-    """장부 경로 = `<앵커>/.project_manager/.local/review_rounds.json` (호출 시점 해소·per-clone).
+def test_record_path_derives_from_repo(external, tmp_path, monkeypatch):
+    """기록 파일 경로 = `<기록 위치>/.project_manager/.local/review_rounds.json` (호출 시점 해소·per-clone).
 
-    앵커는 raw 장부와 같은 규칙 — 넘겨받은 Home(엔진 자기 앵커 REPO)의 local 디렉터리다.
+    기록 위치는 raw 출력 기록 파일과 같은 규칙 — 넘겨받은 Home(엔진 자기 REPO)의 local 디렉터리다.
     """
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)) == \
@@ -331,62 +331,62 @@ def test_ledger_path_derives_from_repo(external, tmp_path, monkeypatch):
         pm_home / ".project_manager" / ".local" / "review_rounds.json"
 
 
-def test_ledger_lock_path_follows_the_ledger_anchor(external, tmp_path, monkeypatch):
-    """락 파일은 장부 경로에서 파생된다 — 앵커가 갈리면 같은 장부를 두 실행이 동시에 고쳐 쓴다."""
+def test_record_lock_path_follows_the_record_path(external, tmp_path, monkeypatch):
+    """락 파일은 기록 파일 경로에서 파생된다 — 기록 위치가 갈리면 같은 기록 파일을 두 실행이 동시에 고쳐 쓴다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
-    assert review_rounds._round_ledger_lock_path(pm_paths.home_at(external.REPO)) == \
+    assert review_rounds._round_record_lock_path(pm_paths.home_at(external.REPO)) == \
         review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).with_name("review_rounds.lock")
 
     pm_home = tmp_path / "pm-home"
-    assert review_rounds._round_ledger_lock_path(pm_paths.home_at(external.REPO, pm_home=pm_home)) == \
+    assert review_rounds._round_record_lock_path(pm_paths.home_at(external.REPO, pm_home=pm_home)) == \
         pm_home / ".project_manager" / ".local" / "review_rounds.lock"
 
 
-def test_ledger_load_missing_is_empty(external, tmp_path, monkeypatch):
-    """장부 파일 부재 → 빈 dict (fail-soft)."""
+def test_record_load_missing_is_empty(external, tmp_path, monkeypatch):
+    """기록 파일 부재 → 빈 dict (fail-soft)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
-    assert review_rounds._load_round_ledger(pm_paths.home_at(external.REPO)) == {}
+    assert review_rounds._load_round_records(pm_paths.home_at(external.REPO)) == {}
 
 
-def test_ledger_save_load_roundtrip(external, tmp_path, monkeypatch):
-    """save → load 왕복 정합 · `.local/` 아래 실 파일 생성(디렉토리 자동 생성)."""
+def test_record_save_load_roundtrip(external, tmp_path, monkeypatch):
+    """save → load 왕복 일치 · `.local/` 아래 실 파일 생성(디렉토리 자동 생성)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
-    reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), {"T-0001": {"count": 3, "records": []}})
+    reviewer_reservation._save_round_records(pm_paths.home_at(external.REPO), {"T-0001": {"count": 3, "records": []}})
     assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).is_file()
-    assert review_rounds._load_round_ledger(pm_paths.home_at(external.REPO)) == {"T-0001": {"count": 3, "records": []}}
+    assert review_rounds._load_round_records(pm_paths.home_at(external.REPO)) == {"T-0001": {"count": 3, "records": []}}
 
 
-def test_ledger_corrupt_falls_back_to_empty(external, tmp_path, monkeypatch):
-    """손상 JSON → 빈 dict (regression flag 동형 fail-soft — 장부 손상이 게이트를 깨지 않음)."""
+def test_record_corrupt_falls_back_to_empty(external, tmp_path, monkeypatch):
+    """손상 JSON → 빈 dict (regression flag 와 같은 fail-soft — 기록 파일 손상이 검사를 깨지 않음)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     path = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{ not json", encoding="utf-8")
-    assert review_rounds._load_round_ledger(pm_paths.home_at(external.REPO)) == {}
+    assert review_rounds._load_round_records(pm_paths.home_at(external.REPO)) == {}
 
 
-def test_gate_entry_normalizes_missing_and_corrupt(external):
-    """`_gate_entry` — 부재/손상 항목을 0/0 으로 정규화하고 ledger 에 심는다."""
+def test_review_ticket_entry_normalizes_missing_and_corrupt(external):
+    """`_review_ticket_entry` — 부재/손상 항목을 0/0 으로 정규화하고 기록에 넣는다."""
     empty = {"count": 0, "sequence": 0,
              "resolution": None, "records": [], "rounds": []}
-    gate_one, gate_two, gate_three = ("T-" + suffix for suffix in ("0001", "0002", "0003"))
-    ledger: dict = {
-        gate_two: {"count": "bad", "acked_through": None, "pm_fixed": "bad"},
-        gate_three: 7,
+    review_ticket_one, review_ticket_two, review_ticket_three = ("T-" + suffix for suffix in ("0001", "0002", "0003"))
+    round_records: dict = {
+        review_ticket_two: {"count": "bad", "acked_through": None, "pm_fixed": "bad"},
+        review_ticket_three: 7,
     }
-    assert reviewer_reservation._gate_entry(ledger, gate_one) == empty
-    assert reviewer_reservation._gate_entry(ledger, gate_two) == empty
-    assert reviewer_reservation._gate_entry(ledger, gate_three) == empty
-    # 정규화 결과가 ledger 에 심겨 후속 save 가 깨끗한 값을 기록한다.
-    assert ledger[gate_one] == empty
+    assert reviewer_reservation._review_ticket_entry(round_records, review_ticket_one) == empty
+    assert reviewer_reservation._review_ticket_entry(round_records, review_ticket_two) == empty
+    assert reviewer_reservation._review_ticket_entry(round_records, review_ticket_three) == empty
+    # 정규화 결과가 기록에 들어가 후속 save 가 깨끗한 값을 기록한다.
+    assert round_records[review_ticket_one] == empty
 
-    ledger["mixed-records"] = {
+    round_records["mixed-records"] = {
         "count": "bad",
         "pm_fixed": "2",
         "records": ["junk", {"sequence": "3", "verdict": True}, 7],
         "rounds": ["junk", {"ts": "2026-08-07T00:00:00+00:00", "verdict": 1}],
     }
-    assert reviewer_reservation._gate_entry(ledger, "mixed-records") == {
+    assert reviewer_reservation._review_ticket_entry(round_records, "mixed-records") == {
         "count": 0,
         "sequence": 3,
         "resolution": None,
@@ -396,8 +396,8 @@ def test_gate_entry_normalizes_missing_and_corrupt(external):
 
 
 def test_refund_keeps_concurrent_reservation_accounting_consistent(external):
-    ledger = {}
-    entry = reviewer_reservation._gate_entry(ledger, "gate")
+    round_records = {}
+    entry = reviewer_reservation._review_ticket_entry(round_records, "review-ticket")
     reviewer_reservation._reserve_round(entry, "first")
     reviewer_reservation._reserve_round(entry, "second")
     reviewer_reservation._refund_round(entry, "first")
@@ -421,7 +421,7 @@ def test_failed_result_with_partial_verdict_text_is_still_incomplete(external):
 
 
 # ── started 신호: 스폰 여부 판정 (_run_reviewer_ex·MF-A 근원) ────────────────
-# main() 게이트 테스트는 run_review 를 mock 하므로 started 매핑을 직접 태우지 않는다 — 여기서
+# main() 검사 테스트는 run_review 를 mock 하므로 started 매핑을 직접 태우지 않는다 — 여기서
 # 실제 스폰-여부 판정(환불 대상 = 확실히 호출 전 실패만)을 run_fn 주입으로 단언한다.
 
 
@@ -486,7 +486,7 @@ def test_started_true_on_generic_error_conservative(external):
 
 
 def test_strict_legacy_runner_does_not_receive_idle_timeout(external):
-    """엄격한 기존 subprocess.run 호환 seam 에 새 키를 밀어 넣지 않는다."""
+    """엄격한 기존 subprocess.run 호환 교체 지점에 새 키를 밀어 넣지 않는다."""
     seen = {}
 
     def strict(argv, *, input, capture_output, text, encoding, errors, timeout):
@@ -501,7 +501,7 @@ def test_strict_legacy_runner_does_not_receive_idle_timeout(external):
 def test_real_subprocess_run_remains_a_valid_injected_runner(external):
     """대표 strict 기존 러너 subprocess.run 을 실제로 태워 호출 전 TypeError 회귀를 막는다.
 
-    커맨드는 엔진이 실제로 만드는 형상(`shlex.join`)으로 조립한다 — 인터프리터 경로에 공백이 있는
+    커맨드는 엔진이 실제로 만드는 모양(`shlex.join`)으로 조립한다 — 인터프리터 경로에 공백이 있는
     플랫폼(Windows `C:\\Program Files\\...`)에서 인용 없는 조립은 실행 파일이 두 토큰으로 갈려
     이 회귀가 러너가 아니라 픽스처 때문에 red 가 된다.
     """
@@ -524,8 +524,8 @@ def test_explicit_idle_runner_receives_new_keyword(external):
     assert ok is True and seen["idle_timeout"] == 37
 
 
-def test_runner_seam_skew_is_loud_and_distinct(external):
-    """호출 전 seam skew 는 일반 리뷰어 실행 오류/라운드 소비로 silent degrade 하지 않는다."""
+def test_runner_override_skew_is_loud_and_distinct(external):
+    """호출 전 교체 지점 skew 는 일반 리뷰어 실행 오류/라운드 소비로 silent degrade 하지 않는다."""
     def incompatible(argv, *, required_new_contract):
         raise AssertionError("bind 전에 호출되면 안 됨")
 
@@ -539,8 +539,8 @@ def test_runner_seam_skew_is_loud_and_distinct(external):
 def test_run_review_surfaces_started(external, tmp_path):
     """run_review 결과 dict 가 started 를 성공·실패(타임아웃) 양쪽에서 실어 나른다 (환불 판정 입력).
 
-    main() 게이트 테스트는 run_review 를 mock 하므로, 여기서 실제 run_review 가 _run_reviewer_ex 의
-    started 를 dict 로 전달함을 성공(True)과 타임아웃(실패지만 True)에서 단언해 seam 을 닫는다."""
+    main() 검사 테스트는 run_review 를 mock 하므로, 여기서 실제 run_review 가 _run_reviewer_ex 의
+    started 를 dict 로 전달함을 성공(True)과 타임아웃(실패지만 True)에서 단언해 교체 지점을 닫는다."""
     target = _resolved_target(external)
     res = reviewer_run.run_review(pm_paths.home_at(external.REPO), "p", target=target, output_dir=tmp_path,
                               run_fn=lambda *a, **k: _completed(0, _codex_reply()))
@@ -553,11 +553,11 @@ def test_run_review_surfaces_started(external, tmp_path):
     assert res["failed"] is True and res["started"] is True  # 타임아웃=호출 가능 → 카운트 유지
 
 
-# ── main() 게이트 harness ───────────────────────────────────────────────────
+# ── main() 검사 harness ───────────────────────────────────────────────────
 
 
-# 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없으므로 CLI 표면을
-# 태우는 배선은 대상 튜플까지 갖춰야 실제 실행 지점에 닿는다.
+# 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없으므로 CLI 명령을
+# 태우는 연결은 대상 튜플까지 갖춰야 실제 실행 지점에 닿는다.
 _ENABLED_CONF = {
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
@@ -566,9 +566,9 @@ _ENABLED_CONF = {
 
 def _wire(external, monkeypatch, tmp_path, *, conf=None,
           diff="diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n", result=None):
-    """main() 을 tmp REPO 로 격리 배선 — 추가 리뷰어 호출 횟수를 세는 counter 반환.
+    """main() 을 tmp REPO 로 격리 연결 — 추가 리뷰어 호출 횟수를 세는 counter 반환.
 
-    REPO=tmp(장부 격리)·local_config(활성)·extract_diff(diff 주입·제외 없음)·run_review 를
+    REPO=tmp(기록 파일 격리)·local_config(활성)·extract_diff(diff 주입·제외 없음)·run_review 를
     module-level 로 monkeypatch 한다. `result` 미지정이면 통과(started=True) 결과를, 지정하면 그
     dict 를 돌려준다(타임아웃=started True·스폰실패=started False 시나리오 주입). 반환 calls['n'] =
     run_review 호출 수(=호출 시도)."""
@@ -617,19 +617,19 @@ _FAIL_UNSTARTED = {"reviewer": "x", "ok": False, "output": "[리뷰어 명령 �
                    "failed": True, "started": False, "any_must_fix": False, "all_pass": False}
 
 
-def _ledger(external, tmp_path):
+def _read_records(external, tmp_path):
     path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def test_valid_json_with_corrupt_records_still_runs_gate(
+def test_valid_json_with_corrupt_records_still_runs_the_check(
     external, monkeypatch, tmp_path,
 ):
     calls = _wire(external, monkeypatch, tmp_path)
-    ledger_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    ledger_path.write_text(
-        json.dumps({"corrupt-gate": {
+    record_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(
+        json.dumps({"corrupt-review-ticket": {
             "count": "bad",
             "acked_through": None,
             "records": ["junk"],
@@ -637,47 +637,47 @@ def test_valid_json_with_corrupt_records_still_runs_gate(
         encoding="utf-8",
     )
 
-    assert external.main(["--review-ticket", "corrupt-gate", "--paths", "x.py"]) == 0
+    assert external.main(["--review-ticket", "corrupt-review-ticket", "--paths", "x.py"]) == 0
     assert calls["n"] == 1
-    entry = _ledger(external, tmp_path)["corrupt-gate"]
+    entry = _read_records(external, tmp_path)["corrupt-review-ticket"]
     assert entry["count"] == 1
     assert len(entry["records"]) == 1
     assert entry["records"][0]["verdict"] is True
 
 
-# ── 호출 횟수 축 제거: 판정 라운드는 더 이상 티켓 축을 막지 않는다 (DoD) ──────
+# ── 호출 횟수 기준 제거: 판정 라운드는 더 이상 티켓 기준을 막지 않는다 (DoD) ──────
 
-# 수렴-형상 상한은 이 형상보다 앞에서 막으므로, 호출 횟수만 보는 테스트는 그 노브를 열어
-# 둔다(`additional_reviewer.rounds_max` 는 T-0593 의 별도 축이고 전용 테스트가 소유한다).
+# 마무리 조건 상한은 이 경우보다 앞에서 막으므로, 호출 횟수만 보는 테스트는 그 노브를 열어
+# 둔다(`additional_reviewer.rounds_max` 는 T-0593 의 별도 기준이고 전용 테스트가 소유한다).
 _ROUNDS_MAX_OFF = {**_ENABLED_CONF, "additional_reviewer.rounds_max": "99"}
 
 
 def test_verdict_rounds_no_longer_refuse_the_next_round(
         external, monkeypatch, tmp_path, capsys):
-    """판정 라운드는 몇 번을 채워도 티켓 축을 막지 않는다 — 옛 상한(4)의 다음 라운드가 정상이다.
+    """판정 라운드는 몇 번을 채워도 티켓 기준을 막지 않는다 — 옛 상한(4)의 다음 라운드가 정상이다.
 
-    제거 전에는 5회째가 rc 4 로 거부됐다. 제거 후 남는 티켓 축은 수렴(여기서는 열어 둠)과
-    미완(판정 없는 호출)뿐이라, 판정만 쌓인 게이트는 계속 열린다."""
+    제거 전에는 5회째가 rc 4 로 거부됐다. 제거 후 남는 티켓 기준은 마무리(여기서는 열어 둠)와
+    미완(판정 없는 호출)뿐이라, 판정만 쌓인 리뷰 집계 티켓은 계속 열린다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
     argv = ["--review-ticket", "T-0100", "--paths", "x.py"]
 
     for i in range(1, 6):  # 옛 상한 4 를 넘겨 5회
         assert external.main(argv) == 0, f"round {i} 는 정상이어야 한다"
     assert calls["n"] == 5
-    entry = _ledger(external, tmp_path)[argv[1]]
+    entry = _read_records(external, tmp_path)[argv[1]]
     assert entry["count"] == 5
     assert "acked_through" not in entry
     assert len(entry["records"]) == 5 and all(row["verdict"] for row in entry["records"])
-    # 판정 5건·미완 0건 — 미완 축은 소진되지 않았다.
+    # 판정 5건·미완 0건 — 미완 기준은 소진되지 않았다.
     assert reviewer_reservation._round_counts(entry) == (5, 5, 0)
     assert "상한 도달" not in capsys.readouterr().err
 
 
-# ── 폐지 필드 처분 · 축 제거 반례 형상 (T-0772) ─────────────────────────────
+# ── 폐지 필드 처분 · 기준 제거 반례 경우 (T-0772) ─────────────────────────────
 #
-# 실 장부에는 폐지 전 승인이 쓰인 게이트가 남아 있다(adopter#0 실측 55게이트 중 3건). 테스트는
-# 채택자 사설 장부를 읽을 수 없으므로 그 **값**을 픽스처로 옮겨 판정을 값으로 단언한다.
-# 형상은 (게이트, count, acked, 판정 레코드 수)이고 제거 전 집계는 각각 (3,3,0)·(2,2,0)·(2,2,0)
+# 실 기록 파일에는 폐지 전 승인이 쓰인 리뷰 집계 티켓이 남아 있다(adopter#0 실측 리뷰 집계 티켓 55개 중 3건). 테스트는
+# 채택자 사설 기록 파일을 읽을 수 없으므로 그 **값**을 픽스처로 옮겨 판정을 값으로 단언한다.
+# 경우는 (리뷰 집계 티켓, count, acked, 판정 레코드 수)이고 제거 전 집계는 각각 (3,3,0)·(2,2,0)·(2,2,0)
 # 이었다 — 승인 수위만큼 창이 잘려 있었다.
 _RETIRED_ACK_SHAPES = (
     ("T-0579", 5, 2, 3),
@@ -687,7 +687,7 @@ _RETIRED_ACK_SHAPES = (
 
 
 def _verdict_records(count: int) -> list[dict]:
-    """판정까지 마감된 호출 레코드 — 미완 축에 들어가지 않는 형상."""
+    """판정까지 마감된 호출 레코드 — 미완 기준에 들어가지 않는 경우."""
     return [
         {"id": f"r{index}", "sequence": index, "number": index,
          "started_at": "2026-08-19T00:00:00+00:00",
@@ -697,20 +697,20 @@ def _verdict_records(count: int) -> list[dict]:
 
 
 @pytest.mark.parametrize(
-    ("gate", "count", "acked", "records"), _RETIRED_ACK_SHAPES,
+    ("review_ticket", "count", "acked", "records"), _RETIRED_ACK_SHAPES,
     ids=[shape[0] for shape in _RETIRED_ACK_SHAPES],
 )
-def test_real_ledger_shapes_drop_the_retired_field_and_recount(
-        external, capsys, gate, count, acked, records):
-    """실 장부 3형상 — 정규화가 폐기 필드를 버리고 집계가 **전체 레코드 기준**으로 다시
-    계산된다. 감지 여부는 호출부에 반환된다(`_gate_entry_with_retirement`) — 저장 여부를
-    모르는 `_gate_entry`(조회 seam) 자체는 침묵한다(F-002 — 정규화는 알림·영속을 하지 않는다).
+def test_real_record_shapes_drop_the_retired_field_and_recount(
+        external, capsys, review_ticket, count, acked, records):
+    """실 기록 파일 3경우 — 정규화가 폐기 필드를 버리고 집계가 **전체 레코드 기준**으로 다시
+    계산된다. 감지 여부는 호출부에 반환된다(`_review_ticket_entry_with_retirement`) — 저장 여부를
+    모르는 `_review_ticket_entry`(조회 함수) 자체는 침묵한다(F-002 — 정규화는 알림·영속을 하지 않는다).
 
-    존치되는 미완 축은 셋 다 0 이라 이 게이트들이 제거로 새로 막히지는 않는다(값 단언)."""
-    ledger = {gate: {"count": count, "acked_through": acked,
+    존치되는 미완 기준은 셋 다 0 이라 이 리뷰 집계 티켓들이 제거로 새로 막히지는 않는다(값 단언)."""
+    round_records = {review_ticket: {"count": count, "acked_through": acked,
                      "records": _verdict_records(records), "rounds": []}}
 
-    entry, retired_ack = reviewer_reservation._gate_entry_with_retirement(ledger, gate)
+    entry, retired_ack = reviewer_reservation._review_ticket_entry_with_retirement(round_records, review_ticket)
 
     assert "acked_through" not in entry
     assert retired_ack == acked
@@ -724,32 +724,32 @@ def test_report_never_warns_about_the_retired_field_across_repeat_reads(
     """F-002 — 읽기 전용 report 는 폐기 필드를 감지해도 알리지 않는다(진단 정책 분리).
 
     영속하지 못하는 호출이 '1회' 고지를 반복하는 게 결함이었다 — 같은 파일을 report 로 2회
-    읽어도(원본 장부는 무변경이라 매번 재검출된다) 두 호출 모두 침묵하고 산출은 같다."""
-    ledger = {"T-0590": {"count": 6, "acked_through": 4,
+    읽어도(원본 기록 파일은 무변경이라 매번 재검출된다) 두 호출 모두 침묵하고 산출은 같다."""
+    round_records = {"T-0590": {"count": 6, "acked_through": 4,
                           "records": _verdict_records(6), "rounds": []}}
-    snapshot = json.loads(json.dumps(ledger))
+    snapshot = json.loads(json.dumps(round_records))
 
-    first = reviewer_rounds.render_rounds_report(ledger, gate="T-0590")
+    first = reviewer_rounds.render_rounds_report(round_records, review_ticket="T-0590")
     assert capsys.readouterr().err == ""
-    second = reviewer_rounds.render_rounds_report(ledger, gate="T-0590")
+    second = reviewer_rounds.render_rounds_report(round_records, review_ticket="T-0590")
     assert capsys.readouterr().err == ""
 
     assert first == second
     assert "acked_through" not in first
-    assert ledger == snapshot                    # 조회가 원본 장부를 고치지 않는다
+    assert round_records == snapshot                    # 조회가 원본 기록 파일을 고치지 않는다
 
 
-def test_blocked_gate_warns_about_the_retired_field_exactly_once_across_repeats(
+def test_blocked_review_ticket_warns_about_the_retired_field_exactly_once_across_repeats(
         external, monkeypatch, tmp_path, capsys):
     """F-002 — mutation/차단 경로는 폐기 필드 정리를 거부 전에 저장하고 1회만 고지한다.
 
-    수렴 상한(기본 2)이 이미 소진된 게이트라 두 호출 모두 거부(rc=EXIT_ROUND_LIMIT_EXCEEDED)로
-    끝나지만, 정리된 장부는 첫 호출에서 이미 저장되므로 두 번째 호출은 조용하다(반복 고지가
+    마무리 상한(기본 2)이 이미 소진된 리뷰 집계 티켓이라 두 호출 모두 거부(rc=EXIT_ROUND_LIMIT_EXCEEDED)로
+    끝나지만, 정리된 기록 파일은 첫 호출에서 이미 저장되므로 두 번째 호출은 조용하다(반복 고지가
     F-002 결함이었다)."""
     _wire(external, monkeypatch, tmp_path, conf=_ENABLED_CONF)
-    ledger_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    ledger_path.write_text(json.dumps({"T-0620": {
+    record_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(json.dumps({"T-0620": {
         "count": 2, "acked_through": 3,
         "records": _verdict_records(2),
         "rounds": [
@@ -762,7 +762,7 @@ def test_blocked_gate_warns_about_the_retired_field_exactly_once_across_repeats(
     assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     first_err = capsys.readouterr().err
     assert "acked_through=3" in first_err
-    assert "acked_through" not in _ledger(external, tmp_path)["T-0620"]
+    assert "acked_through" not in _read_records(external, tmp_path)["T-0620"]
 
     assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     second_err = capsys.readouterr().err
@@ -778,29 +778,29 @@ def test_blocked_gate_warns_about_the_retired_field_exactly_once_across_repeats(
 )
 def test_removed_confirm_fix_flag_is_rejected_without_side_effects(
         external, monkeypatch, tmp_path, capsys, argv):
-    """폐지한 fix 후 재리뷰 표면은 argparse 에서 거부되고 호출·장부 쓰기가 없다."""
+    """폐지한 fix 후 재리뷰 플래그는 argparse 에서 거부되고 호출·기록 쓰기가 없다."""
     calls = _wire(external, monkeypatch, tmp_path)
-    ledger_path = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))
+    record_path.parent.mkdir(parents=True, exist_ok=True)
     original = b'{"sentinel": {"count": 1}}\n'
-    ledger_path.write_bytes(original)
+    record_path.write_bytes(original)
 
     with pytest.raises(SystemExit):
         external.main(argv)
 
     assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
     assert calls["n"] == 0
-    assert ledger_path.read_bytes() == original
+    assert record_path.read_bytes() == original
 
 
-# ── --ack-rounds 폐지: 어느 표면에서도 통하지 않는다 (DoD) ────────────────────
+# ── --ack-rounds 폐지: 어느 명령에서도 통하지 않는다 (DoD) ────────────────────
 
 
 def test_ack_rounds_is_refused_and_changes_nothing(
         external, monkeypatch, tmp_path, capsys):
-    """`--ack-rounds` 호출은 거부된다 — 호출 0·장부 무변경·처방 안내 (연장 경로 폐지).
+    """`--ack-rounds` 호출은 거부된다 — 호출 0·기록 무변경·해결 방법 안내 (연장 경로 폐지).
 
-    플래그가 다시 통하면 차단 축(수렴·미완)이 사람 승인으로 열리는 옛 구조가 되살아난다."""
+    플래그가 다시 통하면 차단 기준(마무리·미완)이 사람 승인으로 열리는 옛 구조가 되살아난다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_ROUNDS_MAX_OFF)
     argv = ["--review-ticket", "T-0101", "--paths", "x.py"]
     for _ in range(4):
@@ -809,8 +809,8 @@ def test_ack_rounds_is_refused_and_changes_nothing(
 
     assert external.main(argv + ["--ack-rounds"]) == 1   # 승인이 아니라 거부
     assert calls["n"] == 4                               # 호출 없음
-    entry = _ledger(external, tmp_path)[argv[1]]
-    assert entry["count"] == 4                           # 장부 무변경
+    entry = _read_records(external, tmp_path)[argv[1]]
+    assert entry["count"] == 4                           # 기록 무변경
     assert "acked_through" not in entry                  # 폐지 필드는 되살아나지 않는다
     err = capsys.readouterr().err
     assert "폐지" in err
@@ -820,7 +820,7 @@ def test_ack_rounds_is_refused_and_changes_nothing(
 
 def test_ack_rounds_is_refused_even_on_the_report_surface(
         external, monkeypatch, tmp_path, capsys):
-    """조회면에서도 무시 경고로 흡수하지 않는다 — 폐지된 플래그는 한 곳에서만 답한다."""
+    """조회면에서도 무시 경고로 넘기지 않는다 — 폐지된 플래그는 한 곳에서만 답한다."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--rounds-report", "--ack-rounds"]) == 1
     err = capsys.readouterr().err
@@ -831,21 +831,21 @@ def test_ack_rounds_is_refused_even_on_the_report_surface(
 
 
 def test_dry_run_excluded_from_count(external, monkeypatch, tmp_path):
-    """dry-run 은 호출이 없어 라운드가 아니다 — 리뷰어 미호출·장부 미기록(무한 반복 무영향)."""
+    """dry-run 은 호출이 없어 라운드가 아니다 — 리뷰어 미호출·기록 미기록(무한 반복 무영향)."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(6):
         assert external.main(["--review-ticket", "T-0102", "--paths", "x.py", "--dry-run"]) == 0
     assert calls["n"] == 0
-    assert _ledger(external, tmp_path) == {}  # 장부 미생성
+    assert _read_records(external, tmp_path) == {}  # 기록 파일 미생성
 
 
 def test_empty_diff_excluded_from_count(external, monkeypatch, tmp_path):
-    """빈-diff 거부(T-0326)는 호출 전 fail 이라 카운트 제외 — 리뷰어 미호출·장부 미기록."""
+    """빈-diff 거부(T-0326)는 호출 전 fail 이라 카운트 제외 — 리뷰어 미호출·기록 미기록."""
     calls = _wire(external, monkeypatch, tmp_path, diff="")
     for _ in range(6):
         assert external.main(["--review-ticket", "T-0103", "--paths", "x.py"]) == 1
     assert calls["n"] == 0
-    assert _ledger(external, tmp_path) == {}
+    assert _read_records(external, tmp_path) == {}
 
 
 def test_timeout_uses_separate_incomplete_retry_limit(external, monkeypatch, tmp_path, capsys):
@@ -860,7 +860,7 @@ def test_timeout_uses_separate_incomplete_retry_limit(external, monkeypatch, tmp
     for i in range(1, 3):
         assert external.main(argv) == 1, f"round {i} 는 FALLBACK(rc=1)"
     assert calls["n"] == 2
-    entry = _ledger(external, tmp_path)[argv[1]]
+    entry = _read_records(external, tmp_path)[argv[1]]
     assert entry["count"] == 2
     assert all(row["finished_at"] and not row["verdict"] for row in entry["records"])
 
@@ -876,12 +876,12 @@ def test_spawn_failure_refunds_reservation(external, monkeypatch, tmp_path):
 
     MF-A: 자식 프로세스가 확실히 시작되지 않았으면(실행 파일 부재 등) 아무것도 호출되지 않았으므로
     예약한 라운드를 되돌린다. 6회 스폰 실패해도 count 는 0 으로 남아 정상 리뷰가 조기 차단되지 않음을
-    단언한다(설치/PATH 문제로 게이트가 막히면 안 된다)."""
+    단언한다(설치/PATH 문제로 검사가 막히면 안 된다)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     for _ in range(6):
         assert external.main(["--review-ticket", "T-0114", "--paths", "x.py"]) == 1
     assert calls["n"] == 6                       # 호출은 시도됨(리뷰어 호출)
-    assert _ledger(external, tmp_path)["T-0114"]["count"] == 0  # 예약 환불 → never blocked
+    assert _read_records(external, tmp_path)["T-0114"]["count"] == 0  # 예약 환불 → never blocked
 
 
 def test_spawn_failure_refund_is_announced_not_silent(
@@ -889,7 +889,7 @@ def test_spawn_failure_refund_is_announced_not_silent(
 ):
     """호출 0 으로 되돌린 라운드는 **말하고** 되돌린다 (무음 환불 0 · T-0722).
 
-    조용히 환불하면 채택자에게 남는 사실이 "장부가 그대로다" 뿐이라, 교차검증이 한 번도 돌지 않은
+    조용히 환불하면 채택자에게 남는 사실이 "기록이 그대로다" 뿐이라, 교차검증이 한 번도 돌지 않은
     실행과 리뷰어를 선언하지 않은 실행이 같은 모양이 된다 — Windows 경로 분해 결함이 30여 릴리즈
     숨어 있던 경로다. 스폰된 실행(호출됐을 수 있음)에는 이 경고가 붙지 않음을 같이 못 박는다."""
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
@@ -899,36 +899,36 @@ def test_spawn_failure_refund_is_announced_not_silent(
     assert "라운드 환불" in err
     assert "실행되지 않았습니다" in err
     assert _FAIL_UNSTARTED["output"] in err       # 사유가 그 자리에 실린다
-    assert _ledger(external, tmp_path)["T-0722"]["count"] == 0
+    assert _read_records(external, tmp_path)["T-0722"]["count"] == 0
 
     _wire(external, monkeypatch, tmp_path, result=_FAIL_STARTED)
     assert external.main(["--review-ticket", "T-0723", "--paths", "x.py"]) == 1
     assert "라운드 환불" not in capsys.readouterr().err
-    assert _ledger(external, tmp_path)["T-0723"]["count"] == 1
+    assert _read_records(external, tmp_path)["T-0723"]["count"] == 1
 
 
 def test_killed_main_leaves_machine_counted_unfinished_record(
     external, monkeypatch, tmp_path,
 ):
     if "fork" not in multiprocessing.get_all_start_methods():
-        pytest.skip("process kill ledger test requires fork")
+        pytest.skip("process kill record test requires fork")
     _wire(external, monkeypatch, tmp_path)
 
     def _block(*args, **kwargs):
         time.sleep(30)
 
     monkeypatch.setattr(reviewer_run, "run_review", _block)
-    gate = "kill-gate"
+    review_ticket = "kill-review-ticket"
     process = multiprocessing.get_context("fork").Process(
         target=external.main,
-        args=(["--review-ticket", gate, "--paths", "x.py"],),
+        args=(["--review-ticket", review_ticket, "--paths", "x.py"],),
     )
     process.start()
     deadline = time.monotonic() + 5
     entry = None
     while time.monotonic() < deadline:
-        ledger = _ledger(external, tmp_path)
-        entry = ledger.get(gate)
+        round_records = _read_records(external, tmp_path)
+        entry = round_records.get(review_ticket)
         if entry and entry.get("records"):
             break
         time.sleep(0.02)
@@ -937,17 +937,17 @@ def test_killed_main_leaves_machine_counted_unfinished_record(
     process.join(timeout=5)
     assert not process.is_alive()
 
-    entry = _ledger(external, tmp_path)[gate]
+    entry = _read_records(external, tmp_path)[review_ticket]
     assert "finished_at" not in entry["records"][0]
     assert reviewer_reservation._round_counts(entry) == (1, 0, 1)
 
 
-# ── local.conf 노브 · --review-ticket 미지정 · ack-without-gate ──────────────────────
+# ── local.conf 노브 · --review-ticket 미지정 · ack-without-review-ticket ──────────────────────
 
 
 def test_the_retired_round_limit_key_supplies_nothing(
         external, monkeypatch, tmp_path):
-    """제거된 축의 키를 적어도 판정 라운드는 막히지 않는다 (죽은 키가 되살아나지 않는다)."""
+    """제거된 기준의 키를 적어도 판정 라운드는 막히지 않는다 (죽은 키가 되살아나지 않는다)."""
     conf = {**_ROUNDS_MAX_OFF, "additional_reviewer.round_limit": "1"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     argv = ["--review-ticket", "T-0105", "--paths", "x.py"]
@@ -956,52 +956,52 @@ def test_the_retired_round_limit_key_supplies_nothing(
     assert calls["n"] == 5
 
 
-def test_no_gate_is_not_ledgered(external, monkeypatch, tmp_path):
-    """명시 `--no-review-ticket` 실행은 상한 대상 밖 — 무제한 진행·장부 미생성."""
+def test_no_review_ticket_is_not_recorded(external, monkeypatch, tmp_path):
+    """명시 `--no-review-ticket` 실행은 상한 대상 밖 — 무제한 진행·기록 파일 미생성."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(8):
         assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     assert calls["n"] == 8
-    assert _ledger(external, tmp_path) == {}
+    assert _read_records(external, tmp_path) == {}
 
 
-def test_ack_rounds_without_gate_is_refused_too(external, monkeypatch, tmp_path, capsys):
-    """`--ack-rounds` 는 --review-ticket 유무와 무관하게 거부된다 (폐지는 형상별 예외가 없다)."""
+def test_ack_rounds_without_review_ticket_is_refused_too(external, monkeypatch, tmp_path, capsys):
+    """`--ack-rounds` 는 --review-ticket 유무와 무관하게 거부된다 (폐지는 경우별 예외가 없다)."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--ack-rounds", "--paths", "x.py"]) == 1
     assert "폐지" in capsys.readouterr().err
     assert calls["n"] == 0
-    assert _ledger(external, tmp_path) == {}
+    assert _read_records(external, tmp_path) == {}
 
 
-def test_ack_wave_without_gate_still_warns_and_proceeds(
+def test_session_budget_reset_without_review_ticket_still_warns_and_proceeds(
         external, monkeypatch, tmp_path, capsys):
-    """`--reset-session-budget` 은 종전대로 경고 후 진행 — 리셋할 게이트 장부가 없을 뿐 실행은 정상이다."""
+    """`--reset-session-budget` 은 종전대로 경고 후 진행 — 리셋할 리뷰 집계 티켓 기록이 없을 뿐 실행은 정상이다."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--reset-session-budget", "--paths", "x.py", "--no-review-ticket"]) == 0
     assert "--review-ticket 과 함께" in capsys.readouterr().err
-    assert _ledger(external, tmp_path) == {}
+    assert _read_records(external, tmp_path) == {}
 
 
-# ── 장부 위치: per-clone `.local/` (git-ignored) ────────────────────────────
+# ── 기록 파일 위치: per-clone `.local/` (git-ignored) ────────────────────────────
 
 
-def test_ledger_written_to_local_scratch(external, monkeypatch, tmp_path):
-    """장부는 per-clone `.project_manager/.local/review_rounds.json` 에 기록된다 (board 오염 없음)."""
+def test_record_written_to_local_scratch(external, monkeypatch, tmp_path):
+    """기록 파일은 per-clone `.project_manager/.local/review_rounds.json` 에 기록된다 (board 오염 없음)."""
     _wire(external, monkeypatch, tmp_path)
     external.main(["--review-ticket", "T-0106", "--paths", "x.py"])
-    ledger_file = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
-    assert ledger_file.is_file()
-    assert json.loads(ledger_file.read_text(encoding="utf-8"))["T-0106"]["count"] == 1
+    record_file = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    assert record_file.is_file()
+    assert json.loads(record_file.read_text(encoding="utf-8"))["T-0106"]["count"] == 1
 
 
 # ── 원자 write · 임계 구역 (MF-B) ───────────────────────────────────────────
 
 
-def test_save_ledger_uses_unique_tmp_names(external, tmp_path, monkeypatch):
+def test_save_record_uses_unique_tmp_names(external, tmp_path, monkeypatch):
     """저장 tmp 는 pid+uuid 로 unique — 고정 `.tmp` 충돌(카운트 유실·write 예외) 없음 (MF-B).
 
-    원자 교체 seam 을 가로채 tmp 경로를 캡처한다. 두 번 저장하면 서로 다른 tmp 이름(pid 포함)이라
+    원자 교체 공용 함수를 가로채 tmp 경로를 캡처한다. 두 번 저장하면 서로 다른 tmp 이름(pid 포함)이라
     동시 실행이 같은 임시 파일을 밟지 않는다 — 순차 호출로 충돌 부재를 단언(실 동시성 스트레스 불요)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     seen: list[str] = []
@@ -1009,30 +1009,30 @@ def test_save_ledger_uses_unique_tmp_names(external, tmp_path, monkeypatch):
     def capture(src, dst):
         seen.append(str(src))
 
-    # 장부는 review_rounds 가, shell 소비 잔여 표식은 board 가 각자 자기 seam 으로 교체한다 —
+    # 기록 파일은 review_rounds 가, shell 이 읽는 남은 일 표시는 board 가 각자 자기 함수로 교체한다 —
     # 두 지점 모두 건다. `_load_board` 는 호출마다 새 모듈을 만들므로 인스턴스를 고정한 뒤 건다
     # (고정하지 않으면 두 번째 저장이 패치 안 된 새 모듈로 쓴다).
     _patch_atomic_replace(monkeypatch, review_rounds, capture)
     _patch_atomic_replace(monkeypatch, release, capture)
-    reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), {"a": 1})
-    reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), {"b": 2})
-    ledger_tmps = [s for s in seen if "review_rounds.json." in s]
+    reviewer_reservation._save_round_records(pm_paths.home_at(external.REPO), {"a": 1})
+    reviewer_reservation._save_round_records(pm_paths.home_at(external.REPO), {"b": 2})
+    record_tmps = [s for s in seen if "review_rounds.json." in s]
     marker_tmps = [s for s in seen if "release-must-fix." in s]
-    assert len(ledger_tmps) == 2 and ledger_tmps[0] != ledger_tmps[1]  # unique
-    assert all(f".{external.os.getpid()}." in s for s in ledger_tmps)  # pid 포함
-    assert all(s.endswith(".tmp") for s in ledger_tmps)
-    assert len(marker_tmps) == 2, "장부 저장마다 shell 소비 잔여 표식도 원자 교체해야 한다"
+    assert len(record_tmps) == 2 and record_tmps[0] != record_tmps[1]  # unique
+    assert all(f".{external.os.getpid()}." in s for s in record_tmps)  # pid 포함
+    assert all(s.endswith(".tmp") for s in record_tmps)
+    assert len(marker_tmps) == 2, "기록 파일 저장마다 shell 이 읽는 남은 일 표시도 원자 교체해야 한다"
 
 
 def _flaky_round_lock(external, monkeypatch, *, fail_on: int):
     """`fail_on` 번째 진입에서만 OSError 를 내는 라운드 락 대역 (락 경합 재현).
 
-    공용 seam 은 프리미티브 획득 실패를 삼키지 않고 올린다(무락 진행 폐지) — 그 예외를 두 구간
+    공용 함수는 프리미티브 획득 실패를 삼키지 않고 올린다(무락 진행 폐지) — 그 예외를 두 구간
     (예약·마감)이 각각 어떻게 번역하는지 본다. Windows `msvcrt.locking` 재시도 소진이 실 유입원.
     """
     import contextlib as _contextlib
 
-    real_lock = review_rounds._round_ledger_lock
+    real_lock = review_rounds._round_record_lock
     entries = {"n": 0}
 
     @_contextlib.contextmanager
@@ -1043,7 +1043,7 @@ def _flaky_round_lock(external, monkeypatch, *, fail_on: int):
         with real_lock(_home):
             yield
 
-    monkeypatch.setattr(review_rounds, "_round_ledger_lock", _flaky)
+    monkeypatch.setattr(review_rounds, "_round_record_lock", _flaky)
     return entries
 
 
@@ -1079,30 +1079,30 @@ def test_lock_failure_at_finish_keeps_the_verdict_exit_code(
     assert "라운드 기록 마감 실패" in err
     assert "미완으로 남아" in err
     # 마감 못 한 레코드는 finished_at 없이 남아 다음 실행이 보수적으로(미완) 센다.
-    record = _ledger(external, tmp_path)["T-0565"]["records"][0]
+    record = _read_records(external, tmp_path)["T-0565"]["records"][0]
     assert "finished_at" not in record
 
 
-def test_ledger_lock_acquires_and_releases(external, tmp_path, monkeypatch):
-    """`_round_ledger_lock()` 이 락 파일을 만들고 획득·해제한다 — 순차(비중첩) 재획득 가능 (MF-B).
+def test_record_lock_acquires_and_releases(external, tmp_path, monkeypatch):
+    """`_round_record_lock()` 이 락 파일을 만들고 획득·해제한다 — 순차(비중첩) 재획득 가능 (MF-B).
 
     확인→예약→저장을 이 컨텍스트로 감싸 동시 실행을 직렬화한다. 재진입 금지(board_lock 관례)이므로
     예약/환불은 각자 독립 구간 — 여기선 순차 재획득이 데드락 없이 됨을 단언한다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
-    with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):
-        assert review_rounds._round_ledger_lock_path(pm_paths.home_at(external.REPO)).exists()  # 락 파일 생성
-    with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):                     # 해제 후 재획득(순차)
+    with review_rounds._round_record_lock(pm_paths.home_at(external.REPO)):
+        assert review_rounds._round_record_lock_path(pm_paths.home_at(external.REPO)).exists()  # 락 파일 생성
+    with review_rounds._round_record_lock(pm_paths.home_at(external.REPO)):                     # 해제 후 재획득(순차)
         pass
 
 
 def test_reserve_check_save_under_single_lock(external, monkeypatch, tmp_path):
-    """게이트 예약 경로가 단일 임계 구역(확인·예약·저장)을 통과함을 장부 정합으로 확인 (MF-B).
+    """리뷰 집계 티켓 예약 경로가 단일 임계 구역(확인·예약·저장)을 통과함을 기록 일치로 확인 (MF-B).
 
-    lock 컨텍스트를 계측해 게이트 통과당 정확히 한 번 잡히고(중첩 아님) 예약이 원자적으로 기록됨을
-    단언한다 — 잔여 슬롯 이중 통과(무락 RMW)로 인한 상한 우회를 닫는다."""
+    lock 컨텍스트를 계측해 검사 통과당 정확히 한 번 잡히고(중첩 아님) 예약이 원자적으로 기록됨을
+    단언한다 — 남은 슬롯 이중 통과(무락 RMW)로 인한 상한 우회를 닫는다."""
     _wire(external, monkeypatch, tmp_path)
     depth = {"cur": 0, "max": 0, "enters": 0}
-    real_lock = review_rounds._round_ledger_lock
+    real_lock = review_rounds._round_record_lock
 
     import contextlib
 
@@ -1117,17 +1117,17 @@ def test_reserve_check_save_under_single_lock(external, monkeypatch, tmp_path):
         finally:
             depth["cur"] -= 1
 
-    monkeypatch.setattr(review_rounds, "_round_ledger_lock", _instrumented)
+    monkeypatch.setattr(review_rounds, "_round_record_lock", _instrumented)
     assert external.main(["--review-ticket", "T-0116", "--paths", "x.py"]) == 0
     assert depth["max"] == 1          # 재진입/중첩 없음 (예약 구간 원자)
     assert depth["enters"] == 2       # 실행 전 등재 + 종료 시 마감
-    assert _ledger(external, tmp_path)["T-0116"]["count"] == 1
+    assert _read_records(external, tmp_path)["T-0116"]["count"] == 1
 
 
-# ══ 라운드별 산출 장부 + wave 예산 (T-0583) ═════════════════════════════════
+# ══ 라운드별 산출 기록 + 세션 호출 예산 (T-0583) ═════════════════════════════════
 # 라운드 count 만으로는 "그 라운드가 실결함을 냈는가"를 기계로 확인할 수 없어 비용 적정성 판단이
-# PM 자기보고에 의존했다. 게이트 항목에 산출 이력(`rounds`)을 append 하고, 게이트별 상한과 별개인
-# wave 단위 총 예산(`wave` 절)을 둔다. 기록은 무조건이고 hard 거부는 예산 축뿐이다.
+# PM 자기보고에 의존했다. 리뷰 집계 티켓 항목에 산출 이력(`rounds`)을 append 하고, 리뷰 집계 티켓별 상한과 별개인
+# 세션 호출 예산(`SESSION_BUDGET_SECTION_KEY` 절)을 둔다. 기록은 무조건이고 hard 거부는 예산 기준뿐이다.
 
 # 리뷰어 응답을 실은 결과 템플릿 — 산출 파싱은 **회신 채널**(answer)만 본다.
 _PASS_ANSWER = (
@@ -1137,7 +1137,7 @@ _PASS_ANSWER = (
 )
 _REJECT_ANSWER = (
     "판정: 반려\n\n"
-    "**must-fix** (반드시 수정):\n- 장부를 락 없이 쓴다\n- 종료 코드가 판정과 어긋난다\n\n"
+    "**must-fix** (반드시 수정):\n- 기록 파일을 락 없이 쓴다\n- 종료 코드가 판정과 어긋난다\n\n"
     "**suggestion** (권장):\n- 주석 보강\n"
 )
 _PASS_WITH_ANSWER = {
@@ -1150,7 +1150,7 @@ _REJECT_WITH_ANSWER = {
     "verdict": {"has_must_fix": True, "has_pass": False}, "file": None,
     "failed": False, "started": True, "any_must_fix": True, "all_pass": False,
 }
-# 오염 진단이 붙은 출력 — 판정 표면에서 무효화되므로 결함 수도 세지 않아야 한다.
+# 오염 진단이 붙은 출력 — 판정 결과에서 무효화되므로 결함 수도 세지 않아야 한다.
 _CONTAMINATED_WITH_ANSWER = {
     **_REJECT_WITH_ANSWER,
     "contamination": ("additional_reviewer_codex_20260807_1.txt",),
@@ -1170,199 +1170,199 @@ def test_output_contamination_reads_old_and_new_raw_prefixes(external):
     )
 
 
-def _wave(external, tmp_path) -> dict:
-    """저장된 장부의 wave 절 (절 부재 = 빈 dict)."""
-    return _ledger(external, tmp_path).get(reviewer_budget.SESSION_BUDGET_SECTION_KEY, {})
+def _session_budget(external, tmp_path) -> dict:
+    """저장된 기록 파일의 세션 호출 예산 절 (절 부재 = 빈 dict)."""
+    return _read_records(external, tmp_path).get(reviewer_budget.SESSION_BUDGET_SECTION_KEY, {})
 
 
-def _wave_budget_state(external, tmp_path) -> dict:
-    """wave 절에서 예산 좌표만 — 세대 `id` 는 매번 새로 발급되므로 값 비교에서 뺀다."""
-    state = dict(_wave(external, tmp_path))
+def _session_budget_progress(external, tmp_path) -> dict:
+    """세션 호출 예산 절에서 예산 좌표만 — 버전 `id` 는 매번 새로 발급되므로 값 비교에서 뺀다."""
+    state = dict(_session_budget(external, tmp_path))
     state.pop("id", None)
     return state
 
 
-# ── 순수 헬퍼: wave 예산 노브 (_wave_budget) ────────────────────────────────
+# ── 순수 헬퍼: 세션 호출 예산 노브 (_wave_budget) ────────────────────────────────
 
 
-def test_wave_budget_default(external):
-    """미설정 → 레지스트리 기본값(24 = 게이트 상한 4 × 동시 진행 6티켓 어림)."""
+def test_session_budget_default(external):
+    """미설정 → 레지스트리 기본값(24 = 리뷰 집계 티켓 상한 4 × 동시 진행 6티켓 어림)."""
     assert reviewer_target._wave_budget({}) == 24
 
 
-def test_wave_budget_knob_override(external):
+def test_session_budget_knob_override(external):
     """local.conf additional_reviewer.session_budget 노브가 예산을 바꾼다 (채택자 조정)."""
     assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "6"}) == 6
     assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "0"}) == 0
 
 
-def test_wave_budget_garbage_and_negative_fall_back(external):
+def test_session_budget_garbage_and_negative_fall_back(external):
     """비정수·음수는 기본값으로 fail-soft (라운드 상한 노브와 같은 규칙)."""
     assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "x"}) == 24
     assert reviewer_target._wave_budget({"additional_reviewer.session_budget": "-3"}) == 24
 
 
-# ── 순수 헬퍼: 구세대 장부 하위호환 (rounds/wave 절 없음) ────────────────────
+# ── 순수 헬퍼: 옛 버전 기록 하위호환 (rounds/세션 호출 예산 절 없음) ────────────────────
 
 
-def test_legacy_gate_entry_without_rounds_normalizes_to_empty_history(external, capsys):
-    """`rounds` 없는 구세대 항목도 정상 로드된다 — count 는 그대로, 이력만 빈 배열로 시작.
+def test_legacy_review_ticket_entry_without_rounds_normalizes_to_empty_history(external, capsys):
+    """`rounds` 없는 옛 버전 항목도 정상 로드된다 — count 는 그대로, 이력만 빈 배열로 시작.
 
-    폐지 필드는 승계 없이 떨어진다. 감지 여부는 `_gate_entry_with_retirement` 가 호출부에
+    폐지 필드는 승계 없이 떨어진다. 감지 여부는 `_review_ticket_entry_with_retirement` 가 호출부에
     반환하고(F-002), 알림·영속은 호출부(mutation 경로) 책임이라 정규화 자체는 침묵한다."""
-    ledger = {"T-0301": {"count": 3, "acked_through": 1}}
-    entry, retired_ack = reviewer_reservation._gate_entry_with_retirement(ledger, "T-0301")
+    round_records = {"T-0301": {"count": 3, "acked_through": 1}}
+    entry, retired_ack = reviewer_reservation._review_ticket_entry_with_retirement(round_records, "T-0301")
     assert entry["count"] == 3
     assert "acked_through" not in entry
     assert entry["rounds"] == []
     assert retired_ack == 1
     assert capsys.readouterr().err == ""
-    # 정규화가 키를 이미 떨궜으므로 같은 장부를 다시 읽어도 감지되지 않는다(자연히 1회).
-    assert reviewer_reservation._gate_entry(ledger, "T-0301")["count"] == 3
+    # 정규화가 키를 이미 떨궜으므로 같은 기록을 다시 읽어도 감지되지 않는다(자연히 1회).
+    assert reviewer_reservation._review_ticket_entry(round_records, "T-0301")["count"] == 3
     assert capsys.readouterr().err == ""
 
 
-def test_legacy_ledger_without_wave_section_starts_a_fresh_wave(external):
-    """`wave` 절이 없거나 손상이면 새 wave(미시작·spent 0)로 정규화하고 장부에 심는다.
+def test_legacy_record_without_session_budget_section_starts_a_fresh_session_budget(external):
+    """세션 호출 예산 절이 없거나 손상이면 새 세션 호출 예산(미시작·spent 0)으로 정규화하고 기록에 넣는다.
 
-    세대 id 가 없던 구세대 절에는 여기서 하나 발급해 심는다 — 이후 예약/환불이 같은 좌표를 쓴다."""
-    ledger = {"T-0301": {"count": 3}}
-    state = reviewer_reservation._wave_state(ledger)
+    버전 id 가 없던 옛 버전 절에는 여기서 하나 발급해 넣는다 — 이후 예약/환불이 같은 좌표를 쓴다."""
+    round_records = {"T-0301": {"count": 3}}
+    state = reviewer_reservation._session_budget_state(round_records)
     assert (state["started"], state["spent"]) == (None, 0)
     assert isinstance(state["id"], str) and state["id"]
-    assert ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY] is state
+    assert round_records[reviewer_budget.SESSION_BUDGET_SECTION_KEY] is state
 
-    corrupt = reviewer_reservation._wave_state({"wave": {"spent": "bad", "started": 7, "id": 9}})
+    corrupt = reviewer_reservation._session_budget_state({reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"spent": "bad", "started": 7, "id": 9}})
     assert (corrupt["started"], corrupt["spent"]) == (None, 0)
     assert isinstance(corrupt["id"], str) and corrupt["id"]
 
 
-def test_wave_state_keeps_an_existing_generation_id(external):
-    """이미 세대 id 가 있으면 그대로 둔다 — 정규화가 세대를 갈아치우면 환불 판정이 무의미해진다."""
-    ledger = {"wave": {"id": "gen-1", "started": "2026-08-07T00:00:00+00:00", "spent": 2}}
-    assert reviewer_reservation._wave_state(ledger) == {
+def test_session_budget_state_keeps_an_existing_generation_id(external):
+    """이미 버전 id 가 있으면 그대로 둔다 — 정규화가 버전을 갈아치우면 환불 판정이 무의미해진다."""
+    round_records = {reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"id": "gen-1", "started": "2026-08-07T00:00:00+00:00", "spent": 2}}
+    assert reviewer_reservation._session_budget_state(round_records) == {
         "id": "gen-1", "started": "2026-08-07T00:00:00+00:00", "spent": 2,
     }
 
 
-def test_gate_names_skip_the_reserved_wave_key(external):
-    """wave 는 예약 키라 게이트 집계 순회에서 빠진다 (예산 절이 게이트로 보이면 안 된다)."""
-    ledger = {"T-0302": {"count": 1}, reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"spent": 1}}
-    assert reviewer_budget._gate_names(ledger) == ["T-0302"]
+def test_review_ticket_names_skip_the_reserved_session_budget_key(external):
+    """세션 호출 예산 절은 예약 키라 리뷰 집계 티켓 집계 순회에서 빠진다 (예산 절이 리뷰 집계 티켓으로 보이면 안 된다)."""
+    round_records = {"T-0302": {"count": 1}, reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"spent": 1}}
+    assert reviewer_budget._review_ticket_names(round_records) == ["T-0302"]
 
 
-# ── 예약 키 충돌 차단 (게이트 이름 = wave) ──────────────────────────────────
-# 두 축이 한 dict 를 공유하므로 같은 이름을 게이트로 쓰면 `_gate_entry` 와 `_wave_state` 가 한
-# 항목을 서로 덮어써 게이트 count 는 저장되지 않고 wave 예산은 매 실행 되살아난다. 게이트 이름
-# 형식은 강제하지 않는다(장부 실측: `wave4-b1` 류 자유 문자열 실사용) — 예약 키만 거부한다.
+# ── 예약 키 충돌 차단 (리뷰 집계 티켓 이름 = 예약 키) ──────────────────────────────────
+# 두 부분이 한 dict 를 공유하므로 같은 이름을 리뷰 집계 티켓으로 쓰면 `_review_ticket_entry` 와 `_session_budget_state` 가 한
+# 항목을 서로 덮어써 리뷰 집계 티켓 count 는 저장되지 않고 세션 호출 예산은 매 실행 되살아난다. 리뷰 집계 티켓 이름
+# 형식은 강제하지 않는다(기록 파일 실측: `batch4-b1` 류 자유 문자열 실사용) — 예약 키만 거부한다.
 
 
-def test_reserved_gate_name_is_refused_before_any_effect(
+def test_reserved_review_ticket_name_is_refused_before_any_effect(
         external, monkeypatch, tmp_path, capsys):
-    """`--review-ticket wave` 는 리뷰어 호출·장부 접근 전에 거부된다 (호출 0·장부 미생성)."""
+    """예약 키를 `--review-ticket` 으로 주면 리뷰어 호출·기록 파일 접근 전에 거부된다 (호출 0·기록 파일 미생성)."""
     calls = _wire(external, monkeypatch, tmp_path)
     rc = external.main(["--review-ticket", reviewer_budget.SESSION_BUDGET_SECTION_KEY, "--paths", "x.py"])
     err = capsys.readouterr().err
     assert rc == 1
     assert calls["n"] == 0
-    assert _ledger(external, tmp_path) == {}
-    assert "예약 키" in err and "--review-ticket wave" in err
+    assert _read_records(external, tmp_path) == {}
+    assert "예약 키" in err and f"--review-ticket {reviewer_budget.SESSION_BUDGET_SECTION_KEY}" in err
     assert "형식 제약은 없습니다" in err     # 하위호환: 자유 이름은 계속 허용
 
 
-def test_reserved_gate_name_is_refused_on_the_report_surface_too(
+def test_reserved_review_ticket_name_is_refused_on_the_report_surface_too(
         external, monkeypatch, tmp_path, capsys):
-    """조회면도 같은 이름을 게이트로 부르지 않는다 (한 곳에서 거르는 단일 판정)."""
+    """조회면도 같은 이름을 리뷰 집계 티켓으로 부르지 않는다 (한 곳에서 거르는 단일 판정)."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--rounds-report", "--review-ticket", reviewer_budget.SESSION_BUDGET_SECTION_KEY]) == 1
     assert "예약 키" in capsys.readouterr().err
 
 
-def test_free_form_gate_names_still_work(external, monkeypatch, tmp_path):
-    """T-NNNN 이 아닌 실사용 게이트 이름(wave4-b1)은 그대로 동작한다 (형식 강제 없음)."""
+def test_free_form_review_ticket_names_still_work(external, monkeypatch, tmp_path):
+    """T-NNNN 이 아닌 실사용 리뷰 집계 티켓 이름(batch4-b1)은 그대로 동작한다 (형식 강제 없음)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--review-ticket", "wave4-b1", "--paths", "x.py"]) == 0
-    assert _ledger(external, tmp_path)["wave4-b1"]["count"] == 1
+    assert external.main(["--review-ticket", "batch4-b1", "--paths", "x.py"]) == 0
+    assert _read_records(external, tmp_path)["batch4-b1"]["count"] == 1
 
 
-def test_gate_entry_refuses_the_reserved_key_loudly(external):
-    """예약 키를 게이트로 정규화하려는 호출은 fail-loud — 두 축의 무언의 상호 덮어쓰기 차단."""
-    ledger: dict = {}
+def test_review_ticket_entry_refuses_the_reserved_key_loudly(external):
+    """예약 키를 리뷰 집계 티켓으로 정규화하려는 호출은 fail-loud — 두 부분의 무언의 상호 덮어쓰기 차단."""
+    round_records: dict = {}
     with pytest.raises(ValueError, match="예약 키"):
-        reviewer_reservation._gate_entry(ledger, reviewer_budget.SESSION_BUDGET_SECTION_KEY)
-    assert ledger == {}
+        reviewer_reservation._review_ticket_entry(round_records, reviewer_budget.SESSION_BUDGET_SECTION_KEY)
+    assert round_records == {}
 
 
-def test_wave_state_replaces_a_legacy_gate_entry_loudly(external, capsys):
-    """예약 키 자리에 옛 게이트 항목이 있으면 경고 후 wave 절로 대체한다 (조용한 삭제 금지)."""
-    ledger = {reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"count": 4, "records": []}}
-    state = reviewer_reservation._wave_state(ledger)
+def test_session_budget_state_replaces_a_legacy_review_ticket_entry_loudly(external, capsys):
+    """예약 키 자리에 옛 리뷰 집계 티켓 항목이 있으면 경고 후 세션 호출 예산 절로 대체한다 (조용한 삭제 금지)."""
+    round_records = {reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"count": 4, "records": []}}
+    state = reviewer_reservation._session_budget_state(round_records)
     assert (state["started"], state["spent"]) == (None, 0)
     err = capsys.readouterr().err
     assert "예약 키" in err and "재계산" in err
 
 
-def test_gate_entry_detection_survives_the_retired_marker_removal(external):
+def test_review_ticket_entry_detection_survives_the_retired_marker_removal(external):
     """마커에서 폐지 필드를 빼도 판별은 느슨해지지 않는다 — `count` 가 같은 자리를 덮는다.
 
-    구 장부의 게이트 항목은 `count` 와 폐지 필드를 **항상 함께** 갖는다(정규화가 둘을 같이
-    썼다). 그래서 폐지 필드만 있고 `count` 가 없는 항목은 실 장부에 없다."""
-    assert "acked_through" not in reviewer_budget._GATE_ENTRY_MARKERS
+    옛 기록의 리뷰 집계 티켓 항목은 `count` 와 폐지 필드를 **항상 함께** 갖는다(정규화가 둘을 같이
+    썼다). 그래서 폐지 필드만 있고 `count` 가 없는 항목은 실 기록 파일에 없다."""
+    assert "acked_through" not in reviewer_budget._REVIEW_TICKET_ENTRY_MARKERS
     old_shape = {"count": 4, "acked_through": 2, "records": [], "rounds": []}
-    assert reviewer_budget._wave_frame_corruption(old_shape) == "예약 키 `wave` 자리의 옛 리뷰 집계 티켓 항목"
-    # 정상 wave 절은 그대로 통과한다(판별이 넓어지지도 않는다).
-    assert reviewer_budget._wave_frame_corruption(
+    assert reviewer_budget._session_budget_frame_corruption(old_shape) == f"예약 키 `{reviewer_budget.SESSION_BUDGET_SECTION_KEY}` 자리의 옛 리뷰 집계 티켓 항목"
+    # 정상 세션 호출 예산 절은 그대로 통과한다(판별이 넓어지지도 않는다).
+    assert reviewer_budget._session_budget_frame_corruption(
         {"id": "abc", "started": None, "spent": 0}) is None
 
 
 @pytest.mark.parametrize(
     "corrupt",
-    ("wave", ["spent"], {"spent": "bad"}, {"spent": [1]}, {"spent": True}, {"spent": -1}),
+    ("not-a-dict", ["spent"], {"spent": "bad"}, {"spent": [1]}, {"spent": True}, {"spent": -1}),
 )
-def test_corrupt_wave_spend_is_recomputed_loudly(external, capsys, corrupt):
-    """손상 wave 값은 라운드 이력으로 재계산되고 그 사실을 고지한다 (무통보 리셋 아님).
+def test_corrupt_session_budget_spend_is_recomputed_loudly(external, capsys, corrupt):
+    """손상 세션 호출 예산 값은 라운드 이력으로 재계산되고 그 사실을 고지한다 (무통보 리셋 아님).
 
-    wave 는 유일한 예산 hard-block 축이라, 조용히 0 으로 접히면 상한이 무통보로 열린다 — 특히
+    세션 호출 예산은 유일한 예산 hard-block 기준이라, 조용히 0 으로 바뀌면 상한이 무통보로 열린다 — 특히
     음수는 예전 `max(0, …)` 보정에서 정상값처럼 통과해 `spent: -1` 한 줄 편집이 승인을 대신했다."""
-    state = reviewer_reservation._wave_state({reviewer_budget.SESSION_BUDGET_SECTION_KEY: corrupt})
+    state = reviewer_reservation._session_budget_state({reviewer_budget.SESSION_BUDGET_SECTION_KEY: corrupt})
     assert (state["started"], state["spent"]) == (None, 0)   # 이력이 없으면 재계산도 0
     err = capsys.readouterr().err
     assert "재계산" in err and "--reset-session-budget" in err
 
 
-def test_negative_wave_spent_is_recomputed_from_round_history(external, capsys):
-    """음수 spent 는 0 이 아니라 **wave 시작 이후 산출 수**로 되살린다 (좌표는 그대로)."""
-    ledger = {
+def test_negative_session_budget_spent_is_recomputed_from_round_history(external, capsys):
+    """음수 spent 는 0 이 아니라 **세션 호출 예산 시작 이후 산출 수**로 되살린다 (좌표는 그대로)."""
+    round_records = {
         "T-0335": {"count": 2, "rounds": [
             {"ts": "2026-08-07T01:00:00+00:00"}, {"ts": "2026-08-07T02:00:00+00:00"},
         ]},
-        "T-0336": {"count": 1, "rounds": [{"ts": "2026-08-06T23:00:00+00:00"}]},  # wave 이전
+        "T-0336": {"count": 1, "rounds": [{"ts": "2026-08-06T23:00:00+00:00"}]},  # 세션 호출 예산 시작 이전
         reviewer_budget.SESSION_BUDGET_SECTION_KEY: {
             "id": "gen-1", "started": "2026-08-07T00:00:00+00:00", "spent": -5,
         },
     }
-    state = reviewer_reservation._wave_state(ledger)
+    state = reviewer_reservation._session_budget_state(round_records)
     assert state["spent"] == 2                               # 시작 이후 산출만
     assert state["id"] == "gen-1"                            # 신뢰 가능한 좌표는 보존
     assert state["started"] == "2026-08-07T00:00:00+00:00"
     assert "음수" in capsys.readouterr().err
 
 
-def test_unusable_wave_frame_recomputes_from_all_rounds(external, capsys):
-    """절 자체가 못 쓸 형상이면 범위를 좁힐 근거가 없어 **전체** 산출을 센다 (보수적)."""
-    ledger = {
+def test_unusable_session_budget_frame_recomputes_from_all_rounds(external, capsys):
+    """절 자체가 못 쓸 상태면 범위를 좁힐 근거가 없어 **전체** 산출을 센다 (보수적)."""
+    round_records = {
         "T-0335": {"count": 2, "rounds": [
             {"ts": "2026-08-07T01:00:00+00:00"}, {"ts": "2026-08-06T23:00:00+00:00"},
         ]},
         reviewer_budget.SESSION_BUDGET_SECTION_KEY: "손상",
     }
-    assert reviewer_reservation._wave_state(ledger)["spent"] == 2
+    assert reviewer_reservation._session_budget_state(round_records)["spent"] == 2
     assert "재계산" in capsys.readouterr().err
 
 
-def test_missing_wave_section_stays_quiet(external, capsys):
-    """절 부재(구세대 장부·첫 실행)는 정상이라 조용하다 — 고지는 손상에만."""
-    reviewer_reservation._wave_state({"T-0333": {"count": 1}})
+def test_missing_session_budget_section_stays_quiet(external, capsys):
+    """절 부재(옛 버전 기록·첫 실행)는 정상이라 조용하다 — 고지는 손상에만."""
+    reviewer_reservation._session_budget_state({"T-0333": {"count": 1}})
     assert capsys.readouterr().err == ""
 
 
@@ -1382,7 +1382,7 @@ def test_must_fix_count_reads_only_the_answer_channel(external):
 def test_must_fix_count_is_null_when_the_section_is_absent(external):
     """must-fix 섹션이 아예 없는 응답은 0 이 아니라 None — "없음" 표기와 부재는 다르다.
 
-    항목 근거 없이 반려만 있는 응답을 '결함 0건 반려'로 박제하면 비용 판단이 거짓이 된다."""
+    항목 근거 없이 반려만 있는 응답을 '결함 0건 반려'로 기록하면 비용 판단이 거짓이 된다."""
     result = {
         "ok": True, "verdict": {"has_pass": False, "has_must_fix": True},
         "answer": "판정: 반려\n\n리뷰 본문: 락 순서가 위험합니다.\n",
@@ -1396,7 +1396,7 @@ def test_must_fix_count_is_null_when_the_section_is_absent(external):
 
 
 def test_must_fix_count_is_null_without_a_valid_verdict(external):
-    """판정이 무효한 라운드(실패·오염)는 셀 근거가 없어 None — 판정 표면과 같은 규칙."""
+    """판정이 무효한 라운드(실패·오염)는 셀 근거가 없어 None — 판정 결과와 같은 규칙."""
     assert reviewer_budget._must_fix_count(
         {"ok": False, "verdict": {"has_pass": False, "has_must_fix": False},
          "answer": _REJECT_ANSWER}
@@ -1413,10 +1413,10 @@ def test_must_fix_count_is_null_without_a_valid_verdict(external):
 
 
 def test_pass_round_appends_outcome_with_verdict(external, monkeypatch, tmp_path):
-    """호출된 라운드는 산출(`ts`·판정 rc·결함 수)이 장부에 append 된다 (DoD)."""
+    """호출된 라운드는 산출(`ts`·판정 rc·결함 수)이 기록에 append 된다 (DoD)."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     assert external.main(["--review-ticket", "T-0303", "--paths", "x.py"]) == 0
-    rounds = _ledger(external, tmp_path)["T-0303"]["rounds"]
+    rounds = _read_records(external, tmp_path)["T-0303"]["rounds"]
     assert len(rounds) == 1
     outcome = rounds[0]
     assert outcome["verdict"] == 0                 # 기존 rc 판정 (0=통과)
@@ -1429,7 +1429,7 @@ def test_reject_round_records_the_must_fix_count(external, monkeypatch, tmp_path
     """반려 라운드는 rc 1 과 함께 실결함 수를 남긴다 — "그 라운드가 결함을 냈나"의 근거."""
     _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER)
     assert external.main(["--review-ticket", "T-0304", "--paths", "x.py"]) == 1
-    outcome = _ledger(external, tmp_path)["T-0304"]["rounds"][0]
+    outcome = _read_records(external, tmp_path)["T-0304"]["rounds"][0]
     assert (outcome["verdict"], outcome["must_fix"]) == (1, 2)
 
 
@@ -1440,7 +1440,7 @@ def test_reject_without_a_must_fix_section_records_null_count(
     result = {**_REJECT_WITH_ANSWER, "answer": answer, "output": answer}
     _wire(external, monkeypatch, tmp_path, result=result)
     assert external.main(["--review-ticket", "T-0327", "--paths", "x.py"]) == 1
-    outcome = _ledger(external, tmp_path)["T-0327"]["rounds"][0]
+    outcome = _read_records(external, tmp_path)["T-0327"]["rounds"][0]
     assert (outcome["verdict"], outcome["must_fix"]) == (1, None)
 
 
@@ -1448,7 +1448,7 @@ def test_round_outcome_carries_the_reservation_identity(external, monkeypatch, t
     """산출이 예약 identity·시작 시각·실제 diff fingerprint를 실어 라운드↔결과를 잠근다."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     assert external.main(["--review-ticket", "T-0328", "--paths", "x.py"]) == 0
-    entry = _ledger(external, tmp_path)["T-0328"]
+    entry = _read_records(external, tmp_path)["T-0328"]
     outcome, record = entry["rounds"][0], entry["records"][0]
     assert outcome["id"] == record["id"]
     assert outcome["sequence"] == record["sequence"] == 1
@@ -1464,16 +1464,16 @@ def test_unparsable_outcome_is_null_and_does_not_block_the_review(
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_STARTED)
     assert external.main(["--review-ticket", "T-0305", "--paths", "x.py"]) == 1  # 판정 rc 보존
     assert calls["n"] == 1
-    outcome = _ledger(external, tmp_path)["T-0305"]["rounds"][0]
+    outcome = _read_records(external, tmp_path)["T-0305"]["rounds"][0]
     assert outcome["verdict"] == 1
     assert outcome["must_fix"] is None and outcome["suggestions"] is None
 
 
 def test_contaminated_round_records_no_defect_count(external, monkeypatch, tmp_path):
-    """오염으로 무효화한 판정은 결함 수도 세지 않는다 (판정 표면과 장부가 갈리지 않게)."""
+    """오염으로 무효화한 판정은 결함 수도 세지 않는다 (판정 결과와 기록이 갈리지 않게)."""
     _wire(external, monkeypatch, tmp_path, result=_CONTAMINATED_WITH_ANSWER)
     assert external.main(["--review-ticket", "T-0306", "--paths", "x.py"]) == 1
-    outcome = _ledger(external, tmp_path)["T-0306"]["rounds"][0]
+    outcome = _read_records(external, tmp_path)["T-0306"]["rounds"][0]
     assert outcome["verdict"] == 1 and outcome["must_fix"] is None
 
 
@@ -1481,50 +1481,50 @@ def test_spawn_failure_leaves_no_outcome(external, monkeypatch, tmp_path):
     """호출이 확실히 없던 라운드는 산출도 남기지 않는다 (리뷰어가 아무 말도 하지 않았다)."""
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     assert external.main(["--review-ticket", "T-0307", "--paths", "x.py"]) == 1
-    entry = _ledger(external, tmp_path)["T-0307"]
+    entry = _read_records(external, tmp_path)["T-0307"]
     assert entry["count"] == 0 and entry["rounds"] == []
 
 
-def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
+def test_old_schema_record_keeps_counting_and_gains_outcomes(
         external, monkeypatch, tmp_path, capsys):
-    """구세대 장부(rounds/wave 절 없음·폐지 필드 잔존)로도 실행이 이어지고 산출만 뒤에 쌓인다 (DoD).
+    """옛 버전 기록(rounds/세션 호출 예산 절 없음·폐지 필드 잔존)으로도 실행이 이어지고 산출만 뒤에 쌓인다 (DoD).
 
-    폐지 필드는 첫 정규화에서 떨어지고 그 사실을 알린다. 장부가 다시 기록된 뒤에는 알릴 대상이
+    폐지 필드는 첫 정규화에서 떨어지고 그 사실을 알린다. 기록 파일이 다시 쓰인 뒤에는 알릴 대상이
     없어 두 번째 실행은 조용하다(별도 상태 파일 없음)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
-    ledger_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    ledger_path.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(
         json.dumps({"T-0309": {"count": 3, "acked_through": 2}}), encoding="utf-8",
     )
 
     assert external.main(["--review-ticket", "T-0309", "--paths", "x.py"]) == 0
-    entry = _ledger(external, tmp_path)["T-0309"]
+    entry = _read_records(external, tmp_path)["T-0309"]
     assert entry["count"] == 4                # 옛 count 를 이어 센다 (리셋 없음)
     assert "acked_through" not in entry       # 폐지 필드는 저장에서 떨어진다
     assert len(entry["rounds"]) == 1          # 산출은 이번 라운드부터
-    assert _wave(external, tmp_path)["spent"] == 1
+    assert _session_budget(external, tmp_path)["spent"] == 1
     first_err = capsys.readouterr().err
     assert "T-0309" in first_err and "acked_through=2" in first_err
 
     assert external.main(["--review-ticket", "T-0309", "--paths", "x.py"]) == 0
     assert calls["n"] == 2
-    entry = _ledger(external, tmp_path)["T-0309"]
+    entry = _read_records(external, tmp_path)["T-0309"]
     assert (entry["count"], reviewer_reservation._round_counts(entry)) == (5, (5, 5, 0))
     assert "acked_through" not in capsys.readouterr().err   # 두 번째 실행은 조용하다
 
 
-# ── wave 예산 게이트 (DoD) ──────────────────────────────────────────────────
+# ── 세션 호출 예산 검사 (DoD) ──────────────────────────────────────────────────
 
 
-def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
+def test_session_budget_blocks_across_review_tickets_then_reset_resumes(
         external, monkeypatch, tmp_path, capsys):
-    """wave 예산은 게이트를 가로질러 합계로 센다 — 소진 시 rc 4·`--reset-session-budget` 으로만 재개 (DoD)."""
+    """세션 호출 예산은 리뷰 집계 티켓을 가로질러 합계로 센다 — 소진 시 rc 4·`--reset-session-budget` 으로만 재개 (DoD)."""
     conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
-    for gate in ("T-0310", "T-0311"):         # 서로 다른 게이트 = 각자 라운드 상한은 여유
-        assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
-    assert _wave(external, tmp_path)["spent"] == 2
+    for review_ticket in ("T-0310", "T-0311"):         # 서로 다른 리뷰 집계 티켓 = 각자 라운드 상한은 여유
+        assert external.main(["--review-ticket", review_ticket, "--paths", "x.py"]) == 0
+    assert _session_budget(external, tmp_path)["spent"] == 2
     capsys.readouterr()
 
     rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py"])
@@ -1534,159 +1534,159 @@ def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
     assert "세션 호출 예산 소진" in err
     assert "--reset-session-budget" in err and "예산 리셋" in err
     assert "--rounds-report" in err                   # 보고 근거 조회면 안내
-    assert "T-0312" not in _ledger(external, tmp_path)  # 거부는 아무것도 커밋하지 않는다
+    assert "T-0312" not in _read_records(external, tmp_path)  # 거부는 아무것도 커밋하지 않는다
 
     rc = external.main(["--review-ticket", "T-0312", "--paths", "x.py", "--reset-session-budget"])
     assert rc == 0 and calls["n"] == 3
     assert "세션 호출 예산 승인 재개" in capsys.readouterr().err
-    assert _wave(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
+    assert _session_budget(external, tmp_path)["spent"] == 1     # 리셋 후 이번 호출 1
 
 
-def test_wave_started_marks_the_first_send_and_accumulates(external, monkeypatch, tmp_path):
-    """wave.started 는 첫 호출 시각이고 명시 리셋 전까지 누적된다 (세션 자동 감지 없음)."""
+def test_session_budget_started_marks_the_first_send_and_accumulates(external, monkeypatch, tmp_path):
+    """세션 호출 예산의 started 는 첫 호출 시각이고 명시 리셋 전까지 누적된다 (세션 자동 감지 없음)."""
     _wire(external, monkeypatch, tmp_path)
     argv = ["--review-ticket", "T-0313", "--paths", "x.py"]
     assert external.main(argv) == 0
-    started = _wave(external, tmp_path)["started"]
+    started = _session_budget(external, tmp_path)["started"]
     assert started and started.endswith("+00:00")
 
     assert external.main(argv) == 0
-    assert _wave_budget_state(external, tmp_path) == {"started": started, "spent": 2}
+    assert _session_budget_progress(external, tmp_path) == {"started": started, "spent": 2}
 
 
-def test_spawn_failure_refunds_the_wave_budget(external, monkeypatch, tmp_path):
-    """호출 0(스폰 전 실패)은 라운드 count 와 wave spent 를 같은 조건으로 되돌린다.
+def test_spawn_failure_refunds_the_session_budget(external, monkeypatch, tmp_path):
+    """호출 0(스폰 전 실패)은 라운드 count 와 세션 호출 예산 spent 를 같은 조건으로 되돌린다.
 
     첫 호출이 아예 없었으므로 시작 시각도 남지 않는다 — 그러지 않으면 조회 표가 있지도 않은
-    wave 를 진행 중으로 보여주고, 다음 첫 호출이 자기 시각을 못 찍는다."""
+    세션 호출 예산을 진행 중으로 보여주고, 다음 첫 호출이 자기 시각을 못 찍는다."""
     calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     for _ in range(6):
         assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 1
     assert calls["n"] == 6
-    assert _ledger(external, tmp_path)["T-0314"]["count"] == 0
+    assert _read_records(external, tmp_path)["T-0314"]["count"] == 0
     # 설치/PATH 문제로 예산이 새지 않는다 + 시작 시각도 복원된다.
-    assert _wave_budget_state(external, tmp_path) == {"started": None, "spent": 0}
+    assert _session_budget_progress(external, tmp_path) == {"started": None, "spent": 0}
 
 
-def test_refund_keeps_the_wave_start_when_earlier_sends_exist(
+def test_refund_keeps_the_session_budget_start_when_earlier_sends_exist(
         external, monkeypatch, tmp_path):
-    """실 호출이 있던 wave 는 환불 후에도 첫 호출 시각을 유지한다 (0 으로 돌아갈 때만 지운다)."""
+    """실 호출이 있던 세션 호출 예산은 환불 후에도 첫 호출 시각을 유지한다 (0 으로 돌아갈 때만 지운다)."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 0
-    started = _wave(external, tmp_path)["started"]
+    started = _session_budget(external, tmp_path)["started"]
 
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     assert external.main(["--review-ticket", "T-0314", "--paths", "x.py"]) == 1
-    assert _wave_budget_state(external, tmp_path) == {"started": started, "spent": 1}
+    assert _session_budget_progress(external, tmp_path) == {"started": started, "spent": 1}
 
 
-def test_refund_wave_round_clears_started_only_when_the_wave_empties(external):
-    """순수 헬퍼 — 같은 세대일 때만, spent 가 0 이 되는 순간에만 started 를 지운다."""
+def test_refund_session_budget_round_clears_started_only_when_the_session_budget_empties(external):
+    """순수 헬퍼 — 같은 버전일 때만, spent 가 0 이 되는 순간에만 started 를 지운다."""
     state = {"id": "gen-1", "started": "2026-08-07T00:00:00+00:00", "spent": 2}
-    assert reviewer_reservation._refund_wave_round(state, "gen-1") is True
+    assert reviewer_reservation._refund_session_budget_round(state, "gen-1") is True
     assert state == {"id": "gen-1", "started": "2026-08-07T00:00:00+00:00", "spent": 1}
-    assert reviewer_reservation._refund_wave_round(state, "gen-1") is True
+    assert reviewer_reservation._refund_session_budget_round(state, "gen-1") is True
     assert state == {"id": "gen-1", "started": None, "spent": 0}
-    assert reviewer_reservation._refund_wave_round(state, "gen-1") is True   # 이미 0 이면 그대로(음수 없음)
+    assert reviewer_reservation._refund_session_budget_round(state, "gen-1") is True   # 이미 0 이면 그대로(음수 없음)
     assert state == {"id": "gen-1", "started": None, "spent": 0}
 
 
-def test_refund_wave_round_ignores_another_generation(external):
-    """세대가 다르면 아무것도 하지 않는다 — 리셋된 새 wave 의 예산을 옛 실패가 깎으면 우회다."""
+def test_refund_session_budget_round_ignores_another_generation(external):
+    """버전이 다르면 아무것도 하지 않는다 — 리셋된 새 세션 호출 예산을 옛 실패가 깎으면 우회다."""
     state = {"id": "gen-2", "started": "2026-08-07T01:00:00+00:00", "spent": 3}
-    assert reviewer_reservation._refund_wave_round(state, "gen-1") is False
-    assert reviewer_reservation._refund_wave_round(state, None) is False
+    assert reviewer_reservation._refund_session_budget_round(state, "gen-1") is False
+    assert reviewer_reservation._refund_session_budget_round(state, None) is False
     assert state == {"id": "gen-2", "started": "2026-08-07T01:00:00+00:00", "spent": 3}
 
 
-def test_refund_skips_a_wave_that_was_reset_mid_flight(
+def test_refund_skips_a_session_budget_that_was_reset_mid_flight(
         external, monkeypatch, tmp_path, capsys):
-    """호출 중 `--reset-session-budget` 으로 새 wave 가 열리면 이 실패는 그 예산을 깎지 않는다 (세대 확인).
+    """호출 중 `--reset-session-budget` 으로 새 세션 호출 예산이 열리면 이 실패는 그 예산을 깎지 않는다 (버전 확인).
 
-    다른 실행이 리뷰 도중 승인·리셋한 형상을 리뷰어 스텁 안에서 재현한다 — 예약 구간 락은 이미
+    다른 실행이 리뷰 도중 승인·리셋한 경우를 리뷰어 스텁 안에서 재현한다 — 예약 구간 락은 이미
     풀린 뒤라 실제 동시 실행과 같은 순서다."""
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     stub_run_review = reviewer_run.run_review
 
-    def _reset_wave_then_fail(*args, **kwargs):
-        with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):             # 다른 실행의 `--reset-session-budget` 대역
-            ledger = review_rounds._load_round_ledger(pm_paths.home_at(external.REPO))
-            reviewer_reservation._spend_wave_round(reviewer_budget._reset_wave(ledger))
-            reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), ledger)
+    def _reset_session_budget_then_fail(*args, **kwargs):
+        with review_rounds._round_record_lock(pm_paths.home_at(external.REPO)):             # 다른 실행의 `--reset-session-budget` 대역
+            round_records = review_rounds._load_round_records(pm_paths.home_at(external.REPO))
+            reviewer_reservation._spend_session_budget_round(reviewer_budget._reset_session_budget(round_records))
+            reviewer_reservation._save_round_records(pm_paths.home_at(external.REPO), round_records)
         return stub_run_review(*args, **kwargs)
 
-    monkeypatch.setattr(reviewer_run, "run_review", _reset_wave_then_fail)
+    monkeypatch.setattr(reviewer_run, "run_review", _reset_session_budget_then_fail)
     assert external.main(["--review-ticket", "T-0326", "--paths", "x.py"]) == 1
 
-    assert _wave(external, tmp_path)["spent"] == 1       # 새 wave 의 소비는 그대로
-    assert _ledger(external, tmp_path)["T-0326"]["count"] == 0   # 라운드 count 는 환불됨
+    assert _session_budget(external, tmp_path)["spent"] == 1       # 새 세션 호출 예산의 소비는 그대로
+    assert _read_records(external, tmp_path)["T-0326"]["count"] == 0   # 라운드 count 는 환불됨
     assert "세션 호출 예산이 이미 리셋" in capsys.readouterr().err
 
 
 def test_refund_is_skipped_when_the_reservation_record_vanishes(
         external, monkeypatch, tmp_path, capsys):
-    """마감 직전 예약 레코드가 사라지면 어느 축도 환불하지 않는다.
+    """마감 직전 예약 레코드가 사라지면 어느 예산도 환불하지 않는다.
 
     집계 창이 비면 그 라운드의 레코드는 이미 없는 것이라, count 를 되돌리면 이중 환불이고
-    wave 만 깎으면 두 축의 소비가 갈린다."""
+    세션 호출 예산만 깎으면 두 예산의 소비가 갈린다."""
     _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
     stub_run_review = reviewer_run.run_review
 
     def _clear_records_then_fail(*args, **kwargs):
-        with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):             # 집계 창을 비우는 동시 실행 대역
-            ledger = review_rounds._load_round_ledger(pm_paths.home_at(external.REPO))
-            entry = reviewer_reservation._gate_entry(ledger, "T-0332")
+        with review_rounds._round_record_lock(pm_paths.home_at(external.REPO)):             # 집계 창을 비우는 동시 실행 대역
+            round_records = review_rounds._load_round_records(pm_paths.home_at(external.REPO))
+            entry = reviewer_reservation._review_ticket_entry(round_records, "T-0332")
             entry["records"] = []
-            reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), ledger)
+            reviewer_reservation._save_round_records(pm_paths.home_at(external.REPO), round_records)
         return stub_run_review(*args, **kwargs)
 
     monkeypatch.setattr(reviewer_run, "run_review", _clear_records_then_fail)
     assert external.main(["--review-ticket", "T-0332", "--paths", "x.py"]) == 1
 
-    entry = _ledger(external, tmp_path)["T-0332"]
+    entry = _read_records(external, tmp_path)["T-0332"]
     assert (entry["count"], entry["records"]) == (1, [])   # 환불 대상 없음 → 이중 환불 없음
-    assert _wave(external, tmp_path)["spent"] == 1         # wave 도 갈리지 않는다
-    assert "wave 가 이미 리셋" not in capsys.readouterr().err   # 세대 오보 경고도 없다
+    assert _session_budget(external, tmp_path)["spent"] == 1         # 세션 호출 예산도 갈리지 않는다
+    assert "세션 호출 예산이 이미 리셋" not in capsys.readouterr().err   # 버전 오보 경고도 없다
 
 
 def test_outcome_keeps_its_sequence_when_records_are_cleared_away(
         external, monkeypatch, tmp_path):
     """동시 실행이 예약 레코드를 비워도 산출은 예약 순번을 잃지 않는다.
 
-    순번을 마감 시점 레코드에서 되찾아 읽으면 이 형상에서 None 이 되고, 조회 표의 라운드 번호가
+    순번을 마감 시점 레코드에서 되찾아 읽으면 이 경우에 None 이 되고, 조회 표의 라운드 번호가
     사라진다 — 예약 시점 값을 그대로 실어 둬야 한다."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     stub_run_review = reviewer_run.run_review
 
     def _clear_records_then_pass(*args, **kwargs):
-        with review_rounds._round_ledger_lock(pm_paths.home_at(external.REPO)):             # 집계 창을 비우는 동시 실행 대역
-            ledger = review_rounds._load_round_ledger(pm_paths.home_at(external.REPO))
-            entry = reviewer_reservation._gate_entry(ledger, "T-0341")
+        with review_rounds._round_record_lock(pm_paths.home_at(external.REPO)):             # 집계 창을 비우는 동시 실행 대역
+            round_records = review_rounds._load_round_records(pm_paths.home_at(external.REPO))
+            entry = reviewer_reservation._review_ticket_entry(round_records, "T-0341")
             entry["records"] = []
-            reviewer_reservation._save_round_ledger(pm_paths.home_at(external.REPO), ledger)
+            reviewer_reservation._save_round_records(pm_paths.home_at(external.REPO), round_records)
         return stub_run_review(*args, **kwargs)
 
     monkeypatch.setattr(reviewer_run, "run_review", _clear_records_then_pass)
     assert external.main(["--review-ticket", "T-0341", "--paths", "x.py"]) == 0
 
-    entry = _ledger(external, tmp_path)["T-0341"]
-    assert entry["records"] == []                       # 집계 창이 비워진 형상
+    entry = _read_records(external, tmp_path)["T-0341"]
+    assert entry["records"] == []                       # 집계 창이 비워진 경우
     outcome = entry["rounds"][0]
     assert outcome["sequence"] == 1                     # 예약 순번은 산출에 남는다
     assert isinstance(outcome["id"], str) and outcome["id"]
 
 
-def test_negative_wave_spent_does_not_reopen_the_budget(
+def test_negative_session_budget_spent_does_not_reopen_the_budget(
         external, monkeypatch, tmp_path, capsys):
-    """장부를 `spent: -1` 로 고쳐도 예산은 열리지 않는다 — 손상은 승인을 대신하지 않는다."""
+    """기록을 `spent: -1` 로 고쳐도 예산은 열리지 않는다 — 손상은 승인을 대신하지 않는다."""
     conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf, result=_PASS_WITH_ANSWER)
-    for gate in ("T-0337", "T-0338"):
-        assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
+    for review_ticket in ("T-0337", "T-0338"):
+        assert external.main(["--review-ticket", review_ticket, "--paths", "x.py"]) == 0
     path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
-    ledger = json.loads(path.read_text(encoding="utf-8"))
-    ledger[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] = -1          # 예산 되돌리기 시도
-    path.write_text(json.dumps(ledger), encoding="utf-8")
+    round_records = json.loads(path.read_text(encoding="utf-8"))
+    round_records[reviewer_budget.SESSION_BUDGET_SECTION_KEY]["spent"] = -1          # 예산 되돌리기 시도
+    path.write_text(json.dumps(round_records), encoding="utf-8")
     capsys.readouterr()
 
     rc = external.main(["--review-ticket", "T-0339", "--paths", "x.py"])
@@ -1696,12 +1696,12 @@ def test_negative_wave_spent_does_not_reopen_the_budget(
     assert calls["n"] == 2                                   # 호출 없음
     assert "음수" in err and "재계산" in err
     assert "세션 호출 예산 소진" in err
-    assert _wave(external, tmp_path)["spent"] == 2           # 이력 기반 복원값이 저장된다
+    assert _session_budget(external, tmp_path)["spent"] == 2           # 이력 기반 복원값이 저장된다
 
 
-def test_ack_wave_does_not_open_the_gate_round_limit(
+def test_session_budget_reset_does_not_open_the_review_ticket_round_limit(
         external, monkeypatch, tmp_path, capsys):
-    """두 예산은 독립 축 — wave 승인이 게이트 미완 라운드 상한을 열지 않는다."""
+    """두 예산은 독립 기준 — 세션 호출 예산 승인이 리뷰 집계 티켓 미완 라운드 상한을 열지 않는다."""
     spend = reviewer_target._incomplete_round_limit({})
     calls = _wire(
         external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=_ROUNDS_MAX_OFF,
@@ -1716,54 +1716,54 @@ def test_ack_wave_does_not_open_the_gate_round_limit(
     assert calls["n"] == spend
 
 
-def test_refused_run_leaves_no_gate_entry_in_the_ledger(
+def test_refused_run_leaves_no_review_ticket_entry_in_the_record(
         external, monkeypatch, tmp_path, capsys):
-    """거부된 실행은 그 게이트의 장부 항목 자체를 만들지 않는다 (호출 0 = 흔적 0).
+    """거부된 실행은 그 리뷰 집계 티켓의 기록 항목 자체를 만들지 않는다 (호출 0 = 흔적 0).
 
-    항목을 만들어 두면 "라운드를 쓴 적 없는 게이트"가 장부에 나타나 조회 표와 승계 판정이 실제
+    항목을 만들어 두면 "라운드를 쓴 적 없는 리뷰 집계 티켓"이 기록에 나타나 조회 표와 승계 판정이 실제
     소비와 어긋난다 — 정규화 결과는 통과한 실행만 저장한다."""
     conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
-    for gate in ("T-0330", "T-0331"):
-        assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
+    for review_ticket in ("T-0330", "T-0331"):
+        assert external.main(["--review-ticket", review_ticket, "--paths", "x.py"]) == 0
     capsys.readouterr()
 
-    rc = external.main(["--review-ticket", "T-0332", "--paths", "x.py"])   # wave 예산 소진으로 거부
+    rc = external.main(["--review-ticket", "T-0332", "--paths", "x.py"])   # 세션 호출 예산 소진으로 거부
 
     assert rc == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert "세션 호출 예산 소진" in capsys.readouterr().err
     assert calls["n"] == 2                                        # 호출 없음
-    assert "T-0332" not in _ledger(external, tmp_path)
+    assert "T-0332" not in _read_records(external, tmp_path)
 
 
-# ── 두 상한 동시 소진: wave 승인 유실 금지 ──────────────────────────────────
-# wave 승인을 적용해 놓고 다른 축에서 저장 없이 되돌아가면 사용자가 준 승인이 조용히 사라진다
-# (같은 승인을 다시 받아야 한다). 승인은 거부되는 실행에서도 저장한다. 라운드 축에는 승인 자체가
+# ── 두 상한 동시 소진: 세션 호출 예산 승인 유실 금지 ──────────────────────────────────
+# 세션 호출 예산 승인을 적용해 놓고 다른 기준에서 저장 없이 되돌아가면 사용자가 준 승인이 조용히 사라진다
+# (같은 승인을 다시 받아야 한다). 승인은 거부되는 실행에서도 저장한다. 라운드 기준에는 승인 자체가
 # 없다 — 연장은 폐지됐고 남은 출구는 재설계·분할이다.
 
 
 def _exhaust_both_budgets(external, monkeypatch, tmp_path):
-    """게이트 미완 상한(2)과 wave 예산(3)을 동시에 소진한 장부를 만든다.
+    """리뷰 집계 티켓 미완 상한(2)과 세션 호출 예산(3)을 동시에 소진한 기록을 만든다.
 
-    게이트 축은 미완(판정 없이 끝난 호출)이다 — 호출 횟수만 세던 판정 상한은 제거됐다."""
+    리뷰 집계 티켓 기준은 미완(판정 없이 끝난 호출)이다 — 호출 횟수만 세던 판정 상한은 제거됐다."""
     spend = reviewer_target._incomplete_round_limit({})
     conf = {
-        **_ROUNDS_MAX_OFF,                      # 수렴 축은 별도 테스트 소유(미완 축만 본다)
+        **_ROUNDS_MAX_OFF,                      # 마무리 기준은 별도 테스트 소유(미완 기준만 본다)
         "additional_reviewer.session_budget": str(spend + 1),
     }
     calls = _wire(
         external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=conf,
     )
-    for _ in range(spend):                                              # 게이트 상한 소진
+    for _ in range(spend):                                              # 리뷰 집계 티켓 상한 소진
         assert external.main(["--review-ticket", "T-0330", "--paths", "x.py"]) == 1
-    assert external.main(["--review-ticket", "T-0331", "--paths", "x.py"]) == 1   # wave 예산 소진
+    assert external.main(["--review-ticket", "T-0331", "--paths", "x.py"]) == 1   # 세션 호출 예산 소진
     assert calls["n"] == spend + 1
     return calls
 
 
-def test_wave_approval_survives_a_round_limit_refusal(
+def test_session_budget_reset_survives_a_round_limit_refusal(
         external, monkeypatch, tmp_path, capsys):
-    """게이트가 막아도 `--reset-session-budget` 리셋은 저장된다 (다음 실행이 그 상태를 이어받는다)."""
+    """리뷰 집계 티켓 상한이 막아도 `--reset-session-budget` 리셋은 저장된다 (다음 실행이 그 상태를 이어받는다)."""
     spent = reviewer_target._incomplete_round_limit({}) + 1
     calls = _exhaust_both_budgets(external, monkeypatch, tmp_path)
     capsys.readouterr()
@@ -1773,43 +1773,43 @@ def test_wave_approval_survives_a_round_limit_refusal(
     err = capsys.readouterr().err
     assert "미완 라운드 상한 도달" in err
     assert calls["n"] == spent
-    assert _wave(external, tmp_path)["spent"] == 0        # 리셋은 남았다
+    assert _session_budget(external, tmp_path)["spent"] == 0        # 리셋은 남았다
     assert "세션 호출 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다
     assert "세션 호출 예산 승인 기록" in err and "거부" in err
 
-    # 라운드 축에는 재개 승인이 없다 — 리셋된 wave 로도 그 게이트는 계속 막힌다.
+    # 라운드 기준에는 재개 승인이 없다 — 리셋된 세션 호출 예산으로도 그 리뷰 집계 티켓은 계속 막힌다.
     assert external.main(argv) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert calls["n"] == spent
 
 
-def test_dry_run_and_empty_diff_do_not_spend_the_wave_budget(
+def test_dry_run_and_empty_diff_do_not_spend_the_session_budget(
         external, monkeypatch, tmp_path):
-    """호출 없는 실행(dry-run·빈 diff)은 wave 예산도 쓰지 않는다 (라운드 count 규칙과 동형)."""
+    """호출 없는 실행(dry-run·빈 diff)은 세션 호출 예산도 쓰지 않는다 (라운드 count 규칙과 같은 구조)."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(3):
         assert external.main(["--review-ticket", "T-0319", "--paths", "x.py", "--dry-run"]) == 0
     assert calls["n"] == 0
-    assert _ledger(external, tmp_path) == {}
+    assert _read_records(external, tmp_path) == {}
 
     _wire(external, monkeypatch, tmp_path, diff="")
     assert external.main(["--review-ticket", "T-0319", "--paths", "x.py"]) == 1
-    assert _ledger(external, tmp_path) == {}
+    assert _read_records(external, tmp_path) == {}
 
 
-def test_ack_wave_without_gate_warns_and_proceeds(external, monkeypatch, tmp_path, capsys):
-    """`--reset-session-budget` 을 --review-ticket 없이 쓰면 경고 후 정상 진행 (장부 대상 아님·--ack-rounds 동형)."""
+def test_session_budget_reset_without_review_ticket_warns_and_proceeds(external, monkeypatch, tmp_path, capsys):
+    """`--reset-session-budget` 을 --review-ticket 없이 쓰면 경고 후 정상 진행 (기록 대상 아님·--ack-rounds 와 같은 구조)."""
     _wire(external, monkeypatch, tmp_path)
     assert external.main(["--reset-session-budget", "--paths", "x.py", "--no-review-ticket"]) == 0
     err = capsys.readouterr().err
     assert "--reset-session-budget" in err and "--review-ticket 과 함께" in err
-    assert _ledger(external, tmp_path) == {}
+    assert _read_records(external, tmp_path) == {}
 
 
 # ── 조회면 (--rounds-report) ────────────────────────────────────────────────
 
 
-def test_rounds_report_dumps_gate_rounds_and_wave(external, monkeypatch, tmp_path, capsys):
-    """조회면이 게이트별 라운드 수·라운드별 판정/결함 수·wave spent 를 표로 낸다 (호출 0)."""
+def test_rounds_report_dumps_review_ticket_rounds_and_session_budget(external, monkeypatch, tmp_path, capsys):
+    """조회면이 리뷰 집계 티켓별 라운드 수·라운드별 판정/결함 수·세션 호출 예산 spent 를 표로 낸다 (호출 0)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER)
     assert external.main(["--review-ticket", "T-0320", "--paths", "x.py"]) == 1
     capsys.readouterr()
@@ -1817,17 +1817,17 @@ def test_rounds_report_dumps_gate_rounds_and_wave(external, monkeypatch, tmp_pat
     assert external.main(["--rounds-report"]) == 0
     out = capsys.readouterr().out
     assert calls["n"] == 1                                  # 조회는 리뷰어를 부르지 않는다
-    assert str(review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))) in out        # 어느 장부를 읽었는지
+    assert str(review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))) in out        # 어느 기록 파일을 읽었는지
     assert "세션 호출 예산: spent=1 / 예산 24" in out
     assert "리뷰 집계 티켓 T-0320: count=1" in out
     assert "판정=1(비통과) must_fix=2 suggestions=미상" in out
 
 
-def test_rounds_report_filters_by_gate(external, monkeypatch, tmp_path, capsys):
-    """`--review-ticket` 을 주면 그 게이트만 본다 (다른 게이트는 표에 없다)."""
+def test_rounds_report_filters_by_review_ticket(external, monkeypatch, tmp_path, capsys):
+    """`--review-ticket` 을 주면 그 리뷰 집계 티켓만 본다 (다른 리뷰 집계 티켓은 표에 없다)."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
-    for gate in ("T-0321", "T-0322"):
-        assert external.main(["--review-ticket", gate, "--paths", "x.py"]) == 0
+    for review_ticket in ("T-0321", "T-0322"):
+        assert external.main(["--review-ticket", review_ticket, "--paths", "x.py"]) == 0
     capsys.readouterr()
 
     assert external.main(["--rounds-report", "--review-ticket", "T-0321"]) == 0
@@ -1835,8 +1835,8 @@ def test_rounds_report_filters_by_gate(external, monkeypatch, tmp_path, capsys):
     assert "리뷰 집계 티켓 T-0321" in out and "T-0322" not in out
 
 
-def test_rounds_report_on_empty_ledger_is_rc_zero(external, monkeypatch, tmp_path, capsys):
-    """장부가 없어도 조회는 답을 낸다 — diff·검토 경로 없이 rc 0 (호출 게이트 뒤가 아니다)."""
+def test_rounds_report_on_empty_record_is_rc_zero(external, monkeypatch, tmp_path, capsys):
+    """기록 파일이 없어도 조회는 답을 낸다 — diff·검토 경로 없이 rc 0 (호출 검사 뒤가 아니다)."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--rounds-report"]) == 0
     out = capsys.readouterr().out
@@ -1850,7 +1850,7 @@ def test_rounds_report_on_empty_ledger_is_rc_zero(external, monkeypatch, tmp_pat
 
 def test_rounds_report_with_a_selector_reads_the_recording_anchor(
         external, monkeypatch, tmp_path, capsys):
-    """`--paths` 를 준 조회는 기록면과 **같은 해소**를 타 같은 장부를 읽는다 (앵커 갈림 방지)."""
+    """`--paths` 를 준 조회는 기록면과 **같은 해소**를 타 같은 기록 파일을 읽는다 (기록 위치 갈림 방지)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     assert external.main(["--review-ticket", "T-0334", "--paths", "x.py"]) == 0
     capsys.readouterr()
@@ -1870,11 +1870,11 @@ def test_rounds_report_warns_about_ignored_action_flags(
     err = capsys.readouterr().err
     assert "조회 전용" in err and "--reset-session-budget" in err and "--no-review-ticket" in err
     assert calls["n"] == 0
-    assert _ledger(external, tmp_path) == {}                # 조회는 장부를 고치지 않는다
+    assert _read_records(external, tmp_path) == {}                # 조회는 기록을 고치지 않는다
 
 
-def test_rounds_report_reflects_the_wave_budget_knob(external, monkeypatch, tmp_path, capsys):
-    """예산 표기는 해소된 conf 노브를 따른다 (조회와 게이트가 같은 값을 본다)."""
+def test_rounds_report_reflects_the_session_budget_knob(external, monkeypatch, tmp_path, capsys):
+    """예산 표기는 해소된 conf 노브를 따른다 (조회와 검사가 같은 값을 본다)."""
     conf = {**_ENABLED_CONF, "additional_reviewer.session_budget": "6"}
     _wire(external, monkeypatch, tmp_path, conf=conf)
     assert external.main(["--rounds-report"]) == 0
@@ -1882,8 +1882,8 @@ def test_rounds_report_reflects_the_wave_budget_knob(external, monkeypatch, tmp_
 
 
 def test_render_rounds_report_marks_unknown_fields_and_is_read_only(external):
-    """산출이 없거나 손상인 필드는 '미상'으로 구분되고, 렌더는 장부를 고치지 않는다."""
-    ledger = {
+    """산출이 없거나 손상인 필드는 '미상'으로 구분되고, 렌더는 기록을 고치지 않는다."""
+    round_records = {
         "T-0324": {
             "count": 2,
             "rounds": [
@@ -1895,41 +1895,41 @@ def test_render_rounds_report_marks_unknown_fields_and_is_read_only(external):
         "T-0325": {"count": 1},
         reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"started": "2026-08-07T00:00:00+00:00", "spent": 3},
     }
-    snapshot = json.loads(json.dumps(ledger))
+    snapshot = json.loads(json.dumps(round_records))
 
     report = reviewer_rounds.render_rounds_report(
-        ledger, ledger_path="/tmp/review_rounds.json", wave_budget=24,
+        round_records, record_path="/tmp/review_rounds.json", session_budget=24,
     )
 
     assert "세션 호출 예산: spent=3 / 예산 24 · 시작 2026-08-07T00:00:00+00:00" in report
-    # 조회 표에서 폐지 필드 항목이 사라졌다 — 게이트 줄은 count·산출·처분만 싣는다.
+    # 조회 표에서 폐지 필드 항목이 사라졌다 — 리뷰 집계 티켓 줄은 count·산출·처분만 싣는다.
     assert "acked_through" not in report
     assert "리뷰 집계 티켓 T-0324: count=2 · 산출 2건 · 처분=" in report
     assert "#1 2026-08-07T00:00:00+00:00 판정=0(통과) must_fix=0 suggestions=미상" in report
     assert "#미상 시각 미상 판정=미상 must_fix=미상 suggestions=미상" in report
-    assert "(라운드 산출 기록 없음" in report            # 구세대 게이트 표기
-    assert ledger == snapshot                            # 조회가 장부를 고치지 않는다
+    assert "(라운드 산출 기록 없음" in report            # 옛 버전 리뷰 집계 티켓 표기
+    assert round_records == snapshot                            # 조회가 기록을 고치지 않는다
 
 
 def test_rounds_report_numbers_rounds_by_reservation_sequence(external):
     """표시 번호·나열 순서는 **예약 순번**이다 — append(=완료) 순서로 읽으면 라운드가 뒤바뀐다."""
-    ledger = {
+    round_records = {
         "T-0340": {"count": 2, "rounds": [
             {"ts": "2026-08-07T02:00:00+00:00", "sequence": 2, "verdict": 0},
             {"ts": "2026-08-07T03:00:00+00:00", "sequence": 1, "verdict": 1},  # 늦게 끝난 1라운드
         ]},
     }
-    body = [line for line in reviewer_rounds.render_rounds_report(ledger).splitlines()
+    body = [line for line in reviewer_rounds.render_rounds_report(round_records).splitlines()
             if line.startswith("  #")]
     assert body[0].startswith("  #1 2026-08-07T03:00:00+00:00 판정=1")
     assert body[1].startswith("  #2 2026-08-07T02:00:00+00:00 판정=0")
 
 
-# ── 스폰 경계 seam: 소유권 이전은 **자식 생성 직전** 한 자리 (T-0590 R3) ─────
+# ── 스폰 경계 교체 지점: 소유권 이전은 **자식 생성 직전** 한 자리 (T-0590 R3) ─────
 #
 # 소유권 이전이 러너 **호출** 직전에 있으면, 러너 안의 준비 구간(프로필 해소·워치독
-# 셋업)과 exec 실패가 전부 "이미 넘긴 뒤"가 된다 — 스폰 0·호출 0 인 실행이 라운드/wave 예산을
-# 먹고, 상한 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 경계는 watchdog 워치독이
+# 셋업)과 exec 실패가 전부 "이미 넘긴 뒤"가 된다 — 스폰 0·호출 0 인 실행이 라운드/세션 호출 예산을
+# 먹고, 상한 1 경우에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 경계는 watchdog 워치독이
 # `Popen` 을 부르기 한 줄 앞이고, 그 앞의 실패와 확정 기동 실패는 started=False 다.
 
 # 확정 기동 실패 표 — exec 자체가 실패해 자식이 뜬 적 없는 예외들(호출 0·과금 0).
@@ -1948,8 +1948,8 @@ def _codex_reply_wire(reply: str = _PASS_REPLY) -> str:
     """codex 구조화 wire(JSONL) 대역 — 최종 회신을 agent_message 이벤트로 싣는다.
 
     해소된 리뷰어 대상은 구조화 transport 라 stdout 이 하네스 wire 로 읽힌다
-    (`contract.extract_harness_reply`). 평문을 그대로 두면 회신 미추출로 판정이 실패 축에 떨어져,
-    라운드 장부·예산을 보는 단언이 상한이 아니라 파싱 때문에 흔들린다."""
+    (`contract.extract_harness_reply`). 평문을 그대로 두면 회신 미추출로 판정이 실패로 떨어져,
+    리뷰 라운드 기록·예산을 보는 단언이 상한이 아니라 파싱 때문에 흔들린다."""
     events = [
         {"type": "thread.started", "thread_id": "t-1"},
         {"type": "item.completed", "item": {"type": "agent_message", "text": reply}},
@@ -2011,7 +2011,7 @@ def test_relay_marked_post_spawn_failure_stays_conservative(external):
     """`Popen` **성공 뒤**의 실패는 같은 예외 종류여도 started=True 로 남는다.
 
     종류만 보면 자식이 떴다 죽은 실행까지 환불 대상이 된다 — 그건 프롬프트가 이미 나간 실행이라
-    상한 무한 우회로 이어진다. watchdog 표식이 종류 판정을 이긴다.
+    상한 무한 우회로 이어진다. watchdog 표시가 종류 판정을 이긴다.
     """
     marked = PermissionError("정리 중 권한 오류")
     marked.spawn_failed = False
@@ -2098,42 +2098,42 @@ def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, m
     assert seen["on_spawn_attempt"] is sentinel
 
 
-# ── seam 오류(TypeError) 분기의 표식 우선순위 (T-0590 R4 추가 리뷰어 4차) ──────
+# ── 교체 지점 오류(TypeError) 분기의 표시 우선순위 (T-0590 R4 추가 리뷰어 4차) ──────
 #
-# `_run_reviewer_ex` 의 TypeError 전용 분기는 watchdog 표식을 보지 않고 스폰 경계 위치만 봤다. 같은
+# `_run_reviewer_ex` 의 TypeError 전용 분기는 watchdog 표시를 보지 않고 스폰 경계 위치만 봤다. 같은
 # 예외 종류가 경계 앞뒤 어디서든 올라올 수 있으므로 그 위치 추정은 두 방향으로 다 틀린다 —
-# 표식 True 인데 경계를 지났으면 호출 0 인 실행이 예산을 먹고, 표식 False 인데 콜백이 아직 안
-# 돌았으면 이미 나간 호출이 환불된다. 우선순위는 한 줄이다: 표식 True→started False,
-# 표식 False→started True, 표식 없음→종전 seam 위치.
+# 표시 True 인데 경계를 지났으면 호출 0 인 실행이 예산을 먹고, 표시 False 인데 콜백이 아직 안
+# 돌았으면 이미 나간 호출이 환불된다. 우선순위는 한 줄이다: 표시 True→started False,
+# 표시 False→started True, 표시 없음→종전 교체 지점 위치.
 
 
 def _marked(exc: BaseException, spawn_failed: bool) -> BaseException:
-    """watchdog 이 스폰 경계에서 붙이는 그 표식을 그대로 얹는다(테스트 픽스처)."""
+    """watchdog 이 스폰 경계에서 붙이는 그 표시를 그대로 얹는다(테스트 픽스처)."""
     exc.spawn_failed = spawn_failed
     return exc
 
 
-def test_seam_typeerror_marked_no_child_is_started_false(external):
-    """경계 콜백이 돈 뒤 올라온 TypeError 라도 표식이 '자식 없음'이면 started=False (환불)."""
+def test_override_typeerror_marked_no_child_is_started_false(external):
+    """경계 콜백이 돈 뒤 올라온 TypeError 라도 표시가 '자식 없음'이면 started=False (환불)."""
     handoffs = []
     runner = _spawn_boundary_runner(
         raise_after=_marked(TypeError("watchdog 이 fork 전에 거절"), True))
     ok, out, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
         pm_paths.home_at(external.REPO), "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
-    assert (ok, started) == (False, False), "표식(자식 없음)을 무시하고 경계 위치로 판정했다"
+    assert (ok, started) == (False, False), "표시(자식 없음)를 무시하고 경계 위치로 판정했다"
     assert handoffs == [1]
     assert "교체 지점 호출 오류" in out.answer
 
 
-def test_seam_typeerror_marked_child_existed_is_started_true(external):
-    """콜백 전에 올라온 TypeError 라도 표식이 '자식 있었음'이면 started=True (환불 금지)."""
+def test_override_typeerror_marked_child_existed_is_started_true(external):
+    """콜백 전에 올라온 TypeError 라도 표시가 '자식 있었음'이면 started=True (환불 금지)."""
     handoffs = []
     runner = _spawn_boundary_runner(
         raise_before=_marked(TypeError("Popen 뒤 초기화 skew"), False))
     ok, _out, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
         pm_paths.home_at(external.REPO), "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
-    assert (ok, started) == (False, True), "표식(자식 있었음)을 무시하고 이미 나간 호출을 환불했다"
-    assert handoffs == [], "경계 콜백은 실제로 돌지 않았다(표식만이 판정 입력)"
+    assert (ok, started) == (False, True), "표시(자식 있었음)를 무시하고 이미 나간 호출을 환불했다"
+    assert handoffs == [], "경계 콜백은 실제로 돌지 않았다(표시만이 판정 입력)"
 
 
 @pytest.mark.parametrize(
@@ -2145,17 +2145,17 @@ def test_seam_typeerror_marked_child_existed_is_started_true(external):
                      id="after-boundary"),
     ),
 )
-def test_unmarked_seam_typeerror_keeps_the_boundary_position_rule(
+def test_unmarked_override_typeerror_keeps_the_boundary_position_rule(
     external, factory, expected_started,
 ):
-    """표식이 없으면 종전 규칙 그대로 — 경계 전이면 False, 경계 뒤면 보수적 True."""
+    """표시가 없으면 종전 규칙 그대로 — 경계 전이면 False, 경계 뒤면 보수적 True."""
     runner = _spawn_boundary_runner(**factory())
     ok, _out, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "p", "codex", 5, runner)
     assert (ok, started) == (False, expected_started)
 
 
 def test_general_failure_marked_child_existed_is_started_true(external):
-    """watchdog 실행 실패 타입 밖의 일반 실행 오류는 표식과 무관하게 전파한다."""
+    """watchdog 실행 실패 타입 밖의 일반 실행 오류는 표시와 무관하게 전파한다."""
     runner = _spawn_boundary_runner(
         raise_before=_marked(RuntimeError("Popen 뒤 정리 중 오류"), False))
     with pytest.raises(RuntimeError, match="Popen 뒤 정리 중 오류"):
@@ -2163,7 +2163,7 @@ def test_general_failure_marked_child_existed_is_started_true(external):
 
 
 def test_started_priority_is_owned_by_one_helper(external):
-    """우선순위(표식 > 위치)를 한 곳이 소유한다 — 분기마다 다시 쓰면 한 자리만 새도 예산이 샌다."""
+    """우선순위(표시 > 위치)를 한 곳이 소유한다 — 분기마다 다시 쓰면 한 자리만 새도 예산이 샌다."""
     assert pm_engine.infra.harness.reviewer_run._started_after(_marked(TypeError("x"), True), True) is False
     assert pm_engine.infra.harness.reviewer_run._started_after(_marked(TypeError("x"), False), False) is True
     assert pm_engine.infra.harness.reviewer_run._started_after(TypeError("x"), True) is True
@@ -2172,10 +2172,10 @@ def test_started_priority_is_owned_by_one_helper(external):
 
 def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
                           diff="diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n"):
-    """main() → **실** run_review → 주입 러너까지 태우는 배선(스폰 경계 판정 e2e).
+    """main() → **실** run_review → 주입 러너까지 태우는 연결(스폰 경계 판정 e2e).
 
     `_wire` 는 run_review 자체를 대역으로 세워 started 매핑을 태우지 않는다. 여기서는 라운드
-    장부·예약 환불까지 실 경로로 돌려야 하므로 기본 러너 자리만 바꾼다."""
+    기록·예약 환불까지 실 경로로 돌려야 하므로 기본 러너 자리만 바꾼다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(conf))
     monkeypatch.setattr(
@@ -2196,8 +2196,8 @@ def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
     return _run
 
 
-# 조일 수 있는 상한을 전부 1 로 둔 형상 — 스폰 0 인 실행이 하나라도 예산을 먹으면 다음 정상
-# 호출이 rc=4 다(판정 상한은 엔진 고정 4 라 여기서 조이는 축이 아니다).
+# 조일 수 있는 상한을 전부 1 로 둔 경우 — 스폰 0 인 실행이 하나라도 예산을 먹으면 다음 정상
+# 호출이 rc=4 다(판정 상한은 엔진 고정 4 라 여기서 조이는 기준이 아니다).
 _ALL_LIMITS_ONE = {
     **_ENABLED_CONF,
     "additional_reviewer.session_budget": "1",
@@ -2209,27 +2209,27 @@ _ALL_LIMITS_ONE = {
 def test_definite_launch_failure_spends_no_budget_and_a_valid_retry_still_spawns(
     external, monkeypatch, tmp_path, exc_type,
 ):
-    """상한 1/1/1 형상에서 확정 기동 실패 3회가 예산을 0 으로 두고, 그 뒤 정상 실행이 돈다."""
+    """상한 1/1/1 경우에서 확정 기동 실패 3회가 예산을 0 으로 두고, 그 뒤 정상 실행이 돈다."""
     failing = _spawn_boundary_runner(raise_after=exc_type("reviewer"))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
-    gate = ["--review-ticket", "T-9001", "--paths", "x.py"]
+    review_ticket = ["--review-ticket", "T-9001", "--paths", "x.py"]
 
     for _ in range(3):
-        assert run(gate) == 1, "확정 기동 실패는 FALLBACK(rc=1) — 상한 거부(rc=4)가 아니다"
+        assert run(review_ticket) == 1, "확정 기동 실패는 FALLBACK(rc=1) — 상한 거부(rc=4)가 아니다"
     assert failing.seen["calls"] == 3
-    ledger = _ledger(external, tmp_path)
-    assert ledger["T-9001"]["count"] == 0, "스폰 0 인 실행이 라운드를 먹었다"
-    assert ledger["T-9001"]["records"] == []
-    assert _wave_budget_state(external, tmp_path)["spent"] == 0, "wave 예산까지 먹었다"
+    round_records = _read_records(external, tmp_path)
+    assert round_records["T-9001"]["count"] == 0, "스폰 0 인 실행이 라운드를 먹었다"
+    assert round_records["T-9001"]["records"] == []
+    assert _session_budget_progress(external, tmp_path)["spent"] == 0, "세션 호출 예산까지 먹었다"
 
     passing = _spawn_boundary_runner()
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(passing))
-    assert run(gate) == 0, "설치를 고친 뒤의 정상 호출이 상한에 막혔다"
+    assert run(review_ticket) == 0, "설치를 고친 뒤의 정상 호출이 상한에 막혔다"
     assert passing.seen["calls"] == 1
-    entry = _ledger(external, tmp_path)["T-9001"]
+    entry = _read_records(external, tmp_path)["T-9001"]
     assert entry["count"] == 1 and entry["records"][0]["verdict"] is True
-    assert _wave_budget_state(external, tmp_path)["spent"] == 1
+    assert _session_budget_progress(external, tmp_path)["spent"] == 1
 
 
 def test_preparation_failure_before_popen_spends_no_budget(
@@ -2239,64 +2239,64 @@ def test_preparation_failure_before_popen_spends_no_budget(
     failing = _spawn_boundary_runner(raise_before=RuntimeError("워치독 준비 실패"))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
-    gate = ["--review-ticket", "T-9002", "--paths", "x.py"]
+    review_ticket = ["--review-ticket", "T-9002", "--paths", "x.py"]
 
     for _ in range(3):
         with pytest.raises(RuntimeError, match="워치독 준비 실패"):
-            run(gate)
-    ledger = _ledger(external, tmp_path)
-    assert ledger["T-9002"]["count"] == 0
-    assert _wave_budget_state(external, tmp_path)["spent"] == 0
+            run(review_ticket)
+    round_records = _read_records(external, tmp_path)
+    assert round_records["T-9002"]["count"] == 0
+    assert _session_budget_progress(external, tmp_path)["spent"] == 0
 
     passing = _spawn_boundary_runner()
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(passing))
-    assert run(gate) == 0
-    assert _ledger(external, tmp_path)["T-9002"]["count"] == 1
+    assert run(review_ticket) == 0
+    assert _read_records(external, tmp_path)["T-9002"]["count"] == 1
 
 
-def test_marked_no_child_seam_error_spends_no_budget(external, monkeypatch, tmp_path):
-    """watchdog 이 '자식 없음'으로 표식한 seam 오류는 라운드·wave 예산을 먹지 않는다(환불 도달).
+def test_marked_no_child_override_error_spends_no_budget(external, monkeypatch, tmp_path):
+    """watchdog 이 '자식 없음'으로 표시한 교체 지점 오류는 라운드·세션 호출 예산을 먹지 않는다(환불 도달).
 
-    분기 반환값이 아니라 장부까지 본다 — 표식을 무시하던 TypeError 분기는 여기서 예산을 태워
-    상한 1 형상의 다음 정상 호출을 rc=4 로 막았다."""
+    분기 반환값이 아니라 기록까지 본다 — 표시를 무시하던 TypeError 분기는 여기서 예산을 태워
+    상한 1 경우의 다음 정상 호출을 rc=4 로 막았다."""
     failing = _spawn_boundary_runner(
         raise_after=_marked(TypeError("watchdog 이 fork 전에 거절"), True))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
-    gate = ["--review-ticket", "T-9004", "--paths", "x.py"]
+    review_ticket = ["--review-ticket", "T-9004", "--paths", "x.py"]
 
-    assert run(gate) == 1
-    ledger = _ledger(external, tmp_path)
-    assert ledger["T-9004"]["count"] == 0, "자식 0 인 실행이 라운드를 먹었다"
-    assert _wave_budget_state(external, tmp_path)["spent"] == 0
+    assert run(review_ticket) == 1
+    round_records = _read_records(external, tmp_path)
+    assert round_records["T-9004"]["count"] == 0, "자식 0 인 실행이 라운드를 먹었다"
+    assert _session_budget_progress(external, tmp_path)["spent"] == 0
 
     passing = _spawn_boundary_runner()
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_watchdog_reviewer_run", _home_bound_runner(passing))
-    assert run(gate) == 0, "환불되지 않아 다음 정상 호출이 상한에 막혔다"
+    assert run(review_ticket) == 0, "환불되지 않아 다음 정상 호출이 상한에 막혔다"
 
 
 def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp_path):
-    """경계를 지난 뒤 죽은 실행은 종전대로 라운드를 소비한다 — wave 예산 1 이면 다음 호출이 rc=4.
+    """경계를 지난 뒤 죽은 실행은 종전대로 라운드를 소비한다 — 세션 호출 예산 1 이면 다음 호출이 rc=4.
 
     확정 기동 실패의 환불이 "스폰된 실행까지 환불"로 번지지 않았음을 반대편에서 못박는다.
     """
     failing = _spawn_boundary_runner(raise_after=RuntimeError("드레인 중 오류"))
     run = _wire_real_run_review(
         external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
-    gate = ["--review-ticket", "T-9003", "--paths", "x.py"]
+    review_ticket = ["--review-ticket", "T-9003", "--paths", "x.py"]
 
     with pytest.raises(RuntimeError, match="드레인 중 오류"):
-        run(gate)
-    assert _ledger(external, tmp_path)["T-9003"]["count"] == 1
-    assert _wave_budget_state(external, tmp_path)["spent"] == 1
-    assert run(gate) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
+        run(review_ticket)
+    assert _read_records(external, tmp_path)["T-9003"]["count"] == 1
+    assert _session_budget_progress(external, tmp_path)["spent"] == 1
+    assert run(review_ticket) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert failing.seen["calls"] == 1, "상한을 넘긴 호출이 리뷰어를 또 띄웠다"
 
 
-# ── 노브 키 배선: 해소 헬퍼가 실제로 게이트를 움직인다 (T-0599·T-0614·T-0767) ──
+# ── 노브 키 연결: 해소 헬퍼가 실제로 검사를 움직인다 (T-0599·T-0614·T-0767) ──
 #
 # 해소 헬퍼의 단위 단언만으로는 **상한 판정이 그 헬퍼를 실제로 소비하는지**가 지워져도 green 이다.
-# 그래서 CLI 표면에서 직접 본다. 구표기 fallback·감지 안내 깔때기는 표기 통일과 함께 제거됐고
+# 그래서 CLI 명령에서 직접 본다. 구표기 fallback·감지 안내 깔때기는 표기 통일과 함께 제거됐고
 # (잔존 구표기는 conf 를 읽는 지점이 fail-loud 로 막는다), 여기서는 **현재 키가 값을 공급한다**는
 # 사실만 실행으로 못박는다.
 
@@ -2307,13 +2307,13 @@ _KNOB_CONF = {
 }
 
 
-def test_knob_keys_drive_the_wave_budget_gate(external, monkeypatch, tmp_path):
-    """예산 1 을 적은 conf 는 2회째 호출을 막는다 — 값이 실제로 게이트를 움직인다."""
+def test_knob_keys_drive_the_session_budget_check(external, monkeypatch, tmp_path):
+    """예산 1 을 적은 conf 는 2회째 호출을 막는다 — 값이 실제로 검사를 움직인다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_KNOB_CONF)
-    gate = ["--review-ticket", "T-9101", "--paths", "x.py"]
+    review_ticket = ["--review-ticket", "T-9101", "--paths", "x.py"]
 
-    assert external.main(gate) == 0
-    assert external.main(gate) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
+    assert external.main(review_ticket) == 0
+    assert external.main(review_ticket) == reviewer_budget.EXIT_ROUND_LIMIT_EXCEEDED
     assert calls["n"] == 1, "예산을 넘긴 호출이 리뷰어를 또 띄웠다"
 
 
@@ -2329,10 +2329,10 @@ def test_knob_conf_run_names_no_retired_key(external, monkeypatch, tmp_path, cap
 
 
 # ── `--resolve-review --pm-verified` — 추가 리뷰어 채널 처분 CLI (T-0791) ──────────
-# 채널 폐지 뒤에도 additional-reviewer 장부(review_rounds.json)의 반려 잔여를 재호출 없이
-# 종결하는 선언면. 릴리즈 축(`_unresolved_must_fix_data`)의 재검증·채널 격리·실패 경로는
-# `tests/test_board_live_test.py` 가 진다 — 여기는 CLI 선언면 자체(모드 선택·호출 0·장부 불변·
-# v1.7.8 실물 형상의 선언 성공/실패)를 담당한다.
+# 채널 폐지 뒤에도 additional-reviewer 기록 파일(review_rounds.json)의 남은 반려를 재호출 없이
+# 종결하는 선언면. 릴리즈 경로(`_unresolved_must_fix_data`)의 재검증·채널 격리·실패 경로는
+# `tests/test_board_live_test.py` 가 진다 — 여기는 CLI 선언면 자체(모드 선택·호출 0·기록 불변·
+# v1.7.8 실물 구성의 선언 성공/실패)를 담당한다.
 
 @pytest.fixture
 def pm_verified_declare(tmp_path, monkeypatch):
@@ -2352,21 +2352,21 @@ def pm_verified_declare(tmp_path, monkeypatch):
             AssertionError("--resolve-review 선언면이 reviewer 를 스폰했다 — 호출 0 계약 위반"),
         ),
     )
-    ledger_path = proj / ".project_manager" / ".local" / "review_rounds.json"
+    record_path = proj / ".project_manager" / ".local" / "review_rounds.json"
 
-    def write_records(ledger: dict) -> None:
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        ledger_path.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+    def write_records(round_records: dict) -> None:
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps(round_records, ensure_ascii=False), encoding="utf-8")
 
     return types.SimpleNamespace(
         external=external, board=board_mod, proj=proj,
         write_records=write_records,
-        read_records=lambda: json.loads(ledger_path.read_text(encoding="utf-8")),
+        read_records=lambda: json.loads(record_path.read_text(encoding="utf-8")),
         run=lambda *argv: external.main(list(argv)),
     )
 
 
-def test_resolve_gate_mode_guidance_lists_only_pm_verified(external, monkeypatch, tmp_path, capsys):
+def test_resolve_review_mode_guidance_lists_only_pm_verified(external, monkeypatch, tmp_path, capsys):
     """`--resolve-review` 처분 미지정 안내는 유일한 `--pm-verified`만 싣는다."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--resolve-review", "T-0001"]) == 1
@@ -2375,9 +2375,9 @@ def test_resolve_gate_mode_guidance_lists_only_pm_verified(external, monkeypatch
     assert calls["n"] == 0
 
 
-def test_resolve_gate_parser_rejects_removed_into_option(
+def test_resolve_review_parser_rejects_removed_into_option(
         external, monkeypatch, tmp_path, capsys):
-    """폐지한 into 표면은 argparse 단계에서 fail-loud한다."""
+    """폐지한 into 플래그는 argparse 단계에서 fail-loud한다."""
     calls = _wire(external, monkeypatch, tmp_path)
     with pytest.raises(SystemExit):
         external.main(["--resolve-review", "T-0001", "--into", "T-0002", "--pm-verified"])
@@ -2385,24 +2385,18 @@ def test_resolve_gate_parser_rejects_removed_into_option(
     assert calls["n"] == 0
 
 
-def test_reviewer_flags_accept_only_the_new_names():
-    """추가 리뷰어 플래그는 새 이름만 받는다. 옛 이름은 별칭 없이 인자 오류(종료 코드 2)다."""
+def test_reviewer_flags_accept_the_new_names():
+    """추가 리뷰어 플래그는 새 이름을 받는다."""
     parser = cli_additional_reviewer.build_arg_parser()
     args = parser.parse_args(["--review-ticket", "T-0001", "--reset-session-budget"])
     assert (args.review_ticket, args.reset_session_budget) == ("T-0001", True)
     assert parser.parse_args(["--no-review-ticket"]).no_review_ticket is True
     assert parser.parse_args(["--resolve-review", "T-0001"]).resolve_review == "T-0001"
-    for old, argv in (("--gate", ["--gate", "T-0001"]), ("--no-gate", ["--no-gate"]),
-                      ("--resolve-gate", ["--resolve-gate", "T-0001"]),
-                      ("--ack-wave", ["--ack-wave"])):
-        with pytest.raises(SystemExit) as caught:
-            parser.parse_args(argv)
-        assert caught.value.code == 2, old
 
 
-def test_pm_verified_flag_without_resolve_gate_is_refused(
+def test_pm_verified_flag_without_resolve_review_is_refused(
         external, monkeypatch, tmp_path, capsys):
-    """`--pm-verified` 를 --resolve-review 없이 쓰면 거부 — 선언할 게이트가 없으면 뜻이 없다."""
+    """`--pm-verified` 를 --resolve-review 없이 쓰면 거부 — 선언할 리뷰 집계 티켓이 없으면 뜻이 없다."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--pm-verified", "--paths", "x.py"]) == 1
     err = capsys.readouterr().err
@@ -2411,10 +2405,10 @@ def test_pm_verified_flag_without_resolve_gate_is_refused(
 
 
 def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified_declare):
-    """v1.7.8 실물 형상이 신규 선언 경로로 rc0 이고 폐지 필드는 정규화에서 제거된다.
+    """v1.7.8 실물 구성이 신규 선언 경로로 rc0 이고 폐지 필드는 정규화에서 제거된다.
 
-    단언: reviewer 스폰 0(고정 fixture) · raw 레코드 증가 0 · `wave.spent` 불변 · 게이트
-    `count` 불변(선언은 장부 기록 전용이라 회계 절을 건드리지 않는다)."""
+    단언: reviewer 스폰 0(고정 fixture) · raw 레코드 증가 0 · 리뷰 집계 티켓
+    `count` 불변(선언은 기록 파일 쓰기 전용이라 집계 절을 건드리지 않는다)."""
     tid = "T-9764"
     entry = _pv_seed_v178_shape(pm_verified_declare.proj, tid)
     before = json.loads(json.dumps(entry))
@@ -2427,14 +2421,13 @@ def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified
     assert after["count"] == before["count"]
     assert "confirm_fix" not in after
     assert after["rounds"] == before["rounds"]
-    assert "wave" not in after       # wave 절 자체를 건드리지 않는다(불변)
     assert not raw_dir.exists(), "선언면이 raw 출력 디렉토리를 만들면 호출이 있었다는 뜻이다"
 
 
 def test_pm_verified_declaration_is_refused_with_reason_when_evidence_is_insufficient(
         pm_verified_declare, capsys,
 ):
-    """증거 미달(표면 미달)이면 rc≠0 + 사람이 읽는 사유(전문)가 stderr 에 실린다."""
+    """증거 미달(판정 범위 미달)이면 rc≠0 + 사람이 읽는 사유(전문)가 stderr 에 실린다."""
     tid = "T-9780"
     proj = pm_verified_declare.proj
     findings = [_pv_finding("X-001")]
@@ -2443,7 +2436,7 @@ def test_pm_verified_declaration_is_refused_with_reason_when_evidence_is_insuffi
         1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
-    entry = _pv_ledger_entry([_pv_round_outcome(1, 3)])   # 잔여 3인데 표면은 1건뿐
+    entry = _pv_ledger_entry([_pv_round_outcome(1, 3)])   # 남은 것 3인데 판정 범위는 1건뿐
     pm_verified_declare.write_records({tid: entry})
 
     rc = pm_verified_declare.run("--resolve-review", tid, "--pm-verified")
@@ -2467,14 +2460,14 @@ def test_rounds_report_shows_pm_verified_disposition_label(pm_verified_declare, 
     assert "pm-verified" in out and "reviewer 재투입 없음" in out
 
 
-# ── 채널 격리 양방향 — 추가 선언 CLI 실경로 (형상은 test_board_live_test 빌더 공용) ────
+# ── 채널 격리 양방향 — 추가 선언 CLI 실경로 (구성은 test_board_live_test 빌더 공용) ────
 
 def test_additional_declaration_opens_when_its_own_channel_is_machine_confirmed(
     pm_verified_declare,
 ):
-    """혼합 채널 형상에서 추가 채널 X-* 기계 확인이 있으면 이 CLI 선언은 열린다.
+    """혼합 채널 구성에서 추가 채널 X-* 기계 확인이 있으면 이 CLI 선언은 열린다.
 
-    같은 형상에서 **내부 축은 닫힌다**(tests/test_board_live_test.py 의 내부 선언·완료 경로) —
+    같은 구성에서 **내부 채널은 닫힌다**(tests/test_board_live_test.py 의 내부 선언·완료 경로) —
     채널 격리는 한쪽을 막는 규칙이 아니라 각 채널이 자기 증거만 본다는 규칙이다."""
     tid = "T-9798"
     entries = _pv_seed_mixed_channel_shape(
@@ -2489,7 +2482,7 @@ def test_additional_declaration_opens_when_its_own_channel_is_machine_confirmed(
 def test_additional_declaration_is_refused_when_only_the_internal_channel_is_confirmed(
     pm_verified_declare, capsys,
 ):
-    """역방향 — 내부 F-* 기계 확인은 추가 리뷰어 게이트의 증거가 아니다(선언 CLI 실경로)."""
+    """역방향 — 내부 F-* 기계 확인은 추가 리뷰어 리뷰 집계 티켓의 증거가 아니다(선언 CLI 실경로)."""
     tid = "T-9799"
     entries = _pv_seed_mixed_channel_shape(
         pm_verified_declare.proj, tid, machine_channel=_PV_CHANNEL_INTERNAL,

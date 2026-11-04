@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""리뷰 라운드 장부 공용 seam.
+"""리뷰 라운드 기록 파일 공용 모듈.
 
-추가 리뷰어(`additional_reviewer.py`) 라운드 장부의 gate entry/예약/산출/수렴 판정 스키마를
-소유한다(board 는 같은 장부를 읽기만 한다). 이 모듈은 장부를 쓰고 읽는 쪽이 갈리면 안 되는
+추가 리뷰어(`additional_reviewer.py`) 리뷰 라운드 기록 파일의 리뷰 집계 티켓 항목/예약/산출/마무리 판정 스키마를
+소유한다(board 는 같은 기록 파일을 읽기만 한다). 이 모듈은 기록 파일을 쓰고 읽는 쪽이 갈리면 안 되는
 다음 규칙만 소유한다.
 
-* JSON 장부 read + PID/UUID 임시 파일을 이용한 원자 write (교체 자체는 공용 `fs` seam —
+* JSON 기록 파일 read + PID/UUID 임시 파일을 이용한 원자 write (교체 자체는 공용 `fs` 함수 —
   플랫폼별 rename 의미 차이를 이 모듈이 복제하지 않는다)
-* gate entry 정규화와 단조 sequence 예약/스폰 전 환불
+* 리뷰 집계 티켓 항목 정규화와 단조 sequence 예약/스폰 전 환불
 * 예약 순서 기준 must-fix 추이, 진행 중 예약을 포함한 상한, 발산 조기 차단
-* 게이트 처분 선언(`resolution`) 판정, 마지막 라운드 판정과 잔여 must-fix
+* 리뷰 집계 티켓 처분 선언(`resolution`) 판정, 마지막 라운드 판정과 남은 must-fix
 
-파일락의 경로와 임계 구역은 호출자가 소유한다. 저장 파일과 부가 기록(livegate/wave)은 호출
-도구가 정한다. 호출자는 반드시 같은 장부 옆의 파일락 안에서 read-modify-write를 수행한다.
+파일락의 경로와 임계 구역은 호출자가 소유한다. 저장 파일과 부가 기록(live-test/세션 호출 예산)은 호출
+도구가 정한다. 호출자는 반드시 같은 기록 파일 옆의 파일락 안에서 read-modify-write를 수행한다.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from pm_engine.domain import reviewer_budget
 from pm_engine.infra import fs
 
 
@@ -35,13 +36,13 @@ CONVERGENCE_DIVERGING = "diverging"
 CONVERGENCE_CAP_UNRESOLVED = "cap-unresolved"
 CONVERGENCE_CAP_REACHED = "cap-reached"
 
-# 폐지된 라운드 연장 승인이 장부에 남긴 필드. 스키마에서 뺐고 **값을 승계하지도 않는다** —
-# 승인 수위만큼 집계 창을 잘라 판정 수를 줄이던 값이라, 남아 있으면 그 게이트의 집계가 전체
-# 레코드 기준과 달라진다. 버리는 사실은 게이트·값과 함께 loud 로 알린다(정규화가 키를 떨구므로
-# 장부가 다시 기록되면 알릴 대상이 없어 자연히 1회다 — 별도 상태 파일 없음).
+# 폐지된 라운드 연장 승인이 기록 파일에 남긴 필드. 스키마에서 뺐고 **값을 승계하지도 않는다** —
+# 승인 수위만큼 집계 창을 잘라 판정 수를 줄이던 값이라, 남아 있으면 그 리뷰 집계 티켓의 집계가 전체
+# 레코드 기준과 달라진다. 버리는 사실은 리뷰 집계 티켓·값과 함께 loud 로 알린다(정규화가 키를 떨구므로
+# 기록 파일이 다시 쓰이면 알릴 대상이 없어 자연히 1회다 — 별도 상태 파일 없음).
 RETIRED_ACK_FIELD = "acked_through"
 
-# 기계 확인(pm-review-confirmation-v1) 증거로 여는 게이트 처분. 상한·쿼터 대신
+# 기계 확인(pm-review-confirmation-v1) 증거로 여는 리뷰 집계 티켓 처분. 상한·쿼터 대신
 # 증거를 요구한다(`review_state.pm_verified_evidence_problem` 이
 # 선언·완료 재검증 공용으로 판정한다). 이 모듈은 표기 문구만 소유한다.
 RESOLUTION_PM_VERIFIED = "pm-verified"
@@ -53,7 +54,7 @@ def utc_now_iso() -> str:
 
 
 def as_int(value: object) -> int:
-    """장부 정수 필드 정규화(손상/누락은 0)."""
+    """기록 정수 필드 정규화(손상/누락은 0)."""
     try:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -65,11 +66,11 @@ def read_records(
     *,
     warning_sink: Callable[[str], None] | None = None,
 ) -> dict:
-    """장부를 읽는다. 부재·손상·비매핑 최상위는 빈 장부로 fail-soft 한다.
+    """기록 파일을 읽는다. 부재·손상·비매핑 최상위는 빈 기록으로 fail-soft 한다.
 
-    파일 부재는 첫 실행의 정상 형상이라 조용하다. 반면 읽기 권한/IO 실패·깨진 UTF-8·빈 파일을
-    포함한 JSON 파싱 실패는 호출자가 ``warning_sink``를 주면 loud 진단을 남긴다. 어느 형상이든
-    손상된 바이트가 라운드 호출을 예외로 막지 않도록 빈 장부로 복구한다.
+    파일 부재는 첫 실행의 정상 경우라 조용하다. 반면 읽기 권한/IO 실패·깨진 UTF-8·빈 파일을
+    포함한 JSON 파싱 실패는 호출자가 ``warning_sink``를 주면 loud 진단을 남긴다. 어느 경우든
+    손상된 바이트가 라운드 호출을 예외로 막지 않도록 빈 기록으로 복구한다.
     """
     target = Path(path)
     try:
@@ -85,8 +86,8 @@ def read_records(
     return data if isinstance(data, dict) else {}
 
 
-def write_records(path: Path | str, ledger: dict) -> None:
-    """장부 JSON을 같은 디렉터리의 고유 임시 파일을 거쳐 원자 교체한다.
+def write_records(path: Path | str, records: dict) -> None:
+    """기록 JSON을 같은 디렉터리의 고유 임시 파일을 거쳐 원자 교체한다.
 
     read-modify-write 직렬화는 호출자의 파일락이 보장한다. 여기서는 독자가 부분 JSON을 보지
     않는 원자 교체와 실패한 임시 파일 정리만 소유한다.
@@ -98,7 +99,7 @@ def write_records(path: Path | str, ledger: dict) -> None:
     )
     try:
         tmp.write_text(
-            json.dumps(ledger, ensure_ascii=False, indent=2),
+            json.dumps(records, ensure_ascii=False, indent=2),
             encoding="utf-8", newline="\n"
         )
         fs.atomic_replace(tmp, target)
@@ -110,10 +111,10 @@ def write_records(path: Path | str, ledger: dict) -> None:
             pass
 
 
-def warn_retired_ack_field(gate: str, value: int) -> None:
-    """폐지 필드를 버린다는 사실을 그 게이트·값과 함께 알린다(승계 없음)."""
+def warn_retired_ack_field(review_ticket: str, value: int) -> None:
+    """폐지 필드를 버린다는 사실을 그 리뷰 집계 티켓·값과 함께 알린다(승계 없음)."""
     print(
-        f"경고: 라운드 기록의 폐지 필드 `{RETIRED_ACK_FIELD}` 를 버립니다 — 리뷰 집계 티켓 {gate} · "
+        f"경고: 라운드 기록의 폐지 필드 `{RETIRED_ACK_FIELD}` 를 버립니다 — 리뷰 집계 티켓 {review_ticket} · "
         f"{RETIRED_ACK_FIELD}={value}. 폐지된 라운드 연장 승인이 남긴 값이라 승계하지 "
         "않으므로, 이 리뷰 집계 티켓의 집계는 이제 전체 레코드 기준입니다. 기록 파일이 다시 쓰이면 이 "
         "안내는 사라집니다.",
@@ -122,27 +123,27 @@ def warn_retired_ack_field(gate: str, value: int) -> None:
 
 
 def normalize_review_ticket_entry(
-    ledger: dict,
-    gate: str,
+    round_records: dict,
+    review_ticket: str,
     *,
     reserved_keys: Sequence[str] = (),
 ) -> tuple[dict, int]:
-    """gate entry를 external/internal 공용 스키마로 정규화해 장부에 심고, 폐기 필드
+    """리뷰 집계 티켓 항목을 external/internal 공용 스키마로 정규화해 기록에 넣고, 폐기 필드
     (`RETIRED_ACK_FIELD`) 감지 여부를 호출부에 돌려준다 — `(entry, retired_ack)`.
 
     폐지 필드는 여기서 떨어진다(승계 없음). `retired_ack` 는 버린 원값(0=미검출)이다 —
     **알림·영속은 이 함수가 하지 않는다**: 순수 조회(report/preview)는 정규화 결과를 저장할
     수 없어 '1회' 고지를 지킬 수 없고, mutation/차단 경로는 저장 시점을 스스로 정한다(거부
     직전에라도 저장해야 알림이 실제로 1회가 된다). 호출부가 `retired_ack` 를 보고 자기
-    계약에 맞는 저장·고지 정책을 고른다(`warn_retired_ack_field` 재사용). 접는 자리를
-    정규화로 둬야 조회·기록·legacy 승계가 한 규칙이다(승계 항목은 장부 스캔이 아니라 이
+    계약에 맞는 저장·고지 정책을 고른다(`warn_retired_ack_field` 재사용). 폐지 필드를 떨구는 자리를
+    정규화로 둬야 조회·기록·legacy 승계가 한 규칙이다(승계 항목은 기록 파일 스캔이 아니라 이
     경로로 들어온다)."""
-    if gate in reserved_keys:
+    if review_ticket in reserved_keys:
         raise ValueError(
-            f"라운드 기록 예약 키를 리뷰 집계 티켓으로 쓸 수 없습니다: {gate!r} "
+            f"라운드 기록 예약 키를 리뷰 집계 티켓으로 쓸 수 없습니다: {review_ticket!r} "
             f"(예약 키: {', '.join(sorted(reserved_keys))})"
         )
-    entry = ledger.get(gate)
+    entry = round_records.get(review_ticket)
     if not isinstance(entry, dict):
         entry = {}
     records = entry.get("records")
@@ -166,7 +167,7 @@ def normalize_review_ticket_entry(
         "records": records,
         "rounds": rounds,
     }
-    ledger[gate] = normalized
+    round_records[review_ticket] = normalized
     return normalized, retired_ack
 
 
@@ -222,17 +223,17 @@ def append_round_outcome(entry: dict, outcome: dict) -> dict:
 
 
 def round_outcome_order_key(outcome: dict) -> tuple[bool, int]:
-    """라운드 산출의 **예약 순번** 정렬 키 — 이 판정의 공용 seam (사본 금지).
+    """라운드 산출의 **예약 순번** 정렬 키 — 이 판정의 공용 함수 (사본 금지).
 
     append 순서는 *완료* 순서라 라운드 번호가 아니다(동시 라운드가 역순으로 끝나면 뒤바뀐다).
     그래서 나열은 예약 순번(`sequence`)을 따른다.
 
-    **순번이 없는 구세대 기록은 신기록보다 앞(오래된 쪽)이다.** 뒤에 두면 업그레이드 후 새 통과가
-    쌓여도 옛 반려가 영원히 '최신'이 되어, 이미 닫힌 게이트가 계속 활성으로 읽히고(회귀 강등)
+    **순번이 없는 옛 버전 기록은 새 기록보다 앞(오래된 쪽)이다.** 뒤에 두면 업그레이드 후 새 통과가
+    쌓여도 옛 반려가 영원히 '최신'이 되어, 이미 닫힌 리뷰 집계 티켓이 계속 활성으로 읽히고(회귀 수준 낮춤)
     확인 전용 라운드 자격도 영구히 열린다. 구기록은 정의상 순번 도입 *이전* 이라 앞이 맞다 —
-    같은 축의 안정 정렬로 구기록끼리는 append 순서를 보존한다.
+    같은 키의 안정 정렬로 구기록끼리는 append 순서를 보존한다.
 
-    이 판정을 쓰는 표면이 여럿이라(회귀 강등·추가 리뷰어의 조회 표·수렴 추이·확인 전용 라운드
+    이 판정을 쓰는 곳이 여럿이라(회귀 수준 낮춤·추가 리뷰어의 조회 표·마무리 추이·확인 전용 라운드
     자격) 이 모듈 한 곳에 둔다 — 사본을 만들면 그 사본이 다시 뒤집힌 '최신'을 답한다.
     """
     sequence = outcome.get("sequence")
@@ -340,24 +341,24 @@ def describe_pm_verified_resolution(declared: dict) -> str:
     return "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)"
 
 
-# ── 장부 위치와 게이트 판정 (회귀 강등·릴리즈 차단·조회 표 공용) ─────────────
+# ── 기록 파일 위치와 리뷰 집계 티켓 판정 (회귀 수준 낮춤·릴리즈 차단·조회 표 공용) ─────────────
 REVIEW_ROUNDS_RECORD_NAME = "review_rounds.json"
-_REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (additional_reviewer SESSION_BUDGET_SECTION_KEY)
+_REVIEW_LEDGER_WAVE_KEY = reviewer_budget.SESSION_BUDGET_SECTION_KEY  # 리뷰 집계 티켓이 아닌 예약 키
 
 
 def _review_rounds_ledger(home) -> Path:
-    """추가 리뷰 라운드 장부 경로 — `home.local_dir` 파생(테스트 격리 추종)."""
+    """추가 리뷰 라운드 기록 파일 경로 — `home.local_dir` 파생(테스트 격리 추종)."""
     return home.local_dir / REVIEW_ROUNDS_RECORD_NAME
 
 
 def review_ticket_last_round(entry: dict) -> dict | None:
-    """게이트의 **마지막 라운드 산출** — 기록이 없으면 None (공용 seam·사본 금지).
+    """리뷰 집계 티켓의 **마지막 라운드 산출** — 기록이 없으면 None (공용 함수·사본 금지).
 
     "마지막이 어느 라운드인가"를 이 한 곳이 정한다 — append 순서가 아니라 예약 순번이다
-    (`round_outcome_order_key`). 이 판정을 세 표면이 쓴다: 회귀 강등의 최신 판정, 릴리즈 게이트의
-    잔여 must-fix, 처분 선언의 근거 게이트 통과 여부. 사본을 두면 그 사본이 서로 다른 라운드를
-    '최신'이라고 답한다. `rounds` 가 리스트가 아닌 손상 항목은 None 이다 — 이 seam 은 판정을
-    돌려줄 뿐이라 손상의 **처분**은 호출부가 정한다(회귀 강등은 fail-open·릴리즈는 fail-closed·
+    (`round_outcome_order_key`). 이 판정을 세 곳이 쓴다: 회귀 수준 낮춤의 최신 판정, 릴리즈 통과 조건의
+    남은 must-fix, 처분 선언의 근거 리뷰 집계 티켓 통과 여부. 사본을 두면 그 사본이 서로 다른 라운드를
+    '최신'이라고 답한다. `rounds` 가 리스트가 아닌 손상 항목은 None 이다 — 이 함수는 판정을
+    돌려줄 뿐이라 손상의 **처분**은 호출부가 정한다(회귀 수준 낮춤은 fail-open·릴리즈는 fail-closed·
     `review_ticket_entry_corruption`)."""
     rounds = entry.get("rounds")
     if not isinstance(rounds, list):
@@ -369,9 +370,9 @@ def review_ticket_last_round(entry: dict) -> dict | None:
 
 
 def _last_round_verdict(entry: dict) -> int | None:
-    """게이트의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
+    """리뷰 집계 티켓의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
 
-    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `review_ticket_last_round` —
+    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 함수 `review_ticket_last_round` —
     additional_reviewer 조회 표와 같은 한 규칙)."""
     outcome = review_ticket_last_round(entry)
     verdict = outcome.get("verdict") if outcome is not None else None
@@ -379,16 +380,16 @@ def _last_round_verdict(entry: dict) -> int | None:
 
 
 def review_ticket_residual_must_fix(entry: dict) -> int | None:
-    """마지막 라운드가 남긴 must-fix 잔여 — 3-상태 (공용 seam).
+    """마지막 라운드가 남긴 must-fix 수 — 3-상태 (공용 함수).
 
-    반환은 `0`(잔여 없음) · `N>0`(N 건) · **`None`(미상)** 이다. 미상은 "호출은 됐는데 판정이
-    무효했다"(타임아웃·오염·섹션 부재로 셀 근거가 없던 라운드)이고, 그건 "잔여가 없다"가 아니라
-    **확인하지 못했다**이다 — 0 으로 접으면 판정 무효 라운드로 끝난 게이트에서 릴리즈 차단이
-    조용히 풀린다(실장부 실례). 형제 seam(additional_reviewer 의 수렴 판정)도 '미상'을 해소로 세지
+    반환은 `0`(남은 것 없음) · `N>0`(N 건) · **`None`(미상)** 이다. 미상은 "호출은 됐는데 판정이
+    무효했다"(타임아웃·오염·섹션 부재로 셀 근거가 없던 라운드)이고, 그건 "남은 것이 없다"가 아니라
+    **확인하지 못했다**이다 — 0 으로 바꾸면 판정 무효 라운드로 끝난 리뷰 집계 티켓에서 릴리즈 차단이
+    조용히 풀린다(실제 기록 파일 실례). 형제 함수(additional_reviewer 의 마무리 판정)도 '미상'을 해소로 세지
     않는 같은 규칙이다.
 
     다만 **통과(rc 0)로 끝난 라운드의 미상은 비대상(0)** 이다 — 그쪽은 판정이 났고 must-fix 섹션이
-    없었을 뿐이라 반려 사실이 없다. suggestion 은 어느 경우에도 이 축에 들어오지 않는다(이월 허용).
+    없었을 뿐이라 반려 사실이 없다. suggestion 은 어느 경우에도 이 수에 들어오지 않는다(이월 허용).
     """
     outcome = review_ticket_last_round(entry)
     if outcome is None:
@@ -400,44 +401,44 @@ def review_ticket_residual_must_fix(entry: dict) -> int | None:
 
 
 def review_ticket_has_residual(entry: dict) -> bool:
-    """처분이 필요한 잔여가 있는가 — N>0 **또는 미상** (공용 seam).
+    """처분이 필요한 남은 must-fix 가 있는가 — N>0 **또는 미상** (공용 함수).
 
-    릴리즈 차단과 처분 선언(`--resolve-review`)이 이 한 술어를 공유한다. 두 표면이 갈리면 차단은
-    되는데 선언은 거부되는 데드락이 난다(미상 게이트가 정확히 그 형상이다)."""
+    릴리즈 차단과 처분 선언(`--resolve-review`)이 이 한 술어를 공유한다. 두 곳이 갈리면 차단은
+    되는데 선언은 거부되는 데드락이 난다(미상 리뷰 집계 티켓이 정확히 그 경우다)."""
     residual = review_ticket_residual_must_fix(entry)
     return residual is None or residual > 0
 
 
 def review_ticket_residual_label(entry: dict) -> str:
-    """잔여 표기 — `N건` / `미상(판정 무효 라운드)` (차단 사유·선언 응답 공용)."""
+    """남은 must-fix 표기 — `N건` / `미상(판정 무효 라운드)` (차단 사유·선언 응답 공용)."""
     residual = review_ticket_residual_must_fix(entry)
     return "미상(판정 무효 라운드)" if residual is None else f"{residual}건"
 
 
-# ── 게이트 처분 선언 (장부 `resolution` 절) ────────────────────────────────
-# 라운드 상한으로 종결된 게이트의 **잔여 must-fix 를 어떻게 소화했는가**를 장부에 남기는 절이다.
+# ── 리뷰 집계 티켓 처분 선언 (기록 파일 `resolution` 절) ────────────────────────────────
+# 라운드 상한으로 종결된 리뷰 집계 티켓의 **남은 must-fix 를 어떻게 소화했는가**를 기록 파일에 남기는 절이다.
 # 쓰는 쪽은 additional_reviewer(`--resolve-review`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
-# 조회 표가 각자 해석하면 같은 장부를 놓고 "처분됐다/아니다"가 갈린다.
-# 기계 확인 증거로 여는 게이트 처분(`RESOLUTION_PM_VERIFIED`)은 장부마다 `allow_pm_verified` 명시
-# 시에만 인정된다(추가 리뷰어 release 축이 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
+# 조회 표가 각자 해석하면 같은 기록 파일을 놓고 "처분됐다/아니다"가 갈린다.
+# 기계 확인 증거로 여는 리뷰 집계 티켓 처분(`RESOLUTION_PM_VERIFIED`)은 기록 파일마다 `allow_pm_verified` 명시
+# 시에만 인정된다(추가 리뷰어 release 경로가 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
 
 # 처분 표기 어휘 — 선언 응답(additional_reviewer)과 차단 사유(여기)가 같은 말을 쓰게.
 REVIEW_TICKET_RESOLUTION_LABELS: dict[str, str] = {
     RESOLUTION_PM_VERIFIED: "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)",
 }
 
-# 처분이 결속하는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
-_GATE_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
-_MISSING_BINDING = object()   # `round_sequence` 키 부재와 명시 null(정상 값)을 구분하는 표식.
+# 처분이 연결되는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
+_REVIEW_TICKET_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
+_MISSING_BINDING = object()   # `round_sequence` 키 부재와 명시 null(정상 값)을 구분하는 표시.
 
 
 def review_ticket_entry_corruption(entry: object) -> str | None:
-    """게이트 항목이 **해석 가능한 형상**인지 — 아니면 사유 (정상이면 None·공용 seam).
+    """리뷰 집계 티켓 항목이 **해석 가능한 구성**인지 — 아니면 사유 (정상이면 None·공용 함수).
 
-    "존재하는데 읽을 수 없음"은 "잔여 없음"이 아니다. 손상 형상마다 조용한 통과 조각이 생기는 것이
-    이 축의 실패 모드였다 — 비-dict 항목은 순회에서 건너뛰고, 문자열 `rounds` 는 '기록 없음'으로,
+    "존재하는데 읽을 수 없음"은 "남은 것 없음"이 아니다. 손상 구성마다 조용한 통과 조각이 생기는 것이
+    이 판정의 실패 모드였다 — 비-dict 항목은 순회에서 건너뛰고, 문자열 `rounds` 는 '기록 없음'으로,
     정수 `rounds` 는 예외로 갈렸다(각각 통과·통과·중단). 셋을 한 술어로 모아 호출부가 **한 처분**
-    (릴리즈 차단)으로 수렴시킨다."""
+    (릴리즈 차단)으로 모은다."""
     if not isinstance(entry, dict):
         return f"리뷰 집계 티켓 항목 형식 오류({type(entry).__name__}) — 해석 불가"
     rounds = entry.get("rounds")
@@ -452,11 +453,11 @@ def review_ticket_entry_corruption(entry: object) -> str | None:
 
 
 def review_ticket_round_binding(entry: dict) -> dict:
-    """게이트의 **현재 라운드 좌표** — `{round_sequence, rounds}` (선언·검증 공용 seam).
+    """리뷰 집계 티켓의 **현재 라운드 좌표** — `{round_sequence, rounds}` (선언·검증 공용 함수).
 
-    처분은 "그때 그 잔여"에 대한 선언이다. 좌표 없이 게이트 단위로만 남기면 처분 뒤에 새 반려
-    라운드가 와도 옛 선언이 잔여를 계속 지운다(처분의 무기한 유효화). 좌표는 둘을 함께 본다 —
-    마지막 라운드의 예약 순번(정렬 좌표)과 산출 수. 순번 없는 구세대 산출만 있는 장부에서도
+    처분은 "그때 남은 must-fix"에 대한 선언이다. 좌표 없이 리뷰 집계 티켓 단위로만 남기면 처분 뒤에 새 반려
+    라운드가 와도 옛 선언이 남은 must-fix 를 계속 지운다(처분의 무기한 유효화). 좌표는 둘을 함께 본다 —
+    마지막 라운드의 예약 순번(정렬 좌표)과 산출 수. 순번 없는 옛 버전 산출만 있는 기록에서도
     산출 수가 증가를 잡는다."""
     rounds = entry.get("rounds")
     rounds = [row for row in rounds if isinstance(row, dict)] if isinstance(rounds, list) else []
@@ -468,13 +469,13 @@ def review_ticket_round_binding(entry: dict) -> dict:
 
 
 def review_ticket_resolution(entry: dict) -> dict | None:
-    """게이트 처분 선언의 해석 — 미선언·형식 불명이면 None(=미처분·공용 seam).
+    """리뷰 집계 티켓 처분 선언의 해석 — 미선언·형식 불명이면 None(=미처분·공용 함수).
 
     읽을 수 없는 값은 처분이 아니다(fail-closed) — 손상된 한 줄이 릴리즈 차단을 **여는** 방향으로
-    작동하면 그 게이트는 기계가 아니다. 라운드 좌표(`round_sequence`·`rounds`)도 같은 축이다:
-    좌표 없는 선언은 어느 잔여를 처분했는지 확인할 수 없으므로 처분으로 인정하지 않는다.
+    작동하면 그 검사는 기계가 아니다. 라운드 좌표(`round_sequence`·`rounds`)도 같은 기준이다:
+    좌표 없는 선언은 어느 남은 must-fix 를 처분했는지 확인할 수 없으므로 처분으로 인정하지 않는다.
     반환은 정규화된 `{kind, round_sequence, rounds, ts?}` 사본이다. 폐지 kind는 None으로
-    읽혀 잔여 게이트를 그대로 차단한다.
+    읽혀 남은 must-fix 가 있는 리뷰 집계 티켓을 그대로 차단한다.
     """
     raw = entry.get("resolution")
     if not isinstance(raw, dict):
@@ -485,7 +486,7 @@ def review_ticket_resolution(entry: dict) -> dict | None:
     sequence = raw.get("round_sequence", _MISSING_BINDING)
     count = raw.get("rounds")
     if sequence is _MISSING_BINDING:
-        return None                      # 좌표 없는 선언 — 어느 잔여를 처분했는지 확인 불가.
+        return None                      # 좌표 없는 선언 — 어느 남은 must-fix 를 처분했는지 확인 불가.
     if sequence is not None and (isinstance(sequence, bool) or not isinstance(sequence, int)):
         return None
     if isinstance(count, bool) or not isinstance(count, int):
@@ -502,33 +503,33 @@ def review_ticket_resolution(entry: dict) -> dict | None:
 
 
 def review_ticket_resolution_is_stale(entry: dict, declared: dict) -> bool:
-    """처분이 결속한 라운드 좌표가 **지금 장부와 다른가** (다르면 미처분 취급·공용 seam).
+    """처분이 연결된 라운드 좌표가 **지금 기록과 다른가** (다르면 미처분 취급·공용 함수).
 
-    선언 이후 새 라운드가 기록됐다면 그 잔여는 처분되지 않은 새 사실이다. 좌표가 뒤로 간 경우
-    (장부 손편집)도 같은 처분이다 — 어느 쪽이든 선언이 가리키던 상태가 아니다."""
+    선언 이후 새 라운드가 기록됐다면 그 남은 must-fix 는 처분되지 않은 새 사실이다. 좌표가 뒤로 간 경우
+    (기록 파일 손편집)도 같은 처분이다 — 어느 쪽이든 선언이 가리키던 상태가 아니다."""
     current = review_ticket_round_binding(entry)
-    return any(current[key] != declared.get(key) for key in _GATE_RESOLUTION_BINDING_KEYS)
+    return any(current[key] != declared.get(key) for key in _REVIEW_TICKET_RESOLUTION_BINDING_KEYS)
 
 
 def _gate_disposition_problem(
-    gate: str,
+    review_ticket: str,
     entry: object,
     *,
     allow_pm_verified: bool = False,
     pm_verified_problem: Callable[[], str | None] | None = None,
 ) -> str | None:
-    """게이트 하나의 처분 판정 — 차단 사유 1줄 (통과면 None).
+    """리뷰 집계 티켓 하나의 처분 판정 — 차단 사유 1줄 (통과면 None).
 
-    순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
-    비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
+    순서대로 본다: **항목 해석 가능성**(손상이면 남은 must-fix 를 셀 수 없으니 차단) → 남은 must_fix(0 이면
+    비대상·suggestion 만 남은 리뷰 집계 티켓 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
     → `pm-verified` 발동 증거의 라이브 재검증. 폐지 kind는 `review_ticket_resolution=None`이라
     미처분으로 fail-loud 한다."""
     corruption = review_ticket_entry_corruption(entry)
     if corruption is not None:
-        return f"  · {gate}: {corruption} — 남은 must-fix 를 확인할 수 없어 차단합니다"
+        return f"  · {review_ticket}: {corruption} — 남은 must-fix 를 확인할 수 없어 차단합니다"
     if not review_ticket_has_residual(entry):
         return None
-    prefix = f"  · {gate}: 최종 라운드 must_fix {review_ticket_residual_label(entry)}"
+    prefix = f"  · {review_ticket}: 최종 라운드 must_fix {review_ticket_residual_label(entry)}"
     declared = review_ticket_resolution(entry)
     if declared is None:
         return f"{prefix} · 처분 선언 없음"
@@ -546,72 +547,72 @@ def _gate_disposition_problem(
     return None if problem is None else f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"
 
 
-# ── 라운드 상한 장부 ─────────────
+# ── 라운드 상한 기록 ─────────────
 # 추가 리뷰어 호출은 유료 호출이라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한
-# 게이트 클러스터 25라운드). PM 자의 라운드 집계를 기계 장부로 대체한다
+# 리뷰 집계 티켓 클러스터 25라운드). PM 자의 라운드 집계를 기계 기록으로 대체한다
 # ([[mechanize-dont-instruct-llm]]): `--review-ticket <T-NNNN>` 별로 실 호출 횟수(count)와 라운드별 산출을
-# per-clone·git-ignored 장부에 기록하고, 상한을 넘기면 실행 전에 거부한다. 폐지된 라운드 연장
+# per-clone·git-ignored 기록 파일에 기록하고, 상한을 넘기면 실행 전에 거부한다. 폐지된 라운드 연장
 # 승인이 남긴 필드는 정규화가 승계 없이 떨어뜨린다(`RETIRED_ACK_FIELD` — 그 사실은
-# 게이트·값과 함께 한 번 알린다). 장부는 세션/클론 로컬 현상이라
-# `.project_manager/.local/`(regression/livegate sidecar 와 동위·board 상태 아님)에 둔다. 경로는
-# 호출부가 넘긴 Home의 PM 소유자에서 장부 경로를 해소한다.
-# 한다(_tickets_dir 동형). 손상 장부는 빈 장부로 fail-soft(회귀해소·regression flag 동형).
+# 리뷰 집계 티켓·값과 함께 한 번 알린다). 기록 파일은 세션/클론 로컬 현상이라
+# `.project_manager/.local/`(regression/live-test sidecar 와 같은 위치·board 상태 아님)에 둔다. 경로는
+# 호출부가 넘긴 Home의 PM 소유자에서 기록 파일 경로를 해소한다.
+# 한다(_tickets_dir 와 같은 구조). 손상 기록 파일은 빈 기록으로 fail-soft(회귀해소·regression flag 와 같은 구조).
 #
-# 장부는 두 축을 함께 싣는다:
-#   · 게이트 축 — 최상위 키가 게이트 이름이고 값이 `_gate_entry` 스키마다. 상한 집계용
+# 기록 파일은 두 부분을 함께 싣는다:
+#   · 리뷰 집계 티켓 부분 — 최상위 키가 리뷰 집계 티켓 이름이고 값이 `_review_ticket_entry` 스키마다. 상한 집계용
 #     `records`(예약/마감 레코드) 옆에 **라운드별 산출** `rounds`(판정 rc·결함 수)를 append 한다.
 #     `rounds` 는 지워지지 않는 이력이라 "그 라운드가 실결함을 냈는가"를 나중에도 기계로 확인할 수
-#     있고, 수렴-형상 게이트(`_convergence_refusal`)의 판정 입력이기도 하다. 게이트 종결 시점의
+#     있고, 마무리 조건 검사(`_convergence_refusal`)의 판정 입력이기도 하다. 리뷰 집계 티켓 종결 시점의
 #     **처분 선언**(`resolution` — `--resolve-review`)도 같은 항목에 실린다. 처분 선언은 릴리즈
-#     차단(`board.py livegate record`)이 읽는 절이고,
+#     차단(`board.py live-test record`)이 읽는 절이고,
 #     그 값의 해석은 `review_ticket_resolution` 이 소유한다(여기선 구조만 보존).
-#   · wave 축 — 예약 키 `wave`(`SESSION_BUDGET_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 게이트 상한만
-#     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 게이트 합계를 이 예산이 묶는다. 두 축이 한
-#     dict 를 공유하므로 **예약 키를 게이트 이름으로 쓰는 것은 기계로 막는다**(`_reserved_gate_error`
-#     가 `--review-ticket` 을 거르고 `_gate_entry` 가 그 키를 fail-loud 로 거부·집계 순회는 건너뛴다).
-# 두 축의 적용 범위는 같다 — 장부를 타는 실행은 게이트가 해소된 실행(명시 `--review-ticket` 또는 `--ticket`
-# 자동 유도)뿐이라 wave 도 그 라운드만 센다. 게이트가 없는 실행(selector 에 티켓이 없거나 명시
-# `--no-review-ticket` opt-out)은 장부 밖이고 어느 예산도 쓰지 않으며, 그 사실을 loud 로 표기한다.
+#   · 세션 호출 예산 부분 — 예약 키(`SESSION_BUDGET_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 리뷰 집계 티켓 상한만
+#     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 리뷰 집계 티켓 합계를 이 예산이 묶는다. 두 부분이 한
+#     dict 를 공유하므로 **예약 키를 리뷰 집계 티켓 이름으로 쓰는 것은 기계로 막는다**(`_reserved_review_ticket_error`
+#     가 `--review-ticket` 을 거르고 `_review_ticket_entry` 가 그 키를 fail-loud 로 거부·집계 순회는 건너뛴다).
+# 두 부분의 적용 범위는 같다 — 기록을 타는 실행은 리뷰 집계 티켓이 해소된 실행(명시 `--review-ticket` 또는 `--ticket`
+# 자동 유도)뿐이라 세션 호출 예산도 그 라운드만 센다. 리뷰 집계 티켓이 없는 실행(selector 에 티켓이 없거나 명시
+# `--no-review-ticket` opt-out)은 기록 밖이고 어느 예산도 쓰지 않으며, 그 사실을 loud 로 표기한다.
 
 
 def _round_ledger_path(home) -> Path:
-    """라운드 장부 경로 — 해소된 **소유 PM 홈**의 `.local/json`.
+    """리뷰 라운드 기록 파일 경로 — 해소된 **소유 PM 홈**의 `.local/json`.
 
-    Home.local_dir는 호출부가 확정한 PM 소유자의 장부 디렉터리다.
-    코드 트리와 PM 소유자가 다른 실행에서도 같은 게이트 예산을 공유한다.
+    Home.local_dir는 호출부가 확정한 PM 소유자의 기록 파일 디렉터리다.
+    코드 트리와 PM 소유자가 다른 실행에서도 같은 리뷰 집계 티켓 예산을 공유한다.
 
-    diff 앵커(diff_root)에 매달면 **같은 게이트의 과금 상한이 diff_root 가 바뀔 때마다 조용히
+    diff 대상 저장소(diff_root)에 매달면 **같은 리뷰 집계 티켓의 과금 상한이 diff_root 가 바뀔 때마다 조용히
     리셋된다** — 새로 판 슬롯에서 같은 `--review-ticket T-NNNN` 을 돌리면
     count 가 0 부터 다시 세어져 상한이 무력화된다. 라운드는 이미 `--review-ticket` 키로 분리되므로 슬롯별
-    장부 분리가 주는 추가 격리는 없다(옛 "슬롯별 게이트 수명 분리" 근거 대체).
+    기록 파일 분리가 주는 추가 격리는 없다(옛 "슬롯별 리뷰 집계 티켓 수명 분리" 근거 대체).
     """
     return (
         (home.local_dir.parent.parent) / ".project_manager" / ".local" / "review_rounds.json"
     )
 
 
-def _legacy_round_ledger_path(home) -> Path:
-    """옛 규칙(diff 앵커)의 라운드 장부 경로 — 1회 승계(backfill)의 입력.
+def _legacy_round_record_path(home) -> Path:
+    """옛 규칙(diff 대상 저장소)의 리뷰 라운드 기록 파일 경로 — 1회 승계(backfill)의 입력.
 
-    앵커를 소유 PM 홈으로 옮기기 전의 실행들은 이 경로에 카운트를 쌓아 뒀다. 그 중에는 상한을
-    이미 넘겨 **차단 중인 게이트**(rc 4·ack 대기)가 있고, 새 앵커에서 0 부터 다시 세면
+    기록 위치를 소유 PM 홈으로 옮기기 전의 실행들은 이 경로에 카운트를 쌓아 뒀다. 그 중에는 상한을
+    이미 넘겨 **차단 중인 리뷰 집계 티켓**(rc 4·ack 대기)이 있고, 새 기록 위치에서 0 부터 다시 세면
     그 차단이 무통보로 열린다.
     """
     return home.root / ".project_manager" / ".local" / "review_rounds.json"
 
 
-def _read_round_ledger_at(path: Path) -> dict:
-    """지정 경로의 라운드 장부를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
+def _read_round_records_at(path: Path) -> dict:
+    """지정 경로의 리뷰 라운드 기록 파일을 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
     return read_records(path)
 
 
-def _load_round_ledger(home) -> dict:
-    """라운드 장부(gate→{count, records, rounds})를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
-    return _read_round_ledger_at(_round_ledger_path(home))
+def _load_round_records(home) -> dict:
+    """리뷰 라운드 기록 파일(리뷰 집계 티켓→{count, records, rounds})을 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
+    return _read_round_records_at(_round_ledger_path(home))
 
 
 def _restrict_to_owner(path: Path) -> None:
-    """호출 산출물을 소유자 전용 접근으로 제한한다 (플랫폼 수단은 공용 seam 소유).
+    """호출 산출물을 소유자 전용 접근으로 제한한다 (플랫폼 수단은 공용 함수 소유).
 
     `os.chmod(0o600/0o700)` 을 직접 부르지 않는 이유는 그 호출이 **Windows 에서 아무 제한도
     걸지 않기 때문**이다(실측 `S_IMODE`=0o666). opencode transport 샌드박스에는 검토 대상 diff
@@ -621,26 +622,26 @@ def _restrict_to_owner(path: Path) -> None:
     fs.restrict_to_owner(path)
 
 
-def _round_ledger_lock_path(home) -> Path:
-    """라운드 장부 배타락 파일 — 장부 **옆** `lock`(장부 경로에서 파생).
+def _round_record_lock_path(home) -> Path:
+    """리뷰 라운드 기록 파일 배타락 파일 — 기록 파일 **옆** `lock`(기록 파일 경로에서 파생).
 
-    앵커를 장부에서 파생한다 — 락과 장부가 각자 앵커를 계산하면 앵커 규칙이 갈릴 때 서로 다른
-    파일을 잠근 두 실행이 같은 장부를 동시에 read-modify-write 한다(상한 우회 창).
+    락 파일 위치를 기록 파일 경로에서 파생한다 — 락과 기록 파일이 각자 기록 위치를 계산하면 그 규칙이 갈릴 때 서로 다른
+    파일을 잠근 두 실행이 같은 기록 파일을 동시에 read-modify-write 한다(상한 우회 창).
     """
     return _round_ledger_path(home).with_name("review_rounds.lock")
 
 
 @contextlib.contextmanager
-def _round_ledger_lock(home) -> Iterator[None]:
-    """라운드 장부 read-modify-write 를 직렬화하는 OS 파일락.
+def _round_record_lock(home) -> Iterator[None]:
+    """리뷰 라운드 기록 파일 read-modify-write 를 직렬화하는 OS 파일락.
 
-    확인(상한 대조)→예약(count+1)→저장을 하나의 임계 구역으로 묶어, 동시 실행 2개가 같은 잔여
+    확인(상한 대조)→예약(count+1)→저장을 하나의 임계 구역으로 묶어, 동시 실행 2개가 같은 남은
     슬롯을 통과해 상한을 우회하는 것을 막는다. 프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock
-    없음). **재진입 금지**(flock 관례·board_lock 동형) — 예약과 환불은 *각자 독립* 락 구간이다
+    없음). **재진입 금지**(flock 관례·board_lock 과 같은 구조) — 예약과 환불은 *각자 독립* 락 구간이다
     (중첩 아님).
 
-    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `fs` seam 이 소유하고 이
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 대체 동작)는 공용 `fs` 함수가 소유하고 이
     도구는 *어느 파일에 거는지*(경로 규약)만 정한다.
     """
-    with fs.exclusive_file_lock(_round_ledger_lock_path(home)):
+    with fs.exclusive_file_lock(_round_record_lock_path(home)):
         yield

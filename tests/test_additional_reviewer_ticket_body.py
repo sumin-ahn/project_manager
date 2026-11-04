@@ -1,7 +1,7 @@
-"""additional_reviewer 게이트 티켓 본문 입력 회귀 (T-0695 · 라운드 사이드카 [[ADR-0090]]).
+"""additional_reviewer 리뷰 집계 티켓 본문 입력 회귀 (T-0695 · 라운드 사이드카 [[ADR-0090]]).
 
 리뷰 입력은 **명세 파일 전문 + 역할별 마지막 산출 라운드 파일**이다. 입력 바이트 상한은 없다
-(파일 선별이 대체 · 명세 과대는 lint 문제) — 이 파일은 상한 축을 소유하지 않는다.
+(파일 선별이 대체 · 명세 과대는 lint 문제) — 이 파일은 상한 기준을 소유하지 않는다.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ DIFF = "diff --git a/x.py b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
 
 
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
-# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+# 없음) 이 파일의 모든 경우가 그 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
@@ -62,8 +62,8 @@ def _ticket(path: Path, *, body: str) -> Path:
         "touches:\n"
         "- x.py\n"
         "estimate: medium\n"
-        # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — `done` + 설계 절(본문이
-        # 소유)로 미리 해소한다. 본문 bytes 는 호출부가 준 그대로 둔다(선택 축이 그 값을 잰다).
+        # T-0815 설계 근거 통과 조건(developer 빈 양식 교체 지점) 관심사 밖 — `done` + 설계 절(본문이
+        # 소유)로 미리 해소한다. 본문 bytes 는 호출부가 준 그대로 둔다(선택 기준이 그 값을 잰다).
         "design: done\n"
         "---\n"
         + body,
@@ -125,8 +125,8 @@ def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
         }
 
     monkeypatch.setattr(reviewer_run, "run_review", _run_review)
-    # 이 파일은 프롬프트 입력 축(T-0695)을 소유한다. 산출 회수(T-0696)는 실 board 왕복이 필요한
-    # 별도 축이라 tests/test_additional_reviewer_ticket_collect.py가 소유하고 여기서는 격리한다.
+    # 이 파일은 프롬프트 입력 기준(T-0695)을 소유한다. 산출 돌려받기(T-0696)는 실 board 왕복이 필요한
+    # 별도 기준이라 tests/test_additional_reviewer_ticket_collect.py가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
         reviewer_collect, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
@@ -182,13 +182,13 @@ def test_paths_only_prompt_does_not_include_ticket_body(
     assert "ticket_body_bytes:" not in out
 
 
-def test_paths_and_gate_without_ticket_states_body_is_unassembled(
+def test_paths_and_review_ticket_without_ticket_states_body_is_unassembled(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """`--paths --review-ticket T-NNNN`(본문 미조립 형상) — [[T-0819]] 값 단언.
+    """`--paths --review-ticket T-NNNN`(본문 미조립 경우) — [[T-0819]] 값 단언.
 
     `--ticket` 이 없으면 `prepare_ticket_body` 가 조립을 건너뛰어 `ticket_body_bytes` 줄
-    자체가 안 찍힌다(형상 E). 미리보기가 침묵 대신 이 사실을 한 줄로 말해야 한다.
+    자체가 안 찍힌다(경우 E). 미리보기가 침묵 대신 이 사실을 한 줄로 말해야 한다.
     """
     _wire(external, monkeypatch, tmp_path)
 
@@ -202,7 +202,7 @@ def test_paths_and_gate_without_ticket_states_body_is_unassembled(
 @pytest.mark.parametrize(
     "accounting_args",
     (["--review-ticket", "T-7777"], ["--no-review-ticket"]),
-    ids=("explicit-gate-override", "no-gate"),
+    ids=("explicit-review-ticket-override", "no-review-ticket"),
 )
 def test_ticket_and_paths_header_uses_body_source_ticket_id(
     external, monkeypatch, tmp_path, capsys, accounting_args,
@@ -233,7 +233,7 @@ def test_ticket_and_paths_missing_body_warns_and_keeps_recovery_channel(
     assert "### 검토 대상 티켓 본문" not in captured.out
 
 
-def test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam(
+def test_plain_list_ticket_scope_is_explicitly_a_test_fixture_override(
     external, monkeypatch, tmp_path, capsys,
 ):
     _wire(external, monkeypatch, tmp_path)
@@ -316,8 +316,8 @@ def test_ticket_and_cross_repo_paths_load_body_from_selected_pm_home(
     monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo",
-        lambda anchor, **kwargs: (
-            engine_home if Path(anchor).resolve() == engine_home.resolve() else selected_home
+        lambda target_repo_root, **kwargs: (
+            engine_home if Path(target_repo_root).resolve() == engine_home.resolve() else selected_home
         ),
     )
     monkeypatch.setattr(reviewer_scope, "_resolve_diff_root", lambda *args, **kwargs: selected_home)
@@ -367,7 +367,7 @@ SPEC_BODY = (
     "## 결정\n결정 내용\n\n"
     "## 설계\n"
     "- **경계 실측**: 기계 테스트 픽스처\n"
-    "- **불변식**: 이 파일의 축 밖\n"
+    "- **불변식**: 이 파일의 기준 밖\n"
     "- **표면 상한**: 픽스처 1건\n"
     "- **테스트 전략**: 정상·실패 경로\n\n"
     "## 완료 조건 (Definition of Done)\n- [ ] 항목\n\n"
@@ -378,7 +378,7 @@ SPEC_BODY = (
 
 
 def _multi_round_board(pm_home: Path, rounds: int) -> Path:
-    """developer/code-reviewer 각 `rounds` 라운드를 가진 실 board 형상."""
+    """developer/code-reviewer 각 `rounds` 라운드를 가진 실 board 구성."""
     ticket = _board_ticket(pm_home, body=SPEC_BODY)
     ordinal = 0
     for index in range(rounds):
@@ -443,7 +443,7 @@ def test_ticket_body_selection_keeps_only_the_last_round_per_role(
 def test_ticket_body_selection_skips_rounds_without_output(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """(c) 시드 그대로인(산출 없음) 라운드는 리뷰 입력에 싣지 않는다."""
+    """(c) 빈 양식 그대로인(산출 없음) 라운드는 리뷰 입력에 싣지 않는다."""
     ticket = _board_ticket(tmp_path, body=SPEC_BODY)
     _round(tmp_path, 1, "developer", _round_text("developer", "1라운드 실산출"))
     _round(
@@ -458,7 +458,7 @@ def test_ticket_body_selection_skips_rounds_without_output(
     out = capsys.readouterr().out
     assert "1라운드 실산출" in out
     assert "--- 02-developer ---" not in out
-    # 생략은 접힌 **산출**의 수다 — 산출 없는 라운드는 접힐 것이 없어 세지 않는다.
+    # 생략은 생략한 **산출**의 수다 — 산출 없는 라운드는 생략할 것이 없어 세지 않는다.
     assert "생략 라운드: 0개" in out
     assert "(생략한 라운드" not in out
 

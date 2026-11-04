@@ -53,14 +53,14 @@ def additional_reviewer():
 
 # ── import + 핵심 심볼 존재 (R14·R15·R16·R17) ──────────────────────────
 
-def test_board_exposes_lint_seams(board):
+def test_board_exposes_lint_functions(board):
     assert callable(wikilink_lint.lint_wikilinks)        # R14
     assert callable(lint_hooks._run_lint_hooks)       # R15
 
 
-def test_ticket_finish_pytest_parser_seams(ticket_finish):
+def test_ticket_finish_pytest_parser_functions(ticket_finish):
     # ADR-0023(T-0103): status 스칼라 갱신 단계 제거 — ticket_finish 의 남은 순수 로직
-    # (회귀 green 게이트·pytest 출력 파서)만 노출 확인. update_status/status_total_style 제거.
+    # (회귀 green 통과 조건·pytest 출력 파서)만 노출 확인. update_status/status_total_style 제거.
     assert callable(finish_rules.parse_pytest_output)
     assert callable(handoff_text.is_pytest_green)
     for module in (ticket_finish, finish_record, ticket_finish_cli):
@@ -77,7 +77,7 @@ def test_additional_reviewer_symbols(additional_reviewer):
 # ── 순수 로직 (R16·R17) ─────────────────────────────────────────────────
 
 def test_pytest_output_parse_green(ticket_finish):
-    # status 갱신 대신 — green 게이트·파서 순수 로직 (status.md = judgment-only·ADR-0023).
+    # status 갱신 대신 — green 통과 조건·파서 순수 로직 (status.md = judgment-only·ADR-0023).
     assert finish_rules.parse_pytest_output("12 passed, 3 deselected in 1s") == (12, 3)
     assert handoff_text.is_pytest_green("12 passed in 1s", returncode=0) is True
     assert handoff_text.is_pytest_green("1 failed, 11 passed in 1s", returncode=1) is False

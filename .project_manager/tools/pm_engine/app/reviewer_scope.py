@@ -62,7 +62,7 @@ def _resolve_diff_root(
     if absolute_roots:
         selected_root = next(iter(absolute_roots)).resolve()
         # 비-ticket 절대 경로는 이미 repo 하나를 확정했다. 복구 채널이 손상된 PM-home
-        # lease 장부 때문에 자기잠김하지 않도록 장부를 읽기 전에 반환한다.
+        # lease 기록 때문에 자기잠김하지 않도록 기록을 읽기 전에 반환한다.
         if not ticket_selected:
             return selected_root
         candidates = lease_store._registered_worktrees(pm_home)
@@ -101,10 +101,10 @@ def _resolve_diff_root(
         return engine_repo.resolve()
 
     if not candidates:
-        # 아직 슬롯 행이 없는 repo에는 lease 장부가 없다. 이 경우 명시 paths의 유일한 repo는
+        # 아직 슬롯 행이 없는 repo에는 lease 기록이 없다. 이 경우 명시 paths의 유일한 repo는
         # 엔진 자기 repo이며, PM-home 다중 슬롯 오해소와 구분된다.
         return engine_repo.resolve()
-    # 슬롯 소유 근거가 되는 단계(`_slot_selection_bases`)만 순서대로 본다 — 암묵 폴백 단계는
+    # 슬롯 소유 근거가 되는 단계(`_slot_selection_bases`)만 순서대로 본다 — 암묵 대체 단계는
     # 놀고 있는 슬롯까지 후보로 만들기 때문에 여기서 제외된다. 선택된 슬롯에서 추출이 어느
     # 단계를 쓰든, 슬롯을 *고른* 근거는 항상 사용자가 지정한 base 자신이다.
     changed: tuple[Path, ...] = ()

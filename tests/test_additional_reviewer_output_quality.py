@@ -1,12 +1,12 @@
 """추가 리뷰어 회신 품질 검사 (T-0563 → T-0887).
 
 리뷰어 회신 본문에 옛 리뷰 raw 파일명·세션 전사 경로·엇갈린 판정 라인이 섞이면 "이번 판정이 이
-리뷰의 것인가"를 기계가 확정할 수 없다. 실측 형상(T-0544 raw)은 같은 세션 내부 reviewer 보고
+리뷰의 것인가"를 기계가 확정할 수 없다. 실측 경우(T-0544 raw)는 같은 세션 내부 reviewer 보고
 verbatim + 옛 리뷰 raw 재인용이었고, 파서는 앞 블록만 보고 통과를 냈다. 그래서 검출은 loud 진단
-으로 올리고 판정은 '판정 불명확'(보수적 exit 1)으로 강등한다.
+으로 올리고 판정은 '판정 불명확'(보수적 exit 1)으로 낮춘다.
 
 이 검사는 **출력 품질**이지 접근 권한이 아니다 — 입력은 회신 텍스트 하나뿐이고 하네스로 갈리지
-않는다. 추가 리뷰어의 실행 조건(cwd·env)은 위임 채널과 같은 seam 이 소유한다(T-0887).
+않는다. 추가 리뷰어의 실행 조건(cwd·env)은 위임 채널과 같은 공용 함수가 소유한다(T-0887).
 
 hermetic: 실 리뷰어 프로세스를 스폰하지 않는다(호출 0). `run_fn` 주입으로 판정 파이프라인만 본다.
 """
@@ -102,9 +102,9 @@ def test_detector_sees_every_verdict_line_the_parser_can_pick(external):
 
 
 def test_prose_verdict_inside_a_sentence_is_not_a_declaration(external):
-    """행 선두 앵커의 **판별** 축 — 산문 안 인용 판정은 선언이 아니고 오탐도 만들지 않는다.
+    """행 선두 고정의 **판별** 기준 — 산문 안 인용 판정은 선언이 아니고 오탐도 만들지 않는다.
 
-    앵커를 풀면(문서 어디의 `판정:` 이든 세면) 같은 입력이 '판정 라인 다중/불일치'가 된다.
+    행 선두 고정을 풀면(문서 어디의 `판정:` 이든 세면) 같은 입력이 '판정 라인 다중/불일치'가 된다.
     """
     output = (
         "참고: 이전 라운드에서는 판정: 반려 였다.\n\n"
@@ -116,13 +116,13 @@ def test_prose_verdict_inside_a_sentence_is_not_a_declaration(external):
 
 
 @pytest.mark.parametrize("prose", (
-    # 실측 형상: 판정선이 아예 없고 **본문에만** '통과' 가 있다 — 본문 전역 스캔이면 통과가 된다.
+    # 실측 경우: 판정선이 아예 없고 **본문에만** '통과' 가 있다 — 본문 전역 스캔이면 통과가 된다.
     "회귀 통과 확인. 문제 없음.\n\n**must-fix** (반드시 수정):\n- 없음\n",
     "이번 리뷰의 판정: 통과 이다.\n\n**must-fix** (반드시 수정):\n- 없음\n",
     "이번 리뷰의 판정: 반려 이다.\n",
 ))
 def test_format_noncompliant_prose_verdict_is_never_a_pass(external, tmp_path, prose):
-    """형식 미준수 출력은 통과로 접지 않는다 — 앵커 판정선 0개면 '판정 불명확'(exit 1)."""
+    """형식 미준수 출력은 통과로 바꾸지 않는다 — 행 선두 판정선 0개면 '판정 불명확'(exit 1)."""
     assert review_verdict.verdict_words(prose) == ()
     assert reviewer_result.parse_verdict(prose)["has_pass"] is False
     result = reviewer_run.run_review(
@@ -134,7 +134,7 @@ def test_format_noncompliant_prose_verdict_is_never_a_pass(external, tmp_path, p
 
 
 def test_prose_fallback_stays_off_when_a_declaration_exists(external):
-    """앵커 선언이 하나라도 있으면 폴백은 비활성 — 정상 형식의 통과가 오탐으로 막히지 않는다."""
+    """행 선두 선언이 하나라도 있으면 대체 판정은 비활성 — 정상 형식의 통과가 오탐으로 막히지 않는다."""
     output = (
         "덧붙임: 이전 라운드의 판정: 반려 는 해소됐다.\n\n"
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
@@ -203,7 +203,7 @@ def test_raw_artifact_regex_accepts_underscored_reviewer_names(external):
 
 
 def test_transcript_regex_detects_windows_paths(external):
-    """Windows 형상 전사 경로를 못 보면 그 플랫폼에서는 백스톱이 없는 것과 같다."""
+    """Windows 경로 형태의 전사 경로를 못 보면 그 플랫폼에서는 백스톱이 없는 것과 같다."""
     output = (
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n\n**suggestion** (권장):\n"
         "- C:\\Users\\u\\.claude\\projects\\-repo\\9f2.jsonl 에서 확인했다.\n"
@@ -220,9 +220,9 @@ def test_clean_output_has_no_markers(external):
     assert contamination.markers == ()
 
 
-# 실측 오염 형상 그대로의 **판별 픽스처**: 리뷰어 자신의 블록(통과·must-fix 없음)이 먼저 오고 옛
+# 실측 오염 경우 그대로의 **판별 픽스처**: 리뷰어 자신의 블록(통과·must-fix 없음)이 먼저 오고 옛
 # 라운드 블록(반려)이 뒤에 echo 된다. 파서는 앞 블록만 보고 통과를 내므로, 이 입력에서 all_pass 를
-# 막는 것은 오직 오염 강등뿐이다(앞뒤가 바뀐 입력은 파서 단독으로 이미 비-통과라 판별력이 0이다).
+# 막는 것은 오직 오염 수준 낮춤뿐이다(앞뒤가 바뀐 입력은 파서 단독으로 이미 비-통과라 판별력이 0이다).
 _ECHOED_OLD_BLOCK_OUTPUT = (
     "판정: 통과\n\n"
     "**must-fix** (반드시 수정):\n- 없음\n\n"
@@ -234,14 +234,14 @@ _ECHOED_OLD_BLOCK_OUTPUT = (
 
 
 def test_parser_alone_reads_the_echoed_pass_as_a_clean_pass(external):
-    """판별력 확인 — 이 입력은 파서 단독으로는 '통과'다(강등 절이 유일한 방어선)."""
+    """판별력 확인 — 이 입력은 파서 단독으로는 '통과'다(수준 낮춤 절이 유일한 방어선)."""
     verdict = reviewer_result.parse_verdict(_ECHOED_OLD_BLOCK_OUTPUT)
     assert verdict == {"has_must_fix": False, "has_pass": True}
 
 
 
 def _direct_target(external, command: str = "codex"):
-    """직접 호출용 대상 — 이 축의 테스트는 transport 아래(회신/로그 채널·판정·오염)를 본다.
+    """직접 호출용 대상 — 이 파일의 테스트는 transport 아래(회신/로그 채널·판정·오염)를 본다.
 
     `run_review` 는 대상을 **필수**로 받고 커맨드 문자열 입구가 없다. 여기서는 하네스 argv 조립을
     태우지 않는 대상 하나로 고정해 판정 파이프라인만 본다 — 엔진 CLI 가 넘기는 대상은 언제나
@@ -266,7 +266,7 @@ def test_contaminated_reject_is_not_recorded_as_a_reject(external, tmp_path):
     )
     assert result["contamination"]
     assert result["any_must_fix"] is False and result["all_pass"] is False
-    assert reviewer_budget._round_has_verdict(result) is False   # 장부에서도 판정이 아니다.
+    assert reviewer_budget._round_has_verdict(result) is False   # 기록 파일에서도 판정이 아니다.
     assert reviewer_budget.determine_exit_code(result) == 1      # 여전히 비-통과(보수적).
 
 
@@ -314,9 +314,9 @@ def test_parser_and_detector_read_the_same_text(external, tmp_path):
     "> 판정: 반려\n",
 ))
 def test_quoted_and_fenced_verdicts_count_for_neither_parser_nor_detector(external, wrapped):
-    """인용/코드펜스 안의 판정 문구는 리뷰어 선언이 아니다 — 두 표면이 같이 무시해야 한다.
+    """인용/코드펜스 안의 판정 문구는 리뷰어 선언이 아니다 — 두 판정 경로가 같이 무시해야 한다.
 
-    검토 대상 diff 에 든 판정 문안(이 저장소의 테스트 픽스처가 그렇다)이 이 축의 상시 오탐 원천이라,
+    검토 대상 diff 에 든 판정 문안(이 저장소의 테스트 픽스처가 그렇다)이 이 판정의 상시 오탐 원천이라,
     좁히는 규칙을 한쪽에만 걸면 오탐이 남거나 "검출기 ⊇ 파서" 성질이 깨진다.
     """
     output = wrapped + "\n판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
@@ -367,12 +367,12 @@ def test_reviewer_output_normalizes_plain_string_runners(external):
 
 
 def test_progress_log_prompt_echo_is_not_contamination(external, tmp_path):
-    """라이브 실측 형상 회귀: codex 진행 로그는 프롬프트 템플릿과 diff 원문을 그대로 싣는다.
+    """라이브 실측 경우 회귀: codex 진행 로그는 프롬프트 템플릿과 diff 원문을 그대로 싣는다.
 
     거기까지 오염으로 세면 (a) 모든 실행이 '판정 라인 다중'이 되고 (b) 검토 대상 코드에 든
     판정 문안/raw 파일명이 오염으로 둔갑해 정상 통과가 false-red 가 된다.
     """
-    # 라이브 회신 형상 그대로 — 프롬프트가 강제하는 두 섹션이 다 있다.
+    # 라이브 회신 모양 그대로 — 프롬프트가 강제하는 두 섹션이 다 있다.
     answer = ("판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n\n"
               "**suggestion** (권장):\n- 없음\n")
     progress_log = (
@@ -389,7 +389,7 @@ def test_progress_log_prompt_echo_is_not_contamination(external, tmp_path):
     assert result["contamination"] == ()
     assert result["all_pass"] is True
     assert result["log"] == progress_log        # 로그는 버리지 않고 따로 보관한다.
-    assert progress_log in result["output"]     # raw 박제 표시에는 그대로 남는다.
+    assert progress_log in result["output"]     # raw 기록 표시에는 그대로 남는다.
 
 
 def test_print_summary_surfaces_contamination(external, capsys):

@@ -1,4 +1,4 @@
-"""위임·추가리뷰 raw 결정적 장부 회귀 가드."""
+"""위임·추가리뷰 raw 결정적 기록 파일 회귀 가드."""
 from __future__ import annotations
 
 from pm_engine.cli import delegate_cmd
@@ -41,7 +41,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 def _load(name: str):
     path = TOOLS / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"raw_ledger_{name}", path)
+    spec = importlib.util.spec_from_file_location(f"raw_records_{name}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -63,14 +63,14 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _ledger(path: Path) -> dict:
+def _read_records(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _unfinished_record(ledger_path: Path, tmp_path: Path) -> str:
+def _unfinished_record(record_path: Path, tmp_path: Path) -> str:
     """raw close 검증용 미마감 레코드를 현재 프로세스 PID로 등록한다."""
     return raw_output.start_raw_record(
-        ledger_path,
+        record_path,
         surface="delegate",
         harness="codex",
         model="gpt-x",
@@ -119,9 +119,9 @@ def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
         (tools / "additional_reviewer.py").write_text(
             "# engine copy\n", encoding="utf-8"
         )
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    lease_record_path = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_record_path.parent.mkdir(parents=True)
+    lease_record_path.write_text(
         json.dumps({"leases": [{"slot": "work/project_1", "state": "leased"}]}),
         encoding="utf-8",
     )
@@ -131,23 +131,23 @@ def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
 def test_default_storage_is_pm_local_and_explicit_destination_is_unchanged(
         tmp_path):
     repo = _repo(tmp_path)
-    raw, ledger = raw_output.raw_storage_paths(repo, "delegate")
+    raw, raw_record_path = raw_output.raw_storage_paths(repo, "delegate")
     assert raw == repo / ".project_manager" / ".local" / "delegate"
-    assert ledger == repo / ".project_manager" / ".local" / "raw_outputs.json"
+    assert raw_record_path == repo / ".project_manager" / ".local" / "raw_outputs.json"
 
     explicit = tmp_path / "injected-output"
-    raw, ledger = raw_output.raw_storage_paths(repo, "review", explicit)
+    raw, raw_record_path = raw_output.raw_storage_paths(repo, "review", explicit)
     assert raw == explicit
-    assert ledger == explicit / "raw_outputs.json"
+    assert raw_record_path == explicit / "raw_outputs.json"
 
 
 def test_unresolved_anchor_refuses_instead_of_writing_to_the_os_tempdir(
         tmp_path):
-    """앵커를 해소 못 하면 값을 돌려주지 않는다 — 기록의 목적지는 두 곳뿐이다.
+    """기록 위치를 해소 못 하면 값을 돌려주지 않는다 — 기록의 목적지는 두 곳뿐이다.
 
     옛 동작은 OS tempdir 의 `pm_raw_outputs.json` 으로 조용히 갈아탔다. 위임 raw 출력과 라운드
-    장부는 기록이라 임시 폴더 청소와 함께 사라지면 안 된다. 복구 채널(명시 output_dir)은 마커
-    검사보다 앞이라 같은 앵커에서도 그대로 통과한다 — 자기잠김 0.
+    기록 파일은 기록이라 임시 폴더 청소와 함께 사라지면 안 된다. 복구 채널(명시 output_dir)은 마커
+    검사보다 앞이라 같은 기록 위치에서도 그대로 통과한다 — 자기잠김 0.
     """
     unresolved = tmp_path / "adopter-without-pm-home"
     with pytest.raises(ValueError) as excinfo:
@@ -166,8 +166,8 @@ def test_unresolved_anchor_refuses_instead_of_writing_to_the_os_tempdir(
 def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
     """canonical + 3 템플릿 사본 어디에도 tempdir 목적지가 남아 있지 않다(정적 핀).
 
-    폴백이 사라지며 소비처가 0 이 된 자리도 같은 핀이 잡는다 — additional_reviewer 의 tempfile
-    import 과 호출부 없이 남아 있던 박제 wrapper 2개. parity 누락(canonical 만 고치고
+    대체 동작이 사라지며 소비처가 0 이 된 자리도 같은 핀이 잡는다 — additional_reviewer 의 tempfile
+    import 과 호출부 없이 남아 있던 기록 wrapper 2개. parity 누락(canonical 만 고치고
     `pm_update --all-targets` 미실행)도 이 한 테스트가 잡는다.
     """
     assert "temp_dir" not in inspect.signature(
@@ -189,7 +189,7 @@ def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
                 offenders.append(f"{path}: pm_raw_outputs")
             if temp_kwarg.search(text):
                 offenders.append(f"{path}: raw_storage_paths(temp_dir=)")
-            # pm_delegate 의 tempfile 은 자식 env·read tmp 축이 살아 있어 이 단언 밖이다.
+            # pm_delegate 의 tempfile 은 자식 env·read tmp 용도가 살아 있어 이 단언 밖이다.
             if path.name == "additional_reviewer.py" and "tempfile" in text:
                 offenders.append(f"{path}: tempfile")
             for archiver in dead_archivers:
@@ -199,11 +199,11 @@ def test_no_engine_copy_can_store_raw_records_in_the_os_tempdir():
 
 
 def test_start_and_finish_record_preserve_audit_fields(tmp_path):
-    ledger_path = tmp_path / "raw_outputs.json"
+    record_path = tmp_path / "raw_outputs.json"
     raw_path = tmp_path / "raw.txt"
     started = datetime.datetime(2026, 7, 30, 1, 2, tzinfo=datetime.timezone.utc)
     record_id = raw_output.start_raw_record(
-        ledger_path,
+        record_path,
         surface="delegate",
         harness="codex",
         model="gpt-x",
@@ -212,21 +212,21 @@ def test_start_and_finish_record_preserve_audit_fields(tmp_path):
         attempt="primary",
         now=started,
     )
-    rows = _ledger(ledger_path)["records"]
+    rows = _read_records(record_path)["records"]
     assert len(rows) == 1
     assert rows[0]["id"] == record_id
     assert rows[0]["raw_path"] == str(raw_path.resolve())
     assert "finished_at" not in rows[0]
 
     raw_output.finish_raw_record(
-        ledger_path,
+        record_path,
         record_id,
         rc=0,
         elapsed_sec=12.3456,
         silence_sec=0.4,
         now=started + datetime.timedelta(seconds=13),
     )
-    rows = _ledger(ledger_path)["records"]
+    rows = _read_records(record_path)["records"]
     assert len(rows) == 1
     assert rows[0]["rc"] == 0
     assert rows[0]["elapsed_sec"] == 12.346
@@ -236,9 +236,9 @@ def test_start_and_finish_record_preserve_audit_fields(tmp_path):
 
 def test_claude_and_codex_usage_shapes_coexist_and_survive_prune_round_trip(
         tmp_path):
-    """4필드(claude)·5필드(codex) 행이 한 장부에 공존하고 `_prune_raw_records` 왕복 후에도
+    """4필드(claude)·5필드(codex) 행이 한 기록 파일에 공존하고 `_prune_raw_records` 왕복 후에도
     각 행의 usage 가 원형 보존된다(T-0780)."""
-    ledger_path = tmp_path / "raw_outputs.json"
+    record_path = tmp_path / "raw_outputs.json"
     claude_usage = {
         "input": 4, "cache_creation": 1_204, "cache_read": 26_079, "output": 311}
     codex_usage = {
@@ -246,27 +246,27 @@ def test_claude_and_codex_usage_shapes_coexist_and_survive_prune_round_trip(
         "output": 105, "reasoning_output": 92,
     }
     claude_id = raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="claude", model="opus",
+        record_path, surface="delegate", harness="claude", model="opus",
         role="developer", raw_path=tmp_path / "claude.txt", attempt="primary",
     )
     raw_output.finish_raw_record(
-        ledger_path, claude_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        record_path, claude_id, rc=0, elapsed_sec=1.0, silence_sec=None,
         extra={"usage": claude_usage},
     )
     codex_id = raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "codex.txt", attempt="primary",
     )
     raw_output.finish_raw_record(
-        ledger_path, codex_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        record_path, codex_id, rc=0, elapsed_sec=1.0, silence_sec=None,
         extra={"usage": codex_usage},
     )
-    # 정리 규칙이 다시 도는 레코드 하나 더 시드 — prune 왕복.
+    # 정리 규칙이 다시 도는 레코드 하나 더 넣는다 — prune 왕복.
     raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="claude", model="opus",
+        record_path, surface="delegate", harness="claude", model="opus",
         role="developer", raw_path=tmp_path / "third.txt", attempt="primary",
     )
-    rows = {row["id"]: row for row in raw_output.raw_records(ledger_path)}
+    rows = {row["id"]: row for row in raw_output.raw_records(record_path)}
     assert rows[claude_id]["usage"] == claude_usage
     assert rows[claude_id]["harness"] == "claude"
     assert rows[codex_id]["usage"] == codex_usage
@@ -275,15 +275,15 @@ def test_claude_and_codex_usage_shapes_coexist_and_survive_prune_round_trip(
 
 def test_reserved_key_table_covers_every_common_schema_field(tmp_path):
     """예약표가 시작·마감이 쓰는 공통 필드를 전부 담는다 — 표가 뒤처지면 예약이 헐거워진다."""
-    ledger_path = tmp_path / "raw_outputs.json"
+    record_path = tmp_path / "raw_outputs.json"
     record_id = raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
     )
     raw_output.finish_raw_record(
-        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        record_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
     )
-    common = set(_ledger(ledger_path)["records"][0])
+    common = set(_read_records(record_path)["records"][0])
     assert common <= raw_output.RAW_RECORD_RESERVED_KEYS, (
         f"공통 스키마 키가 예약표 밖: {sorted(common - raw_output.RAW_RECORD_RESERVED_KEYS)}"
     )
@@ -293,63 +293,63 @@ def test_finish_record_rejects_second_completion_without_overwrite(tmp_path):
     """마감 락 안에서 재마감을 거부해 raw close 조회 후 경합도 덮어쓰지 않는다.
 
     재마감 신호는 전용 타입(`RawRecordAlreadyFinished`)이다 — 원 실행 마감 호출부가
-    "이미 수동 마감됨" 충돌만 경고로 강등하고 시작 레코드 유실(fail-loud)과 구분한다."""
-    ledger_path = tmp_path / "raw_outputs.json"
-    record_id = _unfinished_record(ledger_path, tmp_path)
+    "이미 수동 마감됨" 충돌만 경고로 낮추고 시작 레코드 유실(fail-loud)과 구분한다."""
+    record_path = tmp_path / "raw_outputs.json"
+    record_id = _unfinished_record(record_path, tmp_path)
     raw_output.finish_raw_record(
-        ledger_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
+        record_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
         finish_note="첫 마감",
     )
 
     with pytest.raises(raw_output.RawRecordAlreadyFinished, match="이미 마감"):
         raw_output.finish_raw_record(
-            ledger_path, record_id, rc=-1, elapsed_sec=3, silence_sec=None,
+            record_path, record_id, rc=-1, elapsed_sec=3, silence_sec=None,
             finish_note="덮어쓰기",
         )
 
-    row = _ledger(ledger_path)["records"][0]
+    row = _read_records(record_path)["records"][0]
     assert row["rc"] == 0
     assert row["finish_note"] == "첫 마감"
 
 
 def test_finish_note_is_explicit_field_not_extra_injectable(tmp_path):
     """`finish_note` 는 명시 완료 필드다 — 시작/마감 `extra` 로는 예약 키라 주입 불가."""
-    ledger_path = tmp_path / "raw_outputs.json"
+    record_path = tmp_path / "raw_outputs.json"
     record_id = raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
         extra={"finish_note": "시작 주입 시도"},
     )
-    assert "finish_note" not in _ledger(ledger_path)["records"][0]
+    assert "finish_note" not in _read_records(record_path)["records"][0]
     raw_output.finish_raw_record(
-        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        record_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
         finish_note="정식 마감 사유", extra={"finish_note": "extra 주입 시도"},
     )
-    assert _ledger(ledger_path)["records"][0]["finish_note"] == "정식 마감 사유"
+    assert _read_records(record_path)["records"][0]["finish_note"] == "정식 마감 사유"
 
 
 def test_start_extra_cannot_seed_finish_only_schema_keys(tmp_path):
-    """시작 `extra` 도 **마감 전용** 공통 키를 심지 못한다 (T-0600 — 두 표면 한 규칙).
+    """시작 `extra` 도 **마감 전용** 공통 키를 넣지 못한다 (T-0600 — 두 채널 한 규칙).
 
     시작을 "지금 이 행에 있는 키"로만 막으면 `finished_at`/`rc` 는 시작 시점에 아직 없어
     통과한다. 그렇게 심긴 `finished_at` 은 실행이 죽어도 레코드를 마감된 것으로 보이게 해
     미마감 sweep 이 못 본다(fail-open).
     """
-    ledger_path = tmp_path / "raw_outputs.json"
+    record_path = tmp_path / "raw_outputs.json"
     record_id = raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
         extra={"finished_at": "2026-01-01T00:00:00+00:00", "rc": 0,
                "elapsed_sec": 0.0, "silence_sec": 0.0, "surface": "spoofed",
                "ticket": "T-" + "0600"},
     )
-    row = _ledger(ledger_path)["records"][0]
+    row = _read_records(record_path)["records"][0]
 
     assert row["id"] == record_id and row["surface"] == "delegate"
     for finish_only in ("finished_at", "rc", "elapsed_sec", "silence_sec"):
         assert finish_only not in row, f"시작 extra 가 마감 키를 심었다: {finish_only}"
     assert row["ticket"] == "T-" + "0600"          # 예약 밖 필드는 그대로 실린다
-    assert raw_output.unfinished_raw_records(ledger_path) == [row]   # sweep 이 본다
+    assert raw_output.unfinished_raw_records(record_path) == [row]   # sweep 이 본다
 
 
 def test_retention_is_bounded_and_keeps_unfinished_separate():
@@ -384,7 +384,7 @@ def test_retention_is_bounded_and_keeps_unfinished_separate():
 
 
 def test_parallel_processes_append_without_record_loss(tmp_path):
-    ledger_path = tmp_path / "raw_outputs.json"
+    record_path = tmp_path / "raw_outputs.json"
     script = """
 import pathlib
 import sys
@@ -408,7 +408,7 @@ raw_output.start_raw_record(
                 "-c",
                 script,
                 str(TOOLS),
-                str(ledger_path),
+                str(record_path),
                 str(index),
             ],
             stdout=subprocess.PIPE,
@@ -421,7 +421,7 @@ raw_output.start_raw_record(
     ]
     results = [process.communicate(timeout=20) for process in processes]
     assert [process.returncode for process in processes] == [0, 0, 0, 0], results
-    rows = _ledger(ledger_path)["records"]
+    rows = _read_records(record_path)["records"]
     assert len(rows) == 4
     assert {row["model"] for row in rows} == {
         "model-0", "model-1", "model-2", "model-3"
@@ -436,10 +436,10 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
         delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
+    _raw_dir, record_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
 
     def killed_runner(*_args, **_kwargs):
-        rows = _ledger(ledger_path)["records"]
+        rows = _read_records(record_path)["records"]
         assert len(rows) == 1
         assert "finished_at" not in rows[0]
         raise SimulatedHarnessKill()
@@ -458,44 +458,44 @@ def test_delegate_kill_leaves_discoverable_unfinished_record_before_runner(
             attempt="primary",
         )
 
-    unfinished = raw_output.unfinished_raw_records(ledger_path)
+    unfinished = raw_output.unfinished_raw_records(record_path)
     assert len(unfinished) == 1
     raw_path = Path(unfinished[0]["raw_path"])
     assert raw_path.is_file()
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--unfinished"]) == 0
     output = capsys.readouterr().out
-    assert output.splitlines()[0] == f"조회 기록 파일: {ledger_path.resolve()}"
+    assert output.splitlines()[0] == f"조회 기록 파일: {record_path.resolve()}"
     assert "미마감 raw 1건" in output
     assert str(raw_path.resolve()) in output
 
 
-def test_raw_empty_still_prints_resolved_ledger_on_first_line(
+def test_raw_empty_still_prints_resolved_record_on_first_line(
         delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
+    _raw_dir, record_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
 
-    assert not ledger_path.exists()
+    assert not record_path.exists()
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
 
     lines = capsys.readouterr().out.splitlines()
     assert lines == [
-        f"조회 기록 파일: {ledger_path.resolve()}",
+        f"조회 기록 파일: {record_path.resolve()}",
         "최근 raw 없음",
     ]
 
 
-def test_raw_output_dir_reads_that_ledger(
+def test_raw_output_dir_reads_that_record(
         delegate, monkeypatch, tmp_path, capsys):
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
-    ledger_path = output_dir / "raw_outputs.json"
+    record_path = output_dir / "raw_outputs.json"
     raw_path = output_dir / "explicit.txt"
     raw_path.parent.mkdir(parents=True)
     raw_path.write_text("raw\n", encoding="utf-8")
     raw_output.start_raw_record(
-        ledger_path,
+        record_path,
         surface="delegate",
         harness="codex",
         model="explicit-model",
@@ -507,7 +507,7 @@ def test_raw_output_dir_reads_that_ledger(
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), ["--output-dir", str(output_dir)]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == f"조회 기록 파일: {ledger_path.resolve()}"
+    assert lines[0] == f"조회 기록 파일: {record_path.resolve()}"
     assert lines[1] == "최근 raw 1건"
     assert "explicit-model" not in "\n".join(lines)
     assert str(raw_path.resolve()) in lines[2]
@@ -518,20 +518,20 @@ def test_raw_close_finishes_unfinished_record_with_fixed_abnormal_schema(
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
-    ledger_path = output_dir / "raw_outputs.json"
-    record_id = _unfinished_record(ledger_path, tmp_path)
-    # pid 부재는 안전 게이트를 통과한다.
-    ledger = _ledger(ledger_path)
-    ledger["records"][0].pop("pid")
-    ledger_path.write_text(
-        json.dumps(ledger, ensure_ascii=False), encoding="utf-8"
+    record_path = output_dir / "raw_outputs.json"
+    record_id = _unfinished_record(record_path, tmp_path)
+    # pid 부재는 안전 검사를 통과한다.
+    raw_records = _read_records(record_path)
+    raw_records["records"][0].pop("pid")
+    record_path.write_text(
+        json.dumps(raw_records, ensure_ascii=False), encoding="utf-8"
     )
 
     assert delegate.main([
         "raw", "close", record_id, "--output-dir", str(output_dir),
     ]) == 0
 
-    row = _ledger(ledger_path)["records"][0]
+    row = _read_records(record_path)["records"][0]
     finished = datetime.datetime.fromisoformat(row["finished_at"])
     started = datetime.datetime.fromisoformat(row["started_at"])
     assert row["rc"] == -1
@@ -540,7 +540,7 @@ def test_raw_close_finishes_unfinished_record_with_fixed_abnormal_schema(
     assert row["finish_note"] == "수동 마감(raw close)"
     output = capsys.readouterr().out
     assert f"raw 레코드 마감: {record_id}" in output
-    assert f"마감 기록 파일: {ledger_path.resolve()}" in output
+    assert f"마감 기록 파일: {record_path.resolve()}" in output
 
 
 def test_raw_close_rejects_already_finished_record(
@@ -548,17 +548,17 @@ def test_raw_close_rejects_already_finished_record(
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
-    ledger_path = output_dir / "raw_outputs.json"
-    record_id = _unfinished_record(ledger_path, tmp_path)
+    record_path = output_dir / "raw_outputs.json"
+    record_id = _unfinished_record(record_path, tmp_path)
     raw_output.finish_raw_record(
-        ledger_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
+        record_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
     )
 
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", record_id, "--output-dir", str(output_dir),
     ]) == 1
     assert "이미 마감" in capsys.readouterr().err
-    assert _ledger(ledger_path)["records"][0]["rc"] == 0
+    assert _read_records(record_path)["records"][0]["rc"] == 0
 
 
 def test_raw_close_rejects_unknown_record_id(
@@ -579,15 +579,15 @@ def test_raw_close_rejects_live_pid(
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
-    ledger_path = output_dir / "raw_outputs.json"
-    record_id = _unfinished_record(ledger_path, tmp_path)
-    assert _ledger(ledger_path)["records"][0]["pid"] == os.getpid()
+    record_path = output_dir / "raw_outputs.json"
+    record_id = _unfinished_record(record_path, tmp_path)
+    assert _read_records(record_path)["records"][0]["pid"] == os.getpid()
 
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", record_id, "--output-dir", str(output_dir),
     ]) == 1
     assert "PID가 실행 중" in capsys.readouterr().err
-    assert "finished_at" not in _ledger(ledger_path)["records"][0]
+    assert "finished_at" not in _read_records(record_path)["records"][0]
 
 
 def test_raw_close_force_bypasses_live_pid_and_preserves_note(
@@ -595,8 +595,8 @@ def test_raw_close_force_bypasses_live_pid_and_preserves_note(
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
-    ledger_path = output_dir / "raw_outputs.json"
-    record_id = _unfinished_record(ledger_path, tmp_path)
+    record_path = output_dir / "raw_outputs.json"
+    record_id = _unfinished_record(record_path, tmp_path)
 
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), [
         "close", record_id,
@@ -604,7 +604,7 @@ def test_raw_close_force_bypasses_live_pid_and_preserves_note(
         "--force",
         "--output-dir", str(output_dir),
     ]) == 0
-    row = _ledger(ledger_path)["records"][0]
+    row = _read_records(record_path)["records"][0]
     assert row["rc"] == -1
     assert row["finish_note"] == "PM 확인 후 강제 마감"
 
@@ -614,13 +614,13 @@ def test_raw_close_warns_when_old_completion_is_pruned(
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
     output_dir = tmp_path / "explicit-output"
-    ledger_path = output_dir / "raw_outputs.json"
+    record_path = output_dir / "raw_outputs.json"
     started = (
         datetime.datetime.now(datetime.timezone.utc)
         - datetime.timedelta(days=raw_output.RAW_RECORD_COMPLETED_DAYS + 1)
     )
     record_id = raw_output.start_raw_record(
-        ledger_path,
+        record_path,
         surface="delegate",
         harness="codex",
         model="gpt-x",
@@ -640,7 +640,7 @@ def test_raw_close_warns_when_old_completion_is_pruned(
         f"경고: raw 레코드 {record_id}는 완료 보존창"
         f"({raw_output.RAW_RECORD_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 기록에서 제거됨"
     ]
-    assert raw_output.raw_records(ledger_path) == []
+    assert raw_output.raw_records(record_path) == []
 
 
 def test_raw_help_exposes_close_surface(delegate, capsys):
@@ -651,7 +651,7 @@ def test_raw_help_exposes_close_surface(delegate, capsys):
 
 
 @pytest.mark.parametrize("query_side", ["pm-home", "worktree"])
-def test_raw_warns_about_peer_engine_ledger_without_reading_it(
+def test_raw_warns_about_peer_engine_record_without_reading_it(
         delegate, monkeypatch, tmp_path, capsys, query_side):
     pm_home, worktree = _engine_family(tmp_path)
     query_repo, peer_repo = (
@@ -660,15 +660,15 @@ def test_raw_warns_about_peer_engine_ledger_without_reading_it(
         else (worktree, pm_home)
     )
     monkeypatch.setattr(delegate, "REPO", query_repo)
-    current_ledger = (
+    current_record_path = (
         query_repo / ".project_manager" / ".local" / "raw_outputs.json"
     )
-    peer_ledger = (
+    peer_record_path = (
         peer_repo / ".project_manager" / ".local" / "raw_outputs.json"
     )
     peer_raw = peer_repo / "peer-only.txt"
     raw_output.start_raw_record(
-        peer_ledger,
+        peer_record_path,
         surface="delegate",
         harness="codex",
         model="peer-only-model",
@@ -677,14 +677,14 @@ def test_raw_warns_about_peer_engine_ledger_without_reading_it(
         attempt="primary",
     )
 
-    assert not current_ledger.exists()
+    assert not current_record_path.exists()
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == f"조회 기록 파일: {current_ledger.resolve()}"
+    assert lines[0] == f"조회 기록 파일: {current_record_path.resolve()}"
     assert lines[1] == (
         "경고: 다른 엔진 사본의 raw 출력 기록 파일이 있습니다"
-        f"(이 조회에서는 읽지 않음): {peer_ledger.resolve()}"
+        f"(이 조회에서는 읽지 않음): {peer_record_path.resolve()}"
     )
     assert lines[2] == "최근 raw 없음"
     assert "peer-only-model" not in "\n".join(lines)
@@ -696,7 +696,7 @@ def test_delegate_registration_is_structurally_before_runner(delegate):
     source = inspect.getsource(delegate_execute._execute_attempt)
     registration = source.index("record_id = raw_output.start_raw_record(")
     execution = source.index("result = run_fn(")
-    # 마감은 실행 *뒤* 경로를 앵커로 잡는다 — pre-spawn 거부(스폰 없이 rc=1 마감)가 실행보다
+    # 마감은 실행 *뒤* 경로를 기준으로 잡는다 — pre-spawn 거부(스폰 없이 rc=1 마감)가 실행보다
     # 앞에 있는 것은 설계 동작이라 첫 출현으로 재면 정상 구조를 역전으로 오판한다.
     completion = source.index("raw_output.finish_raw_record(", execution)
     assert registration < execution < completion
@@ -706,10 +706,10 @@ def test_additional_reviewer_kill_leaves_discoverable_unfinished_record_before_r
         external, monkeypatch, tmp_path):
     repo = _repo(tmp_path)
     monkeypatch.setattr(external, "REPO", repo)
-    _raw_dir, ledger_path = reviewer_raw._raw_storage(pm_paths.home_at(external.REPO))
+    _raw_dir, record_path = reviewer_raw._raw_storage(pm_paths.home_at(external.REPO))
 
     def killed_runner(*_args, **_kwargs):
-        rows = _ledger(ledger_path)["records"]
+        rows = _read_records(record_path)["records"]
         assert len(rows) == 1
         assert rows[0]["surface"] == "additional-reviewer"
         assert "finished_at" not in rows[0]
@@ -725,7 +725,7 @@ def test_additional_reviewer_kill_leaves_discoverable_unfinished_record_before_r
             run_fn=killed_runner,
         )
 
-    unfinished = raw_output.unfinished_raw_records(ledger_path)
+    unfinished = raw_output.unfinished_raw_records(record_path)
     assert len(unfinished) == 1
     # 대상은 언제나 해소된 구조화 tuple 이라 미마감 레코드도 **고정된 모델**을 싣는다 — 어느
     # 모델이 이 실행을 냈는지는 죽은 실행에서도 확정된다.
@@ -736,8 +736,8 @@ def test_additional_reviewer_kill_leaves_discoverable_unfinished_record_before_r
 
 def test_review_run_records_usage_for_structured_codex_target_including_nonzero_rc(
         external, tmp_path):
-    """리뷰 표면(structured codex)의 레코드에도 usage 가 실린다 — 실패(rc≠0) 실행도 포함해
-    관측이 ok/rc 에 걸리지 않는다(T-0780 · 위임 표면과 대칭)."""
+    """리뷰 채널(structured codex)의 레코드에도 usage 가 실린다 — 실패(rc≠0) 실행도 포함해
+    관측이 ok/rc 에 걸리지 않는다(T-0780 · 위임 채널과 대칭)."""
     target = reviewer_target.resolve_reviewer_target({
         "additional_reviewer.harness": "codex",
         "additional_reviewer.model": "gpt-5.6-sol",
@@ -770,7 +770,7 @@ def test_review_run_records_usage_for_structured_codex_target_including_nonzero_
         pm_paths.home_at(external.REPO), "p", target=target, output_dir=tmp_path, run_fn=lambda *a, **k: _wire(1))
     assert fail_result["failed"] is True
 
-    rows = _ledger(tmp_path / "raw_outputs.json")["records"]
+    rows = _read_records(tmp_path / "raw_outputs.json")["records"]
     assert len(rows) == 2
     assert all(row["usage"] == expected_usage for row in rows)
     assert all(row["harness"] == "codex" for row in rows)
@@ -811,8 +811,8 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
     assert "# rc: 0" in content
     assert "# elapsed_sec:" in content
     assert "# silence_sec: 0.2" in content
-    _raw_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
-    rows = _ledger(ledger_path)["records"]
+    _raw_dir, record_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
+    rows = _read_records(record_path)["records"]
     assert len(rows) == 1
     assert rows[0]["rc"] == 0
     assert rows[0]["silence_sec"] == 0.2
@@ -823,13 +823,13 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
     assert str(result.raw_path.resolve()) in query
 
 
-# ── 추가리뷰 raw 기록 앵커 = 소유 PM 홈 (기록·조회 단일 앵커) ────────────────────
-# 기록이 diff 슬롯 장부로 갈리면 PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 게이트 raw 를
-# 영구히 못 본다(실측 2건). 조회를 넓히지 않고 기록을 소유 PM 홈으로 수렴시킨 뒤의 회귀다.
+# ── 추가리뷰 raw 기록 위치 = 소유 PM 홈 (기록·조회 단일 위치) ────────────────────
+# 기록이 diff 슬롯 기록 파일로 갈리면 PM 홈 기록 파일을 읽는 `pm_delegate raw` 통합 조회가 리뷰 집계 티켓 raw 를
+# 영구히 못 본다(실측 2건). 조회를 넓히지 않고 기록을 소유 PM 홈으로 모은 뒤의 회귀다.
 
 
 # 해소 가능한 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(기본 커맨드 없음)
-# 이 파일의 모든 형상이 conf 에 그 세트를 갖춰야 run_review 본체까지 들어간다.
+# 이 파일의 모든 경우가 conf 에 그 세트를 갖춰야 run_review 본체까지 들어간다.
 _REVIEWER_CONF = (
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
@@ -840,7 +840,7 @@ def _review_slot_family(tmp_path: Path) -> tuple[Path, Path]:
     """PM 홈 + 등록 슬롯 + 슬롯의 tracked 변경 1건(비어있지 않은 diff)."""
     pm_home, worktree = _engine_family(tmp_path)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    # PM 홈 강등(lease 손상) 형상은 슬롯 자기 conf 를 읽으므로 두 자리에 같은 세트를 둔다.
+    # PM 홈 수준 낮춤(lease 손상) 경우는 슬롯 자기 conf 를 읽으므로 두 자리에 같은 세트를 둔다.
     for root in (pm_home, worktree):
         (root / ".project_manager" / "local.conf").write_text(
             _REVIEWER_CONF, encoding="utf-8")
@@ -855,7 +855,7 @@ _CODEX_PASS_WIRE = json.dumps(
 
 
 def _stub_reviewer(external, monkeypatch) -> None:
-    """자식 프로세스 스폰 없이 run_review 본체(raw 박제·장부 등재)를 그대로 태운다."""
+    """자식 프로세스 스폰 없이 run_review 본체(raw 출력 저장·기록 파일 등재)를 그대로 태운다."""
     def _fake_run_reviewer_ex(
         _home, prompt, reviewer_cmd, timeout, run_fn, idle_timeout=None, metrics=None,
         *, cwd=None, env=None, argv=None, stdin_text=None, on_spawn_attempt=None,
@@ -863,8 +863,8 @@ def _stub_reviewer(external, monkeypatch) -> None:
         # 대상은 언제나 구조화 tuple 이라 wire transport(argv)가 주입된다 — 통짜 커맨드 분해
         # 경로가 되살아나면 여기서 loud 하게 걸린다(프롬프트 전달면은 하네스마다 다르다).
         assert argv is not None
-        # 스폰 시도 seam 은 러너를 대신 서는 이 대역이 소유한다 — 실 경로와 같은 순서로 한 번
-        # 부른다(안 부르면 raw 레코드가 스폰 전 중단으로 닫혀 이 파일의 장부 계약이 갈린다).
+        # 스폰 시도 교체 지점은 러너를 대신 서는 이 대역이 소유한다 — 실 경로와 같은 순서로 한 번
+        # 부른다(안 부르면 raw 레코드가 스폰 전 중단으로 닫혀 이 파일의 기록 계약이 갈린다).
         if on_spawn_attempt is not None:
             on_spawn_attempt()
         if metrics is not None:
@@ -874,9 +874,9 @@ def _stub_reviewer(external, monkeypatch) -> None:
         return True, _CODEX_PASS_WIRE, True
 
     monkeypatch.setattr(pm_engine.infra.harness.reviewer_run, "_run_reviewer_ex", _fake_run_reviewer_ex)
-    # 이 파일의 축은 raw·라운드 장부다. 게이트가 ticket 형상이면 엔진이 리뷰 뒤 그 티켓의
-    # additional-reviewer 절 회수를 시도하는데, 여기 픽스처의 `T-0001.md` 는 장부 축용 빈 파일이라
-    # board 의 티켓 해소를 통과하지 못한다 — 회수 축은 `test_additional_reviewer_ticket_collect.py`
+    # 이 파일의 대상은 raw·리뷰 라운드 기록 파일이다. 리뷰 집계 티켓이 ticket 모양이면 엔진이 리뷰 뒤 그 티켓의
+    # additional-reviewer 절 돌려받기를 시도하는데, 여기 픽스처의 `T-0001.md` 는 기록 시험용 빈 파일이라
+    # board 의 티켓 해소를 통과하지 못한다 — 돌려받기는 `test_additional_reviewer_ticket_collect.py`
     # 가 소유하므로 여기서는 격리한다.
     monkeypatch.setattr(
         reviewer_collect, "_harvest_additional_reviewer_section", lambda *args, **kwargs: None,
@@ -885,7 +885,7 @@ def _stub_reviewer(external, monkeypatch) -> None:
 
 def test_external_raw_storage_anchor_is_resolved_pm_home_owner(
         external, monkeypatch, tmp_path):
-    """앵커 seam: 주입된 소유 PM 홈 > 엔진 자기 앵커 REPO · 명시 output_dir 격리는 불변."""
+    """기록 위치 교체 지점: 주입된 소유 PM 홈 > 엔진 자기 REPO · 명시 output_dir 격리는 불변."""
     pm_home, worktree = _engine_family(tmp_path)
     monkeypatch.setattr(external, "REPO", worktree)
 
@@ -914,9 +914,9 @@ def test_external_raw_storage_anchor_is_resolved_pm_home_owner(
 
 def test_delegate_raw_storage_refuses_unresolved_config_owner(
         delegate, monkeypatch, tmp_path):
-    """PM 홈 강등 뒤 그 앵커에도 마커가 없으면 기록을 tempdir 로 옮기지 않고 멈춘다.
+    """PM 홈 수준 낮춤 뒤 그 위치에도 마커가 없으면 기록을 tempdir 로 옮기지 않고 멈춘다.
 
-    명시 output_dir 은 마커 검사보다 앞이라 같은 앵커에서도 통과한다(복구 채널 자기잠김 0).
+    명시 output_dir 은 마커 검사보다 앞이라 같은 위치에서도 통과한다(복구 채널 자기잠김 0).
     """
     unresolved = tmp_path / "config-owner-without-pm-home"
 
@@ -932,10 +932,10 @@ def test_delegate_raw_storage_refuses_unresolved_config_owner(
 @pytest.mark.parametrize("engine_side", ["slot", "pm-home"])
 def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
         external, delegate, monkeypatch, tmp_path, capsys, engine_side):
-    """어느 엔진 사본으로 실행하든 raw 가 소유 PM 홈 장부에 등재되고 통합 조회에 보인다.
+    """어느 엔진 사본으로 실행하든 raw 가 소유 PM 홈 기록 파일에 등재되고 통합 조회에 보인다.
 
-    두 실측 형상을 모두 태운다 — 슬롯 사본 + 상대 `--paths`, PM 홈 사본 + 절대 `--paths`.
-    diff 앵커는 두 경우 모두 슬롯이므로, 옛 규칙(REPO=diff_root)이면 둘 다 슬롯 장부로 갈린다.
+    두 실측 경우를 모두 태운다 — 슬롯 사본 + 상대 `--paths`, PM 홈 사본 + 절대 `--paths`.
+    diff 대상 저장소는 두 경우 모두 슬롯이므로, 옛 규칙(REPO=diff_root)이면 둘 다 슬롯 기록 파일로 갈린다.
     """
     pm_home, worktree = _review_slot_family(tmp_path)
     engine_repo, review_paths = (
@@ -949,33 +949,33 @@ def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
     assert external.main([*review_paths, "--no-review-ticket"]) == 0
     capsys.readouterr()
 
-    home_ledger = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
-    rows = _ledger(home_ledger)["records"]
+    home_record_path = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+    rows = _read_records(home_record_path)["records"]
     assert len(rows) == 1
     assert rows[0]["surface"] == "additional-reviewer"
     assert rows[0]["rc"] == 0
     raw_path = Path(rows[0]["raw_path"])
     assert raw_path.parent == pm_home / ".project_manager" / ".local" / "review"
     assert raw_path.is_file()
-    # 슬롯에는 raw 도 장부도 쌓이지 않는다 — 옛 raw 축적이 후속 reviewer 컨텍스트를 오염시키던
-    # 축(판정 echo)까지 원천 소멸한다.
+    # 슬롯에는 raw 도 기록 파일도 쌓이지 않는다 — 옛 raw 축적이 후속 reviewer 컨텍스트를 오염시키던
+    # 경로(판정 echo)까지 원천 소멸한다.
     assert not (worktree / ".project_manager" / ".local").exists()
 
     monkeypatch.setattr(delegate, "REPO", pm_home)
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
     query = capsys.readouterr().out
-    assert query.splitlines()[0] == f"조회 기록 파일: {home_ledger.resolve()}"
+    assert query.splitlines()[0] == f"조회 기록 파일: {home_record_path.resolve()}"
     assert "최근 raw 1건" in query
     assert "additional-reviewer" in query
     assert str(raw_path.resolve()) in query
 
 
-def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
+def test_legacy_diff_root_raw_target_repo_writes_to_the_slot_record(
         external, monkeypatch, tmp_path, capsys):
-    """옛 규칙(기록 앵커=diff 슬롯 REPO)의 실제 동작을 핀으로 박제한다 — 슬롯 장부로 갈린다.
+    """옛 규칙(기록 위치=diff 슬롯 REPO)의 실제 동작을 핀으로 고정한다 — 슬롯 기록 파일로 갈린다.
 
     이름이 "오라클 감도"가 아니라 *무슨 동작을 핀했는지*를 말하도록 둔다: 이 테스트가 green 인
-    한 위 회귀(소유 PM 홈 등재)는 앵커 규칙 덕분에 통과한 것이지 우연이 아니다.
+    한 위 회귀(소유 PM 홈 등재)는 기록 위치 규칙 덕분에 통과한 것이지 우연이 아니다.
     """
     pm_home, worktree = _review_slot_family(tmp_path)
     monkeypatch.setattr(external, "REPO", worktree)
@@ -990,7 +990,7 @@ def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
     assert not (
         pm_home / ".project_manager" / ".local" / "raw_outputs.json"
     ).exists()
-    slot_rows = _ledger(
+    slot_rows = _read_records(
         worktree / ".project_manager" / ".local" / "raw_outputs.json"
     )["records"]
     assert len(slot_rows) == 1
@@ -1001,8 +1001,8 @@ def test_unresolvable_pm_home_fails_loud_and_writes_no_raw(
         external, monkeypatch, tmp_path, capsys):
     """lease 손상으로 소유자를 확정 못 하면 raw 를 어디에도 쓰지 않고 멈춘다.
 
-    옛 계약은 loud 경고 뒤 diff_root 로 폴백해 슬롯 장부에 raw 를 박제했다. 그 폴백이 있으면
-    장부를 깨뜨리는 것만으로 귀속이 슬롯으로 옮겨간다.
+    옛 계약은 loud 경고 뒤 diff_root 로 대체해 슬롯 기록 파일에 raw 를 기록했다. 그 대체 동작이 있으면
+    기록 파일을 깨뜨리는 것만으로 귀속이 슬롯으로 옮겨간다.
     """
     pm_home, worktree = _review_slot_family(tmp_path)
     lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
@@ -1023,15 +1023,15 @@ def test_unresolvable_pm_home_fails_loud_and_writes_no_raw(
     ).exists()
 
 
-# ── 라운드 장부 앵커 = 소유 PM 홈 (과금 상한 연속성) ──────────────────────────
-# 라운드 장부(`review_rounds.json`)는 `--review-ticket` 별 실 호출 횟수로 과금 상한을 강제한다. 그 앵커가
-# diff_root 면 게이트 스냅샷 worktree·새로 판 슬롯에서 같은 게이트를 돌릴 때 count 가 0 부터 다시
-# 세어져 **상한이 조용히 리셋**된다. 라운드는 이미 `--review-ticket` 키로 분리되므로 슬롯별 장부 분리가 주는
-# 추가 격리는 없다 — raw 장부와 같은 소유 PM 홈 앵커로 모은다.
+# ── 리뷰 라운드 기록 위치 = 소유 PM 홈 (과금 상한 연속성) ──────────────────────────
+# 리뷰 라운드 기록 파일(`review_rounds.json`)은 `--review-ticket` 별 실 호출 횟수로 과금 상한을 강제한다. 그 위치가
+# diff_root 면 리뷰용 복사본 worktree·새로 판 슬롯에서 같은 리뷰 집계 티켓을 돌릴 때 count 가 0 부터 다시
+# 세어져 **상한이 조용히 리셋**된다. 라운드는 이미 `--review-ticket` 키로 분리되므로 슬롯별 기록 파일 분리가 주는
+# 추가 격리는 없다 — raw 출력 기록 파일과 같은 소유 PM 홈 위치로 모은다.
 
 
 def _second_review_slot(pm_home: Path) -> Path:
-    """같은 PM 홈에 등록된 **두 번째** 슬롯 — 게이트 스냅샷/새 worktree 형상의 대역."""
+    """같은 PM 홈에 등록된 **두 번째** 슬롯 — 리뷰용 복사본/새 worktree 경우의 대역."""
     worktree = pm_home / "work" / "project_2"
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "raw-slot-2", str(worktree)],
@@ -1041,47 +1041,47 @@ def _second_review_slot(pm_home: Path) -> Path:
     tools = worktree / ".project_manager" / "tools"
     tools.mkdir(parents=True)
     (tools / "additional_reviewer.py").write_text("# engine copy\n", encoding="utf-8")
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = _ledger(ledger)
+    lease_record_path = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    data = _read_records(lease_record_path)
     data["leases"].append({"slot": "work/project_2", "state": "leased"})
-    ledger.write_text(json.dumps(data), encoding="utf-8")
+    lease_record_path.write_text(json.dumps(data), encoding="utf-8")
     return worktree
 
 
-def _round_entry(anchor: Path, gate: str) -> dict:
-    """앵커의 라운드 장부에 기록된 게이트 항목 (장부/항목 부재 = 빈 dict)."""
-    path = anchor / ".project_manager" / ".local" / "review_rounds.json"
+def _round_entry(record_root: Path, review_ticket: str) -> dict:
+    """기록 위치의 리뷰 라운드 기록 파일에 기록된 리뷰 집계 티켓 항목 (기록 파일/항목 부재 = 빈 dict)."""
+    path = record_root / ".project_manager" / ".local" / "review_rounds.json"
     if not path.is_file():
         return {}
-    return _ledger(path).get(gate, {})
+    return _read_records(path).get(review_ticket, {})
 
 
-def _round_count(anchor: Path, gate: str) -> int:
-    """앵커의 라운드 장부에 기록된 게이트 호출 횟수 (장부 부재 = 0)."""
-    return _round_entry(anchor, gate).get("count", 0)
+def _round_count(record_root: Path, review_ticket: str) -> int:
+    """기록 위치의 리뷰 라운드 기록 파일에 기록된 리뷰 집계 티켓 호출 횟수 (기록 파일 부재 = 0)."""
+    return _round_entry(record_root, review_ticket).get("count", 0)
 
 
-def test_round_ledger_counts_continue_across_diff_roots(
+def test_round_record_counts_continue_across_diff_roots(
         external, monkeypatch, tmp_path, capsys):
-    """같은 게이트를 서로 다른 슬롯(=다른 diff_root)에서 돌려도 라운드 수가 이어진다 (리셋 0)."""
+    """같은 리뷰 집계 티켓을 서로 다른 슬롯(=다른 diff_root)에서 돌려도 라운드 수가 이어진다 (리셋 0)."""
     pm_home, worktree = _review_slot_family(tmp_path)
     snapshot = _second_review_slot(pm_home)
     _stub_reviewer(external, monkeypatch)
-    gate = "T-" + "0001"
+    review_ticket = "T-" + "0001"
 
     monkeypatch.setattr(external, "REPO", worktree)
-    assert external.main(["--paths", "seed.txt", "--review-ticket", gate]) == 0
+    assert external.main(["--paths", "seed.txt", "--review-ticket", review_ticket]) == 0
     capsys.readouterr()
-    assert _round_count(pm_home, gate) == 1
+    assert _round_count(pm_home, review_ticket) == 1
 
     monkeypatch.setattr(external, "REPO", snapshot)
-    assert external.main(["--paths", "seed.txt", "--review-ticket", gate]) == 0
+    assert external.main(["--paths", "seed.txt", "--review-ticket", review_ticket]) == 0
     capsys.readouterr()
 
-    assert _round_count(pm_home, gate) == 2          # 이어서 센다(상한이 살아 있다)
-    assert _round_count(worktree, gate) == 0         # 슬롯 장부로 갈리지 않는다
-    assert _round_count(snapshot, gate) == 0
-    # 락도 같은 앵커를 따라간다 — 장부만 옮기면 두 실행이 서로 다른 파일을 잠근다.
+    assert _round_count(pm_home, review_ticket) == 2          # 이어서 센다(상한이 살아 있다)
+    assert _round_count(worktree, review_ticket) == 0         # 슬롯 기록 파일로 갈리지 않는다
+    assert _round_count(snapshot, review_ticket) == 0
+    # 락도 같은 위치를 따라간다 — 기록 파일만 옮기면 두 실행이 서로 다른 파일을 잠근다.
     assert (
         pm_home / ".project_manager" / ".local" / "review_rounds.lock"
     ).is_file()
@@ -1089,169 +1089,168 @@ def test_round_ledger_counts_continue_across_diff_roots(
 
 def test_legacy_diff_root_round_anchor_resets_the_count_per_slot(
         external, monkeypatch, tmp_path, capsys):
-    """옛 규칙(라운드 앵커=diff_root)의 실제 동작을 핀으로 박제한다 — 슬롯마다 count 가 1 로 리셋.
+    """옛 규칙(라운드 기록 위치=diff_root)의 실제 동작을 핀으로 고정한다 — 슬롯마다 count 가 1 로 리셋.
 
-    이 핀이 green 인 한 위 연속성 회귀는 앵커 이동 덕분에 통과한 것이다(감도 실증).
+    이 핀이 green 인 한 위 연속성 회귀는 기록 위치 이동 덕분에 통과한 것이다(감도 실증).
     """
     pm_home, worktree = _review_slot_family(tmp_path)
     snapshot = _second_review_slot(pm_home)
     _stub_reviewer(external, monkeypatch)
-    gate = "T-" + "0001"
+    review_ticket = "T-" + "0001"
 
-    def legacy_round_ledger_path(_home):
+    def legacy_round_record_path(_home):
         return (
             external.REPO / ".project_manager" / ".local" / "review_rounds.json"
         )
 
-    monkeypatch.setattr(review_rounds, "_round_ledger_path", legacy_round_ledger_path)
+    monkeypatch.setattr(review_rounds, "_round_ledger_path", legacy_round_record_path)
 
     monkeypatch.setattr(external, "REPO", worktree)
-    assert external.main(["--paths", "seed.txt", "--review-ticket", gate]) == 0
+    assert external.main(["--paths", "seed.txt", "--review-ticket", review_ticket]) == 0
     monkeypatch.setattr(external, "REPO", snapshot)
-    assert external.main(["--paths", "seed.txt", "--review-ticket", gate]) == 0
+    assert external.main(["--paths", "seed.txt", "--review-ticket", review_ticket]) == 0
     capsys.readouterr()
 
-    assert _round_count(worktree, gate) == 1         # 각 슬롯이 자기 장부에서 1 부터
-    assert _round_count(snapshot, gate) == 1         # → 상한이 슬롯마다 리셋
-    assert _round_count(pm_home, gate) == 0
+    assert _round_count(worktree, review_ticket) == 1         # 각 슬롯이 자기 기록 파일에서 1 부터
+    assert _round_count(snapshot, review_ticket) == 1         # → 상한이 슬롯마다 리셋
+    assert _round_count(pm_home, review_ticket) == 0
 
 
-# ── 앵커 이동 1회 승계(backfill) ────────────────────────────────────────────
-# 앵커만 옮기면 옛 diff_root 장부의 **차단 중인 게이트**(rc 4·사용자 승인 대기)가 새 앵커에서
-# 0 으로 되살아나 승인 게이트를 무통보로 연다. 예약 접근 시점에 그 게이트를 1회 승계(이관)해
-# 차단 상태를 정직하게 유지한다 — 런타임 합산 폴백이 아니라 원천 마이그레이션이다.
+# ── 기록 위치 이동 1회 승계(backfill) ────────────────────────────────────────────
+# 위치만 옮기면 옛 diff_root 기록 파일의 **차단 중인 리뷰 집계 티켓**(rc 4·사용자 승인 대기)이 새 위치에서
+# 0 으로 되살아나 승인 검사를 무통보로 연다. 예약 접근 시점에 그 리뷰 집계 티켓을 1회 승계(이관)해
+# 차단 상태를 정직하게 유지한다 — 런타임 합산 대체 동작이 아니라 원천 마이그레이션이다.
 
 
-def _write_legacy_round_ledger(anchor: Path, gate: str, entry: dict) -> Path:
-    """옛 규칙(diff 앵커) 장부를 그 슬롯에 심는다 — 앵커 이동 이전 상태의 대역."""
-    path = anchor / ".project_manager" / ".local" / "review_rounds.json"
+def _write_legacy_round_records(record_root: Path, review_ticket: str, entry: dict) -> Path:
+    """옛 규칙(diff 대상 저장소) 기록 파일을 그 슬롯에 넣는다 — 기록 위치 이동 이전 상태의 대역."""
+    path = record_root / ".project_manager" / ".local" / "review_rounds.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({gate: entry}), encoding="utf-8")
+    path.write_text(json.dumps({review_ticket: entry}), encoding="utf-8")
     return path
 
 
-def test_legacy_gate_is_inherited_and_the_retired_field_is_dropped(
+def test_legacy_review_ticket_is_inherited_and_the_retired_field_is_dropped(
         external, monkeypatch, tmp_path, capsys):
-    """legacy 게이트는 앵커 이동 후에도 그대로 승계되고, 폐지 필드는 그 경로에서 떨어진다.
+    """legacy 리뷰 집계 티켓은 기록 위치 이동 후에도 그대로 승계되고, 폐지 필드는 그 경로에서 떨어진다.
 
-    반례 형상 (i) — `rounds` 가 비고 `count` 만 있는 승계 항목이다. 수렴 축의 입력이 0 이라
-    전에는 호출-판정 축만이 이 게이트를 막았고, 그 축이 사라진 지금은 라운드가 열린다(값 단언).
-    폐지 필드는 장부 스캔이 아니라 이 정규화 경로에서 접히므로 승계분도 같은 규칙이다."""
+    반례 경우 (i) — `rounds` 가 비고 `count` 만 있는 승계 항목이다. 마무리 기준의 입력이 0 이라
+    전에는 호출-판정 기준만이 이 리뷰 집계 티켓을 막았고, 그 기준이 사라진 지금은 라운드가 열린다(값 단언).
+    폐지 필드는 기록 파일 스캔이 아니라 이 정규화 경로에서 떨어지므로 승계분도 같은 규칙이다."""
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
-    gate = "T-" + "0001"
-    _write_legacy_round_ledger(worktree, gate, {"count": 4, "acked_through": 2})
+    review_ticket = "T-" + "0001"
+    _write_legacy_round_records(worktree, review_ticket, {"count": 4, "acked_through": 2})
     monkeypatch.setattr(external, "REPO", worktree)
 
-    rc = external.main(["--paths", "seed.txt", "--review-ticket", gate])
+    rc = external.main(["--paths", "seed.txt", "--review-ticket", review_ticket])
 
     err = capsys.readouterr().err
-    assert rc == 0                                # 제거된 축이 막던 자리 — 이제 열린다
+    assert rc == 0                                # 제거된 기준이 막던 자리 — 이제 열린다
     assert "legacy 라운드 기록 승계" in err
-    assert f"review-ticket={gate} verdicts=4 incomplete=0" in err   # 승계 고지 집계는 전체 레코드 기준
-    assert f"리뷰 집계 티켓 {gate}" in err and "acked_through=2" in err   # 폐지 필드 알림(승계 경로)
-    home_entry = _round_entry(pm_home, gate)
+    assert f"review-ticket={review_ticket} verdicts=4 incomplete=0" in err   # 승계 고지 집계는 전체 레코드 기준
+    assert f"리뷰 집계 티켓 {review_ticket}" in err and "acked_through=2" in err   # 폐지 필드 알림(승계 경로)
+    home_entry = _round_entry(pm_home, review_ticket)
     assert home_entry["count"] == 5               # 승계 4 + 이번 예약 1
     assert "acked_through" not in home_entry      # 승계분도 스키마에서 떨어진다
 
-    # 2회차 — 이미 이관됐으므로 재승계도, 폐지 필드 알림도 없다(장부 재기록 뒤 대상 0).
+    # 2회차 — 이미 이관됐으므로 재승계도, 폐지 필드 알림도 없다(기록 파일 재기록 뒤 대상 0).
     assert external.main(
-        ["--paths", "seed.txt", "--review-ticket", gate]
+        ["--paths", "seed.txt", "--review-ticket", review_ticket]
     ) == 0
     err = capsys.readouterr().err
     assert "legacy 라운드 기록 승계" not in err
     assert "acked_through" not in err
 
 
-def test_inherited_gate_has_no_round_extension_path(
+def test_inherited_review_ticket_has_no_round_extension_path(
         external, monkeypatch, tmp_path, capsys):
-    """승계된 차단 게이트에는 재개 경로가 없다 — 라운드 연장 승인은 폐지됐다(T-0593).
+    """승계된 차단 리뷰 집계 티켓에는 재개 경로가 없다 — 라운드 연장 승인은 폐지됐다(T-0593).
 
     승계는 차단 상태를 그대로 이관하는 마이그레이션이므로, 이관된 상한도 새 상한과 같은 규율을
     따른다: 현재 티켓을 정지하고 사용자에게 보고한다."""
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
-    gate = "T-" + "0001"
-    _write_legacy_round_ledger(worktree, gate, {"count": 4})
+    review_ticket = "T-" + "0001"
+    _write_legacy_round_records(worktree, review_ticket, {"count": 4})
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(
-        ["--paths", "seed.txt", "--review-ticket", gate, "--ack-rounds"]
+        ["--paths", "seed.txt", "--review-ticket", review_ticket, "--ack-rounds"]
     ) == 1
     err = capsys.readouterr().err
     assert "폐지" in err and "정지" in err and "사용자에게 보고" in err
-    assert "legacy 라운드 기록 승계" not in err   # 거부는 장부에 손대지 않는다
-    assert _round_count(pm_home, gate) == 0       # 승계조차 하지 않는다(부작용 0)
+    assert "legacy 라운드 기록 승계" not in err   # 거부는 기록 파일에 손대지 않는다
+    assert _round_count(pm_home, review_ticket) == 0       # 승계조차 하지 않는다(부작용 0)
 
 
-def test_gate_absent_from_legacy_starts_from_zero(
+def test_review_ticket_absent_from_legacy_starts_from_zero(
         external, monkeypatch, tmp_path, capsys):
-    """legacy 에 없는 게이트는 승계 없이 0 에서 시작한다 (없는 카운트를 만들어내지 않는다)."""
+    """legacy 에 없는 리뷰 집계 티켓은 승계 없이 0 에서 시작한다 (없는 카운트를 만들어내지 않는다)."""
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
-    _write_legacy_round_ledger(worktree, "T-" + "0001", {"count": 4})
-    fresh_gate = "T-" + "0002"
+    _write_legacy_round_records(worktree, "T-" + "0001", {"count": 4})
+    fresh_review_ticket = "T-" + "0002"
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(
-        ["--paths", "seed.txt", "--review-ticket", fresh_gate]
+        ["--paths", "seed.txt", "--review-ticket", fresh_review_ticket]
     ) == 0
 
     err = capsys.readouterr().err
     assert "legacy 라운드 기록 승계" not in err
-    assert _round_count(pm_home, fresh_gate) == 1
+    assert _round_count(pm_home, fresh_review_ticket) == 1
 
 
-def test_legacy_round_inheritance_happens_once_per_gate(
+def test_legacy_round_inheritance_happens_once_per_review_ticket(
         external, monkeypatch, tmp_path, capsys):
-    """승계는 게이트당 1회 — 이후 legacy 장부가 어떻게 변하든 PM 홈 장부가 유일한 진실이다."""
+    """승계는 리뷰 집계 티켓당 1회 — 이후 legacy 기록 파일이 어떻게 변하든 PM 홈 기록 파일이 유일한 진실이다."""
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
-    gate = "T-" + "0001"
-    _write_legacy_round_ledger(worktree, gate, {"count": 1})
+    review_ticket = "T-" + "0001"
+    _write_legacy_round_records(worktree, review_ticket, {"count": 1})
     monkeypatch.setattr(external, "REPO", worktree)
 
-    assert external.main(["--paths", "seed.txt", "--review-ticket", gate]) == 0
+    assert external.main(["--paths", "seed.txt", "--review-ticket", review_ticket]) == 0
     assert "legacy 라운드 기록 승계" in capsys.readouterr().err
-    assert _round_count(pm_home, gate) == 2       # 승계 1 + 이번 예약 1
+    assert _round_count(pm_home, review_ticket) == 2       # 승계 1 + 이번 예약 1
 
     # legacy 를 차단 수위로 바꿔도 두 번째 실행은 쳐다보지 않는다(재승계면 rc 4 로 막혔을 값).
-    _write_legacy_round_ledger(worktree, gate, {"count": 99})
+    _write_legacy_round_records(worktree, review_ticket, {"count": 99})
 
-    assert external.main(["--paths", "seed.txt", "--review-ticket", gate]) == 0
+    assert external.main(["--paths", "seed.txt", "--review-ticket", review_ticket]) == 0
     assert "legacy 라운드 기록 승계" not in capsys.readouterr().err
-    assert _round_count(pm_home, gate) == 3
+    assert _round_count(pm_home, review_ticket) == 3
 
 
 def test_corrupt_lease_registered_slot_records_no_round_anywhere(
         external, monkeypatch, tmp_path, capsys):
-    """lease 손상 관리 슬롯은 마커 유무와 무관하게 실 라운드도 회계 밖 자문도 만들지 않는다.
+    """lease 손상 관리 슬롯은 마커 유무와 무관하게 실 라운드도 집계 밖 자문도 만들지 않는다.
 
-    옛 계약은 마커 없는 단일 관리 후보를 '복구 폴백'으로 인정해 슬롯의 휘발 장부에 실 라운드를
-    기록했다. 그러면 장부를 깨뜨리는 것만으로 과금 상한이 0 부터 다시 세어진다.
+    옛 계약은 마커 없는 단일 관리 후보를 '복구 대체 위치'로 인정해 슬롯의 휘발 기록 파일에 실 라운드를
+    기록했다. 그러면 기록 파일을 깨뜨리는 것만으로 과금 상한이 0 부터 다시 세어진다.
     """
     pm_home, worktree = _review_slot_family(tmp_path)
     lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     lease.write_text("{broken", encoding="utf-8")
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
-    gate = "T-" + "0001"
+    review_ticket = "T-" + "0001"
 
-    for argv in (["--paths", "seed.txt", "--review-ticket", gate],
+    for argv in (["--paths", "seed.txt", "--review-ticket", review_ticket],
                  ["--paths", "seed.txt", "--no-review-ticket"]):
         assert external.main(argv) == 1, argv
         err = capsys.readouterr().err
         assert "대상 저장소 해소 실패" in err and "슬롯 대여 기록 파일" in err, argv
-        assert "게이트 스냅샷 마커" not in err, argv
 
-    assert _round_count(worktree, gate) == 0
-    assert _round_count(pm_home, gate) == 0
+    assert _round_count(worktree, review_ticket) == 0
+    assert _round_count(pm_home, review_ticket) == 0
 
 
 def test_main_clears_raw_anchor_between_calls(
         external, monkeypatch, tmp_path, capsys):
     """main() 은 전역 Home override 없이 호출마다 넘겨받은 Home 만 쓴다 — 연속 호출이
-    남의 PM 홈에 박제하지 않는다."""
+    남의 PM 홈에 기록하지 않는다."""
     _pm_home, worktree = _review_slot_family(tmp_path)
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
@@ -1298,7 +1297,7 @@ def test_record_aged_past_old_seven_day_policy_survives_under_raised_retention(
     상수 비교가 아니라 실제 prune 통과 여부를 레코드 존재로 단언한다(시간 경과 주입).
     원문 txt 는 정책과 무관하게 애초에 엔진이 지우지 않는다는 기존 불변식도 같이 확인한다.
     """
-    ledger_path = tmp_path / "raw_outputs.json"
+    record_path = tmp_path / "raw_outputs.json"
     now = datetime.datetime.now(datetime.timezone.utc)
     OLD_POLICY_COMPLETED_DAYS = 7  # 회귀 검증용 기준선(2026-08-19 실측) — 현재 상수가 아니다
     aged = now - datetime.timedelta(days=OLD_POLICY_COMPLETED_DAYS + 1)
@@ -1306,22 +1305,22 @@ def test_record_aged_past_old_seven_day_policy_survives_under_raised_retention(
     raw_path.write_text("raw\n", encoding="utf-8")
 
     record_id = raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=raw_path, attempt="primary", now=aged,
     )
     raw_output.finish_raw_record(
-        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None, now=aged,
+        record_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None, now=aged,
     )
-    # 다음 기록이 prune 을 태운다 — 장부는 쓰기 시점에 정리된다(조회는 정리를 유발하지 않는다).
+    # 다음 기록이 prune 을 태운다 — 기록 파일은 쓰기 시점에 정리된다(조회는 정리를 유발하지 않는다).
     other_id = raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=tmp_path / "new-raw.txt", attempt="primary", now=now,
     )
     raw_output.finish_raw_record(
-        ledger_path, other_id, rc=0, elapsed_sec=1.0, silence_sec=None, now=now,
+        record_path, other_id, rc=0, elapsed_sec=1.0, silence_sec=None, now=now,
     )
 
-    ids = {row["id"] for row in raw_output.raw_records(ledger_path)}
+    ids = {row["id"] for row in raw_output.raw_records(record_path)}
     assert record_id in ids, "구 정책이면 버려졌을 레코드가 신 정책 아래서는 살아 있어야 한다"
     assert raw_path.is_file()
 
@@ -1348,18 +1347,18 @@ def _engine_named_raw(base_dir: Path, name: str, size: int = 8) -> Path:
 
 def test_orphan_scan_lists_only_unreferenced_engine_named_files(tmp_path):
     """`scan_orphan_raw_files` — 참조 중인 원문·미마감 원문·PM 수작업 산출은 제외하고,
-    장부 미참조 엔진 명명 원문만 나열한다(건수·바이트 정확)."""
-    ledger_path = tmp_path / "raw_outputs.json"
+    기록 파일 미참조 엔진 명명 원문만 나열한다(건수·바이트 정확)."""
+    record_path = tmp_path / "raw_outputs.json"
     base_dir = tmp_path / "delegate"
 
     referenced = _engine_named_raw(base_dir, "pm_delegate_codex_1_aaa.txt", size=5)
     raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=referenced, attempt="primary",
     )
     unfinished_ref = _engine_named_raw(base_dir, "pm_delegate_codex_2_bbb.txt", size=3)
     raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=unfinished_ref, attempt="primary",
     )
     orphan = _engine_named_raw(base_dir, "pm_delegate_codex_3_ccc.txt", size=11)
@@ -1370,7 +1369,7 @@ def test_orphan_scan_lists_only_unreferenced_engine_named_files(tmp_path):
     )
 
     summary = raw_output.scan_orphan_raw_files(
-        (base_dir, tmp_path / "review"), ledger_path,
+        (base_dir, tmp_path / "review"), record_path,
     )
 
     assert summary.count == 2
@@ -1382,13 +1381,13 @@ def test_orphan_scan_lists_only_unreferenced_engine_named_files(tmp_path):
     assert pm_authored_md not in summary.paths
 
 
-def test_raw_cmd_surfaces_orphan_warning_and_list_even_when_ledger_is_empty(
+def test_raw_cmd_surfaces_orphan_warning_and_list_even_when_record_is_empty(
         delegate, monkeypatch, tmp_path, capsys):
-    """장부가 텅 비어 있어도(전량 prune·최초 실행) 디스크에 남은 고아 원문은 경고+목록으로
+    """기록 파일이 텅 비어 있어도(전량 prune·최초 실행) 디스크에 남은 고아 원문은 경고+목록으로
     나온다 — 이 티켓이 잡는 역전(요약 소실 후 원문만 남는 상태)의 핵심 재현이다."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, _ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
+    delegate_dir, _record_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
     orphan = _engine_named_raw(
         delegate_dir, f"pm_delegate_codex_{os.getpid()}_deadbeef.txt", size=42,
     )
@@ -1410,7 +1409,7 @@ def test_raw_cmd_orphan_list_respects_limit_and_notes_omission(
     """`--limit` 을 넘는 고아는 그만큼만 나열되고 생략 건수가 명시된다."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, _ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
+    delegate_dir, _record_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
     for index in range(3):
         _engine_named_raw(
             delegate_dir, f"pm_delegate_codex_{index}_orphan{index}.txt", size=1,
@@ -1428,21 +1427,21 @@ def test_raw_queries_never_delete_files(delegate, monkeypatch, tmp_path):
     않는다(참조 원문·고아 원문 모두)."""
     repo = _repo(tmp_path)
     monkeypatch.setattr(delegate, "REPO", repo)
-    delegate_dir, ledger_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
+    delegate_dir, record_path = raw_output._raw_storage(pm_paths.home_at(delegate.REPO))
 
     referenced = _engine_named_raw(delegate_dir, "pm_delegate_codex_1_ref.txt")
     orphan = _engine_named_raw(delegate_dir, "pm_delegate_codex_2_orphan.txt")
     record_id = raw_output.start_raw_record(
-        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        record_path, surface="delegate", harness="codex", model="gpt-x",
         role="developer", raw_path=referenced, attempt="primary",
     )
     raw_output.finish_raw_record(
-        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        record_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
     )
 
     before = sorted(p.name for p in delegate_dir.iterdir())
-    raw_output.raw_records(ledger_path)
-    raw_output.unfinished_raw_records(ledger_path)
+    raw_output.raw_records(record_path)
+    raw_output.unfinished_raw_records(record_path)
     assert delegate_cmd._cmd_raw(pm_paths.home_at(delegate.REPO, board_root=pm_paths._board_root_at(delegate.REPO)), []) == 0
     after = sorted(p.name for p in delegate_dir.iterdir())
 

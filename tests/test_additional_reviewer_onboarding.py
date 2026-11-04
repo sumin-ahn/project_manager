@@ -2,13 +2,13 @@
 
 사람이 부르는 역할 이름은 **추가 리뷰어**다(T-0597). `additional_reviewer*` 는 모듈 파일 이름·raw
 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 대상 튜플 키로만 남는다. 이 파일이 못박는
-2축:
+두 항목:
 
 1. **스위치 없음** — 추가 리뷰어는 developer·architect 와 같이 부르면 도는 역할이다. 켜고 끄는
    키도, 이 역할만의 opt-in 질문·`--force` 강제 진입도 없다(T-0887). 채택자가 적는 것은 대상
    튜플(harness/model/reasoning) 하나이고, 카드·매뉴얼은 리뷰마다·라운드 재개마다 비용을 다시
-   묻지 않는다. 라운드/wave 상한은 기계적 anti-loop 정지이고, 정상 수렴 ack 는 PM 자율이다.
-2. **역할 이름 전수** — 활성 출하 표면(스킬 카드·역할 카드·방법론 wiki·README·부트스트랩 첫 턴
+   묻지 않는다. 라운드/세션 호출 예산 상한은 기계적 anti-loop 정지이고, 정상 마무리 ack 는 PM 자율이다.
+2. **역할 이름 전수** — 활성 출하 문서(스킬 카드·역할 카드·방법론 wiki·README·부트스트랩 첫 턴
    카드)이 폐기 이름을 싣지 않는다. 인벤토리를 파일 열거로 만들어 새 카드·새 타깃이 목록을
    우회하지 못하게 한다.
 
@@ -48,14 +48,14 @@ EXPECTED_DEFAULTS = (
     ("additional_reviewer.reasoning", "max"),
 )
 
-# 폐지된 라운드 연장 승인 플래그 (T-0593) — 출하 문서에서 0 이어야 한다(축 5 가드).
+# 폐지된 라운드 연장 승인 플래그 (T-0593) — 출하 문서에서 0 이어야 한다(항목 5 가드).
 RETIRED_ROUND_ACK_FLAG = "--ack-rounds"
-# 수렴 게이트 카드 서술 계약 — 문장이 아니라 상한·발산·terminal stop 요소를 못박는다.
+# 마무리 통과 조건 카드 서술 계약 — 문장이 아니라 상한·발산·terminal stop 요소를 못박는다.
 # 두 판정 경계는 엔진(`_convergence_refusal`)과 글자로 맞춘다 — 상한 도달은 must-fix 잔존과 무관한
 # 차단이고(사유 라벨만 `cap-unresolved`/`cap-reached` 로 갈린다), 조기 차단은 **strict 증가**만이다
 # (평탄 3→2→2 는 조기 차단이 아니라 상한에서 걸린다). 이 둘을 느슨하게 적으면 카드가 "must-fix 0
 # 이면 4라운드째가 열린다"·"평탄도 조기 차단" 같은 없는 경로를 가르친다.
-CONVERGENCE_GATE_CONTRACTS = (
+CONVERGENCE_CHECK_CONTRACTS = (
     "additional_reviewer.rounds_max",
     "라운드 상한 2회",
     "must-fix 잔존과 무관하게 차단",
@@ -125,15 +125,15 @@ def _parse_conf(text: str) -> dict[str, str]:
     return conf
 
 
-def test_codex_pm_review_card_states_the_caps_without_a_consent_axis():
-    """수렴 게이트의 상한·발산·terminal stop이 codex 카드에 명시된다 (동의 축은 없다)."""
+def test_codex_pm_review_card_states_the_caps_without_a_consent_step():
+    """마무리 통과 조건의 상한·발산·terminal stop이 codex 카드에 명시된다 (동의 확인은 없다)."""
     text = _card_with_operational_details(CODEX_PM_REVIEW)
     assert "additional_reviewer.enabled" not in text
     assert "기계적 anti-loop 정지" in text
     assert "--rounds-report" in text
-    for contract in CONVERGENCE_GATE_CONTRACTS:
-        assert contract in text, f"수렴 게이트 서술 누락: {contract}"
-    # 재개 ack 가 남은 축은 wave 예산 하나 — 라운드 축엔 연장 승인 경로가 없다.
+    for contract in CONVERGENCE_CHECK_CONTRACTS:
+        assert contract in text, f"마무리 통과 조건 서술 누락: {contract}"
+    # 재개 ack 가 남은 기준은 세션 호출 예산 하나 — 라운드 기준엔 연장 승인 경로가 없다.
     assert "--reset-session-budget" in text
     assert RETIRED_ROUND_ACK_FLAG not in text
     # 폐기된 규율: 재개 때마다 사용자 승인을 요구하던 문장.
@@ -151,7 +151,7 @@ def test_codex_pm_review_card_uses_codex_skill_entry_and_active_role_name():
 
 
 def test_shared_pm_review_cards_use_active_role_and_the_caps():
-    """공용 카드도 추가 리뷰어 역할·수렴 게이트 규율을 고정한다 (동의 축은 없다)."""
+    """공용 카드도 추가 리뷰어 역할·마무리 통과 조건 규율을 고정한다 (동의 확인은 없다)."""
     for path in SHARED_PM_REVIEW_CARDS:
         text = path.read_text(encoding="utf-8")
         details = path.parent / "references" / "operational-details.md"
@@ -163,7 +163,7 @@ def test_shared_pm_review_cards_use_active_role_and_the_caps():
         for key, value in EXPECTED_DEFAULTS:
             assert f"{key}={value}" in text, (path, key)
         assert "기계적 anti-loop 정지" in text, path
-        for contract in CONVERGENCE_GATE_CONTRACTS:
+        for contract in CONVERGENCE_CHECK_CONTRACTS:
             assert contract in text, (path, contract)
         assert "--reset-session-budget" in text, path
         assert RETIRED_ROUND_ACK_FLAG not in text, path
@@ -178,8 +178,8 @@ def test_shared_pm_review_cards_stay_byte_identical():
         assert path.read_bytes() == canonical, f"pm-review 카드 드리프트: {path}"
 
 
-def test_codex_pm_review_override_is_registered_in_flavor_manifest():
-    """codex flavor manifest 의 file override — 없으면 공유 카드 렌더가 이 판을 덮는다.
+def test_codex_pm_review_override_is_registered_in_variant_manifest():
+    """codex 하네스별 판 manifest 의 file override — 없으면 공유 카드 렌더가 이 판을 덮는다.
 
     상위 `.agents/skills @render @source=.claude/skills` 디렉토리 항목보다 구체적인 file
     remap 이 이겨야 codex 전용 Bash timeout 절이 살아남는다(pm-dev-delegate 와 같은 기전).
@@ -193,7 +193,7 @@ def test_codex_pm_review_override_is_registered_in_flavor_manifest():
     ) in manifest
 
 
-# ── 축 2: 활성 문서의 역할 이름·비용 규율 ────────────────────────────────────
+# ── 항목 2: 활성 문서의 역할 이름·비용 규율 ────────────────────────────────────
 
 ACTIVE_DOCS = (
     REPO / ".project_manager" / "wiki" / "pm_role.md",
@@ -233,12 +233,12 @@ def test_readme_documents_the_role_without_a_channel_switch():
     assert "`reviewer_cmd` 통짜 커맨드는 더 이상 읽히지 않는다" in text
 
 
-def test_pm_role_makes_cap_ack_autonomous_not_a_cost_gate():
-    """PM 매뉴얼: wave 예산 ack 는 자율 영역, 라운드 축은 연장 승인 자체가 없다."""
+def test_pm_role_makes_cap_ack_autonomous_not_a_cost_check():
+    """PM 매뉴얼: 세션 호출 예산 ack 는 자율 영역, 라운드 기준은 연장 승인 자체가 없다."""
     text = (REPO / ".project_manager" / "wiki" / "pm_role.md").read_text(
         encoding="utf-8"
     )
-    # 남은 ack 축(wave 예산)이 *자율* 절에 들어 있어야 한다 — 사용자 게이트 절이 아니라.
+    # 남은 ack 기준(세션 호출 예산)이 *자율* 절에 들어 있어야 한다 — 사용자 승인 절이 아니라.
     autonomous = text.split("**자율+사후")[1].split("**사용자 승인")[0]
     assert "--reset-session-budget" in autonomous
     assert "정상 마무리 ack" in autonomous
@@ -265,20 +265,20 @@ def test_active_docs_have_no_per_round_user_cost_approval_rule():
             assert phrase not in text, f"{path}: 폐기된 비용 재승인 규율 잔존 — {phrase}"
 
 
-# ── 축 2: 활성 출하 PM 표면 전수의 역할 이름 ─────────────────────────────────
+# ── 항목 2: 활성 출하 PM 문서 전수의 역할 이름 ─────────────────────────────────
 #
-# 이름 변경은 **사람이 부르는 역할**에만 적용된다. 활성 표면(출하 스킬 카드 · 방법론 wiki ·
+# 이름 변경은 **사람이 부르는 역할**에만 적용된다. 활성 문서(출하 스킬 카드 · 방법론 wiki ·
 # README/이식성 문서 · 부트스트랩 첫 턴 카드)에서 폐기 이름을 몰아내되, 다음은 건드리지 않는다:
 #   - 기계 식별자 — `additional_reviewer.py` · `additional_reviewer.harness` · `reviewer_cmd`
-#   - 히스토리 — ADR · CHANGELOG · done 티켓 · archive log · 과거 지적 인용("codex 게이트 must-fix")
+#   - 히스토리 — ADR · CHANGELOG · done 티켓 · archive log · 과거 지적 인용("codex 리뷰 must-fix")
 #   - 실제로 *수신 하네스*(선택된 기본 codex)를 가리키는 codex 전용 문맥
 # 인벤토리를 파일 열거로 만드는 이유: 새 카드/새 타깃이 목록을 우회해 폐기 이름을 다시 실어도
 # 자동으로 red 가 되게 하기 위해서다(하드코딩 목록은 반드시 뒤처진다).
 
 # 폐기된 역할 이름 — 사람이 부르는 이름은 **추가 리뷰어**다. 폐기 표기는 T-0597 sweep 대상이고,
-# 인벤토리에 agent 카드가 없어 opencode architect 카드 하나가 R1 까지 살아남았다(카드 사각).
+# 인벤토리에 agent 카드가 없어 opencode architect 카드 하나가 R1 까지 살아남았다(카드를 놓치는 곳).
 #
-# 리터럴 분할: 폐기 낱말 가드(`tests/test_terminology.py`)가 이 원장 자체를 잔존으로 잡지 않게.
+# 리터럴 분할: 폐기 낱말 가드(`tests/test_terminology.py`)가 이 등록 목록 자체를 잔존으로 잡지 않게.
 _RETIRED_ROLE_PREFIX = "외" + "부"
 RETIRED_ROLE_PHRASES = (
     f"codex {_RETIRED_ROLE_PREFIX} 교차검증",
@@ -286,13 +286,13 @@ RETIRED_ROLE_PHRASES = (
     f"{_RETIRED_ROLE_PREFIX} 리뷰어",
 )
 
-# 폐기된 활동 명사 — 활동 이름은 **추가 리뷰**다(T-0599). 역할(누가)과 축이 달라 따로 둔다:
+# 폐기된 활동 명사 — 활동 이름은 **추가 리뷰**다(T-0599). 역할(누가)과 기준이 달라 따로 둔다:
 # 구키 제거 릴리즈에서 한쪽만 풀릴 수 있고, 활동 명사는 역할 이름이 없는 문장("ticket → dev →
 # 폐기 활동 명사)에도 박혀 있어 역할 스캔이 통째로 놓쳤다.
 RETIRED_ACTIVITY_PHRASES = (f"{_RETIRED_ROLE_PREFIX}리뷰",)
 
-# 활성 표면 스캔이 보는 폐기 표현 전체. 두 축이 같은 인벤토리를 쓰므로 스캔은 하나다 —
-# 축마다 스캔을 복사하면 새 표면이 한쪽 목록에만 들어가는 절반 커버가 생긴다.
+# 활성 문서 스캔이 보는 폐기 표현 전체. 두 항목이 같은 인벤토리를 쓰므로 스캔은 하나다 —
+# 항목마다 스캔을 복사하면 새 문서가 한쪽 목록에만 들어가는 절반 커버가 생긴다.
 RETIRED_REVIEW_PHRASES = (*RETIRED_ROLE_PHRASES, *RETIRED_ACTIVITY_PHRASES)
 
 SKILL_CARD_ROOTS = (
@@ -303,7 +303,7 @@ SKILL_CARD_ROOTS = (
 )
 
 # agent 카드는 4 네임스페이스가 서로 다른 경로·포맷(codex 는 TOML)이라 스킬 카드 인벤토리로는
-# 잡히지 않는다 — 역할 이름을 싣는 표면이므로 따로 열거한다(glob 패턴까지 명시).
+# 잡히지 않는다 — 역할 이름을 싣는 문서이므로 따로 열거한다(glob 패턴까지 명시).
 AGENT_CARD_ROOTS = (
     (REPO / ".claude" / "agents", "*.md"),
     (REPO / "templates" / "claude_code" / ".claude" / "agents", "*.md"),
@@ -326,8 +326,8 @@ METHODOLOGY_SURFACES = (
     REPO / ".project_manager" / "wiki" / "pm_role.md",
     REPO / ".project_manager" / "wiki" / "pm_playbook.md",
     *(
-        REPO / "templates" / flavor / ".project_manager" / "wiki" / name
-        for flavor in TEMPLATE_DIRS
+        REPO / "templates" / variant / ".project_manager" / "wiki" / name
+        for variant in TEMPLATE_DIRS
         for name in ("pm_role.md", "pm_playbook.md")
     ),
     REPO / "README.md",
@@ -338,8 +338,8 @@ METHODOLOGY_SURFACES = (
 BOOTSTRAP_SOURCES = (
     TOOLS / "pm_bootstrap.py",
     *(
-        REPO / "templates" / flavor / ".project_manager" / "tools" / "pm_bootstrap.py"
-        for flavor in TEMPLATE_DIRS
+        REPO / "templates" / variant / ".project_manager" / "tools" / "pm_bootstrap.py"
+        for variant in TEMPLATE_DIRS
     ),
 )
 
@@ -365,7 +365,7 @@ def _active_pm_surfaces() -> list[Path]:
 
 
 def test_active_pm_surface_inventory_covers_agent_cards():
-    """인벤토리가 agent 카드 4 네임스페이스를 실제로 포함한다 — 카드 사각(R1 실측)의 재발 차단."""
+    """인벤토리가 agent 카드 4 네임스페이스를 실제로 포함한다 — 카드를 놓치는 곳(R1 실측)의 재발 차단."""
     scanned = {path.relative_to(REPO).as_posix() for path in _active_pm_surfaces()}
     for rel in (
         ".claude/agents/architect.md",
@@ -379,7 +379,7 @@ def test_active_pm_surface_inventory_covers_agent_cards():
 def _surface_label(path: Path, *, root: Path = REPO) -> str:
     """진단용 자리 이름 — `root` 안이면 root-상대 경로, 밖이면 파일 이름.
 
-    기준 root 는 명시 입력이다. 합성 표면(tmp)으로 검출기를 태우는 sensitivity 는 자기
+    기준 root 는 명시 입력이다. 합성 문서(tmp)로 검출기를 태우는 sensitivity 는 자기
     root 를 넘긴다 — 그 자리가 파일시스템 어디에 있느냐가 이름을 정하지 않는다.
     """
     try:
@@ -389,10 +389,10 @@ def _surface_label(path: Path, *, root: Path = REPO) -> str:
 
 
 def _phrase_residue(paths, phrases, allowed_lines=None, *, root: Path = REPO) -> list[str]:
-    """주어진 표면들에서 폐기 표현이 놓인 자리 — `<자리>:<lineno> — <표현>` 목록.
+    """주어진 문서들에서 폐기 표현이 놓인 자리 — `<자리>:<lineno> — <표현>` 목록.
 
-    잔존 가드 3축(역할·활동 명사·구키)이 같은 검출기를 쓰게 만드는 단일 seam 이다. 축마다 스캔을
-    베끼면 sensitivity 를 축마다 다시 증명해야 하고, 대개 한 축만 증명한 채 남는다.
+    잔존 가드 세 가지(역할·활동 명사·구키)가 같은 검출기를 쓰게 만드는 단일 공용 함수다. 가드마다 스캔을
+    베끼면 sensitivity 를 가드마다 다시 증명해야 하고, 대개 한 가드만 증명한 채 남는다.
 
     `allowed_lines` = `{repo상대경로: (허용 줄 텍스트, …)}` — **줄 단위 예외**다. 파일 통째
     예외는 그 파일에 새로 들어온 사용까지 영영 가려주지만, 줄 단위는 적어 둔 그 줄만 뺀다.
@@ -416,7 +416,7 @@ def _phrase_residue(paths, phrases, allowed_lines=None, *, root: Path = REPO) ->
 
 
 def test_active_pm_surfaces_drop_the_retired_reviewer_names():
-    """활성 출하 PM 표면 전수에 폐기된 역할 이름·활동 명사가 없다."""
+    """활성 출하 PM 문서 전수에 폐기된 역할 이름·활동 명사가 없다."""
     residue = _phrase_residue(_active_pm_surfaces(), RETIRED_REVIEW_PHRASES)
     assert not residue, "폐기된 명칭 잔존(활성 표면):\n  " + "\n  ".join(residue)
 
@@ -425,12 +425,12 @@ def test_retired_phrase_scan_detects_an_injected_residue(tmp_path):
     """주입한 폐기 표현을 검출기가 실제로 잡고, 복원하면 다시 green (비공허 sensitivity).
 
     잔존 0 단언은 스캔이 죽어도(빈 인벤토리·오탈자 패턴) 통과한다 — 검출기 자체를 합성
-    표면으로 태워 "잡을 수 있음"을 증명한다.
+    문서로 태워 "잡을 수 있음"을 증명한다.
     """
     surface = tmp_path / "SKILL.md"
     clean = "위임(`pm_delegate.py`)과 추가 리뷰(`additional_reviewer.py`)는 raw 를 예약한다.\n"
     surface.write_text(clean, encoding="utf-8")
-    # 합성 표면의 기준 root 를 명시로 준다 — 임시 폴더가 어디에 있든 같은 자리 이름이 나온다.
+    # 합성 문서의 기준 root 를 명시로 준다 — 임시 폴더가 어디에 있든 같은 자리 이름이 나온다.
     assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES, root=tmp_path) == []
 
     activity = RETIRED_ACTIVITY_PHRASES[0]
@@ -443,7 +443,7 @@ def test_retired_phrase_scan_detects_an_injected_residue(tmp_path):
     assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES, root=tmp_path) == []
 
 
-# 활동 명사 sweep 이 닿은 엔진 파일 — 위임/추가 리뷰 실행 축 4종(T-0600). **엔진 파일 전체를
+# 활동 명사 sweep 이 닿은 엔진 파일 — 위임/추가 리뷰 실행 파일 4종(T-0600). **엔진 파일 전체를
 # 잔존 스캔 인벤토리(`_active_pm_surfaces`)에 넣지는 않는다**: 거긴 과거 지적 인용·릴리즈 서술
 # 같은 히스토리가 사는 자리라(`test_role_rename_keeps_transport_identifiers_and_history` 가 그
 # 경계를 값으로 고정한다) 전면 스캔은 과거 기록 개서를 요구한다. 여기서 보는 건 **활동 명사
@@ -465,7 +465,7 @@ def test_swept_engine_files_drop_the_retired_activity_noun(name):
 def test_engine_cli_help_names_the_activity_as_additional_review(capsys):
     """**사용자에게 렌더되는** 엔진 CLI help 가 활동을 '추가 리뷰'로 부른다.
 
-    파일 텍스트 스캔이 아니라 argparse 가 실제로 찍는 문자열을 태운다 — 사용자 노출 표면은
+    파일 텍스트 스캔이 아니라 argparse 가 실제로 찍는 문자열을 태운다 — 사용자 노출 문구는
     소스 어디에 적혔는지가 아니라 출력이 진실이고, 히스토리 주석과 섞이지 않는다.
     """
     delegate = _load("pm_delegate")
@@ -487,8 +487,8 @@ def test_retired_activity_noun_scan_covers_the_swept_surfaces():
     } | {
         "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
         ".project_manager/wiki/pm_role.md",
-        *(f"templates/{flavor}/.project_manager/wiki/pm_role.md"
-          for flavor in TEMPLATE_DIRS),
+        *(f"templates/{variant}/.project_manager/wiki/pm_role.md"
+          for variant in TEMPLATE_DIRS),
     }
     assert len(expected) == 8
     assert expected <= scanned, f"sweep 대상이 스캔 밖: {sorted(expected - scanned)}"
@@ -514,7 +514,7 @@ def test_bootstrap_first_turn_card_names_the_additional_reviewer(pm_bootstrap, m
 
 
 def test_role_rename_keeps_transport_identifiers_and_history():
-    """이름 변경은 사람 표면 한정 — 기계 식별자와 히스토리는 그대로 둔다.
+    """이름 변경은 사람이 보는 글 한정 — 기계 식별자와 히스토리는 그대로 둔다.
 
     인벤토리 밖이어야 하는 것(엔진 히스토리 주석)을 값으로 못박아, 가드가 히스토리까지
     번지지 않게 경계를 고정한다.
@@ -528,7 +528,7 @@ def test_role_rename_keeps_transport_identifiers_and_history():
     )
     assert "reviewer_cmd" in playbook       # 레거시 채택자 키도 이름이 바뀌지 않는다
 
-    # 과거 codex 게이트가 낸 지적 인용은 엔진 주석의 히스토리다 — 인벤토리 대상이 아니다.
+    # 과거 codex 리뷰가 낸 지적 인용은 엔진 주석의 히스토리다 — 인벤토리 대상이 아니다.
     history = TOOLS / "pm_engine/cli/handoff.py"
     assert "codex must-fix" in history.read_text(encoding="utf-8")
     assert history not in set(_active_pm_surfaces())
@@ -544,37 +544,37 @@ def test_codex_cards_keep_dollar_skill_entry_notation():
         assert not heading.startswith(f"# /{card.parent.name}"), card
 
 
-# ── 축 5: 폐지된 라운드 연장 승인 플래그 잔재 0 (T-0598) ─────────────────────
+# ── 항목 5: 폐지된 라운드 연장 승인 플래그 잔재 0 (T-0598) ─────────────────────
 #
 # T-0593 이 라운드 연장 승인을 엔진에서 폐지했다(호출하면 rc=1 거부·아무것도 실행 안 함). 출하
 # 문서가 그 플래그를 계속 가르치면 PM 이 존재하지 않는 출구를 시도하고, 문서-엔진 모순이 그대로
-# 운영 지침이 된다. 그래서 출하 표면의 **잔존 0** 을 기계로 못박는다. 잔존이 정당한 자리는 셋뿐:
+# 운영 지침이 된다. 그래서 출하 문서의 **잔존 0** 을 기계로 못박는다. 잔존이 정당한 자리는 셋뿐:
 #   - `CHANGELOG.md` — 릴리즈 히스토리(그 시점의 동작 서술).
-#   - 엔진 `additional_reviewer.py` — 폐지 거부 안내 문구(구 장부 필드는 제거됐다 · T-0772).
-#   - **명시된 테스트 파일들** — 폐지 동작(거부)·구 장부 해석을 단언하는 테스트 자신.
+#   - 엔진 `additional_reviewer.py` — 폐지 거부 안내 문구(옛 기록 필드는 제거됐다 · T-0772).
+#   - **명시된 테스트 파일들** — 폐지 동작(거부)·옛 기록 해석을 단언하는 테스트 자신.
 # `tests/` 를 통째로 빼지 않는 이유: 그러면 테스트 docstring 에 남은 *옛 흐름 서술*(실제로 R1 이
 # `test_additional_reviewer.py` 에서 잡았다)을 가드가 영영 못 본다. 파일을 이름으로 적고, 각 파일이
 # 실제로 그 문자열을 갖고 있는지까지 단언해 목록이 썩지 않게 한다.
-# 히스토리 디렉토리 제외는 두지 않는다 — dev-state(log·decisions·tickets 상태·sealed spike)는 PM
+# 히스토리 디렉토리 제외는 두지 않는다 — dev-state(log·decisions·tickets 상태·확정 spike)는 PM
 # 홈 repo 소유라 이 제품 repo 스캔에 애초에 없다(`.gitkeep` 뿐). 검증할 수 없는 공허한 예외는
 # allowlist 를 헐겁게만 만든다.
-# 잔존 스캔 3축(폐지 플래그·구 게이트 키·구 노브 키)이 공유하는 확장자 인벤토리. 산문·엔진만
-# 보던 `.md`/`.py` 에 **실행/설정 표면**을 더한다(T-0600) — 진입 스크립트(`.sh`·`.cmd`)·opencode
+# 잔존 스캔 세 가지(폐지 플래그·옛 리뷰 집계 티켓 키·옛 노브 키)가 공유하는 확장자 인벤토리. 산문·엔진만
+# 보던 `.md`/`.py` 에 **실행/설정 파일**을 더한다(T-0600) — 진입 스크립트(`.sh`·`.cmd`)·opencode
 # 설정(`.jsonc`)·codex agent 카드와 설정(`.toml`)도 폐기 키/플래그를 실을 수 있는 자리이고,
-# 확장자 하나가 빠지면 그 표면의 잔존은 영영 안 보인다(현행 실잔재는 0 — 그 상태를 못박는다).
+# 확장자 하나가 빠지면 그 파일의 잔존은 영영 안 보인다(현행 실잔재는 0 — 그 상태를 못박는다).
 _RETIRED_ACK_SCAN_SUFFIXES = {".md", ".py", ".sh", ".cmd", ".jsonc", ".toml"}
-# 엔진의 폐지 안내·구 장부 해석이 사는 파일 (canonical + 템플릿 미러 4벌 모두 같은 이름).
+# 엔진의 폐지 안내·옛 기록 해석이 사는 파일 (canonical + 템플릿 미러 4벌 모두 같은 이름).
 _RETIRED_ACK_ENGINE_FILES = ("additional_reviewer.py", "reviewer_budget.py")
 # 폐지 동작을 단언하느라 플래그 리터럴이 정당하게 남는 테스트 (파일명 명시 — 디렉토리 통째 아님).
 _RETIRED_ACK_TEST_FILES = (
     "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(상수·부재 단언)
-    "tests/test_additional_reviewer.py",                  # 어느 표면에서도 거부됨을 단언
-    "tests/test_raw_output_records.py",                # 폐지 플래그 argv 의 장부 무변경
+    "tests/test_additional_reviewer.py",                  # 어느 명령에서도 거부됨을 단언
+    "tests/test_raw_output_records.py",                # 폐지 플래그 argv 의 기록 무변경
 )
 
 
 def _retired_ack_scan_targets() -> list[Path]:
-    """폐지 플래그 잔존을 검사할 출하 표면 (allowlist 제외 후)."""
+    """폐지 플래그 잔존을 검사할 출하 파일 (allowlist 제외 후)."""
     targets: list[Path] = []
     for path in repo_owned_paths(REPO, ".", mode=OWNED):
         if not path.is_file() or path.suffix.lower() not in _RETIRED_ACK_SCAN_SUFFIXES:
@@ -628,7 +628,7 @@ def test_retired_round_ack_scan_covers_the_swept_surfaces():
     "templates/codex/.codex/config.toml",               # codex 어댑터 설정
 ])
 def test_residue_scan_covers_the_execution_and_config_surfaces(rel):
-    """확장자 인벤토리가 실행/설정 표면까지 본다 (T-0600 — 좁은 스캔의 false-green 방지)."""
+    """확장자 인벤토리가 실행/설정 파일까지 본다 (T-0600 — 좁은 스캔의 false-green 방지)."""
     scanned = {path.relative_to(REPO).as_posix() for path in _retired_ack_scan_targets()}
     assert rel in scanned, f"스캔 밖 표면: {rel}"
 
@@ -658,7 +658,7 @@ def test_retired_round_ack_allowlisted_tests_teach_the_new_flow():
     """
     retired_prose = ("승인 후 `--ack-rounds`", "승인 후에만 `--ack-rounds`",
                      "`--ack-rounds`로만 재개", "`--ack-rounds` 로만 재개")
-    # 이 파일 자신은 제외 — 폐기 문구를 *열거* 하는 자리라 정당하다(test_terminology `_SELF` 동형).
+    # 이 파일 자신은 제외 — 폐기 문구를 *열거* 하는 자리라 정당하다(test_terminology `_SELF` 와 같은 구조).
     self_rel = Path(__file__).resolve().relative_to(REPO).as_posix()
     offenders = [
         f"{rel} — {phrase}"
@@ -685,25 +685,25 @@ def test_retired_round_ack_allowlisted_tests_teach_the_new_flow():
 def test_canonical_to_template_parity(relpath):
     """온보딩 계약을 담은 엔진/방법론 사본이 세 타깃에서 byte-identical."""
     canonical = (REPO / relpath).read_bytes()
-    for flavor in TEMPLATE_DIRS:
-        path = REPO / "templates" / flavor / relpath
+    for variant in TEMPLATE_DIRS:
+        path = REPO / "templates" / variant / relpath
         assert path.is_file(), f"템플릿 사본 없음: {path}"
         assert path.read_bytes() == canonical, (
-            f"{flavor} 사본 드리프트 — pm_update 전파 필요: {relpath}"
+            f"{variant} 사본 드리프트 — pm_update 전파 필요: {relpath}"
         )
 
 
-# ── 축 6: 노브 키 표기 (dot notation 단일 표기 · T-0767) ────────────────────
+# ── 항목 6: 노브 키 표기 (dot notation 단일 표기 · T-0767) ────────────────────
 #
-# `local.conf` 표기가 dot notation 하나로 통일되면서 이 축의 키도 `additional_reviewer.<속성>`
+# `local.conf` 표기가 dot notation 하나로 통일되면서 이 항목의 키도 `additional_reviewer.<속성>`
 # 이 됐다. 구표기(flat `additional_reviewer_*`)의 **1릴리즈 fallback·감지 상수·안내 깔때기는 전부
 # 제거**됐다 — 잔존 구표기는 이 모듈이 아니라 공용 로더가 conf 를 읽는 지점에서 fail-loud 로
-# 막고 키 단위 교체를 처방한다(`tests/test_local_conf_notation.py`).
-# 채널 스위치 키는 T-0887 이 삭제했다 — 추가 리뷰어는 부르면 도는 역할이라 켜고 끄는 축이 없다.
+# 막고 키 단위 교체를 해결 방법으로 낸다(`tests/test_local_conf_notation.py`).
+# 채널 스위치 키는 T-0887 이 삭제했다 — 추가 리뷰어는 부르면 도는 역할이라 켜고 끄는 설정이 없다.
 RETIRED_SWITCH_KEY = "additional_reviewer.enabled"
 
-# 각 노브의 해소 함수와 엔진 기본값 — 어느 축이 어느 키를 읽는지까지 못박는다(세 키가 한 표에서
-# 파생하므로 배선이 어긋나면 상한/예산이 서로의 값을 읽는다).
+# 각 노브의 해소 함수와 엔진 기본값 — 어느 상한이 어느 키를 읽는지까지 못박는다(세 키가 한 표에서
+# 파생하므로 연결이 어긋나면 상한/예산이 서로의 값을 읽는다).
 # 판정 라운드 상한은 이 표에 없다 — conf 노브 없이 엔진 고정값 하나다(대체 키 없음).
 _KNOB_RESOLVERS = {
     "additional_reviewer.incomplete_rounds_max": ("_incomplete_round_limit", 2),
@@ -712,14 +712,14 @@ _KNOB_RESOLVERS = {
 KNOB_KEYS = tuple(_KNOB_RESOLVERS)
 
 
-# 출하 표면 전량 스캔의 유일한 예외 — 제거키 **원장**. 그 자리는 "그 이름은 사라졌다" 를 선언
-# 하므로 이름을 들고 있어야 한다: 엔진 매핑표 한 줄. CHANGELOG 는 기록이라 시야 밖이다
+# 출하 파일 전량 스캔의 유일한 예외 — 제거키 **등록 목록**. 그 자리는 "그 이름은 사라졌다" 를 선언
+# 하므로 이름을 들고 있어야 한다: 엔진 매핑표 한 줄. CHANGELOG 는 기록이라 검사 범위 밖이다
 # (`_historical_record`).
 RETIRED_SWITCH_MAP_LINE = f'"{RETIRED_SWITCH_KEY}": None,'
 
 
 def _retired_switch_offenders(files):
-    """출하 표면에서 삭제된 채널 스위치 키를 산 전제로 든 줄 전수."""
+    """출하 파일에서 삭제된 채널 스위치 키를 산 전제로 든 줄 전수."""
     offenders = []
     for path in files:
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -734,8 +734,8 @@ def _retired_switch_offenders(files):
 def test_no_shipping_surface_names_the_retired_channel_switch():
     """카드·매뉴얼·엔진 어디에도 삭제된 스위치 키를 전제로 한 절차가 없다 (T-0887).
 
-    문서 두 개 전용 단언으로는 새 카드·새 타깃 사본이 시야 밖에서 옛 절차를 되살린다. 세 하네스
-    PM 이 같은 단계에서 서로 다른 절차를 읽는 것이 이 가드가 막는 형상이다.
+    문서 두 개 전용 단언으로는 새 카드·새 타깃 사본이 검사 범위 밖에서 옛 절차를 되살린다. 세 하네스
+    PM 이 같은 단계에서 서로 다른 절차를 읽는 것이 이 가드가 막는 경우다.
     """
     offenders = _retired_switch_offenders(_shipped_text_surface())
     assert not offenders, (
@@ -768,7 +768,7 @@ def test_delegate_cards_state_equal_authority(relpath):
 
 
 def test_the_channel_has_no_switch_at_all(board, pm_update):
-    """채널 스위치 축이 통째로 없다 — 판정식·안내·설정 키 어느 것도 남지 않았다 (T-0887).
+    """채널 스위치 설정이 통째로 없다 — 판정식·안내·설정 키 어느 것도 남지 않았다 (T-0887).
 
     추가 리뷰어는 developer·architect 와 같이 부르면 도는 역할이다. 스위치가 남아 있으면 그 위에
     질문·경고·기본값 논쟁이 다시 자란다.
@@ -776,7 +776,7 @@ def test_the_channel_has_no_switch_at_all(board, pm_update):
     core = _additional_reviewer()
     local_conf = conf_schema
 
-    for retired in ("_is_enabled", "disabled_gate_notice",
+    for retired in ("_is_enabled",
                     "ADDITIONAL_REVIEWER_ENABLED_KEY"):
         assert not hasattr(core, retired), retired
     assert RETIRED_SWITCH_KEY not in local_conf.KNOWN_KEYS
@@ -786,7 +786,7 @@ def test_the_channel_has_no_switch_at_all(board, pm_update):
 
 
 def test_no_entry_carries_an_optin_prompt_or_force_flag(board, pm_update):
-    """온보딩 질문·1회 강제 플래그가 어느 진입에도 없다 — 동의 축을 통째로 지웠다."""
+    """온보딩 질문·1회 강제 플래그가 어느 진입에도 없다 — 동의 확인을 통째로 지웠다."""
     core = _additional_reviewer()
     for module in (core, board, pm_update):
         for retired in ("prompt_additional_reviewer_optin",
@@ -805,7 +805,7 @@ def test_no_entry_carries_an_optin_prompt_or_force_flag(board, pm_update):
 
 
 def test_knob_key_constants_match_the_engine_table():
-    """엔진의 노브 키 상수가 글자 단위로 이 표와 같다 (배선 드리프트 가드)."""
+    """엔진의 노브 키 상수가 글자 단위로 이 표와 같다 (연결 드리프트 가드)."""
     core = _additional_reviewer()
     assert (reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY
             == "additional_reviewer.incomplete_rounds_max")
@@ -814,7 +814,7 @@ def test_knob_key_constants_match_the_engine_table():
         reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY,
         reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY,
     }
-    # 판정 상한은 노브도 축도 아니다 — 키 상수·해소 함수·엔진 기본값이 모두 없다(축 제거).
+    # 판정 상한은 노브도 기준도 아니다 — 키 상수·해소 함수·엔진 기본값이 모두 없다(기준 제거).
     assert not hasattr(core, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
     assert not hasattr(core, "_round_limit")
     assert not hasattr(core, "DEFAULT_ROUND_LIMIT")
@@ -865,4 +865,4 @@ def test_engine_guidance_names_the_knob_keys():
     round_guidance = reviewer_budget._ROUND_LIMIT_GUIDANCE
     assert reviewer_budget.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
     assert "additional_reviewer.round_limit" not in round_guidance
-    assert reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY in reviewer_budget._WAVE_BUDGET_GUIDANCE
+    assert reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY in reviewer_budget._SESSION_BUDGET_GUIDANCE

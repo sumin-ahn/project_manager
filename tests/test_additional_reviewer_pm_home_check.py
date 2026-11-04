@@ -1,19 +1,19 @@
-"""additional_reviewer PM 홈 앵커 재지정 게이트 — adopter#0 false-green 능동 차단 (T-0367·ADR-0049).
+"""additional_reviewer PM 홈 대상 저장소 재지정 검사 — adopter#0 false-green 능동 차단 (T-0367·ADR-0049).
 
 빈-diff fail-loud 가드(T-0326·`test_additional_reviewer_repo_root.py`)는 diff 가 *실제로 빈 뒤* 사후
-차단한다. 이 게이트는 그 안내(additional_reviewer.py:166)를 **능동 게이트로 승격**한다 — REPO 앵커가
+차단한다. 이 검사는 그 안내(additional_reviewer.py:166)를 **능동 검사로 승격**한다 — REPO 대상 저장소가
 adopter#0 PM 홈(import 사본)을 가리키고 `--paths` override 가 없으면, diff 추출 전에 canonical 코드
-worktree 재지정을 안내하며 fail-loud 한다([[adopter0-gates-use-worktree-canonical]]·PM 65).
+worktree 재지정을 안내하며 fail-loud 한다(adopter#0 검사는 worktree canonical 을 쓴다·PM 65).
 
 규율 경로(cwd·paths) 단언은 순수 filesystem 판정이라 hermetic — codex 실호출(과금·ADR-0004
-opt-in) 없이 REPO 앵커를 tmp PM 홈/worktree 형상으로 monkeypatch 해 게이트 분기를 단언한다. stage
+opt-in) 없이 REPO 대상 저장소를 tmp PM 홈/worktree 구성으로 monkeypatch 해 검사 분기를 단언한다. stage
 선행(git add)·빈-diff 백스톱은 `test_additional_reviewer_repo_root.py` 가 이미 커버(직교).
 
-**오탐 0 (codex/reviewer 이중 게이트 수렴 must-fix)**: 재지정 대상은 `work/` 슬롯 스캔으로만 잡고
+**오탐 0 (codex/reviewer 이중 리뷰 마무리 must-fix)**: 재지정 대상은 `work/` 슬롯 스캔으로만 잡고
 local.conf `upstream` 은 참조하지 않는다 — upstream 은 URL/무관 로컬 checkout(`pm_import --from
 <로컬>` 정규 채택자·T-0053)일 수 있어, 실 board 를 소유한 정규 채택자에서 정상 리뷰를 hard-block
-하던 오탐 클래스다(reviewer 실측 재현). 아래 두 축으로 못박는다: (1) foreign/로컬 upstream 채택자
-→ 미발화(fail-soft), (2) adopter#0(`work/` 슬롯 실존) → 정확 재지정.
+하던 오탐 클래스다(reviewer 실측 재현). 아래 두 경우로 못박는다: (1) foreign/로컬 upstream 채택자
+→ 미실행(fail-soft), (2) adopter#0(`work/` 슬롯 실존) → 정확 재지정.
 """
 from __future__ import annotations
 
@@ -50,12 +50,12 @@ def external():
     return _load("additional_reviewer")
 
 
-# ── 형상 fixtures ──────────────────────────────────────────────────────────
+# ── 구성 fixtures ──────────────────────────────────────────────────────────
 
 
 def _make_pm_home(tmp_path: Path, *, with_ticket: bool = True,
                   with_worktree: bool = True) -> tuple[Path, Path]:
-    """adopter#0 PM 홈 형상을 합성한다 — 실 board(T-*.md) + 중첩 canonical worktree(`work/*`).
+    """adopter#0 PM 홈 구성을 합성한다 — 실 board(T-*.md) + 중첩 canonical worktree(`work/*`).
 
     반환: (pm_home, worktree). with_ticket/with_worktree 로 conjunction 개별 결핍을 모사."""
     home = tmp_path / "pm_home"
@@ -71,9 +71,9 @@ def _make_pm_home(tmp_path: Path, *, with_ticket: bool = True,
         (worktree / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
         (worktree / ".project_manager" / "tools" / "additional_reviewer.py").write_text(
             "# engine copy\n", encoding="utf-8")
-        ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-        ledger.parent.mkdir(parents=True)
-        ledger.write_text(
+        lease_record_path = home / ".project_manager" / ".local" / "worktree-leases.json"
+        lease_record_path.parent.mkdir(parents=True)
+        lease_record_path.write_text(
             '{"leases": [{"slot": "work/project_manager_1", "state": "leased"}]}',
             encoding="utf-8",
         )
@@ -90,7 +90,7 @@ def test_owns_real_board_true_with_ticket(external, tmp_path):
 
 
 def test_owns_real_board_false_empty_scaffold(external, tmp_path):
-    """빈 scaffold(status 디렉토리만·T-*.md 없음) → False (worktree 출하 형상·오탐 방지)."""
+    """빈 scaffold(status 디렉토리만·T-*.md 없음) → False (worktree 출하 구성·오탐 방지)."""
     home, _ = _make_pm_home(tmp_path, with_ticket=False)
     assert pm_paths._owns_real_board(home / ".project_manager") is False
 
@@ -103,7 +103,7 @@ def test_owns_real_board_legacy_wiki_tickets(external, tmp_path):
     assert pm_paths._owns_real_board(pm) is True
 
 
-# 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없어서, 게이트 축을
+# 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없어서, 검사 기준을
 # 보는 테스트도 대상 튜플을 갖춰야 실제 실행 지점까지 도달한다.
 _ENABLED_CONF = {
     "additional_reviewer.harness": "codex",
@@ -115,7 +115,7 @@ _ENABLED_CONF = {
 
 
 def test_canonical_worktree_scans_work_dir(external, tmp_path):
-    """`<anchor>/work/*` 스캔 중 엔진 사본 보유 디렉토리를 반환한다 (adopter#0 등록 관례)."""
+    """`<target_repo>/work/*` 스캔 중 엔진 사본 보유 디렉토리를 반환한다 (adopter#0 등록 관례)."""
     home, worktree = _make_pm_home(tmp_path)
     assert pm_paths._canonical_worktree(home) == worktree
 
@@ -145,7 +145,7 @@ def test_canonical_worktree_ignores_upstream_foreign_checkout(external, tmp_path
 
 
 def test_reanchor_detects_pm_home(external, tmp_path):
-    """실 board + canonical worktree(work/ 슬롯) 둘 다 → 재지정 대상 worktree 반환 (게이트 발화)."""
+    """실 board + canonical worktree(work/ 슬롯) 둘 다 → 재지정 대상 worktree 반환 (검사 실행)."""
     home, worktree = _make_pm_home(tmp_path)
     assert pm_paths._pm_home_reanchor(home) == worktree
 
@@ -153,9 +153,9 @@ def test_reanchor_detects_pm_home(external, tmp_path):
 def test_reanchor_none_for_worktree_shape(external, tmp_path):
     """worktree(코드 전용·board 미소유)에서 실행 → None (정상·fail-soft·오탐 0).
 
-    게이트가 실행 위치(worktree)를 PM 홈으로 오인해 정당 실행을 막지 않음을 못박는다."""
+    검사가 실행 위치(worktree)를 PM 홈으로 오인해 정당 실행을 막지 않음을 못박는다."""
     home, worktree = _make_pm_home(tmp_path)
-    # worktree 앵커 자신은 실 board 미소유 → conjunction (1) 탈락.
+    # worktree 대상 저장소 자신은 실 board 미소유 → conjunction (1) 탈락.
     assert pm_paths._pm_home_reanchor(worktree) is None
 
 
@@ -167,17 +167,17 @@ def test_reanchor_none_when_no_worktree(external, tmp_path):
     assert pm_paths._pm_home_reanchor(home) is None
 
 
-# ── main() 게이트 (sensitivity: PM 홈 앵커 + paths 미지정 → 차단) ────────────
+# ── main() 검사 (sensitivity: PM 홈 대상 저장소 + paths 미지정 → 차단) ────────────
 
 
-def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
+def _run_main(external, monkeypatch, target_repo_root: Path, conf: dict, argv: list[str]):
     """REPO/local_config 를 monkeypatch 해 main() 을 격리 실행 — 추가 리뷰어는 호출되면 기록.
 
-    반환: (exit_code, reviewer_called). 게이트가 codex 호출 전에 차단함을 격리한다."""
-    monkeypatch.setattr(external, "REPO", anchor)
+    반환: (exit_code, reviewer_called). 검사가 codex 호출 전에 차단함을 격리한다."""
+    monkeypatch.setattr(external, "REPO", target_repo_root)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: conf)
     monkeypatch.setattr(
-        pm_paths, "resolve_pm_home_for_repo", lambda target, **kwargs: anchor,
+        pm_paths, "resolve_pm_home_for_repo", lambda target, **kwargs: target_repo_root,
     )
     # 추출 대역도 본문과 필수 좌표를 함께 제공한다.
     monkeypatch.setattr(
@@ -199,7 +199,7 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
                 "file": None, "failed": False, "any_must_fix": False, "all_pass": True}
 
     monkeypatch.setattr(reviewer_run, "run_review", _fake_run_review)
-    # 이 파일은 PM 홈/diff 앵커 파생 축을 소유한다. 산출 회수(T-0696)는 별도 축이라
+    # 이 파일은 PM 홈/diff 대상 저장소 파생 기준을 소유한다. 산출 돌려받기(T-0696)는 별도 기준이라
     # tests/test_additional_reviewer_ticket_collect.py 가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
         reviewer_collect, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
@@ -217,7 +217,7 @@ def test_main_pm_home_no_paths_derives_worktree(external, monkeypatch, tmp_path,
     assert exit_code == 0
     assert reviewer_called is True
     err = capsys.readouterr().err
-    assert "앵커 해소 실패" not in err
+    assert "대상 저장소 해소 실패" not in err
 
 
 def test_main_default_review_paths_rejects_changed_pm_home_before_send(
@@ -230,9 +230,9 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
     for slot in (slot_one, slot_two):
         slot.mkdir(parents=True)
         (slot / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
-    ledger = engine_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    lease_record_path = engine_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_record_path.parent.mkdir(parents=True)
+    lease_record_path.write_text(
         '{"leases": [{"slot": "work/slot-one"}, {"slot": "work/slot-two"}]}',
         encoding="utf-8",
     )
@@ -249,7 +249,7 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
     monkeypatch.setattr(conf_store, 'local_config', lambda home: configs[home.root.resolve()])
     monkeypatch.setattr(
         pm_paths, "resolve_pm_home_for_repo",
-        lambda anchor, **kwargs: owner_home if anchor.resolve() == slot_two else engine_home,
+        lambda target_repo_root, **kwargs: owner_home if target_repo_root.resolve() == slot_two else engine_home,
     )
     monkeypatch.setattr(
         reviewer_scope, "_candidate_has_diff",
@@ -269,7 +269,7 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
 
 
 def test_main_pm_home_ticket_derives_board_and_diff_separately(external, monkeypatch, tmp_path, capsys):
-    """PM 홈 board touches와 등록 diff worktree를 별도 앵커로 파생해 리뷰한다."""
+    """PM 홈 board touches와 등록 diff worktree를 별도 대상 저장소로 파생해 리뷰한다."""
     home, worktree = _make_pm_home(tmp_path)
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, home, dict(_ENABLED_CONF),
@@ -280,28 +280,28 @@ def test_main_pm_home_ticket_derives_board_and_diff_separately(external, monkeyp
     assert "검토 경로: ['.project_manager/tools']" in capsys.readouterr().err
 
 
-def test_main_pm_home_with_paths_passes_gate(external, monkeypatch, tmp_path, capsys):
-    """PM 홈 앵커라도 `--paths` 명시 → 게이트 통과(deliberate override)·리뷰어까지 진행.
+def test_main_pm_home_with_paths_passes_check(external, monkeypatch, tmp_path, capsys):
+    """PM 홈 대상 저장소라도 `--paths` 명시 → 검사 통과(deliberate override)·리뷰어까지 진행.
 
-    override 는 escape hatch — 명시 시 게이트가 막지 않음을 못박는다(빈 diff 면 빈-diff 가드가 백스톱)."""
+    override 는 escape hatch — 명시 시 검사가 막지 않음을 못박는다(빈 diff 면 빈-diff 가드가 백스톱)."""
     home, worktree = _make_pm_home(tmp_path)
     conf = dict(_ENABLED_CONF)
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, home, conf,
         ["--paths", ".project_manager/tools/", "--no-review-ticket"],
     )
-    assert reviewer_called is True    # 게이트 미차단 → 리뷰어 진행
+    assert reviewer_called is True    # 검사 미차단 → 리뷰어 진행
     assert exit_code == 0
     assert "PM 홈" not in capsys.readouterr().err
 
 
 def test_main_worktree_shape_no_block(external, monkeypatch, tmp_path, capsys):
-    """worktree(코드 전용) 앵커 + paths 미지정 → 게이트 미발화·정상 진행 (fail-soft·오탐 0).
+    """worktree(코드 전용) 대상 저장소 + paths 미지정 → 검사 미실행·정상 진행 (fail-soft·오탐 0).
 
-    canonical worktree 에서 실행하는 것이 *정답*이므로 게이트가 이를 막으면 안 된다."""
+    canonical worktree 에서 실행하는 것이 *정답*이므로 검사가 이를 막으면 안 된다."""
     home, worktree = _make_pm_home(tmp_path)
     conf = dict(_ENABLED_CONF)
-    # worktree 앵커: 실 board 미소유 → 게이트 미발화.
+    # worktree 대상 저장소: 실 board 미소유 → 검사 미실행.
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, worktree, conf, ["--no-review-ticket"],
     )
@@ -317,12 +317,12 @@ def test_main_local_upstream_adopter_ticket_not_blocked(external, monkeypatch, t
     오탐 0 위반·빈-diff 백스톱도 실 diff non-empty 라 무력). work/ 스캔만 쓰므로 canonical=None →
     fail-soft 로 리뷰어까지 정상 진행한다."""
     home, _ = _make_pm_home(tmp_path, with_worktree=False)  # 실 board 소유·work/ 슬롯 없음
-    # ticket touches 해소를 결정론화(실 board 의 T-0001 은 touches 부재라 기본경로 폴백해도 무방).
+    # ticket touches 해소를 결정론화(실 board 의 T-0001 은 touches 부재라 기본경로로 대체해도 무방).
     monkeypatch.setattr(
         round_store, "parse_ticket_touches", lambda _home, t, **kwargs: [".project_manager/tools/"],
     )
     conf = {**_ENABLED_CONF, "upstream.path": str(tmp_path / "foreign")}
     exit_code, reviewer_called = _run_main(external, monkeypatch, home, conf, ["--ticket", "T-0001"])
-    assert reviewer_called is True   # 게이트 미차단 → 리뷰어 진행 (오탐 0)
+    assert reviewer_called is True   # 검사 미차단 → 리뷰어 진행 (오탐 0)
     assert exit_code == 0
     assert "PM 홈" not in capsys.readouterr().err

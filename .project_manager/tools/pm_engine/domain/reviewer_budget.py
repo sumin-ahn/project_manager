@@ -17,15 +17,15 @@ from pm_engine.domain import review_state
 # 해소 결과뿐이고, 모델을 고정하지 않는 실행 경로를 남기지 않는다.
 
 # 리뷰어 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **해소된 대상의 하네스 프로필**이 소유한다
-# (`watchdog.HARNESS_PROFILES` — legacy 기본 command가 `codex exec`이면 codex 축 값). 이 모듈에
+# (`watchdog.HARNESS_PROFILES` — legacy 기본 command가 `codex exec`이면 codex 하네스 값). 이 모듈에
 # 별도 타임아웃 상수를 두지 않는 이유가 이 티켓의 편입 이유와 같다: **값이 두 군데면 규칙이 둘이
 # 된다.** 평범한 diff 153~294초·13파일 대형 227초 — 구 기본 180초는 평상 대역 *안*이라 상시 타임아웃
 # 구조였고, 900 으로 올려도 같은 구조였다(실측: **입력·모델이 완전히 동일한 리뷰 2회 중 하나는
 # 900초 초과 kill·다른 하나는 `--timeout 1500` 으로 성공**). 그래서 값을 고르는 게임을 끝내고
-# 판정 기준을 무진행으로 교체했고, 벽시계는 "감지기 자체가 고장난 경우"의 유한 상한으로 강등된다.
+# 판정 기준을 무진행으로 교체했고, 벽시계는 "감지기 자체가 고장난 경우"의 유한 상한으로 낮아진다.
 # 조정: 일회성 `--timeout`/`--idle-timeout` > local.conf `harness.<reviewer>.wall_timeout`/
-# `.idle_timeout` > 아래 표면-flat legacy 키 > 프로필 선언.
-# 게이트·예산 노브 키. 이름은 사람 역할 이름(추가 리뷰어) 축 하나로 수렴한다 — 모듈 파일명·raw
+# `.idle_timeout` > 아래 평면 legacy 키 > 프로필 선언.
+# 리뷰 집계 티켓·예산 노브 키. 이름은 사람 역할 이름(추가 리뷰어) 하나로 맞춘다 — 모듈 파일명·raw
 # 파일 접두는 기존 감사물의 안정 계약이라 기계 식별자로 그대로 남는다. **구키 감지 상수는 없다**:
 # 구표기 잔존 판정은 공용 로더(`local_conf.assert_no_legacy`)가 conf 를 읽는 지점에서 한 번에
 # 하고, 이 모듈이 그 표의 사본을 들지 않는다.
@@ -61,13 +61,13 @@ _REVIEWER_PROGRESS_CONTRACTS = {
     },
 }
 
-# 미완 라운드 상한 — 판정 없이 끝난 호출(타임아웃·중단·오염 무효화)이 같은 게이트에서 상한
-# 횟수를 채우면 이후 실행을 거부한다. 호출 횟수만 세던 판정 라운드 상한은 같은 범위를 보는 수렴
-# 축과 중복이라 제거됐다(실 장부 53게이트에서 한 번도 발동하지 않았고, 발산은 수렴 축이 더 일찍
-# 잡는다). 상한 값의 정본은 레지스트리다(`local_conf` · 아래 예산 노브 전부 동형).
+# 미완 라운드 상한 — 판정 없이 끝난 호출(타임아웃·중단·오염 무효화)이 같은 리뷰 집계 티켓에서 상한
+# 횟수를 채우면 이후 실행을 거부한다. 호출 횟수만 세던 판정 라운드 상한은 같은 범위를 보는 마무리
+# 기준과 중복이라 제거됐다(실 기록 파일의 리뷰 집계 티켓 53개에서 한 번도 발동하지 않았고, 발산은 마무리 기준이 더 일찍
+# 잡는다). 상한 값의 정본은 레지스트리다(`local_conf` · 아래 예산 노브 전부 같은 구조).
 
-# 수렴-형상 상한 — 코드 리뷰 라운드 수 상한(local.conf `additional_reviewer.rounds_max`).
-# 이 축은 호출 횟수가 아니라 **장부의 must_fix 추이**로 수렴 여부를
+# 마무리 조건 상한 — 코드 리뷰 라운드 수 상한(local.conf `additional_reviewer.rounds_max`).
+# 이 기준은 호출 횟수가 아니라 **기록의 must_fix 추이**로 마무리 여부를
 # 본다: 상한을 넘겼거나(초과), 직전 라운드보다 must_fix 가 늘었으면(발산) 라운드를 더 쓰지 않는다.
 # 실측에서 green 6건 중 5건이 2R 종결이고 관측된 3R 시도 8건은 모두 반려였다.
 REVIEW_ROUNDS_MAX_KEY = "additional_reviewer.rounds_max"
@@ -139,10 +139,10 @@ def _versioned_block_requirement(
     next_finding_id: str | None = None,
     confirmation_ids: Sequence[str] | None = None,
 ) -> str:
-    """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두·ID 실값을 엔진에서 렌더한다.
+    """추가 리뷰어 채널의 구조화 블록 요구 — 양식·접두·ID 실값을 엔진에서 렌더한다.
 
-    리뷰어 세션은 라운드마다 fresh 라 이전 라운드의 ID 를 모른다. 회수 대상 티켓에서 읽어 온
-    **다음 ID 실값**(`_next_external_finding_id`)을 골격에 싣는다. 실값이 없으면(회수 대상 없는
+    리뷰어 세션은 라운드마다 fresh 라 이전 라운드의 ID 를 모른다. 돌려받을 대상 티켓에서 읽어 온
+    **다음 ID 실값**(`_next_external_finding_id`)을 양식에 싣는다. 실값이 없으면(돌려받을 대상 없는
     실행) 첫 ID·placeholder 로 돌려준다.
     """
     role = review_form.ADDITIONAL_REVIEWER_ROLE
@@ -150,7 +150,7 @@ def _versioned_block_requirement(
     rules = _VERSIONED_BLOCK_RULES.format(
         prefix=review_form.PM_REVIEW_FINDING_ID_PREFIXES[role],
             # 표기는 호출부가 정할 수 있다 — 대상이 티켓 하나면 ID 실값 하나이고, 묶음이면
-            # 그 값이 티켓마다 다르다(그 실값은 각 라운드 파일 시드가 이미 들고 있다).
+            # 그 값이 티켓마다 다르다(그 실값은 각 라운드 파일 빈 양식이 이미 들고 있다).
         next_id=f"`{next_id}`",
         top_severity=review_form.PM_REVIEW_SEVERITIES[0],
         placeholder_words="·".join(
@@ -167,7 +167,7 @@ def _versioned_block_requirement(
     )
 
 
-# 수렴 차단 사유 — 안내 문구의 라벨이자 판정 반환값(호출부가 사유별로 갈리지 않게 한 축).
+# 마무리 차단 사유 — 안내 문구의 라벨이자 판정 반환값(호출부가 사유별로 갈리지 않게 한 곳).
 CONVERGENCE_DIVERGING = "diverging"
 CONVERGENCE_CAP_UNRESOLVED = "cap-unresolved"
 CONVERGENCE_CAP_REACHED = "cap-reached"
@@ -181,13 +181,13 @@ _CONVERGENCE_REASONS: dict[str, str] = {
 # 측정 제외 subtree — 기계 생성·설치 산출물을 손작업 diff 와 같은 대상으로 보지 않는다.
 # `templates/<타깃>/.project_manager/`는 그 대부분이 pm_update 가 내보낸 엔진 사본이고,
 # `.opencode/node_modules/`는 패키지 설치 트리다. 완료 기록의 사설 참조 검사가 이 제외로 손작업
-# 표면만 본다(엔진 사본의 같은 줄을 출하 타깃 수만큼 다시 지목하지 않는다). 제외는 **subtree 단위**라
+# 범위만 본다(엔진 사본의 같은 줄을 출하 타깃 수만큼 다시 지목하지 않는다). 제외는 **subtree 단위**라
 # templates 안의 manifest 밖 손편집 파일도 함께 빠지지만, 오차의 방향은 **측정 축소**다.
-# template subtree 자체의 정합은 drift-0 가드가 따로 지키고,
+# template subtree 자체의 일치는 drift-0 가드가 따로 지키고,
 # payload와 리뷰어 거울은 아래의 좁은 manifest 예외만 보존하고 나머지 측정 제외분을 함께 뺀다.
 #
 # 이 정규식은 `.project_manager/`(순수 엔진 사본)만 본다 — `templates/<타깃>/`의 나머지(어댑터층
-# `.claude/`·`.codex/`·`.opencode/`·flavor 루트 `*.md/*.sh/*.cmd`)는 `pm_update --all-targets` 가
+# `.claude/`·`.codex/`·`.opencode/`·하네스별 판 루트 `*.md/*.sh/*.cmd`)는 `pm_update --all-targets` 가
 # 마찬가지로 기계로 써내는데도 이 정규식 밖이라 손작업으로 계상됐다(689줄 실측으로 드러난 부수
 # 발견). 그 어댑터층 판정은 경로 패턴을 추가로 하드코딩하지 않고 `_adapter_layer_machine_mirror`가
 # 그 타깃 engine.manifest 의 `@source=` 방향에서 파생한다 — 이 정규식이 아래 함수보다 먼저
@@ -196,14 +196,14 @@ _MACHINE_MIRROR_RE = re.compile(
     r"^templates/[^/]+/\.project_manager/|^\.opencode/node_modules/"
 )
 
-# wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 **별개** 축이다. 게이트 상한만 있으면 비용이
-# 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 호출을 이 예산으로 묶는다. 기본 24 는
-# 게이트당 4라운드 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
-# `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf
+# 세션 호출 예산(세션 단위 총 라운드 예산) — 리뷰 집계 티켓별 상한과 **별개** 기준이다. 리뷰 집계 티켓 상한만 있으면 비용이
+# 티켓 수 × 라운드 상한으로 확장되므로, 전 리뷰 집계 티켓 합계 호출을 이 예산으로 묶는다. 기본 24 는
+# 리뷰 집계 티켓당 4라운드 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
+# `--rounds-report`로 마무리 상태를 점검하는 관측점을 만든다. local.conf
 # additional_reviewer.session_budget 으로 조정 가능.
 
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
-# 실행 전 거부라 리뷰어는 호출되지 않는다(과금 없음). wave 예산 소진도 같은 축(호출 전
+# 실행 전 거부라 리뷰어는 호출되지 않는다(과금 없음). 세션 호출 예산 소진도 같은 경우(호출 전
 # 예산 거부)이라 같은 rc 를 쓴다 — 호출부가 "예산 때문에 안 나갔다"를 한 코드로 판별한다.
 EXIT_ROUND_LIMIT_EXCEEDED = 4
 
@@ -238,14 +238,14 @@ def _empty_diff_guidance(paths: Sequence[str], *, root: Path) -> str:
         + "\n    예: --paths a.py b.py (자동 교정하지 않음 — 콤마가 파일명인 경우를 보존)."
     )
 
-# 미완 라운드 상한 초과 fail-loud 안내. 같은 게이트에서 판정 없이 끝난 호출이 상한을 채우면
+# 미완 라운드 상한 초과 fail-loud 안내. 같은 리뷰 집계 티켓에서 판정 없이 끝난 호출이 상한을 채우면
 # diff 추출·추가 리뷰어 호출 전에 이 안내로 차단한다.
 #
 # 이 상한의 성격은 **무한 루프 차단(anti-loop pause)**이다. 연장 승인(`--ack-rounds`)은 폐지됐다 —
 # "반례가 진짜니까 계속"을 사람이 승인하는 구조 자체가 비용 누수였다(실측 12라운드). 상한에
 # 닿으면 현재 티켓을 정지하고 사용자에게 보고한다.
 _ROUND_LIMIT_GUIDANCE = (
-    "오류: 추가 리뷰어 미완 라운드 상한 도달 — 리뷰 집계 티켓 {gate} · "
+    "오류: 추가 리뷰어 미완 라운드 상한 도달 — 리뷰 집계 티켓 {review_ticket} · "
     "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
     "  (미완 재시도 상한 {incomplete_limit}). 무한 라운드 차단이라 "
     "초과분은 기계가 멈춥니다 — 자의 우회 불가.\n"
@@ -256,23 +256,23 @@ _ROUND_LIMIT_GUIDANCE = (
     "폐지됐습니다.\n"
     "  · 미완 재시도 상한은 local.conf "
     "`additional_reviewer.incomplete_rounds_max` 로 조정합니다.\n"
-    "  (기록 파일: {ledger} · count={count})"
+    "  (기록 파일: {record_path} · count={count})"
 )
 
-# 수렴-형상 차단 안내 (라운드 상한 rc 를 그대로 쓴다 — 호출 전 예산 거부라 같은 축).
+# 마무리 조건 차단 안내 (라운드 상한 rc 를 그대로 쓴다 — 호출 전 예산 거부라 같은 경우).
 # 라운드 수는 **완료 산출 + 진행 중 예약**이다 — 상한 판정과 같은 수를 보여야 "상한에 닿았는데
-# 왜 막히나"를 문구가 스스로 답한다(동시 실행이 이미 나가 있는 형상).
+# 왜 막히나"를 문구가 스스로 답한다(동시 실행이 이미 나가 있는 경우).
 _CONVERGENCE_GUIDANCE = (
-    "오류: 리뷰 마무리 통과 조건에서 막힘 — 리뷰 집계 티켓 {gate} · {reason}\n"
+    "오류: 리뷰 마무리 통과 조건에서 막힘 — 리뷰 집계 티켓 {review_ticket} · {reason}\n"
     "  라운드 {rounds}(완료 {completed} · 진행 중 예약 {inflight}) / 상한 {limit} · "
     "must_fix 추이 [{series}]\n"
     "  · 라운드를 더 쓰지 않습니다. 현재 티켓을 정지하고 남은 지적을 사용자에게 보고하세요.\n"
-    "  · 라운드별 산출은 `--rounds-report --review-ticket {gate}` 로 확인하세요.\n"
+    "  · 라운드별 산출은 `--rounds-report --review-ticket {review_ticket}` 로 확인하세요.\n"
     "  · 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
-    "  (기록 파일: {ledger})"
+    "  (기록 파일: {record_path})"
 )
 
-# `--ack-rounds` 폐지 안내 — 플래그는 인자표에 남겨 두고(모르는 인자 오류 대신 처방을 낸다)
+# `--ack-rounds` 폐지 안내 — 플래그는 인자표에 남겨 두고(모르는 인자 오류 대신 해결 방법을 낸다)
 # 호출 자체를 거부한다. 연장 승인 경로가 남아 있으면 상한이 상한이 아니게 된다.
 _ACK_ROUNDS_REMOVED_GUIDANCE = (
     "오류: `--ack-rounds`(라운드 연장 승인)는 폐지됐습니다 — 이 실행은 아무것도 하지 않았습니다.\n"
@@ -281,36 +281,36 @@ _ACK_ROUNDS_REMOVED_GUIDANCE = (
     "  · 현재 마무리 상황은 `--rounds-report --review-ticket <T-NNNN>` 로 확인하세요."
 )
 
-# ── 게이트 회계 자동 유도 (`--ticket` → `--review-ticket`) ─────────────────────────────
-# `--ticket` 만 준 실행은 리뷰를 정상 호출·과금하면서 라운드 예약·기록·상한 회계를 통째로
-# 건너뛰었다(실측: 하루 8 라운드 넘게가 장부에 0건). 그 조용한 무기록은 반려 must-fix 가
-# 릴리즈 차단 표면(`board.py livegate record`)에 도달하지 못하게 만드는 구멍이라, 기본값을
+# ── 리뷰 집계 티켓 자동 유도 (`--ticket` → `--review-ticket`) ─────────────────────────────
+# `--ticket` 만 준 실행은 리뷰를 정상 호출·과금하면서 라운드 예약·기록·상한 집계를 통째로
+# 건너뛰었다(실측: 하루 8 라운드 넘게가 기록 파일에 0건). 그 조용한 무기록은 반려 must-fix 가
+# 릴리즈 차단 명령(`board.py live-test record`)에 도달하지 못하게 만드는 구멍이라, 기본값을
 # **기록**으로 뒤집는다 — `--ticket` 은 이미 이번 검토가 어느 티켓의 것인지 말하고 있으므로 그
-# 값을 게이트로 쓰면 회계를 붙이는 데 사람의 기억이 필요 없다([[mechanize-dont-instruct-llm]]:
-# "게이트를 같이 붙여라"는 규율 기억은 실측에서 실패했다). 회계 밖 자문 실행은 명시
+# 값을 리뷰 집계 티켓으로 쓰면 집계를 붙이는 데 사람의 기억이 필요 없다([[mechanize-dont-instruct-llm]]:
+# "리뷰 집계 티켓을 같이 붙여라"는 규율 기억은 실측에서 실패했다). 집계 밖 자문 실행은 명시
 # opt-out(`--no-review-ticket`)으로만 연다.
 #
 # 고지 **출력 자리**는 해소 결과를 말하는 자리다 — 유도 자체는 인자 파싱 직후에 하지만(뒤따르는
-# 게이트 검사·프롬프트·예약이 모두 그 값을 쓴다), 문구는 stderr **첫 줄 = config provenance** 계약을
+# 리뷰 집계 티켓 검사·프롬프트·예약이 모두 그 값을 쓴다), 문구는 stderr **첫 줄 = config provenance** 계약을
 # 깨지 않게 provenance 직후에 낸다. 빈 diff 로 아직 끝날 수 있는 예약 전 자리이므로,
-# 장부에 붙었다는 확정형이 아니라 실행 조건형으로만 말한다.
-_GATE_DERIVED_NOTICE = (
-    "리뷰 집계 티켓 자동 유도: --review-ticket {gate} (--ticket 값에서 유도 — 이 실행이 리뷰어를 부르면 라운드 집계가 "
-    "리뷰 집계 티켓 {gate} 에 붙습니다). "
+# 기록 파일에 붙었다는 확정형이 아니라 실행 조건형으로만 말한다.
+_REVIEW_TICKET_DERIVED_NOTICE = (
+    "리뷰 집계 티켓 자동 유도: --review-ticket {review_ticket} (--ticket 값에서 유도 — 이 실행이 리뷰어를 부르면 라운드 집계가 "
+    "리뷰 집계 티켓 {review_ticket} 에 붙습니다). "
     "집계 밖 자문 실행은 --no-review-ticket 으로 명시하세요."
 )
 # 미리보기는 예약도 기록도 하지 않는다 — 같은 문구를 쓰면 "이번 실행이 기록된다"는 오보가 된다.
-_GATE_DERIVED_DRY_RUN_NOTICE = (
-    "리뷰 집계 티켓 자동 유도: --review-ticket {gate} (--ticket 값에서 유도 — 미리보기라 이번 실행은 기록·집계하지 "
+_REVIEW_TICKET_DERIVED_DRY_RUN_NOTICE = (
+    "리뷰 집계 티켓 자동 유도: --review-ticket {review_ticket} (--ticket 값에서 유도 — 미리보기라 이번 실행은 기록·집계하지 "
     "않고, 실 호출 때 라운드 집계가 이 리뷰 집계 티켓에 붙습니다)."
 )
 
-# 회계 밖 실행의 loud 표기 — 침묵이 이 함정의 본체였으므로 명시 opt-out 실행은 자기
-# 상태를 스스로 말한다. 아무 선택도 없는 실 호출은 아래 `_GATE_ACCOUNTING_REQUIRED_GUIDANCE`로
+# 집계 밖 실행의 loud 표기 — 침묵이 이 함정의 본체였으므로 명시 opt-out 실행은 자기
+# 상태를 스스로 말한다. 아무 선택도 없는 실 호출은 아래 `_REVIEW_TICKET_ACCOUNTING_REQUIRED_GUIDANCE`로
 # 거부하므로, 이 조건형 경고는 `--no-review-ticket` 경로에서만 나온다.
 # 예약 자리(호출 확정 전)의 문구는 **조건형**이다: 이 뒤로 환경 준비·스폰이 남아 있어 "호출했다"고
 # 확정하면 스폰 전에 중단된 실행이 이미 찍힌 고지와 모순된다. 확정 표기는 실행이 끝난 뒤 판정
-# 블록(`print_summary`)의 게이트 줄이 낸다.
+# 블록(`print_summary`)의 리뷰 집계 티켓 줄이 낸다.
 _UNACCOUNTED_RUN_TAIL = (
     "리뷰어를 부르면 라운드 기록에 남지 않고 라운드·세션 호출 예산도 쓰지 않습니다 — 그 라운드에서 나온 "
     "반려 must-fix 는 릴리즈 차단(`board.py live-test record`)이 읽는 기록에 남지 않습니다.\n"
@@ -321,10 +321,10 @@ _UNACCOUNTED_OPT_OUT_NOTICE = (
     "경고: `--no-review-ticket` 명시 opt-out — 이 실행이 " + _UNACCOUNTED_RUN_TAIL
 )
 
-# 실 실행은 회계에 넣거나 명시적으로 빠져야 한다. 어느 쪽도 고르지 않은 실행을 경고만 하고
-# 진행하면 티켓 누락 한 번이 라운드 장부·livegate 누락으로 이어진다. dry-run·조회·처분은
+# 실 실행은 집계에 넣거나 명시적으로 빠져야 한다. 어느 쪽도 고르지 않은 실행을 경고만 하고
+# 진행하면 티켓 누락 한 번이 리뷰 라운드 기록·라이브 시험(`board.py live-test`) 누락으로 이어진다. dry-run·조회·처분은
 # 리뷰어를 부르지 않아 이 검사에 도달하지 않는다.
-_GATE_ACCOUNTING_REQUIRED_GUIDANCE = (
+_REVIEW_TICKET_ACCOUNTING_REQUIRED_GUIDANCE = (
     "오류: 실 호출에는 리뷰 집계 티켓 지정 또는 명시 opt-out 이 필요합니다 — "
     "이 실행은 호출하지 않았습니다.\n"
     "  · 라운드 집계에 넣으려면 `--ticket <T-NNNN>`(리뷰 집계 티켓 자동 유도) 또는 "
@@ -332,15 +332,15 @@ _GATE_ACCOUNTING_REQUIRED_GUIDANCE = (
     "  · 집계 밖 자문 실행이면 `--no-review-ticket` 을 명시하세요."
 )
 
-# 판정 블록의 게이트 줄 — 회계 밖 실행은 **끝난 뒤** 여기서 확정형으로 말한다. stderr 경고는 로그를
+# 판정 블록의 리뷰 집계 티켓 줄 — 집계 밖 실행은 **끝난 뒤** 여기서 확정형으로 말한다. stderr 경고는 로그를
 # 안 읽으면 사라지지만 PM 은 판정 블록을 반드시 읽는다(오염 진단·실패 사유와 같은 근거).
-_SUMMARY_UNACCOUNTED_GATE = "(없음 — 집계 밖·라운드 기록 안 함)"
+_SUMMARY_UNACCOUNTED_REVIEW_TICKET = "(없음 — 집계 밖·라운드 기록 안 함)"
 
 # `--review-ticket` 과 `--no-review-ticket` 동시 지정 안내 — 한 실행이 "기록한다"와 "기록하지 않는다"를 동시에
 # 뜻할 수 없다. 경고 후 한쪽을 골라 실행하면 그 선택이 조용한 자의 판정이 되므로 부작용 0
 # 지점에서 거부한다(`--ack-rounds` 폐지와 같은 자리·같은 규율).
-_GATE_OPT_OUT_CONFLICT_GUIDANCE = (
-    "오류: `--no-review-ticket` 과 `--review-ticket {gate}` 는 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
+_REVIEW_TICKET_OPT_OUT_CONFLICT_GUIDANCE = (
+    "오류: `--no-review-ticket` 과 `--review-ticket {review_ticket}` 는 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
     "  · `--review-ticket` 은 이 라운드를 기록하겠다는 지정이고, `--no-review-ticket` 은 기록하지 않겠다는 "
     "opt-out 입니다.\n"
@@ -348,71 +348,71 @@ _GATE_OPT_OUT_CONFLICT_GUIDANCE = (
 )
 
 
-# wave 예산 소진 fail-loud 안내. 게이트별 상한을 통과한 호출이라도 wave 합계가 예산을 채우면
-# 같은 자리(추가 리뷰어 호출 전)에서 같은 rc 로 막는다 — 게이트마다 상한을 새로 받는 구조에서는
+# 세션 호출 예산 소진 fail-loud 안내. 리뷰 집계 티켓별 상한을 통과한 호출이라도 세션 전체 합계가 예산을 채우면
+# 같은 자리(추가 리뷰어 호출 전)에서 같은 rc 로 막는다 — 리뷰 집계 티켓마다 상한을 새로 받는 구조에서는
 # 티켓 수만큼 라운드가 늘어나기 때문이다. 성격은 라운드 상한과 같은 anti-loop pause 다.
-_WAVE_BUDGET_GUIDANCE = (
+_SESSION_BUDGET_GUIDANCE = (
     "오류: 세션 호출 예산 소진 — `--reset-session-budget` 으로 재개(예산 리셋)\n"
-    "  리뷰 집계 티켓 {gate} · 세션 호출 예산 spent={spent} (예산 {budget} · 시작 {started})\n"
+    "  리뷰 집계 티켓 {review_ticket} · 세션 호출 예산 spent={spent} (예산 {budget} · 시작 {started})\n"
     "  · 리뷰 집계 티켓별 라운드 상한과 **별개**인 세션 단위 총 라운드 예산입니다 — 티켓 수 × 라운드 "
     "상한으로 라운드가 확장되는 것을 막습니다.\n"
     "  · 먼저 `--rounds-report` 로 라운드별 산출을 확인하세요.\n"
     "  · 같은 범위가 정상적으로 마무리되는 중이면 PM 이 자율로 `--reset-session-budget` 을 붙여 재개합니다 "
     "(spent 를 0 으로 리셋):\n"
-    "      python3 .project_manager/tools/additional_reviewer.py --review-ticket {gate} --reset-session-budget [기존 옵션]\n"
+    "      python3 .project_manager/tools/additional_reviewer.py --review-ticket {review_ticket} --reset-session-budget [기존 옵션]\n"
     "  · 마무리가 안 되고 있으면(같은 지적 반복·범위 발산) 사용자에게 보고하세요.\n"
     "  · 예산 조정은 local.conf `additional_reviewer.session_budget`.\n"
-    "  (기록 파일: {ledger})"
+    "  (기록 파일: {record_path})"
 )
 
 
-# ── 게이트 처분 선언(`--resolve-review`) 안내 ────────────────────────────────
-# 라운드 상한으로 종결된 게이트의 잔여 must-fix 를 **어떻게 소화했는지** 장부에 남기는 표면이다.
-# 선언 자체가 판정이 아니라 *기록*이고, 릴리즈 차단(`board.py livegate record`)은 그 기록 사실만
+# ── 리뷰 집계 티켓 처분 선언(`--resolve-review`) 안내 ────────────────────────────────
+# 라운드 상한으로 종결된 리뷰 집계 티켓의 남은 must-fix 를 **어떻게 소화했는지** 기록 파일에 남기는 명령이다.
+# 선언 자체가 판정이 아니라 *기록*이고, 릴리즈 차단(`board.py live-test record`)은 그 기록 사실만
 # 읽는다 — "사소하니 넘어간다"는 자의 판정이 들어갈 자리를 어느 쪽에도 만들지 않는다.
-_RESOLVE_GATE_MODE_GUIDANCE = (
-    "오류: `--resolve-review {gate}` 에는 `--pm-verified`가 필요합니다 — 이 실행은 아무것도 "
+_RESOLVE_REVIEW_MODE_GUIDANCE = (
+    "오류: `--resolve-review {review_ticket}` 에는 `--pm-verified`가 필요합니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
     "  · PM 판정 범위의 기계 확인 증거로만 해소합니다(재호출 없음 — accepted 남은 지적 "
     "0·남은 must-fix 건수만큼 전건 처분·필요 시 기계 확인 1건 이상).\n"
     "  · 후속 티켓·후속 리뷰 집계 티켓으로 남은 지적을 넘기는 처분은 지원하지 않습니다."
 )
 
-_RESOLVE_GATE_REQUIRED_GUIDANCE = (
+_RESOLVE_REVIEW_REQUIRED_GUIDANCE = (
     "오류: `{flag}` 는 `--resolve-review <T-NNNN>` 와 함께 써야 합니다 — 처분할 리뷰 집계 티켓이 없으면 "
     "선언할 사실이 없습니다.\n"
     "      python3 .project_manager/tools/additional_reviewer.py --resolve-review <T-NNNN> {flag}"
     "{value}"
 )
 
-_RESOLVE_GATE_PM_VERIFIED_GUIDANCE = (
-    "오류: 리뷰 집계 티켓 {gate} 에는 pm-verified 처분을 선언할 수 없습니다 — {detail}\n"
+_RESOLVE_REVIEW_PM_VERIFIED_GUIDANCE = (
+    "오류: 리뷰 집계 티켓 {review_ticket} 에는 pm-verified 처분을 선언할 수 없습니다 — {detail}\n"
     "  · `--pm-verified` 는 PM 판정 범위(수락한 리뷰 지적)가 그 채널 accepted 남은 지적 없이, 그 채널 남은 "
     "must-fix 건수만큼 전건 처분되고, accepted 가 있었을 때만 기계 확인이 1건 이상 기록됐을 때만 "
     "선언됩니다.\n"
-    "  · 판정 범위 상태는 `python3 .project_manager/tools/pm_delegate.py review accepted --ticket {gate}` "
+    "  · 판정 범위 상태는 `python3 .project_manager/tools/pm_delegate.py review accepted --ticket {review_ticket}` "
     "로 확인하세요."
 )
 
-_RESOLVE_GATE_UNKNOWN_GUIDANCE = (
-    "오류: 리뷰 집계 티켓 {gate} 는 라운드 기록이 없습니다 — 처분할 남은 지적이 없습니다.\n"
+_RESOLVE_REVIEW_UNKNOWN_GUIDANCE = (
+    "오류: 리뷰 집계 티켓 {review_ticket} 는 라운드 기록이 없습니다 — 처분할 남은 지적이 없습니다.\n"
     "  · 처분 선언의 입력은 라운드 기록의 사실뿐입니다(그 리뷰 집계 티켓으로 실제 돈 라운드).\n"
-    "  · 리뷰 집계 티켓 이름을 `--rounds-report` 로 확인하세요 (기록 파일: {ledger})."
+    "  · 리뷰 집계 티켓 이름을 `--rounds-report` 로 확인하세요 (기록 파일: {record_path})."
 )
 
-_RESOLVE_GATE_DRY_RUN_GUIDANCE = (
-    "오류: `--resolve-review {gate}` 는 `--dry-run` 과 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
+_RESOLVE_REVIEW_DRY_RUN_GUIDANCE = (
+    "오류: `--resolve-review {review_ticket}` 는 `--dry-run` 과 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
     "  · 처분 선언은 기록에 사실을 남기는 것이 목적이라 미리보기가 성립하지 않습니다 "
     "(호출은 어차피 없습니다).\n"
-    "  · 지금 상태만 보려면 `--rounds-report --review-ticket {gate}` 를 쓰세요."
+    "  · 지금 상태만 보려면 `--rounds-report --review-ticket {review_ticket}` 를 쓰세요."
 )
 
-_RESOLVE_GATE_NO_RESIDUAL_GUIDANCE = (
-    "오류: 리뷰 집계 티켓 {gate} 에는 처분할 남은 must-fix 가 없습니다 (최종 라운드 must_fix={residual}).\n"
+_RESOLVE_REVIEW_NO_RESIDUAL_GUIDANCE = (
+    "오류: 리뷰 집계 티켓 {review_ticket} 에는 처분할 남은 must-fix 가 없습니다 (최종 라운드 must_fix={residual}).\n"
     "  · 처분 선언은 **반려로 끝난** 리뷰 집계 티켓의 남은 지적을 소화하는 기록입니다 — 남은 지적이 없으면 라이브 시험 "
     "통과 조건도 이 리뷰 집계 티켓을 보지 않습니다(무대상).\n"
-    "  · 현재 상태는 `--rounds-report --review-ticket {gate}` 로 확인하세요."
+    "  · 현재 상태는 `--rounds-report --review-ticket {review_ticket}` 로 확인하세요."
 )
 
 
@@ -425,23 +425,23 @@ def _target_rev_fingerprint(diff: str) -> str:
     return "sha256:" + hashlib.sha256(diff.encode("utf-8")).hexdigest()
 
 
-# ── wave 예산 절 (전 게이트 합계) ───────────────────────────────────────────
+# ── 세션 호출 예산 절 (전 리뷰 집계 티켓 합계) ───────────────────────────────────────────
 
 SESSION_BUDGET_SECTION_KEY = "wave"
 
-# 장부 최상위에서 wave 절이 차지하는 **예약 키** — 게이트 이름으로 쓸 수 없다. 같은 키를 게이트가
-# 쓰면 `_gate_entry` 와 `_wave_state` 가 한 항목을 서로 덮어써 게이트 count 는 저장되지 않고 wave
-# 예산은 매 실행 0 으로 되살아난다(두 상한이 조용히 무력화). 게이트 이름은 형식 강제 대상이 아니라
-# 자유 문자열이 실사용이므로(장부 실측: `wave4-b1`·`wave4-b3r2`) `T-NNNN` 강제 대신 **예약 키만**
+# 기록 파일 최상위에서 세션 호출 예산 절이 차지하는 **예약 키** — 리뷰 집계 티켓 이름으로 쓸 수 없다. 같은 키를 리뷰 집계 티켓이
+# 쓰면 `_review_ticket_entry` 와 `_session_budget_state` 가 한 항목을 서로 덮어써 리뷰 집계 티켓 count 는 저장되지 않고 세션 호출
+# 예산은 매 실행 0 으로 되살아난다(두 상한이 조용히 무력화). 리뷰 집계 티켓 이름은 형식 강제 대상이 아니라
+# 자유 문자열이 실사용이므로(기록 파일 실측: `T-NNNN` 이 아닌 묶음 이름) `T-NNNN` 강제 대신 **예약 키만**
 # 거부한다 — 기존 이름은 하나도 깨지지 않고 충돌 가능성만 사라진다.
-_RESERVED_LEDGER_KEYS: frozenset[str] = frozenset({SESSION_BUDGET_SECTION_KEY})
+_RESERVED_RECORD_KEYS: frozenset[str] = frozenset({SESSION_BUDGET_SECTION_KEY})
 
-# 게이트 항목임을 알아보는 필드 — 예약 키 자리에 이런 항목이 들어 있으면 예약 키 도입 *이전에*
-# 그 이름을 게이트로 쓴 장부다(교체 사실을 조용히 넘기지 않고 알린다).
-_GATE_ENTRY_MARKERS: tuple[str, ...] = ("count", "records", "rounds")
+# 리뷰 집계 티켓 항목임을 알아보는 필드 — 예약 키 자리에 이런 항목이 들어 있으면 예약 키 도입 *이전에*
+# 그 이름을 리뷰 집계 티켓으로 쓴 기록 파일이다(교체 사실을 조용히 넘기지 않고 알린다).
+_REVIEW_TICKET_ENTRY_MARKERS: tuple[str, ...] = ("count", "records", "rounds")
 
-_RESERVED_GATE_GUIDANCE = (
-    "오류: `{flag} {gate}` 는 라운드 기록의 예약 키라 리뷰 집계 티켓 이름으로 쓸 수 없습니다 "
+_RESERVED_REVIEW_TICKET_GUIDANCE = (
+    "오류: `{flag} {review_ticket}` 는 라운드 기록의 예약 키라 리뷰 집계 티켓 이름으로 쓸 수 없습니다 "
     "(예약 키: {keys}).\n"
     "  · 그 키는 기록 최상위에서 세션 호출 예산 절이 씁니다 — 같은 이름의 리뷰 집계 티켓은 티켓별 집계와 "
     "세션 호출 예산이 서로 덮어써 라운드 상한·예산이 둘 다 조용히 무력화됩니다.\n"
@@ -449,31 +449,31 @@ _RESERVED_GATE_GUIDANCE = (
 )
 
 
-def _reserved_gate_error(gate: str | None, *, flag: str = "--review-ticket") -> str | None:
-    """게이트 이름이 장부 예약 키면 차단 안내를 돌려준다 (아니면 None).
+def _reserved_review_ticket_error(review_ticket: str | None, *, flag: str = "--review-ticket") -> str | None:
+    """리뷰 집계 티켓 이름이 기록 파일 예약 키면 차단 안내를 돌려준다 (아니면 None).
 
-    판정 입력은 이름 하나뿐이라 호출·장부 접근 **전에** 부를 수 있다 — 거부된 실행은 호출도
-    장부 변경도 남기지 않는다. 게이트 이름을 받는 표면이 여럿이라(`--review-ticket`·`--resolve-review`)
+    판정 입력은 이름 하나뿐이라 호출·기록 파일 접근 **전에** 부를 수 있다 — 거부된 실행은 호출도
+    기록 파일 변경도 남기지 않는다. 리뷰 집계 티켓 이름을 받는 플래그가 여럿이라(`--review-ticket`·`--resolve-review`)
     어느 플래그가 걸렸는지는 인자로 받는다 — 판정 규칙은 한 곳이다."""
-    if gate is None or gate not in _RESERVED_LEDGER_KEYS:
+    if review_ticket is None or review_ticket not in _RESERVED_RECORD_KEYS:
         return None
-    return _RESERVED_GATE_GUIDANCE.format(
-        flag=flag, gate=gate, keys=", ".join(sorted(_RESERVED_LEDGER_KEYS)),
+    return _RESERVED_REVIEW_TICKET_GUIDANCE.format(
+        flag=flag, review_ticket=review_ticket, keys=", ".join(sorted(_RESERVED_RECORD_KEYS)),
     )
 
 
-def _new_wave_id() -> str:
-    """wave 세대 식별자 — 리셋마다 새로 발급한다 (환불이 남의 세대를 깎지 않게)."""
+def _new_session_budget_id() -> str:
+    """세션 호출 예산 버전 식별자 — 리셋마다 새로 발급한다 (환불이 다른 버전을 깎지 않게)."""
     return uuid.uuid4().hex
 
 
-def _wave_frame_corruption(raw: object) -> str | None:
-    """wave 절 **자체**가 못 쓸 형상인지 (절 부재·정상이면 None).
+def _session_budget_frame_corruption(raw: object) -> str | None:
+    """세션 호출 예산 절 **자체**가 못 쓸 상태인지 (절 부재·정상이면 None).
 
-    비-dict 값이나 예약 키를 차지한 옛 게이트 항목은 id/started 를 포함해 아무 좌표도 신뢰할 수
+    비-dict 값이나 예약 키를 차지한 옛 리뷰 집계 티켓 항목은 id/started 를 포함해 아무 좌표도 신뢰할 수
     없는 경우다 — 소비량은 라운드 이력에서 다시 센다."""
     if raw is None or (isinstance(raw, dict) and not any(
-        marker in raw for marker in _GATE_ENTRY_MARKERS
+        marker in raw for marker in _REVIEW_TICKET_ENTRY_MARKERS
     )):
         return None
     if not isinstance(raw, dict):
@@ -481,8 +481,8 @@ def _wave_frame_corruption(raw: object) -> str | None:
     return f"예약 키 `{SESSION_BUDGET_SECTION_KEY}` 자리의 옛 리뷰 집계 티켓 항목"
 
 
-def _wave_spent_corruption(spent: object) -> str | None:
-    """`spent` 값이 신뢰할 수 없는지 — 비정수와 **음수**가 같은 축이다.
+def _session_budget_spent_corruption(spent: object) -> str | None:
+    """`spent` 값이 신뢰할 수 없는지 — 비정수와 **음수**가 같은 경우다.
 
     음수를 정상 정수로 받아 `max(0, …)` 로 접으면 `spent: -1` 한 줄 편집이 승인 없이 hard 예산을
     되돌린다(무통보 재개방). 소비량은 셀 수 없는 값이지 0 이 아니므로 손상으로 판정한다."""
@@ -495,27 +495,27 @@ def _wave_spent_corruption(spent: object) -> str | None:
     return None
 
 
-def _wave_corruption_note(raw: object) -> str | None:
-    """wave 절 손상 진단 한 곳 — 프레임 축과 spent 축을 합산한다 (정상·부재면 None).
+def _session_budget_corruption_note(raw: object) -> str | None:
+    """세션 호출 예산 절 손상 진단 한 곳 — 프레임 진단과 spent 진단을 합산한다 (정상·부재면 None).
 
-    `_wave_state` 의 복구 판정과 호출부의 "복구값을 저장할까" 판정이 **같은 술어**를 봐야 한다 —
-    갈리면 고친 값을 안 쓰거나(경고만 반복) 멀쩡한 장부를 거부 경로에서 덮어쓴다."""
-    frame = _wave_frame_corruption(raw)
+    `_session_budget_state` 의 복구 판정과 호출부의 "복구값을 저장할까" 판정이 **같은 술어**를 봐야 한다 —
+    갈리면 고친 값을 안 쓰거나(경고만 반복) 멀쩡한 기록 파일을 거부 경로에서 덮어쓴다."""
+    frame = _session_budget_frame_corruption(raw)
     if frame is not None:
         return frame
-    return _wave_spent_corruption(raw.get("spent") if isinstance(raw, dict) else None)
+    return _session_budget_spent_corruption(raw.get("spent") if isinstance(raw, dict) else None)
 
 
-def _recorded_round_outcomes(ledger: dict, *, since: str | None = None) -> int:
-    """장부에 남은 라운드 산출 수 — `since`(UTC ISO 시각) 이후로 좁힐 수 있으면 좁힌다.
+def _recorded_round_outcomes(round_records: dict, *, since: str | None = None) -> int:
+    """기록 파일에 남은 라운드 산출 수 — `since`(UTC ISO 시각) 이후로 좁힐 수 있으면 좁힌다.
 
     손상된 `spent` 를 0 으로 접지 않기 위한 **데이터 근거 재계산**이다. 산출은 실제 호출된 라운드
     에만 남으므로(스폰 전 실패는 환불·미기록) 소비량의 하한이고, 범위를 좁힐 근거가 없으면
-    (wave 시작 시각까지 손상) 전체를 세어 보수적으로 남는다 — 손상이 예산을 여는 방향으로는
+    (세션 호출 예산 시작 시각까지 손상) 전체를 세어 보수적으로 남는다 — 손상이 예산을 여는 방향으로는
     작동하지 않게 한다. 같은 형식의 UTC ISO 문자열은 사전순 비교가 곧 시간순이다."""
     total = 0
-    for name in _gate_names(ledger):
-        entry = ledger.get(name)
+    for name in _review_ticket_names(round_records):
+        entry = round_records.get(name)
         rounds = entry.get("rounds") if isinstance(entry, dict) else None
         if not isinstance(rounds, list):
             continue
@@ -528,24 +528,24 @@ def _recorded_round_outcomes(ledger: dict, *, since: str | None = None) -> int:
     return total
 
 
-def _gate_names(ledger: dict) -> list[str]:
-    """장부의 게이트 키만 정렬해 돌려준다 — 예약 키(`wave`)는 게이트가 아니다."""
-    return sorted(key for key in ledger if key != SESSION_BUDGET_SECTION_KEY)
+def _review_ticket_names(round_records: dict) -> list[str]:
+    """기록 파일의 리뷰 집계 티켓 키만 정렬해 돌려준다 — 예약 키(`SESSION_BUDGET_SECTION_KEY`)는 리뷰 집계 티켓이 아니다."""
+    return sorted(key for key in round_records if key != SESSION_BUDGET_SECTION_KEY)
 
 
-def _reset_wave(ledger: dict) -> dict:
+def _reset_session_budget(round_records: dict) -> dict:
     """`--reset-session-budget` — ack 시점에 예산을 리셋한다(다음 호출이 새 시작 시각을 찍는다).
 
-    새 세대 id 를 발급한다 — 리셋 전에 예약한 실행의 환불이 이 wave 의 예산을 깎지 못하게."""
-    ledger[SESSION_BUDGET_SECTION_KEY] = {"id": _new_wave_id(), "started": None, "spent": 0}
-    return ledger[SESSION_BUDGET_SECTION_KEY]
+    새 버전 id 를 발급한다 — 리셋 전에 예약한 실행의 환불이 이 버전의 예산을 깎지 못하게."""
+    round_records[SESSION_BUDGET_SECTION_KEY] = {"id": _new_session_budget_id(), "started": None, "spent": 0}
+    return round_records[SESSION_BUDGET_SECTION_KEY]
 
 
 def _round_has_verdict(result: dict) -> bool:
     """리뷰어 결과에 통과 또는 must-fix/반려 판정이 실제로 있었는지 판별한다.
 
-    오염 진단이 붙은 출력은 판정으로 세지 않는다 — 판정 표면(all_pass·any_must_fix)에서 무효화한
-    것을 라운드 장부에서만 판정으로 세면 두 표면이 갈린다."""
+    오염 진단이 붙은 출력은 판정으로 세지 않는다 — 판정 결과(all_pass·any_must_fix)에서 무효화한
+    것을 리뷰 라운드 기록에서만 판정으로 세면 두 결과가 갈린다."""
     if not result.get("ok") or result.get("contamination"):
         return False
     verdict = result.get("verdict")
@@ -555,26 +555,26 @@ def _round_has_verdict(result: dict) -> bool:
 
 
 # ── 라운드별 산출 기록 ──────────────────────────────────────────────────────
-# 라운드 count 만으로는 "그 라운드가 실결함을 냈는가"를 기계로 확인할 수 없어, 게이트 심도 대비
+# 라운드 count 만으로는 "그 라운드가 실결함을 냈는가"를 기계로 확인할 수 없어, 리뷰 집계 티켓 심도 대비
 # 비용 적정성 판단이 PM 자기보고에 의존했다. 산출은 **새 파서 없이** 기존 판정 결과에서만 파생한다
 # (rc 판정 + 이미 있는 must-fix 파서). 기록은 무조건이고, 셀 근거가 없으면 null 로 남긴다 —
-# 기록 실패로 리뷰를 막지 않는다(hard 거부는 예산 축 하나뿐).
+# 기록 실패로 리뷰를 막지 않는다(hard 거부는 예산 기준 하나뿐).
 
 
 def _round_must_fix_items(result: dict) -> list[str] | None:
     """이번 라운드가 지적한 must-fix 항목 **텍스트** (셀 근거가 없으면 None · "없음" 표기는 []).
 
-    판정이 무효한 라운드(실패·타임아웃·오염 진단)는 세지 않는다 — 판정 표면에서 무효화한 출력을
-    산출 장부에서만 결함으로 세면 두 표면이 갈린다(`_round_has_verdict` 와 같은 규칙). 세는 대상은
+    판정이 무효한 라운드(실패·타임아웃·오염 진단)는 세지 않는다 — 판정 결과에서 무효화한 출력을
+    산출 기록에서만 결함으로 세면 두 결과가 갈린다(`_round_has_verdict` 와 같은 규칙). 세는 대상은
     **회신 채널**(`answer`)뿐이다: 진행 로그에는 프롬프트와 diff 원문이 그대로 실려 있어 그것까지
     보면 리뷰 대상 코드의 문구가 결함 수로 둔갑한다.
 
     **섹션 부재와 "없음" 표기는 다르다.** 형식을 지킨 응답의 `must-fix: 없음` 은 리뷰어가 결함이
     없다고 *말한* 것이라 []이고, must-fix 섹션이 아예 없는 응답은 아무 말도 없던 것이라 None 이다
-    (항목 근거 없이 반려만 있는 응답을 '결함 0건 반려'로 박제하면 비용 판단이 거짓이 된다).
+    (항목 근거 없이 반려만 있는 응답을 '결함 0건 반려'로 기록하면 비용 판단이 거짓이 된다).
     섹션 인식은 판정 파서와 **같은 정규식**(`_MUST_FIX_SECTION_RE`)을 쓰고, 항목 추출은 판정
     파서와 **같은 함수**(`_extract_must_fix_items`)를 쓴다 — 개수와 텍스트가 다른 규칙으로 갈리면
-    장부의 건수와 근거가 어긋난다."""
+    기록 파일의 건수와 근거가 어긋난다."""
     if not _round_has_verdict(result):
         return None
     answer = result.get("answer")
@@ -590,7 +590,7 @@ def _must_fix_count(result: dict) -> int | None:
     """이번 라운드가 지적한 must-fix 항목 수 (셀 근거가 없으면 None).
 
     셈의 입력은 항목 텍스트 추출(`_round_must_fix_items`)과 **같은 한 함수**다 — 건수와 텍스트가
-    각자 파싱하면 장부의 `must_fix` 와 기록 근거가 서로 다른 라운드를 말하게 된다."""
+    각자 파싱하면 기록 파일의 `must_fix` 와 기록 근거가 서로 다른 라운드를 말하게 된다."""
     items = _round_must_fix_items(result)
     return None if items is None else len(items)
 
@@ -600,7 +600,7 @@ def _format_must_fix_series(series: Sequence[int | None]) -> str:
     return " → ".join("미상" if value is None else str(value) for value in series) or "없음"
 
 
-# 승인 고지 — 같은 승인이라도 **재개된 실행**과 **남은 축이 막아 거부된 실행**의 문구가 달라야
+# 승인 고지 — 같은 승인이라도 **재개된 실행**과 **남은 기준이 막아 거부된 실행**의 문구가 달라야
 # 한다. rc 4 로 끝나는 실행이 "재개"를 말하면 stderr 가 종료 코드와 어긋난 loud 오보가 된다
 # (승인 자체는 저장되므로 다음 실행이 이어받는다).
 _APPROVAL_RESUMED_VERB = "재개"
@@ -608,20 +608,20 @@ _APPROVAL_REFUSED_VERB = "기록(이번 실행은 남은 기준이 막아 거부
 
 
 def _approval_notes(
-    *, wave_reset: bool, wave_budget: int, resumed: bool,
+    *, session_budget_reset: bool, session_budget: int, resumed: bool,
 ) -> list[str]:
     """이번 실행이 적용한 승인의 stderr 고지 문구 (적용분이 없으면 빈 목록).
 
-    승인 축은 wave 예산 하나뿐이다 — 라운드 연장 승인(`--ack-rounds`)은 폐지됐다."""
+    승인 대상은 세션 호출 예산 하나뿐이다 — 라운드 연장 승인(`--ack-rounds`)은 폐지됐다."""
     verb = _APPROVAL_RESUMED_VERB if resumed else _APPROVAL_REFUSED_VERB
     notes: list[str] = []
-    if wave_reset:
-        notes.append(f"세션 호출 예산 승인 {verb}: spent 리셋 (예산 {wave_budget}).")
+    if session_budget_reset:
+        notes.append(f"세션 호출 예산 승인 {verb}: spent 리셋 (예산 {session_budget}).")
     return notes
 
 
-# ── 예산 게이트: 확인→예약 (호출보다 **앞**) ────────────────────────────────
-# 두 예산(게이트 라운드 상한·wave)의 확인과 예약은 raw 선점·스폰보다 먼저다. 이미
+# ── 예산 검사: 확인→예약 (호출보다 **앞**) ────────────────────────────────
+# 두 예산(리뷰 집계 티켓 라운드 상한·세션 호출 예산)의 확인과 예약은 raw 자리 차지·스폰보다 먼저다. 이미
 # 상한에 닿은 호출이 raw 자리와 산출 디렉터리를 만들었다 지우면 "차단된 호출은 아무것도 하지
 # 않는다"가 거짓이 된다 — 정리가 끝까지 성공한다는 보장도 없어(정리 실패는 loud 경고로 남는다)
 # 호출도 못 할 실행이 산출 자리를 남길 수 있다.
@@ -637,33 +637,33 @@ class RoundBudget(NamedTuple):
     """이번 실행의 예산 판정 결과 — 거부 rc 또는 예약 identity.
 
     `refused_rc` 가 채워진 결과는 **그 자리에서 끝나는 실행**이다(raw·스폰·과금 없음).
-    통과한 실행 중 `--review-ticket` 지정분만 예약 좌표(gate·round_id·sequence·wave_id)를 갖는다 —
-    `--review-ticket` 없는 실행은 종전대로 장부 밖이라 세 값이 비어 있는 통과 결과다.
+    통과한 실행 중 `--review-ticket` 지정분만 예약 좌표(review_ticket·round_id·sequence·session_budget_id)를 갖는다 —
+    `--review-ticket` 없는 실행은 종전대로 기록 밖이라 세 값이 비어 있는 통과 결과다.
 
     `sequence` 는 **예약 시점** 순번이다: 마감 때 레코드를 되찾아 읽으면 그 사이 집계 창이
-    비워진 실행만 순번을 잃는다. `wave_id` 는 예약 시점 wave 세대라
-    환불이 그 세대에만 유효하다(리셋된 새 wave 의 예산을 옛 실패가 깎지 못한다).
+    비워진 실행만 순번을 잃는다. `session_budget_id` 는 예약 시점 세션 호출 예산 버전이라
+    환불이 그 버전에만 유효하다(리셋된 새 버전의 예산을 옛 실패가 깎지 못한다).
 
     """
 
     refused_rc: int | None = None
-    gate: str | None = None
+    review_ticket: str | None = None
     round_id: str | None = None
     sequence: int | None = None
     started_at: str | None = None
     target_rev: str | None = None
-    wave_id: str | None = None
+    session_budget_id: str | None = None
 
     @property
     def reserved(self) -> bool:
         """되돌리거나 마감할 예약이 실제로 있는지."""
-        return self.gate is not None and self.round_id is not None
+        return self.review_ticket is not None and self.round_id is not None
 
 
-class GateDerivation(NamedTuple):
-    """게이트 유도 결과 — 거부 안내 / 유도 고지. **출력은 호출부가** 제 자리에서 한다.
+class ReviewTicketDerivation(NamedTuple):
+    """리뷰 집계 티켓 유도 결과 — 거부 안내 / 유도 고지. **출력은 호출부가** 제 자리에서 한다.
 
-    고지를 여기서 찍지 않는 이유는 자리 때문이다: 유도는 인자 파싱 직후여야 하고(뒤따르는 게이트
+    고지를 여기서 찍지 않는 이유는 자리 때문이다: 유도는 인자 파싱 직후여야 하고(뒤따르는 리뷰 집계 티켓
     검사·프롬프트·예약이 그 값을 쓴다) 고지는 stderr 첫 줄 provenance 뒤여야 한다."""
 
     refusal: str | None = None
@@ -671,7 +671,7 @@ class GateDerivation(NamedTuple):
 
 
 def _first_output_line(result: dict) -> str:
-    """실패 사유 1줄(없으면 빈 문자열) — 판정 블록과 환불 경고가 같은 문장을 쓰게 하는 공용 seam."""
+    """실패 사유 1줄(없으면 빈 문자열) — 판정 블록과 환불 경고가 같은 문장을 쓰게 하는 공용 함수."""
     head = str(result.get("output") or "").strip().splitlines()
     return head[0][:200] if head else ""
 
