@@ -377,7 +377,7 @@ def test_mine_includes_numeric_only_prefix_area_open(board, capsys):
     area_owner None → alice --mine 에서 누락(이 단언이 수정 전 fail).
 
     (T-0164 sole-area 대체 후 정정): 이 레지스트리는 *단일 area* 라 미리 넣은 no-prefix 티켓은
-    sole-area 대체로 그 area 에 들어간다 — no-prefix 제외 검증은 multi-area 레지스트리에서만
+    sole-area 대체 경로로 그 area 에 들어간다 — no-prefix 제외 검증은 multi-area 레지스트리에서만
     유효하므로 `test_ticket_area_owner_legacy_id_multi_area_is_none` 으로 분리했다. 여기선 순수
     숫자 *prefix* 해소만 단언한다(prefix 티켓이 sole-area 대체 미경유로 정확히 잡힘)."""
     areas = (
@@ -622,7 +622,7 @@ def test_area_owner_in_use_all_empty(board):
 def test_mine_solo_user_known_but_no_registry_not_empty(monkeypatch, board, capsys):
     """**핵심 회귀 가드**: git email 있어 my_user non-None 이지만 areas.md 부재(**solo**).
 
-    흔한 솔로 케이스 — `git config user.email` 대체로 my_user 가 해소되지만 area_owner 가
+    흔한 솔로 케이스 — `git config user.email` 대체 경로로 my_user 가 해소되지만 area_owner 가
     보드에 운영되지 않는다(_area_owner_in_use False). (a) 가 전체 open 으로 degrade 해야 한다
     — bootstrap 기본뷰 `list --mine` 보드가 비면 안 된다(빈 보드 금지·plain list 처럼).
 
@@ -683,7 +683,7 @@ def test_mine_solo_no_prefix_open_included_when_migrated(monkeypatch, board, cap
     PM 이 실 데이터로 잡은 버그: migration 이 area_owner 를 채워 _area_owner_in_use True 가
     되면 (a) 가 area_owner==me 로 좁혀지는데, no-prefix 티켓은 _ticket_area_owner None 이라
     제외됐고 전체-open 대체도 안 타 솔로 보드의 모든 open 티켓이 --mine 에서 사라졌다(claim 만
-    보임). sole-area 대체로 no-prefix 티켓이 단일 area_owner==me 로 해소돼 (a)에 든다.
+    보임). sole-area 대체 경로로 no-prefix 티켓이 단일 area_owner==me 로 해소돼 (a)에 든다.
     이 단언이 수정 전 fail(=빈 (a))."""
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "sumin")  # type: ignore[assignment]
     _write_conf(board, session="project_manager_1")
@@ -691,7 +691,7 @@ def test_mine_solo_no_prefix_open_included_when_migrated(monkeypatch, board, cap
     _seed(board, "T-0162", "open")  # no-prefix open
     _seed(board, "T-0163", "open")  # no-prefix open
     ids = _list_ids(board, capsys, mine=True)
-    # area_owner_in_use True(migrated) 인데도 sole-area 대체로 no-prefix open 이 (a)에 든다.
+    # area_owner_in_use True(migrated) 인데도 sole-area 대체 경로로 no-prefix open 이 (a)에 든다.
     assert set(ids) == {"T-0162", "T-0163"}
 
 

@@ -777,7 +777,7 @@ def test_t0930_promote_binding_legacy_local_operations(board, tmp_path, monkeypa
 
 
 def _mark_records_closing(board, cluster: str) -> None:
-    """[[T-0959]] 연결된 완료는 종결 파이프라인이 묶음 기록을 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
+    """[[T-0959]] 묶음에 연결된 티켓의 완료는 종결 파이프라인이 묶음 기록을 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
     records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), cluster)

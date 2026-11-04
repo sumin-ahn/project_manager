@@ -189,7 +189,7 @@ def _ticket_is_mine(home, status: str, fm: dict, my_user: str | None,
         미해소(귀속 불가)는 제외 — 남의 user-claim 을 slot 번호로 끌어오는 누출 0.
       - **legacy 슬롯-only**(`cb_user is None`·user 토큰 없음): **진짜 단일 사용자(distinct user ≤1·
         `not multi_user`)에서만** `_slot_matches`(내 슬롯)로 포함한다. 조건이 `my_user is None` 이
-        아니라 `not multi_user` 인 건 `user_name()` 이 git email 대체로 단일 사용자도 my_user 를
+        아니라 `not multi_user` 인 건 `user_name()` 이 git email 로 대체해 단일 사용자도 my_user 를
         해소할 수 있어(흔함) — my_user proxy 면 그 보드의 자기 슬롯 legacy claim 을 잘못 숨긴다.
         multi_user 면 legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
     (a) 내 소유 open — status==open 한정. `owner = _ticket_owner(fm, area_owner_in_use)`
@@ -213,7 +213,7 @@ def _ticket_is_mine(home, status: str, fm: dict, my_user: str | None,
         elif not multi_user and ticket_rules._slot_matches(cb, my_slot):
             # legacy 슬롯-only claim(user 토큰 없음) — **진짜 단일 사용자(distinct user ≤1·not multi_user)**
             # 에서만 slot 매칭으로 포함. 조건이 `my_user is None` 이 아니라 `not multi_user` 인 건
-            # `user_name()` 이 git email 대체로 단일 사용자도 my_user 를 해소할 수 있어(흔함)
+            # `user_name()` 이 git email 로 대체해 단일 사용자도 my_user 를 해소할 수 있어(흔함)
             # my_user proxy 면 그 보드의 자기 슬롯 legacy claim 을 잘못 숨기기 때문이다. multi_user 면
             # legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
             return True

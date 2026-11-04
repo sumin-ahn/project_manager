@@ -1072,7 +1072,7 @@ def test_areas_set_cell_fills_empty_column(board):
 
 
 def test_areas_set_cell_clearing_restores_default_fallback(board):
-    """빈 값으로 되돌리면 `_repo_protected` 가 DEFAULT_PROTECTED 로 대체으로 복귀한다."""
+    """빈 값으로 되돌리면 `_repo_protected` 가 다시 DEFAULT_PROTECTED 로 대체한다."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     areas_registry.areas_set_cell(pm_paths.home_at(board.REPO), "service-a", "protected", "")
     assert areas_store._repo_protected(pm_paths.home_at(board.REPO), "service-a") == list(areas_rules.DEFAULT_PROTECTED)

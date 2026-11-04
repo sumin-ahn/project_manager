@@ -285,7 +285,7 @@ def cmd_complete(home, args: argparse.Namespace) -> int:
         binding = getattr(args, "cluster_close", None)
         binding_problem = cluster_binding.cluster_complete_binding_problem(home, args.id, fm, binding)
         if binding_problem is None and binding is not None:
-            # 연결된 완료는 종결 파이프라인이 연 묶음 기록(closing)에서만 받는다 — 파이프라인 밖의 직접
+            # 묶음에 연결된 티켓의 완료는 종결 파이프라인이 연 묶음 기록(closing)에서만 받는다 — 파이프라인 밖의 직접
             # 호출은 티켓만 done 으로 옮기고 묶음 기록·머지를 남긴다(복구 전용 반쪽 상태).
             records = cluster_store.load_cluster(home, binding)
             if records is not None and str(records.get("status") or "").strip() != "closing":
@@ -797,7 +797,7 @@ def cmd_promote(home, args: argparse.Namespace) -> int:
     거부(rc=1)하고 남은 이슈를 안내한다(파일은 drafts_dir() 에 그대로 — 재수정 후 재시도).
     형식(placeholder/thin/설계 절)에 더해 본문이 **주장하는 사실**도 이 자리에서 판정한다
     (`content_facts=True` — repo-relative `파일:줄` 인용의 부재·범위 초과와 `design:
-    required|done` 티켓의 architect 점검 라운드를 돌려받지 않음은 차단, touches 미해소와 판정불능
+    required|done` 티켓의 architect 점검 라운드를 돌려받지 않았으면 차단, touches 미해소와 판정불능
     개수는 경고 1줄). 판정 대상은 승격되는 티켓 하나이며 기존 open 티켓을 소급하지 않는다.
     통과해야 `open/` 으로 옮겨져 STATUS_DIRS 스캔 대상이 되고 board-git 에 커밋돼 공유 board
     에 존재하게 된다(생성~claim 사이 handoff 창에 미충전 stub 이 인계되는 실패를 원천 차단).

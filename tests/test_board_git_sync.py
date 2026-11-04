@@ -938,7 +938,7 @@ def test_claim_detached_prints_checkout_guidance_not_offline(board, tmp_path, ca
     _detach_head(board_dir)
 
     rc = board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(id="T-0001", task=_TASK, user="me"))
-    assert rc == 1, "detached board claim 이 차단 안 됨(anchor 없는데 진행)."
+    assert rc == 1, "detached board claim 이 차단 안 됨(orig_head 없는데 진행)."
     err = capsys.readouterr().err
     assert "detached HEAD" in err and "checkout" in err, \
         f"detached 안내 메시지가 detached/checkout 을 안 담음: {err!r}"

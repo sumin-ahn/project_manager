@@ -4,9 +4,9 @@
 
   1. 동시 `new` → 유일 ID (board_lock 이 `_next_id`+파일생성 구간을 직렬화).
      - 락 무력화(no-op) 시 ID 충돌이 *재현*되는 sensitivity 테스트도 둔다 — 락이 실제로
-       무엇을 막는지 고정(테스트가 락 없이도 통과하면 무의미).
+       무엇을 막는지 기록(테스트가 락 없이도 통과하면 무의미).
   2. 동시 같은 ticket claim → 하나만 성공·나머지 `claim race lost`
-     (기존 `move_ticket` atomic rename 의 원자성 회귀 고정 — 신규 락 아님).
+     (기존 `move_ticket` atomic rename 의 원자성 회귀 기록 — 신규 락 아님).
   3. 크래시 시 락 자동해제 — 락 보유 프로세스가 죽으면 다음 획득자가 막히지 않는다
      (OS flock 특성·stale-lock 없음).
 
@@ -477,7 +477,7 @@ def test_concurrent_new_yields_unique_ids(proj):
 def test_prefix_relabel_rechecks_canonical_after_concurrent_process_write(
     proj, monkeypatch, bypass_fresh_recheck, expected,
 ):
-    """두 실제 세션의 선판정→타 case 발행→lock 취득 interleaving을 전/후로 고정한다.
+    """두 실제 세션의 선판정→타 case 발행→lock 취득 interleaving을 전/후로 기록한다.
 
     source 번호를 003으로 두고 concurrent `FRESH`는 001을 발행해, collision 가드가 우연히
     막아주는 구성을 피한다. fresh 재검증이 없으면 `FRESH`/`fresh`가 공존하고, production
@@ -590,7 +590,7 @@ def test_task_derived_new_rechecks_after_concurrent_area_case_write(
 def test_unlocked_id_issuance_collides_deterministically(board, monkeypatch):
     """sensitivity — 락 없이 `_next_id` 를 *읽기만* 하고 파일을 안 만들면 같은 ID 가 나온다.
 
-    `cmd_new` 가 board_lock 으로 막는 정확한 race 를 결정적으로 고정한다: ID 발행(`_next_id`
+    `cmd_new` 가 board_lock 으로 막는 정확한 race 를 결정적으로 기록한다: ID 발행(`_next_id`
     = max+1)과 파일 생성 사이의 틈에 다른 세션이 끼면 같은 ID 를 본다. 락이 이 read→create 를
     원자로 묶어 충돌을 없앤다. (확률적 spawn race 대신 교체 지점을 직접 노출 — 빠르고 결정적.)
     """
@@ -611,16 +611,16 @@ def test_unlocked_id_issuance_collides_deterministically(board, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 2. 동시 같은 ticket claim → 하나만 성공 (기존 atomic rename 원자성 고정)
+# 2. 동시 같은 ticket claim → 하나만 성공 (기존 atomic rename 원자성 기록)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_concurrent_claim_only_one_wins(proj):
     """N 개 세션이 같은 open ticket 을 동시에 claim → 정확히 하나만 성공·**패배자는 깨끗이 실패**.
 
     `move_ticket` 의 POSIX atomic rename(`os.rename`)이 락 — 진 쪽은 FileNotFoundError 로
-    드러난다(board.py move_item docstring). 이 *기존* 원자성을 회귀로 고정한다(신규 락 없음).
+    드러난다(board.py move_item docstring). 이 *기존* 원자성을 회귀로 기록한다(신규 락 없음).
 
-    **검증 의미 (T-0057·ADR-0012 계약)** = 두 가지를 동시에 고정한다:
+    **검증 의미 (T-0057·ADR-0012 계약)** = 두 가지를 동시에 기록한다:
       1. *안전성* — 정확히 한 세션만 claim 성공·ticket 은 한 번만 claimed 로 이동(분열·중복 0).
       2. *깨끗한 패배* — 패배자는 **미처리 traceback 없이 rc=1 로 깨끗이 실패**해야 한다(EXC 0).
          패배는 타이밍에 따라 세 가지 *깨끗한* 형태 중 하나로 난다(모두 rc=1·traceback 0):
@@ -629,7 +629,7 @@ def test_concurrent_claim_only_one_wins(proj):
            (c) 조회→`move_ticket` window race → "claim race lost"
          fix 전엔 (b) 가 미처리 FileNotFoundError 로 새어 EXC(=계약 위반)로 잡혔다. fix 후엔
          (b)도 (c)처럼 board 안에서 rc=1 로 처리된다. 어느 *깨끗한* 형태로 지든 무해하므로 이
-         테스트는 EXC(미처리 traceback)만 fail 로 본다. (b) window 의 결정적 고정 + "claim race
+         테스트는 EXC(미처리 traceback)만 fail 로 본다. (b) window 의 결정적 기록 + "claim race
          lost" 메시지 자체는 `test_claim_load_window_race_lost_cleanly`(아래)가 담당한다 —
          확률적 spawn 타이밍에 메시지 문구를 의존하지 않기 위함(이 spawn 테스트의 flake 회피).
     """
@@ -908,7 +908,7 @@ def test_claim_critical_section_holds_board_lock(monkeypatch, board):
     """sensitivity(결정적·cross-platform) — claim 의 load→rename 임계구역이 board_lock 을 보유한다.
 
     Windows `os.rename` 비배타(ADR-0012 Amendment·T-0213)를 락으로 대체한 것을 결정적으로
-    고정한다: claim 이 `load_ticket` 을 부르는 순간(=임계구역 *안*) 다른 fd 로 board_lock 을
+    기록한다: claim 이 `load_ticket` 을 부르는 순간(=임계구역 *안*) 다른 fd 로 board_lock 을
     *비차단* 획득하려 하면 실패해야 한다(락 잡힘). `cmd_claim` 에서 `with board_lock()` 을
     걷어내면 프로브가 free 를 봐 이 단언이 FAIL 을 재현한다 = 락이 load-bearing(확률적 spawn
     타이밍 비의존·`test_refresh_board_scan_and_write_are_mutually_exclusive` 동류). flock/msvcrt
@@ -971,7 +971,7 @@ def test_lock_auto_released_on_holder_crash(proj):
 
     자식이 board_lock 을 잡은 채 멈춘 동안 부모의 *비차단* 프로브는 실패해야 하고(락이
     실제로 잡힘), 자식을 kill 하면 OS 가 락을 해제해 프로브가 성공한다. 블로킹 thread 없이
-    비차단 프로브로 결정적·빠르게 stale-lock 부재를 고정한다.
+    비차단 프로브로 결정적·빠르게 stale-lock 부재를 기록한다.
     """
     board = _load_board_bound(proj)
     lock_path = (pm_paths.home_at(board.REPO).local_dir / "board.lock")
@@ -1064,7 +1064,7 @@ def test_concurrent_refresh_board_reflects_latest_state(proj):
 def test_refresh_board_scan_and_write_are_mutually_exclusive(board):
     """sensitivity(결정적) — refresh_board 의 scan+write 는 다른 refresh 의 write 와 상호배제.
 
-    lost-update 의 핵심 race 를 결정적 교체 지점으로 고정한다. A 가 scan 을 시작한 직후 멈춘
+    lost-update 의 핵심 race 를 결정적 교체 지점으로 기록한다. A 가 scan 을 시작한 직후 멈춘
     동안(scan-pause), B 가 *더 새로운* 상태(ticket 추가)를 통째 refresh(scan+write) 한다.
     이어 A 가 재개해 자기 write 를 한다.
 

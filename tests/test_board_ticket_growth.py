@@ -365,7 +365,7 @@ def _collected_review_text(finding_id: str = "F-001") -> str:
 
 
 @requires_git
-def test_show_keeps_marking_a_parallel_round_unharvested(board_env, capsys):
+def test_show_keeps_marking_a_parallel_round_uncollected(board_env, capsys):
     """같은 역할 병렬 2라운드 — 01 을 돌려받은 뒤에도 손대지 않은 02 는 돌려받지 않은 것으로 보인다.
 
     조회의 산출 없음 판정이 다른 라운드의 현재 내용에 기대면 02 가 산출 있는 것으로 읽혀

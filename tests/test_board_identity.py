@@ -135,7 +135,7 @@ def _write_conf(board, **kv) -> None:
 
 def _write_leases(board, *rows) -> None:
     """슬롯 대여 기록(`LEASES_FILE`)에 (repo, slot 정수) 행을 leased 상태로 쓴다 — `identity_args.
-    resolve_actor_slot` 이 읽는 실 스키마(repo·slot=`work/<repo>_<N>`·session·state)과 같은 구조
+    resolve_actor_slot` 이 읽는 실 스키마(repo·slot=`work/<repo>_<N>`·session·state)와 같은 구조
     (test_identity_args.py `_write_leases` 와 같은 방식)."""
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
     leases = [{"repo": r["repo"], "slot": f"work/{r['repo']}_{r['slot']}",

@@ -2083,7 +2083,7 @@ def test_mine_includes_my_claim_and_my_area_open(board, capsys):
 # ── DoD (c): created_by 2차 대체 (area_owner 미설정 채택자) ────────────────────
 
 def test_mine_created_by_fallback_excludes_other_no_area_owner(board, capsys):
-    """area_owner 미운영(채택자 미마이그) + 다중사용자 → created_by.user 2차 대체으로 소유 판정.
+    """area_owner 미운영(채택자 미마이그) + 다중사용자 → created_by.user 를 2차 대체 소유자로 써서 소유 판정.
 
     현행(버그·T2): area_owner 미운영이면 `not area_owner_in_use → return True` 로 전체 open 유출.
     fix 후: owner=created_by.user 로 bob open 제외(alice 것만)."""
@@ -2092,7 +2092,7 @@ def test_mine_created_by_fallback_excludes_other_no_area_owner(board, capsys):
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
     ids = _mine_ids(board, capsys, mine=True)
-    assert ids == ["T-0001"]     # bob 의 open 은 created_by 대체으로 제외
+    assert ids == ["T-0001"]     # bob 의 open 은 created_by 대체 소유자로 제외
 
 
 def test_created_by_fallback_bare_user(board, capsys):
@@ -2481,7 +2481,7 @@ def test_cmd_list_genuine_multiuser_strict_exclude_unchanged(board, capsys):
 
 
 def _mark_records_closing(board, cluster: str) -> None:
-    """[[T-0959]] 연결된 완료는 종결 파이프라인이 묶음 기록을 closing 으로 표시한 뒤에만 받는다 — 그 기록을 재현한다.
+    """[[T-0959]] 묶음에 연결된 티켓의 완료는 종결 파이프라인이 묶음 기록을 closing 으로 표시한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
     records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), cluster)

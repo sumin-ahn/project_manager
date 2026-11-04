@@ -198,7 +198,7 @@ def test_live_test_record_task_threads_absolute_cwd(board, monkeypatch, capsys):
     (board.REPO / "work/A_2/.git").mkdir(parents=True)
     fake = _FakeRun(0, pytest_summary(14, deselected=800))
     _install_fake(board, monkeypatch, fake)
-    # engine-root sidecar 해소를 솔로 대체로(_resolve_livegate_flag 가 hooksPath 미설정 시 정상).
+    # engine-root sidecar 해소를 솔로 대체 경로로(_resolve_livegate_flag 가 hooksPath 미설정 시 정상).
     regression_cmd.cmd_live_test(pm_paths.home_at(board.REPO), _lg_args(task="job4"))
     expected_cwd = str(board.REPO / "work" / "A_2")
     # 마지막(release) subprocess 호출의 cwd 가 F6 슬롯 절대경로.

@@ -205,7 +205,7 @@ def test_has_real_board_legacy_wiki_true(tmp_path):
 
 
 def test_has_real_board_scaffold_only_false(tmp_path):
-    # 빈 scaffold(worktree 출하 구성)은 '실 board' 아님 — 이게 False 여야 worktree 가 flag 됨.
+    # 빈 scaffold(worktree 출하 구성)는 '실 board' 아님 — 이게 False 여야 worktree 가 flag 됨.
     b = _load_board()
     pm = tmp_path / ".project_manager"
     _make_scaffold_board(pm)
@@ -691,7 +691,7 @@ _MUTATION_ARGVS = [
     ["prefix", "strip", "AAA"],
     ["prefix", "merge", "AAA", "--into", "BBB"],
     ["prefix", "delete", "AAA"],
-    ["cluster", "new", "cluster", "--tickets", "T-0100"],
+    ["cluster", "new", "sample", "--tickets", "T-0100"],
 ]
 
 
