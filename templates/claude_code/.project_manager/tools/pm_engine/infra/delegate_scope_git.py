@@ -14,7 +14,7 @@ from pm_engine.infra import ticket_store
 
 
 def _ticket_touches_error(ticket_id: str, exc: Exception) -> delegate_scope_rules.DelegateScopeError:
-    """ticket 조회의 로드/호출 실패를 같은 계약 오류 형상으로 감싼다."""
+    """ticket 조회의 로드/호출 실패를 같은 계약 오류 구성으로 감싼다."""
     return delegate_scope_rules.DelegateScopeError(f"ticket touches 읽기 실패({ticket_id}): {exc}")
 
 
@@ -38,7 +38,7 @@ def resolve_workspace_root(
     """``--cwd``가 repo **하위 디렉토리**여도 판정 기준을 git toplevel로 맞춘다.
 
     status/해시 캡처와 touches 좌표 정규화가 서로 다른 루트를 쓰면 경로 비교가 어긋나 판정이
-    통째로 꺼진다(하위 디렉토리 위임에서 실측된 사각). 해소 실패는 :class:`DelegateScopeError`로
+    통째로 꺼진다(하위 디렉토리 위임에서 실측된 놓치는 곳). 해소 실패는 :class:`DelegateScopeError`로
     올려 호출부가 loud degrade 하게 한다.
     """
     cwd = Path(workspace).resolve()
@@ -54,7 +54,7 @@ def resolve_workspace_root(
 
 
 def _capture_modes(cwd: Path, runner: Callable[[Path, list[str]], tuple[int, str]]) -> tuple[tuple[str, str], ...]:
-    """porcelain v2 지문 캡처 — 실패하면 빈 값(상태코드/해시 비교로 강등)."""
+    """porcelain v2 지문 캡처 — 실패하면 빈 값(상태코드/해시 비교로 낮춘다)."""
     rc, output = runner(cwd, ["status", "--porcelain=v2", "-z", "--untracked-files=all"])
     if rc != 0:
         return ()
@@ -111,7 +111,7 @@ def _hash_object(
     batch: Sequence[str],
     runner: Callable[[Path, list[str]], tuple[int, str]],
 ) -> list[tuple[str, str]] | None:
-    """``git hash-object -- <paths>`` 1회. 실패/출력 불일치는 None(호출부가 강등)."""
+    """``git hash-object -- <paths>`` 1회. 실패/출력 불일치는 None(호출부가 수준을 낮춘다)."""
     if not batch:
         return []
     rc, output = runner(cwd, ["hash-object", "--", *batch])
@@ -140,7 +140,7 @@ def capture_worktree_state(workspace: Path | str) -> delegate_scope_rules.Worktr
 
 
 def content_signal_missing(state: delegate_scope_rules.WorktreeState, workspace: Path | str) -> bool:
-    """해시 대상이 있는데 지문을 하나도 못 구했으면 True(재수정 감지 불가 = 조용한 강등 방지 신호)."""
+    """해시 대상이 있는데 지문을 하나도 못 구했으면 True(재수정 감지 불가 = 조용한 수준 낮춤 방지 신호)."""
     if state.digests:
         return False
     cwd = Path(workspace)

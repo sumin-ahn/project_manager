@@ -3,37 +3,37 @@
 
 PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 역할 노동
 (developer/researcher/architect/code-reviewer)을 **다른 하네스 CLI subprocess** 로 위임하는
-순수 CLI. N×N 대칭 — 호출측 하네스 조건 0 (additional_reviewer 와 동형 seam).
+순수 CLI. N×N 대칭 — 호출측 하네스 조건 0 (additional_reviewer 와 같은 구조).
 
 이 도구는 **엔진 코어**만 담는다:
   · config 해소  — `delegate.<role>[.<tier>].harness/.model/.reasoning` 3키를 **원자 tuple**
                   `(harness, model, reasoning)` 로 해소(티어 세트 통째·혼합 상속/부분 override 금지).
   · 3 드라이버   — codex(`-a never -s <mode> exec --json`·stdin)·claude(`-p --tools`·stdin)·
                   opencode(`run --file --agent --dir`). reasoning 은 드라이버별 플래그.
-  · 권한 매핑    — 역할축(write=developer/architect·read=researcher/code-reviewer)을 argv/sandbox 로
+  · 권한 매핑    — 역할 기준(write=developer/architect·read=researcher/code-reviewer)을 argv/sandbox 로
                   강제하되 보장 수준을 정직 표기.
-  · 쓰기-타깃 axis — 엔진 코드(`.project_manager/tools/`) write 위임이 PM 홈 cwd 면 canonical
-                  worktree 재앵커 fail-loud(additional_reviewer `_pm_home_reanchor` 재사용).
+  · 쓰기 대상 기준 — 엔진 코드(`.project_manager/tools/`) write 위임이 PM 홈 cwd 면 canonical
+                  worktree 로 대상 저장소를 다시 잡으라고 fail-loud(additional_reviewer `_pm_home_reanchor` 재사용).
                   allowlist 정제 + prompt-file containment. ack digest는 해소된 primary
-                  harness:model과 합성 전문에 결속한다. ack으로 차단을 통과한 실행은 primary 인프라
-                  실패여도 폴백하지 않는다 — 다른 수신자는 명시 재실행과 별도 승인 판단이 필요하다.
-  · 결과 수집    — 최종 reply 텍스트만 stdout·raw+메타는 O_EXCL·0600·PID/UUID 파일 박제.
-  · loud 폴백    — 역할/티어별 명시 fallback tuple 이 있을 때만 인프라 실패를 양성 분류해 1회 실행하고
+                  harness:model과 합성 전문에 연결한다. ack으로 차단을 통과한 실행은 primary 인프라
+                  실패여도 대체 하네스로 넘어가지 않는다 — 다른 수신자는 명시 재실행과 별도 승인 판단이 필요하다.
+  · 결과 수집    — 최종 reply 텍스트만 stdout·raw+메타는 O_EXCL·0600·PID/UUID 파일 기록.
+  · loud 대체 하네스 — 역할/티어별 명시 fallback tuple 이 있을 때만 인프라 실패를 양성 분류해 1회 실행하고
                   실행 provenance 를 reply/raw 에 남김(미설정·비-인프라 실패는 기존 fail-loud).
-                  **시간 예산**: 폴백은 primary 와 별개로 turn timeout 을 새로 쓴다 — 최악 소요는
-                  primary·폴백 **각 하네스 예산의 합**이고, 세션 재사용(--resume-from) 라운드는
-                  미일치 fresh 재실행으로 primary 축을 한 번 더 쓸 수 있다(codex/claude=timeout · opencode 는
+                  **시간 예산**: 대체 하네스는 primary 와 별개로 turn timeout 을 새로 쓴다 — 최악 소요는
+                  primary·대체 하네스 **각 하네스 예산의 합**이고, 세션 재사용(--resume-from) 라운드는
+                  미일치 fresh 재실행으로 primary 하네스 예산을 한 번 더 쓸 수 있다(codex/claude=timeout · opencode 는
                   첫-이벤트 워치독 재시도분이 더 붙는다·_harness_timeout_budget). 호출부(스킬·CI)의
                   대기 예산은 --dry-run 이 찍는 실수치로 잡아라.
   · 무음 대체 금지 — 채널 실행 실패(스폰 실패·비정상 rc·타임아웃·연결 실패)는 fail-loud rc 로
                   끝난다. 같은 호출 안에서 **명시 fallback tuple 밖의** 다른 하네스/모델로 자동
                   재시도하지 않고, 실패 안내도 다른 수신자를 권하지 않는다(권유가 곧 무기록
-                  대행의 입구다). 재위임 = 사람의 명시 재호출 · 실패는 raw 장부에 잔존.
+                  대행의 입구다). 재위임 = 사람의 명시 재호출 · 실패는 raw 출력 기록에 잔존.
   · 위임 마스터 스위치 — `delegate.enabled`(기본 ON·채널 무관). off 면 `run`·`ticket prepare` 가
                   rc=3 + stderr 안내(false-green 차단)이고 하네스 훅의 `decide` 도 deny 한다.
 
-설정 시드/lint·어댑터 배선은 별도 표면이다. CLI 본체는 `pm_engine.cli.delegate_run` 이고 이 파일은
-콘솔 설정과 설치 앵커 Home 으로 그 CLI 를 부르는 진입이다. 기본 단위 테스트는 패키지 CLI 의 run_fn DI 로
+설정 초기값/lint·어댑터 등록은 별도 명령이다. CLI 본체는 `pm_engine.cli.delegate_run` 이고 이 파일은
+콘솔 설정과 설치 위치 기준 Home 으로 그 CLI 를 부르는 진입이다. 기본 단위 테스트는 패키지 CLI 의 run_fn DI 로
 격리하고, Codex resume 2-turn 검증만 명시 환경변수 opt-in 라이브 테스트로 둔다.
 """
 import os

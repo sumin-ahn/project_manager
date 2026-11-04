@@ -15,7 +15,7 @@ from pm_engine.domain import review_verdict
 
 
 def pm_review_refused_line(role: str) -> str:
-    """그 역할 라운드에 붙는 표식 줄 — 발행이 이 함수 하나를 본다."""
+    """그 역할 라운드에 붙는 표시 줄 — 발행이 이 함수 하나를 본다."""
     return f"<!-- {review_form.PM_REVIEW_REFUSED_MARKER} role={role} -->"
 
 
@@ -24,17 +24,17 @@ ADDITIONAL_REVIEWER_REFUSED_LINE = pm_review_refused_line(review_form.ADDITIONAL
 
 
 def _round_text_with_refused_marker(text: str, role: str) -> str:
-    """표식을 끝줄로 붙인 본문 — 개행 표기는 원문을 따른다(bytes 대조를 쓰는 자리들 때문)."""
+    """표시를 끝줄로 붙인 본문 — 개행 표기는 원문을 따른다(bytes 대조를 쓰는 자리들 때문)."""
     newline = "\r\n" if "\r\n" in text else "\n"
     separator = "" if text.endswith(("\n", "\r")) else newline
     return f"{text}{separator}{pm_review_refused_line(role)}{newline}"
 
 
 def _round_text_without_refused_marker(text: str, role: str) -> str:
-    """그 역할 표식을 끝에서 걷어 낸 본문 — 발행 이전 bytes 를 되돌리는 역함수.
+    """그 역할 표시를 끝에서 걷어 낸 본문 — 발행 이전 bytes 를 되돌리는 역함수.
 
-    포기(`abandon_ticket_copy`)의 파괴 판정 기준선은 표식을 붙이기 **전** bytes 다. 재호출은
-    이미 표식이 붙은 파일을 읽으므로 그 자리에서 기준선을 되돌리지 않으면, 엔진이 자기가 쓴
+    포기(`abandon_ticket_copy`)의 파괴 판정 기준선은 표시를 붙이기 **전** bytes 다. 재호출은
+    이미 표시가 붙은 파일을 읽으므로 그 자리에서 기준선을 되돌리지 않으면, 엔진이 자기가 쓴
     줄을 "산출이 생겼다" 로 읽어 남은 정리를 영영 끝내지 못한다.
     """
     line = pm_review_refused_line(role)
@@ -48,7 +48,7 @@ def _round_text_without_refused_marker(text: str, role: str) -> str:
 def validate_review_block(
     reply_text: str, *, reviewer_role: str = review_form.ADDITIONAL_REVIEWER_ROLE,
 ) -> str | None:
-    """리뷰 산출의 `pm-review-v1` 블록을 회수 전에 검증한다(위반 사유 또는 None).
+    """리뷰 산출의 `pm-review-v1` 블록을 돌려받기 전에 검증한다(위반 사유 또는 None).
 
     채널은 finding ID 접두만 가른다 — 스키마·중복·자리 규칙은 두 채널이 같다.
     """
@@ -92,7 +92,7 @@ def validate_review_block(
     ids = [item.id for item in parsed]
     duplicated = sorted({item for item in ids if ids.count(item) > 1})
     if duplicated:
-        # 같은 ID 를 `findings` 와 `confirmations` 양쪽에 실은 형상이 여기로 온다 — 사유가
+        # 같은 ID 를 `findings` 와 `confirmations` 양쪽에 실은 구성이 여기로 온다 — 사유가
         # 이름을 짚어야 리뷰어가 어느 항목을 옮겨야 하는지 그 자리에서 안다.
         return (
             f"finding/confirmation ID 중복: {', '.join(duplicated)} — 기존 finding 은 "
@@ -106,9 +106,9 @@ def collect_confirmable_finding_ids(
 ) -> list[str]:
     """확인 라운드가 `confirmations` 에 실을 수 있는 그 채널 ID (정렬).
 
-    배제는 둘이고 리뷰 라운드 시드 프리필(`render_ticket_growth_section_form`)과 **같은 규칙**
-    이다: 회수 거부 라운드(판정 표면 밖)와 PM 이 `rejected` 로 판정한 ID(재등장을 표면이
-    malformed 로 막는다). 두 채널이 서로 다른 목록을 보면 한쪽 리뷰어가 표면이 거부할 ID 를
+    배제는 둘이고 리뷰 라운드 빈 양식 프리필(`render_ticket_growth_section_form`)과 **같은 규칙**
+    이다: 돌려받기 거부 라운드(판정 범위 밖)와 PM 이 `rejected` 로 판정한 ID(재등장을 판정 범위가
+    malformed 로 막는다). 두 채널이 서로 다른 목록을 보면 한쪽 리뷰어가 판정 범위가 거부할 ID 를
     확인 대상으로 받는다.
     """
     declared = review_state.collect_review_finding_declarations(
@@ -126,7 +126,7 @@ def collect_confirmable_finding_ids(
                 reviewer_ordinal=item.ordinal,
             )
         except delegate_errors.DelegateError:
-            continue        # 읽을 수 없는 판정 블록은 표면 파서가 loud 하게 잡는다.
+            continue        # 읽을 수 없는 판정 블록은 판정 범위 파서가 loud 하게 잡는다.
     return sorted(declared - rejected)
 
 
@@ -157,10 +157,10 @@ def _review_id_collisions(
 def _review_missing_confirmation_targets(
     body: str, declared_finding_ids: Sequence[str],
 ) -> list[str]:
-    """회신 블록의 confirmation ID 중 티켓 판정 표면에 **없는** 것.
+    """회신 블록의 confirmation ID 중 티켓 판정 범위에 **없는** 것.
 
-    판정 표면은 confirmation 이 선행 finding 을 참조할 것을 요구한다. 라운드가 파일 하나라
-    차등 판정·반사실 프로브가 사라졌으므로, 표면에 없는 ID(회수 거부된 라운드의
+    판정 범위는 confirmation 이 선행 finding 을 참조할 것을 요구한다. 라운드가 파일 하나라
+    차등 판정·반사실 프로브가 사라졌으므로, 판정 범위에 없는 ID(돌려받기 거부된 라운드의
     ID·환각 ID)를 실은 블록을 막는 것은 이 대조 하나다.
     """
     declared = set(declared_finding_ids)
@@ -185,26 +185,26 @@ def review_collect_problem(
     reply_text: str, *, ticket_text: str, rounds: Sequence,
     reviewer_role: str = review_form.ADDITIONAL_REVIEWER_ROLE,
 ) -> str | None:
-    """리뷰 산출을 라운드로 회수해도 되는지 판정한다 — 위반 사유 또는 None.
+    """리뷰 산출을 라운드로 돌려받아도 되는지 판정한다 — 위반 사유 또는 None.
 
-    두 회수 경로가 이 함수 하나를 부른다: 추가 리뷰어 회수(`additional_reviewer`)와 내부 채널 회수
+    두 돌려받기 경로가 이 함수 하나를 부른다: 추가 리뷰어 돌려받기(`additional_reviewer`)와 내부 채널 돌려받기
     (`collect_ticket_copy`). 채널이 가르는 것은 finding ID 접두뿐이고 사유·강도는 같다 — 판정
-    표면이 하나라 한쪽만 관대하면 그쪽 산출이 표면을 막는다.
+    판정 범위가 하나라 한쪽만 관대하면 그쪽 산출이 판정 범위를 막는다.
 
-    거부한 산출은 판정 표면에 오르지 않되 사라지지도 않는다. 추가 리뷰어 채널은 라운드 파일을
+    거부한 산출은 판정 범위에 오르지 않되 사라지지도 않는다. 추가 리뷰어 채널은 라운드 파일을
     만들지 않고 raw 에 남기고, 내부 채널은 board 라운드 파일 bytes 를 그대로 두고 슬롯 run-dir 을
-    유지한다 — 사본을 고쳐 같은 경로로 다시 회수할 수 있다.
+    유지한다 — 사본을 고쳐 같은 경로로 다시 돌려받을 수 있다.
 
-    신규 finding ID 대조의 corpus 에서 시드 그대로인(`pending`) 라운드와 엔진 표식이 붙은
-    라운드는 뺀다 — 그 라운드가 실은 ID 는 엔진이 넣은 자리표시이지 선언이 아니고, 회수 대상
+    신규 finding ID 대조의 corpus 에서 빈 양식 그대로인(`pending`) 라운드와 엔진 표시가 붙은
+    라운드는 뺀다 — 그 라운드가 실은 ID 는 엔진이 넣은 자리표시이지 선언이 아니고, 돌려받기 대상
     라운드 자신도 그 상태다.
 
-    사유는 네 축이고 종류를 가리지 않고 같은 처리(거부)다: 엔진 전용 표식 선언 · `pm-review-v1`
+    사유는 네 가지이고 종류를 가리지 않고 같은 처리(거부)다: 엔진 전용 표시 선언 · `pm-review-v1`
     블록 규칙 위반(부재·중복·스키마·JSON 손상 · 같은 ID 를 `findings` 와 `confirmations` 양쪽
-    기재) · 티켓에 이미 있는 finding ID 재선언 · 티켓 판정 표면에 없는 confirmation 대상.
+    기재) · 티켓에 이미 있는 finding ID 재선언 · 티켓 판정 범위에 없는 confirmation 대상.
 
-    대조는 두 축이고 시야가 다르다. 신규 finding ID 는 **넓은** 스캔(산문 인용 포함)과,
-    confirmation 대상은 **판정 표면 선언**과 맞춘다. 차등 판정·반사실 프로브는 없다 — 이 산출이
+    대조는 두 가지이고 검사 범위가 다르다. 신규 finding ID 는 **넓은** 스캔(산문 인용 포함)과,
+    confirmation 대상은 **판정 범위 선언**과 맞춘다. 차등 판정·반사실 프로브는 없다 — 이 산출이
     다른 라운드의 판정을 오염시킬 자리가 없다(F-028 구조 폐쇄).
     """
     if review_form.pm_review_refused_marker_present(reply_text):
@@ -221,11 +221,11 @@ def review_collect_problem(
             getattr(item, "pending", False)
             or review_form.pm_review_refused_marker_present(item.text)
         ):
-            # 엔진이 시드에 넣은 ID 는 **선언이 아니다**. 회수 대상 라운드 자신이 이 목록에
-            # 들어 있으므로(예약된 board 파일은 회수 전까지 시드 그대로다), 시드가 실은 다음 ID
+            # 엔진이 빈 양식에 넣은 ID 는 **선언이 아니다**. 돌려받기 대상 라운드 자신이 이 목록에
+            # 들어 있으므로(예약된 board 파일은 돌려받기 전까지 빈 양식 그대로다), 빈 양식이 실은 다음 ID
             # 를 그대로 쓴 회신이 자기 자신과 충돌해 거부되는 자기 충돌을 여기서 닫는다.
-            # 표식이 붙은 라운드도 같은 자리에서 뺀다 — 표식은 bytes 를 바꿔 `pending` 을
-            # 무너뜨리지만 그 골격의 ID 는 여전히 엔진이 넣은 자리표시다(종결된 예약).
+            # 표시가 붙은 라운드도 같은 자리에서 뺀다 — 표시는 bytes 를 바꿔 `pending` 을
+            # 무너뜨리지만 그 빈 양식의 ID 는 여전히 엔진이 넣은 자리표시다(종결된 예약).
             continue
         existing_ids |= review_state.collect_review_finding_ids(item.text, reviewer_role)
     collisions = _review_id_collisions(reply_text, existing_ids)
@@ -249,7 +249,7 @@ def review_collect_problem(
     return None
 
 
-# ── 내부 code-reviewer 라운드 장부 ────────────────────────────────────────
+# ── 내부 code-reviewer 라운드 기록 ────────────────────────────────────────
 
 _INTERNAL_MUST_FIX_CANONICAL_HEADER = "## must-fix"
 
@@ -307,12 +307,12 @@ def _contract_test_targets(
 ) -> tuple[str, ...]:
     """계약이 지목한 repo-relative Python 테스트 대상 — 값의 **첫 토큰** 하나뿐이다.
 
-    산문 전역을 훑으면 "옛 경로 대신 새 경로" 같은 서술의 옛 경로까지 diff 결속 대상이 된다 —
-    이번 라운드가 손댈 자리가 아닌 파일을 회수가 요구하게 되므로, 대상은 값이 맨 앞에 적은
-    하나로 고정한다. 여러 파일을 결속하려면 계약 행을 여러 개 쓴다.
+    산문 전역을 훑으면 "옛 경로 대신 새 경로" 같은 서술의 옛 경로까지 diff 연결 대상이 된다 —
+    이번 라운드가 손댈 자리가 아닌 파일을 돌려받기가 요구하게 되므로, 대상은 값이 맨 앞에 적은
+    하나로 고정한다. 여러 파일을 연결하려면 계약 행을 여러 개 쓴다.
 
-    ``required`` 는 architect 축(설계 라운드가 확정하는 필수 테스트)의 규칙이다 —
-    거기서는 테스트 대상이 계약이라 하나도 없으면 거부한다. reviewer fix 축은
+    ``required`` 는 architect 기준(설계 라운드가 확정하는 필수 테스트)의 규칙이다 —
+    거기서는 테스트 대상이 계약이라 하나도 없으면 거부한다. reviewer fix 기준은
     붙일 테스트가 없는 지적(죽은 코드 삭제)을 표현할 수 있어야 하므로 끈다.
     """
     head = value.split(maxsplit=1)
@@ -347,7 +347,7 @@ def _reviewer_fix_test_requirement(value: str, field: str) -> tuple[str, tuple[s
 def _contract_changed_paths(value: str, changed_paths: frozenset[str]) -> tuple[str, ...]:
     """계약 산문의 낱말 중 이번 diff 의 바뀐 경로와 글자 그대로 같은 것.
 
-    fix 축의 작업 증명은 "계약이 적은 파일을 이번 라운드가 바꿨는가"다. 슬래시 없는
+    fix 기준의 작업 증명은 "계약이 적은 파일을 이번 라운드가 바꿨는가"다. 슬래시 없는
     낱말은 모양만으로 최상위 파일과 버전 번호·심볼·도메인을 가를 수 없어, 바뀐 경로와
     같은 낱말만 센다. 첫 등장 순서로, 중복 없이 돌려준다.
     """
@@ -436,7 +436,7 @@ def render_pm_review_disposition_template(
     ticket_text: str, rounds: Sequence, reviewer_ordinal: int | None = None,
     *, reviewer_role: str | None = None,
 ) -> str:
-    """기존 판정을 보존하고 미판정 행을 채운 단일 PM disposition 골격을 렌더한다.
+    """기존 판정을 보존하고 미판정 행을 채운 단일 PM disposition 빈 양식을 렌더한다.
 
     입력은 명세(`ticket_text` — PM 판정 블록의 자리)와 라운드 목록이다. 채널(`reviewer_role`)
     미지정이면 두 리뷰 채널을 통틀어 **최신 라운드**의 채널을 쓴다 — PM 은 채널마다 다른 절차를
@@ -505,13 +505,13 @@ def render_pm_review_disposition_template(
     if finding_ids and existing_block is not None and "finding_zero" in existing_block:
         raise review_form.PMReviewError("malformed", "finding이 있는 reviewer에 finding_zero disposition")
 
-    # 골격의 시야는 대상 라운드 하나인데 판정 표면의 finding ID 유일성은 티켓 전역이다. 두
-    # 시야가 갈리면 골격이 프리필한 ID 를 PM 이 채워도 `parse_pm_review_accepted` 가 그 판정을
-    # 되돌려보낸다. 그런 ID 가 하나라도 있으면 **골격을 내지 않는다** — 나머지 ID 만 부분
-    # 출력해도 그 골격을 채운 산출은 같은 라운드 때문에 표면이 통째로 거부하므로(왕복 불변식은
+    # 빈 양식의 검사 범위는 대상 라운드 하나인데 판정 범위의 finding ID 유일성은 티켓 전역이다. 두
+    # 검사 범위가 갈리면 빈 양식이 프리필한 ID 를 PM 이 채워도 `parse_pm_review_accepted` 가 그 판정을
+    # 되돌려보낸다. 그런 ID 가 하나라도 있으면 **빈 양식을 내지 않는다** — 나머지 ID 만 부분
+    # 출력해도 그 빈 양식을 채운 산출은 같은 라운드 때문에 판정 범위가 통째로 거부하므로(왕복 불변식은
     # 복구되지 않고 판정 대상 finding 만 조용히 사라진다) 이 라운드는 여기서 끝낸다.
-    # 형상은 둘이다: 선행 같은 채널 라운드가 이미 선언한 ID(재선언), 그리고 이 라운드가 스스로
-    # `confirmations` 에 실은 자기 ID(자기-확인). 판정 표면(`parse_pm_review_accepted`)도 같은
+    # 구성은 둘이다: 선행 같은 채널 라운드가 이미 선언한 ID(재선언), 그리고 이 라운드가 스스로
+    # `confirmations` 에 실은 자기 ID(자기-확인). 판정 범위(`parse_pm_review_accepted`)도 같은
     # 라운드를 malformed 로 막으므로 두 명령이 같은 상태에 같은 판정을 낸다.
     redeclared = review_state.collect_review_finding_declarations(
         ticket_text, section.role, rounds, before_ordinal=section.ordinal,
@@ -545,7 +545,7 @@ def render_pm_review_disposition_template(
             raise review_form.PMReviewError(
                 "pending", f"reviewer ordinal={section.ordinal}은 이미 finding-zero 판정됨",
             )
-        payload = review_form._pm_review_seed_object(review_form.PM_REVIEW_FINDING_ZERO_PAYLOAD_KEYS, {
+        payload = review_form._pm_review_form_object(review_form.PM_REVIEW_FINDING_ZERO_PAYLOAD_KEYS, {
             "version": review_form.PM_REVIEW_DISPOSITION_VERSION,
             review_form.PM_REVIEW_DISPOSITION_ROLE_KEY: section.role,
             "reviewer_ordinal": section.ordinal,
@@ -562,7 +562,7 @@ def render_pm_review_disposition_template(
             )
         decision_placeholder = "<accepted|rejected>"
         dispositions = [
-            review_form._pm_review_seed_object(
+            review_form._pm_review_form_object(
                 review_form.PM_REVIEW_DISPOSITION_KEYS,
                 existing_by_id.get(finding_id, {
                     "id": finding_id,
@@ -571,7 +571,7 @@ def render_pm_review_disposition_template(
             )
             for finding_id in finding_ids
         ]
-        payload = review_form._pm_review_seed_object(review_form.PM_REVIEW_DISPOSITION_PAYLOAD_KEYS, {
+        payload = review_form._pm_review_form_object(review_form.PM_REVIEW_DISPOSITION_PAYLOAD_KEYS, {
             "version": review_form.PM_REVIEW_DISPOSITION_VERSION,
             review_form.PM_REVIEW_DISPOSITION_ROLE_KEY: section.role,
             "reviewer_ordinal": section.ordinal,
@@ -580,16 +580,16 @@ def render_pm_review_disposition_template(
     return f"```{review_form.PM_REVIEW_DISPOSITION_BLOCK}\n" + review_form._pm_review_render_json(payload) + "\n```\n"
 
 
-def render_pm_review_accepted(ticket: str, delta: review_form.PMReviewDelta) -> str:
+def render_pm_review_accepted(ticket: str, review_accepted: review_form.PMReviewAccepted) -> str:
     """developer prompt에 붙이는 accepted-only 최소 renderer. 0건이면 빈 문자열.
 
     심각도는 블록이 단일 진실이라 여기서 그대로 표기한다 — dev 는 산문을 다시 읽지 않고 이
     렌더에서 우선순위를 안다.
     """
-    if not delta.accepted:
+    if not review_accepted.accepted:
         return ""
     lines = [f"## PM 이 수락한 리뷰 지적 — {ticket}", ""]
-    for finding, disposition in delta.accepted:
+    for finding, disposition in review_accepted.accepted:
         lines.extend([
             f"### {finding.id}",
             f"- 채널: {finding.reviewer_role}",
@@ -609,19 +609,19 @@ def render_pm_review_accepted(ticket: str, delta: review_form.PMReviewDelta) -> 
     return f"{body}\n\n{delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE}"
 
 
-# ── verify-template — 기계 확인 대상 분류 + PM 확인 골격 ────────────
+# ── verify-template — 기계 확인 대상 분류 + PM 확인 빈 양식 ────────────
 
 
 def render_pm_review_verify_template(template: review_state.PMReviewVerifyTemplate) -> str:
-    """기계 확인 대상 행의 PM 확인 골격 — source round 별 블록을 순번 오름차순으로 낸다.
+    """기계 확인 대상 행의 PM 확인 빈 양식 — source round 별 블록을 순번 오름차순으로 낸다.
 
     `id`·`command` 는 그대로 옮기고 `status`·`observed` 는 자리표시자다(no-hand-retyping).
     `expected` 는 판정 참고용 안내 줄로만 보인다 — 확인 블록 스키마 자체에는 없는 필드다(단일
     진실은 verify 행 · 불변식 5 의 정신 상속).
 
-    블록이 여럿인 이유는 확인 블록의 `round` 가 **그 행이 실린 developer 라운드**에 결속되기
+    블록이 여럿인 이유는 확인 블록의 `round` 가 **그 행이 실린 developer 라운드**에 연결되기
     때문이다. 오름차순은 파서의 전역 단조 증가 규칙과 같은 순서라, 낸 순서대로 명세에 붙이면
-    그대로 수용된다(왕복 정합).
+    그대로 수용된다(왕복 일치).
     """
     if not template.machine_rows:
         return ""
@@ -635,7 +635,7 @@ def render_pm_review_verify_template(template: review_state.PMReviewVerifyTempla
             lines.append(f"- {row.id}: `{row.command}` → expected: {row.expected}")
         lines.append("")
         confirmations = [
-            review_form._pm_review_seed_object(review_form.PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, {
+            review_form._pm_review_form_object(review_form.PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, {
                 "id": row.id,
                 "status": "<" + "|".join(review_form.PM_REVIEW_CONFIRMATION_STATES) + ">",
                 "command": row.command,
@@ -643,7 +643,7 @@ def render_pm_review_verify_template(template: review_state.PMReviewVerifyTempla
             })
             for row in grouped[source_round]
         ]
-        payload = review_form._pm_review_seed_object(review_form.PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, {
+        payload = review_form._pm_review_form_object(review_form.PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, {
             "version": review_form.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
             "round": source_round,
             "confirmations": confirmations,
@@ -656,7 +656,7 @@ def render_pm_review_verify_template(template: review_state.PMReviewVerifyTempla
 
 
 # ── 확인 커맨드 실행 — 엔진이 돌리고 엔진이 기입한다 ────────────────
-# 확인 골격(`render_pm_review_verify_template`)이 내던 자리표시자 두 칸(`status`·`observed`)을
+# 확인 빈 양식(`render_pm_review_verify_template`)이 내던 자리표시자 두 칸(`status`·`observed`)을
 # 엔진이 실행 결과로 채운다. 사람이 커맨드를 옮겨 치고 관측값을 옮겨 적는 왕복이 사라지므로
 # 옮겨 적기 drift 도 사라진다. 판정은 여전히 파서가 소유한다 — 여기서는 `expected ⊂ observed`
 # 와 rc 를 그대로 재현할 뿐 완화하지 않는다(비-0 rc 는 통과로 접지 않는다).
@@ -670,7 +670,7 @@ PM_REVIEW_CONFIRMATION_COMMAND_TIMEOUT_SEC = 1800
 PM_REVIEW_CONFIRMATION_OBSERVED_LIMIT = 2000
 _PM_REVIEW_OBSERVED_ELLIPSIS = "…"
 # 명세 PM 영역에 기입하는 절 제목 — PM 관행이던 문자열을 **엔진 소유 상수**로 승격한다.
-# 엔진이 그 절을 쓰기 시작하는 순간 제목은 관행이 아니라 기계 표면이다.
+# 엔진이 그 절을 쓰기 시작하는 순간 제목은 관행이 아니라 기계가 읽는 자리다.
 PM_REVIEW_CONFIRMATION_SECTION = "## PM 기계 확인"
 
 
@@ -678,7 +678,7 @@ def _pm_review_observed_excerpt(text: str, expected: str) -> str:
     """관측값 발췌 — 기대값이 있으면 그 자리를 포함하도록 자른다.
 
     판정(전문 기준)과 기입(발췌)이 갈리면 엔진이 resolved 로 적은 행을 파서가 malformed 로
-    거부한다(왕복 정합 위반). 그래서 자르는 자리는 기대값 위치가 정한다.
+    거부한다(왕복 일치 위반). 그래서 자르는 자리는 기대값 위치가 정한다.
     """
     limit = PM_REVIEW_CONFIRMATION_OBSERVED_LIMIT
     if len(text) <= limit:
@@ -698,7 +698,7 @@ def render_pm_review_confirmation_section(
 ) -> str:
     """실행 결과를 명세 PM 영역에 붙일 절로 렌더한다 — 자리표시자 0.
 
-    블록을 source round 별로 나누는 규칙·오름차순은 확인 골격(`render_pm_review_verify_template`)
+    블록을 source round 별로 나누는 규칙·오름차순은 확인 빈 양식(`render_pm_review_verify_template`)
     과 같다 — 파서의 전역 단조 증가 규칙과 같은 순서라 낸 순서대로 붙으면 그대로 수용된다.
     """
     if not rows:
@@ -719,11 +719,11 @@ def _render_pm_review_confirmation_block(
     source_round: int, rows: Sequence[review_form.PMReviewMachineConfirmation],
 ) -> str:
     """한 developer round의 confirmation fence — 새 append와 기존 block merge 공용."""
-    payload = review_form._pm_review_seed_object(review_form.PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, {
+    payload = review_form._pm_review_form_object(review_form.PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, {
         "version": review_form.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
         "round": source_round,
         "confirmations": [
-            review_form._pm_review_seed_object(review_form.PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, {
+            review_form._pm_review_form_object(review_form.PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, {
                 "id": row.id,
                 "status": row.status,
                 "command": row.command,
@@ -859,7 +859,7 @@ def _merge_pm_review_confirmation_section(
             merged_body.rstrip("\n") + "\n\n"
             + render_pm_review_confirmation_section(additions)
         )
-    # merge 뒤 full parser가 disposition/verify 이중 결속과 spoof를 최종 판정한다. write는 이
+    # merge 뒤 full parser가 disposition/verify 이중 연결과 spoof를 최종 판정한다. write는 이
     # 검증 뒤라 conflict/malformed가 원본 일부를 바꾸는 창이 없다.
     review_state.parse_pm_review_accepted(merged_body, rounds)
     return merged_body, changed

@@ -1,14 +1,14 @@
-"""묶음 라운드 왕복 — `ticket prepare --cluster` (run-dir 1 · 라운드 파일 N) 과 run-dir 회수.
+"""묶음 라운드 왕복 — `ticket prepare --cluster` (run-dir 1 · 라운드 파일 N) 과 run-dir 돌려받기.
 
 여기서 지키는 성질은 다섯이다.
   (1) 준비 단위는 묶음이다 — run-dir 하나 안에서 티켓마다 자기 자리를 갖는다.
   (2) 크기 1 묶음은 별도 코드 경로가 아니다 — `--ticket` 은 그 묶음을 가리키는 표기다.
-  (3) 회수는 **티켓별 독립**이다 — 파일마다 교체·경고·거부를 따로 내고 요약 1줄로 집계한다.
-  (4) 인가는 여전히 장부 행이 한다 — 디렉터리 인자는 행을 찾는 입력 형식일 뿐이다.
-  (5) 묶음 키가 없는 옛 장부 행은 종전 경로로 그대로 회수된다(엔진 교체가 열린 run 을 죽이지
+  (3) 돌려받기는 **티켓별 독립**이다 — 파일마다 교체·경고·거부를 따로 내고 요약 1줄로 집계한다.
+  (4) 인가는 여전히 기록 행이 한다 — 디렉터리 인자는 행을 찾는 입력 형식일 뿐이다.
+  (5) 묶음 키가 없는 옛 기록 행은 종전 경로로 그대로 돌려받을 수 있다(엔진 교체가 열린 run 을 죽이지
       않는다).
 
-hermetic 패턴은 `test_pm_delegate_rounds.py` 와 동형 — PM 홈(board 데이터 + 엔진 사본)과
+hermetic 패턴은 `test_pm_delegate_rounds.py` 와 같은 구조 — PM 홈(board 데이터 + 엔진 사본)과
 ignore 된 슬롯 git 트리 한 쌍을 tmp 에 세운다.
 """
 from __future__ import annotations
@@ -51,13 +51,13 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
 
-# 설계 근거 게이트가 인정하는 `design: done` 의 짝 — 4항목이 값으로 채워진 설계 절.
+# 설계 근거 통과 조건이 인정하는 `design: done` 의 짝 — 4항목이 값으로 채워진 설계 절.
 _FILLED_DESIGN_SECTION = (
     "## 설계\n"
     "- **경계 실측**: 묶음 라운드 왕복 픽스처\n"
     "- **불변식**: run-dir 하나에 티켓 자리 N\n"
     "- **표면 상한**: 라운드 파일 티켓당 1개\n"
-    "- **테스트 전략**: 정상 왕복·부분 시드·위조 경로\n"
+    "- **테스트 전략**: 정상 왕복·부분 빈 양식·위조 경로\n"
 )
 
 
@@ -162,7 +162,7 @@ def _write_spec(tickets: Path, ticket: str, **kwargs) -> Path:
 
 
 def _write_cluster(pm_home: Path, cluster: str, tickets: list[str]) -> Path:
-    """묶음 장부 1건 — board 가 읽는 자리에 frontmatter 만 쓴다."""
+    """묶음 기록 1건 — board 가 읽는 자리에 frontmatter 만 쓴다."""
     directory = pm_home / ".project_manager" / "wiki" / "tickets" / "clusters"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{cluster}.md"
@@ -173,7 +173,7 @@ def _write_cluster(pm_home: Path, cluster: str, tickets: list[str]) -> Path:
         + "base_branch: task/main\n"
         f"branch: task/{cluster[2:]}\n"
         "spike: null\n"
-        # 예산 4키는 장부가 만들어질 때 박힌다 — 부분 선언은 판정 입력이 아니다.
+        # 예산 4키는 기록이 만들어질 때 박힌다 — 부분 선언은 판정 입력이 아니다.
         "budget:\n  architect: 1\n  developer_per_ticket: 1\n"
         "  code-reviewer: 1\n  fix: 1\n"
         "replans: []\n"
@@ -198,7 +198,7 @@ def _rounds_dir(pm_home: Path, ticket: str) -> Path:
     return pm_home / ".project_manager" / "wiki" / "tickets" / "rounds" / ticket
 
 
-def _ledger_rows(pm_home: Path) -> list[dict]:
+def _record_rows(pm_home: Path) -> list[dict]:
     path = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
     if not path.exists():
         return []
@@ -219,7 +219,7 @@ def _fill(path: Path, marker: str) -> None:
             "<shell 메타문자 없는 단일 테스트 명령>": "python3 --version",
             "<stdout/stderr/exit 또는 output에 포함될 짧은 문자열>": "Python",
             "<성공 output에 포함될 짧은 문자열>": "Python",
-            "<변경 전 실패하거나 거부돼야 하는 음성 사례>": "계약 누락은 회수를 거부한다",
+            "<변경 전 실패하거나 거부돼야 하는 음성 사례>": "계약 누락은 돌려받기를 거부한다",
         }
         for old, new in replacements.items():
             text = text.replace(old, new)
@@ -232,12 +232,12 @@ def _fill(path: Path, marker: str) -> None:
 
 def test_cluster_prepare_lays_one_run_dir_with_a_seat_per_ticket(pd, cluster_env):
     pm_home, slot, tickets = cluster_env
-    _seed_cluster(pm_home, tickets, "C-wave", ["T-6001", "T-6002"])
+    _seed_cluster(pm_home, tickets, "C-batch", ["T-6001", "T-6002"])
 
     plan = delegate_prepare.prepare_cluster_copy(
-        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-wave", role="architect", cwd=slot, )
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-batch", role="architect", cwd=slot, )
 
-    assert plan.cluster == "C-wave" and plan.role == "architect"
+    assert plan.cluster == "C-batch" and plan.role == "architect"
     assert len(plan.rounds) == 2
     # run-dir 은 하나이고 티켓 자리가 그 안에 산다(쓰기 허용 범위 = run-dir 전체).
     assert {round_plan.run_dir.parent for round_plan in plan.rounds} == {plan.run_dir}
@@ -251,11 +251,11 @@ def test_cluster_prepare_lays_one_run_dir_with_a_seat_per_ticket(pd, cluster_env
         assert round_plan.path.read_bytes() == round_plan.board_path.read_bytes()
         assert (round_plan.run_dir / "spec.md").read_text(encoding="utf-8") == (
             (tickets / f"{round_plan.ticket}-cluster.md").read_text(encoding="utf-8"))
-    # 장부는 티켓당 한 행이고 같은 run 을 가리킨다(묶음 키 포함).
-    rows = _ledger_rows(pm_home)
+    # 기록은 티켓당 한 행이고 같은 run 을 가리킨다(묶음 키 포함).
+    rows = _record_rows(pm_home)
     assert len(rows) == 2
     assert {row["run_id"] for row in rows} == {plan.run_id}
-    assert {row["cluster"] for row in rows} == {"C-wave"}
+    assert {row["cluster"] for row in rows} == {"C-batch"}
     assert {row["ticket"] for row in rows} == {"T-6001", "T-6002"}
 
 
@@ -265,7 +265,7 @@ def _t0928_prior_roles(pd, pm_home, tickets, members, role):
         for previous_role in ("architect", "developer")[:
                 (0 if role == "architect" else 1 if role == "developer" else 2)]:
             previous = round_form.load_rounds(tickets.parent, ticket, ticket_text=spec)
-            seed = delegate_prepare._ticket_round_seed(previous_role, spec, None,
+            seed = delegate_prepare._ticket_round_form(previous_role, spec, None,
                                         today="2026-10-02", rounds=previous)
             path = round_store.reserve_round(tickets.parent, ticket, previous_role, content=seed,
                                         lock=fs.board_lock(pm_paths.home_at(_fixture_board(pd, pm_home).REPO)))
@@ -283,7 +283,7 @@ def _t0928_set_status(board, ticket, status):
 
 @pytest.mark.parametrize("role", ["architect", "developer", "code-reviewer"])
 @pytest.mark.parametrize("size", [1, 2])
-def test_t0928_formal_prepare_records_only_new_seeds_after_all_ledger_rows(
+def test_t0928_formal_prepare_records_only_new_seeds_after_all_record_rows(
         pd, cluster_env, monkeypatch, role, size):
     pm_home, slot, tickets = cluster_env
     members = ["T-6101", "T-6102"][:size]
@@ -305,7 +305,7 @@ def test_t0928_formal_prepare_records_only_new_seeds_after_all_ledger_rows(
 
     def sync(_home, message, paths):
         assert not active
-        rows = _ledger_rows(pm_home)
+        rows = _record_rows(pm_home)
         assert {row["ticket"] for row in rows} == set(members)
         assert all(Path(row["copy"]).is_file() for row in rows)
         assert all((Path(row["copy"]).parent / "spec.md").is_file() for row in rows)
@@ -358,7 +358,7 @@ def test_t0928_prepare_boundaries_use_final_reservation_status(pd, cluster_env,
         _t0928_set_status(board, "T-6112", "draft")
     if state == "draft":
         _t0928_set_status(board, "T-6111", "draft")
-    original_seed = delegate_prepare._ticket_round_seed
+    original_seed = delegate_prepare._ticket_round_form
 
     def seed(*args, **kwargs):
         result = original_seed(*args, **kwargs)
@@ -366,7 +366,7 @@ def test_t0928_prepare_boundaries_use_final_reservation_status(pd, cluster_env,
             _t0928_set_status(board, "T-6112", "draft" if state == "final-draft" else "open")
         return result
 
-    monkeypatch.setattr(delegate_prepare, "_ticket_round_seed", seed)
+    monkeypatch.setattr(delegate_prepare, "_ticket_round_form", seed)
     plan = delegate_prepare.prepare_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), cluster="C-status", role="architect",
                                    cwd=slot, )
     expected = {item.board_path for item in plan.rounds
@@ -393,7 +393,7 @@ def test_t0928_prepare_boundaries_reopen_records_nothing(pd, cluster_env, monkey
 
 
 @pytest.mark.parametrize("failure", ["before-reserve", "after-reserve", "laydown",
-                                     "ledger-first", "ledger-second", "sync"])
+                                     "record-first", "record-second", "sync"])
 def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, monkeypatch,
                                                            capsys, failure):
     pm_home, slot, tickets = cluster_env
@@ -409,7 +409,7 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
 
     monkeypatch.setattr(round_maintenance, "_rounds_mutation_sync_paths", sync)
     if failure == "before-reserve":
-        monkeypatch.setattr(delegate_prepare, "_ticket_round_seed",
+        monkeypatch.setattr(delegate_prepare, "_ticket_round_form",
                             lambda *a, **k: (_ for _ in ()).throw(delegate_errors.DelegateError("예약 전 오류")))
     elif failure == "after-reserve":
         monkeypatch.setattr(round_rules, "parse_round_filename",
@@ -423,14 +423,14 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
             return original(path, *args, **kwargs)
 
         monkeypatch.setattr(delegate_copy_store, "_write_exclusive_file", write)
-    elif failure.startswith("ledger-"):
+    elif failure.startswith("record-"):
         original = delegate_copy_store._append_delegate_rounds_ledger
         count = []
 
         def append(home, row):
             count.append(row)
-            if len(count) == (1 if failure == "ledger-first" else 2):
-                raise delegate_errors.DelegateError("장부 오류")
+            if len(count) == (1 if failure == "record-first" else 2):
+                raise delegate_errors.DelegateError("기록 오류")
             return original(home, row)
 
         monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", append)
@@ -447,8 +447,8 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
         diagnostic = str(caught.value) + capsys.readouterr().err
         assert "예약한 board 라운드" in diagnostic
         assert str(run_root) in diagnostic
-    assert len(_ledger_rows(pm_home)) == (
-        2 if failure == "sync" else 1 if failure == "ledger-second" else 0)
+    assert len(_record_rows(pm_home)) == (
+        2 if failure == "sync" else 1 if failure == "record-second" else 0)
     assert len(syncs) == (1 if failure == "sync" else 0)
 
 
@@ -468,15 +468,15 @@ def test_cluster_prepare_reserves_nothing_when_one_member_fails_the_judgment(
             pm_paths.home_at(Path(pm_home).resolve()), cluster="C-part", role="architect", cwd=slot, )
 
     assert not _rounds_dir(pm_home, "T-6003").exists()
-    assert _ledger_rows(pm_home) == []
+    assert _record_rows(pm_home) == []
     assert not (slot / delegate_records.TICKET_COPY_REL_ROOT / "C-part").exists()
 
 
 def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env):
-    """크기 1 = 별도 코드 경로 0 — `--ticket` 도 묶음 키 run-dir 에 앉고 장부가 그 키를 싣는다.
+    """크기 1 = 별도 코드 경로 0 — `--ticket` 도 묶음 키 run-dir 에 앉고 기록이 그 키를 싣는다.
 
     `cluster` 필드가 없는 티켓은 `C-<티켓 ID>` 크기 1 묶음으로 읽힌다(명세 마이그레이션 0) —
-    그 이름의 장부가 예산을 선언하고 준비는 그 선언만 읽는다.
+    그 이름의 기록이 예산을 선언하고 준비는 그 선언만 읽는다.
     """
     pm_home, slot, tickets = cluster_env
     _write_spec(tickets, "T-6005")
@@ -490,7 +490,7 @@ def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env)
         slot / delegate_records.TICKET_COPY_REL_ROOT / "C-T-6005" / plan.run_id / "T-6005")
     # board 라운드 자리는 종전과 같다(라운드 파일 위치 불변).
     assert plan.board_path == _rounds_dir(pm_home, "T-6005") / "01-architect.md"
-    row = _ledger_rows(pm_home)[-1]
+    row = _record_rows(pm_home)[-1]
     assert row["cluster"] == "C-T-6005" and row["ticket"] == "T-6005"
 
     _fill(plan.path, "## 경계 실측\n- 실측")
@@ -503,11 +503,11 @@ def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env)
 
 
 def test_developer_round_after_reopen_is_prepared(pd, cluster_env):
-    """재개방한 옛 티켓의 라운드가 열린다 — `reopen` 이 open 진입 자리에서 장부를 만든다.
+    """재개방한 옛 티켓의 라운드가 열린다 — `reopen` 이 open 진입 자리에서 기록을 만든다.
 
-    장부 도입 이전 종결 티켓은 `cluster` 필드도 장부도 없어, 되돌린 뒤 준비가 "묶음 장부가
-    없습니다" 로 멈췄다(장부를 손으로 만들어야 진행되던 실증). 라운드 0건 티켓으로 세운다 —
-    라운드가 이미 쌓인 티켓은 장부와 무관하게 고정 수열이 먼저 거부한다.
+    기록 도입 이전 종결 티켓은 `cluster` 필드도 기록도 없어, 되돌린 뒤 준비가 "묶음 기록이
+    없습니다" 로 멈췄다(기록을 손으로 만들어야 진행되던 실증). 라운드 0건 티켓으로 세운다 —
+    라운드가 이미 쌓인 티켓은 기록과 무관하게 고정 수열이 먼저 거부한다.
     """
     pm_home, slot, tickets = cluster_env
     done = tickets.parent / "done"
@@ -532,14 +532,14 @@ def test_developer_round_after_reopen_is_prepared(pd, cluster_env):
     assert plan.cluster == "C-T-6020"
     assert plan.path.name == "02-developer.md"
     assert plan.board_path == _rounds_dir(pm_home, "T-6020") / "02-developer.md"
-    assert _ledger_rows(pm_home)[-1]["cluster"] == "C-T-6020"
+    assert _record_rows(pm_home)[-1]["cluster"] == "C-T-6020"
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 회수 — 티켓별 독립(교차 원자성 없음)
+# 돌려받기 — 티켓별 독립(교차 원자성 없음)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_run_dir_harvest_replaces_every_filled_round_and_closes_the_run(
+def test_run_dir_collect_replaces_every_filled_round_and_closes_the_run(
         pd, cluster_env):
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-full", ["T-6010", "T-6011"])
@@ -558,14 +558,14 @@ def test_run_dir_harvest_replaces_every_filled_round_and_closes_the_run(
         assert f"{round_plan.ticket} 실측" in board_text
     assert not plan.run_dir.exists()        # 마지막 자리가 닫히면 run 도 닫힌다.
     assert all(row["collected_at"] is not None
-               for row in _ledger_rows(pm_home) if row["collected_at"] is not None)
-    assert len([row for row in _ledger_rows(pm_home)
+               for row in _record_rows(pm_home) if row["collected_at"] is not None)
+    assert len([row for row in _record_rows(pm_home)
                 if row["collected_at"] is not None]) == 2
 
 
-def test_run_dir_harvest_warns_per_ticket_when_one_seat_is_still_the_seed(
+def test_run_dir_collect_warns_per_ticket_when_one_seat_is_still_the_seed(
         pd, cluster_env, capsys):
-    """부분 시드 — 그 티켓만 경고·board 무변경이고 나머지는 교체된다(교차 원자성 없음)."""
+    """부분 빈 양식 — 그 티켓만 경고·board 무변경이고 나머지는 교체된다(교차 원자성 없음)."""
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-partial", ["T-6012", "T-6013"])
     plan = delegate_prepare.prepare_cluster_copy(
@@ -585,15 +585,15 @@ def test_run_dir_harvest_warns_per_ticket_when_one_seat_is_still_the_seed(
     assert seeded.board_path.read_bytes() == seed_bytes  # board 무변경.
     err = capsys.readouterr().err
     assert "산출 없음" in err and seeded.ticket in err
-    # 채운 자리는 닫히고 시드 자리는 남는다 — 같은 세션을 이어 시킬 수 있다.
+    # 채운 자리는 닫히고 빈 양식 자리는 남는다 — 같은 세션을 이어 시킬 수 있다.
     assert not filled.run_dir.exists()
     assert seeded.run_dir.is_dir()
     assert plan.run_dir.is_dir()
 
 
-def test_run_dir_harvest_refuses_a_seat_the_ledger_does_not_authorize(
+def test_run_dir_collect_refuses_a_seat_the_record_does_not_authorize(
         pd, cluster_env):
-    """디렉터리 인자는 입력 형식일 뿐 — 인가는 장부 행이 한다(위조 자리는 회수되지 않는다)."""
+    """디렉터리 인자는 입력 형식일 뿐 — 인가는 기록 행이 한다(위조 자리는 돌려받지 않는다)."""
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-forge", ["T-6014"])
     plan = delegate_prepare.prepare_cluster_copy(
@@ -607,13 +607,13 @@ def test_run_dir_harvest_refuses_a_seat_the_ledger_does_not_authorize(
     outcomes = delegate_collect.collect_cluster_copy(
         pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
-    assert [item.ticket for item in outcomes] == ["T-6014"]   # 장부 행만 회수 대상이다.
+    assert [item.ticket for item in outcomes] == ["T-6014"]   # 기록 행만 돌려받기 대상이다.
     assert not _rounds_dir(pm_home, "T-9999").exists()
     with pytest.raises(delegate_errors.DelegateError, match="준비 기록 없음"):
         delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=smuggled, cwd=slot, )
 
 
-def test_run_dir_harvest_refuses_when_no_unharvested_row_matches(pd, cluster_env):
+def test_run_dir_collect_refuses_when_no_uncollected_row_matches(pd, cluster_env):
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-empty", ["T-6015"])
     plan = delegate_prepare.prepare_cluster_copy(
@@ -625,8 +625,8 @@ def test_run_dir_harvest_refuses_when_no_unharvested_row_matches(pd, cluster_env
         delegate_collect.collect_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )
 
 
-def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_env):
-    """마이그레이션 불변식 — 묶음 키가 없는 옛 행은 종전 경로로 그대로 회수된다."""
+def test_a_record_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_env):
+    """마이그레이션 불변식 — 묶음 키가 없는 옛 행은 종전 경로로 그대로 돌려받을 수 있다."""
     pm_home, slot, tickets = cluster_env
     _write_spec(tickets, "T-6016")
     board = _fixture_board(pd, pm_home)
@@ -657,23 +657,23 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
 
 
 # ════════════════════════════════════════════════════════════════════════
-# architect 선행 게이트 — 묶음 산출이 곧 티켓 파일이다(판정식 불변)
+# architect 선행 통과 조건 — 묶음 산출이 곧 티켓 파일이다(판정식 불변)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_cluster_architect_round_satisfies_the_per_ticket_design_gate(pd, cluster_env):
+def test_cluster_architect_round_satisfies_the_per_ticket_design_check(pd, cluster_env):
     pm_home, slot, tickets = cluster_env
-    _seed_cluster(pm_home, tickets, "C-gate", ["T-6020", "T-6021"], design="n/a")
+    _seed_cluster(pm_home, tickets, "C-check", ["T-6020", "T-6021"], design="n/a")
 
-    # 설계 단계를 건너뛴 요청 — 순서 축이 먼저 말한다(예약 자체가 없으므로 근거를 볼 것도 없다).
+    # 설계 단계를 건너뛴 요청 — 순서 검사가 먼저 말한다(예약 자체가 없으므로 근거를 볼 것도 없다).
     for ticket in ("T-6020", "T-6021"):
         with pytest.raises(delegate_errors.ClusterRoundBudgetExceeded, match="다음 라운드는 architect"):
             delegate_prepare.prepare_ticket_copy(
                 pm_paths.home_at(Path(pm_home).resolve()), ticket=ticket, role="developer", cwd=slot, )
 
     plan = delegate_prepare.prepare_cluster_copy(
-        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-gate", role="architect", cwd=slot, )
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-check", role="architect", cwd=slot, )
 
-    # 예약만 되고 회수 전인 시드 라운드는 근거가 아니다 — 이번엔 설계 근거 축이 거부한다.
+    # 예약만 되고 돌려받기 전인 빈 양식 라운드는 근거가 아니다 — 이번엔 설계 근거 검사가 거부한다.
     with pytest.raises(delegate_errors.DelegateError, match="developer 착수 전 architect 테스트 계약"):
         delegate_prepare.prepare_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), ticket="T-6020", role="developer", cwd=slot, )
@@ -701,7 +701,7 @@ def _machine_lines(out: str) -> list[dict]:
     return rows
 
 
-def test_cli_prepare_and_harvest_round_trip_over_a_run_dir(
+def test_cli_prepare_and_collect_round_trip_over_a_run_dir(
         pd, cluster_env, monkeypatch, capsys):
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-cli", ["T-6030", "T-6031"])
@@ -739,7 +739,7 @@ def test_cli_prepare_and_harvest_round_trip_over_a_run_dir(
 # ════════════════════════════════════════════════════════════════════════
 
 def _discard_member(tickets: Path, ticket: str) -> None:
-    """장부에 선언된 멤버 하나를 `discarded/` 로 옮긴다(`board.py discard` 의 결과 형상)."""
+    """기록에 선언된 멤버 하나를 `discarded/` 로 옮긴다(`board.py discard` 의 결과 구성)."""
     source = tickets / f"{ticket}-cluster.md"
     target_dir = tickets.parent / "discarded"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -752,15 +752,15 @@ def _discard_member(tickets: Path, ticket: str) -> None:
 def test_cluster_prepare_skips_a_discarded_member(pd, cluster_env):
     """선언 멤버 중 처분된 티켓은 묶음 라운드 준비 대상이 아니다(종결의 처분 종결 멤버와 같은 규칙)."""
     pm_home, slot, tickets = cluster_env
-    _seed_cluster(pm_home, tickets, "C-wave", ["T-6001", "T-6002"])
+    _seed_cluster(pm_home, tickets, "C-batch", ["T-6001", "T-6002"])
     _discard_member(tickets, "T-6002")
 
     plan = delegate_prepare.prepare_cluster_copy(
-        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-wave", role="architect", cwd=slot, )
+        pm_paths.home_at(Path(pm_home).resolve()), cluster="C-batch", role="architect", cwd=slot, )
 
     assert [round_plan.ticket for round_plan in plan.rounds] == ["T-6001"]
     assert sorted(item.name for item in plan.run_dir.iterdir()) == ["T-6001"]
     assert not _rounds_dir(pm_home, "T-6002").exists()
     board = _fixture_board(pd, pm_home)
-    assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-wave") == ("T-6001", "T-6002")
-    assert cluster_store.cluster_live_members(pm_paths.home_at(board.REPO), "C-wave") == ("T-6001",)
+    assert cluster_store.cluster_members(pm_paths.home_at(board.REPO), "C-batch") == ("T-6001", "T-6002")
+    assert cluster_store.cluster_live_members(pm_paths.home_at(board.REPO), "C-batch") == ("T-6001",)

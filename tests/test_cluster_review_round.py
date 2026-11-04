@@ -7,9 +7,9 @@
   (3) 프롬프트는 **기존 조립기**가 만든다 — 티켓 본문 N·변경 파일·검토 중점이 실값으로 실린다.
   (4) 같은 하네스(`ticket prepare --role code-reviewer`)와 다른 하네스(`--role code-reviewer
       --cluster`) 두 전송이 같은 준비·조립·돌려받기를 쓴다.
-  (5) 리뷰 잔여 판정 입력은 리뷰 라운드 파일과 명세 PM 영역뿐이다(내부 기록 파일 없음).
-  (6) final-fix 확인 입력은 read-only preflight하고, PM resolve가 기계 확인과 엄격히 이중 결속된
-      PM-owned terminal 확인을 기입한 뒤 완료 판정의 리뷰 잔여가 열린다(reviewer 재호출 경로 없음).
+  (5) 남은 리뷰 판정 입력은 리뷰 라운드 파일과 명세 PM 영역뿐이다(내부 기록 파일 없음).
+  (6) final-fix 확인 입력은 read-only preflight하고, PM resolve가 기계 확인과 엄격히 이중 연결된
+      PM-owned terminal 확인을 기입한 뒤 완료 판정의 남은 리뷰 판정이 열린다(reviewer 재호출 경로 없음).
 
 hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)를 따른다.
 """
@@ -84,16 +84,16 @@ _FIXTURE_DAY = datetime.date.today().isoformat()
 _FIXTURE_STAMP = f"{_FIXTURE_DAY}T00:00:00+00:00"
 
 _BASE_BRANCH = "task/main"
-_CLUSTER = "C-wave"
-_CLUSTER_BRANCH = "task/wave"
+_CLUSTER = "C-batch"
+_CLUSTER_BRANCH = "task/batch"
 _MEMBERS = ("T-8001", "T-8002")
 
 _FILLED_DESIGN_SECTION = (
     "## 설계\n"
     "- **경계 실측**: 묶음 리뷰 픽스처\n"
     "- **불변식**: run-dir 1 · 리뷰 자리 N\n"
-    "- **표면 상한**: 스냅샷 1\n"
-    "- **테스트 전략**: 입력·스냅샷·프롬프트·왕복\n"
+    "- **표면 상한**: 복사본 1\n"
+    "- **테스트 전략**: 입력·복사본·프롬프트·왕복\n"
 )
 
 
@@ -156,7 +156,7 @@ def _fixture_board(pd, home: Path):
     return board
 
 
-def _write_cluster_ledger(home: Path, *, replans: list | None = None) -> Path:
+def _write_cluster_record(home: Path, *, replans: list | None = None) -> Path:
     directory = home / ".project_manager" / "wiki" / "tickets" / "clusters"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{_CLUSTER}.md"
@@ -210,7 +210,7 @@ def review_env(tmp_path, pd, monkeypatch):
     for ticket in _MEMBERS:
         (tickets / f"{ticket}-review.md").write_text(
             _spec_text(ticket), encoding="utf-8", newline="\n")
-    _write_cluster_ledger(home)
+    _write_cluster_record(home)
     _fixture_board(pd, home)
     monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {
         "delegate_enabled": "true",
@@ -247,7 +247,7 @@ def test_review_input_spans_the_merge_base_with_the_integration_tip(pd, review_e
     assert review.branch == _CLUSTER_BRANCH and review.base_branch == _BASE_BRANCH
     assert review.merge_base == _git(
         home, "merge-base", _BASE_BRANCH, _CLUSTER_BRANCH).stdout.strip()
-    # 이 묶음이 만든 변경만 입력이다 — 통합 브랜치가 흡수한 변경은 조상이라 빠진다.
+    # 이 묶음이 만든 변경만 입력이다 — 통합 브랜치가 이미 합친 변경은 조상이라 빠진다.
     assert sorted(review.paths) == ["t-8001.py", "t-8002.py"]
     assert not hasattr(review, "diff")
     prompt = delegate_cluster_review.build_cluster_review_prompt(
@@ -264,11 +264,11 @@ def test_review_input_spans_the_merge_base_with_the_integration_tip(pd, review_e
 
 
 @requires_git
-def test_review_input_refuses_a_ledger_without_branch_coordinates(pd, review_env):
+def test_review_input_refuses_a_record_without_branch_coordinates(pd, review_env):
     home, _tickets = review_env
-    ledger = home / ".project_manager" / "wiki" / "tickets" / "clusters" / f"{_CLUSTER}.md"
-    ledger.write_text(
-        ledger.read_text(encoding="utf-8").replace(
+    cluster_record = home / ".project_manager" / "wiki" / "tickets" / "clusters" / f"{_CLUSTER}.md"
+    cluster_record.write_text(
+        cluster_record.read_text(encoding="utf-8").replace(
             f"branch: {_CLUSTER_BRANCH}\n", "branch:\n"),
         encoding="utf-8", newline="\n")
     board = _fixture_board(pd, home)
@@ -279,7 +279,7 @@ def test_review_input_refuses_a_ledger_without_branch_coordinates(pd, review_env
 
 @requires_git
 def test_review_input_refuses_an_empty_span(pd, review_env):
-    """빈 diff 는 가짜 통과의 입력이다 — 스냅샷·호출 전에 멈춘다."""
+    """빈 diff 는 가짜 통과의 입력이다 — 복사본·호출 전에 멈춘다."""
     home, _tickets = review_env
     assert _git(home, "reset", "-q", "--hard", _BASE_BRANCH).returncode == 0
     board = _fixture_board(pd, home)
@@ -299,7 +299,7 @@ _SESSION_MARKER_KEYS = (
 
 
 def _native_review_harness(pd, monkeypatch) -> None:
-    """같은 하네스 형상 — PM 하네스 표식과 리뷰 역할 하네스를 같은 값(claude)으로 고정한다."""
+    """같은 하네스 구성 — PM 하네스 표시와 리뷰 역할 하네스를 같은 값(claude)으로 고정한다."""
     for key in _SESSION_MARKER_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("CLAUDECODE", "1")
@@ -342,7 +342,7 @@ def _write_seat(pd, seat: Path, findings: list) -> None:
 def test_review_prepare_refuses_a_dirty_slot(pd, review_env, monkeypatch, capsys):
     """AT-007 — 리뷰 경로 밖 추적 파일 수정·추적 안 된 파일이 있으면 준비가 예약 앞에서 멈춘다.
 
-    변경 전에는 I1 이 리뷰 경로 drift 만 봐서 두 형상을 모두 통과시켰다.
+    변경 전에는 I1 이 리뷰 경로 drift 만 봐서 두 구성을 모두 통과시켰다.
     """
     home, _tickets = review_env
     _reserve_prior_rounds(pd, home, ("architect", "developer"))
@@ -370,7 +370,7 @@ def test_review_prepare_refuses_a_dirty_slot(pd, review_env, monkeypatch, capsys
 
 
 def _head_count(home: Path) -> int:
-    """그 트리의 HEAD 까지 커밋 수 — 회수가 커밋을 만들었는지 값으로 본다."""
+    """그 트리의 HEAD 까지 커밋 수 — 돌려받기가 커밋을 만들었는지 값으로 본다."""
     return int(_git(home, "rev-list", "--count", "HEAD").stdout.strip())
 
 
@@ -390,11 +390,11 @@ def _developer_round(pd, home: Path, ticket: str):
 
 
 @requires_git
-def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
-    """dev 라운드 회수가 그 슬롯에서 산출을 커밋한다 — 문안은 티켓 제목(손 커밋 0).
+def test_developer_round_collect_commits_the_slot_output(pd, review_env):
+    """dev 라운드 돌려받기가 그 슬롯에서 산출을 커밋한다 — 문안은 티켓 제목(손 커밋 0).
 
-    커밋이 없으면 스냅샷 결속(브랜치 tip 대조)이 그 산출을 미커밋으로 거부해 묶음 리뷰가
-    아예 서지 않는다 — 회수가 커밋 자리다.
+    커밋이 없으면 복사본 확인(브랜치 tip 대조)이 그 산출을 미커밋으로 거부해 묶음 리뷰가
+    아예 서지 않는다 — 돌려받기가 커밋 자리다.
     """
     home, _tickets = review_env
     ticket = _MEMBERS[0]
@@ -416,18 +416,18 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
     assert _head_count(home) == before + 1
     assert _git(home, "log", "-1", "--format=%s").stdout.strip() == f"묶음 리뷰 {ticket}"
     assert _git(home, "status", "--porcelain").stdout.strip() == ""
-    # 커밋된 산출은 이제 브랜치 tip 이라 리뷰 입력 결속을 그대로 통과한다.
+    # 커밋된 산출은 이제 브랜치 tip 이라 리뷰 입력 확인을 그대로 통과한다.
     board = _fixture_board(pd, home)
     delegate_cluster_review.assert_cluster_review_tree(
         delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home), repo=home)
 
 
 @requires_git
-def test_developer_round_harvest_without_the_architect_test_leaves_head_alone(
+def test_developer_round_collect_without_the_architect_test_leaves_head_alone(
         pd, review_env, tmp_path):
-    """architect 대상 테스트 변경이 없으면 회수·커밋 모두 거부한다.
+    """architect 대상 테스트 변경이 없으면 돌려받기·커밋 모두 거부한다.
 
-    슬롯은 PM 홈과 다른 트리다 — board 쓰기가 슬롯을 더럽히지 않는 실 형상이라, 이 판정이
+    슬롯은 PM 홈과 다른 트리다 — board 쓰기가 슬롯을 더럽히지 않는 실 구성이라, 이 판정이
     보는 변경은 dev 산출뿐이다.
     """
     home, _tickets = review_env
@@ -455,7 +455,7 @@ def test_developer_round_harvest_without_the_architect_test_leaves_head_alone(
 
 
 @requires_git
-def test_developer_harvest_uses_markerless_linked_app_worktree_diff(
+def test_developer_collect_uses_markerless_linked_app_worktree_diff(
         pd, review_env, tmp_path):
     """ADR-0069 app slot의 `.git` 파일만으로 developer diff 루트를 고정한다."""
     home, _tickets = review_env
@@ -491,7 +491,7 @@ def test_developer_harvest_uses_markerless_linked_app_worktree_diff(
         encoding="utf-8", newline="\n",
     )
 
-    # harvest의 AT 결속 판정이 실제로 연결하는 두 seam을 함께 탄다.
+    # 돌려받기의 AT 연결 판정이 실제로 부르는 두 함수를 함께 탄다.
     repo_root = pm_paths._repo_root_for_cwd(slot)
     changed = delegate_copy_git._developer_round_changed_paths(repo_root, base_rev=base_rev)
 
@@ -513,7 +513,7 @@ def test_developer_changed_paths_reports_unknown_base_revision(pd, tmp_path):
 @requires_git
 def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
         pd, review_env, capsys):
-    """위임 표면도 같은 결속이다 — 스냅샷도 예약도 만들지 않고 rc 1 이다."""
+    """위임 명령도 같은 확인을 거친다 — 복사본도 예약도 만들지 않고 rc 1 이다."""
     home, _tickets = review_env
     _reserve_prior_rounds(pd, home, ("architect", "developer"))
     assert _git(home, "checkout", "-q", _BASE_BRANCH).returncode == 0
@@ -523,7 +523,7 @@ def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
     rc = cli_delegate_run.main(pm_paths.home_at(pd.REPO),
         ["--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", str(home),
          "--output-dir", str(home.parent / "raw")],
-        run_fn=lambda *a, **k: pytest.fail("결속 거부 뒤 스폰되면 안 됨"),
+        run_fn=lambda *a, **k: pytest.fail("확인 거부 뒤 스폰되면 안 됨"),
     )
 
     assert rc == 1
@@ -564,7 +564,7 @@ def test_prompt_carries_every_ticket_body_changed_files_focus_and_diff(pd, revie
 
 @requires_git
 def test_prompt_leaves_the_block_requirement_to_the_round_seed(pd, review_env):
-    """구조화 블록 요구는 라운드 파일 시드가 소유한다 — 두 벌이면 갈린다."""
+    """구조화 블록 요구는 라운드 파일 빈 양식이 소유한다 — 두 벌이면 갈린다."""
     home, _tickets = review_env
     board = _fixture_board(pd, home)
     review = delegate_cluster_review.cluster_review_input(pm_paths.home_at(board.REPO), _CLUSTER, repo=home)
@@ -582,7 +582,7 @@ def test_prompt_leaves_the_block_requirement_to_the_round_seed(pd, review_env):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 위임 1회 — run-dir 1 · 리뷰 자리 N · 실행 root = 스냅샷 · 회수
+# 위임 1회 — run-dir 1 · 리뷰 자리 N · 실행 root = 복사본 · 돌려받기
 # ════════════════════════════════════════════════════════════════════════
 
 def _codex_reply(text: str = "DONE") -> str:
@@ -641,7 +641,7 @@ def _reserve_prior_rounds(pd, home: Path, roles: tuple[str, ...]) -> None:
 
 
 def _cross_claude_review(pd, monkeypatch) -> None:
-    """다른 하네스 형상 — PM 하네스 표식 없음 · 리뷰 역할 하네스 claude."""
+    """다른 하네스 구성 — PM 하네스 표시 없음 · 리뷰 역할 하네스 claude."""
     for key in _SESSION_MARKER_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(conf_store, 'local_config', lambda *_a, **_k: {
@@ -657,7 +657,7 @@ def _slot_seats(home: Path) -> list[Path]:
 
 
 @requires_git
-def test_cross_review_runs_in_the_slot_and_harvests(pd, review_env, monkeypatch, capsys):
+def test_cross_review_runs_in_the_slot_and_collects(pd, review_env, monkeypatch, capsys):
     """AT-012 — 교차 리뷰는 `--cwd` 슬롯에서 실행되고 끝나면 멤버 라운드를 돌려받는다.
 
     분리 실행 기록·내부 기록 파일은 생기지 않는다(그 경로는 지웠다).
@@ -687,7 +687,6 @@ def test_cross_review_runs_in_the_slot_and_harvests(pd, review_env, monkeypatch,
     assert seen["cwd"].resolve() == home.resolve()
     assert len(seen["seats"]) == len(_MEMBERS)
     assert f"리뷰 대상 트리: {home.resolve()}" in seen["prompt"]
-    assert "격리 스냅샷" not in seen["prompt"]
     assert seen["prompt"].count("### 리뷰 입력 좌표") == 1
     assert "```sh" in seen["prompt"] and "T-8001 구현" not in seen["prompt"]
     # 리뷰 세션은 fresh 라 이전 번호를 모른다 — 자리마다 준비가 확정한 다음 finding ID 를 싣는다.
@@ -734,7 +733,7 @@ def test_cross_review_with_the_pm_harness_states_the_native_rule(
 
 @requires_git
 def test_delegation_refuses_when_the_cluster_budget_is_spent(pd, review_env, capsys):
-    """묶음 예산은 리뷰 위임 표면에서도 같은 판정이다(우회 인자 없음)."""
+    """묶음 예산은 리뷰 위임 명령에서도 같은 판정이다(우회 인자 없음)."""
     home, _tickets = review_env
     _reserve_prior_rounds(
         pd, home, ("architect", "developer", "code-reviewer", "developer"))
@@ -770,18 +769,17 @@ def test_cluster_and_ticket_targets_are_mutually_exclusive(pd, review_env, capsy
 
 _REMOVED_REVIEW_CLI = (
     ("--role", "code-reviewer", "--cluster", _CLUSTER, "--cwd", "{home}", "--background"),
-    ("--role", "code-reviewer", "--gate", "T-8001", "--cwd", "{home}"),
     ("cluster", "wait", "--cluster", _CLUSTER, "--cwd", "{home}"),
-    ("rounds", "recalculate", "--gate", "T-8001"),
+    ("rounds", "recalculate", "--review-ticket", "T-8001"),
     ("rounds", "report"),
     ("--rounds-report",),
     ("rounds", "--rounds-report"),
-    ("rounds", "resolve", "--gate", "T-8001", "--pm-verified"),
+    ("rounds", "resolve", "--review-ticket", "T-8001", "--pm-verified"),
 )
 
 
 def test_review_cli_has_no_background_or_wait(pd, review_env, capsys):
-    """AT-013 — 지운 CLI 표면(분리 실행·대기·재계산·조회·게이트 처분)은 전부 사용 오류(rc 2)다."""
+    """AT-013 — 지운 CLI 명령(분리 실행·대기·재계산·조회·리뷰 집계 티켓 처분)은 전부 사용 오류(rc 2)다."""
     home, _tickets = review_env
     codes = {}
     for argv in _REMOVED_REVIEW_CLI:
@@ -795,7 +793,7 @@ def test_review_cli_has_no_background_or_wait(pd, review_env, capsys):
 
 
 def test_removed_cluster_subcommand_has_no_parser(pd):
-    """지운 `cluster wait` 는 조회 표면(실행 단일 진실 parser)에도 남지 않는다."""
+    """지운 `cluster wait` 는 조회 명령(실행 단일 진실 parser)에도 남지 않는다."""
     assert delegate_cmd.build_subcommand_parser("cluster") is None
 
 
@@ -849,7 +847,6 @@ def test_ticket_prepare_code_reviewer_writes_engine_prompt(
     assert "t-8001.py" in prompt and "t-8002.py" in prompt
     assert "### 리뷰 입력 좌표" in prompt and "```sh" in prompt
     assert "```diff" not in prompt and "T-8001 구현" not in prompt
-    assert "격리 스냅샷" not in prompt
     rows = delegate_records.ticket_copy_records(home)
     assert len(rows) == len(_MEMBERS)
     assert all(row["role"] == "code-reviewer" and row.get("base_rev") == head for row in rows)
@@ -884,9 +881,9 @@ def test_ticket_prepare_review_takes_the_cluster_only(
 
 @pytest.mark.parametrize("change", ["tracked", "untracked", "commit"])
 @requires_git
-def test_review_harvest_refuses_when_slot_changed_after_prepare(
+def test_review_collect_refuses_when_slot_changed_after_prepare(
         pd, review_env, monkeypatch, capsys, change):
-    """AT-004 — 준비 뒤 슬롯이 바뀌면 돌려받기가 board·장부·run-dir 을 바꾸지 않고 거부한다.
+    """AT-004 — 준비 뒤 슬롯이 바뀌면 돌려받기가 board·기록·run-dir 을 바꾸지 않고 거부한다.
 
     변경 전에는 code-reviewer 행에 `base_rev` 가 없고 돌려받기가 트리를 보지 않아 수락했다.
     """
@@ -925,7 +922,7 @@ def test_review_harvest_refuses_when_slot_changed_after_prepare(
 
 
 @requires_git
-def test_review_harvest_accepts_round_file_only_change(pd, review_env, monkeypatch, capsys):
+def test_review_collect_accepts_round_file_only_change(pd, review_env, monkeypatch, capsys):
     """AT-005 — 라운드 파일과 ignore 대상만 바뀐 정상 리뷰는 돌려받기가 통과한다(정상 사용)."""
     home, _tickets = review_env
     _reserve_prior_rounds(pd, home, ("architect", "developer"))
@@ -950,17 +947,17 @@ def test_review_harvest_accepts_round_file_only_change(pd, review_env, monkeypat
 
 
 @requires_git
-def test_review_harvest_refuses_a_row_without_base_rev(pd, review_env, capsys):
+def test_review_collect_refuses_a_row_without_base_rev(pd, review_env, capsys):
     """AT-006 — `base_rev` 없는 code-reviewer 행(옛 CLI 준비)은 HEAD 로 대신하지 않고 거부한다."""
     home, _tickets = review_env
     _reserve_prior_rounds(pd, home, ("architect", "developer"))
     plan = delegate_prepare.prepare_cluster_copy(
         pm_paths.home_at(Path(home).resolve()), cluster=_CLUSTER, role="code-reviewer", cwd=home, )
-    ledger = home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
-    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    rounds_file = home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
+    rows = [json.loads(line) for line in rounds_file.read_text(encoding="utf-8").splitlines()]
     for row in rows:
         row.pop("base_rev", None)
-    ledger.write_text(
+    rounds_file.write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8")
     seat = plan.rounds[0]
@@ -1024,7 +1021,7 @@ def test_native_review_must_fix_blocks_completion_until_disposed(
     """AT-001 — CLI 실행 없이 같은 하네스 경로로 만든 리뷰의 미처분 must-fix 가 판정을 막는다.
 
     준비(`ticket prepare`) → 라운드 파일 작성 → 돌려받기(`ticket collect`) 뒤 내부 기록 파일이
-    없어도 완료·종결 판정이 잔여를 거부하고, 기각 처분 기입 뒤에는 둘 다 통과한다.
+    없어도 완료·종결 판정이 남은 것을 거부하고, 기각 처분 기입 뒤에는 둘 다 통과한다.
     """
     home, tickets = review_env
     _reserve_prior_rounds(pd, home, ("architect", "developer"))
@@ -1140,15 +1137,15 @@ def _accepted_ticket(pd, *, command: str = "echo hi", expected: str = "hi",
 
 
 def _pm_owned_ticket(
-    pd, *, scope: str = "pm-owned: ADR·current-truth·local ledger",
+    pd, *, scope: str = "pm-owned: ADR·current-truth·local 기록",
     reason: str = "pm-owned",
 ):
-    """F-003 형상 — PM-owned dual binding 외에는 terminal 확인 경로가 없다."""
+    """F-003 구성 — PM-owned dual binding 외에는 terminal 확인 경로가 없다."""
     finding = _finding("F-003")
     finding["fix_contract"] = {
         "location": "/pm-home/.project_manager/.local/review_rounds.json",
-        "failure": "legacy resolution 32건이 current ledger에 남음",
-        "design": "PM이 같은 fix 단계에서 권위 문서와 local ledger를 일회 정리",
+        "failure": "legacy resolution 32건이 current 기록에 남음",
+        "design": "PM이 같은 fix 단계에서 권위 문서와 local 기록을 일회 정리",
         "test": "PM 홈 절대경로 audit 결과와 current-truth 정렬을 종결 기록한다",
         "command": "python3 -c \"print(0)\"",
         "expected": "0",
@@ -1174,7 +1171,7 @@ def _partially_confirmed_pm_owned_ticket(pd):
     pm_owned["fix_contract"] = {
         "location": "/pm-home/.project_manager/.local/review_rounds.json",
         "failure": "PM-owned current-truth 감사 미완",
-        "design": "PM이 같은 fix 단계에서 권위 문서와 local ledger를 일회 정리",
+        "design": "PM이 같은 fix 단계에서 권위 문서와 local 기록을 일회 정리",
         "test": "PM 홈 절대경로 audit 결과와 current-truth 정렬을 종결 기록한다",
         "command": "python3 -c \"print(0)\"",
         "expected": "0",
@@ -1184,7 +1181,7 @@ def _partially_confirmed_pm_owned_ticket(pd):
         _reviewer_round_text(pd, [_finding("F-001"), pm_owned]),
     )
     pm_owned_decision = _decision("F-003")
-    pm_owned_decision["scope"] = "pm-owned: ADR·current-truth·local ledger"
+    pm_owned_decision["scope"] = "pm-owned: ADR·current-truth·local 기록"
     spec = _disposition_block(
         pd, 1, [_decision("F-001"), pm_owned_decision],
     )
@@ -1204,7 +1201,7 @@ def _partially_confirmed_pm_owned_ticket(pd):
 
 
 @requires_git
-def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
+def test_review_accepted_over_a_cluster_concatenates_per_ticket_output(
         pd, review_env, monkeypatch, capsys):
     home, tickets = review_env
     board = _fixture_board(pd, home)
@@ -1213,7 +1210,7 @@ def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
     monkeypatch.setattr(pd, "REPO", board.REPO)
     import contextlib
     for ticket in _MEMBERS:
-        spec, rounds = _accepted_ticket(pd)  # noqa: PLW2901 — 티켓마다 같은 형상
+        spec, rounds = _accepted_ticket(pd)  # noqa: PLW2901 — 티켓마다 같은 구성
         path = tickets / f"{ticket}-review.md"
         path.write_text(path.read_text(encoding="utf-8") + "\n" + spec,
                         encoding="utf-8", newline="")
@@ -1297,7 +1294,7 @@ def test_confirmation_command_runs_a_real_process(pd, tmp_path):
 
 
 def test_observed_excerpt_keeps_the_expected_value_visible(pd):
-    """발췌가 기대값을 잘라내면 엔진이 적은 resolved 를 파서가 거부한다(왕복 정합)."""
+    """발췌가 기대값을 잘라내면 엔진이 적은 resolved 를 파서가 거부한다(왕복 일치)."""
     limit = review_contract.PM_REVIEW_CONFIRMATION_OBSERVED_LIMIT
     noisy = ("x" * limit) + "찾는값" + ("y" * limit)
     excerpt = review_contract._pm_review_observed_excerpt(noisy, "찾는값")
@@ -1305,7 +1302,7 @@ def test_observed_excerpt_keeps_the_expected_value_visible(pd):
 
 
 def test_written_confirmation_section_round_trips_through_the_parser(pd, tmp_path):
-    """엔진이 기입한 확인 절이 파서를 통과하고 accepted 잔여를 닫는다."""
+    """엔진이 기입한 확인 절이 파서를 통과하고 accepted 남은 것을 닫는다."""
     spec, rounds = _accepted_ticket(pd, command="echo hi", expected="hi")
     template = review_state.pm_review_verify_template(spec, rounds)
     rows = review_command.run_pm_review_confirmations(
@@ -1315,8 +1312,8 @@ def test_written_confirmation_section_round_trips_through_the_parser(pd, tmp_pat
 
     assert section.startswith(review_contract.PM_REVIEW_CONFIRMATION_SECTION)
     assert "<관측값>" not in section and "<resolved|" not in section
-    delta = review_state.parse_pm_review_accepted(spec + "\n" + section, rounds)
-    assert delta.accepted == ()
+    review_accepted = review_state.parse_pm_review_accepted(spec + "\n" + section, rounds)
+    assert review_accepted.accepted == ()
     assert review_state.pm_verified_evidence_problem(
         spec + "\n" + section, rounds,
         reviewer_role="code-reviewer", surface_floor=1,
@@ -1352,7 +1349,7 @@ def test_pm_owned_terminal_confirmation_is_generated_without_running_a_command(
 
 @pytest.mark.parametrize(("scope", "reason"), (
     ("F-003 developer 범위", "pm-owned"),
-    ("pm-owned: ADR·current-truth·local ledger", "design-judgment"),
+    ("pm-owned: ADR·current-truth·local 기록", "design-judgment"),
 ))
 def test_pm_owned_terminal_confirmation_rejects_scope_verify_spoof(
     pd, scope, reason,
@@ -1487,10 +1484,10 @@ def test_confirmation_same_round_merge_rejects_conflict_and_spoof_atomically(
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 설계 축도 reviewer의 수정·테스트 계약으로 fix에서 종결한다
+# 설계 변경(design_change)도 reviewer의 수정·테스트 계약으로 fix에서 종결한다
 # ════════════════════════════════════════════════════════════════════════
 
-def test_design_axis_uses_the_reviewer_machine_test_contract(pd):
+def test_design_change_uses_the_reviewer_machine_test_contract(pd):
     spec, rounds = _accepted_ticket(pd, design_change=True)
     template = review_state.pm_review_verify_template(spec, rounds)
 
@@ -1502,14 +1499,14 @@ def test_design_axis_uses_the_reviewer_machine_test_contract(pd):
         "confirmations": [{"id": "F-001", "status": "resolved",
                            "command": "echo hi", "observed": "hi"}],
     }, ensure_ascii=False, separators=(",", ":"))
-    delta = review_state.parse_pm_review_accepted(
+    review_accepted = review_state.parse_pm_review_accepted(
         spec + f"\n```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
         rounds,
     )
-    assert delta.accepted == ()
+    assert review_accepted.accepted == ()
 
 
-def test_design_axis_residual_closes_after_the_fix_test_confirmation(pd):
+def test_design_change_residual_closes_after_the_fix_test_confirmation(pd):
     spec, rounds = _accepted_ticket(pd, design_change=True)
 
     before = review_state.pm_verified_evidence_problem(
@@ -1525,10 +1522,6 @@ def test_design_axis_residual_closes_after_the_fix_test_confirmation(pd):
 
     assert before is not None and "F-001" in before
     assert after is None
-
-
-def test_design_axis_replan_escape_hatch_is_removed(pd):
-    assert not hasattr(pd, "_design_axis_replan_block")
 
 
 @requires_git
@@ -1559,11 +1552,11 @@ def test_focus_file_is_read_as_prompt_source_and_missing_paths_fail_loud(
 
 
 @requires_git
-def test_resolve_cluster_completes_without_internal_ledger(
+def test_resolve_cluster_completes_without_internal_record(
         pd, review_env, monkeypatch, capsys):
-    """AT-014 — 엔진이 확인 커맨드를 실행해 기입하고 완료 판정의 리뷰 잔여를 연다(내부 기록 없음).
+    """AT-014 — 엔진이 확인 커맨드를 실행해 기입하고 완료 판정의 남은 리뷰 판정을 연다(내부 기록 없음).
 
-    변경 전에는 기계 확인 기입 뒤 "내부 리뷰 게이트 장부 항목이 없음" 으로 rc 1 이었다.
+    변경 전에는 기계 확인 기입 뒤 "내부 리뷰 통과 조건 기록 항목이 없음" 으로 rc 1 이었다.
     """
     home, tickets = review_env
     board = _fixture_board(pd, home)
@@ -1717,17 +1710,17 @@ def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes
 
 @requires_git
 def test_resolve_cluster_is_scoped_to_the_machine_evidence_disposition(pd, capsys):
-    """묶음 처분은 `--pm-verified` 전용이다 — 게이트별 판단은 묶음으로 접지 않는다."""
+    """묶음 처분은 `--pm-verified` 전용이다 — 리뷰 집계 티켓별 판단은 묶음으로 합치지 않는다."""
     with pytest.raises(SystemExit):
         delegate_cmd._cmd_rounds(pm_paths.home_at(pd.REPO), ["resolve", "--cluster", _CLUSTER, "--into", "T-0001"])
     err = capsys.readouterr().err
     assert "--pm-verified" in err and "--into" not in err
 
     with pytest.raises(SystemExit) as caught:
-        delegate_cmd._cmd_rounds(pm_paths.home_at(pd.REPO), ["resolve", "--cluster", _CLUSTER, "--gate", "T-0001",
+        delegate_cmd._cmd_rounds(pm_paths.home_at(pd.REPO), ["resolve", "--cluster", _CLUSTER, "--review-ticket", "T-0001",
                         "--pm-verified"])
     assert caught.value.code == 2
-    assert "unrecognized arguments: --gate" in capsys.readouterr().err
+    assert "unrecognized arguments: --review-ticket" in capsys.readouterr().err
 
 
 def test_resolve_identity_accepts_task_and_repo_slot_execution(pd, review_env, monkeypatch):
@@ -1749,7 +1742,7 @@ def test_resolve_identity_accepts_task_and_repo_slot_execution(pd, review_env, m
 
 @requires_git
 def test_dry_run_previews_the_cluster_without_side_effects(pd, review_env, capsys):
-    """미리보기는 부작용 0 이다 — 스냅샷도 예약도 만들지 않고 입력만 값으로 보인다."""
+    """미리보기는 부작용 0 이다 — 복사본도 예약도 만들지 않고 입력만 값으로 보인다."""
     home, _tickets = review_env
     _reserve_prior_rounds(pd, home, ("architect", "developer"))
     # 검토 중점 파일은 슬롯 밖에 둔다 — 슬롯 안 추적 안 된 파일은 준비 I1 의 작업 트리 변경이다.
@@ -1778,15 +1771,15 @@ def test_dry_run_previews_the_cluster_without_side_effects(pd, review_env, capsy
 
 
 @requires_git
-def test_a_refused_seat_harvest_does_not_pass_as_success(pd, review_env, capsys):
-    """자리 하나가 회수 거부면 위임 rc 는 성공이 아니다(다른 자리 교체는 보존)."""
+def test_a_refused_seat_collect_does_not_pass_as_success(pd, review_env, capsys):
+    """자리 하나가 돌려받기 거부면 위임 rc 는 성공이 아니다(다른 자리 교체는 보존)."""
     home, _tickets = review_env
     _reserve_prior_rounds(pd, home, ("architect", "developer"))
 
     def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
         run_dir = _add_dir(list(argv))
         seats = sorted(run_dir.glob("*/*-code-reviewer.md"))
-        # 첫 자리만 정상 산출 — 둘째는 시드 골격을 남긴 채 블록을 하나 더 붙여 거부시킨다.
+        # 첫 자리만 정상 산출 — 둘째는 빈 양식을 남긴 채 블록을 하나 더 붙여 거부시킨다.
         header = seats[0].read_text(encoding="utf-8").partition("\n")[0]
         seats[0].write_text(header + _reviewer_block(pd, []),
                             encoding="utf-8", newline="")
@@ -1987,13 +1980,13 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
     slot = home / "work/proj_1"
     assert _git(home, "worktree", "add", "-q", str(slot), _BASE_BRANCH).returncode == 0
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [{"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased", "role": "work"}]}), encoding="utf-8")
-    ledger_path = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), _CLUSTER)
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), _CLUSTER)
-    ledger["branch"] = None
-    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger)
-    before = (ledger_path.read_bytes(), pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes(),
+    record_path = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), _CLUSTER)
+    cluster_data = cluster_store.load_cluster(pm_paths.home_at(board.REPO), _CLUSTER)
+    cluster_data["branch"] = None
+    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), cluster_data)
+    before = (record_path.read_bytes(), pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes(),
               tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md"))))
-    # 미결속 resolver는 base_branch가 있어도 대여 기록을 읽지 않는다.
+    # 미연결 resolver는 base_branch가 있어도 대여 기록을 읽지 않는다.
     reads = []
     with monkeypatch.context() as patch:
         patch.setattr(lease_store, "_read_lease_rows_status",
@@ -2005,7 +1998,7 @@ def test_t0930_confirmation_unbound(pd, review_env, monkeypatch, task_only):
     identity = argparse.Namespace(task="main", repo=None if task_only else "proj", slot=None if task_only else 1)
     with pytest.raises(delegate_errors.DelegateError, match="cluster new"):
         delegate_cmd._cluster_confirmation_tree(pm_paths.home_at(home), _CLUSTER, identity=identity)
-    assert (ledger_path.read_bytes(), pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes(),
+    assert (record_path.read_bytes(), pm_paths.leases_file(pm_paths.home_at(board.REPO)).read_bytes(),
             tuple(path.read_bytes() for path in sorted(tickets.glob("T-*.md")))) == before
 
 

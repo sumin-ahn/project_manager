@@ -1,4 +1,4 @@
-"""T-0684 — versioned reviewer finding/disposition과 accepted-only delta."""
+"""T-0684 — versioned reviewer finding/disposition과 accepted-only 수락한 지적."""
 from __future__ import annotations
 
 from pm_engine.infra import pm_paths
@@ -24,13 +24,13 @@ PM_DELEGATE = REPO / ".project_manager" / "tools" / "pm_delegate.py"
 
 
 def _load_pd():
-    spec = importlib.util.spec_from_file_location("pm_delegate_review_delta", PM_DELEGATE)
+    spec = importlib.util.spec_from_file_location("pm_delegate_review_accepted", PM_DELEGATE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-# 리뷰 블록 세대는 엔진 상수에서 읽는다 — 승격이 있으면 픽스처가 자동으로 따라간다.
+# 리뷰 블록 버전은 엔진 상수에서 읽는다 — 승격이 있으면 픽스처가 자동으로 따라간다.
 BLOCK_VERSION = review_form.PM_REVIEW_VERSION
 LEGACY_BLOCK_VERSION = review_form.PM_REVIEW_LEGACY_VERSION
 DISPOSITION_VERSION = review_form.PM_REVIEW_DISPOSITION_VERSION
@@ -45,8 +45,8 @@ class _Ticket:
     """명세(PM 판정 블록의 자리) + 라운드 목록 — 판정 입력 한 쌍을 조립한다.
 
     라운드 순번은 **조립 순서**로 1..N 이 붙는다([[ADR-0090]] 티켓 전역 순번). `+` 는 옛
-    단일 파일 픽스처의 표기를 그대로 유지하려고 남긴 것이고, 두 축(명세/라운드)은 섞이지
-    않는다 — 문자열을 더하면 명세에, `_Ticket` 을 더하면 각 축에 붙는다.
+    단일 파일 픽스처의 표기를 그대로 유지하려고 남긴 것이고, 두 입력(명세/라운드)은 섞이지
+    않는다 — 문자열을 더하면 명세에, `_Ticket` 을 더하면 각 입력에 붙는다.
     """
 
     def __init__(self, spec: str = "", round_texts: tuple[str, ...] = ()):
@@ -84,7 +84,7 @@ def _round(pd, ordinal: int, text: str, role: str = "code-reviewer", *, pending:
     )
 
 
-def _delta(pd, ticket: _Ticket):
+def _accepted(pd, ticket: _Ticket):
     return review_state.parse_pm_review_accepted(ticket.spec, ticket.rounds(pd))
 
 
@@ -165,11 +165,11 @@ def test_classification_disposition_table_3x3(pd, classification, decision):
 
     if decision == "decision-required":
         with pytest.raises(review_form.PMReviewError, match="선행 권위 결정") as caught:
-            _delta(pd, ticket)
+            _accepted(pd, ticket)
         assert caught.value.code == "decision-required"
         return
-    delta = _delta(pd, ticket)
-    rendered = review_contract.render_pm_review_accepted("T-0684", delta)
+    review_accepted = _accepted(pd, ticket)
+    rendered = review_contract.render_pm_review_accepted("T-0684", review_accepted)
     if decision == "accepted":
         assert "F-001" in rendered and classification in rendered
         assert "PM accepted 근거" in rendered and "허용 범위" in rendered
@@ -197,7 +197,7 @@ def test_strict_review_schema_rejects_missing_duplicate_extra_and_unknown(pd, mu
     mutator(value)
     ticket = _review_section(value) + _disposition(1, [_decision("accepted")])
     with pytest.raises(review_form.PMReviewError, match=pattern) as caught:
-        _delta(pd, ticket)
+        _accepted(pd, ticket)
     assert caught.value.code == "malformed"
 
 
@@ -214,7 +214,7 @@ def test_v3_fix_contract_rejects_placeholder_in_every_string_field(pd, field):
     }) + _disposition(1, [_decision("accepted")])
 
     with pytest.raises(review_form.PMReviewError, match="placeholder") as caught:
-        _delta(pd, ticket)
+        _accepted(pd, ticket)
     assert caught.value.code == "malformed"
 
 
@@ -224,12 +224,12 @@ def test_declared_contract_placeholder_words_are_all_parser_inputs(pd):
         assert review_form._CONTRACT_PLACEHOLDER_RE.search(word)
 
 
-# 계약 값의 결속 대상은 **첫 공백 구분 토큰** 하나다 — 산문 전역을 훑던 옛 규칙은 "옛 경로
-# 대신 새 경로" 같은 서술의 옛 경로까지 diff 결속 대상으로 삼아, 이번 라운드가 손대지 않을
-# 파일을 회수가 요구하게 했다. 두 축(architect target · reviewer fix test)이 같은 파서다.
+# 계약 값의 연결 대상은 **첫 공백 구분 토큰** 하나다 — 산문 전역을 훑던 옛 규칙은 "옛 경로
+# 대신 새 경로" 같은 서술의 옛 경로까지 diff 연결 대상으로 삼아, 이번 라운드가 손대지 않을
+# 파일을 돌려받기가 요구하게 했다. 두 기준(architect target · reviewer fix test)이 같은 파서다.
 
 def test_contract_test_target_binds_only_the_first_token(pd):
-    """첫 토큰만 결속한다 — 뒤따르는 산문의 경로는 대상이 아니다(조사·구두점은 계속 벗긴다)."""
+    """첫 토큰만 연결한다 — 뒤따르는 산문의 경로는 대상이 아니다(조사·구두점은 계속 벗긴다)."""
     assert review_contract._contract_test_targets(
         "tests/test_pm_review_accepted.py에 첫 토큰 회귀를 추가한다. "
         "tests/test_round_budget.py 는 이번 라운드가 손대지 않는다.",
@@ -243,8 +243,8 @@ def test_contract_test_target_binds_only_the_first_token(pd):
         "tests/test_a.py::test_case 로 좁힌 대상", "reviewer 추가 회귀 F-003.test",
     ) == ("tests/test_a.py",)
 
-    # 첫 토큰이 테스트 경로가 아니면 결속 0 — 붙일 테스트가 없는 지적을 허용하는 축은 통과,
-    # 대상이 계약인 축은 종전 문구로 거부다.
+    # 첫 토큰이 테스트 경로가 아니면 연결 0 — 붙일 테스트가 없는 지적을 허용하는 기준은 통과,
+    # 대상이 계약인 기준은 종전 문구로 거부다.
     prose_first = "회귀는 tests/test_a.py 에 추가한다"
     assert review_contract._contract_test_targets(
         prose_first, "reviewer 추가 회귀 F-004.test", required=False,
@@ -253,8 +253,8 @@ def test_contract_test_target_binds_only_the_first_token(pd):
         review_contract._contract_test_targets(prose_first, "reviewer 추가 회귀 F-004.test")
 
 
-def test_architect_target_axis_uses_the_same_first_token_rule(pd):
-    """architect `target` 축도 같은 파서다 — 축마다 다른 결속 규칙을 두지 않는다."""
+def test_architect_target_uses_the_same_first_token_rule(pd):
+    """architect `target` 기준도 같은 파서다 — 기준마다 다른 연결 규칙을 두지 않는다."""
     multi = (
         "tests/test_pm_review_accepted.py::test_first (cwd=work/slot_1) · "
         "tests/test_round_budget.py 는 대상이 아니다"
@@ -270,7 +270,7 @@ def test_architect_target_axis_uses_the_same_first_token_rule(pd):
         "tests": [{
             "id": "AT-001", "target": multi,
             "command": "python3 -m pytest tests/test_pm_review_accepted.py -q",
-            "expected": "1 passed", "negative": "첫 토큰 결속이 풀리면 실패",
+            "expected": "1 passed", "negative": "첫 토큰 연결이 풀리면 실패",
         }],
     }, ensure_ascii=False)
     parsed = review_contract.parse_architect_tests(
@@ -284,10 +284,10 @@ def test_architect_target_axis_uses_the_same_first_token_rule(pd):
 
 
 def test_contract_value_hints_state_the_first_token_rule(pd):
-    """두 값 힌트(architect `target` · reviewer `fix_contract.test`)가 첫 토큰 결속 규칙을 적는다.
+    """두 값 힌트(architect `target` · reviewer `fix_contract.test`)가 첫 토큰 연결 규칙을 적는다.
 
-    고지가 없으면 산문으로 시작한 값이 `required=False` 축에서 조용히 0건으로 통과해, 그
-    finding 의 fix diff 결속이 사라진다. 고지와 판정은 한 규칙이라 같은 케이스에서 함께 본다.
+    고지가 없으면 산문으로 시작한 값이 `required=False` 기준에서 조용히 0건으로 통과해, 그
+    finding 의 fix diff 연결이 사라진다. 고지와 판정은 한 규칙이라 같은 케이스에서 함께 본다.
     """
     rule = "첫 공백 구분 토큰 하나만 결속한다(여러 파일은 계약 행을 여러 개 쓴다)"
     architect = review_form.render_architect_test_skeleton()
@@ -295,7 +295,7 @@ def test_contract_value_hints_state_the_first_token_rule(pd):
     assert rule in architect, architect
     assert rule in reviewer, reviewer
 
-    # 자리표시자 괄호 형태는 유지된다 — 미편집 시드는 계속 placeholder 로 거부된다.
+    # 자리표시자 괄호 형태는 유지된다 — 미편집 빈 양식은 계속 placeholder 로 거부된다.
     seeded = (
         json.loads(architect.splitlines()[1])["tests"][0]["target"],
         json.loads(reviewer.splitlines()[1])["findings"][0]["fix_contract"]["test"],
@@ -304,9 +304,9 @@ def test_contract_value_hints_state_the_first_token_rule(pd):
         assert value.startswith("<") and value.endswith(">")
         assert review_form._CONTRACT_PLACEHOLDER_RE.search(value)
 
-    # 고지한 그대로의 파서 거동 — 첫 토큰만 결속하고, 산문으로 시작하면 결속 0 이다.
+    # 고지한 그대로의 파서 거동 — 첫 토큰만 연결하고, 산문으로 시작하면 연결 0 이다.
     assert review_contract._contract_test_targets(
-        "tests/test_pm_review_accepted.py::test_case 는 결속하고 "
+        "tests/test_pm_review_accepted.py::test_case 는 연결하고 "
         "뒤따르는 tests/test_round_budget.py 는 대상이 아니다",
         "reviewer 추가 회귀 F-001.test", required=False,
     ) == ("tests/test_pm_review_accepted.py",)
@@ -394,7 +394,7 @@ def test_severity_is_required_with_a_closed_value_set(pd, mutator, pattern):
     mutator(value)
     ticket = _review_section(value) + _disposition(1, [_decision("accepted")])
     with pytest.raises(review_form.PMReviewError, match=pattern) as caught:
-        _delta(pd, ticket)
+        _accepted(pd, ticket)
     assert caught.value.code == "malformed"
 
 
@@ -409,10 +409,10 @@ def _legacy_finding(finding: dict, *, keep_severity: bool) -> dict:
 
 
 def test_severity_boundary_is_the_block_generation_not_the_ticket_state(pd):
-    """severity 요구의 경계는 **블록 payload 세대**다 — 티켓 상태·ordinal 이 아니다.
+    """severity 요구의 경계는 **블록 payload 버전**이다 — 티켓 상태·ordinal 이 아니다.
 
-    이미 봉인된 v1 블록(진행 중 티켓의 옛 라운드)은 부재를 그대로 읽어 '미기재'로 표기하고,
-    현행 세대 블록은 부재를 거부한다. 두 세대가 한 티켓에 섞여 있어도 각자 규칙을 받는다.
+    이미 확정된 v1 블록(진행 중 티켓의 옛 라운드)은 부재를 그대로 읽어 '미기재'로 표기하고,
+    현행 버전 블록은 부재를 거부한다. 두 버전이 한 티켓에 섞여 있어도 각자 규칙을 받는다.
     """
     legacy = _review_section({
         "version": LEGACY_BLOCK_VERSION,
@@ -421,8 +421,8 @@ def test_severity_boundary_is_the_block_generation_not_the_ticket_state(pd):
         )],
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted", finding_id="F-001")])
-    delta = _delta(pd, legacy)
-    rendered = review_contract.render_pm_review_accepted("T-0696", delta)
+    review_accepted = _accepted(pd, legacy)
+    rendered = review_contract.render_pm_review_accepted("T-0696", review_accepted)
     assert f"- 심각도: {review_form.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in rendered
 
     current_without_severity = _review_section({
@@ -433,7 +433,7 @@ def test_severity_boundary_is_the_block_generation_not_the_ticket_state(pd):
         "confirmations": [],
     })
     with pytest.raises(review_form.PMReviewError, match="missing=\\['severity'\\]") as caught:
-        _delta(pd, current_without_severity)
+        _accepted(pd, current_without_severity)
     assert caught.value.code == "malformed"
 
 
@@ -446,18 +446,18 @@ def test_legacy_block_may_also_include_severity_from_the_transition_window(pd):
         )],
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted")])
-    delta = _delta(pd, ticket)
-    assert "- 심각도: should-fix" in review_contract.render_pm_review_accepted("T-0696", delta)
+    review_accepted = _accepted(pd, ticket)
+    assert "- 심각도: should-fix" in review_contract.render_pm_review_accepted("T-0696", review_accepted)
 
 
-def test_delta_render_exposes_severity_and_channel(pd):
-    """dev 는 산문을 다시 읽지 않고 delta 렌더에서 우선순위와 채널을 안다."""
+def test_accepted_render_exposes_severity_and_channel(pd):
+    """dev 는 산문을 다시 읽지 않고 수락한 지적 렌더에서 우선순위와 채널을 안다."""
     ticket = _review_section({
         "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect", severity="should-fix")],
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted")])
-    rendered = review_contract.render_pm_review_accepted("T-0696", _delta(pd, ticket))
+    rendered = review_contract.render_pm_review_accepted("T-0696", _accepted(pd, ticket))
     assert "- 심각도: should-fix" in rendered
     assert f"- 채널: {review_form.INTERNAL_REVIEW_ROLE}" in rendered
 
@@ -465,11 +465,11 @@ def test_delta_render_exposes_severity_and_channel(pd):
 @pytest.mark.parametrize("ticket", _duplicate_member_tickets())
 def test_json_duplicate_member_is_malformed_at_every_schema_depth(pd, ticket):
     with pytest.raises(review_form.PMReviewError, match="duplicate JSON member") as caught:
-        _delta(pd, ticket)
+        _accepted(pd, ticket)
     assert caught.value.code == "malformed"
 
 
-def test_pending_and_decision_required_block_all_accepted_delta(pd):
+def test_pending_and_decision_required_block_all_accepted_findings(pd):
     findings = [
         _finding("implementation-defect", finding_id="F-001"),
         _finding("spec-violation", finding_id="F-002"),
@@ -479,7 +479,7 @@ def test_pending_and_decision_required_block_all_accepted_delta(pd):
     )
     pending += _disposition(1, [_decision("accepted", finding_id="F-001")])
     with pytest.raises(review_form.PMReviewError) as caught:
-        _delta(pd, pending)
+        _accepted(pd, pending)
     assert caught.value.code == "pending"
 
     required = _review_section(
@@ -490,7 +490,7 @@ def test_pending_and_decision_required_block_all_accepted_delta(pd):
         _decision("decision-required", finding_id="F-002"),
     ])
     with pytest.raises(review_form.PMReviewError) as caught:
-        _delta(pd, required)
+        _accepted(pd, required)
     assert caught.value.code == "decision-required"
 
 
@@ -505,18 +505,18 @@ def test_duplicate_blocks_extra_disposition_and_finding_zero_mixture_fail_closed
         + "```pm-review-v1\n{\"version\":1,\"findings\":[],\"confirmations\":[]}\n```\n",
     ))
     with pytest.raises(review_form.PMReviewError, match="review block 중복"):
-        _delta(pd, duplicate_review + _disposition(1, [_decision("accepted")]))
+        _accepted(pd, duplicate_review + _disposition(1, [_decision("accepted")]))
 
     with pytest.raises(review_form.PMReviewError, match="disposition block 중복"):
-        _delta(pd, review + _disposition(1, [_decision("accepted")])
+        _accepted(pd, review + _disposition(1, [_decision("accepted")])
             + _disposition(1, [_decision("accepted")])
         )
     with pytest.raises(review_form.PMReviewError, match="extra disposition ID"):
-        _delta(pd, review + _disposition(1, [
+        _accepted(pd, review + _disposition(1, [
             _decision("accepted"), _decision("accepted", finding_id="F-999"),
         ]))
     with pytest.raises(review_form.PMReviewError, match="finding_zero disposition 불일치"):
-        _delta(pd, review + _disposition(1, zero=True))
+        _accepted(pd, review + _disposition(1, zero=True))
 
 
 def test_accepted_only_filter_and_confirmation_state_transitions(pd):
@@ -537,8 +537,8 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
         "findings": [],
         "confirmations": [{"id": "F-001", "status": "unresolved", "evidence": "probe rc=1"}],
     })
-    delta = _delta(pd, first + disposition + one_unresolved)
-    rendered = review_contract.render_pm_review_accepted("T-0684", delta)
+    review_accepted = _accepted(pd, first + disposition + one_unresolved)
+    rendered = review_contract.render_pm_review_accepted("T-0684", review_accepted)
     assert "F-001" in rendered
     assert "F-002" not in rendered and "PM rejected" not in rendered
 
@@ -548,7 +548,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
         "confirmations": [{"id": "F-001", "status": "regressed", "evidence": "probe rc=2"}],
     })
     with pytest.raises(review_form.PMReviewError) as caught:
-        _delta(pd, first + disposition + one_unresolved + two_unresolved)
+        _accepted(pd, first + disposition + one_unresolved + two_unresolved)
     assert caught.value.code == "repeated-unresolved"
 
     resolved = _review_section({
@@ -556,8 +556,8 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
         "findings": [],
         "confirmations": [{"id": "F-001", "status": "resolved", "evidence": "probe rc=0"}],
     })
-    delta = _delta(pd, first + disposition + one_unresolved + resolved)
-    assert review_contract.render_pm_review_accepted("T-0684", delta) == ""
+    review_accepted = _accepted(pd, first + disposition + one_unresolved + resolved)
+    assert review_contract.render_pm_review_accepted("T-0684", review_accepted) == ""
 
     rejected_confirmation = _review_section({
         "version": BLOCK_VERSION,
@@ -565,7 +565,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
         "confirmations": [{"id": "F-002", "status": "resolved", "evidence": "재등장"}],
     })
     with pytest.raises(review_form.PMReviewError, match="rejected finding ID"):
-        _delta(pd, first + disposition + rejected_confirmation)
+        _accepted(pd, first + disposition + rejected_confirmation)
 
 
 def test_indented_or_overlong_review_fence_cannot_hide_a_duplicate(pd):
@@ -576,10 +576,10 @@ def test_indented_or_overlong_review_fence_cannot_hide_a_duplicate(pd):
     }) + _disposition(1, [_decision("accepted")])
     hidden = "\n  ```pm-review-v1\n{}\n```\n"
     with pytest.raises(review_form.PMReviewError, match="손상된 review fence"):
-        _delta(pd, ticket + hidden)
+        _accepted(pd, ticket + hidden)
     hidden = "\n````pm-review-v1\n{}\n````\n"
     with pytest.raises(review_form.PMReviewError, match="손상된 review fence"):
-        _delta(pd, ticket + hidden)
+        _accepted(pd, ticket + hidden)
 
 
 def test_finding_zero_requires_cross_checked_pass_and_compact_pm_acceptance(pd):
@@ -587,11 +587,11 @@ def test_finding_zero_requires_cross_checked_pass_and_compact_pm_acceptance(pd):
         {"version": BLOCK_VERSION, "findings": [], "confirmations": []}, pass_zero=True,
     )
     with pytest.raises(review_form.PMReviewError) as caught:
-        _delta(pd, zero)
+        _accepted(pd, zero)
     assert caught.value.code == "pending"
-    delta = _delta(pd, zero + _disposition(1, zero=True))
-    assert delta.finding_zero is True
-    assert review_contract.render_pm_review_accepted("T-0684", delta) == ""
+    review_accepted = _accepted(pd, zero + _disposition(1, zero=True))
+    assert review_accepted.finding_zero is True
+    assert review_contract.render_pm_review_accepted("T-0684", review_accepted) == ""
 
 
 def test_design_acceptance_without_authority_reference_is_decision_required(pd):
@@ -601,7 +601,7 @@ def test_design_acceptance_without_authority_reference_is_decision_required(pd):
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted", prerequisite="plain prose")])
     with pytest.raises(review_form.PMReviewError) as caught:
-        _delta(pd, ticket)
+        _accepted(pd, ticket)
     assert caught.value.code == "decision-required"
 
 
@@ -622,7 +622,7 @@ def _materialize(pd, ticket: _Ticket, tickets_dir: Path, ticket_id: str) -> Path
     return spec_path
 
 
-def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
+def test_review_accepted_cli_dispatch_renders_success_and_prescribes_pending(
         pd, monkeypatch, tmp_path, capsys):
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     accepted = _review_section({
@@ -658,8 +658,8 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
 def test_machine_confirmation_merges_into_the_same_confirmation_history(pd):
     """T-0786 — PM 기계 확인은 reviewer 확인과 같은 확인 이력에 합류한다(불변식 6).
 
-    dev verify 골격(`pm-review-verify-v1`)과 PM 기계 확인(`pm-review-confirmation-v1`)은
-    이 파일이 다루는 `parse_pm_review_accepted` 의 병합 축에 새로 얹힌 입력이다 — 별도
+    dev verify 빈 양식(`pm-review-verify-v1`)과 PM 기계 확인(`pm-review-confirmation-v1`)은
+    이 파일이 다루는 `parse_pm_review_accepted` 의 병합 기준에 새로 얹힌 입력이다 — 별도
     reviewer 재투입 없이 accepted 가 비는지가 이 병합의 전부다.
     """
     review = _review_section({
@@ -687,12 +687,12 @@ def test_machine_confirmation_merges_into_the_same_confirmation_history(pd):
     }) + "\n```\n")
 
     rounds = review.rounds(pd) + [dev_round]
-    delta = review_state.parse_pm_review_accepted((review + confirmation).spec, rounds)
-    assert delta.accepted == ()
+    review_accepted = review_state.parse_pm_review_accepted((review + confirmation).spec, rounds)
+    assert review_accepted.accepted == ()
 
 
-def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys):
-    """순번 빈틈(삭제 의심)은 판정 전에 막는다 — [[ADR-0090]] 3.8 의 유일한 red 축."""
+def test_review_accepted_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys):
+    """순번 빈틈(삭제 의심)은 판정 전에 막는다 — [[ADR-0090]] 3.8 의 유일한 red 사유."""
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     ticket = _review_section({
         "version": BLOCK_VERSION,
@@ -716,20 +716,20 @@ def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys)
     assert "round-gap" in error and "빠진 순번" in error
 
 
-# ── 시드 그대로인(pending) 리뷰 라운드는 판정 표면 밖 ────────────────────
+# ── 빈 양식 그대로인(pending) 리뷰 라운드는 판정 범위 밖 ────────────────────
 
-def _pending_seed_text(pd, role: str, spec_text: str, previous_round: tuple[int, str]) -> str:
-    """엔진이 렌더한 시드 본문 그대로 — 헤더는 직전 라운드 첫 줄을 재사용해 손으로 다시 짓지 않는다."""
+def _pending_form_text(pd, role: str, spec_text: str, previous_round: tuple[int, str]) -> str:
+    """엔진이 렌더한 빈 양식 본문 그대로 — 헤더는 직전 라운드 첫 줄을 재사용해 손으로 다시 짓지 않는다."""
     previous_header = previous_round[1].splitlines()[0]
     body = round_form.render_ticket_growth_section_form(role, spec_text, previous_round=previous_round)
     return f"{previous_header}\n\n{body}"
 
 
 def test_pending_seed_review_round_is_excluded_from_the_judgment_surface(pd):
-    """kill·미회수로 시드 그대로 남은 다음 라운드는 판정 표면에 오르지 않는다.
+    """kill·돌려받지 않음으로 빈 양식 그대로 남은 다음 라운드는 판정 범위에 오르지 않는다.
 
-    시드 골격의 자리표시 finding(`class` 값이 `<...>` 그대로)이 실 선언으로 읽히면
-    `parse_pm_review_accepted` 가 malformed 로 막힌다 — 표면 함수뿐 아니라, 그 함수를 거치지
+    빈 양식의 자리표시 finding(`class` 값이 `<...>` 그대로)이 실 선언으로 읽히면
+    `parse_pm_review_accepted` 가 malformed 로 막힌다 — 판정 범위 함수뿐 아니라, 그 함수를 거치지
     않고 라운드를 직접 순회해 reviewer block 을 모으는 내부 구간도 같은 배제가 있어야
     막히지 않는다.
     """
@@ -740,18 +740,18 @@ def test_pending_seed_review_round_is_excluded_from_the_judgment_surface(pd):
     }).round_texts[0])
     spec = _disposition(1, [_decision("accepted")]).spec
     round2 = _round(
-        pd, 2, _pending_seed_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
+        pd, 2, _pending_form_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
     )
 
     assert review_state._pm_review_surface_rounds([round1, round2]) == [round1]
-    delta = review_state.parse_pm_review_accepted(spec, [round1, round2])
-    assert [finding.id for finding, _disposition in delta.accepted] == ["F-001"]
+    review_accepted = review_state.parse_pm_review_accepted(spec, [round1, round2])
+    assert [finding.id for finding, _disposition in review_accepted.accepted] == ["F-001"]
 
 
 def test_pending_seed_round_does_not_shadow_a_legitimate_trailing_round(pd):
-    """정당한 산출이 있는 뒤 라운드는 그 뒤에 낀 시드 라운드가 있어도 그대로 판정된다.
+    """정당한 산출이 있는 뒤 라운드는 그 뒤에 낀 빈 양식 라운드가 있어도 그대로 판정된다.
 
-    round2 가 F-001 을 실제로 해소 확인하는 라운드다. round3(시드 그대로)을 더 붙여도
+    round2 가 F-001 을 실제로 해소 확인하는 라운드다. round3(빈 양식 그대로)을 더 붙여도
     round2 의 산출은 과잉 배제 없이 그대로 반영되어야 한다."""
     first = _review_section({
         "version": BLOCK_VERSION,
@@ -768,24 +768,24 @@ def test_pending_seed_round_does_not_shadow_a_legitimate_trailing_round(pd):
     rounds = ticket.rounds(pd)
     round3 = _round(
         pd, 3,
-        _pending_seed_text(pd, "code-reviewer", ticket.spec, (2, rounds[1].text)),
+        _pending_form_text(pd, "code-reviewer", ticket.spec, (2, rounds[1].text)),
         pending=True,
     )
 
     assert review_state._pm_review_surface_rounds(rounds + [round3]) == rounds
-    delta = review_state.parse_pm_review_accepted(ticket.spec, rounds + [round3])
+    review_accepted = review_state.parse_pm_review_accepted(ticket.spec, rounds + [round3])
     # 값 핀은 3필드 전부다 — `confirmation_cursor` 는 [[T-0805]] 가 뒤에 실은 필드이고, 여기서
-    # F-001 이 2 인 것은 라운드 2 의 reviewer 확인이 그 ID 의 인과 floor 이기 때문이다(시드
+    # F-001 이 2 인 것은 라운드 2 의 reviewer 확인이 그 ID 의 인과 floor 이기 때문이다(빈 양식
     # 라운드와 무관). 기본값에 기대 두 필드만 적으면 필드가 늘어난 순간 핀이 조용히 헐거워진다.
-    assert delta == review_state.parse_pm_review_accepted(ticket.spec, rounds) == review_form.PMReviewDelta(
+    assert review_accepted == review_state.parse_pm_review_accepted(ticket.spec, rounds) == review_form.PMReviewAccepted(
         (), False, (("F-001", 2),),
     )
 
 
-def test_pending_seed_round_leaves_delta_output_bytes_unchanged(pd):
-    """pending 라운드가 없는 형상과 비교해 delta 산출이 bytes 로 같다.
+def test_pending_seed_round_leaves_accepted_output_bytes_unchanged(pd):
+    """pending 라운드가 없는 구성과 비교해 수락한 지적 산출이 bytes 로 같다.
 
-    시드 라운드를 뒤에 덧붙여도 이미 accepted 판정된 F-001 의 delta 렌더는 한 글자도
+    빈 양식 라운드를 뒤에 덧붙여도 이미 accepted 판정된 F-001 의 수락한 지적 렌더는 한 글자도
     안 바뀐다."""
     round1 = _round(pd, 1, _review_section({
         "version": BLOCK_VERSION,
@@ -794,23 +794,23 @@ def test_pending_seed_round_leaves_delta_output_bytes_unchanged(pd):
     }).round_texts[0])
     spec = _disposition(1, [_decision("accepted")]).spec
     round2 = _round(
-        pd, 2, _pending_seed_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
+        pd, 2, _pending_form_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
     )
     baseline = [round1]
     with_pending = [round1, round2]
 
-    baseline_delta = review_state.parse_pm_review_accepted(spec, baseline)
-    with_pending_delta = review_state.parse_pm_review_accepted(spec, with_pending)
-    assert baseline_delta == with_pending_delta
+    baseline_accepted = review_state.parse_pm_review_accepted(spec, baseline)
+    with_pending_accepted = review_state.parse_pm_review_accepted(spec, with_pending)
+    assert baseline_accepted == with_pending_accepted
     assert (
-        review_contract.render_pm_review_accepted("T-TEST", baseline_delta)
-        == review_contract.render_pm_review_accepted("T-TEST", with_pending_delta)
+        review_contract.render_pm_review_accepted("T-TEST", baseline_accepted)
+        == review_contract.render_pm_review_accepted("T-TEST", with_pending_accepted)
     )
 
 
 def test_pending_seed_round_leaves_prep_surface_output_bytes_unchanged(pd):
-    """pending 라운드가 없는 형상과 비교해 disposition-template·confirmable 산출이 bytes 로
-    같다 — 아직 PM 미판정인 F-001 의 준비 골격·확인 대상 ID 는 시드 라운드를 덧붙여도
+    """pending 라운드가 없는 구성과 비교해 disposition-template·confirmable 산출이 bytes 로
+    같다 — 아직 PM 미판정인 F-001 의 준비 빈 양식·확인 대상 ID 는 빈 양식 라운드를 덧붙여도
     그대로다."""
     round1 = _round(pd, 1, _review_section({
         "version": BLOCK_VERSION,
@@ -819,7 +819,7 @@ def test_pending_seed_round_leaves_prep_surface_output_bytes_unchanged(pd):
     }).round_texts[0])
     spec = ""
     round2 = _round(
-        pd, 2, _pending_seed_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
+        pd, 2, _pending_form_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
     )
     baseline = [round1]
     with_pending = [round1, round2]
@@ -834,7 +834,7 @@ def test_pending_seed_round_leaves_prep_surface_output_bytes_unchanged(pd):
     )
 
 
-# ── 세 CLI 표면(review accepted·review verify-template·rounds resolve --pm-verified) ──
+# ── 세 CLI 명령(review accepted·review verify-template·rounds resolve --pm-verified) ──
 
 def _materialize_rounds(pd, spec_text: str, rounds, tickets_dir: Path, ticket_id: str) -> Path:
     """명세 파일 + (역할이 섞일 수 있는) 라운드 목록을 실 파일로 깐다."""
@@ -850,8 +850,8 @@ def _materialize_rounds(pd, spec_text: str, rounds, tickets_dir: Path, ticket_id
     return spec_path
 
 
-def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path, capsys):
-    """실 라운드 파일로 깐 티켓에서 시드 라운드가 섞여도 `review accepted` CLI 는 rc=0."""
+def test_review_accepted_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path, capsys):
+    """실 라운드 파일로 깐 티켓에서 빈 양식 라운드가 섞여도 `review accepted` CLI 는 rc=0."""
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     round1_text = _review_section({
         "version": BLOCK_VERSION,
@@ -859,7 +859,7 @@ def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path
         "confirmations": [],
     }).round_texts[0]
     spec = _disposition(1, [_decision("accepted")]).spec
-    round2_text = _pending_seed_text(pd, "code-reviewer", spec, (1, round1_text))
+    round2_text = _pending_form_text(pd, "code-reviewer", spec, (1, round1_text))
     ticket_path = _materialize(pd, _Ticket(spec, (round1_text, round2_text)), tickets_dir, "T-0684")
 
     loaded = round_form.load_rounds(tickets_dir, "T-0684", ticket_text=spec)
@@ -878,7 +878,7 @@ def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path
 
 
 def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path, capsys):
-    """developer 라운드 뒤에 시드 그대로인 리뷰 라운드가 이어져도 `verify-template` CLI 는 rc=0."""
+    """developer 라운드 뒤에 빈 양식 그대로인 리뷰 라운드가 이어져도 `verify-template` CLI 는 rc=0."""
     tickets_dir = tmp_path / ".project_manager" / "wiki" / "tickets"
     round1_text = _review_section({
         "version": BLOCK_VERSION,
@@ -899,7 +899,7 @@ def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch
         })
         + "\n```\n"
     ), role="developer")
-    round3_text = _pending_seed_text(pd, "code-reviewer", spec, (1, round1_text))
+    round3_text = _pending_form_text(pd, "code-reviewer", spec, (1, round1_text))
     round3 = _round(pd, 3, round3_text, pending=True)
     ticket_path = _materialize_rounds(
         pd, spec, [round1, dev_round, round3], tickets_dir, "T-0786",
@@ -921,9 +921,9 @@ def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch
 
 
 def test_pm_verified_evidence_problem_ignores_a_pending_seed_round(pd, tmp_path):
-    """`rounds resolve --pm-verified` 가 소비하는 증거 판정도 시드 라운드에 막히지 않는다.
+    """`rounds resolve --pm-verified` 가 소비하는 증거 판정도 빈 양식 라운드에 막히지 않는다.
 
-    선언 CLI 와 같은 형태로(내부 채널 스코프 · 표면 하한 = 장부 잔여 1) 호출한다 — T-0791 에서
+    선언 CLI 와 같은 형태로(내부 채널 스코프 · 판정 범위 하한 = 기록의 남은 건수 1) 호출한다 — T-0791 에서
     무스코프 전역 분기를 삭제했다."""
     tickets_dir = tmp_path / "tickets"
     round1_text = _review_section({
@@ -944,7 +944,7 @@ def test_pm_verified_evidence_problem_ignores_a_pending_seed_round(pd, tmp_path)
         })
         + "\n```\n"
     ), role="developer")
-    round3_text = _pending_seed_text(pd, "code-reviewer", "", (1, round1_text))
+    round3_text = _pending_form_text(pd, "code-reviewer", "", (1, round1_text))
     round3 = _round(pd, 3, round3_text, pending=True)
 
     confirmation = _Ticket(f"```{review_form.PM_REVIEW_CONFIRMATION_BLOCK}\n" + json.dumps({

@@ -2,17 +2,17 @@
 
 실측한 결함(2026-08-09·PM 33차 릴리즈): additional_reviewer 가 읽는 인스턴스 소유 overlay
 `.project_manager/review_context.local.md` 가 어느 ignore 파일에도 없어(`git check-ignore` rc=1)
-PM 홈에 untracked 로 표면화했다. per-clone 파일이 커밋에 유입되면 인스턴스마다 다른 추가 리뷰어
+PM 홈에 untracked 로 드러냈다. per-clone 파일이 커밋에 유입되면 인스턴스마다 다른 추가 리뷰어
 프롬프트 보강이 공유 히스토리에 박힌다.
 
 `local.conf`·`.local/` 과 같은 per-clone 클래스라 엔진 `.project_manager/.gitignore` 에 등재하고
-manifest 전파로 출하 템플릿 전 타깃(=채택자가 받는 사본)에 내린다. 가드는 세 축이다:
+manifest 전파로 출하 템플릿 전 타깃(=채택자가 받는 사본)에 내린다. 가드는 세 가지다:
 
   ① 생성 주체와 ignore 규칙이 같은 파일을 가리킨다 — `round_store._load_review_context` 에서
      실제 판독 경로의 이름·디렉터리를 단언한다.
   ② 엔진 canonical + 출하 템플릿 전 타깃에 규칙이 등재돼 있다 — 엔진만 고치면 채택자에게 닿는
      채널(pm_import 트리 복사·pm_update manifest 전파)이 비어 출하 누락으로 남는다([[T-0473]] 선례).
-  ③ `git check-ignore` 실판정 — 임시 채택자 repo 에 실 파일을 만들어 rc=0 과 `git status` 무표면화를
+  ③ `git check-ignore` 실판정 — 임시 채택자 repo 에 실 파일을 만들어 rc=0 과 `git status` 에 드러나지 않음을
      확인한다. 등재 문자열만 보면 상위 절의 부정 패턴·구문 오류로 규칙이 죽어 있어도 통과한다.
 
 과일반화 금지(ticket 결정)도 함께 못박는다 — 패턴은 정확명이라 채택자 dev-state
@@ -248,7 +248,7 @@ def test_check_ignore_leaves_adopter_owned_local_docs_trackable(
             "정확명 등재가 와일드카드로 번졌다(T-0608 결정 위반)")
 
 
-# ── sensitivity — 가드가 실제로 도는지 (가짜 게이트 방지) ──────────────────────
+# ── sensitivity — 가드가 실제로 도는지 (가짜 통과 방지) ──────────────────────
 
 
 @requires_git_binary

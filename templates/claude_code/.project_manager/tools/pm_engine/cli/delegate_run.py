@@ -1,4 +1,4 @@
-"""일반 위임 CLI 실행과 회수 조정 (층: cli)."""
+"""일반 위임 CLI 실행과 돌려받기 조정 (층: cli)."""
 from __future__ import annotations
 
 import os
@@ -32,7 +32,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
          git_run_fn: Callable | None = None) -> int:
     engine_home = home
     # `lint` 서브커맨드 — flat 위임 옵션(--role/--prompt-file/--cwd required)과 분리한 별도 경로.
-    # 위임과 인자 형상이 다르므로 build_arg_parser 앞에서 분기(subparsers 로 위임 required 를 흩지
+    # 위임과 인자 구성이 다르므로 build_arg_parser 앞에서 분기(subparsers 로 위임 required 를 흩지
     # 않는다). never-block(항상 rc=0).
     resolved = list(sys.argv[1:] if argv is None else argv)
     if resolved and resolved[0] == "lint":
@@ -61,7 +61,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
     profile_source = "cli-override" if (args.harness and args.model) else "local-conf"
 
     # --cwd는 실행 타깃뿐 아니라 config/board 소유자를 정하는 명시 입력이다. 먼저 git 루트를
-    # 확정한 뒤 worktree lease 장부로 PM 홈을 해소해, 어느 엔진 사본을 호출했는지와 분리한다.
+    # 확정한 뒤 worktree lease 기록으로 PM 홈을 해소해, 어느 엔진 사본을 호출했는지와 분리한다.
     if not delegate_env._cwd_in_git_repo(cwd, git_run_fn):
         print(
             f"오류: --cwd 는 git 저장소 루트이거나 그 하위여야 합니다: {cwd}\n"
@@ -101,8 +101,8 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
         return 1
 
     # 위임 마스터 스위치 (비-dry-run·기본 ON·명시 off = rc=3). **매핑 해소보다 앞** — 위임 자체가
-    # 비허용인 형상은 "매핑 미설정"(rc=1)이 아니라 disabled(rc=3)로 응답해야 진단이 정확하다.
-    # dry-run 은 항상 미리보기 허용(미호출)이라 이 게이트를 통과시킨다.
+    # 비허용인 구성은 "매핑 미설정"(rc=1)이 아니라 disabled(rc=3)로 응답해야 진단이 정확하다.
+    # dry-run 은 항상 미리보기 허용(미호출)이라 이 통과 조건을 통과시킨다.
     if not args.dry_run and not delegate_config._is_enabled(conf):
         print(
             "위임이 꺼져 있습니다 — 채널(native/cross) 무관 "
@@ -131,7 +131,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
     # [R] cold 재투입 비용 가드. write 역할만 코드 재섭취 중복을 막는다. read 역할은
     # generate≠evaluate 독립성을 위해 라운드마다 cold 판정하는 것이 정상이라 무마찰 통과시킨다.
     # resume/dry-run은 대상이 아니고, `--fresh <사유>`는 명시 우회다.
-    # 장부 부재·손상은 이 가드만 fail-open하며, 안전 경계인 raw 기록 자체를 복구/초기화하지 않는다.
+    # 기록 부재·손상은 이 가드만 fail-open하며, 안전 경계인 raw 기록 자체를 복구/초기화하지 않는다.
     if (
         effective_ticket
         and args.role in delegate_run_rules.WRITE_ROLES
@@ -145,12 +145,12 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                 effective_ticket, args.role, harness, completed,
             ))
 
-    # 폴백 **비발동** 판정(loud skip·설정은 그대로 두고 이번 실행만 끈다). 설정 자체는 위에서 해소해
-    # 불완전 폴백 설정을 fail-loud 로 잡되(설정 정합은 override 와 무관), 아래 사유면 이번 실행에선
+    # 대체 하네스 **비발동** 판정(loud skip·설정은 그대로 두고 이번 실행만 끈다). 설정 자체는 위에서 해소해
+    # 불완전 대체 하네스 설정을 fail-loud 로 잡되(설정 일치는 override 와 무관), 아래 사유면 이번 실행에선
     # 쓰지 않는다 — "설정돼 있는데 안 썼다"를 정확히 말할 수 있어야 loud skip 이 성립한다:
     #   CLI 완전지정(--harness AND --model) = 설정 미참조 원자 override(resolve_delegate 불변) —
     #      일회성 명시 실행이 요청 밖 하네스로 넘어가면 그 불변이 깨진다.
-    #   폴백 tuple 의 하네스/모델이 primary 와 동일 — 한도 소진된 같은 채널을 유료로 재타격할 뿐이다
+    #   대체 하네스 tuple 의 하네스/모델이 primary 와 동일 — 한도 소진된 같은 채널을 유료로 재타격할 뿐이다
     #      (reasoning 만 다른 경우도 같은 계정/모델 한도라 skip 한다).
     fallback_skip: str | None = None
     if fallback is not None:
@@ -180,8 +180,8 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
             print(f"오류: --prompt-file 읽기 실패: {exc}", file=sys.stderr)
             return 1
 
-    # [A] 실제 공유 장부와 그 행이 가리키는 raw 파일에서 최종 reply를 읽는다. 첨부는 task 원문
-    # 말미에 붙으므로 full payload와 resume delta 어느 쪽에서도 같은 원문 1회가 실제로 넘어간다.
+    # [A] 실제 공유 기록과 그 행이 가리키는 raw 파일에서 최종 reply를 읽는다. 첨부는 task 원문
+    # 말미에 붙으므로 full payload와 resume 바뀐 부분 어느 쪽에서도 같은 원문 1회가 실제로 넘어간다.
     try:
         attached_raw = delegate_raw.resolve_attached_raw(home, args.attach_raw, output_dir=output_dir)
     except delegate_errors.DelegateError as exc:
@@ -190,7 +190,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
         task_text = delegate_raw.append_attached_raw(task_text, attached_raw)
 
     # cross 실위임의 라운드 준비. dry-run은 미호출/무부수효과 계약이라 만들지 않고, 하네스로
-    # 위임되는 역할의 실제 실행만 prepare한다(ticket 없는 legacy 호출은 종전 형상 유지).
+    # 위임되는 역할의 실제 실행만 prepare한다(ticket 없는 legacy 호출은 종전 구성 유지).
     # 묶음 리뷰는 native 준비와 같은 함수(`prepare_cluster_review`)로 준비 트리 조건·리뷰 입력 판독 뒤
     # 예약한다 — dry-run 은 같은 입력을 읽기만 한다(`cluster_review_sources`).
     ticket_copy: delegate_rounds.TicketCopyPlan | None = None
@@ -209,7 +209,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                     home, cluster=args.cluster, cwd=cwd_repo, focus_path=focus_path, owner_pid=os.getpid(), git_run_fn=git_run_fn,
                 )
                 # 쓰기 자리·run_id·환불 좌표는 run 단위라 대표 자리 하나로 잡아도 같은 값이다.
-                # 티켓별로 갈리는 회수는 아래에서 `cluster_plan.rounds` 를 그대로 순회한다.
+                # 티켓별로 갈리는 돌려받기는 아래에서 `cluster_plan.rounds` 를 그대로 순회한다.
                 ticket_copy = cluster_plan.rounds[0]
         except delegate_errors.DelegateError as exc:
             return delegate_execute.fail_loud(f"오류: 묶음 리뷰 준비 실패: {exc}")
@@ -223,13 +223,13 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
 
     # 예약(prepare_ticket_copy) 이후 ~ 실행 인계(_execute_and_collect) 이전 구간
     # 전체를 하나의 정리 경계로 감싼다. 이 구간을 벗어나는 모든 경로(명시 return · 전파
-    # 예외)가 이 finally 하나로 수렴한다 — 지점마다 호출을 꽂지 않는다(리뷰 라운드가 꽂았던
+    # 예외)가 이 finally 하나로 마무리된다 — 지점마다 호출을 꽂지 않는다(리뷰 라운드가 꽂았던
     # 6개 지점 삽입을 대체한다). `_ticket_copy_handed_off` 는 `_execute_and_collect` 호출
     # 직전 단 한 곳에서만 True 로 바뀐다 — 그 전에 return 이든 전파 예외든 이 경계를
     # 빠져나가면 전부 환불(abandon) 로 정리한다.
     _ticket_copy_handed_off = False
     try:
-        # 프롬프트 합성과 회수 판정이 같은 실행-전 등록부 스냅샷을 쓴다. 위임 중 등록부 값이
+        # 프롬프트 합성과 돌려받기 판정이 같은 실행-전 등록부 복사본을 쓴다. 위임 중 등록부 값이
         # 바뀌어도 전달한 금지 루트와 다른 현재값으로 재판정하지 않는다.
         adapter_roots = install_rules.adapter_directories()
         if cluster_sources is not None:
@@ -249,26 +249,26 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                 preamble += "\n" + round_note
             prompt = preamble + "\n\n" + task_text
 
-        # 세션 재사용 해소 — **호출 전 게이트보다 앞**이다. 재사용 라운드가 실제로 내보내는 건 delta
-        # payload 라, 게이트(재앵커·시크릿 스캔)가 그걸 못 보면 검사받지 않은 본문이 나간다. 재사용
-        # 실패 시 full payload 로 돌아가므로 두 본문 **모두**를 게이트 입력으로 합친다.
+        # 세션 재사용 해소 — **호출 전 통과 조건보다 앞**이다. 재사용 라운드가 실제로 내보내는 건 바뀐 부분
+        # payload 라, 통과 조건(대상 저장소 다시 잡기·시크릿 스캔)이 그걸 못 보면 검사받지 않은 본문이 나간다. 재사용
+        # 실패 시 full payload 로 돌아가므로 두 본문 **모두**를 통과 조건 입력으로 합친다.
         resume = delegate_execute.resolve_resume_plan(
             home, args.resume_from, harness=harness, role=args.role,
             task_text=task_text, output_dir=output_dir,
         )
         outgoing_text = (
-            prompt if resume is None else "\n".join((resume.delta_prompt, prompt))
+            prompt if resume is None else "\n".join((resume.change_prompt, prompt))
         )
 
-        # 쓰기-타깃 axis 재앵커 게이트 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
+        # 쓰기 대상 기준으로 대상 저장소를 다시 잡는 검사 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
         # divergence와 같은 cwd repo 해소 입력을 기존 write-target 가드에도 재사용한다. 하위 디렉토리
-        # `--cwd`가 PM 홈 가드를 우회하는 별도 판정축을 만들지 않는다.
-        reanchor = delegate_execute.check_write_target_reanchor(args.role, cwd_repo or cwd, outgoing_text)
-        if reanchor is not None:
+        # `--cwd`가 PM 홈 가드를 우회하는 별도 판정기준을 만들지 않는다.
+        retarget = delegate_execute.check_write_target_retarget(args.role, cwd_repo or cwd, outgoing_text)
+        if retarget is not None:
             print(
                 "오류: 엔진 코드(.project_manager/tools/) write 위임을 adopter#0 PM 홈 cwd 에서 실행했습니다 —\n"
                 "  import 사본을 수정하면 canonical worktree 와 갈려 stale·false-green 이 납니다.\n"
-                f"  · canonical worktree 로 대상 저장소를 다시 잡으세요:  --cwd {reanchor}\n"
+                f"  · canonical worktree 로 대상 저장소를 다시 잡으세요:  --cwd {retarget}\n"
                 "  · PM-doc(wiki/ADR/spike) 작업이면 PM 홈 cwd 가 정당합니다 — 그 경우 프롬프트가 엔진 코드\n"
                 "    경로를 write 타깃으로 지목하지 않게 하세요.",
                 file=sys.stderr,
@@ -288,15 +288,15 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
             None if resume is None else resume.session_id,
         )
 
-        # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다. 값이 하네스별이라
-        # **시도마다 자기 하네스의 예산**을 쓴다(폴백이 다른 축이면 예산도 그 축의 것).
+        # 타임아웃은 dry-run 미리보기(대체 하네스 시간 예산 표시)와 실행이 같은 값을 쓴다. 값이 하네스별이라
+        # **시도마다 자기 하네스의 예산**을 쓴다(대체 하네스가 다른 하네스면 예산도 그 하네스의 것).
         timeout = delegate_env._resolve_timeout(home, args, conf, harness)
         fallback_timeout = (delegate_env._resolve_timeout(home, args, conf, fallback[0])
                             if fallback is not None else timeout)
         execution_budget = delegate_env._harness_timeout_budget(home, harness, timeout)
         if resume is not None:
-            # 재사용 라운드는 primary 축을 두 번 쓸 수 있다(재사용 turn → 세션 불일치 시 fresh
-            # 재실행). 그 뒤 인프라 폴백까지 겹치면 이 실행의 최악 스폰은 3회다 — 호출층 상한
+            # 재사용 라운드는 primary 하네스 예산을 두 번 쓸 수 있다(재사용 turn → 세션 불일치 시 fresh
+            # 재실행). 그 뒤 인프라 대체 하네스까지 겹치면 이 실행의 최악 스폰은 3회다 — 호출층 상한
             # advisory 가 두 시도만 요구하면 하네스가 엔진 진단보다 먼저 kill 한다.
             execution_budget += delegate_env._harness_timeout_budget(home, harness, timeout)
         if fallback is not None:
@@ -305,8 +305,8 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
         if cap_warning is not None:
             print(cap_warning, file=sys.stderr)
 
-        # 기존 `--cwd` 신뢰 repo축을 파생 config_repo와 대조한다. 양쪽 모두 설정된 fallback 값만
-        # 공용 seam이 비교한다.
+        # 기존 `--cwd` 신뢰 repo 기준을 파생 config_repo와 대조한다. 양쪽 모두 설정된 fallback 값만
+        # 공용 함수가 비교한다.
         compare_fallback = fallback is not None
         try:
             _resolved_cwd_repo, divergence = delegate_execute.check_local_conf_divergence(
@@ -336,10 +336,10 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                 file=sys.stderr,
             )
 
-        # 병렬 위임 touches 교집합 사전 경고 — 호출-전 게이트를 모두 통과한 뒤, **dry-run 미리보기
+        # 병렬 위임 touches 교집합 사전 경고 — 호출-전 통과 조건을 모두 통과한 뒤, **dry-run 미리보기
         # 에도** 낸다(띄우기 전에 보는 것이 이 경고의 값이다). rc 는 바꾸지 않는다. 리뷰어는
         # 트리를 바꾸지 않으므로(돌려받기 트리 조건) 쓰기 역할만 대상이다.
-        # 이 경고는 **정보성**이다 — 차단 게이트(재앵커)와 독립이라 뒤따르는 게이트가
+        # 이 경고는 **정보성**이다 — 차단 통과 조건(대상 저장소 다시 잡기)과 독립이라 뒤따르는 통과 조건이
         # 실행을 막아도 출력은 그대로 남는다(rc·상태 불변). 출력 위치는 미리보기 요구가 정한다.
         touch_overlaps: tuple[delegate_scope_audit.TicketTouchOverlap, ...] = ()
         if effective_ticket and args.role in delegate_run_rules.WRITE_ROLES:
@@ -411,7 +411,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
             if transport_note is not None:
                 print(transport_note)
             if args.resume_from is not None:
-                # 재사용을 **요청한** 실행만 이 줄을 낸다(미요청 실행의 미리보기 형상은 불변).
+                # 재사용을 **요청한** 실행만 이 줄을 낸다(미요청 실행의 미리보기 구성은 불변).
                 print(
                     "세션 재사용: 미적용 — fresh + full payload (사유는 stderr 안내)"
                     if resume is None else
@@ -421,45 +421,45 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                     f"{delegate_env._harness_timeout_budget(home, harness, timeout)}s 추가)"
                 )
             print("--- 합성 프롬프트 ---")
-            dry_run_prompt = prompt if resume is None else resume.delta_prompt
-            # read 역할 + 재앵커 하네스(현재 codex 단독)는 실행과 같은 3-절대경로 preamble을 미리보기
-            # 에도 낸다 — 조건은 재앵커 플래그 단일이다(claude·opencode 특례
+            dry_run_prompt = prompt if resume is None else resume.change_prompt
+            # read 역할 + 실행 위치를 다시 잡는 하네스(현재 codex 단독)는 실행과 같은 3-절대경로 preamble을 미리보기
+            # 에도 낸다 — 조건은 실행 위치 다시 잡기 플래그 하나다(claude·opencode 특례
             # 없음). dry-run은 부작용 0 계약이라 read_tmp를 만들지 않고 `_predict_read_tmp_paths`로
             # 같은 이름 규칙의 대표 경로만 계산한다.
             #
             # 리뷰 must-fix(F-001): 이 조건은 실행 경로가 `read_tmp is not None`(=
             # `_read_tmp_strategy()` 가 전략을 낸다)으로 판정하는 것과 **같은 사실**을 봐야 한다 —
             # 예측 전용 사본을 새로 만들지 않고, 실행이 `_create_read_role_temp`를 통해 소비하는 바로
-            # 그 함수(`_read_tmp_strategy()`)를 여기서도 그대로 부른다. 전략이 없는 플랫폼(fd 결속도
-            # 소유자 ACL 도 없음)은 실행도 재앵커를 안 하므로(`read_tmp=None` → `_apply_read_tmp_argv`
+            # 그 함수(`_read_tmp_strategy()`)를 여기서도 그대로 부른다. 전략이 없는 플랫폼(fd 연결도
+            # 소유자 ACL 도 없음)은 실행도 실행 위치를 다시 잡지 않으므로(`read_tmp=None` → `_apply_read_tmp_argv`
             # 가 argv 를 그대로 반환 → `-C`는 원 `--cwd`) dry-run 도 존재하지 않을 좌표를 예고하지
             # 않는다(실재하지 않는 좌표를 주는 것은 좌표를 아예 안 주는 것보다 나쁘다 — PM 판정).
             if (
                 args.role in delegate_run_rules.READ_ROLES
-                and delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+                and delegate_run_rules._READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS[harness]
                 and delegate_temp._read_tmp_strategy() is not None
             ):
                 predicted_exec_root, predicted_writable = delegate_transport._predict_read_tmp_paths(home, harness)
-                dry_run_prompt = dry_run_prompt + "\n\n" + delegate_transport._reanchor_exec_root_preamble(
+                dry_run_prompt = dry_run_prompt + "\n\n" + delegate_transport._retarget_exec_root_preamble(
                     cwd, predicted_exec_root, predicted_writable,
                 )
             print(dry_run_prompt)
             print("=== [dry-run] 위임 호출 생략 ===")
             return 0
 
-        # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
-        # 1회 실행한다(최악 소요 = 두 시도의 하네스별 예산 합·2차 폴백 없음). 보안/재앵커 게이트는 이
-        # 지점보다 앞이라 폴백 대상이 될 수 없다. (`output_dir` 은 재사용 후보 조회에 먼저 쓰였다.)
+        # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 대체 하네스를 같은 드라이버 계약으로
+        # 1회 실행한다(최악 소요 = 두 시도의 하네스별 예산 합·2차 대체 하네스 없음). 보안/대상 저장소 다시 잡기 통과 조건은 이
+        # 지점보다 앞이라 대체 하네스 대상이 될 수 없다. (`output_dir` 은 재사용 후보 조회에 먼저 쓰였다.)
         _run = run_fn or partial(delegate_run._default_run_fn, home)
 
-        # 범위 판정 캡처 — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
-        # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
-        # 실행·회수 블록의 모든 종료 경로(성공·폴백·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
+        # 범위 판정 캡처 — **위임 전체 단위**로 1회. 대체 하네스 attempt 도 같은 위임의 일부라
+        # attempt 마다 재캡처하지 않는다(PM 이 돌려받기 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
+        # 실행·돌려받기 블록의 모든 종료 경로(성공·대체 하네스·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
         scope_audit = delegate_scope_audit.begin_scope_audit(
             home, effective_ticket, cwd, pm_root=board_repo, adapter_roots=adapter_roots,
         )
         if touch_overlaps:
-            # 실행 전에 이미 경고한 겹침 경로를 회수 시점 판정 입력으로 싣는다. 캡처 함수의
+            # 실행 전에 이미 경고한 겹침 경로를 돌려받기 시점 판정 입력으로 싣는다. 캡처 함수의
             # 입력이 아니라 이 위임이 무엇을 겹친다고 알렸는지의 기록이다.
             scope_audit = scope_audit._replace(
                 overlap_paths=delegate_scope_audit.overlap_touch_paths(touch_overlaps),
@@ -473,7 +473,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
             advisory = delegate_execute.native_advisory(harness, args.role)
             if advisory is not None:
                 print(advisory, file=sys.stderr)
-            _ticket_copy_handed_off = True  # 여기부터 harvest 가 정리를 넘겨받는다
+            _ticket_copy_handed_off = True  # 여기부터 돌려받기가 정리를 넘겨받는다
             return delegate_execute._execute_and_collect(
                 home, args=args, harness=harness, model=model, reasoning=reasoning,
                 fallback=fallback, fallback_skip=fallback_skip, cwd=cwd,
@@ -486,7 +486,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                 # 재개 라운드의 티켓 식별자 **계승** — 명시 `--ticket` 이 우선이고, 없으면 이어받은
                 # 레코드의 티켓을 그대로 싣는다. 안 실으면 이 라운드 레코드에 ticket 이 없어 **다음**
                 # 재개의 티켓 지시자 선택(최신 1건)에서 빠지고, 재개 사슬이 한 라운드 만에 끊긴다.
-                # 범위 판정(scope audit)은 계승하지 않는다 — 그건 선언 touches 의 축이라 이 실행이
+                # 범위 판정(scope audit)은 계승하지 않는다 — 그건 선언 touches 의 기준이라 이 실행이
                 # 무엇을 선언했는지가 기준이다.
                 ticket=effective_ticket or (resume.ticket if resume is not None else None),
                 fresh_reason=(args.fresh.strip() if args.fresh is not None else None),
@@ -501,9 +501,9 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
             if ticket_copy is not None and _ticket_copy_handed_off:
                 try:
                     if cluster_plan is not None:
-                        # 묶음은 자리마다 독립 회수다 — 한 자리의 거부가 다른 자리의 교체를
-                        # 되돌리지 않는다(회수 판정식은 단일 경로와 같은 하나다).
-                        delegate_execute._report_cluster_harvest(delegate_collect.collect_cluster_copy(
+                        # 묶음은 자리마다 독립 돌려받기다 — 한 자리의 거부가 다른 자리의 교체를
+                        # 되돌리지 않는다(돌려받기 판정식은 단일 경로와 같은 하나다).
+                        delegate_execute._report_cluster_collect(delegate_collect.collect_cluster_copy(
                             home, run_dir=cluster_plan.run_dir, cwd=cwd_repo,
                             ))
                     else:
@@ -517,14 +517,14 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                             file=sys.stderr,
                         )
                 except delegate_errors.DelegateError as exc:
-                    # 정상 return rc에는 harvest 실패 rc=1이 더 강하다. 반면 runner/실행 예외가 이미
+                    # 정상 return rc에는 돌려받기 실패 rc=1이 더 강하다. 반면 runner/실행 예외가 이미
                     # 전파 중이면 finally return으로 삼키지 않고 원 예외를 그대로 보존하며 두 원인을
                     # 모두 stderr에 남긴다.
                     residue = (
                         cluster_plan.run_dir if cluster_plan is not None
                         else ticket_copy.path
                     )
-                    recovery = delegate_execute._delegation_harvest_failure_message(exc, residue)
+                    recovery = delegate_execute._delegation_collect_failure_message(exc, residue)
                     if pending_exception is not None:
                         print(
                             "오류: 위임 실행 예외도 그대로 전파합니다: "
@@ -541,5 +541,5 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
                 else (ticket_copy,)
             )
             for seat in seats:
-                delegate_prepare._refund_gate_rejected_ticket_copy(
+                delegate_prepare._refund_check_rejected_ticket_copy(
                     home, seat, cwd=cwd_repo, )

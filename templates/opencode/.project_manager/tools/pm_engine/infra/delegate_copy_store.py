@@ -1,4 +1,4 @@
-"""위임 사본과 장부 저장 (층: infra)."""
+"""위임 사본과 기록 저장 (층: infra)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -47,9 +47,9 @@ def _write_exclusive_file(
 
 
 def _append_delegate_rounds_ledger(home, row: dict) -> None:
-    """공유 atomic-append seam 으로 0600 장부에 한 행을 덧붙인다(기존 bytes 불변)."""
+    """공유 atomic-append 함수로 0600 기록에 한 행을 덧붙인다(기존 bytes 불변)."""
     pm_home_root = home.local_dir.parent.parent
-    delegate_records._delegate_rounds_ledger_row(row, line_number=0)
+    delegate_records._delegate_rounds_record_row(row, line_number=0)
     local_dir, local_fd = _secure_machine_dir(
         pm_home_root, delegate_records.DELEGATE_ROUNDS_RECORD_REL_PATH.parent.parts,
         label="PM 위임 라운드 기록 디렉터리",
@@ -75,7 +75,7 @@ def _append_delegate_rounds_ledger(home, row: dict) -> None:
 
 
 def _delegate_round_record(home, copy_path: Path) -> dict:
-    """이 슬롯 파일의 **준비 기록** — 없으면 회수를 거부한다(신뢰 뿌리는 PM 홈 장부다)."""
+    """이 슬롯 파일의 **준비 기록** — 없으면 돌려받기를 거부한다(신뢰 뿌리는 PM 홈 기록이다)."""
     pm_home_root = home.local_dir.parent.parent
     resolved = str(Path(copy_path).resolve())
     matches = [
@@ -219,7 +219,7 @@ def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
     """`source`(check-ignore 가 보고한 -C cwd 상대경로)가 git 인덱스에 tracked 인지 확인한다.
 
     rc=0 tracked · rc=1 untracked · 그 외는 도구 실패로 fail-loud(board.py:4405 `ls-files
-    --error-unmatch` 와 같은 seam).
+    --error-unmatch` 와 같은 함수).
     """
     if _ignore_source_definitely_untracked(cwd, source):
         return False
@@ -238,10 +238,10 @@ def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
 def _pool_bare_for_code_root(cwd: Path) -> Path | None:
     """이 코드 트리가 두-git 풀 슬롯이면 그 풀의 공용 bare 를, 임베드면 None 을 돌려준다.
 
-    형상 규칙 사본을 만들지 않는다 — 소유 PM 홈은 `pm_paths.owning_pm_home` 이 이 트리의 `.git`
-    선언에서 유도하고, 여기서는 두 값만 비교한다. 그 유도가 인정하는 공용 저장소 형상은
+    구성 규칙 사본을 만들지 않는다 — 소유 PM 홈은 `pm_paths.owning_pm_home` 이 이 트리의 `.git`
+    선언에서 유도하고, 여기서는 두 값만 비교한다. 그 유도가 인정하는 공용 저장소 구성은
     `<X>/.git`(임베드·단일 clone·그 clone 이 판 linked worktree)과 `<X>/.repos/<repo>.git`
-    (풀 슬롯) 둘뿐이고 그 밖은 예외이므로, 공용 저장소가 `<PM 홈>/.git` 이 아니면 남는 형상은
+    (풀 슬롯) 둘뿐이고 그 밖은 예외이므로, 공용 저장소가 `<PM 홈>/.git` 이 아니면 남는 구성은
     풀 bare 하나이며 그 값이 곧 bare 다.
     """
     common = Path(delegate_copy_git._cluster_git(cwd, "rev-parse", "--git-common-dir").strip())
@@ -275,7 +275,7 @@ def _assert_pool_bare_ignore_rule(bare: Path, *, ignored: bool, observation: str
     있는지 fail-loud 확인한다. 둘을 함께 요구한다.
 
     규칙 존재만 보면 슬롯 안 `.gitignore` 의 부정 규칙 한 줄이 정본을 뒤집어도 통과한다 — 그
-    형상에서 사본 루트는 실제로 무시되지 않아 게이트가 지키려던 성질이 이 갈래에서만 사라진다.
+    구성에서 사본 루트는 실제로 무시되지 않아 통과 조건이 지키려던 성질이 이 갈래에서만 사라진다.
     거꾸로 check-ignore 가 어느 출처를 보고했는지는 판정 입력이 아니다. 중첩 `.gitignore` 가
     `info/exclude` 보다 우선순위가 높아, 출처로 판정하면 규칙이 없는 풀도 그 중첩 파일 하나로
     우연히 통과한다. 파일 부재는 규칙 부재와 같은 거부이고, 읽기 실패는 그대로 올린다
@@ -308,17 +308,17 @@ def _assert_pool_bare_ignore_rule(bare: Path, *, ignored: bool, observation: str
 def _assert_ticket_copy_root_ignored(
     cwd: Path, *, cluster: str, run_id: str, ticket: str,
 ) -> None:
-    """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지, 임베드 형상이면 그 규칙이 tracked
+    """ignore 규칙이 실제 ticket-copy 경로 구성을 숨기는지, 임베드 구성이면 그 규칙이 tracked
     `.project_manager/.gitignore` 유래인지 fail-loud 확인한다.
 
-    정본은 형상마다 정확히 하나다 — 임베드·단일 clone 은 tracked
+    정본은 구성마다 정확히 하나다 — 임베드·단일 clone 은 tracked
     `.project_manager/.gitignore`(아래 본문), 두-git 풀 슬롯은 그 풀 bare 의 `info/exclude`
     (`_assert_pool_bare_ignore_rule`)다. 한쪽이 거부돼도 다른 후보로 재시도하지 않는다.
     앱 저장소에 `.project_manager` 가 없는 풀 슬롯은 tracked 정본을 가질 수 없어, 정본을
     파일 경로 하나로 못박으면 구조적으로 통과할 수 없다.
 
     경로가 정본 위치와 같아도 그 파일 자체가 untracked 면(예: fresh import 직후 아직 `git add`
-    하지 않은 형상) 다른 클론에는 없는 로컬 산출물일 수 있어 별도로 `ls-files --error-unmatch` 로
+    하지 않은 구성) 다른 클론에는 없는 로컬 산출물일 수 있어 별도로 `ls-files --error-unmatch` 로
     확인한다(F-001). 정본 위치가 아닌 출처는 그 출처 자신이 tracked 인지에 따라 진단 문구를
     가른다(F-002) — tracked 비정본 위치(예: 루트 `.gitignore`)는 다른 클론에도 있으므로 "이
     클론에만 있다"는 말은 거짓이고, untracked 출처(`.git/info/exclude`·전역 `core.excludesFile`·
@@ -394,14 +394,14 @@ def _reserved_round_residue(board_rel: str, ordinal: int) -> str:
 
 
 def _expected_slot_round_path(cwd: Path, row: dict) -> Path:
-    """장부 행이 인가하는 **유일한** 슬롯 경로 — 회수 입력 검증의 단일 단언.
+    """기록 행이 인가하는 **유일한** 슬롯 경로 — 돌려받기 입력 검증의 단일 단언.
 
     행의 (ticket, run_id, ordinal, role) 로 경로를 다시 조립해 전량 일치를 요구한다. 규칙이
-    하나라 containment(사본 루트 밖)·깊이(run-dir 상위·하위)·파일명 결속(순번·역할)·티켓 결속이
-    함께 닫힌다 — 축마다 다른 검사를 두면 하나가 빠졌을 때 조용히 넓어진다.
+    하나라 containment(사본 루트 밖)·깊이(run-dir 상위·하위)·파일명 연결(순번·역할)·티켓 연결이
+    함께 닫힌다 — 기준마다 다른 검사를 두면 하나가 빠졌을 때 조용히 넓어진다.
 
-    비교는 **어휘적**이다(경로 해소를 끼우지 않는다). 해소하면 그 자리가 symlink 로 바뀐 형상에서
-    양쪽이 같은 대상으로 접혀 결속 판정이 눈먼다 — 대상 무결성은 chain lstat 과 nofollow 판독이
+    비교는 **어휘적**이다(경로 해소를 끼우지 않는다). 해소하면 그 자리가 symlink 로 바뀐 구성에서
+    양쪽이 같은 대상으로 바뀌어 연결 판정이 눈먼다 — 대상 무결성은 chain lstat 과 nofollow 판독이
     따로 본다.
     """
     return Path(cwd) / delegate_records._row_ticket_relative_dir(row) / round_rules.round_filename(
@@ -417,7 +417,7 @@ def _same_lexical_path(left: Path, right: Path) -> bool:
 def _prune_empty_run_dir(ticket_dir: Path) -> None:
     """티켓 자리를 닫은 뒤 **빈** run-dir 을 걷는다 — 마지막 자리가 닫히면 run 도 닫힌다.
 
-    크기 1 묶음이면 자리가 하나라 회수·포기 즉시 run-dir 이 사라진다(종전과 같은 관측).
+    크기 1 묶음이면 자리가 하나라 돌려받기·포기 즉시 run-dir 이 사라진다(종전과 같은 관측).
     다른 티켓의 자리가 남아 있으면 아무것도 하지 않는다. `rmdir` 은 빈 디렉터리에서만
     성공하므로 이 정리가 남의 산출을 지울 수 없다(재귀 삭제 아님).
     """
@@ -429,10 +429,10 @@ def _prune_empty_run_dir(ticket_dir: Path) -> None:
 
 
 def _read_slot_round_text(copy_path: Path) -> str:
-    """슬롯 라운드 파일을 이식 경계 seam 으로 읽는다 (정규 파일·nofollow·UTF-8).
+    """슬롯 라운드 파일을 이식 경계 함수로 읽는다 (정규 파일·nofollow·UTF-8).
 
-    경로가 장부 행이 인가한 그것인지는 호출부가 이미 단언했다. 여기서 막는 것은 **그 경로가
-    가리키는 대상**이 회수 뒤에 바뀐 형상이다 — 최종 파일의 symlink 와, 사본 루트로 가는 길목의
+    경로가 기록 행이 인가한 그것인지는 호출부가 이미 단언했다. 여기서 막는 것은 **그 경로가
+    가리키는 대상**이 돌려받기 뒤에 바뀐 구성이다 — 최종 파일의 symlink 와, 사본 루트로 가는 길목의
     디렉터리 교체.
     """
     copy_path = Path(copy_path)
@@ -468,11 +468,11 @@ def _read_slot_round_text(copy_path: Path) -> str:
 def _assert_slot_run_dir_chain_is_plain(cwd: Path, relative_dir: Path) -> None:
     """티켓 자리까지의 **모든** 마디가 실 디렉터리인지 본다 (symlink 교체 거부).
 
-    시야는 검사 대상 표면과 같아야 한다 — 사본 루트까지만 보면 `<묶음>/<run_id>/<티켓>` 세
-    마디가 검사 밖이라, 그 자리를 symlink 로 갈아끼우면 다른 트리의 파일이 회수되고
+    검사 범위는 검사 대상 범위와 같아야 한다 — 사본 루트까지만 보면 `<묶음>/<run_id>/<티켓>` 세
+    마디가 검사 밖이라, 그 자리를 symlink 로 갈아끼우면 다른 트리의 파일을 돌려받고
     `force_rmtree` 가 남의 디렉터리를 지운다. 최종 파일의 nofollow 판독은 그 다음 층이다.
-    입력은 장부 행이 인가한 상대 경로 그대로다(`_row_ticket_relative_dir`) — 여기서 규약을
-    다시 조립하면 옛 세대 행의 마디를 놓친다.
+    입력은 기록 행이 인가한 상대 경로 그대로다(`_row_ticket_relative_dir`) — 여기서 규약을
+    다시 조립하면 옛 버전 행의 마디를 놓친다.
     """
     current = Path(cwd)
     for part in Path(relative_dir).parts:
@@ -488,7 +488,7 @@ def _assert_slot_run_dir_chain_is_plain(cwd: Path, relative_dir: Path) -> None:
 
 
 def _board_relative_path(home, board_path: Path, ) -> str:
-    """장부에 싣는 board 상대 경로 — PM 홈 밖으로 해소되면 경계 오류로 표면화한다."""
+    """기록에 싣는 board 상대 경로 — PM 홈 밖으로 해소되면 경계 오류로 드러낸다."""
     pm_home_root = home.local_dir.parent.parent
     try:
         return board_path.resolve().relative_to(pm_home_root).as_posix()
@@ -501,10 +501,10 @@ def _board_relative_path(home, board_path: Path, ) -> str:
 def _reopen_round_path(
     tickets_dir, ticket: str, role: str, *, ordinal: int, lock,
 ) -> Path:
-    """재개방 대상 라운드의 경로 — 판정은 사이드카 seam 하나가 소유한다.
+    """재개방 대상 라운드의 경로 — 판정은 사이드카 함수 하나가 소유한다.
 
     준비는 이 호출을 두 번 한다(run-dir 만들기 전 사전판정 · board_lock 안 최종). 두 지점이
-    같은 규칙을 봐야 흔한 실패가 잔여 없이 끝나고 경합 실패도 같은 문구로 거부된다. 오류형만
+    같은 규칙을 봐야 흔한 실패가 남김없이 끝나고 경합 실패도 같은 문구로 거부된다. 오류형만
     이 층의 것으로 옮긴다 — 준비의 다른 거부와 같은 rc·같은 경로로 나온다.
     """
     try:
@@ -516,11 +516,11 @@ def _reopen_round_path(
 
 
 def _cluster_run_rows(home, run_dir: Path) -> list[dict]:
-    """run-dir 이 가리키는 **미처분** 장부 행들 — `(묶음, run_id)` 로 해소한다.
+    """run-dir 이 가리키는 **미처분** 기록 행들 — `(묶음, run_id)` 로 해소한다.
 
     디렉터리 인자는 행을 찾는 **입력 형식**일 뿐이고 인가는 여전히 행이 한다 — 행마다 기존
-    단일-경로 전량 일치 단언을 다시 통과시킨다(판정식 완화 0). 이미 회수·포기된 행은 빠진다
-    (재회수 개념이 없다).
+    단일-경로 전량 일치 단언을 다시 통과시킨다(판정식 완화 0). 이미 돌려받기·포기된 행은 빠진다
+    (다시 돌려받기 개념이 없다).
     """
     pm_home_root = home.local_dir.parent.parent
     run_dir = Path(run_dir).resolve()
@@ -542,19 +542,19 @@ def _cluster_run_rows(home, run_dir: Path) -> list[dict]:
     return sorted(rows, key=lambda row: (row["ticket"], row["ordinal"]))
 
 
-def _abandon_raw_ledger_hint(home, row: dict) -> str:
+def _abandon_raw_record_hint(home, row: dict) -> str:
     """거부 문구에 붙이는 **비-권위 참고** — 같은 (ticket, role) 의 미마감 raw 레코드.
 
     판정 술어에는 넣지 않는다. cross 실위임 raw 행에는 `run_id`·`copy` 가 실려 이 예약과
-    문자열로 결속되지만, 이 참고는 그 결속을 판정에 쓰지 않고 여전히 (ticket, role) 휴리스틱
+    문자열로 연결되지만, 이 참고는 그 연결을 판정에 쓰지 않고 여전히 (ticket, role) 휴리스틱
     조인만 쓴다 — 판정식 교체는 이 함수 소유가 아니다. 하네스 subprocess 를 띄우지 않는 native
-    위임은 raw 행 자체를 만들지 않는다(결속 대상 없음). 휴리스틱을 결정 입력으로 쓰면 증거 없는
+    위임은 raw 행 자체를 만들지 않는다(연결 대상 없음). 휴리스틱을 결정 입력으로 쓰면 증거 없는
     예약이 조용히 "증거 있음"으로 뒤바뀐다. 참고를 읽지 못하면 참고만 빠진다(판정은 그대로다).
     """
     pm_home_root = home.local_dir.parent.parent
     try:
-        _raw_dir, ledger_path = raw_output.raw_storage_paths(pm_home_root, "delegate")
-        rows = raw_output.raw_records(ledger_path, unfinished_only=True, lock=False)
+        _raw_dir, record_path = raw_output.raw_storage_paths(pm_home_root, "delegate")
+        rows = raw_output.raw_records(record_path, unfinished_only=True, lock=False)
     except (OSError, ValueError, UnicodeError):
         return ""
     matches = [
@@ -593,7 +593,7 @@ def _abandon_liveness_problem(
     """종료 증거 판정 — 거부 사유(통과면 None). **파괴 연산의 기본값은 거부다.**
 
     기계가 증명할 수 있는 것만 기계가 막는다: 행에 `owner_pid` 가 있고 그 프로세스가 살아 있으면
-    run 은 진행 중이다. 표식이 없는 행(기존 준비 전부·native 위임)은 증명 수단 자체가 없으므로
+    run 은 진행 중이다. 표시가 없는 행(기존 준비 전부·native 위임)은 증명 수단 자체가 없으므로
     통과시키지 않고 운영자 명시 확인을 요구한다 — 거부도 무조건 허용도 아닌 제3 선택지다.
 
     거부 문구는 좌표를 값으로 찍는다. 매번 "무엇을 지우는지" 를 보게 하는 것이 명시 확인 플래그가
@@ -603,7 +603,7 @@ def _abandon_liveness_problem(
         f"ticket={row['ticket']} · role={row['role']} · ordinal={row['ordinal']} · "
         f"prepared_at={row['prepared_at']} · copy={copy_path}"
     )
-    hint = _abandon_raw_ledger_hint(home, row)
+    hint = _abandon_raw_record_hint(home, row)
     owner_pid = row.get("owner_pid")
     if owner_pid is None:
         return (

@@ -77,7 +77,7 @@ def test_shared_code_list_is_derived_from_current_import_statements(tmp_path):
     assert after == ()
 
 
-def test_shared_scan_inventory_is_owned_seam_not_disk_walk(tmp_path):
+def test_shared_scan_inventory_is_owned_function_not_disk_walk(tmp_path):
     board = _load_board()
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)

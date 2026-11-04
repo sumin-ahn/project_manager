@@ -145,7 +145,7 @@ def _diff_block_path(block: list[str]) -> str | None:
 
     destination 경로를 우선하되 신규/삭제의 ``/dev/null``은 경로로 보지 않고 반대편을 쓴다.
     헤더는 공백 없는 두 atom 또는 C-quoted 두 atom일 때, 해당 side의 구조화 메타데이터가 없을
-    때만 폴백한다. 공백 헤더를 임의 분할하지 않는다.
+    때만 이 대체 방법을 쓴다. 공백 헤더를 임의 분할하지 않는다.
     """
     if not block or not block[0].startswith("diff --git "):
         return None

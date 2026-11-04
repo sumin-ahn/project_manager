@@ -1,18 +1,18 @@
-"""kill 된 위임 잔여를 명시적으로 정리하는 `ticket abandon` 의 불변식 픽스처.
+"""kill 된 위임이 남긴 것을 명시적으로 정리하는 `ticket abandon` 의 불변식 픽스처.
 
-세 자산(PM 홈 delegate-rounds 장부 행 · board 라운드 파일 · 슬롯 run-dir)을 전진 수렴
+세 자산(PM 홈 delegate-rounds 기록 행 · board 라운드 파일 · 슬롯 run-dir)을 전진 마무리
 (roll-forward)으로 종결하는 처분이라, 검증은 성공 경로가 아니라 **경계**에 있다.
 
-  I1 산출 보존   — 지우기 직전 관측에서 시드와 다르면 그 자산을 보존하고 rc≠0.
+  I1 산출 보존   — 지우기 직전 관측에서 빈 양식과 다르면 그 자산을 보존하고 rc≠0.
   I2 fail-closed — 소유 pid 가 살아 있으면 명시 확인 없이는 아무것도 바뀌지 않는다.
-  I3 단일 처분   — 한 copy 는 회수 또는 포기 중 하나로만 종결된다.
-  I4 전진 수렴   — 어느 단계에서 실패하든 같은 명령 재호출이 남은 작업을 끝낸다.
+  I3 단일 처분   — 한 copy 는 돌려받기 또는 포기 중 하나로만 종결된다.
+  I4 전진 마무리   — 어느 단계에서 실패하든 같은 명령 재호출이 남은 작업을 끝낸다.
   I5 순번 무결   — 포기 전후로 round-gap·round-dup 이 늘지 않는다.
   I6 락 경계     — board_lock 안에는 순번 판정과 unlink 만 있다(교착 회귀는 실 그래프로).
-  I7 신뢰 뿌리   — 인가 경로는 회수와 같다(장부 행·경로 전량 일치·chain plain).
-  I8 비목표      — 리뷰 라운드 예산 장부는 건드리지 않는다.
+  I7 신뢰 뿌리   — 인가 경로는 돌려받기와 같다(기록 행·경로 전량 일치·chain plain).
+  I8 비목표      — 리뷰 라운드 예산 기록은 건드리지 않는다.
 
-검증 근거는 실 board 트리·실 라운드 파일·실 장부 파일이고, 교착 회귀만 stub 없는 실 호출
+검증 근거는 실 board 트리·실 라운드 파일·실 기록 파일이고, 교착 회귀만 stub 없는 실 호출
 그래프를 subprocess 로 태운다.
 """
 from __future__ import annotations
@@ -119,7 +119,7 @@ def _spec_text(ticket: str, *, status: str = "claimed") -> str:
         f"# {ticket}\n\n## 목표\nabandon 왕복 픽스처.\n\n"
         "## 설계\n"
         "- **경계 실측**: 기계 테스트 픽스처\n"
-        "- **불변식**: 이 파일의 축 밖\n"
+        "- **불변식**: 이 파일의 기준 밖\n"
         "- **표면 상한**: 픽스처 1건\n"
         "- **테스트 전략**: 정상·실패 경로\n"
     )
@@ -185,9 +185,9 @@ _FIXED_ROUNDS = ("architect", "developer", "code-reviewer", "developer")
 
 
 def _write_spec(env: Env, ticket: str, *, rounds=_FIXED_ROUNDS, **kwargs) -> Path:
-    """명세와 그 티켓의 크기 1 묶음 장부를 함께 쓴다.
+    """명세와 그 티켓의 크기 1 묶음 기록을 함께 쓴다.
 
-    abandon 축과 무관하게 장부 예산은 제품의 고정 수열만 쓴다. ``rounds`` 인자는 옛 fixture
+    abandon 처리와 무관하게 기록 예산은 제품의 고정 수열만 쓴다. ``rounds`` 인자는 옛 fixture
     호출부 호환용이며 값을 바꿔도 가변 예산을 되살리지 않는다.
     """
     path = env.tickets / f"{ticket}-abandon.md"
@@ -206,7 +206,7 @@ def _prepare(pd, env: Env, ticket: str, role: str = "architect", **kwargs):
 
 
 def _fill_architect(pd, plan) -> None:
-    """architect 사본의 계약 placeholder 를 harvest 가능한 실값으로 채운다."""
+    """architect 사본의 계약 placeholder 를 돌려받기 가능한 실값으로 채운다."""
     text = plan.path.read_text(encoding="utf-8")
     opening = f"```{review_form.ARCHITECT_TEST_BLOCK}\n"
     start = text.index(opening) + len(opening)
@@ -228,7 +228,7 @@ def _fill_architect(pd, plan) -> None:
 
 
 def _land_architect(pd, env: Env, plan) -> None:
-    """고정 수열의 다음 단계 준비가 가능하도록 architect 계약을 실값으로 회수한다."""
+    """고정 수열의 다음 단계 준비가 가능하도록 architect 계약을 실값으로 돌려받는다."""
     _fill_architect(pd, plan)
     result = delegate_collect.collect_ticket_copy(
         pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=plan.path, cwd=env.slot, )
@@ -247,12 +247,12 @@ def _rounds_dir(env: Env, ticket: str) -> Path:
     return env.pm_home / ".project_manager" / "wiki" / "tickets" / "rounds" / ticket
 
 
-def _ledger_path(env: Env) -> Path:
+def _record_path(env: Env) -> Path:
     return env.pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
 
 
-def _ledger_rows(env: Env) -> list[dict]:
-    path = _ledger_path(env)
+def _record_rows(env: Env) -> list[dict]:
+    path = _record_path(env)
     if not path.exists():
         return []
     return [
@@ -273,14 +273,14 @@ def _problem_codes(pd, env: Env, ticket: str) -> list[str]:
 
 
 def _assets(plan, env: Env) -> tuple[bool, bytes | None, bool, dict]:
-    """세 자산의 현재 값 — run-dir 존재 · board bytes · 장부 마지막 행."""
+    """세 자산의 현재 값 — run-dir 존재 · board bytes · 기록 마지막 행."""
     board_bytes = plan.board_path.read_bytes() if plan.board_path.exists() else None
-    rows = [row for row in _ledger_rows(env) if Path(row["copy"]) == plan.path]
+    rows = [row for row in _record_rows(env) if Path(row["copy"]) == plan.path]
     return plan.run_dir.exists(), board_bytes, plan.path.exists(), rows[-1]
 
 
 def _use_relay_pid(pd, monkeypatch, *, alive: bool):
-    """생존 조회 seam(`raw_output.pid_is_alive`)만 주입한다 — 나머지 raw 표면은 실 모듈 그대로 쓴다."""
+    """생존 조회 함수(`raw_output.pid_is_alive`)만 주입한다 — 나머지 raw 함수는 실 모듈 그대로 쓴다."""
     monkeypatch.setattr(raw_output, "pid_is_alive", lambda _pid: alive)
 
 
@@ -315,11 +315,11 @@ def _inject_slot_write(pd, monkeypatch, *, call_index: int, path: Path, before: 
 # ── 세 자산 종결 (증거 없는 legacy 예약 · 명시 확인) ────────────────────────
 
 def test_abandon_closes_all_three_kill_residue_assets(pd, env):
-    """실 prepare 로 만든 세 자산이 명시 확인 뒤 모두 종결된다(legacy 잔여가 실제로 지워진다)."""
+    """실 prepare 로 만든 세 자산이 명시 확인 뒤 모두 종결된다(legacy 남은 것이 실제로 지워진다)."""
     _write_spec(env, "T-8001")
     plan = _prepare(pd, env, "T-8001")
     assert plan.run_dir.exists() and plan.board_path.exists()
-    before = _ledger_rows(env)[-1]
+    before = _record_rows(env)[-1]
     assert Path(before["copy"]) == plan.path and before["collected_at"] is None
     assert "abandoned_at" not in before and "owner_pid" not in before
 
@@ -331,7 +331,7 @@ def test_abandon_closes_all_three_kill_residue_assets(pd, env):
     assert result.converged is True and result.sync_ready is True
     assert not plan.run_dir.exists()
     assert not plan.board_path.exists()
-    row = _ledger_rows(env)[-1]
+    row = _record_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["collected_at"] is None
     assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8001", unharvested=True) == []
     assert env.sync_calls[-1][1] == [plan.board_path]
@@ -349,7 +349,7 @@ def test_abandon_lets_reprepare_reuse_the_same_ordinal(pd, env):
 
 
 def test_abandon_leaves_other_live_runs_untouched(pd, env):
-    """한 티켓의 kill 잔여를 지워도 다른 티켓의 진행 중 준비는 세 자산 전부 그대로다."""
+    """한 티켓의 kill 로 남은 것을 지워도 다른 티켓의 진행 중 준비는 세 자산 전부 그대로다."""
     _write_spec(env, "T-8003")
     _write_spec(env, "T-8004")
     dead = _prepare(pd, env, "T-8003")
@@ -358,7 +358,7 @@ def test_abandon_leaves_other_live_runs_untouched(pd, env):
     _abandon(pd, env, dead)
 
     assert alive.run_dir.exists() and alive.board_path.exists()
-    alive_row = [row for row in _ledger_rows(env) if row["ticket"] == "T-8004"][-1]
+    alive_row = [row for row in _record_rows(env) if row["ticket"] == "T-8004"][-1]
     assert alive_row["collected_at"] is None and "abandoned_at" not in alive_row
     assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8004", unharvested=True)[0][
         "copy"
@@ -366,7 +366,7 @@ def test_abandon_leaves_other_live_runs_untouched(pd, env):
 
 
 def test_abandon_refuses_a_round_with_real_output(pd, env):
-    """산출이 있으면(시드 그대로가 아니면) harvest 대상이지 abandon 대상이 아니다."""
+    """산출이 있으면(빈 양식 그대로가 아니면) 돌려받기 대상이지 abandon 대상이 아니다."""
     _write_spec(env, "T-8005")
     plan = _prepare(pd, env, "T-8005")
     _write_output(plan.path, "실산출")
@@ -379,12 +379,12 @@ def test_abandon_refuses_a_round_with_real_output(pd, env):
 
     assert plan.board_path.read_bytes() == before
     assert plan.run_dir.exists()
-    assert "abandoned_at" not in _ledger_rows(env)[-1]
+    assert "abandoned_at" not in _record_rows(env)[-1]
     assert env.sync_calls == before_sync
 
 
 def test_abandon_refuses_an_unprepared_path(pd, env):
-    """신뢰 뿌리는 PM 홈 장부다 — 슬롯이 스스로 자격을 주장할 수 없다(I7)."""
+    """신뢰 뿌리는 PM 홈 기록이다 — 슬롯이 스스로 자격을 주장할 수 없다(I7)."""
     _write_spec(env, "T-8007")
     plan = _prepare(pd, env, "T-8007")
     smuggled = plan.run_dir / "02-developer.md"
@@ -398,16 +398,16 @@ def test_abandon_refuses_an_unprepared_path(pd, env):
     assert smuggled.exists() and plan.run_dir.exists()
 
 
-def test_abandon_does_not_touch_review_round_ledgers(pd):
-    """비목표(I8) — 리뷰 라운드 예산 환불은 이 처분의 축이 아니다."""
+def test_abandon_does_not_touch_review_round_records(pd):
+    """비목표(I8) — 리뷰 라운드 예산 환불은 이 처분의 대상이 아니다."""
     source = inspect.getsource(delegate_prepare.abandon_ticket_copy)
     assert "review_rounds" not in source
 
 
-# ── D1 증거 없음 게이트 (파괴 연산의 기본값은 거부) ─────────────────────────
+# ── D1 증거 없음 통과 조건 (파괴 연산의 기본값은 거부) ─────────────────────────
 
 def test_abandon_without_evidence_is_refused_and_leaves_all_three_assets(pd, env):
-    """표식 없는 예약(기존 8키 행 형상)은 명시 확인 없이는 거부다 — 세 자산 불변."""
+    """표시 없는 예약(기존 8키 행 구성)은 명시 확인 없이는 거부다 — 세 자산 불변."""
     _write_spec(env, "T-8020")
     plan = _prepare(pd, env, "T-8020")
     before = _assets(plan, env)
@@ -426,7 +426,7 @@ def test_evidence_refusal_message_carries_the_reservation_coordinates(pd, env):
     """무엇을 지우는지 매번 값으로 보게 한다 — 명시 확인이 습관이 되지 않게."""
     _write_spec(env, "T-8021")
     plan = _prepare(pd, env, "T-8021")
-    prepared_at = _ledger_rows(env)[-1]["prepared_at"]
+    prepared_at = _record_rows(env)[-1]["prepared_at"]
 
     with pytest.raises(delegate_errors.DelegateError) as caught:
         _abandon(pd, env, plan, assume_dead=False)
@@ -437,11 +437,11 @@ def test_evidence_refusal_message_carries_the_reservation_coordinates(pd, env):
 
 
 def test_unfinished_raw_record_is_a_hint_and_not_a_decision_input(pd, env):
-    """raw 장부 조인은 휴리스틱이라 참고로만 붙는다 — 그 행이 있어도 판정은 그대로 거부다."""
+    """raw 기록 조인은 휴리스틱이라 참고로만 붙는다 — 그 행이 있어도 판정은 그대로 거부다."""
     _write_spec(env, "T-8022")
     plan = _prepare(pd, env, "T-8022")
-    ledger = env.pm_home / ".project_manager" / ".local" / "raw_outputs.json"
-    ledger.write_text(json.dumps({"version": 1, "records": [{
+    record_file = env.pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+    record_file.write_text(json.dumps({"version": 1, "records": [{
         "id": "rawid01", "surface": "delegate", "harness": "codex", "model": "m",
         "role": "architect", "attempt": "1", "pid": 999999999,
         "started_at": "2026-08-22T00:00:00+00:00", "raw_path": str(plan.run_dir),
@@ -501,7 +501,7 @@ def test_dead_owner_pid_needs_no_explicit_confirmation(pd, env, monkeypatch):
 
 
 def test_owner_pid_is_recorded_only_when_the_caller_owns_the_run(pd, env, monkeypatch):
-    """표식은 run 소유자만 남긴다 — native 준비 CLI 는 키를 싣지 않는다(부재=증거 없음)."""
+    """표시는 run 소유자만 남긴다 — native 준비 CLI 는 키를 싣지 않는다(부재=증거 없음)."""
     _write_spec(env, "T-8033")
     _write_spec(env, "T-8034")
     owned = _prepare(pd, env, "T-8033", owner_pid=4242)
@@ -512,7 +512,7 @@ def test_owner_pid_is_recorded_only_when_the_caller_owns_the_run(pd, env, monkey
     ])
 
     assert rc == 0
-    rows = {row["ticket"]: row for row in _ledger_rows(env)}
+    rows = {row["ticket"]: row for row in _record_rows(env)}
     assert rows[owned.ticket]["owner_pid"] == 4242
     assert "owner_pid" not in rows["T-8034"]
 
@@ -542,10 +542,10 @@ def test_output_landing_before_the_removal_preserves_bytes_and_run_dir(
     assert str(plan.path) in str(caught.value)
 
 
-# ── I4 실패 주입 × 3 → 같은 명령 재호출로 수렴 ─────────────────────────────
+# ── I4 실패 주입 × 3 → 같은 명령 재호출로 마무리 ─────────────────────────────
 
 def _assert_converged(pd, env: Env, plan, *, board_removed: bool = True) -> None:
-    row = [row for row in _ledger_rows(env) if Path(row["copy"]) == plan.path][-1]
+    row = [row for row in _record_rows(env) if Path(row["copy"]) == plan.path][-1]
     assert row["abandoned_at"] is not None
     assert not plan.run_dir.exists()
     assert plan.board_path.exists() is not board_removed
@@ -559,7 +559,7 @@ def test_sync_failure_converges_on_the_next_call(pd, env):
     with pytest.raises(RuntimeError, match="sync 실패 주입"):
         _abandon(pd, env, plan)
     assert not plan.board_path.exists() and plan.run_dir.exists()
-    assert _ledger_rows(env)[-1]["abandoned_at"] is not None
+    assert _record_rows(env)[-1]["abandoned_at"] is not None
 
     env.failures["sync"] = False
     result = _abandon(pd, env, plan)
@@ -568,7 +568,7 @@ def test_sync_failure_converges_on_the_next_call(pd, env):
     _assert_converged(pd, env, plan)
 
 
-def test_ledger_append_failure_converges_on_the_next_call(pd, env, monkeypatch):
+def test_record_append_failure_converges_on_the_next_call(pd, env, monkeypatch):
     """2단계(마감 행 append) 실패는 아무것도 지우기 전이다 — 재호출이 처음부터 다시 한다."""
     _write_spec(env, "T-8051")
     plan = _prepare(pd, env, "T-8051")
@@ -576,14 +576,14 @@ def test_ledger_append_failure_converges_on_the_next_call(pd, env, monkeypatch):
 
     def _boom(pm_home, row):
         if "abandoned_at" in row:
-            raise delegate_errors.DelegateError("장부 append 실패 주입")
+            raise delegate_errors.DelegateError("기록 append 실패 주입")
         return real_append(pm_home, row)
 
     monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", _boom)
-    with pytest.raises(delegate_errors.DelegateError, match="장부 append 실패 주입"):
+    with pytest.raises(delegate_errors.DelegateError, match="기록 append 실패 주입"):
         _abandon(pd, env, plan)
     assert plan.board_path.exists() and plan.run_dir.exists()
-    assert "abandoned_at" not in _ledger_rows(env)[-1]
+    assert "abandoned_at" not in _record_rows(env)[-1]
 
     monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", real_append)
     result = _abandon(pd, env, plan)
@@ -609,7 +609,7 @@ def test_run_dir_removal_failure_converges_on_the_next_call(pd, env, monkeypatch
     with pytest.raises(delegate_errors.DelegateError, match="run-dir 삭제 실패"):
         _abandon(pd, env, plan)
     assert not plan.board_path.exists() and plan.run_dir.exists()
-    assert _ledger_rows(env)[-1]["abandoned_at"] is not None
+    assert _record_rows(env)[-1]["abandoned_at"] is not None
 
     monkeypatch.setattr(delegate_prepare, "fs", real_file_lock)
     result = _abandon(pd, env, plan)
@@ -619,23 +619,23 @@ def test_run_dir_removal_failure_converges_on_the_next_call(pd, env, monkeypatch
 
 
 def test_converged_abandon_is_idempotent(pd, env):
-    """수렴 뒤 재호출은 아무것도 바꾸지 않고 성공한다(멱등 · 거부가 아니다)."""
+    """마무리 뒤 재호출은 아무것도 바꾸지 않고 성공한다(멱등 · 거부가 아니다)."""
     _write_spec(env, "T-8053")
     plan = _prepare(pd, env, "T-8053")
     _abandon(pd, env, plan)
-    rows_before = len(_ledger_rows(env))
+    rows_before = len(_record_rows(env))
 
     result = _abandon(pd, env, plan)
 
     assert result.changed is False and result.converged is True
     assert result.board_removed is True and result.run_dir_removed is True
-    assert len(_ledger_rows(env)) == rows_before
+    assert len(_record_rows(env)) == rows_before
 
 
 # ── I5·D3 순번: 중간 순번은 board 파일을 보존한다 ──────────────────────────
 
 def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
-    """고정 수열의 중간 developer 시드 — board 파일 보존 · 나머지 두 자산 종결."""
+    """고정 수열의 중간 developer 빈 양식 — board 파일 보존 · 나머지 두 자산 종결."""
     _write_spec(env, "T-8060")
     architect = _prepare(pd, env, "T-8060", "architect")
     _land_architect(pd, env, architect)
@@ -649,12 +649,12 @@ def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
     assert result.board_removed is False and result.converged is True
     assert target.board_path.exists()                     # 자산 2 보존
     assert not target.run_dir.exists()                    # 자산 1 종결
-    row = [row for row in _ledger_rows(env) if Path(row["copy"]) == target.path][-1]
+    row = [row for row in _record_rows(env) if Path(row["copy"]) == target.path][-1]
     assert row["abandoned_at"] is not None                # 자산 3 종결
     after_codes = _problem_codes(pd, env, "T-8060")
     for code in ("round-gap", "round-dup"):
         assert after_codes.count(code) == before_codes.count(code) == 0
-    # 보존 분기도 board 파일을 바꾼다(표식 발행) — 그 write 를 커밋하지 않으면 PM 홈에 미커밋
+    # 보존 분기도 board 파일을 바꾼다(표시 발행) — 그 write 를 커밋하지 않으면 PM 홈에 미커밋
     # 변경이 남아 다음 board mutation 에 섞인다.
     assert env.sync_calls[-1] == (
         "ticket-abandon T-8060 developer", [target.board_path],
@@ -662,7 +662,7 @@ def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
 
 
 def test_middle_ordinal_abandon_is_idempotent_too(pd, env):
-    """보존 분기의 재호출도 성공한다 — 보존된 board 파일이 '미수렴'으로 읽히지 않는다."""
+    """보존 분기의 재호출도 성공한다 — 보존된 board 파일이 '미마무리'로 읽히지 않는다."""
     _write_spec(env, "T-8063")
     architect = _prepare(pd, env, "T-8063")
     _land_architect(pd, env, architect)
@@ -679,7 +679,7 @@ def test_middle_ordinal_abandon_is_idempotent_too(pd, env):
 
 
 def test_middle_ordinal_abandon_is_not_listed_as_unharvested(pd, env):
-    """PM 표시면(진행 중 작업)의 입력은 board 파일이 아니라 장부 행이다."""
+    """PM 조회(진행 중 작업)의 입력은 board 파일이 아니라 기록 행이다."""
     _write_spec(env, "T-8061")
     architect = _prepare(pd, env, "T-8061")
     _land_architect(pd, env, architect)
@@ -711,9 +711,9 @@ def test_max_ordinal_abandon_leaves_no_gap_for_the_remaining_rounds(pd, env):
 
 # ── D5 폐기 처분: 선언이 있으면 산출을 board 로 옮기고 종결한다 ────────────
 #
-# 재실행 대체(`superseded_by_ordinal`)가 아닌 처분 축이다. 슬롯 사본이 그 산출의 유일본이라
-# (`ticket prepare` 로 예약만 하고 실행하지 않은 라운드는 위임 raw 장부에 레코드가 없다) 지우기
-# 전에 board 라운드 파일로 옮기고 엔진 표식을 붙인다.
+# 재실행 대체(`superseded_by_ordinal`)가 아닌 처분 경로다. 슬롯 사본이 그 산출의 유일본이라
+# (`ticket prepare` 로 예약만 하고 실행하지 않은 라운드는 위임 raw 기록에 레코드가 없다) 지우기
+# 전에 board 라운드 파일로 옮기고 엔진 표시를 붙인다.
 
 _DISCARD_REASON = "티켓 폐기 — 이 라운드는 재실행되지 않는다"
 
@@ -733,13 +733,13 @@ def test_discard_moves_the_output_into_the_board_round_and_marks_it(pd, env):
         True, False, True
     )
     assert result.converged is True and result.sync_ready is True
-    # 산출은 버려지지 않는다 — board 라운드 파일이 사본 bytes + 표식 한 줄이다.
+    # 산출은 버려지지 않는다 — board 라운드 파일이 사본 bytes + 표시 한 줄이다.
     marker = review_contract.pm_review_refused_line("architect")
     assert plan.board_path.read_bytes() == (produced + marker + "\n").encode("utf-8")
     assert review_form.pm_review_refused_marker_present(
         plan.board_path.read_text(encoding="utf-8"))
     assert not plan.run_dir.exists()
-    row = _ledger_rows(env)[-1]
+    row = _record_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
     assert "superseded_by_ordinal" not in row
     assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8080", unharvested=True) == []
@@ -749,7 +749,7 @@ def test_discard_moves_the_output_into_the_board_round_and_marks_it(pd, env):
     # I5 — 순번 무결성은 그대로고, 옮겨 온 라운드는 `pending` 도 아니다.
     assert _problem_codes(pd, env, "T-8080") == []
 
-    # 재호출은 표식을 두 번 붙이지 않는다(표식 유무가 이관 완료의 관측이다).
+    # 재호출은 표시를 두 번 붙이지 않는다(표시 유무가 이관 완료의 관측이다).
     board_bytes = plan.board_path.read_bytes()
     again = _abandon(pd, env, plan, discard_reason=_DISCARD_REASON)
     assert again.converged is True and again.changed is False
@@ -780,10 +780,10 @@ def test_discard_of_a_middle_ordinal_keeps_the_other_rounds_intact(pd, env):
 
 
 def test_discard_converges_when_both_artifacts_are_gone(pd, env):
-    """AT-002: 슬롯 사본도 board 파일도 없는 행(T-0778 실측 형상)은 선언으로 닫힌다."""
+    """AT-002: 슬롯 사본도 board 파일도 없는 행(T-0778 실측 구성)은 선언으로 닫힌다."""
     _write_spec(env, "T-8081")
     plan = _prepare(pd, env, "T-8081")
-    # 실측 형상 — 슬롯 트리가 통째로 사라졌고 board 예약도 남아 있지 않다.
+    # 실측 구성 — 슬롯 트리가 통째로 사라졌고 board 예약도 남아 있지 않다.
     plan.board_path.unlink()
     remove_git_tree(env.slot)          # Windows read-only git object 대응
     assert not plan.path.exists() and not plan.board_path.exists()
@@ -793,13 +793,13 @@ def test_discard_converges_when_both_artifacts_are_gone(pd, env):
 
     with pytest.raises(delegate_errors.DelegateError, match="지울 자산이 없습니다"):
         _abandon(pd, env, plan)
-    assert "abandoned_at" not in _ledger_rows(env)[-1]
+    assert "abandoned_at" not in _record_rows(env)[-1]
 
     result = _abandon(pd, env, plan, discard_reason=_DISCARD_REASON)
 
     assert (result.changed, result.converged) == (True, True)
     assert (result.board_removed, result.run_dir_removed) == (True, True)
-    row = _ledger_rows(env)[-1]
+    row = _record_rows(env)[-1]
     assert row["abandoned_at"] is not None and row["discard_reason"] == _DISCARD_REASON
     assert delegate_records.ticket_copy_records(env.pm_home, ticket="T-8081", unharvested=True) == []
     assert env.sync_calls == before_sync     # 지운 자산이 없어 커밋할 board 변경도 없다
@@ -829,7 +829,7 @@ def test_discard_without_any_declaration_is_still_refused(pd, env):
 
 
 def test_the_two_disposal_declarations_are_mutually_exclusive(pd, env):
-    """선언이 둘이면 장부에 어느 것이 실릴지 모호하다 — 상태를 읽기 전에 거부한다."""
+    """선언이 둘이면 기록에 어느 것이 실릴지 모호하다 — 상태를 읽기 전에 거부한다."""
     _write_spec(env, "T-8084")
     architect = _prepare(pd, env, "T-8084")
     _land_architect(pd, env, architect)
@@ -864,7 +864,7 @@ def test_discard_reason_must_be_one_non_empty_line(pd, env, bad):
 
 # ── I3 단일 처분 (D4) ──────────────────────────────────────────────────────
 
-def test_abandon_refuses_an_already_harvested_run(pd, env):
+def test_abandon_refuses_an_already_collected_run(pd, env):
     _write_spec(env, "T-8070")
     plan = _prepare(pd, env, "T-8070")
     _land_architect(pd, env, plan)
@@ -873,8 +873,8 @@ def test_abandon_refuses_an_already_harvested_run(pd, env):
         _abandon(pd, env, plan)
 
 
-def test_harvest_refuses_an_abandoned_reservation(pd, env):
-    """포기된 행의 회수를 열어 두면 재사용된 순번의 새 라운드를 옛 run 이 덮는다."""
+def test_collect_refuses_an_abandoned_reservation(pd, env):
+    """포기된 행의 돌려받기를 열어 두면 재사용된 순번의 새 라운드를 옛 run 이 덮는다."""
     _write_spec(env, "T-8071")
     plan = _prepare(pd, env, "T-8071")
     _abandon(pd, env, plan)
@@ -884,8 +884,8 @@ def test_harvest_refuses_an_abandoned_reservation(pd, env):
             pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=plan.path, cwd=env.slot, )
 
 
-def test_reused_ordinal_survives_the_old_runs_harvest(pd, env):
-    """포기 → 같은 순번 재채번 → 옛 copy 회수 시도 = 거부 ∧ 새 라운드 bytes 불변."""
+def test_reused_ordinal_survives_the_old_runs_collect(pd, env):
+    """포기 → 같은 순번 재채번 → 옛 copy 돌려받기 시도 = 거부 ∧ 새 라운드 bytes 불변."""
     _write_spec(env, "T-8072")
     dead = _prepare(pd, env, "T-8072")
     dead_copy = dead.path
@@ -904,7 +904,7 @@ def test_reused_ordinal_survives_the_old_runs_harvest(pd, env):
     assert fresh.board_path.read_bytes() == fresh_bytes
 
 
-# ── 장부 하위 호환 (구 8키 ⊆ row ⊆ 8키 ∪ {abandoned_at, owner_pid}) ────────
+# ── 기록 하위 호환 (구 8키 ⊆ row ⊆ 8키 ∪ {abandoned_at, owner_pid}) ────────
 
 def _base_row(**overrides) -> dict:
     row = {
@@ -917,13 +917,13 @@ def _base_row(**overrides) -> dict:
     return row
 
 
-def test_ledger_row_accepts_legacy_eight_key_rows(pd):
-    row = delegate_records._delegate_rounds_ledger_row(_base_row(), line_number=1)
+def test_record_row_accepts_legacy_eight_key_rows(pd):
+    row = delegate_records._delegate_rounds_record_row(_base_row(), line_number=1)
     assert "abandoned_at" not in row and "owner_pid" not in row
 
 
-def test_ledger_row_accepts_the_two_optional_keys(pd):
-    row = delegate_records._delegate_rounds_ledger_row(
+def test_record_row_accepts_the_two_optional_keys(pd):
+    row = delegate_records._delegate_rounds_record_row(
         _base_row(abandoned_at="2026-08-22T01:00:00+00:00", owner_pid=4242),
         line_number=1,
     )
@@ -931,8 +931,8 @@ def test_ledger_row_accepts_the_two_optional_keys(pd):
     assert row["owner_pid"] == 4242
 
 
-def test_ledger_row_accepts_a_discard_reason(pd):
-    row = delegate_records._delegate_rounds_ledger_row(
+def test_record_row_accepts_a_discard_reason(pd):
+    row = delegate_records._delegate_rounds_record_row(
         _base_row(abandoned_at="2026-09-02T01:00:00+00:00",
                   discard_reason="티켓 폐기"),
         line_number=1,
@@ -941,39 +941,39 @@ def test_ledger_row_accepts_a_discard_reason(pd):
 
 
 @pytest.mark.parametrize("bad", [None, "", "   ", "첫 줄\n둘째 줄", 5])
-def test_ledger_row_rejects_discard_reasons_without_a_readable_value(pd, bad):
-    """사유가 그 처분의 유일한 기록이라 읽을 값이 없는 행은 장부 경계에서 막는다."""
+def test_record_row_rejects_discard_reasons_without_a_readable_value(pd, bad):
+    """사유가 그 처분의 유일한 기록이라 읽을 값이 없는 행은 기록 경계에서 막는다."""
     with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
-        delegate_records._delegate_rounds_ledger_row(_base_row(discard_reason=bad), line_number=1)
+        delegate_records._delegate_rounds_record_row(_base_row(discard_reason=bad), line_number=1)
 
 
 @pytest.mark.parametrize("bad", [None, ""])
-def test_ledger_row_rejects_null_or_empty_abandoned_at(pd, bad):
+def test_record_row_rejects_null_or_empty_abandoned_at(pd, bad):
     with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
-        delegate_records._delegate_rounds_ledger_row(_base_row(abandoned_at=bad), line_number=1)
+        delegate_records._delegate_rounds_record_row(_base_row(abandoned_at=bad), line_number=1)
 
 
 @pytest.mark.parametrize("bad", [0, -1, True, "4242", None])
-def test_ledger_row_rejects_owner_pid_values_that_query_as_absent(pd, bad):
-    """생존 조회 seam 이 부재로 정규화하는 값은 장부 경계에서 막는다(조용한 퇴화 금지)."""
+def test_record_row_rejects_owner_pid_values_that_query_as_absent(pd, bad):
+    """생존 조회 함수가 부재로 정규화하는 값은 기록 경계에서 막는다(조용한 퇴화 금지)."""
     with pytest.raises(delegate_errors.DelegateError, match="값 형식 불일치"):
-        delegate_records._delegate_rounds_ledger_row(_base_row(owner_pid=bad), line_number=1)
+        delegate_records._delegate_rounds_record_row(_base_row(owner_pid=bad), line_number=1)
 
 
-def test_ledger_row_still_rejects_unknown_keys(pd):
+def test_record_row_still_rejects_unknown_keys(pd):
     with pytest.raises(delegate_errors.DelegateError, match="schema 불일치"):
-        delegate_records._delegate_rounds_ledger_row(_base_row(mystery="x"), line_number=1)
+        delegate_records._delegate_rounds_record_row(_base_row(mystery="x"), line_number=1)
 
 
-def test_ledger_row_still_rejects_missing_required_keys(pd):
+def test_record_row_still_rejects_missing_required_keys(pd):
     row = _base_row()
     del row["collected_at"]
     with pytest.raises(delegate_errors.DelegateError, match="schema 불일치"):
-        delegate_records._delegate_rounds_ledger_row(row, line_number=1)
+        delegate_records._delegate_rounds_record_row(row, line_number=1)
 
 
 def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys):
-    """구 8키 행·`abandoned_at` 행·`owner_pid` 행이 섞여도 손상 경고 0 · 조회/회수 정상."""
+    """구 8키 행·`abandoned_at` 행·`owner_pid` 행이 섞여도 손상 경고 0 · 조회/돌려받기 정상."""
     for ticket in ("T-8101", "T-8102", "T-8103"):
         _write_spec(env, ticket)
     legacy = _prepare(pd, env, "T-8101")
@@ -986,18 +986,18 @@ def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys
     capsys.readouterr()
     rows = delegate_records.ticket_copy_records(env.pm_home)
     warning = capsys.readouterr().err
-    harvested = delegate_collect.collect_ticket_copy(
+    collected = delegate_collect.collect_ticket_copy(
         pm_paths.home_at(Path(env.pm_home).resolve()), copy_path=owned.path, cwd=env.slot, )
 
     assert "손상" not in warning
     assert {row["ticket"] for row in rows} == {"T-8101", "T-8102", "T-8103"}
-    assert harvested.changed is True
+    assert collected.changed is True
     assert owned.board_path.read_text(encoding="utf-8").endswith("architect 계약\n")
 
 
-# ── CLI 표면 ────────────────────────────────────────────────────────────────
+# ── CLI 구성 ────────────────────────────────────────────────────────────────
 
-def test_abandon_cli_surface_matches_harvest_argument_shape(pd):
+def test_abandon_cli_surface_matches_collect_argument_shape(pd):
     parser = delegate_cmd.build_subcommand_parser("ticket")
     args = parser.parse_args(["abandon", "--copy", "/abs/copy.md", "--cwd", "/abs/cwd"])
 
@@ -1030,7 +1030,7 @@ def test_cli_reports_the_convergence_assertion_as_machine_fields(pd, env, monkey
 
 
 def test_cli_abandon_wires_the_discard_reason_flag(pd, env, monkeypatch, capsys):
-    """CLI 표면 — `--discard-reason` 이 argparse 를 거쳐 실제 처분까지 전달된다."""
+    """CLI 구성 — `--discard-reason` 이 argparse 를 거쳐 실제 처분까지 전달된다."""
     _write_spec(env, "T-8112")
     plan = _prepare(pd, env, "T-8112")
     _write_output(plan.path)
@@ -1046,12 +1046,12 @@ def test_cli_abandon_wires_the_discard_reason_flag(pd, env, monkeypatch, capsys)
     payload = json.loads(captured.out.strip().splitlines()[-1])
     assert rc == 0
     assert payload["converged"] is True and payload["board_removed"] is False
-    assert _ledger_rows(env)[-1]["discard_reason"] == _DISCARD_REASON
+    assert _record_rows(env)[-1]["discard_reason"] == _DISCARD_REASON
     assert "폐기-확인" in captured.err
 
 
 def test_cli_copies_query_labels_abandoned_rows(pd, env, monkeypatch, capsys):
-    """역방향 — 조회면은 포기된 행을 그대로 보여주고 미회수 목록에서는 뺀다."""
+    """역방향 — 조회면은 포기된 행을 그대로 보여주고 돌려받지 않은 목록에서는 뺀다."""
     _write_spec(env, "T-8111")
     plan = _prepare(pd, env, "T-8111")
     _abandon(pd, env, plan)

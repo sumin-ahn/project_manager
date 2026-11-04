@@ -25,7 +25,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 명세 파일 본문 — 라운드 모델에서는 역할 절이 없다(라운드는 사이드카 파일이다).
-# frontmatter 는 T-0815 설계 근거 게이트(developer 시드 seam)가 `design:` 값을 읽는 유일한
+# frontmatter 는 T-0815 설계 근거 통과 조건(developer 빈 양식 렌더 함수)이 `design:` 값을 읽는 유일한
 # 입력이라 붙인다 — `design: done` + 충전된 설계 절이 이 파일의 관심사(라운드 사이드카 기계
 # 자체) 밖의 근거를 미리 해소해, 아래 대다수 테스트가 공용 헬퍼(`_seed`/`_reserve`)로
 # role="developer" 라운드를 세울 때마다 설계 근거를 따로 갖추지 않아도 되게 한다(무관 실패 0).
@@ -34,11 +34,11 @@ TICKET_TEXT = (
     "id: T-XXXX\n"
     "design: done\n"
     "---\n"
-    "# T-XXXX — 라운드 seam 테스트\n\n"
+    "# T-XXXX — 라운드 공용 함수 테스트\n\n"
     "## 목표\n라운드 사이드카를 검증한다.\n\n"
     "## 설계\n"
     "- **경계 실측**: 기계 테스트 픽스처\n"
-    "- **불변식**: 이 파일의 축 밖\n"
+    "- **불변식**: 이 파일의 기준 밖\n"
     "- **표면 상한**: 픽스처 1건\n"
     "- **테스트 전략**: 정상·실패 경로\n\n"
     "## 완료 조건 (Definition of Done)\n- [ ] 실제 동작 검증\n"
@@ -200,7 +200,7 @@ def test_parse_round_filename_is_the_inverse_of_round_filename():
             assert round_rules.parse_round_filename(name) == (ordinal, role)
 
 
-# ── 시드 렌더 (pm_delegate 재사용) ─────────────────────────────────────────
+# ── 빈 양식 렌더 (pm_delegate 재사용) ─────────────────────────────────────────
 
 def test_round_seed_is_the_role_header_plus_the_delegate_skeleton():
     seed = round_form.render_round_form("developer", TICKET_TEXT, today="2026-01-02")
@@ -293,7 +293,7 @@ def test_concurrent_reservations_under_one_lock_get_unique_ordinals(tickets_dir)
     reserved: list[Path] = []
     errors: list[BaseException] = []
     roles = ("developer", "code-reviewer")
-    # Jinja 환경의 첫 로드는 이 계약의 병렬 대상이 아니다. main thread에서 시드를 먼저
+    # Jinja 환경의 첫 로드는 이 계약의 병렬 대상이 아니다. main thread에서 빈 양식을 먼저
     # 렌더해 두고, worker는 단일 lock 아래의 채번/파일 예약만 동시에 실행한다.
     seeds = {role: _seed(role) for role in roles}
 
@@ -351,7 +351,7 @@ def test_reserve_round_refuses_to_overwrite_when_the_scan_was_stale(
     with pytest.raises(round_rules.RoundsError, match="예약 충돌"):
         round_store.reserve_round(
             tickets_dir, "T-0001", "developer",
-            content="다른 시드\n", lock=threading.Lock(),
+            content="다른 빈 양식\n", lock=threading.Lock(),
         )
 
     assert existing.read_bytes() == before
@@ -360,7 +360,7 @@ def test_reserve_round_refuses_to_overwrite_when_the_scan_was_stale(
 # ── 재개방 (같은 순번을 다시 연다) ─────────────────────────────────────────
 
 def _architect_output(marker: str) -> str:
-    """architect 라운드 산출 — 테스트 계약 블록 **한 벌**을 든 실제 회수 형상."""
+    """architect 라운드 산출 — 테스트 계약 블록 **한 벌**을 든 실제 돌려받기 구성."""
     payload = json.dumps({
         "version": review_form.ARCHITECT_TEST_VERSION,
         "tests": [{
@@ -383,7 +383,7 @@ def test_reopen_round_keeps_the_ordinal_and_replaces_the_file(
     """이어 시킨 단계는 순번을 늘리지 않는다 — 같은 자리를 다시 열고 그 파일을 교체한다.
 
     변경 전에는 이 자리가 없어 이어 시킨 작업이 `max + 1` 로 새 파일을 받았고, 같은 역할이
-    번호만 바꿔 반복됐다. 교체이므로 계약 블록은 한 벌 그대로다(절을 더하는 처방은 반려).
+    번호만 바꿔 반복됐다. 교체이므로 계약 블록은 한 벌 그대로다(절을 더하는 수정 방법은 반려).
     """
     first = _reserve(tickets_dir, "T-0001", "architect")
     _reserve(tickets_dir, "T-0001", "developer")
@@ -396,7 +396,7 @@ def test_reopen_round_keeps_the_ordinal_and_replaces_the_file(
 
     assert reopened == first
     assert sorted(item.name for item in first.parent.iterdir()) == before
-    # 재개방이 여는 것은 자리뿐이다 — 슬롯 시드가 될 현재 내용은 손대지 않는다.
+    # 재개방이 여는 것은 자리뿐이다 — 슬롯 빈 양식이 될 현재 내용은 손대지 않는다.
     assert reopened.read_text(encoding="utf-8") == _architect_output("1차 산출")
 
     round_store.replace_round(reopened, _architect_output("이어 시킨 산출"))
@@ -475,17 +475,17 @@ def test_reopen_round_refuses_an_ambiguous_duplicate_ordinal(tickets_dir):
 def test_a_deleted_round_is_restored_from_the_board_git_record(
     tickets_dir, delegate,
 ):
-    """빈 순번의 유일한 처방 — 기록에 남은 그 파일을 되쓰고 엔진 표식을 붙인다.
+    """빈 순번의 유일한 해결 방법 — 기록에 남은 그 파일을 되쓰고 엔진 표시를 붙인다.
 
     엔진은 빈 순번을 만들지 않는다(포기는 최대 순번만 지우고 중간 순번은 보존한다). 사람이
-    직접 지운 자리는 board git 이 든 그 bytes 를 공용 교체 seam 으로 되쓰면 채워지고, 엔진
-    표식이 그 라운드를 판정 표면 밖에 세운다 — 되살린 시드가 `round-pending` 으로 남지 않고
+    직접 지운 자리는 board git 이 든 그 bytes 를 공용 교체 함수로 되쓰면 채워지고, 엔진
+    표시가 그 라운드를 판정 범위 밖에 세운다 — 되살린 빈 양식이 `round-pending` 으로 남지 않고
     직전 산출로도 서지 않는다. 새 규약을 만들지 않는다는 것이 이 테스트의 내용이다.
     """
     for role in ("architect", "developer", "code-reviewer"):
         path = _reserve(tickets_dir, "T-0001", role)
         round_store.replace_round(path, f"## 산출 ({role} · 2026-01-03)\n\n내용\n")
-    # board git 이 든 그 순번의 기록(여기서는 산출 없는 시드였다) + 사람이 직접 rm 한 상태.
+    # board git 이 든 그 순번의 기록(여기서는 산출 없는 빈 양식이었다) + 사람이 직접 rm 한 상태.
     recorded = _seed("developer")
     target = tickets_dir / "rounds" / "T-0001" / "02-developer.md"
     target.unlink()
@@ -516,35 +516,35 @@ def test_temporary_round_path_stays_outside_the_round_name_grammar(tickets_dir):
     assert round_rules.parse_round_filename(temporary.name) is None
 
 
-def test_load_verify_and_reserve_survive_the_lockless_harvest_window(
+def test_load_verify_and_reserve_survive_the_lockless_collect_window(
     tickets_dir, monkeypatch,
 ):
-    """회수(무락) 중간 파일이 디스크에 있는 창에서도 같은 티켓의 로드·판정·예약이 정상이다."""
+    """돌려받기(무락) 중간 파일이 디스크에 있는 창에서도 같은 티켓의 로드·판정·예약이 정상이다."""
     target = _reserve(tickets_dir, "T-0001", "developer")
-    harvested = "## 구현 보충 (developer · 2026-01-03)\n\n회수 본문\n"
-    seam = fs
-    original_replace = seam.atomic_replace
+    collected = "## 구현 보충 (developer · 2026-01-03)\n\n돌려받기 본문\n"
+    fs_module = fs
+    original_replace = fs_module.atomic_replace
     inside_window = threading.Event()
     release = threading.Event()
     failure: list[BaseException] = []
 
     def blocking_replace(source, destination):
         inside_window.set()
-        assert release.wait(30), "회수 창 해제 신호 누락"
+        assert release.wait(30), "돌려받기 창 해제 신호 누락"
         return original_replace(source, destination)
 
-    monkeypatch.setattr(seam, "atomic_replace", blocking_replace)
+    monkeypatch.setattr(fs_module, "atomic_replace", blocking_replace)
 
-    def harvest() -> None:
+    def collect() -> None:
         try:
-            round_store.replace_round(target, harvested)
+            round_store.replace_round(target, collected)
         except BaseException as exc:   # noqa: BLE001 — 스레드 실패를 본 스레드로 옮긴다.
             failure.append(exc)
 
-    thread = threading.Thread(target=harvest)
+    thread = threading.Thread(target=collect)
     thread.start()
     try:
-        assert inside_window.wait(30), "회수 창에 진입하지 못했다"
+        assert inside_window.wait(30), "돌려받기 창에 진입하지 못했다"
         # 창이 실재하는지 먼저 단언한다 — 임시 파일이 없으면 이 테스트는 아무것도 안 본다.
         residue = [
             item.name for item in target.parent.iterdir()
@@ -554,7 +554,7 @@ def test_load_verify_and_reserve_survive_the_lockless_harvest_window(
 
         loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
         assert [(item.ordinal, item.role) for item in loaded] == [(1, "developer")]
-        assert loaded[0].text != harvested        # 교체 전이라 리더는 옛 내용을 본다
+        assert loaded[0].text != collected        # 교체 전이라 리더는 옛 내용을 본다
 
         problems = round_form.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
         assert [problem.code for problem in problems] == [round_rules.PROBLEM_PENDING]
@@ -569,7 +569,7 @@ def test_load_verify_and_reserve_survive_the_lockless_harvest_window(
         thread.join(30)
 
     assert not failure, failure
-    assert target.read_bytes() == harvested.encode("utf-8")
+    assert target.read_bytes() == collected.encode("utf-8")
     assert sorted(item.name for item in target.parent.iterdir()) == [
         "01-developer.md", "02-code-reviewer.md",
     ]
@@ -578,9 +578,9 @@ def test_load_verify_and_reserve_survive_the_lockless_harvest_window(
 def test_stray_dot_prefixed_files_are_not_rounds_and_do_not_break_anything(
     tickets_dir,
 ):
-    """점-접두 규약은 임시 파일뿐 아니라 외부 부산물(.DS_Store 류)도 표면 밖에 둔다."""
+    """점-접두 규약은 임시 파일뿐 아니라 외부 부산물(.DS_Store 류)도 범위 밖에 둔다."""
     path = _reserve(tickets_dir, "T-0001", "developer")
-    round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n회수\n")
+    round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n돌려받기\n")
     (path.parent / ".DS_Store").write_bytes(b"\x00")
 
     loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
@@ -661,7 +661,7 @@ def test_a_header_that_lost_its_date_is_not_pending(tickets_dir):
 
 
 def test_a_seed_with_a_custom_header_label_is_still_pending(tickets_dir):
-    """헤더 라벨은 사람이 고르는 자리다(`section-add --label`) — 판정은 본문 골격만 본다."""
+    """헤더 라벨은 사람이 고르는 자리다(`section-add --label`) — 판정은 본문 빈 양식만 본다."""
     path = _reserve(tickets_dir, "T-0001", "developer")
     seed = _seed("developer")
     round_store.replace_round(
@@ -691,13 +691,13 @@ def _reviewer_output(finding_id: str = "F-001", role: str = "code-reviewer") -> 
     )
 
 
-def test_pending_does_not_flip_when_an_earlier_round_of_the_same_role_is_harvested(
+def test_pending_does_not_flip_when_an_earlier_round_of_the_same_role_is_collected(
     tickets_dir,
 ):
-    """같은 역할 병렬 2라운드 — 01 회수가 손대지 않은 02 의 판정을 뒤집지 않는다.
+    """같은 역할 병렬 2라운드 — 01 돌려받기가 손대지 않은 02 의 판정을 뒤집지 않는다.
 
     판정 입력이 시점(다른 라운드의 현재 내용)에 기대면 02 가 "산출 있음"으로 읽혀
-    `verify_rounds` 가 미회수를 보고하지 않고 조회의 `(산출 없음)` 표시도 사라진다.
+    `verify_rounds` 가 돌려받지 않은 것을 보고하지 않고 조회의 `(산출 없음)` 표시도 사라진다.
     """
     first = _reserve(tickets_dir, "T-0001", "code-reviewer")
     second = _reserve(tickets_dir, "T-0001", "code-reviewer")
@@ -733,7 +733,7 @@ def test_a_seed_whose_confirmation_ids_are_prefilled_is_pending(tickets_dir):
 
 
 def test_filling_the_confirmation_status_ends_pending(tickets_dir):
-    """골격 대조는 ID 만 자유롭다 — 값을 채운 블록은 산출이다."""
+    """빈 양식 대조는 ID 만 자유롭다 — 값을 채운 블록은 산출이다."""
     path = _reserve(tickets_dir, "T-0001", "code-reviewer")
     seed = path.read_text(encoding="utf-8")
     filled = seed.replace("<resolved|unresolved|regressed>", "resolved")
@@ -745,7 +745,7 @@ def test_filling_the_confirmation_status_ends_pending(tickets_dir):
 
 
 def test_a_round_whose_review_block_is_broken_is_not_pending(tickets_dir):
-    """블록을 읽지 못하면 골격이라 단정하지 않는다 — 산출 있음 쪽으로 남긴다."""
+    """블록을 읽지 못하면 빈 양식이라 단정하지 않는다 — 산출 있음 쪽으로 남긴다."""
     path = _reserve(tickets_dir, "T-0001", "code-reviewer")
     seed = path.read_text(encoding="utf-8")
     round_store.replace_round(path, seed.replace('"confirmations"', '"confirmations'))
@@ -755,7 +755,7 @@ def test_a_round_whose_review_block_is_broken_is_not_pending(tickets_dir):
 
 
 def test_a_seed_with_the_next_finding_id_is_still_pending(tickets_dir):
-    """다음 finding ID 실값을 실은 새 시드도 산출이 없다 — 판정은 본문 자신의 값으로 재렌더한다."""
+    """다음 finding ID 실값을 실은 새 빈 양식도 산출이 없다 — 판정은 본문 자신의 값으로 재렌더한다."""
     first = _reserve(tickets_dir, "T-0001", "code-reviewer")
     round_store.replace_round(first, _reviewer_output("F-003"))
     loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
@@ -770,7 +770,7 @@ def test_a_seed_with_the_next_finding_id_is_still_pending(tickets_dir):
 
     reloaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert [(item.ordinal, item.pending) for item in reloaded] == [(1, False), (2, True)]
-    # CRLF 사본도 같은 골격이다.
+    # CRLF 사본도 같은 빈 양식이다.
     crlf = round_rules.Round(*reloaded[1][:3], seed.replace("\n", "\r\n"), False)
     assert round_form.round_is_pending(crlf) is True
     # 한 글자만 채우면 산출이다.
@@ -783,9 +783,9 @@ def test_a_seed_with_the_next_finding_id_is_still_pending(tickets_dir):
 def test_an_engine_marked_round_is_not_pending_and_not_the_previous_output(
     tickets_dir, delegate,
 ):
-    """엔진 표식이 붙은 라운드는 `pending` 을 배제하는 자리에서 함께 빠진다.
+    """엔진 표시가 붙은 라운드는 `pending` 을 배제하는 자리에서 함께 빠진다.
 
-    표식이 붙는 순간 bytes 가 시드와 달라 `pending` 이 아니게 되므로, 두 배제가 같은 자리에
+    표시가 붙는 순간 bytes 가 빈 양식과 달라 `pending` 이 아니게 되므로, 두 배제가 같은 자리에
     없으면 종결된 예약이 직전 산출·프리필 공급원으로 선다.
     """
     first = _reserve(tickets_dir, "T-0001", "code-reviewer")
@@ -805,7 +805,7 @@ def test_an_engine_marked_round_is_not_pending_and_not_the_previous_output(
 
 
 def test_the_engine_marker_is_read_for_every_round_role(tickets_dir, delegate):
-    """판독은 역할을 가리지 않는다 — 표식이 붙는 자리는 리뷰 채널만이 아니다."""
+    """판독은 역할을 가리지 않는다 — 표시가 붙는 자리는 리뷰 채널만이 아니다."""
     for role in sorted(delegate_records.TICKET_COPY_ROLES):
         ticket = f"T-{9100 + sorted(delegate_records.TICKET_COPY_ROLES).index(role)}"
         landed = _reserve(tickets_dir, ticket, role)
@@ -850,21 +850,21 @@ def test_previous_round_of_role_ignores_other_roles_and_empty_input(tickets_dir)
     assert round_rules.previous_round_of_role(loaded, "developer")[0] == 1
 
 
-# ── 교체 (회수) ────────────────────────────────────────────────────────────
+# ── 교체 (돌려받기) ────────────────────────────────────────────────────────────
 
 def test_replace_round_preserves_crlf_bytes_round_trip(tickets_dir):
     path = _reserve(tickets_dir, "T-0001", "developer")
-    harvested = "## 구현 보충 (developer · 2026-01-03)\r\n\r\n회수 본문\r\n"
-    round_store.replace_round(path, harvested)
+    collected = "## 구현 보충 (developer · 2026-01-03)\r\n\r\n돌려받기 본문\r\n"
+    round_store.replace_round(path, collected)
 
-    assert path.read_bytes() == harvested.encode("utf-8")
+    assert path.read_bytes() == collected.encode("utf-8")
     loaded = round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
-    assert loaded[0].text == harvested
+    assert loaded[0].text == collected
 
 
 def test_replace_round_leaves_no_temporary_residue(tickets_dir):
     path = _reserve(tickets_dir, "T-0001", "developer")
-    round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n회수\n")
+    round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n돌려받기\n")
     assert [item.name for item in path.parent.iterdir()] == ["01-developer.md"]
 
 
@@ -872,13 +872,13 @@ def test_replace_round_creates_the_file_when_it_is_missing(tickets_dir):
     directory = tickets_dir / "rounds" / "T-0001"
     directory.mkdir(parents=True)
     target = directory / "01-developer.md"
-    round_store.replace_round(target, "## 구현 보충 (developer · 2026-01-03)\n\n회수\n")
-    assert target.read_text(encoding="utf-8").endswith("회수\n")
+    round_store.replace_round(target, "## 구현 보충 (developer · 2026-01-03)\n\n돌려받기\n")
+    assert target.read_text(encoding="utf-8").endswith("돌려받기\n")
 
 
 # ── 판정 ───────────────────────────────────────────────────────────────────
 
-def test_verify_rounds_is_clean_for_a_harvested_sequence(tickets_dir):
+def test_verify_rounds_is_clean_for_a_collected_sequence(tickets_dir):
     for role in ("architect", "developer"):
         path = _reserve(tickets_dir, "T-0001", role)
         round_store.replace_round(path, f"## 산출 ({role} · 2026-01-03)\n\n내용\n")
@@ -908,7 +908,7 @@ def test_verify_rounds_reports_a_pending_round_as_information(tickets_dir):
 
 
 def test_verify_problem_codes_are_four_distinct_values():
-    """소비자(lint·complete 게이트)가 한국어 detail 을 파싱하지 않고 코드로 심각도를 정한다."""
+    """소비자(lint·complete 통과 조건)가 한국어 detail 을 파싱하지 않고 코드로 심각도를 정한다."""
     codes = {
         round_rules.PROBLEM_NAME, round_rules.PROBLEM_GAP,
         round_rules.PROBLEM_DUPLICATE, round_rules.PROBLEM_PENDING,
@@ -978,12 +978,12 @@ def test_render_rounds_for_show_terminates_a_round_without_a_trailing_newline(ti
     assert round_rules.render_rounds_for_show(loaded).endswith("마지막 줄\n")
 
 
-# ── 경계 (공용 파일 seam) ────────────────────────────────────────────────
+# ── 경계 (공용 파일 함수) ────────────────────────────────────────────────
 
-def test_reads_and_replacements_go_through_the_shared_file_lock_seam(tickets_dir, monkeypatch):
-    """판독·교체가 공용 seam 을 지난다 — 일반 `open`/`os.replace` 로 내려앉지 않는다."""
+def test_reads_and_replacements_go_through_the_shared_file_lock_function(tickets_dir, monkeypatch):
+    """판독·교체가 공용 함수를 지난다 — 일반 `open`/`os.replace` 로 내려앉지 않는다."""
     path = _reserve(tickets_dir, "T-0001", "developer")
-    seam = fs
+    fs_module = fs
     calls: list[str] = []
 
     def record_read(*args, **kwargs):
@@ -994,12 +994,12 @@ def test_reads_and_replacements_go_through_the_shared_file_lock_seam(tickets_dir
         calls.append("replace")
         return original_replace(*args, **kwargs)
 
-    original_read = seam.read_text_shared
-    original_replace = seam.atomic_replace
-    monkeypatch.setattr(seam, "read_text_shared", record_read)
-    monkeypatch.setattr(seam, "atomic_replace", record_replace)
+    original_read = fs_module.read_text_shared
+    original_replace = fs_module.atomic_replace
+    monkeypatch.setattr(fs_module, "read_text_shared", record_read)
+    monkeypatch.setattr(fs_module, "atomic_replace", record_replace)
 
-    round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n회수\n")
+    round_store.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n돌려받기\n")
     round_form.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
 
     assert calls == ["replace", "read"]

@@ -1,4 +1,4 @@
-"""위임 모델·추론 토큰의 카드 배선 가드 — 생산(local.conf)과 소비(agent 카드)를 한 진실로 묶는다.
+"""위임 모델·추론 토큰의 카드 등록 가드 — 생산(local.conf)과 소비(agent 카드)를 한 진실로 묶는다.
 
 배경(T-0766). 세 하네스의 카드가 **상보적으로 반쪽씩** 비어 있었다: claude·opencode 는 4 역할
 카드에 모델 토큰을 실었지만 hard 티어 카드 자체가 없었고, codex 는 hard 카드만 토큰을 싣고 역할
@@ -16,8 +16,8 @@
       (추론 허용집합 확인 포함 — opencode 는 가짜 실행 파일의 모델 목록 조회) 를 그대로 태워
       렌더된 필드 값이 conf 값과 같은지 본다. 카드와 conf 가 어긋나면 그 자리에서 red 다.
   (3) **민감도** — 카드 한 장에서 토큰 한 줄을 지우면 (1) 이 실제로 red 를 내는지 실측한다.
-      가드가 자기 표면을 덮는지 스스로 증명하지 못하면 시야는 언제든 표면보다 좁아진다.
-  (4) **손열거 표면 시야** — 카드 집합을 손으로 적어 둔 다섯 자리(다른 테스트 모듈의 상수 + 가드
+      가드가 자기 대상을 덮는지 스스로 증명하지 못하면 검사 범위는 언제든 대상보다 좁아진다.
+  (4) **손열거 목록 검사 범위** — 카드 집합을 손으로 적어 둔 다섯 자리(다른 테스트 모듈의 상수 + 가드
       카드맵)가 실제 카드 집합과 등호인지 본다. 이 다섯은 카드를 늘려도 red 를 내지 않아 무가드
       출하를 만드는 자리다.
   (5) **전파 전제** — 새 카드가 git tracked 여야 출하 인벤토리(`TRACKED_ONLY`)에 들어간다.
@@ -151,7 +151,7 @@ def _token_stem(token: str, prefix: str) -> str:
 
 
 def _expected_stems(pm_render_module) -> tuple[str, ...]:
-    """토큰 표가 요구하는 카드 stem 집합 — 4 역할 축 + developer hard 티어."""
+    """토큰 표가 요구하는 카드 stem 집합 — 4 역할 + developer hard 티어."""
     stems = {
         _token_stem(token, "DELEGATE_MODEL_")
         for token in pm_render_module.DELEGATE_MODEL_CONF_KEYS
@@ -235,7 +235,7 @@ def test_delegate_tokens_wired_in_every_card_tree_both_ways(pm_render):
 
 
 def test_expected_consumption_covers_the_whole_token_table(pm_render):
-    """가드가 표의 **모든** 토큰을 실제로 요구하는지 — 자명 통과 방지(시야 == 표면).
+    """가드가 표의 **모든** 토큰을 실제로 요구하는지 — 자명 통과 방지(검사 범위 == 대상).
 
     (a) 는 카드 stem 을 돌기 때문에, 표에만 있고 아무 stem 에도 안 붙는 토큰이 생기면 조용히
     검사 밖으로 빠진다. 표 전량이 어느 트리에선가 기대 대상인지 뒤집어 센다.
@@ -296,7 +296,7 @@ def test_guard_is_sensitive_to_one_missing_token(
 ):
     """실 카드 트리를 복사해 토큰 한 줄을 지우면 같은 가드가 red 를 낸다.
 
-    존재가 아니라 값을 재는 축임을 실측한다 — 민감도 없는 가드는 카드가 늘 때 한 타깃이 빠져도
+    존재가 아니라 값을 재는 가드임을 실측한다 — 민감도 없는 가드는 카드가 늘 때 한 타깃이 빠져도
     영원히 green 이다(이 티켓이 닫는 재발 클래스 그 자체).
     """
     tree = next(t for t in CARD_TREES if t.label == tree_label)
@@ -417,8 +417,8 @@ def test_cards_render_local_conf_values_through_the_real_path(
 ):
     """`local.conf` → 해소 → 렌더까지 실 경로를 태워 카드 필드가 conf 값이 되는지 본다.
 
-    문자열 존재 검사가 아니라 **반환값**을 본다: 토큰이 있어도 채널 배선이 빠지면 여기서 red 다
-    (선언이 실행면에 닿지 않는 상태를 그 자리에서 표면화한다). 렌더는 `update_render._render_text` 를
+    문자열 존재 검사가 아니라 **반환값**을 본다: 토큰이 있어도 채널 등록이 빠지면 여기서 red 다
+    (선언이 실행면에 닿지 않는 상태를 그 자리에서 드러낸다). 렌더는 `update_render._render_text` 를
     거친다 — 추론 허용집합 확인(`contract.reasoning_allowed`)까지 실 경로다.
     """
     dest = tmp_path / f"dest-{tree.harness}"
@@ -450,7 +450,7 @@ def test_card_conf_mismatch_is_red_on_the_resolution_path(
 ):
     """카드가 conf 와 어긋나면(토큰이 다른 역할 것으로 바뀌면) 해소 결과가 달라져 red.
 
-    민감도 축 — 위 테스트가 값을 실제로 재는지 확인한다.
+    민감도 확인 — 위 테스트가 값을 실제로 재는지 확인한다.
     """
     dest = tmp_path / f"dest-{tree.harness}"
     conf_text, expected = _conf_text(pm_render, tree.harness)
@@ -491,7 +491,7 @@ def test_unused_profile_neutralizes_model_and_reasoning_together(
 ):
     """conf 하네스 ≠ 카드 하네스면 카드 5장의 model·추론 줄이 함께 중화되고 형식이 유효하다.
 
-    adopter#0 처럼 전 프로필을 다른 하네스로 보내는 형상에서, 역할 카드가 렌더를 깨지 않는지
+    adopter#0 처럼 전 프로필을 다른 하네스로 보내는 구성에서, 역할 카드가 렌더를 깨지 않는지
     (rc 불변) 본다. 중화는 값을 채우는 대신 사유를 남기는 경로다. 한쪽 줄만 중화되면 그 카드는
     다른 하네스용 값을 반쪽 싣는다.
     """
@@ -523,7 +523,7 @@ def test_unused_profile_neutralizes_model_and_reasoning_together(
 def test_empty_hard_model_fails_loud_with_the_conf_key(render_home, pm_render, pm_update, tmp_path):
     """`delegate.developer.hard.model=` (빈값)은 중화가 아니라 fail-loud 다 — 오설정 신호.
 
-    부재는 정상 형상(중화)이지만 빈값은 손-편집·손상 신호라 조용히 넘기면 hard 위임이 모델 없이
+    부재는 정상 구성(중화)이지만 빈값은 손-편집·손상 신호라 조용히 넘기면 hard 위임이 모델 없이
     돈다. 메시지가 채울 conf 키를 이름으로 지목하는지까지 단언한다.
     """
     dest = tmp_path / "dest"
@@ -542,15 +542,15 @@ def test_empty_hard_model_fails_loud_with_the_conf_key(render_home, pm_render, p
     assert "{{DELEGATE_MODEL_DEVELOPER_HARD}}" in message, message
 
 
-# ── (4) 손열거 표면 시야 == 카드 표면 ─────────────────────────────────────────
+# ── (4) 손열거 목록 검사 범위 == 카드 목록 ─────────────────────────────────────────
 
 def _claude_card_stems() -> set[str]:
     tree = next(t for t in CARD_TREES if t.label == "claude(root)")
     return {path.stem for path in tree.directory(REPO).glob("*.md")}
 
 
-def _developer_axis_surfaces() -> set[str]:
-    """네 트리의 developer 축 카드 상대경로(REPO 기준) — hard 티어 포함."""
+def _developer_card_paths() -> set[str]:
+    """네 트리의 developer 계열 카드 상대경로(REPO 기준) — hard 티어 포함."""
     surfaces: set[str] = set()
     for tree in CARD_TREES:
         for path in tree.directory(REPO).glob(f"*{tree.suffix}"):
@@ -560,7 +560,7 @@ def _developer_axis_surfaces() -> set[str]:
 
 
 def _hand_enumerations() -> dict[str, tuple[object, object]]:
-    """손열거 표면 → (실제 열거에서 뽑은 시야, 실 카드 표면). 등호가 불변식이다."""
+    """손열거 목록 → (실제 열거에서 뽑은 검사 범위, 실 카드 목록). 등호가 불변식이다."""
     frontmatter = importlib.import_module("test_agents_frontmatter")
     parity = importlib.import_module("test_claude_adapter_parity")
     board_lint = importlib.import_module("test_board_lint")
@@ -568,7 +568,7 @@ def _hand_enumerations() -> dict[str, tuple[object, object]]:
     large_output = importlib.import_module("test_large_output_file_delivery_convention")
 
     claude_stems = _claude_card_stems()
-    developer_axis = {stem for stem in claude_stems if stem.startswith("developer")}
+    developer_stems = {stem for stem in claude_stems if stem.startswith("developer")}
     return {
         "test_agents_frontmatter.AGENT_NAMES": (
             {Path(name).stem for name in frontmatter.AGENT_NAMES},
@@ -593,18 +593,18 @@ def _hand_enumerations() -> dict[str, tuple[object, object]]:
                 path.relative_to(REPO).as_posix()
                 for path in fix_scope.DEVELOPER_CARD_SURFACES
             },
-            _developer_axis_surfaces(),
+            _developer_card_paths(),
         ),
         "test_large_output_file_delivery_convention._ROLES": (
             {role for role in large_output._ROLES if role.startswith("developer")},
-            developer_axis,
+            developer_stems,
         ),
     }
 
 
 @pytest.mark.parametrize("surface", sorted(_hand_enumerations()))
 def test_hand_enumerated_surfaces_see_the_whole_card_set(surface):
-    """카드 집합을 손으로 적어 둔 자리가 실 카드 표면과 등호인지 (시야 == 표면).
+    """카드 집합을 손으로 적어 둔 자리가 실 카드 목록과 등호인지 (검사 범위 == 대상).
 
     이 다섯은 카드를 늘려도 스스로 red 를 내지 않는다 — 그래서 새 카드가 가드 없이 출하되는
     자리다. 여기서 등호를 강제해 "한 곳이라도 빠지면 red" 를 만든다.
@@ -617,7 +617,7 @@ def test_hand_enumerated_surfaces_see_the_whole_card_set(surface):
 
 
 def test_guard_card_map_sees_the_whole_claude_card_set(guard):
-    """가드 카드맵(6번째 손열거 표면)도 claude 카드 전량을 본다."""
+    """가드 카드맵(6번째 손열거 목록)도 claude 카드 전량을 본다."""
     view = {path.stem for path in native_agent_card.CLAUDE_NATIVE_AGENT_CARDS.values()}
     assert view == _claude_card_stems(), (
         f"가드 카드맵 시야가 갈렸다 — 누락 {sorted(_claude_card_stems() - view)}"
@@ -626,7 +626,7 @@ def test_guard_card_map_sees_the_whole_claude_card_set(guard):
 
 @pytest.mark.parametrize("surface", sorted(_hand_enumerations()))
 def test_hand_enumeration_check_is_sensitive_to_a_dropped_entry(surface):
-    """민감도 probe — 시야에서 hard 항목 하나를 빼면 등호가 실제로 깨진다."""
+    """민감도 probe — 검사 범위에서 hard 항목 하나를 빼면 등호가 실제로 깨진다."""
     view, actual = _hand_enumerations()[surface]
     dropped = {item for item in view if "developer-hard" in str(item)}
     assert dropped, f"{surface}: hard 항목이 시야에 없다(전제 실패)"

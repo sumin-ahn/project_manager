@@ -1,4 +1,4 @@
-"""fix 라운드 delta 꼬리 제약 블록 — 부착·복제 0·전달 지시 파리티 문면 가드."""
+"""fix 라운드 수락한 지적 꼬리 제약 블록 — 부착·복제 0·전달 지시 파리티 문면 가드."""
 from __future__ import annotations
 
 from pm_engine.domain import review_contract
@@ -45,12 +45,12 @@ PM_ROLE_SURFACES = (
     REPO / "templates/codex/.project_manager/wiki/pm_role.md",
     REPO / "templates/opencode/.project_manager/wiki/pm_role.md",
 )
-# 복제 0 가드 대상 18본 — 렌더러 상수가 단일 진실이고 이 표면들은 "그대로 전달" 지시만 갖는다.
+# 복제 0 가드 대상 18본 — 렌더러 상수가 단일 진실이고 이 파일들은 "그대로 전달" 지시만 갖는다.
 DUPLICATE_CHECK_SURFACES = (
     SKILL_SURFACES + DEVELOPER_CARD_SURFACES + PLAYBOOK_SURFACES + PM_ROLE_SURFACES
 )
 
-# 값을 재는 축(민감도) — 짧은 줄은 우연 일치가 잦아 상수 진단력이 없다.
+# 값을 재는 기준(민감도) — 짧은 줄은 우연 일치가 잦아 상수 진단력이 없다.
 MIN_DUPLICATE_LINE_LENGTH = 10
 
 # 제약 블록이 실어야 하는 개념 — 상수를 약한 문장으로 갈아치우면 여기서 red.
@@ -62,7 +62,7 @@ CONTENT_CONCEPTS = {
     "report-format-4-items": (("대상:",), ("빈틈:",), ("충돌:",), ("대안:",)),
 }
 
-# 스킬이 delta 출력을 발췌 없이 그대로 전달하라는 지시를 갖는지 — 문장 복제가 아니라 개념 보유.
+# 스킬이 수락한 지적 출력을 발췌 없이 그대로 전달하라는 지시를 갖는지 — 문장 복제가 아니라 개념 보유.
 DELIVERY_CONCEPTS = (
     (("발췌",), ("말고", "않")),
     (("그대로",),),
@@ -109,19 +109,19 @@ def _disposition(pd_module, finding_id: str = "F-001") -> "pd_module.PMReviewDis
     )
 
 
-def _delta(pd_module, pairs, *, finding_zero: bool = False):
-    return review_form.PMReviewDelta(accepted=tuple(pairs), finding_zero=finding_zero)
+def _accepted(pd_module, pairs, *, finding_zero: bool = False):
+    return review_form.PMReviewAccepted(accepted=tuple(pairs), finding_zero=finding_zero)
 
 
 # --- 1. 부착 픽스처 단언 -----------------------------------------------------
 
 
-def test_notice_attaches_once_at_tail_for_accepted_delta(pd):
+def test_notice_attaches_once_at_tail_for_accepted_findings(pd):
     finding = _finding(pd)
     disposition = _disposition(pd)
-    delta = _delta(pd, [(finding, disposition)])
+    review_accepted = _accepted(pd, [(finding, disposition)])
 
-    rendered = review_contract.render_pm_review_accepted("T-TEST", delta)
+    rendered = review_contract.render_pm_review_accepted("T-TEST", review_accepted)
 
     assert rendered.startswith("## PM 이 수락한 리뷰 지적 — T-TEST")
     assert delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE in rendered
@@ -140,9 +140,9 @@ def test_notice_attaches_once_regardless_of_finding_count(pd):
         (_finding(pd, "F-001"), _disposition(pd, "F-001")),
         (_finding(pd, "F-002"), _disposition(pd, "F-002")),
     ]
-    delta = _delta(pd, pairs)
+    review_accepted = _accepted(pd, pairs)
 
-    rendered = review_contract.render_pm_review_accepted("T-TEST", delta)
+    rendered = review_contract.render_pm_review_accepted("T-TEST", review_accepted)
 
     assert "F-001" in rendered and "F-002" in rendered
     assert rendered.count(delegate_prompt_rules.PM_REVIEW_FIX_SCOPE_NOTICE) == 1
@@ -152,16 +152,16 @@ def test_notice_attaches_once_regardless_of_finding_count(pd):
 
 
 @pytest.mark.parametrize("finding_zero", [False, True])
-def test_empty_accepted_delta_stays_empty(pd, finding_zero):
-    delta = _delta(pd, [], finding_zero=finding_zero)
-    assert review_contract.render_pm_review_accepted("T-TEST", delta) == ""
+def test_empty_accepted_findings_stay_empty(pd, finding_zero):
+    review_accepted = _accepted(pd, [], finding_zero=finding_zero)
+    assert review_contract.render_pm_review_accepted("T-TEST", review_accepted) == ""
 
 
 def test_confirmation_resolved_exhaustion_stays_empty(pd):
-    """accepted finding 이 이후 라운드의 resolved 확인으로 소진되면 delta.accepted 에서 빠진다.
+    """accepted finding 이 이후 라운드의 resolved 확인으로 소진되면 `review_accepted.accepted` 에서 빠진다.
 
-    이 경로는 렌더러 자체가 아니라 delta 계산(`parse_pm_review_accepted`)에서 결정되므로,
-    렌더 축과 별개로 실 파서 파이프라인을 태워야 "블록을 무조건 붙이는" 회귀를 못 본다.
+    이 경로는 렌더러 자체가 아니라 수락한 지적 계산(`parse_pm_review_accepted`)에서 결정되므로,
+    렌더 기준과 별개로 실 파서 파이프라인을 태워야 "블록을 무조건 붙이는" 회귀를 못 본다.
     """
 
     def round_(ordinal: int, text: str):
@@ -187,9 +187,9 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
             "recommendation": "F-001만 수정",
             "fix_contract": {
                 "location": ".project_manager/tools/pm_delegate.py:parse_pm_review_accepted",
-                "failure": "확인으로 해소된 finding이 accepted delta에 남는다.",
+                "failure": "확인으로 해소된 finding이 accepted 목록에 남는다.",
                 "design": "후속 resolved 확인을 소진 처리한다.",
-                "test": "tests/test_fix_round_prescription_scope.py의 delta 소진 회귀",
+                "test": "tests/test_fix_round_prescription_scope.py의 수락한 지적 소진 회귀",
                 "command": "python3 -m pytest tests/test_fix_round_prescription_scope.py -q",
                 "expected": "passed",
             },
@@ -213,10 +213,10 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
         }],
     }, ensure_ascii=False, indent=2) + "\n```\n"
 
-    delta = review_state.parse_pm_review_accepted(spec, [first, resolved])
+    review_accepted = review_state.parse_pm_review_accepted(spec, [first, resolved])
 
-    assert delta.accepted == ()
-    assert review_contract.render_pm_review_accepted("T-TEST", delta) == ""
+    assert review_accepted.accepted == ()
+    assert review_contract.render_pm_review_accepted("T-TEST", review_accepted) == ""
 
 
 # --- 4. 내용 계약(비-vacuous) — 개념 토큰 -------------------------------------
@@ -266,7 +266,7 @@ def test_notice_text_not_duplicated_into_delivery_surfaces(pd, path):
 
 
 def test_duplicate_guard_detects_injected_copy(pd, tmp_path):
-    """민감도 probe — 존재가 아니라 값을 재는 축임을 확인한다."""
+    """민감도 probe — 존재가 아니라 값을 재는 기준임을 확인한다."""
     lines = _notice_lines(pd)
     assert lines, "가드 대상 줄이 비었습니다"
     injected = tmp_path / "injected.md"
@@ -281,7 +281,7 @@ def test_duplicate_guard_detects_injected_copy(pd, tmp_path):
 
 
 @pytest.mark.parametrize("path", SKILL_SURFACES, ids=lambda path: str(path.relative_to(REPO)))
-def test_skill_surfaces_instruct_verbatim_delta_delivery(pd, path):
+def test_skill_surfaces_instruct_verbatim_accepted_delivery(pd, path):
     del pd
     assert path.is_file(), f"스킬 표면 없음: {path}"
     text = path.read_text(encoding="utf-8")

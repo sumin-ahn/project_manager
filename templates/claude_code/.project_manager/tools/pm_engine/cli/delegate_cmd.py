@@ -43,7 +43,7 @@ from pm_engine.infra import ticket_store
 
 
 def _cmd_raw_close(home, argv: list[str]) -> int:
-    """명시한 미마감 raw 장부 레코드를 비정상 종료(rc=-1)로 마감한다."""
+    """명시한 미마감 raw 기록 레코드를 비정상 종료(rc=-1)로 마감한다."""
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py raw close",
         description="kill·비정상 종료로 남은 raw 출력 기록 항목 수동 마감",
@@ -63,13 +63,13 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
-    _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
-    resolved_ledger = ledger_path.resolve()
+    _raw_dir, record_path = raw_output._raw_storage(home, output_dir)
+    resolved_record = record_path.resolve()
 
     # 중복 id는 한 레코드에 대한 한 번의 마감 요청으로 정규화한다.
     record_ids = list(dict.fromkeys(args.record_ids))
     rows_by_id = {
-        str(row.get("id")): row for row in raw_output.raw_records(ledger_path)
+        str(row.get("id")): row for row in raw_output.raw_records(record_path)
     }
     selected: list[tuple[dict, float]] = []
     current = datetime.datetime.now(datetime.timezone.utc)
@@ -78,7 +78,7 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
         if row is None:
             print(
                 f"오류: raw 출력 기록에 항목 없음: {record_id} "
-                f"(기록 파일: {resolved_ledger})",
+                f"(기록 파일: {resolved_record})",
                 file=sys.stderr,
             )
             return 1
@@ -109,7 +109,7 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
         record_id = str(row["id"])
         try:
             raw_output.finish_raw_record(
-                ledger_path,
+                record_path,
                 record_id,
                 rc=-1,
                 elapsed_sec=elapsed_sec,
@@ -124,29 +124,29 @@ def _cmd_raw_close(home, argv: list[str]) -> int:
         print(f"raw 레코드 마감: {record_id}")
         if not any(
             str(item.get("id")) == record_id
-            for item in raw_output.raw_records(ledger_path)
+            for item in raw_output.raw_records(record_path)
         ):
             print(
                 f"경고: raw 레코드 {record_id}는 완료 보존창"
                 f"({raw_output.RAW_RECORD_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 "
                 "기록에서 제거됨"
             )
-    print(f"마감 기록 파일: {resolved_ledger}")
+    print(f"마감 기록 파일: {resolved_record}")
     return 0
 
 
 def _print_orphan_raw_summary(
-    home, output_dir: Path | None, ledger_path: Path, *, limit: int,
+    home, output_dir: Path | None, record_path: Path, *, limit: int,
 ) -> None:
-    """장부 미참조 엔진 명명 원문을 경고 1줄 + 읽기 전용 목록으로 표면화한다.
+    """기록 미참조 엔진 명명 원문을 경고 1줄 + 읽기 전용 목록으로 드러낸다.
 
     삭제는 하지 않는다 — 목록화만 해서 사용자가 직접 처분하게
-    한다. delegate·review 두 디렉터리를 모두 스캔한다(장부는 두 표면이 공유하는 한 파일).
+    한다. delegate·review 두 디렉터리를 모두 스캔한다(기록은 두 명령이 공유하는 한 파일).
     """
     repo_override = home.local_dir.parent.parent
     delegate_dir, _ = raw_output.raw_storage_paths(repo_override, "delegate", output_dir)
     review_dir, _ = raw_output.raw_storage_paths(repo_override, "review", output_dir)
-    summary = raw_output.scan_orphan_raw_files((delegate_dir, review_dir), ledger_path)
+    summary = raw_output.scan_orphan_raw_files((delegate_dir, review_dir), record_path)
     if summary.count == 0:
         return
     print(
@@ -162,7 +162,7 @@ def _print_orphan_raw_summary(
 
 
 def _cmd_raw(home, argv: list[str]) -> int:
-    """공유 장부의 raw 조회 또는 명시 레코드 마감을 수행한다."""
+    """공유 기록의 raw 조회 또는 명시 레코드 마감을 수행한다."""
     if argv and argv[0] == "close":
         return _cmd_raw_close(home, argv[1:])
     parser = argparse.ArgumentParser(
@@ -190,19 +190,19 @@ def _cmd_raw(home, argv: list[str]) -> int:
     if args.limit <= 0:
         parser.error("--limit은 양수여야 합니다")
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
-    _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
-    resolved_ledger = ledger_path.resolve()
-    print(f"조회 기록 파일: {resolved_ledger}")
-    for peer_ledger in raw_output._peer_engine_ledgers(
+    _raw_dir, record_path = raw_output._raw_storage(home, output_dir)
+    resolved_record = record_path.resolve()
+    print(f"조회 기록 파일: {resolved_record}")
+    for peer_record in raw_output._peer_engine_ledgers(
         home, None if home.local_dir.parent.parent == home.root else home.local_dir.parent.parent,
     ):
-        if peer_ledger != resolved_ledger:
+        if peer_record != resolved_record:
             print(
                 "경고: 다른 엔진 사본의 raw 출력 기록 파일이 있습니다"
-                f"(이 조회에서는 읽지 않음): {peer_ledger}"
+                f"(이 조회에서는 읽지 않음): {peer_record}"
             )
     rows = raw_output.raw_records(
-        ledger_path, unfinished_only=args.unfinished
+        record_path, unfinished_only=args.unfinished
     )[:args.limit]
     label = "미마감 raw" if args.unfinished else "최근 raw"
     if not rows:
@@ -219,9 +219,9 @@ def _cmd_raw(home, argv: list[str]) -> int:
                 f"{row.get('harness')} · role={row.get('role')} · "
                 f"pid={row.get('pid')} · raw={row.get('raw_path')}"
             )
-    # 고아(장부 미참조) 원문 표면화는 rows 유무와 독립이다 — 장부가 텅 비어 있어도(전량 prune)
+    # 고아(기록 미참조) 원문 표시는 rows 유무와 독립이다 — 기록이 텅 비어 있어도(전량 prune)
     # 디스크에 원문이 남아 있을 수 있고 그게 바로 이 티켓이 잡는 역전이다.
-    _print_orphan_raw_summary(home, output_dir, ledger_path, limit=args.limit)
+    _print_orphan_raw_summary(home, output_dir, record_path, limit=args.limit)
     return 0
 
 # ── config lint (동일-모델 dev/reviewer 경고·never-block) ────────────────
@@ -230,7 +230,7 @@ def _cmd_raw(home, argv: list[str]) -> int:
 def _cmd_lint(home, argv: list[str]) -> int:
     """`pm_delegate.py lint` — 동일-모델 dev/reviewer 경고(never-block·항상 rc=0).
 
-    설정 정합 점검일 뿐 강제가 아니다 — 경고가 있어도 rc=0(차단 금지). 경고는 stderr, 정합 시
+    설정 일치 점검일 뿐 강제가 아니다 — 경고가 있어도 rc=0(차단 금지). 경고는 stderr, 일치 시
     안내는 stdout. board lint advisory 훅과 짝을 이루는 명시 진입점."""
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py lint",
@@ -265,11 +265,11 @@ def _add_review_target_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
-    """flat delegate parser 밖 special command의 실제 argparse 표면을 introspection에 공개한다.
+    """flat delegate parser 밖 special command의 실제 argparse 구성을 introspection에 공개한다.
 
     문서↔CLI 존재 가드는 `main()`의 선행 dispatch를 실행하지 않고 parser만 읽어야 한다. 실행과
     검사가 다른 parser를 만들면 문서의 중첩 flag가 실재해도 미등록으로 오판하거나, 반대로 검사만
-    green인 가짜 표면이 생긴다. 현재 공개 대상은 라운드 사본 `ticket`이고 소비자는 반환 parser에
+    green인 가짜 구성이 생긴다. 현재 공개 대상은 라운드 사본 `ticket`이고 소비자는 반환 parser에
     command 뒤 argv를 그대로 넣는다.
     """
     if command == "review":
@@ -410,7 +410,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     return parser
 
 
-# cross 채널 판정이 "결정 못함"으로 접는 allow reason — 이 둘만 침묵 통과다(그 밖 verdict!=deny 는
+# cross 채널 판정이 "결정 못함"으로 바꾸는 allow reason — 이 둘만 침묵 통과다(그 밖 verdict!=deny 는
 # 판정불능이라 stderr 경고 1줄을 낸다. 불변식 4). native harness 일치·역할 harness 미설정은 decide()가
 # 이미 확정적으로 답한 상태라 노이즈를 더하지 않는다.
 _PREPARE_CROSS_ROLE_SILENT_ALLOW_PREFIXES = (
@@ -418,11 +418,11 @@ _PREPARE_CROSS_ROLE_SILENT_ALLOW_PREFIXES = (
     "[delegate-channel/allow] 역할 harness 미설정",
 )
 
-# 이 게이트가 거부로 접는 유일한 deny 는 매핑된 하네스가 PM 하네스와 달라 cross 인 경우
+# 이 통과 조건이 거부로 바꾸는 유일한 deny 는 매핑된 하네스가 PM 하네스와 달라 cross 인 경우
 # (decide() Row 5)뿐이다 — 그 판정은 verdict=="deny" 와 함께 항상 비어 있지 않은 harness/model 을
 # 실어 온다(resolve_delegate 가 harness·model 을 원자 tuple 로만 해소하므로 하나만 비는 경우가
 # 없다). 마스터 스위치 꺼짐(Row 0.5, "위임이 꺼져 있습니다")은 verdict=="deny" 이되 harness·model 이
-# 둘 다 비어 있고, 여기 도달하기 전에 호출부가 owner_conf 로 이미 걸러낸다(별개 축이라 여기서
+# 둘 다 비어 있고, 여기 도달하기 전에 호출부가 owner_conf 로 이미 걸러낸다(별개 기준이라 여기서
 # 거부하지 않되 침묵하지도 않는다) — 사용자용 한국어 사유 문자열은 진단 출력에만 쓰고 정책 분기에는
 # 쓰지 않는다(문구가 바뀌어도 verdict/harness/model 구조는 안정적이다).
 
@@ -430,7 +430,7 @@ _PREPARE_CROSS_ROLE_SILENT_ALLOW_PREFIXES = (
 def _reject_cross_role_prepare(home, role: str, tier: str, conf: dict[str, str]) -> None:
     """cross 역할(PM 하네스 ≠ 매핑된 하네스) 수동 prepare 를 거부한다.
 
-    판정식은 `delegate_channel.decide`(native Agent 위임 훅과 같은 seam) 하나 — 여기서
+    판정식은 `delegate_channel.decide`(native Agent 위임 훅과 같은 함수) 하나 — 여기서
     하네스 비교를 다시 쓰지 않는다(불변식 1·2). `conf` 는 호출부가 이미 owner(PM 홈)에서 읽어 마스터
     스위치 판정과 함께 쓴 값을 그대로 받는다(불변식 3 — 실행 엔진 사본 repo 로 읽으면 역할 매핑이 없는
     사본에서 조용히 no-op). 거부는 `verdict=="deny"` 중에서도 cross-harness 불일치 사유뿐이고,
@@ -460,7 +460,7 @@ def _reject_cross_role_prepare(home, role: str, tier: str, conf: dict[str, str])
 
 def _review_prompt_path(owner: Path, run_id: str) -> Path:
     """native 리뷰 프롬프트 파일 자리 — PM 홈 위임 raw 디렉터리 아래 run 마다 하나."""
-    delegate_dir, _ledger = raw_output.raw_storage_paths(owner, "delegate")
+    delegate_dir, _record = raw_output.raw_storage_paths(owner, "delegate")
     return Path(delegate_dir) / f"review-prompt-{run_id}.md"
 
 
@@ -523,8 +523,8 @@ def _cmd_ticket(home, argv: list[str]) -> int:
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             owner = pm_paths.resolve_pm_home_for_repo(home.local_dir.parent.parent)
             home = pm_paths.home_at(home.root, pm_home=owner, board_root=pm_paths._board_root_at(owner))
-            ledger = delegate_records._delegate_rounds_ledger_path(owner)
-            print(f"조회 기록 파일: {ledger}")
+            record_file = delegate_records._delegate_rounds_record_path(owner)
+            print(f"조회 기록 파일: {record_file}")
             rows = delegate_records.ticket_copy_records(
                 owner, ticket=args.ticket, unharvested=args.uncollected,
             )
@@ -553,8 +553,8 @@ def _cmd_ticket(home, argv: list[str]) -> int:
         if args.ticket_command == "prepare":
             # 위임 마스터 스위치 — **준비 단계에서** 막는다. native 위임도 이 CLI 로 라운드 파일을
             # 준비하므로(스킬 규정) 여기가 엔진이 확실히 차단할 수 있는 지점이다. run-dir 생성·
-            # 장부 순번 예약보다 앞이라 off 형상에서 고아 산출물이 남지 않는다.
-            # `collect`·`copies` 는 게이트 밖이다 — 이미 준비된 라운드를 회수/조회하는 길까지
+            # 기록 순번 예약보다 앞이라 off 구성에서 고아 산출물이 남지 않는다.
+            # `collect`·`copies` 는 통과 조건 밖이다 — 이미 준비된 라운드를 돌려받거나 조회하는 길까지
             # 막으면 스위치를 끄는 순간 진행 중 라운드가 고아가 된다.
             # owner_conf 를 한 번만 읽어 마스터 스위치와 cross 판정에 함께 넘긴다 — 실행 엔진
             # 사본(REPO) conf 는 판정에 관여하지 않는다(불변식 3: owner 가 provenance 단일 진실).
@@ -631,7 +631,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
                 "converged": abandon_result.converged,
             }, sort_keys=True))
             if not abandon_result.converged:
-                # 수렴 단언이 깨진 상태는 rc 로 말한다 — 재호출이 남은 작업을 끝낸다(rollback 없음).
+                # 마무리 단언이 깨진 상태는 rc 로 말한다 — 재호출이 남은 작업을 끝낸다(rollback 없음).
                 print(
                     "오류: ticket abandon 결과가 아직 일치하지 않음 — 같은 명령을 다시 실행하세요: "
                     f"copy={copy}",
@@ -640,7 +640,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
                 return 1
             return 0
         if copy.is_dir():
-            # 디렉터리 인자 = run-dir. 행마다 같은 회수 판정을 통과시키고 결과를 티켓별로 낸다.
+            # 디렉터리 인자 = run-dir. 행마다 같은 돌려받기 판정을 통과시키고 결과를 티켓별로 낸다.
             outcomes = delegate_collect.collect_cluster_copy(
                 home, run_dir=copy, cwd=cwd_repo, )
             for outcome in outcomes:
@@ -684,7 +684,7 @@ def _emit_pm_review_verify_template(template: review_state.PMReviewVerifyTemplat
     """`review verify-template` 의 출력과 rc — rc 는 판정 함수가 아니라 이 자리가 정한다.
 
     rc≠0 은 `missing`(태만)·`stale`(확인 창을 지난 선언) 두 상태뿐이다. `gap`(빈틈 보고)과
-    `reviewer`(사람 확인 전용)는 정상 산출이라 rc=0 이고 stderr 로 크게 알린다. 확인 골격은 rc 와
+    `reviewer`(사람 확인 전용)는 정상 산출이라 rc=0 이고 stderr 로 크게 알린다. 확인 빈 양식은 rc 와
     무관하게 **먼저** 낸다 — 해소된 finding 의 부분 확인이 다른 finding 의 상태에 인질로 잡히면
     다음 fix 라운드가 이미 끝난 finding 을 다시 싣는다.
     """
@@ -814,8 +814,8 @@ def _cmd_review_ticket(home, args: argparse.Namespace, ticket: str) -> int:
             )
             return _emit_pm_review_verify_template(template)
         else:
-            delta = review_state.parse_pm_review_accepted(ticket_text, rounds)
-            rendered = review_contract.render_pm_review_accepted(ticket, delta)
+            review_accepted = review_state.parse_pm_review_accepted(ticket_text, rounds)
+            rendered = review_contract.render_pm_review_accepted(ticket, review_accepted)
         if rendered:
             sys.stdout.write(rendered)
         return 0
@@ -1043,7 +1043,7 @@ def _cmd_rounds_resolve_cluster(
     """`resolve --cluster --pm-verified` — 멤버마다 확인 실행·기입·완료 판정 재확인.
 
     rc 는 하나라도 실패하면 1 이다. 앞 티켓의 기입은 되돌리지 않는다 — 티켓별 독립이라
-    실패한 자리만 다시 부르면 이어진다(회수와 같은 규율). 잔여 0 멤버는 무대상이다.
+    실패한 자리만 다시 부르면 이어진다(돌려받기와 같은 규율). 남은 것이 0 인 멤버는 대상이 아니다.
     """
     members = cluster_store.cluster_live_members(home, cluster)
     if not members:
@@ -1068,9 +1068,9 @@ def _cmd_rounds_resolve_cluster(
 
 
 def _cmd_rounds(home, argv: list[str], run_fn: Callable | None = None) -> int:
-    """리뷰 잔여의 확인 생성·기입 서브커맨드(`rounds resolve --cluster`).
+    """남은 리뷰 항목의 확인 생성·기입 서브커맨드(`rounds resolve --cluster`).
 
-    `run_fn` 은 확인 커맨드 실행 seam(테스트 DI) — 생략하면 `subprocess.run` 이다.
+    `run_fn` 은 확인 커맨드 실행 교체 지점(테스트 DI) — 생략하면 `subprocess.run` 이다.
     """
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py rounds",

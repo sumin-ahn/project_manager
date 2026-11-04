@@ -11,7 +11,7 @@ ALWAYS_ALLOWED_PATHS: tuple[str, ...] = ()
 # git hash-object 한 번에 넘길 경로 수 — argv 길이 한계 회피(dirty 집합이 큰 트리 방어).
 HASH_BATCH_SIZE = 100
 # 이 크기를 넘는 파일은 해시 보강을 건너뛴다 — 대용량 산출물(빌드 아티팩트·모델 가중치 등)은
-# 존재/상태코드로 이미 표면화되고, 그걸 읽는 비용이 판정의 최악 I/O 를 지배한다.
+# 존재/상태코드로 이미 드러나고, 그걸 읽는 비용이 판정의 최악 I/O 를 지배한다.
 HASH_MAX_FILE_BYTES = 5 * 1024 * 1024
 
 
@@ -32,7 +32,7 @@ class StatusEntry(NamedTuple):
 class WorktreeState(NamedTuple):
     entries: tuple[StatusEntry, ...]
     # dirty 경로의 blob 해시((path, sha) 쌍) — 상태코드가 같은 **재수정**(M→M)을 잡는 유일한 신호.
-    # 해시 산출 실패는 이 목록에서 빠질 뿐이라 판정 전체를 잃지 않는다(상태코드 비교로 자연 강등).
+    # 해시 산출 실패는 이 목록에서 빠질 뿐이라 판정 전체를 잃지 않는다(상태코드 비교로 자연스럽게 낮아진다).
     digests: tuple[tuple[str, str], ...] = ()
     # 경로별 (submodule 상태, worktree mode) 지문 — porcelain v2 필드. 내용이 같아도 실행권한
     # (chmod +x)·submodule 포인터가 바뀌면 상태코드/해시 둘 다 그대로라 이 신호만 남는다.
@@ -116,7 +116,7 @@ def changed_status_paths(before: WorktreeState, after: WorktreeState) -> tuple[s
 
     **상태코드가 같아도** blob 해시나 mode/submodule 지문이 달라졌으면 변경이다 — 이미 dirty(``M``)한
     파일을 위임이 또 고치면 코드는 ``M``→``M`` 그대로라 코드 비교만으론 안 보이고(병렬 공유 트리
-    clobber가 정확히 이 형상), chmod(+x)·submodule 포인터 변경은 내용이 같아 해시도 안 움직인다.
+    clobber가 정확히 이 구성), chmod(+x)·submodule 포인터 변경은 내용이 같아 해시도 안 움직인다.
     양쪽 신호를 다 가진 경로만 비교하고, 한쪽이라도 없으면 상태코드 판정을 따른다.
     """
     before_map = {entry.path: entry.code for entry in before.entries}

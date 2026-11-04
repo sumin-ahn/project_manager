@@ -25,7 +25,7 @@ from pm_engine.infra import ticket_store
 
 # ── CHANGELOG 재료 추출 (완료 티켓 본문 → 릴리즈 노트 재료) ────────────────────
 #
-# 릴리즈 노트의 **문안은 사람이 쓴다**. 이 표면이 내는 것은 재료뿐이다 — 어떤 티켓이 이 릴리즈
+# 릴리즈 노트의 **문안은 사람이 쓴다**. 이 명령이 내는 것은 재료뿐이다 — 어떤 티켓이 이 릴리즈
 # 구간에 들어갔고, 그 티켓이 자기 본문에서 무엇을 하겠다고 선언했는가. 분류(Added/Changed/…)는
 # **후보**만 세운다: 확정은 채택자 관점의 판단이고, 기계가 그 판단을 대신하면 아무도 읽고 고르지
 # 않은 문장이 그대로 릴리즈 노트가 된다.
@@ -35,8 +35,8 @@ from pm_engine.infra import ticket_store
 # 시각 이후에 완료된 티켓을 고른다. 코드 체크아웃이나 rev 를 해소하지 못하면 빈 목록이 아니라
 # rc≠0 이다(조용한 빈 손은 곧 릴리즈 노트 누락이다).
 #
-# 이 표면은 board 를 **읽기만** 한다 — 순회는 board 의 공용 strict 로더(그 안에서 공유 읽기
-# seam)를 쓰고 어떤 티켓 파일도 쓰지 않는다. done 티켓 하나가 손상돼 있으면 그 경로를 찍고
+# 이 명령은 board 를 **읽기만** 한다 — 순회는 board 의 공용 strict 로더(그 안에서 공유 읽기
+# 함수)를 쓰고 어떤 티켓 파일도 쓰지 않는다. done 티켓 하나가 손상돼 있으면 그 경로를 찍고
 # 멈춘다: 건너뛴 티켓은 출력에서 '원래 없던 재료'와 구별되지 않는다.
 
 # 코드 체크아웃 좌표를 담은 per-clone conf 키 — 엔진 갱신이 쓰는 그 키 하나다(사본 0).
@@ -79,7 +79,7 @@ def _changelog_instant(value: object, *, source: str) -> datetime.datetime:
     (board 가 기록하는 값은 offset 을 달고 있다).
     """
     parsed = (value if isinstance(value, datetime.datetime)
-              else delegate_run_rules._parse_ledger_timestamp(value))
+              else delegate_run_rules._parse_record_timestamp(value))
     if parsed is None:
         raise delegate_errors.DelegateError(f"시각을 읽지 못했습니다: {source} → {value!r}")
     if parsed.tzinfo is None:
@@ -88,7 +88,7 @@ def _changelog_instant(value: object, *, source: str) -> datetime.datetime:
 
 
 def _changelog_required(value: object, *, field: str, path: Path) -> str:
-    """완료 티켓의 필수 값 — 없거나 비었으면 그 경로를 찍고 터진다(파일명 폴백 없음)."""
+    """완료 티켓의 필수 값 — 없거나 비었으면 그 경로를 찍고 터진다(파일명으로 대신하지 않음)."""
     text = str(value or "").strip()
     if not text:
         raise delegate_errors.DelegateError(f"완료 티켓의 `{field}` 가 비어 있습니다: {path}")
@@ -121,7 +121,7 @@ def changelog_since_instant(
 ) -> datetime.datetime:
     """`--since` 의 태그·rev → 그 커밋 시각(해소 실패는 fail-loud).
 
-    git 실행은 이 모듈이 이미 가진 조회 seam 하나를 그대로 쓴다(runner 사본 0).
+    git 실행은 이 모듈이 이미 가진 조회 함수 하나를 그대로 쓴다(runner 사본 0).
     """
     try:
         raw = delegate_copy_git._cluster_git(
@@ -251,7 +251,7 @@ def _resolve_ticket_pm_verified(
     """티켓 하나의 리뷰 확인 입력 preflight → terminal 확인 기입 → 완료 판정 재확인.
 
     순서가 계약이다: (1) 입력 preflight (2) machine command/PM-owned terminal 확인 생성
-    (3) 확인 절 기입 (4) 명세를 **다시 읽어** 완료 판정의 리뷰 잔여가 열렸는지 확인한다.
+    (3) 확인 절 기입 (4) 명세를 **다시 읽어** 완료 판정의 남은 리뷰 항목이 열렸는지 확인한다.
     판정 입력은 리뷰 라운드 파일과 명세 PM 영역뿐이다(다른 기록을 쓰지 않는다).
     """
     owner = home.local_dir.parent.parent

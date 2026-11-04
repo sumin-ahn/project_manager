@@ -21,20 +21,20 @@ from pm_engine.infra.harness import watchdog
 
 # ── 드라이버 관측 능력 선언 (분기 특례가 아니라 테이블) ────────────────────────────
 #
-# 무진행 판정도 startup stall 워치독도 시간 예산도 "드라이버가 무엇을 관측시켜 주느냐 + 어느 축에서
+# 무진행 판정도 startup stall 워치독도 시간 예산도 "드라이버가 무엇을 관측시켜 주느냐 + 어느 하네스에서
 # 도느냐"에만 의존한다. 하니스별 if 분기를 만들지 않고 **선언 테이블**을 읽는다.
-#   · progress_signal — 실측 형상:
+#   · progress_signal — 실측 구성:
 #       codex    `exec --json`               → 줄 단위 이벤트 스트림.
 #       opencode `run --format json`         → 줄 단위 이벤트(각 이벤트에 timestamp 내장).
 #       claude   `-p --output-format stream-json --verbose` → 줄 단위 이벤트(옛 `json` =
 #                종료 시 단일 덩어리 = 신호 없음이었다).
 #   · startup_watchdog — 첫-stdout-이벤트 창 + 유한 재시도. **opencode 전용**인 이유는
-#     특례가 아니라 근거다: startup network fetch stall(upstream #13841)이 opencode 축에서만
-#     실측됐고, 첫-이벤트 창을 신호 축 전부에 켜면 기동이 느린 실행을 새로 false-kill 한다.
-#   · idle_timeout / wall_timeout — 클라우드 축(codex·claude)과 로컬 GPU 축(opencode)의 값이 다르다
+#     특례가 아니라 근거다: startup network fetch stall(upstream #13841)이 opencode 에서만
+#     실측됐고, 첫-이벤트 창을 신호 있는 하네스 전부에 켜면 기동이 느린 실행을 새로 false-kill 한다.
+#   · idle_timeout / wall_timeout — 클라우드 하네스(codex·claude)와 로컬 GPU 하네스(opencode)의 값이 다르다
 #     (근거 수치는 `watchdog` 선언부 주석). 값이 갈리는 건 허용, **코드가 갈리면 위반**이다.
-# 테이블은 **`watchdog` 가 단일 소유**한다 — additional_reviewer 도 같은 테이블을 읽어야 리뷰어 축과 위임
-# 축의 규칙이 갈리지 않는다(값이 두 군데면 규칙이 둘).
+# 테이블은 **`watchdog` 가 단일 소유**한다 — additional_reviewer 도 같은 테이블을 읽어야 리뷰어 쪽과 위임
+# 쪽의 규칙이 갈리지 않는다(값이 두 군데면 규칙이 둘).
 
 
 def harness_profile(home, harness: str, conf: dict[str, str] | None = None):
@@ -54,9 +54,9 @@ def harness_profile(home, harness: str, conf: dict[str, str] | None = None):
     )
 
 
-# 처방 커맨드 렌더 규칙. 처방은 사람이 붙여넣어 **실제로 실행**하는 줄이므로 장부
+# 안내 커맨드 렌더 규칙. 안내 커맨드는 사람이 붙여넣어 **실제로 실행**하는 줄이므로 기록
 # 직렬화(POSIX 표기)와 달리 실행 셸의 인용 규칙을 따른다. Windows argv 인용(공백·따옴표)은
-# `subprocess.list2cmdline` 이 그대로 담당하고, 아래 상수는 그 규칙 밖의 셸 축만 다룬다.
+# `subprocess.list2cmdline` 이 그대로 담당하고, 아래 상수는 그 규칙 밖의 셸 규칙만 다룬다.
 #   · argv 규칙엔 인용이 불필요해도 셸이 먼저 재해석하는 문자 — 큰따옴표로 중화된다
 #     (cmd.exe·PowerShell 공통).
 _WINDOWS_SHELL_METACHARACTERS = frozenset("&|<>^()")
@@ -113,9 +113,9 @@ def _windows_command_is_paste_safe(tokens: Sequence[str]) -> bool:
 
 
 def render_shell_token(value: str, *, windows: bool | None = None) -> str:
-    """처방 커맨드에 끼워 넣는 인자 하나를 실행 셸의 인용 규칙으로 렌더한다.
+    """안내 커맨드에 끼워 넣는 인자 하나를 실행 셸의 인용 규칙으로 렌더한다.
 
-    문장 안에 이미 조립된 커맨드의 한 자리(예: 훅 처방의 `--cwd <경로>`)를 채울 때 쓴다.
+    문장 안에 이미 조립된 커맨드의 한 자리(예: 훅 안내의 `--cwd <경로>`)를 채울 때 쓴다.
     전체 커맨드를 새로 만들 수 있으면 `render_shell_command`를 쓴다 — 그쪽만 재해석 불가
     토큰을 EncodedCommand로 올릴 수 있다."""
     if windows is None:
@@ -125,7 +125,7 @@ def render_shell_token(value: str, *, windows: bool | None = None) -> str:
 
 
 def render_shell_command(argv: Sequence[str]) -> str:
-    """처방 커맨드 한 줄을 실행 셸 규칙으로 렌더한다 (붙여넣으면 그대로 실행돼야 한다).
+    """안내 커맨드 한 줄을 실행 셸 규칙으로 렌더한다 (붙여넣으면 그대로 실행돼야 한다).
 
     POSIX는 `shlex.join`, Windows는 `subprocess.list2cmdline` 등가 argv 규칙 + 셸 메타문자
     인용이다. 두 Windows 셸 공통 평문이 불가능한 입력만 EncodedCommand 한 줄로 올린다
@@ -141,7 +141,7 @@ def render_shell_command(argv: Sequence[str]) -> str:
 
 
 def _prescribed_interpreter() -> str:
-    """처방 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
+    """안내 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
 
     Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어 런처가 1순위다. 그 판정은
     `contract.entrypoint_command` 하나가 소유하고, 여기서는 해소값의 인터프리터 토큰만 꺼내
@@ -153,7 +153,7 @@ def _prescribed_interpreter() -> str:
 
 
 def _temp_env_reference(windows: bool | None = None) -> str:
-    """처방 문구가 임시 디렉터리를 가리킬 때 쓰는 셸 변수 표기."""
+    """안내 문구가 임시 디렉터리를 가리킬 때 쓰는 셸 변수 표기."""
     if windows is None:
         windows = contract.running_on_windows()
     return delegate_run_rules._TEMP_ENV_REFERENCE_WINDOWS if windows else delegate_run_rules._TEMP_ENV_REFERENCE_POSIX
@@ -177,7 +177,7 @@ def _env_source_value(
     """부모 env 에서 키 하나를 읽는다(Windows 는 이름 대소문자를 구분하지 않는다).
 
     `os.environ` 자체는 Windows 에서 대소문자 무시 매핑이지만, 사본 dict 로 넘어오면 그 성질이
-    사라진다 — 그 자리에서 `SystemRoot` 를 못 찾아 필수 키를 떨구는 일이 없게 여기서 흡수한다.
+    사라진다 — 그 자리에서 `SystemRoot` 를 못 찾아 필수 키를 떨구는 일이 없게 여기서 처리한다.
     """
     if key in source:
         return source[key]
@@ -193,7 +193,7 @@ def _env_source_value(
 def _with_resolved_child_env(
     env: dict[str, str], *, harness: str, windows: bool, source: Mapping[str, str],
 ) -> dict[str, str]:
-    """정제 env 의 임시 디렉터리 축을 해소하고 필수 키 누락을 fail-loud 로 세운다.
+    """정제 env 의 임시 디렉터리 변수를 해소하고 필수 키 누락을 fail-loud 로 세운다.
 
     임시 디렉터리는 **이름이 플랫폼마다 다르다** — 부모 env 에 그 이름이 하나도 없으면 자식을
     빈 채로 보내지 않고 실측값(`_gettempdir`)으로 채운다. 필수 키가 그래도 없으면 실행하지 않는다:
@@ -239,7 +239,7 @@ def build_env(
     구성한다(os.environ 미상속). 목록은 상수(_ENV_ALLOWLIST_*·_HARNESS_AUTH_ENV)로 조정 가능.
 
     `windows`/`source` 는 주입 지점이다 — 플랫폼별 키 집합과 필수 키 판정을 실제 실행 플랫폼과
-    무관하게 태울 수 있어야 회귀가 두 축을 모두 검증한다(기본은 실제 플랫폼·실제 os.environ)."""
+    무관하게 태울 수 있어야 회귀가 두 플랫폼을 모두 검증한다(기본은 실제 플랫폼·실제 os.environ)."""
     if windows is None:
         windows = contract.running_on_windows()
     src = os.environ if source is None else source
@@ -275,7 +275,7 @@ def _cwd_in_git_repo(cwd: Path, run_fn: Callable | None = None) -> bool:
 
     광범위 경로(홈 디렉토리 등 non-repo)를 신뢰 작업공간으로 삼는 것을 차단한다(codex must-fix) —
     실제 허용 작업공간을 git repo 로 조여 cwd (a) 신뢰 루트가 과도하게 넓어지는 것을 막는다. git 미설치·
-    실행 불가·비-repo 는 False(호출부 fail-loud). run_fn 주입(테스트 mock·additional_reviewer 동형 seam)."""
+    실행 불가·비-repo 는 False(호출부 fail-loud). run_fn 주입(테스트 mock·additional_reviewer 와 같은 구조의 교체 지점)."""
     _run = run_fn or subprocess.run
     try:
         result = _run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
@@ -300,11 +300,11 @@ def _resolve_timeout(home, args: argparse.Namespace, conf: dict[str, str], harne
 def _harness_timeout_budget(home, harness: str, timeout: int) -> int:
     """하네스 **1회 실행+정리**의 최악 소요 예산(초).
 
-    첫-이벤트 워치독을 **선언한 축**(프로필 startup_watchdog=True·현재 opencode)만 다르다 —
+    첫-이벤트 워치독을 **선언한 하네스**(프로필 startup_watchdog=True·현재 opencode)만 다르다 —
     워치독이 **시도마다** overall 예산을 새로 잡으므로 단일 실행이 timeout 을 넘을 수 있다.
     다만 stall 로 죽는 시도는 overall 이 아니라 첫-이벤트 창에서 kill 되므로(`now >= first_deadline`
     분기), 실행 본체는 `timeout + retries×min(첫-이벤트 창, timeout)` 이다. 여기에 부모 wait 5초와
-    pipe drain 5초의 연속 정리를 **모든 시도(retries+1)** 에 더한다. 나머지 축도 timeout 뒤 정리
+    pipe drain 5초의 연속 정리를 **모든 시도(retries+1)** 에 더한다. 나머지 하네스도 timeout 뒤 정리
     1회를 같은 공용 식으로 센다. watchdog 노브(env PM_OC_STALL_RETRIES·PM_OC_FIRST_EVENT_TIMEOUT)를
     못 읽으면 재시도 0인 공용 식으로 계산한다.
     (무진행 판정은 벽시계 *안쪽* 에서만 앞당겨 끝내므로 이 상한을 늘리지 않는다.)"""
@@ -328,8 +328,8 @@ def _harness_timeout_budget(home, harness: str, timeout: int) -> int:
 def max_declared_execution_path_budget(home) -> int:
     """기본 선언으로 가능한 primary→fallback 경로의 최악 본체 예산(초).
 
-    폴백은 자기 turn 예산을 새로 쓰며, 같은 하네스의 다른 모델로도 유효하다. 따라서 단일 프로필
-    최댓값이 아니라 **모든 선언 축 두 시도의 합**을 본다. 2단 폴백은 없으므로 깊이는 정확히 2다.
+    대체 하네스는 자기 turn 예산을 새로 쓰며, 같은 하네스의 다른 모델로도 유효하다. 따라서 단일 프로필
+    최댓값이 아니라 **모든 선언 하네스 두 시도의 합**을 본다. 2단 대체 하네스는 없으므로 깊이는 정확히 2다.
     startup watchdog 재시도 창도 각 시도의 예산에 포함한다.
     """
     budgets = [

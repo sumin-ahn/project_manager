@@ -16,18 +16,18 @@ from pm_engine.infra import ticket_store
 
 
 def _section_add_owning_cluster(home, tid: str, path: Path) -> str | None:
-    """그 티켓의 라운드 수열을 **소유하는 묶음 장부 id**(없으면 None).
+    """그 티켓의 라운드 수열을 **소유하는 묶음 기록 id**(없으면 None).
 
-    장부가 있으면 그 티켓의 라운드는 고정 예산 수열이 지배한다 — 라운드를 여는 표면은 위임
+    기록이 있으면 그 티켓의 라운드는 고정 예산 수열이 지배한다 — 라운드를 여는 명령은 위임
     준비(`pm_delegate.py ticket prepare`) 하나뿐이고, 그 판정을 거치지 않는 `section-add` 가
-    같은 자리를 열면 예산이 세는 수열 밖에서 라운드가 늘어난다. 장부가 없는 티켓(발행 전
-    draft)은 예산 판정의 입력 자체가 없어 이 명령이 유일한 예약 표면이다.
+    같은 자리를 열면 예산이 세는 수열 밖에서 라운드가 늘어난다. 기록이 없는 티켓(발행 전
+    draft)은 예산 판정의 입력 자체가 없어 이 명령이 유일한 예약 명령이다.
 
     손상 명세는 여기서 판정하지 않는다 — 클러스터 해소는 `ticket_cluster_from_text` 와 같은
     규칙(필드 부재·파싱 실패는 크기 1)이라 `load_ticket_soft` 로 읽는다. 이 판정이 호출부
-    (`cmd_section_add`)의 `load_ticket` **앞**이므로, 장부를 가진 티켓은 명세 YAML 이 손상돼도
+    (`cmd_section_add`)의 `load_ticket` **앞**이므로, 기록을 가진 티켓은 명세 YAML 이 손상돼도
     loud 판독 대신 아래 묶음 소유 거부 문구를 받는다 — 둘 다 첫 쓰기 앞 rc=1 이라 갈리는 것은
-    진단 문구뿐이다. 장부가 없는 티켓은 종전대로 `load_ticket` 이 손상을 loud 하게 낸다.
+    진단 문구뿐이다. 기록이 없는 티켓은 종전대로 `load_ticket` 이 손상을 loud 하게 낸다.
     """
     loaded = ticket_store.load_ticket_soft(home, path)
     fm = loaded[0] if loaded is not None else {}
@@ -43,9 +43,9 @@ def _active_ticket_path(home, tid: str, action: str, *, role: str | None=None) -
     blocked/done 및 위 두 draft 예외 밖(section-add×developer|code-reviewer 등)은 같은 경계에서
     거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
 
-    section-add 는 그 위에 조건이 하나 더 있다 — **묶음 장부가 없는 티켓**만 연다. 라운드
-    예약 표면은 둘이고 정의역이 겹치지 않는다: 장부가 있는 티켓은 위임 준비만(고정 예산이
-    수열을 지배한다), 장부가 없는 티켓은 이 명령만.
+    section-add 는 그 위에 조건이 하나 더 있다 — **묶음 기록이 없는 티켓**만 연다. 라운드
+    예약 명령은 둘이고 정의역이 겹치지 않는다: 기록이 있는 티켓은 위임 준비만(고정 예산이
+    수열을 지배한다), 기록이 없는 티켓은 이 명령만.
     """
     try:
         status, path = ticket_store.find_ticket_for_mutation(home, tid)
@@ -77,26 +77,26 @@ def _rounds_mutation_sync_paths(home, message: str, paths: Sequence[Path]) -> bo
     별도 board-git이 없는 no-op이며, 원격 공유 완료를 뜻하지 않는다. 원격 보류는 기존
     best-effort 출력이 안내하고 draft 라운드의 공개는 promote가 소유한다.
 
-    준비·회수·포기가 직접 호출하는 두 인자 시그니처를 유지한다. 인자를 늘리면 부분 동기된
+    준비·돌려받기·포기가 직접 호출하는 두 인자 시그니처를 유지한다. 인자를 늘리면 부분 동기된
     PM 홈 사본에서 라운드를 반영한 뒤 CLI가 TypeError로 실패할 수 있다.
     """
     board_dashboard.refresh_board(home)
     return board_sync._board_git_sync_best_effort(home, message, tuple(paths))
 
-_ROUND_PENDING_UNHARVESTED_QUERY = 'python3 .project_manager/tools/pm_delegate.py ticket copies --uncollected'
+_ROUND_PENDING_UNCOLLECTED_QUERY = 'python3 .project_manager/tools/pm_delegate.py ticket copies --uncollected'
 
-def _round_pending_ledger_owner(home) -> Path:
-    """명시 Home의 코드 좌표에서 미회수 라운드 장부를 소유한 PM 홈을 해소한다.
+def _round_pending_record_owner(home) -> Path:
+    """명시 Home의 코드 좌표에서 돌려받지 않은 라운드 기록을 소유한 PM 홈을 해소한다.
 
-    해소 실패는 전파하며 다른 모듈의 실행 위치나 전역 재앵커에 의존하지 않는다."""
+    해소 실패는 전파하며 다른 모듈의 실행 위치나 전역 대상 저장소 설정에 의존하지 않는다."""
     return Path(pm_paths.resolve_pm_home_for_repo(home.root)).resolve()
 
 def _round_pending_abandon_command(home, tid: str, ordinal: int, role: str) -> str | None:
-    """미회수 장부에서 이 pending 라운드의 실 `--copy`/`--cwd` 를 해소해 완성 abandon 커맨드를 낸다.
+    """돌려받지 않은 기록에서 이 pending 라운드의 실 `--copy`/`--cwd` 를 해소해 완성 abandon 커맨드를 낸다.
 
-    이 (순번, 역할)의 미회수 행 부재·경로 형태 불일치는 해소 불능으로 `None`(호출부가
-    `ticket copies --uncollected` 조회 처방으로 대체한다). 장부 조회 예외는 전파한다."""
-    owner = _round_pending_ledger_owner(home)
+    이 (순번, 역할)의 돌려받지 않은 행 부재·경로 형태 불일치는 해소 불능으로 `None`(호출부가
+    `ticket copies --uncollected` 조회 안내로 대신한다). 기록 조회 예외는 전파한다."""
+    owner = _round_pending_record_owner(home)
     rows = delegate_records.ticket_copy_records(owner, ticket=tid, unharvested=True)
     match = next((row for row in rows if row.get('ordinal') == ordinal and row.get('role') == role), None)
     if match is None:
@@ -110,18 +110,18 @@ def _round_pending_abandon_command(home, tid: str, ordinal: int, role: str) -> s
     return f'python3 .project_manager/tools/pm_delegate.py ticket abandon --copy {copy_path} --cwd {cwd} --assume-dead'
 
 def _discard_round_pending_notice(home, tid: str) -> None:
-    """미회수(round-pending) 라운드가 있어도 discard 를 막지 않고 ⓘ 로 회수 처방만 안내한다.
+    """돌려받지 않은(round-pending) 라운드가 있어도 discard 를 막지 않고 ⓘ 로 돌려받는 방법만 안내한다.
 
-    완료 게이트(`_round_completion_problems`)와 같은 축(round-pending=비차단·표시용)이다.
-    여러 pending 이 있어도 안내는 **정확히 1줄**(건수 + 첫 pending 의 처방)로 접는다 — pending
+    완료 통과 조건(`_round_completion_problems`)과 같은 기준(round-pending=비차단·표시용)이다.
+    여러 pending 이 있어도 안내는 **정확히 1줄**(건수 + 첫 pending 의 안내)로 줄인다 — pending
     마다 자리표시자 줄을 찍던 옛 형태는 실행 가능한 값이 아니었다(reviewer). round-gap·
-    round-dup·round-name 은 완료 게이트가 이미 다루는 축이라 여기서 재확인하지 않는다(discard
-    는 그 축을 차단하지 않는다).
+    round-dup·round-name 은 완료 통과 조건이 이미 다루는 기준이라 여기서 재확인하지 않는다(discard
+    는 그 기준을 차단하지 않는다).
     """
     pending = [item for item in round_form.load_rounds(pm_paths.tickets_dir(home), tid) if item.pending]
     if not pending:
         return
     first = pending[0]
     resolved = _round_pending_abandon_command(home, tid, first.ordinal, first.role)
-    prescription = resolved if resolved is not None else _ROUND_PENDING_UNHARVESTED_QUERY
+    prescription = resolved if resolved is not None else _ROUND_PENDING_UNCOLLECTED_QUERY
     print(f'ⓘ  round-pending {len(pending)}건({first.path.name}) — 돌려받으려면 `{prescription}`', file=sys.stderr)

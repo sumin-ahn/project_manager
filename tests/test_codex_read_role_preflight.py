@@ -1,15 +1,15 @@
 """T-0844 — codex read 역할 exec-root preflight.
 
-배경 — codex read 역할(researcher·code-reviewer)만 `-C`(실행 root)를 격리 tmp 로 재앵커한다
-(`_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS["codex"]`). 그 tmp 는 매 attempt 새로 만드는 빈
+배경 — codex read 역할(researcher·code-reviewer)만 `-C`(실행 root)를 격리 tmp 로 다시 잡는다
+(`_READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS["codex"]`). 그 tmp 는 매 attempt 새로 만드는 빈
 디렉터리라 절대 git 저장소가 아니고, 모델은 프롬프트 지시로 `--cwd` 복귀를 기대받을 뿐이다 —
 그 준수를 기계가 보장할 수는 없다(`codex exec --help` 실측: `-C` 는 항상 암묵적 쓰기 가능
 root·`--add-dir` 는 추가만 한다 — "주 워크스페이스는 read-only·별도 root만 write" 조합이 CLI 에
-없다). 실측 3건(T-0778 r05·T-0841 r02·T-0823 r04)에서 리뷰어가 재앵커된 빈 tmp 에서 되짚어가지
+없다). 실측 3건(T-0778 r05·T-0841 r02·T-0823 r04)에서 리뷰어가 다시 잡은 빈 tmp 에서 되짚어가지
 못해 "저장소가 아니다/테스트가 없다"로 반려했다 — 세 라운드 모두 `--cwd` 자신은 정상이었다.
 
-이 preflight(`_preflight_codex_read_exec_root`)는 재앵커 **이전**의 `--cwd` 가 리뷰 가능한
-형상인지(저장소인가·toplevel 이 `--cwd` 자신인가)를 스폰 전에 기계로 확정해, 불량 입력으로 인한
+이 preflight(`_preflight_codex_read_exec_root`)는 실행 위치 다시 잡기 **이전**의 `--cwd` 가 리뷰 가능한
+구성인지(저장소인가·toplevel 이 `--cwd` 자신인가)를 스폰 전에 기계로 확정해, 불량 입력으로 인한
 무의미한 유료 라운드를 과금 전에 끊는다. 역할과 무관한 검사다 — 리뷰는 커밋된 슬롯 HEAD 를 보므로
 (준비가 깨끗한 작업 트리를 요구한다) staged 변경을 요구하지 않는다.
 """
@@ -97,7 +97,7 @@ def _run_attempt(pd, *, harness, role, cwd, tmp_path, run_fn):
     )
 
 
-# ── (a) 세 형상 — 각각 호출 전 rc≠0 차단 ─────────────────────────────────
+# ── (a) 세 구성 — 각각 호출 전 rc≠0 차단 ─────────────────────────────────
 
 def test_non_repo_cwd_blocks_before_spawn(pd, tmp_path, monkeypatch):
     """--cwd 가 git 저장소가 아니면 codex 를 스폰하지 않고 DelegateError 로 끊는다.
@@ -144,7 +144,7 @@ def test_subdirectory_cwd_toplevel_mismatch_blocks(pd, tmp_path):
         )
 
 
-# ── (b) 오차단 0 — 정상 형상은 막히지 않는다 ──────────────────────────────────
+# ── (b) 오차단 0 — 정상 구성은 막히지 않는다 ──────────────────────────────────
 
 def test_code_reviewer_needs_no_staged_changes(pd, tmp_path):
     """AT-011 — staged 변경 0 인 깨끗한 저장소(toplevel 일치)에서도 codex code-reviewer 는 스폰된다.
@@ -186,7 +186,7 @@ def test_developer_role_never_reaches_preflight(pd, tmp_path):
     assert len(calls) == 1
 
 
-# ── (c) 클래스 전수 — claude·opencode 는 exec root 를 재앵커하지 않아 이 클래스가 없다 ──
+# ── (c) 클래스 전수 — claude·opencode 는 exec root 를 다시 잡지 않아 이 클래스가 없다 ──
 
 @pytest.mark.parametrize(
     ("harness", "stdout_fn"),
@@ -194,9 +194,9 @@ def test_developer_role_never_reaches_preflight(pd, tmp_path):
 )
 def test_claude_and_opencode_reviewer_not_subject_to_this_class(
         pd, tmp_path, harness, stdout_fn):
-    """claude·opencode 는 `_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS` 가 False 라 -C/--dir 을 건드리지
+    """claude·opencode 는 `_READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS` 가 False 라 -C/--dir 을 건드리지
     않는다 — 같은 비-저장소·staged-0 cwd 로도 이 preflight 가 아예 발동하지 않고 정상 스폰된다."""
-    assert delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness] is False
+    assert delegate_run_rules._READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS[harness] is False
     cwd = tmp_path / "worktree"   # 의도적으로 git 저장소가 아님 · staged 도 없음
     cwd.mkdir()
     calls = []
@@ -213,15 +213,15 @@ def test_claude_and_opencode_reviewer_not_subject_to_this_class(
     assert len(calls) == 1
 
 
-# ── T-0844 라운드 2 — 재앵커된 read 실행의 3-절대경로 preamble(엔진 소유) ──────────
+# ── T-0844 라운드 2 — 실행 위치를 다시 잡은 read 실행의 3-절대경로 preamble(엔진 소유) ──────────
 
 def test_reanchor_preamble_carries_three_absolute_values_and_declaration(pd, tmp_path):
-    """`_reanchor_exec_root_preamble`(순수 함수) 산출에 (a)(b)(c) 세 절대경로와 '대상 아님'
+    """`_retarget_exec_root_preamble`(순수 함수) 산출에 (a)(b)(c) 세 절대경로와 '대상 아님'
     선언·절대경로 git 명령 예시가 실린다."""
     cwd = tmp_path / "repo"
     exec_root = tmp_path / "isolated-tmp"
     writable = exec_root
-    text = delegate_transport._reanchor_exec_root_preamble(cwd, exec_root, writable)
+    text = delegate_transport._retarget_exec_root_preamble(cwd, exec_root, writable)
 
     assert str(cwd) in text                       # (a) 검토 대상 절대경로
     assert str(exec_root) in text                  # (b) 실행 root 절대경로
@@ -287,7 +287,7 @@ def test_dry_run_prompt_carries_three_absolute_values(pd, tmp_path, capsys):
 
 
 def test_dry_run_developer_role_has_no_reanchor_preamble(pd, tmp_path, capsys):
-    """write 역할(developer)은 read_tmp/재앵커 대상이 아니므로 이 preamble 이 없다."""
+    """write 역할(developer)은 read_tmp/실행 위치 다시 잡기 대상이 아니므로 이 preamble 이 없다."""
     repo = tmp_path / "repo"
     _init_repo(repo, staged=True)
     prompt_file = repo / "prompt.md"
@@ -308,7 +308,7 @@ def test_dry_run_developer_role_has_no_reanchor_preamble(pd, tmp_path, capsys):
 
 def test_dry_run_no_reanchor_when_read_tmp_strategy_unavailable(
         pd, tmp_path, monkeypatch, capsys):
-    """read_tmp 전략이 없으면(fd 결속도 소유자 ACL 도 없음) 실행도 재앵커를 안 하므로(`read_tmp
+    """read_tmp 전략이 없으면(fd 연결도 소유자 ACL 도 없음) 실행도 위치를 다시 잡지 않으므로(`read_tmp
     =None` → `_apply_read_tmp_argv` 가 argv 를 그대로 반환) dry-run 도 존재하지 않을 좌표를
     예고하지 않는다 — 존재하지 않을 좌표를 안내하는 건 안내가 없는 것보다 나쁘다(PM 판정).
     dry-run 과 실행의 `-C` 의미(둘 다 `--cwd`)·preamble 유무가 일치함을 한 테스트에서 교차 확인."""
@@ -330,7 +330,7 @@ def test_dry_run_no_reanchor_when_read_tmp_strategy_unavailable(
     assert rc == 0
     assert "검토 대상이 아니다" not in out
     assert "[격리 실행 좌표 — 엔진 값]" not in out
-    assert f"-C {repo}" in out   # dry-run argv 의 -C 의미 = --cwd (재앵커 없음)
+    assert f"-C {repo}" in out   # dry-run argv 의 -C 의미 = --cwd (실행 위치 다시 잡기 없음)
 
     seen = {}
 

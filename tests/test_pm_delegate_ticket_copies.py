@@ -1,28 +1,28 @@
-"""T-0850 — 재실행으로 대체된 라운드가 harvest·abandon 양쪽에 거부돼 미회수 장부 레코드에
-종결 경로가 없는 실형상(라운드 5/6 F-001 재선언 순환) 픽스처.
+"""T-0850 — 재실행으로 대체된 라운드가 돌려받기·abandon 양쪽에 거부돼 돌려받지 않은 기록 레코드에
+종결 경로가 없는 실구성(라운드 5/6 F-001 재선언 순환) 픽스처.
 
-`ticket abandon` 의 "시드 그대로가 아님" 거부에 명시-확인 축(`--superseded-by ordinal`) 하나만
+`ticket abandon` 의 "빈 양식 그대로가 아님" 거부에 명시-확인 경로(`--superseded-by ordinal`) 하나만
 연다 — 그 외 거부 조건(단일 처분·신뢰 뿌리·종료 증거·중간 순번 board 보존)은 손대지 않는다.
-`ticket collect` 의 finding ID 재선언 거부는 판정 무결성 축이라 이 티켓의 대상이 아니다(회귀로
+`ticket collect` 의 finding ID 재선언 거부는 판정 무결성 검사라 이 티켓의 대상이 아니다(회귀로
 고정).
 
-  R1 명시 축 필요    — `--superseded-by` 없이는 종전대로 거부(회귀).
+  R1 명시 경로 필요    — `--superseded-by` 없이는 종전대로 거부(회귀).
   R2 자기 참조 거부  — 대체본이 자기 자신일 수 없다.
   R3 생존 확인 유지  — 대체-확인이 종료 증거·소유 pid 생존 확인을 대신하지 않는다(역방향 확인).
-  R4 실형상 종결     — 라운드 N/N+1 이 같은 finding ID 로 harvest·abandon 순환에 빠진 뒤,
+  R4 실구성 종결     — 라운드 N/N+1 이 같은 finding ID 로 돌려받기·abandon 순환에 빠진 뒤,
                        `--superseded-by`(+`--assume-dead`) 로 라운드 N 이 종결되고
                        `ticket copies --uncollected` 목록에서 값으로 사라진다.
   R5 재호출 멱등     — 재호출은 `--superseded-by` 를 다시 주지 않아도 남은 정리를 끝낸다.
-  R6 harvest 비목표  — `ticket collect` 는 이 축을 모른다.
-  R7 산출 보존 불변식 — 검증·loud·장부 기록은 대체-확인이 실제로 발화한 호출에서만 나고,
-                       파괴 효력(run-dir 삭제)은 장부에 기록된 값만 인정한다(재호출 인자 무시).
-  R8 값·실재·순서    — `<1`·자기참조·부재 ordinal 은 시드 대조 분기와 무관하게 거부되고,
-                       loud 는 생존 게이트를 통과한 뒤에만 남는다.
+  R6 돌려받기 비목표  — `ticket collect` 는 이 경로를 모른다.
+  R7 산출 보존 불변식 — 검증·loud·기록 쓰기는 대체-확인이 실제로 실행한 호출에서만 나고,
+                       파괴 효력(run-dir 삭제)은 기록에 남은 값만 인정한다(재호출 인자 무시).
+  R8 값·실재·순서    — `<1`·자기참조·부재 ordinal 은 빈 양식 대조 분기와 무관하게 거부되고,
+                       loud 는 생존 확인을 통과한 뒤에만 남는다.
 
-중간 순번이라 보존한 board 시드에는 엔진 표식이 발행돼 `round-pending`·판정 표면·직전 산출에서
+중간 순번이라 보존한 board 빈 양식에는 엔진 표시가 발행돼 `round-pending`·판정 범위·직전 산출에서
 함께 빠지고, 파괴 판정 기준선은 그 발행 **이전** bytes 다(최대 순번 삭제 분기는 불변).
 
-검증 근거는 실 board 트리·실 라운드 파일·실 `delegate-rounds.jsonl` 이고, 리뷰 블록은 엔진 골격
+검증 근거는 실 board 트리·실 라운드 파일·실 `delegate-rounds.jsonl` 이고, 리뷰 블록은 엔진 빈 양식
 렌더(`render_pm_review_block_skeleton`)에서 key·enum 을 받아 값만 채운다(스키마 재타이핑 0).
 """
 from __future__ import annotations
@@ -91,7 +91,7 @@ def pd():
     ]
     module = _load_pd()
 
-    # 이 모듈은 superseded copy의 abandon/harvest 저수준 상태만 검증한다.
+    # 이 모듈은 superseded copy의 abandon/돌려받기 저수준 상태만 검증한다.
     # 출하 고정 architect→developer→reviewer→fix 수열은 test_round_budget.py가
     # 담당하므로 여기서는 기존 fixture가 선언한 reviewer 좌석만 편다.
     def _copy_transport_sequence(budget, *, cluster):
@@ -133,10 +133,10 @@ def _spec_text(ticket: str, *, status: str = "claimed") -> str:
         "design: done\n"
         "tags: []\n"
         "---\n"
-        f"# {ticket}\n\n## 목표\n대체-확인 축 왕복 픽스처.\n\n"
+        f"# {ticket}\n\n## 목표\n대체-확인 경로 왕복 픽스처.\n\n"
         "## 설계\n"
         "- **경계 실측**: 기계 테스트 픽스처\n"
-        "- **불변식**: 이 파일의 축 밖\n"
+        "- **불변식**: 이 파일의 기준 밖\n"
         "- **표면 상한**: 픽스처 1건\n"
         "- **테스트 전략**: 정상·실패 경로\n"
     )
@@ -190,7 +190,7 @@ def env(tmp_path, pd, monkeypatch):
 def _write_spec(
     tickets: Path, ticket: str, *, rounds=("code-reviewer",), **kwargs,
 ) -> Path:
-    """명세와 그 티켓의 크기 1 묶음 장부를 함께 쓴다 — `rounds` 가 예약할 역할 순서다."""
+    """명세와 그 티켓의 크기 1 묶음 기록을 함께 쓴다 — `rounds` 가 예약할 역할 순서다."""
     path = tickets / f"{ticket}-supersede.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
     write_cluster_ledger(
@@ -199,7 +199,7 @@ def _write_spec(
     return path
 
 
-def _ledger_rows(pm_home: Path) -> list[dict]:
+def _record_rows(pm_home: Path) -> list[dict]:
     path = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
     if not path.exists():
         return []
@@ -219,8 +219,8 @@ def _finding_values(pd, finding_id: str) -> dict:
         "recommendation": f"{finding_id}만 수정",
         "fix_contract": {
             "location": ".project_manager/tools/pm_delegate.py:abandon_ticket_copy",
-            "failure": f"{finding_id} 대체 회수 순환 재현",
-            "design": f"{finding_id} 범위에서 장부·증거 보존",
+            "failure": f"{finding_id} 대체 돌려받기 순환 재현",
+            "design": f"{finding_id} 범위에서 기록·증거 보존",
             "test": "tests/test_pm_delegate_ticket_copies.py",
             "command": "python3 --version",
             "expected": "Python",
@@ -230,7 +230,7 @@ def _finding_values(pd, finding_id: str) -> dict:
 
 
 def _review_body(pd, role: str, finding_ids: list[str]) -> str:
-    """리뷰 라운드 본문 — 블록 key·fence 는 엔진 골격 렌더가 소유하고 값만 채운다."""
+    """리뷰 라운드 본문 — 블록 key·fence 는 엔진 빈 양식 렌더가 소유하고 값만 채운다."""
     skeleton = review_form.render_pm_review_block_skeleton(role, [])
     payload = review_form._pm_review_json_blocks(skeleton)[0].value
     finding_shape = payload["findings"][0]
@@ -267,11 +267,11 @@ def _problem_codes(pd, pm_home: Path, ticket: str) -> list[str]:
 
 
 def _use_relay_pid(pd, monkeypatch, *, alive: bool):
-    """생존 조회 seam(`raw_output.pid_is_alive`)만 주입한다 — 나머지 raw 표면은 실 모듈 그대로 쓴다."""
+    """생존 조회 함수(`raw_output.pid_is_alive`)만 주입한다 — 나머지 raw 함수는 실 모듈 그대로 쓴다."""
     monkeypatch.setattr(raw_output, "pid_is_alive", lambda _pid: alive)
 
 
-# ── R1 명시 축 필요(회귀 — 기본 거부 유지) ──────────────────────────────────
+# ── R1 명시 경로 필요(회귀 — 기본 거부 유지) ──────────────────────────────────
 
 def test_abandon_without_superseded_by_still_refuses_mismatched_output(pd, env):
     """`--superseded-by` 없는 abandon 은 산출 있는 라운드를 종전대로 거부한다."""
@@ -291,7 +291,7 @@ def test_abandon_without_superseded_by_still_refuses_mismatched_output(pd, env):
 
     assert plan.board_path.read_bytes() == before
     assert plan.run_dir.exists()
-    assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
+    assert "abandoned_at" not in _record_rows(pm_home)[-1]
     assert sync_log == before_sync
 
 
@@ -305,7 +305,7 @@ def test_t0928_recorded_seed_stays_pending_and_can_be_abandoned(pd, env):
     assert result.changed is False
     assert plan.board_path.read_bytes() == before
     assert plan.path.is_file()
-    assert _ledger_rows(pm_home)[-1]["collected_at"] is None
+    assert _record_rows(pm_home)[-1]["collected_at"] is None
     assert len(sync_log) == 1
     abandoned = delegate_prepare.abandon_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=plan.path, cwd=slot,
                                        assume_dead=True)
@@ -313,7 +313,7 @@ def test_t0928_recorded_seed_stays_pending_and_can_be_abandoned(pd, env):
     assert not plan.board_path.exists() and not plan.run_dir.exists()
 
 
-def test_t0928_recorded_seed_draft_harvest_waits_for_promote(pd, env, monkeypatch):
+def test_t0928_recorded_seed_draft_collect_waits_for_promote(pd, env, monkeypatch):
     from test_delegate_cluster_rounds import _fill
     pm_home, slot, tickets, sync_log = env
     spec = _write_spec(tickets, "T-9202", rounds=("architect",), status="draft")
@@ -387,11 +387,11 @@ def test_superseded_by_self_reference_is_rejected(pd, env):
 
     assert plan.board_path.read_bytes() == before
     assert plan.run_dir.exists()
-    assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
+    assert "abandoned_at" not in _record_rows(pm_home)[-1]
     assert sync_log == before_sync
 
 
-# ── R3 생존 확인 유지(역방향 확인 — 대체-확인이 liveness gate 를 대신하지 않는다) ─────────
+# ── R3 생존 확인 유지(역방향 확인 — 대체-확인이 liveness 확인을 대신하지 않는다) ─────────
 
 def test_superseded_by_without_evidence_still_requires_assume_dead(pd, env):
     """대체-확인만으로는 부족하다 — 종료 증거 없는 예약은 여전히 명시 확인이 필요하다."""
@@ -414,7 +414,7 @@ def test_superseded_by_without_evidence_still_requires_assume_dead(pd, env):
     assert delegate_rounds.ABANDON_ASSUME_DEAD_FLAG in str(caught.value)
     assert dead.board_path.read_bytes() == before
     assert dead.run_dir.exists()
-    assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
+    assert "abandoned_at" not in _record_rows(pm_home)[-1]
     assert sync_log == before_sync
 
 
@@ -440,7 +440,7 @@ def test_superseded_by_does_not_override_a_live_owner_pid(pd, env, monkeypatch):
 
     assert dead.board_path.read_bytes() == before
     assert dead.run_dir.exists()
-    assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
+    assert "abandoned_at" not in _record_rows(pm_home)[-1]
     assert sync_log == before_sync
 
     # 죽음이 확인되면(`pid_is_alive`→False) `--assume-dead` 로 그제야 진행된다.
@@ -452,12 +452,12 @@ def test_superseded_by_does_not_override_a_live_owner_pid(pd, env, monkeypatch):
     assert result.converged is True
 
 
-# ── R4 실형상 종결 + R5 재호출 멱등 ──────────────────────────────────────────
+# ── R4 실구성 종결 + R5 재호출 멱등 ──────────────────────────────────────────
 
 def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
-    """실측 재현: 라운드 1 이 F-001 을 내고, 라운드 2 가 같은 ID 로 회수된 뒤,
+    """실측 재현: 라운드 1 이 F-001 을 내고, 라운드 2 가 같은 ID 로 돌려받은 뒤,
 
-    라운드 1 은 harvest(ID 충돌)·abandon(산출 존재) 양쪽에 막힌다 — `--superseded-by` 로
+    라운드 1 은 돌려받기(ID 충돌)·abandon(산출 존재) 양쪽에 막힌다 — `--superseded-by` 로
     종결하면 `ticket copies --uncollected` 목록에서 라운드 1 이 값으로 사라진다.
     """
     pm_home, slot, tickets, sync_log = env
@@ -471,10 +471,10 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9005", role="code-reviewer", cwd=slot, )
     assert round2.ordinal == round1.ordinal + 1
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-001"]))
-    harvested = delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
-    assert harvested.changed is True
+    collected = delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
+    assert collected.changed is True
 
-    # 라운드 1 은 이제 harvest·abandon 양쪽에 막힌다(실측 순환).
+    # 라운드 1 은 이제 돌려받기·abandon 양쪽에 막힌다(실측 순환).
     with pytest.raises(delegate_errors.DelegateError, match="finding ID 재선언: F-001"):
         delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, )
     with pytest.raises(delegate_errors.DelegateError, match="산출이 있어 포기할 수 없습니다"):
@@ -494,7 +494,7 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     assert result.board_removed is False           # 중간 순번 보존 규칙은 그대로다.
     assert result.run_dir_removed is True
     assert round1.board_path.exists()
-    # 보존한 시드에는 엔진 표식 한 줄만 붙는다(그 앞 bytes 는 시드 그대로다).
+    # 보존한 빈 양식에는 엔진 표시 한 줄만 붙는다(그 앞 bytes 는 빈 양식 그대로다).
     marker = review_contract.pm_review_refused_line("code-reviewer")
     assert round1.board_path.read_bytes() == round1_board_seed + f"{marker}\n".encode("utf-8")
     assert sync_log[-1] == (
@@ -504,7 +504,7 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     loud = capsys.readouterr().err
     assert "대체-확인" in loud and f"ordinal={round2.ordinal}" in loud
 
-    # 표식이 붙은 라운드는 `pending` 을 배제하는 자리에서 함께 빠진다.
+    # 표시가 붙은 라운드는 `pending` 을 배제하는 자리에서 함께 빠진다.
     loaded = round_form.load_rounds(_tickets_root(pm_home), "T-9005")
     assert [(item.ordinal, item.pending) for item in loaded] == [
         (round1.ordinal, False), (round2.ordinal, False)]
@@ -516,16 +516,16 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     spec_text = (tickets / "T-9005-supersede.md").read_text(encoding="utf-8")
     assert "F-001" in review_contract.render_pm_review_disposition_template(spec_text, loaded)
 
-    # 값으로 사라짐 — 미회수 목록에 더는 라운드 1 사본이 없다.
+    # 값으로 사라짐 — 돌려받지 않은 목록에 더는 라운드 1 사본이 없다.
     unharvested = delegate_records.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
     assert str(round1.path) not in [row["copy"] for row in unharvested]
-    assert unharvested == []          # 라운드 2 는 harvested, 라운드 1 은 abandoned.
+    assert unharvested == []          # 라운드 2 는 돌려받았고, 라운드 1 은 abandoned.
 
     assert _problem_codes(pd, pm_home, "T-9005") == []      # `round-pending` 도 사라진다.
 
 
 def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, monkeypatch):
-    """재호출은 `--superseded-by` 를 다시 안 줘도 남은 정리를 끝낸다(장부에서 되읽는다)."""
+    """재호출은 `--superseded-by` 를 다시 안 줘도 남은 정리를 끝낸다(기록에서 되읽는다)."""
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9006", rounds=("code-reviewer", "code-reviewer"))
     round1 = delegate_prepare.prepare_ticket_copy(
@@ -536,7 +536,7 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-011"]))
     delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
 
-    # run-dir 삭제만 실패하도록 주입해 "ledger 는 닫혔지만 run-dir 은 남은" 중간 상태를 만든다.
+    # run-dir 삭제만 실패하도록 주입해 "기록은 닫혔지만 run-dir 은 남은" 중간 상태를 만든다.
     real_rmtree = fs.force_rmtree
     state = {"calls": 0}
 
@@ -553,10 +553,10 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
             pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, assume_dead=True,
             superseded_by_ordinal=round2.ordinal,
         )
-    assert "abandoned_at" in _ledger_rows(pm_home)[-1]      # 1단계는 이미 내구성 있게 닫혔다.
+    assert "abandoned_at" in _record_rows(pm_home)[-1]      # 1단계는 이미 내구성 있게 닫혔다.
     assert round1.run_dir.exists()                          # 삭제는 실패해 남아 있다.
 
-    # 재호출 — `superseded_by_ordinal` 인자 없이도 장부에서 되읽어 같은 기준선으로 마무리한다.
+    # 재호출 — `superseded_by_ordinal` 인자 없이도 기록에서 되읽어 같은 기준선으로 마무리한다.
     result = delegate_prepare.abandon_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, assume_dead=True,
     )
@@ -567,21 +567,21 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
     assert unharvested == []
 
 
-# ── 보존 시드 표식 ─────────────────────────────────────────────────────────
+# ── 보존 빈 양식 표시 ─────────────────────────────────────────────────────────
 
 def test_middle_ordinal_abandon_marks_the_preserved_seed_out_of_the_surfaces(
     pd, env,
 ):
-    """대체-확인 **없는** 중간 순번 포기도 보존한 시드에 표식을 발행한다.
+    """대체-확인 **없는** 중간 순번 포기도 보존한 빈 양식에 표시를 발행한다.
 
-    그 board 파일은 영원히 시드 그대로라 표식이 없으면 `round-pending` 으로 남는다. 표식은
+    그 board 파일은 영원히 빈 양식 그대로라 표시가 없으면 `round-pending` 으로 남는다. 표시는
     파괴 판정 기준선을 읽은 뒤 붙으므로 run-dir 정리는 종전대로 끝난다.
     """
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9020", rounds=("code-reviewer", "code-reviewer"))
     round1 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9020", role="code-reviewer", cwd=slot, )
-    round1_seed = round1.board_path.read_bytes()
+    round1_form = round1.board_path.read_bytes()
     round2 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9020", role="code-reviewer", cwd=slot, )
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-921"]))
@@ -595,7 +595,7 @@ def test_middle_ordinal_abandon_marks_the_preserved_seed_out_of_the_surfaces(
     assert (result.changed, result.converged) == (True, True)
     assert result.board_removed is False and result.run_dir_removed is True
     marker = review_contract.pm_review_refused_line("code-reviewer")
-    assert round1.board_path.read_bytes() == round1_seed + f"{marker}\n".encode("utf-8")
+    assert round1.board_path.read_bytes() == round1_form + f"{marker}\n".encode("utf-8")
     assert sync_log[-1] == (
         "ticket-abandon T-9020 code-reviewer", [round1.board_path],
     )
@@ -608,7 +608,7 @@ def test_middle_ordinal_abandon_marks_the_preserved_seed_out_of_the_surfaces(
 
 
 def test_max_ordinal_abandon_still_deletes_the_board_round_without_a_marker(pd, env):
-    """역방향 — 최대 순번은 종전대로 board 파일을 지운다(표식 발행 0)."""
+    """역방향 — 최대 순번은 종전대로 board 파일을 지운다(표시 발행 0)."""
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9021")
     only = delegate_prepare.prepare_ticket_copy(
@@ -627,16 +627,16 @@ def test_max_ordinal_abandon_still_deletes_the_board_round_without_a_marker(pd, 
 def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
     pd, env, monkeypatch,
 ):
-    """재호출은 표식을 다시 쓰지 않고, 자기가 쓴 줄 때문에 산출 보존으로 뒤집히지도 않는다.
+    """재호출은 표시를 다시 쓰지 않고, 자기가 쓴 줄 때문에 산출 보존으로 뒤집히지도 않는다.
 
-    파괴 판정 기준선은 표식 **이전** bytes 다 — 되돌리지 않으면 첫 호출이 붙인 줄이 다음
+    파괴 판정 기준선은 표시 **이전** bytes 다 — 되돌리지 않으면 첫 호출이 붙인 줄이 다음
     호출에 "산출이 생겼다" 로 읽혀 남은 정리가 영영 끝나지 않는다.
     """
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9022", rounds=("code-reviewer", "code-reviewer"))
     round1 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9022", role="code-reviewer", cwd=slot, )
-    round1_seed = round1.board_path.read_bytes()
+    round1_form = round1.board_path.read_bytes()
     round2 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9022", role="code-reviewer", cwd=slot, )
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-922"]))
@@ -658,7 +658,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
             pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, assume_dead=True,
         )
     marker = review_contract.pm_review_refused_line("code-reviewer")
-    assert round1.board_path.read_bytes() == round1_seed + f"{marker}\n".encode("utf-8")
+    assert round1.board_path.read_bytes() == round1_form + f"{marker}\n".encode("utf-8")
 
     result = delegate_prepare.abandon_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, assume_dead=True,
@@ -666,14 +666,14 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
 
     assert result.converged is True
     assert not round1.run_dir.exists()
-    # 표식은 한 줄뿐이다(재호출이 자기 줄 위에 다시 쓰지 않는다).
-    assert round1.board_path.read_bytes() == round1_seed + f"{marker}\n".encode("utf-8")
+    # 표시는 한 줄뿐이다(재호출이 자기 줄 위에 다시 쓰지 않는다).
+    assert round1.board_path.read_bytes() == round1_form + f"{marker}\n".encode("utf-8")
 
 
-# ── R6 harvest 비목표 ────────────────────────────────────────────────────────
+# ── R6 돌려받기 비목표 ────────────────────────────────────────────────────────
 
-def test_harvest_is_untouched_by_the_superseded_axis(pd):
-    """`ticket collect` 는 이 축을 모른다 — finding ID 재선언 거부는 그대로다."""
+def test_collect_is_untouched_by_the_superseded_check(pd):
+    """`ticket collect` 는 이 경로를 모른다 — finding ID 재선언 거부는 그대로다."""
     source = inspect.getsource(delegate_collect.collect_ticket_copy)
     assert "superseded" not in source
 
@@ -681,17 +681,17 @@ def test_harvest_is_untouched_by_the_superseded_axis(pd):
 # ── R7 산출 보존 불변식(검증 지점 ≠ 효력 지점 회귀) ──────────────────────────
 
 def test_self_reference_is_rejected_even_when_seed_is_intact(pd, env):
-    """자기참조 ordinal 은 시드가 그대로여도(mismatch 분기가 아예 안 돌아도) 거부된다.
+    """자기참조 ordinal 은 빈 양식이 그대로여도(mismatch 분기가 아예 안 돌아도) 거부된다.
 
-    산출을 안 쓴 라운드는 slot bytes 가 board 시드와 같아 mismatch 분기가 돌지 않는다 — 값
+    산출을 안 쓴 라운드는 slot bytes 가 board 빈 양식과 같아 mismatch 분기가 돌지 않는다 — 값
     검증이 그 분기 **안**에만 있으면 이 호출은 검증을 하나도 거치지 않고 통과해, 무효한
-    자기참조 값이 장부에 그대로 박힌다.
+    자기참조 값이 기록에 그대로 박힌다.
     """
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9008")
     round1 = delegate_prepare.prepare_ticket_copy(
         pm_paths.home_at(Path(pm_home).resolve()), ticket="T-9008", role="code-reviewer", cwd=slot, )
-    # 산출을 쓰지 않는다 — 슬롯 라운드 파일이 board 시드 그대로다.
+    # 산출을 쓰지 않는다 — 슬롯 라운드 파일이 board 빈 양식 그대로다.
     before = round1.board_path.read_bytes()
 
     before_sync = list(sync_log)
@@ -702,7 +702,7 @@ def test_self_reference_is_rejected_even_when_seed_is_intact(pd, env):
             superseded_by_ordinal=round1.ordinal,
         )
 
-    last_row = _ledger_rows(pm_home)[-1]
+    last_row = _record_rows(pm_home)[-1]
     assert "superseded_by_ordinal" not in last_row
     assert "abandoned_at" not in last_row
     assert round1.board_path.read_bytes() == before
@@ -713,12 +713,12 @@ def test_self_reference_is_rejected_even_when_seed_is_intact(pd, env):
 def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed(
     pd, env, monkeypatch, capsys,
 ):
-    """장부에 기록되지 않은 대체-확인은 재호출 인자만으로 파괴 효력을 못 가진다.
+    """기록에 남지 않은 대체-확인은 재호출 인자만으로 파괴 효력을 못 가진다.
 
-    라운드를 닫은 호출(시드 그대로 → mismatch 분기 미발화)은 `superseded_by_ordinal` 을 장부에
+    라운드를 닫은 호출(빈 양식 그대로 → mismatch 분기 미실행)은 `superseded_by_ordinal` 을 기록에
     남기지 않는다. 그 뒤 살아 있는 프로세스가 산출을 슬롯에 마저 쓰고, 재호출이(이미 닫힌 행이라
     2단계를 건너뛰면서) `--superseded-by` 를 새로 주더라도 — 그 인자는 검증을 거친 적이 없으므로
-    5단계 파괴 판정에 쓰이지 않고, run-dir 은 산출 보존으로 거부된다(장부 0 · stderr 0).
+    5단계 파괴 판정에 쓰이지 않고, run-dir 은 산출 보존으로 거부된다(기록 0 · stderr 0).
     """
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9009", rounds=("code-reviewer", "code-reviewer"))
@@ -729,7 +729,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
     _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-931"]))
     delegate_collect.collect_ticket_copy(pm_paths.home_at(Path(pm_home).resolve()), copy_path=round2.path, cwd=slot, )
 
-    # run-dir 삭제만 실패하도록 주입 — round1 은 이 시점에 산출이 없어(시드 그대로) 마감 행이
+    # run-dir 삭제만 실패하도록 주입 — round1 은 이 시점에 산출이 없어(빈 양식 그대로) 마감 행이
     # `superseded_by_ordinal` 없이 정상 닫힌다.
     real_rmtree = fs.force_rmtree
     state = {"calls": 0}
@@ -746,11 +746,11 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
         delegate_prepare.abandon_ticket_copy(
             pm_paths.home_at(Path(pm_home).resolve()), copy_path=round1.path, cwd=slot, assume_dead=True,
         )
-    closed_row = _ledger_rows(pm_home)[-1]
+    closed_row = _record_rows(pm_home)[-1]
     assert "abandoned_at" in closed_row
     assert "superseded_by_ordinal" not in closed_row     # 마감 행에 대체-확인이 없다.
 
-    # 마감 뒤 산출이 슬롯에 착지한다(살아 있는 agent 의 마지막 쓰기 형상).
+    # 마감 뒤 산출이 슬롯에 착지한다(살아 있는 agent 의 마지막 쓰기 구성).
     _write_round_output(round1.path, _review_body(pd, "code-reviewer", ["F-932"]))
 
     capsys.readouterr()
@@ -764,14 +764,14 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
 
     loud = capsys.readouterr().err
     assert "대체-확인" not in loud                          # stderr 0건.
-    assert "superseded_by_ordinal" not in _ledger_rows(pm_home)[-1]   # 장부 0건.
+    assert "superseded_by_ordinal" not in _record_rows(pm_home)[-1]   # 기록 0건.
     assert round1.run_dir.exists()                          # 산출 보존 — 지워지지 않는다.
 
 
 # ── R8 값·실재·순서(should-fix) ──────────────────────────────────────────────
 
-def test_superseded_by_value_below_one_is_rejected_before_ledger_write(pd, env):
-    """`0`(1 미만)도 시드 그대로인 호출에서 자기참조와 같은 이유로 거부된다."""
+def test_superseded_by_value_below_one_is_rejected_before_record_write(pd, env):
+    """`0`(1 미만)도 빈 양식 그대로인 호출에서 자기참조와 같은 이유로 거부된다."""
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9010")
     round1 = delegate_prepare.prepare_ticket_copy(
@@ -783,7 +783,7 @@ def test_superseded_by_value_below_one_is_rejected_before_ledger_write(pd, env):
             superseded_by_ordinal=0,
         )
 
-    assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
+    assert "abandoned_at" not in _record_rows(pm_home)[-1]
     assert round1.run_dir.exists()
 
 
@@ -801,13 +801,13 @@ def test_superseded_by_nonexistent_ordinal_is_rejected(pd, env):
             superseded_by_ordinal=99,
         )
 
-    assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
+    assert "abandoned_at" not in _record_rows(pm_home)[-1]
     assert round1.run_dir.exists()
     assert round1.board_path.exists()
 
 
-def test_loud_does_not_print_when_the_liveness_gate_still_rejects(pd, env, monkeypatch, capsys):
-    """loud 는 생존 게이트 뒤에만 — 거부된 호출에 "포기합니다" 를 남기지 않는다."""
+def test_loud_does_not_print_when_the_liveness_check_still_rejects(pd, env, monkeypatch, capsys):
+    """loud 는 생존 확인 뒤에만 — 거부된 호출에 "포기합니다" 를 남기지 않는다."""
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9012", rounds=("code-reviewer", "code-reviewer"))
     dead = delegate_prepare.prepare_ticket_copy(
@@ -826,17 +826,17 @@ def test_loud_does_not_print_when_the_liveness_gate_still_rejects(pd, env, monke
 
     loud = capsys.readouterr().err
     assert "대체-확인" not in loud
-    assert "abandoned_at" not in _ledger_rows(pm_home)[-1]
+    assert "abandoned_at" not in _record_rows(pm_home)[-1]
 
 
-# ── CLI 표면 (argparse 배선) ─────────────────────────────────────────────────
+# ── CLI 구성 (argparse 등록) ─────────────────────────────────────────────────
 
 def _cli_ticket_owner(pd, monkeypatch, pm_home: Path):
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
 
 
 def test_cli_abandon_wires_the_superseded_by_flag(pd, env, monkeypatch):
-    """CLI 표면 — `--superseded-by` 가 argparse 를 거쳐 실제 처분까지 전달된다."""
+    """CLI 구성 — `--superseded-by` 가 argparse 를 거쳐 실제 처분까지 전달된다."""
     pm_home, slot, tickets, sync_log = env
     _write_spec(tickets, "T-9007", rounds=("code-reviewer", "code-reviewer"))
     round1 = delegate_prepare.prepare_ticket_copy(

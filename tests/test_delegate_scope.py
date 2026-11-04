@@ -34,7 +34,7 @@ def scope():
 
 @pytest.fixture
 def delegated_repo(tmp_path: Path) -> tuple[Path, Path]:
-    """repo_coordinates가 검증할 실제 PM-home ``work/<repo>_<N>`` 형상."""
+    """repo_coordinates가 검증할 실제 PM-home ``work/<repo>_<N>`` 구성."""
     workspace = tmp_path / "work" / "demo_1"
     workspace.mkdir(parents=True)
     subprocess.run(
@@ -164,7 +164,7 @@ def _commit(workspace: Path, relative: str, text: str) -> Path:
 def test_already_dirty_file_modified_again_is_detected(scope, delegated_repo):
     """이미 dirty(M) 한 파일을 위임이 **또** 고치면 상태코드는 M→M 그대로 — 내용 해시가 잡는다.
 
-    병렬 공유 트리 clobber(다른 dev 의 WIP 덮어쓰기)가 정확히 이 형상이다."""
+    병렬 공유 트리 clobber(다른 dev 의 WIP 덮어쓰기)가 정확히 이 구성이다."""
     pm_root, workspace = delegated_repo
     target = _commit(workspace, "outside/wip.py", "original\n")
     target.write_text("사람이 만든 WIP\n", encoding="utf-8")     # 위임 전부터 dirty
@@ -207,7 +207,7 @@ def test_rename_reports_both_paths(scope, delegated_repo):
 def test_rename_two_token_consumption_has_no_phantom_entry(scope):
     """두-토큰 소비를 지우면 old 경로가 **상태 라인처럼** 재파싱돼 유령 엔트리가 생긴다(회귀 가드).
 
-    구분력을 위해 old 경로의 3번째 문자가 공백인 형상을 쓴다 — 그때 `<XY> <path>` 파싱 가드를
+    구분력을 위해 old 경로의 3번째 문자가 공백인 구성을 쓴다 — 그때 `<XY> <path>` 파싱 가드를
     통과해 ('ol', 'd/old.py') 같은 유령이 실제로 만들어진다(일반 경로면 가드에 걸려 조용히 넘어가
     변이가 안 잡힌다)."""
     entries = delegate_scope_rules.parse_porcelain_z("R  src/new.py\0ol d/old.py\0?? stray.txt\0")
@@ -245,7 +245,7 @@ def test_resolve_workspace_root_outside_repo_is_loud(scope, tmp_path):
     """repo 밖이면 조용히 통과시키지 않고 DelegateScopeError(호출부가 loud degrade).
 
     "이 자리는 어느 checkout 도 아니다"가 입력이다 — 픽스처 위치가 그 답을 정하지 않도록
-    이 함수가 이미 가진 `run_git` 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    이 함수가 이미 가진 `run_git` 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     """
     outside = tmp_path / "not-a-repo"
     outside.mkdir()
@@ -314,7 +314,7 @@ def test_write_roles_injection_overrides_default_set(scope, delegated_repo):
 
 
 def test_warning_notes_gitignored_and_concurrent_edits(scope):
-    """경고 블록이 판정 사각(gitignore 제외·동시 편집 혼입·repo 경계)을 함께 알린다."""
+    """경고 블록이 판정 놓치는 곳(gitignore 제외·동시 편집 혼입·repo 경계)을 함께 알린다."""
     warning = delegate_scope_rules.format_warning(["stray.txt"])
     assert "gitignored" in warning and "판정 대상이 아닙니다" in warning
     assert "다른 터미널" in warning
@@ -448,18 +448,18 @@ def test_large_untracked_file_is_not_hashed(scope, delegated_repo, monkeypatch):
     state = delegate_scope_git.capture_worktree_state(workspace)
     digests = dict(state.digests)
     assert "small.txt" in digests and "big.bin" not in digests
-    assert {entry.path for entry in state.entries} == {"small.txt", "big.bin"}   # 표면화는 유지
+    assert {entry.path for entry in state.entries} == {"small.txt", "big.bin"}   # 드러나는 것은 유지
 
 
 def test_content_signal_missing_flags_total_hash_loss(scope, delegated_repo, monkeypatch):
-    """해시 대상이 있는데 지문이 0이면 강등 사실을 호출부가 알 수 있어야 한다."""
+    """해시 대상이 있는데 지문이 0이면 수준 낮춤 사실을 호출부가 알 수 있어야 한다."""
     _pm_root, workspace = delegated_repo
     (workspace / "dirty.txt").write_text("x\n", encoding="utf-8")
 
     healthy = delegate_scope_git.capture_worktree_state(workspace)
     assert healthy.digests and delegate_scope_git.content_signal_missing(healthy, workspace) is False
 
-    monkeypatch.setattr(delegate_scope_git, '_hash_object', lambda *a, **k: None)   # 해시 전량 실패 형상
+    monkeypatch.setattr(delegate_scope_git, '_hash_object', lambda *a, **k: None)   # 해시 전량 실패 구성
     degraded = delegate_scope_git.capture_worktree_state(workspace)
     assert degraded.digests == ()
     assert delegate_scope_git.content_signal_missing(degraded, workspace) is True

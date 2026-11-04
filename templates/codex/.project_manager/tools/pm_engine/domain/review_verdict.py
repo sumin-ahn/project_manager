@@ -1,6 +1,6 @@
 """리뷰어 답신의 판정 해석 (층: domain).
 
-판정 낱말 정확일치, 내부 리뷰 산문 판정·must-fix 추출과 진단, 기계 블록 축과 산문 축의 결합 판정을 소유한다.
+판정 낱말 정확일치, 내부 리뷰 산문 판정·must-fix 추출과 진단, 기계 블록 출처와 산문 출처의 결합 판정을 소유한다.
 """
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ INTERNAL_DIAGNOSTIC_CONFLICTING_VERDICT = "conflicting-verdict-words"
 INTERNAL_DIAGNOSTIC_PASS_WITHOUT_ZERO = "pass-without-zero-must-fix"
 INTERNAL_DIAGNOSTIC_REJECT_WITHOUT_ITEMS = "reject-without-must-fix-items"
 
-# 라운드 산출 bytes 의 두 판정 축(기계 블록 · 산문)이 서로 다른 값을 세운 형상 — 어느 쪽도
+# 라운드 산출 bytes 의 두 판정 출처(기계 블록 · 산문)가 서로 다른 값을 세운 구성 — 어느 쪽도
 # 기록하지 않고 두 값을 함께 싣는다(판정 불능을 한쪽 채택으로 위장하지 않는다).
 INTERNAL_DIAGNOSTIC_VERDICT_CONFLICT = "block-reply-verdict-conflict"
 
-# 기계 블록 축이 판정을 세우지 못한 사유(블록 부재·손상·severity 미기재).
-INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE = "block-axis-unusable"
+# 기계 블록 출처가 판정을 세우지 못한 사유(블록 부재·손상·severity 미기재).
+INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE = "block-source-unusable"
 INTERNAL_VERDICT_SOURCE_BLOCK = "block"
 INTERNAL_VERDICT_SOURCE_REPLY = "reply"
 _INTERNAL_MUST_FIX_HEADER_RE = re.compile(
@@ -97,7 +97,7 @@ class InternalReplyOutcome(NamedTuple):
 
 
 class InternalReplyDiagnostic(NamedTuple):
-    """판정 추출 실패의 기계 코드와 사람용 원인·재리뷰 처방."""
+    """판정 추출 실패의 기계 코드와 사람용 원인·재리뷰 해결 방법."""
 
     code: str
     reason: str
@@ -117,27 +117,27 @@ class InternalReplyDiagnostic(NamedTuple):
 
 
 class InternalReplyAssessment(NamedTuple):
-    """한 축(산문 또는 기계 블록)의 판정과, unknown일 때의 구조화 진단."""
+    """한 출처(산문 또는 기계 블록)의 판정과, unknown일 때의 구조화 진단."""
 
     outcome: InternalReplyOutcome
     diagnostic: InternalReplyDiagnostic | None
 
 
 class InternalRoundVerdict(NamedTuple):
-    """두 축을 결합한 라운드 마감 판정과 그 출처."""
+    """두 출처를 결합한 라운드 마감 판정과 그 출처."""
 
     outcome: InternalReplyOutcome
     diagnostic: InternalReplyDiagnostic | None
-    # 판정을 세운 축(`block`/`reply`) — 미상이면 None.
+    # 판정을 세운 출처(`block`/`reply`) — 미상이면 None.
     source: str | None = None
-    # 두 축이 상충했을 때 보존하는 양쪽 값.
+    # 두 출처가 상충했을 때 보존하는 양쪽 값.
     conflict: dict[str, str] | None = None
-    # 판정은 섰지만 다른 축이 못 선 사유(경고로만 낸다 · 장부 판정 무영향).
+    # 판정은 섰지만 다른 출처가 못 선 사유(경고로만 낸다 · 기록 판정 무영향).
     note: str | None = None
 
 
 def _extract_internal_must_fix_items(reply: str) -> list[str] | None:
-    """실 reviewer의 markdown heading/목록 형상에서 must-fix를 추출한다.
+    """실 reviewer의 markdown heading/목록 구성에서 must-fix를 추출한다.
 
     **계수 단위는 must-fix 절의 코드펜스 밖 목록 후보 중 최소 들여쓰기 깊이에 있는 목록 행
     하나**다. 그보다 깊은 probe·근거 불릿, 표 행, fenced code 안 목록은 부모 항목의 설명이고
@@ -149,7 +149,7 @@ def _extract_internal_must_fix_items(reply: str) -> list[str] | None:
     inline = ""
     for index, line in enumerate(lines):
         if _INTERNAL_MUST_FIX_COUNT_DECLARATION_RE.fullmatch(line):
-            # 실 리뷰 회신 형상. 선언의 숫자는 신뢰하지 않고 뒤 목록을 현행 규칙으로만 센다.
+            # 실 리뷰 회신 구성. 선언의 숫자는 신뢰하지 않고 뒤 목록을 현행 규칙으로만 센다.
             start = index + 1
             break
         match = _INTERNAL_MUST_FIX_HEADER_RE.match(line)
@@ -193,7 +193,7 @@ def _extract_internal_must_fix_items(reply: str) -> list[str] | None:
             or _INTERNAL_PLAIN_SECTION_RE.match(line)
         ):
             break
-        # 실 리뷰 회신 형상: bare `must-fix` 절 뒤의 `확인 결과`가 markdown decorator 없이
+        # 실 리뷰 회신 구성: bare `must-fix` 절 뒤의 `확인 결과`가 markdown decorator 없이
         # 다음 절을 연다. 빈 줄 직후의 비-목록 평문만 경계로 삼되, legacy 명시 0건 표기와
         # 표는 본문으로 보존한다. fence는 위 분기에서 먼저 소비하므로 이 규칙에 걸리지 않는다.
         previous_blank = bool(body) and not body[-1][0].strip()
@@ -244,41 +244,41 @@ def _extract_internal_must_fix_items(reply: str) -> list[str] | None:
     return items or None
 
 
-# 재리뷰는 유료 호출이라 판정 불능의 기본 처방이 아니다. 두 축이 모두 판정을 못 세운
-# 실행에서만 선택지로 제시하고, 그때도 비용과 대안(회수된 산출 직접 판정)을 함께 적는다.
+# 재리뷰는 유료 호출이라 판정 불능의 기본 해결 방법이 아니다. 두 출처가 모두 판정을 못 세운
+# 실행에서만 선택지로 제시하고, 그때도 비용과 대안(돌려받은 산출 직접 판정)을 함께 적는다.
 _INTERNAL_REREVIEW_LAST_RESORT = (
     "재리뷰는 유료 호출이라 기본 행동이 아닙니다 — 먼저 돌려받은 라운드 파일을 읽고 PM이 "
     "직접 판정하세요(`rounds resolve --pm-verified`). 그래도 재리뷰가 필요하면:"
 )
 
-# 통과는 두 축 합의로만 인정한다 — 한 축만 통과인 실행의 처방은 "못 선 축을 채워라"다. 채울
-# 대상은 축마다 다르므로 규칙 문장과 재리뷰 불요 문장만 공유하고 가운데만 갈린다.
-_INTERNAL_PASS_BOTH_AXES_RULE = "통과는 기계 블록과 산문이 모두 통과일 때만 기록합니다 —"
+# 통과는 두 출처 합의로만 인정한다 — 한 출처만 통과인 실행의 해결 방법은 "못 선 출처를 채워라"다. 채울
+# 대상은 출처마다 다르므로 규칙 문장과 재리뷰 불요 문장만 공유하고 가운데만 갈린다.
+_INTERNAL_PASS_BOTH_SOURCES_RULE = "통과는 기계 블록과 산문이 모두 통과일 때만 기록합니다 —"
 _INTERNAL_PASS_NO_REREVIEW = (
     "이미 돌려받은 라운드 파일을 PM이 직접 판정해도 되며 재리뷰(유료 호출)는 필요 없습니다."
 )
 
-# 기계 블록만 통과인 실행 — 채울 축은 산문이다.
-_INTERNAL_PASS_NEEDS_BOTH_AXES_REPAIR = (
-    f"{_INTERNAL_PASS_BOTH_AXES_RULE} 라운드 파일 판정 절에 허용 선언형 한 줄과 "
+# 기계 블록만 통과인 실행 — 채울 출처는 산문이다.
+_INTERNAL_PASS_NEEDS_BOTH_SOURCES_REPAIR = (
+    f"{_INTERNAL_PASS_BOTH_SOURCES_RULE} 라운드 파일 판정 절에 허용 선언형 한 줄과 "
     f"must-fix 0건 항목을 남기세요. {_INTERNAL_PASS_NO_REREVIEW}"
 )
 
-# 두 축이 서로 다른 값을 세운 실행 — 처방은 산출 일치이지 재리뷰가 아니다.
+# 두 출처가 서로 다른 값을 세운 실행 — 해결 방법은 산출 일치이지 재리뷰가 아니다.
 _INTERNAL_VERDICT_CONFLICT_REPAIR = (
     "돌려받은 라운드 파일에서 두 출처 중 무엇이 이 라운드의 실제 판정인지 확인해 산출을 "
     "일치시키세요. 어느 쪽도 라운드 기록에 적지 않았습니다."
 )
 
-# 기계 블록 축이 못 선 실행의 처방 — 허용 severity 값은 파서 enum에서만 파생한다.
+# 기계 블록 출처가 못 선 실행의 해결 방법 — 허용 severity 값은 파서 enum에서만 파생한다.
 _INTERNAL_BLOCK_UNUSABLE_REPAIR = (
     f"라운드 파일에 `{review_form.PM_REVIEW_BLOCK}` 블록을 정확히 하나 남기고 finding마다 severity"
     f"(<{'|'.join(review_form.PM_REVIEW_SEVERITIES)}>)를 채우세요."
 )
 
-# 산문만 통과인 실행 — 채울 축은 기계 블록이다. 반려 축은 이 처방을 타지 않는다.
-_INTERNAL_PASS_NEEDS_BLOCK_AXIS_REPAIR = (
-    f"{_INTERNAL_PASS_BOTH_AXES_RULE} {_INTERNAL_BLOCK_UNUSABLE_REPAIR} "
+# 산문만 통과인 실행 — 채울 출처는 기계 블록이다. 반려 쪽은 이 해결 방법을 타지 않는다.
+_INTERNAL_PASS_NEEDS_BLOCK_SOURCE_REPAIR = (
+    f"{_INTERNAL_PASS_BOTH_SOURCES_RULE} {_INTERNAL_BLOCK_UNUSABLE_REPAIR} "
     f"{_INTERNAL_PASS_NO_REREVIEW}"
 )
 
@@ -288,7 +288,7 @@ def _internal_reply_diagnostic(
     *,
     words: Sequence[str] = (),
 ) -> InternalReplyDiagnostic:
-    """4종 unknown 사유와 수정 처방 — preamble과 같은 parser 원천을 소비한다."""
+    """4종 unknown 사유와 수정 방법 — preamble과 같은 parser 원천을 소비한다."""
     canonical_pass, canonical_reject = _internal_canonical_verdict_forms()
     verdict_forms = f"`{canonical_pass}` 또는 `{canonical_reject}`"
     canonical_none = f"- {_INTERNAL_NONE_ITEM_TOKENS[0]}"
@@ -365,7 +365,7 @@ def _internal_reply_assessment(reply: str | None) -> InternalReplyAssessment:
     if kind == VERDICT_REJECT:
         if items:
             return InternalReplyAssessment(InternalReplyOutcome(1, items), None)
-        # 반려+"없음" 또는 절/목록 부재는 처방할 must-fix 근거가 없으므로 판정도 unknown이다.
+        # 반려+"없음" 또는 절/목록 부재는 고칠 must-fix 근거가 없으므로 판정도 unknown이다.
         return InternalReplyAssessment(
             unknown,
             _internal_reply_diagnostic(
@@ -391,8 +391,8 @@ def _internal_block_assessment(text: str | None) -> InternalReplyAssessment:
     """산출 bytes의 `pm-review-v1` 블록만으로 판정한다(산문 추론 0).
 
     `must_fix`는 **must-fix severity finding 수 + 해소되지 않은 confirmation 수**다.
-    confirmation 축을 빼면 확인 전용 라운드(`findings: []` + 퇴행 확인)가 통과로 뒤집힌다.
-    severity가 하나라도 비어 있으면(severity 이전 세대 산출) "반드시 고쳐야 하는가"를 블록만으로
+    confirmation 쪽을 빼면 확인 전용 라운드(`findings: []` + 퇴행 확인)가 통과로 뒤집힌다.
+    severity가 하나라도 비어 있으면(severity 이전 버전 산출) "반드시 고쳐야 하는가"를 블록만으로
     알 수 없으므로 **판정 불능**이다 — 0건 통과로 접지 않는다.
 
     스키마 판정은 전부 기존 strict 파서를 그대로 소비한다(값·key 집합 재기재 0).
@@ -458,19 +458,19 @@ def _internal_block_assessment(text: str | None) -> InternalReplyAssessment:
 
 
 def _internal_round_verdict(text: str | None) -> InternalRoundVerdict:
-    """같은 산출 bytes의 기계 블록 축과 산문 축을 비대칭 규칙으로 결합한다.
+    """같은 산출 bytes의 기계 블록 출처와 산문 출처를 비대칭 규칙으로 결합한다.
 
-    **반려는 한 축 단독으로 인정하고, 통과는 두 축이 모두 통과일 때만 인정한다.** 한 축만 통과인
-    형상을 통과로 접으면 다른 축이 불능인 라운드가 처분 선언 없이 완료 게이트를 연다 — 실 corpus
-    에서 한 축 단독으로만 판정이 서는 라운드는 전부 통과 방향이었다. 이 비대칭은 두 방향 모두에
-    적용된다(블록만 통과 · 산문만 통과). 두 축이 각각 판정을 세우고 값이 다르면 어느 쪽도
+    **반려는 한 출처 단독으로 인정하고, 통과는 두 출처가 모두 통과일 때만 인정한다.** 한 출처만 통과인
+    구성을 통과로 바꾸면 다른 출처가 불능인 라운드가 처분 선언 없이 완료 통과 조건을 연다 — 실 corpus
+    에서 한 출처 단독으로만 판정이 서는 라운드는 전부 통과 방향이었다. 이 비대칭은 두 방향 모두에
+    적용된다(블록만 통과 · 산문만 통과). 두 출처가 각각 판정을 세우고 값이 다르면 어느 쪽도
     기록하지 않는다.
 
     입력은 board 리뷰 라운드 파일 bytes 하나다(판정 입력 = 라운드 파일 · 다른 기록 없음).
     """
-    reply_axis = _internal_reply_assessment(text)
-    block_axis = _internal_block_assessment(text)
-    block, reply = block_axis.outcome, reply_axis.outcome
+    reply_assessment = _internal_reply_assessment(text)
+    block_assessment = _internal_block_assessment(text)
+    block, reply = block_assessment.outcome, reply_assessment.outcome
     unknown = InternalReplyOutcome(None, None)
     canonical_pass, canonical_reject = _internal_canonical_verdict_forms()
 
@@ -497,7 +497,7 @@ def _internal_round_verdict(text: str | None) -> InternalRoundVerdict:
                 ),
                 conflict=conflict,
             )
-        # 두 축 합의 — 수와 항목 텍스트는 권위 블록 한 축에서 함께 만든다(수 == 항목 수).
+        # 두 출처 합의 — 수와 항목 텍스트는 권위 블록 한 출처에서 함께 만든다(수 == 항목 수).
         return InternalRoundVerdict(
             block, None, source=INTERNAL_VERDICT_SOURCE_BLOCK,
         )
@@ -505,11 +505,11 @@ def _internal_round_verdict(text: str | None) -> InternalRoundVerdict:
         return InternalRoundVerdict(
             block, None, source=INTERNAL_VERDICT_SOURCE_BLOCK,
         )
-    reply_diagnostic = reply_axis.diagnostic or _internal_reply_diagnostic(
+    reply_diagnostic = reply_assessment.diagnostic or _internal_reply_diagnostic(
         INTERNAL_DIAGNOSTIC_MISSING_VERDICT,
     )
     if block.verdict is not None:
-        # 블록만 통과 — 통과는 양축 합의가 필요하므로 미상으로 남긴다.
+        # 블록만 통과 — 통과는 두 출처 합의가 필요하므로 미상으로 남긴다.
         return InternalRoundVerdict(
             unknown,
             reply_diagnostic._replace(
@@ -517,36 +517,36 @@ def _internal_round_verdict(text: str | None) -> InternalRoundVerdict:
                     f"{reply_diagnostic.reason} · 기계 블록은 "
                     f"{canonical_pass}(must-fix {len(block.must_fix_items)}건)"
                 ),
-                repair=_INTERNAL_PASS_NEEDS_BOTH_AXES_REPAIR,
+                repair=_INTERNAL_PASS_NEEDS_BOTH_SOURCES_REPAIR,
             ),
         )
     if reply.verdict is not None:
         if not reply.verdict:
-            # **통과**는 두 축 합의로만 인정한다. 블록 축이 못 서고
-            # 산문만 통과인 값을 기록하면 처분 선언 없이 완료 게이트가 열린다(false-green).
-            # 반려 축은 이 규칙을 타지 않는다 — 반려는 한 축 단독으로도 인정한다.
-            # 이 분기의 블록 축은 반드시 불능이라 진단이 실재한다(`_internal_block_assessment`는
-            # 판정이 선 경우에만 진단을 비운다). 그 사유가 처방이 지목할 유일한 결측 증거다.
+            # **통과**는 두 출처 합의로만 인정한다. 블록 출처가 못 서고
+            # 산문만 통과인 값을 기록하면 처분 선언 없이 완료 통과 조건이 열린다(false-green).
+            # 반려 쪽은 이 규칙을 타지 않는다 — 반려는 한 출처 단독으로도 인정한다.
+            # 이 분기의 블록 출처는 반드시 불능이라 진단이 실재한다(`_internal_block_assessment`는
+            # 판정이 선 경우에만 진단을 비운다). 그 사유가 해결 방법이 지목할 유일한 결측 증거다.
             return InternalRoundVerdict(
                 unknown,
                 InternalReplyDiagnostic(
                     INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE,
-                    f"{block_axis.diagnostic.reason} · 산문은 "
+                    f"{block_assessment.diagnostic.reason} · 산문은 "
                     f"{canonical_pass}(must-fix {len(reply.must_fix_items)}건)",
-                    _INTERNAL_PASS_NEEDS_BLOCK_AXIS_REPAIR,
+                    _INTERNAL_PASS_NEEDS_BLOCK_SOURCE_REPAIR,
                 ),
             )
-        # 산문 축만 판정이 선다 — 값을 기록하고 블록 축이 왜 못 섰는지는 경고로만 남긴다.
+        # 산문 출처만 판정이 선다 — 값을 기록하고 블록 출처가 왜 못 섰는지는 경고로만 남긴다.
         return InternalRoundVerdict(
             reply, None, source=INTERNAL_VERDICT_SOURCE_REPLY,
             note=(
-                None if block_axis.diagnostic is None
-                else block_axis.diagnostic.message
+                None if block_assessment.diagnostic is None
+                else block_assessment.diagnostic.message
             ),
         )
     reason = reply_diagnostic.reason
-    if block_axis.diagnostic is not None:
-        reason = f"{reason} · {block_axis.diagnostic.reason}"
+    if block_assessment.diagnostic is not None:
+        reason = f"{reason} · {block_assessment.diagnostic.reason}"
     return InternalRoundVerdict(
         unknown,
         reply_diagnostic._replace(
@@ -602,7 +602,7 @@ def verdict_words(text: str) -> tuple[str, ...]:
 
     좁히는 규칙을 검출기에만 걸면 파서가 보는 라인을 검출기가 못 보게 되어 오염 판정이 새므로,
     파서와 검출기가 이 함수 하나를 공유한다. 인용/코드펜스 안의 판정 문구는 리뷰어 자신의 선언이
-    아니라 인용물이라 어느 쪽에서도 판정으로 세지 않는다(리뷰 대상 diff에 든 판정 문안이 이 축의
+    아니라 인용물이라 어느 쪽에서도 판정으로 세지 않는다(리뷰 대상 diff에 든 판정 문안이 이 출처의
     상시 오탐 원천이다).
     """
     words: list[str] = []

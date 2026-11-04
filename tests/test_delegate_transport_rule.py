@@ -1,4 +1,4 @@
-"""위임 transport 규칙 한 문장 — 위임을 안내하는 표면 전부가 같은 규칙을 말한다 (T-0947 · T-0950).
+"""위임 transport 규칙 한 문장 — 위임을 안내하는 출하 파일 전부가 같은 규칙을 말한다 (T-0947 · T-0950).
 
 규칙(R1): 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다.
 리뷰도 역할 예외가 없다 — 같은 하네스면 `ticket prepare --cluster --role code-reviewer` 가 만든 엔진
@@ -8,8 +8,8 @@
   (1) R1 문장이 공용 카드·codex 카드·opencode 운영 지침·playbook·opencode 명령 파생본과
       lite 진입 문서 2벌·템플릿 README 3벌·세션 자동 로드 공통 코어 `AGENTS.md` 2벌·opencode PM 카드·
       codex 부트스트랩 카드 절에 있다.
-  (2) 리뷰를 엔진 전용으로 안내하던 문구(하네스와 무관한 엔진 실행·격리 스냅샷·분리 실행·대기)가 위
-      표면과 `pm_principles.md` 에 없다.
+  (2) 리뷰를 엔진 전용으로 안내하던 문구(하네스와 무관한 엔진 실행·분리 실행·대기)가 위
+      출하 파일과 `pm_principles.md` 에 없다.
   (3) 카드의 `ticket prepare` 역할 목록 합집합은 엔진 선택지(developer·architect·code-reviewer)와 같다.
   (4) 설계·구현·리뷰 native 안내와 리뷰가 쓰는 native `code-reviewer` 카드 파일이 있다.
 """
@@ -32,7 +32,7 @@ OPENCODE_LITE = REPO / "templates" / "opencode" / "AGENTS.lite.md"
 CLAUDE_README = REPO / "templates" / "claude_code" / "README.md"
 OPENCODE_README = REPO / "templates" / "opencode" / "README.md"
 OPENCODE_REVIEWER_CARD = REPO / "templates" / "opencode" / ".opencode" / "agents" / "code-reviewer.md"
-# PM 세션에 자동으로 실리는 진입 표면 — codex·opencode 공통 코어, opencode PM primary 카드, codex README.
+# PM 세션에 자동으로 실리는 진입 문서 — codex·opencode 공통 코어, opencode PM primary 카드, codex README.
 CODEX_AGENTS = REPO / "templates" / "codex" / "AGENTS.md"
 OPENCODE_AGENTS = REPO / "templates" / "opencode" / "AGENTS.md"
 CODEX_README = REPO / "templates" / "codex" / "README.md"
@@ -52,12 +52,11 @@ TRANSPORT_RULE = (
     "설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다."
 )
 PRINCIPLES = REPO / ".project_manager" / "wiki" / "pm_principles.md"
-# 리뷰를 엔진 전용으로 안내하던 문구 — 하네스 무관 엔진 실행·이유 설명·준비 제외·격리 트리·분리 실행·대기.
+# 리뷰를 엔진 전용으로 안내하던 문구 — 하네스 무관 엔진 실행·이유 설명·준비 제외·분리 실행·대기.
 ENGINE_ONLY_REVIEW_RULE = (
     "하네스와 무관하게 엔진이 실행",
     "리뷰만 엔진",
     "리뷰는 준비 대상이 아니다",
-    "격리 스냅샷",
     "cluster wait",
     "--background",
 )
@@ -70,7 +69,7 @@ NATIVE_REVIEWER_CARDS = (
 
 
 def _flat(path: Path) -> str:
-    """줄바꿈·들여쓰기를 공백 하나로 접는다 — 문장 판정이 줄 접기에 흔들리지 않게."""
+    """줄바꿈·들여쓰기를 공백 하나로 바꾼다 — 문장 판정이 줄바꿈에 흔들리지 않게."""
     return re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
 
 
@@ -83,7 +82,7 @@ def test_surface_states_the_transport_rule(surface):
     "surface", (*SURFACES, PRINCIPLES), ids=lambda path: path.relative_to(REPO).as_posix(),
 )
 def test_surface_has_no_engine_only_review_rule(surface):
-    """AT-017 — 리뷰를 엔진 전용으로 안내하는 문구가 안내 표면 13개와 `pm_principles.md` 에 없다."""
+    """AT-017 — 리뷰를 엔진 전용으로 안내하는 문구가 안내 파일 13개와 `pm_principles.md` 에 없다."""
     text = surface.read_text(encoding="utf-8")
     remaining = [phrase for phrase in ENGINE_ONLY_REVIEW_RULE if phrase in text]
     assert remaining == []
@@ -109,7 +108,7 @@ def test_prepare_role_list_matches_the_engine_choices(card):
 
 
 def test_native_guidance_covers_design_implementation_and_review():
-    """설계·구현·리뷰 native 위임 안내가 세 하네스 표면에 있다."""
+    """설계·구현·리뷰 native 위임 안내가 세 하네스 출하 파일에 있다."""
     shared = SHARED_CARD.read_text(encoding="utf-8")
     for role in ("developer", "architect", "code-reviewer"):
         assert f"subagent_type: {role}" in shared

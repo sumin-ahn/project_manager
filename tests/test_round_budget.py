@@ -1,4 +1,4 @@
-"""묶음 고정 라운드 예산 — 역할 수열·순서 밖 거부·종료 수렴.
+"""묶음 고정 라운드 예산 — 역할 수열·순서 밖 거부·종료 마무리.
 
 여기서 지키는 성질은 다섯이다.
   (1) 묶음의 라운드 수열은 PM → 설계 → 구현 → 리뷰 → fix에서 사람 라운드 4개로 고정된다.
@@ -117,7 +117,7 @@ def _spec_text(ticket: str, cluster: str) -> str:
     return (
         "---\n"
         f"id: {ticket}\n"
-        "title: 예산 축\n"
+        "title: 예산 기준\n"
         "status: claimed\n"
         f"created: '{_FIXTURE_DAY}'\n"
         "created_by: test\n"
@@ -216,10 +216,10 @@ def _seed(pm_home: Path, tickets_dir: Path, cluster: str, members: list[str], **
 def _write_round_output(
     pd, path: Path, role: str, *, regression_result: str = "rc=0 · fixture green",
 ) -> None:
-    """그 역할의 산출을 슬롯 라운드 파일에 쓴다(회수 검증을 실제로 통과하는 bytes).
+    """그 역할의 산출을 슬롯 라운드 파일에 쓴다(돌려받기 검증을 실제로 통과하는 bytes).
 
-    리뷰 라운드는 시드 골격의 자리표시자 블록을 **갈아 끼운다** — 덧붙이면 블록이 둘이 되어
-    회수가 거부한다(그 거부 자체가 엔진 계약이다).
+    리뷰 라운드는 빈 양식의 자리표시자 블록을 **갈아 끼운다** — 덧붙이면 블록이 둘이 되어
+    돌려받기가 거부한다(그 거부 자체가 엔진 계약이다).
     """
     header = path.read_text(encoding="utf-8").partition("\n")[0]
     if role == "architect":
@@ -253,7 +253,7 @@ def _write_round_output(
 
 
 def _advance(pd, cluster: str, role: str, *, pm_home: Path, slot: Path):
-    """한 단계를 실제로 예약하고 산출을 채워 회수한다(다음 단계의 입력이 된다)."""
+    """한 단계를 실제로 예약하고 산출을 채워 돌려받는다(다음 단계의 입력이 된다)."""
     plan = delegate_prepare.prepare_cluster_copy(
         pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role=role, cwd=slot, )
     for round_plan in plan.rounds:
@@ -276,7 +276,7 @@ def _advance(pd, cluster: str, role: str, *, pm_home: Path, slot: Path):
 
 
 def _record_finding_zero(pd, pm_home: Path, ticket: str, ordinal: int) -> None:
-    """PM 판정 — finding 0 리뷰 라운드의 수용 선언(다음 fix 라운드 시드의 선행 조건)."""
+    """PM 판정 — finding 0 리뷰 라운드의 수용 선언(다음 fix 라운드 빈 양식의 선행 조건)."""
     payload = json.dumps({
         "version": review_form.PM_REVIEW_DISPOSITION_VERSION,
         "reviewer_role": "code-reviewer",
@@ -314,7 +314,7 @@ def _rounds_dir(pm_home: Path, ticket: str) -> Path:
 
 
 def _open_runs(pd, slot: Path, cluster: str) -> list[str]:
-    """아직 열려 있는 run-dir 이름 — 회수로 닫힌 run 은 여기 없다."""
+    """아직 열려 있는 run-dir 이름 — 돌려받기로 닫힌 run 은 여기 없다."""
     root = slot / delegate_records.TICKET_COPY_REL_ROOT / cluster
     return sorted(item.name for item in root.iterdir()) if root.is_dir() else []
 
@@ -344,7 +344,7 @@ def _architect_output(
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 수열 — 장부 값이 순서를 말한다
+# 수열 — 기록 값이 순서를 말한다
 # ════════════════════════════════════════════════════════════════════════
 
 def _prepare_accepted_review(
@@ -391,7 +391,7 @@ def test_budget_values_expand_into_the_role_sequence(pd):
         cluster_rules.CLUSTER_BUDGET_DEFAULT, cluster="C-cycle",
     )
     assert sequence == _CYCLE
-    # 값을 늘이거나 줄여 가변 루프/단계 생략으로 바꾸는 장부는 손상이다.
+    # 값을 늘이거나 줄여 가변 루프/단계 생략으로 바꾸는 기록은 손상이다.
     for key, value in (("developer_per_ticket", 2), ("architect", 0), ("fix", -1)):
         with pytest.raises(delegate_errors.DelegateError, match=rf"{key}=1"):
             delegate_rounds.cluster_round_sequence(
@@ -406,7 +406,7 @@ def test_budget_values_expand_into_the_role_sequence(pd):
     ({"architect": 1, "developer_per_ticket": 1, "code-reviewer": 1}, "fix"),
 ])
 def test_an_undeclared_budget_value_stops_the_judgment(pd, budget, missing):
-    """선언되지 않은 값은 기본값으로 지어내지 않는다 — 그 장부는 판정 입력이 아니다."""
+    """선언되지 않은 값은 기본값으로 지어내지 않는다 — 그 기록은 판정 입력이 아니다."""
     with pytest.raises(delegate_errors.DelegateError) as caught:
         delegate_rounds.cluster_round_sequence(budget, cluster="C-broken")
 
@@ -451,7 +451,7 @@ def test_architect_contract_rejects_placeholder_in_every_string_field(pd, field)
         )
 
 
-def test_initial_developer_harvest_requires_the_architect_target_in_its_diff(
+def test_initial_developer_collect_requires_the_architect_target_in_its_diff(
     pd, budget_env,
 ):
     pm_home, slot, tickets = budget_env
@@ -472,7 +472,7 @@ def test_initial_developer_harvest_requires_the_architect_target_in_its_diff(
     assert "tests/test_round_budget.py" in outcome.refusal
 
 
-def test_developer_harvest_requires_an_exact_green_full_regression_record(
+def test_developer_collect_requires_an_exact_green_full_regression_record(
     pd, budget_env,
 ):
     pm_home, slot, tickets = budget_env
@@ -488,7 +488,7 @@ def test_developer_harvest_requires_an_exact_green_full_regression_record(
     target.parent.mkdir(parents=True)
     target.write_text("# architect contract target\n", encoding="utf-8", newline="\n")
 
-    # 시드 placeholder는 developer가 전체 회귀를 직접 실행·기록한 증거가 아니다.
+    # 빈 양식 placeholder는 developer가 전체 회귀를 직접 실행·기록한 증거가 아니다.
     plan.rounds[0].path.write_text(
         plan.rounds[0].path.read_text(encoding="utf-8") + "\n## 산출\n- 구현 완료\n",
         encoding="utf-8", newline="",
@@ -584,7 +584,7 @@ def test_stage_exit_reads_pm_home_data_with_the_running_engine_board(
     assert delegate_collect._full_regression_command(candidate) == "PM-HOME-LEASE-CMD"
 
 
-def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
+def test_developer_collect_refuses_when_an_architect_required_test_is_red(
     pd, budget_env,
 ):
     pm_home, slot, tickets = budget_env
@@ -611,7 +611,7 @@ def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
     assert _round_names(pm_home, "T-7003") == ["01-architect.md", "02-developer.md"]
 
 
-def test_fix_harvest_requires_each_reviewer_test_target_in_the_fix_diff(
+def test_fix_collect_requires_each_reviewer_test_target_in_the_fix_diff(
     pd, budget_env,
 ):
     pm_home, slot, tickets = budget_env
@@ -635,11 +635,11 @@ def test_fix_harvest_requires_each_reviewer_test_target_in_the_fix_diff(
     assert outcome.terminal is True
 
 
-def test_fix_harvest_binds_only_the_first_test_target_token_to_the_fix_diff(
+def test_fix_collect_binds_only_the_first_test_target_token_to_the_fix_diff(
     pd, budget_env,
 ):
-    """결속 대상은 계약 값의 첫 토큰 하나다 — 조사는 계속 벗기고, 뒤따르는 산문의 경로는
-    이번 라운드가 손댈 자리가 아니므로 회수가 요구하지 않는다."""
+    """연결 대상은 계약 값의 첫 토큰 하나다 — 조사는 계속 벗기고, 뒤따르는 산문의 경로는
+    이번 라운드가 손댈 자리가 아니므로 돌려받기가 요구하지 않는다."""
     pm_home, slot, tickets = budget_env
     ticket = "T-7090"
     cluster = "C-review-korean-targets"
@@ -690,15 +690,15 @@ def test_the_declared_cycle_runs_and_the_next_request_is_refused(pd, budget_env)
     message = str(caught.value)
     assert "고정 라운드 종료" in message and "T-7001" in message
     assert "추가 라운드 없이 정지·보고" in message
-    # 거부는 예약 앞이다 — 라운드 파일도 run-dir 도 늘지 않는다(회수로 닫힌 run 만 있다).
+    # 거부는 예약 앞이다 — 라운드 파일도 run-dir 도 늘지 않는다(돌려받기로 닫힌 run 만 있다).
     assert len(_round_names(pm_home, "T-7001")) == 4
     assert _open_runs(pd, slot, "C-cycle") == []
 
 
-def test_the_budget_axis_is_the_only_round_cap(pd, budget_env):
-    """고정 수열(4키 전부 1) 밖 요청의 거부 사유는 예산 축 하나다 — 역할별 상한은 없다.
+def test_the_budget_is_the_only_round_cap(pd, budget_env):
+    """고정 수열(4키 전부 1) 밖 요청의 거부 사유는 예산 기준 하나다 — 역할별 상한은 없다.
 
-    [[T-0901]] 이 도달 불가였던 역할별 per-ticket 상한을 지웠다. 그 축이 되살아나면 같은
+    [[T-0901]] 이 도달 불가였던 역할별 per-ticket 상한을 지웠다. 그 기준이 되살아나면 같은
     요청이 두 사유로 갈리므로, 거부 예외형과 심볼 부재를 함께 못박는다.
     """
     pm_home, slot, tickets = budget_env
@@ -710,7 +710,7 @@ def test_the_budget_axis_is_the_only_round_cap(pd, budget_env):
         delegate_prepare.prepare_cluster_copy(
             pm_paths.home_at(Path(pm_home).resolve()), cluster="C-onlycap", role="developer", cwd=slot, )
 
-    # 예외형이 정확히 예산 축의 그것이다(다른 상한 예외로 갈리지 않는다).
+    # 예외형이 정확히 예산 기준의 그것이다(다른 상한 예외로 갈리지 않는다).
     assert type(caught.value) is delegate_errors.ClusterRoundBudgetExceeded
     message = str(caught.value)
     assert "고정 라운드 종료" in message and "추가 라운드 없이 정지·보고" in message
@@ -718,7 +718,7 @@ def test_the_budget_axis_is_the_only_round_cap(pd, budget_env):
     assert [
         name for name in dir(pd) if "ROUNDLIMIT" in name.upper().replace("_", "")
     ] == []
-    # 삭제 게이트는 소스와 pycache 를 함께 훑는 전수 grep 이라 지워진 심볼 이름을 리터럴로
+    # 삭제 검사는 소스와 pycache 를 함께 훑는 전수 grep 이라 지워진 심볼 이름을 리터럴로
     # 남기지 않는다 — 인접 리터럴 결합은 컴파일러가 접으므로 실행 시점에 조립한다.
     upper = "_".join(["ROUND", "LIMIT"])
     camel = "".join(["Round", "Limit"])
@@ -728,7 +728,7 @@ def test_the_budget_axis_is_the_only_round_cap(pd, budget_env):
         "_internal_round_count", "_internal_round_list",
         f"_INTERNAL_{upper}_GUIDANCE",
     ):
-        assert not hasattr(pd, name), f"역할별 상한 축이 되살아났다: {name}"
+        assert not hasattr(pd, name), f"역할별 상한 기준이 되살아났다: {name}"
     # 거부는 예약 앞이다 — 수열 4자리 그대로고 열린 run 도 없다.
     assert len(_round_names(pm_home, "T-7060")) == 4
     assert _open_runs(pd, slot, "C-onlycap") == []
@@ -746,7 +746,7 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
     _advance(pd, "C-reopen", "architect", pm_home=pm_home, slot=slot)
     board = _fixture_board(pd, pm_home)
     board_round = _rounds_dir(pm_home, "T-7100") / "01-architect.md"
-    harvested = board_round.read_bytes()
+    collected = board_round.read_bytes()
 
     plan = delegate_prepare.prepare_cluster_copy(
         pm_paths.home_at(Path(pm_home).resolve()), cluster="C-reopen", role="architect", cwd=slot, reopen_ordinal=1,
@@ -755,8 +755,8 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
     assert _round_names(pm_home, "T-7100") == ["01-architect.md"]
     assert plan.rounds[0].ordinal == 1
     assert plan.rounds[0].board_path == board_round
-    # 슬롯 시드는 골격이 아니라 board 라운드의 현재 내용이다(이어 시키는 자리).
-    assert plan.rounds[0].path.read_bytes() == harvested
+    # 슬롯 사본은 빈 양식이 아니라 board 라운드의 현재 내용이다(이어 시키는 자리).
+    assert plan.rounds[0].path.read_bytes() == collected
     # 그 순번은 쓰기 사본으로 깔린다 — 읽기 전용 이전 라운드로 한 벌 더 깔지 않는다.
     assert not (plan.rounds[0].run_dir / delegate_rounds.TICKET_COPY_ROUNDS_DIRNAME
                 / "01-architect.md").exists()
@@ -792,11 +792,11 @@ def test_reopened_round_consumes_no_new_budget_step(pd, budget_env):
     ]
 
 
-def test_a_reopened_developer_round_harvests_into_the_same_file(pd, budget_env):
-    """이어 시킨 dev 단계 — 회수 판정 입력이 시드가 아니라 **직전 산출**이어도 통과한다.
+def test_a_reopened_developer_round_collects_into_the_same_file(pd, budget_env):
+    """이어 시킨 dev 단계 — 돌려받기 판정 입력이 빈 양식이 아니라 **직전 산출**이어도 통과한다.
 
-    developer 회수는 예약 bytes 에서 verify 행 기준선을 뽑는데, 재개방의 그 bytes 는 시드가
-    아니라 앞 회차의 산출이다. 그 자리가 갈리면 이어 시킨 단계가 회수 불가가 된다. 회수는
+    developer 돌려받기는 예약 bytes 에서 verify 행 기준선을 뽑는데, 재개방의 그 bytes 는 빈 양식이
+    아니라 앞 회차의 산출이다. 그 자리가 갈리면 이어 시킨 단계가 돌려받기 불가가 된다. 돌려받기는
     같은 순번의 파일을 교체하고 새 순번을 만들지 않는다.
     """
     pm_home, slot, tickets = budget_env
@@ -812,7 +812,7 @@ def test_a_reopened_developer_round_harvests_into_the_same_file(pd, budget_env):
         + "\n## 이어 시킨 산출\n- 재개방 실측\n",
         encoding="utf-8", newline="",
     )
-    # 이어 시킨 단계도 그 단계의 계약 대상을 실제로 만진다(회수 판정은 이 run 의 diff 를 본다).
+    # 이어 시킨 단계도 그 단계의 계약 대상을 실제로 만진다(돌려받기 판정은 이 run 의 diff 를 본다).
     target = slot / "tests" / "test_round_budget.py"
     target.write_text(
         target.read_text(encoding="utf-8") + "# 이어 시킨 단계의 변경\n",
@@ -868,9 +868,9 @@ def test_a_reopened_review_round_carries_its_own_findings_and_still_blocks_other
 ):
     """이어 시킨 리뷰 단계는 **자기 자신과** 충돌하지 않는다 — 좌표로 corpus 에서 빠진다.
 
-    재개방 시드는 board 라운드의 직전 회수 산출이라 `pending` 도 엔진 표식도 아니다. 회수 대상
+    재개방 슬롯 사본은 board 라운드의 직전 돌려받기 산출이라 `pending` 도 엔진 표시도 아니다. 돌려받기 대상
     라운드 자신을 빼지 않으면 그 라운드가 앞서 선언한 ID 가 '티켓에 이미 있는 ID' 로 세어져,
-    앞 지적을 유지한 회신이 통째로 거부된다(앞 지적을 빼면 그 finding 이 delta 에서 사라져
+    앞 지적을 유지한 회신이 통째로 거부된다(앞 지적을 빼면 그 finding 이 수락한 지적에서 사라져
     어느 쪽으로도 이어 시킬 수 없다). 다른 라운드가 이미 쓴 ID 의 재선언은 종전대로 거부다.
     """
     pm_home, slot, tickets = budget_env
@@ -887,7 +887,7 @@ def test_a_reopened_review_round_carries_its_own_findings_and_still_blocks_other
     reopened = delegate_prepare.prepare_cluster_copy(
         pm_paths.home_at(Path(pm_home).resolve()), cluster=cluster, role="code-reviewer", cwd=slot, reopen_ordinal=3,
     )
-    # 시드가 골격이 아니라 F-001 을 실은 직전 산출이다(이 형상이 자기 충돌의 입력이었다).
+    # 슬롯 사본이 빈 양식이 아니라 F-001 을 실은 직전 산출이다(이 구성이 자기 충돌의 입력이었다).
     assert "F-001" in reopened.rounds[0].path.read_text(encoding="utf-8")
     _write_review_output(pd, reopened.rounds[0].path, ["F-001", "F-002"], ticket=ticket)
 
@@ -959,7 +959,7 @@ def _prepare_recorded_developer(pd, budget_env, *, phase: str, suffix: str):
 
 
 @pytest.mark.parametrize("phase", ("initial", "fix"))
-def test_developer_harvest_accepts_exact_record_without_reexecuting_full(
+def test_developer_collect_accepts_exact_record_without_reexecuting_full(
     pd, budget_env, monkeypatch, phase,
 ):
     pm_home, slot, _ticket, plan = _prepare_recorded_developer(
@@ -970,7 +970,7 @@ def test_developer_harvest_accepts_exact_record_without_reexecuting_full(
 
     def targeted_only(command, expected, *, cwd):
         calls.append((command, expected))
-        assert expected is not None, "harvest가 stage-exit full을 중복 실행했다"
+        assert expected is not None, "돌려받기가 stage-exit full을 중복 실행했다"
         return real_run(command, expected, cwd=cwd)
 
     monkeypatch.setattr(review_command, "_run_required_test", targeted_only)
@@ -978,29 +978,29 @@ def test_developer_harvest_accepts_exact_record_without_reexecuting_full(
         pm_paths.home_at(Path(pm_home).resolve()), run_dir=plan.run_dir, cwd=slot, )[0]
 
     assert outcome.refusal is None
-    assert calls, "architect targeted 계약은 harvest에서 계속 검증해야 한다"
+    assert calls, "architect targeted 계약은 돌려받기에서 계속 검증해야 한다"
     assert all(expected is not None for _command, expected in calls)
 
 
 @pytest.mark.parametrize("phase", ("initial", "fix"))
 @pytest.mark.parametrize(
-    "record_axis,expected_message",
+    "record_kind,expected_message",
     (("missing", "절 정확히 1개"),
      ("mismatch", "stage-exit 명령과 다릅니다"),
      ("nonzero", "green이 아닙니다")),
 )
-def test_developer_harvest_rejects_invalid_record_without_running_full(
-    pd, budget_env, monkeypatch, phase, record_axis, expected_message,
+def test_developer_collect_rejects_invalid_record_without_running_full(
+    pd, budget_env, monkeypatch, phase, record_kind, expected_message,
 ):
-    suffix = f"{7100 + (0 if phase == 'initial' else 10) + ('missing', 'mismatch', 'nonzero').index(record_axis)}"
+    suffix = f"{7100 + (0 if phase == 'initial' else 10) + ('missing', 'mismatch', 'nonzero').index(record_kind)}"
     pm_home, slot, _ticket, plan = _prepare_recorded_developer(
         pd, budget_env, phase=phase, suffix=suffix,
     )
     path = plan.rounds[0].path
     text = path.read_text(encoding="utf-8")
-    if record_axis == "missing":
+    if record_kind == "missing":
         text = text.replace("## 회귀\n", "## 회귀 기록 누락\n", 1)
-    elif record_axis == "mismatch":
+    elif record_kind == "mismatch":
         text = text.replace(
             f"- 커맨드: `{delegate_collect._full_regression_command(slot)}`",
             "- 커맨드: `python3 -m pytest tests/ -q`",
@@ -1025,7 +1025,7 @@ def test_developer_harvest_rejects_invalid_record_without_running_full(
     assert all(expected is not None for _command, expected in calls)
 
 
-def test_fix_harvest_runs_the_reviewer_required_regression(pd, budget_env):
+def test_fix_collect_runs_the_reviewer_required_regression(pd, budget_env):
     pm_home, slot, tickets = budget_env
     ticket = "T-7005"
     _seed(pm_home, tickets, "C-review-red", [ticket])
@@ -1073,13 +1073,13 @@ def test_fix_harvest_runs_the_reviewer_required_regression(pd, budget_env):
     assert "reviewer 추가 회귀 F-001" in outcomes[0].refusal
 
 
-@pytest.mark.parametrize("red_axis", ("architect", "reviewer", "record"))
+@pytest.mark.parametrize("red_kind", ("architect", "reviewer", "record"))
 def test_final_fix_red_is_a_terminal_stop_with_preserved_evidence(
-    pd, budget_env, monkeypatch, red_axis,
+    pd, budget_env, monkeypatch, red_kind,
 ):
     pm_home, slot, tickets = budget_env
     ticket = "T-7008"
-    cluster = f"C-terminal-{red_axis}"
+    cluster = f"C-terminal-{red_kind}"
     _seed(pm_home, tickets, cluster, [ticket])
     for role in _CYCLE[:2]:
         _advance(pd, cluster, role, pm_home=pm_home, slot=slot)
@@ -1100,18 +1100,18 @@ def test_final_fix_red_is_a_terminal_stop_with_preserved_evidence(
     target = slot / "tests" / "test_terminal_regression.py"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("# final fix regression target\n", encoding="utf-8", newline="\n")
-    if red_axis == "record":
+    if red_kind == "record":
         text = fix.rounds[0].path.read_text(encoding="utf-8").replace(
             "- 결과: rc=0 · fixture green", "- 결과: rc=1 · 1 failed", 1,
         )
         fix.rounds[0].path.write_text(text, encoding="utf-8", newline="")
 
     def required_test(command, expected, *, cwd):
-        assert expected is not None, "final-fix harvest가 stage-exit full을 중복 실행했다"
-        if red_axis == "architect" and command == python_argv_command("--version"):
-            return "green이 아닙니다: architect axis"
-        if red_axis == "reviewer" and command == reviewer_command:
-            return "green이 아닙니다: reviewer axis"
+        assert expected is not None, "final-fix 돌려받기가 stage-exit full을 중복 실행했다"
+        if red_kind == "architect" and command == python_argv_command("--version"):
+            return "green이 아닙니다: architect 기준"
+        if red_kind == "reviewer" and command == reviewer_command:
+            return "green이 아닙니다: reviewer 기준"
         return None
 
     monkeypatch.setattr(review_command, "_run_required_test", required_test)
@@ -1121,16 +1121,16 @@ def test_final_fix_red_is_a_terminal_stop_with_preserved_evidence(
     assert outcome.refusal is not None and outcome.terminal is True
     assert "terminal stop" in outcome.refusal
     assert "사용자에게 보고" in outcome.refusal
-    for forbidden in ("재회수", "새 prepare", "새 위임", "사본을 고쳐"):
+    for forbidden in ("다시 돌려받", "새 prepare", "새 위임", "사본을 고쳐"):
         assert forbidden not in outcome.refusal
     assert fix.rounds[0].path.exists()
     assert _round_names(pm_home, ticket)[-1] == "04-developer.md"
 
-    delegated = delegate_execute._delegation_harvest_failure_message(
-        delegate_rounds.TerminalFixHarvestError(outcome.refusal), fix.run_dir,
+    delegated = delegate_execute._delegation_collect_failure_message(
+        delegate_rounds.TerminalFixCollectError(outcome.refusal), fix.run_dir,
     )
     assert "terminal stop" in delegated and "사용자에게 보고" in delegated
-    for forbidden in ("재회수", "새 prepare", "새 위임", "사본을 고쳐"):
+    for forbidden in ("다시 돌려받", "새 prepare", "새 위임", "사본을 고쳐"):
         assert forbidden not in delegated
 
 
@@ -1163,7 +1163,7 @@ def test_implementation_after_the_fix_round_is_refused(pd, budget_env):
 
 
 def test_the_ticket_surface_gets_the_same_budget_verdict(pd, budget_env):
-    """표면이 판정을 정하지 않는다 — 티켓 단축 표기 준비도 같은 예산·같은 처방을 받는다."""
+    """준비 단위가 판정을 정하지 않는다 — 티켓 단축 표기 준비도 같은 예산·같은 해결 방법을 받는다."""
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-surface", ["T-7030"])
     for role in _CYCLE:
@@ -1180,7 +1180,7 @@ def test_the_ticket_surface_gets_the_same_budget_verdict(pd, budget_env):
 
 
 def test_the_ticket_surface_refuses_an_out_of_order_role_too(pd, budget_env):
-    """순서 판정도 표면과 무관하다 — 설계 없이 구현을 티켓 표면으로 열 수 없다."""
+    """순서 판정도 준비 단위와 무관하다 — 설계 없이 구현을 티켓 단위로 열 수 없다."""
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-surfaceorder", ["T-7031"])
 
@@ -1194,7 +1194,7 @@ def test_the_ticket_surface_refuses_an_out_of_order_role_too(pd, budget_env):
 
 def test_cli_prepare_refuses_over_budget_with_the_stop_prescription(
         pd, budget_env, monkeypatch, capsys):
-    """CLI rc 는 1 이고 처방은 추가 라운드 없는 정지·보고다."""
+    """CLI rc 는 1 이고 해결 방법은 추가 라운드 없는 정지·보고다."""
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-cli", ["T-7040"])
     for role in _CYCLE:
@@ -1291,8 +1291,8 @@ def test_an_all_zero_budget_is_invalid(pd):
         delegate_rounds.cluster_round_sequence(_ALL_ZERO_BUDGET, cluster="C-zero")
 
 
-def test_a_zero_budget_ledger_refuses_before_any_reservation(pd, budget_env):
-    """0을 선언한 손상 장부는 전 역할을 fail-loud하고 잔여를 만들지 않는다."""
+def test_a_zero_budget_record_refuses_before_any_reservation(pd, budget_env):
+    """0을 선언한 손상 기록은 전 역할을 fail-loud하고 남은 것을 만들지 않는다."""
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-zero", ["T-7100"], budget=_ALL_ZERO_BUDGET)
 
@@ -1306,7 +1306,7 @@ def test_a_zero_budget_ledger_refuses_before_any_reservation(pd, budget_env):
     assert _round_names(pm_home, "T-7100") == []
     assert _open_runs(pd, slot, "C-zero") == []
 
-    # 네 값이 모두 1인 canonical 장부에서는 첫 architect 요청이 통과한다.
+    # 네 값이 모두 1인 canonical 기록에서는 첫 architect 요청이 통과한다.
     _write_cluster(pm_home, "C-zero", ["T-7100"])
     plan = delegate_prepare.prepare_cluster_copy(
         pm_paths.home_at(Path(pm_home).resolve()), cluster="C-zero", role="architect", cwd=slot, )
@@ -1314,7 +1314,7 @@ def test_a_zero_budget_ledger_refuses_before_any_reservation(pd, budget_env):
 
 
 def _refuse_at_the_lock(pd, pm_home: Path, monkeypatch, mutate) -> None:
-    """두 판정 지점 사이(사전판정 통과 뒤·락 안 재확인 전)에 장부를 바꾼다."""
+    """두 판정 지점 사이(사전판정 통과 뒤·락 안 재확인 전)에 기록을 바꾼다."""
     board = _fixture_board(pd, pm_home)
     real_lock = fs.board_lock
     entries: list[int] = []
@@ -1330,7 +1330,7 @@ def _refuse_at_the_lock(pd, pm_home: Path, monkeypatch, mutate) -> None:
 
 def test_the_lock_recheck_sees_a_budget_that_became_invalid(
         pd, budget_env, monkeypatch):
-    """사전판정 뒤 장부가 0으로 손상되면 락 안 재확인이 fail-loud한다."""
+    """사전판정 뒤 기록이 0으로 손상되면 락 안 재확인이 fail-loud한다."""
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-shrink", ["T-7110"])
     _refuse_at_the_lock(
@@ -1347,11 +1347,11 @@ def test_the_lock_recheck_sees_a_budget_that_became_invalid(
     assert _round_names(pm_home, "T-7110") == []
 
 
-def test_a_ledger_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatch):
-    """장부가 사라진 요청은 열리지 않는다(삭제가 우회 수단이 아니다)."""
+def test_a_record_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatch):
+    """기록이 사라진 요청은 열리지 않는다(삭제가 우회 수단이 아니다)."""
     pm_home, slot, tickets = budget_env
-    ledger = _seed(pm_home, tickets, "C-vanish", ["T-7120"])
-    _refuse_at_the_lock(pd, pm_home, monkeypatch, ledger.unlink)
+    record_file = _seed(pm_home, tickets, "C-vanish", ["T-7120"])
+    _refuse_at_the_lock(pd, pm_home, monkeypatch, record_file.unlink)
 
     with pytest.raises(delegate_errors.DelegateError, match="묶음 기록이 없습니다"):
         delegate_prepare.prepare_cluster_copy(
@@ -1360,12 +1360,12 @@ def test_a_ledger_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatc
     assert _round_names(pm_home, "T-7120") == []
 
 
-def test_a_ticket_without_a_ledger_stops_the_preparation(pd, budget_env):
-    """장부 없는 묶음 이름은 멤버가 없다 — 준비는 그 빈 값에서 정지한다(멤버 합성 0).
+def test_a_ticket_without_a_record_stops_the_preparation(pd, budget_env):
+    """기록 없는 묶음 이름은 멤버가 없다 — 준비는 그 빈 값에서 정지한다(멤버 합성 0).
 
     이름 모양이 멤버를 만들던 자리다. 그 합성이 열리면 선언한 적 없는 묶음이 예산 선언 없이
     라운드를 받는다. 티켓 표기(`--ticket`)는 멤버를 명시로 싣고 오므로 같은 부재를 한 걸음 뒤
-    장부 판정에서 만난다(`test_the_ticket_surface_without_a_ledger_stops_too`).
+    기록 판정에서 만난다(`test_the_ticket_surface_without_a_record_stops_too`).
     """
     pm_home, slot, tickets = budget_env
     (tickets / "T-7130-budget.md").write_text(
@@ -1401,11 +1401,11 @@ def test_legacy_replan_metadata_does_not_reopen_the_fixed_sequence(pd, budget_en
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 역방향 — 크기 1 동형 · 장부 없는 옛 경로 무영향
+# 역방향 — 크기 1 같은 구조 · 기록 없는 옛 경로 무영향
 # ════════════════════════════════════════════════════════════════════════
 
 def test_size_one_cluster_takes_the_same_path(pd, budget_env):
-    """크기 1 도 특례가 아니다 — 같은 수열·같은 거부·같은 처방이다."""
+    """크기 1 도 특례가 아니다 — 같은 수열·같은 거부·같은 해결 방법이다."""
     pm_home, slot, tickets = budget_env
     _seed(pm_home, tickets, "C-one", ["T-7080"])
     for role in _CYCLE:
@@ -1418,8 +1418,8 @@ def test_size_one_cluster_takes_the_same_path(pd, budget_env):
     assert "추가 라운드 없이 정지·보고" in str(caught.value)
 
 
-def test_the_ticket_surface_without_a_ledger_stops_too(pd, budget_env):
-    """티켓 표면도 장부 없이는 열리지 않는다 — 필드 없는 티켓이 우회로가 아니다."""
+def test_the_ticket_surface_without_a_record_stops_too(pd, budget_env):
+    """티켓 단위도 기록 없이는 열리지 않는다 — 필드 없는 티켓이 우회로가 아니다."""
     pm_home, slot, tickets = budget_env
     (tickets / "T-7090-legacy.md").write_text(
         _spec_text("T-7090", "C-T-7090").replace("cluster: C-T-7090\n", ""),
@@ -1501,7 +1501,7 @@ def test_cluster_replan_is_not_a_parser_surface(board_env):
     board, _board_dir = board_env
     with pytest.raises(SystemExit):
         board_cmd.build_parser().parse_args([
-            "cluster", "replan", "wave", "--reason", "설계 축 지적",
+            "cluster", "replan", "C-replan", "--reason", "설계 변경 지적",
         ])
 
 
@@ -1518,7 +1518,7 @@ def test_replan_helpers_are_removed(board_env):
     assert not hasattr(board, "cluster_replan_baseline")
 
 
-def test_new_cluster_ledger_has_only_the_fixed_budget(board_env):
+def test_new_cluster_record_has_only_the_fixed_budget(board_env):
     board, _board_dir = board_env
     fm = cluster_rules._new_cluster_fm("C-json", ["T-0001"])
     assert fm["budget"] == cluster_rules.CLUSTER_BUDGET_DEFAULT

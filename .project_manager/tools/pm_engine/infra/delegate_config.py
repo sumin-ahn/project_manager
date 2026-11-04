@@ -16,7 +16,7 @@ def _is_enabled(conf: dict[str, str]) -> bool:
     """위임 허용 여부 — **키 부재·빈값은 허용**(기본 ON)이고 명시 거부만 차단한다.
 
     기본을 OFF 로 두면 기존 채택자의 native 위임이 이 릴리즈에서 새로 막히는 회귀가 된다
-    (현행 native 무게이트 동작 보존이 기준). 명시 `false` 만 위임 전면 비허용이다.
+    (현행 native 무검사 동작 보존이 기준). 명시 `false` 만 위임 전면 비허용이다.
     빈값은 conf 파싱 의미대로 **미설정**이라 기본값으로 간다(`delegate.enabled=` 한 줄이
     위임을 조용히 끄지 않는다).
     """
@@ -29,7 +29,7 @@ def _is_enabled(conf: dict[str, str]) -> bool:
 # ── config 해소 (원자 tuple) ────────────────────────────────────────────
 
 def _validate_harness(harness: str) -> str:
-    """공용 드라이버 계약(`contract`) 검증의 얇은 wrapper — 예외만 이 표면 타입으로 옮긴다."""
+    """공용 드라이버 계약(`contract`) 검증의 얇은 wrapper — 예외만 이 모듈 오류 타입으로 옮긴다."""
     try:
         return contract.validate_harness(harness)
     except contract.HarnessContractError as exc:
@@ -42,7 +42,7 @@ def _validate_reasoning(
     """실행 직전 확인 — reasoning 이 그 하네스·모델의 허용집합 원소인가(공용 계약 wrapper).
 
     허용집합은 실행과 같은 cwd·env(`build_env(harness)`)로 해소한다 — opencode 는 그 조건의 모델
-    목록 조회 결과가 정한다. 밖이거나 확인할 수 없으면 fail-loud(조용한 무시/자동 강등 금지).
+    목록 조회 결과가 정한다. 밖이거나 확인할 수 없으면 fail-loud(조용히 무시하거나 자동으로 수준을 낮추지 않음).
     미지정=None(조회 없음). 해소 함수(`resolve_delegate`·`resolve_fallback`)는 실행하지 않는
     경로(채널 가드 훅·프로필 비교)에서도 불리므로 이 확인을 하지 않는다."""
     try:
@@ -64,7 +64,7 @@ def resolve_delegate(
 
     CLI 완전지정(--harness AND --model)이면 설정 미참조(원자 override). 아니면 티어 키 세트를 통째로
     읽는다(`delegate.<role>[.<tier>].{harness,model,reasoning}` — 혼합 상속 금지). harness/model 부재면
-    fail-loud(hard 미설정=normal 강등 금지·normal 미설정=조용한 claude 폴백 금지). CLI 부분 override
+    fail-loud(hard 미설정을 normal 로 낮추지 않음·normal 미설정을 조용히 claude 로 대신하지 않음). CLI 부분 override
     (--harness 만/--model 만)는 호출 전 usage error 로 걸러진 전제(여기선 방어적 재검).
     """
     if cli_harness or cli_model:
@@ -97,12 +97,12 @@ def resolve_fallback(
     role: str,
     tier: str,
 ) -> tuple[str, str, str | None] | None:
-    """명시된 1단 폴백 tuple 을 해소한다.
+    """명시된 1단 대체 하네스 tuple 을 해소한다.
 
-    기존 역할 매핑과 동형인
+    기존 역할 매핑과 같은 구조인
     `delegate.<role>[.hard].fallback.{harness,model,reasoning}` 세트를 통째로 읽는다. 세 키가 모두
-    없으면 폴백 미설정(None)이고, 하나라도 있으면 harness/model 완전 세트를 요구한다. hard 는 normal
-    폴백을 상속하지 않는다 — 티어 혼합 상속은 주 매핑과 똑같이 금지한다. 엔진 기본 폴백은 없으며,
+    없으면 대체 하네스 미설정(None)이고, 하나라도 있으면 harness/model 완전 세트를 요구한다. hard 는 normal
+    대체 하네스를 상속하지 않는다 — 티어 혼합 상속은 주 매핑과 똑같이 금지한다. 엔진 기본 대체 하네스는 없으며,
     미설정은 기존 fail-loud 를 보존한다.
     """
     key = f"delegate.{role}" + (".hard" if tier == "hard" else "") + ".fallback"
@@ -131,7 +131,7 @@ def resolved_delegate_profile(
 def _format_silence(silence_sec: float | None, idle_killed: bool) -> str:
     """감사 헤더의 침묵 관측치 1줄 값 — 다음 kill 의 원인을 사후 확정하는 입력.
 
-    관측 불가(신호 없는 축·주입 run_fn 등)는 `n/a` 로 남긴다 — 0 으로 위장하지 않는다(관측 없음과
+    관측 불가(신호 없는 하네스·주입 run_fn 등)는 `n/a` 로 남긴다 — 0 으로 위장하지 않는다(관측 없음과
     "침묵 0초"는 다른 사실이다). 무진행 kill 은 사유를 병기해 하네스 상한/기타 kill 과 구분한다."""
     if silence_sec is None:
         return "n/a (진행 신호 미관측)"
@@ -150,9 +150,9 @@ def _format_meta(argv: list[str], rc: int, harness: str, model: str,
                  transport_sandbox_path: str | None = None,
                  transport_prompt_path: str | None = None,
                  transport_binding_mode: str | None = None) -> str:
-    """raw 박제 본문 — 메타(argv·rc·모델·소요·침묵) 헤더 + 원문.
+    """raw 기록 본문 — 메타(argv·rc·모델·소요·침묵) 헤더 + 원문.
 
-    폴백 attempt 는 `# primary_raw:` 로 앞선 primary raw 경로를 적어 **raw 파일 하나만 봐도** 감사
+    대체 하네스 attempt 는 `# primary_raw:` 로 앞선 primary raw 경로를 적어 **raw 파일 하나만 봐도** 감사
     체인(왜 이 하네스로 갔는가)이 닫히게 한다. `# silence_sec:` 은 최종 진행 이벤트 이후 침묵으로,
     kill 이 났을 때 원인(하네스 상한 vs 무진행 vs 기타)을 사후에 가르는 유일한 관측치다 — 누적 8회
     kill 이 전부 원인 불명이었던 구멍을 이 줄이 닫는다."""

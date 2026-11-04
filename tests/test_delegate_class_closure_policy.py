@@ -78,17 +78,17 @@ def _policy_errors(text: str) -> list[str]:
         ("누락", ("확인하지 않", "확인 불필요", "생략")),
         ("정상 사용", ("확인하지 않", "확인 불필요", "생략")),
     )
-    for anchor, forbidden in polarity_checks:
+    for phrase, forbidden in polarity_checks:
         for line in text.splitlines():
-            if anchor in line and any(term in line for term in forbidden):
-                errors.append(f"의미 반전: {anchor}")
+            if phrase in line and any(term in line for term in forbidden):
+                errors.append(f"의미 반전: {phrase}")
                 break
     return errors
 
 
 @pytest.mark.parametrize("path", DELEGATE_SURFACES, ids=lambda path: str(path.relative_to(ROOT)))
 def test_all_developer_delegate_surfaces_hold_class_closure_policy(path: Path):
-    """Claude·Codex·OpenCode 출하 표면 모두 두 의무와 보고 항목을 보유한다."""
+    """Claude·Codex·OpenCode 출하 파일 모두 두 의무와 보고 항목을 보유한다."""
     assert not (errors := _policy_errors(_read(path))), f"{path}: {errors}"
 
 

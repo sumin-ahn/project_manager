@@ -64,9 +64,9 @@ def _managed_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
     worktree.parent.mkdir()
     _git(home, "worktree", "add", "-q", "-b", "test-slot", str(worktree))
     # Git toplevel이 linked worktree 슬롯에서 멈춘다. 자기 엔진 사본 마커는
-    # PM 홈 강등(lease 손상) 형상에서 슬롯 자기 conf를 해소하는 역할만 한다.
+    # PM 홈을 못 찾아 슬롯으로 낮춘(lease 손상) 구성에서 슬롯 자기 conf를 해소하는 역할만 한다.
     (worktree / ".project_manager" / "tools").mkdir(parents=True)
-    # PM 홈 강등(lease 손상) 형상은 슬롯 자기 conf 로 리뷰어 대상을 해소한다.
+    # PM 홈을 못 찾아 슬롯으로 낮춘(lease 손상) 구성은 슬롯 자기 conf 로 리뷰어 대상을 해소한다.
     (worktree / ".project_manager" / "local.conf").write_text(
         _REVIEWER_TARGET_LINES, encoding="utf-8")
 
@@ -91,9 +91,9 @@ def _managed_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
         "delegate.developer.model=gpt-test\n",
         encoding="utf-8",
     )
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    lease_file = home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.parent.mkdir(parents=True)
+    lease_file.write_text(
         json.dumps({"leases": [{"slot": "work/slot", "state": "leased"}]}),
         encoding="utf-8",
     )
@@ -111,7 +111,7 @@ def _unregistered_worktree(tmp_path: Path) -> tuple[Path, Path]:
     _git(home, "commit", "-qm", "seed")
     worktree = tmp_path / "snapshot"
     _git(home, "worktree", "add", "-q", "-b", "snapshot", str(worktree))
-    # 미등록 worktree 는 자기 앵커로 강등되므로 리뷰어 대상도 자기 conf 에서 해소된다.
+    # 미등록 worktree 는 자기 대상 저장소로 낮춰지므로 리뷰어 대상도 자기 conf 에서 해소된다.
     conf = worktree / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text(_REVIEWER_TARGET_LINES, encoding="utf-8")
@@ -229,30 +229,30 @@ def _foreign_commondir_worktree(tmp_path: Path) -> Path:
     bare = tmp_path / "vendor" / "app.git"
     bare.parent.mkdir(parents=True)
     _git(tmp_path, "clone", "-q", "--bare", str(source), str(bare))
-    anchor = tmp_path / "vendor-worktree"
-    _git(bare, "worktree", "add", "-q", "-b", "vendor", str(anchor))
-    return anchor
+    target_repo = tmp_path / "vendor-worktree"
+    _git(bare, "worktree", "add", "-q", "-b", "vendor", str(target_repo))
+    return target_repo
 
 
 @pytest.mark.parametrize(
     "shape", ["foreign-commondir", "pm-home-without-project-manager"],
 )
 def test_unregistered_linked_worktree_fails_loud_without_demotion(tmp_path, shape):
-    """소유 PM 홈을 확정 못 하는 두 형상은 `AnchorResolutionError` — 강등이 없다.
+    """소유 PM 홈을 확정 못 하는 두 구성은 `AnchorResolutionError` — 슬롯으로 낮추지 않는다.
 
-    판정 입력은 anchor 의 `.git` commondir 형상과 유도된 홈의 `.project_manager` 실재 둘뿐
-    이다. lease 장부는 슬롯 배정 원장이지 소유 증거가 아니라 판정에 들어가지 않는다 —
-    장부 부재·손상·빈 장부는 해소 실패가 아니다.
+    판정 입력은 대상 저장소의 `.git` commondir 구성과 유도된 홈의 `.project_manager` 실재 둘뿐
+    이다. lease 기록은 슬롯 배정 기록이지 소유 증거가 아니라 판정에 들어가지 않는다 —
+    기록 부재·손상·빈 기록은 해소 실패가 아니다.
     """
     external = _load(f"additional_reviewer_fail_loud_{shape}")
 
     if shape == "foreign-commondir":
-        anchor = _foreign_commondir_worktree(tmp_path)
+        target_repo = _foreign_commondir_worktree(tmp_path)
     else:
-        _source, anchor = _unregistered_worktree(tmp_path)
+        _source, target_repo = _unregistered_worktree(tmp_path)
 
     with pytest.raises(pm_paths.AnchorResolutionError) as caught:
-        pm_paths.resolve_pm_home_for_repo(anchor)
+        pm_paths.resolve_pm_home_for_repo(target_repo)
     message = str(caught.value)
     assert "PM 홈을 찾지 못했습니다" in message
     assert "PM 홈 해소 실패" not in message
@@ -260,15 +260,15 @@ def test_unregistered_linked_worktree_fails_loud_without_demotion(tmp_path, shap
 
     # `required=` 는 사라진 인터페이스다 — 남겨 두면 호출 자체가 TypeError 다.
     with pytest.raises(TypeError):
-        pm_paths.resolve_pm_home_for_repo(anchor, required=True)
+        pm_paths.resolve_pm_home_for_repo(target_repo, required=True)
 
 
-def test_ledger_without_the_anchor_row_still_resolves_by_git_declaration(tmp_path):
-    """장부에 등재되지 않은 슬롯도 자기 `.git` 선언으로 같은 소유 PM 홈을 받는다.
+def test_record_without_the_slot_row_still_resolves_by_git_declaration(tmp_path):
+    """기록에 등재되지 않은 슬롯도 자기 `.git` 선언으로 같은 소유 PM 홈을 받는다.
 
     소유는 공용 저장소의 자리가 정한다 — `<X>/.repos/<repo>.git` 이면 X 가 그 bare 를 만든
-    주체다. 장부는 어느 슬롯을 누구에게 빌려줬는지 적는 배정 원장이라 소유 증거가 아니고,
-    gitignored·per-clone 파일이라 anchor 의 함수도 아니다.
+    주체다. 기록은 어느 슬롯을 누구에게 빌려줬는지 적는 배정 기록이라 소유 증거가 아니고,
+    gitignored·per-clone 파일이라 대상 저장소에 따라 정해지는 값도 아니다.
     """
     pm_home = tmp_path / "pm-home"
     (pm_home / ".project_manager").mkdir(parents=True)
@@ -289,9 +289,9 @@ def test_ledger_without_the_anchor_row_still_resolves_by_git_declaration(tmp_pat
     registered.parent.mkdir()
     _git(bare, "worktree", "add", "-q", "-b", "task/app-1", str(registered))
     _git(bare, "worktree", "add", "-q", "-b", "task/app-2", str(unregistered))
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    lease_file = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.parent.mkdir(parents=True)
+    lease_file.write_text(
         json.dumps({"leases": [{"slot": "work/app_1", "state": "leased"}]}),
         encoding="utf-8",
     )
@@ -302,11 +302,11 @@ def test_ledger_without_the_anchor_row_still_resolves_by_git_declaration(tmp_pat
 
 
 def test_pool_less_adopter_worktree_resolves_to_its_main_checkout(tmp_path):
-    """워크트리 풀을 쓰지 않는 채택자(장부 파일 자체가 없음)도 소유 PM 홈을 받는다.
+    """워크트리 풀을 쓰지 않는 채택자(기록 파일 자체가 없음)도 소유 PM 홈을 받는다.
 
     채택자가 우리 슬롯 체계를 쓰는지는 소유 판정 조건이 아니다 — 평범한 `git worktree add`
-    와 `--detach --no-checkout` 스냅샷 둘 다 자기 main checkout 으로 해소된다. 그래도 답이
-    하나가 아닌 형상(미지 commondir)은 여전히 실패다.
+    와 `--detach --no-checkout` 복사본 둘 다 자기 main checkout 으로 해소된다. 그래도 답이
+    하나가 아닌 구성(미지 commondir)은 여전히 실패다.
     """
     adopter = tmp_path / "adopter"
     adopter.mkdir()
@@ -358,7 +358,7 @@ def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
     _git(app_source, "add", "seed.txt")
     _git(app_source, "commit", "-qm", "seed")
 
-    # ADR-0027 실 형상 — app 저장소의 공유 bare 원본은 PM 홈 안 `.repos/<repo>.git` 이다
+    # ADR-0027 실 구성 — app 저장소의 공유 bare 원본은 PM 홈 안 `.repos/<repo>.git` 이다
     # (`worktree_pool.bare_repo_path`). 슬롯의 `.git` 포인터가 이 자리로 소유 PM 홈을 선언한다.
     bare = pm_home / ".repos" / "app.git"
     bare.parent.mkdir(parents=True)
@@ -370,9 +370,9 @@ def test_repo_root_from_cwd_stops_at_markerless_linked_app_worktree(tmp_path):
     nested.mkdir(parents=True)
     assert (slot / ".git").is_file()
     assert not (slot / ".project_manager").exists()
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    lease_file = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.parent.mkdir(parents=True)
+    lease_file.write_text(
         json.dumps({"leases": [{"slot": "work/app_1", "state": "leased"}]}),
         encoding="utf-8",
     )
@@ -421,10 +421,10 @@ def test_delegate_anchor_oracle_is_sensitive_to_engine_repo_fallback(
 def test_unregistered_worktree_fails_loud_for_delegate_and_review(
     tmp_path, monkeypatch, capsys,
 ):
-    """소유 PM 홈이 없는 linked worktree 는 자기 앵커로 강등하지 않고 두 도구 모두 멈춘다.
+    """소유 PM 홈이 없는 linked worktree 는 자기 대상 저장소로 낮추지 않고 두 도구 모두 멈춘다.
 
-    옛 계약은 "board 가 필요 없는 실행" 이라며 경고 한 줄 뒤 자기 repo 를 앵커로 썼다. 그래서
-    같은 코드가 실행 위치에 따라 다른 앵커를 골랐다 — 그 강등 경로가 이 티켓이 지운 것이다.
+    옛 계약은 "board 가 필요 없는 실행" 이라며 경고 한 줄 뒤 자기 repo 를 대상 저장소로 썼다. 그래서
+    같은 코드가 실행 위치에 따라 다른 대상 저장소를 골랐다 — 그 낮춤 경로가 이 티켓이 지운 것이다.
     """
     _home, worktree = _unregistered_worktree(tmp_path)
     local = worktree / ".project_manager" / "local.conf"
@@ -459,13 +459,13 @@ def test_unregistered_worktree_fails_loud_for_delegate_and_review(
     assert "board가 필요 없는 실행" not in review_err
 
 
-def test_unregistered_snapshot_run_fails_before_ledger_raw_or_spawn(
+def test_unregistered_snapshot_run_fails_before_record_raw_or_spawn(
     tmp_path, monkeypatch, capsys,
 ):
     """미등록 linked worktree 는 실 라운드·raw·스폰 어느 것도 만들기 전에 rc1 로 멈춘다.
 
-    옛 코드는 여기까지 자기 앵커로 내려온 뒤 라운드 예약 직전 별도 가드가 막았다. 해소가
-    fail-loud 가 되면 그 2차 가드가 볼 형상 자체가 없다.
+    옛 코드는 여기까지 자기 대상 저장소로 내려온 뒤 라운드 예약 직전 별도 가드가 막았다. 해소가
+    fail-loud 가 되면 그 2차 가드가 볼 구성 자체가 없다.
     """
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
@@ -501,10 +501,10 @@ def test_unregistered_snapshot_run_fails_before_ledger_raw_or_spawn(
 def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
     tmp_path, monkeypatch, capsys,
 ):
-    """스냅샷 안에 실 ticket 이 있어도 소유자 판정은 `.git` 선언 하나가 한다.
+    """복사본 안에 실 ticket 이 있어도 소유자 판정은 `.git` 선언 하나가 한다.
 
-    실 board 소유를 조기 반환 조건으로 두면, 소유자를 확정 못 한 트리가 자기 휘발 장부에
-    라운드를 기록할 수 있다 — 그 조기 반환이 없어야 이 형상이 닫힌다.
+    실 board 소유를 조기 반환 조건으로 두면, 소유자를 확정 못 한 트리가 자기 휘발 기록에
+    라운드를 기록할 수 있다 — 그 조기 반환이 없어야 이 구성이 닫힌다.
     """
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
@@ -546,14 +546,14 @@ def test_unregistered_snapshot_with_real_ticket_still_fails_loud(
     assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
 
 
-def test_unregistered_snapshot_no_gate_and_dry_run_do_not_rescue_the_anchor(
+def test_unregistered_snapshot_no_review_ticket_and_dry_run_do_not_rescue_the_target_repo(
     tmp_path, monkeypatch, capsys,
 ):
-    """`--no-review-ticket`·`--dry-run`·조회도 미해소 앵커를 복구하지 않는다 — 해소가 먼저다."""
+    """`--no-review-ticket`·`--dry-run`·조회도 미해소 대상 저장소를 복구하지 않는다 — 해소가 먼저다."""
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_unregistered_no_gate")
+    external = _load("additional_reviewer_unregistered_no_check")
     monkeypatch.setattr(external, "REPO", snapshot)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
@@ -570,7 +570,7 @@ def test_unregistered_snapshot_no_gate_and_dry_run_do_not_rescue_the_anchor(
     assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
 
 
-def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
+def test_resolver_override_is_the_guard_override_even_when_target_repo_has_snapshot_marker(
     tmp_path, monkeypatch, capsys,
 ):
     """resolver pin을 둔 하네스에서는 가드가 실제 마커/git/lease를 독자 재조회하지 않는다."""
@@ -580,37 +580,36 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
     marker.parent.mkdir(parents=True)
     marker.write_text("{}\n", encoding="utf-8")
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("additional_reviewer_resolver_guard_seam")
+    external = _load("additional_reviewer_resolver_guard_override")
     monkeypatch.setattr(external, "REPO", snapshot)
     monkeypatch.setattr(
-        pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: snapshot.resolve(),
+        pm_paths, "resolve_pm_home_for_repo", lambda target_repo, **kwargs: snapshot.resolve(),
     )
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
-    gate = "T-0643-resolver-seam"
+    review_ticket = "T-0643-resolver-override"
     assert external.main([
-        "--review-ticket", gate, "--paths", "seed.txt",
-        "--output-dir", str(tmp_path / "resolver-seam-raw"),
+        "--review-ticket", review_ticket, "--paths", "seed.txt",
+        "--output-dir", str(tmp_path / "resolver-override-raw"),
     ]) == 0
 
     assert calls["reviewer"] == 1
-    ledger = snapshot / ".project_manager" / ".local" / "review_rounds.json"
-    assert json.loads(ledger.read_text(encoding="utf-8"))[gate]["count"] == 1
-    assert "게이트 스냅샷 마커가 있는 앵커" not in capsys.readouterr().err
+    rounds_file = snapshot / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(rounds_file.read_text(encoding="utf-8"))[review_ticket]["count"] == 1
 
 
-def test_removed_fixed_disposition_never_touches_the_round_ledger(
+def test_removed_fixed_disposition_never_touches_the_round_record(
     tmp_path, monkeypatch, capsys,
 ):
-    """폐지된 `--fixed` 처분은 argparse 경계에서 거부되고 장부를 한 바이트도 바꾸지 않는다."""
+    """폐지된 `--fixed` 처분은 argparse 경계에서 거부되고 기록을 한 바이트도 바꾸지 않는다."""
     home, worktree, _ticket = _managed_worktree(tmp_path)
     _enable_additional_review(home)
     external = _load("additional_reviewer_removed_fixed_disposition")
     monkeypatch.setattr(external, "REPO", worktree)
 
-    ledger_path = home / ".project_manager" / ".local" / "review_rounds.json"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    ledger_path.write_text(json.dumps({
+    record_path = home / ".project_manager" / ".local" / "review_rounds.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(json.dumps({
         "T-0634-rejected": {
             "count": 1,
             "rounds": [{
@@ -631,19 +630,19 @@ def test_removed_fixed_disposition_never_touches_the_round_ledger(
         },
     }), encoding="utf-8")
 
-    before = ledger_path.read_bytes()
+    before = record_path.read_bytes()
     with pytest.raises(SystemExit):
         external.main([
             "--resolve-review", "T-0634-rejected", "--fixed", "T-0634-passed",
         ])
-    assert ledger_path.read_bytes() == before
+    assert record_path.read_bytes() == before
     assert "unrecognized arguments: --fixed" in capsys.readouterr().err
 
 
-def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
+def test_registered_worktree_real_round_still_uses_pm_home_record(
     tmp_path, monkeypatch, capsys,
 ):
-    """유효 lease 등록 worktree의 실 라운드는 종전대로 PM 홈 장부에 기록한다."""
+    """유효 lease 등록 worktree의 실 라운드는 종전대로 PM 홈 기록에 기록한다."""
     home, worktree, _ticket = _managed_worktree(tmp_path)
     _enable_additional_review(home)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
@@ -657,16 +656,15 @@ def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
     ]) == 0
 
     assert calls["reviewer"] == 1
-    home_ledger = home / ".project_manager" / ".local" / "review_rounds.json"
-    assert json.loads(home_ledger.read_text(encoding="utf-8"))["T-0634-registered"]["count"] == 1
+    home_record = home / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(home_record.read_text(encoding="utf-8"))["T-0634-registered"]["count"] == 1
     assert not (worktree / ".project_manager" / ".local" / "review_rounds.json").exists()
-    assert "미등록 linked worktree 자기 앵커에서는" not in capsys.readouterr().err
 
 
 def test_slot_own_ticket_does_not_change_the_owning_pm_home(
     tmp_path, monkeypatch, capsys,
 ):
-    """슬롯 안에 실 ticket 이 있어도 소유자는 `.git` 선언이 정한다 — 라운드는 PM 홈 장부로."""
+    """슬롯 안에 실 ticket 이 있어도 소유자는 `.git` 선언이 정한다 — 라운드는 PM 홈 기록으로."""
     home, worktree, _ticket = _managed_worktree(tmp_path)
     tickets = worktree / ".project_manager" / "board" / "tickets" / "open"
     tickets.mkdir(parents=True)
@@ -682,15 +680,15 @@ def test_slot_own_ticket_does_not_change_the_owning_pm_home(
 
     assert pm_paths.resolve_pm_home_for_repo(worktree) == home.resolve()
 
-    gate = "T-0634-registered-ticket"
+    review_ticket = "T-0634-registered-ticket"
     assert external.main([
-        "--review-ticket", gate, "--paths", "seed.txt",
+        "--review-ticket", review_ticket, "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "registered-ticket-raw"),
     ]) == 0
 
     assert calls["reviewer"] == 1
-    home_ledger = home / ".project_manager" / ".local" / "review_rounds.json"
-    assert json.loads(home_ledger.read_text(encoding="utf-8"))[gate]["count"] == 1
+    home_record = home / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(home_record.read_text(encoding="utf-8"))[review_ticket]["count"] == 1
     assert not (worktree / ".project_manager" / ".local" / "review_rounds.json").exists()
     capsys.readouterr()
 
@@ -698,12 +696,12 @@ def test_slot_own_ticket_does_not_change_the_owning_pm_home(
 def test_markerless_snapshot_with_corrupt_lease_is_blocked(
     tmp_path, monkeypatch, capsys,
 ):
-    """마커 도입 전 스냅샷 + 손상 장부라는 알려진 노출도 같은 실패로 닫힌다."""
+    """마커 도입 전 복사본 + 손상 기록이라는 알려진 노출도 같은 실패로 닫힌다."""
     home, _registered, _ticket = _managed_worktree(tmp_path)
-    snapshot = home / "work" / "gate-markerless"
+    snapshot = home / "work" / "check-markerless"
     _git(home, "worktree", "add", "-q", "-b", "markerless-snapshot", str(snapshot))
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text("{broken", encoding="utf-8")
+    lease_file = home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.write_text("{broken", encoding="utf-8")
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
     assert not (
@@ -715,7 +713,7 @@ def test_markerless_snapshot_with_corrupt_lease_is_blocked(
     calls = _stub_review_send(external, monkeypatch, tmp_path)
 
     assert external.main([
-        "--review-ticket", "T-0643-markerless-corrupt-ledger", "--paths", "seed.txt",
+        "--review-ticket", "T-0643-markerless-corrupt-record", "--paths", "seed.txt",
         "--output-dir", str(tmp_path / "markerless-corrupt-raw"),
     ]) == 1
 
@@ -732,7 +730,7 @@ def test_markerless_snapshot_with_corrupt_lease_is_blocked(
 def test_unregistered_delegate_stops_at_anchor_before_profile_diagnostics(
     tmp_path, monkeypatch, capsys, extra_args,
 ):
-    """미해소 앵커는 프로필/역할 매핑 진단보다 먼저 멈춘다 — 강등 경고가 아니라 오류다."""
+    """미해소 대상 저장소는 프로필/역할 매핑 진단보다 먼저 멈춘다 — 낮춤 경고가 아니라 오류다."""
     _home, worktree = _unregistered_worktree(tmp_path)
     prompt = worktree / "prompt.md"
     prompt.write_text("implement the unit", encoding="utf-8")
@@ -759,7 +757,7 @@ def test_boardless_review_oracle_is_sensitive_to_unconditional_anchor_error(
     external = _load("additional_reviewer_anchor_sensitivity")
     monkeypatch.setattr(external, "REPO", worktree)
 
-    def _old_half_fix(anchor, **kwargs):
+    def _old_half_fix(target_repo, **kwargs):
         raise pm_paths.AnchorResolutionError("unconditional anchor error")
 
     monkeypatch.setattr(pm_paths, "resolve_pm_home_for_repo", _old_half_fix)
@@ -880,7 +878,7 @@ def test_delegate_and_review_failure_sets_match_across_three_repo_shapes(
         capsys.readouterr()
 
     assert failure_sets == {
-        # 미등록 worktree 는 소유 PM 홈이 없어 네 표면 전부가 해소 단계에서 멈춘다.
+        # 미등록 worktree 는 소유 PM 홈이 없어 네 명령 전부가 해소 단계에서 멈춘다.
         "registered-slot": {"delegate-hard", "review-empty"},
         "unregistered-worktree": set(results),
         "plain-clone": {"delegate-hard", "review-empty"},
@@ -892,9 +890,9 @@ def test_delegate_raw_storage_uses_resolved_pm_home_owner(tmp_path, monkeypatch)
     delegate = _load("pm_delegate_raw_owner")
     monkeypatch.setattr(delegate, "REPO", worktree)
 
-    raw_dir, ledger = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=home))
+    raw_dir, record_file = raw_output._raw_storage(pm_paths.home_at(delegate.REPO, pm_home=home))
     assert raw_dir == home / ".project_manager" / ".local" / "delegate"
-    assert ledger == home / ".project_manager" / ".local" / "raw_outputs.json"
+    assert record_file == home / ".project_manager" / ".local" / "raw_outputs.json"
 
 
 def test_delegate_anchor_handles_symlink_standalone_and_missing_inputs(
@@ -943,9 +941,9 @@ def test_duplicate_pm_home_registration_does_not_create_ambiguity(tmp_path):
             f"---\nid: {ticket}\ntitle: fixture\nstatus: open\ntouches: []\n---\n",
             encoding="utf-8",
         )
-        ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_text(
+        lease_file = home / ".project_manager" / ".local" / "worktree-leases.json"
+        lease_file.parent.mkdir(parents=True, exist_ok=True)
+        lease_file.write_text(
             json.dumps({"leases": [{"slot": str(worktree), "state": "leased"}]}),
             encoding="utf-8",
         )
@@ -965,10 +963,10 @@ def test_registered_worktree_owner_does_not_require_existing_ticket(tmp_path):
     assert pm_paths.resolve_pm_home_for_repo(worktree) == home.resolve()
 
 
-def test_ledger_row_alone_cannot_claim_a_slot_of_another_repository(tmp_path):
-    """장부 등재만으로는 소유권이 생기지 않는다 — 슬롯의 `.git` 선언이 소유자를 정한다.
+def test_record_row_alone_cannot_claim_a_slot_of_another_repository(tmp_path):
+    """기록 등재만으로는 소유권이 생기지 않는다 — 슬롯의 `.git` 선언이 소유자를 정한다.
 
-    옛 해소는 조상 훑기로 실 board 를 가진 홈을 찾아 그 장부의 등재만 확인했다. 그래서 남의
+    옛 해소는 조상 훑기로 실 board 를 가진 홈을 찾아 그 기록의 등재만 확인했다. 그래서 남의
     저장소에서 판 worktree 도 경로가 겹치면 이 홈 소유가 됐다.
     """
     home = tmp_path / "pm"
@@ -989,14 +987,14 @@ def test_ledger_row_alone_cannot_claim_a_slot_of_another_repository(tmp_path):
         "---\nid: T-fixture\ntitle: fixture\nstatus: open\n---\n",
         encoding="utf-8",
     )
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    lease_file = home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.parent.mkdir(parents=True)
+    lease_file.write_text(
         json.dumps({"leases": [{"slot": str(worktree), "state": "leased"}]}),
         encoding="utf-8",
     )
 
-    external = _load("additional_reviewer_ledger_row_alone")
+    external = _load("additional_reviewer_record_row_alone")
     with pytest.raises(pm_paths.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
         pm_paths.resolve_pm_home_for_repo(worktree)
 
@@ -1134,8 +1132,8 @@ def test_ticket_touching_other_registered_slot_names_anchor_mismatch(tmp_path):
     home, first, _ticket = _managed_worktree(tmp_path)
     second = home / "work" / "second"
     _git(home, "worktree", "add", "-q", "-b", "second-slot", str(second))
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text(
+    lease_file = home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.write_text(
         json.dumps({"leases": [
             {"slot": "work/slot", "state": "leased"},
             {"slot": "work/second", "state": "leased"},
@@ -1158,7 +1156,7 @@ def test_ticket_touching_other_registered_slot_names_anchor_mismatch(tmp_path):
 
 
 def _dual_slot_home(root: Path) -> tuple[Path, Path, Path]:
-    """등록 슬롯 2개를 가진 PM 홈 — conf additional_reviewer.paths 로 슬롯을 고르는 형상.
+    """등록 슬롯 2개를 가진 PM 홈 — conf additional_reviewer.paths 로 슬롯을 고르는 구성.
 
     두 슬롯 모두 깨끗한 상태로 돌려주므로, 각 테스트가 필요한 변경(작업트리/커밋)을 직접 만든다.
     반환: (PM 홈, 첫 슬롯, 둘째 슬롯).
@@ -1189,9 +1187,9 @@ def _dual_slot_home(root: Path) -> tuple[Path, Path, Path]:
     local = home / ".project_manager" / "local.conf"
     local.write_text(_REVIEWER_TARGET_LINES + "additional_reviewer.paths=src/module.py\n",
                      encoding="utf-8")
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    lease_file = home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.parent.mkdir(parents=True)
+    lease_file.write_text(
         json.dumps({"leases": [
             {"slot": "work/first", "state": "leased"},
             {"slot": "work/second", "state": "leased"},
@@ -1327,15 +1325,15 @@ def test_unfinished_round_record_is_counted_separately():
 
 
 def _cross_owned_slot(root, *, declare_review_paths: bool = True):
-    """A 장부가 B 소유 슬롯을 등록한 교차 소유 형상.
+    """A 기록이 B 소유 슬롯을 등록한 교차 소유 구성.
 
-    두 PM 홈이 서로 다른 additional_reviewer.paths 를 선언하고, A 의 lease 장부가 B 의
+    두 PM 홈이 서로 다른 additional_reviewer.paths 를 선언하고, A 의 lease 기록이 B 의
     worktree 를 슬롯으로 등록한다. 인자 없는 실행에서 A 의 additional_reviewer.paths 로
     diff_root 를 고르면 그 소유자는 B 라, 표시된 config provenance 와 실제
     호출 범위가 갈린다.
 
     `declare_review_paths=False` 면 두 conf 모두 additional_reviewer.paths 를 선언하지 않아 범위가 엔진 고정
-    기본 경로로 떨어진다 — 범위 출처가 최초 PM 홈이라는 사실은 같은 형상이다.
+    기본 경로로 떨어진다 — 범위 출처가 최초 PM 홈이라는 사실은 같은 구성이다.
     """
     home_a = root / "home-a"
     home_b = root / "home-b"
@@ -1365,9 +1363,9 @@ def _cross_owned_slot(root, *, declare_review_paths: bool = True):
     (slot / "src" / "a.py").write_text("value = 2\n", encoding="utf-8")
 
     for home in (home_a, home_b):
-        ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_text(
+        lease_file = home / ".project_manager" / ".local" / "worktree-leases.json"
+        lease_file.parent.mkdir(parents=True, exist_ok=True)
+        lease_file.write_text(
             json.dumps({"leases": [{"slot": str(slot), "state": "leased"}]}),
             encoding="utf-8",
         )
@@ -1398,11 +1396,11 @@ def test_explicit_paths_escape_cross_owned_conf_block(
     capsys.readouterr()
 
 
-# ── 강등 실행의 소유 PM 홈 필터 승계 (호출 방향) ────────────────────────────
+# ── 슬롯으로 낮춘 실행의 소유 PM 홈 필터 승계 (호출 방향) ────────────────────────────
 
 
 def _demoted_worktree_with_owner_filters(tmp_path) -> tuple[Path, Path]:
-    """lease 장부 손상으로 config 소유자가 슬롯으로 강등되는 형상 + PM 홈 전용 필터 선언.
+    """lease 기록 손상으로 config 소유자가 슬롯으로 낮춰지는 구성 + PM 홈 전용 필터 선언.
 
     PM 홈만 `additional_reviewer.paths=src` 와 `additional_reviewer.denylist_extra=*.vault` 를 선언하고, 슬롯에는 conf 가
     없다. 승계가 없으면 이 실행은 엔진 기본 경로로 `src/keys.vault` 까지 필터 없이 내보낸다.
@@ -1433,7 +1431,7 @@ def _demoted_worktree_with_owner_filters(tmp_path) -> tuple[Path, Path]:
 
 
 def _demoted_worktree_with_owner_default_scope(tmp_path) -> tuple[Path, Path]:
-    """소유 PM 홈은 additional_reviewer.paths 미선언(=엔진 기본 경로)이고 슬롯만 `.` 를 선언한 강등 형상.
+    """소유 PM 홈은 additional_reviewer.paths 미선언(=엔진 기본 경로)이고 슬롯만 `.` 를 선언한 낮춤 구성.
 
     슬롯 선언이 살아남으면 lease 손상만으로 호출 범위가 소유 유효 범위보다 넓어진다 — 기본 경로
     밖 파일(`docs/notes.md`)의 포함 여부가 그 판별자다.
@@ -1465,14 +1463,14 @@ def _cross_repo_absolute_target(
 ) -> tuple[Path, Path, Path, Path]:
     """엔진 A = 자기 conf 와 소유 conf 가 모두 깨진 PM 홈의 슬롯 · 절대 `--paths` 대상 B = 다른 슬롯.
 
-    A 컨텍스트는 (1) 강등 + 소유 PM 홈 conf 판독 불가, (2) **엔진 자기 슬롯 conf 자체도 판독 불가**라
+    A 컨텍스트는 (1) 슬롯으로 낮춤 + 소유 PM 홈 conf 판독 불가, (2) **엔진 자기 슬롯 conf 자체도 판독 불가**라
     선택 전 config 를 읽거나 검사하는 순간 중단된다. B 소유 PM 홈은 정상이고 `*.b-vault` 를
     선언한다. `break_target_owner=True` 면 B 쪽 소유 관계까지 깨뜨려 **선택된 소유자** 기준
     fail-closed 를 본다.
     """
     home_a, slot_a, _ticket_a = _managed_worktree(tmp_path / "a")
-    # 깨뜨리는 것은 **conf 판독**뿐이다. lease 장부 손상은 라운드 장부를 읽는 게이트 실행에서
-    # 따로 중단시키는 축이라(`test_markerless_snapshot_with_corrupt_lease_is_blocked`), 여기
+    # 깨뜨리는 것은 **conf 판독**뿐이다. lease 기록 손상은 라운드 기록을 읽는 통과 조건 실행에서
+    # 따로 중단시키는 경우라(`test_markerless_snapshot_with_corrupt_lease_is_blocked`), 여기
     # 섞으면 "선택 전 conf 를 읽지 않는다"는 이 픽스처의 명제를 관측할 수 없다.
     (home_a / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
     (slot_a / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
@@ -1503,7 +1501,7 @@ def _cross_repo_absolute_target(
 def test_explicit_anchor_run_has_zero_pre_selection_conf_dependency(
     tmp_path, monkeypatch, capsys,
 ):
-    """명시 앵커 실행은 선택 전 config 를 **읽지도 검사하지도** 않는다 — 로드 seam 호출로 단언."""
+    """명시 대상 저장소 실행은 선택 전 config 를 **읽지도 검사하지도** 않는다 — 로드 교체 지점 호출로 단언."""
     _home_a, slot_a, home_b, slot_b = _cross_repo_absolute_target(
         tmp_path, break_target_owner=False,
     )
@@ -1563,9 +1561,9 @@ def _multi_commit_base_home(root: Path) -> tuple[Path, Path, Path]:
     conf.parent.mkdir(parents=True)
     conf.write_text(_REVIEWER_TARGET_LINES + "additional_reviewer.paths=src/module.py\n",
                     encoding="utf-8")
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    lease_file = home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.parent.mkdir(parents=True)
+    lease_file.write_text(
         json.dumps({"leases": [
             {"slot": "work/old", "state": "leased"},
             {"slot": "work/tip", "state": "leased"},
@@ -1580,7 +1578,7 @@ def test_diff_width_table_and_slot_ownership_evidence_are_stated_once():
     external = _load("additional_reviewer_diff_width")
     assert review_diff._diff_bases("HEAD") == ("HEAD", "HEAD~1..HEAD")
     assert review_diff._diff_bases("main") == ("main",)
-    # 암묵 폴백 단계는 소유 근거가 아니다. 사용자가 그 리비전을 직접 지정하면 근거가 된다.
+    # 암묵 대체 단계는 소유 근거가 아니다. 사용자가 그 리비전을 직접 지정하면 근거가 된다.
     assert review_diff._slot_selection_bases("HEAD") == ("HEAD",)
     assert review_diff._slot_selection_bases("main") == ("main",)
     assert review_diff._slot_selection_bases("HEAD~1..HEAD") == ("HEAD~1..HEAD",)
@@ -1609,7 +1607,7 @@ def test_clean_slot_on_multi_commit_base_is_never_selected_as_changed(
 def test_commit_only_change_needs_explicit_anchor_in_multi_slot_home(
     tmp_path, monkeypatch, capsys,
 ):
-    """커밋만 된 변경으로 슬롯을 고르려면 앵커 명시가 필요하고, 명시하면 그 슬롯이 확정된다."""
+    """커밋만 된 변경으로 슬롯을 고르려면 대상 저장소 명시가 필요하고, 명시하면 그 슬롯이 확정된다."""
     home, _first, second = _dual_slot_home(tmp_path / "commit-only")
     base_commit = _git_out(home, "rev-parse", "HEAD")
     _commit_in_slot(second, "value = 2\n")
@@ -1642,7 +1640,7 @@ def test_worktree_change_selects_its_slot_over_commit_only_slot(
 def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
     tmp_path, monkeypatch, capsys,
 ):
-    """폴백 단계를 소유 근거로 되돌리면 놀던 tip 슬롯이 뽑혀 공유 base 커밋이 호출된다."""
+    """대체 단계를 소유 근거로 되돌리면 놀던 tip 슬롯이 뽑혀 공유 base 커밋이 호출된다."""
     home, _old, tip = _multi_commit_base_home(tmp_path / "fallback-evidence")
     external = _load("additional_reviewer_fallback_evidence")
     monkeypatch.setattr(external, "REPO", home)
@@ -1668,7 +1666,7 @@ def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
 def test_default_review_paths_cross_owned_slot_blocks_before_external_send(
     tmp_path, monkeypatch, capsys,
 ):
-    """conf 가 additional_reviewer.paths 를 선언하지 않아도 교차 소유 형상은 같은 기준으로 차단한다."""
+    """conf 가 additional_reviewer.paths 를 선언하지 않아도 교차 소유 구성은 같은 기준으로 차단한다."""
     home_a, home_b, _slot = _cross_owned_slot(
         tmp_path / "default-cross", declare_review_paths=False,
     )
@@ -1689,7 +1687,7 @@ def test_default_review_paths_cross_owned_slot_blocks_before_external_send(
 def test_explicit_paths_escape_default_paths_cross_owned_block(
     tmp_path, monkeypatch, capsys,
 ):
-    """선언 없는 형상에서도 --paths 탈출구는 불변이다."""
+    """선언 없는 구성에서도 --paths 탈출구는 불변이다."""
     home_a, _home_b, slot = _cross_owned_slot(
         tmp_path / "default-escape", declare_review_paths=False,
     )
@@ -1703,7 +1701,7 @@ def test_explicit_paths_escape_default_paths_cross_owned_block(
 def test_default_paths_cross_owned_oracle_is_sensitive_to_declared_only_guard(
     tmp_path, monkeypatch, capsys,
 ):
-    """판정을 옛 '선언된 additional_reviewer.paths 만' 기준으로 되돌리면 같은 형상이 rc=0 으로 통과한다."""
+    """판정을 옛 '선언된 additional_reviewer.paths 만' 기준으로 되돌리면 같은 구성이 rc=0 으로 통과한다."""
     home_a, _home_b, _slot = _cross_owned_slot(
         tmp_path / "declared-only", declare_review_paths=False,
     )

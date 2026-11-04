@@ -6,7 +6,7 @@ from collections.abc import Sequence
 import re
 from pm_engine.domain import review_form
 
-# fix 라운드 delta 꼬리에 부착하는 수정 범위 제약 문구 단일 진실 — 스킬·카드·playbook은
+# fix 라운드 수락한 지적 꼬리에 부착하는 수정 범위 제약 문구 단일 진실 — 스킬·카드·playbook은
 # 이 상수를 복제하지 않고 "출력을 그대로 전달"만 지시한다(no-hand-retyping 원칙). 빈틈 보고
 # 형식이 verify 블록·사유 값을 인용하므로 그 상수들 **뒤에** 둔다(문언 drift 0).
 PM_REVIEW_FIX_SCOPE_NOTICE = f"""\
@@ -74,7 +74,7 @@ REGRESSION_SCOPE_PREAMBLE = (
 REGRESSION_SCOPE_ROLES: frozenset[str] = frozenset({"developer"})
 
 
-# ── 쓰기-타깃 axis 재앵커  ─────────────────────────────────────────────
+# ── 쓰기 대상 기준 대상 저장소 다시 잡기 ─────────────────────────────────────────────
 
 _ENGINE_PATH_CANDIDATE_RE = re.compile(
     r"[A-Za-z0-9._/\\-]*\.project_manager[A-Za-z0-9._/\\-]*"
@@ -242,7 +242,7 @@ def _engine_path_parts(raw: str) -> tuple[str, ...] | None:
 
 
 def _path_layout_gap_is_internal(text: str, start: int, end: int) -> bool:
-    """layout gap 이 이미 시작된 경로 후보 내부의 접힘 지점인가."""
+    """layout gap 이 이미 시작된 경로 후보 내부의 줄바꿈 지점인가."""
     if start == 0 or end >= len(text):
         return False
     next_char = text[end]
@@ -253,7 +253,7 @@ def _path_layout_gap_is_internal(text: str, start: int, end: int) -> bool:
     if next_char not in "/\\":
         return False
 
-    # separator 앞 gap 은 왼쪽 토큰이 이미 `.project_manager` 경로일 때만 접는다.
+    # separator 앞 gap 은 왼쪽 토큰이 이미 `.project_manager` 경로일 때만 없앤다.
     # 따라서 `Modify\n.project_manager/...` 같은 일반 단어→경로 경계는 보존된다.
     left_match = re.search(rf"[{_PATH_LAYOUT_CHAR_CLASS}]+$", text[:start])
     if left_match is None:
@@ -266,7 +266,7 @@ def _normalize_prompt_path_layout(prompt: str) -> tuple[str, list[int]]:
     """긴 경로의 자연 줄바꿈을 제거한 매칭 뷰와 원문 offset map 을 반환한다.
 
     직전 조각이 separator 로 끝나거나 이미 `.project_manager` 경로이고 다음 조각이 separator 로
-    시작할 때만 개행(plain 또는 shell식 ``\\\n`` 연속)/수평 공백을 접는다. 일반 단어와 경로 시작
+    시작할 때만 개행(plain 또는 shell식 ``\\\n`` 연속)/수평 공백을 없앤다. 일반 단어와 경로 시작
     사이 및 독립된 여러 경로 사이의 layout 은 보존한다.
     """
     remove = [False] * len(prompt)
@@ -274,7 +274,7 @@ def _normalize_prompt_path_layout(prompt: str) -> tuple[str, list[int]]:
         remove_start = match.start()
         if not _path_layout_gap_is_internal(prompt, remove_start, match.end()):
             # Windows식 경로 separator 자체가 줄끝에 온
-            # `.project_manager\\\ntools\\x.py`에서는 `\`를 보존하고 개행만 접는다.
+            # `.project_manager\\\ntools\\x.py`에서는 `\`를 보존하고 개행만 없앤다.
             # `/\\\n`의 두 번째 `\`는 shell 연속 문자이므로 기존처럼 gap 전체를 제거한다.
             backslash = prompt.rfind("\\", match.start(), match.end())
             if (backslash < 0
@@ -485,20 +485,20 @@ def _prompt_targets_engine_code(prompt: str) -> bool:
     """위임 프롬프트가 엔진 코드 경로(`.project_manager/tools/`)를 write 대상으로 하는가.
 
     정확 문자열 매칭이 아니라 **경로를 정규화해 성분 시퀀스**로 판정한다(codex must-fix) — 각 토큰을
-    PurePosixPath 로 정규화(`.`/중복 슬래시 접힘)하고 긴 경로의 공백·개행/``\\\n`` 연속을 먼저
-    접어 `.project_manager` 직후 `tools` 성분이 오면 True. 이로써 trailing slash 없음·`./`·자연
+    PurePosixPath 로 정규화(`.`/중복 슬래시 정규화)하고 긴 경로의 공백·개행/``\\\n`` 연속을 먼저
+    없애고 `.project_manager` 직후 `tools` 성분이 오면 True. 이로써 trailing slash 없음·`./`·자연
     줄바꿈 우회를 닫는다. 단, 독립된 순수 read-only `board.py show|list|lint` 호출(A)과 경로에 직접
     결합한 수정 금지(B)의 **그 경로 span만** 제외한다. 절/문서의 금지를 공유하지 않으며, 다른
     출현이 실제 write 지시면 True를 유지한다.
 
     위협 모델은 적대 프롬프트 의미 분석이 아니라 PM의 실수 방지다. 따라서 read-only 호출 다음 줄의
     대명사/일반 지시(예: ``본문대로 구현하라``)만으로 그 경로를 write 대상으로 추론하지 않는다
-    (정당 관용구와 텍스트만으로 구분 불가). 명시 경로 재등장은 계속 차단한다. 잔여 경계는
+    (정당 관용구와 텍스트만으로 구분 불가). 명시 경로 재등장은 계속 차단한다. 남은 경계는
     (1) 같은 엔진 경로에 금지와 write를 함께 붙인 자기모순 shape, (2) 경로 separator 없이
-    `.project_manager``와 ``tools``를 개행 분할한 shape, (3) ASCII slash 대신 유니코드 동형
-    slash를 쓴 shape다. 이 잔여 신형/적대 표현은 role preamble 금지
+    `.project_manager``와 ``tools``를 개행 분할한 shape, (3) ASCII slash 대신 생김새가 같은 유니코드
+    slash를 쓴 shape다. 이 남은 신형/적대 표현은 role preamble 금지
     변경 감지가 닫는다.
-    write 역할 + PM 홈 cwd 조합에서만 재앵커 게이트로 쓰인다(PM-doc/wiki write 는 PM 홈 정당)."""
+    write 역할 + PM 홈 cwd 조합에서만 대상 저장소 다시 잡기 통과 조건으로 쓰인다(PM-doc/wiki write 는 PM 홈 정당)."""
     for start, end, parts in _engine_path_occurrences(prompt):
         if _is_pure_read_only_board_call(prompt, start, end, parts):
             continue

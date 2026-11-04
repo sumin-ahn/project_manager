@@ -33,7 +33,7 @@ from pm_engine.infra.harness import watchdog
 def fail_loud(message: str, *, rc: int = 1) -> int:
     """위임 실패 종료의 **단일 깔때기** — 사유 + 무음 대체 금지 안내를 stderr 에 내고 rc 를 돌려준다.
 
-    실패 종료 지점은 여러 곳(타임아웃·비정상 rc·정리 실패·reply 미추출·폴백 소진)인데, 안내를
+    실패 종료 지점은 여러 곳(타임아웃·비정상 rc·정리 실패·reply 미추출·대체 하네스 소진)인데, 안내를
     지점마다 손으로 이어붙이면 **새 종료 경로가 조용히 안내를 빠뜨린다**. 그래서 `NO_SILENT_SUBSTITUTE_NOTE` 의 소비자는 이 함수 하나뿐이고(테스트가 그 불변을 못박는다),
     실패 경로는 `return fail_loud(...)` 로만 끝난다.
     """
@@ -67,9 +67,9 @@ def check_local_conf_divergence(
     cli_override: bool = False,
     compare_fallback: bool = False,
 ) -> tuple[Path | None, object | None]:
-    """기존 `--cwd` repo축으로 이번 role/tier의 **유효 primary/fallback 프로필** 분기를 검사한다.
+    """기존 `--cwd` repo 기준으로 이번 role/tier의 **유효 primary/fallback 프로필** 분기를 검사한다.
 
-    reviewer_target의 repo-root/conf 비교 seam을 재사용해 두 표면이 별도 판정 규칙을 갖지 않게 한다.
+    reviewer_target의 repo-root/conf 비교 함수를 재사용해 두 명령이 별도 판정 규칙을 갖지 않게 한다.
     양쪽 모두 `resolve_delegate`를 거쳐 reasoning 미지정(None)까지 포함한 완전 tuple을 비교하므로,
     한쪽만 키를 생략한 실제 수신 프로필 차이도 잡는다. 대상 역할/티어가 불완전하거나 잘못돼
     해소되지 않으면 실행 가능한 비교 대상이 아니므로 skip한다. CLI 완전지정은 local.conf를 primary
@@ -78,7 +78,7 @@ def check_local_conf_divergence(
     비교한다. 또한 양쪽 `resolve_fallback` 결과가 모두 tuple이고 각 후보의 primary와 harness/model이
     다를 때만 값 차이를 판정한다. 한쪽 미설정·primary 동일은 실제 발동 불가능하므로 무소음이며,
     불완전/잘못된 대상 tuple도 실행 가능한 비교값이 아니어서 skip한다. 반환 target_repo는
-    이 skip들과 무관하게 write-target 재앵커에도
+    이 skip들과 무관하게 write-target 대상 저장소 다시 잡기 검사에도
     재사용한다.
     """
     target_repo = pm_paths.repo_root_from_cwd(cwd)
@@ -127,10 +127,10 @@ def check_local_conf_divergence(
     return target_repo, divergence
 
 
-def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | None:
-    """write 역할이 PM 홈 cwd 에서 엔진 코드(import 사본)를 write 타깃하면 재앵커 대상 worktree 반환.
+def check_write_target_retarget(role: str, cwd: Path, prompt: str) -> Path | None:
+    """write 역할이 PM 홈 cwd 에서 엔진 코드(import 사본)를 write 타깃하면 대상 저장소로 다시 잡을 worktree 반환.
 
-    재앵커는 cwd 자체가 아니라 **쓰기-타깃 axis** 로 판정 — PM-doc(wiki/ADR/spike) 작업은 PM 홈 cwd
+    대상 저장소 다시 잡기는 cwd 자체가 아니라 **쓰기 대상 기준**으로 판정 — PM-doc(wiki/ADR/spike) 작업은 PM 홈 cwd
     정당. 판정 = pm_paths._pm_home_reanchor(실 board 소유 + `work/*` canonical 보유·파일 존재
     휴리스틱 금지) 재사용. read 역할·비-엔진-코드 타깃·PM 홈 아닌 cwd 는 None(통과)."""
     if role not in delegate_run_rules.WRITE_ROLES:
@@ -141,7 +141,7 @@ def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | Non
 
 
 def _resume_unavailable(reason: str) -> None:
-    """재사용 불가 사유를 1줄로 알리고 fresh 로 간다(조용한 강등 금지·차단은 아님)."""
+    """재사용 불가 사유를 1줄로 알리고 fresh 로 간다(조용히 수준을 낮추지 않는다·차단은 아님)."""
     print(
         f"세션 재사용 미적용: {reason} — fresh 스폰 + full payload 로 진행합니다.",
         file=sys.stderr,
@@ -158,11 +158,11 @@ def resolve_resume_plan(
 ) -> delegate_run_rules.ResumePlan | None:
     """`--resume-from` 지시자를 확정된 재사용 1건으로 해소한다(불가하면 None + loud 1줄).
 
-    막히는 자리는 넷이고 전부 **비차단**이다: 재개 미지원 하네스, 장부 부재, 후보 부재(보존 창
+    막히는 자리는 넷이고 전부 **비차단**이다: 재개 미지원 하네스, 기록 부재, 후보 부재(보존 창
     밖·다른 role·미마감/실패 레코드), 세션 id 형식 불일치. 어느 쪽이든 fresh + full payload 로
     진행한다.
 
-    장부 부재는 **락을 잡기 전에** 끝낸다 — 조회는 읽기인데 락 획득이 장부 상위 디렉터리와
+    기록 부재는 **락을 잡기 전에** 끝낸다 — 조회는 읽기인데 락 획득이 기록 상위 디렉터리와
     `.lock` 파일을 만든다(`fs.exclusive_file_lock`). 한 번도 위임하지 않은 트리에서
     `--dry-run` 이 `.project_manager/.local/` 을 새로 만드는 건 미리보기의 부작용 0 원칙 위반이다.
     """
@@ -171,12 +171,12 @@ def resolve_resume_plan(
     if not contract.harness_supports_resume(harness):
         _resume_unavailable(f"{harness} 하네스는 재개 argv 가 미검증(선언표 미지원)")
         return None
-    _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
-    if not ledger_path.is_file():
-        _resume_unavailable(f"raw 출력 기록 없음({ledger_path}) — 이 위치에 아직 위임 기록이 없음")
+    _raw_dir, record_path = raw_output._raw_storage(home, output_dir)
+    if not record_path.is_file():
+        _resume_unavailable(f"raw 출력 기록 없음({record_path}) — 이 위치에 아직 위임 기록이 없음")
         return None
     try:
-        rows = raw_output.raw_records(ledger_path)
+        rows = raw_output.raw_records(record_path)
     except (OSError, ValueError) as exc:
         _resume_unavailable(f"raw 출력 기록을 읽지 못함({exc})")
         return None
@@ -184,7 +184,7 @@ def resolve_resume_plan(
         rows, selector=selector, role=role, harness=harness,
     )
     if record is None:
-        # 사유를 갈라 낸다 — "정말 없다"와 "있는데 이어받을 수 없다"는 처방이 다르다.
+        # 사유를 갈라 낸다 — "정말 없다"와 "있는데 이어받을 수 없다"는 해결 방법이 다르다.
         _resume_unavailable(
             delegate_run_rules.resume_unusable_reason(rows, selector=selector, role=role, harness=harness)
             or (f"{selector!r} 의 성공 마감 위임 레코드(role={role}·harness={harness}) 없음 — "
@@ -204,7 +204,7 @@ def resolve_resume_plan(
         session_id=session_id,
         record_id=str(record.get("id")),
         ticket=record_ticket if isinstance(record_ticket, str) and record_ticket else None,
-        delta_prompt=delegate_run_rules.build_resume_change_payload(
+        change_prompt=delegate_run_rules.build_resume_change_payload(
             must_fix_items=(
                 must_fix_items if isinstance(must_fix_items, list) else ()
             ),
@@ -237,26 +237,26 @@ def _execute_attempt(
     run_id: str | None = None,
     round_copy_path: str | None = None,
 ) -> delegate_run.DelegateAttempt:
-    """하네스 1회를 실행하고 raw를 박제한다.
+    """하네스 1회를 실행하고 raw를 적어 둔다.
 
-    폴백도 같은 드라이버/권한축/env allowlist/timeout 계약을 탄다(그래서 폴백이 발동한 실행의 최악
-    소요는 두 시도의 하네스별 예산 합이고, 세션 재사용 라운드는 primary 축을 두 번 쓸 수
+    대체 하네스도 같은 드라이버/권한 기준/env allowlist/timeout 계약을 탄다(그래서 대체 하네스가 발동한 실행의 최악
+    소요는 두 시도의 하네스별 예산 합이고, 세션 재사용 라운드는 primary 하네스 예산을 두 번 쓸 수
     있다·_harness_timeout_budget). opencode의 합성 prompt-file은
     attempt마다 만들고 즉시 정리한다. DI run_fn이 예외를 직접 raise해도 _default_run_fn과 **같은
     분류 신호**로 정규화한다 — 스폰 단계 예외(_LAUNCH_STAGE_ERRORS)만 RUN_RESULT_LAUNCH_FAILED 이고,
-    그 밖의 OSError는 호출 후일 수 있어 미분류 실패로 남긴다(폴백 금지·중복 호출 차단).
+    그 밖의 OSError는 호출 후일 수 있어 미분류 실패로 남긴다(대체 하네스 금지·중복 호출 차단).
 
-    `resume_session_id`/`ticket`/`base_rev` 는 이 실행의 **장부 구조화 필드**다. 재개 id 는 지원
-    선언표를 통과한 축에서만 받는다(미지원 축으로 미검증 argv 가 나가지 않는다).
+    `resume_session_id`/`ticket`/`base_rev` 는 이 실행의 **기록 구조화 필드**다. 재개 id 는 지원
+    선언표를 통과한 하네스에서만 받는다(미지원 하네스로 미검증 argv 가 나가지 않는다).
 
     `run_id`/`round_copy_path` 는 cross 라운드 준비가 있었던 실행에서만 채워진다 — 있으면
-    delegate-rounds 장부의 같은 이름 필드와 값이 같다. native 위임은 라운드 준비 자체가 없어
+    delegate-rounds 기록의 같은 이름 필드와 값이 같다. native 위임은 라운드 준비 자체가 없어
     이 실행 경로를 타지 않는다.
 
     이 함수 호출부(`_execute_and_collect`)는 한 run 에서 최대 3회 이 함수를 부른다(primary·
-    세션 재사용 불일치 뒤 fresh 재실행·인프라 실패 폴백) — 셋 다 같은 `run_id`/`round_copy_path`
-    를 싣는다(raw 행 → 예약은 many-to-one). 종료 판정 입력은 "결속된 행 중 아무 하나의 마감"이
-    아니라 **가장 최신 attempt 행의 마감**이다 — primary 가 실패로 마감되고 폴백이 진행 중인
+    세션 재사용 불일치 뒤 fresh 재실행·인프라 실패 대체 하네스) — 셋 다 같은 `run_id`/`round_copy_path`
+    를 싣는다(raw 행 → 예약은 many-to-one). 종료 판정 입력은 "연결된 행 중 아무 하나의 마감"이
+    아니라 **가장 최신 attempt 행의 마감**이다 — primary 가 실패로 마감되고 대체 하네스가 진행 중인
     창에서 전자를 쓰면 아직 도는 run 을 끝난 것으로 오판한다.
     """
     if resume_session_id is not None and not contract.harness_supports_resume(harness):
@@ -264,14 +264,14 @@ def _execute_attempt(
             f"{harness} 하네스는 세션 재사용 미지원인데 재개 id 가 전달됐다 — "
             "미검증 argv 를 만들지 않는다."
         )
-    # 슬롯 주인 task 는 준비 산출물을 만들기 전에 해소한다 — 장부 판독 실패가 되감을 산출물을 남기지 않는다.
+    # 슬롯 주인 task 는 준비 산출물을 만들기 전에 해소한다 — 기록 판독 실패가 되감을 산출물을 남기지 않는다.
     delegate_task_env = _delegate_task_env(home, cwd)
     argv, stdin_text, prompt_path, read_tmp = delegate_transport._prepare_attempt_transport(
         home, harness, model, reasoning, role, cwd, prompt, resume_session_id,
         cluster_run_dir,
     )
     # env 해소도 실패할 수 있다(하네스 필수 키 누락은 fail-loud) — 그 실패가 attempt 사본과
-    # read tmp 를 남기지 않도록 준비 산출물과 같은 소유권 seam 에서 되감는다.
+    # read tmp 를 남기지 않도록 준비 산출물과 같은 소유권 함수에서 되감는다.
     try:
         env = contract.with_harness_runtime_role(
             delegate_transport._apply_read_tmp_env(delegate_env.build_env(harness), harness, read_tmp), harness, role,
@@ -281,30 +281,30 @@ def _execute_attempt(
         delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
         raise
 
-    # raw 경로와 미마감 장부는 자식 프로세스 실행 전에 확정한다. 이 순서가 하네스 Bash/stdout
+    # raw 경로와 미마감 기록은 자식 프로세스 실행 전에 확정한다. 이 순서가 하네스 Bash/stdout
     # 유실 시에도 경로를 남기는 핵심 계약이다. 이후 BaseException으로 마감 경로를 건너뛰면
     # 레코드가 의도적으로 미마감 상태로 남아 kill/비정상 종료의 조회 입력이 된다.
     try:
         raw_path = raw_output._reserve_raw_output(home, harness, output_dir)
-        _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
+        _raw_dir, record_path = raw_output._raw_storage(home, output_dir)
         record_id = raw_output.start_raw_record(
-            ledger_path,
+            record_path,
             surface=delegate_run_rules.DELEGATE_RAW_SURFACE,
             harness=harness,
             model=model,
             role=role,
             raw_path=raw_path,
             attempt=attempt,
-            # 실행 **전**에 아는 구조화 필드 — 다음 라운드의 후보 선택(ticket)과 delta 기준(rev),
-            # 그리고 이 실행이 어떤 세션을 이어받으려 했는지가 장부 한 행에 남는다. opencode는
-            # PM 홈 감사 raw와 cwd wire 사본 좌표를 같은 행에 두어 조인 없이 회수한다.
+            # 실행 **전**에 아는 구조화 필드 — 다음 라운드의 후보 선택(ticket)과 바뀐 부분 기준(rev),
+            # 그리고 이 실행이 어떤 세션을 이어받으려 했는지가 기록 한 행에 남는다. opencode는
+            # PM 홈 감사 raw와 cwd wire 사본 좌표를 같은 행에 두어 조인 없이 돌려받는다.
             extra={
                 key: value for key, value in (
                     (delegate_run_rules.RESUME_FIELD_TICKET, ticket),
                     (delegate_run_rules.RESUME_FIELD_BASE_REV, base_rev),
                     (delegate_run_rules.RESUME_FIELD_RESUME_FROM, resume_session_id),
                     (delegate_run_rules.FRESH_REASON_FIELD, fresh_reason),
-                    # cross 라운드 준비가 있었던 실행만 채운다 — delegate-rounds 장부 행과
+                    # cross 라운드 준비가 있었던 실행만 채운다 — delegate-rounds 기록 행과
                     # 값이 같아야 조인이 성립한다.
                     (delegate_run_rules.RESUME_FIELD_RUN_ID, run_id),
                     (delegate_run_rules.RESUME_FIELD_TICKET_COPY, round_copy_path),
@@ -316,7 +316,7 @@ def _execute_attempt(
             },
         )
     except BaseException:
-        # transport 준비 뒤 raw 예약/장부 시작이 실패해도 지시 사본을 남기지 않는다.
+        # transport 준비 뒤 raw 예약/기록 시작이 실패해도 지시 사본을 남기지 않는다.
         delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
         raise
     started = time.monotonic()
@@ -329,7 +329,7 @@ def _execute_attempt(
         )
         if prompt_path is not None and prompt_path.launch_binding_mode is None:
             prompt_path.launch_binding_mode = "fail-closed"
-        # raw 쓰기 자체가 실패해도 finally에서 장부는 반드시 마감한다. 그래야 0-byte raw가
+        # raw 쓰기 자체가 실패해도 finally에서 기록은 반드시 마감한다. 그래야 0-byte raw가
         # 남더라도 finished_at/rc가 kill 증거와 pre-spawn 거부를 기계적으로 구분한다.
         try:
             raw_output._write_reserved_raw(
@@ -358,7 +358,7 @@ def _execute_attempt(
         finally:
             try:
                 raw_output.finish_raw_record(
-                    ledger_path,
+                    record_path,
                     record_id,
                     rc=1,
                     elapsed_sec=rejection_elapsed,
@@ -380,16 +380,16 @@ def _execute_attempt(
                 read_tmp.path
                 if (
                     read_tmp is not None
-                    and delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+                    and delegate_run_rules._READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS[harness]
                 )
                 else cwd
             )
             if (
                 read_tmp is not None
-                and delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+                and delegate_run_rules._READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS[harness]
             ):
-                # codex read 역할만 -C를 격리 tmp로 재앵커한다 — 그 tmp는 절대 git 저장소가
-                # 아니므로 여기서 다시 rev-parse해 봐야 무의미하다. 재앵커 **이전**의 --cwd 자신을
+                # codex read 역할만 -C를 격리 tmp로 다시 잡는다 — 그 tmp는 절대 git 저장소가
+                # 아니므로 여기서 다시 rev-parse해 봐야 무의미하다. 다시 잡기 **이전**의 --cwd 자신을
                 # 스폰 전에 검증한다(`_preflight_codex_read_exec_root` 선언부 주석 참고).
                 try:
                     delegate_transport._preflight_codex_read_exec_root(cwd)
@@ -397,7 +397,7 @@ def _execute_attempt(
                     _record_pre_spawn_rejection(exc)
                     raise
             if prompt_path is not None:
-                # raw 예약/장부 시작처럼 준비 뒤 실행 전에 낀 작업까지 포함해 lexical
+                # raw 예약/기록 시작처럼 준비 뒤 실행 전에 낀 작업까지 포함해 lexical
                 # containment와 symlink 아닌 entry를 다시 확인한다.
                 try:
                     launch_argv, launch_cwd = delegate_transport._opencode_transport_launch_target(
@@ -420,9 +420,9 @@ def _execute_attempt(
             result = delegate_run._midrun_failure_result(harness, exc)
     finally:
         elapsed = time.monotonic() - started
-        # 이 finally는 runner 예외와 watchdog timeout/child-kill을 모두 회수한다. 다만 OS kill -9,
+        # 이 finally는 runner 예외와 watchdog timeout/child-kill을 모두 정리한다. 다만 OS kill -9,
         # host crash 등 pm_delegate 프로세스 자체가 강제 종료되면 사용자 공간 finally는 실행될 수
-        # 없으므로 그 경우의 잔여 0까지 보장하지 않는다.
+        # 없으므로 그 경우 남는 것이 없음까지 보장하지 않는다.
         cleanup_residue = delegate_temp._cleanup_attempt_transport(prompt_path, read_tmp)
 
     rc = result.get("returncode", 1)
@@ -432,7 +432,7 @@ def _execute_attempt(
         # 잔존 트리를 남긴 실행은 실패다 — 경고만 찍고 rc=0 으로 끝내면 200MB 단위 잔재가
         # 저장소에 쌓이는 동안 호출부는 정상으로 읽는다. 위 `finally` 안에서 raise 하면 주
         # 결과와 전파 중인 예외를 덮으므로, 여기서 결과 자체를 실패로 내린다(분류 신호는
-        # 붙이지 않는다 — 인프라 실패가 아니므로 폴백 대상이 아니다).
+        # 붙이지 않는다 — 인프라 실패가 아니므로 대체 하네스 대상이 아니다).
         rc = rc if rc != 0 else delegate_run_rules._READ_TMP_RESIDUE_RC
         stderr = f"{stderr}\n{cleanup_residue}" if stderr else cleanup_residue
         result = {**result, "returncode": rc, "stderr": stderr}
@@ -459,16 +459,16 @@ def _execute_attempt(
     observed = delegate_run._observe_harness_result(harness, stdout)
     try:
         raw_output.finish_raw_record(
-            ledger_path,
+            record_path,
             record_id,
             rc=rc,
             elapsed_sec=elapsed,
             silence_sec=result.get(delegate_run_rules.RUN_RESULT_SILENCE_SEC),
-            extra=delegate_run._finished_ledger_fields(observed, resume_session_id),
+            extra=delegate_run._finished_record_fields(observed, resume_session_id),
         )
     except raw_output.RawRecordAlreadyFinished as exc:
         # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 실행 결과는
-        # 실패로 바꾸지 않는다(회신은 raw 파일에 이미 박제됨).
+        # 실패로 바꾸지 않는다(회신은 raw 파일에 이미 기록됨).
         print(f"경고: 기록 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
               file=sys.stderr)
     return delegate_run.DelegateAttempt(
@@ -514,7 +514,7 @@ def native_advisory(harness: str | None, role: str) -> str | None:
     하네스뿐이다(역할 예외 없음). PM 하네스 env 마커(codex CODEX_THREAD_ID·claude CLAUDECODE·
     opencode OPENCODE)를 감지해 안내가 필요하면
     경고 문자열을 반환한다(호출부가 stderr 로 냄). 1차 판정은 어댑터 스킬 카드·이건 백스톱."""
-    # 직접 호출 seam 에도 공개 하네스 도메인을 적용한다. 이 진단은 하네스 이름별 표현을 소유한다.
+    # 직접 호출 교체 지점에도 공개 하네스 도메인을 적용한다. 이 진단은 하네스 이름별 표현을 소유한다.
     if harness not in conf_schema.HARNESS_CHOICES:
         return None
     pm_harness = _session_harness(os.environ)
@@ -550,7 +550,7 @@ def harness_cap_advisory(home, env: dict[str, str] | None = None,
     adapter settings 는 engine.manifest 밖 인스턴스 소유라 pm_update 로 정적 상향할 수 없다. 실행
     시 실제 env 를 읽어 조용한 무력화를 막는다. 기본 선언 최악과 이번 실행의 해소 예산 중 큰 쪽을
     요구치로 삼아 local.conf/CLI 상향도 놓치지 않는다. 알 수 없는/불량 값 역시 조용히 통과시키지
-    않고 설정 표면을 명시한다(advisory·실행은 차단하지 않음).
+    않고 설정 위치를 명시한다(advisory·실행은 차단하지 않음).
     """
     env = os.environ if env is None else env
     if not _session_harnesses(env):
@@ -579,9 +579,9 @@ def harness_cap_advisory(home, env: dict[str, str] | None = None,
     )
 
 
-def _delegation_harvest_failure_message(exc: Exception, residue: Path) -> str:
-    """cross 위임 종료의 회수 실패 처방 — terminal fix만 복구 루프를 열지 않는다."""
-    if isinstance(exc, delegate_rounds.TerminalFixHarvestError):
+def _delegation_collect_failure_message(exc: Exception, residue: Path) -> str:
+    """cross 위임 종료의 돌려받기 실패 안내 — terminal fix만 복구 루프를 열지 않는다."""
+    if isinstance(exc, delegate_rounds.TerminalFixCollectError):
         return (
             "오류: 최종 fix ticket collect 실패 — terminal stop. "
             "board 라운드와 slot run-dir 증거를 그대로 보존했습니다. "
@@ -596,11 +596,11 @@ def _delegation_harvest_failure_message(exc: Exception, residue: Path) -> str:
     )
 
 
-def _report_cluster_harvest(outcomes: Sequence[delegate_collect.ClusterHarvestOutcome]) -> None:
-    """묶음 회수 결과 요약 — 자리마다 한 줄. 거부가 하나라도 있으면 실패로 올린다.
+def _report_cluster_collect(outcomes: Sequence[delegate_collect.ClusterCollectOutcome]) -> None:
+    """묶음 돌려받기 결과 요약 — 자리마다 한 줄. 거부가 하나라도 있으면 실패로 올린다.
 
-    자리별 독립 회수라 성공한 자리는 그대로 두되, 남은 거부를 성공 rc 로 덮지 않는다
-    (단일 경로의 회수 실패 처리와 같은 축 — 호출부의 복구 안내가 그대로 붙는다).
+    자리별 독립 돌려받기라 성공한 자리는 그대로 두되, 남은 거부를 성공 rc 로 덮지 않는다
+    (단일 경로의 돌려받기 실패 처리와 같은 방식 — 호출부의 복구 안내가 그대로 붙는다).
     """
     refused: list[str] = []
     for outcome in outcomes:
@@ -622,7 +622,7 @@ def _report_cluster_harvest(outcomes: Sequence[delegate_collect.ClusterHarvestOu
     if refused:
         message = f"묶음 돌려받기 거부 {len(refused)}건: {', '.join(refused)}"
         if any(outcome.terminal for outcome in outcomes):
-            raise delegate_rounds.TerminalFixHarvestError(message)
+            raise delegate_rounds.TerminalFixCollectError(message)
         raise delegate_errors.DelegateError(message)
 
 
@@ -632,7 +632,7 @@ def _round_write_scope(
     """이 실행에 열어 줄 쓰기 자리 — 라운드 준비가 있었던 리뷰 실행만 실값이다.
 
     값은 준비 계획이 실은 **묶음 run-dir**(`ClusterCopyPlan.run_dir`) 그대로다. 좌표가 없는
-    계획으로 여기 오면 쓰기 자리를 조용히 좁히지 않고 멈춘다 — 권한 표면을 말없이 강등하면
+    계획으로 여기 오면 쓰기 자리를 조용히 좁히지 않고 멈춘다 — 권한 범위를 말없이 낮추면
     "실행은 됐는데 산출을 못 쓴" 라운드가 위임 실패로만 보인다.
     """
     if ticket_copy is None or role != review_form.INTERNAL_REVIEW_ROLE:
@@ -668,17 +668,17 @@ def _execute_and_collect(
     ticket_copy: delegate_rounds.TicketCopyPlan | None = None,
     cluster_plan: delegate_rounds.ClusterCopyPlan | None = None,
 ) -> int:
-    """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다.
+    """primary(+선택적 대체 하네스) 실행과 결과 돌려받기 — main 의 종료 rc 를 그대로 낸다.
 
     main 에서 분리한 이유는 위임 범위 판정이 **모든 종료 경로에서 정확히 1회** 돌아야 하기
     때문이다 — 호출부의 try/finally 가 그 경계다.
 
-    `fallback_timeout` = 폴백 하네스의 벽시계 백스톱(미지정이면 primary 값). 값이 하네스별이라
-    다른 축으로 폴백하면 예산도 그 축의 것이어야 한다(클라우드→로컬 GPU 폴백에서 로컬 작업이
+    `fallback_timeout` = 대체 하네스의 벽시계 백스톱(미지정이면 primary 값). 값이 하네스별이라
+    다른 하네스로 넘어가면 예산도 그 하네스의 것이어야 한다(클라우드→로컬 GPU 대체 하네스에서 로컬 작업이
     클라우드 예산에 잘리는 걸 막는다).
 
-    `resume` 가 있으면 **delta payload 를 그 세션으로** 먼저 보낸다. 성공 판정은 회신 세션 id 가
-    요청한 id 와 같은가 하나뿐이다(rc 로 판정하지 않는다). 확정된 "세션 없음"은 delta 미소비라
+    `resume` 가 있으면 **바뀐 부분 payload 를 그 세션으로** 먼저 보낸다. 성공 판정은 회신 세션 id 가
+    요청한 id 와 같은가 하나뿐이다(rc 로 판정하지 않는다). 확정된 "세션 없음"은 바뀐 부분 미소비라
     write/read 모두 fresh + full payload 재실행이 안전하다. 반면 rc=0 명시적 id 불일치는 turn 이
     이미 실행됐을 수 있어 `RESUME_MUTATING_ROLES`(위임 4역할 전부. write 역할은 작업 트리, read
     역할은 라운드 파일을 쓴다)는 재실행하지 않는다. 그 밖의 역할만 fresh 로 다시 돈다. 미분류
@@ -692,7 +692,7 @@ def _execute_and_collect(
             role=args.role,
             cwd=cwd,
             prompt=delegate_prompt._with_ticket_copy_preamble(
-                prompt if resume is None else resume.delta_prompt, ticket_copy,
+                prompt if resume is None else resume.change_prompt, ticket_copy,
                 cluster_plan,
             ),
             timeout=timeout,
@@ -711,10 +711,10 @@ def _execute_and_collect(
                 str(ticket_copy.path) if ticket_copy is not None else None
             ),
         )
-        # 재실행은 **재사용 축의 확정된 실패에만** 쓴다(`resume_rerun_reason`) — 깨끗한 완료의
+        # 재실행은 **세션 재사용의 확정된 실패에만** 쓴다(`resume_rerun_reason`) — 깨끗한 완료의
         # 명시적 세션 id 불일치, 또는 확정된 "세션 없음" 오류. 미분류 `rc≠0` 은 **호출 후** 죽은
         # 실행일 수 있어(프롬프트는 이미 나갔다) full payload 재실행이 곧 중복 과금·중복 외부
-        # 호출이다 — 그런 실패는 기존 fail-loud/폴백 축이 그대로 소유한다. 인프라 실패(스폰·
+        # 호출이다 — 그런 실패는 기존 fail-loud/대체 하네스 경로가 그대로 소유한다. 인프라 실패(스폰·
         # 타임아웃·한도)도 세션 id 를 못 남겨 형식만 보면 "불일치"라, 분류 결과를 함께 본다.
         rerun_reason = (
             None if resume is None
@@ -725,7 +725,7 @@ def _execute_and_collect(
             rerun_reason is not None
             and delegate_run.classify_infrastructure_failure(primary.result) is None
         ):
-            # 확정된 세션 부재(rc≠0 양성 오류)는 delta 가 소비되지 않아 모든 역할이 fresh 로
+            # 확정된 세션 부재(rc≠0 양성 오류)는 바뀐 부분이 소비되지 않아 모든 역할이 fresh 로
             # 안전하다. rc=0 세션-id 불일치는 turn 이 이미 돌았을 수 있으므로 쓰기 자리가 있는
             # 역할(`RESUME_MUTATING_ROLES`: write 역할은 작업 트리, read 역할은 라운드 파일)은
             # 재실행을 막는다.
@@ -775,7 +775,7 @@ def _execute_and_collect(
     except (OSError, delegate_errors.DelegateError) as exc:
         return fail_loud(f"오류: 위임 실행 준비/raw 출력 기록 실패: {exc}")
 
-    # 실패 분류 → 선택적 loud 폴백. rc=0 reply(반려/must-fix 포함)는 분류 함수가 절대 폴백시키지
+    # 실패 분류 → 선택적 loud 대체 하네스. rc=0 reply(반려/must-fix 포함)는 분류 함수가 절대 대체 하네스로 넘기지
     # 않는다. 알려지지 않은 rc≠0도 기존 fail-loud로 남는다(오분류 보수 방향).
     result = primary.result
     raw_path = primary.raw_path
@@ -785,7 +785,7 @@ def _execute_and_collect(
     failure_class = delegate_run.classify_infrastructure_failure(result)
 
     if failure_class is not None and fallback is None and fallback_skip is not None:
-        # 설정은 있으나 이번 실행에선 폴백을 끈다 — 조용히 지나가지 않는다(loud skip).
+        # 설정은 있으나 이번 실행에선 대체 하네스를 끈다 — 조용히 지나가지 않는다(loud skip).
         print(
             f"대체 동작 안 함: 인프라 실패({failure_class})이지만 {fallback_skip}. "
             "기존 fail-loud 로 진행한다.",
@@ -863,7 +863,7 @@ def _execute_and_collect(
                 "오류: 대체 동작 위임 reply 미추출(빈 출력·파싱 실패) — 두 번째 대체 동작 없음. "
                 f"primary raw: {raw_path} · fallback raw: {fallback_attempt.raw_path}")
 
-        # stdout 결과에 provenance를 넣어 PM 회수 reply 자체가 폴백 사실을 보존한다.
+        # stdout 결과에 provenance를 넣어 PM 이 돌려받는 reply 자체가 대체 하네스 사실을 보존한다.
         print(
             "[pm-delegate] 실행 provenance: "
             f"fallback={fallback_harness}(model={fallback_model}) · "

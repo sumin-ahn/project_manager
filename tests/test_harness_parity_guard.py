@@ -1,16 +1,16 @@
-"""하네스·위임 파리티 정적 가드 — 이름이 권한·경로·env·동의 축을 가르지 않는다 (T-0887).
+"""하네스·위임 파리티 정적 가드 — 이름이 권한·경로·env·동의 기준을 가르지 않는다 (T-0887).
 
 claude·codex·opencode 는 사용자가 교차로 쓰는 같은 등급의 하네스다. 셋 다로 PM 을 돌리고 셋 다에
 developer·architect·code-reviewer 를 위임한다. 그런데 엔진은 한때 추가 리뷰어 역할에만 저장소
-거울·임시 홈·별도 동의 축을 붙였다 — 같은 행위(저장소 내용을 모델 API 로 보내는 것)에 채널마다
-다른 규칙을 준 것이고 근거가 없다(PM 이 파일을 읽는 순간 같은 호출이 게이트 없이 일어난다).
+거울·임시 홈·별도 동의 기준을 붙였다 — 같은 행위(저장소 내용을 모델 API 로 보내는 것)에 채널마다
+다른 규칙을 준 것이고 근거가 없다(PM 이 파일을 읽는 순간 같은 호출이 아무 검사 없이 일어난다).
 
 **불변식 둘**:
 
-1. 하네스 이름(claude·codex·opencode)이 접근 가능한 경로·env·동의 축·게이트 통과 여부를 바꾸지
-   않는다. 정당한 비대칭은 CLI 형식뿐이고, 그 자리는 아래 원장에 사유와 함께 등재한다.
+1. 하네스 이름(claude·codex·opencode)이 접근 가능한 경로·env·동의 기준·검사 통과 여부를 바꾸지
+   않는다. 정당한 비대칭은 CLI 형식뿐이고, 그 자리는 아래 등록 목록에 사유와 함께 등재한다.
 2. 위임자는 피위임자에게 자신과 같은 권한을 준다 — 위임 방향·하네스 조합과 무관하다. 위임 경로
-   에서 피위임자 권한을 좁히는 자리는 역할축(generate≠evaluate) 하나뿐이고 그것도 전수 등재한다.
+   에서 피위임자 권한을 좁히는 자리는 역할 기준(generate≠evaluate) 하나뿐이고 그것도 전수 등재한다.
 
 판정 방식은 셋이다.
 
@@ -18,12 +18,12 @@ developer·architect·code-reviewer 를 위임한다. 그런데 엔진은 한때
   이름 그 자체인 문자열 리터럴이 있는 자리. 부분 문자열(`.claude/skills/...` 같은 경로)은 어댑터
   레이아웃 상수라 세지 않는다.
 - **선언표** — 하네스 이름을 **키로 갖는 매핑 리터럴**. 조건식만 보면 `{"opencode": ("HOME",)}`
-  같은 표 형태의 차등이 통째로 시야 밖에 남는다(그 형상은 엔진이 이미 쓴다).
-- **위임 권한 자리** — 역할축 집합(`WRITE_ROLES`·`READ_ROLES`·`RESUME_MUTATING_ROLES`) 참조와
-  sandbox 강등 리터럴(`read-only`). 하네스 이름이 없어도 피위임자 권한을 좁히는 자리다.
+  같은 표 형태의 차등이 통째로 검사 범위 밖에 남는다(그 구성은 엔진이 이미 쓴다).
+- **위임 권한 자리** — 역할 기준 집합(`WRITE_ROLES`·`READ_ROLES`·`RESUME_MUTATING_ROLES`) 참조와
+  sandbox 를 낮추는 리터럴(`read-only`). 하네스 이름이 없어도 피위임자 권한을 좁히는 자리다.
 
-원장 밖 자리가 하나라도 나오면 실패이고, 원장 항목이 코드에서 사라져도 실패다(죽은 예외 금지).
-총량은 `LEDGER_CEILING` 이하여야 한다 — **새 등재는 다른 항목을 지워야만 가능하다**(축소 전용).
+등록 목록 밖 자리가 하나라도 나오면 실패이고, 등록 항목이 코드에서 사라져도 실패다(죽은 예외 금지).
+총량은 `REGISTRY_CEILING` 이하여야 한다 — **새 등재는 다른 항목을 지워야만 가능하다**(축소 전용).
 그리고 사유 문구가 아니라 **분기 몸통의 효과**로 권한 차등을 판정한다: 하네스 이름 조건이 감싸는
 서브트리가 env·HOME·PATH·CWD·PERMISSION·SANDBOX·MODE 를 건드리면 등재 여부와 무관하게 실패다.
 """
@@ -44,12 +44,12 @@ TOOLS = REPO / ".project_manager" / "tools"
 # 하네스 이름 — 리터럴이 이 값 **자체**일 때만 하네스 정체 분기로 센다.
 HARNESS_NAMES = ("claude", "codex", "opencode")
 
-# 위임 권한 자리 — 역할축 집합 이름과 sandbox 강등 리터럴.
-ROLE_AXIS_NAMES = ("WRITE_ROLES", "READ_ROLES", "RESUME_MUTATING_ROLES")
+# 위임 권한 자리 — 역할 기준 집합 이름과 sandbox 를 낮추는 리터럴.
+ROLE_SET_NAMES = ("WRITE_ROLES", "READ_ROLES", "RESUME_MUTATING_ROLES")
 SANDBOX_DOWNGRADE_LITERAL = "read-only"
 
-# 원장 키 = (엔진 파일, 그 자리를 담은 함수 또는 모듈 선언 이름, 하네스/역할축 이름).
-LedgerKey = tuple[str, str, str]
+# 등록 키 = (엔진 파일, 그 자리를 담은 함수 또는 모듈 선언 이름, 하네스/역할 기준 이름).
+RegistryKey = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ class Site:
 
 
 # ── ① 하네스 이름이 조건식에 나오는 자리 (전부 CLI 형식) ──────────────────
-CONDITION_BRANCHES: dict[LedgerKey, Site] = {
+CONDITION_BRANCHES: dict[RegistryKey, Site] = {
     ('reviewer_target.py', '_structured_reviewer_argv', 'codex'): Site(
         "argv 조립 — codex 는 `exec --json` 형식이라 contract 의 codex 빌더로 간다"),
     ('reviewer_target.py', '_structured_reviewer_argv', 'claude'): Site(
@@ -109,7 +109,7 @@ CONDITION_BRANCHES: dict[LedgerKey, Site] = {
 
 # ── ② 하네스 이름을 키로 갖는 선언표 ──────────────────────────────────────
 # 정당한 비대칭(CLI 형식·어댑터 레이아웃)은 분기가 아니라 **표**로 적는다는 규약의 실물이다.
-# 표 하나가 세 하네스 키를 가지므로 원장 항목도 셋이 된다(값 = (사유, 하네스들)).
+# 표 하나가 세 하네스 키를 가지므로 등록 항목도 셋이 된다(값 = (사유, 하네스들)).
 HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
     ('reviewer_budget.py', '_REVIEWER_PROGRESS_CONTRACTS'): (
         "CLI 형식 — 하네스마다 실행 파일과 진행 신호 옵션 계약이 다르다", HARNESS_NAMES),
@@ -121,7 +121,7 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
         "CLI 형식 — CLI 가 허용하는 임시 경로 부모 표기 실측값", HARNESS_NAMES),
     ('delegate_run_rules.py', '_READ_TMP_PYTEST_REL_BY_HARNESS'): (
         "CLI 형식 — 회귀 실행 위치 안내에 쓰는 상대 경로 표기", HARNESS_NAMES),
-    ('delegate_run_rules.py', '_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS'): (
+    ('delegate_run_rules.py', '_READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS'): (
         "CLI 형식 — 실행 root 재앵커 플래그(`-C`) 보유 여부 실측값", HARNESS_NAMES),
     ('delegate_run_rules.py', '_READ_TMP_TMP_TEMP_USE_WRITABLE_PATH_BY_HARNESS'): (
         "CLI 형식 — TMPDIR/TMP/TEMP 표기를 CLI 가 어떻게 읽는지의 실측값", HARNESS_NAMES),
@@ -166,42 +166,42 @@ HARNESS_TABLES: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
 }
 
 # ── ③ 위임 경로에서 피위임자 권한을 좁히는 자리 ───────────────────────────
-# 하네스와 무관하게 generate≠evaluate 를 강제하는 역할축 하나뿐이다. 여기 없는 새 좁힘이 들어오면
+# 하네스와 무관하게 generate≠evaluate 를 강제하는 역할 기준 하나뿐이다. 여기 없는 새 좁힘이 들어오면
 # (하네스 이름이 없어도) 미등재로 걸린다.
-_ROLE_AXIS_REASON = "역할축 — 하네스와 무관하게 generate≠evaluate 를 강제한다"
-DELEGATION_AUTHORITY_SITES: dict[LedgerKey, Site] = {
-    ('delegate_scope_git.py', 'allowed_paths', 'WRITE_ROLES'): Site(_ROLE_AXIS_REASON),
-    ('delegate_run_rules.py', 'RESUME_MUTATING_ROLES', 'WRITE_ROLES'): Site(_ROLE_AXIS_REASON),
-    ('delegate_transport.py', '_apply_read_tmp_argv', 'READ_ROLES'): Site(_ROLE_AXIS_REASON),
-    ("delegate_scope_audit.py", "_changed_overlap_paths", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
+_ROLE_SET_REASON = "역할 기준 — 하네스와 무관하게 generate≠evaluate 를 강제한다"
+DELEGATION_AUTHORITY_SITES: dict[RegistryKey, Site] = {
+    ('delegate_scope_git.py', 'allowed_paths', 'WRITE_ROLES'): Site(_ROLE_SET_REASON),
+    ('delegate_run_rules.py', 'RESUME_MUTATING_ROLES', 'WRITE_ROLES'): Site(_ROLE_SET_REASON),
+    ('delegate_transport.py', '_apply_read_tmp_argv', 'READ_ROLES'): Site(_ROLE_SET_REASON),
+    ("delegate_scope_audit.py", "_changed_overlap_paths", "WRITE_ROLES"): Site(_ROLE_SET_REASON),
     ("delegate_execute.py", "_execute_and_collect", "RESUME_MUTATING_ROLES"): Site(
-        "역할축 — 재실행이 라운드를 하나 더 만드는 역할을 mutating 으로 다룬다"),
-    ('delegate_transport.py', '_prepare_attempt_transport', 'READ_ROLES'): Site(_ROLE_AXIS_REASON),
-    ("delegate_run.py", "main", "READ_ROLES"): Site(_ROLE_AXIS_REASON),
+        "역할 기준 — 재실행이 라운드를 하나 더 만드는 역할을 mutating 으로 다룬다"),
+    ('delegate_transport.py', '_prepare_attempt_transport', 'READ_ROLES'): Site(_ROLE_SET_REASON),
+    ("delegate_run.py", "main", "READ_ROLES"): Site(_ROLE_SET_REASON),
     ("delegate_run.py", "main", "WRITE_ROLES"): Site(
-        _ROLE_AXIS_REASON, expected_count=2),
-    ("delegate_execute.py", "check_write_target_reanchor", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("delegate_scope_audit.py", "report_scope_audit", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("contract.py", "build_claude_argv", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("contract.py", "claude_tools", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
-    ("contract.py", "perm_kind", "WRITE_ROLES"): Site(_ROLE_AXIS_REASON),
+        _ROLE_SET_REASON, expected_count=2),
+    ("delegate_execute.py", "check_write_target_retarget", "WRITE_ROLES"): Site(_ROLE_SET_REASON),
+    ("delegate_scope_audit.py", "report_scope_audit", "WRITE_ROLES"): Site(_ROLE_SET_REASON),
+    ("contract.py", "build_claude_argv", "WRITE_ROLES"): Site(_ROLE_SET_REASON),
+    ("contract.py", "claude_tools", "WRITE_ROLES"): Site(_ROLE_SET_REASON),
+    ("contract.py", "perm_kind", "WRITE_ROLES"): Site(_ROLE_SET_REASON),
     ("delegate_transport.py", "_apply_read_tmp_argv", SANDBOX_DOWNGRADE_LITERAL): Site(
-        "역할축 — read 역할 argv 가 들고 온 sandbox 계약을 확인하고 임시 자리만 연다"),
+        "역할 기준 — read 역할 argv 가 들고 온 sandbox 계약을 확인하고 임시 자리만 연다"),
     ("contract.py", "CODEX_SANDBOX", SANDBOX_DOWNGRADE_LITERAL): Site(
-        "역할축 — read 축 codex sandbox 값 선언(하네스가 아니라 권한축이 키다)"),
+        "역할 기준 — read 기준 codex sandbox 값 선언(하네스가 아니라 권한 종류가 키다)"),
 }
 
-# 원장 총량 상한 — **축소 전용**. 새 자리를 등재하려면 다른 자리를 코드에서 지워야 한다.
+# 등록 총량 상한 — **축소 전용**. 새 자리를 등재하려면 다른 자리를 코드에서 지워야 한다.
 # 현재 총량과 같은 값이라 항목 추가만으로는 통과할 수 없다.
-LEDGER_CEILING = 109
+REGISTRY_CEILING = 109
 
-# 하네스 분기 몸통에서 금지하는 효과 — 이 축을 건드리면 등재 자체가 불가능하다.
+# 하네스 분기 몸통에서 금지하는 효과 — 이 효과를 내면 등재 자체가 불가능하다.
 PERMISSION_EFFECT_KEYS = ("HOME", "PATH", "CWD", "PERMISSION", "SANDBOX", "MODE")
 
 
-def ledger() -> dict[LedgerKey, Site]:
-    """세 원장을 하나로 — 측정 Counter 와 같은 키 공간이다."""
-    merged: dict[LedgerKey, Site] = dict(CONDITION_BRANCHES)
+def registry() -> dict[RegistryKey, Site]:
+    """세 등록 목록을 하나로 — 측정 Counter 와 같은 키 공간이다."""
+    merged: dict[RegistryKey, Site] = dict(CONDITION_BRANCHES)
     for (source, holder), (reason, harnesses) in HARNESS_TABLES.items():
         for harness in harnesses:
             merged[(source, holder, harness)] = Site(reason)
@@ -268,13 +268,13 @@ def _harness_keyed_mappings(tree: ast.Module) -> list[tuple[ast.AST, str]]:
 
 
 def _delegation_authority_nodes(tree: ast.Module) -> list[tuple[ast.AST, str]]:
-    """(노드, 역할축 이름) — 피위임자 권한을 좁히는 자리."""
+    """(노드, 역할 기준 이름) — 피위임자 권한을 좁히는 자리."""
     found: list[tuple[ast.AST, str]] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id in ROLE_AXIS_NAMES:
+        if isinstance(node, ast.Name) and node.id in ROLE_SET_NAMES:
             if isinstance(node.ctx, ast.Load):
                 found.append((node, node.id))
-        elif isinstance(node, ast.Attribute) and node.attr in ROLE_AXIS_NAMES:
+        elif isinstance(node, ast.Attribute) and node.attr in ROLE_SET_NAMES:
             found.append((node, node.attr))
         elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
                 and node.value == SANDBOX_DOWNGRADE_LITERAL):
@@ -293,9 +293,9 @@ def _harness_names_in(condition: ast.AST) -> set[str]:
     return names
 
 
-def _measured_sites(sources: list[Path]) -> Counter[LedgerKey]:
+def _measured_sites(sources: list[Path]) -> Counter[RegistryKey]:
     """소스 전수에서 하네스 분기·선언표·위임 권한 자리를 같은 키 공간으로 센다."""
-    measured: Counter[LedgerKey] = Counter()
+    measured: Counter[RegistryKey] = Counter()
     for path in sources:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         owner = _scope_names(tree)
@@ -372,51 +372,51 @@ def _engine_sources() -> list[Path]:
 
 
 def test_engine_sources_are_actually_scanned():
-    """스캔 대상이 비면 판정 불능이다 — 초록이 사각의 증거가 되지 않게 먼저 센다."""
+    """스캔 대상이 비면 판정 불능이다 — 초록이 검사 공백의 증거가 되지 않게 먼저 센다."""
     sources = _engine_sources()
     assert len(sources) >= 20, [path.name for path in sources]
     assert TOOLS / "board.py" in sources, "공유 슬롯 가드 board.py가 스캔 대상에서 누락됐다"
     assert _measured_sites(sources), "측정 자리 0 — 스캐너가 무력화됐다"
 
 
-def test_no_site_outside_the_ledger():
-    """원장 밖에서 하네스 이름·역할축으로 갈리는 자리가 없다."""
+def test_no_site_outside_the_registry():
+    """등록 목록 밖에서 하네스 이름·역할 기준으로 갈리는 자리가 없다."""
     measured = _measured_sites(_engine_sources())
-    registered = ledger()
+    registered = registry()
     unregistered = sorted(key for key in measured if key not in registered)
     assert not unregistered, (
-        "원장 미등재 자리 — 권한·경로·env·동의 축을 가르는 자리라면 지우고, CLI 형식·역할축이면 "
-        f"사유와 함께 원장에 등재하라(총량 상한 {LEDGER_CEILING}): {unregistered}"
+        "등록 목록 미등재 자리 — 권한·경로·env·동의 기준을 가르는 자리라면 지우고, CLI 형식·역할 기준이면 "
+        f"사유와 함께 등록 목록에 등재하라(총량 상한 {REGISTRY_CEILING}): {unregistered}"
     )
 
 
-def test_no_dead_ledger_entry():
-    """코드에서 사라진 원장 항목을 남기지 않는다 (원장은 축소 방향으로만 움직인다)."""
+def test_no_dead_registry_entry():
+    """코드에서 사라진 등록 항목을 남기지 않는다 (등록 목록은 축소 방향으로만 움직인다)."""
     measured = _measured_sites(_engine_sources())
-    registered = ledger()
+    registered = registry()
     stale = sorted(
         key for key, entry in registered.items()
         if measured.get(key, 0) != entry.expected_count
     )
     assert not stale, (
-        "사라졌거나 개수가 바뀐 자리 — 원장에서 제거/재검토하라: "
+        "사라졌거나 개수가 바뀐 자리 — 등록 목록에서 제거/재검토하라: "
         f"{[(key, registered[key].expected_count, measured.get(key, 0)) for key in stale]}"
     )
 
 
-def test_ledger_total_never_grows():
-    """원장 총량이 상한을 넘지 않는다 — 새 등재는 다른 자리를 지워야만 가능하다."""
-    registered = ledger()
+def test_registry_total_never_grows():
+    """등록 총량이 상한을 넘지 않는다 — 새 등재는 다른 자리를 지워야만 가능하다."""
+    registered = registry()
     total = sum(entry.expected_count for entry in registered.values())
-    assert total <= LEDGER_CEILING, (
-        f"원장 총량 {total} > 상한 {LEDGER_CEILING} — 자리를 추가하려면 다른 자리를 코드에서 "
+    assert total <= REGISTRY_CEILING, (
+        f"등록 총량 {total} > 상한 {REGISTRY_CEILING} — 자리를 추가하려면 다른 자리를 코드에서 "
         "지우고 상한을 그만큼 내려라(축소 전용)."
     )
 
 
-def test_every_ledger_entry_carries_a_reason():
+def test_every_registry_entry_carries_a_reason():
     """등재 사유는 사람이 읽는 설명으로 남는다 — 판정은 코드 효과가 한다."""
-    empty = sorted(key for key, entry in ledger().items() if not entry.reason.strip())
+    empty = sorted(key for key, entry in registry().items() if not entry.reason.strip())
     assert not empty, empty
 
 
@@ -430,7 +430,7 @@ def test_no_permission_effect_inside_a_harness_branch():
 
 
 def test_permission_effect_inside_a_harness_branch_is_never_ledgerable(tmp_path):
-    """감도 — 권한 효과가 있는 분기는 원장에 올려도 통과하지 못한다."""
+    """감도 — 권한 효과가 있는 분기는 등록 목록에 올려도 통과하지 못한다."""
     injected = tmp_path / "pm_relay.py"
     injected.write_text(
         "def _scoped_home(harness, env):\n"
@@ -443,14 +443,14 @@ def test_permission_effect_inside_a_harness_branch_is_never_ledgerable(tmp_path)
     key = ("pm_relay.py", "_scoped_home", "opencode")
     measured = _measured_sites([injected])
     assert measured[key] == 1
-    # 원장에 CLI 형식 사유로 올려도(우회 시도) 효과 판정이 따로 잡는다.
+    # 등록 목록에 CLI 형식 사유로 올려도(우회 시도) 효과 판정이 따로 잡는다.
     offenders = _permission_effect_offenders([injected])
     assert offenders and all("HOME" in offender or "env" in offender
                              for offender in offenders), offenders
 
 
 def test_harness_keyed_mapping_is_measured(tmp_path):
-    """감도 — 표 형태의 하네스별 env 차등도 조건식과 같은 축으로 잡힌다."""
+    """감도 — 표 형태의 하네스별 env 차등도 조건식과 같은 기준으로 잡힌다."""
     injected = tmp_path / "pm_delegate.py"
     injected.write_text(
         "_HARNESS_ENV_STRIP: dict[str, tuple[str, ...]] = {'opencode': ('HOME', 'PATH')}\n"
@@ -467,7 +467,7 @@ def test_harness_keyed_mapping_is_measured(tmp_path):
     measured = _measured_sites([injected])
 
     assert measured[key] == 1
-    assert key not in ledger()
+    assert key not in registry()
 
 
 def test_delegation_authority_narrowing_is_measured(tmp_path):
@@ -482,7 +482,7 @@ def test_delegation_authority_narrowing_is_measured(tmp_path):
     )
 
     measured = _measured_sites([injected])
-    registered = ledger()
+    registered = registry()
 
     assert measured[("pm_delegate.py", "_narrow", "WRITE_ROLES")] == 1
     assert measured[("pm_delegate.py", "_narrow", "read-only")] == 1
@@ -491,7 +491,7 @@ def test_delegation_authority_narrowing_is_measured(tmp_path):
 
 
 def test_no_permission_or_env_branch_on_harness_name(tmp_path):
-    """감도 — 하네스 이름으로 env/권한을 가르는 분기를 새로 넣으면 원장 밖 자리로 잡힌다."""
+    """감도 — 하네스 이름으로 env/권한을 가르는 분기를 새로 넣으면 등록 목록 밖 자리로 잡힌다."""
     injected = tmp_path / "pm_delegate.py"
     injected.write_text(
         "def build_env(harness):\n"
@@ -505,18 +505,18 @@ def test_no_permission_or_env_branch_on_harness_name(tmp_path):
     measured = _measured_sites([injected])
 
     assert measured == Counter({('pm_delegate.py', 'build_env', 'codex'): 1})
-    assert ("pm_delegate.py", "build_env", "codex") not in ledger()
+    assert ("pm_delegate.py", "build_env", "codex") not in registry()
 
 
-def test_a_removed_site_makes_its_ledger_entry_dead(tmp_path):
-    """감도 — 등재된 자리를 코드에서 지우고 원장을 그대로 두면 죽은 예외로 잡힌다."""
+def test_a_removed_site_makes_its_registry_entry_dead(tmp_path):
+    """감도 — 등재된 자리를 코드에서 지우고 등록 목록을 그대로 두면 죽은 예외로 잡힌다."""
     emptied = tmp_path / "add_harness.py"
     emptied.write_text("def add_harness(name):\n    return name\n", encoding="utf-8")
 
     measured = _measured_sites([emptied])
 
     assert measured.get(("add_harness.py", "add_harness", "codex"), 0) == 0
-    assert ("add_harness.py", "add_harness", "codex") in ledger()
+    assert ("add_harness.py", "add_harness", "codex") in registry()
 
 
 def test_adapter_path_literals_are_not_harness_identity_branches(tmp_path):
