@@ -42,7 +42,7 @@ _UNRESOLVABLE_WARNING_NAMES = {
         "RepoFilesFallbackWarning"),
     "ad-hoc-copy": ("file_lock_under_test", "LocklessFallbackWarning"),
 }
-_WARNING_TEXT = "git 보장이 사라져 강등"
+_WARNING_TEXT = "git 보장이 사라져 보호 수준을 낮춤"
 
 # 자식 pytest 실행 상한 — 프로브 스위트는 테스트 두 개라 정상이면 1초 안팎에 끝난다.
 NESTED_RUN_TIMEOUT_SECONDS = 300
@@ -60,7 +60,7 @@ def _raw_unserializer():
 
 @contextlib.contextmanager
 def _controller_module_shape(module_name: str):
-    """그 이름이 `sys.modules` 에 없는 상태 — 경고를 되살리는 컨트롤러의 형상을 재현한다.
+    """그 이름이 `sys.modules` 에 없는 상태 — 경고를 되살리는 컨트롤러의 구성을 재현한다.
 
     워커는 같은 프로세스에서 엔진/사본 모듈을 이미 열어 그 이름을 캐시에 갖고 있을 수 있다(엔진
     부트스트랩이 합성 이름으로 캐시한다 · `-n 8` 실측에서 gw5 만 초록이 아니었다). 컨트롤러에는 그
@@ -93,7 +93,7 @@ def _warning_data(module_name: str, class_name: str) -> dict:
 
 @pytest.mark.parametrize("shape", sorted(_UNRESOLVABLE_WARNING_NAMES))
 def test_raw_xdist_dies_on_unresolvable_warning_name(shape):
-    """감싸지 않은 xdist 되살리기는 두 형태 모두에서 ModuleNotFoundError — 감싸기의 대상 표면."""
+    """감싸지 않은 xdist 되살리기는 두 형태 모두에서 ModuleNotFoundError — 감싸기의 대상 범위."""
     module_name, class_name = _UNRESOLVABLE_WARNING_NAMES[shape]
 
     with _controller_module_shape(module_name), pytest.raises(ModuleNotFoundError):
@@ -119,7 +119,7 @@ def test_unresolvable_warning_degrades_with_identity_preserved(shape):
 
 
 def test_resolvable_warning_is_not_degraded():
-    """이름으로 되살아나는 경고는 감싸개를 지나도 클래스 정체 그대로다(무차별 강등 아님)."""
+    """이름으로 되살아나는 경고는 감싸개를 지나도 클래스 정체 그대로다(무차별 수준 낮춤 아님)."""
     data = _warning_data("builtins", "RuntimeWarning")
 
     restored = test_config.tolerant_warning_unserializer(_raw_unserializer())(data)
@@ -219,7 +219,7 @@ def _run_parallel_probe(root: Path) -> subprocess.CompletedProcess:
 def test_parallel_run_survives_worker_warnings(tmp_path):
     """conftest 가드가 있으면 `-n 2` 실행이 두 경고를 다 받고도 rc0 으로 끝난다.
 
-    강등이 정보를 지우지 않는지도 같은 실행에서 본다 — 요약에 원 모듈명·클래스명·메시지가 남는다.
+    수준 낮춤이 정보를 지우지 않는지도 같은 실행에서 본다 — 요약에 원 모듈명·클래스명·메시지가 남는다.
     """
     root = tmp_path / "with-guards"
     _write_probe_suite(root, with_guards=True)
@@ -235,7 +235,7 @@ def test_parallel_run_survives_worker_warnings(tmp_path):
 
 
 def test_parallel_run_without_guards_dies_on_the_same_warnings(tmp_path):
-    """대조군 — 가드 없는 같은 스위트는 컨트롤러 INTERNALERROR 로 죽는다(가드 표면 확인)."""
+    """대조군 — 가드 없는 같은 스위트는 컨트롤러 INTERNALERROR 로 죽는다(가드 범위 확인)."""
     root = tmp_path / "without-guards"
     _write_probe_suite(root, with_guards=False)
 

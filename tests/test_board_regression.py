@@ -1,14 +1,14 @@
-"""회귀 FULL 게이트 수집 개수 — 직전 기록 대비 증감 표시(T-project_manager-004).
+"""회귀 FULL 통과 조건 수집 개수 — 직전 기록 대비 증감 표시(T-project_manager-004).
 
 선언 하한(`regression.min_collected`)은 폐지했다. 채택자 선언값이 실측의 절반에 머물러 스위트
-절반이 사라져도 통과하던 느슨한 안심을 버리고, FULL 게이트가 직전 회귀 기록의 수집수와 이번
+절반이 사라져도 통과하던 느슨한 안심을 버리고, FULL 통과 조건이 직전 회귀 기록의 수집수와 이번
 수집수의 증감을 회귀 줄에 함께 낸다 — 변화율 1% 이상이면 눈에 띄게 적되 **아무것도 막지
 않는다**(판단은 사람이 한다). 수집 0(rc=5)과 선언 platform 의 수집수 검증 불가는 그대로 red 다.
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`LOCAL_DIR`·
 `LEASES_FILE`)은 import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 monkeypatch 재지정해
-실 루트의 local.conf·회귀 플래그를 읽거나 쓰지 않는다(test_board_multipm.py 동형 패턴).
-pytest 자식은 절대 실기동하지 않는다 — 회귀 러너 seam(`subprocess.Popen` — 출력을 tee 하며
+실 루트의 local.conf·회귀 플래그를 읽거나 쓰지 않는다(test_board_multipm.py 와 같은 패턴).
+pytest 자식은 절대 실기동하지 않는다 — 회귀 러너 교체 지점(`subprocess.Popen` — 출력을 tee 하며
 읽는다)을 rc/스트림 주입 대역으로 갈아끼운다.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ from _pytest_summary import pytest_summary
 from _textio import utf8_child_env
 from _engine_tree import engine_python_files
 from pm_engine.cli import regression_cmd, task_args
-from pm_engine.domain import pytest_report, ticket_rules
+from pm_engine.domain import pytest_report, reviewer_budget, ticket_rules
 from pm_engine.infra import areas_store, git, pm_paths, pre_push_hook, python_env, regression_store, review_rounds, ticket_store
 from pm_engine.app import areas_lint, regression
 
@@ -64,13 +64,13 @@ def _load_board():
 
 @pytest.fixture
 def board(tmp_path, monkeypatch):
-    """회귀 경로를 hermetic 하게 만든 board — 플래그/conf/장부/HEAD 를 tmp·fake 로 격리.
+    """회귀 경로를 hermetic 하게 만든 board — 플래그/conf/슬롯 대여 기록/HEAD 를 tmp·fake 로 격리.
 
-    LEASES_FILE 은 기본 부재(→ leased 0 = 솔로 · `_active_slot_path` None → cwd=REPO 폴백)이고,
-    M>1 테스트만 장부를 직접 심는다. env 세션은 제거해 실 PM 세션이 새지 않게 한다.
+    LEASES_FILE 은 기본 부재(→ leased 0 = 솔로 · `_active_slot_path` None → cwd=REPO 로 대체)이고,
+    M>1 테스트만 슬롯 대여 기록을 직접 심는다. env 세션은 제거해 실 PM 세션이 새지 않게 한다.
 
     트리는 **스위트가 있는 코드 트리**가 기본이다(`tests/` 실재) — 이 파일의 대다수 케이스가
-    "자기 스위트를 도는 트리"의 측정·기록·강등을 다루기 때문이다. 스위트 없는 트리(분리 형상
+    "자기 스위트를 도는 트리"의 측정·기록·범위 낮춤을 다루기 때문이다. 스위트 없는 트리(분리 구성
     PM 홈)를 요구하는 케이스는 `_without_suite(board)` 로 그 디렉토리를 지우고 시작한다.
     """
     proj = tmp_path / "proj"
@@ -126,17 +126,17 @@ def actual_git_board(tmp_path, monkeypatch):
 
 
 def _patch_atomic_replace(monkeypatch, module, fake):
-    """엔진이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+    """엔진이 원자 교체에 **실제로 부르는** 함수(`file_lock.atomic_replace`)를 대역으로 바꾼다.
 
-    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 는 그 함수의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
     `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
-    같은 성질이 고정된다. 엔진 패키지가 쓰는 seam 모듈(`pm_engine.infra.fs`)에 건다.
-    반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
+    같은 성질이 고정된다. 엔진 패키지가 쓰는 교체 지점 모듈(`pm_engine.infra.fs`)에 건다.
+    반환값은 교체 지점 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
     (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
     """
-    seam = fs
-    monkeypatch.setattr(seam, "atomic_replace", fake)
-    return seam
+    override = fs
+    monkeypatch.setattr(override, "atomic_replace", fake)
+    return override
 
 
 class _FakeProc:
@@ -188,7 +188,7 @@ def _write_flag(board, *, status: str, rc, collected=None, previous_collected=No
                 head: str = "deadbeef01234567", **extra) -> None:
     """공유 회귀 플래그를 직접 심는다 (check 판정의 baseline 주입).
 
-    `conf_anchor` 미기록이 기본 — 옛 플래그(후방호환 폴백) 형상을 그대로 태운다.
+    `conf_anchor` 미기록이 기본 — 옛 플래그(후방호환 대체) 구성을 그대로 태운다.
     """
     pm_paths.home_at(board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
     pm_paths.regression_flag(pm_paths.home_at(board.REPO)).write_text(json.dumps(
@@ -198,7 +198,7 @@ def _write_flag(board, *, status: str, rc, collected=None, previous_collected=No
 
 
 def _install_run(board, monkeypatch, fake) -> _FakeRun:
-    """회귀 러너 seam(`subprocess.Popen` — tee 하며 읽는다)을 대역으로 덮는다."""
+    """회귀 러너 교체 지점(`subprocess.Popen` — tee 하며 읽는다)을 대역으로 덮는다."""
     # 이 대역은 pytest 실행만 소유한다. 가짜 .git fixture의 metadata가 상위 repo로 새지 않는다.
     monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
     real_popen = subprocess.Popen
@@ -209,7 +209,7 @@ def _install_run(board, monkeypatch, fake) -> _FakeRun:
 
 
 def _without_suite(board) -> None:
-    """이 트리를 **스위트 없는 트리**(분리 형상 PM 홈)로 만든다 — `tests/` 를 지운다."""
+    """이 트리를 **스위트 없는 트리**(분리 구성 PM 홈)로 만든다 — `tests/` 를 지운다."""
     shutil.rmtree(board.REPO / "tests", ignore_errors=True)
     assert not (board.REPO / "tests").is_dir()
 
@@ -582,7 +582,7 @@ def test_check_rejects_legacy_record_and_command_drift_after_declaration(board, 
 
 
 # ════════════════════════════════════════════════════════════════════════
-# T-0872 — single FULL 실행 cwd/HEAD/conf anchor 좌표 정합
+# T-0872 — single FULL 실행 cwd/HEAD/conf 대상 저장소 좌표 일치
 # ════════════════════════════════════════════════════════════════════════
 
 
@@ -619,25 +619,25 @@ def test_single_check_turns_stale_when_recorded_target_head_changes(
 
 
 @requires_git
-@pytest.mark.parametrize("anchor_kind", ["empty", "relative", "removed", "non-git"])
+@pytest.mark.parametrize("target_repo_kind", ["empty", "relative", "removed", "non-git"])
 def test_single_check_fails_closed_for_present_invalid_anchor(
-        actual_git_board, tmp_path, anchor_kind, capsys):
+        actual_git_board, tmp_path, target_repo_kind, capsys):
     board, target, _git_env = actual_git_board
     target_head = git._git_head_at(str(target))
-    if anchor_kind == "empty":
-        anchor = ""
-    elif anchor_kind == "relative":
-        anchor = "relative/target"
-    elif anchor_kind == "removed":
-        anchor = str(tmp_path / "removed")
+    if target_repo_kind == "empty":
+        target_repo = ""
+    elif target_repo_kind == "relative":
+        target_repo = "relative/target"
+    elif target_repo_kind == "removed":
+        target_repo = str(tmp_path / "removed")
     else:
         nongit = tmp_path / "non-git"
         nongit.mkdir()
-        anchor = str(nongit)
-    # empty anchor + empty fallback HEAD 동치도 green이 아니어야 한다.
-    recorded_head = git._git_head(pm_paths.home_at(board.REPO)) if anchor_kind == "empty" else target_head
+        target_repo = str(nongit)
+    # empty target_repo + empty fallback HEAD 동치도 green이 아니어야 한다.
+    recorded_head = git._git_head(pm_paths.home_at(board.REPO)) if target_repo_kind == "empty" else target_head
     _write_flag(board, status="pass", rc=0, collected=1,
-                head=recorded_head, conf_anchor=anchor)
+                head=recorded_head, conf_anchor=target_repo)
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), argparse.Namespace(action="check")) == 1
     assert "stale" in capsys.readouterr().err
@@ -689,7 +689,7 @@ def test_collected_count_counts_xfail_and_error_kinds(board):
 def test_collected_count_uses_last_summary_line(board):
     """테스트 자신이 찍은 `3 passed` 로그가 섞여도 **끝에서부터** 요약행을 찾는다.
 
-    출력 전체 검색이면 앞쪽 로그를 먼저 만나 수집수를 오판 → 하한 가드가 엉뚱하게 발화한다.
+    출력 전체 검색이면 앞쪽 로그를 먼저 만나 수집수를 오판 → 하한 가드가 엉뚱하게 실행된다.
     """
     out = "captured log: subprocess reported 3 passed\n7577 passed in 145.23s\n"
     assert pytest_report._collected_count(out) == 7577
@@ -741,7 +741,7 @@ def test_collected_count_none_when_no_summary(board):
 # ② 증감 문장 — 직전 기록 대비 (막지 않는 표시)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_collection_delta_text_is_empty_without_a_comparable_previous(board):
+def test_collection_change_text_is_empty_without_a_comparable_previous(board):
     """직전 기록이 없거나 수집수를 못 읽으면 문장이 빈다 — 증감을 지어내지 않는다."""
     assert pytest_report.collection_change_text(13323, None) == ""
     assert pytest_report.collection_change_text(None, 13323) == ""
@@ -749,18 +749,18 @@ def test_collection_delta_text_is_empty_without_a_comparable_previous(board):
     assert pytest_report.collection_change_text(13323, True) == ""     # bool 은 정수 취급 금지.
 
 
-def test_collection_delta_text_from_zero_previous_shows_difference_only(board):
+def test_collection_change_text_from_zero_previous_shows_difference_only(board):
     """직전 0 이면 비율을 내지 않고 차이만 낸다 (0 나눗셈 금지)."""
     assert pytest_report.collection_change_text(12, 0) == " (직전 0 · +12)"
 
 
-def test_collection_delta_text_below_threshold_has_no_alert(board):
+def test_collection_change_text_below_threshold_has_no_alert(board):
     """1% 미만 증감은 숫자만 — 정상 범위의 테스트 add/remove 에 소음을 내지 않는다."""
     assert pytest_report.collection_change_text(13334, 13323) == " (직전 13323 · +11)"
     assert pytest_report.collection_change_text(13312, 13323) == " (직전 13323 · -11)"
 
 
-def test_collection_delta_text_marks_one_percent(board):
+def test_collection_change_text_marks_one_percent(board):
     """1% 이상 증감(증가·감소 모두)은 비율과 경고 표기를 단다 — 임계값은 상수 하나가 소유."""
     assert pytest_report.COLLECTION_CHANGE_ALERT_PCT == 0.01
     assert pytest_report.collection_change_text(13500, 13323) == " (직전 13323 · +177 · 1.3% ⚠)"
@@ -768,10 +768,10 @@ def test_collection_delta_text_marks_one_percent(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ③ FULL 게이트 run — 증감을 표시하되 rc 는 바꾸지 않는다
+# ③ FULL 통과 조건 run — 증감을 표시하되 rc 는 바꾸지 않는다
 # ════════════════════════════════════════════════════════════════════════
 
-def test_run_shows_delta_against_previous_record_without_blocking(
+def test_run_shows_difference_against_previous_record_without_blocking(
         board, monkeypatch, capsys):
     """직전 기록 대비 1% 이상 감소해도 rc0·pass 그대로이고 회귀 줄에만 증감이 붙는다.
 
@@ -791,7 +791,7 @@ def test_run_shows_delta_against_previous_record_without_blocking(
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), argparse.Namespace(action="check")) == 0
 
 
-def test_run_without_previous_record_shows_no_delta(board, monkeypatch, capsys):
+def test_run_without_previous_record_shows_no_difference(board, monkeypatch, capsys):
     """첫 실행은 비교 대상이 없다 — 증감 문장 없이 현행 줄 그대로."""
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="3 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
@@ -864,8 +864,8 @@ def test_run_zero_collection_stays_red(board, monkeypatch, capsys):
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), argparse.Namespace(action="check")) == 1
 
 
-def test_scoped_run_writes_no_record_and_no_delta(board, monkeypatch, capsys):
-    """스코프(touches) 실행은 기록을 읽지도 쓰지도 않는다 — 다른 축의 수집수를 빼지 않는다."""
+def test_scoped_run_writes_no_record_and_no_difference(board, monkeypatch, capsys):
+    """스코프(touches) 실행은 기록을 읽지도 쓰지도 않는다 — 다른 기준의 수집수를 빼지 않는다."""
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     capsys.readouterr()
@@ -879,17 +879,17 @@ def test_scoped_run_writes_no_record_and_no_delta(board, monkeypatch, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ③-b check green 줄 — 기록을 읽는 자리라 같은 축끼리 견준다
+# ③-b check green 줄 — 기록을 읽는 자리라 같은 기준끼리 견준다
 # ════════════════════════════════════════════════════════════════════════
 
-def test_check_green_line_shows_the_recorded_delta(board, capsys):
+def test_check_green_line_shows_the_recorded_difference(board, capsys):
     """check green 은 기록이 담은 증감을 그대로 낸다(재계산·재해소 없음)."""
     _write_flag(board, status="pass", rc=0, collected=13500, previous_collected=13323)
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), argparse.Namespace(action="check")) == 0
     assert "green @ deadbeef (직전 13323 · +177 · 1.3% ⚠) ✓" in capsys.readouterr().out
 
 
-def test_check_green_without_previous_has_no_delta(board, capsys):
+def test_check_green_without_previous_has_no_difference(board, capsys):
     """비교 대상이 없는 기록의 green 줄은 현행 모양 그대로."""
     _write_flag(board, status="pass", rc=0, collected=13500)
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), argparse.Namespace(action="check")) == 0
@@ -903,52 +903,52 @@ def test_check_old_flag_without_collected_is_green(board):
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), argparse.Namespace(action="check")) == 0
 
 
-def _seed_anchor_flag(board, anchor: Path, *, status="fail",
+def _seed_target_repo_flag(board, target_repo: Path, *, status="fail",
                       rc=1, collected=12) -> None:
-    """앵커가 박힌 공유 플래그를 심는다 (훅 `check || run` 재실행의 baseline)."""
+    """대상 저장소가 적힌 공유 플래그를 심는다 (훅 `check || run` 재실행의 baseline)."""
     _write_flag(board, status=status, rc=rc,
-                collected=collected, conf_anchor=str(anchor))
+                collected=collected, conf_anchor=str(target_repo))
 
 
 def test_run_inherits_anchor_of_blocking_record(board, monkeypatch, tmp_path):
-    """차단 기록(fail@A)이 있으면 무-`--cwd` 재실행이 **A 에서** 돈다 — 게이트 우회 차단.
+    """차단 기록(fail@A)이 있으면 무-`--cwd` 재실행이 **A 에서** 돈다 — 통과 조건 우회 차단.
 
     훅은 `check || run` 이고 `--cwd` 를 못 넘긴다. 재실행이 기본 트리 B 에서 돌면 B 의 green 이
     A 의 RED 기록을 덮어 그대로 push 된다(codex must-fix).
     """
     tree_a = tmp_path / "A"
     (tree_a / "tests").mkdir(parents=True)      # 그 트리가 회귀를 돌던 코드 트리다
-    _seed_anchor_flag(board, tree_a)
+    _seed_target_repo_flag(board, tree_a)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(tree_a), "기본 트리에서 돌아 A 기록을 덮었다"
-    assert _flag(board)["conf_anchor"] == str(tree_a)   # 갱신도 같은 앵커.
+    assert _flag(board)["conf_anchor"] == str(tree_a)   # 갱신도 같은 대상 저장소.
 
 
 def test_run_does_not_inherit_anchor_of_green_record(board, monkeypatch, tmp_path):
     """차단 기록이 아니면 이어받지 않는다 — 릴리즈 `--cwd <readonly>` 핀이 눌러붙지 않게."""
     tree_a = tmp_path / "A"
     tree_a.mkdir()
-    _seed_anchor_flag(board, tree_a, status="pass", rc=0, collected=7577)
+    _seed_target_repo_flag(board, tree_a, status="pass", rc=0, collected=7577)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO)
 
 
 def test_run_explicit_cwd_wins_over_recorded_anchor(board, monkeypatch, tmp_path):
-    """명시 `--cwd` 는 기록 앵커를 이긴다 (사람이 고른 실행 위치가 최우선)."""
+    """명시 `--cwd` 는 기록의 대상 저장소를 이긴다 (사람이 고른 실행 위치가 최우선)."""
     tree_a, tree_b = tmp_path / "A", tmp_path / "B"
     tree_a.mkdir()
     tree_b.mkdir()
-    _seed_anchor_flag(board, tree_a)
+    _seed_target_repo_flag(board, tree_a)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args(cwd=str(tree_b))) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(tree_b)
 
 
 def test_run_falls_back_when_recorded_anchor_is_gone(board, monkeypatch, tmp_path, capsys):
-    """앵커 트리가 정리됐으면 기본 트리로 폴백하고 그 사실을 시끄럽게 알린다 (fail-soft)."""
-    _seed_anchor_flag(board, tmp_path / "removed")
+    """대상 저장소 트리가 정리됐으면 기본 트리로 대체하고 그 사실을 시끄럽게 알린다 (fail-soft)."""
+    _seed_target_repo_flag(board, tmp_path / "removed")
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     assert fake.calls[0]["kwargs"]["cwd"] == str(board.REPO)
@@ -968,13 +968,13 @@ def test_recorded_anchor_is_absolute(board, monkeypatch, tmp_path):
 def test_corrupt_collected_degrades_instead_of_crashing(board, monkeypatch, capsys):
     """손상된 `collected`(문자열)는 산술에서 죽지 않고 증감 문장이 비는 것으로 끝난다.
 
-    정규화 없이 뺄셈에 들어가면 TypeError 로 게이트 자체가 죽는다 — 장부 손상이 회귀
-    해소를 깨면 안 된다는 기존 규율과 같은 축(codex suggestion).
+    정규화 없이 뺄셈에 들어가면 TypeError 로 통과 조건 자체가 죽는다 — 기록 손상이 회귀
+    해소를 깨면 안 된다는 기존 규율과 같은 기준(codex suggestion).
     """
     _write_flag(board, status="pass", rc=0, collected="많음", previous_collected=7000)
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), argparse.Namespace(action="check")) == 0   # TypeError 아님.
     assert "직전" not in capsys.readouterr().out
-    # 슬롯 경로도 동형 — 손상값이 green 판정에 들어가지 않는다.
+    # 슬롯 경로도 같은 방식 — 손상값이 green 판정에 들어가지 않는다.
     assert regression_store._flag_collected({"collected": ["12"]}) is None
     assert regression_store._flag_collected({"collected": True}) is None   # bool 은 정수 취급 금지.
     assert regression_store._flag_collected({"collected": 12}) == 12
@@ -1001,7 +1001,7 @@ def test_tee_stream_handles_missing_stream(board):
 
 
 def test_run_regression_cmd_with_real_child_splits_streams(board, tmp_path, capsys):
-    """실 자식 1개로 러너 배선을 확인한다 — rc·stdout/stderr 분리·교착 없음.
+    """실 자식 1개로 러너 연결을 확인한다 — rc·stdout/stderr 분리·교착 없음.
 
     대역은 스레드 tee 의 실 동작(파이프가 차서 자식이 멈추는 교착)을 증명하지 못한다. pytest 가
     아니라 두 스트림에 쓰고 종료하는 최소 스크립트를 돌린다(하네스 무관·프로덕션 진입점 아님).
@@ -1063,11 +1063,11 @@ def test_stderr_counts_do_not_pollute_parsing(board, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ⑤ M>1 슬롯 순회 — 같은 강등이 슬롯 경로에도 배선되고 check 라벨에 사유가 실린다
+# ⑤ M>1 슬롯 순회 — 같은 범위 낮춤이 슬롯 경로에도 연결되고 check 라벨에 사유가 실린다
 # ════════════════════════════════════════════════════════════════════════
 
-def _write_ledger(board, *sessions: str) -> None:
-    """리스 장부에 leased 행을 쓴다 (`slot=work/<session>`·worktree_pool 스키마 부분집합)."""
+def _write_records(board, *sessions: str) -> None:
+    """슬롯 대여 기록에 leased 행을 쓴다 (`slot=work/<session>`·worktree_pool 스키마 부분집합)."""
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).parent.mkdir(parents=True, exist_ok=True)
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps({"leases": [
         {"slot": f"work/{s}", "repo": "r", "session": s, "state": "leased"}
@@ -1081,13 +1081,13 @@ def _slot_cwd(board, session: str) -> str:
 @pytest.fixture
 def multi_board(board, monkeypatch):
     """board + 2 leased 슬롯(A_1·B_1)·슬롯별 HEAD mock — M>1 all-or-nothing 순회 전제."""
-    _write_ledger(board, "A_1", "B_1")
+    _write_records(board, "A_1", "B_1")
     heads = {_slot_cwd(board, "A_1"): "HEAD_A", _slot_cwd(board, "B_1"): "HEAD_B"}
     monkeypatch.setattr(git, "_git_head_at", lambda cwd: heads.get(cwd, "HEAD_?"))
     return board
 
 
-def test_multi_slot_regression_keeps_per_slot_head_seam(multi_board):
+def test_multi_slot_regression_keeps_per_slot_head_override(multi_board):
     board = multi_board
     for session, head in (("A_1", "HEAD_A"), ("B_1", "HEAD_B")):
         flag = regression_store._regression_flag_for(pm_paths.home_at(board.REPO), session)
@@ -1125,7 +1125,7 @@ def test_multi_slot_platform_matrix_uses_each_slot_config_and_is_all_or_nothing(
         if cmd.startswith("run-"):
             head = env["PM_QA_EXPECTED_HEAD"]
             if cmd == "run-B_1":
-                head = "stale-guest"
+                head = "stale-added-harness"
             return 0, _marker("windows", head), ""
         return 0, "3 passed in 0.01s\n", ""
 
@@ -1181,7 +1181,7 @@ def test_multi_slot_platform_record_rejects_red_or_partial_core_aggregate(
     assert regression._regression_slot_state(pm_paths.home_at(board.REPO), session, str(tree)).state == expected
 
 
-def test_multi_run_records_delta_per_slot_without_blocking(
+def test_multi_run_records_difference_per_slot_without_blocking(
         multi_board, monkeypatch, capsys):
     """M>1 순회도 슬롯마다 자기 직전 기록과 견준다 — 크게 줄어도 rc0(막지 않는다)."""
     b = multi_board
@@ -1272,13 +1272,13 @@ def test_multi_run_skips_green_slots_regardless_of_collection_size(
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ⑥ 요약행 파서 공용 seam — 소비처 전수가 끝에서-탐색을 쓴다
+# ⑥ 요약행 파서 공용 함수 — 소비처 전수가 끝에서-탐색을 쓴다
 # ════════════════════════════════════════════════════════════════════════
 #
 # 첫-매칭 `re.search` 파서가 도구마다 복제돼 있었다 — 캡처 출력에 테스트/자식 러너가 찍은
 # `N passed`·`N failed` 로그가 섞이면 그걸 요약행으로 오판한다(수집수 오염·green↔red 전도).
-# 올바른 구현(board 의 끝에서-탐색)을 공용 seam 으로 승격하고 소비처 넷을 갈아탔다. 아래는
-# **소비처마다** "중간에 가짜 로그 + 끝에 실제 요약" 을 먹여 끝-탐색이 실제로 배선됐는지
+# 올바른 구현(board 의 끝에서-탐색)을 공용 파서로 승격하고 소비처 넷을 갈아탔다. 아래는
+# **소비처마다** "중간에 가짜 로그 + 끝에 실제 요약" 을 먹여 끝-탐색이 실제로 연결됐는지
 # 본다 — 어느 소비처든 자기 사본으로 되돌아가면 red 다.
 
 # 가짜 로그: `3 passed`(수집수 오판 유발)와 `1 failed`(green→red 전도 유발)를 함께 싣는다.
@@ -1287,19 +1287,19 @@ _FAKE_LOG = (
     "captured stdout: child runner reported 3 passed, 1 failed in 0.01s\n"
 )
 
-# seam 을 소비하는 도구 — 여기에 자기 요약행 정규식이 남아 있으면 승격이 반쪽이다.
-_SEAM_CONSUMER_TOOLS = ("board.py", "pm_bootstrap.py", "pm_engine/domain/finish_rules.py", "pm_engine/domain/handoff_text.py")
+# 공용 파서를 소비하는 도구 — 여기에 자기 요약행 정규식이 남아 있으면 승격이 반쪽이다.
+_SHARED_PARSER_CONSUMER_TOOLS = ("board.py", "pm_bootstrap.py", "pm_engine/domain/finish_rules.py", "pm_engine/domain/handoff_text.py")
 # 소스에 박힌 outcome 정규식 리터럴(`(\d+) passed`·`\d+ failed` …) 탐지용.
 _LOCAL_OUTCOME_REGEX = re.compile(r"\\d\+\)? (?:passed|failed|deselected|skipped|errors?)")
 
 
 def _load_tool(name: str):
-    """엔진 도구를 경로 로드한다 (도구는 패키지가 아니므로 importlib · 다른 테스트 관용구 동형).
+    """엔진 도구를 경로 로드한다 (도구는 패키지가 아니므로 importlib · 다른 테스트 관용구와 같다).
 
-    소비처는 자기 board 형제 로더로 **실제** seam 을 읽으므로 board 대역을 심지 않는다 —
-    배선 자체(로더→seam)가 검증 대상이다.
+    소비처는 자기 board 형제 로더로 **실제** 공용 파서를 읽으므로 board 대역을 심지 않는다 —
+    연결 자체(로더→공용 파서)가 검증 대상이다.
     """
-    spec = importlib.util.spec_from_file_location(f"seam_consumer_{name}", TOOLS / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"shared_parser_consumer_{name}", TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -1320,9 +1320,9 @@ def handoff():
     return _load_tool("pm_handoff")
 
 
-# ── seam 자체 (승계 + 승격으로 늘어난 표면) ────────────────────────────────
+# ── 공용 파서 자체 (승계 + 승격으로 늘어난 범위) ────────────────────────────────
 
-def test_seam_outcome_count_reads_one_kind(board):
+def test_shared_outcome_count_reads_one_kind(board):
     """한 종류만 읽는다 — 부재는 None(수 0 과 구분해야 `deselected` 기본 0 이 성립)."""
     line = "5 failed, 1467 passed, 24 deselected in 10.00s"
     assert pytest_report._pytest_outcome_count(line, "passed") == 1467
@@ -1331,38 +1331,38 @@ def test_seam_outcome_count_reads_one_kind(board):
     assert pytest_report._pytest_outcome_count(line, "skipped") is None
 
 
-def test_seam_outcome_counts_narrows_kinds(board):
+def test_shared_outcome_counts_narrows_kinds(board):
     """`kinds` 로 셀 종류를 좁힌다 — 소비처마다 '무엇이 실행인가' 가 다르다."""
     line = "1 failed, 6 passed, 3 skipped, 812 deselected in 40.0s"
-    assert sum(pytest_report._pytest_outcome_counts(line, pytest_report._LIVEGATE_RAN_KINDS)) == 7
+    assert sum(pytest_report._pytest_outcome_counts(line, pytest_report._LIVE_TEST_RAN_KINDS)) == 7
     assert sum(pytest_report._pytest_outcome_counts(line)) == 10   # 기본 6종 = skipped 포함.
 
 
-def test_seam_summary_tail_cuts_from_kind(board):
+def test_shared_summary_tail_cuts_from_kind(board):
     """요약 문자열은 `N passed` 지점부터 줄 끝까지 — 대상 줄은 끝에서-탐색으로 고른다."""
     out = _FAKE_LOG + "5 failed, 1467 passed, 24 deselected in 10.00s\n"
     assert pytest_report._pytest_summary_tail(out) == "1467 passed, 24 deselected in 10.00s"
 
 
-def test_seam_summary_tail_none_when_unresolved(board):
-    """요약행 부재·그 종류 부재는 None — 호출부가 자기 폴백(출력 꼬리)을 고른다."""
+def test_shared_summary_tail_none_when_unresolved(board):
+    """요약행 부재·그 종류 부재는 None — 호출부가 자기 대체(출력 꼬리)를 고른다."""
     assert pytest_report._pytest_summary_tail("no tests ran in 0.01s\n") is None
     assert pytest_report._pytest_summary_tail("2 errors in 1.00s\n") is None
     assert pytest_report._pytest_summary_tail("") is None
 
 
-# ── 소비처 ① 릴리즈 라이브 게이트 (board 자신도 seam 소비) ─────────────────
+# ── 소비처 ① 릴리즈 라이브 시험 (board 자신도 공용 파서 소비) ─────────────────
 
-def test_livegate_ran_count_ignores_mid_output_log(board):
+def test_live_test_ran_count_ignores_mid_output_log(board):
     """중간 로그의 `3 passed, 1 failed` 를 세면 pin 대조가 통째로 어긋난다."""
     out = _FAKE_LOG + "18 passed, 810 deselected in 45.67s\n"
-    assert pytest_report._livegate_ran_count(out) == 18
+    assert pytest_report._live_test_ran_count(out) == 18
 
 
-def test_livegate_ran_count_keeps_kind_selection(board):
+def test_live_test_ran_count_keeps_kind_selection(board):
     """세는 종류는 불변 — passed+failed+error 만(deselected·skipped 는 실행분 아님)."""
     out = "2 errors, 5 passed, 3 skipped, 812 deselected in 3.0s\n"
-    assert pytest_report._livegate_ran_count(out) == 7
+    assert pytest_report._live_test_ran_count(out) == 7
 
 
 # ── 소비처 ② 부트스트랩 회귀 dump ─────────────────────────────────────────
@@ -1414,7 +1414,7 @@ def test_handoff_summary_falls_back_to_output_tail(handoff):
 
 
 def test_handoff_green_ignores_mid_output_failed_log(handoff):
-    """중간 로그의 `1 failed` 로 인계 게이트를 막지 않는다."""
+    """중간 로그의 `1 failed` 로 인계 통과 조건을 막지 않는다."""
     out = _FAKE_LOG + "7577 passed in 145.23s\n"
     assert pm_engine.domain.handoff_text.is_pytest_green(out, returncode=0) is True
     assert pm_engine.domain.handoff_text.is_pytest_green(out, returncode=1) is False   # rc 가드는 불변.
@@ -1424,7 +1424,7 @@ def test_handoff_green_ignores_mid_output_failed_log(handoff):
 # 섹션 위쪽 짝(`_FAKE_LOG`)은 "가짜 → 진짜" 순서(요약 *앞* 로그)만 본다. 실측된 반대 방향은
 # 소비처 넷이 파서에 **stdout+stderr 병합** 출력을 먹이는 데서 온다 — 자식 하네스가 stderr 에
 # 찍은 한 줄이 진짜 요약 *뒤* 꼬리로 붙어 그게 요약으로 채택됐다(ticket_finish (5,0)·bootstrap
-# (5,5)·livegate 5·handoff 엉뚱한 줄). 방어는 seam 의 문법 완전 일치 하나이므로 소비처가 자동
+# (5,5)·live-test 5·handoff 엉뚱한 줄). 방어는 공용 파서의 문법 완전 일치 하나이므로 소비처가 자동
 # 상속한다 — 아래가 소비처별 짝이다.
 
 # 실측 오염 줄: 접두 산문 + `in X.XXs` 종결까지 갖춰서, 줄머리 앵커 없이는 요약으로 뽑힌다.
@@ -1433,11 +1433,11 @@ _TRAILING_FAKE = "child harness: 5 passed in 1.00s\n"
 _TRAILING_FAKE_WRAPPER = "[wrapper] post-run report: 8000 passed, 1 failed in 900.00s\n"
 
 
-def test_livegate_ran_count_ignores_trailing_fake(board):
+def test_live_test_ran_count_ignores_trailing_fake(board):
     """릴리즈 pin 대조 — 꼬리 오염을 세면 수집 N 이 어긋나 pin 검증이 통째로 무너진다(실측 5)."""
     real = "18 passed, 810 deselected in 45.67s\n"
-    assert pytest_report._livegate_ran_count(real + _TRAILING_FAKE) == 18
-    assert pytest_report._livegate_ran_count(real + _TRAILING_FAKE_WRAPPER) == 18
+    assert pytest_report._live_test_ran_count(real + _TRAILING_FAKE) == 18
+    assert pytest_report._live_test_ran_count(real + _TRAILING_FAKE_WRAPPER) == 18
 
 
 def test_bootstrap_counts_ignore_trailing_fake(bootstrap):
@@ -1466,8 +1466,8 @@ def test_handoff_summary_ignores_trailing_fake(handoff):
                                    returncode=0) is True
 
 
-def test_fixture_helper_output_satisfies_seam_grammar(board):
-    """픽스처 헬퍼가 만든 요약행을 seam 이 요약행으로 인정한다 — 헬퍼↔문법 합치 못박기.
+def test_fixture_helper_output_satisfies_shared_parser_grammar(board):
+    """픽스처 헬퍼가 만든 요약행을 공용 파서가 요약행으로 인정한다 — 헬퍼↔문법 합치 못박기.
 
     픽스처가 `"1 passed"` 같은 축약형을 쓰면 그 경로가 파서를 타는 순간 무더기 red 가 되는
     시한 픽스처가 된다(실측). 형식을 `_pytest_summary.pytest_summary` 한 곳에 두고, 그 산출이
@@ -1483,8 +1483,8 @@ def test_fixture_helper_output_satisfies_seam_grammar(board):
         assert pytest_report._collected_count(line) == expected
 
 
-def test_seam_rejects_measured_child_harness_tail(board):
-    """실측 오염 줄 자체를 seam 이 요약행으로 인정하지 않는다 (줄머리 앵커의 존재 이유)."""
+def test_shared_parser_rejects_measured_child_harness_tail(board):
+    """실측 오염 줄 자체를 공용 파서가 요약행으로 인정하지 않는다 (줄머리 앵커의 존재 이유)."""
     assert not pytest_report._is_pytest_summary_line(_TRAILING_FAKE.strip())
     assert pytest_report._collected_count("12 passed in 0.30s\n" + _TRAILING_FAKE) == 12
 
@@ -1494,42 +1494,42 @@ def test_seam_rejects_measured_child_harness_tail(board):
 def test_no_consumer_keeps_local_outcome_regex():
     """소비처 소스에 outcome 정규식 리터럴이 남으면 red.
 
-    seam 은 종류 이름을 인자로 받아 패턴을 만든다(리터럴 0). 어느 도구든 `\\d+ passed` 류를
+    공용 파서는 종류 이름을 인자로 받아 패턴을 만든다(리터럴 0). 어느 도구든 `\\d+ passed` 류를
     다시 박으면 그 지점이 첫-매칭 오판을 되살리므로 여기서 막는다.
     """
     offenders = [
-        name for name in _SEAM_CONSUMER_TOOLS
+        name for name in _SHARED_PARSER_CONSUMER_TOOLS
         if _LOCAL_OUTCOME_REGEX.search((TOOLS / name).read_text(encoding="utf-8"))
     ]
     assert not offenders, offenders
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ⑥ 회귀 스테이징 (T-0593) — 활성 리뷰 사이클 중 FULL → targeted 강등
+# ⑥ 회귀 스테이징 (T-0593) — 활성 리뷰 사이클 중 FULL → targeted 로 범위 낮춤
 # ════════════════════════════════════════════════════════════════════════
-# 리뷰 라운드마다 FULL 회귀를 도는 것이 라운드 비용의 세 번째 축이었다. 리뷰가 아직 닫히지 않은
-# 티켓의 FULL 요청은 그 티켓 touches 로 강등하고, FULL 은 `--final`(수렴 후)·핸드오프·pre-push
-# 경로만 돈다. 판정 입력은 이미 있는 데이터 둘뿐이다(사람 선언 0): 추가 리뷰 라운드 장부 +
-# 보드 티켓 status. 장부는 append-only 라 자체 마감 이벤트가 없어, **티켓이 현재 claimed 인지**를
-# 함께 봐야 done 티켓의 옛 반려가 영원히 강등을 유발하지 않는다(실측: done 10건 잔존).
+# 리뷰 라운드마다 FULL 회귀를 도는 것이 라운드 비용의 세 번째 요인이었다. 리뷰가 아직 닫히지 않은
+# 티켓의 FULL 요청은 그 티켓 touches 로 범위를 낮추고, FULL 은 `--final`(마무리 뒤)·핸드오프·pre-push
+# 경로만 돈다. 판정 입력은 이미 있는 데이터 둘뿐이다(사람 선언 0): 추가 리뷰 라운드 기록 +
+# 보드 티켓 status. 라운드 기록은 append-only 라 자체 마감 이벤트가 없어, **티켓이 현재 claimed 인지**를
+# 함께 봐야 done 티켓의 옛 반려가 영원히 범위 낮춤을 유발하지 않는다(실측: done 10건 남음).
 
 
-def _write_rounds_ledger(board, gates: dict) -> None:
-    """추가 리뷰 라운드 장부를 심는다 — 값은 `{gate: [(sequence, verdict), ...]}`."""
+def _write_rounds_records(board, review_tickets: dict) -> None:
+    """추가 리뷰 라운드 기록을 심는다 — 값은 `{review_ticket: [(sequence, verdict), ...]}`."""
     pm_paths.home_at(board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
     payload = {
-        gate: {"rounds": [{"sequence": seq, "verdict": verdict, "must_fix": None}
+        review_ticket: {"rounds": [{"sequence": seq, "verdict": verdict, "must_fix": None}
                           for seq, verdict in rounds]}
-        for gate, rounds in gates.items()
+        for review_ticket, rounds in review_tickets.items()
     }
-    payload["wave"] = {"id": "gen", "started": None, "spent": 0}
+    payload[reviewer_budget.SESSION_BUDGET_SECTION_KEY] = {"id": "gen", "started": None, "spent": 0}
     review_rounds._review_rounds_ledger(pm_paths.home_at(board.REPO)).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _ticket_statuses(board, monkeypatch, statuses: dict) -> None:
     """보드 티켓 status 대역 — `{ticket_id: status}` 이외의 id 는 부재(None).
 
-    강등 판정이 쓰는 조회 seam 은 정확-일치(`find_ticket_exact`)다 — 대역도 같은 자리에 건다."""
+    범위 낮춤 판정이 쓰는 조회 함수는 정확-일치(`find_ticket_exact`)다 — 대역도 같은 자리에 건다."""
     def _find_exact(_home, tid, **_kwargs):
         if tid not in statuses:
             return None
@@ -1540,7 +1540,7 @@ def _ticket_statuses(board, monkeypatch, statuses: dict) -> None:
 
 def test_active_review_cycle_is_the_last_round_not_a_pass(board, monkeypatch):
     """미마감 = (claimed 티켓) ∧ (마지막 라운드가 통과 rc 0 이 아님). 순서는 **예약 순번**."""
-    _write_rounds_ledger(board, {
+    _write_rounds_records(board, {
         "T-0001": [(1, 1), (2, 0)],                 # 통과로 끝남 → 마감
         "T-0002": [(1, 0), (2, 1)],                 # 반려로 끝남 → 활성
         "T-0003": [(2, 1), (1, 0)],                 # append 역순 — 순번상 마지막은 반려
@@ -1550,26 +1550,26 @@ def test_active_review_cycle_is_the_last_round_not_a_pass(board, monkeypatch):
         "T-0001": "claimed", "T-0002": "claimed",
         "T-0003": "claimed", "T-0004": "claimed",
     })
-    assert regression._active_review_gates(pm_paths.home_at(board.REPO)) == ["T-0002", "T-0003"]
+    assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == ["T-0002", "T-0003"]
 
 
-def test_done_ticket_ledger_residue_never_activates(board, monkeypatch):
-    """마감된 티켓의 옛 반려 라운드는 활성으로 세지 않는다 — 장부에 마감 이벤트가 없어서다.
+def test_done_ticket_record_residue_never_activates(board, monkeypatch):
+    """마감된 티켓의 옛 반려 라운드는 활성으로 세지 않는다 — 라운드 기록에 마감 이벤트가 없어서다.
 
-    이게 없으면 done 티켓이 쌓일수록 `regression run` 이 영구 targeted 강등이 된다(실측 10건)."""
-    _write_rounds_ledger(board, {
+    이게 없으면 done 티켓이 쌓일수록 `regression run` 이 영구 targeted 로 범위가 낮아진다(실측 10건)."""
+    _write_rounds_records(board, {
         "T-0001": [(1, 1)], "T-0002": [(1, 1)], "T-0003": [(1, 1)], "T-0004": [(1, 1)],
     })
     _ticket_statuses(board, monkeypatch, {
         "T-0001": "done", "T-0002": "open", "T-0003": "blocked",
-        # T-0004 는 보드에서 아예 사라진 게이트(자유 문자열·삭제) — 부재도 활성 아님.
+        # T-0004 는 보드에서 아예 사라진 리뷰 집계 티켓(자유 문자열·삭제) — 부재도 활성 아님.
     })
-    assert regression._active_review_gates(pm_paths.home_at(board.REPO)) == []
+    assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == []
 
 
 def test_done_ticket_residue_does_not_downgrade_a_full_run(board, monkeypatch, capsys):
-    """done 티켓 장부 잔존 형상에서 FULL 요청은 강등되지 않고 게이트 플래그를 쓴다 (DoD)."""
-    _write_rounds_ledger(board, {"T-0001": [(1, 1)]})
+    """done 티켓 라운드 기록이 남은 구성에서 FULL 요청은 범위가 낮아지지 않고 통과 조건 플래그를 쓴다 (DoD)."""
+    _write_rounds_records(board, {"T-0001": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0001": "done"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
@@ -1578,17 +1578,17 @@ def test_done_ticket_residue_does_not_downgrade_a_full_run(board, monkeypatch, c
     assert _flag(board)["scope"] == "full"
 
 
-def test_missing_or_corrupt_ledger_never_downgrades(board):
-    """장부 부재·손상은 강등하지 않는다 — 이 축의 실패가 회귀 게이트를 좁히면 안 된다."""
-    assert regression._active_review_gates(pm_paths.home_at(board.REPO)) == []
+def test_missing_or_corrupt_records_never_downgrades(board):
+    """라운드 기록 부재·손상은 범위를 낮추지 않는다 — 이 판정의 실패가 회귀 통과 조건을 좁히면 안 된다."""
+    assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == []
     pm_paths.home_at(board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
     review_rounds._review_rounds_ledger(pm_paths.home_at(board.REPO)).write_text("{ not json", encoding="utf-8")
-    assert regression._active_review_gates(pm_paths.home_at(board.REPO)) == []
+    assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == []
 
 
 def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, capsys):
-    """손상 frontmatter 는 예외로 전파한다 — 회귀를 실행하지 않고, 부분 강등도 없다."""
-    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    """손상 frontmatter 는 예외로 전파한다 — 회귀를 실행하지 않고, 부분 범위 낮춤도 없다."""
+    _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
     def _boom(_home, tid):
@@ -1604,25 +1604,25 @@ def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, ca
 
 
 def test_full_run_is_downgraded_during_an_active_cycle(board, monkeypatch, capsys):
-    """활성 사이클 중 FULL 요청 → touches targeted 강등 + 안내 1줄 (DoD).
+    """활성 사이클 중 FULL 요청 → touches targeted 로 범위 낮춤 + 안내 1줄 (DoD).
 
-    강등된 실행은 스코프 실행과 같다 — push 게이트 플래그를 쓰지 않는다."""
-    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    범위를 낮춘 실행은 스코프 실행과 같다 — push 통과 조건 플래그를 쓰지 않는다."""
+    _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     out = capsys.readouterr().out
     assert "활성 리뷰 사이클 [T-0002]" in out and "수준을 낮춥니다" in out
-    assert "--final" in out                       # 수렴 후 FULL 경로를 함께 안내
+    assert "--final" in out                       # 마무리 뒤 FULL 경로를 함께 안내
     assert "regression(scoped, 1 touches)" in out
     assert '-k "pay"' in fake.calls[0]["args"][0]
-    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()     # FULL 게이트 플래그는 안 쓴다
+    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()     # FULL 통과 조건 플래그는 안 쓴다
 
 
-def test_final_flag_keeps_the_full_gate(board, monkeypatch, capsys):
-    """`--final` 은 활성 사이클 중에도 FULL 을 그대로 돈다 (수렴 후·pre-push 경로·DoD)."""
-    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+def test_final_flag_keeps_the_full_check(board, monkeypatch, capsys):
+    """`--final` 은 활성 사이클 중에도 FULL 을 그대로 돈다 (마무리 뒤·pre-push 경로·DoD)."""
+    _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
@@ -1630,12 +1630,12 @@ def test_final_flag_keeps_the_full_gate(board, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "수준을 낮춥니다" not in out
     assert "-k" not in fake.calls[0]["args"][0]
-    assert _flag(board)["scope"] == "full"        # push 게이트 플래그 기록
+    assert _flag(board)["scope"] == "full"        # push 통과 조건 플래그 기록
 
 
 def test_closed_cycle_runs_full_without_the_flag(board, monkeypatch, capsys):
     """마지막 라운드가 통과면 사이클은 닫힌 것 — `--final` 없이도 FULL 이다."""
-    _write_rounds_ledger(board, {"T-0001": [(1, 1), (2, 0)]})
+    _write_rounds_records(board, {"T-0001": [(1, 1), (2, 0)]})
     _ticket_statuses(board, monkeypatch, {"T-0001": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
@@ -1645,11 +1645,11 @@ def test_closed_cycle_runs_full_without_the_flag(board, monkeypatch, capsys):
 
 
 def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
-    """touches 를 모르면 강등하지 않는다 — 스코프 없는 좁힘은 '가짜 green' 이다.
+    """touches 를 모르면 범위를 낮추지 않는다 — 스코프 없는 좁힘은 '가짜 green' 이다.
 
-    게이트 이름은 자유 문자열이 실사용이라(`wave4-b1`) 티켓이 아닌 게이트가 정상적으로 있다."""
-    _write_rounds_ledger(board, {"wave4-b1": [(1, 1)]})
-    _ticket_statuses(board, monkeypatch, {"wave4-b1": "claimed"})
+    리뷰 집계 티켓 이름은 자유 문자열이 실사용이라(`group4-b1`) 티켓이 아닌 리뷰 집계 티켓이 정상적으로 있다."""
+    _write_rounds_records(board, {"group4-b1": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"group4-b1": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: [])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
@@ -1657,10 +1657,10 @@ def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
     assert _flag(board)["scope"] == "full"
 
 
-# ── 게이트 조회는 canonical ID 정확 일치 (T-0602 ③) ────────────────────────
-# codex R2 지적: 자유 문자열 게이트를 glob 기반 `find_ticket` 에 그대로 넘긴다 — `T-0036` 이
-# `T-0036-001-*.md` 에 오인 매칭되면 **무관한 티켓의 touches** 로 FULL 회귀가 강등된다(그 실행은
-# 아무것도 검증하지 않은 '가짜 green'). 아래는 그 형상을 실 파일로 재현하고 차단을 단언한다.
+# ── 리뷰 집계 티켓 조회는 canonical ID 정확 일치 (T-0602 ③) ────────────────────────
+# codex R2 지적: 자유 문자열 리뷰 집계 티켓을 glob 기반 `find_ticket` 에 그대로 넘긴다 — `T-0036` 이
+# `T-0036-001-*.md` 에 오인 매칭되면 **무관한 티켓의 touches** 로 FULL 회귀 범위가 낮아진다(그 실행은
+# 아무것도 검증하지 않은 '가짜 green'). 아래는 그 구성을 실 파일로 재현하고 차단을 단언한다.
 
 
 def _seed_ticket_file(board, tid: str, *, status: str, slug: str,
@@ -1675,37 +1675,37 @@ def _seed_ticket_file(board, tid: str, *, status: str, slug: str,
     return path
 
 
-def test_prefixed_ticket_does_not_answer_for_a_legacy_gate_id(board):
-    """재현: 게이트 `T-0036` · 보드엔 `T-0036-001-*` 만 — glob 은 잡지만 canonical ID 가 다르다."""
+def test_prefixed_ticket_does_not_answer_for_a_legacy_review_ticket_id(board):
+    """재현: 리뷰 집계 티켓 `T-0036` · 보드엔 `T-0036-001-*` 만 — glob 은 잡지만 canonical ID 가 다르다."""
     _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
                       touches="src/unrelated.py")
     # glob 은 실제로 오인 매칭한다(차단이 어디서 서는지 못박는다).
     assert ticket_store.find_ticket(pm_paths.home_at(board.REPO), "T-0036")[1].name.startswith("T-0036-001")
 
     assert regression._gate_ticket(pm_paths.home_at(board.REPO), "T-0036") is None
-    assert regression._gate_ticket_is_claimed(pm_paths.home_at(board.REPO), "T-0036") is False
+    assert regression._review_ticket_is_claimed(pm_paths.home_at(board.REPO), "T-0036") is False
     assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0036") == []     # 무관 touches 로 좁히지 않는다
 
 
-def test_glob_mismatched_gate_never_downgrades_a_full_run(board, monkeypatch, capsys):
-    """그 형상에서 FULL 요청은 강등되지 않는다 — 무관 touches 로 좁힌 '가짜 green' 폐쇄 (DoD)."""
+def test_glob_mismatched_review_ticket_never_downgrades_a_full_run(board, monkeypatch, capsys):
+    """그 구성에서 FULL 요청은 범위가 낮아지지 않는다 — 무관 touches 로 좁힌 '가짜 green' 폐쇄 (DoD)."""
     _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
                       touches="src/unrelated.py")
-    _write_rounds_ledger(board, {"T-0036": [(1, 1)]})
+    _write_rounds_records(board, {"T-0036": [(1, 1)]})
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
-    assert regression._active_review_gates(pm_paths.home_at(board.REPO)) == []
+    assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == []
     assert "수준을 낮춥니다" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
 
 
-def test_exact_ticket_gate_still_downgrades(board, monkeypatch, capsys):
-    """정상 경로 무변경 — canonical ID 가 정확히 일치하면 종전대로 그 touches 로 강등한다."""
+def test_exact_review_ticket_still_downgrades(board, monkeypatch, capsys):
+    """정상 경로 무변경 — canonical ID 가 정확히 일치하면 종전대로 그 touches 로 범위를 낮춘다."""
     _seed_ticket_file(board, "T-0036", status="claimed", slug="본래-티켓")
     _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
                       touches="src/unrelated.py")
-    _write_rounds_ledger(board, {"T-0036": [(1, 1)]})
+    _write_rounds_records(board, {"T-0036": [(1, 1)]})
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
@@ -1714,8 +1714,8 @@ def test_exact_ticket_gate_still_downgrades(board, monkeypatch, capsys):
     assert '-k "pay"' in fake.calls[0]["args"][0]     # 본래 티켓의 touches 로 좁힌다
 
 
-def test_free_form_gate_label_skips_the_ticket_lookup(board, monkeypatch):
-    """티켓 ID 문법이 아닌 라벨(`wave4-b1`·glob 메타)은 조회 자체를 생략한다."""
+def test_free_form_review_ticket_label_skips_the_ticket_lookup(board, monkeypatch):
+    """티켓 ID 문법이 아닌 라벨(`group4-b1`·glob 메타)은 조회 자체를 생략한다."""
     calls: list[str] = []
 
     def _find(_home, tid, **_kwargs):
@@ -1723,20 +1723,20 @@ def test_free_form_gate_label_skips_the_ticket_lookup(board, monkeypatch):
         return None
 
     monkeypatch.setattr(ticket_store, "find_ticket_exact", _find)
-    for label in ("wave4-b1", "T-*", "T-0036-001-fix", "리뷰", ""):
+    for label in ("group4-b1", "T-*", "T-0036-001-fix", "리뷰", ""):
         assert regression._gate_ticket(pm_paths.home_at(board.REPO), label) is None
-        assert regression._gate_ticket_is_claimed(pm_paths.home_at(board.REPO), label) is False
+        assert regression._review_ticket_is_claimed(pm_paths.home_at(board.REPO), label) is False
     assert calls == [], f"비-ID 라벨이 보드 조회를 탔다: {calls}"
 
-    # canonical ID 는 종전대로 조회한다 (생략 규칙이 정상 게이트를 삼키지 않는다).
+    # canonical ID 는 종전대로 조회한다 (생략 규칙이 정상 리뷰 집계 티켓을 삼키지 않는다).
     assert regression._gate_ticket(pm_paths.home_at(board.REPO), "T-0036-001") is None
     assert calls == ["T-0036-001"]
 
 
-def test_ticket_id_gate_with_empty_touches_stays_full(board, monkeypatch, capsys):
-    """canonical ID 게이트인데 touches 가 비면 강등하지 않는다 — 스코프 없는 좁힘 금지(불변)."""
+def test_review_ticket_id_with_empty_touches_stays_full(board, monkeypatch, capsys):
+    """canonical ID 리뷰 집계 티켓인데 touches 가 비면 범위를 낮추지 않는다 — 스코프 없는 좁힘 금지(불변)."""
     _seed_ticket_file(board, "T-0037", status="claimed", slug="빈-touches", touches="")
-    _write_rounds_ledger(board, {"T-0037": [(1, 1)]})
+    _write_rounds_records(board, {"T-0037": [(1, 1)]})
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
@@ -1744,43 +1744,43 @@ def test_ticket_id_gate_with_empty_touches_stays_full(board, monkeypatch, capsys
     assert _flag(board)["scope"] == "full"
 
 
-# ── 강등 확정은 전-게이트 fail-closed (T-0603 ①) ────────────────────────────
-# codex R3 지적: 활성 게이트가 여럿일 때 하나만 touches 를 확정하지 못해도 나머지 touches 로
-# 강등이 성사됐다 — 그 실행은 미해소 게이트가 건드린 범위를 **한 번도 돌지 않은 채** rc0 을 내고,
-# 그 green 은 활성 게이트 전부에 대한 통과로 읽힌다(false-green). 아래는 두 미해소 형상(빈
-# touches·읽기 실패)을 재현하고 **강등 전체 취소**를 단언한다.
+# ── 범위 낮춤 확정은 전체 리뷰 집계 티켓 단위 fail-closed (T-0603 ①) ────────────────────────────
+# codex R3 지적: 활성 리뷰 집계 티켓이 여럿일 때 하나만 touches 를 확정하지 못해도 나머지 touches 로
+# 범위 낮춤이 성사됐다 — 그 실행은 미해소 리뷰 집계 티켓이 건드린 범위를 **한 번도 돌지 않은 채** rc0 을 내고,
+# 그 green 은 활성 리뷰 집계 티켓 전부에 대한 통과로 읽힌다(false-green). 아래는 두 미해소 구성(빈
+# touches·읽기 실패)을 재현하고 **범위 낮춤 전체 취소**를 단언한다.
 
 
-def _two_active_gates(board, monkeypatch, resolver) -> None:
-    """활성 게이트 둘(T-0002·T-0003)을 심고 touches 해소기를 주입한다."""
-    _write_rounds_ledger(board, {"T-0002": [(1, 1)], "T-0003": [(1, 1)]})
+def _two_active_review_tickets(board, monkeypatch, resolver) -> None:
+    """활성 리뷰 집계 티켓 둘(T-0002·T-0003)을 심고 touches 해소기를 주입한다."""
+    _write_rounds_records(board, {"T-0002": [(1, 1)], "T-0003": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed", "T-0003": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", resolver)
 
 
-def test_one_gate_without_touches_cancels_the_whole_downgrade(
+def test_one_review_ticket_without_touches_cancels_the_whole_downgrade(
         board, monkeypatch, capsys):
-    """게이트 하나가 빈 touches 면 다른 게이트의 touches 로 부분 강등하지 않는다 (DoD)."""
-    _two_active_gates(board, monkeypatch,
+    """리뷰 집계 티켓 하나가 빈 touches 면 다른 리뷰 집계 티켓의 touches 로 부분만 범위를 낮추지 않는다 (DoD)."""
+    _two_active_review_tickets(board, monkeypatch,
                       lambda _home, tid: ["src/pay.py"] if tid == "T-0002" else [])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     out, err = capsys.readouterr()
-    assert "수준을 낮춥니다" not in out                       # 부분 강등 안내가 뜨지 않는다
-    assert "T-0003" in err and "수준 낮춤을 취소" in err       # 미해소 게이트를 지목한 사유 1줄
+    assert "수준을 낮춥니다" not in out                       # 부분 범위 낮춤 안내가 뜨지 않는다
+    assert "T-0003" in err and "수준 낮춤을 취소" in err       # 미해소 리뷰 집계 티켓을 지목한 사유 1줄
     assert "-k" not in fake.calls[0]["args"][0]         # FULL 그대로 돈다
-    assert _flag(board)["scope"] == "full"              # push 게이트 플래그 = FULL
+    assert _flag(board)["scope"] == "full"              # push 통과 조건 플래그 = FULL
 
 
-def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, capsys):
-    """touches 읽기 실패(손상 frontmatter)는 예외로 전파한다 — 나머지 게이트로 부분 강등하지 않는다."""
+def test_one_unreadable_review_ticket_cancels_the_whole_downgrade(board, monkeypatch, capsys):
+    """touches 읽기 실패(손상 frontmatter)는 예외로 전파한다 — 나머지 리뷰 집계 티켓으로 부분 범위 낮춤을 하지 않는다."""
     def _resolve(_home, tid):
         if tid == "T-0003":
             raise ValueError("frontmatter 손상")
         return ["src/pay.py"]
 
-    _two_active_gates(board, monkeypatch, _resolve)
+    _two_active_review_tickets(board, monkeypatch, _resolve)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     with pytest.raises(ValueError, match="frontmatter 손상"):
@@ -1790,29 +1790,29 @@ def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, cap
     assert fake.calls == []
 
 
-def test_all_gates_resolved_still_downgrade_to_the_union(board, monkeypatch, capsys):
-    """정상 경로 무변경 — 활성 게이트 전부가 touches 를 확정하면 종전대로 합집합 강등이다."""
-    _two_active_gates(
+def test_all_review_tickets_resolved_still_downgrade_to_the_union(board, monkeypatch, capsys):
+    """정상 경로 무변경 — 활성 리뷰 집계 티켓 전부가 touches 를 확정하면 종전대로 합집합으로 범위를 낮춘다."""
+    _two_active_review_tickets(
         board, monkeypatch,
-        lambda _home, tid: ["src/pay.py"] if tid == "T-0002" else ["src/ledger.py"])
+        lambda _home, tid: ["src/pay.py"] if tid == "T-0002" else ["src/record.py"])
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     out = capsys.readouterr().out
     assert "활성 리뷰 사이클 [T-0002, T-0003]" in out and "수준을 낮춥니다" in out
     scoped = fake.calls[0]["args"][0]
-    assert '-k "ledger or pay"' in scoped               # 두 게이트의 합집합
-    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()           # 강등 실행은 게이트 플래그를 안 쓴다
+    assert '-k "pay or record"' in scoped               # 두 리뷰 집계 티켓의 합집합
+    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()           # 범위를 낮춘 실행은 통과 조건 플래그를 안 쓴다
 
 
-# ── 티켓 조회 공용 seam (T-0603 ④) ──────────────────────────────────────────
-# 정확-일치 판정을 board 공개 함수로 승격했다 — 강등(board)·estimate(추가 리뷰어)·완료 게이트
+# ── 티켓 조회 공용 함수 (T-0603 ④) ──────────────────────────────────────────
+# 정확-일치 판정을 board 공개 함수로 승격했다 — 범위 낮춤(board)·estimate(추가 리뷰어)·완료 통과 조건
 # (ticket_finish)가 **같은 함수**를 쓴다. 사본 판정을 두면 그 사본이 다시 첫-매칭으로 흘러
 # half-fix 가 재발한다(이 클래스의 재발 이력).
 
 
 def test_find_ticket_exact_answers_only_for_the_canonical_id(board):
-    """공존 픽스처에서 정확-일치 seam 은 각 ID 에 그 ID 의 파일만 돌려준다."""
+    """공존 픽스처에서 정확-일치 공용 함수는 각 ID 에 그 ID 의 파일만 돌려준다."""
     _seed_ticket_file(board, "T-0036", status="claimed", slug="본래-티켓")
     _seed_ticket_file(board, "T-0036-001", status="open", slug="다른-티켓",
                       touches="src/unrelated.py")
@@ -1839,7 +1839,7 @@ def test_find_ticket_still_falls_back_when_no_exact_candidate_exists(board):
     path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / "T-0038-fix-123.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     # frontmatter `id:` 부재 + 숫자로 끝나는 slug — 파일명 파서가 `T-0038-fix-123` 으로 읽어
-    # canonical 이 `T-0038` 과 어긋나는 legacy 형상(`_canonical_ticket_id` 주석의 그 모호성).
+    # canonical 이 `T-0038` 과 어긋나는 legacy 구성(`_canonical_ticket_id` 주석의 그 모호성).
     path.write_text("---\ntitle: 픽스처\nstatus: open\n---\n\n# 본문\n", encoding="utf-8")
 
     assert ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), "T-0038") is None
@@ -1847,8 +1847,8 @@ def test_find_ticket_still_falls_back_when_no_exact_candidate_exists(board):
 
 
 def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, capsys):
-    """명시 스코프(`--ticket`/`--touches`)는 종전 그대로다 (강등 판정 자체를 타지 않는다)."""
-    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    """명시 스코프(`--ticket`/`--touches`)는 종전 그대로다 (범위 낮춤 판정 자체를 타지 않는다)."""
+    _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/other.py"])
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
@@ -1857,8 +1857,8 @@ def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, cap
     assert "수준을 낮춥니다" not in out and "regression(scoped, 1 touches)" in out
 
 
-def test_pre_push_hook_runs_the_final_full_gate(board, monkeypatch):
-    """훅은 FULL 을 요구한다 — 강등되면 게이트 플래그가 안 써져 push 가 통과할 수 없다."""
+def test_pre_push_hook_runs_the_final_full_check(board, monkeypatch):
+    """훅은 FULL 을 요구한다 — 범위가 낮아지면 통과 조건 플래그가 안 써져 push 가 통과할 수 없다."""
     # 설치는 자기 `.git` 아래로 해소될 때만 선다(T-0899) — 훅 폴더는 엔진이 만든다.
     (board.REPO / ".git").mkdir(parents=True, exist_ok=True)
     hooks = board.REPO / ".git" / "hooks"
@@ -1871,14 +1871,14 @@ def test_pre_push_hook_runs_the_final_full_gate(board, monkeypatch):
 
 
 # ── 구형 서명 훅 = 차단 (fail-closed) ───────────────────────────────────────
-# 훅 본문은 설치 시점에 박제되므로, 엔진이 게이트 명령을 바꿔도 이미 설치된 훅은 옛 명령을 돈다.
-# 실측 클래스: `--final` 없는 구버전 훅이 강등 실행의 rc0 을 push 허가로 읽어 FULL 플래그 없이
-# push 가 열린다. 게이트는 그 훅을 고치지 않고 **막는다** — 처방은 `board.py init` 재실행 1회다.
+# 훅 본문은 설치 시점에 고정되므로, 엔진이 통과 조건 명령을 바꿔도 이미 설치된 훅은 옛 명령을 돈다.
+# 실측 클래스: `--final` 없는 구버전 훅이 범위를 낮춘 실행의 rc0 을 push 허가로 읽어 FULL 플래그 없이
+# push 가 열린다. 통과 조건은 그 훅을 고치지 않고 **막는다** — 해결 방법은 `board.py init` 재실행 1회다.
 #
 # 이 군은 옛 자기치유 테스트 군을 **차단 의미로 대체**한 것이다. 케이스 수가 준 만큼 커버리지가
-# 준 게 아니라 검증할 대상이 없어졌다: 표식 TTL·일회성 소비·표식 탈취·치유 실패 fail-soft 는
+# 준 게 아니라 검증할 대상이 없어졌다: 표시 TTL·일회성 소비·표시 탈취·치유 실패 fail-soft 는
 # 전부 "치유 사실을 다음 프로세스에 전달하는" 상태 기계의 케이스였고, 그 기계가 사라졌다. 남은
-# 축은 판정 하나(현행 세대인가)와 그 결론(차단 / 무간섭)뿐이라 여기 케이스도 그 둘만 센다.
+# 기준은 판정 하나(현재 버전인가)와 그 결론(차단 / 무간섭)뿐이라 여기 케이스도 그 둘만 센다.
 
 
 def _legacy_hook(py: str = "python3") -> str:
@@ -1886,13 +1886,13 @@ def _legacy_hook(py: str = "python3") -> str:
 
 
 def board_legacy_body(py: str) -> str:
-    """구세대 본문은 엔진 registry 가 소유한다 — 테스트가 사본을 두면 registry 가 죽어도 green."""
+    """옛 버전 본문은 엔진 registry 가 소유한다 — 테스트가 사본을 두면 registry 가 죽어도 green."""
     mod = _load_board()
     return pre_push_hook._legacy_pre_push_hook_bodies(py)[0]
 
 
 def _hooked_repo(board, monkeypatch, tmp_path, body: str | None):
-    """`.git` 디렉토리를 갖춘 tmp REPO + (선택) 설치된 훅 — 세대 판정 진입 조건 재현.
+    """`.git` 디렉토리를 갖춘 tmp REPO + (선택) 설치된 훅 — 버전 판정 진입 조건 재현.
 
     훅 경로는 실제 해소 규칙(`REPO/.git/hooks`)을 그대로 태운다 — `_hooks_dir` 를 스텁하면
     "git 호출 없이 해소한다"는 이 판정의 성질이 검증되지 않는다."""
@@ -1909,7 +1909,7 @@ def _hooked_repo(board, monkeypatch, tmp_path, body: str | None):
 def test_regression_run_refuses_a_legacy_hook(board, monkeypatch, tmp_path, capsys):
     """구버전 훅(`--final` 부재)이면 회귀를 돌리지 않고 rc 1 로 막고 `init` 을 안내한다.
 
-    차단은 **어떤 부작용보다 앞**이다 — pytest 를 돌리지도, 게이트 플래그를 쓰지도 않는다
+    차단은 **어떤 부작용보다 앞**이다 — pytest 를 돌리지도, 통과 조건 플래그를 쓰지도 않는다
     (기록이 남으면 그게 다음 실행의 green 재사용 입력이 된다)."""
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
@@ -1937,9 +1937,9 @@ def test_regression_check_refuses_a_legacy_hook_too(board, monkeypatch, tmp_path
 def test_the_check_then_run_sequence_stays_blocked(board, monkeypatch, tmp_path, capsys):
     """훅 본문은 `check || run` **2프로세스**다 — 두 단계 모두 차단으로 끝난다.
 
-    구형 훅이 실행 중인 push 시도에서 2단계 run 이 통과하면(강등이든 FULL 이든) 옛 훅이 그 rc0 을
+    구형 훅이 실행 중인 push 시도에서 2단계 run 이 통과하면(범위를 낮췄든 FULL 이든) 옛 훅이 그 rc0 을
     push 허가로 읽는다. 차단은 두 단계에 같은 결론을 주므로 그 창 자체가 없다."""
-    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
@@ -1952,13 +1952,13 @@ def test_the_check_then_run_sequence_stays_blocked(board, monkeypatch, tmp_path,
     assert fake.calls == []
     assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()
     err = capsys.readouterr().err
-    assert err.count("board.py init") == 2      # 두 단계 모두 같은 처방을 말한다
+    assert err.count("board.py init") == 2      # 두 단계 모두 같은 해결 방법을 말한다
 
 
 def test_an_unknown_pm_hook_body_is_refused_too(board, monkeypatch, tmp_path, capsys):
     """서명은 있는데 **엔진이 모르는 본문**(채택자 커스터마이즈)도 차단이다.
 
-    아는 세대만 골라 다루던 옛 경계는 *덮어쓰기*가 있을 때의 것이었다. 덮지 않는 지금은
+    아는 버전만 골라 다루던 옛 경계는 *덮어쓰기*가 있을 때의 것이었다. 덮지 않는 지금은
     "이 훅이 무엇을 강제하는지 확정할 수 없다"가 곧 차단 사유고, 조용한 통과 경로를 남기지 않는다.
     """
     custom = _legacy_hook() + "python3 scripts/company_policy_check.py || exit 1\n"
@@ -1974,7 +1974,7 @@ def test_an_unknown_pm_hook_body_is_refused_too(board, monkeypatch, tmp_path, ca
 
 
 def test_a_current_generation_hook_passes_untouched(board, monkeypatch, tmp_path, capsys):
-    """현행 세대(`board.py init` 이 방금 설치한 본문)는 무소음 통과다 — 설치↔판정이 닫힌다."""
+    """현재 버전(`board.py init` 이 방금 설치한 본문)은 무소음 통과다 — 설치↔판정이 닫힌다."""
     hooks = board.REPO / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
@@ -1993,7 +1993,7 @@ def test_a_current_generation_hook_passes_untouched(board, monkeypatch, tmp_path
 
 
 def test_a_current_hook_with_the_adopters_launcher_passes(board, monkeypatch, tmp_path):
-    """채택자의 런처 선택(`py -3.12`)이 세대 판정을 뒤집지 않는다 — 설치된 인터프리터로 대조."""
+    """채택자의 런처 선택(`py -3.12`)이 버전 판정을 뒤집지 않는다 — 설치된 인터프리터로 대조."""
     hook = _hooked_repo(board, monkeypatch, tmp_path, None)
     hook.write_text(pre_push_hook.pre_push_hook_body("py -3.12"), encoding="utf-8")
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
@@ -2004,7 +2004,7 @@ def test_a_current_hook_with_the_adopters_launcher_passes(board, monkeypatch, tm
 
 def test_a_foreign_hook_is_not_our_business(board, monkeypatch, tmp_path, capsys):
     """남의 pre-push 훅(pm 서명 없음)은 판정 대상이 아니다 — 차단도 경고도 없다."""
-    foreign = "#!/bin/sh\n# someone else's gate\nexit 0\n"
+    foreign = "#!/bin/sh\n# someone else's check\nexit 0\n"
     hook = _hooked_repo(board, monkeypatch, tmp_path, foreign)
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
@@ -2015,7 +2015,7 @@ def test_a_foreign_hook_is_not_our_business(board, monkeypatch, tmp_path, capsys
 
 
 def test_a_missing_hook_is_not_our_business(board, monkeypatch, tmp_path):
-    """훅 미설치 형상(솔로 legacy·의도적 미설치)은 무영향 — 심지도, 막지도 않는다."""
+    """훅 미설치 구성(솔로 legacy·의도적 미설치)은 무영향 — 심지도, 막지도 않는다."""
     hook = _hooked_repo(board, monkeypatch, tmp_path, None)
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
@@ -2026,9 +2026,9 @@ def test_a_missing_hook_is_not_our_business(board, monkeypatch, tmp_path):
 def test_an_unreadable_hook_is_refused(board, monkeypatch, tmp_path, capsys):
     """훅 파일은 있는데 읽지 못하면 **차단**이다 — 판정 실패도 차단 방향(조용한 통과 0).
 
-    세대를 확정하지 못한 훅을 통과시키는 것이 곧 옛 게이트가 조용히 사는 채널이다."""
+    버전을 확정하지 못한 훅을 통과시키는 것이 곧 옛 통과 조건이 조용히 사는 채널이다."""
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
-    # 훅 판독은 공유 읽기 seam 을 지난다(T-0729) — 주입도 그 자리에 건다. `Path.read_text` 에
+    # 훅 판독은 공유 읽기 함수를 지난다(T-0729) — 주입도 그 자리에 건다. `Path.read_text` 에
     # 걸면 엔진이 그 호출을 더는 하지 않아 이 회귀가 공허해진다.
     real_read_text = fs.read_text_shared
 
@@ -2051,7 +2051,7 @@ def test_the_refusal_resolves_a_present_hook_without_calling_git(board, monkeypa
     """순수 해소 자리에 훅이 **실재하면** 그 파일로 판정한다 — 회귀 진입에 subprocess 0.
 
     `_hooks_dir`(git `rev-parse`)를 호출하면 실패하도록 두고, 그래도 판정이 성립함을 단언한다.
-    (훅을 못 찾은 형상에서만 git 권위 해소를 묻는다 — 아래 hooksPath 절.)"""
+    (훅을 못 찾은 구성에서만 git 권위 해소를 묻는다 — 아래 hooksPath 절.)"""
     monkeypatch.setattr(pre_push_hook, "_hooks_dir",
                         lambda _home: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
     _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
@@ -2059,7 +2059,7 @@ def test_the_refusal_resolves_a_present_hook_without_calling_git(board, monkeypa
 
 
 def test_non_git_trees_are_left_alone(board, monkeypatch):
-    """`.git` 없는 트리는 해소 자체가 None — 판정 밖(비-훅 형상을 차단하지 않는다)."""
+    """`.git` 없는 트리는 해소 자체가 None — 판정 밖(비-훅 구성을 차단하지 않는다)."""
     monkeypatch.setattr(pre_push_hook, "_hooks_dir",
                         lambda _home: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
     assert pre_push_hook._pure_hooks_dir(pm_paths.home_at(board.REPO)) is None
@@ -2072,11 +2072,11 @@ def test_failed_replace_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
     잔재는 git 이 실행하지 않는 이름이라 무해했지만, 실패마다 훅 디렉토리에 쌓인다.
     """
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
-    seam = fs
+    override = fs
     _patch_atomic_replace(
         monkeypatch, board,
         # Windows 분기가 실패에서 내는 클래스 그대로(OSError 서브클래스).
-        lambda *a, **k: (_ for _ in ()).throw(seam.AtomicReplaceError("교체 실패")),
+        lambda *a, **k: (_ for _ in ()).throw(override.AtomicReplaceError("교체 실패")),
     )
 
     with pytest.raises(OSError):
@@ -2120,7 +2120,7 @@ def test_pure_hooks_dir_follows_a_linked_worktree_to_the_shared_hooks(board, tmp
 
 
 # ── `core.hooksPath` 값 파싱 ────────────────────────────────────────────────
-# 존재-only 감지는 선언이 있기만 하면 판정을 포기했다 — 기본 위치를 가리키는 선언까지 세대 관리
+# 존재-only 감지는 선언이 있기만 하면 판정을 포기했다 — 기본 위치를 가리키는 선언까지 버전 관리
 # 밖에 남는다. 값을 순수 파이썬으로 읽어 그 경로를 훅 위치로 쓴다(subprocess 0).
 # git 은 섹션·키를 대소문자 무관으로 다루고, 상대 경로는 worktree 루트 기준으로 해소한다.
 
@@ -2138,7 +2138,7 @@ def test_pure_hooks_dir_parses_a_relative_hooks_path(board):
 
 
 def test_pure_hooks_dir_parses_an_absolute_hooks_path(board, tmp_path):
-    """절대 `core.hooksPath`(보호훅 형상)는 그 경로 그대로다."""
+    """절대 `core.hooksPath`(보호훅 구성)는 그 경로 그대로다."""
     elsewhere = tmp_path / "repo-hooks" / "proj"
     elsewhere.mkdir(parents=True)
     _write_git_config(board, f"[core]\n\thooksPath = {elsewhere}\n")
@@ -2176,17 +2176,17 @@ def test_absent_hooks_path_keeps_the_default_location(board, text):
     '[includeIf "gitdir:~/work/"]\n\tpath = ../work.config\n',
     "[core]\n\thooksPath =\n",                        # 빈 값
 ])
-def test_unresolvable_config_leaves_the_gate_alone(board, text):
+def test_unresolvable_config_leaves_the_check_alone(board, text):
     """include/includeIf·빈 값은 git 없이 확정 불가 — 훅 위치를 모르면 판정 자체가 없다.
 
-    여기서 막으면 **훅을 안 쓰는 형상까지** 회귀가 멈춘다(차단 사유는 '구형 훅이 실재한다'뿐)."""
+    여기서 막으면 **훅을 안 쓰는 구성까지** 회귀가 멈춘다(차단 사유는 '구형 훅이 실재한다'뿐)."""
     _write_git_config(board, text)
     assert pre_push_hook._pure_hooks_dir(pm_paths.home_at(board.REPO)) is None
     assert pre_push_hook._stale_pre_push_hook_refusal(pm_paths.home_at(board.REPO)) is None
 
 
 def test_a_hooks_path_at_the_default_location_is_covered(board, monkeypatch, tmp_path):
-    """기본 위치를 가리키는 선언도 판정이 커버한다 — 선언 형태가 세대 관리를 끊지 않는다."""
+    """기본 위치를 가리키는 선언도 판정이 커버한다 — 선언 형태가 버전 관리를 끊지 않는다."""
     _write_git_config(board, "[core]\n\thooksPath = .git/hooks\n")
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
     assert pre_push_hook._pure_hooks_dir(pm_paths.home_at(board.REPO)) == (board.REPO / ".git" / "hooks").resolve()
@@ -2195,7 +2195,7 @@ def test_a_hooks_path_at_the_default_location_is_covered(board, monkeypatch, tmp
 
 
 def test_a_hook_under_a_custom_hooks_path_is_covered(board, monkeypatch, tmp_path):
-    """커스텀 위치의 엔진 훅도 판정 대상이다 — 위치 선언이 세대 관리를 끊지 않는다."""
+    """커스텀 위치의 엔진 훅도 판정 대상이다 — 위치 선언이 버전 관리를 끊지 않는다."""
     custom = board.REPO / ".githooks"
     custom.mkdir(parents=True)
     _write_git_config(board, "[core]\n\thooksPath = .githooks\n")
@@ -2210,11 +2210,11 @@ def test_a_hook_under_a_custom_hooks_path_is_covered(board, monkeypatch, tmp_pat
 
 def test_current_hook_still_downgrades_during_an_active_cycle(
         board, monkeypatch, tmp_path, capsys):
-    """현행 세대 훅에서는 활성 사이클 강등이 종전대로 돈다 — 차단은 구형 훅에만 걸린다.
+    """현재 버전 훅에서는 활성 사이클의 범위 낮춤이 종전대로 돈다 — 차단은 구형 훅에만 걸린다.
 
-    강등이 push 게이트를 열지 못하는 근거가 바로 이것이다: 강등 rc0 을 허가로 읽는 훅은 애초에
-    진입에서 막히므로, 여기 남는 강등은 항상 `--final` 을 싣는 현행 훅과 짝을 이룬다."""
-    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    범위 낮춤이 push 통과 조건을 열지 못하는 근거가 바로 이것이다: 범위를 낮춘 rc0 을 허가로 읽는 훅은 애초에
+    진입에서 막히므로, 여기 남는 범위 낮춤은 항상 `--final` 을 싣는 현행 훅과 짝을 이룬다."""
+    _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: ["src/pay.py"])
     hook = _hooked_repo(board, monkeypatch, tmp_path, None)
@@ -2229,8 +2229,8 @@ def test_current_hook_still_downgrades_during_an_active_cycle(
 
 # ── repo config 밖 `core.hooksPath` = git 권위 해소 (T-0605 ②) ────────────────
 # codex R5 지적: 훅 위치 판정이 **저장소 config 만** 읽어 global/system/worktree 선언을 놓쳤다.
-# git 과 설치기는 그 선언을 따르므로 구세대 훅은 선언된 경로에서 계속 실행되는데, 판정은
-# `.git/hooks` 를 보고 "미설치"로 읽어 세대 차단이 통째로 우회됐다. 순수 해소가 훅을 못 찾은
+# git 과 설치기는 그 선언을 따르므로 옛 버전 훅은 선언된 경로에서 계속 실행되는데, 판정은
+# `.git/hooks` 를 보고 "미설치"로 읽어 버전 차단이 통째로 우회됐다. 순수 해소가 훅을 못 찾은
 # 자리에서만 git 에 권위 해소(`rev-parse --git-path hooks`)를 묻는다 — 훅이 이미 순수 위치에
 # 있으면 그 파일로 판정하므로 회귀 진입의 subprocess 는 0 이다(위 절).
 
@@ -2264,7 +2264,7 @@ def _declare_global_hooks_path(tmp_path: Path, hooks: Path) -> None:
 @requires_git
 def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
         board, monkeypatch, tmp_path):
-    """global `core.hooksPath` 아래의 구세대 훅도 차단된다 (재현 → 차단·DoD).
+    """global `core.hooksPath` 아래의 옛 버전 훅도 차단된다 (재현 → 차단·DoD).
 
     재현: repo config 에는 선언이 없고 global config 만 hooksPath 를 가리킨다. 순수 해소는
     `.git/hooks`(훅 없음)를 답하므로 판정이 서지 않았다 — git 의 권위 해소가 그 자리를 메운다."""
@@ -2276,10 +2276,10 @@ def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
     hook.write_text(_legacy_hook(), encoding="utf-8")
     hook.chmod(0o755)
 
-    # 재현 축 — 순수 해소만 보면 이 훅은 보이지 않는다(우회가 성립하던 자리).
+    # 재현 단계 — 순수 해소만 보면 이 훅은 보이지 않는다(우회가 성립하던 자리).
     assert pre_push_hook._pure_hooks_dir(pm_paths.home_at(board.REPO)) == (board.REPO / ".git" / "hooks").resolve()
     assert not (board.REPO / ".git" / "hooks" / "pre-push").exists()
-    # 차단 축 — git 권위 해소가 실제 실행되는 훅을 찾아 세대를 판정한다.
+    # 차단 단계 — git 권위 해소가 실제 실행되는 훅을 찾아 버전을 판정한다.
     assert pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))[0] == hooks.resolve()
     assert "구버전" in (pre_push_hook._stale_pre_push_hook_refusal(pm_paths.home_at(board.REPO)) or "")
     assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 고치지 않는다
@@ -2287,12 +2287,12 @@ def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
 
 @requires_git
 def test_a_current_hook_under_a_global_hooks_path_passes(board, monkeypatch, tmp_path):
-    """같은 형상의 **현행 세대** 훅은 무소음 통과다 — 위치 확장이 과차단을 만들지 않는다.
+    """같은 구성의 **현재 버전** 훅은 무소음 통과다 — 위치 확장이 과차단을 만들지 않는다.
 
     통과(`None`)만 단언하면 **판정이 아예 안 돌아도 같은 값**이라(위치 해소 실패 → 무영향) 가드가
     없는 상태와 구분되지 않는다 — Windows 실측에서 이 테스트가 정확히 그렇게 통과했다. 그래서
     판정이 이 위치를 실제로 봤음을 값으로 확인한다: (1) 권위 해소가 그 훅 디렉토리를 짚고
-    (2) 같은 자리의 본문을 구세대로 바꾸면 차단이 선다([[guard-must-cover-its-own-surface]])."""
+    (2) 같은 자리의 본문을 옛 버전으로 바꾸면 차단이 선다([[guard-must-cover-its-own-surface]])."""
     _real_git_repo(board, monkeypatch, tmp_path)
     hooks = tmp_path / "company-hooks"
     hooks.mkdir()
@@ -2303,7 +2303,7 @@ def test_a_current_hook_under_a_global_hooks_path_passes(board, monkeypatch, tmp
     # 판정이 돌았음의 근거 — 해소가 실패하면 아래 통과는 아무 것도 뜻하지 않는다.
     assert pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))[0] == hooks.resolve()
     assert pre_push_hook._stale_pre_push_hook_refusal(pm_paths.home_at(board.REPO)) is None
-    # 같은 자리의 구세대 본문은 차단된다 — 통과가 '판정 부재'가 아니라 '현행 판정'임을 가른다.
+    # 같은 자리의 옛 버전 본문은 차단된다 — 통과가 '판정 부재'가 아니라 '현행 판정'임을 가른다.
     hook.write_text(_legacy_hook(), encoding="utf-8")
     assert "구버전" in (pre_push_hook._stale_pre_push_hook_refusal(pm_paths.home_at(board.REPO)) or "")
 
@@ -2315,19 +2315,19 @@ def test_an_unanswerable_git_hooks_query_is_loud_instead_of_silent(
 
     재현(Linux 에서 Windows 표기를 직접 주입): global config 의 `hooksPath` 를 백슬래시 표기로
     적으면 git config 파서가 값의 `\\U` 를 이스케이프로 읽어 파싱에 실패하고, 그 repo 의 **모든**
-    git 호출이 rc≠0 이 된다. 종전엔 그 실패가 `None` 으로 삼켜져 훅 세대 판정이 전면 no-op 이
+    git 호출이 rc≠0 이 된다. 종전엔 그 실패가 `None` 으로 삼켜져 훅 버전 판정이 전면 no-op 이
     됐는데도 호출부는 '통과'와 구분할 수 없었다(Windows 실측 false-green 의 뿌리)."""
     _real_git_repo(board, monkeypatch, tmp_path)
     (tmp_path / "global.gitconfig").write_text(
         "[core]\n\thooksPath = C:\\Users\\pm\\company-hooks\n", encoding="utf-8")
 
-    # 재현 축 — git 이 답을 못 한다(rc≠0). 사유는 침묵 대신 값으로 나온다.
+    # 재현 단계 — git 이 답을 못 한다(rc≠0). 사유는 침묵 대신 값으로 나온다.
     hooks_dir, reason = pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))
     assert hooks_dir is None
     assert reason and "rc=" in reason
     assert pre_push_hook._hooks_dir_resolution(pm_paths.home_at(board.REPO))[0] is None
 
-    # 관측성 축 — 판정 생략이 사유와 함께 stderr 에 남는다(판정 부재를 통과로 읽지 않게).
+    # 관측성 확인 — 판정 생략이 사유와 함께 stderr 에 남는다(판정 부재를 통과로 읽지 않게).
     assert pre_push_hook._stale_pre_push_hook_refusal(pm_paths.home_at(board.REPO)) is None
     err = capsys.readouterr().err
     assert "훅 디렉토리를 해소하지 못해" in err
@@ -2335,7 +2335,7 @@ def test_an_unanswerable_git_hooks_query_is_loud_instead_of_silent(
 
 
 def test_an_uncallable_git_stays_silent_and_keeps_the_pure_verdict(board, monkeypatch, capsys):
-    """git 을 **부르지 못하는** 환경은 사유 없이 조용하다 — 훅이 실행되지 않는 형상은 판정 대상 밖.
+    """git 을 **부르지 못하는** 환경은 사유 없이 조용하다 — 훅이 실행되지 않는 구성은 판정 대상 밖.
 
     `(None, None)` 은 '판정 불능'이 아니라 '판정 대상 없음'이다. 여기까지 시끄러우면 git 없는
     트리의 모든 회귀 실행에 경고가 붙는다."""
@@ -2350,7 +2350,7 @@ def test_an_uncallable_git_stays_silent_and_keeps_the_pure_verdict(board, monkey
 
 
 def test_a_failed_git_resolution_keeps_the_pure_verdict(board, monkeypatch, tmp_path):
-    """git 호출이 실패해도 판정은 현행 순수 해소 그대로다 (무간섭 아님·폴백).
+    """git 호출이 실패해도 판정은 현행 순수 해소 그대로다 (무간섭 아님·대체).
 
     스텁 대상은 **git 을 부르는 그 지점**(`_hooks_dir_resolution`)이다 — 얇은 wrapper 만 막으면
     실제 호출 경로가 스텁을 지나쳐 이 테스트가 아무 것도 주입하지 못한다."""
@@ -2379,7 +2379,7 @@ def test_a_tree_without_git_never_asks_git(board, monkeypatch):
 # ── touches 정규화 = 리스트[str] 강제 (T-0605 ③) ─────────────────────────────
 # codex R5 지적: `touches` 가 YAML 스칼라 문자열이면 `list(...)` 가 **문자 목록**을 만들어
 # `-k "s or r or c ..."` 같은 오염된 스코프가 선다(그 실행의 rc0 은 아무 것도 검증하지 않는다).
-# 형식이 불명이면 강등을 취소하고 FULL 로 남긴다(fail-closed).
+# 형식이 불명이면 범위 낮춤을 취소하고 FULL 로 남긴다(fail-closed).
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -2398,8 +2398,8 @@ def test_touches_normalization_forces_a_list_of_strings(board, raw, expected):
 
 def test_scalar_touches_cancels_the_downgrade_instead_of_scoping_by_characters(
         board, monkeypatch, capsys):
-    """스칼라 touches 는 문자 스코프가 아니라 **강등 취소 = FULL** 이다 (재현 → 차단·DoD)."""
-    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    """스칼라 touches 는 문자 스코프가 아니라 **범위 낮춤 취소 = FULL** 이다 (재현 → 차단·DoD)."""
+    _write_rounds_records(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
     monkeypatch.setattr(regression, "_ticket_touches", lambda _home, tid: None)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
@@ -2435,41 +2435,41 @@ def test_declared_touches_still_scope_the_run(board, monkeypatch, capsys):
     assert '-k "pay"' in fake.calls[0]["args"][0]
 
 
-# ── 구세대 outcome 정렬 = 신기록보다 앞 (T-0605 ⑥) ──────────────────────────
+# ── 옛 형식 outcome 정렬 = 신기록보다 앞 (T-0605 ⑥) ──────────────────────────
 # codex R5 지적: `sequence` 없는 구기록을 신기록 **뒤**에 두면, 업그레이드 후 새 통과가 쌓여도
-# 옛 반려가 영원히 '최신'이 되어 마감된 게이트가 계속 활성으로 읽힌다(영구 강등).
+# 옛 반려가 영원히 '최신'이 되어 마감된 리뷰 집계 티켓이 계속 활성으로 읽힌다(영구 범위 낮춤).
 
 
-def _ledger_with_legacy_round(board, gate: str, rounds: list[dict]) -> None:
+def _records_with_legacy_round(board, review_ticket: str, rounds: list[dict]) -> None:
     """`sequence` 유무가 섞인 산출을 그대로 심는다 (구기록 정렬 재현용)."""
     pm_paths.home_at(board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
-    payload = {gate: {"rounds": rounds}, "wave": {"id": "gen", "started": None, "spent": 0}}
+    payload = {review_ticket: {"rounds": rounds}, reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"id": "gen", "started": None, "spent": 0}}
     review_rounds._review_rounds_ledger(pm_paths.home_at(board.REPO)).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_a_sequenceless_old_rejection_is_not_the_latest_round(board, monkeypatch):
-    """순번 없는 구기록 반려 + 순번 있는 신기록 통과 → **최신은 통과**(게이트 마감)."""
-    _ledger_with_legacy_round(board, "T-0002", [
-        {"verdict": 1, "must_fix": 3},                 # 구세대 기록(순번 없음·오래된 쪽)
+    """순번 없는 구기록 반려 + 순번 있는 신기록 통과 → **최신은 통과**(리뷰 집계 티켓 마감)."""
+    _records_with_legacy_round(board, "T-0002", [
+        {"verdict": 1, "must_fix": 3},                 # 옛 형식 기록(순번 없음·오래된 쪽)
         {"sequence": 1, "verdict": 0, "must_fix": 0},  # 업그레이드 후의 통과
     ])
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
     assert review_rounds._last_round_verdict({"rounds": [
         {"verdict": 1}, {"sequence": 1, "verdict": 0}]}) == 0
-    assert regression._active_review_gates(pm_paths.home_at(board.REPO)) == []          # 옛 반려가 영구 활성으로 남지 않는다
+    assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == []          # 옛 반려가 영구 활성으로 남지 않는다
 
 
 def test_a_sequenceless_round_is_still_the_latest_when_alone(board, monkeypatch):
-    """정상 경로 무변경 — 구기록만 있는 게이트는 그 판정이 그대로 최신이다."""
-    _ledger_with_legacy_round(board, "T-0002", [{"verdict": 1, "must_fix": 2}])
+    """정상 경로 무변경 — 구기록만 있는 리뷰 집계 티켓은 그 판정이 그대로 최신이다."""
+    _records_with_legacy_round(board, "T-0002", [{"verdict": 1, "must_fix": 2}])
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
-    assert regression._active_review_gates(pm_paths.home_at(board.REPO)) == ["T-0002"]
+    assert regression._active_review_tickets(pm_paths.home_at(board.REPO)) == ["T-0002"]
 
 
 def test_round_order_key_puts_sequenced_rounds_after_legacy_ones(board):
-    """공용 정렬 seam — 순번 없는 기록이 앞, 순번 있는 기록이 순번 순으로 뒤."""
+    """공용 정렬 함수 — 순번 없는 기록이 앞, 순번 있는 기록이 순번 순으로 뒤."""
     rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
     ordered = sorted(rounds, key=review_rounds.round_outcome_order_key)
     assert ordered == [{"verdict": 1}, {"sequence": 1}, {"sequence": 2}]
@@ -2494,19 +2494,19 @@ def test_scalar_touches_in_a_real_ticket_never_becomes_a_character_scope(
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 훅 자기 가림 — 회귀 게이트는 `tests/` 가 있는 트리만 · lint 게이트는 항상 (T-0733)
+# 훅 자기 가림 — 회귀 통과 조건은 `tests/` 가 있는 트리만 · lint 통과 조건은 항상 (T-0733)
 # ════════════════════════════════════════════════════════════════════════
-# 회귀 단위는 push 되는 트리 자신이다. 코드가 worktree 슬롯에 사는 분리 형상의 PM 홈(dev-state·
+# 회귀 단위는 push 되는 트리 자신이다. 코드가 worktree 슬롯에 사는 분리 구성의 PM 홈(dev-state·
 # board·wiki)엔 돌릴 스위트가 없는데도 옛 훅은 회귀를 요구했고, 회귀 cwd 가 활성 슬롯으로 우회해
 # **코드가 한 줄도 안 바뀐 board/wiki push 가 슬롯 스위트 전량**을 조건으로 삼았다(채택자 제보).
 # 판정은 이제 훅 본문이 push 시점에 `[ -d tests ]` 로 직접 한다.
 #
 # 아래 e2e 는 **실 git push** 로 그 셸 분기를 태운다 — 훅 본문이 산출물이라 파이썬에서 문자열만
 # 대조하면 "git 이 이 스크립트를 어떻게 실행하는가"(cwd·분기·종료코드 전파)가 검증되지 않는다.
-# 게이트 명령 자리에는 인자를 기록하는 sh 대역을 둔다(실 엔진·실 pytest 를 돌리지 않는다).
+# 통과 조건 명령 자리에는 인자를 기록하는 sh 대역을 둔다(실 엔진·실 pytest 를 돌리지 않는다).
 
 _FAKE_BOARD_SH = """#!/bin/sh
-echo "$*" >> "$PM_TEST_GATE_LOG"
+echo "$*" >> "$PM_TEST_CHECK_LOG"
 case "$*" in
   regression*) exit ${PM_TEST_RC_REGRESSION:-0} ;;
   *lint*) exit ${PM_TEST_RC_LINT:-0} ;;
@@ -2523,7 +2523,7 @@ def _push_env(tmp_path: Path, **extra: str) -> dict:
         "GIT_CONFIG_SYSTEM": str(tmp_path / "system.gitconfig"),
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
-        "PM_TEST_GATE_LOG": str(tmp_path / "gate.log"),
+        "PM_TEST_CHECK_LOG": str(tmp_path / "check.log"),
     })
     env.update(extra)
     return env
@@ -2535,10 +2535,10 @@ def _git_e2e(args: list[str], cwd: Path, env: dict) -> subprocess.CompletedProce
 
 
 def _pushable_repo(board, monkeypatch, tmp_path, env: dict, *, with_tests: bool) -> Path:
-    """실 git 저장소 + bare 원격 + **엔진이 설치한** 현행 훅 — push 가 훅을 실제로 돌리는 형상.
+    """실 git 저장소 + bare 원격 + **엔진이 설치한** 현행 훅 — push 가 훅을 실제로 돌리는 구성.
 
-    `with_tests` 가 두 형상을 가른다: `tests/` 있는 트리(코드 repo) / 없는 트리(분리 형상 PM 홈).
-    인터프리터를 `sh` 로 설치해 게이트 명령 자리의 sh 대역이 그대로 실행되게 한다 — 파이썬 경로·
+    `with_tests` 가 두 구성을 가른다: `tests/` 있는 트리(코드 repo) / 없는 트리(분리 구성 PM 홈).
+    인터프리터를 `sh` 로 설치해 통과 조건 명령 자리의 sh 대역이 그대로 실행되게 한다 — 파이썬 경로·
     엔진 로딩 없이 훅의 셸 분기만 태운다.
     """
     repo = tmp_path / "home"
@@ -2563,9 +2563,9 @@ def _pushable_repo(board, monkeypatch, tmp_path, env: dict, *, with_tests: bool)
     return repo
 
 
-def _gate_calls(tmp_path: Path) -> list[str]:
-    """훅이 실제로 부른 게이트 명령 목록 (sh 대역이 기록·미호출이면 로그 파일 자체가 없다)."""
-    log = tmp_path / "gate.log"
+def _check_calls(tmp_path: Path) -> list[str]:
+    """훅이 실제로 부른 통과 조건 명령 목록 (sh 대역이 기록·미호출이면 로그 파일 자체가 없다)."""
+    log = tmp_path / "check.log"
     if not log.exists():
         return []
     return [line for line in log.read_text(encoding="utf-8").splitlines() if line]
@@ -2578,11 +2578,11 @@ def _remote_has_main(tmp_path: Path, env: dict) -> bool:
 
 
 @requires_git
-def test_a_push_from_a_tree_without_tests_meets_only_the_lint_gate(
+def test_a_push_from_a_tree_without_tests_meets_only_the_lint_check(
         board, monkeypatch, tmp_path):
-    """`tests/` 없는 트리(분리 형상 PM 홈) push — 회귀는 아예 호출되지 않고 lint 만 돌며 rc0.
+    """`tests/` 없는 트리(분리 구성 PM 홈) push — 회귀는 아예 호출되지 않고 lint 만 돌며 rc0.
 
-    제보 형상의 근절 축이다: 코드가 없는 홈의 push 가 슬롯 스위트를 요구하지 않는다. '회귀가
+    제보 구성의 근절 기준이다: 코드가 없는 홈의 push 가 슬롯 스위트를 요구하지 않는다. '회귀가
     green 이라 통과'와 구분하려고 **회귀 명령이 호출되지 않았음**(대역 로그)을 값으로 단언한다.
     """
     env = _push_env(tmp_path)
@@ -2591,22 +2591,22 @@ def test_a_push_from_a_tree_without_tests_meets_only_the_lint_gate(
     push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
 
     assert push.returncode == 0, push.stderr
-    assert _gate_calls(tmp_path) == ["lint --blocking"]      # 회귀 미실행·lint 는 실행
+    assert _check_calls(tmp_path) == ["lint --blocking"]      # 회귀 미실행·lint 는 실행
     assert "회귀 통과 조건 비대상" in (push.stdout + push.stderr)
     assert _remote_has_main(tmp_path, env)
 
 
 @requires_git
-def test_a_push_from_a_tree_with_tests_still_meets_the_regression_gate(
+def test_a_push_from_a_tree_with_tests_still_meets_the_regression_check(
         board, monkeypatch, tmp_path):
-    """`tests/` 있는 트리(코드 repo) push — 회귀 게이트는 무변경(check 선행·그 뒤 lint)."""
+    """`tests/` 있는 트리(코드 repo) push — 회귀 통과 조건은 무변경(check 선행·그 뒤 lint)."""
     env = _push_env(tmp_path)
     repo = _pushable_repo(board, monkeypatch, tmp_path, env, with_tests=True)
 
     push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
 
     assert push.returncode == 0, push.stderr
-    assert _gate_calls(tmp_path) == ["regression check", "lint --blocking"]
+    assert _check_calls(tmp_path) == ["regression check", "lint --blocking"]
     assert _remote_has_main(tmp_path, env)
 
 
@@ -2620,16 +2620,16 @@ def test_a_red_regression_still_blocks_a_push_from_a_code_tree(
     push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
 
     assert push.returncode != 0
-    assert _gate_calls(tmp_path) == ["regression check", "regression run --final"]
+    assert _check_calls(tmp_path) == ["regression check", "regression run --final"]
     assert not _remote_has_main(tmp_path, env)          # 차단은 원격에 도달하지 않는다
 
 
 @requires_git
-def test_the_lint_gate_still_blocks_a_push_from_a_tree_without_tests(
+def test_the_lint_check_still_blocks_a_push_from_a_tree_without_tests(
         board, monkeypatch, tmp_path):
-    """회귀를 가려도 lint 게이트는 남는다 — PM 홈 자신의 board/wiki 무결성은 계속 push 를 막는다.
+    """회귀를 가려도 lint 통과 조건은 남는다 — PM 홈 자신의 board/wiki 무결성은 계속 push 를 막는다.
 
-    이 훅이 lint 차단을 강제하는 유일한 상시 호출자다(가림이 게이트 하나를 통째로 없애지 않는다).
+    이 훅이 lint 차단을 강제하는 유일한 상시 호출자다(가림이 통과 조건 하나를 통째로 없애지 않는다).
     """
     env = _push_env(tmp_path, PM_TEST_RC_LINT="1")
     repo = _pushable_repo(board, monkeypatch, tmp_path, env, with_tests=False)
@@ -2637,17 +2637,17 @@ def test_the_lint_gate_still_blocks_a_push_from_a_tree_without_tests(
     push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
 
     assert push.returncode != 0
-    assert _gate_calls(tmp_path) == ["lint --blocking"]
+    assert _check_calls(tmp_path) == ["lint --blocking"]
     assert not _remote_has_main(tmp_path, env)
 
 
-# ── 본문 세대 — 현행 rev / 구세대 registry ─────────────────────────────────
+# ── 본문 버전 — 현행 rev / 옛 버전 registry ─────────────────────────────────
 
-def test_the_current_body_masks_the_regression_gate_and_stamps_a_new_rev(board):
-    """현행 본문 = `[ -d tests ]` 가림 + 항상 도는 lint + 새 세대 스탬프(설치 훅의 자기 신고)."""
+def test_the_current_body_masks_the_regression_check_and_stamps_a_new_rev(board):
+    """현행 본문 = `[ -d tests ]` 가림 + 항상 도는 lint + 새 버전 스탬프(설치 훅의 자기 신고)."""
     body = pre_push_hook.pre_push_hook_body("python3")
     assert f"{pre_push_hook._PM_HOOK_REV_PREFIX}{pre_push_hook.PM_HOOK_REV}" in body
-    assert pre_push_hook.PM_HOOK_REV == 4                      # 본문이 바뀌면 세대도 바뀐다
+    assert pre_push_hook.PM_HOOK_REV == 4                      # 본문이 바뀌면 버전도 바뀐다
     assert "if [ -d tests ]; then" in body
     # 회귀 두 줄은 가림 블록 **안**, lint 줄은 블록 **밖**(항상).
     masked = body.split("if [ -d tests ]; then", 1)[1].split("\nfi\n", 1)
@@ -2656,7 +2656,7 @@ def test_the_current_body_masks_the_regression_gate_and_stamps_a_new_rev(board):
 
 
 def test_the_previous_generation_is_registered_as_legacy(board):
-    """옛 버전(rev 2 · 트리를 안 보고 항상 회귀, rev 3 · lint 플래그가 `--gate`)이 옛 본문 목록에 있다 — 정확일치 3 버전."""
+    """옛 버전(rev 2 · 트리를 안 보고 항상 회귀, rev 3 · lint 차단 플래그가 옛 이름)이 옛 본문 목록에 있다 — 정확일치 3 버전."""
     legacy = pre_push_hook._legacy_pre_push_hook_bodies("python3")
     assert len(legacy) == 3
     rev3 = next(b for b in legacy if f"{pre_push_hook._PM_HOOK_REV_PREFIX}3" in b)
@@ -2668,20 +2668,20 @@ def test_the_previous_generation_is_registered_as_legacy(board):
     assert all(b != pre_push_hook.pre_push_hook_body("python3") for b in legacy)
 
 
-def test_the_installed_launcher_survives_the_indented_gate_line(board):
-    """세대 대조는 **설치된 훅의** 인터프리터로 한다 — 가림 블록 들여쓰기가 그 되읽기를 깨지 않는다.
+def test_the_installed_launcher_survives_the_indented_check_line(board):
+    """버전 대조는 **설치된 훅의** 인터프리터로 한다 — 가림 블록 들여쓰기가 그 되읽기를 깨지 않는다.
 
-    되읽기가 깨지면 `py -3.12` 채택자의 현행 훅이 `python3` 본문과 대조돼 상시 구세대로 오판된다.
+    되읽기가 깨지면 `py -3.12` 채택자의 현행 훅이 `python3` 본문과 대조돼 상시 옛 버전으로 오판된다.
     """
     body = pre_push_hook.pre_push_hook_body("py -3.12")
     assert pre_push_hook._installed_hook_interpreter(body) == "py -3.12"
-    # 되읽은 인터프리터로 조립한 본문이 그 훅과 정확히 같아야 세대 판정이 통과한다.
+    # 되읽은 인터프리터로 조립한 본문이 그 훅과 정확히 같아야 버전 판정이 통과한다.
     assert pre_push_hook.pre_push_hook_body(pre_push_hook._installed_hook_interpreter(body)) == body
 
 
 def test_a_previous_generation_hook_is_refused_with_the_init_prescription(
         board, monkeypatch, tmp_path, capsys):
-    """직전 세대(rev 2) 훅이 깔린 트리는 차단된다 — 처방은 `board.py init` 재실행 1회.
+    """직전 버전(rev 2) 훅이 깔린 트리는 차단된다 — 해결 방법은 `board.py init` 재실행 1회.
 
     이것이 이미 배포된 훅의 유일한 교체 경로다(엔진은 남의 훅도, 옛 훅도 손대지 않는다).
     """
@@ -2702,12 +2702,12 @@ def test_a_previous_generation_hook_is_refused_with_the_init_prescription(
 # ── 회귀 cwd = push 되는 트리(REPO) · 슬롯 우회 없음 ────────────────────────
 
 def test_the_regression_cwd_is_this_tree_even_with_a_leased_slot(board):
-    """리스 장부에 활성 슬롯이 있어도 회귀 cwd 는 이 트리다 — 슬롯 우회가 삭제됐다.
+    """슬롯 대여 기록에 활성 슬롯이 있어도 회귀 cwd 는 이 트리다 — 슬롯 우회가 삭제됐다.
 
     우회는 "PM 홈엔 tests/ 가 없다"를 cwd 로 땜질한 것이었고, 그 판정은 이제 훅이 직접 한다.
     """
-    _write_ledger(board, "solo_1")
-    # 슬롯 자체는 해소된다(장부·경로 조립은 살아 있다) — 회귀가 그리로 가지 않을 뿐이다.
+    _write_records(board, "solo_1")
+    # 슬롯 자체는 해소된다(슬롯 대여 기록·경로 조립은 살아 있다) — 회귀가 그리로 가지 않을 뿐이다.
     assert regression._active_slot_path(pm_paths.home_at(board.REPO), "solo_1") == _slot_cwd(board, "solo_1")
     assert regression._regression_cwd(pm_paths.home_at(board.REPO)) == str(board.REPO)
     assert regression._regression_cwd(pm_paths.home_at(board.REPO), None) == str(board.REPO)
@@ -2715,7 +2715,7 @@ def test_the_regression_cwd_is_this_tree_even_with_a_leased_slot(board):
 
 def test_an_explicit_cwd_still_pins_the_regression_tree(board):
     """명시 `--cwd` 는 그대로다 — 다른 트리를 겨냥하는 유일한 채널(솔로/핀 실행 무변경)."""
-    _write_ledger(board, "solo_1")
+    _write_records(board, "solo_1")
     pinned = str(board.REPO / "elsewhere")
     assert regression._regression_cwd(pm_paths.home_at(board.REPO), pinned) == pinned
 
@@ -2726,25 +2726,25 @@ def test_two_leases_no_longer_refuse_the_regression_cwd(board):
     모호가 성립하던 것은 '슬롯 중 어느 것을 도느냐'였다. 그 선택 자체가 없어졌으므로 거부도 없다
     (슬롯 순회는 `_regression_multi_run` 이 슬롯 경로를 자기 손으로 해소한다).
     """
-    _write_ledger(board, "A_1", "B_1")
+    _write_records(board, "A_1", "B_1")
     assert regression._regression_cwd(pm_paths.home_at(board.REPO)) == str(board.REPO)
 
 
 # ── 스위트 없는 트리의 회귀 요청 = 실행 전 거부 (T-0733 R2 · F-009) ─────────
-# 훅이 push 를 가리는 것과 같은 축(그 트리에 `tests/` 가 있는가)을 사람이 직접 부른 실행에도 댄다.
+# 훅이 push 를 가리는 것과 같은 기준(그 트리에 `tests/` 가 있는가)을 사람이 직접 부른 실행에도 댄다.
 # 스위트 없는 홈에서 도는 pytest 는 홈 루트 재귀 수집(슬롯 스위트 오수집)이나 rc4/rc5 로 끝나고,
 # 그 결과가 소비자 없는 홈 플래그에 red 로 남는다.
 
 def test_a_run_is_refused_before_pytest_when_this_tree_has_no_suite(
         board, monkeypatch, capsys):
-    """`tests/` 를 지목하는 test_cmd + 스위트 없는 트리 → 실행 전 rc1(측정 0·기록 0·처방 1줄)."""
+    """`tests/` 를 지목하는 test_cmd + 스위트 없는 트리 → 실행 전 rc1(측정 0·기록 0·해결 방법 1줄)."""
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
     _without_suite(board)
 
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args(cmd="pytest tests/ -q", final=True)) == 1
 
     assert fake.calls == []                          # pytest 를 띄우지 않았다
-    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()        # 게이트 플래그도 쓰지 않았다
+    assert not pm_paths.regression_flag(pm_paths.home_at(board.REPO)).exists()        # 통과 조건 플래그도 쓰지 않았다
     err = capsys.readouterr().err
     assert "회귀 스위트가 없다" in err and "--cwd" in err and "--task" in err
 
@@ -2795,7 +2795,7 @@ def test_a_non_pytest_test_cmd_is_untouched(board, monkeypatch):
 
 
 def test_the_rc5_note_says_the_tree_lacks_a_suite_not_a_session_mismatch(board, monkeypatch):
-    """rc5 진단은 트리 사실을 말한다 — 세션/lease 처방은 회귀가 그걸 안 보므로 거짓이다."""
+    """rc5 진단은 트리 사실을 말한다 — 세션/lease 안내는 회귀가 그걸 안 보므로 거짓이다."""
     _without_suite(board)
     note = regression._regression_rc5_note(5, str(board.REPO), None)
     assert "`tests/` 가 없다" in note and "--cwd" in note
@@ -2805,19 +2805,19 @@ def test_the_rc5_note_says_the_tree_lacks_a_suite_not_a_session_mismatch(board, 
         " · 수집 0 — 테스트 루트/cwd 확인"
 
 
-# ── 세대 판정은 항상 도는 게이트 줄에도 붙는다 (T-0733 R2 · F-010) ──────────
-# rev3 부터 `tests/` 없는 트리의 훅은 회귀를 부르지 않는다. 세대 판정의 호출자가 회귀뿐이면
-# 그 트리는 다음 세대 교체 처방을 받을 자리가 없다 — lint 줄은 두 형상 모두 항상 돈다.
+# ── 버전 판정은 항상 도는 통과 조건 줄에도 붙는다 (T-0733 R2 · F-010) ──────────
+# rev3 부터 `tests/` 없는 트리의 훅은 회귀를 부르지 않는다. 버전 판정의 호출자가 회귀뿐이면
+# 그 트리는 다음 버전 교체 안내를 받을 자리가 없다 — lint 줄은 두 구성 모두 항상 돈다.
 
-def test_a_previous_generation_hook_also_blocks_the_lint_gate(
+def test_a_previous_generation_hook_also_blocks_the_lint_check(
         board, monkeypatch, tmp_path, capsys):
-    """스위트 없는 트리에서도 구세대 훅은 `lint --gate` 가 같은 처방으로 막는다."""
+    """스위트 없는 트리에서도 옛 버전 훅은 `lint --blocking` 이 같은 해결 방법으로 막는다."""
     rev2 = next(b for b in pre_push_hook._legacy_pre_push_hook_bodies("python3")
                 if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     hook = _hooked_repo(board, monkeypatch, tmp_path, rev2)
-    _without_suite(board)                            # 회귀 게이트 비대상 트리
-    # 이 tmp 보드는 init 을 안 돌린 등록 0 형상이라 areas 이관 안내(advisory)가 상시 붙는다 —
-    # 이 테스트의 판정축(훅 세대)이 아니므로 격리한다.
+    _without_suite(board)                            # 회귀 통과 조건 비대상 트리
+    # 이 tmp 보드는 init 을 안 돌린 등록 0 구성이라 areas 이관 안내(advisory)가 상시 붙는다 —
+    # 이 테스트의 판정 기준(훅 버전)이 아니므로 격리한다.
     monkeypatch.setattr(areas_lint, "lint_areas_repo_unregistered", lambda home: [])
 
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True)) == 1
@@ -2825,28 +2825,28 @@ def test_a_previous_generation_hook_also_blocks_the_lint_gate(
     assert hook.read_text(encoding="utf-8") == rev2  # 고치지 않는다
     err = capsys.readouterr().err
     assert "구버전" in err and "board.py init" in err
-    # 보고 전용 `lint`(무 `--gate`)는 차단 표면이 아니다 — 부착은 게이트 모드에만.
+    # 보고 전용 `lint`(무 `--blocking`)는 차단 명령이 아니다 — 부착은 차단 모드에만.
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=False)) == 0
     assert "구버전" not in capsys.readouterr().err
 
 
-def test_the_lint_gate_stays_silent_under_a_current_hook(
+def test_the_lint_check_stays_silent_under_a_current_hook(
         board, monkeypatch, tmp_path, capsys):
-    """현행 세대 훅에서는 lint 게이트가 무소음 통과 — 부착이 과차단을 만들지 않는다."""
+    """현재 버전 훅에서는 lint 통과 조건이 무소음 통과 — 부착이 과차단을 만들지 않는다."""
     _hooked_repo(board, monkeypatch, tmp_path, pre_push_hook.pre_push_hook_body("python3"))
 
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), argparse.Namespace(blocking=True)) == 0
     assert "구버전" not in capsys.readouterr().err
 
 
-# ── 판정 축 = '이 트리를 대상으로 삼는가' (T-0733 R3 · F-013) ────────────────
-# 엔진 기본 폴백 test_cmd(`pytest -q`)는 경로를 지정하지 않아 pytest 가 **cwd 를 재귀 수집**한다.
-# 스위트 없는 홈에서 그 형상은 슬롯 worktree 의 `work/<repo>_<N>/tests/**` 를 잘못된 rootdir 로
+# ── 판정 기준 = '이 트리를 대상으로 삼는가' (T-0733 R3 · F-013) ────────────────
+# 엔진 기본 대체 test_cmd(`pytest -q`)는 경로를 지정하지 않아 pytest 가 **cwd 를 재귀 수집**한다.
+# 스위트 없는 홈에서 그 구성은 슬롯 worktree 의 `work/<repo>_<N>/tests/**` 를 잘못된 rootdir 로
 # 긁어 FULL green 을 기록했다(리뷰 실측). 경로 미지정도 '이 트리 대상'으로 본다.
 
 def test_a_path_less_pytest_is_refused_in_a_tree_without_a_suite(
         board, monkeypatch, capsys):
-    """경로 미지정 pytest(`pytest -q` — 엔진 기본 폴백) + 스위트 없는 트리 → 실행 전 거부."""
+    """경로 미지정 pytest(`pytest -q` — 엔진 기본 대체) + 스위트 없는 트리 → 실행 전 거부."""
     _without_suite(board)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="1 passed in 0.10s\n"))
 
@@ -2898,8 +2898,8 @@ def test_an_executed_run_still_prints_the_command(board, monkeypatch, capsys):
     assert "regression: $" in capsys.readouterr().out
 
 
-# ── 훅 세대 안내는 호출 경로 중립 (T-0733 R3 · F-012) ───────────────────────
-# 같은 판정이 `regression`(스위트 있는 트리)과 `lint --gate`(두 형상)에서 나온다. 접두가 한
+# ── 훅 버전 안내는 호출 경로 중립 (T-0733 R3 · F-012) ───────────────────────
+# 같은 판정이 `regression`(스위트 있는 트리)과 `lint --blocking`(두 구성)에서 나온다. 접두가 한
 # 채널 이름이면 다른 채널의 소비자(pm_bootstrap lint dump)가 자기 산출로 읽다가 파싱에 실패한다.
 
 def test_the_hook_notice_prefix_is_channel_neutral(board):
@@ -2911,9 +2911,9 @@ def test_the_hook_notice_prefix_is_channel_neutral(board):
         assert not notice.startswith("regression:")
 
 
-def test_the_lint_gate_refusal_carries_the_neutral_prefix(
+def test_the_lint_check_refusal_carries_the_neutral_prefix(
         board, monkeypatch, tmp_path, capsys):
-    """`lint --gate` 로 나가는 차단 문구도 그 접두다(소비자가 채널 산출로 오독하지 않게)."""
+    """`lint --blocking` 으로 나가는 차단 문구도 그 접두다(소비자가 채널 산출로 오독하지 않게)."""
     rev2 = next(b for b in pre_push_hook._legacy_pre_push_hook_bodies("python3")
                 if f"{pre_push_hook._PM_HOOK_REV_PREFIX}2" in b)
     _hooked_repo(board, monkeypatch, tmp_path, rev2)
@@ -2930,7 +2930,7 @@ def test_the_lint_gate_refusal_carries_the_neutral_prefix(
 # ════════════════════════════════════════════════════════════════════════
 
 _TOOL_SOURCES = tuple(engine_python_files(TOOLS))
-# 폐지한 하한 축의 식별자 — 어느 도구에도 남으면 옛 경로가 살아 있는 것이다.
+# 폐지한 하한 기준의 식별자 — 어느 도구에도 남으면 옛 경로가 살아 있는 것이다.
 _ABOLISHED_FLOOR_NAMES = (
     "regression.min_collected", "REGRESSION_MIN_COLLECTED_KEY",
     "_regression_min_collected", "_green_floor_stale", "_collection_shortfall_text",
@@ -2944,11 +2944,11 @@ def test_the_collection_floor_left_no_path_behind():
     for path in _TOOL_SOURCES:
         text = path.read_text(encoding="utf-8")
         for name in _ABOLISHED_FLOOR_NAMES:
-            assert name not in text, f"{path.name} 에 폐지한 하한 축이 남았다: {name}"
+            assert name not in text, f"{path.name} 에 폐지한 하한 기준이 남았다: {name}"
 
 
 def test_the_unverified_collection_label_stays_for_the_platform_contract(board, monkeypatch):
-    """존치 라벨 — 선언 platform 의 "수집수는 정수" 계약은 하한과 다른 축이라 그대로 동작한다."""
+    """존치 라벨 — 선언 platform 의 "수집수는 정수" 계약은 하한과 다른 기준이라 그대로 동작한다."""
     assert regression.REGRESSION_RC_UNVERIFIED_COLLECTION == "unverified-collection"
     _set_platforms(board, windows="run-windows")
     monkeypatch.setattr(regression, "_run_regression_cmd",
@@ -2975,18 +2975,18 @@ def test_the_regression_record_has_exactly_one_writer():
     assert source.count("_write_regression_flag(") == 1 + 4   # 정의 1 + 단일/슬롯의 시작 HEAD 실패 및 종료 기록 각 2자리
 
 
-def test_the_delta_is_only_attached_where_the_record_is_read():
+def test_the_difference_is_only_attached_where_the_record_is_read():
     """증감 문장은 기록을 읽는 세 자리(run 2 · check 1)에만 붙는다.
 
     부트스트랩·핸드오프는 기록을 읽지도 쓰지도 않고 자기 pytest 출력의 `passed+failed` 를 쓴다 —
-    기록의 `collected`(skipped 포함)와 축이 달라 그대로 빼면 가짜 증감이 상시 뜬다.
+    기록의 `collected`(skipped 포함)와 기준이 달라 그대로 빼면 가짜 증감이 상시 뜬다.
     """
     source = "".join(path.read_text(encoding="utf-8") for path in engine_python_files(TOOLS))
     call_sites = source.count("collection_change_text(")
     assert call_sites == 1 + 3, f"증감 표시 자리가 3곳이 아니다(정의 1 + 호출 {call_sites - 1})"
     for name in ("pm_bootstrap.py", "pm_engine/cli/handoff.py"):
         text = (TOOLS / name).read_text(encoding="utf-8")
-        assert "collection_change_text" not in text, f"{name} 이 다른 축의 숫자로 증감을 냈다"
+        assert "collection_change_text" not in text, f"{name} 이 다른 기준의 숫자로 증감을 냈다"
         assert "previous_collected" not in text
 
 
@@ -2995,7 +2995,7 @@ def test_leftover_floor_declaration_no_longer_blocks_a_real_run(tmp_path):
     """하한 값이 남은 `local.conf` 로도 실 회귀가 막히지 않는다 (마이그레이션·실 서브프로세스).
 
     옛 키는 이제 레지스트리 밖이라 never-block advisory 로만 떨어진다 — 채택자 conf 를 손보기
-    전에도 게이트가 그대로 돈다.
+    전에도 통과 조건이 그대로 돈다.
     """
     from _git import commit_env
     from _manager_home import make_pm_home
@@ -3266,8 +3266,8 @@ def _t0936_review_command_setup(board, monkeypatch, prefix="", platform=False, t
     pm_paths.home_at(board.REPO).local_conf.write_text("test.cmd=local-core\n" + ("qa.platforms=windows\n" if platform else ""), encoding="utf-8")
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text("| repo | prefix | test_cmd |\n|---|---|---|\n" + f"| A | {prefix} | repo-core |\n", encoding="utf-8")
     row = {"slot":"work/A_1", "repo":"A", "session":"main" if task else "A_1", "state":"leased", "role":"work", "test_cmd":None}
-    ledger = {"leases":[row], "tasks":[{"name":"main", "session":"S"}] if task else []}
-    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(ledger), encoding="utf-8")
+    records = {"leases":[row], "tasks":[{"name":"main", "session":"S"}] if task else []}
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(records), encoding="utf-8")
     monkeypatch.setattr(pre_push_hook, "_stale_pre_push_hook_refusal", lambda _home: None)
     monkeypatch.setattr(regression, "_review_cycle_downgrade", lambda _home: ([], []))
     monkeypatch.setattr(regression_store, "_resolve_regression_flag", lambda home, cwd: (pm_paths.regression_flag(home), regression_store._LG_NO_HOOK))
@@ -3276,14 +3276,14 @@ def _t0936_review_command_setup(board, monkeypatch, prefix="", platform=False, t
     monkeypatch.setattr(regression, "_platform_test_commands", lambda *a: pytest.fail("개발 플랫폼 해소"))
     calls = []
     monkeypatch.setattr(regression, "_run_regression_cmd", lambda *a: (calls.append(a) or (0, "3 passed in 0.01s\n", "")))
-    return target, ledger, calls
+    return target, records, calls
 
 
 @pytest.mark.parametrize("prefix", ["", "A"])
 @pytest.mark.parametrize("platform", [False, True])
 @pytest.mark.parametrize("task", [False, True])
 def test_t0936_single_slot_core_command_priority(board, monkeypatch, prefix, platform, task):
-    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix, platform, task)
+    target, records, calls = _t0936_review_command_setup(board, monkeypatch, prefix, platform, task)
     # 선택은 `--task`(+위치 인자) 또는 `--cwd` 핀이다 — `--task` 없는 `--repo/--slot` 은 없다(T-0962).
     argv = ["regression", "run", "--final"]
     argv += ["--task", "main", "--repo", "A", "--slot", "1"] if task else ["--cwd", str(target)]
@@ -3297,10 +3297,10 @@ def test_t0936_single_slot_core_command_priority(board, monkeypatch, prefix, pla
 
 @pytest.mark.parametrize("layer", ["lease", "prefix", "local", "default"])
 def test_t0936_single_slot_core_command_priority_layers_and_quarantine(board, monkeypatch, layer):
-    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A" if layer=="prefix" else "")
+    target, records, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A" if layer=="prefix" else "")
     if layer=="lease":
-        ledger["leases"][0]["test_cmd"]="lease-core"
-        pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(ledger), encoding="utf-8")
+        records["leases"][0]["test_cmd"]="lease-core"
+        pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(records), encoding="utf-8")
     if layer=="default": pm_paths.home_at(board.REPO).local_conf.write_text("", encoding="utf-8")
     (board.REPO / ".project_manager/quarantine.txt").write_text("tests/test_sample.py::test_bad\n", encoding="utf-8")
     expected = {"lease":"lease-core", "prefix":"repo-core", "local":"local-core", "default":python_env.default_pytest_cmd()}[layer]
@@ -3314,15 +3314,15 @@ def test_t0936_single_slot_core_command_priority_layers_and_quarantine(board, mo
 @pytest.mark.parametrize("explicit_cwd", [False, True])
 @pytest.mark.parametrize("task", [False, True])
 def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explicit_cwd, task):
-    # T-0962: check 의 폴더 선택은 `--task`(+위치 인자)뿐이다 — 대여 행은 task 보유로 두고, `task` 축은
-    # run 의 선택(`--task` 위치 인자 / `--cwd` 핀)을, `explicit_cwd` 축은 check 에 `--cwd` 를 겹친
-    # 형상을 고른다. `--task` 와 `--cwd` 는 함께 쓸 수 없어 겹친 check 는 기록 대조 전에 멈춘다.
-    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A", task=True)
+    # T-0962: check 의 폴더 선택은 `--task`(+위치 인자)뿐이다 — 대여 행은 task 보유로 두고, `task` 경우는
+    # run 의 선택(`--task` 위치 인자 / `--cwd` 핀)을, `explicit_cwd` 경우는 check 에 `--cwd` 를 겹친
+    # 구성을 고른다. `--task` 와 `--cwd` 는 함께 쓸 수 없어 겹친 check 는 기록 대조 전에 멈춘다.
+    target, records, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A", task=True)
     sibling = board.REPO / "work/A_2"
     (sibling / ".git").mkdir(parents=True)
-    ledger["leases"][0]["test_cmd"]="core-A"
-    ledger["leases"].append({"slot":"work/A_2", "repo":"A", "session":"main", "state":"leased", "role":"work", "test_cmd":"core-B"})
-    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(ledger), encoding="utf-8")
+    records["leases"][0]["test_cmd"]="core-A"
+    records["leases"].append({"slot":"work/A_2", "repo":"A", "session":"main", "state":"leased", "role":"work", "test_cmd":"core-B"})
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(records), encoding="utf-8")
     run=["regression","run","--final"]
     run += ["--task","main","--repo","A","--slot","1"] if task else ["--cwd",str(target)]
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), board_cmd.build_parser().parse_args(run))==0
@@ -3334,7 +3334,7 @@ def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explic
             with pytest.raises(SystemExit):
                 regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), board_cmd.build_parser().parse_args([*argv, "--cwd", str(cwd)]))
     else:
-        # 선택 없이 `--cwd` 로 잰 기록은 task 가 고른 폴더의 green 으로 인정되지 않는다(명령 축 불일치).
+        # 선택 없이 `--cwd` 로 잰 기록은 task 가 고른 폴더의 green 으로 인정되지 않는다(명령 기준 불일치).
         assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), board_cmd.build_parser().parse_args(same))==(0 if task else 1)
         assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), board_cmd.build_parser().parse_args(different))==1
     # check는 자식을 실행하거나 기록을 바꾸지 않는다.
@@ -3342,9 +3342,9 @@ def test_t0936_core_check_rejects_other_selected_slot(board, monkeypatch, explic
 
 
 def test_t0936_core_check_rejects_other_selected_slot_cwd_only_and_conflict(board, monkeypatch):
-    target, ledger, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A")
-    ledger["leases"][0]["test_cmd"]="core-A"
-    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(ledger), encoding="utf-8")
+    target, records, calls = _t0936_review_command_setup(board, monkeypatch, prefix="A")
+    records["leases"][0]["test_cmd"]="core-A"
+    pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text(json.dumps(records), encoding="utf-8")
     other=board.REPO / "other"; other.mkdir()
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), board_cmd.build_parser().parse_args(["regression","run","--cwd",str(target),"--final"]))==0
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), board_cmd.build_parser().parse_args(["regression","check","--cwd",str(other)]))==1
@@ -3480,7 +3480,7 @@ def test_t0983_idle_and_readonly_are_not_run_targets(board, monkeypatch):
 
 
 @pytest.mark.parametrize('damage', ['json', 'root', 'rows', 'row', 'session', 'slot', 'repo', 'role', 'command', 'duplicate', 'traversal', 'alias', 'whitespace-command'])
-def test_t0983_bad_ledger_is_refused_before_execution(board, monkeypatch, damage):
+def test_t0983_bad_records_is_refused_before_execution(board, monkeypatch, damage):
     rows, calls = _t0983_workspaces(board, monkeypatch)
     if damage == 'json': pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text('{broken', encoding='utf-8')
     elif damage == 'root': pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text('[]', encoding='utf-8')
@@ -3554,7 +3554,7 @@ def test_t0983_io_failure_never_falls_back_to_home(board, monkeypatch, error):
     rows, calls = _t0983_workspaces(board, monkeypatch)
     original = regression.fs.read_text_shared
     def read(path, *a, **kw):
-        if path == pm_paths.leases_file(pm_paths.home_at(board.REPO)): raise error('test ledger failure')
+        if path == pm_paths.leases_file(pm_paths.home_at(board.REPO)): raise error('test record failure')
         return original(path,*a,**kw)
     monkeypatch.setattr(regression.fs, 'read_text_shared', read)
     with pytest.raises((SystemExit,OSError)):
@@ -3574,7 +3574,7 @@ def test_t0983_row_command_drift_only_reruns_its_workspace(board, monkeypatch):
     assert [c[0] for c in calls] == ['changed-core']
 
 
-def test_t0983_workspace_count_delta_is_independent(board, monkeypatch):
+def test_t0983_workspace_count_difference_is_independent(board, monkeypatch):
     rows, calls = _t0983_workspaces(board, monkeypatch)
     assert regression_cmd.cmd_regression(pm_paths.home_at(board.REPO), _run_args()) == 0
     flag = _t0983_flag(board, rows[1])

@@ -1,7 +1,7 @@
-"""릴리즈 must-fix 게이트의 수렴 계약.
+"""릴리즈 must-fix 통과 조건의 마무리 계약.
 
 처분은 ``pm-verified`` 하나뿐이다. 폐지된 ``into``/``fixed``는 파서에서 거부되고
-기존 장부의 동일 kind도 미처분으로 fail-loud한다. 라이브 실행은 모두 대역으로 격리한다.
+기존 라운드 기록의 동일 kind도 미처분으로 fail-loud한다. 라이브 실행은 모두 대역으로 격리한다.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from pm_engine.infra import git, review_rounds
 from pm_engine.app import regression
+from pm_engine.domain import reviewer_budget
 from pm_engine.cli import regression_cmd
 from pm_engine.infra import pm_paths
 import subprocess
@@ -38,12 +39,12 @@ def _project(tmp_path: Path) -> Path:
     return root
 
 
-def _ledger_path(root: Path) -> Path:
+def _record_path(root: Path) -> Path:
     return root / ".project_manager" / ".local" / "review_rounds.json"
 
 
-def _write_ledger(root: Path, value: object) -> None:
-    _ledger_path(root).write_text(
+def _write_records(root: Path, value: object) -> None:
+    _record_path(root).write_text(
         json.dumps(value, ensure_ascii=False), encoding="utf-8", newline="\n",
     )
 
@@ -60,24 +61,24 @@ def _rejected_entry(*, resolution: dict | None = None) -> dict:
 @pytest.fixture
 def review(tmp_path, monkeypatch):
     root = _project(tmp_path)
-    module = _load("additional_reviewer", "release_gate_review")
+    module = _load("additional_reviewer", "release_check_review")
     monkeypatch.setattr(module, "REPO", root)
-    _write_ledger(root, {"T-0610": _rejected_entry()})
-    return types.SimpleNamespace(module=module, root=root, ledger=_ledger_path(root))
+    _write_records(root, {"T-0610": _rejected_entry()})
+    return types.SimpleNamespace(module=module, root=root, record_path=_record_path(root))
 
 
 @pytest.mark.parametrize("removed", ["--into", "--fixed"])
-def test_removed_resolution_options_are_rejected_without_ledger_mutation(
+def test_removed_resolution_options_are_rejected_without_record_mutation(
     review, removed, capsys,
 ):
-    before = review.ledger.read_bytes()
+    before = review.record_path.read_bytes()
     with pytest.raises(SystemExit):
         review.module.main(["--resolve-review", "T-0610", removed, "T-0611"])
-    assert review.ledger.read_bytes() == before
+    assert review.record_path.read_bytes() == before
     assert f"unrecognized arguments: {removed}" in capsys.readouterr().err
 
 
-def test_resolve_gate_requires_pm_verified_and_never_suggests_follow_up(review, capsys):
+def test_resolve_review_requires_pm_verified_and_never_suggests_follow_up(review, capsys):
     assert review.module.main(["--resolve-review", "T-0610"]) == 1
     err = capsys.readouterr().err
     assert "--pm-verified" in err
@@ -95,7 +96,7 @@ def test_external_help_exposes_only_pm_verified_resolution(review, capsys):
 
 
 def test_legacy_resolution_kinds_are_not_current_board_resolutions():
-    board = _load("board", "release_gate_board_resolution")
+    board = _load("board", "release_check_board_resolution")
     for kind in ("into", "fixed", "pm-fixed"):
         entry = _rejected_entry(resolution={
             "kind": kind, "round_sequence": 1, "rounds": 1,
@@ -106,7 +107,7 @@ def test_legacy_resolution_kinds_are_not_current_board_resolutions():
 
 
 def test_pm_verified_is_the_only_current_resolution_and_revalidates_callback():
-    board = _load("board", "release_gate_board_pm_verified")
+    board = _load("board", "release_check_board_pm_verified")
     entry = _rejected_entry(resolution={
         "kind": review_rounds.RESOLUTION_PM_VERIFIED,
         "round_sequence": 1, "rounds": 1,
@@ -117,7 +118,7 @@ def test_pm_verified_is_the_only_current_resolution_and_revalidates_callback():
     ) is None
     problem = review_rounds._gate_disposition_problem(
         "T-0610", entry, allow_pm_verified=True,
-        pm_verified_problem=lambda: "accepted 잔여 F-001",
+        pm_verified_problem=lambda: "accepted 남은 지적 F-001",
     )
     assert problem is not None and "발동 조건 재검증 실패" in problem
 
@@ -139,7 +140,7 @@ class _Run:
 @pytest.fixture
 def release(tmp_path, monkeypatch):
     root = _project(tmp_path)
-    board = _load("board", "release_gate_live")
+    board = _load("board", "release_check_live")
     local = root / ".project_manager" / ".local"
     monkeypatch.setattr(board, "REPO", root)
     monkeypatch.setattr(git, "_git_config_get", lambda cwd, key: None)
@@ -152,8 +153,8 @@ def release(tmp_path, monkeypatch):
     return types.SimpleNamespace(board=board, root=root, runner=runner, args=args)
 
 
-def test_unresolved_must_fix_blocks_before_release_wave(release, capsys):
-    _write_ledger(release.root, {"T-0610": _rejected_entry()})
+def test_unresolved_must_fix_blocks_before_release_cluster(release, capsys):
+    _write_records(release.root, {"T-0610": _rejected_entry()})
     assert regression_cmd.cmd_live_test(pm_paths.home_at(release.board.REPO), release.args) == 1
     assert release.runner.calls == []
     err = capsys.readouterr().err
@@ -161,8 +162,8 @@ def test_unresolved_must_fix_blocks_before_release_wave(release, capsys):
 
 
 @pytest.mark.parametrize("kind", ["into", "fixed", "pm-fixed"])
-def test_legacy_ledger_resolution_does_not_open_release(kind, release, capsys):
-    _write_ledger(release.root, {"T-0610": _rejected_entry(resolution={
+def test_legacy_record_resolution_does_not_open_release(kind, release, capsys):
+    _write_records(release.root, {"T-0610": _rejected_entry(resolution={
         "kind": kind, "round_sequence": 1, "rounds": 1,
     })})
     assert regression_cmd.cmd_live_test(pm_paths.home_at(release.board.REPO), release.args) == 1
@@ -170,9 +171,9 @@ def test_legacy_ledger_resolution_does_not_open_release(kind, release, capsys):
     assert "처분 선언 없음" in capsys.readouterr().err
 
 
-def test_suggestion_only_and_reserved_wave_section_do_not_block(release):
-    _write_ledger(release.root, {
-        "wave": {"id": "wave", "spent": 1},
+def test_suggestion_only_and_reserved_session_budget_section_do_not_block(release):
+    _write_records(release.root, {
+        reviewer_budget.SESSION_BUDGET_SECTION_KEY: {"id": "gen", "spent": 1},
         "T-0610": {"rounds": [
             {"sequence": 1, "verdict": 0, "must_fix": 0, "suggestions": 2},
         ]},
@@ -181,15 +182,15 @@ def test_suggestion_only_and_reserved_wave_section_do_not_block(release):
     assert len(release.runner.calls) == 1
 
 
-def test_corrupt_gate_entry_fails_closed_before_release_wave(release, capsys):
-    _write_ledger(release.root, {"T-0610": {"rounds": "broken"}})
+def test_corrupt_review_ticket_entry_fails_closed_before_release_cluster(release, capsys):
+    _write_records(release.root, {"T-0610": {"rounds": "broken"}})
     assert regression_cmd.cmd_live_test(pm_paths.home_at(release.board.REPO), release.args) == 1
     assert release.runner.calls == []
     assert "형식 오류" in capsys.readouterr().err
 
 
 def test_pm_verified_resolution_is_bound_to_the_latest_round():
-    board = _load("board", "release_gate_stale")
+    board = _load("board", "release_check_stale")
     entry = _rejected_entry(resolution={
         "kind": "pm-verified", "round_sequence": 1, "rounds": 1,
     })

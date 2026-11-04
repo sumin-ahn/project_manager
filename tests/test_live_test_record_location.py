@@ -1,8 +1,8 @@
-"""livegate 기록 위치 == 훅 read 위치 가드 (T-0287·two-git footgun 재발 차단).
+"""live-test 기록 위치 == 훅 read 위치 가드 (T-0287·two-git footgun 재발 차단).
 
-`livegate record` 는 push 보호훅이 읽는 **바로 그** livegate.json 에 기록해야 한다. 훅은 repo 의
+`live-test record` 는 push 보호훅이 읽는 **바로 그** live-test.json 에 기록해야 한다. 훅은 repo 의
 git `core.hooksPath` 옆 sidecar `engine-root`(PM 홈 REPO 절대경로 1줄)로 board.py 를 해소해
-`<engine-root>/.project_manager/.local/livegate.json` 을 읽는다. two-git 토폴로지(PM 홈+worktree·
+`<engine-root>/.project_manager/.local/live-test.json` 을 읽는다. two-git 토폴로지(PM 홈+worktree·
 ADR-0027)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면, worktree board.py 로 record 할
 때 훅이 안 읽는 worktree `.local` 에 조용히 기록→pass 위장→push 순간에야 불일치로 드러났다
 (PM 60 v1.1.0 릴리즈 실측). 여기선:
@@ -11,13 +11,13 @@ ADR-0027)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면, 
     돌려주는지(단일 소스) — 실 git two-git 토폴로지를 모사해 단언.
   - end-to-end `record` 가 worktree board.py 로 돌아도 훅 read 위치(PM 홈 `.local`)에 기록하고
     호출된 사본의 `.local` 에는 안 쓰는지(단일 소스).
-  - livegate 훅 없음(단일-repo/솔로)이면 현행 `REPO/.local` 폴백(채택자 무변경).
+  - live-test 보호훅 없음(단일-repo/솔로)이면 현행 `REPO/.local` 로 대체(채택자 무변경).
   - 훅 sidecar 는 있으나 engine-root 무효면 pass 대신 fail-loud(false-green 백스톱).
   - 훅 본문(worktree_pool)이 record 와 같은 engine-root 규약을 읽는지(공유 규약 드리프트 가드).
   - `check` 도 `record` 와 **대칭**으로 `_resolve_livegate_flag` 를 거쳐(모듈상수 직독 제거·
     T-0306) 어느 board.py 사본/cwd 로 check 하든 훅이 기록한 engine-root 파일을 읽는지
-    (single-source·wrong-copy false-green/false-red 차단)·engine-root 무효면 record 와 동형
-    fail-loud·솔로 폴백 무변경.
+    (single-source·wrong-copy false-green/false-red 차단)·engine-root 무효면 record 와 같은 방식으로
+    fail-loud·솔로 대체 경로 무변경.
 
 **hermetic + 라이브 실행 금지**: 실 `pytest -m release` 는 절대 기동하지 않는다 — `subprocess.run`
 대역이 pytest 만 가로채고 git 은 실제로 돌려 `core.hooksPath` 해소를 충실히 검증한다. board.py
@@ -102,7 +102,7 @@ def _make_topology(tmp_path, monkeypatch, *, with_hookspath=True,
 
     - engine: PM 홈(engine-root) 역할. board.py 더미 실재(`board_in_engine`) → 훅/record 해소.
     - worktree: 호출된 사본(=슬롯 board.py) 역할의 실 git repo. board.py 경로 전역을 여기로
-      재지정 → record 를 worktree 사본으로 돌리는 PM 60 버그 형상. `core.hooksPath` = hooks_dir.
+      재지정 → record 를 worktree 사본으로 돌리는 PM 60 버그 구성. `core.hooksPath` = hooks_dir.
     - hooks_dir: 훅 옆 sidecar `engine-root`(기본=engine 절대경로) + `protected`.
     """
     mod = _load_board()
@@ -136,20 +136,20 @@ def _make_topology(tmp_path, monkeypatch, *, with_hookspath=True,
 
 
 def _hook_read_flag(hooks_dir: Path) -> Path:
-    """훅이 실제로 읽는 livegate.json 을 sidecar 로부터 독립 재구성한다.
+    """훅이 실제로 읽는 live-test.json 을 sidecar 로부터 독립 재구성한다.
 
     훅은 `<hooks_dir>/engine-root`(PM 홈 절대경로)로 `<root>/.project_manager/tools/board.py`
-    를 돌리고, 그 사본의 기본 기록 위치(`pm_paths.live_test_flag` = `<root>/.project_manager/.local/livegate.json`)를
+    를 돌리고, 그 사본의 기본 기록 위치(`pm_paths.live_test_flag` = `<root>/.project_manager/.local/live-test.json`)를
     읽는다. record 가 정렬해야 할 목표 위치 — `_resolve_livegate_flag` 와 독립 계산해 대조한다.
     """
     root = (hooks_dir / "engine-root").read_text(encoding="utf-8").splitlines()[0].strip()
     return Path(root) / ".project_manager" / ".local" / "live-test.json"
 
 
-def _platform_regression_record(anchor: Path) -> dict:
-    """platform FULL green 증거 — 선언은 실행 코드 트리(anchor)에 둔다."""
-    (anchor / ".project_manager").mkdir(parents=True, exist_ok=True)
-    (anchor / ".project_manager" / "local.conf").write_text(
+def _platform_regression_record(target_repo: Path) -> dict:
+    """platform FULL green 증거 — 선언은 실행 코드 트리(대상 저장소)에 둔다."""
+    (target_repo / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (target_repo / ".project_manager" / "local.conf").write_text(
         "test.cmd=core-full\n"
         "qa.platforms=windows\n"
         "test.windows.cmd=run-windows\n",
@@ -158,7 +158,7 @@ def _platform_regression_record(anchor: Path) -> dict:
     return {
         "head": _HEAD_SHA, "status": "pass", "rc": 0, "scope": "full",
         "collected": 3, "previous_collected": None,
-        "conf_anchor": str(anchor.resolve()),
+        "conf_anchor": str(target_repo.resolve()),
         "ts": "2026-08-29T00:00:00+00:00",
         "command": "core-full",
     }
@@ -175,7 +175,7 @@ def _readonly_tree(tmp_path: Path, hooks_dir: Path) -> Path:
 # ── ① 단일 소스 해소: record 위치 == 훅 read 위치 (two-git) ──────────────────
 
 @_git_required
-def test_resolve_livegate_flag_engine_root_matches_hook_read(tmp_path, monkeypatch):
+def test_resolve_live_test_flag_engine_root_matches_hook_read(tmp_path, monkeypatch):
     """훅 활성 two-git 토폴로지 → `_resolve_livegate_flag` = 훅 read 위치(PM 홈 .local)·단일 소스."""
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
 
@@ -214,7 +214,7 @@ def test_record_writes_to_hook_read_location_not_called_copy(tmp_path, monkeypat
 @_git_required
 def test_platform_record_uses_engine_root_evidence_and_recorded_anchor_with_readonly_cwd(
         tmp_path, monkeypatch):
-    """two-tree 정상: release cwd에 선언이 없어도 engine-root 증거의 conf_anchor로 record/check green."""
+    """two-tree 정상: release cwd에 선언이 없어도 engine-root 증거의 conf_anchor 로 record/check green."""
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
     readonly = _readonly_tree(tmp_path, hooks_dir)
     regression_flag = engine / ".project_manager" / ".local" / "regression.json"
@@ -267,11 +267,11 @@ def test_platform_evidence_in_called_copy_only_blocks_readonly_record(
     assert regression_cmd.cmd_live_test(pm_paths.home_at(mod.REPO), _chk_args(_HEAD_SHA, cwd=str(readonly))) == 1
 
 
-# ── ② 단일-repo/솔로 폴백: 훅 없음 → 현행 REPO/.local (채택자 무변경) ─────────
+# ── ② 단일-repo/솔로 대체: 훅 없음 → 현행 REPO/.local (채택자 무변경) ─────────
 
 @_git_required
 def test_resolve_no_hookspath_falls_back_to_repo_local(tmp_path, monkeypatch):
-    """`core.hooksPath` 미설정(단일-repo/솔로) → `pm_paths.live_test_flag`(REPO/.local) 폴백·mode solo."""
+    """`core.hooksPath` 미설정(단일-repo/솔로) → `pm_paths.live_test_flag`(REPO/.local) 로 대체·mode solo."""
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, with_hookspath=False)
 
@@ -295,7 +295,7 @@ def test_resolve_hookspath_without_engine_root_is_no_hook_not_broken(tmp_path, m
 
 @_git_required
 def test_record_solo_records_at_repo_local(tmp_path, monkeypatch):
-    """솔로 폴백 경로에서 record 가 정상 pass 를 REPO/.local(`pm_paths.live_test_flag`)에 기록(현행 동작 보존)."""
+    """솔로 대체 경로에서 record 가 정상 pass 를 REPO/.local(`pm_paths.live_test_flag`)에 기록(현행 동작 보존)."""
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, with_hookspath=False)
     real_run = subprocess.run
@@ -360,10 +360,10 @@ def test_record_broken_engine_root_fails_loud_no_write(tmp_path, monkeypatch, ca
 
 # ── ④ 공유 규약 가드: 훅 본문 == record 해소가 읽는 engine-root 규약 ──────────
 
-def test_hook_body_shares_engine_root_livegate_convention():
+def test_hook_body_shares_engine_root_live_test_convention():
     """protected_hooks 본문이 record(`_resolve_livegate_flag`)와 같은 engine-root 규약을 읽는다.
 
-    훅이 sidecar 이름(`engine-root`)·board.py 경로·`livegate check` 소비를 바꾸면 record 해소와
+    훅이 sidecar 이름(`engine-root`)·board.py 경로·`live-test check` 소비를 바꾸면 record 해소와
     갈라져 단일 소스가 깨진다 — 그 드리프트를 여기서 못박는다(정렬 계약 회귀).
     """
     body = protected_hooks._PROTECTED_PRE_PUSH_HOOK
@@ -373,8 +373,8 @@ def test_hook_body_shares_engine_root_livegate_convention():
 
 
 @_git_required
-def test_resolve_livegate_flag_no_hook_when_not_git_repo(tmp_path, monkeypatch):
-    """비-git 경로(git config 실패) → solo 폴백(비-repo·격리 환경 graceful).
+def test_resolve_live_test_flag_no_hook_when_not_git_repo(tmp_path, monkeypatch):
+    """비-git 경로(git config 실패) → solo 로 대체(비-repo·격리 환경 graceful).
 
     `_git_config_get` 이 실 git 바이너리를 호출하므로 git 없는 러너에선 skip(FileNotFoundError
     회피)한다 — 파일의 다른 케이스와 동일 가드(리뷰 nit).
@@ -430,8 +430,8 @@ def test_resolve_relative_hookspath_resolves_against_worktree_root(tmp_path, mon
 # 호출-사본의 stale/wrong `.local` 을 읽어 false-green/false-red 오독이 난다 — 그걸 못박는다.
 
 
-def _write_livegate_json(path: Path, *, status: str, head: str, n=None, rc=0):
-    """livegate.json 을 직접 기록한다(record 실행 없이 check 소비만 테스트)."""
+def _write_live_test_json(path: Path, *, status: str, head: str, n=None, rc=0):
+    """live-test.json 을 직접 기록한다(record 실행 없이 check 소비만 테스트)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"head": head, "status": status,
                "n": n if n is not None else 0, "rc": rc, "ts": "2026-07-14T00:00:00+00:00"}
@@ -447,10 +447,10 @@ def test_check_worktree_cwd_reads_engine_root_record(tmp_path, monkeypatch, caps
     """
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
     hook_flag = _hook_read_flag(hooks_dir)
-    _write_livegate_json(hook_flag, status="pass", head=_HEAD_SHA,
+    _write_live_test_json(hook_flag, status="pass", head=_HEAD_SHA,
                          n=regression.LIVE_TEST_RELEASE_PIN, rc=0)
     # 호출-사본(worktree)의 순진한 위치엔 상충 fail — check 가 이걸 읽으면 안 된다.
-    _write_livegate_json(pm_paths.live_test_flag(pm_paths.home_at(mod.REPO)), status="fail", head=_HEAD_SHA, n=0, rc=1)
+    _write_live_test_json(pm_paths.live_test_flag(pm_paths.home_at(mod.REPO)), status="fail", head=_HEAD_SHA, n=0, rc=1)
 
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(mod.REPO), _chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 
@@ -462,13 +462,13 @@ def test_check_worktree_cwd_reads_engine_root_record(tmp_path, monkeypatch, caps
 def test_check_default_cwd_resolves_engine_root_not_module_const(tmp_path, monkeypatch):
     """`--cwd` 미지정 → 이 board.py 사본의 REPO(=worktree)로 해소·engine-root 기록을 읽는다.
 
-    default cwd 가 기본 위치 직독으로 폴백하면 worktree 의 상충 fail 을 읽어 red 가 난다.
+    default cwd 가 기본 위치 직독으로 대체하면 worktree 의 상충 fail 을 읽어 red 가 난다.
     green 이면 default(REPO)→hooksPath→engine-root 정렬이 살아있는 것(모듈상수 직독 제거 회귀).
     """
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
-    _write_livegate_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
+    _write_live_test_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
                          n=regression.LIVE_TEST_RELEASE_PIN, rc=0)
-    _write_livegate_json(pm_paths.live_test_flag(pm_paths.home_at(mod.REPO)), status="fail", head=_HEAD_SHA, n=0, rc=1)
+    _write_live_test_json(pm_paths.live_test_flag(pm_paths.home_at(mod.REPO)), status="fail", head=_HEAD_SHA, n=0, rc=1)
 
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(mod.REPO), _chk_args(rev=_HEAD_SHA, cwd=None))   # default → str(REPO)=worktree
 
@@ -479,7 +479,7 @@ def test_check_default_cwd_resolves_engine_root_not_module_const(tmp_path, monke
 def test_check_rev_mismatch_against_engine_root(tmp_path, monkeypatch, capsys):
     """engine-root 기록이 pass 라도 push rev 가 다르면 rc1 rev 불일치(engine-root 값으로 판정)."""
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
-    _write_livegate_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
+    _write_live_test_json(_hook_read_flag(hooks_dir), status="pass", head=_HEAD_SHA,
                          n=regression.LIVE_TEST_RELEASE_PIN, rc=0)
 
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(mod.REPO), _chk_args(rev="deadbeef" * 5, cwd=str(worktree)))
@@ -490,7 +490,7 @@ def test_check_rev_mismatch_against_engine_root(tmp_path, monkeypatch, capsys):
 
 @_git_required
 def test_check_broken_engine_root_fails_loud(tmp_path, monkeypatch, capsys):
-    """훅 sidecar 있으나 engine-root 무효(board.py 미해소) → check 는 record 와 동형 fail-loud rc1.
+    """훅 sidecar 있으나 engine-root 무효(board.py 미해소) → check 는 record 와 같은 방식으로 fail-loud rc1.
 
     조용한 통과(false-green)도, 조용한 red 도 아닌 명시 거부 — 기록/훅 read 위치가 갈릴 수 있어
     판정을 신뢰 못 하기 때문(record `test_record_broken_engine_root_fails_loud` 와 대칭).
@@ -508,15 +508,15 @@ def test_check_broken_engine_root_fails_loud(tmp_path, monkeypatch, capsys):
 
 @_git_required
 def test_check_solo_no_hookspath_reads_repo_local(tmp_path, monkeypatch, capsys):
-    """`core.hooksPath` 미설정(단일-repo/솔로) → 현행 REPO/.local(`pm_paths.live_test_flag`) 폴백 read 무변경."""
+    """`core.hooksPath` 미설정(단일-repo/솔로) → 현행 REPO/.local(`pm_paths.live_test_flag`) 대체 read 무변경."""
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, with_hookspath=False)
-    _write_livegate_json(pm_paths.live_test_flag(pm_paths.home_at(mod.REPO)), status="pass", head=_HEAD_SHA,
+    _write_live_test_json(pm_paths.live_test_flag(pm_paths.home_at(mod.REPO)), status="pass", head=_HEAD_SHA,
                          n=regression.LIVE_TEST_RELEASE_PIN, rc=0)
 
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(mod.REPO), _chk_args(rev=_HEAD_SHA, cwd=str(worktree)))
 
-    assert rc == 0, "솔로 폴백에서 check 가 REPO/.local 기록을 못 읽음(회귀)"
+    assert rc == 0, "솔로 대체 경로에서 check 가 REPO/.local 기록을 못 읽음(회귀)"
     assert "green" in capsys.readouterr().out
 
 
@@ -528,7 +528,7 @@ def test_check_absent_record_at_engine_root_blocks(tmp_path, monkeypatch, capsys
     '기록 없음' 을 낸다 — wrong-copy stale 을 green 으로 오독하지 않는다(false-green 차단).
     """
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
-    _write_livegate_json(pm_paths.live_test_flag(pm_paths.home_at(mod.REPO)), status="pass", head=_HEAD_SHA,
+    _write_live_test_json(pm_paths.live_test_flag(pm_paths.home_at(mod.REPO)), status="pass", head=_HEAD_SHA,
                          n=regression.LIVE_TEST_RELEASE_PIN, rc=0)   # 호출-사본 stale pass
 
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(mod.REPO), _chk_args(rev=_HEAD_SHA, cwd=str(worktree)))

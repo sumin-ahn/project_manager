@@ -1,6 +1,6 @@
-"""회귀·라이브 게이트 기록 파일 (층: infra).
+"""회귀·라이브 시험 기록 파일 (층: infra).
 
-회귀 기록 쓰기·직전 수집수 승계·차단 기록 앵커 승계와 기록 경로 해소(보호 훅 engine-root 정렬)를 소유한다.
+회귀 기록 쓰기·직전 수집수 승계·차단 기록의 대상 저장소 승계와 기록 경로 해소(보호 훅 engine-root 정렬)를 소유한다.
 """
 from __future__ import annotations
 
@@ -49,16 +49,16 @@ def _previous_collected(flag: Path) -> int | None:
     return inherited if isinstance(inherited, int) and not isinstance(inherited, bool) else None
 
 
-def _flag_conf_anchor(data: dict, fallback: str | None) -> str | None:
-    """플래그에 기록된 **conf 앵커**(실행 당시 cwd) — 미기록/손상이면 `fallback`.
+def _flag_conf_target_repo(data: dict, fallback: str | None) -> str | None:
+    """플래그에 기록된 **conf 대상 저장소**(실행 당시 cwd) — 미기록/손상이면 `fallback`.
 
     선언(test_cmd·platform 목록)은 *실행 트리* 의 것이다. `run --cwd <tree>` 로 핀해 돈 결과를
     pre-push 훅이 `check`(훅은 `--cwd` 를 못 넘긴다)로 검증할 때 check 가 **자기** cwd 로
     선언을 재해소하면 실행 때와 다른 local.conf 를 읽는다(false-green/false-RED). 그래서 run 이
-    앵커를 기록하고 check 는 그 앵커로 해소한다. 미기록(옛 플래그)은 호출부 해소값으로 폴백.
+    대상 저장소를 기록하고 check 는 그 대상 저장소로 해소한다. 미기록(옛 플래그)은 호출부 해소값으로 대체.
     """
-    anchor = data.get("conf_anchor")
-    return anchor if isinstance(anchor, str) and anchor else fallback
+    target_repo = data.get("conf_anchor")
+    return target_repo if isinstance(target_repo, str) and target_repo else fallback
 
 
 def _flag_collected(data: dict) -> int | None:
@@ -66,7 +66,7 @@ def _flag_collected(data: dict) -> int | None:
 
     None 은 "수집수 모름" 이다 — 증감 문장이 비고(지어내지 않는다) 선언 platform aggregate
     에서는 검증 불가로 fail 이 된다. 정규화 없이 손상값이 산술에 들어가면 TypeError 로
-    **게이트 자체가 죽는다** — 장부 손상이 회귀 해소를 깨면 안 된다는 fail-soft 규율과 같은 축이다.
+    **통과 조건 자체가 죽는다** — 기록 손상이 회귀 해소를 깨면 안 된다는 fail-soft 규율과 같은 기준이다.
     """
     value = data.get("collected")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -81,17 +81,17 @@ def _flag_blocks_push(data: dict) -> bool:
     return data.get("status") != "pass"
 
 
-def _inherit_flag_anchor(home, default_cwd: str, flag: Path | None = None) -> str:
-    """차단 기록이 있으면 그 기록의 conf 앵커를 이어받는다 — 없으면 `default_cwd`.
+def _inherit_flag_target_repo(home, default_cwd: str, flag: Path | None = None) -> str:
+    """차단 기록이 있으면 그 기록의 conf 대상 저장소를 이어받는다 — 없으면 `default_cwd`.
 
-    pre-push 훅은 `check || run` 이고 `--cwd` 를 못 넘긴다. 앵커 A(핀된 트리)의 기록으로
+    pre-push 훅은 `check || run` 이고 `--cwd` 를 못 넘긴다. 대상 저장소 A(핀된 트리)의 기록으로
     check 가 RED/stale 을 냈는데 이어지는 재실행이 기본 트리 B 에서 돌면, **B 의 green 이 A 의
-    차단 기록을 덮어** 그대로 push 된다(게이트 우회). 그래서 차단 기록의 재실행은 그 기록이
+    차단 기록을 덮어** 그대로 push 된다(통과 조건 우회). 그래서 차단 기록의 재실행은 그 기록이
     가리키는 트리에서 돈다.
 
     **HEAD-stale 은 이어받지 않는다** — 커밋마다 생기는 정상 재실행이라 여기서 이어받으면
     릴리즈 때 한 번 쓴 `--cwd <readonly>` 핀이 이후 모든 훅 재실행에 눌러붙는다(그 트리는
-    현 작업 커밋이 아니다). 앵커 디렉토리가 사라졌으면(worktree 정리) 기본 해소로 돌아간다.
+    현 작업 커밋이 아니다). 대상 저장소 디렉토리가 사라졌으면(worktree 정리) 기본 해소로 돌아간다.
     """
     flag = flag or pm_paths.regression_flag(home)
     if not flag.exists():
@@ -102,18 +102,18 @@ def _inherit_flag_anchor(home, default_cwd: str, flag: Path | None = None) -> st
         return default_cwd
     if not isinstance(data, dict):
         return default_cwd
-    anchor = _flag_conf_anchor(data, None)
-    if not anchor or os.path.abspath(anchor) == default_cwd:
+    target_repo = _flag_conf_target_repo(data, None)
+    if not target_repo or os.path.abspath(target_repo) == default_cwd:
         return default_cwd
     if not _flag_blocks_push(data):
         return default_cwd
-    if not Path(anchor).is_dir():
-        print(f"regression: 직전 차단 기록의 대상 저장소({anchor})가 없어 기본 트리에서 재실행 — "
+    if not Path(target_repo).is_dir():
+        print(f"regression: 직전 차단 기록의 대상 저장소({target_repo})가 없어 기본 트리에서 재실행 — "
               "그 기록은 이 실행 결과로 덮인다.", file=sys.stderr)
         return default_cwd
-    print(f"regression: 직전 차단 기록의 대상 저장소를 이어받아 실행 → {anchor} "
+    print(f"regression: 직전 차단 기록의 대상 저장소를 이어받아 실행 → {target_repo} "
           "(다른 트리 green 으로 덮이는 통과 조건 우회 차단)")
-    return os.path.abspath(anchor)
+    return os.path.abspath(target_repo)
 
 
 def _regression_flag_for(home, session: str | None, *, local_dir: Path | None = None, workspace: str | None = None) -> Path:
@@ -131,30 +131,30 @@ def _regression_flag_for(home, session: str | None, *, local_dir: Path | None = 
     return base / f"regression-{slug}.json"
 
 
-# ── livegate 기록 위치 = 훅 read 위치 정렬 (two-git 단일 소스) ─────────────
-# `livegate record` 는 push 보호훅이 읽는 **바로 그** livegate.json 에 기록해야 한다. 훅은 repo 의
+# ── live-test 기록 위치 = 훅 read 위치 정렬 (two-git 단일 소스) ─────────────
+# `live-test record` 는 push 보호훅이 읽는 **바로 그** live-test.json 에 기록해야 한다. 훅은 repo 의
 # git `core.hooksPath` 에 설치돼(worktree_pool.install_protected_hook), 같은 디렉토리의 sidecar
 # `engine-root`(PM 홈 REPO 절대경로 1줄)로 `<engine-root>/.project_manager/tools/board.py` 를 해소하고
-# 그 사본의 `.local/livegate.json` 을 `livegate check` 로 읽는다(worktree_pool `_PROTECTED_PRE_PUSH_HOOK`).
+# 그 사본의 `.local/live-test.json` 을 `live-test check` 로 읽는다(worktree_pool `_PROTECTED_PRE_PUSH_HOOK`).
 # two-git 토폴로지(PM 홈+worktree)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면,
 # worktree board.py 로 record 할 때 훅이 안 읽는 worktree `.local` 에 조용히 기록→pass 위장→push
 # 순간에야 불일치로 드러난다. 그래서 record 도 훅과 **동일한 engine-root
-# sidecar 해소**를 공유해 같은 파일에 기록한다(단일 소스). livegate 훅이 없는 홈이면 현행
-# `REPO/.local` 폴백이라 채택자 무변경.
+# sidecar 해소**를 공유해 같은 파일에 기록한다(단일 소스). live-test 보호훅이 없는 홈이면 현행
+# `REPO/.local` 로 대체해 채택자 무변경.
 _LG_ENGINE_ROOT = "engine-root"  # 프레임워크 push 보호훅 활성 → PM 홈 .local (단일 소스).
-_LG_NO_HOOK = "no-hook"          # livegate 훅 없음 → 호출된 사본 REPO/.local (현행 폴백 무변경).
+_LG_NO_HOOK = "no-hook"          # live-test 보호훅 없음 → 호출된 사본 REPO/.local (현행 대체 무변경).
 _LG_BROKEN = "broken"            # 훅 sidecar 존재하나 engine-root 무효 → fail-loud(false-green 차단).
 
 
 def _resolve_livegate_flag(home, cwd: str) -> tuple[Path, str]:
-    """record 가 기록할 livegate.json 경로 = **push 보호훅이 읽는 파일**로 정렬한다.
+    """record 가 기록할 live-test.json 경로 = **push 보호훅이 읽는 파일**로 정렬한다.
 
     보호훅(`_PROTECTED_PRE_PUSH_HOOK`)과 동일 해소를 공유한다 — repo(`cwd`)의 git
     `core.hooksPath` 옆 sidecar `engine-root`(PM 홈 REPO 절대경로 1줄)를 읽어, 그 root 에
-    board.py 가 실재하면(훅의 `[ -f "$engine_root/.../board.py" ]` fail-closed 게이트와 동일
-    검증) `<engine-root>/.project_manager/.local/livegate.json` 을 돌려준다. 반환:
-      - (PM 홈 .local livegate.json, `_LG_ENGINE_ROOT`) — 훅 활성·단일 소스.
-      - (`pm_paths.live_test_flag`, `_LG_NO_HOOK`) — livegate 훅 없음(현행 폴백 무변경).
+    board.py 가 실재하면(훅의 `[ -f "$engine_root/.../board.py" ]` fail-closed 검사와 동일
+    검증) `<engine-root>/.project_manager/.local/live-test.json` 을 돌려준다. 반환:
+      - (PM 홈 .local live-test.json, `_LG_ENGINE_ROOT`) — 훅 활성·단일 소스.
+      - (`pm_paths.live_test_flag`, `_LG_NO_HOOK`) — live-test 보호훅 없음(현행 대체 무변경).
       - (`pm_paths.live_test_flag`, `_LG_BROKEN`) — 훅 sidecar 는 있으나 engine-root 무효(빈값/board.py
         부재). 이땐 훅 read 위치와 기록 위치가 갈릴 수 있어 호출부가 fail-loud 로 거부한다.
     """
@@ -168,8 +168,8 @@ def _resolve_livegate_flag(home, cwd: str) -> tuple[Path, str]:
         hp = Path(cwd) / hp
     sidecar = hp / "engine-root"
     if not sidecar.is_file():
-        # `core.hooksPath` 는 있으나 engine-root sidecar 부재 = livegate 보호훅 아님(예: PM 홈
-        # 자신의 회귀 훅·채택자 custom 훅) → 훅 부재 폴백(오탐 fail-loud 방지).
+        # `core.hooksPath` 는 있으나 engine-root sidecar 부재 = live-test 보호훅 아님(예: PM 홈
+        # 자신의 회귀 훅·채택자 custom 훅) → 훅이 없을 때의 대체(오탐 fail-loud 방지).
         return pm_paths.live_test_flag(home), _LG_NO_HOOK
     lines = fs.read_text_shared(sidecar, encoding="utf-8").splitlines()
     engine_root = lines[0].strip() if lines else ""
@@ -182,11 +182,11 @@ def _resolve_livegate_flag(home, cwd: str) -> tuple[Path, str]:
 
 
 def _resolve_regression_flag(home, cwd: str) -> tuple[Path, str]:
-    """regression 증거를 livegate와 같은 engine-root `.local` 좌표로 해소한다.
+    """regression 증거를 live-test 와 같은 engine-root `.local` 좌표로 해소한다.
 
-    보호훅 two-git 형상에서는 regression과 livegate가 서로 다른 clone-local 파일을 읽으면
+    보호훅 two-git 구성에서는 regression과 live-test 가 서로 다른 clone-local 파일을 읽으면
     platform 증거가 있어도 release가 legacy no-platform으로 통과할 수 있다. 훅이 없는 솔로
-    형상은 기존 `LOCAL_DIR`을 그대로 쓴다. broken sidecar 판정도 livegate와 공유한다.
+    구성은 기존 `LOCAL_DIR`을 그대로 쓴다. broken sidecar 판정도 live-test 와 공유한다.
     """
     # 단위/채택 트리 중 `.git` 자체가 없는 경로는 hooksPath도 가질 수 없다. git subprocess를
     # 불필요하게 늘리지 않고 기존 clone-local 좌표를 그대로 쓴다.

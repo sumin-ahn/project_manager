@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 
 
-# ── FULL 게이트 수집 증감 (직전 기록 대비 · 막지 않는다) ─────────────────
+# ── FULL 통과 조건 수집 증감 (직전 기록 대비 · 막지 않는다) ─────────────────
 # 채택자가 선언하던 수집 하한은 폐지했다 — 스위트 규모의 함수라 선언값이
 # 실측의 절반에 머물러 스위트 절반이 사라져도 통과했다(느슨한 안심). 대신 직전 회귀 기록의
 # 수집수와 이번 수집수의 증감을 회귀 줄에 함께 낸다. 변화율이 `COLLECTION_CHANGE_ALERT_PCT`
@@ -15,17 +15,17 @@ import re
 # rc5(수집 0)는 그대로 red 다(하한이 아니라 "테스트가 한 개도 안 돌았다"는 별개 사실).
 COLLECTION_CHANGE_ALERT_PCT = 0.01          # 이 비율 이상이면 증감 문장에 경고 표기를 단다.
 
-# ── pytest 요약행 파서 (엔진 공용 seam) ────────────────────────────────────
+# ── pytest 요약행 파서 (엔진 공용 파서) ────────────────────────────────────
 # 요약행은 **끝에서부터** 줄 단위로 찾는다. 캡처된 pytest 출력에는 테스트 자신이 찍은
 # `3 passed` 류 로그가 섞이고, 출력 전체를 `re.search` 하면 그 로그를 요약으로 오판한다.
-# 도구마다 복제돼 있던 첫-매칭 파서를 여기로 승격했다 — 수집 증감 표시·릴리즈 라이브 게이트
-# ·부트스트랩 회귀 dump·ticket 마감 회귀 판정·핸드오프 회귀 1줄이 모두 이 seam 을
+# 도구마다 복제돼 있던 첫-매칭 파서를 여기로 승격했다 — 수집 증감 표시·릴리즈 라이브 시험
+# ·부트스트랩 회귀 dump·ticket 마감 회귀 판정·핸드오프 회귀 1줄이 모두 이 공용 파서를
 # 쓴다. 다른 도구는 이 모듈을 import 해 읽는다 — **로컬 사본 금지**(사본은
 # 첫-매칭 오판을 그대로 되살린다).
 #
 # 오염은 **양방향**이다: 요약 *앞* 로그는 끝에서-탐색이, 요약 *뒤* 로그(소비처 넷은 stdout+
 # stderr 를 병합해 먹인다 — 자식 하네스의 stderr 한 줄이 꼬리에 붙는다)는 요약행 문법 완전
-# 일치가 막는다. 두 축 모두 이 seam 안에 있어 소비처가 자동 상속한다.
+# 일치가 막는다. 두 기준 모두 이 공용 파서 안에 있어 소비처가 자동 상속한다.
 
 # pytest 요약행 outcome 종류 — 실행 수 = 이 값들의 합. `deselected`(quarantine `--deselect`·
 # 마커 필터)는 *돌지 않은* 수라 세지 않는다. `xfailed`/`xpassed` 는 패턴이 `<수> <종류>` 라
@@ -53,7 +53,7 @@ def _pytest_outcome_counts(line: str,
     """한 줄에서 pytest outcome 카운트를 뽑는다 (`7577 passed, 12 skipped …` → [7577, 12]).
 
     `kinds` 로 셀 종류를 좁힌다 — 소비처마다 *무엇을 실행으로 보는지* 가 다르다(수집 증감 표시는
-    6종 전부·릴리즈 라이브 게이트는 마커 안에서 돈 3종).
+    6종 전부·릴리즈 라이브 시험은 마커 안에서 돈 3종).
     """
     counts: list[int] = []
     for kind in kinds:
@@ -151,21 +151,21 @@ def collection_change_text(collected: int | None, previous: int | None) -> str:
     return body + ")"
 
 
-# 라이브 게이트의 "실행 수" 로 세는 outcome 종류 — 마커 안에서 *돈* 케이스만.
+# 라이브 시험의 "실행 수" 로 세는 outcome 종류 — 마커 안에서 *돈* 케이스만.
 # `deselected`(release 마커 밖)·`skipped` 는 실행분이 아니라 제외한다.
-_LIVEGATE_RAN_KINDS = ("passed", "failed", "errors?")
+_LIVE_TEST_RAN_KINDS = ("passed", "failed", "errors?")
 
 
-def _livegate_ran_count(output: str) -> int:
+def _live_test_ran_count(output: str) -> int:
     """`pytest -m release -q` 요약행에서 *실제 실행된* release 테스트 수(수집 N)를 센다.
 
     N = passed + failed + error(s). deselected 는 release 마커 밖이라 세지 않는다. "no tests
     ran"(exit5)처럼 요약에 카운트가 없으면 0. 이 수집 N 을 pin 과 대조해 마커 소실·wrong-cwd
     로 인한 false-green(수집 위장)을 차단한다 — rc0 만으로는 "0개 수집됐지만 red 아님"을
-    green 으로 삼킬 수 있다. 대상 줄은 공용 seam 이 **끝에서** 찾는다(라이브 wave 가 캡처
+    green 으로 삼킬 수 있다. 대상 줄은 공용 파서가 **끝에서** 찾는다(라이브 시험이 캡처
     출력에 찍는 `N passed` 로그를 요약으로 오판하면 pin 대조가 통째로 어긋난다).
     """
     line = _pytest_summary_line(output)
     if line is None:
         return 0
-    return sum(_pytest_outcome_counts(line, _LIVEGATE_RAN_KINDS))
+    return sum(_pytest_outcome_counts(line, _LIVE_TEST_RAN_KINDS))

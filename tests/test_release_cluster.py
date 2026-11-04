@@ -1,12 +1,12 @@
-"""릴리즈 테스트(③ tier·`release` marker) — 실 LLM 한 세션이 fresh adopter 에서 full wave 운영.
+"""릴리즈 테스트(③ tier·`release` marker) — 실 LLM 한 세션이 fresh adopter 에서 full cluster 시험 운영.
 
 테스트 3-tier 의 Tier 3(릴리즈). Tier 2(런타임 smoke·`test_fresh_adopter_runtime_smoke`)는 실 LLM 이
 *PM 으로서* ticket 라이프사이클(new→claim→complete)을 운영하는지까지 친다. 이 층은 그 위 — **위임**까지
-포함한 full wave: PM 세션이 ticket 을 발행·claim 하고 **developer 서브에이전트에 구현을 Task 위임**,
+포함한 full cluster 시험: PM 세션이 ticket 을 발행·claim 하고 **developer 서브에이전트에 구현을 Task 위임**,
 **code-reviewer 서브에이전트에 리뷰를 Task 위임**한 뒤 complete 까지 운영하는지, 그리고 **위임이 실제로
 일어났는지**(developer 가 작성한 probe 파일·ticket done 전이)를 검증한다.
 
-게이트 아님 — 사용자가 릴리즈 직전 `PM_ORCH_LIVE_RELEASE=1` 로 occasional 트리거(비용·flaky 감수).
+통과 조건 아님 — 사용자가 릴리즈 직전 `PM_ORCH_LIVE_RELEASE=1` 로 occasional 트리거(비용·flaky 감수).
 기본 skip(env 미설정·CI green 불변). claude 경로는 PM 36 라이브 probe 로 검증된 mechanics
 (`scratchpad/release_probe.py`·145s·dev×15·reviewer×21·probe.txt·done)를 옮긴 것이다.
 
@@ -61,14 +61,14 @@ from pm_engine.cli import import_cmd
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # claude: sonnet-4-6(API 과금·env override). probe 가 이 모델로 PASS.
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-# opencode: full wave(claim→위임→complete sync-gate)는 *강한* 모델이 필요하다 — gemma4:26b 는
-# complete 의 sync-gate 를 못 넘어 flaky(위임=probe.txt 는 쓰나 ticket 이 claimed 에 머묾·PM 39 실측).
+# opencode: full cluster 시험(claim→위임→complete 동기화 확인)은 *강한* 모델이 필요하다 — gemma4:26b 는
+# complete 의 동기화 확인을 못 넘어 flaky(위임=probe.txt 는 쓰나 ticket 이 claimed 에 머묾·PM 39 실측).
 # 출하 모델(ollama cloud) 강한 모델을 release default 로 쓴다(라이브 실측은
-# 릴리즈 wave). env override 로 교체 가능.
+# 릴리즈 묶음 시험). env override 로 교체 가능.
 from _opencode_model import LIVE_MODEL
 CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")
 
-# full wave probe 가 작성하도록 지시하는 산출 파일·내용 — side-effect 단언의 기준(단일 진실).
+# full cluster 시험 probe 가 작성하도록 지시하는 산출 파일·내용 — side-effect 단언의 기준(단일 진실).
 PROBE_FILE = "probe.txt"
 PROBE_TEXT = "hello from dev"
 
@@ -82,18 +82,18 @@ _GROWTH_PIPELINE = (
     (_REVIEWER_SUBAGENT, "LIVE_TICKET_REVIEWER_PERSISTED"),
     (_DEV_SUBAGENT, "LIVE_TICKET_FINAL_FIX_PERSISTED"),
 )
-_WAVE_TEST_FILE = "tests/test_release_wave_probe.py"
-# full wave 의 작업 폴더 형상([[T-0956]]) — task `wave` 가 작업 폴더 2개를 보유한다. 1번은 base_branch 를
-# 계속 드는 통합 폴더, 2번은 묶음 브랜치 `task/wave` 로 전환한 작업 폴더다(커맨드 카드의 통합 폴더 형상).
-_WAVE_TASK = "wave"
-_WAVE_CLUSTER = "wave"
-_WAVE_INTEGRATION_SLOT = 1
-_WAVE_WORK_SLOT = 2
-_WAVE_TARGETED_COMMAND = f"python3 -m pytest {_WAVE_TEST_FILE} -q -n auto"
-_WAVE_FULL_COMMAND = "python3 -m pytest tests/ -q -n auto"
+_CLUSTER_TEST_FILE = "tests/test_release_cluster_probe.py"
+# full cluster 시험의 작업 폴더 구성([[T-0956]]) — task `cluster` 가 작업 폴더 2개를 보유한다. 1번은 base_branch 를
+# 계속 드는 통합 폴더, 2번은 묶음 브랜치 `task/cluster` 로 전환한 작업 폴더다(커맨드 카드의 통합 폴더 구성).
+_CLUSTER_TASK = "cluster"
+_CLUSTER_NAME = "cluster"
+_CLUSTER_INTEGRATION_SLOT = 1
+_CLUSTER_WORK_SLOT = 2
+_CLUSTER_TARGETED_COMMAND = f"python3 -m pytest {_CLUSTER_TEST_FILE} -q -n auto"
+_CLUSTER_FULL_COMMAND = "python3 -m pytest tests/ -q -n auto"
 
 
-# opencode 는 gemma 가 느리고 변동 커 1800s. Claude full-wave는 고정 4단계+PM disposition
+# opencode 는 gemma 가 느리고 변동 커 1800s. Claude full-cluster는 고정 4단계+PM disposition
 # 실측이 600s를 넘겨 기본 900s이고, 환경변수 override는 그대로 유지한다.
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT_DEFAULT = 900
@@ -104,12 +104,12 @@ _CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CODEX_TIMEOUT", "900")
 
 # Claude Code 2.1.241의 non-interactive `-p`는 prompt 문자열 `/compact`를 slash command로
 # dispatch하지 않는다(PreCompact/PostCompact hook 0건 실측). 업무 중 compaction은 억제하고
-# full-wave 완료 뒤 같은 세션을 낮은 native 경계로 resume해 compaction event를 유도한다.
-_CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD = "1m"
+# full-cluster 완료 뒤 같은 세션을 낮은 native 경계로 resume해 compaction event를 유도한다.
+_CLAUDE_CLUSTER_AUTOCOMPACT_THRESHOLD = "1m"
 _CLAUDE_AUTOCOMPACT_THRESHOLD = "100k"
 
-# T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-wave
-# 항목에 결합해 전역 livegate 수 pin/board 소유 표면은 그대로 둔다.
+# T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-cluster
+# 항목에 결합해 전역 live-test 수 pin/board 소유 범위는 그대로 둔다.
 _COMPACTION_RECOVERY_SENTINEL = "RECOVERED_AFTER_COMPACTION"
 _CLAUDE_COMPACTION_PROBE_PROMPT = (
     "Use Bash exactly once to run `pwd`, then reply exactly "
@@ -141,7 +141,7 @@ _TOOLS = Path(__file__).resolve().parents[1] / ".project_manager" / "tools"
 def _pm_delegate_contract() -> tuple[str, int, str, int]:
     """라이브 prompt가 쓰는 review/architect schema 값을 엔진 상수에서 읽는다."""
     spec = importlib.util.spec_from_file_location(
-        "_release_wave_pm_delegate", _TOOLS / "pm_delegate.py"
+        "_release_cluster_pm_delegate", _TOOLS / "pm_delegate.py"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -151,7 +151,7 @@ def _pm_delegate_contract() -> tuple[str, int, str, int]:
     )
 
 
-# 회수된 라운드가 담아야 하는 구조화 계약(엔진 파생).
+# 돌려받은 라운드가 담아야 하는 구조화 계약(엔진 파생).
 (_PM_REVIEW_BLOCK, _PM_REVIEW_VERSION,
  _ARCHITECT_TEST_BLOCK, _ARCHITECT_TEST_VERSION) = _pm_delegate_contract()
 
@@ -185,7 +185,7 @@ def _opencode_snapshot_receipts(marker_dir: Path) -> frozenset[tuple[str, str]]:
 
 
 def _compaction_checkpoint_markers(marker_dir: Path) -> frozenset[str]:
-    """압축 checkpoint 가 남긴 durable marker 이름 집합(격리 adopter의 전후 delta용)."""
+    """압축 checkpoint 가 남긴 durable marker 이름 집합(격리 adopter의 전후 차이용)."""
     return frozenset(
         marker.name
         for marker in marker_dir.glob("compact-checkpoint.*")
@@ -205,17 +205,17 @@ def _claude_session_transcript(session_id: str) -> Path:
 
 
 # multi-repo 라이브 웨이브가 여는 board task 이름.
-_RELEASE_WAVE_TASK = "release-wave"
+_RELEASE_CLUSTER_TASK = "release-cluster"
 
 
-def _assert_wave_session_task(dest: Path, session_id: str) -> None:
-    """웨이브 주 세션이 연 task 가 정확히 `wave` 하나인지 단언한다(task 기록은 읽기만 한다).
+def _assert_cluster_session_task(dest: Path, session_id: str) -> None:
+    """묶음 시험 주 세션이 연 task 가 정확히 `cluster` 하나인지 단언한다(task 기록은 읽기만 한다).
 
     압축 기록·snapshot 은 세션 ID 로 task 를 찾으므로, 주 세션이 프롬프트 첫 단계에서 부트스트랩해
-    `wave` 를 열었어야 한다. 행이 없거나 같은 세션 행이 둘이면 압축 기록이 막힌다."""
+    `cluster` 를 열었어야 한다. 행이 없거나 같은 세션 행이 둘이면 압축 기록이 막힌다."""
     resolved = pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(dest), session_id)
-    assert resolved == (_WAVE_TASK, None), (
-        f"웨이브 세션({session_id})이 연 task 가 `{_WAVE_TASK}` 하나가 아니다: {resolved}"
+    assert resolved == (_CLUSTER_TASK, None), (
+        f"웨이브 세션({session_id})이 연 task 가 `{_CLUSTER_TASK}` 하나가 아니다: {resolved}"
     )
 
 
@@ -359,10 +359,10 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
 
 
 # 웨이브 주 세션이 첫 단계로 실행하는 부트스트랩 — 압축 기록이 이 세션의 task 를 찾는 근거다.
-_WAVE_BOOTSTRAP_COMMAND = f"python3 .project_manager/tools/pm_bootstrap.py --task {_WAVE_TASK}"
+_CLUSTER_BOOTSTRAP_COMMAND = f"python3 .project_manager/tools/pm_bootstrap.py --task {_CLUSTER_TASK}"
 
 
-def _full_wave_prompt(entry_doc: str, harness: str) -> str:
+def _full_cluster_prompt(entry_doc: str, harness: str) -> str:
     """PM 세션이 고정 4회 위임과 native 라운드 파일 왕복을 운영하라는 프롬프트.
 
     board.py 경로를 *주지 않는다* — adopter 가 `entry_doc` 만으로 도구를 찾아 운영해야 통과(= 문서 운영성).
@@ -370,23 +370,23 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
     prepare→native subagent→collect를 수행한다. 준비가 예약한 라운드
     파일(`tickets/rounds/<T-NNNN>/NN-<역할>.md`)의 고유 sentinel과 developer의 probe.txt를 side-effect로
     관측한다. `section-add`는 여기서 쓰지 않는다 — 슬롯 없는 준비라 위임 경로와 겹치면 빈 라운드가
-    하나 더 예약된다. 기존 Claude/OpenCode full-wave 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
+    하나 더 예약된다. 기존 Claude/OpenCode full-cluster 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
 
-    작업 폴더 형상은 `_guided_adopter(folders=2, task=wave)` 다([[T-0956]]·커맨드 카드의 통합 폴더 형상):
-    1번 폴더가 base_branch 를 계속 드는 통합 폴더, 2번 폴더가 묶음 브랜치 `task/wave` 로 전환한 작업
+    작업 폴더 구성은 `_guided_adopter(folders=2, task=cluster)` 다([[T-0956]]·커맨드 카드의 통합 폴더 구성):
+    1번 폴더가 base_branch 를 계속 드는 통합 폴더, 2번 폴더가 묶음 브랜치 `task/cluster` 로 전환한 작업
     폴더다. 2개를 빌린 task 는 `--task` 만으로 폴더를 고를 수 없어 발행·claim 은 `--slot 2`, 묶음 선언은
     `--slot 1` 로 지목한다. 생성 회귀 테스트는 작업 폴더에서 홈 보드를 보지 못하므로 자기 파일 기준
-    저장소 루트의 probe.txt 만 확인한다 — 정본 라운드 확인은 `_assert_wave_side_effects` 가 홈 보드에서 한다.
+    저장소 루트의 probe.txt 만 확인한다 — 정본 라운드 확인은 `_assert_cluster_side_effects` 가 홈 보드에서 한다.
     """
     repo = f"adopter-{harness}"
-    work_folder = f"work/{repo}_{_WAVE_WORK_SLOT}"
-    work_branch = f"task/{_WAVE_CLUSTER}"
+    work_folder = f"work/{repo}_{_CLUSTER_WORK_SLOT}"
+    work_branch = f"task/{_CLUSTER_NAME}"
     architect_payload = json.dumps({
         "version": _ARCHITECT_TEST_VERSION,
         "tests": [{
             "id": "AT-001",
-            "target": _WAVE_TEST_FILE,
-            "command": _WAVE_TARGETED_COMMAND,
+            "target": _CLUSTER_TEST_FILE,
+            "command": _CLUSTER_TARGETED_COMMAND,
             "expected": "passed",
             "negative": "probe 내용 또는 canonical architect round가 틀리면 실패해야 한다",
         }],
@@ -396,7 +396,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         ensure_ascii=False, separators=(",", ":"),
     )
     architect_body = (
-        "## 경계 실측\n- isolated release-wave adopter and canonical ticket rounds\n\n"
+        "## 경계 실측\n- isolated release-cluster adopter and canonical ticket rounds\n\n"
         "## 불변식\n- architect then developer then code-reviewer then final developer\n\n"
         "## 표면 상한\n- probe.txt and one stable regression test\n\n"
         "## 테스트 전략\n- positive canonical round/probe check and negative mismatch check\n\n"
@@ -414,9 +414,9 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
         "tool works. First, in this main session and before any other board command or delegation, open "
-        f"the board task session with `{_WAVE_BOOTSTRAP_COMMAND}`. Only this main session runs "
+        f"the board task session with `{_CLUSTER_BOOTSTRAP_COMMAND}`. Only this main session runs "
         "pm_bootstrap.py; subagents never run it, and a subagent that reports a slot write denial hands it "
-        "back to this main session. HARD DELEGATION GATE: the PM main may run board, prepare, and collect commands but "
+        "back to this main session. HARD DELEGATION CHECK: the PM main may run board, prepare, and collect commands but "
         f"must not directly write, edit, cp, or sed any round file body. Call native {delegation_tool} exactly four "
         "times in this order: architect once, developer once, code-reviewer once, developer once. After "
         "each prepare, pass that absolute round path and its complete ROUND contract below to the matching "
@@ -427,19 +427,19 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "prompt must include the nested BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content "
         "below verbatim, without paraphrasing or changing its schema. Before completion, self-check spawned "
         "role counts exactly architect=1, developer=2, code-reviewer=1 and stop on any mismatch. "
-        f"The board task `{_WAVE_TASK}` already holds two work folders of repo `{repo}`: slot "
-        f"{_WAVE_INTEGRATION_SLOT} is the integration folder (it keeps the merge target branch) and slot "
-        f"{_WAVE_WORK_SLOT} is the work folder. Because the task holds two folders, pass "
+        f"The board task `{_CLUSTER_TASK}` already holds two work folders of repo `{repo}`: slot "
+        f"{_CLUSTER_INTEGRATION_SLOT} is the integration folder (it keeps the merge target branch) and slot "
+        f"{_CLUSTER_WORK_SLOT} is the work folder. Because the task holds two folders, pass "
         f"`--repo {repo} --slot <N>` wherever a board command names the folder. "
-        "Then run a full release wave: "
-        "(1) create exactly one ticket titled 'release wave probe' with the board tool, using "
-        f"`--task {_WAVE_TASK} --repo {repo} --slot {_WAVE_WORK_SLOT} "
-        f"--touches {PROBE_FILE},{_WAVE_TEST_FILE}`, "
-        f"(2) claim it with `--task {_WAVE_TASK} --repo {repo} --slot {_WAVE_WORK_SLOT}`, then before "
+        "Then run a full release cluster: "
+        "(1) create exactly one ticket titled 'release cluster probe' with the board tool, using "
+        f"`--task {_CLUSTER_TASK} --repo {repo} --slot {_CLUSTER_WORK_SLOT} "
+        f"--touches {PROBE_FILE},{_CLUSTER_TEST_FILE}`, "
+        f"(2) claim it with `--task {_CLUSTER_TASK} --repo {repo} --slot {_CLUSTER_WORK_SLOT}`, then before "
         "ROUND 01 bind the merge target and move the work folder: run "
-        f"`python3 .project_manager/tools/board.py cluster new {_WAVE_CLUSTER} --tickets <ticket> "
-        f"--task {_WAVE_TASK} --repo {repo} --slot {_WAVE_INTEGRATION_SLOT}` and then "
-        f"`python3 .project_manager/tools/worktree_pool.py switch {repo}_{_WAVE_WORK_SLOT} {work_branch}`, "
+        f"`python3 .project_manager/tools/board.py cluster new {_CLUSTER_NAME} --tickets <ticket> "
+        f"--task {_CLUSTER_TASK} --repo {repo} --slot {_CLUSTER_INTEGRATION_SLOT}` and then "
+        f"`python3 .project_manager/tools/worktree_pool.py switch {repo}_{_CLUSTER_WORK_SLOT} {work_branch}`, "
         "(3) execute exactly these four human rounds in order. For every round use pm_delegate.py ticket "
         "prepare with the stated role, pass the returned absolute round file to the matching native "
         "subagent, then always ticket collect before advancing. Every ticket prepare and ticket collect "
@@ -452,7 +452,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "contract block, exactly one architect sentinel, and zero `<...>` placeholder tokens. If the old "
         "skeleton follows the sentinel or any check fails, rewrite line 2 through EOF and reread it.\n"
         "ROUND 02 developer: implement that contract in the work folder. Create probe.txt with exactly "
-        f"'{PROBE_TEXT}' and create {_WAVE_TEST_FILE}. The test checks only the content of probe.txt at "
+        f"'{PROBE_TEXT}' and create {_CLUSTER_TEST_FILE}. The test checks only the content of probe.txt at "
         "the repository root derived from its own file, `Path(__file__).resolve().parents[1]`; the work "
         "folder does not see the project board, so the test must not read tickets or rounds. "
         "It must never refer "
@@ -460,16 +460,16 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "After writing the test, reopen its source and verify the literal `.local/delegate-ticket-copies` "
         "occurs zero times in the entire file bytes, including comments and docstrings; describe this ban "
         "only in the round evidence, never inside the generated test. Also verify no 32-hex run hash occurs. "
-        f"Run `{_WAVE_TARGETED_COMMAND}` and then `{_WAVE_FULL_COMMAND}` yourself. Only actual rc=0 may be "
+        f"Run `{_CLUSTER_TARGETED_COMMAND}` and then `{_CLUSTER_FULL_COMMAND}` yourself. Only actual rc=0 may be "
         "recorded. The `## 회귀` section must contain exactly two nonblank rows: "
-        f"`- 커맨드: `{_WAVE_FULL_COMMAND}`` and `- 결과: rc=0 · <the one observed full pytest "
+        f"`- 커맨드: `{_CLUSTER_FULL_COMMAND}`` and `- 결과: rc=0 · <the one observed full pytest "
         "summary>`. Put targeted evidence under `## DoD evidence`, not under `## 회귀`. Before replying, "
         "reopen the developer file and extract `## 회귀` through the next `## ` heading; rewrite and "
-        f"reread unless it has exactly those two rows, contains `{_WAVE_FULL_COMMAND}` once, contains "
-        f"neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
+        f"reread unless it has exactly those two rows, contains `{_CLUSTER_FULL_COMMAND}` once, contains "
+        f"neither `{_CLUSTER_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
         f"{_GROWTH_PIPELINE[1][1]} exactly once. Never fabricate a count.\n"
-        f"ROUND 03 code-reviewer: the review unit is the cluster `{_WAVE_CLUSTER}`, so prepare it with "
-        f"`python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-{_WAVE_CLUSTER} --role "
+        f"ROUND 03 code-reviewer: the review unit is the cluster `{_CLUSTER_NAME}`, so prepare it with "
+        f"`python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster C-{_CLUSTER_NAME} --role "
         "code-reviewer --cwd <work folder absolute path>` and pass the returned `prompt` file path together "
         "with the absolute round file to the code-reviewer subagent. "
         "Review probe.txt and its regression test. If the known stable fixture is "
@@ -480,7 +480,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "after the sentinel before replying. "
         "If there is a real defect instead, fill the seeded v3 finding without changing its keys; include "
         "evidence and all fix_contract fields, "
-        f"with test={_WAVE_TEST_FILE}, command=`{_WAVE_TARGETED_COMMAND}`, expected=passed. PM must collect "
+        f"with test={_CLUSTER_TEST_FILE}, command=`{_CLUSTER_TARGETED_COMMAND}`, expected=passed. PM must collect "
         "ROUND 03 and observe rc=0 plus the canonical reviewer content before running ROUND 04 prepare; never "
         "reserve or pre-create ROUND 04 earlier.\n"
         "PM DISPOSITION: after reviewer collect, run review disposition-template for the actual reviewer "
@@ -490,29 +490,29 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "never invent a finding row. Do not search source or help for the block location. Reopen both files "
         "and verify the disposition fence occurs zero times in canonical ROUND 03 and exactly once under "
         "the claimed ticket's `## PM 기계 확인`; only after these counts are true may ROUND 04 prepare run. "
-        "Confirm the review accepted output is empty. Then pass the exact accepted-only delta output to "
+        "Confirm the review accepted output is empty. Then pass the exact accepted-only findings output to "
         "the final developer. Do not create another ticket or reviewer round.\n"
         "ROUND 04 developer (terminal final fix): always prepare and delegate this second developer round, "
         "even when the review accepted output is empty. Apply every accepted finding, add or modify its required regression "
         "test, and fill every preseeded pm-review-verify-v1 row. Run the architect/reviewer targeted commands "
-        f"and `{_WAVE_FULL_COMMAND}` yourself. The final body must use the completed sections in exact order "
+        f"and `{_CLUSTER_FULL_COMMAND}` yourself. The final body must use the completed sections in exact order "
         "`## 변경 파일`, `## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`, then any "
         "seeded verify block and the final sentinel. The `## 회귀` section must contain exactly two "
-        f"nonblank rows: `- 커맨드: `{_WAVE_FULL_COMMAND}`` and `- 결과: rc=0 · <the one observed "
+        f"nonblank rows: `- 커맨드: `{_CLUSTER_FULL_COMMAND}`` and `- 결과: rc=0 · <the one observed "
         "full pytest summary>`. Put targeted evidence under `## DoD evidence`, not under `## 회귀`. "
         "Before replying, reopen the final file and extract `## 회귀` through the next `## ` heading; "
-        f"rewrite and reread unless it has exactly those two rows, contains `{_WAVE_FULL_COMMAND}` once, "
-        f"contains neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
+        f"rewrite and reread unless it has exactly those two rows, contains `{_CLUSTER_FULL_COMMAND}` once, "
+        f"contains neither `{_CLUSTER_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
         f"{_GROWTH_PIPELINE[3][1]} exactly once. Collect once and open no further human round.\n"
         "(4) after all four collects, start a fresh board.py show process and verify the exact role order "
         "architect, developer, code-reviewer, developer and all four sentinels, "
-        "(5) do not run a separate resolve command (the closer resolves the review gate). "
-        "Do not search source or help for another gate command. Check all ticket DoD "
+        "(5) do not run a separate resolve command (the closer resolves the review ticket). "
+        "Do not search source or help for another check command. Check all ticket DoD "
         "boxes, update the status row, append one ticket entry to log/current.md, then run exactly "
-        f"`python3 .project_manager/tools/ticket_finish.py <ticket> --task {_WAVE_TASK} --no-pytest` "
-        f"(the ticket belongs to cluster `{_WAVE_CLUSTER}`, so a direct `board.py complete` is rejected; the "
+        f"`python3 .project_manager/tools/ticket_finish.py <ticket> --task {_CLUSTER_TASK} --no-pytest` "
+        f"(the ticket belongs to cluster `{_CLUSTER_NAME}`, so a direct `board.py complete` is rejected; the "
         "closer merges the work folder branch into the integration folder; --no-pytest reuses the full "
-        "regression this wave already recorded). "
+        "regression this cluster already recorded). "
         "Do not do further discovery after that command succeeds. "
         "Reply with the ticket id when the ticket is done."
     )
@@ -521,7 +521,7 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
 def _collect_subagent_types(stdout: str) -> list[str]:
     """stream-json stdout 의 각 라인을 json 파싱 → 재귀 walk 로 `subagent_type` 값 수집.
 
-    PM 36 probe 의 walk 와 동형(검증됨) — Task tool_use input 에 `subagent_type` 가 들어간다. claude
+    PM 36 probe 의 walk 와 같은 방식(검증됨) — Task tool_use input 에 `subagent_type` 가 들어간다. claude
     의 stream-json 형식 정확 스키마에 비의존적으로 *어느 깊이든* 키를 긁는다(형식 변동에 강건). 파싱
     불가 라인(비-json·빈 줄)은 무시. opencode 출력엔 이 키가 없을 수 있어(미확정) best-effort 로만 쓴다.
     """
@@ -550,14 +550,14 @@ def _collect_subagent_types(stdout: str) -> list[str]:
     return types
 
 
-def _wave_base_branch(dest: Path) -> str:
-    """묶음 `wave` 의 base_branch(통합 브랜치) — `board.py cluster show` 의 `base_branch:` 줄."""
+def _cluster_base_branch(dest: Path) -> str:
+    """묶음 `cluster` 의 base_branch(통합 브랜치) — `board.py cluster show` 의 `base_branch:` 줄."""
     shown = subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "board.py"),
-         "cluster", "show", _WAVE_CLUSTER],
+         "cluster", "show", _CLUSTER_NAME],
         cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
-    assert shown.returncode == 0, f"cluster show {_WAVE_CLUSTER} rc={shown.returncode}\n{shown.stderr}"
+    assert shown.returncode == 0, f"cluster show {_CLUSTER_NAME} rc={shown.returncode}\n{shown.stderr}"
     values = [line.split(":", 1)[1].strip() for line in shown.stdout.splitlines()
               if line.strip().startswith("base_branch:")]
     assert len(values) == 1, shown.stdout
@@ -573,54 +573,54 @@ def _integration_file(dest: Path, base: str, relpath: str, repo: str | None = No
     return shown.stdout if shown.returncode == 0 else None
 
 
-def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, harness: str) -> None:
-    """full wave side-effect 단언 — developer 산출이 통합 브랜치에 머지·ticket 이 done/ 도달.
+def _assert_cluster_side_effects(dest: Path, proc: subprocess.CompletedProcess, harness: str) -> None:
+    """full cluster 시험 side-effect 단언 — developer 산출이 통합 브랜치에 머지·ticket 이 done/ 도달.
 
     probe.txt(내용 'hello from dev') = developer 서브에이전트가 위임받아 구현했다는 증거이고, 그것이
-    묶음 `wave` 의 base_branch(통합 브랜치)에 있어야 종결의 머지까지 끝난 것이다([[T-0956]]·통합 폴더
-    형상). 지정 테스트 재실행은 그 브랜치를 든 통합 폴더에서 한다. done/ 도달·라운드 순서·sentinel 은
+    묶음 `cluster` 의 base_branch(통합 브랜치)에 있어야 종결의 머지까지 끝난 것이다([[T-0956]]·통합 폴더
+    구성). 지정 테스트 재실행은 그 브랜치를 든 통합 폴더에서 한다. done/ 도달·라운드 순서·sentinel 은
     홈 보드를 본다. 모두 출력 phrasing 비결정에 강건한 side-effect.
     """
     tail = (
         f"--- {harness} stdout(tail) ---\n{proc.stdout[-2000:]}\n"
         f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
-    base = _wave_base_branch(dest)
-    assert base == f"{dest.name}_{_WAVE_INTEGRATION_SLOT}", (
-        f"묶음 {_WAVE_CLUSTER} 의 base_branch {base!r} 가 통합 폴더 브랜치가 아니다.\n" + tail
+    base = _cluster_base_branch(dest)
+    assert base == f"{dest.name}_{_CLUSTER_INTEGRATION_SLOT}", (
+        f"묶음 {_CLUSTER_NAME} 의 base_branch {base!r} 가 통합 폴더 브랜치가 아니다.\n" + tail
     )
     probe = _integration_file(dest, base, PROBE_FILE)
     assert probe is not None, (
-        f"실 {harness} full wave 후 통합 브랜치 {base} 에 {PROBE_FILE} 부재 — developer 위임/구현 "
+        f"실 {harness} full cluster 후 통합 브랜치 {base} 에 {PROBE_FILE} 부재 — developer 위임/구현 "
         "또는 종결 머지 실패.\n" + tail
     )
     assert probe.strip() == PROBE_TEXT, (
         f"{PROBE_FILE} 내용이 '{PROBE_TEXT}' 아님 — developer 가 다르게 구현.\n" + tail
     )
-    wave_test_text = _integration_file(dest, base, _WAVE_TEST_FILE)
-    assert wave_test_text is not None, (
-        f"architect 지정 회귀 {_WAVE_TEST_FILE} 가 통합 브랜치 {base} 에 없다.\n" + tail
+    cluster_test_text = _integration_file(dest, base, _CLUSTER_TEST_FILE)
+    assert cluster_test_text is not None, (
+        f"architect 지정 회귀 {_CLUSTER_TEST_FILE} 가 통합 브랜치 {base} 에 없다.\n" + tail
     )
-    assert PROBE_FILE in wave_test_text, "release probe가 probe.txt 를 확인하지 않음.\n" + tail
-    assert ".local/delegate-ticket-copies" not in wave_test_text, (
-        "release probe가 일회성 delegate copy 경로에 결속됨.\n" + tail
+    assert PROBE_FILE in cluster_test_text, "release probe가 probe.txt 를 확인하지 않음.\n" + tail
+    assert ".local/delegate-ticket-copies" not in cluster_test_text, (
+        "release probe가 일회성 delegate copy 경로에 묶였다.\n" + tail
     )
-    assert re.search(r"\b[0-9a-f]{32}\b", wave_test_text, re.IGNORECASE) is None, (
+    assert re.search(r"\b[0-9a-f]{32}\b", cluster_test_text, re.IGNORECASE) is None, (
         "release probe가 랜덤 run hash를 hardcode함.\n" + tail
     )
     integration_folder = dest / "work" / base
     assert integration_folder.is_dir(), f"통합 폴더 {integration_folder} 부재.\n" + tail
     targeted = subprocess.run(
-        _WAVE_TARGETED_COMMAND.split(), cwd=integration_folder, capture_output=True, text=True,
+        _CLUSTER_TARGETED_COMMAND.split(), cwd=integration_folder, capture_output=True, text=True,
         encoding="utf-8", errors="replace", check=False,
     )
     assert targeted.returncode == 0, (
-        f"live side-effect에서 architect 지정 테스트 재실행 red: {_WAVE_TARGETED_COMMAND}\n"
+        f"live side-effect에서 architect 지정 테스트 재실행 red: {_CLUSTER_TARGETED_COMMAND}\n"
         f"stdout={targeted.stdout[-1200:]}\nstderr={targeted.stderr[-800:]}\n" + tail
     )
     done_tickets = _tickets_in(dest, "done")
     assert done_tickets, (
-        f"실 {harness} 가 ticket 을 done/ 까지 운영하지 못함 — full wave 미완주.\n"
+        f"실 {harness} 가 ticket 을 done/ 까지 운영하지 못함 — full cluster 미완주.\n"
         f"open={_tickets_in(dest, 'open')} claimed={_tickets_in(dest, 'claimed')}\n" + tail
     )
     ticket_name = sorted(done_tickets)[-1]
@@ -643,15 +643,15 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
     for path, (role, sentinel) in zip(round_files, _GROWTH_PIPELINE):
         text = path.read_text(encoding="utf-8")
         assert sentinel in text, (
-            f"실 {harness} {path.name}({role})에 harvest sentinel 부재.\n" + tail
+            f"실 {harness} {path.name}({role})에 collect sentinel 부재.\n" + tail
         )
-        # 첫 줄 헤더(라벨·역할·날짜)는 엔진이 시드하지만 사람 참고용이라 엔진이 재작성을
-        # 강제하지 않는다(`round_rules` 단일 진실은 파일명의 순번·역할) — 라이브 tier 판정 축은
+        # 첫 줄 헤더(라벨·역할·날짜)는 엔진이 빈 양식으로 만들지만 사람 참고용이라 엔진이 재작성을
+        # 강제하지 않는다(`round_rules` 단일 진실은 파일명의 순번·역할) — 라이브 tier 판정 기준은
         # 엔진이 실제로 강제하는 성질(sentinel·아래 pm-review-v1 블록)로 좁힌다.
         if role == _REVIEWER_SUBAGENT:
-            # 리뷰 라운드는 엔진이 시드한 판정 블록을 담은 채 회수돼야 delta 단계가 선다.
+            # 리뷰 라운드는 엔진이 빈 양식으로 넣은 판정 블록을 담은 채 돌려받아야 수락한 지적 단계가 선다.
             assert f"```{_PM_REVIEW_BLOCK}" in text, (
-                f"실 {harness} 리뷰 라운드에 {_PM_REVIEW_BLOCK} 블록 부재 — 시드 골격이 지워졌다: "
+                f"실 {harness} 리뷰 라운드에 {_PM_REVIEW_BLOCK} 블록 부재 — 빈 양식이 지워졌다: "
                 f"{path}\n" + tail
             )
 
@@ -661,7 +661,7 @@ def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) ->
 
     설치 → 기준 커밋 → 안내 명령 `pm-config worktree add <repo> --user-ack <repo>` 를 `folders` 번 →
     `pm-config task new <task>` → `pm-config alloc <repo> --task <task>` 를 `folders` 번. 그 task 가
-    작업 폴더 `folders` 개를 보유한다. 카드 시험(folders=1)과 full wave(folders=2)가 함께 쓴다.
+    작업 폴더 `folders` 개를 보유한다. 카드 시험(folders=1)과 full cluster 시험(folders=2)이 함께 쓴다.
     """
     dest = _import_adopter(tmp_path, harness)
     _guide_folders(dest, task=task, folders=folders)
@@ -671,18 +671,18 @@ def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) ->
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("claude"),
-    reason="release wave — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
+    reason="release cluster — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
-def test_release_wave_claude_full_wave(tmp_path):
-    """실 claude full wave + native auto-compaction이 snapshot을 재주입한다.
+def test_release_cluster_claude_full_cluster(tmp_path):
+    """실 claude full cluster 시험 + native auto-compaction이 snapshot을 재주입한다.
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
     claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
-    side-effect(probe.txt·done)를 먼저 단언한다. 주 세션이 첫 단계에서 연 task 가 정확히 `wave` 하나인지
+    side-effect(probe.txt·done)를 먼저 단언한다. 주 세션이 첫 단계에서 연 task 가 정확히 `cluster` 하나인지
     단언한 뒤 같은 세션을 낮은 native `--autocompact` 경계로 resume한다. 압축 뒤 첫 주 스레드 훅의
     checkpoint 1건 이상과 snapshot 전달, 모델 sentinel 응답을 함께 확인한다. API 과금.
     """
-    dest = _guided_adopter(tmp_path, "claude", task=_WAVE_TASK, folders=2)
+    dest = _guided_adopter(tmp_path, "claude", task=_CLUSTER_TASK, folders=2)
     session_id = str(uuid.uuid4())
     checkpoints_before = _compaction_checkpoint_count(dest)
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
@@ -691,11 +691,11 @@ def test_release_wave_claude_full_wave(tmp_path):
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--session-id", session_id,
-         "--autocompact", _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD,
+         "--autocompact", _CLAUDE_CLUSTER_AUTOCOMPACT_THRESHOLD,
          "--allowedTools", "Bash", "Task",
          "--output-format", "stream-json", "--verbose",
          "--dangerously-skip-permissions",
-         _full_wave_prompt("CLAUDE.md", "claude")],
+         _full_cluster_prompt("CLAUDE.md", "claude")],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
@@ -711,15 +711,15 @@ def test_release_wave_claude_full_wave(tmp_path):
         and _REVIEWER_SUBAGENT in subagent_types
         and subagent_types.count(_DEV_SUBAGENT) >= 2
     ), (
-        f"claude full wave 에서 위임 미관측 — subagent_type={subagent_types} "
+        f"claude full cluster 에서 위임 미관측 — subagent_type={subagent_types} "
         f"(architect 1·developer 2·code-reviewer 1 필요).\n" + tail
     )
 
     # side-effect(hard) — developer 위임 결과(probe.txt)·done 전이.
-    _assert_wave_side_effects(dest, proc, "claude")
+    _assert_cluster_side_effects(dest, proc, "claude")
 
     assert proc.returncode == 0
-    _assert_wave_session_task(dest, session_id)
+    _assert_cluster_session_task(dest, session_id)
     resume_proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--resume", session_id,
@@ -752,43 +752,43 @@ def test_release_wave_claude_full_wave(tmp_path):
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("codex") or not codex_auth_available(),
-    reason="release wave native codex — PM_ORCH_LIVE_RELEASE=1 + codex auth 필요.",
+    reason="release cluster native codex — PM_ORCH_LIVE_RELEASE=1 + codex auth 필요.",
 )
-def test_release_wave_codex_native_ticket_growth(tmp_path):
-    """실 Codex main이 spawn_agent 3역할로 같은 ticket copy를 성장·harvest하고 done까지 완주한다."""
-    dest = _guided_adopter(tmp_path, "codex", task=_WAVE_TASK, folders=2)
+def test_release_cluster_codex_native_ticket_growth(tmp_path):
+    """실 Codex main이 spawn_agent 3역할로 같은 ticket copy를 성장·collect하고 done까지 완주한다."""
+    dest = _guided_adopter(tmp_path, "codex", task=_CLUSTER_TASK, folders=2)
     home = make_codex_home(tmp_path)
     try:
         proc = run_codex_exec(
-            _full_wave_prompt("AGENTS.md", "codex"), dest, home,
+            _full_cluster_prompt("AGENTS.md", "codex"), dest, home,
             model=CODEX_MODEL, timeout=_CODEX_TIMEOUT, sandbox="danger-full-access",
         )
     finally:
         drop_codex_auth(home)
-    _assert_wave_side_effects(dest, proc, "codex")
+    _assert_cluster_side_effects(dest, proc, "codex")
 
 
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("opencode"),
-    reason="release wave — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
+    reason="release cluster — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
 )
-def test_release_wave_opencode_full_wave(tmp_path):
-    """실 opencode full wave + 강제 native 임계가 snapshot 재주입·checkpoint를 남긴다.
+def test_release_cluster_opencode_full_cluster(tmp_path):
+    """실 opencode full cluster 시험 + 강제 native 임계가 snapshot 재주입·checkpoint를 남긴다.
 
     opencode 의 위임 관측 수단은 claude 의 stream-json `subagent_type` 와 다르다 — PM 36 라이브 probe
     실측 결과 gemma/opencode 는 위임 흔적(subagent_type·'developer'·task)을 출력에 **0** 으로 낸다(비결정).
-    그래서 **side-effect(probe.txt·done)만 hard 단언**하고(probe.txt=developer 가 위임받아 작성·done=wave
+    그래서 **side-effect(probe.txt·done)만 hard 단언**하고(probe.txt=developer 가 위임받아 작성·done=묶음
     완주 → side-effect 가 위임 *결과*를 커버), 위임 흔적(stdout 에 'developer'/'code-reviewer' 등장)은
     **best-effort**(있으면 단언·없으면 skip)다. opencode 위임 관측 수단은 PM probe 후 보강한다.
     gemma 는 느리고 변동 커 timeout 1800s. `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판).
     compaction 경계는 격리 adopter의 `harness.opencode.ctx_window_tokens`(하네스별 키) + 선택
     모델 `limit.context-output`만 낮추고 반복 입력으로 넘긴다. 출하 config/generic 예산은 무변경.
     두 단계다(T-0953): 첫 실행(`--format json`)에서 루트 세션 ID 를 얻어 그 세션이 연 task 가 정확히
-    `wave` 하나인지 단언하고, 같은 세션(`--continue`)으로 압축을 일으킨다 — 압축 기록의 task 는 세션
+    `cluster` 하나인지 단언하고, 같은 세션(`--continue`)으로 압축을 일으킨다 — 압축 기록의 task 는 세션
     ID 로 찾는다.
     """
-    dest = _guided_adopter(tmp_path, "opencode", task=_WAVE_TASK, folders=2)
+    dest = _guided_adopter(tmp_path, "opencode", task=_CLUSTER_TASK, folders=2)
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
     checkpoints_before = _compaction_checkpoint_count(dest)
     checkpoint_markers_before = _compaction_checkpoint_markers(marker_dir)
@@ -796,19 +796,19 @@ def test_release_wave_opencode_full_wave(tmp_path):
 
     proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스라 opencode 가 `--dir` 디렉토리를
-        # external_directory 로 보고 권한을 auto-reject → AGENTS.md 도 못 읽고 wave 시작 실패한다.
-        # 이 플래그로 권한을 통과시켜야 wave 완주(throwaway tmp adopter 격리라 안전·PM 36 probe 실측).
+        # external_directory 로 보고 권한을 auto-reject → AGENTS.md 도 못 읽고 묶음 시험 시작에 실패한다.
+        # 이 플래그로 권한을 통과시켜야 묶음 시험 완주(throwaway tmp adopter 격리라 안전·PM 36 probe 실측).
         ["opencode", "run", "--format", "json", "--agent", "build", "--dir", str(dest),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
-         _full_wave_prompt("AGENTS.md", "opencode")],
+         _full_cluster_prompt("AGENTS.md", "opencode")],
         cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
-    # side-effect(hard) — full wave 의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
-    _assert_wave_side_effects(dest, proc, "opencode")
-    _assert_wave_session_task(dest, _opencode_session_id(proc.stdout))
+    # side-effect(hard) — full cluster 시험의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
+    _assert_cluster_side_effects(dest, proc, "opencode")
+    _assert_cluster_session_task(dest, _opencode_session_id(proc.stdout))
 
-    # full wave를 정상 context로 완주한 뒤에만 같은 completed session의 native
+    # full cluster 시험을 정상 context로 완주한 뒤에만 같은 completed session의 native
     # compaction 경계를 낮춰, 아래 bounded safe turns로 checkpoint+receipt를 관측한다.
     _force_opencode_compaction_threshold(dest, LIVE_MODEL)
 
@@ -818,7 +818,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
     if _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout:
         assert _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout
 
-    # T-0627 release boundary: 현 full-wave 세션을 이어 안전 크기 turn들을 누적한다. 과거
+    # T-0627 release boundary: 현 full-cluster 세션을 이어 안전 크기 turn들을 누적한다. 과거
     # turn은 native compaction으로 줄일 수 있지만 현재 prompt는 줄일 수 없으므로 단일 초대형
     # prompt를 쓰지 않는다. 새 checkpoint 증가 뒤에는 snapshot payload가 system[]에 실제 push된
     # generation receipt를 모델 phrasing·in-process marker 수명과 독립적으로 관측한다.
@@ -903,21 +903,21 @@ def test_release_wave_opencode_full_wave(tmp_path):
     # sentinel 미등장은 receipt hard 단언을 실패시키지 않으며, 보인 echo는 trace에 보존된다.
 
 
-# ── multi-repo 경로 (multi-PM 셋업 full wave · T-0158) ───────────────────────────────────
-# 위 단일-adopter 테스트는 *한* repo 위 full wave 다. 아래는 그 multi-repo 확장 — multi-PM 셋업
+# ── multi-repo 경로 (multi-PM 셋업 full cluster 시험 · T-0158) ───────────────────────────────────
+# 위 단일-adopter 테스트는 *한* repo 위 full cluster 시험이다. 아래는 그 multi-repo 확장 — multi-PM 셋업
 # (`pm_config repo add` 2 repo + worktree slot)에서 한 LLM 세션이 공유 보드 위 *여러 repo* 의
-# wave 를 운영하는지 검증한다. PM 라이브 probe(opencode·ollama cloud 모델·실측 PASS)로 viable 확인
+# 묶음 시험을 운영하는지 검증한다. PM 라이브 probe(opencode·ollama cloud 모델·실측 PASS)로 viable 확인
 # 후 그 mechanics 를 옮긴 것이다.
 
 # multi-repo 셋업의 repo 이름 = prefix = worktree 슬롯 네임스페이스(단일 진실). 2 repo 로 충분 —
-# 새 위험축(per-repo prefix·per-slot 식별)은 1→2 에서 이미 드러난다(대N 은 spike §6 후속).
+# 새 위험 요소(per-repo prefix·per-slot 식별)는 1→2 에서 이미 드러난다(대N 은 spike §6 후속).
 # 이름은 **소문자**여야 한다 — prefix sanity(`_validate_prefix`·[a-z0-9_]+·ADR-0042/T-0237)가
 # `--prefix <repo>` 를 검증하므로(대문자면 rc1). 프롬프트의 발행 줄은 실 repo 이름(소문자)을 채운
 # `--prefix repoa` 다 → sanity 통과.
 _MULTIREPO_REPOS = ("repoa", "repob")
-# multi-repo wave 가 각 repo 작업 폴더에 쓰도록 지시하는 산출 파일·내용 — 단언은 이 파일이 그 저장소의
-# 묶음 브랜치와 통합 브랜치에 있는지 본다(단일 wave 의 PROBE_FILE='probe.txt' 와 별개).
-_WAVE_FILE = "wave-done.txt"
+# multi-repo 묶음 시험이 각 repo 작업 폴더에 쓰도록 지시하는 산출 파일·내용 — 단언은 이 파일이 그 저장소의
+# 묶음 브랜치와 통합 브랜치에 있는지 본다(단일 묶음 시험의 PROBE_FILE='probe.txt' 와 별개).
+_CLUSTER_FILE = "cluster-done.txt"
 
 
 def _seed_git_repo(path: Path) -> None:
@@ -973,9 +973,9 @@ def _import_multipm_home(tmp_path: Path, harness: str,
         _seed_git_repo(origins / repo)
         # 등록 owner(registrant) 는 T-0779 부터 세션 해소 체인(명시 > $PM_SESSION_NAME > leased 1개
         # > None)으로만 정해진다 — fresh 홈은 아직 worktree(lease)가 0개이므로(repo add 가 worktree
-        # add 보다 먼저) local.conf session= 폴백(폐지)에 의존하던 이전 암묵 해소가 사라졌다. 이
+        # add 보다 먼저) local.conf session= 대체(폐지)에 의존하던 이전 암묵 해소가 사라졌다. 이
         # 헬퍼가 재현하는 "한 사람이 여러 repo 를 attach 하는 부트스트랩" 시나리오의 registrant 를
-        # `--owner`로 명시(area_owner 축의 `--user` 와는 별개 — registrant=등록 행위자·area_owner=
+        # `--owner`로 명시(area_owner 기준의 `--user` 와는 별개 — registrant=등록 행위자·area_owner=
         # 그 area 의 user 소유).
         add_args = ["repo", "add", repo, "--git", str(origins / repo), "--owner", "bootstrap"]
         # area_owners 지정 시 그 repo 의 area_owner(=그 area 의 user 소유)를 `--user` 로 스탬프한다
@@ -990,7 +990,7 @@ def _import_multipm_home(tmp_path: Path, harness: str,
             f"stdout={added.stdout[-600:]}\nstderr={added.stderr[-600:]}"
         )
         # 이 helper는 사용자가 승인한 multi-PM 홈 셋업을 실제 CLI로 재현한다. 신규 슬롯
-        # 거부 테스트가 아니므로 대상 repo에 값-결속된 ack를 명시한다(T-0636 픽스처 정책).
+        # 거부 테스트가 아니므로 대상 repo에 값이 연결된 ack를 명시한다(T-0636 픽스처 정책).
         slotted = _pm_config(
             home, "worktree", "add", repo, "--user-ack", repo
         )
@@ -1001,7 +1001,7 @@ def _import_multipm_home(tmp_path: Path, harness: str,
     return home
 
 
-def _multirepo_wave_home(tmp_path: Path, harness: str) -> Path:
+def _multirepo_cluster_home(tmp_path: Path, harness: str) -> Path:
     """다중 저장소 웨이브 홈 — 저장소마다 작업 폴더 2개(통합 1번·작업 2번)를 웨이브 task 가 보유한다([[T-0958]]).
 
     `_import_multipm_home` 이 저장소마다 만든 첫 폴더에 `worktree add` 로 둘째 폴더를 더하고, task 를 만든 뒤
@@ -1010,9 +1010,9 @@ def _multirepo_wave_home(tmp_path: Path, harness: str) -> Path:
     """
     home = _import_multipm_home(tmp_path, harness)
     steps = [("worktree", "add", repo, "--user-ack", repo) for repo in _MULTIREPO_REPOS]
-    steps.append(("task", "new", _RELEASE_WAVE_TASK))
-    steps += [("alloc", repo, "--task", _RELEASE_WAVE_TASK)
-              for repo in _MULTIREPO_REPOS for _slot in (_WAVE_INTEGRATION_SLOT, _WAVE_WORK_SLOT)]
+    steps.append(("task", "new", _RELEASE_CLUSTER_TASK))
+    steps += [("alloc", repo, "--task", _RELEASE_CLUSTER_TASK)
+              for repo in _MULTIREPO_REPOS for _slot in (_CLUSTER_INTEGRATION_SLOT, _CLUSTER_WORK_SLOT)]
     for step in steps:
         proc = _pm_config(home, *step)
         assert proc.returncode == 0, (
@@ -1026,46 +1026,46 @@ def _multirepo_wave_home(tmp_path: Path, harness: str) -> Path:
 _MULTIREPO_TICKET = "<TICKET_ID>"
 
 
-def _multirepo_wave_commands(repo: str) -> tuple[str, ...]:
+def _multirepo_cluster_commands(repo: str) -> tuple[str, ...]:
     """저장소 하나의 웨이브 실행 줄 7개 — 카드 줄에 그 저장소 값과 폴더 지목을 채운 것, 카드 순서([[T-0958]]).
 
-    카드 순서는 new → cluster new → promote → tier → claim → switch → 종결이다([[T-0960]] · board 형상과
+    카드 순서는 new → cluster new → promote → tier → claim → switch → 종결이다([[T-0960]] · board 구성과
     무관한 한 순서). 발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고 switch 는 작업
-    폴더를 묶음 브랜치로 옮긴다. 발행에는 새 prefix 의 값-결속 승인과 바꿀 파일 선언을 붙인다. 파일 쓰기와 완료 조건 체크는
+    폴더를 묶음 브랜치로 옮긴다. 발행에는 새 prefix 의 값이 연결된 승인과 바꿀 파일 선언을 붙인다. 파일 쓰기와 완료 조건 체크는
     switch(6번째)와 종결(7번째) 사이의 사람 몫이다(프롬프트가 지시한다).
     """
-    task, tid, cluster = _RELEASE_WAVE_TASK, _MULTIREPO_TICKET, f"wave-{repo}"
-    work = f"--repo {repo} --slot {_WAVE_WORK_SLOT}"
-    integration = f"--repo {repo} --slot {_WAVE_INTEGRATION_SLOT}"
+    task, tid, cluster = _RELEASE_CLUSTER_TASK, _MULTIREPO_TICKET, f"probe-{repo}"
+    work = f"--repo {repo} --slot {_CLUSTER_WORK_SLOT}"
+    integration = f"--repo {repo} --slot {_CLUSTER_INTEGRATION_SLOT}"
     tools = "python3 .project_manager/tools"
     return (
-        f'{tools}/board.py new "wave probe {repo}" --task {task} {work} '
-        f"--prefix {repo} --user-ack {repo} --touches {_WAVE_FILE}",
+        f'{tools}/board.py new "cluster probe {repo}" --task {task} {work} '
+        f"--prefix {repo} --user-ack {repo} --touches {_CLUSTER_FILE}",
         f"{tools}/board.py cluster new {cluster} --tickets {tid} --task {task} {integration}",
         f"{tools}/board.py promote {tid}",
         f"{tools}/board.py tier {tid} pm-direct",
         f"{tools}/board.py claim {tid} --task {task} {work}",
-        f"{tools}/worktree_pool.py switch work/{repo}_{_WAVE_WORK_SLOT} task/{cluster}",
+        f"{tools}/worktree_pool.py switch work/{repo}_{_CLUSTER_WORK_SLOT} task/{cluster}",
         f"{tools}/ticket_finish.py {tid} --task {task} --no-pytest",
     )
 
 
-def _multirepo_wave_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
+def _multirepo_cluster_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
     """한 세션이 공유 보드 위 저장소마다 코드 변경 하나를 카드 흐름대로 종결하라는 프롬프트([[T-0958]]).
 
-    새 위험축은 그대로다 — 한 세션이 저장소별 prefix(`--prefix <repo>` → `T-<repo>-NNN`)와 저장소별 폴더
-    지목(`--repo <repo> --slot <N>`)을 바르게 다루는가. 실행 줄은 `_multirepo_wave_commands` 가 카드 줄에
+    새 위험 요소는 그대로다 — 한 세션이 저장소별 prefix(`--prefix <repo>` → `T-<repo>-NNN`)와 저장소별 폴더
+    지목(`--repo <repo> --slot <N>`)을 바르게 다루는가. 실행 줄은 `_multirepo_cluster_commands` 가 카드 줄에
     값을 채운 것이고 순서도 카드 순서다(비라이브 재현이 같은 줄을 실행한다). 맨 앞의 부트스트랩은 가드 훅이
     이 세션을 task 에 묶게 해 작업 폴더 쓰기를 연다. 신규 prefix 승인은 이 프롬프트가 주체이므로 저장소마다
-    발행 줄 한 곳에만 값-결속 `--user-ack` 를 둔다(T-0744).
+    발행 줄 한 곳에만 값이 연결된 `--user-ack` 를 둔다(T-0744).
     """
     blocks = []
     for index, repo in enumerate(repos, start=1):
-        commands = _multirepo_wave_commands(repo)
-        lines = [f"Wave {index} (repo {repo}):"]
+        commands = _multirepo_cluster_commands(repo)
+        lines = [f"Part {index} (repo {repo}):"]
         lines += [f"  {n}. {command}" for n, command in enumerate(commands[:6], start=1)]
         lines.append(
-            f"  7. Write the file work/{repo}_{_WAVE_WORK_SLOT}/{_WAVE_FILE} containing exactly "
+            f"  7. Write the file work/{repo}_{_CLUSTER_WORK_SLOT}/{_CLUSTER_FILE} containing exactly "
             f"\"done by {repo}\" — only after step 6 and only in that folder. The finish step commits it."
         )
         lines.append(
@@ -1075,19 +1075,19 @@ def _multirepo_wave_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
         lines.append(f"  9. {commands[6]}")
         blocks.append("\n".join(lines))
     folders = ", ".join(
-        f"work/{repo}_{_WAVE_INTEGRATION_SLOT} (integration) and work/{repo}_{_WAVE_WORK_SLOT} (work)"
+        f"work/{repo}_{_CLUSTER_INTEGRATION_SLOT} (integration) and work/{repo}_{_CLUSTER_WORK_SLOT} (work)"
         for repo in repos
     )
     return (
         "You operate a multi-PM project-manager home that shares ONE board across "
-        f"{len(repos)} code repos: {' and '.join(repos)}. The board task `{_RELEASE_WAVE_TASK}` already "
+        f"{len(repos)} code repos: {' and '.join(repos)}. The board task `{_RELEASE_CLUSTER_TASK}` already "
         f"holds two folders of each repo: {folders}. The integration folder keeps the merge target "
         "branch; you change files only in the work folder.\n\n"
         "This release-test instruction explicitly approves each repo's value-bound --user-ack for its "
         "new test prefix; do not invent or alter acknowledgements.\n\n"
         "First open the task session (the write guard allows edits inside the work folders only after "
-        f"this):\n  python3 .project_manager/tools/pm_bootstrap.py --task {_RELEASE_WAVE_TASK}\n\n"
-        "Then run one wave per repo, finishing one repo completely before starting the next. Run every "
+        f"this):\n  python3 .project_manager/tools/pm_bootstrap.py --task {_RELEASE_CLUSTER_TASK}\n\n"
+        "Then run one part per repo, finishing one repo completely before starting the next. Run every "
         "command exactly as written and in this order; replace <TICKET_ID> with the ticket id printed by "
         "that repo's step 1. This project ships no test suite, so the finish command carries --no-pytest.\n\n"
         + "\n\n".join(blocks)
@@ -1096,19 +1096,19 @@ def _multirepo_wave_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
 
 
 def _ticket_field(path: Path, key: str) -> str | None:
-    """티켓·묶음 장부 frontmatter 의 `key: 값` 한 줄 값."""
+    """티켓·묶음 기록 frontmatter 의 `key: 값` 한 줄 값."""
     match = re.search(rf"^{key}:\s*(\S+)\s*$", path.read_text(encoding="utf-8"), flags=re.M)
     return match.group(1) if match else None
 
 
-def _assert_multirepo_wave_side_effects(home: Path, proc: subprocess.CompletedProcess,
+def _assert_multirepo_cluster_side_effects(home: Path, proc: subprocess.CompletedProcess,
                                         harness: str,
                                         repos: tuple[str, ...] = _MULTIREPO_REPOS) -> None:
     """저장소마다 결과의 실체를 본다 — 티켓 done·묶음 closed·바꾼 파일이 묶음 브랜치와 통합 브랜치에 있다.
 
     (1) `tickets/done/T-<repo>-*.md` 가 정확히 하나다(그 저장소 prefix 로 발행·종결 완주).
-    (2) 그 티켓 `cluster` 장부가 `status: closed` 이고 `base_branch` 가 통합 폴더 브랜치(`<repo>_1`)다.
-    (3) 그 저장소 bare 에서 묶음 `branch` 와 `base_branch` 의 `wave-done.txt` 내용이 `done by <repo>` 다.
+    (2) 그 티켓 `cluster` 기록이 `status: closed` 이고 `base_branch` 가 통합 폴더 브랜치(`<repo>_1`)다.
+    (3) 그 저장소 bare 에서 묶음 `branch` 와 `base_branch` 의 `cluster-done.txt` 내용이 `done by <repo>` 다.
         묶음 브랜치에 있어야 작업 폴더에서 고친 변경이 종결의 머지로 들어간 것이다. 폴더 안 파일 존재만 보면
         커밋되지 않은 파일과 통합 브랜치 직접 커밋을 가리지 못한다([[T-0958]] · 6d1c39c9 라이브 두 하네스).
     """
@@ -1120,23 +1120,23 @@ def _assert_multirepo_wave_side_effects(home: Path, proc: subprocess.CompletedPr
     for repo in repos:
         done = sorted((root / "done").glob(f"T-{repo}-*.md"))
         assert len(done) == 1, (
-            f"실 {harness} multi-repo wave: repo '{repo}' 의 done ticket(T-{repo}-*) 이 {len(done)}개.\n"
+            f"실 {harness} multi-repo cluster: repo '{repo}' 의 done ticket(T-{repo}-*) 이 {len(done)}개.\n"
             f"all done={_tickets_in(home, 'done')}\n"
             f"open={_tickets_in(home, 'open')} claimed={_tickets_in(home, 'claimed')}\n" + tail
         )
         cluster = _ticket_field(done[0], "cluster")
-        ledger = root / "clusters" / f"{cluster}.md"
-        assert cluster and ledger.is_file(), f"repo '{repo}' done ticket 의 묶음 장부 부재: {cluster}\n" + tail
-        status, base, branch = (_ticket_field(ledger, key) for key in ("status", "base_branch", "branch"))
+        record_path = root / "clusters" / f"{cluster}.md"
+        assert cluster and record_path.is_file(), f"repo '{repo}' done ticket 의 묶음 기록 부재: {cluster}\n" + tail
+        status, base, branch = (_ticket_field(record_path, key) for key in ("status", "base_branch", "branch"))
         assert status == "closed", f"repo '{repo}' 묶음 {cluster} status={status} (closed 아님)\n" + tail
-        assert base == f"{repo}_{_WAVE_INTEGRATION_SLOT}", (
+        assert base == f"{repo}_{_CLUSTER_INTEGRATION_SLOT}", (
             f"repo '{repo}' 묶음 {cluster} 의 base_branch {base!r} 가 통합 폴더 브랜치가 아니다.\n" + tail
         )
         expected = f"done by {repo}"
         for label, ref in (("묶음 브랜치", branch), ("통합 브랜치", base)):
-            content = _integration_file(home, ref, _WAVE_FILE, repo=repo) if ref else None
+            content = _integration_file(home, ref, _CLUSTER_FILE, repo=repo) if ref else None
             assert content is not None and content.strip() == expected, (
-                f"실 {harness} multi-repo wave: repo '{repo}' {label} {ref} 의 {_WAVE_FILE} = {content!r} "
+                f"실 {harness} multi-repo cluster: repo '{repo}' {label} {ref} 의 {_CLUSTER_FILE} = {content!r} "
                 f"(기대 {expected!r}) — 작업 폴더에서 고쳐 종결로 머지하지 않았다.\n" + tail
             )
 
@@ -1144,78 +1144,78 @@ def _assert_multirepo_wave_side_effects(home: Path, proc: subprocess.CompletedPr
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("opencode"),
-    reason="release wave multi-repo — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
+    reason="release cluster multi-repo — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
            "기본 skip·사용자 트리거.",
 )
-def test_release_wave_multirepo_opencode_full_wave(tmp_path):
+def test_release_cluster_multirepo_opencode_full_cluster(tmp_path):
     """실 opencode(agentic·ollama)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 웨이브를 닫는다.
 
-    홈은 `_multirepo_wave_home`(저장소마다 통합 폴더 1번·작업 폴더 2번을 task 가 보유)이고, 프롬프트
-    (`_multirepo_wave_prompt`)는 부트스트랩 줄 다음에 저장소마다 카드 줄 7개(new·cluster new·promote·tier·
+    홈은 `_multirepo_cluster_home`(저장소마다 통합 폴더 1번·작업 폴더 2번을 task 가 보유)이고, 프롬프트
+    (`_multirepo_cluster_prompt`)는 부트스트랩 줄 다음에 저장소마다 카드 줄 7개(new·cluster new·promote·tier·
     claim·switch·종결)에 값을 채운 실행 줄과 그 사이 파일 쓰기·완료 조건 체크를 싣는다. direct complete 는
-    프롬프트에 없다([[T-0958]]). 단일 full wave 와 다른 검증축이다: 한 세션이 공유 보드 위 저장소별
+    프롬프트에 없다([[T-0958]]). 단일 full cluster 시험과 다른 검증 기준이다: 한 세션이 공유 보드 위 저장소별
     prefix(`--prefix <repo>`)와 폴더 지목(`--repo <repo> --slot <N>`)을 바르게 다루는가.
-    단언은 결과의 실체만 본다(`_assert_multirepo_wave_side_effects`): 저장소마다 done 티켓 1개, 그 묶음
-    closed 와 base_branch `<repo>_1`, 묶음 브랜치와 통합 브랜치의 wave-done.txt 내용. 출력 문구 비결정에
-    강건하다(T-0157 동형). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama).
+    단언은 결과의 실체만 본다(`_assert_multirepo_cluster_side_effects`): 저장소마다 done 티켓 1개, 그 묶음
+    closed 와 base_branch `<repo>_1`, 묶음 브랜치와 통합 브랜치의 cluster-done.txt 내용. 출력 문구 비결정에
+    강건하다(T-0157 과 같은 방식). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama).
     """
-    home = _multirepo_wave_home(tmp_path, "opencode")
+    home = _multirepo_cluster_home(tmp_path, "opencode")
 
     proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
-        # 단일 wave 테스트와 동일 근거(opencode 가 --dir 디렉토리를 external 로 보고 auto-reject).
+        # 단일 묶음 시험과 동일 근거(opencode 가 --dir 디렉토리를 external 로 보고 auto-reject).
         ["opencode", "run", "--agent", "build", "--dir", str(home),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
-         _multirepo_wave_prompt()],
+         _multirepo_cluster_prompt()],
         cwd=str(home), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
     # 결과 실체(hard) — 저장소마다 done 티켓 1개·묶음 closed·base_branch·묶음 브랜치와 통합 브랜치의 파일 내용.
-    _assert_multirepo_wave_side_effects(home, proc, "opencode")
+    _assert_multirepo_cluster_side_effects(home, proc, "opencode")
 
 
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("claude"),
-    reason="release wave multi-repo — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
+    reason="release cluster multi-repo — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
-def test_release_wave_multirepo_claude_full_wave(tmp_path):
+def test_release_cluster_multirepo_claude_full_cluster(tmp_path):
     """실 claude(`claude-sonnet-4-6`)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 웨이브를 닫는다.
 
-    opencode 짝(`test_release_wave_multirepo_opencode_full_wave`)과 같은 홈·프롬프트·단언에 단일 claude
+    opencode 짝(`test_release_cluster_multirepo_opencode_full_cluster`)과 같은 홈·프롬프트·단언에 단일 claude
     실행 방식(`--allowedTools Bash`·subprocess cwd 존중이라 `--dir` 불요)을 얹은 것이다. 프롬프트는
     부트스트랩 줄과 저장소마다 카드 줄 7개(new·cluster new·promote·tier·claim·switch·종결)이고 direct
     complete 는 없다([[T-0958]]). 단언은 저장소마다 done 티켓 1개, 그 묶음 closed 와 base_branch `<repo>_1`,
-    묶음 브랜치와 통합 브랜치의 wave-done.txt 내용이다(`_assert_multirepo_wave_side_effects`). 웨이브에
+    묶음 브랜치와 통합 브랜치의 cluster-done.txt 내용이다(`_assert_multirepo_cluster_side_effects`). 묶음 시험에
     developer·reviewer 위임이 없어 stream-json `subagent_type` 단언은 하지 않는다. API 과금.
     """
-    home = _multirepo_wave_home(tmp_path, "claude")
+    home = _multirepo_cluster_home(tmp_path, "claude")
 
     proc = subprocess.run(
         # `--allowedTools Bash`: 웨이브는 부트스트랩·카드 줄 실행(board.py·worktree_pool.py·ticket_finish.py)과
-        # 파일 쓰기뿐이고 developer·reviewer 위임이 없어 Task 불요(단일 full wave 와 다른 점). claude 는
+        # 파일 쓰기뿐이고 developer·reviewer 위임이 없어 Task 불요(단일 full cluster 시험과 다른 점). claude 는
         # subprocess cwd 를 존중하므로 `--dir` 불요(opencode 와 다른 점). 결과 실체만 단언하므로 stream-json 도 불요.
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--allowedTools", "Bash",
          "--dangerously-skip-permissions",
-         _multirepo_wave_prompt()],
+         _multirepo_cluster_prompt()],
         cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
 
     # 결과 실체(hard) — 저장소마다 done 티켓 1개·묶음 closed·base_branch·묶음 브랜치와 통합 브랜치의 파일 내용.
-    _assert_multirepo_wave_side_effects(home, proc, "claude")
+    _assert_multirepo_cluster_side_effects(home, proc, "claude")
 
 
 # ── multi-USER composite 경로 (2 user 공유보드 뷰 섞임 격리 · release-marked 라이브 half · T-0309) ──
-# 위 multi-repo 테스트는 *한* user(단일 정체성)가 여러 repo 슬롯을 운영하는 축이다. 아래는 그 직교
-# 축 — **2 distinct user(alice/bob)가 공유 보드에서 각자 티켓을 만들고 세션 뷰가 서로 섞이지 않는가**
+# 위 multi-repo 테스트는 *한* user(단일 정체성)가 여러 repo 슬롯을 운영하는 기준이다. 아래는 그 직교
+# 기준 — **2 distinct user(alice/bob)가 공유 보드에서 각자 티켓을 만들고 세션 뷰가 서로 섞이지 않는가**
 # (ADR-0053 세션격리 불변식). T-0304(`test_board_scoping_isolation`)가 이 불변식을 *무-LLM* durable
 # 로 못박고(실 board API create→view), 이 라이브 half 는 실 opencode 세션이 각 identity 로 티켓을
 # 생성한 뒤 뷰 섞임을 side-effect 로 검증한다(라이브 opencode end-to-end·release tier).
 
-# 각 identity = (repo, prefix, task, user). prefix(al/be)는 repo(alpha/beta)와 별개 축(ID
+# 각 identity = (repo, prefix, task, user). prefix(al/be)는 repo(alpha/beta)와 별개 기준(ID
 # 네임스페이스·소문자 sanity `_validate_prefix`)이고, task 는 그 user 의 귀속 정체성이다(T-0962 —
 # 귀속 쓰기는 `--task`). task 마다 그 repo 폴더 1개를 빌린다. `test_board_scoping_isolation._seed_composite` 와
 # 동일 매핑을 라이브 홈에 재현한다. areas.md `area_owner` 칼럼이 open 티켓 소유(`_ticket_owner`·
@@ -1224,8 +1224,8 @@ _MULTIUSER_REPOS = ("alpha", "beta")
 _MULTIUSER_AREA_OWNERS = {"alpha": "alice", "beta": "bob"}
 _MULTIUSER_IDENTITIES = (
     # (repo,   prefix, task,         user)
-    ("alpha", "al", "alice-wave", "alice"),
-    ("beta",  "be", "bob-wave",   "bob"),
+    ("alpha", "al", "alice-cluster", "alice"),
+    ("beta",  "be", "bob-cluster",   "bob"),
 )
 
 
@@ -1251,7 +1251,7 @@ def _import_multiuser_home(tmp_path: Path, harness: str) -> Path:
     return home
 
 
-def _multiuser_wave_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
+def _multiuser_cluster_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
     """각 identity(alice/bob)가 공유 보드에서 자기 정체성으로 [미claim open + claim] 티켓을 만들라는 프롬프트.
 
     섞임 격리를 실증하려면 각 user 가 (i) 미claim open (다른 user 뷰가 절대 유출하면 안 되는 대상) +
@@ -1259,11 +1259,11 @@ def _multiuser_wave_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
     귀속(created_by/claimed_by user)을 distinct 2 user 로 스탬프한다 — 이게 `_distinct_ticket_users`
     다중사용자 신호(≥2)를 세워 세션 뷰가 strict-exclude(degrade 아님)로 돌게 한다. `--prefix` 로 ID
     네임스페이스(T-al-*/T-be-*)를 가르고, 이 release-test 프롬프트 자체가 신규 테스트
-    prefix 승인 주체이므로 각 prefix의 **첫** `new` 원 명령에만 값-결속된
-    `--user-ack <prefix>`를 명시한다. 에이전트가 ack를 자동 추가하는 형상은 테스트하지
+    prefix 승인 주체이므로 각 prefix의 **첫** `new` 원 명령에만 값이 연결된
+    `--user-ack <prefix>`를 명시한다. 에이전트가 ack를 자동 추가하는 구성은 테스트하지
     않으며(기계 가드가 금지), 두 번째 `new`는 이미 등록된 prefix를 쓴다. new 두 줄과 claim 줄은
     그 identity 의 `--task <task>` 를 싣는다(귀속 쓰기의 정체성·T-0962 — task 폴더가 1개라 위치 인자 없음).
-    board.py 경로는 준다 — 새 위험축은 identity 귀속·뷰 격리이지 문서 운영성이 아니다(단일 full wave 커버).
+    board.py 경로는 준다 — 새 위험 요소는 identity 귀속·뷰 격리이지 문서 운영성이 아니다(단일 full cluster 시험이 커버).
     """
     blocks = []
     for _repo, prefix, task, user in identities:
@@ -1299,7 +1299,7 @@ def _board_list(home: Path, *args: str) -> subprocess.CompletedProcess:
     """home 의 board.py list 를 subprocess 로 호출(엔진 도구·LLM 아님 → 부모 env OK).
 
     격리 판정은 **테스트가 직접** board.py 를 돌려 실 산출(뷰)을 파싱한다 — LLM 출력 phrasing
-    비결정에 강건(side-effect 단언·T-0157 동형). `--task <task>` 는 아무것도 안 바꾸는 뷰 렌즈.
+    비결정에 강건(side-effect 단언·T-0157 과 같은 방식). `--task <task>` 는 아무것도 안 바꾸는 뷰 렌즈.
     """
     return subprocess.run(
         [sys.executable, str(home / ".project_manager" / "tools" / "board.py"), "list", *args],
@@ -1314,7 +1314,7 @@ def _set_home_user(home: Path, user: str) -> None:
     user-first(ADR-0056·T-0312): `list --task <task>` 는 **현재 사용자 ∩ task**라, 각 identity 의
     task 뷰는 *그 user 로* 조회해야 자기 claim 이 보인다(옛 area_owner-derivation 폐기 — `--task` 가
     area_owner 로 user 를 유도하지 않는다). `load_local_config` 는 KEY 마지막 값 채택이라 append 가
-    이긴다(`_append_tiny_ctx_window` 동형). machine composite(`test_board_scoping_isolation`
+    이긴다(`_append_tiny_ctx_window` 와 같은 방식). machine composite(`test_board_scoping_isolation`
     `_write_conf(user=…)`)의 라이브 짝.
     """
     conf = home / ".project_manager" / "local.conf"
@@ -1324,7 +1324,7 @@ def _set_home_user(home: Path, user: str) -> None:
 def _parse_list_rows(stdout: str) -> list[tuple[str, str]]:
     """board.py list 출력에서 (status, ticket_id) 목록을 파싱 (`  [status ] T-...  title …`).
 
-    `test_board_scoping_isolation._view` 동형 파싱을 subprocess stdout 에 적용한다 — `[` 로 시작하는
+    `test_board_scoping_isolation._view` 같은 방식 파싱을 subprocess stdout 에 적용한다 — `[` 로 시작하는
     행만, `]` 뒤 첫 토큰이 ticket id. 비-행(헤더·`(no tickets)`·경고)은 조용히 무시.
     """
     rows: list[tuple[str, str]] = []
@@ -1344,9 +1344,9 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
     """multi-USER 뷰 섞임 격리 단언 — 각 user 세션 뷰가 타 user 티켓을 미열람·자기 것만 열람.
 
     테스트가 직접 board.py list 를 돌려(side-effect·LLM phrasing 비결정 강건) 실 뷰를 파싱한다:
-      (전제) 두 user 가 실제로 티켓을 만들었고(wave 완주) 각자 미claim open 을 남겼다 — 미claim open
+      (전제) 두 user 가 실제로 티켓을 만들었고(묶음 시험 완주) 각자 미claim open 을 남겼다 — 미claim open
              이 없으면 섞임 assert 가 공허해진다(degrade 가 유출할 대상 open 이 실재해야 catch).
-      (a) alice task(alice-wave) 뷰 = T-al-* 만·bob(T-be-*) **미열람** · bob task(bob-wave) 뷰 = 역.
+      (a) alice task(alice-cluster) 뷰 = T-al-* 만·bob(T-be-*) **미열람** · bob task(bob-cluster) 뷰 = 역.
       (c) 각자 자기(T-<own>-*) 열람 (섞임 격리가 자기 것까지 지우는 over-exclude 도 잡음).
     ID prefix(T-al-*/T-be-*)가 소유 user 와 1:1 대응(각 user 가 자기 --prefix 로 발행)이라, "alice 뷰에
     T-be-* 0" = alice 세션이 bob 소유 티켓을 유출 안 함 = ADR-0053 세션격리. degrade(전체 open=mine)면
@@ -1357,7 +1357,7 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
 
     # (전제) 전체 보드 — 두 user 가 티켓을 만들었고 각자 미claim open 을 남겼나.
     # 전제 확인 = 전체 보드 상세 — ADR-0066 이후 무인자 기본 뷰는 내 스트림 스코프(미귀속 open 접힘)
-    # 이라 `--all` 로 전체를 본다(v1.3.2 livegate red 근본원인).
+    # 이라 `--all` 로 전체를 본다(v1.3.2 live-test red 근본원인).
     full = _board_list(home, "--all", "--status", "all")
     assert full.returncode == 0, (
         f"board.py list --status all rc={full.returncode}\n{full.stderr[-800:]}\n" + tail)
@@ -1365,12 +1365,12 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
     for _repo, prefix, _task, user in identities:
         owned = [tid for _st, tid in all_rows if tid.startswith(f"T-{prefix}-")]
         assert owned, (
-            f"실 {harness} multiuser wave: user '{user}'(prefix {prefix}) 티켓 미생성 — wave 미완주.\n"
+            f"실 {harness} multiuser cluster: user '{user}'(prefix {prefix}) 티켓 미생성 — cluster 미완주.\n"
             f"all={all_rows}\n" + tail)
         owned_open = [tid for st, tid in all_rows
                       if tid.startswith(f"T-{prefix}-") and st == "open"]
         assert owned_open, (
-            f"실 {harness} multiuser wave: user '{user}' 미claim open(T-{prefix}-*) 부재 — 섞임 "
+            f"실 {harness} multiuser cluster: user '{user}' 미claim open(T-{prefix}-*) 부재 — 섞임 "
             f"격리 assert 가 공허해진다(유출 대상 open 이 실재해야 catch).\nall={all_rows}\n" + tail)
 
     # (a)·(c) 각 identity task 뷰 — 타 user 미열람 · 자기 열람.
@@ -1394,8 +1394,8 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
             f"자기 것까지 지움(over-exclude).\n뷰={sorted(ids)}\n" + tail)
 
     # task 렌즈(`--task <이름>`·T-0365·[[ADR-0059]] Decision 10) 라이브 커버 — 기계 composite
-    # (`test_board_scoping_isolation` 의 task 축 surface)와 **짝**(decision: 둘 중 하나만 갱신하면
-    # 라이브/기계 뷰가 어긋난다). 라이브 wave 는 identity task 의 claim(claimed_by=<user>/<task>)만 남기므로
+    # (`test_board_scoping_isolation` 의 task 기준 surface)와 **짝**(decision: 둘 중 하나만 갱신하면
+    # 라이브/기계 뷰가 어긋난다). 라이브 실행은 identity task 의 claim(claimed_by=<user>/<task>)만 남기므로
     # 그 위에서 다른 task 이름의 렌즈가 (i) 타 user 무유출 (ii) 그 claim 을 다른 task 이름으로 안 끌어옴
     # (claimed_by 재사용) 을 실증한다. task 바인딩 claim 이 없는 fresh task 명은 (claim 0 + 내 소유 open
     # backlog) 로 좁혀져야 한다 — 무필터 전체 보드로 새지 않음(핸들러가 `--task` 를 실 소비).
@@ -1407,7 +1407,7 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
                                for _r, p, _t, _u in identities}
     for _repo, prefix, _task, user in identities:
         _set_home_user(home, user)
-        # identity task(`<user>-wave`)와 다른 자유 task 명 — 같은 이름이면 그 task 의 claim 이 정당하게
+        # identity task(`<user>-cluster`)와 다른 자유 task 명 — 같은 이름이면 그 task 의 claim 이 정당하게
         # 보여 판별 검증이 공허해진다.
         fresh_task = f"{prefix}-probe-task"
         tview = _board_list(home, "--task", fresh_task)
@@ -1434,21 +1434,21 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("opencode"),
-    reason="release wave multiuser composite — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
+    reason="release cluster multiuser composite — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
            "기본 skip·사용자 트리거.",
 )
-def test_release_wave_multiuser_composite_opencode(tmp_path):
+def test_release_cluster_multiuser_composite_opencode(tmp_path):
     """실 opencode 세션이 공유 보드에서 2 distinct user(alice/bob)로 티켓을 만들고 세션 뷰가 섞이지 않음을 라이브 실증.
 
-    T-0304(`test_board_scoping_isolation`)의 무-LLM composite 게이트의 **라이브 opencode 짝**(ADR-0053).
+    T-0304(`test_board_scoping_isolation`)의 무-LLM composite 검사의 **라이브 opencode 짝**(ADR-0053).
     셋업(`_import_multiuser_home`): 공유 보드 홈에 repo alpha(area_owner alice)·beta(area_owner bob)를
-    distinct user 로 등록. opencode(agentic·출하 모델)가 `_multiuser_wave_prompt` 로 각 identity 의
+    distinct user 로 등록. opencode(agentic·출하 모델)가 `_multiuser_cluster_prompt` 로 각 identity 의
     [미claim open + claim] 티켓을 자기 `--user`/`--prefix`/`--task` 로 만든다.
 
     격리 판정은 **테스트가 직접** board.py list 를 돌려(side-effect·LLM phrasing 비결정 강건) —
-    alice task(alice-wave) 뷰는 bob 티켓(T-be-*) 미열람·자기(T-al-*) 열람, bob task(bob-wave) 뷰는 역 —
+    alice task(alice-cluster) 뷰는 bob 티켓(T-be-*) 미열람·자기(T-al-*) 열람, bob task(bob-cluster) 뷰는 역 —
     즉 **뷰가 섞이지 않음**을 실 산출로 assert(`_assert_multiuser_view_isolation`). `--dir` 로 루트 핀
-    (opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama). cross-slot 축은 T-0304 기계 게이트 커버.
+    (opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama). cross-slot 기준은 T-0304 기계 검사 커버.
     """
     home = _import_multiuser_home(tmp_path, "opencode")
 
@@ -1457,7 +1457,7 @@ def test_release_wave_multiuser_composite_opencode(tmp_path):
         # multi-repo 라이브 테스트와 동일 근거(opencode 가 --dir 디렉토리를 external 로 보고 auto-reject).
         ["opencode", "run", "--agent", "build", "--dir", str(home),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
-         _multiuser_wave_prompt()],
+         _multiuser_cluster_prompt()],
         cwd=str(home), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
@@ -1465,26 +1465,26 @@ def test_release_wave_multiuser_composite_opencode(tmp_path):
     _assert_multiuser_view_isolation(home, proc, "opencode")
 
 
-# ── compaction-native 최종 넛지 라이브 단언 (ADR-0038 D4/T-D · T-0190) ─────────────────────────
-# 위 wave 테스트는 정상 컨텍스트에서 도는 full wave 다. 아래는 그 *경계* — 최종 넛지가
-# 실 claude transcript 위에서 비차단으로 발화하는지를 라이브로 못박는다. 기계 단위 테스트
+# ── compaction-native 마지막 경고 라이브 단언 (ADR-0038 D4/T-D · T-0190) ─────────────────────────
+# 위 묶음 시험은 정상 컨텍스트에서 도는 full cluster 시험이다. 아래는 그 *경계* — 마지막 경고가
+# 실 claude transcript 위에서 비차단으로 실행되는지를 라이브로 못박는다. 기계 단위 테스트
 # (test_claude_ctx_guard)가 로직을 결정적으로 커버하지만,
-# transcript-slug 탐색·실 transcript 의 100% 판정·래퍼(.sh) exec 발화는 실 하니스 형상에서만
+# transcript-slug 탐색·실 transcript 의 100% 판정·래퍼(.sh) exec 실행은 실 하니스 구성에서만
 # 드러나는 갭이다([[verify-real-output-not-just-review]]·설계검증 allow-list 렌즈).
 
-# ctx 예산 극소 설정 — 실 transcript 의 첫 턴이 곧장 stop 밴드(쓴 100%)에 들도록. local.conf
+# ctx 예산 극소 설정 — 실 transcript 의 첫 턴이 곧장 stop 구간(쓴 100%)에 들도록. local.conf
 # 에 이 값을 *append* 해 마지막-줄이 이긴다(last-wins·load_local_config 규칙·PM 47 실측).
 _TINY_CTX_WINDOW = 2000
-# 최종 넛지 훅 stdin 세션 id — marker 파일명(`<sid>.final`)의 단일 진실.
-_FINAL_NUDGE_SID = "release-final-nudge-probe"
+# 마지막 경고 훅 stdin 세션 id — marker 파일명(`<sid>.final`)의 단일 진실.
+_FINAL_WARN_SID = "release-final-nudge-probe"
 
 
 def _append_tiny_ctx_window(dest: Path) -> None:
-    """adopter local.conf 에 극소 claude 사용 한도를 append(last-wins) — 즉발 stop 밴드.
+    """adopter local.conf 에 극소 claude 사용 한도를 append(last-wins) — 즉발 stop 구간.
 
     사용 한도는 하네스별 키(`harness.claude.ctx_window_tokens`)다 — 공통 한도 키는 없다(T-0923).
     append 한 극소값이 *마지막 줄* 로 이겨(load_local_config 는 KEY 마지막 값 채택) 첫 실 턴이
-    쓴 100% = stop 밴드. 이 값은 훅 판정만 옮긴다 — 압축 한도 기록의 claude 항목도 같은 값으로
+    쓴 100% = stop 구간. 이 값은 훅 판정만 옮긴다 — 압축 한도 기록의 claude 항목도 같은 값으로
     옮기고(`_override_ctx_record`), 설정 파일 반영(`pm-config apply`)은 돌리지 않으므로 Claude
     Code 의 압축 지점은 출하 값 그대로다.
     """
@@ -1508,10 +1508,10 @@ def _claude_project_slug(cwd: Path) -> str:
 def _find_claude_transcript(dest: Path, *, not_before: float = 0.0) -> Path | None:
     """turn1 이 남긴 실 transcript(`~/.claude/projects/<cwd-slug>/*.jsonl`) 최신본을 찾는다.
 
-    1차: cwd(=dest) slug 디렉토리 직접 glob. 2차 폴백(resolve/치환 엣지 대비): dest.name slug 로
+    1차: cwd(=dest) slug 디렉토리 직접 glob. 2차 대체(resolve/치환 엣지 대비): dest.name slug 로
     끝나는 프로젝트 디렉토리 안을 훑는다. 못 찾으면 None(호출부가 명확 assert).
 
-    `not_before`(test 시작 시각): 폴백이 dest.name('adopter-claude')만으로 매칭하면 **과거 run 의
+    `not_before`(test 시작 시각): 대체 경로가 dest.name('adopter-claude')만으로 매칭하면 **과거 run 의
     잔재 transcript** 를 집어 primary-miss 를 가릴 수 있다(reviewer should-fix) — 이번 run 생성분
     (mtime >= not_before)만 후보로 스코프해 stale false-green 을 차단한다.
 
@@ -1539,7 +1539,7 @@ def _load_adopter_ctx_guard(dest: Path):
 
 
 def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProcess:
-    """adopter 의 `.claude/ctx_stop_hook.sh` 래퍼를 하니스처럼 발화(stdin JSON·rc/stdout 그대로).
+    """adopter 의 `.claude/ctx_stop_hook.sh` 래퍼를 하니스처럼 실행(stdin JSON·rc/stdout 그대로).
 
     claude Code 가 훅을 부르는 방식(래퍼 exec·stdin 에 hook JSON)을 그대로 재현한다 — 래퍼가
     인터프리터 self-resolve 후 ctx_stop_hook.py 를 exec. 엔진-측 스크립트라 LLM 아님·부모 env OK.
@@ -1558,29 +1558,29 @@ def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProc
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("claude"),
-    reason="release wave final warn — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
+    reason="release cluster final warn — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
-def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
-    """실 claude transcript 로 PreToolUse 최종 넛지·driver marker 소유권을 라이브 단언.
+def test_release_cluster_claude_final_warn_driver_marker_contract(tmp_path):
+    """실 claude transcript 로 PreToolUse 마지막 경고·driver marker 소유권을 라이브 단언.
 
     fresh claude adopter 에 극소 컨텍스트 예산을 적용하고, 1회의 실 Claude 턴으로 만든
-    transcript 가 stop 밴드인지 같은 ctx_guard machinery 로 확인한다. 그 transcript 위에서
-    adopter 래퍼를 하니스 형상으로 발화해 다음 계약을 핀한다.
+    transcript 가 stop 구간인지 같은 ctx_guard machinery 로 확인한다. 그 transcript 위에서
+    adopter 래퍼를 하니스 구성으로 실행해 다음 계약을 핀한다.
 
-      1. PreToolUse + Bash 호출은 ``additionalContext`` 최종 넛지를 내며
+      1. PreToolUse + Bash 호출은 ``additionalContext`` 마지막 경고를 내며
          ``permissionDecision``을 포함하지 않는다.
-      2. 같은 사이클의 UserPromptSubmit 은 먼저 발화한 PreToolUse 가 공유 marker 를
+      2. 같은 사이클의 UserPromptSubmit 은 먼저 실행된 PreToolUse 가 공유 marker 를
          소비했으므로 무출력이다.
       3. 훅 소유 ``.final`` marker 는 생성되지만 ``.done``은 생성되지 않는다.
          ``.done`` 생산자는 relay driver 계약이며 T-0553에서 연결한다.
 
-    turn2 LLM 콜은 추가 과금·비결정을 낳으므로 래퍼 발화로 주입/멱등/marker 소유
+    turn2 LLM 콜은 추가 과금·비결정을 낳으므로 래퍼 실행으로 주입/멱등/marker 소유
     계약을 결정적으로 검증한다. claude 는 subprocess cwd 를 존중한다(``--dir`` 불요).
     API 과금은 transcript 생성용 turn1 1콜만 발생한다.
     """
     # 설치가 기록하는 모델을 이 테스트의 실제 세션 모델로 둔다 — 고정 한도 픽스처 기본 이름이면
-    # UserPromptSubmit 에 모델 불일치 경고(T-0943)가 실려 중복 넛지 단언과 섞인다.
+    # UserPromptSubmit 에 모델 불일치 경고(T-0943)가 실려 중복 경고 단언과 섞인다.
     dest = _import_adopter(tmp_path, "claude", ctx_model=CLAUDE_MODEL)
     _append_tiny_ctx_window(dest)
     test_start = time.time()  # transcript 탐색 스코프(과거 run 잔재 배제·reviewer should-fix).
@@ -1612,10 +1612,10 @@ def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
         ctx_guard.context_tokens_from_transcript(str(transcript))[0], _TINY_CTX_WINDOW)
     assert used == 100, (
         f"실 transcript 가 used=100% 로 판정되지 않음(used={used}·window={_TINY_CTX_WINDOW}) — "
-        f"stop 밴드 진입 실패.\ntranscript={transcript}"
+        f"stop 구간 진입 실패.\ntranscript={transcript}"
     )
 
-    base_stdin = {"transcript_path": str(transcript), "session_id": _FINAL_NUDGE_SID}
+    base_stdin = {"transcript_path": str(transcript), "session_id": _FINAL_WARN_SID}
 
     # (1) PreToolUse + 새 작업(Bash ls) → additionalContext 비차단 주입.
     pretool = _fire_stop_hook(dest, {
@@ -1642,21 +1642,21 @@ def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
 
     # 훅은 `.final`만 생산. relay driver 소유 `.done`은 T-0553 연결 전제를 핀한다.
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
-    assert (marker_dir / f"{_FINAL_NUDGE_SID}.final").exists()
-    assert not (marker_dir / f"{_FINAL_NUDGE_SID}.done").exists(), (
+    assert (marker_dir / f"{_FINAL_WARN_SID}.final").exists()
+    assert not (marker_dir / f"{_FINAL_WARN_SID}.done").exists(), (
         "ctx 훅이 driver 소유 `.done` marker 를 생산함 — T-0553 계약 위반"
     )
 
 
 # ── hermetic 단위 가드 (라이브 실행 없이·@release/skipif 무관 — 매 회귀 통과) ──────────────
 # 위 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는 라이브
-# 없이도 돌아 (1) full wave 프롬프트가 5단계 키워드를 담는지 (2) subagent_type walk 가 stream-json
+# 없이도 돌아 (1) full cluster 시험 프롬프트가 5단계 키워드를 담는지 (2) subagent_type walk 가 stream-json
 # 샘플에서 값을 정확히 추출하는지 — 라이브 미실행 시에도 mechanics 구조를 가드한다(회귀가 잡음).
 
 
-def test_full_wave_prompt_has_ticket_growth_stages():
-    """full wave 프롬프트가 고정 01→02→03→04와 실제 테스트 계약을 담는다."""
-    prompt = _full_wave_prompt("CLAUDE.md", "claude")
+def test_full_cluster_prompt_has_ticket_growth_stages():
+    """full cluster 시험 프롬프트가 고정 01→02→03→04와 실제 테스트 계약을 담는다."""
+    prompt = _full_cluster_prompt("CLAUDE.md", "claude")
     # (1) new — 정확히 1개 ticket 발행 지시.
     assert "create exactly one ticket" in prompt
     # (2) claim.
@@ -1671,8 +1671,8 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "ticket prepare" in prompt and "ticket collect" in prompt
     assert PROBE_FILE in prompt and PROBE_TEXT in prompt
     assert _ARCHITECT_TEST_BLOCK in prompt
-    assert _WAVE_TEST_FILE in prompt and _WAVE_TARGETED_COMMAND in prompt
-    assert _WAVE_FULL_COMMAND in prompt and "Only actual rc=0" in prompt
+    assert _CLUSTER_TEST_FILE in prompt and _CLUSTER_TARGETED_COMMAND in prompt
+    assert _CLUSTER_FULL_COMMAND in prompt and "Only actual rc=0" in prompt
     assert "review disposition-template" in prompt and "review accepted" in prompt
     assert "even when the review accepted output is empty" in prompt
     assert "BEGIN EXACT ARCHITECT BODY" in prompt
@@ -1680,22 +1680,21 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "old skeleton follows the sentinel" in prompt
     assert "extract `## 회귀`" in prompt
     assert "exactly two" in prompt and "contains neither" in prompt
-    assert "rounds resolve --gate" not in prompt
-    assert "ticket prepare --cluster C-wave --role code-reviewer" in re.sub(r"\s+", " ", prompt)
+    assert "ticket prepare --cluster C-cluster --role code-reviewer" in re.sub(r"\s+", " ", prompt)
     assert "pass the returned `prompt` file path" in prompt
     assert "Do not search source or help" in prompt
-    assert "ticket_finish.py <ticket> --task wave --no-pytest" in prompt
+    assert "ticket_finish.py <ticket> --task cluster --no-pytest" in prompt
     # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
-    # 그 설명이 아니라 옛 처방 커맨드 자체다.
+    # 그 설명이 아니라 옛 안내 커맨드 자체다.
     assert "board.py complete <ticket> --tests-pass" not in prompt
-    # 통합 폴더 형상([[T-0956]]) — 발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고
+    # 통합 폴더 구성([[T-0956]]) — 발행·claim 은 작업 폴더(2번), 묶음 선언은 통합 폴더(1번)를 지목하고
     # 작업 폴더를 묶음 브랜치로 옮긴 뒤 라운드를 연다.
     flat = re.sub(r"\s+", " ", prompt)
-    assert "--task wave --repo adopter-claude --slot 2 --touches probe.txt," in flat
-    assert ("board.py cluster new wave --tickets <ticket> --task wave --repo adopter-claude "
+    assert "--task cluster --repo adopter-claude --slot 2 --touches probe.txt," in flat
+    assert ("board.py cluster new cluster --tickets <ticket> --task cluster --repo adopter-claude "
             "--slot 1") in flat
-    assert "worktree_pool.py switch adopter-claude_2 task/wave" in flat
-    assert flat.index("(2) claim it") < flat.index("cluster new wave") < flat.index(
+    assert "worktree_pool.py switch adopter-claude_2 task/cluster" in flat
+    assert flat.index("(2) claim it") < flat.index("cluster new cluster") < flat.index(
         "ROUND 01 architect:")
     assert "absolute path of the work folder `work/adopter-claude_2`" in flat
     # 생성 회귀 테스트는 작업 폴더에서 홈 보드를 보지 못하므로 probe.txt 만 확인한다(E11).
@@ -1707,10 +1706,10 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "never inside the generated test" in prompt
     round02 = prompt[prompt.index("ROUND 02 developer"):prompt.index("ROUND 03 code-reviewer")]
     assert "The `## 회귀` section must contain exactly two nonblank rows" in round02
-    assert f"`- 커맨드: `{_WAVE_FULL_COMMAND}``" in round02
+    assert f"`- 커맨드: `{_CLUSTER_FULL_COMMAND}``" in round02
     assert "`- 결과: rc=0 · <the one observed full pytest summary>`" in round02
     assert "Put targeted evidence under `## DoD evidence`, not under `## 회귀`" in round02
-    assert f"contains neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder" in round02
+    assert f"contains neither `{_CLUSTER_TARGETED_COMMAND}` nor a placeholder" in round02
     assert f"{_GROWTH_PIPELINE[1][1]} exactly once" in round02
     assert "BEGIN EXACT REVIEWER BODY" in prompt
     assert "exact body equality, one review block" in prompt
@@ -1718,21 +1717,21 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "never reserve or pre-create ROUND 04 earlier" in prompt
     # (4) 새 프로세스 canonical 재조회.
     assert "fresh board.py show process" in prompt
-    # (5) complete + sync gate.
-    assert "ticket_finish.py <ticket> --task wave --no-pytest" in prompt
+    # (5) complete + 동기화 확인.
+    assert "ticket_finish.py <ticket> --task cluster --no-pytest" in prompt
     # 프롬프트는 "직접 board.py complete 는 거부된다" 를 **설명으로** 담는다. 금지 대상은
-    # 그 설명이 아니라 옛 처방 커맨드 자체다.
+    # 그 설명이 아니라 옛 안내 커맨드 자체다.
     assert "board.py complete <ticket> --tests-pass" not in prompt
     # 진입문서가 프롬프트에 박힌다(harness 별 CLAUDE.md/AGENTS.md).
     assert "CLAUDE.md" in prompt
-    assert "AGENTS.md" in _full_wave_prompt("AGENTS.md", "codex")
+    assert "AGENTS.md" in _full_cluster_prompt("AGENTS.md", "codex")
     assert _CLAUDE_TIMEOUT_DEFAULT == 900
 
 
-def test_full_wave_prompt_requires_exact_native_task_sequence():
+def test_full_cluster_prompt_requires_exact_native_task_sequence():
     """PM main의 round 직접 대체와 Task 생략을 round 시작 전에 차단한다."""
-    prompt = _full_wave_prompt("CLAUDE.md", "claude")
-    gate = "HARD DELEGATION GATE"
+    prompt = _full_cluster_prompt("CLAUDE.md", "claude")
+    check = "HARD DELEGATION CHECK"
     contracts = (
         "must not directly write, edit, cp, or sed any round file body",
         "architect once, developer once, code-reviewer once, developer once",
@@ -1742,18 +1741,18 @@ def test_full_wave_prompt_requires_exact_native_task_sequence():
         "role counts exactly architect=1, developer=2, code-reviewer=1",
     )
 
-    assert prompt.index(gate) < prompt.index("(1) create exactly one ticket")
-    assert prompt.index(gate) < prompt.index("ROUND 01 architect")
+    assert prompt.index(check) < prompt.index("(1) create exactly one ticket")
+    assert prompt.index(check) < prompt.index("ROUND 01 architect")
     for contract in contracts:
         assert contract in prompt
     assert prompt.index(contracts[4]) < prompt.index("BEGIN EXACT REVIEWER BODY\n")
 
 
-def test_full_wave_prompt_uses_each_harness_native_delegation_tool():
+def test_full_cluster_prompt_uses_each_harness_native_delegation_tool():
     """Claude/OpenCode는 Task, Codex는 존재하는 spawn_agent만 지시한다."""
-    claude = _full_wave_prompt("CLAUDE.md", "claude")
-    opencode = _full_wave_prompt("AGENTS.md", "opencode")
-    codex = _full_wave_prompt("AGENTS.md", "codex")
+    claude = _full_cluster_prompt("CLAUDE.md", "claude")
+    opencode = _full_cluster_prompt("AGENTS.md", "opencode")
+    codex = _full_cluster_prompt("AGENTS.md", "codex")
 
     for prompt in (claude, opencode):
         assert "Call native Task exactly four times" in prompt
@@ -1767,7 +1766,7 @@ def test_full_wave_prompt_uses_each_harness_native_delegation_tool():
 def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
     tmp_path, monkeypatch,
 ):
-    """unborn adopter를 host가 추적하고 Codex native wave 한 호출만 git 쓰기를 연다."""
+    """unborn adopter를 host가 추적하고 Codex native 묶음 시험 한 호출만 git 쓰기를 연다."""
     dest = tmp_path / "adopter-codex"
     (dest / ".project_manager").mkdir(parents=True)
     (dest / ".project_manager" / ".gitignore").write_text(".local/\n", encoding="utf-8")
@@ -1800,12 +1799,12 @@ def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
     home = tmp_path / "codex-home"
     home.mkdir()
     run_codex_exec("default", dest, home)
-    run_codex_exec("native wave", dest, home, sandbox="danger-full-access")
+    run_codex_exec("native cluster", dest, home, sandbox="danger-full-access")
     assert calls[0][calls[0].index("-s") + 1] == "workspace-write"
     assert calls[1][calls[1].index("-s") + 1] == "danger-full-access"
     assert all("--dangerously-bypass-hook-trust" in call for call in calls)
 
-    live_source = inspect.getsource(test_release_wave_codex_native_ticket_growth)
+    live_source = inspect.getsource(test_release_cluster_codex_native_ticket_growth)
     assert live_source.index('_guided_adopter(tmp_path, "codex"') < live_source.index(
         "run_codex_exec("
     )
@@ -1814,7 +1813,7 @@ def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
 
 def test_zero_finding_disposition_is_ticket_owned_before_round04_prepare():
     """zero-finding PM 판정은 reviewer round를 오염시키지 않고 04보다 먼저 닫힌다."""
-    prompt = _full_wave_prompt("CLAUDE.md", "claude")
+    prompt = _full_cluster_prompt("CLAUDE.md", "claude")
     disposition = "append only the exact finding-zero block emitted by the template"
     ticket_owner = "under `## PM 기계 확인` in the claimed ticket file"
     round_negative = "never in the canonical ROUND 03 reviewer file or any round file"
@@ -1840,21 +1839,21 @@ def test_zero_finding_disposition_is_ticket_owned_before_round04_prepare():
     assert prompt.index(prepare_barrier) < prompt.index("ROUND 04 developer")
 
 
-def test_claude_full_wave_uses_two_phase_native_autocompact():
-    """wave 완료 뒤 같은 세션에서만 낮은 native compaction 경계를 적용한다."""
-    source = inspect.getsource(test_release_wave_claude_full_wave)
+def test_claude_full_cluster_uses_two_phase_native_autocompact():
+    """묶음 시험 완료 뒤 같은 세션에서만 낮은 native compaction 경계를 적용한다."""
+    source = inspect.getsource(test_release_cluster_claude_full_cluster)
 
-    side_effect = source.index('_assert_wave_side_effects(dest, proc, "claude")')
+    side_effect = source.index('_assert_cluster_side_effects(dest, proc, "claude")')
     resume = source.index('"--resume", session_id')
     low_threshold = source.index('"--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD')
     evidence = source.index("_claude_recovery_deliveries(transcript)")
 
-    assert '"--autocompact", _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD' in source
+    assert '"--autocompact", _CLAUDE_CLUSTER_AUTOCOMPACT_THRESHOLD' in source
     assert source.count('"--resume", session_id') == 1
     assert side_effect < resume < low_threshold < evidence
     assert '"--allowedTools", "Bash"' in source[resume:evidence]
     assert '"/compact"' not in source
-    assert _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD == "1m"
+    assert _CLAUDE_CLUSTER_AUTOCOMPACT_THRESHOLD == "1m"
     assert _CLAUDE_AUTOCOMPACT_THRESHOLD == "100k"
     assert _CLAUDE_COMPACTION_PROBE_PROMPT == (
         "Use Bash exactly once to run `pwd`, then reply exactly "
@@ -1940,36 +1939,36 @@ def test_opencode_forced_compaction_limit_clears_the_post_compaction_input(tmp_p
     assert limit["context"] - limit["output"] > _OPENCODE_POST_COMPACTION_INPUT_MAX
 
 
-def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
+def test_opencode_full_cluster_uses_compaction_evidence_from_initial_run(
     tmp_path, monkeypatch,
 ):
-    """full-wave 안의 checkpoint+receipt delta면 불필요한 추가 외부 turn을 생략한다."""
+    """full-cluster 안의 checkpoint+receipt 차이면 불필요한 추가 외부 turn을 생략한다."""
     calls = []
-    ledger_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger_path.parent.mkdir(parents=True)
-    ledger_path.write_text(json.dumps({"leases": [], "tasks": [{"name": _WAVE_TASK, "session": "ses_wave"}]}),
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(json.dumps({"leases": [], "tasks": [{"name": _CLUSTER_TASK, "session": "ses_cluster"}]}),
                            encoding="utf-8")
-    ledger_before = ledger_path.read_bytes()
+    records_before = record_path.read_bytes()
 
     monkeypatch.setitem(
-        test_release_wave_opencode_full_wave.__globals__,
+        test_release_cluster_opencode_full_cluster.__globals__,
         "_guided_adopter",
         lambda _tmp_path, _harness, *, task, folders: tmp_path,
     )
     monkeypatch.setitem(
-        test_release_wave_opencode_full_wave.__globals__,
+        test_release_cluster_opencode_full_cluster.__globals__,
         "_force_opencode_compaction_threshold",
         lambda _dest, _model: None,
     )
     monkeypatch.setitem(
-        test_release_wave_opencode_full_wave.__globals__,
-        "_assert_wave_side_effects",
+        test_release_cluster_opencode_full_cluster.__globals__,
+        "_assert_cluster_side_effects",
         lambda _dest, _proc, _harness: None,
     )
 
     def fake_run(argv, *, cwd, env, timeout):
         calls.append(argv)
-        assert len(calls) == 1, "pre-wave 증거가 있는데 compaction probe를 추가 호출함"
+        assert len(calls) == 1, "묶음 실행 전 증거가 있는데 compaction probe를 추가 호출함"
         marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
         marker_dir.mkdir(parents=True, exist_ok=True)
         (marker_dir / "compact-checkpoint.live.boundary1").write_text(
@@ -1978,65 +1977,65 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
         (marker_dir / "compact-snapshot-receipt.live.generation1").write_text(
             "delivered\n", encoding="utf-8",
         )
-        stdout = json.dumps({"type": "step_start", "sessionID": "ses_wave"}) + "\n"
+        stdout = json.dumps({"type": "step_start", "sessionID": "ses_cluster"}) + "\n"
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     monkeypatch.setitem(
-        test_release_wave_opencode_full_wave.__globals__,
+        test_release_cluster_opencode_full_cluster.__globals__,
         "_run_opencode_live",
         fake_run,
     )
 
-    test_release_wave_opencode_full_wave(tmp_path)
+    test_release_cluster_opencode_full_cluster(tmp_path)
 
     assert len(calls) == 1
     assert "--continue" not in calls[0]
-    assert ledger_path.read_bytes() == ledger_before
-    source = inspect.getsource(test_release_wave_opencode_full_wave)
-    assert source.index('_assert_wave_side_effects(dest, proc, "opencode")') < source.index(
-        "_assert_wave_session_task(dest, _opencode_session_id(proc.stdout))"
+    assert record_path.read_bytes() == records_before
+    source = inspect.getsource(test_release_cluster_opencode_full_cluster)
+    assert source.index('_assert_cluster_side_effects(dest, proc, "opencode")') < source.index(
+        "_assert_cluster_session_task(dest, _opencode_session_id(proc.stdout))"
     ) < source.index(
         "_force_opencode_compaction_threshold(dest, LIVE_MODEL)"
     ) < source.index("_opencode_compaction_probe_prompts()")
 
 
-def test_wave_session_task_assertion_needs_exactly_one_wave_row(tmp_path):
-    """웨이브 세션 task 단언은 그 세션 행이 정확히 `wave` 하나일 때만 통과하고 task 기록을 쓰지 않는다."""
-    def ledger_with(name: str, rows: list[dict]) -> Path:
+def test_cluster_session_task_assertion_needs_exactly_one_cluster_row(tmp_path):
+    """묶음 시험 세션 task 단언은 그 세션 행이 정확히 `cluster` 하나일 때만 통과하고 task 기록을 쓰지 않는다."""
+    def records_with(name: str, rows: list[dict]) -> Path:
         dest = tmp_path / name
-        ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
-        ledger.parent.mkdir(parents=True)
-        ledger.write_text(json.dumps({"leases": [], "tasks": rows}), encoding="utf-8")
+        record_path = dest / ".project_manager" / ".local" / "worktree-leases.json"
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(json.dumps({"leases": [], "tasks": rows}), encoding="utf-8")
         return dest
 
-    def ledger_bytes(dest: Path) -> bytes:
+    def record_bytes(dest: Path) -> bytes:
         return (dest / ".project_manager" / ".local" / "worktree-leases.json").read_bytes()
 
-    passing = ledger_with("wave", [{"name": _WAVE_TASK, "session": "ses_wave"},
+    passing = records_with("cluster", [{"name": _CLUSTER_TASK, "session": "ses_cluster"},
                                    {"name": "other", "session": "ses_other"}])
-    before = ledger_bytes(passing)
-    _assert_wave_session_task(passing, "ses_wave")
-    assert ledger_bytes(passing) == before
+    before = record_bytes(passing)
+    _assert_cluster_session_task(passing, "ses_cluster")
+    assert record_bytes(passing) == before
     failing = {
-        "no-row": [{"name": _WAVE_TASK, "session": ""}],
-        "two-rows": [{"name": "adopter-claude", "session": "ses_wave"},
-                     {"name": _WAVE_TASK, "session": "ses_wave"}],
-        "other-name": [{"name": _RELEASE_WAVE_TASK, "session": "ses_wave"}],
+        "no-row": [{"name": _CLUSTER_TASK, "session": ""}],
+        "two-rows": [{"name": "adopter-claude", "session": "ses_cluster"},
+                     {"name": _CLUSTER_TASK, "session": "ses_cluster"}],
+        "other-name": [{"name": _RELEASE_CLUSTER_TASK, "session": "ses_cluster"}],
     }
     for name, rows in failing.items():
-        dest = ledger_with(name, rows)
-        before = ledger_bytes(dest)
+        dest = records_with(name, rows)
+        before = record_bytes(dest)
         with pytest.raises(AssertionError):
-            _assert_wave_session_task(dest, "ses_wave")
-        assert ledger_bytes(dest) == before, name
+            _assert_cluster_session_task(dest, "ses_cluster")
+        assert record_bytes(dest) == before, name
 
 
-def test_full_wave_prompt_opens_the_wave_task_before_any_delegation():
-    """세 하네스 full wave 프롬프트가 주 세션 부트스트랩을 첫 위임·티켓 발행보다 먼저 한 번 지시한다."""
+def test_full_cluster_prompt_opens_the_cluster_task_before_any_delegation():
+    """세 하네스 full cluster 시험 프롬프트가 주 세션 부트스트랩을 첫 위임·티켓 발행보다 먼저 한 번 지시한다."""
     for entry_doc, harness, tool in (("CLAUDE.md", "claude", "Task"), ("AGENTS.md", "codex", "spawn_agent"),
                                      ("AGENTS.md", "opencode", "Task")):
-        prompt = _full_wave_prompt(entry_doc, harness)
-        command = "python3 .project_manager/tools/pm_bootstrap.py --task wave"
+        prompt = _full_cluster_prompt(entry_doc, harness)
+        command = "python3 .project_manager/tools/pm_bootstrap.py --task cluster"
         assert prompt.count(command) == 1, harness
         bootstrap = prompt.index(command)
         assert bootstrap < prompt.index(f"Call native {tool} exactly four"), harness
@@ -2044,26 +2043,26 @@ def test_full_wave_prompt_opens_the_wave_task_before_any_delegation():
         assert "subagents never run it" in prompt, harness
 
 
-def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):
-    """canonical 4라운드는 통과하고 delegate-copy run hash 결속은 역방향으로 거부한다.
+def test_cluster_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):
+    """canonical 4라운드는 통과하고 delegate-copy run hash 묶임은 역방향으로 거부한다.
 
-    통합 브랜치 판독(`_wave_base_branch`·`_integration_file`)은 대역으로 바꾼다 — 이 시험이 보는
-    것은 판정 규칙이고, 실제 머지 판독은 라이브 full wave 가 친다.
+    통합 브랜치 판독(`_cluster_base_branch`·`_integration_file`)은 대역으로 바꾼다 — 이 시험이 보는
+    것은 판정 규칙이고, 실제 머지 판독은 라이브 full cluster 시험이 친다.
     """
     dest = tmp_path / "adopter-hermetic"
-    base = f"{dest.name}_{_WAVE_INTEGRATION_SLOT}"
+    base = f"{dest.name}_{_CLUSTER_INTEGRATION_SLOT}"
     (dest / "work" / base).mkdir(parents=True)
     merged = {
         PROBE_FILE: PROBE_TEXT + "\n",
-        _WAVE_TEST_FILE: "# reads probe.txt from Path(__file__).resolve().parents[1]\n",
+        _CLUSTER_TEST_FILE: "# reads probe.txt from Path(__file__).resolve().parents[1]\n",
     }
-    globals_ = _assert_wave_side_effects.__globals__
-    monkeypatch.setitem(globals_, "_wave_base_branch", lambda _dest: base)
+    globals_ = _assert_cluster_side_effects.__globals__
+    monkeypatch.setitem(globals_, "_cluster_base_branch", lambda _dest: base)
     monkeypatch.setitem(globals_, "_integration_file",
                         lambda _dest, branch, relpath: merged.get(relpath) if branch == base else None)
     done = dest / ".project_manager" / "wiki" / "tickets" / "done"
     done.mkdir(parents=True)
-    (done / "T-0001-release-wave-probe.md").write_text("done\n", encoding="utf-8")
+    (done / "T-0001-release-cluster-probe.md").write_text("done\n", encoding="utf-8")
     rounds = done.parent / "rounds" / "T-0001"
     rounds.mkdir(parents=True)
     for ordinal, (role, sentinel) in enumerate(_GROWTH_PIPELINE, start=1):
@@ -2077,25 +2076,25 @@ def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch
     )
     proc = subprocess.CompletedProcess([], 0, "", "")
 
-    _assert_wave_side_effects(dest, proc, "hermetic")
+    _assert_cluster_side_effects(dest, proc, "hermetic")
 
-    merged[_WAVE_TEST_FILE] += "# .local/delegate-ticket-copies/T-0001/0123456789abcdef0123456789abcdef\n"
+    merged[_CLUSTER_TEST_FILE] += "# .local/delegate-ticket-copies/T-0001/0123456789abcdef0123456789abcdef\n"
     with pytest.raises(AssertionError, match="delegate copy"):
-        _assert_wave_side_effects(dest, proc, "hermetic")
+        _assert_cluster_side_effects(dest, proc, "hermetic")
     merged[PROBE_FILE] = None
     with pytest.raises(AssertionError, match="통합 브랜치"):
-        _assert_wave_side_effects(dest, proc, "hermetic")
+        _assert_cluster_side_effects(dest, proc, "hermetic")
 
 
-def test_t0956_wave_adopter_fixture_creates_guided_work_folders(tmp_path):
+def test_t0956_cluster_adopter_fixture_creates_guided_work_folders(tmp_path):
     """[[T-0956]] AT-009 — 공용 픽스처가 안내 경로로 작업 폴더 2개를 만들고 task 가 둘 다 보유한다.
 
     기준 커밋 → 안내 명령 2회 → task new → alloc 2회. 자기 행 git·base 는 설치가 채웠고 공유 bare 의
     HEAD 가 해소된다(빈 bare 아님).
     """
-    dest = _guided_adopter(tmp_path, "claude", task=_WAVE_TASK, folders=2)
+    dest = _guided_adopter(tmp_path, "claude", task=_CLUSTER_TASK, folders=2)
     repo = dest.name
-    slots = {f"work/{repo}_{n}" for n in (_WAVE_INTEGRATION_SLOT, _WAVE_WORK_SLOT)}
+    slots = {f"work/{repo}_{n}" for n in (_CLUSTER_INTEGRATION_SLOT, _CLUSTER_WORK_SLOT)}
     for slot in slots:
         assert (dest / slot).is_dir(), slot
     bare_head = subprocess.run(
@@ -2103,10 +2102,10 @@ def test_t0956_wave_adopter_fixture_creates_guided_work_folders(tmp_path):
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     assert bare_head.returncode == 0, bare_head.stderr
-    ledger = json.loads((dest / ".project_manager" / ".local" / "worktree-leases.json")
+    records = json.loads((dest / ".project_manager" / ".local" / "worktree-leases.json")
                         .read_text(encoding="utf-8"))
-    held = {row["slot"] for row in ledger["leases"]
-            if row.get("session") == _WAVE_TASK and row.get("state") == "leased"}
+    held = {row["slot"] for row in records["leases"]
+            if row.get("session") == _CLUSTER_TASK and row.get("state") == "leased"}
     assert held == slots
     areas = (dest / ".project_manager" / "areas.md").read_text(encoding="utf-8")
     header = next(line for line in areas.splitlines() if line.startswith("| repo "))
@@ -2172,7 +2171,7 @@ def test_collect_subagent_types_handles_no_delegation():
 # ── multi-repo hermetic 가드 (라이브 실행 없이·@release/skipif 무관 — 매 회귀 통과 · T-0158) ──────
 # multi-repo 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는
 # 라이브 없이도 돌아 (1) 셋업 헬퍼(`_import_multipm_home`)가 LLM 없이 home + 2 repo areas + 2 슬롯을
-# 만드는지 (= 셋업 자체 검증·라이브 테스트의 전제) (2) multi-repo wave 프롬프트가 부트스트랩 줄 다음에
+# 만드는지 (= 셋업 자체 검증·라이브 테스트의 전제) (2) multi-repo 묶음 시험 프롬프트가 부트스트랩 줄 다음에
 # 저장소마다 카드 줄 7개(new·cluster new·promote·tier·claim·switch·종결)를 순서대로 싣고 direct complete·
 # 구 actor 플래그가 없으며 저장소별 prefix 승인이 발행 줄 한 곳에만 있는지 — 라이브 미실행 시에도 구조를
 # 가드한다([[T-0958]] · 줄의 실행 가능성은 카드 사용성 파일의 비라이브 재현이 본다).
@@ -2182,7 +2181,7 @@ def test_import_multipm_home_sets_up_two_repos_and_slots(tmp_path):
     """`_import_multipm_home` 가 LLM 없이 multi-PM 홈 + 2 repo areas 등록 + 2 worktree 슬롯을 만든다.
 
     라이브 테스트의 전제(셋업)를 hermetic 하게 검증 — 셋업이 깨지면 라이브가 가짜 PASS/skip 으로
-    숨지 않고 여기서 잡힌다(단일 hermetic 가드 패턴 동형). models 조회는 `_real_models_runner`
+    숨지 않고 여기서 잡힌다(단일 hermetic 가드 패턴과 같은 방식). models 조회는 `_real_models_runner`
     스텁으로 차단되므로 LLM·네트워크 없이 돈다.
     """
     home = _import_multipm_home(tmp_path, "opencode")
@@ -2208,8 +2207,8 @@ def test_import_multipm_home_sets_up_two_repos_and_slots(tmp_path):
 def test_import_multipm_home_claude_sets_up_two_repos_and_slots(tmp_path):
     """`_import_multipm_home` 가 claude 하니스에서도 multi-PM 홈 + 2 repo areas + 2 슬롯을 만든다.
 
-    claude multi-repo 라이브 테스트(`test_release_wave_multirepo_claude_full_wave`)의 전제(셋업)를
-    hermetic 하게 검증 — opencode 동형 짝(`test_import_multipm_home_sets_up_two_repos_and_slots`)이다.
+    claude multi-repo 라이브 테스트(`test_release_cluster_multirepo_claude_full_cluster`)의 전제(셋업)를
+    hermetic 하게 검증 — opencode 쪽 짝(`test_import_multipm_home_sets_up_two_repos_and_slots`)이다.
     `_import_multipm_home` 은 harness 파라미터화돼 있어 셋업은 harness 무관해야 한다(어댑터층만 다름).
     셋업이 깨지면 라이브가 가짜 PASS/skip 으로 숨지 않고 여기서 잡힌다.
     """
@@ -2232,16 +2231,16 @@ def test_import_multipm_home_claude_sets_up_two_repos_and_slots(tmp_path):
         assert slot.is_dir(), f"worktree 슬롯 work/{repo}_1 미생성"
 
 
-def test_multirepo_wave_prompt_has_per_repo_mechanics():
-    """multi-repo wave 프롬프트가 부트스트랩 다음에 저장소마다 카드 흐름 실행 줄을 순서대로 싣는다([[T-0958]]).
+def test_multirepo_cluster_prompt_has_per_repo_mechanics():
+    """multi-repo 묶음 시험 프롬프트가 부트스트랩 다음에 저장소마다 카드 흐름 실행 줄을 순서대로 싣는다([[T-0958]]).
 
-    실행 줄은 `_multirepo_wave_commands` 그대로이고 저장소 순서·줄 순서도 같다. 카드가 처방하지 않는 direct
+    실행 줄은 `_multirepo_cluster_commands` 그대로이고 저장소 순서·줄 순서도 같다. 카드에 적히지 않은 direct
     complete 와 구 actor 플래그는 없다(줄의 실행 가능성은 카드 사용성 파일의 비라이브 재현이 본다).
     """
-    prompt = _multirepo_wave_prompt()
-    cursor = prompt.index(f"python3 .project_manager/tools/pm_bootstrap.py --task {_RELEASE_WAVE_TASK}")
+    prompt = _multirepo_cluster_prompt()
+    cursor = prompt.index(f"python3 .project_manager/tools/pm_bootstrap.py --task {_RELEASE_CLUSTER_TASK}")
     for repo in _MULTIREPO_REPOS:
-        for command in _multirepo_wave_commands(repo):
+        for command in _multirepo_cluster_commands(repo):
             cursor = prompt.index(command, cursor)
     assert "board.py complete" not in prompt
     assert "--session" not in prompt and "--worktree-slot" not in prompt
@@ -2251,7 +2250,7 @@ def test_multirepo_wave_prompt_has_per_repo_mechanics():
 # multi-USER 라이브 테스트는 PM_ORCH_LIVE_RELEASE 미설정 시 skip 이라 CI 에선 안 돈다. 아래 단위는
 # 라이브 없이도 돌아 (1) 셋업 헬퍼(`_import_multiuser_home`)가 2 repo 를 distinct area_owner
 # (alpha→alice·beta→bob)로 등록하는지 (= 섞임 격리의 전제·라이브가 가짜 PASS 로 숨지 않게)
-# (2) wave 프롬프트가 identity 귀속 mechanics 를 담는지 (3) 뷰 파서가 (status,id)를 정확히 뽑는지 —
+# (2) 묶음 시험 프롬프트가 identity 귀속 mechanics 를 담는지 (3) 뷰 파서가 (status,id)를 정확히 뽑는지 —
 # 라이브 미실행 시에도 구조·셋업을 가드한다(회귀가 잡음).
 
 
@@ -2282,14 +2281,14 @@ def test_import_multiuser_home_sets_up_two_distinct_area_owners(tmp_path):
     assert len(set(_MULTIUSER_AREA_OWNERS.values())) == 2
 
 
-def test_multiuser_wave_prompt_has_per_identity_mechanics():
-    """multiuser wave 프롬프트가 귀속 mechanics와 사용자-명시 prefix ack를 담는다(T-0962 AT-012).
+def test_multiuser_cluster_prompt_has_per_identity_mechanics():
+    """multiuser 묶음 시험 프롬프트가 귀속 mechanics와 사용자-명시 prefix ack를 담는다(T-0962 AT-012).
 
     라이브 미실행 시에도 프롬프트 구조를 가드 — identity 마다 new 두 줄과 claim 한 줄이 `--task <task>`
     (귀속 정체성)를 싣고 어느 줄에도 `--slot` 이 없으며, `--user-ack` 는 첫 new 줄에만 있다. `--user`
     (귀속 user·multi_user 신호)·`--prefix`(ID 네임스페이스)·미claim open(유출 대상)이 빠져도 잡힌다.
     """
-    prompt = _multiuser_wave_prompt()
+    prompt = _multiuser_cluster_prompt()
     lines = prompt.splitlines()
     for _repo, prefix, task, user in _MULTIUSER_IDENTITIES:
         assert user in prompt, f"프롬프트에 user '{user}' 미언급"
@@ -2312,14 +2311,14 @@ def test_multiuser_wave_prompt_has_per_identity_mechanics():
     assert "--session" not in prompt and "--worktree-slot" not in prompt
 
 
-def test_multirepo_wave_prompt_has_user_ack_per_prefix():
-    """multirepo wave 프롬프트가 신규 prefix 의 값-결속 사용자 ack 를 저장소마다 `new` 줄 한 곳에만 담는다 (T-0744).
+def test_multirepo_cluster_prompt_has_user_ack_per_prefix():
+    """multirepo 묶음 시험 프롬프트가 신규 prefix 의 값이 연결된 사용자 ack 를 저장소마다 `new` 줄 한 곳에만 담는다 (T-0744).
 
-    `--prefix <repo>` 는 신규 prefix 사용자-승인 게이트(`require_prefix_user_ack`)를 지나므로 프롬프트가
-    `--user-ack <repo>` 를 주지 않으면 라이브 판정이 모델 행동에 좌우된다(livegate d0b5890 실측). 승인
+    `--prefix <repo>` 는 신규 prefix 사용자-승인 통과 조건(`require_prefix_user_ack`)을 지나므로 프롬프트가
+    `--user-ack <repo>` 를 주지 않으면 라이브 판정이 모델 행동에 좌우된다(live-test d0b5890 실측). 승인
     주체 문장이 있고, ack 는 발행 줄 밖에 다시 붙지 않는다.
     """
-    prompt = _multirepo_wave_prompt()
+    prompt = _multirepo_cluster_prompt()
     for repo in _MULTIREPO_REPOS:
         assert prompt.count(f"--prefix {repo} --user-ack {repo}") == 1, repo
         for line in prompt.splitlines():
@@ -2349,8 +2348,8 @@ def test_parse_list_rows_extracts_status_and_id():
 
 
 # ── marker-수집 가드 (기계·항상 실행·@release/skipif 무관 — 매 회귀 통과 · T-0190) ────────────
-# 릴리즈 게이트는 `pytest -m release` 로 라이브 서브셋을 선택한다. 마커가 소실(데코레이터 삭제)·
-# 개명(다른 이름)되면 그 테스트는 selection 에서 조용히 빠지고, 게이트는 "0개 수집·exit5" 를
+# 릴리즈 시험은 `pytest -m release` 로 라이브 서브셋을 선택한다. 마커가 소실(데코레이터 삭제)·
+# 개명(다른 이름)되면 그 테스트는 selection 에서 조용히 빠지고, 시험은 "0개 수집·exit5" 를
 # false-green 으로 삼킨다 — pytest.ini strict-marker 는 *오타* 만 잡지 *소실* 은 못 잡는다. 그래서
 # 마커 달린 테스트 함수 수를 pin 해, 마커가 사라지거나 이름이 바뀌면 이 기계 가드가 즉시 red 로
 # 잡는다(T-0159 보완). 기대값은 테스트가 늘 때 의도적으로 함께 갱신한다.
@@ -2370,24 +2369,24 @@ _RELEASE_TEST_FILES = (
     Path(__file__).parent / "test_pm_delegate_live.py",
 )
 # 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
-# 7(이 파일: full/multirepo × claude/opencode + Codex native ticket growth + final-nudge +
+# 7(이 파일: full/multirepo × claude/opencode + Codex native ticket growth + final-warn +
 #     multiuser-composite opencode·T-0309)
 # + 2(runtime_smoke: pm_update opencode/claude)
 # + 2(command_card_usability: claude/opencode 카드 사용성·ADR-0046·T-0255)
 # + 2(pm_worktree_live: claude/opencode 스킬 라이브 하네스·ADR-0050·T-0278)
 # + 2(pm_release_live: claude hard/opencode best-effort 릴리즈 스킬 라이브·ADR-0049·T-0349)
-# + 1(test_task_cycle_e2e: task 사이클 완주 기계 e2e·ADR-0068 사이클 게이트·T-0400 — 라이브 LLM
+# + 1(test_task_cycle_e2e: task 사이클 완주 기계 e2e·ADR-0068 사이클 검사·T-0400 — 라이브 LLM
 #     불요·순수 기계지만 release 티어에 편입해 릴리즈마다 사이클 완주를 강제).
-# + 1(test_engine_rev_release: pm_engine.ENGINE_REV ↔ CHANGELOG 최신 릴리스 버전 정합·T-0397 —
-#     기계·릴리즈마다 값 갱신을 강제·갱신 누락을 릴리즈 게이트에서 red).
+# + 1(test_engine_rev_release: pm_engine.ENGINE_REV ↔ CHANGELOG 최신 릴리스 버전 일치·T-0397 —
+#     기계·릴리즈마다 값 갱신을 강제·갱신 누락을 릴리즈 시험에서 red).
 # + 1(test_pm_relay_codex: codex relay 라이브 smoke·spawn→resume·tid==marker·usage 누적·ADR-0070 D7·
 #     T-0407 — codex 라이브 green 을 릴리즈 pin 에 편입·codex green 없이 v1.4.0 push 차단).
 # + 4(test_pm_delegate_live: 기존 Codex smoke 1 + 선택 cross Claude→Codex·Claude→OpenCode·
 #     Codex→Claude ticket growth 3·T-0685).
-# ⚠ 커플드-pin: 이 값을 올리면 touches 밖의 전역 pin 도 함께 정합돼야 `livegate record`(수집
+# ⚠ 커플드-pin: 이 값을 올리면 touches 밖의 전역 pin 도 함께 맞춰져야 `live-test record`(수집
 #   N==pin)가 통과한다(orchestrator 가 갱신·test_command_card_usability.py 주석 참조):
 #   regression.LIVE_TEST_RELEASE_PIN · tests/test_board_live_test.py(하드코딩 fake/assert) ·
-#   tests/test_worktree_pool.py(_LIVEGATE_RELEASE_PIN 미러) · templates/*/pm_engine/app/regression.py(pm_update 전파).
+#   tests/test_worktree_pool.py(_LIVE_TEST_RELEASE_PIN 미러) · templates/*/pm_engine/app/regression.py(pm_update 전파).
 _EXPECTED_RELEASE_TESTS = 22
 
 
@@ -2420,26 +2419,26 @@ def _count_marked_tests(path: Path, marker: str) -> int:
     )
 
 
-def test_release_pin_matches_board_livegate_pin():
-    """pin 단일진실 교차 단언 (T-0221/T-0222 접점·PM 배선) — release 케이스 수가 바뀌면
-    regression.LIVE_TEST_RELEASE_PIN(livegate record 의 수집 게이트)도 함께 바뀌어야 한다.
-    한쪽만 갱신하면 여기서 red — livegate 가 구 pin 으로 신규/삭제 케이스를 위장 통과시키는
+def test_release_pin_matches_board_live_test_pin():
+    """pin 단일진실 교차 단언 (T-0221/T-0222 접점·PM 연결) — release 케이스 수가 바뀌면
+    regression.LIVE_TEST_RELEASE_PIN(live-test record 의 수집 검사)도 함께 바뀌어야 한다.
+    한쪽만 갱신하면 여기서 red — live-test 가 구 pin 으로 신규/삭제 케이스를 위장 통과시키는
     드리프트를 차단한다."""
     assert regression.LIVE_TEST_RELEASE_PIN == _EXPECTED_RELEASE_TESTS
 
 
 def test_release_marker_count_is_pinned():
-    """`release` 마커 테스트 수(`_RELEASE_TEST_FILES` 합)가 고정값과 일치 — 마커 소실/개명 시 게이트 false-green 방어.
+    """`release` 마커 테스트 수(`_RELEASE_TEST_FILES` 합)가 고정값과 일치 — 마커 소실/개명 시 시험 false-green 방어.
 
-    근거(2026-07-02 실측): 릴리즈 게이트가 wrong-cwd + 잔재 tests/ 로 0개 수집·exit5 를 조용히
+    근거(2026-07-02 실측): 릴리즈 시험이 wrong-cwd + 남은 tests/ 로 0개 수집·exit5 를 조용히
     내는 false-green 이 실제 발생. `-m release` selection 에서 마커가 빠진 테스트는 조용히 안 돌고,
-    그 부재를 게이트가 못 본다. 이 수집-수 pin 이 마커 소실/개명 클래스를 red 로 세운다(T-0159 보완).
+    그 부재를 시험이 못 본다. 이 수집-수 pin 이 마커 소실/개명 클래스를 red 로 세운다(T-0159 보완).
     ADR-0039 로 라이브 tier 가 하나(release)라, `_RELEASE_TEST_FILES` 파일들의 마커를 합산해 pin 한다.
     """
     actual = sum(_count_marked_tests(f, "release") for f in _RELEASE_TEST_FILES)
     assert actual == _EXPECTED_RELEASE_TESTS, (
         f"`release` 마커 테스트 수 {actual} != 기대 {_EXPECTED_RELEASE_TESTS} — 마커 소실/개명 "
-        f"의심(게이트 selection 에서 조용히 누락될 위험). 라이브 테스트를 의도적으로 늘렸다면 "
+        f"의심(통과 조건 selection 에서 조용히 누락될 위험). 라이브 테스트를 의도적으로 늘렸다면 "
         f"_EXPECTED_RELEASE_TESTS 를 함께 갱신하라."
     )
 
