@@ -318,9 +318,9 @@ def test_print_summary_failure_shows_reason_line(external, capsys):
 
 
 def test_record_path_derives_from_repo(external, tmp_path, monkeypatch):
-    """기록 파일 경로 = `<대상 저장소>/.project_manager/.local/review_rounds.json` (호출 시점 해소·per-clone).
+    """기록 파일 경로 = `<기록 위치>/.project_manager/.local/review_rounds.json` (호출 시점 해소·per-clone).
 
-    기준 저장소는 raw 출력 기록 파일과 같은 규칙 — 넘겨받은 Home(엔진 자기 REPO)의 local 디렉터리다.
+    기록 위치는 raw 출력 기록 파일과 같은 규칙 — 넘겨받은 Home(엔진 자기 REPO)의 local 디렉터리다.
     """
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)) == \
@@ -332,7 +332,7 @@ def test_record_path_derives_from_repo(external, tmp_path, monkeypatch):
 
 
 def test_record_lock_path_follows_the_record_path(external, tmp_path, monkeypatch):
-    """락 파일은 기록 파일 경로에서 파생된다 — 기준 저장소가 갈리면 같은 기록 파일을 두 실행이 동시에 고쳐 쓴다."""
+    """락 파일은 기록 파일 경로에서 파생된다 — 기록 위치가 갈리면 같은 기록 파일을 두 실행이 동시에 고쳐 쓴다."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert review_rounds._round_record_lock_path(pm_paths.home_at(external.REPO)) == \
         review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).with_name("review_rounds.lock")
@@ -1850,7 +1850,7 @@ def test_rounds_report_on_empty_record_is_rc_zero(external, monkeypatch, tmp_pat
 
 def test_rounds_report_with_a_selector_reads_the_recording_anchor(
         external, monkeypatch, tmp_path, capsys):
-    """`--paths` 를 준 조회는 기록면과 **같은 해소**를 타 같은 기록 파일을 읽는다 (대상 저장소 갈림 방지)."""
+    """`--paths` 를 준 조회는 기록면과 **같은 해소**를 타 같은 기록 파일을 읽는다 (기록 위치 갈림 방지)."""
     calls = _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     assert external.main(["--review-ticket", "T-0334", "--paths", "x.py"]) == 0
     capsys.readouterr()
@@ -2385,7 +2385,7 @@ def test_resolve_review_parser_rejects_removed_into_option(
     assert calls["n"] == 0
 
 
-def test_reviewer_flags_accept_only_the_new_names():
+def test_reviewer_flags_accept_the_new_names():
     """추가 리뷰어 플래그는 새 이름을 받는다."""
     parser = cli_additional_reviewer.build_arg_parser()
     args = parser.parse_args(["--review-ticket", "T-0001", "--reset-session-budget"])
@@ -2408,7 +2408,7 @@ def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified
     """v1.7.8 실물 구성이 신규 선언 경로로 rc0 이고 폐지 필드는 정규화에서 제거된다.
 
     단언: reviewer 스폰 0(고정 fixture) · raw 레코드 증가 0 · 리뷰 집계 티켓
-    `count` 불변(선언은 기록 파일 기록 전용이라 집계 절을 건드리지 않는다)."""
+    `count` 불변(선언은 기록 파일 쓰기 전용이라 집계 절을 건드리지 않는다)."""
     tid = "T-9764"
     entry = _pv_seed_v178_shape(pm_verified_declare.proj, tid)
     before = json.loads(json.dumps(entry))

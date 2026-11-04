@@ -174,7 +174,7 @@ _RAW_ARTIFACT_RE = re.compile(
     r"[A-Za-z0-9._-]+_\d{4,}[A-Za-z0-9_.-]*\.txt\b"
 )
 # 하네스 세션 전사 저장소(실측 경로만 선언 — 추정 경로는 넣지 않는다). 구분자는 `/`·`\` 양쪽을
-# 받는다 — Windows 경로(`C:\Users\u\.claude\projects\…`)을 못 보면 그 플랫폼에서 백스톱이 없다.
+# 받는다 — Windows 경로(`C:\Users\u\.claude\projects\…`)를 못 보면 그 플랫폼에서 백스톱이 없다.
 _SESSION_TRANSCRIPT_RE = re.compile(
     r"[\w~.:/\\-]*(?:\.claude[/\\]projects|\.codex[/\\]sessions)[/\\][\w.:@/\\-]*"
 )

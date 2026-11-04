@@ -594,8 +594,8 @@ def _round_ledger_path(home) -> Path:
 def _legacy_round_record_path(home) -> Path:
     """옛 규칙(diff 대상 저장소)의 리뷰 라운드 기록 파일 경로 — 1회 승계(backfill)의 입력.
 
-    기준 저장소를 소유 PM 홈으로 옮기기 전의 실행들은 이 경로에 카운트를 쌓아 뒀다. 그 중에는 상한을
-    이미 넘겨 **차단 중인 리뷰 집계 티켓**(rc 4·ack 대기)이 있고, 새 기준 저장소에서 0 부터 다시 세면
+    기록 위치를 소유 PM 홈으로 옮기기 전의 실행들은 이 경로에 카운트를 쌓아 뒀다. 그 중에는 상한을
+    이미 넘겨 **차단 중인 리뷰 집계 티켓**(rc 4·ack 대기)이 있고, 새 기록 위치에서 0 부터 다시 세면
     그 차단이 무통보로 열린다.
     """
     return home.root / ".project_manager" / ".local" / "review_rounds.json"
@@ -625,7 +625,7 @@ def _restrict_to_owner(path: Path) -> None:
 def _round_record_lock_path(home) -> Path:
     """리뷰 라운드 기록 파일 배타락 파일 — 기록 파일 **옆** `lock`(기록 파일 경로에서 파생).
 
-    기준 저장소를 기록 파일에서 파생한다 — 락과 기록 파일이 각자 기준 저장소를 계산하면 그 규칙이 갈릴 때 서로 다른
+    락 파일 위치를 기록 파일 경로에서 파생한다 — 락과 기록 파일이 각자 기록 위치를 계산하면 그 규칙이 갈릴 때 서로 다른
     파일을 잠근 두 실행이 같은 기록 파일을 동시에 read-modify-write 한다(상한 우회 창).
     """
     return _round_ledger_path(home).with_name("review_rounds.lock")

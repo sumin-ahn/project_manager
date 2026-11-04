@@ -755,7 +755,7 @@ def test_non_string_final_reply_is_not_a_reply_at_the_shared_function(
     """최종 회신의 타입 계약은 공용 함수가 세운다 — 텍스트가 아니면 회신이 아니다(None).
 
     여기서 세우지 않으면 dict/list 가 소비하는 쪽까지 흘러가 판정 파싱에서 AttributeError 로 터지고,
-    그 시점은 raw 기록·기록 파일 마감 **전**이라 원문도 기록도 남지 않는다."""
+    그 시점은 raw 출력 저장·기록 파일 마감 **전**이라 원문도 기록도 남지 않는다."""
     reply = contract.extract_harness_reply(harness, _malformed_wire(line))
     assert reply is None, (shape, reply)
 

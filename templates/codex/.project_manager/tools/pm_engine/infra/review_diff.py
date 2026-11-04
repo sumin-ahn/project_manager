@@ -279,7 +279,7 @@ def _measure_stages(
 ) -> tuple[tuple[str, bool], ...]:
     """완료 기록 측정의 단계 표 — `(git diff 기준, untracked 포함 여부)`.
 
-    통합 기준(`integration_base` 가 고른 기준점 — 통합 브랜치와의 merge-base)가 있고
+    통합 기준(`integration_base` 가 고른 기준점 — 통합 브랜치와의 merge-base)이 있고
     base 가 기본('HEAD')이면 단계는 하나다: `git diff <통합 기준>` 은 그 커밋 트리와 **현재
     작업트리**를 비교하므로 기준점 이후의 커밋·스테이징·언스테이징이 한 폭에 들어온다.
     untracked 신규 파일도 작업트리 구성원이라 함께 본다(stage 전 신규 파일이 측정에서

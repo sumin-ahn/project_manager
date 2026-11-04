@@ -71,9 +71,9 @@ def _make_pm_home(tmp_path: Path, *, with_ticket: bool = True,
         (worktree / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
         (worktree / ".project_manager" / "tools" / "additional_reviewer.py").write_text(
             "# engine copy\n", encoding="utf-8")
-        round_records = home / ".project_manager" / ".local" / "worktree-leases.json"
-        round_records.parent.mkdir(parents=True)
-        round_records.write_text(
+        lease_record_path = home / ".project_manager" / ".local" / "worktree-leases.json"
+        lease_record_path.parent.mkdir(parents=True)
+        lease_record_path.write_text(
             '{"leases": [{"slot": "work/project_manager_1", "state": "leased"}]}',
             encoding="utf-8",
         )
@@ -230,9 +230,9 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
     for slot in (slot_one, slot_two):
         slot.mkdir(parents=True)
         (slot / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
-    round_records = engine_home / ".project_manager" / ".local" / "worktree-leases.json"
-    round_records.parent.mkdir(parents=True)
-    round_records.write_text(
+    lease_record_path = engine_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_record_path.parent.mkdir(parents=True)
+    lease_record_path.write_text(
         '{"leases": [{"slot": "work/slot-one"}, {"slot": "work/slot-two"}]}',
         encoding="utf-8",
     )

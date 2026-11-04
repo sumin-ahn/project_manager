@@ -149,7 +149,7 @@ def main(home, argv: list[str] | None = None) -> int:
         )
         return 1
     if args.resolve_review:
-        # 기록 파일 기록 전용면 — 실행 경로(conf 해소·diff 추출)보다 앞에서 끝낸다.
+        # 기록 파일 쓰기 전용면 — 실행 경로(conf 해소·diff 추출)보다 앞에서 끝낸다.
         return reviewer_rounds._resolve_review_command(engine_home, args)
     if args.rounds_report:
         ignored = ", ".join(
@@ -471,7 +471,7 @@ def main(home, argv: list[str] | None = None) -> int:
         return 0
 
     # ── 라운드 상한·세션 호출 예산 검사: 호출 전 예약 ──────────
-    # raw 자리 먼저 차지하기보다 **먼저**다 — 이미 상한에 닿은 호출이 raw 자리를 만들었다 지우면 "호출 없이
+    # raw 자리 차지보다 **먼저**다 — 이미 상한에 닿은 호출이 raw 자리를 만들었다 지우면 "호출 없이
     # 끝나는 실행은 부작용 0" 규율(dry-run 과 같은 기준)을 이 rc 에서만 깨는 것이다.
     # dry-run·조회·처분은 이미 반환했다. 여기까지 온 실행은
     # 리뷰어를 부르므로, `--review-ticket`(또는 `--ticket` 자동 유도) / 명시 `--no-review-ticket` 중 하나가 반드시

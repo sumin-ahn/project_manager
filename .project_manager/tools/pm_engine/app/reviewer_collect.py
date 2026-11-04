@@ -123,7 +123,7 @@ def _collect_target_ticket_state(
 ) -> _CollectTargetState | None:
     """돌려받을 대상 티켓의 명세 + 라운드 (대상 없거나 읽기 실패면 None · 실패는 loud).
 
-    프롬프트에 실린 티켓 본문에서 파생하면 문서화된 설계 리뷰 경우(`--paths … --review-ticket T-NNNN`)은
+    프롬프트에 실린 티켓 본문에서 파생하면 문서화된 설계 리뷰 경우(`--paths … --review-ticket T-NNNN`)는
     본문이 실리지 않아 티켓을 못 본다. 대상 해소는 돌려받기 경로와 **같은 함수**를 써서 두 경로가
     갈리지 않게 하고, 프롬프트 실값·확인 근거 대조가 **같은 읽기**를 쓴다.
 

@@ -86,9 +86,9 @@ def test_shape_b_bare_common_dir_uses_registered_checkout_owner(tmp_path):
         "---\nid: T-9003\ntitle: bare fixture\nstatus: open\n---\n",
         encoding="utf-8",
     )
-    round_records = home / ".project_manager" / ".local" / "worktree-leases.json"
-    round_records.parent.mkdir(parents=True)
-    round_records.write_text(
+    lease_record_path = home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_record_path.parent.mkdir(parents=True)
+    lease_record_path.write_text(
         json.dumps({"leases": [{"slot": "work/project_1", "state": "leased"}]}),
         encoding="utf-8",
     )

@@ -15,10 +15,10 @@ import uuid
 def _inherit_legacy_round_entry(home, round_records: dict, review_ticket: str) -> dict | None:
     """diff 대상 저장소 legacy 기록 파일의 리뷰 집계 티켓 항목을 PM 홈 기록 파일로 **1회 승계**한다 (없으면 None).
 
-    기준 저장소 이동(diff_root → 소유 PM 홈)의 마이그레이션이다 — 런타임 대체 동작(두 기록 파일을 계속 합산)이
+    기록 위치 이동(diff_root → 소유 PM 홈)의 마이그레이션이다 — 런타임 대체 동작(두 기록 파일을 계속 합산)이
     아니라 원천 이관이라, 승계 뒤에는 PM 홈 기록 파일이 유일한 진실이다(리뷰 집계 티켓당 1회·호출부가
     즉시 저장한다). 승계 대상은 **PM 홈에 아직 그 리뷰 집계 티켓이 없을 때**뿐이라 이미 이관된 리뷰 집계 티켓의
-    카운트를 옛 값으로 되돌리지 않는다. 두 기준 저장소가 같은 실행(수준 낮춤 대체 동작)은 대상이 아니다.
+    카운트를 옛 값으로 되돌리지 않는다. 두 기록 위치가 같은 실행(수준 낮춤 대체 동작)은 대상이 아니다.
     """
     if review_ticket in round_records:
         return None
@@ -349,7 +349,7 @@ def _reserve_round_budget(
     try:
         with review_rounds._round_record_lock(home):
             round_records = review_rounds._load_round_records(home)
-            # 기준 저장소 이동 1회 승계 — legacy(diff 대상 저장소) 기록 파일의 차단 상태를 그대로 이관한다.
+            # 기록 위치 이동 1회 승계 — legacy(diff 대상 저장소) 기록 파일의 차단 상태를 그대로 이관한다.
             # 승계분은 판정 *이전에* 저장한다: 차단으로 조기 return 해도 마이그레이션은
             # 남아야 다음 실행이 다시 승계하지 않는다(리뷰 집계 티켓당 1회).
             if _inherit_legacy_round_entry(home, round_records, args.review_ticket) is not None:

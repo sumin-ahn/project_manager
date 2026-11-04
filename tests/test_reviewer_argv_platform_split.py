@@ -39,7 +39,7 @@ from pm_engine.infra import process
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# 분해 규칙의 표시(Private Use Area 한 글자)과 그 규칙을 구현해도 되는 유일한 모듈.
+# 분해 규칙의 표시(Private Use Area 한 글자)와 그 규칙을 구현해도 되는 유일한 모듈.
 # 소스 스캔은 두 표기를 함께 본다 — escape 로 적은 사본과 글자를 그대로 박은 사본 둘 다 걸린다.
 WINDOWS_PATH_SEPARATOR_MARK = "\ue000"
 WINDOWS_PATH_SEPARATOR_SOURCE = "\\ue000"

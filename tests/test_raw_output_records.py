@@ -119,9 +119,9 @@ def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
         (tools / "additional_reviewer.py").write_text(
             "# engine copy\n", encoding="utf-8"
         )
-    round_records = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    round_records.parent.mkdir(parents=True)
-    round_records.write_text(
+    lease_record_path = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_record_path.parent.mkdir(parents=True)
+    lease_record_path.write_text(
         json.dumps({"leases": [{"slot": "work/project_1", "state": "leased"}]}),
         encoding="utf-8",
     )
@@ -131,14 +131,14 @@ def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
 def test_default_storage_is_pm_local_and_explicit_destination_is_unchanged(
         tmp_path):
     repo = _repo(tmp_path)
-    raw, round_records = raw_output.raw_storage_paths(repo, "delegate")
+    raw, raw_record_path = raw_output.raw_storage_paths(repo, "delegate")
     assert raw == repo / ".project_manager" / ".local" / "delegate"
-    assert round_records == repo / ".project_manager" / ".local" / "raw_outputs.json"
+    assert raw_record_path == repo / ".project_manager" / ".local" / "raw_outputs.json"
 
     explicit = tmp_path / "injected-output"
-    raw, round_records = raw_output.raw_storage_paths(repo, "review", explicit)
+    raw, raw_record_path = raw_output.raw_storage_paths(repo, "review", explicit)
     assert raw == explicit
-    assert round_records == explicit / "raw_outputs.json"
+    assert raw_record_path == explicit / "raw_outputs.json"
 
 
 def test_unresolved_anchor_refuses_instead_of_writing_to_the_os_tempdir(
@@ -521,10 +521,10 @@ def test_raw_close_finishes_unfinished_record_with_fixed_abnormal_schema(
     record_path = output_dir / "raw_outputs.json"
     record_id = _unfinished_record(record_path, tmp_path)
     # pid 부재는 안전 검사를 통과한다.
-    round_records = _read_records(record_path)
-    round_records["records"][0].pop("pid")
+    raw_records = _read_records(record_path)
+    raw_records["records"][0].pop("pid")
     record_path.write_text(
-        json.dumps(round_records, ensure_ascii=False), encoding="utf-8"
+        json.dumps(raw_records, ensure_ascii=False), encoding="utf-8"
     )
 
     assert delegate.main([
@@ -855,7 +855,7 @@ _CODEX_PASS_WIRE = json.dumps(
 
 
 def _stub_reviewer(external, monkeypatch) -> None:
-    """자식 프로세스 스폰 없이 run_review 본체(raw 기록·기록 파일 등재)를 그대로 태운다."""
+    """자식 프로세스 스폰 없이 run_review 본체(raw 출력 저장·기록 파일 등재)를 그대로 태운다."""
     def _fake_run_reviewer_ex(
         _home, prompt, reviewer_cmd, timeout, run_fn, idle_timeout=None, metrics=None,
         *, cwd=None, env=None, argv=None, stdin_text=None, on_spawn_attempt=None,
@@ -1041,24 +1041,24 @@ def _second_review_slot(pm_home: Path) -> Path:
     tools = worktree / ".project_manager" / "tools"
     tools.mkdir(parents=True)
     (tools / "additional_reviewer.py").write_text("# engine copy\n", encoding="utf-8")
-    round_records = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = _read_records(round_records)
+    lease_record_path = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    data = _read_records(lease_record_path)
     data["leases"].append({"slot": "work/project_2", "state": "leased"})
-    round_records.write_text(json.dumps(data), encoding="utf-8")
+    lease_record_path.write_text(json.dumps(data), encoding="utf-8")
     return worktree
 
 
-def _round_entry(target_repo_root: Path, review_ticket: str) -> dict:
-    """기준 저장소의 리뷰 라운드 기록 파일에 기록된 리뷰 집계 티켓 항목 (기록 파일/항목 부재 = 빈 dict)."""
-    path = target_repo_root / ".project_manager" / ".local" / "review_rounds.json"
+def _round_entry(record_root: Path, review_ticket: str) -> dict:
+    """기록 위치의 리뷰 라운드 기록 파일에 기록된 리뷰 집계 티켓 항목 (기록 파일/항목 부재 = 빈 dict)."""
+    path = record_root / ".project_manager" / ".local" / "review_rounds.json"
     if not path.is_file():
         return {}
     return _read_records(path).get(review_ticket, {})
 
 
-def _round_count(target_repo_root: Path, review_ticket: str) -> int:
-    """기준 저장소의 리뷰 라운드 기록 파일에 기록된 리뷰 집계 티켓 호출 횟수 (기록 파일 부재 = 0)."""
-    return _round_entry(target_repo_root, review_ticket).get("count", 0)
+def _round_count(record_root: Path, review_ticket: str) -> int:
+    """기록 위치의 리뷰 라운드 기록 파일에 기록된 리뷰 집계 티켓 호출 횟수 (기록 파일 부재 = 0)."""
+    return _round_entry(record_root, review_ticket).get("count", 0)
 
 
 def test_round_record_counts_continue_across_diff_roots(
@@ -1122,9 +1122,9 @@ def test_legacy_diff_root_round_anchor_resets_the_count_per_slot(
 # 차단 상태를 정직하게 유지한다 — 런타임 합산 대체 동작이 아니라 원천 마이그레이션이다.
 
 
-def _write_legacy_round_records(target_repo_root: Path, review_ticket: str, entry: dict) -> Path:
+def _write_legacy_round_records(record_root: Path, review_ticket: str, entry: dict) -> Path:
     """옛 규칙(diff 대상 저장소) 기록 파일을 그 슬롯에 넣는다 — 기록 위치 이동 이전 상태의 대역."""
-    path = target_repo_root / ".project_manager" / ".local" / "review_rounds.json"
+    path = record_root / ".project_manager" / ".local" / "review_rounds.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({review_ticket: entry}), encoding="utf-8")
     return path
