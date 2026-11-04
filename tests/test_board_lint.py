@@ -1,6 +1,6 @@
-"""board.py 파일명-무관 참조 lint + push 게이트 단위테스트 (T-0036).
+"""board.py 파일명-무관 참조 lint + push 통과 조건 단위테스트 (T-0036).
 
-`lint_unstable_refs()` 와 `lint --gate` 종료코드 분기, pre-push 훅 본문을 검증한다.
+`lint_unstable_refs()` 와 `lint --blocking` 종료코드 분기, pre-push 훅 본문을 검증한다.
 
   - lint 함수는 모듈-레벨 경로 상수(REPO·TICKETS_DIR·DECISIONS_DIR·IDEAS_DIR)를 tmp_path
     로 monkeypatch 해 구동한다 — **실 .project_manager/wiki/ 미접촉**. `_collect_wikilink_files`
@@ -54,7 +54,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
 
-# symlink 생성 불가 환경(권한 없는 Windows 등)에서 symlink 의존 테스트를 skip (test_pm_import 동형).
+# symlink 생성 불가 환경(권한 없는 Windows 등)에서 symlink 의존 테스트를 skip (test_pm_import 와 같은 방식).
 requires_symlink = pytest.mark.skipif(
     not _can_symlink(),
     reason="Windows: symlink requires Developer Mode/admin",
@@ -90,7 +90,7 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
     ideas = wiki / "ideas"
     decisions = wiki / "decisions"
     # 상태 디렉토리는 board 상수에서 유도한다 — 손으로 열거하면 새 상태가 픽스처 트리에서
-    # 빠져 그 상태의 링크가 "실재 안 함"으로만 관측되고 정상 통과 축을 못 잰다.
+    # 빠져 그 상태의 링크가 "실재 안 함"으로만 관측되고 정상 통과 기준을 못 잰다.
     for status in ticket_rules.STATUS_DIRS:
         (tickets / status).mkdir(parents=True, exist_ok=True)
     for status in ticket_rules.IDEA_STATUS_DIRS:
@@ -158,7 +158,7 @@ def test_md_path_link_without_leading_slash_is_caught(board, monkeypatch, tmp_pa
 def test_md_link_with_fragment_or_title_is_caught(board, monkeypatch, tmp_path):
     """`.md#sec` fragment·`.md "title"` 달린 링크도 포착 (codex T-0036 must-fix).
 
-    `.md)` 로 끝나는 형만 잡으면 fragment/title 달린 dangling 링크가 게이트를 우회한다.
+    `.md)` 로 끝나는 형만 잡으면 fragment/title 달린 dangling 링크가 통과 조건을 우회한다.
     target 추출 후 fragment/query 를 떼고 매칭해 둘 다 잡는다.
     """
     wiki = _wire_repo(board, monkeypatch, tmp_path)
@@ -190,7 +190,7 @@ def test_external_url_decision_path_not_flagged(board, monkeypatch, tmp_path):
 def test_code_span_and_fence_examples_not_flagged(board, monkeypatch, tmp_path):
     """코드 span/fence 안의 *예시* 링크는 실제 참조가 아니므로 차단 안 함 (codex T-0036·오탐 0).
 
-    문서가 "나쁜 예시"로 `[x](decisions/NNNN-...)` 를 코드로 보여줘도 push 게이트를 막으면 안 된다."""
+    문서가 "나쁜 예시"로 `[x](decisions/NNNN-...)` 를 코드로 보여줘도 push 통과 조건을 막으면 안 된다."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _doc(wiki, "doc.md",
          "inline 나쁜 예시 `[bad](decisions/9999-ghost.md)` 는 무시해야 한다.\n\n"
@@ -215,7 +215,7 @@ def test_md_link_single_quote_and_paren_title_is_caught(board, monkeypatch, tmp_
 def test_num_lead_wikilink_alias_deduped_to_base(board, monkeypatch, tmp_path):
     """`[[0003-slug|표시명]]` 의 alias 는 dedupe 키에서 제거 — 같은 대상이 1 issue (codex suggestion)."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
-    _adr(wiki, "0003", "overlay-seam")
+    _adr(wiki, "0003", "overlay-hook")
     _doc(wiki, "note.md",
          "alias 둘 [[0003-overlay|첫째]] 그리고 [[0003-overlay|둘째]] 참고")
     issues = wikilink_lint.lint_unstable_refs(pm_paths.home_at(board.REPO))
@@ -257,7 +257,7 @@ def test_num_lead_wikilink_hangul_slug_is_caught(board, monkeypatch, tmp_path):
     `[^\\]|]+` 로 넓혀 비-ASCII slug 도 잡는다.
     """
     wiki = _wire_repo(board, monkeypatch, tmp_path)
-    _adr(wiki, "0003", "overlay-seam")
+    _adr(wiki, "0003", "overlay-hook")
     _doc(wiki, "note.md", "참조 [[0003-오버레이-심]] 형으로 적음")
     issues = wikilink_lint.lint_unstable_refs(pm_paths.home_at(board.REPO))
     match = [i for i in issues if i[0] == "0003-오버레이-심"]
@@ -278,7 +278,7 @@ def test_md_path_link_to_existing_decision_is_advice_not_block(board, monkeypatc
     assert match, issues
     name, kind, detail = match[0]
     assert kind == "unstable-ref-advice"          # 작동은 함 → 권고만
-    assert kind in board_lint._ADVISORY_LINT_KINDS     # gate 가 막지 않음
+    assert kind in board_lint._ADVISORY_LINT_KINDS     # blocking 이 막지 않음
     assert "[[ADR-0007]]" in detail
 
 
@@ -286,7 +286,7 @@ def test_ticket_path_link_in_every_status_dir_is_classified(board, monkeypatch, 
     """`tickets/<state>/<slug>.md` 링크는 **모든** 상태 디렉토리에서 lint 경로로 들어간다.
 
     상태 조각을 정규식에 리터럴로 적으면 새 상태가 분류 자체에서 빠져 dangling 도 슬러그 권고도
-    조용히 사라진다(검사 우회). 상태별로 실재 링크=권고 / 부재 링크=차단 두 축을 다 잰다.
+    조용히 사라진다(검사 우회). 상태별로 실재 링크=권고 / 부재 링크=차단 두 기준을 다 잰다.
     """
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     for status in ticket_rules.STATUS_DIRS:
@@ -311,7 +311,7 @@ def test_discarded_ticket_link_existing_is_advice_and_missing_blocks(
     """처분 종결 디렉토리 링크가 기존 두 lint 경로로 정확히 갈린다 — 실재는 통과·부재는 차단.
 
     처분 상태가 정규식에서 빠져 있던 동안 `tickets/discarded/…` 링크는 dangling 이어도
-    `lint --gate` 를 그대로 통과했다(환각 링크가 push 게이트를 우회).
+    `lint --blocking` 을 그대로 통과했다(환각 링크가 push 통과 조건을 우회).
     """
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     (wiki / "tickets" / "discarded" / "T-0101-merged-away.md").write_text(
@@ -326,7 +326,7 @@ def test_discarded_ticket_link_existing_is_advice_and_missing_blocks(
     advice = [i for i in issues if i[0] == "T-0101-merged-away.md"]
     dangling = [i for i in issues if i[0] == "T-0901-never-existed.md"]
     assert advice and advice[0][1] == "unstable-ref-advice", issues
-    assert advice[0][1] in board_lint._ADVISORY_LINT_KINDS      # gate 가 막지 않음
+    assert advice[0][1] in board_lint._ADVISORY_LINT_KINDS      # blocking 이 막지 않음
     assert "[[T-0101]]" in advice[0][2], advice
     assert dangling and dangling[0][1] == "unstable-ref", issues
     assert "실재 안 함" in dangling[0][2], dangling
@@ -344,7 +344,7 @@ def test_struct_path_regex_has_no_hardcoded_status_names(board):
     fragments = re.findall(r"(?:tickets|ideas)/\(\?:([^)]*)\)", source)
     literals = [f for f in fragments if any(name in f for name in known)]
 
-    assert fragments, "구조 경로 정규식 조각을 소스에서 못 찾았다 — 가드 시야가 표면과 어긋났다"
+    assert fragments, "구조 경로 정규식 조각을 소스에서 못 찾았다 — 가드 검사 범위가 소스와 어긋났다"
     assert literals == [], f"상태명을 리터럴로 박은 구조 경로 정규식 잔존: {literals}"
     for status in ticket_rules.STATUS_DIRS:
         assert re.escape(status) in wikilink_lint._TICKET_STATUS_PATTERN, status
@@ -355,9 +355,9 @@ def test_struct_path_regex_has_no_hardcoded_status_names(board):
 
 
 def test_raw_snapshot_slug_link_advice_suppressed(board, monkeypatch, tmp_path):
-    """raw/ 스냅샷(ADR-0010 — sealed 면 immutable)의 실재-슬러그 *권고*는 면제한다.
+    """raw/ 복사본(ADR-0010 — 확정(`sealed`)이면 immutable)의 실재-슬러그 *권고*는 면제한다.
 
-    봉인된 스냅샷의 링크는 고칠 수 없고(immutable) 역사적 인용이라 ID-wikilink 권고가
+    확정된 복사본의 링크는 고칠 수 없고(immutable) 역사적 인용이라 ID-wikilink 권고가
     비실행적이다. 같은 링크가 비-raw 문서에 있으면 권고는 유지된다(면제는 raw source 한정).
     """
     wiki = _wire_repo(board, monkeypatch, tmp_path)
@@ -412,7 +412,7 @@ def test_wikilink_in_fenced_block_not_flagged_dangling(board, monkeypatch, tmp_p
 def test_real_dangling_wikilink_outside_code_still_flagged(board, monkeypatch, tmp_path):
     """code span *밖*의 진짜 dangling wikilink 는 여전히 flag (누락 경계).
 
-    code 제외가 실 참조까지 놓치면(false-negative) 환각 ref 가 게이트를 우회한다.
+    code 제외가 실 참조까지 놓치면(false-negative) 환각 ref 가 통과 조건을 우회한다.
     같은 문서에 backtick 예시(보존)와 산문 dangling(차단)을 함께 둬 둘을 분리 검증.
     """
     wiki = _wire_repo(board, monkeypatch, tmp_path)
@@ -451,7 +451,7 @@ def test_scaffold_dangling_wikilink_is_flagged(board, monkeypatch, tmp_path, rel
     """출하 scaffold 의 dangling framework [[ADR-NNNN]] 이 lint 에 잡힌다 (scaffold 스캔).
 
     T-0129 이후 scaffold-only framework ADR/idea dangling 은 advisory kind
-    `dangling-wikilink-scaffold` 로 분류된다(여전 보고되되 `--gate` 미차단).
+    `dangling-wikilink-scaffold` 로 분류된다(여전 보고되되 `--blocking` 미차단).
     """
     _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음 → ADR-9999 는 부재.
     _scaffold_doc(tmp_path, relpath,
@@ -494,23 +494,23 @@ def test_scaffold_absent_harness_dir_skipped(board, monkeypatch, tmp_path):
 # ── ③d scaffold framework ADR/idea dangling = advisory · push 미차단 (T-0129) ──
 # T-0118 이 scaffold dangling 을 blocking 으로 만들면서 framework ADR 부재 다운스트림
 # 채택자의 push 를 막는 부작용이 생겼다. T-0129 이 scaffold-only framework ADR/idea
-# dangling 을 `dangling-wikilink-scaffold`(advisory·`_ADVISORY_LINT_KINDS`) 로 강등한다 —
+# dangling 을 `dangling-wikilink-scaffold`(advisory·`_ADVISORY_LINT_KINDS`) 로 수준을 낮춘다 —
 # signal(visibility) 은 유지하되 false push-block 만 제거. wiki/·root-doc·ticket dangling 은
 # 여전히 `dangling-wikilink`(blocking).
 
 def test_scaffold_kind_is_advisory(board):
-    """`dangling-wikilink-scaffold` 는 `_ADVISORY_LINT_KINDS` 에 등재 (gate 가 안 막음)."""
+    """`dangling-wikilink-scaffold` 는 `_ADVISORY_LINT_KINDS` 에 등재 (blocking 이 안 막음)."""
     assert "dangling-wikilink-scaffold" in board_lint._ADVISORY_LINT_KINDS
     # blocking kind 는 advisory 가 아니다 (대칭 회귀 — 본 dangling 은 여전 차단).
     assert "dangling-wikilink" not in board_lint._ADVISORY_LINT_KINDS
 
 
-def test_scaffold_dangling_gate_passes(board, monkeypatch, tmp_path):
-    """scaffold-only framework ADR dangling 만 있으면 `lint --gate` 종료코드 0 (미차단)."""
+def test_scaffold_dangling_blocking_passes(board, monkeypatch, tmp_path):
+    """scaffold-only framework ADR dangling 만 있으면 `lint --blocking` 종료코드 0 (미차단)."""
     _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음 → ADR-9999 부재.
     _scaffold_doc(tmp_path, ".opencode/agents/orchestrator.md",
                   "이 에이전트는 [[ADR-9999]] 와 [[idea-9999]] 를 따른다.")
-    # 다른 lint 표면은 비워 scaffold dangling 만 게이트에 반영.
+    # 다른 lint 결과는 비워 scaffold dangling 만 blocking 결과에 반영.
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
@@ -522,13 +522,13 @@ def test_scaffold_dangling_gate_passes(board, monkeypatch, tmp_path):
     assert all(kind == "dangling-wikilink-scaffold"
                for name, kind, _d in issues
                if name in ("ADR-9999", "idea-9999")), issues
-    # gate 는 통과(0), full 은 advisory 라도 1 (현행 계약: full 은 모든 finding 에서 1).
+    # blocking 은 통과(0), full 은 advisory 라도 1 (현행 계약: full 은 모든 finding 에서 1).
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
 def test_wiki_dangling_still_blocks(board, monkeypatch, tmp_path):
-    """wiki/ 의 framework ADR dangling 은 여전히 `dangling-wikilink`·gate 차단."""
+    """wiki/ 의 framework ADR dangling 은 여전히 `dangling-wikilink`·blocking 차단."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)  # ADR 트리 비어 있음.
     _doc(wiki, "note.md", "본문 산문 참조 [[ADR-9999]] 는 실재해야 한다.")
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
@@ -605,20 +605,20 @@ def test_finance_dev_d4_prefixed_ticket_resolves_and_dangling(board, monkeypatch
 
     제보 D4 는 구버전 fork 관찰 — `[[T-<prefix>-NNN]]` 을 실존인데도 dangling 으로 오탐. 현 엔진은
     `ticket_rules._TICKET_ID_BODY` 공유 grammar + `ticket_ids` 멤버십 단일 경로(board.py)
-    로 이미 정합해소한다. 이 테스트가 finance_dev 가 보고한 정확한 케이스로 그 정합을 못박아
+    로 이미 일치하게 해소한다. 이 테스트가 finance_dev 가 보고한 정확한 케이스로 그 일치를 못박아
     grammar/해소 drift(T-0164 클래스) 재발 시 빨간불이 되게 한다."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     # (a) 실존 prefixed ticket — dangling 으로 오탐되면 안 된다 (오탐 제거).
     p = wiki / "tickets" / "open" / "T-finance-011-x.md"
     p.write_text("---\nid: T-finance-011\n---\n# T-finance-011\n", encoding="utf-8")
-    # 실존 링크와 부재 링크를 같은 산문에 둬 정합·검출력을 함께 검증.
+    # 실존 링크와 부재 링크를 같은 산문에 둬 일치·검출력을 함께 검증.
     _doc(wiki, "note.md",
          "실존 [[T-finance-011]] · 부재 [[T-nope-999]] 참조.")
     issues = wikilink_lint.lint_wikilinks(pm_paths.home_at(board.REPO))
     # (a) 실존 prefixed → clean (결과에 그 name 이 없음).
     assert not any(name == "T-finance-011" for name, _k, _d in issues), (
         f"실존 prefixed ticket wikilink 는 dangling 아님(오탐):\n{issues}")
-    # (b) 부재 prefixed → is_ticket blocking(`dangling-wikilink`·advisory 강등 아님)·검출력 유지.
+    # (b) 부재 prefixed → is_ticket blocking(`dangling-wikilink`·advisory 로 수준 낮춤 아님)·검출력 유지.
     assert any(name == "T-nope-999" and kind == "dangling-wikilink"
                for name, kind, _d in issues), (
         f"부재 prefixed ticket wikilink 는 blocking dangling 이어야 함:\n{issues}")
@@ -632,7 +632,7 @@ def test_same_ref_in_scaffold_and_wiki_blocks(board, monkeypatch, tmp_path):
     _scaffold_doc(tmp_path, ".claude/agents/orchestrator.md", "scaffold 참조 [[ADR-9999]].")
     _doc(wiki, "note.md", "wiki 산문 참조 [[ADR-9999]] 도 있다.")
     issues = wikilink_lint.lint_wikilinks(pm_paths.home_at(board.REPO))
-    # 사용처 하나라도 wiki/root-doc 이면 advisory 강등 불가 → blocking.
+    # 사용처 하나라도 wiki/root-doc 이면 advisory 로 수준 낮춤 불가 → blocking.
     assert any(name == "ADR-9999" and kind == "dangling-wikilink"
                for name, kind, _d in issues), issues
     assert not any(name == "ADR-9999" and kind == "dangling-wikilink-scaffold"
@@ -661,10 +661,10 @@ def test_prose_path_mention_not_a_link_untouched(board, monkeypatch, tmp_path):
     assert issues == [], issues
 
 
-# ── ⑤ --gate 종료코드 분기 ────────────────────────────────────────────────────
+# ── ⑤ --blocking 종료코드 분기 ────────────────────────────────────────────────────
 
-def test_gate_zero_on_status_drift_only(board, monkeypatch, tmp_path, capsys):
-    """status drift(자문성)만 있으면 --gate 종료코드 0 — never blocks 계약 보존."""
+def test_blocking_zero_on_status_drift_only(board, monkeypatch, tmp_path, capsys):
+    """status drift(자문성)만 있으면 --blocking 종료코드 0 — never blocks 계약 보존."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
@@ -682,8 +682,8 @@ def test_gate_zero_on_status_drift_only(board, monkeypatch, tmp_path, capsys):
     assert rc_full == 1
 
 
-def test_gate_one_on_unstable_ref_dangling(board, monkeypatch, tmp_path):
-    """dangling unstable-ref 가 있으면 --gate 종료코드 1 (차단)."""
+def test_blocking_one_on_unstable_ref_dangling(board, monkeypatch, tmp_path):
+    """dangling unstable-ref 가 있으면 --blocking 종료코드 1 (차단)."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
@@ -698,8 +698,8 @@ def test_gate_one_on_unstable_ref_dangling(board, monkeypatch, tmp_path):
     assert rc == 1
 
 
-def test_gate_zero_on_unstable_ref_advice_only(board, monkeypatch, tmp_path):
-    """실재 슬러그 권고(unstable-ref-advice)만 있으면 --gate 0 — 차단은 dangling 만."""
+def test_blocking_zero_on_unstable_ref_advice_only(board, monkeypatch, tmp_path):
+    """실재 슬러그 권고(unstable-ref-advice)만 있으면 --blocking 0 — 차단은 dangling 만."""
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
@@ -714,10 +714,10 @@ def test_gate_zero_on_unstable_ref_advice_only(board, monkeypatch, tmp_path):
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
 
-# ── ⑥ pre-push 훅 본문에 lint --gate 단계 포함 ────────────────────────────────
+# ── ⑥ pre-push 훅 본문에 lint --blocking 단계 포함 ────────────────────────────────
 
 def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
-    """자기 `.git` 디렉토리를 갖춘 tmp REPO + 그 아래 훅 폴더 — 설치가 서는 형상(T-0899).
+    """자기 `.git` 디렉토리를 갖춘 tmp REPO + 그 아래 훅 폴더 — 설치가 서는 구성(T-0899).
 
     엔진은 해소된 훅 폴더가 `REPO/.git` 아래일 때만 쓴다. 훅 폴더를 저장소 밖에 두면 설치
     자체가 서지 않아 본문을 볼 수 없다.
@@ -729,7 +729,7 @@ def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
     return hooks
 
 
-def test_pre_push_hook_includes_lint_gate(board, monkeypatch, tmp_path):
+def test_pre_push_hook_includes_lint_check(board, monkeypatch, tmp_path):
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
     monkeypatch.setattr(python_env, "_detect_py", lambda: "python3")
     assert pre_push_hook.install_pre_push_hook(pm_paths.home_at(board.REPO)) is True
@@ -758,7 +758,7 @@ def test_lint_tickets_includes_unstable_refs(board, monkeypatch, tmp_path):
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     # 명시적 구조 경로 링크(실재 안 함) → dangling unstable-ref (차단 가능 카테고리).
     _doc(wiki, "note.md", "broken [x](decisions/9999-ghost.md) ref")
-    # 다른 lint 표면은 비워 unstable-ref 만 본다.
+    # 다른 lint 결과는 비워 unstable-ref 만 본다.
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
@@ -770,7 +770,7 @@ def test_lint_tickets_includes_unstable_refs(board, monkeypatch, tmp_path):
 
 # ── status judgment-only — scalar-anchor lint 제거 (ADR-0023 a안) ──────────────
 # status.md 헤더 scalar·회귀 실측 라인이 제거돼(judgment-only) ticket_finish 가 더 이상
-# status.md 를 안 건드린다 → 그 앵커 무결성 가드(`lint_status_anchors`·`scalar-anchor-broken`)도
+# status.md 를 안 건드린다 → 그 표지 무결성 가드(`lint_status_anchors`·`scalar-anchor-broken`)도
 # 제거됐다. ✅ 누적 권고(`status-done-accum`)와 architecture freshness 는 유지된다.
 
 def test_scalar_anchor_lint_removed(board):
@@ -846,7 +846,7 @@ def test_family_scope_empty_string_falls_back_to_shared(board):
 
 
 def test_family_scope_non_string_falls_back_to_shared(board):
-    """비-문자열(잘못 적힌 list/숫자) → shared 안전 폴백 (파싱 예외 0)."""
+    """비-문자열(잘못 적힌 list/숫자) → shared 로 안전하게 대체 (파싱 예외 0)."""
     assert wiki_lint.family_scope({"family_scope": ["a", "b"]}) == "shared"
     assert wiki_lint.family_scope({"family_scope": 42}) == "shared"
     assert wiki_lint.family_scope({"family_scope": None}) == "shared"
@@ -886,7 +886,7 @@ def test_lint_scopes_advice_on_broken_format(board, monkeypatch, tmp_path):
 def test_lint_scopes_advice_on_non_string(board, monkeypatch, tmp_path, scope_yaml):
     """비문자열 family_scope(list/dict/int) → scope-advice (형식 오류·자문성·ADR-0015).
 
-    `family_scope()` 헬퍼는 shared 로 fail-soft 폴백하지만, lint 는 그 형식 오류를
+    `family_scope()` 헬퍼는 shared 로 fail-soft 로 대체하지만, lint 는 그 형식 오류를
     조용히 삼키지 않고 원본을 검사해 권고한다.
     """
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
@@ -898,7 +898,7 @@ def test_lint_scopes_advice_on_non_string(board, monkeypatch, tmp_path, scope_ya
 
 
 def test_lint_scopes_non_string_is_advisory_not_blocking(board, monkeypatch, tmp_path):
-    """비문자열 family_scope 권고는 advisory — --gate 종료코드 0 유지 (차단 0)."""
+    """비문자열 family_scope 권고는 advisory — --blocking 종료코드 0 유지 (차단 0)."""
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     adr = wiki / "decisions" / "0001-alpha.md"
     adr.write_text("---\nid: ADR-0001\nfamily_scope:\n  - a\n---\n# ADR\n",
@@ -910,7 +910,7 @@ def test_lint_scopes_non_string_is_advisory_not_blocking(board, monkeypatch, tmp
     monkeypatch.setattr(wikilink_lint, "lint_wikilinks", lambda home: [])
     monkeypatch.setattr(wikilink_lint, "lint_unstable_refs", lambda home: [])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
-    # advice 는 떠야 하고(가드 무력화 시 비게 됨), gate 는 0 유지.
+    # advice 는 떠야 하고(가드 무력화 시 비게 됨), blocking 은 0 유지.
     assert "scope-advice" in _kinds(ticket_lint.lint_tickets(pm_paths.home_at(board.REPO)))
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
 
@@ -947,8 +947,8 @@ def test_lint_scopes_reads_specs_dir(board, monkeypatch, tmp_path):
                for name, kind, _detail in issues), issues
 
 
-def test_lint_scopes_is_advisory_not_blocking_in_gate(board, monkeypatch, tmp_path):
-    """scope-advice 만 있으면 --gate 종료코드 0 (ADR-0015 "차단은 최소·advisory 우선")."""
+def test_lint_scopes_is_advisory_not_blocking_in_blocking_mode(board, monkeypatch, tmp_path):
+    """scope-advice 만 있으면 --blocking 종료코드 0 (ADR-0015 "차단은 최소·advisory 우선")."""
     _wire_repo(board, monkeypatch, tmp_path)
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
@@ -973,7 +973,7 @@ def test_lint_tickets_includes_scopes(board, monkeypatch, tmp_path):
     """lint_scopes 가 lint_tickets 합류에 포함된다 (kind 노출 회귀)."""
     wiki = _wire_scope_repo(board, monkeypatch, tmp_path)
     _adr_with_scope(wiki, "0001", "alpha", "family_scope: 'bad scope'\n")
-    # 다른 lint 표면은 비워 scope-advice 만 본다.
+    # 다른 lint 결과는 비워 scope-advice 만 본다.
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
@@ -983,7 +983,7 @@ def test_lint_tickets_includes_scopes(board, monkeypatch, tmp_path):
     assert "scope-advice" in _kinds(ticket_lint.lint_tickets(pm_paths.home_at(board.REPO)))
 
 
-# ── cmd_promote_scope — retag (idea-promote 동형) ─────────────────────────────
+# ── cmd_promote_scope — retag (idea-promote 와 같은 방식) ─────────────────────────────
 
 def test_promote_scope_retags_frontmatter(board, monkeypatch, tmp_path):
     """promote-scope = family_scope 값 교체 (repoA → shared retag·ADR-0015)."""
@@ -1061,9 +1061,9 @@ def test_promote_scope_accepts_file_in_specs_dir(board, monkeypatch, tmp_path):
     assert fm["family_scope"] == "shared"
 
 
-# ── domain lint 배선 (T-0094 · advisory·never-block) ──────────
+# ── domain lint 연결 (T-0094 · advisory·never-block) ──────────
 # `doc_lint.lint_domain(home)` 은 Home 의 wiki/domain 페이지 freshness finding 을 board lint 에
-# 표면화한다. 테스트는 board REPO 를 tmp 로·git_runner 를 고정 대역으로 갈아끼워 hermetic 하게
+# 드러낸다. 테스트는 board REPO 를 tmp 로·git_runner 를 고정 대역으로 갈아끼워 hermetic 하게
 # stale 을 강제한다(실 .project_manager/wiki/domain 미접촉).
 
 DOMAIN_PY = TOOLS / "domain.py"
@@ -1074,7 +1074,7 @@ def _load_domain():
 
 
 def _domain_page(domain_dir: Path, name: str, *, frontmatter: str, body: str) -> Path:
-    """tmp domain/ 에 frontmatter md 페이지를 쓴다(test_domain._write_page 동형)."""
+    """tmp domain/ 에 frontmatter md 페이지를 쓴다(test_domain._write_page 와 같은 방식)."""
     domain_dir.mkdir(parents=True, exist_ok=True)
     path = domain_dir / name
     path.write_text(f"---\n{frontmatter}\n---\n{body}", encoding="utf-8")
@@ -1097,12 +1097,12 @@ def _wire_domain(board, monkeypatch, domain_dir: Path, *,
 
 
 def _fixed_git(out: str, rc: int = 0):
-    """고정 (rc, out) 을 돌려주는 hermetic git_runner 대역 (test_domain 동형)."""
+    """고정 (rc, out) 을 돌려주는 hermetic git_runner 대역 (test_domain 과 같은 방식)."""
     return lambda argv: (rc, out)
 
 
 def test_lint_domain_surfaces_stale_as_advisory(board, monkeypatch, tmp_path):
-    """stale 페이지 fixture → board lint_domain 이 advisory finding 으로 표면화."""
+    """stale 페이지 fixture → board lint_domain 이 advisory finding 으로 드러냄."""
     domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     # 상호 인링크로 orphan 회피 — stale 만 본다.
     _domain_page(
@@ -1149,10 +1149,10 @@ def test_lint_domain_surfaced_in_full_report(board, monkeypatch, tmp_path):
     assert "orphan" in kinds            # domain finding 이 합류 흐름에 노출
 
 
-def test_gate_excludes_domain_findings(board, monkeypatch, tmp_path):
-    """domain finding(stale)만 있으면 --gate 종료코드 0 — advisory/never-block."""
+def test_blocking_excludes_domain_findings(board, monkeypatch, tmp_path):
+    """domain finding(stale)만 있으면 --blocking 종료코드 0 — advisory/never-block."""
     _wire_repo(board, monkeypatch, tmp_path)
-    # 다른 lint 표면은 비우고 domain 만 stale 을 낸다.
+    # 다른 lint 결과는 비우고 domain 만 stale 을 낸다.
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
@@ -1167,7 +1167,7 @@ def test_gate_excludes_domain_findings(board, monkeypatch, tmp_path):
         ("거대", "oversized", "본문 250줄 > 200"),
         ("이력쌓임", "history", "변경 이력 항목 3개 — …"),
     ])
-    # --gate: domain 은 종료코드에 기여 안 함 → 0.
+    # --blocking: domain 은 종료코드에 기여 안 함 → 0.
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
     # 무인자(full): 같은 입력에서 1 (보고는 함·현행 계약).
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
@@ -1176,8 +1176,8 @@ def test_gate_excludes_domain_findings(board, monkeypatch, tmp_path):
 def test_domain_lint_kinds_are_registered_advisory(board):
     """domain 이 내는 4 kind 전부 `_ADVISORY_LINT_KINDS` 등재 — visibility>enforcement.
 
-    신규 kind(history·T-0503)가 등재를 빠뜨리면 `--gate` 가 push 를 막는다 — domain lint 의
-    never-block 계약 위반이라 이 축을 kind 목록째 고정한다.
+    신규 kind(history·T-0503)가 등재를 빠뜨리면 `--blocking` 이 push 를 막는다 — domain lint 의
+    never-block 계약 위반이라 이 기준을 kind 목록째 고정한다.
     """
     for kind in ("stale", "orphan", "oversized", "history"):
         assert kind in board_lint._ADVISORY_LINT_KINDS
@@ -1238,7 +1238,7 @@ def decisions_dir(board, monkeypatch, tmp_path):
 
 
 def test_adr_lifecycle_consistent_no_findings(board, decisions_dir):
-    # 0002 amends 0001 · 0001 amended_by 0002 + status amended → 정합·finding 0.
+    # 0002 amends 0001 · 0001 amended_by 0002 + status amended → 일치·finding 0.
     _write_adr(decisions_dir, "0001", status="amended", amended_by=["ADR-0002"])
     _write_adr(decisions_dir, "0002", status="accepted", amends=["ADR-0001"])
     assert wiki_lint.lint_adr_lifecycle(pm_paths.home_at(board.REPO)) == []
@@ -1271,7 +1271,7 @@ def test_adr_lifecycle_self_consistency(board, decisions_dir):
 
 
 def test_adr_lifecycle_supersede(board, decisions_dir):
-    # supersede 경로: 정합이면 0 · status 누락이면 finding.
+    # supersede 경로: 일치하면 0 · status 누락이면 finding.
     _write_adr(decisions_dir, "0010", status="superseded", superseded_by=["ADR-0021"])
     _write_adr(decisions_dir, "0021", status="accepted", supersedes="ADR-0010")
     assert wiki_lint.lint_adr_lifecycle(pm_paths.home_at(board.REPO)) == []
@@ -1307,7 +1307,7 @@ def test_adr_lifecycle_refines_not_checked(board, decisions_dir):
 
 
 def test_adr_lifecycle_is_advisory_never_blocks(board):
-    # adr-lifecycle 은 advisory — --gate 종료코드 비기여.
+    # adr-lifecycle 은 advisory — --blocking 종료코드 비기여.
     assert "adr-lifecycle" in board_lint._ADVISORY_LINT_KINDS
 
 
@@ -1385,17 +1385,17 @@ def test_adr_author_malformed_is_advised(board, decisions_dir):
 
 
 def test_adr_author_is_advisory_never_blocks(board):
-    # adr-author 은 advisory — --gate 종료코드 비기여(_ADVISORY_LINT_KINDS 등재).
+    # adr-author 은 advisory — --blocking 종료코드 비기여(_ADVISORY_LINT_KINDS 등재).
     assert "adr-author" in board_lint._ADVISORY_LINT_KINDS
 
 
-def test_adr_author_gate_does_not_block(board, monkeypatch, tmp_path):
-    # author 부재 ADR 만 있어도 `lint --gate` 종료코드 0 (never-block 보증·end-to-end).
+def test_adr_author_check_does_not_block(board, monkeypatch, tmp_path):
+    # author 부재 ADR 만 있어도 `lint --blocking` 종료코드 0 (never-block 보증·end-to-end).
     wiki = _wire_repo(board, monkeypatch, tmp_path)
     _write_adr_author(wiki / "decisions", "0001", author=None)
     # adr-author finding 이 실제로 발생함을 먼저 확인.
     assert any(k == "adr-author" for _l, k, _d in wiki_lint.lint_adr_author(pm_paths.home_at(board.REPO)))
-    # 그럼에도 gate 는 0 (차단 카테고리 0), full 보고는 1 (issue 존재).
+    # 그럼에도 blocking 은 0 (차단 카테고리 0), full 보고는 1 (issue 존재).
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1
 
@@ -1414,7 +1414,7 @@ def test_adr_author_graceful_no_decisions(board, monkeypatch, tmp_path):
 def _oid_for(argv):
     """rev-parse `<sha>^{commit}` argv 에서 sha 를 뽑아 full-length OID(입력 prefix)로 만든다.
 
-    codex R5: `_sha_anchor_status` 가 해소 OID 의 입력-prefix 여부로 고정 SHA↔hex-이름 ref 를
+    codex R5: `_sha_pin_status` 가 해소 OID 의 입력-prefix 여부로 고정 SHA↔hex-이름 ref 를
     가르므로, 진짜 SHA 해소를 재현하려면 OID 가 입력을 prefix 로 가져야 한다."""
     return argv[-1].split("^")[0].ljust(40, "0") + "\n"
 
@@ -1435,7 +1435,7 @@ def _clean_git(argv):
     """sha 해소(rev-parse rc0·OID=입력 prefix)·covers HEAD 트리 presence·매핑 경로 커밋 없음(clean).
 
     domain covers 존재 판정이 HEAD-tree 기준(codex R9·`git diff <empty> HEAD`)이라 `diff` 는
-    present 로, merge-base 는 rc0(선조·default 빈 출력), log 만 빈 출력(델타 없음=clean) — arch/status
+    present 로, merge-base 는 rc0(선조·default 빈 출력), log 만 빈 출력(차이 없음=clean) — arch/status
     는 diff/log 미사용(엔진 경로 트리 pathspec 은 `_git_commits_between` 만·log)."""
     if argv and argv[0] == "rev-parse":
         if "--show-object-format" in argv:
@@ -1461,7 +1461,7 @@ def _env_error_git(argv):
 def _descendant_sha_git(argv):
     """해소되나 HEAD 선조 아님 — rev-parse rc0(OID=입력 prefix)·`merge-base --is-ancestor` rc1 (R4-α).
 
-    object store 공유 형상에서 descendant/딴 브랜치 sha 는 (고정 SHA 로) rev-parse 통과하나 선조
+    object store 공유 구성에서 descendant/딴 브랜치 sha 는 (고정 SHA 로) rev-parse 통과하나 선조
     아님 → `<sha>..HEAD` 가 비어 영구 false-clean 이던 것을 non-ancestor unverifiable 로 잡는다."""
     if argv and argv[0] == "merge-base":
         return (1, "")            # --is-ancestor 실패 = 선조 아님
@@ -1473,7 +1473,7 @@ def _descendant_sha_git(argv):
 def _hex_named_ref_git(argv):
     """hex 로 명명된 branch/tag — rev-parse 해소(rc0)하나 OID 가 입력과 무관(ref 로 해소·codex R5).
 
-    형식 게이트(`_is_hex_sha`)·rev-parse 를 다 통과해도 해소 OID 가 입력 prefix 가 아니라 non-sha
+    형식 검사(`_is_hex_sha`)·rev-parse 를 다 통과해도 해소 OID 가 입력 prefix 가 아니라 non-sha
     (움직이는 ref) 로 잡힌다 — hex-이름 ref 를 고정 SHA 로 오인하던 false-green 을 막는다."""
     if argv and argv[0] == "rev-parse":
         return (0, "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b\n")   # 입력과 무관한 OID
@@ -1497,7 +1497,7 @@ def arch_file(board, monkeypatch, tmp_path):
     return p
 
 
-# (a) verified_at 이후 매핑 경로 커밋 있으면 architecture-stale 표면 (sensitivity 양성 대조).
+# (a) verified_at 이후 매핑 경로 커밋 있으면 architecture-stale 드러냄 (sensitivity 양성 대조).
 def test_architecture_freshness_flags_when_commits_after_sha(board, arch_file):
     _write_verified_doc(arch_file, verified_at="deadbeef")
     findings = freshness_lint.lint_architecture_freshness(pm_paths.home_at(board.REPO), runner=_stale_git)
@@ -1534,7 +1534,7 @@ def test_architecture_freshness_skip_when_no_frontmatter(board, arch_file):
 
 def test_architecture_freshness_flags_unverifiable_when_sha_unknown(board, arch_file):
     # 미지/타-git sha(rev-parse rc==1·순수 미해소) → 종전 silent skip 대신 unverifiable advisory
-    # (T-0454). 서로 다른 git 의 SHA 를 range 양끝으로 결합하지 않고 판정 불가를 정직히 표면화.
+    # (T-0454). 서로 다른 git 의 SHA 를 range 양끝으로 결합하지 않고 판정 불가를 정직히 드러냄.
     _write_verified_doc(arch_file, verified_at="deadbeef")
     findings = freshness_lint.lint_architecture_freshness(pm_paths.home_at(board.REPO), runner=_unknown_sha_git)
     assert len(findings) == 1
@@ -1552,10 +1552,10 @@ def test_architecture_freshness_env_error_is_silent_skip(board, arch_file):
 
 
 def test_architecture_freshness_moving_ref_is_unverifiable(board, arch_file):
-    # codex MF2: verified_at 이 HEAD/브랜치 등 움직이는 ref → 형식 게이트로 unverifiable
+    # codex MF2: verified_at 이 HEAD/브랜치 등 움직이는 ref → 형식 검사로 unverifiable
     # ("고정 sha 아님"). HEAD 는 rev-parse rc0 이라도 `HEAD..HEAD` 가 항상 비어 false-green.
     _write_verified_doc(arch_file, verified_at="HEAD")
-    findings = freshness_lint.lint_architecture_freshness(pm_paths.home_at(board.REPO), runner=_stale_git)  # runner 무관(게이트 선차단)
+    findings = freshness_lint.lint_architecture_freshness(pm_paths.home_at(board.REPO), runner=_stale_git)  # runner 무관(형식 검사 선차단)
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "architecture.md"
@@ -1565,7 +1565,7 @@ def test_architecture_freshness_moving_ref_is_unverifiable(board, arch_file):
 
 def test_architecture_freshness_non_ancestor_sha_is_unverifiable(board, arch_file):
     # codex R4-α: verified_at 이 해소되나 HEAD 선조 아님(descendant/딴 브랜치) → unverifiable
-    # ("HEAD 선조 아님"). object store 공유 형상서 `<sha>..HEAD` 가 비어 영구 false-clean 이던 축.
+    # ("HEAD 선조 아님"). object store 공유 구성서 `<sha>..HEAD` 가 비어 영구 false-clean 이던 기준.
     _write_verified_doc(arch_file, verified_at="beef0042")
     findings = freshness_lint.lint_architecture_freshness(pm_paths.home_at(board.REPO), runner=_descendant_sha_git)
     assert len(findings) == 1
@@ -1577,7 +1577,7 @@ def test_architecture_freshness_non_ancestor_sha_is_unverifiable(board, arch_fil
 
 def test_architecture_freshness_hex_named_ref_is_unverifiable(board, arch_file):
     # codex R5: verified_at="deadbeef" 가 hex-이름 branch/tag 라 rev-parse 해소(rc0)하나 OID 가
-    # 입력 prefix 아님 → 형식 게이트 통과했어도 non-sha unverifiable("고정 sha 아님").
+    # 입력 prefix 아님 → 형식 검사 통과했어도 non-sha unverifiable("고정 sha 아님").
     _write_verified_doc(arch_file, verified_at="deadbeef")
     findings = freshness_lint.lint_architecture_freshness(pm_paths.home_at(board.REPO), runner=_hex_named_ref_git)
     assert len(findings) == 1
@@ -1623,7 +1623,7 @@ def test_status_freshness_skip_when_verified_at_absent(board, status_file):
 
 
 def test_status_freshness_flags_unverifiable_when_sha_unknown(board, status_file):
-    # status.md 도 동일 축 — 타-git sha 미해소(rc1) → status-unverifiable advisory (T-0454).
+    # status.md 도 동일 기준 — 타-git sha 미해소(rc1) → status-unverifiable advisory (T-0454).
     _write_verified_doc(status_file, verified_at="beefcafe", extra="type: status")
     findings = freshness_lint.lint_status_freshness(pm_paths.home_at(board.REPO), runner=_unknown_sha_git)
     assert len(findings) == 1
@@ -1634,7 +1634,7 @@ def test_status_freshness_flags_unverifiable_when_sha_unknown(board, status_file
 
 
 def test_status_freshness_moving_ref_is_unverifiable(board, status_file):
-    # codex MF2: status.md verified_at 이 브랜치명 → 형식 게이트로 status-unverifiable("고정 sha 아님").
+    # codex MF2: status.md verified_at 이 브랜치명 → 형식 검사로 status-unverifiable("고정 sha 아님").
     _write_verified_doc(status_file, verified_at="main", extra="type: status")
     findings = freshness_lint.lint_status_freshness(pm_paths.home_at(board.REPO), runner=_stale_git)
     assert len(findings) == 1
@@ -1677,11 +1677,11 @@ def test_status_freshness_in_advisory_kinds(board):
     assert "status-unverifiable" in board_lint._ADVISORY_LINT_KINDS   # T-0454·never-block
 
 
-def test_gate_zero_on_unverifiable_only(board, monkeypatch, tmp_path):
-    """-unverifiable finding 만 있으면 --gate 종료코드 0 — 파생 kind 의 never-block 을
-    gate 경로로 직접 잠근다(T-0454 reviewer suggestion). `*_in_advisory_kinds` 는 리터럴
+def test_blocking_zero_on_unverifiable_only(board, monkeypatch, tmp_path):
+    """-unverifiable finding 만 있으면 --blocking 종료코드 0 — 파생 kind 의 never-block 을
+    blocking 경로로 직접 잠근다(T-0454 reviewer suggestion). `*_in_advisory_kinds` 는 리터럴
     멤버십만 봐서, 파생(`kind.replace("-stale","-unverifiable")`)이 미등재 kind 를 내면
-    못 잡는다 — 실 finding 을 gate 로 흘려 그 갭을 덮는다."""
+    못 잡는다 — 실 finding 을 blocking 으로 흘려 그 갭을 덮는다."""
     _wire_repo(board, monkeypatch, tmp_path)
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
@@ -1764,7 +1764,7 @@ def test_domain_freshness_in_advisory_kinds(board):
 # ── never-block + lint_tickets 통합 ───────────────────────────────────────────
 
 def test_freshness_findings_are_advisory_never_block(board, monkeypatch):
-    # architecture/status/domain-stale finding 만 있으면 --gate 종료코드 0 (never-block).
+    # architecture/status/domain-stale finding 만 있으면 --blocking 종료코드 0 (never-block).
     monkeypatch.setattr(ticket_lint, "lint_dependencies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_bodies", lambda home: [])
     monkeypatch.setattr(body_lint, "lint_ideas", lambda home: [])
@@ -1784,7 +1784,7 @@ def test_freshness_findings_are_advisory_never_block(board, monkeypatch):
     monkeypatch.setattr(doc_lint, "lint_domain_freshness", lambda home: [
         ("엔진", "domain-stale", "sha 이후 covers 커밋 있음")])
     assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=True)) == 0    # 차단 0
-    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1   # finding 표면화
+    assert board_lint.cmd_lint(pm_paths.home_at(board.REPO), SimpleNamespace(blocking=False)) == 1   # finding 드러냄
 
 
 def test_lint_tickets_includes_freshness_lints(board, monkeypatch):
@@ -1808,11 +1808,11 @@ def test_lint_tickets_includes_freshness_lints(board, monkeypatch):
     assert arch in result and status in result and dom in result
 
 
-# ── render-leak 트리 성격 게이트 (local.conf 부재=소스 트리 무발화 · T-0170·ADR-0028) ──
+# ── render-leak 트리 성격 판별 (local.conf 부재=소스 트리 알림 없음 · T-0170·ADR-0028) ──
 # render-leak 은 *렌더 산출물*(operational 토큰 치환 어댑터)의 미해소 토큰을 잡는다. 토큰-form
 # 소스 트리(① canonical worktree·local.conf 부재)는 산출물이 아니라 토큰이 정상이므로 검사 밖이다
-# (`_render_managed_relpaths` 의 local.conf 게이트). 루트 manifest 가 `.claude/* @render` 여도 소스
-# 트리에선 무발화·채택 인스턴스(local.conf 보유)에선 실 leak 을 잡는다 — 양방향 박제.
+# (`_render_managed_relpaths` 의 local.conf 판별). 루트 manifest 가 `.claude/* @render` 여도 소스
+# 트리에선 알림 없음·채택 인스턴스(local.conf 보유)에선 실 leak 을 잡는다 — 양방향으로 고정한다.
 
 def _write_root_manifest(root: Path, body: str) -> None:
     """tmp REPO 에 .project_manager/engine.manifest 를 쓴다."""
@@ -1830,11 +1830,11 @@ def _write_claude_adapter(root: Path, text: str) -> Path:
 
 
 def test_render_leak_skips_source_tree_no_localconf(board, monkeypatch, tmp_path):
-    """① canonical 소스 트리(local.conf 부재) → 루트 manifest @render 여도 render-leak 무발화.
+    """① canonical 소스 트리(local.conf 부재) → 루트 manifest @render 여도 render-leak 알림 없음.
 
     sensitivity: 루트 manifest 가 `.claude/agents @render` 이고 어댑터에 미해소 토큰이 잔존해도,
     local.conf 가 없으면 토큰-form 소스 트리이므로 검사 대상 0(빈 결과). 이게 ① worktree 에서
-    `lint --gate` 가 rc=0 으로 통과하는 근거(T-0170 A·이전엔 rc=1 로 깨졌던 지점).
+    `lint --blocking` 이 rc=0 으로 통과하는 근거(T-0170 A·이전엔 rc=1 로 깨졌던 지점).
     """
     fake_repo = tmp_path / "source_tree"
     _write_root_manifest(fake_repo, ".claude/agents    @render\n")
@@ -1845,18 +1845,18 @@ def test_render_leak_skips_source_tree_no_localconf(board, monkeypatch, tmp_path
     monkeypatch.setattr(board, "REPO", fake_repo)
 
     assert render_lint.lint_render_leak(pm_paths.home_at(board.REPO)) == [], (
-        "토큰-form 소스 트리(local.conf 부재)인데 render-leak 이 발화 — 트리 게이트 미작동."
+        "토큰-form 소스 트리(local.conf 부재)인데 render-leak 이 알림을 냄 — 트리 판별 미작동."
     )
     assert render_lint._render_managed_relpaths(pm_paths.home_at(board.REPO)) == set(), (
-        "소스 트리는 검사 대상 0 이어야 한다(local.conf 게이트)."
+        "소스 트리는 검사 대상 0 이어야 한다(local.conf 판별)."
     )
 
 
 def test_render_leak_fires_on_rendered_tree_with_localconf(board, monkeypatch, tmp_path):
-    """채택 인스턴스(local.conf 존재·render 산출물) → 미해소 토큰 잔존 시 render-leak 발화(blocking).
+    """채택 인스턴스(local.conf 존재·render 산출물) → 미해소 토큰 잔존 시 render-leak 알림(blocking).
 
     specificity: 같은 manifest·같은 토큰-form 어댑터라도 local.conf 가 있으면 렌더 산출물 트리이므로
-    실 leak 을 잡는다. 트리 게이트가 *소스 트리만* 면제하고 산출물 트리의 보안 의미론은 보존함을 박제.
+    실 leak 을 잡는다. 트리 판별이 *소스 트리만* 면제하고 산출물 트리의 보안 의미론은 보존함을 고정한다.
     """
     fake_repo = tmp_path / "rendered_tree"
     _write_root_manifest(fake_repo, ".claude/agents    @render\n")
@@ -1876,7 +1876,7 @@ def test_render_leak_fires_on_rendered_tree_with_localconf(board, monkeypatch, t
 
 
 # ── 출하 템플릿 mirror 면제 (도그푸딩 worktree 보완 · T-0463) ──────────────────
-# local.conf 트리 게이트는 도그푸딩 worktree(adopter#0·local.conf 보유)를 못 가른다. 그 트리의
+# local.conf 트리 판별은 도그푸딩 worktree(adopter#0·local.conf 보유)를 못 가른다. 그 트리의
 # 토큰-form 출하 원본은 `templates/<harness>/` 사본과 byte-identical 인지로 파일 단위 판정한다
 # (`_template_mirror_state`). 후보는 손-열거가 아니라 세 겹 파생 —
 # `shipping_targets.discover_target_names(home)`(이름) + `resolve_target_root`(symlink 탈출 거부) +
@@ -1889,7 +1889,7 @@ def _write_shipping_template(root: Path, harness: str, rel_posix: str, text: str
 
     `manifest_body` 가 None 이 아니면 `templates/<harness>/.project_manager/engine.manifest` 를
     그 내용으로 만들어 **출하 템플릿 성격 + @render 범위**를 부여한다
-    (`_shipping_template_render_scopes` 의 성격·범위 게이트). None 이면 디렉토리 이름만 같은
+    (`_shipping_template_render_scopes` 의 성격·범위 판별). None 이면 디렉토리 이름만 같은
     무관 트리(엔진 사본 없음)를 시뮬한다. `@render` 없는 manifest 본문을 주면 "manifest 는 있지만
     그 경로를 렌더-관리한다고 선언하지 않은" 트리가 된다.
     """
@@ -2144,7 +2144,7 @@ def test_template_mirror_skips_source_remapped_render_entries(board, monkeypatch
 def test_template_mirror_multi_target_partial_drift_is_not_exempt(board, monkeypatch, tmp_path):
     """여러 타깃이 같은 경로를 @render 로 선언하면 **전수 집계** — 하나만 drift 해도 면제 없음.
 
-    실재 형상: `.claude/skills` 는 claude_code 와 opencode 양쪽 manifest 의 @render 범위다. first-match
+    실재 구성: `.claude/skills` 는 claude_code 와 opencode 양쪽 manifest 의 @render 범위다. first-match
     조기 반환이면 한 타깃만 갱신해도 면제가 나 나머지의 `--all-targets` 미전파가 숨는다(codex R3
     must-fix). sensitivity: 한쪽 identical + 한쪽 differs → DIFFERS 우선(전파 힌트 finding·blocking).
     specificity: 양쪽 identical → 면제.
@@ -2266,7 +2266,7 @@ def test_render_leak_differing_mirror_message_hints_propagation(board, monkeypat
 # T-0463 재발 가드 대상 — 공개 루트의 token-form 어댑터 13파일(agents 5 + skills 8).
 # 이 열거는 `tests/test_claude_adapter_parity.py::IDENTICAL_RELPATHS`(root↔templates byte-identical
 # 9파일)와 같은 불변식의 *부분 중복*이다: 저쪽은 전파 드리프트 0, 이쪽은 그 동일성이 render-leak
-# 면제의 근거라는 축. 한쪽을 고치면 다른 쪽도 같이 본다.
+# 면제의 근거라는 기준. 한쪽을 고치면 다른 쪽도 같이 본다.
 _T0463_TOKEN_FORM_MIRRORS = (
     ".claude/agents/architect.md",
     ".claude/agents/code-reviewer.md",
@@ -2369,7 +2369,7 @@ def _rendered_tree(root: Path) -> None:
 
 
 def test_render_leak_flags_token_in_non_md_toml(board, monkeypatch, tmp_path):
-    """sensitivity(핵심 DoD): @render 경로의 `.toml` 에 미해소 토큰 → render-leak 발화(blocking).
+    """sensitivity(핵심 DoD): @render 경로의 `.toml` 에 미해소 토큰 → render-leak 알림(blocking).
 
     이 티켓의 목적 자체 — 옛 `rglob("*.md")` 는 `.toml` 을 스캔하지 않아 leak 을 통과시켰다.
     """
@@ -2436,7 +2436,7 @@ def test_render_leak_skips_real_binary_no_crash(board, monkeypatch, tmp_path):
 def test_render_leak_binary_survives_when_text_judgment_lies(board, monkeypatch, tmp_path):
     """넓힌 except 안전판: _is_text_source 가 바이너리를 True 로 오판해도 read 에서 크래시 0.
 
-    TOCTOU/폴백 방어(`except (UnicodeDecodeError, OSError)`) 를 직접 태운다 — 텍스트 판정을
+    TOCTOU/대체 방어(`except (UnicodeDecodeError, OSError)`) 를 직접 태운다 — 텍스트 판정을
     통과한 뒤 read_text 가 UnicodeDecodeError 를 던져도(rglob("*") 로 바이너리가 스캔 대상에 든다)
     OSError 만 잡던 옛 코드처럼 죽지 않는다. _is_text_source=True 강제가 유일한 도달 경로.
     """
@@ -2448,11 +2448,11 @@ def test_render_leak_binary_survives_when_text_judgment_lies(board, monkeypatch,
 
     monkeypatch.setattr(update_render, "_is_text_source", lambda p: True)  # 바이너리도 '텍스트'라 우김
 
-    render_lint.lint_render_leak(pm_paths.home_at(board.REPO))  # 예외 없이 반환해야 함(넓힌 except 가 UnicodeDecodeError 흡수)
+    render_lint.lint_render_leak(pm_paths.home_at(board.REPO))  # 예외 없이 반환해야 함(넓힌 except 가 UnicodeDecodeError 처리)
 
 
 def test_render_leak_delegates_text_judgment_to_pm_update(board, monkeypatch, tmp_path):
-    """판정 공유(DoD): 텍스트 판정을 update_render._is_text_source 에 **위임**함을 박제(세 번째 사본 0).
+    """판정 공유(DoD): 텍스트 판정을 update_render._is_text_source 에 **위임**함을 고정한다(세 번째 사본 0).
 
     render 채널이 쓰는 그 함수를 호출한다 — 스텁이 False 를 주면(그 파일 텍스트 아님) 스캔에서
     빠져야 한다. board 가 확장자 재열거 등 자체 인라인 판정으로 회귀하면 스텁이 무시돼 red.
@@ -2555,10 +2555,10 @@ def test_claude_adapter_manifest_is_render_not_target_owned(board):
 # 자동 충족 — 여기선 rev 비교 sensitivity 와 advisory never-block 만 검증한다.
 
 def _wire_conf(board, monkeypatch, tmp_path, conf: dict) -> None:
-    """실 local.conf 를 깔고 그 경로를 물린다 — 판독은 lint 조회면의 seam 하나가 한다.
+    """실 local.conf 를 깔고 그 경로를 물린다 — 판독은 lint 조회면의 공용 함수 하나가 한다.
 
     `local_config()` 를 dict 로 갈아끼우면 이 함수가 어느 경로로 conf 를 읽는지 자체가 가려진다
-    (판독 실패로 조회면이 죽던 형상이 그렇게 숨었다). 파일·로더를 그대로 태운다(network 0).
+    (판독 실패로 조회면이 죽던 구성이 그렇게 숨었다). 파일·로더를 그대로 태운다(network 0).
     """
     conf_path = tmp_path / ".project_manager" / "local.conf"
     conf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2614,8 +2614,8 @@ def test_adapter_drift_graceful_when_baseline_unrecorded(board, monkeypatch, tmp
 
 def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkeypatch, tmp_path):
     # baseline 은 있으나 seen(`upstream_seen_rev`) 미기록 → 관찰불가 advisory (T-0305·ADR-0032 Q3).
-    # 과거엔 조용한 [](silent skip)였으나, safety-critical 잔여가 *관찰 없이* 낡는 "green 인데 고장"을
-    # 막으려 관찰불가 자체를 표면화한다(never-block·1줄이라 flood 아님).
+    # 과거엔 조용한 [](silent skip)였으나, safety-critical 남은 차이가 *관찰 없이* 낡는 "green 인데 고장"을
+    # 막으려 관찰불가 자체를 드러낸다(never-block·1줄이라 flood 아님).
     _wire_conf(board, monkeypatch, tmp_path, {
         "upstream.path": "https://github.com/example/project_manager",
         "upstream.rev": "aaaaaaaaaaaa1111",
@@ -2681,8 +2681,8 @@ def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch
     """연결 검증(T-0413) — 경로 upstream sync 1회 후 lint 의 adapter-drift 가 실제로 0이 된다.
 
     엔진 기록(upstream_revisions.record_upstream_rev_baseline)과 판정(board.lint_adapter_drift)을 실
-    local.conf 파일로 이어 붙인다 — 두 쪽 단위테스트가 각자 green 이어도 배선이 끊기면 거짓
-    경보가 남으므로, 어긋난 conf(baseline 신·seen 구)가 sync 로 수렴함을 파일 왕복으로 본다.
+    local.conf 파일로 이어 붙인다 — 두 쪽 단위테스트가 각자 green 이어도 연결이 끊기면 거짓
+    경보가 남으므로, 어긋난 conf(baseline 신·seen 구)가 sync 로 일치함을 파일 왕복으로 본다.
     """
     pm_update = _load_module("pm_update", TOOLS / "pm_update.py")
     dest = tmp_path / "adopter"
@@ -2693,7 +2693,7 @@ def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch
     local_conf.write_text(
         f"upstream.path={source}\n"
         "upstream.rev=ddf6f4842653\n"
-        "upstream.seen_rev=0ccc02513a7f\n",  # 조상 — 흡수 직후에도 거짓 drift 를 내던 형상.
+        "upstream.seen_rev=0ccc02513a7f\n",  # 조상 — 받아 반영한 직후에도 거짓 drift 를 내던 구성.
         encoding="utf-8",
     )
     monkeypatch.setattr(board, "REPO", dest)
@@ -2739,12 +2739,12 @@ def test_adapter_drift_key_contract_documents_the_single_writer():
 
 
 def test_adapter_drift_kind_is_advisory(board):
-    # adapter-drift 는 `_ADVISORY_LINT_KINDS` 등재 → --gate 종료코드 비기여(never-block).
+    # adapter-drift 는 `_ADVISORY_LINT_KINDS` 등재 → --blocking 종료코드 비기여(never-block).
     assert "adapter-drift" in board_lint._ADVISORY_LINT_KINDS
 
 
 def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch, tmp_path):
-    # 인위 drift finding 만 있어도 --gate 는 0(미차단)·무인자는 표면화로 1 (sensitivity).
+    # 인위 drift finding 만 있어도 --blocking 은 0(미차단)·무인자는 드러내므로 1 (sensitivity).
     for module, fn, stub in (
         (ticket_lint, "lint_dependencies", lambda home: []),
         (body_lint, "lint_bodies", lambda home: []),
@@ -2794,8 +2794,8 @@ def test_lint_tickets_includes_adapter_drift(board, monkeypatch):
 
 # ── areas-duplicate-repo (ADR-0072·T-0417·advisory·never-block) ───────────────
 
-def test_gate_zero_on_areas_duplicate_repo_only(board, monkeypatch, tmp_path):
-    """중복 repo 행만 있으면 `--gate` 종료코드 0 — 레지스트리 정리는 push 결함이 아니다.
+def test_blocking_zero_on_areas_duplicate_repo_only(board, monkeypatch, tmp_path):
+    """중복 repo 행만 있으면 `--blocking` 종료코드 0 — 레지스트리 정리는 push 결함이 아니다.
 
     실 areas.md(tmp) 를 중복 행으로 깔아 `lint_areas_duplicate_repo` 를 *실제로* 구동한다
     (sentinel 주입 아님) — advisory 등재 누락이면 여기서 1 로 뒤집힌다.
@@ -2808,7 +2808,7 @@ def test_gate_zero_on_areas_duplicate_repo_only(board, monkeypatch, tmp_path):
         "| svc | P | g | t | o | main | main | u |\n"
         "| svc | P | g | t | o | main | develop | u |\n",
         encoding="utf-8")
-    # inline 형상의 union 배포는 정상으로 둔다 — 이 tmp 홈에 루트 선언이 없으면
+    # inline 구성의 union 배포는 정상으로 둔다 — 이 tmp 홈에 루트 선언이 없으면
     # `areas-merge-union`(T-0418) advisory 가 같이 잡혀 이 테스트의 kind 단언이 흐려진다.
     (tmp_path / ".gitattributes").write_text(
         ".project_manager/areas.md merge=union\n", encoding="utf-8")
@@ -2888,20 +2888,20 @@ def test_broken_frontmatter_is_unparseable_by_the_strict_loader(board, monkeypat
 
 
 def test_scan_loader_skips_a_broken_ticket_loudly(board, monkeypatch, tmp_path, capsys):
-    """순회 로더는 None + 경고 1줄 — 경로와 사유, 그리고 실제 처방(콜론 인용)을 함께 낸다."""
+    """순회 로더는 None + 경고 1줄 — 경로와 사유, 그리고 실제 해결 방법(콜론 인용)을 함께 낸다."""
     _wire_repo(board, monkeypatch, tmp_path)
     path = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
 
     assert ticket_store.load_ticket_soft(pm_paths.home_at(board.REPO), path) is None
     err = capsys.readouterr().err
     assert "건너뜁니다" in err and "T-0002" in err
-    assert "인용" in err, "처방(콜론 포함 값은 인용)이 경고에 없다"
+    assert "인용" in err, "해결 방법(콜론 포함 값은 인용)이 경고에 없다"
 
 
 def test_scan_loader_rejects_non_mapping_frontmatter(board, monkeypatch, tmp_path, capsys):
-    """frontmatter 가 매핑이 아닌 형상도 같은 축으로 접는다 — 뒤따르는 `fm.get` 이 안 터지게."""
+    """frontmatter 가 매핑이 아닌 구성도 같은 기준으로 바꾼다 — 뒤따르는 `fm.get` 이 안 터지게."""
     _wire_repo(board, monkeypatch, tmp_path)
-    path = _ticket(board, "open", "T-0003", "---\n- 리스트\n- 형상\n---\n# 본문\n")
+    path = _ticket(board, "open", "T-0003", "---\n- 리스트\n- 구성\n---\n# 본문\n")
     assert ticket_store.load_ticket_soft(pm_paths.home_at(board.REPO), path) is None
     assert "매핑이 아니라" in capsys.readouterr().err
 
@@ -2954,7 +2954,7 @@ def test_designated_mutation_stays_fail_loud(board, monkeypatch, tmp_path):
     pm = tmp_path / ".project_manager"
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
-    # claim 은 `--task` 와 그 task 폴더(앵커)가 필요하다(T-0962) — 없으면 이 테스트가 보려는
+    # claim 은 `--task` 와 그 task 폴더(대상 위치)가 필요하다(T-0962) — 없으면 이 테스트가 보려는
     # 실패(손상 frontmatter fail-loud) 대신 task 미지정으로 먼저 죽는다.
     ensure_product_slot(board, task="pm-1")
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
@@ -3030,15 +3030,15 @@ def test_reid_blocks_on_a_broken_ticket_via_unreadable_scan(board, monkeypatch, 
     assert ticket.exists(), "차단된 reid 가 손상 티켓을 옮겼다"
 
 
-# ── 필수 필드 누락(`id:`) — 파일명 폴백 고정 (T-0784 공백 4) ────────────────────
-# `_canonical_ticket_id` 는 frontmatter `id:` 부재 시 파일명 파싱으로 폴백한다(문서화된
-# fail-soft). mutation 조회(`find_ticket_for_mutation`)에서도 그 폴백이 성립해 정확히 그 티켓만
-# 찾고 무관 티켓을 옮기지 않는지 고정한다 — 이 축의 기대는 "거부" 가 아니라 폴백 동작이다.
+# ── 필수 필드 누락(`id:`) — 파일명 대체 고정 (T-0784 공백 4) ────────────────────
+# `_canonical_ticket_id` 는 frontmatter `id:` 부재 시 파일명 파싱으로 대체한다(문서화된
+# fail-soft). mutation 조회(`find_ticket_for_mutation`)에서도 그 대체가 성립해 정확히 그 티켓만
+# 찾고 무관 티켓을 옮기지 않는지 고정한다 — 이 기준의 기대는 "거부" 가 아니라 대체 동작이다.
 
 def test_missing_id_field_falls_back_to_filename_for_mutation(board, monkeypatch, tmp_path):
     """`id:` 없는 티켓도 파일명으로 정확히 찾아 이동하고, 무관 티켓은 그대로 둔다.
 
-    `refresh_board()` 는 stub 한다 — board.md 렌더는 이 축(mutation 조회의 파일명 폴백)과
+    `refresh_board()` 는 stub 한다 — board.md 렌더는 이 기준(mutation 조회의 파일명 대체)과
     무관한 **별도 결함**을 갖고 있다(발견분은 라운드 보고로 분리 — 이 티켓은 동작 변경 0):
     렌더러의 상태별 표(`open`/`blocked`/…)가 `fm['id']` 를 직접 인덱싱해, mutation 이 `id:` 를
     되채우지 않는 채 이동만 시키므로 그 다음 렌더가 `KeyError: 'id'` 로 죽는다. 이 테스트는
@@ -3059,10 +3059,10 @@ def test_missing_id_field_falls_back_to_filename_for_mutation(board, monkeypatch
 
     rc = board_ticket.cmd_block(pm_paths.home_at(board.REPO), SimpleNamespace(id="T-0005", reason="사유"))
 
-    assert rc == 0, "id: 부재 티켓의 파일명 폴백이 mutation 조회에서 안 먹힘"
+    assert rc == 0, "id: 부재 티켓의 파일명 대체가 mutation 조회에서 안 먹힘"
     assert not target.exists(), "block 성공인데 원본 경로에 그대로 남음"
     moved = list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "blocked").glob("T-0005-*.md"))
-    assert len(moved) == 1, "폴백이 여러 파일에 걸리거나 못 찾음"
+    assert len(moved) == 1, "대체가 여러 파일에 걸리거나 못 찾음"
     assert other.exists(), "무관 티켓(T-0006)이 함께 옮겨짐"
     assert list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open").glob("T-0006-*.md")), \
         "무관 티켓이 open/ 밖으로 밀려남"
@@ -3072,9 +3072,9 @@ def test_missing_id_field_falls_back_to_filename_for_mutation(board, monkeypatch
 # codex R2 지적: soft 로더가 **실제 전체 순회**에 일관되게 연결되지 않았다 — YAML 스칼라·리스트
 # frontmatter(파싱은 성공하나 dict 가 아님)는 자체 except 목록을 통과해 뒤따르는 `fm.get` 에서
 # AttributeError 로 죽고, 기본 `list` 가 그 경로(`_distinct_ticket_users`)를 **먼저** 부른다.
-# 아래는 그 형상 그대로 재현하고, 순회 소비자들이 공용 로더로 접히는지 본다.
+# 아래는 그 구성 그대로 재현하고, 순회 소비자들이 공용 로더로 처리되는지 본다.
 
-_NON_MAPPING_FRONTMATTER = "---\n- 리스트\n- 형상\n---\n# 본문\n"
+_NON_MAPPING_FRONTMATTER = "---\n- 리스트\n- 구성\n---\n# 본문\n"
 _SCALAR_FRONTMATTER = "---\n그냥 스칼라 한 줄\n---\n# 본문\n"
 
 
@@ -3095,7 +3095,7 @@ def test_distinct_ticket_users_skips_non_mapping_frontmatter(
     _ticket(board, "open", "T-0002", text)
     _ticket(board, "claimed", "T-0001", _claimed_ticket_text("T-0001", claimed_by="pm_1"))
 
-    assert ticket_access._distinct_ticket_users(pm_paths.home_at(board.REPO)) == 1, f"{shape} 형상에서 사용자 신호가 깨졌다"
+    assert ticket_access._distinct_ticket_users(pm_paths.home_at(board.REPO)) == 1, f"{shape} 구성에서 사용자 신호가 깨졌다"
     assert "T-0002" in capsys.readouterr().err       # 조용한 드롭이 아니다
 
 
@@ -3124,17 +3124,17 @@ def test_default_list_view_survives_a_non_mapping_frontmatter_ticket(
 
 
 def test_scan_task_tickets_skips_broken_and_non_mapping(board, monkeypatch, tmp_path, capsys):
-    """`scan_task_tickets`(task end 소진 게이트)도 같은 공용 로더를 탄다 — 정상분은 그대로 모은다."""
+    """`scan_task_tickets`(task end 소진 통과 조건)도 같은 공용 로더를 탄다 — 정상분은 그대로 모은다."""
     _wire_repo(board, monkeypatch, tmp_path)
     _ticket(board, "claimed", "T-0003", _NON_MAPPING_FRONTMATTER)
     _ticket(board, "claimed", "T-0002", _BROKEN_FRONTMATTER)
-    _ticket(board, "claimed", "T-0001", _claimed_ticket_text("T-0001", claimed_by="wave-x"))
+    _ticket(board, "claimed", "T-0001", _claimed_ticket_text("T-0001", claimed_by="cluster-x"))
 
-    scanned = ticket_access.scan_task_tickets(pm_paths.home_at(board.REPO), "tester", "wave-x")
+    scanned = ticket_access.scan_task_tickets(pm_paths.home_at(board.REPO), "tester", "cluster-x")
 
     assert [row["id"] for row in scanned["claimed"]] == ["T-0001"]
     err = capsys.readouterr().err
-    assert "T-0002" in err and "T-0003" in err        # 두 손상 형상 모두 표면화
+    assert "T-0002" in err and "T-0003" in err        # 두 손상 구성 모두 드러냄
 
 
 # 티켓 **순회**에서 strict 로더를 그대로 쓰는 것이 정당한 지점 — 지정 대상 mutation 은 fail-loud
@@ -3174,7 +3174,7 @@ def test_ticket_iteration_consumers_use_the_shared_soft_loader(board):
 def test_fallback_lookup_warns_when_it_answers_with_a_different_ticket(
     tmp_path, monkeypatch, capsys
 ):
-    """정확 후보가 없을 때의 폴백 반환은 무음이 아니다 — canonical 불일치를 stderr 로 알린다."""
+    """정확 후보가 없을 때의 대체 반환은 무음이 아니다 — canonical 불일치를 stderr 로 알린다."""
     board = _load_board()
 
     tickets = tmp_path / "tickets"
@@ -3193,8 +3193,8 @@ def test_fallback_lookup_warns_when_it_answers_with_a_different_ticket(
 
 # ── 라운드 사이드카 lint (advisory) + 구 역할 절 잔존 (blocking) ──────────────
 #
-# 라운드 판정의 단일 진실은 사이드카 seam 이고 board 는 그것을 lint 표면으로만 올린다
-# (차단 소비자는 완료 게이트). 반대로 명세 본문에 남은 구 역할 절은 마이그레이션 명령 1회로
+# 라운드 판정의 단일 진실은 사이드카 공용 함수이고 board 는 그것을 lint 결과로만 올린다
+# (차단 소비자는 완료 통과 조건). 반대로 명세 본문에 남은 구 역할 절은 마이그레이션 명령 1회로
 # 해소되는 이행 잔재라 blocking 이다.
 
 def _lint_ticket(board, status: str, tid: str, *, body: str = "") -> Path:
@@ -3213,7 +3213,7 @@ def _lint_ticket(board, status: str, tid: str, *, body: str = "") -> Path:
         "blocks: []\n"
         "touches: []\n"
         "estimate: small\n"
-        # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — `done` + 설계 절로 미리
+        # T-0815 설계 근거 통과 조건(developer 빈 양식 공용 함수) 관심사 밖 — `done` + 설계 절로 미리
         # 해소한다(면제 값은 폐지됐다).
         "design: done\n"
         "tags: []\n"
@@ -3221,7 +3221,7 @@ def _lint_ticket(board, status: str, tid: str, *, body: str = "") -> Path:
         f"# {tid} — 픽스처\n\n## 목표\n판정 입력.\n\n"
         "## 설계\n"
         "- **경계 실측**: lint 픽스처\n"
-        "- **불변식**: 이 파일의 축 밖\n"
+        "- **불변식**: 이 파일의 기준 밖\n"
         "- **표면 상한**: 픽스처 1건\n"
         "- **테스트 전략**: 정상·실패 경로\n\n"
         "## 완료 조건 (Definition of Done)\n- [x] 없음\n\n## 참고\n- 없음\n"
@@ -3242,8 +3242,8 @@ def _lint_round(board, tid: str, name: str, text: str) -> Path:
     return path
 
 
-def test_round_problem_kinds_are_the_seam_codes_and_never_block(board):
-    """lint kind = seam 판정 코드 그대로 · 전부 advisory (차단은 완료 게이트 하나)."""
+def test_round_problem_kinds_are_the_shared_codes_and_never_block(board):
+    """lint kind = 공용 함수 판정 코드 그대로 · 전부 advisory (차단은 완료 통과 조건 하나)."""
     for code in (round_rules.PROBLEM_NAME, round_rules.PROBLEM_GAP,
                  round_rules.PROBLEM_DUPLICATE, round_rules.PROBLEM_PENDING):
         assert code in board_lint._ADVISORY_LINT_KINDS, code
@@ -3272,9 +3272,9 @@ def test_lint_rounds_surfaces_gap_and_pending(board, monkeypatch, tmp_path):
 def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
     board, monkeypatch, tmp_path,
 ):
-    """중간 순번 포기가 보존한 시드는 엔진 표식 때문에 `round-pending` 에서 빠진다.
+    """중간 순번 포기가 보존한 빈 양식은 엔진 표시 때문에 `round-pending` 에서 빠진다.
 
-    표식 없는 같은 시드는 그대로 보고된다 — 배제 조건은 표식 하나다.
+    표시 없는 같은 빈 양식은 그대로 보고된다 — 배제 조건은 표시 하나다.
     """
     _wire_repo(board, monkeypatch, tmp_path)
     path = _lint_ticket(board, "claimed", "T-3020")
@@ -3294,7 +3294,7 @@ def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
 
 
 def test_lint_rounds_reports_engine_temporary_leftovers(board, monkeypatch, tmp_path):
-    """점-접두 잔여(교체 중 크래시)는 라운드가 아니므로 seam 판정 밖이다 — 여기서 보이게 한다."""
+    """점-접두로 남은 파일(교체 중 크래시)은 라운드가 아니므로 공용 함수 판정 밖이다 — 여기서 보이게 한다."""
     _wire_repo(board, monkeypatch, tmp_path)
     _lint_ticket(board, "claimed", "T-3002")
     _lint_round(board, "T-3002", "01-developer.md",
@@ -3330,7 +3330,7 @@ def test_lint_rounds_without_a_rounds_directory_is_empty(board, monkeypatch, tmp
 def test_lint_rounds_keeps_reporting_a_round_without_output_after_a_sibling_lands(
     board, monkeypatch, tmp_path,
 ):
-    """같은 역할 병렬 2라운드 — 01 회수가 02 의 미회수 판정을 지우지 않는다."""
+    """같은 역할 병렬 2라운드 — 01 돌려받기가 02 의 못 돌려받음 판정을 지우지 않는다."""
     _wire_repo(board, monkeypatch, tmp_path)
     path = _lint_ticket(board, "claimed", "T-3011")
     spec_text = path.read_text(encoding="utf-8")
@@ -3364,7 +3364,7 @@ def test_lint_rounds_keeps_reporting_a_round_without_output_after_a_sibling_land
 def test_lint_rounds_surfaces_a_file_sitting_where_a_ticket_directory_belongs(
     board, monkeypatch, tmp_path,
 ):
-    """`tickets/rounds/` 직계는 티켓별 디렉터리 자리다 — 파일 항목은 잔여로 보인다."""
+    """`tickets/rounds/` 직계는 티켓별 디렉터리 자리다 — 파일 항목은 남은 파일로 보인다."""
     _wire_repo(board, monkeypatch, tmp_path)
     _lint_ticket(board, "claimed", "T-3012")
     _lint_round(board, "T-3012", "01-developer.md",
@@ -3386,7 +3386,7 @@ def test_lint_rounds_fail_soft_boundary_is_one_ticket(board, monkeypatch, tmp_pa
     _lint_round(board, "T-3013", "01-developer.md",
                 round_form.render_round_form(
                     "developer", path.read_text(encoding="utf-8"), today="2026-01-02"))
-    # 판정 자체가 불가능한 이름(플랫폼 예약 장치명) — seam 이 loud 하게 거부한다.
+    # 판정 자체가 불가능한 이름(플랫폼 예약 장치명) — 공용 함수가 loud 하게 거부한다.
     unreadable = round_store.rounds_dir(pm_paths.tickets_dir(pm_paths.home_at(board.REPO))) / "CON"
     unreadable.mkdir(parents=True, exist_ok=True)
 
@@ -3419,7 +3419,7 @@ def test_legacy_growth_section_blocks_and_names_the_migration(board, monkeypatch
     assert issues == [(
         "T-3005", "legacy-growth-section",
         "본문에 구 역할 절 주석이 남아 있다 — " + ticket_lint._LEGACY_GROWTH_MIGRATION_HINT)]
-    assert "legacy-growth-section" not in board_lint._ADVISORY_LINT_KINDS, "차단 축이어야 한다"
+    assert "legacy-growth-section" not in board_lint._ADVISORY_LINT_KINDS, "차단 kind 여야 한다"
     assert "v1.8.1" in issues[0][2]
     assert "라운드 파일로 옮기거나" in issues[0][2]
     assert issues[0] in ticket_lint.lint_tickets(pm_paths.home_at(board.REPO))
@@ -3437,10 +3437,10 @@ def test_legacy_growth_section_covers_every_status_and_drafts(board, monkeypatch
 
 
 def test_legacy_seal_comment_alone_is_enough_to_flag(board, monkeypatch, tmp_path):
-    """marker 를 손으로 지우고 봉인 주석만 남긴 형상도 미변환이다."""
+    """marker 를 손으로 지우고 확정 줄 주석만 남긴 구성도 미변환이다."""
     _wire_repo(board, monkeypatch, tmp_path)
     _lint_ticket(board, "done", "T-3009",
-                 body="\n<!-- pm-ticket-seal role=developer ordinal=0 sha256=x by=harvest -->\n")
+                 body="\n<!-- pm-ticket-seal role=developer ordinal=0 sha256=x by=collect -->\n")
 
     assert [kind for _n, kind, _d in ticket_lint.lint_legacy_growth_sections(pm_paths.home_at(board.REPO))] == [
         "legacy-growth-section"]
@@ -3470,7 +3470,7 @@ def test_migrated_board_has_no_legacy_findings(board, monkeypatch, tmp_path):
 # ════════════════════════════════════════════════════════════════════════
 # 옛 `cmd_unblock`(T-0783 이전)이 claimed_by 를 무접촉으로 둔 채 무조건 open 으로 옮기던 결함의
 # 잔재를 가시화한다(I1: status=open 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null).
-# `blocked` + claimed_by 는 (a)안(claimed-origin blocked 의 정상 형상)이라 대상이 **아니다**.
+# `blocked` + claimed_by 는 (a)안(claimed-origin blocked 의 정상 구성)이라 대상이 **아니다**.
 
 def _open_with_claimed_by_text(tid: str, *, claimed_by: str) -> str:
     return (f"---\nid: {tid}\ntitle: 모순 티켓\nstatus: open\n"
@@ -3490,12 +3490,12 @@ def _blocked_without_claimed_by_text(tid: str) -> str:
 
 
 def test_open_claimed_contradiction_kind_is_advisory_never_block(board):
-    """kind 등록 확인 — `--gate` 종료코드에 기여하지 않는다."""
+    """kind 등록 확인 — `--blocking` 종료코드에 기여하지 않는다."""
     assert "open-claimed-contradiction" in board_lint._ADVISORY_LINT_KINDS
 
 
 def test_lint_claim_identity_flags_open_with_claimed_by(board, monkeypatch, tmp_path):
-    """open + claimed_by 잔존 형상 1건을 정확히 잡는다."""
+    """open + claimed_by 잔존 구성 1건을 정확히 잡는다."""
     _wire_repo(board, monkeypatch, tmp_path)
     _ticket(board, "open", "T-0001",
             _open_with_claimed_by_text("T-0001", claimed_by="alice/pm-1"))
@@ -3506,7 +3506,7 @@ def test_lint_claim_identity_flags_open_with_claimed_by(board, monkeypatch, tmp_
 
 
 def test_lint_claim_identity_no_false_positive_on_healthy_shapes(board, monkeypatch, tmp_path):
-    """정상 형상(open+null·claimed+set·blocked+set·blocked+null) 전부 오탐 0
+    """정상 구성(open+null·claimed+set·blocked+set·blocked+null) 전부 오탐 0
     (adopter#0 실측 대상 0건 재현 — DoD)."""
     _wire_repo(board, monkeypatch, tmp_path)
     _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
@@ -3529,7 +3529,7 @@ def test_lint_tickets_surfaces_claim_identity_contradiction(board, monkeypatch, 
 
 
 # ── 필드별 단독 잔존 (F-002 · I1 세 필드 전부 검사) ──────────────────────────
-# claimed_by 만 잔존하는 형상은 위 `_open_with_claimed_by_text` 가 이미 커버하지만 claimed_at
+# claimed_by 만 잔존하는 구성은 위 `_open_with_claimed_by_text` 가 이미 커버하지만 claimed_at
 # 도 같이 채워 시나리오를 겸한다 — 여기 셋은 **한 필드만** 남기고 나머지 둘은 완전히 비워
 # "그 필드 하나만으로도 걸리는가"를 각각 독립 격리해 확인한다.
 
@@ -3592,15 +3592,15 @@ def test_lint_claim_identity_kind_stays_advisory_after_widening(board):
     assert "open-claimed-contradiction" in board_lint._ADVISORY_LINT_KINDS
 
 
-# ── F-001 (라운드 6) — 실제 open 티켓 frontmatter 형상 전용 픽스처 ────────────
+# ── F-001 (라운드 6) — 실제 open 티켓 frontmatter 구성 전용 픽스처 ────────────
 # `_healthy_ticket_text`(공유 헬퍼·4개 다른 테스트가 exact-equality 로 의존)는 건드리지 않는다
 # (라운드 5 빈틈 보고 수용 — PM 대안 1 채택). 대신 실 board(`.project_manager/board/tickets/
-# open/`) 의 실제 frontmatter 형상을 그대로 재현한 **전용** 픽스처를 쓴다 — claimed_by/
+# open/`) 의 실제 frontmatter 구성을 그대로 재현한 **전용** 픽스처를 쓴다 — claimed_by/
 # claimed_at/completed_at 을 값으로 명시(null)해, "필드 부재"가 아니라 "필드가 null 값으로
 # 존재"하는 정상 open 티켓에서도 오탐 0 임을 값 단언으로 잠근다.
 
 def _realistic_open_ticket_text(tid: str) -> str:
-    return (f"---\nid: {tid}\ntitle: 실측 형상 정상 티켓\nstatus: open\n"
+    return (f"---\nid: {tid}\ntitle: 실측 구성 정상 티켓\nstatus: open\n"
             "created: '2026-08-01'\ncreated_by: tester/pm-1\n"
             "claimed_by: null\nclaimed_at: null\ncompleted_at: null\n"
             "depends_on: []\nblocks: []\ntouches: []\nestimate: small\ndesign: n/a\ntags: []\n"
@@ -3609,7 +3609,7 @@ def _realistic_open_ticket_text(tid: str) -> str:
 
 def test_lint_claim_identity_no_false_positive_on_realistic_open_ticket_shape(
         board, monkeypatch, tmp_path):
-    """실 board 의 open 티켓 frontmatter 형상(claimed_by/claimed_at/completed_at 이 **값으로**
+    """실 board 의 open 티켓 frontmatter 구성(claimed_by/claimed_at/completed_at 이 **값으로**
     null)에서 오탐 0 — `_healthy_ticket_text`(필드 부재)와 달리 필드가 명시적으로 존재해도
     값이 null 이면 걸리지 않는다는 것을 값 단언으로 잠근다(F-001)."""
     _wire_repo(board, monkeypatch, tmp_path)
@@ -3621,7 +3621,7 @@ def test_lint_claim_identity_no_false_positive_on_realistic_open_ticket_shape(
 def test_lint_claim_identity_still_flags_contradiction_alongside_realistic_healthy_ticket(
         board, monkeypatch, tmp_path):
     """역방향 확인 — 새 오탐-0 픽스처가 실제 정탐(claimed_by 잔존)까지 함께 삼켜버리지 않는다.
-    같은 스캔에 실측 형상 정상 티켓과 모순 티켓을 같이 두고, 모순 티켓만 정확히 잡히는지 본다."""
+    같은 스캔에 실측 구성 정상 티켓과 모순 티켓을 같이 두고, 모순 티켓만 정확히 잡히는지 본다."""
     _wire_repo(board, monkeypatch, tmp_path)
     _ticket(board, "open", "T-0001", _realistic_open_ticket_text("T-0001"))
     _ticket(board, "open", "T-0002",
@@ -3635,7 +3635,7 @@ def test_lint_claim_identity_still_flags_contradiction_alongside_realistic_healt
 # ── local.conf 필수 키 누락 lint (`local-conf-missing-required` · T-0906) ────
 
 def test_missing_required_surfaces_as_an_advisory_finding(board, monkeypatch, tmp_path):
-    """필수 키가 없는 conf 는 1줄 advisory — kind 는 모르는-키 축과 배타적이다."""
+    """필수 키가 없는 conf 는 1줄 advisory — kind 는 모르는-키 kind 와 배타적이다."""
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("runtime.py=python3\nreview_ticket_body_max_bytes=65536\n", encoding="utf-8")
@@ -3648,7 +3648,7 @@ def test_missing_required_surfaces_as_an_advisory_finding(board, monkeypatch, tm
     assert kind == "local-conf-missing-required"
     assert "test.cmd" in detail and "runtime.py" not in detail
     assert "--keys" in detail
-    # 기존 축은 그대로다 — 같은 conf 에서 모르는-키 판정은 여전히 그 키만 낸다.
+    # 기존 판정은 그대로다 — 같은 conf 에서 모르는-키 판정은 여전히 그 키만 낸다.
     assert _kinds(conf_lint.lint_local_conf_keys(pm_paths.home_at(board.REPO))) == ["local-conf-unknown-key"]
 
 
@@ -3669,7 +3669,7 @@ _UNRELATED_LINT_FNS = (
 
 
 def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypatch, tmp_path):
-    """kind 등재(`--gate` 종료코드 비기여) + `lint_tickets()` 합류."""
+    """kind 등재(`--blocking` 종료코드 비기여) + `lint_tickets()` 합류."""
     assert "local-conf-missing-required" in board_lint._ADVISORY_LINT_KINDS
     _wire_repo(board, monkeypatch, tmp_path)
     conf = tmp_path / ".project_manager" / "local.conf"
@@ -3687,7 +3687,7 @@ def test_missing_required_kind_is_advisory_and_joins_the_report(board, monkeypat
 
 
 def test_no_local_conf_file_reports_no_missing_required(board, monkeypatch, tmp_path):
-    """conf 부재는 정상 형상이다 — 없는 파일에 필수 누락을 씌우지 않는다."""
+    """conf 부재는 정상 구성이다 — 없는 파일에 필수 누락을 씌우지 않는다."""
     monkeypatch.setattr(board, "REPO", tmp_path)
     assert conf_lint.lint_local_conf_required(pm_paths.home_at(board.REPO)) == []
 
@@ -3707,8 +3707,8 @@ def test_fresh_init_conf_has_no_missing_required(board, monkeypatch, tmp_path):
 
 
 # ── local.conf 판독 실패 lint (`local-conf-unreadable` · T-0918·X-5) ────────
-# 판독 seam 이 삼키던 동안 잘못된 UTF-8 conf 는 "키 0 개" 로 읽혀 conf 관측 kind 전부가 0 건이었다
-# (못 읽은 것이 값이 없는 것으로 위장). 이제 seam 이 세 상태를 구분하고 발견은 한 자리가 낸다.
+# 판독 공용 함수가 삼키던 동안 잘못된 UTF-8 conf 는 "키 0 개" 로 읽혀 conf 관측 kind 전부가 0 건이었다
+# (못 읽은 것이 값이 없는 것으로 위장). 이제 공용 함수가 세 상태를 구분하고 발견은 한 자리가 낸다.
 
 
 def _unreadable_conf(tmp_path: Path) -> Path:
@@ -3720,7 +3720,7 @@ def _unreadable_conf(tmp_path: Path) -> Path:
 
 
 def test_unreadable_local_conf_surfaces_one_advisory_finding(board, monkeypatch, tmp_path):
-    """읽지 못한 conf 는 1줄 advisory 다 — 값 축 kind 들은 침묵한다(같은 사실 재진술 0)."""
+    """읽지 못한 conf 는 1줄 advisory 다 — 값 판정 kind 들은 침묵한다(같은 사실 재진술 0)."""
     _unreadable_conf(tmp_path)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
@@ -3742,7 +3742,7 @@ def test_no_local_conf_file_reports_nothing_unreadable(board, monkeypatch, tmp_p
 
 
 def test_readable_local_conf_reports_nothing_unreadable(board, monkeypatch, tmp_path):
-    """정상 conf 는 이 축에서 조용하다(대조군 — 가드가 항상 뜨지 않는다)."""
+    """정상 conf 는 이 판정에서 조용하다(대조군 — 가드가 항상 뜨지 않는다)."""
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_text("runtime.py=python3\ntest.cmd=pytest -q\n", encoding="utf-8")
@@ -3752,10 +3752,10 @@ def test_readable_local_conf_reports_nothing_unreadable(board, monkeypatch, tmp_
 
 
 def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tmp_path):
-    """kind 등재(`--gate` 종료코드 비기여) + `lint_tickets()` 합류(발견 1건).
+    """kind 등재(`--blocking` 종료코드 비기여) + `lint_tickets()` 합류(발견 1건).
 
-    `lint_adapter_drift` 는 대역으로 끄지 않는다 — 그 자리도 같은 판독 seam 을 쓰므로 같은
-    트리에서 조용히 빈 목록이다. 끄고 재면 조회면 전체가 traceback 으로 죽는 형상을 못 본다.
+    `lint_adapter_drift` 는 대역으로 끄지 않는다 — 그 자리도 같은 판독 공용 함수를 쓰므로 같은
+    트리에서 조용히 빈 목록이다. 끄고 재면 조회면 전체가 traceback 으로 죽는 구성을 못 본다.
     """
     _unreadable_conf(tmp_path)
     assert "local-conf-unreadable" in board_lint._ADVISORY_LINT_KINDS
@@ -3764,7 +3764,7 @@ def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tm
     for module, fn, stub in _UNRELATED_LINT_FNS:
         monkeypatch.setattr(module, fn, stub)
 
-    assert conf_lint.lint_adapter_drift(pm_paths.home_at(board.REPO)) == []      # 같은 seam — 못 읽었다고 두 번 말하지 않는다
+    assert conf_lint.lint_adapter_drift(pm_paths.home_at(board.REPO)) == []      # 같은 공용 함수 — 못 읽었다고 두 번 말하지 않는다
     kinds = _kinds(ticket_lint.lint_tickets(pm_paths.home_at(board.REPO)))
 
     assert kinds.count("local-conf-unreadable") == 1, kinds
@@ -3775,9 +3775,9 @@ def test_unreadable_kind_is_advisory_and_joins_the_report(board, monkeypatch, tm
 def test_the_real_lint_command_reaches_the_advisory(tmp_path):
     """실 `board.py lint` 가 그 줄을 낸다 — 조회면이 판독 실패로 죽지 않는다(도달성).
 
-    in-process 단언만으로는 이 축이 닫히지 않는다: 판독을 값 소비 계약으로 하던 자리가 하나라도
+    in-process 단언만으로는 이 경로가 닫히지 않는다: 판독을 값 소비 계약으로 하던 자리가 하나라도
     남으면 사용자가 실제로 보는 것은 새 줄이 아니라 `UnicodeDecodeError` traceback 이다.
-    rc 는 두 표면이 다르다 — 무인자 lint 는 발견이 있으면 1(보고 표면), `--gate` 는 advisory 라
+    rc 는 두 모드가 다르다 — 무인자 lint 는 발견이 있으면 1(보고 모드), `--blocking` 은 advisory 라
     0(never-block). 둘 다 traceback 없이 그 줄을 싣는지 값으로 고정한다.
     """
     inst = tmp_path / "adopter"
@@ -3791,36 +3791,18 @@ def test_the_real_lint_command_reaches_the_advisory(tmp_path):
             [sys.executable, str(inst / ".project_manager" / "tools" / "board.py"), *argv],
             capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(inst))
 
-    plain, gate = lint("lint"), lint("lint", "--blocking")
+    plain, blocking = lint("lint"), lint("lint", "--blocking")
 
-    assert gate.returncode == 0, gate.stderr          # advisory 는 게이트를 막지 않는다
-    assert plain.returncode == 1, plain.stderr        # 무인자는 발견이 있으면 1(보고 표면)
-    for completed in (plain, gate):
+    assert blocking.returncode == 0, blocking.stderr          # advisory 는 push 를 막지 않는다
+    assert plain.returncode == 1, plain.stderr        # 무인자는 발견이 있으면 1(보고 모드)
+    for completed in (plain, blocking):
         assert "local-conf-unreadable" in completed.stdout, completed.stdout
         assert completed.stdout.count("local-conf-unreadable") == 1, completed.stdout
         assert "Traceback" not in completed.stderr, completed.stderr
 
 
-def test_the_old_lint_flag_and_live_test_names_are_rejected(capsys):
-    """옛 `lint --gate`·`livegate` 하위 명령은 별칭 없이 argparse 가 종료 코드 2 로 거부한다."""
-    from pm_engine.cli import board_cmd
-
-    parser = board_cmd.build_parser()
-    with pytest.raises(SystemExit) as old_flag:
-        parser.parse_args(["lint", "--gate"])
-    assert old_flag.value.code == 2
-    assert "unrecognized arguments: --gate" in capsys.readouterr().err
-
-    with pytest.raises(SystemExit) as old_command:
-        parser.parse_args(["livegate", "check", "--rev", "abc"])
-    assert old_command.value.code == 2
-    assert "invalid choice: 'livegate'" in capsys.readouterr().err
-
-    assert parser.parse_args(["lint", "--blocking"]).blocking is True
-
-
-def test_read_seam_uses_the_strict_loader(board, monkeypatch, tmp_path):
-    """판독 seam 은 `local_conf.load_strict` 를 부른다 — 삼키는 `load` 로 돌아가면 red."""
+def test_shared_reader_uses_the_strict_loader(board, monkeypatch, tmp_path):
+    """판독 공용 함수는 `local_conf.load_strict` 를 부른다 — 삼키는 `load` 로 돌아가면 red."""
     _unreadable_conf(tmp_path)
     monkeypatch.setattr(board, "REPO", tmp_path)
 
@@ -3830,12 +3812,12 @@ def test_read_seam_uses_the_strict_loader(board, monkeypatch, tmp_path):
 
 # ════════════════════════════════════════════════════════════════════════
 # `status_snapshot()` — 관리자 읽기 계약(`pm-config status --json --with-board`)이 부르는
-# 얇은 조립. 여기서는 board 소유 축(상태별 수·open 목록·lint 목록·sidecar 통과)만 본다.
-# CLI 배선은 tests/test_pm_config_status_json.py 가 실 홈에서 end-to-end 로 잰다.
+# 얇은 조립. 여기서는 board 소유 항목(상태별 수·open 목록·lint 목록·sidecar 통과)만 본다.
+# CLI 연결은 tests/test_pm_config_status_json.py 가 실 홈에서 end-to-end 로 잰다.
 
 
-def test_status_snapshot_counts_open_rows_and_gate_records(board, monkeypatch, tmp_path):
-    """상태별 수는 `STATUS_DIRS` 다섯 축이고, open 행과 게이트 기록이 그대로 실린다."""
+def test_status_snapshot_counts_open_rows_and_review_ticket_records(board, monkeypatch, tmp_path):
+    """상태별 수는 `STATUS_DIRS` 다섯 개이고, open 행과 리뷰 집계 티켓 기록이 그대로 실린다."""
     _wire_repo(board, monkeypatch, tmp_path)
     local = tmp_path / ".project_manager" / ".local"
     local.mkdir(parents=True, exist_ok=True)

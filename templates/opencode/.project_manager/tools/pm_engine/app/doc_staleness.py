@@ -16,7 +16,7 @@ from pm_engine.infra import pm_paths, repo_files
 from pm_engine.app import freshness_lint
 
 
-# git CLI argv → (returncode, stdout). DI seam 타입(worktree_records.GitRunner 선례).
+# git CLI argv → (returncode, stdout). DI 교체 지점 타입(worktree_records.GitRunner 선례).
 GitRunner = Callable[[list], "tuple[int, str]"]
 GitRunnerFactory = Callable[[dict], "GitRunner | None"]
 _UNRESOLVED_GIT_RUNNER = object()
@@ -46,7 +46,7 @@ _REPOSITORY_FAILURE_CACHE: ContextVar[
 
 
 def _real_git_runner(cwd: Path) -> GitRunner:
-    """공용 captured runner를 domain의 기존 stdout-only 정책으로 배선한다.
+    """공용 captured runner를 domain의 기존 stdout-only 정책으로 연결한다.
 
     반환 callable: argv(list) → (returncode, stdout). git 바이너리 부재(shutil.which)면
     (1, msg)·예외(타임아웃 등)는 (1, str(exc)) 로 감싼다(fail-soft·rc!=0 로 호출부 위임·
@@ -70,7 +70,7 @@ def _page_owner_repo(home, page: dict) -> tuple[Path | None, str | None]:
     `freshness_lint._freshness_owner_repo`가 `self`/`upstream` 해소의 단일 진실이다. 미지원/빈 repo,
     upstream 미설정·URL·이동 등은 ``(None, reason)``으로 보존한다.
 
-    freshness runner와 normalized touch 매칭이 이 seam을 공유한다. 후자는 반환 checkout과
+    freshness runner와 normalized touch 매칭이 이 공용 함수를 공유한다. 후자는 반환 checkout과
     ``NormalizedRepoPath.workspace``의 git common-dir 정체성을 대조해 멀티-repo 동명
     상대경로 오매칭을 막되, 같은 repo의 다른 linked-worktree 슬롯은 허용한다.
     """
@@ -85,7 +85,7 @@ def _page_owner_repo(home, page: dict) -> tuple[Path | None, str | None]:
 
 
 def _page_owner_git_runner(home, page: dict) -> GitRunner | None:
-    """페이지 `repo:`를 소유 checkout runner로 해소한다(date freshness 축)."""
+    """페이지 `repo:`를 소유 checkout runner로 해소한다(date freshness 기준)."""
     owner_repo, _owner_error = _page_owner_repo(home, page)
     if owner_repo is None:
         return None
@@ -173,7 +173,7 @@ def _same_repository_checkouts(
 
 # object-format 별 git 빈 트리 OID (git 정의 상수). `diff <빈-트리> HEAD` = HEAD 트리 전체를
 # 추가로 보여 준다 — HEAD **커밋 트리**를 `:(glob)` pathspec 으로 질의하는 수단(`git ls-tree`
-# 는 pathspec magic 미지원). SHA-1 만 하드코딩하면 SHA-256 repo 서 안 맞아 diff rc≠0 → 전축 silent
+# 는 pathspec magic 미지원). SHA-1 만 하드코딩하면 SHA-256 repo 서 안 맞아 diff rc≠0 → 모든 기준 silent
 # skip — `rev-parse --show-object-format` 로 알고 감지 후 맞는 OID 를 쓴다(cross-platform·
 # runner 경유·`/dev/null` 미의존이라 Windows 무회귀·`git hash-object -t tree /dev/null` 동치).
 _EMPTY_TREE_OID_BY_FORMAT = {
@@ -197,25 +197,25 @@ def _pathspec_observable(runner: GitRunner, pathspec: str, verified_at: str,
                          empty_tree: str | None) -> bool | None:
     """`pathspec`(git `:(glob)` magic 등) 이 `verified_at` **기준으로** 관찰 가능한가.
 
-    - `True`  = **HEAD 트리**(커밋됨)에 있음 **또는** pin 이후 델타 있음(`<verified_at>..HEAD` 비지
-      않음 — pin 이후 삭제/rename 도 관찰 가능한 델타). 미추적 present 는 곧 pin 이후 델타라 기존
+    - `True`  = **HEAD 트리**(커밋됨)에 있음 **또는** pin 이후 차이 있음(`<verified_at>..HEAD` 비지
+      않음 — pin 이후 삭제/rename 도 관찰 가능한 차이). 미추적 present 는 곧 pin 이후 차이라 기존
       `<sha>..HEAD` stale 검사가 자연히 stale 로 잡는다.
-    - `False` = HEAD 트리에 없음 + pin 이후 델타 0 = **pin 시점부터 이 저장소가 못 봄**. never-tracked
+    - `False` = HEAD 트리에 없음 + pin 이후 차이 0 = **pin 시점부터 이 저장소가 못 봄**. never-tracked
       (`templates/**` 류·이력 0) 이든 pin *이전* 삭제/외부 이전이든 forward-관찰가능성 0 →
       동일하게 판정 불가(unverifiable·호출부 advisory).
     - `None`  = git 오류(rc≠0·non-repo)·`empty_tree` 산출 실패 — 분류 불가(거짓 분류 없이 skip).
       git 실행 예외는 전파한다.
 
-    **판정 축을 커밋 이력과 일관되게 HEAD 트리 기준으로 한다**
+    **판정 기준을 커밋 이력과 일관되게 HEAD 트리 기준으로 한다**
     **index(staged)** 를 포함해 — 새 경로를 stage 만 해도 present 인데 `<sha>..HEAD` 는 비어 순간
     false-green 이었다. `git diff --name-only <빈-트리> HEAD -- <pathspec>`(HEAD 커밋 트리를 `:(glob)`
     그대로 질의)로 바꿔 **staged-추가는 present 아님**(HEAD 미포함)·**staged-삭제는 present 유지**
     (HEAD 트리엔 있음)로 커밋-기준 일관. 빈 트리 OID(`empty_tree`)는 object-format 중립.
 
     **경계를 verified_at 에 맞춘다**: pin *이전* 삭제 경로를
-    present 로 오판해 조용한 clean 이 됐다 — 이제 pin 이후 델타 0 → 부재. `verified_at` 은 호출부
-    (sha 해소·선조 검증 통과분)가 넘기는 유효 anchor 라 range 가 성립한다. HEAD 트리에 있으면 pin
-    델타 확인을 생략한다(short-circuit)."""
+    present 로 오판해 조용한 clean 이 됐다 — 이제 pin 이후 차이 0 → 부재. `verified_at` 은 호출부
+    (sha 해소·선조 검증 통과분)가 넘기는 유효한 고정 커밋이라 range 가 성립한다. HEAD 트리에 있으면 pin
+    이후 차이 확인을 생략한다(short-circuit)."""
     if empty_tree is None:
         return None  # 빈 트리 OID 산출 실패 — fail-soft skip.
     rc, out = runner(["diff", "--name-only", empty_tree, "HEAD", "--", pathspec])
@@ -223,7 +223,7 @@ def _pathspec_observable(runner: GitRunner, pathspec: str, verified_at: str,
         return None  # git 부재/non-repo/env 오류 — 분류 불가(거짓 분류 회피).
     if out.strip():
         return True  # HEAD 트리(커밋)에 있음 — index/staged 무관.
-    # HEAD 트리에 없음 — pin 이후 델타(삭제/rename 포함) 확인. pin 이전부터 부재면 델타 0 → absent.
+    # HEAD 트리에 없음 — pin 이후 차이(삭제/rename 포함) 확인. pin 이전부터 부재면 차이 0 → absent.
     rc, out = runner(["log", "-1", "--oneline", f"{verified_at}..HEAD", "--", pathspec])
     if rc != 0:
         return None  # env 오류·range 불가 — 분류 불가.
@@ -253,7 +253,7 @@ def _missing_foreign_hierarchy(home, glob, covers, owner_repo: Path) -> bool:
     except FileNotFoundError:
         return True
     except OSError:
-        return False  # 파일시스템 판정 실패를 downstream 완화로 흡수하지 않는다.
+        return False  # 파일시스템 판정 실패를 downstream 완화로 받아들이지 않는다.
     return False
 
 
@@ -262,26 +262,26 @@ def covers_pathspecs(home, covers, *, repo: Path | None = None,
                      verified_at: str) -> tuple[list[str], list[str], list[str]]:
     """covers 글롭을 **`:(glob)` magic pathspec 으로 직접** verified_at 기준 관찰가능성 분할한다.
 
-    Returns `(present, absent, unmappable)` — 전부 **원본 글롭 문자열**(호출부 표면화·재변환용):
-      - `present`    = 현재 tracked **또는** pin(`verified_at`) 이후 델타 있음 → freshness 판정 가능.
-      - `absent`     = 미추적 + pin 이후 델타 0 = pin 시점부터 관찰 불가 → 판정 불가(호출부 advisory).
+    Returns `(present, absent, unmappable)` — 전부 **원본 글롭 문자열**(호출부 표시·재변환용):
+      - `present`    = 현재 tracked **또는** pin(`verified_at`) 이후 차이 있음 → freshness 판정 가능.
+      - `absent`     = 미추적 + pin 이후 차이 0 = pin 시점부터 관찰 불가 → 판정 불가(호출부 advisory).
       - `unmappable` = **지원 안 하는 covers 문법**(비-경계 `**` 등 두 방언 의미가 다른 형태)
         → 오번역 대신 **조용히 skip 안 하고** advisory(관찰불가를 정직 보고). 빈/공백 글롭은 패턴이
         아니라 제외(코드-무관·unmappable 아님).
 
-    부재 경로는 `git log <sha>..HEAD -- <pathspec>` 가 **"델타 없음"(빈 출력)과 구분 못 해**
-    조용히 green 이 되는 사각이다 — 두-git 형상에서 `templates/**` 는 제품
+    부재 경로는 `git log <sha>..HEAD -- <pathspec>` 가 **"차이 없음"(빈 출력)과 구분 못 해**
+    조용히 green 이 되는 놓치는 곳이다 — 두-git 구성에서 `templates/**` 는 제품
     worktree 소유라 PM 홈엔 그 이력이 0 이라 그 페이지는 아무리 낡아도 영원히 green 이었다.
     **판정 기준은 git 관찰가능성·경계는 verified_at·매핑은 손실 없는 `:(glob)`**이다(codex MF3/R2/R4/R6):
       - untracked 생성물(예 `board.md`)·never-tracked(`templates/**`)·pin *이전* 삭제 경로는 pin
-        이후 델타 0 → **부재**(조용한 clean/green 회피).
+        이후 차이 0 → **부재**(조용한 clean/green 회피).
       - HEAD 트리(커밋)에 있으면(`git diff <빈-트리> HEAD`·index/staged 무관), verified_at *이후*
-        삭제/rename 된 경로는 `<sha>..HEAD` 델타로 **존재**. **`covers_glob_pathspec` 로 원본 글롭을
+        삭제/rename 된 경로는 `<sha>..HEAD` 차이로 **존재**. **`covers_glob_pathspec` 로 원본 글롭을
         직접 넘겨**(접두사 손실 폐기·지원 문법만) `**/x.py`·`src/*.py` 도 정확 판정.
 
     **분류 불가**: non-repo·rc≠0 인 pathspec 은 어느 쪽에도 안 넣는다(git 실행 예외는 전파)
     (거짓 분류 회피 — unmappable 과 구분: git 오류는 skip, 형식상 매핑불가는 unmappable). `verified_at`
-    = pin(호출부가 anchor 유효성 검증 후 전달·range 양끝). `git_runner` 미지정 시 `_real_git_runner(repo)`.
+    = pin(호출부가 고정 커밋 유효성 검증 후 전달·range 양끝). `git_runner` 미지정 시 `_real_git_runner(repo)`.
 
     ``parse_page``가 보존한 ``repo: upstream`` 페이지를 별개 downstream에서 판정할 때는, 현재
     checkout에 literal 최상위 계층 자체가 없는 absent만 advisory 대상에서 제외한다. 소유 checkout
@@ -325,12 +325,12 @@ def page_stale(home, page: dict, *,
       - git 호출 rc≠0 또는 빈 출력(미추적·커밋 0).
     git 실행 예외(주입 runner 예외 포함)는 전파한다.
 
-    **원본-글롭 pathspec**(`covers_glob_pathspec`·`:(glob)` magic — sha-축과 동일 판정 기계
+    **원본-글롭 pathspec**(`covers_glob_pathspec`·`:(glob)` magic — sha 기준과 동일 판정 기계
     재사용): git 이 `*`(세그먼트 내)·경계 `**`(슬래시 횡단)을 네이티브로 매칭한다 —
     접두사 손실(단일 `*` 가 디렉토리로 과확장·접두사-없는 글롭 통째 skip)을 없앤다. 미지원/빈
-    글롭은 skip(date-축은 advisory visibility·간이 신호라 unmappable 세분화 없이 fail-soft 흡수).
+    글롭은 skip(date 기준은 advisory visibility·간이 신호라 unmappable 세분화 없이 fail-soft 로 받아들임).
     covers 의 여러 글롭은 하나의 `git log -1 -- <pathspec…>` 로 합쳐 *그 중 가장 최근* 커밋
-    날짜를 본다(어느 covers 코드든 바뀌면 stale). git 은 주입 `git_runner`(DI seam·테스트
+    날짜를 본다(어느 covers 코드든 바뀌면 stale). git 은 주입 `git_runner`(DI 교체 지점·테스트
     hermetic) 또는 실 subprocess(미주입).
     """
     covers = page.get("covers") or []

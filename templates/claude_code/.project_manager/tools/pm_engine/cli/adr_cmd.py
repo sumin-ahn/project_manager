@@ -1,4 +1,4 @@
-"""ADR 발행/개정 공개 CLI — 채번·scaffold·lifecycle back-ref·README 색인·log 배선 (층: cli).
+"""ADR 발행/개정 공개 CLI — 채번·scaffold·lifecycle back-ref·README 색인·log 연결 (층: cli).
 
 결정 디렉터리·log 경로는 넘겨받은 Home 의 PM 홈 wiki 에서 해소한다.
 """
@@ -14,17 +14,17 @@ from pm_engine.infra import lease_store, pm_paths
 
 
 # ── contradiction lint 트리거 ───────────────────────────────
-# 결정을 개정(amends/supersedes)하는 바로 이 명령이 모순 lint 의 배선점이다 — 재정의 순간
-# (인지 시점)에 옛 결정을 참조하는 문서의 잔여 모순을 표면화한다. **개정에만** 발화한다(신규 plain 발행·
-# refines 는 참조 스코프가 없거나 대상 불변이라 잔여 모순을 안 만든다). 탐지=LLM(기본 dry·미호출)·판정=
+# 결정을 개정(amends/supersedes)하는 바로 이 명령이 모순 lint 를 거는 자리다 — 재정의 순간
+# (인지 시점)에 옛 결정을 참조하는 문서의 남은 모순을 드러낸다. **개정에만** 실행한다(신규 plain 발행·
+# refines 는 참조 스코프가 없거나 대상 불변이라 남은 모순을 안 만든다). 탐지=LLM(기본 dry·미호출)·판정=
 # 사람(advisory·차단 아님). lint 실행 실패는 숨기지 않고 전파한다(ADR 파일은 이미 쓰였다).
 def emit_contradiction_advisory(
     home, *, new_number: int, title: str, adr_text: str, amends: list[int], supersedes: list[int],
 ) -> None:
-    """개정(amends/supersedes) 시 모순 lint advisory 를 stderr 로 표면화한다(인지 시점).
+    """개정(amends/supersedes) 시 모순 lint advisory 를 stderr 로 드러낸다(인지 시점).
 
     개정 대상이 없으면 no-op. 모순 lint 실행 실패는 전파한다. LLM 은 호출하지 않는다(dry·비용 0)
-    — 스코프+안내만 표면화한다."""
+    — 스코프+안내만 드러낸다."""
     targets = [adr_rules.adr_id(n) for n in (amends + supersedes)]
     if not targets:
         return
@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_new(home, args: argparse.Namespace) -> int:
     # slug 는 파일명이 되므로 부작용(채번·파일 쓰기) 이전에 CLI 입력 단계에서 거부한다(fail-loud·
-    # 파일 주입/traversal 방지·validator 클래스 동형).
+    # 파일 주입/traversal 방지·validator 클래스와 같은 방식).
     try:
         adr_rules.validate_slug(args.slug)
     except ValueError as exc:
@@ -96,7 +96,7 @@ def cmd_new(home, args: argparse.Namespace) -> int:
         return 2
 
     # 개정대상 ID 도 부작용 이전 입구에서 rc 2 한 줄 오류로 거부한다
-    # ValueError 가 traceback 으로 노출·slug 게이트와 동형 패턴).
+    # ValueError 가 traceback 으로 노출·slug 검사와 같은 방식).
     try:
         amends = _parse_id_list(args.amends)
         supersedes = _parse_id_list(args.supersedes)
@@ -143,8 +143,8 @@ def cmd_new(home, args: argparse.Namespace) -> int:
     for w in plan["warnings"]:
         print(f"  ⚠ {w}", file=sys.stderr)
 
-    # 모순 lint 트리거 — 개정(amends/supersedes)에만 발화. dry-run/apply 공통으로
-    # 인지 시점(재정의 명령)에 잔여 모순 스코프를 표면화한다(advisory·차단 아님, 실행 실패는 전파).
+    # 모순 lint 트리거 — 개정(amends/supersedes)에만 실행. dry-run/apply 공통으로
+    # 인지 시점(재정의 명령)에 남은 모순 스코프를 드러낸다(advisory·차단 아님, 실행 실패는 전파).
     emit_contradiction_advisory(
         home, new_number=number, title=args.title, adr_text=plan["adr_text"],
         amends=amends, supersedes=supersedes,

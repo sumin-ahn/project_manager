@@ -1,4 +1,4 @@
-"""결정 개정 잔여 모순 lint (층: app).
+"""결정 개정 뒤 남은 모순 lint (층: app).
 
 개정 대상 ADR 을 wikilink 로 참조하는 문서를 모으고, 발췌와 LLM 프롬프트·후보 판독·advisory 렌더를 소유한다.
 기본은 LLM 을 부르지 않는다.
@@ -21,7 +21,7 @@ _ADR_NAME_RE = re.compile(r"ADR-(\d+)$")
 class ScopeHit(NamedTuple):
     """개정 대상을 참조하는 문서 하나 — 상대경로 + 매칭된 대상 id(들) + LLM 대조용 본문 excerpt.
 
-    excerpt 는 *참조 줄만*이 아니라 문서 본문(또는 상한 초과 시 참조 주변 윈도)이다 — 잔여 모순은
+    excerpt 는 *참조 줄만*이 아니라 문서 본문(또는 상한 초과 시 참조 주변 윈도)이다 — 남은 모순은
     참조 줄이 아니라 같은 문서의 **다른 문단/절**에 있으므로 참조 줄만으론 근거가 없어 탐지 불능이다
     (codex must-fix). ref_lines 는 advisory 표시용 참조 라인 스니펫(경량)."""
     path: str
@@ -30,13 +30,13 @@ class ScopeHit(NamedTuple):
     ref_lines: tuple[str, ...]
 
 
-# 프롬프트 크기 상한 근거 (박제·codex must-fix) — 잔여 모순은 참조 줄이 아니라 *같은 문서의 다른
+# 프롬프트 크기 상한 근거 (기록·codex must-fix) — 남은 모순은 참조 줄이 아니라 *같은 문서의 다른
 # 문단/절*에 있을 수 있어 참조 줄만으론 탐지 불능이다. 문서 전체를 넣는 게 이상적이나 무한 비용이라
 # 상한을 둔다:
 #   - 파일이 `_WHOLE_FILE_LINE_CAP` 이하 → **전체 본문** 포함(ADR·wiki·spike 대부분이 수백 줄 이내라
-#     "다른 절의 모순"까지 온전히 담긴다·잔여 모순 탐지의 기본 케이스).
+#     "다른 절의 모순"까지 온전히 담긴다·남은 모순 탐지의 기본 케이스).
 #   - 초과 → 각 참조 줄 주변 ±`_EXCERPT_CONTEXT_LINES` 윈도를 병합한 excerpt(생략 구간은 마커)로,
-#     총 `_MAX_EXCERPT_LINES` 상한. 참조 인접 문단의 잔여 모순을 담되 프롬프트 토큰을 bound.
+#     총 `_MAX_EXCERPT_LINES` 상한. 참조 인접 문단의 남은 모순을 담되 프롬프트 토큰을 bound.
 _WHOLE_FILE_LINE_CAP = 200
 _EXCERPT_CONTEXT_LINES = 15
 _MAX_EXCERPT_LINES = 200
@@ -47,7 +47,7 @@ def _build_excerpt(file_lines: list[str], ref_idxs: list[int]) -> str:
     """스코프 파일 본문에서 LLM 대조용 excerpt 를 만든다 — 작은 파일은 전체, 큰 파일은 참조 주변 윈도 병합.
 
     큰 파일은 각 참조 줄 ±`_EXCERPT_CONTEXT_LINES` 를 keep 하고 인접 윈도를 병합, 생략 구간은
-    `_EXCERPT_GAP` 마커로 표시한다(총 `_MAX_EXCERPT_LINES` 상한). 참조 인접 문단의 잔여 모순을 담는다."""
+    `_EXCERPT_GAP` 마커로 표시한다(총 `_MAX_EXCERPT_LINES` 상한). 참조 인접 문단의 남은 모순을 담는다."""
     n = len(file_lines)
     if n <= _WHOLE_FILE_LINE_CAP:
         return "\n".join(file_lines)

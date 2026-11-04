@@ -123,7 +123,7 @@
     ".project_manager/tools/pm_engine/domain/doc_drafts.py": [
       {
         "kind": "decision_label",
-        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "hash": "172f1d4cb50ef28f7a17455254bae3948d0aa51949c6e57dd94e9bbc65a35a1c",
         "count": 1
       }
     ],
@@ -488,7 +488,7 @@
     "templates/claude_code/.project_manager/tools/pm_engine/domain/doc_drafts.py": [
       {
         "kind": "decision_label",
-        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "hash": "172f1d4cb50ef28f7a17455254bae3948d0aa51949c6e57dd94e9bbc65a35a1c",
         "count": 1
       }
     ],
@@ -856,7 +856,7 @@
     "templates/codex/.project_manager/tools/pm_engine/domain/doc_drafts.py": [
       {
         "kind": "decision_label",
-        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "hash": "172f1d4cb50ef28f7a17455254bae3948d0aa51949c6e57dd94e9bbc65a35a1c",
         "count": 1
       }
     ],
@@ -1415,7 +1415,7 @@
     "templates/opencode/.project_manager/tools/pm_engine/domain/doc_drafts.py": [
       {
         "kind": "decision_label",
-        "hash": "553e681a8b93c306e0355bf1257a0be1436265df97979e69503ba66f95ceb02e",
+        "hash": "172f1d4cb50ef28f7a17455254bae3948d0aa51949c6e57dd94e9bbc65a35a1c",
         "count": 1
       }
     ],

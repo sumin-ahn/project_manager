@@ -78,7 +78,7 @@ def _write_page(domain_dir: Path, name: str, *, frontmatter: str, body: str = "\
 
 
 def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    """tmp fixture 안에서만 git 형상을 만드는 checked runner."""
+    """tmp fixture 안에서만 git 구성을 만드는 checked runner."""
     return subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -126,7 +126,7 @@ def test_parse_page_full(dm, tmp_path):
         tmp_path,
         "review.md",
         frontmatter=(
-            "title: 이중 게이트 리뷰\n"
+            "title: 이중 확인 리뷰\n"
             "type: guide\n"
             "covers:\n"
             "  - .project_manager/tools/additional_reviewer.py\n"
@@ -137,7 +137,7 @@ def test_parse_page_full(dm, tmp_path):
     )
     page = doc_page_store.parse_page(path)
     assert page["path"] == path
-    assert page["title"] == "이중 게이트 리뷰"
+    assert page["title"] == "이중 확인 리뷰"
     assert page["type"] == "guide"
     assert page["covers"] == [
         ".project_manager/tools/additional_reviewer.py",
@@ -515,7 +515,7 @@ def test_pages_for_touches_dir_touch_matches_trailing_double_star(dm, tmp_path):
 
 def test_pages_for_touches_directory_expansion_matches_exact_file_cover(
         dm, tmp_path, monkeypatch):
-    """실 board형 디렉토리 touch가 그 아래 exact 파일 cover 페이지를 소환한다."""
+    """실 board형 디렉토리 touch가 그 아래 exact 파일 cover 페이지를 불러온다."""
     tools_dir = tmp_path / ".project_manager" / "tools"
     tools_dir.mkdir(parents=True)
     (tools_dir / "domain.py").write_text("# covered\n", encoding="utf-8")
@@ -536,7 +536,7 @@ def test_pages_for_touches_directory_expansion_matches_exact_file_cover(
 
 
 def test_nonexistent_directory_shaped_touch_does_not_prefix_match(dm, tmp_path):
-    """실재 파일로 전개되지 않는 경로는 하위 cover 원문 prefix만으로 소환하지 않는다."""
+    """실재 파일로 전개되지 않는 경로는 하위 cover 원문 prefix만으로 불러오지 않는다."""
     pages = [{
         "path": Path("domain.md"),
         "title": "domain-layer",
@@ -548,7 +548,7 @@ def test_nonexistent_directory_shaped_touch_does_not_prefix_match(dm, tmp_path):
 
 def test_pages_for_path_preserved_owner_filters_same_relative_path(
         dm, tmp_path, monkeypatch):
-    """동일 상대경로여도 normalized owner와 다른 repo 페이지는 소환하지 않는다."""
+    """동일 상대경로여도 normalized owner와 다른 repo 페이지는 불러오지 않는다."""
     workspace = tmp_path / "work/project_manager_1"
     workspace.mkdir(parents=True)
     path_type = type(
@@ -628,7 +628,7 @@ def test_same_bare_linked_worktree_slots_match_repository_identity(
 
 def test_domain_real_git_runner_wires_stdout_only_shared_policy(
         dm, tmp_path, monkeypatch):
-    """domain factory 이름/DI seam은 유지하며 공용 runner에 기존 정책만 전달한다."""
+    """domain factory 이름/DI 교체 지점은 유지하며 공용 runner에 기존 정책만 전달한다."""
     captured = {}
     sentinel = lambda _argv: (0, "sentinel")
 
@@ -657,9 +657,9 @@ def test_multi_repo_same_relative_touch_matches_only_page_owner_checkout(
     }
     for slot in slots.values():
         _init_git_repo(tmp_path / slot)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":['
         '{"slot":"work/repo_a_1","repo":"repo_a","state":"leased"},'
         '{"slot":"work/repo_b_1","repo":"repo_b","state":"leased"}'
@@ -745,7 +745,7 @@ def test_normalized_touch_non_git_checkout_warns_and_does_not_match(
     }
     monkeypatch.setattr(doc_staleness, "_page_owner_repo", lambda home, _page: (workspace, None))
     # "이 자리는 git 저장소가 아니다"가 이 테스트의 입력이다 — 픽스처가 어디에 있느냐로
-    # 그 답이 갈리지 않게 엔진의 runner 주입 seam 으로 답을 명시한다.
+    # 그 답이 갈리지 않게 엔진의 runner 주입 교체 지점으로 답을 명시한다.
     monkeypatch.setattr(doc_staleness, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     doc_staleness._REPOSITORY_IDENTITY_CACHE.clear()
     doc_staleness._REPOSITORY_MATCH_CACHE.clear()
@@ -879,13 +879,13 @@ def test_pages_for_touches_drops_non_string_touch(dm, touch_pages):
 
 def test_pages_for_touches_strips_whitespace(dm, touch_pages):
     # 선행/후행 공백이 붙은 touch(직접 API 호출 시)도 strip 후 매칭(T-0089·uncovered_paths
-    # 동형). strip 없으면 covers 글롭이 정확 경로로만 매치해 silent-miss 한다.
+    # 와 같은 방식). strip 없으면 covers 글롭이 정확 경로로만 매치해 silent-miss 한다.
     hits = doc_affected.pages_for_touches(pm_paths.home_at(dm.REPO), ["  src/analysis/x.py  ", "\tsrc/core/y.py\n"], touch_pages)
     assert _titles(hits) == ["analysis", "core", "wide"]
 
 
 def test_pages_for_touches_skips_blank_touch(dm, touch_pages):
-    # 공백/빈 touch 원소는 strip 후 건너뛴다(uncovered_paths 동형·crash 0·매치 0).
+    # 공백/빈 touch 원소는 strip 후 건너뛴다(uncovered_paths 와 같은 방식·crash 0·매치 0).
     hits = doc_affected.pages_for_touches(pm_paths.home_at(dm.REPO), ["   ", "", "src/analysis/x.py"], touch_pages)
     assert _titles(hits) == ["analysis", "wide"]
 
@@ -951,12 +951,12 @@ def test_affected_ticket_reads_touches_via_board(dm, tmp_path, monkeypatch, caps
 
 
 def test_affected_ticket_normalizes_pm_home_worktree_touch(dm, tmp_path, monkeypatch, capsys):
-    """PM-home 좌표 touches도 active lease 검증 후 repo-relative covers를 실제 소환한다."""
+    """PM-home 좌표 touches도 active lease 검증 후 repo-relative covers를 실제 불러온다."""
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"","state":"idle"}]}',
         encoding="utf-8",
@@ -998,9 +998,9 @@ def test_affected_ticket_directory_touch_summons_exact_cover(
     tools_dir = tmp_path / slot / ".project_manager" / "tools"
     tools_dir.mkdir(parents=True)
     (tools_dir / "domain.py").write_text("# covered\n", encoding="utf-8")
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"","state":"idle"}]}',
         encoding="utf-8",
@@ -1039,9 +1039,9 @@ def test_affected_ticket_worktree_slot_mismatch_warns_and_continues(
     """read-only 조회는 오류 경로를 loud 경고하고 유효한 나머지 touch를 계속 처리한다."""
     registered = "work/project_manager_1"
     (tmp_path / registered).mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"T-0473","state":"leased"}]}',
         encoding="utf-8",
@@ -1075,12 +1075,12 @@ def test_affected_ticket_worktree_slot_mismatch_warns_and_continues(
 )
 def test_ticket_touch_unsafe_relative_warns_and_is_excluded_from_query(
         dm, tmp_path, monkeypatch, capsys, touch, message):
-    """조회 표면은 위험 상대부를 원문으로 넘기지 않고 경고 후 제외한다."""
+    """조회 명령은 위험 상대부를 원문으로 넘기지 않고 경고 후 제외한다."""
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"T-0473","state":"leased"}]}',
         encoding="utf-8",
@@ -1141,7 +1141,7 @@ class _FakeBoard:
 
 def test_touches_from_ticket_strips_list_whitespace_and_drops_empty(dm, tmp_path, monkeypatch):
     # frontmatter touches 리스트 원소의 앞뒤 공백 strip·빈 토큰 drop — "  src/b.py"
-    # 같은 값이 매칭에서 조용히 누락되지 않게 (--touches CLI 와 동형).
+    # 같은 값이 매칭에서 조용히 누락되지 않게 (--touches CLI 와 같은 방식).
     board = _FakeBoard(tmp_path, ["src/a.py", " src/b.py", "  ", "\tsrc/c.py "])
     monkeypatch.setattr(ticket_store, "find_ticket", lambda _home, _tid: ("open", board._path))
     assert domain_cmd._touches_from_ticket(pm_paths.home_at(dm.REPO), "T-9999") == ["src/a.py", "src/b.py", "src/c.py"]
@@ -1284,7 +1284,7 @@ def test_page_stale_broken_updated_returns_none(dm):
 
 def test_page_stale_all_unmappable_covers_returns_none(dm):
     # 모든 covers 글롭이 미지원 문법(비-경계 `**`) → covers_glob_pathspec None → 매핑 가능
-    # pathspec 0 → fail-soft None(date-축은 unmappable 을 조용히 흡수·간이 신호).
+    # pathspec 0 → fail-soft None(date 기준은 unmappable 을 조용히 넘김·간이 신호).
     page = {"path": Path("/d/p.md"), "covers": ["src/**.py", "a**b"],
             "updated": "2026-06-19"}
     assert doc_staleness.page_stale(pm_paths.home_at(dm.REPO), page, git_runner=_fixed_git("2026-06-20T00:00:00Z\n")) is None
@@ -1302,7 +1302,7 @@ def test_page_stale_runner_raises_returns_none(dm):
 
 def test_page_stale_passes_pathspecs_to_git(dm):
     # covers 의 여러 글롭이 원본-글롭 :(glob) magic pathspec 으로 변환돼 단일 git log 에 합쳐
-    # 전달된다(손실 접두사 아님 — sha-축과 동일 판정 기계 covers_glob_pathspec).
+    # 전달된다(손실 접두사 아님 — sha 기준과 동일 판정 기계 covers_glob_pathspec).
     captured = {}
 
     def runner(argv):
@@ -1317,9 +1317,9 @@ def test_page_stale_passes_pathspecs_to_git(dm):
     assert argv[4:] == [":(glob)src/analysis/**", ":(glob)tools/exact.py"]
 
 
-# ── 글롭 fidelity (T-0459 · date-축도 원본-글롭 판정·red-첫) ────────────────────
-# 종전 손실 접두사(covers_to_pathspec)가 date-축에서 (a) 단일 `*` 를 디렉토리로 과확장,
-# (b) 접두사-없는 글롭을 통째 skip(false-green) 하던 것을 sha-축과 동일한 covers_glob_pathspec
+# ── 글롭 fidelity (T-0459 · date 기준도 원본-글롭 판정·red-첫) ────────────────────
+# 종전 손실 접두사(covers_to_pathspec)가 date 기준에서 (a) 단일 `*` 를 디렉토리로 과확장,
+# (b) 접두사-없는 글롭을 통째 skip(false-green) 하던 것을 sha 기준과 동일한 covers_glob_pathspec
 # (`:(glob)` magic)로 통일해 교정한다. 두 테스트 모두 종전 covers_to_pathspec 동작에선 red.
 
 
@@ -1608,10 +1608,11 @@ def test_lint_oversized_threshold_is_strict_gt(dm, tmp_path, monkeypatch):
 
 # ── domain lint history (현재-진실 페이지의 변경 이력 누적·T-0503) ──────────────
 # 크기(oversized)가 아니라 **누적 자체**를 본다 — 페이지를 쪼개는 건 증상 유예이고, 원인은
-# 현재-진실 문서에 세션 delta 를 쓰는 관행이다. 아래는 검출축(⓵ 스탬프-머리 ⓶ 스탬프+라벨)과
-# 오탐 경계(본문 안 근거 인용은 대상 아님)를 함께 고정한다.
+# 현재-진실 문서에 세션 변경 기록을 쓰는 관행이다. 아래는 검출 기준(⓵ 스탬프-머리 ⓶ 스탬프+라벨)과
+# 오탐 경계(본문 안 근거 인용은 대상 아님)를 함께 고정한다. `_HISTORY_CHANGE_BLOCK` 의 라벨은
+# 채택자 문서가 실제로 쓰는 영어 라벨 그대로다(이력 라벨 정규식의 그 가지를 확인한다).
 
-_HISTORY_DELTA_BLOCK = (
+_HISTORY_CHANGE_BLOCK = (
     "\n> **2026-07-26 (PM 12차) delta ([[T-0467]]):** 타임아웃 기본값을 올렸다.\n"
 )
 
@@ -1620,13 +1621,13 @@ def _history_details(findings: list[tuple[str, str, str]]) -> list[str]:
     return [detail for kind, _page, detail in findings if kind == "history"]
 
 
-def test_lint_detects_session_delta_blockquote(dm, tmp_path, monkeypatch, capsys):
-    # `> **YYYY-MM-DD (PM N차) delta:**` = 세션 delta 항목 → history finding.
+def test_lint_detects_session_change_blockquote(dm, tmp_path, monkeypatch, capsys):
+    # `> **YYYY-MM-DD (PM N차) <라벨>:**` = 세션 변경 기록 항목 → history finding.
     domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     _write_page(
         domain_dir, "adapter.md",
         frontmatter="title: 어댑터\ntype: concept",
-        body="\n지금의 형상은 이렇다. [[peer]]\n" + _HISTORY_DELTA_BLOCK,
+        body="\n지금의 구성은 이렇다. [[peer]]\n" + _HISTORY_CHANGE_BLOCK,
     )
     _write_page(
         domain_dir, "peer.md",
@@ -1642,7 +1643,7 @@ def test_lint_detects_session_delta_blockquote(dm, tmp_path, monkeypatch, capsys
 
 
 def test_lint_history_sensitivity_fires_on_reaccrual(dm, tmp_path, monkeypatch):
-    """정리된 페이지는 clean 이고, delta 절을 **다시 쌓으면** 발화한다(재발 방지 sensitivity)."""
+    """정리된 페이지는 clean 이고, 변경 기록 절을 **다시 쌓으면** 알림을 낸다(재발 방지 sensitivity)."""
     page = _write_page(
         tmp_path, "clean.md",
         frontmatter="title: 정리됨\ntype: concept",
@@ -1652,8 +1653,8 @@ def test_lint_history_sensitivity_fires_on_reaccrual(dm, tmp_path, monkeypatch):
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
     assert _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO)))) == []
 
-    # 다음 세션이 같은 관행으로 delta 를 덧붙인다 → 가드가 다시 운다.
-    page.write_text(page.read_text(encoding="utf-8") + _HISTORY_DELTA_BLOCK,
+    # 다음 세션이 같은 관행으로 변경 기록을 덧붙인다 → 가드가 다시 운다.
+    page.write_text(page.read_text(encoding="utf-8") + _HISTORY_CHANGE_BLOCK,
                     encoding="utf-8")
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
     details = _history_details(doc_lint.lint_pages(pm_paths.home_at(dm.REPO), pages, domain_dir=pm_paths.domain_dir(pm_paths.home_at(dm.REPO)), manifest_path=pm_paths.engine_manifest(pm_paths.home_at(dm.REPO))))
@@ -1662,7 +1663,7 @@ def test_lint_history_sensitivity_fires_on_reaccrual(dm, tmp_path, monkeypatch):
 
 
 def test_lint_history_detects_stamp_headed_heading(dm, tmp_path, monkeypatch):
-    # 절을 개념이 아니라 변경 단위(티켓·릴리즈)로 조직한 헤딩도 히스토리 축이다.
+    # 절을 개념이 아니라 변경 단위(티켓·릴리즈)로 조직한 헤딩도 히스토리 기준이다.
     _write_page(
         tmp_path, "sections.md",
         frontmatter="title: 절\ntype: concept",
@@ -1698,7 +1699,7 @@ def test_lint_history_counts_run_on_dated_quote_list(dm, tmp_path, monkeypatch):
 
 
 def test_lint_history_detects_label_only_heading(dm, tmp_path, monkeypatch):
-    """제목이 이력 절 이름이면 스탬프가 한 줄도 없어도 잡는다(스탬프 축 단독의 미탐 구멍).
+    """제목이 이력 절 이름이면 스탬프가 한 줄도 없어도 잡는다(스탬프 기준 단독의 미탐 구멍).
 
     `## 변경 이력` 아래 계보를 쌓으면 항목마다 날짜를 안 달아도 그 절 자체가 자라는 이력이다.
     """
@@ -1718,8 +1719,8 @@ def test_lint_history_detects_label_only_heading(dm, tmp_path, monkeypatch):
     assert "3개" in details[0]
 
 
-def test_lint_history_label_only_axis_is_start_anchored(dm, tmp_path, monkeypatch):
-    """이력 절 이름 축은 **시작-앵커** — 기능 서술 헤딩·산문의 같은 낱말은 안 잡는다."""
+def test_lint_history_label_only_rule_is_start_anchored(dm, tmp_path, monkeypatch):
+    """이력 절 이름 기준은 **시작 고정 패턴** — 기능 서술 헤딩·산문의 같은 낱말은 안 잡는다."""
     _write_page(
         tmp_path, "feature.md",
         frontmatter="title: 기능\ntype: concept",
@@ -1734,17 +1735,17 @@ def test_lint_history_label_only_axis_is_start_anchored(dm, tmp_path, monkeypatc
 
 
 def test_lint_history_detects_bold_leadin_outside_quote(dm, tmp_path, monkeypatch):
-    """인용 밖 줄머리 굵은 도입부(`- **vX.Y.Z … delta:** …`)도 스탬프+라벨이면 잡는다.
+    """인용 밖 줄머리 굵은 도입부(`- **vX.Y.Z … 재검증:** …`)도 스탬프+라벨이면 잡는다.
 
-    delta 를 blockquote 가 아니라 그냥 불릿으로 쓰는 형태 — 이 축이 없으면 인용만 피해서
-    같은 누적을 계속할 수 있다(축 제거 시 red 가 나는지로만 이 분기가 검증된다).
+    변경 기록을 blockquote 가 아니라 그냥 불릿으로 쓰는 형태 — 이 기준이 없으면 인용만 피해서
+    같은 누적을 계속할 수 있다(기준 제거 시 red 가 나는지로만 이 분기가 검증된다).
     """
     _write_page(
         tmp_path, "bulleted.md",
         frontmatter="title: 불릿\ntype: concept",
         body=(
             "\n## 본문\n"
-            "- **v1.5.2 코드 재검증 delta:** 이번 릴리즈에서 이렇게 바뀌었다.\n"
+            "- **v1.5.2 코드 재검증:** 이번 릴리즈에서 이렇게 바뀌었다.\n"
             "- **지금 유효한 계약**: 이건 정상 현재-진실 서술이다.\n"
         ),
     )
@@ -1774,13 +1775,13 @@ def test_lint_history_ignores_evidence_citation_in_prose(dm, tmp_path, monkeypat
 
 
 def test_lint_history_ignores_fenced_code(dm, tmp_path, monkeypatch):
-    # 코드펜스 안의 delta-형 예시는 실제 이력 항목이 아니다(문서가 규칙을 *설명*하는 경우).
+    # 코드펜스 안의 변경 기록형 예시는 실제 이력 항목이 아니다(문서가 규칙을 *설명*하는 경우).
     _write_page(
         tmp_path, "fenced.md",
         frontmatter="title: 펜스\ntype: concept",
         body=(
             "\n규칙 예시:\n\n```\n"
-            "> **2026-07-26 (PM 12차) delta:** 이렇게 쓰지 마라.\n"
+            "> **2026-07-26 (PM 12차) 변경 기록:** 이렇게 쓰지 마라.\n"
             "```\n"
         ),
     )
@@ -1790,11 +1791,11 @@ def test_lint_history_ignores_fenced_code(dm, tmp_path, monkeypatch):
 
 
 def test_lint_history_applies_to_research_type(dm, tmp_path, monkeypatch):
-    """타입 분기 없음 — research 페이지의 세션 delta 도 같은 규칙으로 잡힌다."""
+    """타입 분기 없음 — research 페이지의 세션 변경 기록도 같은 규칙으로 잡힌다."""
     _write_page(
         tmp_path, "research.md",
         frontmatter="title: 조사\ntype: research",
-        body="\n조사 결과.\n" + _HISTORY_DELTA_BLOCK,
+        body="\n조사 결과.\n" + _HISTORY_CHANGE_BLOCK,
     )
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, page, **kw: None)
     pages = doc_page_store.load_pages(domain_dir=tmp_path)
@@ -1806,7 +1807,7 @@ def test_lint_history_is_independent_of_page_size(dm, tmp_path, monkeypatch):
     _write_page(
         tmp_path, "small.md",
         frontmatter="title: 작음\ntype: concept",
-        body="\n짧다.\n" + _HISTORY_DELTA_BLOCK,
+        body="\n짧다.\n" + _HISTORY_CHANGE_BLOCK,
     )
     _write_page(
         tmp_path, "big.md",
@@ -1821,9 +1822,9 @@ def test_lint_history_is_independent_of_page_size(dm, tmp_path, monkeypatch):
 
 
 def test_history_detail_caps_quoted_leadins(dm):
-    # detail 은 lead-in 을 상한까지만 인용하고 나머지는 건수로 접는다(출력 부피 통제).
+    # detail 은 lead-in 을 상한까지만 인용하고 나머지는 건수로 줄인다(출력 부피 통제).
     body = "".join(
-        f"\n> **2026-08-0{i} (PM 3{i}차) delta:** {'가' * 200}\n"
+        f"\n> **2026-08-0{i} (PM 3{i}차) 변경 기록:** {'가' * 200}\n"
         for i in range(1, 6)
     )
     leadins = doc_pages.history_leadins(body)
@@ -1906,8 +1907,8 @@ def test_lint_empty_domain_is_clean(dm, tmp_path, monkeypatch, capsys):
 
 
 def test_page_slug_is_file_stem(dm, tmp_path):
-    page = {"path": tmp_path / "dual-gate-review.md", "title": "이중 게이트"}
-    assert doc_pages.page_slug(page) == "dual-gate-review"
+    page = {"path": tmp_path / "two-step-review.md", "title": "이중 확인"}
+    assert doc_pages.page_slug(page) == "two-step-review"
 
 
 # ── uncovered_paths (coverage gap — 담당 covers 없는 touch·T-0084) ────────────
@@ -2422,7 +2423,7 @@ def test_capture_all_gaps_shows_complete_directory_expansion(
 
 def test_capture_folds_only_large_directory_group_and_keeps_file_touches(
         dm, tmp_path, monkeypatch, capsys):
-    """혼합 입력에서 큰 디렉토리 그룹만 접고 독립 파일 touch는 전량 표시한다."""
+    """혼합 입력에서 큰 디렉토리 그룹만 줄이고 독립 파일 touch는 전량 표시한다."""
     bulk = tmp_path / "bulk"
     bulk.mkdir()
     total = domain_cmd.DIRECTORY_GAP_DISPLAY_LIMIT + 3
@@ -2480,10 +2481,10 @@ def test_capture_no_change_prints_none_message(dm, tmp_path, monkeypatch, capsys
 
 def test_capture_affected_prints_current_truth_replacement_rule(
         dm, tmp_path, monkeypatch, capsys):
-    """채록 안내가 '갱신=현재-진실 교체'를 명시한다 — 세션 delta 유도 금지(T-0503 ④).
+    """채록 안내가 '갱신=현재-진실 교체'를 명시한다 — 세션 변경 기록 유도 금지(T-0503 ④).
 
     옛 안내는 "영향 페이지 (갱신 검토)" 뿐이라, 세션 done ticket 목록을 손에 든 시점의 자연스러운
-    행동이 *그 세션 delta 를 페이지에 덧붙이는 것*이었다(실측: 11 페이지에 44 항목 누적). 이제
+    행동이 *그 세션 변경 기록을 페이지에 덧붙이는 것*이었다(실측: 11 페이지에 44 항목 누적). 이제
     같은 지점에서 히스토리의 행선지(log/ADR)를 함께 알린다.
     """
     domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
@@ -2635,12 +2636,12 @@ def test_capture_tickets_aggregates_touches(dm, tmp_path, monkeypatch, capsys):
 
 def test_capture_tickets_normalizes_pm_home_worktree_touches(
         dm, tmp_path, monkeypatch, capsys):
-    """capture --tickets도 affected와 같은 공용 좌표 seam을 거쳐 coverage를 찾는다."""
+    """capture --tickets도 affected와 같은 공용 좌표 함수를 거쳐 coverage를 찾는다."""
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"T-0473","state":"leased"}]}',
         encoding="utf-8",
@@ -2680,9 +2681,9 @@ def test_capture_upstream_touch_matching_self_page_warns_repin_once(
     """covers는 맞지만 기본 self 채널 페이지뿐이면 gap과 함께 repin advisory 한 줄을 낸다."""
     slot = "work/project_manager_1"
     (tmp_path / slot).mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"T-0473","state":"leased"}]}',
         encoding="utf-8",
@@ -2718,9 +2719,9 @@ def test_capture_tickets_bad_coordinate_warns_and_keeps_valid_paths(
     """capture 배치도 오류 touch 하나를 경고하되 유효한 나머지 영향/gap 계산을 계속한다."""
     registered = "work/project_manager_1"
     (tmp_path / registered).mkdir(parents=True)
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    record_path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
         '{"leases":[{"slot":"work/project_manager_1","repo":"project_manager",'
         '"session":"","state":"idle"}]}',
         encoding="utf-8",
@@ -2778,7 +2779,7 @@ def test_capture_tickets_space_separated_nargs(dm, tmp_path, monkeypatch, capsys
 
 
 def test_capture_tickets_mixed_space_and_comma(dm, tmp_path, monkeypatch, capsys):
-    # 혼합 형식 — 일부 argv 는 콤마분리, 일부는 공백 나열. join(",")→split 이 양형식을 흡수해
+    # 혼합 형식 — 일부 argv 는 콤마분리, 일부는 공백 나열. join(",")→split 이 양형식을 받아들여
     # 세 ticket 모두 집계(콤마-단일-문자열 backward compat 은 test_capture_tickets_aggregates_touches
     # 가 이미 잠근다 — 여기선 혼합·nargs 경로를 잠근다·T-0346).
     domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
@@ -2823,13 +2824,13 @@ def test_capture_draft_writes_scaffold_with_draft_status(dm, tmp_path):
     text = path.read_text(encoding="utf-8")
     assert 'title: "Factor Beta Pipeline"' in text
     assert "status: draft" in text          # index 제외 진실
-    assert "repo: self" in text             # 소유 시계 명시(_template과 정합).
+    assert "repo: self" in text             # 소유 시계 명시(_template과 일치).
     assert "derived: false" in text         # 사람 author
     assert "updated: 2026-06-27" in text
     assert "covers: [src/analysis/**]" in text
-    # source 미지정 → 자유서술 placeholder(절대경로 박제 금지·T-0174).
+    # source 미지정 → 자유서술 placeholder(절대경로 기록 금지·T-0174).
     assert f'source: "{doc_drafts.SOURCE_TODO_PLACEHOLDER}"' in text
-    # _template.md 골격 절.
+    # _template.md 빈 양식 절.
     assert "# Factor Beta Pipeline" in text
     assert "## 조사 결과" in text
 
@@ -2942,7 +2943,7 @@ def test_capture_draft_non_ascii_title_falls_back_to_draft_slug(dm, tmp_path):
 
 
 def test_capture_draft_no_auto_commit_git_status_unchanged(dm, tmp_path):
-    # **no-auto-commit (검토 게이트)**: 임시 git repo 에서 capture-draft 후 staging 변화 0.
+    # **no-auto-commit (검토 통과 조건)**: 임시 git repo 에서 capture-draft 후 staging 변화 0.
     # capture-draft 는 파일을 *쓰되* git add/commit 을 절대 호출하지 않는다 — untracked 로만
     # 남아 사람이 검토(promote)할 때까지 staged 변화가 없다.
     import subprocess
@@ -3074,20 +3075,20 @@ def test_capture_draft_covers_csv_parsed(dm, tmp_path, monkeypatch):
     assert "TODO PM: covers" not in text  # covers 있으므로 placeholder 없음.
 
 
-# ── T-0174: prose `##` 강등 + source 경로 정규화 ──────────────────────────────
-# prose 의 `## ` 헤딩을 `### ` 로 강등해 scaffold 절(`## 조사 결과`)과 미충돌. source: 는
-# repo 내 → 상대경로·stdin/미지정/repo밖(tmp) → placeholder(절대경로 박제·dangling 방지).
+# ── T-0174: prose `##` 수준 낮춤 + source 경로 정규화 ──────────────────────────────
+# prose 의 `## ` 헤딩을 `### ` 로 낮춰 scaffold 절(`## 조사 결과`)과 미충돌. source: 는
+# repo 내 → 상대경로·stdin/미지정/repo밖(tmp) → placeholder(절대경로 기록·dangling 방지).
 
 
 def test_capture_draft_demotes_prose_h2_to_h3(dm, tmp_path):
-    # prose 의 라인-시작 `## ` 가 `### ` 로 강등 → scaffold 절과 같은 레벨 형제로 안 뜬다.
+    # prose 의 라인-시작 `## ` 가 `### ` 로 낮춤 → scaffold 절과 같은 레벨 형제로 안 뜬다.
     prose = "서론.\n\n## tier 정의\ntier1 = ...\n\n## tier 판정\ntier2 = ...\n"
-    path = doc_page_store.write_draft_page(pm_paths.home_at(dm.REPO), "강등", slug="demote", source=None, domain_dir=tmp_path)
-    # 직접 _draft_body 로 prose 강등을 검증(source 정규화와 분리).
-    body = doc_drafts._draft_body("강등", [], prose)
+    path = doc_page_store.write_draft_page(pm_paths.home_at(dm.REPO), "수준 낮춤", slug="demote", source=None, domain_dir=tmp_path)
+    # 직접 _draft_body 로 prose 수준 낮춤을 검증(source 정규화와 분리).
+    body = doc_drafts._draft_body("수준 낮춤", [], prose)
     assert "### tier 정의" in body
     assert "### tier 판정" in body
-    # 강등 후 본문에 라인-시작 `## tier` 는 없다(scaffold 절과 충돌 안 함).
+    # 낮춘 뒤 본문에 라인-시작 `## tier` 는 없다(scaffold 절과 충돌 안 함).
     assert "\n## tier" not in body
     # scaffold 절 자체(`## 조사 결과` 등)는 보존.
     assert "## 조사 결과" in body
@@ -3095,7 +3096,7 @@ def test_capture_draft_demotes_prose_h2_to_h3(dm, tmp_path):
 
 
 def test_capture_draft_demote_preserves_h3_and_deeper(dm, tmp_path):
-    # `###`+ 는 이미 scaffold 절보다 깊어 충돌 안 함 → 손대지 않는다(`##` 만 한 단계 강등).
+    # `###`+ 는 이미 scaffold 절보다 깊어 충돌 안 함 → 손대지 않는다(`##` 만 한 단계 낮춤).
     prose = "## H2\n### H3 그대로\n#### H4 그대로\n"
     body = doc_drafts._draft_body("깊이", [], prose)
     assert "### H2" in body          # H2 → H3
@@ -3106,40 +3107,40 @@ def test_capture_draft_demote_preserves_h3_and_deeper(dm, tmp_path):
 
 
 def test_capture_draft_demote_skips_h2_inside_code_fence(dm, tmp_path):
-    # 코드펜스(```) 안의 `## ` 는 코드/주석이라 강등 제외 — 펜스 토글 추적.
+    # 코드펜스(```) 안의 `## ` 는 코드/주석이라 수준 낮춤 제외 — 펜스 토글 추적.
     prose = (
         "## 실제 헤딩\n\n"
         "```sh\n"
-        "## 이건 shell 주석 (강등 금지)\n"
+        "## 이건 shell 주석 (수준 낮춤 금지)\n"
         "echo hi\n"
         "```\n\n"
         "## 펜스 뒤 헤딩\n"
     )
     body = doc_drafts._draft_body("펜스", [], prose)
-    # 펜스 밖 헤딩은 강등.
+    # 펜스 밖 헤딩은 낮춘다.
     assert "### 실제 헤딩" in body
     assert "### 펜스 뒤 헤딩" in body
-    # 펜스 안 `## ` 는 원형 보존(강등 안 함).
-    assert "## 이건 shell 주석 (강등 금지)" in body
+    # 펜스 안 `## ` 는 원형 보존(낮추지 않음).
+    assert "## 이건 shell 주석 (수준 낮춤 금지)" in body
     assert "### 이건 shell 주석" not in body
 
 
 def test_capture_draft_demote_skips_h2_inside_tilde_fence(dm, tmp_path):
-    # 틸드 펜스(~~~) 안의 `## ` 도 강등 제외(CommonMark 는 ~~~ 도 코드펜스·백틱과 동형).
+    # 틸드 펜스(~~~) 안의 `## ` 도 수준 낮춤 제외(CommonMark 는 ~~~ 도 코드펜스·백틱과 같은 구조).
     prose = (
         "## 실제 헤딩\n\n"
         "~~~sh\n"
-        "## 이건 펜스 안 주석 (강등 금지)\n"
+        "## 이건 펜스 안 주석 (수준 낮춤 금지)\n"
         "echo hi\n"
         "~~~\n\n"
         "## 펜스 뒤 헤딩\n"
     )
     body = doc_drafts._draft_body("틸드", [], prose)
-    # 펜스 밖 헤딩은 강등.
+    # 펜스 밖 헤딩은 낮춘다.
     assert "### 실제 헤딩" in body
     assert "### 펜스 뒤 헤딩" in body
-    # 틸드 펜스 안 `## ` 는 원형 보존(강등 안 함).
-    assert "## 이건 펜스 안 주석 (강등 금지)" in body
+    # 틸드 펜스 안 `## ` 는 원형 보존(낮추지 않음).
+    assert "## 이건 펜스 안 주석 (수준 낮춤 금지)" in body
     assert "### 이건 펜스 안 주석" not in body
 
 
@@ -3148,27 +3149,27 @@ def test_capture_draft_demote_mixed_fence_no_mistoggle(dm, tmp_path):
     # 닫는 펜스는 여는 펜스와 같은 문자여야). 그래서 ``` 사이 `## ` 도 (틸드 펜스 안이라) 보호.
     prose = (
         "~~~\n"
-        "## 틸드 펜스 안 (강등 금지)\n"
+        "## 틸드 펜스 안 (수준 낮춤 금지)\n"
         "```\n"
-        "## 안쪽 백틱 라인 사이 (여전히 틸드 펜스 안·강등 금지)\n"
+        "## 안쪽 백틱 라인 사이 (여전히 틸드 펜스 안·수준 낮춤 금지)\n"
         "```\n"
-        "## 아직 틸드 펜스 안 (강등 금지)\n"
+        "## 아직 틸드 펜스 안 (수준 낮춤 금지)\n"
         "~~~\n\n"
-        "## 펜스 완전히 닫힌 뒤 (강등)\n"
+        "## 펜스 완전히 닫힌 뒤 (수준 낮춤)\n"
     )
     body = doc_drafts._draft_body("믹스", [], prose)
     # 틸드 펜스 안의 모든 `## ` 는 (중간 ``` 가 닫지 못하므로) 보호된다.
-    assert "## 틸드 펜스 안 (강등 금지)" in body
-    assert "## 안쪽 백틱 라인 사이 (여전히 틸드 펜스 안·강등 금지)" in body
-    assert "## 아직 틸드 펜스 안 (강등 금지)" in body
+    assert "## 틸드 펜스 안 (수준 낮춤 금지)" in body
+    assert "## 안쪽 백틱 라인 사이 (여전히 틸드 펜스 안·수준 낮춤 금지)" in body
+    assert "## 아직 틸드 펜스 안 (수준 낮춤 금지)" in body
     assert "### 틸드 펜스 안" not in body
     assert "### 안쪽 백틱 라인" not in body
-    # 틸드 펜스가 완전히 닫힌 뒤의 헤딩만 강등.
-    assert "### 펜스 완전히 닫힌 뒤 (강등)" in body
+    # 틸드 펜스가 완전히 닫힌 뒤의 헤딩만 낮춘다.
+    assert "### 펜스 완전히 닫힌 뒤 (수준 낮춤)" in body
 
 
 def test_capture_draft_source_stdin_is_placeholder(dm, tmp_path, monkeypatch):
-    # --source - (stdin) → source: 는 자유서술 placeholder(stdin 은 경로 박제 불가).
+    # --source - (stdin) → source: 는 자유서술 placeholder(stdin 은 경로 기록 불가).
     domain_dir = _declare_domain_dir(dm, monkeypatch, tmp_path)
     import io
     monkeypatch.setattr("sys.stdin", io.StringIO("stdin prose.\n"))
@@ -3180,7 +3181,7 @@ def test_capture_draft_source_stdin_is_placeholder(dm, tmp_path, monkeypatch):
 
 
 def test_capture_draft_source_outside_repo_is_placeholder(dm, tmp_path, monkeypatch):
-    # repo 밖 source → placeholder(절대경로 박제 금지·dangling 방지). repo 경계는 픽스처가
+    # repo 밖 source → placeholder(절대경로 기록 금지·dangling 방지). repo 경계는 픽스처가
     # 선언한다 — 임시 루트 위치가 "밖인지"를 정하면 판정이 위치의 함수가 된다.
     monkeypatch.setattr(dm, "REPO", tmp_path / "repo")
     src = tmp_path / "scratch.md"
@@ -3188,7 +3189,7 @@ def test_capture_draft_source_outside_repo_is_placeholder(dm, tmp_path, monkeypa
     path = doc_page_store.write_draft_page(pm_paths.home_at(dm.REPO), "밖", slug="outside", source=str(src), domain_dir=tmp_path)
     text = path.read_text(encoding="utf-8")
     assert f'source: "{doc_drafts.SOURCE_TODO_PLACEHOLDER}"' in text
-    assert str(src) not in text          # 절대경로 박제 안 됨.
+    assert str(src) not in text          # 절대경로 기록 안 됨.
     assert str(tmp_path) not in text     # 일시 디렉토리 경로도 안 박힘.
 
 
@@ -3202,7 +3203,7 @@ def test_capture_draft_source_inside_repo_is_relative(dm, tmp_path):
         path = doc_page_store.write_draft_page(pm_paths.home_at(dm.REPO), "안", slug="inside", source=str(src), domain_dir=tmp_path)
         text = path.read_text(encoding="utf-8")
         assert f'source: "{rel}"' in text         # 상대경로.
-        assert str(dm.REPO) not in text           # 절대경로 prefix 박제 안 됨.
+        assert str(dm.REPO) not in text           # 절대경로 prefix 기록 안 됨.
     finally:
         src.unlink()
         # 빈 scratchpad 디렉토리 정리(테스트 hermetic — repo 상태 무변화).
@@ -3213,11 +3214,11 @@ def test_capture_draft_source_inside_repo_is_relative(dm, tmp_path):
 
 
 def test_capture_draft_source_unspecified_is_placeholder(dm, tmp_path):
-    # --source 미지정(None) → source: 는 placeholder(절대경로/`(none)` 박제 안 함).
+    # --source 미지정(None) → source: 는 placeholder(절대경로/`(none)` 기록 안 함).
     path = doc_page_store.write_draft_page(pm_paths.home_at(dm.REPO), "미지정", slug="unspec", source=None, domain_dir=tmp_path)
     text = path.read_text(encoding="utf-8")
     assert f'source: "{doc_drafts.SOURCE_TODO_PLACEHOLDER}"' in text
-    assert '"(none)"' not in text  # 옛 `(none)` 라벨 박제 안 함.
+    assert '"(none)"' not in text  # 옛 `(none)` 라벨 기록 안 함.
 
 
 def test_normalize_source_label_unit(dm):

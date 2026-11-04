@@ -212,12 +212,12 @@ def _files_for_directory_touch(home, touch: str) -> list[str]:
     cache_hit = expansion_cache is not None and cache_key in expansion_cache
     cached_files = expansion_cache[cache_key] if cache_hit else None
     if cache_hit and cached_files is None:
-        # OSError 폴백도 성공 결과와 같은 배치 수명으로 고정한다. affected가 실패 폴백을
+        # OSError 대체 결과도 성공 결과와 같은 배치 수명으로 고정한다. affected가 실패 대체 결과를
         # 본 뒤 gap이 즉시 재시도해 파일별 covered로 뒤집히면 둘 다 0인 모순이 재발한다.
         return [touch]
     if not cache_hit:
         try:
-            # 이 seam 소비는 출하가 아니라 directory touch의 coverage 분모 전개다. 비었거나
+            # 이 공용 함수 소비는 출하가 아니라 directory touch의 coverage 분모 전개다. 비었거나
             # 전부 ignored인 디렉토리의 0건은 정당하게 gap에서 사라지므로 출하용 0건 승격을
             # 적용하지 않는다. 원 touch 보존은 열거 실패에만 해당하며 빈 분모와 의미가 다르다.
             relative_files = repo_files.list_repo_owned_files(
@@ -261,7 +261,7 @@ def _uncovered_path_groups(
     """touch별 ``(원 touch, uncovered 파일들)``을 돌려준다.
 
     전체 입력에서 gap 좌표를 dedup하되 원 touch별 그룹을 보존한다. ``cmd_capture``는
-    파일이 여러 개인 디렉토리 전개 그룹만 표시 상한으로 접고, 공개 ``uncovered_paths``
+    파일이 여러 개인 디렉토리 전개 그룹만 표시 상한으로 줄이고, 공개 ``uncovered_paths``
     API는 그룹들을 다시 평탄화해 기존처럼 전체 목록을 반환한다.
     """
     if not touches:
@@ -273,7 +273,7 @@ def _uncovered_path_groups(
             continue
         stripped = touch.strip()
         # NormalizedRepoPath는 str subclass에 owner/repo 메타데이터를 단다. 이미 trim된
-        # 좌표에서 touch.strip()을 호출하면 plain str로 강등되어 repo 귀속이 유실되므로
+        # 좌표에서 touch.strip()을 호출하면 plain str로 바뀌어 repo 귀속이 유실되므로
         # 값이 그대로면 원 객체를 보존한다. raw whitespace 입력만 plain trimmed str로 바꾼다.
         norm = touch if stripped == touch else stripped
         if not norm:
@@ -310,9 +310,9 @@ def uncovered_paths(
     신규 페이지. 실재 디렉토리 touch는 checkout의 파일 단위로 전개한 뒤 각 파일에
     `pages_for_path`를 적용해 매칭 0 인 것만 남긴다. recall도 같은 전개기를 사용하므로
     affected와 gap의 판정 단위는 항상 파일이다.
-    **발견 순서 보존·dedup 키=(owner, repo, 경로)**라 같은 repo 좌표 중복만 접고, 문자열
+    **발견 순서 보존·dedup 키=(owner, repo, 경로)**라 같은 repo 좌표 중복만 합치고, 문자열
     값이 같은 self/upstream·서로 다른 repo gap은 각각 보존한다. 비-문자열 touch·빈/공백
-    경로는 방어적으로 건너뛴다(`pages_for_touches` 동형). 빈/None touches → [].
+    경로는 방어적으로 건너뛴다(`pages_for_touches` 와 같은 방식). 빈/None touches → [].
 
     반환값은 출력 상한과 무관한 **전체 목록**이다. 기본 ``capture`` 출력만 디렉토리 touch별
     상한을 적용하며 ``capture --all-gaps``는 이 전체 목록과 같은 정보를 표시한다.
@@ -337,7 +337,7 @@ def pages_for_touches(home, touches: list[str] | None, pages: list[dict]) -> lis
     **union·dedup**(페이지 path 기준·발견 순서 안정)한다. 같은 페이지가 여러 touch 에
     걸려도 한 번만 담는다. 빈/None touches → `[]`.
 
-    touch 문자열은 `strip()` 후 매칭한다(`uncovered_paths` 동형) — covers 글롭은 정확
+    touch 문자열은 `strip()` 후 매칭한다(`uncovered_paths` 와 같은 방식) — covers 글롭은 정확
     경로로 매치하므로 선행/후행 공백이 붙은 touch(예: 직접 API 호출 시)는 strip 없으면
     silent-miss 한다. 콤마분리 CLI 는 이미 `cmd_*` 에서 strip 되지만 직접 호출도 견고화.
     빈/공백 touch 는 건너뛴다.

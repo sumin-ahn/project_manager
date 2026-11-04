@@ -3,7 +3,7 @@
 
 `domain/` 페이지 frontmatter `covers:`(담당 코드 글롭)로 *페이지 ↔ 코드* 인덱스를 만들어
 touches∩covers 매칭·staleness·채록에 쓴다. 이 파일은 CLI 진입(`list`/`affected`/`capture`/
-`capture-draft`/`coverage`/`lint`)이고 명령 파서·배선은 `pm_engine.cli.domain_cmd`, 구현은 패키지에
+`capture-draft`/`coverage`/`lint`)이고 명령 파서·등록은 `pm_engine.cli.domain_cmd`, 구현은 패키지에
 있다: 문서 규칙 `pm_engine.domain.doc_pages`·
 초안 양식 `pm_engine.domain.doc_drafts`, 페이지 읽기·쓰기 `pm_engine.infra.doc_page_store`, 판정
 `pm_engine.app.doc_staleness`·`doc_affected`·`doc_coverage`·`doc_lint`.

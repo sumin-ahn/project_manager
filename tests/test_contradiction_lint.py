@@ -1,8 +1,8 @@
 """contradiction_lint.py 단위/통합 테스트 (T-0369·ADR-0064) — 모순 lint.
 
-"결정을 바꾼 순간의 잔여" 탐지 — 개정된 결정을 [[wikilink]] 로 참조하는 문서를 기계로 스코프하고,
+"결정을 바꾼 순간에 남은 것" 탐지 — 개정된 결정을 [[wikilink]] 로 참조하는 문서를 기계로 스코프하고,
 LLM 탐지(DI·기본 dry=미호출)로 후보를 제시한다. 판정=사람(advisory·차단 아님). pm_adr.py 발행/개정
-명령의 트리거 배선도 함께 검증한다(개정에만 발화·refines/plain 은 no-op·fail-soft).
+명령의 트리거 연결도 함께 검증한다(개정에만 실행·refines/plain 은 no-op·fail-soft).
 
 LLM 호출은 전부 DI/mock — 라이브 호출 없음(hermetic). 도구는 패키지가 아니므로 importlib 동적 로드.
 """
@@ -64,11 +64,11 @@ def test_collect_scope_only_referencing_files(cl, tmp_path):
 
 def test_collect_scope_excerpt_spans_separated_sections(cl, tmp_path):
     """링크는 '참고' 절·모순 서술은 '결정' 절(분리) — excerpt 에 둘 다 담겨야 run_fn 이 근거로 탐지 가능
-    (codex must-fix: 참조 줄만 담으면 다른 문단의 잔여 모순은 근거 부재로 탐지 불능)."""
+    (codex must-fix: 참조 줄만 담으면 다른 문단의 남은 모순은 근거 부재로 탐지 불능)."""
     doc = (
         "## 결정\n"
         "우리는 항상 동기 방식으로 처리한다(옛 결정 전제).\n"
-        "이 문장이 새 결정과 모순되는 잔여 서술이다.\n"
+        "이 문장이 새 결정과 모순되는 남은 서술이다.\n"
         "\n"
         "## 배경\n"
         "여러 문단.\n"
@@ -82,10 +82,10 @@ def test_collect_scope_excerpt_spans_separated_sections(cl, tmp_path):
     ex = hits[0].excerpt
     # 링크 줄(참고 절)과 모순 서술 줄(결정 절)이 *둘 다* excerpt 에 있어야 한다(분리된 절).
     assert "[[ADR-0061]]" in ex
-    assert "모순되는 잔여 서술" in ex
+    assert "모순되는 남은 서술" in ex
     # 프롬프트에도 두 절이 함께 실려 run_fn 이 대조 근거를 갖는다.
     prompt = adr_contradiction.build_prompt("ADR-0062", "새 방향", "이제 비동기 처리한다.", hits)
-    assert "모순되는 잔여 서술" in prompt and "[[ADR-0061]]" in prompt
+    assert "모순되는 남은 서술" in prompt and "[[ADR-0061]]" in prompt
 
 
 def test_collect_scope_large_file_windows_around_reference(cl, tmp_path):
@@ -154,7 +154,7 @@ def test_build_prompt_contains_decision_scope_and_contract(cl):
 def test_parse_candidates_extracts_lines(cl):
     out = ("서두.\n"
            "- [wiki/a.md] 옛 전제 X — 새 결정 Y 와 모순\n"
-           "- [wiki/b.md] 또 다른 잔여 — 모순\n"
+           "- [wiki/b.md] 또 다른 남은 서술 — 모순\n"
            "잡담.")
     cands = adr_contradiction.parse_candidates(out)
     assert len(cands) == 2
@@ -163,7 +163,7 @@ def test_parse_candidates_extracts_lines(cl):
 
 def test_parse_candidates_no_contradictions(cl):
     assert adr_contradiction.parse_candidates("NO_CONTRADICTIONS") == []
-    assert adr_contradiction.parse_candidates("전부 정합.\nNO_CONTRADICTIONS\n") == []
+    assert adr_contradiction.parse_candidates("전부 일치.\nNO_CONTRADICTIONS\n") == []
 
 
 # ── ContradictionLinter (DI·dry 기본·LLM opt-in) ──────────────────────────────────
@@ -281,12 +281,12 @@ def test_cli_dry_reports_scope(cl, tmp_path, monkeypatch, capsys):
     assert "새 결정" in out  # title 로드됨
 
 
-# ── pm_adr 트리거 배선 (ADR-0064·개정에만·fail-soft·차단 아님) ────────────────────────
+# ── pm_adr 트리거 연결 (ADR-0064·개정에만·fail-soft·차단 아님) ────────────────────────
 
 
 @pytest.fixture
 def wiki(tmp_path):
-    """test_pm_adr 와 동형 임시 decisions/ + README + log 셋업."""
+    """test_pm_adr 와 같은 구조의 임시 decisions/ + README + log 셋업."""
     decisions = tmp_path / ".project_manager" / "wiki" / "decisions"
     decisions.mkdir(parents=True)
     (decisions / "0060-a.md").write_text(
@@ -315,7 +315,7 @@ def _patch_scope(adr, monkeypatch, scope_files):
 
 
 def test_pm_adr_amends_triggers_advisory(adr, wiki, tmp_path, monkeypatch, capsys):
-    """개정(amends) 발행 → 모순 lint advisory 가 stderr 로 표면화·rc 0(차단 아님)."""
+    """개정(amends) 발행 → 모순 lint advisory 가 stderr 로 드러남·rc 0(차단 아님)."""
     decisions, log = wiki
     ref = _write(tmp_path, "wiki/ref.md", "이 방침은 [[ADR-0061]] 을 전제로 한다.")
     monkeypatch.setattr(adr, "REPO", decisions.parents[2])
@@ -331,7 +331,7 @@ def test_pm_adr_amends_triggers_advisory(adr, wiki, tmp_path, monkeypatch, capsy
 
 
 def test_pm_adr_plain_new_no_trigger(adr, wiki, tmp_path, monkeypatch, capsys):
-    """신규 plain 발행(개정 없음) → 모순 lint 발화 안 함(참조 스코프 무·트리거 조건 미충족)."""
+    """신규 plain 발행(개정 없음) → 모순 lint 실행 안 함(참조 스코프 무·트리거 조건 미충족)."""
     decisions, log = wiki
     ref = _write(tmp_path, "wiki/ref.md", "이 방침은 [[ADR-0061]] 을 전제로 한다.")
     monkeypatch.setattr(adr, "REPO", decisions.parents[2])
@@ -343,7 +343,7 @@ def test_pm_adr_plain_new_no_trigger(adr, wiki, tmp_path, monkeypatch, capsys):
 
 
 def test_pm_adr_refines_no_trigger(adr, wiki, tmp_path, monkeypatch, capsys):
-    """refines(대상 불변·확장)만 → 모순 lint 발화 안 함(잔여 모순을 안 만든다)."""
+    """refines(대상 불변·확장)만 → 모순 lint 실행 안 함(남은 모순을 안 만든다)."""
     decisions, log = wiki
     ref = _write(tmp_path, "wiki/ref.md", "[[ADR-0061]] 전제.")
     monkeypatch.setattr(adr, "REPO", decisions.parents[2])

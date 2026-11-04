@@ -2,7 +2,7 @@
 
 채번·frontmatter scaffold·lifecycle back-ref surgical 기록·README 색인 이동·log decide entry
 + end-to-end 발행 계획/적용을 hermetic(임시 decisions/) 로 검증한다. 마지막에 board.py 의
-`lint_adr_lifecycle`(ADR-0021 advisory)를 발행 산출물에 돌려 **back-ref clean**(DoD 정합)을 실측한다.
+`lint_adr_lifecycle`(ADR-0021 advisory)를 발행 산출물에 돌려 **back-ref clean**(DoD 일치)을 실측한다.
 
 도구는 패키지가 아니므로 importlib 동적 로드 (test_pm_handoff 관용구).
 """
@@ -96,7 +96,7 @@ def test_cli_rejects_bad_slug_before_side_effects(adr, capsys, monkeypatch, wiki
 def test_cli_rejects_bad_amends_id_rc2(adr, capsys, monkeypatch, wiki):
     """CLI new --amends <오형식> → rc 2·한 줄 오류(traceback 아님)·decisions 무변경 (T-0376).
 
-    옛엔 parse_adr_num ValueError 가 uncaught traceback 으로 노출 — slug 게이트와 동형의
+    옛엔 parse_adr_num ValueError 가 uncaught traceback 으로 노출 — slug 검사와 같은 방식의
     입구 거부로 전환. 정상 ID 경로는 기존 e2e 가 커버(과차단 아님)."""
     decisions, log = wiki
     monkeypatch.setattr(adr, "REPO", decisions.parents[2])
@@ -205,12 +205,12 @@ def test_build_adr_file_adversarial_title_parses_via_board(adr, tmp_path):
 
 def test_build_adr_file_has_body_scaffold(adr):
     text = adr_rules.build_adr_file(
-        number=70, title="본문 골격", scope="internal-process", author="u/pm_1",
+        number=70, title="본문 빈 양식", scope="internal-process", author="u/pm_1",
         date="2026-07-19", status="accepted",
         amends=[], supersedes=[], refines=[], related=[], tags=["x"],
     )
     assert text.startswith("---\n")
-    assert "# ADR-0070 — 본문 골격" in text
+    assert "# ADR-0070 — 본문 빈 양식" in text
     for section in ("## Context", "## Decision", "## Consequences", "## References"):
         assert section in text
     assert "PM 서술" in text  # placeholder 존재
@@ -431,7 +431,7 @@ def test_issue_new_adr_amending_target_end_to_end(adr, wiki):
 
 
 def test_issue_is_lint_clean_against_board_adr_lifecycle(adr, wiki, monkeypatch):
-    """발행 산출물이 board.lint_adr_lifecycle(ADR-0021) advisory clean (DoD 정합·실측)."""
+    """발행 산출물이 board.lint_adr_lifecycle(ADR-0021) advisory clean (DoD 일치·실측)."""
     decisions, log = wiki
     board = _load("board")
     monkeypatch.setattr(board, "REPO", decisions.parent.parent / "home")
@@ -439,7 +439,7 @@ def test_issue_is_lint_clean_against_board_adr_lifecycle(adr, wiki, monkeypatch)
     shutil.copytree(decisions, home_decisions)
     decisions = home_decisions
 
-    # 발행 전: 대상은 accepted·back-ref 없음 → 사전 findings 0(기존은 정합).
+    # 발행 전: 대상은 accepted·back-ref 없음 → 사전 findings 0(기존은 일치).
     assert wiki_lint.lint_adr_lifecycle(pm_paths.home_at(board.REPO)) == []
 
     issuer = adr_issue.AdrIssuer(decisions_dir=decisions, log_file=log, date="2026-07-19")

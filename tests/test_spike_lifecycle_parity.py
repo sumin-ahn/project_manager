@@ -6,7 +6,7 @@ IMMUTABLE** 로 정의한다. 그 생애주기가 claude 스킬(`.claude/skills/
 (2 템플릿)에는 구 all-immutable
 모델로 남아 stale/자기모순이던 것을 못박는다.
 
-diff-scoped 리뷰는 *부재*(한쪽 표면이 생애주기 서술을 안 담음)를 못 본다 — 이 가드가 그 갭을
+diff-scoped 리뷰는 *부재*(한쪽 파일이 생애주기 서술을 안 담음)를 못 본다 — 이 가드가 그 갭을
 회귀로 막는다.
 
 ⚠️ **왜 손 동기인가 (root cause):** 아래 raw/README 3벌은 **`engine.manifest` 밖**이라
@@ -28,7 +28,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 # claude 스킬 = canonical 진실 (수정 대상 아님·읽기 전용 reference).
 CLAUDE_SKILL = REPO / ".claude" / "skills" / "spike-new" / "SKILL.md"
-# opencode 출하 두 표면(T-0674): 모델 skill tool 미러 + 사람 slash command 사본.
+# opencode 출하 두 파일(T-0674): 모델 skill tool 미러 + 사람 slash command 사본.
 OPENCODE_SKILL = REPO / "templates" / "opencode" / ".claude" / "skills" / "spike-new" / "SKILL.md"
 OPENCODE_COMMAND = REPO / "templates" / "opencode" / ".opencode" / "command" / "spike-new.md"
 
@@ -44,11 +44,11 @@ _RAW_READMES = [
 ]
 
 # ── ADR-0010 생애주기 3상태 어휘 (얕은 "draft" in text 가드 우회 방지) ──────────
-# draft(편집상태) → 사인오프 트리거 → sealed(봉인상태) → immutable(취지). 구 all-immutable
+# draft(편집상태) → 사인오프 트리거 → sealed(확정 상태) → immutable(취지). 구 all-immutable
 # 모델(draft/sealed 부재)은 이 4개를 다 담지 못하므로 fail 한다.
 _LIFECYCLE_MARKERS = [
     ("draft 편집상태", "draft"),
-    ("sealed 봉인상태", "sealed"),
+    ("sealed 확정 상태", "sealed"),
     ("immutable 취지", "immutable"),
     ("seal 트리거 = 사용자 사인오프", "사인오프"),
 ]
@@ -78,7 +78,7 @@ _FRAMEWORK_WIKILINK = re.compile(r"\[\[(ADR-\d+|T-\d+|idea-\d+)\]\]")
 def test_surface_describes_adr0010_lifecycle(label, path):
     """claude 스킬과 opencode 커맨드가 **둘 다** ADR-0010 draft/sealed/immutable 생애주기를 서술.
 
-    한쪽만 갱신(예: 스킬만 draft/sealed, 커맨드는 구 all-immutable)이면 그 표면에서 fail 한다.
+    한쪽만 갱신(예: 스킬만 draft/sealed, 커맨드는 구 all-immutable)이면 그 파일에서 fail 한다.
     얕은 "draft" 단어 세기가 아니라 3상태 어휘(draft·sealed·immutable 취지·사인오프 seal 트리거)
     전부를 요구해 우회를 막는다.
     """

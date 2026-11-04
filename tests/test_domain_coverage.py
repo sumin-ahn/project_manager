@@ -141,7 +141,7 @@ def test_new_unowned_shipped_tool_is_finding(domain, tmp_path):
 )
 def test_page_zero_shapes_skip_with_visible_reason(
         domain, tmp_path, shape, reason, capsys):
-    """채택자 wiki 부재 3형상은 crash/조용한 green 없이 사유가 있는 graceful skip."""
+    """채택자 wiki 부재 3구성은 crash/조용한 green 없이 사유가 있는 graceful skip."""
     domain_dir = tmp_path / ".project_manager" / "wiki" / "domain"
     if shape != "missing":
         domain_dir.mkdir(parents=True)
@@ -440,11 +440,11 @@ def test_manifest_directory_uses_source_remap_shipping_inventory(domain, tmp_pat
     assert report["tools"] == [".project_manager/tools/alpha.py"]
 
 
-@pytest.mark.parametrize("flavor", ["claude_code", "codex", "opencode"])
-def test_flavor_manifest_engine_tool_paths_ignore_unrelated_upstream_sources(
-        domain, flavor):
-    """채택자 flavor의 upstream-only @source가 도구 분모 해석을 깨지 않는다."""
-    manifest = REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
+@pytest.mark.parametrize("variant", ["claude_code", "codex", "opencode"])
+def test_variant_manifest_engine_tool_paths_ignore_unrelated_upstream_sources(
+        domain, variant):
+    """채택자 하네스별 판의 upstream-only @source가 도구 분모 해석을 깨지 않는다."""
+    manifest = REPO / "templates" / variant / ".project_manager" / "engine.manifest"
 
     assert doc_coverage.engine_tool_paths(manifest) == doc_coverage.engine_tool_paths(
         REPO / ".project_manager" / "engine.manifest"
@@ -524,9 +524,9 @@ def test_manifest_paths_are_parsed_by_canonical_pm_update_reader(domain, tmp_pat
     assert report["tools"] == [".project_manager/tools/alpha tool.py"]
 
 
-def test_engine_tool_denominator_consumes_manifest_reader_seam(
+def test_engine_tool_denominator_consumes_shared_manifest_reader(
         domain, tmp_path, monkeypatch):
-    """분모 계산이 자체 line parser로 회귀하지 않고 canonical reader seam을 소비한다."""
+    """분모 계산이 자체 line parser로 회귀하지 않고 canonical 공용 reader를 소비한다."""
     _root, _tools, domain_dir, manifest, readme = _coverage_tree(
         tmp_path,
         domain,
@@ -557,7 +557,7 @@ def test_engine_tool_denominator_consumes_manifest_reader_seam(
 @pytest.mark.parametrize("command_shape", ["missing", "duplicate"])
 def test_coverage_command_reference_must_appear_once(
         domain, tmp_path, command_shape):
-    """README 커맨드 1회 검사를 지우는 mutation은 두 형상 모두 red."""
+    """README 커맨드 1회 검사를 지우는 mutation은 두 구성 모두 red."""
     _root, _tools, domain_dir, manifest, readme = _coverage_tree(
         tmp_path, domain, shipped=("alpha.py",)
     )
@@ -712,7 +712,7 @@ def test_markerless_adopter_domain_does_not_join_engine_coverage(
     root, _tools, domain_dir, manifest, readme = _coverage_tree(tmp_path, domain)
     readme.write_text(
         "# 우리 프로젝트 domain\n\n"
-        "우리 결제 도구는 외부 승인과 내부 원장을 함께 기록합니다.\n",
+        "우리 결제 도구는 외부 승인과 내부 거래 내역을 함께 기록합니다.\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(domain, "REPO", root)
@@ -852,16 +852,16 @@ def test_coverage_command_output_is_machine_derived(domain, tmp_path, monkeypatc
     )
 
 
-def test_coverage_finding_flows_through_board_and_gate_stays_zero(
+def test_coverage_finding_flows_through_board_and_blocking_stays_zero(
         domain, tmp_path, monkeypatch):
-    """실 domain fixture finding이 board lint 를 지나도 --gate는 rc 0."""
+    """실 domain fixture finding이 board lint 를 지나도 --blocking은 rc 0."""
     root, _tools, domain_dir, manifest, readme = _coverage_tree(tmp_path, domain)
     _readme(domain, readme, "complete")
     monkeypatch.setattr(domain, "REPO", root)
     monkeypatch.setattr(doc_coverage, "DOMAIN_COVERAGE_EXEMPTIONS", {})
     monkeypatch.setattr(doc_staleness, "page_stale", lambda home, _page, **_kwargs: None)
 
-    board = _load("board_coverage_gate_test", TOOLS / "board.py")
+    board = _load("board_coverage_blocking_test", TOOLS / "board.py")
     monkeypatch.setattr(board, "REPO", root)
     findings = doc_lint.lint_domain(pm_paths.home_at(board.REPO))
     assert any(label == "beta.py" and kind == "coverage"

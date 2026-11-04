@@ -1,17 +1,17 @@
-"""domain freshness 관찰불가 사각 닫기 — anchor 판정 + pin-경계 관찰가능성 + 글롭 충실도 (T-0421·codex MF/R1-R10).
+"""domain freshness 관찰불가로 놓치는 곳 닫기 — 고정 커밋 판정 + pin-경계 관찰가능성 + 글롭 충실도 (T-0421·codex MF/R1-R10).
 
-domain 페이지 `verified_at` sha 기반 freshness 판정(ADR-0063)이 두-git 형상(ADR-0027)에서 거짓
-green 이 되던 축들을 advisory/stale 로 정직히 표면화하는지 검증한다.
+domain 페이지 `verified_at` sha 기반 freshness 판정(ADR-0063)이 두-git 구성(ADR-0027)에서 거짓
+green 이 되던 기준들을 advisory/stale 로 정직히 드러내는지 검증한다.
 
-anchor 판정(`board._sha_anchor_status`) — 유효 anchor = 고정 hex + **고정 SHA 해소**(hex-이름 ref 아님·R5)
+고정 커밋 판정(`freshness_lint._sha_pin_status`) — 유효한 고정 커밋 = 고정 hex + **고정 SHA 해소**(hex-이름 ref 아님·R5)
   + **HEAD 선조**(R4-α). 실패는 non-sha/unresolved/non-ancestor verdict 로 구분(env-error→unknown silent).
 covers 관찰가능성(`domain.covers_pathspecs`) — 경계는 **verified_at**(R4-β)·매핑은 **`:(glob)` magic
   pathspec 직접**(R6·손실 접두사 폐기·`?`/`[]` 이스케이프 R7·지원 문법만 R8): **HEAD 트리**(커밋·`git diff
-  <빈-트리> HEAD`·index/staged 무관·R9·object-format 중립 R10) 에 있음 OR pin 이후 델타 → present,
-  미추적+pin 이후 델타 0 → absent, 빈/공백 → skip·미지원 형태/repo-밖 경로 → unmappable(advisory·R8/R10).
+  <빈-트리> HEAD`·index/staged 무관·R9·object-format 중립 R10) 에 있음 OR pin 이후 차이 → present,
+  미추적+pin 이후 차이 0 → absent, 빈/공백 → skip·미지원 형태/repo-밖 경로 → unmappable(advisory·R8/R10).
 
 git 은 argv 를 분기하는 hermetic runner 로 대역(rev-parse/merge-base/diff/log)해 실 subprocess 미사용.
-`:(glob)`·SHA-256·staged 실 동작은 별도 throwaway 실 git 테스트로 대역과 정합 확인.
+`:(glob)`·SHA-256·staged 실 동작은 별도 throwaway 실 git 테스트로 대역과 일치 확인.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ _posix_only = pytest.mark.skipif(not posix_filenames_supported(),
 
 
 def _sha256_supported() -> bool:
-    """git 이 `--object-format=sha256` 을 지원하나 (SHA-256 회귀 테스트 게이트·codex R10)."""
+    """git 이 `--object-format=sha256` 을 지원하나 (SHA-256 회귀 테스트 실행 조건·codex R10)."""
     probe = tempfile.mkdtemp(prefix="sha256probe_", dir=PROJECT_TEMP_ROOT)
     try:
         return subprocess.run(["git", "-C", probe, "init", "--object-format=sha256", "-q"],
@@ -82,9 +82,9 @@ def _windows_expanduser(path: Path) -> Path:
 
 
 def _use_windows_expanduser(monkeypatch) -> None:
-    """`Path.expanduser` **자체**에 Windows 동작을 주입한다 — 엔진 seam 유무와 무관한 경계.
+    """`Path.expanduser` **자체**에 Windows 동작을 주입한다 — 엔진 교체 지점 유무와 무관한 경계.
 
-    엔진 쪽 확장 seam 에 주입하면 "seam 이 있는 구현"만 태우게 된다(그 seam 이 곧 이번 수정의
+    엔진 쪽 확장 교체 지점에 주입하면 "교체 지점이 있는 구현"만 태우게 된다(그 교체 지점이 곧 이번 수정의
     일부라 수정 전 red 가 성립하지 않는다). 플랫폼 API 를 직접 갈아끼워 Windows 분기를 Linux
     에서 있는 그대로 태운다.
     """
@@ -111,13 +111,13 @@ def _unmagic(spec: str) -> str:
 def _git(*, resolves: bool = True, rev_rc: int | None = None,
          ancestor: bool = True, mb_rc: int | None = None,
          tracked=None, post_pin=(), resolved_oid=None):
-    """anchor 3조건 + covers 관찰가능성을 재현하는 hermetic git runner.
+    """고정 커밋 3조건 + covers 관찰가능성을 재현하는 hermetic git runner.
 
     rev-parse             : `rev_rc` 명시 시 그 rc / 아니면 resolves→(0|1). 해소 OID 는
                             `resolved_oid`(hex-이름 ref 재현) 또는 입력 sha prefix(진짜 SHA·R5).
     merge-base --is-ancestor: `mb_rc` 명시 시 그 rc / 아니면 ancestor→(0|1).  [R4-α]
-    diff(HEAD-tree presence) / log(pin 델타) : pathspec 의 `:(glob)` 를 벗긴 **원본 글롭**으로
-                            `tracked`(HEAD 트리에 있음·codex R9)·`post_pin`(pin 이후 델타) 집합 매칭.
+    diff(HEAD-tree presence) / log(pin 이후 차이) : pathspec 의 `:(glob)` 를 벗긴 **원본 글롭**으로
+                            `tracked`(HEAD 트리에 있음·codex R9)·`post_pin`(pin 이후 차이) 집합 매칭.
     """
     track = None if tracked is None else set(tracked)
     pin = set(post_pin)
@@ -150,12 +150,12 @@ def _git(*, resolves: bool = True, rev_rc: int | None = None,
 
 
 def _raising_git(argv):
-    """주입 runner 가 raise → covers_pathspecs/anchor 판정이 분류 불가(skip/unknown)."""
+    """주입 runner 가 raise → covers_pathspecs/고정 커밋 판정이 분류 불가(skip/unknown)."""
     raise RuntimeError("git unavailable")
 
 
 def _fs_git(*, tracked=(), post_pin=()):
-    """covers_pathspecs 관찰가능성 대역 — diff(HEAD 트리 presence·codex R9)와 log(pin 이후 델타)
+    """covers_pathspecs 관찰가능성 대역 — diff(HEAD 트리 presence·codex R9)와 log(pin 이후 차이)
     분리 제어. pathspec 의 `:(glob)` 를 벗긴 원본 글롭으로 집합 매칭."""
     tr, pin = set(tracked), set(post_pin)
 
@@ -198,10 +198,10 @@ def _wire(board, domain, monkeypatch, repo: Path):
     return domain_dir
 
 
-# ── 핵심 판정 (anchor OK + covers 관찰가능성) ────────────────────────────────
+# ── 핵심 판정 (고정 커밋 OK + covers 관찰가능성) ────────────────────────────────
 
-# (1) 현재 tracked + pin 이후 델타 → domain-stale (양성 대조·회귀 0).
-def test_present_path_with_delta_flags_stale(board, domain, monkeypatch, tmp_path):
+# (1) 현재 tracked + pin 이후 차이 → domain-stale (양성 대조·회귀 0).
+def test_present_path_with_change_flags_stale(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="cafe0001",
                  title="모듈")
@@ -213,15 +213,15 @@ def test_present_path_with_delta_flags_stale(board, domain, monkeypatch, tmp_pat
     assert "cafe0001" in detail
 
 
-# (2) 현재 tracked + pin 이후 델타 없음 → clean.
-def test_present_path_no_delta_is_clean(board, domain, monkeypatch, tmp_path):
+# (2) 현재 tracked + pin 이후 차이 없음 → clean.
+def test_present_path_no_change_is_clean(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/mod/**"], verified_at="cafe0001")
     assert doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
         runner=_git(tracked={"src/mod/**"}, post_pin=())) == []
 
 
-# (3) 미추적 + pin 이후 델타 0(never-tracked) → domain-unverifiable "관찰 불가".
+# (3) 미추적 + pin 이후 차이 0(never-tracked) → domain-unverifiable "관찰 불가".
 def test_never_tracked_path_flags_unverifiable(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "codex.md", covers=["templates/codex/**"],
@@ -234,7 +234,7 @@ def test_never_tracked_path_flags_unverifiable(board, domain, monkeypatch, tmp_p
     assert not any(k == "domain-stale" for _l, k, _d in findings)
 
 
-# ── anchor 실패 축 (모두 unverifiable·사유 구분) ─────────────────────────────
+# ── 고정 커밋 실패 기준 (모두 unverifiable·사유 구분) ─────────────────────────────
 
 def test_unresolved_sha_flags_unverifiable(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
@@ -304,7 +304,7 @@ def test_hex_named_ref_verified_at_is_unverifiable(board, domain, monkeypatch, t
 
 
 def test_unverifiable_sha_skips_covers_judgment(board, domain, monkeypatch, tmp_path):
-    # 전제(codex R4): anchor 실패 페이지는 covers 관찰가능성 판정에 안 온다 — 사유는 sha 만.
+    # 전제(codex R4): 고정 커밋 실패 페이지는 covers 관찰가능성 판정에 안 온다 — 사유는 sha 만.
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "codex.md", covers=["templates/codex/**"],
                  verified_at="3cf0f731", title="codex 어댑터")
@@ -322,7 +322,7 @@ def test_deleted_after_pin_flags_stale(board, domain, monkeypatch, tmp_path):
     _domain_page(domain_dir, "p.md", covers=["src/old/**"], verified_at="cafe0007",
                  title="삭제된 모듈")
     findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO),
-        runner=_git(tracked=(), post_pin={"src/old/**"}))   # 미추적 + pin 이후 삭제 델타
+        runner=_git(tracked=(), post_pin={"src/old/**"}))   # 미추적 + pin 이후 삭제 차이
     assert len(findings) == 1
     label, kind, _detail = findings[0]
     assert (label, kind) == ("삭제된 모듈", "domain-stale")
@@ -357,7 +357,7 @@ def test_mixed_present_stale_and_absent_yields_both_findings(
 # ── codex R6: 글롭 충실도 (접두사-없는 글롭·세그먼트 글롭) ────────────────────
 
 # (a) `**/*.py` 접두사-없는 글롭 → 종전 covers_to_pathspec None 으로 통째 skip(false-green) 이던
-#     것을 :(glob) 로 직접 판정 → pin 이후 델타 있으면 domain-stale (red-첫-재현).
+#     것을 :(glob) 로 직접 판정 → pin 이후 차이 있으면 domain-stale (red-첫-재현).
 def test_prefixless_glob_is_judged_not_skipped(board, domain, monkeypatch, tmp_path):
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["**/*.py"], verified_at="cafe0009",
@@ -378,7 +378,7 @@ def test_covers_pathspecs_passes_original_glob_as_magic_pathspec(domain, tmp_pat
         seen.append(list(argv))
         if argv and argv[0] == "rev-parse":
             return (0, "sha1\n")   # 빈 트리 OID 산출(codex R10) — 없으면 diff 미호출
-        return (0, "")   # 미추적·델타 0 (분류는 무관·pathspec 형태만 본다)
+        return (0, "")   # 미추적·차이 0 (분류는 무관·pathspec 형태만 본다)
 
     doc_staleness.covers_pathspecs(pm_paths.home_at(domain.REPO), ["src/*.py"], repo=tmp_path, git_runner=capture,
                             verified_at="cafe0001")
@@ -437,7 +437,7 @@ def test_unverifiable_in_advisory_kinds(board):
     assert "domain-unverifiable" in board_lint._ADVISORY_LINT_KINDS
 
 
-def test_unverifiable_never_blocks_gate(board, monkeypatch):
+def test_unverifiable_never_blocks_blocking_mode(board, monkeypatch):
     for module, fn, stub in (
         (ticket_lint, "lint_dependencies", lambda home: []),
         (body_lint, "lint_bodies", lambda home: []),
@@ -485,7 +485,7 @@ def test_covers_glob_pathspec_escapes_glob_specials(domain):
 
 
 # ── 실 git: 리터럴 특수문자 covers 정확 매칭 (codex R7·POSIX 전용·throwaway repo) ──
-# 대역(mock)은 git glob 시맨틱을 구현하지 않아 이 축을 못 잡는다 — 실 git subprocess 로 검증한다.
+# 대역(mock)은 git glob 시맨틱을 구현하지 않아 이 기준을 못 잡는다 — 실 git subprocess 로 검증한다.
 
 def _init_repo(root: Path, *, object_format: str | None = None) -> None:
     init = ["init", "-q"] + ([f"--object-format={object_format}"] if object_format else [])
@@ -502,7 +502,7 @@ def _commit(root: Path, msg: str) -> str:
 
 def test_downstream_omits_absent_upstream_only_hierarchy(
         board, domain, monkeypatch, tmp_path):
-    """형상 A: downstream에 없는 templates 계층은 영구 unverifiable로 올리지 않는다."""
+    """구성 A: downstream에 없는 templates 계층은 영구 unverifiable로 올리지 않는다."""
     owner = tmp_path / "owner"
     downstream = tmp_path / "downstream"
     owner.mkdir()
@@ -532,7 +532,7 @@ def test_downstream_omits_absent_upstream_only_hierarchy(
 
 def test_owner_repo_keeps_full_covers_validation(
         board, domain, monkeypatch, tmp_path):
-    """형상 B: 소유 repo에서는 실재 경로가 clean이고 삭제 commit은 stale로 잡힌다."""
+    """구성 B: 소유 repo에서는 실재 경로가 clean이고 삭제 commit은 stale로 잡힌다."""
     owner = tmp_path / "owner"
     owner.mkdir()
     _init_repo(owner)
@@ -559,7 +559,7 @@ def test_owner_repo_keeps_full_covers_validation(
 
 def test_downstream_existing_hierarchy_keeps_absent_finding(
         board, domain, monkeypatch, tmp_path):
-    """형상 C: downstream에도 있는 계층의 사라진 covers는 완화하지 않는다."""
+    """구성 C: downstream에도 있는 계층의 사라진 covers는 완화하지 않는다."""
     owner = tmp_path / "owner"
     downstream = tmp_path / "downstream"
     owner.mkdir()
@@ -590,11 +590,11 @@ def test_downstream_existing_hierarchy_keeps_absent_finding(
 
 def test_two_repo_owner_change_closes_unsynced_copy_window(
         board, domain, monkeypatch, tmp_path):
-    """2-repo 재현: 원본 변경·PM import 사본 미동기여도 세 freshness 축이 원본 시계로 stale.
+    """2-repo 재현: 원본 변경·PM import 사본 미동기여도 세 freshness 기준이 원본 시계로 stale.
 
     PM 홈은 owner initial commit을 clone해 두 저장소가 같은 pin을 공유한다. 이후 PM 홈에는
     문서만 commit하고 import 사본은 그대로, owner에서만 tools 경로를 바꾼다. 종전 REPO 시계
-    질의가 clean임을 음성 대조한 뒤 새 owner 시계의 domain/architecture/status 발화를 확인한다.
+    질의가 clean임을 음성 대조한 뒤 새 owner 시계의 domain/architecture/status 알림을 확인한다.
     """
     owner = tmp_path / "owner"
     owner.mkdir()
@@ -646,7 +646,7 @@ def test_upstream_owner_unresolved_stays_advisory(
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
                  title="외부소유", repo="upstream")
-    # local.conf/upstream 부재 — runner를 호출해 self로 green 흡수하면 안 된다.
+    # local.conf/upstream 부재 — runner를 호출해 self로 green 처리하면 안 된다.
     findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
@@ -656,7 +656,7 @@ def test_upstream_owner_unresolved_stays_advisory(
 
 def test_explicit_null_owner_is_unverifiable_not_self(
         board, domain, monkeypatch, tmp_path):
-    """`repo: null`은 키 부재가 아니다 — self 시계로 흡수하지 않고 advisory."""
+    """`repo: null`은 키 부재가 아니다 — self 시계로 바꾸지 않고 advisory."""
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     domain_dir.mkdir(parents=True)
     page = domain_dir / "null-owner.md"
@@ -678,7 +678,7 @@ def test_unsupported_repo_values_including_falsy_stay_advisory(
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
                  title="잘못된소유", repo=repo_literal)
-    # false/0/[]를 `owner or "self"`로 흡수하면 runner가 호출돼 조용한 green이 된다.
+    # false/0/[]를 `owner or "self"`로 바꾸면 runner가 호출돼 조용한 green이 된다.
     findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=_raising_git)
     assert len(findings) == 1
     label, kind, detail = findings[0]
@@ -688,7 +688,7 @@ def test_unsupported_repo_values_including_falsy_stay_advisory(
 
 def test_date_freshness_lint_uses_owner_repo_runner(
         board, domain, monkeypatch, tmp_path):
-    """updated/date 축도 upstream runner를 써 self의 false stale/green을 모두 배제한다."""
+    """updated/date 기준도 upstream runner를 써 self의 false stale/green을 모두 배제한다."""
     self_repo = tmp_path / "self"
     owner_repo = tmp_path / "owner"
     self_repo.mkdir()
@@ -697,7 +697,7 @@ def test_date_freshness_lint_uses_owner_repo_runner(
     domain_dir = pm_paths.domain_dir(pm_paths.home_at(board.REPO))
     _domain_page(domain_dir, "p.md", covers=["src/**"], title="소유페이지",
                  repo="upstream")
-    # helper의 기본 updated가 없으므로 date 축 대상이 되도록 명시 교체한다.
+    # helper의 기본 updated가 없으므로 date 기준 대상이 되도록 명시 교체한다.
     page_path = domain_dir / "p.md"
     page_path.write_text(
         page_path.read_text(encoding="utf-8").replace(
@@ -752,7 +752,7 @@ def test_unusable_upstream_paths_stay_advisory(
     else:
         candidate.mkdir()
         if case == "damaged_git_marker":
-            (candidate / ".git").mkdir()  # 표식만 있고 rev-parse는 실패하는 손상 경로.
+            (candidate / ".git").mkdir()  # 표시만 있고 rev-parse는 실패하는 손상 경로.
             # 손상 `.git` 을 만난 git 은 조상 저장소로 넘어가므로 픽스처 위치가 답을 정한다.
             # "이 후보는 유효한 checkout 이 아니다"가 이 케이스의 입력이니 그 한 질문에만
             # 답을 명시한다(나머지 git 조회는 그대로 위임).
@@ -807,11 +807,11 @@ def test_unusable_upstream_paths_stay_advisory(
 @pytest.mark.parametrize("expansion", ["posix", "windows"])
 def test_unexpandable_upstream_user_stays_advisory(
         board, domain, monkeypatch, tmp_path, expansion):
-    """없는 `~user` upstream 은 **두 플랫폼 모두** '경로 해소 실패' 로 수렴한다.
+    """없는 `~user` upstream 은 **두 플랫폼 모두** '경로 해소 실패' 로 같아진다.
 
     POSIX `expanduser()` 는 `pwd` 조회 실패를 RuntimeError 로 올리지만 Windows 는 없는 사용자도
     `C:\\Users\\<name>` 으로 조립해 준다 — 그러면 해소가 성공한 척 다음 단계로 내려가 "경로
-    부재/이동" 이라는 **다른 사유**로 갈렸다(Windows 실측). 확장 seam 에 Windows 동작을 주입해
+    부재/이동" 이라는 **다른 사유**로 갈렸다(Windows 실측). 확장 교체 지점에 Windows 동작을 주입해
     그 분기를 Linux 에서 태운다."""
     if expansion == "windows":
         _use_windows_expanduser(monkeypatch)
@@ -832,9 +832,9 @@ def test_unexpandable_upstream_user_stays_advisory(
 
 def test_current_user_home_expansion_keeps_resolving(
         board, domain, monkeypatch, tmp_path):
-    """`~`(현재 사용자)에는 실재 검사를 걸지 않는다 — `~user` 판정이 정상 형상을 막지 않는다.
+    """`~`(현재 사용자)에는 실재 검사를 걸지 않는다 — `~user` 판정이 정상 구성을 막지 않는다.
 
-    홈 디렉터리가 아직 없는 형상까지 해소 실패로 접으면 판정이 과차단이다. `~` 확장 결과는
+    홈 디렉터리가 아직 없는 구성까지 해소 실패로 바꾸면 판정이 과차단이다. `~` 확장 결과는
     그대로 다음 단계(경로 실재)로 내려가고, 사유도 그 단계의 것이어야 한다."""
     _use_windows_expanduser(monkeypatch)
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
@@ -1721,7 +1721,7 @@ def test_bare_dir_exact_path_git_subtree(domain, tmp_path):
 
 # 미지원 형태(비-경계 `**`) red-첫: `**.py` 는 우리 matcher 가 중첩 .py 를 매치하나 git :(glob) 은
 # `**` 를 세그먼트 못 넘어 miss → 두 방언 불일치. 오번역 대신 변환 거부(None) → 호출부 unmappable.
-# (특수문자 파일명 없음 → POSIX 게이트 불요·git wildmatch 는 OS 무관.)
+# (특수문자 파일명 없음 → POSIX 실행 조건 불요·git wildmatch 는 OS 무관.)
 def test_non_boundary_starstar_mistranslation_refused(domain, tmp_path):
     _init_repo(tmp_path)
     (tmp_path / "src" / "nested").mkdir(parents=True)
@@ -1748,7 +1748,7 @@ def test_unsupported_glob_page_flags_unverifiable(board, domain, monkeypatch, tm
     assert not any(k == "domain-stale" for _l, k, _d in findings)
 
 
-# ── codex R9: 판정 축을 HEAD 트리 기준으로 (mutable index/staged 무관) ────────────
+# ── codex R9: 판정 기준을 HEAD 트리 기준으로 (mutable index/staged 무관) ────────────
 
 def test_staged_add_not_in_head_is_absent(domain, tmp_path):
     # staged-추가(HEAD 미포함)만으로는 present 아님 — 종전 ls-files 면 present=순간 false-green(red-첫).
@@ -1783,7 +1783,7 @@ def test_staged_delete_stays_present(domain, tmp_path):
 
 @_sha256_only
 def test_sha256_repo_head_tree_judgment(domain, tmp_path):
-    # SHA-256 repo — 종전 SHA-1 하드코딩이면 diff rc≠0 → 전축 silent skip. R10 은 포맷 감지로 정상.
+    # SHA-256 repo — 종전 SHA-1 하드코딩이면 diff rc≠0 → 모든 기준 silent skip. R10 은 포맷 감지로 정상.
     _init_repo(tmp_path, object_format="sha256")
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "committed.py").write_text("x\n", encoding="utf-8")
@@ -1853,7 +1853,7 @@ def test_covers_pathspecs_git_error_skips_pathspec(domain, tmp_path):
     assert present == [] and absent == [] and unmappable == []   # git 오류=skip(≠unmappable)
 
 
-# ── 유닛: board._is_hex_sha / _sha_anchor_status (형식·해소·선조 3조건) ───────
+# ── 유닛: board._is_hex_sha / _sha_pin_status (형식·해소·선조 3조건) ───────
 
 def test_is_hex_sha_accepts_and_rejects(board):
     assert freshness_lint._is_hex_sha("fa1c398") and freshness_lint._is_hex_sha(
@@ -1868,7 +1868,7 @@ _REAL_AMBIGUOUS_STDERR = ("error: short object ID 25b0 is ambiguous\n힌트: The
                           "fatal: Needed a single revision")
 
 
-def _anchor_git(rev=0, mb=0, oid=None, ambig=False):
+def _pin_git(rev=0, mb=0, oid=None, ambig=False):
     def runner(argv):
         if argv and argv[0] == "rev-parse":
             if ambig and "--quiet" not in argv:
@@ -1884,48 +1884,48 @@ def _anchor_git(rev=0, mb=0, oid=None, ambig=False):
     return runner
 
 
-# `_sha_anchor_status` 는 `(verdict, full_oid)` 반환 — full_oid 는 OK 일 때만(codex R16).
+# `_sha_pin_status` 는 `(verdict, full_oid)` 반환 — full_oid 는 OK 일 때만(codex R16).
 def test_sha_anchor_status_ok_returns_full_oid(board):
-    verdict, full_oid = freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_anchor_git(0, 0))
-    assert verdict == freshness_lint._ANCHOR_OK
+    verdict, full_oid = freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_pin_git(0, 0))
+    assert verdict == freshness_lint._PIN_OK
     assert full_oid == "cafe0001".ljust(40, "0")   # rev-parse 해소 canonical full OID
 
 
 def test_sha_anchor_status_unresolved(board):
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_anchor_git(1, 0)) == \
-        (freshness_lint._ANCHOR_UNRESOLVED, None)
+    assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_pin_git(1, 0)) == \
+        (freshness_lint._PIN_UNRESOLVED, None)
 
 
 def test_sha_anchor_status_non_ancestor(board):
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "beef0042", runner=_anchor_git(0, 1)) == \
-        (freshness_lint._ANCHOR_NON_ANCESTOR, None)
+    assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "beef0042", runner=_pin_git(0, 1)) == \
+        (freshness_lint._PIN_NON_ANCESTOR, None)
 
 
 def test_sha_anchor_status_non_sha(board):
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "HEAD", runner=_anchor_git(0, 0)) == \
-        (freshness_lint._ANCHOR_NON_SHA, None)
+    assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "HEAD", runner=_pin_git(0, 0)) == \
+        (freshness_lint._PIN_NON_SHA, None)
 
 
 def test_sha_anchor_status_hex_named_ref_is_non_sha(board):
     # codex R5: rev-parse 해소(rc0)하나 OID 가 입력 prefix 아님(ref 로 해소) → non-sha.
     ref_oid = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO),
-        "deadbeef", runner=_anchor_git(0, 0, oid=ref_oid))[0] == freshness_lint._ANCHOR_NON_SHA
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO),
-        "deadbeef", runner=_anchor_git(0, 0, oid="deadbeef" + "0" * 32))[0] == freshness_lint._ANCHOR_OK
+    assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO),
+        "deadbeef", runner=_pin_git(0, 0, oid=ref_oid))[0] == freshness_lint._PIN_NON_SHA
+    assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO),
+        "deadbeef", runner=_pin_git(0, 0, oid="deadbeef" + "0" * 32))[0] == freshness_lint._PIN_OK
 
 
 def test_sha_anchor_status_unknown_env_error(board):
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_anchor_git(128, 0))[0] == freshness_lint._ANCHOR_UNKNOWN
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_anchor_git(0, 128))[0] == freshness_lint._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_pin_git(128, 0))[0] == freshness_lint._PIN_UNKNOWN
+    assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_pin_git(0, 128))[0] == freshness_lint._PIN_UNKNOWN
 
 
 def test_sha_anchor_status_ambiguous(board):
     # codex R22: --quiet rev-parse 실패(rc1·stderr 억제) + non-quiet 진단이 모호 stderr → ambiguous
     # (env/unresolved 아님). rc≥2 로 억제되는 git 버전도 진단이 잡게(양쪽 rev 확인).
     for rev in (1, 128):
-        assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO),
-            "25b0abc", runner=_anchor_git(rev, 0, ambig=True))[0] == freshness_lint._ANCHOR_AMBIGUOUS
+        assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO),
+            "25b0abc", runner=_pin_git(rev, 0, ambig=True))[0] == freshness_lint._PIN_AMBIGUOUS
 
 
 def test_rev_parse_ambiguous_signal(board):
@@ -1957,9 +1957,9 @@ def test_real_git_path_timeout_propagates(board, tmp_path, monkeypatch, probe):
 
 
 def test_sha_anchor_status_unknown_empty_or_raise(board):
-    assert freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "", runner=_anchor_git())[0] == freshness_lint._ANCHOR_UNKNOWN
+    assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "", runner=_pin_git())[0] == freshness_lint._PIN_UNKNOWN
     with pytest.raises(RuntimeError, match="git unavailable"):
-        freshness_lint._sha_anchor_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_raising_git)
+        freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_raising_git)
 
 
 # codex R16: 검증 후 하류 명령이 **canonical full OID** 를 쓰는지 argv 로 단언 (원 입력 재해석 제거).
@@ -1982,7 +1982,7 @@ def test_downstream_commands_use_full_oid_not_input(board, domain, monkeypatch, 
         if argv and argv[0] == "diff":
             return (0, "src/mod/x.py\n")  # HEAD-tree present
         if argv and argv[0] == "log":
-            return (0, "abc commit\n")    # delta → stale
+            return (0, "abc commit\n")    # 차이 있음 → stale
         return (0, "")
 
     findings = doc_lint.lint_domain_freshness(pm_paths.home_at(board.REPO), runner=runner)

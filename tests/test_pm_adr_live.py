@@ -8,7 +8,7 @@ README 표)를 깔고, **스킬을 유일 컨텍스트**로 준 실 LLM(claude +
 주제의 ADR 발행을 시켜 **실 decisions 상태**(새 ADR 파일 = 다음 번호 + frontmatter + 주제 marker ·
 README Accepted 행 · log decide entry)로 단언한다.
 
-판정 철학(pm_ticket_live/release_wave 상속):
+판정 철학(pm_ticket_live/release_cluster 상속):
 - **side-effect(실 파일 상태) 기반** — LLM 이 아무것도 안 하면 새 ADR 파일이 없어 fail·채번만 하고
   본문/색인을 안 채우면 각 단언이 fail → silent pass 불가(false-green 가드).
 - **주제 marker** — 프롬프트가 요구한 고유 토큰이 ADR 본문에 있어야 통과.
@@ -40,7 +40,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 from _opencode_model import LIVE_MODEL
-# codex 축(D7): 기본 모델 = 로컬 config 상속(gpt-5.5·-m 생략)·명시 override 만 env.
+# codex 기준(D7): 기본 모델 = 로컬 config 상속(gpt-5.5·-m 생략)·명시 override 만 env.
 CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")  # None → codex 로컬 config 기본 상속.
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CLAUDE_TIMEOUT", "600"))
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_TIMEOUT", "1800"))
@@ -186,7 +186,7 @@ def test_pm_adr_live_codex(tmp_path):
 
 @_skill_present
 def test_pm_adr_skill_references_backbone_and_labeled():
-    """pm-adr 스킬이 backbone(pm_adr.py)을 참조하고 audience 라벨을 보유(ADR-0049 4요소 정합)."""
+    """pm-adr 스킬이 backbone(pm_adr.py)을 참조하고 audience 라벨을 보유(ADR-0049 4요소 일치)."""
     text = _SKILL.read_text(encoding="utf-8")
     assert "pm_adr.py" in text, "스킬이 backbone pm_adr.py 를 참조하지 않음(thin wrapper 위반)."
     assert "audience: pm-internal" in text, "audience 라벨(pm-internal) 부재(ADR-0049)."

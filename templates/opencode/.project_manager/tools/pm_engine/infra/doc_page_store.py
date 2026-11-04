@@ -38,7 +38,7 @@ def parse_page(path: Path) -> dict:
     가 "그 sha 이후 covers 경로 커밋 있나"로 판정) — 부재/비-문자열 → None(freshness skip).
     `repo` 는 그 sha/covers 를 판정할 **소유 저장소 시계**(`self` | `upstream`) — 키 부재만
     `self` 로 자연 퇴화한다. 명시 빈 문자열/false/0/컨테이너는 그대로 보존해 freshness lint 가
-    `domain-unverifiable`로 표면화한다.
+    `domain-unverifiable`로 드러낸다.
     frontmatter 깨짐은 예외를 그대로 전파한다(load_pages
     도 전파한다). `status` 는 capture-draft 가 쓴 `draft` 진실 — load_pages 가 이로
     미승인 초안을 index 에서 제외한다(suffix 가 아닌 frontmatter status 가 필터 기준).
@@ -66,7 +66,7 @@ def parse_page(path: Path) -> dict:
     else:
         owner_repo = fm.get("repo")
         if isinstance(owner_repo, str):
-            owner_repo = owner_repo.strip()  # 명시 `repo: ""`는 "" 유지(self 흡수 금지).
+            owner_repo = owner_repo.strip()  # 명시 `repo: ""`는 "" 유지(self 로 바꾸기 금지).
     covers = doc_pages._PageCovers(covers, owner_repo)
     return {
         "path": path,
@@ -146,7 +146,7 @@ def _page_body(page: dict) -> str:
 def _read_source(source: str | None) -> str:
     """`--source` 입력(조사 prose)을 읽는다 — `-`=stdin·파일경로=파일·None/(none)=빈 문자열.
 
-    프로비넌스 표기 `(none)`(미지정)도 빈 본문으로 흡수한다. 파일 부재/읽기 실패는 호출부가
+    프로비넌스 표기 `(none)`(미지정)도 빈 본문으로 처리한다. 파일 부재/읽기 실패는 호출부가
     명시 에러로 보고하도록 예외를 전파한다(scaffold 전에 잡혀 잘못된 빈 페이지 생성 방지).
     """
     if source is None or source == "(none)":
@@ -159,13 +159,13 @@ def _read_source(source: str | None) -> str:
 def _normalize_source_label(home, source: str | None) -> str:
     """`--source` 입력을 frontmatter `source:` 에 박을 provenance 라벨로 정규화한다.
 
-    절대경로/일시경로 박제를 막는다(promote 후 dangling). 규칙:
+    절대경로/일시경로 기록을 막는다(promote 후 dangling). 규칙:
       - stdin(`-`)·미지정(None) → placeholder(자유서술·PM 손).
       - repo 내 파일경로 → **repo 상대경로**(절대경로 아님).
-      - repo 밖 경로(일시 `/tmp/...` 포함) → placeholder(절대경로 박제 금지).
+      - repo 밖 경로(일시 `/tmp/...` 포함) → placeholder(절대경로 기록 금지).
 
-    repo 루트 판정은 모듈 REPO 상수(스크립트-위치 앵커) 재사용. repo-내/밖 이분으로 단순화 —
-    repo 밖이면 이미 placeholder 라 tmp 별도 패턴 판정 불요(`/tmp/...` 는 repo 밖이므로 흡수됨).
+    repo 루트 판정은 모듈 REPO 상수(스크립트 위치 기준) 재사용. repo-내/밖 이분으로 단순화 —
+    repo 밖이면 이미 placeholder 라 tmp 별도 패턴 판정 불요(`/tmp/...` 는 repo 밖이므로 함께 처리됨).
     """
     if source is None or source == "(none)" or source == "-":
         return doc_drafts.SOURCE_TODO_PLACEHOLDER
@@ -218,7 +218,7 @@ def write_draft_page(home, title: str, *, ptype: str = doc_drafts.DEFAULT_DRAFT_
     today = today or datetime.date.today().isoformat()
     prose = _read_source(source)
     # source: 라벨 정규화 — repo 내 → 상대경로·stdin/미지정/repo밖(tmp 포함) → placeholder
-    # (절대경로/일시경로 박제 금지·promote 후 dangling 방지).
+    # (절대경로/일시경로 기록 금지·promote 후 dangling 방지).
     source_label = _normalize_source_label(home, source)
 
     domain_dir = Path(domain_dir)

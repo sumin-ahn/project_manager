@@ -1,4 +1,4 @@
-"""모순 lint 공개 CLI — 개정된 결정을 참조하는 문서의 잔여 모순 후보 표면화 (층: cli).
+"""모순 lint 공개 CLI — 개정된 결정을 참조하는 문서의 남은 모순 후보 드러냄 (층: cli).
 
 standalone 재검사 진입이다. ADR 발행 명령(`cli.adr_cmd`)은 `pm_engine.app.adr_contradiction` API 를
 직접 부른다.

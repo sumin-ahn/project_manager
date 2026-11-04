@@ -1,6 +1,6 @@
 """wiki 운영 문서 lint (층: app).
 
-status.md 완료 행 누적, family scope 태그, ADR 수명주기 back-ref 정합과 작성자 표기를 판정한다.
+status.md 완료 행 누적, family scope 태그, ADR 수명주기 back-ref 일치와 작성자 표기를 판정한다.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def lint_status(home) -> list[tuple[str, str, str]]:
       - status-done-accum: 활성 매트릭스에 ✅ 완성 행이 누적 — status_done.md 로 archive 권고.
 
     (status.md 헤더 scalar·테스트 수·합계·소계·회귀 실측은 derivable 이라
-    제거됐다 — 따라서 `status-header-bloat` 가드와 ticket_finish 스칼라 앵커 무결성 검사
+    제거됐다 — 따라서 `status-header-bloat` 가드와 ticket_finish 스칼라 표지 무결성 검사
     `lint_status_anchors` 도 같이 제거. status.md = judgment-only.)
 
     status.md 없으면 빈 리스트. (board.py refresh/lint 끝에서 호출.)
@@ -55,7 +55,7 @@ def _scope_aware_dirs(home) -> tuple[Path, ...]:
     return (pm_paths.decisions_dir(home), pm_paths.specs_dir(home))
 
 
-# 유효 family_scope 값 형식 — `shared` 또는 prefix 형(영숫자·`-`·`_`, 등록 prefix 와 동형).
+# 유효 family_scope 값 형식 — `shared` 또는 prefix 형(영숫자·`-`·`_`, 등록 prefix 와 같은 구조).
 # 형식만 검사(등록 여부는 advisory 메시지로) — areas.md 부재에서도 동작.
 _FAMILY_SCOPE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -82,7 +82,7 @@ def family_scope(fm: dict[str, Any]) -> str:
 
     `family_scope:` 값을 strip 해 반환한다. 없거나 빈 문자열이면 `shared` 기본
     비-문자열(잘못 적힌 list 등)도 shared 로
-    안전 폴백 — 파싱이 절대 예외를 던지지 않게 한다(lint fail-soft).
+    안전하게 대체 — 파싱이 절대 예외를 던지지 않게 한다(lint fail-soft).
     """
     raw = fm.get("family_scope")
     if not isinstance(raw, str):
@@ -103,8 +103,8 @@ def lint_scopes(home) -> list[tuple[str, str, str]]:
     scope 자체로 hard-fail 을 만들지 않는다.
     (family_scope 부재) 에선 항상 빈 리스트 — 회귀 0.
 
-    *원본 값* 을 검사한다(파싱 헬퍼 `family_scope()` 의 fail-soft 폴백과 분리) — 헬퍼는
-    비문자열을 shared 로 안전 폴백하지만, lint 는 그 형식 오류를 조용히 삼키지 않고
+    *원본 값* 을 검사한다(파싱 헬퍼 `family_scope()` 의 fail-soft 대체와 분리) — 헬퍼는
+    비문자열을 shared 로 안전하게 대체하지만, lint 는 그 형식 오류를 조용히 삼키지 않고
     `scope-advice` 로 권고해야 한다.
     """
     issues: list[tuple[str, str, str]] = []
@@ -117,7 +117,7 @@ def lint_scopes(home) -> list[tuple[str, str, str]]:
                 fm, _body = ticket_store.load_ticket(p)
             except (ValueError, OSError, yaml.YAMLError):
                 # frontmatter 없음(README) 또는 placeholder({{DATE}} 등 비-YAML) — scope 인지
-                # 대상 아님(fail-soft). 한 문서 파싱 실패가 lint 전체를 막지 않게 흡수한다.
+                # 대상 아님(fail-soft). 한 문서 파싱 실패가 lint 전체를 막지 않게 넘어간다.
                 continue
             if not isinstance(fm, dict):
                 continue  # frontmatter 가 스칼라/리스트 — scope 인지 대상 아님.
@@ -126,7 +126,7 @@ def lint_scopes(home) -> list[tuple[str, str, str]]:
             raw = fm.get("family_scope")
             src = pm_paths._rel_to_repo(home, p)
             if not isinstance(raw, str):
-                # list/dict/number 등 — frontmatter 형식 오류. 헬퍼는 shared 폴백하지만
+                # list/dict/number 등 — frontmatter 형식 오류. 헬퍼는 shared 로 대체하지만
                 # lint 는 조용히 삼키지 않고 권고한다.
                 issues.append((src, "scope-advice",
                                f"family_scope 가 비문자열({type(raw).__name__}) — "
@@ -165,12 +165,12 @@ def _as_id_list(val) -> list[str]:
 
 
 def lint_adr_lifecycle(home) -> list[tuple[str, str, str]]:
-    """ADR lifecycle 정합 advisory (never-block).
+    """ADR lifecycle 일치 advisory (never-block).
 
     `amends:[Y]`/`supersedes:Y` 인 ADR-X 에 대해 대상 Y(ADR)가 **back-ref**(amended_by/
     superseded_by 에 X)와 **status**(amended/superseded)를 갖는지 검사한다. + 자가일관:
     status=amended 면 amended_by 가, superseded 면 superseded_by 가 있어야 한다. 어긋나면
-    권고(kind=`adr-lifecycle`·`_ADVISORY_LINT_KINDS` 등재로 `--gate` 종료코드 비기여).
+    권고(kind=`adr-lifecycle`·`_ADVISORY_LINT_KINDS` 등재로 `--blocking` 종료코드 비기여).
     `refines`(추가·대상 불변)는 검사 안 한다. ticket back-ref(`amended_by:[T-NNNN]`)는
     forward edge 가 없어 cross-check 대상 아님(자가일관만). decisions/ 부재·깨진 frontmatter
     → graceful skip(신규 clone·ADR 0개 무영향)."""
@@ -242,9 +242,9 @@ def lint_adr_author(home) -> list[tuple[str, str, str]]:
 
     각 ADR frontmatter 에 `author: <user>/<pm-slot>`(누가 결정했나·provenance·연속성 아님)가
     박혀 있는지 권고한다 — board.py 가 ADR 을 *발행*하지 않으므로 발행측 규칙을 강제하는 대신
-    부재/형식어긋남을 visibility 로만 표면화한다. `author` 부재 → "author 권고"; 있으나
+    부재/형식어긋남을 visibility 로만 드러낸다. `author` 부재 → "author 권고"; 있으나
     `<user>/<pm-slot>` 형식이 아니면 → 형식 권고. kind=`adr-author`(`_ADVISORY_LINT_KINDS`
-    등재로 `--gate` 종료코드 비기여). decisions/ 부재·깨진 frontmatter → graceful skip
+    등재로 `--blocking` 종료코드 비기여). decisions/ 부재·깨진 frontmatter → graceful skip
     (신규 clone·구 ADR author 부재 정상 무영향)."""
     findings: list[tuple[str, str, str]] = []
     if not pm_paths.decisions_dir(home).is_dir():
