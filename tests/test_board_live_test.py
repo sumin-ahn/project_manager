@@ -409,7 +409,7 @@ def test_drift_changes_none_when_manifest_entry_source_missing(
     assert "[source 에 없음]" in err
 
 
-def test_drift_changes_detects_legacy_add_harness_block_rebuild(
+def test_drift_changes_detects_legacy_add_harness_guest_block_rebuild(
         tmp_path, pm_update_module, monkeypatch, capsys):
     """실 legacy add-harness 픽스처(추가 하네스 절 provenance 미기록) — 첫 sync 는 구획을 그 판의 출하
     manifest 에서 다시 만들어 `.project_manager/engine.manifest` 를 update 한다. `drift_changes` 가
