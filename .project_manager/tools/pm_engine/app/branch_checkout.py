@@ -52,11 +52,11 @@ def refresh(home, slot: str, *, onto: "str | None" = None,
              인자에 규칙이 갈리지 않는다.
       4b. **submodule 재동기** — `git submodule update --init --recursive --force`(gitlink 옛 pin 잔존
          →stale+dirty 자가 잠금 방지·readonly=dev submodule 없어 전체 재동기 안전).
-      5. **스냅 갱신** — `record_git_snapshot(base_branch=기준 branch)` — 기준 branch 는 onto(명시 시)
-         또는 기록된 base.branch 이며(무인자 경로에서 ref 가 origin/<branch> 로 해소돼도 장부에는 논리
+      5. **git 상태 기록 갱신** — `record_git_snapshot(base_branch=기준 branch)` — 기준 branch 는 onto(명시 시)
+         또는 기록된 base.branch 이며(무인자 경로에서 ref 가 origin/<branch> 로 해소돼도 기록에는 논리
          branch 가 남는다), base.commit 을 새 head 로 갱신한다(onto 생략에도 갱신 — HEAD 이동했는데
-         장부 base.commit 옛값 잔존 불일치 방지). refresh 는 readonly 슬롯 base 가 바뀌는 유일
-         지점이다. 주의: 명시 `--onto` 는 비-고착 — 장부에 남는 건 그 branch 명이라
+         기록 base.commit 옛값 잔존 불일치 방지). refresh 는 readonly 슬롯 base 가 바뀌는 유일
+         지점이다. 주의: 명시 `--onto` 는 비-고착 — 기록에 남는 건 그 branch 명이라
          다음 무인자 refresh 는 `_origin_or_local_base_ref` 로 다시 해소된다(origin 이 앞서거나 같으면
          origin/<branch>·로컬이 앞서면 로컬 그대로 — 성공 메시지의 실측 ref/sha 로 확인).
     반환 = `(이동한 기준 ref, 이동 후 HEAD 커밋 sha)` — 본체 CLI 가 이 실측값을 그대로 보고한다(조용한
@@ -119,16 +119,16 @@ def refresh(home, slot: str, *, onto: "str | None" = None,
     # 로 남아 **다음 refresh 가 자기 dirty 거부에 걸리는 자가 잠금**이 된다(create_slot 은 init 하는데
     # refresh 는 안 하던 비대칭). readonly 슬롯은 mutation(dev) 거부라 on-branch(dev) submodule 이
     # 존재할 수 없으니(보호 대상 0), selective 가 아닌 **전체 재동기**(`--init --recursive --force`·
-    # create_slot 관례 정합)가 안전하다. rc≠0 은 fail-loud(기준면이 반쯤 갱신된 채 성공 보고 금지).
+    # create_slot 관례와 일치)가 안전하다. rc≠0 은 fail-loud(기준면이 반쯤 갱신된 채 성공 보고 금지).
     rc, out = runner(["submodule", "update", "--init", "--recursive", "--force"])
     if rc != 0:
         raise worktree_records.RefreshRefused(slot, "git-error",
                              detail=f"submodule 재동기 실패 (rc={rc}): {str(out).strip()[:200]}")
-    # 스냅 갱신 — base 를 **기준 branch(onto 또는 기록된 base.branch)로 재기록**해 base.commit=새 head 로
+    # git 상태 기록 갱신 — base 를 **기준 branch(onto 또는 기록된 base.branch)로 재기록**해 base.commit=새 head 로
     # 갱신한다. onto 생략(기록된 base.branch 로 refresh)에도 base_branch 를 넘겨야, HEAD 는 최신
-    # origin/<base> 로 이동했는데 장부 base.commit 은 옛 커밋으로 남아 status 부모 분기 커밋·기준면 기록이
+    # origin/<base> 로 이동했는데 기록 base.commit 은 옛 커밋으로 남아 status 부모 분기 커밋·기준면 기록이
     # 실제와 어긋나는 불일치를 막는다. refresh 는 readonly 슬롯 base 가 바뀌는 유일 지점이다(detached
-    # 기준면 이동이 곧 base 이동). `_apply_git_snapshot` 이 방금 스냅한 head 를 commit 으로 쓴다.
+    # 기준면 이동이 곧 base 이동). `_apply_git_snapshot` 이 방금 기록한 head 를 commit 으로 쓴다.
     slot_snapshot.record_git_snapshot(home, slot, base_branch=base_branch, git_runner=git_runner)
     # 이동 후 실 HEAD sha — 결과 메시지가 "어느 ref 의 어느 커밋으로 갔는지"를 실측으로 보고하게 한다
     # (해소 규칙을 사용자 명시 존중으로 바꾼 것의 짝). 조회 불가는 "" fail-soft(이동 자체는 성공).
@@ -142,7 +142,7 @@ def _rebase_in_progress(home, slot: str, *, git_runner: worktree_records.GitRunn
     (worktree 는 `.git` 이 gitdir 를 가리키는 파일이라 직접 경로 조합 불가) 그 경로 실재를 본다. 둘
     중 하나라도 있으면 rebase 진행 중(선-검사 스킵 사유). git 조회 rc≠0 → 그 이름은 미검출(진행중
     미검출 시 rebase 시도가 git 자체 'already a rebase in progress' 로 rc≠0 → conflict 로
-    수렴·이중 안전). git 실행 예외는 전파한다. `git_runner` 미주입이면 슬롯 worktree 바인딩 실
+    일치·이중 안전). git 실행 예외는 전파한다. `git_runner` 미주입이면 슬롯 worktree 바인딩 실
     runner(부재면 False)."""
     runner = git_runner
     if runner is None:
@@ -167,7 +167,7 @@ def _rebase_in_progress(home, slot: str, *, git_runner: worktree_records.GitRunn
 
 def _rebase_one(home, slot: str, *, onto: "str | None", owner: str,
                 git_runner: worktree_records.GitRunner | None = None) -> worktree_records.RebaseSlotResult:
-    """슬롯 하나 rebase — 선-검사 → fetch → git rebase → 성공 시 부모 기록·장부 스냅 갱신.
+    """슬롯 하나 rebase — 선-검사 → fetch → git rebase → 성공 시 부모 기록·대여 기록의 git 상태 갱신.
 
     선-검사(스킵+loud·순서): readonly(공유 기준면·mutation 불가) → 소유(`owner` 명의 leased
     아님 — `owner` 는 세션 또는 task 명의·해소는 `rebase`) → worktree 부재 → dirty(clean 전제) →
@@ -179,8 +179,8 @@ def _rebase_one(home, slot: str, *, onto: "str | None", owner: str,
         스킵(추론 금지). fetch 뒤 대상 ref 는 `refresh` 무인자와 **같은 helper**
         (`_origin_or_local_base_ref`)로 해소한다 — origin 선호·로컬이 앞서면 로컬 tip(stderr 고지).
     이후 `git rebase <target>`. rc≠0(충돌 등) = **그 상태 그대로 두고 conflict**(엔진 임의 abort 금지·
-    부모 기록·장부 불변). 성공 = fork=대상 tip 으로 부모 기록을 다시 쓰고(`record_branch_parent`)
-    장부 스냅(head·recorded_at)을 갱신한다. 선-검사·충돌은 RebaseSlotResult 로 돌려 일괄 독립성을
+    부모 기록·대여 기록 불변). 성공 = fork=대상 tip 으로 부모 기록을 다시 쓰고(`record_branch_parent`)
+    대여 기록의 git 상태(head·recorded_at)를 갱신한다. 선-검사·충돌은 RebaseSlotResult 로 돌려 일괄 독립성을
     보장하고, rebase 성공 뒤 기록 실패는 `BranchParentError` 로 올린다(기록 없이 성공 보고 금지)."""
     def skip(reason: str) -> worktree_records.RebaseSlotResult:
         return worktree_records.RebaseSlotResult(slot, worktree_records.REBASE_SKIPPED, reason=reason)
@@ -190,8 +190,8 @@ def _rebase_one(home, slot: str, *, onto: "str | None", owner: str,
     if lease is not None and lease.role == pool_store._LEASE_ROLE_READONLY:
         return skip("readonly")   # 공유 기준면 — mutation 불가(·refresh 로만 갱신).
     # 소유 판정 = leased lease.session == 내 명의(`owner`) — `release`(`target.session !=
-    # owner_task`)와 **같은 장부·같은 비교**다. 명의가 세션이냐 task 냐는 `rebase` 가
-    # 해소하고(단일 지점), 여기 판정은 축과 무관하게 하나다.
+    # owner_task`)와 **같은 기록·같은 비교**다. 명의가 세션이냐 task 냐는 `rebase` 가
+    # 해소하고(단일 지점), 여기 판정은 기준과 무관하게 하나다.
     if lease is None or lease.state != "leased" or lease.session != owner:
         holder = lease.session if (lease is not None and lease.state == "leased") else ""
         return skip("not-owner" if not holder else f"not-owner:{holder}")
@@ -233,17 +233,17 @@ def _rebase_one(home, slot: str, *, onto: "str | None", owner: str,
         )
     elif onto is None:
         # `--onto` 생략 경로 한정 — 대상 ref 해소는 `refresh` 무인자와 같은 helper. `onto` 명시 경로는
-        # 이 elif 를 안 타므로 준 값 그대로다(조용한 origin 대체 없음·refresh 명시-onto 계약과 동형).
+        # 이 elif 를 안 타므로 준 값 그대로다(조용한 origin 대체 없음·refresh 명시-onto 계약과 같은 방식).
         target = branch_store._origin_or_local_base_ref(parent_name, slot=slot, runner=runner)
     rc, out = runner(["rebase", target])
     if rc != 0:
         # 충돌(또는 실패) — **그 상태 그대로 두고 fail-loud**. 엔진이 임의 abort 하지 않는다
-        # (해소는 사용자 git rebase --continue|--abort). 부모 기록·장부는 **완전 불변** → 다음
+        # (해소는 사용자 git rebase --continue|--abort). 부모 기록·대여 기록은 **완전 불변** → 다음
         # 부트스트랩 0단계가 "rebase 진행 중" 으로 감지·안내한다.
         return worktree_records.RebaseSlotResult(slot, worktree_records.REBASE_CONFLICT, base=parent_name,
                                 reason=str(out).strip()[:200])
 
-    # ── 성공 → 부모 기록(fork=대상 tip) + 장부 스냅 갱신(**유일 기록 지점**) ──────
+    # ── 성공 → 부모 기록(fork=대상 tip) + 대여 기록의 git 상태 갱신(**유일 기록 지점**) ──────
     fork = branch_store._resolve_base_commit(home, slot, target, git_runner=runner)
     if fork is None:
         raise branch_store.BranchParentError(
@@ -266,15 +266,15 @@ def rebase(home, slots: "list[str]", *, onto: "str | None" = None,
     ). `onto` 생략 = 기록된 부모 브랜치 최신으로 rebase(부모 기록 없으면 거부). 반환 =
     슬롯별 `RebaseSlotResult` 리스트(호출부가 성공/스킵/충돌 요약).
 
-    **소유 판별 축** = `owner_task`(명시 task 명의) > `_default_session()`(세션 명의):
+    **소유 판별 기준** = `owner_task`(명시 task 명의) > `_default_session()`(세션 명의):
       - `owner_task` 주어짐(CLI `--task <task>`·단일/일괄 공통) → **그 task 명의**가 '내 것'의
-        정의다. `release(owner_task=)` 의 소유검사와 **동형**(같은 장부·같은 의미: 그 슬롯의
+        정의다. `release(owner_task=)` 의 소유검사와 **같은 방식**(같은 기록·같은 의미: 그 슬롯의
         leased `lease.session` 이 그 명의인가) — 같은 소유를 두 도구가 다르게 판정하던 게 결함의
-        본질이었다(이 task 를 1급 축으로 올렸는데 rebase 의 소유 축만 슬롯 세션에 머묾).
+        본질이었다(이 task 를 1급 기준으로 올렸는데 rebase 의 소유 기준만 슬롯 세션에 머묾).
       - 미지정 → 세션 명의(`_default_session()` — env/단일-lease 유입·`_resolve_current_
-        slot` 동형)로 판정.
-    어느 축이든 **검사 자체는 그대로**다 — 그 명의가 leased 로 보유하지 않은 슬롯(다른 task·다른
-    슬롯 세션·미점유)은 여전히 `not-owner` 스킵(loud). 축 확장이지 검사 제거가 아니다."""
+        slot` 과 같은 방식)으로 판정.
+    어느 기준이든 **검사 자체는 그대로**다 — 그 명의가 leased 로 보유하지 않은 슬롯(다른 task·다른
+    슬롯 세션·미점유)은 여전히 `not-owner` 스킵(loud). 기준 확장이지 검사 제거가 아니다."""
     owner = owner_task or lease_store._default_session(home)
     return [_rebase_one(home, s, onto=onto, owner=owner, git_runner=git_runner) for s in slots]
 
@@ -282,20 +282,20 @@ def rebase(home, slots: "list[str]", *, onto: "str | None" = None,
 def _rerecord_branch_snapshot(home, slot: str, target: str, lease: "Lease", *,
                               git_runner: worktree_records.GitRunner | None,
                               refuse: "Callable[[str, str], RuntimeError]") -> dict:
-    """브랜치를 바꾼 **뒤** 장부 스냅을 재기록하고 그 기록을 돌려준다 — `switch`·`create_task_branch` 공용.
+    """브랜치를 바꾼 **뒤** 대여 기록의 git 상태를 다시 적고 그 기록을 돌려준다 — `switch`·`create_task_branch` 공용.
 
-    여기서부터는 브랜치 변경이 이미 일어난 뒤다. 어떤 실패든 조용히 통과시키면 장부가 stale 인 채
+    여기서부터는 브랜치 변경이 이미 일어난 뒤다. 어떤 실패든 조용히 통과시키면 기록이 stale 인 채
     성공 보고가 나가고, 사용자는 다음 0단계에서 diverged 차단을 만난다 → 전부
-    `refuse("record-failed", detail)` 로 수렴해 해소 안내를 싣는다 — **예외**(장부 IO·권한·락)까지
+    `refuse("record-failed", detail)` 로 모아 해소 안내를 싣는다 — **예외**(기록 IO·권한·락)까지
     포함(내부 리뷰 must-fix: 불일치 dict 반환만 잡으면 가장 흔한 실패인 예외가 원시 traceback 으로
-    샌다). 판정은 `_cmd_record` 와 **동형** — 무변경(스냅 불가로 기존 git 보존)·branch 불일치·None 전부
-    실패다. branch 만 보면 "기록=X·live=main diverged 에서 switch X" 처럼 **이미 X 로 기록된** 장부가
-    stale head 를 지닌 채 성공으로 통과한다(내부 리뷰 should-fix). 이미 그 브랜치·완전 동일 스냅이면
-    보수적 loud(=record 동형·재실행 안내)로 기운다 — 조용한 stale 보다 낫다."""
+    샌다). 판정은 `_cmd_record` 와 **같은 방식** — 무변경(git 상태를 기록하지 못해 기존 git 보존)·branch 불일치·None 전부
+    실패다. branch 만 보면 "기록=X·live=main diverged 에서 switch X" 처럼 **이미 X 로 기록된** 기록이
+    stale head 를 지닌 채 성공으로 통과한다(내부 리뷰 should-fix). 이미 그 브랜치·git 상태가 완전히 같으면
+    보수적 loud(=record 와 같은 방식·재실행 안내)로 기운다 — 조용한 stale 보다 낫다."""
     before_git = lease.git if isinstance(getattr(lease, "git", None), dict) else None
     try:
         updated = slot_snapshot.record_git_snapshot(home, slot, git_runner=git_runner)
-    except Exception as exc:  # noqa: BLE001 — must-fix: 장부 IO/권한/락 예외도 안내 채널로 수렴.
+    except Exception as exc:  # noqa: BLE001 — must-fix: 기록 IO/권한/락 예외도 안내 채널 하나로 모은다.
         converted = refuse("record-failed", f"슬롯 대여 기록 쓰기 예외: {exc}")
         raise converted from exc
     recorded = updated.git if (updated is not None and isinstance(updated.git, dict)) else None
@@ -309,17 +309,17 @@ def _rerecord_branch_snapshot(home, slot: str, target: str, lease: "Lease", *,
 
 def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None,
            git_runner: worktree_records.GitRunner | None = None) -> worktree_records.SwitchResult:
-    """슬롯을 **기존** 브랜치로 전환하고 **같은 호출 안에서** 장부 스냅을 재기록한다 — 원자.
+    """슬롯을 **기존** 브랜치로 전환하고 **같은 호출 안에서** 대여 기록의 git 상태를 다시 적는다 — 원자.
 
     순서(선-검사는 전부 부작용 0 — 하나라도 걸리면 전환/기록 어느 것도 하지 않는다):
       1. **readonly 거부**(·`_reject_readonly_mutation`) — 공유 기준면은 mutation 불가.
-      2. **장부 등록 확인** — 미등록이면 `SwitchRefused("unregistered")`(스냅 기록 대상 아님).
+      2. **기록 등록 확인** — 미등록이면 `SwitchRefused("unregistered")`(git 상태 기록 대상 아님).
       3. **worktree/runner 해소** — 실경로(runner 미주입)에서 슬롯 부재면 `no-worktree`.
       4. **dirty 거부 + rebase 진행중 거부** — 전환이 WIP 를 흔든다·rebase 중 전환은 꼬인다
          (`_rebase_one` 선-검사와 같은 프리미티브 `_is_dirty`/`_rebase_in_progress` 재사용).
          ⚠ **소유(내 세션 leased) 검사는 없다** — `record`/`refresh` 와 같은 위치인자
-         pool 관리 표면이고, bind 경로 remedy 는 **바인딩 이전**에 실행되므로 소유를 요구하면
-         이 커맨드의 주 용처가 막힌다(rebase 의 not-owner 스킵은 task 일괄 표면 특성).
+         pool 관리 명령이고, bind 경로의 해결 방법은 **바인딩 이전**에 실행되므로 소유를 요구하면
+         이 커맨드의 주 용처가 막힌다(rebase 의 not-owner 스킵은 task 일괄 명령의 특성).
       5. **브랜치명 정규화**(`_normalize_branch_name` — `check-ref-format --branch` 출력) —
          부적합 이름 거부 + **revspec 확장 해소**(`@{-1}`→실명). 이후 **모든 단계가 이 정규화
          이름 기준**이다(codex must-fix — 원문 기준이면 `@{-1}` 이 보호목록 비교를 우회해 이
@@ -336,11 +336,11 @@ def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None
          `submodule.recurse=true` override) + 성공 직후 `_resync_submodules_selective`
          (detached=pin 재동기·**on-branch(dev)=skip**·dirty=skip+경고·fail-soft). alloc 의 브랜치
          전환 3분기가 쓰는 그 경로다 — 새 프리미티브를 쓰면 이 submodule 보호가 통째로 빠진다
-         (codex 게이트 must-fix). 실패는 `CheckoutFailed` → `git-error`. 성공하면 그 브랜치의
+         (codex 리뷰 must-fix). 실패는 `CheckoutFailed` → `git-error`. 성공하면 그 브랜치의
          보존 기록(슬롯 제거가 남긴 `pm-slot` 등)을 지운다 — 다시 슬롯에 들어온 브랜치다. 그 지우기
          실패(`BranchParentError`)는 전환이 이미 일어난 뒤라 `record-failed` 로 거부한다.
-      9. **스냅 재기록** — 전환·resync **후에** `_rerecord_branch_snapshot`(`record` 서브커맨드와
-         동형 판정·실패는 전부 `record-failed`).
+      9. **git 상태 다시 기록** — 전환·resync **후에** `_rerecord_branch_snapshot`(`record` 서브커맨드와
+         같은 방식으로 판정·실패는 전부 `record-failed`).
     반환 = `SwitchResult`(branch=**정규화 이름**·requested=원문·head). **diverged 검사는
     무변경** — 사람이 raw `git switch` 를 직접 하면 여전히 FAIL-LOUD 로 잡힌다(탐지력 손실 0)."""
     pool_store._reject_readonly_mutation(home, slot, "switch", git_runner=git_runner)
@@ -359,7 +359,7 @@ def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None
     if worktree_git._is_dirty(pm_paths.slot_path(home, slot), git_runner=runner):
         raise worktree_records.SwitchRefused(slot, "dirty")
     if _rebase_in_progress(home, slot, git_runner=runner):
-        raise worktree_records.SwitchRefused(slot, "rebase-in-progress")   # `_rebase_one` 선-검사와 동형 프리미티브.
+        raise worktree_records.SwitchRefused(slot, "rebase-in-progress")   # `_rebase_one` 선-검사와 같은 방식의 프리미티브.
 
     # 브랜치명 정규화 — **이 아래 전 단계의 단일 기준**(원문 아님·revspec 확장 해소·codex must-fix).
     target = branch_store._normalize_branch_name(branch, git_runner=runner)
@@ -379,7 +379,7 @@ def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None
     if not branch_store._local_branch_exists(target, git_runner=runner):
         raise worktree_records.SwitchRefused(slot, "not-found", detail=f"`{target}`")
     # 타 worktree 가 이미 checkout 중인 기존 브랜치로의 전환은 부작용 0 으로 거부한다 —
-    # 강행하면 plain checkout 이 실패하고 옛 `-B` 폴백이 그 브랜치 ref 를 이 슬롯 HEAD 로
+    # 강행하면 plain checkout 이 실패하고 옛 `-B` 대체 동작이 그 브랜치 ref 를 이 슬롯 HEAD 로
     # 리셋하는 공유 통합 브랜치 clobber 클래스였다. self(같은 슬롯)가 보유한 브랜치로의
     # 재-switch 는 값 비교로 통과한다(protected-upstream **앞** — 데이터 안전 클래스가 먼저).
     elsewhere = branch_store._branch_checked_out_elsewhere(home, target, slot, git_runner=runner)
@@ -387,7 +387,7 @@ def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None
         raise worktree_records.SwitchRefused(slot, "checked-out-elsewhere",
                             detail=f"`{target}` → {elsewhere}")
     # 보호브랜치 원격을 추적하는 기존 브랜치로 가면 다음 0단계가 다시 main-참조로
-    # 막는다(remedy 가 다른 축의 fault 를 만든다).
+    # 막는다(해결 방법이 다른 쪽의 fault 를 만든다).
     tracked = branch_store._branch_protected_upstream(target, protected_list, git_runner=runner)
     if tracked is not None:
         raise worktree_records.SwitchRefused(slot, "protected-upstream",
@@ -406,7 +406,7 @@ def switch(home, slot: str, branch: str, *, protected: "list[str] | None" = None
         raise worktree_records.SwitchRefused(slot, "git-error",
                             detail=f"브랜치 전환 실패: {str(exc.output).strip()[:200]}") from exc
     except branch_store.BranchParentError as exc:
-        # 보존 기록 지우기 실패 — 전환은 이미 일어났으므로 스냅 재기록 실패와 같은 채널로 거부한다.
+        # 보존 기록 지우기 실패 — 전환은 이미 일어났으므로 git 상태 재기록 실패와 같은 채널로 거부한다.
         raise worktree_records.SwitchRefused(slot, "record-failed", detail=str(exc)) from exc
 
     recorded = _rerecord_branch_snapshot(home, 
@@ -422,7 +422,7 @@ def create_task_branch(home, slot: str, branch: str, *, parent: str, owner_task:
 
     슬롯 안 새 브랜치 생성의 유일한 엔진 경로다(`switch` 는 기존 브랜치 전환만). 순서 — 앞 단계
     거부는 부작용 0:
-      1. readonly 거부(`ReadonlySlotMutation`) · 장부 미등록 `unregistered` · `owner_task` 가 leased 로
+      1. readonly 거부(`ReadonlySlotMutation`) · 기록 미등록 `unregistered` · `owner_task` 가 leased 로
          보유한 슬롯이 아니면 `not-owner`.
       2. worktree 부재 `no-worktree` · dirty `dirty` · rebase 진행 중 `rebase-in-progress`.
       3. 브랜치명 정규화(`_normalize_branch_name`) 실패 `invalid-ref` — 이후 전부 정규화 이름 기준.
@@ -432,7 +432,7 @@ def create_task_branch(home, slot: str, branch: str, *, parent: str, owner_task:
          실패 `git-error`.
       6. `checkout --no-recurse-submodules -b <branch> <fork>` 실패 `git-error` → 성공 뒤
          `_resync_submodules_selective`(switch 전환과 같은 submodule 보호).
-      7. 부모 기록(`record_branch_parent`) · 장부 스냅 재기록(`_rerecord_branch_snapshot` — switch 와 같은
+      7. 부모 기록(`record_branch_parent`) · 대여 기록의 git 상태 재기록(`_rerecord_branch_snapshot` — switch 와 같은
          판정) 실패는 `record-failed`(브랜치는 이미 만들어졌다).
     반환 = `SwitchResult`(branch=정규화 이름·head=기록 head·requested=원문)."""
     pool_store._reject_readonly_mutation(home, slot, "task branch", git_runner=git_runner)
@@ -499,8 +499,8 @@ def _checkout_required(home, slot: str, branch: str, *,
                        git_runner: worktree_records.GitRunner | None = None) -> None:
     """`_checkout` 을 부르고 실패(rc≠0)면 `CheckoutFailed` raise.
 
-    fail-soft 로 무시하면 호출부가 장부 branch/state 를 성공처럼 갱신해 장부↔실제 worktree
-    branch 가 어긋난다. 성공해야만 호출부가 장부를 갱신하도록 강제하는 가드.
+    fail-soft 로 무시하면 호출부가 기록 branch/state 를 성공처럼 갱신해 기록↔실제 worktree
+    branch 가 어긋난다. 성공해야만 호출부가 기록을 갱신하도록 강제하는 가드.
 
     체크아웃 성공 직후 `_resync_submodules_selective` 로 submodule 을 새 브랜치 pin 에 selective
     재동기한다(detached=consume 만 재동기·on-branch=dev skip·dirty
@@ -528,12 +528,12 @@ def dev(home, slot: str, sub: str, branch: str, *, git_runner: worktree_records.
     """슬롯 worktree 의 submodule 을 dev 브랜치로 지정한다 — on-branch 화.
 
     `git -C <sub> checkout -b <branch>`(신규 생성)로 submodule 을 on-branch 로 만든다. 브랜치가
-    이미 있으면 `-b` 가 rc≠0 이므로 `git -C <sub> checkout <branch>`(전환)로 폴백한다(`_checkout`
-    의 create-or-switch 정신과 정합·단 submodule 컨텍스트). 결과적으로 그 submodule 의 live git
+    이미 있으면 `-b` 가 rc≠0 이므로 `git -C <sub> checkout <branch>`(전환)을 대신 쓴다(`_checkout`
+    의 create-or-switch 정신과 일치·단 submodule 컨텍스트). 결과적으로 그 submodule 의 live git
     HEAD 가 symbolic ref(on-branch)가 되어, 이후 `_resync_submodules_selective`가 그
     submodule 을 **dev 역할로 판별해 skip** 한다(detached pin 으로 낚아채지 않음)
     — 즉 "이 submodule 은 내가 작업 중이니 pin 재동기로 건드리지 마" 선언(무스키마·역할은 별도
-    장부 없이 submodule HEAD 로 정함).
+    기록 없이 submodule HEAD 로 정함).
 
     **`sub` 슬롯-경계 검증(codex must-fix)**: `dev` 는 실 git side-effect(`checkout`)를
     caller-공급 경로에 낸다. 이 도구는 LLM-구동 pm-internal 이라 `sub` 가 자연어에서 구성된다
@@ -547,8 +547,8 @@ def dev(home, slot: str, sub: str, branch: str, *, git_runner: worktree_records.
     `sub` 는 **슬롯 worktree 상대 submodule 경로**(`git submodule status` 가 나열하는 경로·예
     `vendor/sub`). runner 는 슬롯 worktree 바인딩(`_real_git_runner(slot_path(slot))`) + 다중 `-C`
     (`["-C", sub, ...]`)로 superproject cwd 기준 submodule 에 재진입한다(`_submodule_dirty`·
-    `_resync_submodules_selective` 와 동형 배선). `(rc, out)` 반환 — 호출부(CLI)가 rc≠0 를 명시
-    에러로 surface 한다. `git_runner` 주입 시 그 runner(테스트 mock·DI seam 보존).
+    `_resync_submodules_selective` 와 같은 방식으로 부른다). `(rc, out)` 반환 — 호출부(CLI)가 rc≠0 를 명시
+    에러로 surface 한다. `git_runner` 주입 시 그 runner(테스트 mock·DI 교체 지점 보존).
 
     **readonly 거부**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
     dev 는 submodule 을 on-branch 로 checkout 하는 mutation 이라 read-only 기준면엔 불가(진입 가드).
@@ -565,8 +565,8 @@ def dev(home, slot: str, sub: str, branch: str, *, git_runner: worktree_records.
         return 1, f"submodule {sub!r} 은 폴더 밖이거나 초기화 안 됨, sync 후 dev를 지정한다"
     rc, out = runner(["-C", sub, "checkout", "-b", branch])
     if rc != 0:
-        # `-b` 실패 원인 판별(codex bundle) — 브랜치가 *이미 존재*할 때만 전환 폴백한다. 그 외
-        # (충돌/lock/잘못된 브랜치명)의 `-b` 실패까지 폴백하면 진단이 흐려지므로, `show-ref
+        # `-b` 실패 원인 판별(codex bundle) — 브랜치가 *이미 존재*할 때만 전환을 대신 쓴다. 그 외
+        # (충돌/lock/잘못된 브랜치명)의 `-b` 실패까지 전환으로 대신하면 진단이 흐려지므로, `show-ref
         # --verify --quiet refs/heads/<branch>` rc0(존재)일 때만 plain `checkout <branch>` 로
         # 전환하고, 미존재(rc≠0)면 원 `-b` 실패(rc/out)를 그대로 전파한다(원인 명확).
         rc_ref, _out_ref = runner(
@@ -588,7 +588,7 @@ def sync(home, slot: str, *, git_runner: worktree_records.GitRunner | None = Non
       - detached & dirty → skip + 경고(미커밋 작업 유실 방지).
       - submodule 없는 슬롯 → no-op.
     fail-soft(raise 금지·경고는 stderr) — `_resync_submodules_selective` 계약 상속. `git_runner`
-    주입 시 그 runner(테스트 mock·DI seam), 미주입이면 슬롯 worktree 바인딩 실 runner.
+    주입 시 그 runner(테스트 mock·DI 교체 지점), 미주입이면 슬롯 worktree 바인딩 실 runner.
 
     **readonly 거부**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
     sync 는 submodule 을 pin 으로 재동기(checkout)하는 mutation 이라 read-only 기준면엔 불가(진입
@@ -603,10 +603,10 @@ def _rebase_skip_reason(home, reason: "str | None") -> str:
     if reason and reason.startswith("not-owner:"):
         holder = reason.split(":", 1)[1]
         # 보유자 명의는 세션일 수도 task 일 수도 있다 — "세션" 으로 단정하면 task 모드에서
-        # 안내가 틀린 축을 가리킨다(codex 게이트 suggestion).
+        # 안내가 틀린 기준을 가리킨다(codex 리뷰 suggestion).
         msg = f"명의 {holder!r} 이(가) 보유 — 내 슬롯 아님(rebase 차단·소유검사)"
         if pool_store._is_registered_task(home, holder):
-            # 보유자가 등록 task = 소유 축이 task 다— 해소 커맨드를 실값으로 안내.
+            # 보유자가 등록 task = 소유 기준이 task 다 — 해소 커맨드를 실값으로 안내.
             msg += (f" · 이 슬롯이 내 task 명의면 `--task {holder}` 를 붙여 그 명의로 rebase 하라"
                     " (소유검사)")
         return msg

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """worktree CLI 진입점.
 
-명령 파서·dispatch 는 pm_engine.cli.worktree_cmd, 슬롯·task·장부·git 작업은 pm_engine 패키지가
-소유한다. 이 파일은 콘솔 설정과 설치 앵커 Home 으로 CLI 를 부르는 일만 맡는다.
+명령 파서·dispatch 는 pm_engine.cli.worktree_cmd, 슬롯·task·기록·git 작업은 pm_engine 패키지가
+소유한다. 이 파일은 콘솔 설정과 설치 위치로 정한 대상 Home 으로 CLI 를 부르는 일만 맡는다.
 """
 import os
 import sys

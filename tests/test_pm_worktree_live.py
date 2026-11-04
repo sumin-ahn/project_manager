@@ -16,15 +16,15 @@
 (autoSetupMerge)을 못 잡아 false-green 났다 — 실 git + 실 LLM 만이 그 백스톱이다
 ([[verify-real-output-not-just-review]]). 전역 `submodule.recurse` 낚아채임(크럭스 A)도 같은 이유.
 
-판정 철학(release_wave·command_card_usability 상속):
+판정 철학(release_cluster·command_card_usability 상속):
 - **side-effect(실 git 상태) 기반** — LLM 출력 phrasing 비결정에 강건. 초기 상태를 *비공허*
   (dev submodule=detached·consume=drift)로 세워 **LLM 이 아무것도 안 하면 3 단언이 fail** → silent
   pass 불가(false-green 가드의 핵심). 명령 미실행(초기 git 상태 그대로)이면 명시 fail.
-- **관측 수단 비대칭**(release_wave 위임-관측 비대칭 상속): claude=stream-json 의 Bash tool-call 로
+- **관측 수단 비대칭**(release_cluster 위임-관측 비대칭 상속): claude=stream-json 의 Bash tool-call 로
   backbone(dev·sync) 실행을 **hard** 관측 / opencode=stream-json 처럼 정밀 노출 X(stdout 스캔뿐)이라
   side-effect 만 hard·커맨드 관측은 **best-effort**.
 
-게이트 아님 — 사용자가 릴리즈 직전 `PM_ORCH_LIVE_RELEASE=1` 로 occasional 트리거(비용·flaky 감수).
+통과 조건 아님 — 사용자가 릴리즈 직전 `PM_ORCH_LIVE_RELEASE=1` 로 occasional 트리거(비용·flaky 감수).
 기본 skip(env 미설정·바이너리 부재·CI green 불변). 이 파일은 그 외 **always-run hermetic 가드**도
 보유한다 — 라이브 미실행 시에도 (1) 스킬 파일 존재·backbone 참조 (2) 프롬프트 구조 (3) fixture 가
 비공허 초기 상태를 만드는지 (4) backbone 이 시나리오를 수준에서 성립시키는지 (5) release 마커 수를
@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 
-# release_wave/runtime_smoke 헬퍼 재사용(중복 인프라 금지·같은 tests/ 디렉토리 import) —
+# release_cluster/runtime_smoke 헬퍼 재사용(중복 인프라 금지·같은 tests/ 디렉토리 import) —
 # adopter import(hermetic·models 조회 차단)·LLM env 격리(화이트리스트)·claude stream-json Bash 파싱.
 from test_fresh_adopter_runtime_smoke import _import_adopter, _live_env
 from test_command_card_usability import _collect_bash_commands
@@ -55,10 +55,10 @@ REPO = Path(__file__).resolve().parents[1]
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 라이브 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # claude: sonnet-4-6(API 과금·env override). opencode: 출하 모델(ollama cloud·
-# 과금 0·env override). release_wave/command_card_usability 와 동일 단일 진실(양쪽 default 일치).
+# 과금 0·env override). release_cluster/command_card_usability 와 동일 단일 진실(양쪽 default 일치).
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 from _opencode_model import LIVE_MODEL
-# opencode 는 느리고 변동 커 1800s, claude 는 dev+sync 2콜 여유분 600s (release_wave 상속).
+# opencode 는 느리고 변동 커 1800s, claude 는 dev+sync 2콜 여유분 600s (release_cluster 상속).
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
 
@@ -78,7 +78,7 @@ _CONSUME_SUB = "vendor/consume"
 _DEV_BRANCH = "mywork"
 _BASE_BRANCH = "develop"
 
-# 이 파일 release 라이브 케이스 수(claude+opencode) — 마커 소실/개명 시 게이트 selection 에서
+# 이 파일 release 라이브 케이스 수(claude+opencode) — 마커 소실/개명 시 통과 조건 selection 에서
 # 조용히 빠지는 것 방어(pin·아래 `test_release_markers_pinned`). 라이브를 의도적으로 늘리면 함께 갱신.
 _EXPECTED_RELEASE_TESTS = 2
 
@@ -88,7 +88,7 @@ _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음
 # 테스트-전용 file:// submodule 프로토콜 우회 — 픽스처의 submodule origin 은 로컬 file:// 경로라
 # git 이 보안상(CVE-2022-39253) 기본 차단한다. GIT_CONFIG_* 로 `protocol.file.allow=always` 를
 # 주입해 그 차단만 푼다(실 ssh/https submodule 엔 무관한 테스트 우회·엔진 코드는 `-c` 를 안 박아
-# 실전 동작 영향 0·`test_real_git_submodule_init_in_new_slot` 동형). setup 은 이걸 os.environ 에
+# 실전 동작 영향 0·`test_real_git_submodule_init_in_new_slot` 와 같은 방식). setup 은 이걸 os.environ 에
 # monkeypatch 로 박아(엔진 un-injected 실 runner 도 상속) 라이브 subprocess env 에도 얹는다.
 _FILE_PROTO_ENV = {
     "GIT_CONFIG_COUNT": "1",
@@ -97,7 +97,7 @@ _FILE_PROTO_ENV = {
 }
 
 
-# ── 실 git 헬퍼 (hermetic·임시 git repo·test_worktree_pool 동형) ────────────────
+# ── 실 git 헬퍼 (hermetic·임시 git repo·test_worktree_pool 와 같은 방식) ────────────────
 def _git(cwd, *argv):
     """테스트용 실 git 헬퍼 — check=True·UTF-8 캡처·author/committer 고정."""
     env = dict(os.environ)
@@ -186,7 +186,7 @@ def _setup_home_with_submodule_slot(tmp_path: Path, harness: str, monkeypatch) -
     consume_pin = _git(family / _CONSUME_SUB, "rev-parse", "HEAD").stdout.strip()  # =v2(슬롯 pin).
     _git(family, "checkout", "-q", "main")
 
-    # bare(worktree base·ADR-0011 §31) — clone --bare + refspec 보정(T-0152 동형) + fetch(→ origin/develop)
+    # bare(worktree base·ADR-0011 §31) — clone --bare + refspec 보정(T-0152 와 같은 방식) + fetch(→ origin/develop)
     # + autoSetupMerge=true(--no-track 없으면 upstream 걸릴 조건·assertion 3 을 비공허하게).
     bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), _REPO_NAME)
     bare.parent.mkdir(parents=True, exist_ok=True)
@@ -383,11 +383,11 @@ def test_pm_worktree_live_opencode_best_effort(tmp_path, monkeypatch):
 
     claude 와 같은 스킬-only 프롬프트지만 **판정 강도가 낮다**(테스트명 `_best_effort`가 표기).
     opencode 는 stream-json 처럼 tool-call 을 정밀 노출하지 않아(stdout 스캔뿐) backbone 실행을
-    hard-claim 못 한다(release_wave 위임-관측 비대칭 상속). 그래서 hard 상한 = **실 git 상태 3 단언**
+    hard-claim 못 한다(release_cluster 위임-관측 비대칭 상속). 그래서 hard 상한 = **실 git 상태 3 단언**
     (side-effect·초기 비공허라 미실행 시 red)이고, 커맨드 실행 관측은 stdout 에코가 있을 때만
     best-effort 다. claude 경로(`test_pm_worktree_live_claude`)가 커맨드를 hard 로 커버하는 짝이다.
     `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판)·`--dangerously-skip-permissions`(비대화 헤드리스
-    auto-reject 회피·throwaway tmp 홈 격리·release_wave 동일 근거). API 과금 0(ollama).
+    auto-reject 회피·throwaway tmp 홈 격리·release_cluster 동일 근거). API 과금 0(ollama).
     """
     fx = _setup_home_with_submodule_slot(tmp_path, "opencode", monkeypatch)
     _assert_initial_state(fx)
@@ -404,7 +404,7 @@ def test_pm_worktree_live_opencode_best_effort(tmp_path, monkeypatch):
     # side-effect(hard) — 실 git 상태 3 단언 + false-green 가드(초기 비공허·미실행 fail).
     _assert_worktree_git_state(fx, proc, "opencode")
 
-    # 커맨드 실행 관측은 best-effort·gate 아님 — opencode 는 backbone 커맨드를 정밀 노출하지 않아
+    # 커맨드 실행 관측은 best-effort·통과 조건 아님 — opencode 는 backbone 커맨드를 정밀 노출하지 않아
     # side-effect(위 _assert_worktree_git_state)로만 판정한다(stdout 에코는 단언하지 않는다).
 
 
@@ -448,7 +448,7 @@ def test_pm_worktree_prompt_names_the_root_by_absolute_path(tmp_path):
     """루트 지칭은 절대경로 **값**이다 — 서술 지칭("`.project_manager` 를 가진 디렉터리")은 0.
 
     격리 홈은 바깥 저장소 트리 안에 만들어지므로(임시 루트 규약) 그 서술은 바깥 홈도 만족한다 —
-    같은 문안이 pm_release_live 에서 실제 오배치를 냈다(2026-09-02 livegate #2).
+    같은 문안이 pm_release_live 에서 실제 오배치를 냈다(2026-09-02 라이브 시험 #2).
     """
     root = tmp_path / "adopter-claude"
     prompt = _pm_worktree_prompt(_CLAUDE_SKILL.read_text(encoding="utf-8"), root=root)
@@ -492,19 +492,19 @@ def test_scenario_backbone_produces_expected_final_state(tmp_path, monkeypatch):
     assert rc == 0, f"backbone dev 실패(rc={rc}): {out!r}"
     branch_checkout.sync(pm_paths.home_at(wp.REPO), _SLOT)
 
-    # 3 단언 — dev no-clobber·consume 재동기·슬롯 no-track (side-effect 부분·_assert_worktree_git_state 동형).
+    # 3 단언 — dev no-clobber·consume 재동기·슬롯 no-track (side-effect 부분·_assert_worktree_git_state 와 같은 방식).
     assert _sub_branch(fx.slot_dir, _DEV_SUB) == _DEV_BRANCH, "dev submodule 이 on-branch 로 보존 안 됨"
     assert _sub_head(fx.slot_dir, _CONSUME_SUB) == fx.consume_pin, "consume 이 pin 으로 재동기 안 됨"
     assert not _slot_branch_has_upstream(fx.slot_dir), "슬롯 브랜치에 upstream 자동설정됨(--no-track 위반)"
 
 
 def test_release_markers_pinned():
-    """이 파일 release 마커 수(claude+opencode)를 pin — 마커 소실/개명 시 게이트 selection 누락 방어.
+    """이 파일 release 마커 수(claude+opencode)를 pin — 마커 소실/개명 시 통과 조건 selection 누락 방어.
 
     `pytest -m release` 는 마커로 라이브 서브셋을 고른다. 데코레이터 삭제/개명으로 마커가 빠지면 그
-    테스트는 조용히 선택에서 빠지고 게이트가 그 부재를 못 본다(pytest strict-marker 는 *오타* 만 잡음).
+    테스트는 조용히 선택에서 빠지고 통과 조건이 그 부재를 못 본다(pytest strict-marker 는 *오타* 만 잡음).
     이 파일 스코프로 release 마커 함수 수를 고정한다(test_release_cluster `test_release_marker_count_is_
-    pinned` 동형·라이브를 의도적으로 늘리면 `_EXPECTED_RELEASE_TESTS` 를 함께 갱신). 이 파일은
+    pinned` 와 같은 방식·라이브를 의도적으로 늘리면 `_EXPECTED_RELEASE_TESTS` 를 함께 갱신). 이 파일은
     test_release_cluster 의 `_RELEASE_TEST_FILES` 에도 등록돼(11 합산 pin·T-0278) cross-file 로 커버되고,
     여기 자체 pin(=2)으로 이중 방어한다(그 리스트에서 누락돼도 이 파일 마커 소실을 잡는다).
     """
@@ -521,5 +521,5 @@ def test_release_markers_pinned():
                 count += 1
     assert count == _EXPECTED_RELEASE_TESTS, (
         f"이 파일 release 마커 수={count} != 기대 {_EXPECTED_RELEASE_TESTS}(claude+opencode) — 마커 "
-        f"소실/개명 의심(게이트 selection 누락 위험). 라이브를 의도적으로 늘렸다면 기대값을 함께 갱신."
+        f"소실/개명 의심(통과 조건 selection 누락 위험). 라이브를 의도적으로 늘렸다면 기대값을 함께 갱신."
     )

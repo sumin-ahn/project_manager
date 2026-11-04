@@ -35,7 +35,7 @@ import pm_engine.app.worktree_pool
 
 # areas.md canonical 칼럼 순서 (`areas_rules._AREAS_COLUMNS` 와 같은 순서). 구 헤더는 이 순서의
 # *prefix* 라, 헤더보다 넓은 행(구 헤더에 신 canonical row 가 append 된 업그레이드 행)은 이
-# 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(`areas_rules._areas_row_dict` 동형).
+# 순서로 이어 매핑해 `base`/`protected`/`area_owner` 유실을 막는다(`areas_rules._areas_row_dict` 와 같은 방식).
 _AREAS_CANONICAL_COLUMNS = ("repo", "prefix", "git", "test_cmd", "owner", "base",
                             "protected", "area_owner")
 
@@ -101,7 +101,7 @@ def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:
 
     포맷 = `<branch>@<head 단축> (부모: <parent>@<갈라진 커밋 단축> · 앞 N · 뒤 M)`.
       - 부모 기록이 없으면 `(부모 기록 없음)`, 부모 브랜치가 지워졌으면 앞/뒤 대신 `부모 브랜치 없음`.
-      - readonly 슬롯 = branch 축은 `(detached)`·부모는 따라갈 브랜치.
+      - readonly 슬롯 = branch 칸은 `(detached)`·부모는 따라갈 브랜치.
     """
     if readonly:
         branch_disp = "(detached)"
@@ -122,7 +122,7 @@ def _slot_git_summary(status: dict, *, readonly: bool = False) -> str:
 # 이미 읽기 전용인 `status` 에 기계 출력을 붙였다 — 사람 출력(텍스트)은 바이트 그대로다.
 #
 # 절은 비용으로 갈린다: 기본은 가벼운 절(슬롯·슬롯 없는 보존 브랜치·task·git·repo·하네스·설정)이고,
-# `--with-board`(티켓·lint·게이트 기록)와 `--with-adapters`(어댑터 판정·diff·기능 표)가 무거운
+# `--with-board`(티켓·lint·통과 조건 기록)와 `--with-adapters`(어댑터 판정·diff·기능 표)가 무거운
 # 절을 붙인다. 기본 호출은 board 집계(`app.board_dashboard.status_snapshot`)를 실행하지 않는다(티켓 파일을 읽지 않는다).
 STATUS_JSON_SCHEMA = 1
 
@@ -130,9 +130,9 @@ STATUS_JSON_SCHEMA = 1
 def _write_machine_line(text: str) -> None:
     """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
-    사람 출력(`print`)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그 치환은
-    되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를 직접 쓴다
-    (board `_write_machine_line` 동형).
+    사람 출력(`print`)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 바뀔 수 있고 그 치환은
+    되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 함수로 UTF-8 bytes 를 직접 쓴다
+    (board `_write_machine_line` 과 같은 방식).
     """
     console.write_machine_line(text)
 
@@ -220,15 +220,15 @@ def _status_json_remote(home, leases, git_runner: worktree_records.GitRunner) ->
 
 def _status_json_slots(home, leases, task_names: set,
                        remote: dict[str, dict] | None = None) -> list[dict]:
-    """슬롯 축 — 리스 장부 + 슬롯당 git 요약. 판정은 전부 `worktree_pool` 것을 그대로 싣는다.
+    """슬롯 구획 — 대여 기록 + 슬롯당 git 요약. 판정은 전부 `worktree_pool` 것을 그대로 싣는다.
 
     `remote` 는 `--with-remote` 로 부른 때만 슬롯마다 원격 대조(`_status_json_remote`)이고 그
     밖에는 null 이다(네트워크를 쓰는 절이라 가벼운 조회에 넣지 않는다).
 
     `alive` 는 `worktree_records.lease_is_open` 그대로다(판정 재구현 0) — 열림 기록(leased +
     session)이 있고 그에 대응하는 종료 기록(release/force_release/end_task 의 idle+session 비움)이
-    없으면 참이다. 프로세스 조회는 0회다. `role` 은 장부에 키가 없는 행이 있어 `work`/`readonly` 두 값으로 정규화한다 —
-    표시 축이 아니라 판정 축이라 빈 값을 남기지 않는다.
+    없으면 참이다. 프로세스 조회는 0회다. `role` 은 기록에 키가 없는 행이 있어 `work`/`readonly` 두 값으로 정규화한다 —
+    표시용이 아니라 판정용이라 빈 값을 남기지 않는다.
     """
     rows: list[dict] = []
     repo_reads: dict = {}   # 저장소 공용 git 값(부모 기록·stash·부모 비교 ref)은 조회 1회에 한 번만 읽는다.
@@ -255,9 +255,9 @@ def _status_json_slots(home, leases, task_names: set,
 
 
 def _status_json_tasks(home, tasks) -> list[dict]:
-    """task 축 — 정체성 + 보유 슬롯(`slots_for_task` · session 축 귀속).
+    """task 구획 — 정체성 + 보유 슬롯(`slots_for_task` · session 칸 귀속).
 
-    `alive` = 장부 task 행의 열림 기록(`open`) 그대로다 — 프로세스 조회 0회.
+    `alive` = 기록 task 행의 열림 기록(`open`) 그대로다 — 프로세스 조회 0회.
     """
     return [{
         "name": task.name,
@@ -274,18 +274,18 @@ def _status_json_tasks(home, tasks) -> list[dict]:
 def _status_json_git(home, git_runner: worktree_records.GitRunner) -> dict:
     """PM 홈 checkout 의 git 요약 — branch·head·dirty.
 
-    슬롯 축(`slots[].branch`)과 다른 축이다 — 이건 board·wiki·장부를 담은 **이 사본 자신**이고,
-    회귀·라이브게이트 기록이 어느 HEAD 에 대한 판정인지 대조하는 기준이다. git checkout 이
+    슬롯 구획(`slots[].branch`)과 다른 것이다 — 이건 board·wiki·기록을 담은 **이 사본 자신**이고,
+    회귀·라이브 시험 기록이 어느 HEAD 에 대한 판정인지 대조하는 기준이다. git checkout 이
     아니면 세 값 모두 None(그 사실이 곧 신호다).
 
     브랜치는 `worktree_git.current_branch` 와 **같은 primitive** 하나로 읽는다 —
     `symbolic-ref HEAD`(full ref·`--short` 없이) rc 0 이면 `refs/heads/` 접두만 정확히 벗겨
-    브랜치명, rc≠0 이면 detached 라 None 이다. 두 축이 같은 상태를 같은 값(null)으로 말해야
+    브랜치명, rc≠0 이면 detached 라 None 이다. 두 값이 같은 상태를 같은 값(null)으로 말해야
     읽는 쪽이 판정을 다시 구현하지 않는다. `rev-parse --abbrev-ref HEAD` 를 쓰지 않는 이유는
     `current_branch` docstring 에 기록된 실측 사고 그대로다 — detached 를 문자열 `"HEAD"` 로,
     브랜치명과 동명의 태그가 있으면 `heads/<branch>` 으로, 커밋 0 인 브랜치는 rc≠0 으로 준다.
 
-    커밋 0 인 저장소(`pm_import --new` 직후 fresh clone)는 정상 형상이다 — `symbolic-ref` 가
+    커밋 0 인 저장소(`pm_import --new` 직후 fresh clone)는 정상인 경우다 — `symbolic-ref` 가
     `refs/heads/<branch>` 을 rc 0 으로 주므로 브랜치명은 있고 `head` 만 None 이다
     (`rev-parse HEAD` 가 rc≠0 · `pm_bootstrap._collect_git` 과 같은 규약).
     """
@@ -311,7 +311,7 @@ def _status_json_repos(home) -> list[dict]:
 
 
 def _source_missing_required(source_root: Path, values: dict) -> list[str]:
-    """**소스** 레지스트리 기준 필수 누락 — "갱신하면 필요" 축.
+    """**소스** 레지스트리 기준 필수 누락 — "갱신하면 필요" 기준.
 
     비교 기준은 소스 checkout 의 레지스트리다(이 사본의 선언이 아니라 갱신하면 오게 될 선언).
     이 프로세스에는 이 사본의 `pm_engine` 이 이미 적재돼 있어 소스 패키지를 import 하면 이 사본
@@ -471,12 +471,12 @@ def _status_json_usage_error(args) -> str | None:
 
 
 def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
-    """`status | whoami` — 2축 cockpit(task 상황 + slot 풀·슬롯당 git 요약).
+    """`status | whoami` — 두 구획 cockpit(task 상황 + slot 풀·슬롯당 git 요약).
 
-    **2축 cockpit** — 다슬롯 관리 부담을 한눈에 보이게 두 축으로 나눈다:
-      - **task 축** — 사람이 명명한 task 별 {보유 작업공간(`work/<repo>_<N>` 목록)·prefix}
-        (`list_tasks`+`slots_for_task`). slot 축과 깔끔히 분리된다.
-      - **slot 풀 축** — 슬롯별 {state·보유 task·role} + **슬롯당 git 요약**
+    **두 구획 cockpit** — 다슬롯 관리 부담을 한눈에 보이게 두 구획으로 나눈다:
+      - **task 구획** — 사람이 명명한 task 별 {보유 작업공간(`work/<repo>_<N>` 목록)·prefix}
+        (`list_tasks`+`slots_for_task`). slot 구획과 깔끔히 분리된다.
+      - **slot 풀 구획** — 슬롯별 {state·보유 task·role} + **슬롯당 git 요약**
         (`<branch>@<head> (base: <b>@<sha> · N behind)`·`slot_git_status`). behind 는 base 기록
         (`git.base`)이 있을 때만·미기록은 `-`+이유(자동 추론 금지).
 
@@ -485,14 +485,14 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     checkout` 해도 즉시 반영·드리프트 없음. detached/조회불가는 "(detached/조회불가)".
 
     status·whoami 는 같은 데이터·같은 핸들러 — whoami 는 이 세션 줄을 머리에 둔다. 데이터는
-    전부 장부(기계)에서 파생([[living-truth-docs-anti-ossification]]) — 신설 저장소 없음. 전
+    전부 기록(기계)에서 파생([[living-truth-docs-anti-ossification]]) — 신설 저장소 없음. 전
     surface(task/slot/git)의 조회 실패는 전파한다.
 
-    `status --json` 은 같은 수집을 **기계 계약**으로 낸다(`_emit_status_json` — 관리자 읽기
-    표면). 텍스트 출력은 그 플래그가 없을 때 종전 바이트 그대로다. `--json` 은 `status` 전용이라
+    `status --json` 은 같은 수집을 **기계 계약**으로 낸다(`_emit_status_json` — 관리자가
+    읽는 자리). 텍스트 출력은 그 플래그가 없을 때 종전 바이트 그대로다. `--json` 은 `status` 전용이라
     `whoami` 는 텍스트 별칭으로 남는다(계약 하나).
 
-    경로는 명시 Home 에서 해소하고, `engine_rev` 는 JSON 문서의 엔진 세대 값 필드에만 쓴다.
+    경로는 명시 Home 에서 해소하고, `engine_rev` 는 JSON 문서의 엔진 버전 값 필드에만 쓴다.
     """
     usage_error = _status_json_usage_error(args)
     if usage_error is not None:
@@ -506,7 +506,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     mine = [l for l in leases if l.state == "leased" and l.session == sess]
 
     # 브랜치는 슬롯 worktree 의 git HEAD 에서 live 조회한다
-    # git=진실·장부 저장 폐지). 사용자가 슬롯서 직접 `git checkout` 해도 즉시 반영.
+    # git=진실·기록 저장 폐지). 사용자가 슬롯서 직접 `git checkout` 해도 즉시 반영.
     # detached/조회불가는 None → "(detached/조회불가)" 로 surface.
     def _live_branch(slot: str) -> str:
         return worktree_git.current_branch(home, slot) or "(detached/조회불가)"
@@ -514,8 +514,8 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     print(f"# pm-config {args.command} — 세션: {sess or '(비바인딩)'}")
 
     # 정체성·세션격리 posture surface: resolved user + isolation
-    # 상태(strict/degrade/single-user) + remedy. board.py 를 import 하지 않고
-    # user 는 `_default_user`(자체 해소·`_local_conf_user` 동형), 다중사용자 여부는 areas.md
+    # 상태(strict/degrade/single-user) + 해결 방법. board.py 를 import 하지 않고
+    # user 는 `_default_user`(자체 해소·`_local_conf_user` 와 같은 방식), 다중사용자 여부는 areas.md
     # `area_owner` 자체 파싱(`_distinct_area_owners`)으로 판정한다 — board 의 격리 *판정*은 복제
     # 하지 않고 최소 신호만.
     #
@@ -528,7 +528,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     # 근절 취지). board 티켓 스캔 복제는 하지 않는다.
     resolved_user = lease_store.user_name(home)
     multi_user = _distinct_area_owners(home) > 1
-    _remedy = "`board init --owner <you>` 또는 `board migrate-identity --task <task>`"
+    _fix = "`board init --owner <you>` 또는 `board migrate-identity --task <task>`"
     _authoritative = "실 격리는 `board list --mine`(strict-exclude loud-warn)이 authoritative"
     print(f"## 정체성(user): {resolved_user or '(미해소 — local.conf identity.user= / git config user.email 미설정)'}")
     if not multi_user:
@@ -540,7 +540,7 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
               f"내 소유 open + claim). {_authoritative}.")
     else:
         print("## 세션격리(registry/area_owner 기준): ⚠ degrade-risk (다중사용자·정체성 미해소 — "
-              f"소유 미해소 open 이 `board list --mine` 에서 strict-exclude). 해결 방법: {_remedy}")
+              f"소유 미해소 open 이 `board list --mine` 에서 strict-exclude). 해결 방법: {_fix}")
 
     if mine:
         print("## 이 세션의 대여:")
@@ -549,8 +549,8 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
     else:
         print("## 이 세션의 대여: (없음)")
 
-    # task 축 — 사람이 명명한 task 별 {보유 작업공간·prefix}. list_tasks
-    # + slots_for_task(session==task 명의 leased 슬롯). task 명 집합은 slot 풀 축의 "보유 task"
+    # task 구획 — 사람이 명명한 task 별 {보유 작업공간·prefix}. list_tasks
+    # + slots_for_task(session==task 명의 leased 슬롯). task 명 집합은 slot 풀 구획의 "보유 task"
     # 귀속에도 쓴다. 공급자는 소유 모듈을 직접 부른다 — 있는지 더듬지 않는다.
     tasks = pool_store.list_tasks(home) or []
     # truthy name 만 — 레코드가 name 미보유(None/빈값)면 집합에 넣지 않는다(방어). None 이 섞이면
@@ -588,9 +588,9 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
             f"state={l.state} · session={l.session or '-'} · "
             f"{'열림' if worktree_records.lease_is_open(l) else '닫힘'}{role_str}"
         )
-        # 보유 task 귀속(장부 축) — lease.session 이 task 명이면 그 task 가 이 슬롯을 보유(session
-        # 축). idle 슬롯(session 이 task 명 아님/빈값)은 `-`. **장부 유래라 항상 출력** —
-        # slot 풀 축 명세({state·보유 task·role})는 git 요약과 분리다.
+        # 보유 task 귀속(기록 기준) — lease.session 이 task 명이면 그 task 가 이 슬롯을 보유(session
+        # 칸). idle 슬롯(session 이 task 명 아님/빈값)은 `-`. **기록 유래라 항상 출력** —
+        # slot 풀 구획 명세({state·보유 task·role})는 git 요약과 분리다.
         task_disp = l.session if (l.session and l.session in task_names) else "-"
         try:
             git_line = _slot_git_line(l.slot, readonly=role == "readonly")
@@ -610,12 +610,12 @@ def cmd_status(home, args: argparse.Namespace, *, engine_rev: str) -> int:
         print(f"  - {row['repo']} · {row['name']} · 쓰던 슬롯 {row['slot']} · "
               f"보존 {row['preserved_at']} · 사유 {row['reason']} · {parent_part} · {unmerged_part}")
 
-    # git worktree × 장부 정합(reconcile) — 실 git worktree 와 장부를 대조해 drift 를
+    # git worktree × 기록 일치(reconcile) — 실 git worktree 와 기록을 대조해 drift 를
     # surface 한다. **조회 전용·부작용 0**: 삭제/prune/이동 안 함 — 판정·복구 안내만(자동삭제는
     # 사용자 위임·파일 삭제 원칙). reconcile 실패는 전파한다.
-    #   - orphan = git worktree 존재·장부 미등록(중단된 create/수동 add 잔존·audit #2·다음 create
+    #   - orphan = git worktree 존재·기록 미등록(중단된 create/수동 add 잔존·audit #2·다음 create
     #     번호 충돌·audit #4 의 근원). status 가 이걸 못 보던 게 audit #3.
-    #   - stale = 장부 등록·worktree 없음(dir 삭제/prune).
+    #   - stale = 기록 등록·worktree 없음(dir 삭제/prune).
     #   - incomplete = provisional("creating") — worktree add 후 확정 전 중단된 create 흔적.
     recon = pm_engine.app.worktree_pool.reconcile_worktrees(home)
     if recon.orphans or recon.stale or recon.incomplete:

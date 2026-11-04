@@ -9,7 +9,7 @@
   - `#` 로 시작하는 줄과 빈 줄은 무시 · `=` 없는 줄도 무시.
   - **값 안의 `#` 은 주석이 아니다**(inline 주석 없음 — 값 그대로 보존).
   - **중복 키는 last-wins** · 마지막 값이 빈 문자열이면 그 키는 `""`(설정 해제).
-  - 파일 부재·`OSError`·`UnicodeError` → 빈 결과(fail-soft — conf 부재는 정상 형상이다).
+  - 파일 부재·`OSError`·`UnicodeError` → 빈 결과(fail-soft — conf 부재는 정상인 경우다).
 
 판정은 파싱과 분리한다. `conf_store.load()` 는 **raise 하지 않고**, 구표기 잔존 판정은
 `assert_no_legacy()` 한 호출이다. 이유는 `pm_update` 의 apply 경로다 — 구표기 conf 를 가진 채택자도
@@ -37,7 +37,7 @@ from pathlib import Path
 HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
 
 # reasoning 드라이버별 정적 허용집합 — (codex-cli 0.145.0·claude 2.1.218). 허용집합 밖 지정은
-# fail-loud(조용한 무시/강등 금지):
+# fail-loud(조용한 무시/기본값으로 낮추기 금지):
 #   · codex(`-c model_reasoning_effort`): low/medium/high/xhigh/max — 0.145.0 xhigh 실측 수용(exec
 #     앞/뒤 위치 무관 rc=0). `max` 는 추가 리뷰어 기본 프로필(gpt-5.6-sol)이 쓰는 ladder 상단이며,
 #     codex 는 미지원값을 provider 로 넘기지 않고 CLI 에서 세우므로 허용집합에 명시 등재한다.
@@ -99,16 +99,16 @@ _PER_HARNESS_WINDOW_DISPLAY = "harness.<name>.ctx_window_tokens"
 # 키이고, 그 밖은 "이 키를 저 이름으로 옮겨라" 다. 테스트가 이 표를 양방향으로 소비한다 —
 # 표에 있는 구키가 코드에 남아 있으면 red, 코드가 읽는 신키가 표/레지스트리에 없으면 red.
 LEGACY_KEY_MAP: dict[str, str | None] = {
-    # 위임 축
+    # 위임 설정
     "delegate_enabled": "delegate.enabled",
     "delegate_timeout": "delegate.timeout",
     "delegate_idle_timeout": "delegate.idle_timeout",
-    # 제거 — 추가 리뷰어 채널 스위치 축 자체가 없어졌다(대체 키 없음). 추가 리뷰어는
+    # 제거 — 추가 리뷰어 채널 스위치 설정 자체가 없어졌다(대체 키 없음). 추가 리뷰어는
     # developer·architect 와 같이 부르면 도는 역할이라 켜고 끄는 키가 없다. 남은 행은 지운다.
     "additional_reviewer.enabled": None,
     "additional_reviewer_enabled": None,
     "external_review_enabled": None,
-    # 제거 — 호출 횟수만 세던 판정 라운드 상한 축 자체가 없어졌다(대체 키 없음·수렴 축이 같은
+    # 제거 — 호출 횟수만 세던 판정 라운드 상한 설정 자체가 없어졌다(대체 키 없음·마무리 판정 설정이 같은
     # 범위를 본다: `additional_reviewer.rounds_max`)
     "additional_reviewer_round_limit": None,
     "external_review_round_limit": None,
@@ -121,18 +121,18 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
     "additional_reviewer.wave_budget": "additional_reviewer.session_budget",
     "review_rounds_max": "additional_reviewer.rounds_max",
     "review_paths": "additional_reviewer.paths",
-    # 제거 — 리뷰 내용에서 경로를 빼던 필터 축이 없어졌다(대체 키 없음)
+    # 제거 — 리뷰 내용에서 경로를 빼던 필터 설정이 없어졌다(대체 키 없음)
     "review_denylist_extra": None,
     "external_review_timeout": "additional_reviewer.timeout",
     "external_review_idle_timeout": "additional_reviewer.idle_timeout",
     "external_review_progress_signal": "additional_reviewer.progress_signal",
-    # 제거 — 리뷰어 전용 env allowlist·임시 홈 축이 없어졌다(대체 키 없음: 리뷰어 실행 조건은
-    # 위임 채널과 같은 seam 이 소유한다)
+    # 제거 — 리뷰어 전용 env allowlist·임시 홈 설정이 없어졌다(대체 키 없음: 리뷰어 실행 조건은
+    # 위임 채널과 같은 공용 함수가 소유한다)
     "reviewer_env_keep_extra": None,
     "reviewer_home_artifacts_extra": None,
     # 제거 — 모델을 고정하지 않는 legacy 실행 경로 폐지(대체 없음·구조화 tuple 이 정본)
     "reviewer_cmd": None,
-    # 하네스 축
+    # 하네스 설정
     "opencode_pro_model": "harness.opencode.pro_model",
     # ctx 임계 — 옛 비율 여섯은 전부 **남은** % 였고 새 두 키는 사용 한도 대비 **쓴** % 다. 갱신이
     # 옮길 때 값도 `100 − 옛 값` 으로 바꾼다(`_USED_PCT_FROM_REMAINING` · `rename_updates`).
@@ -161,25 +161,25 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
     # 정체성
     "user": "identity.user",
     # 제거 — slot·task 종속 값은 프로젝트 공용 conf 의 자리가 아니다. 세션의 진실은 lease
-    # 장부, prefix 의 진실은 areas.md 칼럼이다.
+    # 기록, prefix 의 진실은 areas.md 칼럼이다.
     "session": None,
     "prefix": None,
     # 제거 — 묶음 리뷰는 라운드 파일 판정으로 돌고 엔진이 리뷰 횟수를 세지 않는다(대체 키 없음).
     "delegate.code-reviewer.rounds_max": None,
-    # 제거 — 작업 크기별 변경 줄 수 상한 축이 없어졌다(대체 키 없음). 남은 행은 지운다.
+    # 제거 — 작업 크기별 변경 줄 수 상한 설정이 없어졌다(대체 키 없음). 남은 행은 지운다.
     "diff_cap.small": None,
     "diff_cap.medium": None,
     "diff_cap.large": None,
 }
 
-# **안내만 하고 막지는 않는 구키** — 읽는 코드가 이미 0인 키다(폴백이 먼저 폐지됐다).
-# 값을 공급하지 않으므로 잔존해도 조용히 강등되는 축이 없고(불변식 6 의 대상이 아니다), 여기서
+# **안내만 하고 막지는 않는 구키** — 읽는 코드가 이미 0인 키다(대체 동작이 먼저 폐지됐다).
+# 값을 공급하지 않으므로 잔존해도 조용히 기본값으로 낮아지는 설정이 없고(불변식 6 의 대상이 아니다), 여기서
 # 막으면 무해한 잔존 한 줄이 기존 채택자의 전 명령을 세운다. 교체 안내는 이 키들도 지목한다.
 NON_BLOCKING_LEGACY_KEYS: frozenset[str] = frozenset({"session", "prefix"})
 
 # suffix per-harness 표기(`ctx_window_tokens_<harness>`)는 접두 패턴으로 판정한다 — 구표기는
 # 하네스명이 f-string 으로 붙는 **열린 집합**이었고, 신표기 `harness.<name>.ctx_window_tokens`
-# 로 옮기면 `harness.<name>.*` 패턴에 흡수돼 닫힌 집합이 된다.
+# 로 옮기면 `harness.<name>.*` 패턴에 포함돼 닫힌 집합이 된다.
 LEGACY_SUFFIX_PREFIX = "ctx_window_tokens_"
 
 
@@ -206,7 +206,7 @@ def is_legacy_key(key: str) -> bool:
 # 소비자는 `default_for()` 로 읽는다. 출하 문서는 이 표를 복제하지 않고 `local_conf.py --keys`
 # 를 가리킨다 — 복제본은 반드시 drift 한다.
 #
-# 축 없는 단일값도 축을 만든다(`test.cmd`·`runtime.py`) — "이 키는 왜 다르지" 가 생기지 않게
+# 묶음 없는 단일값도 묶음을 만든다(`test.cmd`·`runtime.py`) — "이 키는 왜 다르지" 가 생기지 않게
 # 예외를 두지 않는다. 세그먼트 구분자만 점이고, 세그먼트 안의 철자는 그 식별자의 정본을 따른다
 # (역할은 `ROLE_CHOICES` 표기 `code-reviewer`, 속성은 snake_case `idle_timeout`).
 # 폐지된 이름은 여기 없다 — 그 표는 `LEGACY_KEY_MAP` 하나다(중복 표기 금지).
@@ -226,7 +226,7 @@ class KeySpec:
     `required` 는 **반드시 명시**한다(기본값 없음) — 새 키를 적으면서 필수 여부를 빠뜨리면
     import 시점에 `TypeError` 로 멈춘다.
 
-    `choices` 는 이 키가 고르는 **값의 축 이름**(`harness`·`model`·`reasoning` = `_ROLE_SUFFIXES`)
+    `choices` 는 이 키가 고르는 **값 종류 이름**(`harness`·`model`·`reasoning` = `_ROLE_SUFFIXES`)
     이고 목록 자체는 담지 않는다 — 목록의 정본은 설정 어휘(`HARNESS_CHOICES`·`REASONING_ALLOWED`)와
     `contract.MODEL_SOURCE` 라 여기 복제하면 두 자리가 갈린다. reasoning 은 정적 허용값
     버킷(claude·codex)이거나 모델 목록 조회 응답의 그 모델 variant(opencode)다. 고를 목록이 없는 키는
@@ -265,7 +265,7 @@ class KeySpec:
         self.governed_by = governed_by
         self.readonly = readonly
 
-    def __repr__(self) -> str:                                   # 진단 표면(테스트 실패 메시지)
+    def __repr__(self) -> str:                                   # 진단 출력(테스트 실패 메시지)
         return (f"KeySpec(label={self.label!r}, default={self.default!r}, "
                 f"required={self.required!r}, group={self.group!r})")
 
@@ -482,7 +482,7 @@ KNOWN_KEYS: tuple[str, ...] = tuple(KEY_REGISTRY)
 
 
 # `harness.<name>.*` 의 기본값은 접미마다 다르다 — 사용 한도만 한 값(모든 하네스 공통 200000)을
-# 갖고, 나머지는 기본값이 없어 안 채웠을 때 일어나는 일을 적는다: 시간 두 축은 하네스 프로필이
+# 갖고, 나머지는 기본값이 없어 안 채웠을 때 일어나는 일을 적는다: 시간 제한 두 종류는 하네스 프로필이
 # 받고, 모델 이름은 안내 문서 렌더가 자리를 TODO 로 남긴다(`render_rules.neutralize_model_todo`).
 _HARNESS_MEMBER_DEFAULTS: dict[str, str] = {
     "ctx_window_tokens": "200000",
@@ -512,7 +512,7 @@ def key_spec(key: str) -> KeySpec | None:
         return None
     spec = PATTERN_REGISTRY[pattern]
     if pattern == DELEGATE_ROLE_PATTERN:
-        # 축이 멤버마다 다르다(harness/model/reasoning) — 군 한 칸에 담기지 않으므로 이 키의
+        # 값 종류가 멤버마다 다르다(harness/model/reasoning) — 군 한 칸에 담기지 않으므로 이 키의
         # 접미로 채워 준다(`_delegate_pattern_for` 가 그 접미를 `_ROLE_SUFFIXES` 로 이미 닫았다).
         # 안 채웠을 때 일어나는 일은 티어마다 다르다(`_DELEGATE_TIER_UNSET`).
         role, _, rest = key[len("delegate."):].partition(".")
@@ -586,7 +586,7 @@ def unset_for(key: str) -> str | None:
 def recommended_for(key: str) -> str | None:
     """이 키의 **권장값** — 근거가 있는 자리만 값이 있고 나머지는 None (기본값이 아니다).
 
-    `default_for` 와 다른 축이다: 기본값은 미설정 시 엔진이 실제로 쓰는 값이고, 권장값은 채택자가
+    `default_for` 와 다른 값이다: 기본값은 미설정 시 엔진이 실제로 쓰는 값이고, 권장값은 채택자가
     저장해야 효과가 나는 제안이다. 표는 역할 위임 키만 담는다(`DELEGATE_RECOMMENDED`).
     """
     if pattern_for(key) != DELEGATE_ROLE_PATTERN:
@@ -652,9 +652,9 @@ class ConfResult:
 
 
 class LegacyConfKeyError(RuntimeError):
-    """구표기 키가 남은 conf 를 **값 소비 지점**이 만났다(조용한 기본값 강등 차단)."""
+    """구표기 키가 남은 conf 를 **값 소비 지점**이 만났다(조용한 기본값 낮추기 차단)."""
 
-    # fail-soft 해소 경로가 이 예외를 **import 없이** 식별하는 표식이다 — 중앙 로더가 멈춘 것을
+    # fail-soft 해소 경로가 이 예외를 **import 없이** 식별하는 표시이다 — 중앙 로더가 멈춘 것을
     # 호출부가 일반 해소 실패로 삼키면 fail-loud 가 무효가 된다.
     _legacy_conf_key = True
 
@@ -732,7 +732,7 @@ def legacy_error_message(legacy: dict[str, str | None], path: Path | None = None
         "모델 값은 자동으로 옮기지 않습니다 — 하네스·모델 조합은 환경마다 다르므로 "
         "PM 과 합의해 수동으로 설정하십시오.")
     # 예외 전문도 안내와 **같은 데이터**로 채택자 소유 파일을 지목한다 — 이 예외가 유일한
-    # 복구 경로 안내인 형상(도구가 여기서 멈춘다)에서 포인터가 빠지면 채택자는 엔진이 고쳐
+    # 복구 경로 안내인 경우(도구가 여기서 멈춘다)에서 포인터가 빠지면 채택자는 엔진이 고쳐
     # 주지 않는 파일이 남아 있다는 사실을 어디서도 듣지 못한다.
     lines.extend(adopter_pointer_lines())
     return "\n".join(lines)
@@ -805,7 +805,7 @@ def _used_pct_from_remaining(key: str, value: str) -> str:
 
 
 def migration_lines(legacy: dict[str, str | None]) -> list[str]:
-    """구표기 → 신표기 지목 줄(안내 표면 공용 · 정렬은 선언 순서)."""
+    """구표기 → 신표기 지목 줄(안내 출력 공용 · 정렬은 선언 순서)."""
     out: list[str] = []
     for key, replacement in legacy.items():
         if replacement is None:
@@ -816,9 +816,9 @@ def migration_lines(legacy: dict[str, str | None]) -> list[str]:
 
 
 # ── 교체 안내 (pm_import·pm_update 공용 문구) ────────────────────────────
-# 기본값 변경은 **형상 무관 1줄**로 무조건 알린다. 구키가 아예 없는 채택자(키 미설정)는 fail-loud
-# 가 잡지 못하는 유일한 형상이고, "안 켰다" 가 "켜졌다" 로 바뀌는 것도 그 형상뿐이라 기계 통지
-# 수단이 이 한 줄밖에 없다. 재질문은 하지 않는다 — 폐지한 동의 축을 되살리는 것이기 때문이다.
+# 기본값 변경은 **어느 경우든 1줄**로 무조건 알린다. 구키가 아예 없는 채택자(키 미설정)는 fail-loud
+# 가 잡지 못하는 유일한 경우이고, "안 켰다" 가 "켜졌다" 로 바뀌는 것도 그 경우뿐이라 기계 통지
+# 수단이 이 한 줄밖에 없다. 재질문은 하지 않는다 — 폐지한 동의 설정을 되살리는 것이기 때문이다.
 DELEGATE_DEFAULT_CHANGE_NOTICE = (
     "위임 기본값이 허용으로 바뀝니다 — 위임을 원치 않으면 local.conf 에 "
     "`delegate.enabled=false` 를 명시하세요."
@@ -867,7 +867,7 @@ def migration_notice(result: ConfResult) -> list[str]:
 
 
 def blocking_legacy(legacy: dict[str, str | None]) -> dict[str, str | None]:
-    """구표기 중 **값 공급을 잃어 조용히 강등될 수 있는** 키만 (안내 전용 키는 뺀다)."""
+    """구표기 중 **값 공급을 잃어 조용히 기본값으로 낮아질 수 있는** 키만 (안내 전용 키는 뺀다)."""
     return {key: value for key, value in legacy.items()
             if key not in NON_BLOCKING_LEGACY_KEYS}
 
@@ -946,7 +946,7 @@ def _platform_command_name(key: str) -> str | None:
 def platform_test_commands(values: dict[str, str]) -> tuple[tuple[str, str], ...]:
     """`qa.platforms` 선언을 순서 보존 `(name, command)` tuple로 fail-closed 해소한다.
 
-    선언 부재/빈값은 legacy no-platform 형상이라 platform 의미 검사를 전혀 하지 않는다.
+    선언 부재/빈값은 legacy no-platform 경우라 platform 의미 검사를 전혀 하지 않는다.
     nonempty 선언부터 이름·중복·command 누락·미선언 orphan을 모두 오류로 올린다.
     """
     raw = values.get("qa.platforms")

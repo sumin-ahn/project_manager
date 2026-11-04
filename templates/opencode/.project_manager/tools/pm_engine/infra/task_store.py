@@ -16,8 +16,8 @@ from pm_engine.infra import fs, pm_paths, pool_store
 def _task_todo_lock(home, name: str) -> Iterator[None]:
     """한 task 의 할 일 파일 read-modify-write 를 직렬화한다.
 
-    장부 락(`_lease_lock`)과 **다른 락**이다. 재진입 금지는 장부 락과 같다. 이 구간 안에서
-    장부 락을 잡지 않는다 — 두 락을 겹쳐 잡는 자리를 만들면 순서를 지킬 책임이 생긴다.
+    기록 락(`_lease_lock`)과 **다른 락**이다. 재진입 금지는 기록 락과 같다. 이 구간 안에서
+    기록 락을 잡지 않는다 — 두 락을 겹쳐 잡는 자리를 만들면 순서를 지킬 책임이 생긴다.
     """
     path = pm_paths._task_todo_lock_file(home, name)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ def ensure_task_pm_state(home, name: str) -> Path:
 
     task는 슬롯 0개여도 독립 정체성이므로 state 생성은 slot alloc/bind나 첫 handoff까지 미루지
     않는다. 이미 있으면 byte 불변 no-op. 없으면 tracked template을 task 첫 세션 형태로 렌더해
-    원자 교체한다. template 부재/손상은 task 장부만 생기는 반쪽 상태를 허용하지 않고 fail-loud.
+    원자 교체한다. template 부재/손상은 task 기록만 생기는 반쪽 상태를 허용하지 않고 fail-loud.
     """
     task_rules._validate_task_name(name)
     target = pm_paths.task_pm_state_file(home, name)

@@ -1,4 +1,4 @@
-"""task 사이클 e2e — 생성→편입→작업→핸드오프→재개 (W4·ADR-0068 사이클 게이트·release-marked).
+"""task 사이클 e2e — 생성→편입→작업→핸드오프→재개 (W4·ADR-0068 사이클 검사·release-marked).
 
 실 파일시스템/실 git/실 엔진(worktree_pool·pm_bootstrap·pm_handoff)으로 **사용자 사이클을 한
 케이스로 완주**한다:
@@ -7,18 +7,18 @@
   ② `worktree add --task`(생성+편입·create_slot owner_task) + alloc(추가 대여·I3 항상-신규) —
      같은 task 가 같은 repo 2슬롯 보유(집합 성장) → 재부트스트랩이 "보유 2 — 전수 검증" 열거.
   ③ 작업(한 슬롯 커밋·다른 슬롯 무변경) 후 핸드오프 — **변경 슬롯만 회귀**(무변경 슬롯 skip)·
-     **전 슬롯 재스냅**(집합 전체 두고 간다·T-0388 루프)·**트리거 `--task`**(T-0394)·정상-종료
+     **전 슬롯 git 상태 재기록**(집합 전체 두고 간다·T-0388 루프)·**트리거 `--task`**(T-0394)·정상-종료
      task 종료 기록(닫힘).
   ④ 트리거 그대로 재개 — 닫힌 기록 `resumed`·집합 재수령(보유 2)·
-     0단계 record↔live ✓(재스냅이 diverged 오탐을 닫음·PM 78 실증).
+     0단계 record↔live ✓(git 상태 재기록이 diverged 오탐을 닫음·PM 78 실증).
 
-release-marked — 릴리즈마다 "단위게이트 green·사이클 단절"(PM 78 실증) 클래스를 기계 차단한다
-(livegate 수집 pin 편입). 라이브 LLM 불요(순수 기계 e2e).
+release-marked — 릴리즈마다 "단위 시험 green·사이클 단절"(PM 78 실증) 클래스를 기계 차단한다
+(live-test 수집 pin 편입). 라이브 LLM 불요(순수 기계 e2e).
 
-**hermetic**: tmp scratch 루트에서 돌며 실 장부/실 PM 홈을 절대 건드리지 않는다 — worktree_pool·
+**hermetic**: tmp scratch 루트에서 돌며 실 기록/실 PM 홈을 절대 건드리지 않는다 — worktree_pool·
 pm_handoff 모듈 전역(REPO·LEASES_FILE·TASKS_DIR·WORK_DIR 등)을 tmp 로 재바인딩한다(test_worktree_
-pool.py·test_pm_handoff.py 의 real-git 픽스처 동류). 검증은 실 git worktree·실 리스/tasks 장부·실
-엔진 함수 호출로 하고, board/log/pytest 러너만 hermetic seam 으로 주입한다.
+pool.py·test_pm_handoff.py 의 real-git 픽스처 동류). 검증은 실 git worktree·실 대여/tasks 기록·실
+엔진 함수 호출로 하고, board/log/pytest 러너만 hermetic 교체 지점으로 주입한다.
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ _GIT = shutil.which("git")
 _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음")
 
 
-# ── 실 git 헬퍼 (test_worktree_pool.py 동형) ──────────────────────────────────
+# ── 실 git 헬퍼 (test_worktree_pool.py 와 같은 방식) ──────────────────────────────────
 
 
 def _git(cwd, *argv):
@@ -79,14 +79,14 @@ def _init_repo(path):
     return path
 
 
-# ── 모듈 로드 + tmp 재배선 ────────────────────────────────────────────────────
+# ── 모듈 로드 + tmp 다시 연결 ────────────────────────────────────────────────────
 
 
 def _load_wp_bound(proj: Path):
     """worktree_pool.py 를 새로 로드하고 경로 전역을 `proj` tmp 루트로 재바인딩한다.
 
-    test_worktree_pool.py `_load_wp_bound` 와 동형 — import 시점에 굳은 실 REPO 경로(리스장부·
-    락·tasks 서술 공간·work/·bare 원)를 tmp 로 전부 덮어 실 장부 격리를 보장한다.
+    test_worktree_pool.py `_load_wp_bound` 와 같은 방식 — import 시점에 굳은 실 REPO 경로(대여 기록·
+    락·tasks 서술 공간·work/·bare 원)를 tmp 로 전부 덮어 실 기록 격리를 보장한다.
     """
     spec = importlib.util.spec_from_file_location("wp_cycle_e2e", TOOLS / "worktree_pool.py")
     mod = importlib.util.module_from_spec(spec)
@@ -128,7 +128,7 @@ def _load_module(name: str):
 
 
 def _mk_real_bare(wp, repo: str, tmp_path: Path) -> Path:
-    """실 bare repo `.repos/<repo>.git` (`pm-config repo add` 동형·family origin → clone --bare)."""
+    """실 bare repo `.repos/<repo>.git` (`pm-config repo add` 와 같은 방식·family origin → clone --bare)."""
     origin = _init_repo(tmp_path / f"{repo}-origin")
     bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), repo)
     bare.parent.mkdir(parents=True, exist_ok=True)
@@ -140,10 +140,10 @@ def _mk_real_bare(wp, repo: str, tmp_path: Path) -> Path:
 
 
 class _FakeBoard:
-    """board 대역 — 엔진 앵커(통과) + 보호브랜치 목록(`_repo_protected`)."""
+    """board 대역 — 엔진 대상 저장소 검사(통과) + 보호브랜치 목록(`_repo_protected`)."""
 
     def _pm_home_worktree_misanchor(self, anchor, **_kw):
-        return None  # PM 홈(통과) — 앵커 거부 안 함.
+        return None  # PM 홈(통과) — 대상 저장소 거부 안 함.
 
     def _repo_protected(self, repo):
         return ["main", "master", "trunk"]
@@ -176,10 +176,10 @@ def _make_bootstrap(bootstrap_mod, wp, tmp_path, *, monkeypatch):
     return bootstrap_cli.PmBootstrap(pm_paths.home_at(wp.REPO), run_board_fn=_fake_board_fn, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('pytest 호출 안 됨')), run_git_fn=_fake_git_fn, log_file=log_file, areas_file=areas_file, pm_state_file=pm_state_file, board_dir=tmp_path / 'noboard')
 
 
-_PROMPT_ANCHOR = "## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
+_PROMPT_MARKER = "## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)"
 _TRIGGER_PLAYBOOK = (
     "# pm_playbook\n\n"
-    f"{_PROMPT_ANCHOR}\n\n"
+    f"{_PROMPT_MARKER}\n\n"
     "설명 문단.\n\n"
     "```\n"
     "당신은 이 프로젝트의 PM 세션입니다.\n"
@@ -197,9 +197,9 @@ _TRIGGER_PLAYBOOK = (
 def test_task_new_identity_then_bootstrap_resumes(tmp_path, monkeypatch, capsys):
     """`task new`(정체성만) → 부트스트랩이 **resume 으로 이어받는다** (T-0909·사이클 앞단 분리).
 
-    생성 진입점이 둘이 된 뒤에도 사이클이 끊기지 않는지 재는 축이다 — 정체성만 만든 task(닫힘·
-    슬롯 0)에 `--task` 로 진입하면 신규 생성(`created`)이 아니라 clean `resumed` 여야 한다(회수 경고
-    없음·행 1개). 실 장부·실 pm_state·실 엔진(worktree_pool·pm_bootstrap)으로 판정한다.
+    생성 진입점이 둘이 된 뒤에도 사이클이 끊기지 않는지 재는 시험이다 — 정체성만 만든 task(닫힘·
+    슬롯 0)에 `--task` 로 진입하면 신규 생성(`created`)이 아니라 clean `resumed` 여야 한다(강제 인계 안내
+    없음·행 1개). 실 기록·실 pm_state·실 엔진(worktree_pool·pm_bootstrap)으로 판정한다.
     """
     proj = tmp_path / "proj"
     (proj / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
@@ -229,10 +229,10 @@ def test_task_new_identity_then_bootstrap_resumes(tmp_path, monkeypatch, capsys)
         "정체성만 만든 task 진입인데 clean resume 으로 분류되지 않았다"
     )
     assert "상태=신규 task" not in out, "이미 만든 정체성인데 신규 생성으로 분류됐다"
-    assert "회수 진입" not in out, "닫힌 기록 재개인데 회수 경고 오탐"
+    assert "[강제 인계]" not in out, "닫힌 기록 재개인데 강제 인계 안내 오탐"
     assert "작업 슬롯: (없음)" in out, "슬롯 0 진입 열거가 사라졌다"
 
-    # ③ 장부는 행 하나(중복 생성 없음)이고 열림 표시만 바뀐다. pm_state 는 재개가 덮지 않는다.
+    # ③ 기록은 행 하나(중복 생성 없음)이고 열림 표시만 바뀐다. pm_state 는 재개가 덮지 않는다.
     rows = json.loads(
         (proj / ".project_manager" / ".local" / "worktree-leases.json").read_text(encoding="utf-8")
     )["tasks"]
@@ -273,7 +273,7 @@ def test_bootstrap_of_another_task_moves_the_same_session(tmp_path, monkeypatch,
 @pytest.mark.release
 @_git_required
 def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, monkeypatch, capsys):
-    'task 세션 전체 사이클 완주 — 실 git/실 장부/실 엔진 (ADR-0068 사이클 게이트·PM 78 재현).\n\n    "단위게이트 green·사이클 단절"(진입/실행/할당/퇴장/인계 5표면 각각 통과해도 사용자 사이클이\n    끊기던 PM 78 실증)을 릴리즈마다 기계 차단한다 — W1(alloc 항상-신규+add --task 이음)·W2(핸드오프\n    집합 퇴장)·W3(진입 집합 열거) 표면을 한 흐름으로 태운다.\n    '
+    'task 세션 전체 사이클 완주 — 실 git/실 기록/실 엔진 (ADR-0068 사이클 검사·PM 78 재현).\n\n    "단위 시험 green·사이클 단절"(진입/실행/할당/퇴장/인계 5단계 각각 통과해도 사용자 사이클이\n    끊기던 PM 78 실증)을 릴리즈마다 기계 차단한다 — W1(alloc 항상-신규+add --task 이음)·W2(핸드오프\n    집합 퇴장)·W3(진입 집합 열거) 경로를 한 흐름으로 태운다.\n    '
     home = pm_paths.home_at(tmp_path)
     proj = tmp_path / 'proj'
     (proj / '.project_manager' / '.local').mkdir(parents=True, exist_ok=True)
@@ -315,7 +315,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, monkeypatch
     out2 = capsys.readouterr().out
     assert '보유 2 — 전수 검증' in out2, '성장한 집합(2슬롯)이 열거되지 않음(I2)'
     assert 'work/app_1' in out2 and 'work/app_2' in out2
-    assert '기록↔live ✓' in out2, '도착 스냅 직후 record↔live match 여야 함(0단계 green)'
+    assert '기록↔live ✓' in out2, '도착 git 상태 기록 직후 record↔live match 여야 함(0단계 green)'
     slot1_dir = pm_paths.slot_path(pm_paths.home_at(wp.REPO), 'work/app_1')
     (slot1_dir / 'work.txt').write_text('session work\n', encoding='utf-8')
     _git(slot1_dir, 'add', 'work.txt')
@@ -338,10 +338,10 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, monkeypatch
     assert regressed_slots == ['work/app_1'], f'변경 슬롯만 회귀 위반(ⓑB) — 회귀 슬롯={regressed_slots} (app_1 만이어야)'
     assert 'work/app_2' in out3 and '변경 흔적 없음' in out3, '무변경 슬롯 skip 사유 surface 없음'
     leases = {l.slot: l for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))}
-    assert leases['work/app_1'].git['head'] == head_after, 'app_1 재스냅 미갱신(퇴장 재스냅 누락)'
-    assert leases['work/app_2'].git is not None, 'app_2 도 재스냅 대상(전 슬롯)'
+    assert leases['work/app_1'].git['head'] == head_after, 'app_1 git 상태 재기록 미갱신(퇴장 git 상태 재기록 누락)'
+    assert leases['work/app_2'].git is not None, 'app_2 도 git 상태 재기록 대상(전 슬롯)'
     expected_trigger = lease_store._runtime_skill_entry('pm-bootstrap') + f' --task {task}'
-    assert expected_trigger in out3, '인계 트리거에 --task 앵커 없음'
+    assert expected_trigger in out3, '인계 트리거에 --task 표시 없음'
     task_rec = next((t for t in pool_store.list_tasks(pm_paths.home_at(wp.REPO)) if t.name == task))
     assert task_rec.open is False, '정상 종료 기록 미기록(다음 진입이 거부된다)'
     task_store.record_task_session_claim(pm_paths.home_at(wp.REPO), task, 's-e2e')
@@ -349,7 +349,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, monkeypatch
     assert rc == 0, '재개 부트스트랩 실패(사이클 단절)'
     out4 = capsys.readouterr().out
     assert '보유 2 — 전수 검증' in out4, '재개 시 집합 재수령 실패(I2)'
-    assert '기록↔live ✓' in out4, '재스냅 후 0단계 record↔live match 아님(PM 78 오탐 재발)'
-    assert 'diverged' not in out4, '외부-개입 오탐 재발(재스냅 실패)'
+    assert '기록↔live ✓' in out4, 'git 상태 재기록 후 0단계 record↔live match 아님(PM 78 오탐 재발)'
+    assert 'diverged' not in out4, '외부-개입 오탐 재발(git 상태 재기록 실패)'
     assert '재개(resume)' in out4, 'clean resume 아님(닫힌 기록 재개 미표기)'
-    assert '회수' not in out4, '정상 인계인데 crash 회수 경고 오탐(T-0392)'
+    assert '[강제 인계]' not in out4, '정상 인계인데 강제 인계 안내 오탐(T-0392)'

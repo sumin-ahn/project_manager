@@ -200,7 +200,7 @@ def _shared_default_branch(*, git_runner: worktree_records.GitRunner) -> str:
     같은 이름의 태그가 있으면 `heads/<name>` 을 돌려준다(실측 · git 2.43).
 
     조회 실패와 브랜치가 아닌 출력(detached HEAD)은 판정 실패라 raise 한다. 빈 값으로 접으면
-    기본 브랜치 보존 축이 조용히 사라진다.
+    기본 브랜치 보존 규칙이 조용히 사라진다.
     """
     rc, out = git_runner(["rev-parse", "--git-common-dir"])
     common_dir = str(out).strip()
@@ -236,7 +236,7 @@ def _branch_tip(branch: str, *, git_runner: worktree_records.GitRunner) -> "str 
 def _is_ancestor_or_raise(ancestor: str, descendant: str, *, git_runner: worktree_records.GitRunner) -> bool:
     """`merge-base --is-ancestor` — rc0 참·rc1 거짓·그 밖 raise(판정 실패).
 
-    `_is_ancestor`(head 관계 판정용)는 판정 불가를 False 로 접는다. 삭제 판정에서 그렇게 접으면
+    `_is_ancestor`(head 관계 판정용)는 판정 불가를 False 로 바꾼다. 삭제 판정에서 그렇게 바꾸면
     조회 실패가 "합쳐지지 않음" 보존으로 둔갑하므로 이 판정은 따로 raise 한다."""
     rc, out = git_runner(["merge-base", "--is-ancestor", ancestor, descendant])
     if rc == 0:
@@ -451,7 +451,7 @@ def _resolve_base_commit(home, slot: str, ref: str, *, git_runner: worktree_reco
 
     `git rev-parse --verify <ref>^{commit}` — 브랜치면 tip, 커밋이면 그 커밋. 해소 불가(rc≠0)·슬롯
     부재 → None, runner 예외는 전파한다. 실경로(runner 미주입)는 슬롯 worktree 바인딩 runner, 슬롯 부재면 None
-    (`_slot_head` 동형 규율)."""
+    (`_slot_head` 와 같은 규율)."""
     runner = git_runner
     if runner is None:
         p = pm_paths.slot_path(home, slot)
@@ -468,7 +468,7 @@ def _slot_parent_status(branch: "str | None", lease: "Lease | None", *,
                         git_runner: worktree_records.GitRunner, shared: dict) -> "dict | None":
     """슬롯 행 `parent` — `{name, fork, ref, ahead, behind}` 또는 None(기록 없음·브랜치 없음).
 
-    작업 슬롯은 현재 브랜치의 git 설정 부모 기록, readonly 슬롯은 브랜치가 없어 장부 `lease.git.base`
+    작업 슬롯은 현재 브랜치의 git 설정 부모 기록, readonly 슬롯은 브랜치가 없어 기록 `lease.git.base`
     (따라갈 부모 브랜치·detach 한 커밋)를 쓴다. ahead=슬롯에만 있는 커밋 수·behind=부모에만 있는 수.
     부모 브랜치가 지워져 비교 ref 가 없으면 ahead/behind None. 부모 기록과 부모 이름별 비교 ref 는
     `shared`(`slot_git_status` 의 저장소 공용 값)에서 처음 한 번만 읽고 ahead/behind 는 슬롯마다 잰다."""
@@ -535,9 +535,9 @@ def _normalize_branch_name(branch: str, *, git_runner: worktree_records.GitRunne
         $ git switch '@{-1}'                      →  실제로 main 으로 전환
 
     rc 만 보고 **원문 문자열**로 보호목록을 비교하면 `@{-1}` ≠ `main` 이라 통과하고, 그 결과 이
-    커맨드가 스스로 슬롯을 보호 브랜치에 앉힌다(codex 게이트 must-fix — 이 티켓이 막으려던 상태를
-    remedy 가 만든다). 그래서 **출력(정규화된 이름)을 단일 기준**으로 삼고 이후 전 단계(보호목록
-    비교·존재 판정·D/F 검사·`git switch` 인자·장부 스냅 기록)에 일관 적용한다. 거부 목록(`@{` 금지)
+    커맨드가 스스로 슬롯을 보호 브랜치에 앉힌다(codex 리뷰 must-fix — 이 티켓이 막으려던 상태를
+    해결 방법이 만든다). 그래서 **출력(정규화된 이름)을 단일 기준**으로 삼고 이후 전 단계(보호목록
+    비교·존재 판정·D/F 검사·`git switch` 인자·대여 기록의 git 상태 기록)에 일관 적용한다. 거부 목록(`@{` 금지)
     방식은 다른 revspec 문법에서 채택하지 않는다(정규화가 클래스를 닫는다).
 
     반환 = 정규화된 브랜치명. 아래는 전부 None(**fail-closed** 거부 — 정규화 불가 = 안전검사 불가라
@@ -547,9 +547,9 @@ def _normalize_branch_name(branch: str, *, git_runner: worktree_records.GitRunne
       - **고정점 아님** — 정규화 결과를 한 번 더 통과시켰을 때 자기 자신이 아니면 거부한다
         (`--branch` rc 0 이 곧 안전은 아니라는 가정).
 
-    ⚠ **이 함수가 브랜치명 수용 규칙의 단일 진실**이다 — 0단계 remedy 의 *후보 생성* 쪽
-    (`bootstrap_slots._remedy_branch_ref_ok` → `_remedy_branch_name`)도 판정을 따로 구현하지 않고 이
-    함수를 호출한다(제안 쪽과 실행 쪽이 갈리면 안내가 곧바로 실행 불가·codex 게이트 must-fix)."""
+    ⚠ **이 함수가 브랜치명 수용 규칙의 단일 진실**이다 — 0단계 해결 방법의 *후보 생성* 쪽
+    (`bootstrap_slots._fix_branch_ref_ok` → `_fix_branch_name`)도 판정을 따로 구현하지 않고 이
+    함수를 호출한다(제안 쪽과 실행 쪽이 갈리면 안내가 곧바로 실행 불가·codex 리뷰 must-fix)."""
     def resolve(name: str) -> "str | None":
         rc, out = git_runner(["check-ref-format", "--branch", name])
         if rc != 0:
@@ -578,16 +578,16 @@ def _branch_protected_upstream(branch: str, protected: "list[str]", *,
                                git_runner: worktree_records.GitRunner) -> "str | None":
     """기존 브랜치 `branch` 의 `@{upstream}` 이 **보호 브랜치 원격**이면 그 upstream 명, 아니면 None.
 
-    0단계 main-참조 판정의 **축 2**(`bootstrap_slots._phase0_protected_upstream`·)와 같은 규칙이다:
+    0단계 main-참조 판정의 **조건 2**(`bootstrap_slots._phase0_protected_upstream`·)와 같은 규칙이다:
     upstream `<remote>/<branch>` 의 branch 부분(첫 `/` 이후·`feature/x` 도 보존)이 보호목록이면
     main-참조. 자기 feature 브랜치 추적(`origin/a5`)은 정상 작업 슬롯이라 통과시킨다(오탐 0).
 
     **기존 브랜치 전환 경로 전용** — `create_task_branch` 가 새로 파는 브랜치는 upstream 이 없다(실측). 이
     검사가 없으면 `switch <slot> <origin/main 추적 브랜치>` 가 통과하고 **다음 0단계가 다시 main-참조로
-    막는다** = 이 티켓이 닫으려는 remedy-유발 상태전이의 다른 축(내부 리뷰 should-fix).
+    막는다** = 이 티켓이 닫으려는, 해결 방법이 일으키는 상태전이의 다른 경로(내부 리뷰 should-fix).
 
     `git rev-parse --abbrev-ref <branch>@{upstream}`(`_upstream_status` 의 branch-지정 변형·rc 우선
-    판정 동형 — `_real_git_runner` 는 stdout+stderr 를 합쳐 주므로 미해소 시 out 이 비어있지 않다).
+    판정과 같은 방식 — `_real_git_runner` 는 stdout+stderr 를 합쳐 주므로 미해소 시 out 이 비어있지 않다).
     미해소(rc≠0·빈 이름)·`/` 없는 이름는 None(판정 불가는 통과·오탐 0). runner 예외는 전파한다."""
     rc, out = git_runner(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"])
     name = (out or "").strip()
@@ -601,11 +601,11 @@ def _non_branch_ref_kind(name: str, *, git_runner: worktree_records.GitRunner) -
     """`name` 이 **로컬 브랜치가 아닌 ref**(remote-tracking·태그)로도 해소되는가 — 종류 or None.
 
     `create_task_branch`(로컬 브랜치 미존재)에서 인자가 `origin/main`·태그명이면 "새 작업 브랜치
-    이름" 으로 부적절하고, 옛 plain-checkout 폴백에선 **detached HEAD 이동**으로 빠졌다(실측:
+    이름" 으로 부적절하고, 옛 plain-checkout 대체 동작에선 **detached HEAD 이동**으로 빠졌다(실측:
     `git checkout origin/main` → `## HEAD (브랜치 없음)`). 게다가 `origin/main` 은 보호목록 `main`
-    과 **문자열이 달라 보호검사를 통과**한다 — 그 창을 인자 단계에서 닫는다(codex 게이트 must-fix).
+    과 **문자열이 달라 보호검사를 통과**한다 — 그 창을 인자 단계에서 닫는다(codex 리뷰 must-fix).
 
-    축 2(`_branch_protected_upstream`)와 **다른 축**이다: 축 2 는 *기존 로컬 브랜치의 upstream*
+    조건 2(`_branch_protected_upstream`)와 **다른 조건**이다: 조건 2 는 *기존 로컬 브랜치의 upstream*
     을 보고, 이건 *인자 자체가 로컬 브랜치가 아닌 것*을 가리키는 경우다(둘 다 필요).
 
     `refs/remotes/<name>` → "remote-tracking" · `refs/tags/<name>` → "태그" · 둘 다 아니면 None.
@@ -626,8 +626,8 @@ def _branch_df_conflict(branch: str, *, git_runner: worktree_records.GitRunner) 
     접두 부모(`a/b/c` → `a`, `a/b`)의 실재를 함께 본다.
 
     ⚠️ 역방향(디렉토리가 이미 있는데 그 이름의 파일 ref 를 만드는 경우 — `task/main` 존재 시
-    `task` 생성)은 여기서 안 본다: 그 경우는 `git checkout -b` 의 loud 실패(→ `git-error`)로 수렴하고
-    사유가 git 메시지에 그대로 실린다(선-검사 범위는 remedy 안내가 실제로 부딪히는 클래스에 한정)."""
+    `task` 생성)은 여기서 안 본다: 그 경우는 `git checkout -b` 의 loud 실패(→ `git-error`)로 끝나고
+    사유가 git 메시지에 그대로 실린다(선-검사 범위는 해결 방법 안내가 실제로 부딪히는 클래스에 한정)."""
     parts = branch.split("/")
     for i in range(1, len(parts)):
         parent = "/".join(parts[:i])
@@ -643,9 +643,9 @@ def _branch_checked_out_elsewhere(home, branch: str, slot: str, *,
 
     `git worktree list --porcelain`(`_parse_worktree_porcelain` 재사용 — 새 파서 0)을 슬롯의
     git_runner(슬롯이 속한 repo 전체를 보는 `worktree list`라 어느 worktree cwd 로 불러도 같은
-    목록이 나온다·DI seam 유지)로 조회해, 대상 브랜치를 보유한 bare-아닌 엔트리 중 **self 가
+    목록이 나온다·DI 교체 지점 유지)로 조회해, 대상 브랜치를 보유한 bare-아닌 엔트리 중 **self 가
     아닌** 것을 찾는다. self 판정은 슬롯 id 가 아니라 **경로 값**(`slot_path(slot)` vs porcelain
-    경로, 둘 다 `resolve()`)으로 한다 — 장부 슬롯 값이 `_slot_from_worktree_path` 로 되짚어지지
+    경로, 둘 다 `resolve()`)으로 한다 — 기록 슬롯 값이 `_slot_from_worktree_path` 로 되짚어지지
     않는 경우에도 값 비교로는 정확히 self 로 잡힌다.
 
     fail-open: `worktree list` rc≠0 은 None(판정 생략·runner 예외는 전파) — 이 선-검사가 fail-open

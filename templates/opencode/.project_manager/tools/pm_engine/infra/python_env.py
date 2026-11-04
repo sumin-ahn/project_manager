@@ -28,7 +28,7 @@ def _pytest_xdist_available(py: str) -> bool:
     """엔진 Python 환경에 pytest-xdist가 설치됐는지 import 없이 확인한다.
 
     ``default_pytest_cmd``의 runtime은 이 엔진이 실행 검증해 고른 interpreter다. 여기서 다시
-    subprocess를 열면 regression 테스트가 주입한 Popen/run seam을 침범하고, 스캐폴드 기본값을
+    subprocess를 열면 regression 테스트가 주입한 Popen/run 교체 지점을 침범하고, 스캐폴드 기본값을
     묻는 순수 해소가 프로세스 생성 부작용을 갖는다. module spec 조회만으로 같은 환경을 판정한다.
     ``py``는 cache key이자 호출 계약을 보존한다.
     """
@@ -38,7 +38,7 @@ def _pytest_xdist_available(py: str) -> bool:
 def default_pytest_cmd(py: str | None = None) -> str:
     """Python 프로젝트의 스캐폴드 test_cmd; xdist가 있으면 병렬이 기본이다."""
     # 이미 이 엔진을 실행 중인 interpreter는 재-probe할 이유가 없다. 기본값 해소가
-    # subprocess를 열면 regression runner의 Popen DI seam을 선점해 실제 테스트 호출 관측을
+    # subprocess를 열면 regression runner의 Popen DI 교체 지점을 먼저 차지해 실제 테스트 호출 관측을
     # 오염시킨다. scaffold init은 감지한 runtime을 명시 인자로 넘기므로 그 계약도 보존된다.
     runtime = py or sys.executable or "python3"
     parallel = " -n auto" if _pytest_xdist_available(runtime) else ""
@@ -55,7 +55,7 @@ def _python_floor_probe_path() -> str:
 
     probe 는 이 패키지를 담은 tools 폴더(`pm_engine/infra/` 의 두 단계 위)에 있다.
     """
-    # _detect_py 의 Windows 분기는 _probe_os_name() seam 주입으로 테스트한다(전역 os.name 은
+    # _detect_py 의 Windows 분기는 _probe_os_name() 교체 지점 주입으로 테스트한다(전역 os.name 은
     # 더 이상 안 바뀐다). 그래도 pathlib 은 실행 시점 os.name 을 참조해 WindowsPath/PosixPath 를
     # 고르므로, 이 함수는 그 선택 자체에 기대지 않도록 import 시 고정된 os.path 를 계속 쓴다.
     tools_dir = os.path.dirname(
@@ -72,7 +72,7 @@ def _interp_runs(cmd: str) -> bool:
     ``cmd <probe.py>``로 실행한다. 특히 Windows ``py``의 ``-c`` 기본 버전과 실제
     스크립트 shebang 디스패치가 갈리는 창을 닫는다. 단, 부분/수동 복사본에 probe가
     없으면 ``-c`` 인라인 검사로 degrade해 하한 자체는 계속 강제한다
-    시나리오). 짧은 timeout·예외 전부 흡수해 탐지가 절대 실패하지 않게 한다(fail-soft).
+    시나리오). 짧은 timeout·예외를 전부 말없이 넘겨 탐지가 절대 실패하지 않게 한다(fail-soft).
     """
     try:
         r = subprocess.run(
@@ -155,7 +155,7 @@ def _detect_py() -> str:
     후보 순서: Windows = (python, py, python3), POSIX = (python3, python). 각 후보는
     `shutil.which` 존재 **및** `_interp_runs` 실행검증을 모두 통과해야 채택된다 —
     존재하지만 죽은 shim·Python 하한 미달을 건너뛴다. 아무 것도 통과 못 하면 loud 진단을
-    stderr 에 한 줄 남기고 `"python3"` 리터럴로 폴백한다(기존 fail-soft 계약 유지).
+    stderr 에 한 줄 남기고 `"python3"` 리터럴을 대신 쓴다(기존 fail-soft 계약 유지).
     **bare 명령**을 반환한다(which 의 절대경로가 아니라) —
     subprocess 가 PATH 해석하고, CLAUDE.md `{{PY}}` 표시에도 가독하다.
     탐지는 후보마다 subprocess를 최대 세 번 실행하므로 프로세스 수명 동안 결과를 캐시한다.
@@ -256,10 +256,10 @@ def _detect_command_environment(
 
 
 def _default_python(home) -> str:
-    """플랫폼-인지 venv 인터프리터 경로 (없으면 sys.executable 폴백).
+    """플랫폼-인지 venv 인터프리터 경로 (없으면 sys.executable 을 대신 씀).
 
     Windows 는 venv/Scripts/python.exe, POSIX 는 venv/bin/python. venv 가 없으면
-    현재 인터프리터로 폴백한다. 이 머신은 시스템 python3 에 pytest 가 없고 venv 에만
+    현재 인터프리터를 대신 쓴다. 이 머신은 시스템 python3 에 pytest 가 없고 venv 에만
     있으므로, venv 가 있으면 무조건 venv 를 우선해 회귀 측정 인터프리터를 보존한다.
     """
     cand = (

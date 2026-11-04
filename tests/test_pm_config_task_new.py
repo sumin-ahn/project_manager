@@ -1,18 +1,18 @@
 """`pm-config task new <이름>` — task 정체성만 생성하는 CLI (T-0909).
 
-판정은 **실 장부 파일**로 한다 — tmp PM 홈에 실 `.local/worktree-leases.json`·
-`.local/tasks/<이름>/pm_state.md` 를 만들게 하고 그 파일의 내용·바이트를 읽어 단언한다(장부/락을
+판정은 **실 기록 파일**로 한다 — tmp PM 홈에 실 `.local/worktree-leases.json`·
+`.local/tasks/<이름>/pm_state.md` 를 만들게 하고 그 파일의 내용·바이트를 읽어 단언한다(기록/락을
 흉내 내는 대역 금지). 커버:
 
-  - 생성 성공: 장부 행 `open is False`(닫힘)·`prefix is None` · pm_state 즉시 생성 · 다음 단계 안내.
+  - 생성 성공: 기록 행 `open is False`(닫힘)·`prefix is None` · pm_state 즉시 생성 · 다음 단계 안내.
   - pm_state 동일성: `create_task` 산출이 `bind_task` 신규 생성분과 **바이트 동일**(같은
     `ensure_task_pm_state`).
-  - 이어받기: 생성 뒤 `bind_task(같은 이름, session="s-test")` 이 **resumed**(신규 생성 아님·회수 경고 없음).
-  - 거부(각각 rc≠0·장부 바이트 불변): 중복 이름 · 동명 종료 archive(`task reopen` 안내) ·
+  - 이어받기: 생성 뒤 `bind_task(같은 이름, session="s-test")` 이 **resumed**(신규 생성 아님·강제 인계 안내 없음).
+  - 거부(각각 rc≠0·기록 바이트 불변): 중복 이름 · 동명 종료 archive(`task reopen` 안내) ·
     부적합 이름(traversal) · 슬롯 예약패턴(`<repo>_<N>`).
   - 실 서브프로세스: `python <tmp 홈>/.project_manager/tools/pm_config.py task new <이름>` 의
-    rc·stdout·장부(파서 배선까지 실제로 태운다) + 재실행 rc1·장부 불변.
-  - 표면 상한: `--prefix` 는 두지 않는다(새 prefix 신설은 `task prefix --user-ack` 게이트 단일 지점).
+    rc·stdout·기록(파서 연결까지 실제로 태운다) + 재실행 rc1·기록 불변.
+  - 표면 상한: `--prefix` 는 두지 않는다(새 prefix 신설은 `task prefix --user-ack` 승인 단일 지점).
 """
 from __future__ import annotations
 from pm_engine.cli import config_slots
@@ -42,11 +42,11 @@ TOOLS = REPO / ".project_manager" / "tools"
 PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"
 
 
-# ── tmp PM 홈 + 모듈 로드 (test_task_cycle_e2e `_load_wp_bound` 동형) ─────────────
+# ── tmp PM 홈 + 모듈 로드 (test_task_cycle_e2e `_load_wp_bound` 와 같은 방식) ─────────────
 
 
 def _make_home(root: Path) -> Path:
-    """실 장부를 쓸 tmp PM 홈 골격 — `.local/` + task pm_state template."""
+    """실 기록을 쓸 tmp PM 홈 빈 양식 — `.local/` + task pm_state template."""
     root.mkdir(parents=True, exist_ok=True)
     (root / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
     wiki = root / ".project_manager" / "wiki"
@@ -114,20 +114,20 @@ def _run_new(pc, wp, name, *, monkeypatch):
     return config_tasks.cmd_task_new(pm_paths.home_at(pc.REPO), argparse.Namespace(name=name))
 
 
-def _ledger_rows(wp) -> list[dict]:
-    """실 장부 파일에서 tasks 컬렉션 원본 dict 를 읽는다(엔진 API 우회·파일 진실)."""
+def _record_rows(wp) -> list[dict]:
+    """실 기록 파일에서 tasks 컬렉션 원본 dict 를 읽는다(엔진 API 우회·파일 진실)."""
     return json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))["tasks"]
 
 
 # ── 생성 성공 ────────────────────────────────────────────────────────────────
 
 
-def test_task_new_writes_unoccupied_ledger_row_and_pm_state(pc, monkeypatch, wp, capsys):
-    """`task new` = 정체성만 — 장부 행 닫힘·`prefix None` + pm_state 즉시 생성 + 슬롯 0."""
+def test_task_new_writes_unoccupied_record_row_and_pm_state(pc, monkeypatch, wp, capsys):
+    """`task new` = 정체성만 — 기록 행 닫힘·`prefix None` + pm_state 즉시 생성 + 슬롯 0."""
     rc = _run_new(pc, wp, "job", monkeypatch=monkeypatch)
     assert rc == 0
 
-    rows = _ledger_rows(wp)
+    rows = _record_rows(wp)
     assert [row["name"] for row in rows] == ["job"]
     assert rows[0]["session"] == "", "세션에 묶지 않았는데 열림으로 기록됐다"
     assert rows[0]["prefix"] is None, "`--prefix` 없는 생성인데 prefix 가 붙었다"
@@ -164,7 +164,7 @@ def test_task_new_pm_state_is_byte_identical_to_bind_task_output(pc, monkeypatch
 
 
 def test_task_new_then_bind_task_is_clean_resume(pc, monkeypatch, wp, capsys):
-    """생성 뒤 bootstrap 진입(`bind_task`)은 **resumed** — 신규 생성도, 회수 경고도 아니다."""
+    """생성 뒤 bootstrap 진입(`bind_task`)은 **resumed** — 신규 생성도, 강제 인계 안내도 아니다."""
     assert _run_new(pc, wp, "job", monkeypatch=monkeypatch) == 0
     capsys.readouterr()
 
@@ -172,14 +172,14 @@ def test_task_new_then_bind_task_is_clean_resume(pc, monkeypatch, wp, capsys):
 
     assert action == "resumed", "닫힌 기록 재개인데 created 로 분류됐다"
     assert record.open is True
-    assert len(_ledger_rows(wp)) == 1, "재개가 두 번째 행을 만들었다"
+    assert len(_record_rows(wp)) == 1, "재개가 두 번째 행을 만들었다"
 
 
-# ── 거부 (rc≠0 · 장부 불변) ──────────────────────────────────────────────────
+# ── 거부 (rc≠0 · 기록 불변) ──────────────────────────────────────────────────
 
 
-def test_task_new_duplicate_name_refused_without_ledger_change(pc, monkeypatch, wp, capsys):
-    """같은 이름이 이미 있으면 rc1 — 장부 바이트 불변(재개는 bootstrap 몫)."""
+def test_task_new_duplicate_name_refused_without_record_change(pc, monkeypatch, wp, capsys):
+    """같은 이름이 이미 있으면 rc1 — 기록 바이트 불변(재개는 bootstrap 몫)."""
     assert _run_new(pc, wp, "job", monkeypatch=monkeypatch) == 0
     capsys.readouterr()
     before = wp.LEASES_FILE.read_bytes()
@@ -187,7 +187,7 @@ def test_task_new_duplicate_name_refused_without_ledger_change(pc, monkeypatch, 
     rc = _run_new(pc, wp, "job", monkeypatch=monkeypatch)
 
     assert rc == 1
-    assert wp.LEASES_FILE.read_bytes() == before, "중복 거부인데 장부가 변했다"
+    assert wp.LEASES_FILE.read_bytes() == before, "중복 거부인데 기록이 변했다"
     err = capsys.readouterr().err
     assert "이미 있다" in err and "pm-bootstrap --task job" in err
 
@@ -212,7 +212,7 @@ def test_task_new_archived_name_refused_with_reopen_hint(pc, monkeypatch, wp, ca
     rc = _run_new(pc, wp, "job", monkeypatch=monkeypatch)
 
     assert rc == 1
-    assert not wp.LEASES_FILE.exists(), "거부인데 장부 파일이 생겼다"
+    assert not wp.LEASES_FILE.exists(), "거부인데 기록 파일이 생겼다"
     assert not pm_paths.task_dir(pm_paths.home_at(wp.REPO), "job").exists(), "거부인데 서술 폴더가 생겼다"
     assert (archive / "pm_state.md").read_text(encoding="utf-8") == "old-state"
     err = capsys.readouterr().err
@@ -222,7 +222,7 @@ def test_task_new_archived_name_refused_with_reopen_hint(pc, monkeypatch, wp, ca
 
 @pytest.mark.parametrize("bad", ["../evil", "a/b", ".hidden", ""])
 def test_task_new_unsafe_name_refused_before_any_write(pc, monkeypatch, wp, bad, capsys):
-    """부적합 이름 → rc1 · 장부/서술 폴더 무생성(엔진 validator 재사용)."""
+    """부적합 이름 → rc1 · 기록/서술 폴더 무생성(엔진 validator 재사용)."""
     rc = _run_new(pc, wp, bad, monkeypatch=monkeypatch)
 
     assert rc == 1
@@ -240,13 +240,13 @@ def test_task_new_reserved_slot_pattern_refused_via_registered_repos(pc, monkeyp
     assert "부적합 task 명" in capsys.readouterr().err
 
 
-def test_task_new_propagates_areas_read_failure_and_writes_no_ledger(pc, wp, monkeypatch, capsys):
-    """areas.md 읽기 실패(registered 해소 불가)는 전파하고 task 장부를 만들지 않는다."""
+def test_task_new_propagates_areas_read_failure_and_writes_no_records(pc, wp, monkeypatch, capsys):
+    """areas.md 읽기 실패(registered 해소 불가)는 전파하고 task 기록을 만들지 않는다."""
     monkeypatch.setattr(areas_store, "registered_repos", _raise_areas_read)
 
     with pytest.raises(OSError, match="areas broken"):
         _run_new(pc, wp, "job", monkeypatch=monkeypatch)
-    assert not wp.LEASES_FILE.exists(), "판독 실패 뒤 장부가 만들어졌다"
+    assert not wp.LEASES_FILE.exists(), "판독 실패 뒤 기록이 만들어졌다"
 
 
 
@@ -283,14 +283,14 @@ def test_registered_repos_resolution_is_shared_by_task_new_and_prebound_validati
 
     assert calls == [["app"], ["app"]], \
         "두 호출부가 같은 해소 자리를 부르지 않았다(사본이 남아 있다)"
-    assert not wp.LEASES_FILE.exists(), "거부 경로가 장부를 건드렸다"
+    assert not wp.LEASES_FILE.exists(), "거부 경로가 기록을 건드렸다"
 
 
-# ── 파서 표면 (상한: 새 서브커맨드 하나 · 새 플래그 0) ────────────────────────
+# ── 파서 명령 (상한: 새 서브커맨드 하나 · 새 플래그 0) ────────────────────────
 
 
 def test_task_new_parser_leaf_is_wired_to_cmd_task_new(pc):
-    """`task new <이름>` 이 파서 leaf 로 등록되고 `cmd_task_new` 로 배선된다."""
+    """`task new <이름>` 이 파서 leaf 로 등록되고 `cmd_task_new` 로 연결된다."""
     args = config_cmd.build_parser().parse_args(["task", "new", "job"])
     assert args.command == "task" and args.task_command == "new"
     assert args.name == "job"
@@ -298,19 +298,19 @@ def test_task_new_parser_leaf_is_wired_to_cmd_task_new(pc):
 
 
 def test_task_new_has_no_prefix_flag(pc):
-    """`--prefix` 는 두지 않는다 — 새 prefix 신설 승인 게이트는 `task prefix` 단일 지점."""
+    """`--prefix` 는 두지 않는다 — 새 prefix 신설 승인은 `task prefix` 단일 지점."""
     with pytest.raises(SystemExit) as exc_info:
         config_cmd.build_parser().parse_args(["task", "new", "job", "--prefix", "pay"])
     assert exc_info.value.code == 2
 
 
 def test_task_group_help_lists_new(pc):
-    """`task` 그룹 help 가 `new` 를 표면화한다(진입점이 둘이 된 사실)."""
+    """`task` 그룹 help 가 `new` 를 드러낸다(진입점이 둘이 된 사실)."""
     help_text = config_cmd.build_parser().format_help()
     assert "task 정체성 관리 (new·prefix·branch·close·end·reopen)" in help_text
 
 
-# ── 실 서브프로세스 (파서 배선 + 엔진 로드까지 실제로 태운다) ─────────────────
+# ── 실 서브프로세스 (파서 연결 + 엔진 로드까지 실제로 태운다) ─────────────────
 
 
 def _copy_engine_home(root: Path) -> Path:
@@ -334,7 +334,7 @@ def _run_cli(home: Path, *argv: str) -> subprocess.CompletedProcess:
 
 
 def test_task_new_real_cli_creates_identity_and_refuses_rerun(tmp_path):
-    """실 CLI 1회차 rc0(장부·pm_state 생성) · 2회차 rc1(장부 바이트 불변)."""
+    """실 CLI 1회차 rc0(기록·pm_state 생성) · 2회차 rc1(기록 바이트 불변)."""
     home = _copy_engine_home(tmp_path / "cli_home")
 
     first = _run_cli(home, "task", "new", "demo")
@@ -342,18 +342,18 @@ def test_task_new_real_cli_creates_identity_and_refuses_rerun(tmp_path):
     assert "✓ task 생성" in first.stdout and "demo" in first.stdout
     assert "pm-bootstrap --task demo" in first.stdout
 
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    rows = json.loads(ledger.read_text(encoding="utf-8"))["tasks"]
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    rows = json.loads(records.read_text(encoding="utf-8"))["tasks"]
     assert [row["name"] for row in rows] == ["demo"]
     assert rows[0]["session"] == "" and rows[0]["prefix"] is None
     state = home / ".project_manager" / ".local" / "tasks" / "demo" / "pm_state.md"
     assert state.exists()
 
-    before = ledger.read_bytes()
+    before = records.read_bytes()
     second = _run_cli(home, "task", "new", "demo")
     assert second.returncode == 1
     assert "이미 있다" in second.stderr
-    assert ledger.read_bytes() == before, "중복 거부인데 실 장부가 변했다"
+    assert records.read_bytes() == before, "중복 거부인데 실 기록이 변했다"
 
 
 @pytest.fixture(autouse=True)

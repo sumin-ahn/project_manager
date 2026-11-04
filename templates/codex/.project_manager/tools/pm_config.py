@@ -2,8 +2,8 @@
 """pm-config CLI 진입점.
 
 서브커맨드 파서·dispatch·도움말은 pm_engine.cli.config_cmd, 각 명령의 처리는 pm_engine.cli.config_* 가
-소유한다. 이 파일은 콘솔 설정과 설치 앵커 Home 으로 CLI 를 부르는 일만 맡는다. 앵커는 스크립트
-위치라 어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 타깃한다.
+소유한다. 이 파일은 콘솔 설정과 설치 위치로 정한 대상 Home 으로 CLI 를 부르는 일만 맡는다. 대상은 스크립트
+위치로 정하므로 어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 타깃한다.
 """
 import os
 import sys

@@ -11,14 +11,14 @@ def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | Non
     """task 명을 안전한 단일 path 컴포넌트로 검증한다 — 위반 시 `InvalidTaskName`(fail-loud·must-fix).
 
     `task_dir(name)` 이 무검증 조인이라 traversal/절대경로/빈 문자열이 작업트리 밖에 디렉토리를
-    만들고 장부를 오염시킨다(reviewer 실측 `--task ../../evil` → git-tracked `.project_manager/evil`).
-    **엔진 진입점(bind_task)**에서 검증해 CLI 우회(직접 소비)까지 닫는다. mkdir·장부 write
+    만들고 기록을 오염시킨다(reviewer 실측 `--task ../../evil` → git-tracked `.project_manager/evil`).
+    **엔진 진입점(bind_task)**에서 검증해 CLI 우회(직접 소비)까지 닫는다. mkdir·기록 write
     **이전**에 raise 한다(부작용 0). `registered_repos` 주면 `<repo>_<N>` 예약도 거부(primitive
     자기완결·CLI 의 빠른 거부와 이중화·should-fix). 예약 판정 정규식은 CLI 의
-    `identity_args.is_reserved_task_name` 과 동형(모듈 격리라 inline).
+    `identity_args.is_reserved_task_name` 과 같은 규칙(모듈 격리라 inline).
 
-    **문자 도메인 = 하류 구문 표면에 맞춘 협소화**(단일 불변식·per-surface 이스케이프
-    회피). 거부 순서와 표면 근거:
+    **문자 도메인 = 하류 구문 자리에 맞춘 협소화**(단일 불변식·per-surface 이스케이프
+    회피). 거부 순서와 자리별 근거:
       - 빈/공백-only → 빈 이름.
       - **모든 whitespace**(스페이스·탭 등·선행/후행/내부 전부) → task 명은 하류 *인자 경계*다: CLI
         `--task <task>`(shell word)·relay 재진입 프롬프트 `/pm-bootstrap --task <task>`(slash 인자
@@ -27,7 +27,7 @@ def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | Non
         `)` 포함 명은 태그를 조기 종료시켜 파서(`task:[^)]+`)의 bound_session 매칭이 어긋나 task 연속성
         추론/본문 추출이 파손된다(codex 실증 `foo)bar` → 태그 `(task:foo)bar)` 조기 매칭).
       - path separator(`/`·`\\`) → 선행 `.`(숨김/`.`/`..` 상대) → 단일 컴포넌트 아님(traversal).
-    한글·하이픈·언더스코어·숫자는 유지 — 어느 표면(CLI·log 태그·path)과도 무충돌."""
+    한글·하이픈·언더스코어·숫자는 유지 — 어느 자리(CLI·log 태그·path)와도 무충돌."""
     if not name or not name.strip():
         raise worktree_records.InvalidTaskName(name, "빈 이름(공백 포함)")
     if any(ch.isspace() for ch in name):
@@ -56,7 +56,7 @@ def _validate_todo_doc(path: Path, doc: object) -> None:
     이 파일을 쓰는 코드는 `_write_todo_doc` 하나뿐이라, 모양이 어긋났다면 손편집이거나 깨진
     파일이다. 어긋난 행을 조용히 버리지 않는다 — 버리면 열린 일이 소리 없이 사라지고, 그러면
     쓰기 판정이 "열린 할 일 없음" 으로 보고 경고를 멈춘다(실패가 눈에 안 보인다).
-    `_read_tasks_strict` 가 장부 행에 하는 것과 같은 규율이다.
+    `_read_tasks_strict` 가 기록 행에 하는 것과 같은 규율이다.
     """
     if not isinstance(doc, dict):
         raise ValueError(f"할 일 파일이 object 가 아니다: {path}")
@@ -93,15 +93,15 @@ def _render_initial_task_pm_state(template_text: str, date_str: str) -> str:
         "`pm_state.template.md` 에서 task 생성/재개 시 자동 생성.",
         1,
     )
-    anchor = "## 세션 식별 (현재까지 사용된 이름)"
-    start = rendered.find(anchor)
+    marker = "## 세션 식별 (현재까지 사용된 이름)"
+    start = rendered.find(marker)
     if start < 0:
-        raise ValueError(f"pm_state template에 세션 식별 절 제목이 없다: {anchor}")
-    next_header = re.search(r"^##(?!#) ", rendered[start + len(anchor):], re.MULTILINE)
+        raise ValueError(f"pm_state template에 세션 식별 절 제목이 없다: {marker}")
+    next_header = re.search(r"^##(?!#) ", rendered[start + len(marker):], re.MULTILINE)
     end = (
         len(rendered)
         if next_header is None
-        else start + len(anchor) + next_header.start()
+        else start + len(marker) + next_header.start()
     )
     section = rendered[start:end]
     first_entry = re.search(r"^  - \*\*\d+차\*\*.*(?:\n|$)", section, re.MULTILINE)

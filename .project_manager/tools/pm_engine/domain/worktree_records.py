@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pm_engine.domain import identity_args
 
 
-# git CLI argv → (returncode, stdout). DI seam 의 타입(pm_import.GitRunner 선례).
+# git CLI argv → (returncode, stdout). DI 교체 지점의 타입(pm_import.GitRunner 선례).
 GitRunner = Callable[[list], "tuple[int, str]"]
 
 
@@ -36,7 +36,7 @@ class ReleaseRefused(Exception):
 
 
 class RemoveRefused(Exception):
-    """remove_slot 거부 — 활성 리스·커밋 안 한 변경·git 미등록 잔재 트리 (사용 중 슬롯·작업 유실 보호).
+    """remove_slot 거부 — 활성 대여·커밋 안 한 변경·git 미등록 잔재 트리 (사용 중 슬롯·작업 유실 보호).
 
     `reason` ∈ {"active-lease", "dirty", "unregistered-tree"}. `force=True` 가 무시하는 것은
     "active-lease"(점유) 하나뿐이다. 커밋 안 한 변경은 사용자가 커밋(또는 요청한 stash)으로 치운다.
@@ -58,7 +58,7 @@ class RemoveRefused(Exception):
 class TaskActiveElsewhere(Exception):
     """같은 task 를 살아있는 다른 세션이 열고 있다 — 동시 세션 거부.
 
-    task 열림 기록 검사(부트스트랩 진입 시): 장부 task 행의 `session` 이 다른 세션
+    task 열림 기록 검사(부트스트랩 진입 시): 기록 task 행의 `session` 이 다른 세션
     ID 면(열림 기록이 있고 종료 기록이 없음) 이 예외로 거부한다. 프로세스 조회는 하지 않는다 — 번호 재사용·세션 교체로
     생존을 알 수 없어서다. 해소는 사용자 행위 둘 중 하나다: 그 창을 쓰거나, 기록을 닫거나
     (`pm-config task close <task>`), 강제로 이어받는다(부트스트랩 `--force`).
@@ -78,7 +78,7 @@ class InvalidTaskName(Exception):
     """task 명이 안전한 단일 path 컴포넌트가 아니거나 예약 패턴이다 — fail-loud (must-fix).
 
     `task_dir(name)=TASKS_DIR/name` 이 무검증이면 `--task ../../evil`·`/tmp/x`·`a/b`·빈 문자열이
-    작업트리 밖/임의 경로에 디렉토리를 만들고 장부를 오염시킨다(reviewer 실측). 검증은 **엔진층
+    작업트리 밖/임의 경로에 디렉토리를 만들고 기록을 오염시킨다(reviewer 실측). 검증은 **엔진층
     (bind_task 진입점)**에 둔다 — CLI 검증만으론 bind_task 직접 소비가 우회된다.
     거부: 빈/공백·path separator(`/`·`\\`)·선행 `.`(숨김/상대 traversal)·단일 컴포넌트 아님·(등록
     repo 넘기면) `<repo>_<N>` 슬롯 폴더 이름 패턴 예약. `reason` = 위반 사유(진단용).
@@ -132,7 +132,7 @@ class TaskEndRefused(Exception):
 class NotTaskOwner(Exception):
     """release `--task <task>` 이 그 task 명의가 아닌 슬롯을 반납하려 함 — 소유검사 거부.
 
-    슬롯↔task 연결 = lease.session == task 이름 (alloc `--task` 가 session=task 로 리스).
+    슬롯↔task 연결 = lease.session == task 이름 (alloc `--task` 가 session=task 로 대여).
     `--task` 를 준 release 는 이 소유검사를 통과해야 반납한다 — 다른 task/세션이 쓰는 슬롯을
     실수로 idle 화(작업 뺏기)하지 않게. `holder` = 실제 그 슬롯을 leased 중인 session(진단용·
     빈 문자열이면 idle/미점유). slot-only 반납(`--task` 미지정·백스톱)은 이 검사를 안 탄다.
@@ -151,9 +151,9 @@ class NotTaskOwner(Exception):
 class CheckoutFailed(Exception):
     """슬롯 worktree 의 branch checkout 실패.
 
-    fail-soft 로 무시하면 리스 장부의 state/session 이 실제 worktree 상태와 어긋난다
-    (부분 leased 전이). alloc 은 checkout 성공 시에만 장부를 갱신하고, 실패하면 이를
-    raise 해 기존 리스 상태를 보존한다(부분 갱신 차단). 브랜치 자체는 더는 장부에
+    fail-soft 로 무시하면 대여 기록의 state/session 이 실제 worktree 상태와 어긋난다
+    (부분 leased 전이). alloc 은 checkout 성공 시에만 기록을 갱신하고, 실패하면 이를
+    raise 해 기존 대여 상태를 보존한다(부분 갱신 차단). 브랜치 자체는 더는 기록에
     저장하지 않는다(git=진실) — checkout 은 git HEAD 를 바꾼다.
     """
 
@@ -174,7 +174,7 @@ class BareRepoMissing(RuntimeError):
     bare clone 으로 mirror 를 (재)생성해야 한다. **repo 가 areas.md 에 이미
     등록됐으면**(하나의 채택 폴더를 여러 사람이 clone 한 2번째 사용자·`.repos/` 는 gitignore·
     per-clone 이라 공유 안 됨) `pm-config repo add <repo>` 를 **`--git` 없이** 실행하면 areas
-    등록 URL 로 mirror 를 hydrate 한다. 침묵 폴백으로 multi-PM 루트 자신의 worktree 를
+    등록 URL 로 mirror 를 hydrate 한다. 침묵 대체로 multi-PM 루트 자신의 worktree 를
     만들면 슬롯이 family repo 가 아닌 multi-PM 루트를 체크아웃해 토폴로지가 깨진다
     fail-soft 규율) → 명시 raise 로 선행 명령을 안내한다.
 
@@ -216,9 +216,9 @@ class SlotBranchExists(RuntimeError):
     `remove_slot` 가 **미머지 전용 브랜치**(`<repo>_<N>`)를 보존(작업 유실 방지)한 뒤, 같은 번호
     슬롯을 재생성하면 `git worktree add` 가 `fatal: a branch named '<repo>_<N>' already exists`
     (rc≠0)로 죽는다. 작업 슬롯 생성은 슬롯 전용 브랜치를 `--no-track -b <repo>_<N> <path>
-    origin/<base>` 로 판다. 슬롯번호는 ledger∪git-worktree
+    origin/<base>` 로 판다. 슬롯번호는 기록∪git-worktree
     병합으로 회피하지만, 그 병합은 **worktree 없이 잔존하는 브랜치**(보존 브랜치는 worktree 를
-    안 가짐·브랜치 축은 슬롯번호 축과 독립)를 못 본다.
+    안 가짐·브랜치 쪽은 슬롯번호 쪽과 독립)를 못 본다.
 
     옛 동작은 이 실패를 create_slot 의 already-exists 진단이 "worktree 경로 이미 등록(orphan)"으로
     **오귀인**했다(reviewer 실측 — orphan 정리 안내를 냈지만 지울 orphan worktree 는 없다).
@@ -230,12 +230,12 @@ class SlotBranchExists(RuntimeError):
     미머지된 것이라(그래서 remove_slot 가 보존했다) 그 브랜치를 *base-경로에서* 재사용하면 슬롯이
     요청한 base 가 아닌 옛 미머지 작업 위에서 **조용히** 시작한다(base ≠ 브랜치 HEAD·silent 시맨틱
     어긋남). 사용자가 옛 작업 재개를 모른 채 진행할 위험이라 — 재개는 **명시 의사로만**(그 브랜치를
-    슬롯에 checkout) 열어 둔다. 이 코드베이스의 fail-loud 규율(`BareRepoMissing`·`RemoveRefused`)과 정합.
+    슬롯에 checkout) 열어 둔다. 이 코드베이스의 fail-loud 규율(`BareRepoMissing`·`RemoveRefused`)과 일치.
 
     ✅ **재개 경로는 리셋 없이 안전**: 그 브랜치를 checkout 해 미머지 작업을 이어가려면 다른
     슬롯에서 `switch <slot> <repo>_<N>`(기존 브랜치 전환·리셋 없음)한다.
 
-    **`RuntimeError` 서브클래스**인 이유: `BareRepoMissing` 과 동형 — 파사드 `pm_config.
+    **`RuntimeError` 서브클래스**인 이유: `BareRepoMissing` 과 같은 이유 — 파사드 `pm_config.
     cmd_worktree_add` 가 `create_slot` 실패를 `except RuntimeError` 로 잡아 사용자 안내 rc 1 로
     surface 한다. `base` = 요청 base.
     """
@@ -274,38 +274,38 @@ class SlotFoldersRefused(RuntimeError):
 # 필드로 소비하고, 그 외 미지 키는 `extra` 로 보존해 to_dict 가 재방출한다(구·신 엔진 왕복 무손실).
 #   - CANONICAL = 이 엔진 버전이 아는 1급 필드(각자 self.* 로 소비·extra 아님).
 #   - DROP = legacy 최상위 `branch` — extra 로도 보존하지
-#     않는다. 표시는 git=진실(`current_branch`)이라 장부에 branch 를 되살리면 드리프트 원천이
+#     않는다. 표시는 git=진실(`current_branch`)이라 기록에 branch 를 되살리면 드리프트 원천이
 #     재생긴다(테스트 `test_from_dict_ignores_legacy_branch_key` 가 이 무시를 못박음). git 필드
-#     안의 `branch` 서브키(작업 브랜치 스냅)와는 다른 축 — 그건 git blob 의 일부로 보존된다.
+#     안의 `branch` 서브키(작업 브랜치 git 상태 기록)와는 다른 것 — 그건 git blob 의 일부로 보존된다.
 _LEASE_CANONICAL_KEYS = frozenset(
     {"slot", "repo", "session", "started", "state", "test_cmd", "git", "role", "bound"}
 )
 
-# DROP 에 legacy `pid` 를 더한다 — 세션 살아있음을 프로세스 번호로 판정하던 축은 폐기됐고
+# DROP 에 legacy `pid` 를 더한다 — 세션 살아있음을 프로세스 번호로 판정하던 기준은 폐기됐고
 # (열림 = state==leased + session 있음), extra 로 보존하면 `to_dict` 가 옛 필드를 다시 방출해
-# 장부에 되살아난다. 읽을 때 1회 버리고 다시 쓰지 않는다(옛 필드 잔존 0).
+# 기록에 되살아난다. 읽을 때 1회 버리고 다시 쓰지 않는다(옛 필드 잔존 0).
 _LEASE_DROP_KEYS = frozenset({"branch", "pid"})
 
 
 class Lease:
-    """리스 장부 한 엔트리.
+    """대여 기록 한 엔트리.
 
     슬롯=브랜치-무관 컨테이너·session=점유 주체·state=leased|idle|creating. `creating` 은
     create_slot 의 provisional 마커(worktree add 전 선기록·확정 시 leased·중단 시 흔적).
-    **브랜치 *표시*는 권위 필드가 아니다** — git 이 단일 진실이라 장부에
+    **브랜치 *표시*는 권위 필드가 아니다** — git 이 단일 진실이라 기록에
     저장하지 않고 `current_branch(slot)` 로 슬롯 worktree 의 live HEAD 에서 읽는다(드리프트 불가능).
 
     **`git` 필드 (additive·엔진 전용 write·md 아님)**: 슬롯 git 상태를 *기대*
-    (drift 감지 기준) 축으로 기계 기록한다 — `{base:{branch,commit}, branch, head, submodules:
+    (drift 감지 기준) 값으로 기계 기록한다 — `{base:{branch,commit}, branch, head, submodules:
     [{path,pin}], recorded_at}`. 뒤집지 않는다: 표시는 여전히 live
-    조회(`current_branch`)·기록은 별개의 *기대* 축(submodule pin/drift 모델을 본체로 대칭 확장).
+    조회(`current_branch`)·기록은 별개의 *기대* 값(submodule pin/drift 모델을 본체로 대칭 확장).
     write 시점 = alloc·핸드오프·create(release 시 정리)·compare 시점 = 0단계
     (`compare_slot_git`). 미기록(구 슬롯) = drift 감지 비활성. raw dict 로
     들고 있어 미지 서브키까지 왕복 보존한다(None=미기록·to_dict 는 None 이면 키 자체를 뺀다).
 
     **`extra` (미지 키 보존)**: 이 엔진 버전이 모르는 최상위 키(`task`[T-035x] 등 향후
-    additive 키)를 `from_dict` 가 `extra` dict 로 보존하고 `to_dict` 가 재방출한다. 장부 지속은
-    `_read_ledger`→`_write_ledger`(from_dict→to_dict) 왕복 하나로 수렴하는데, **신규 키를 모르는
+    additive 키)를 `from_dict` 가 `extra` dict 로 보존하고 `to_dict` 가 재방출한다. 기록 지속은
+    `_read_records`→`_write_ledger`(from_dict→to_dict) 왕복 하나로 모이는데, **신규 키를 모르는
     엔진(adopter#0 import 사본 lag 로 버전 skew 실재)이 아무 op 라도 하면 그 read-modify-write
     왕복에서 *모든 슬롯*의 신규 키가 소실**된다 — base/head 기록이 조용히 날아가면 drift 감지가
     가짜 기준 위에서 돌아 무의미해진다([[robustness-value-connections-before-ship]] silent
@@ -322,18 +322,18 @@ class Lease:
         self.slot = slot          # "work/<repo>_<N>" (브랜치 무관)
         self.repo = repo          # repo 이름 (per-repo 네임스페이스)
         self.session = session    # 점유 세션 식별자 (빈 문자열 = 무소유)
-        self.started = started    # 리스 시작 시각 (UTC ISO)
+        self.started = started    # 대여 시작 시각 (UTC ISO)
         self.state = state        # "leased" | "idle" | "creating"(provisional)
         self.test_cmd = test_cmd  # 슬롯 바인딩 회귀/빌드명령 (None=미지정)
-        self.git = git            # 슬롯 git 스냅 dict(base/branch/head/submodules/recorded_at)·None=미기록
+        self.git = git            # 슬롯 git 상태 기록 dict(base/branch/head/submodules/recorded_at)·None=미기록
         # 슬롯 role (additive): "work"(기본·배타 대여 작업 슬롯) | "readonly"
         # (research 전용 공유 슬롯·detached·session 없음·alloc/release 대상 제외). role 이
         # 0단계 carve-out(readonly 공유 슬롯) 소유검사 예외(identity_args)·엔진
-        # mutation 거부(rebase/switch/dev/sync)의 canonical 판별 축이다.
+        # mutation 거부(rebase/switch/dev/sync)의 canonical 판별 기준이다.
         self.role = role
-        # bind-origin 마커 (additive 동형 조건방출): True 는 지운 옛 사람 바인딩 경로(슬롯 직접 지정
+        # bind-origin 마커 (git/role 과 같은 additive 조건방출): True 는 지운 옛 사람 바인딩 경로(슬롯 직접 지정
         # 부트스트랩)가 남긴 대여 기록 행이다. 지금 엔진은 True 를 쓰지 않고 옛 기록을 읽을 때만 True 가 된다.
-        # alloc·release·force_release·end_task 가 해제한다. 구 장부(키 부재)=False 동치·마이그레이션 0.
+        # alloc·release·force_release·end_task 가 해제한다. 구 기록(키 부재)=False 동치·마이그레이션 0.
         #   alloc 은 idle 슬롯만 대여하므로 leased 행(task 명의·bind 모두)을 다른 명의로 넘기지 않는다.
         self.bound = bound
         # 미지 최상위 키 보존(additive 스키마 클래스 폐쇄). mutable 기본 회피(None 센티넬).
@@ -359,18 +359,18 @@ class Lease:
             "state": self.state,
             "test_cmd": self.test_cmd,
         }
-        # git 은 *있을 때만* 방출한다 — 구 장부(git 필드 부재)를 로드·재기록해도 `git: null` 을
+        # git 은 *있을 때만* 방출한다 — 구 기록(git 필드 부재)을 로드·재기록해도 `git: null` 을
         # 덧붙이지 않아 왕복이 무손실(하위호환·DoD). test_cmd 는 항상 방출.
         if self.git is not None:
             d["git"] = self.git
-        # role 은 *기본("work")이 아닐 때만* 방출한다 (git 필드 조건방출과 동형·하위호환).
-        # 구 장부(role 부재=work 슬롯)를 로드·재기록해도 `role: "work"` 를 덧붙이지 않아 왕복이
-        # byte-무손실이다(from_dict 가 부재 시 "work" 로 read). readonly 슬롯만 role 을 장부에 남긴다.
+        # role 은 *기본("work")이 아닐 때만* 방출한다 (git 필드 조건방출과 같은 방식·하위호환).
+        # 구 기록(role 부재=work 슬롯)을 로드·재기록해도 `role: "work"` 를 덧붙이지 않아 왕복이
+        # byte-무손실이다(from_dict 가 부재 시 "work" 로 read). readonly 슬롯만 role 을 기록에 남긴다.
         if self.role != "work":
             d["role"] = self.role
-        # bound 는 *True 일 때만* 방출한다 (git/role 조건방출과 동형·하위호환). 구 장부(bound
-        # 부재=False·pool 슬롯)를 로드·재기록해도 `bound: false` 를 덧붙이지 않아 왕복이 byte-무손실
-        # 이다(from_dict 가 부재 시 False 로 read). 옛 사람 bind 기록 행만 bound 를 장부에 남긴다.
+        # bound 는 *True 일 때만* 방출한다 (git/role 조건방출과 같은 방식·하위호환). 구 기록(bound
+        # 부재=False·pool 슬롯)을 로드·재기록해도 `bound: false` 를 덧붙이지 않아 왕복이 byte-무손실
+        # 이다(from_dict 가 부재 시 False 로 read). 옛 사람 bind 기록 행만 bound 를 기록에 남긴다.
         if self.bound:
             d["bound"] = True
         # 미지 키 재방출(구·신 엔진 왕복 무손실). extra 엔 canonical/legacy-branch 가 없다
@@ -380,7 +380,7 @@ class Lease:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Lease":
-        # 하위호환 read: test_cmd 부재(구 장부)는 None·git 부재는 None. 구 장부의 legacy 최상위
+        # 하위호환 read: test_cmd 부재(구 기록)는 None·git 부재는 None. 구 기록의 legacy 최상위
         # `branch` 키는 관용적으로 *무시*한다(branch 는 권위 필드가
         # 아니다·표시는 git 에서만 온다). canonical/legacy-branch 를 뺀 나머지 미지 키는 `extra`
         # 로 보존해 to_dict 가 재방출한다(구·신 엔진 왕복 무손실·additive 스키마 클래스 폐쇄).
@@ -396,13 +396,13 @@ class Lease:
             state=d.get("state", "leased"),
             test_cmd=d.get("test_cmd"),
             git=d.get("git"),
-            role=d.get("role", "work"),   # 하위호환 read: 구 장부(role 부재) = "work"(작업 슬롯).
-            bound=bool(d.get("bound", False)),  # 하위호환 read: 구 장부(bound 부재) = False(pool 슬롯).
+            role=d.get("role", "work"),   # 하위호환 read: 구 기록(role 부재) = "work"(작업 슬롯).
+            bound=bool(d.get("bound", False)),  # 하위호환 read: 구 기록(bound 부재) = False(pool 슬롯).
             extra=extra,
         )
 
 
-# Task 직렬화 키 분류 (Lease 동형 additive 스키마). canonical 을 각 필드로 소비하고 그
+# Task 직렬화 키 분류 (Lease 와 같은 additive 스키마). canonical 을 각 필드로 소비하고 그
 # 외 미지 키는 `extra` 로 보존해 왕복 무손실(구·신 엔진 skew·향후 additive task 서브키 대비).
 # `open`·`pid`·`todos` 는 옛 이름으로 남겨 둔다 — canonical 에 있어야 `from_dict` 가 그것을
 # `extra` 로 보존하지 않고 버린다(다시 쓸 때 옛 필드가 되살아나지 않는다·읽기 1회 이주). 옛 열림
@@ -412,7 +412,7 @@ _TASK_CANONICAL_KEYS = frozenset(
 
 
 class Task:
-    """리스 장부 top-level `tasks` 컬렉션 한 엔트리 — 작업 단위 정체성.
+    """대여 기록 top-level `tasks` 컬렉션 한 엔트리 — 작업 단위 정체성.
 
     task = 슬롯과 **직교**한 작업스트림 정체성(슬롯 0개로도 존재 가능). 슬롯-키 lease 행과 별개의
     top-level 컬렉션에 산다(같은 파일·같은 `_lease_lock`/atomic replace 직렬화). 필드:
@@ -424,11 +424,11 @@ class Task:
         task" 를 이 값으로 찾는다. `open` 은 이 값에서 파생한 읽기 전용 값이다.
       - `started`— task 레코드 생성 시각(UTC ISO).
 
-    저장 위치 = 리스 장부 파일 top-level `tasks`(출처 1개·저장소 신설 불요·단일 파일 스캔).
+    저장 위치 = 대여 기록 파일 top-level `tasks`(출처 1개·저장소 신설 불요·단일 파일 스캔).
     **열린 할 일은 여기 없다** — `.local/tasks/<name>/todo.json` 이 소유한다. 할 일은 세션 중
     수시로 바뀌고 슬롯 대여는 거의 안 바뀌는데, 한 파일에 두면 잦은 쓰기가 드문 쪽까지 매번 다시
     쓰고 task 끼리 같은 락을 두고 겨룬다. 미지 최상위 task 키는 `extra` 로 왕복 보존
-    (Lease 동형·additive 스키마 클래스 폐쇄). (dataclass 미사용 — Lease 와 같은 forward-ref 회피.)
+    (Lease 와 같은 방식·additive 스키마 클래스 폐쇄). (dataclass 미사용 — Lease 와 같은 forward-ref 회피.)
     """
 
     def __init__(self, name: str, prefix: "str | None" = None,
@@ -495,7 +495,7 @@ class SubmoduleStatus:
     """슬롯 worktree 한 submodule 의 상태 — 역할(live HEAD) + pin 비교 판정.
 
     (`_resync_submodules_selective`)의 *역할 판별*을 표시층으로 재사용한다 — 역할은
-    별도 장부 없이 submodule 의 live git HEAD 로 정한다(무스키마):
+    별도 기록 없이 submodule 의 live git HEAD 로 정한다(무스키마):
 
       - `kind="dev-ahead"` — **on-branch**(=dev 역할·`symbolic-ref -q HEAD` rc0). 사용자가 그
         submodule 에서 브랜치를 파 작업 중 → **정보**(경고 아님). detached pin 으로 낚아채지
@@ -555,7 +555,7 @@ class SlotStatus:
 class GitWorktree:
     """`git worktree list --porcelain` 한 엔트리 — 실 git worktree 의 경로/브랜치/상태.
 
-    리스 장부(Lease)와 대조할 *실-git* 소스(`list_git_worktrees`). `slot` = 경로가 WORK_DIR
+    대여 기록(Lease)과 대조할 *실-git* 소스(`list_git_worktrees`). `slot` = 경로가 WORK_DIR
     (=REPO/work) 바로 아래의 단일 디렉토리면 슬롯 식별자(`work/<repo>_<N>`), 아니면 None
     (bare 원·multi-PM 루트·외부 worktree). `bare` = bare 원 엔트리(슬롯 아님·reconcile/슬롯번호
     에서 제외). (dataclass 미사용 — Lease/SlotStatus 와 동일 이유: `spec_from_file_location`
@@ -576,13 +576,13 @@ class GitWorktree:
 
 
 class ReconcileResult:
-    """리스 장부 × 실 git worktree 정합 결과 — orphan/stale/incomplete drift (조회 전용).
+    """대여 기록 × 실 git worktree 일치 결과 — orphan/stale/incomplete drift (조회 전용).
 
-    - **orphans** = git worktree(슬롯 경로·non-bare)인데 장부에 없음(`GitWorktree` 리스트).
+    - **orphans** = git worktree(슬롯 경로·non-bare)인데 기록에 없음(`GitWorktree` 리스트).
       중단된 create/수동 add 잔존(audit #2) — 다음 create_slot 번호 충돌(#4)·status blind(#3).
-    - **stale** = 장부 확정 리스(leased/idle)인데 대응 git worktree 없음(`Lease` 리스트).
+    - **stale** = 기록 확정 대여(leased/idle)인데 대응 git worktree 없음(`Lease` 리스트).
       worktree dir 삭제/prune 됨(audit #3).
-    - **incomplete** = provisional("creating") 리스(`Lease` 리스트). worktree add 후 확정 전에
+    - **incomplete** = provisional("creating") 대여(`Lease` 리스트). worktree add 후 확정 전에
       중단된 create 의 흔적(SIGKILL 도 커버) — 정리 대상.
 
     (dataclass 미사용 — 위 클래스들과 동일 이유.)
@@ -608,8 +608,8 @@ class RemoveResult:
     - `branch_deletion` — 그 브랜치의 삭제 판정 결과(`BranchDeletion`·`delete_branch_by_rule`).
       브랜치를 판별하지 못했으면 None.
     - `tree_cleaned` — git 이 등록만 지우고 남긴 디렉터리 잔재를 엔진이 마저 지웠는가.
-    - `forced_state` — `--force` 로 **활성 리스**(leased/creating·사용 중)를 override 하고 제거했을 때
-      그 원래 state(예 "leased"·CLI 가 강제 회수 경고 surface). idle 슬롯이었으면 None(정상 제거·경고 불요).
+    - `forced_state` — `--force` 로 **활성 대여**(leased/creating·사용 중)를 override 하고 제거했을 때
+      그 원래 state(예 "leased"·CLI 가 강제 반납 경고 surface). idle 슬롯이었으면 None(정상 제거·경고 불요).
 
     (dataclass 미사용 — Lease/ReconcileResult 등과 동일 이유: `spec_from_file_location` 로드 시
     dataclass 의 forward-ref 해소가 깨진다. 평범한 클래스로 그 결합을 피한다.)
@@ -630,15 +630,15 @@ class RemoveResult:
                 f"forced_state={self.forced_state!r})")
 
 
-# `fetch origin` 실패 시 폴백 대상 ref 의 정체 — 경고 문구 단일 소스. remote-tracking ref
-# (`origin/<branch>`)가 기준이면 폴백 대상은 로컬 브랜치가 아니라 **직전 fetch 시점에 멈춘
+# `fetch origin` 실패 시 대체 대상 ref 의 정체 — 경고 문구 단일 소스. remote-tracking ref
+# (`origin/<branch>`)가 기준이면 대체 대상은 로컬 브랜치가 아니라 **직전 fetch 시점에 멈춘
 # remote-tracking ref** 다. 둘을 "로컬 …(동결 head)" 로 뭉뚱그리면 사용자가 로컬 브랜치를
 # 갱신해 해소하려 하지만(그 ref 는 안 움직인다) 실제 해소는 fetch 복구뿐이다.
 _REMOTE_TRACKING_PREFIX = "origin/"
 
 
 def _frozen_fallback_label(ref: str) -> str:
-    """fetch 실패 폴백 대상 표기 — 로컬 브랜치 / stale remote-tracking ref 를 구분한다."""
+    """fetch 실패 대체 대상 표기 — 로컬 브랜치 / stale remote-tracking ref 를 구분한다."""
     if ref.startswith(_REMOTE_TRACKING_PREFIX):
         return f"stale remote-tracking `{ref}`(직전 fetch 시점 동결)"
     return f"로컬 `{ref}`(동결 head)"
@@ -650,7 +650,7 @@ def _slot_for(repo: str, n: int) -> str:
 
 
 def _slot_number(repo: str, lease: "Lease") -> float:
-    """장부 행이 이 repo 에서 점유한 슬롯 번호 — 정렬 키 (최소 번호 대여 결정론 ⓒ).
+    """기록 행이 이 repo 에서 점유한 슬롯 번호 — 정렬 키 (최소 번호 대여 결정론 ⓒ).
 
     번호는 **행 값**(경로 값 ∪ session 값·`identity_args._row_slot_numbers` 공유 규칙)에서
     계상한다 — 슬롯 식별자 문자열의 마지막 `_` 를 뜯던 자리다. 행이 이 repo 번호를 주지 않으면
@@ -661,13 +661,13 @@ def _slot_number(repo: str, lease: "Lease") -> float:
 
 
 def _existing_slot_numbers(repo: str, leases: list[Lease]) -> set[int]:
-    """장부에 이미 있는 이 repo 의 슬롯 번호 집합 — **행 전수**에서 계상.
+    """기록에 이미 있는 이 repo 의 슬롯 번호 집합 — **행 전수**에서 계상.
 
     번호는 행의 slot 경로(`work/<repo>_<N>`)와 행의 session(`<repo>_<N>`) 양쪽에서 읽는다
-    (`identity_args._row_slot_numbers` 공유 규칙·`repo_slot_numbers` 와 같은 축). 경로에 번호가
+    (`identity_args._row_slot_numbers` 공유 규칙·`repo_slot_numbers` 와 같은 기준). 경로에 번호가
     없는 행(PM 홈 자신을 가리키는 행 등)도 session 으로 자기 번호를 점유하므로, 다음 `alloc` 이
     이미 쓰이는 이름(`<repo>_<N>` 세션·브랜치)을 다시 파지 않는다. 상태 무관(idle 포함) —
-    번호는 대여 상태가 아니라 **이름 점유** 축이다(종전 동형).
+    번호는 대여 상태가 아니라 **이름 점유** 기준이다(종전과 같다).
     """
     nums: set[int] = set()
     for lease in leases:
@@ -675,7 +675,7 @@ def _existing_slot_numbers(repo: str, leases: list[Lease]) -> set[int]:
     return nums
 
 
-# ── 열림/닫힘 판정 (기록 축) ─────────────────────────────────────────────────
+# ── 열림/닫힘 판정 (기록 기준) ─────────────────────────────────────────────────
 
 
 def lease_is_open(lease: Lease) -> bool:
@@ -727,11 +727,11 @@ class GitCompareResult:
 
     - `unrecorded` — git 미기록(구 슬롯·git 필드 부재/슬롯 없음) → drift 감지 **비활성**. 0단계는
       차단이 아니라 loud 표시 + 사용자 질의. ok/fail 어느 쪽도 아닌 별도 상태.
-    - `recorded`/`live` — 기록 git dict / live 스냅 dict(branch·head·submodules).
-    - `branch_match` — 기록 branch == live branch. False = 브랜치 변경(사고·FAIL-LOUD·표 branch 축).
+    - `recorded`/`live` — 기록 git dict / live git 상태 dict(branch·head·submodules).
+    - `branch_match` — 기록 branch == live branch. False = 브랜치 변경(사고·FAIL-LOUD·표 branch 칸).
     - `head_relation` — `match`/`descendant`/`diverged`/`unknown`(is-ancestor 완화·위 상수).
     - `submodule_drift` — 기록 pin ≠ live pin 인 submodule path 목록(경고).
-    - ⚠️ **`recorded["base"]`(readonly 슬롯만 가진다)는 비교축이 아니다**(비교축은
+    - ⚠️ **`recorded["base"]`(readonly 슬롯만 가진다)는 비교 대상이 아니다**(비교 대상은
       branch+head+submodule 뿐) — *전달만* 하고 비교/계산을 붙이지 않는다.
 
     (dataclass 미사용 — Lease/SlotStatus 등과 동일 이유: `spec_from_file_location` 로드 시
@@ -812,7 +812,7 @@ class RefreshRefused(RuntimeError):
 
     `reason` ∈ {"dirty", "no-base", "not-readonly"}:
       - **dirty** — read-only 슬롯에 미커밋 변경이 있다 = "누군가 여기 썼다"는 신호. 조용히 reset 하면
-        신호가 사라진다 → 거부 + loud(감지=기계·해소=사용자·submodule drift 동형·결정). 사용자가 보고
+        신호가 사라진다 → 거부 + loud(감지=기계·해소=사용자·submodule drift 와 같은 방식·결정). 사용자가 보고
         판단한다(수동 정리/조사 후 재시도).
       - **no-base** — `--onto` 미지정 + 기록된 base.branch 도 없어 어디로 갱신할지 불명(추론 금지).
       - **not-readonly** — 대상 슬롯이 readonly 가 아니다(refresh 는 detached 공유 슬롯 전용 — 작업
@@ -834,16 +834,16 @@ class RefreshRefused(RuntimeError):
         super().__init__(msg + tail + f"")
 
 
-REBASE_REBASED = "rebased"        # 성공 — 장부 원자 갱신 완료.
+REBASE_REBASED = "rebased"        # 성공 — 기록 원자 갱신 완료.
 REBASE_SKIPPED = "skipped"        # 선-검사/거부 스킵(loud) — reason 참조.
-REBASE_CONFLICT = "conflict"      # rebase 가 rc≠0(충돌 등) — 그 상태 그대로·장부 미갱신·loud.
+REBASE_CONFLICT = "conflict"      # rebase 가 rc≠0(충돌 등) — 그 상태 그대로·기록 미갱신·loud.
 
 
 class RebaseSlotResult:
     """rebase 한 슬롯 하나의 결과 — outcome + 진단 (일괄 요약 원료).
 
-    - `outcome` ∈ {`rebased`(성공·장부 원자 갱신), `skipped`(선-검사/거부 스킵+loud),
-      `conflict`(rebase rc≠0·그 상태 그대로 + fail-loud·장부 미갱신)}.
+    - `outcome` ∈ {`rebased`(성공·기록 원자 갱신), `skipped`(선-검사/거부 스킵+loud),
+      `conflict`(rebase rc≠0·그 상태 그대로 + fail-loud·기록 미갱신)}.
     - `reason` — skipped/conflict 사유(진단·CLI loud surface). skipped: `readonly`/`not-owner`/
       `no-worktree`/`dirty`/`in-progress`/`no-branch`/`no-parent`/`unresolvable-onto`. conflict: git 출력 요약.
     - `base` — rebase 가 향한 부모 브랜치명(해소된 경우·None=해소 전 스킵).
@@ -869,11 +869,11 @@ class RebaseSlotResult:
                 f"reason={self.reason!r}, base={self.base!r}, new_head={self.new_head!r})")
 
 
-# board.DEFAULT_PROTECTED 와 *동형* 폴백 (pm_config._DEFAULT_PROTECTED 동형). board 부재/
+# board.DEFAULT_PROTECTED 와 *같은* 대체 값 (pm_config._DEFAULT_PROTECTED 와 같음). board 부재/
 # 헬퍼 부재/파싱 실패로 areas 를 못 읽어도 보호는 안전 기본값이 있어야 한다(미해소여도 main 류 차단).
 
 # 새 브랜치 생성 안내 — switch 는 브랜치를 만들지 않는다(생성 시점에 부모를 기록하는 task 경로만).
-_TASK_BRANCH_REMEDY = "`pm-config task branch <task> <슬롯> <브랜치> --from <부모>`"
+_TASK_BRANCH_FIX = "`pm-config task branch <task> <슬롯> <브랜치> --from <부모>`"
 
 
 class SwitchRefused(RuntimeError):
@@ -885,38 +885,38 @@ class SwitchRefused(RuntimeError):
         no-worktree·dirty·rebase-in-progress·invalid-ref·not-found) — 전환도 기록도 하지 않는다
         (부작용 0).
       - **git-error** — `_checkout_required`(checkout+resync)를 *시도한 뒤* 실패(트리 상태는 git 이
-        남긴 그대로·장부 불변·`CheckoutFailed` 를 이 사유로 감싼다).
-      - **record-failed** — 전환은 **성공**했고 그 뒤 기록(보존 기록 지우기 또는 장부 스냅 재기록)만
+        남긴 그대로·기록 불변·`CheckoutFailed` 를 이 사유로 감싼다).
+      - **record-failed** — 전환은 **성공**했고 그 뒤 기록(보존 기록 지우기 또는 대여 기록의 git 상태 재기록)만
         실패(원자성 파손 → 아래 안내).
 
     `reason` ∈ {"unregistered", "protected", "protected-upstream", "checked-out-elsewhere",
     "no-worktree", "dirty", "rebase-in-progress", "invalid-ref", "not-found", "git-error",
     "record-failed"}:
-      - **unregistered** — 장부에 없는 슬롯(스냅 기록 대상이 아니다·`record` 동형 메시지).
+      - **unregistered** — 기록에 없는 슬롯(git 상태 기록 대상이 아니다·`record` 와 같은 메시지).
       - **protected** — 대상 브랜치가 그 repo 보호목록. 보호브랜치로 *들어가는* 전환은 이
         커맨드의 목적(main-참조 해소)과 정반대다.
       - **protected-upstream** — 대상(기존) 브랜치가 **보호브랜치 원격을 origin-추적**한다.
-        전환은 되지만 다음 0단계가 다시 main-참조로 막으므로 여기서 거부한다(remedy-유발 상태전이).
+        전환은 되지만 다음 0단계가 다시 main-참조로 막으므로 여기서 거부한다(해결 방법이 일으키는 상태전이).
       - **checked-out-elsewhere** — 대상(기존) 브랜치를 **이 슬롯이 아닌 다른 worktree** 가 이미
         checkout 중이다(통합 브랜치 `task/main` 등). 전환을 강행하면 plain checkout 이 실패하고
-        옛 `-B` 폴백이 그 브랜치 ref 를 이 슬롯 HEAD 로 **리셋**했을 공유 브랜치 clobber 클래스다.
+        옛 `-B` 대체 동작이 그 브랜치 ref 를 이 슬롯 HEAD 로 **리셋**했을 공유 브랜치 clobber 클래스다.
         `--force` 류 우회는 없다(슬롯은 dev 브랜치 전용·통합 브랜치는 전용 worktree 소관).
         self(같은 슬롯)가 이미 보유한 브랜치로의 재-switch 는 통과한다.
       - **no-worktree** — 슬롯 worktree 경로 부재(실경로·runner 미주입).
-      - **dirty** — 미커밋 변경이 있다. 전환이 WIP 를 흔든다(rebase 선-검사 동형).
+      - **dirty** — 미커밋 변경이 있다. 전환이 WIP 를 흔든다(rebase 선-검사와 같음).
       - **rebase-in-progress** — 그 슬롯에 rebase 가 진행 중(`.git/rebase-merge|rebase-apply`).
         해소(continue/abort)가 먼저다 — 중간에 브랜치를 옮기면 진행 중 rebase 가 꼬인다
-        (`_rebase_one` 선-검사와 동형·같은 프리미티브 `_rebase_in_progress`).
+        (`_rebase_one` 선-검사와 같은 프리미티브 `_rebase_in_progress`).
       - **invalid-ref** — git 브랜치명으로 부적합하거나 **정규화 불가**(`check-ref-format --branch`
         rc≠0·빈/이상 출력·비고정점·호출 실패). 정규화가 안 되면 보호목록 등 안전검사를 그 이름
         기준으로 할 수 없으므로 fail-closed 로 거부한다.
       - **not-found** — 로컬 브랜치가 없다. switch 는 브랜치를 만들지 않는다 — 새 브랜치는 생성
         시점에 부모를 기록하는 task branch 명령으로 만든다.
       - **git-error** — 브랜치 전환(`_checkout_required`) 자체가 실패.
-      - **record-failed** — 전환은 됐으나 보존 기록 지우기(`clear_preserved_branch`) 또는 장부 스냅
+      - **record-failed** — 전환은 됐으나 보존 기록 지우기(`clear_preserved_branch`) 또는 대여 기록의 git 상태
         재기록이 실패했다(원자성 깨짐 → **loud**: 조용히 성공 보고하면 다음 0단계가 diverged 로
         막힌다 → `record` 안내·보존 기록 실패는 원인 해소 뒤 같은 switch 재실행).
-    (`RuntimeError` — `RefreshRefused` 동형·CLI 파사드가 rc 1 로 surface.)"""
+    (`RuntimeError` — `RefreshRefused` 와 같은 방식·CLI 파사드가 rc 1 로 surface.)"""
 
     def __init__(self, slot: str, reason: str, *, detail: str = ""):
         self.slot = slot
@@ -930,7 +930,7 @@ class SwitchRefused(RuntimeError):
             "protected-upstream": (f"슬롯 {slot!r} 을 **보호브랜치 원격을 추적하는** 브랜치로 전환하는 것은 "
                                    f"거부한다 — 전환은 되지만 다음 부트스트랩 0단계가 다시 main-참조"
                                    f"(origin-추적)로 막는다. upstream 이 없는 작업 브랜치로 전환하라"
-                                   f"(새 작업 브랜치는 {_TASK_BRANCH_REMEDY})"),
+                                   f"(새 작업 브랜치는 {_TASK_BRANCH_FIX})"),
             "checked-out-elsewhere": (f"슬롯 {slot!r} 을 **다른 worktree 가 이미 checkout 중인** 브랜치로 "
                                       f"전환하는 것은 거부한다 — 전환을 강행하면 그 브랜치 ref 가 이 슬롯 "
                                       f"HEAD 로 리셋된다(공유 브랜치 clobber). 우회 플래그는 없다"),
@@ -943,7 +943,7 @@ class SwitchRefused(RuntimeError):
             "invalid-ref": (f"슬롯 {slot!r} 에 지정한 브랜치명이 git ref 규칙에 어긋나거나 실 브랜치명으로 "
                             f"정규화할 수 없다(`git check-ref-format --branch`) — 다른 이름을 지정하라"),
             "not-found": (f"슬롯 {slot!r} 에 지정한 브랜치가 없다 — switch 는 기존 브랜치 전환만 한다. "
-                          f"새 브랜치는 {_TASK_BRANCH_REMEDY} 로 만든다"),
+                          f"새 브랜치는 {_TASK_BRANCH_FIX} 로 만든다"),
             "git-error": f"슬롯 {slot!r} 브랜치 전환 중 git 오류",
             "record-failed": (f"슬롯 {slot!r} 브랜치 전환은 됐으나 기록(보존 기록 지우기 또는 대여 기록의 git 상태 "
                               f"재기록)에 실패했다 — 이대로면 다음 0단계가 '기록↔live diverged' 로 막는다. "
@@ -962,8 +962,8 @@ class SwitchResult:
     def __init__(self, slot: str, branch: str, *, head: "str | None",
                  requested: "str | None" = None):
         self.slot = slot
-        self.branch = branch        # **정규화된** 실 브랜치명(검사·전환·장부 기록의 단일 기준).
-        self.head = head            # 재기록된 장부 스냅의 head(sha).
+        self.branch = branch        # **정규화된** 실 브랜치명(검사·전환·대여 기록 적기의 단일 기준).
+        self.head = head            # 다시 적은 git 상태의 head(sha).
         self.requested = requested if requested is not None else branch  # 사용자 원문(revspec 가능).
 
     @property
@@ -982,7 +982,7 @@ class TaskBranchRefused(RuntimeError):
     부작용 범위: **선-검사 사유**(unregistered·not-owner·no-worktree·dirty·rebase-in-progress·
     invalid-ref·protected·exists·ambiguous-ref·df-conflict·parent-missing)는 브랜치도 기록도 만들지
     않는다(부작용 0). **git-error** 는 부모 끝 커밋 해소 또는 `checkout -b` 실패(브랜치 미생성·git 이
-    남긴 트리 그대로). **record-failed** 는 브랜치는 **만들어졌고** 부모 기록 또는 장부 스냅 재기록이
+    남긴 트리 그대로). **record-failed** 는 브랜치는 **만들어졌고** 부모 기록 또는 대여 기록의 git 상태 재기록이
     실패한 상태다."""
 
     def __init__(self, slot: str, reason: str, *, detail: str = ""):

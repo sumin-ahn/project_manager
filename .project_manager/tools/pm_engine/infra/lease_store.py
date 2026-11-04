@@ -1,7 +1,7 @@
-"""리스 장부(`worktree-leases.json`) 읽기와 장부 기반 해소 (층: infra).
+"""대여 기록(`worktree-leases.json`) 읽기와 기록 기반 해소 (층: infra).
 
-장부 행 판정 규칙과 결과 형식은 `pm_engine.domain.identity_args` 가 소유하고, 이 모듈은 장부를 공유 읽기로
-읽어 그 규칙을 적용한다. 장부는 `worktree_pool` 이 원자 교체하는 파일이라 판독도
+기록 행 판정 규칙과 결과 형식은 `pm_engine.domain.identity_args` 가 소유하고, 이 모듈은 기록을 공유 읽기로
+읽어 그 규칙을 적용한다. 기록은 `worktree_pool` 이 원자 교체하는 파일이라 판독도
 `fs.read_text_shared` 를 지난다.
 """
 from __future__ import annotations
@@ -37,20 +37,20 @@ def _runtime_skill_entry(skill: str) -> str:
 
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
-# 앵커 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
+# 위치 기준 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
 
 
-# ── 공유 읽기 (원자 교체 대상 장부) ──────────────────────────────────────
-# 이 모듈이 읽는 리스 장부(`worktree-leases.json`)는 `worktree_pool` 이 **원자 교체**하는
+# ── 공유 읽기 (원자 교체 대상 기록) ──────────────────────────────────────
+# 이 모듈이 읽는 대여 기록(`worktree-leases.json`)은 `worktree_pool` 이 **원자 교체**하는
 # 파일이다. 일반 `open` 리더가 하나라도 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막으므로,
-# 판독도 공용 seam 의 공유 읽기(`fs.read_text_shared`)를 지난다.
+# 판독도 공용 함수의 공유 읽기(`fs.read_text_shared`)를 지난다.
 
 def task_prefix(name: str, leases_file: Path) -> str | None:
-    """장부 top-level `tasks` 컬렉션에서 task `name` 의 board prefix 를 읽는다 — 없으면 None.
+    """기록 top-level `tasks` 컬렉션에서 task `name` 의 board prefix 를 읽는다 — 없으면 None.
 
     `board.py new --task <task>` 이 `--prefix` 명시가 없을 때 task 설정 prefix(`task prefix`
     로 설정·기본 None)를 참조한다. 순수 point-read(부작용 0·`worktree_pool` 미import·
-    데이터 결합) — 부재/손상/미설정 → None(fail-soft·caller 가 유도 체인으로 폴백).
+    데이터 결합) — 부재/손상/미설정 → None(fail-soft·caller 가 유도 체인을 대신 씀).
     """
     try:
         data = json.loads(fs.read_text_shared(leases_file, encoding="utf-8"))
@@ -67,7 +67,7 @@ def task_prefix(name: str, leases_file: Path) -> str | None:
     return None
 
 
-# ── 리스 IO 층 (worktree-leases.json 원장 point-read·격리 관성) ──────────
+# ── 대여 IO 층 (worktree-leases.json 기록 point-read·격리 관성) ──────────
 
 
 def _load_lease_rows(leases_file: Path) -> list[dict] | None:
@@ -90,7 +90,7 @@ def _load_lease_rows(leases_file: Path) -> list[dict] | None:
 
 
 def _read_lease_rows_status(leases_file: Path) -> "tuple[str, list[dict]]":
-    """장부 `leases` dict 행 + **읽기 축 판정**(`LEDGER_*`) — 부재/손상/정상을 구분한다.
+    """기록 `leases` dict 행 + **읽기 상태 판정**(`RECORD_*`) — 부재/손상/정상을 구분한다.
 
     `_lease_dict_rows`(fail-soft·빈 리스트)의 판정형 짝이다. 해소 결과가 "판정 불능"일 때
     호출부가 *왜* 불능인지(부재냐 손상이냐)를 그대로 사용자에게 낼 수 있게 사유를 나른다.
@@ -108,16 +108,16 @@ def _read_lease_rows_status(leases_file: Path) -> "tuple[str, list[dict]]":
 
 
 def leased_sessions(leases_file: Path) -> list[str]:
-    """lease 장부에서 `state=="leased"` 행들의 session 목록 (count-based 유도용).
+    """lease 기록에서 `state=="leased"` 행들의 session 목록 (count-based 유도용).
 
-    `board._leased_sessions`·`pm_config._leased_sessions` 흡수(동형·byte-for-byte 동작 보존) —
-    `state` 가 **정확히 "leased"** 인 행만 센다(back-compat 기본값 없음 — 원 두 사본과 동형).
-    장부 부재/파싱실패/손상 → 빈 리스트(fail-soft — 세션 해소가 장부 손상으로 죽지 않게). session
+    `board._leased_sessions`·`pm_config._leased_sessions` 를 합쳐 옮김(같은 방식·byte-for-byte 동작 보존) —
+    `state` 가 **정확히 "leased"** 인 행만 센다(back-compat 기본값 없음 — 원 두 사본과 같은 방식).
+    기록 부재/파싱실패/손상 → 빈 리스트(fail-soft — 세션 해소가 기록 손상으로 죽지 않게). session
     이 빈/None 인 행은 제외.
 
     주의(의도된 비대칭): `repo_slot_numbers` 는 `state` 키 **부재**를 `"leased"` 로 back-compat
-    처리한다(원 `pm_bootstrap._repo_slot_numbers` 동형) — 이 함수는 그러지 않는다(원 두 `_leased_
-    sessions` 사본 동형).
+    처리한다(원 `pm_bootstrap._repo_slot_numbers` 와 같은 방식) — 이 함수는 그러지 않는다(원 두 `_leased_
+    sessions` 사본과 같은 방식).
     """
     rows = _load_lease_rows(leases_file)
     if rows is None:
@@ -132,11 +132,11 @@ def leased_sessions(leases_file: Path) -> list[str]:
 
 
 def task_names(leases_file: Path) -> set[str]:
-    """장부 top-level `tasks` 컬렉션의 이름 집합 — task 축의 단일 진실(부재/손상 → 빈 집합).
+    """기록 top-level `tasks` 컬렉션의 이름 집합 — task 목록의 단일 진실(부재/손상 → 빈 집합).
 
-    "이 세션이 task 인가"를 **이름 모양**(`foo_1` 형상 추측)이 아니라 등록 membership 으로 묻기
+    "이 세션이 task 인가"를 **이름 모양**(`foo_1` 모양 추측)이 아니라 등록 membership 으로 묻기
     위한 point-read (`worktree_pool.reclaim_stale`·`_ensure_slot_pm_state_locked` 가 이미 쓰는
-    근거와 같은 축). fail-soft — 장부가 없으면 등록 task 도 없다.
+    근거와 같은 기준). fail-soft — 기록이 없으면 등록 task 도 없다.
     """
     try:
         data = json.loads(fs.read_text_shared(leases_file, encoding="utf-8"))
@@ -152,18 +152,18 @@ def task_names(leases_file: Path) -> set[str]:
 
 
 def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
-    """`leases_file` 장부에서 `repo` 의 **활성(leased)** 슬롯이 점유한 번호 집합.
+    """`leases_file` 기록에서 `repo` 의 **활성(leased)** 슬롯이 점유한 번호 집합.
 
-    번호는 **장부 행의 값**에서 계상한다 — 행의 slot 경로(`work/<repo>_<N>`)와 행의 session
+    번호는 **기록 행의 값**에서 계상한다 — 행의 slot 경로(`work/<repo>_<N>`)와 행의 session
     (`<repo>_<N>`) 양쪽(`_row_slot_numbers`). 경로에 번호가 없는 행도 session 값으로 자기
     번호를 점유하므로, 번호 조회/충돌 회피가 그 행을 빠뜨리지 않는다. `state` 가 `"leased"` 인 엔트리만 센다 — **`state` 키 부재는 `"leased"` 로
-    back-compat**(`worktree_pool.from_dict` default 동형·`leased_sessions` 와의 의도된 비대칭은
-    위 docstring 참고). 같은 번호의 중복 장부 엔트리는 dedup(정렬된 unique 목록).
+    back-compat**(`worktree_pool.from_dict` default 와 같은 방식·`leased_sessions` 와의 의도된 비대칭은
+    위 docstring 참고). 같은 번호의 중복 기록 엔트리는 dedup(정렬된 unique 목록).
 
     파일 부재/JSON 깨짐/스키마 불일치 → `None`(fail-soft·"읽을 수 없음"); 정상 read 인데 그 repo
     의 leased 슬롯이 0개면 빈 리스트 `[]`("읽었으나 활성 슬롯 없음"). 호출부는 두 경우를 구분한다.
 
-    **폴더 해소는 이 번호 축을 타지 않는다** — `resolve_actor_workspace` 는 장부 행 값(session/slot)
+    **폴더 해소는 이 번호 기준을 타지 않는다** — `resolve_actor_workspace` 는 기록 행 값(session/slot)
     으로 해소한다(번호에서 세션을 재구성하지 않는다·아래).
     """
     rows = _load_lease_rows(leases_file)
@@ -173,7 +173,7 @@ def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
     for row in rows:
         if not isinstance(row, dict) or row.get("repo") != repo:
             continue
-        # 활성(leased) 슬롯만 — idle(반납)은 죽은 세션이라 라우팅 대상 아님(codex must-fix 원 흡수).
+        # 활성(leased) 슬롯만 — idle(반납)은 죽은 세션이라 라우팅 대상 아님(codex must-fix 원문 반영).
         # state 키 부재는 leased 로 본다(worktree_pool from_dict default·back-compat).
         if row.get("state", "leased") != "leased":
             continue
@@ -182,15 +182,15 @@ def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
 
 
 def repo_slot_state_counts(repo: str, leases_file: Path) -> "dict[str, int] | None":
-    """`leases_file` 장부에서 `repo` 슬롯을 `state` 값별로 센다 — 발행 표면(`board.py new`/
+    """`leases_file` 기록에서 `repo` 슬롯을 `state` 값별로 센다 — 발행 명령(`board.py new`/
     `promote`)의 "가용(idle) 슬롯 수" 재료가 쓰는 유일한 집계 지점이다.
 
     `state` 는 3값(`leased`|`idle`|`creating`·`worktree_pool.py`)이고 그 값을 **그대로** 버킷
     키로 쓴다 — `creating`(provisional)을 `idle`로 세지 않는다. `state` 키 부재는
-    `repo_slot_numbers` 와 동형으로 `"leased"` back-compat 처리한다(장부의 다수 소비자가 이미
+    `repo_slot_numbers` 와 같은 방식으로 `"leased"` back-compat 처리한다(기록의 다수 소비자가 이미
     같은 default 를 쓴다 — 오래된 행을 idle 로 잘못 세지 않는 안전한 방향).
 
-    파일 부재/JSON 깨짐/스키마 불일치(`_load_lease_rows` 가 이미 판정한 축) → `None`
+    파일 부재/JSON 깨짐/스키마 불일치(`_load_lease_rows` 가 이미 판정한 것) → `None`
     (판정불능 — 호출부가 슬롯 재료 줄 자체를 생략한다. 모르는 값을 0 으로 주장하지 않는다).
     정상 read 인데 그 repo 행이 0개면 빈 `dict`(idle 0 을 정당하게 보고한다).
     """
@@ -210,8 +210,8 @@ def repo_slot_state_counts(repo: str, leases_file: Path) -> "dict[str, int] | No
 def slot_path_resolution(repo: str, number: int, leases_file: Path) -> identity_args.SlotPathResolution:
     """`repo` 슬롯 번호 `number` → **활성 행의 slot 경로 값** + 판정 사유(discriminated).
 
-    명시 `--repo X --slot N` 이 실행 슬롯 경로를 `work/<repo>_<N>` 로 **재조립**하던 자리를 장부
-    값으로 바꾼다. 장부가 그 번호를 다른 경로로 들고 있으면(`nested/X_1`·PM 홈 자신을 가리키는
+    명시 `--repo X --slot N` 이 실행 슬롯 경로를 `work/<repo>_<N>` 로 **재조립**하던 자리를 기록
+    값으로 바꾼다. 기록이 그 번호를 다른 경로로 들고 있으면(`nested/X_1`·PM 홈 자신을 가리키는
     `.`) 재조립 값은 존재하지 않는 경로다. 번호 점유 판정은 `repo_slot_numbers` 와 같은 규칙
     (`_row_slot_numbers` — 경로 값 ∪ session 값)을 공유한다.
 
@@ -249,13 +249,13 @@ def resolve_actor_workspace(repo: str, leases_file: Path) -> "identity_args.Work
 
     **정체성은 행의 `session`, 경로는 행의 `slot`** — 어느 쪽도 다른 쪽에서 재구성하지 않는다.
     이전 구현은 번호 집합(`repo_slot_numbers`)으로 해소한 뒤 세션을 `f"{repo}_{N}"` 로 **재조립**
-    해서, 장부의 실제 session 과 갈렸다(task 이름으로 대여된 슬롯을 `<repo>_<N>` 로 오귀속). 여기서
+    해서, 기록의 실제 session 과 갈렸다(task 이름으로 대여된 슬롯을 `<repo>_<N>` 로 오귀속). 여기서
     행 값을 그대로 내고, 경로가 필요한 호출부(handoff 실행 슬롯·worktree_pool dev/sync)는
     `.slot` 을 쓴다 — 세션에서 `work/<session>` 을 만들지 않는다.
 
-    - 활성 슬롯 0개(장부 부재/파싱실패/그 repo 활성 슬롯 없음) → `None`(fail-soft·미해소 신호).
+    - 활성 슬롯 0개(기록 부재/파싱실패/그 repo 활성 슬롯 없음) → `None`(fail-soft·미해소 신호).
     - 활성 슬롯 ≥2 → `SlotResolutionError`(fail-loud·모호).
-    - 같은 슬롯의 중복 행이 서로 **다른 session** 을 주장하면(장부 모순) 임의 선택하지 않고
+    - 같은 슬롯의 중복 행이 서로 **다른 session** 을 주장하면(기록 모순) 임의 선택하지 않고
       `SlotResolutionError` — 판정 불능은 통과가 아니다.
     """
     by_slot: dict[str, list[dict]] = {}
@@ -298,15 +298,15 @@ def resolve_actor_workspace(repo: str, leases_file: Path) -> "identity_args.Work
 
 
 def session_coordinates(session: object, leases_file: Path) -> "tuple[str | None, int | None]":
-    """세션 명의 → 재접속 좌표 `(repo, number)` — **장부 행 값 1순위**, 행이 없으면 키 분해.
+    """세션 명의 → 재접속 좌표 `(repo, number)` — **기록 행 값 1순위**, 행이 없으면 키 분해.
 
     세션 키를 `rpartition("_")` 로 뜯어 `(repo, N)` 을 만들면 행의 repo 와 어긋난 session
-    (`repo=A · slot=work/A_1 · session=B_7`)에서 장부에 없는 repo `B` 가 나온다 — 그 좌표로 만든
-    지시(`--repo B --slot 7`·board 렌즈·remedy 안내)는 즉시 조인 실패한다(리뷰 F-002). 장부가
+    (`repo=A · slot=work/A_1 · session=B_7`)에서 기록에 없는 repo `B` 가 나온다 — 그 좌표로 만든
+    지시(`--repo B --slot 7`·board 렌즈·해결 방법 안내)는 즉시 조인 실패한다(리뷰 F-002). 기록이
     그 세션을 명의로 가진 행을 들고 있으면 **행의 repo 와 행 번호**가 좌표이고, 그런 행이 없을
     때만 pool 명명 규약(키 분해)이 유일한 진실이다.
 
-    좌표가 유일하지 않으면(행 repo 가 갈림·번호가 갈림) 해당 축은 `None` — 지어내지 않는다.
+    좌표가 유일하지 않으면(행 repo 가 갈림·번호가 갈림) 해당 값은 `None` — 지어내지 않는다.
     """
     if not isinstance(session, str) or not session:
         return None, None
@@ -315,15 +315,15 @@ def session_coordinates(session: object, leases_file: Path) -> "tuple[str | None
 
 
 def slot_identity_resolution(slot: object, leases_file: Path) -> identity_args.SlotIdentityResolution:
-    """슬롯 경로 값 → 슬롯 정체성 + 판정 사유. **장부 행 session 이 1순위**, pool 규약이 2순위.
+    """슬롯 경로 값 → 슬롯 정체성 + 판정 사유. **기록 행 session 이 1순위**, pool 규약이 2순위.
 
     해소 순서:
-      1. 장부에서 그 slot 값을 가진 행을 찾아(표기 정규화 후 대조) 그 행의 `session` 이 슬롯 키
+      1. 기록에서 그 slot 값을 가진 행을 찾아(표기 정규화 후 대조) 그 행의 `session` 이 슬롯 키
          형식이면 **그 값이 정체성**이다 — 경로 basename 을 파싱하지 않는다. 경로에 이름이 없는
          슬롯(`slot="."`)도 이 층에서 해소된다.
-      2. 장부가 그 슬롯에 슬롯 축 정체성을 주지 않으면(미등록 · task 소유 session · 무소유 빈
+      2. 기록이 그 슬롯에 슬롯 정체성을 주지 않으면(미등록 · task 소유 session · 무소유 빈
          session · `<host>-<pid>` 임시 명명) pool 명명 규약대로 **경로의 마지막 마디**를 키로
-         쓴다. 슬롯 상태 앵커는 *슬롯의* 속성이라 대여자(session)가 바뀌어도 같은 키여야 한다 —
+         쓴다. 슬롯 상태의 기준 키는 *슬롯의* 속성이라 대여자(session)가 바뀌어도 같은 키여야 한다 —
          이 층이 없으면 재바인딩마다 pm_state 연속성이 끊긴다.
       3. 둘 다 없으면 미해소 — 왜 못 했는지(부재/손상/행 부재)를 `status` 로 나른다.
 
@@ -334,7 +334,7 @@ def slot_identity_resolution(slot: object, leases_file: Path) -> identity_args.S
     if not isinstance(slot, str) or not slot.strip():
         return identity_args.SlotIdentityResolution(identity_args.SLOT_IDENTITY_NO_SLOT, None, "슬롯 값이 비었다")
     value = identity_args.normalize_slot_value(slot)
-    ledger_status, all_rows = _read_lease_rows_status(leases_file)
+    record_status, all_rows = _read_lease_rows_status(leases_file)
     rows = [row for row in all_rows if identity_args.normalize_slot_value(row.get("slot")) == value]
     name = identity_args.slot_path_name(value)
     fallback = None
@@ -359,9 +359,9 @@ def slot_identity_resolution(slot: object, leases_file: Path) -> identity_args.S
                          session=session, repo=repo, number=number))
     if fallback is not None:
         return identity_args.SlotIdentityResolution(identity_args.SLOT_IDENTITY_OK, fallback)
-    if ledger_status != identity_args.RECORD_OK:
+    if record_status != identity_args.RECORD_OK:
         return identity_args.SlotIdentityResolution(
-            ledger_status, None,
+            record_status, None,
             f"슬롯 대여 기록을 읽을 수 없고({leases_file}) 경로 {slot!r} 에도 슬롯 키 마디가 없다",
             fallback=None)
     return identity_args.SlotIdentityResolution(
@@ -372,8 +372,8 @@ def slot_identity_resolution(slot: object, leases_file: Path) -> identity_args.S
 def resolve_slot_identity(slot: object, leases_file: Path) -> "identity_args.SlotIdentity | None":
     """`slot_identity_resolution` 의 관용 wrapper — 정체성 또는 `None`.
 
-    **읽기/표시 호출부 전용**이다. 장부 모순(`SLOT_IDENTITY_CONFLICT`)에서는 종전대로 pool 명명
-    규약 폴백을 내어 표시 연속성을 지키지만, **쓰기 진입은 `slot_identity_resolution` 을 직접
+    **읽기/표시 호출부 전용**이다. 기록 모순(`SLOT_IDENTITY_CONFLICT`)에서는 종전대로 pool 명명
+    규약 값을 대신 내어 표시 연속성을 지키지만, **쓰기 진입은 `slot_identity_resolution` 을 직접
     소비**해 모순을 fail-loud 로 번역해야 한다(리뷰 F-004 — 읽기 관용/쓰기 엄격).
     """
     result = slot_identity_resolution(slot, leases_file)
@@ -381,7 +381,7 @@ def resolve_slot_identity(slot: object, leases_file: Path) -> "identity_args.Slo
 
 
 def _lease_dict_rows(leases_file: Path) -> list[dict]:
-    """장부 `leases` 배열의 dict 행만 (해소 원천·조회 전용). 부재/손상 → 빈 리스트(fail-soft)."""
+    """기록 `leases` 배열의 dict 행만 (해소 원천·조회 전용). 부재/손상 → 빈 리스트(fail-soft)."""
     rows = _load_lease_rows(leases_file)
     if rows is None:
         return []
@@ -391,7 +391,7 @@ def _lease_dict_rows(leases_file: Path) -> list[dict]:
 def resolve_task_workspace(identity: identity_args.Identity, leases_file: Path) -> identity_args.Workspace:
     """task 보유 집합과 명시 repo/slot 좌표를 조인한다. readonly 참조는 역할을 보존한다.
 
-    실행 소비는 반환값의 readonly를 검사한다. 장부 부재·손상·중복 모순은 경로 추측 없이
+    실행 소비는 반환값의 readonly를 검사한다. 기록 부재·손상·중복 모순은 경로 추측 없이
     거부하며, 선택 없는 다중 슬롯은 기존 --repo/--slot 명시를 요구한다.
     """
     task = identity.task
@@ -444,17 +444,17 @@ def session_name(home, override: str | None = None) -> str | None:
         override(`--task` 값 — 액터 서브가 `_actor_session_override` 로 미리 검증해 넘긴다)
           > $PM_SESSION_NAME (env·harness 무관 엔진 식별자)
           > $CLAUDE_SESSION_NAME (env·deprecated alias·silent back-compat)
-          > lease 장부 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
+          > lease 기록 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
           > None
 
     `PM_SESSION_NAME` 이 정식 이름(엔진 변수·하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
     (둘 다면 PM 승·조용히 동작·안내는 문서만·`--json` 출력 오염 방지).
 
-    **per-clone 저장 쪽지 폴백은 없다.** slot 종속 값이 프로젝트 공용 per-clone conf(`local.conf
+    **per-clone 저장 쪽지 대체는 없다.** slot 종속 값이 프로젝트 공용 per-clone conf(`local.conf
     session=`)에 있던 것이 범위 오류였다 — 슬롯 1개는 N=1 부분집합일 뿐이라
     "이 클론이 어떤 홈이다"를 이 프로세스만 아는 파일에 스스로 적어두는 쪽지를
-    두지 않는다. 그 키가 conf 에 남아 있어도 읽지 않는다(모르는 키로 표면화될 뿐 동작 불변).
-    세션은 **공유 장부로부터의 유도**(lease 단일-행) 또는 **명시**(env·`--task`)로만
+    두지 않는다. 그 키가 conf 에 남아 있어도 읽지 않는다(모르는 키로 드러날 뿐 동작 불변).
+    세션은 **공유 기록으로부터의 유도**(lease 단일-행) 또는 **명시**(env·`--task`)로만
     해소한다 — 어느 층도 저장하지 않고 매 호출 재유도한다.
 
     귀속 쓰기(new·claim·migrate-identity·unclaim --takeover)는 이 함수를 정체성으로 쓰지 않는다 —
@@ -465,9 +465,9 @@ def session_name(home, override: str | None = None) -> str | None:
     소유권이 미스되므로 세 모듈(session_name·worktree_pool._default_
     session·pm-config 조회)가 같은 우선순위를 공유한다(tail 만 용처별 상이).
 
-    장부에 행이 하나도 없으면 이 홈은 **아직 슬롯으로 등록되지 않은 것**이고 해소는 미해소로
+    기록에 행이 하나도 없으면 이 홈은 **아직 슬롯으로 등록되지 않은 것**이고 해소는 미해소로
     떨어진다 — "행이 없다"에서 세션 이름을 유도하지 않는다. 그 유도는 실제로 행을 보유했던
-    홈이 장부 손상으로 0행처럼 보이는 순간 silent 오귀속이 됐고, 등록 자체를 장부 행으로
+    홈이 기록 손상으로 0행처럼 보이는 순간 silent 오귀속이 됐고, 등록 자체를 기록 행으로
     옮기면서 유도할 대상이 사라졌다.
     """
     if override:
@@ -478,26 +478,26 @@ def session_name(home, override: str | None = None) -> str | None:
     leased = leased_sessions(pm_paths.leases_file(home))
     if len(leased) == 1:
         return leased[0]
-    # leased 0(미등록) 또는 ≥2(모호) → 미해소. 유도 폴백 없음.
+    # leased 0(미등록) 또는 ≥2(모호) → 미해소. 유도 대체 없음.
     return None
 
 
 def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
-    """PM 홈의 실재 worktree 후보를 lease 장부에서 파생한다(하네스 목록/슬롯 추측 없음)."""
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    """PM 홈의 실재 worktree 후보를 lease 기록에서 파생한다(하네스 목록/슬롯 추측 없음)."""
+    records = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     try:
-        data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(records, encoding="utf-8"))
     except FileNotFoundError:
         return ()
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 읽기 실패: {ledger} ({exc})") from exc
+        raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 읽기 실패: {records} ({exc})") from exc
     rows = data.get("leases") if isinstance(data, dict) else None
     if not isinstance(rows, list):
-        raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 형식 오류: {ledger}")
+        raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 형식 오류: {records}")
     found: set[Path] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or not isinstance(row.get("slot"), str):
-            raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 leases[{index}] 형식 오류: {ledger}")
+            raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 leases[{index}] 형식 오류: {records}")
         candidate = (pm_home / row["slot"]).resolve()
         if candidate.is_dir() and (candidate / ".git").exists():
             found.add(candidate)
@@ -505,18 +505,18 @@ def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
 
 
 def _default_session(home) -> str:
-    """세션 식별자 기본값 — `session_name()` 과 *동형* 우선순위:
+    """세션 식별자 기본값 — `session_name()` 과 *같은* 우선순위:
     `$PM_SESSION_NAME` env > `$CLAUDE_SESSION_NAME` env(deprecated alias·silent) >
-    lease 장부 state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) >
+    lease 기록 state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) >
     `<host>-<pid>`.
 
     `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
     (둘 다면 PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**
-    (session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
+    (session_name 과 같은 방식 — 저장 쪽지로 남의 세션 행세 차단).
 
     session_name 과 **tail 만 다르다**: 미해소를 None 으로 두지 않고 `<host>-<pid>` 로
-    떨어진다. board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌 회피) 리스
-    카운팅은 자체 구현한다. 장부 0행에서 세션 이름을 유도하는 층은 없다.
+    떨어진다. board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌 회피) 대여
+    카운팅은 자체 구현한다. 기록 0행에서 세션 이름을 유도하는 층은 없다.
     """
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
@@ -529,7 +529,7 @@ def _default_session(home) -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
 
-# user identity 해소 git 폴백 timeout — `git config user.email` 은 로컬 config 읽기라
+# user identity 해소 git 대체 timeout — `git config user.email` 은 로컬 config 읽기라
 # 즉답이지만(네트워크 0) 환경 이상에 대비해 짧은 상한을 둔다(엔진 subprocess 관례·_interp_runs 동류).
 _GIT_USER_TIMEOUT_SECONDS = 5
 
@@ -537,10 +537,10 @@ _GIT_USER_TIMEOUT_SECONDS = 5
 def _git_config_email(home) -> str | None:
     """`git config user.email` 을 읽어 반환 — 미설정/git 부재/실패 → None (fail-soft).
 
-    user identity 해소(`user_name`)의 폴백 레이어다 — `local.conf identity.user=` 가 없을 때
+    user identity 해소(`user_name`)의 대체 레이어다 — `local.conf identity.user=` 가 없을 때
     git 의 commit author email 을 user 식별자로 쓴다. subprocess 는
     엔진 관례대로 UTF-8 고정(한글 이름·메시지 안전)·짧은 timeout. git 바이너리 부재
-    (`shutil.which` None)·rc≠0(미설정)·예외는 모두 None 으로 강등한다(크래시 0).
+    (`shutil.which` None)·rc≠0(미설정)·예외는 모두 None 으로 바꾼다(크래시 0).
     """
     git_binary = shutil.which("git")
     if git_binary is None:
@@ -551,7 +551,7 @@ def _git_config_email(home) -> str | None:
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_GIT_USER_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.SubprocessError):  # fail-soft: git 호출 실패는 None(미상)으로 강등.
+    except (OSError, subprocess.SubprocessError):  # fail-soft: git 호출 실패는 None(미상)으로 바꾼다.
         return None
     if r.returncode != 0:
         return None
@@ -559,14 +559,14 @@ def _git_config_email(home) -> str | None:
 
 
 def user_name(home, override: str | None = None) -> str | None:
-    """user 식별자 해소 — `session_name()` 과 *동형* 우선순위:
+    """user 식별자 해소 — `session_name()` 과 *같은* 우선순위:
 
         override > local.conf `identity.user=` > `git config user.email` > None
 
     `pm`(슬롯)이 *어느 PM 컨텍스트*인지(=`session_name()`)와 직교하는 **누가**(사람) 차원이다
     multi-user 보드 공유에서 `created_by`(provenance)·`claimed_by`(assignee)·
     areas `area_owner` 의 user 토큰을 푼다. 단일 사용자(M=1)는 보통 `local.conf identity.user=` 미설정 →
-    `git config user.email` 로 폴백(commit author 와 동일 식별자)·그마저 없으면 None(graceful —
+    `git config user.email` 을 대신 씀(commit author 와 동일 식별자)·그마저 없으면 None(graceful —
     user 미상 허용·fail-soft·기존 슬롯-only 동작 무변경).
     """
     if override:
@@ -597,17 +597,17 @@ def identity_tag(home, session_override: str | None = None,
     return f"{user}/{pm}" if user else pm
 
 
-def _ledger_registration(home, anchor: Path) -> tuple[bool, str | None]:
-    """PM 홈 장부가 `anchor` 슬롯을 등록하는지 strict point-read 한다.
+def _record_registration(home, target_repo: Path) -> tuple[bool, str | None]:
+    """PM 홈 기록이 `target_repo` 슬롯을 등록하는지 strict point-read 한다.
 
-    반환은 (일치, 오류). 부재·손상·스키마 오류는 load-bearing 소유 판정에서 빈 장부로
-    강등하지 않고 오류 문자열로 돌려 호출부가 fail-loud 하게 한다.
+    반환은 (일치, 오류). 부재·손상·스키마 오류는 load-bearing 소유 판정에서 빈 기록으로
+    낮추지 않고 오류 문자열로 돌려 호출부가 fail-loud 하게 한다.
     """
-    ledger = pm_paths.leases_file(home)
-    if not ledger.is_file():
+    records = pm_paths.leases_file(home)
+    if not records.is_file():
         return (False, f'{home.root}: 슬롯 대여 기록 파일 없음')
     try:
-        data = json.loads(fs.read_text_shared(ledger, encoding='utf-8'))
+        data = json.loads(fs.read_text_shared(records, encoding='utf-8'))
     except (json.JSONDecodeError, OSError, UnicodeError) as exc:
         return (False, f'{home.root}: 슬롯 대여 기록 파일을 읽을 수 없음 ({exc})')
     if not isinstance(data, dict):
@@ -615,7 +615,7 @@ def _ledger_registration(home, anchor: Path) -> tuple[bool, str | None]:
     rows = data.get('leases')
     if not isinstance(rows, list):
         return (False, f'{home.root}: 슬롯 대여 기록 파일의 leases 값이 list가 아님')
-    target = anchor.resolve()
+    target = target_repo.resolve()
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             return (False, f'{home.root}: 슬롯 대여 기록 파일 leases[{index}]가 object가 아님')

@@ -1,7 +1,7 @@
-"""ctx 임계 기본값·미측정 sentinel 정합 가드 (T-0207·T-0550·T-0770·T-0906·T-0923·T-0943).
+"""ctx 임계 기본값·미측정 sentinel 일치 가드 (T-0207·T-0550·T-0770·T-0906·T-0923·T-0943).
 
 쓴 % 임계(중간 기록 권고·압축 임박 경고)와 사용 한도의 기본값은 엔진 레지스트리 한 곳뿐이다. Python
-어댑터의 밴드·마진 판정은 엔진 공개 진입(`cli.hooks`)이 소유하므로 어댑터 사이 사본 대조는 없다 —
+어댑터의 구간·마진 판정은 엔진 공개 진입(`cli.hooks`)이 소유하므로 어댑터 사이 사본 대조는 없다 —
 이 파일은 레지스트리 sanity 와 세 하네스의 첫 응답 전 미측정 규칙만 본다.
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _load_module(name: str, path: Path):
 
 def test_claude_and_codex_return_the_same_unmeasured_sentinel_before_first_response(tmp_path):
     """claude `context_tokens_from_transcript`·codex `rollout_context_tokens` 는 첫 응답 전
-    (usage/token_count 0건) 같은 sentinel(0)로 수렴한다 — 어느 쪽도 실측치로 오인하지 않는다."""
+    (usage/token_count 0건) 같은 sentinel(0)이 된다 — 어느 쪽도 실측치로 오인하지 않는다."""
     claude = _load_module("claude_ctx_guard_t0835_mirror", CLAUDE_GUARD)
     codex = _load_module("codex_ctx_guard_t0835_mirror", CODEX_GUARD)
 
@@ -63,7 +63,7 @@ def test_claude_and_codex_return_the_same_unmeasured_sentinel_before_first_respo
     assert codex.rollout_context_tokens(str(rollout)) == 0
 
 
-def test_opencode_gates_ctx_evaluation_on_an_assistant_message_with_tokens(tmp_path):
+def test_opencode_checks_ctx_evaluation_on_an_assistant_message_with_tokens(tmp_path):
     """opencode 는 `message.updated` + `role==assistant` + `tokens` 관측 전에는 일반 도구 판정 요청에
     ctx 를 싣지 않는다(context=null) — 첫 모델 응답 전에는 점유를 모르므로 ctx 안내·marker 가 없다
     (codex/claude 의 0-sentinel 과 같은 결론). 관측 뒤에는 같은 요청에 그 토큰이 실린다."""

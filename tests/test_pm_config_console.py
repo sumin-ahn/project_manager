@@ -1,13 +1,13 @@
-"""pm-config 대화형 콘솔 단위/배선 테스트 (T-0069 · ADR-0011·0014).
+"""pm-config 대화형 콘솔 단위/연결 테스트 (T-0069 · ADR-0011·0014).
 
 무인자(tty) `pm-config` 의 휴먼 프론트엔드(`run_console`)를 검증한다 — 상태 렌더
-(repos via areas · slots via 리스) · 메뉴 라우팅(r/w/b/s/q → 기존 핸들러) · 입력 견고성
+(repos via areas · slots via 대여) · 메뉴 라우팅(r/w/b/s/q → 기존 핸들러) · 입력 견고성
 (빈입력/오타키 재프롬프트 · EOF/KeyboardInterrupt 우아 종료) · 재렌더.
 
 **hermetic 필수**: 실 clone/worktree/`input()` 블록 0. 입력은 시퀀스 주입(io 없이 콜러블),
 엔진(board·worktree_pool)은 mock 주입, 액션 핸들러(cmd_repo_add·cmd_worktree_add·
 cmd_set_test_cmd)는 monkeypatch 로 가로채 *어떤 핸들러가 어떤 인자로 불리는지*만 친다
-(test_pm_config_facade.py 의 DI seam·pm_import 비-tty 폴백 패턴 동류). 콘솔은 얇은 셸이므로
+(test_pm_config_facade.py 의 DI 교체 지점·pm_import 비-tty 대체 동작 패턴 동류). 콘솔은 얇은 셸이므로
 액션 동작 자체는 facade 테스트가 검증하고, 여기선 라우팅/렌더/견고성만 본다.
 """
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _inputs(*lines):
 
     run_console 은 메뉴 선택만 읽으면 종료(q)하거나 액션 핸들러가 추가로 읽는다 — 핸들러를
     monkeypatch 로 가로채면(아래) 그 입력은 소비 안 되므로, 메뉴 선택 줄만 넣으면 된다.
-    소진 시 EOFError 로 안전 종료(무한 루프 방지·실 input 의 EOF 와 동형).
+    소진 시 EOFError 로 안전 종료(무한 루프 방지·실 input 의 EOF 와 같음).
     """
     it = iter(lines)
 
@@ -148,8 +148,8 @@ class FakeWorktreePool:
         return self.leases
 
     def list_tasks(self):
-        # task 축 대역(T-0361 cockpit·T-0353) — 콘솔 테스트는 leases=[] 상태에서 cmd_status 를
-        # 태우므로 명명 task 없음([])이면 충분. task 축 헤더만 렌더된다(회귀 0).
+        # task 구획 대역(T-0361 cockpit·T-0353) — 콘솔 테스트는 leases=[] 상태에서 cmd_status 를
+        # 태우므로 명명 task 없음([])이면 충분. task 구획 헤더만 렌더된다(회귀 0).
         self.calls.append(("list_tasks",))
         return []
 
@@ -191,7 +191,7 @@ class FakeWorktreePool:
         return self.slots_for_task(value)
 
 
-# ── 상태 렌더 — repos(areas) + slots(리스) ───────────────────────────────────
+# ── 상태 렌더 — repos(areas) + slots(대여) ───────────────────────────────────
 
 
 def test_console_renders_repos_from_areas(pc, monkeypatch, capsys):
@@ -212,7 +212,7 @@ def test_console_renders_repos_from_areas(pc, monkeypatch, capsys):
 
 
 def test_console_renders_slots_from_leases(pc, monkeypatch, capsys):
-    """콘솔 첫 렌더가 worktree 리스(slot·repo·build(test_cmd)·state)를 surface."""
+    """콘솔 첫 렌더가 worktree 대여(slot·repo·build(test_cmd)·state)를 surface."""
     board = FakeBoardAreas(rows=[])
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[
         FakeLease("work/svc_1", "svc", test_cmd="ctest -R hil", state="leased"),
@@ -347,7 +347,7 @@ def test_console_w_routes_to_worktree_add(pc, monkeypatch):
     def fake_wt_add(_home, args, *, input_fn=None, is_tty=None):
         seen["repo"] = args.repo
         seen["test"] = args.test            # 콘솔은 --test 미지정(프롬프트 경로)
-        seen["user_ack"] = args.user_ack    # repo 재입력 확인을 값-결속 ack로 소비
+        seen["user_ack"] = args.user_ack    # repo 재입력 확인을 값-연결 ack로 소비
         seen["tty"] = is_tty() if is_tty else None
         return 0
 
@@ -465,7 +465,7 @@ def test_console_u_case_insensitive(pc, monkeypatch):
 
 
 def test_console_u_eof_after_update_quits_gracefully(pc, monkeypatch, capsys):
-    """`u` 후 다음 메뉴서 EOF(입력 소진) → 우아 종료 rc 0(abort 정합·크래시 0)."""
+    """`u` 후 다음 메뉴서 EOF(입력 소진) → 우아 종료 rc 0(abort 처리와 일치·크래시 0)."""
     monkeypatch.setattr(config_install, "cmd_update", lambda *a, **k: 0)
     # "u" 후 입력 소진 → 다음 메뉴 프롬프트서 EOFError → 우아 종료.
     bind_pool(monkeypatch, FakeWorktreePool())
@@ -613,10 +613,10 @@ def test_console_build_cmd_prompt_abort_graceful(pc, monkeypatch, capsys, exc):
     """[w] 빌드명령 프롬프트(cmd_worktree_add 내부)서 EOF/Ctrl-C → 크래시 0.
 
     [w] 에서 repo 까지 입력 후 빌드명령 프롬프트(cmd_worktree_add→_prompt_test_cmd)서 중단되면
-    None 폴백으로 슬롯은 생성 시도되고(create_slot test_cmd=None) 루프는 정상 지속·종료(traceback 0).
+    None 대체 동작으로 슬롯은 생성 시도되고(create_slot test_cmd=None) 루프는 정상 지속·종료(traceback 0).
     """
     wp = bind_pool(monkeypatch, FakeWorktreePool())
-    # repo 입력 후 빌드명령 프롬프트서 중단 → _prompt_test_cmd 가 None 흡수 → create_slot(None).
+    # repo 입력 후 빌드명령 프롬프트서 중단 → _prompt_test_cmd 가 None 으로 바꿈 → create_slot(None).
     # 그 뒤 메뉴 'q' 로 종료.
     reader = _inputs_then_exc_resume("w", "svc", "svc", build_exc=exc, after=("q",))
     bind_pool(monkeypatch, wp)
@@ -624,7 +624,7 @@ def test_console_build_cmd_prompt_abort_graceful(pc, monkeypatch, capsys, exc):
     bind_board(monkeypatch, FakeBoardAreas(rows=_SVC_ROWS))
     rc = config_console.run_console(pm_paths.home_at(pc.REPO), input_fn=reader)
     assert rc == 0
-    # 빌드명령 중단은 None 폴백(크래시 0) — 슬롯 생성은 진행(create_slot test_cmd=None).
+    # 빌드명령 중단은 None 대체(크래시 0) — 슬롯 생성은 진행(create_slot test_cmd=None).
     assert ("create_slot", "svc", None) in wp.calls
     assert "콘솔 종료" in capsys.readouterr().out
 
@@ -632,7 +632,7 @@ def test_console_build_cmd_prompt_abort_graceful(pc, monkeypatch, capsys, exc):
 def _inputs_then_exc_resume(*lead, build_exc, after):
     """lead 입력 → 다음(빌드명령) 프롬프트서 build_exc 1회 → 이후 after 입력으로 재개.
 
-    빌드명령 프롬프트 중단(_prompt_test_cmd 가 None 흡수)은 *액션을 끝내지 않고* 슬롯 생성으로
+    빌드명령 프롬프트 중단(_prompt_test_cmd 가 None 으로 바꿈)은 *액션을 끝내지 않고* 슬롯 생성으로
     진행하므로(크래시 0), 그 뒤 메뉴가 다시 돌아온다 — after=("q",) 로 우아 종료시킨다.
     """
     state = {"raised": False}
@@ -683,7 +683,7 @@ def test_console_autoloads_engines_when_not_injected(pc, monkeypatch, capsys):
 # ════════════════════════════════════════════════════════════════════════
 # ADR-0053 #4 — cmd_status 세션격리 posture surface (T-0307).
 #
-# resolved user + isolation 상태(strict/degrade/solo) + remedy 를 노출한다. board.py 를 import
+# resolved user + isolation 상태(strict/degrade/solo) + 해결 방법을 노출한다. board.py 를 import
 # 하지 않고([[ADR-0013]]) user 는 `_default_user`(자체 해소), 다중사용자 여부는 areas.md
 # `area_owner` 자체 파싱(`_distinct_area_owners`)으로 판정한다 — 최소 신호만(board 격리 판정 무복제).
 # ════════════════════════════════════════════════════════════════════════
@@ -729,25 +729,25 @@ def test_status_surface_strict(pc, monkeypatch, capsys):
     assert _MARK_AUTHORITATIVE in out        # authoritative 신호 pointer 노출
 
 
-def test_status_surface_degrade_with_remedy(pc, monkeypatch, capsys):
-    """다중사용자 + 정체성 미해소 → degrade-risk + remedy(board init --owner / migrate-identity)."""
+def test_status_surface_degrade_with_fix(pc, monkeypatch, capsys):
+    """다중사용자 + 정체성 미해소 → degrade-risk + 해결 방법(board init --owner / migrate-identity)."""
     out = _status_out(pc, monkeypatch, capsys, user=None, area_owners=2)
     assert _MARK_DEGRADE in out
-    assert "board init --owner" in out       # remedy 1
-    assert "migrate-identity" in out         # remedy 2
+    assert "board init --owner" in out       # 해결 방법 1
+    assert "migrate-identity" in out         # 해결 방법 2
     assert "미해소" in out                    # resolved user = (미해소) surface
     assert _MARK_AUTHORITATIVE in out        # authoritative 신호 pointer 노출
 
 
 def test_status_surface_single_user_unresolved_user_not_falsely_reassure(pc, monkeypatch, capsys):
     """solo + 정체성 미해소 → registry 기준 solo(격리 판정 아님)이되 "정상" 오안심 없이 한계·
-    authoritative pointer 노출(should-fix). solo 는 remedy 로 nag 하지 않되 warn 확인처는 가리킨다."""
+    authoritative pointer 노출(should-fix). solo 는 해결 방법으로 nag 하지 않되 warn 확인처는 가리킨다."""
     out = _status_out(pc, monkeypatch, capsys, user=None, area_owners=0)
     assert _MARK_SOLO in out
     assert _MARK_DEGRADE not in out
     assert "정상" not in out                  # 오안심 단언 없음
     assert _MARK_AUTHORITATIVE in out        # 한계 인지 → authoritative 신호로 유도
-    assert "board init --owner" not in out   # solo 는 remedy 로 nag 하지 않음
+    assert "board init --owner" not in out   # solo 는 해결 방법으로 nag 하지 않음
 
 
 def test_status_surface_never_loads_board(pc, monkeypatch, capsys):
@@ -820,7 +820,7 @@ def test_distinct_area_owners_absent_is_zero(pc, monkeypatch, tmp_path):
 
 
 def test_distinct_area_owners_corrupt_utf8_is_zero(pc, monkeypatch, tmp_path):
-    """손상 UTF-8 바이트는 크래시 없이 0 — docstring fail-soft 계약 정합(suggestion)."""
+    """손상 UTF-8 바이트는 크래시 없이 0 — docstring fail-soft 계약과 일치(suggestion)."""
     proj = tmp_path / ".project_manager"
     proj.mkdir(parents=True, exist_ok=True)
     (proj / "areas.md").write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
@@ -847,7 +847,7 @@ def test_distinct_area_owners_upgrade_wider_row(pc, monkeypatch, tmp_path):
     assert config_status._distinct_area_owners(pm_paths.home_at(pc.REPO)) == 2
 
 
-# ── 위임 모델 안내 (`[m]`) — 설치된 하네스만·조회 실패는 loud 강등 ──────────────
+# ── 위임 모델 안내 (`[m]`) — 설치된 하네스만·조회 실패는 알리고 수준을 낮춘다 ──────────────
 # 모델 설정에 검증도 가이드도 없었다: 키 형식은 문서에 있지만 *유효한 값의 목록·확인 방법*이
 # 어디에도 없었다. 위임 시점 검증 함수는 만들지 않고(codex 값은 자유 문자열·alias 미선언
 # 채택자에선 멤버십 검증이 아무것도 잡지 않는다) 이 안내로 비대칭을 닫는다.
@@ -913,7 +913,7 @@ def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys,
 
 @pytest.mark.parametrize("outcome", [(False, []), (True, [])])
 def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome, monkeypatch):
-    """조회 실패·빈 목록은 형식 안내로 **강등**하되 그 사실을 말한다(조용한 강등 금지)."""
+    """조회 실패·빈 목록은 형식 안내로 **낮추되** 그 사실을 말한다(조용히 낮추기 금지)."""
     fake = _FakePmImport(installed=("opencode",), monkeypatch=monkeypatch)
     fake._real_models_runner = lambda source=None: outcome
 
@@ -921,7 +921,7 @@ def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome
     out = capsys.readouterr().out
 
     assert "목록 조회 실패" in out and "수준을 낮춘다" in out
-    assert "provider/model" in out, "형식 안내까지 사라지면 강등이 아니라 침묵이다"
+    assert "provider/model" in out, "형식 안내까지 사라지면 낮춘 것이 아니라 침묵이다"
 
 
 def test_model_guidance_shows_declared_alias_members(pc, capsys, monkeypatch):
@@ -950,7 +950,7 @@ def test_model_guidance_without_injected_conf_reads_the_real_local_conf(pc, caps
 
 
 def test_model_guidance_does_not_require_alias_declaration(pc, capsys, monkeypatch):
-    """alias 미선언은 정상 형상 — 목록을 위해 alias 를 만들라고 하지 않는다."""
+    """alias 미선언은 정상인 경우 — 목록을 위해 alias 를 만들라고 하지 않는다."""
     fake = _FakePmImport(installed=("claude",), monkeypatch=monkeypatch)
     config_models._print_delegate_model_guidance(pm_paths.home_at(pc.REPO), conf={})
     out = capsys.readouterr().out
@@ -978,7 +978,7 @@ def test_alias_members_parses_comma_list_and_ignores_blanks(pc):
 
 
 def test_console_menu_routes_m_to_model_guidance(pc, monkeypatch, capsys):
-    """`[m]` 이 모델 안내 핸들러로 라우팅되고 장부는 건드리지 않는다."""
+    """`[m]` 이 모델 안내 핸들러로 라우팅되고 기록은 건드리지 않는다."""
     calls = []
     monkeypatch.setattr(config_models, "_print_delegate_model_guidance", lambda _home: calls.append(1))
     board = FakeBoardAreas(rows=[])

@@ -1,4 +1,4 @@
-"""패키지 소유자에 테스트 대역을 설치하는 공용 seam."""
+"""패키지 소유자에 테스트 대역을 설치하는 공용 교체 지점."""
 from types import ModuleType
 
 from pm_engine.app import branch_checkout
@@ -116,7 +116,7 @@ _OWNERS = {
     '_SLOT_VALUE_ALT_SEPARATOR': (worktree_paths, False),
     '_STASH_SUBJECT_PREFIXES': (worktree_records, False),
     '_SYMREF_BRANCH_PREFIX': (worktree_git, False),
-    '_TASK_BRANCH_REMEDY': (worktree_records, False),
+    '_TASK_BRANCH_FIX': (worktree_records, False),
     '_TASK_CANONICAL_KEYS': (worktree_records, False),
     '_TREE_OBJECT_TYPE': (sparse_checkout, False),
     '_UNRECORDED_PRESERVED_REASONS': (worktree_records, False),
@@ -168,10 +168,10 @@ _OWNERS = {
     '_parse_submodule_paths': (submodule_git, False),
     '_parse_worktree_porcelain': (worktree_git, True),
     '_porcelain_status_lines': (worktree_git, False),
-    '_read_ledger': (pool_store, True),
-    '_read_ledger_raw': (pool_store, True),
-    '_read_ledger_raw_strict': (pool_store, True),
-    '_read_ledger_strict': (pool_store, True),
+    '_read_records': (pool_store, True),
+    '_read_records_raw': (pool_store, True),
+    '_read_records_raw_strict': (pool_store, True),
+    '_read_records_strict': (pool_store, True),
     '_read_preserved_records': (branch_store, False),
     '_read_tasks': (pool_store, True),
     '_read_tasks_strict': (pool_store, True),
@@ -226,7 +226,7 @@ _OWNERS = {
     '_worktree_registered': (worktree_git, True),
     '_write_branch_config': (branch_store, False),
     '_write_ledger': (pool_store, True),
-    '_write_ledger_raw': (pool_store, True),
+    '_write_records_raw': (pool_store, True),
     '_write_tasks': (pool_store, True),
     '_write_todo_doc': (task_store, True),
     'add_task_todo': (task_lifecycle, True),
@@ -292,7 +292,7 @@ _OWNERS = {
     'todo_age_days': (task_store, False),}
 
 def bind_pool(monkeypatch, fake):
-    """기록용 대역의 실제 메서드를 Home 인자를 받는 패키지 seam에 연결한다."""
+    """기록용 대역의 실제 메서드를 Home 인자를 받는 패키지 교체 지점에 연결한다."""
     if fake is None or isinstance(fake, ModuleType):
         return fake
     for name, (owner, needs_home) in _OWNERS.items():

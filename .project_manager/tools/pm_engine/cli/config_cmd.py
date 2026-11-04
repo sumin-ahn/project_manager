@@ -8,41 +8,41 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
 보호 정책·훅·git 조회는 repo_protection·protected_hooks·git·areas_store가 소유한다.
 
 사용:
-    pm-config init [<board init 인자>]                     # clone 당 1회 셋업 (board.py init 흡수)
+    pm-config init [<board init 인자>]                     # clone 당 1회 셋업 (board.py init 을 대신 실행)
     pm-config repo add <name> [--git <url>] [--test "<cmd>"] [--protected "main,develop"] # repo 등록 + .repos clone (신규=--git 필수 / 기등록 hydrate=areas URL)
-    pm-config repo protected <name> [<목록>|default]        # 보호 브랜치 목록 조회/설정 (areas → 훅 sidecar 정합화)
+    pm-config repo protected <name> [<목록>|default]        # 보호 브랜치 목록 조회/설정 (areas → 훅 sidecar 일치시킴)
     pm-config repo list                                    # 등록 repo 표 (repo·prefix·base·protected·test_cmd·area_owner)
-    pm-config worktree add <repo> [--folders <폴더,…>] --user-ack <repo>        # 사용자 승인값 결속 + 새 슬롯 생성 + submodule init
-    pm-config worktree prune-stale                         # worktree 사라진 dangling 장부 엔트리 정리
-    pm-config worktree remove <slot> --user-ack <slot> [--user-ack <브랜치>]... [--force] # 사용자 승인값 결속 + 슬롯 통째 제거 — worktree+브랜치 판정+장부 (--force=점유만 무시)
-    pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
+    pm-config worktree add <repo> [--folders <폴더,…>] --user-ack <repo>        # 사용자 승인값 연결 + 새 슬롯 생성 + submodule init
+    pm-config worktree prune-stale                         # worktree 사라진 dangling 기록 엔트리 정리
+    pm-config worktree remove <slot> --user-ack <slot> [--user-ack <브랜치>]... [--force] # 사용자 승인값 연결 + 슬롯 통째 제거 — worktree+브랜치 판정+기록 (--force=점유만 무시)
+    pm-config status | whoami                              # 풀/대여 + 이 세션 repo/슬롯/branch
     pm-config alloc <repo> --task <task> [--folders <폴더,…>]                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
     pm-config release <slot> [--task <task>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
-    pm-config task new <task>                               # task 정체성 생성 — 장부 행(닫힘)+pm_state (세션 묶기 없음·진입은 부트스트랩)
+    pm-config task new <task>                               # task 정체성 생성 — 기록 행(닫힘)+pm_state (세션 묶기 없음·진입은 부트스트랩)
     pm-config task close <task>                             # 열린 채 남은 task 세션 기록 닫기 (기록만·복원 없음)
     pm-config task branch <task> <슬롯> <브랜치> --from <부모>     # 슬롯에 새 브랜치 — 부모 최신 커밋에서 만들고 부모·갈라진 커밋 기록
-    pm-config task prefix <task> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
-    pm-config task end <task>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
+    pm-config task prefix <task> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 연결·변경/해제 (`none`=해제)
+    pm-config task end <task>                               # task 종료 — claimed 소진 통과 조건·dirty 통과 조건·일괄 반납 + _ended 아카이브
     pm-config task reopen <task> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
     pm-config task todo add <task> <할 일 한 줄>            # 열린 todo 등록 — 파일 수정 전에 지금 하는 일을 적는다(없으면 쓰기 판정이 경고)
     pm-config task todo list <task>                         # 열린 todo — ID·등록일·묵은 일수
     pm-config task todo done <task> <ID>                    # 완료 = 목록에서 제거 (완료 표시를 남기지 않는다·기록은 log)
-    pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
+    pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 를 대신 실행)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
-    pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용(단건·세트)
+    pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 일치 검사 / 상류 값 수용(단건·세트)
     pm-config apply [--json] [--set 키=값 ...]             # 값 검사 → local.conf 기록 → 파생 파일 반영 (반영 전 거부 rc 3)
     pm-config delegate models --harness <h> --json         # 그 하네스가 인정하는 모델 목록과 모델별 추론 강도(variant) 조회 (읽기 전용·JSON 한 줄)
 
-서브커맨드별 엔진 배선:
+서브커맨드별로 부르는 엔진 함수:
   - init      → cli.board_cmd.main(home, ["init", ...], prog="pm-config") verbatim forward (clone 당 1회 셋업·N=1·M=1 ~ N×M 공용).
   - repo add  → areas_registry.areas_append(per-repo 레지스트리 줄) + `git clone --bare`
                 로 `.repos/<name>.git`(worktree 풀 공유 .git 원).
-  - repo protected → (조회) areas_store._repo_protected 실효값 + areas raw 셀(출처) + 훅 sidecar 정합 /
+  - repo protected → (조회) areas_store._repo_protected 실효값 + areas raw 셀(출처) + 훅 sidecar 일치 /
                 (설정) areas_registry.areas_set_cell(areas.md 단일 진실·board_lock in-place) →
                 repo_protection → protected_hooks.install_protected_hook(파생 sidecar·순서 고정) → board-git 동기.
-  - repo list → areas_store._parse_areas() 표 렌더(빈 셀은 폴백을 괄호로 명시).
-  - worktree add → repo 값과 같은 `--user-ack` 사용자 승인 게이트 뒤
+  - repo list → areas_store._parse_areas() 표 렌더(빈 셀은 대신 쓰는 값을 괄호로 명시).
+  - worktree add → repo 값과 같은 `--user-ack` 사용자 승인 뒤
                 pm_engine.app.worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
                 `--task <task>` 면 owner_task 로 넘겨 생성 직후 그 슬롯 task 명의 대여(ⓓB).
   - status|whoami → pool_store.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
@@ -51,8 +51,8 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
                `worktree add --task` 승인 요청(생성+대여 한 흐름·ⓓB·물리층=사용자).
   - release → pm_engine.app.worktree_pool.release(--task 면 owner_task 소유검사·--force 면 force_release) — 수동 반납/강제만.
   - task prefix → ticket_rules._validate_prefix(입력 sanity·소비 grammar 단일 진실) → task_lifecycle.set_task_prefix
-                (장부 flock/스키마 단일 소유·`none`=해제·직접 JSON write 금지).
-  - task end → ticket_access.scan_task_tickets(claimed 소진 게이트) → task_lifecycle.end_task(dirty 게이트·
+                (기록 flock/스키마 단일 소유·`none`=해제·직접 JSON write 금지).
+  - task end → ticket_access.scan_task_tickets(claimed 소진 통과 조건) → task_lifecycle.end_task(dirty 통과 조건·
                일괄 idle 반납·서술 폴더 `_ended/<task>-<날짜>/` 아카이브 이동·삭제 아님).
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
   - add-harness → app.add_harness.add_harness_cli(home, dest, harness, dry_run=, source_root=) verbatim forward
@@ -62,7 +62,7 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
                   표가 선언한 조회 명령 실행). 응답에 모델별 `variants`(opencode)가 실린다.
                   읽기 전용이고 조회 실패는 빈 목록이 아니라 rc 3 이다(사유는 stderr 한 줄).
   - sync-adapter-config → adapter_report.judge_adapter_configs(조회) / adapter_accept.accept_adapter_config(수용·백업
-                  후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
+                  후 template 채택 + 어댑터 설정 기록에 적음). manifest 밖 instance-owned config 는 동기가 무편집
                   분만 자동 갱신하고 나머지는 보존+보고하므로, 이 커맨드가 보존분을 채택자가
                   명시적으로 받는 유일한 채널이다(소스 해소는 add-harness 와 같은 규칙).
                   수용한 파일이 하네스 설정 파일이면 수용 직후 사용 한도를 다시 반영한다.
@@ -71,11 +71,11 @@ repo(multi-PM 셋업)를 도는 토폴로지의 셋업·조회·진단과 슬롯
                   처리하지 못한 예외의 rc 1 과 겹치지 않아 관리자 화면은 rc 3 만 잘못된 값으로 보인다.
 
 
-  - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 배선의 단일 지점.
+  - thin forwarder(`pm-config.sh/.cmd`)는 로직 0 — 이 디스패처가 엔진 함수를 부르는 단일 지점.
   - 브랜치 할당은 `task branch`(새 브랜치)·`worktree_pool.py switch`(있는 브랜치) 소관이다.
-  - update 는 pm_update 로직을 *위임*(import 호출) — pm_update.py 는 그대로 두고 흡수만.
+  - update 는 pm_update 로직을 *위임*(import 호출) — pm_update.py 는 그대로 두고 대신 실행만 한다.
   - 작업 공간 명령은 cli.config_repo/config_slots/config_tasks/config_console이 소유한다.
-    경로는 명시 Home으로 전달하고 입력·git runner는 실제 IO seam에서 격리한다.
+    경로는 명시 Home으로 전달하고 입력·git runner는 실제 IO 교체 지점에서 격리한다.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ from pm_engine.infra import console, lease_store
 
 
 def cmd_init(home: home.Home, forward_args: list[str]) -> int:
-    """`init [<board init 인자>]` — clone 당 1회 셋업 (board.py init 흡수).
+    """`init [<board init 인자>]` — clone 당 1회 셋업 (board.py init 을 대신 실행).
 
     board 명령 진입 `board_cmd.main(home, ["init", *forward_args], prog="pm-config")` 로
     verbatim forward 한다 — board init 이 CLI 규격의 단일 진실이고, 이 서브커맨드는 위임만
@@ -165,8 +165,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_repo_add.set_defaults(func=config_repo.cmd_repo_add)
 
     # repo protected <name> [<목록>|default] — 보호목록 조회/설정.
-    # 값 인자 유무로 get/set(`upstream show|set`·`task prefix <name> <p|none>` family 동형).
-    # `default` 리터럴 = 칼럼 비움(= DEFAULT_PROTECTED 폴백·"보호 해제" 아님·빈 문자열은 거부).
+    # 값 인자 유무로 get/set(`upstream show|set`·`task prefix <name> <p|none>` family 와 같은 방식).
+    # `default` 리터럴 = 칼럼 비움(= DEFAULT_PROTECTED 를 대신 씀·"보호 해제" 아님·빈 문자열은 거부).
     p_repo_protected = repo_sub.add_parser(
         "protected",
         help="보호 브랜치 목록 조회/설정 — 값 없으면 조회(실효값·출처·훅 sidecar 일치), "
@@ -218,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_wt_add.add_argument("--folders", metavar="<폴더,…>", default=None,
                           help="슬롯에 꺼낼 폴더 목록 (cone, git 2.36 이상, readonly와 함께 사용 불가)")
     p_wt_add.set_defaults(func=config_slots.cmd_worktree_add)
-    # worktree prune-stale — worktree 가 사라진 dangling 장부 엔트리 안전 정리.
+    # worktree prune-stale — worktree 가 사라진 dangling 기록 엔트리 안전 정리.
     # status reconcile 의 stale/incomplete(worktree 부재) 정리 진입점(조회-전용 reconcile 과 분리·
     # 명시 user-invoked). orphan worktree(git 측)는 `git worktree remove` 로 사용자가.
     p_wt_prune = wt_sub.add_parser(
@@ -227,9 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wt_prune.set_defaults(func=config_slots.cmd_worktree_prune_stale)
     # worktree remove <slot> --user-ack <slot> [--user-ack <브랜치> ...] [--force] — 슬롯 통째 제거.
-    # 리스 확인→등록 조회→커밋 안 한 변경 검사→git worktree remove→브랜치 삭제 판정→장부 엔트리 삭제를
-    # 한 번에. prune-stale(worktree 부재 장부만 정리·안전)과 달리 **실 worktree 를 지운다** — 사용자
-    # 승인값 결속 전제. 장부 엔트리 제거로 `add` 가 빈 번호 재사용(번호 skip footgun 종결).
+    # 대여 확인→등록 조회→커밋 안 한 변경 검사→git worktree remove→브랜치 삭제 판정→기록 엔트리 삭제를
+    # 한 번에. prune-stale(worktree 부재 기록만 정리·안전)과 달리 **실 worktree 를 지운다** — 사용자
+    # 승인값 연결 전제. 기록 엔트리 제거로 `add` 가 빈 번호 재사용(번호 skip footgun 종결).
     p_wt_remove = wt_sub.add_parser(
         "remove",
         help="슬롯 통째 제거 — worktree remove + 브랜치 삭제 판정 + 슬롯 대여 기록 항목 삭제 (사용자 "
@@ -248,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wt_remove.set_defaults(func=config_slots.cmd_worktree_remove)
 
-    # status | whoami (같은 핸들러) — `--json` 은 status 전용 기계 계약(관리자 읽기 표면).
+    # status | whoami (같은 핸들러) — `--json` 은 status 전용 기계 계약(관리자가 읽는 자리).
     p_status = sub.add_parser(
         "status",
         help="풀·대여 상태 + 이 세션 repo/슬롯/branch (`--json` 으로 기계 현황)",
@@ -318,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_release.set_defaults(func=config_slots.cmd_release)
 
     # task new <task> — 정체성만 생성(닫힘·세션 묶기 없음) / task end <task> — task 종료:
-    # claimed 소진 게이트·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동
+    # claimed 소진 통과 조건·dirty 통과 조건·clean 시 일괄 반납 + 아카이브 이동
     p_task = sub.add_parser("task", help="task 정체성 관리 (new·prefix·branch·close·end·reopen)")
     task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
     p_task_new = task_sub.add_parser(
@@ -414,7 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
     # add-harness <harness> [--dry-run] — 라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가
     # app.add_harness.add_harness_cli 로 verbatim 위임(cmd_add_harness) — harness 는
     # choices 로 재검증하지 않고(add_harness 가 CLI 규격 단일 진실·미지원은 add_harness_cli 가
-    # ValueError→rc 1) 그대로 넘긴다. repo/worktree/release 와 동형의 func-dispatch 서브커맨드다.
+    # ValueError→rc 1) 그대로 넘긴다. repo/worktree/release 와 같은 방식의 func-dispatch 서브커맨드다.
     p_add_harness = sub.add_parser(
         "add-harness",
         help="라이브 인스턴스에 두 번째 harness 어댑터 비파괴 추가 (add_harness 위임)",
@@ -435,7 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_add_harness.set_defaults(func=config_install.cmd_add_harness)
 
     # sync-adapter-config [--list|--check|--accept <경로>] — instance-owned config 채널.
-    #   동기(pm-update)는 무편집분만 자동 갱신하고 편집분·원장 부재는 보존+보고한다. 이 커맨드가
+    #   동기(pm-update)는 무편집분만 자동 갱신하고 편집분·어댑터 설정 기록 부재는 보존+보고한다. 이 커맨드가
     #   그 보존분을 채택자가 명시적으로 받는 유일한 채널이다(판정은 adapter_report 단일 진실).
     p_sync_cfg = sub.add_parser(
         "sync-adapter-config",
@@ -486,7 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_apply.set_defaults(func=config_install.cmd_apply)
 
-    # delegate models --harness <h> --json — 위임 모델 목록 조회(읽기 전용·장부 변경 0).
+    # delegate models --harness <h> --json — 위임 모델 목록 조회(읽기 전용·기록 변경 0).
     #   `--harness` 값의 닫힌 집합은 `contract.MODEL_SOURCE` 의 키다. 그 표를 파서 조립 시점에
     #   읽지 않는 것은 의도다 — 파서는 실패를 보고할 채널이 없어서, 표를 못 읽는 사본에서
     #   무관한 서브커맨드(`status` 등)까지 함께 죽는다. 값 판정은 핸들러가 같은 표로 하고 rc 2 다.
@@ -506,7 +506,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_delegate_models.set_defaults(func=config_models.cmd_delegate_models)
 
-    # update [--from ...] — pm-update 흡수. 실제 forward 는 _main 이 argparse 우회로
+    # update [--from ...] — pm-update 를 대신 실행. 실제 forward 는 _main 이 argparse 우회로
     # 처리한다(아래 special-case) — 여기 등록은 `--help` 목록 surface(발견성)용이다.
     # option-like 플래그(--from·--dry-run)를 이 디스패처가 가로채면 안 되므로 forward
     # 토큰을 subparser 로 파싱하지 않는다.
@@ -516,10 +516,10 @@ def build_parser() -> argparse.ArgumentParser:
         add_help=False,
     )
 
-    # init [<board init 인자>] — board.py init 흡수. 실제 forward 는 _main 이 argparse
+    # init [<board init 인자>] — board.py init 을 대신 실행. 실제 forward 는 _main 이 argparse
     # 우회로 처리한다(아래 special-case) — 여기 등록은 `--help` 목록 surface(발견성)용이다.
     # option-like 플래그(--prefix·--area·--owner·--session)를 이 디스패처가 가로채면
-    # 안 되므로 forward 토큰을 subparser 로 파싱하지 않는다(update 와 동형).
+    # 안 되므로 forward 토큰을 subparser 로 파싱하지 않는다(update 와 같은 방식).
     sub.add_parser(
         "init",
         help="clone 당 1회 셋업 (board.py init 을 대신 실행) — 뒤 인자는 board 로 verbatim forward",
@@ -536,7 +536,7 @@ def _main(home: home.Home, argv: list[str] | None = None) -> int:
     #   - tty(stdin·stdout 둘 다)  → 대화형 콘솔(run_console). multi-PM이 복잡(다수 repo·슬롯·
     #     빌드변형)해 CLI 플래그를 외우기 어려운 걸 상태 가시화 + 메뉴로 해소.
     #   - 비-tty(파이프/CI)         → 현행 help(아래 argparse 경로). input() 으로 안 멈춘다
-    #     (pm_import 비-tty 폴백 패턴 동류·CI 안전). 서브커맨드를 주면 기존 CLI 경로 그대로
+    #     (pm_import 비-tty 대체 패턴 동류·CI 안전). 서브커맨드를 주면 기존 CLI 경로 그대로
     #     (이 분기 미진입) — 커맨드형 동작 0 변경.
     if not raw and console._stdin_is_tty():
         return config_console.run_console(home)
@@ -547,7 +547,7 @@ def _main(home: home.Home, argv: list[str] | None = None) -> int:
     if raw and raw[0] == "update":
         return config_install.cmd_update(home, raw[1:])
 
-    # `init` 도 동형 — 뒤 인자를 board.py init 으로 *verbatim* forward 한다.
+    # `init` 도 같은 방식 — 뒤 인자를 board.py init 으로 *verbatim* forward 한다.
     # `--prefix`·`--area`·`--owner`·`--session` 같은 option-like 플래그를 디스패처가
     # 가로채지 않게 한다(board.py init 이 CLI 규격의 단일 진실·중복 파싱 0). `init` 이
     # 첫 토큰일 때만.
@@ -569,20 +569,20 @@ def _main(home: home.Home, argv: list[str] | None = None) -> int:
     if args.command == "worktree" and getattr(args, "worktree_command", None) is None:
         parser.parse_args(["worktree", "--help"])
         return 1
-    # `upstream` 만 주고 하위 동작(show/set)을 안 줬으면 그 그룹 도움말 surface(repo/worktree 동형).
+    # `upstream` 만 주고 하위 동작(show/set)을 안 줬으면 그 그룹 도움말 surface(repo/worktree 와 같은 방식).
     if args.command == "upstream" and getattr(args, "upstream_action", None) is None:
         parser.parse_args(["upstream", "--help"])
         return 1
-    # `task` 만 주고 하위 동작(end)을 안 줬으면 그 그룹 도움말 surface(repo/worktree/upstream 동형).
+    # `task` 만 주고 하위 동작(end)을 안 줬으면 그 그룹 도움말 surface(repo/worktree/upstream 과 같은 방식).
     if args.command == "task" and getattr(args, "task_command", None) is None:
         parser.parse_args(["task", "--help"])
         return 1
-    # `task todo` 만 주고 하위 동작(add/list/done)을 안 줬으면 그 그룹 도움말 surface(위와 동형).
+    # `task todo` 만 주고 하위 동작(add/list/done)을 안 줬으면 그 그룹 도움말 surface(위와 같은 방식).
     if (args.command == "task" and getattr(args, "task_command", None) == "todo"
             and getattr(args, "todo_command", None) is None):
         parser.parse_args(["task", "todo", "--help"])
         return 1
-    # `delegate` 만 주고 하위 동작(models)을 안 줬으면 그 그룹 도움말 surface(위 넷과 동형).
+    # `delegate` 만 주고 하위 동작(models)을 안 줬으면 그 그룹 도움말 surface(위 넷과 같은 방식).
     if args.command == "delegate" and getattr(args, "delegate_command", None) is None:
         parser.parse_args(["delegate", "--help"])
         return 1
@@ -593,5 +593,5 @@ def _main(home: home.Home, argv: list[str] | None = None) -> int:
 
 
 def main(home: home.Home, argv: list[str] | None = None) -> int:
-    """서브커맨드를 dispatch 한다. status 에는 엔진 세대 값 `pm_engine.ENGINE_REV` 를 넘긴다."""
+    """서브커맨드를 dispatch 한다. status 에는 엔진 버전 값 `pm_engine.ENGINE_REV` 를 넘긴다."""
     return _main(home, argv)
