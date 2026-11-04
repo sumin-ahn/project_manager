@@ -73,7 +73,6 @@
 - **라이브 시험 명령·환경 변수 이름이 바뀐다.** `board.py livegate record|check`·`board.py lint --gate`·`PM_SKIP_LIVE_GATE` 를 적은 스크립트와 채택자 소유 문서는 `board.py live-test record|check`·`board.py lint --blocking`·`PM_SKIP_LIVE_TEST` 로 고친다. 옛 환경 변수 `PM_SKIP_LIVE_GATE=1` 은 무시되어 라이브 시험 확인이 그대로 요구된다.
 - **옛 라이브 시험 기록은 읽지 않는다.** `.project_manager/.local/livegate.json` 은 남아 있어도 동작에 영향이 없고 지워도 된다. 릴리즈 전에 `board.py live-test record` 로 새로 기록한다.
 - `pm_config.py status --json --with-board` 의 `board.livegate` 를 읽던 도구는 `board.live_test` 를 읽는다.
-- **OpenCode 를 추가 하네스로 붙인 사본(`pm-config add-harness opencode`)은 `.project_manager/engine.manifest` 의 `# >>> pm add-harness` 로 시작하는 구획에서 두 줄을 고친다.** `.opencode/command/pm-wave-claim.md`·`.opencode/command/pm-wave-finish.md` 행에서 `pm-wave-claim` 을 `pm-cluster-claim` 으로, `pm-wave-finish` 를 `pm-cluster-finish` 로 바꾼다(행마다 경로와 `@source` 두 곳). 갱신 전후 어느 때나 되고, 고친 뒤 갱신하면 `.opencode/command/pm-cluster-claim.md`·`pm-cluster-finish.md` 가 설치된다. 고치지 않으면 새 명령 파일이 설치되지 않고 갱신마다 옛 두 행이 `[skip]` 으로 나온다. 하네스를 하나만 쓰는 사본은 할 일이 없다.
 - 옛 스킬 파일(`/pm-wave-claim`·`/pm-wave-finish`)을 고쳐 썼다면 `.pm_import_backups/(날짜)/` 의 백업에서 새 스킬(`.claude/skills/pm-cluster-claim/` 등)로 옮겨 적는다. 옮긴 뒤 남는 빈 폴더 `.claude/skills/pm-wave-claim/` 등은 지워도 된다. 스크립트·채택자 소유 문서의 옛 스킬 이름도 새 이름으로 고친다.
 - `pm_log.py ctx-guidance --band …` 를 직접 부르는 스크립트는 `--level` 과 새 값(`warn`·`warn2`)으로 바꾼다. 상태 응답 `level` 의 `nudge`·`nudge2` 를 비교하던 채택자 도구도 `warn`·`warn2` 로 고친다.
 - 갱신할 때 진행 중이던 세션은 같은 사용률 구간의 경고를 한 번 더 받는다. 옛 표시 파일 `.project_manager/.local/ctx-stop/(세션).nudge`·`(세션).nudge2` 는 더 읽지 않으며 지워도 된다.

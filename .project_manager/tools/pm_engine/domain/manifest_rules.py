@@ -264,8 +264,8 @@ def _manifest_marker_key(entry) -> tuple:
 # 아래 두 상수는 **채택자 디스크에 기록된 데이터**다 — engine.manifest 안에 실제로 적힌 바이트이지
 # 이 소스의 산문이 아니다. 따라서 스트립·문구 정리·리팩터 대상이 아니며 한 글자만 달라져도 이미
 # 기록된 채택자 manifest 의 guest 절을 못 읽어 절이 조용히 사라진다. 읽기·쓰기 모두 이 두 상수
-# 하나다. 표시를 바꾸면 갱신 완료 단계(`update_finish.rename_added_harness_markers`)가 계획보다
-# 먼저 옛 표시를 새 표시로 옮기게 한다.
+# 하나다. 표시를 바꾸면 갱신의 옛 표기 이관 자리(`update_cmd._main`, 상류 해소·계획 앞)에서
+# `update_finish.rename_added_harness_markers` 가 옛 표시를 새 표시로 옮긴다.
 _GUEST_MANIFEST_BEGIN = "# >>> pm add-harness @render (local·pm_update-preserved) >>>"
 _GUEST_MANIFEST_END = "# <<< pm add-harness @render (local) <<<"
 # pm:data-literal:end

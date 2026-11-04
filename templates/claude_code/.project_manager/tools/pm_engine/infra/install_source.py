@@ -494,7 +494,7 @@ def _guest_manifest_lines(
     host 가 이미 소유한 것은 downstream 차감(`_guest_render_sync_plan` 의 `_path_owned_by`·기준
     `_core_manifest_paths`)이 dest 기준으로 정확히 뺀다(엔진 행은 `_in_adapter_namespace` 가 같은
     `dest_owned` 로 여기서 이미 뺀다). 두 종류 모두 host 인스턴스 소유라 `@target-owned` 를 붙인다 —
-    렌더물은 재렌더 clobber 계약(MF-2), 엔진 행은 upstream flavor 부재 시 loud `[skip]` + rc0 이다.
+    렌더물은 재렌더 clobber 계약(MF-2)이다.
     직렬화는 `manifest_rules._manifest_entry_line` 재사용(마커 순서 결정적·손 f-string 금지).
     flavor manifest 를 읽지 못하면 그 오류가 그대로 올라간다(add-harness·갱신 공통)."""
     entries = manifest_store.read_manifest(

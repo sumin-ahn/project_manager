@@ -564,7 +564,7 @@ def test_dry_run_no_write(pm_update, old_gen_text, tmp_path):
 # ── --target 비발화 (self-update 경로 한정 게이트) ─────────────────────────
 
 def test_target_export_does_not_migrate(pm_update, monkeypatch, capsys):
-    """`--target`(엔진 export)은 진입 doc 마이그레이션을 발화하지 않는다(skew/selfheal 동일 경계)."""
+    """`--target`(엔진 export)은 진입 doc 마이그레이션을 발화하지 않는다(옛 표기 이관과 같은 경계)."""
     calls = []
     orig = entry_doc_migration.migrate_entry_doc
 

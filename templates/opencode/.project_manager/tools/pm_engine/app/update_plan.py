@@ -392,7 +392,7 @@ def drift_changes(home, engine_root: Path) -> list[str] | None:
 
     엔진 코드 행(`_engine_code_plan`, 전달 프로세스와 같은 계획)을 먼저 보고, 변경이 있으면 그 목록을
     돌려준다. 없을 때만 `_resolve_engine_sync_plan`(완료 단계 dry-run 이 실제로 호출하는 것과 **같은
-    함수**)으로 간다 — 별도 diff 알고리즘을 두지 않는다(render 설정·notation·guest-backfill 인자도
+    함수**)으로 간다 — 별도 diff 알고리즘을 두지 않는다(render 설정·notation 인자도
     dry-run 과 동일하게 태운다).
 
     판정 불능(`None`) — 아래는 전부 같은 "이 형상엔 게이트가 적용되지 않는다"로 수렴한다(거부가

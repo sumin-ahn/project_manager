@@ -489,8 +489,8 @@ flowchart LR
 wiki, ticket, log 같은 인스턴스 상태는 덮어쓰지 않는다. 나중에 `add-harness` 로 붙인 추가 하네스
 어댑터도 인스턴스 `engine.manifest` 의 전용 구획(마커로 감싼 목록)에 등재돼 관리를 받는다 —
 opencode 를 codex 프로젝트에 붙일 때 opencode 가 소비하는 `.claude/skills` 처럼 어댑터
-네임스페이스 밖 의존물도 그 구획에 함께 등재된다. `pm-update` 는 이 구획을 보존(코어를 덮어쓴 뒤
-재부착)하며, 구획 안 두 종류를 **같은 update 채널**로 전파하되 방식이 갈린다: `@render` 행
+네임스페이스 밖 의존물도 그 구획에 함께 등재된다. `pm-update` 는 갱신마다 이 구획을 그 하네스의 상류 manifest 에서 다시 만들며(구획에 손으로 넣은 행은
+관리에서 빠지고 파일은 남는다), 구획 안 두 종류를 **같은 update 채널**로 전파하되 방식이 갈린다: `@render` 행
 (어댑터 렌더물)은 채택자 `local.conf` 값으로 **다시 렌더**하고, 비-`@render` 엔진 행(`@source=`
 매핑·추가 하네스의 드라이버/훅 등)은 byte-copy 로 갱신한다. 렌더물이므로 추가 하네스 어댑터 카드의
 손편집(예 agent 카드의 `model`)은 다음 `pm-update` 가 `local.conf` 값으로 되돌린다 — 값을 바꾸는

@@ -155,8 +155,8 @@ def _track_source_tree(root: Path) -> None:
 def _make_upstream_manifest(root: Path, entries: list[str]) -> None:
     """source(upstream) 트리 — 등재 경로별 sentinel 파일 + 그를 담은 engine.manifest.
 
-    _make_upstream 의 다-경로 버전 — manifest 에 여러 등재분을 넣어 skew(로컬 manifest 가
-    이 중 일부를 누락)를 시뮬레이션한다.
+    _make_upstream 의 다-경로 버전 — manifest 에 여러 등재분을 넣어 로컬 manifest 가
+    이 중 일부만 가진 형상을 만든다.
     """
     for rel in entries:
         f = root / rel
@@ -793,7 +793,7 @@ def test_main_url_sync_records_both_keys(pm_update, tmp_path, monkeypatch, capsy
     assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "cachehead77"
 
 
-# ── T-0395: manifest skew → baseline 갱신 억제 (false-최신 차단·drift 은폐 방지) ──
+# ── baseline 기록 (계획은 그 하네스의 출하 manifest 로 하고, --target 은 타깃 manifest 로 한다) ──
 
 NEW_ENGINE_REL = "sentinel/__pm_update_new_engine__.py"
 
@@ -811,8 +811,6 @@ def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkey
 
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "manifest skew" not in out, f"정합인데 skew 오탐: {out!r}"
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "insyncrev7", \
         f"정합 sync 인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
@@ -840,12 +838,9 @@ def test_main_stops_when_upstream_manifest_absent(pm_update, tmp_path, monkeypat
     assert "upstream.rev" not in conf
 
 
-def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch, capsys):
-    """--target(엔진 export) 경로는 타깃별 manifest 차이로 skew 를 오탐하지 않는다 — 검출/억제 비발화.
-
-    타깃 manifest(templates/<name>/engine.manifest)가 루트(source)보다 등재분이 적어도(의도적
-    어댑터 비대칭) skew 경고/baseline 억제가 발화하면 안 된다(codex must-fix). 현행 거동(무조건
-    baseline 갱신)을 유지한다 — skew 검출은 self-update(채택자 흡수) 경로 한정.
+def test_main_target_mode_records_baseline_with_target_manifest(pm_update, tmp_path, monkeypatch, capsys):
+    """--target(엔진 export) 경로는 타깃 manifest 가 루트(source)보다 등재분이 적어도(의도적
+    어댑터 비대칭) 항상 baseline(upstream.rev)을 기록한다.
     """
     fake_repo = tmp_path / "fake_repo"
     target_root = fake_repo / "templates" / "tgt"
@@ -859,18 +854,14 @@ def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch,
 
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--target", "tgt"])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "manifest skew" not in out and "억제" not in out, \
-        f"--target 에서 skew 검출/억제가 발화함(오탐): {out!r}"
     conf = install_conf._read_local_conf(target_root / ".project_manager" / "local.conf")
     assert conf.get("upstream.rev") == "targetrev1", \
         f"--target 인데 baseline 미갱신(현행 거동 위반): {conf.get('upstream.rev')!r}"
 
 
-# ── manifest 자기치유 (T-0396·self-update 2-pass 단일 실행) ─────────────────────
-# 구형 로컬 manifest 를 upstream manifest 로 승격해 신규 등재분을 한 번의 실행으로 도달시킨다.
+# ── 출하 manifest 로 계획 (신규 등재분은 갱신 한 번으로 도달한다) ─────────────────
 # manifest 자기전파 엔트리(T-0305) — upstream 이 항상 등재. 회사 실측 형상 재현에 함께 넣어
-# 로컬 manifest 파일까지 자기치유되는지(신규 등재분 반영) 검증한다.
+# 로컬 manifest 파일까지 출하본으로 다시 쓰이는지(신규 등재분 반영) 검증한다.
 MANIFEST_SELF_REL = ".project_manager/engine.manifest"
 
 
@@ -1933,11 +1924,10 @@ def test_main_dry_run_shows_new_entry_without_side_effects(pm_update, tmp_path, 
     assert "upstream.rev" not in conf, "dry-run 인데 baseline 기록됨(부작용)"
 
 
-def test_main_target_mode_skips_selfheal(pm_update, tmp_path, monkeypatch, capsys):
-    """--target(엔진 export)은 자기치유 비발화 — 타깃 manifest(루트보다 적은 등재)를 그대로 쓴다.
+def test_main_target_mode_plans_with_target_manifest(pm_update, tmp_path, monkeypatch, capsys):
+    """--target(엔진 export)은 타깃 manifest(루트보다 적은 등재)로 계획한다.
 
-    타깃 manifest 는 루트와 의도적으로 다르므로(어댑터 비대칭) upstream 승격하면 대량 오탐/오전파.
-    현행(타깃 manifest 기준)을 유지한다 — 자기치유는 self-update(채택자 흡수) 경로 한정.
+    타깃 manifest 는 루트와 의도적으로 다르므로(어댑터 비대칭) 루트 등재분이 타깃으로 새면 안 된다.
     """
     fake_repo = tmp_path / "fake_repo"
     target_root = fake_repo / "templates" / "tgt"
@@ -1951,8 +1941,6 @@ def test_main_target_mode_skips_selfheal(pm_update, tmp_path, monkeypatch, capsy
 
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), ["--from", str(source), "--target", "tgt"])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "자기치유" not in out, f"--target 에서 자기치유 발화(오탐): {out!r}"
     # 타깃 manifest 기준이라 NEW_ENGINE_REL 은 전파되지 않는다(의도적 어댑터 비대칭 유지).
     assert not (target_root / NEW_ENGINE_REL).exists(), \
         "--target 인데 루트-전용 등재분이 타깃으로 새어 전파됨(승격 오발화)"

@@ -172,7 +172,7 @@ _OLD_ADDED_HARNESS_MARKERS = {
 
 
 def rename_added_harness_markers(effective_dest: Path, *, write: bool) -> int:
-    """engine.manifest 의 옛 추가 하네스 구획 표시를 새 표시로 옮긴다(갱신 완료 단계의 계획 전에 한 번).
+    """engine.manifest 의 옛 추가 하네스 구획 표시를 새 표시로 옮긴다(갱신의 옛 표기 이관 자리 update_cmd._main 에서 상류 해소·계획 전에 한 번).
 
     표시를 바꾼 갱신이 디스크에 남은 옛 표시를 직접 옮긴다. 엔진은 새 표시만 읽으므로 계획·적용이
     구획을 읽기 전에 옮겨야 구획이 남는다. 앞뒤 공백을 뺀 줄이 옛 표시와 같은 줄만 바꾸고 줄 끝

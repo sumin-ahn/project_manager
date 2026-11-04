@@ -365,8 +365,8 @@ def _append_guest_render_to_manifest(
     """dest engine.manifest 의 guest 절을 이 하네스 namespace 에 대해 현재 flavor 와 **동기화**한다
     (신규 등재 **+ 폐기 제거**·타 하네스 불변). 반환 `{"added": [라인], "removed": [경로]}`.
 
-    **단일 guest 절**(마커 하나) 아래 모든 하네스 라인이 모이고, pm_update 가 engine.manifest overwrite
-    시 재부착한다(MF-1). refresh 가 add-only 였으면 upstream flavor 에서 사라진 경로가 영구 render/lint
+    **단일 guest 절**(마커 하나) 아래 모든 하네스 라인이 모이고, pm_update 가 갱신마다 그 하네스의 출하
+    manifest 에서 구획을 다시 만든다. refresh 가 add-only 였으면 upstream flavor 에서 사라진 경로가 영구 render/lint
     관리로 남았다. write 후 `read_manifest` **왕복 검증**(조용한 미등재 금지·RuntimeError). dest
     manifest 부재·무변경(멱등)은 graceful skip. 계획은 `_guest_render_sync_plan`(preview 공유·판정 사본 0)."""
     manifest = dest_root / ".project_manager" / "engine.manifest"
