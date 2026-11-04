@@ -28,7 +28,7 @@
   - LLM 미호출 — stdlib + pm_engine 패키지만.
 
 이 파일은 안정된 CLI 진입점이다 — 콘솔 설정과 설치 위치(`REPO`)의 Home 만 넘기고, 기록·종결 흐름의
-본체는 `pm_engine.cli.ticket_finish`(argv·등록)·`cli.finish_record`(완료 기록)·
+본체는 `pm_engine.cli.ticket_finish`(argv·연결)·`cli.finish_record`(완료 기록)·
 `cli.cluster_close`(묶음 종결)와 finish_* 소유 모듈에 있다.
 """
 import os

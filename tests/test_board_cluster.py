@@ -1,4 +1,4 @@
-"""클러스터 묶음 기록 — `cluster new|show` · 티켓 `cluster` 필드 자동 귀속 · `cluster-*` lint.
+"""묶음 기록 — `cluster new|show` · 티켓 `cluster` 필드 자동 귀속 · `cluster-*` lint.
 
 여기서 지키는 성질은 넷이다.
   (1) `cluster new` 가 묶음 기록과 통합 브랜치를 만들고 멤버 티켓에 귀속을 적어 둔다.

@@ -610,7 +610,7 @@ def test_status_entries_ignores_stderr_noise_from_git(tf, tmp_path, monkeypatch,
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
     out = capsys.readouterr().out
     assert "real.md" in out
-    assert noise not in out, "stderr 잡음이 남은 목록에 항목으로 섞였다"
+    assert noise not in out, "stderr 잡음이 남은 변경 목록에 항목으로 섞였다"
 
 
 @requires_git
@@ -962,7 +962,7 @@ def test_finish_skips_submodule_ticket_paths_in_split_layout(tf, tmp_path, monke
     ticket = board_dir / "tickets" / "done" / "T-0001-x.md"
     ticket.write_text(
         "---\nid: T-0001\ntitle: t\nstatus: done\n---\n\n# T-0001 — t\n\n"
-        # 완료 기록 경로의 DoD 통과 조건 통과분 — 이 픽스처의 관측 기준은 stage 스코프다.
+        # 완료 기록 경로의 DoD 통과 조건을 지나는 상태 — 이 픽스처의 관측 기준은 stage 스코프다.
         "## 완료 조건 (Definition of Done)\n- [x] 구현\n",
         encoding="utf-8")
     _git_init(board_dir)
@@ -1038,7 +1038,7 @@ def test_finish_blocks_on_a_single_unstaged_residual(tf, tmp_path, monkeypatch, 
     (root / "others.py").write_text("o = 1\n", encoding="utf-8")   # 선언 밖 신규 미스테이지 1건
     finisher = _make_finisher(
         tf, root, monkeypatch, touches=[_TOUCHED_FILE],
-        run_board_fn=lambda args: pytest.fail("남은 일 1건인데 board complete 가 불렸다"))
+        run_board_fn=lambda args: pytest.fail("남은 변경 1건인데 board complete 가 불렸다"))
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 1
     captured = capsys.readouterr()

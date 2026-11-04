@@ -13,7 +13,7 @@ from typing import Any
 from pm_engine.infra import pm_paths, ticket_store
 
 
-# ── 클러스터 묶음 기록 (운영 단위 = 티켓 묶음 · 크기 1 도 클러스터) ─────────────────
+# ── 묶음 기록 (운영 단위 = 티켓 묶음 · 크기 1 도 클러스터) ─────────────────
 #
 # 설계·리뷰·fix의 묶음 기록 IO는 이 모듈이, ID·멤버 규칙은 domain.cluster_rules가 소유한다. 묶음 기록은
 # `tickets/clusters/<id>.md`(frontmatter 만)이고 STATUS_DIRS 밖 sibling 이라
@@ -30,7 +30,7 @@ CLUSTERS_DIRNAME = "clusters"
 
 
 def clusters_dir(home) -> Path:
-    """클러스터 묶음 기록 디렉토리 — `tickets_dir()/clusters` (board_root 추종·STATUS_DIRS 밖)."""
+    """묶음 기록 디렉토리 — `tickets_dir()/clusters` (board_root 추종·STATUS_DIRS 밖)."""
     return pm_paths.tickets_dir(home) / CLUSTERS_DIRNAME
 
 

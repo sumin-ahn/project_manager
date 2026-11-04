@@ -1920,7 +1920,7 @@ def test_residual_preflight_runs_after_the_dod_block(tf, tmp_path, capsys):
         affected_domain_fn=lambda tid: [],
         dod_block_fn=lambda tid: "DoD 미마감 — T-1234",
         residual_block_fn=lambda tid: (_ for _ in ()).throw(
-            AssertionError("DoD 차단 뒤에는 남은 일 판정을 묻지 않는다")),
+            AssertionError("DoD 차단 뒤에는 남은 변경 판정을 묻지 않는다")),
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 1
@@ -1939,7 +1939,7 @@ def test_preflight_override_order_is_private_ref_dod_residual_self_check(tf, tmp
         run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
         private_ref_block_fn=lambda tid: calls.append("private_ref") or None,
         dod_block_fn=lambda tid: calls.append("dod") or None,
-        residual_block_fn=lambda tid: calls.append("residual") or "남은 일 1건 — T-1234",
+        residual_block_fn=lambda tid: calls.append("residual") or "남은 변경 1건 — T-1234",
         self_check_block_fn=lambda tid: calls.append("self_check") or None,
         log_file=tmp_path / "log.md",
     )
@@ -1951,7 +1951,7 @@ def test_preflight_override_order_is_private_ref_dod_residual_self_check(tf, tmp
 
 def test_residual_preflight_dry_run_is_also_refused(tf, tmp_path):
     """dry-run 도 같은 거절이다 — 미리보기는 통과 조건 면제가 아니다."""
-    finisher = _residual_finisher(tf, tmp_path, residual_block="남은 일 1건")
+    finisher = _residual_finisher(tf, tmp_path, residual_block="남은 변경 1건")
     assert finisher.run("T-1234", section=None, dry_run=True) == 1
 
 

@@ -100,7 +100,7 @@ def _livegate_check(home, args: argparse.Namespace) -> int:
         return 1
     # 읽을 위치를 push 보호훅 read 위치와 정렬(record 와 대칭·단일 소스). 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 사본으로 check 해도
-    # 훅이 기록한 한 파일을 읽는다. hooksPath 미설정/훅 부재면 현행 `pm_paths.live_test_flag`(REPO/.local) 대체 무변경.
+    # 훅이 기록한 한 파일을 읽는다. hooksPath 미설정/훅 부재면 지금처럼 `pm_paths.live_test_flag`(REPO/.local) 로 대체한다.
     cwd = getattr(args, "cwd", None) or str((home.root))
     flag, mode = regression_store._resolve_livegate_flag(home, cwd)
     if mode == regression_store._LG_BROKEN:

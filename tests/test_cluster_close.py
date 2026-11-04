@@ -2068,7 +2068,7 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
     )
     monkeypatch.setattr(
         board_ticket, "_review_completion_problem",
-        lambda *_a, **_k: dry_events.append("pending") or "남은 일",
+        lambda *_a, **_k: dry_events.append("pending") or "남은 지적",
     )
     assert dry._pre_resolve() == []
     assert dry._step_resolve() is None
@@ -2089,7 +2089,7 @@ def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
         lambda *_a, **_k: actual_events.append("preflight") or None,
     )
     monkeypatch.setattr(
-        board_ticket, "_review_completion_problem", lambda *_a, **_k: "남은 일",
+        board_ticket, "_review_completion_problem", lambda *_a, **_k: "남은 지적",
     )
     assert actual._pre_resolve() == []
     assert actual._step_resolve() is None
