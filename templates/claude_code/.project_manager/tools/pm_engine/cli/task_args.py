@@ -15,7 +15,7 @@ from typing import Any
 from pm_engine.app import ticket_access
 
 
-# 실행 소비자(claim·new·cluster new·regression·livegate record·rounds resolve)에 `--task` 없이
+# 실행 소비자(claim·new·cluster new·regression·live-test record·rounds resolve)에 `--task` 없이
 # `--repo`/`--slot` 이 왔을 때의 중단 문구. {retry} 는 입력값을 채운 다시 칠 인자다.
 SLOT_SELECTOR_WITHOUT_TASK = (
     "[중단] `--repo`/`--slot` 은 task 가 보유한 폴더를 고르는 위치 인자다(정체성 아님). "
@@ -115,7 +115,7 @@ def _actor_session_override(home, args: argparse.Namespace) -> str | None:
 def _frontmatter_with_claimed_rev(
     fm: dict[str, Any], claimed_rev: str,
 ) -> dict[str, Any]:
-    """`claimed_at` 바로 뒤에 `claimed_rev` 를 둔 frontmatter (앵커 키가 없으면 끝에 붙인다).
+    """`claimed_at` 바로 뒤에 `claimed_rev` 를 둔 frontmatter (기준 키가 없으면 끝에 붙인다).
 
     frontmatter 는 삽입 순서대로 직렬화되므로(`sort_keys=False`) 자리를 정하려면 재조립해야
     한다. claim 3종(주체·시각·rev)이 붙어 있어야 티켓을 연 사람이 한 자리에서 읽는다. 기존

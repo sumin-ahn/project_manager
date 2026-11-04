@@ -1,4 +1,4 @@
-"""슬롯 git 스냅 기록과 live 상태 비교."""
+"""슬롯 git 상태 기록과 live 상태 비교."""
 from __future__ import annotations
 
 
@@ -15,7 +15,7 @@ def _slot_head(git_runner: worktree_records.GitRunner) -> "str | None":
 
 
 def _snapshot_submodule_pins(git_runner: worktree_records.GitRunner) -> "list[dict]":
-    """`git submodule status` → `[{path, pin}]` (기록=기대 축).
+    """`git submodule status` → `[{path, pin}]` (기록=기대 기준).
 
     pin = submodule 의 현재 체크아웃 sha(선두 flag 제거) — "여기 두고 간다"의 기준값(재개 시 이
     sha 와 달라지면 drift·`_submodule_pin_drift`). `_submodule_statuses`와 같은 `submodule
@@ -39,12 +39,12 @@ def _snapshot_submodule_pins(git_runner: worktree_records.GitRunner) -> "list[di
 
 
 def _snapshot_slot_git(home, slot: str, *, git_runner: worktree_records.GitRunner | None = None) -> "dict | None":
-    """슬롯의 live git 상태를 스냅한다 — `{branch, head, submodules, recorded_at}` (base 제외).
+    """슬롯의 live git 상태를 기록한다 — `{branch, head, submodules, recorded_at}` (base 제외).
 
     write 프리미티브의 원료(base 는 호출부가 결정: create=새 기록·alloc/bind=기존 보존). git rc≠0
     은 각 칸의 None·빈 값이고 runner 예외는 전파한다. 슬롯 경로 부재 가드는 **실경로
     (git_runner 미주입)에서만** 본다 — 주입 runner(hermetic 테스트)는 존재/HEAD 를 모델링하는
-    권위라 건너뛴다. 슬롯 부재(실경로)면 None(스냅 불가 → 호출부가 기존 git 을 유지)."""
+    권위라 건너뛴다. 슬롯 부재(실경로)면 None(git 상태 기록 불가 → 호출부가 기존 git 을 유지)."""
     runner = git_runner
     if runner is None:
         path = pm_paths.slot_path(home, slot)
@@ -61,18 +61,18 @@ def _snapshot_slot_git(home, slot: str, *, git_runner: worktree_records.GitRunne
 
 def _apply_git_snapshot(home, lease: "Lease", *, base_branch: "str | None" = None,
                         git_runner: worktree_records.GitRunner | None = None) -> None:
-    """`lease.git` 을 live 슬롯 스냅으로 갱신한다 — write 프리미티브 본체(in-place).
+    """`lease.git` 을 live 슬롯 git 상태로 갱신한다 — write 프리미티브 본체(in-place).
 
-    base 는 **readonly 슬롯 전용**이다(브랜치가 없어 따라갈 부모 브랜치를 장부에 둔다). readonly lease 에
-    `base_branch` 주어짐(생성·refresh) = base 를 `{branch, commit=방금 스냅한 head}` 로 **새로** 기록 /
+    base 는 **readonly 슬롯 전용**이다(브랜치가 없어 따라갈 부모 브랜치를 기록에 둔다). readonly lease 에
+    `base_branch` 주어짐(생성·refresh) = base 를 `{branch, commit=방금 기록한 head}` 로 **새로** 기록 /
     미주어짐 = 기존 `lease.git.base` **보존**. 작업 슬롯은 `base_branch` 와 무관하게 base 가 없다(부모는
-    git 설정 `branch.<branch>.pm-parent` 가 진실 — 옛 장부 base 는 다음 스냅에서 빠진다).
-    스냅 불가(슬롯 부재 등 None)면 기존 git 을 clobber 하지 않고 그대로 둔다(silent 손실 방지).
-    스냅 예외는 전파한다.
+    git 설정 `branch.<branch>.pm-parent` 가 진실 — 옛 기록 base 는 다음 git 상태 기록에서 빠진다).
+    git 상태 기록 불가(슬롯 부재 등 None)면 기존 git 을 clobber 하지 않고 그대로 둔다(silent 손실 방지).
+    git 상태 기록 예외는 전파한다.
     """
     snap = _snapshot_slot_git(home, lease.slot, git_runner=git_runner)
     if snap is None:
-        return  # 슬롯 부재/스냅 불가 → 기존 git 유지(clobber 안 함).
+        return  # 슬롯 부재/git 상태 기록 불가 → 기존 git 유지(clobber 안 함).
     if lease.role != pool_store._LEASE_ROLE_READONLY:
         base = None
     elif base_branch is not None:
@@ -89,12 +89,12 @@ def record_git_snapshot(home, slot: str, *, base_branch: "str | None" = None,
     """슬롯 현재 git 상태를 `lease.git` 에 기록하는 독립 write 프리미티브 (핸드오프·rebase·switch).
 
     alloc·create 는 자기 lock 안에서 `_apply_git_snapshot` 을 인라인 호출하지만,
-    핸드오프("여기 두고 간다")·rebase·switch·refresh 처럼 lifecycle op 밖에서 스냅을 찍는 호출부를
+    핸드오프("여기 두고 간다")·rebase·switch·refresh 처럼 lifecycle op 밖에서 git 상태 기록을 남기는 호출부를
     위한 standalone 진입점이다. `base_branch` 는 readonly 전용(refresh — 따라갈 부모 브랜치 재기록).
     `_lease_lock`+`_write_ledger`(atomic) — alloc/release 와 동일한 read-modify-write
-    직렬화. 장부에 슬롯이 없으면 None(무해). 갱신된 Lease 반환."""
+    직렬화. 기록에 슬롯이 없으면 None(무해). 갱신된 Lease 반환."""
     with pool_store._lease_lock(home):
-        leases = pool_store._read_ledger_strict(home)
+        leases = pool_store._read_records_strict(home)
         target = next((l for l in leases if l.slot == slot), None)
         if target is None:
             return None
@@ -135,7 +135,7 @@ def _head_relation(recorded_branch: "str | None", recorded_head: "str | None",
 
 
 def _submodule_pin_drift(recorded_subs: "list", live_subs: "list") -> "list[str]":
-    """기록 submodule pin ≠ live pin 인 path 목록 (pin/drift 대칭·경고 축)."""
+    """기록 submodule pin ≠ live pin 인 path 목록 (pin/drift 대칭·경고 기준)."""
     live_map = {
         s["path"]: s.get("pin") for s in live_subs
         if isinstance(s, dict) and "path" in s
@@ -152,13 +152,13 @@ def _submodule_pin_drift(recorded_subs: "list", live_subs: "list") -> "list[str]
 def compare_slot_git(home, slot: str, *, git_runner: worktree_records.GitRunner | None = None) -> worktree_records.GitCompareResult:
     """기록된 `lease.git`(기대) vs 슬롯 live 상태를 비교한다 — compare 프리미티브 (0단계 소비).
 
-    장부에서 슬롯 lease 를 읽어 그 `git` 스냅(기대)을 live 스냅과 대조한다. `_lease_lock` 은 장부
+    기록에서 슬롯 lease 를 읽어 그 `git` 상태 기록(기대)을 live git 상태와 대조한다. `_lease_lock` 은 기록
     read 동안만 짧게 잡고 git 조회(subprocess)는 lock 밖에서 한다. 미기록(git 필드 없음/슬롯 없음)
     이면 `unrecorded=True`(drift 감지 비활성). head 비교는 `merge-base --is-ancestor` 로
     완화(crash 후 재개를 경보 소음으로 안 만든다). 판정 정책(FAIL/notice/질의)은 0단계
     가 `ok`/`fail_loud`/`unrecorded`/`head_relation` 을 읽어 결정한다(엔진=surface·PM=확인)."""
     with pool_store._lease_lock(home):
-        leases = pool_store._read_ledger(home)
+        leases = pool_store._read_records(home)
     target = next((l for l in leases if l.slot == slot), None)
     recorded = target.git if (target is not None and isinstance(target.git, dict)) else None
     live = _snapshot_slot_git(home, slot, git_runner=git_runner) or {}

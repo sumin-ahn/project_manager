@@ -5,16 +5,16 @@
 (어댑터 네임스페이스)·비파괴 백업·**계약 예외의 친화 번역(rc 1)** 은 전부 pm_import 가 단일
 진실로 소유하고(T-0269 add_harness + T-0270 add_harness_cli 래퍼), pm_config 는 얇은
 디스패처(로직 0)다. 실 복사 부작용은 mock 주입으로 격리한다(test_pm_config_facade.py 의
-DI seam 동류).
+DI 교체 지점 동류).
 
 커버:
-  - forward 배선 — cmd_add_harness → pm_import.add_harness_cli(dest, harness, dry_run=) verbatim.
-  - dest 해소 — 미주입 시 pm_config 규약(REPO=인스턴스 루트)으로 폴백.
+  - forward 연결 — cmd_add_harness → pm_import.add_harness_cli(dest, harness, dry_run=) verbatim.
+  - dest 해소 — 미주입 시 pm_config 규약(REPO=인스턴스 루트)을 대신 쓴다.
   - dispatch 라우팅 — `main(["add-harness", ...])` 가 이 핸들러로 간다.
-  - usage prog 정합 — 서브파서 usage=`pm-config add-harness`(파일명 leak 0).
+  - usage prog 일치 — 서브파서 usage=`pm-config add-harness`(파일명 leak 0).
   - 엔진 부재 격리 — pm_import 부재면 명시 에러 rc 1.
   - **계약 예외 경계(codex)** — add_harness_cli 가 ValueError/FileNotFoundError/FileVsDirConflict/
-    AncestorConflict 를 친화 메시지 + rc 1 로 번역(traceback 0·pm_import.main 동형).
+    AncestorConflict 를 친화 메시지 + rc 1 로 번역(traceback 0·pm_import.main 과 같은 방식).
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def test_slot_default_test_cmd_uses_board_parallel_default(pc, monkeypatch):
 class FakePmImport:
     """`app.add_harness.add_harness_cli` 대역 — (home, dest, harness, dry_run=) 호출 인자를 기록한다.
 
-    실 복사/plan_copy 없이 *pm_config 가 어떤 인자로 위임하는지*(배선)만 결정적으로 친다.
+    실 복사/plan_copy 없이 *pm_config 가 어떤 인자로 위임하는지*(연결)만 결정적으로 친다.
     on_call 훅으로 위임 *중* 동작을 주입할 수 있다.
     `install(monkeypatch)` 가 실제 소유 함수 자리에 이 대역을 붙인다.
     """
@@ -99,7 +99,7 @@ class FakePmImport:
         return self._rc
 
 
-# ── forward 배선 — verbatim (cmd_add_harness → pm_import.add_harness_cli) ─────
+# ── forward 연결 — verbatim (cmd_add_harness → pm_import.add_harness_cli) ─────
 
 
 def test_add_harness_forwards_to_pm_import(pc, monkeypatch):
@@ -153,11 +153,11 @@ def test_add_harness_dispatch_routes_to_handler(pc, monkeypatch):
     assert len(fake.calls) == 1
     assert fake.calls[0]["harness"] == "opencode"
     assert fake.calls[0]["dry_run"] is True
-    # dest 미주입(dispatch 경로) → REPO 폴백.
+    # dest 미주입(dispatch 경로) → REPO 를 대신 씀.
     assert fake.calls[0]["dest_root"] == pc.REPO
 
 
-# ── usage prog 정합 (T-0249·ADR-0043) — 위임-경계 가드 + 서브파서 usage ──────
+# ── usage prog 일치 (T-0249·ADR-0043) — 위임-경계 가드 + 서브파서 usage ──────
 
 
 def _usage_line(text: str) -> str:
@@ -170,7 +170,7 @@ def test_add_harness_help_usage_shows_facade_prog(pc, capsys):
         pc.main(["add-harness", "--help"])
     assert exc.value.code == 0
     usage = _usage_line(capsys.readouterr().out)
-    assert usage.startswith("usage: pm-config add-harness")   # facade+서브 표기(카드↔실행 정합)
+    assert usage.startswith("usage: pm-config add-harness")   # facade+서브 표기(카드↔실행 일치)
     assert "pm_import.py" not in usage
     assert "pm_config.py" not in usage
 
@@ -221,7 +221,7 @@ def test_add_harness_cli_translates_contract_exc_to_rc1(
     assert rc == 1
     err = capsys.readouterr().err
     assert needle in err            # 예외 메시지가 친화적으로 surface
-    assert "오류:" in err           # main 동형 접두
+    assert "오류:" in err           # main 과 같은 접두
     assert "Traceback" not in err   # traceback 0
 
 
@@ -269,12 +269,12 @@ def test_add_harness_missing_dest_end_to_end_rc1(pc, tmp_path, capsys):
 
 
 def test_pm_config_local_leased_sessions_removed(pc):
-    """pm_config 로컬 `_leased_sessions` 사본이 제거됐다 — 공용 모듈로 완전 흡수(ADR-0057 B-1)."""
+    """pm_config 로컬 `_leased_sessions` 사본이 제거됐다 — 공용 모듈로 완전히 옮김(ADR-0057 B-1)."""
     assert not hasattr(pc, "_leased_sessions")
 
 
 def test_default_session_delegates_to_identity_args_leased_sessions(pc, tmp_path, monkeypatch):
-    """공용 session_name이 명시 Home의 장부 경로와 leased_sessions 결과를 사용한다."""
+    """공용 session_name이 명시 Home의 기록 경로와 leased_sessions 결과를 사용한다."""
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -290,7 +290,7 @@ def test_default_session_delegates_to_identity_args_leased_sessions(pc, tmp_path
 
 
 def test_default_session_identity_leased_zero_is_unresolved(pc, tmp_path, monkeypatch):
-    """공용 장부 조회가 빈 결과면 local.conf session 값과 무관하게 미해소를 반환한다."""
+    """공용 기록 조회가 빈 결과면 local.conf session 값과 무관하게 미해소를 반환한다."""
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -303,15 +303,15 @@ def test_default_session_identity_leased_zero_is_unresolved(pc, tmp_path, monkey
 
 
 def test_default_session_no_identity_injected_uses_real_module(pc, tmp_path, monkeypatch):
-    """장부와 설정이 없는 임시 Home에서 공용 조회가 미해소를 반환한다."""
+    """기록과 설정이 없는 임시 Home에서 공용 조회가 미해소를 반환한다."""
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    # 장부·local.conf 둘 다 부재 → 미해소(None) — 크래시 없이 실 모듈 경로가 동작함을 확인.
+    # 기록·local.conf 둘 다 부재 → 미해소(None) — 크래시 없이 실 모듈 경로가 동작함을 확인.
     assert lease_store.session_name(pm_paths.home_at(pc.REPO)) is None
 
 
-# ── sync-adapter-config --check 수렴 게이트 (T-0591) ─────────────────────────
+# ── sync-adapter-config --check 일치 검사 (T-0591) ─────────────────────────
 
 _CHECK_HOOKS_REL = ".codex/hooks.json"
 _CHECK_REPORT_REL = ".codex/config.toml"
@@ -324,7 +324,7 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _make_check_case(tmp_path: Path, *, hooks: str, ledger_sha: str | None):
+def _make_check_case(tmp_path: Path, *, hooks: str, record_sha: str | None):
     source = tmp_path / "source"
     template = source / "templates" / "codex" / ".codex"
     template.mkdir(parents=True)
@@ -341,12 +341,12 @@ def _make_check_case(tmp_path: Path, *, hooks: str, ledger_sha: str | None):
     (dest / _CHECK_REPORT_REL).write_text("adopter_knob = true\n", encoding="utf-8")
     (dest / ".project_manager" / "install.json").write_text(
         '{"schema": 1, "harnesses": ["codex"]}\n', encoding="utf-8")
-    if ledger_sha is not None:
+    if record_sha is not None:
         document = {
             "schema": 1,
             "files": {
                 _CHECK_HOOKS_REL: {
-                    "sha256": ledger_sha,
+                    "sha256": record_sha,
                     "recorded_at": "2026-01-01T00:00:00+09:00",
                     "template_rev": "old",
                 }
@@ -358,23 +358,23 @@ def _make_check_case(tmp_path: Path, *, hooks: str, ledger_sha: str | None):
 
 
 @pytest.mark.parametrize(
-    ("name", "hooks", "ledger_sha", "expected_rc", "remedy"),
+    ("name", "hooks", "record_sha", "expected_rc", "fix"),
     [
         ("converged", _CHECK_UPSTREAM_HOOKS, _sha(_CHECK_UPSTREAM_HOOKS), 0, None),
         ("unrecorded", _CHECK_OLD_HOOKS, None, 1, "--accept .codex/hooks.json"),
         ("unedited", _CHECK_OLD_HOOKS, _sha(_CHECK_OLD_HOOKS), 1, "pm-update"),
         ("edited", _CHECK_EDITED_HOOKS, _sha(_CHECK_OLD_HOOKS), 1,
          "--accept .codex/hooks.json"),
-        # byte가 같아도 durable 원장 증거가 없으면 false-green이다.
+        # byte가 같아도 durable 어댑터 설정 기록 증거가 없으면 false-green이다.
         ("in-sync-unrecorded", _CHECK_UPSTREAM_HOOKS, None, 1,
          "backfill"),
     ],
 )
-def test_sync_adapter_config_check_exit_and_actionable_remedy(
-        pc, tmp_path, capsys, name, hooks, ledger_sha, expected_rc, remedy):
-    dest, source = _make_check_case(tmp_path / name, hooks=hooks, ledger_sha=ledger_sha)
-    ledger = dest / ".project_manager" / "adapter_baseline.json"
-    before = ledger.read_bytes() if ledger.is_file() else None
+def test_sync_adapter_config_check_exit_and_actionable_fix(
+        pc, tmp_path, capsys, name, hooks, record_sha, expected_rc, fix):
+    dest, source = _make_check_case(tmp_path / name, hooks=hooks, record_sha=record_sha)
+    records = dest / ".project_manager" / "adapter_baseline.json"
+    before = records.read_bytes() if records.is_file() else None
     args = argparse.Namespace(
         list=False, check=True, accept=None, source=str(source))
 
@@ -383,21 +383,21 @@ def test_sync_adapter_config_check_exit_and_actionable_remedy(
     captured = capsys.readouterr()
     assert rc == expected_rc
     assert _CHECK_REPORT_REL in captured.out, "report-only 차이가 판정 출력에서 사라짐"
-    if remedy is None:
+    if fix is None:
         assert "일치 확인" in captured.out
     else:
-        assert remedy in captured.err, (name, captured.err)
+        assert fix in captured.err, (name, captured.err)
         assert "불일치" in captured.err
-    after = ledger.read_bytes() if ledger.is_file() else None
-    assert after == before, "--check가 원장을 썼다(write 0 계약 위반)"
+    after = records.read_bytes() if records.is_file() else None
+    assert after == before, "--check가 어댑터 설정 기록을 썼다(write 0 계약 위반)"
     assert (dest / _CHECK_HOOKS_REL).read_text(encoding="utf-8") == hooks
 
 
 def test_sync_adapter_config_check_in_sync_unrecorded_prescribes_real_pm_update(
         pc, tmp_path, capsys):
-    """byte 동일+원장 부재는 accept overwrite가 아니라 실 pm-update의 무변경 backfill 대상이다."""
+    """byte 동일+어댑터 설정 기록 부재는 accept overwrite가 아니라 실 pm-update의 무변경 backfill 대상이다."""
     dest, source = _make_check_case(
-        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=None)
+        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, record_sha=None)
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
     assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO), args, dest_root=dest) == 1
@@ -410,7 +410,7 @@ def test_sync_adapter_config_check_in_sync_unrecorded_prescribes_real_pm_update(
 def test_sync_adapter_config_check_report_only_drift_is_nonblocking(
         pc, tmp_path, capsys):
     dest, source = _make_check_case(
-        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=_sha(_CHECK_UPSTREAM_HOOKS))
+        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, record_sha=_sha(_CHECK_UPSTREAM_HOOKS))
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
     assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO),
@@ -422,7 +422,7 @@ def test_sync_adapter_config_check_report_only_drift_is_nonblocking(
 
 def test_sync_adapter_config_check_unavailable_is_rc1(pc, tmp_path, capsys, monkeypatch):
     def judge_adapter_configs(_dest, _source):
-        raise OSError("ledger read failed")
+        raise OSError("records read failed")
 
     monkeypatch.setattr(adapter_accept, "resolve_adapter_config_source",
                         lambda _dest, explicit: Path(explicit))
@@ -433,14 +433,14 @@ def test_sync_adapter_config_check_unavailable_is_rc1(pc, tmp_path, capsys, monk
     assert config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pc.REPO),
         args, dest_root=tmp_path / "dest") == 1
     err = capsys.readouterr().err
-    assert "unavailable" in err and "ledger read failed" in err
+    assert "unavailable" in err and "records read failed" in err
 
 
 def test_sync_adapter_config_check_managed_dest_missing_source_template_is_rc1(
         pc, tmp_path, capsys):
     """managed dest가 있는데 source template이 없으면 빈 판정 rc0로 접지 않는다."""
     dest, source = _make_check_case(
-        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=_sha(_CHECK_UPSTREAM_HOOKS))
+        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, record_sha=_sha(_CHECK_UPSTREAM_HOOKS))
     (source / "templates" / "codex" / _CHECK_HOOKS_REL).unlink()
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
 
@@ -449,14 +449,14 @@ def test_sync_adapter_config_check_managed_dest_missing_source_template_is_rc1(
 
     err = capsys.readouterr().err
     assert "unavailable" in err and _CHECK_HOOKS_REL in err
-    assert "--from <framework checkout>" in err, "source 복구 처방이 actionable하지 않음"
+    assert "--from <framework checkout>" in err, "source 복구 해결 방법이 actionable하지 않음"
 
 
 def test_sync_adapter_config_check_report_only_only_missing_managed_template_is_green(
         pc, tmp_path, capsys):
     """managed dest 후보가 아예 없고 report-only만 있으면 missing managed template은 비차단."""
     dest, source = _make_check_case(
-        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, ledger_sha=_sha(_CHECK_UPSTREAM_HOOKS))
+        tmp_path, hooks=_CHECK_UPSTREAM_HOOKS, record_sha=_sha(_CHECK_UPSTREAM_HOOKS))
     (dest / _CHECK_HOOKS_REL).unlink()
     (source / "templates" / "codex" / _CHECK_HOOKS_REL).unlink()
     args = argparse.Namespace(list=False, check=True, accept=None, source=str(source))
@@ -535,7 +535,7 @@ def test_accept_reapplies_harness_ctx(pc, tmp_path, capsys):
     (dest / "AGENTS.md").write_text("# adopter\n", encoding="utf-8")
     templates = REPO / "templates" / "codex" / ".codex"
     (dest / ".codex" / "hooks.json").write_bytes((templates / "hooks.json").read_bytes())
-    # 앞 세대 채택자 파일(한도 키 하나 · 900000) — 수용이 템플릿으로 바꾼다.
+    # 앞 버전 채택자 파일(한도 키 하나 · 900000) — 수용이 템플릿으로 바꾼다.
     shipped = (templates / "config.toml").read_text(encoding="utf-8")
     managed = "model_context_window = 200000\nmodel_auto_compact_token_limit = 180000\n"
     (dest / ".codex" / "config.toml").write_text(
@@ -555,7 +555,7 @@ def test_accept_reapplies_harness_ctx(pc, tmp_path, capsys):
     assert document["model_auto_compact_token_limit"] == 170000, "템플릿 값에 멈췄다"
     assert "model_context_window" not in document
     assert ".codex/config.toml model_auto_compact_token_limit 180000 → 170000" in captured.out
-    # 수용이 원장에 남긴 무편집 증언은 반영 뒤에도 유지된다(sha256 만 새 내용).
+    # 수용이 어댑터 설정 기록에 남긴 무편집 증언은 반영 뒤에도 유지된다(sha256 만 새 내용).
     judged = {item.relpath: item.status
               for item in adapter_report.judge_adapter_configs(dest, REPO, harnesses=["codex"])}
     assert judged[".codex/config.toml"] == "unedited"

@@ -1,4 +1,4 @@
-"""슬롯 장부와 live git 상태의 조회 결과 조립."""
+"""슬롯 기록과 live git 상태의 조회 결과 조립."""
 from __future__ import annotations
 
 
@@ -22,7 +22,7 @@ def slot_status(home, slot: str, *, git_runner: worktree_records.GitRunner | Non
     전파한다. `git_runner` 미주입 시 슬롯
     worktree 바인딩 `_real_git_runner(slot_path(slot))` 로 해소(hermetic 테스트는 mock 주입).
     슬롯 경로 부재 가드는 **실경로(미주입)에서만** 본다 — 주입 runner 는 존재/rc/HEAD 를
-    전부 모델링하는 권위이므로 fs 가드를 건너뛴다(`current_branch` 동형).
+    전부 모델링하는 권위이므로 fs 가드를 건너뛴다(`current_branch` 와 같은 방식).
     """
     runner = git_runner
     if runner is None:

@@ -14,7 +14,7 @@ from pm_engine.infra import pm_paths, repo_files, worktree_paths
 # add console-visible 러너(_real_git_runner_interactive)의 상한. **타임아웃의 실패모드 = 정상 op 도
 # 죽임(false-kill)** — 대형 repo 의 worktree add(로컬 bare→full checkout·느린 디스크/VPN/
 # Windows)가 진행 중인데도 짧은 고정값(옛 120)에 걸려 false-kill 되던 실측 블로커. submodule 선례
-# (SUBMODULE_TIMEOUT)와 동형으로 env override + 관대한 기본으로 옮긴다.
+# (SUBMODULE_TIMEOUT)와 같은 방식으로 env override + 관대한 기본으로 옮긴다.
 #
 # env override (`_resolve_submodule_timeout` 미러): 코드 직수정은 worktree_pool.py=manifest
 #   엔진이라 다음 pm_update 가 원복 → **env `PM_GIT_TIMEOUT`(pm_update overwrite 를 넘어 persist)** 로
@@ -23,12 +23,12 @@ from pm_engine.infra import pm_paths, repo_files, worktree_paths
 #   기본으로 안 두는 건 captured 계열 fast op(status/checkout 등)의 silent-hang 방지(submodule 3600
 #   유한 기본과 동일 철학·무제한은 env opt-in).
 #
-# ⚠️ **무제한은 console-visible 러너에만** (codex 게이트·설계 모순 fix): `None`(무제한)은 진행이 콘솔에
+# ⚠️ **무제한은 console-visible 러너에만** (codex 리뷰·설계 모순 fix): `None`(무제한)은 진행이 콘솔에
 #   보이는 worktree-add 인터랙티브 러너에만 적용한다. **captured 러너(`_real_git_runner`)는 절대 무제한이
 #   되지 않는다** — silent(진행 안 보임)라 무제한이면 base 파생 `fetch origin` 네트워크 stall 시 silent hang
-#   한다. 그래서 captured 러너는 GIT_TIMEOUT_SECONDS 가 None 일 때 `_GIT_TIMEOUT_DEFAULT`(유한)로 폴백-캡한다
+#   한다. 그래서 captured 러너는 GIT_TIMEOUT_SECONDS 가 None 일 때 `_GIT_TIMEOUT_DEFAULT`(유한)를 대신 써 상한을 건다
 #   (아래 `_real_git_runner`). 즉 captured=항상 유한·visible add=none 가능.
-_GIT_TIMEOUT_DEFAULT = 1800   # 기본 유한 상한 (초·30분) — 미설정/비정상 기본 + captured 러너 무제한 폴백 cap.
+_GIT_TIMEOUT_DEFAULT = 1800   # 기본 유한 상한 (초·30분) — 미설정/비정상 기본 + captured 러너 무제한 대신 쓰는 cap.
 
 
 def _resolve_git_timeout() -> "int | None":
@@ -84,14 +84,14 @@ def _real_git_runner(cwd: Path) -> worktree_records.GitRunner:
     <cwd> <argv...>` 형태로 항상 그 work tree/repo 에 묶는다. 인코딩은 엔진 관례대로 UTF-8
     (한글 경로·메시지 안전).
 
-    **stdout+stderr 결합 반환 (pm_config._real_clone_runner 정합)**: 옛 코드는
+    **stdout+stderr 결합 반환 (pm_config._real_clone_runner 와 일치)**: 옛 코드는
     `result.stdout` 만 돌려 stderr 를 버려 — TimeoutExpired/실패 시 out='' 가 돼 진단이
     불가능했다(`git submodule init failed: ''`). stderr 를 합쳐 에러를 가시화한다.
     ⚠️ `_is_dirty` 는 결합된 출력을 `_porcelain_status_lines`(porcelain 형식 라인만 추림·아래)로
     필터하므로 stderr 경고가 섞여도 dirty 오탐이 없다 — 이 결합은 진단용이고 dirty 판정은
     porcelain 라인만 보는 경로로 분리돼 있다.
 
-    ⚠️ **captured 러너는 절대 무제한이 되지 않는다 (codex 게이트·설계 모순 fix)**: subprocess
+    ⚠️ **captured 러너는 절대 무제한이 되지 않는다 (codex 리뷰·설계 모순 fix)**: subprocess
     timeout 은 `GIT_TIMEOUT_SECONDS or _GIT_TIMEOUT_DEFAULT` — GIT_TIMEOUT_SECONDS 가
     None(PM_GIT_TIMEOUT=none)이어도 유한 fallback(1800s)으로 캡한다. captured 는 진행이 콘솔에
     안 보여(silent) 무제한이면 network stall(base 파생 `fetch origin`) 시 silent hang 하기 때문.
@@ -128,7 +128,7 @@ def _real_git_runner_interactive(
     반환 `(rc, "")` — 출력은 콘솔로 직접 갔으므로 캡처 문자열은 없다(rc 로만 성공/실패 판정).
     git 부재는 `(1, 부재 메시지)`, 실행 예외(시간 초과 등)는 전파한다.
     `create_slot` 의 submodule/worktree-add 단계가 `git_runner is None` 인 실경로에서만 이걸
-    쓴다 — 주입된 git_runner(테스트 mock)가 있으면 그대로(DI seam 보존·인터랙티브 안 탐).
+    쓴다 — 주입된 git_runner(테스트 mock)가 있으면 그대로(DI 교체 지점 보존·인터랙티브 안 탐).
 
     ⚠️ 비-tty(CI/pytest)서도 안전: 테스트는 git_runner 를 주입하므로 이 실 인터랙티브
     경로를 타지 않는다. 이 함수 자체의 단위테스트는 짧은 비-네트워크 git 명령(stdin 블록
@@ -195,7 +195,7 @@ def _is_valid_bare(bare_path: Path, *, runner: worktree_records.GitRunner) -> bo
     bare)는 깨진 채, 나중 `git worktree add` 의 base 가 없어 날 git 에러로 죽는다(원인 안
     드러남·audit #1→#4).
 
-    **두 조건 AND** (codex 게이트·실측 확정):
+    **두 조건 AND** (codex 리뷰·실측 확정):
       1. **bare 형식** — `git -C <bare> rev-parse --is-bare-repository` rc0 && stdout 에 `true`.
       2. **HEAD 해소** — `git -C <bare> rev-parse --verify HEAD` **rc0**. is-bare(=`core.bare=true`)
          만으론 부족하다: `git init --bare`(또는 objects fetch 전 죽은 clone)가 남긴 **빈/부분
@@ -214,7 +214,7 @@ def _is_valid_bare(bare_path: Path, *, runner: worktree_records.GitRunner) -> bo
 
     `runner` 는 argv 앞에 `-C <bare>` 를 받는 clone-runner 계열 — pm_config 의 sibling 헬퍼
     (`_set_bare_fetch_refspec`·`_ensure_bare_branch_tracking`·`_resolve_base`)가 주입 runner 를
-    `-C <bare>` 로 재사용하는 관례와 동일(별도 DI seam 안 만듦·주입 mock 은 이 argv 로 유효/무효
+    `-C <bare>` 로 재사용하는 관례와 동일(별도 DI 교체 지점 안 만듦·주입 mock 은 이 argv 로 유효/무효
     bare 를 모델링). 절대경로 `-C` 는 중첩돼도(worktree_pool 실경로 `_real_git_runner(bare)` 와
     이중 `-C`) idempotent(뒤 절대경로가 앞을 리셋)라 안전.
     """
@@ -243,8 +243,8 @@ def _slot_branch_exists(runner: worktree_records.GitRunner, branch: str) -> bool
     안전(`.split()` 부분매치보다 견고).
 
     **rc 무시** — `git branch --list` 는 매치 없어도 rc0 이라 rc 기반(show-ref/rev-parse)은 못 쓴다
-    (게다가 주입 runner 의 generic 폴백 rc0 이 "존재" 오탐돼 hermetic 테스트를 깬다).
-    출력 라인 정확-일치만 신뢰한다. 주입 runner(테스트 mock)의 generic 폴백 `(0, "")` 은 빈
+    (게다가 주입 runner 의 generic 기본 응답 rc0 이 "존재" 오탐돼 hermetic 테스트를 깬다).
+    출력 라인 정확-일치만 신뢰한다. 주입 runner(테스트 mock)의 generic 기본 응답 `(0, "")` 은 빈
     splitlines → **"부재"**(슬롯 브랜치 생성 경로로 진행).
     """
     _rc, out = runner(["branch", "--list", "--format=%(refname:short)", branch])
@@ -337,7 +337,7 @@ def _discover_bares(home) -> "list[tuple[str, Path]]":
 def list_git_worktrees(home, 
     repo: "str | None" = None, *, git_runner: worktree_records.GitRunner | None = None,
 ) -> list[worktree_records.GitWorktree]:
-    """`git worktree list --porcelain` 로 실 git worktree 를 열거한다 — 장부 대조 소스.
+    """`git worktree list --porcelain` 로 실 git worktree 를 열거한다 — 기록 대조 소스.
 
     `repo` 지정 → 그 repo 의 bare(`.repos/<repo>.git`) 컨텍스트 1개만. `repo=None` → `.repos/` 의
     모든 bare 를 순회(전-repo·reconcile 용). 각 bare 에서 `git -C <bare> worktree list --porcelain`
@@ -345,7 +345,7 @@ def list_git_worktrees(home,
     콘솔 직행·빈 out)를 쓰지 않는다. 짧은 로컬 read-only op 라 유한 timeout 으로 충분.
 
     git 부재·rc≠0 은 그 bare 를 건너뛰고(빈 기여) runner 예외는 전파한다. **DI
-    seam 보존**: 주입 runner(테스트 mock)는 모든 bare 에 재사용(hermetic — porcelain 을 모델링·실
+    교체 지점 보존**: 주입 runner(테스트 mock)는 모든 bare 에 재사용(hermetic — porcelain 을 모델링·실
     git 안 탐). 반환은 GitWorktree 리스트(bare 엔트리 포함·slot=None) — 호출부(reconcile/슬롯번호)가
     non-bare 슬롯만 필터한다.
     """
@@ -366,7 +366,7 @@ def list_git_worktrees(home,
 def _git_slot_numbers(home, repo: str, *, git_runner: worktree_records.GitRunner | None = None) -> set[int]:
     """실 git worktree 목록에서 이 repo 의 슬롯 번호 집합 (orphan 포함·슬롯번호 충돌 회피).
 
-    `_existing_slot_numbers`(ledger 기준)와 **병합**해 create_slot 이 orphan(ledger 미등록·중단된
+    `_existing_slot_numbers`(기록 기준)와 **병합**해 create_slot 이 orphan(기록 미등록·중단된
     create/수동 add 잔존) worktree 번호와 충돌하지 않게 한다 — `git worktree add` "already exists"
     암호 에러(audit #4) 근절.
     """
@@ -390,7 +390,7 @@ def current_branch(home, slot: str, *, git_runner: worktree_records.GitRunner | 
     """슬롯 worktree 의 git HEAD 에서 현재 브랜치를 **live** 로 읽는다.
 
     `git symbolic-ref HEAD` → `refs/heads/<name>` 에서 `refs/heads/` 접두를 정확히 제거해 브랜치명.
-    브랜치가 git 의 단일 진실 — 장부에 저장된 복사본이 아니라 슬롯 worktree 의 실제 HEAD 를 매번
+    브랜치가 git 의 단일 진실 — 기록에 저장된 복사본이 아니라 슬롯 worktree 의 실제 HEAD 를 매번
     조회한다(사용자가 슬롯서 직접 `git checkout` 해도 즉시 반영·드리프트 불가능).
 
     **`symbolic-ref HEAD`(full ref·`--short` 없이)를 쓰는 이유**:
@@ -400,7 +400,7 @@ def current_branch(home, slot: str, *, git_runner: worktree_records.GitRunner | 
     주고, detached 일 때만 "ref HEAD is not a symbolic ref" 로 rc≠0 이라 — "현재 브랜치명 or 브랜치
     아님"의 정석 primitive 다(git=진실). **`--short` 를 뺀 이유**:
     `--short` 는 브랜치명과 같은 이름의 태그가 있으면(릴리즈가 `v1.3.0` 브랜치를 그대로 `v1.3.0`
-    태그로 찍은 경우) 모호성 회피로 `heads/v1.3.0` 을 돌려줘 순수 브랜치명이 아니었다 — 장부 기록
+    태그로 찍은 경우) 모호성 회피로 `heads/v1.3.0` 을 돌려줘 순수 브랜치명이 아니었다 — 대여 기록 값
     (`v1.3.0`)과 불일치해 부트스트랩 0단계가 가짜 "외부 개입" FAIL-LOUD 로 차단됐다.
     full ref 는 태그 존재와 무관하게 항상 `refs/heads/<정확한 브랜치명>` 이라 모호성 자체가 없고,
     `refs/heads/` 접두만 정확히 벗기면 진짜 이름이 `heads/x` 인 브랜치(합법·`heads/x` → 그대로 보존)
@@ -413,7 +413,7 @@ def current_branch(home, slot: str, *, git_runner: worktree_records.GitRunner | 
       - 슬롯 경로 부재 — worktree 폴더가 아직 없거나 지워짐.
 
     `git_runner` 미주입 시 실경로는 `_real_git_runner(slot_path(slot))` 로 해소한다
-    (기존 DI seam 패턴 — 테스트는 mock runner 주입으로 hermetic·실 git 불요). **슬롯 경로
+    (기존 DI 교체 지점 패턴 — 테스트는 mock runner 주입으로 hermetic·실 git 불요). **슬롯 경로
     부재 가드는 실경로(미주입)에서만 본다** — git_runner 주입 시엔 그 runner 가 존재/rc/HEAD
     를 전부 모델링하는 권위이므로 fs 가드를 건너뛴다(hermetic 테스트가 슬롯 폴더 없이 동작).
     """
@@ -446,4 +446,4 @@ def _rollback_worktree(home, repo: str, slot_path_: Path, *, git_runner: worktre
     runner = git_runner or _real_git_runner(pm_paths.bare_repo_path(home, repo))
     rc, _out = runner(["worktree", "remove", str(slot_path_), "--force"])
     if rc != 0:
-        runner(["worktree", "prune"])  # 폴백 — 등록 메타만이라도 정리.
+        runner(["worktree", "prune"])  # 대체 — 등록 메타만이라도 정리.

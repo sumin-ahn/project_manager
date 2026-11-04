@@ -60,7 +60,7 @@ def _render_key_rows(rows: list[tuple[str, str, str, str]]) -> list[str]:
 
 
 def render_key_table() -> str:
-    """`--keys` 출력 — 실명 키 표 + 패턴 키군 표. 이 산출이 키 목록의 사람 표면이다."""
+    """`--keys` 출력 — 실명 키 표 + 패턴 키군 표. 이 산출이 키 목록을 사람이 읽는 출력이다."""
     lines = [
         "local.conf 키 — 정본은 `local_conf.py` 레지스트리다(문서는 이 표를 복제하지 않는다).",
         "필수 = 없으면 핵심 명령(회귀·init)이 못 도는 키 · 기본값 `-` = 선언된 고정 기본값 없음.",
@@ -79,14 +79,14 @@ def render_key_table() -> str:
     return "\n".join(lines)
 
 
-# ── 키 표의 기계 표면 (`--keys --json`) ──────────────────────────────────
+# ── 키 표의 기계용 출력 (`--keys --json`) ──────────────────────────────────
 # 사람 표(`render_key_table`)와 **같은 레지스트리·같은 순서**를 낸다. 다른 점은 둘이다:
 # 패턴 키군의 전개된 실명을 `members` 로 함께 내며, 행마다 `choices`(고를 수 있는 값)·`recommended`(권장값)를
-# 싣는다. 소비자는 관리자 화면이고, 화면은 **그 프로젝트 사본의** 이 산출을 읽는다(세대가 다르면
+# 싣는다. 소비자는 관리자 화면이고, 화면은 **그 프로젝트 사본의** 이 산출을 읽는다(버전이 다르면
 # 키 집합이 다르므로 남의 레지스트리로 대신 그리지 않는다).
 #
 # schema 2 = 1 + `choices`·`recommended`. `keys[]`·`members[]` 의 **모든 행**이 두 키를 갖고(없으면
-# null) 사람 표는 바이트 그대로다 — 새 필드는 이 기계 표면에만 산다.
+# null) 사람 표는 바이트 그대로다 — 새 필드는 이 기계용 출력에만 산다.
 # schema 3 = 2 + `label`(사람이 읽는 이름). 화면이 키 문자열을 행 이름으로 쓰지 않게 하려는 것이고,
 # 문구의 단일 소유는 계속 이 파일이다(화면 상수 0).
 # schema 4 = 3 + `unset`(안 채웠을 때 적용되는 상태 한 낱말). 기본값과 짝이라 둘 중 하나는 항상
@@ -106,19 +106,19 @@ KEY_JSON_SCHEMA = 6
 _MODEL_FETCH: dict[str, str] = {"command": "delegate models", "arg": "harness"}
 
 
-def _axis_values(axis: str) -> dict[str, list[str]]:
-    """값의 축 이름 → `{버킷: 고를 수 있는 값}`. 목록은 설정 어휘에서 읽는다(여기 복제 0).
+def _choice_values(choice_kind: str) -> dict[str, list[str]]:
+    """값 종류 이름 → `{버킷: 고를 수 있는 값}`. 목록은 설정 어휘에서 읽는다(여기 복제 0).
 
     `harness` 는 버킷이 없어 `""` 한 칸이고, `reasoning` 은 CLI 마다 ladder 가 달라 하네스가
     버킷이다 — 버킷은 정적 허용값 하네스뿐이고 모델마다 값이 다른 하네스는 조회 응답에서 받는다.
     `model` 은 닫힌 목록이 없다(자유 문자열 + 조회 명령) — 빈 표다.
     """
-    if axis == "harness":
+    if choice_kind == "harness":
         return {"": list(conf_schema.HARNESS_CHOICES)}
-    if axis == "reasoning":
+    if choice_kind == "reasoning":
         return {harness: list(values)
                 for harness, values in conf_schema.REASONING_ALLOWED.items()}
-    if axis == "progress_signal":
+    if choice_kind == "progress_signal":
         return {"": [kind for kind in _progress_signal_kinds() if kind]}
     return {}
 
@@ -130,7 +130,7 @@ def _progress_signal_kinds() -> tuple[str, ...]:
 
 
 def _choices_json(key: str) -> dict | None:
-    """이 키가 고를 수 있는 값 — 화면이 읽는 규칙 한 벌 (축이 없는 키는 None).
+    """이 키가 고를 수 있는 값 — 화면이 읽는 규칙 한 벌 (고를 값 종류가 없는 키는 None).
 
     화면이 쓰는 규칙은 셋이다. 첫째 `bucket = depends_on ? (그 키의 현재 값 ?? "") : ""`,
     둘째 목록 원천 — 버킷이 `values` 에 있으면 그 목록, 없고 `fetch` 가 있으면 그 명령으로 받은
@@ -140,25 +140,25 @@ def _choices_json(key: str) -> dict | None:
     쓰는 위임 키와 추가 리뷰어 키가 같은 규칙으로 읽힌다.
     """
     spec = conf_schema.key_spec(key)
-    axis = None if spec is None else spec.choices
-    if axis is None:
+    choice_kind = None if spec is None else spec.choices
+    if choice_kind is None:
         return None
     harness = _harness_of(key)
-    fetch = dict(_MODEL_FETCH) if axis in ("model", "reasoning") else None
-    if axis == "reasoning":
+    fetch = dict(_MODEL_FETCH) if choice_kind in ("model", "reasoning") else None
+    if choice_kind == "reasoning":
         # 모델마다 추론 강도가 다른 하네스는 같은 세트 모델의 variant 를 조회 응답에서 받는다.
         fetch["variants_of"] = f"{key.rsplit('.', 1)[0]}.model"
-    if axis == "model" and harness is not None:
+    if choice_kind == "model" and harness is not None:
         # 하네스가 키에 박힌 군은 종속 키를 볼 것이 없다 — 무엇으로 조회할지를 표가 실어 준다.
         fetch["value"] = harness
     depends_on = None
-    if harness is None and axis not in ("harness", "progress_signal"):
+    if harness is None and choice_kind not in ("harness", "progress_signal"):
         depends_on = f"{key.rsplit('.', 1)[0]}.harness"
     return {
         "depends_on": depends_on,
-        "values": _axis_values(axis),
+        "values": _choice_values(choice_kind),
         "fetch": fetch,
-        "free_text": axis == "model",
+        "free_text": choice_kind == "model",
     }
 
 
@@ -168,7 +168,7 @@ def _harness_of(key: str) -> str | None:
 
 
 # 한 줄로 묶이는 키군의 **줄 이름** — 화면이 `delegate.developer.hard` 같은 키를 그대로 이름으로
-# 쓰지 않게 한다. 축(역할·티어)은 이 모듈이 이미 소유하고, 여기서는 그 축의 사람 말 이름만 준다.
+# 쓰지 않게 한다. 패턴 자리(역할·티어)는 이 모듈이 이미 소유하고, 여기서는 그 자리의 사람 말 이름만 준다.
 _ROLE_LABELS = {
     "developer": "구현",
     "researcher": "조사",
@@ -204,7 +204,7 @@ def _pattern_unit_labels(pattern: str) -> dict[str, str]:
     """키군 안에서 행마다 갈리는 이름 `<키> → 사람이 읽는 이름`. 안 갈리는 군은 빈 표다.
 
     군 선언의 이름 하나가 멤버 전부에 그대로 붙으면 같은 이름이 여러 줄에 서서 어느 줄이
-    무엇인지 갈리지 않는다. 축을 이 모듈이 소유한 군만 여기서 갈라 준다 — 채택자가 이름을
+    무엇인지 갈리지 않는다. 전개 값을 이 모듈이 소유한 군만 여기서 갈라 준다 — 채택자가 이름을
     정하는 군(`test.<platform>`·`delegate.model_alias.<name>`)은 그 이름 자체가 이미 갈라
     주므로 지어내지 않는다. 한 줄로 묶이는 역할 군의 줄 이름은 여기가 아니라 `_units_json` 이다.
 
@@ -218,10 +218,10 @@ def _pattern_unit_labels(pattern: str) -> dict[str, str]:
 
 
 def _pattern_members(pattern: str) -> list[dict]:
-    """패턴 키군의 전개된 실명과 각 기본값 — 축은 이 모듈이 이미 소유한 선언에서 온다.
+    """패턴 키군의 전개된 실명과 각 기본값 — 전개 값은 이 모듈이 이미 소유한 선언에서 온다.
 
-    코드가 축을 갖지 않는 군은 빈 목록이다(지어내지 않는다): `test.<platform>.cmd` 의 축은 그
-    프로젝트의 `qa.platforms` 값이고, `delegate.model_alias.<name>` 의 축은 채택자가 정하는
+    코드가 전개 값을 갖지 않는 군은 빈 목록이다(지어내지 않는다): `test.<platform>.cmd` 의 전개 값은 그
+    프로젝트의 `qa.platforms` 값이고, `delegate.model_alias.<name>` 의 전개 값은 채택자가 정하는
     이름이다. 그 두 군의 실키는 화면이 **conf 에 이미 있는 값**에서 읽는다.
     """
     if pattern == conf_schema.HARNESS_PATTERN:
@@ -235,12 +235,12 @@ def _pattern_members(pattern: str) -> list[dict]:
         keys = []
     return [{"key": key, "default": conf_schema.default_for(key), "unset": conf_schema.unset_for(key),
              "choices": _choices_json(key), "recommended": conf_schema.recommended_for(key),
-             **_row_axes(key)}
+             **_row_fields(key)}
             for key in keys]
 
 
-def _row_axes(key: str) -> dict:
-    """행마다 싣는 schema 6 축 셋 — 묶음 이름·스위치·엔진이 적는 키인지."""
+def _row_fields(key: str) -> dict:
+    """행마다 싣는 schema 6 필드 셋 — 묶음 이름·스위치·엔진이 적는 키인지."""
     spec = conf_schema.key_spec(key)
     return {"unit": unit_of(key), "governed_by": _governed_json(spec),
             "readonly": spec is not None and spec.readonly}
@@ -293,7 +293,7 @@ def key_registry_json() -> dict:
          "description": spec.description,
          "default": spec.default, "unset": spec.unset, "required": spec.required,
          "kind": "key", "members": None, "unit_labels": {},
-         "choices": _choices_json(key), "recommended": conf_schema.recommended_for(key), **_row_axes(key)}
+         "choices": _choices_json(key), "recommended": conf_schema.recommended_for(key), **_row_fields(key)}
         for key, spec in conf_schema.KEY_REGISTRY.items()
     ]
     keys.extend(
@@ -316,7 +316,7 @@ def _declared_groups() -> list[str]:
     """실제 선언에 쓰인 묶음 이름 — 표시 순서는 `KEY_GROUPS` 하나가 정한다.
 
     `KEY_GROUPS` 밖의 묶음을 뒤에 덧붙이는 자리는 두지 않는다 — 완전성 테스트가 모든
-    `spec.group` 이 `KEY_GROUPS` 안에 있음을 강제하므로 그 확장은 발화할 수 없다(새 묶음을
+    `spec.group` 이 `KEY_GROUPS` 안에 있음을 강제하므로 그 확장은 일어날 수 없다(새 묶음을
     쓰려면 `KEY_GROUPS` 에 순서를 선언하는 것이 유일한 경로다).
     """
     return [group for group in conf_schema.KEY_GROUPS
@@ -324,12 +324,12 @@ def _declared_groups() -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """키 표(`--keys`)와 기계 JSON(`--keys --json`) 출력 — 사람이 손으로 옮겨 적는 표면을 없앤다."""
+    """키 표(`--keys`)와 기계 JSON(`--keys --json`) 출력 — 사람이 손으로 옮겨 적는 자리를 없앤다."""
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ["--keys"] and args[1:] in ([], ["--json"]):
         if args[1:]:
             # 기계 판독 페이로드는 콘솔 텍스트 레이어를 건너뛴다 — 그 레이어는 PowerShell 캡처에서
-            # 콘솔 codepage 로 강등되고 그 치환은 되돌릴 수 없다(사람 표는 종전 `print` 그대로).
+            # 콘솔 codepage 로 바뀌고 그 치환은 되돌릴 수 없다(사람 표는 종전 `print` 그대로).
             console.write_machine_line(
                 json.dumps(key_registry_json(), ensure_ascii=False))
         else:

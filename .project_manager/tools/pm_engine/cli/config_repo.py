@@ -16,7 +16,7 @@ from pm_engine.app import board_sync
 
 # ── base 브랜치 해소 ─────────────────────────────────────────────────
 
-# `--base` 검증 실패(없는 브랜치)를 빈문자열("미해소")과 구별하는 sentinel. None 폴백
+# `--base` 검증 실패(없는 브랜치)를 빈문자열("미해소")과 구별하는 sentinel. None 대체
 # (bare HEAD 해소 실패)은 빈 문자열로 surface 하지만, *명시 base 가 검증 실패*하면 등록을
 # 막아야 하므로(잘못된 base 기록 방지) 이 sentinel 로 호출부에 신호한다.
 _BASE_INVALID = object()
@@ -25,12 +25,12 @@ _BASE_INVALID = object()
 def _resolve_base(base_arg: str | None, bare_path: Path, *, runner: worktree_records.GitRunner):
     """repo add base 브랜치를 해소한다. bare(`.repos/<name>.git`)는 존재 전제.
 
-    git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI seam 안 만듦·
+    git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI 교체 지점 안 만듦·
     `_real_clone_runner` 가 `git <argv>` 형태라 `-C` 를 argv 로 넣으면 그 repo 컨텍스트).
 
       - `base_arg` 미지정(None) → bare HEAD 해소(`git -C <bare> symbolic-ref HEAD` full ref
         = 원격 default 브랜치)를 base 로 명시값화한다. 해소 실패(rc≠0/비-브랜치 ref)는 빈 문자열
-        ("미해소"·worktree add 가 bare HEAD 폴백·현행 동작) — repo 등록 자체는 막지 않는다.
+        ("미해소"·worktree add 가 bare HEAD 대체·현행 동작) — repo 등록 자체는 막지 않는다.
       - `base_arg` 지정 → **로컬 브랜치** 검증(`git -C <bare> show-ref --verify --quiet
         refs/heads/<b>` rc==0). `show-ref --verify` 는 exact-ref primitive(revision 문법
         미적용)라 태그·SHA·`HEAD`·원격 ref 는 물론 `main~0`·`main^{}` 같은 revision 표현도
@@ -46,7 +46,7 @@ def _resolve_base(base_arg: str | None, bare_path: Path, *, runner: worktree_rec
         rc, out = runner(["-C", str(bare_path), "symbolic-ref", "HEAD"])
         ref = out.strip()
         if rc != 0 or not ref.startswith(worktree_git._SYMREF_BRANCH_PREFIX):
-            return ""  # bare HEAD 해소 실패 → 미해소(worktree add 가 bare HEAD 폴백·현행).
+            return ""  # bare HEAD 해소 실패 → 미해소(worktree add 가 bare HEAD 대체·현행).
         return ref[len(worktree_git._SYMREF_BRANCH_PREFIX):]
     # refs/heads/<b> exact-ref 검증 — 태그·SHA·HEAD·원격 ref·revision 문법(main~0·main^{}) 거부,
     # 로컬 브랜치만 통과. show-ref --verify 는 revision 문법을 적용 안 하는 exact-ref primitive.
@@ -62,7 +62,7 @@ def _resolve_base(base_arg: str | None, bare_path: Path, *, runner: worktree_rec
 
 # `git clone --bare` 가 설정하지 않는 fetch refspec — 일반(non-bare) clone 은 이 줄을
 # remote.origin.fetch 에 박지만 `--bare` 는 생략한다. 그 결과 bare 에 origin/* remote-tracking
-# ref(origin/main 등)가 안 생겨, 그 bare 를 공유하는 worktree 슬롯이 핸드오프 라이브-게이트
+# ref(origin/main 등)가 안 생겨, 그 bare 를 공유하는 worktree 슬롯이 핸드오프 라이브 검사
 #의 baseline(@{upstream}/origin/main)을 해소 못 한다. multi-PM 패밀리 공통 결함.
 _BARE_FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*"
 
@@ -72,13 +72,13 @@ def _set_bare_fetch_refspec(bare_path: Path, *, runner: worktree_records.GitRunn
 
     `git clone --bare` 는 일반 clone 과 달리 `remote.origin.fetch` 를 설정하지 않아 bare 에
     `refs/remotes/origin/*` 가 영영 안 생긴다 → 그 bare 를 공유하는 worktree 슬롯이 핸드오프
-    라이브-게이트의 baseline(origin/main)을 해소 못 한다(ambiguous→surface). 이를:
+    라이브 검사의 baseline(origin/main)을 해소 못 한다(ambiguous→surface). 이를:
       1. `git -C <bare> config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`
          (set=덮어쓰기·멱등 — 재실행/refspec-없는 과거 bare 보정 안전).
       2. `git -C <bare> fetch origin` (origin/* remote-tracking ref 채움 → origin/main 생성).
     로 근절한다(`--mirror` 가 아니라 명시 refspec — 국소·안전·push --mirror 부작용 없음·결정).
 
-    git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI seam 안 만듦·base
+    git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI 교체 지점 안 만듦·base
     해소가 symbolic-ref/show-ref 를 `-C <bare>` 로 호출하는 패턴과 동일). **fail-soft**:
     refspec set 실패·fetch 실패(네트워크)는 경고를 surface 하되 repo add 자체는 막지 않는다
     (refspec 은 박혔으니 이후 fetch 로 복구 가능). bare 는 존재 전제(clone 성공/재사용 후 호출).
@@ -111,7 +111,7 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: worktree_records.Gi
 
     `git clone --bare` 는 일반(non-bare) clone 과 달리 로컬 브랜치 tracking config
     (`branch.<n>.remote`/`branch.<n>.merge`)를 설정하지 않는다 → 그 bare 를 공유하는 worktree
-    슬롯의 **기본 브랜치가 `@{upstream}`(origin/<default>)을 해소 못 한다**(livegate baseline·
+    슬롯의 **기본 브랜치가 `@{upstream}`(origin/<default>)을 해소 못 한다**(라이브 시험 통과 조건 baseline·
     handoff freshness·`git status` ahead/behind·`git pull` 무인자 영향).
     (`_set_bare_fetch_refspec`)가 tracking 의 한 절반(origin/* remote-tracking ref)을 채웠고,
     이 함수가 나머지 절반(로컬 `branch.<d>.*` tracking config)을 채운다. bare 에 설정하면
@@ -119,14 +119,14 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: worktree_records.Gi
 
     동작:
       1. 기본 브랜치 = bare HEAD 해소(`git -C <bare> symbolic-ref HEAD` full ref, 실패·
-         비-브랜치 ref 시 `git -C <bare> rev-parse --abbrev-ref HEAD` 폴백).
+         비-브랜치 ref 시 `git -C <bare> rev-parse --abbrev-ref HEAD` 대체).
       2. `git -C <bare> config branch.<d>.remote origin` (set=덮어쓰기·멱등).
       3. `git -C <bare> config branch.<d>.merge refs/heads/<d>`.
     비-bare `git clone` 이 checked-out 기본 브랜치만 tracking 거는 동작을 미러 — **기본 브랜치만**
     설정한다(전 브랜치 일괄 tracking 아님·로컬-전용 의도 브랜치를 잘못 tracking 걸지 않기 위해).
 
-    git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI seam 안 만듦·
-    `_set_bare_fetch_refspec`·base 해소 동형). **fail-soft**: bare HEAD 미해소·config
+    git 호출은 주입된 clone `runner` 를 `-C <bare>` 로 재사용한다(별도 DI 교체 지점 안 만듦·
+    `_set_bare_fetch_refspec`·base 해소와 같은 방식). **fail-soft**: bare HEAD 미해소·config
     실패는 경고를 surface 하되 repo add 자체는 막지 않는다(tracking 은 *추가 가드*이지 repo add
     핵심 부작용 아님). bare 는 존재 전제(clone 성공/재사용 후 호출).
     """
@@ -136,7 +136,7 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: worktree_records.Gi
     if rc == 0 and ref.startswith(worktree_git._SYMREF_BRANCH_PREFIX):
         default_branch = ref[len(worktree_git._SYMREF_BRANCH_PREFIX):]
     else:
-        # detached·비-symbolic HEAD(비-브랜치 ref) 폴백 — 현재 브랜치명을 rev-parse 로 시도.
+        # detached·비-symbolic HEAD(비-브랜치 ref) 대체 — 현재 브랜치명을 rev-parse 로 시도.
         rc, out = runner(["-C", str(bare_path), "rev-parse", "--abbrev-ref", "HEAD"])
         default_branch = out.strip()
     if rc != 0 or not default_branch or default_branch == "HEAD":
@@ -184,7 +184,7 @@ def _ensure_bare_branch_tracking(bare_path: Path, *, runner: worktree_records.Gi
 # `info/exclude` 다. bare 의 exclude 는 `$GIT_COMMON_DIR/info/exclude` 라 그 풀의 모든 linked
 # worktree 가 공유하므로, 앱 저장소에 프레임워크 파일을 두거나 사람이 exclude 를 손으로
 # 고치는 절차가 사라진다. 값은 `delegate_rounds.TICKET_COPY_POOL_IGNORE_RULE` 과 같은
-# 문자열이어야 한다(판정하는 쪽과 설치하는 쪽의 불변식은 테스트가 고정). 루트 앵커 디렉터리
+# 문자열이어야 한다(판정하는 쪽과 설치하는 쪽의 불변식은 테스트가 고정). 루트에 고정한 디렉터리
 # 규칙이라 저장소가 추적하는 `.project_manager/tools`·`wiki` 는 숨기지 않는다.
 TICKET_COPY_POOL_IGNORE_RULE = "/.project_manager/.local/"
 
@@ -204,7 +204,7 @@ def _ensure_bare_ticket_copy_exclude(bare_path: Path) -> bool:
 
     **fail-soft**: 쓰기 실패는 경고를 surface 하되 repo 등록·슬롯 생성 자체는 막지 않는다
     (옆 두 헬퍼 `_set_bare_fetch_refspec`·`_ensure_bare_branch_tracking` 과 같은 계약). 조용한
-    생략이 아니다 — 진짜 게이트는 `delegate_copy_store`의 사본 루트 검사(fail-loud)이고, 여기서 rc 를
+    생략이 아니다 — 진짜 검사는 `delegate_copy_store`의 사본 루트 검사(fail-loud)이고, 여기서 rc 를
     1 로 만들면 exclude 쓰기 실패가 repo 등록 자체를 막는다. 반환 = 규칙이 설치된 상태인지.
     """
     exclude = bare_path / "info" / "exclude"
@@ -327,7 +327,7 @@ def cmd_repo_add(
     **base 브랜치 해소** — clone 후, areas 등록 *전*(등록 줄에 base 를 박아야 하므로):
       - `--base` 미지정 → bare HEAD(`git -C .repos/<name>.git symbolic-ref HEAD` full ref
         = 원격 default 브랜치)를 해소해 명시값화·기록. worktree add 가 슬롯 브랜치를 그
-        base 에서 파생한다. HEAD 해소 실패 시 base 빈 값(현행 bare HEAD 동작 폴백).
+        base 에서 파생한다. HEAD 해소 실패 시 base 빈 값(현행 bare HEAD 동작 대체).
       - `--base <b>` 지정 → 로컬 브랜치 검증(`git -C .repos/<name>.git show-ref --verify --quiet refs/heads/<b>` rc==0).
         없으면 명확한 에러 rc 1(clone 은 됐으나 areas 등록은 막아 잘못된 base 기록 방지).
 
@@ -343,7 +343,7 @@ def cmd_repo_add(
     재해소하지 않는다(append-only·중복 등록 금지).
     clone 실패해도 등록이 남았지만, 이제 clone 성공 후에만 등록한다(재실행이 둘 다 다시 함).
 
-    clone_runner / repos_dir 주입으로 hermetic 테스트(실 등록·clone 없이 배선 검증).
+    clone_runner / repos_dir 주입으로 hermetic 테스트(실 등록·clone 없이 연결 검증).
     base 해소 git 호출(symbolic-ref/show-ref)은 같은 `clone_runner` 를 `-C <bare>` 로 재사용한다.
     """
 
@@ -354,7 +354,7 @@ def cmd_repo_add(
 
     # name 가드 — **어떤 부작용(bare clone·areas_append·훅 설치)보다 앞에서** 검증한다.
     # `../x` 폴더탈출·슬래시/공백/`.` 의 areas.md 줄 corruption·leading `-`·빈 문자열을 입구에서
-    # 막는다(fail-closed·부분 부작용 0). CLI·콘솔 두 경로가 결국 이 sink 로 수렴하므로 여기 한 곳.
+    # 막는다(fail-closed·부분 부작용 0). CLI·콘솔 두 경로가 결국 이 sink 로 모이므로 여기 한 곳.
     if not areas_rules._validate_repo_name(name):
         print(
             f"[중단] repo 이름 {name!r} 형식 위반 — 허용: 영숫자로 시작, 이후 영숫자/`_`/`-` "
@@ -365,7 +365,7 @@ def cmd_repo_add(
         return 1
 
     # 보호목록 형식 검증 — **어떤 부작용(bare clone·areas_append·훅 설치)보다
-    # 앞에서**. 미지정(None)이면 빈 칼럼 = `_repo_protected` 의 DEFAULT_PROTECTED 폴백(현행).
+    # 앞에서**. 미지정(None)이면 빈 칼럼 = `_repo_protected` 의 DEFAULT_PROTECTED 대체(현행).
     # 명시했으면 토큰 형식만 본다(브랜치 실재는 검증 안 함 — 아직 없는 `release` 를 미리 보호하는
     # 게 정상). 빈 문자열은 "보호 없음" 을 뜻할 수 없으므로 fail-loud(플래그 생략으로 안내).
     protected_arg = getattr(args, "protected", None)
@@ -422,10 +422,10 @@ def cmd_repo_add(
     area_owner = getattr(args, "user", None) or lease_store.user_name(home)
     base_arg = getattr(args, "base", None)
     bare_path = repos_dir / f"{name}.git"
-    # 멱등 재등록 판별은 **repo명**으로 한다(prefix 로 세지 않는다) — 자동시드 폐지
+    # 멱등 재등록 판별은 **repo명**으로 한다(prefix 로 세지 않는다) — 자동 채움 폐지
     # 후 prefix 칼럼이 비므로 `registered_prefixes()` 는 이 repo 를 못 센다. `registered_repos()`
     # 는 repo 칼럼을 직접 세어 중복 append(같은 repo 두 줄)를 막는다. 위 case-only 가드에서 이미
-    # 조회한 `registered_names` 를 재사용한다(같은 areas 스냅샷·중복 조회 dedupe).
+    # 조회한 `registered_names` 를 재사용한다(같은 areas 읽은 결과·중복 조회 dedupe).
     already_registered = name in registered_names
     runner = clone_runner or git._real_clone_runner()
 
@@ -558,17 +558,17 @@ def cmd_repo_add(
         return 1
 
     # 4) areas.md 등록 — repo/prefix/git/test_cmd/owner/base/protected 칼럼.
-    #    prefix(2번째 positional)는 **빈 값**으로 등록 — repo명 자동시드 폐지: repo명은
+    #    prefix(2번째 positional)는 **빈 값**으로 등록 — repo명 자동 채움 폐지: repo명은
     #    작업 카테고리가 아니다.
     #    으로 튀게 했다. protected 는 `--protected` 인자— 미지정이면 빈 값이라
-    #    `_repo_protected` 가 DEFAULT_PROTECTED(main/master/develop) 폴백하고, 사후 변경은
-    #    `pm-config repo protected <name> <목록>`(areas → sidecar 정합화)로 한다.
+    #    `_repo_protected` 가 DEFAULT_PROTECTED(main/master/develop) 를 대신 쓰고, 사후 변경은
+    #    `pm-config repo protected <name> <목록>`(areas → sidecar 일치시킴)로 한다.
     areas_registry.areas_append(
         home, "", "", owner, repo=name, git=git_url, test_cmd=args.test, base=base,
         protected=protected_cell, area_owner=area_owner,
     )
     # --test 미지정(None) 이면 areas test_cmd 빈 값 — 해소 체인이 슬롯/local.conf 로
-    # 폴백한다. 빌드명령은 worktree add 프롬프트·콘솔 [b] 에서 채울 수 있다.
+    # 대체한다. 빌드명령은 worktree add 프롬프트·콘솔 [b] 에서 채울 수 있다.
     test_surface = args.test if args.test else "(미지정 — worktree add/콘솔 [b] 에서 설정)"
     base_surface = base if base else "(미해소 — worktree add 가 bare HEAD 사용)"
     area_owner_surface = area_owner if area_owner else "(미상 — local.conf identity.user= / git user.email 미설정)"
@@ -597,17 +597,17 @@ def _print_protected_status(
     *,
     clone_runner: worktree_records.GitRunner | None = None,
 ) -> int:
-    """`repo protected <name>` 조회 — 실효값 + 출처 + sidecar 정합/drift 3줄.
+    """`repo protected <name>` 조회 — 실효값 + 출처 + sidecar 일치/drift 3줄.
 
-    "빈 값이라 기본값 폴백 중" 과 "이 clone 의 훅은 아직 옛 값으로 동작" 두 사실이 안 보이면
+    "빈 값이라 기본값으로 대체 중" 과 "이 clone 의 훅은 아직 옛 값으로 동작" 두 사실이 안 보이면
     사용자가 계속 헷갈린다 — 그래서 **실효값**(areas_store가 해소한 목록)·**출처**(명시/기본값
-    폴백/미등록)·**sidecar 정합**(훅이 실제로 읽는 파일과 같은가)을 함께 낸다. 조회는 순수
+    대체/미등록)·**sidecar 일치**(훅이 실제로 읽는 파일과 같은가)을 함께 낸다. 조회는 순수
     읽기라 어떤 파일도 쓰지 않는다(rc 0).
 
-    **sidecar 줄은 두 축을 본다(should-fix)**:  내용 정합(sidecar == 실효값)  **배선**
+    **sidecar 줄은 두 가지를 본다(should-fix)**:  내용 일치(sidecar == 실효값)  **등록**
     (`core.hooksPath` 가 우리 훅 디렉토리를 가리키나·`protected_hook_wired`).
     "sidecar 는 최신인데 훅이 아예 안 걸린" 부분성공(`install_protected_hook` 3단계 실패)이
-    `✓ 정합` 으로 보인다 — 보호가 꺼져 있는데 정합하다고 거짓 보고하는 것이다.
+    `✓ 일치` 으로 보인다 — 보호가 꺼져 있는데 일치한다고 거짓 보고하는 것이다.
     """
     effective = areas_store._repo_protected(home, name)
     print(f"{name} · protected = {', '.join(effective)}")
@@ -630,18 +630,18 @@ def _print_protected_status(
     wired = protected_hooks.protected_hook_wired(home,
         name, git_runner=clone_runner)
     listed = ", ".join(sidecar) or "(빈 파일)"
-    # 재실행 안내는 **현재 상태**(명시/폴백/미등록)에 맞춰야 한다 — 폴백 상태에 명시 커맨드를
+    # 재실행 안내는 **현재 상태**(명시/대체/미등록)에 맞춰야 한다 — 대체 상태에 명시 커맨드를
     # 안내하면 사용자가 그대로 실행했을 때 출처가 조용히 "명시" 로 바뀐다(단일 분기 헬퍼).
     retry = repo_protection.protected_retry_command(home, name)
     if sidecar != effective:
-        # 내용 drift 가 지배적 — 배선 여부와 무관하게 재설치가 답이다(재설치가 둘 다 고친다).
+        # 내용 drift 가 지배적 — 등록 여부와 무관하게 재설치가 답이다(재설치가 둘 다 고친다).
         print(f"  훅 sidecar: {path} → {listed}  "
               f"⚠ 옛 목록({', '.join(sidecar) or '없음'}) — 이 clone 의 훅은 아직 옛 값으로 동작")
         print(f"    → 일치시키려면:  {retry}"
               f"   (또는 `{lease_store._runtime_skill_entry('pm-bootstrap')}` 이 세션 시작에 자동으로 일치시킴)")
         return 0
     if wired is False:
-        # 내용은 최신인데 배선이 끊긴 부분성공 — sidecar 만 보면 `✓ 정합` 으로 보이는 그 상태.
+        # 내용은 최신인데 등록이 끊긴 부분성공 — sidecar 만 보면 `✓ 일치` 으로 보이는 그 상태.
         print(f"  훅 sidecar: {path} → {listed}  "
               "⚠ 훅 미등록 — 목록은 최신이나 bare `core.hooksPath` 가 이 디렉토리를 가리키지 "
               "않아 pre-push·pre-commit 훅이 아예 실행되지 않는다(보호 꺼짐)")
@@ -665,15 +665,15 @@ def cmd_repo_protected(
     """`repo protected <name> [<목록>|default]` — 보호 브랜치 목록 조회/설정.
 
     값 인자 유무로 get/set 이 갈린다(`upstream show|set`·`task prefix <name> <p|none>` family
-    동형). `default`(대소문자 무관)는 **칼럼 비움** = `DEFAULT_PROTECTED`
-    (main/master/develop) 폴백이지 "보호 해제" 가 아니다 — 빈 문자열 지정은 fail-loud 한다.
+    와 같은 방식). `default`(대소문자 무관)는 **칼럼 비움** = `DEFAULT_PROTECTED`
+    (main/master/develop) 대체이지 "보호 해제" 가 아니다 — 빈 문자열 지정은 fail-loud 한다.
 
     설정 순서(**areas → sidecar 고정**·역순 금지):
       1. 형식 검증(토큰만·브랜치 실재는 검증 안 함) — 실패면 부작용 0 rc1.
       2. `areas_registry.areas_set_cell(name, "protected", …)` — `board_lock()` 하 비파괴 in-place 재기록.
          중복 repo 행이면 fail-loud(부작용 0·수동 정리 안내), 미등록이면 `repo add` 안내.
       3. 훅 sidecar 재설치(`_install_protected_hook` 재사용·멱등). 실패는 loud 경고 + 재실행
-         안내 — areas 는 이미 비준됐으므로 rc 0(다음 `repo add`/`/pm-bootstrap` 이 자가치유).
+         안내 — areas 는 이미 승인됐으므로 rc 0(다음 `repo add`/`/pm-bootstrap` 이 자가치유).
       4. board-git best-effort 동기(공유 정책 변경은 즉시 공유돼야 값-연결이 산다).
       5. bare 에 없는 브랜치가 있으면 경고 1줄(거부 아님 — 미래 브랜치 선-보호가 정상).
 
@@ -698,7 +698,7 @@ def cmd_repo_protected(
     # ── set ──────────────────────────────────────────────────────────────
     if value.strip().lower() == areas_rules._PROTECTED_DEFAULT_LITERAL:
         tokens: list[str] = []
-        new_cell = ""            # 칼럼 비움 → `_repo_protected` 가 DEFAULT_PROTECTED 폴백.
+        new_cell = ""            # 칼럼 비움 → `_repo_protected` 가 DEFAULT_PROTECTED 대체.
     else:
         parsed, reason = areas_rules._validate_protected_tokens(value)
         if parsed is None:
@@ -707,7 +707,7 @@ def cmd_repo_protected(
         tokens = parsed
         new_cell = ",".join(tokens)
 
-    # 2) areas.md 셀 변경 — 단일 진실 먼저(역순이면 훅이 비준되지 않은 목록을 강제한다).
+    # 2) areas.md 셀 변경 — 단일 진실 먼저(역순이면 훅이 승인되지 않은 목록을 강제한다).
     try:
         old_cell, _new = areas_registry.areas_set_cell(home, name, "protected", new_cell)
     except (areas_rules.AreasDuplicateRepo, areas_rules.AreasRepoNotFound, OSError, UnicodeError) as exc:
@@ -736,10 +736,10 @@ def cmd_repo_protected(
     new_surface = new_cell or "(빈 값 — 기본값으로 대체: main/master/develop)"
     print(f"✓ areas.md `protected` 갱신: {name}  {old_surface} → {new_surface}")
 
-    # 3) 파생 sidecar 정합화 — 훅이 *실제로 읽는* 파일. 멱등 재설치(`repo add`·`worktree add` 공용).
-    # areas 는 이미 비준됐으므로 sidecar 실패는 rc 를 바꾸지 않는다(다음 repo add/`/pm-bootstrap`
+    # 3) 파생 sidecar 일치시킴 — 훅이 *실제로 읽는* 파일. 멱등 재설치(`repo add`·`worktree add` 공용).
+    # areas 는 이미 승인됐으므로 sidecar 실패는 rc 를 바꾸지 않는다(다음 repo add/`/pm-bootstrap`
     # 이 자가치유) — 대신 공용 깔때기가 실패를 loud 하게 낸다(침묵 금지).
-    # 재실행 안내는 방금 비준한 상태 기준 — `default` 로 되돌린 경우엔 `default` 를 안내해야
+    # 재실행 안내는 방금 승인한 상태 기준 — `default` 로 되돌린 경우엔 `default` 를 안내해야
     # 정확하다(`tokens` 가 빈 리스트라 falsy → 옛 코드는 `repo add` 로 잘못 떨어졌다).
     repo_protection._install_protected_hook_reporting(home,
         name, action="갱신",
@@ -766,8 +766,8 @@ _REPO_LIST_COLUMNS = ("repo", "prefix", "git", "base", "protected", "test_cmd", 
 def cmd_repo_list(home, args: argparse.Namespace) -> int:
     """`repo list` — 등록 repo 표(repo·prefix·base·protected·test_cmd·area_owner).
 
-    areas.md 레지스트리의 조회 표면이다 — 보호목록을 고치려면 *지금 뭐가 등록돼 있는지* 부터
-    보여야 한다. 빈 셀은 그 칼럼의 폴백을 괄호로 밝힌다(특히 `protected` 빈 값 = 기본값 폴백 —
+    areas.md 레지스트리의 조회 명령이다 — 보호목록을 고치려면 *지금 뭐가 등록돼 있는지* 부터
+    보여야 한다. 빈 셀은 그 칼럼이 대신 쓰는 값을 괄호로 밝힌다(특히 `protected` 빈 값 = 기본값 대체 —
     "빈 칸" 을 "보호 없음" 으로 오독하지 않게). 순수 읽기(rc 0·미등록이어도 안내 후 0).
     """
     try:

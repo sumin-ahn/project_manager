@@ -1,19 +1,19 @@
-"""pm-config 셋업 파사드 디스패처 단위/배선 테스트 (T-0061 · ADR-0011·0014).
+"""pm-config 셋업 파사드 디스패처 단위/연결 테스트 (T-0061 · ADR-0011·0014).
 
-가벼운 디스패처(`pm_config.py`)의 라우팅·`--help` surface·엔진 호출 배선을 검증한다.
+가벼운 디스패처(`pm_config.py`)의 라우팅·`--help` surface·엔진 호출 연결을 검증한다.
 엔진 부작용(실 clone/worktree)은 **mock 주입**으로 격리한다 — test_worktree_pool.py 의
-DI seam·test_pm_update.py 의 monkeypatch 격리 패턴 동류. 실 git/board/worktree_pool 을
-건드리지 않고 *어떤 엔진을 어떤 인자로 부르는지*(배선)만 결정적으로 친다.
+DI 교체 지점·test_pm_update.py 의 monkeypatch 격리 패턴 동류. 실 git/board/worktree_pool 을
+건드리지 않고 *어떤 엔진을 어떤 인자로 부르는지*(연결)만 결정적으로 친다.
 
 커버:
   - 디스패치 라우팅 — 각 서브커맨드가 올바른 핸들러로 간다.
   - `--help` surface — 등록 안내(서브커맨드 목록)가 단일 소스(epilog/docstring)에서 나온다.
   - init forward — `init` 뒤 인자가 board.main(["init", ...]) 으로 *verbatim*(argparse 미가공) 전달.
   - update forward — `update` 뒤 인자가 pm_update.main 으로 *verbatim*(argparse 미가공) 전달.
-  - repo add 배선 — areas_append(per-repo 스키마) + `git clone --bare .repos/<name>.git`.
-  - worktree add 배선 — worktree_pool.create_slot 호출.
-  - status|whoami 배선 — list_leases() + 이 세션 리스 surface.
-  - release 배선 — release / --force=force_release.
+  - repo add 연결 — areas_append(per-repo 스키마) + `git clone --bare .repos/<name>.git`.
+  - worktree add 연결 — worktree_pool.create_slot 호출.
+  - status|whoami 연결 — list_leases() + 이 세션 대여 surface.
+  - release 연결 — release / --force=force_release.
 """
 from __future__ import annotations
 
@@ -92,11 +92,11 @@ def _fake_bare_root(tmp_path, monkeypatch, pc):
     monkeypatch.setattr(FakeWorktreePool, "bare_root", tmp_path / ".repos")
 
 
-# ── 주입형 엔진 fake (DI seam — hermetic) ────────────────────────────────────
+# ── 주입형 엔진 fake (DI 교체 지점 — hermetic) ────────────────────────────────────
 
 
 class FakeLease:
-    """worktree_pool.Lease 의 최소 대역 — 배선 검증에 필요한 필드만."""
+    """worktree_pool.Lease 의 최소 대역 — 연결 검증에 필요한 필드만."""
 
     def __init__(self, slot, repo, branch=None, session="s1", state="leased",
                  test_cmd=None, role="work"):
@@ -118,8 +118,8 @@ class FakeWorktreePool:
 
     """worktree_pool 모듈 대역 — 호출을 기록하고 미리 정한 결과를 돌려준다.
 
-    실 `git worktree add`/리스장부 없이 create_slot/list_leases/release/force_release
-    배선을 결정적으로 친다. 예외 클래스(NeedsCreate·ReleaseRefused)도 노출해 디스패처가
+    실 `git worktree add`/대여 기록 없이 create_slot/list_leases/release/force_release
+    연결을 결정적으로 친다. 예외 클래스(NeedsCreate·ReleaseRefused)도 노출해 디스패처가
     그를 잡는 경로를 검증할 수 있게 한다.
     """
 
@@ -224,7 +224,7 @@ class FakeWorktreePool:
         # alloc(T-0354) — 반환할 FakeLease(또는 slot 문자열) / 던질 예외 클래스.
         self._alloc_returns = alloc_returns
         self._alloc_raises = alloc_raises
-        # _validate_task_name(T-0354 must-fix ②) — True 면 InvalidTaskName 을 던진다(불법명 배선).
+        # _validate_task_name(T-0354 must-fix ②) — True 면 InvalidTaskName 을 던진다(불법명 연결).
         self._validate_raises = validate_raises
         # find_task(T-0354) — task 레코드(prefix 접근용 SimpleNamespace) 또는 None. "__unset__"
         # 기본은 prefix=None 레코드로 해소(대다수 테스트가 prefix 무관).
@@ -243,21 +243,21 @@ class FakeWorktreePool:
         # reconcile 결과(T-0295·cmd_status drift surface) — (orphans, stale, incomplete) 튜플
         # 또는 None(=drift 없음·기본). 기존 status 테스트는 미지정 → 빈 결과라 drift 절 미출력(무영향).
         self._reconcile = reconcile
-        # task 축(T-0361 cockpit·T-0353/0354/0357) — list_tasks 가 돌려줄 Task 대역 리스트.
+        # task 구획(T-0361 cockpit·T-0353/0354/0357) — list_tasks 가 돌려줄 Task 대역 리스트.
         # 미지정 → [] (task 없음 절). 각 Task 대역은 name·prefix 필드(SimpleNamespace).
         self._tasks = tasks or []
         # slot → slot_git_status dict(T-0361·§F8·T-0350). 미지정 슬롯은 _live_branches 기반
-        # 최소 dict(부모 기록 없음)로 합성해 git 요약 배선을 친다.
+        # 최소 dict(부모 기록 없음)로 합성해 git 요약 연결을 친다.
         self._slot_git = slot_git or {}
 
     def create_slot(self, repo, *, base, test_cmd=None, readonly=False, owner_task=None, folders=None):
         # base (T-0075) — areas 의 그 repo base 를 cmd_worktree_add 가 전달한다(슬롯 브랜치의
-        # 부모). 엔진처럼 필수 키워드다. 호출 인자에 base 를 함께 기록해 배선 검증(4-tuple).
+        # 부모). 엔진처럼 필수 키워드다. 호출 인자에 base 를 함께 기록해 연결 검증(4-tuple).
         self.calls.append(("create_slot", repo, test_cmd, base))
-        # readonly (⑬·T-0358) — --readonly 플래그 전달 배선을 별도 속성으로 기록(4-tuple 불변).
+        # readonly (⑬·T-0358) — --readonly 플래그 전달 연결을 별도 속성으로 기록(4-tuple 불변).
         self.last_folders = folders
         self.last_readonly = readonly
-        # owner_task (ⓓB·ADR-0068) — --task 명의 생성 직결 배선을 별도 속성으로 기록(tuple 불변).
+        # owner_task (ⓓB·ADR-0068) — --task 명의 생성 직결 연결을 별도 속성으로 기록(tuple 불변).
         self.last_create_owner_task = owner_task
         role = "readonly" if readonly else "work"
         # 확정 상태는 엔진과 같은 세 갈래 — task 명의 leased · readonly 무소유 leased · 그 밖 무소유 idle.
@@ -286,10 +286,10 @@ class FakeWorktreePool:
 
     def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
         # 보호 브랜치 pre-push 훅 (재)설치 대역 (T-0076) — repo·protected 목록을 기록해
-        # repo add/worktree add 가 보호 훅 설치를 호출하는 배선을 결정적으로 검증한다.
-        # True 반환(bare 존재 시 설치 성공·실 install_protected_hook 계약과 동형).
+        # repo add/worktree add 가 보호 훅 설치를 호출하는 연결을 결정적으로 검증한다.
+        # True 반환(bare 존재 시 설치 성공·실 install_protected_hook 계약과 같은 방식).
         self.calls.append(("install_protected_hook", repo, list(protected)))
-        self.last_protected_gate = (gate_mode, test_cmd)
+        self.last_protected_check = (gate_mode, test_cmd)
         return True
 
     def set_test_cmd(self, slot, cmd):
@@ -328,19 +328,19 @@ class FakeWorktreePool:
         return self._live_branches.get(slot)
 
     def list_tasks(self):
-        # task 축 대역(T-0361 cockpit·T-0353) — 명명 task 레코드 리스트. 미지정 → [].
+        # task 기준 대역(T-0361 cockpit·T-0353) — 명명 task 레코드 리스트. 미지정 → [].
         self.calls.append(("list_tasks",))
         return self._tasks
 
     def slots_for_task(self, name):
-        # task 명의 leased 슬롯 대역(T-0361·T-0354) — session==name 인 leased 슬롯(장부 진실 동형).
+        # task 명의 leased 슬롯 대역(T-0361·T-0354) — session==name 인 leased 슬롯(기록 진실과 같은 방식).
         self.calls.append(("slots_for_task", name))
         return [l for l in self.leases
                 if getattr(l, "state", None) == "leased" and l.session == name]
 
     def slot_git_status(self, slot, *, repo_reads, git_runner=None):
         # 슬롯 git 요약 대역(T-0361·§F8·T-0350) — 명시 dict 우선, 없으면 live_branches 기반
-        # 최소 dict(부모 기록 없음)로 합성한다. 실 slot_git_status 반환 shape 동형. `repo_reads`
+        # 최소 dict(부모 기록 없음)로 합성한다. 실 slot_git_status 반환 shape 와 같은 방식. `repo_reads`
         # 는 필수 — status 가 조회 1회의 저장소 공용 값 dict 를 넘기는지 고정한다(T-0961).
         self.calls.append(("slot_git_status", slot))
         if slot in self._slot_git:
@@ -348,7 +348,7 @@ class FakeWorktreePool:
         return _git_status(branch=self._live_branches.get(slot))
 
     def reconcile_worktrees(self, *, git_runner=None):
-        # git worktree × 장부 정합 대역(T-0295) — cmd_status 가 drift 를 surface 하는 배선을
+        # git worktree × 기록 일치 대역(T-0295) — cmd_status 가 drift 를 surface 하는 연결을
         # 결정적으로 친다. reconcile 미지정이면 빈 결과(drift 없음·기존 status 테스트 무영향).
         self.calls.append(("reconcile_worktrees",))
         orphans, stale, incomplete = self._reconcile or ([], [], [])
@@ -375,7 +375,7 @@ class FakeWorktreePool:
 
     def alloc(self, repo, *, session=None, owner_task=None, branch=None, resume=None, git_runner=None, folders=None):
         # task-명의 alloc(ADR-0068 I3)은 owner_task 로 온다 — 유효 세션(lease.session)은 task 이름.
-        # 기존 배선 assertion(`("alloc", repo, "job")`)이 유지되게 유효 세션을 기록하고, owner_task
+        # 기존 연결 assertion(`("alloc", repo, "job")`)이 유지되게 유효 세션을 기록하고, owner_task
         # 원값은 별도 속성으로 남겨 I3 경로(멱등 폐기·bound)를 검증한다.
         eff_session = owner_task if owner_task is not None else session
         self.calls.append(("alloc", repo, eff_session))
@@ -388,13 +388,13 @@ class FakeWorktreePool:
         return FakeLease(slot=f"work/{repo}_1", repo=repo, state="leased")
 
     def _validate_task_name(self, name, registered_repos=None):
-        # 공유 엔진 validator 대역 (T-0354 must-fix ②) — registered_repos 전달 배선을 기록.
+        # 공유 엔진 validator 대역 (T-0354 must-fix ②) — registered_repos 전달 연결을 기록.
         self.calls.append(("_validate_task_name", name, registered_repos))
         if self._validate_raises:
             raise FakeWorktreePool.InvalidTaskName(name, "테스트 거부")
-        # 예약패턴(`<repo>_<N>`·⑥) — registered_repos 가 전달됐을 때만 판별(실 엔진 계약 동형).
+        # 예약패턴(`<repo>_<N>`·⑥) — registered_repos 가 전달됐을 때만 판별(실 엔진 계약과 같은 방식).
         # board 미해소로 registered_repos=None 이면 이 검증이 완화되므로(T-0398 must-fix ① 회귀 대상),
-        # 예약명 거부 테스트가 registered 전달 배선을 실제로 태운다.
+        # 예약명 거부 테스트가 registered 전달 연결을 실제로 태운다.
         import re as _re
         for repo in (registered_repos or ()):
             if _re.match(rf"^{_re.escape(repo)}_\d+$", name):
@@ -450,29 +450,29 @@ class FakeBoard:
     """board 모듈 대역 — areas_append 호출 인자를 기록·known prefix 제어.
 
     main(argv) 도 기록한다 — `init` 위임(board.main(["init", ...]) verbatim forward·
-    T-0065) 배선 검증용. main 의 rc 는 board_main_rc 로 제어(rc 전파 테스트).
+    T-0065) 연결 검증용. main 의 rc 는 board_main_rc 로 제어(rc 전파 테스트).
     """
 
     def __init__(self, *, registered=(), board_main_rc=0, repo_bases=None,
                  repo_protecteds=None, repo_gits=None, task_scan=None,
                  known_prefixes=("pay",)):
         self._registered = set(registered)
-        # 기존 task-prefix 테스트가 쓰는 `pay`를 4소스 중 하나에 시드한 형상. 승인 게이트
-        # 자체는 실 board를 쓰는 전용 테스트가 검증하고, 이 fake는 downstream 저장 배선을 친다.
+        # 기존 task-prefix 테스트가 쓰는 `pay`를 4소스 중 하나에 미리 넣은 상태. 승인 검사
+        # 자체는 실 board를 쓰는 전용 테스트가 검증하고, 이 fake는 downstream 저장 연결을 친다.
         self._known_prefixes = set(known_prefixes) | self._registered
         self.append_calls: list[tuple] = []
         self.main_argv = None
         self._board_main_rc = board_main_rc
         # scan_task_tickets 대역 결과(T-0354·⑲) — {"claimed":[...], "prefix_open":[...]} 또는
-        # None(미지정 → 빈 두 축·게이트 통과). 호출 인자 기록으로 배선(user/task/prefix) 검증.
+        # None(미지정 → 빈 두 값·승인 검사 통과). 호출 인자 기록으로 연결(user/task/prefix) 검증.
         self._task_scan = task_scan
         self.scan_calls: list[tuple] = []
         # repo → base 매핑 (T-0075) — `_resolve_repo_base` 가 board._repo_base 를 부르므로
-        # worktree add 가 areas base 를 create_slot 으로 전달하는 배선을 결정적으로 친다.
+        # worktree add 가 areas base 를 create_slot 으로 전달하는 연결을 결정적으로 친다.
         self._repo_bases = repo_bases or {}
         # repo → git URL 매핑 (T-0291) — `_resolve_clone_git_url` 이 board._areas_git_url 을
-        # 부른다. `--git` 미제공 hydrate 경로(2번째 사용자)가 areas URL 로 clone 하는 배선을
-        # 결정적으로 친다. 미지정 매핑은 None(areas 에 URL 없음·미등록/부분등록 폴백).
+        # 부른다. `--git` 미제공 hydrate 경로(2번째 사용자)가 areas URL 로 clone 하는 연결을
+        # 결정적으로 친다. 미지정 매핑은 None(areas 에 URL 없음·미등록/부분등록 대체).
         self._repo_gits = repo_gits or {}
         # repo → protected 목록 매핑 (T-0076) — `_resolve_repo_protected` 가
         # board._repo_protected 를 부른다. 미지정 매핑은 default(main/master/develop).
@@ -508,18 +508,18 @@ class FakeBoard:
         return self._repo_bases.get(repo)
 
     def _areas_git_url(self, repo):
-        # board._areas_git_url 대역 (T-0291) — 매핑에 없으면 None(미등록/`git` 칼럼 빔 폴백).
+        # board._areas_git_url 대역 (T-0291) — 매핑에 없으면 None(미등록/`git` 칼럼 빔 대체).
         # `_resolve_clone_git_url` 이 `--git` 미제공 hydrate·불일치 판정에 이 값을 쓴다.
         return self._repo_gits.get(repo)
 
     def _repo_protected(self, repo):
         # board._repo_protected 대역 (T-0076) — 매핑에 없으면 default(main/master/develop)
-        # 폴백(`_resolve_repo_protected` 가 이 값을 install_protected_hook 으로 전달).
+        # 대체(`_resolve_repo_protected` 가 이 값을 install_protected_hook 으로 전달).
         return self._repo_protecteds.get(repo, ["main", "master", "develop"])
 
     def _validate_prefix(self, prefix):
         # board._validate_prefix 대역 (T-0357·소비 grammar 단일 진실) — 예약어 `none`·형식
-        # `[A-Za-z0-9][A-Za-z0-9_]*` 위반이면 사유 문자열, 정상이면 None(ADR-0042·ADR-0055 동형).
+        # `[A-Za-z0-9][A-Za-z0-9_]*` 위반이면 사유 문자열, 정상이면 None(ADR-0042·ADR-0055 와 같은 방식).
         import re as _re
         if prefix.lower() == "none":
             return f"prefix {prefix!r} 은 예약어"
@@ -639,7 +639,7 @@ def test_init_forwards_through_main_dispatch(pc, monkeypatch):
     """main(["init", ...]) 경로도 option-like 플래그를 가로채지 않고 forward 한다.
 
     디스패처가 `--prefix`·`--owner`·`--session` 등을 자기 플래그로 오인하지 않음을
-    검증 (argparse 우회 special-case·update 동형). raw 토큰 순서·내용 verbatim 보존.
+    검증 (argparse 우회 special-case·update 와 같은 방식). raw 토큰 순서·내용 verbatim 보존.
     """
     fake = FakeBoardCmdMain()
     monkeypatch.setattr(board_cmd, "main", fake.main)
@@ -687,7 +687,7 @@ def test_update_propagates_pm_update_returncode(pc, monkeypatch):
     assert config_install.cmd_update(pm_paths.home_at(pc.REPO), ["--from", "/x"]) == 2
 
 
-# ── init/update forward usage prog 정합 (T-0249·ADR-0043) ────────────────────
+# ── init/update forward usage prog 일치 (T-0249·ADR-0043) ────────────────────
 # board/pm_update 명령 진입의 argparse prog 기본값은 파일명("board.py"/"pm_update.py")이라,
 # pm-config 가 위임할 때 usage 줄에 그 파일명이 새면 에이전트가 칠 실 커맨드 pm-config init/update
 # 와 어긋난다(ADR-0043 부수 CLI 위생). pm-config 는 `main(home, argv, prog=...)` 에 facade 이름을
@@ -713,7 +713,7 @@ def test_init_help_usage_shows_facade_prog_not_board_py(pc, capsys):
         pc.main(["init", "--help"])
     assert exc.value.code == 0
     usage = _usage_line(capsys.readouterr().out)
-    assert usage.startswith("usage: pm-config init")   # facade 서브커맨드 표기(카드↔실행 정합)
+    assert usage.startswith("usage: pm-config init")   # facade 서브커맨드 표기(카드↔실행 일치)
     assert "board.py" not in usage                     # usage 줄 파일명 leak 0
 
 
@@ -753,7 +753,7 @@ def test_update_error_usage_shows_facade_prog_not_pm_update_py(pc, capsys):
     assert "pm-config update" in combined     # facade prog(+서브)로 표기
 
 
-# ── upstream show/set 배선 — 검증(도달성·fail-closed) + local.conf atomic·타 키 보존 (T-0145) ──
+# ── upstream show/set 연결 — 검증(도달성·fail-closed) + local.conf atomic·타 키 보존 (T-0145) ──
 
 
 def _good_upstream_runner(argv):
@@ -816,7 +816,7 @@ def test_upstream_set_url_valid_records_and_preserves_keys(pc, tmp_path):
 
 def test_upstream_set_normalizes_duplicates_and_effective_value_is_requested(
         pc, tmp_path):
-    """A2 — first/last가 갈린 conf도 upstream 한 줄 + 요청 실효값으로 수렴한다."""
+    """A2 — first/last가 갈린 conf도 upstream 한 줄 + 요청 실효값으로 맞춘다."""
     conf = _setup_repo_conf(
         pc, tmp_path,
         "# header\nsession=pm\nupstream.path=/first\ntest.cmd=pytest -q\n"
@@ -855,8 +855,8 @@ def test_upstream_set_postcondition_mismatch_fails_loud(pc, tmp_path, monkeypatc
     assert "✓ upstream 설정" not in captured.out
 
 
-def test_upstream_set_recomputes_installed_gate_contract(pc, tmp_path, monkeypatch):
-    """upstream 변경 즉시 등록 repo 훅의 원자 gate contract를 중앙 resolver로 재설치한다."""
+def test_upstream_set_recomputes_installed_check_contract(pc, tmp_path, monkeypatch):
+    """upstream 변경 즉시 등록 repo 훅의 원자 검사 contract를 중앙 resolver로 재설치한다."""
     _setup_repo_conf(pc, tmp_path, "upstream.path=/old\ntest.cmd=go test ./...\n")
     _set_registered(monkeypatch, "svc")
     board = bind_board(monkeypatch, FakeBoard(
@@ -873,7 +873,7 @@ def test_upstream_set_recomputes_installed_gate_contract(pc, tmp_path, monkeypat
         args, git_runner=_good_upstream_runner,
 
     ) == 0
-    assert pool.last_protected_gate == ("release", "go test ./...")
+    assert pool.last_protected_check == ("release", "go test ./...")
     assert _install_hook_call(pool) == ("install_protected_hook", "svc", ["main"])
 
 
@@ -913,7 +913,7 @@ def test_upstream_set_path_nonexistent_rejected(pc, tmp_path, capsys):
 def test_upstream_set_unsafe_value_rejected_before_network(pc, tmp_path, capsys):
     """나쁜 값(credential·leading-dash·비허용 scheme)은 도달성 검사 *전* 순수 검증에서 거부.
 
-    git_runner 가 호출되지 않아야(네트워크 0) — 순수 검증이 1차 게이트(fail-closed·기록 안 함).
+    git_runner 가 호출되지 않아야(네트워크 0) — 순수 검증이 1차 검사(fail-closed·기록 안 함).
     """
     conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/keep\n")
     called = {"n": 0}
@@ -931,7 +931,7 @@ def test_upstream_set_unsafe_value_rejected_before_network(pc, tmp_path, capsys)
 
 
 def test_upstream_no_action_surfaces_help(pc, monkeypatch):
-    """`upstream` 만 주면 그룹 도움말 surface(SystemExit) — repo/worktree 동형."""
+    """`upstream` 만 주면 그룹 도움말 surface(SystemExit) — repo/worktree 와 같은 방식."""
     with pytest.raises(SystemExit):
         pc.main(["upstream"])
 
@@ -954,7 +954,7 @@ def test_upstream_set_missing_conf_skips_network(pc, tmp_path, monkeypatch, caps
     assert called["n"] == 0, "conf 부재인데 git(네트워크)이 호출됨(네트워크 낭비)"
 
 
-# ── repo add 배선 — areas_append(per-repo) + git clone --bare ────────────────
+# ── repo add 연결 — areas_append(per-repo) + git clone --bare ────────────────
 
 
 # owner 기본값 "me" — 이 헬퍼를 쓰는 테스트는 owner *해소* 를 검증하지 않는다(base/clone/hook/
@@ -989,12 +989,12 @@ def test_repo_add_registers_areas_and_clones(monkeypatch, pc, tmp_path):
     # areas_append — per-repo 스키마(repo/git/test_cmd/base) 로 호출.
     assert len(board.append_calls) == 1
     call = board.append_calls[0]
-    assert call["prefix"] == ""     # repo명 자동시드 폐지 — prefix 는 빈 값(ADR-0042·T-0237)
+    assert call["prefix"] == ""     # repo명 자동 채움 폐지 — prefix 는 빈 값(ADR-0042·T-0237)
     assert call["repo"] == "svc"
     assert call["git"] == "git@h:me/svc.git"
     assert call["test_cmd"] == "pytest -q"
     assert call["owner"] == "me"
-    assert call["base"] == ""   # base 미지정 + symbolic-ref (0,"") → 빈 base(미해소·현행 폴백)
+    assert call["base"] == ""   # base 미지정 + symbolic-ref (0,"") → 빈 base(미해소·현행 대체)
     # git clone --bare <url> .repos/svc.git (base 해소 git 호출과 섞여 있을 수 있음).
     argv = _clone_argv(gitr)
     assert argv is not None
@@ -1008,7 +1008,7 @@ def test_repo_add_passes_explicit_user_as_area_owner(monkeypatch, pc, tmp_path):
     """repo add --user → areas_append(area_owner=) 로 전달 (ADR-0033 ③·T-0161).
 
     area_owner 는 그 area 의 *user* 소유(`--mine` 풀 입력)다 — registrant `owner`(별개 칼럼·
-    overload 금지)와 독립. 명시 `--user` 가 _default_user 폴백보다 우선임을 확증한다.
+    overload 금지)와 독립. 명시 `--user` 가 _default_user 대체보다 우선임을 확증한다.
     """
     board = FakeBoard(registered=())
     gitr = FakeGitRecorder(rc=0)
@@ -1026,14 +1026,14 @@ def test_repo_add_passes_explicit_user_as_area_owner(monkeypatch, pc, tmp_path):
 def test_repo_add_area_owner_falls_back_to_default_user(pc, tmp_path, monkeypatch):
     """repo add (--user 미지정) → _default_user 로 area_owner 해소 (T-0161·local.conf user=/git email).
 
-    `_default_user` 를 hermetic stub 으로 고정해 local.conf user=/git email 폴백 경로가
-    area_owner 로 흐르는 배선을 결정적으로 친다(실 git config 누출 0).
+    `_default_user` 를 hermetic stub 으로 고정해 local.conf user=/git email 대체 경로가
+    area_owner 로 흐르는 연결을 결정적으로 친다(실 git config 누출 0).
     """
     monkeypatch.setattr(lease_store, 'user_name', lambda _home: "resolved-user")
     board = bind_board(monkeypatch, FakeBoard(registered=()))
     gitr = FakeGitRecorder(rc=0)
     repos = tmp_path / ".repos"
-    # owner="me"(registrant) — 이 테스트는 area_owner 폴백만 검증(owner 해소는 별개·overload 금지).
+    # owner="me"(registrant) — 이 테스트는 area_owner 대체만 검증(owner 해소는 별개·overload 금지).
     args = argparse.Namespace(name="svc", git="git@h:me/svc.git", test="pytest -q",
                               owner="me", base=None)  # user 속성 부재 → getattr None → _default_user
     bind_board(monkeypatch, board)
@@ -1043,7 +1043,7 @@ def test_repo_add_area_owner_falls_back_to_default_user(pc, tmp_path, monkeypatc
 
 
 def test_default_user_local_conf_wins_over_git(pc, tmp_path, monkeypatch):
-    """_default_user — local.conf user= 가 git email 폴백보다 우선 (T-0161·board.user_name 동형)."""
+    """_default_user — local.conf user= 가 git email 대체보다 우선 (T-0161·board.user_name 와 같은 방식)."""
     pm = tmp_path / ".project_manager"
     pm.mkdir(parents=True)
     (pm / "local.conf").write_text("identity.user=alice\nsession=slot\n", encoding="utf-8")
@@ -1053,7 +1053,7 @@ def test_default_user_local_conf_wins_over_git(pc, tmp_path, monkeypatch):
 
 
 def test_default_user_falls_back_to_git_email(pc, tmp_path, monkeypatch):
-    """_default_user — local.conf user= 부재 → git config user.email 폴백 (T-0161)."""
+    """_default_user — local.conf user= 부재 → git config user.email 대체 (T-0161)."""
     monkeypatch.setattr(pc, "REPO", tmp_path)   # local.conf 없음
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "dev@example.com")
     assert lease_store.user_name(pm_paths.home_at(pc.REPO)) == "dev@example.com"
@@ -1281,7 +1281,7 @@ class _BaseAwareGit:
     `refs/heads/<b>` 형태다 — 그 prefix 를 벗겨 로컬 브랜치 집합과 **exact 대조**한다(show-ref
     --verify 는 revision 문법 미적용 exact-ref primitive). `refs/heads/` 가 아닌 ref(태그·SHA·
     `HEAD`·원격 ref)·revision 표현(`main~0`·`main^{}`)은 valid 집합에 없어 rc 1(거부) — 실 git 의
-    `show-ref --verify` exact-ref 검증과 동형. 그 외(clone 등)는 rc 0 성공.
+    `show-ref --verify` exact-ref 검증과 같은 방식. 그 외(clone 등)는 rc 0 성공.
     """
 
     def __init__(self, *, head="main", valid_branches=()):
@@ -1424,7 +1424,7 @@ def test_repo_add_base_local_branch_passes(monkeypatch, pc, tmp_path):
 
 
 def test_repo_add_base_head_resolution_failure_falls_back_empty(monkeypatch, pc, tmp_path):
-    """bare HEAD 해소 실패(symbolic-ref rc≠0) → base 빈 값(미해소·등록은 진행·현행 폴백·T-0075)."""
+    """bare HEAD 해소 실패(symbolic-ref rc≠0) → base 빈 값(미해소·등록은 진행·현행 대체·T-0075)."""
     board = FakeBoard(registered=())
 
     class _NoHeadGit(_BaseAwareGit):
@@ -1517,7 +1517,7 @@ def test_repo_add_unbound_session_owner_fail_loud_no_side_effects(pc, tmp_path, 
 
     None 을 그대로 areas_append 에 넘기면 board 가 owner 를 문자열 "None" 으로 areas.md 에
     기록(귀속 쓰기 누출) — 그 전에 clone/등록/훅 없이 차단한다(board.cmd_init owner
-    required=True 와 동형). status/whoami surface 테스트가 못 잡던 *쓰기* 경로 회귀 핀.
+    required=True 와 같은 방식). status/whoami surface 테스트가 못 잡던 *쓰기* 경로 회귀 핀.
     """
     _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf 없음 → identity.user 없음
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: None)
@@ -1567,9 +1567,9 @@ def test_repo_add_valid_name_passes_guard(monkeypatch, pc, tmp_path, good_name):
     assert board.append_calls[0]["repo"] == good_name
 
 
-# ── worktree add 배선 — create_slot ──────────────────────────────────────────
+# ── worktree add 연결 — create_slot ──────────────────────────────────────────
 
-# worktree add 는 repo 등록 base 가 있어야 슬롯을 만든다(부모 기록) — 배선 테스트용 등록 base.
+# worktree add 는 repo 등록 base 가 있어야 슬롯을 만든다(부모 기록) — 연결 테스트용 등록 base.
 _SVC_BASE = {"svc": "main"}
 
 
@@ -1721,7 +1721,7 @@ def test_worktree_add_without_registered_base_refuses_before_create_slot(pc, mon
 
 
 def test_worktree_add_missing_test_attr_defaults_none(pc, monkeypatch, capsys):
-    """Namespace 에 test 속성이 아예 없어도 getattr 폴백으로 None(파사드 직접 호출 견고성)."""
+    """Namespace 에 test 속성이 아예 없어도 getattr 대체로 None(파사드 직접 호출 견고성)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     bind_pool(monkeypatch, wp)
     bind_board(monkeypatch, FakeBoard(repo_bases=_SVC_BASE))
@@ -1730,7 +1730,7 @@ def test_worktree_add_missing_test_attr_defaults_none(pc, monkeypatch, capsys):
     assert ("create_slot", "svc", None, "main") in wp.calls
 
 
-# ── 보호 브랜치 훅 (재)설치 배선 (T-0076) ─────────────────────────────────────
+# ── 보호 브랜치 훅 (재)설치 연결 (T-0076) ─────────────────────────────────────
 
 
 def _install_hook_call(wp):
@@ -1911,7 +1911,7 @@ def test_repo_add_already_registered_reinstalls_hook(pc, tmp_path, monkeypatch):
 
 
 def test_repo_add_registers_protected_column_empty(pc, monkeypatch, tmp_path):
-    """repo add 신규 등록 → areas_append(protected="") (빈 칼럼·default 폴백·T-0076)."""
+    """repo add 신규 등록 → areas_append(protected="") (빈 칼럼·default 대체·T-0076)."""
     board = bind_board(monkeypatch, FakeBoard(registered=()))
     gitr = FakeGitRecorder(rc=0)
     wp = bind_pool(monkeypatch, FakeWorktreePool())
@@ -1928,7 +1928,7 @@ def test_repo_add_registers_protected_column_empty(pc, monkeypatch, tmp_path):
 
 
 def test_install_protected_hook_helper_fail_soft_on_exception(pc, monkeypatch):
-    """_install_protected_hook — install 예외는 전파한다(False 로 강등하지 않는다)."""
+    """_install_protected_hook — install 예외는 전파한다(False 로 낮추지 않는다)."""
     class _BoomWp:
         def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
             raise RuntimeError("boom")
@@ -1971,9 +1971,9 @@ def test_ordinary_hook_install_error_does_not_abort_repo_or_worktree_add(
 
 
 @pytest.mark.parametrize("upstream", ["~pm_user_that_cannot_exist_0524/repo", "bad\0path"])
-def test_install_protected_hook_gate_resolution_error_is_fail_soft(pc, tmp_path, monkeypatch, upstream):
-    """B4 — gate config의 expanduser/Path 오류는 raw installer 전에 예외로 전파한다(입력이 문구에 남는다)."""
-    home = tmp_path / "bad-gate-config"
+def test_install_protected_hook_check_resolution_error_is_fail_soft(pc, tmp_path, monkeypatch, upstream):
+    """B4 — 검사 config의 expanduser/Path 오류는 raw installer 전에 예외로 전파한다(입력이 문구에 남는다)."""
+    home = tmp_path / "bad-check-config"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(f"upstream.path={upstream}\ntest.cmd=pytest -q\n", encoding="utf-8")
@@ -1992,18 +1992,18 @@ def test_install_protected_hook_gate_resolution_error_is_fail_soft(pc, tmp_path,
             or "embedded null byte" in reason)
 
 
-# ── `~user` 확장 판정 = 플랫폼 무관 (T-0712 축 C) ────────────────────────────
+# ── `~user` 확장 판정 = 플랫폼 무관 (T-0712 항목 C) ────────────────────────────
 # POSIX 의 `expanduser()` 는 없는 사용자를 RuntimeError 로 거절하지만 Windows 는 존재하지 않는
-# 사용자도 `C:\Users\<name>` 으로 조립해 준다 — 그 형상에서만 gate resolver 가 성공해 raw
+# 사용자도 `C:\Users\<name>` 으로 조립해 준다 — 그 경우에만 검사 resolver 가 성공해 raw
 # installer 까지 갔다(5차 Windows 측정: `'RuntimeError' in 'AssertionError: resolver 실패 뒤 raw
-# installer를 호출함'`). 확장 동작을 seam 에 주입해 **Linux 에서 그 분기를 태운다**.
+# installer를 호출함'`). 확장 동작을 교체 지점에 주입해 **Linux 에서 그 분기를 태운다**.
 
 
 def _windows_style_expanduser(users_root: Path):
     """Windows `Path.expanduser()` 대역 — 없는 사용자도 `<users_root>/<name>` 으로 조립한다.
 
     ntpath 는 `~name` 을 현재 사용자 홈의 부모에 이어 붙일 뿐 그 사용자의 실재를 보지 않는다.
-    POSIX 확장기로는 이 분기가 안 서므로 확장 seam 에 주입한다(플랫폼 skip 대신 재현).
+    POSIX 확장기로는 이 분기가 안 서므로 확장 교체 지점에 주입한다(플랫폼 skip 대신 재현).
     """
 
     def expand(path: Path) -> Path:
@@ -2017,7 +2017,7 @@ def _windows_style_expanduser(users_root: Path):
 
 
 def _adopter_home_with_upstream(tmp_path: Path, upstream: str) -> Path:
-    """`upstream.path=` 만 다른 PM 홈 형상 — gate resolver 입력을 한 줄로 세팅한다."""
+    """`upstream.path=` 만 다른 PM 홈 모양 — 검사 resolver 입력을 한 줄로 세팅한다."""
     home = tmp_path / "adopter-home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
@@ -2071,7 +2071,7 @@ def test_install_protected_hook_keeps_existing_user_home_resolving(pc, tmp_path,
         ("svc", "self-test")]
 
 
-def test_gate_resolution_failure_names_the_input_whatever_the_platform_text(pc, tmp_path, monkeypatch):
+def test_check_resolution_failure_names_the_input_whatever_the_platform_text(pc, tmp_path, monkeypatch):
     """예외 문구가 플랫폼마다 달라도 진단에는 **어떤 입력이** 안 풀렸는지가 남는다.
 
     같은 NUL 입력이 POSIX 에선 "embedded null byte", Windows 에선 "stat: embedded null
@@ -2099,8 +2099,8 @@ def test_gate_resolution_failure_names_the_input_whatever_the_platform_text(pc, 
     assert "ValueError" in reason      # 원인 예외 문구도 잃지 않는다
 
 
-def test_expanded_user_path_does_not_gate_the_current_user_home(pc, tmp_path, monkeypatch):
-    """`~`(현재 사용자)는 실재 검사 축이 아니다 — 분기는 `~user` 자리에만 둔다."""
+def test_expanded_user_path_does_not_check_the_current_user_home(pc, tmp_path, monkeypatch):
+    """`~`(현재 사용자)는 실재 검사 대상이 아니다 — 분기는 `~user` 자리에만 둔다."""
     monkeypatch.setattr(pm_paths, "_expanduser_path",
                         _windows_style_expanduser(tmp_path / "Users"))
 
@@ -2108,8 +2108,8 @@ def test_expanded_user_path_does_not_gate_the_current_user_home(pc, tmp_path, mo
         tmp_path / "Users" / "current" / "work" / "repo")
 
 
-def test_protected_push_gate_config_keeps_framework_self_repo_release_gate(pc, tmp_path, monkeypatch):
-    """upstream이 이 PM 홈의 canonical repo 슬롯이면 기존 release gate를 그대로 선택한다."""
+def test_protected_push_check_config_keeps_framework_self_repo_release_check(pc, tmp_path, monkeypatch):
+    """upstream이 이 PM 홈의 canonical repo 슬롯이면 기존 release 검사를 그대로 선택한다."""
     home = tmp_path / "pm-home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
@@ -2123,7 +2123,7 @@ def test_protected_push_gate_config_keeps_framework_self_repo_release_gate(pc, t
         "release", "python -m pytest tests/ -q")
 
 
-def test_protected_push_gate_config_routes_adopter_to_repo_test_cmd(pc, tmp_path, monkeypatch):
+def test_protected_push_check_config_routes_adopter_to_repo_test_cmd(pc, tmp_path, monkeypatch):
     """외부 framework upstream을 쓰는 adopter는 areas의 자기 test_cmd를 선택한다."""
     home = tmp_path / "adopter-home"
     conf = home / ".project_manager" / "local.conf"
@@ -2140,8 +2140,8 @@ def test_protected_push_gate_config_routes_adopter_to_repo_test_cmd(pc, tmp_path
         "self-test", "go test ./...")
 
 
-def test_protected_push_gate_config_url_identity_keeps_framework_release(pc, tmp_path, monkeypatch):
-    """URL upstream도 areas repo remote와 같은 identity면 framework release gate다."""
+def test_protected_push_check_config_url_identity_keeps_framework_release(pc, tmp_path, monkeypatch):
+    """URL upstream도 areas repo remote와 같은 identity면 framework release 검사다."""
     home = tmp_path / "url-framework-home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
@@ -2187,7 +2187,7 @@ def test_git_remote_identity_normalizes_legitimate_network_notations(
     ],
     ids=["file-vs-network", "non-default-port", "path"],
 )
-def test_git_remote_identity_preserves_security_relevant_axes(pc, left, right):
+def test_git_remote_identity_preserves_security_relevant_parts(pc, left, right):
     """A3 identity 표 — file transport, non-default port, path는 보존해 오합치지 않는다."""
     assert git._git_remote_identity(left) != git._git_remote_identity(right)
 
@@ -2215,7 +2215,7 @@ def test_git_remote_identity_ipv6_decision_table(pc, left, right, same):
     assert len(left_identity) == 4 and len(right_identity) == 4
 
 
-def test_protected_push_gate_config_file_transport_collision_is_adopter_self_test(pc, tmp_path, monkeypatch):
+def test_protected_push_check_config_file_transport_collision_is_adopter_self_test(pc, tmp_path, monkeypatch):
     """A3 — file:// authority/path가 https remote 문자열과 같아도 release로 오판하지 않는다."""
     home = tmp_path / "file-transport-adopter"
     conf = home / ".project_manager" / "local.conf"
@@ -2232,7 +2232,7 @@ def test_protected_push_gate_config_file_transport_collision_is_adopter_self_tes
         "self-test", "pytest -q")
 
 
-def test_protected_push_gate_config_scp_without_user_keeps_framework_release(pc, tmp_path, monkeypatch):
+def test_protected_push_check_config_scp_without_user_keeps_framework_release(pc, tmp_path, monkeypatch):
     """지원 SCP `host:path`도 pm_import 공용 분류를 거쳐 같은 remote면 release다."""
     home = tmp_path / "scp-framework-home"
     conf = home / ".project_manager" / "local.conf"
@@ -2249,8 +2249,8 @@ def test_protected_push_gate_config_scp_without_user_keeps_framework_release(pc,
         "release", "pytest -q")
 
 
-def test_protected_push_gate_config_missing_upstream_downgrades_to_self_test(pc, tmp_path, monkeypatch, capsys):
-    """사용자 통제 밖 upstream 부재는 영구 차단 대신 증거 요구를 유지한 self-test로 강등한다."""
+def test_protected_push_check_config_missing_upstream_downgrades_to_self_test(pc, tmp_path, monkeypatch, capsys):
+    """사용자 통제 밖 upstream 부재는 영구 차단 대신 증거 요구를 유지한 self-test로 낮춘다."""
     home = tmp_path / "unresolved-home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
@@ -2264,7 +2264,7 @@ def test_protected_push_gate_config_missing_upstream_downgrades_to_self_test(pc,
     assert "upstream을 설정" in err[0]
 
 
-def test_protected_push_gate_config_url_without_registry_git_downgrades_to_self_test(pc, tmp_path, monkeypatch, capsys):
+def test_protected_push_check_config_url_without_registry_git_downgrades_to_self_test(pc, tmp_path, monkeypatch, capsys):
     """URL upstream + 구 registry의 빈 git 칼럼도 unresolved 하드 차단 없이 self-test다."""
     home = tmp_path / "url-no-registry-git"
     conf = home / ".project_manager" / "local.conf"
@@ -2293,8 +2293,8 @@ def test_local_conf_value_duplicate_empty_is_last_wins_like_board(pc, tmp_path, 
     assert repo_protection._local_conf_value(pm_paths.home_at(pc.REPO), "test.cmd") == ""
 
 
-def test_protected_push_gate_trailing_empty_upstream_downgrades_like_upstream_show(pc, tmp_path, monkeypatch, capsys):
-    """A2 — canonical upstream 뒤 `upstream.path=`는 해제이며 gate도 미해소 self-test로 본다."""
+def test_protected_push_check_trailing_empty_upstream_downgrades_like_upstream_show(pc, tmp_path, monkeypatch, capsys):
+    """A2 — canonical upstream 뒤 `upstream.path=`는 해제이며 검사도 미해소 self-test로 본다."""
     home = tmp_path / "cleared-upstream"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
@@ -2355,11 +2355,11 @@ def test_worktree_add_bare_missing_caught_as_runtime_error(pc, monkeypatch, caps
 
 
 
-# ── status | whoami 배선 — list_leases + 이 세션 surface ──────────────────────
+# ── status | whoami 연결 — list_leases + 이 세션 surface ──────────────────────
 
 
 def test_status_lists_leases(pc, monkeypatch, capsys):
-    """status → list_leases() 호출 + 전체 리스 surface."""
+    """status → list_leases() 호출 + 전체 대여 surface."""
     leases = [
         FakeLease(slot="work/svc_1", repo="svc", branch="feat", session="me", state="leased"),
         FakeLease(slot="work/svc_2", repo="svc", branch=None, session="", state="idle"),
@@ -2396,7 +2396,7 @@ def test_status_surfaces_readonly_role(pc, monkeypatch, capsys):
 
 
 def test_whoami_highlights_my_lease(pc, monkeypatch, capsys):
-    """whoami → 이 세션($CLAUDE_SESSION_NAME)의 leased 슬롯을 "이 세션의 리스" 로 강조."""
+    """whoami → 이 세션($CLAUDE_SESSION_NAME)의 leased 슬롯을 "이 세션의 대여" 로 강조."""
     leases = [
         FakeLease(slot="work/svc_1", repo="svc", branch="feat", session="me", state="leased"),
         FakeLease(slot="work/svc_3", repo="svc", branch="x", session="other", state="leased"),
@@ -2408,14 +2408,14 @@ def test_whoami_highlights_my_lease(pc, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "이 세션의 대여:" in out
-    # 내 슬롯(svc_1)은 "이 세션의 리스" 절에, other 의 svc_3 은 거기 없음(전체엔 있음).
+    # 내 슬롯(svc_1)은 "이 세션의 대여" 절에, other 의 svc_3 은 거기 없음(전체엔 있음).
     my_section = out.split("풀 전체 슬롯 대여 기록")[0]
     assert "work/svc_1" in my_section
     assert "work/svc_3" not in my_section
 
 
 def test_status_empty_pool(pc, monkeypatch, capsys):
-    """리스 없으면 빈 풀 안내(크래시 없음)."""
+    """대여 없으면 빈 풀 안내(크래시 없음)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
     bind_pool(monkeypatch, wp)
     rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
@@ -2424,12 +2424,12 @@ def test_status_empty_pool(pc, monkeypatch, capsys):
 
 
 def test_status_unbound_session_surfaces_placeholder(pc, monkeypatch, tmp_path, capsys):
-    """_default_session None(미바인딩) → cmd_status 헤더 "(비바인딩)"·남의 리스로 self-identify 안 함.
+    """_default_session None(미바인딩) → cmd_status 헤더 "(비바인딩)"·남의 대여로 self-identify 안 함.
 
     Windows 4슬롯 홈에서 비바인딩(pm-env) 세션이 남의 세션으로 self-identify 하던 직접 증상의
-    수정(ADR-0040 surface) — 세션 None 이면 헤더가 "(비바인딩)"·"이 세션의 리스: (없음)".
+    수정(ADR-0040 surface) — 세션 None 이면 헤더가 "(비바인딩)"·"이 세션의 대여: (없음)".
     """
-    _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf·장부 없음 → _default_session None
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)   # local.conf·기록 없음 → _default_session None
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[
@@ -2446,8 +2446,8 @@ def test_status_unbound_session_surfaces_placeholder(pc, monkeypatch, tmp_path, 
 def test_status_shows_live_branch_from_current_branch(pc, monkeypatch, capsys):
     """status 가 branch 를 `current_branch(slot)` live 조회로 표시한다(ADR-0013 amend T-0072).
 
-    장부에 저장된 lease.branch 가 아니라 슬롯 worktree 의 git HEAD live 값을 surface한다 —
-    이 세션 리스 줄·풀 전체 줄 둘 다. current_branch 가 호출됐는지도 검증.
+    기록에 저장된 lease.branch 가 아니라 슬롯 worktree 의 git HEAD live 값을 surface한다 —
+    이 세션 대여 줄·풀 전체 줄 둘 다. current_branch 가 호출됐는지도 검증.
     """
     leases = [
         FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased"),
@@ -2460,7 +2460,7 @@ def test_status_shows_live_branch_from_current_branch(pc, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "live-feat" in out, "live branch(current_branch) 가 surface 안 됨"
-    # 이 세션 리스 줄에도 live branch.
+    # 이 세션 대여 줄에도 live branch.
     my_section = out.split("풀 전체 슬롯 대여 기록")[0]
     assert "live-feat" in my_section
     # current_branch 가 슬롯에 대해 호출됐다(저장 필드 대신 live 조회).
@@ -2483,7 +2483,7 @@ def test_status_detached_branch_shows_placeholder(pc, monkeypatch, capsys):
 
 
 
-# ── status 2축 cockpit — task 상황 + slot 풀·슬롯당 git 요약 (T-0361·§F8·결정 ⑥⑪) ──
+# ── status 두 구획 cockpit — task 상황 + slot 풀·슬롯당 git 요약 (T-0361·§F8·결정 ⑥⑪) ──
 
 
 def _git_status(*, parent=None, branch=None, head=None, folders=None):
@@ -2497,11 +2497,11 @@ def _parent_row(name, fork, *, ref, ahead=None, behind=None):
     return {"name": name, "fork": fork, "ref": ref, "ahead": ahead, "behind": behind}
 
 
-def test_status_task_axis_lists_named_tasks_and_workspaces(pc, monkeypatch, capsys):
-    """DoD — task 축이 명명 task 별 {보유 작업공간·prefix} 를 surface (T-0361·결정 ⑥·T-0353/0354/0357).
+def test_status_task_section_lists_named_tasks_and_workspaces(pc, monkeypatch, capsys):
+    """DoD — task 구획이 명명 task 별 {보유 작업공간·prefix} 를 surface (T-0361·결정 ⑥·T-0353/0354/0357).
 
     task=`payjob`(prefix=PAY·슬롯 2개 보유)·`readmod`(prefix 없음·슬롯 0개). slot-모드 세션(`me`)은
-    task 축에 안 올라온다(auto-task 폐기·2축 분리)."""
+    task 구획에 안 올라온다(auto-task 폐기·두 구획 분리)."""
     leases = [
         FakeLease(slot="work/svc_1", repo="svc", session="payjob", state="leased"),
         FakeLease(slot="work/svc_2", repo="svc", session="payjob", state="leased"),
@@ -2515,18 +2515,18 @@ def test_status_task_axis_lists_named_tasks_and_workspaces(pc, monkeypatch, caps
     rc = config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     assert rc == 0
     out = capsys.readouterr().out
-    task_axis = out.split("task 상황")[1].split("slot 풀")[0]
+    task_section = out.split("task 상황")[1].split("slot 풀")[0]
     # payjob 은 prefix=PAY + 슬롯 2개, readmod 는 prefix 없음(기본) + 슬롯 0개.
-    assert "payjob" in task_axis and "PAY" in task_axis
-    assert "work/svc_1" in task_axis and "work/svc_2" in task_axis
-    assert "readmod" in task_axis and "없음(기본)" in task_axis
-    assert "보유 작업공간 없음" in task_axis
-    # slot-모드 세션 `me` 는 task 축에 없다(2축 분리·결정 ⑥).
-    assert "me" not in task_axis
+    assert "payjob" in task_section and "PAY" in task_section
+    assert "work/svc_1" in task_section and "work/svc_2" in task_section
+    assert "readmod" in task_section and "없음(기본)" in task_section
+    assert "보유 작업공간 없음" in task_section
+    # slot-모드 세션 `me` 는 task 구획에 없다(두 구획 분리·결정 ⑥).
+    assert "me" not in task_section
 
 
-def test_status_task_axis_empty_when_no_named_tasks(pc, monkeypatch, capsys):
-    """DoD — 명명 task 0 이면 task 축은 "(task 없음 …)" 안내(slot-모드 세션은 slot 풀 축에만)."""
+def test_status_task_section_empty_when_no_named_tasks(pc, monkeypatch, capsys):
+    """DoD — 명명 task 0 이면 task 구획은 "(task 없음 …)" 안내(slot-모드 세션은 slot 풀 구획에만)."""
     leases = [FakeLease(slot="work/svc_1", repo="svc", session="me", state="leased")]
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=leases, tasks=[]))
     bind_pool(monkeypatch, wp)
@@ -2605,14 +2605,14 @@ def test_status_readonly_slot_git_shows_detached_and_role(pc, monkeypatch, capsy
     out = capsys.readouterr().out
     pool = out.split("slot 풀")[1]
     assert "role=readonly" in pool
-    # readonly = branch 축은 (detached)(무소유 기준면)이라 live branch 를 요약에 안 씌운다.
+    # readonly = branch 칸은 (detached)(무소유 기준면)이라 live branch 를 요약에 안 씌운다.
     assert "(detached)@" in pool
     assert "feat-live@" not in pool          # readonly 는 branch 이름을 요약에 안 실음
     assert "부모: main@aabbccdd" in pool
 
 
 def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
-    """slot 풀 축의 "보유 task" — session 이 명명 task 면 그 task, 아니면 `-` (T-0361·⑥ session 축)."""
+    """slot 풀 구획의 "보유 task" — session 이 명명 task 면 그 task, 아니면 `-` (T-0361·⑥ session 칸)."""
     leases = [
         FakeLease(slot="work/svc_1", repo="svc", session="payjob", state="leased"),
         FakeLease(slot="work/svc_2", repo="svc", session="me", state="leased"),
@@ -2630,10 +2630,10 @@ def test_status_slot_git_summary_task_attribution(pc, monkeypatch, capsys):
     assert "보유 task=-" in svc2             # slot-모드 세션 → task 아님
 
 
-def test_status_slot_git_failure_propagates_after_task_axis(pc, monkeypatch, capsys):
+def test_status_slot_git_failure_propagates_after_task_section(pc, monkeypatch, capsys):
     """slot_git_status 가 던지면 status 텍스트는 그 줄을 `(조회 불가)` 로 접지 않고 예외를 전파한다.
 
-    장부 축(보유 task)은 예외 전에 이미 출력된다 — 실패 지점까지의 출력은 남는다."""
+    기록 구획(보유 task)은 예외 전에 이미 출력된다 — 실패 지점까지의 출력은 남는다."""
     class _Boom(FakeWorktreePool):
         def slot_git_status(self, slot, *, repo_reads, git_runner=None):
             raise RuntimeError("git blew up")
@@ -2646,7 +2646,7 @@ def test_status_slot_git_failure_propagates_after_task_axis(pc, monkeypatch, cap
     with pytest.raises(RuntimeError, match="git blew up"):
         config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     out = capsys.readouterr().out
-    assert "work/svc_1" in out                  # 실패 전에 나간 리스 장부 축
+    assert "work/svc_1" in out                  # 실패 전에 나간 대여 기록 구획
     assert "(조회 불가)" not in out              # git 실패를 표시 문자열로 접지 않는다
 
 
@@ -2668,7 +2668,7 @@ def test_status_idle_lease_not_attributed_to_none_task(pc, monkeypatch, capsys):
 
 
 def test_status_surfaces_orphan_drift(pc, monkeypatch, capsys):
-    """DoD(1) — reconcile 이 orphan(git worktree 존재·장부 미등록)을 status 가 flag 한다 (T-0295)."""
+    """DoD(1) — reconcile 이 orphan(git worktree 존재·기록 미등록)을 status 가 flag 한다 (T-0295)."""
     orphan = SimpleNamespace(slot="work/svc_2", branch="svc_2")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[], reconcile=([orphan], [], [])))
     bind_pool(monkeypatch, wp)
@@ -2683,7 +2683,7 @@ def test_status_surfaces_orphan_drift(pc, monkeypatch, capsys):
 
 
 def test_status_surfaces_stale_and_incomplete_drift(pc, monkeypatch, capsys):
-    """DoD(2) — reconcile 이 stale(장부 등록·worktree 없음)·incomplete(creating)를 flag 한다 (T-0295)."""
+    """DoD(2) — reconcile 이 stale(기록 등록·worktree 없음)·incomplete(creating)를 flag 한다 (T-0295)."""
     stale = FakeLease(slot="work/svc_9", repo="svc", session="", state="idle")
     incomplete = FakeLease(slot="work/svc_5", repo="svc", session="me", state="creating")
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[], reconcile=([], [stale], [incomplete])))
@@ -2720,7 +2720,7 @@ def test_status_reconcile_failure_propagates(pc, monkeypatch, capsys):
     with pytest.raises(RuntimeError, match="git blew up"):
         config_status.cmd_status(pm_paths.home_at(pc.REPO), argparse.Namespace(command="status"), engine_rev=pm_engine.ENGINE_REV)
     out = capsys.readouterr().out
-    assert "work/svc_1" in out          # 실패 전에 나간 리스 장부 축
+    assert "work/svc_1" in out          # 실패 전에 나간 대여 기록 구획
 
 
 def test_status_drift_guidance_recommends_prune_not_force_release(pc, monkeypatch, capsys):
@@ -2734,11 +2734,11 @@ def test_status_drift_guidance_recommends_prune_not_force_release(pc, monkeypatc
     assert rc == 0
     out = capsys.readouterr().out
     assert "prune-stale" in out                 # 안전 프리미티브 안내
-    assert "release --force" not in out         # 위험한 옛 안내 제거(force_release=idle 화·잔여)
+    assert "release --force" not in out         # 위험한 옛 안내 제거(force_release=idle 화·남은)
     assert "worktree remove" in out             # orphan 은 사용자가 git 로
 
 
-# ── worktree prune-stale 배선 — 안전 dangling cleanup (T-0295) ────────────────
+# ── worktree prune-stale 연결 — 안전 dangling cleanup (T-0295) ────────────────
 
 
 def test_worktree_prune_stale_wires_to_engine(pc, monkeypatch, capsys):
@@ -2770,7 +2770,7 @@ def test_worktree_prune_stale_empty_is_harmless(pc, monkeypatch, capsys):
 
 
 
-# ── release 배선 — release / --force=force_release ───────────────────────────
+# ── release 연결 — release / --force=force_release ───────────────────────────
 
 
 def test_release_calls_release(pc, monkeypatch, capsys):
@@ -2798,7 +2798,7 @@ def test_release_force_calls_force_release(pc, monkeypatch, capsys):
 
 
 def test_release_force_absent_slot_is_harmless(pc, monkeypatch, capsys):
-    """--force 인데 슬롯이 장부에 없으면(None) 무해 종료 rc 0."""
+    """--force 인데 슬롯이 기록에 없으면(None) 무해 종료 rc 0."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(force_returns="absent"))
     bind_pool(monkeypatch, wp)
     rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
@@ -2847,7 +2847,7 @@ def test_release_readonly_slot_refused(pc, monkeypatch, capsys):
 
 
 def test_release_unknown_slot_errors(pc, monkeypatch, capsys):
-    """release(비-force) 가 KeyError(미존재 리스)면 rc 1 + 명시 에러."""
+    """release(비-force) 가 KeyError(미존재 대여)면 rc 1 + 명시 에러."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(release_raises=KeyError))
     bind_pool(monkeypatch, wp)
     rc = config_slots.cmd_release(pm_paths.home_at(pc.REPO),
@@ -2866,7 +2866,7 @@ def test_main_routes_status_to_engine(pc, monkeypatch):
     """main(["status"]) 가 cmd_status → worktree_pool.list_leases 로 라우팅됨을 확인.
 
     build_parser 가 set_defaults(func=cmd_status) 를 빌드 시점에 굳히므로 핸들러를
-    직접 monkeypatch 하는 대신, 슬롯 장부 seam 에 fake worktree_pool 을 묶어
+    직접 monkeypatch 하는 대신, 슬롯 기록 교체 지점에 fake worktree_pool 을 묶어
     list_leases 호출(=cmd_status 도달)을 관찰한다.
     """
     wp = bind_pool(monkeypatch, FakeWorktreePool(leases=[]))
@@ -2912,7 +2912,7 @@ def test_main_routes_worktree_add_to_engine(pc, monkeypatch):
 def test_main_worktree_add_test_flag_parses_and_forwards(pc, monkeypatch):
     """main(["worktree","add","svc","--test","<cmd>"]) → create_slot(svc, test_cmd=cmd) (T-0066 end-to-end 파싱).
 
-    build_parser 의 --test 서브파서 인자 + cmd_worktree_add 배선을 한 경로로 검증 — DI mock
+    build_parser 의 --test 서브파서 인자 + cmd_worktree_add 연결을 한 경로로 검증 — DI mock
     wp 로 create_slot 호출의 test_cmd 인자를 관찰한다(실 worktree add 없이).
     """
     wp = bind_pool(monkeypatch, FakeWorktreePool())
@@ -2934,11 +2934,11 @@ def test_main_worktree_without_add_shows_group_help(pc):
         pc.main(["worktree"])
 
 
-# ── delegate models 배선 — 읽기 전용 조회 하나 (T-0916) ──────────────────────
+# ── delegate models 연결 — 읽기 전용 조회 하나 (T-0916) ──────────────────────
 
 
 def test_main_delegate_without_models_shows_group_help(pc):
-    """`delegate`(하위 동작 없이) → 그룹 도움말 surface(repo/worktree/task 동형)."""
+    """`delegate`(하위 동작 없이) → 그룹 도움말 surface(repo/worktree/task 와 같은 방식)."""
     with pytest.raises(SystemExit):
         pc.main(["delegate"])
 
@@ -2968,15 +2968,15 @@ def test_delegate_models_takes_only_the_json_shape(pc):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# _default_session — lease_store.session_name 과 동형 count-based 유도 (ADR-0040 D1·T-0073)
-# env > lease 장부 leased 1개면 그 session(단일-lease 유도) > None. per-clone
+# _default_session — lease_store.session_name 과 같은 방식 count-based 유도 (ADR-0040 D1·T-0073)
+# env > lease 기록 leased 1개면 그 session(단일-lease 유도) > None. per-clone
 # local.conf `session=` 층은 T-0779 가 폐지했다. cmd_status/whoami 의
-# "이 세션의 리스" surface 가 이걸 쓰므로 board 매칭과 정합해야 한다(T-0066 must-fix).
-# board 와 tail 만 다르다(host-pid 폴백 없음 — surface 는 미해소=None → "(비바인딩)").
+# "이 세션의 대여" surface 가 이걸 쓰므로 board 매칭과 일치해야 한다(T-0066 must-fix).
+# board 와 tail 만 다르다(host-pid 대체 없음 — surface 는 미해소=None → "(비바인딩)").
 # ════════════════════════════════════════════════════════════════════════
 
 def _bind_tmp_repo(pc, monkeypatch, tmp_path):
-    """pc 의 REPO 를 tmp 로 재지정 — 실 루트 local.conf/리스장부 무오염(hermetic).
+    """pc 의 REPO 를 tmp 로 재지정 — 실 루트 local.conf/대여 기록 무오염(hermetic).
 
     `_leased_sessions`·conf 헬퍼가 `REPO / .project_manager / …` 를 읽으므로 REPO 를
     tmp 로 묶어야 실 루트를 안 건드린다. module-scope pc 라도 monkeypatch 가 테스트 후 복원.
@@ -2987,8 +2987,8 @@ def _bind_tmp_repo(pc, monkeypatch, tmp_path):
     return pm / "local.conf"
 
 
-def _write_ledger_pc(tmp_path, *rows):
-    """`REPO/.project_manager/.local/worktree-leases.json` 에 리스 행을 쓴다 (유도 전제)."""
+def _write_records_pc(tmp_path, *rows):
+    """`REPO/.project_manager/.local/worktree-leases.json` 에 대여 행을 쓴다 (유도 전제)."""
     import json
     local = tmp_path / ".project_manager" / ".local"
     local.mkdir(parents=True, exist_ok=True)
@@ -3005,7 +3005,7 @@ def test_default_session_prefers_pm_env(pc, monkeypatch, tmp_path):
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
     conf.write_text("session=from-conf\n", encoding="utf-8")
-    _write_ledger_pc(tmp_path, {"session": "leased-sess"})
+    _write_records_pc(tmp_path, {"session": "leased-sess"})
     assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "from-pm-env"
 
 
@@ -3027,11 +3027,11 @@ def test_default_session_pm_wins_over_claude(pc, monkeypatch, tmp_path):
 
 
 def test_default_session_single_lease_derives_session(pc, monkeypatch, tmp_path):
-    """env 없음·leased 슬롯 1개 → 그 session 유도 (ADR-0040 count-based·board 동형)."""
+    """env 없음·leased 슬롯 1개 → 그 session 유도 (ADR-0040 count-based·board 와 같은 방식)."""
     _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    _write_ledger_pc(tmp_path, {"session": "project_manager_1"})
+    _write_records_pc(tmp_path, {"session": "project_manager_1"})
     assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "project_manager_1"
 
 
@@ -3041,7 +3041,7 @@ def test_default_session_single_lease_wins_over_local_conf(pc, monkeypatch, tmp_
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     conf.write_text("session=stale-conf\n", encoding="utf-8")
-    _write_ledger_pc(tmp_path, {"session": "derived-1"})
+    _write_records_pc(tmp_path, {"session": "derived-1"})
     assert lease_store.session_name(pm_paths.home_at(pc.REPO)) == "derived-1"
 
 
@@ -3051,12 +3051,12 @@ def test_default_session_two_leases_returns_none(pc, monkeypatch, tmp_path):
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     conf.write_text("session=some-conf\n", encoding="utf-8")
-    _write_ledger_pc(tmp_path, {"session": "a_1"}, {"session": "b_1"})
+    _write_records_pc(tmp_path, {"session": "a_1"}, {"session": "b_1"})
     assert lease_store.session_name(pm_paths.home_at(pc.REPO)) is None
 
 
 def test_default_session_ignores_local_conf_session(pc, monkeypatch, tmp_path):
-    """env·lease 없음 + local.conf `session=foo` → None (폴백 폐지·board 동형·T-0779)."""
+    """env·lease 없음 + local.conf `session=foo` → None (대체 폐지·board 와 같은 방식·T-0779)."""
     conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -3065,12 +3065,12 @@ def test_default_session_ignores_local_conf_session(pc, monkeypatch, tmp_path):
 
 
 def test_default_session_solo_unbound_returns_none(pc, monkeypatch, tmp_path):
-    """env·lease 모두 없음 → None (구 host-pid 폴백 제거·ADR-0040).
+    """env·lease 모두 없음 → None (구 host-pid 대체 제거·ADR-0040).
 
     surface(cmd_status/whoami·required=False)가 이 None 을 "(비바인딩)" 으로 표시한다 —
     `<host>-<pid>` 는 세션-귀속 아닌 국소 용처(worktree_pool lease 취득)에만 잔존.
     """
-    _bind_tmp_repo(pc, monkeypatch, tmp_path)  # local.conf 없음·장부 없음
+    _bind_tmp_repo(pc, monkeypatch, tmp_path)  # local.conf 없음·기록 없음
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     assert lease_store.session_name(pm_paths.home_at(pc.REPO)) is None
@@ -3101,7 +3101,7 @@ def test_repo_add_parser_test_is_optional(pc):
 
 
 def test_repo_add_without_test_registers_empty_test_cmd(monkeypatch, pc, tmp_path):
-    """--test 미지정 → areas_append(test_cmd=None) (해소 체인이 슬롯/local.conf 로 폴백·T-0066)."""
+    """--test 미지정 → areas_append(test_cmd=None) (해소 체인이 슬롯/local.conf 로 대체·T-0066)."""
     board = FakeBoard(registered=())
     gitr = FakeGitRecorder(rc=0)
     bind_board(monkeypatch, board)
@@ -3111,7 +3111,7 @@ def test_repo_add_without_test_registers_empty_test_cmd(monkeypatch, pc, tmp_pat
     )
     assert rc == 0
     assert len(board.append_calls) == 1
-    assert board.append_calls[0]["test_cmd"] is None  # 빈 값 — board 가 "" 로 떨군다(폴백)
+    assert board.append_calls[0]["test_cmd"] is None  # 빈 값 — board 가 "" 로 떨군다(대체)
 
 
 def test_repo_add_with_test_still_forwards_test_cmd(monkeypatch, pc, tmp_path):
@@ -3186,7 +3186,7 @@ def test_worktree_add_prompt_empty_input_binds_none(pc, monkeypatch):
 
     슬롯 test_cmd 는 board 해소 체인서 areas per-repo test_cmd 보다 우선(T-0066)이라, 빈입력에
     기본값을 박으면 areas 의 그 repo 명령(예 go test)을 잘못 덮는다 → 빈입력은 None 이어야
-    해소 체인이 areas/local.conf 로 폴백(기존 동작 보존). 비어있지 않은 입력만 바인딩.
+    해소 체인이 areas/local.conf 로 대체(기존 동작 보존). 비어있지 않은 입력만 바인딩.
     """
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     monkeypatch.setattr(repo_protection, "_resolve_repo_test_cmd", lambda _home, repo, **kw: "pytest -q")
@@ -3199,7 +3199,7 @@ def test_worktree_add_prompt_empty_input_binds_none(pc, monkeypatch):
     )
     assert rc == 0
     assert ("create_slot", "svc", None, "main") in wp.calls          # 빈입력 → None(슬롯 미바인딩)
-    # 기본값(pytest -q)이 슬롯에 잘못 박히지 않았는지 — areas 폴백 보존의 핵심.
+    # 기본값(pytest -q)이 슬롯에 잘못 박히지 않았는지 — areas 대체 보존의 핵심.
     assert ("create_slot", "svc", "pytest -q", "main") not in wp.calls
 
 
@@ -3221,7 +3221,7 @@ def test_worktree_add_no_test_non_tty_skips_prompt(pc, monkeypatch):
     )
     assert rc == 0
     assert prompted == []                                   # 비-tty → 프롬프트 안 함
-    assert ("create_slot", "svc", None, "main") in wp.calls         # 현행 None(폴백)
+    assert ("create_slot", "svc", None, "main") in wp.calls         # 현행 None(대체)
 
 
 class _FakeBoardAreasRow:
@@ -3247,11 +3247,11 @@ def test_resolve_repo_test_cmd_prefers_areas(pc, monkeypatch):
 
 
 def test_resolve_repo_test_cmd_falls_back_to_local_conf(pc, monkeypatch):
-    """areas 미등록/빈 test_cmd → _default_test_cmd(local.conf 또는 pytest -q)로 폴백."""
-    _set_areas_rows(monkeypatch, {"svc": {"test_cmd": ""}})   # 빈 → 폴백
+    """areas 미등록/빈 test_cmd → _default_test_cmd(local.conf 또는 pytest -q)로 대체."""
+    _set_areas_rows(monkeypatch, {"svc": {"test_cmd": ""}})   # 빈 → 대체
     monkeypatch.setattr(repo_protection, "_default_test_cmd", lambda _home: "ctest")
     assert repo_protection._resolve_repo_test_cmd(pm_paths.home_at(pc.REPO), "svc") == "ctest"
-    # 미등록 repo 도 폴백.
+    # 미등록 repo 도 대체.
     assert repo_protection._resolve_repo_test_cmd(pm_paths.home_at(pc.REPO), "absent") == "ctest"
 
 
@@ -3270,9 +3270,9 @@ def test_worktree_add_prompt_displays_resolved_default(pc, monkeypatch):
         is_tty=lambda: True,
     )
     assert rc == 0
-    # 프롬프트에 그 repo 의 areas 폴백값(go test)이 표시 — Enter 시 적용될 값.
+    # 프롬프트에 그 repo 의 areas 대체값(go test)이 표시 — Enter 시 적용될 값.
     assert any("go test ./..." in p for p in prompts)
-    # 빈입력이라 슬롯엔 안 박힘(must-fix 1·areas 폴백 보존).
+    # 빈입력이라 슬롯엔 안 박힘(must-fix 1·areas 대체 보존).
     assert ("create_slot", "svc", None, "main") in wp.calls
 
 
@@ -3293,7 +3293,7 @@ def test_worktree_add_empty_input_does_not_override_areas(pc, monkeypatch):
 
 
 def test_worktree_add_prompt_eof_falls_back_none(pc, monkeypatch):
-    """프롬프트 중 EOFError(EOF) → None 폴백(크래시 0·create_slot 진행)."""
+    """프롬프트 중 EOFError(EOF) → None 대체(크래시 0·create_slot 진행)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     monkeypatch.setattr(repo_protection, "_resolve_repo_test_cmd", lambda _home, repo, **kw: "pytest -q")
 
@@ -3307,11 +3307,11 @@ def test_worktree_add_prompt_eof_falls_back_none(pc, monkeypatch):
           input_fn=boom, is_tty=lambda: True,
     )
     assert rc == 0
-    assert ("create_slot", "svc", None, "main") in wp.calls         # EOF → None 폴백
+    assert ("create_slot", "svc", None, "main") in wp.calls         # EOF → None 대체
 
 
 def test_worktree_add_prompt_keyboardinterrupt_falls_back_none(pc, monkeypatch):
-    """프롬프트 중 KeyboardInterrupt(Ctrl-C) → None 폴백(크래시 0)."""
+    """프롬프트 중 KeyboardInterrupt(Ctrl-C) → None 대체(크래시 0)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     monkeypatch.setattr(repo_protection, "_resolve_repo_test_cmd", lambda _home, repo, **kw: "pytest -q")
 
@@ -3329,7 +3329,7 @@ def test_worktree_add_prompt_keyboardinterrupt_falls_back_none(pc, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# cmd_set_test_cmd 배선 (T-0069) — worktree_pool.set_test_cmd 위임·slot 부재 에러
+# cmd_set_test_cmd 연결 (T-0069) — worktree_pool.set_test_cmd 위임·slot 부재 에러
 # ════════════════════════════════════════════════════════════════════════
 
 
@@ -3424,7 +3424,7 @@ def test_alloc_success_leases_under_task_session(pc, monkeypatch, capsys):
     )
     assert rc == 0
     assert ("alloc", "svc", "job") in wp.calls    # session=task 로 대여(⑥)
-    # 명 검증 + 기바인딩 확인 배선(must-fix ②).
+    # 명 검증 + 기바인딩 확인 연결(must-fix ②).
     assert wp.did("_validate_task_name") and wp.did("find_task")
     out = capsys.readouterr().out
     assert "work/svc_1" in out and "job" in out
@@ -3463,7 +3463,7 @@ def test_alloc_requires_prebound_task(pc, monkeypatch, capsys):
     assert "pm-bootstrap" in err and "job" in err
     # 생성 진입점이 둘(정체성만 `task new` · 생성+진입 bootstrap)이므로 안내도 둘을 말한다.
     assert "pm-config task new job" in err
-    assert "()" not in err          # 스트립 잔재(빈 괄호) 재발 금지(T-0810 동형)
+    assert "()" not in err          # 스트립 잔재(빈 괄호) 재발 금지(T-0810 와 같은 방식)
     assert not wp.did("alloc")    # 미바인딩이면 대여 안 함
 
 
@@ -3620,13 +3620,13 @@ def test_worktree_add_task_reserved_name_rejected_via_resolved_board(pc, capsys,
     )
     assert rc == 1
     assert not wp.did("create_slot")   # 예약명 거부 → 슬롯 생성 안 함
-    # registered_repos 가 실제로 전달됐는지(None 완화 아님) 배선 확인.
+    # registered_repos 가 실제로 전달됐는지(None 완화 아님) 연결 확인.
     val = [c for c in wp.calls if c[0] == "_validate_task_name"]
     assert val and set(val[0][2]) == {"svc"}
 
 
 def test_worktree_add_task_forwards_registered_repos_when_injected(pc, monkeypatch):
-    """board 주입 경로도 registered_repos 전달 — add 예약 검증 계약(alloc 동형·must-fix ①)."""
+    """board 주입 경로도 registered_repos 전달 — add 예약 검증 계약(alloc 와 같은 방식·must-fix ①)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     _set_registered(monkeypatch, "svc", "acc")
     board = bind_board(monkeypatch, FakeBoard(registered=("svc", "acc"), repo_bases=_SVC_BASE))
@@ -3745,7 +3745,7 @@ def _end_result(*, released=(), dirty=(), moved_to=None, moved_from=None):
                            refused=refused, moved_to=moved_to, moved_from=moved_from)
 
 
-def test_task_end_claimed_gate_refuses(pc, monkeypatch, capsys):
+def test_task_end_claimed_check_refuses(pc, monkeypatch, capsys):
     """claimed 티켓 잔존(⑲) → rc1 + 목록·거부·end_task 미호출(반납/이동 안 함)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     board = bind_board(monkeypatch, FakeBoard(task_scan={"claimed": [{"id": "T-0009", "title": "wip", "status": "claimed"}],
@@ -3758,7 +3758,7 @@ def test_task_end_claimed_gate_refuses(pc, monkeypatch, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "T-0009" in err and "종료 거부" in err
-    # 소진 게이트가 막았으니 반납/이동을 시도하지 않는다.
+    # 소진 통과 조건이 막았으니 반납/이동을 시도하지 않는다.
     assert not wp.did("end_task")
 
 
@@ -3811,7 +3811,7 @@ def test_task_end_conf_read_failure_uses_git_identity(tmp_path, monkeypatch, cap
     assert "T-0009" in err and "종료 거부" in err
 
 
-def test_task_end_dirty_gate_refuses(pc, monkeypatch, capsys):
+def test_task_end_dirty_check_refuses(pc, monkeypatch, capsys):
     """claimed 없음·보유 슬롯 dirty → end_task refused → rc1 + dirty 목록."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(end_task_result=_end_result(dirty=["work/svc_1"])))
     board = bind_board(monkeypatch, FakeBoard(task_scan={"claimed": [], "prefix_open": []}))
@@ -3856,7 +3856,7 @@ def test_task_end_prefix_open_info_only(pc, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "T-PAY-009" in out and "정보" in out
-    # 스캔이 task prefix(PAY)로 호출됐는지(find_task.prefix 전달 배선).
+    # 스캔이 task prefix(PAY)로 호출됐는지(find_task.prefix 전달 연결).
     assert board.scan_calls and board.scan_calls[0][1:] == ("job", "PAY")
 
 
@@ -3883,7 +3883,7 @@ def test_main_routes_task_end_to_engine(pc, monkeypatch):
     assert wp.did("end_task")
 
 
-def test_task_end_close_record_gate_is_rc1(pc, monkeypatch, capsys):
+def test_task_end_close_record_check_is_rc1(pc, monkeypatch, capsys):
     refusal = FakeWorktreePool.TaskEndRefused("job")
     wp = bind_pool(monkeypatch, FakeWorktreePool(end_raises=refusal))
     bind_pool(monkeypatch, wp)
@@ -3991,7 +3991,7 @@ def test_task_prefix_validates_task_name_before_write(pc, monkeypatch, capsys):
 
 
 def test_task_prefix_forwards_registered_repos_for_reserved_check(pc, monkeypatch):
-    """task 명 검증에 등록 repo 전달 — 예약패턴(`<repo>_<N>`·⑥) 판별 근거(alloc/task end 동형)."""
+    """task 명 검증에 등록 repo 전달 — 예약패턴(`<repo>_<N>`·⑥) 판별 근거(alloc/task end 와 같은 방식)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool())
     _set_registered(monkeypatch, "svc", "acc")
     board = bind_board(monkeypatch, FakeBoard(registered=("svc", "acc")))
@@ -4098,9 +4098,9 @@ def test_task_prefix_surfaced_in_task_group_help(pc, capsys):
 
 
 def test_main_task_group_without_sub_shows_help(pc, capsys):
-    """`task` 만 주고 하위 동작 없음 → 그룹 도움말 surface·rc1(repo/worktree 동형)."""
+    """`task` 만 주고 하위 동작 없음 → 그룹 도움말 surface·rc1(repo/worktree 와 같은 방식)."""
     with pytest.raises(SystemExit):
-        # argparse 그룹 --help 는 SystemExit(0) 로 끝난다(repo/worktree 동형 경로).
+        # argparse 그룹 --help 는 SystemExit(0) 로 끝난다(repo/worktree 와 같은 방식 경로).
         pc.main(["task"])
 
 
@@ -4198,8 +4198,8 @@ def test_task_branch_engine_refusal_rc1_with_engine_wording(pc, monkeypatch, cap
 
 def test_task_branch_other_engine_errors_propagate(pc, monkeypatch):
     """거부 두 타입 밖의 엔진 오류는 잡지 않는다 — rc 로 접지 않고 그대로 올라간다."""
-    wp = bind_pool(monkeypatch, FakeWorktreePool(task_branch_raises=OSError("장부 쓰기 실패")))
-    with pytest.raises(OSError, match="장부 쓰기 실패"):
+    wp = bind_pool(monkeypatch, FakeWorktreePool(task_branch_raises=OSError("기록 쓰기 실패")))
+    with pytest.raises(OSError, match="기록 쓰기 실패"):
         bind_pool(monkeypatch, wp)
         config_tasks.cmd_task_branch(pm_paths.home_at(pc.REPO), _task_branch_args())
 

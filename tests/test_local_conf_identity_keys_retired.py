@@ -1,17 +1,17 @@
 """per-clone `local.conf` 의 정체성 키(`session=`/`prefix=`) 폐지 가드 (T-0779).
 
-세션은 lease 장부, prefix 는 areas.md 칼럼이 단일 진실이다. 두 키는 slot·task 종속 값이라
-프로젝트 공용 per-clone conf 의 범위가 아니었고, "등록 0 = solo 홈" 에서만 살아나는 그 폴백이
-엔진의 유일한 solo 전용 경로였다. 이 파일은 그 경로가 **코드에서 사라졌다**는 사실을 세 축으로
+세션은 lease 기록, prefix 는 areas.md 칼럼이 단일 진실이다. 두 키는 slot·task 종속 값이라
+프로젝트 공용 per-clone conf 의 범위가 아니었고, "등록 0 = solo 홈" 에서만 살아나는 그 대체 동작이
+엔진의 유일한 solo 전용 경로였다. 이 파일은 그 경로가 **코드에서 사라졌다**는 사실을 세 가지로
 못박는다:
 
   ① 정적 — 엔진 소스(canonical + 출하 템플릿 사본)에 그 키를 읽거나 쓰는 코드가 0.
   ② 동적 — 그 키만 있는 실 conf 픽스처에서 해소가 조용히 성공하지 않는다(조회 None·
      귀속 쓰기 fail-loud). 픽스처 문자열은 **구 엔진 init 이 실제로 쓰던 2줄**이다.
-  ③ 형상 — `board init` 은 `--prefix` 유무와 무관하게 areas repo 행을 등록하므로 "등록 0"
-     형상 자체가 새로 생기지 않는다. 남아 있는 등록 0 clone 에는 이관 안내가 붙는다.
+  ③ 모양 — `board init` 은 `--prefix` 유무와 무관하게 areas repo 행을 등록하므로 "등록 0"
+     상태 자체가 새로 생기지 않는다. 남아 있는 등록 0 clone 에는 이관 안내가 붙는다.
 
-②의 픽스처는 손으로 지어낸 conf 가 아니라 폐지 전 `board.py init` 이 만든 형상이다(주석 1줄 +
+②의 픽스처는 손으로 지어낸 conf 가 아니라 폐지 전 `board.py init` 이 만든 모양이다(주석 1줄 +
 `session=pm`). 그래야 "구 채택자 clone 이 실제로 무엇을 만나는가" 를 값으로 단언한다.
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 TEMPLATE_DIRS = ("claude_code", "codex", "opencode")
 
-# 폐지 전 `board.py init` 이 fresh 홈에 쓰던 첫 두 줄 (구 채택자 clone 의 실 형상).
+# 폐지 전 `board.py init` 이 fresh 홈에 쓰던 첫 두 줄 (구 채택자 clone 의 실 모양).
 LEGACY_INIT_CONF_HEAD = (
     "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     "session=pm\n"
@@ -237,11 +237,11 @@ def _engine_sources() -> list[Path]:
     """canonical 엔진 + 출하 템플릿 사본의 모든 `.py` (스캔 대상 전수).
 
     템플릿 사본까지 보는 이유: 채택자가 실제로 실행하는 것은 그 사본이다. canonical 만 고치고
-    전파를 잊으면 채택자 트리에서는 폐지된 폴백이 계속 산다.
+    전파를 잊으면 채택자 트리에서는 폐지된 대체 동작이 계속 산다.
     """
     sources = engine_python_files(TOOLS)
-    for flavor in TEMPLATE_DIRS:
-        tools = REPO / "templates" / flavor / ".project_manager" / "tools"
+    for variant in TEMPLATE_DIRS:
+        tools = REPO / "templates" / variant / ".project_manager" / "tools"
         if tools.is_dir():
             sources.extend(engine_python_files(tools))
     return sources
@@ -278,7 +278,7 @@ def test_no_engine_source_reads_the_local_conf_identity_keys():
         if pattern.search(line)
     ]
     assert not offenders, (
-        "per-clone local.conf 의 정체성 키를 읽는 코드가 남아 있다 — 세션은 lease 장부,\n"
+        "per-clone local.conf 의 정체성 키를 읽는 코드가 남아 있다 — 세션은 lease 기록,\n"
         "prefix 는 areas.md 가 단일 진실이다:\n  " + "\n  ".join(sorted(offenders))
     )
 
@@ -368,11 +368,11 @@ def test_the_three_self_parsing_modules_dropped_their_copies():
     assert "solo local.conf" not in pm_engine.domain.session_identity.SNAPSHOT_IDENTITY_SOURCES
 
 
-# ── ② 동적: 구 clone 형상에서 조용한 폴백이 없다 ────────────────────────────
+# ── ② 동적: 구 clone 모양에서 조용한 대체 동작이 없다 ────────────────────────────
 
 @pytest.fixture
 def board(tmp_path, monkeypatch):
-    """구 채택자 clone 형상의 hermetic board — 실 init 이 만든 conf 2줄만 있고 장부는 없다."""
+    """구 채택자 clone 모양의 hermetic board — 실 init 이 만든 conf 2줄만 있고 기록은 없다."""
     project = tmp_path / "proj"
     pm_dir = project / ".project_manager"
     tickets = pm_dir / "wiki" / "tickets"
@@ -392,13 +392,13 @@ def board(tmp_path, monkeypatch):
 
 
 def test_legacy_conf_session_does_not_resolve_a_session(board):
-    """`session=pm` 만 있는 구 clone 조회 → None (조용한 폴백 0)."""
+    """`session=pm` 만 있는 구 clone 조회 → None (조용한 대체 동작 0)."""
     pm_paths.home_at(board.REPO).local_conf.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
     assert lease_store.session_name(pm_paths.home_at(board.REPO)) is None
 
 
 def test_legacy_conf_session_fails_loud_on_attributed_write(board):
-    """같은 형상의 귀속 쓰기 → fail-loud 문구를 **실값**으로 단언한다(귀속은 `--task` 만·T-0962)."""
+    """같은 모양의 귀속 쓰기 → fail-loud 문구를 **실값**으로 단언한다(귀속은 `--task` 만·T-0962)."""
     pm_paths.home_at(board.REPO).local_conf.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args())
@@ -411,13 +411,13 @@ def test_legacy_conf_prefix_does_not_namespace_new_tickets(board):
     """`prefix=ACC` 만 있는 구 clone → 해소 None·발행은 무prefix `T-NNNN`(none 카테고리)."""
     pm_paths.home_at(board.REPO).local_conf.write_text(LEGACY_INIT_CONF_HEAD + "prefix=ACC\n", encoding="utf-8")
     assert areas_store.id_prefix(pm_paths.home_at(board.REPO), None) is None
-    assert areas_registry.known_prefixes(pm_paths.home_at(board.REPO)) == frozenset()   # 승인 게이트 3소스에도 없다
+    assert areas_registry.known_prefixes(pm_paths.home_at(board.REPO)) == frozenset()   # 승인 검사 3소스에도 없다
 
 
-def test_lease_ledger_shape_resolves_the_session(board):
-    """실 lease 장부(단일 leased 행) 형상이면 같은 홈에서 세션이 해소된다 — 역방향 확인.
+def test_lease_record_shape_resolves_the_session(board):
+    """실 lease 기록(단일 leased 행) 모양이면 같은 홈에서 세션이 해소된다 — 역방향 확인.
 
-    폴백 제거가 *정상* 사용을 막지 않는다: 슬롯을 대여한 홈은 장부에서 조회 세션이 나온다
+    대체 동작 제거가 *정상* 사용을 막지 않는다: 슬롯을 대여한 홈은 기록에서 조회 세션이 나온다
     (귀속 쓰기는 이 세션이 아니라 `--task` 로만 한다 — T-0962).
     """
     import json
@@ -439,8 +439,8 @@ def test_env_binding_resolves_the_session(board):
         os.environ.pop("PM_SESSION_NAME", None)
 
 
-# ── ③ 형상: init 이 등록 0 을 만들지 않는다 + 등록 두 축(repo·카테고리)의 실제 값 ──
-# 폐지된 conf 폴백을 대체하는 것이 areas repo 행이므로, "등록이 실제로 남는가" 를 값으로 친다.
+# ── ③ 모양: init 이 등록 0 을 만들지 않는다 + 등록 두 칸(repo·카테고리)의 실제 값 ──
+# 폐지된 conf 대체 동작을 대신하는 것이 areas repo 행이므로, "등록이 실제로 남는가" 를 값으로 친다.
 # 특히 무prefix init 뒤의 카테고리 지정(재실행)이 **셀 갱신**인지 — 여기서 2행이 되면 한 물리
 # repo 가 두 repo 로 등록돼 세션→repo→prefix 해소가 깨진다.
 
@@ -472,7 +472,7 @@ def test_init_without_prefix_leaves_no_unregistered_shape(board):
 
 
 def test_unregistered_shape_advisory_names_the_init_rerun(board):
-    """등록 0 형상의 이관 안내는 처방(`board.py init` 재실행)을 지목하고 never-block 이다."""
+    """등록 0 상태의 이관 안내는 해결 방법(`board.py init` 재실행)을 지목하고 never-block 이다."""
     findings = areas_lint.lint_areas_repo_unregistered(pm_paths.home_at(board.REPO))
     assert len(findings) == 1
     label, kind, detail = findings[0]
@@ -480,14 +480,14 @@ def test_unregistered_shape_advisory_names_the_init_rerun(board):
     assert "board.py init" in detail
     assert "session=" in detail and "prefix=" in detail   # 더 이상 읽지 않음을 명시
     assert kind in board_lint._ADVISORY_LINT_KINDS            # push 미차단(advisory)
-    assert findings[0] in ticket_lint.lint_tickets(pm_paths.home_at(board.REPO))           # 집계에 배선됨
+    assert findings[0] in ticket_lint.lint_tickets(pm_paths.home_at(board.REPO))           # 집계에 연결됨
 
 
 def test_both_id_formats_keep_resolving_on_a_mixed_board(board):
     """무prefix·prefixed 티켓이 섞인 보드에서 두 형식이 계속 해소·조회·완료된다.
 
     실 보드 건수는 테스트가 셀 수 없으므로(엔진 저장소엔 보드가 없다) 두 형식을 섞은 픽스처로
-    같은 성질을 친다 — 폴백 제거가 기존 ID 를 건드리지 않는다.
+    같은 성질을 친다 — 대체 동작 제거가 기존 ID 를 건드리지 않는다.
     """
     board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args())
     for ticket_id in ("T-0778", "T-0779", "T-project_manager-001", "T-project_manager-002"):
@@ -512,7 +512,7 @@ def _areas_data_rows(board) -> list[str]:
 def test_category_init_after_bare_init_updates_the_cell_not_a_second_row(board, capsys):
     """무prefix init → 카테고리 init 재실행: 행은 1개 그대로, prefix 칼럼만 채워진다.
 
-    두 축(repo 칼럼 = 이 clone · prefix 칼럼 = 작업 카테고리)이 분리돼 있어야 재실행이 멱등하다.
+    두 칸(repo 칼럼 = 이 clone · prefix 칼럼 = 작업 카테고리)이 분리돼 있어야 재실행이 멱등하다.
     """
     assert board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args()) == 0
     assert areas_store.registered_repos(pm_paths.home_at(board.REPO)) == {"proj"} and areas_store.registered_prefixes(pm_paths.home_at(board.REPO)) == set()
@@ -556,17 +556,17 @@ def test_explicit_repo_flag_names_the_areas_row_not_the_prefix(board):
 def test_repo_only_init_registers_with_zero_active_leases(board):
     """활성 lease 0(=fresh clone)에서도 `--repo <이름>` 만으로 등록된다.
 
-    등록명 지정은 actor 정체성 해소와 다른 축이다 — 여기서 슬롯 미해소로 중단하면 repo 이름
+    등록명 지정은 actor 정체성 해소와 다른 문제다 — 여기서 슬롯 미해소로 중단하면 repo 이름
     유도 실패 안내(`--repo <이름>`)가 그 자리에서 죽는다.
     """
-    assert not pm_paths.leases_file(pm_paths.home_at(board.REPO)).exists()                    # 장부 자체가 없다
+    assert not pm_paths.leases_file(pm_paths.home_at(board.REPO)).exists()                    # 기록 자체가 없다
     assert board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args(repo="billing")) == 0
     assert areas_store.registered_repos(pm_paths.home_at(board.REPO)) == {"billing"}
     assert _areas_data_rows(board)[0].split("|")[1].strip() == "billing"
 
 
 def test_changing_the_category_by_init_is_refused_with_zero_side_effects(board, capsys):
-    """이미 카테고리가 있는 행에 다른 카테고리로 init → 부작용 0 fail-loud + 처방 지목."""
+    """이미 카테고리가 있는 행에 다른 카테고리로 init → 부작용 0 fail-loud + 해결 방법 지목."""
     board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args(prefix="acct", area="회계", user_ack="acct"))
     capsys.readouterr()
     assert board_init.cmd_init(pm_paths.home_at(board.REPO), _init_args(prefix="ops", area="운영", user_ack="ops")) == 1
@@ -601,10 +601,10 @@ def test_completion_surface_prints_only_id_formats_the_board_will_issue(board, c
 
 
 def test_completion_surface_flags_ambiguity_instead_of_a_bare_id_it_cannot_issue(board, capsys):
-    """다중-카테고리·세션 미바인딩 형상 — 완료 안내가 `cmd_new` 의 ≥2 모호 가드와 같은 판정을 쓴다.
+    """다중-카테고리·세션 미바인딩 상태 — 완료 안내가 `cmd_new` 의 ≥2 모호 가드와 같은 판정을 쓴다.
 
     시퀀스(확인 라운드 재현): 이 clone 이 무prefix init → 다른 repo 행(`ops`)이 이미 카테고리를
-    쓰는 형상에서 이 clone 이 `acct` 카테고리를 셀 갱신으로 얻는다. `id_prefix(None)` 은 등록
+    쓰는 상태에서 이 clone 이 `acct` 카테고리를 셀 갱신으로 얻는다. `id_prefix(None)` 은 등록
     카테고리가 ≥2 이고 세션이 안 묶여 None 이지만, 그건 "무prefix 발행 가능" 이 아니라 `cmd_new`
     가 자신의 ≥2 가드로 거부하는 모호 상태다 — 완료 안내가 `T-NNNN` 을 성공 메시지로 내면 보드가
     발행하지 않을 포맷을 광고하는 것이다.
@@ -623,14 +623,14 @@ def test_completion_surface_flags_ambiguity_instead_of_a_bare_id_it_cannot_issue
     assert "--prefix <PFX>" in out
     # 원인은 등록 카테고리 수다 — 세션을 바인딩해도 prefix 는 바뀌지 않는다(세션 유도 층 없음).
     assert "세션이 바인딩" not in out and "세션 미바인딩" not in out
-    # 직후 무prefix cmd_new 는 안내가 예고한 대로 실제로 거부된다 — 안내와 실 거동의 정합.
+    # 직후 무prefix cmd_new 는 안내가 예고한 대로 실제로 거부된다 — 안내와 실 거동의 일치.
     assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args(task=_TASK)) == 1
 
 
 def test_completion_surface_still_issues_the_bare_format_when_unambiguous(board, capsys):
     """역방향 확인 — 등록이 단일-repo·무prefix 뿐이면 완료 안내는 여전히 `T-NNNN` 을 낸다.
 
-    F-001 모호-형상 가드를 조인해도 정상(비모호) 형상의 완료 안내가 사라지면 안 된다.
+    F-001 모호-상태 가드를 조인해도 정상(비모호) 상태의 완료 안내가 사라지면 안 된다.
     """
     # cmd_new 발행에 필요한 본문 템플릿 — 이 fixture 는 완료 안내(cmd_init)만 겨냥해 만들지
     # 않으므로, 이 테스트에서만 최소 템플릿을 심는다(다른 테스트는 무영향).

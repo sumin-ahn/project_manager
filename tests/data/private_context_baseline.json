@@ -52,12 +52,12 @@
     ".project_manager/tools/pm_engine/app/worktree_pool.py": [
       {
         "kind": "session_stamp",
-        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "hash": "14ffaec39115321b2bd0266e102b2fb0b45c311b85a625dbead9ab3e2efc3c4d",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "hash": "57f6c2845544f93b0b9af3b54fd0adffd284648454a7335e3ebf684861292a96",
         "count": 1
       }
     ],
@@ -417,12 +417,12 @@
     "templates/claude_code/.project_manager/tools/pm_engine/app/worktree_pool.py": [
       {
         "kind": "session_stamp",
-        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "hash": "14ffaec39115321b2bd0266e102b2fb0b45c311b85a625dbead9ab3e2efc3c4d",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "hash": "57f6c2845544f93b0b9af3b54fd0adffd284648454a7335e3ebf684861292a96",
         "count": 1
       }
     ],
@@ -785,12 +785,12 @@
     "templates/codex/.project_manager/tools/pm_engine/app/worktree_pool.py": [
       {
         "kind": "session_stamp",
-        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "hash": "14ffaec39115321b2bd0266e102b2fb0b45c311b85a625dbead9ab3e2efc3c4d",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "hash": "57f6c2845544f93b0b9af3b54fd0adffd284648454a7335e3ebf684861292a96",
         "count": 1
       }
     ],
@@ -1344,12 +1344,12 @@
     "templates/opencode/.project_manager/tools/pm_engine/app/worktree_pool.py": [
       {
         "kind": "session_stamp",
-        "hash": "56fbbb8b8565237aa879447058162521fde7bf7391f48723c5a9e266b13cff11",
+        "hash": "14ffaec39115321b2bd0266e102b2fb0b45c311b85a625dbead9ab3e2efc3c4d",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "8b6c9222260e82fb23625ad2bae8f6275d8e62228e3974451224791d1902e1e5",
+        "hash": "57f6c2845544f93b0b9af3b54fd0adffd284648454a7335e3ebf684861292a96",
         "count": 1
       }
     ],

@@ -1,20 +1,20 @@
 """worktree 슬롯 제거 — remove_slot 엔진 + 브랜치 삭제 판정 + `pm-config worktree remove` CLI.
 
 worktree 슬롯 lifecycle 의 *제거 본체*(수동 `git worktree remove` 위임)를 단일 커맨드로
-닫는다(PM 69 footgun 체인: 수동 remove → dangling 장부 → `add` 가 번호 skip → 뒤늦은 prune).
+닫는다(PM 69 footgun 체인: 수동 remove → dangling 기록 → `add` 가 번호 skip → 뒤늦은 prune).
 설계 단일 진실: PM 홈 spike `branch-parent-record-and-delete-rules-2026-09-14` 0절 규칙 2·3·4.
 검증:
 
-  - **remove_slot 엔진**(DI seam·mock git): 정상 제거(`worktree remove --force`) / 커밋 안 한 변경
-    거부(force 무관·stash 없음) / 활성 리스 거부·force 는 점유만 무시 / git 미등록 잔재 트리 거부
-    (force 무관·파일 무접촉) / detached / 장부 없음 / worktree remove 실패 뒤 등록 판정 / 승인값 전달 /
+  - **remove_slot 엔진**(DI 교체 지점·mock git): 정상 제거(`worktree remove --force`) / 커밋 안 한 변경
+    거부(force 무관·stash 없음) / 활성 대여 거부·force 는 점유만 무시 / git 미등록 잔재 트리 거부
+    (force 무관·파일 무접촉) / detached / 기록 없음 / worktree remove 실패 뒤 등록 판정 / 승인값 전달 /
     판정 조회 실패는 raise.
   - **브랜치 삭제 판정**(`delete_branch_by_rule`·실 git): 판정 표 행마다 — 보호 브랜치 · 공용 저장소
     기본 브랜치 · 자식 브랜치 · 부모 기록 없음 · 부모 브랜치 없음 · 합쳐짐 삭제 · 합쳐지지 않음(무승인
     보존 + 커밋 목록 + origin 반영 여부 / 승인 삭제) · 끝 커밋 이동 · `branch -D` 거부.
   - **실 git 슬롯 제거**: 번호 재사용 / 하위 모듈 있는 깨끗한 슬롯 제거 / 하위 모듈 안 변경 거부 /
     합쳐지지 않은 브랜치 보존·승인 삭제 / 읽기 전용 잔재 / SlotBranchExists / 보존 브랜치 재개.
-  - **cmd_worktree_remove CLI**: 승인값 게이트(없음/다름/같음) / 거부 문구 / 판정 출력 / 파서·help.
+  - **cmd_worktree_remove CLI**: 승인값 검사(없음/다름/같음) / 거부 문구 / 판정 출력 / 파서·help.
 
 hermetic 필수 — worktree_pool 모듈 전역(REPO·LEASES_FILE·WORK_DIR·REPOS_DIR)은 import 시점에
 실 repo 절대경로로 굳으므로 tmp 로 재지정한다(test_worktree_pool.py 패턴 동류). board.py 는
@@ -51,7 +51,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 
 # ════════════════════════════════════════════════════════════════════════
-# worktree_pool.remove_slot — 엔진 (DI seam·mock git)
+# worktree_pool.remove_slot — 엔진 (DI 교체 지점·mock git)
 # ════════════════════════════════════════════════════════════════════════
 
 
@@ -59,7 +59,7 @@ def _load_wp_bound(proj: Path):
     """worktree_pool.py 를 새로 로드하고 경로 전역을 `proj` tmp 루트로 재바인딩한다.
 
     import 시점에 굳은 실 REPO 경로를 tmp 로 덮어써 실 `.project_manager` 를 절대 건드리지
-    않는다(test_worktree_pool.py._load_wp_bound 와 동형).
+    않는다(test_worktree_pool.py._load_wp_bound 와 같은 방식).
     """
     spec = importlib.util.spec_from_file_location("wp_rm_test", TOOLS / "worktree_pool.py")
     mod = importlib.util.module_from_spec(spec)
@@ -81,7 +81,7 @@ def _load_wp_bound(proj: Path):
 
 @pytest.fixture
 def proj(tmp_path):
-    """tmp 프로젝트 루트 — .project_manager/.local + work/ + .repos/ 골격."""
+    """tmp 프로젝트 루트 — .project_manager/.local + work/ + .repos/ 빈 양식."""
     p = tmp_path / "proj"
     (p / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
     (p / "work").mkdir(parents=True, exist_ok=True)
@@ -105,7 +105,7 @@ _FAKE_TIP = "c0ffee0000000000000000000000000000000000"
 
 
 class RemoveFakeGit:
-    """remove_slot DI seam 용 mock git — 등록·변경·HEAD·worktree remove/prune 과 브랜치 판정 조회를 모델링한다.
+    """remove_slot DI 교체 지점 용 mock git — 등록·변경·HEAD·worktree remove/prune 과 브랜치 판정 조회를 모델링한다.
 
     - `slot` → 등록 상태를 모델링할 슬롯(경로는 `wp.slot_path(slot)` 으로 해소).
     - `registered` / `list_rc` → `worktree list --porcelain` 이 그 경로를 등록으로 내는지 / rc(≠0=조회 실패).
@@ -118,7 +118,7 @@ class RemoveFakeGit:
     - `merged` → `merge-base --is-ancestor` rc(True=0 조상·False=1 조상 아님).
     - `delete_rc` → `branch -D` rc.
     - `remove_rc` / `deregisters_on_failure` → `git worktree remove` rc / rc≠0 인데 등록은 이미 지워진
-      실측 형상(읽기 전용 잔재).
+      실측 경우(읽기 전용 잔재).
     """
 
     def __init__(self, wp, *, slot="work/A_1", registered=True, list_rc=0, dirty=False,
@@ -210,11 +210,11 @@ class RemoveFakeGit:
 
 
 def _seed(wp, *leases, tree=True):
-    """리스 장부를 쓰고, 기본으로 그 슬롯 디렉터리도 세운다.
+    """대여 기록을 쓰고, 기본으로 그 슬롯 디렉터리도 세운다.
 
     `remove_slot` 은 지울 트리가 실재하는지를 파일시스템에 묻는다(주입 runner 여부와 무관) —
     hermetic 케이스도 슬롯 자리를 실물로 둬야 등록 조회 이후 경로를 탄다. `tree=False` 는
-    트리가 이미 사라진 형상(dangling 장부)을 재현하는 자리다.
+    트리가 이미 사라진 상황(dangling 기록)을 재현하는 자리다.
     """
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
         pool_store._write_ledger(pm_paths.home_at(wp.REPO), list(leases))
@@ -228,7 +228,7 @@ def _lease(wp, *, slot, repo, session="s1", state="leased"):
 
 
 def test_remove_slot_clean_idle_slot_removes_worktree_and_deletes_merged_branch(wp):
-    """정상 제거 — idle·변경 없음·부모에 합쳐진 브랜치 → `worktree remove --force` + `branch -D` + 장부 삭제.
+    """정상 제거 — idle·변경 없음·부모에 합쳐진 브랜치 → `worktree remove --force` + `branch -D` + 기록 삭제.
 
     `--force` 는 변경 없음을 엔진이 확인한 뒤에만 붙는다(하위 모듈이 있는 깨끗한 슬롯 때문).
     """
@@ -262,7 +262,7 @@ def test_remove_slot_uncommitted_changes_refused_with_or_without_force(wp, force
 
 @pytest.mark.parametrize("state", ["leased", "creating"])
 def test_remove_slot_active_lease_refused_without_force(wp, state):
-    """활성 리스(사용 중·in-flight 생성) + force 아님 → RemoveRefused("active-lease")·아무 git op 없음."""
+    """활성 대여(사용 중·in-flight 생성) + force 아님 → RemoveRefused("active-lease")·아무 git op 없음."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state=state))
     git = RemoveFakeGit(wp, head="A_1")
     with pytest.raises(worktree_records.RemoveRefused) as exc:
@@ -274,7 +274,7 @@ def test_remove_slot_active_lease_refused_without_force(wp, state):
 
 @pytest.mark.parametrize("state", ["leased", "creating"])
 def test_remove_slot_force_overrides_active_lease_and_reports_state(wp, state):
-    """--force 는 점유를 무시하고 제거한다 — 원래 state 를 forced_state 에 실어 CLI 가 강제 회수를 경고한다."""
+    """--force 는 점유를 무시하고 제거한다 — 원래 state 를 forced_state 에 실어 CLI 가 강제 반납을 경고한다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="other", state=state))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"})
     result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", force=True, git_runner=git)
@@ -284,14 +284,14 @@ def test_remove_slot_force_overrides_active_lease_and_reports_state(wp, state):
 
 
 def test_remove_slot_idle_removal_forced_state_none(wp):
-    """정상(idle) 제거는 forced_state=None (강제 회수 아님·CLI 경고 불요)."""
+    """정상(idle) 제거는 forced_state=None (강제 반납 아님·CLI 경고 불요)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"})
     assert worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git).forced_state is None
 
 
-def test_remove_slot_tree_missing_prunes_and_cleans_ledger(wp):
-    """worktree dir 부재 + 장부 잔존 → remove 스킵·prune·장부 정리(dangling)·브랜치 판정 없음."""
+def test_remove_slot_tree_missing_prunes_and_cleans_records(wp):
+    """worktree dir 부재 + 기록 잔존 → remove 스킵·prune·기록 정리(dangling)·브랜치 판정 없음."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"), tree=False)
     git = RemoveFakeGit(wp, head="A_1")
     result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1", git_runner=git)
@@ -310,15 +310,15 @@ def test_remove_slot_detached_head_no_branch_judgement(wp):
     assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == []
 
 
-def test_remove_slot_absent_ledger_returns_none(wp):
-    """장부 없음 무해 종료 — 엔트리 없으면 None·git op 0(orphan 은 git worktree remove)."""
+def test_remove_slot_absent_records_returns_none(wp):
+    """기록 없음 무해 종료 — 엔트리 없으면 None·git op 0(orphan 은 git worktree remove)."""
     git = RemoveFakeGit(wp, head="Z_9")
     assert worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/Z_9", git_runner=git) is None
     assert git.calls == []
 
 
 def test_remove_slot_registration_intact_failure_changes_nothing(wp):
-    """remove 실패 + 등록 잔존 → RuntimeError·장부/브랜치/디렉터리 미변경(재시도 방법을 지어내지 않는다)."""
+    """remove 실패 + 등록 잔존 → RuntimeError·기록/브랜치/디렉터리 미변경(재시도 방법을 지어내지 않는다)."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, remove_rc=1)
     with pytest.raises(RuntimeError) as exc:
@@ -330,7 +330,7 @@ def test_remove_slot_registration_intact_failure_changes_nothing(wp):
 
 
 def test_remove_slot_finishes_when_git_deregistered_but_tree_remains(wp):
-    """remove 실패인데 등록은 사라진 실측 형상 → git 이 판정을 통과시킨 뒤이므로 잔재를 마저 지우고 마무리한다."""
+    """remove 실패인데 등록은 사라진 실측 경우 → git 이 판정을 통과시킨 뒤이므로 잔재를 마저 지우고 마무리한다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, remove_rc=1,
                         deregisters_on_failure=True)
@@ -381,7 +381,7 @@ def test_remove_slot_passes_acked_branches_to_judgement(wp):
 
 
 def test_remove_slot_branch_lookup_failure_raises_without_deleting(wp):
-    """판정 조회 실패(공용 저장소 HEAD 미해소)는 보존으로 접지 않고 raise — 삭제 시도 없음·장부는 정지 지점에 남는다."""
+    """판정 조회 실패(공용 저장소 HEAD 미해소)는 보존으로 바꾸지 않고 raise — 삭제 시도 없음·기록은 정지 지점에 남는다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="task/wip", default_branch=None, parents={"task/wip": "develop"})
     with pytest.raises(branch_store.BranchParentError) as exc:
@@ -434,7 +434,7 @@ def _init_repo(path):
 
 
 def _mk_real_bare(wp, repo, tmp_path):
-    """실 bare repo `.repos/<repo>.git` — `pm-config repo add` 가 만든 것과 동형(ADR-0011 §31)."""
+    """실 bare repo `.repos/<repo>.git` — `pm-config repo add` 가 만든 것과 같은 방식(ADR-0011 §31)."""
     origin = _init_repo(tmp_path / f"{repo}-origin")
     bare = pm_paths.bare_repo_path(pm_paths.home_at(wp.REPO), repo)
     bare.parent.mkdir(parents=True, exist_ok=True)
@@ -612,8 +612,8 @@ def test_real_judge_delete_refused_by_git_preserved_with_output(family):
 def test_real_git_remove_slot_then_add_reuses_number(proj, tmp_path, *, monkeypatch):
     """remove_slot 경유 시 다음 add 가 빈 번호를 재사용 — PM 69 footgun 체인 종결.
 
-    create A_1·A_2 → remove_slot A_1(worktree remove + 합쳐진 전용 브랜치 삭제 + 장부 엔트리 삭제) →
-    다음 create 가 A_3 로 skip 하지 않고 **A_1 재사용**. 장부·전용 브랜치 둘 중 하나라도 남으면 재사용 실패.
+    create A_1·A_2 → remove_slot A_1(worktree remove + 합쳐진 전용 브랜치 삭제 + 기록 엔트리 삭제) →
+    다음 create 가 A_3 로 skip 하지 않고 **A_1 재사용**. 기록·전용 브랜치 둘 중 하나라도 남으면 재사용 실패.
     """
     _init_repo(proj)
     wp = bind_pool(monkeypatch, _load_wp_bound(proj))
@@ -626,7 +626,7 @@ def test_real_git_remove_slot_then_add_reuses_number(proj, tmp_path, *, monkeypa
     assert a1.state == "idle"
     result = worktree_pool.remove_slot(pm_paths.home_at(wp.REPO), "work/A_1")
     assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").is_dir(), "worktree 가 실제로 안 지워짐"
-    assert all(l.slot != "work/A_1" for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))), "장부 엔트리 미삭제(dangling)"
+    assert all(l.slot != "work/A_1" for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))), "기록 엔트리 미삭제(dangling)"
     assert result.branch_deletion.action == worktree_records.BRANCH_DELETED, "합쳐진 전용 브랜치 A_1 이 삭제 안 됨"
 
     a1b = worktree_pool.create_slot(pm_paths.home_at(wp.REPO), "A", base="main", init_submodules=False)
@@ -634,8 +634,8 @@ def test_real_git_remove_slot_then_add_reuses_number(proj, tmp_path, *, monkeypa
 
 
 @_git_required
-def test_real_git_manual_worktree_remove_leaves_dangling_ledger_skips_number(proj, tmp_path, *, monkeypatch):
-    """대조(footgun 재현) — 수동 `git worktree remove` 는 장부를 남겨 다음 add 가 번호 skip."""
+def test_real_git_manual_worktree_remove_leaves_dangling_records_skips_number(proj, tmp_path, *, monkeypatch):
+    """대조(footgun 재현) — 수동 `git worktree remove` 는 기록을 남겨 다음 add 가 번호 skip."""
     _init_repo(proj)
     wp = bind_pool(monkeypatch, _load_wp_bound(proj))
     _mk_real_bare(wp, "A", tmp_path)
@@ -755,7 +755,7 @@ def test_real_git_remove_slot_with_readonly_leftovers_succeeds(proj, tmp_path, *
 
     assert result.tree_cleaned is True, "잔재 정리를 보고하지 않았다"
     assert not slot_dir.exists(), "디렉터리 잔재가 남았다"
-    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == [], "장부 엔트리가 남았다"
+    assert pool_store.list_leases(pm_paths.home_at(wp.REPO)) == [], "기록 엔트리가 남았다"
     assert str(slot_dir) not in _git(bare, "worktree", "list", "--porcelain").stdout
 
 
@@ -783,7 +783,7 @@ def test_real_git_base_recreate_after_preserved_branch_fails_loud(proj, tmp_path
     assert (exc.value.branch, exc.value.slot, exc.value.base) == ("A_1", "work/A_1", "main")
     assert "orphan" not in msg.lower(), f"orphan-worktree 오귀인 잔존: {msg!r}"
     assert "브랜치" in msg and "A_1" in msg
-    assert all(l.slot != "work/A_1" for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))), "provisional lease 롤백 실패(장부 dangling)"
+    assert all(l.slot != "work/A_1" for l in pool_store.list_leases(pm_paths.home_at(wp.REPO))), "provisional lease 롤백 실패(기록 dangling)"
     assert not pm_paths.slot_path(pm_paths.home_at(wp.REPO), "work/A_1").is_dir(), "실패한 재생성이 worktree 를 남김"
 
 
@@ -994,8 +994,8 @@ def test_real_git_alloc_checkout_of_a_preserved_branch_clears_the_record(pool):
     assert _preserved_record(bare, "A_1") == _NO_PRESERVED_RECORD
 
 
-def test_remove_slot_preserved_record_write_failure_raises_and_keeps_ledger_row(wp):
-    """보존 기록 쓰기 rc≠0 → BranchParentError(기록 없이 넘어가지 않는다) · 장부 행은 정지 지점에 남는다."""
+def test_remove_slot_preserved_record_write_failure_raises_and_keeps_record_row(wp):
+    """보존 기록 쓰기 rc≠0 → BranchParentError(기록 없이 넘어가지 않는다) · 기록 행은 정지 지점에 남는다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", state="idle"))
     git = RemoveFakeGit(wp, head="A_1", parents={"A_1": "develop"}, merged=False)
 
@@ -1073,12 +1073,12 @@ def test_real_git_preserved_branches_damaged_record_raises(family):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# create_slot 보존 브랜치 충돌 — 선-검출 fail-loud (T-0335·DI seam·hermetic)
+# create_slot 보존 브랜치 충돌 — 선-검출 fail-loud (T-0335·DI 교체 지점·hermetic)
 # ════════════════════════════════════════════════════════════════════════
 
 
 class _CreateBaseFakeGit:
-    """create_slot 작업 슬롯 경로 DI seam mock — bare 검증·branch --list(전용 브랜치 잔존)·fetch/show-ref·
+    """create_slot 작업 슬롯 경로 DI 교체 지점 mock — bare 검증·branch --list(전용 브랜치 잔존)·fetch/show-ref·
     갈라진 커밋 해소(`rev-parse --verify <ref>^{commit}`)·worktree add.
 
     `slot_branch_exists` → `_slot_branch_exists` 의 `git branch --list --format=%(refname:short)
@@ -1162,7 +1162,7 @@ def test_create_slot_post_hoc_branch_exists_not_misattributed_orphan(wp):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# cmd_worktree_remove — CLI 배선 (pm_config·mock worktree_pool 주입)
+# cmd_worktree_remove — CLI 연결 (pm_config·mock worktree_pool 주입)
 # ════════════════════════════════════════════════════════════════════════
 
 
@@ -1197,7 +1197,7 @@ class FakeRemoveResult:
 
 
 class FakeWP:
-    """worktree_pool 대역 — remove_slot 호출을 기록하고 결과/예외를 결정적으로 낸다(DI seam)."""
+    """worktree_pool 대역 — remove_slot 호출을 기록하고 결과/예외를 결정적으로 낸다(DI 교체 지점)."""
 
     class RemoveRefused(Exception):
         def __init__(self, slot, reason, *, state=None, path=None):
@@ -1237,7 +1237,7 @@ def _deletion(engine, branch="A_1", **fields):
 
 
 def test_cmd_remove_without_user_ack_refuses_before_engine(pc, monkeypatch, engine, capsys):
-    """승인값 없음 → 엔진을 부르지 않고 rc1 + 사용자 승인 요청 처방(세션 자동 부착 금지)."""
+    """승인값 없음 → 엔진을 부르지 않고 rc1 + 사용자 승인 요청 해결 방법(세션 자동 부착 금지)."""
     wp = bind_pool(monkeypatch, FakeWP(engine))
     bind_pool(monkeypatch, wp)
     rc = config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(user_ack=[]))
@@ -1305,8 +1305,8 @@ def test_cmd_remove_unregistered_tree_refusal_hands_path_to_user(pc, monkeypatch
     assert str(path) in err and "직접 확인·삭제" in err and "prune-stale" in err
 
 
-def test_cmd_remove_absent_ledger_harmless_rc0(pc, monkeypatch, engine, capsys):
-    """remove_slot 이 None(장부 없음) → 무해 종료 rc0 + orphan 안내."""
+def test_cmd_remove_absent_records_harmless_rc0(pc, monkeypatch, engine, capsys):
+    """remove_slot 이 None(기록 없음) → 무해 종료 rc0 + orphan 안내."""
     wp = bind_pool(monkeypatch, FakeWP(engine, result=None))
     bind_pool(monkeypatch, wp)
     assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns("work/gone_9")) == 0
@@ -1317,7 +1317,7 @@ def test_cmd_remove_absent_ledger_harmless_rc0(pc, monkeypatch, engine, capsys):
 def test_cmd_remove_engine_runtime_error_rc1_without_force_advice(pc, monkeypatch, engine, capsys):
     """엔진 RuntimeError(worktree remove 실패·판정 조회 실패) → rc1 + 관측만(도달 불가한 --force 재시도 권하지 않음)."""
     wp = bind_pool(monkeypatch, FakeWP(engine, raises=RuntimeError(
-        "git worktree remove failed for 'work/A_1' (rc=255) — git 등록·장부·브랜치가 그대로다.")))
+        "git worktree remove failed for 'work/A_1' (rc=255) — git 등록·기록·브랜치가 그대로다.")))
     bind_pool(monkeypatch, wp)
     assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns()) == 1
     err = capsys.readouterr().err
@@ -1351,7 +1351,7 @@ def test_cmd_remove_unmerged_branch_preserved_lists_commits_origin_and_caveat(pc
 
 
 def test_cmd_remove_unmerged_commit_list_folds_over_limit(pc, monkeypatch, engine, capsys):
-    """커밋 줄은 상한까지만 싣고 나머지는 '외 N개' 로 접는다."""
+    """커밋 줄은 상한까지만 싣고 나머지는 '외 N개' 로 합친다."""
     shown = config_slots._UNMERGED_COMMITS_SHOWN
     commits = [f"{index:07x} c{index}" for index in range(shown + 2)]
     deletion = _deletion(engine, action=worktree_records.BRANCH_PRESERVED, reason=worktree_records.BRANCH_REASON_UNMERGED,
@@ -1409,7 +1409,7 @@ def test_cmd_remove_tree_cleaned_is_announced(pc, monkeypatch, engine, capsys):
 
 
 def test_cmd_remove_forced_state_warns_on_stderr(pc, monkeypatch, engine, capsys):
-    """forced_state 있으면 '⚠ 활성 강제 회수' 를 stderr 로 · 없으면 경고 없음."""
+    """forced_state 있으면 '⚠ 활성 강제 반납' 를 stderr 로 · 없으면 경고 없음."""
     wp = bind_pool(monkeypatch, FakeWP(engine, forced_state="leased"))
     bind_pool(monkeypatch, wp)
     assert config_slots.cmd_worktree_remove(pm_paths.home_at(pc.REPO), _ns(force=True)) == 0

@@ -3,7 +3,7 @@
 `local.conf` 의 키 표기가 세 갈래(flat snake_case · dot notation · suffix per-harness)로 섞여 있었고
 파싱이 9구현으로 갈려 같은 텍스트가 모듈마다 다른 dict 로 해소됐다(중복 키를 어떤 구현은 first-wins,
 어떤 구현은 last-wins). 표기를 dot notation 하나로 통일하고 파싱을 `local_conf.py` 하나로 합친 절의
-회귀다. 이 파일이 닫는 축:
+회귀다. 이 파일이 닫는 항목:
 
 1. 파싱 의미 — 한 표(conf 텍스트 → 기대 dict)로 계약을 고정하고, 두 정책(fail-soft 판독 / 판독 실패
    전파)이 호출부별로 갈리는 것까지 단언한다.
@@ -12,7 +12,7 @@
 3. 전수 매핑표 ↔ 코드 양방향 — 표의 구키가 코드에 남아 있으면 red, 코드가 읽는 신키가 레지스트리에
    없으면 red.
 4. 불변식 1·2·3 — flat 키 0 · per-harness 단일 문법 · 값 공급 경로 유일.
-5. 교체 안내 — 키 단위 지목 + 모델 자동 이관 없음 + 기본값 변경 1줄(형상 무관) + 채택자 소유 파일 지목.
+5. 교체 안내 — 키 단위 지목 + 모델 자동 이관 없음 + 기본값 변경 1줄(어느 경우든) + 채택자 소유 파일 지목.
 6. 위임 마스터 스위치 — off 의 차단 3층과 면제(collect·copies·--dry-run).
 7. conf 생성 문자열 — 주석이 설정값을 재진술하지 않는다(손으로 옮겨 적은 값은 반드시 drift 한다).
 
@@ -102,7 +102,7 @@ def test_parsing_semantics_are_one_table(conf_module, tmp_path, text, expected):
 
 
 def test_missing_conf_is_an_empty_result_not_an_error(conf_module, tmp_path):
-    """conf 부재는 정상 형상이다 — 새 clone 이 첫 명령에서 터지지 않는다."""
+    """conf 부재는 정상인 경우다 — 새 clone 이 첫 명령에서 터지지 않는다."""
     assert conf_store.load(tmp_path / "없는" / "local.conf").values == {}
 
 
@@ -124,9 +124,9 @@ def test_unreadable_conf_splits_by_caller_policy(conf_module, tmp_path):
 
 
 def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
-    """중복 키 형상에서 **모든 소비 모듈이 같은 값**을 본다(옛 first-wins 3구현 정정).
+    """중복 키가 있는 경우 **모든 소비 모듈이 같은 값**을 본다(옛 first-wins 3구현 정정).
 
-    같은 파일을 `pm-config`·board·리뷰 축이 다르게 읽으면 한 도구가 허용한 설정을 다른 도구가
+    같은 파일을 `pm-config`·board·리뷰 쪽이 다르게 읽으면 한 도구가 허용한 설정을 다른 도구가
     거부한다 — 그 비대칭이 표기 통일 전의 실제 결함이었다.
     """
     _write_conf(tmp_path, "identity.user=first@example.com\n"
@@ -144,10 +144,10 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
     assert repo_protection._local_conf_value(pm_paths.home_at(config.REPO), "identity.user") == "last@example.com"
 
 
-def test_module_level_local_config_seams_are_still_patchable(monkeypatch, tmp_path):
-    """모듈 레벨 `local_config` 이름은 시그니처째 보존된다 — 63지점 테스트 seam."""
+def test_module_level_local_config_overrides_are_still_patchable(monkeypatch, tmp_path):
+    """모듈 레벨 `local_config` 이름은 시그니처째 보존된다 — 63지점 테스트 교체 지점."""
     for name in ("additional_reviewer", "ticket_finish", "pm_delegate"):
-        _load(name, f"seam_{name}")
+        _load(name, f"override_{name}")
         owner = conf_store
         assert callable(owner.local_config)
         monkeypatch.setattr(owner, "local_config", lambda *a, **k: {"test.cmd": "x"})
@@ -168,7 +168,7 @@ _LEGACY_CONF = (
 def test_legacy_keys_stop_the_consumer_instead_of_silently_defaulting(tmp_path, name):
     """구표기 conf 를 **읽는 지점**이 멈춘다 — 조용히 엔진 기본값으로 떨어지지 않는다.
 
-    `conf.get(key, default)` 로 읽던 값들이라 개칭 즉시 가드가 약해지는 방향으로 강등된다
+    `conf.get(key, default)` 로 읽던 값들이라 개칭 즉시 가드가 약해지는 방향으로 낮아진다
     (`delegate.enabled` 는 기본이 permissive 로 뒤집힌다). 폐지된 이름
     (`regression_min_collected`)도 같은 자리에서 멈춘다 — 대체 키가 없다고 말해줘야 한다.
     """
@@ -213,7 +213,7 @@ def test_pm_update_apply_delivers_engine_files_on_a_legacy_conf(tmp_path, capsys
     (dest / ".project_manager" / "tools").mkdir(parents=True)
     _write_conf(dest, _LEGACY_CONF)
     stale = dest / ".project_manager" / "tools" / "local_conf.py"
-    stale.write_text("# 구세대 사본\n", encoding="utf-8")
+    stale.write_text("# 옛 버전 사본\n", encoding="utf-8")
 
     # change tuple = (relpath, source, dest, kind) — planning 산출과 같은 모양이다.
     update_render.apply(pm_paths.home_at(update.REPO), [(".project_manager/tools/local_conf.py",
@@ -226,23 +226,23 @@ def test_pm_update_apply_delivers_engine_files_on_a_legacy_conf(tmp_path, capsys
 
 
 @pytest.mark.parametrize("name", ("pm_handoff", "ticket_finish"))
-def test_gate_resolution_stops_instead_of_falling_back_to_the_default_suite(tmp_path, name):
-    """게이트 해소가 구표기 conf 를 만나면 **멈춘다** — 기본 pytest 게이트로 강등되지 않는다.
+def test_check_resolution_stops_instead_of_falling_back_to_the_default_suite(tmp_path, name):
+    """회귀 통과 조건 해소가 구표기 conf 를 만나면 **멈춘다** — 기본 pytest 통과 조건으로 낮아지지 않는다.
 
-    해소 체인은 실패를 삼켜 솔로 폴백(None)으로 흘리도록 설계돼 있다. 그 삼킴이 구표기 판정까지
-    먹으면 채택자가 conf 에 적어 둔 게이트가 사라진 채 `pytest tests/ -q` 가 대신 돈다 — 중앙
+    해소 체인은 실패를 삼켜 솔로 대체(None)로 흘리도록 설계돼 있다. 그 삼킴이 구표기 판정까지
+    먹으면 채택자가 conf 에 적어 둔 통과 조건이 사라진 채 `pytest tests/ -q` 가 대신 돈다 — 중앙
     로더를 fail-loud 로 만든 이유가 그 자리에서 무효가 된다.
     """
     _write_conf(tmp_path, _LEGACY_CONF + "test_cmd=false\n")
-    handoff = _load("pm_handoff", f"gate_handoff_{name}")
+    handoff = _load("pm_handoff", f"check_handoff_{name}")
 
-    # 실 파일을 읽는 Home 으로 두 도구의 동형 경로를 돌린다(주입 dict 아님).
+    # 실 파일을 읽는 Home 으로 두 도구의 같은 방식 경로를 돌린다(주입 dict 아님).
     with pytest.raises(RuntimeError) as caught:
         regression._resolve_gate_cmd(pm_paths.home_at(tmp_path))
 
     assert type(caught.value).__name__ == "LegacyConfKeyError"
     assert "test_cmd" in str(caught.value)
-    # 폴백 라벨이 대신 나가지 않았다 — 멈춘 자리에서 무엇을 고칠지 말한다.
+    # 대체 라벨이 대신 나가지 않았다 — 멈춘 자리에서 무엇을 고칠지 말한다.
     assert pm_engine.domain.handoff_text._gate_label(None) not in str(caught.value)
 
 
@@ -266,7 +266,7 @@ def test_the_exception_text_points_at_adopter_owned_files(tmp_path):
     assert ".codex/config.toml" in message
 
 
-def test_the_round_limit_axis_is_named_as_removed_not_renamed(conf_module):
+def test_the_round_limit_setting_is_named_as_removed_not_renamed(conf_module):
     """라운드 상한 구키 두 이름은 '대체 없이 제거'다 — 이 티켓이 신키를 만들지 않는다."""
     retired = ("additional_reviewer_round_limit", "additional_reviewer_round_limit")
     for key in retired:
@@ -279,10 +279,10 @@ def test_the_round_limit_axis_is_named_as_removed_not_renamed(conf_module):
     assert ".round_limit" not in (REPO / "README.md").read_text(encoding="utf-8")
 
 
-def test_the_collection_floor_axis_is_named_as_removed_not_renamed(conf_module, tmp_path):
+def test_the_collection_floor_setting_is_named_as_removed_not_renamed(conf_module, tmp_path):
     """수집 하한 구키는 '대체 없이 제거'다 — 신키를 만들지 않았고 신표기는 차단도 아니다.
 
-    개칭이면 안내가 새 이름을 지목하고 채택자는 그 이름으로 옮긴다. 이 축은 사라졌으므로
+    개칭이면 안내가 새 이름을 지목하고 채택자는 그 이름으로 옮긴다. 이 설정은 사라졌으므로
     구표기는 "제거" 로 지목하고, 이미 dot 표기로 옮겨 적어 둔 채택자의 남은 한 줄은
     never-block advisory 로만 떨어져야 한다(그 줄 때문에 전 명령이 서면 안 된다).
     """
@@ -339,11 +339,11 @@ def test_every_conf_key_the_engine_reads_is_registered(conf_module):
     assert unknown == [], unknown
 
 
-# ── ③-B 출하 표면 전수 (런타임 문자열·문서·facade·어댑터) ────────────────
+# ── ③-B 출하 파일 전수 (런타임 문자열·문서·facade·어댑터) ────────────────
 #
 # 조회 자리만 보는 가드는 **가르치는 문구**를 못 본다 — 오류·`--help`·출하 문서·facade 가 구표기를
-# 처방하면 채택자는 그대로 적고, 그 conf 는 소비 지점에서 멈춘다(엔진은 맞는데 안내가 틀린 상태).
-# 그래서 판정 표면을 Python 밖(shell·cmd·JS·문서·templates)까지 넓히고, **가드 시야가 그 표면과
+# 안내하면 채택자는 그대로 적고, 그 conf 는 소비 지점에서 멈춘다(엔진은 맞는데 안내가 틀린 상태).
+# 그래서 판정 대상을 Python 밖(shell·cmd·JS·문서·templates)까지 넓히고, **가드 검사 범위가 그 출하 파일과
 # 같다는 것**을 독립 열거로 대조한다(존재가 아니라 파일 수·차집합 값).
 #
 # 문맥 규칙 — "표기" 로 세는 형태만 본다:
@@ -362,16 +362,16 @@ _NOTATION_ALLOWLIST = (
     ".project_manager/tools/pm_engine/domain/conf_schema.py",   # 전수 매핑표·안내 문구의 소유자(사본 포함)
     "CHANGELOG.md",                           # 릴리즈 이력 — 그 시점의 이름을 보존한다
 )
-# 가드 시야 밖(대조에서 제외) — 엔진이 생성하는 wiki 산출물(추적 대상 아님).
+# 가드 검사 범위 밖(대조에서 제외) — 엔진이 생성하는 wiki 산출물(추적 대상 아님).
 _NOTATION_GENERATED = (".project_manager/wiki/board.md",
                        ".project_manager/wiki/log/dashboard.md")
 
 
 def _notation_surface_files() -> list[str]:
-    """가드가 여는 파일 — repo-owned 열거 seam 하나로 정의한다.
+    """가드가 여는 파일 — repo-owned 열거 공용 함수 하나로 정의한다.
 
     직접 `rglob` 하면 이 저장소의 열거 규칙(추적/ignore 보장)을 우회하는 두 번째 정의가 생겨
-    가드 시야와 실 출하 표면이 갈린다. 열거는 seam 이 소유하고 여기서는 확장자·경로만 거른다.
+    가드 검사 범위와 실 출하 파일이 갈린다. 열거는 공용 함수가 소유하고 여기서는 확장자·경로만 거른다.
     """
     found: set[str] = set()
     for root in _NOTATION_SURFACE_ROOTS:
@@ -397,7 +397,7 @@ def _notation_pattern(conf_module) -> re.Pattern:
 
 
 def test_no_shipped_surface_teaches_a_retired_key_notation(conf_module):
-    """출하 표면 전수 — 런타임 문자열·문서·facade·어댑터가 구표기를 가르치지 않는다."""
+    """출하 파일 전수 — 런타임 문자열·문서·facade·어댑터가 구표기를 가르치지 않는다."""
     pattern = _notation_pattern(conf_module)
     offenders: list[str] = []
     for relpath in _notation_surface_files():
@@ -410,9 +410,9 @@ def test_no_shipped_surface_teaches_a_retired_key_notation(conf_module):
 
 
 def test_the_notation_guard_field_of_view_matches_the_shipped_surface():
-    """가드 시야 == 출하 표면 — **독립 열거**(git 색인)와 파일 단위로 대조한다.
+    """가드 검사 범위 == 출하 파일 — **독립 열거**(git 색인)와 파일 단위로 대조한다.
 
-    시야가 표면보다 좁으면 "구표기 0" 주장이 값으로 잠기지 않는다(가드가 안 보는 자리에 남는다).
+    검사 범위가 출하 파일보다 좁으면 "구표기 0" 주장이 값으로 잠기지 않는다(가드가 안 보는 자리에 남는다).
     그래서 존재가 아니라 **차집합과 계층별 수**를 단언한다.
     """
     scanned = set(_notation_surface_files())
@@ -426,7 +426,7 @@ def test_the_notation_guard_field_of_view_matches_the_shipped_surface():
              or relpath.startswith(tuple(f"{root}/" for root in _NOTATION_SURFACE_ROOTS)))
     }
 
-    assert scanned == expected, {"미시야": expected - scanned, "색인밖": scanned - expected}
+    assert scanned == expected, {"검사밖": expected - scanned, "색인밖": scanned - expected}
     # 계층별 수 — 어느 계층도 통째로 빠지지 않았다(0 이면 그 계층을 안 보는 것이다).
     layers = {
         "facade-shell": len([f for f in scanned if f.endswith((".sh", ".cmd"))]),
@@ -437,7 +437,7 @@ def test_the_notation_guard_field_of_view_matches_the_shipped_surface():
                        if f.startswith(".project_manager/tools/")]),
     }
     assert all(count > 0 for count in layers.values()), layers
-    # 표면이 실제로 담고 있는 파일들 — 이름으로 못박는다(리뷰 지적의 실제 자리).
+    # 출하 범위가 실제로 담고 있는 파일들 — 이름으로 못박는다(리뷰 지적의 실제 자리).
     for relpath in ("templates/claude_code/pm-update.sh",
                     "templates/codex/pm-update.cmd",
                     "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
@@ -451,7 +451,7 @@ def test_the_notation_guard_field_of_view_matches_the_shipped_surface():
 
 
 def test_invariant_one_notation_is_dot_only(conf_module):
-    """불변식 1 — 신키 레지스트리에 flat snake_case 키가 0 이다(축 없는 값도 축을 만든다)."""
+    """불변식 1 — 신키 레지스트리에 flat snake_case 키가 0 이다(묶음 없는 값도 묶음을 만든다)."""
     flat = [key for key in conf_module.KNOWN_KEYS if "." not in key]
     assert flat == []
 
@@ -503,7 +503,7 @@ def test_migration_notice_splits_what_update_moves_from_what_you_decide(
 
 
 def test_default_change_notice_is_unconditional(conf_module, tmp_path):
-    """구키가 아예 없는 채택자에게도 기본값 변경 1줄은 나간다 — fail-loud 가 못 잡는 형상이다."""
+    """구키가 아예 없는 채택자에게도 기본값 변경 1줄은 나간다 — fail-loud 가 못 잡는 경우다."""
     path = _write_conf(tmp_path, "test.cmd=pytest -q\n")
     lines = conf_module.migration_notice(conf_store.load(path))
 
@@ -533,7 +533,7 @@ def test_import_into_an_existing_tree_delivers_engine_then_refuses_init(
 
 
 def _delegate_repo(tmp_path: Path, switch: str | None) -> Path:
-    """위임 CLI 가 요구하는 git 작업공간 + 매핑이 갖춰진 conf (스위치만 형상별로 바뀐다)."""
+    """위임 CLI 가 요구하는 git 작업공간 + 매핑이 갖춰진 conf (스위치만 경우별로 바뀐다)."""
     lines = ["delegate.developer.harness=codex\n", "delegate.developer.model=gpt-x\n"]
     if switch is not None:
         lines.insert(0, f"delegate.enabled={switch}\n")
@@ -546,7 +546,7 @@ def test_ticket_prepare_is_refused_when_delegation_is_off(tmp_path, capsys):
     """스위치 off 는 `ticket prepare` 도 rc=3 — run-dir·라운드 순번을 만들지 않는다.
 
     native 위임도 이 CLI 로 라운드 파일을 준비하므로(스킬 규정) 엔진이 확실히 막을 수 있는 지점이
-    여기다. 준비 부작용보다 앞에서 끊어야 off 형상에 고아 산출물이 남지 않는다.
+    여기다. 준비 부작용보다 앞에서 끊어야 off 상태에 고아 산출물이 남지 않는다.
     """
     delegate = _load("pm_delegate", "switch_pm_delegate")
     repo = _delegate_repo(tmp_path, "false")
@@ -575,9 +575,9 @@ def test_delegation_switch_defaults_to_allow(guard_home, tmp_path):
                         "claude")["verdict"] == "deny"
 
 
-def test_harvest_and_copies_stay_outside_the_switch(tmp_path, capsys):
-    """`collect`·`copies` 는 게이트 밖이다 — 끄는 순간 진행 중 라운드가 고아가 되면 안 된다."""
-    delegate = _load("pm_delegate", "harvest_pm_delegate")
+def test_collect_and_copies_stay_outside_the_switch(tmp_path, capsys):
+    """`collect`·`copies` 는 스위치 검사 밖이다 — 끄는 순간 진행 중 라운드가 고아가 되면 안 된다."""
+    delegate = _load("pm_delegate", "collect_pm_delegate")
     repo = _delegate_repo(tmp_path, "false")
     delegate.REPO = repo
 
@@ -623,8 +623,8 @@ def test_init_conf_holds_only_real_values(tmp_path, monkeypatch):
 def test_the_registry_documents_the_keys_the_conf_no_longer_explains(conf_module):
     """설명 블록의 이관처 — 레지스트리가 키마다 설명을 실제로 담는다 (T-0906: 문서→코드).
 
-    conf 파일은 실값만 담고(시드 주석 폐지) 출하 문서는 표를 복제하지 않는다. 그래서 "이 키가
-    무엇인가" 를 말하는 자리는 레지스트리 하나뿐이고, 그 표면이 `--keys` 출력이다.
+    conf 파일은 실값만 담고(빈 양식 주석 폐지) 출하 문서는 표를 복제하지 않는다. 그래서 "이 키가
+    무엇인가" 를 말하는 자리는 레지스트리 하나뿐이고, 그 자리가 `--keys` 출력이다.
     """
     for key in conf_module.KNOWN_KEYS:
         spec = conf_module.key_spec(key)
@@ -632,11 +632,11 @@ def test_the_registry_documents_the_keys_the_conf_no_longer_explains(conf_module
     table = local_conf_cli.render_key_table()
     for key in conf_module.KNOWN_KEYS:
         assert key in table, key
-    for axis in ("additional_reviewer.", "upstream.", "harness.", "delegate."):
-        assert axis in table, axis
+    for prefix in ("additional_reviewer.", "upstream.", "harness.", "delegate."):
+        assert prefix in table, prefix
 
 
-# ── ⑧ 문구 규율 (동의 축 폐지 · 3타깃 파리티) ──────────────────────────────
+# ── ⑧ 문구 규율 (동의 설정 폐지 · 3타깃 파리티) ──────────────────────────────
 
 _DELEGATE_SWITCH_SECTION = "### 위임 마스터 스위치"
 _DELEGATE_CARDS = (
@@ -664,10 +664,10 @@ def test_delegate_switch_section_is_identical_across_targets():
         assert contract in section, contract
 
 
-def test_no_surface_calls_the_delegate_switch_a_consent_axis():
-    """위임 축 문구에 "호출·과금 동의" 가 0 이다 — 그 축은 폐지됐다.
+def test_no_surface_calls_the_delegate_switch_a_consent_setting():
+    """위임 설정 문구에 "호출·과금 동의" 가 0 이다 — 그 설정은 폐지됐다.
 
-    남은 동의 축은 추가 리뷰어(diff 통째 호출)뿐이다. 위임 스위치를 동의로 다시 쓰면 native
+    남은 동의 설정은 추가 리뷰어(diff 통째 호출)뿐이다. 위임 스위치를 동의로 다시 쓰면 native
     위임까지 "동의를 받아야 하는 행위" 로 되돌아가 스위치의 의미가 둘이 된다.
     """
     surfaces = [
@@ -684,7 +684,7 @@ def test_no_surface_calls_the_delegate_switch_a_consent_axis():
             if "delegate" not in line and "위임" not in line:
                 continue
             if "additional_reviewer" in line or "추가 리뷰어" in line:
-                continue                       # 리뷰 축의 동의는 이번 릴리즈 존치다
+                continue                       # 리뷰 쪽의 동의는 이번 릴리즈 존치다
             if "과금 동의" in line or "비용 동의" in line or "지속 동의" in line:
                 offenders.append(f"{path.name}: {line.strip()}")
     assert offenders == [], offenders
@@ -694,10 +694,10 @@ def test_no_surface_calls_the_delegate_switch_a_consent_axis():
 
 
 def test_board_lint_surfaces_legacy_keys_and_restated_comments(tmp_path, monkeypatch):
-    """채택자의 **실** conf 는 pytest 시야 밖이라 조회면이 본다 — 구표기와 값 재진술 주석 둘 다.
+    """채택자의 **실** conf 는 pytest 검사 범위 밖이라 조회면이 본다 — 구표기와 값 재진술 주석 둘 다.
 
     엔진 생성 문자열은 정적 단언이 막지만, 이미 디스크에 있는 파일(git-ignored)은 그 단언이 닿지
-    않는다. 관측은 advisory 다 — 값을 소비하지 않으므로 여기서 멈추면 안내 표면만 사라진다.
+    않는다. 관측은 advisory 다 — 값을 소비하지 않으므로 여기서 멈추면 안내만 사라진다.
     """
     board = _load("board", "lint_conf_board")
     conf = _write_conf(tmp_path, _LEGACY_CONF + "# test.cmd=pytest -q\ntest.cmd=make test\n")
@@ -740,7 +740,7 @@ _ADAPTER_LEGACY_CONF = (
     "ctx.window_tokens=12345\n"
     "test_cmd=false\n"
 )
-# 남은 % 91·90 = 쓴 % 9·10 — 같은 밴드를 새 이름으로 적은 conf.
+# 남은 % 91·90 = 쓴 % 9·10 — 같은 구간을 새 이름으로 적은 conf.
 _ADAPTER_NEW_CONF = (
     "ctx.checkpoint_at_pct=9\n"
     "ctx.precompact_at_pct=10\n"

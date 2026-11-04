@@ -10,10 +10,10 @@
   - 가벼운 절 전수(schema·engine_rev·pm_home·generated_at·slots·tasks·git·repos·harnesses·conf).
   - `alive` 세 형태 — 열린 기록(leased+session)·닫힌 기록(idle)·readonly(세션 없음). 값은
     `worktree_pool.lease_is_open` 과 같아야 한다(판정 재구현 0·프로세스 조회 0회).
-  - `role` 정규화(장부에 키가 없는 행 → `work` · readonly 행 → `readonly`)와 task 귀속.
+  - `role` 정규화(기록에 키가 없는 행 → `work` · readonly 행 → `readonly`)와 task 귀속.
   - `conf` 다섯 목록(필수 누락·폐지·미지·표준과 다름·최신 기준 누락 — 마지막은 소스 레지스트리).
-  - `--with-board`: `STATUS_DIRS` 다섯 축 counts(초안 미집계)·open 목록·lint 목록(이슈가 있어도
-    JSON 산출 계속)·회귀/라이브게이트 sidecar 그대로.
+  - `--with-board`: `STATUS_DIRS` 다섯 칸 counts(초안 미집계)·open 목록·lint 목록(이슈가 있어도
+    JSON 산출 계속)·회귀/라이브 시험 sidecar 그대로.
   - `--with-adapters`: 파일별 `mode`/`status` 가 엔진 어휘 그대로(네 상태 각 1)·문서 파일은
     검사 없음 한 줄·기능 표(없음/다름/폐지됨)와 `distance` 정의·기준/최신 diff 둘.
   - 소스 해소: `--from` 없이 local.conf `upstream.path=file://…` 이 T-0908 캐시로 해소되고
@@ -45,7 +45,7 @@ import pytest
 from _git_fixture import remove_git_tree
 from pm_engine.domain import conf_schema
 # T-0908 의 URL 캐시 픽스처(로컬 bare + `file://` · 네트워크 0)를 그대로 쓴다 — 캐시 자리·
-# 형상 판정을 두 벌로 만들지 않는다.
+# 구성 판정을 두 벌로 만들지 않는다.
 from test_pm_update_url_cache import (  # noqa: E402
     _make_bare, _make_framework_repo, _only_cache,
 )
@@ -86,7 +86,7 @@ def wp():
     return _load("worktree_pool_status_json", "worktree_pool.py")
 
 
-# ── 실 git 헬퍼 (test_task_cycle_e2e 동형) ────────────────────────────────────
+# ── 실 git 헬퍼 (test_task_cycle_e2e 와 같은 방식) ────────────────────────────────────
 
 
 def _git(cwd, *argv):
@@ -100,15 +100,15 @@ def _git(cwd, *argv):
                           errors="replace", env=env)
 
 
-# ── tmp PM 홈 (실 엔진 사본 + 실 장부) ────────────────────────────────────────
+# ── tmp PM 홈 (실 엔진 사본 + 실 기록) ────────────────────────────────────────
 
 
 def _engine_home(root: Path) -> Path:
-    """엔진 사본을 담은 tmp PM 홈 — 실 CLI 를 이 홈에서 돌린다(REPO 앵커 = 이 홈).
+    """엔진 사본을 담은 tmp PM 홈 — 실 CLI 를 이 홈에서 돌린다(REPO 기준 = 이 홈).
 
     홈을 **자기 git 저장소로 선언**한다(`tests/_git_fixture` 규약). pytest 임시 루트가 이
     저장소 work tree 안이라, 선언이 없으면 홈 안에서 도는 git 질문(`git config core.hooksPath`·
-    `rev-parse`)이 이 저장소의 답을 받아 실 PM 홈의 sidecar 를 읽는다(실측: livegate 값이
+    `rev-parse`)이 이 저장소의 답을 받아 실 PM 홈의 sidecar 를 읽는다(실측: live-test 값이
     픽스처가 아니라 실 홈 것으로 나왔다).
     """
     root.mkdir(parents=True, exist_ok=True)
@@ -131,7 +131,7 @@ def _write_json(path: Path, document) -> Path:
     return _write(path, json.dumps(document, ensure_ascii=False, indent=2) + "\n")
 
 
-def _ledger(home: Path, leases: list[dict], tasks: list[dict] | None = None) -> Path:
+def _records(home: Path, leases: list[dict], tasks: list[dict] | None = None) -> Path:
     return _write_json(home / ".project_manager" / ".local" / "worktree-leases.json",
                        {"leases": leases, "tasks": tasks or []})
 
@@ -182,12 +182,12 @@ def home(tmp_path):
     return _engine_home(tmp_path / "home")
 
 
-# ── ① 가벼운 절 — 실 장부·실 git 슬롯 ────────────────────────────────────────
+# ── ① 가벼운 절 — 실 기록·실 git 슬롯 ────────────────────────────────────────
 
 
 @_git_required
-def test_status_json_light_sections_from_real_ledger(home, pc, wp):
-    """가벼운 절 전수 — 실 장부/실 슬롯에서 나온 값이 필드마다 실린다."""
+def test_status_json_light_sections_from_real_records(home, pc, wp):
+    """가벼운 절 전수 — 실 기록/실 슬롯에서 나온 값이 필드마다 실린다."""
     slot = _make_slot(home, "app", 1, "feat/x")
     _write(home / ".project_manager" / "local.conf",
            "project.name=demo\ntest.cmd=pytest -q\nruntime.py=python3\n")
@@ -199,7 +199,7 @@ def test_status_json_light_sections_from_real_ledger(home, pc, wp):
                 {"harnesses": ["claude"], "schema": 2})
     _write(home / "CLAUDE.md", "# demo\n")
     (home / ".claude").mkdir(exist_ok=True)
-    _ledger(home, [{
+    _records(home, [{
         "slot": slot, "repo": "app", "session": "main", "started": "2026-09-07T00:00:00+00:00", "state": "leased",
         "test_cmd": "pytest -q",
     }], [{"name": "main", "prefix": "app", "session": "s-test",
@@ -246,7 +246,7 @@ def test_status_json_repos_reads_the_registry_inside_a_separate_board(home):
     """보드가 별도 저장소인 홈은 레지스트리가 `board/areas.md` 다 — 고정 경로로 읽으면 빈 목록이었다."""
     (home / ".project_manager" / "board" / "tickets").mkdir(parents=True)
     _write(home / ".project_manager" / "board" / "areas.md", _AREAS_TABLE)
-    _ledger(home, [])
+    _records(home, [])
 
     repos = _status_json(home)["repos"]
 
@@ -257,7 +257,7 @@ def test_status_json_repos_reads_the_registry_inside_a_separate_board(home):
 def test_status_json_with_remote_reports_origin_url_without_a_tracked_branch(home):
     """`--with-remote` — 원격 브랜치에 연결하지 않은 슬롯은 origin 주소만 싣고 `upstream` 은 null 이다."""
     slot = _make_slot(home, "app", 1, "feat/x")
-    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
+    _records(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
                     "state": "idle", "test_cmd": None}])
 
     remote = _status_json(home, "--with-remote")["slots"][0]["remote"]
@@ -275,7 +275,7 @@ def test_status_json_with_remote_reports_the_tracked_remote_branch(home):
     tracked = _make_slot(home, "app", 1, "feat/x")
     gone = _make_slot(home, "app", 2, "feat/gone")
     detached = _make_slot(home, "app", 3, "feat/detached")
-    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
+    _records(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
                     "state": "idle", "test_cmd": None} for slot in (tracked, gone, detached)])
     origin = home / ".origin"
     # `clone --bare` 는 원격 브랜치를 받는 자리를 설정하지 않는다 — 보통 clone 의 설정을 준다.
@@ -308,7 +308,7 @@ def test_status_json_with_remote_reports_the_tracked_remote_branch(home):
 def test_status_json_with_remote_stops_without_a_partial_document(home, wp):
     """원격에 닿지 못하면 빈 값으로 접지 않고 rc 1 · 표준 출력 없음이다."""
     slot = _make_slot(home, "app", 1, "feat/x")
-    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
+    _records(home, [{"slot": slot, "repo": "app", "session": "", "started": "s",
                     "state": "idle", "test_cmd": None}])
     _git(home / ".repos" / "app.git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
     _git(home / slot, "config", "branch.feat/x.remote", "origin")
@@ -327,7 +327,7 @@ def test_status_json_alive_is_the_open_record(home, wp):
     slot_open = _make_slot(home, "app", 1, "live")
     slot_closed = _make_slot(home, "app", 2, "closed")
     slot_readonly = _make_slot(home, "app", 3, "readonly")
-    _ledger(home, [
+    _records(home, [
         {"slot": slot_open, "repo": "app", "session": "main", "started": "s", "state": "leased", "test_cmd": None},
         {"slot": slot_closed, "repo": "app", "session": "", "started": "s", "state": "idle", "test_cmd": None},
         {"slot": slot_readonly, "repo": "app", "session": "", "started": "s", "state": "leased", "test_cmd": None, "role": "readonly"},
@@ -349,14 +349,14 @@ def test_status_json_alive_is_the_open_record(home, wp):
 def test_status_json_alive_follows_the_records_a_real_session_left(home, wp, tmp_path):
     """실 서브프로세스가 남긴 기록을 그대로 읽는다 — 대여 뒤 열림, 닫은 뒤 닫힘.
 
-    엔진 프로세스 pid 를 적던 시절엔 대여 명령이 끝나는 순간 죽어 slots/tasks 가 늘 회수 대기로
+    엔진 프로세스 pid 를 적던 시절엔 대여 명령이 끝나는 순간 죽어 slots/tasks 가 늘 반납 대기로
     보였다(관리자 현황 탭). 이제 판정 재료는 프로세스가 아니라 기록이라, 명령이 끝난 뒤에도
     열림으로 남고 **닫는 명령**을 받아야 닫힌다. [[T-0960]] AT-006 — 지운 `bind_slot` 대신
     `pm-config alloc` 의 엔진 호출(`alloc(repo, owner_task=task)`)로 기록을 남긴다.
     """
     slot = _make_slot(home, "app", 1, "feat/x")
-    # `worktree add` 가 남기는 idle 행 — alloc 은 장부의 idle 행에서만 빌린다.
-    _ledger(home, [{"slot": slot, "repo": "app", "session": "", "started": "t", "state": "idle"}])
+    # `worktree add` 가 남기는 idle 행 — alloc 은 기록의 idle 행에서만 빌린다.
+    _records(home, [{"slot": slot, "repo": "app", "session": "", "started": "t", "state": "idle"}])
     template = home / ".project_manager" / "wiki" / "pm_state.template.md"
     template.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(REPO / ".project_manager" / "wiki" / "pm_state.template.md", template)
@@ -384,17 +384,17 @@ def test_status_json_alive_follows_the_records_a_real_session_left(home, wp, tmp
 
 @_git_required
 def test_status_json_normalizes_role_and_task_attribution(home):
-    """장부에 `role` 키가 없는 행은 `work` · readonly 는 그대로 · task 귀속은 session 축."""
+    """기록에 `role` 키가 없는 행은 `work` · readonly 는 그대로 · task 귀속은 session 칸."""
     work_slot = _make_slot(home, "app", 1, "w")
     readonly_slot = _make_slot(home, "app", 2, "r")
-    _ledger(home, [
+    _records(home, [
         {"slot": work_slot, "repo": "app", "session": "solo", "started": "s", "state": "idle", "test_cmd": None},
         {"slot": readonly_slot, "repo": "app", "session": "", "started": "s", "state": "leased", "test_cmd": None, "role": "readonly"},
     ], [{"name": "other", "prefix": None, "started": "s"}])
 
     rows = {row["slot"]: row for row in _status_json(home)["slots"]}
 
-    assert rows[work_slot]["role"] == "work"      # 장부 키 부재 → 기본값 정규화
+    assert rows[work_slot]["role"] == "work"      # 기록 키 부재 → 기본값 정규화
     assert rows[readonly_slot]["role"] == "readonly"
     assert rows[work_slot]["task"] is None        # session 이 task 명이 아니다
     assert rows[readonly_slot]["session"] is None
@@ -403,7 +403,7 @@ def test_status_json_normalizes_role_and_task_attribution(home):
 @_git_required
 def test_status_json_git_section_tracks_pm_home_checkout(home):
     """`git` 절은 PM 홈 checkout 자신 — clean 이면 dirty False, 파일 하나 놓으면 True."""
-    _ledger(home, [])
+    _records(home, [])
     _write(home / ".gitignore", ".project_manager/\nwork/\n.repos/\n.origin/\n")
     _git(home, "add", "-A")
     _git(home, "commit", "-q", "-m", "tree")
@@ -422,9 +422,9 @@ def test_status_json_git_section_is_null_outside_git(home):
     """git checkout 이 아니면 세 값 모두 null — 그 사실이 곧 신호다(추측 금지).
 
     상위 저장소로 탐색이 새면 남의 브랜치를 이 사본의 것으로 보고하게 되므로, `.git` 을 지운
-    홈에 경계 env 를 주어 "조상도 없다" 형상을 만든다.
+    홈에 경계 env 를 주어 "조상도 없다" 상황을 만든다.
     """
-    _ledger(home, [])
+    _records(home, [])
     remove_git_tree(home / ".git")
     env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(home.parent))
 
@@ -436,8 +436,8 @@ def test_status_json_git_section_is_null_outside_git(home):
 
 @_git_required
 def test_status_json_git_section_handles_zero_commit_clone(home):
-    """커밋 0 저장소(fresh clone 직후)는 브랜치만 있고 head 는 null — 정상 형상이다."""
-    _ledger(home, [])
+    """커밋 0 저장소(fresh clone 직후)는 브랜치만 있고 head 는 null — 정상인 경우다."""
+    _records(home, [])
     remove_git_tree(home / ".git")
     _git(home, "init", "-q", "-b", "main")
 
@@ -455,7 +455,7 @@ def test_status_json_git_section_reports_detached_head_as_null_branch(home):
     읽는 쪽이 detached 와 'HEAD 라는 이름의 브랜치' 를 구분할 수 없게 만든다."""
     slot = _make_slot(home, "app", 1, "feat/x")
     _git(home / slot, "checkout", "-q", "--detach")
-    _ledger(home, [{"slot": slot, "repo": "app", "session": "main", "started": "s", "state": "leased", "test_cmd": None}])
+    _records(home, [{"slot": slot, "repo": "app", "session": "main", "started": "s", "state": "leased", "test_cmd": None}])
     _write(home / ".gitignore", ".project_manager/\nwork/\n.repos/\n.origin/\n")
     _git(home, "add", "-A")
     _git(home, "commit", "-q", "-m", "tree")
@@ -465,7 +465,7 @@ def test_status_json_git_section_reports_detached_head_as_null_branch(home):
     document = _status_json(home)
 
     assert document["git"] == {"branch": None, "head": head, "dirty": False}
-    assert document["slots"][0]["branch"] is None, "두 축의 detached 표현이 갈렸다"
+    assert document["slots"][0]["branch"] is None, "두 값의 detached 표현이 갈렸다"
 
 
 @_git_required
@@ -473,7 +473,7 @@ def test_status_json_git_section_is_not_shadowed_by_a_tag_of_the_same_name(home)
     """브랜치명과 동명의 태그가 있어도 순수 브랜치명이다 — `heads/<이름>` 으로 실리지 않는다.
 
     릴리즈가 `v1.7.13` 브랜치를 같은 이름의 태그로 찍는 이 저장소의 실제 규약이다."""
-    _ledger(home, [])
+    _records(home, [])
     _git(home, "checkout", "-q", "-b", "v1.7.13")
     _git(home, "tag", "v1.7.13")
 
@@ -493,7 +493,7 @@ def test_status_json_conf_five_lists_from_real_local_conf(home, pc):
     standard_key, standard_spec = next(
         (key, spec) for key, spec in local_conf.KEY_REGISTRY.items()
         if spec.default is not None)
-    _ledger(home, [])
+    _records(home, [])
     _write(home / ".project_manager" / "local.conf",
            f"{legacy_key}=x\n"
            f"{standard_key}={standard_spec.default}9\n"
@@ -512,17 +512,17 @@ def test_status_json_conf_five_lists_from_real_local_conf(home, pc):
 
 @_git_required
 def test_status_json_missing_for_latest_reads_source_registry(home, tmp_path):
-    """`--from` 소스의 레지스트리가 요구하는 필수 키 — "갱신하면 필요" 축."""
+    """`--from` 소스의 레지스트리가 요구하는 필수 키 — "갱신하면 필요" 기준."""
     source = _engine_home(tmp_path / "source")
     source_conf = source / ".project_manager" / "tools" / "pm_engine" / "domain" / "conf_schema.py"
     source_conf.write_text(
         source_conf.read_text(encoding="utf-8")
         + '\nKEY_REGISTRY["future.knob"] = KeySpec(\n'
-          '    "다음 세대 키", "다음 세대가 요구하는 값",\n'
+          '    "다음 버전 키", "다음 버전이 요구하는 값",\n'
           '    default=None, required=True, group=KEY_GROUPS[0],\n'
-          '    unset="다음 세대 없음")\n',
+          '    unset="다음 버전 없음")\n',
         encoding="utf-8")
-    _ledger(home, [])
+    _records(home, [])
     _write(home / ".project_manager" / "local.conf", "project.name=demo\n")
 
     conf = _status_json(home, "--from", str(source))["conf"]
@@ -551,9 +551,9 @@ def _ticket(home: Path, status: str, ticket_id: str, title: str, **fields) -> Pa
 
 
 @_git_required
-def test_with_board_counts_open_lint_and_gate_records(home):
-    """counts 다섯 축·open 목록·lint 목록·회귀/라이브게이트 sidecar — 실 파일에서."""
-    _ledger(home, [])
+def test_with_board_counts_open_lint_and_check_records(home):
+    """counts 다섯 칸·open 목록·lint 목록·회귀/라이브 시험 sidecar — 실 파일에서."""
+    _records(home, [])
     _ticket(home, "open", "T-0001", "열린 것")
     _ticket(home, "done", "T-0002", "끝난 것", completed_at="2026-09-07")
     _ticket(home, "discarded", "T-0003", "처분된 것", disposition="dropped")
@@ -578,7 +578,7 @@ def test_with_board_counts_open_lint_and_gate_records(home):
 @_git_required
 def test_with_board_keeps_emitting_json_when_lint_has_issues(home):
     """lint 이슈(=`board lint` rc 1)가 있어도 JSON 산출은 계속된다 — 목록으로만 실린다."""
-    _ledger(home, [])
+    _records(home, [])
     _ticket(home, "open", "T-0010", "의존성 깨진 것", depends_on=["T-9999"])
 
     board = _status_json(home, "--with-board")["board"]
@@ -629,7 +629,7 @@ def test_default_call_does_not_load_board_engine(pc, monkeypatch, tmp_path, caps
 def _adapter_home(root: Path) -> Path:
     """세 하네스 어댑터가 설치된 tmp 인스턴스 — config 4파일이 판정 대상이 된다."""
     home = _engine_home(root)
-    _ledger(home, [])
+    _records(home, [])
     _write(home / "CLAUDE.md", "# 인스턴스 소유 문서\n")
     _write(home / "AGENTS.md", "# 인스턴스 소유 문서\n")
     (home / ".agents").mkdir(exist_ok=True)
@@ -670,11 +670,11 @@ def test_with_adapters_reports_engine_status_vocabulary(tmp_path):
     home = _adapter_home(tmp_path / "home")
     head = _git(REPO, "rev-parse", "HEAD").stdout.strip()
     # in-sync = 템플릿과 같은 내용(`.codex/hooks.json` 은 그대로 둔다).
-    # unedited = 내용이 template 과 다르고 원장이 **지금 dest** 를 기록 → 상류가 바뀐 것.
+    # unedited = 내용이 template 과 다르고 어댑터 설정 기록이 **지금 dest** 를 기록 → 상류가 바뀐 것.
     _write(home / ".codex/config.toml", "sandbox_mode = \"workspace-write\"\n")
-    # edited = 원장이 다른 내용을 기록 → 채택자 편집(보존).
+    # edited = 어댑터 설정 기록이 다른 내용을 기록 → 채택자 편집(보존).
     _write(home / ".opencode/opencode.jsonc", "{\n  // 손편집\n  \"instructions\": []\n}\n")
-    # unrecorded = 원장 항목 없음(.claude/settings.json).
+    # unrecorded = 어댑터 설정 기록 항목 없음(.claude/settings.json).
     settings = home / ".claude/settings.json"
     _write(settings, settings.read_text(encoding="utf-8").replace(
         '"autoCompactEnabled": true', '"autoCompactEnabled": false'))
@@ -743,7 +743,7 @@ def test_with_adapters_keeps_a_deleted_managed_file_as_a_null_status_row(tmp_pat
     """관리 대상 config 를 지워도 행이 남는다 — `status=null`(파일 없음)이다.
 
     행이 사라지면 관리자 화면에서 "없는 파일" 과 "판정할 것이 없는 파일" 이 같은 그림이 된다
-    (선언된 대상이 통째로 시야에서 빠진다)."""
+    (선언된 대상이 통째로 검사 범위에서 빠진다)."""
     home = _adapter_home(tmp_path / "home")
     (home / ".codex/hooks.json").unlink()
 
@@ -793,7 +793,7 @@ def test_with_adapters_diffs_against_baseline_rev_and_latest(tmp_path):
 def _url_upstream_home(tmp_path: Path) -> Path:
     """URL upstream(로컬 bare + `file://`·네트워크 0)을 가리키는 codex 인스턴스 홈.
 
-    T-0908 의 캐시 픽스처를 그대로 쓴다(캐시 자리·형상 판정을 두 벌로 만들지 않는다). 상류
+    T-0908 의 캐시 픽스처를 그대로 쓴다(캐시 자리·구성 판정을 두 벌로 만들지 않는다). 상류
     checkout 에는 최신 설정 레지스트리를 얹는다 — `conf.missing_for_latest` 의 비교 기준이라
     없으면 소스 레지스트리 로드가 그대로 터진다.
     """
@@ -811,7 +811,7 @@ def _url_upstream_home(tmp_path: Path) -> Path:
     url = _make_bare(framework, tmp_path / "fw.git")
 
     home = _engine_home(tmp_path / "home")
-    _ledger(home, [])
+    _records(home, [])
     _write(home / ".project_manager" / "local.conf", f"upstream.path={url}\n")
     _write(home / ".codex" / "hooks.json",
            (framework / "templates" / "codex" / ".codex" / "hooks.json").read_text(
@@ -854,7 +854,7 @@ def test_with_adapters_resolves_url_upstream_via_cache(tmp_path):
 @_git_required
 def test_with_adapters_source_unresolved_errors(home):
     """소스 미해소 — rc≠0 이고 stdout 에 부분 JSON 이 0바이트(AT-003)."""
-    _ledger(home, [])
+    _records(home, [])
     _write(home / ".project_manager" / "local.conf", "project.name=demo\n")
     _write_json(home / ".project_manager" / "install.json",
                 {"harnesses": ["claude"], "schema": 2})
@@ -875,7 +875,7 @@ def _tree_digest(root: Path, *, exclude: Path | None = None) -> str:
     """`.project_manager/` 트리의 경로+내용 해시 — 생성·수정·삭제를 모두 잡는다.
 
     `exclude` 는 부분트리 하나를 해시에서 뺀다 — 읽기 전용 계약이 쓰기를 허용하는 유일한 자리
-    (엔진 소유 스크래치 `.local/upstream-cache/`)를 **명시적 예외**로 선언하기 위한 축이다.
+    (엔진 소유 스크래치 `.local/upstream-cache/`)를 **명시적 예외**로 선언하기 위한 장치다.
     """
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*")):
@@ -895,10 +895,10 @@ def test_json_path_writes_nothing(tmp_path):
     """JSON 경로가 `.project_manager/` 아래 어떤 파일도 만들지 않고 고치지 않는다(AT-004)."""
     home = _adapter_home(tmp_path / "home")
     slot = _make_slot(home, "app", 1, "feat")
-    _ledger(home, [{"slot": slot, "repo": "app", "session": "main", "started": "s", "state": "leased", "test_cmd": None}])
+    _records(home, [{"slot": slot, "repo": "app", "session": "main", "started": "s", "state": "leased", "test_cmd": None}])
     _ticket(home, "open", "T-0001", "열린 것")
-    # 텍스트 경로를 먼저 한 번 돌려 공유 읽기 seam(리스 락 파일)을 만든 상태를 기준으로 삼는다 —
-    # JSON 이 **텍스트 경로보다 더** 쓰지 않음을 재는 것이 이 단언의 축이다.
+    # 텍스트 경로를 먼저 한 번 돌려 공유 읽기 공용 함수(대여 락 파일)을 만든 상태를 기준으로 삼는다 —
+    # JSON 이 **텍스트 경로보다 더** 쓰지 않음을 재는 것이 이 단언의 요점이다.
     assert _run_cli(home, "status").returncode == 0
     before = _tree_digest(home / ".project_manager")
 
@@ -912,16 +912,16 @@ def test_json_path_writes_nothing(tmp_path):
 
 @_git_required
 def test_json_path_url_upstream_writes_only_the_engine_cache(tmp_path):
-    """URL upstream 형상의 무쓰기 범위 — 예외는 엔진 소유 `.local/upstream-cache/` 하나다.
+    """URL upstream 모양의 무쓰기 범위 — 예외는 엔진 소유 `.local/upstream-cache/` 하나다.
 
     `--from` 없이 URL upstream 을 쓰면 소스 해소가 그 캐시를 clone(최초)/fetch(이후)하므로 전체
     트리 해시로는 잴 수 없다. 허용된 쓰기 자리가 그 부분트리 하나뿐임을 값으로 고정한다 — 캐시를
     뺀 `.project_manager/` 는 전후 동일해야 하고, 캐시는 이 실행이 실제로 만들었어야 한다(예외가
-    선언된 것임을 함께 못박는다·`--from` 형상의 전체 트리 무변경 단언은 그대로 둔다)."""
+    선언된 것임을 함께 못박는다·`--from` 경우의 전체 트리 무변경 단언은 그대로 둔다)."""
     home = _url_upstream_home(tmp_path)
     cache_root = home / ".project_manager" / ".local" / "upstream-cache"
     assert not cache_root.exists(), "픽스처 전제: 캐시가 아직 없어야 한다"
-    # 텍스트 경로를 먼저 돌려 공유 읽기 seam(리스 락 파일)이 선 상태를 기준선으로 삼는다.
+    # 텍스트 경로를 먼저 돌려 공유 읽기 공용 함수(대여 락 파일)이 선 상태를 기준선으로 삼는다.
     assert _run_cli(home, "status").returncode == 0
     before = _tree_digest(home / ".project_manager", exclude=cache_root)
 
@@ -929,15 +929,15 @@ def test_json_path_url_upstream_writes_only_the_engine_cache(tmp_path):
     _status_json(home, "--with-adapters")   # 이후 — fetch
 
     assert _tree_digest(home / ".project_manager", exclude=cache_root) == before, \
-        "URL 형상의 JSON 조회가 캐시 밖 .project_manager/ 를 건드렸다"
+        "URL 모양의 JSON 조회가 캐시 밖 .project_manager/ 를 건드렸다"
     assert _only_cache(home).is_dir(), \
-        "캐시가 만들어지지 않았다면 이 예외 선언은 공허하다(형상이 URL 로 해소되지 않았다)"
+        "캐시가 만들어지지 않았다면 이 예외 선언은 공허하다(모양이 URL 로 해소되지 않았다)"
 
 
 @_git_required
 def test_text_path_output_is_byte_identical(home):
     """텍스트 경로 골든 — `--json` 추가가 사람 출력의 바이트를 바꾸지 않는다(불변식 1)."""
-    _ledger(home, [])
+    _records(home, [])
     _write(home / ".project_manager" / "local.conf", "identity.user=me@example.invalid\n")
 
     done = _run_cli(home, "status")
@@ -961,7 +961,7 @@ def test_text_path_output_is_byte_identical(home):
 @pytest.mark.parametrize("flag", ["--with-board", "--with-adapters"])
 def test_scope_flags_without_json_are_usage_error(home, flag):
     """`--with-*` 를 `--json` 없이 주면 usage error(rc 2) — 조용히 무시하지 않는다."""
-    _ledger(home, [])
+    _records(home, [])
     done = _run_cli(home, "status", flag)
     assert done.returncode == 2
     assert flag in done.stderr and "--json" in done.stderr
@@ -971,7 +971,7 @@ def test_scope_flags_without_json_are_usage_error(home, flag):
 @_git_required
 def test_from_without_json_is_usage_error(home):
     """`--from` 도 `--json` 전용이다 — 텍스트 경로엔 그 소스를 쓰는 절이 없다."""
-    _ledger(home, [])
+    _records(home, [])
     done = _run_cli(home, "status", "--from", str(REPO))
     assert done.returncode == 2
     assert "--from" in done.stderr
@@ -1011,7 +1011,7 @@ def _slot_lifecycle(home: Path, script: Path, *argv: str) -> str:
 def preserved_home(home, tmp_path):
     """홈 엔진으로 슬롯 둘을 만들고 지운 홈 — app_1 은 커밋 2개(합쳐지지 않음)·app_2 는 부모 기록 없음."""
     bare = _origin_bare(home, "app")
-    _ledger(home, [])
+    _records(home, [])
     script = tmp_path / "slot_lifecycle.py"
     script.write_text(_SLOT_LIFECYCLE_SOURCE, encoding="utf-8")
     kept = _slot_lifecycle(home, script, "create")
@@ -1119,7 +1119,7 @@ def test_status_git_calls_per_slot_are_bounded(home, tmp_path, mode, per_slot):
     """슬롯 2개를 더하면 git 호출은 슬롯당 고정 수만큼만 는다 — `git submodule status` 0회, 부모 기록과
     stash 목록은 저장소 공용 값이라 조회 1회에 한 번씩만 읽는다(T-0961 · 엔진 create_slot 슬롯)."""
     _origin_bare(home, "app")
-    _ledger(home, [])
+    _records(home, [])
     script = tmp_path / "slot_lifecycle.py"
     script.write_text(_SLOT_LIFECYCLE_SOURCE, encoding="utf-8")
     _slot_lifecycle(home, script, "create")
@@ -1145,7 +1145,7 @@ def test_status_repo_reads_stay_per_repo(home, tmp_path):
     lib 슬롯이 각자 저장소의 stash 수·자식 기록을 받고, 두 값은 저장소마다 한 번씩만 읽힌다(T-0961)."""
     for repo in ("app", "lib"):
         _origin_bare(home, repo)
-    _ledger(home, [])
+    _records(home, [])
     script = tmp_path / "create_repo_slot.py"
     script.write_text(_CREATE_REPO_SLOT_SOURCE, encoding="utf-8")
     app_slot, lib_slot = (_slot_lifecycle(home, script, repo) for repo in ("app", "lib"))
@@ -1187,7 +1187,7 @@ def test_status_json_slot_rows_include_folders(home):
     limited = _make_slot(home, "app", 1, "limited")
     full = _make_slot(home, "app", 2, "full")
     _git(home / limited, "sparse-checkout", "set", "--cone", "docs")
-    _ledger(home, [{"slot": slot, "repo": "app", "state": "idle", "session": "", "started": "t"}
+    _records(home, [{"slot": slot, "repo": "app", "state": "idle", "session": "", "started": "t"}
                    for slot in [limited, full]])
     rows = {row["slot"]: row for row in _status_json(home)["slots"]}
     assert rows[limited]["folders"] == ["docs"]

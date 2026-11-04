@@ -22,7 +22,7 @@ from pm_engine.cli import config_models
 def _render_repos(home) -> None:
     """areas.md per-repo 레지스트리 행을 surface 한다 (`areas_store._parse_areas` 재사용).
 
-    areas.md 부재(미배선)면 빈 안내. 중복 파싱 구현 0 — 헤더-인식 파서를 그대로 쓴다.
+    areas.md 부재(미등록)면 빈 안내. 중복 파싱 구현 0 — 헤더-인식 파서를 그대로 쓴다.
     """
     print("## repos (areas.md per-repo 레지스트리):")
     _header, rows = areas_store._parse_areas(home)
@@ -39,9 +39,9 @@ def _render_repos(home) -> None:
 
 
 def _render_slots(home) -> None:
-    """worktree 풀 리스 장부를 slot·repo·build(test_cmd)·state·session 으로 surface.
+    """worktree 풀 대여 기록을 slot·repo·build(test_cmd)·state·session 으로 surface.
 
-    pool_store.list_leases(home) 재사용. 빈 장부면 안내를 표시한다. cmd_status의 풀
+    pool_store.list_leases(home) 재사용. 빈 기록이면 안내를 표시한다. cmd_status의 풀
     surface 와 같은 데이터 — 콘솔은 build(test_cmd) 칼럼을 강조한다(이 콘솔의 1급 관심사).
     """
     print("## slots (worktree 풀 대여):")
@@ -57,7 +57,7 @@ def _render_slots(home) -> None:
 
 
 def _render_state(home) -> None:
-    """콘솔 상태 1회 렌더 — repos(areas) + slots(리스). 액션마다 재호출(재렌더)."""
+    """콘솔 상태 1회 렌더 — repos(areas) + slots(대여). 액션마다 재호출(재렌더)."""
     print()
     print(f"# pm-config 콘솔 — 세션: {lease_store.session_name(home) or '(비바인딩)'}")
     _render_repos(home)
@@ -71,7 +71,7 @@ _CONSOLE_ABORT = object()
 
 
 def _console_input(input_fn: Callable[[str], str], prompt: str):
-    """콘솔 공유 입력 헬퍼 — `EOFError`/`KeyboardInterrupt` 를 `_CONSOLE_ABORT` 로 흡수.
+    """콘솔 공유 입력 헬퍼 — `EOFError`/`KeyboardInterrupt` 를 `_CONSOLE_ABORT` 로 바꾼다.
 
     **메뉴 입력뿐 아니라 모든 액션 내부 프롬프트**(`[r]` 이름/git/test·`[w]` repo·`[b]` slot/
     빌드명령)가 이 헬퍼를 거친다 — 어느 프롬프트서 Ctrl-C/EOF 가 나도 예외가 전파돼 크래시
@@ -135,7 +135,7 @@ def _console_worktree_add(home, input_fn):
     물리 슬롯 생성 전에 repo 이름을 한 번 더 입력하는 사용자-present 확인 프롬프트를
     띄우고, 정확히 일치한 값만 CLI ``--user-ack <repo>``와 동치인 토큰으로 넘긴다.
     빌드명령 프롬프트의 표시 기본값은 명시 Home의 areas_store에서 읽는다. 프롬프트 내부 중단은
-    cmd_worktree_add → _prompt_test_cmd 가 None 으로 흡수(크래시 0·기존 폴백).
+    cmd_worktree_add → _prompt_test_cmd 가 None 으로 바꿈(크래시 0·기존 대체 동작).
 
     이 액션은 핸들러 rc 를 읽지 않는다(취소/중단 sentinel 만 반환). 핸들러가 올린 예외는
     잡지 않고 그대로 올라간다.
@@ -189,8 +189,8 @@ def _console_set_test_cmd(home, input_fn):
 def _console_update(home) -> None:
     """`[u]` — 엔진 갱신을 `config_install.cmd_update(home, [])` 로 위임 (= update_cmd verbatim).
 
-    `[r]`/`[w]`/`[b]` 와 동형의 얇은 래퍼 — 입력 프롬프트 없이(인자 없는 갱신) 기존 핸들러로
-    위임만 한다(중복 0). 갱신은 repos/slots 장부를 안 바꿔도(엔진 파일 동기화) 호출부가
+    `[r]`/`[w]`/`[b]` 와 같은 방식의 얇은 래퍼 — 입력 프롬프트 없이(인자 없는 갱신) 기존 핸들러로
+    위임만 한다(중복 0). 갱신은 repos/slots 기록을 안 바꿔도(엔진 파일 동기화) 호출부가
     상태를 재렌더한다(무해·일관).
     """
     config_install.cmd_update(home, [])
@@ -205,7 +205,7 @@ def run_console(
     """대화형 콘솔 루프 — 상태 렌더 + 메뉴 + 액션 + 재렌더 (tty 전용).
 
     무인자 `pm-config`(tty)가 진입한다(비-tty 는 main 이 help 로 분기). 흐름:
-      1. 상태 렌더(repos via areas · slots via 리스) — cmd_status/list_leases/areas 파서 재사용.
+      1. 상태 렌더(repos via areas · slots via 대여) — cmd_status/list_leases/areas 파서 재사용.
       2. 메뉴 프롬프트 → 키 1자.
       3. 액션(`[r]`·`[w]`·`[b]`·`[m]`·`[u]`)은 *기존 핸들러*로 위임 → 상태 재렌더.
       4. `[s]` 새로고침(재렌더만)·`[q]` 종료. (`[u]` 엔진 갱신 = cmd_update.)
@@ -215,7 +215,7 @@ def run_console(
     `[b]` 의 이름/git/repo/slot 입력)가 공유 `_console_input` 헬퍼를 거친다 — 어느 프롬프트서
     중단해도 액션이 `_CONSOLE_ABORT` 를 반환하고 루프가 우아 종료한다(must-fix 2·codex —
     "우아 종료/크래시 0" 보장·traceback 0·rc 0). 현재 Home을 콘솔 소유 함수에 전달하고
-    실제 handler seam과 input_fn으로 시험을 격리한다.
+    실제 handler 교체 지점과 input_fn으로 시험을 격리한다.
     """
     _render_state(home)
     while True:
@@ -240,7 +240,7 @@ def run_console(
         elif choice == "b":
             result = _console_set_test_cmd(home, input_fn)
         elif choice == "m":
-            # 위임 모델 안내 — 출력 전용(장부 변경 0). 입력 프롬프트가 없어 중단 축이 없다.
+            # 위임 모델 안내 — 출력 전용(기록 변경 0). 입력 프롬프트가 없어 중단할 자리가 없다.
             result = config_models._console_delegate_models(home)
         elif choice == "u":
             # 엔진 갱신— 입력 프롬프트 없이 cmd_update([]) 위임 후 재렌더.

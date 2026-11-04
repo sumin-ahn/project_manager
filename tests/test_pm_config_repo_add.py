@@ -1,11 +1,11 @@
-"""pm-config repo add — bare clone fetch refspec 보정 단위/배선 테스트 (T-0152).
+"""pm-config repo add — bare clone fetch refspec 보정 단위/연결 테스트 (T-0152).
 
 `git clone --bare` 는 일반 clone 과 달리 `remote.origin.fetch` 를 설정하지 않아 bare 에
 origin/* remote-tracking ref(origin/main 등)가 안 생긴다 → 그 bare 를 공유하는 worktree
-슬롯이 핸드오프 라이브-게이트(T-0151)의 baseline(origin/main)을 해소 못 한다. `cmd_repo_add`
+슬롯이 핸드오프 라이브 검사(T-0151)의 baseline(origin/main)을 해소 못 한다. `cmd_repo_add`
 가 bare clone 성공 직후(+기존 bare 재사용 경로) refspec 설정 + `fetch origin` 으로 근절하는지
 검증한다 — clone_runner **mock 주입**으로 hermetic(실 clone/네트워크 0·test_pm_config_facade
-의 DI seam 동류). 커버:
+의 DI 교체 지점 동류). 커버:
 
   - refspec config 호출 단언 — `config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`.
   - fetch 호출 단언 — `fetch origin` (refspec 성공 시).
@@ -54,13 +54,13 @@ def _repo_home(tmp_path, monkeypatch, pc):
     monkeypatch.setattr(pc, "REPO", tmp_path)
 
 
-# ── 주입형 fake (DI seam — hermetic·test_pm_config_facade 동형 최소 대역) ───────
+# ── 주입형 fake (DI 교체 지점 — hermetic·test_pm_config_facade 와 같은 방식의 최소 대역) ───────
 
 
 def _set_registered(monkeypatch, *repos):
     """이미 등록된 **repo명** 대역 — pm_config 가 읽는 `areas_store.registered_repos` 자리.
 
-    멱등 재등록 판별 축(ADR-0042 후 repo 칼럼 기준).
+    멱등 재등록 판별 방식(ADR-0042 후 repo 칼럼 기준).
     """
     monkeypatch.setattr(areas_store, "registered_repos", lambda _home: set(repos))
 
@@ -105,7 +105,7 @@ class GitFake:
         # 기본 브랜치 origin tracking(T-0273) 모델링 — symbolic-ref/rev-parse(HEAD 해소)와
         # config branch.<d>.remote/merge 의 rc 를 각각 오버라이드해 fail-soft 분기를 친다.
         self._symref_rc = symref_rc            # symbolic-ref --short HEAD rc
-        self._revparse_rc = revparse_rc        # rev-parse --abbrev-ref HEAD rc (symref 실패 폴백)
+        self._revparse_rc = revparse_rc        # rev-parse --abbrev-ref HEAD rc (symref 실패 대체)
         self._branch_config_rc = branch_config_rc   # config branch.<d>.remote/merge rc
         # bare 실검증(T-0294·2조건 AND): (1) `rev-parse --is-bare-repository`=is_bare, (2) `rev-parse
         # --verify HEAD` rc=head_resolves. **유효 bare = is_bare AND head_resolves 둘 다**. is_bare=
@@ -383,11 +383,11 @@ def test_fetch_failure_warns_but_repo_add_succeeds(monkeypatch, pc, tmp_path, ca
     assert "fetch origin" in capsys.readouterr().err
 
 
-# ── repo명 자동시드 폐지 (ADR-0042·T-0237) ───────────────────────────────────
+# ── repo명 자동 채움 폐지 (ADR-0042·T-0237) ───────────────────────────────────
 
 
 def test_repo_add_seeds_empty_prefix_not_repo_name(monkeypatch, pc, tmp_path):
-    """repo add 는 prefix 를 **빈 값**으로 등록한다 — repo명 자동시드 폐지 (ADR-0042·DoD 1).
+    """repo add 는 prefix 를 **빈 값**으로 등록한다 — repo명 자동 채움 폐지 (ADR-0042·DoD 1).
 
     이전엔 `areas_append(name, …)` 로 repo명이 prefix 칼럼에 박혀 다음 티켓이 `T-<repo>-NNN`
     으로 튀었다. 이제 positional prefix 는 `""` — repo명은 작업 카테고리가 아니다.
@@ -399,14 +399,14 @@ def test_repo_add_seeds_empty_prefix_not_repo_name(monkeypatch, pc, tmp_path):
     assert rc == 0
     assert len(board.append_calls) == 1
     call = board.append_calls[0]
-    assert call["prefix"] == ""          # 자동시드 폐지 — repo명 아님
+    assert call["prefix"] == ""          # 자동 채움 폐지 — repo명 아님
     assert call["repo"] == "svc"          # repo 칼럼엔 repo명 유지(등록 식별)
 
 
 def test_repo_add_idempotent_by_repo_name_not_prefix(pc, tmp_path, monkeypatch):
     """이미 등록된 repo(빈 prefix) 재실행 → 중복 append 0 — 멱등 판별이 repo명 기준 (ADR-0042·DoD 1).
 
-    자동시드 폐지로 prefix 칼럼이 비어 `registered_prefixes()` 로는 이 repo 를 못 세므로,
+    자동 채움 폐지로 prefix 칼럼이 비어 `registered_prefixes()` 로는 이 repo 를 못 세므로,
     멱등 판별을 `registered_repos()`(repo 칼럼)로 옮겼다 — 재실행이 같은 repo 를 두 줄로
     append 하지 않는다(append-only 레지스트리 오염 방지).
     """
@@ -438,7 +438,7 @@ def test_repo_add_rejects_case_only_duplicate_repo_name(pc, tmp_path, capsys, mo
     assert _clone_call(gitr) is None          # clone 도 안 함(부작용 0)
 
 
-# ── 헬퍼 직접 단위 (배선 격리) ───────────────────────────────────────────────
+# ── 헬퍼 직접 단위 (연결 격리) ───────────────────────────────────────────────
 
 
 def test_set_bare_fetch_refspec_helper_success(pc, tmp_path, capsys):
@@ -572,11 +572,11 @@ def test_ensure_bare_branch_tracking_failsoft_head_unresolved(pc, tmp_path, caps
 
 
 def test_ensure_bare_branch_tracking_revparse_fallback(pc, tmp_path):
-    """symbolic-ref 실패 시 rev-parse --abbrev-ref HEAD 폴백으로 기본 브랜치 해소 (T-0273)."""
+    """symbolic-ref 실패 시 rev-parse --abbrev-ref HEAD 대체로 기본 브랜치 해소 (T-0273)."""
     bare = tmp_path / "svc.git"
     gitr = GitFake(symref_rc=1, revparse_rc=0, head="main")
     config_repo._ensure_bare_branch_tracking(bare, runner=gitr)
-    assert any("rev-parse" in c for c in gitr.calls)      # 폴백 경로가 탔다
+    assert any("rev-parse" in c for c in gitr.calls)      # 대체 경로가 탔다
     calls = _branch_config_calls(gitr)
     assert ["-C", str(bare), "config", "branch.main.remote", "origin"] in calls
     assert ["-C", str(bare), "config", "branch.main.merge", "refs/heads/main"] in calls
@@ -607,7 +607,7 @@ def test_ensure_bare_branch_tracking_tag_collision_pure_branch(pc, tmp_path):
 def test_real_clone_creates_origin_main_tracking_ref(monkeypatch, pc, tmp_path):
     """실 `git clone --bare` 경로가 origin/main remote-tracking ref 를 실제로 만든다 (T-0152·통합).
 
-    mock 배선 테스트(GitFake)는 argv 단언만이라 refspec 문자열이 미묘히 틀려도 통과한다 —
+    mock 연결 테스트(GitFake)는 argv 단언만이라 refspec 문자열이 미묘히 틀려도 통과한다 —
     이 테스트는 clone_runner 미주입(실 `_real_clone_runner`·실 git clone --bare)으로
     refspec 설정 + `fetch origin` 이 *실제로* `.repos/<name>.git` 에
     `refs/remotes/origin/main` 을 생성하는지 고정한다(네트워크 0·로컬 tmp source repo only).
@@ -713,7 +713,7 @@ def test_t0956_repo_add_refuses_dangling_head_source(monkeypatch, pc, tmp_path, 
 
     `git init --bare` 원본의 HEAD 를 `refs/heads/master` 로 두고 `main` 커밋 1개만 push 한다.
     `ls-remote --exit-code 원본 HEAD` 가 rc 2 라 커밋 0개와 같은 분기에서 rc 1 로 멈추고, 안내가
-    원본 HEAD 원인과 그 처방을 함께 말한다. repos 폴더 아래 bare 도 areas 등록도 없다.
+    원본 HEAD 원인과 그 해결 방법을 함께 말한다. repos 폴더 아래 bare 도 areas 등록도 없다.
     """
     def git(cwd, *args):
         return subprocess.run(
@@ -751,7 +751,7 @@ def test_t0956_repo_add_refuses_dangling_head_source(monkeypatch, pc, tmp_path, 
 def test_real_clone_sets_default_branch_upstream_tracking(monkeypatch, pc, tmp_path):
     """실 `git clone --bare` 경로가 기본 브랜치 origin tracking 을 박고 슬롯 @{upstream} 을 해소한다 (T-0273·통합).
 
-    mock 배선(GitFake)은 argv 단언만이라 config 값이 미묘히 틀려도 통과한다 — 이 테스트는
+    mock 연결(GitFake)은 argv 단언만이라 config 값이 미묘히 틀려도 통과한다 — 이 테스트는
     clone_runner 미주입(실 clone)으로 (1) bare 에 branch.main.remote=origin +
     branch.main.merge=refs/heads/main 이 실제로 박히고, (2) 그 bare 를 공유하는 worktree 슬롯이
     config 상속으로 main@{upstream}=origin/main 을 해소함을 고정한다(검증된 사실·PM 55·네트워크 0).
@@ -810,15 +810,15 @@ def test_real_clone_sets_default_branch_upstream_tracking(monkeypatch, pc, tmp_p
     assert up.stdout.strip() == "origin/main"
 
 
-# ── owner 미해소 remedy 힌트 — 존재하는 플래그만 안내 (T-0317·T-0313 findings·ADR-0057) ─────
+# ── owner 미해소 해결 방법 힌트 — 존재하는 플래그만 안내 (T-0317·T-0313 findings·ADR-0057) ─────
 #
 # `repo add` 의 owner 미해소 fail-loud 가 없는 `--session <repo>_<N>` 를 안내하던 오안내
-# (T-0313 findings)를 이 티켓이 흡수한다 — `repo add` 의 유일한 정체성 플래그는 `--owner`
-# 뿐이라, remedy 는 그것만 가리켜야 한다(플래그 통일 wave 로 근본 소멸·ADR-0057).
+# (T-0313 findings)를 이 티켓이 함께 처리한다 — `repo add` 의 유일한 정체성 플래그는 `--owner`
+# 뿐이라, 해결 방법은 그것만 가리켜야 한다(플래그 통일 묶음으로 근본 소멸·ADR-0057).
 
 
 def _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path, *, git_email=None):
-    """`pc.REPO` 를 tmp 로 재지정 — owner 축(`identity.user` > git user.email)을 hermetic 하게 만든다.
+    """`pc.REPO` 를 tmp 로 재지정 — owner 값(`identity.user` > git user.email)을 hermetic 하게 만든다.
 
     local.conf 부재 → `identity.user` 없음. git user.email 은 `git_email` 로 명시 주입한다
     (환경의 실 git 설정이 판정에 새지 않게).
@@ -832,10 +832,10 @@ def _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path, *, git_email=None):
 
 def test_repo_add_owner_unresolved_hint_omits_nonexistent_session_flag(
         pc, tmp_path, monkeypatch, capsys):
-    """owner 미해소 remedy 힌트가 존재하지 않는 `--session` 을 더 이상 안내하지 않는다
+    """owner 미해소 해결 방법 힌트가 존재하지 않는 `--session` 을 더 이상 안내하지 않는다
     (T-0313 pm_config 분 fix) — `repo add` 의 실 정체성 플래그(`--owner`)만 안내한다.
     부작용 0(clone/등록 안 함)도 함께 확인한다. 미해소 조건은 `identity.user`·git user.email
-    둘 다 없음이다(슬롯 세션은 이 축의 입력이 아니다).
+    둘 다 없음이다(슬롯 세션은 이 값의 입력이 아니다).
     """
     _bind_tmp_repo_for_owner(pc, monkeypatch, tmp_path)
     board = FakeBoard()
@@ -855,7 +855,7 @@ def test_repo_add_owner_unresolved_hint_omits_nonexistent_session_flag(
 
 def test_repo_add_owner_comes_from_the_user_identity_not_a_slot_session(
         pc, tmp_path, monkeypatch):
-    """작업 폴더가 하나도 없는 fresh 홈에서도 `repo add` 가 owner 를 채운다 — 값은 사람 축이다.
+    """작업 폴더가 하나도 없는 fresh 홈에서도 `repo add` 가 owner 를 채운다 — 값은 사람 식별자다.
 
     등록은 어느 슬롯에서 쳤는지와 무관하고, 첫 등록 시점엔 슬롯이 아예 없다. owner 의 단일
     진실은 `identity.user`(없으면 git user.email)라 슬롯 행 0개에서도 해소된다.
@@ -901,7 +901,7 @@ def test_repo_add_installs_the_ticket_copy_exclude_idempotently(pc, tmp_path, mo
     _set_registered(monkeypatch, "svc")
     board = FakeBoard()     # 이미 등록 → early-return 경로
     repos = tmp_path / ".repos"
-    (repos / "svc.git" / "info").mkdir(parents=True)   # clone 이 깐 bare 형상
+    (repos / "svc.git" / "info").mkdir(parents=True)   # clone 이 깐 bare 모양
     exclude = repos / "svc.git" / "info" / "exclude"
     exclude.write_text("# git default\n", encoding="utf-8", newline="\n")
 
@@ -939,7 +939,7 @@ def test_repo_add_creates_the_exclude_file_when_the_bare_has_none(pc, tmp_path, 
 def test_missing_bare_warns_and_keeps_repo_add_green(pc, tmp_path, capsys, monkeypatch):
     """bare 부재는 no-op + 경고다 — 없는 자리에 `<repo>.git` 을 만들면 나중 clone 이 죽는다.
 
-    fail-soft(rc 0)이지 조용한 생략이 아니다. 진짜 게이트는 `ticket prepare` 의 fail-loud 다.
+    fail-soft(rc 0)이지 조용한 생략이 아니다. 진짜 검사는 `ticket prepare` 의 fail-loud 다.
     """
     _set_registered(monkeypatch, "svc")
     board = FakeBoard()

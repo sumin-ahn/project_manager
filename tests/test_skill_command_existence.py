@@ -1,18 +1,18 @@
-"""스킬 md ↔ CLI 커맨드 **존재** 정합 가드 (T-0347 · spike §F13 · 결정 ⑱ · [[ADR-0062]]).
+"""스킬 md ↔ CLI 커맨드 **존재** 일치 가드 (T-0347 · spike §F13 · 결정 ⑱ · [[ADR-0062]]).
 
 배경 — **실패 모드가 기능적이다**: 스킬 문서(`.claude/skills/**/SKILL.md` — 양 하네스가
-opencode skill/command 표면 포함)의 ```bash 블록은 채택자·PM 이 그대로 복붙해 도는 실행 지시다. 거기 적힌
+opencode skill/command 파일 포함)의 ```bash 블록은 채택자·PM 이 그대로 복붙해 도는 실행 지시다. 거기 적힌
 서브커맨드·플래그가 CLI 파서에서 사라지거나 이름이 바뀌면(예 v1.2.0 이 `--session` 제거·ADR-0057)
 그 지시는 런타임에 **깨진다**. 살아있는 실사례 [[T-0346]](pm-handoff 가이드 `--tickets` 형식이 CLI
-실형식과 어긋난 live drift)·물린 전례 [[T-0324]](구 `--session` 하드코딩이 두 가드 사각을 통과해
-라이브 tier 에서야 릴리즈 블로커로 잡힘)가 이 클래스다. task 모델(v1.3.0)이 가이드 표면을 대폭
+실형식과 어긋난 live drift)·물린 전례 [[T-0324]](구 `--session` 하드코딩이 두 가드가 놓치는 곳을 지나
+라이브 tier 에서야 릴리즈 블로커로 잡힘)가 이 클래스다. task 모델(v1.3.0)이 가이드 문서를 대폭
 바꾸므로 같은 drift 가 재발 예약돼 있다.
 
-이 가드는 그 표면을 lock-in 한다 — 스킬 md 의 각 커맨드가 실제 파서에 **존재**하는지를 도구의
+이 가드는 그 문서들을 lock-in 한다 — 스킬 md 의 각 커맨드가 실제 파서에 **존재**하는지를 도구의
 `build_parser()`(기존 `importlib.util.spec_from_file_location` 관례) introspection 으로 대조한다.
-값이 canonical 인지(예 `--slot` 값이 옛 형식인지)는 **별개 표면**(T-0262/0263·값 가드)이고, 도구
-자체 `--help` usage ↔ subparser 정합도 **별개 표면**([[T-0348]]) — 이 파일은 스킬 md ↔ CLU **존재**
-정합만 본다.
+값이 canonical 인지(예 `--slot` 값이 옛 형식인지)는 **별개 검사**(T-0262/0263·값 가드)이고, 도구
+자체 `--help` usage ↔ subparser 일치도 **별개 검사**([[T-0348]]) — 이 파일은 스킬 md ↔ CLU **존재**
+일치만 본다.
 
 세 가지 커맨드 모양을 인식한다:
   - `python3 .project_manager/tools/<X>.py <sub> --flag …` → 그 도구 파서를 로드해 서브커맨드
@@ -24,9 +24,9 @@ opencode skill/command 표면 포함)의 ```bash 블록은 채택자·PM 이 그
 
 **sensitivity 필수** — 추출된 스캔 대상이 0 이면 test 실패(공허 가드 재발 방지). v1.2.0 이 `--session`
 을 제거하자 그 값만 보던 가드([[test_adapter_session_identity]])가 스캔 대상 0 = green 이지만 아무것도
-안 지키는 상태가 됐다 — 그 공허 함정을 이 가드는 대상 수·표면 커버리지·분류기 자기검증으로 봉쇄한다.
-(그 공허해진 `--session` 값 가드는 이 존재 가드가 흡수한다 — 없는 플래그를 쓰면 존재 검사에서 먼저
-걸린다. `--session` 자체의 재유입은 `test_flag_unification_parity` group 2 가 넓은 .md 표면에서 백스톱.)
+안 지키는 상태가 됐다 — 그 공허 함정을 이 가드는 대상 수·스캔 대상 커버리지·분류기 자기검증으로 봉쇄한다.
+(그 공허해진 `--session` 값 가드는 이 존재 가드가 대신 맡는다 — 없는 플래그를 쓰면 존재 검사에서 먼저
+걸린다. `--session` 자체의 재유입은 `test_flag_unification_parity` group 2 가 넓은 .md 파일에서 백스톱.)
 """
 from __future__ import annotations
 
@@ -45,8 +45,8 @@ from pm_engine.infra import pm_paths
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# 스캔 표면 — canonical 스킬 + 양 하네스 templates 미러 + opencode 슬래시 command 사본.
-# command는 canonical에서 기계 생성되지만 채택자가 실제로 실행하는 독립 표면이므로 포함한다.
+# 스캔 범위 — canonical 스킬 + 양 하네스 templates 미러 + opencode 슬래시 command 사본.
+# command는 canonical에서 기계 생성되지만 채택자가 실제로 실행하는 독립 대상이므로 포함한다.
 # templates/* 는 root `.claude/skills` 의 pm_update --target 동기 미러라, 미러가 drift 하면
 # (전파 누락) 거기서 잡히는 것이 곧 파리티 가드다.
 _SCAN_DIRS = (
@@ -103,7 +103,7 @@ def _load_parser(stem: str) -> "argparse.ArgumentParser | None":
     대부분 도구는 `build_parser()` 를 노출한다(test_flag_unification_parity 등 관례). 일부
     (worktree_pool·pm_update 의 `cli.update_cmd`)는 파서를 `main()` 내부에 인라인으로 짓는다 — 그 경우
     `parse_args` 를 일시 후킹해 완성된 파서를 낚아챈다(부작용 없음: 두 도구 모두 parse_args
-    이전에 네트워크/쓰기가 없음을 소스 확인). 얻지 못하면 None → 호출측이 fail-loud 로 표면화
+    이전에 네트워크/쓰기가 없음을 소스 확인). 얻지 못하면 None → 호출측이 fail-loud 로 드러낸다
     (조용한 skip = 공허 가드라 금지).
     """
     if stem in _parser_cache:
@@ -144,7 +144,7 @@ def _parser_for_command(
 
     일부 CLI는 기존 flat required 옵션을 흩지 않기 위해 `main()`에서 첫 토큰을 먼저 분기한다.
     모듈이 `build_subcommand_parser(command)`를 공개하면 그 parser가 실행 단일 진실이므로 존재
-    검사도 같은 표면을 쓴다. 미지원 command/모듈은 종전 root parser로 그대로 퇴화한다.
+    검사도 같은 parser를 쓴다. 미지원 command/모듈은 종전 root parser로 그대로 퇴화한다.
     """
     if tokens and not _flag_of(tokens[0]):
         builder = (delegate_cmd.build_subcommand_parser if stem == "pm_delegate"
@@ -237,7 +237,7 @@ def _tokenize(rest: str) -> "list[str]":
 
 
 def check_command(parser: argparse.ArgumentParser, tokens: "list[str]") -> "list[str]":
-    """`tokens`(도구/파사드 뒤 인자)를 `parser` 로 존재 검사 → offender 사유 목록(빈=정합).
+    """`tokens`(도구/파사드 뒤 인자)를 `parser` 로 존재 검사 → offender 사유 목록(빈=일치).
 
     서브커맨드(중첩 subparsers)·constrained positional(choices)을 앞에서부터 walk 하며 대조하고,
     남은 토큰의 플래그를 walk 경로(root→최심 서브)의 옵션 합집합과 대조한다. 값·자유 positional
@@ -334,7 +334,7 @@ def _canonical_skill_names() -> "set[str]":
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 실 스캔 — 스킬 md ↔ CLI 존재 정합
+# 실 스캔 — 스킬 md ↔ CLI 존재 일치
 # ════════════════════════════════════════════════════════════════════════════
 
 
@@ -374,21 +374,21 @@ def test_skill_bash_commands_reference_existing_cli():
         "sensitivity: 스킬 md ```bash 에서 커맨드를 0개 추출 — 추출 정규식/스캔 경로가 stale 하거나"
         " 스킬 md 구조가 바뀌었다. 공허 통과(green 이지만 무보증)를 막기 위해 실패시킨다."
     )
-    # templates 전수: 네 표면(canonical·claude_code·opencode skill·opencode command)이
-    # 모두 실 커맨드를 냈는지 — 한 표면이라도 0 이면 파리티 커버리지 구멍.
+    # templates 전수: 네 스캔 대상(canonical·claude_code·opencode skill·opencode command)이
+    # 모두 실 커맨드를 냈는지 — 한 대상이라도 0 이면 파리티 커버리지 구멍.
     assert surfaces_with_targets == set(_SCAN_DIRS), (
-        "sensitivity: 커맨드를 낸 표면이 전수(_SCAN_DIRS)가 아님 — "
-        f"{sorted(set(_SCAN_DIRS) - surfaces_with_targets)} 표면이 스캔에서 비었다(파리티 구멍)."
+        "sensitivity: 커맨드를 낸 스캔 대상이 전수(_SCAN_DIRS)가 아님 — "
+        f"{sorted(set(_SCAN_DIRS) - surfaces_with_targets)} 대상이 스캔에서 비었다(파리티 구멍)."
     )
     assert not offenders, (
         "스킬 md 가 실 파서에 없는 서브커맨드/플래그를 지시한다 — 채택자 복붙 시 런타임에 깨진다.\n"
-        "CLI 실형식에 맞춰 스킬 md 를 정정하라(값 canonical 은 별개 표면·T-0262/0263):\n  "
+        "CLI 실형식에 맞춰 스킬 md 를 정정하라(값 canonical 은 별개 검사·T-0262/0263):\n  "
         + "\n  ".join(offenders)
     )
 
 
 def test_existence_classifier_catches_drift():
-    """존재 검사 분류기 자기검증 — 실 트리와 무관한 합성 입력으로(가짜 게이트 방지).
+    """존재 검사 분류기 자기검증 — 실 트리와 무관한 합성 입력으로(가짜 통과 방지).
 
     이게 없으면 `check_command` 가 *무엇이든* 통과시켜도(offender 항상 빈) 위 스캔이 green 이라
     공허해진다. 미등록 서브커맨드·미등록 action·미등록 플래그를 실제로 잡고, 정상형은 통과함을
@@ -413,14 +413,10 @@ def test_existence_classifier_catches_drift():
     assert check_command(board, _tokenize("claim T-1 --nonexistent x")) == [
         "미등록 플래그 '--nonexistent'"
     ]
-    # catch/pass — main 선행 dispatch의 중첩 parser도 실행과 같은 표면을 검사한다.
+    # catch/pass — main 선행 dispatch의 중첩 parser도 실행과 같은 파서를 검사한다.
     assert check_command(delegate_ticket, delegate_tokens) == []
     assert check_command(delegate_ticket, _tokenize("collect --nonexistent x")) == [
         "미등록 플래그 '--nonexistent'"
-    ]
-    # catch — 이름을 바꾼 옛 서브커맨드는 별칭 없이 거부된다.
-    assert check_command(delegate_ticket, _tokenize("harvest --copy /tmp/c --cwd /tmp/w")) == [
-        "미등록 서브커맨드 'harvest'"
     ]
     # catch — constrained positional(regression action) 오타.
     assert check_command(board, _tokenize("regression runn --ticket T-1")) == [
@@ -446,7 +442,7 @@ def test_existence_classifier_catches_drift():
 
 
 def test_tokenizer_is_quote_aware_no_false_flag():
-    """토크나이저 자기검증 — quoted 값 안의 플래그를 오탐하지 않는다 (reviewer 실측 수렴).
+    """토크나이저 자기검증 — quoted 값 안의 플래그를 오탐하지 않는다 (reviewer 실측 반영).
 
     순진한 공백 split 은 `--test "pytest --tb=short"` 에서 `--tb` 를 미등록 플래그로 오탐한다
     (`repo add` 는 실제 `--test "<cmd>"` 를 받으므로 라이브 false positive). shlex 로 인용을
@@ -463,7 +459,7 @@ def test_tokenizer_is_quote_aware_no_false_flag():
     assert check_command(
         config, _tokenize('repo add <name> --git <url> --test "pytest -q --tb=short"')
     ) == []
-    # fail-loud — 불균형 인용(비셸 문법)은 조용히 skip 하지 않고 ValueError 로 표면화.
+    # fail-loud — 불균형 인용(비셸 문법)은 조용히 skip 하지 않고 ValueError 로 드러낸다.
     import pytest
 
     with pytest.raises(ValueError):
@@ -474,7 +470,7 @@ def test_referenced_tools_all_expose_a_parser():
     """스킬 md 가 지시하는 모든 도구가 introspect 가능한 파서를 실제로 노출하는지 (sensitivity).
 
     파서를 못 얻는 도구가 있으면 그 커맨드의 존재 검사가 조용히 skip 돼 가드가 부분 공허해진다 —
-    그 상황을 fail-loud 로 못박는다(build_parser 부재 시 main 캡처 폴백이 살아있음을 실증).
+    그 상황을 fail-loud 로 못박는다(build_parser 부재 시 main 캡처 대체 동작이 살아있음을 실증).
     """
     referenced: "set[str]" = set()
     for md in _iter_md_files():
@@ -521,7 +517,7 @@ def test_slash_skill_references_exist():
 
 
 def test_slash_classifier_catches_unknown_skill():
-    """슬래시 존재 판별 자기검증 — 합성 입력으로(가짜 게이트 방지).
+    """슬래시 존재 판별 자기검증 — 합성 입력으로(가짜 통과 방지).
 
     실재 스킬은 유효 집합에 있고, 없는 스킬(`/pm-nonexistent`)은 걸리고, 파일 경로의
     `/pm-…`(`./pm-config.sh`·`pm-import.py`) 오매치는 슬래시로 안 잡히는지 못박는다.

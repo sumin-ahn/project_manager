@@ -1,7 +1,7 @@
 """부트스트랩 첫 실행 순서 — 인계 컨텍스트 수집 전에 task 서술 상태를 만든다.
 
-슬롯별 pm_state 축(`.local/slots/<slot>/pm_state.md`)은 삭제됐고, 여기 남은 것은 그
-축과 무관한 task 상태·부트스트랩 순서 계약이다.
+슬롯별 pm_state 경로(`.local/slots/<slot>/pm_state.md`)는 삭제됐고, 여기 남은 것은 그
+경로와 무관한 task 상태·부트스트랩 순서 계약이다.
 """
 from __future__ import annotations
 from pm_engine.cli import bootstrap_card
@@ -25,7 +25,7 @@ TOOLS = ROOT / ".project_manager" / "tools"
 TEMPLATE = ROOT / ".project_manager" / "wiki" / "pm_state.template.md"
 
 
-# `_load` 가 호출마다 새 모듈을 만들기 때문에 재앵커는 로더 안에서 건다(아래 autouse fixture 가
+# `_load` 가 호출마다 새 모듈을 만들기 때문에 REPO 재지정은 로더 안에서 건다(아래 autouse fixture 가
 # 테스트별 tmp 경로를 심는다).
 _DASHBOARD_REDIRECT: dict[str, Path] = {}
 
@@ -44,11 +44,11 @@ def _load(name: str):
 
 @pytest.fixture(autouse=True)
 def _hermetic_dashboard(tmp_path, monkeypatch):
-    """slot 대시보드 렌더를 tmp 로 재앵커한다(이 모듈의 모든 신규 로드에 적용).
+    """slot 대시보드 렌더를 tmp 로 재지정한다(이 모듈의 모든 신규 로드에 적용).
 
-    `_dashboard_file()` 은 모듈 `REPO` 를 따라가므로 재앵커 없이 부트스트랩/핸드오프를 돌리면
+    `_dashboard_file()` 은 모듈 `REPO` 를 따라가므로 재지정 없이 부트스트랩/핸드오프를 돌리면
     실 작업 트리의 `wiki/log/dashboard.md` 를 갱신한다(tests/conftest.py 의 live board 오염 가드가
-    teardown 에서 잡는다). 렌더 내용이 앞선 테스트가 남긴 리스 상태에 좌우돼 단독 실행에서는
+    teardown 에서 잡는다). 렌더 내용이 앞선 테스트가 남긴 대여 상태에 좌우돼 단독 실행에서는
     재현되지 않는다. `_load` 는 호출마다 새 모듈 객체를 만들므로 리다이렉트를 로더에 건다."""
     monkeypatch.setitem(_DASHBOARD_REDIRECT, "path", tmp_path / "dashboard.md")
 

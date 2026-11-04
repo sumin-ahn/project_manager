@@ -1,7 +1,7 @@
 """`pm-config task todo <add|list|done>` — task 의 열린 할 일 CLI.
 
 판정은 **실 할 일 파일**로 한다 — tmp PM 홈에 실 `.local/tasks/<이름>/todo.json` 을 만들게 하고 그
-파일 내용을 읽어 단언한다(저장/락을 흉내 내는 대역 금지·`test_pm_config_task_new` 동형). 커버:
+파일 내용을 읽어 단언한다(저장/락을 흉내 내는 대역 금지·`test_pm_config_task_new` 와 같은 방식). 커버:
 
   - `add`: 파일에 열린 todo 가 쌓이고 등록 시각·ID 를 엔진이 박는다 · 출력이 ID·등록일을 보인다.
   - `list`: ID·등록일·묵은 일수 표시 · 빈 목록은 등록 경로를 안내한다.
@@ -31,7 +31,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 PM_STATE_TEMPLATE = REPO / ".project_manager" / "wiki" / "pm_state.template.md"
 
 
-# ── tmp PM 홈 + 모듈 로드 (test_pm_config_task_new 동형) ──────────────────────
+# ── tmp PM 홈 + 모듈 로드 (test_pm_config_task_new 와 같은 방식) ──────────────────────
 
 
 def _make_home(root: Path) -> Path:
@@ -160,7 +160,7 @@ def test_todo_add_empty_text_is_rc1_without_write(pc, monkeypatch, wp, task, cap
 
 
 def test_todo_add_invalid_task_name_is_rc1(pc, monkeypatch, wp, capsys):
-    """traversal 이름 → rc1(장부 write 이전 거부·형제 write 진입점 동형)."""
+    """traversal 이름 → rc1(기록 write 이전 거부·형제 write 진입점과 같은 방식)."""
     assert _add(pc, wp, "../evil", "x", monkeypatch=monkeypatch) == 1
     assert capsys.readouterr().err.startswith("[중단] 부적합 task 명")
 
@@ -238,11 +238,11 @@ def test_todo_done_missing_task_is_rc1(pc, monkeypatch, wp, capsys):
 
 
 
-# ── 파서 배선 ────────────────────────────────────────────────────────────────
+# ── 파서 연결 ────────────────────────────────────────────────────────────────
 
 
 def test_parser_wires_three_todo_subcommands(pc):
-    """`task todo <add|list|done>` 이 각 핸들러로 배선된다(인자 모양 포함)."""
+    """`task todo <add|list|done>` 이 각 핸들러로 연결된다(인자 모양 포함)."""
     parser = config_cmd.build_parser()
     add = parser.parse_args(["task", "todo", "add", "job", "할 일"])
     assert (add.func, add.name, add.text) == (config_tasks.cmd_task_todo_add, "job", "할 일")

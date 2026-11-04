@@ -1,11 +1,11 @@
 """`pm-config task close <이름>` — 열린 채 남은 세션 기록을 사용자가 닫는다 (T-0920 AT-006).
 
-세션이 핸드오프 없이 끝나면 장부 task 행이 열린 채 남아 다음 부트스트랩이 거부한다. 그것을
-닫는 것은 **사용자 행위**다(엔진 자동 회수·만료 시각 없음). 이 명령은 **기록만** 닫는다 —
+세션이 핸드오프 없이 끝나면 기록 task 행이 열린 채 남아 다음 부트스트랩이 거부한다. 그것을
+닫는 것은 **사용자 행위**다(엔진 자동 반납·만료 시각 없음). 이 명령은 **기록만** 닫는다 —
 복원(claim 티켓·라운드 단계 등)은 부트스트랩 `--force` 인계 몫이라 여기서 내지 않는다.
 작업 폴더 쪽 짝은 기존 `pm-config release <slot> --force` 이고 새로 만들지 않았다.
 
-판정은 실 PM 홈 + 실 서브프로세스로 한다(장부 파일 바이트를 그대로 읽는다).
+판정은 실 PM 홈 + 실 서브프로세스로 한다(기록 파일 바이트를 그대로 읽는다).
 """
 from __future__ import annotations
 from pm_engine.cli import config_tasks
@@ -46,8 +46,8 @@ def home(tmp_path):
     return make_pm_home(tmp_path / "home")
 
 
-def _ledger(home: Path) -> dict:
-    """장부 원본 — 아직 아무 op 도 없으면 파일 자체가 없다(빈 장부로 읽는다)."""
+def _records(home: Path) -> dict:
+    """기록 원본 — 아직 아무 op 도 없으면 파일 자체가 없다(빈 기록으로 읽는다)."""
     path = home / ".project_manager" / ".local" / "worktree-leases.json"
     if not path.is_file():
         return {"leases": [], "tasks": []}
@@ -74,12 +74,12 @@ def test_close_flips_the_open_record_of_a_real_session(home, *, monkeypatch):
     """실 서브프로세스로 닫는다 — 열림에서 닫힘으로, 그 행 하나만."""
     pm_config(home, "task", "new", "sibling")
     _open_task(home, "job", monkeypatch=monkeypatch)
-    assert [bool(t["session"]) for t in _ledger(home)["tasks"] if t["name"] == "job"] == [True]
+    assert [bool(t["session"]) for t in _records(home)["tasks"] if t["name"] == "job"] == [True]
 
     done = _cli(home, "task", "close", "job")
 
     assert done.returncode == 0, done.stderr
-    rows = {task["name"]: task for task in _ledger(home)["tasks"]}
+    rows = {task["name"]: task for task in _records(home)["tasks"]}
     assert rows["job"]["session"] == ""
     assert rows["sibling"]["session"] == ""       # 형제 행 무접촉
     assert "복원" not in done.stdout or "복원 없음" in done.stdout
@@ -91,12 +91,12 @@ def test_close_does_not_report_what_the_session_was_doing(home, *, monkeypatch):
 
     out = _cli(home, "task", "close", "job").stdout
 
-    for forbidden in ("claim 중인 티켓", "미회수 위임 준비", "라운드 단계", "마지막 기록"):
+    for forbidden in ("claim 중인 티켓", "돌려받지 않은 위임 준비", "라운드 단계", "마지막 기록"):
         assert forbidden not in out, f"닫기가 복원 정보를 냈다: {forbidden}"
 
 
 def test_close_touches_nothing_but_that_row(home, *, monkeypatch):
-    """장부의 그 행 말고는 1바이트도 바꾸지 않는다 — 서술·log·board·슬롯 lease 전부."""
+    """기록의 그 행 말고는 1바이트도 바꾸지 않는다 — 서술·log·board·슬롯 lease 전부."""
     pm_config(home, "task", "new", "job")
     _open_task(home, "job", monkeypatch=monkeypatch)
     watched = [
@@ -105,26 +105,26 @@ def test_close_touches_nothing_but_that_row(home, *, monkeypatch):
     ]
     before = {path: path.read_bytes() for path in watched if path.is_file()}
     assert before, "감시할 파일이 없으면 이 단언은 무의미하다"
-    leases_before = _ledger(home)["leases"]
+    leases_before = _records(home)["leases"]
 
     assert _cli(home, "task", "close", "job").returncode == 0
 
     for path, blob in before.items():
         assert path.read_bytes() == blob, f"닫기가 {path.name} 를 건드렸다"
-    assert _ledger(home)["leases"] == leases_before
+    assert _records(home)["leases"] == leases_before
 
 
 def test_closing_a_closed_record_is_harmless(home):
-    """이미 닫힌 기록은 바꿀 것이 없다 — rc 0 이고 장부 바이트가 그대로다."""
+    """이미 닫힌 기록은 바꿀 것이 없다 — rc 0 이고 기록 바이트가 그대로다."""
     pm_config(home, "task", "new", "job")
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    before = ledger.read_bytes()
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    before = records.read_bytes()
 
     done = _cli(home, "task", "close", "job")
 
     assert done.returncode == 0
     assert "이미 닫혀" in done.stdout
-    assert ledger.read_bytes() == before
+    assert records.read_bytes() == before
 
 
 def test_closing_an_unknown_task_is_refused(home):
@@ -132,14 +132,14 @@ def test_closing_an_unknown_task_is_refused(home):
     done = _cli(home, "task", "close", "absent")
 
     assert done.returncode == 1
-    assert _ledger(home)["tasks"] == []
+    assert _records(home)["tasks"] == []
 
 
-# ── ② 값은 열림/닫힘 둘뿐 · 새 축 0 ─────────────────────────────────────────
+# ── ② 값은 열림/닫힘 둘뿐 · 새 항목 0 ─────────────────────────────────────────
 
 
 def test_close_writes_through_the_existing_primitive(pc, monkeypatch, capsys):
-    """장부 write 를 재구현하지 않는다 — 기존 `close_task_session` 하나만 부른다."""
+    """기록 write 를 재구현하지 않는다 — 기존 `close_task_session` 하나만 부른다."""
     calls: list[str] = []
 
     class _Pool:
@@ -164,7 +164,7 @@ def test_close_writes_through_the_existing_primitive(pc, monkeypatch, capsys):
 
 
 def test_close_takes_no_expiry_or_grace_argument(pc):
-    """만료 시각·유예 시간 같은 새 축을 인자로도 받지 않는다."""
+    """만료 시각·유예 시간 같은 새 항목을 인자로도 받지 않는다."""
     parser = config_cmd.build_parser()
 
     with pytest.raises(SystemExit):
@@ -179,7 +179,7 @@ def test_the_record_has_only_two_values(home, *, monkeypatch):
     _open_task(home, "job", monkeypatch=monkeypatch)
     _cli(home, "task", "close", "job")
 
-    row = _ledger(home)["tasks"][0]
+    row = _records(home)["tasks"][0]
 
     assert row["session"] == ""
     assert "pid" not in row and "state" not in row and "expires_at" not in row

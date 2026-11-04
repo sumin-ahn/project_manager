@@ -1,4 +1,4 @@
-"""worktree_pool 공개 CLI — 슬롯 git 구성 조회·rebase·refresh·record·switch·dev·sync 배선 (층: cli)."""
+"""worktree_pool 공개 CLI — 슬롯 git 구성 조회·rebase·refresh·record·switch·dev·sync 를 부르는 CLI (층: cli)."""
 from __future__ import annotations
 
 import argparse
@@ -15,34 +15,34 @@ from pm_engine.infra import worktree_paths
 
 
 # ── task 컬렉션 (top-level `tasks`·슬롯과 직교) ───────────────────────
-# 리스 장부 파일의 top-level `tasks` 배열에 산다(leases 와 형제·같은 `_lease_lock`/atomic).
+# 대여 기록 파일의 top-level `tasks` 배열에 산다(leases 와 형제·같은 `_lease_lock`/atomic).
 # 슬롯 0개로도 존재 가능(task 는 alloc 전에 먼저 생긴다). 동시 세션 거부는 열림 기록(`open`)
 # 하나로 판정한다 — 프로세스 조회 0.
 
 
 # ── 열린 할 일 (task 별 파일) ────────────────────────────────────────────────
-# 저장 위치가 장부가 아니라 task 폴더인 이유: 할 일은 세션 중 수시로 바뀌고 슬롯 대여는 거의
+# 저장 위치가 기록이 아니라 task 폴더인 이유: 할 일은 세션 중 수시로 바뀌고 슬롯 대여는 거의
 # 안 바뀐다. 한 파일에 두면 할 일 하나 넣을 때마다 남의 대여 행까지 통째로 다시 쓰고, 세 task 가
 # 같은 락을 두고 겨룬다. 폴더 안에 두면 task 종료(`end_task` 의 폴더 이동)에 그대로 따라간다.
 
 
-# ── git worktree × 장부 정합 (reconcile·중단-안전 슬롯번호) ────────────────
-# 장부(Lease)는 우리 메타(session/test_cmd)이고, 실제 worktree 는 git 이 소유한다
+# ── git worktree × 기록 일치 (reconcile·중단-안전 슬롯번호) ────────────────
+# 기록(Lease)은 우리 메타(session/test_cmd)이고, 실제 worktree 는 git 이 소유한다
 # (`.repos/<repo>.git` bare 의 worktree 목록). create_slot 이 worktree add 성공
 # 후 lease 기록 전에 죽으면 둘이 어긋난다(orphan·audit #2). git worktree 목록을 *실-git 소스*
 # 로 삼아 (a) 슬롯번호를 orphan 까지 회피(#4)하고 (b) status 가 drift 를 surface(#3)한다.
 
 
-# ── 슬롯 git 진실: 스냅 기록(write) + 비교(compare) + is-ancestor 판정 ───────
-# 슬롯 git 상태를 *기대*(drift 감지 기준) 축으로 lease 장부에 기계 기록한다(live 표시는
-# 그대로·2축). submodule 의 pin/drift 모델을 본체(superproject)로 대칭 확장 — 개념
+# ── 슬롯 git 진실: git 상태 기록(write) + 비교(compare) + is-ancestor 판정 ───────
+# 슬롯 git 상태를 *기대*(drift 감지 기준) 값으로 lease 기록에 기계 기록한다(live 표시는
+# 그대로·두 값). submodule 의 pin/drift 모델을 본체(superproject)로 대칭 확장 — 개념
 # write=alloc·핸드오프·create(release 시 정리)·compare=0단계.
 
 
 # ── 브랜치 부모 기록 (공용 git 저장소 설정 `branch.<브랜치>.pm-parent`·`pm-fork`) ──
 # 부모 브랜치 = 이 브랜치를 만든 브랜치이자 다시 합칠 곳 · 갈라진 커밋 = 만든 시점의 부모 커밋.
 # 기록은 브랜치를 만드는 엔진 명령(create_slot·create_task_branch)과 rebase 만 쓴다. 저장 위치가 git
-# 설정이라 `git branch -m` 은 기록을 새 이름으로 옮기고 `git branch -d` 는 함께 지운다(장부 동기화
+# 설정이라 `git branch -m` 은 기록을 새 이름으로 옮기고 `git branch -d` 는 함께 지운다(기록 동기화
 # 코드 없음). worktree 에서 부른 `git config` 도 공용 저장소 설정에 쓴다. 기록 없음은 추정하지 않는다.
 
 
@@ -65,17 +65,17 @@ from pm_engine.infra import worktree_paths
 # 선-검사(소유/dirty/rebase 진행중/브랜치/부모) → 실패면 스킵+loud, 통과면 부모 최신 fetch → git rebase.
 # 충돌은 **그 상태 그대로 두고 fail-loud**(엔진 임의 abort 금지 — 해소는 사용자 git rebase --continue|
 # --abort·다음 부트스트랩 0단계가 "rebase 진행 중" 으로 감지·안내). 기록 갱신은 **성공 시에만**
-# (부모 기록 fork=새 부모 tip·`--onto` 면 부모 이름도 교체 → 장부 스냅 head/recorded_at). 부모 기록
+# (부모 기록 fork=새 부모 tip·`--onto` 면 부모 이름도 교체 → 대여 기록의 git 상태 head/recorded_at). 부모 기록
 # 없음 + --onto 없음 = 거부(추론 금지).
 
 
-# ── switch (기존 브랜치 전환 + 장부 스냅 재기록 **원자**) · create_task_branch (새 브랜치 + 부모 기록) ──
-# 엔진이 매개하는 브랜치/head 전환은 전부 자기가 스냅을 재기록한다(bind·create·rebase·refresh·
-# handoff). raw git 전환은 장부 스냅이 옛 브랜치를 가리킨 채라 **곧바로 0단계 '기록↔live diverged'**
-# 차단을 부른다. `switch` 는 기존 브랜치 전환과 스냅 재기록을 **한 호출**에 담고, 새 브랜치는
+# ── switch (기존 브랜치 전환 + 대여 기록의 git 상태 재기록 **원자**) · create_task_branch (새 브랜치 + 부모 기록) ──
+# 엔진이 매개하는 브랜치/head 전환은 전부 자기가 git 상태를 다시 기록한다(bind·create·rebase·refresh·
+# handoff). raw git 전환은 대여 기록의 git 상태가 옛 브랜치를 가리킨 채라 **곧바로 0단계 '기록↔live diverged'**
+# 차단을 부른다. `switch` 는 기존 브랜치 전환과 git 상태 재기록을 **한 호출**에 담고, 새 브랜치는
 # `create_task_branch` 만 만든다(생성 시점에 부모 기록·task 소유 슬롯 한정).
 #   - diverged 검사 자체는 **무변경** — 사람이 raw `git switch` 를 직접 하면 여전히 FAIL-LOUD 로
-#     잡힌다(외부 개입 탐지력 손실 0). 엔진 경로만 스냅을 동반한다.
+#     잡힌다(외부 개입 탐지력 손실 0). 엔진 경로만 git 상태 기록을 동반한다.
 #   - 보호목록 브랜치로의 전환은 **거부** — 이 커맨드의 목적(main-참조 해소)과 정반대다.
 
 
@@ -169,11 +169,11 @@ def _cmd_rebase(home, args) -> int:
     CLI 핸들러.
 
     슬롯 독립 처리 — 선-검사(소유/dirty/rebase 진행중) 스킵 + 충돌 그대로 fail-loud(엔진 abort 안
-    함) + 성공 시 장부 원자 갱신. 끝에 성공/스킵/충돌 요약. 단일은 성공해야 rc 0(스킵/충돌=rc 1),
+    함) + 성공 시 기록 원자 갱신. 끝에 성공/스킵/충돌 요약. 단일은 성공해야 rc 0(스킵/충돌=rc 1),
     일괄은 충돌이 있으면 rc 1(주의 필요·나머지는 독립 진행).
 
     **`--task` 는 두 역할이고 위치인자와 배타가 아니다**: 대상 *선택*(위치인자 없으면
-    그 task 보유 전 슬롯 일괄) 소유 *명의*(`rebase(owner_task=)` — release 동형). 그래서
+    그 task 보유 전 슬롯 일괄) 소유 *명의*(`rebase(owner_task=)` — release 와 같은 방식). 그래서
     `rebase <slot> --task <task>` = 그 task 명의로 **단일** 슬롯 rebase 다 — 종전엔 둘이 배타라
     task 명의 슬롯을 단일 지정으로 rebase 할 방법이 아예 없었다. 위치인자만이면 종전대로 세션
     명의로 판정한다(슬롯-세션 모드 불변).
@@ -257,12 +257,12 @@ def _cmd_refresh(home, args) -> int:
 
 
 def _cmd_record(home, args) -> int:
-    """`record <slot>` CLI 핸들러 — 도착 스냅(lease.git)을 live 로 재기록 (base 보존).
+    """`record <slot>` CLI 핸들러 — 도착 시 git 상태 기록(lease.git)을 live 로 재기록 (base 보존).
 
     0단계 record-vs-live diverged FAIL-LOUD 를 사용자가 정당(의도한 브랜치 전환·릴리즈 등)이라
     판단했을 때의 명시 재동기 진입 — `record_git_snapshot(slot)`(base 미전달=기존 base 보존·
-    arrival 동형) 프리미티브를 CLI 로 노출한다(감지=기계·해소=사용자·자동 실행 없음). 슬롯 형식
-    오류·장부 미등록·스냅 불가는 rc 1 로 명시 실패(silent 무변경 방지)."""
+    arrival 과 같은 방식) 프리미티브를 CLI 로 노출한다(감지=기계·해소=사용자·자동 실행 없음). 슬롯 형식
+    오류·기록 미등록·git 상태 기록 불가는 rc 1 로 명시 실패(silent 무변경 방지)."""
     try:
         slot = worktree_paths._normalize_slot(home, args.slot)
     except worktree_records.SlotResolutionError as exc:
@@ -277,7 +277,7 @@ def _cmd_record(home, args) -> int:
         return 1
     after_git = lease.git if isinstance(lease.git, dict) else None
     if after_git is None or after_git == before_git:
-        # 스냅 불가(슬롯 worktree 경로 부재 등 → `_apply_git_snapshot` 이 기존 git 보존)·무변경.
+        # git 상태 기록 불가(슬롯 worktree 경로 부재 등 → `_apply_git_snapshot` 이 기존 git 보존)·무변경.
         print(f"[중단] 슬롯 {slot} git 상태 다시 기록 실패 — 슬롯 worktree 의 상태를 기록할 수 없다(경로 부재/git 오류). "
               "슬롯이 실재하는지 확인하라.", file=sys.stderr)
         return 1
@@ -287,9 +287,9 @@ def _cmd_record(home, args) -> int:
 
 
 def _cmd_switch(home, args) -> int:
-    """`switch <slot> <branch>` CLI 핸들러 — 브랜치 전환 + 스냅 재기록 원자.
+    """`switch <slot> <branch>` CLI 핸들러 — 브랜치 전환 + git 상태 재기록 원자.
 
-    0단계 main-참조 fault 의 remedy 진입점. 선-검사 거부(`SwitchRefused`)·readonly
+    0단계 main-참조 fault 의 해결 방법 진입점. 선-검사 거부(`SwitchRefused`)·readonly
     (`ReadonlySlotMutation`)·슬롯 형식 오류는 rc 1 + 사유(loud). 성공 시 무엇을 했는지(전환 형태·
     재기록 head)를 stdout 으로 surface 한다 — 이 한 커맨드로 0단계 재진입이 열린다(2차 diverged
     차단 없음)."""
@@ -314,16 +314,16 @@ def _cmd_switch(home, args) -> int:
 def main(home, argv: list[str] | None = None) -> int:
     """argparse 진입점 — pm-worktree 스킬이 래핑할 `dev`/`sync`/`status`/`rebase`/`refresh`/`record`/`switch` 커맨드
 
-    진입 파일 worktree_pool.py 가 설치 앵커 Home 을 만들어 넘긴다. 스킬이
+    진입 파일 worktree_pool.py 가 설치 위치로 정한 대상 Home 을 만들어 넘긴다. 스킬이
     `python3 .project_manager/tools/worktree_pool.py dev <sub> <branch> [--repo <name> [--slot <N>]]` /
     `... sync [--repo <name> [--slot <N>]]` /
     `... status [<slot>]` 로 부른다. CLI 는 **실경로 wiring**(git_runner 미주입)이고, 함수 레벨 DI
-    seam(`dev`/`sync`/`slot_git_status` 의 git_runner)은 테스트가 쓴다. 사람이 읽는
+    교체 지점(`dev`/`sync`/`slot_git_status` 의 git_runner)은 테스트가 쓴다. 사람이 읽는
     stdout(무엇을 했는지)·skip/경고 사유는 backbone 이 stderr·실패는 rc 1 + 메시지.
 
-    **두 인자 표면**: `dev`/`sync` 는 --repo/--slot identity(자기 세션 슬롯 대상)·
+    **두 인자 방식**: `dev`/`sync` 는 --repo/--slot identity(자기 세션 슬롯 대상)·
     `status`/`rebase`/`refresh`/`record`/`switch` 는 위치인자 `<slot>`(임의 슬롯 pool 관리). 위치인자
-    커맨드는 identity 파싱 전에 분기 처리한다(그 args 표면 없음).
+    커맨드는 identity 파싱 전에 분기 처리한다(그 인자 형식 없음).
 
     정체성 인자는 공용 `identity_args`(`add_identity_args`·`parse_identity`)로 통일한다(
     분해형 `--repo <name>
@@ -352,7 +352,7 @@ def main(home, argv: list[str] | None = None) -> int:
         "sync", help="현재 슬롯 submodule 을 pin 에 selective 재동기(수동 트리거).")
     identity_args.add_identity_args(p_sync)
 
-    # status — 위치인자 <slot>(dev/sync 의 --repo/--slot identity 와 다른 표면·pool 관리).
+    # status — 위치인자 <slot>(dev/sync 의 --repo/--slot identity 와 다른 형식·pool 관리).
     p_status = subparsers.add_parser(
         "status",
         help="슬롯 git 구성 조회(role·branch·head·부모·자식·stash·submodule pin/drift·dirty·단일/일괄).")
@@ -362,7 +362,7 @@ def main(home, argv: list[str] | None = None) -> int:
                           help="그 task 보유 전 슬롯 일괄 조회(`<slot>` 과 배타).")
 
     # rebase <slot> [--task <task>] [--onto <b>] (단일) · rebase --task <task> [--onto <b>] (일괄)
-    # — 위치인자/pool 관리. `--task` 는 선택 축이자 **소유 명의** 축이라 위치인자와 배타가 아니다.
+    # — 위치인자/pool 관리. `--task` 는 선택 조건이자 **소유 명의**라 위치인자와 배타가 아니다.
     p_rebase = subparsers.add_parser(
         "rebase",
         help="슬롯 브랜치를 부모 브랜치 최신 위로 사용자 명시로 rebase(단일/일괄·선-검사·충돌 그대로+loud·"
@@ -389,7 +389,7 @@ def main(home, argv: list[str] | None = None) -> int:
                                 "origin 을 우선하되 로컬이 더 앞서 있으면 대체하지 않고 로컬 tip 을 쓰며, "
                                 "둘 다 없으면 거부.")
 
-    # record <slot> — 도착 기대 스냅(lease.git)을 live 로 재기록(base 보존·위치인자 <slot>).
+    # record <slot> — 도착 기대 git 상태 기록(lease.git)을 live 로 재기록(base 보존·위치인자 <slot>).
     # 0단계 record-vs-live diverged FAIL-LOUD 를 사용자가 정당(의도한 브랜치 전환 등)이라 판단했을
     # 때의 명시 재동기 진입 — `record_git_snapshot` 프리미티브의 CLI 노출(감지=기계·해소=사용자).
     p_record = subparsers.add_parser(
@@ -397,8 +397,8 @@ def main(home, argv: list[str] | None = None) -> int:
         help="슬롯 도착 상태 기록(lease.git·branch/head)을 live 로 다시 기록(base 보존) — 0단계 diverged 정당 판단 시 명시 재동기.")
     p_record.add_argument("slot", help="대상 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
 
-    # switch <slot> <branch> — 기존 브랜치 전환 + 장부 스냅 재기록을 **원자**로(위치인자 <slot>).
-    # raw `git switch` 는 스냅을 안 남겨 곧바로 차단(기록↔live diverged)을 부른다. 보호목록 브랜치로의
+    # switch <slot> <branch> — 기존 브랜치 전환 + 대여 기록의 git 상태 재기록을 **원자**로(위치인자 <slot>).
+    # raw `git switch` 는 git 상태 기록을 안 남겨 곧바로 차단(기록↔live diverged)을 부른다. 보호목록 브랜치로의
     # 전환은 거부하고, 없는 브랜치는 만들지 않는다.
     p_switch = subparsers.add_parser(
         "switch",

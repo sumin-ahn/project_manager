@@ -1,7 +1,7 @@
 """슬롯 폴더 제한 테스트 — `create_slot`·`alloc` 의 `folders` (git sparse-checkout cone · T-0926).
 
 큰 저장소에서 슬롯마다 전체를 꺼내는 부담을 줄이려 슬롯에 일부 폴더만 꺼낸다. 폴더 목록의 진실은
-그 슬롯의 git 설정이고 대여 장부에는 적지 않는다. 이 파일이 고정하는 것:
+그 슬롯의 git 설정이고 대여 기록에는 적지 않는다. 이 파일이 고정하는 것:
 
   - 생성: 전체를 디스크에 쓰지 않는다(`--no-checkout` → `sparse-checkout set --cone` → `checkout`) ·
     폴더 밖 파일은 추적(S 표시)으로 남고 커밋에서 빠지지 않는다.
@@ -12,7 +12,7 @@
   - 현황의 폴더 목록은 git 이 가진 cone 목록 그대로다(한글 원문·cone 이 아니면 거부).
 
 hermetic: worktree_pool 경로 전역은 import 시점에 실 repo 로 굳으므로 tmp 프로젝트로 재지정한다
-(`tests/test_worktree_pool.py` 의 `_load_wp_bound` 동형). 실 git 형상은 로컬 origin → bare clone
+(`tests/test_worktree_pool.py` 의 `_load_wp_bound` 와 같은 방식). 실 git 준비는 로컬 origin → bare clone
 (`.repos/A.git` · fetch refspec 보정)이고, 순서·argv 만 보는 테스트는 기록 러너를 쓴다.
 """
 from __future__ import annotations
@@ -56,7 +56,7 @@ _ORIGIN_FILES = {
 _INVALID_FOLDERS = ["nope", "R.md", "sub", "../x", "/a", "a\\b", "", ".", "a//b", "a/../b", "C:/a", "a\0b"]
 
 
-# ── 모듈 로드 + tmp 재배선 ────────────────────────────────────────────────────
+# ── 모듈 로드 + tmp 다시 연결 ────────────────────────────────────────────────────
 
 
 def _load_wp_bound(proj: Path):
@@ -112,7 +112,7 @@ def wp(proj):
     return _load_wp_bound(proj)
 
 
-# ── 실 git 형상 ──────────────────────────────────────────────────────────────
+# ── 실 git 준비 ──────────────────────────────────────────────────────────────
 
 
 def _make_origin(root: Path) -> Path:

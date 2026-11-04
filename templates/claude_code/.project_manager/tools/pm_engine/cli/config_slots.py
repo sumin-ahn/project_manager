@@ -19,14 +19,14 @@ from pm_engine.cli import config_repo
 def _prompt_test_cmd(input_fn: Callable[[str], str], *, default: str) -> str | None:
     """worktree add 빌드명령 프롬프트 — `빌드/테스트 명령? [Enter=repo 기본값 유지 <default>]:`.
 
-    **빈 입력(엔터만) → None(슬롯 미바인딩)** — 슬롯 리스 test_cmd 가 board 의 해소 체인서
+    **빈 입력(엔터만) → None(슬롯 미바인딩)** — 슬롯 대여 test_cmd 가 board 의 해소 체인서
     areas per-repo test_cmd 보다 *우선*이라, 빈입력에 기본값을 박으면 areas 의
     그 repo test_cmd(예: `go test ./...`)를 잘못 덮는다(must-fix 1·codex). 빈입력은 None 으로
-    슬롯을 비워 해소 체인이 areas/local.conf 로 폴백하게 한다(기존 동작 보존). `default` 는
-    *표시 전용* — Enter 시 적용될 repo 폴백값(areas→local.conf→pytest-q)을 투명하게 보일 뿐
+    슬롯을 비워 해소 체인이 areas/local.conf 를 대신 쓰게 한다(기존 동작 보존). `default` 는
+    *표시 전용* — Enter 시 적용될 repo 대체값(areas→local.conf→pytest-q)을 투명하게 보일 뿐
     슬롯엔 안 박는다. 비어있지 않은 입력만 그 값으로 슬롯에 바인딩된다.
 
-    `EOFError`/`KeyboardInterrupt` 는 우아하게 None 으로 흡수(미지정 폴백·크래시 0). input_fn
+    `EOFError`/`KeyboardInterrupt` 는 우아하게 None 으로 바꾼다(미지정 대체·크래시 0). input_fn
     주입으로 hermetic 테스트(라이브 input 블록 0·주입 시퀀스로 결정적).
     """
     try:
@@ -38,10 +38,10 @@ def _prompt_test_cmd(input_fn: Callable[[str], str], *, default: str) -> str | N
 
 
 def _require_worktree_add_user_ack(args: argparse.Namespace) -> bool:
-    """물리 슬롯 생성에 repo 값-결속 사용자 승인 토큰을 요구한다.
+    """물리 슬롯 생성에 repo 값-연결 사용자 승인 토큰을 요구한다.
 
     CLI의 ``--user-ack <repo>``와 콘솔 ``[w]``의 repo 재입력 확인이 이 한 sink로
-    수렴한다. 토큰은 자가-증언형 감사/마찰 장치이며 raw git/장부 직접 편집 같은 적대적
+    모인다. 토큰은 자가-증언형 감사/마찰 장치이며 raw git/기록 직접 편집 같은 적대적
     우회까지 막는 보안 경계는 아니다.
     """
     repo = args.repo
@@ -75,7 +75,7 @@ def cmd_worktree_add(
     """`worktree add <repo> [--test "<cmd>"] [--task <task>] [--readonly]` — 새 슬롯 생성 + submodule init.
 
     **`--task <task>`**: 생성 직후 그 슬롯을 task 명의로 대여한다(session=task·alloc
-    동형·reclaim/재부착 보호는 tasks 장부 조인). 풀 소진 시 alloc 이 안내하는 "생성+대여 한 흐름" — min-idle 재탐색의
+    과 같은 방식·reclaim/재부착 보호는 tasks 기록 조인). 풀 소진 시 alloc 이 안내하는 "생성+대여 한 흐름" — min-idle 재탐색의
     오슬롯 리스크가 없다. task 명 검증 + 기바인딩은 alloc 과 같은 헬퍼로. `--readonly` 와 상호배타.
 
     pm_engine.app.worktree_pool.create_slot(repo, base=) 를 호출한다 — `<repo>_<N>`(브랜치 무관 재사용
@@ -87,11 +87,11 @@ def cmd_worktree_add(
     브랜치 `<repo>_<N>` 가 그 base(develop 등)에서 파생되고 base 가 그 브랜치의 부모로 기록된다.
     areas 에 base 가 없으면 부모를 적을 수 없어 슬롯을 만들지 않는다(rc 1).
 
-    test_cmd(슬롯 리스 바인딩) 해소:
+    test_cmd(슬롯 대여 바인딩) 해소:
       - `--test "<cmd>"` 명시 → 그 값을 바인딩(현행·CLI 정확작업·CI).
       - `--test` 미지정 + **tty** → 슬롯 생성 후 빌드명령 프롬프트. **빈입력(Enter) → None
-        (슬롯 미바인딩)** → 해소 체인이 areas/local.conf 로 폴백(기존 동작 보존·must-fix 1).
-        프롬프트 `[Enter=repo 기본값 유지: …]` 표시값은 그 repo 의 *실제 폴백*(areas test_cmd
+        (슬롯 미바인딩)** → 해소 체인이 areas/local.conf 를 대신 씀(기존 동작 보존·must-fix 1).
+        프롬프트 `[Enter=repo 기본값 유지: …]` 표시값은 그 repo 의 *실제 대체*(areas test_cmd
         → local.conf → pytest -q·`_resolve_repo_test_cmd`)이라 Enter 가 무엇을 적용하는지 투명.
       - `--test` 미지정 + 비-tty(CI/파이프) → 프롬프트 생략·None(현행·repo areas/local.conf 로 해소).
     regression._test_cmd 가 활성 슬롯의 이 값을 areas 위 레이어로 읽으므로, 빈입력에 기본값을 박으면
@@ -106,7 +106,7 @@ def cmd_worktree_add(
     없거나 조회에 실패하면 그 rc 로 멈추고 bare 를 만들지 않는다. bare 경로가 있으나 무효면
     `create_slot` 의 BareRepoMissing 안내가 그대로 나간다(자동 삭제 없음).
 
-    Home으로 registry와 풀 좌표를 전달한다. input_fn/is_tty/clone_runner는 실제 입력·IO seam이다.
+    Home으로 registry와 풀 좌표를 전달한다. input_fn/is_tty/clone_runner는 실제 입력·IO 교체 지점이다.
     `clone_runner`는 hydrate의 `config_repo.cmd_repo_add`에 전달하는 Python 키워드다.
     """
     if not _require_worktree_add_user_ack(args):
@@ -114,7 +114,7 @@ def cmd_worktree_add(
 
 
     # test_cmd 해소: --test 명시면 그 값. 미지정 + tty 면 프롬프트(빌드명령). 비-tty 면 None.
-    # 프롬프트 표시 기본값은 그 repo 의 실제 폴백(areas→local.conf→pytest-q)을 resolve 해
+    # 프롬프트 표시 기본값은 그 repo 의 실제 대체 값(areas→local.conf→pytest-q)을 resolve 해
     # 보여준다(Enter 시 적용될 값 투명화) — 빈입력은 그래도 None 으로 슬롯을 비운다(must-fix 1).
     tty_check = is_tty if is_tty is not None else console._stdin_is_tty
     test_cmd = getattr(args, "test", None)
@@ -238,15 +238,15 @@ def cmd_worktree_add(
 def cmd_worktree_prune_stale(
     home,
     args: argparse.Namespace) -> int:
-    """`worktree prune-stale` — worktree dir 이 사라진 dangling 장부 엔트리를 안전 정리.
+    """`worktree prune-stale` — worktree dir 이 사라진 dangling 기록 엔트리를 안전 정리.
 
-    status reconcile 이 surface 한 stale/incomplete 중 **worktree 가 물리적으로 부재**한 장부
+    status reconcile 이 surface 한 stale/incomplete 중 **worktree 가 물리적으로 부재**한 기록
     엔트리를 제거한다(worktree_pool.prune_stale_leases). **안전**: 지울 worktree 파일이 없는
     dangling 기록만 정리 — 사용자 데이터/worktree 삭제가 아니라 삭제-위임 원칙 위반이 아니다.
     orphan *worktree*(git 측·disk 존재·작업 가능)는 손대지 않는다(그건 `git worktree remove` 로
     사용자가). reconcile(status)이 조회-전용인 것과 분리된 **명시 user-invoked 정리 진입점**이다.
 
-    worktree_pool의 실제 함수 seam으로 hermetic 테스트(실 장부 쓰기 없이 배선 검증).
+    worktree_pool의 실제 함수 교체 지점으로 hermetic 테스트(실 기록 쓰기 없이 연결 검증).
     """
 
     pruned = pm_engine.app.worktree_pool.prune_stale_leases(home)
@@ -261,7 +261,7 @@ def cmd_worktree_prune_stale(
 
 
 def _require_worktree_remove_user_ack(args: argparse.Namespace) -> bool:
-    """슬롯 제거에 슬롯 값-결속 사용자 승인 토큰을 요구한다(`_require_worktree_add_user_ack` 와 같은 모양).
+    """슬롯 제거에 슬롯 값-연결 사용자 승인 토큰을 요구한다(`_require_worktree_add_user_ack` 와 같은 모양).
 
     `--user-ack` 는 반복 가능하다. 입력한 slot 인자가 값 중에 그대로 있어야 엔진을 부르고, 값 전부가
     합쳐지지 않은 브랜치 삭제 승인값으로 엔진에 넘어간다(`remove_slot(acked_branches=)`). 토큰은
@@ -288,7 +288,7 @@ def _require_worktree_remove_user_ack(args: argparse.Namespace) -> bool:
     return False
 
 
-# 슬롯 제거 출력에 싣는 합쳐지지 않은 커밋 줄 상한 — 넘으면 "외 N개" 로 접는다.
+# 슬롯 제거 출력에 싣는 합쳐지지 않은 커밋 줄 상한 — 넘으면 "외 N개" 로 합친다.
 _UNMERGED_COMMITS_SHOWN = 10
 
 
@@ -307,25 +307,25 @@ def cmd_worktree_remove(
     args: argparse.Namespace) -> int:
     """`worktree remove <slot> --user-ack <slot> [--user-ack <브랜치> ...] [--force]` — 슬롯 통째 제거.
 
-    pm_engine.app.worktree_pool.remove_slot(slot, force=, acked_branches=) 로 리스 확인 → 등록 조회 → 커밋 안 한
-    변경 검사 → `git worktree remove` → 브랜치 삭제 판정 → 장부 엔트리 제거를 한 번에 한다.
-    footgun 체인(수동 remove → dangling 장부 → `add` 가 번호 skip → 뒤늦은 prune)을 원천
-    종결한다 — 장부 엔트리 제거로 `add` 가 빈 번호를 재사용한다.
+    pm_engine.app.worktree_pool.remove_slot(slot, force=, acked_branches=) 로 대여 확인 → 등록 조회 → 커밋 안 한
+    변경 검사 → `git worktree remove` → 브랜치 삭제 판정 → 기록 엔트리 제거를 한 번에 한다.
+    footgun 체인(수동 remove → dangling 기록 → `add` 가 번호 skip → 뒤늦은 prune)을 원천
+    종결한다 — 기록 엔트리 제거로 `add` 가 빈 번호를 재사용한다.
 
     **사용자 승인값 필수** — `--user-ack` 값에 입력한 슬롯이 없으면 엔진을 부르지 않고 rc1
-    (`_require_worktree_remove_user_ack`). `prune-stale`(worktree 부재 장부만 정리)과 달리 **실
-    worktree 를 지운다**. orphan worktree(장부 미등록)는 여전히 `git worktree remove` 로 사용자가.
+    (`_require_worktree_remove_user_ack`). `prune-stale`(worktree 부재 기록만 정리)과 달리 **실
+    worktree 를 지운다**. orphan worktree(기록 미등록)는 여전히 `git worktree remove` 로 사용자가.
 
-    - 활성 리스(leased·사용 중) → 거부. `--force` 가 넘는 것은 이 점유 하나뿐이다.
+    - 활성 대여(leased·사용 중) → 거부. `--force` 가 넘는 것은 이 점유 하나뿐이다.
     - 커밋 안 한 변경·git 미등록 트리 → `--force` 와 무관하게 거부(RemoveRefused·rc1). 엔진은
       stash 하지 않고 미등록 트리를 지우지 않는다.
-    - 장부에 슬롯 없으면 무해 종료(rc0·이미 정리됨).
+    - 기록에 슬롯 없으면 무해 종료(rc0·이미 정리됨).
     - 브랜치: `BranchDeletion` 을 그대로 출력한다(삭제/보존 사유·자식·합쳐지지 않은 커밋·origin).
       합쳐지지 않은 브랜치는 그 브랜치 이름이 `--user-ack` 값에 있을 때만 지운다.
     - 엔진 RuntimeError(worktree remove 실패·브랜치 조회 실패) → rc1. 그 실패가 무엇을 남겼는지는
       엔진이 등록을 다시 물어 판정하므로, 여기서 재시도 방법을 지어내지 않는다.
 
-    worktree_pool의 실제 함수 seam으로 hermetic 테스트(실 worktree remove·장부 쓰기 없이 배선 검증).
+    worktree_pool의 실제 함수 교체 지점으로 hermetic 테스트(실 worktree remove·기록 쓰기 없이 연결 검증).
     """
     if not _require_worktree_remove_user_ack(args):
         return 1
@@ -367,8 +367,8 @@ def cmd_worktree_remove(
         )
         return 0
 
-    # ⚠ 활성 리스 강제 회수 경고 — `--force` 로 leased/creating(사용 중) 슬롯을 override 했을 때
-    # (reviewer should-fix·티켓 결정 §활성 리스 문구 정합). 다른 세션이 쓰던 슬롯일 수 있음을 stderr 로.
+    # ⚠ 활성 대여 강제 반납 경고 — `--force` 로 leased/creating(사용 중) 슬롯을 override 했을 때
+    # (reviewer should-fix·티켓 결정 §활성 대여 문구와 일치). 다른 세션이 쓰던 슬롯일 수 있음을 stderr 로.
     if getattr(result, "forced_state", None):
         print(
             f"⚠ 활성(state={result.forced_state}) 슬롯 {args.slot!r} 을 강제 반납 "
@@ -377,7 +377,7 @@ def cmd_worktree_remove(
         )
 
     print(f"✓ 슬롯 {args.slot!r} 제거 — worktree remove + 기록 항목 삭제(빈 번호 재사용 가능).")
-    # git 이 등록만 지우고 트리를 남긴 형상(읽기 전용 잔재 등) — 엔진이 마저 지웠음을 고지한다.
+    # git 이 등록만 지우고 트리를 남긴 경우(읽기 전용 잔재 등) — 엔진이 마저 지웠음을 고지한다.
     if result.tree_cleaned:
         print("  git 이 등록만 지우고 남긴 디렉터리 잔재를 엔진이 마저 정리했다.")
     deletion = result.branch_deletion
@@ -400,12 +400,12 @@ def cmd_set_test_cmd(
     cmd: str | None) -> int:
     """슬롯 빌드/테스트 명령 설정·변경 — 콘솔 `[b]`·"나중에 변경".
 
-    pm_engine.app.worktree_pool.set_test_cmd(slot, cmd) 로 기존 슬롯 리스의 test_cmd 를 갱신한다(flock +
+    pm_engine.app.worktree_pool.set_test_cmd(slot, cmd) 로 기존 슬롯 대여의 test_cmd 를 갱신한다(flock +
     atomic write·worktree_pool 책임). 별도 CLI 서브커맨드는 없다 — 콘솔 `[b]` 와 worktree
-    add 프롬프트가 변경 경로를 흡수(결정 §setter 단순화). 장부에 슬롯이 없으면(`KeyError`)
-    명시 에러 rc 1(침묵 무력화 금지). `cmd=None`/빈 문자열이면 바인딩 해제(폴백·현행).
+    add 프롬프트가 변경 경로를 대신 맡는다(결정 §setter 단순화). 기록에 슬롯이 없으면(`KeyError`)
+    명시 에러 rc 1(침묵 무력화 금지). `cmd=None`/빈 문자열이면 바인딩 해제(대체·현행).
 
-    worktree_pool의 실제 함수 seam으로 hermetic 테스트(실 장부 쓰기 없이 배선 검증).
+    worktree_pool의 실제 함수 교체 지점으로 hermetic 테스트(실 기록 쓰기 없이 연결 검증).
     """
 
     normalized = (cmd.strip() or None) if cmd else None
@@ -436,10 +436,10 @@ def cmd_release(
       로 거부(다른 task/세션 슬롯을 실수로 idle 화 방지). dirty 판정보다 먼저. `--task` 미지정은
       현행 slot-only 반납(백스톱).
     - `--force`: pm_engine.app.worktree_pool.force_release(slot) — 점유(leased)·소유 **무시 강제** idle 화.
-      커밋 안 한 변경은 force 여도 ReleaseRefused. 장부에 슬롯 없으면 무해 종료. force 는 순수
+      커밋 안 한 변경은 force 여도 ReleaseRefused. 기록에 슬롯 없으면 무해 종료. force 는 순수
       백스톱이라 `--task` 소유검사도 건너뛴다(override 의도).
 
-    부트스트랩·핸드오프는 슬롯을 반납하지 않는다. 실제 worktree_pool 함수 seam으로 시험을 격리한다.
+    부트스트랩·핸드오프는 슬롯을 반납하지 않는다. 실제 worktree_pool 함수 교체 지점으로 시험을 격리한다.
     """
 
 
@@ -530,7 +530,7 @@ def _validate_prebound_task(home, task: str) -> int:
 def _slot_live_branch(home, slot: str) -> str:
     """슬롯 worktree 의 live 브랜치를 조회한다.
 
-    `current_branch(slot)`(git=진실·장부 저장 폐지)를 부른다 — detached 는 표시 문자열로
+    `current_branch(slot)`(git=진실·기록 저장 폐지)를 부른다 — detached 는 표시 문자열로
     내고, 조회 실패는 전파한다.
     """
     return worktree_git.current_branch(home, slot) or "(detached)"
@@ -542,7 +542,7 @@ def _render_task_slots(home, task_name: str) -> None:
     집합을 바꾸는 연산(alloc·release·task end·`worktree add --task`) **직후** 결과 집합(슬롯·
     repo·branch·state 행렬)을 출력한다 — 사용자/PM 이 매 연산 후 현재 보유 집합을 한눈에 본다
     (묶음 처리 1급화). 부트스트랩 진입 열거와 같은 렌더 문법을 공유하려는 공용 헬퍼다.
-    `slots_for_task`(session==task 명의 leased·장부 진실)에서 파생 — 신설 저장소 0·부작용 0.
+    `slots_for_task`(session==task 명의 leased·기록 진실)에서 파생 — 신설 저장소 0·부작용 0.
     """
     slots = list(pool_store.slots_for_task(home, task_name) or [])
     label = f"작업공간 (task {task_name!r} 보유 {len(slots)})"
@@ -561,14 +561,14 @@ def cmd_alloc(
     """`alloc <repo> --task <task>` — 기바인딩 task 명의로 idle 최소 번호 슬롯 대여.
 
     pm_engine.app.worktree_pool.alloc(repo, owner_task=<task>) 로 idle **최소 번호** 슬롯을 leased 로 전이한다 —
-    session 축에 task 정체성을 실어 이후 `release --task`/`task end` 소유검사가 매칭한다.
+    session 칸에 task 정체성을 실어 이후 `release --task`/`task end` 소유검사가 매칭한다.
     **항상 신규 대여**: 같은 task 가 이미 이 repo 슬롯을 보유해도 그걸 재반환하지 않고
     다른 idle 슬롯을 대여해 **같은 repo 복수 보유**(병렬 dev 격리
-    등)를 자연 지원한다. 대여한 lease 의 reclaim/재부착 보호는 **tasks 장부 조인**(session ∈ tasks
-    장부)이 담당한다 — 자동 회수는 없다. idle 슬롯이 없으면 NeedsCreate → **대여 실패 + 사용자 생성 요청**
+    등)를 자연 지원한다. 대여한 lease 의 reclaim/재부착 보호는 **tasks 기록 조인**(session ∈ tasks
+    기록)이 담당한다 — 자동 반납은 없다. idle 슬롯이 없으면 NeedsCreate → **대여 실패 + 사용자 생성 요청**
     (자동 생성 금지·`worktree add --task` 안내로 생성+대여 한 흐름). 새 슬롯은 디스크(코드 전체
-    사본×슬롯)라 물리층이고 사용자 승인(`worktree add`)이 게이트다 — alloc/release=PM 자율(논리
-    층)·create/remove=사용자 승인(물리층)의 2층 분리를 CLI 로 표면화한다.
+    사본×슬롯)라 물리층이고 사용자 승인(`worktree add`)을 거친다 — alloc/release=PM 자율(논리
+    층)·create/remove=사용자 승인(물리층)의 2층 분리를 CLI 로 드러낸다.
 
     **명 검증 + 기바인딩 요구**: `--task` 이름이 lease session 으로 **기록**되므로 write
     -capable 진입점이다 — 공유 헬퍼 `_validate_prebound_task`(`worktree add --task` 와 동일 계약·엔진
@@ -578,7 +578,7 @@ def cmd_alloc(
     task 를 만들라" 안내(정체성 *생성*은 그 둘 소관·alloc은 이미 존재하는 task 에 슬롯을 붙일 뿐).
     예약패턴 판별 근거(등록 repo)는 `areas_store.registered_repos` 가 areas.md 에서 해소한다(판독 실패는 전파).
 
-    worktree_pool의 실제 함수 seam으로 hermetic 테스트(실 git alloc 없이 배선·분기 검증).
+    worktree_pool의 실제 함수 교체 지점으로 hermetic 테스트(실 git alloc 없이 연결·분기 검증).
     """
 
 
@@ -590,7 +590,7 @@ def cmd_alloc(
 
     try:
         # owner_task = task-명의 alloc — 항상 신규 idle 슬롯 대여(같은 repo
-        # 복수 보유). session=owner_task 로 기록되고, 그 슬롯의 reclaim/재부착 보호는 tasks 장부 조인이
+        # 복수 보유). session=owner_task 로 기록되고, 그 슬롯의 reclaim/재부착 보호는 tasks 기록 조인이
         # 담당한다(bound 아님).
         folders_arg = getattr(args, "folders", None)
         folders = None if folders_arg is None else [item.strip() for item in folders_arg.split(",")]

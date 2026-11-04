@@ -9,17 +9,17 @@ upstream_rev 기록·pm_config 의 upstream set 이 공유하는 백엔드). 이
 **전에** 내용을 읽고 나중에 통째로 갈아끼우는 writer(init 병합·`_write_conf_keys` 의
 temp+`os.replace`)가 그사이의 다른 결정을 읽지 못하면 그 결정은 교체본에 없어 사라진다. 그래서
 락의 단위는 "쓰기" 가 아니라 "이 conf 를 읽고 쓰는 구간" 이고, 경로 유도까지 공용
-seam(`pm_engine.infra.fs.conf_lock_path`) 한 곳이 소유한다(사본이 갈리면 같은 conf 에 다른 락 파일 =
+공용 함수(`pm_engine.infra.fs.conf_lock_path`) 한 곳이 소유한다(사본이 갈리면 같은 conf 에 다른 락 파일 =
 직렬화 없음).
 
 R6 에서 그 단위가 한 번 더 정확해졌다 — 쓰기만 잠그고 **현재 상태 읽기와 계획**을 락 밖에 두면,
 원자적으로 써도 그사이 들어온 결정을 옛 값으로 덮는다(재-import 의 사용자 키 보존). 계약은
 read → 판단/계획 → write → postcondition 전체의 직렬화다.
 
-검증 축:
-  1. inventory ratchet — canonical tools 를 AST 로 훑어 conf writer 를 기계적으로 세고, 각 writer 의
+검증 항목:
+  1. inventory 기준선(줄이기만 함) — canonical tools 를 AST 로 훑어 conf writer 를 기계적으로 세고, 각 writer 의
      처분(직접 락·상위 락 전제·위임)을 못박는다. 새 writer 가 생기면 red. 중첩 0 은 락 **구간
-     본문**만 따로 훑어 잰다(락 밖 폴백 위임을 중첩으로 오판하지 않게).
+     본문**만 따로 훑어 잰다(락 밖 대체 위임을 중첩으로 오판하지 않게).
   2. 경로 규약 — 모든 진입이 같은 conf 에서 같은 락 파일에 도달한다.
   3. 실 경쟁 — 배리어로 겹치게 돌려 **어느 순서로 겹쳐도** 양쪽 결정이 남는지 본다(helper 대역이
      아니라 실 writer 두 개를 실제 스레드로 경쟁시킨다). 계획이 락 안인지는 배리어를 *현재 상태를
@@ -124,7 +124,7 @@ def test_t0927_migration_lock_replans_new_user_value(tmp_path, pm_update, pm_imp
     assert "ctx.stop_pct" not in values
 
 
-# ── 축 1: writer inventory ratchet ──────────────────────────────────────────
+# ── 항목 1: writer inventory 기준선(줄이기만 함) ──────────────────────────────────────────
 #
 # 처분(disposition):
 #   HOLDS_LOCK        — 자기가 공용 락 구간을 연다(읽기·판정·쓰기·검증이 그 안).
@@ -136,14 +136,14 @@ HOLDS_LOCK = "holds-lock"
 UNDER_CALLER_LOCK = "under-caller-lock"
 DELEGATES = "delegates"
 
-LOCK_SEAM_CALL = "local_conf_write_lock("
+CONF_WRITE_LOCK_CALL = "local_conf_write_lock("
 
 # 등재된 conf writer 전수. 값 = (처분, 사유). 스캐너가 새 writer 를 잡으면 이 표와 어긋나 red 다.
 LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
     ("pm_engine/infra/conf_store.py", "_write_init_local_conf"):
         (HOLDS_LOCK, "init 최초 전체 생성 + 비파괴 병합(read→merge→write_text)"),
     ("pm_engine/app/upstream_revisions.py", "record_upstream_revs"):
-        (HOLDS_LOCK, "형상 판정(upstream=)→updates 계획→키 write→검증이 한 구간"),
+        (HOLDS_LOCK, "구성 판정(upstream=)→updates 계획→키 write→검증이 한 구간"),
     ("pm_engine/app/entry_doc_migration.py", "migrate_renamed_conf_keys"):
         (HOLDS_LOCK, "구표기 판정→이름 이동 계획→키 write+옛 줄 삭제가 한 구간"),
     ("pm_engine/infra/install_conf.py", "_write_conf_keys"):
@@ -255,14 +255,14 @@ def test_the_writer_inventory_is_complete():
     ids=[f"{module}::{name}" for module, name in LOCAL_CONF_WRITERS],
 )
 def test_each_writer_matches_its_declared_lock_disposition(coordinate, disposition):
-    """직접 락을 여는 writer 만 seam 을 부르고, 나머지는 **부르지 않는다**(재진입/데드락 차단)."""
+    """직접 락을 여는 writer 만 공용 잠금 함수를 부르고, 나머지는 **부르지 않는다**(재진입/데드락 차단)."""
     module_file, function = coordinate
     source = _source_of(module_file, function)
     if disposition == HOLDS_LOCK:
-        assert LOCK_SEAM_CALL in source, (
+        assert CONF_WRITE_LOCK_CALL in source, (
             f"{module_file}::{function} 이 공용 락 없이 conf 를 쓴다")
     else:
-        assert LOCK_SEAM_CALL not in source, (
+        assert CONF_WRITE_LOCK_CALL not in source, (
             f"{module_file}::{function} 은 상위/피위임자가 이미 쥔 락을 다시 잡는다(재진입)")
 
 
@@ -287,7 +287,7 @@ def _callers_of(function: str) -> set[tuple[str, str]]:
 
     호출부가 다른 도구일 수도 있다(pm_update 가 로드한 pm_import 사본의 임계 구간 본문을
     `pm_import._write_conf_keys_locked(...)` 로 부른다) — 같은 파일만 보면 그 교차-도구 호출이
-    ratchet 밖으로 빠진다.
+    기준선 밖으로 빠진다.
     """
     callers: set[tuple[str, str]] = set()
     for path in engine_python_files(TOOLS):
@@ -316,8 +316,8 @@ def test_helpers_under_the_caller_lock_are_only_called_by_lock_holders():
 def test_no_lock_holder_calls_another_conf_writer_inside_its_lock_body():
     """락 **구간 본문** 안에서 다른 락-보유 writer 를 부르지 않는다 — 중첩 0의 정밀 측정.
 
-    앞의 등재 단위 검사는 함수 전체를 보므로, 폴백 분기처럼 락 **밖**에 있는 위임 호출까지
-    중첩으로 오판한다(pm_update 는 구세대 pm_import 사본에서 자기-락 writer 로 물러난다 — 그
+    앞의 등재 단위 검사는 함수 전체를 보므로, 대체 분기처럼 락 **밖**에 있는 위임 호출까지
+    중첩으로 오판한다(pm_update 는 옛 버전 pm_import 사본에서 자기-락 writer 로 물러난다 — 그
     호출은 우리 락 밖이어야 한다). 여기서는 `with _local_conf_write_lock(...)` 의 본문만 훑고
     이름 호출·속성 호출을 함께 본다.
     """
@@ -346,14 +346,14 @@ def test_no_lock_holder_calls_another_conf_writer_inside_its_lock_body():
         assert bodies, f"{module_file}::{function} 에 측정 가능한 락 구간이 없다"
 
 
-# ── 축 2: 경로 규약 (같은 conf → 같은 락 파일) ──────────────────────────────
+# ── 항목 2: 경로 규약 (같은 conf → 같은 락 파일) ──────────────────────────────
 
 def test_every_entry_derives_the_same_lock_path(
     board, pm_update, pm_import, file_lock, tmp_path,
 ):
     """세 진입이 같은 conf 에 대해 같은 락 파일에 도달한다 — 유도 규칙 사본 0.
 
-    pm_update 는 경로를 직접 유도하지 않는다 — 공용 seam 의 `local_conf_write_lock` 만 쓴다(T-0951)."""
+    pm_update 는 경로를 직접 유도하지 않는다 — 공용 함수의 `local_conf_write_lock` 만 쓴다(T-0951)."""
     conf = tmp_path / ".project_manager" / "local.conf"
     expected = conf.parent / ".local" / "local-conf.lock"
     assert file_lock.conf_lock_path(conf) == expected
@@ -361,11 +361,11 @@ def test_every_entry_derives_the_same_lock_path(
     assert fs.conf_lock_path(conf) == expected
 
 
-def test_the_path_rule_lives_only_in_the_shared_seam():
-    """락 파일명 리터럴은 공용 seam(`pm_engine.infra.fs`) 한 곳뿐이다.
+def test_the_path_rule_lives_only_in_the_shared_file_lock():
+    """락 파일명 리터럴은 공용 모듈(`pm_engine.infra.fs`) 한 곳뿐이다.
 
-    pm_import 의 구세대-사본 인라인 폴백은 T-0963 이 지웠다 — 공용 잠금이 패키지 import 라
-    구세대 사본이 섞일 자리가 없다.
+    pm_import 의 옛 버전 사본 인라인 대체 동작은 T-0963 이 지웠다 — 공용 잠금이 패키지 import 라
+    옛 버전 사본이 섞일 자리가 없다.
     """
     owners = {
         path.relative_to(TOOLS).as_posix() for path in engine_python_files(TOOLS)
@@ -375,7 +375,7 @@ def test_the_path_rule_lives_only_in_the_shared_seam():
         f"락 경로 유도 사본이 늘었다: {sorted(owners)}")
 
 
-# ── 축 3: 실 경쟁 (배리어로 겹치는 두 실 writer) ────────────────────────────
+# ── 항목 3: 실 경쟁 (배리어로 겹치는 두 실 writer) ────────────────────────────
 
 def _conf_at(tmp_path: Path, text: str) -> Path:
     conf = tmp_path / ".project_manager" / "local.conf"
@@ -425,7 +425,7 @@ def test_a_concurrent_key_writer_never_loses_the_init_merge(
 ):
     """RMW writer 가 **먼저 읽고** 나중에 교체해도 그사이 init 병합 결정이 사라지지 않는다.
 
-    이것이 4차 지적의 원문 형상이다 — 각자 자기 쓰기만 직렬화하면 이 순서에서 한쪽 결정이 통째
+    이것이 4차 지적의 원문 상황이다 — 각자 자기 쓰기만 직렬화하면 이 순서에서 한쪽 결정이 통째
     교체에 덮인다. 같은 락을 공유해야 두 결정이 모두 남는다.
     """
     conf = _conf_at(tmp_path, "session=pm\n")
@@ -512,21 +512,21 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_init_merge(
 
 
 def test_init_merge_reads_the_conf_it_writes(board, monkeypatch, tmp_path):
-    """병합 판단(어느 기본키가 없나)은 잠그고 쓰는 그 conf 를 읽는다 — 앵커 트리의 conf 가 아니다.
+    """병합 판단(어느 기본키가 없나)은 잠그고 쓰는 그 conf 를 읽는다 — 대상 저장소 트리의 conf 가 아니다.
 
-    앵커 트리(`board.REPO`)에 기본키가 다 든 conf 가 있어도, 대상 conf 에 없는 기본키는 추가된다.
+    대상 저장소 트리(`board.REPO`)에 기본키가 다 든 conf 가 있어도, 대상 conf 에 없는 기본키는 추가된다.
     """
-    anchor_tree = tmp_path / "anchor"
-    _conf_at(anchor_tree, (
+    target_repo_tree = tmp_path / "target_repo"
+    _conf_at(target_repo_tree, (
         "runtime.py=oldpy\n"
         "test.cmd=oldpy -m pytest\n"
-        "project.name=anchor\n"
+        "project.name=target_repo\n"
         "ctx.checkpoint_at_pct=1\n"
         "ctx.precompact_at_pct=2\n"
         "ctx.compact_at_pct=3\n"
     ))
     conf = _conf_at(tmp_path / "target", "session=pm\n")
-    monkeypatch.setattr(board, "REPO", anchor_tree)
+    monkeypatch.setattr(board, "REPO", target_repo_tree)
     commit = _init_merge(board, monkeypatch, conf)
 
     commit()
@@ -536,7 +536,7 @@ def test_init_merge_reads_the_conf_it_writes(board, monkeypatch, tmp_path):
     assert parsed["session"] == "pm"
 
 
-# ── 축 3'': 계획도 락 안이다 (stale plan 경쟁·R5 재현) ──────────────────────
+# ── 항목 3'': 계획도 락 안이다 (stale plan 경쟁·R5 재현) ──────────────────────
 #
 # 앞의 경쟁들은 "쓰기끼리" 겹쳤다. 이 절은 한 단계 앞을 본다 — 현재 conf 를 **락 밖에서** 읽어
 # 세운 계획은 커밋 시점엔 이미 낡아, 원자적으로 쓰더라도 그사이 들어온 결정을 잘못된 값/분기로
@@ -547,7 +547,7 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
 ):
     """재-import 의 사용자 키 보존이 **그사이 생긴 결정**을 백업의 옛 값으로 덮지 않는다.
 
-    형상: 백업에 `runtime.py=oldpy` 가 있고 대상 conf 에는 아직 그 키가 없다. 보존 재병합이
+    상황: 백업에 `runtime.py=oldpy` 가 있고 대상 conf 에는 아직 그 키가 없다. 보존 재병합이
     "현재 conf 에 없는 키" 판정을 락 밖에서 해 두면, 그 사이 init 병합이 `python3` 를 기록해도
     낡은 계획이 `oldpy` 로 되돌린다(방금 정한 값을 무음 롤백). 판정을 락 안에서 하면 새 결정은
     그대로 남고 충돌하지 않는 보존 대상만 복원된다.
@@ -647,7 +647,7 @@ def test_an_in_flight_preserve_blocks_a_later_merge_and_keeps_both_decisions(
 def _pm_update_rev_writer(pm_update, monkeypatch, rev: str):
     """`record_upstream_revs` 가 읽을 source rev 만 못박는다.
 
-    git repo 를 만들지 않기 위해 rev 읽기(`upstream_git.read_upstream_rev`)만 대체하고, 형상 분류·
+    git repo 를 만들지 않기 위해 rev 읽기(`upstream_git.read_upstream_rev`)만 대체하고, 구성 분류·
     키 writer·postcondition 은 실물 그대로 쓴다.
     """
     monkeypatch.setattr(upstream_git, "read_upstream_rev", lambda source_root: rev)
@@ -711,10 +711,10 @@ def _run_rev_record_against_an_upstream_flip(
 def test_rev_record_and_an_upstream_flip_both_survive(
     pm_update, pm_import, monkeypatch, tmp_path, stored, flipped,
 ):
-    """플립과 rev 기록이 겹쳐도 양쪽 결정이 남는다 — 두 rev 키는 형상과 무관하게 함께 쓰인다.
+    """플립과 rev 기록이 겹쳐도 양쪽 결정이 남는다 — 두 rev 키는 구성과 무관하게 함께 쓰인다.
 
-    한쪽만 남으면(플립이 덮이거나 관찰값이 누락되면) 두 키가 영구히 어긋나 정상 흡수 직후에도
-    drift 거짓 경보가 상시 뜬다. 기록 자체는 형상을 읽지 않으므로 어느 방향 플립이든 결과가
+    한쪽만 남으면(플립이 덮이거나 관찰값이 누락되면) 두 키가 영구히 어긋나 정상 반영 직후에도
+    drift 거짓 경보가 상시 뜬다. 기록 자체는 구성을 읽지 않으므로 어느 방향 플립이든 결과가
     같다(T-0908 — 두 키의 writer 는 record_upstream_revs 하나).
     """
     (changed, updates), parsed = _run_rev_record_against_an_upstream_flip(
@@ -741,7 +741,7 @@ def _vanishing_conf_lock(module, monkeypatch):
 def test_rev_record_skips_an_absent_conf_without_leaving_a_lock_file(
     pm_update, monkeypatch, tmp_path, capsys,
 ):
-    """conf 자체가 없는 형상(init 전·출하 템플릿)에는 락 파일도 만들지 않는다(발자국 0)."""
+    """conf 자체가 없는 경우(init 전·출하 템플릿)에는 락 파일도 만들지 않는다(발자국 0)."""
     dest = tmp_path / "dest"
     (dest / ".project_manager").mkdir(parents=True)
     _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
@@ -774,7 +774,7 @@ def test_the_existence_check_inside_the_lock_is_the_authoritative_one(
     assert not conf.exists(), "락 안에서 사라진 conf 를 되살려 썼다"
 
 
-# ── 축 3': 락 획득의 실측 (경로까지) ────────────────────────────────────────
+# ── 항목 3': 락 획득의 실측 (경로까지) ────────────────────────────────────────
 
 def _spy_lock(module, monkeypatch, taken: list):
     """그 도구가 쓰는 file_lock 사본의 공용 conf 락을 감시한다(실 락은 그대로 건다)."""
@@ -817,7 +817,7 @@ def test_key_writer_takes_the_shared_lock(pm_import, monkeypatch, tmp_path):
 
 
 def test_pm_update_rev_record_takes_the_shared_lock(pm_update, monkeypatch, tmp_path):
-    """pm_update 의 upstream rev 기록도 공용 락 안이다(형상 판정→계획→write 가 한 구간)."""
+    """pm_update 의 upstream rev 기록도 공용 락 안이다(구성 판정→계획→write 가 한 구간)."""
     conf = _conf_at(tmp_path, "session=pm\nupstream.path=/somewhere\n")
     _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
     taken: list[str] = []
@@ -829,7 +829,7 @@ def test_pm_update_rev_record_takes_the_shared_lock(pm_update, monkeypatch, tmp_
     assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-new"
 
 
-# ── 축 4: 비파괴 (직렬화가 바이트 계약을 바꾸지 않는다) ─────────────────────
+# ── 항목 4: 비파괴 (직렬화가 바이트 계약을 바꾸지 않는다) ─────────────────────
 
 @pytest.mark.parametrize(
     "existing",
@@ -870,4 +870,4 @@ def test_t0932_commit_writer_lock_sensitivity():
     assert locks and all(any(call in list(ast.walk(lock)) for lock in locks) for call in calls)
     broken = source.replace('local_conf_write_lock(', 'removed_lock(')
     with pytest.raises(AssertionError):
-        assert LOCK_SEAM_CALL in broken, '동결 commit 락 누락'
+        assert CONF_WRITE_LOCK_CALL in broken, '동결 commit 락 누락'

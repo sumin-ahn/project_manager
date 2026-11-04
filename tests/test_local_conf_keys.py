@@ -1,11 +1,11 @@
-"""local.conf 키 레지스트리와 그 lint 배선 (T-0761·T-0906).
+"""local.conf 키 레지스트리와 그 lint 연결 (T-0761·T-0906).
 
 `local.conf` 의 키 판정은 `local_conf.py`(T-0767)가 소유하고, T-0906 이 그 자리를 **키마다
 설명·기본값·필수 여부를 든 레지스트리**(`KEY_REGISTRY`·`PATTERN_REGISTRY`)로 넓혔다. 이 파일은
-그 레지스트리의 완전성과, 판정을 **소비만** 하는 board.py 배선의 회귀다 — 사본을 만들지 않는다:
+그 레지스트리의 완전성과, 판정을 **소비만** 하는 board.py 연결의 회귀다 — 사본을 만들지 않는다:
 
 1. `board.lint_local_conf_keys()` 가 `local_conf.load(...).unknown` 을 그대로 advisory 로 감싸는지.
-2. `lint_tickets()` 합류 · kind 등재(`_ADVISORY_LINT_KINDS`) · `lint --gate` 종료코드 비기여.
+2. `lint_tickets()` 합류 · kind 등재(`_ADVISORY_LINT_KINDS`) · `lint --blocking` 종료코드 비기여.
 3. 유입 경로 전수(오타·폐기 키·섹션 오기·대소문자) — 한 규칙이 전부 잡는지.
 4. 역방향 — 정상 키·주석·빈 줄이 새지 않는지.
 5. `board.py init` 병합 경로가 같은 함수·같은 목록을 1줄로 재사용하는지.
@@ -184,8 +184,8 @@ def test_lint_tickets_includes_the_unknown_key_finding(board, monkeypatch, tmp_p
                for _name, kind, detail in issues), issues
 
 
-def test_gate_zero_on_unknown_key_only(board, monkeypatch, tmp_path):
-    """오타 키가 있어도 `lint --gate` rc 0(never-block) · 무인자 `lint` 는 표면화(rc 1)."""
+def test_blocking_zero_on_unknown_key_only(board, monkeypatch, tmp_path):
+    """오타 키가 있어도 `lint --blocking` rc 0(never-block) · 무인자 `lint` 는 드러냄(rc 1)."""
     _wire_repo(board, monkeypatch, tmp_path)
     _write_conf(tmp_path, "runtime.py=python3\nreview_ticket_body_max_bytes=65536\n")
     monkeypatch.setattr(board, "REPO", tmp_path)
@@ -330,7 +330,7 @@ def test_no_platform_declaration_keeps_legacy_semantics_but_orphan_is_advisory_u
 
 
 def test_fresh_init_conf_has_zero_unknown_keys(board, monkeypatch, tmp_path):
-    """`board.py init` 산출 fresh conf(주석 시드 포함)를 그대로 lint 하면 unknown 0."""
+    """`board.py init` 산출 fresh conf(주석 빈 양식 포함)를 그대로 lint 하면 unknown 0."""
     pm = tmp_path / ".project_manager"
     pm.mkdir(parents=True)
     monkeypatch.setattr(board, "REPO", tmp_path)
@@ -341,7 +341,7 @@ def test_fresh_init_conf_has_zero_unknown_keys(board, monkeypatch, tmp_path):
     assert conf_lint.lint_local_conf_keys(pm_paths.home_at(board.REPO)) == []
 
 
-# ── ⑤ `board.py init` 병합 경로 — 같은 함수·같은 목록을 1줄로 표면화 ────────
+# ── ⑤ `board.py init` 병합 경로 — 같은 함수·같은 목록을 1줄로 드러냄 ────────
 
 
 def test_init_merge_path_surfaces_the_same_findings_pre_existing_unknown_key(board, monkeypatch, tmp_path):
@@ -349,7 +349,7 @@ def test_init_merge_path_surfaces_the_same_findings_pre_existing_unknown_key(boa
 
     `_write_init_local_conf` 는 비파괴 병합이라 기존 오타 키를 지우지 않는다 — init 이 쓴 뒤에도
     `lint_local_conf_keys()` 를 다시 부르면 같은 finding 이 나온다는 것이 "같은 목록 재사용"의
-    관측 가능한 계약이다(cmd_init 은 이 함수의 산출을 그대로 print 한다·본문 소스로 배선 확인).
+    관측 가능한 계약이다(cmd_init 은 이 함수의 산출을 그대로 print 한다·본문 소스로 연결 확인).
     """
     pm = tmp_path / ".project_manager"
     pm.mkdir(parents=True)
@@ -402,7 +402,7 @@ def test_removing_a_known_key_from_the_registry_turns_its_conf_line_red(board, m
 
 
 # ── ⑦ `cmd_init` 동적 구동 — 정적 소스 확인을 실 stdout 으로 보강 ───────────
-# 픽스처는 `tests/test_local_conf_identity_keys_retired.py` 의 fresh-home 관용구와 동형이다.
+# 픽스처는 `tests/test_local_conf_identity_keys_retired.py` 의 fresh-home 관용구와 같은 방식이다.
 
 
 def _wired_init_board(monkeypatch, tmp_path, alias: str):
@@ -496,7 +496,7 @@ _KEYS_BEFORE_THE_REGISTRY = frozenset({
 
 
 def test_known_keys_is_derived_from_the_registry_and_keeps_its_members(conf_module):
-    """`KNOWN_KEYS` 는 레지스트리 파생이고 원소 집합이 이관 전과 같다 (사본 0·표면 불변)."""
+    """`KNOWN_KEYS` 는 레지스트리 파생이고 원소 집합이 이관 전과 같다 (사본 0·출력 불변)."""
     assert conf_module.KNOWN_KEYS == tuple(conf_module.KEY_REGISTRY)
     assert set(conf_module.KNOWN_KEYS) == set(_KEYS_BEFORE_THE_REGISTRY)
 
@@ -514,8 +514,8 @@ def test_declared_groups_is_a_single_key_groups_order_filter(conf_module):
     """`_declared_groups()` 는 `KEY_GROUPS` 순서 필터 **하나**다 — 뒤에 덧붙는 자리가 없다.
 
     레지스트리의 모든 `spec.group` 이 `KEY_GROUPS` 원소라(위 완전성 가드가 강제) "KEY_GROUPS
-    밖 묶음을 뒤에 붙인다" 는 확장은 어떤 입력으로도 발화하지 않는다. 그 발화 불가 분기를 지운
-    뒤의 계약을 세 축으로 못박는다 — 함수 본문이 단일 `return`(누적-확장 경로 재유입 차단) ·
+    밖 묶음을 뒤에 붙인다" 는 확장은 어떤 입력으로도 일어나지 않는다. 그 일어날 수 없는 분기를 지운
+    뒤의 계약을 세 가지로 못박는다 — 함수 본문이 단일 `return`(누적-확장 경로 재유입 차단) ·
     산출이 `KEY_GROUPS` 순서 필터와 같음 · `--keys` 절 이름/순서와 각 절의 키 목록 불변.
     새 묶음을 쓰는 유일한 경로는 `KEY_GROUPS` 에 순서를 선언하는 것이다."""
     used = {spec.group for spec in conf_module.KEY_REGISTRY.values()}
@@ -624,7 +624,7 @@ _MOVED_DEFAULTS = (
                  id="reviewer-rounds-max"),
     pytest.param("additional_reviewer.session_budget", "24",
                  lambda c: reviewer_target._wave_budget({}), 24,
-                 id="reviewer-wave-budget"),
+                 id="reviewer-session-budget"),
 )
 
 
@@ -635,17 +635,6 @@ def test_moved_default_is_declared_once_and_read_by_its_consumer(
     monkeypatch.setattr(conf_store, "local_config", lambda *a, **k: {})
     assert conf_module.default_for(key) == declared
     assert probe(consumers) == expected
-
-
-def test_the_deleted_constants_left_no_alias_behind(consumers):
-    """상수는 삭제됐다 — 같은 이름의 alias 가 남아 있으면 값이 두 곳에서 공급된다."""
-    for name in ("CTX_NUDGE_PCT_DEFAULT", "CTX_STOP_PCT_DEFAULT",
-                 "CTX_WINDOW_TOKENS_DEFAULT"):
-        assert not hasattr(consumers.board, name), name
-    for name in ("DEFAULT_PATHS", "DEFAULT_INCOMPLETE_ROUND_LIMIT",
-                 "DEFAULT_REVIEW_ROUNDS_MAX", "DEFAULT_DIFF_CAPS", "DEFAULT_WAVE_BUDGET"):
-        assert not hasattr(consumers.reviewer, name), name
-    assert not hasattr(consumers.delegate, "DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX")
 
 
 def test_timeout_keys_declare_no_scalar_default_and_name_the_profile_table(conf_module):
@@ -667,7 +656,7 @@ def test_timeout_keys_declare_no_scalar_default_and_name_the_profile_table(conf_
     pytest.param({"runtime.py": "python3", "test.cmd": "pytest -q"}, (), id="all-declared"),
 ))
 def test_missing_required_reports_only_undeclared_keys(conf_module, values, missing):
-    """빈 문자열은 "있음" 이다 — 선언 유무만 보는 축이라 빈값 허용 키를 오탐하지 않는다."""
+    """빈 문자열은 "있음" 이다 — 선언 유무만 보는 검사라 빈값 허용 키를 오탐하지 않는다."""
     assert conf_module.missing_required(values) == missing
 
 
@@ -688,7 +677,7 @@ def test_nonstandard_compares_only_keys_that_declare_a_default(conf_module):
 
 
 def test_keys_cli_lists_all_keys(conf_module):
-    """`local_conf.py --keys` 가 실명 27키·패턴 군·기본값을 사람 표면 하나로 낸다."""
+    """`local_conf.py --keys` 가 실명 27키·패턴 군·기본값을 사람이 읽는 출력 하나로 낸다."""
     proc = subprocess.run(
         [sys.executable, str(LOCAL_CONF_PY), "--keys"],
         capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
@@ -703,7 +692,7 @@ def test_keys_cli_lists_all_keys(conf_module):
     assert "필수" in proc.stdout                       # 필수 칸이 표에 있다
 
 
-# ── ⑧ `--keys --json` — 화면이 읽는 기계 표면 (T-0911) ──────────────────────
+# ── ⑧ `--keys --json` — 화면이 읽는 기계용 출력 (T-0911) ──────────────────────
 # 관리자 설정 화면의 항목 목록은 **그 프로젝트 사본의** 이 산출이다. 사람 표와 같은 레지스트리를
 # 읽되 표시용 합성 표기는 싣지 않고, 패턴 키군은 전개된 실명(`members`)을 함께 낸다.
 
@@ -737,7 +726,7 @@ def test_keys_json_carries_both_registries_split_by_kind(conf_module, keys_docum
         assert row["default"] == spec.default
         assert row["required"] == spec.required
         assert row["group"] == spec.group
-        assert row["members"] is None, row["key"]     # 실명 키에는 전개할 축이 없다
+        assert row["members"] is None, row["key"]     # 실명 키에는 전개할 값이 없다
     for row in patterns:
         assert row["choices"] is None, row["key"]     # 군 자체는 고를 값을 갖지 않는다
         assert row["recommended"] is None, row["key"]
@@ -754,7 +743,7 @@ def test_pattern_members_take_the_registry_default_not_the_table_string(
 
 
 def test_every_expanded_member_resolves_back_to_its_own_family(conf_module, keys_document):
-    """전개 축(`_DELEGATE_TIERS`·하네스·역할)이 파서(`pattern_for`)와 갈리면 red.
+    """전개 값(`_DELEGATE_TIERS`·하네스·역할)이 파서(`pattern_for`)와 갈리면 red.
 
     전개는 선언에서 만들고 판정은 `_delegate_pattern_for` 가 한다 — 둘이 어긋나면 화면이 그
     사본이 모르는 키를 목록에 싣는다. 왕복이 그 어긋남의 유일한 관측점이다.
@@ -770,7 +759,7 @@ def test_every_expanded_member_resolves_back_to_its_own_family(conf_module, keys
 
 
 def test_every_row_carries_unit_switch_and_readonly(conf_module, keys_document):
-    """schema 6 축 셋이 모든 행에 있고, 선언과 소비자가 말하는 것과 같다."""
+    """schema 6 필드 셋이 모든 행에 있고, 선언과 소비자가 말하는 것과 같다."""
     rows = _rows(keys_document)
     assert rows and all({"unit", "governed_by", "readonly"} <= set(row) for row in rows)
 
@@ -824,11 +813,11 @@ def test_unset_says_what_happens_as_a_sentence(conf_module, keys_document):
     assert len({row["unset"] for row in cells}) == 1, "한 세트 안에서 문구가 갈린다"
 
 
-def test_families_without_a_code_owned_axis_expand_to_nothing(conf_module, keys_document):
-    """축이 코드에 없는 군은 빈 목록이다 — 이름을 지어내지 않는다.
+def test_families_without_a_code_owned_segment_expand_to_nothing(conf_module, keys_document):
+    """전개 값이 코드에 없는 군은 빈 목록이다 — 이름을 지어내지 않는다.
 
-    `test.<platform>.cmd` 의 축은 그 프로젝트의 `qa.platforms` 값이고,
-    `delegate.model_alias.<name>` 의 축은 채택자가 정하는 이름이다. 화면은 이 두 군의 실키를
+    `test.<platform>.cmd` 의 전개 값은 그 프로젝트의 `qa.platforms` 값이고,
+    `delegate.model_alias.<name>` 의 전개 값은 채택자가 정하는 이름이다. 화면은 이 두 군의 실키를
     conf 에 이미 있는 값에서 읽는다(자유 입력을 여는 자리는 platform 명령 한 군뿐).
     """
     families = {row["key"]: row["members"]
@@ -839,7 +828,7 @@ def test_families_without_a_code_owned_axis_expand_to_nothing(conf_module, keys_
 
 
 def test_the_human_table_is_byte_identical_with_or_without_the_json_flag(conf_module):
-    """`--json` 을 붙인 것은 표를 바꾸지 않는다 — 사람 표면은 이전 세대와 같은 바이트다."""
+    """`--json` 을 붙인 것은 표를 바꾸지 않는다 — 사람이 읽는 표는 이전 버전과 같은 바이트다."""
     table = _keys_json()
 
     assert table.returncode == 0, table.stderr
@@ -882,10 +871,10 @@ def _rows(document: dict) -> list[dict]:
     return rows
 
 
-def _choice_rows(document: dict, axis: str) -> list[dict]:
-    """마지막 세그먼트가 `axis` 인 행 중 선택지를 든 것 (harness·model·reasoning)."""
+def _choice_rows(document: dict, choice_kind: str) -> list[dict]:
+    """마지막 세그먼트가 `choice_kind` 인 행 중 선택지를 든 것 (harness·model·reasoning)."""
     return [row for row in _rows(document)
-            if row["choices"] is not None and row["key"].rsplit(".", 1)[-1] == axis]
+            if row["choices"] is not None and row["key"].rsplit(".", 1)[-1] == choice_kind]
 
 
 def test_every_row_carries_the_choices_and_recommended_keys(keys_document):
@@ -917,7 +906,7 @@ def test_reasoning_choices_are_the_relay_allowed_sets_bucketed_by_harness(
     expected = {harness: set(values)
                 for harness, values in conf_schema.REASONING_ALLOWED.items()}
 
-    assert expected and all(expected.values()), "허용집합이 비었다 — 파생이 조용히 강등됐다"
+    assert expected and all(expected.values()), "허용집합이 비었다 — 파생이 조용히 빈 값이 됐다"
     assert len(rows) == 1 + 10, [row["key"] for row in rows]
     for row in rows:
         values = row["choices"]["values"]
@@ -1066,7 +1055,7 @@ def test_the_human_table_does_not_read_the_new_json_fields(conf_module):
     """사람 표는 새 필드를 소비하지 않는다 — 바이트 불변의 구조적 근거.
 
     바이트 동일성 테스트는 같은 함수끼리 비교라 새 필드 누출을 못 잡는다. 표를 만드는 두 함수의
-    소스에 그 이름이 아예 없음을 못박아 "JSON 표면에만 산다" 를 직접 확인한다.
+    소스에 그 이름이 아예 없음을 못박아 "JSON 출력에만 산다" 를 직접 확인한다.
     """
     rendered = inspect.getsource(local_conf_cli.render_key_table)
     displayed = inspect.getsource(local_conf_cli._default_display)

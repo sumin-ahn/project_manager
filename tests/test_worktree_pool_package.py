@@ -16,7 +16,7 @@ from pm_engine.app import task_lifecycle
 def _seed(root):
     home = pm_paths.home_at(root)
     with pool_store._lease_lock(home):
-        pool_store._write_ledger_raw(home, {
+        pool_store._write_records_raw(home, {
             "leases": [], "tasks": [{"name": "job", "open": True}],
             "unknown": {"keep": 1},
         })
@@ -31,7 +31,7 @@ def _tool(name):
     return module
 
 
-def test_two_home_ledger_and_todo_isolation(tmp_path):
+def test_two_home_records_and_todo_isolation(tmp_path):
     left = _seed(tmp_path / "left")
     right = _seed(tmp_path / "right")
     task_lifecycle.add_task_todo(left, "job", "left task")
@@ -43,7 +43,7 @@ def test_two_home_ledger_and_todo_isolation(tmp_path):
     assert task_store.take_task_session_claim(left, "job") == "sid"
     with pool_store._lease_lock(left):
         pool_store._write_ledger(left, [])
-        assert pool_store._read_ledger_raw_strict(left)["unknown"] == {"keep": 1}
+        assert pool_store._read_records_raw_strict(left)["unknown"] == {"keep": 1}
 
 
 def test_missing_todo_has_no_writes(tmp_path):
@@ -52,7 +52,7 @@ def test_missing_todo_has_no_writes(tmp_path):
     assert not home.local_dir.exists()
 
 
-def test_corrupt_todo_and_strict_ledger_raise(tmp_path):
+def test_corrupt_todo_and_strict_records_raise(tmp_path):
     home = _seed(tmp_path)
     todo = pm_paths.task_todo_file(home, "job")
     todo.parent.mkdir(parents=True)
@@ -61,7 +61,7 @@ def test_corrupt_todo_and_strict_ledger_raise(tmp_path):
         task_store.read_task_todos(home, "job")
     pm_paths.leases_file(home).write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError):
-        pool_store._read_ledger_raw_strict(home)
+        pool_store._read_records_raw_strict(home)
 
 
 def test_board_todo_uses_execution_code(tmp_path):
