@@ -1,7 +1,7 @@
-"""릴리즈 라이브 게이트 단위 테스트 — `board.py livegate record/check` (T-0221·ADR-0039 D2).
+"""릴리즈 라이브 시험 단위 테스트 — `board.py live-test record/check` (T-0221·ADR-0039 D2).
 
-`livegate record` 는 `pytest -m release` 를 회귀와 동일한 cwd 해소로 실행하고 결과를
-`.local/livegate.json` 에 기록한다(실행=기록). `livegate check --rev <sha>` 는 보호훅이
+`live-test record` 는 `pytest -m release` 를 회귀와 동일한 cwd 해소로 실행하고 결과를
+`.local/live-test.json` 에 기록한다(실행=기록). `live-test check --rev <sha>` 는 보호훅이
 push HEAD 의 green 을 소비하는 채널이다. 여기선 실 pytest 를 절대 기동하지 않는다 —
 `subprocess.run` 대역으로 rc·요약행(수집 N)을 주입하고, worktree HEAD 는 `_git_head_at`
 대역으로 격리한다(라이브 실행 금지·전량 mock).
@@ -86,17 +86,17 @@ def _load_pm_render():
 
 @pytest.fixture
 def live_board(tmp_path, monkeypatch):
-    """fresh board 모듈 + livegate IO 전역을 tmp 로 재지정한 hermetic 인스턴스.
+    """fresh board 모듈 + live-test IO 전역을 tmp 로 재지정한 hermetic 인스턴스.
 
-    장부에는 **작업 폴더 행** 하나를 깐다 → `_active_slot_path` 가 그 슬롯 트리를 낸다. 라이브
-    게이트 cwd 는 "행이 없으니 이 트리겠지" 폴백이 아니라 행이 가리키는 경로다(작업 폴더가
+    슬롯 대여 기록에는 **작업 폴더 행** 하나를 깐다 → `_active_slot_path` 가 그 슬롯 트리를 낸다. 라이브
+    시험 cwd 는 "행이 없으니 이 트리겠지" 대체가 아니라 행이 가리키는 경로다(작업 폴더가
     없는 홈은 fail-loud). worktree HEAD 는 `_git_head_at` 대역으로 고정.
     """
     proj = tmp_path / "proj"
     local = proj / ".project_manager" / ".local"
     seed_slot(proj)
     # 픽스처가 자기 저장소라고 선언한다 — 선언이 없으면 `_resolve_livegate_flag` 의
-    # `git config core.hooksPath` 가 이 저장소를 답해 실 PM 홈의 livegate.json 을 쓴다.
+    # `git config core.hooksPath` 가 이 저장소를 답해 실 PM 홈의 live-test.json 을 쓴다.
     init_git_repo(proj)
     mod = _load_board()
     monkeypatch.setattr(mod, "REPO", proj)
@@ -123,10 +123,10 @@ class _FakeRun:
 
 
 class _ShellOnlySpy:
-    """subprocess.run 대역 — `shell=True`(livegate 의 `pytest -m release` 호출)만 가로채고
+    """subprocess.run 대역 — `shell=True`(live-test 의 `pytest -m release` 호출)만 가로채고
     그 외(엔진 drift 판정 내부의 `git ls-files` 등 list-argv 호출)는 실 `subprocess.run` 에 위임한다.
 
-    drift-차단 테스트는 "라이브 wave 미실행"을 **부작용 없는 spy**로 단언해야 하는데, 무조건
+    drift-차단 테스트는 "라이브 실행 안 함"을 **부작용 없는 spy**로 단언해야 하는데, 무조건
     가로채는 `_FakeRun` 을 그대로 쓰면 `drift_changes` 내부의 정상 git 조회까지 고정 stdout 을
     돌려받아 파싱이 깨진다(list-argv 호출과 `shell=True` 호출이 같은 `subprocess.run` 을 공유).
     """
@@ -135,7 +135,7 @@ class _ShellOnlySpy:
         self._real_run = real_run
         self.rc = rc
         self.stdout = stdout
-        self.calls: list[dict] = []   # shell=True 호출만 기록(라이브 wave 호출 스펙트럼).
+        self.calls: list[dict] = []   # shell=True 호출만 기록(라이브 실행 호출 스펙트럼).
 
     def __call__(self, *args, **kwargs):
         if not kwargs.get("shell"):
@@ -215,8 +215,8 @@ def _chk_args(rev=None):
 def _platform_conf(live_board, monkeypatch, command="run-windows") -> None:
     """platform 선언을 좌표 둘 다에 깐다 — 홈(기록의 conf_anchor)과 실행 cwd(슬롯 트리).
 
-    게이트는 platform 증거가 있으면 그 기록의 `conf_anchor`(홈)를, 없으면 실행 cwd(장부 행이
-    가리키는 작업 폴더)를 선언 좌표로 읽는다. 두 좌표가 갈리는 것이 슬롯 형상의 평시다.
+    통과 조건은 platform 증거가 있으면 그 기록의 `conf_anchor`(홈)를, 없으면 실행 cwd(슬롯 대여 기록 행이
+    가리키는 작업 폴더)를 선언 좌표로 읽는다. 두 좌표가 갈리는 것이 슬롯 구성의 평시다.
     """
     text = ("test.cmd=core-full\nqa.platforms=windows\n"
             f"test.windows.cmd={command}\n")
@@ -250,19 +250,19 @@ def _read_flag(live_board) -> dict:
     return json.loads(pm_paths.live_test_flag(pm_paths.home_at(live_board.REPO)).read_text(encoding="utf-8"))
 
 
-# ── _livegate_ran_count 파서 (수집 N 추출) ─────────────────────────────────
+# ── _live_test_ran_count 파서 (수집 N 추출) ─────────────────────────────────
 
 @pytest.mark.parametrize("output,expected", [
-    ("7 passed, 812 deselected in 45.67s", 7),          # 정상 green wave
+    ("7 passed, 812 deselected in 45.67s", 7),          # 정상 green 실행
     ("5 passed, 814 deselected in 30.00s", 5),          # 마커 소실 → 수집 미달
     ("1 failed, 6 passed, 812 deselected in 40.0s", 7), # 실행 7·1 red
     ("2 errors, 5 passed, 812 deselected in 3.0s", 7),  # error 도 실행에 포함
     ("no tests ran in 0.01s", 0),                        # 수집 0 (exit5)
     ("", 0),                                             # 빈 출력
 ])
-def test_livegate_ran_count_parses_summary(live_board, output, expected):
+def test_live_test_ran_count_parses_summary(live_board, output, expected):
     """요약행에서 수집 N = passed + failed + error(s) (deselected 제외·수집 0 은 0)."""
-    assert pytest_report._livegate_ran_count(output) == expected
+    assert pytest_report._live_test_ran_count(output) == expected
 
 
 # ── update_plan.drift_changes — 판정 불능 클래스 전수 + 바이트 drift 판정 ─────────────
@@ -273,7 +273,7 @@ def test_drift_changes_detects_byte_diff(tmp_path, pm_update_module):
     _seed_engine_drift_fixture(dest, upstream, drift=True)
     assert update_plan.drift_changes(pm_paths.home_at(pm_update_module.REPO), dest) == [_DRIFT_MANIFEST_REL]
 
-    # 엔진 패키지에서 대상 전용 모듈만 남은(삭제만 있는) 형상도 패키지 경로 한 건의 drift 다.
+    # 엔진 패키지에서 대상 전용 모듈만 남은(삭제만 있는) 구성도 패키지 경로 한 건의 drift 다.
     package_dest, package_upstream = tmp_path / "package-dest", tmp_path / "package-upstream"
     _seed_package_drift_fixture(package_dest, package_upstream,
                                 dest_extra={"obsolete.py": "# obsolete\n"})
@@ -395,7 +395,7 @@ def _seed_missing_source_fixture(dest_root: Path, upstream_root: Path) -> None:
 def test_drift_changes_none_when_manifest_entry_source_missing(
         tmp_path, pm_update_module, monkeypatch, capsys):
     """manifest 가 등재한 source 파일이 upstream 에 없음(non-`@target-owned`) → None — 확정
-    drift 0 과 판정 불능을 구분한다. plan()의 `missing`을 버리면 이 형상이 drift 0 으로
+    drift 0 과 판정 불능을 구분한다. plan()의 `missing`을 버리면 이 구성이 drift 0 으로
     오판된다(main 의 rc2·`[source 에 없음]` 과 같은 판정 신호를 공유한다는 증거)."""
     dest, upstream = tmp_path / "dest", tmp_path / "upstream"
     _seed_missing_source_fixture(dest, upstream)
@@ -409,11 +409,11 @@ def test_drift_changes_none_when_manifest_entry_source_missing(
     assert "[source 에 없음]" in err
 
 
-def test_drift_changes_detects_legacy_add_harness_guest_backfill_manifest_update(
+def test_drift_changes_detects_legacy_add_harness_backfill_manifest_update(
         tmp_path, pm_update_module, monkeypatch, capsys):
-    """실 legacy add-harness 픽스처(guest 절 provenance 미기록) — 첫 sync 는 파생 guest backfill
+    """실 legacy add-harness 픽스처(추가 하네스 절 provenance 미기록) — 첫 sync 는 파생 추가 하네스 backfill
     을 절에 기록하며 `.project_manager/engine.manifest` 를 update 한다. `drift_changes` 가 이
-    인자(`guest_backfill_lines`)를 놓치면 이 변경을 빠뜨린다(재발 방지 회귀). 같은 픽스처의
+    인자(`added_harness_backfill_lines`)를 놓치면 이 변경을 빠뜨린다(재발 방지 회귀). 같은 픽스처의
     `.opencode/agents`(`@target-owned`·source 부재)는 판정 불능을 유발하지 않아야 한다
     (target-owned missing 은 정상 — missing 필터가 방향을 잘못 잡으면 여기서 드러난다)."""
     from test_pm_update import _make_guest_framework, _make_legacy_guest_adopter
@@ -430,7 +430,7 @@ def test_drift_changes_detects_legacy_add_harness_guest_backfill_manifest_update
         "@target-owned 를 걸러내지 못했다"
     )
     assert manifest_rules._MANIFEST_SELF_REL in result, (
-        "guest backfill 로 인한 engine.manifest update 를 drift_changes 가 놓쳤다"
+        "추가 하네스 backfill 로 인한 engine.manifest update 를 drift_changes 가 놓쳤다"
     )
 
     monkeypatch.setattr(pm_update_module, "REPO", dest)
@@ -445,7 +445,7 @@ def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_cha
         tmp_path, pm_update_module, monkeypatch, capsys):
     """`main()` 의 self-update 경로와 `drift_changes()` 가 **같은 함수를 실제로 공동 호출**한다는
     것을 사람용 stdout 파싱이 아니라 호출 인자·반환된 구조화 계획으로 직접 잠근다 — legacy
-    add-harness 픽스처(guest backfill 축)에서 두 호출의 `changes`/`missing` 집합이 일치한다."""
+    add-harness 픽스처(추가 하네스 backfill 경로)에서 두 호출의 `changes`/`missing` 집합이 일치한다."""
     from test_pm_update import _make_guest_framework, _make_legacy_guest_adopter
 
     framework = _make_guest_framework(tmp_path / "fw")
@@ -625,7 +625,7 @@ def test_declared_platform_valid_same_head_core_executes_platform_and_snapshots(
     assert regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _chk_args(rev=data["head"])) == 0
 
 
-def test_declared_platform_livegate_check_rejects_current_command_change(
+def test_declared_platform_live_test_check_rejects_current_command_change(
         live_board, monkeypatch):
     _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board)
@@ -637,9 +637,9 @@ def test_declared_platform_livegate_check_rejects_current_command_change(
     assert regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _chk_args(rev=head)) == 1
 
 
-def test_platform_livegate_check_translates_legacy_conf_key_without_traceback(
+def test_platform_live_test_check_translates_legacy_conf_key_without_traceback(
         live_board, monkeypatch, capsys):
-    """platform anchor의 구표기 local.conf는 traceback 대신 한 줄 fail-closed 진단이다."""
+    """platform 대상 저장소의 구표기 local.conf는 traceback 대신 한 줄 fail-closed 진단이다."""
     _platform_conf(live_board, monkeypatch)
     _platform_regression_record(live_board)
     fake = _FakeRun(0, "22 passed in 1.00s")
@@ -748,21 +748,21 @@ def test_record_rc5_no_tests_records_fail(live_board, monkeypatch):
     assert data["rc"] == 5
 
 
-# ── record ②b codex 축 편입(pin 17) → codex relay smoke 누락 시 fail-safe 차단 (ADR-0070 D7) ──
+# ── record ②b codex 라이브 시험 편입(pin 17) → codex relay smoke 누락 시 fail-safe 차단 (ADR-0070 D7) ──
 
-def test_record_missing_codex_axis_blocks(live_board, monkeypatch, capsys):
-    """codex 라이브 축(relay smoke·@release)이 release pin 에 편입된 뒤(16→17), codex 축이 빠지거나
-    skip 돼 수집이 16 으로 줄면 livegate 가 **차단**함을 못박는다 — 티켓 목표 'codex 라이브 green 없이는
+def test_record_missing_codex_live_test_blocks(live_board, monkeypatch, capsys):
+    """codex 라이브 시험(relay smoke·@release)이 release pin 에 편입된 뒤(16→17), codex 시험이 빠지거나
+    skip 돼 수집이 16 으로 줄면 live-test 가 **차단**함을 못박는다 — 티켓 목표 'codex 라이브 green 없이는
     v1.4.0 main push 차단'을 수집 pin 으로 강제(ADR-0070 D7·수집 위장 차단의 codex 방향).
 
-    pin=17 은 codex relay smoke 를 포함한다. codex 축이 (마커 소실·wrong-cwd·게이트 env 누락으로)
+    pin=17 은 codex relay smoke 를 포함한다. codex 시험이 (마커 소실·wrong-cwd·검사 env 누락으로)
     안 돌면 수집이 16 으로 떨어지는데, 이때 '수집 16 ≠ pin 17' 로 red — codex green 없이 릴리즈가
     통과하는 false-green 을 막는다. (over-collection 마커 소실 5↔16 과 대칭인, codex-특정 under-collection.)"""
     without_codex = regression.LIVE_TEST_RELEASE_PIN - 1  # codex relay smoke 누락 → 17에서 16으로.
     fake = _FakeRun(0, f"{without_codex} passed, 810 deselected in 45.67s")
     monkeypatch.setattr(subprocess, "run", fake)
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _rec_args())
-    assert rc == 1, "codex 축 누락(수집<pin)인데 pass(0) 면 codex green 없이 릴리즈 통과(false-green)"
+    assert rc == 1, "codex 라이브 시험 누락(수집<pin)인데 pass(0) 면 codex green 없이 릴리즈 통과(false-green)"
     data = _read_flag(live_board)
     assert data["status"] == "fail"
     assert data["n"] == without_codex   # codex 빠져 16 수집
@@ -777,7 +777,7 @@ def test_record_missing_codex_axis_blocks(live_board, monkeypatch, capsys):
 def test_record_rc_nonzero_records_fail(live_board, monkeypatch, capsys):
     """rc!=0 → status='fail' + rc1 — 수집 N==pin(22) 이어도 red 는 fail.
 
-    rc 게이트가 수집 N 과 독립임을 확인: 22개 실행(1 red)이라 N=22 이지만 rc1 → fail.
+    rc 검사가 수집 N 과 독립임을 확인: 22개 실행(1 red)이라 N=22 이지만 rc1 → fail.
     """
     fake = _FakeRun(1, "1 failed, 21 passed, 810 deselected in 40.0s")
     monkeypatch.setattr(subprocess, "run", fake)
@@ -791,12 +791,12 @@ def test_record_rc_nonzero_records_fail(live_board, monkeypatch, capsys):
     assert "release red (rc=1)" in err
 
 
-# ── record ⑤ cwd 해소 = 활성 slot worktree (`_livegate_cwd`) ────────────────
+# ── record ⑤ cwd 해소 = 활성 slot worktree (`_live_test_cwd`) ────────────────
 
-def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
-    """record 의 pytest 는 `_livegate_cwd`(활성 slot worktree)에서 돈다.
+def test_record_uses_regression_cwd_override(live_board, monkeypatch):
+    """record 의 pytest 는 `_live_test_cwd`(활성 slot worktree)에서 돈다.
 
-    회귀 cwd 와는 갈린다 — 회귀는 push 되는 트리 자신에서 돌고(`_regression_cwd`), 라이브 게이트만
+    회귀 cwd 와는 갈린다 — 회귀는 push 되는 트리 자신에서 돌고(`_regression_cwd`), 라이브 시험만
     PM 홈에서 실행돼 코드가 사는 슬롯 트리를 겨냥한다(T-0733)."""
     worktree = str(live_board._proj / "work" / "slot1")
     # `_active_slot_path(session=None)` 시그니처(ADR-0040 D2) — 선택 인자 수용.
@@ -841,14 +841,14 @@ def test_record_explicit_cwd_override(live_board, monkeypatch):
 
 
 # ── record ⑥ multi-lease cwd 해소: --repo/--slot 이 슬롯 핀 (T-0298·ADR-0057·--cwd 우회 불요) ──
-# `livegate record` 는 이제 `--repo`/`--slot`(ADR-0057)을 받아 handoff 과 동형
-# (session_name)으로 `_livegate_cwd` 에 thread 한다. multi-lease(leased≥2) 홈에서 --repo/--slot
-# 명시면 그 슬롯 cwd 로 해소돼 pytest 가 돌고(rc0), 무명시면 seam 이 fail-loud(모호는 시끄럽게) —
-# 광고한 remedy(`--repo <repo> --slot <N>`)가 실제로 수용돼 dead-end 가 아니다(T-0285 anti-pattern
+# `live-test record` 는 이제 `--repo`/`--slot`(ADR-0057)을 받아 handoff 과 같은 방식
+# (session_name)으로 `_live_test_cwd` 에 thread 한다. multi-lease(leased≥2) 홈에서 --repo/--slot
+# 명시면 그 슬롯 cwd 로 해소돼 pytest 가 돌고(rc0), 무명시면 해소 함수가 fail-loud(모호는 시끄럽게) —
+# 광고한 해결 방법(`--repo <repo> --slot <N>`)이 실제로 수용돼 dead-end 가 아니다(T-0285 anti-pattern
 # 회피).
 
 def _seed_two_leases(live_board):
-    """활성 슬롯 2개(A_1·B_1)를 리스 장부에 심는다 (multi-lease genuine-ambiguity 전제)."""
+    """활성 슬롯 2개(A_1·B_1)를 슬롯 대여 기록에 심는다 (multi-lease genuine-ambiguity 전제)."""
     pm_paths.leases_file(pm_paths.home_at(live_board.REPO)).parent.mkdir(parents=True, exist_ok=True)
     pm_paths.leases_file(pm_paths.home_at(live_board.REPO)).write_text(json.dumps({"leases": [
         {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
@@ -867,9 +867,9 @@ def test_record_multilease_no_session_fails_loud(live_board, monkeypatch):
         regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _rec_args())
     msg = str(exc.value)
     assert "--repo" in msg and "--cwd" in msg
-    # fail-loud 는 값비싼 pytest -m release 를 돌리기 전에 거부해야 한다(cwd seam·record 앞단).
+    # fail-loud 는 값비싼 pytest -m release 를 돌리기 전에 거부해야 한다(cwd 해소 함수·record 앞단).
     assert not any(c["kwargs"].get("shell") for c in fake.calls), \
-        "모호한데도 pytest -m release 를 돌렸다 (fail-loud 가 seam 에서 안 막음)"
+        "모호한데도 pytest -m release 를 돌렸다 (fail-loud 가 해소 함수에서 안 막음)"
 
 
 def test_record_write_is_atomic_no_tmp_left(live_board, monkeypatch):
@@ -882,11 +882,11 @@ def test_record_write_is_atomic_no_tmp_left(live_board, monkeypatch):
     assert pm_paths.live_test_flag(pm_paths.home_at(live_board.REPO)).exists()
 
 
-# ── record ⑤ 실행 엔진 사본 drift — 라이브 wave 전 조기 거부 ──────────────────────
+# ── record ⑤ 실행 엔진 사본 drift — 라이브 실행 전 조기 거부 ──────────────────────
 
-def test_record_blocks_on_engine_drift_before_live_wave(live_board, monkeypatch, capsys):
-    """drift 1건 → rc1 · fail 기록(reason=engine-drift) · 라이브 wave(`shell=True` 호출) 미실행
-    (spy 로 호출 0 을 값으로 단언) · drift relpath + 처방이 stderr 에 남는다."""
+def test_record_blocks_on_engine_drift_before_live_run(live_board, monkeypatch, capsys):
+    """drift 1건 → rc1 · fail 기록(reason=engine-drift) · 라이브 실행(`shell=True` 호출) 안 함
+    (spy 로 호출 0 을 값으로 단언) · drift relpath + 해결 방법이 stderr 에 남는다."""
     upstream = live_board._proj.parent / "upstream"
     _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True)
     real_run = subprocess.run
@@ -894,7 +894,7 @@ def test_record_blocks_on_engine_drift_before_live_wave(live_board, monkeypatch,
     monkeypatch.setattr(subprocess, "run", spy)
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 1
-    assert spy.calls == [], "drift 차단인데 라이브 wave(shell=True 호출) 가 실행됐다"
+    assert spy.calls == [], "drift 차단인데 라이브 실행(shell=True 호출) 이 일어났다"
     data = _read_flag(live_board)
     assert data["status"] == "fail"
     assert data["reason"] == "engine-drift"
@@ -903,7 +903,7 @@ def test_record_blocks_on_engine_drift_before_live_wave(live_board, monkeypatch,
     err = capsys.readouterr().err
     assert _DRIFT_MANIFEST_REL in err
     assert "실행 엔진 사본이 upstream 과 drift" in err
-    assert "pm_update.py" in err   # 처방(재동기 커맨드)
+    assert "pm_update.py" in err   # 해결 방법(재동기 커맨드)
 
 
 def test_record_proceeds_when_engine_copy_in_sync(live_board, monkeypatch, capsys):
@@ -915,7 +915,7 @@ def test_record_proceeds_when_engine_copy_in_sync(live_board, monkeypatch, capsy
     monkeypatch.setattr(subprocess, "run", spy)
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 0
-    assert len(spy.calls) == 1, "drift 0 인데 라이브 wave 가 실행되지 않았다"
+    assert len(spy.calls) == 1, "drift 0 인데 라이브 실행이 일어나지 않았다"
     data = _read_flag(live_board)
     assert data["n"] == regression.LIVE_TEST_RELEASE_PIN == 22
     assert data["status"] == "pass"
@@ -927,13 +927,13 @@ def test_record_proceeds_when_engine_copy_in_sync(live_board, monkeypatch, capsy
 
 def test_record_warns_and_proceeds_when_upstream_unset(live_board, monkeypatch, capsys):
     """판정 불능(upstream 미등록·`local.conf` 부재) — 거부하지 않고 stderr 경고 1줄 후 현행
-    경로(라이브 wave 실행)를 그대로 진행한다."""
+    경로(라이브 실행)를 그대로 진행한다."""
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(subprocess, "run", fake)
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 0
     assert any(c["kwargs"].get("shell") for c in fake.calls), \
-        "판정 불능인데 라이브 wave(shell=True 호출) 가 차단됐다"
+        "판정 불능인데 라이브 실행(shell=True 호출) 이 차단됐다"
     err = capsys.readouterr().err
     assert "판정 불능" in err
 
@@ -972,14 +972,14 @@ def _seed_judgment_incapable_missing_source(live_board) -> None:
 def test_record_engine_drift_judgment_incapable_warns_exactly_one_line(
         live_board, monkeypatch, capsys, seed):
     """판정 불능 대표 4분기(URL·미존재 경로·manifest 부재·missing>0) — 각각 stderr 경고가
-    정확히 1줄이고(splitlines 로 확인) 라이브 wave 를 차단하지 않는다."""
+    정확히 1줄이고(splitlines 로 확인) 라이브 실행을 차단하지 않는다."""
     seed(live_board)
     fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
     monkeypatch.setattr(subprocess, "run", fake)
     rc = regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _rec_args())
     assert rc == 0
     assert any(c["kwargs"].get("shell") for c in fake.calls), \
-        "판정 불능인데 라이브 wave(shell=True 호출) 가 차단됐다"
+        "판정 불능인데 라이브 실행(shell=True 호출) 이 차단됐다"
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if line.strip()]
     assert len(lines) == 1, f"판정 불능 경고가 정확히 1줄이 아니다: {err!r}"
@@ -997,7 +997,7 @@ def test_check_absent_record_blocks(live_board, capsys):
 
 
 def test_check_red_record_blocks(live_board, capsys):
-    """status!=pass 기록 → rc1 + RED 사유 (수집·rc 표면화·rev 무관)."""
+    """status!=pass 기록 → rc1 + RED 사유 (수집·rc 를 드러냄·rev 무관)."""
     pm_paths.home_at(live_board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
     pm_paths.live_test_flag(pm_paths.home_at(live_board.REPO)).write_text(json.dumps(
         {"head": "cafef00dcafef00d0011223344556677", "status": "fail",
@@ -1058,11 +1058,11 @@ def test_record_pass_then_check_green_roundtrip(live_board, monkeypatch, capsys)
     assert "green" in capsys.readouterr().out
 
 
-# ── pm-verified 처분 — 추가 리뷰어(release) 축 채널 스코프 재검증 ──────────────
-# 채널 폐지 뒤에도 additional-reviewer 장부(review_rounds.json)의 반려 잔여를 재호출 없이
-# 종결하는 `--resolve-review --pm-verified` 처분이 릴리즈 축(`_unresolved_must_fix_data` →
+# ── pm-verified 처분 — 추가 리뷰어(release) 채널 스코프 재검증 ──────────────
+# 채널 폐지 뒤에도 additional-reviewer 라운드 기록(review_rounds.json)의 남은 반려를 재호출 없이
+# 종결하는 `--resolve-review --pm-verified` 처분이 릴리즈 검사(`_unresolved_must_fix_data` →
 # `_gate_disposition_problem`)에서 실제로 열리고, `pm-fixed` 는 여전히 막히며, 다른 채널의
-# accepted 잔여가 이 채널 처분을 막지 않는지(채널 격리)를 실 board 트리 + 실 라운드/명세 파일 +
+# accepted 남은 지적이 이 채널 처분을 막지 않는지(채널 격리)를 실 board 트리 + 실 라운드/명세 파일 +
 # 실 review_rounds.json 으로 검증한다. `--resolve-review --pm-verified` CLI 선언면(호출 0 단언 포함)
 # 은 `tests/test_additional_reviewer.py` 가 진다.
 
@@ -1070,7 +1070,7 @@ def test_record_pass_then_check_green_roundtrip(live_board, monkeypatch, capsys)
 def _pm_verified_pd():
     """pm_delegate.py 를 (패키지 아님) 경로 로드 — 리뷰 블록 상수·채널 판정 함수 전용 접근."""
     spec = importlib.util.spec_from_file_location(
-        "board_livegate_pm_verified_pd", TOOLS / "pm_delegate.py",
+        "board_live_test_pm_verified_pd", TOOLS / "pm_delegate.py",
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -1082,8 +1082,8 @@ _PV_BLOCK_VERSION = review_form.PM_REVIEW_VERSION
 _PV_DISPOSITION_VERSION = review_form.PM_REVIEW_DISPOSITION_VERSION
 _PV_ADDITIONAL_ROLE = review_form.ADDITIONAL_REVIEWER_ROLE
 _PV_INTERNAL_ROLE = review_form.INTERNAL_REVIEW_ROLE
-# 장부 채널 어휘는 board 상수가 단일 진실이다(사본 금지) — 빌더·테스트가 같은 값을 쓴다. 리뷰
-# 라운드 채널(code-reviewer)은 장부가 없어 판정 role 이 그 어휘다.
+# 라운드 기록 채널 어휘는 board 상수가 단일 진실이다(사본 금지) — 빌더·테스트가 같은 값을 쓴다. 리뷰
+# 라운드 채널(code-reviewer)은 라운드 기록이 없어 판정 role 이 그 어휘다.
 _PV_BOARD = _load_board()
 _PV_CHANNEL_INTERNAL = _PV_INTERNAL_ROLE
 _PV_CHANNEL_ADDITIONAL = completion_check.CHECK_CHANNEL_ADDITIONAL
@@ -1136,7 +1136,7 @@ def _pv_review_block(findings: list) -> str:
 
 
 def _pv_confirmation_only_block(confirmations: list) -> str:
-    """findings 없이 confirmations 만 실은 후속 리뷰 라운드 블록(reviewer 확인 전용·기계 확인과 다른 축)."""
+    """findings 없이 confirmations 만 실은 후속 리뷰 라운드 블록(reviewer 확인 전용·기계 확인과 다른 기준)."""
     payload = {"version": _PV_BLOCK_VERSION, "findings": [], "confirmations": confirmations}
     return (
         "판정: 통과\n\n## must-fix\n- 없음\n\n"
@@ -1175,7 +1175,7 @@ def _pv_ledger_entry(rounds: list, *, confirm_fix: int = 0) -> dict:
 
 
 def _pv_seed_v178_shape(proj: Path, tid: str) -> dict:
-    """v1.7.8 실물 형상 재현 — 잔여 1·confirm_fix 0·완료 라운드 1·X-001 rejected(사유 있음)·기계 확인 0."""
+    """v1.7.8 실물 구성 재현 — 남은 지적 1·confirm_fix 0·완료 라운드 1·X-001 rejected(사유 있음)·기계 확인 0."""
     _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
         1, [_pv_decision("X-001", "rejected")], reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
@@ -1216,7 +1216,7 @@ def _pv_machine_confirmation_block(round_ordinal: int, finding_ids: list) -> str
 
 
 def _pv_pm_verified_resolution(round_sequence: int, count: int, must_fix: int = 1) -> dict:
-    """이미 선언돼 장부에 실린 pm-verified 처분 — 재검증(완료·릴리즈) 축의 입력."""
+    """이미 선언돼 라운드 기록에 실린 pm-verified 처분 — 재검증(완료·릴리즈) 검사의 입력."""
     return {
         "kind": "pm-verified", "ts": "2026-08-01T02:00:00+00:00", "must_fix": must_fix,
         "round_sequence": round_sequence, "rounds": count,
@@ -1224,18 +1224,18 @@ def _pv_pm_verified_resolution(round_sequence: int, count: int, must_fix: int = 
 
 
 def _pv_seed_mixed_channel_shape(proj: Path, tid: str, *, machine_channel: str) -> dict:
-    """두 채널이 함께 열렸던 티켓 — **한 채널만** 기계 확인이 있는 혼합 형상 공용 빌더.
+    """두 채널이 함께 열렸던 티켓 — **한 채널만** 기계 확인이 있는 혼합 구성 공용 빌더.
 
     세 경로(리뷰 라운드 완료 판정·추가 선언·릴리즈 재검증)가 이 한 빌더를 공유한다 — 생산
-    배선과 테스트 기준이 갈리지 않게 형상은 여기 한 곳에서만 정의한다.
+    연결과 테스트 기준이 갈리지 않게 구성은 여기 한 곳에서만 정의한다.
 
     두 채널 모두 accepted 판정을 받았고, 기계 확인이 없는 쪽은 **리뷰어 확인 라운드**로만
-    해소된다. 그래서 티켓 전역(=채널 스코프 없는 판정)에서는 accepted 잔여가 0 이고 기계 확인이
+    해소된다. 그래서 티켓 전역(=채널 스코프 없는 판정)에서는 accepted 남은 지적이 0 이고 기계 확인이
     1건 이상이라 두 채널이 모두 열려 보인다 — 채널 스코프가 있어야 기계 확인이 없는 쪽이 닫힌다.
 
     `machine_channel` 은 `_PV_CHANNEL_INTERNAL`/`_PV_CHANNEL_ADDITIONAL` 어휘를 쓴다. 반환은 추가
-    리뷰어 장부 entry(`{"additional": ...}`) 이고, 호출부가 필요한 처분(`resolution`)을 얹어
-    장부에 쓴다.
+    리뷰어 라운드 기록 entry(`{"additional": ...}`) 이고, 호출부가 필요한 처분(`resolution`)을 얹어
+    라운드 기록에 쓴다.
     """
     machine_internal = machine_channel == _PV_CHANNEL_INTERNAL
     machine_ids = ["F-001"] if machine_internal else ["X-001"]
@@ -1279,15 +1279,15 @@ def _pv_round_tuple(ordinal: int, role: str, text: str):
 
 
 def _pv_complete(mod, tid: str) -> list[str]:
-    """`_complete_gate` 를 `cmd_complete` 처럼 부른다 — 본문·명세를 넘겨야 리뷰 잔여까지 본다."""
+    """`_complete_gate` 를 `cmd_complete` 처럼 부른다 — 본문·명세를 넘겨야 남은 리뷰 지적까지 본다."""
     _status, path = ticket_store.find_ticket_exact(pm_paths.home_at(mod.REPO), tid)
     spec_text = path.read_text(encoding="utf-8")
     _fm, body = ticket_store.load_ticket(path)
-    return board_ticket._complete_gate(pm_paths.home_at(mod.REPO), tid, _pv_gate_args(), body, spec_text=spec_text)
+    return board_ticket._complete_gate(pm_paths.home_at(mod.REPO), tid, _pv_check_args(), body, spec_text=spec_text)
 
 
-def _pv_gate_args() -> argparse.Namespace:
-    """`_complete_gate` 인자 — log·회귀 축은 통과로 두고 리뷰 게이트만 판정면에 남긴다."""
+def _pv_check_args() -> argparse.Namespace:
+    """`_complete_gate` 인자 — log·회귀 검사는 통과로 두고 리뷰 통과 조건만 판정 대상에 남긴다."""
     return argparse.Namespace(
         allow_missing_log=True, tests_pass=True, allow_untested=False,
     )
@@ -1295,11 +1295,11 @@ def _pv_gate_args() -> argparse.Namespace:
 
 @pytest.fixture
 def pm_verified_release(tmp_path, monkeypatch):
-    """pm-verified 처분 검증 시나리오 — 실 티켓 트리 + 실 라운드 파일 + 추가 리뷰어 실 장부.
+    """pm-verified 처분 검증 시나리오 — 실 티켓 트리 + 실 라운드 파일 + 추가 리뷰어 실 라운드 기록.
 
     한 시나리오가 생산 경로를 그대로 태운다: 리뷰 라운드 완료 판정(`board._complete_gate`) ·
-    릴리즈 재검증(`board livegate record`). 추가 채널 선언 CLI 는 `tests/test_additional_reviewer.py` 가
-    같은 빌더를 import 해 태운다 — 형상 정의는 한 곳(`_pv_seed_mixed_channel_shape`)뿐이다.
+    릴리즈 재검증(`board live-test record`). 추가 채널 선언 CLI 는 `tests/test_additional_reviewer.py` 가
+    같은 빌더를 import 해 태운다 — 구성 정의는 한 곳(`_pv_seed_mixed_channel_shape`)뿐이다.
     """
     proj = tmp_path / "proj"
     local = proj / ".project_manager" / ".local"
@@ -1312,35 +1312,35 @@ def pm_verified_release(tmp_path, monkeypatch):
     runner = _FakeRun(0, f"{regression.LIVE_TEST_RELEASE_PIN} passed, 800 deselected in 40.0s")
     monkeypatch.setattr(subprocess, "run", runner)
 
-    # 완료 판정은 board 가 로드한 pm_delegate 로 리뷰 잔여를 판정한다 — 같은 모듈 인스턴스를
-    # 테스트에도 넘겨 판정 함수 대역(민감도)이 실제 배선에 닿게 한다.
+    # 완료 판정은 board 가 로드한 pm_delegate 로 남은 리뷰 지적을 판정한다 — 같은 모듈 인스턴스를
+    # 테스트에도 넘겨 판정 함수 대역(민감도)이 실제 연결에 닿게 한다.
     pd = _pm_verified_pd()
 
     monkeypatch.setattr(pd, "REPO", proj)
 
-    ledger_path = local / "review_rounds.json"
+    record_path = local / "review_rounds.json"
 
-    def write_records(ledger: dict) -> None:
+    def write_records(records: dict) -> None:
         local.mkdir(parents=True, exist_ok=True)
-        ledger_path.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+        record_path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
 
     return types.SimpleNamespace(
-        module=mod, pd=pd, proj=proj, runner=runner, ledger_path=ledger_path,
+        module=mod, pd=pd, proj=proj, runner=runner, record_path=record_path,
         write_records=write_records,
-        read_records=lambda: json.loads(ledger_path.read_text(encoding="utf-8")),
-        complete=lambda gate: _pv_complete(mod, gate),
+        read_records=lambda: json.loads(record_path.read_text(encoding="utf-8")),
+        complete=lambda review_ticket: _pv_complete(mod, review_ticket),
         record=lambda: regression_cmd.cmd_live_test(pm_paths.home_at(mod.REPO), argparse.Namespace(
             action="record", rev=None, cwd=str(proj), repo=None, slot=None, task=None)),
         flag=lambda: json.loads((local / "live-test.json").read_text(encoding="utf-8")),
     )
 
 
-# ── 정상 · v1.7.8 실물 형상 재현 ─────────────────────────────────────────────
+# ── 정상 · v1.7.8 실물 구성 재현 ─────────────────────────────────────────────
 
 def test_pm_verified_resolution_opens_the_v178_release_shape(pm_verified_release):
-    """v1.7.8 실물 형상(잔여1·confirm_fix0·완료라운드1·X-001 rejected·기계확인0)이 신규 경로로 rc0.
+    """v1.7.8 실물 구성(남은 지적1·confirm_fix0·완료라운드1·X-001 rejected·기계확인0)이 신규 경로로 rc0.
 
-    단언은 라이브 wave 가 실제로 도는 것(=차단이 풀렸다) — 호출 0 단언 자체는 선언면(CLI) 을 도는
+    단언은 라이브 실행이 실제로 도는 것(=차단이 풀렸다) — 호출 0 단언 자체는 선언면(CLI) 을 도는
     `tests/test_additional_reviewer.py` 가 진다.
     """
     tid = "T-9764"
@@ -1351,12 +1351,12 @@ def test_pm_verified_resolution_opens_the_v178_release_shape(pm_verified_release
     }
     pm_verified_release.write_records({tid: entry})
     assert pm_verified_release.record() == 0
-    assert pm_verified_release.runner.calls, "잔여가 처분됐으면 라이브 wave 가 실제로 돌아야 한다"
+    assert pm_verified_release.runner.calls, "남은 지적이 처분됐으면 라이브 실행이 실제로 돌아야 한다"
     assert pm_verified_release.flag()["status"] == "pass"
 
 
-def test_pm_fixed_resolution_is_still_rejected_on_the_release_ledger(pm_verified_release, capsys):
-    """같은 v1.7.8 형상을 `pm-fixed` 로 선언하면 여전히 rc≠0 (명시 회귀 — 열어도 쓸 수 없는 표면)."""
+def test_pm_fixed_resolution_is_still_rejected_on_the_release_records(pm_verified_release, capsys):
+    """같은 v1.7.8 구성을 `pm-fixed` 로 선언하면 여전히 rc≠0 (명시 회귀 — 열어도 쓸 수 없는 처분)."""
     tid = "T-9765"
     entry = _pv_seed_v178_shape(pm_verified_release.proj, tid)
     entry["confirm_fix"] = 1
@@ -1371,7 +1371,7 @@ def test_pm_fixed_resolution_is_still_rejected_on_the_release_ledger(pm_verified
 # ── 실패 경로 7종 ────────────────────────────────────────────────────────────
 
 def test_pm_verified_declaration_blocks_when_surface_finding_count_is_short(pm_verified_release):
-    """실패1 — 잔여 5인데 표면 처분 3건뿐 → 차단(표면 미달·불변식 5)."""
+    """실패1 — 남은 지적 5인데 처분 목록 3건뿐 → 차단(처분 목록 미달·불변식 5)."""
     proj, mod = pm_verified_release.proj, pm_verified_release.module
     tid = "T-9770"
     findings = [_pv_finding(f"X-00{i}") for i in (1, 2, 3)]
@@ -1389,7 +1389,7 @@ def test_pm_verified_declaration_blocks_when_surface_finding_count_is_short(pm_v
 
 
 def test_pm_verified_declaration_blocks_on_undisposed_finding(pm_verified_release):
-    """실패2 — 표면에 미판정 finding 이 남으면 delta 파싱이 pending 으로 막힌다."""
+    """실패2 — 처분 목록에 미판정 finding 이 남으면 수락한 지적 파싱이 pending 으로 막힌다."""
     proj, mod = pm_verified_release.proj, pm_verified_release.module
     tid = "T-9771"
     findings = [_pv_finding("X-001"), _pv_finding("X-002")]
@@ -1424,7 +1424,7 @@ def test_pm_verified_declaration_blocks_on_blank_rejection_reason(pm_verified_re
 
 
 def test_pm_verified_declaration_blocks_on_open_accepted_finding(pm_verified_release):
-    """실패4 — 그 채널 accepted 잔여(미해소)가 있으면 차단."""
+    """실패4 — 그 채널 accepted 남은 지적(미해소)이 있으면 차단."""
     proj, mod = pm_verified_release.proj, pm_verified_release.module
     tid = "T-9773"
     rows = [_pv_decision("X-001", "accepted")]
@@ -1461,7 +1461,7 @@ def test_pm_verified_declaration_blocks_when_accepted_lacks_machine_confirmation
 
 
 def test_pm_verified_declaration_is_re_blocked_by_a_new_round(pm_verified_release):
-    """실패6(stale) — 선언 뒤 새 반려 라운드가 장부에 기록되면 다시 차단(review_ticket_resolution_is_stale)."""
+    """실패6(stale) — 선언 뒤 새 반려 라운드가 라운드 기록에 적히면 다시 차단(review_ticket_resolution_is_stale)."""
     tid = "T-9775"
     entry = _pv_seed_v178_shape(pm_verified_release.proj, tid)
     entry["resolution"] = {
@@ -1505,7 +1505,7 @@ def test_pm_verified_re_verification_uses_the_live_surface_not_the_stored_declar
 # ── 민감도 3종 ───────────────────────────────────────────────────────────────
 
 def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verified_release):
-    """민감도(a) — `allow_pm_verified` 를 되돌리면(False) 통과하던 v1.7.8 형상이 다시 red."""
+    """민감도(a) — `allow_pm_verified` 를 되돌리면(False) 통과하던 v1.7.8 구성이 다시 red."""
     proj, mod = pm_verified_release.proj, pm_verified_release.module
     tid = "T-9777"
     entry = _pv_seed_v178_shape(proj, tid)
@@ -1514,7 +1514,7 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
         "round_sequence": 1, "rounds": 1,
     }
     pm_verified_release.write_records({tid: entry})
-    # 배선대로(allow_pm_verified=True) 면 통과.
+    # 연결대로(allow_pm_verified=True) 면 통과.
     assert review_rounds._gate_disposition_problem(
         tid, entry,
         allow_pm_verified=True,
@@ -1522,22 +1522,22 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
             tid, entry, _PV_CHANNEL_ADDITIONAL,
         ),
     ) is None
-    # 되돌리면(기본 False) 같은 형상이 다시 차단된다.
+    # 되돌리면(기본 False) 같은 구성이 다시 차단된다.
     reverted = review_rounds._gate_disposition_problem(tid, entry)
     assert reverted is not None
     assert "허용하지 않습니다" in reverted
 
 
 # ── 채널 격리 — 실제 완료·릴리즈 경로 (직접 술어 호출 아님) ─────────────────────
-# 혼합 채널 형상(두 채널 모두 accepted 였고 한 채널만 기계 확인)을 생산 경로에 태운다. 리뷰 라운드
-# 채널(code-reviewer)은 마지막 리뷰 라운드의 잔여로 판정하고, 추가 리뷰어 채널은 그 장부 잔여로
-# 판정한다. 추가 선언 CLI 축은 tests/test_additional_reviewer.py 가 같은 빌더로 진다.
+# 혼합 채널 구성(두 채널 모두 accepted 였고 한 채널만 기계 확인)을 생산 경로에 태운다. 리뷰 라운드
+# 채널(code-reviewer)은 마지막 리뷰 라운드의 남은 지적으로 판정하고, 추가 리뷰어 채널은 그 라운드 기록의 남은 지적으로
+# 판정한다. 추가 선언 CLI 경로는 tests/test_additional_reviewer.py 가 같은 빌더로 진다.
 
 
-def test_additional_axis_opens_on_the_mixed_channel_shape(
+def test_additional_source_opens_on_the_mixed_channel_shape(
     pm_verified_release,
 ):
-    """과차단 없음 — 추가 리뷰어 채널에 기계 확인이 있으면 릴리즈 축은 혼합 형상에서 열린다."""
+    """과차단 없음 — 추가 리뷰어 채널에 기계 확인이 있으면 릴리즈 검사는 혼합 구성에서 열린다."""
     tid = "T-9792"
     entries = _pv_seed_mixed_channel_shape(
         pm_verified_release.proj, tid, machine_channel=_PV_CHANNEL_ADDITIONAL,
@@ -1547,12 +1547,12 @@ def test_additional_axis_opens_on_the_mixed_channel_shape(
     pm_verified_release.write_records({tid: entry})
 
     assert pm_verified_release.record() == 0
-    assert pm_verified_release.runner.calls, "추가 채널 근거가 충분하면 라이브 wave 가 돌아야 한다"
+    assert pm_verified_release.runner.calls, "추가 채널 근거가 충분하면 라이브 실행이 돌아야 한다"
     assert pm_verified_release.flag()["status"] == "pass"
 
 
 def test_review_completion_opens_with_review_channel_machine_evidence(pm_verified_release):
-    """정상 해소 — 리뷰 라운드 채널 기계 확인이 실재하면 완료 게이트가 열린다(채널 조임이
+    """정상 해소 — 리뷰 라운드 채널 기계 확인이 실재하면 완료 통과 조건이 열린다(채널 조임이
     정상 해소까지 막지 않는다)."""
     tid = "T-9793"
     _pv_seed_mixed_channel_shape(
@@ -1562,10 +1562,10 @@ def test_review_completion_opens_with_review_channel_machine_evidence(pm_verifie
     assert pm_verified_release.complete(tid) == []
 
 
-def test_release_axis_stays_closed_when_only_the_internal_channel_is_confirmed(
+def test_release_check_stays_closed_when_only_the_internal_channel_is_confirmed(
     pm_verified_release, capsys,
 ):
-    """역방향 — 리뷰 라운드 F-* 기계 확인은 추가 리뷰어 게이트의 증거가 아니다(릴리즈 실경로)."""
+    """역방향 — 리뷰 라운드 F-* 기계 확인은 추가 리뷰어 통과 조건의 증거가 아니다(릴리즈 실경로)."""
     tid = "T-9794"
     entries = _pv_seed_mixed_channel_shape(
         pm_verified_release.proj, tid, machine_channel=_PV_CHANNEL_INTERNAL,
@@ -1580,13 +1580,13 @@ def test_release_axis_stays_closed_when_only_the_internal_channel_is_confirmed(
 
 
 def test_sensitivity_surface_floor_check_removed_lets_a_short_surface_pass():
-    """민감도(c) — 건수 대조(불변식 5)를 지우면(하한 0) 표면 미달 케이스가 잘못 green 이 된다."""
+    """민감도(c) — 건수 대조(불변식 5)를 지우면(하한 0) 처분 목록 미달 케이스가 잘못 green 이 된다."""
     findings = [_pv_finding(f"X-00{i}") for i in (1, 2, 3)]
     rows = [_pv_decision(f"X-00{i}", "rejected") for i in (1, 2, 3)]
     spec = _pv_disposition_block(1, rows, reviewer_role=_PV_ADDITIONAL_ROLE)
     rounds = [_pv_round_tuple(1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))]
     correct = review_state.pm_verified_evidence_problem(
-        spec, rounds, reviewer_role=_PV_ADDITIONAL_ROLE, surface_floor=5,   # 장부 잔여 5(실제 배선값)
+        spec, rounds, reviewer_role=_PV_ADDITIONAL_ROLE, surface_floor=5,   # 남은 지적 5(실제 연결값)
     )
     assert correct is not None and "5건" in correct
     removed = review_state.pm_verified_evidence_problem(
@@ -1595,7 +1595,7 @@ def test_sensitivity_surface_floor_check_removed_lets_a_short_surface_pass():
     assert removed is None, "건수 대조가 제거되면 표면 미달이 잘못 통과한다"
 
 
-def test_t0929_selected_workspace_livegate_head_and_cwd(live_board, monkeypatch):
+def test_t0929_selected_workspace_live_test_head_and_cwd(live_board, monkeypatch):
     from test_task_workspace_wiring import _t0929_mock_workspaces
     from _pytest_summary import pytest_summary
     _t0929_mock_workspaces(live_board, monkeypatch)
@@ -1622,12 +1622,12 @@ def test_t0929_selected_workspace_readonly_cwd_reference_preserved(live_board, m
     assert _read_flag(live_board)['head'] == 'head5'
 
 
-# T-0936 릴리즈 플랫폼 실행과 증거 결속
+# T-0936 릴리즈 플랫폼 실행과 증거 연결
 @pytest.fixture
 def t0936_release(tmp_path, monkeypatch):
     board = _load_board()
-    anchor = tmp_path / 'declared'; execution = tmp_path / 'release'; home = tmp_path / 'engine'
-    for tree in [anchor, execution, home]: (tree / '.project_manager/.local').mkdir(parents=True)
+    target_repo = tmp_path / 'declared'; execution = tmp_path / 'release'; home = tmp_path / 'engine'
+    for tree in [target_repo, execution, home]: (tree / '.project_manager/.local').mkdir(parents=True)
     local = home / '.project_manager/.local'
     for name, value in {'REPO': home}.items():
         monkeypatch.setattr(board, name, value)
@@ -1639,10 +1639,10 @@ def t0936_release(tmp_path, monkeypatch):
     monkeypatch.setattr(regression_cmd, "_refuse_release_for_engine_drift", lambda _home, flag, cwd: 0)
     monkeypatch.delenv('PM_SESSION_NAME', raising=False)
     monkeypatch.delenv('CLAUDE_SESSION_NAME', raising=False)
-    (anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\nqa.platforms=arm,windows\ntest.arm.cmd=arm-full\ntest.windows.cmd=windows-full\n', encoding='utf-8')
-    (home/'.project_manager/local.conf').write_text((anchor / '.project_manager/local.conf').read_text(encoding='utf-8'), encoding='utf-8')
+    (target_repo / '.project_manager/local.conf').write_text('test.cmd=core-full\nqa.platforms=arm,windows\ntest.arm.cmd=arm-full\ntest.windows.cmd=windows-full\n', encoding='utf-8')
+    (home/'.project_manager/local.conf').write_text((target_repo / '.project_manager/local.conf').read_text(encoding='utf-8'), encoding='utf-8')
     core = {'head':head, 'status':'pass', 'rc':0, 'scope':'full', 'collected':3,
-            'previous_collected':2, 'conf_anchor':str(anchor), 'command':'core-full', 'ts':'2026-10-02T00:00:00+00:00'}
+            'previous_collected':2, 'conf_anchor':str(target_repo), 'command':'core-full', 'ts':'2026-10-02T00:00:00+00:00'}
     pm_paths.regression_flag(pm_paths.home_at(board.REPO)).write_text(json.dumps(core), encoding='utf-8')
     calls = []; live = []
     def platform(command, cwd, env):
@@ -1652,7 +1652,7 @@ def t0936_release(tmp_path, monkeypatch):
     def release(*a, **kw):
         live.append((a,kw)); return types.SimpleNamespace(returncode=0,stdout='22 passed in 0.01s\n',stderr='')
     monkeypatch.setattr(subprocess, 'run', release)
-    return types.SimpleNamespace(board=board, anchor=anchor, cwd=execution, head=head, core=core, calls=calls, live=live, platform=platform, release=release)
+    return types.SimpleNamespace(board=board, target_repo=target_repo, cwd=execution, head=head, core=core, calls=calls, live=live, platform=platform, release=release)
 
 
 def _t0936_record(f, home=None):
@@ -1675,7 +1675,7 @@ def test_t0936_record_executes_platforms_before_live(t0936_release):
     assert len(f.live)==1 and f.live[0][1]['cwd']==str(f.cwd)
     assert f.live[0][0][0]==release.LIVE_TEST_CMD
     snapshot=_read_flag(f.board)
-    assert snapshot['conf_anchor']==str(f.anchor) and snapshot['cwd']==str(f.cwd)
+    assert snapshot['conf_anchor']==str(f.target_repo) and snapshot['cwd']==str(f.cwd)
     assert snapshot['command']=='core-full' and snapshot['collected']==3 and snapshot['previous_collected']==2
     assert [cell['name'] for cell in snapshot['platforms']]==['arm','windows']
     assert _t0936_check(f)==0
@@ -1687,7 +1687,7 @@ def test_t0936_record_rejects_unusable_core_before_children(t0936_release, defec
     f=t0936_release; core=dict(f.core)
     changes={'red':('status','fail'),'stale':('head','old'),'unknown':('collected',None),'zero':('collected',0),'bool':('collected',True),'command':('command','old-core'),'anchor':('conf_anchor','relative'),'schema':('extra',1),'old-aggregate':('platforms',[])}
     if defect in ['missing','other-F']:
-        if defect=='other-F': (f.anchor/'regression.json').write_text(json.dumps(core),encoding='utf-8')
+        if defect=='other-F': (f.target_repo/'regression.json').write_text(json.dumps(core),encoding='utf-8')
         pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
     else:
         key,value=changes[defect]; core[key]=value
@@ -1720,11 +1720,11 @@ def test_t0936_check_revalidates_complete_release_evidence(t0936_release, defect
     f=t0936_release; assert _t0936_record(f)==0
     record=_read_flag(f.board)
     if defect in ['order','add','delete','command']:
-        text=(f.anchor / '.project_manager/local.conf').read_text(encoding='utf-8')
+        text=(f.target_repo / '.project_manager/local.conf').read_text(encoding='utf-8')
         text=text.replace('arm,windows',{'order':'windows,arm','add':'arm,windows,extra','delete':'','command':'arm,windows'}[defect])
         if defect=='add': text+='test.extra.cmd=extra-full\n'
         if defect=='command': text=text.replace('windows-full','changed-full')
-        (f.anchor / '.project_manager/local.conf').write_text(text,encoding='utf-8')
+        (f.target_repo / '.project_manager/local.conf').write_text(text,encoding='utf-8')
     elif defect.startswith('current-'):
         core=dict(f.core); key=defect[8:]
         key,value={'red':('status','fail'),'stale':('head','old'),'collected':('collected',9),'command':('command','old'),'anchor':('conf_anchor',str(f.cwd))}[key]
@@ -1748,9 +1748,9 @@ def test_t0936_release_midrun_drift_stays_red(t0936_release, monkeypatch, phase,
     def mutate():
         changed[0]=True
         if drift in ['declaration','command']:
-            text=(f.anchor / '.project_manager/local.conf').read_text(encoding='utf-8')
-            (f.anchor / '.project_manager/local.conf').write_text(text.replace('arm,windows','windows,arm') if drift=='declaration' else text.replace('core-full','changed-core'),encoding='utf-8')
-    monkeypatch.setattr(git,'_git_head_at',lambda cwd: 'NEW' if changed[0] and str(cwd)==str(f.anchor if drift=='A-head' else f.cwd) and drift.endswith('head') else f.head)
+            text=(f.target_repo / '.project_manager/local.conf').read_text(encoding='utf-8')
+            (f.target_repo / '.project_manager/local.conf').write_text(text.replace('arm,windows','windows,arm') if drift=='declaration' else text.replace('core-full','changed-core'),encoding='utf-8')
+    monkeypatch.setattr(git,'_git_head_at',lambda cwd: 'NEW' if changed[0] and str(cwd)==str(f.target_repo if drift=='A-head' else f.cwd) and drift.endswith('head') else f.head)
     def platform(command,cwd,env):
         result=f.platform(command,cwd,env)
         if phase=='platform' or (phase=='before-live' and env['PM_QA_PLATFORM']=='windows'): mutate()
@@ -1773,14 +1773,14 @@ def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, 
     if defect:
         core=dict(f.core)
         if defect=='A-relative': core['conf_anchor']='relative'
-        elif defect=='A-missing': core['conf_anchor']=str(f.anchor/'missing')
-        elif defect in ['A-head','L-head']: monkeypatch.setattr(git,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.anchor if defect=='A-head' else f.cwd) else f.head)
+        elif defect=='A-missing': core['conf_anchor']=str(f.target_repo/'missing')
+        elif defect in ['A-head','L-head']: monkeypatch.setattr(git,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.target_repo if defect=='A-head' else f.cwd) else f.head)
         elif defect=='L-missing': f.cwd=f.cwd/'missing'
-        elif defect=='A-F': monkeypatch.setattr(regression_store,'_resolve_regression_flag',lambda _home, cwd:(f.anchor/'regression.json',regression_store._LG_ENGINE_ROOT))
-        elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(f.anchor/'live-test.json',regression_store._LG_ENGINE_ROOT))
+        elif defect=='A-F': monkeypatch.setattr(regression_store,'_resolve_regression_flag',lambda _home, cwd:(f.target_repo/'regression.json',regression_store._LG_ENGINE_ROOT))
+        elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(f.target_repo/'live-test.json',regression_store._LG_ENGINE_ROOT))
         elif defect=='broken': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.live_test_flag(home),regression_store._LG_BROKEN))
         elif defect=='clone-only':
-            engine_home=pm_paths.home_at(f.board.REPO); called=pm_paths.home_at(f.board.REPO, f.anchor)
+            engine_home=pm_paths.home_at(f.board.REPO); called=pm_paths.home_at(f.board.REPO, f.target_repo)
             pm_paths.regression_flag(engine_home).unlink()
             monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(pm_paths.live_test_flag(engine_home),regression_store._LG_ENGINE_ROOT))
             record_home = called
@@ -1795,7 +1795,7 @@ def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
     f=t0936_release
     if form=='no-platform-legacy':
         (f.board.REPO/'.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
-        (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
+        (f.target_repo / '.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
         pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
         assert _t0936_record(f)==0 and f.calls==[] and len(f.live)==1 and _t0936_check(f)==0
     elif form in ['aggregate-pass','aggregate-fail']:
@@ -1805,7 +1805,7 @@ def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
         assert _t0936_record(f)==1 and f.calls==f.live==[]
     elif form=='declared-deleted':
         assert _t0936_record(f)==0
-        (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
+        (f.target_repo / '.project_manager/local.conf').write_text('test.cmd=core-full\n',encoding='utf-8')
         assert _t0936_check(f)==1
     else:
         pm_paths.live_test_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
@@ -1816,7 +1816,7 @@ def test_t0936_legacy_and_old_aggregate_disposition(t0936_release, form):
 def test_t0936_failed_record_invalidates_previous_green(t0936_release, monkeypatch, failure):
     f=t0936_release
     pm_paths.live_test_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps({'head':f.head,'status':'pass','rc':0,'n':22,'ts':'now'}),encoding='utf-8')
-    if failure=='config': (f.anchor / '.project_manager/local.conf').write_text('test.cmd=core-full\nqa.platforms=windows\n',encoding='utf-8')
+    if failure=='config': (f.target_repo / '.project_manager/local.conf').write_text('test.cmd=core-full\nqa.platforms=windows\n',encoding='utf-8')
     elif failure=='core': pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
     elif failure=='coordinate': f.core['conf_anchor']='relative'; pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps(f.core),encoding='utf-8')
     else:
@@ -1851,7 +1851,7 @@ def test_t0936_existing_release_guards_precede_platforms(t0936_release, monkeypa
 def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_release, monkeypatch):
     f = t0936_release
     pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
-    (f.anchor / '.project_manager/local.conf').write_text("test.cmd=core-full\n", encoding="utf-8")
+    (f.target_repo / '.project_manager/local.conf').write_text("test.cmd=core-full\n", encoding="utf-8")
     (f.board.REPO / ".project_manager/local.conf").write_text("test.cmd=core-full\n", encoding="utf-8")
     flag = f.board.REPO / "cold" / ".project_manager" / ".local/live-test.json"
     monkeypatch.setattr(regression_store, "_resolve_livegate_flag", lambda _home, cwd: (flag, regression_store._LG_ENGINE_ROOT))
@@ -1865,7 +1865,7 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_absent_conf(
         t0936_release, monkeypatch, consumer):
     f = t0936_release
     pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
-    (f.anchor / '.project_manager/local.conf').unlink()
+    (f.target_repo / '.project_manager/local.conf').unlink()
     (f.board.REPO / ".project_manager/local.conf").unlink()
     pm_paths.live_test_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps({
         "head":f.head, "status":"pass", "rc":0, "n":22, "ts":"now",
@@ -1885,7 +1885,7 @@ def test_t0936_legacy_and_old_aggregate_disposition_partial_engine_present_or_da
         t0936_release, monkeypatch, shape):
     f = t0936_release
     pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).unlink()
-    (f.anchor / '.project_manager/local.conf').unlink()
+    (f.target_repo / '.project_manager/local.conf').unlink()
     (f.board.REPO / ".project_manager/local.conf").unlink()
     conf = f.cwd / ".project_manager/local.conf"
     if shape == "directory": conf.mkdir()
@@ -1918,7 +1918,7 @@ def t0982_board(tmp_path, monkeypatch):
         monkeypatch.setattr(board,name,value)
     flag = local / "live-test.json"
     flag.write_text('{"head":"prior-head","status":"pass"}\n',encoding="utf-8")
-    state = types.SimpleNamespace(board=board, home=home, flag=flag, effects=[], waves=[], tasks=[], actual_execution=task_args._execution_actor_session_override)
+    state = types.SimpleNamespace(board=board, home=home, flag=flag, effects=[], live_runs=[], tasks=[], actual_execution=task_args._execution_actor_session_override)
     def unexpected(*args, **kwargs):
         pytest.fail("명시 cwd가 정체성·슬롯 해소를 호출함")
     monkeypatch.setattr(task_args,"_execution_actor_session_override",unexpected)
@@ -1932,11 +1932,11 @@ def t0982_board(tmp_path, monkeypatch):
     monkeypatch.setattr(regression_cmd,"_refuse_release_for_engine_drift",lambda *a: state.effects.append(("drift",None)) or 0)
     monkeypatch.setattr(release,"_release_core_context",lambda _home,_flag,cwd,_session: (None,cwd,(),None))
     monkeypatch.setattr(git,"_git_head_at",lambda cwd: state.effects.append(("head", cwd)) or "f"*40)
-    def wave(*args,**kwargs):
+    def live_run(*args,**kwargs):
         assert kwargs.get("shell") is True, "실 Git/다른 subprocess 호출 금지"
-        state.waves.append((args,kwargs))
+        state.live_runs.append((args,kwargs))
         return types.SimpleNamespace(returncode=0,stdout=f"{regression.LIVE_TEST_RELEASE_PIN} passed in 0.01s\n",stderr="")
-    monkeypatch.setattr(subprocess,"run",wave)
+    monkeypatch.setattr(subprocess,"run",live_run)
     return state
 
 
@@ -1953,7 +1953,7 @@ def test_t0982_cwd_rejects_each_selector_combination_before_effects(t0982_board,
         regression_cmd.cmd_live_test(pm_paths.home_at(state.board.REPO), args)
     message = str(caught.value)
     assert "--cwd" in message and "--task" in message and "--repo" in message and "--slot" in message
-    assert state.effects == [] and state.waves == []
+    assert state.effects == [] and state.live_runs == []
     assert state.flag.read_bytes() == before
 
 
@@ -1964,7 +1964,7 @@ def test_t0982_supplied_falsey_selectors_are_not_ignored(t0982_board, selector):
     args = board_cmd.build_parser().parse_args(["live-test","record","--cwd",str(state.home/"readonly"),*selector])
     with pytest.raises(SystemExit):
         regression_cmd.cmd_live_test(pm_paths.home_at(state.board.REPO), args)
-    assert state.effects == [] and state.waves == []
+    assert state.effects == [] and state.live_runs == []
     assert state.flag.read_bytes() == before
 
 
@@ -1975,7 +1975,7 @@ def test_t0982_empty_cwd_is_not_an_implicit_workspace(t0982_board):
     with pytest.raises(SystemExit) as caught:
         regression_cmd.cmd_live_test(pm_paths.home_at(state.board.REPO), args)
     assert "--cwd" in str(caught.value) and "비어" in str(caught.value)
-    assert state.effects == [] and state.waves == []
+    assert state.effects == [] and state.live_runs == []
     assert state.flag.read_bytes() == before
 
 
@@ -1988,7 +1988,7 @@ def test_t0982_cwd_only_preserves_unleased_readonly_pin(t0982_board, leased):
     selected.mkdir()
     args = board_cmd.build_parser().parse_args(["live-test","record","--cwd",str(selected)])
     assert regression_cmd.cmd_live_test(pm_paths.home_at(state.board.REPO), args) == 0
-    assert len(state.waves) == 1 and state.waves[0][1]["cwd"] == str(selected)
+    assert len(state.live_runs) == 1 and state.live_runs[0][1]["cwd"] == str(selected)
     assert state.effects[0] == ("flag",str(selected))
     assert json.loads(state.flag.read_text(encoding="utf-8"))["status"] == "pass"
 
@@ -2006,8 +2006,8 @@ def test_t0982_task_workspace_injection_is_not_explicit_cwd(t0982_board, monkeyp
     monkeypatch.setattr(task_args,"_resolve_task_workspace_cwd",resolve)
     args = board_cmd.build_parser().parse_args(["live-test","record",*selector])
     assert regression_cmd.cmd_live_test(pm_paths.home_at(state.board.REPO), args) == 0
-    assert state.tasks == ["main"] and len(state.waves) == 1
-    assert state.waves[0][1]["cwd"] == str(selected)
+    assert state.tasks == ["main"] and len(state.live_runs) == 1
+    assert state.live_runs[0][1]["cwd"] == str(selected)
 
 
 @pytest.mark.parametrize("selector", (["--repo","A"],["--slot","1"],["--repo","A","--slot","1"]))
@@ -2019,4 +2019,4 @@ def test_t0982_selectors_without_task_keep_existing_rejection(t0982_board, monke
     args=board_cmd.build_parser().parse_args(["live-test","record",*selector])
     with pytest.raises(SystemExit):
         regression_cmd.cmd_live_test(pm_paths.home_at(state.board.REPO), args)
-    assert state.effects == [] and state.waves == [] and state.flag.read_bytes() == before
+    assert state.effects == [] and state.live_runs == [] and state.flag.read_bytes() == before

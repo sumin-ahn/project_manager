@@ -8,11 +8,11 @@ LLM 이 load-bearing 이다(사용자 지시: "진짜로 얘네들이 커맨드�
 claim→종결)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0** & 출력에 `--help`/`-h` 호출·재시도
 흔적 0 임을 단언한다.
 
-판정 철학(release_wave·runtime_smoke 상속):
+판정 철학(release_cluster·runtime_smoke 상속):
 - **카드 커맨드가 실제로 *실행*됐는지가 1급 판정**: 기대 lifecycle op {new, promote, claim, complete}가
   **실제 실행된 argv 에서 각 정확히 1회** 관측돼야 통과. side-effect(done/)만으론 부족하다 — LLM 이 카드
   커맨드를 건너뛰고 파일을 직접 옮겨 done/ 을 만들어도 통과시키면 "카드를 첫 시도에 제대로 쓰는가"
-  게이트가 false-green 이 된다(이 테스트의 존재 이유가 무너짐). 그래서 op 관측을 side-effect 위에 얹는다.
+  검사가 false-green 이 된다(이 테스트의 존재 이유가 무너짐). 그래서 op 관측을 side-effect 위에 얹는다.
   나아가 `echo "…board.py claim…"` 같은 **비실행 문자열**(에코·리터럴)을 op 로 오집계하면 그 봉함의
   우회로가 되므로, `_executed_board_ops` 가 셸 파싱으로 *실행 argv 만* 센다(에코/printf/mv 배제·MF-2).
 - **첫 시도 *rc0* 를 직접 확증**: claude 는 stream-json 의 tool_result(`is_error`)를 tool_use 와 상관해
@@ -21,18 +21,18 @@ claim→종결)을 시켜 **각 조작의 첫 시도 커맨드가 그대로 rc0*
   이므로, side-effect 나 실행-횟수만으로는 부족하고 rc 를 봐야 한다. tool_result 는 콜 *전체*의 rc 하나뿐
   이라, lifecycle op 콜은 **단일-op·rc 마스킹 연산자(`||`/`;`/`|`/`&`) 0** 이어야 그 rc 가 곧 op rc 다
   (`claim … || true` 처럼 실패를 은폐하면 red·`&&` 프리픽스만 허용·R5 구조 규칙으로 shell-파싱 견고화 종결).
-- **관측 수단 비대칭(release_wave 위임-관측 비대칭 상속·§test_release_cluster.py:170-219)**:
+- **관측 수단 비대칭(release_cluster 위임-관측 비대칭 상속·§test_release_cluster.py:170-219)**:
   · **claude = hard** — stream-json 의 Bash tool-call·tool_result 를 파싱해 *실행 커맨드·결과*를 본다.
     각 op 정확-1회·--help(shlex 토큰)·**첫 실행 rc0(is_error)**·side-effect(done)를 전부 hard 단언.
   · **opencode = best-effort** — stream-json 처럼 tool-call/result 를 정밀 노출하지 않아(stdout 스캔뿐)
     정확-1회·rc0 를 **hard-claim 할 수 없다**. side-effect(done) + stdout `--help` 호출 스캔(카드-에코
     무해한 `.py`+help 패턴)이 hard 상한이고, op 실행 관측은 stdout 에코가 있을 때만 best-effort 다. 이
     한계는 판정 로직 주석·실패 메시지·테스트명(`..._opencode_best_effort`)에 명시한다.
-- **flake**: fail 시 그 시나리오 단건 1회 재실행 재판정(PM 51 livegate 방식) — 재현 fail 은 red 유지.
+- **flake**: fail 시 그 시나리오 단건 1회 재실행 재판정(PM 51 live-test 방식) — 재현 fail 은 red 유지.
 
-게이트 아님 — 사용자가 릴리즈 직전 `PM_ORCH_LIVE_RELEASE=1` 로 occasional 트리거(비용·flaky 감수).
+통과 조건 아님 — 사용자가 릴리즈 직전 `PM_ORCH_LIVE_RELEASE=1` 로 occasional 트리거(비용·flaky 감수).
 기본 skip(env 미설정·CI green 불변). 기계층(카드 dump 존재·카드↔CLI drift 가드·T-0250)과 상보 —
-이 게이트는 **사용성**(실 LLM 첫 시도)만 본다.
+이 검사는 **사용성**(실 LLM 첫 시도)만 본다.
 """
 from __future__ import annotations
 
@@ -61,18 +61,18 @@ from pathlib import Path
 
 import pytest
 
-# release_wave/runtime_smoke 헬퍼 재사용(중복 인프라 금지·같은 tests/ 디렉토리 import) —
+# release_cluster/runtime_smoke 헬퍼 재사용(중복 인프라 금지·같은 tests/ 디렉토리 import) —
 # adopter import(hermetic·models 조회 차단)·LLM env 격리(화이트리스트)·ticket 상태 조회.
 from test_fresh_adopter_runtime_smoke import _live_env, _load_pm_import, _tickets_in
 # 설치 구간의 모델 한도 조회 고정(실제 하네스 CLI 미호출).
 from _manager_home import install_known_ctx_io
 # release 마커 AST 카운트(자기 파일 pin 가드용) — 마커 소실/개명 방어 도구 재사용. 안내 경로로 첫
-# 작업 폴더를 만든 채택자 픽스처는 full wave 와 공용이다([[T-0956]]).
+# 작업 폴더를 만든 채택자 픽스처는 전체 묶음 시험과 공용이다([[T-0956]]).
 from test_release_cluster import (
-    _MULTIREPO_REPOS, _MULTIREPO_TICKET, _RELEASE_WAVE_TASK, _WAVE_FILE, _WAVE_INTEGRATION_SLOT,
-    _WAVE_WORK_SLOT, _assert_multirepo_wave_side_effects, _count_marked_tests,
+    _MULTIREPO_REPOS, _MULTIREPO_TICKET, _RELEASE_CLUSTER_TASK, _CLUSTER_FILE, _CLUSTER_INTEGRATION_SLOT,
+    _CLUSTER_WORK_SLOT, _assert_multirepo_cluster_side_effects, _count_marked_tests,
     _guided_adopter,
-    _import_multipm_home, _multirepo_wave_commands, _multirepo_wave_home, _pm_config,
+    _import_multipm_home, _multirepo_cluster_commands, _multirepo_cluster_home, _pm_config,
 )
 from pm_engine.cli import import_cmd
 from test_fresh_adopter_runtime_smoke import _baseline_adopter
@@ -82,10 +82,10 @@ REPO = Path(__file__).resolve().parents[1]
 # 릴리즈 트리거 — 사용자가 릴리즈 직전 명시 set(occasional). 미설정이면 전부 skip(CI green 불변).
 _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"
 # claude: sonnet-4-6(API 과금·env override). opencode: 출하 모델(ollama cloud·
-# 과금 0·env override). release_wave 와 동일 단일 진실(양쪽 파일 default 일치).
+# 과금 0·env override). release_cluster 와 동일 단일 진실(양쪽 파일 default 일치).
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 from _opencode_model import LIVE_MODEL
-# opencode 는 느리고 변동 커 1800s, claude 는 lifecycle 4콜 여유분 600s (release_wave 상속).
+# opencode 는 느리고 변동 커 1800s, claude 는 lifecycle 4콜 여유분 600s (release_cluster 상속).
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
 
@@ -97,16 +97,16 @@ PROBE_TITLE = "card usability probe"
 # 커맨드에서 **각 정확히 1회** 관측됐는지 본다: 0회=카드 커맨드 건너뜀(누락·false-green 원천)·
 # 2회+=첫 시도 실패 후 재시도. read 조작(list/show/regression/prefix list 등)은 반복 무해·판정 제외.
 # (핸드오프는 이 시퀀스에서 제외 — `_usability_prompt` docstring 근거.)
-# **완료 축은 묶음 종결(`ticket_finish.py`)이다** — 발행이 모든 티켓을 크기 1 묶음에 귀속시켜
-# direct `board.py complete` 는 결속 없이 거부되고 카드도 그 줄을 싣지 않는다. 카드가 처방하지
-# 않는 명령을 기대 op 로 남기면 이 게이트는 LLM 에게 없는 커맨드를 요구해 라이브에서만 터진다
+# **완료 기준은 묶음 종결(`ticket_finish.py`)이다** — 발행이 모든 티켓을 크기 1 묶음에 귀속시켜
+# direct `board.py complete` 는 묶음 연결 없이 거부되고 카드도 그 줄을 싣지 않는다. 카드에 적히지
+# 않은 명령을 기대 op 로 남기면 이 검사는 LLM 에게 없는 커맨드를 요구해 라이브에서만 터진다
 # (평시 skip 이라 회귀는 green — 이 파일이 막으려는 false-green 클래스 그대로다).
-# 종결까지의 조작은 카드가 처방한다([[T-0956]]) — 리뷰 없이 닫는 표시(`tier`)·묶음 결속(`cluster
+# 종결까지의 조작은 카드가 안내한다([[T-0956]]) — 리뷰 없이 닫는 표시(`tier`)·묶음 연결(`cluster
 # new`)·작업 폴더 전환(`worktree_pool.py switch`)이 claim 과 종결 사이의 필수 조작이다.
 _EXPECTED_LIFECYCLE_OPS = ("new", "cluster", "promote", "tier", "claim", "switch", "finish")
 
 # mutating 조작 분류 집합(핸드오프 포함) — `_board_operation` 이 read/write 구분에 참조(classifier).
-# 카드 시퀀스가 낼 수 있는 어휘만 담는다 — `complete` 는 카드가 처방하지 않으므로 여기 없다.
+# 카드 시퀀스가 낼 수 있는 어휘만 담는다 — `complete` 는 카드에 적히지 않으므로 여기 없다.
 _SEQUENCE_MUTATING_OPS = frozenset(
     {"new", "promote", "tier", "cluster", "claim", "switch", "finish", "handoff"})
 
@@ -142,16 +142,16 @@ def _usability_prompt(card: str) -> str:
     """실 LLM 에 카드만 주고 표준 라이프사이클을 시키는 프롬프트 (카드 = 유일 컨텍스트).
 
     진입문서(CLAUDE.md/AGENTS.md) 경로를 *주지 않는다* — 카드만으로 커맨드/플래그를 골라야
-    통과(= 카드 사용성). 종결까지의 조작(리뷰 없이 닫는 표시·묶음 결속·작업 폴더 전환·완료 조건
-    체크)은 **카드가 처방한다**([[T-0956]]) — 프롬프트는 티켓의 성격(코드 변경 없음·리뷰 라운드 없이
+    통과(= 카드 사용성). 종결까지의 조작(리뷰 없이 닫는 표시·묶음 연결·작업 폴더 전환·완료 조건
+    체크)은 **카드가 안내한다**([[T-0956]]) — 프롬프트는 티켓의 성격(코드 변경 없음·리뷰 라운드 없이
     닫음)만 말하고 그 명령과 이름을 쓰지 않는다. 카드만 보는 새 채택자가 닫을 수 있어야 하기
-    때문이다. 회귀 게이트 만족(`--no-pytest`)만 카드 밖 사실로 명시한다 — 채택자 fresh 트리에는 test
-    스위트가 없다. 로그 한 줄은 지시하지 않는다(종결이 log 골격을 만든다·경계 실측 E17).
+    때문이다. 회귀 통과 조건 만족(`--no-pytest`)만 카드 밖 사실로 명시한다 — 채택자 fresh 트리에는 test
+    스위트가 없다. 로그 한 줄은 지시하지 않는다(종결이 log 빈 양식을 만든다·경계 실측 E17).
     카드 줄 순서대로 실행하기 전에 **티켓 본문 채우기** 단계를 명시해 claim=promote 선행 트랩(본문 채운 뒤
-    promote)을 시퀀스에서 실제로 밟게 한다. 승격은 카드 줄 순서(묶음 결속 뒤 · [[T-0960]])를 따르므로
+    promote)을 시퀀스에서 실제로 밟게 한다. 승격은 카드 줄 순서(묶음 연결 뒤 · [[T-0960]])를 따르므로
     별도 단계로 떼지 않는다 — 떼면 카드 순서와 어긋나 같은 줄을 두 번 실행하게 된다.
     핸드오프는 이 시퀀스에서 제외한다: 세션 종료 op 는 무거운 side-effect(pm_state write·log
-    skeleton)라 첫 시도 판정을 흐리고, 핸드오프 라이브 커버리지는 기존 release full-wave/hard-stop
+    skeleton)라 첫 시도 판정을 흐리고, 핸드오프 라이브 커버리지는 기존 release 전체 묶음 시험/hard-stop
     계보가 보유한다.
     """
     return (
@@ -168,8 +168,8 @@ def _usability_prompt(card: str) -> str:
         "ready to promote (per the card's warning, claim rejects unfilled/draft tickets, so the "
         "body must be filled and the ticket promoted before you can claim it).\n"
         "  4. Promote it, claim it and then finish it: run, in order, the command lines the card lists "
-        "under its wave-claim entry (the promote line is among them, in card order) and then under its "
-        "wave-finish entry for this ticket, following the card's warnings. This ticket changes no code and is closed without a review round. "
+        "under its cluster-claim entry (the promote line is among them, in card order) and then under its "
+        "cluster-finish entry for this ticket, following the card's warnings. This ticket changes no code and is closed without a review round. "
         "One fact the card does not state: this project ships no test suite, so pass --no-pytest "
         "to the finish command.\n\n"
         "Command card:\n"
@@ -185,7 +185,7 @@ def _usability_prompt(card: str) -> str:
 def _collect_bash_commands(stdout: str) -> list[str]:
     """claude stream-json stdout 의 각 라인을 json 파싱 → 재귀 walk 로 Bash tool_use 커맨드 수집.
 
-    `_collect_subagent_types`(release_wave)와 동형 walk — claude 는 Bash 도구 호출을 `{"type":
+    `_collect_subagent_types`(release_cluster)와 같은 방식의 walk — claude 는 Bash 도구 호출을 `{"type":
     "tool_use","name":"Bash","input":{"command": "..."}}` 로 낸다. 형식 변동에 강건하게 *어느
     깊이든* 그 노드를 긁어 `input.command` 를 순서대로 모은다. 파싱 불가 라인(비-json·빈 줄)은
     무시. 이 커맨드 리스트가 첫 시도/재시도/--help 판정의 단일 입력이다.
@@ -221,13 +221,13 @@ _PY_EXECUTABLES = frozenset({"python", "python3", "py"})
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
 _SHELL_PUNCT = set("();<>|&;")  # shlex punctuation_chars — statement 를 가르는 연산자 문자.
 _OP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
-# 스크립트 자신이 곧 조작인 도구 — `board.py <op>` 와 달리 서브커맨드가 없다(카드의 강등 엔진 줄).
+# 스크립트 자신이 곧 조작인 도구 — `board.py <op>` 와 달리 서브커맨드가 없다(카드의 내부 엔진 줄).
 # `ticket_finish.py` = /pm-cluster-finish 의 엔진이고 그것이 카드의 유일한 완료 진입이다.
 _SCRIPT_OPS = {"pm_handoff.py": "handoff", "ticket_finish.py": "finish"}
 # 첫 하위 명령이 곧 조작인 도구 — 카드의 작업 폴더 전환은 `worktree_pool.py switch` 다([[T-0956]]).
 # board.py 에는 switch 하위 명령이 없어 조작 이름이 겹치지 않는다.
 _SUBCOMMAND_TOOLS = frozenset({"board.py", "worktree_pool.py"})
-# `board.py cluster` 는 다음 토큰이 이 이름일 때만 묶음 결속 조작이다 — `cluster show` 는 읽기라 반복 무해.
+# `board.py cluster` 는 다음 토큰이 이 이름일 때만 묶음 연결 조작이다 — `cluster show` 는 읽기라 반복 무해.
 _CLUSTER_BINDING_SUBCOMMAND = "new"
 # 스크립트 조작에 이 플래그가 붙으면 읽기다 — `ticket_finish.py --dry-run` 은 편집·board·git 없이 계획만
 # 출력한다(흐름 카드가 처음 도는 묶음에 먼저 보라고 한다·[[T-0958]]). `cluster show` 와 같은 원칙.
@@ -334,7 +334,7 @@ def _commands_leaving_the_sandbox(commands: Sequence[str], sandbox: Path) -> lis
 
     라이브 격리 홈은 바깥 저장소 트리 **안**에 만들어진다(임시 루트 규약·T-0890). 그래서 홈
     경로의 접두를 프로젝트 루트로 오독하면 모델이 바깥 PM 홈에 대고 backbone 을 돌린다
-    (2026-09-02 livegate #2 실측). 경계는 격리 홈이 아니라 **샌드박스**다 — 홈의 형제인
+    (2026-09-02 live-test #2 실측). 경계는 격리 홈이 아니라 **샌드박스**다 — 홈의 형제인
     readonly 좌표도 정당한 홈 밖 절대경로라, 홈으로 경계를 잡으면 그 정상 커맨드가 오탐이 된다.
     """
     root = Path(sandbox).resolve()
@@ -352,7 +352,7 @@ def _command_has_help_flag(command: str) -> bool:
     """커맨드에 `--help`/`-h` 가 **셸 토큰**으로 있는가 (MF-2).
 
     raw regex 는 따옴표/체인(`"--help"`·`--help; true`·`'-h'`)을 놓친다 — shlex 토큰화 후 정확히
-    `--help`/`-h` 토큰이 있는지 본다(`_executed_board_ops` 와 동형 파싱). `--tests-pass`·
+    `--help`/`-h` 토큰이 있는지 본다(`_executed_board_ops` 와 같은 방식의 파싱). `--tests-pass`·
     `--session-seq` 등은 토큰이 달라 오탐 0.
     """
     return any(tok in ("--help", "-h") for tok in _shell_tokens(command))
@@ -402,10 +402,10 @@ def _executed_board_ops(command: str) -> list[str]:
 
 
 def _board_op_mentions(text: str) -> list[str]:
-    """text 에 board/handoff 조작이 *언급*된 것을 loose 스캔 (opencode best-effort 전용·비-gating).
+    """text 에 board/handoff 조작이 *언급*된 것을 loose 스캔 (opencode best-effort 전용·판정 제외).
 
     opencode stdout 은 clean argv 가 아니라 에이전트 혼합 출력이라 실행/비실행 구분이 불가하다 —
-    이 scan 은 판정을 gate 하지 않고(opencode 는 side-effect + --help 만 hard) 통과 사유에 관측을
+    이 scan 은 판정을 막지 않고(opencode 는 side-effect + --help 만 hard) 통과 사유에 관측을
     실어 투명화하는 용도다(에코여도 무해). 실행 여부 hard 판정은 claude `_executed_board_ops` 몫.
     """
     ops = re.findall(r"(?:board|worktree_pool)\.py\s+([a-z][a-z0-9-]*)", text)
@@ -439,7 +439,7 @@ def _help_invocation_lines(text: str) -> list[str]:
 def _judge_commands(commands: list[str]) -> tuple[bool, str]:
     """실행 커맨드 리스트로 사용성 판정 (claude hard 경로) — 반환 (통과여부, 사유).
 
-    2중 단언(커맨드 표면):
+    2중 단언(커맨드 범위):
       1. `--help`/`-h` 호출 0 (카드만으론 부족해 도움말 왕복 = fail).
       2. 기대 lifecycle op(`_EXPECTED_LIFECYCLE_OPS`)가 **각 정확히 1회** 실행 관측. 0회=카드 커맨드
          건너뜀(누락)·2회+=재시도. side-effect(done/)만 보면 board 커맨드를 안 쓰고 파일만 옮겨도 통과하는
@@ -475,7 +475,7 @@ def _collect_bash_tool_calls(stdout: str) -> list[dict]:
     """claude stream-json 에서 Bash tool_use 를 {id, command} 로 순서대로 수집 (rc0 상관용).
 
     `_collect_bash_commands` 는 command 만 뽑지만, rc0 판정은 각 호출의 `id` 로 tool_result 를
-    상관해야 하므로 id 를 함께 보존한다. walk 는 동형(어느 깊이든 tool_use[name=Bash] 노드).
+    상관해야 하므로 id 를 함께 보존한다. walk 는 같은 방식(어느 깊이든 tool_use[name=Bash] 노드).
     """
     calls: list[dict] = []
 
@@ -506,7 +506,7 @@ def _collect_bash_tool_calls(stdout: str) -> list[dict]:
 def _collect_tool_results(stdout: str) -> dict[str, bool]:
     """claude stream-json 에서 tool_result 를 {tool_use_id: is_error(bool)} 로 수집 (rc 판정 근거).
 
-    claude Bash 도구는 rc≠0 실행을 tool_result `is_error=true` 로 표면화한다 — 이 플래그로 각 op 의
+    claude Bash 도구는 rc≠0 실행을 tool_result `is_error=true` 로 드러낸다 — 이 플래그로 각 op 의
     첫 실행 성공(rc0) 여부를 판정한다. is_error 키가 없으면 성공(False)으로 간주(일부 포맷은 성공 시
     생략). tool_result 자체가 없으면(id 미수집) 호출부가 'rc0 미확증'으로 처리한다.
     """
@@ -602,9 +602,9 @@ def _proc_tail(proc: subprocess.CompletedProcess, harness: str) -> str:
 
 
 def _judge_claude(dest: Path, proc: subprocess.CompletedProcess) -> tuple[bool, str]:
-    """claude 판정(hard) — 커맨드 표면(--help/정확-1회) + **첫 시도 rc0**(tool_result) + side-effect(done).
+    """claude 판정(hard) — 커맨드 범위(--help/정확-1회) + **첫 시도 rc0**(tool_result) + side-effect(done).
 
-    3게이트: (1) `_judge_commands` — --help 0·기대 op 정확-1회(누락/재시도 red). (2) `_judge_first_try_rc0`
+    3단 검사: (1) `_judge_commands` — --help 0·기대 op 정확-1회(누락/재시도 red). (2) `_judge_first_try_rc0`
     — 기대 op 각 첫 실행이 단일-op·rc 마스킹 0(`|| true`·`;` 등 red·R5)·rc0(is_error=False)인지(실패 후
     수동 보정 red·MF-1). (3) ticket done/ 도달.
     """
@@ -634,7 +634,7 @@ def _judge_opencode(dest: Path, proc: subprocess.CompletedProcess) -> tuple[bool
 
     **한계(claude 대비 비대칭)**: opencode 는 stream-json 처럼 tool-call 을 정밀 노출하지 않아(stdout
     스캔뿐) 기대 op {new, promote, claim, complete}의 **정확-1회를 hard-claim 할 수 없다** — LLM 이
-    board 커맨드를 안 쓰고 파일만 옮겨 done/ 을 만든 false-green 을 claude 만큼 못 막는다(release_wave
+    board 커맨드를 안 쓰고 파일만 옮겨 done/ 을 만든 false-green 을 claude 만큼 못 막는다(release_cluster
     위임-관측 비대칭 상속). 그래서 이 경로의 hard 상한 = side-effect(done) + --help 호출 스캔(카드-에코
     무해한 `.py`+help 패턴)이고, op 실행 관측은 stdout 에 커맨드가 에코될 때만 **best-effort** 다.
     """
@@ -648,9 +648,9 @@ def _judge_opencode(dest: Path, proc: subprocess.CompletedProcess) -> tuple[bool
             f"ticket 이 done/ 에 미도달 — 첫 시도 lifecycle 미완주.\n"
             f"open={_tickets_in(dest, 'open')} claimed={_tickets_in(dest, 'claimed')}\n{tail}"
         )
-    # best-effort: opencode stdout 에 board 커맨드가 언급되면 기대 op 를 loose 로 관측(gate 아님).
+    # best-effort: opencode stdout 에 board 커맨드가 언급되면 기대 op 를 loose 로 관측(판정 조건 아님).
     # opencode 는 정확-1회·실행여부를 hard-claim 못 하므로(위 한계) 관측 실패여도 fail 시키지 않는다 —
-    # 관측된 op 를 통과 사유에 실어 투명하게 남긴다(에코 포함 가능·비-gating·side-effect 로 판정).
+    # 관측된 op 를 통과 사유에 실어 투명하게 남긴다(에코 포함 가능·판정 제외·side-effect 로 판정).
     observed_ops = sorted(set(_board_op_mentions(proc.stdout)) & set(_EXPECTED_LIFECYCLE_OPS))
     return True, (
         f"clean(--help 호출 0·done={done}) · op 실행 관측(best-effort·hard 아님)={observed_ops}"
@@ -658,11 +658,11 @@ def _judge_opencode(dest: Path, proc: subprocess.CompletedProcess) -> tuple[bool
 
 
 def _attempt_with_single_rerun(run_attempt) -> tuple[bool, str]:
-    """flake 흡수 — 1차 판정 pass 면 즉시 반환, fail 이면 단건 1회 재실행 재판정(PM 51 livegate 방식).
+    """flake 받아들임 — 1차 판정 pass 면 즉시 반환, fail 이면 단건 1회 재실행 재판정(PM 51 live-test 방식).
 
     `run_attempt(i) -> (passed, detail)` — i 는 시도 인덱스(0=최초·1=재실행)로, 재실행은 *fresh
     홈*에서 돌려 이전 시도의 side-effect(done ticket)가 재판정을 오염(false-green)하지 않게 한다.
-    2차도 fail 이면 재현 fail 로 보고 red 유지(비결정 flake 만 흡수·진짜 결함은 통과 안 시킴).
+    2차도 fail 이면 재현 fail 로 보고 red 유지(비결정 flake 만 받아들임·진짜 결함은 통과 안 시킴).
     """
     passed, detail = run_attempt(0)
     if passed:
@@ -687,7 +687,7 @@ def _run_live_or_timeout(argv: list[str], *, cwd: str, env: dict, timeout: int, 
     """LLM subprocess 실행 — TimeoutExpired 를 `(None, detail)` 로 변환해 재실행 경로에 태운다 (suggestion).
 
     `subprocess.run(timeout=)` 의 TimeoutExpired 는 예외라, 그냥 두면 `_attempt_with_single_rerun`
-    의 단건 재실행을 못 타고 테스트가 즉시 error 난다. timeout 도 flake 흡수 대상(LLM 지연은 종종
+    의 단건 재실행을 못 타고 테스트가 즉시 error 난다. timeout 도 flake 로 받아들이는 대상(LLM 지연은 종종
     일시적)이므로 detail fail 로 바꿔 재실행 경로에 넣는다 — 2차도 timeout 이면 red(재현).
     반환 (proc, None) 정상 / (None, timeout_detail) timeout.
     """
@@ -714,7 +714,7 @@ def test_command_card_usability_claude(tmp_path):
     카드(ADR-0045)만 컨텍스트로 주고 카드 순서의 new→cluster new→promote→claim→종결을 시킨다 — 진입문서 경로 미제공.
     stream-json 으로 실행 커맨드·결과를 파싱해 --help/-h 호출·조작 재시도 0·**각 op 첫 실행 rc0**
     (tool_result is_error)를 hard 단언하고, side-effect(ticket done)로 완주를 확증한다. flake·timeout 은
-    단건 1회 재실행 흡수. claude 는 subprocess cwd 를 존중(`--dir` 불요). API 과금.
+    단건 1회 재실행으로 받아들임. claude 는 subprocess cwd 를 존중(`--dir` 불요). API 과금.
     """
     def run_attempt(attempt: int) -> tuple[bool, str]:
         dest = _import_attempt(tmp_path, "claude", attempt)
@@ -750,7 +750,7 @@ def test_command_card_usability_opencode_best_effort(tmp_path):
     + --help 호출 스캔이고, op 실행 관측은 stdout 에코가 있을 때만 best-effort 다. claude 경로
     (`test_command_card_usability_claude`)가 정확-1회를 hard 로 커버하는 짝이다. `--dir` 로 루트 핀
     (opencode 는 PWD 로 루트 오판). `--dangerously-skip-permissions`: 비대화 헤드리스라 --dir 를 external
-    로 보고 auto-reject 하지 않게(throwaway tmp adopter 격리·release_wave 동일 근거). API 과금 0(ollama).
+    로 보고 auto-reject 하지 않게(throwaway tmp adopter 격리·release_cluster 동일 근거). API 과금 0(ollama).
     """
     def run_attempt(attempt: int) -> tuple[bool, str]:
         dest = _import_attempt(tmp_path, "opencode", attempt)
@@ -779,9 +779,9 @@ def test_command_card_usability_opencode_best_effort(tmp_path):
 def test_render_command_card_has_lifecycle_commands():
     """카드 렌더가 lifecycle 커맨드(new/promote/claim + 묶음 종결)+핸드오프를 담고 --session 미포함.
 
-    완료 축은 `board.py complete` 가 아니라 묶음 종결이다 — 발행이 모든 티켓을 크기 1 묶음에
-    귀속시키므로 direct complete 는 결속 없이 거부되고, 카드는 그 줄을 싣지 않는다(X-001).
-    실행 줄만 본다: ticket_finish 강등 줄의 "내부서 board.py complete 수행" 주석이 토큰 검사를
+    완료 기준은 `board.py complete` 가 아니라 묶음 종결이다 — 발행이 모든 티켓을 크기 1 묶음에
+    귀속시키므로 direct complete 는 묶음 연결 없이 거부되고, 카드는 그 줄을 싣지 않는다(X-001).
+    실행 줄만 본다: ticket_finish 내부 엔진 줄의 "내부서 board.py complete 수행" 주석이 토큰 검사를
     대신 충족하면 이 가드가 공허해진다.
     """
     card = _render_command_card(REPO)
@@ -808,26 +808,26 @@ def test_usability_prompt_embeds_card_and_sequence():
     # 표준 조작 시퀀스 + probe 식별자.
     assert PROBE_TITLE in prompt
     for step in ("Create a new ticket", "Fill in the new ticket", "Promote it, claim it and then finish it",
-                 "the promote line is among them, in card order", "wave-claim entry", "wave-finish entry",
+                 "the promote line is among them, in card order", "cluster-claim entry", "cluster-finish entry",
                  "changes no code and is closed without a review round"):
         assert step in prompt, f"프롬프트에 '{step}' 단계 부재"
-    # 지시부(카드 임베드 앞)는 카드가 처방하지 않는 direct complete 를 시키지 않는다.
+    # 지시부(카드 임베드 앞)는 카드에 적히지 않은 direct complete 를 시키지 않는다.
     instructions = prompt.split("Command card:", 1)[0]
     assert "board.py complete" not in instructions and "--tests-pass" not in instructions, \
         "프롬프트가 카드에 없는 direct complete 를 시킨다(라이브에서만 red 나는 false-green)"
-    # 회귀 게이트 만족(`--no-pytest`)은 sync-gate 로그와 같은 축의 housekeeping 으로 명시된다.
+    # 회귀 통과 조건 만족(`--no-pytest`)은 동기화 확인 로그와 같은 기준의 housekeeping 으로 명시된다.
     assert "--no-pytest" in instructions
     # --help 사용 금지가 명시된다(사용성 판정 대상).
     assert "Do NOT run any command with --help or -h" in prompt
 
 
 def test_expected_lifecycle_ops_are_all_prescribed_by_the_card():
-    """기대 op 는 **카드가 실제로 처방하는 커맨드**에서만 온다 (X-001 낙수 가드).
+    """기대 op 는 **카드에 실제로 적힌 커맨드**에서만 온다 (X-001 낙수 가드).
 
-    카드에 없는 명령을 기대 op 로 남기면 라이브 게이트는 LLM 에게 존재하지 않는 커맨드를 요구해
+    카드에 없는 명령을 기대 op 로 남기면 라이브 검사는 LLM 에게 존재하지 않는 커맨드를 요구해
     반드시 red 가 되는데, 이 파일의 라이브 2건은 평시 skip 이라 회귀는 green 이다 — 정확히 이
     파일이 막으려는 false-green 클래스다. 그래서 카드 실행 줄에서 op 를 추출해 기대 집합과
-    대조한다(판정기·프롬프트·카드 3자 정합).
+    대조한다(판정기·프롬프트·카드 3자 일치).
     """
     card = _render_command_card(REPO)
     prescribed: set[str] = set()
@@ -835,15 +835,15 @@ def test_expected_lifecycle_ops_are_all_prescribed_by_the_card():
         prescribed.update(_executed_board_ops(line.split("#", 1)[0]))
     assert prescribed, "카드에서 실행 op 를 하나도 못 뽑았다(추출기 가정 붕괴)"
     missing = [op for op in _EXPECTED_LIFECYCLE_OPS if op not in prescribed]
-    assert not missing, f"카드가 처방하지 않는 기대 op: {missing} (카드 처방={sorted(prescribed)})"
+    assert not missing, f"카드가 적지 않은 기대 op: {missing} (카드에 적힌 op={sorted(prescribed)})"
     assert "complete" not in prescribed, \
         "카드가 direct complete 를 되살렸다 — 크기 1 묶음 귀속으로 항상 rc=1 이다"
 
 
 def test_t0956_card_prescribes_closing_steps():
-    """[[T-0956]] AT-010 — 첫 티켓을 닫는 조작은 카드가 처방하고 프롬프트는 그 명령을 쓰지 않는다.
+    """[[T-0956]] AT-010 — 첫 티켓을 닫는 조작은 카드가 안내하고 프롬프트는 그 명령을 쓰지 않는다.
 
-    기대 조작은 발행·묶음 결속·승격·리뷰 없는 종결 표시·claim·작업 폴더 전환·종결 7개이고(카드 순서·[[T-0960]]) 전부 카드
+    기대 조작은 발행·묶음 연결·승격·리뷰 없는 종결 표시·claim·작업 폴더 전환·종결 7개이고(카드 순서·[[T-0960]]) 전부 카드
     실행 줄에서 뽑힌다. 프롬프트 지시부(카드 임베드 앞)에는 그 명령·이름과 옛 prefix·로그 지시가
     없고, 카드 밖 사실인 `--no-pytest` 만 있다.
     """
@@ -856,7 +856,7 @@ def test_t0956_card_prescribes_closing_steps():
     assert set(_EXPECTED_LIFECYCLE_OPS) <= prescribed, sorted(prescribed)
     instructions = _usability_prompt(card).split("Command card:", 1)[0]
     for banned in ("board.py tier", "cluster new", "worktree_pool.py", "--prefix", "log/current.md"):
-        assert banned not in instructions, f"프롬프트 지시부가 카드 처방을 대신 적었다: {banned}"
+        assert banned not in instructions, f"프롬프트 지시부가 카드에 적힌 명령을 대신 적었다: {banned}"
     assert "--no-pytest" in instructions
 
 
@@ -872,7 +872,7 @@ _CARD_TOOLS_MARK = ".project_manager/tools/"
 def _card_command_lines(card: str) -> dict[tuple[str, str | None], str]:
     """카드 실행 줄 → `(도구, 첫 하위 명령)` 별 첫 줄(주석 제외·인터프리터 포함 그대로).
 
-    인터프리터 접두(`python3`·Windows `py -3`)는 하드코딩하지 않는다 — 도구 경로 표식 앞은 줄째
+    인터프리터 접두(`python3`·Windows `py -3`)는 하드코딩하지 않는다 — 도구 경로 표시 앞은 줄째
     보존한다. 하위 명령이 없는 도구(`ticket_finish.py <T-NNNN>`)는 None 키다.
     """
     found: dict[tuple[str, str | None], str] = {}
@@ -926,7 +926,7 @@ def _run_card_line(dest: Path, line: str, fills: dict[str, str], extra: Sequence
     return proc
 
 
-# 티켓 폴더 — 기본 형상은 PM 홈 git 안(`wiki/tickets`), 공유 board 형상은 별도 git(`board/tickets`)이다.
+# 티켓 폴더 — 기본 구성은 PM 홈 git 안(`wiki/tickets`), 공유 board 구성은 별도 git(`board/tickets`)이다.
 _CARD_TICKET_ROOTS = (Path(".project_manager") / "wiki" / "tickets", Path(".project_manager") / "board" / "tickets")
 
 
@@ -969,7 +969,7 @@ _CARD_SLOT_FORM_RE = re.compile(r"<slot>=(?P<form>[^)\s]+)\)")
 # pm-cluster-claim 흐름 카드의 같은 규칙(bash 주석이라 백틱이 없다).
 _SKILL_NAME_RULE_RE = re.compile(r"예: (?P<example>[\w.-]+)\)\. 티켓 ID 모양\((?P<reserved>[^)]+)\)")
 _SKILL_REPO_PLACEHOLDER_RE = re.compile(r"--repo (<[^>]+>)")
-_WAVE_SKILLS = REPO / ".claude" / "skills"
+_CLUSTER_SKILLS = REPO / ".claude" / "skills"
 
 
 def _card_name_rule(card: str) -> tuple[str, str]:
@@ -1020,7 +1020,7 @@ def test_t0956_card_cluster_name_rule_matches_engine(monkeypatch):
         card = _render_command_card(REPO)
         rules.append(_card_name_rule(card))
         assert _CARD_SLOT_FORM_RE.search(card)["form"] == "work/<repo>_<N>"
-    claim_skill = (_WAVE_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
+    claim_skill = (_CLUSTER_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
     skill_rule = _SKILL_NAME_RULE_RE.search(claim_skill)
     assert skill_rule, "pm-cluster-claim 흐름 카드가 묶음 이름 규칙을 싣지 않는다"
     rules.append((skill_rule["example"], skill_rule["reserved"]))
@@ -1033,7 +1033,7 @@ def test_t0956_card_cluster_name_rule_matches_engine(monkeypatch):
     assert cluster_rules._validate_cluster_name(instance) is not None
     assert cluster_rules.is_auto_cluster_id(instance) == instance
     for name in ("pm-cluster-claim", "pm-cluster-finish"):
-        text = (_WAVE_SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
+        text = (_CLUSTER_SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
         placeholders = _SKILL_REPO_PLACEHOLDER_RE.findall(text)
         assert placeholders and set(placeholders) == {"<repo>"}, (name, placeholders)
 
@@ -1067,7 +1067,7 @@ def test_t0956_flow_card_rule_scopes_task_name(monkeypatch):
                           for token in _RETIRED_PLACEHOLDERS if token in text]
     assert leftovers == []
 
-    lines = (_WAVE_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8").splitlines()
+    lines = (_CLUSTER_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8").splitlines()
     cluster_new = [line for line in lines if "board.py cluster new " in line]
     assert cluster_new and all("board.py cluster new <ticket-group> " in line for line in cluster_new)
     claim = [line for line in lines if "board.py claim " in line and "--task " in line]
@@ -1138,8 +1138,8 @@ def test_t0956_card_commands_close_first_ticket(tmp_path):
     assert "status: closed" in (clusters / f"C-{example}.md").read_text(encoding="utf-8")
 
 
-# 카드 줄 순서 = 실행 순서다([[T-0960]]). board 형상(PM 홈 git 안·공유 board)과 무관한 한 순서이고, 공유
-# board 의 promote 가 묶음 결속을 요구하고 tier 가 draft 를 거부하므로 cluster new 가 promote 앞이다.
+# 카드 줄 순서 = 실행 순서다([[T-0960]]). board 구성(PM 홈 git 안·공유 board)과 무관한 한 순서이고, 공유
+# board 의 promote 가 묶음 연결을 요구하고 tier 가 draft 를 거부하므로 cluster new 가 promote 앞이다.
 _CARD_FLOW = (("board.py", "new"), ("board.py", "cluster"), ("board.py", "promote"), ("board.py", "tier"),
               ("board.py", "show"), ("board.py", "lint"), ("board.py", "claim"), ("worktree_pool.py", "switch"))
 
@@ -1157,11 +1157,11 @@ def _card_line_positions(card: str) -> dict[tuple[str, str | None], int]:
 
 
 def test_t0960_card_draft_notes_follow_board_shape(tmp_path):
-    """[[T-0960]] AT-001 — 카드의 new·promote·claim 설명과 줄 순서가 두 board 형상에서 같은 한 가지로 참이다.
+    """[[T-0960]] AT-001 — 카드의 new·promote·claim 설명과 줄 순서가 두 board 구성에서 같은 한 가지로 참이다.
 
-    기본 형상(board 가 PM 홈 git 안)의 `board.py new` 는 draft 없이 `open/` 에 바로 발행하고, 공유 board
-    (별도 git) 형상은 draft 를 만든다. 카드는 형상 조건 문구 없이 두 형상에서 참인 평서문을 쓰고, 줄은
-    new → cluster new → promote → tier → show → lint → claim → switch 순서로 출력한다. 기본 형상에서
+    기본 구성(board 가 PM 홈 git 안)의 `board.py new` 는 draft 없이 `open/` 에 바로 발행하고, 공유 board
+    (별도 git) 구성은 draft 를 만든다. 카드는 구성 조건 문구 없이 두 구성에서 참인 평서문을 쓰고, 줄은
+    new → cluster new → promote → tier → show → lint → claim → switch 순서로 출력한다. 기본 구성에서
     그 순서로 new·cluster new·promote 를 실행하면 티켓은 `open/` 에 있고 promote 는 rc 0 으로 그대로 둔다.
     """
     dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1)
@@ -1187,7 +1187,7 @@ def test_t0960_card_draft_notes_follow_board_shape(tmp_path):
 
 
 def _shared_board_adopter(tmp_path: Path, monkeypatch, *, folders: int) -> Path:
-    """공유 board(별도 git) 형상 채택자 — `_guided_adopter` 와 같은 안내 경로에 `--board-submodule` 만 더한다.
+    """공유 board(별도 git) 구성 채택자 — `_guided_adopter` 와 같은 안내 경로에 `--board-submodule` 만 더한다.
 
     board 원격은 로컬 bare 저장소다. git 기본값은 submodule 의 로컬 경로 복제를 막으므로
     (`transport 'file' not allowed`) 이 시험의 자식 프로세스에만 `protocol.file.allow=always` 를 준다.
@@ -1216,11 +1216,11 @@ def _shared_board_adopter(tmp_path: Path, monkeypatch, *, folders: int) -> Path:
 @pytest.mark.parametrize("folders", (1, 2))
 @pytest.mark.parametrize("shape", ("default", "shared-board"))
 def test_t0960_card_flow_runs_first_try_in_both_board_shapes(tmp_path, monkeypatch, shape, folders):
-    """[[T-0960]] — 카드 줄을 적힌 순서대로 실행하면 두 board 형상·작업 폴더 1개와 2개에서 new 부터 switch 까지
+    """[[T-0960]] — 카드 줄을 적힌 순서대로 실행하면 두 board 구성·작업 폴더 1개와 2개에서 new 부터 switch 까지
     전부 첫 시도에 rc 0 이다.
 
     폴더 2개면 카드 경고대로 발행·claim 은 작업 폴더(2번), cluster new 는 통합 폴더(1번)를 지목한다. 공유
-    board 형상의 new 는 draft 를 만들고, cluster new 로 묶은 뒤의 promote 가 open 으로 옮긴다.
+    board 구성의 new 는 draft 를 만들고, cluster new 로 묶은 뒤의 promote 가 open 으로 옮긴다.
     """
     if shape == "default":
         dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=folders)
@@ -1251,7 +1251,7 @@ def test_t0960_pm_env_skill_matches_card_alloc_flow():
     문장(지워진 바인딩 안내에 붙어 있던 것)이 없다. 세션 시작은 사용자가 정하고 `--user-ack` 를 세션이 스스로
     붙이지 않는다는 문장은 남는다. 원본과 채택자에게 깔리는 사본 전부를 본다.
     """
-    skills = [_WAVE_SKILLS / "pm-env" / "SKILL.md",
+    skills = [_CLUSTER_SKILLS / "pm-env" / "SKILL.md",
               *sorted((REPO / "templates").glob("*/*/skills/pm-env/SKILL.md")),
               *sorted((REPO / "templates").glob("*/*/command/pm-env.md"))]
     assert len(skills) == 5, skills
@@ -1430,14 +1430,14 @@ def test_t0958_card_multirepo_one_folder_each_closes_first_ticket(tmp_path):
 def test_t0958_flow_cards_state_switch_order(tmp_path):
     """[[T-0958]] — 흐름 카드가 switch 필수·순서·폴더 선택과 task 세션의 claim 줄을 실행 줄 옆에 싣는다.
 
-    pm-cluster-claim: lint 줄은 `lint --gate`, 5단계 claim 줄은 하나이고 `--task <task>` 를 갖는다(T-0962 — 슬롯
+    pm-cluster-claim: lint 줄은 `lint --blocking`, 5단계 claim 줄은 하나이고 `--task <task>` 를 갖는다(T-0962 — 슬롯
     세션 claim 줄은 없다), 6단계는 코드 변경이 없어도 실행하고 폴더 1개·2개의 대상과 파일 수정 시점을 말한다.
     pm-cluster-finish: 실행 블록의 전제와 dry-run 항목이 switch 뒤를 말한다. 옛 슬롯 형식 claim
     (`--repo --slot` 만)은 claim 자체가 rc 1 이고 티켓은 open 에 남는다([[T-0959]] AT-008 · 예전에는 claim
     이 통과하고 종결이 소유 불일치로 막혔다).
     """
-    claim_text = (_WAVE_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
-    finish_text = (_WAVE_SKILLS / "pm-cluster-finish" / "SKILL.md").read_text(encoding="utf-8")
+    claim_text = (_CLUSTER_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
+    finish_text = (_CLUSTER_SKILLS / "pm-cluster-finish" / "SKILL.md").read_text(encoding="utf-8")
     block = claim_text.split("```bash", 1)[1].split("```", 1)[0].splitlines()
     assert any(line.strip() == "python3 .project_manager/tools/board.py lint --blocking" for line in block)
     claims = [index for index, line in enumerate(block) if "board.py claim " in line]
@@ -1482,12 +1482,12 @@ def _markdown_section(text: str, heading: str) -> str:
 def test_t0958_delegate_docs_state_switch_after_claim():
     """[[T-0958]] — 위임 경로 문서도 claim 뒤 switch(코드 변경이 없어도, 작업·종결 전)를 claim 바로 옆에 싣는다.
 
-    pm_playbook §Wave 구성 2항(묶음 선언 + claim)과 pm-dev-delegate 의 클러스터 단계 표(묶음 선언 바로 다음
+    pm_playbook §묶음 구성 2항(묶음 선언 + claim)과 pm-dev-delegate 의 클러스터 단계 표(묶음 선언 바로 다음
     행)·사전 조건(claim 항목 바로 다음 항목)이 대상이다. 원본과 채택자에게 깔리는 사본 전부를 본다.
     """
     playbooks = [REPO / ".project_manager" / "wiki" / "pm_playbook.md",
                  *sorted((REPO / "templates").glob("*/.project_manager/wiki/pm_playbook.md"))]
-    cards = [_WAVE_SKILLS / "pm-dev-delegate" / "SKILL.md",
+    cards = [_CLUSTER_SKILLS / "pm-dev-delegate" / "SKILL.md",
              *sorted((REPO / "templates").glob("*/*/skills/pm-dev-delegate/SKILL.md")),
              *sorted((REPO / "templates").glob("*/*/command/pm-dev-delegate.md"))]
     assert len(playbooks) > 1 and len(cards) > 1, (playbooks, cards)
@@ -1517,7 +1517,7 @@ def test_t0958_delegate_work_location_names_work_folder():
     브랜치에 옮긴 작업 폴더다. 잉여 슬롯 반납(`pm_config.py release`)으로 위치를 고르지 않는다. codex 어댑터
     원본(`.agents`)을 포함해 원본과 출하 사본 전부를 본다(codex 절 제목은 꼬리표가 붙는다).
     """
-    cards = [_WAVE_SKILLS / "pm-dev-delegate" / "SKILL.md",
+    cards = [_CLUSTER_SKILLS / "pm-dev-delegate" / "SKILL.md",
              *sorted((REPO / "templates").glob("*/*/skills/pm-dev-delegate/SKILL.md")),
              *sorted((REPO / "templates").glob("*/*/command/pm-dev-delegate.md"))]
     assert any(".agents" in path.parts for path in cards) and len(cards) == 5, cards
@@ -1533,21 +1533,21 @@ def test_t0958_delegate_work_location_names_work_folder():
         assert re.findall(r"--slot (\d+)`", section) == ["2"], path
 
 
-def _run_multirepo_wave(home: Path, repo: str, edit=None, *, finish_rc: int = 0) -> subprocess.CompletedProcess:
+def _run_multirepo_cluster(home: Path, repo: str, edit=None, *, finish_rc: int = 0) -> subprocess.CompletedProcess:
     """다중 저장소 프롬프트의 그 저장소 실행 줄을 순서대로 실행한다 — 인터프리터만 이 프로세스로 바꾼다.
 
     맨 앞 부트스트랩 줄은 하네스 가드 훅이 세션을 기록해야 도는 줄이라 뺀다(작업 폴더 쓰기 가드를 여는
     용도 · 비라이브엔 가드 훅이 없다). 종결 줄 앞에서 파일을 쓰고(`edit` · 기본은 작업 폴더에 프롬프트 내용)
     완료 조건을 체크한다. 종결 앞 줄마다 rc 0, 종결 줄은 `finish_rc` 를 단언하고 종결 줄의 실행 결과를 돌려준다.
     """
-    commands = _multirepo_wave_commands(repo)
-    work = home / "work" / f"{repo}_{_WAVE_WORK_SLOT}"
+    commands = _multirepo_cluster_commands(repo)
+    work = home / "work" / f"{repo}_{_CLUSTER_WORK_SLOT}"
     tid = _MULTIREPO_TICKET
     for index, command in enumerate(commands):
         last = index == len(commands) - 1
         if last:
             if edit is None:
-                (work / _WAVE_FILE).write_text(f"done by {repo}\n", encoding="utf-8")
+                (work / _CLUSTER_FILE).write_text(f"done by {repo}\n", encoding="utf-8")
             else:
                 edit()
             _check_card_dod(home, tid)
@@ -1566,19 +1566,19 @@ def test_t0958_multirepo_prompt_follows_card_and_closes_each_repo(tmp_path):
     """[[T-0958]] — 다중 저장소 프롬프트의 실행 줄은 카드 줄에 값을 채운 것이고 카드 순서다. 그대로 실행하면
     저장소마다 티켓 done·묶음 closed·바꾼 파일이 묶음 브랜치와 통합 브랜치 `<repo>_1` 에 있다.
 
-    라이브 단언(`_assert_multirepo_wave_side_effects`)이 이 결과를 통과시킨다. 카드 줄과의 대조는 도구
-    경로 표식 뒤만 본다(인터프리터 접두는 플랫폼마다 다르다).
+    라이브 단언(`_assert_multirepo_cluster_side_effects`)이 이 결과를 통과시킨다. 카드 줄과의 대조는 도구
+    경로 표시 뒤만 본다(인터프리터 접두는 플랫폼마다 다르다).
     """
-    home = _multirepo_wave_home(tmp_path, "claude")
-    card = _render_command_card(home, task=_RELEASE_WAVE_TASK)
+    home = _multirepo_cluster_home(tmp_path, "claude")
+    card = _render_command_card(home, task=_RELEASE_CLUSTER_TASK)
     lines = _card_command_lines(card)
     order = list(lines)
     for repo in _MULTIREPO_REPOS:
-        fills = {'"<제목>"': f'"wave probe {repo}"', "<T-NNNN>": _MULTIREPO_TICKET,
-                 "T-NNNN": _MULTIREPO_TICKET, "<ticket-group>": f"wave-{repo}",
-                 "<slot>": _card_slot_value(card, repo, _WAVE_WORK_SLOT)}
+        fills = {'"<제목>"': f'"cluster probe {repo}"', "<T-NNNN>": _MULTIREPO_TICKET,
+                 "T-NNNN": _MULTIREPO_TICKET, "<ticket-group>": f"probe-{repo}",
+                 "<slot>": _card_slot_value(card, repo, _CLUSTER_WORK_SLOT)}
         positions = []
-        for command in _multirepo_wave_commands(repo):
+        for command in _multirepo_cluster_commands(repo):
             rest = command.split(_CARD_TOOLS_MARK, 1)[1]
             words = rest.split()
             key = (words[0], words[1] if len(words) > 1 and words[1].isalpha() else None)
@@ -1588,47 +1588,47 @@ def test_t0958_multirepo_prompt_follows_card_and_closes_each_repo(tmp_path):
             assert rest == expected or rest.startswith(expected + " "), (rest, expected)
             positions.append(order.index(key))
         assert positions == sorted(positions), positions
-        _run_multirepo_wave(home, repo)
-    _assert_multirepo_wave_side_effects(home, subprocess.CompletedProcess([], 0, "", ""), "비라이브 재현")
+        _run_multirepo_cluster(home, repo)
+    _assert_multirepo_cluster_side_effects(home, subprocess.CompletedProcess([], 0, "", ""), "비라이브 재현")
 
 
 @pytest.mark.parametrize(
     "shape", ["uncommitted-in-integration-folder", "committed-on-integration-branch", "closed-without-merge"])
 def test_t0958_multirepo_side_effects_reject_unmerged_change(tmp_path, shape):
-    """[[T-0958]] — 바꾼 파일이 종결의 머지로 들어가지 않은 웨이브는 티켓 done·묶음 closed 여도 단언이 거부한다.
+    """[[T-0958]] — 바꾼 파일이 종결의 머지로 들어가지 않은 묶음 시험은 티켓 done·묶음 closed 여도 단언이 거부한다.
 
-    6d1c39c9 라이브의 두 형상: 통합 폴더에 커밋하지 않은 파일(폴더 결과는 opencode 와 같다)과 통합 브랜치
-    직접 커밋(claude). 두 형상은 예전에 종결이 rc 0 이었고 통합 폴더에 파일이 있어 옛 단언은 통과시켰다.
-    [[T-0959]] 부터 두 형상은 종결 줄이 첫 부작용 전에 "완료 기록 거부" 로 멈추고 티켓 claimed·장부 open 이다 —
-    단언은 그 상태도 거부한다. 셋째 형상은 작업 폴더에서 고쳐 묶음 브랜치에는 있으나 통합 브랜치에 머지되지
-    않은 결과다(장부만 닫힌 경우 · 종결 뒤 통합 브랜치를 종결 전 커밋으로 되돌려 만든다). 통합 브랜치 확인이
+    6d1c39c9 라이브의 두 구성: 통합 폴더에 커밋하지 않은 파일(폴더 결과는 opencode 와 같다)과 통합 브랜치
+    직접 커밋(claude). 두 구성은 예전에 종결이 rc 0 이었고 통합 폴더에 파일이 있어 옛 단언은 통과시켰다.
+    [[T-0959]] 부터 두 구성은 종결 줄이 첫 부작용 전에 "완료 기록 거부" 로 멈추고 티켓 claimed·묶음 기록 open 이다 —
+    단언은 그 상태도 거부한다. 셋째 구성은 작업 폴더에서 고쳐 묶음 브랜치에는 있으나 통합 브랜치에 머지되지
+    않은 결과다(묶음 기록만 닫힌 경우 · 종결 뒤 통합 브랜치를 종결 전 커밋으로 되돌려 만든다). 통합 브랜치 확인이
     머지 없는 종결을 거부한다.
     """
-    home = _multirepo_wave_home(tmp_path, "claude")
-    integration = home / "work" / f"repoa_{_WAVE_INTEGRATION_SLOT}"
+    home = _multirepo_cluster_home(tmp_path, "claude")
+    integration = home / "work" / f"repoa_{_CLUSTER_INTEGRATION_SLOT}"
     bare = ["git", "--git-dir", str(home / ".repos" / "repoa.git")]
-    base = f"repoa_{_WAVE_INTEGRATION_SLOT}"
+    base = f"repoa_{_CLUSTER_INTEGRATION_SLOT}"
     before = subprocess.run([*bare, "rev-parse", base], capture_output=True, text=True, check=True).stdout.strip()
 
     def edit() -> None:
-        (integration / _WAVE_FILE).write_text("done by repoa\n", encoding="utf-8")
+        (integration / _CLUSTER_FILE).write_text("done by repoa\n", encoding="utf-8")
         if shape == "committed-on-integration-branch":
-            for argv in (["add", _WAVE_FILE], ["commit", "-q", "-m", "direct"]):
+            for argv in (["add", _CLUSTER_FILE], ["commit", "-q", "-m", "direct"]):
                 assert subprocess.run(["git", "-C", str(integration), *argv], capture_output=True,
                                       env={**os.environ, **_CARD_IDENTITY_ENV}).returncode == 0
 
     if shape == "closed-without-merge":
-        _run_multirepo_wave(home, "repoa")
+        _run_multirepo_cluster(home, "repoa")
         subprocess.run([*bare, "update-ref", f"refs/heads/{base}", before], check=True)
     else:
-        refused = _run_multirepo_wave(home, "repoa", edit=edit, finish_rc=1)
-        assert "완료 기록 거부" in refused.stderr and _WAVE_FILE in refused.stderr, refused.stderr
+        refused = _run_multirepo_cluster(home, "repoa", edit=edit, finish_rc=1)
+        assert "완료 기록 거부" in refused.stderr and _CLUSTER_FILE in refused.stderr, refused.stderr
         clusters = home / ".project_manager" / "wiki" / "tickets" / "clusters"
-        assert re.search(r"^status: open$", (clusters / "C-wave-repoa.md").read_text(encoding="utf-8"), flags=re.M)
-    _run_multirepo_wave(home, "repob")
-    assert (integration / _WAVE_FILE).exists()
+        assert re.search(r"^status: open$", (clusters / "C-probe-repoa.md").read_text(encoding="utf-8"), flags=re.M)
+    _run_multirepo_cluster(home, "repob")
+    assert (integration / _CLUSTER_FILE).exists()
     with pytest.raises(AssertionError, match="repo 'repoa'"):
-        _assert_multirepo_wave_side_effects(home, subprocess.CompletedProcess([], 0, "", ""), "비라이브 음성")
+        _assert_multirepo_cluster_side_effects(home, subprocess.CompletedProcess([], 0, "", ""), "비라이브 음성")
 
 
 # ── [[T-0959]] 종결·claim·발행 경로 결함 — 안내 경로 채택자에서 카드 줄 그대로 실행 ────────────────────
@@ -1664,7 +1664,7 @@ def _seed_home_only_doc(dest: Path) -> None:
     _commit_in(dest, _HOME_ONLY_DOC, message="home-only note")
 
 
-def _ledger_status(dest: Path, cluster: str) -> str | None:
+def _record_status(dest: Path, cluster: str) -> str | None:
     path = dest / ".project_manager" / "wiki" / "tickets" / "clusters" / f"C-{cluster}.md"
     match = re.search(r"^status:\s*(\S+)", path.read_text(encoding="utf-8"), flags=re.M)
     return match.group(1) if match else None
@@ -1742,29 +1742,29 @@ class _CardFlow:
 
 
 def _assert_home_clean_and_handoff(flow: _CardFlow) -> None:
-    """[[T-0959]] I1 — 종결 rc 0 뒤 홈에 미커밋이 없고 장부 `closed` 가 홈 HEAD 에 있으며 첫 핸드오프가 통과한다."""
+    """[[T-0959]] I1 — 종결 rc 0 뒤 홈에 미커밋이 없고 묶음 기록 `closed` 가 홈 HEAD 에 있으며 첫 핸드오프가 통과한다."""
     assert _home_status(flow.dest) == []
-    ledger = f".project_manager/wiki/tickets/clusters/C-{flow.cluster}.md"
-    shown = _git_out("-C", str(flow.dest), "show", f"HEAD:{ledger}")
+    record_path = f".project_manager/wiki/tickets/clusters/C-{flow.cluster}.md"
+    shown = _git_out("-C", str(flow.dest), "show", f"HEAD:{record_path}")
     assert shown.returncode == 0 and "status: closed" in shown.stdout, shown.stdout + shown.stderr
     handoff = flow.handoff()
     assert handoff.returncode == 0, handoff.stdout[-1500:] + handoff.stderr[-1500:]
 
 
 @pytest.mark.parametrize(
-    "shape", ["one-folder-no-code", "two-folders-code", "absorbed-size-one-ledger", "home-only-doc-deletion"])
+    "shape", ["one-folder-no-code", "two-folders-code", "absorbed-size-one-record", "home-only-doc-deletion"])
 def test_t0959_home_git_finish_leaves_home_clean(tmp_path, shape):
     """[[T-0959]] AT-001 — board 가 홈 git 인 채택자에서 카드 줄로 종결하면 그 묶음의 board 산출이 홈 커밋에 실린다.
 
-    종결은 장부에 `closed` 를 쓰고, 묶음 선언이 흡수한 크기 1 장부·이동한 티켓의 옛 경로·선언한 홈 문서의 삭제를
-    남긴다. 이 넷이 홈 커밋에 실리지 않으면 종결은 rc 0 인데 첫 핸드오프가 미커밋 잔여로 멈춘다.
+    종결은 묶음 기록에 `closed` 를 쓰고, 묶음 선언이 합친 크기 1 묶음 기록·이동한 티켓의 옛 경로·선언한 홈 문서의 삭제를
+    남긴다. 이 넷이 홈 커밋에 실리지 않으면 종결은 rc 0 인데 첫 핸드오프가 미커밋 남은 변경으로 멈춘다.
     """
     flow = _CardFlow(tmp_path, folders=2 if shape == "two-folders-code" else 1)
     if shape == "home-only-doc-deletion":
         _seed_home_only_doc(flow.dest)
-    if shape == "absorbed-size-one-ledger":
+    if shape == "absorbed-size-one-record":
         flow.publish_only()
-        _commit_in(flow.dest, ".", message="session outputs")       # 발행이 만든 크기 1 장부를 추적한다
+        _commit_in(flow.dest, ".", message="session outputs")       # 발행이 만든 크기 1 묶음 기록을 추적한다
         flow.declare()
     else:
         touches = {"two-folders-code": (_PROBE_FILE,), "home-only-doc-deletion": (_HOME_ONLY_DOC,)}.get(shape, ())
@@ -1786,24 +1786,24 @@ def test_t0959_home_git_finish_leaves_home_clean(tmp_path, shape):
     _assert_home_clean_and_handoff(flow)
 
 
-def test_t0959_multirepo_wave_leaves_home_clean(tmp_path):
+def test_t0959_multirepo_cluster_leaves_home_clean(tmp_path):
     """[[T-0959]] AT-002 — 다중 저장소 홈을 기준 커밋한 뒤 저장소마다 프롬프트 줄을 실행하면 홈이 깨끗하고 핸드오프가 통과한다."""
-    home = _multirepo_wave_home(tmp_path, "claude")
+    home = _multirepo_cluster_home(tmp_path, "claude")
     _commit_in(home, ".", message="baseline")
     assert _home_status(home) == []
     for repo in _MULTIREPO_REPOS:
-        _run_multirepo_wave(home, repo)
+        _run_multirepo_cluster(home, repo)
     assert _home_status(home) == []
     handoff = subprocess.run(
-        [sys.executable, str(home / ".project_manager" / "tools" / "pm_handoff.py"), "--task", _RELEASE_WAVE_TASK,
-         "--user-ack", _RELEASE_WAVE_TASK, "--no-pytest"],
+        [sys.executable, str(home / ".project_manager" / "tools" / "pm_handoff.py"), "--task", _RELEASE_CLUSTER_TASK,
+         "--user-ack", _RELEASE_CLUSTER_TASK, "--no-pytest"],
         cwd=home, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, **_CARD_IDENTITY_ENV})
     assert handoff.returncode == 0, handoff.stdout[-1500:] + handoff.stderr[-1500:]
 
 
 def _lost_change_flow(tmp_path: Path, shape: str) -> tuple[_CardFlow, str, list[str]]:
-    """선언한 변경이 종결의 머지 대상 밖에 놓이는 형상을 만든다 — (흐름, 잃은 경로, 종결할 티켓들)."""
+    """선언한 변경이 종결의 머지 대상 밖에 놓이는 구성을 만든다 — (흐름, 잃은 경로, 종결할 티켓들)."""
     if shape == "cluster-member-lost":
         flow = _CardFlow(tmp_path, folders=2, cluster="grp")
         members = []
@@ -1869,13 +1869,13 @@ def test_t0959_finish_refuses_declared_change_outside_merge(tmp_path, shape):
     assert "완료 기록 거부" in refused.stderr and "아직 아무 부작용도 내지 않았다" in refused.stderr, refused.stderr
     assert lost in refused.stderr, refused.stderr
     assert _tickets_in(flow.dest, "claimed") == {_card_ticket(flow.dest, member).name for member in members}
-    assert _ledger_status(flow.dest, flow.cluster) == "open"
+    assert _record_status(flow.dest, flow.cluster) == "open"
     assert _branch_rev(flow.dest, f"{flow.repo}_1") == base_before
     assert _home_head(flow.dest) == home_before
 
 
 def _declared_change_flow(tmp_path: Path, shape: str, *, removal: str = "rm") -> _CardFlow:
-    """선언한 변경이 머지 대상에 들어가는 정상 형상을 만들고 종결까지 실행한다(rc 단언은 호출부)."""
+    """선언한 변경이 머지 대상에 들어가는 정상 구성을 만들고 종결까지 실행한다(rc 단언은 호출부)."""
     def remove(folder: Path, path: str) -> None:
         if removal == "rm":
             (folder / path).unlink()
@@ -1885,13 +1885,13 @@ def _declared_change_flow(tmp_path: Path, shape: str, *, removal: str = "rm") ->
 
     if shape == "code-only-deletion":
         flow = _CardFlow(tmp_path, folders=2)
-        flow.publish((_CODE_ONLY_FILE,), title="add wave", cluster="add-wave")
+        flow.publish((_CODE_ONLY_FILE,), title="add probe", cluster="add-probe")
         flow.switch()
         (flow.work / _CODE_ONLY_FILE).write_text("x\n", encoding="utf-8")
         added = flow.finish()
         assert added.returncode == 0, added.stdout[-1500:] + added.stderr[-1500:]
         assert _branch_has(flow.dest, f"{flow.repo}_1", _CODE_ONLY_FILE)
-        flow.publish((_CODE_ONLY_FILE,), title="delete wave", cluster="delete-wave")
+        flow.publish((_CODE_ONLY_FILE,), title="delete probe", cluster="delete-probe")
         flow.switch()
         remove(flow.work, _CODE_ONLY_FILE)
         flow.removed = _CODE_ONLY_FILE
@@ -1935,7 +1935,7 @@ def test_t0959_finish_merges_declared_change(tmp_path, shape):
     flow = _declared_change_flow(tmp_path, shape)
     assert flow.finished.returncode == 0, flow.finished.stdout[-1500:] + flow.finished.stderr[-1500:]
     assert _card_ticket(flow.dest, flow.tid).parent.name == "done"
-    assert _ledger_status(flow.dest, flow.cluster) == "closed"
+    assert _record_status(flow.dest, flow.cluster) == "closed"
     if shape == "code-in-work-folder":
         shown = _git_out("--git-dir", str(flow.dest / ".repos" / f"{flow.repo}.git"), "show",
                          f"{flow.repo}_1:{_PROBE_FILE}")
@@ -1957,15 +1957,15 @@ def test_t0959_finish_commits_git_rm_staged_deletion(tmp_path, shape):
     flow = _declared_change_flow(tmp_path, shape, removal="git-rm")
     assert flow.finished.returncode == 0, flow.finished.stdout[-1500:] + flow.finished.stderr[-1500:]
     assert "스코프 밖 staged" not in flow.finished.stderr
-    assert _ledger_status(flow.dest, flow.cluster) == "closed"
+    assert _record_status(flow.dest, flow.cluster) == "closed"
     _assert_deletion_merged(flow)
 
 
 def test_t0959_finish_refuses_clone_doc_edited_in_home(tmp_path):
-    """[[T-0959]] Q1 — 홈과 작업 폴더 양쪽에 있는 문서(clone 형상)를 홈에서만 고친 티켓은 종결 전에 멈춘다.
+    """[[T-0959]] Q1 — 홈과 작업 폴더 양쪽에 있는 문서(clone 구성)를 홈에서만 고친 티켓은 종결 전에 멈춘다.
 
     선언 경로가 작업 폴더에 있어 코드 몫이고, 홈의 편집은 머지 대상이 아니다. 예전 종결은 rc 0 이었지만 그 편집은
-    어느 커밋에도 없어 첫 핸드오프가 미커밋 잔여로 멈췄다. 이제 첫 부작용 전에 멈추고 홈 편집은 그대로 남는다.
+    어느 커밋에도 없어 첫 핸드오프가 미커밋 남은 변경으로 멈췄다. 이제 첫 부작용 전에 멈추고 홈 편집은 그대로 남는다.
     """
     doc = ".project_manager/wiki/architecture.md"
     flow = _CardFlow(tmp_path, folders=1)
@@ -1979,7 +1979,7 @@ def test_t0959_finish_refuses_clone_doc_edited_in_home(tmp_path):
     assert refused.returncode == 1, refused.stdout[-1500:] + refused.stderr[-1500:]
     assert "완료 기록 거부" in refused.stderr and doc in refused.stderr, refused.stderr
     assert _card_ticket(flow.dest, flow.tid).parent.name == "claimed"
-    assert _ledger_status(flow.dest, flow.cluster) == "open"
+    assert _record_status(flow.dest, flow.cluster) == "open"
     assert _home_head(flow.dest) == home_before
     assert "- probe edit" in (flow.dest / doc).read_text(encoding="utf-8")
 
@@ -1999,7 +1999,7 @@ def test_t0959_finish_refuses_declared_new_file_written_in_home(tmp_path):
     assert refused.returncode == 1, refused.stdout[-1500:] + refused.stderr[-1500:]
     assert "완료 기록 거부" in refused.stderr and _PROBE_FILE in refused.stderr, refused.stderr
     assert _card_ticket(flow.dest, flow.tid).parent.name == "claimed"
-    assert _ledger_status(flow.dest, flow.cluster) == "open"
+    assert _record_status(flow.dest, flow.cluster) == "open"
     assert _branch_rev(flow.dest, f"{flow.repo}_1") == base_before
     assert _home_head(flow.dest) == home_before
 
@@ -2014,12 +2014,12 @@ def test_t0959_finish_commits_new_doc_inside_home_state_root(tmp_path):
     finished = flow.finish()
     assert finished.returncode == 0, finished.stdout[-1500:] + finished.stderr[-1500:]
     assert _card_ticket(flow.dest, flow.tid).parent.name == "done"
-    assert _ledger_status(flow.dest, flow.cluster) == "closed"
+    assert _record_status(flow.dest, flow.cluster) == "closed"
     shown = _git_out("-C", str(flow.dest), "show", f"HEAD:{doc}")
     assert shown.returncode == 0 and shown.stdout == "note\n", shown.stderr
 
 
-# board 가 별도 git(서브모듈)인 형상의 git 설정 — 서브모듈 복제(file 프로토콜)를 이 자식 프로세스에서만 연다.
+# board 가 별도 git(서브모듈)인 구성의 git 설정 — 서브모듈 복제(file 프로토콜)를 이 자식 프로세스에서만 연다.
 _SUBMODULE_ENV = {**_CARD_IDENTITY_ENV, "GIT_CONFIG_COUNT": "3",
                   "GIT_CONFIG_KEY_2": "protocol.file.allow", "GIT_CONFIG_VALUE_2": "always"}
 
@@ -2071,8 +2071,8 @@ def _fill_any_ticket(dest: Path, tid: str) -> None:
 def test_t0959_board_submodule_finish_is_unchanged(tmp_path):
     """[[T-0959]] 역방향(I12) — board 가 별도 git(서브모듈)인 채택자의 종결은 바뀌지 않는다.
 
-    장부·티켓 이동은 board git 이 커밋하고, 홈 커밋은 log 와 board 포인터다. 종결 뒤 홈과 board 가 모두 깨끗하고
-    첫 핸드오프가 통과한다. 홈 git 형상에서 장부를 홈 커밋에 싣는 변경이 이 형상에 새지 않는다.
+    묶음 기록·티켓 이동은 board git 이 커밋하고, 홈 커밋은 log 와 board 포인터다. 종결 뒤 홈과 board 가 모두 깨끗하고
+    첫 핸드오프가 통과한다. 홈 git 구성에서 묶음 기록을 홈 커밋에 싣는 변경이 이 구성에 새지 않는다.
     """
     dest = _board_submodule_adopter(tmp_path)
     environment = {**os.environ, **_SUBMODULE_ENV}
@@ -2109,8 +2109,8 @@ def test_t0959_board_submodule_finish_is_unchanged(tmp_path):
 
 
 @pytest.mark.parametrize("shape", ["home-git", "board-submodule"])
-def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
-    """[[T-0959]] — pm-cluster-claim 실행 블록을 단계 순서대로 실행하면 두 board 형상 모두 claim·switch 까지 rc 0 이다.
+def test_t0959_cluster_claim_skill_steps_reach_switch(tmp_path, shape):
+    """[[T-0959]] — pm-cluster-claim 실행 블록을 단계 순서대로 실행하면 두 board 구성 모두 claim·switch 까지 rc 0 이다.
 
     블록이 cluster new 다음에 promote 를 싣는다. 공유 board(서브모듈)의 발행은 draft 라 promote 없이는 claim 이
     "currently in draft/" 로 막혔다. 홈 git board 의 발행은 이미 open 이라 promote 는 그대로 두고 rc 0 이다.
@@ -2122,10 +2122,10 @@ def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
     repo = dest.name
     tid = _created_ticket_id(_run_in(dest, "new", "skill probe", "--task", CARD_TASK, tool="board.py"))
     _fill_any_ticket(dest, tid)
-    claim_text = (_WAVE_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
+    claim_text = (_CLUSTER_SKILLS / "pm-cluster-claim" / "SKILL.md").read_text(encoding="utf-8")
     block = claim_text.split("```bash", 1)[1].split("```", 1)[0].splitlines()
     step6 = next(index for index, line in enumerate(block) if line.startswith("# 6."))
-    fills = {"<ticket-group>": "wave-probe", "<T-NNNN,T-NNNN>": tid, "T-NNNN": tid,
+    fills = {"<ticket-group>": "cluster-probe", "<T-NNNN,T-NNNN>": tid, "T-NNNN": tid,
              "<설계 문서 경로>": ".project_manager/wiki/architecture.md", "<repo>": repo, "<N>": "1",
              "<task>": CARD_TASK, "<slot>": f"work/{repo}_1"}
     executed: list[str] = []
@@ -2151,9 +2151,9 @@ def test_t0959_wave_claim_skill_steps_reach_switch(tmp_path, shape):
 
 
 def test_t0959_direct_cluster_close_is_refused_then_finish_closes(tmp_path):
-    """[[T-0959]] AT-011 — 내부 결속 플래그로 `board.py complete` 를 직접 부르면 종결 파이프라인 밖이라 거부된다.
+    """[[T-0959]] AT-011 — 내부 묶음 연결 플래그로 `board.py complete` 를 직접 부르면 종결 파이프라인 밖이라 거부된다.
 
-    예전에는 티켓만 done 으로 옮기고 장부·머지를 남겨 이어지는 종결이 복구 경로 처방만 냈다. 거부 뒤 카드의 종결 줄이
+    예전에는 티켓만 done 으로 옮기고 묶음 기록·머지를 남겨 이어지는 종결이 복구 경로 안내만 냈다. 거부 뒤 카드의 종결 줄이
     그대로 닫는다.
     """
     flow = _CardFlow(tmp_path, folders=2)
@@ -2169,7 +2169,7 @@ def test_t0959_direct_cluster_close_is_refused_then_finish_closes(tmp_path):
     assert direct.returncode == 1, direct.stdout + direct.stderr
     assert "closing" in direct.stderr and f"ticket_finish.py --cluster C-{flow.cluster}" in direct.stderr
     assert _card_ticket(flow.dest, flow.tid).parent.name == "claimed"
-    assert _ledger_status(flow.dest, flow.cluster) == "open"
+    assert _record_status(flow.dest, flow.cluster) == "open"
 
     finished = flow.finish()
     assert finished.returncode == 0, finished.stdout[-1500:] + finished.stderr[-1500:]
@@ -2203,7 +2203,7 @@ def test_t0959_new_output_lint_command_passes_after_fill(tmp_path):
 def test_t0959_promote_output_names_what_happened(tmp_path):
     """[[T-0959]] N2 — board 가 홈 git 인 채택자에서 promote 출력은 board-git 승격을 말하지 않는다.
 
-    이 형상의 발행은 draft 를 만들지 않고 board-git 도 없다 — 이동도 board-git 커밋도 없는데 "board-git 승격
+    이 구성의 발행은 draft 를 만들지 않고 board-git 도 없다 — 이동도 board-git 커밋도 없는데 "board-git 승격
     완료" 라고 말하던 것을 실제로 일어난 일(open/ 그대로, 커밋 없음)로 바꾼다.
     """
     dest = _guided_adopter(tmp_path, "claude", task=CARD_TASK, folders=1)
@@ -2261,7 +2261,7 @@ def test_command_has_help_flag_detects_shlex_tokens():
     assert not _command_has_help_flag("python3 board.py complete T-1 --tests-pass")
     assert not _command_has_help_flag("python3 ticket_finish.py T-1 --no-pytest")
     assert not _command_has_help_flag("python3 board.py list --mine")
-    assert not _command_has_help_flag("python3 pm_handoff.py --session-seq 1 --wave-summary x")
+    assert not _command_has_help_flag("python3 pm_handoff.py --session-seq 1 --session-summary x")
     assert not _command_has_help_flag("python3 board.py new --help-me")  # --help 아님(경계).
 
 
@@ -2269,7 +2269,7 @@ def test_commands_leaving_the_sandbox_are_detected(tmp_path):
     """샌드박스 밖으로 나가는 커맨드만 잡는다 — 홈의 형제(readonly 좌표)는 오탐이 아니다.
 
     라이브 격리 홈은 바깥 PM 홈 트리 안에 만들어지므로(임시 루트 규약), 모델이 홈 경로의 접두를
-    프로젝트 루트로 오독하면 바깥 장부에 대고 backbone 을 돈다(2026-09-02 livegate #2 의 그 한 줄이
+    프로젝트 루트로 오독하면 바깥 슬롯 대여 기록에 대고 backbone 을 돈다(2026-09-02 live-test #2 의 그 한 줄이
     아래 음성 사례다). 경계는 홈이 아니라 샌드박스라, 홈 밖이지만 샌드박스 안인 readonly 좌표를
     위반으로 잡으면 정상 커맨드가 red 가 된다.
     """
@@ -2303,8 +2303,8 @@ def test_board_operation_classifies_lifecycle_and_handoff():
     assert _board_operation(f"{inv}/board.py promote T-1") == "promote"
     assert _board_operation(f"{inv}/board.py claim T-1") == "claim"
     assert _board_operation(f"{inv}/ticket_finish.py T-1 --no-pytest") == "finish"
-    assert _board_operation(f"{inv}/pm_handoff.py --session-seq 1 --wave-summary x") == "handoff"
-    # direct complete 는 여전히 파싱되지만 **카드가 처방하지 않으므로** 시퀀스 어휘가 아니다.
+    assert _board_operation(f"{inv}/pm_handoff.py --session-seq 1 --session-summary x") == "handoff"
+    # direct complete 는 여전히 파싱되지만 **카드에 적히지 않으므로** 시퀀스 어휘가 아니다.
     assert _board_operation(f"{inv}/board.py complete T-1 --tests-pass") == "complete"
     assert "complete" not in _SEQUENCE_MUTATING_OPS
     # read op 는 분류되나 mutating 이 아니라 재시도 판정 대상 아님.
@@ -2322,7 +2322,7 @@ def test_judge_commands_passes_clean_first_try_sequence():
 
 
 def test_judge_commands_ignores_read_only_cluster_show():
-    """[[T-0956]] AT-011 — 읽기 전용 `board.py cluster show` 는 묶음 결속 조작으로 세지 않는다.
+    """[[T-0956]] AT-011 — 읽기 전용 `board.py cluster show` 는 묶음 연결 조작으로 세지 않는다.
 
     모든 조작이 첫 시도에 1회씩 실행된 명령열에 묶음 확인 한 줄이 섞여도 통과하고, `cluster new`
     를 두 번 실행한 명령열은 여전히 재시도로 실패한다.
@@ -2399,9 +2399,9 @@ def test_judge_commands_flags_skipped_lifecycle_op():
 
 
 def test_judge_commands_flags_no_board_commands_used():
-    """board 커맨드를 아예 안 쓰고 파일만 직접 조작(mv 등)하면 fail — 게이트 무력화 방어(MF-1).
+    """board 커맨드를 아예 안 쓰고 파일만 직접 조작(mv 등)하면 fail — 검사 무력화 방어(MF-1).
 
-    카드 사용성 게이트의 존재 이유 = "실 LLM 이 *카드 커맨드*를 첫 시도에 제대로 쓰는가". board
+    카드 사용성 검사의 존재 이유 = "실 LLM 이 *카드 커맨드*를 첫 시도에 제대로 쓰는가". board
     커맨드 0 개면(예: `mv open/T.md done/T.md` 로 side-effect 만 위조) 반드시 red — 기대 op 전부
     미실행으로 잡힌다.
     """
@@ -2528,8 +2528,8 @@ def test_judge_claude_rejects_first_try_failures_with_manual_done(tmp_path):
     """각 op 를 첫 실행에서 rc≠0(is_error)로 실패시키고 done/ 을 수동 생성해도 _judge_claude fail — MF-1 rc0.
 
     op 정확-1회 + 재시도 0 이어도(각 op 딱 한 번 실행) 그 첫 실행이 전부 실패(is_error=True)면 "첫
-    시도 rc0" 주장이 거짓 — LLM 이 실패 후 파일 직접 조작으로 done/ 을 만든 상황. 커맨드 표면
-    (_judge_commands)만 보면 통과하겠지만(정확-1회·--help 0), rc0 게이트가 red 를 세운다(실패-후-수동
+    시도 rc0" 주장이 거짓 — LLM 이 실패 후 파일 직접 조작으로 done/ 을 만든 상황. 커맨드 범위
+    (_judge_commands)만 보면 통과하겠지만(정확-1회·--help 0), rc0 검사가 red 를 세운다(실패-후-수동
     보정 sensitivity — 현 코드가 rc 를 안 보면 이게 통과 = 버그).
     """
     done_dir = tmp_path / ".project_manager" / "wiki" / "tickets" / "done"
@@ -2655,7 +2655,7 @@ def test_attempt_with_single_rerun_passes_on_first_attempt():
 
 
 def test_attempt_with_single_rerun_recovers_on_single_rerun():
-    """1차 fail·2차 pass 면 flake 흡수로 통과(단건 1회 재실행)."""
+    """1차 fail·2차 pass 면 flake 로 받아들여 통과(단건 1회 재실행)."""
     results = {0: (False, "1차 fail"), 1: (True, "2차 ok")}
     calls: list[int] = []
 
@@ -2680,7 +2680,7 @@ def test_attempt_with_single_rerun_stays_red_on_reproduced_fail():
 
 
 def test_run_live_or_timeout_converts_timeout_to_rerunnable_fail(monkeypatch):
-    """subprocess timeout → (None, detail) 로 변환돼 재실행 경로에 태워진다 (suggestion·예외 흡수)."""
+    """subprocess timeout → (None, detail) 로 변환돼 재실행 경로에 태워진다 (suggestion·예외 받아들임)."""
     def _raise_timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=600)
 
@@ -2692,7 +2692,7 @@ def test_run_live_or_timeout_converts_timeout_to_rerunnable_fail(monkeypatch):
 
 
 def test_run_live_or_timeout_returns_proc_on_success(monkeypatch):
-    """정상 실행이면 (proc, None) — timeout 흡수가 성공 경로를 방해하지 않는다."""
+    """정상 실행이면 (proc, None) — timeout 받아들임이 성공 경로를 방해하지 않는다."""
     fake = subprocess.CompletedProcess(["claude"], 0, stdout="ok", stderr="")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: fake)
     proc, detail = _run_live_or_timeout(
@@ -2701,21 +2701,21 @@ def test_run_live_or_timeout_returns_proc_on_success(monkeypatch):
     assert proc is fake and detail is None
 
 
-# ── 자기 파일 release 마커 pin (마커 소실/개명 방어 — release_wave._count_marked_tests 재사용) ─────
-# release 게이트(`pytest -m release`)는 이 파일의 라이브 2케이스를 selection 에 포함해야 한다.
+# ── 자기 파일 release 마커 pin (마커 소실/개명 방어 — release_cluster._count_marked_tests 재사용) ─────
+# release 시험(`pytest -m release`)은 이 파일의 라이브 2케이스를 selection 에 포함해야 한다.
 # 마커가 소실/개명되면 조용히 빠지므로, 이 파일의 release 마커 수를 pin 해 red 로 잡는다.
 # ⚠ 커플드-pin: 이 파일 추가로 release 총 수집 수가 7→9 로 늘었다 — 이 파일 touches 밖의 전역 pin
-#   *5곳*이 함께 9 로 정합돼야 `livegate record`(수집 N==pin)가 통과한다(orchestrator 가 갱신):
+#   *5곳*이 함께 9 로 맞춰져야 `live-test record`(수집 N==pin)가 통과한다(orchestrator 가 갱신):
 #     (1) test_release_cluster._EXPECTED_RELEASE_TESTS  (AST 수집 pin)
 #     (2) test_release_cluster._RELEASE_TEST_FILES      (스캔 파일 목록 — 이 파일 포함시켜야 함)
-#     (3) regression.LIVE_TEST_RELEASE_PIN            (livegate record 의 수집 게이트 단일 진실)
+#     (3) regression.LIVE_TEST_RELEASE_PIN            (live-test record 의 수집 검사 단일 진실)
 #     (4) tests/test_board_live_test.py               (하드코딩 fake 출력/assert 여러 곳 — 7→9)
 #     (5) templates/{claude_code,opencode}/.project_manager/tools/pm_engine/app/regression.py  (pm_update 전파·LIVE_TEST_RELEASE_PIN)
 _EXPECTED_LOCAL_RELEASE_TESTS = 2
 
 
 def test_command_card_release_marker_count_is_pinned():
-    """이 파일의 `release` 마커 테스트 수가 고정값과 일치 — 마커 소실/개명 시 게이트 누락 방어."""
+    """이 파일의 `release` 마커 테스트 수가 고정값과 일치 — 마커 소실/개명 시 시험 누락 방어."""
     actual = _count_marked_tests(Path(__file__), "release")
     assert actual == _EXPECTED_LOCAL_RELEASE_TESTS, (
         f"이 파일 `release` 마커 수 {actual} != 기대 {_EXPECTED_LOCAL_RELEASE_TESTS} — 마커 "

@@ -63,7 +63,7 @@ def test_shipped_notation_and_details_document_the_wrapper_protocol():
         assert all(member in text for member in (
             '"platform"', '"head"', '"status"', '"collected"',
         )), path
-        # 정리 시점 조항 — 종료 시점 정리는 중단된 실행에서 돌지 않아 잔여가 계속 쌓인다.
+        # 정리 시점 조항 — 종료 시점 정리는 중단된 실행에서 돌지 않아 남은 것이 계속 쌓인다.
         # 프레임워크가 갖는 것은 실행기가 아니라 이 계약이다.
         assert "실행 시작에" in text, path
         assert all(made in text for made in ("번들", "게스트 클론", "호스트 임시")), path
@@ -113,7 +113,7 @@ def test_t0936_project_full_commands_follow_phase_ownership(
     assert [command for command, _cwd, _env in calls] == [full_test_cmd]
     assert "PM_QA_PLATFORM" not in calls[0][2]
     release = t0936_release
-    release.anchor = board.REPO
+    release.target_repo = board.REPO
     release.head = expected_head
     pm_paths.home_at(release.board.REPO).local_conf.write_text(
         pm_paths.home_at(board.REPO).local_conf.read_text(encoding="utf-8"), encoding="utf-8")
