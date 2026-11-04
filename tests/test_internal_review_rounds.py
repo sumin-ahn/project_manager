@@ -1,9 +1,9 @@
-"""code-reviewer 리뷰 라운드 판정 파서 — 산문 축·블록 축 결합.
+"""code-reviewer 리뷰 라운드 판정 파서 — 산문 출처·블록 출처 결합.
 
 판정 입력은 리뷰 라운드 파일 bytes 하나다(`_internal_round_verdict`). 판정 및 중첩 1R/2R
 fixture는 PM 홈 `.project_manager/.local/delegate/`의 실제 Codex raw JSONL에서 마지막
 `agent_message.text`를 발췌한 것이다. 사용자/절대경로만 일반화했고 판정, 최상위 항목, 2~3칸
-probe·근거 불릿 형상은 보존했다. 조립 문자열은 실 보고서 계수 검증에 쓰지 않고, 코드펜스 같은
+probe·근거 불릿 구성은 보존했다. 조립 문자열은 실 보고서 계수 검증에 쓰지 않고, 코드펜스 같은
 독립 문법 경계의 단위 테스트에만 쓴다.
 """
 
@@ -31,8 +31,8 @@ T0656_PROSE_NONE_REPLY = FIXTURES / "internal_review_t0656_prose_none_reply.txt"
 T0657_ROUND2_STRUCTURED_PASS_REPLY = (
     FIXTURES / "internal_review_t0657_round2_structured_pass_reply.txt"
 )
-# 회수된 board 라운드 파일 — 산문 통과 선언 + finding 0건 블록.
-T0817_ROUND_FILE = FIXTURES / "internal_round_t0813_pass_both_axes.md"
+# 돌려받은 board 라운드 파일 — 산문 통과 선언 + finding 0건 블록.
+T0817_ROUND_FILE = FIXTURES / "internal_round_t0813_pass_both_sources.md"
 
 
 def _load(name: str, path: Path):
@@ -57,7 +57,7 @@ def _reply(path: Path) -> str:
 
 
 def _round_text(path: Path) -> str:
-    """회수된 board 라운드 파일 bytes(fixture)."""
+    """돌려받은 board 라운드 파일 bytes(fixture)."""
     return path.read_text(encoding="utf-8")
 
 
@@ -142,7 +142,7 @@ def test_t0658_fix1_real_structured_pass_reply_is_zero_verdict_and_must_fix(pd):
     ],
 )
 def test_t0658_four_diagnostics_reach_the_completion_judgement(pd, reply, code, reason):
-    """4종 실패 각각 리뷰 라운드 완료 판정 사유에 원인과 재리뷰 처방을 보존한다."""
+    """4종 실패 각각 리뷰 라운드 완료 판정 사유에 원인과 재리뷰 해결 방법을 보존한다."""
     actual_reply = _reply(T0656_PROSE_NONE_REPLY) if reply is None else reply
 
     assert review_verdict._internal_round_verdict(actual_reply).diagnostic.code == code
@@ -161,7 +161,7 @@ def test_list_shaped_explicit_absence_is_zero_must_fix(pd, absence):
 
 
 def test_real_nested_reviewer_rounds_count_top_level_six_to_two(pd):
-    """실 T-0651 1R/2R reply의 하위 probe를 세지 않아 정상 수렴 6→2를 보존한다."""
+    """실 T-0651 1R/2R reply의 하위 probe를 세지 않아 정상 마무리 6→2를 보존한다."""
     first = review_verdict._internal_reply_outcome(_reply(NESTED_ROUND1_REPLY))
     second = review_verdict._internal_reply_outcome(_reply(NESTED_ROUND2_REPLY))
 
@@ -192,7 +192,7 @@ def test_pm_verified_still_refuses_the_finding_zero_review_round(pd):
 
 
 def test_legacy_unfingerprinted_fixed_resolution_is_unrecognized(pd):
-    gate = {
+    review_ticket = {
         "rounds": [{
             "sequence": 1, "verdict": 1, "must_fix": 1,
             "started_at": "2026-08-12T00:00:00+00:00",
@@ -205,19 +205,19 @@ def test_legacy_unfingerprinted_fixed_resolution_is_unrecognized(pd):
             "rounds": 1,
         },
     }
-    assert review_rounds.review_ticket_resolution(gate) is None
-    problem = review_rounds._gate_disposition_problem("T-LEGACY-BLOCK", gate)
+    assert review_rounds.review_ticket_resolution(review_ticket) is None
+    problem = review_rounds._gate_disposition_problem("T-LEGACY-BLOCK", review_ticket)
     assert problem is not None and "처분 선언 없음" in problem
 
 
 @pytest.mark.parametrize(
     "argv",
     [
-        ["delete", "--gate", "T-0651"],
-        ["recalculate", "--gate", "T-0651", "--must-fix", "0"],
-        ["recalculate", "--gate", "T-0651", "--delete"],
-        ["resolve", "--gate", "T-0651", "--into", "T-0654", "--delete"],
-        ["resolve", "--gate", "T-0651", "--fixed", "T-0654", "--must-fix", "0"],
+        ["delete", "--review-ticket", "T-0651"],
+        ["recalculate", "--review-ticket", "T-0651", "--must-fix", "0"],
+        ["recalculate", "--review-ticket", "T-0651", "--delete"],
+        ["resolve", "--review-ticket", "T-0651", "--into", "T-0654", "--delete"],
+        ["resolve", "--review-ticket", "T-0651", "--fixed", "T-0654", "--must-fix", "0"],
     ],
 )
 def test_rounds_cli_has_no_destructive_or_direct_value_surface(pd, argv):
@@ -323,7 +323,7 @@ def test_terminal_judgement_failure_is_unknown_not_zero(pd, reply):
 
 
 def test_resolve_offers_only_pm_verified(pd, capsys):
-    """내부 처분 표면은 기계 확인 하나뿐이다."""
+    """내부 처분 수단은 기계 확인 하나뿐이다."""
     with pytest.raises(SystemExit) as exc:
         delegate_cmd._cmd_rounds(pm_paths.home_at(pd.REPO), ["resolve", "--help"])
 

@@ -37,7 +37,7 @@ def append_pm_review_confirmation(
 ) -> Path:
     """확인 절을 티켓 명세 PM 영역에 append/동일 round 병합하고 board-git 에 싣는다.
 
-    명세 쓰기 seam 은 새로 만들지 않는다 — 기존 조합(`ticket_store.load_ticket` →
+    명세 쓰기 함수는 새로 만들지 않는다 — 기존 조합(`ticket_store.load_ticket` →
     `ticket_store.dump_ticket_atomic` → `round_maintenance._rounds_mutation_sync_paths`)을 그대로 쓴다.
     """
     changed = False

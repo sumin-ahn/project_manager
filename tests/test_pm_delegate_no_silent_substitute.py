@@ -1,16 +1,16 @@
-"""T-0596 — 위임 채널 실패의 **무음 대체 금지**(fail-loud rc · 대체 시도 0 · 장부 실패 기록).
+"""T-0596 — 위임 채널 실패의 **무음 대체 금지**(fail-loud rc · 대체 시도 0 · raw 출력 기록에 실패 기록).
 
 실사고: codex 세션에서 claude 위임이 실패하자 그 세션의 native GPT 가 위임 대상 작업을 조용히
-대행했다 — 장부엔 대행 기록이 없어 사후에 누가 무엇을 했는지 재구성할 수 없었다. 실패 안내가
+대행했다 — raw 출력 기록엔 대행 흔적이 없어 사후에 누가 무엇을 했는지 재구성할 수 없었다. 실패 안내가
 "네이티브/다른 하네스로 재시도를 검토하세요"였던 것이 그 입구였다.
 
 이 파일이 고정하는 계약(전부 mock·run_fn DI — 실 하네스 스폰 0):
   ① 채널 실행 실패(스폰 실패·비정상 rc·타임아웃)는 **rc=1 fail-loud** 로 끝난다.
-  ② 폴백 미설정이면 **대체 시도 0** — 그 호출의 run_fn 호출 수는 정확히 1이다.
+  ② 대체 하네스 미설정이면 **대체 시도 0** — 그 호출의 run_fn 호출 수는 정확히 1이다.
   ③ 실패 안내는 다른 수신자를 권하지 않고(옛 문구 소멸) 명시 재호출만 지시한다.
-  ④ 실패는 raw 장부의 그 레코드에 rc 와 함께 **마감 기록으로 잔존**한다(조회 가능).
-  ⑤ 명시 fallback tuple 경로는 불변 — 인프라 실패 1회 loud 폴백은 그대로 동작한다
-     (금지 대상은 "명시 설정 없는 자동 대체"이지 선언된 폴백이 아니다).
+  ④ 실패는 raw 기록의 그 레코드에 rc 와 함께 **마감 기록으로 잔존**한다(조회 가능).
+  ⑤ 명시 fallback tuple 경로는 불변 — 인프라 실패 1회 loud 대체 하네스는 그대로 동작한다
+     (금지 대상은 "명시 설정 없는 자동 대체"이지 선언된 대체 하네스가 아니다).
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def pd():
 
 
 class _FakeRun:
-    """run_fn seam stub — 호출을 기록하고 canned 결과를 낸다(호출 수 = 대체 시도 관측치)."""
+    """run_fn 대역 — 호출을 기록하고 canned 결과를 낸다(호출 수 = 대체 시도 관측치)."""
 
     def __init__(self, *, stdout: str = "", returncode: int = 0,
                  stderr: str = "", timed_out: bool = False, raises: BaseException | None = None):
@@ -64,7 +64,7 @@ class _FakeRun:
 
 
 class _SequenceRun:
-    """호출 순서대로 다른 결과를 내는 stub — primary 실패 → 폴백 성공 시나리오용."""
+    """호출 순서대로 다른 결과를 내는 stub — primary 실패 → 대체 하네스 성공 시나리오용."""
 
     def __init__(self, *results):
         self.results = list(results)
@@ -108,7 +108,7 @@ def _write_prompt(tmp_path: Path) -> Path:
 
 
 def _run(pd, monkeypatch, tmp_path, fake, conf=None) -> tuple[int, Path]:
-    """mock 위임 1회 실행 — (rc, 장부 경로). raw/장부는 tmp output-dir 로 격리한다."""
+    """mock 위임 1회 실행 — (rc, 기록 경로). raw/기록은 tmp output-dir 로 격리한다."""
     monkeypatch.setattr(conf_store, 'local_config', lambda _home: conf if conf is not None else _conf())
     monkeypatch.setattr(delegate_env, '_cwd_in_git_repo', lambda *a, **k: True)
     outdir = tmp_path / "raw"
@@ -120,19 +120,19 @@ def _run(pd, monkeypatch, tmp_path, fake, conf=None) -> tuple[int, Path]:
     return rc, outdir / "raw_outputs.json"
 
 
-def _ledger_rows(ledger: Path) -> list[dict]:
-    return json.loads(ledger.read_text(encoding="utf-8"))["records"]
+def _record_rows(record_file: Path) -> list[dict]:
+    return json.loads(record_file.read_text(encoding="utf-8"))["records"]
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ①~④ 폴백 미설정 — 실패는 fail-loud rc · 대체 시도 0 · 장부 잔존
+# ①~④ 대체 하네스 미설정 — 실패는 fail-loud rc · 대체 시도 0 · 기록 잔존
 # ════════════════════════════════════════════════════════════════════════
 
 def test_spawn_failure_fails_loud_with_no_substitute_attempt(pd, monkeypatch, tmp_path, capsys):
     """스폰 실패(바이너리 부재) → rc=1 · run_fn 호출 1회 · 다른 하네스 시도 0."""
     fake = _FakeRun(raises=FileNotFoundError("codex: not found"))
 
-    rc, ledger = _run(pd, monkeypatch, tmp_path, fake)
+    rc, record_file = _run(pd, monkeypatch, tmp_path, fake)
 
     err = capsys.readouterr().err
     assert rc == 1, "스폰 실패가 fail-loud rc 로 끝나지 않음"
@@ -140,17 +140,17 @@ def test_spawn_failure_fails_loud_with_no_substitute_attempt(pd, monkeypatch, tm
     assert {call["harness"] for call in fake.calls} == {"codex"}, "다른 하네스로 대체 시도됨"
     assert "재위임은 명시 재호출만" in err, f"무음 대체 금지 안내 누락:\n{err}"
     assert _SUBSTITUTION_INVITATION not in err, f"대체 권유 문구 재발:\n{err}"
-    # 실행 전 예약된 레코드가 마감되어 실패가 장부에 남는다(rc=127=launch 실패 정규화값).
-    rows = _ledger_rows(ledger)
+    # 실행 전 예약된 레코드가 마감되어 실패가 기록에 남는다(rc=127=launch 실패 정규화값).
+    rows = _record_rows(record_file)
     assert len(rows) == 1 and rows[0]["finished_at"] is not None
-    assert rows[0]["rc"] == 127, f"장부에 실패 rc 가 안 남음: {rows[0]}"
+    assert rows[0]["rc"] == 127, f"기록에 실패 rc 가 안 남음: {rows[0]}"
 
 
 def test_nonzero_rc_fails_loud_and_keeps_failure_record(pd, monkeypatch, tmp_path, capsys):
-    """비정상 rc → rc=1 · 대체 시도 0 · 장부에 rc≠0 마감 레코드 · 대체 권유 문구 0."""
+    """비정상 rc → rc=1 · 대체 시도 0 · 기록에 rc≠0 마감 레코드 · 대체 권유 문구 0."""
     fake = _FakeRun(stdout="", returncode=2, stderr="boom")
 
-    rc, ledger = _run(pd, monkeypatch, tmp_path, fake)
+    rc, record_file = _run(pd, monkeypatch, tmp_path, fake)
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -160,7 +160,7 @@ def test_nonzero_rc_fails_loud_and_keeps_failure_record(pd, monkeypatch, tmp_pat
     assert "native 모델이 대신 수행하지 마세요" in err
     assert _SUBSTITUTION_INVITATION not in err, (
         "실패 안내가 아직 다른 하네스/네이티브 재시도를 권한다 — 무음 대체의 입구")
-    rows = _ledger_rows(ledger)
+    rows = _record_rows(record_file)
     assert [row["rc"] for row in rows] == [2]
     assert all(row["finished_at"] is not None for row in rows)
 
@@ -169,7 +169,7 @@ def test_timeout_fails_loud_with_no_substitute_attempt(pd, monkeypatch, tmp_path
     """turn 타임아웃 → rc=1 · 대체 시도 0 · 무음 대체 금지 안내."""
     fake = _FakeRun(stdout="", timed_out=True)
 
-    rc, _ledger = _run(pd, monkeypatch, tmp_path, fake)
+    rc, _record = _run(pd, monkeypatch, tmp_path, fake)
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -182,7 +182,7 @@ def test_empty_reply_fails_loud_with_no_substitute_attempt(pd, monkeypatch, tmp_
     """rc=0 이지만 reply 미추출(빈 출력) → rc=1 · 대체 시도 0 · 무음 대체 금지 안내."""
     fake = _FakeRun(stdout="", returncode=0)
 
-    rc, _ledger = _run(pd, monkeypatch, tmp_path, fake)
+    rc, _record = _run(pd, monkeypatch, tmp_path, fake)
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -192,13 +192,13 @@ def test_empty_reply_fails_loud_with_no_substitute_attempt(pd, monkeypatch, tmp_
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ⑤ 명시 fallback tuple — 기존 loud 폴백 동작 불변(금지 대상이 아니다)
+# ⑤ 명시 fallback tuple — 기존 loud 대체 하네스 불변(금지 대상이 아니다)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_declared_fallback_still_runs_once_and_stays_loud(pd, monkeypatch, tmp_path, capsys):
-    """설정된 폴백 tuple + 인프라 실패 → 폴백 1회 실행·rc=0·loud provenance(기존 동작 보존).
+    """설정된 대체 하네스 tuple + 인프라 실패 → 대체 하네스 1회 실행·rc=0·loud provenance(기존 동작 보존).
 
-    무음 대체 금지는 **명시 설정 없는 자동 대체**를 막는 것이다 — 선언된 폴백은 사람이 미리
+    무음 대체 금지는 **명시 설정 없는 자동 대체**를 막는 것이다 — 선언된 대체 하네스는 사람이 미리
     승인한 수신자라 이 티켓의 금지 대상이 아니다(그 실행은 stderr·stdout 에 loud 하게 남는다).
     """
     conf = _conf(**{
@@ -207,26 +207,26 @@ def test_declared_fallback_still_runs_once_and_stays_loud(pd, monkeypatch, tmp_p
     })
     fake = _SequenceRun(
         FileNotFoundError("codex: not found"),                       # primary 스폰 실패
-        {"returncode": 0, "stdout": _claude_stdout("폴백결과"),      # 폴백 성공
+        {"returncode": 0, "stdout": _claude_stdout("대체 하네스 결과"),      # 대체 하네스 성공
          "stderr": "", "timed_out": False},
     )
 
-    rc, ledger = _run(pd, monkeypatch, tmp_path, fake, conf=conf)
+    rc, record_file = _run(pd, monkeypatch, tmp_path, fake, conf=conf)
 
     captured = capsys.readouterr()
     assert rc == 0
     assert [call["harness"] for call in fake.calls] == ["codex", "claude"], (
-        f"선언된 1단 폴백이 실행되지 않음(또는 2단 폴백 발생): {fake.calls}")
+        f"선언된 1단 대체 동작이 실행되지 않음(또는 2단 대체 동작 발생): {fake.calls}")
     assert "대체 동작: codex→claude(opus)" in captured.err
-    assert "폴백결과" in captured.out
-    # 두 attempt 모두 장부에 마감 레코드로 남는다(실패한 primary 도 사라지지 않는다).
-    rows = sorted(_ledger_rows(ledger), key=lambda row: row["started_at"])
+    assert "대체 하네스 결과" in captured.out
+    # 두 attempt 모두 기록에 마감 레코드로 남는다(실패한 primary 도 사라지지 않는다).
+    rows = sorted(_record_rows(record_file), key=lambda row: row["started_at"])
     assert [row["harness"] for row in rows] == ["codex", "claude"]
     assert [row["rc"] for row in rows] == [127, 0]
 
 
 def test_declared_fallback_failure_has_no_second_substitute(pd, monkeypatch, tmp_path, capsys):
-    """폴백까지 실패 → rc=1 · 2차 폴백 없음(총 실행 2회) · 명시 재호출 안내."""
+    """대체 하네스까지 실패 → rc=1 · 2차 대체 하네스 없음(총 실행 2회) · 명시 재호출 안내."""
     conf = _conf(**{
         "delegate.developer.fallback.harness": "claude",
         "delegate.developer.fallback.model": "opus",
@@ -236,11 +236,11 @@ def test_declared_fallback_failure_has_no_second_substitute(pd, monkeypatch, tmp
         {"returncode": 3, "stdout": "", "stderr": "fallback boom", "timed_out": False},
     )
 
-    rc, _ledger = _run(pd, monkeypatch, tmp_path, fake, conf=conf)
+    rc, _record = _run(pd, monkeypatch, tmp_path, fake, conf=conf)
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert len(fake.calls) == 2, f"2차 폴백이 발생함: {fake.calls}"
+    assert len(fake.calls) == 2, f"2차 대체 동작이 발생함: {fake.calls}"
     assert "두 번째 대체 동작 없음" in err
     assert "재위임은 명시 재호출만" in err
 
@@ -269,7 +269,7 @@ def test_no_substitute_note_has_single_consumer(pd):
     assert not leaked, (
         f"안내 문구를 깔때기 밖에서 직접 결합한 지점: pm_delegate.py:{leaked} — "
         "실패 종료는 `return fail_loud(<사유>)` 로만 끝내라.")
-    assert delegate_execute.fail_loud is not None  # 로드된 모듈에도 같은 seam 이 존재
+    assert delegate_execute.fail_loud is not None  # 로드된 모듈에도 같은 함수가 존재
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -279,8 +279,8 @@ def test_no_substitute_note_has_single_consumer(pd):
 # 안 쓰면 그 가드는 조용히 통과한다 — T-0596 의 원 사고가 정확히 그 클래스였다. 그래서 채널 실행
 # 구간의 **비영 종료 전수**가 `fail_loud` 경유임을 구조로 단언한다.
 
-# 채널 실행 구간 = 하네스를 실제로 스폰하고 결과를 회수하는 함수. 이 앞의 게이트(설정 해소·시크릿
-# 스캔·재앵커)는 호출 자체가 없어 다른 축이다.
+# 채널 실행 구간 = 하네스를 실제로 스폰하고 결과를 돌려받는 함수. 이 앞의 검사(설정 해소·시크릿
+# 스캔·대상 저장소 다시 잡기)는 호출 자체가 없어 다른 경우다.
 _CHANNEL_FUNCTION = "_execute_and_collect"
 
 
@@ -323,7 +323,7 @@ def test_every_channel_exit_goes_through_the_funnel(pd):
     """채널 실행 구간의 종료는 `return 0` 아니면 `return fail_loud(...)` 뿐이다.
 
     이 단언이 막는 것은 "안내를 손으로 안 이어붙였다"가 아니라 **안내를 아예 안 내는 새 실패
-    종료**다 — 그 경로는 raw 장부만 남고 사람에겐 아무 처방이 없어, 실패한 위임을 세션 native
+    종료**다 — 그 경로는 raw 기록만 남고 사람에겐 아무 안내가 없어, 실패한 위임을 세션 native
     모델이 조용히 대행하는 입구가 된다."""
     leaked = _leaking_exits(Path(delegate_execute.__file__).read_text(encoding="utf-8"), _CHANNEL_FUNCTION)
     assert not leaked, (
@@ -341,9 +341,9 @@ def test_every_channel_exit_goes_through_the_funnel(pd):
     ("return 0", False),
 ])
 def test_guard_actually_detects_a_new_silent_exit(statement, detected):
-    """가드 자신의 검출력 — 합성 종료를 실제로 잡는지 확인한다(가짜 게이트 방지).
+    """가드 자신의 검출력 — 합성 종료를 실제로 잡는지 확인한다(가짜 통과 방지).
 
-    안 돌려보면 가짜 게이트다: 이 파라미터가 없으면 분류기가 무엇이든 통과시키도록 퇴화해도
+    안 돌려보면 가짜 통과다: 이 파라미터가 없으면 분류기가 무엇이든 통과시키도록 퇴화해도
     위 단언은 계속 green 이다."""
     source = (
         f"def {_CHANNEL_FUNCTION}(*, args):\n"
@@ -370,7 +370,7 @@ def test_successful_delegation_prints_no_substitute_note(pd, monkeypatch, tmp_pa
     """정상 위임(rc=0·reply 있음)은 무음 대체 금지 안내를 내지 않는다(실패 경로 전용 문구)."""
     fake = _FakeRun(stdout=_codex_stdout("정상답변"))
 
-    rc, _ledger = _run(pd, monkeypatch, tmp_path, fake)
+    rc, _record = _run(pd, monkeypatch, tmp_path, fake)
 
     captured = capsys.readouterr()
     assert rc == 0

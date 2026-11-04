@@ -56,7 +56,7 @@ def _write_probe_name() -> str:
 def _probe_writable_target(path: Path, *, label: str) -> None:
     """권한을 올리기 전에 그 경로가 **실제로** 쓰기 가능한지 실측한다.
 
-    실패는 `read-only` 강등이 아니라 사유와 함께 loud 다 — 강등하면 "실행은 됐는데 아무것도
+    실패는 `read-only` 로 낮추지 않고 사유와 함께 loud 다 — 낮추면 "실행은 됐는데 아무것도
     못 쓰는" 위임이 되고, 그 실패는 위임 실패로만 보인다([[no-green-by-disabling]]).
     """
     if not path.is_dir():
@@ -90,7 +90,7 @@ def _probe_writable_target(path: Path, *, label: str) -> None:
     try:
         os.unlink(probe)
     except OSError as exc:
-        # 프로브 잔재는 attempt tmp 회수가 함께 걷어간다 — 주 결과를 덮지 않고 알리기만 한다.
+        # 프로브 잔재는 attempt tmp 정리가 함께 걷어간다 — 주 결과를 덮지 않고 알리기만 한다.
         delegate_temp._warn_read_tmp_cleanup_failure(probe, exc)
 
 
@@ -112,7 +112,7 @@ def _apply_read_tmp_argv(
     argv: list[str], harness: str, role: str, read_tmp: delegate_temp._ReadRoleTemp | None,
     cluster_run_dir: Path | None = None,
 ) -> list[str]:
-    """하네스 실측 수단으로 read tmp 하나만 실행 권한 표면에 연결한다."""
+    """하네스 실측 수단으로 read tmp 하나만 실행 권한 범위에 연결한다."""
     if role not in delegate_run_rules.READ_ROLES or read_tmp is None:
         return argv
     adjusted = list(argv)
@@ -165,12 +165,12 @@ def _apply_read_tmp_argv(
                 "수준을 낮추지 않는다"
             )
     # opencode는 추가-dir 기능이 없어 custom 역할 agent를 그대로 쓰고, ticket-copy reviewer의
-    # repo 쓰기 표면은 위 경고와 실행 전후 감사로 loud하게 관리한다.
+    # repo 쓰기 범위는 위 경고와 실행 전후 감사로 loud하게 관리한다.
     return adjusted
 
 
 def _codex_workspace_dirs(argv: list[str], roots: Sequence[Path]) -> list[str]:
-    """공용 전역 `--add-dir` formatter 의 계약 예외를 위임 표면 예외로 옮긴다."""
+    """공용 전역 `--add-dir` formatter 의 계약 예외를 위임 쪽 예외로 옮긴다."""
     try:
         return contract.with_codex_workspace_dirs(argv, [str(root) for root in roots])
     except contract.HarnessContractError as exc:
@@ -180,7 +180,7 @@ def _codex_workspace_dirs(argv: list[str], roots: Sequence[Path]) -> list[str]:
 # 원 작업공간을 쓰는 codex 실행에서 git 이 실제로 쓰는 메타데이터 위치. workspace-write 는 `-C`
 # 안의 `.git` 과 포인터가 가리키는 git 디렉터리를 읽기 전용으로 보호하므로, 명시적 추가 루트로
 # 열지 않으면 `git add` 가 index·objects 쓰기에서 막힌다. linked worktree 만이 아니라 일반 clone·
-# submodule 도 같은 조회로 처리한다(형상 판별 대신 git 이 답한 위치를 쓴다).
+# submodule 도 같은 조회로 처리한다(구성 판별 대신 git 이 답한 위치를 쓴다).
 _GIT_METADATA_QUERY: tuple[str, ...] = (
     "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir",
 )
@@ -246,7 +246,7 @@ def _git_metadata_write_roots(
 def _apply_workspace_git_dirs(argv: list[str], mode: str, source_cwd: Path) -> list[str]:
     """최종 argv 가 원 작업공간을 workspace-write 로 열면 그 git 메타데이터 루트를 더한다.
 
-    판정 입력은 역할 이름이 아니라 최종 sandbox 와 `-C` 실경로다. 읽기 역할의 tmp 재앵커처럼
+    판정 입력은 역할 이름이 아니라 최종 sandbox 와 `-C` 실경로다. 읽기 역할의 tmp 실행 위치 다시 잡기처럼
     실행 좌표가 원 작업공간과 다르거나 read-only 가 남은 실행은 원 git 을 조회하지 않고 그대로
     둔다. 전역 `--add-dir` 형식(`workspace-add-dir`)이 아닌 하네스 argv 는 그대로 반환한다."""
     if mode != "workspace-add-dir":
@@ -274,20 +274,20 @@ def _apply_workspace_git_dirs(argv: list[str], mode: str, source_cwd: Path) -> l
     return _codex_workspace_dirs(argv, _git_metadata_write_roots(source_cwd))
 
 
-# 재앵커된 read 실행(현재 codex만·_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS)의 3-절대경로
+# 실행 위치를 다시 잡은 read 실행(현재 codex만·_READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS)의 3-절대경로
 # preamble — 반려 근거: `--dry-run` 실측에서 합성 프롬프트에 정체성·
 # 금지사항·회귀 범위·산출 형식은 실렸지만 해소된 `--cwd` 절대경로가 **한 글자도 없었다**. 엔진이
-# `-C`를 빈 tmp로 재앵커해 놓고 실 대상 좌표는 PM 산문에만 맡긴 것은 모델 준수 문제가 아니라
+# `-C`를 빈 tmp로 다시 잡아 놓고 실 대상 좌표는 PM 산문에만 맡긴 것은 모델 준수 문제가 아니라
 # 엔진 결함이라는 판정이다 — 좌표는 엔진만 아는 기계 사실이므로 엔진이 합성 preamble에 직접
 # 싣는다([[mechanize-dont-instruct-llm]]). 실측 3건에서 모델의
 # 첫 명령이 `&&`로 묶인 **상대** 명령(`pwd && ls && git rev-parse ...`)이라 격리 root의 빈 pwd에서
 # 곧장 죽었다 — 그래서 예시 명령은 전부 `-C <절대경로>`/명시 target 플래그로 줘서 pwd를 몰라도
 # 그대로 맞게 한다. `_execute_attempt`(실행)와 `main()` dry-run 미리보기가 이 한 함수를 공유한다
 # (값만 다르다 — 실행은 방금 만든 실 read_tmp, dry-run은 부작용 0 인 `_predict_read_tmp_paths`).
-def _reanchor_exec_root_preamble(
+def _retarget_exec_root_preamble(
     cwd: Path, exec_root: Path, writable_path: Path,
 ) -> str:
-    """실행 root가 재앵커된 read 실행에 검토 대상·실행 root·쓰기 경로 절대값을 박아 준다."""
+    """실행 root를 다시 잡은 read 실행에 검토 대상·실행 root·쓰기 경로 절대값을 박아 준다."""
     git_status_cmd = delegate_env.render_shell_command(["git", "-C", str(cwd), "status", "--short"])
     git_diff_cmd = delegate_env.render_shell_command(["git", "-C", str(cwd), "diff", "--cached"])
     git_head_cmd = delegate_env.render_shell_command(["git", "-C", str(cwd), "rev-parse", "HEAD"])
@@ -313,7 +313,7 @@ def _reanchor_exec_root_preamble(
 
 def _predict_read_tmp_paths(home, harness: str) -> tuple[Path, Path]:
     """dry-run 전용 — `_create_read_role_temp`와 같은 이름 규칙(`_read_tmp_attempt_name`)으로
-    대표 경로만 계산한다(attempt 자리는 만들지 않는다 · 공유 임시 루트는 앵커 seam 이 소유한다).
+    대표 경로만 계산한다(attempt 자리는 만들지 않는다 · 공유 임시 루트는 기준 위치 함수가 소유한다).
     dry-run 은 실행하지 않으므로 이 값이 이후 실행의 read_tmp와 같은 문자열일 필요는 없다 —
     이번 invocation이 실행됐다면 만들었을 이름 규칙의 진짜 값(placeholder 아님)을 보여주는 게
     목적이다."""
@@ -345,12 +345,12 @@ def _read_tmp_prompt_note(
     codex_note = (
         f" Codex 실행 root도 {read_tmp.path}로 옮겼으므로 worktree 명령은 절대경로를 쓰거나 "
         f"`cd {delegate_env.render_shell_token(str(cwd))}` 뒤 실행하라."
-        if delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+        if delegate_run_rules._READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS[harness]
         else ""
     )
-    reanchor_preamble = (
-        "\n\n" + _reanchor_exec_root_preamble(cwd, read_tmp.path, read_tmp.writable_path)
-        if delegate_run_rules._READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+    retarget_preamble = (
+        "\n\n" + _retarget_exec_root_preamble(cwd, read_tmp.path, read_tmp.writable_path)
+        if delegate_run_rules._READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS[harness]
         else ""
     )
     return (
@@ -361,33 +361,33 @@ def _read_tmp_prompt_note(
         f"--basetemp {pytest_temp} ...`처럼 "
         "cacheprovider를 끄고 basetemp를 지정하라. PYTHONDONTWRITEBYTECODE=1도 설정되어 있다. "
         f"하네스 권한 근거: {harness}.{codex_note}"
-        f"{reanchor_preamble}"
+        f"{retarget_preamble}"
     )
 
 
-# codex read 역할만 `-C`(실행 root)를 격리 tmp로 재앵커한다(_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS
-# — claude·opencode는 -C/--dir을 건드리지 않아 이 클래스가 구조적으로 없다). 재앵커된 tmp는 절대
+# codex read 역할만 `-C`(실행 root)를 격리 tmp로 다시 잡는다(_READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS
+# — claude·opencode는 -C/--dir을 건드리지 않아 이 클래스가 구조적으로 없다). 실행 위치를 다시 잡은 tmp는 절대
 # git 저장소가 아니므로(매 attempt 새로 만드는 빈 0700 디렉터리), 모델은 프롬프트 지시
 # (`_read_tmp_prompt_note`의 codex_note)로 `--cwd` 복귀를 기대받는다 — 그 준수를 기계가 보장할
 # 수는 없다: `codex exec --help` 실측상 `-C`는 항상 암묵적 쓰기 가능 root이고 `--add-dir`는
 # 추가만 한다 — "주 워크스페이스는 read-only·별도 root만 write" 조합이 CLI에 없다(실측 —
 # `-c permissions.<name>=` 동적 override 시도도 codex-cli 0.147.0에서 patch 도구가 read-only로
-# 남아 이미 실패한 바 있다·위 주석). 그래서 기계가 보장할 수 있는 건 재앵커 **이전**의 `--cwd`
-# 자신이 리뷰 가능한 형상인가뿐이다 — 재앵커된 tmp에서 다시 rev-parse해 봐야 항상 실패하는
+# 남아 이미 실패한 바 있다·위 주석). 그래서 기계가 보장할 수 있는 건 실행 위치 다시 잡기 **이전**의 `--cwd`
+# 자신이 리뷰 가능한 구성인가뿐이다 — 실행 위치를 다시 잡은 tmp에서 다시 rev-parse해 봐야 항상 실패하는
 # 무의미한 검사가 된다. 이 함수는 `--cwd` 를 스폰 전에 검증해 불량 입력을 과금 전에 끊는다
 # (실측 3건 — 세 라운드 모두 `--cwd` 자체는 정상이었다·즉 모델이
 # 격리 tmp에서 `--cwd`로 되짚어가지 못한 것이 근본 원인이고, 이 preflight는 그 모델 준수까지
 # 기계로 보장하진 못한다. 대신 `--cwd` 부실(비-저장소·하위디렉터리 오지정)이라는 인접 실패
 # 클래스를 스폰 전에 닫아, 같은 종류의 무의미한 유료 라운드를 줄인다).
 #
-# 검사는 재앵커를 공유하는 모든 codex read 역할(code-reviewer·researcher)에 같다 — 어떤 역할이든
-# `--cwd` 가 실제 저장소 최상위가 아니면 재앵커·`_read_tmp_prompt_note`의 절대경로 안내 자체가
+# 검사는 실행 위치 다시 잡기를 공유하는 모든 codex read 역할(code-reviewer·researcher)에 같다 — 어떤 역할이든
+# `--cwd` 가 실제 저장소 최상위가 아니면 실행 위치 다시 잡기·`_read_tmp_prompt_note`의 절대경로 안내 자체가
 # 잘못된 값을 참조하게 되는, 역할 무관 공통 전제다. 리뷰 입력은 미커밋 작업물이 아니라 묶음
 # 브랜치 diff 라(준비 트리 조건이 작업 트리 변경 0 을 요구한다) staged 변경은 요구하지 않는다.
 
 
 def _preflight_codex_read_exec_root(cwd: Path) -> None:
-    """codex read 역할 스폰 **전** `--cwd` 저장소 형상을 기계로 확정한다(호출 없음).
+    """codex read 역할 스폰 **전** `--cwd` 저장소 구성을 기계로 확정한다(호출 없음).
 
     (a) `--cwd` 가 git 저장소인가 (b) 그 `--show-toplevel` 값이 `--cwd` 자신과 일치하는가
     (저장소 하위 디렉터리가 잘못 `--cwd` 로 넘어온 경우를 잡는다). 하나라도 어긋나면

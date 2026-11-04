@@ -21,7 +21,7 @@ def _role_preamble(role: str, adapter_directories: Sequence[str]) -> str:
 def _ticket_copy_preamble(plan: delegate_rounds.TicketCopyPlan) -> str:
     """이 위임의 산출 자리 안내 — 좌표도 다음 finding ID 도 준비가 확정한 실값이다.
 
-    리뷰 채널은 라운드마다 fresh 라 이전 라운드가 쓴 번호를 모른다. 시드에만 값을 실으면 사본을
+    리뷰 채널은 라운드마다 fresh 라 이전 라운드가 쓴 번호를 모른다. 빈 양식에만 값을 실으면 사본을
     열기 전에 프롬프트만 읽는 위임에서 번호가 추측이 된다 — 두 자리가 같은 값을 말해야 한다.
     """
     seat = (
@@ -42,7 +42,7 @@ def _with_ticket_copy_preamble(
     prompt: str, ticket_copy: delegate_rounds.TicketCopyPlan | None,
     cluster_plan: "delegate_rounds.ClusterCopyPlan | None" = None,
 ) -> str:
-    """full/resume delta/fallback/fresh 모든 wire가 이번 run의 같은 사본 지시를 받는 seam.
+    """full/resume 바뀐 부분/fallback/fresh 모든 wire가 이번 run의 같은 사본 지시를 받는 공용 함수.
 
     자리가 N 이면 N 자리 안내가 붙는다 — 붙이는 쪽과 준비한 쪽이 같은 판정을 쓴다.
     """

@@ -18,11 +18,11 @@ from pm_engine.app import tier_signals
 
 
 def cmd_section_add(home, args: argparse.Namespace) -> int:
-    """다음 라운드를 시드로 예약한다 — 슬롯 없는 준비(PM 이 직접 채우는 자리).
+    """다음 라운드를 빈 양식으로 예약한다 — 슬롯 없는 준비(PM 이 직접 채우는 자리).
 
     쓰는 것은 `tickets/rounds/<티켓>/NN-<role>.md` 하나뿐이다. 명세 파일은 건드리지 않으므로
     lifecycle writer 와 겹치지 않고, 순번 채번+배타 생성만 짧은 board_lock 이 직렬화한다
-    (락 컨텍스트는 seam 이 잡는다 — board_lock 은 재진입이 없어 호출자가 잡은 채 넘기지 않는다).
+    (락 컨텍스트는 예약 함수가 잡는다 — board_lock 은 재진입이 없어 호출자가 잡은 채 넘기지 않는다).
     """
     role = args.role
     label = round_rules._section_label(role, args.label)
@@ -40,8 +40,8 @@ def cmd_section_add(home, args: argparse.Namespace) -> int:
             spec_text = handle.read()
     try:
         existing = round_form.load_rounds(pm_paths.tickets_dir(home), args.id, ticket_text=spec_text)
-        seed = round_form.render_round_form(role, spec_text, today=today, previous_round=round_rules.previous_round_of_role(existing, role), rounds=existing)
-        round_path = round_store.reserve_round(pm_paths.tickets_dir(home), args.id, role, content=round_rules._round_seed_header_override(seed, label, role, today), lock=fs.board_lock(home))
+        form = round_form.render_round_form(role, spec_text, today=today, previous_round=round_rules.previous_round_of_role(existing, role), rounds=existing)
+        round_path = round_store.reserve_round(pm_paths.tickets_dir(home), args.id, role, content=round_rules._round_form_header_override(form, label, role, today), lock=fs.board_lock(home))
     except round_rules.RoundsError as exc:
         print(f'cannot section-add: {exc}', file=sys.stderr)
         return 1
@@ -69,12 +69,12 @@ def cmd_tier(home, args: argparse.Namespace) -> int:
     return 0
 
 def cmd_design(home, args: argparse.Namespace) -> int:
-    """발행 후 frontmatter `design`을 기록/갱신하는 1급 수단(`cmd_tier` 동형).
+    """발행 후 frontmatter `design`을 기록/갱신하는 1급 수단(`cmd_tier` 같은 구조).
 
     `--design`은 `new` 발행 시점 1회뿐이라 이후 상태 갱신은 YAML 손편집이 유일한 경로였다.
     값 검증은 `_validate_design` 재사용 — 인식 불가 값(폐지된 면제 표기 포함)은 파일을 읽기
     전에 거부한다(rc=1). 대상은 draft/open/claimed를 허용한다(`_active_ticket_path`의
-    design 축) — `design: required`가 promote를 막으므로 draft에서 상태를 올릴 수 없으면
+    design 기준) — `design: required`가 promote를 막으므로 draft에서 상태를 올릴 수 없으면
     setter가 있어도 실제 막힌 상황을 풀지 못한다. 값은 정규화·소문자화 없이 원문 그대로
     기록한다(`_design_state`가 이미 대소문자 무시로 판정한다).
     """

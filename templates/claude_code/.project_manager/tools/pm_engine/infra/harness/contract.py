@@ -17,7 +17,7 @@ from typing import NamedTuple, Sequence
 from pm_engine.domain import conf_schema
 
 
-# claude assistant usage wire → 원장 usage 4필드 이름. 한 스칼라로 접으면 캐시 **재적재**
+# claude assistant usage wire → 기록 usage 4필드 이름. 한 스칼라로 합치면 캐시 **재적재**
 # (cache_read)와 **새 적재**(cache_creation)가 구분되지 않아 세션 재사용의 비용 근거가 사라진다.
 CLAUDE_USAGE_WIRE_FIELDS: tuple[tuple[str, str], ...] = (
     ("input_tokens", "input"),
@@ -28,7 +28,7 @@ CLAUDE_USAGE_WIRE_FIELDS: tuple[tuple[str, str], ...] = (
 
 
 def _claude_usage_fields(usage: object) -> dict[str, int] | None:
-    """claude `message.usage` wire → 원장 4필드(있는 값만·음이 아닌 정수만).
+    """claude `message.usage` wire → 기록 4필드(있는 값만·음이 아닌 정수만).
 
     **없는 필드는 적지 않는다** — 0 은 "0 토큰"이라는 다른 사실이고, 수집 못 한 자리를 0 으로
     채우면 비용 표가 false-정밀해진다. 값 하나라도 형식이 깨졌으면 그 관측 전체를 미수집으로
@@ -50,19 +50,19 @@ def parse_stream_json(lines) -> tuple[str | None, str | None, int | None]:
     """`claude -p --output-format stream-json` 출력에서 (session_id, result, used_tokens) 추출.
 
     회전 판정용 3-tuple facade — 같은 1회 파싱의 usage 분해까지 쓰려면
-    `_parse_stream_json_events`(원장·세션 재사용 축)를 쓴다. 파서는 하나다.
+    `_parse_stream_json_events`(기록·세션 재사용 쪽)을 쓴다. 파서는 하나다.
 
     - session_id: `system/init` 이벤트의 `session_id`(이후 모든 이벤트에도 실리나 init 우선).
-      init 가 없으면 `result` 이벤트의 session_id 로 폴백.
+      init 가 없으면 `result` 이벤트의 session_id 로 대신한다.
     - result: `result` 이벤트의 `result` 필드(= 최종 reply 텍스트).
     - used_tokens: 마지막 `assistant` 이벤트의 `message.usage` 입력 계열
       (`input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens`) +
       `output_tokens` 합 — 회전(post-turn) 판정은 *다음* turn 이 지게 될 컨텍스트가 기준이라
-      이번 응답 출력을 포함한다(훅이 도구 실행 전에 보는 "현재 점유"와 용도가 다름·codex 게이트).
+      이번 응답 출력을 포함한다(훅이 도구 실행 전에 보는 "현재 점유"와 용도가 다름·codex 검사).
       각 값은 음이 아닌 정수만 인정하며 신호가 하나도 없으면 None.
     - JSONDecodeError 라인은 skip(부분/비-JSON 라인에 robust).
 
-    PoC(`scratch/poc/orchestrator_claude_relay_swap.py`)의 run_turn 파싱 골격을
+    PoC(`scratch/poc/orchestrator_claude_relay_swap.py`)의 run_turn 파싱 뼈대를
     순수 함수로 추출 — driver 가 호출하고 테스트가 직접 검증한다.
     """
     session_id, result, used_tokens, _usage = _parse_stream_json_events(lines)
@@ -74,7 +74,7 @@ def _parse_stream_json_events(
 ) -> tuple[str | None, str | None, int | None, dict[str, int] | None]:
     """claude stream-json 1회 파싱 — (session_id, result, used_tokens, usage 4필드).
 
-    `parse_stream_json` 의 본체다. 회전 판정은 스칼라 합만 쓰고 원장은 분해를 쓰므로 두
+    `parse_stream_json` 의 본체다. 회전 판정은 스칼라 합만 쓰고 기록은 분해를 쓰므로 두
     소비면이 같은 한 번의 순회를 나눠 갖는다(두 번째 파서를 만들지 않는다)."""
     import json  # 지연 import — 순수 헬퍼만 쓰는 경로의 import 비용 회피.
 
@@ -110,7 +110,7 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None, int | None]:
     """`opencode run --format json` 출력에서 (session_id, reply, used_tokens) 추출.
 
     claude `parse_stream_json` 과 **대칭** 위치의 opencode 어댑터용 순수 헬퍼 —
-    하니스가 다른 한 줄=한 이벤트 JSON 스트림을 같은 3-tuple 규격으로 흡수한다.
+    하니스가 다른 한 줄=한 이벤트 JSON 스트림을 같은 3-tuple 규격으로 받아들인다.
     opencode driver(`pm_orch_opencode.py`)가 DI 로 주입받아 쓴다(엔진은 파싱만 보유).
 
     - session_id: 모든 이벤트 top-level `sessionID`(실측 — 매 이벤트에 실린다). 첫 등장값
@@ -118,10 +118,10 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None, int | None]:
     - reply: `type:"text"` 이벤트의 `part.text` 를 등장 순서대로 누적(멀티-part 답변 대응).
       reply 가 없으면(text part 0) None.
     - used_tokens: 마지막 `step_finish` 이벤트의 `part.tokens` 에서 유효한 `total`(양의 정수)을
-      우선하고, 없으면 `input + output + reasoning + cache.read + cache.write`로 폴백한다. 이때
-      reasoning을 별도 가산해 보수적 상위집합으로 잡는다. tokens가 없거나 어느 값/cache 형상이
+      우선하고, 없으면 `input + output + reasoning + cache.read + cache.write`로 대신 계산한다. 이때
+      reasoning을 별도 가산해 보수적 상위집합으로 잡는다. tokens가 없거나 어느 값/cache 구성이
       비정상이면 None.
-      설치 opencode 1.18.5 바이너리 실측도 total 우선 + cache 합산 폴백을 확인했다.
+      설치 opencode 1.18.5 바이너리 실측도 total 우선 + cache 합산 대체 계산을 확인했다.
     - 비-JSON / 비-dict 라인은 skip(부분/노이즈 라인에 robust — claude 파서와 동일 정책).
 
     실측 이벤트 형식(opencode 1.17.6):
@@ -186,7 +186,7 @@ def _codex_usage_contract(wire: dict) -> dict:
     `reasoning_output_tokens` — 예 input_tokens=
     12481·cached_input_tokens=9600·output_tokens=105·reasoning_output_tokens=92). 파서가 이 **wire→contract
     경계를 소유** 해 driver 인터페이스(접미사 없는 contract 키)를 하니스-무관으로 유지한다 — driver 는
-    codex wire 형태를 몰라도 된다(claude/opencode 파서가 각자 wire 를 흡수하는 것과 동형). 비-정수/누락
+    codex wire 형태를 몰라도 된다(claude/opencode 파서가 각자 wire 를 받아들이는 것과 같은 구조). 비-정수/누락
     키는 0. cached_input/cache_write_input은 contract에 실어 관측 가능하게 두되 driver 사용 합산에서는
     제외한다. cached_input의 input 포함 관계는 실측됐지만 cache_write_input은 관측만 했고 포함 관계를
     검증하지 않았으므로 비합산 정책 자체만 보존한다(codex driver `_maybe_mark_ctx`).
@@ -209,7 +209,7 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
 
     claude `parse_stream_json`·opencode `parse_opencode_json` 과 **대칭** 위치의 codex 어댑터용
     순수 헬퍼 — codex 는 thread_id 를 사전지정 못 하고 `thread.started` 이벤트로 발급하므로
-    (opencode sid 동형) 출력 파싱으로 획득한다. usage 는 codex driver 의 driver-side 기계 ctx
+    (opencode sid 같은 구조) 출력 파싱으로 획득한다. usage 는 codex driver 의 driver-side 기계 ctx
     가드(relay 경로엔 opencode plugin 같은 marker 채널이 없어 driver 가 예산을
     직접 판정)의 원천이다. 세 파서 모두 3번째 값으로 usage 를 낸다(v1.6.0 일원화 — codex 는 dict·claude/opencode 는 정수).
 
@@ -223,7 +223,7 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
       (`{input,cached_input,cache_write_input,output,reasoning_output}`)로
       `_codex_usage_contract` 가 정규화한 값.
       없으면 None. (**실측 wire 키는 접미사 `_tokens`** — 접미사 없는 키를 읽으면 used==0 으로
-      ctx 가드가 영구 사멸한다·PM 라이브 프로브 5회 권위·codex/opencode 리뷰 수렴 결함.)
+      ctx 가드가 영구 사멸한다·PM 라이브 프로브 5회 권위·codex/opencode 리뷰 마무리 결함.)
     - 비-JSON / 비-dict 라인은 skip(claude·opencode 파서와 동일 robust 정책).
     """
     import json  # 지연 import — 순수 헬퍼만 쓰는 경로의 import 비용 회피(claude·opencode 파서 대칭).
@@ -262,12 +262,12 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
 # ── 하네스 드라이버 계약 (검증·argv·회신 추출) — 위임/추가 리뷰어 공용 단일 소유 ────────
 #
 # 위임(pm_delegate)과 추가 리뷰어(additional_reviewer)는 **같은 세 하네스 CLI**를 스폰한다. 값 테이블과
-# argv 조립이 두 표면에 각각 있으면 규칙이 둘로 갈리므로(진행신호 테이블·시간 프로필과 같은 이유)
+# argv 조립이 두 명령에 각각 있으면 규칙이 둘로 갈리므로(진행신호 테이블·시간 프로필과 같은 이유)
 # 이 leaf 모듈이 단일 소유한다. 이 모듈은 다른 엔진 도구를 import 하지 않아(cycle-free) 양쪽이
 # 안전하게 deep-import 할 수 있다 — additional_reviewer 는 pm_delegate 를 import 하지 않는다(역방향
 # deep-import 가 이미 있어 순환이 된다).
 
-# 권한축 — write(편집 가능) / read(읽기 전용). 역할이 아니라 **축**이 드라이버 플래그를 정한다.
+# 권한 종류 — write(편집 가능) / read(읽기 전용). 역할이 아니라 **권한 종류**가 드라이버 플래그를 정한다.
 WRITE_ROLES: frozenset[str] = frozenset({"developer", "architect"})
 READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 
@@ -492,7 +492,7 @@ def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) 
 CODEX_SANDBOX: dict[str, str] = {"write": "workspace-write", "read": "read-only"}
 # 승인 없는 위임(`-a never`)은 네트워크 명령의 건별 승격을 요청할 수 없다. 그래서 workspace-write
 # 실행의 명령 네트워크를 실행 단위 override 로 연다(프로젝트 config 의 대화형 기본값보다 우선하고,
-# 읽기 역할의 tmp 재앵커처럼 원 프로젝트 config 를 읽지 않는 실행에도 같게 실린다). 설정 노브가
+# 읽기 역할의 tmp 실행 위치 다시 잡기처럼 원 프로젝트 config 를 읽지 않는 실행에도 같게 실린다). 설정 노브가
 # 아니라 CLI 형식 선언이며 모든 역할·신규/재개 실행에 exec 앞 전역 위치로 정확히 한 번 들어간다.
 CODEX_WORKSPACE_EXEC_OPTIONS: tuple[str, ...] = (
     "-c", "sandbox_workspace_write.network_access=true",
@@ -512,7 +512,7 @@ OPENCODE_AGENT: dict[str, str] = {
 }
 # Cross-harness 실행은 수신 저장소가 OpenCode adopter라고 가정할 수 없다. 예를 들어 Claude
 # adopter에서 `opencode run --agent code-reviewer`를 호출하면 프로젝트 `.opencode/agents/`가
-# 없으므로 OpenCode가 default build agent로 조용히 폴백한다. argv의 역할 이름만 정확해도 역할은
+# 없으므로 OpenCode가 default build agent로 조용히 대체된다. argv의 역할 이름만 정확해도 역할은
 # 보존되지 않는 이유다. 따라서 공용 relay가 **이번 역할 하나**의 mode/permission을 런타임 config로
 # 만든다. 역할 지시는 pm_delegate가 첨부 prompt의 preamble으로 이미 싣고, 여기서는 하네스가 역할을
 # 실제 선택하고 그 권한으로 실행하는 데 필요한 최소 기계 계약만 소유한다.
@@ -532,17 +532,17 @@ def opencode_runtime_role_config(role: str) -> str:
     The caller places this engine-owned value in ``OPENCODE_CONFIG_CONTENT`` *after* environment
     allowlisting. Incoming content is intentionally not merged or inherited: it is an arbitrary runtime
     override surface and may contain plugins, commands, or secrets. Normal user/project config files still
-    load through the separately allowlisted ``OPENCODE_CONFIG``/``OPENCODE_CONFIG_DIR`` anchors; this
+    load through the separately allowlisted ``OPENCODE_CONFIG``/``OPENCODE_CONFIG_DIR`` locations; this
     highest-precedence fragment only pins the delegated role's identity, its permissions, and
     how an automatically rejected permission request is handled.
     """
     perm_kind(role)  # shared role allowlist and wording
     # ``edit`` is allowed for every role, researcher included: all participating roles record
     # their own output in the ticket copy's role section, and the shipped opencode researcher
-    # card carries the same ``edit: allow`` / ``bash: deny`` axis. This fragment is the
+    # card carries the same ``edit: allow`` / ``bash: deny`` rule. This fragment is the
     # highest-precedence config, so a researcher ``edit: deny`` here would override the card
-    # and leave the harvested section unwritten. Path narrowing is not an opencode
-    # edit-permission axis; the pre/post delegation touches audit holds it.
+    # and leave the collected section unwritten. Path narrowing is not an opencode
+    # edit-permission rule; the pre/post delegation touches audit holds it.
     permission: dict[str, object] = {
         "read": "allow",
         "edit": "allow",
@@ -605,15 +605,15 @@ def with_harness_runtime_role(
 # message 부재 시 rc=1). 실 지시는 `--file` 프롬프트에 있으므로 고정 안내 message 를 준다.
 OPENCODE_ATTACHED_MSG = "첨부된 프롬프트 파일(--file)의 지시를 그대로 수행하라."
 
-# claude 가용 도구셋 — `--tools`(가용성 제한, `--allowedTools` 아님). 역할축:
+# claude 가용 도구셋 — `--tools`(가용성 제한, `--allowedTools` 아님). 역할 기준:
 #   write(developer/architect) = 편집 도구 포함 · researcher = 읽기 + 라운드 파일
 #   (`NN-<role>.md`) 기록용 Edit(Write/Bash 없음) · code-reviewer = 읽기+Bash(pytest·Write/Edit
 #   제외). 콤마-구분 단일 인자.
 #
 # researcher 의 Edit 는 "모든 참여 역할이 자기 산출을 라운드 파일 하나로 남긴다"의
-# 최소 수단이다. **보장 수준을 정확히 적는다**: `--tools` 는 도구 *가용성* 축이라 claude 축에서는
+# 최소 수단이다. **보장 수준을 정확히 적는다**: `--tools` 는 도구 *가용성* 제한이라 claude 에서는
 # 편집 대상 경로를 좁히지 못한다(규율은 역할 카드 문구와 위임 전후 git/touches 감사가 든다).
-# 경로를 기계로 좁히는 것은 다른 두 축이다 — codex 는 read-only sandbox + `--add-dir <copy dir>`,
+# 경로를 기계로 좁히는 것은 다른 두 수단이다 — codex 는 read-only sandbox + `--add-dir <copy dir>`,
 # opencode 는 역할 agent 의 permission. code-reviewer 도 같은 사본 절을 쓰지만 수단이 다르다:
 # `--tools` 에 Edit 가 없고 Bash 로 쓴다. 조사 역할의 도구 축소 근거는 역할 카드의 도구 가드다.
 CLAUDE_TOOLS_WRITE = "Read,Glob,Grep,Bash,Write,Edit"
@@ -624,13 +624,13 @@ CLAUDE_TOOLS_REVIEWER = "Read,Glob,Grep,Bash"
 class HarnessContractError(RuntimeError):
     """하네스/reasoning 값이 드라이버 허용집합 밖 — 스폰 전 fail-loud.
 
-    소비 표면은 자기 예외(DelegateError·ReviewerTargetError)로 감싸되 **문구는 이 모듈이 소유**한다
-    (같은 오설정이 두 표면에서 다르게 설명되지 않게).
+    소비하는 두 명령은 자기 예외(DelegateError·ReviewerTargetError)로 감싸되 **문구는 이 모듈이 소유**한다
+    (같은 오설정이 두 명령에서 다르게 설명되지 않게).
     """
 
 
 def validate_harness(harness: str) -> str:
-    """지원 하네스만 통과시킨다(조용한 폴백 금지·명시 등록 요구)."""
+    """지원 하네스만 통과시킨다(조용한 대체 금지·명시 등록 요구)."""
     if harness not in conf_schema.HARNESS_CHOICES:
         raise HarnessContractError(
             f"미지원 harness {harness!r} — 지원: {', '.join(conf_schema.HARNESS_CHOICES)}. "
@@ -703,7 +703,7 @@ def validate_reasoning(
 
 
 def perm_kind(role: str) -> str:
-    """역할 → 권한축('write' | 'read'). 미등록 역할은 보수적으로 read."""
+    """역할 → 권한 종류('write' | 'read'). 미등록 역할은 보수적으로 read."""
     return "write" if role in WRITE_ROLES else "read"
 
 
@@ -805,7 +805,7 @@ def build_claude_argv(model: str, reasoning: str | None, role: str,
 
     `resume_session_id` 를 주면 그 세션을 이어받는 turn 이 된다(직전 컨텍스트가 프롬프트 캐시
     단가로 재적재되고 도구 재읽기가 사라진다 — "재적재 0" 이 아니다). 값은 형식 검증을 통과할
-    때만 실린다: 재개 id 는 argv 에 실리는 유일한 **외부 유래 토큰**이라, 손상 장부의 `--` 시작
+    때만 실린다: 재개 id 는 argv 에 실리는 유일한 **외부 유래 토큰**이라, 손상 기록의 `--` 시작
     문자열이 그대로 나가면 CLI 가 그걸 플래그로 소비한다."""
     argv = ["claude", "-p", "--output-format", "stream-json", "--verbose",
             "--model", model, "--tools", claude_tools(role)]
@@ -845,7 +845,7 @@ def assert_opencode_prompt_in_cwd(cwd: str | Path, prompt_file: str | Path) -> N
     argv 빌더 자체는 추가 리뷰어의 표시용 placeholder도 조립하므로 순수 함수로 둔다. 실제 파일을
     넘기는 호출부가 이 가드를 직전에 호출한다. 양쪽 경로를 resolve해 실제 containment를 판정하며,
     해소 자체가 실패하면 공용 계약 예외로 번역한다. 따라서 ``--dir`` 안의 symlink가 바깥 파일을
-    가리키는 형상도 거부하며, 파일 경로가 sandbox 루트와 같은 값인 형상도 하위로 인정하지 않는다.
+    가리키는 구성도 거부하며, 파일 경로가 sandbox 루트와 같은 값인 구성도 하위로 인정하지 않는다.
     """
     try:
         sandbox = Path(cwd).resolve()
@@ -874,19 +874,19 @@ def assert_opencode_prompt_in_cwd(cwd: str | Path, prompt_file: str | Path) -> N
 # 재개는 **직전 세션 컨텍스트의 프롬프트 캐시 재적재 + 도구 재읽기 0**이다(재적재 비용 0 아님).
 # 지원 여부는 분기가 아니라 선언표다:
 #   · claude — `-p` 재개 플래그로 같은 세션 id 를 이어받는다. 성공 판정은 **회신 세션 id 일치**
-#     (rc 로 판정하지 않는다 — 만료/부분 손상이 rc=0 새 세션으로 나오는 축은 미측정이다).
+#     (rc 로 판정하지 않는다 — 만료/부분 손상이 rc=0 새 세션으로 나오는 경우는 미측정이다).
 #   · codex — 설치 codex-cli 0.147.0 라이브 실측(2026-08-12): `codex exec --help`에
 #     `resume` 하위 커맨드가 있고, `codex exec resume --help`가 `[SESSION_ID] [PROMPT]`와
 #     `--json`을 함께 선언한다. `codex -a never -s read-only -C /tmp exec resume --json
 #     --skip-git-repo-check <uuid> -`도 인자 파싱을 통과해 app-server 초기화까지 진입했다
 #     (현재 read-only 상위 sandbox에서는 상태 파일 생성 EROFS로 라이브 turn 전 중단). 따라서
-#     위임 드라이버는 `SESSION_ID -`로 stdin delta를 보내고 기존 JSONL 파서를 그대로 쓴다.
-#   · opencode — 위임 드라이버에 재개 배선 없음.
+#     위임 드라이버는 `SESSION_ID -`로 stdin 으로 바뀐 부분을 보내고 기존 JSONL 파서를 그대로 쓴다.
+#   · opencode — 위임 드라이버에 재개 등록 없음.
 HARNESS_RESUME_SUPPORT: dict[str, bool] = {
     "claude": True, "codex": True, "opencode": False,
 }
 
-# 세션 id 형식(uuid 표기) 가드. 재개 id 는 장부에서 온 값이라 형식이 맞을 때만 argv 에 싣는다.
+# 세션 id 형식(uuid 표기) 가드. 재개 id 는 기록에서 온 값이라 형식이 맞을 때만 argv 에 싣는다.
 SESSION_ID_RE = re.compile(
     r"\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z"
 )
@@ -903,9 +903,9 @@ def is_resumable_session_id(value: object) -> bool:
 
 
 class HarnessReply(NamedTuple):
-    """하네스 wire 1회의 구조화 관측 — 최종 회신·세션 id·원장 usage.
+    """하네스 wire 1회의 구조화 관측 — 최종 회신·세션 id·기록 usage.
 
-    세 파서가 각자 wire 를 흡수한 결과를 한 형상으로 모은다. 종전 reply 전용 seam 은 이 관측의
+    세 파서가 각자 wire 를 받아들인 결과를 한 구성으로 모은다. 종전 reply 전용 함수는 이 관측의
     한 필드를 꺼내는 얇은 facade 다(세션 id·usage 를 버리던 자리)."""
 
     reply: str | None
@@ -922,19 +922,19 @@ def _codex_harness_reply(lines) -> HarnessReply:
     """thread id 가 세션 id 자리다. usage 는 `_codex_usage_contract` 5필드
     (`input`·`cached_input`·`cache_write_input`·`output`·`reasoning_output`)를 **접지 않고**
     그대로 싣는다 — `cached_input` 이 `input` 에 포함되고 cache write 의 포함 관계는 미검증이라,
-    같은 필드 이름(claude 의 4필드)으로 접으면 합산 의미가 하네스마다 달라진다. 소비자는 장부
+    같은 필드 이름(claude 의 4필드)으로 합치면 합산 의미가 하네스마다 달라진다. 소비자는 기록
     행의 `harness` 를 보고 해석한다. 이 5필드 중 missing/비-정수 키는 `_codex_usage_contract`
-    가 0 으로 채운다 — claude 4필드 축의 "부재=미관측"(값 자체를 만들지 않음)과 다른 규칙이라
+    가 0 으로 채운다 — claude 4필드 기준의 "부재=미관측"(값 자체를 만들지 않음)과 다른 규칙이라
     claude 처럼 "0 은 실측"으로 읽으면 안 된다."""
     thread_id, reply, usage = parse_codex_json(lines)
     return HarnessReply(reply, thread_id, usage)
 
 
 def _opencode_harness_reply(lines) -> HarnessReply:
-    """총합 스칼라만 내는 파서 축 — wire `part.tokens` 에는 실제로 input/output/reasoning/cache
-    분해가 있지만(`parse_opencode_json`) 파서가 스칼라 하나로 접어, 원장에 실을 하네스 contract가
+    """총합 스칼라만 내는 파서 쪽 — wire `part.tokens` 에는 실제로 input/output/reasoning/cache
+    분해가 있지만(`parse_opencode_json`) 파서가 스칼라 하나로 합쳐, 기록에 실을 하네스 contract가
     없다. 그 스칼라도 두 갈래 의미(`total` 원값 또는 보수적 상위집합 합)라 값 형태로 실으면 같은
-    이름 아래 다른 사실이 섞인다. 이번 범위 밖(별건 후보) — 원장 usage 는 필드 부재로 남긴다."""
+    이름 아래 다른 사실이 섞인다. 이번 범위 밖(별건 후보) — 기록 usage 는 필드 부재로 남긴다."""
     session_id, reply, _used_tokens = parse_opencode_json(lines)
     return HarnessReply(reply, session_id, None)
 
@@ -950,9 +950,9 @@ HARNESS_REPLY_ADAPTERS = {
 def extract_harness_result(harness: str, stdout: str) -> HarnessReply:
     """하네스 stdout(구조화 wire)에서 회신·세션 id·usage 를 한 번에 관측한다.
 
-    reply 의 **타입 계약은 이 seam 이 소유한다**(아래 `extract_harness_reply` 주석 참조) — 그
-    판정을 여기서 한 번 세우고 두 소비면(회신 전용 facade·원장/세션 재사용)이 같은 결과를 쓴다.
-    미지원 하네스는 fail-loud(조용한 폴백 금지)."""
+    reply 의 **타입 계약은 이 함수가 소유한다**(아래 `extract_harness_reply` 주석 참조) — 그
+    판정을 여기서 한 번 세우고 두 소비면(회신 전용 facade·기록/세션 재사용)이 같은 결과를 쓴다.
+    미지원 하네스는 fail-loud(조용한 대체 금지)."""
     adapter = HARNESS_REPLY_ADAPTERS.get(harness)
     if adapter is None:
         raise HarnessContractError(f"미지원 harness {harness!r} — reply 추출 불가.")
@@ -971,30 +971,30 @@ def extract_harness_reply(harness: str, stdout: str) -> str | None:
     한다(wire 원문을 그대로 판정에 넣지 않는다). 세션 id·usage 까지 필요한 호출자는
     `extract_harness_result` 를 쓴다(같은 관측의 다른 필드다).
 
-    **최종 회신의 타입 계약은 이 seam 이 소유한다** — 내용이 있는 `str` 하나이고, 그 밖의 값
+    **최종 회신의 타입 계약은 이 함수가 소유한다** — 내용이 있는 `str` 하나이고, 그 밖의 값
     (dict/list/수·null·빈 문자열·공백만)은 전부 미추출(None)이다. wire 파서는 "wire 가 무엇을 말했는지"를
     그대로 옮기는 층이라 claude `result` 필드처럼 스키마상 임의 JSON 값이 올 수 있는 자리를
-    통과시킨다(실측 형상: `{"type":"result","result":{...}}`). 그 값이 소비 표면까지 흘러가면
-    판정 파싱·전사 단계에서 AttributeError 로 터지는데, 그 시점은 raw 박제·장부 마감 **전**이라
-    터진 실행은 원문도 장부도 남기지 않는다. 그래서 타입은 두 표면(위임·추가 리뷰어)이 공유하는
-    이 한 지점에서 세운다 — 형상 붕괴는 "회신 없음"으로 환원되고 호출자의 기존 fail-loud 경로가
+    통과시킨다(실측 구성: `{"type":"result","result":{...}}`). 그 값이 소비하는 쪽까지 흘러가면
+    판정 파싱·전사 단계에서 AttributeError 로 터지는데, 그 시점은 raw 기록·기록 마감 **전**이라
+    터진 실행은 원문도 기록도 남기지 않는다. 그래서 타입은 두 명령(위임·추가 리뷰어)이 공유하는
+    이 한 지점에서 세운다 — 구성 붕괴는 "회신 없음"으로 환원되고 호출자의 기존 fail-loud 경로가
     그대로 받는다.
 
     **공백만 있는 회신은 빈 회신과 같다.** 참/거짓만 보면 `" "`·`"\\n"` 이 통과해 리뷰어가 아무 말도
     하지 않은 실행이 '회신 있음'으로 기록되고, 그 뒤의 판정 파싱은 아무 토큰도 찾지 못한 채 판정
-    불명확으로만 끝난다 — 폴백 신호(`reply_extraction_failed`)가 서지 않아 호출자가 내부 리뷰어로
+    불명확으로만 끝난다 — 대체 하네스 신호(`reply_extraction_failed`)가 서지 않아 호출자가 내부 리뷰어로
     갈아탈 근거를 잃는다. 그래서 존재 판정은 `strip()` 으로 하고, **돌려주는 값은 원문 그대로**다
-    (앞뒤 공백까지 회신 바이트의 일부라 판정·전사 표면이 wire 와 어긋나면 안 된다)."""
+    (앞뒤 공백까지 회신 바이트의 일부라 판정·전사 범위가 wire 와 어긋나면 안 된다)."""
     return extract_harness_result(harness, stdout).reply
 
 
-# ── 스폰 진입점 표기 (도구 승인 prefix·처방 커맨드가 공유) ──────────────────
+# ── 스폰 진입점 표기 (도구 승인 prefix·안내 커맨드가 공유) ──────────────────
 #
-# 처방·재실행 안내가 찍는 2-token(`인터프리터 + 진입점`)은 도구 승인 prefix 와 **같은 표기**여야
+# 안내·재실행 안내가 찍는 2-token(`인터프리터 + 진입점`)은 도구 승인 prefix 와 **같은 표기**여야
 # 재사용 승인을 소비한다. Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어
 # 런처(`py`)가 1순위다 — 그 규칙은 이 한 함수가 소유한다(사본을 만들면 표기가 갈린다).
 
-# 표면별 진입점 — 도구 재사용 승인 prefix 가 되는 2-token 이다.
+# 명령별 진입점 — 도구 재사용 승인 prefix 가 되는 2-token 이다.
 DELEGATE_ENTRYPOINT = ".project_manager/tools/pm_delegate.py"
 ADDITIONAL_REVIEWER_ENTRYPOINT = ".project_manager/tools/additional_reviewer.py"
 
@@ -1006,6 +1006,6 @@ def running_on_windows() -> bool:
 
 def entrypoint_command(script: str, *,
                        windows: bool | None = None) -> tuple[str, str]:
-    """도구 승인 prefix·처방 커맨드가 공유하는 2-token(인터프리터, 진입점)."""
+    """도구 승인 prefix·안내 커맨드가 공유하는 2-token(인터프리터, 진입점)."""
     on_windows = running_on_windows() if windows is None else windows
     return ("py" if on_windows else "python3", script)

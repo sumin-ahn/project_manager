@@ -28,7 +28,7 @@ from pm_engine.infra.harness import contract
 # 가드·예: pm_orch_opencode.TURN_TIMEOUT_SEC=600)이 그대로 백스톱. provider 노브(headerTimeout 등)는
 # stall 이 provider 스트림 fetch *밖*에서 발생해 무효 실측 — 워치독이 클래스를 커버한다.
 
-# env 노브 (worktree_pool 의 PM_GIT_TIMEOUT 네이밍 결). 세 표면(opencode driver·pm_import fill·
+# env 노브 (worktree_pool 의 PM_GIT_TIMEOUT 네이밍 결). 세 실행 경로(opencode driver·pm_import fill·
 # release 라이브 헬퍼)이 아래 두 해소기로 이 기본값을 공유한다. 값을 바꾸려면 export 후 재실행.
 FIRST_EVENT_TIMEOUT_ENV = "PM_OC_FIRST_EVENT_TIMEOUT"   # 첫-이벤트 대기 상한(초).
 STALL_RETRIES_ENV = "PM_OC_STALL_RETRIES"               # stall 시 재시도 횟수.
@@ -42,7 +42,7 @@ _KILL_GRACE_SEC = 5.0
 # 하네스 상한 계산이 한 단계만 세면 부분 산출물 수확 전에 호출층이 먼저 프로세스를 죽일 수 있다.
 _PROCESS_CLEANUP_GRACE_PHASES = 2
 
-# 정리 뒤 분류·raw 박제·범위 감사에 남기는 공용 여유. 두 소비 표면(pm_delegate/additional_reviewer)이
+# 정리 뒤 분류·raw 기록·범위 감사에 남기는 공용 여유. 두 소비 명령(pm_delegate/additional_reviewer)이
 # 같은 `harness_cap_required_budget`을 써야 상한 계산 규칙이 갈리지 않는다. 실측 보조 단계 합 7초를
 # 플랫폼 편차를 위해 다음 10초 경계로 올린 값이다.
 HARNESS_CAP_MEASURED_AUX_BUDGET_SEC = 7
@@ -64,8 +64,8 @@ def watchdog_execution_budget(
 ) -> float:
     """공용 워치독 한 번의 최악 실행+정리 예산.
 
-    startup 창이 wall보다 먼저 발화할 때만 실패한 각 startup 시도를 재실행한다. wall이 먼저거나
-    동시에 발화하면 첫 시도에서 끝나므로 재시도 예산을 더하지 않는다. startup 창이 꺼진 축도
+    startup 창이 wall보다 먼저 울릴 때만 실패한 각 startup 시도를 재실행한다. wall이 먼저거나
+    동시에 울리면 첫 시도에서 끝나므로 재시도 예산을 더하지 않는다. startup 창이 꺼진 프로필도
     전달된 retries를 무시해 기존 단일 시도 계약을 보존한다.
     """
     retry_count = (
@@ -83,7 +83,7 @@ def watchdog_execution_budget(
 
 
 def harness_cap_required_budget(execution_budget: float) -> float:
-    """엔진 실행+정리 뒤 진단/박제까지 마치기 위한 호출층 최소 상한."""
+    """엔진 실행+정리 뒤 진단/기록까지 마치기 위한 호출층 최소 상한."""
     return float(execution_budget) + HARNESS_CAP_MARGIN_SEC
 
 
@@ -119,7 +119,7 @@ def harness_cap_advisory(
     session_markers: dict[str, tuple[str, ...]], cap_env: dict[str, str | None],
     render_missing, render_invalid, render_low,
 ) -> str | None:
-    """세 실행 표면이 공유하는 호출층 상한 판정; 표면별 기존 문구는 renderer가 소유한다."""
+    """세 실행 경로가 공유하는 호출층 상한 판정; 경로별 기존 문구는 renderer가 소유한다."""
     required = int(harness_cap_required_budget(execution_budget))
     warnings = []
     for harness, markers in session_markers.items():
@@ -211,12 +211,12 @@ def _env_positive_int(name: str, default: int) -> int:
 
 
 def first_event_timeout_default() -> float:
-    """PM_OC_FIRST_EVENT_TIMEOUT env(초) 또는 기본 90. 세 표면 공유 해소기."""
+    """PM_OC_FIRST_EVENT_TIMEOUT env(초) 또는 기본 90. 세 실행 경로 공유 해소기."""
     return _env_positive_float(FIRST_EVENT_TIMEOUT_ENV, DEFAULT_FIRST_EVENT_TIMEOUT_SEC)
 
 
 def stall_retries_default() -> int:
-    """PM_OC_STALL_RETRIES env 또는 기본 2. 세 표면 공유 해소기."""
+    """PM_OC_STALL_RETRIES env 또는 기본 2. 세 실행 경로 공유 해소기."""
     return _env_nonneg_int(STALL_RETRIES_ENV, DEFAULT_STALL_RETRIES)
 
 
@@ -225,37 +225,37 @@ def stall_retries_default() -> int:
 # 못 닫는다 — 동일 입력이 900초를 넘기도 하고 안 넘기도 한 직접 증거(추가 리뷰 채널 실측 2회
 # 실행·입력 동일·한 번은 kill/한 번은 성공)가 임계값이 정상 작업의 **분산 대역 안**에 있음을 보였다.
 # 그래서 판정 기준을 **마지막 진행 이벤트 이후 무진행 시간**으로 교체하고 벽시계는 백스톱으로
-# 강등한다(worktree_pool.py:84-100 "진행이 보이면 관대하게, 안 보이면 유한하게"의 승계).
+# 낮춘다(worktree_pool.py:84-100 "진행이 보이면 관대하게, 안 보이면 유한하게"의 승계).
 # ── 시간 예산 실측 근거 (추측 상수 금지) ────────────────────────────────────────────
-# **클라우드 축**(codex·claude — 원격 추론). 재료 = /tmp 잔존 위임 raw 코퍼스(pm_delegate_codex_*
-# 5,100건·pm_delegate_claude_* 749건) + additional_reviewer raw(codex 평문 축 207건).
+# **클라우드 프로필**(codex·claude — 원격 추론). 재료 = /tmp 잔존 위임 raw 코퍼스(pm_delegate_codex_*
+# 5,100건·pm_delegate_claude_* 749건) + additional_reviewer raw(codex 평문 출력 207건).
 #   ⓐ 도구 실행 침묵(직접 실측·N=860 표본/89 파일) — codex 는 command_execution 을 item.started →
 #      (그 도구가 도는 동안 stdout 이벤트 0) → item.completed 로 내므로 **한 도구 실행의 소요 =
 #      그 구간의 stdout 침묵**이다. 도구가 스스로 찍은 소요(pytest "in NNNs")를 표본으로:
 #      p50 0.5s · p90 82.6s · p95 102.7s · p99 124.9s · **max 254.6s**.
 #   ⓑ 이벤트 간 평균 간격(비둘기집 하한·rc=0 완주 153건) — 총 소요/이벤트 수 ≤ 최대 간격:
 #      p50 9.0s · p99 16.4s · max 17.7s. (총 소요 자체는 p50 370.2s·p99 1036.6s·max 1429.1s.)
-#   ⓒ 평문 축(additional_reviewer 의 `codex exec` — `--json` 없음) — 진행 로그가 **stderr** 로 촘촘히
+#   ⓒ 평문 출력(additional_reviewer 의 `codex exec` — `--json` 없음) — 진행 로그가 **stderr** 로 촘촘히
 #      흐른다(리뷰 1건 stderr 12,233줄·hook/exec/succeeded 라인이 도구마다). stdout 은 최종 회신
-#      뿐이라(실측 498~759 바이트) **stdout 단독 관측은 이 축을 전량 false-kill 한다** — 그래서
+#      뿐이라(실측 498~759 바이트) **stdout 단독 관측은 이 출력 방식을 전량 false-kill 한다** — 그래서
 #      진행 신호는 stdout·stderr **양쪽 chunk 도착**으로 본다.
 CLOUD_IDLE_TIMEOUT_SEC = 900.0    # 관측 최대 침묵(254.6s)의 3.5배.
 CLOUD_WALL_TIMEOUT_SEC = 3600.0   # 관측 최대 완주(1429.1s)의 2.5배 — 백스톱이라 여유를 크게.
 
-# **로컬 GPU 축**(opencode — 로컬 모델 추론). 위 코퍼스에 opencode 표본은 **0건**이라 값을 클라우드
+# **로컬 GPU 프로필**(opencode — 로컬 모델 추론). 위 코퍼스에 opencode 표본은 **0건**이라 값을 클라우드
 # 측정치로 잡으면 안 된다(초기 구현이 그렇게 했다가 전제가 깨졌다). 근거는 사용자 실측 증언이다:
 # 회사 환경(로컬 GPU 부족)의 opencode 위임은 **3시간까지** 걸리고, 관찰된 진행 양상은
 # **"길게 멈췄다 가끔 움직임"** 이다 — 즉 총 소요만 긴 게 아니라 **침묵 구간 자체가 길다**.
 # 클라우드 값(idle 900s)으로는 그 정상 작업을 죽인다.
 #   · wall 4시간 = 관측된 3시간 완주 + 33% 여유(요구: "3시간 위").
 #   · idle 1.5시간 = 3시간 실행에서 한 침묵이 전체의 절반에 달해도 통과. 이 이상 조용하면 총 소요의
-#     절반을 무출력으로 보낸 것이라 정지로 본다. 하드 표본이 없는 축이라 **설정 안 해도 안 죽는
+#     절반을 무출력으로 보낸 것이라 정지로 본다. 하드 표본이 없는 프로필이라 **설정 안 해도 안 죽는
 #     쪽**으로 잡았다 — 미설정 채택자의 false-kill 이 이 판정 전환의 실패 조건이기 때문이다.
 #     GPU 가 넉넉한 배포는 환경 조건이 다르므로 local.conf `harness.opencode.*` 로 조인다.
 LOCAL_GPU_IDLE_TIMEOUT_SEC = 5400.0    # 1.5시간
 LOCAL_GPU_WALL_TIMEOUT_SEC = 14400.0   # 4시간
 
-# 호출층 Bash 상한을 관측할 수 있는 세션 축의 단일 선언. 공개 상한이 없는 codex는 None으로
+# 호출층 Bash 상한을 관측할 수 있는 세션 종류의 단일 선언. 공개 상한이 없는 codex는 None으로
 # 남기며, 그 자체는 advisory 대상이 아니다.
 HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
     "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
@@ -270,7 +270,7 @@ HARNESS_CAP_ENV: dict[str, str | None] = {
 
 
 class HarnessProfile(NamedTuple):
-    """하네스 축 선언 — 관측 능력 + 시간 예산. **값만 갈리고 판정 코드는 하나다.**
+    """하네스 프로필 선언 — 관측 능력 + 시간 예산. **값만 갈리고 판정 코드는 하나다.**
 
     "하네스별 특례 분기 금지"의 금지 대상은 *코드 분기*이고, 드라이버별 *선언된 값*은 이 테이블의
     존재 이유다. 코드가 갈리면(하네스 이름으로 판정 경로가 바뀌면) 그건 위반이다."""
@@ -282,20 +282,20 @@ class HarnessProfile(NamedTuple):
 
 
 HARNESS_PROFILES: dict[str, HarnessProfile] = {
-    # 클라우드 축 — 원격 추론이라 침묵/완주 모두 짧다(위 ⓐⓑ 실측).
+    # 클라우드 프로필 — 원격 추론이라 침묵/완주 모두 짧다(위 ⓐⓑ 실측).
     "codex": HarnessProfile(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, False,
                             CLOUD_IDLE_TIMEOUT_SEC, CLOUD_WALL_TIMEOUT_SEC),
     "claude": HarnessProfile(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, False,
                              CLOUD_IDLE_TIMEOUT_SEC, CLOUD_WALL_TIMEOUT_SEC),
-    # 로컬 GPU 축 — 긴 침묵 + 장시간 완주(사용자 실측 증언). startup stall 워치독은 이 축에서만
+    # 로컬 GPU 프로필 — 긴 침묵 + 장시간 완주(사용자 실측 증언). startup stall 워치독은 이 프로필에서만
     # 실측된 결함(upstream #13841)이라 여기만 True 다.
     "opencode": HarnessProfile(conf_schema.PROGRESS_SIGNAL_EVENT_STREAM, True,
                                LOCAL_GPU_IDLE_TIMEOUT_SEC, LOCAL_GPU_WALL_TIMEOUT_SEC),
 }
 
-# 프로필을 모르는 축의 기본 = **테이블에 선언된 값 중 가장 관대한 쪽**(false-kill 방향 금지).
-# 특정 프로필 상수의 alias 로 두면 더 관대한 축을 추가할 때 조용히 stale 해지므로 반드시 테이블에서
-# 파생한다. 이 두 이름은 기존 호출자의 공개 호환 표면이라 유지하되 값의 소유권은 HARNESS_PROFILES 다.
+# 프로필을 모르는 하네스의 기본 = **테이블에 선언된 값 중 가장 관대한 쪽**(false-kill 방향 금지).
+# 특정 프로필 상수의 alias 로 두면 더 관대한 프로필을 추가할 때 조용히 stale 해지므로 반드시 테이블에서
+# 파생한다. 이 두 이름은 기존 호출자의 공개 호환 이름이라 유지하되 값의 소유권은 HARNESS_PROFILES 다.
 DEFAULT_IDLE_TIMEOUT_SEC = max(profile.idle_timeout for profile in HARNESS_PROFILES.values())
 DEFAULT_WALL_TIMEOUT_SEC = max(profile.wall_timeout for profile in HARNESS_PROFILES.values())
 
@@ -306,14 +306,14 @@ UNKNOWN_HARNESS_PROFILE = HarnessProfile(conf_schema.PROGRESS_SIGNAL_NONE, False
 
 
 # 미지 **리뷰어** 커맨드 — 출력 형식을 모르므로 진행 신호가 있다고 가정하지 않는다. 종료 시 한 번에
-# 출력하는 CLI를 평문 증분 축으로 오인하면 정상 침묵 구간이 곧 idle kill 대상이 된다. 모를 때
+# 출력하는 CLI를 평문 증분 출력으로 오인하면 정상 침묵 구간이 곧 idle kill 대상이 된다. 모를 때
 # 신호 없음(벽시계만)이 false-kill에 안전하고, 값은 가장 관대한 쪽으로 유한하게 남긴다.
 REVIEWER_FALLBACK_PROFILE = HarnessProfile(conf_schema.PROGRESS_SIGNAL_NONE, False,
                                            DEFAULT_IDLE_TIMEOUT_SEC, DEFAULT_WALL_TIMEOUT_SEC)
 
 
 # local.conf 하네스별 override 키 — GPU 여유/네트워크 같은 **환경 조건**은 엔진 속성이 아니라
-# 배포 속성이라 per-clone 으로 받는다. 두 표면(위임·추가 리뷰)이 같은 키를 읽는다.
+# 배포 속성이라 per-clone 으로 받는다. 두 명령(위임·추가 리뷰)이 같은 키를 읽는다.
 HARNESS_IDLE_TIMEOUT_KEY = "harness.{harness}.idle_timeout"
 HARNESS_WALL_TIMEOUT_KEY = "harness.{harness}.wall_timeout"
 
@@ -358,9 +358,9 @@ def resolve_harness_profile(harness: str, conf: dict | None = None, *,
                             fallback: HarnessProfile | None = None,
                             legacy_idle_key: str | None = None,
                             legacy_wall_key: str | None = None) -> HarnessProfile:
-    """하네스 → 시간 예산이 해소된 프로필. **두 표면이 이 한 함수를 쓴다.**
+    """하네스 → 시간 예산이 해소된 프로필. **두 명령이 이 한 함수를 쓴다.**
 
-    해소 순서(뒤가 이긴다): 선언 기본 → 표면-flat legacy 키(`delegate.timeout`·
+    해소 순서(뒤가 이긴다): 선언 기본 → 공통 legacy 키(`delegate.timeout`·
     `additional_reviewer.timeout` 등 기존 노브) → 하네스별 키(`harness.<name>.*`). CLI 일회성 override 는
     호출부가 이 결과 위에 얹는다(가장 강함). 미지 하네스는 `fallback`(없으면 UNKNOWN_HARNESS_PROFILE).
     """
@@ -380,7 +380,7 @@ def resolve_harness_profile(harness: str, conf: dict | None = None, *,
 
 def idle_timeout_for_signal(progress_signal: str,
                             configured: float | None = None) -> float | None:
-    """진행-신호 선언 → 적용할 무진행 상한(초). 신호 없는 축은 None(=벽시계 유지).
+    """진행-신호 선언 → 적용할 무진행 상한(초). 신호 없는 하네스는 None(=벽시계 유지).
 
     configured=None 이면 테이블 파생 기본을 쓴다. 미지의 선언은 **보수적으로** 신호 없음으로
     취급한다(모르는 드라이버를 무진행으로 죽이지 않는다 — false-kill 방향 금지)."""
@@ -436,7 +436,7 @@ def _kill_process_group(proc, process_group_id: int | None = None) -> None:
             ).returncode
         except OSError as exc:
             raise ProcessCleanupError(f"프로세스 kill 실패(pid={proc.pid}): {exc}") from exc
-        # 찾지 못함은 poll 과 taskkill 사이에 스스로 끝난 형상일 때만 성공이다.
+        # 찾지 못함은 poll 과 taskkill 사이에 스스로 끝난 구성일 때만 성공이다.
         already_exited = (taskkill_rc == _TASKKILL_NOT_FOUND_RC
                           and proc.poll() is not None)
         if taskkill_rc != 0 and not already_exited:
@@ -456,7 +456,7 @@ def _kill_process_group(proc, process_group_id: int | None = None) -> None:
 # 부모가 쥔 파이프 래퍼는 kill·wait 로 닫히지 않는다. 자식이 죽어도 래퍼가 살아 있는 동안 그
 # 핸들은 열려 있고, Windows 는 열린 핸들이 있는 파일·디렉터리 삭제를 계속 거부한다(자식이 쓰던
 # 작업 트리를 지우는 `force_rmtree` 재시도가 그 자리에서 소진된다). POSIX 는 GC 가 늦게라도
-# 회수하지만 kill 경로는 예외 traceback 이 프레임(=proc)을 붙잡고 있어 그 회수도 늦다.
+# 정리하지만 kill 경로는 예외 traceback 이 프레임(=proc)을 붙잡고 있어 그 정리도 늦다.
 _CHILD_PIPE_ATTRS = ("stdout", "stderr", "stdin")
 
 
@@ -464,11 +464,11 @@ def _close_child_pipes(proc, *, argv) -> None:
     """자식 파이프 래퍼(stdout/stderr/stdin)를 **명시적으로** 닫는다 — 실패는 삼키지 않는다.
 
     호출 조건은 하나다: **그 파이프를 읽는 스레드가 더는 없을 때**. 남의 blocking read 밑에서
-    핸들을 뽑는 대신, 리더가 살아 있는 형상(드레인 타임아웃)은 호출부가 loud 로 올린다.
+    핸들을 뽑는 대신, 리더가 살아 있는 구성(드레인 타임아웃)은 호출부가 loud 로 올린다.
 
     닫히지 않은 래퍼는 조용히 사라지지 않고 남은 핸들로 다음 단계(작업 트리 삭제)를 깨뜨리므로
     close 실패는 부분 성공으로 감추지 않고 `ProcessCleanupError` 로 올린다. 유일한 예외는 **stdin
-    의 `BrokenPipeError`** 다 — kill 뒤 읽는 쪽이 이미 사라진 정상 형상이고(버퍼를 비우다 파손을
+    의 `BrokenPipeError`** 다 — kill 뒤 읽는 쪽이 이미 사라진 정상 구성이고(버퍼를 비우다 파손을
     만난다) 래퍼 자체는 그 자리에서 닫힌다.
     """
     failures: list[str] = []
@@ -494,9 +494,9 @@ def _cleanup_failed_watched_spawn(proc, process_group_id: int | None, *, argv,
     """`Popen` 성공 뒤 어댑터 초기화 실패를 그룹 kill + pipe drain + pipe close 로 롤백한다.
 
     드레인(`communicate`)이 파이프를 닫아 주는 것은 **그 드레인이 끝까지 돈 경우뿐**이다. Windows
-    의 `Popen._communicate` 는 스트림마다 리더 **스레드**를 만들어 돌리므로, 스레드/시그널 축이
+    의 `Popen._communicate` 는 스트림마다 리더 **스레드**를 만들어 돌리므로, 스레드/시그널 구성이
     깨진 초기화 실패(이 함수를 부른 그 실패)에서는 드레인이 스레드 생성 자리에서 그대로 터져
-    파이프가 열린 채 남는다(POSIX 의 selector 드레인엔 없는 형상). 그래서 드레인이 어떤 예외로
+    파이프가 열린 채 남는다(POSIX 의 selector 드레인엔 없는 구성). 그래서 드레인이 어떤 예외로
     끝나든 래퍼는 이 함수가 직접 닫는다 — 리더가 아직 읽고 있는 타임아웃만 예외다.
     """
     _kill_process_group(proc, process_group_id)
@@ -520,7 +520,7 @@ def _cleanup_failed_watched_spawn(proc, process_group_id: int | None, *, argv,
         if not drain_timed_out:
             _close_child_pipes(proc, argv=argv)
 
-    # Thread.start()가 성공한 뒤 다음 초기화 단계가 실패한 경우 reader/writer까지 회수한다.
+    # Thread.start()가 성공한 뒤 다음 초기화 단계가 실패한 경우 reader/writer까지 정리한다.
     # 시작 전 Thread.join()은 RuntimeError이므로 ident가 생긴 스레드만 기다린다.
     for thread in threads:
         if thread.ident is None:
@@ -537,14 +537,14 @@ SPAWN_FAILED_ATTR = "spawn_failed"
 
 
 def _mark_spawn_failed(exc: BaseException, failed: bool) -> None:
-    """예외에 "자식이 떴는가" 표식을 붙인다 — 이미 붙어 있으면 그대로 둔다(최초 관측이 진실).
+    """예외에 "자식이 떴는가" 표시를 붙인다 — 이미 붙어 있으면 그대로 둔다(최초 관측이 진실).
 
-    표식의 소유자는 **스폰 경계를 실제로 본 층**이다: `_WatchedPopen` 은 실 `Popen` 호출의 앞뒤를
+    표시의 소유자는 **스폰 경계를 실제로 본 층**이다: `_WatchedPopen` 은 실 `Popen` 호출의 앞뒤를
     보고 preflight 거절(NUL 입력)과 확정 기동 실패에 True(자식 없음)를, 그 밖의 `Popen` 예외와
-    `Popen` 반환 뒤의 실패에 False(자식 있었음·보수)를 붙이고, 워치독 루프는 표식 없는 주입
+    `Popen` 반환 뒤의 실패에 False(자식 있었음·보수)를 붙이고, 워치독 루프는 표시 없는 주입
     어댑터의 exec 실패(OSError)에 True 를 붙인다.
-    상위(추가 리뷰어 러너)는 이 표식이 있으면 그것을, 없으면 예외 종류만 보고 보수적으로 판정한다.
-    속성을 못 받는 예외(슬롯 정의)는 조용히 넘긴다 — 표식 없음은 '판정 유보'라 안전쪽이다.
+    상위(추가 리뷰어 러너)는 이 표시가 있으면 그것을, 없으면 예외 종류만 보고 보수적으로 판정한다.
+    속성을 못 받는 예외(슬롯 정의)는 조용히 넘긴다 — 표시 없음은 '판정 유보'라 안전쪽이다.
     """
     if getattr(exc, SPAWN_FAILED_ATTR, None) is not None:
         return
@@ -554,8 +554,8 @@ def _mark_spawn_failed(exc: BaseException, failed: bool) -> None:
         pass
 
 
-# `Popen` 이 던졌을 때 "자식이 뜬 적 없음"을 **확정**할 수 있는 종류. exec 자체가 실패한 형상들이고
-# (파일 부재·실행 권한·경로 형상), CPython 은 이때 자기가 만든 자식을 errpipe 로 확인한 뒤 회수한다.
+# `Popen` 이 던졌을 때 "자식이 뜬 적 없음"을 **확정**할 수 있는 종류. exec 자체가 실패한 구성들이고
+# (파일 부재·실행 권한·경로 구성), CPython 은 이때 자기가 만든 자식을 errpipe 로 확인한 뒤 정리한다.
 # additional_reviewer 의 `_DEFINITE_LAUNCH_FAILURES` 와 같은 집합이다(양쪽 테스트가 동치를 못박는다).
 _DEFINITE_LAUNCH_FAILURES = (
     FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError,
@@ -583,7 +583,7 @@ def _preflight_spawn_inputs(argv, *, cwd, env) -> None:
     `Popen` 이 던졌다는 사실만으로는 자식 유무를 확정할 수 없다 — 그 생성자는 fork/exec 앞의 인자
     검증도, 자식이 뜬 **뒤**의 부모측 초기화도 같은 자리에서 올린다. 그래서 "호출 0" 판정의 근거를
     예외를 받는 자리가 아니라 **부르기 전**으로 옮긴다: argv·cwd·env 의 NUL 은 이 함수가 보고
-    거절하므로 그 거절에 붙는 '자식 없음' 표식은 관측이지 추측이 아니다(환불 계약 보존).
+    거절하므로 그 거절에 붙는 '자식 없음' 표시는 관측이지 추측이 아니다(환불 계약 보존).
 
     검사 범위는 *확정 가능한 것* 뿐이다 — 여기서 통과한 입력이 `Popen` 안에서 무엇으로 실패하든
     그 판정은 호출부의 보수 규칙이 맡는다(넓히면 다시 추측이 된다).
@@ -601,14 +601,14 @@ def _preflight_spawn_inputs(argv, *, cwd, env) -> None:
 
 
 def _reject_pre_child(where: str):
-    """NUL 입력 거절 — `Popen` 과 같은 종류(`ValueError`)에 '자식 없음' 표식을 붙여 올린다."""
+    """NUL 입력 거절 — `Popen` 과 같은 종류(`ValueError`)에 '자식 없음' 표시를 붙여 올린다."""
     exc = ValueError(f"embedded null byte: {where}")
     _mark_spawn_failed(exc, True)
     raise exc
 
 
 def _mark_child_existed(exc: BaseException) -> None:
-    """이 **실행**에 자식이 한 번이라도 있었음을 못박는다 — 기존 표식도 덮는다.
+    """이 **실행**에 자식이 한 번이라도 있었음을 못박는다 — 기존 표시도 덮는다.
 
     `_mark_spawn_failed` 는 최초 관측이 이긴다(같은 시도 안에서 층끼리 서로 덮지 않게). 이 선언은
     시도를 가로지르는 상위 사실이라 그 규칙 위에 선다: 앞 시도가 자식을 띄웠다면 뒤 시도가 exec 에
@@ -631,7 +631,7 @@ class _WatchedPopen:
     fake(테스트)로 대체 가능한 얇은 어댑터 — 워치독 로직은 run_with_first_event_watchdog 이 쥔다.
 
     **진행 관측**: stdout·stderr **어느 쪽이든** chunk 가 도착한 시각을 `last_event_at()`
-    로 노출한다(무진행 판정의 입력). 양쪽을 보는 이유는 실측이다 — `codex exec` 평문 축은 진행
+    로 노출한다(무진행 판정의 입력). 양쪽을 보는 이유는 실측이다 — `codex exec` 평문 출력은 진행
     로그가 전부 stderr 로 흐르고 stdout 은 최종 회신뿐이라, stdout 만 보면 정상 진행을 무진행으로
     오판한다. `first_event_ready()` 는 **stdout 전용 그대로** 둔다(opencode startup stall 의미론
     보존).
@@ -644,7 +644,7 @@ class _WatchedPopen:
     def __init__(self, argv, *, cwd=None, env=None, text=True,
                  input_text: str | None = None, clock=None):
         # fork/exec 전에 확정 판정 가능한 입력(NUL)은 여기서 거절한다 — 그 거절의 '자식 없음'
-        # 표식은 `Popen` 예외 종류를 보고 추측한 것이 아니라 경계 **앞**의 관측이다.
+        # 표시는 `Popen` 예외 종류를 보고 추측한 것이 아니라 경계 **앞**의 관측이다.
         _preflight_spawn_inputs(argv, cwd=cwd, env=env)
         popen_kwargs = dict(
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env,
@@ -664,15 +664,15 @@ class _WatchedPopen:
         io_threads: list[threading.Thread] = []
         try:
             # 실제 자식 생성도 try 안에 둔다. Popen이 핸들을 반환한 직후부터 아래 후속 초기화
-            # (Event/Lock/Thread 생성·start)가 실패해도 같은 트랜잭션에서 자식을 회수한다.
+            # (Event/Lock/Thread 생성·start)가 실패해도 같은 트랜잭션에서 자식을 정리한다.
             try:
                 # 첫 인자는 자식 env 의 PATH 로 해소한다(Windows npm 셈 `.cmd` — `resolve_executable`).
-                # 해소 실패는 `FileNotFoundError` 라 아래 확정 기동 실패로 같이 표식된다.
+                # 해소 실패는 `FileNotFoundError` 라 아래 확정 기동 실패로 같이 표시된다.
                 spawned = subprocess.Popen(
                     [contract.resolve_executable(argv[0], env), *argv[1:]], **popen_kwargs)
             except _DEFINITE_LAUNCH_FAILURES as launch_failure:
                 # exec 자체가 실패한 확정 기동 실패다 — CPython 은 이때 자기가 만든 자식을
-                # errpipe 로 확인하고 회수하며, 프롬프트를 밀어 넣는 stdin 펌프는 `Popen` 이
+                # errpipe 로 확인하고 정리하며, 프롬프트를 밀어 넣는 stdin 펌프는 `Popen` 이
                 # 돌아온 **뒤에야** 시작한다. 호출 0·과금 0 이므로 환불 계약을 유지한다.
                 _mark_spawn_failed(launch_failure, True)
                 raise
@@ -682,7 +682,7 @@ class _WatchedPopen:
                 # **뒤**의 부모측 초기화(errpipe 읽기·fd 정리)를 같은 자리에서 올린다. 확정할 수
                 # 없는 나머지는 보수쪽으로 못박는다 — '자식 있었음'(False)이면 최악의 경우
                 # 라운드를 한 번 더 세지만, 반대로 틀리면 이미 나간 호출이 예산에서 사라진다.
-                # `BaseException`(Ctrl-C 등)은 표식 없이 그대로 올린다: 판정 유보 = 보수쪽이다.
+                # `BaseException`(Ctrl-C 등)은 표시 없이 그대로 올린다: 판정 유보 = 보수쪽이다.
                 _mark_spawn_failed(unknown_boundary, False)
                 raise
             self._proc = spawned
@@ -694,7 +694,7 @@ class _WatchedPopen:
             self._stdout_chunks: list[str] = []
             self._stderr_chunks: list[str] = []
             # 리더 스레드(2)와 메인 루프가 공유하는 상태(chunk 누적·마지막 도착 시각)의 단일 락.
-            # 실제 read chunk 당 1회 획득이라 비용은 무시 가능하고, 스냅샷이 append 와 경합하지 않는다.
+            # 실제 read chunk 당 1회 획득이라 비용은 무시 가능하고, 복사본이 append 와 경합하지 않는다.
             self._progress_lock = threading.Lock()
             self._last_event_at: float | None = None
             self._stdout_reader = threading.Thread(target=self._pump_stdout, daemon=True)
@@ -711,9 +711,9 @@ class _WatchedPopen:
             self._stderr_reader.start()
         except BaseException as primary:
             if spawned is not None:
-                # 자식이 **실제로 떴다** — 뒤이은 초기화 실패는 '스폰 전'이 아니다. 회수는 하되
-                # 그 사실을 예외에 표식으로 남긴다(호출부가 exec 실패와 구분해 호출 가능성을
-                # 보수적으로 판정한다). 표식을 못 붙이는 예외는 표식 없음 = 판정 유보다.
+                # 자식이 **실제로 떴다** — 뒤이은 초기화 실패는 '스폰 전'이 아니다. 정리는 하되
+                # 그 사실을 예외에 표시로 남긴다(호출부가 exec 실패와 구분해 호출 가능성을
+                # 보수적으로 판정한다). 표시를 못 붙이는 예외는 표시 없음 = 판정 유보다.
                 _mark_spawn_failed(primary, False)
                 process_group_id = spawned.pid if os.name == "posix" else None
                 try:
@@ -808,7 +808,7 @@ class _WatchedPopen:
             return self._last_event_at
 
     def partial_output(self) -> tuple[str, str]:
-        """지금까지 받은 (stdout, stderr) 스냅샷 — kill 시점 부분 산출물 보존용(전량 폐기 폐쇄)."""
+        """지금까지 받은 (stdout, stderr) 복사본 — kill 시점 부분 산출물 보존용(전량 폐기 폐쇄)."""
         with self._progress_lock:
             return "".join(self._stdout_chunks), "".join(self._stderr_chunks)
 
@@ -878,7 +878,7 @@ class WatchdogTimeoutExpired(subprocess.TimeoutExpired):
     """공용 워치독 중단의 구조화된 진단 계약.
 
     소비자는 호출 시 인자로 받았던 값(하네스별 해소 전/primary 값일 수 있음)을 다시 추정하지 않고,
-    예외가 싣는 **실제 발화 축·임계·중단 시 실측 침묵**을 읽는다."""
+    예외가 싣는 **실제 시간 제한 종류·임계·중단 시 실측 침묵**을 읽는다."""
 
     def __init__(self, cmd, timeout, *, timeout_axis: str,
                  silence_seconds: float | None = None,
@@ -893,7 +893,7 @@ class IdleTimeoutExpired(WatchdogTimeoutExpired):
     """무진행(마지막 출력 이후 침묵) 판정으로 중단 — 벽시계 초과와 구분되는 sentinel.
 
     `subprocess.TimeoutExpired` 를 **상속** 해 기존 호출부의 `except subprocess.TimeoutExpired`
-    가 그대로 잡는다(분류/폴백 경로 회귀 0). 구분이 필요한 지점(감사 헤더·실패 메시지)은
+    가 그대로 잡는다(분류/대체 하네스 경로 회귀 0). 구분이 필요한 지점(감사 헤더·실패 메시지)은
     `idle_seconds`(실측 침묵 초) 속성 유무로 본다."""
 
     def __init__(self, cmd, timeout, *, idle_seconds: float,
@@ -921,7 +921,7 @@ SILENCE_SEC_ATTR = "silence_sec"
 
 
 def _proc_partial_output(proc) -> tuple[str, str]:
-    """proc 가 지금까지 받은 (stdout, stderr) 스냅샷. 어댑터가 미지원이면 ("",""), getter 예외는 전파."""
+    """proc 가 지금까지 받은 (stdout, stderr) 복사본. 어댑터가 미지원이면 ("",""), getter 예외는 전파."""
     getter = getattr(proc, "partial_output", None)
     if not callable(getter):
         return "", ""
@@ -997,7 +997,7 @@ def _drain_with_idle_judgment(proc, *, argv, start: float, idle_timeout: float,
 
     - 무진행 초과 → 프로세스 그룹째 kill + loud 1줄 + IdleTimeoutExpired(부분 산출물 동반).
     - 벽시계 초과 → 같은 kill + TimeoutExpired(부분 산출물 동반). 감지기가 고장나도 유한하게
-      닫는다(무제한 금지·worktree_pool 의 captured 러너 폴백-캡과 동형).
+      닫는다(무제한 금지·worktree_pool 의 captured 러너 대체 상한과 같은 구조).
     """
     while not _proc_drain_complete(proc):
         now = clock()
@@ -1047,14 +1047,14 @@ def run_with_first_event_watchdog(
     모든 시도(= retries+1) 소진 → StallWatchdogError(fail-loud·호출부가 정책 결정).
 
     `first_event_timeout=None` = **startup 창 미적용**(첫-이벤트 감시 없이 바로 드레인). 첫 stdout
-    이 종료 직전에야 오는 축(codex exec 평문 리뷰어)이 이 창에 걸려 죽지 않게 하는 선언이다 —
+    이 종료 직전에야 오는 출력(codex exec 평문 리뷰어)이 이 창에 걸려 죽지 않게 하는 선언이다 —
     하니스별 if 분기가 아니라 호출부의 능력 선언(idle_timeout_for_signal 과 짝).
 
     `idle_timeout=None` = **무진행 판정 미적용**(현행 동작 불변) — 드레인은 종전처럼 단일 블로킹
     `communicate(overall 백스톱)` 이다. 값이 있으면 드레인이 폴 루프로 바뀌어 마지막 진행 이후
     침묵이 그 값을 넘을 때 kill 한다(벽시계는 백스톱으로 잔류).
 
-    DI seam(hermetic 테스트·바이너리 불요):
+    DI 교체 지점(hermetic 테스트·바이너리 불요):
       popen : argv -> proc(first_event_ready()/poll()/kill()/communicate(timeout)/returncode
               [+ last_event_at()/partial_output() — 무진행 판정·부분 보존]).
               기본 = _WatchedPopen(cwd/env/text/input_text/clock 바인딩).
@@ -1062,18 +1062,18 @@ def run_with_first_event_watchdog(
       sleep : (초) -> None. 기본 time.sleep(폴 간격 양보). fake 는 여기서 clock 을 전진시킨다.
       log   : (str) -> None. 기본 stderr 1줄.
 
-    `on_spawn_attempt` = **첫 자식 생성 직전** 1회 호출되는 seam(기본 None = 종전 동작). 호출
+    `on_spawn_attempt` = **첫 자식 생성 직전** 1회 호출되는 교체 지점(기본 None = 종전 동작). 호출
     지점은 인자 검증·프로필 해소·워치독 준비가 모두 끝나 **다음 문장이 자식을 띄우는** 자리다 —
     그보다 앞의 실패(준비 구간)는 호출이 확실히 0 이라, 이 콜백으로 예산 소유권을 옮기는 호출부가
     그 구간을 환불 대상으로 유지할 수 있다. stall 재시도의 2회차 이후에는 다시 호출하지 않는다
     (소유권 이전은 실행당 1회이고, 그때는 이미 자식이 한 번 떴다).
 
-    스폰 실패의 "자식 없음" 표식(`spawn_failed`)은 두 층이 나눠 붙인다. 실 어댑터
+    스폰 실패의 "자식 없음" 표시(`spawn_failed`)는 두 층이 나눠 붙인다. 실 어댑터
     (`_WatchedPopen`)는 `Popen` 경계를 직접 보므로 preflight 거절(argv/cwd/env 의 NUL)과 확정 기동
     실패(exec 이 실패한 `FileNotFoundError`·`PermissionError`·`NotADirectoryError`·
     `IsADirectoryError`)에 True 를, 그 밖의 `Popen` 예외와 `Popen` 성공 뒤의 초기화 실패에는 False
-    를 붙인다(자식 유무를 확정할 수 없으면 보수쪽). 이 루프는 표식 없는 주입 어댑터의 `OSError`
-    에만 True 를 덧붙이고, **자식이 한 번이라도 떴으면** 그 뒤의 실패에 표식을 False 로 못박는다:
+    를 붙인다(자식 유무를 확정할 수 없으면 보수쪽). 이 루프는 표시 없는 주입 어댑터의 `OSError`
+    에만 True 를 덧붙이고, **자식이 한 번이라도 떴으면** 그 뒤의 실패에 표시를 False 로 못박는다:
     앞선 시도의 자식이 있는데 뒤 시도가 기동에 실패한 경우도, `popen` 이 돌아온 **뒤** 본문
     (시계·first_event·poll·communicate·정리)이 무엇으로 실패한 경우도 같다. 실행 단위 보수 규칙이
     시도 단위 관측을 이긴다(이미 나갔을 호출이 환불되지 않게).
@@ -1097,7 +1097,7 @@ def run_with_first_event_watchdog(
 
     attempts = retries + 1  # retries=재시도 횟수 → 총 시도 = retries+1(최초 1 + 재시도 M).
     last_reason = ""
-    last_axis: str | None = None
+    last_kind: str | None = None
     last_threshold: float | None = None
     last_silence: float | None = None
     stalled_stdout: list[str] = []
@@ -1123,9 +1123,9 @@ def run_with_first_event_watchdog(
                 _mark_child_existed(exc)
                 raise
             # 첫 자식을 만들다 실패했다 — 자식은 아직 없었다. `_WatchedPopen` 이 실 `Popen`
-            # 경계에서 붙인 표식(pre-child 거절 True·`Popen` 성공 뒤 실패 False)이 1순위고,
-            # 표식 없는 주입 어댑터는 종전 규칙대로 exec 실패 종류(OSError)만 '자식 없음'으로
-            # 확정한다(그 밖의 종류는 표식 없이 올려 상위가 보수적으로 판정한다).
+            # 경계에서 붙인 표시(pre-child 거절 True·`Popen` 성공 뒤 실패 False)가 1순위고,
+            # 표시 없는 주입 어댑터는 종전 규칙대로 exec 실패 종류(OSError)만 '자식 없음'으로
+            # 확정한다(그 밖의 종류는 표시 없이 올려 상위가 보수적으로 판정한다).
             if isinstance(exc, OSError):
                 _mark_spawn_failed(exc, True)
             raise
@@ -1149,10 +1149,10 @@ def run_with_first_event_watchdog(
                     if first_expired and (
                         not wall_expired or first_deadline < overall_deadline
                     ):
-                        # coarse poll로 둘 다 지났더라도 더 이른 first-event 축을 최종 선택한다.
+                        # coarse poll로 둘 다 지났더라도 더 이른 first-event 종류를 최종 선택한다.
                         wall_expired = False
                         stalled = True
-                        last_axis = TIMEOUT_KIND_FIRST_EVENT
+                        last_kind = TIMEOUT_KIND_FIRST_EVENT
                         last_threshold = float(first_event_timeout)
                         last_silence = _silence_seconds(proc, now, start)
                         last_reason = f"첫 이벤트 임계 {first_event_timeout:.0f}s 초과"
@@ -1215,8 +1215,8 @@ def run_with_first_event_watchdog(
             # 나오든 실행 전체를 '자식 없음'으로 읽히게 두면 안 된다. 종류만 보는 상위(추가 리뷰어
             # 러너)는 `PermissionError` 같은 확정-기동-실패 종류가 여기서 올라오면 호출 0 으로
             # 오분류해 이미 나갔을 프롬프트를 환불한다. 정리·재전파 **전에** 못박고(정리가 실패해
-            # cause 로 매달려도 원 예외 객체는 그대로라 표식이 보존된다), 방향은 True→False 한쪽뿐이라
-            # 단조롭다(`_mark_child_existed` 는 앞선 표식도 덮는 실행 단위 사실이다).
+            # cause 로 매달려도 원 예외 객체는 그대로라 표시가 보존된다), 방향은 True→False 한쪽뿐이라
+            # 단조롭다(`_mark_child_existed` 는 앞선 표시도 덮는 실행 단위 사실이다).
             _mark_child_existed(primary)
             if isinstance(primary, (WatchdogTimeoutExpired, ProcessCleanupError)):
                 # 이 sentinel들은 해당 판정 경로가 이미 그룹 kill+drain을 끝냈거나 그 정리 자체가
@@ -1236,24 +1236,24 @@ def run_with_first_event_watchdog(
     )
     headline = (
         f"startup stall 이 {attempts}회 연속 발생"
-        if last_axis == TIMEOUT_KIND_FIRST_EVENT
+        if last_kind == TIMEOUT_KIND_FIRST_EVENT
         else f"overall watchdog 가 {attempts}회 연속 작동"
     )
     diagnosis = (
         " startup network fetch stall 의심(upstream #13841)."
-        if last_axis == TIMEOUT_KIND_FIRST_EVENT else ""
+        if last_kind == TIMEOUT_KIND_FIRST_EVENT else ""
     )
     exhausted = StallWatchdogError(
         f"{headline}("
         f"실제 작동: {last_reason}{silence_label}) — 재시도 소진. "
         f"{diagnosis}".rstrip(),
-        timeout_axis=last_axis,
+        timeout_axis=last_kind,
         threshold_seconds=last_threshold,
         silence_seconds=last_silence,
         output="".join(stalled_stdout),
         stderr="".join(stalled_stderr),
     )
-    # 여기 도달했다는 것은 모든 시도가 자식을 띄우고 stall 로 kill 됐다는 뜻이다 — 표식을 명시해
+    # 여기 도달했다는 것은 모든 시도가 자식을 띄우고 stall 로 kill 됐다는 뜻이다 — 표시를 명시해
     # 상위가 종류 추론으로 이 실행을 '호출 0' 으로 읽을 여지를 남기지 않는다.
     _mark_child_existed(exhausted)
     raise exhausted
@@ -1266,7 +1266,7 @@ def run_with_first_event_watchdog(
 # 없으면 우회 실패가 조용히 지나간다. 이 detector 가 출력 소비 지점(Supervisor.run_loop)에서 응답이
 # cap 근방인지 보고 loud advisory 를 낸다. **advisory·never-block** — 경고+로그만·파이프라인 무중단
 # (오탐이 relay 를 죽이면 안 됨). claude 는 범위 밖: claude 는 truncation 을 stop_reason=max_tokens 로
-# *네이티브 노출* 하므로 silent 절단 클래스가 아니다 — run_loop 배선은
+# *네이티브 노출* 하므로 silent 절단 클래스가 아니다 — run_loop 등록은
 # 하니스-무관 크기 advisory 라 claude 응답도 지나가나 임계가 정상 응답보다 한참 위라 무영향.
 
 CAP_TOKENS = 32000                   # opencode 실효 출력 cap(opencode.jsonc limit.output).
@@ -1276,12 +1276,12 @@ CAP_TOKENS = 32000                   # opencode 실효 출력 cap(opencode.jsonc
 # 한글-dominant false-negative 창을 닫기 위해 char 길이 하한을 **극단 dense CJK(~1.2 char/token)**
 # 기준으로 보수 하향한다 — genuine 32k-token 응답은 이 밀도에서도 ≈38400 char 다.
 CAP_HIT_MIN_CHARS_PER_TOKEN = 1.2    # char/token 보수적 하한(극단 dense CJK 기준·상한 token 근사).
-CAP_HIT_RATIO = 0.90                 # cap 근방 밴드 = char 하한의 90% 이상이면 절단 의심.
+CAP_HIT_RATIO = 0.90                 # cap 근방 구간 = char 하한의 90% 이상이면 절단 의심.
 # char 임계 = 32000 × 1.2 × 0.90 = 34560 char. 이 값은 (a) 내용 혼합 전반의 genuine 절단 char 길이
 # (영어 128k·코드 112k·혼합 80k·한글 48k·극단 dense CJK 38k) *아래* 라 절단을 놓치지 않고
 # (false-negative 회피 — 순수 한글 dense 창 포함), (b) 정상 PM relay 응답(수백~수 KB·verbose handoff
 # ~15KB)보다 여전히 >2x 위라 오탐 0(false-positive 회피). 두 경계 폭이 넓어 단일 char 임계로 양쪽을
-# 만족한다(정확 token 수 불필요·advisory 목적엔 절단 *의심* 표면화면 충분).
+# 만족한다(정확 token 수 불필요·advisory 목적엔 절단 *의심*을 드러내면 충분).
 CAP_HIT_CHAR_THRESHOLD = int(CAP_TOKENS * CAP_HIT_MIN_CHARS_PER_TOKEN * CAP_HIT_RATIO)  # 34560
 CAP_HIT_THRESHOLD_ENV = "PM_OC_CAP_HIT_THRESHOLD"  # char 임계 override(필요 시만·양의 정수).
 
@@ -1296,10 +1296,10 @@ def detect_output_cap_hit(text, *, char_threshold: int | None = None) -> tuple[b
 
     반환 (hit, reason). hit=True 면 응답이 cap-hit 임계(char) 이상이라 절단 의심 → 호출부가 loud
     advisory 를 낸다(never-block). hit=False 면 reason="". 정확 token 수는 근사(보수적 상한) —
-    char↔token 비가 내용마다 달라 exact 는 못 주나 절단 *의심* 표면화엔 충분(advisory 목적).
+    char↔token 비가 내용마다 달라 exact 는 못 주나 절단 *의심*을 드러내기엔 충분(advisory 목적).
 
     char_threshold=None 이면 env 노브(PM_OC_CAP_HIT_THRESHOLD) 또는 기본을 쓴다. text 가 비거나
-    None 이면 무발화(정상 크기 = 무조건 통과·오탐 0 보장의 하한 경로).
+    None 이면 실행하지 않는다(정상 크기 = 무조건 통과·오탐 0 보장의 하한 경로).
     """
     if char_threshold is None:
         char_threshold = cap_hit_char_threshold_default()
@@ -1317,7 +1317,7 @@ def detect_output_cap_hit(text, *, char_threshold: int | None = None) -> tuple[b
 def cap_hit_warning_message(reason: str) -> str:
     """cap-hit loud advisory 1줄.
 
-    run_loop 배선은 하니스-무관이라 claude 대형 응답에도 발화할 수 있다 — opencode 한정으로 단정하지
+    run_loop 등록은 하니스-무관이라 claude 대형 응답에도 실행할 수 있다 — opencode 한정으로 단정하지
     않고 **조건부**('opencode 하니스라면')로 문구를 중립화해 오해 소지를 없앤다(claude 는 truncation 을
     stop_reason 으로 네이티브 노출하므로 이 silent-절단 클래스가 아님·§메모). 규약 안내는 유지한다.
     stdout(=PM 대화 채널)은 오염하지 않는다 — 호출부가 이 문자열을 stderr/log 로 낸다."""

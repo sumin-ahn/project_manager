@@ -31,9 +31,9 @@ ROUND_FILE_SUFFIX = ".md"
 # 2자리 zero-pad. 100 이상은 자릿수만 늘고 숫자 정렬(파서가 int 로 뗀다)은 그대로다.
 ROUND_ORDINAL_WIDTH = 2
 
-# 판정 코드. 완료 게이트가 red 로 보는 것은 순번 유일성·연속성이 깨진 둘(`round-gap` 삭제 의심 ·
-# `round-dup` 같은 순번 중복)이고, `round-name`(문법 위반)과 `round-pending`(시드 그대로)은
-# 표시용이다. 심각도 자체는 소비자(lint·complete 게이트)가 정한다.
+# 판정 코드. 완료 통과 조건이 red 로 보는 것은 순번 유일성·연속성이 깨진 둘(`round-gap` 삭제 의심 ·
+# `round-dup` 같은 순번 중복)이고, `round-name`(문법 위반)과 `round-pending`(빈 양식 그대로)은
+# 표시용이다. 심각도 자체는 소비자(lint·complete 통과 조건)가 정한다.
 PROBLEM_NAME = "round-name"
 PROBLEM_GAP = "round-gap"
 PROBLEM_DUPLICATE = "round-dup"
@@ -57,7 +57,7 @@ class RoundsError(RuntimeError):
 
 
 class Round(NamedTuple):
-    """라운드 파일 하나. `pending` 은 내용이 시드 그대로(산출 없음)라는 뜻이다."""
+    """라운드 파일 하나. `pending` 은 내용이 빈 양식 그대로(산출 없음)라는 뜻이다."""
 
     ordinal: int
     role: str
@@ -145,7 +145,7 @@ def parse_round_filename(name: str) -> tuple[int, str] | None:
 def render_round_header(role: str, *, today: str) -> str:
     """라운드 파일 첫 줄 — `## <라벨> (<role> · <YYYY-MM-DD>)`.
 
-    준비(시드)와 추가 리뷰어 회수(실내용)가 같은 첫 줄을 쓴다. 라운드 파일 형식은 이 모듈이
+    준비(빈 양식)와 추가 리뷰어 돌려받기(실내용)가 같은 첫 줄을 쓴다. 라운드 파일 형식은 이 모듈이
     소유하므로 헤더 문자열도 여기 하나뿐이다 — 쓰는 자리마다 다시 적으면 라벨·표기가 갈린다.
     """
     _require_role(role)
@@ -162,19 +162,19 @@ def _round_header_re(role: str) -> re.Pattern[str]:
 
 
 def _text_is_refused(text: str) -> bool:
-    """엔진이 판정 표면 밖으로 뺀 라운드인가 — 판독은 표식 소유자(`review_form`)가 낸다."""
+    """엔진이 판정 범위 밖으로 뺀 라운드인가 — 판독은 표시 소유자(`review_form`)가 낸다."""
     return review_form.pm_review_refused_marker_present(text)
 
 
 def latest_round_of_role(rounds, role: str):
     """그 역할의 **마지막 산출 라운드**(없으면 None) — 직전-라운드 규칙의 단일 소유자.
 
-    배제는 둘이고 같은 뜻이다: 산출이 없는 라운드(`pending`)는 자리표시자 골격뿐이고, 엔진
-    표식이 붙은 라운드는 종결된 예약(대체·회수 거부)이라 판정 표면 밖이다 — 어느 쪽도 어떤
-    소비자에게도 직전 산출이 아니다. 표식이 붙는 순간 그 파일은 시드와 bytes 가 달라 `pending`
+    배제는 둘이고 같은 뜻이다: 산출이 없는 라운드(`pending`)는 자리표시자 빈 양식뿐이고, 엔진
+    표시가 붙은 라운드는 종결된 예약(대체·돌려받기 거부)이라 판정 범위 밖이다 — 어느 쪽도 어떤
+    소비자에게도 직전 산출이 아니다. 표시가 붙는 순간 그 파일은 빈 양식과 bytes 가 달라 `pending`
     이 아니게 되므로, 두 배제가 같은 자리에 있어야 종결된 라운드가 직전 산출로 서지 않는다.
-    시드 프리필(예약)·확인 대상 finding ID(추가 리뷰어 프롬프트)가 같은 규칙을 봐야 한쪽이
-    표면 밖 ID 를 받거나 "prefill 을 해소할 수 없어 강등" 경고를 정상 경로에서 낸다. 입력은
+    빈 양식 프리필(예약)·확인 대상 finding ID(추가 리뷰어 프롬프트)가 같은 규칙을 봐야 한쪽이
+    범위 밖 ID 를 받거나 "prefill 을 해소할 수 없어 빈 양식으로 낮춤" 경고를 정상 경로에서 낸다. 입력은
     `Round`(또는 `role`·`ordinal`·`text`·`pending` 을 가진 같은 모양)의 목록이다.
     """
     candidates = [
@@ -189,9 +189,9 @@ def latest_round_of_role(rounds, role: str):
 
 
 def previous_round_of_role(rounds, role: str):
-    """같은 역할 직전 산출 라운드의 `(순번, 본문)` — 시드 프리필의 유일한 입력.
+    """같은 역할 직전 산출 라운드의 `(순번, 본문)` — 빈 양식 프리필의 유일한 입력.
 
-    규칙은 `latest_round_of_role` 하나이고 이 함수는 시드 렌더가 받는 모양으로 줄인 것이다.
+    규칙은 `latest_round_of_role` 하나이고 이 함수는 빈 양식 렌더가 받는 모양으로 줄인 것이다.
     """
     latest = latest_round_of_role(rounds, role)
     return None if latest is None else (latest.ordinal, latest.text)
@@ -200,7 +200,7 @@ def previous_round_of_role(rounds, role: str):
 def render_rounds_for_show(rounds) -> str:
     """라운드를 순번 순으로 이어붙인다 — 각 라운드 앞에 `--- NN-<role> ---` 구분선.
 
-    시드 그대로인 라운드는 구분선에 `(산출 없음)` 을 병기한다. 구분선 모양은 유지하므로 사람이
+    빈 양식 그대로인 라운드는 구분선에 `(산출 없음)` 을 병기한다. 구분선 모양은 유지하므로 사람이
     읽는 자리에서도, 구분선으로 잘라 읽는 자리에서도 같은 규칙 하나만 보면 된다.
     """
     blocks: list[str] = []
@@ -218,7 +218,7 @@ def _round_role_choices() -> tuple[str, ...]:
     return tuple(ticket_round_role_labels())
 
 def ticket_round_role_labels() -> dict[str, str]:
-    """라운드 역할 → 사람용 라벨 (권위 = 사이드카 seam · board 는 복제하지 않는다).
+    """라운드 역할 → 사람용 라벨 (권위 = 사이드카 함수 · board 는 복제하지 않는다).
 
     argparse 선택지와 절명 기본값이 같은 표를 읽어야 한 쪽만 넓어지는 drift 가 생기지 않는다.
     """
@@ -232,14 +232,14 @@ def _section_label(role: str, override: str | None) -> str | None:
         return None
     return label
 
-def _round_seed_header_override(seed: str, label: str, role: str, today: str) -> str:
-    """시드 첫 줄의 라벨만 사람이 준 절명으로 바꾼다 (본문 골격은 seam 산출 그대로).
+def _round_form_header_override(form: str, label: str, role: str, today: str) -> str:
+    """빈 양식 첫 줄의 라벨만 사람이 준 절명으로 바꾼다 (본문 빈 양식은 렌더 함수 산출 그대로).
 
-    헤더 문법(`## <라벨> (<role> · <날짜>)`)은 seam 이 소유하므로 여기서 다시 조립하지 않고
+    헤더 문법(`## <라벨> (<role> · <날짜>)`)은 렌더 함수가 소유하므로 여기서 다시 조립하지 않고
     **그 자리의 라벨만** 치환한다 — 기본 라벨일 때는 바이트가 그대로다.
     """
-    default_header, separator, rest = seed.partition('\n')
+    default_header, separator, rest = form.partition('\n')
     replacement = f'## {label} ({role} · {today})'
     if not separator or default_header == replacement:
-        return seed
+        return form
     return replacement + separator + rest

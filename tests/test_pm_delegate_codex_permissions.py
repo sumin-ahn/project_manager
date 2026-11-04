@@ -1,7 +1,7 @@
 """codex 위임 권한 보정 — git 메타데이터 쓰기 루트·실행별 네트워크 override·전역 --add-dir 배치.
 
 원 작업공간을 workspace-write 로 여는 codex 실행은 git 이 답한 common_dir·git_dir 를 쓰기
-루트로 더한다(같은 경로면 하나·worktree·일반 clone·submodule 공통). 읽기 역할의 tmp 재앵커 실행은 원 트리·원 git
+루트로 더한다(같은 경로면 하나·worktree·일반 clone·submodule 공통). 읽기 역할의 tmp 실행 위치 다시 잡기 실행은 원 트리·원 git
 메타데이터를 열지 않는다. 모든 `--add-dir` 는 exec 앞 전역 위치에 둔다(재개 하위 명령 뒤는 CLI 가
 거부한다). 조회 실패는 빈 루트로 바꾸지 않고 호출 전에 멈춘다.
 
@@ -229,7 +229,7 @@ def test_metadata_write_attempt_transport_adds_git_root(pd, tmp_path):
 @pytest.mark.parametrize("with_run_dir", [False, True])
 def test_scope_read_reanchor_never_opens_source_git(
         pd, tmp_path, monkeypatch, role, resume, with_run_dir):
-    """tmp 가 저장소(PM 홈 형상) 안이어도 부모 저장소를 탐색하지 않고 원 git·원 트리를 열지 않는다."""
+    """tmp 가 저장소(PM 홈 구성) 안이어도 부모 저장소를 탐색하지 않고 원 git·원 트리를 열지 않는다."""
     home = _committed_repo(tmp_path / "home")
     source = _committed_repo(home / "work" / "slot")
     temp_root = home / ".project_manager" / ".local" / "tmp"
@@ -509,7 +509,7 @@ def test_cli_formats_codex_mode_comes_from_existing_declaration(pd):
 
 
 def test_cli_formats_new_functions_add_no_harness_or_role_branch():
-    """새 함수에 하네스 이름·역할축 분기가 없다(기존 파리티 가드 측정 함수로 판정)."""
+    """새 함수에 하네스 이름·역할 기준 분기가 없다(기존 파리티 가드 측정 함수로 판정)."""
     measured = parity_guard._measured_sites(parity_guard._engine_sources())
     new_functions = {
         ("pm_delegate.py", "_git_metadata_write_roots"),
@@ -520,11 +520,11 @@ def test_cli_formats_new_functions_add_no_harness_or_role_branch():
     }
     offenders = [key for key in measured if key[:2] in new_functions]
     assert offenders == []
-    # 등록 발생 수는 늘지 않는다(원장 면제·상한 인상 없이 107 유지).
+    # 등록 발생 수는 늘지 않는다(등록 목록 면제·상한 인상 없이 107 유지).
     assert sum(measured.values()) == REGISTERED_SITE_OCCURRENCES
-    assert sum(site.expected_count for site in parity_guard.ledger().values()) == (
+    assert sum(site.expected_count for site in parity_guard.registry().values()) == (
         REGISTERED_SITE_OCCURRENCES)
-    assert REGISTERED_SITE_OCCURRENCES <= parity_guard.LEDGER_CEILING
+    assert REGISTERED_SITE_OCCURRENCES <= parity_guard.REGISTRY_CEILING
 
 
 def test_cli_formats_no_legacy_mode_knob(pd, tmp_path, monkeypatch):

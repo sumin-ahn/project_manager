@@ -8,7 +8,7 @@ critical env(ctx-guard 예산이 아닌 bash timeout 노브·T-0293)와 정본 a
 막지만(claude-code-guide: 커스텀 env 드롭은 미문서), **출하본에 존재하는지**는 이 가드가 fail-loud 로 세운다.
 
 정본(claude-code-guide 확인·T-0300): auto-compact 는 top-level `autoCompactEnabled` 가 스키마 정본이고
-`env.DISABLE_AUTO_COMPACT` 는 중복 우회수단 — **하나(top-level)만** 남긴다. bash timeout 노브는 정식
+`env.DISABLE_AUTO_COMPACT` 는 중복 우회 수단 — **하나(top-level)만** 남긴다. bash timeout 노브는 정식
 문서화 env 라 `env` 블록에 존치한다.
 """
 from __future__ import annotations
@@ -53,14 +53,14 @@ _CLAUDE_DELEGATE_CARDS = (
 
 
 def _card_with_operational_details(path: Path) -> str:
-    """상시 카드와 T-0678 sibling 상황별 참조를 하나의 문서 표면으로 읽는다."""
+    """상시 카드와 T-0678 sibling 상황별 참조를 하나의 문서 묶음으로 읽는다."""
     text = path.read_text(encoding="utf-8")
     details = path.parent / "references" / "operational-details.md"
     if details.is_file():
         text += "\n" + details.read_text(encoding="utf-8")
     return text
 _TIMEOUT_CONTRACT_PATH_EXEMPTIONS = {
-    # 이 카드 안 cross pm_delegate 블록은 존재하지만 Codex 실행 표면에는 Claude Bash DEFAULT가
+    # 이 카드 안 cross pm_delegate 블록은 존재하지만 Codex 실행 환경에는 Claude Bash DEFAULT가
     # 적용되지 않는다. 면제 근거는 mirror 여부가 아니라 호출 하네스의 실제 timeout 계약이다.
     "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md":
         "Codex native spawn_agent override에는 Claude Bash DEFAULT 1800초가 적용되지 않음",
@@ -122,7 +122,7 @@ def test_ship_template_autocompact_canonical_toggle_only():
     """auto-compact 는 정본 top-level `autoCompactEnabled` 단일 — env 중복 토글 제거(T-0300 dedup).
 
     값은 **true**(T-0458 — 서브에이전트 compaction 허용·메인은 훅 hard-stop 이 선행하고
-    auto-compact 는 폴백). 이 가드는 (1) 정본 토글의 존재/타입과 (2) env 중복 토글 부재(단일 정본)를
+    auto-compact 는 대체 하네스). 이 가드는 (1) 정본 토글의 존재/타입과 (2) env 중복 토글 부재(단일 정본)를
     못박는다 — 재직렬화가 정본 토글을 드롭하거나 env 중복을 되살리면 fail-loud.
     """
     conf = _load(_SHIP_TEMPLATE)
@@ -145,10 +145,10 @@ def test_settings_json_valid(path: Path):
 
 # ── max(primary+fallback 실행 경로) + 여유 ≤ 명시 timeout 상한(MAX) ────────────────
 # 둘 다 **우리 소유**인데 값이 정확히 같으면(구 1800 vs 1800) 여유가 0이다 — 엔진이 자기 타임아웃을
-# 분류(인프라 실패 → 폴백)하고 부분 산출물을 raw 에 박제하기 전에 하네스가 먼저 프로세스를 죽일 수
-# 있고, 그러면 아무 진단도 안 남는다(위임 kill 누적 8회가 전부 원인 불명이었던 축 중 하나 ·
+# 분류(인프라 실패 → 대체 하네스)하고 부분 산출물을 raw 에 적어 두기 전에 하네스가 먼저 프로세스를 죽일 수
+# 있고, 그러면 아무 진단도 안 남는다(위임 kill 누적 8회가 전부 원인 불명이었던 이유 중 하나 ·
 # 백그라운드 커맨드가 **무출력으로** kill 된 실측 2건). 엔진 백스톱이 하네스별로 갈린 뒤로 좌변은
-# **선언된 값 중 최댓값**이다 — 로컬 GPU 축(장시간 위임)이 이 부등식을 지배한다.
+# **선언된 값 중 최댓값**이다 — 로컬 GPU 프로필(장시간 위임)이 이 부등식을 지배한다.
 
 def test_declared_wall_backstops_stay_under_harness_bash_cap():
     """유효 primary+fallback 최악 예산 + 여유가 claude MAX/opencode 상한 모두 이하."""
@@ -164,7 +164,7 @@ def test_declared_wall_backstops_stay_under_harness_bash_cap():
             ("opencode instructions", _opencode_bash_cap_sec())):
         assert worst + margin <= cap, (
             f"{surface}: 최악 primary+fallback {worst}s + 여유 {margin}s > 상한 {cap:.0f}s — "
-            "엔진 분류/부분 산출물 박제 전에 하네스가 선행 kill")
+            "엔진 분류/부분 산출물 기록 전에 하네스가 선행 kill")
 
 
 def test_claude_default_timeout_is_tight_and_not_a_delegation_budget():
@@ -300,7 +300,7 @@ def test_new_markdown_with_engine_command_is_automatically_classified(tmp_path, 
         encoding="utf-8",
     )
     # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
-    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    # 정하지 않도록 엔진의 runner 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(REPO_FILES, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     with pytest.warns(RepoFilesFallbackWarning, match="filesystem 전수 순회"):
         targets = _long_engine_command_markdown(tmp_path)
@@ -317,7 +317,7 @@ def test_real_command_card_without_timeout_contract_is_red(tmp_path, monkeypatch
         encoding="utf-8",
     )
     # "이 트리는 git checkout 이 아니다"가 이 테스트의 입력이다 — 픽스처 위치가 그 답을
-    # 정하지 않도록 엔진의 runner 주입 seam 으로 비-repo(rc 128)를 명시한다.
+    # 정하지 않도록 엔진의 runner 주입 교체 지점으로 비-repo(rc 128)를 명시한다.
     monkeypatch.setattr(REPO_FILES, "_real_git_runner", lambda _cwd: lambda _argv: (128, ""))
     with pytest.warns(RepoFilesFallbackWarning, match="filesystem 전수 순회"):
         with pytest.raises(AssertionError, match="호출층 명시 timeout"):

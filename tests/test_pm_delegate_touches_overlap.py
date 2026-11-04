@@ -1,7 +1,7 @@
 """병렬 위임 touches 교집합 경고 회귀 (T-0701).
 
 같은 세션이 claim 중인 다른 ticket 과 대상 ticket 의 touches 가 겹치면, dev 위임은 띄우기
-**전에** loud 경고하고 회수 시점에 "겹친 파일이 실제로 바뀌었나"를 1줄로 알린다. 차단은
+**전에** loud 경고하고 돌려받기 시점에 "겹친 파일이 실제로 바뀌었나"를 1줄로 알린다. 차단은
 하지 않는다(rc 불변) — 판단은 PM 몫이다.
 """
 from __future__ import annotations
@@ -73,7 +73,7 @@ def pd():
         target="tests/test_pm_delegate_touches_overlap.py",
         command=python_argv_command("--version"),
         expected="Python",
-        negative="명령 실패 또는 Python 표식 누락은 거부",
+        negative="명령 실패 또는 Python 표시 누락은 거부",
     )
     real_architect_tests = review_evidence.architect_tests_from_rounds
 
@@ -107,7 +107,7 @@ def _ok_result(reply: str = "완료"):
 
 
 class _WritingRun:
-    """run_fn seam — 위임 산출물을 워크스페이스에 쓰고 canned 결과를 낸다."""
+    """run_fn 교체 지점 — 위임 산출물을 워크스페이스에 쓰고 canned 결과를 낸다."""
 
     def __init__(self, workspace: Path, writes=()):
         self.workspace = workspace
@@ -139,14 +139,14 @@ def _run_main(pd, monkeypatch, argv, conf, run_fn=None):
 def _ticket_text(pd, ticket_id: str, *, status: str, claimed_by: str | None,
                  touches) -> str:
     if isinstance(touches, str):
-        touches_block = f"touches: {touches}\n"       # YAML 스칼라(형식 불명 축)
+        touches_block = f"touches: {touches}\n"       # YAML 스칼라(형식 불명 기준)
     elif touches:
         touches_block = "touches:\n" + "\n".join(f"- {item}" for item in touches) + "\n"
     else:
         touches_block = "touches: []\n"
     claim_line = f"claimed_by: {claimed_by}\n" if claimed_by else ""
-    # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — `done` + 설계 절로 미리
-    # 해소한다(이 픽스처의 축은 touches 교집합 판정이지 설계 근거가 아니다).
+    # T-0815 설계 근거 통과 조건(developer 빈 양식 교체 지점) 관심사 밖 — `done` + 설계 절로 미리
+    # 해소한다(이 픽스처의 기준은 touches 교집합 판정이지 설계 근거가 아니다).
     design_line = "design: done\n"
     text = (
         "---\n"
@@ -160,12 +160,12 @@ def _ticket_text(pd, ticket_id: str, *, status: str, claimed_by: str | None,
         f"# {ticket_id} — 교집합 e2e\n\n## 목표\n교집합 판정 e2e.\n\n"
         "## 설계\n"
         "- **경계 실측**: 기계 테스트 픽스처\n"
-        "- **불변식**: 이 파일의 축 밖\n"
+        "- **불변식**: 이 파일의 기준 밖\n"
         "- **표면 상한**: 픽스처 1건\n"
         "- **테스트 전략**: 정상·실패 경로\n"
     )
-    sealed = text
-    return sealed
+    confirmed = text
+    return confirmed
 
 
 def _overlap_workspace(
@@ -174,7 +174,7 @@ def _overlap_workspace(
 ) -> tuple[Path, Path]:
     """PM 홈 + `work/demo_1` git 워크스페이스 + claimed ticket 들을 실물로 세운다.
 
-    `tickets` 는 (id, status, claimed_by, touches) 튜플 목록이다. board 형상은 legacy
+    `tickets` 는 (id, status, claimed_by, touches) 튜플 목록이다. board 구성은 legacy
     (`wiki/tickets`)와 board-git 분리(`board/tickets`) 둘 다 세울 수 있다.
     """
     pm_home = tmp_path / "pm_home"
@@ -210,15 +210,15 @@ def _overlap_workspace(
                             touches=touches)
         # 라운드는 명세 밖 파일이고 준비가 예약한다([[ADR-0090]]) — 명세만 세우면 된다.
         ticket_path.write_text(text, encoding="utf-8", newline="\n")
-        # 발행이 티켓마다 크기 1 묶음 장부를 만든다 — 준비는 라운드 예산을 그 장부에서만
+        # 발행이 티켓마다 크기 1 묶음 기록을 만든다 — 준비는 라운드 예산을 그 기록에서만
         # 읽으므로 픽스처 board 도 같은 파일을 갖는다.
         write_cluster_ledger(
             board_root, ticket_id, base_branch="task/main", rounds=rounds,
         )
 
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(
+    lease_file = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease_file.parent.mkdir(parents=True, exist_ok=True)
+    lease_file.write_text(
         _json.dumps({"leases": [{"slot": "work/demo_1", "state": "leased"}]}),
         encoding="utf-8",
     )
@@ -260,10 +260,10 @@ def test_same_session_claimed_overlap_warns_and_does_not_block(
     assert rc == 0 and fake.calls == ["codex"]        # never-block · 위임은 그대로 수행
     assert err.count(OVERLAP_HEADER) == 1             # 위임 1건 = 사전 경고 1블록
     assert "T-9702" in err and "T-9703" in err
-    assert "src/shared.py" in err                     # 공유 경로는 접힌 트리 좌표
+    assert "src/shared.py" in err                     # 공유 경로는 정규화한 트리 좌표
     assert "src/only_mine.py" in err
     assert "docs/other.md" not in err                 # 겹치지 않는 선언은 안 싣는다
-    assert "pm-config worktree add" in err            # 처방
+    assert "pm-config worktree add" in err            # 해결 방법
 
 
 # ── (b) 겹침 0 → 무경고 ────────────────────────────────────────────────────
@@ -316,9 +316,9 @@ def test_other_session_claim_is_excluded(pd, monkeypatch, tmp_path, capsys):
 @pytest.mark.parametrize(
     ("target_touch", "other_touch", "expected_path"),
     [
-        # 상대가 디렉토리를 선언한 축 (T-0701 발단 형상: `tests/` ⊃ `tests/x.py`)
+        # 상대가 디렉토리를 선언한 경우 (T-0701 발단 구성: `tests/` ⊃ `tests/x.py`)
         ("work/demo_1/tests/test_x.py", "work/demo_1/tests", "tests/test_x.py"),
-        # 대상이 디렉토리를 선언한 반대 축
+        # 대상이 디렉토리를 선언한 반대 경우
         ("work/demo_1/tests", "work/demo_1/tests/test_x.py", "tests/test_x.py"),
     ],
 )
@@ -341,12 +341,12 @@ def test_directory_prefix_overlap_is_detected_both_ways(
     assert rc == 0
     assert OVERLAP_HEADER in err
     assert f"T-9702({other_touch})" in err            # 상대 **원 선언**을 그대로 보여준다
-    assert f": {expected_path}" in err                # 공유 경로는 접힌 좌표의 좁은 쪽
+    assert f": {expected_path}" in err                # 공유 경로는 정규화한 좌표의 좁은 쪽
 
 
 def test_windows_separator_touch_notation_is_normalized(pd, monkeypatch, tmp_path,
                                                         capsys):
-    """`\\` 표기/`./` 접두 선언도 같은 경로로 접혀 겹침을 놓치지 않는다."""
+    """`\\` 표기/`./` 접두 선언도 같은 경로로 정규화돼 겹침을 놓치지 않는다."""
     workspace, prompt = _overlap_workspace(
         tmp_path, monkeypatch, pd,
         tickets=[
@@ -362,15 +362,15 @@ def test_windows_separator_touch_notation_is_normalized(pd, monkeypatch, tmp_pat
     assert rc == 0
     assert OVERLAP_HEADER in err
     assert "T-9702(work\\demo_1\\src)" in err        # 원 선언은 board 표기 그대로
-    assert ": src/shared.py" in err                   # 비교/표시 좌표는 접힌 트리 경로
+    assert ": src/shared.py" in err                   # 비교/표시 좌표는 정규화한 트리 경로
 
 
-# ── (e) 회수 시점 — 겹친 파일이 실제로 변경됨 ──────────────────────────────
+# ── (e) 돌려받기 시점 — 겹친 파일이 실제로 변경됨 ──────────────────────────────
 
 def test_changed_overlap_path_is_reported_after_delegation(
     pd, monkeypatch, tmp_path, capsys,
 ):
-    """겹친 경로가 이 위임 시간창에 실제로 바뀌면 회수 시점에 1줄이 더 나온다."""
+    """겹친 경로가 이 위임 시간창에 실제로 바뀌면 돌려받기 시점에 1줄이 더 나온다."""
     workspace, prompt = _overlap_workspace(
         tmp_path, monkeypatch, pd,
         tickets=[
@@ -432,13 +432,13 @@ def test_dry_run_still_shows_pre_warning(pd, monkeypatch, tmp_path, capsys):
     assert rc == 0 and fake.calls == []               # 미실행
     assert OVERLAP_HEADER in captured.err
     assert "T-9702" in captured.err
-    assert CHANGED_OVERLAP_PREFIX not in captured.err  # 회수 축은 실행이 있어야 돈다
+    assert CHANGED_OVERLAP_PREFIX not in captured.err  # 돌려받기 시점 검사는 실행이 있어야 돈다
 
 
-# ── board 형상 둘 · 역할 축 · 실패 비차단 ──────────────────────────────────
+# ── board 구성 둘 · 역할 기준 · 실패 비차단 ──────────────────────────────────
 
 def test_board_git_split_layout_is_read(pd, monkeypatch, tmp_path, capsys):
-    """board-git 분리 형상(`.project_manager/board/tickets/`)에서도 claimed 를 읽는다."""
+    """board-git 분리 구성(`.project_manager/board/tickets/`)에서도 claimed 를 읽는다."""
     workspace, prompt = _overlap_workspace(
         tmp_path, monkeypatch, pd,
         tickets=[
@@ -510,15 +510,15 @@ def test_overlap_calculation_failure_is_loud_but_nonblocking(
     assert OVERLAP_HEADER not in err
 
 
-# ── R1 delta: 좌표 규칙 하나 · 축 격리 · 표시 상한 · 형식 경계 ─────────────
+# ── R1 수락한 지적: 좌표 규칙 하나 · 기준 격리 · 표시 상한 · 형식 경계 ─────────────
 
 def test_mixed_slot_prefix_and_bare_notation_overlaps(pd, monkeypatch, tmp_path,
                                                       capsys):
     """F-001: 한쪽은 slot 접두, 다른 쪽은 무접두로 같은 파일을 선언해도 겹침이다.
 
     실 보드에는 두 표기가 공존한다(같은 상대경로가 양쪽 표기로 선언된 사례 실측). 표기 정규화만
-    하고 비교하면 이 조합에서 교집합이 조용히 0이 된다 — 사전 축도 사후 축과 같은 normalizer 로
-    이 workspace 좌표까지 접은 뒤 비교해야 한다.
+    하고 비교하면 이 조합에서 교집합이 조용히 0이 된다 — 사전 검사도 사후 검사와 같은 normalizer 로
+    이 workspace 좌표로 정규화한 뒤 비교해야 한다.
     """
     workspace, prompt = _overlap_workspace(
         tmp_path, monkeypatch, pd,
@@ -536,13 +536,13 @@ def test_mixed_slot_prefix_and_bare_notation_overlaps(pd, monkeypatch, tmp_path,
     assert rc == 0
     assert OVERLAP_HEADER in err
     assert "T-9702" in err and "T-9703" in err
-    assert ": src/shared.py" in err                   # 접힌 좌표 하나로 만난다
-    assert CHANGED_OVERLAP_PREFIX in err              # 사후 축도 같은 좌표를 쓴다
+    assert ": src/shared.py" in err                   # 정규화한 좌표 하나로 만난다
+    assert CHANGED_OVERLAP_PREFIX in err              # 사후 검사도 같은 좌표를 쓴다
 
 
 def test_other_slot_declaration_is_not_a_false_overlap(pd, monkeypatch, tmp_path,
                                                        capsys):
-    """다른 슬롯 선언(`work/other_2/...`)은 이 workspace 좌표로 접히지 않아 겹침이 아니다."""
+    """다른 슬롯 선언(`work/other_2/...`)은 이 workspace 좌표로 정규화되지 않아 겹침이 아니다."""
     workspace, prompt = _overlap_workspace(
         tmp_path, monkeypatch, pd,
         tickets=[
@@ -560,8 +560,8 @@ def test_other_slot_declaration_is_not_a_false_overlap(pd, monkeypatch, tmp_path
     assert "T-9702" not in err
 
 
-class _AxisIsolationScope:
-    """범위-밖 축은 성공하고 교집합 축만 터지는 판정 모듈 대역(F-002 재현)."""
+class _OverlapFailingScope:
+    """범위-밖 검사는 성공하고 교집합 검사만 터지는 판정 모듈 대역(F-002 재현)."""
 
     def capture_worktree_state(self, *a, **k):
         return delegate_scope_rules.WorktreeState(())
@@ -576,30 +576,30 @@ class _AxisIsolationScope:
         return delegate_scope_rules.format_warning(paths)
 
     def changed_status_paths(self, *a, **k):
-        raise RuntimeError("좌표 해소 실패(교집합 축)")
+        raise RuntimeError("좌표 해소 실패(교집합 검사)")
 
     def committed_paths(self, *a, **k):
-        raise RuntimeError("좌표 해소 실패(교집합 축)")
+        raise RuntimeError("좌표 해소 실패(교집합 검사)")
 
 
-def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys, monkeypatch):
-    """F-002: 새 축(교집합)의 예외는 전파하되 **이미 출력된** 범위-밖 경고를 지우지 않는다."""
-    seam = _AxisIsolationScope()
-    monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", seam.capture_worktree_state)
-    monkeypatch.setattr(delegate_scope_rules, "head_moved", seam.head_moved)
-    monkeypatch.setattr(delegate_scope_git, "out_of_scope_changes", seam.out_of_scope_changes)
-    monkeypatch.setattr(delegate_scope_rules, "changed_status_paths", seam.changed_status_paths)
-    monkeypatch.setattr(delegate_scope_git, "committed_paths", seam.committed_paths)
+def test_out_of_scope_warning_survives_overlap_check_failure(pd, tmp_path, capsys, monkeypatch):
+    """F-002: 새 검사(교집합)의 예외는 전파하되 **이미 출력된** 범위-밖 경고를 지우지 않는다."""
+    override = _OverlapFailingScope()
+    monkeypatch.setattr(delegate_scope_git, "capture_worktree_state", override.capture_worktree_state)
+    monkeypatch.setattr(delegate_scope_rules, "head_moved", override.head_moved)
+    monkeypatch.setattr(delegate_scope_git, "out_of_scope_changes", override.out_of_scope_changes)
+    monkeypatch.setattr(delegate_scope_rules, "changed_status_paths", override.changed_status_paths)
+    monkeypatch.setattr(delegate_scope_git, "committed_paths", override.committed_paths)
     audit = delegate_scope_audit.ScopeAudit(
-        ("src",),                       # touches 축 살아 있음
+        ("src",),                       # touches 검사 살아 있음
         delegate_scope_rules.WorktreeState(()),
         tmp_path,
         tmp_path,
-        (),                             # 어댑터 축은 등록 0(강등 경고만)
-        ("src/shared.py",),             # 교집합 축 입력 — 계산은 터진다
+        (),                             # 어댑터 검사는 등록 0(낮춤 경고만)
+        ("src/shared.py",),             # 교집합 검사 입력 — 계산은 터진다
     )
 
-    with pytest.raises(RuntimeError, match="교집합 축"):       # 새 축 실패는 전파
+    with pytest.raises(RuntimeError, match="교집합 검사"):       # 새 검사 실패는 전파
         delegate_scope_audit.report_scope_audit(audit, "developer")
     err = capsys.readouterr().err
 
@@ -609,7 +609,7 @@ def test_out_of_scope_warning_survives_overlap_axis_failure(pd, tmp_path, capsys
 
 
 def test_overlap_warning_caps_ticket_and_path_lists(pd):
-    """F-004: 목록은 8건까지만 싣고 나머지는 건수로 접는다."""
+    """F-004: 목록은 8건까지만 싣고 나머지는 건수로 줄여 적는다."""
     overlaps = tuple(
         delegate_scope_audit.TicketTouchOverlap(
             f"T-97{index:02d}", SESSION,
@@ -657,7 +657,7 @@ def test_scalar_touches_ticket_is_skipped_without_blocking(pd, monkeypatch, tmp_
 
 
 def test_scalar_touches_on_target_holds_judgment(pd, monkeypatch, tmp_path, capsys):
-    """대상 ticket 쪽이 스칼라여도 같은 축으로 접는다(경고 0·비차단)."""
+    """대상 ticket 쪽이 스칼라여도 같은 기준으로 정규화한다(경고 0·비차단)."""
     workspace, prompt = _overlap_workspace(
         tmp_path, monkeypatch, pd,
         tickets=[
@@ -699,7 +699,7 @@ def test_slot_only_claimed_by_is_the_same_session(pd, monkeypatch, tmp_path, cap
 # ── 순수 계산 단위 ─────────────────────────────────────────────────────────
 
 def test_overlap_paths_union_is_sorted_and_deduplicated(pd):
-    """회수 축 입력은 정렬·중복 제거된 합집합이다(같은 경로 두 티켓에서 1회)."""
+    """돌려받기 시점 검사 입력은 정렬·중복 제거된 합집합이다(같은 경로 두 티켓에서 1회)."""
     overlaps = (
         delegate_scope_audit.TicketTouchOverlap("T-9702", SESSION, ("tests",), ("tests/b.py",)),
         delegate_scope_audit.TicketTouchOverlap("T-9703", SESSION, ("tests/b.py", "src"),

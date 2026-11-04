@@ -19,25 +19,25 @@ def cold_reinjection_record(
     role: str,
     output_dir: Path | None,
 ) -> dict | None:
-    """같은 ticket+role의 최근 **마감** 레코드, 없거나 장부를 못 읽으면 None.
+    """같은 ticket+role의 최근 **마감** 레코드, 없거나 기록을 못 읽으면 None.
 
-    장부 부재·손상은 비용 가드만 fail-open한다. raw 감사 기록 자체의 쓰기 계약은 별도 안전
-    경계이므로 여기서 장부를 고치거나 초기화하지 않는다.
+    기록 부재·손상은 비용 가드만 fail-open한다. raw 감사 기록 자체의 쓰기 계약은 별도 안전
+    경계이므로 여기서 기록을 고치거나 초기화하지 않는다.
     """
-    _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
-    if not ledger_path.is_file():
+    _raw_dir, record_path = raw_output._raw_storage(home, output_dir)
+    if not record_path.is_file():
         print(
             f"경고: cold 재투입 비용 가드가 raw 출력 기록을 찾지 못해 fail-open 합니다: "
-            f"{ledger_path}",
+            f"{record_path}",
             file=sys.stderr,
         )
         return None
     try:
-        rows = raw_output.raw_records(ledger_path)
+        rows = raw_output.raw_records(record_path)
     except (OSError, UnicodeError, ValueError) as exc:
         print(
             "경고: cold 재투입 비용 가드가 raw 출력 기록을 읽지 못해 fail-open 합니다: "
-            f"{ledger_path} ({type(exc).__name__}: {exc})",
+            f"{record_path} ({type(exc).__name__}: {exc})",
             file=sys.stderr,
         )
         return None
@@ -61,7 +61,7 @@ def cold_reinjection_rejection(
     harness: str,
     record: Mapping[str, object],
 ) -> str:
-    """cold 재투입 거부와 하네스 capability에 맞는 재호출 처방."""
+    """cold 재투입 거부와 하네스 capability에 맞는 재호출 안내."""
     lines = [
         f"오류: cold 재투입 거부 — ticket={ticket} · role={role}의 완료 레코드가 "
         f"이미 있습니다(id={record.get('id')}).",
@@ -73,7 +73,7 @@ def cold_reinjection_rejection(
 
 
 def _attached_record_reply(record: Mapping[str, object], raw_path: Path) -> str:
-    """장부가 가리키는 실제 raw에서 최종 reply를 추출한다(요약·발췌 없음)."""
+    """기록이 가리키는 실제 raw에서 최종 reply를 추출한다(요약·발췌 없음)."""
     try:
         content = fs.read_text_shared(raw_path, encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -105,17 +105,17 @@ def resolve_attached_raw(
     *,
     output_dir: Path | None,
 ) -> delegate_run_rules.AttachedRaw | None:
-    """`--attach-raw`를 실제 마감 장부 행+raw 최종 reply로 해소한다(fail-loud)."""
+    """`--attach-raw`를 실제 마감 기록 행+raw 최종 reply로 해소한다(fail-loud)."""
     if not selector:
         return None
-    _raw_dir, ledger_path = raw_output._raw_storage(home, output_dir)
-    if not ledger_path.is_file():
-        raise delegate_errors.DelegateError(f"--attach-raw raw 출력 기록이 없음: {ledger_path}")
+    _raw_dir, record_path = raw_output._raw_storage(home, output_dir)
+    if not record_path.is_file():
+        raise delegate_errors.DelegateError(f"--attach-raw raw 출력 기록이 없음: {record_path}")
     try:
-        rows = raw_output.raw_records(ledger_path)
+        rows = raw_output.raw_records(record_path)
     except (OSError, UnicodeError, ValueError) as exc:
         raise delegate_errors.DelegateError(
-            f"--attach-raw raw 출력 기록 읽기 실패: {ledger_path} "
+            f"--attach-raw raw 출력 기록 읽기 실패: {record_path} "
             f"({type(exc).__name__}: {exc})"
         ) from exc
     record = delegate_run_rules.select_attached_raw_record(rows, selector)

@@ -1,30 +1,30 @@
-"""pm_delegate 라이브 하네스 테스트 — 실 CLI cross 위임 3방향 스모크 (T-0449 · sealed spike §9).
+"""pm_delegate 라이브 하네스 테스트 — 실 CLI cross 위임 3방향 스모크 (T-0449 · 확정 spike §9).
 
 pm_delegate.py 는 **실 하네스 CLI subprocess** 를 스폰하는 채널이라 backbone 단위 테스트
 (`test_pm_delegate.py`·전부 run_fn mock)로는 "argv/config 해소가 옳나"만 검증되고 "**실 codex/
-opencode/claude 가 위임 프롬프트를 받아 완주하고 reply 를 회수하나**"는 미검증이다
-([[harness-test-vs-machine-test]]). 이 파일이 그 갭을 `PM_DELEGATE_LIVE=1` 게이트로 메운다
+opencode/claude 가 위임 프롬프트를 받아 완주하고 reply 를 돌려받나**"는 미검증이다
+([[harness-test-vs-machine-test]]). 이 파일이 그 갭을 `PM_DELEGATE_LIVE=1` 조건으로 메운다
 (`PM_RELAY_LIVE`/`PM_ORCH_LIVE` 선례·기본 skip·CI green 불변) — 소형 read 태스크(README 요약)를
 `--role researcher` 로 3방향 타깃(codex·opencode·claude)에 각 1회 실 위임하고, **reply 에 README
 고유 marker 가 실제로 담겼는지** 단언한다.
 
-**false-green 방지(side-effect/marker 기반·adr_live/release_wave 상속)**: 프롬프트는 README 의
+**false-green 방지(side-effect/marker 기반·adr_live/release_cluster 상속)**: 프롬프트는 README 의
 교정 코드(`_MARKER`)를 *값으로 말하지 않고* "README 에 적힌 코드를 그대로 인용하라"고만 지시한다 —
 빈 reply·프롬프트 에코·미실행은 marker 부재로 red(marker 는 오직 README 를 실제로 읽어야 나온다).
-+ 위임 성공 = rc==0 + raw 박제 파일 존재까지 hard 단언.
++ 위임 성공 = rc==0 + raw 기록 파일 존재까지 hard 단언.
 
 **in-process(self-contained)**: `pm_delegate.main()` 을 직접 호출하되 `local_config` 를
 `delegate.enabled=true` 로 monkeypatch 하고 `--harness/--model` CLI override 로 타깃을 지정한다 —
-per-clone local.conf(worktree) 의존을 없애 fresh clone/CI/livegate 어디서든 자기-정합. run_fn 은
+per-clone local.conf(worktree) 의존을 없애 fresh clone/CI/라이브 시험 어디서든 자기-일치. run_fn 은
 실제 `_default_run_fn`(실 subprocess 스폰)이다. codex 는 격리 CODEX_HOME(auth 복사·종료 시 삭제·실
 ~/.codex 미오염·conftest 선례)로 스폰한다.
 
-**release tier 편입**: codex 방향 1건을 `@pytest.mark.release` + `PM_ORCH_LIVE_RELEASE` 게이트로
-릴리즈 라이브 tier 에 편입한다(codex 라이브 = load-bearing 게이트·test_pm_relay_codex 선례). ⚠
+**release tier 편입**: codex 방향 1건을 `@pytest.mark.release` + `PM_ORCH_LIVE_RELEASE` 조건으로
+릴리즈 라이브 tier 에 편입한다(codex 라이브 = load-bearing 검사·test_pm_relay_codex 선례). ⚠
 **커플드 전역 pin**(regression.LIVE_TEST_RELEASE_PIN · test_release_cluster `_RELEASE_TEST_FILES`/
 `_EXPECTED_RELEASE_TESTS` · test_board_live_test · test_worktree_pool 미러 · templates/*/board.py)에
-이 파일을 **+1 등재**하는 갱신은 **orchestrator 가 wave 종료 시 1회 수행**한다(touches 밖 공유 상수·
-병렬 wave clobber 회피·test_pm_release_live 동형). 이 파일은 **file-local 마커 pin** 만 둔다.
+이 파일을 **+1 등재**하는 갱신은 **orchestrator 가 작업 묶음 종료 시 1회 수행**한다(touches 밖 공유 상수·
+병렬 작업 묶음 clobber 회피·test_pm_release_live 같은 구조). 이 파일은 **file-local 마커 pin** 만 둔다.
 
 always-run 가드(라이브 없이·매 회귀): backbone 존재·로드 + 실측 `_REASONING_ALLOWED` 집합 + marker
 비-에코(false-green 가드가 vacuous 아님) + release 마커 수 pin.
@@ -64,9 +64,9 @@ from _opencode_model import SHIPPED_MODEL
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# ── 게이트 (기본 skip·CI green 불변) ────────────────────────────────────────────
+# ── 실행 조건 (기본 skip·CI green 불변) ────────────────────────────────────────────
 PM_DELEGATE_LIVE = os.environ.get("PM_DELEGATE_LIVE") == "1"      # 3방향 on-demand 스모크.
-_RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"     # release tier 트리거(livegate).
+_RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"     # release tier 트리거(라이브 시험).
 
 # 모델(env override) — 라이브 실측 매핑(researcher 중심·저비용) 단일 진실. codex=gpt-5.6-terra(T-0449
 # 실측 유효)·claude=sonnet 계열 alias·opencode=출하 모델($0).
@@ -128,7 +128,7 @@ def _seed_repo(tmp_path: Path) -> tuple[Path, Path]:
         "이 프로젝트는 창고의 위젯 재고를 추적하는 작은 도구다. 모든 재고 조정은 단일 "
         f"교정 코드(calibration code) `{_MARKER}` 로 서명되며, 어떤 요약이든 이 코드를 반드시 "
         "그대로 인용해야 한다.\n\n"
-        "재고는 하루 한 번 스냅샷으로 집계되고, 불일치는 다음 스냅샷까지 이월된다.\n",
+        "재고는 하루 한 번 상태 기록으로 집계되고, 불일치는 다음 상태 기록까지 이월된다.\n",
         encoding="utf-8",
     )
     prompt = repo / "summarize_prompt.txt"
@@ -150,9 +150,9 @@ def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path | None, harness:
     """pm_delegate.main() 을 in-process 로 호출(local_config=enabled monkeypatch·실 run_fn 스폰).
 
     `cluster` 를 주면 묶음 리뷰 경로다 — 프롬프트는 엔진이 조립하고 `focus` 파일이 검토 중점으로
-    실린다(`--prompt-file` 없음). reply 는 stdout(print)로 나오므로 capsys 로 회수한다.
+    실린다(`--prompt-file` 없음). reply 는 stdout(print)로 나오므로 capsys 로 돌려받는다.
     rc·reply·stderr 반환."""
-    # test.cmd 도 함께 싣는다 — 회수의 stage-exit 대조(regression._test_cmd)가 같은 local_config 를 읽는다.
+    # test.cmd 도 함께 싣는다 — 돌려받기의 stage-exit 대조(regression._test_cmd)가 같은 local_config 를 읽는다.
     monkeypatch.setattr(conf_store, 'local_config',
                         lambda _home: {"delegate.enabled": "true", "test.cmd": _CROSS_FULL_COMMAND})
     if cluster:
@@ -190,7 +190,7 @@ def _growth_ticket_text(ticket: str) -> str:
         f"# {ticket} — live cross growth\n\n## 목표\nrole round persistence\n\n"
         "## 설계\n"
         "- **경계 실측**: 라이브 호출 픽스처\n"
-        "- **불변식**: 이 파일의 축 밖\n"
+        "- **불변식**: 이 파일의 기준 밖\n"
         "- **표면 상한**: 픽스처 1건\n"
         "- **테스트 전략**: 정상·실패 경로\n"
         "\nOUTSIDE_MARKER_MUST_STAY\n"
@@ -213,7 +213,7 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     # 사본 루트(.local/)는 tracked `.project_manager/.gitignore` 로 무시돼야 prepare 가 받는다
-    # (채택자 출하 형상과 같게 — ignore 규칙 출처 검증). 실 운영의 코드 트리는 PM 홈과 다른 슬롯이다 —
+    # (채택자 출하 구성과 같게 — ignore 규칙 출처 검증). 실 운영의 코드 트리는 PM 홈과 다른 슬롯이다 —
     # 이 픽스처는 PM 홈 = 코드 트리라 PM 홈 쓰기(엔진 사본·board 라운드)가 리뷰 준비·돌려받기의
     # 작업 트리 변경으로 보이지 않게 함께 ignore 한다.
     ignore = repo / ".project_manager" / ".gitignore"
@@ -227,7 +227,7 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
         [_GIT, "-C", str(repo), "checkout", "-q", "-b", _GROWTH_CLUSTER_BRANCH], check=True)
     source = tickets / f"{ticket}-live-cross-growth.md"
     source.write_text(_growth_ticket_text(ticket), encoding="utf-8")
-    # 라운드 준비는 묶음 장부의 예산·브랜치 선언을 읽는다 — 크기 1 장부를 함께 깐다.
+    # 라운드 준비는 묶음 기록의 예산·브랜치 선언을 읽는다 — 크기 1 기록을 함께 깐다.
     write_cluster_ledger(
         repo / ".project_manager" / "wiki", ticket, base_branch=base_branch,
         branch=_GROWTH_CLUSTER_BRANCH)
@@ -276,7 +276,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
     rounds_dir = (
         repo / ".project_manager" / "wiki" / "tickets" / "rounds" / ticket
     )
-    fix_delta = ""
+    fix_accepted = ""
 
     for stage, (role, sentinel) in enumerate(_GROWTH_PIPELINE, start=1):
         prompt = repo / f"growth-{target}-{stage:02d}-{role}.md"
@@ -350,7 +350,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
         else:
             edit_contract = (
                 "This is terminal round 04, not another initial implementation. Apply every accepted-only "
-                "delta below; if it is empty, make no code change. For each accepted finding, modify or add "
+                "finding below; if it is empty, make no code change. For each accepted finding, modify or add "
                 f"{_CROSS_TEST_FILE} as its regression target and fill every preseeded pm-review-verify-v1 "
                 "row with a real boolean and the exact executed command/expected/before values. Run "
                 f"`{_CROSS_TEST_COMMAND}` and then `{_CROSS_FULL_COMMAND}`. Only after both actually return "
@@ -366,7 +366,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 "placeholder, and the whole body contains the sentinel exactly once. Rewrite and reread if "
                 "any check fails. Append "
                 f"`{sentinel}`. Never fabricate counts and never create another round or ticket.\n"
-                "ACCEPTED-ONLY DELTA:\n" + (fix_delta or "(empty: reviewer finding zero accepted)\n")
+                "ACCEPTED-ONLY FINDINGS:\n" + (fix_accepted or "(empty: reviewer finding zero accepted)\n")
             )
             final_contract = "After the edit, reply with exactly DONE.\n"
         brief = (
@@ -398,9 +398,9 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
         )
         if target == "opencode":
             assert "Falling back to default agent" not in err + reply, (
-                "OpenCode custom 역할이 default agent로 강등됨" + tail
+                "OpenCode custom 역할이 default agent로 낮춰짐" + tail
             )
-        # 회수 대상은 `NN-<역할>.md` 하나다 — 이름 문법의 단일 진실은 엔진(`round_rules`)이고
+        # 돌려받기 대상은 `NN-<역할>.md` 하나다 — 이름 문법의 단일 진실은 엔진(`round_rules`)이고
         # 여기서는 그 형식으로 찾아 내용만 단언한다.
         role_rounds = sorted(rounds_dir.glob(f"*-{role}.md"))
         assert role_rounds, (
@@ -408,7 +408,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
         )
         texts = [path.read_text(encoding="utf-8") for path in role_rounds]
         assert any(sentinel in text for text in texts), (
-            f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} harvest sentinel 부재" + tail
+            f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} 돌려받기 sentinel 부재" + tail
         )
         assert any(text.splitlines()[0].startswith("## ") and f"({role} · " in text.splitlines()[0]
                    for text in texts), (
@@ -420,7 +420,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
         )
         assert list(output_dir.glob(f"pm_delegate_{target}_*.txt")), "raw 감사 산출물 부재"
         if role == "code-reviewer":
-            fix_delta = _record_growth_review_disposition(pd, source, ticket)
+            fix_accepted = _record_growth_review_disposition(pd, source, ticket)
 
     # 새 Python 프로세스가 고정 4라운드(동일 developer 02/04)를 다시 읽어야 영속 증거다.
     probe = subprocess.run(
@@ -439,7 +439,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
 
 
 def _assert_delegate_ok(rc: int, reply: str, err: str, output_dir: Path, harness: str) -> None:
-    """위임 성공 강판정 — rc==0 + reply 에 README marker(실 읽기 증거) + raw 박제 파일 존재."""
+    """위임 성공 강판정 — rc==0 + reply 에 README marker(실 읽기 증거) + raw 기록 파일 존재."""
     tail = f"\n--- stderr(tail) ---\n{err[-1500:]}\n--- reply(tail) ---\n{reply[-800:]}"
     assert rc == 0, f"{harness} 위임 rc={rc}(!=0·실패 loud)" + tail
     assert _MARKER in reply, (
@@ -447,7 +447,7 @@ def _assert_delegate_ok(rc: int, reply: str, err: str, output_dir: Path, harness
         f"(false-green 가드). marker 는 README 를 실제로 읽어야만 나온다." + tail
     )
     raws = list(Path(output_dir).glob(f"pm_delegate_{harness}_*.txt"))
-    assert raws, f"{harness} raw 박제 파일 부재(§3.4 감사 산출물 없음)." + tail
+    assert raws, f"{harness} raw 기록 파일 부재(§3.4 감사 산출물 없음)." + tail
 
 
 # ── 라이브 3방향 (on-demand · PM_DELEGATE_LIVE=1) ──────────────────────────────────
@@ -457,7 +457,7 @@ def _assert_delegate_ok(rc: int, reply: str, err: str, output_dir: Path, harness
            "기본 skip·on-demand.",
 )
 def test_delegate_live_codex(tmp_path, monkeypatch, capsys):
-    """claude/codex/opencode PM → **codex** researcher 위임 1회 — reply marker + rc0 + raw 박제.
+    """claude/codex/opencode PM → **codex** researcher 위임 1회 — reply marker + rc0 + raw 기록.
 
     격리 CODEX_HOME(auth 복사·종료 시 삭제)·read-only sandbox(researcher=순수읽기·기계적)·reasoning=low
     (`-c model_reasoning_effort=low`·drive)."""
@@ -499,7 +499,7 @@ def test_delegate_live_opencode(tmp_path, monkeypatch, capsys):
            "기본 skip·on-demand.",
 )
 def test_delegate_live_claude(tmp_path, monkeypatch, capsys):
-    """codex/opencode PM → **claude** researcher 위임 1회 — reply marker + rc0 + raw 박제.
+    """codex/opencode PM → **claude** researcher 위임 1회 — reply marker + rc0 + raw 기록.
 
     `--tools Read,Glob,Grep,Edit`(researcher=Bash/Write 제외·Edit 는 티켓 사본 자기 절
     기록 전용·T-0696)·`--effort low`(drive)·cwd 존중."""
@@ -519,11 +519,11 @@ def test_delegate_live_claude(tmp_path, monkeypatch, capsys):
 def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
     """실 경로 2라운드 — R1 fresh 스폰 → `--resume-from` 으로 **같은 세션** 이어받기(T-0595 DoD).
 
-    R1 은 marker 인용까지 완주해 장부에 세션 id 를 남기고, R2 는 그 레코드 id 로 재개해 delta 만
-    보낸다. 판정은 세 가지다: R2 회신 세션 id 가 R1 과 같은가(장부 `resume_matched`), delta 가
+    R1 은 marker 인용까지 완주해 기록에 세션 id 를 남기고, R2 는 그 레코드 id 로 재개해 바뀐 부분만
+    보낸다. 판정은 세 가지다: R2 회신 세션 id 가 R1 과 같은가(기록 `resume_matched`), 바뀐 부분이
     실제로 나갔는가(R2 raw argv 에 재개 플래그), 그리고 **이어받은 컨텍스트로 답했는가**(R2
     프롬프트는 README 를 다시 읽으라고 하지 않는데 marker 를 그대로 말한다 — fresh 세션이면 못
-    한다). 미일치면 엔진이 fresh + full payload 로 재실행하므로 라운드 수(장부 행)로도 갈린다."""
+    한다). 미일치면 엔진이 fresh + full payload 로 재실행하므로 라운드 수(기록 행)로도 갈린다."""
     pd = _load_pd()
     repo, prompt = _seed_repo(tmp_path)
     out_dir = tmp_path / "raw"
@@ -531,17 +531,17 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
                                CLAUDE_MODEL, "low", out_dir, _CLAUDE_TIMEOUT)
     _assert_delegate_ok(rc, reply, err, out_dir, "claude")
 
-    ledger = out_dir / "raw_outputs.json"
-    rows = raw_output.raw_records(ledger)
+    record_file = out_dir / "raw_outputs.json"
+    rows = raw_output.raw_records(record_file)
     first = rows[0]
-    assert first.get("session_id"), f"R1 장부에 세션 id 부재 — 재개 불가.\n{first}"
-    assert first.get("usage"), f"R1 장부에 usage 분해 부재.\n{first}"
+    assert first.get("session_id"), f"R1 기록에 세션 id 부재 — 재개 불가.\n{first}"
+    assert first.get("usage"), f"R1 기록에 usage 분해 부재.\n{first}"
 
     # R2 프롬프트는 README 를 다시 읽으라고 말하지 않는다 — 이어받은 세션만 답할 수 있는 질문이다.
     followup = repo / "resume_prompt.txt"
     followup.write_text(
         "방금 네가 요약한 그 저장소에 대해 한 줄만 더 답하라. 방금 인용했던 교정 코드"
-        "(calibration code)를 그대로 다시 적고, 재고 스냅샷 주기를 한 단어로 덧붙여라. "
+        "(calibration code)를 그대로 다시 적고, 재고 상태 기록 주기를 한 단어로 덧붙여라. "
         "파일을 새로 읽지 말고 이미 아는 내용으로만 답하라.",
         encoding="utf-8",
     )
@@ -558,20 +558,20 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
     assert rc2 == 0, f"resume 라운드 rc={rc2}" + tail
     assert "세션 재사용 미적용" not in captured.err, "재개 시도 자체가 서지 않았다" + tail
     assert "세션 재사용 실패" not in captured.err, (
-        "회신 세션 id 가 요청과 달라 fresh 로 폴백했다(재개 미성립)" + tail)
+        "회신 세션 id 가 요청과 달라 fresh 로 다시 실행했다(재개 미성립)" + tail)
     assert _MARKER in captured.out, (
         "resume 회신에 marker 부재 — 이어받은 컨텍스트로 답하지 못했다(파일 재읽기 금지 지시)" + tail)
 
-    resumed = [row for row in raw_output.raw_records(ledger)
+    resumed = [row for row in raw_output.raw_records(record_file)
                if row.get("attempt") == delegate_run_rules.RESUME_ATTEMPT]
     assert len(resumed) == 1, f"재개 attempt 레코드 수 이상: {len(resumed)}" + tail
-    assert resumed[0]["resume_matched"] is True, "장부가 세션 불일치를 기록" + tail
+    assert resumed[0]["resume_matched"] is True, "기록에 세션 불일치가 남음" + tail
     assert resumed[0]["session_id"] == first["session_id"]
     raw_text = Path(resumed[0]["raw_path"]).read_text(encoding="utf-8")
     assert first["session_id"] in raw_text, "재개 argv 가 raw 감사 헤더에 없다" + tail
 
 
-# ── release tier (livegate · PM_ORCH_LIVE_RELEASE=1) ──────────────────────────────
+# ── release tier (라이브 시험 · PM_ORCH_LIVE_RELEASE=1) ──────────────────────────────
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("codex") or not codex_auth_available(),
@@ -709,7 +709,7 @@ def test_cross_growth_fixture_pins_fixed_pipeline_and_parallel_full_command(tmp_
 
 
 def test_cross_stage2_regression_section_has_exact_boundary_and_negative_guard():
-    """02 developer sentinel/targeted 증거가 exact two-row 회귀 절에 흡수되지 않는다."""
+    """02 developer sentinel/targeted 증거가 exact two-row 회귀 절에 반영되지 않는다."""
     route_source = inspect.getsource(_run_cross_growth_route)
     stage2_source = route_source.split("elif stage == 2:", 1)[1].split(
         "        else:", 1,
@@ -726,7 +726,7 @@ def test_cross_stage2_regression_section_has_exact_boundary_and_negative_guard()
 
 
 def test_delegate_forwards_resume_from_without_fresh(tmp_path, monkeypatch, capsys):
-    """final-fix 재주입은 ticket resume 결속만 쓰고 fresh 우회를 만들지 않는다."""
+    """final-fix 재주입은 ticket resume 연결만 쓰고 fresh 우회를 만들지 않는다."""
     seen = []
 
     class StubDelegate:
@@ -751,11 +751,11 @@ def test_delegate_forwards_resume_from_without_fresh(tmp_path, monkeypatch, caps
 
 
 def test_release_markers_pinned():
-    """이 파일 release 마커 수(=1·codex 릴리즈 스모크)를 pin — 마커 소실/개명 시 게이트 selection 누락 방어.
+    """이 파일 release 마커 수(=1·codex 릴리즈 스모크)를 pin — 마커 소실/개명 시 라이브 시험 selection 누락 방어.
 
     `pytest -m release` 는 마커로 라이브 서브셋을 고른다. 데코레이터 삭제/개명 시 조용히 빠지는 것을
-    file-local 로 잡는다(test_pm_release_live 동형). ⚠ 이 파일을 test_release_cluster `_RELEASE_TEST_FILES`
-    합산 + 전역 pin(regression.LIVE_TEST_RELEASE_PIN 등)에 등재하는 커플드-pin 갱신은 orchestrator 가 wave
+    file-local 로 잡는다(test_pm_release_live 같은 구조). ⚠ 이 파일을 test_release_cluster `_RELEASE_TEST_FILES`
+    합산 + 전역 pin(regression.LIVE_TEST_RELEASE_PIN 등)에 등재하는 커플드-pin 갱신은 orchestrator 가 작업 묶음
     종료 시 수행(touches 밖 공유 상수). 라이브를 의도적으로 늘리면 `_EXPECTED_RELEASE_TESTS` 를 함께 갱신."""
     import ast
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))

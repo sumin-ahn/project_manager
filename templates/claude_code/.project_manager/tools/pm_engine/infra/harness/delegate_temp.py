@@ -27,7 +27,7 @@ _READ_TMP_FD_SUPPORTED = (
 
 
 def _assert_opencode_transport_path(cwd: Path, prompt_file: Path) -> None:
-    """공용 ``--file``/``--dir`` containment 계약을 위임 표면 예외로 번역한다."""
+    """공용 ``--file``/``--dir`` containment 계약을 위임 쪽 예외로 번역한다."""
     try:
         contract.assert_opencode_prompt_in_cwd(cwd, prompt_file)
     except contract.HarnessContractError as exc:
@@ -59,15 +59,15 @@ class _OpenCodeTransportPrompt:
         return str(self.path)
 
     def __getattr__(self, name: str):
-        # 내부 테스트/장부 코드가 Path 표면(parent/resolve/read_text 등)을 그대로 쓸 수 있게 한다.
+        # 내부 테스트/기록 코드가 Path API(parent/resolve/read_text 등)를 그대로 쓸 수 있게 한다.
         return getattr(self.path, name)
 
 
 class _ReadRoleTemp:
     """read attempt 하나가 소유한 임시 디렉터리.
 
-    `parent_fd` 는 fd 결속 수단(POSIX)에서만 값이 있고, 소유자 ACL 수단(Windows)에서는 None 이다 —
-    회수/재검증이 그 축을 보고 같은 보장을 내는 다른 수단을 고른다.
+    `parent_fd` 는 fd 연결 수단(POSIX)에서만 값이 있고, 소유자 ACL 수단(Windows)에서는 None 이다 —
+    정리/재검증이 그 값을 보고 같은 보장을 내는 다른 수단을 고른다.
     """
 
     def __init__(
@@ -86,7 +86,7 @@ class _ReadRoleTemp:
         self.identity = identity
         self.owned_fds = owned_fds
         # opencode 전용 temp 부모를 이번 attempt가 만들었을 때만, 생성 inode가 그대로인 경우에만
-        # 빈 부모까지 회수한다.
+        # 빈 부모까지 정리한다.
         self.created_parent = created_parent
 
     def __fspath__(self) -> str:
@@ -133,7 +133,7 @@ def _read_tmp_root(home) -> Path:
     """read 역할 격리 자리의 루트 — PM 홈이 소유한 프로젝트 안 임시 루트 하나다.
 
     자리 규약을 여기 다시 적지 않고 `raw_output.temp_root` 를 그대로 쓴다(원자 쓰기를 뺀 엔진의
-    모든 임시물이 같은 부모를 쓴다). 앵커는 raw 박제와 같은 소유자다 — 위임 산출과 그 실행의
+    모든 임시물이 같은 부모를 쓴다). 기준 위치는 raw 기록과 같은 소유자다 — 위임 산출과 그 실행의
     임시물이 다른 clone 으로 흩어지지 않는다. 테스트는 이 함수 하나를 주입해 자리를 옮긴다.
     """
     return raw_output.temp_root(home.local_dir.parent.parent)
@@ -145,7 +145,7 @@ def _read_tmp_attempt_name() -> str:
 
 
 def _read_tmp_parent(home, harness: str) -> tuple[Path, str | None]:
-    """attempt 생성 부모를 반환한다(opencode는 공유 골격 아래에서 호출별 root를 만든다)."""
+    """attempt 생성 부모를 반환한다(opencode는 공유 뼈대 폴더 아래에서 호출별 root를 만든다)."""
     temp_root = _read_tmp_root(home).resolve()
     component = delegate_run_rules._READ_TMP_PARENT_COMPONENT_BY_HARNESS[harness]
     return (
@@ -155,20 +155,20 @@ def _read_tmp_parent(home, harness: str) -> tuple[Path, str | None]:
     )
 
 
-# 검토 표면 밖 판정의 접두 — clone-local 런타임 자리. gitignore(`.project_manager/.gitignore` 의
-# `.local/`)·잔여 인구 제외(`finish_rules._is_local_runtime_path`)·pytest 수집 제외가 **이미** 이
+# 검토 범위 밖 판정의 접두 — clone-local 런타임 자리. gitignore(`.project_manager/.gitignore` 의
+# `.local/`)·남은 변경 집계 제외(`finish_rules._is_local_runtime_path`)·pytest 수집 제외가 **이미** 이
 # 접두에 걸려 있다. 새 접두를 만들면 같은 뜻의 제외를 세 곳에 더 달아야 한다.
 _LOCAL_RUNTIME_PREFIX_PARTS: tuple[str, ...] = (".project_manager", ".local")
 
 
 def _assert_read_tmp_outside_review_surface(attempt_path: Path, cwd: Path) -> None:
-    """격리 자리가 검토 대상의 **추적 표면** 안이면 거부한다.
+    """격리 자리가 검토 대상의 **추적 범위** 안이면 거부한다.
 
-    판정 주어는 "cwd 트리 밖"이 아니라 "검토 표면 밖"이다. 격리 요건은 리뷰 실행 root 에
+    판정 주어는 "cwd 트리 밖"이 아니라 "검토 범위 밖"이다. 격리 요건은 리뷰 실행 root 에
     검토 대상의 source·index·산출이 섞이지 않는 것이고, clone-local 런타임 접두
-    (`.project_manager/.local/`)에는 gitignore·잔여 인구 제외·pytest 수집 제외가 이미 걸려 있어
-    같은 트리 안이어도 검토 표면이 아니다(묶음 run-dir 이 이미 그 접두를 쓰고 codex `--add-dir`
-    로 열린다). 주어를 cwd 트리로 두면 cwd 가 PM 홈이거나 그 하위인 형상(단일 clone 채택자·
+    (`.project_manager/.local/`)에는 gitignore·남은 변경 집계 제외·pytest 수집 제외가 이미 걸려 있어
+    같은 트리 안이어도 검토 범위가 아니다(묶음 run-dir 이 이미 그 접두를 쓰고 codex `--add-dir`
+    로 열린다). 주어를 cwd 트리로 두면 cwd 가 PM 홈이거나 그 하위인 구성(단일 clone 채택자·
     PM 문서 검토)에서 read 역할 위임이 전부 죽는다.
     """
     try:
@@ -190,7 +190,7 @@ def _assert_read_tmp_outside_review_surface(attempt_path: Path, cwd: Path) -> No
 
 
 def _read_tmp_owner_acl_platform() -> bool:
-    """소유자 전용 ACL 로 fd 결속과 등가인 격리를 낼 수 있는 플랫폼인가(주입 가능 seam)."""
+    """소유자 전용 ACL 로 fd 연결과 등가인 격리를 낼 수 있는 플랫폼인가(주입 가능 교체 지점)."""
     return bool(fs.windows_acl_platform())
 
 
@@ -204,12 +204,12 @@ def _read_tmp_strategy() -> str | None:
 
 
 def _remove_read_tmp_tree(path: Path, *, parent_fd: int | None) -> None:
-    """attempt 트리를 회수한다 — 강제 삭제 seam 하나에 fd 결속을 실어 보낸다.
+    """attempt 트리를 정리한다 — 강제 삭제 함수 하나에 fd 연결을 실어 보낸다.
 
     맨 `shutil.rmtree` 는 read-only 하위가 하나만 있어도 남긴다(실측: 리뷰어 회귀가 만드는
     0o500 디렉터리에서 `PermissionError [Errno 13] ... 'inner.txt'`). `fs.force_rmtree` 는
     속성을 풀고 그 항목만 재시도하되 끝내 남으면 예외를 올리고, `dir_fd` 를 받으면 삭제를 고정
-    부모 fd 에 결속해 symlink 공격 회피도 그대로 유지한다.
+    부모 fd 에 연결해 symlink 공격 회피도 그대로 유지한다.
     """
     fs.force_rmtree(path, dir_fd=parent_fd)
 
@@ -228,8 +228,8 @@ def _restrict_read_tmp_to_owner(path: Path) -> None:
 def _create_read_role_temp_owner_acl(home, harness: str, cwd: Path) -> _ReadRoleTemp:
     """dir_fd 가 없는 플랫폼의 등가 경로 — 배타 생성 + 소유자 ACL + identity 재검증.
 
-    fd 결속 대신 (a) 예측 불가 이름의 배타 mkdir(선점된 이름이면 FileExistsError 로 끝난다),
-    (b) 생성 직후 symlink/reparse 아님 확인, (c) 소유자 전용 ACL, (d) 회수 시 생성 identity 재대조로
+    fd 연결 대신 (a) 예측 불가 이름의 배타 mkdir(먼저 차지된 이름이면 FileExistsError 로 끝난다),
+    (b) 생성 직후 symlink/reparse 아님 확인, (c) 소유자 전용 ACL, (d) 정리 시 생성 identity 재대조로
     같은 보장을 낸다. 어느 단계든 실패하면 권한을 낮춰 계속하지 않고 loud 로 끝낸다.
     """
     temp_parent, optional_parent_name = _read_tmp_parent(home, harness)
@@ -312,10 +312,10 @@ def _create_read_role_temp_owner_acl(home, harness: str, cwd: Path) -> _ReadRole
 
 
 def _create_read_role_temp(home, harness: str, cwd: Path) -> _ReadRoleTemp | None:
-    """read attempt 전용 0700 tmp를 mkdir(dir_fd)로 만들고 parent fd에 결속한다.
+    """read attempt 전용 0700 tmp를 mkdir(dir_fd)로 만들고 parent fd에 연결한다.
 
-    fd/nofollow/race 규율은 바로 아래 opencode 전달 사본 seam과 동일하다. 그 primitive 가 없는
-    플랫폼은 넓은 경로 기반 삭제로 강등하지 않고 소유자 ACL 등가 경로를 탄다. 두 수단이 모두
+    fd/nofollow/race 규율은 바로 아래 opencode 전달 사본 함수와 동일하다. 그 primitive 가 없는
+    플랫폼은 넓은 경로 기반 삭제로 낮추지 않고 소유자 ACL 등가 경로를 탄다. 두 수단이 모두
     없을 때만 preamble의 명시적 회귀-불가 경로를 탄다.
     """
     strategy = _read_tmp_strategy()
@@ -479,7 +479,7 @@ def _cleanup_owned_read_tmp_parent(
 
 
 def _cleanup_read_role_temp(read_tmp: _ReadRoleTemp | None) -> str | None:
-    """고정 parent fd와 inode를 재검증한 뒤 attempt 트리만 symlink-safe 회수한다.
+    """고정 parent fd와 inode를 재검증한 뒤 attempt 트리만 symlink-safe 하게 정리한다.
 
     끝내 지우지 못하면 사유를 돌려준다 — 호출부가 그 실행의 결과를 실패로 내린다. 이 자리는
     `finally` 안에서 불리므로 여기서 raise 하면 주 결과와 전파 중인 예외를 덮는다.
@@ -547,16 +547,16 @@ def _cleanup_attempt_transport(
     prompt: _OpenCodeTransportPrompt | None,
     read_tmp: _ReadRoleTemp | None = None,
 ) -> str | None:
-    """attempt wire 사본·read tmp를 한 소유권 seam에서 되감는다.
+    """attempt wire 사본·read tmp를 한 소유권 함수에서 되감는다.
 
     prompt 삭제가 실패하면 자기-은닉 ignore를 보존해 민감 사본이 untracked로 노출되지 않게 한다.
     정상 삭제 뒤에는 ignore→고유 attempt 디렉터리→delegate/.local/.project_manager를 역순
-    제거한다. 겹친 attempt가 사용하는 공유 골격은 ENOTEMPTY로 자연스럽게 보존된다.
+    제거한다. 겹친 attempt가 사용하는 공유 뼈대 폴더는 ENOTEMPTY로 자연스럽게 보존된다.
 
     반환값은 read tmp 잔존 사유다(없으면 None) — 실행 경로가 그 값으로 결과를 실패로 내린다.
     """
-    # read tmp는 pytest가 만든 임의 하위 트리까지 회수한다. prompt 정리 실패와 서로 독립적으로
-    # 시도해야 둘 중 하나가 다른 하나의 잔여 0 보장을 가리지 않는다.
+    # read tmp는 pytest가 만든 임의 하위 트리까지 정리한다. prompt 정리 실패와 서로 독립적으로
+    # 시도해야 둘 중 하나가 다른 하나의 아무것도 남지 않는다는 보장을 가리지 않는다.
     read_tmp_residue = _cleanup_read_role_temp(read_tmp)
     if prompt is None:
         return read_tmp_residue
@@ -613,7 +613,7 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
 
     `os.open` 의 mode 인자는 **ACL 플랫폼에서 무효**라 0600 만으로는 소유자 전용이 되지 않는다
     (Windows 는 부모 디렉터리의 상속 ACL 을 그대로 받는다). 쓰기 직후 공용 소유자-제한
-    seam(`fs.restrict_to_owner`)이 두 플랫폼에서 같은 보장을 낸다."""
+    공용 함수(`fs.restrict_to_owner`)가 두 플랫폼에서 같은 보장을 낸다."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0)
     fd: int | None = None
@@ -634,10 +634,10 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
                 os.unlink(path)
             except OSError as unlink_exc:
                 # 원래 쓰기 예외를 롤백 실패로 덮지 않는다 — 아래 bare raise가 그대로 전파한다.
-                # 정리 실패는 관측만 loud 하게 남긴다. 잔여 파일 경로는 원 예외에
+                # 정리 실패는 관측만 loud 하게 남긴다. 남은 파일 경로는 원 예외에
                 # 실어 둔다 — 호출자가 cleanup 재시도·자기-은닉 ignore 보존 판단에 쓴다.
-                # ENOENT 는 잔여가 없다(누가 먼저 지웠다) — 표식을 붙이면 cleanup 이 오탐 경고를 낸다.
-                # 표식은 예외 객체에 붙어 재사용 예외에서도 남을 수 있어, 호출자는 attempt 고유(uuid)
+                # ENOENT 는 남은 것이 없다(누가 먼저 지웠다) — 표시를 붙이면 cleanup 이 오탐 경고를 낸다.
+                # 표시는 예외 객체에 붙어 재사용 예외에서도 남을 수 있어, 호출자는 attempt 고유(uuid)
                 # 경로와 등가비교로만 소비한다(무접두 이름 충돌 방지 위해 `_pm_` 접두).
                 if unlink_exc.errno != errno.ENOENT:
                     write_exc._pm_residual_path = path
@@ -697,8 +697,8 @@ def _save_opencode_transport_prompt(
         _portable_exclusive_write(dest, prompt)
         transport.prompt_created = True
     except BaseException as exc:
-        # 롤백 unlink까지 실패하면(정리 경고) 잔여 파일이 디스크에 남는데도 `*_created`가
-        # False라 cleanup이 그 존재를 몰랐다 — 원 예외의 잔여 경로 표식으로 해당 플래그를 세워
+        # 롤백 unlink까지 실패하면(정리 경고) 남은 파일이 디스크에 남는데도 `*_created`가
+        # False라 cleanup이 그 존재를 몰랐다 — 원 예외의 남은 경로 표시로 해당 플래그를 세워
         # 기존 cleanup 순서(프롬프트 재시도 → 성공 시만 ignore 삭제 → 실패 시 ignore 보존+loud)를
         # 타게 한다.
         residual_path = getattr(exc, "_pm_residual_path", None)

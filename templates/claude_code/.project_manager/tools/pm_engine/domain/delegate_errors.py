@@ -7,7 +7,7 @@ from __future__ import annotations
 
 
 class DelegateError(Exception):
-    """config 해소·검증·containment·재앵커 등의 fail-loud 오류 (main 이 rc=1 로 변환)."""
+    """config 해소·검증·containment·대상 저장소 다시 잡기 등의 fail-loud 오류 (main 이 rc=1 로 변환)."""
 
 
 

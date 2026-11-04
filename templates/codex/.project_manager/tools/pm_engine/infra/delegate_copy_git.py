@@ -25,16 +25,16 @@ def _ticket_commit_message(home, ticket: str) -> str:
 
 
 def _assert_developer_commit_tree(cwd: Path) -> None:
-    """dev 산출을 커밋할 트리가 코드 트리인지 확인한다 — 장부 루트면 거부한다.
+    """dev 산출을 커밋할 트리가 코드 트리인지 확인한다 — PM 홈 루트면 거부한다.
 
-    티켓 제목 커밋은 코드 트리에만 만든다. 장부 루트(PM 홈)를 `--cwd` 로 받으면 board·wiki·
-    log 변경이 `add -A` 에 함께 실려 그 티켓 제목의 커밋으로 묶인다. 판정 입력은 형상 하나다 —
+    티켓 제목 커밋은 코드 트리에만 만든다. PM 홈 루트를 `--cwd` 로 받으면 board·wiki·
+    log 변경이 `add -A` 에 함께 실려 그 티켓 제목의 커밋으로 묶인다. 판정 입력은 구성 하나다 —
     소유 PM 홈이 자기 자신이면 그 트리가 곧 PM 홈이고, 그 홈이 슬롯 풀의 공용 bare
     (`.repos/<repo>.git` · 풀을 만든 도구가 써 넣은 자리)를 가지면 코드 트리는 그 풀의 슬롯이지
     이 트리가 아니다. 임베드·단일 clone(풀 없음)은 PM 홈이 곧 코드 트리라 그대로 통과한다.
 
-    자리는 회수의 다른 developer 게이트와 같다(board 교체 앞) — 커밋 직전으로 밀면 거부 시점에
-    board 라운드 교체·장부 append·run-dir 삭제가 이미 끝나 같은 자리로 다시 회수할 수 없다.
+    자리는 돌려받기의 다른 developer 통과 조건과 같다(board 교체 앞) — 커밋 직전으로 밀면 거부 시점에
+    board 라운드 교체·기록 append·run-dir 삭제가 이미 끝나 같은 자리로 다시 돌려받을 수 없다.
     """
     if Path(pm_paths.owning_pm_home(cwd)).resolve() != Path(cwd).resolve():
         return                              # 풀 슬롯 — 소유 PM 홈이 따로 있다.
@@ -43,7 +43,7 @@ def _assert_developer_commit_tree(cwd: Path) -> None:
         return                              # 임베드·단일 clone — PM 홈이 곧 코드 트리다.
     pools = []
     for bare in bares:
-        # git 은 Windows 에서도 `/` 경로를 찍는다 — 장부 루트와 같은 절대경로 표기로 싣는다.
+        # git 은 Windows 에서도 `/` 경로를 찍는다 — PM 홈 루트와 같은 절대경로 표기로 싣는다.
         slots = [
             Path(line[len("worktree "):].strip()).resolve()
             for line in _cluster_git(
@@ -74,7 +74,7 @@ def _commit_developer_round_output(cwd: Path, *, ticket: str, home) -> str | Non
     """dev 산출을 그 슬롯에서 커밋한다 — 커밋했으면 문안, 커밋할 변경이 없으면 None.
 
     dev 산출의 커밋 자리는 여기 하나다(손 커밋 0). 리뷰 입력은 묶음 브랜치 tip 이고 리뷰 준비는
-    작업 트리 변경 0 을 요구하므로, 회수한 산출이 커밋되지 않으면 리뷰가 서지 않는다. 변경
+    작업 트리 변경 0 을 요구하므로, 돌려받은 산출이 커밋되지 않으면 리뷰가 서지 않는다. 변경
     관측은 리뷰 준비·돌려받기 트리 조건과 같은 하나다(`_slot_pending_changes`). 실패는 삼키지 않는다: 커밋되지
     않은 산출을 커밋된 것처럼 보고하면 그 라운드가 리뷰에서 통째로 빠진다.
     """
@@ -90,7 +90,7 @@ def _assert_review_tree_unchanged(cwd: Path, row: Mapping[str, object], *, copy:
     """리뷰 돌려받기 트리 조건 — 슬롯 HEAD 가 준비 기록 `base_rev` 와 같고 작업 트리 변경이 0 인가.
 
     리뷰어가 본 트리와 판정할 트리가 같아야 라운드가 증거다. 라운드 파일과 ignore 대상(사본
-    루트·테스트 산출)은 작업 트리 변경이 아니다. 어긋나면 board·장부·run-dir 을 바꾸지 않고
+    루트·테스트 산출)은 작업 트리 변경이 아니다. 어긋나면 board·기록·run-dir 을 바꾸지 않고
     멈춘다. `base_rev` 가 없는 행(이 엔진 이전 준비)은 HEAD 로 대신하지 않는다.
     """
     base_rev = str(row.get("base_rev") or "")
@@ -130,15 +130,15 @@ def _developer_round_changed_paths(
 ) -> frozenset[str]:
     """직전 developer 커밋 후 현재 라운드가 바꾼 경로.
 
-    developer 산출은 harvest 성공 뒤에만 커밋되므로 ``HEAD..작업트리``가
+    developer 산출은 돌려받기 성공 뒤에만 커밋되므로 ``HEAD..작업트리``가
     해당 단계의 자연스런 기준선이다. 존재 이유가 사라진 코드·테스트를 지우는 것도
     그 라운드의 산출이라 같이 세고, untracked 테스트는 별도로 포함한다.
 
-    삭제(``D``)를 세는 이 집합은 **두 축이 공유한다** — reviewer fix 계약 대상 검사와
+    삭제(``D``)를 세는 이 집합은 **두 기준이 공유한다** — reviewer fix 계약 대상 검사와
     architect 필수 테스트 대상 검사가 같은 값을 본다. 그래서 architect 계약이 지목한 테스트
     파일을 **지운** 라운드도 대상 검사만으로는 통과한다. 그 자리를 인자로 가르지 않는 이유는
     바로 뒤에서 그 계약의 command 를 실제로 실행하기 때문이다 — 지목된 파일이 없으면 명령
-    자체가 red 라 같은 라운드가 그 자리에서 멈춘다. 축을 가르는 인자는 이미 실행이 내는 답을
+    자체가 red 라 같은 라운드가 그 자리에서 멈춘다. 기준을 가르는 인자는 이미 실행이 내는 답을
     한 번 더 재는 장치다.
     """
     changed = {

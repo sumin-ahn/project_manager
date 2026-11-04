@@ -56,11 +56,11 @@ class ClusterReviewSources(NamedTuple):
 def cluster_review_input(
     home, cluster: str, *, repo: Path, git_run_fn: Callable | None = None,
 ) -> ClusterReviewInput:
-    """리뷰 대상 diff 와 그 범위를 묶음 장부에서 해소한다.
+    """리뷰 대상 diff 와 그 범위를 묶음 기록에서 해소한다.
 
     기준은 `merge-base(<통합 브랜치 tip>, <묶음 브랜치>)` 다 — 통합 브랜치가 그동안 앞서
-    갔어도 이 묶음이 만든 변경만 리뷰 입력이 된다(흡수분은 조상이라 빠진다). 입력을 해소한
-    자리에서 트리를 결속한다(준비 트리 조건 · `assert_cluster_review_tree`).
+    갔어도 이 묶음이 만든 변경만 리뷰 입력이 된다(이미 합쳐진 변경은 조상이라 빠진다). 입력을 해소한
+    자리에서 트리 조건을 함께 확인한다(준비 트리 조건 · `assert_cluster_review_tree`).
     """
     fm = cluster_store.load_cluster(home, cluster)
     if fm is None:
@@ -109,11 +109,11 @@ def assert_cluster_review_tree(
     review: ClusterReviewInput, *, repo: Path,
     git_run_fn: Callable | None = None,
 ) -> None:
-    """리뷰 대상 트리가 묶음 브랜치이고 작업 트리 변경이 0 인지 결속한다(준비 트리 조건 · fail-closed).
+    """리뷰 대상 트리가 묶음 브랜치이고 작업 트리 변경이 0 인지 확인한다(준비 트리 조건 · fail-closed).
 
-    프롬프트의 비교 범위는 장부 브랜치의 `merge-base..tip` 이고, 리뷰어가 실제로 읽는 파일은
+    프롬프트의 비교 범위는 기록 브랜치의 `merge-base..tip` 이고, 리뷰어가 실제로 읽는 파일은
     이 트리의 내용이다. 트리가 그 브랜치가 아니거나 커밋되지 않은 변경이 있으면 둘이 서로 다른
-    코드가 되어 판정 전체가 헛돈다. 브랜치 대조 seam 은 확인 커맨드 실행 트리와 같은 하나다
+    코드가 되어 판정 전체가 헛돈다. 브랜치 대조 함수는 확인 커맨드 실행 트리와 같은 하나다
     (`git._cluster_current_branch`).
     """
     current = git._cluster_current_branch(str(repo))
@@ -153,7 +153,7 @@ def build_cluster_review_prompt(
     """묶음 리뷰 프롬프트 본문 — 조립기는 추가 리뷰어 채널과 **같은 하나**다.
 
     구조화 블록 요구는 이 프롬프트가 소유하지 않는다: 산출 자리가 티켓별 라운드 파일이고 그
-    시드가 이미 채널 골격과 다음 ID 실값을 들고 있다(요구가 두 벌이면 갈린다).
+    빈 양식이 이미 채널 칸과 다음 ID 실값을 들고 있다(요구가 두 벌이면 갈린다).
     """
     header = (
         f"## 리뷰 단위: {review.cluster} (티켓 {len(review.members)})\n\n"
@@ -196,7 +196,7 @@ def cluster_review_sources(
     home, cluster: str, *, repo: Path, focus_path: Path | None,
     git_run_fn: Callable | None = None,
 ) -> ClusterReviewSources:
-    """리뷰 프롬프트 입력을 읽는다(부작용 0) — 입력 해소 안에서 준비 트리 조건을 결속한다."""
+    """리뷰 프롬프트 입력을 읽는다(부작용 0) — 입력 해소 안에서 준비 트리 조건을 함께 확인한다."""
     review = cluster_review_input(home, cluster, repo=repo, git_run_fn=git_run_fn)
     specs = _cluster_member_specs(home, review.members)
     focus = (
@@ -213,8 +213,8 @@ def prepare_cluster_review(
 ) -> tuple[ClusterReviewSources, delegate_rounds.ClusterCopyPlan]:
     """두 전송이 같이 쓰는 리뷰 준비 — 준비 트리 조건·리뷰 입력·명세·검토 중점 판독 뒤에 예약한다.
 
-    거부는 전부 예약 앞이다(board·장부·run-dir 무변경). 예약은 `prepare_cluster_copy` 가
-    멤버마다 code-reviewer 라운드를 깔고 장부 행에 `base_rev`(돌려받기 트리 조건의 기준)를 남긴다.
+    거부는 전부 예약 앞이다(board·기록·run-dir 무변경). 예약은 `prepare_cluster_copy` 가
+    멤버마다 code-reviewer 라운드를 깔고 기록 행에 `base_rev`(돌려받기 트리 조건의 기준)를 남긴다.
     `owner_pid` 는 준비 프로세스가 run 의 소유자일 때(교차 실행)만 준다.
     """
     sources = cluster_review_sources(
