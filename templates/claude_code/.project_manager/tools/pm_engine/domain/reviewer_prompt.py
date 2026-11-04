@@ -7,7 +7,7 @@ from pm_engine.domain import round_rules
 
 
 class TicketBodySelection(NamedTuple):
-    """리뷰 입력 티켓 본문 — 명세 + 선별한 라운드, 그리고 접어 둔 산출 라운드 수."""
+    """리뷰 입력 티켓 본문 — 명세 + 선별한 라운드, 그리고 생략한 산출 라운드 수."""
 
     text: str
     omitted_rounds: int
@@ -22,7 +22,7 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
     """명세 전문 + **역할별 마지막 산출 라운드**를 순번 순으로 이어 붙인다.
 
     명세(`body`)는 권위 절과 PM 판정 블록을 그대로 담은 파일이라 전량 싣는다. 라운드는 파일
-    하나가 산출 하나라 선별이 파일 선택으로 끝난다 — 역할마다 마지막 것만 싣고, 시드 그대로인
+    하나가 산출 하나라 선별이 파일 선택으로 끝난다 — 역할마다 마지막 것만 싣고, 빈 양식 그대로인
     라운드(산출 없음)는 세지도 싣지도 않는다. 이어 붙이는 표기는 `round_rules.render_rounds_for_show`
     가 소유한다(사람이 `board.py show` 에서 읽는 그 구분선과 같은 규칙 하나).
 
@@ -37,8 +37,8 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
         (item for item in landed if last_by_role[item.role] == item.ordinal),
         key=lambda item: item.ordinal,
     )
-    # 생략 = **접힌 산출**의 수다. 산출 없는 라운드는 애초에 실을 것이 없으므로 세지 않는다 —
-    # 세면 접힌 산출이 없는 티켓에서도 "생략" 과 선별 요약 헤더가 붙는다.
+    # 생략 = **생략한 산출**의 수다. 산출 없는 라운드는 애초에 실을 것이 없으므로 세지 않는다 —
+    # 세면 생략한 산출이 없는 티켓에서도 "생략" 과 선별 요약 헤더가 붙는다.
     omitted = len(landed) - len(selected)
     if not selected and not omitted:
         return TicketBodySelection(body, 0)
@@ -51,11 +51,11 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
     return TicketBodySelection("".join(parts), omitted)
 
 
-# 스폰면 경고 문구 — 준비면(`round_form._warn_unharvested_developer_round`)과 같은 축을
-# 쓰되, 문구는 다르다. 형상 B(앞선 산출 라운드가 있고 최신만 시드)에서 준비면 문구를 그대로
-# 복제하면 "리뷰어 입력에 실리지 않습니다"가 거짓이 된다 — 이 표면은 그렇게 단정하지 않고, 이번
+# 스폰면 경고 문구 — 준비면(`round_form._warn_uncollected_developer_round`)과 같은 기준을
+# 쓰되, 문구는 다르다. 경우 B(앞선 산출 라운드가 있고 최신만 빈 양식)에서 준비면 문구를 그대로
+# 복제하면 "리뷰어 입력에 실리지 않습니다"가 거짓이 된다 — 이 경로는 그렇게 단정하지 않고, 이번
 # 프롬프트에 실제로 실리는 developer 산출 라운드 이름(없으면 "없음")을 값으로 말한다.
-_SPAWN_SEED_DEVELOPER_ROUND_WARNING = (
+_SPAWN_EMPTY_FORM_DEVELOPER_ROUND_WARNING = (
     "경고: 추가 리뷰어가 {ticket} 의 산출 없는 developer 라운드 위에서 스폰됩니다 — "
     "{name} 이 빈 양식 그대로입니다. 이번 프롬프트에 실리는 developer 산출 라운드: {latest}."
 )

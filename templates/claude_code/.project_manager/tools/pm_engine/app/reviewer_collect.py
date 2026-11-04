@@ -1,4 +1,4 @@
-"""추가 리뷰어 산출 회수와 라운드 마감 (층: app)."""
+"""추가 리뷰어 산출 돌려받기와 라운드 마감 (층: app)."""
 from __future__ import annotations
 
 from typing import NamedTuple
@@ -41,17 +41,17 @@ def _format_verdict(ok: bool, verdict: dict | None) -> str:
     return "성공 → 판정 불명확 (PM 확인 필요)"
 
 
-def print_summary(result: dict, gate: str | None = None) -> None:
+def print_summary(result: dict, review_ticket: str | None = None) -> None:
     """결과 요약을 stdout 에 출력한다.
 
-    게이트 줄은 **항상** 나온다 — 게이트 없이 끝난 실행은 그 사실이 회계 상태(장부 미기록)라
+    리뷰 집계 티켓 줄은 **항상** 나온다 — 리뷰 집계 티켓 없이 끝난 실행은 그 사실이 집계 상태(기록 파일 미기록)라
     stderr 경고 하나에만 맡기지 않는다(오염 진단·실패 사유와 같은 근거: 판정 블록은 읽힌다).
     이 줄은 실행이 끝난 뒤라 확정형으로 말할 수 있다."""
     sep = "=" * 60
     name = result.get("reviewer", "reviewer")
     print(sep)
     print(f"추가 리뷰어 코드리뷰 결과 요약 [{name}]")
-    print(f"리뷰 집계 티켓: {gate if gate else reviewer_budget._SUMMARY_UNACCOUNTED_GATE}")
+    print(f"리뷰 집계 티켓: {review_ticket if review_ticket else reviewer_budget._SUMMARY_UNACCOUNTED_REVIEW_TICKET}")
     print(sep)
     print(f"\n[{name}] {_format_verdict(result['ok'], result.get('verdict'))}")
     if result.get("file"):
@@ -63,7 +63,7 @@ def print_summary(result: dict, gate: str | None = None) -> None:
         print(f"  ⚠ 회신 품질 의심(이번 판정 확정 불가): {marker}")
     if result.get("reply_extraction_failed"):
         # 구조화 대상이 rc=0 으로 끝났는데 회신을 못 뽑았다 — wire 를 판정에 흘리지 않았으므로
-        # 이 실행은 리뷰를 못 받은 것이고, 실패 축(FALLBACK_INTERNAL)으로 내려간다. 원인(형식
+        # 이 실행은 리뷰를 못 받은 것이고, 실패(FALLBACK_INTERNAL)로 다룬다. 원인(형식
         # 변경·비-문자열 회신·빈 turn)은 raw 원문에서만 보이니 그리로 보낸다.
         print("  ⚠ 회신 추출 실패 — 하네스 wire 에서 최종 회신을 찾지 못했습니다"
               "(리뷰 미수신 처리 · 원문 파일 확인).")
@@ -80,7 +80,7 @@ def print_summary(result: dict, gate: str | None = None) -> None:
         elif reason:
             print(f"  사유: {reason}")
         print(f"종합 판정: {name} 실패")
-        print("FALLBACK_INTERNAL")  # 내부 code-reviewer 서브에이전트로 폴백 신호
+        print("FALLBACK_INTERNAL")  # 내부 code-reviewer 서브에이전트로 대신 리뷰하라는 신호
     elif result["any_must_fix"]:
         print("종합 판정: 비-통과 (must-fix 감지 — PM 검토 필요)")
     elif result["all_pass"]:
@@ -90,54 +90,54 @@ def print_summary(result: dict, gate: str | None = None) -> None:
     print(sep)
 
 
-def _harvest_target_ticket(
+def _collect_target_ticket(
     home, args, ) -> tuple[str | None, str | None]:
-    """회수 대상 티켓과 (대상이 없을 때의) 사유 — `--ticket` 우선, 없으면 ticket 형상 `--review-ticket`.
+    """돌려받을 대상 티켓과 (대상이 없을 때의) 사유 — `--ticket` 우선, 없으면 ticket 모양의 `--review-ticket`.
 
-    문서화된 설계 리뷰 형상은 `--paths … --review-ticket T-NNNN` 이라 `--ticket` 이 비어 있다. 그 실행의
-    산출도 그 티켓의 것이므로 같은 회수 규칙을 탄다(자유 문자열 게이트는 대상이 아니다).
+    문서화된 설계 리뷰 경우는 `--paths … --review-ticket T-NNNN` 이라 `--ticket` 이 비어 있다. 그 실행의
+    산출도 그 티켓의 것이므로 같은 돌려받기 규칙을 탄다(자유 문자열 리뷰 집계 티켓은 대상이 아니다).
     """
     if args.ticket:
         return args.ticket, None
-    gate = getattr(args, "review_ticket", None)
-    if not gate:
+    review_ticket = getattr(args, "review_ticket", None)
+    if not review_ticket:
         return None, None
-    if not ticket_rules._is_valid_ticket_id(gate):
-        return None, None                     # 자유 문자열 게이트 — 회수 대상 아님(조용).
+    if not ticket_rules._is_valid_ticket_id(review_ticket):
+        return None, None                     # 자유 문자열 리뷰 집계 티켓 — 돌려받을 대상 아님(조용).
     try:
-        round_store._find_ticket_file(home, gate, )
+        round_store._find_ticket_file(home, review_ticket, )
     except pm_paths.AnchorResolutionError as exc:
-        return None, f"리뷰 집계 티켓 {gate} 를 보드에서 찾지 못해 돌려받지 않았습니다: {exc}"
-    return gate, None
+        return None, f"리뷰 집계 티켓 {review_ticket} 를 보드에서 찾지 못해 돌려받지 않았습니다: {exc}"
+    return review_ticket, None
 
 
-class _HarvestTargetState(NamedTuple):
-    """회수 대상 티켓의 명세 전문과 라운드 목록 — 프롬프트 실값 두 소비자가 쓰는 한 벌."""
+class _CollectTargetState(NamedTuple):
+    """돌려받을 대상 티켓의 명세 전문과 라운드 목록 — 프롬프트 실값 두 소비자가 쓰는 한 벌."""
 
     text: str
     rounds: list
 
 
-def _harvest_target_ticket_state(
+def _collect_target_ticket_state(
     home, args, *, degraded: str,
-) -> _HarvestTargetState | None:
-    """회수 대상 티켓의 명세 + 라운드 (대상 없거나 읽기 실패면 None · 실패는 loud).
+) -> _CollectTargetState | None:
+    """돌려받을 대상 티켓의 명세 + 라운드 (대상 없거나 읽기 실패면 None · 실패는 loud).
 
-    프롬프트에 실린 티켓 본문에서 파생하면 문서화된 설계 리뷰 형상(`--paths … --review-ticket T-NNNN`)은
-    본문이 실리지 않아 티켓을 못 본다. 대상 해소는 회수 경로와 **같은 함수**를 써서 두 표면이
+    프롬프트에 실린 티켓 본문에서 파생하면 문서화된 설계 리뷰 경우(`--paths … --review-ticket T-NNNN`)은
+    본문이 실리지 않아 티켓을 못 본다. 대상 해소는 돌려받기 경로와 **같은 함수**를 써서 두 경로가
     갈리지 않게 하고, 프롬프트 실값·확인 근거 대조가 **같은 읽기**를 쓴다.
 
     finding ID 는 라운드 파일에만 선언되므로 명세만 읽어서는 다음 ID·확인 대상을 알 수 없다 —
-    두 축을 함께 돌려준다.
+    두 값을 함께 돌려준다.
     """
-    ticket, _problem = _harvest_target_ticket(home, args, )
+    ticket, _problem = _collect_target_ticket(home, args, )
     if not ticket:
         return None
     try:
         ticket_text = round_store._load_ticket_text_and_body(
             round_store._find_ticket_file(home, ticket, )
         )[0]
-        return _HarvestTargetState(
+        return _CollectTargetState(
             ticket_text,
             reviewer_prompt._load_ticket_rounds_for(
                 home, ticket, ticket_text=ticket_text,
@@ -152,13 +152,13 @@ def _harvest_target_ticket_state(
 
 
 def _next_external_finding_id(home, args, ) -> str | None:
-    """이 채널이 이번 라운드에 쓸 첫 finding ID 실값 (회수 대상 없으면 None).
+    """이 채널이 이번 라운드에 쓸 첫 finding ID 실값 (돌려받을 대상 없으면 None).
 
     라운드마다 fresh 인 리뷰어 세션이 스스로 알 수 없는 값이다 — 안 실으면 2라운드가 같은 ID 를
-    재선언해 회수가 거부된다. 시야는 **명세 + 모든 라운드**다(넓은 스캔) — 한 라운드만 보면
+    재선언해 돌려받기가 거부된다. 검사 범위는 **명세 + 모든 라운드**다(넓은 스캔) — 한 라운드만 보면
     지난 라운드가 쓴 번호를 다시 지시한다.
     """
-    state = _harvest_target_ticket_state(
+    state = _collect_target_ticket_state(
         home, args, degraded="이 라운드는 첫 finding ID 로 안내합니다.",
     )
     if state is None:
@@ -170,16 +170,16 @@ def _next_external_finding_id(home, args, ) -> str | None:
 
 def _harvest_additional_reviewer_section(
     home, ticket: str, result: dict, ) -> str | None:
-    """추가 리뷰어 산출을 게이트 티켓의 새 `additional-reviewer` 라운드 파일로 회수한다.
+    """추가 리뷰어 산출을 리뷰 집계 티켓의 새 `additional-reviewer` 라운드 파일로 돌려받는다.
 
-    회수 주체는 **엔진**이다 — 리뷰어에게 티켓/보드 편집 권한을 주지 않는다. 라운드 본문은 첫 줄
+    돌려받는 주체는 **엔진**이다 — 리뷰어에게 티켓/보드 편집 권한을 주지 않는다. 라운드 본문은 첫 줄
     헤더 + 산문 회신 전문(그 안에 versioned 블록 하나)이고, 내용 검증(`review_contract` 소유)을
     통과할 때만 파일이 생긴다. 통과하지 못하면 **파일을 만들지 않고** 사유를 돌려준다(호출부가
-    rc 로 표면화하고 산출 원문은 raw 에 남는다) — 라운드가 파일 하나라 "거부 표식을 얹어 절에
-    남기고 판정 표면에서 빼는" 보정이 필요 없다.
+    rc 로 드러내고 산출 원문은 raw 에 남는다) — 라운드가 파일 하나라 "거부 표시를 얹어 절에
+    남기고 판정 범위에서 빼는" 보정이 필요 없다.
 
-    채번+생성은 준비(`delegate_prepare.prepare_ticket_copy`)와 **같은 seam**(`round_store.reserve_round`)을
-    지난다 — 인자가 시드냐 실내용이냐만 다르다.
+    채번+생성은 준비(`delegate_prepare.prepare_ticket_copy`)와 **같은 공용 함수**(`round_store.reserve_round`)를
+    지난다 — 인자가 빈 양식이냐 실내용이냐만 다르다.
 
     실행 엔진의 round_store와 round_maintenance를 사용하고 데이터는 Home의 PM 소유자에 쓴다.
     """
@@ -189,7 +189,7 @@ def _harvest_additional_reviewer_section(
     try:
         return _reserve_additional_reviewer_round(
             home, ticket, reply, )
-    # 라운드 규약·파일 IO의 기존 오류를 회수 실패 사유로 보고한다.
+    # 라운드 규약·파일 IO의 기존 오류를 돌려받기 실패 사유로 보고한다.
     except (delegate_errors.DelegateError, round_rules.RoundsError,
             OSError, UnicodeError) as exc:
         return f"티켓 라운드 기록 실패: {exc}"
@@ -200,7 +200,7 @@ def _reserve_additional_reviewer_round(
     """내용 검증 → 통과 시 라운드 예약 + board 부분 커밋 (위반 사유 또는 None).
 
     검증 입력(명세 + 라운드)은 예약 **직전**에 읽는다 — finding ID 재선언·confirmation 대상
-    판정이 실제로 쓰이는 상태와 같은 스냅샷을 봐야 한다.
+    판정이 실제로 쓰이는 상태와 같은 상태 기록을 봐야 한다.
     """
     role = review_form.ADDITIONAL_REVIEWER_ROLE
     found = ticket_store.find_ticket_exact(home, ticket)
@@ -238,7 +238,7 @@ def _reserve_additional_reviewer_round(
     )
     ordinal, _role = round_rules.parse_round_filename(round_path.name)
     message = f"additional-reviewer {ticket} {role}"
-    # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 그 이름이 갈렸을 때 라운드
+    # board 부분 커밋 공용 함수는 직접 부른다 — 이름을 더듬어 찾으면 그 이름이 갈렸을 때 라운드
     # 파일만 만들어지고 board 커밋은 조용히 빠진 rc0 이 된다(AttributeError 로 죽는 편이 낫다).
     sync_ready = bool(round_maintenance._rounds_mutation_sync_paths(home, message, [round_path]))
     print(
@@ -255,30 +255,30 @@ def _run_review_round(
     reservation: "reviewer_reservation._PreSpawnReservation | None" = None,
     diff_root: Path | None = None,
 ) -> int:
-    """예약 수명 **안**에서 도는 구간 — 리뷰 실행·장부 마감.
+    """예약 수명 **안**에서 도는 구간 — 리뷰 실행·기록 마감.
 
     `_main` 에서 떼어낸 이유는 예약 소유권 하나다: 여기서 어떤 경로로 빠져나가도(조기 return·
     예외) 호출부의 단일 `__exit__` 가 스폰 전 예약을 환불한다.
 
     예산 확인·예약은 이 구간 **밖**에서 이미 끝났다. 넘겨받은 예약(`reservation`)의 앞부분(환경 준비, 그리고
-    `run_review` 안의 raw 선점·장부 시작 레코드·transport·argv 준비, 그리고 러너 안의 준비
-    구간)은 아직 스폰 전이라 호출부의 환불 seam 이 소유하고, 소유권은 **실 스폰 경계**(watchdog
+    `run_review` 안의 raw 자리 차지·기록 시작 레코드·transport·argv 준비, 그리고 러너 안의 준비
+    구간)은 아직 스폰 전이라 호출부의 환불 함수가 소유하고, 소유권은 **실 스폰 경계**(watchdog
     워치독의 `Popen` 직전)의 `on_spawn_attempt` 콜백으로 넘어온다 — 그 뒤부터 이 구간이 예약을
     호출 결과로 마감한다.
 
     이전에는 대칭 반납이 붙는다(`on_no_spawn`). 러너가 `started=False` 로 판명해 돌아오면 소유권이
-    스폰 전 seam 으로 되돌아오고, 요약·진단·라운드 환불이 **저장까지 끝난 뒤**에야 반납된다 — 그
-    사이의 실패(닫힌 stdout 파이프의 `BrokenPipeError` 가 실측 축이다)는 자식이 없던 실행이므로
-    바깥 seam 이 예약을 한 번 되돌려야 한다. 예외로 나가지 **않는** 변종이 하나 있다: 마감 저장이
+    스폰 전 함수로 되돌아오고, 요약·진단·라운드 환불이 **저장까지 끝난 뒤**에야 반납된다 — 그
+    사이의 실패(닫힌 stdout 파이프의 `BrokenPipeError` 가 실측 근거다)는 자식이 없던 실행이므로
+    바깥 함수가 예약을 한 번 되돌려야 한다. 예외로 나가지 **않는** 변종이 하나 있다: 마감 저장이
     `OSError` 로 실패한 경우다. 그 경로는 판정 rc 를 그대로 돌려주며 정상 return 하므로 바깥
     `__exit__` 가 소유를 보지 못해, 되돌림을 그 자리에서 직접 한 번 한다.
     `started=True` 는 종전 그대로 반납하지 않는다.
     """
     if reservation is None:
-        reservation = reviewer_reservation._PreSpawnReservation(home, reviewer_budget.RoundBudget())  # 장부 밖 직접 호출
+        reservation = reviewer_reservation._PreSpawnReservation(home, reviewer_budget.RoundBudget())  # 기록 밖 직접 호출
     budget = reservation.budget
     # 추가 리뷰어의 실행 조건은 위임과 같다 — cwd 는 검토 대상 저장소, env 는 위임 채널이 소유한
-    # 같은 seam 이 조립한다. 채널이 다르다고 다른 홈·다른 allowlist 를 만들지 않는다(그 차등은
+    # 같은 공용 함수가 조립한다. 채널이 다르다고 다른 홈·다른 allowlist 를 만들지 않는다(그 차등은
     # 강제력 없이 비용만 받았다: 리뷰어는 절대경로를 그대로 읽을 수 있고, 임시 홈은 세션 재사용을
     # 막아 라운드마다 전체 payload 를 다시 과금했다).
     reviewer_environment = (
@@ -292,10 +292,10 @@ def _run_review_round(
 
     print(f"추가 리뷰어 실행 중 (유료 호출): {reviewer_cmd}", file=sys.stderr)
     # 예약 소유는 `run_review` **진입**이 아니라 watchdog 워치독이 자식을 띄우기 **직전**에 넘어간다
-    # (`on_spawn_attempt`). run_review 의 앞부분(raw 선점·장부 시작 레코드·구조화 transport·
+    # (`on_spawn_attempt`). run_review 의 앞부분(raw 자리 차지·기록 시작 레코드·구조화 transport·
     # argv/kwargs 준비)과 러너 안의 준비 구간(프로필 해소·워치독 셋업)은 자식이 아직
     # 없는 구간이라, 진입에서 넘기면 스폰 0·과금 0 으로 끝난 준비 실패(예: `--output-dir` 이
-    # 일반 파일이라 raw 선점이 터지는 실행, 실행 권한 없는 리뷰어 바이너리)가 예약을 미완/소진으로
+    # 일반 파일이라 raw 자리 차지가 터지는 실행, 실행 권한 없는 리뷰어 바이너리)가 예약을 미완/소진으로
     # 남긴다 — `incomplete_limit=1` 이면 다음 **정상** 호출이 곧바로 rc=4 로 막힌다.
     # 이전 이후의 실패는 프롬프트가 이미 나갔을 수 있으므로 환불하지 않는다: 되돌림 판정은 아래
     # 마감 경로의 `started` 가 소유한다(타임아웃·비정상 종료까지 환불하면 과금된 호출이 상한을
@@ -317,16 +317,16 @@ def _run_review_round(
         # 않는다(무한 우회·MF-A).
         reservation.hand_off()
     # started=False 는 반대다 — 러너가 "자식 없음"으로 판명해 돌아온 실행이라 `on_no_spawn` 이
-    # 소유권을 이 seam 으로 되돌려 놨다. 아래 요약·진단·마감이 **끝날 때까지** 그 상태를 유지한다:
+    # 소유권을 이 함수로 되돌려 놨다. 아래 요약·진단·마감이 **끝날 때까지** 그 상태를 유지한다:
     # 여기서 미리 넘기면 요약 출력이 닫힌 stdout 파이프로 죽는 순간(BrokenPipeError) 호출 0·과금 0
-    # 인 실행의 예약이 미완으로 남아 `incomplete_limit=1` 형상에서 다음 정상 호출을 막는다.
-    print_summary(result, gate=args.review_ticket)
+    # 인 실행의 예약이 미완으로 남아 `incomplete_limit=1` 경우에서 다음 정상 호출을 막는다.
+    print_summary(result, review_ticket=args.review_ticket)
 
     # 정상 복귀한 호출은 판정 유무와 별개로 종료 마감한다. 프로세스 kill처럼 이 지점에 도달하지
     # 못한 레코드는 finished_at 없이 남아 다음 호출에서 미완 재시도 예산으로 식별된다.
     if budget.reserved:
-        # 산출 파싱·시각은 락 **밖**에서 끝낸다 — 임계 구역은 장부 read-modify-write 만 잡는다.
-        # 예약 identity(id·sequence)는 예약 시점 값이라 마감 시점 장부 상태에 의존하지 않는다.
+        # 산출 파싱·시각은 락 **밖**에서 끝낸다 — 임계 구역은 기록 파일 read-modify-write 만 잡는다.
+        # 예약 identity(id·sequence)는 예약 시점 값이라 마감 시점 기록 상태에 의존하지 않는다.
         outcome = (
             reviewer_reservation._round_outcome(result, record={
                 "id": budget.round_id, "sequence": budget.sequence,
@@ -335,19 +335,19 @@ def _run_review_round(
             if started else None
         )
         # 항목 텍스트를 산출 파싱과 같은 자리·같은 함수에서 남겨 건수와 텍스트가 갈리지 않게 한다.
-        # 저장 지점은 예약 레코드 안이라 정규화(`_gate_entry`)에서 살아남는다.
+        # 저장 지점은 예약 레코드 안이라 정규화(`_review_ticket_entry`)에서 살아남는다.
         must_fix_items = reviewer_budget._round_must_fix_items(result) if started else None
         refunded_round = False
         try:
-            with review_rounds._round_ledger_lock(home):
-                ledger = review_rounds._load_round_ledger(home)
+            with review_rounds._round_record_lock(home):
+                round_records = review_rounds._load_round_records(home)
                 if not started:
-                    # 호출이 확실히 없던 라운드 — 두 예산(게이트 count·wave spent)을 같은 조건으로
+                    # 호출이 확실히 없던 라운드 — 두 예산(리뷰 집계 티켓 count·세션 호출 예산 spent)을 같은 조건으로
                     # 되돌린다(스폰 전 실패 환불과 **같은 기계**). 산출도 남기지 않는다
                     # (리뷰어가 아무 말도 하지 않았다).
-                    refunded_round = reviewer_reservation._refund_reserved_round(ledger, budget)
+                    refunded_round = reviewer_reservation._refund_reserved_round(round_records, budget)
                 elif outcome is not None:
-                    entry = reviewer_reservation._gate_entry(ledger, budget.gate)
+                    entry = reviewer_reservation._review_ticket_entry(round_records, budget.review_ticket)
                     matching = next(
                         (row for row in entry["records"]
                          if row.get("id") == budget.round_id),
@@ -362,22 +362,22 @@ def _run_review_round(
                     # (승인이 집계 창을 비워도 "무엇이 나왔는가"는 이력으로 남아야 한다).
                     # 예약 identity 를 함께 실어 동시 완료에서도 라운드↔산출 연결이 확정된다.
                     reviewer_reservation._append_round_outcome(entry, outcome)
-                reviewer_reservation._save_round_ledger(home, ledger)
+                reviewer_reservation._save_round_records(home, round_records)
             if not started:
                 # 되돌린 라운드는 **말하고** 되돌린다 — 조용히 환불하면 채택자에게 남는 사실이
-                # "장부가 그대로다" 뿐이라, 교차검증이 아예 돌지 않은 실행과 리뷰어를 선언하지
+                # "기록이 그대로다" 뿐이라, 교차검증이 아예 돌지 않은 실행과 리뷰어를 선언하지
                 # 않은 실행이 같은 모양이 된다(Windows 경로 분해 결함이 30여 릴리즈 숨은 경로).
                 if refunded_round:
                     print(
-                        f"라운드 환불: 리뷰 집계 티켓 {budget.gate} — 리뷰어 프로세스가 시작되지 않아 "
+                        f"라운드 환불: 리뷰 집계 티켓 {budget.review_ticket} — 리뷰어 프로세스가 시작되지 않아 "
                         "추가 리뷰어 교차검증이 **실행되지 않았습니다**(호출 0·상한/세션 호출 예산 "
                         f"미소진). 사유: {reviewer_budget._first_output_line(result) or '미상'}",
                         file=sys.stderr,
                     )
                 # 환불이 **저장까지 끝난** 뒤에야 소유권을 반납한다 — 이 줄 앞에서 죽으면 바깥
-                # seam 이 아직 소유자라 한 번 되돌리고, 이 줄 뒤에는 되돌릴 것이 없다. 저장이
+                # 함수가 아직 소유자라 한 번 되돌리고, 이 줄 뒤에는 되돌릴 것이 없다. 저장이
                 # 실패한 경로(아래 OSError)는 반납하지 않는다: 되돌리지 못한 예약의 소유자는
-                # 여전히 스폰 전 seam 이고, 그 경로는 예외 없이 정상 return 하므로(바깥
+                # 여전히 스폰 전 함수이고, 그 경로는 예외 없이 정상 return 하므로(바깥
                 # `__exit__` 가 보지 못한다) 거기서 직접 한 번 되돌린다.
                 reservation.settle_refunded()
         except OSError as exc:
@@ -386,13 +386,13 @@ def _run_review_round(
             # finished_at 없이 남아 다음 실행의 미완 재시도 예산으로 보수적으로 집계된다.
             #
             # 단 `started=False` 는 예외다 — 자식이 뜬 적 없다고 **판명된** 실행이라 예약 소유는
-            # 아직 스폰 전 seam 에 있다(`on_no_spawn` 이 되돌려 놨고 반납은 저장 성공 뒤에만
+            # 아직 스폰 전 함수에 있다(`on_no_spawn` 이 되돌려 놨고 반납은 저장 성공 뒤에만
             # 선다). 이 경로는 예외를 삼키고 **정상 return** 하므로 `__exit__` 가 그 소유를 보지
-            # 못한다: 그대로 두면 호출 0·과금 0 인 실행이 라운드·wave 예산을 먹은 채 미완으로
-            # 남아, `incomplete_limit=1` 형상에서 다음 **정상** 재시도가 곧바로 rc=4 로 막힌다.
+            # 못한다: 그대로 두면 호출 0·과금 0 인 실행이 라운드·세션 호출 예산을 먹은 채 미완으로
+            # 남아, `incomplete_limit=1` 경우에서 다음 **정상** 재시도가 곧바로 rc=4 로 막힌다.
             # 그래서 같은 환불 기계로 한 번 더 되돌린다 — 락이 그새 풀리면 예산이 복구되고,
-            # 저장은 됐는데 락 해제만 실패한 형상이면 되돌릴 레코드가 없어 `_refund_round` 가
-            # False 를 내므로 이중 환불이 되지 않는다. 소유는 여전히 한 seam 이다(`release` 는
+            # 저장은 됐는데 락 해제만 실패한 경우면 되돌릴 레코드가 없어 `_refund_round` 가
+            # False 를 내므로 이중 환불이 되지 않는다. 소유는 여전히 한 함수다(`release` 는
             # 한 번만 선다). 스폰된 실행(started=True)은 종전대로 건드리지 않는다 — 프롬프트가
             # 이미 나갔을 수 있어 되돌리면 과금된 호출이 상한을 소비하지 않는다(MF-A).
             refunded = not started and reservation.release(
@@ -408,22 +408,22 @@ def _run_review_round(
             )
 
     rc = reviewer_budget.determine_exit_code(result)
-    # 라운드 장부 마감 **뒤**에 회수한다 — 장부는 종전대로 기록되고, 회수 실패는 판정 rc 를
+    # 리뷰 라운드 기록 마감 **뒤**에 돌려받는다 — 기록 파일은 종전대로 기록되고, 돌려받기 실패는 판정 rc 를
     # 덮지 않고 rc=0 인 실행만 실패로 올린다. 대상은 `--ticket` 또는 보드에 실재하는 ticket
-    # 형상 `--review-ticket` 이고, 대상이 있는데 회수하지 않은 실행은 사유를 반드시 말한다(조용한 누락 금지).
-    harvest_ticket, target_problem = _harvest_target_ticket(home, args, )
+    # 모양의 `--review-ticket` 이고, 대상이 있는데 돌려받지 않은 실행은 사유를 반드시 말한다(조용한 누락 금지).
+    collect_ticket, target_problem = _collect_target_ticket(home, args, )
     if target_problem is not None:
         print(f"경고: 추가 리뷰어 산출 돌려받지 않음 — {target_problem}", file=sys.stderr)
-    elif harvest_ticket and not (started and not result.get("failed")):
+    elif collect_ticket and not (started and not result.get("failed")):
         print(
-            f"경고: 추가 리뷰어 산출 돌려받지 않음 — {harvest_ticket}: 이번 라운드는 "
+            f"경고: 추가 리뷰어 산출 돌려받지 않음 — {collect_ticket}: 이번 라운드는 "
             "리뷰어 회신을 받지 못했습니다(호출 실패·타임아웃). 산출 없음이라 라운드 파일을 "
             f"만들지 않습니다 · raw={result.get('file')}",
             file=sys.stderr,
         )
-    if harvest_ticket and started and not result.get("failed"):
+    if collect_ticket and started and not result.get("failed"):
         problem = _harvest_additional_reviewer_section(
-            home, harvest_ticket, result, )
+            home, collect_ticket, result, )
         if problem is not None:
             print(
                 f"오류: 추가 리뷰어 산출 돌려받기 문제 — {problem}\n"

@@ -1,4 +1,4 @@
-"""additional_reviewer REPO 앵커 — 설치 깊이 고정 해소 가드.
+"""additional_reviewer REPO 기준 저장소 — 설치 깊이 고정 해소 가드.
 
 도구는 언제나 `<root>/.project_manager/tools/` 에 설치된다 — 설치 경로를 만드는
 `pm_import` 가 그 깊이를 못 박으므로 다른 깊이는 나올 수 없다. 그래서 REPO 는 상향 탐색이
@@ -42,25 +42,25 @@ def test_repo_constant_anchors_at_the_install_depth(external):
     """모듈 상수 REPO 는 도구 **자기 위치**에서 나온다 — 하위 파생 경로가 함께 따라온다.
 
     실 repo 는 `<root>/.project_manager/tools/additional_reviewer.py` 정확히 2단이다.
-    REPO 상수·하위 파생(TICKETS_DIR/LOCAL_CONF 등)이 그 앵커를 쓰는지 박제한다."""
+    REPO 상수·하위 파생(TICKETS_DIR/LOCAL_CONF 등)이 그 기준 저장소를 쓰는지 고정한다."""
     expected = Path(external.__file__).resolve().parents[2]
     assert external.REPO == expected
 
 
 # ── 빈-diff fail-loud 가드 (T-0326 — adopter#0 false-green 원천 차단) ──────────
-# adopter#0/worktree 형상에서 REPO 앵커가 PM 홈을 가리키면 실 변경은 worktree 에 있어
+# adopter#0/worktree 구성에서 REPO 기준 저장소가 PM 홈을 가리키면 실 변경은 worktree 에 있어
 # `git diff` 가 비고, codex 가 "변경 없음"을 통과로 판정해 가짜 통과(false-green)가 난다
 # (PM 65 실측). main() 이 diff 추출 직후·codex 호출 전에 빈/공백-only diff 를 무조건 fail
 # (비-0 exit)하고 추가 리뷰어를 호출하지 않음을 hermetic 하게 단언한다. extract_diff·run_review
 # 를 module-level 로 monkeypatch 해 실제 git/codex 없이 diff 를 주입한다(--force 로 활성화
-# 게이트 우회 → 가드가 유일한 차단 지점임을 보장).
+# 검사 우회 → 가드가 유일한 차단 지점임을 보장).
 
 
 def _run_main_with_diff(external, monkeypatch, diff: str):
     """main() 을 실행하되 diff 는 주입하고 추가 리뷰어(run_review) 호출 여부를 기록한다.
 
     반환: (exit_code, reviewer_called). --paths 로 ticket 파싱을 건너뛰고 --force 로 활성화
-    게이트를 우회한다 — 빈-diff 가드가 codex 호출 전에 유일하게 차단함을 격리한다."""
+    검사를 우회한다 — 빈-diff 가드가 codex 호출 전에 유일하게 차단함을 격리한다."""
     # 추출 대역은 본문과 필수 좌표를 함께 제공한다.
     monkeypatch.setattr(
         review_diff, "extract_diff",
@@ -100,7 +100,7 @@ def test_main_empty_diff_fails_loud_before_reviewer(external, monkeypatch, capsy
     assert reviewer_called is False  # codex subprocess 미호출 단언 (DoD)
     err = capsys.readouterr().err
     assert "리뷰할 diff 가 없습니다" in err
-    assert "--paths" in err       # worktree canonical 형상 안내
+    assert "--paths" in err       # worktree canonical 구성 안내
     assert "git add" in err       # untracked-only 안내 (stage-before-additional-reviewer)
 
 

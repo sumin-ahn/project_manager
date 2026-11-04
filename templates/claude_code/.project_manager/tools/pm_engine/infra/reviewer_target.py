@@ -21,9 +21,9 @@ from pm_engine.infra.harness import watchdog
 
 
 class ReviewerTarget(NamedTuple):
-    """이번 실행이 실제로 부를 추가 리뷰어 — 세 표면이 공유하는 단일 해소 결과.
+    """이번 실행이 실제로 부를 추가 리뷰어 — 세 출력이 공유하는 단일 해소 결과.
 
-    `command` = 세 표면(dry-run·stderr provenance·raw 헤더)이 **같은 문자열로** 말하는 정체이며
+    `command` = 세 출력(dry-run·stderr provenance·raw 헤더)이 **같은 문자열로** 말하는 정체이며
     구조화 tuple 의 argv 를 그대로 렌더한 값이다(다른 출처는 없다).
     """
 
@@ -38,7 +38,7 @@ class ReviewerTarget(NamedTuple):
         """구조화 transport(하네스 argv 조립)를 태울 수 있는가.
 
         출처 라벨만으로 판정하면 **해소를 지나지 않아 harness 가 None 인** 대상(부분 구성)이
-        구조화로 읽혀 argv 조립 단계에서 `harness=None` 으로 죽는다. 조립에 필요한 축이 실제로
+        구조화로 읽혀 argv 조립 단계에서 `harness=None` 으로 죽는다. 조립에 필요한 값이 실제로
         해소됐는지를 함께 본다.
         """
         return self.source == reviewer_result.REVIEWER_SOURCE_STRUCTURED and self.harness is not None
@@ -49,8 +49,8 @@ class ReviewerTarget(NamedTuple):
         return reviewer_name(self.command)
 
     @property
-    def ledger_model(self) -> str:
-        """이 실행의 **모델 정체** — 네 표면(dry-run·stderr·raw 헤더·raw 장부)이 공유하는 단일 값.
+    def record_model(self) -> str:
+        """이 실행의 **모델 정체** — 네 출력(dry-run·stderr·raw 헤더·raw 출력 기록 파일)이 공유하는 단일 값.
 
         **명시 모델 그대로**다. 커맨드 문자열에서 역추론하지 않는다(그러면 명시 모델이 argv 표기
         규칙에 따라 `default` 로 퇴화할 수 있다)."""
@@ -58,9 +58,9 @@ class ReviewerTarget(NamedTuple):
 
     @property
     def profile_tail(self) -> str:
-        """해소 tuple 의 출처/모델 축 — provenance 문자열의 공통 꼬리.
+        """해소 tuple 의 출처/모델 값 — provenance 문자열의 공통 꼬리.
 
-        모델 축은 장부·raw 헤더와 **같은 정체 값**(`ledger_model`)을 쓴다."""
+        모델 값은 기록 파일·raw 헤더와 **같은 정체 값**(`record_model`)을 쓴다."""
         return (f"source={self.source}, harness={self.harness}, "
                 f"model={self.model}, reasoning={self.reasoning}")
 
@@ -71,7 +71,7 @@ def _structured_reviewer_argv(
 ) -> list[str]:
     """구조화 대상의 argv — 공용 드라이버 계약(`contract`)만으로 조립한다.
 
-    모델·reasoning 은 **항상 argv 에 명시**되고 권한축은 code-reviewer(읽기)로 고정된다. 사용자
+    모델·reasoning 은 **항상 argv 에 명시**되고 권한은 code-reviewer(읽기)로 고정된다. 사용자
     config 기본값(모델·effort)이 실제 수신자를 바꿀 수 없는 이유가 이것이다 — 명시 플래그가
     config 기본값을 이긴다.
 
@@ -92,18 +92,18 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
     · 구조화 키가 **하나도 없으면** 대상이 없다 — fail-loud 다(엔진 기본 커맨드로 조용히 나가지
       않는다·모델 미고정 실행 경로 폐지).
     · 구조화 키가 하나라도 **있으면**(값이 비어 있어도 선언이다) harness/model 동반 필수 —
-      부분 지정은 fail-loud 다(조용한 폴백·절반만 반영된 대상 금지). 선언 판정을 값의 truthiness
+      부분 지정은 fail-loud 다(조용한 대체 동작·절반만 반영된 대상 금지). 선언 판정을 값의 truthiness
       로 하면 `additional_reviewer.harness=` 처럼 **비운 채 선언한 부분 tuple** 이 "미설정" 으로
       읽혀 진단이 엉뚱해진다. 그래서 기준은 **키 존재**다.
-      `reasoning` 만 빈 값이 허용되고(선택 축·플래그 생략), 그것도 harness/model 이 온전할 때다.
+      `reasoning` 만 빈 값이 허용되고(선택 값·플래그 생략), 그것도 harness/model 이 온전할 때다.
     · model 이 **예약 sentinel**(`RESERVED_MODEL_VALUES` — 엔진이 '모델 미고정'을 뜻하는 낱말)이면
       거부한다. 값이 비어있지 않다는 것만으로 통과시키면 `additional_reviewer.model=default` 가
-      "고정했다"는 선언과 함께 미고정 라벨을 장부에 박아, 감사가 자기 모순을 기록한다.
+      "고정했다"는 선언과 함께 미고정 라벨을 기록 파일에 남겨, 감사가 자기 모순을 기록한다.
     · harness 값 검증은 공용 드라이버 계약(`contract`)이 소유한다. reasoning 은 정리만 하고, 그 모델이
       받는 값인지는 실행 직전 `check_reviewer_reasoning` 이 실행 cwd·env 로 확인한다(이 함수는
       비교용 `reviewer_profile_config` 에서도 불린다 — 거기서 모델 목록을 조회하지 않는다).
 
-    모든 거부는 **호출·라운드 예약·raw 예약 전**에 성립한다 — 호출부가 이 함수를 그 게이트들
+    모든 거부는 **호출·라운드 예약·raw 예약 전**에 성립한다 — 호출부가 이 함수를 그 검사들
     앞에서 부르고, 이 함수 자체는 부작용이 없다.
     """
     present = tuple(key for key in reviewer_result.ADDITIONAL_REVIEWER_KEYS if key in conf)
@@ -182,7 +182,7 @@ def _split_reviewer_argv(reviewer_cmd: str) -> list[str]:
 
     `shlex.split` 를 직접 부르면 POSIX 규칙이라 Windows 실행 경로의 ``\\`` 가 escape 로 소비된다 —
     ``C:\\Users\\pm\\codex.exe`` 가 ``C:Userspmcodex.exe`` 로 뭉개져 확정 기동 실패로 끝나고, 그
-    실행은 "리뷰어를 찾을 수 없음"으로 흡수돼 교차검증이 조용히 환불된다. 분해 규칙 사본을 여기
+    실행은 "리뷰어를 찾을 수 없음"으로 바뀌어 교차검증이 조용히 환불된다. 분해 규칙 사본을 여기
     만들지 않고 `pm_engine.infra.process.split_command_argv` 하나를 쓴다(같은 보호 규칙·같은 복원).
     """
     return process.split_command_argv(
@@ -194,7 +194,7 @@ def _normalized_reviewer_key(argv: list[str]) -> str:
     """리뷰어 실행파일을 공유 프로필 키로 정규화한다.
 
     Windows 실행파일 접미사/대소문자/경로 구분자를 여기서 한 번만 처리한다. 진행신호 계약과 시간
-    프로필이 이 키를 함께 써야 `codex.exe`의 진행은 codex로 보면서 시간만 미지 GPU 축으로 잡는
+    프로필이 이 키를 함께 써야 `codex.exe`의 진행은 codex로 보면서 시간만 미지 GPU 종류로 잡는
     비대칭이 생기지 않는다.
     """
     if not argv:
@@ -256,7 +256,7 @@ def _reviewer_progress_signal(reviewer_cmd: str, conf: dict[str, str]) -> str:
 def reviewer_profile(home, reviewer_cmd: str, conf: dict[str, str] | None = None):
     """리뷰어 커맨드 → 시간값 프로필 + 출력형식 기반 진행신호 프로필.
 
-    시간값은 실행 파일 축의 공유 테이블을 쓰되, 진행 신호는 전체 argv/명시 설정으로 독립 판정한다.
+    시간값은 실행 파일 기준의 공유 테이블을 쓰되, 진행 신호는 전체 argv/명시 설정으로 독립 판정한다.
     conf 미지정 호출도 local.conf를 읽어 `delegate_env.harness_profile`과 대칭이다.
     """
     if conf is None:
@@ -318,9 +318,9 @@ def _incomplete_round_limit(conf: dict[str, str]) -> int:
 
 
 def _wave_budget(conf: dict[str, str]) -> int:
-    """wave 총 라운드 예산 (local.conf additional_reviewer.session_budget·미설정은 레지스트리 기본값).
+    """세션 호출 예산 총 라운드 (local.conf additional_reviewer.session_budget·미설정은 레지스트리 기본값).
 
-    비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 게이트를
+    비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 검사를
     벽돌로 만들지 않는다)."""
     default = reviewer_result._conf_default_int(reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY)
     raw = reviewer_result._knob_raw(conf, reviewer_budget.ADDITIONAL_REVIEWER_SESSION_BUDGET_KEY)
@@ -334,9 +334,9 @@ def _wave_budget(conf: dict[str, str]) -> int:
 
 
 def _review_rounds_max(conf: dict[str, str]) -> int:
-    """수렴-형상 라운드 상한 (local.conf `additional_reviewer.rounds_max`·미설정은 레지스트리 기본값).
+    """마무리 조건 라운드 상한 (local.conf `additional_reviewer.rounds_max`·미설정은 레지스트리 기본값).
 
-    비정수·음수는 기본값으로 fail-soft — 다른 예산 노브와 같은 규칙이다(깨진 노브가 게이트를
+    비정수·음수는 기본값으로 fail-soft — 다른 예산 노브와 같은 규칙이다(깨진 노브가 검사를
     벽돌로 만들지 않는다)."""
     default = reviewer_result._conf_default_int(reviewer_budget.REVIEW_ROUNDS_MAX_KEY)
     raw = conf.get(reviewer_budget.REVIEW_ROUNDS_MAX_KEY, "").strip()
@@ -360,7 +360,7 @@ def _read_local_config(path: Path) -> dict[str, str]:
     """존재가 확인된 비교 대상 local.conf를 공용 로더로 읽는다(구표기 잔존은 fail-loud).
 
     판독 실패는 **삼키지 않는다**(`load_strict`) — 호출부가 그 예외로 fail-closed 하므로, 빈 conf
-    로 강등하면 보호 선언을 확인하지 못한 채 나간다."""
+    로 낮추면 보호 선언을 확인하지 못한 채 나간다."""
     result = conf_store.load_strict(path)
     conf_schema.assert_no_legacy(result)
     return result.values
@@ -372,7 +372,7 @@ def _review_raw_content(
 ) -> str:
     """pm_delegate와 같은 `# key: value` 감사 헤더를 additional_reviewer 원문에 붙인다.
 
-    헤더는 **추가만** 한다(기존 두 줄의 위치·표기 불변). 해소 축(출처·harness·model·reasoning·
+    헤더는 **추가만** 한다(기존 두 줄의 위치·표기 불변). 해소 값(출처·harness·model·reasoning·
     실행 커맨드)을 한 줄씩 더해, raw 하나만 봐도 "무엇이 이 판정을 냈는가"가 닫힌다."""
     if local_conf_path is None and resolved_profile is None and target is None:
         return content
@@ -390,8 +390,8 @@ def _review_raw_content(
                 f"# reasoning: {target.reasoning}",
             ])
         else:
-            # legacy 도 장부와 **같은 정체 값**을 쓴다(표기 없으면 `unpinned-model`).
-            header.append(f"# model: {target.ledger_model}")
+            # legacy 도 기록 파일과 **같은 정체 값**을 쓴다(표기 없으면 `unpinned-model`).
+            header.append(f"# model: {target.record_model}")
         header.append(f"# command: {target.command}")
     return "\n".join((*header, "", content))
 
@@ -400,7 +400,7 @@ def reviewer_profile_config(conf: dict[str, str]) -> dict[str, str]:
     """additional_reviewer의 실제 호출 대상 값. 미지정과 명시 default는 같은 값으로 정규화한다.
 
     비교 대상은 **해소된 대상**이다 — 한쪽이 구조화 tuple 이고 다른 쪽이 legacy 커맨드면 실제
-    수신자가 다르므로 커맨드·출처 축이 모두 갈려 loud 하다. 해소 불가능한 대상 conf 는 값 자리에
+    수신자가 다르므로 커맨드·출처 값이 모두 갈려 loud 하다. 해소 불가능한 대상 conf 는 값 자리에
     사유를 실어 조용히 같아 보이지 않게 한다(비교기는 절대 예외를 올리지 않는다)."""
     try:
         target = resolve_reviewer_target(conf)
@@ -432,7 +432,7 @@ def _cross_repo_target_conf(
     target_conf_path = target_repo / ".project_manager" / "local.conf"
     try:
         # lstat은 dangling symlink도 "존재"로 구분한다. FileNotFoundError만 기존 정상·무소음
-        # 대상 conf 부재 축이고, 그 밖의 stat/read/UTF-8 실패는 보호 선언을 확인할 수 없으므로
+        # 대상 conf 부재 경우이고, 그 밖의 stat/read/UTF-8 실패는 보호 선언을 확인할 수 없으므로
         # 호출 전에 fail-closed 해야 한다.
         target_conf_path.lstat()
     except FileNotFoundError:
@@ -493,7 +493,7 @@ def resolved_reviewer_profile(
 ) -> str:
     """stderr·dry-run·raw 가 **같은 문자열로** 공유하는 추가 리뷰어 해소 tuple.
 
-    앞머리(커맨드·시간 예산)와 뒤의 해소 출처 축(`source=structured` + harness/model/reasoning)이
+    앞머리(커맨드·시간 예산)와 뒤의 해소 출처 값(`source=structured` + harness/model/reasoning)이
     **같은 검증된 대상 하나**에서 나온다(커맨드 문자열을 따로 받지 않는다)."""
     return (
         f"(reviewer_cmd={target.command}, wall_timeout_sec={timeout}, "

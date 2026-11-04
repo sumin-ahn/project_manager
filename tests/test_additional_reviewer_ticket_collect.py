@@ -1,10 +1,10 @@
-"""T-0696 — 추가 리뷰어 산출의 티켓 회수·finding severity 단일 진실 (라운드 사이드카).
+"""T-0696 — 추가 리뷰어 산출의 티켓 돌려받기·finding severity 단일 진실 (라운드 사이드카).
 
-두 축을 소유한다.
-  · 회수: `additional_reviewer --ticket` 실행이 끝나면 **엔진이** 산출을 그 티켓의 새
+두 가지를 소유한다.
+  · 돌려받기: `additional_reviewer --ticket` 실행이 끝나면 **엔진이** 산출을 그 티켓의 새
     `additional-reviewer` 라운드 파일(`tickets/rounds/<T>/NN-additional-reviewer.md`)로 기록하고,
-    내부 리뷰어와 같은 `review accepted` 표면에 올린다. 내용 검증(블록 부재·스키마 위반·중복·JSON
-    손상·finding ID 재선언·표면에 없는 confirmation 대상)에 걸리면 **라운드 파일을 만들지 않고**
+    내부 리뷰어와 같은 `review accepted` 판정 범위에 올린다. 내용 검증(블록 부재·스키마 위반·중복·JSON
+    손상·finding ID 재선언·판정 범위에 없는 confirmation 대상)에 걸리면 **라운드 파일을 만들지 않고**
     rc≠0 으로 사유를 말한다 — 산출 원문은 raw 에 남는다([[ADR-0090]] · 차등 판정·반사실 프로브
     없음).
   · severity: `pm-review-v1` finding 의 심각도가 블록의 필수 필드다(산문 재기재 없음).
@@ -47,7 +47,7 @@ ROLE = "additional-reviewer"
 
 
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
-# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+# 없음) 이 파일의 모든 경우가 그 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
@@ -56,14 +56,14 @@ _REVIEWER_TARGET = {
 
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(
-        f"{name}_ticket_harvest", TOOLS / f"{name}.py",
+        f"{name}_ticket_collect", TOOLS / f"{name}.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-# 세대·값 enum 은 엔진 상수에서 읽는다 — 테스트가 리터럴로 적으면 승격 때 조용히 갈린다.
+# 버전·값 enum 은 엔진 상수에서 읽는다 — 테스트가 리터럴로 적으면 승격 때 조용히 갈린다.
 PD = _load("pm_delegate")
 BLOCK_VERSION = review_form.PM_REVIEW_VERSION
 LEGACY_BLOCK_VERSION = review_form.PM_REVIEW_LEGACY_VERSION
@@ -88,7 +88,7 @@ def _tickets_dir(pm_home: Path) -> Path:
 
 
 def _ticket_path(pm_home: Path, status: str = "claimed") -> Path:
-    return _tickets_dir(pm_home) / status / f"{TICKET}-harvest.md"
+    return _tickets_dir(pm_home) / status / f"{TICKET}-collect.md"
 
 
 def _rounds_dir(pm_home: Path) -> Path:
@@ -103,11 +103,11 @@ def _seed_board(pm_home: Path, *, status: str = "claimed", body: str = "") -> Pa
     path.write_text(
         "---\n"
         f"id: {TICKET}\n"
-        "title: 회수 픽스처\n"
+        "title: 돌려받기 픽스처\n"
         f"status: {status}\n"
         "touches:\n- x.py\n"
         "---\n"
-        f"# {TICKET}\n\n## 목표\n추가 리뷰어 산출 회수.\n" + body,
+        f"# {TICKET}\n\n## 목표\n추가 리뷰어 산출 돌려받기.\n" + body,
         encoding="utf-8", newline="\n",
     )
     return path
@@ -141,7 +141,7 @@ def _rounds(pd, pm_home: Path, *, status: str = "claimed") -> list:
     )
 
 
-def _delta(pd, pm_home: Path, extra_spec: str = "", *, status: str = "claimed"):
+def _review_accepted(pd, pm_home: Path, extra_spec: str = "", *, status: str = "claimed"):
     spec = _ticket_path(pm_home, status).read_text(encoding="utf-8") + extra_spec
     return review_state.parse_pm_review_accepted(spec, _rounds(pd, pm_home, status=status))
 
@@ -158,7 +158,7 @@ def _finding(
     finding_id: str = "X-001", *, severity: str | None = "must-fix",
     classification: str = "implementation-defect", design_change: bool = False,
 ) -> dict:
-    """현행 세대 finding. `severity=None` 이면 현행 스키마의 severity 누락 형상이다."""
+    """현행 버전 finding. `severity=None` 이면 현행 스키마의 severity 누락 경우다."""
     finding = {
         "id": finding_id,
         "class": classification,
@@ -182,7 +182,7 @@ def _finding(
 
 
 def _legacy_finding(finding_id: str = "X-001") -> dict:
-    """fix_contract 도입 전 세대 finding."""
+    """fix_contract 도입 전 버전 finding."""
     finding = _finding(finding_id, severity=None)
     del finding["fix_contract"]
     return finding
@@ -208,7 +208,7 @@ def _block(payload: dict) -> str:
 
 
 def _prose(must_fix: str = "- 없음", *, verdict: str = "판정: 반려") -> str:
-    """회신 산문 머리 — `**suggestion**` 절까지 적어야 must-fix 항목 회계가 블록에서 멈춘다."""
+    """회신 산문 머리 — `**suggestion**` 절까지 적어야 must-fix 항목 집계가 블록에서 멈춘다."""
     return (
         f"{verdict}\n\n**must-fix** (반드시 수정):\n{must_fix}\n\n"
         "**suggestion** (권장):\n- 없음\n\n"
@@ -225,7 +225,7 @@ def _confirm_reply(*confirmations: dict) -> str:
 
 
 def _confirming_reject_reply(finding: dict, *confirmations: dict) -> str:
-    """신규 finding 과 confirmations 를 함께 담은 반려 회신(확인 라운드 형상)."""
+    """신규 finding 과 confirmations 를 함께 담은 반려 회신(확인 라운드 경우)."""
     return (
         _prose(f"- {finding['id']}")
         + _block(_payload([finding], list(confirmations)))
@@ -262,7 +262,7 @@ def _append_spec(pm_home: Path, text: str, *, status: str = "claimed") -> None:
 
 def _external_round_text(pd, payload: dict, *, today: str = "2026-08-18",
                          raw_block: str | None = None, head: str = "") -> str:
-    """회수된 라운드 파일과 같은 모양의 본문(헤더 + 산문 + 블록)."""
+    """돌려받은 라운드 파일과 같은 모양의 본문(헤더 + 산문 + 블록)."""
     return (
         round_rules.render_round_header(ROLE, today=today) + "\n\n"
         + head
@@ -274,10 +274,10 @@ def _external_round_text(pd, payload: dict, *, today: str = "2026-08-18",
 def _wire(
     external, monkeypatch, pm_home: Path, reply, *, conf: dict | None = None,
 ) -> dict:
-    """main() 을 tmp PM 홈으로 배선한다 — 반환 dict['n'] = 리뷰어 호출 수(호출 시도).
+    """main() 을 tmp PM 홈으로 연결한다 — 반환 dict['n'] = 리뷰어 호출 수(호출 시도).
 
     `reply` 가 호출 가능이면 프롬프트를 인자로 받아 회신을 만든다(프롬프트가 지시한 ID 를 따르는
-    리뷰어 형상). dict['prompts'] 에는 이 배선으로 나간 프롬프트가 순서대로 쌓인다.
+    리뷰어 경우). dict['prompts'] 에는 이 연결로 나간 프롬프트가 순서대로 쌓인다.
     """
     resolved_conf = {**_REVIEWER_TARGET, **(conf or {})}
     monkeypatch.setattr(external, "REPO", pm_home)
@@ -319,10 +319,10 @@ def _run(external, pm_home: Path, *argv: str) -> int:
     return external.main([*argv, "--output-dir", str(pm_home / "raw")])
 
 
-# ── (a) 반려 라운드 회수 → 라운드 파일 + 같은 판정 표면 ─────────────────────
+# ── (a) 반려 라운드 돌려받기 → 라운드 파일 + 같은 판정 범위 ─────────────────────
 
 
-def test_rejected_round_lands_as_a_round_file_and_delta_finding(
+def test_rejected_round_lands_as_a_round_file_and_accepted_finding(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
     """(a) 반려 산출이 라운드 파일 하나가 되고 `review accepted` 에 X- 가 뜬다."""
@@ -334,24 +334,24 @@ def test_rejected_round_lands_as_a_round_file_and_delta_finding(
     assert _run(external, tmp_path, "--ticket", TICKET) == 1  # 반려 = 판정 rc
     paths = _round_paths(tmp_path)
     assert [path.name for path in paths] == [f"01-{ROLE}.md"]
-    # 라운드 본문 = 첫 줄 헤더 + 회신 전문(무해화·거부 표식 없음).
+    # 라운드 본문 = 첫 줄 헤더 + 회신 전문(무해화·거부 표시 없음).
     text = paths[0].read_text(encoding="utf-8")
     header, _blank, rest = text.partition("\n\n")
     assert re.fullmatch(rf"## .+ \({ROLE} · \d{{4}}-\d{{2}}-\d{{2}}\)", header)
     assert rest == reply
-    # 명세 파일은 회수로 바뀌지 않는다(라운드는 별도 파일이다).
+    # 명세 파일은 돌려받기로 바뀌지 않는다(라운드는 별도 파일이다).
     assert ticket_path.read_text(encoding="utf-8") == spec_before
     assert f"{ROLE}[1]" in capsys.readouterr().err
 
     with pytest.raises(review_form.PMReviewError) as caught:
-        _delta(pd, tmp_path)
+        _review_accepted(pd, tmp_path)
     assert caught.value.code == "pending"  # PM 판정 전에는 loud
     assert f"대상 채널=['{ROLE}[1]']" in str(caught.value)
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    accepted = [finding for finding, _row in delta.accepted]
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    accepted = [finding for finding, _row in review_accepted.accepted]
     assert [item.id for item in accepted] == ["X-001"]
     assert accepted[0].reviewer_role == ROLE
-    rendered = review_contract.render_pm_review_accepted(TICKET, delta)
+    rendered = review_contract.render_pm_review_accepted(TICKET, review_accepted)
     assert f"- 채널: {ROLE}" in rendered
     assert "- 심각도: must-fix" in rendered
 
@@ -373,10 +373,10 @@ def test_second_round_takes_the_next_ordinal(external, pd, monkeypatch, tmp_path
     ) == []
 
 
-def test_harvest_reserves_through_the_rounds_seam(
+def test_collect_reserves_through_the_rounds_function(
     external, pd, monkeypatch, tmp_path,
 ):
-    """회수 예약은 준비와 **같은 seam**(`round_store.reserve_round`)을 지난다."""
+    """돌려받기 예약은 준비와 **같은 공용 함수**(`round_store.reserve_round`)를 지난다."""
     _seed_board(tmp_path)
     seen: dict = {}
     real_reserve = round_store.reserve_round
@@ -394,13 +394,13 @@ def test_harvest_reserves_through_the_rounds_seam(
     assert seen["content"].endswith("\n")
 
 
-# ── (b) 회수 거부: 사유 불문 파일 미생성 + raw 보존 + rc≠0 ──────────────────
+# ── (b) 돌려받기 거부: 사유 불문 파일 미생성 + raw 보존 + rc≠0 ──────────────────
 
 
 _BROKEN_JSON_REPLY = (
     _prose("- X-001") + '```pm-review-v1\n{"version":2,"findings":[\n```\n'
 )
-# 스캐너가 fence 후보로 보지만 라벨 표기가 어긋난 형상 — 판정이 좁으면 이 fence 가 라운드에
+# 스캐너가 fence 후보로 보지만 라벨 표기가 어긋난 경우 — 판정이 좁으면 이 fence 가 라운드에
 # 착지해 그 티켓의 전역 블록 스캔이 계속 fail-loud 한다.
 _BROKEN_FENCE_REPLY = (
     _prose("- X-002") + "````pm-review-v1\n"
@@ -450,10 +450,10 @@ _BROKEN_FENCE_REPLY = (
         pytest.param(_BROKEN_FENCE_REPLY, "손상된 review fence", id="broken-fence"),
     ],
 )
-def test_refused_harvest_creates_no_round_file_and_keeps_the_raw_output(
+def test_refused_collect_creates_no_round_file_and_keeps_the_raw_output(
     external, pd, monkeypatch, tmp_path, capsys, reply, reason,
 ):
-    """(b) 회수 거부는 사유 불문 같은 처리다 — 파일 미생성·raw 보존·rc≠0."""
+    """(b) 돌려받기 거부는 사유 불문 같은 처리다 — 파일 미생성·raw 보존·rc≠0."""
     ticket_path = _seed_board(tmp_path)
     before = ticket_path.read_text(encoding="utf-8")
     _wire(external, monkeypatch, tmp_path, reply)
@@ -470,7 +470,7 @@ def test_refused_harvest_creates_no_round_file_and_keeps_the_raw_output(
 def test_a_refused_round_does_not_lock_the_next_round(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """(b) 거부된 산출 뒤에도 정상 라운드가 착지하고 delta 가 green 이다."""
+    """(b) 거부된 산출 뒤에도 정상 라운드가 착지하고 수락한 지적이 green 이다."""
     conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _BROKEN_JSON_REPLY, conf=conf)
@@ -482,14 +482,14 @@ def test_a_refused_round_does_not_lock_the_next_round(
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     # 거부 라운드가 순번을 먹지 않았다 — 정상 산출이 01 이다.
     assert [path.name for path in _round_paths(tmp_path)] == [f"01-{ROLE}.md"]
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    assert [finding.id for finding, _row in review_accepted.accepted] == ["X-001"]
 
 
 def test_reply_cannot_declare_the_engine_refusal_marker(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """회신이 엔진 전용 표식을 실으면 회수 자체가 거부된다(판정 표면 자가 제외 금지)."""
+    """회신이 엔진 전용 표시를 실으면 돌려받기 자체가 거부된다(판정 범위 자가 제외 금지)."""
     _seed_board(tmp_path)
     _wire(
         external, monkeypatch, tmp_path,
@@ -520,14 +520,14 @@ def test_reply_may_quote_markup_without_creating_other_rounds(
     assert [path.name for path in paths] == [f"01-{ROLE}.md"]
     assert "인용한 티켓 본문" in paths[0].read_text(encoding="utf-8")
     assert _round_paths(tmp_path, "developer") == []
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    assert [finding.id for finding, _row in review_accepted.accepted] == ["X-001"]
 
 
 # ── F-028 구조 폐쇄: 기존 라운드의 손상이 새 라운드 판정에 끼어들지 않는다 ──────
 
 
-def test_a_malformed_existing_round_does_not_open_the_gate(
+def test_a_malformed_existing_round_does_not_open_the_check(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
     """(F-028 재현) 기존 라운드가 malformed 여도 위반 산출은 거부다 — 파일 미생성·raw 보존.
@@ -574,10 +574,10 @@ def test_a_malformed_existing_round_does_not_block_a_valid_new_round(
 # ── (c) 확인 전용 라운드 ────────────────────────────────────────────────
 
 
-def test_confirmation_round_resolves_the_finding_out_of_the_delta(
+def test_confirmation_round_resolves_the_finding_out_of_the_accepted_findings(
     external, pd, monkeypatch, tmp_path,
 ):
-    """일반 후속 산출이 X- ID 를 resolved 로 확인하면 delta 에서 사라진다."""
+    """일반 후속 산출이 X- ID 를 resolved 로 확인하면 수락한 지적에서 사라진다."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -588,16 +588,16 @@ def test_confirmation_round_resolves_the_finding_out_of_the_delta(
     _wire(external, monkeypatch, tmp_path, resolved)
     assert _run(external, tmp_path, "--ticket", TICKET) == 0
 
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    assert delta.accepted == ()
-    assert review_contract.render_pm_review_accepted(TICKET, delta) == ""
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    assert review_accepted.accepted == ()
+    assert review_contract.render_pm_review_accepted(TICKET, review_accepted) == ""
 
 
-# ── (d) 회수 대상이 없는 실행 ────────────────────────────────────────────
+# ── (d) 돌려받을 대상이 없는 실행 ────────────────────────────────────────────
 
 
-def test_paths_only_run_harvests_nothing(external, monkeypatch, tmp_path):
-    """(d) 티켓 없는 실행은 회수 대상이 아니다 — 라운드가 생기지 않는다."""
+def test_paths_only_run_collects_nothing(external, monkeypatch, tmp_path):
+    """(d) 티켓 없는 실행은 돌려받을 대상이 아니다 — 라운드가 생기지 않는다."""
     ticket_path = _seed_board(tmp_path)
     before = ticket_path.read_text(encoding="utf-8")
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
@@ -607,19 +607,19 @@ def test_paths_only_run_harvests_nothing(external, monkeypatch, tmp_path):
     assert ticket_path.read_text(encoding="utf-8") == before
 
 
-def test_free_form_gate_without_ticket_harvests_nothing(
+def test_free_form_review_ticket_without_ticket_collects_nothing(
     external, monkeypatch, tmp_path,
 ):
-    """자유 문자열 게이트도 회수 대상이 아니다(회수 입력은 ticket 형상 하나다)."""
+    """자유 문자열 리뷰 집계 티켓도 돌려받을 대상이 아니다(돌려받기 입력은 ticket 모양 하나다)."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
-    assert _run(external, tmp_path, "--review-ticket", "free-gate", "--paths", "x.py") == 1
+    assert _run(external, tmp_path, "--review-ticket", "free-review-ticket", "--paths", "x.py") == 1
     assert _round_paths(tmp_path) == []
 
 
 def test_done_ticket_write_is_refused_loudly(external, monkeypatch, tmp_path, capsys):
-    """완료 티켓에는 라운드를 만들지 않는다 — 거부 사유가 표면화되고 rc≠0 이다."""
+    """완료 티켓에는 라운드를 만들지 않는다 — 거부 사유가 드러나고 rc≠0 이다."""
     _seed_board(tmp_path, status="done")
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
@@ -651,11 +651,9 @@ def test_deleted_single_file_devices_are_absent(pd, external):
         "ExternalReviewSectionWrite", "_render_additional_reviewer_section",
         "neutralize_ticket_growth_markup", "_neutralize_review_fence",
         "EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX", "EXTERNAL_REVIEW_SECTION_LABEL",
-        "_additional_reviewer_delta_regression", "_pm_review_delta_regression_reason",
         "_pm_review_probe_section_content", "_PM_REVIEW_PROBE_TEXT",
     ):
         assert not hasattr(pd, symbol), symbol
-    assert not hasattr(external, "_harvest_target_ticket_body")
     assert not hasattr(external, "_ticket_body_max_bytes")
     assert not hasattr(external, "_load_board")
 
@@ -678,11 +676,11 @@ def test_disposition_without_reviewer_role_is_read_as_internal_channel(pd):
             "scope": "F-001 허용 범위", "prerequisite": "",
         }],
     }, ensure_ascii=False, separators=(",", ":"))
-    delta = review_state.parse_pm_review_accepted(
+    review_accepted = review_state.parse_pm_review_accepted(
         "\n```pm-review-disposition-v1\n" + legacy + "\n```\n",
         [_round_view(pd, 1, round_text, role="code-reviewer")],
     )
-    finding, _row = delta.accepted[0]
+    finding, _row = review_accepted.accepted[0]
     assert finding.id == "F-001" and finding.reviewer_role == review_form.INTERNAL_REVIEW_ROLE
 
 
@@ -704,8 +702,8 @@ def test_prose_item_enumeration_is_optional_for_the_block_truth(
 
     body = _round_texts(tmp_path)[0]
     assert "X-001 probe rc=1" not in body.split("```pm-review-v1")[0]
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    finding, _row = delta.accepted[0]
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    finding, _row = review_accepted.accepted[0]
     assert finding.evidence == "X-001 probe rc=1"
 
 
@@ -724,10 +722,10 @@ def test_finding_zero_pass_round_needs_only_the_compact_pm_acceptance(
         "reviewer_ordinal": 1,
         "finding_zero": "accepted",
     }, ensure_ascii=False, separators=(",", ":"))
-    delta = _delta(
+    review_accepted = _review_accepted(
         pd, tmp_path, "\n```pm-review-disposition-v1\n" + zero + "\n```\n",
     )
-    assert delta.finding_zero is True and delta.accepted == ()
+    assert review_accepted.finding_zero is True and review_accepted.accepted == ()
 
 
 # ── 프롬프트: 구조화 블록 요구는 엔진 상수에서만 나온다 ────────────────────
@@ -742,7 +740,7 @@ def test_prompt_requires_the_versioned_block_rendered_from_parser_constants(
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
 
     prompt = calls["prompt"]
-    # 첫 라운드는 확인할 finding 이 없다 — 골격의 confirmations 도 실값(빈 목록)이다.
+    # 첫 라운드는 확인할 finding 이 없다 — 양식의 confirmations 도 실값(빈 목록)이다.
     assert review_form.render_pm_review_block_skeleton(ROLE, []) in prompt
     assert "X-001" in prompt and "severity" in prompt
 
@@ -752,8 +750,8 @@ def test_prompt_requires_the_versioned_block_rendered_from_parser_constants(
     assert "blocker-probe" in reviewer_budget._versioned_block_requirement()
 
 
-def test_prompt_says_the_round_file_is_the_harvest_target(external):
-    """프롬프트는 회수 도착지를 라운드 파일로 말한다(옛 '역할 절' 표현 없음)."""
+def test_prompt_says_the_round_file_is_the_collect_target(external):
+    """프롬프트는 돌려받기 도착지를 라운드 파일로 말한다(옛 '역할 절' 표현 없음)."""
     assert "라운드 파일로 돌려받고" in reviewer_budget._VERSIONED_BLOCK_HEADER
     assert "역할 절" not in reviewer_budget._VERSIONED_BLOCK_HEADER
 
@@ -788,7 +786,7 @@ def test_prompt_requires_concrete_fix_contract_values(external, pd):
 def test_disposition_template_targets_the_external_channel(
     external, pd, monkeypatch, tmp_path,
 ):
-    """PM 은 채널마다 다른 절차를 밟지 않는다 — 같은 골격 명령이 X- finding 을 채운다."""
+    """PM 은 채널마다 다른 절차를 밟지 않는다 — 같은 양식 명령이 X- finding 을 채운다."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -803,7 +801,7 @@ def test_disposition_template_targets_the_external_channel(
     assert [row["id"] for row in payload["dispositions"]] == ["X-001"]
 
 
-# ── F-002 세대 승격: 실 보드의 v1 블록을 legacy 로 계속 읽는다 ──────────────
+# ── F-002 버전 승격: 실 보드의 v1 블록을 legacy 로 계속 읽는다 ──────────────
 
 
 LEGACY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "legacy_review_blocks_v1.json"
@@ -814,7 +812,7 @@ def _legacy_fixture_tickets() -> list[dict]:
 
 
 def _rebuild_legacy_ticket(pd, entry: dict) -> tuple[str, list]:
-    """픽스처(실 보드 v1 블록 형상)를 (명세, 라운드 목록) 으로 되살린다(값은 축약본)."""
+    """픽스처(실 보드 v1 블록 모양)를 (명세, 라운드 목록) 으로 되살린다(값은 축약본)."""
     spec = [f"---\nid: {entry['ticket']}\nstatus: claimed\n---\n# {entry['ticket']}\n"]
     rounds = []
     for ordinal, section in enumerate(entry["sections"], 1):
@@ -828,7 +826,7 @@ def _rebuild_legacy_ticket(pd, entry: dict) -> tuple[str, list]:
         ))
     for index, disposition in enumerate(entry["dispositions"]):
         payload = dict(disposition)
-        # 라운드 순번은 티켓 전역 1..N 이다 — 판정이 가리키는 라운드를 그 축으로 옮긴다.
+        # 라운드 순번은 티켓 전역 1..N 이다 — 판정이 가리키는 라운드를 그 순번으로 옮긴다.
         if "reviewer_ordinal" in payload:
             payload["reviewer_ordinal"] = index + 1
         spec.append(
@@ -843,9 +841,9 @@ def _rebuild_legacy_ticket(pd, entry: dict) -> tuple[str, list]:
     "entry", _legacy_fixture_tickets(), ids=lambda entry: entry["ticket"],
 )
 def test_legacy_v1_blocks_from_the_live_board_stay_readable(pd, entry):
-    """구세대(v1) 블록은 severity 없이도 delta 를 낸다 — 마이그레이션된 자산을 잠그지 않는다.
+    """옛 버전(v1) 블록은 severity 없이도 수락한 지적을 낸다 — 마이그레이션된 자산을 잠그지 않는다.
 
-    픽스처는 실 보드 7건(T-0691·T-0693·T-0701·T-0703·T-0704·T-0705·T-0735)의 블록 형상을 값만
+    픽스처는 실 보드 7건(T-0691·T-0693·T-0701·T-0703·T-0704·T-0705·T-0735)의 블록 모양을 값만
     축약해 굳힌 것이다 — 라운드 파일로 옮겨져도 파서가 계속 읽어야 fix 루프가 돌아간다.
     """
     spec, rounds = _rebuild_legacy_ticket(pd, entry)
@@ -859,9 +857,9 @@ def test_legacy_v1_blocks_from_the_live_board_stay_readable(pd, entry):
         for finding in section["payload"]["findings"]
     )
 
-    delta = review_state.parse_pm_review_accepted(spec, rounds)   # malformed 면 fix 루프가 막힌다.
-    rendered = review_contract.render_pm_review_accepted(entry["ticket"], delta)
-    if delta.accepted:
+    review_accepted = review_state.parse_pm_review_accepted(spec, rounds)   # malformed 면 fix 루프가 막힌다.
+    rendered = review_contract.render_pm_review_accepted(entry["ticket"], review_accepted)
+    if review_accepted.accepted:
         assert f"- 심각도: {review_form.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in rendered
     summary_rows = [
         row for row in review_state.render_pm_review_summary(spec, rounds).splitlines()
@@ -875,7 +873,7 @@ def test_legacy_v1_blocks_from_the_live_board_stay_readable(pd, entry):
 
 
 def test_current_generation_block_still_requires_severity(pd):
-    """세대 경계는 블록 payload 의 `version` 이다 — 현행 세대는 부재를 계속 거부한다."""
+    """버전 경계는 블록 payload 의 `version` 이다 — 현행 버전은 부재를 계속 거부한다."""
     round_text = _external_round_text(pd, _payload([_finding(severity=None)]))
     with pytest.raises(review_form.PMReviewError, match=r"missing=\['severity'\]") as caught:
         review_state.parse_pm_review_accepted("", [_round_view(pd, 1, round_text)])
@@ -883,7 +881,7 @@ def test_current_generation_block_still_requires_severity(pd):
 
 
 def test_engine_written_skeleton_and_prompt_use_the_current_generation(pd):
-    """엔진이 새로 시드·요구하는 블록은 현행 세대다(구 세대는 읽기 전용 수용)."""
+    """엔진이 새로 빈 양식으로 넣고 요구하는 블록은 현행 버전이다(옛 버전은 읽기 전용 수용)."""
     for role in review_form.REVIEW_ROLES:
         skeleton = json.loads(
             review_form.render_pm_review_block_skeleton(role)
@@ -901,7 +899,7 @@ def test_engine_written_skeleton_and_prompt_use_the_current_generation(pd):
 
 
 def test_summary_folds_only_the_broken_round_of_a_mixed_ticket(pd):
-    """(F-001) 구 세대·현행·손상 블록이 섞여도 나머지 라운드 요약은 살아 있다."""
+    """(F-001) 옛 버전·현행·손상 블록이 섞여도 나머지 라운드 요약은 살아 있다."""
     rounds = [
         _round_view(pd, 1, _external_round_text(
             pd, _payload([_legacy_finding("X-001")],
@@ -925,9 +923,9 @@ def test_summary_folds_only_the_broken_round_of_a_mixed_ticket(pd):
 
 
 def test_summary_folds_a_broken_json_block_into_its_own_round_row(pd):
-    """JSON 자체가 깨진 라운드도 그 한 줄로 접힌다(티켓 전체 요약을 버리지 않는다).
+    """JSON 자체가 깨진 라운드도 그 한 줄로 바뀐다(티켓 전체 요약을 버리지 않는다).
 
-    손수정·마이그레이션으로 생길 수 있는 형상이다 — 회수는 이런 산출을 애초에 만들지 않는다.
+    손수정·마이그레이션으로 생길 수 있는 경우다 — 돌려받기는 이런 산출을 애초에 만들지 않는다.
     """
     rounds = [
         _round_view(pd, 1, _external_round_text(pd, _payload([_finding("X-001")]))),
@@ -947,26 +945,26 @@ def test_summary_folds_a_broken_json_block_into_its_own_round_row(pd):
     assert f"{ROLE}[2]" in folded[0] and "JSON 파싱 실패" in folded[0]
 
 
-# ── F-003 ticket 형상 게이트 회수 ───────────────────────────────────────
+# ── F-003 ticket 모양 리뷰 집계 티켓 돌려받기 ───────────────────────────────────────
 
 
-def test_ticket_shaped_gate_without_ticket_flag_is_harvested(
+def test_ticket_shaped_review_ticket_without_ticket_flag_is_collected(
     external, pd, monkeypatch, tmp_path,
 ):
-    """문서화된 `--paths … --review-ticket T-NNNN` 설계 리뷰 형상도 같은 회수 규칙을 탄다."""
+    """문서화된 `--paths … --review-ticket T-NNNN` 설계 리뷰 경우도 같은 돌려받기 규칙을 탄다."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
     assert _run(external, tmp_path, "--review-ticket", TICKET, "--paths", "x.py") == 1
     assert [path.name for path in _round_paths(tmp_path)] == [f"01-{ROLE}.md"]
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    assert [finding.id for finding, _row in review_accepted.accepted] == ["X-001"]
 
 
-def test_ticket_shaped_gate_missing_from_the_board_says_why(
+def test_ticket_shaped_review_ticket_missing_from_the_board_says_why(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """보드에 없는 ticket 형상 게이트는 조용히 지나가지 않는다 — 사유를 말한다."""
+    """보드에 없는 ticket 모양 리뷰 집계 티켓은 조용히 지나가지 않는다 — 사유를 말한다."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 
@@ -975,10 +973,10 @@ def test_ticket_shaped_gate_missing_from_the_board_says_why(
     assert "돌려받지 않음" in err and "T-9999" in err
 
 
-def test_reviewer_failure_reports_that_nothing_was_harvested(
+def test_reviewer_failure_reports_that_nothing_was_collected(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """회신이 없어 회수하지 않은 실행도 사유를 남긴다(조용한 누락 금지)."""
+    """회신이 없어 돌려받지 않은 실행도 사유를 남긴다(조용한 누락 금지)."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, "")
     monkeypatch.setattr(reviewer_run, "run_review", lambda *a, **k: {
@@ -1022,7 +1020,7 @@ def test_prompt_carries_the_next_finding_id_from_the_round_files(
 
 
 def test_next_finding_id_sees_the_round_files_not_only_the_spec(pd, tmp_path):
-    """다음 ID 의 시야는 명세 + **모든 라운드**다 — 라운드만 보면 지난 번호를 다시 지시한다."""
+    """다음 ID 의 검사 범위는 명세 + **모든 라운드**다 — 라운드만 보면 지난 번호를 다시 지시한다."""
     rounds = [
         _round_view(pd, 1, _external_round_text(pd, _payload([_finding("X-001")]))),
         _round_view(pd, 2, _external_round_text(pd, _payload([_finding("X-004")]))),
@@ -1037,13 +1035,13 @@ def _prompt_next_id(prompt: str) -> str:
     return match.group(1)
 
 
-def test_gate_shaped_run_advances_the_finding_id_across_rounds(
+def test_review_ticket_shaped_run_advances_the_finding_id_across_rounds(
     external, pd, monkeypatch, tmp_path,
 ):
-    """본문이 실리지 않는 `--paths … --review-ticket T-NNNN` 형상도 라운드마다 ID 가 전진한다.
+    """본문이 실리지 않는 `--paths … --review-ticket T-NNNN` 경우도 라운드마다 ID 가 전진한다.
 
-    출처가 프롬프트용 티켓 본문이면 이 형상은 매 라운드 첫 ID 를 지시해 2라운드가 재선언으로
-    거부된다 — 출처는 회수 대상 티켓의 라운드 파일이다.
+    출처가 프롬프트용 티켓 본문이면 이 경우는 매 라운드 첫 ID 를 지시해 2라운드가 재선언으로
+    거부된다 — 출처는 돌려받을 대상 티켓의 라운드 파일이다.
     """
     conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
@@ -1059,12 +1057,12 @@ def test_gate_shaped_run_advances_the_finding_id_across_rounds(
 
     assert seen == ["X-001", "X-002", "X-003"]
     assert len(_round_paths(tmp_path)) == 3
-    delta = _delta(
+    review_accepted = _review_accepted(
         pd, tmp_path,
         _disposition("X-001") + _disposition("X-002", ordinal=2)
         + _disposition("X-003", ordinal=3),
     )
-    assert sorted(finding.id for finding, _row in delta.accepted) == [
+    assert sorted(finding.id for finding, _row in review_accepted.accepted) == [
         "X-001", "X-002", "X-003",
     ]
 
@@ -1072,7 +1070,7 @@ def test_gate_shaped_run_advances_the_finding_id_across_rounds(
 def test_reused_finding_id_is_refused_and_the_next_round_can_land(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """(F-004) 같은 ID 재선언은 회수하지 않는다 — 티켓은 계속 판정 가능하다."""
+    """(F-004) 같은 ID 재선언은 돌려받지 않는다 — 티켓은 계속 판정 가능하다."""
     conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
@@ -1087,19 +1085,19 @@ def test_reused_finding_id_is_refused_and_the_next_round_can_land(
     # 재시도 라운드가 새 ID 로 정상 착지한다.
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-002")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    delta = _delta(
+    review_accepted = _review_accepted(
         pd, tmp_path, _disposition("X-001") + _disposition("X-002", ordinal=2),
     )
-    assert sorted(finding.id for finding, _row in delta.accepted) == ["X-001", "X-002"]
+    assert sorted(finding.id for finding, _row in review_accepted.accepted) == ["X-001", "X-002"]
 
 
 def test_self_confirmed_new_finding_is_refused_and_the_next_round_can_land(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """자기 신규 ID 를 `findings`·`confirmations` 양쪽에 실은 회신은 회수하지 않는다.
+    """자기 신규 ID 를 `findings`·`confirmations` 양쪽에 실은 회신은 돌려받지 않는다.
 
-    선행 선언이 공집합인 첫 라운드에서 나오는 형상이라 재선언 축이 아니라 블록 축에서 걸린다 —
-    판정 표면은 이 형상을 "confirmation이 선행 finding ID를 참조하지 않음"으로 막는다.
+    선행 선언이 공집합인 첫 라운드에서 나오는 경우라 재선언 검사가 아니라 블록 검사에서 걸린다 —
+    판정 범위는 이 경우를 "confirmation이 선행 finding ID를 참조하지 않음"으로 막는다.
     """
     conf = {"review_rounds_max": "9"}
     _seed_board(tmp_path)
@@ -1118,8 +1116,8 @@ def test_self_confirmed_new_finding_is_refused_and_the_next_round_can_land(
     _wire(external, monkeypatch, tmp_path, _reject_reply(finding), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     assert len(_round_paths(tmp_path)) == 1
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    assert [item.id for item, _row in delta.accepted] == ["X-001"]
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    assert [item.id for item, _row in review_accepted.accepted] == ["X-001"]
 
 
 def test_confirmation_round_may_reference_existing_ids(
@@ -1135,17 +1133,17 @@ def test_confirmation_round_may_reference_existing_ids(
     }))
     assert _run(external, tmp_path, "--ticket", TICKET) == 0
     assert len(_round_paths(tmp_path)) == 2
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    assert delta.accepted == ()
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    assert review_accepted.accepted == ()
 
 
-# ── F-016 회수 게이트 시야 == 판정 표면(confirmation 대상 대조) ──────────
+# ── F-016 돌려받기 검사 범위 == 판정 범위(confirmation 대상 대조) ──────────
 
 
 def test_hallucinated_confirmation_target_is_refused(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """(F-016) 티켓에 없는 ID(하네스 환각)를 확인하면 회수가 거부된다."""
+    """(F-016) 티켓에 없는 ID(하네스 환각)를 확인하면 돌려받기가 거부된다."""
     conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
@@ -1159,41 +1157,41 @@ def test_hallucinated_confirmation_target_is_refused(
     assert "confirmation 대상 finding 부재: X-099" in capsys.readouterr().err
     assert len(_round_paths(tmp_path)) == 1
 
-    # 정상 라운드는 그대로 판정 대상이고 delta 는 계속 읽힌다.
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+    # 정상 라운드는 그대로 판정 대상이고 수락한 지적은 계속 읽힌다.
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    assert [finding.id for finding, _row in review_accepted.accepted] == ["X-001"]
 
 
 def test_confirmation_of_an_unharvested_id_is_refused(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """(F-016) 회수되지 않은 산출의 ID 는 표면에 없다 — 그 ID 를 확인해도 거부다."""
+    """(F-016) 돌려받지 않은 산출의 ID 는 판정 범위에 없다 — 그 ID 를 확인해도 거부다."""
     conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _BROKEN_JSON_REPLY, conf=conf)
-    assert _run(external, tmp_path, "--ticket", TICKET) != 0   # 라운드1 회수 거부
+    assert _run(external, tmp_path, "--ticket", TICKET) != 0   # 라운드1 돌려받기 거부
     capsys.readouterr()
 
     _wire(external, monkeypatch, tmp_path, _confirming_reject_reply(
         _finding("X-002"),
-        {"id": "X-001", "status": "resolved", "evidence": "회수되지 않은 산출의 ID"},
+        {"id": "X-001", "status": "resolved", "evidence": "돌려받지 않은 산출의 ID"},
     ), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
     err = capsys.readouterr().err
     assert "돌려받기 문제" in err and "confirmation 대상 finding 부재: X-001" in err
     assert _round_paths(tmp_path) == []
 
-    # 다음 라운드가 정상 착지하고 delta 가 green 이다.
+    # 다음 라운드가 정상 착지하고 수락한 지적이 green 이다.
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-003")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    delta = _delta(pd, tmp_path, _disposition("X-003"))
-    assert [finding.id for finding, _row in delta.accepted] == ["X-003"]
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-003"))
+    assert [finding.id for finding, _row in review_accepted.accepted] == ["X-003"]
 
 
 def test_declarations_count_only_the_surface_rounds(pd):
-    """(F-016) 표면 선언 집합은 거부 표식 라운드·산문 인용을 세지 않는다.
+    """(F-016) 판정 범위 선언 집합은 거부 표시 라운드·산문 인용을 세지 않는다.
 
-    거부 표식 라운드는 단일 파일 시절 산출이 마이그레이션된 형상이다(새 회수는 만들지 않는다).
+    거부 표시 라운드는 단일 파일 시절 산출이 마이그레이션된 경우다(새 돌려받기는 만들지 않는다).
     """
     normal = _round_view(pd, 1, _external_round_text(pd, _payload([_finding("X-001")])))
     refused = _round_view(pd, 2, _external_round_text(
@@ -1205,14 +1203,14 @@ def test_declarations_count_only_the_surface_rounds(pd):
     assert review_state.collect_review_finding_declarations(spec, ROLE, [normal, refused]) == {
         "X-001",
     }
-    # 재사용 방지 스캔은 거부 라운드·산문까지 넓게 본다 — 두 시야는 의도적으로 다르다.
+    # 재사용 방지 스캔은 거부 라운드·산문까지 넓게 본다 — 두 검사 범위는 의도적으로 다르다.
     assert review_state.next_review_finding_id(spec, ROLE, [normal, refused]) == "X-051"
 
 
-def test_removed_confirm_fix_is_rejected_before_ticket_harvest(
+def test_removed_confirm_fix_is_rejected_before_ticket_collect(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """폐지한 fix 후 재리뷰 플래그는 호출·라운드 파일·장부 변경 전에 거부된다."""
+    """폐지한 fix 후 재리뷰 플래그는 호출·라운드 파일·기록 변경 전에 거부된다."""
     _seed_board(tmp_path)
     calls = _wire(external, monkeypatch, tmp_path, _confirm_reply({
         "id": "X-001", "status": "resolved", "evidence": "옛 경로 probe",
@@ -1225,7 +1223,7 @@ def test_removed_confirm_fix_is_rejected_before_ticket_harvest(
     assert not review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).exists()
 
 
-# ── F-021 프롬프트 골격: 확인 가능한 ID 실값(직전 라운드 파일) ─────────────
+# ── F-021 프롬프트 양식: 확인 가능한 ID 실값(직전 라운드 파일) ─────────────
 
 
 def test_prompt_skeleton_does_not_prefill_previous_round_confirmations(
@@ -1259,7 +1257,7 @@ def test_prompt_skeleton_does_not_prefill_previous_round_confirmations(
 def test_prompt_skeleton_ignores_a_reserved_round_without_output(
     external, pd, monkeypatch, tmp_path,
 ):
-    """예약만 해 둔 시드 라운드가 있어도 새 프롬프트의 confirmations 는 비어 있다."""
+    """예약만 해 둔 빈 양식 라운드가 있어도 새 프롬프트의 confirmations 는 비어 있다."""
     conf = {"additional_reviewer.rounds_max": "9"}
     spec = _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
@@ -1282,13 +1280,13 @@ def test_prompt_skeleton_ignores_a_reserved_round_without_output(
 
 
 
-# ── F-025 강등 안내·지연 해소 ───────────────────────────────────────────
+# ── F-025 수준 낮춤 안내·지연 해소 ───────────────────────────────────────────
 
 
 def test_prompt_does_not_resolve_confirmable_ids(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """폐지한 재리뷰 입력 수집 seam은 일반 프롬프트 조립에서 호출되지 않는다."""
+    """폐지한 재리뷰 입력 수집 함수는 일반 프롬프트 조립에서 호출되지 않는다."""
     _seed_board(tmp_path)
     _write_round(
         tmp_path, 1, ROLE,
@@ -1322,26 +1320,26 @@ def test_crlf_reply_keeps_its_bytes_in_the_round_file(
     raw = _round_paths(tmp_path)[0].read_bytes()
     assert b"\r\r\n" not in raw
     assert raw.endswith(reply.encode("utf-8"))
-    delta = _delta(pd, tmp_path, _disposition("X-001"))
-    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+    review_accepted = _review_accepted(pd, tmp_path, _disposition("X-001"))
+    assert [finding.id for finding, _row in review_accepted.accepted] == ["X-001"]
 
 
-# ── F-006 쓰기 엔진: 형제 canonical + 사본 불일치 처방 ──────────────────
+# ── F-006 쓰기 엔진: 형제 canonical + 사본 불일치 해결 방법 ──────────────────
 
 
 
 
-def test_harvest_writes_with_the_running_engine_not_a_stale_pm_home_copy(
+def test_collect_writes_with_the_running_engine_not_a_stale_pm_home_copy(
     external, monkeypatch, tmp_path,
 ):
-    """PM 홈에 stale board 사본이 있어도 회수는 이 실행의 형제 엔진으로 쓴다."""
+    """PM 홈에 stale board 사본이 있어도 돌려받기는 이 실행의 형제 엔진으로 쓴다."""
     _seed_board(tmp_path)
     stale = tmp_path / ".project_manager" / "tools" / "board.py"
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text(
         "ENGINE_REV = 'stale'\n"
         "def find_ticket_exact(*args, **kwargs):\n"
-        "    raise AssertionError('stale PM 홈 사본이 회수 쓰기를 수행했다')\n",
+        "    raise AssertionError('stale PM 홈 사본이 돌려받기 쓰기를 수행했다')\n",
         encoding="utf-8", newline="\n",
     )
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
@@ -1350,10 +1348,10 @@ def test_harvest_writes_with_the_running_engine_not_a_stale_pm_home_copy(
     assert len(_round_paths(tmp_path)) == 1
 
 
-def test_rounds_seam_error_becomes_a_harvest_problem_not_a_traceback(
+def test_rounds_function_error_becomes_a_collect_problem_not_a_traceback(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """라운드 규약 위반(`RoundsError`)은 회수 실패 처방으로 접힌다 — 사본 skew 절이 먼저 받으면
+    """라운드 규약 위반(`RoundsError`)은 돌려받기 실패 해결 방법으로 바뀐다 — 사본 skew 절이 먼저 받으면
     같은 오류가 traceback 으로 나간다(`RoundsError` 는 `RuntimeError` 하위형이다)."""
     _seed_board(tmp_path)
 
@@ -1370,7 +1368,7 @@ def test_rounds_seam_error_becomes_a_harvest_problem_not_a_traceback(
 
 
 def test_non_skew_runtime_error_is_not_swallowed(external, monkeypatch, tmp_path):
-    """표시 없는 RuntimeError 는 흡수 대상이 아니다(진단을 삼키지 않는다)."""
+    """표시 없는 RuntimeError 는 삼킬 대상이 아니다(진단을 삼키지 않는다)."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
 

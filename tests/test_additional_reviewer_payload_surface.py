@@ -35,7 +35,7 @@ DERIVED_PREFIX = "리뷰 집계 티켓 자동 유도: --review-ticket"
 
 
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
-# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+# 없음) 이 파일의 모든 경우가 그 세트를 깔고 시작한다.
 _REVIEWER_TARGET = {
     "additional_reviewer.harness": "codex",
     "additional_reviewer.model": "gpt-5.6-sol",
@@ -81,7 +81,7 @@ def _pass_result() -> dict:
 
 
 def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None):
-    """main을 tmp 앵커와 무스폰 reviewer로 격리한다."""
+    """main을 tmp 대상 저장소와 무스폰 reviewer로 격리한다."""
     config = {
         **_REVIEWER_TARGET,
         "additional_reviewer.paths": "src/ .opencode/node_modules/",
@@ -91,7 +91,7 @@ def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None):
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(conf_store, 'local_config', lambda _home, repo=None: dict(config))
     monkeypatch.setattr(
-        pm_paths, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path,
+        pm_paths, "resolve_pm_home_for_repo", lambda target_repo_root, **kwargs: tmp_path,
     )
     monkeypatch.setattr(reviewer_scope, "_resolve_diff_root", lambda *args, **kwargs: tmp_path)
     monkeypatch.setattr(round_store, "parse_ticket_touches", lambda *args, **kwargs: ["src/"])
@@ -132,7 +132,7 @@ def test_git_c_unquote_reassembles_octal_bytes_before_utf8_decode(external):
 
 
 def _owner_only(external, path: Path) -> bool:
-    """`path` 가 소유자 전용 접근인가 — 엔진 공용 seam(플랫폼 수단 소유)으로 실측한다."""
+    """`path` 가 소유자 전용 접근인가 — 엔진 공용 함수(플랫폼 수단 소유)로 실측한다."""
     return fs.owner_only_access(path)
 
 
@@ -157,7 +157,7 @@ def test_opencode_transport_is_inside_review_sandbox_and_self_hidden(external, t
         assert prompt_file.read_text(encoding="utf-8") == "검토 diff"
         # 접근 제한 판정은 퍼미션 비트가 아니라 **OS 되묻기**다 — Windows 의 `chmod` 는 아무
         # 제한도 걸지 않아(`S_IMODE`=0o666 실측) 비트 단언이 그 플랫폼에서 항상 거짓이 된다.
-        # 보장(다른 사용자가 못 읽는다)은 같고 수단만 다르므로 수단을 아는 seam 에 묻는다.
+        # 보장(다른 사용자가 못 읽는다)은 같고 수단만 다르므로 수단을 아는 함수에 묻는다.
         assert _owner_only(external, prompt_file) is True
         assert ignore.read_text(encoding="utf-8") == "*\n"
         assert _owner_only(external, ignore) is True
@@ -168,13 +168,13 @@ def test_opencode_transport_is_inside_review_sandbox_and_self_hidden(external, t
     assert not (sandbox / ".project_manager").exists()
 
 
-def test_opencode_transport_restriction_goes_through_the_platform_seam(
+def test_opencode_transport_restriction_goes_through_the_platform_function(
         external, monkeypatch, tmp_path):
-    """전달 파일의 접근 제한은 **공용 seam** 을 지난다 — `chmod` 직접 호출은 Windows 에서 무효다.
+    """전달 파일의 접근 제한은 **공용 함수**를 지난다 — `chmod` 직접 호출은 Windows 에서 무효다.
 
-    이 배선이 없으면 그 플랫폼에서는 diff 원문이 든 프롬프트가 아무 제한 없이 남는다(생성 seam 의
+    이 연결이 없으면 그 플랫폼에서는 diff 원문이 든 프롬프트가 아무 제한 없이 남는다(생성 함수의
     `0600` 은 read-only 속성만 만진다). 판정 대상 파일 자신이 POSIX 에서는 이미 0600 이라
-    결과만 봐서는 배선 유무가 구분되지 않으므로 **호출**을 본다.
+    결과만 봐서는 연결 유무가 구분되지 않으므로 **호출**을 본다.
     """
     target = _opencode_target(external)
     sandbox = tmp_path / "mirror-tree"
@@ -216,24 +216,24 @@ def test_opencode_post_create_containment_failure_cleans_transport(
     assert not (tmp_path / ".project_manager").exists()
 
 
-# 각 tuple이 한 셀의 기대값이다. 특히 no-gate/명시 gate 행은 조건형 고지까지 부재해야 한다.
+# 각 tuple이 한 셀의 기대값이다. 특히 no-review-ticket/명시 review-ticket 행은 조건형 고지까지 부재해야 한다.
 @pytest.mark.parametrize(
-    "gate_mode,expected_rc,derived_notice,unaccounted_notice,confirmed_notice",
+    "review_ticket_mode,expected_rc,derived_notice,unaccounted_notice,confirmed_notice",
     [
         ("derived", 1, True, False, False),
-        ("no-gate", 1, False, False, False),
+        ("no-review-ticket", 1, False, False, False),
         ("explicit", 1, False, False, False),
     ],
 )
 def test_early_exit_notice_matrix_has_cell_specific_expectations(
-        external, monkeypatch, tmp_path, capsys, gate_mode, expected_rc,
+        external, monkeypatch, tmp_path, capsys, review_ticket_mode, expected_rc,
         derived_notice, unaccounted_notice, confirmed_notice):
-    """빈 diff 조기 종료 칸마다 고지가 다르다(호출 0 · 장부 0)."""
+    """빈 diff 조기 종료 칸마다 고지가 다르다(호출 0 · 기록 0)."""
     calls = _wire_main(external, monkeypatch, tmp_path, diff="")
 
-    if gate_mode == "derived":
+    if review_ticket_mode == "derived":
         argv = ["--ticket", "T-0637"]
-    elif gate_mode == "no-gate":
+    elif review_ticket_mode == "no-review-ticket":
         argv = ["--paths", "src/app.py", "--no-review-ticket"]
     else:
         argv = ["--paths", "src/app.py", "--review-ticket", "T-0637"]
@@ -243,7 +243,7 @@ def test_early_exit_notice_matrix_has_cell_specific_expectations(
     captured = capsys.readouterr()
     assert (DERIVED_PREFIX in captured.err) is derived_notice
     assert (reviewer_budget._UNACCOUNTED_OPT_OUT_NOTICE in captured.err) is unaccounted_notice
-    assert (reviewer_budget._SUMMARY_UNACCOUNTED_GATE in captured.out) is confirmed_notice
+    assert (reviewer_budget._SUMMARY_UNACCOUNTED_REVIEW_TICKET in captured.out) is confirmed_notice
     if derived_notice:
         assert "이 실행이 리뷰어를 부르면 라운드 집계가" in captured.err
     else:
@@ -251,11 +251,11 @@ def test_early_exit_notice_matrix_has_cell_specific_expectations(
     assert not (tmp_path / ".project_manager" / ".local" / "review_rounds.json").exists()
 
 
-def test_gate_and_anchor_order_remains_unambiguous(external):
-    """게이트 해소 → 조기 종료 → 선택 거부 → 예약 순서를 고정한다."""
+def test_review_ticket_and_target_order_remains_unambiguous(external):
+    """리뷰 집계 티켓 해소 → 조기 종료 → 선택 거부 → 예약 순서를 고정한다."""
     source = inspect.getsource(cli_additional_reviewer.main)
     positions = [
-        source.index("gate_derivation = reviewer_reservation._derive_gate_from_ticket(args)"),
+        source.index("review_ticket_derivation = reviewer_reservation._derive_review_ticket_from_ticket(args)"),
         source.index("if not diff.strip():"),
         source.index("if not args.review_ticket and not args.no_review_ticket:"),
         source.index("budget = reviewer_reservation._reserve_round_budget("),
@@ -263,8 +263,8 @@ def test_gate_and_anchor_order_remains_unambiguous(external):
     assert positions == sorted(positions)
 
 
-def test_help_and_shipped_skill_send_examples_choose_gate_accounting(external):
-    """복사 가능한 help/SKILL 실송 예시는 ticket/gate/no-gate 중 하나를 반드시 고른다."""
+def test_help_and_shipped_skill_send_examples_choose_review_ticket_accounting(external):
+    """복사 가능한 help/SKILL 실송 예시는 ticket/review-ticket/no-review-ticket 중 하나를 반드시 고른다."""
     script = "python3 .project_manager/tools/additional_reviewer.py"
     help_commands = [
         line.strip()

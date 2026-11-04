@@ -31,11 +31,11 @@ def _diff_bases(base: str) -> tuple[str, ...]:
 def _slot_selection_bases(base: str) -> tuple[str, ...]:
     """등록 슬롯 후보 판정에 **소유 근거로 쓸 수 있는** 단계 — `_diff_bases` 의 부분집합.
 
-    사용자가 지정한 base 자신만 근거다. 암묵 폴백 단계(`HEAD~1..HEAD`)는 이 슬롯이 무엇을 했는지
+    사용자가 지정한 base 자신만 근거다. 암묵 대체 단계(`HEAD~1..HEAD`)는 이 슬롯이 무엇을 했는지
     말해주지 않는다 — 슬롯이 아무 것도 안 해도 **공유 base 의 마지막 커밋**이 검토 경로를
     건드렸으면 비어 있지 않아, 놀고 있는 슬롯을 '변경 슬롯'으로 뽑고 그 커밋을 이번 작업물인 양
     리뷰어에게 보낸다. 그래서 그 단계는 *이미 고른 repo 안에서 무엇을 리뷰할지*(추출 폭)에만 남기고
-    *어느 repo인지*의 근거에서는 뺀다. 커밋만 된 변경으로 슬롯을 고르려면 앵커를 명시해야 한다 —
+    *어느 repo인지*의 근거에서는 뺀다. 커밋만 된 변경으로 슬롯을 고르려면 대상을 명시해야 한다 —
     `--base <공통 base ref>`(그 자체로 단계 하나) 또는 repo 를 직접 지정하는 절대 `--paths`.
     """
     return tuple(stage for stage in _diff_bases(base) if stage == base)
@@ -44,12 +44,12 @@ def _slot_selection_bases(base: str) -> tuple[str, ...]:
 # untracked 신규 파일의 '새 파일 diff' 는 `--no-index` 로 뽑는다 — **index 를 건드리지 않는
 # 방식**이어야 한다. `git add -N`(intent-to-add) 선행이 더 짧지만 그건 read-only 여야 할 리뷰·측정
 # 경로가 채택자 index 를 바꾸는 일이고, 위임 스코프 가드가 `git status --porcelain` 지문으로
-# 작업트리 상태를 재는 축과 정면으로 부딪힌다(리뷰가 지문을 흔들면 범위 위반으로 오판된다).
+# 작업트리 상태를 재는 기준과 정면으로 부딪힌다(리뷰가 지문을 흔들면 범위 위반으로 오판된다).
 # `/dev/null` 은 git 이 **문자열 그대로** 특수 취급하는 이름이라 Windows 에서도 같은 인자다.
 _DEV_NULL_DIFF_OPERAND = "/dev/null"
 # `--no-index` 는 `--exit-code` 를 내장해 **차이가 있으면 rc 1** 이다. 소비자는 rc 0 만 읽으므로
-# (실패한 실행 = 그 단계에 변경 없음) 여기서 '차이 있음'을 rc 0 으로 접는다. rc≥2(진짜 오류)는
-# 그대로 두어 종전 폴백 규칙을 탄다.
+# (실패한 실행 = 그 단계에 변경 없음) 여기서 '차이 있음'을 rc 0 으로 바꾼다. rc≥2(진짜 오류)는
+# 그대로 두어 종전 대체 규칙을 탄다.
 _NO_INDEX_DIFFERENCES_RC = 1
 
 
@@ -106,9 +106,9 @@ def _stage_diff_runs(
     `extra_args` 는 같은 폭을 **다른 형식**으로 뽑는 데 쓴다(문맥 없는 diff). 폭 자체(단계 표)는
     한 곳이 정하고 형식만 갈리게 해, 리뷰가 본 diff 와 사설 참조 검사가 본 diff 가 어긋나지 않게 한다.
 
-    untracked 는 기본적으로 **작업트리 단계('HEAD')에만** 붙는다 — 명시 base·폴백 커밋 단계는
+    untracked 는 기본적으로 **작업트리 단계('HEAD')에만** 붙는다 — 명시 base·대체 커밋 단계는
     커밋 사이의 폭이라 아직 커밋되지 않은 신규 파일이 그 폭의 구성원이 아니다. `untracked` 를
-    명시하면 그 판정을 호출부가 소유한다: claim 앵커 단계(`git diff <claim 시점 rev>`)는 커밋
+    명시하면 그 판정을 호출부가 소유한다: claim 기준 단계(`git diff <claim 시점 rev>`)는 커밋
     이름을 base 로 쓰지만 비교 대상이 **현재 작업트리**라 신규 파일도 그 폭의 구성원이다.
     """
     _run = run_fn or subprocess.run
@@ -126,7 +126,7 @@ def _stage_diff_runs(
 
 
 def _canonical_measure_path(path: str) -> str:
-    """측정 판정 전 표기 변형을 POSIX 한 좌표로 모은다(`repo_coordinates` 정규화와 동형)."""
+    """측정 판정 전 표기 변형을 POSIX 한 좌표로 모은다(`repo_coordinates` 정규화와 같은 구조)."""
     normalized = path.replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
@@ -136,33 +136,33 @@ def _canonical_measure_path(path: str) -> str:
 # ── 어댑터층 기계 mirror — engine.manifest `@source=` 방향에서 파생 ────────────────
 # 판정 입력은 그 타깃 engine.manifest 항목 하나뿐이다(새 설정 키·CLI 플래그 0). 항목이
 # bare(마커 없음)면 관례상 소스는 같은 상대경로를 **레포 루트**에서 읽는다는 뜻이라(`manifest_rules.
-# _source_root_rel` 동형) templates/<타깃>/ 접두가 없는 다른 물리 경로를 가리키므로 늘 진짜 교차
+# _source_root_rel` 와 같은 구조) templates/<타깃>/ 접두가 없는 다른 물리 경로를 가리키므로 늘 진짜 교차
 # 위치 복사다. `@source=<path>` 항목은 그 경로가 명시 소스다. 두 경우 다 "그 항목이 가리키는 실제
 # 소스 경로가 이 파일 자신의 templates/<타깃>/ 물리 경로와 같은가"만 보면 된다 — 같으면(자기참조)
-# `pm_update`가 이 파일을 재생성하지 않는다는 뜻이라(no-op self-copy) 그 flavor 가 손으로 관리하는
-# canonical 원본이고(예: `templates/codex/.agents/skills/pm-dev-delegate/SKILL.md` — 각 flavor 가
+# `pm_update`가 이 파일을 재생성하지 않는다는 뜻이라(no-op self-copy) 그 하네스별 판이 손으로 관리하는
+# canonical 원본이고(예: `templates/codex/.agents/skills/pm-dev-delegate/SKILL.md` — 각 하네스별 판이
 # 자기 소스를 갖는 자리라 제외 대상이 아니다), 다르면 다른 위치(대개 레포 루트의 canonical)에서
 # 기계로 복사돼 들어온 mirror 다. manifest 미등재 경로(CLAUDE.md·AGENTS.md·local.conf·설정 파일 등
-# 인스턴스/flavor 전용 문서)는 애초에 이 판정에 들어오지 않아 손작업으로 남는다. 새 타깃이
+# 인스턴스/하네스별 판 전용 문서)는 애초에 이 판정에 들어오지 않아 손작업으로 남는다. 새 타깃이
 # `templates/<신규>/.project_manager/engine.manifest` 를 갖추면 이 로직은 그 파일 이름만으로
 # 갈리므로 패턴을 손보지 않아도 따라온다.
-_TEMPLATES_FLAVOR_RE = re.compile(r"^templates/([^/]+)/(.+)$")
+_TEMPLATES_VARIANT_RE = re.compile(r"^templates/([^/]+)/(.+)$")
 
-# flavor 이름 → manifest 항목 리스트(또는 manifest 부재 시 None). flavor 당 1회만 읽고 재사용한다 —
+# 하네스별 판 이름 → manifest 항목 리스트(또는 manifest 부재 시 None). 판마다 1회만 읽고 재사용한다 —
 # 측정 제외 판정이 diff 경로마다 호출하므로 매번 재파싱하면 큰 diff에서 I/O 가 선형으로 늘어난다.
 _adapter_manifest_entries_cache: dict[tuple[Path, str], list | None] = {}
 
 
-def _adapter_flavor_manifest(home, flavor: str) -> list | None:
-    """`<flavor>` 출하 manifest 항목 (flavor 당 1회 로드·캐시). 부재는 None, 파싱 실패는 전파."""
-    cache_key = (Path(home.root), flavor)
+def _adapter_variant_manifest(home, variant: str) -> list | None:
+    """`<variant>` 출하 manifest 항목 (판마다 1회 로드·캐시). 부재는 None, 파싱 실패는 전파."""
+    cache_key = (Path(home.root), variant)
     if cache_key not in _adapter_manifest_entries_cache:
         manifest_path = (
-            home.root / "templates" / flavor / ".project_manager" / "engine.manifest"
+            home.root / "templates" / variant / ".project_manager" / "engine.manifest"
         )
         try:
             entries = manifest_store.read_manifest(manifest_path)
-        except FileNotFoundError:  # 부재는 그 flavor 판정만 보류.
+        except FileNotFoundError:  # 부재는 그 판의 판정만 보류.
             entries = None
         _adapter_manifest_entries_cache[cache_key] = entries
     return _adapter_manifest_entries_cache[cache_key]
@@ -175,17 +175,17 @@ def _adapter_layer_machine_mirror(home, canonical_path: str) -> bool:
     파일 단위 override(`.claude/skills/pm-dev-delegate/SKILL.md @source=...`)가 있으면 override
     가 이긴다(동률은 나중 선언이 더 구체적이라고 본다). 소유 항목이 없으면(미등재) 손작업(False).
 
-    ``@target-owned`` 항목은 **source 방향 비교 전에** 손작업으로 접는다(F-001
+    ``@target-owned`` 항목은 **source 방향 비교 전에** 손작업으로 분류한다(F-001
     리뷰) — 그 마커는 "upstream 에 source 가 아예 없는 게 정상"이라는 명시 선언이라
-    (`manifest_rules.TARGET_OWNED_TAG`), bare 경로의 관례적 "레포 루트가 source" 폴백을 이 항목에
+    (`manifest_rules.TARGET_OWNED_TAG`), bare 경로의 관례적 "레포 루트가 source" 대체 규칙을 이 항목에
     적용하면 실재하지 않는 교차 위치와 비교해 기계 mirror로 오분류한다 — 수기 소유 파일이
     측정에서 통째로 빠져 사설 참조 검사를 우회하는 방향이라(과다 제외) 이 판정의 불변식(과다
     제외 0)을 정면으로 어긴다."""
-    match = _TEMPLATES_FLAVOR_RE.match(canonical_path)
+    match = _TEMPLATES_VARIANT_RE.match(canonical_path)
     if match is None:
         return False
-    flavor, relpath = match.group(1), match.group(2)
-    entries = _adapter_flavor_manifest(home, flavor)
+    variant, relpath = match.group(1), match.group(2)
+    entries = _adapter_variant_manifest(home, variant)
     if not entries:
         return False
     relpath_norm = relpath.strip("/")
@@ -202,7 +202,7 @@ def _adapter_layer_machine_mirror(home, canonical_path: str) -> bool:
         return False
     if getattr(owner, "target_owned", False):
         return False
-    dest_physical = f"templates/{flavor}/{str(owner)}".replace("\\", "/").strip("/")
+    dest_physical = f"templates/{variant}/{str(owner)}".replace("\\", "/").strip("/")
     source_physical = (
         getattr(owner, "source_rel", None) or str(owner)
     ).replace("\\", "/").strip("/")
@@ -218,7 +218,7 @@ def is_machine_mirror_path(home, path: str) -> bool:
     파일 전부는 아니다 — manifest 밖 손편집 파일도 있어 통째 제외하면 과소 측정이 생기지만,
     오차의 방향이 **측정 축소**라 정당한 작업을 오차단하지 않는다.
 
-    **측정 제외 규칙의 단일 진실** — 완료 기록(ticket_finish)의 사설 참조 표면 해소가 이 판정을
+    **측정 제외 규칙의 단일 진실** — 완료 기록(ticket_finish)의 사설 참조 범위 해소가 이 판정을
     쓴다(사본 0). 판정은 경로 문자열뿐이라 트리 상태에 의존하지 않는다."""
     canonical = _canonical_measure_path(path)
     if reviewer_budget._MACHINE_MIRROR_RE.match(canonical) is not None:
@@ -226,19 +226,19 @@ def is_machine_mirror_path(home, path: str) -> bool:
     return _adapter_layer_machine_mirror(home, canonical)
 
 
-# ── 완료 기록 측정 폭 (앵커) ────────────────────────────────────────────
+# ── 완료 기록 측정 폭 (통합 기준) ────────────────────────────────────────────
 # 완료 기록의 사설 참조 검사가 재야 하는 것은 "이 작업이 통합 브랜치에서 갈라진 뒤 남긴 변경"이다.
-# 작업트리+직전 커밋 한 칸이라는 옛 폭은 dev 브랜치를 `--no-ff` merge 로 흡수하는 형상에서
-# 0 에 수렴한다 — 완료 기록 시점 트리는 clean 이고 마지막 커밋이 전파/기록 커밋이면 경로
+# 작업트리+직전 커밋 한 칸이라는 옛 폭은 dev 브랜치를 `--no-ff` merge 로 받아 반영하는 경우에서
+# 0 이 된다 — 완료 기록 시점 트리는 clean 이고 마지막 커밋이 전파/기록 커밋이면 경로
 # 교집합이 비기 때문이다(실측).
 #
 # 기준점은 `merge-base(<통합 브랜치>, HEAD)` 다. 그 값은 커밋·재배치 순서와 무관하게 같으므로
-# 폭이 조작 순서의 함수가 되지 않고, 재배치로 흡수한 남의 커밋은 그 기준점의 조상이라 폭에서
-# 빠진다(claim 시점 rev 를 기준점으로 쓰면 그 흡수분이 자기 폭으로 실렸다·실측). 통합 브랜치를
+# 폭이 조작 순서의 함수가 되지 않고, 재배치로 받아 반영한 남의 커밋은 그 기준점의 조상이라 폭에서
+# 빠진다(claim 시점 rev 를 기준점으로 쓰면 그 반영분이 자기 폭으로 실렸다·실측). 통합 브랜치를
 # 선언하지 않았거나 이 트리에서 해소되지 않으면 **멈춘다** — 기준 없이 잰 폭은 그 자체가 판정
-# 불능이고, 다른 기준으로 접으면 같은 게이트가 실행마다 다른 것을 재게 된다.
+# 불능이고, 다른 기준으로 바꾸면 같은 검사가 실행마다 다른 것을 재게 된다.
 
-# merge-base 산출은 git argv 를 타고 오는 값이라 형태를 확인한 뒤에만 앵커로 쓴다(경고 한 줄이
+# merge-base 산출은 git argv 를 타고 오는 값이라 형태를 확인한 뒤에만 통합 기준으로 쓴다(경고 한 줄이
 # 값으로 둔갑하지 않게 한다). git 이 내는 값은 40자 sha 다.
 _MERGE_BASE_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
@@ -252,14 +252,14 @@ def integration_base(
     root: Path, integration_ref: str,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> tuple[str | None, str | None]:
-    """측정 폭의 기준점 `merge-base(<통합 브랜치>, HEAD)` — `(앵커, None)` 또는 `(None, 사유)`.
+    """측정 폭의 기준점 `merge-base(<통합 브랜치>, HEAD)` — `(통합 기준, None)` 또는 `(None, 사유)`.
 
     이 값이 폭의 기준점이면 커밋·재배치가 언제 일어나도 폭이 같다: 통합 브랜치가 이미 가진
     커밋은 이 기준점의 조상이라 빠지고, 이 작업이 갈라진 뒤 남긴 것만 남는다.
 
     해소 실패는 사유를 돌려 호출부가 **멈추게** 한다. 다른 기준점으로 접으면 `git diff <rev>`
-    가 실패한 단계를 '변경 없음'으로 접는 경로와 만나 **조용한 0 줄**(false-green)이 되고,
-    무엇보다 같은 게이트가 실행마다 다른 폭을 재게 된다."""
+    가 실패한 단계를 '변경 없음'으로 바꾸는 경로와 만나 **조용한 0 줄**(false-green)이 되고,
+    무엇보다 같은 검사가 실행마다 다른 폭을 재게 된다."""
     _run = run_fn or subprocess.run
     try:
         result = _run(
@@ -275,20 +275,20 @@ def integration_base(
 
 
 def _measure_stages(
-    base: str, anchor: str | None,
+    base: str, integration_base_rev: str | None,
 ) -> tuple[tuple[str, bool], ...]:
     """완료 기록 측정의 단계 표 — `(git diff 기준, untracked 포함 여부)`.
 
-    앵커(`integration_base` 가 고른 기준점 — 통합 브랜치와의 merge-base)가 있고
-    base 가 기본('HEAD')이면 단계는 하나다: `git diff <앵커>` 는 그 커밋 트리와 **현재
+    통합 기준(`integration_base` 가 고른 기준점 — 통합 브랜치와의 merge-base)가 있고
+    base 가 기본('HEAD')이면 단계는 하나다: `git diff <통합 기준>` 은 그 커밋 트리와 **현재
     작업트리**를 비교하므로 기준점 이후의 커밋·스테이징·언스테이징이 한 폭에 들어온다.
     untracked 신규 파일도 작업트리 구성원이라 함께 본다(stage 전 신규 파일이 측정에서
     빠지는 창을 닫아 둔다).
 
-    `--base` 를 명시하면 그 폭이다 — 사용자가 고른 폭을 앵커가 덮어쓰지 않는다(앵커 없는
+    `--base` 를 명시하면 그 폭이다 — 사용자가 고른 폭을 통합 기준이 덮어쓰지 않는다(통합 기준 없는
     호출은 그 명시 폭 하나뿐이다 · 기본 폭에서 기준점을 못 고르면 호출부가 거부한다)."""
-    if anchor and base == "HEAD":
-        return ((anchor, True),)
+    if integration_base_rev and base == "HEAD":
+        return ((integration_base_rev, True),)
     return tuple((stage, stage == "HEAD") for stage in _diff_bases(base))
 
 
@@ -324,8 +324,8 @@ def _stage_diff_text(
     """한 diff 단계의 원문(성공한 실행분만 이어붙임).
 
     strict 면 실패한 git 실행을 RuntimeError 로 올린다 — 명시 base 의 오타/미존재 리비전은
-    조용한 빈 diff 가 아니라 오류여야 한다. 폴백 단계와 후보 판정은 실패를 '이 단계에는 변경
-    없음'으로 본다(그 단계가 없는 repo 도 정상 형상).
+    조용한 빈 diff 가 아니라 오류여야 한다. 대체 단계와 후보 판정은 실패를 '이 단계에는 변경
+    없음'으로 본다(그 단계가 없는 repo 도 정상 경우).
     """
     runs = _stage_diff_runs(root, stage_base, paths, run_fn)
     if strict:
