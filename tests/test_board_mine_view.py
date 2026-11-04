@@ -4,15 +4,15 @@
   (a) 내 area 의 open — status=open ∧ 그 티켓 area 의 `area_owner` == 내 user.
   (b) 내 in-progress — `claimed_by` 의 *user*(rsplit 추출) == 내 user (상태 무관).
 솔로 graceful(핵심): user 미상(None)이면 빈 보드 금지 → (a)=전체 open + (b)=내 슬롯 claim
-으로 폴백(현행과 사실상 동등). 무플래그 `board list` 는 무변경(additive).
+으로 대체(현행과 사실상 동등). 무플래그 `board list` 는 무변경(additive).
 
 이 파일이 검증하는 계약:
   1. **prefix/area 매핑** `_ticket_prefix`·`_ticket_area_owner` — ID prefix→repo→area_owner.
   2. **claimed_by user 추출** `_claimed_by_user` — `<user>/<slot>` rsplit · 슬롯-only graceful.
-  3. **`--mine` 필터** (a) area_owner==me open · (b) claimed_by.user==me · 솔로 폴백 · 무변경.
+  3. **`--mine` 필터** (a) area_owner==me open · (b) claimed_by.user==me · 솔로 대체 · 무변경.
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`AREAS_FILE`·`TICKETS_DIR` 등)은 import
-시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정하고 git 폴백은
+시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정하고 git 대체 조회는
 `_git_config_email` 을 stub 해 실 git config/실 루트를 절대 건드리지 않는다
 (test_board_identity.py·test_board_per_repo.py 의 hermetic 패턴 동류).
 """
@@ -62,7 +62,7 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
-    # 기본: git 폴백 미설정(None) — 실 git config 누출 차단. 명시 테스트가 덮는다.
+    # 기본: git 대체 조회 미설정(None) — 실 git config 누출 차단. 명시 테스트가 덮는다.
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     return mod
 
@@ -148,7 +148,7 @@ def test_ticket_prefix_family_scope_hyphen_prefix(board):
 
 def test_ticket_prefix_numeric_only_prefix(board):
     """순수 숫자 prefix(`123`)도 해소 — 등록 grammar(`pm_config._REPO_NAME_RE`·
-    `^[A-Za-z0-9][A-Za-z0-9_-]*$`)가 `123` 을 허용·등록하므로 소비 grammar 도 정합해야 한다.
+    `^[A-Za-z0-9][A-Za-z0-9_-]*$`)가 `123` 을 허용·등록하므로 소비 grammar 도 일치해야 한다.
 
     round-3 must-fix: 소비 grammar 가 비-숫자 1개를 강제했을 때(`[A-Za-z0-9_-]*[A-Za-z_-]…`)
     `T-123-001` 이 prefix 로 인식 안 돼(None) `_ticket_prefix`/wikilink/bootstrap 이 어긋났다.
@@ -231,7 +231,7 @@ def test_ticket_area_owner_legacy_id_multi_area_is_none(board):
     """no-prefix ID + area 여러 개(multi-repo)는 area_owner 미해소 → None.
 
     no-prefix 티켓이 multi-repo 레지스트리(area 2개)에 떨어지면 어느 area 인지 모호 →
-    None 유지(sole-area 폴백은 area 가 정확히 1개일 때만·기존 동작 보존)."""
+    None 유지(sole-area 대체는 area 가 정확히 1개일 때만·기존 동작 보존)."""
     _write_areas(board)  # PAY·ACC 두 area
     assert ticket_access._ticket_area_owner(pm_paths.home_at(board.REPO), "T-0164") is None
 
@@ -259,12 +259,12 @@ def test_ticket_area_owner_solo_no_prefix_resolves_sole_area(board):
 
 def test_ticket_area_owner_prefix_ticket_not_intercepted_by_sole_area(board):
     """단일 area 레지스트리라도 *prefix 가 있는* 티켓은 prefix→area 매핑 경로 그대로 —
-    sole-area 폴백이 prefix 티켓을 가로채지 않는다(multi-repo 정합·무회귀).
+    sole-area 대체가 prefix 티켓을 가로채지 않는다(multi-repo 와 일치·무회귀).
 
     단일 area(prefix=project_manager·area_owner=sumin)에서 *다른* prefix 티켓(`T-PAY-001`)은
     미등록 prefix → None(sole-area 의 sumin 으로 잘못 매핑되지 않음)."""
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_SOLO_AREAS, encoding="utf-8")
-    # 등록된 prefix 티켓은 prefix 행에서 직접 읽는다(sole-area 폴백 미경유):
+    # 등록된 prefix 티켓은 prefix 행에서 직접 읽는다(sole-area 대체 미경유):
     assert ticket_access._ticket_area_owner(pm_paths.home_at(board.REPO), "T-project_manager-001") == "sumin"
     # 미등록 prefix 는 sole-area 로 흘러내리지 않고 None(prefix 경로 유지):
     assert ticket_access._ticket_area_owner(pm_paths.home_at(board.REPO), "T-PAY-001") is None
@@ -272,7 +272,7 @@ def test_ticket_area_owner_prefix_ticket_not_intercepted_by_sole_area(board):
 
 # 두 prefix(PAY·ACC)가 *같은 `repo` 칼럼값*(monorepo)을 공유하고 각자 다른 area_owner.
 # areas registry 는 prefix-unique 만 보장하고 repo-unique 는 아니다 — 모노레포 같은 합법
-# 형상. 직접-읽기 수정 전의 이중홉(prefix→row→repo→_repo_area_owner 재스캔)은 repo 로
+# 구성. 직접-읽기 수정 전의 이중홉(prefix→row→repo→_repo_area_owner 재스캔)은 repo 로
 # 재스캔해 *그 repo 의 첫 행*(PAY/alice) area_owner 를 돌려줘 ACC 도 alice 로 오인했다.
 _SHARED_REPO_AREAS = (
     "# Area Registry\n\n"
@@ -288,7 +288,7 @@ def test_ticket_area_owner_shared_repo_resolves_per_prefix(board):
 
     이중홉(repo 재스캔) 회귀 방지(reviewer should-fix): repo-unique 가 아니므로 repo 로
     재스캔하면 monorepo 의 첫 행(PAY/alice) area_owner 가 ACC 에도 반환됐다. prefix 행에서
-    직접 읽으면(line 737 선례 동형) PAY→alice·ACC→bob 으로 각자 맞게 나온다.
+    직접 읽으면(line 737 선례와 같은 방식) PAY→alice·ACC→bob 으로 각자 맞게 나온다.
     """
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_SHARED_REPO_AREAS, encoding="utf-8")
     assert ticket_access._ticket_area_owner(pm_paths.home_at(board.REPO), "T-PAY-001") == "alice"
@@ -376,10 +376,10 @@ def test_mine_includes_numeric_only_prefix_area_open(board, capsys):
     소비 grammar 가 등록 grammar 보다 좁으면(비-숫자 강제) `T-123-001` 이 legacy(None)로 빠져
     area_owner None → alice --mine 에서 누락(이 단언이 수정 전 fail).
 
-    (T-0164 sole-area 폴백 후 정정): 이 레지스트리는 *단일 area* 라 no-prefix 티켓 seed 는
-    sole-area 폴백으로 그 area 에 흡수된다 — no-prefix 제외 검증은 multi-area 레지스트리에서만
+    (T-0164 sole-area 대체 후 정정): 이 레지스트리는 *단일 area* 라 미리 넣은 no-prefix 티켓은
+    sole-area 대체로 그 area 에 들어간다 — no-prefix 제외 검증은 multi-area 레지스트리에서만
     유효하므로 `test_ticket_area_owner_legacy_id_multi_area_is_none` 으로 분리했다. 여기선 순수
-    숫자 *prefix* 해소만 단언한다(prefix 티켓이 sole-area 폴백 미경유로 정확히 잡힘)."""
+    숫자 *prefix* 해소만 단언한다(prefix 티켓이 sole-area 대체 미경유로 정확히 잡힘)."""
     areas = (
         "# Area Registry\n\n"
         "| repo | prefix | git | test_cmd | owner | base | protected | area_owner |\n"
@@ -422,7 +422,7 @@ def test_mine_includes_my_claim_any_status(board, capsys):
     """(b) claimed_by.user==나 면 상태 무관(claimed/done)으로 포함 — 연속성.
 
     기본 status 뷰(T-0197)는 활성만(done 접기) — done 클레임까지 보려면
-    `--status all` 을 명시한다(status 셀렉터는 `--mine` 과 직교하는 별도 축).
+    `--status all` 을 명시한다(status 셀렉터는 `--mine` 과 직교하는 별도 기준).
     """
     _write_conf(board, user="alice", session="pm-1")
     _write_areas(board)
@@ -455,12 +455,12 @@ def test_mine_solo_git_email_legacy_slot_only_included(board, capsys, monkeypatc
     """**codex R2 회귀 가드**: git email 로 my_user 해소된 solo(distinct user ≤1)도 자기 슬롯의
     legacy 슬롯-only claim 을 --mine 에서 계속 본다.
 
-    게이트가 `not multi_user`(진짜 solo)라 git email 유무와 무관. `my_user is None` proxy 였으면
+    조건이 `not multi_user`(진짜 solo)라 git email 유무와 무관. `my_user is None` proxy 였으면
     git email 만 설정한 흔한 solo 에서 legacy 슬롯 claim 이 사라지는 과보정(round-1)이 났다.
     """
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "solo@example.com")  # type: ignore[assignment]
-    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")           # 세션 바인딩(conf 폴백 폐지·T-0779)
-    _write_conf(board)                                      # user= 없음 → git email 폴백(my_user 해소)
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")           # 세션 바인딩(conf 대체 폐지·T-0779)
+    _write_conf(board)                                      # user= 없음 → git email 대체(my_user 해소)
     _seed(board, "T-ACC-005", "claimed", claimed_by="pm-1")  # legacy 슬롯-only·내 슬롯
     ids = _list_ids(board, capsys, mine=True)
     assert ids == ["T-ACC-005"]     # solo → legacy 슬롯-only 포함(git email 해소돼도)
@@ -503,15 +503,15 @@ def test_mine_is_union_of_area_open_and_my_claim(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 솔로 graceful — user None 폴백(빈 보드 아님)
+# 솔로 graceful — user None 대체(빈 보드 아님)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_mine_solo_user_none_not_empty(board, capsys, monkeypatch):
     """user 미상(None) + areas.md 부재(솔로): --mine 이 빈 보드를 주지 않는다.
 
-    폴백 = 전체 open + 내 슬롯 claim → 현행 list 와 사실상 동등(spike §2.D 핵심).
+    대체 = 전체 open + 내 슬롯 claim → 현행 list 와 사실상 동등(spike §2.D 핵심).
     """
-    # 세션은 env 바인딩(conf 폴백 폐지·T-0779)·user 미상(git 폴백 None·fixture)·areas.md 부재.
+    # 세션은 env 바인딩(conf 대체 폐지·T-0779)·user 미상(git 대체 조회 None·fixture)·areas.md 부재.
     monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
     _write_conf(board)
     _seed(board, "T-0001", "open")
@@ -534,7 +534,7 @@ _SOLO_TWO_AREA = (
 
 
 def test_mine_solo_includes_all_open(board, capsys):
-    """솔로 폴백 (a) = 전체 open — **genuinely solo**(단일 area_owner) + user 미상이면 소유 판정 불가.
+    """솔로 대체 (a) = 전체 open — **genuinely solo**(단일 area_owner) + user 미상이면 소유 판정 불가.
 
     codex R3 정정: solo = distinct ticket-user ≤1 AND distinct area_owner ≤1. 여기 레지스트리는
     두 area 모두 alice 소유(내 repo 2개·distinct owner 1)라 진짜 solo → all-open degrade. area_owner
@@ -559,7 +559,7 @@ def test_distinct_area_owners_counts_multiplicity(board):
 
 # NB(ADR-0057·T-0323): `test_mine_multiowner_all_legacy_no_leak`(codex R3 leak 가드)는
 # 삭제됐다 — bare `--slot N`(repo 불문 cross-repo suffix 매칭)이 이 테스트가 지키던 정확한
-# 취약 클래스였는데, ADR-0057 이 그 인자 표면 자체를 제거했다(`--slot` 은 이제 `--repo` 필수 —
+# 취약 클래스였는데, ADR-0057 이 그 인자 자체를 제거했다(`--slot` 은 이제 `--repo` 필수 —
 # 같은 슬롯 번호가 *다른* repo 를 가리켜 충돌할 길이 CLI 층에서 구조적으로 막힌다). `--repo
 # service-a --slot 1` 로 갱신해도 repo 불일치로 타 area 티켓이 애초에 안 걸려 무의미(공허 통과)
 # 해진다 — `_distinct_area_owners` multi-user 판정 자체는 단위테스트(`test_distinct_area_owners_
@@ -568,8 +568,8 @@ def test_distinct_area_owners_counts_multiplicity(board):
 
 
 def test_mine_solo_claim_matches_my_slot(board, capsys, monkeypatch):
-    """솔로 폴백 (b) = 내 슬롯(session_name)의 claim — 슬롯-only 값 매칭."""
-    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")   # 세션 바인딩(conf 폴백 폐지·T-0779)
+    """솔로 대체 (b) = 내 슬롯(session_name)의 claim — 슬롯-only 값 매칭."""
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")   # 세션 바인딩(conf 대체 폐지·T-0779)
     _write_conf(board)
     _seed(board, "T-0003", "claimed", claimed_by="pm-1")
     _seed(board, "T-0004", "done", claimed_by="pm-2")   # 남의 슬롯 → 제외
@@ -622,7 +622,7 @@ def test_area_owner_in_use_all_empty(board):
 def test_mine_solo_user_known_but_no_registry_not_empty(monkeypatch, board, capsys):
     """**핵심 회귀 가드**: git email 있어 my_user non-None 이지만 areas.md 부재(**solo**).
 
-    흔한 솔로 케이스 — `git config user.email` 폴백으로 my_user 가 해소되지만 area_owner 가
+    흔한 솔로 케이스 — `git config user.email` 대체로 my_user 가 해소되지만 area_owner 가
     보드에 운영되지 않는다(_area_owner_in_use False). (a) 가 전체 open 으로 degrade 해야 한다
     — bootstrap 기본뷰 `list --mine` 보드가 비면 안 된다(빈 보드 금지·plain list 처럼).
 
@@ -632,7 +632,7 @@ def test_mine_solo_user_known_but_no_registry_not_empty(monkeypatch, board, caps
     `test_mine_excludes_others_claim` 가 별도로 못박고, 다중사용자 strict-exclude 는
     `test_board_multipm.py` 의 세션 격리 스위트 소관이다."""
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "solo@example.com")  # type: ignore[assignment]
-    _write_conf(board, session="pm-1")  # user 키 없음 → git email 폴백 탐
+    _write_conf(board, session="pm-1")  # user 키 없음 → git email 대체 탐
     _seed(board, "T-0001", "open")
     _seed(board, "T-0002", "open")
     _seed(board, "T-0003", "claimed", claimed_by="solo@example.com/pm-1")  # 내 user-claim
@@ -648,8 +648,8 @@ def test_mine_user_known_area_owner_in_use_filters_to_my_areas(monkeypatch, boar
 
     T-0168 단순화의 **의도된 동작 변경**: area_owner 파티션이 운영 중이면(마이그레이션됨)
     (a) 는 area_owner==me 로 좁힌다. carol 소유 area 가 0개면 (a) 는 빈다 — 이건 회귀가 아니라
-    '내 area 의 open 이 없음'이라는 올바른 결과(이전 per-user 폴백은 전체 open 으로 떨어졌으나,
-    데이터 정합 후엔 좁히는 게 맞다·사용자 결정 2026-06-26).
+    '내 area 의 open 이 없음'이라는 올바른 결과(이전 per-user 대체는 전체 open 으로 떨어졌으나,
+    데이터 일치 후엔 좁히는 게 맞다·사용자 결정 2026-06-26).
     """
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "carol")  # type: ignore[assignment]
     _write_conf(board, session="pm-1")
@@ -682,8 +682,8 @@ def test_mine_solo_no_prefix_open_included_when_migrated(monkeypatch, board, cap
 
     PM 이 실 데이터로 잡은 버그: migration 이 area_owner 를 채워 _area_owner_in_use True 가
     되면 (a) 가 area_owner==me 로 좁혀지는데, no-prefix 티켓은 _ticket_area_owner None 이라
-    제외됐고 전체-open 폴백도 안 타 솔로 보드의 모든 open 티켓이 --mine 에서 사라졌다(claim 만
-    보임). sole-area 폴백으로 no-prefix 티켓이 단일 area_owner==me 로 해소돼 (a)에 든다.
+    제외됐고 전체-open 대체도 안 타 솔로 보드의 모든 open 티켓이 --mine 에서 사라졌다(claim 만
+    보임). sole-area 대체로 no-prefix 티켓이 단일 area_owner==me 로 해소돼 (a)에 든다.
     이 단언이 수정 전 fail(=빈 (a))."""
     monkeypatch.setattr(lease_store, '_git_config_email', lambda _home: "sumin")  # type: ignore[assignment]
     _write_conf(board, session="project_manager_1")
@@ -691,7 +691,7 @@ def test_mine_solo_no_prefix_open_included_when_migrated(monkeypatch, board, cap
     _seed(board, "T-0162", "open")  # no-prefix open
     _seed(board, "T-0163", "open")  # no-prefix open
     ids = _list_ids(board, capsys, mine=True)
-    # area_owner_in_use True(migrated) 인데도 sole-area 폴백으로 no-prefix open 이 (a)에 든다.
+    # area_owner_in_use True(migrated) 인데도 sole-area 대체로 no-prefix open 이 (a)에 든다.
     assert set(ids) == {"T-0162", "T-0163"}
 
 
@@ -762,7 +762,7 @@ def test_list_all_does_not_resolve_identity(board, capsys, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# scan_task_tickets — task end 소진 게이트 스캔 (⑲·T-0354·자체 스캔)
+# scan_task_tickets — task end 소진 확인 스캔 (⑲·T-0354·자체 스캔)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_scan_task_tickets_matches_user_slash_task_claimed(board):
@@ -798,37 +798,37 @@ def test_scan_task_tickets_prefix_open_info_only(board):
     _seed(board, "T-ACC-001", "open")                               # 다른 prefix — 제외
     scan = ticket_access.scan_task_tickets(pm_paths.home_at(board.REPO), "alice", "mytask", prefix="PAY")
     assert {r["id"] for r in scan["prefix_open"]} == {"T-PAY-001"}
-    # claimed 축은 prefix 와 독립 — mytask claim 은 여전히 잡힌다.
+    # claimed 목록은 prefix 와 독립 — mytask claim 은 여전히 잡힌다.
     assert {r["id"] for r in scan["claimed"]} == {"T-PAY-002"}
 
 
 def test_scan_task_tickets_no_prefix_no_prefix_open(board):
-    """prefix 미지정이면 prefix_open 은 항상 비어있다(정보 축 off)."""
+    """prefix 미지정이면 prefix_open 은 항상 비어있다(정보 목록 off)."""
     _seed(board, "T-PAY-001", "open")
     scan = ticket_access.scan_task_tickets(pm_paths.home_at(board.REPO), "alice", "mytask")
     assert scan["prefix_open"] == []
 
 
 def test_scan_task_tickets_empty_when_no_match(board):
-    """일치 티켓이 없으면 두 축 모두 빈 리스트(게이트 통과 신호·거짓 거부 없음)."""
+    """일치 티켓이 없으면 두 목록 모두 빈 리스트(소진 확인 통과 신호·거짓 거부 없음)."""
     _seed(board, "T-0001", "open")
     scan = ticket_access.scan_task_tickets(pm_paths.home_at(board.REPO), "alice", "mytask")
     assert scan == {"claimed": [], "prefix_open": []}
 
 
 def test_scan_task_tickets_done_claimed_excluded(board):
-    """**must-fix ①·회귀 가드**: done+claimed_by 잔존은 claimed 축에서 제외 → task end 통과.
+    """**must-fix ①·회귀 가드**: done+claimed_by 잔존은 claimed 목록에서 제외 → task end 통과.
 
     `cmd_complete` 는 done 이동 시 `claimed_by` 를 안 지운다 → `<user>/<task>` claim→complete 한
     티켓이 done/ 에 claimed_by 를 남긴다. 이걸 담으면(옛 상태 무관 스캔) 그 티켓은 `unclaim`(claimed
-    전용)도 불가라 task end 가 영구 차단됐다(⑲ 해소수단 부재 모순). done 은 소진 게이트 대상이 아니다."""
+    전용)도 불가라 task end 가 영구 차단됐다(⑲ 해소수단 부재 모순). done 은 소진 확인 대상이 아니다."""
     _seed(board, "T-0001", "done", claimed_by="alice/mytask")     # 완료·claimed_by 잔존
     scan = ticket_access.scan_task_tickets(pm_paths.home_at(board.REPO), "alice", "mytask")
-    assert scan["claimed"] == []     # done 은 제외 → 게이트 통과(영구 차단 해소)
+    assert scan["claimed"] == []     # done 은 제외 → 소진 확인 통과(영구 차단 해소)
 
 
-def test_scan_task_tickets_blocked_still_gated(board):
-    """진행 중(blocked)의 내 claim 은 여전히 claimed 축(완료 아님·소진 게이트 유지·done 만 예외)."""
+def test_scan_task_tickets_blocked_still_checked(board):
+    """진행 중(blocked)의 내 claim 은 여전히 claimed 목록(완료 아님·소진 확인 유지·done 만 예외)."""
     _seed(board, "T-0001", "blocked", claimed_by="alice/mytask")
     scan = ticket_access.scan_task_tickets(pm_paths.home_at(board.REPO), "alice", "mytask")
     assert {r["id"] for r in scan["claimed"]} == {"T-0001"}

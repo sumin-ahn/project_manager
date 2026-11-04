@@ -10,11 +10,11 @@ ADR-0067(ADR-0066 amend): 세션의 기본 화면(무인자 `list`·명시 세�
   2. **user ∧ 세션 claim 상세** — user-qualified claim은 user와 세션(슬롯/task exact)이 모두
      일치할 때만 상세.
   3. **세션 부재 created_by**(user-only·backfill 대상) — 바인딩 세션 뷰에서 비노출.
-  4. **무바인딩/솔로 폴백** — 세션 미해소면 user-단위(--mine) 폴백(solo=subset·등가).
+  4. **무바인딩/솔로 대체** — 세션 미해소면 user-단위(--mine) 대체(solo=subset·등가).
   5. **접힘 카운트 줄 부재** — "그 외 open" 꼬리 줄이 어떤 경우에도 안 나온다.
   6. **`--all`** — 필터 없는 전체 보드(모든 세션·타 사용자)·정체성 무해소·상호 배타.
 
-hermetic 패턴은 `test_board_mine_view.py` 와 동형 — board.py 경로 전역을 tmp 프로젝트로 monkeypatch
+hermetic 패턴은 `test_board_mine_view.py` 와 같은 방식 — board.py 경로 전역을 tmp 프로젝트로 monkeypatch
 하고, 추가로 LEASES_FILE·PM_SESSION_NAME/CLAUDE_SESSION_NAME env 를 통제한다.
 """
 from __future__ import annotations
@@ -76,7 +76,7 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     # ambient 세션 env 를 먼저 지우고(실환경 격리) 이 파일의 canonical 세션을 명시 바인딩한다 —
-    # per-clone conf `session=` 폴백은 폐지됐다(T-0779). 다른 세션이 필요한 테스트는 자기
+    # per-clone conf `session=` 대체는 폐지됐다(T-0779). 다른 세션이 필요한 테스트는 자기
     # monkeypatch.setenv 로 덮는다(나중이 이김).
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setenv("PM_SESSION_NAME", "project_manager_1")
@@ -163,7 +163,7 @@ def test_default_view_created_session_matches_task_session(board, capsys, monkey
 
 
 def test_default_view_created_session_requires_same_user(board, capsys, monkeypatch):
-    """생성 세션 라벨이 같아도 타 user open은 제외 — user ∧ session 복합축."""
+    """생성 세션 라벨이 같아도 타 user open은 제외 — user ∧ session 복합 기준."""
     monkeypatch.setenv("PM_SESSION_NAME", "refactor")
     _write_conf(board, user="alice")
     _seed(board, "T-PAY-001", "open", created_by="bob/refactor")   # 타 user·동일 세션 → 비노출
@@ -196,7 +196,7 @@ def test_default_view_solo_legacy_slot_claim_shown(board, capsys):
     assert _ids(out) == ["T-0003"]
 
 
-def test_default_view_claim_axis_requires_same_user(board, capsys):
+def test_default_view_claim_filter_requires_same_user(board, capsys):
     """user-qualified claim은 user ∧ session. multi-user에서 legacy
     슬롯-only는 모호하므로 strict-exclude한다."""
     _write_conf(board, user="alice")
@@ -256,7 +256,7 @@ def test_default_view_unresolved_user_multi_user_strict_excludes(board, capsys, 
 def test_default_view_solo_resolved_user_legacy_slot_claim_shown(board, capsys):
     """조회 user가 해소된 solo에서도 legacy 슬롯-only claim은 자기 세션에 보인다.
 
-    solo 게이트는 `my_user is None` 대용값이 아니라 실제 `multi_user` 판정이어야 한다.
+    solo 조건은 `my_user is None` 대용값이 아니라 실제 `multi_user` 판정이어야 한다.
     """
     _write_conf(board, user="alice")
     _seed(board, "T-0001", "claimed", claimed_by="project_manager_1")
@@ -281,12 +281,12 @@ def test_default_view_created_by_without_session_hidden(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ④ 무바인딩/솔로 — user-단위(--mine) 폴백 (solo=subset·특례 아님)
+# ④ 무바인딩/솔로 — user-단위(--mine) 대체 (solo=subset·특례 아님)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_default_view_unbound_falls_back_to_user_stream(board, capsys, monkeypatch):
-    """세션 미해소(무바인딩)면 user-단위 폴백 — 내 소유(user) open + 타 사용자 open 은 strict-exclude."""
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)   # 무바인딩 형상
+    """세션 미해소(무바인딩)면 user-단위 대체 — 내 소유(user) open + 타 사용자 open 은 strict-exclude."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)   # 무바인딩 상태
     _write_conf(board, user="alice")
     _seed(board, "T-0001", "open", created_by="alice/whatever")  # owner alice → 상세
     _seed(board, "T-0002", "open", created_by="bob/x")           # owner bob·multi_user → 제외
@@ -297,7 +297,7 @@ def test_default_view_unbound_falls_back_to_user_stream(board, capsys, monkeypat
 
 def test_default_view_solo_no_identity_degrades_to_all_open(board, capsys, monkeypatch):
     """정체성 둘 다 미상(user·session)이면 all-open degrade — 소유 미해소 open 도 상세."""
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)   # 무바인딩 형상
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)   # 무바인딩 상태
     # conf 없음 → user 미상·session 미상. distinct user ≤1 → not multi_user → degrade.
     _seed(board, "T-0002", "open", created_by=None)
     out = _run(board, capsys)
@@ -387,6 +387,6 @@ def test_all_mutually_exclusive_with_task(board):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_list_all_flag_parses(board):
-    """`list --all` 이 argparse 레벨에서 파싱된다(파서 등록·카드↔CLI 정합 입력)."""
+    """`list --all` 이 argparse 레벨에서 파싱된다(파서 등록·카드↔CLI 일치 입력)."""
     args = board_cmd.build_parser().parse_args(["list", "--all"])
     assert args.all is True

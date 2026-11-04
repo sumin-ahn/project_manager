@@ -1,25 +1,25 @@
 """claim 소유 대조 · 처분 종결(discarded) · 오처리 복구(reopen) 단위 회귀 (T-0781).
 
-세 축을 담는다.
+세 항목을 담는다.
 
-**축 A — 소유 대조**: `claimed_by` 가 박힌 티켓의 상태 변경(`complete`·`block`·`unclaim`·
+**항목 A — 소유 대조**: `claimed_by` 가 박힌 티켓의 상태 변경(`complete`·`block`·`unclaim`·
 `unblock`·`discard`)은 그 소유 정체성에서만 성립한다. 옛 동작은 status 만 봤기 때문에 다른
 슬롯이 claim 한 티켓을 아무 세션이나 complete 할 수 있었다(채택자 실사고 — 다른 슬롯이 발행한
-티켓을 자기 것으로 착각해 `complete --tests-pass`, 실제 진행 0). 판정 축은 조회 뷰
+티켓을 자기 것으로 착각해 `complete --tests-pass`, 실제 진행 0). 판정 기준은 조회 뷰
 (`_ticket_is_mine`)와 **같은 규칙**이고 판정 함수도 하나다(`_ticket_ownership` — `cmd_reid` 도
 이 함수를 소비한다).
 
-**축 B — 소유자 부재 이전**: `unclaim --takeover --reason <사유>` 하나뿐이다. 다른 커맨드에는
+**항목 B — 소유자 부재 이전**: `unclaim --takeover --reason <사유>` 하나뿐이다. 다른 커맨드에는
 takeover 인수를 두지 않는다(문이 넷이면 소유 규칙이 네 벌이 된다). 사유는 티켓 본문과 board-git
 커밋 메시지 **양쪽**에 남는다 — board-git 을 안 쓰는 채택자도 이력이 남아야 한다.
 
-**축 C — 종결 두 종류**: `done`(구현 완료) · `discarded`(처분 — 병합·폐기). 처분을 complete 로
-내보내던 옛 형상은 done/ 에 구현 0 티켓을 섞었다. `reopen` 은 그 종결을 되돌리는 유일한 문이다.
+**항목 C — 종결 두 종류**: `done`(구현 완료) · `discarded`(처분 — 병합·폐기). 처분을 complete 로
+내보내던 옛 방식은 done/ 에 구현 0 티켓을 섞었다. `reopen` 은 그 종결을 되돌리는 유일한 문이다.
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`TICKETS_DIR`·`LOCAL_CONF`·`LEASES_FILE` 등)은
 import 시점에 실 repo 절대경로로 굳는다 — tmp 프로젝트로 재지정하고, 정체성은 **명시 바인딩**
 (세션=`PM_SESSION_NAME` env 또는 `--repo/--slot` · user=tmp `local.conf user=`)만 쓴다. per-clone
-conf 의 `session=` 폴백은 폐지됐으므로(T-0779) 세션 바인딩에 쓰지 않는다.
+conf 의 `session=` 대체는 폐지됐으므로(T-0779) 세션 바인딩에 쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -64,9 +64,9 @@ _GIT_IDENTITY = {
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
 }
 
-# 통과하는 DoD — 완료 게이트의 다른 축(전량 이월·절 부재)에 걸리지 않는 최소 본문.
+# 통과하는 DoD — 완료 검사의 다른 기준(전량 이월·절 부재)에 걸리지 않는 최소 본문.
 _DOD_DONE = "## 완료 조건 (Definition of Done)\n- [x] 구현\n"
-# 전량 이월 DoD — 구현 0. 실증 4건(T-0769·T-0773·T-0775 병합 · T-0743 취소)의 형상이다.
+# 전량 이월 DoD — 구현 0. 실증 4건(T-0769·T-0773·T-0775 병합 · T-0743 취소)의 구성이다.
 _DOD_ALL_DEFERRED = (
     "## 완료 조건 (Definition of Done)\n"
     "- [>] 구현 (이월: T-0002 로 병합 — PM 2단계 분할 판정)\n"
@@ -100,7 +100,7 @@ def board(tmp_path, monkeypatch):
     overrides = {'REPO': proj}
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
-    # user 축은 conf 로, 세션 축은 env 로 명시 바인딩(실 git config·실 clone conf 미접촉).
+    # user 기준은 conf 로, 세션 기준은 env 로 명시 바인딩(실 git config·실 clone conf 미접촉).
     (pm / "local.conf").write_text("identity.user=alice\n", encoding="utf-8")
     monkeypatch.setattr(lease_store, "_git_config_email", lambda _home: None)
     monkeypatch.setenv("PM_SESSION_NAME", "pm_1")
@@ -151,7 +151,7 @@ def _write_leases(board, *sessions: str) -> None:
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 축 A — 소유 대조 (5 커맨드 × 7 형상)
+# 항목 A — 소유 대조 (5 커맨드 × 7 경우)
 # ════════════════════════════════════════════════════════════════════════
 #
 # 커맨드별 (출발 status, 인자, 통과 시 도착 status). 인자는 실 파서가 만드는 Namespace 와 같은
@@ -176,7 +176,7 @@ def _call(board, command: str, tid: str = "T-0001", **identity) -> int:
 
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 def test_owner_session_passes(board, command):
-    """형상 1 — user·slot 이 모두 일치하는 소유 세션은 종전대로 통과한다(회귀 기준선)."""
+    """경우 1 — user·slot 이 모두 일치하는 소유 세션은 종전대로 통과한다(회귀 기준선)."""
     source, _kwargs, dest = _COMMANDS[command]
     _seed(board, status=source)
 
@@ -187,7 +187,7 @@ def test_owner_session_passes(board, command):
 
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 def test_other_slot_is_rejected_without_touching_the_ticket(board, command, capsys):
-    """형상 2 — 같은 user·다른 슬롯은 거부. 파일은 한 바이트도 안 바뀌고 문구가 3요소를 낸다."""
+    """경우 2 — 같은 user·다른 슬롯은 거부. 파일은 한 바이트도 안 바뀌고 문구가 3요소를 낸다."""
     source, _kwargs, dest = _COMMANDS[command]
     path = _seed(board, status=source, claimed_by="alice/pm_2")
     before = path.read_bytes()
@@ -205,7 +205,7 @@ def test_other_slot_is_rejected_without_touching_the_ticket(board, command, caps
 
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 def test_other_user_on_the_same_slot_is_rejected(board, command):
-    """형상 3 — 슬롯 이름이 같아도 user 가 다르면 거부(동명 슬롯 교차사용자 누출 차단)."""
+    """경우 3 — 슬롯 이름이 같아도 user 가 다르면 거부(동명 슬롯 교차사용자 누출 차단)."""
     source, _kwargs, _dest = _COMMANDS[command]
     path = _seed(board, status=source, claimed_by="bob/pm_1", created_by="bob/pm_1")
     before = path.read_bytes()
@@ -216,7 +216,7 @@ def test_other_user_on_the_same_slot_is_rejected(board, command):
 
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 def test_legacy_slot_only_claim_passes_on_a_solo_board(board, command):
-    """형상 4 — user 토큰 없는 레거시 claim 은 solo 보드에서 슬롯 일치로 통과(degrade 보존)."""
+    """경우 4 — user 토큰 없는 레거시 claim 은 solo 보드에서 슬롯 일치로 통과(degrade 보존)."""
     source, _kwargs, dest = _COMMANDS[command]
     _seed(board, status=source, claimed_by="pm_1", created_by="pm_1")
 
@@ -226,7 +226,7 @@ def test_legacy_slot_only_claim_passes_on_a_solo_board(board, command):
 
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 def test_legacy_slot_only_claim_is_rejected_on_a_multi_user_board(board, command):
-    """형상 5 — 다중사용자 보드의 슬롯-only claim 은 귀속이 모호하다 → 거부(strict-exclude)."""
+    """경우 5 — 다중사용자 보드의 슬롯-only claim 은 귀속이 모호하다 → 거부(strict-exclude)."""
     source, _kwargs, _dest = _COMMANDS[command]
     path = _seed(board, status=source, claimed_by="pm_1", created_by="pm_1")
     # 다중사용자 신호 — 다른 user 로 귀속된 티켓 1건이면 `_distinct_ticket_users()` 가 2가 된다.
@@ -240,9 +240,9 @@ def test_legacy_slot_only_claim_is_rejected_on_a_multi_user_board(board, command
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 def test_unresolved_session_is_rejected_and_names_the_explicit_flags(
         board, command, monkeypatch, capsys):
-    """형상 6 — 세션 미해소(활성 리스 2개·인자 없음)는 거부하고 `--task` 를 안내한다(T-0962).
+    """경우 6 — 세션 미해소(활성 슬롯 대여 2개·인자 없음)는 거부하고 `--task` 를 안내한다(T-0962).
 
-    "검사 skip" 폴백은 두지 않는다 — 소유를 증명할 수 없는 상태에서 남의 티켓을 옮기는 쪽이
+    "검사 skip" 대체는 두지 않는다 — 소유를 증명할 수 없는 상태에서 남의 티켓을 옮기는 쪽이
     더 나쁘다(claim 의 `required=True` fail-loud 와 대칭).
     """
     source, _kwargs, _dest = _COMMANDS[command]
@@ -261,7 +261,7 @@ def test_unresolved_session_is_rejected_and_names_the_explicit_flags(
 
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 def test_ticket_without_an_owner_is_not_a_target(board, command):
-    """형상 7 — `claimed_by` 가 없으면 소유자 자체가 없다 → 무대상(새 차단 아님)."""
+    """경우 7 — `claimed_by` 가 없으면 소유자 자체가 없다 → 무대상(새 차단 아님)."""
     source, _kwargs, _dest = _COMMANDS[command]
     _seed(board, status=source, claimed_by=None)
 
@@ -277,7 +277,7 @@ def test_open_ticket_block_and_claim_are_unaffected(board):
 
 
 def test_reid_consumes_the_same_ownership_judgement(board, capsys):
-    """`reid` 의 타 세션 claim 가드도 같은 판정 함수를 쓴다 — user 축까지 본다(판정 2벌 금지)."""
+    """`reid` 의 타 세션 claim 가드도 같은 판정 함수를 쓴다 — user 기준까지 본다(판정 2벌 금지)."""
     _seed(board, claimed_by="bob/pm_1", created_by="bob/pm_1")
 
     rc = board_prefix.cmd_reid(pm_paths.home_at(board.REPO), argparse.Namespace(
@@ -290,7 +290,7 @@ def test_reid_consumes_the_same_ownership_judgement(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 축 B — 소유자 부재 이전 (unclaim --takeover)
+# 항목 B — 소유자 부재 이전 (unclaim --takeover)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_takeover_releases_a_foreign_claim_and_records_the_reason(board):
@@ -360,7 +360,7 @@ def test_blocked_owner_can_unclaim_without_takeover(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 축 C — 처분 종결(discard) · 오처리 복구(reopen)
+# 항목 C — 처분 종결(discard) · 오처리 복구(reopen)
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.parametrize("source", ["open", "claimed", "blocked"])
@@ -437,7 +437,7 @@ def test_board_md_renders_a_discarded_section_without_a_key_error(board):
 
 
 def test_task_end_scan_ignores_discarded_tickets(board):
-    """task 소진 게이트는 종결(done·discarded)을 안 본다 — 처분 티켓이 task end 를 영구 차단하지 않는다."""
+    """task 소진 확인은 종결(done·discarded)을 안 본다 — 처분 티켓이 task end 를 영구 차단하지 않는다."""
     _seed(board, "T-0001", status="discarded", claimed_by="alice/job1",
           disposition="dropped", disposition_reason="취소")
 
@@ -445,7 +445,7 @@ def test_task_end_scan_ignores_discarded_tickets(board):
 
 
 def test_reopen_resets_every_terminal_field(board):
-    """`reopen` 은 완료·처분·소유 표식을 **전부** 비우고 사유를 본문에 남긴다(값 단언)."""
+    """`reopen` 은 완료·처분·소유 표시를 **전부** 비우고 사유를 본문에 남긴다(값 단언)."""
     _seed(board, status="discarded", claimed_by="alice/pm_1",
           claimed_rev="b" * 40, completed_at="2026-08-20T01:00:00+00:00",
           disposition="merged", disposition_reason="T-0002 로 병합")
@@ -490,8 +490,8 @@ def test_reopen_rejects_a_non_terminal_ticket(board):
 def test_reopened_ticket_runs_the_normal_cycle_again(board):
     """왕복 — done → reopen → claim → complete 가 정상 사이클로 돈다.
 
-    되돌린 티켓은 발행된 티켓과 같은 형상이다 — reopen 이 open 진입 자리에서 크기 1 장부를
-    만들므로 완료도 다른 열린 티켓과 같이 그 묶음 결속으로 한다(`--cluster-close`).
+    되돌린 티켓은 발행된 티켓과 같은 구성이다 — reopen 이 open 진입 자리에서 크기 1 묶음 기록을
+    만들므로 완료도 다른 열린 티켓과 같이 그 묶음 연결로 한다(`--cluster-close`).
     """
     _seed(board, status="done", claimed_by="alice/pm_1",
           completed_at="2026-08-20T01:00:00+00:00")
@@ -502,7 +502,7 @@ def test_reopened_ticket_runs_the_normal_cycle_again(board):
     fm, _body = ticket_store.load_ticket(_ticket_path(board, "T-0001", "claimed"))
     assert fm["claimed_by"] == "alice/pm_1"
 
-    _mark_ledger_closing(board, "C-T-0001")
+    _mark_records_closing(board, "C-T-0001")
     assert _call(board, "complete", cluster_close="C-T-0001") == 0
     assert list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "done").glob("T-0001-*.md"))
 
@@ -518,9 +518,9 @@ def test_all_deferred_completion_is_refused_but_the_discard_path_works(board, ca
 
     assert board_ticket.cmd_reopen(pm_paths.home_at(board.REPO), argparse.Namespace(
         id="T-0001", reason="처분 종결로 재분류(T-0781 backfill)")) == 0
-    # 되돌린 뒤 다시 claim→complete 를 시도하면 전량 이월이라 막힌다(그 형상이 done 이 아님).
+    # 되돌린 뒤 다시 claim→complete 를 시도하면 전량 이월이라 막힌다(그 상태가 done 이 아님).
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_ns(board)) == 0
-    _mark_ledger_closing(board, "C-T-0001")
+    _mark_records_closing(board, "C-T-0001")
     assert _call(board, "complete", cluster_close="C-T-0001") == 1
     assert "discard" in capsys.readouterr().err
 
@@ -536,7 +536,7 @@ def test_all_deferred_completion_is_refused_but_the_discard_path_works(board, ca
 
 
 # ════════════════════════════════════════════════════════════════════════
-# board-git 결속 — takeover 사유 커밋 · 원격 처분 티켓 claim race-lost
+# board-git 연결 — takeover 사유 커밋 · 원격 처분 티켓 claim race-lost
 # ════════════════════════════════════════════════════════════════════════
 
 def _make_board_git(board, root: Path, *, remote: Path, tid: str = "T-0001",
@@ -588,7 +588,7 @@ def test_remote_discarded_ticket_makes_a_claim_race_lost(board, tmp_path, capsys
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(board, board._proj, remote=bare, status="discarded",
                                 claimed_by="bob/other_1")
-    # 로컬 사본만 open 으로 되돌린 stale 형상 — 원격은 여전히 discarded 다.
+    # 로컬 사본만 open 으로 되돌린 stale 상태 — 원격은 여전히 discarded 다.
     local = board_dir / "tickets" / "discarded" / "T-0001-t.md"
     local.rename(board_dir / "tickets" / "open" / "T-0001-t.md")
 
@@ -599,13 +599,13 @@ def test_remote_discarded_ticket_makes_a_claim_race_lost(board, tmp_path, capsys
     assert "discarded" in err, err
 
 
-def _mark_ledger_closing(board, cluster: str) -> None:
-    """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
+def _mark_records_closing(board, cluster: str) -> None:
+    """[[T-0959]] 연결된 완료는 종결 파이프라인이 묶음 기록을 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), cluster)
-    ledger["status"] = "closing"
-    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger)
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), cluster)
+    records["status"] = "closing"
+    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), records)
 
 
 def test_t0962_takeover_requires_task_and_records_it(board, monkeypatch, capsys):

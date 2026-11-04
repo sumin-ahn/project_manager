@@ -28,7 +28,7 @@ def _rewrite_text_counted(text: str, id_map: dict[str, str]) -> tuple[str, dict[
     """`rewrite_text_token_aware` 의 per-ID 카운트 판 (rewrite_refs 의 N 집계용·내부).
 
     반환 `(new_text, {old_id: 치환건수})`. 빈 맵/무매치면 `(text, {})`. old ID 를 **길이
-    내림차순**으로 alternation 에 넣어 짧은 ID 가 더 긴 ID 를 가리는 것을 막는다(같은 앵커에서
+    내림차순**으로 alternation 에 넣어 짧은 ID 가 더 긴 ID 를 가리는 것을 막는다(같은 위치에서
     최장매치 선호). 단일 pass 치환이라 new 값 안에 다른 old 키가 있어도 재치환되지 않는다.
     """
     counts: dict[str, int] = {}
@@ -65,8 +65,8 @@ def collect_rewrite_targets(root: str | Path) -> list[Path]:
 
     `root` 는 `board/`·`wiki/`·`log/` 를 담는 디렉토리(관례상 `<REPO>/.project_manager`)를
     호출측이 주입한다 — 전역 상태 무의존·테스트가 tmp 트리를 그대로 넘긴다. 각 하위는 있을
-    때만 스캔한다(legacy 형상은 tickets/log 가 `wiki/` 안이라 `wiki.rglob` 가 이미 포섭·
-    board/ 분리 형상은 `board/tickets` 가 별도 → union). frontmatter·h1 포함 텍스트 전체가
+    때만 스캔한다(legacy 구성은 tickets/log 가 `wiki/` 안이라 `wiki.rglob` 가 이미 포섭·
+    board/ 분리 구성은 `board/tickets` 가 별도 → union). frontmatter·h1 포함 텍스트 전체가
     스캔 대상(depends_on 등 frontmatter 참조도 치환). 파일명 slug rename 은 범위 밖.
     """
     root = Path(root)
@@ -98,7 +98,7 @@ def rewrite_refs(root: str | Path, id_map: dict[str, str], *, dry_run: bool,
         # CRLF 채택자(Windows 회사 실측)의 파일을 rewrite 가 LF 로 무단 정규화하지 않게 한다.
         # 읽기 실패는 OSError(권한·소실)뿐 아니라 UnicodeDecodeError(비-UTF-8 바이너리·깨진
         # 인코딩)도 포함해 넓게 잡되, **silent 누락 금지** — skip 한 파일을 stderr 로 1줄 경고해
-        # 참조가 조용히 남는 것을 표면화한다.
+        # 참조가 조용히 남는 것을 드러낸다.
         try:
             with fs.open_shared(path, binary=False, encoding="utf-8", newline="") as fh:
                 text = fh.read()
@@ -127,7 +127,7 @@ def cmd_prefix_list(home, args: argparse.Namespace) -> int:
     """prefix별 티켓 수·번호범위 현황을 출력한다 (read-only·비파괴).
 
     STATUS_DIRS(전 상태 디렉토리)의 전 티켓 ID 를 파싱해 `T-<p>-NNN` → 그 prefix,
-    `T-NNNN` → `none`(무prefix)로 버킷팅한다. mess(카테고리 난립·번호 재시작)를 표면화하는
+    `T-NNNN` → `none`(무prefix)로 버킷팅한다. mess(카테고리 난립·번호 재시작)를 드러내는
     도구 — board mutation·rewrite 는 하지 않는다.
     """
     # prefix(또는 None=무prefix) → [(순번, 실 ID), …]. 실 ID 를 들고 있어 min/max 를 재구성
@@ -166,7 +166,7 @@ def _rename_map(src: str | None, dst: str | None,
 
     src 매칭은 **case-insensitive fold**(`_fold_key`) — `rename aaa bbb` 가 기존
     `T-AAA-*`(prefix `AAA`)를 잡아 relabel 한다(case 만 다르면 silent no-op 하던 갭 봉합). dst 는
-    호출자가 ``require_prefix_user_ack`` 공유 게이트에서 3소스 canonical case로
+    호출자가 ``require_prefix_user_ack`` 공유 검사에서 3소스 canonical case로
     해소한 값이므로 그대로 발행 case다(`_validate_dst_prefix`는 형식 sanity만 담당).
     """
     src_key = ticket_rules._fold_key(src)
@@ -187,7 +187,7 @@ def _merge_append_map(sources: list[str | None], into: str | None,
     대상(into) 티켓 번호는 무변경(저위험). tiebreak = (source 목록 순서, 기존 번호) 로 같은
     created 안에서 기존 상대순서를 보존한다.
     created 부재(빈 문자열) 티켓은 정렬에서 맨 앞(최고령)으로 간다 — created 없는 티켓은 대개
-    구세대(초기 도입 전) 산출물이라 최고령 배치가 자연스럽다(suggestion 채택·현행 유지).
+    옛 버전(초기 도입 전) 산출물이라 최고령 배치가 자연스럽다(suggestion 채택·현행 유지).
 
     source membership 은 **case-insensitive fold**(`_fold_key`) — `merge aaa --into bbb`
     가 기존 `T-AAA-*` source 를 모은다. into(대상) max 계산은 exact(`== into`) — 호출자의
@@ -240,7 +240,7 @@ def _collision_key(tid: str) -> tuple[str | None, int] | str:
     논리 티켓번호*의 공존을 놓친다(내부 reviewer should-fix). `(prefix, int)` 로 정규화해 폭
     불일치도 같은 키로 묶어 abort 로 잡는다. prefix 는 **case-insensitive fold**(`_fold_key`·
     이미 오염된 `T-AAA-001`/`T-aaa-001` 공존 보드에서 rename/merge 가 그 case-split 를
-    collision 으로 잡는다(무손실 abort). 순번 미파싱(malformed)은 리터럴 문자열로 폴백해 자기끼리만
+    collision 으로 잡는다(무손실 abort). 순번 미파싱(malformed)은 리터럴 문자열로 대체해 자기끼리만
     충돌 판정(오검출 없음).
     """
     num = ticket_rules._ticket_id_number(tid)
@@ -291,7 +291,7 @@ def _plan_file_renames(home, id_map: dict[str, str]) -> list[tuple[Path, Path]]:
     있어도 오치환 없음). 파일명-only 파싱은 숫자로 끝나는 legacy slug(ID 뒤 숫자 slug가 붙은 파일명)를
     prefixed ID 로 오인해 rename 을 누락시키므로, 스캔측(`_scan_prefix_tickets`)과
     같은 fm-우선 해소로 통일한다. canonical 이 파일명 접두가 아니면(코너/corrupt) slug 슬라이스가
-    어긋나므로 파일명 파싱값으로 폴백해 접두 일치를 보장한다(비손실·기존 동작 보존).
+    어긋나므로 파일명 파싱값으로 대체해 접두 일치를 보장한다(비손실·기존 동작 보존).
 
     **본문 rewrite 가 스킵될 티켓 파일(비-UTF-8·읽기 실패)은 rename 도 제외**한다(suggestion 채택·
     `rewrite_refs` 가 그 파일의 content id 를 못 바꿔 남겨두는데 파일명만 new ID
@@ -303,7 +303,7 @@ def _plan_file_renames(home, id_map: dict[str, str]) -> list[tuple[Path, Path]]:
         for p in (pm_paths.tickets_dir(home) / status).glob("T-*.md"):
             tid = ticket_store._canonical_ticket_id(p)       # frontmatter id 정본 (숫자-slug 모호성 해소).
             if not (tid and p.name.startswith(tid)):
-                tid = ticket_rules._ticket_id_from_filename(p.name)   # 접두 불일치(corrupt) → 파일명 폴백.
+                tid = ticket_rules._ticket_id_from_filename(p.name)   # 접두 불일치(corrupt) → 파일명으로 대체.
             if not (tid and tid in id_map):
                 continue
             if not _is_rewritable(p):
@@ -390,7 +390,7 @@ def _prefix_relabel(home, build_map, *, verb: str, label: str,
     dry-run: 규모 preview("N ID·M refs·K 파일")만·쓰기 0(read-only 라 락 불요). 적용: 홈 git
     dirty 안내(**차단 아님**) → **단일 `board_lock()` 구간에서** 본문 토큰
     rewrite(`rewrite_refs`) + slug 파일명 rename → board.md 재생성 → **만진 경로만** board-git
-    백업 commit(분리 형상)·legacy skip 안내. 티켓 물리삭제 없음.
+    백업 commit(분리 구성)·legacy skip 안내. 티켓 물리삭제 없음.
 
     **락 직렬화(codex must-fix)**: rewrite→rename→refresh→board-git 백업 전체를 `cmd_new` 의 ID
     발행·`cmd_claim` 이 쓰는 그 board_lock 으로 감싼다— 동시 new/claim 과 직렬화해
@@ -416,7 +416,7 @@ def _prefix_relabel(home, build_map, *, verb: str, label: str,
                 f"{scale['files']} 파일(본문 rewrite) · {n_renames} 파일명 rename")
 
     if dry_run:
-        # read-only preview — 어떤 파일도 안 쓰므로 board_lock 을 잡지 않는다(스냅샷 오차 허용).
+        # read-only preview — 어떤 파일도 안 쓰므로 board_lock 을 잡지 않는다(읽은 시점 차이 허용).
         id_map, rc = build_map()
         if not id_map:
             return rc
@@ -438,12 +438,12 @@ def _prefix_relabel(home, build_map, *, verb: str, label: str,
         print(f"  ⓘ 홈 git 에 무관한 미커밋 변경 {n_dirty}건 — relabel 이 만진 파일과 뒤섞여 보이니 "
               "리뷰 시 유의하라(차단하지 않는다). 이 명령은 자기가 만진 경로만 커밋한다.")
 
-    # board-git 백업 rev — 분리 형상에서 relabel *직전* HEAD(되돌아갈 지점). rewrite 뒤 새 commit
+    # board-git 백업 rev — 분리 구성에서 relabel *직전* HEAD(되돌아갈 지점). rewrite 뒤 새 commit
     # 이 relabel 을 board-git 에 기록하므로 이 rev 로 `reset --hard` 하면 원복된다.
     backup_rev = board_git._board_git_head(home) if board_git._board_git_enabled(home) else None
 
     # 전체 mutation 을 단일 board_lock 으로 직렬화 (동시 new/claim 과 상호배제). 파일명
-    # rename 계획은 락 보유 하에 fresh scan 으로 세운다(rewrite 와 같은 스냅샷). refresh 는 락-보유
+    # rename 계획은 락 보유 하에 fresh scan 으로 세운다(rewrite 와 같은 시점 상태). refresh 는 락-보유
     # 변형(`_refresh_board_locked`)을 직접 불러 board_lock 재진입(데드락)을 피한다.
     # 백업 commit 이 이 구간 안에 있으므로 **board_git_lock 을 board_lock 보다 먼저** 잡는다
     # (락 순서 고정 — 역순 획득이 하나라도 있으면 claim 과 데드락). board-git 비활성이면
@@ -499,7 +499,7 @@ def _validate_dst_prefix(raw: str, parsed: str | None) -> str | None:
     `none`(parsed=None)은 항상 허용(이름 지우기·무prefix). 실 prefix 는 새/재사용 카테고리
     이름이므로 `_validate_prefix`(예약어+`[A-Za-z0-9][A-Za-z0-9_]*`·대소문자 허용)로
     못박아 malformed ID 발행을 막는다. source prefix 는 *기존* 발행분이라 검증하지 않는다(하이픈
-    legacy 존중). 기존 prefix와의 fold 동일성 및 canonical case 해소는 네 표면이 공유하는
+    legacy 존중). 기존 prefix와의 fold 동일성 및 canonical case 해소는 네 명령이 공유하는
     ``require_prefix_user_ack``가 3소스 합집합으로 맡는다.
     """
     if parsed is None:
@@ -560,7 +560,7 @@ def cmd_prefix_rename(home, args: argparse.Namespace) -> int:
                 f"승인한 사용자만 `--user-ack {requested_dst}`를 대상값 그대로 붙여 실행하라."
             )
     else:
-        # 승인 게이트는 실제 변경 맵이 있을 때만 연다. source 0건 no-op은 여기서 바로 끝나
+        # 승인 확인은 실제 변경 맵이 있을 때만 연다. source 0건 no-op은 여기서 바로 끝나
         # 쓰기·승인 모두 0이고, 실제 적용은 아래에서 같은 맵을 락 안 fresh scan으로 다시 만든다.
         planned, rc = build_map()
         if not planned:
@@ -645,7 +645,7 @@ def cmd_prefix_merge(home, args: argparse.Namespace) -> int:
                 f"승인한 사용자만 `--user-ack {requested_into}`를 대상값 그대로 붙여 실행하라."
             )
     else:
-        # rename과 같은 정책: source 0건이면 승인 없이 no-op, 실제 변경 맵이 있을 때만 gate.
+        # rename과 같은 정책: source 0건이면 승인 없이 no-op, 실제 변경 맵이 있을 때만 승인을 확인한다.
         planned, rc = build_map()
         if not planned:
             return rc
@@ -677,12 +677,12 @@ def _areas_clear_prefix_cell(home, prefix: str) -> int:
     """areas.md 에서 prefix 셀이 `prefix` 인 행의 그 셀을 빈 값으로 in-place 편집한다(행 보존).
 
     repo 등록 행 자체는 남기고 prefix 칼럼만 비운다
-    동형·무손실. areas write 는 진짜 공유 mutation 이라 board_lock 으로 동시 `areas_append` 와의
-    lost-update 를 막는다(`_migrate_areas_apply` 동형). **재진입 금지**: 락 안에서
+    같은 방식·무손실. areas write 는 진짜 공유 mutation 이라 board_lock 으로 동시 `areas_append` 와의
+    lost-update 를 막는다(`_migrate_areas_apply` 와 같은 방식). **재진입 금지**: 락 안에서
     board_lock 을 다시 잡는 헬퍼는 부르지 않는다(순수 텍스트 RMW 만). 반환 = 비운 셀(행) 수.
 
     prefix 칼럼 index 는 헤더에서 얻는다(canonical per-repo 레지스트리). 헤더에 prefix 칼럼이
-    없거나 areas.md 부재면 0(무변경). 변경된 행만 canonical `| … |`(areas_append 와 동형)로 재조립
+    없거나 areas.md 부재면 0(무변경). 변경된 행만 canonical `| … |`(areas_append 와 같은 방식)로 재조립
     하고 나머지 줄(헤더·구분선·무관 행·산문)은 원문 그대로 보존한다.
     """
     af = pm_paths.areas_file(home)
@@ -724,9 +724,9 @@ def _areas_clear_prefix_cell(home, prefix: str) -> int:
 def cmd_prefix_delete(home, args: argparse.Namespace) -> int:
     """`prefix delete <A>` — 빈(0티켓) prefix 의 areas 등록을 지운다·티켓 있으면 fail-loud.
 
-    prefix 는 티켓으로만 존재하는 작업 카테고리(자동시드 폐지)다. 0 티켓이면:
+    prefix 는 티켓으로만 존재하는 작업 카테고리(자동 생성 폐지)다. 0 티켓이면:
       - areas.md 에 A 가 등록돼 있으면 → 그 행의 **prefix 셀을 실제로 비운다**(행·repo 등록 보존·
-        무손실·PM 홈 수동 조치와 동형). promise=do — 메시지가 실제 셀 편집과 일치한다.
+        무손실·PM 홈 수동 조치와 같은 방식). promise=do — 메시지가 실제 셀 편집과 일치한다.
       - 미등록이면 → 지울 등록이 없으므로 "확인만"(변경 0)으로 정직하게 보고한다.
     티켓이 있으면 물리삭제 없이 rename/merge 로 안내한다(fail-loud). `--dry-run` 은 쓰기 0·규모
     preview(다른 동사와 공통 표기).
@@ -824,14 +824,14 @@ def cmd_reid(home, args: argparse.Namespace) -> int:
 
     def build_map() -> "tuple[dict[str, str] | None, int]":
         # 상태 의존 검사는 (적용 경로에선) `_prefix_relabel` 이 잡은 board_lock 안 fresh snapshot 에서
-        # 수행한다 — 검사↔적용 사이 cmd_new/claim 창을 봉합한다(prefix rename build_map 동형).
+        # 수행한다 — 검사↔적용 사이 cmd_new/claim 창을 막는다(prefix rename build_map 과 같은 방식).
         # OLD 티켓을 canonical ID 로 정확 선택한다. `find_ticket` 은 `{old_id}-*.md` glob 의 *첫*
         # legacy ID 부재 시 같은 숫자로 시작하는 prefixed ID가
         # glob에 걸려 무동작하거나, 두 표기의 파일이 공존할 때 디렉토리
         # 순서에 따라 후자가 먼저 잡혀 canonical mismatch 로 실재하는 OLD 를 놓침(false-negative).
-        # `_scan_prefix_tickets`(fm.get("id") or 파일명 폴백·전 상태 디렉토리+.drafts)로 전수 스캔해
-        # canonical ID 가 정확히 old_id 인 레코드만 고른다. 스냅샷은 **한 번만** 뜬다 — OLD 선택과
-        # NEW collision 판정이 같은 스냅샷을 봐야 그 사이의 변화로 판정이 갈리지 않는다.
+        # `_scan_prefix_tickets`(fm.get("id") or 파일명 대체·전 상태 디렉토리+.drafts)로 전수 스캔해
+        # canonical ID 가 정확히 old_id 인 레코드만 고른다. 전수 스캔은 **한 번만** 한다 — OLD 선택과
+        # NEW collision 판정이 같은 스캔 결과를 봐야 그 사이의 변화로 판정이 갈리지 않는다.
         tickets, scan_rc = areas_registry._prefix_scan(home, "reid")
         if tickets is None:
             return None, scan_rc
@@ -853,12 +853,12 @@ def cmd_reid(home, args: argparse.Namespace) -> int:
         # 적용 경로에서는 아래 `_prefix_relabel`이 fresh map/소유 검사를 board_lock 안에서 다시
         # 수행한다. 이 선판정은 승인 안내를 위한 preview이며 쓰기 권위가 아니다.
         # 소유 판정은 lifecycle mutation 과 **같은 함수**다(`_ticket_ownership`) — 판정을 두 벌로
-        # 두면 한쪽만 user 축을 보는 식으로 갈린다. 문구만 이 surface(단일세션 op)의 것을 쓴다.
+        # 두면 한쪽만 user 기준을 보는 식으로 갈린다. 문구만 이 surface(단일세션 op)의 것을 쓴다.
         ownership = ticket_access._ticket_ownership(home, fm, task=getattr(args, "task", None), user=getattr(args, "user", None))
         if not ownership.ok:
-            remedy = ticket_rules._owner_session_remedy(ownership.owner or "")
+            fix = ticket_rules._owner_session_fix(ownership.owner or "")
             print(f"[중단] {old_id} 은 `{ownership.owner}` 가 claim 중 — reid 는 단일세션 op 다. "
-                  f"{remedy}. 또는 먼저 unclaim 하라.",
+                  f"{fix}. 또는 먼저 unclaim 하라.",
                   file=sys.stderr)
             return None, 1
         # NEW collision — `_detect_collisions` 재사용(zero-pad 폭 정규화 포함). {OLD:NEW} 를 전 티켓
@@ -882,8 +882,8 @@ def cmd_reid(home, args: argparse.Namespace) -> int:
                 "대상값 그대로 붙여 실행하라."
             )
     else:
-        # rename/merge와 동형: OLD 미존재·NEW collision 등으로 실제 맵이 없으면
-        # 승인을 요구하지 않고, 쓰기 계획이 있을 때만 값-결속 게이트를 연다.
+        # rename/merge와 같은 방식: OLD 미존재·NEW collision 등으로 실제 맵이 없으면
+        # 승인을 요구하지 않고, 쓰기 계획이 있을 때만 값 일치 확인을 연다.
         planned, rc = build_map()
         if not planned:
             return rc

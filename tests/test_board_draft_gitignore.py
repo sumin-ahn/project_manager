@@ -1,17 +1,17 @@
-"""board `.gitignore` 에 `tickets/.drafts/` 편입 — dirty 게이트 draft 오탐 소멸 (T-0632).
+"""board `.gitignore` 에 `tickets/.drafts/` 편입 — dirty 검사의 draft 오탐 소멸 (T-0632).
 
 draft 티켓(`tickets/.drafts/`)은 **설계상 board-git 미커밋**이다(ADR-0049 authoring flow). 그
-의도는 mutation 축에만 박혀 있었고(`_BOARD_GIT_SCOPE_EXCLUDE`·`_BOARD_GIT_DRAFT_PATHSPEC`)
-관측 축엔 선언이 없어, draft 파일이 untracked 로 남아 dirty-tree 를 재는 소비자
-(`pm_handoff` [0/7] 게이트·`git status`)가 매번 "기록 누락 잔여" 로 오탐했다 — 핸드오프마다
+의도는 mutation 쪽에만 박혀 있었고(`_BOARD_GIT_SCOPE_EXCLUDE`·`_BOARD_GIT_DRAFT_PATHSPEC`)
+관측 쪽엔 선언이 없어, draft 파일이 untracked 로 남아 dirty-tree 를 재는 소비자
+(`pm_handoff` [0/7] 검사·`git status`)가 매번 "기록 누락 남은 파일" 로 오탐했다 — 핸드오프마다
 `--ack-dirty` override 를 요구했다(PM 36 실측).
 
 여기서 검증하는 것:
   - **내용 판정** — `_drafts_ignore_declared` 가 실제 표기(후행 `/`·선행 `/`·`**/`·basename)를
     인정하고, 주석 줄은 선언으로 세지 않으며, 부정(`!`)은 채택자 결정으로 존중한다.
-  - **backfill** — `_ensure_board_gitignore` 가 부재→생성 / 항목 누락→보강 / 정합→no-op(멱등)
-    이고 기존 내용을 덮어쓰지 않는다. 비-board-git 형상(legacy·솔로)은 100% 무영향.
-  - **배선** — commit funnel(`_board_git_stage_and_commit`)이 보강분을 그 스코프 커밋에 싣고,
+  - **backfill** — `_ensure_board_gitignore` 가 부재→생성 / 항목 누락→보강 / 일치→no-op(멱등)
+    이고 기존 내용을 덮어쓰지 않는다. 비-board-git 구성(legacy·솔로)은 100% 무영향.
+  - **연결** — commit funnel(`_board_git_stage_and_commit`)이 보강분을 그 스코프 커밋에 싣고,
     사용자가 편집 중인 `.gitignore` 는 대신 커밋하지 않는다.
   - **실측(값-연결)** — 보강 후 draft 가 실 git 의 `--exclude-standard` 관측과 pm_handoff
     dirty 판정 양쪽에서 사라진다. draft 자체는 여전히 커밋되지 않는다.
@@ -43,7 +43,7 @@ requires_git = pytest.mark.skipif(
     reason="git 바이너리 부재 — 실 git 케이스 skip(내용 판정 단위 테스트는 항상 실행).",
 )
 
-# hermetic git commit 을 위한 결정적 author/committer (test_areas_merge_union 동형).
+# hermetic git commit 을 위한 결정적 author/committer (test_areas_merge_union 과 같은 방식).
 _GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
@@ -65,7 +65,7 @@ def _load_mod(name: str):
 
 @pytest.fixture
 def board(tmp_path, monkeypatch):
-    """REPO 를 tmp 로 재지정한 fresh board 모듈 (실 루트 미접촉·test_areas_merge_union 동형)."""
+    """REPO 를 tmp 로 재지정한 fresh board 모듈 (실 루트 미접촉·test_areas_merge_union 과 같은 방식)."""
     mod = _load_mod("board")
     monkeypatch.setattr(mod, "REPO", tmp_path)
     for key, val in _GIT_IDENTITY.items():
@@ -80,10 +80,10 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 def _make_board_dir(board_mod, root: Path, *, real_git: bool = False,
                     ticket: str | None = None) -> Path:
-    """`<root>/.project_manager/board/` 에 board 분리 형상을 만든다 (tickets/ + areas.md + .git).
+    """`<root>/.project_manager/board/` 에 board 분리 구성을 만든다 (tickets/ + areas.md + .git).
 
     `real_git=False` 면 `.git` 을 빈 파일로 둔다 — `_ensure_board_gitignore`/`pm_paths._board_root_at` 은
-    *존재*만 보므로 git 바이너리 없이도 분리 형상을 정확히 모사한다(내용 판정 테스트용).
+    *존재*만 보므로 git 바이너리 없이도 분리 구성을 정확히 모사한다(내용 판정 테스트용).
     """
     board_dir = root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
@@ -119,7 +119,7 @@ def _head_files(board_dir: Path) -> list[str]:
 
 
 def _untracked_unignored(board_dir: Path) -> list[str]:
-    """dirty 게이트가 쓰는 바로 그 관측 — `ls-files --others --exclude-standard`."""
+    """dirty 검사가 쓰는 바로 그 관측 — `ls-files --others --exclude-standard`."""
     out = _git(["ls-files", "--others", "--exclude-standard"], board_dir).stdout
     return [line for line in out.splitlines() if line.strip()]
 
@@ -177,7 +177,7 @@ def test_own_block_is_self_declaring(board):
 def test_ignore_pattern_matches_actual_drafts_location(board, tmp_path):
     """**lockstep 가드**: 리터럴 ignore 패턴 = 실제 `drafts_dir()` 의 board 상대 경로.
 
-    세 축(관측 ignore·mutation 금지 구역·legacy pathspec)이 같은 경로를 말해야 한다. draft
+    세 기준(관측 ignore·mutation 금지 구역·legacy pathspec)이 같은 경로를 말해야 한다. draft
     디렉토리가 옮겨지면 여기서 red 가 난다(선언만 남고 오탐이 되살아나는 조용한 drift 차단).
     """
     board_dir = _make_board_dir(board, tmp_path)
@@ -235,7 +235,7 @@ def test_ensure_backfills_when_entry_missing(board, tmp_path):
 
 @requires_git
 def test_ensure_is_idempotent_no_duplicate_line(board, tmp_path):
-    """정합 → no-op. 두 번째 호출은 False + 파일 무변경(줄 중복 0)."""
+    """일치 → no-op. 두 번째 호출은 False + 파일 무변경(줄 중복 0)."""
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
     assert board_git._ensure_board_gitignore(pm_paths.home_at(board.REPO)) is True
     first = (board_dir / ".gitignore").read_text(encoding="utf-8")
@@ -389,7 +389,7 @@ def test_symlink_gitignore_is_rejected_without_following_target(board, tmp_path,
 
 
 def test_non_regular_gitignore_is_rejected_loudly(board, tmp_path, capsys):
-    """directory 등 비정규 `.gitignore` 도 쓰기 없이 사유를 표면화한다."""
+    """directory 등 비정규 `.gitignore` 도 쓰기 없이 사유를 드러낸다."""
     board_dir = _make_board_dir(board, tmp_path)
     (board_dir / ".gitignore").mkdir()
 
@@ -399,7 +399,7 @@ def test_non_regular_gitignore_is_rejected_loudly(board, tmp_path, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 3. 배선 — commit funnel 이 보강분을 그 스코프 커밋에 싣는다
+# 3. 연결 — commit funnel 이 보강분을 그 스코프 커밋에 싣는다
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
@@ -426,7 +426,7 @@ def test_backfill_rides_scoped_mutation_commit(board, tmp_path):
 def test_user_edited_gitignore_is_not_swept_into_mutation(board, tmp_path):
     """사용자가 편집 중인 `.gitignore` 는 티켓 mutation 이 **대신 커밋하지 않는다**.
 
-    이미 정합인 파일은 ensure 가 no-write 라 pathspec 에도 오르지 않는다(누출 동형 차단).
+    이미 맞는 파일은 ensure 가 no-write 라 pathspec 에도 오르지 않는다(같은 구조의 누출 차단).
     """
     board_dir = _make_board_dir(board, tmp_path, real_git=True, ticket="T-0001")
     ignore = board_dir / ".gitignore"
@@ -499,17 +499,17 @@ def test_draft_disappears_from_untracked_observation(board, tmp_path):
 
 
 @requires_git
-def test_pm_handoff_dirty_gate_sees_no_draft_residue(board, tmp_path):
-    """`pm_handoff` dirty-tree 판정(그 게이트의 실제 seam)이 draft 를 잔여로 보지 않는다.
+def test_pm_handoff_dirty_check_sees_no_draft_residue(board, tmp_path):
+    """`pm_handoff` dirty-tree 판정(그 검사의 실제 함수)이 draft 를 남은 파일로 보지 않는다.
 
-    소비 지점을 직접 태운다 — board 쪽 관측만 재면 게이트가 다른 축을 본다는 사실을 놓친다.
+    소비 지점을 직접 태운다 — board 쪽 관측만 재면 검사가 다른 쪽을 본다는 사실을 놓친다.
     """
     handoff = _load_mod("pm_handoff")
     board_dir = _make_board_dir(board, tmp_path, real_git=True, ticket="T-0001")
     _write_draft(board_dir)
     dirty_before = pm_engine.infra.handoff_git._dirty_paths_in_tree(str(board_dir), pm_engine.infra.handoff_git._module_run_git)
     assert dirty_before and any(p.startswith("tickets/.drafts/") for p in dirty_before), \
-        f"전제 실측 실패 — 게이트가 draft 를 잔여로 안 봄: {dirty_before}"
+        f"전제 실측 실패 — 검사가 draft 를 남은 파일로 안 봄: {dirty_before}"
 
     ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
     ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")

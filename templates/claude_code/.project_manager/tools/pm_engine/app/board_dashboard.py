@@ -1,4 +1,4 @@
-"""티켓 스냅샷의 파생 보드 갱신 (층: app)."""
+"""티켓 상태에서 만드는 파생 보드 갱신 (층: app)."""
 from __future__ import annotations
 
 from pm_engine.infra import clock
@@ -16,8 +16,8 @@ def refresh_board(home) -> None:
 
     scan(tickets/) + render + write 를 *하나의* `board_lock()` 구간 안에서 한다
     (공유 단일파일 lost-update 방지). write 만 감싸면, 동시 변경 시
-    A 가 stale 스냅샷을 떠 둔 사이 B 가 scan+write 를 끝내도, A 가 락을 잡아 자기
-    stale 스냅샷으로 board.md 를 덮어써 B 의 갱신을 유실한다. scan 까지 락 안에서
+    A 가 stale 상태를 읽어 둔 사이 B 가 scan+write 를 끝내도, A 가 락을 잡아 자기
+    stale 상태로 board.md 를 덮어써 B 의 갱신을 유실한다. scan 까지 락 안에서
     하면 *마지막 writer 가 모든 선행 write 이후의 ticket 상태를 scan* 하므로
     board.md 가 항상 최신을 반영한다.
 
@@ -135,15 +135,15 @@ def _refresh_board_locked(home) -> None:
 
 
 def status_snapshot(home) -> dict:
-    """board 현황 기계 조회 — 상태별 티켓 수 · open 목록 · lint 판정 · 회귀/라이브게이트 기록.
+    """board 현황 기계 조회 — 상태별 티켓 수 · open 목록 · lint 판정 · 회귀/라이브 시험 기록.
 
     `pm-config status --json --with-board` 가 부르는 **얇은 조립**이다. 수집은 전부 기존 함수가
-    하고(`_all_tickets` · `lint_tickets` + `_run_lint_hooks` · 회귀/라이브게이트 sidecar) 여기선
+    하고(`_all_tickets` · `lint_tickets` + `_run_lint_hooks` · 회귀/라이브 시험 sidecar) 여기선
     dict 로 묶기만 한다 — `cmd_list`·`cmd_lint` 의 필터·출력·종료코드 경로는 건드리지 않는다
     (판정 사본 0). lint 는 **목록으로만** 실린다: 이슈가 있어도 이 함수는 실패하지 않는다(rc 는
     `cmd_lint` 의 관심사다).
 
-    세는 축은 `STATUS_DIRS` 다섯이다 — `.drafts`(발행 전 초안)는 그 밖이라 세지 않는다.
+    세는 기준은 `STATUS_DIRS` 다섯이다 — `.drafts`(발행 전 초안)는 그 밖이라 세지 않는다.
     sidecar 좌표는 push 보호훅이 쓰는 것과 **같은 해소**를 거친다(사본/cwd 별 오독 차단).
     """
     counts = {status: 0 for status in ticket_rules.STATUS_DIRS}

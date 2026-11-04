@@ -1,15 +1,15 @@
-"""`board list` freshness 표면화 단위 테스트 (T-0379·PM 69 stale-read 잔여 폐쇄).
+"""`board list` freshness 표시 단위 테스트 (T-0379·PM 69 stale-read 남은 일 폐쇄).
 
-세션 중간의 board 읽기(`list`)에도 board submodule 최신도를 1줄 표면화해, 부트스트랩 이후
-시점의 stale 오독(타 슬롯이 stale board 스냅샷을 최신처럼 신뢰)을 없앤다. 판정은 **신규
+세션 중간의 board 읽기(`list`)에도 board submodule 최신도를 1줄로 드러내, 부트스트랩 이후
+시점의 stale 오독(타 슬롯이 stale board 복사본을 최신처럼 신뢰)을 없앤다. 판정은 **신규
 구현 0** — 부트스트랩(T-0341)이 소비하는 pm_bootstrap 순수 판정(`_format_freshness`·
 `parse_git_ahead_behind`·`_behind_warning`)을 재사용한다(판정 단일화).
 
 이 파일이 검증하는 계약:
   1. 최신(online·behind0·ahead0) → `board-git: 최신`.
-  2. offline(fetch 실패) → `판정불가 — 스냅샷일 수 있음` fail-soft(stale 을 최신으로 오단정 안 함).
+  2. offline(fetch 실패) → `판정불가 — 옛 복사본일 수 있음` fail-soft(stale 을 최신으로 오단정 안 함).
   3. behind>0(online) → `behind N` + `수동 동기 필요` 경고.
-  4. solo/board 비-git(`_board_git_enabled()` False) → 표면화 생략(None·무출력·오탐 0).
+  4. solo/board 비-git(`_board_git_enabled()` False) → 표시 생략(None·무출력·오탐 0).
   5. `cmd_list` 가 freshness 를 **stderr** 로 낸다(stdout 목록 포맷 무오염) + 각 변형 공통.
 
 hermetic: board 모듈을 fresh 로드하고 board-git 함수(`_board_git`)를 fake 로 갈아, 실 git/
@@ -111,13 +111,13 @@ def test_freshness_line_online_up_to_date(board, monkeypatch):
 
 
 def test_freshness_line_offline_undetermined(board, monkeypatch):
-    """offline(fetch 실패) → 판정불가 fail-soft (stale 스냅샷을 최신으로 오단정 안 함·T-0341 상속)."""
+    """offline(fetch 실패) → 판정불가 fail-soft (stale 복사본을 최신으로 오단정 안 함·T-0341 상속)."""
     _wire_board_git(board, monkeypatch, fetch_rc=1, ab_out="0\t0")
     line = board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line
     assert line is not None
     assert "판정불가 — 옛 복사본일 수 있음" in line
     assert "최신" not in line              # offline 은 "최신" 을 주장하지 않는다.
-    assert "fetch 실패" in line            # offline 사유 표면.
+    assert "fetch 실패" in line            # offline 사유 표시.
 
 
 def test_freshness_line_behind_warns(board, monkeypatch):
@@ -130,7 +130,7 @@ def test_freshness_line_behind_warns(board, monkeypatch):
 
 
 def test_freshness_line_solo_non_git_omitted(board, monkeypatch):
-    """solo/board 비-git(`_board_git_enabled()` False) → None (표면화 생략·오탐 0)."""
+    """solo/board 비-git(`_board_git_enabled()` False) → None (표시 생략·오탐 0)."""
     monkeypatch.setattr(board_git, "_board_git_enabled", lambda _home: False)
     assert board_git._board_git_freshness(pm_paths.home_at(board.REPO)).line is None
 
@@ -220,7 +220,7 @@ def _make_project(root: Path) -> None:
 
 @pytest.fixture
 def list_board(tmp_path, monkeypatch):
-    """cmd_list hermetic 인스턴스 — tmp 프로젝트로 IO 재지정 + git 폴백 stub (list_scope 동형)."""
+    """cmd_list hermetic 인스턴스 — tmp 프로젝트로 IO 재지정 + git 대체 조회 stub (list_scope 와 같은 방식)."""
     proj = tmp_path / "proj"
     _make_project(proj)
     mod = _load_board()
@@ -263,7 +263,7 @@ def test_cmd_list_solo_no_freshness_line(list_board, capsys):
 
 
 def test_cmd_list_freshness_covers_no_tickets_path(list_board, monkeypatch, capsys):
-    """freshness 는 "(no tickets)" 경로에서도 표면화된다(양 return 경로 공통 소환)."""
+    """freshness 는 "(no tickets)" 경로에서도 표시된다(양 return 경로 공통 호출)."""
     _wire_board_git(list_board, monkeypatch, fetch_rc=1)   # offline
     rc = board_list.cmd_list(pm_paths.home_at(list_board.REPO), _list_args())
     assert rc == 0

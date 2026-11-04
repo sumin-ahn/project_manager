@@ -1,13 +1,13 @@
 """pm-ticket 스킬 라이브 하네스 테스트 — 실 LLM authoring flow → 실 board 상태 단언 (ADR-0050·T-0366).
 
 `pm-ticket` 스킬(draft→fill→promote flow·얇은 래퍼)은 **LLM-facing 프롬프트**라 backbone pytest
-(`test_board_promote_fill_check.py`)로는 "게이트가 옳게 도나"만 검증되고 "**실 LLM 이 스킬 읽고
+(`test_board_promote_fill_check.py`)로는 "검사가 옳게 도나"만 검증되고 "**실 LLM 이 스킬 읽고
 자족적 티켓을 authoring 하나**"는 미검증이다([[ADR-0050]]·[[harness-test-vs-machine-test]]). 이
 파일이 그 갭을 on-demand 라이브 tier 에서 메운다 — fresh import 홈에서 **스킬을 유일 컨텍스트**로
 준 실 LLM(claude + opencode/출하 모델)에게 구체 주제의 티켓을 authoring 시키고, **실 board
 상태**(발행된 티켓이 존재 + 5절 placeholder 0 + 주제 marker 포함)로 단언한다.
 
-판정 철학(release_wave·pm_worktree_live 상속):
+판정 철학(release_cluster·pm_worktree_live 상속):
 - **side-effect(실 board 파일 상태) 기반** — LLM 출력 phrasing 비결정에 강건. LLM 이 아무것도
   안 하면 티켓 파일이 없어 fail·티켓만 만들고 fill 을 안 하면 placeholder 잔존으로 fail →
   silent pass 불가(false-green 가드).
@@ -15,11 +15,11 @@
   그대로 두거나 무관 내용으로 채우면 fail).
 
 on-demand — 사용자가 `PM_ORCH_LIVE=1` 로 트리거(비용·flaky 감수). `release` 마커는 **달지 않는다**
-— 릴리즈 게이트 커플드-pin(regression.LIVE_TEST_RELEASE_PIN·_RELEASE_TEST_FILES 합산·templates 전파)은
+— 릴리즈 통과 조건 커플드-pin(regression.LIVE_TEST_RELEASE_PIN·_RELEASE_TEST_FILES 합산·templates 전파)은
 orchestrator 소유라, 이 스킬을 릴리즈 tier 로 승격할지는 PM 결정에 맡긴다(승격 시 `@pytest.mark.
 release` 부착 + pin 14→N 갱신). 기본 skip(env 미설정·바이너리 부재·CI green 불변).
 
-always-run 가드(라이브 없이·매 회귀): (1) backbone fill 게이트의 강화 토큰 집합이 온전한지
+always-run 가드(라이브 없이·매 회귀): (1) backbone fill 검사의 강화 토큰 집합이 온전한지
 (setup-rot pin·스킬 무관) (2) 스킬이 적용됐다면 backbone 참조·audience·프롬프트 구조. 스킬은
 scratchpad→`.claude/skills` 를 **PM 이 적용**(서브에이전트 `.claude/` 쓰기 불가·harness 구조)하므로,
 스킬-의존 가드는 스킬 부재 시 skip 하고 적용 후 활성화된다(T-0366 handoff — PM 이 적용 후 재회귀).
@@ -50,14 +50,14 @@ TOOLS = REPO / ".project_manager" / "tools"
 PM_ORCH_LIVE = os.environ.get("PM_ORCH_LIVE") == "1"
 CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 from _opencode_model import LIVE_MODEL
-# codex 축(D7): 기본 모델 = 로컬 config 상속(gpt-5.5·-m 생략)·명시 override 만 env.
+# codex 쪽(D7): 기본 모델 = 로컬 config 상속(gpt-5.5·-m 생략)·명시 override 만 env.
 CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")  # None → codex 로컬 config 기본 상속.
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CLAUDE_TIMEOUT", "600"))
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_TIMEOUT", "1800"))
 _CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CODEX_TIMEOUT", "600"))
 
 # 검증 대상 저작 소스(① canonical). opencode command는 이 파일에서 기계 생성되며
-# 정합은 T-0674 전용 가드가 별도 강제한다. 미적용 시 스킬-의존 가드는 skip.
+# 일치는 T-0674 전용 가드가 별도 강제한다. 미적용 시 스킬-의존 가드는 skip.
 _SKILL = REPO / ".claude" / "skills" / "pm-ticket" / "SKILL.md"
 _skill_present = pytest.mark.skipif(
     not _SKILL.exists(),
@@ -108,7 +108,7 @@ def _ticket_roots(dest: Path) -> list[Path]:
 def _find_authored_ticket(dest: Path) -> tuple[Path, str] | None:
     """adopter 홈에서 새로 발행된 티켓 파일 + 본문을 찾는다 (open/ ∪ claimed/ ∪ .drafts/).
 
-    seed 템플릿(`_template.md`)은 제외하고 실 T-*.md 만 본다. 여러 개면 가장 최근 것을 고른다.
+    빈 양식 템플릿(`_template.md`)은 제외하고 실 T-*.md 만 본다. 여러 개면 가장 최근 것을 고른다.
     `.drafts/` 도 포함해 찾아 — 승격 안 된 draft 잔류(false-green)를 단언 지점에서 검출한다."""
     board = _load_board()
     candidates: list[Path] = []
@@ -132,7 +132,7 @@ def _assert_self_contained_ticket(dest: Path, proc: subprocess.CompletedProcess,
         f"실 {harness} 가 pm-ticket 스킬로 티켓을 발행하지 않음(board 에 T-*.md 없음·미실행 "
         f"false-green 가드).\n" + tail)
     path, body = found
-    # promote 안착 — board-git 형상(.drafts 디렉토리 실존)이면 최종 파일이 open/ 에 있어야 한다.
+    # promote 안착 — board-git 구성(.drafts 디렉토리 실존)이면 최종 파일이 open/ 에 있어야 한다.
     # .drafts/ 잔류 = LLM 이 authoring 만 하고 promote 를 안 함(authored-but-not-promoted false-green).
     # legacy(.drafts 없음)는 `new` 가 open/ 직행이라 조건부 — 그래도 open/claimed 안착은 요구한다.
     drafts_present = any((root / ".drafts").is_dir() for root in _ticket_roots(dest))
@@ -143,7 +143,7 @@ def _assert_self_contained_ticket(dest: Path, proc: subprocess.CompletedProcess,
     else:
         assert path.parent.name in ("open", "claimed"), (
             f"발행 티켓이 {path.parent.name}/ 에 있음 — 미완 authoring(false-green 가드).\n" + tail)
-    # 자족성 — authoring 게이트와 동일 strict(5절 존재 + placeholder 0). 하나라도 남으면 fail.
+    # 자족성 — authoring 검사와 동일 strict(5절 존재 + placeholder 0). 하나라도 남으면 fail.
     issues = body_lint._body_lint_issues(pm_paths.home_at(board.REPO), path.stem, body, strict_sections=True)
     assert not issues, (
         f"발행된 티켓 {path.name} 에 placeholder/thin 잔존 — 스킬 fill 미완(자족성 위반): "
@@ -187,7 +187,7 @@ def test_pm_ticket_live_opencode(tmp_path):
     """실 opencode(출하 모델)가 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언.
 
     claude 와 같은 스킬-only 프롬프트. side-effect(실 board 파일 상태)로만 판정해 opencode 의 tool-call
-    비노출에 강건(release_wave 위임-관측 비대칭 상속). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판)·
+    비노출에 강건(release_cluster 위임-관측 비대칭 상속). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판)·
     `--dangerously-skip-permissions`(비대화 헤드리스 auto-reject 회피·throwaway tmp 홈 격리). API 과금 0."""
     dest = _import_adopter(tmp_path, "opencode")
     prompt = _authoring_prompt(_SKILL.read_text(encoding="utf-8"))
@@ -225,8 +225,8 @@ def test_pm_ticket_live_codex(tmp_path):
 
 # ── always-run 가드 (라이브 없이·매 회귀 — setup-rot·마커 소실 백스톱) ──────────────────────────
 
-def test_backbone_fill_gate_tokens_intact():
-    """backbone fill 게이트의 강화 placeholder 토큰(T-0366)이 온전한지 — 라이브 무관 setup-rot pin.
+def test_backbone_fill_check_tokens_intact():
+    """backbone fill 검사의 강화 placeholder 토큰(T-0366)이 온전한지 — 라이브 무관 setup-rot pin.
 
     라이브가 skip 되는 CI 에서도 always-run 으로 backbone 을 exercise 한다: 라이브 시나리오가 의존하는
     "절별 placeholder 잔존 → 차단" 규칙이 후퇴하면(토큰 삭제·검사 우회) 여기서 red 로 잡힌다."""
@@ -234,8 +234,8 @@ def test_backbone_fill_gate_tokens_intact():
     for token in ("이 ticket 이 만들거나 바꾸는", "구현 방향에 대한 확정 사항",
                   "[[architecture]] 관련 절", "T-XXXX"):
         assert token in body_lint._PLACEHOLDERS, (
-            f"강화 토큰 {token!r} 이 _PLACEHOLDERS 에서 빠짐 — 절별 자족성 게이트 후퇴.")
-    # 목표·DoD 만 채우고 인터페이스·결정을 뼈대로 남긴 본문은 issue 를 내야 한다(게이트 실효 확인).
+            f"강화 토큰 {token!r} 이 _PLACEHOLDERS 에서 빠짐 — 절별 자족성 검사 후퇴.")
+    # 목표·DoD 만 채우고 인터페이스·결정을 뼈대로 남긴 본문은 issue 를 내야 한다(검사 실효 확인).
     half = (
         "# T-0001 — 실 제목\n\n## 목표\n실제 목표.\n\n"
         "## 인터페이스\n이 ticket 이 만들거나 바꾸는 함수·클래스·CLI·데이터 형식의 시그니처/규격.\n\n"
@@ -244,7 +244,7 @@ def test_backbone_fill_gate_tokens_intact():
         "## 참고\n- [[ADR-0049]]\n\n## 메모\n"
     )
     assert body_lint._body_lint_issues(pm_paths.home_at(board.REPO), "T-0001", half), \
-        "절반-채운 본문이 게이트를 통과함 — 강화 토큰이 실효하지 않음."
+        "절반-채운 본문이 검사를 통과함 — 강화 토큰이 실효하지 않음."
 
 
 @_skill_present

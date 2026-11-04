@@ -1,21 +1,21 @@
-"""티켓 설계 단계 — `design:` 필드 · `## 설계` 절 · claim 게이트 (T-0594).
+"""티켓 설계 단계 — `design:` 필드 · `## 설계` 절 · claim 검사 (T-0594).
 
 설계 결함이 코드 리뷰 라운드로 전가되는 클래스를 라이프사이클 앞단에서 차단한다(근거 T-0587 —
-티켓 인터페이스가 명세한 입력 가정이 실환경과 어긋난 채 구현으로 전진해 리뷰 12라운드로도 미수렴).
+티켓 인터페이스가 명세한 입력 가정이 실환경과 어긋난 채 구현으로 전진해 리뷰 12라운드로도 마무리되지 않음).
 검증 대상:
 
   1. **필드 파싱·기본값** — `required`/`done`/`n/a` 3형식 정규화, 필드 부재는
-     `n/a`(구세대 티켓 하위호환), 형식 위반은 `invalid`(오타로 게이트가 조용히 꺼지지 않음).
+     `n/a`(옛 버전 티켓 하위호환), 형식 위반은 `invalid`(오타로 검사가 조용히 꺼지지 않음).
      발행 기본값은 estimate=large → `required`, 그 외 `n/a`. **면제 값은 폐지됐다** — 설계
      단계를 건너뛰는 값이 남으면 그 티켓만 라운드 순번이 어긋나고 면제가 곧 우회가 된다.
   2. **설계 절 판정** — `_template.md` 뼈대 문장 잔존/절 부재를 `design-pending` 1줄로 요약
      (`_body_lint_issues` 단일 깔때기 편입 · `n/a` 는 뼈대가 남아도 무영향).
-  3. **claim 게이트 4경로** — required 차단 / done 통과 / n/a 무영향 + 구티켓
+  3. **claim 검사 4경로** — required 차단 / done 통과 / n/a 무영향 + 구티켓
      (필드 부재) 하위호환 + invalid 차단(폐지된 면제 값 포함). 차단 시 티켓은 `open/` 에
      그대로 남는다.
-  4. **promote 게이트** — board-git 활성 홈에서 `design: required` draft 는 승격 거부, 설계 절
+  4. **promote 검사** — board-git 활성 홈에서 `design: required` draft 는 승격 거부, 설계 절
      완성 + `design: done` 은 승격.
-  5. **lint advisory** — kind `design-pending` 은 `_ADVISORY_LINT_KINDS` 등재라 `--gate`(pre-push)
+  5. **lint advisory** — kind `design-pending` 은 `_ADVISORY_LINT_KINDS` 등재라 `--blocking`(pre-push)
      종료코드에 기여하지 않고, 무인자 lint 는 그대로 보고한다.
   6. **출하 파리티** — 루트 `_template.md`·pm-ticket 스킬 카드의 설계 단계 내용이 templates/ 3벌에
      전부 도달했는지(채택자 도달 가드).
@@ -25,7 +25,7 @@
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`TICKETS_DIR`·`TEMPLATE_FILE` 등)은 import 시점에
 실 repo 절대경로로 굳는다 — tmp 프로젝트로 monkeypatch 재지정해 실 board 를 읽거나 쓰지 않는다
-(test_board_identity.py 의 hermetic 패턴 동형). board-git e2e 는 실 git + bare remote 를 tmp 에
+(test_board_identity.py 의 hermetic 패턴과 같은 방식). board-git e2e 는 실 git + bare remote 를 tmp 에
 세우는 test_board_promote_fill_check.py 패턴을 따르고, git 부재 환경에선 skip 한다.
 """
 from __future__ import annotations
@@ -122,10 +122,10 @@ def _body(design_section: str = _DESIGN_FILLED) -> str:
     return (
         "# T-0001 — 실 제목\n\n"
         "## 목표\n티켓 라이프사이클에 설계 단계를 신설한다.\n\n"
-        "## 인터페이스\n`design:` frontmatter 필드 + claim 게이트.\n\n"
+        "## 인터페이스\n`design:` frontmatter 필드 + claim 검사.\n\n"
         "## 결정\nestimate=large 만 자동 required · 그 외 n/a.\n\n"
         + design_section +
-        "## 완료 조건 (Definition of Done)\n- [ ] 게이트 + 단위 테스트\n\n"
+        "## 완료 조건 (Definition of Done)\n- [ ] 검사 + 단위 테스트\n\n"
         "## 참고\n- 근거 사례 T-0587 부검\n\n"
         "## 메모\n")
 
@@ -142,13 +142,13 @@ def _body(design_section: str = _DESIGN_FILLED) -> str:
     ("N/A", design_rules.DESIGN_NA),
 ])
 def test_design_state_normalizes_three_forms(value, expected):
-    """3형식(required/done/n/a)이 정규화 상태로 접힌다."""
+    """3형식(required/done/n/a)이 정규화 상태로 바뀐다."""
     assert design_rules._design_state(value) == expected
 
 
 @pytest.mark.parametrize("value", [None, "", "   "])
 def test_design_state_missing_field_is_na(value):
-    """필드 부재·빈값 = `n/a` — 구세대 티켓(설계 절도 필드도 없음) 하위호환(마이그레이션 불요)."""
+    """필드 부재·빈값 = `n/a` — 옛 버전 티켓(설계 절도 필드도 없음) 하위호환(마이그레이션 불요)."""
     assert design_rules._design_state(value) == design_rules.DESIGN_NA
 
 
@@ -157,9 +157,9 @@ def test_design_state_missing_field_is_na(value):
     ["requried", "todo", "true", "waived", "waived:   ", "waived: 리뷰 상한 초과"],
 )
 def test_design_state_rejects_unrecognized_value(value):
-    """형식 위반은 `n/a` 로 삼키지 않고 invalid — 오타 하나로 게이트가 조용히 꺼지지 않는다.
+    """형식 위반은 `n/a` 로 삼키지 않고 invalid — 오타 하나로 검사가 조용히 꺼지지 않는다.
 
-    폐지된 면제 값(사유가 있든 없든)도 같은 축이다 — 잔존이 조용히 통과하지 않는다."""
+    폐지된 면제 값(사유가 있든 없든)도 같은 경우다 — 남은 값이 조용히 통과하지 않는다."""
     assert design_rules._design_state(value) == design_rules.DESIGN_INVALID
 
 
@@ -181,7 +181,7 @@ def test_resolve_design_honors_explicit_override(explicit):
 
 
 def test_validate_design_rejects_bad_value_and_accepts_forms():
-    """`--design` 입력 sanity — 위반은 사유 문자열, 3형식은 None(`_validate_prefix` 동형)."""
+    """`--design` 입력 sanity — 위반은 사유 문자열, 3형식은 None(`_validate_prefix` 와 같은 방식)."""
     assert design_rules._validate_design("bogus")
     assert "bogus" in design_rules._validate_design("bogus")
     for ok in ("required", "done", "n/a"):
@@ -201,7 +201,7 @@ def test_validate_design_rejects_the_abolished_exemption_value():
 def test_design_placeholder_tokens_live_in_shipped_template():
     """탐지 토큰이 실제 `_template.md` 설계 절에 리터럴로 존재한다 (setup-rot·drift 가드).
 
-    템플릿 문장만 고치고 토큰을 안 고치면 뼈대가 영영 안 잡혀 게이트가 dead 가 된다."""
+    템플릿 문장만 고치고 토큰을 안 고치면 뼈대가 영영 안 잡혀 검사가 dead 가 된다."""
     for token in design_rules._DESIGN_PLACEHOLDERS:
         assert token in _DESIGN_SKELETON, (
             f"설계 뼈대 토큰 {token!r} 이 출하 템플릿에 없음 — 탐지 dead-token.")
@@ -247,7 +247,7 @@ def test_required_with_filled_section_still_needs_promotion():
 
 
 def test_done_with_filled_section_is_clean():
-    """설계 절 완성 + `done` → 0건(게이트 통과)."""
+    """설계 절 완성 + `done` → 0건(검사 통과)."""
     assert design_rules._design_issues("T-0001", _body(), design_rules.DESIGN_DONE) == []
 
 
@@ -281,7 +281,7 @@ def test_design_issue_is_single_line_at_most():
             assert len(design_rules._design_issues("T-0001", _body(section), design)) <= 1
 
 
-# ── `_body_lint_issues` 편입 (기존 seam 재사용·레거시 호출 무변경) ────────────────
+# ── `_body_lint_issues` 편입 (기존 공용 함수 재사용·레거시 호출 무변경) ────────────────
 
 def test_body_lint_issues_without_design_arg_is_legacy_clean():
     """`design` 인자를 안 넘기는 기존 호출은 설계 판정 없이 기존 검사만 받는다(무변경)."""
@@ -289,7 +289,7 @@ def test_body_lint_issues_without_design_arg_is_legacy_clean():
 
 
 def test_body_lint_issues_folds_design_verdict():
-    """설계 판정이 같은 깔때기(`_body_lint_issues`)로 흘러 authoring 게이트가 재사용한다."""
+    """설계 판정이 같은 깔때기(`_body_lint_issues`)로 흘러 authoring 검사가 재사용한다."""
     issues = body_lint._body_lint_issues(pm_paths.home_at(board_mod.REPO), "T-0001", _body(_DESIGN_SKELETON),
                                          strict_sections=True,
                                          design=design_rules.DESIGN_REQUIRED)
@@ -364,7 +364,7 @@ def _seed_open(board, *, design, body=None, tid="T-0001", estimate=None):
 # ── cmd_new 발행 기본값 ──────────────────────────────────────────────────
 
 def test_cmd_new_large_ticket_defaults_to_design_required(board):
-    """estimate=large 발행은 `design: required` 로 박힌다(자동 추론은 이 축 하나뿐)."""
+    """estimate=large 발행은 `design: required` 로 박힌다(자동 추론은 이 경우 하나뿐)."""
     assert board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args(estimate="large")) == 0
     fm, _ = ticket_store.load_ticket(list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open").glob("T-0001-*.md"))[0])
     assert fm["design"] == design_rules.DESIGN_REQUIRED
@@ -400,7 +400,7 @@ def test_cmd_new_body_includes_design_section(board):
     assert design_rules._DESIGN_SECTION in body
 
 
-# ── claim 게이트 4경로 + 하위호환 ────────────────────────────────────────
+# ── claim 검사 4경로 + 하위호환 ────────────────────────────────────────
 
 def test_claim_blocked_when_design_required_and_section_unfilled(board, capsys):
     """① required + 설계 절 미충전 → rc=1 · 티켓은 open/ 에 남는다."""
@@ -427,13 +427,13 @@ def test_claim_passes_when_design_done(board):
 
 
 def test_claim_blocked_when_done_but_section_unfilled(board):
-    """`done` 인데 설계 절이 뼈대면 차단 — 필드값과 절 내용의 어긋남(엔진이 보는 두 축)."""
+    """`done` 인데 설계 절이 뼈대면 차단 — 필드값과 절 내용의 어긋남(엔진이 보는 두 기준)."""
     _seed_open(board, design="done", body=_body(_DESIGN_SKELETON))
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 1
 
 
 def test_claim_blocked_when_design_uses_the_abolished_exemption(board):
-    """③ 폐지된 면제 값은 통과가 아니라 **차단**이다 — 잔존이 게이트를 조용히 열지 않는다."""
+    """③ 폐지된 면제 값은 통과가 아니라 **차단**이다 — 남은 값이 검사를 조용히 열지 않는다."""
     _seed_open(board, design="waived: 표면 없음", body=_body(_DESIGN_SKELETON))
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 1
     assert list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open").glob("T-0001-*.md"))
@@ -446,21 +446,21 @@ def test_claim_unaffected_when_design_na(board):
 
 
 def test_claim_legacy_ticket_without_design_field_passes(board):
-    """구세대 티켓(필드 부재 · 설계 절 부재)은 무영향 — 마이그레이션 불요."""
+    """옛 버전 티켓(필드 부재 · 설계 절 부재)은 무영향 — 마이그레이션 불요."""
     _seed_open(board, design=None, body="# T-0001 — 구티켓\n\n## 목표\n옛 본문.\n")
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 0
     assert list((pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "claimed").glob("T-0001-*.md"))
 
 
 def test_claim_blocked_on_invalid_design_value(board, capsys):
-    """형식 위반 값은 claim 에서 fail-loud — 오타로 게이트가 조용히 꺼지지 않는다."""
+    """형식 위반 값은 claim 에서 fail-loud — 오타로 검사가 조용히 꺼지지 않는다."""
     _seed_open(board, design="requried")
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 1
     assert "인식 불가" in capsys.readouterr().err
 
 
-def test_claim_gate_runs_after_dependency_gate(board):
-    """설계 게이트가 의존성 거부를 덮지 않는다 — 미완 의존은 여전히 의존성 사유로 거부."""
+def test_claim_check_runs_after_dependency_check(board):
+    """설계 검사가 의존성 거부를 덮지 않는다 — 미완 의존은 여전히 의존성 사유로 거부."""
     _seed_open(board, design="done", tid="T-0002")
     fm = {"id": "T-0001", "title": "seed", "status": "open", "claimed_by": None,
           "depends_on": ["T-0002"], "design": "required"}
@@ -472,7 +472,7 @@ def test_claim_gate_runs_after_dependency_gate(board):
 # ── lint advisory ───────────────────────────────────────────────────────
 
 def test_design_pending_is_advisory_kind():
-    """`design-pending` 은 advisory 등재 — pre-push 게이트(`lint --gate`)를 막지 않는다."""
+    """`design-pending` 은 advisory 등재 — pre-push 검사(`lint --blocking`)를 막지 않는다."""
     assert "design-pending" in board_lint._ADVISORY_LINT_KINDS
 
 
@@ -489,10 +489,10 @@ def test_lint_bodies_silent_for_na_ticket(board):
     assert body_lint.lint_bodies(pm_paths.home_at(board.REPO)) == []
 
 
-def test_cmd_lint_gate_does_not_block_on_design_pending(board, monkeypatch):
-    """`--gate` 는 design-pending 만 있으면 rc=0(never-block), 무인자 lint 는 보고(rc=1).
+def test_cmd_lint_blocking_does_not_block_on_design_pending(board, monkeypatch):
+    """`--blocking` 은 design-pending 만 있으면 rc=0(never-block), 무인자 lint 는 보고(rc=1).
 
-    남의 설계-중 티켓이 내 push 를 막지 않아야 한다 — 차단은 claim 게이트가 한다."""
+    남의 설계-중 티켓이 내 push 를 막지 않아야 한다 — 차단은 claim 검사가 한다."""
     monkeypatch.setattr(ticket_lint, "lint_tickets",
                         lambda _home: [("T-0001", "design-pending", "설계 절 미충전")])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
@@ -504,12 +504,12 @@ def test_cmd_lint_gate_does_not_block_on_design_pending(board, monkeypatch):
 # estimate 사후 교정 재유도 advisory (T-0601 ③)
 # ════════════════════════════════════════════════════════════════════════
 # 자동 `required` 판정은 **발행 시점 1회**뿐이라, medium 으로 발행한 뒤 large 로 교정한 티켓에는
-# 설계 게이트가 영영 안 붙는다(이 wave 실경로 2회). 올릴지 면제할지는 사람 판정이므로 엔진은
+# 설계 검사가 영영 안 붙는다(이 묶음 실경로 2회). 올릴지 면제할지는 사람 판정이므로 엔진은
 # 재유도 1줄만 낸다(never-block).
 
 
 def test_design_estimate_is_advisory_kind():
-    """`design-estimate` 는 advisory 등재 — pre-push 게이트를 막지 않는다."""
+    """`design-estimate` 는 advisory 등재 — pre-push 검사를 막지 않는다."""
     assert "design-estimate" in board_lint._ADVISORY_LINT_KINDS
 
 
@@ -523,13 +523,13 @@ def test_large_estimate_with_na_design_is_readvised():
 
 
 def test_missing_design_field_counts_as_na(board_estimate="large"):
-    """필드 부재도 `n/a` 다 — 구세대 티켓을 large 로 교정한 형상이 실경로다."""
+    """필드 부재도 `n/a` 다 — 옛 버전 티켓을 large 로 교정한 경우가 실경로다."""
     assert len(design_rules._design_estimate_advisory("T-0601", board_estimate, None)) == 1
 
 
 @pytest.mark.parametrize("estimate, design", [
     ("small", "n/a"),                    # 자동 required 대상이 아니다
-    ("medium", None),                    # 같은 축
+    ("medium", None),                    # 같은 기준
     (None, "n/a"),                       # estimate 미선언
     ("", "n/a"),
     ("large", "required"),               # 이미 설계 대상 — design-pending 이 소유
@@ -537,7 +537,7 @@ def test_missing_design_field_counts_as_na(board_estimate="large"):
     ("large", "requried"),               # invalid — 값 자체 안내는 다른 깔때기가 낸다
     ("LARGE", "required"),
 ])
-def test_readvisory_stays_silent_outside_its_axis(estimate, design):
+def test_readvisory_stays_silent_outside_its_scope(estimate, design):
     """이 advisory 가 보는 건 '비대상으로 남아 있는가' 하나 — 그 밖은 전부 0건(오탐 0)."""
     assert design_rules._design_estimate_advisory("T-0601", estimate, design) == []
 
@@ -555,8 +555,8 @@ def test_lint_bodies_silent_for_a_large_ticket_already_on_the_design_track(board
     assert body_lint.lint_bodies(pm_paths.home_at(board.REPO)) == []
 
 
-def test_cmd_lint_gate_does_not_block_on_design_estimate(board, monkeypatch):
-    """`--gate` 는 design-estimate 만 있으면 rc=0(never-block), 무인자 lint 는 보고(rc=1)."""
+def test_cmd_lint_blocking_does_not_block_on_design_estimate(board, monkeypatch):
+    """`--blocking` 은 design-estimate 만 있으면 rc=0(never-block), 무인자 lint 는 보고(rc=1)."""
     monkeypatch.setattr(ticket_lint, "lint_tickets",
                         lambda _home: [("T-0001", "design-estimate", "estimate=large 인데 n/a")])
     monkeypatch.setattr(lint_hooks, "_run_lint_hooks", lambda home: [])
@@ -567,7 +567,7 @@ def test_cmd_lint_gate_does_not_block_on_design_estimate(board, monkeypatch):
 # ════════════════════════════════════════════════════════════════════════
 # 설계 절 **존재** 판정 앵커화 (T-0601 ⑫)
 # ════════════════════════════════════════════════════════════════════════
-# 충전 축(T-0594)은 이미 펜스 선-strip + 절 슬라이스로 판정한다. 존재 축도 같은 규율이어야
+# 충전 판정(T-0594)은 이미 펜스 선-strip + 절 슬라이스로 판정한다. 존재 판정도 같은 규율이어야
 # `## 설계` 라는 짧은 이름이 다른 절(`## 설계 검토 이력`)이나 인용으로 성립하지 않는다.
 
 
@@ -582,7 +582,7 @@ def test_prose_heading_prefix_is_not_the_design_section():
 
 
 def test_fenced_design_heading_is_not_the_design_section():
-    """펜스 안에 인용된 `## 설계` 도 절이 아니다 (선-strip 규율이 존재 축에도 적용)."""
+    """펜스 안에 인용된 `## 설계` 도 절이 아니다 (선-strip 규율이 존재 판정에도 적용)."""
     body = _body("## 참고 인용\n```md\n## 설계\n- **불변식**: 예시다.\n```\n\n")
     assert design_rules._design_section_gaps(body) == [
         f"{design_rules._DESIGN_SECTION} 절 부재"]
@@ -601,7 +601,7 @@ def test_exact_heading_line_is_the_design_section():
     "## 설계(초안)",
 ])
 def test_parenthesized_subtitle_is_still_the_design_section(heading):
-    """괄호 부제가 붙은 헤딩은 그 절이다 — 존재 축 강화가 실 사용례를 오차단하면 안 된다.
+    """괄호 부제가 붙은 헤딩은 그 절이다 — 존재 판정 강화가 실 사용례를 오차단하면 안 된다.
 
     괄호 없이 이어지는 말(`## 설계 검토 이력`)은 다른 절 제목이라 여전히 차단된다."""
     assert design_rules._design_section_gaps(
@@ -611,7 +611,7 @@ def test_parenthesized_subtitle_is_still_the_design_section(heading):
 def test_subtitled_headings_are_sliced_by_the_same_rule():
     """부제가 붙는 절(`## 완료 조건 (Definition of Done)`)도 같은 규칙으로 잡힌다(괄호 부제 허용).
 
-    존재 축 강화가 DoD 슬라이서를 함께 조여 실 템플릿의 DoD 가 통째로 안 보이면 안 된다."""
+    존재 판정 강화가 DoD 슬라이서를 함께 조여 실 템플릿의 DoD 가 통째로 안 보이면 안 된다."""
     body = _body()
     assert completion_check._dod_section_texts(body)
     assert completion_check._dod_open_items(body), "DoD 미체크 항목을 못 봤다 — 슬라이서 회귀"
@@ -621,7 +621,7 @@ def test_subtitled_headings_are_sliced_by_the_same_rule():
 # 설계 절 **실질** 검사 — 4항목의 존재 + 값 (T-0602 ⑤)
 # ════════════════════════════════════════════════════════════════════════
 # codex R2 지적: placeholder 문자열이 없다는 이유로 **빈 `## 설계` 절**이나 임의 산문 한 줄짜리
-# 절도 `design: done` 을 통과했다 — 뼈대를 지우는 것만으로 claim 게이트가 열린다. 항목 이름은
+# 절도 `design: done` 을 통과했다 — 뼈대를 지우는 것만으로 claim 검사가 열린다. 항목 이름은
 # `_DESIGN_PLACEHOLDER_LABELS` 단일 진실을 재사용하고, 값이 실제로 있는지까지 본다.
 
 _DESIGN_LABELS = design_rules._DESIGN_PLACEHOLDER_LABELS
@@ -680,7 +680,7 @@ def test_missing_one_item_names_exactly_that_item():
 
 
 def test_skeleton_still_reports_one_gap_per_item():
-    """뼈대 잔존 축은 종전대로다 — 항목마다 판정 1건(부재/값 없음과 중복 보고하지 않는다)."""
+    """뼈대 남음 판정은 종전대로다 — 항목마다 판정 1건(부재/값 없음과 중복 보고하지 않는다)."""
     gaps = design_rules._design_section_gaps(_body(_DESIGN_SKELETON))
 
     assert gaps == list(_DESIGN_LABELS), f"뼈대 절 판정이 항목당 1건이 아니다: {gaps}"
@@ -694,7 +694,7 @@ def test_filled_section_stays_clean_and_claimable():
 
 @pytest.mark.parametrize("bullet", ["-", "*", "+"])
 def test_item_detection_accepts_all_bullet_markers(bullet):
-    """불릿 세 종과 굵게 표기 유무는 항목 인식에 영향을 주지 않는다 (표기 편차 흡수)."""
+    """불릿 세 종과 굵게 표기 유무는 항목 인식에 영향을 주지 않는다 (표기 차이를 받아들임)."""
     lines = "\n".join(
         f"{bullet} {label}: 실값 {index}." for index, label in enumerate(_DESIGN_LABELS, 1))
 
@@ -702,7 +702,7 @@ def test_item_detection_accepts_all_bullet_markers(bullet):
 
 
 def test_claim_blocked_when_done_but_design_section_is_emptied(board, capsys):
-    """claim 게이트 e2e — 뼈대를 지운 빈 설계 절 + `design: done` 은 여전히 차단된다 (DoD)."""
+    """claim 검사 e2e — 뼈대를 지운 빈 설계 절 + `design: done` 은 여전히 차단된다 (DoD)."""
     _seed_open(board, design=design_rules.DESIGN_DONE, body=_body("## 설계\n\n"))
 
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), _claim_args()) == 1
@@ -712,7 +712,7 @@ def test_claim_blocked_when_done_but_design_section_is_emptied(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# promote 게이트 (board-git 활성 홈 e2e)
+# promote 검사 (board-git 활성 홈 e2e)
 # ════════════════════════════════════════════════════════════════════════
 
 def _git(argv, cwd):
@@ -722,7 +722,7 @@ def _git(argv, cwd):
 
 @pytest.fixture
 def board_git(tmp_path, monkeypatch):
-    """board 가 별도 git(공유 형상)인 hermetic 홈 — draft 격리·promote 게이트가 작동한다."""
+    """board 가 별도 git(공유 구성)인 hermetic 홈 — draft 격리·promote 검사가 작동한다."""
     mod = _load_board()
     anchor_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
@@ -774,7 +774,7 @@ def test_promote_rejects_design_required_with_unfilled_section(board_git, capsys
 def test_promote_rejects_design_required_even_when_section_is_filled(board_git, capsys):
     """설계 절을 다 채워도 `design: required` 면 promote 가 거부한다 (엄격 promote).
 
-    claim 게이트와 같은 판정이 승격 자리에도 걸린다 — **설계 검토 완료(`done`)가
+    claim 검사와 같은 판정이 승격 자리에도 걸린다 — **설계 검토 완료(`done`)가
     open 진입 조건**이라, 절만 채우고 검토 없이 공유 보드에 올리는 경로를 막는다. 미충전
     케이스만 있으면 "채우면 통과"로 오독되므로 충전 케이스를 따로 못박는다(T-0594 R1 공백).
     """
@@ -788,17 +788,17 @@ def test_promote_rejects_design_required_even_when_section_is_filled(board_git, 
     assert board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=fm["id"])) == 1
     err = capsys.readouterr().err
     assert "design-pending" in err
-    assert design_rules.DESIGN_DONE in err, "승격 처방(design: done)이 안내에 없다."
+    assert design_rules.DESIGN_DONE in err, "승격 해결 방법(design: done)이 안내에 없다."
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 draft 는 .drafts/ 에 남아야 한다."
     assert not list((board_dir / "tickets" / "open").glob("T-*-*.md"))
 
 
-def _harvest_architect_round(board_git, board_dir: Path, tid: str) -> None:
-    """architect 점검 라운드를 예약하고 산출로 채운다(시드 잔존 아님).
+def _collect_architect_round(board_git, board_dir: Path, tid: str) -> None:
+    """architect 점검 라운드를 예약하고 산출로 채운다(빈 양식 그대로가 아님).
 
-    `design: required|done` 티켓은 이 라운드가 회수되기 전 promote 가 거부한다 — 설계 절
-    충전 축만 보려는 케이스는 이 전제를 갖춘 뒤 판정한다."""
+    `design: required|done` 티켓은 이 라운드를 돌려받기 전 promote 가 거부한다 — 설계 절
+    충전 판정만 보려는 케이스는 이 전제를 갖춘 뒤 판정한다."""
     assert board_round.cmd_section_add(
         pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid, role="architect", label=None)) == 0
     path = board_dir / "tickets" / "rounds" / tid / "01-architect.md"
@@ -808,14 +808,14 @@ def _harvest_architect_round(board_git, board_dir: Path, tid: str) -> None:
 
 @requires_git
 def test_promote_accepts_filled_design_section_with_done(board_git):
-    """설계 절 완성 + `design: done` + architect 점검 라운드 회수 → 승격(rc=0)·open/ 이동."""
+    """설계 절 완성 + `design: done` + architect 점검 라운드 돌려받음 → 승격(rc=0)·open/ 이동."""
     board_dir = board_git._board_dir
     assert board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = ticket_store.load_ticket(draft)
     fm["design"] = design_rules.DESIGN_DONE
     ticket_store.dump_ticket(draft, fm, _body())
-    _harvest_architect_round(board_git, board_dir, fm["id"])
+    _collect_architect_round(board_git, board_dir, fm["id"])
 
     bind_product_cluster(board_git, fm["id"], task=_TASK)
     assert board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=fm["id"])) == 0
@@ -860,7 +860,7 @@ def test_root_skill_card_documents_design_stage():
     """pm-ticket 스킬 카드가 설계 단계 운영 규칙(작성 주체·검토 단위·출구·승격)을 명시한다.
 
     검토 단위는 묶음 architect 라운드이고 불완전하면 라운드를 늘이지 않고 사용자에게 보고한다.
-    옛 replan/"상한 2라운드" 축이 되살아나면 이 가드가 잡는다.
+    옛 replan/"상한 2라운드" 규칙이 되살아나면 이 가드가 잡는다.
     """
     text = SKILL.read_text(encoding="utf-8") + "\n" + (
         SKILL.parent / "references" / "operational-details.md"
@@ -890,7 +890,7 @@ def test_shipped_skill_cards_include_design_stage(shipped):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_design_subcommand_is_registered_and_shown_in_help():
-    """`design` 이 parser choices에 등록되고 `--help` 에 노출된다(CLI 배선 확인)."""
+    """`design` 이 parser choices에 등록되고 `--help` 에 노출된다(CLI 등록 확인)."""
     parser = board_cmd.build_parser()
     help_text = parser.format_help()
     assert "design" in help_text
@@ -900,10 +900,10 @@ def test_design_subcommand_is_registered_and_shown_in_help():
     assert sub.choices["design"].get_default("fn") is board_round.cmd_design
 
 
-def _seed_harvested_architect_round(board, tid: str) -> None:
-    """회수된 architect 점검 라운드 1건을 board 라운드 자리에 남긴다(시드 그대로가 아님).
+def _seed_collected_architect_round(board, tid: str) -> None:
+    """돌려받은 architect 점검 라운드 1건을 board 라운드 자리에 남긴다(빈 양식 그대로가 아님).
 
-    헤더 렌더는 라운드 사이드카 seam 을 그대로 쓴다 — 형식 사본을 테스트가 다시 쓰지 않는다.
+    헤더 렌더는 라운드 사이드카 공용 함수를 그대로 쓴다 — 형식 사본을 테스트가 다시 쓰지 않는다.
     """
     directory = round_store.rounds_dir_for_ticket(tid, pm_paths.tickets_dir(pm_paths.home_at(board.REPO)))
     directory.mkdir(parents=True, exist_ok=True)
@@ -938,7 +938,7 @@ def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pas
     assert fm["design"] == design_rules.DESIGN_DONE
     assert design_rules._design_state(fm["design"]) == design_rules.DESIGN_DONE
     # `done` 은 architect 점검 라운드도 함께 요구한다(면제 경로가 없어진 자리) — 실산출 1건.
-    _seed_harvested_architect_round(board_git, tid)
+    _seed_collected_architect_round(board_git, tid)
 
     bind_product_cluster(board_git, tid, task=_TASK)
     assert board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid)) == 0
@@ -967,7 +967,7 @@ def test_design_setter_refuses_the_abolished_exemption_value(board_git, capsys):
 
 @requires_git
 def test_design_open_ticket_transition_syncs_to_board_git(board_git):
-    """open 티켓 전환은 promote와 무관하게 board-git 원격에 값이 도달한다(동기 축 구분)."""
+    """open 티켓 전환은 promote와 무관하게 board-git 원격에 값이 도달한다(동기 경로 구분)."""
     board_dir = board_git._board_dir
     assert board_ticket.cmd_new(pm_paths.home_at(board_git.REPO), _new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
@@ -975,7 +975,7 @@ def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     tid = fm["id"]
     fm["design"] = design_rules.DESIGN_DONE
     ticket_store.dump_ticket(draft, fm, _body())
-    _harvest_architect_round(board_git, board_dir, tid)
+    _collect_architect_round(board_git, board_dir, tid)
     bind_product_cluster(board_git, tid, task=_TASK)
     assert board_ticket.cmd_promote(pm_paths.home_at(board_git.REPO), argparse.Namespace(id=tid)) == 0
 

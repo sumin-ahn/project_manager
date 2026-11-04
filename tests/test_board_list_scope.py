@@ -10,8 +10,8 @@ list 의 렌즈는 `--task`·`--mine`·`--all`·무인자 기본 뷰다 — quer
   2. `--status` 셀렉터 — 기본=활성만 · `all`=전체(done 포함) · 특정값=그것만(기존 동작).
   3. argparse 가 `--status all`/`--mine` 을 에러 없이 받는다(opencode PM 실증 회귀 방지 계승).
 
-hermetic 패턴은 `test_board_mine_view.py` 와 동형 — board.py 의 경로 전역을 tmp 프로젝트로
-monkeypatch 하고 git 폴백은 stub 한다. querying identity 는 local.conf `identity.user=` 로 명시한다.
+hermetic 패턴은 `test_board_mine_view.py` 와 같은 방식 — board.py 의 경로 전역을 tmp 프로젝트로
+monkeypatch 하고 git 대체 조회는 stub 한다. querying identity 는 local.conf `identity.user=` 로 명시한다.
 """
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ def test_list_mine_and_repo_mutually_exclusive_at_dispatch(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# --repo X --slot N (kind=slot) — 현재 사용자 ∩ 그 세션(완전 일치·구 --session 동형)
+# --repo X --slot N (kind=slot) — 현재 사용자 ∩ 그 세션(완전 일치·옛 --session 과 같은 방식)
 # ════════════════════════════════════════════════════════════════════════
 
 
@@ -147,7 +147,7 @@ def test_list_mine_and_repo_mutually_exclusive_at_dispatch(board):
 # ════════════════════════════════════════════════════════════════════════
 
 # status 셀렉터는 전체 뷰(`--all`·ADR-0066 로 기존 무인자 전체 뷰 이관)에 적용된다 — 무인자
-# 기본은 이제 세션 스코프(내 스트림)라 status 셀렉터 검증은 `--all` 로 돈다(status 축은 뷰 스코프와
+# 기본은 이제 세션 스코프(내 스트림)라 status 셀렉터 검증은 `--all` 로 돈다(status 기준은 뷰 스코프와
 # 직교·`--all` 이 done 접기/전체를 그대로 계승).
 def test_all_view_hides_done(board, capsys):
     _seed(board, "T-0010", "open")

@@ -1,6 +1,6 @@
-"""`board.py new` 발행 규율 게이트 — 미충전 stub 은 board-git 미커밋(draft) (T-0196).
+"""`board.py new` 발행 규율 검사 — 미충전 stub 은 board-git 미커밋(draft) (T-0196).
 
-board(tickets+areas)가 별도 git 으로 분리된(공유) 형상에서, `board.py new` 가 방금 만든
+board(tickets+areas)가 별도 git 으로 분리된(공유) 구성에서, `board.py new` 가 방금 만든
 티켓 본문이 아직 `_template.md` placeholder(무엇을 만들/바꿀/검증할지 · [[xxxxx]] 등)를
 그대로 담고 있으면(=기본값 그대로, 제목만 바뀜) **board-git 에 커밋하지 않는다** — draft 는
 로컬 파일시스템(open/)엔 존재하되 board-git 엔 없어, 다른 slot 의 pull/handoff 에 나타나지
@@ -8,10 +8,10 @@ board(tickets+areas)가 별도 git 으로 분리된(공유) 형상에서, `board
 
 본문을 채운 뒤 `board.py promote <id>` 로 승격(board-git commit) — 여전히 미충전이면 거부.
 
-board 가 별도 git 이 아니면(legacy·솔로) 게이트 자체가 무의미(공유 board 가 없음) — 항상
+board 가 별도 git 이 아니면(legacy·솔로) 검사 자체가 무의미(공유 board 가 없음) — 항상
 즉시 sync(기존 무변경).
 
-hermetic 패턴은 `test_board_git_sync.py` 와 동형 — 실 board git + bare remote 를 tmp 에
+hermetic 패턴은 `test_board_git_sync.py` 와 같은 방식 — 실 board git + bare remote 를 tmp 에
 세우고 board 모듈의 `REPO` 를 그 tmp 로 monkeypatch 한다.
 """
 from __future__ import annotations
@@ -73,7 +73,7 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
                           check=False)
 
 
-# 실 `_template.md` 와 동형(placeholder 그대로) — `board.py new` 가 이 골격에 제목만 채워
+# 실 `_template.md` 와 같은 구조(placeholder 그대로) — `board.py new` 가 이 빈 양식에 제목만 채워
 # 발행한다는 전제를 hermetic 하게 모사한다.
 _TEMPLATE_TEXT = (
     "---\n"
@@ -126,7 +126,7 @@ def board(tmp_path, monkeypatch):
     return mod
 
 
-_TASK = "draft-gate-task"
+_TASK = "draft-check-task"
 
 
 def _new_args(title: str) -> argparse.Namespace:
@@ -162,7 +162,7 @@ def test_new_placeholder_body_not_committed_to_board_git(board, tmp_path, capsys
     # 첫 mutation 이 draft 여도 sync funnel 이 루트 ignore backfill 을 즉시 commit/push 한다.
     # draft 파일은 계속 commit 대상이 아니지만 이제 일반 status/handoff 관측에서도 사라져야 한다.
     status = _git(["status", "--porcelain"], board_dir).stdout
-    assert status.strip() == "", f"첫 draft 생성 뒤 dirty 잔여가 남음: {status!r}"
+    assert status.strip() == "", f"첫 draft 생성 뒤 dirty 변경이 남음: {status!r}"
     head_files = _git(["ls-tree", "-r", "--name-only", "HEAD"], board_dir).stdout
     assert ".gitignore" in head_files
     assert "tickets/.drafts/" not in head_files, "ignore backfill 커밋에 draft 자체가 유출됨."
@@ -176,7 +176,7 @@ def test_new_placeholder_body_not_committed_to_board_git(board, tmp_path, capsys
 
     handoff = _load_tool("pm_handoff")
     assert pm_engine.infra.handoff_git._dirty_paths_in_tree(str(board_dir), pm_engine.infra.handoff_git._module_run_git) == [], \
-        "cmd_new→draft 뒤 handoff 실제 dirty seam 이 draft 잔여를 검출함."
+        "cmd_new→draft 뒤 handoff 실제 dirty 판정 함수가 draft 를 남은 파일로 검출함."
 
     log = _git(["log", "--oneline"], board_dir).stdout
     assert "board init" in log
@@ -400,7 +400,7 @@ def test_draft_not_leaked_by_unrelated_promote(board, tmp_path, monkeypatch):
 
 @requires_git
 def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monkeypatch):
-    """draft 생성 후 무관 티켓(T-0001, 기존 seed)을 claim+complete 해도 draft 는 board-git 미커밋.
+    """draft 생성 후 무관 티켓(T-0001, 기존에 미리 넣은 티켓)을 claim+complete 해도 draft 는 board-git 미커밋.
 
     claim(strict)·complete(best-effort) 모두 `_board_git_stage_and_commit` 을 거친다 — 둘 다
     무관 draft 를 안 쓸어담아야 한다."""
@@ -412,11 +412,11 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
     board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args("드래프트"))
     draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
 
-    # seed 티켓(T-0001, _make_board_git 이 만든 기존 open 티켓과 별개로 이번엔 new 로 만든
+    # 미리 넣는 티켓(T-0001, _make_board_git 이 만든 기존 open 티켓과 별개로 이번엔 new 로 만든
     # 필드가 채워진 티켓)을 claim + complete — 무관 mutation 연쇄.
     seed_path = list((board_dir / "tickets" / "open").glob("T-0001-*.md"))
     if not seed_path:
-        # `_make_board_git` 은 이 fixture 에서 template 만 커밋하므로(테스트용 별도 seed 필요)
+        # `_make_board_git` 은 이 fixture 에서 template 만 커밋하므로(테스트용 별도 티켓 필요)
         # T-0001 자체를 직접 만든다.
         board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args("실 티켓"))
         for p in (board_dir / "tickets" / ".drafts").glob("T-*-*.md"):
@@ -424,7 +424,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
                 fm, _ = ticket_store.load_ticket(p)
                 seed_id = "-".join(p.stem.split("-")[:2])
                 # DoD 는 체크 상태로 심는다 — 이 테스트의 주제는 draft leak 이지만 아래에서
-                # 실제로 complete 까지 태우므로 DoD 기록 게이트(T-0596)를 만족해야 한다.
+                # 실제로 complete 까지 태우므로 DoD 기록 검사(T-0596)를 만족해야 한다.
                 filled_body = (
                     f"# {seed_id} — 실 티켓\n\n"
                     "## 목표\n실제 목표.\n\n"
@@ -443,7 +443,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
         argparse.Namespace(id=seed_id, task=_TASK, user="me")) == 0, \
         "seed 티켓 claim 실패(테스트 전제 붕괴)."
     # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
-    _mark_ledger_closing(board, "C-declared")
+    _mark_records_closing(board, "C-declared")
     rc = board_ticket.cmd_complete(pm_paths.home_at(board.REPO), argparse.Namespace(
         id=seed_id, tests_pass=True, allow_missing_log=True, allow_untested=False,
         task=_TASK, user="me", cluster_close="C-declared"))
@@ -451,7 +451,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
 
     # draft 는 여전히 drafts_dir() 에 있고 board-git 에 커밋/push 되지 않아야 한다.
     assert draft_path.exists(), "무관 claim/complete 후 draft 파일이 사라짐(예상 밖 부작용)."
-    # `-z` 로 NUL 구분 raw 경로 — quote 이스케이프로 인한 false-negative 방지(위 promote 케이스 동형).
+    # `-z` 로 NUL 구분 raw 경로 — quote 이스케이프로 인한 false-negative 방지(위 promote 케이스와 같은 방식).
     remote_ls = _git(["ls-tree", "-zr", "--name-only", "main"], bare).stdout.split("\0")
     assert not any(draft_path.name in entry for entry in remote_ls), (
         f"leak 재발 — 무관 claim/complete 커밋에 draft({draft_path.name})가 "
@@ -459,11 +459,11 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path, monke
 
 
 # ════════════════════════════════════════════════════════════════════════
-# board-git 비활성(legacy·솔로) — 게이트 무의미, 기존처럼 즉시 동작
+# board-git 비활성(legacy·솔로) — 검사 무의미, 기존처럼 즉시 동작
 # ════════════════════════════════════════════════════════════════════════
 
-def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
-    """board 가 별도 git 아니면(legacy) 게이트 없이 기존 sync 경로 그대로(git 미호출)."""
+def test_new_legacy_no_git_check_no_op(board, tmp_path, monkeypatch):
+    """board 가 별도 git 아니면(legacy) 검사 없이 기존 sync 경로 그대로(git 미호출)."""
     wiki = tmp_path / ".project_manager" / "wiki"
     for status in ("open", "claimed", "blocked", "done"):
         (wiki / "tickets" / status).mkdir(parents=True, exist_ok=True)
@@ -473,7 +473,7 @@ def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
 
     def _boom(_home, *a, **k):
         called["n"] += 1
-        raise AssertionError("legacy 인데 board-git 호출 발생 — 게이트 누출")
+        raise AssertionError("legacy 인데 board-git 호출 발생 — 검사 누출")
 
     monkeypatch.setattr(git, "_board_git", _boom)
     rc = board_ticket.cmd_new(pm_paths.home_at(board.REPO), _new_args("제목"))
@@ -486,7 +486,7 @@ def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# draft 종결 경로 — discard 가 draft 도 받아 discarded/ 로 박제하고 reopen 이 되돌린다.
+# draft 종결 경로 — discard 가 draft 도 받아 discarded/ 로 옮겨 기록하고 reopen 이 되돌린다.
 # 번호 배정(`_ID_SCAN_STATUSES`)은 무변경 — 여기선 종결 기록만 다룬다.
 # ════════════════════════════════════════════════════════════════════════
 
@@ -508,7 +508,7 @@ def _commit_file_status(board_dir: Path, rev: str = "HEAD") -> list[str]:
     """`<STATUS>\t<경로>` 목록 — 커밋 메타 없이 그 한 커밋이 담은 파일만.
 
     `-z`(NUL 구분)로 받는다 — 기본 출력은 non-ASCII(한글) 파일명을 core.quotepath 8진
-    이스케이프로 quote 해 문자열 비교가 깨진다(이 파일의 다른 `ls-tree -z` 케이스와 동형)."""
+    이스케이프로 quote 해 문자열 비교가 깨진다(이 파일의 다른 `ls-tree -z` 케이스와 같은 방식)."""
     out = _git(["diff-tree", "--no-commit-id", "--name-status", "-r", "-z", rev], board_dir).stdout
     parts = [p for p in out.split("\0") if p]
     pairs = iter(parts)
@@ -556,8 +556,8 @@ def test_discard_accepts_a_draft_and_commits_only_the_new_file(board, tmp_path):
 
 @requires_git
 def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp_path, capsys):
-    """미회수(시드 그대로) 라운드가 있어도 draft discard 는 차단되지 않고, 미회수 장부에서 해소한
-    실행 가능한 abandon 처방 1줄만 ⓘ 로 낸다 — board-git 커밋은 discarded/ 추가만 담고, tracked
+    """돌려받지 않은(빈 양식 그대로) 라운드가 있어도 draft discard 는 차단되지 않고, 돌려받지 않은 라운드 기록에서 해소한
+    실행 가능한 abandon 해결 방법 1줄만 ⓘ 로 낸다 — board-git 커밋은 discarded/ 추가만 담고, tracked
     pending 라운드는 discard 전후로 바이트 하나 바뀌지 않는다."""
     bare = tmp_path / "bare-discard-pending"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
@@ -572,16 +572,16 @@ def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp
         today=datetime.date.today().isoformat())
     round_path = round_dir / "01-architect.md"
     round_path.write_text(seed_text, encoding="utf-8")
-    # 실 prepare/sync 와 동형: 이 라운드는 이미 board-git 에 tracked 다(예 — 다른 라운드가
-    # 나중에 승격 스코프를 통해 같은 디렉터리를 함께 실었을 때의 형상). discard 자신은 이
+    # 실 prepare/sync 와 같은 구성: 이 라운드는 이미 board-git 에 tracked 다(예 — 다른 라운드가
+    # 나중에 승격 스코프를 통해 같은 디렉터리를 함께 실었을 때의 구성). discard 자신은 이
     # tracked 상태를 건드리지 않는다는 것이 아래 값 단언(I6)의 대상이다.
     _git(["add", "-A", "--", "tickets/rounds"], board_dir)
     _git(["commit", "-qm", "seed pending round"], board_dir)
     round_bytes_before = round_path.read_bytes()
     head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
 
-    # 실 prepare 가 남기는 미회수 장부 행 — discard 의 ⓘ 안내가 여기서 --copy/--cwd 실값을
-    # 해소해야 한다(F-001). run-dir 자체는 짓지 않는다(안내는 장부 값만 읽는다).
+    # 실 prepare 가 남기는 돌려받지 않은 라운드 기록 행 — discard 의 ⓘ 안내가 여기서 --copy/--cwd 실값을
+    # 해소해야 한다(F-001). run-dir 자체는 짓지 않는다(안내는 기록 값만 읽는다).
     run_id = "f" * 32
     copy_root = tmp_path / "delegate-cwd"
     copy_path = (
@@ -590,22 +590,22 @@ def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp
     )
     copy_path.parent.mkdir(parents=True, exist_ok=True)
     copy_path.write_text(seed_text, encoding="utf-8")
-    ledger_row = {
+    record_row = {
         "ticket": tid, "role": "architect", "ordinal": 1, "run_id": run_id,
         "copy": str(copy_path.resolve()),
         "board_rel": f"tickets/rounds/{tid}/01-architect.md",
         "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "collected_at": None,
     }
-    ledger_dir = tmp_path / ".project_manager" / ".local"
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    (ledger_dir / "delegate-rounds.jsonl").write_text(
-        json.dumps(ledger_row, sort_keys=True) + "\n", encoding="utf-8")
+    record_dir = tmp_path / ".project_manager" / ".local"
+    record_dir.mkdir(parents=True, exist_ok=True)
+    (record_dir / "delegate-rounds.jsonl").write_text(
+        json.dumps(record_row, sort_keys=True) + "\n", encoding="utf-8")
 
-    rc = board_ticket.cmd_discard(pm_paths.home_at(board.REPO), _discard_args(tid, "dropped", "폐기 — 라운드 미회수"))
+    rc = board_ticket.cmd_discard(pm_paths.home_at(board.REPO), _discard_args(tid, "dropped", "폐기 — 라운드 돌려받지 않음"))
 
     err = capsys.readouterr().err
-    assert rc == 0, f"미회수 라운드가 discard 를 막았다: {err}"
+    assert rc == 0, f"돌려받지 않은 라운드가 discard 를 막았다: {err}"
     notice_lines = [line for line in err.splitlines() if "round-pending" in line]
     assert len(notice_lines) == 1, f"round-pending 안내가 정확히 1줄이 아니다: {err!r}"
     notice = notice_lines[0]
@@ -646,7 +646,7 @@ def test_reopen_of_a_draft_discard_returns_to_drafts(board, tmp_path):
     assert rc == 0
     assert not list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md"))
     assert not list((board_dir / "tickets" / "open").glob(f"{tid}-*.md")), \
-        "draft 출처 reopen 이 open/ 으로 갔다(placeholder 게이트를 우회함)."
+        "draft 출처 reopen 이 open/ 으로 갔다(placeholder 검사를 우회함)."
     restored = list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md"))
     assert restored, "draft 출처 reopen 이 .drafts/ 로 복귀하지 않았다."
     fm, body = ticket_store.load_ticket(restored[0])
@@ -695,10 +695,10 @@ def test_t0930_promote_binding(board, tmp_path, monkeypatch, capsys):
     assert _git(["rev-parse", "HEAD"], board_dir).stdout == head
     assert "cluster new" in capsys.readouterr().err
     slot = _t0930_bind(board, tmp_path, tid, monkeypatch)
-    ledger = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "declared")
-    recorded = ledger.read_bytes()
+    record_path = cluster_store.cluster_record_path(pm_paths.home_at(board.REPO), "declared")
+    recorded = record_path.read_bytes()
     assert board_ticket.cmd_promote(pm_paths.home_at(board.REPO), argparse.Namespace(id=tid)) == 0
-    assert ledger.read_bytes() == recorded
+    assert record_path.read_bytes() == recorded
     assert ticket_store.find_ticket_exact(pm_paths.home_at(board.REPO), tid)[0] == "open"
     assert _git(["symbolic-ref", "--short", "HEAD"], slot).stdout.strip() == "main"
 
@@ -716,21 +716,21 @@ def test_t0930_promote_binding_corruption(board, tmp_path, monkeypatch, damage):
     from test_board_cluster import _TEMPLATE_TEXT as filled
     ticket_store.dump_ticket(path, fm, filled.split("---", 2)[2].replace("T-NNNN", tid).replace("<제목>", "검증"))
     _t0930_bind(board, tmp_path, tid, monkeypatch)
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "declared")
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), "declared")
     if damage in ("branch", "base"):
-        ledger["branch" if damage == "branch" else "base_branch"] = None
+        records["branch" if damage == "branch" else "base_branch"] = None
     elif damage == "absent-base":
-        ledger["base_branch"] = "task/absent"
+        records["base_branch"] = "task/absent"
     elif damage == "missing":
-        ledger["tickets"] = []
+        records["tickets"] = []
     elif damage == "reverse":
         fm, body = ticket_store.load_ticket(path)
         fm["cluster"] = "C-other"
         ticket_store.dump_ticket(path, fm, body)
     else:
-        duplicate = dict(ledger, id="C-duplicate")
+        duplicate = dict(records, id="C-duplicate")
         cluster_store.dump_cluster(pm_paths.home_at(board.REPO), duplicate)
-    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger)
+    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), records)
     before = (path.read_bytes(), tuple(p.read_bytes() for p in sorted(cluster_store.clusters_dir(pm_paths.home_at(board.REPO)).glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout)
     assert board_ticket.cmd_promote(pm_paths.home_at(board.REPO), argparse.Namespace(id=tid)) == 1
     assert (path.read_bytes(), tuple(p.read_bytes() for p in sorted(cluster_store.clusters_dir(pm_paths.home_at(board.REPO)).glob("C-*.md"))), _git(["rev-parse", "HEAD"], board_dir).stdout) == before
@@ -776,10 +776,10 @@ def test_t0930_promote_binding_legacy_local_operations(board, tmp_path, monkeypa
     assert len(list((wiki / "tickets/open").glob("T-*.md"))) == 1
 
 
-def _mark_ledger_closing(board, cluster: str) -> None:
-    """[[T-0959]] 결속 완료는 종결 파이프라인이 장부를 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
+def _mark_records_closing(board, cluster: str) -> None:
+    """[[T-0959]] 연결된 완료는 종결 파이프라인이 묶음 기록을 closing 으로 기록한 뒤에만 받는다 — 그 기록을 재현한다.
 
     종결의 진행 기록(`ClusterCloser._write_progress`)과 같은 쓰기다(`load_cluster` → `dump_cluster`)."""
-    ledger = cluster_store.load_cluster(pm_paths.home_at(board.REPO), cluster)
-    ledger["status"] = "closing"
-    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), ledger)
+    records = cluster_store.load_cluster(pm_paths.home_at(board.REPO), cluster)
+    records["status"] = "closing"
+    cluster_store.dump_cluster(pm_paths.home_at(board.REPO), records)

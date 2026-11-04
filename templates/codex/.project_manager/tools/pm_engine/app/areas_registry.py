@@ -38,13 +38,13 @@ def areas_append(home, prefix: str, area: str, owner: str,
     스키마: per-repo 레지스트리
     `| repo | prefix | git | test_cmd | owner | base | protected | area_owner |`.
     `owner` = **등록 식별자(registrant)** — 협업 소유자(다중-사람)가 아니라 single user
-    의 등록 출처 표식이다. 기본 = 현 세션. 컬럼/형식은 보존
-    (test_path 바인딩·regression 게이트가 의존) — 의미만 재정의.
+    의 등록 출처 표시다. 기본 = 현 세션. 컬럼/형식은 보존
+    (test_path 바인딩·regression 통과 조건이 의존) — 의미만 재정의.
     `repo`/`git`/`test_cmd`/`base`/`protected`/`area_owner` 미지정 시 빈 칼럼으로 채운다
     (부분 등록 허용·하위호환). `base`는 worktree 슬롯 브랜치가 파생될 base 브랜치
-    — 빈 값/누락이면 `_repo_base` 가 None 폴백(worktree add 가 현행 bare HEAD 동작).
+    — 빈 값/누락이면 `_repo_base` 가 None 으로 대체(worktree add 가 현행 bare HEAD 동작).
     `protected`는 PM 이 자율 commit/push 못 하는 보호 브랜치(쉼표분리) — 빈 값/
-    누락이면 `_repo_protected` 가 `DEFAULT_PROTECTED`(main/master/develop) 폴백.
+    누락이면 `_repo_protected` 가 `DEFAULT_PROTECTED`(main/master/develop) 로 대체.
     `area_owner`는 그 area 의 *user* 소유(`--mine` 풀 입력) — `owner`
     (registrant)와 별개 칼럼(overload 금지). 빈 값/누락이면 소비자가 None 으로 읽는다.
     `area`(구 스키마 칼럼)는 신 스키마에 칼럼이 없어 무시한다 — 호출 시그니처는
@@ -66,7 +66,7 @@ def areas_set_cell(home, repo: str, column: str, value: str) -> tuple[str, str]:
 
     `board_lock()` 하 read→transform→atomic write(temp + `fs.atomic_replace`) 이다 — `areas_append`
     (O_APPEND 등록)와 같은 락으로 직렬화해 동시 등록의 lost-update 를 막는다(
-    `_migrate_areas_apply` 동형). 변환이 no-op(값 동일·`_areas_set_cell_text` 결과가 원문과
+    `_migrate_areas_apply` 와 같은 방식). 변환이 no-op(값 동일·`_areas_set_cell_text` 결과가 원문과
     같음)이면 **쓰지 않는다**(멱등).
 
     `column` 은 `_AREAS_COLUMNS` 의 칼럼명이어야 하고, `value` 는 표를 깨는 `|`·개행을 담을 수
@@ -122,7 +122,7 @@ def fill_self_repo_row(home, *, write: bool) -> str | None:
     설치(`cmd_init`)가 자기 행에 두 칸을 기록하기 전에 만들어진 채택자의 데이터 이관이다(갱신 완료
     단계 `app.update_finish.fill_self_repo_row` 가 부른다). 대상 행이 없거나 어느 한 칸이라도 차 있으면
     아무것도 하지 않는다(덮어쓰지 않는다·다른 repo 행은 보지 않는다). 같은 이름 행이 둘 이상이면
-    `AreasDuplicateRepo` 를 그대로 올린다(`board.py lint` 의 areas-duplicate-repo 와 같은 처방).
+    `AreasDuplicateRepo` 를 그대로 올린다(`board.py lint` 의 areas-duplicate-repo 와 같은 해결 방법).
     값을 정하지 못하면 알림 한 줄 뒤 무동작. `write=False` 는 판정만 한다.
     반환 = 채운(채울) 값 설명 또는 None.
     """
@@ -159,10 +159,10 @@ def _parse_prefix_arg(raw: str) -> str | None:
 
 
 def _format_ticket_id(prefix: str | None, num: int) -> str:
-    """prefix(또는 None=무prefix)와 순번으로 canonical ID 생성 (`_next_id` 발행 규칙과 정합).
+    """prefix(또는 None=무prefix)와 순번으로 canonical ID 생성 (`_next_id` 발행 규칙과 일치).
 
     None → `T-NNNN`(최소 4자리) · prefix → `T-<p>-NNN`(최소 3자리). zero-pad 는 *최소* 폭이라
-    번호가 커지면 자연 확장된다(`_next_id` 와 동형).
+    번호가 커지면 자연 확장된다(`_next_id` 와 같은 방식).
     """
     if prefix:
         return f"T-{prefix}-{num:03d}"
@@ -172,8 +172,8 @@ def _format_ticket_id(prefix: str | None, num: int) -> str:
 def _scan_prefix_tickets(home, skipped: list[Path] | None = None) -> list[dict[str, Any]]:
     """STATUS_DIRS 전 티켓을 relabel 용 레코드로 수집한다 (id·num·prefix·status·path·created).
 
-    `created` 는 merge 시간순 정렬 키(문자열 ISO 로 정규화 — yaml date/str 양쪽 흡수). ID 미해소
-    (파일명·frontmatter 둘 다 실패)나 순번 미상 파일은 건너뛴다(`cmd_prefix_list` 버킷팅과 동형).
+    `created` 는 merge 시간순 정렬 키(문자열 ISO 로 정규화 — yaml date/str 양쪽을 받아들임). ID 미해소
+    (파일명·frontmatter 둘 다 실패)나 순번 미상 파일은 건너뛴다(`cmd_prefix_list` 버킷팅과 같은 방식).
 
     `skipped` 를 주면 **읽지 못한 티켓 경로**를 거기 싣는다. 이 스캔은 조회(prefix list)와
     mutation(rename·merge·reid·delete)이 함께 쓰는데, 못 읽은 티켓의 의미가 두 쪽에서 다르다:
@@ -206,7 +206,7 @@ def _scan_prefix_tickets(home, skipped: list[Path] | None = None) -> list[dict[s
     return out
 
 
-# ID 재부여 표면의 손상-티켓 차단 안내 — 조회 표면과 갈리는 지점을 문구가 스스로 밝힌다.
+# ID 재부여 명령의 손상-티켓 차단 안내 — 조회 명령과 갈리는 지점을 문구가 스스로 밝힌다.
 _UNREADABLE_SCAN_BLOCK = (
     "[중단] {op}: 읽지 못한 티켓 {count}건이 있어 ID 유일성을 판정할 수 없다 — {sample}\n"
     "  · 못 본 ID 는 곧 clobber 다 — 유일성 검사와 번호 이어붙이기(`start=max(...)`)가 그 ID 를 "
@@ -217,11 +217,11 @@ _UNREADABLE_SCAN_BLOCK = (
 
 
 def _prefix_scan(home, op: str) -> tuple[list[dict[str, Any]] | None, int]:
-    """ID 재부여 표면용 전수 스캔 — 읽지 못한 티켓이 1건이라도 있으면 `(None, 1)` 로 막는다.
+    """ID 재부여 명령용 전수 스캔 — 읽지 못한 티켓이 1건이라도 있으면 `(None, 1)` 로 막는다.
 
     조회는 손상 1건을 건너뛰고 계속 도는 게 옳지만(보드 전체가 조회 불능이 되면 안 된다),
-    **ID 를 재부여하는 표면은 반대**다: 못 본 ID 는 유일성 판정에서 빠져 그 위로 다른 티켓이
-    덮인다. 같은 스캔을 쓰되 skip 의 의미만 표면별로 가른다.
+    **ID 를 재부여하는 명령은 반대**다: 못 본 ID 는 유일성 판정에서 빠져 그 위로 다른 티켓이
+    덮인다. 같은 스캔을 쓰되 skip 의 의미만 명령별로 가른다.
     """
     skipped: list[Path] = []
     tickets = _scan_prefix_tickets(home, skipped)
@@ -236,7 +236,7 @@ def _prefix_scan(home, op: str) -> tuple[list[dict[str, Any]] | None, int]:
 
 
 class PrefixSourcesUnreadable(RuntimeError):
-    """prefix 승인 게이트의 3소스 중 하나를 신뢰할 수 없어 fail-loud 해야 함."""
+    """prefix 승인 통과 조건의 3소스 중 하나를 신뢰할 수 없어 fail-loud 해야 함."""
 
 
 @functools.lru_cache(maxsize=1)
@@ -253,14 +253,14 @@ def _cheap_prefix_inventory(home) -> tuple[tuple[str, tuple[str, ...]], ...]:
         task_prefixes: set[str] = set()
         if pm_paths.leases_file(home).exists():
             try:
-                ledger = json.loads(fs.read_text_shared(pm_paths.leases_file(home), encoding="utf-8"))
+                records = json.loads(fs.read_text_shared(pm_paths.leases_file(home), encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 raise PrefixSourcesUnreadable(
                     f"task 기록 파일 {pm_paths.leases_file(home)}를 읽을 수 없음: {exc}"
                 ) from exc
-            if not isinstance(ledger, dict):
+            if not isinstance(records, dict):
                 raise PrefixSourcesUnreadable("task 기록 최상위 값이 object가 아님")
-            tasks = ledger.get("tasks", [])
+            tasks = records.get("tasks", [])
             if not isinstance(tasks, list):
                 raise PrefixSourcesUnreadable("task 기록의 tasks 값이 list가 아님")
             for index, task in enumerate(tasks):
@@ -305,15 +305,15 @@ def _cheap_prefix_inventory(home) -> tuple[tuple[str, tuple[str, ...]], ...]:
 def _known_prefix_inventory(home) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """3소스 prefix와 각 출처를 immutable·결정적 snapshot으로 한 번 읽는다.
 
-    소스는 (1) areas.md prefix, (2) 기발행 티켓 ID prefix, (3) worktree task 장부의
+    소스는 (1) areas.md prefix, (2) 기발행 티켓 ID prefix, (3) worktree task 기록의
     모든 ``Task.prefix``다. per-clone ``local.conf`` 는 소스가 아니다 — clone-local 라벨은
-    ``id_prefix`` 해소에도 없으므로 승인 게이트에도 whitelist하지 않는다.
+    ``id_prefix`` 해소에도 없으므로 승인 통과 조건에도 whitelist하지 않는다.
 
     board는 worktree_pool 엔진을 import하지 않는 기존 격리를 지킨다. worktree_pool이
-    atomic-replace하는 JSON 장부를 strict point-read하고, 손상은 빈 집합으로 완화하지 않는다.
+    atomic-replace하는 JSON 기록 파일을 strict point-read하고, 손상은 빈 집합으로 완화하지 않는다.
     case 충돌 판정은 값싼 소스의 fold-match 여부와 무관하게 항상 티켓까지 3소스를
     확인한다. 첫 전수 스캔 결과는 이 함수의 프로세스 캐시에 보관해 후속 판정 비용을
-    회수하며, 티켓 손상은 빈 집합으로 완화하지 않고 fail-loud한다.
+    줄이며, 티켓 손상은 빈 집합으로 완화하지 않고 fail-loud한다.
     동일 문자열이 여러 소스에 있으면 출처를 합치고, case 변형은 서로 다른 항목으로 보존한다.
     그래야 ``AAA``/``aaa`` 오염을 union 과정에서 숨기지 않고 발견된 변형과 소스를 전부
     fail-loud할 수 있다. 반환 순서는 ``(lower, exact)``로 고정해 set/hash 순서와 무관하다.
@@ -377,7 +377,7 @@ def _prefix_target_snapshot(
     """현재 snapshot에서 ``(canonical, is_new)``를 반환한다. 판정 불능이면 ``(None, False)``.
 
     한 fold에 case 변형이 둘 이상이면 어느 항목도 canonical로 임의 선택하지 않는다. 발견된
-    모든 변형과 3소스 출처를 정렬 출력하고, 먼저 한 case로 수렴시키라는 처방과 함께 막는다.
+    모든 변형과 3소스 출처를 정렬 출력하고, 먼저 한 case로 맞추라는 해결 방법과 함께 막는다.
     """
     try:
         known = known_prefixes(home, prefix)
@@ -479,7 +479,7 @@ def require_prefix_user_ack(
     """기존 prefix의 canonical case 또는 승인된 신규 prefix를 반환하고, 거부면 None.
 
     prefix 동일성은 3소스 합집합에 case-insensitive fold로 대조한다. 신규 라벨은
-    ``--user-ack <prefix>`` 값이 대상과 정확히 결속될 때만 통과한다. 이 토큰은 적대적
+    ``--user-ack <prefix>`` 값이 대상과 정확히 맞을 때만 통과한다. 이 토큰은 적대적
     우회 방지가 아니라 사용자 승인 마찰과 감사 surface이며, 승인 주체가 아닌 세션이
     자가 부착할 수 있다는 위협 모델은 의도적으로 숨기지 않는다.
     """

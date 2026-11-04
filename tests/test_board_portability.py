@@ -80,7 +80,7 @@ def test_dump_ticket_passes_utf8_encoding_and_untranslated_newlines(
 
     ambient PYTHONUTF8 가 cp949 버그를 가려도 이 단언은 통과하지 못한다 —
     수정 전 코드(encoding 누락)에서 captured['encoding'] 은 None.
-    `newline=''`(줄끝 미번역)은 표기 보존 축이다 — 본문이 담은 개행이 그대로 bytes 가 돼야
+    `newline=''`(줄끝 미번역)은 표기 보존 기준이다 — 본문이 담은 개행이 그대로 bytes 가 돼야
     CRLF 티켓이 lifecycle 재작성에서 LF 로 뒤집히지 않는다(T-0709).
     """
     captured: dict = {}
@@ -101,7 +101,7 @@ def test_dump_ticket_passes_utf8_encoding_and_untranslated_newlines(
 def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
     """load_ticket 이 판독에 encoding='utf-8' 를 명시하는지 직접 검증.
 
-    판독은 공유 읽기 seam 을 지나므로([[T-0729]]) 관찰도 그 자리에서 한다 — `Path.read_text` 를
+    판독은 공유 읽기 함수를 지나므로([[T-0729]]) 관찰도 그 자리에서 한다 — `Path.read_text` 를
     보면 엔진이 그 호출을 더는 하지 않아 이 검증이 공허해진다.
     """
     path = tmp_path / "T-9999-y.md"
@@ -123,7 +123,7 @@ def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
 # ── C5: pre-push 훅 본문이 탐지 인터프리터를 쓰는지 (bare 'python3' 하드코딩 아님) ──
 
 def _own_git_hooks(board, monkeypatch, root: Path) -> Path:
-    """자기 `.git` 디렉토리를 갖춘 tmp REPO + 그 아래 훅 폴더 — 설치가 서는 형상(T-0899).
+    """자기 `.git` 디렉토리를 갖춘 tmp REPO + 그 아래 훅 폴더 — 설치가 서는 구성(T-0899).
 
     엔진은 해소된 훅 폴더가 `REPO/.git` 아래일 때만 쓴다. 훅 폴더를 저장소 밖에 두면 설치
     자체가 서지 않아 본문·인코딩을 볼 수 없다.
@@ -144,7 +144,7 @@ def test_hook_body_uses_detected_interpreter(board, monkeypatch, tmp_path):
     import re
 
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
-    # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
+    # 실행검증 교체 지점을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     # python3 부재·python 존재 → _detect_py() == 'python'.
     monkeypatch.setattr(
@@ -167,7 +167,7 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
     에 truncate-rewrite 하지 않기 위해·T-0593) — spy 도 그 tmp 를 함께 본다.
     """
     hooks = _own_git_hooks(board, monkeypatch, tmp_path)
-    # 실행검증 seam 을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
+    # 실행검증 교체 지점을 mock 해 detection 을 which mock 만으로 결정적이게 (실 인터프리터 비의존).
     monkeypatch.setattr(python_env, "_interp_runs", lambda cmd: True)
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/python3" if cmd == "python3" else None)
 
@@ -330,7 +330,7 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     assert board_init.cmd_init(pm_paths.home_at(board.REPO), args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    # 세션·prefix 는 per-clone conf 의 키가 아니다(T-0779) — 정체성은 lease 장부·areas.md.
+    # 세션·prefix 는 per-clone conf 의 키가 아니다(T-0779) — 정체성은 슬롯 대여 기록·areas.md.
     assert "session=" not in conf_text and "prefix=" not in conf_text
     assert "runtime.py=" in conf_text
     assert f"test.cmd={python_env.default_pytest_cmd(python_env._detect_py())}" in conf_text

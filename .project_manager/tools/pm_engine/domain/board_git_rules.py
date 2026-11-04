@@ -9,7 +9,7 @@ from pm_engine.domain import ticket_rules
 
 # board git 에 **엔진이 넣는 텍스트 파일**의 확장자. 지금 실재하는 건 티켓·라운드·areas 의 `.md`
 # 뿐이지만 표기 고정을 한 확장자에 매달 이유가 없다 — 엔진이 board 에 넣는 어떤 텍스트도 같은
-# 표기로 체크아웃돼야 회수 bytes 보존과 재작성 byte 판정이 개행으로 갈리지 않는다.
+# 표기로 체크아웃돼야 읽어 온 bytes 보존과 재작성 byte 판정이 개행으로 갈리지 않는다.
 # 채택자가 board 에 둔 다른 형식은 대상이 아니다(우리 소유 확장자만 선언한다).
 _BOARD_TEXT_ATTR_EXTENSIONS: tuple[str, ...] = ("md", "json", "txt", "jsonl")
 
@@ -34,7 +34,7 @@ _BOARD_GITATTRIBUTES_BLOCK = (
 )
 
 
-# board 루트에 엔진이 배포하는 파일들. ensure/판정/snapshot/pathspec 이 모두 이 seam 을 공유해
+# board 루트에 엔진이 배포하는 파일들. ensure/판정/snapshot/pathspec 이 모두 이 목록을 공유해
 # 한 파일만 WIP 보호에서 빠지는 drift 를 막는다. 순서는 pathspec·복구 안내의 나열 순서다.
 _BOARD_GIT_ROOT_FILES: tuple[str, ...] = (".gitattributes", ".gitignore")
 
@@ -52,10 +52,10 @@ _GITATTRIBUTES_TEXT_ENABLED: frozenset[str] = frozenset({"set", "auto"})
 
 
 # `tickets/.drafts/`(미충전 draft)는 **설계상 board-git 미커밋**이다(draft authoring flow 결정 —
-# placeholder 본문이 공유 board 에 올라가는 것을 막는다). mutation 축엔 그 의도가 이미 박혀
-# 있지만(`_BOARD_GIT_SCOPE_EXCLUDE`·`_BOARD_GIT_DRAFT_PATHSPEC`), **관측 축**엔 아무 선언도 없어
-# draft 파일이 untracked 로 남는다 — dirty-tree 를 재는 소비자(`pm_handoff` [0/7] 게이트·사람의
-# `git status`)가 그걸 매번 "기록 누락 잔여" 로 오탐해 핸드오프마다 `--ack-dirty` override 를
+# placeholder 본문이 공유 board 에 올라가는 것을 막는다). mutation 쪽엔 그 의도가 이미 박혀
+# 있지만(`_BOARD_GIT_SCOPE_EXCLUDE`·`_BOARD_GIT_DRAFT_PATHSPEC`), **관측 쪽**엔 아무 선언도 없어
+# draft 파일이 untracked 로 남는다 — dirty-tree 를 재는 소비자(`pm_handoff` [0/7] 검사·사람의
+# `git status`)가 그걸 매번 "기록 누락 남은 파일" 로 오탐해 핸드오프마다 `--ack-dirty` override 를
 # 요구했다(핸드오프 관측 결과). board git 의 `.gitignore` 에 그 디렉토리를 선언해 오탐을 원천에서
 # 없앤다 — 새 판정 규칙이 아니라 이미 있던 의도(미커밋)를 git 에 명시하는 것이다.
 _BOARD_GIT_DRAFT_IGNORE_PATTERN = "tickets/.drafts/"
@@ -117,10 +117,10 @@ _CLAIM_BLOCK_OFFLINE = "offline"            # fetch 도달 불가(네트워크·
 _CLAIM_BLOCK_NO_UPSTREAM = "no-upstream"    # 추적 브랜치 미설정 → 조율할 원격이 없음
 
 
-_CLAIM_BLOCK_NO_ANCHOR = "no-anchor"        # HEAD 조회 불가 → rollback anchor 없이 진행 금지
+_CLAIM_BLOCK_NO_HEAD = "no-anchor"        # HEAD 조회 불가 → rollback 기준 HEAD 없이 진행 금지
 
 
-# 잔여 차단 진단에 나열할 더러운 파일 표본 상한 — 전부 쏟으면(수십 건) 안내가 묻히고, 0 이면
+# 남은 차단 진단에 나열할 더러운 파일 표본 상한 — 전부 쏟으면(수십 건) 안내가 묻히고, 0 이면
 # "무엇 때문에 막혔나" 를 사용자가 다시 찾아야 한다. 총계는 항상 함께 낸다.
 _BOARD_GIT_DIRTY_SAMPLE_MAX = 5
 
@@ -131,7 +131,7 @@ _BOARD_GIT_DETAIL_MAX = 200
 
 
 # 사유 코드 → **짧은 라벨**. "무엇 때문인지" 한 마디만 끼워 넣는 자리(롤백 후 stale 경고)용이다
-# — 사유별 *처방* 문장은 `_claim_block_message` 가 소유한다(claim 차단이라는 다른 맥락). 판정
+# — 사유별 *해결 방법* 문장은 `_claim_block_message` 가 소유한다(claim 차단이라는 다른 맥락). 판정
 # 자체는 두 곳 모두 `_classify_pull_failure` 하나를 쓴다.
 _BOARD_GIT_BLOCK_LABELS: dict[str, str] = {
     _CLAIM_BLOCK_REBASE: "rebase 진행 중·충돌 미해소",
@@ -165,8 +165,8 @@ class _BoardGitUpstream(NamedTuple):
         return f"refs/remotes/{self.remote}/{short}"
 
 
-# 원격에서 이 티켓이 이미 `open` 을 벗어났으면 선점(claim race-lost)이다. STATUS_DIRS 를
-# 추종해 유도한다 — 신규 상태(예: 처분 종결 `discarded`)가 생겨도 "open 이 아니면 선점" 이라는
+# 원격에서 이 티켓이 이미 `open` 을 벗어났으면 원격이 먼저 차지한 것(claim race-lost)이다. STATUS_DIRS 를
+# 추종해 유도한다 — 신규 상태(예: 처분 종결 `discarded`)가 생겨도 "open 이 아니면 먼저 차지됨" 이라는
 # 판정이 자동으로 그 상태를 덮는다(손-열거하면 새 상태가 조용히 claim 가능해진다).
 _CLAIM_RACE_LOST_STATUSES: tuple[str, ...] = tuple(
     status for status in ticket_rules.STATUS_DIRS if status != "open")
@@ -184,19 +184,19 @@ class _BoardGitUncommittedScope(NamedTuple):
 
 
 class _ClaimPrefetch(NamedTuple):
-    """claim 선점 감지 결과 — anchor · 차단 사유 · 진단 재료.
+    """claim 을 원격이 먼저 차지했는지 감지한 결과 — orig_head · 차단 사유 · 진단 재료.
 
     옛 sentinel 문자열 반환(5분)을 대체한다. 차단 사유가 넷으로 갈리고(dirty / rebase 충돌 /
     offline / upstream 없음) 진단에 `behind` 와 더러운 파일 목록이 함께 필요해, 값 하나로는
     표현이 안 된다 — 사유와 재료를 **한 구조체로 묶어** 호출부가 메시지를 한 곳에서 렌더한다.
     """
 
-    anchor: str | None = None
+    orig_head: str | None = None
     """`<sha>` = 정상 진행(rollback 복귀 지점) · `""` = board-git 비활성(legacy) · None = 차단."""
     block: str | None = None
     """`_CLAIM_BLOCK_*` 사유 코드 (None = 진행 가능)."""
     behind: int | None = 0
-    """원격이 로컬보다 앞선 커밋 수 — 잔여 차단 진단의 핵심 수치. None = 계산 불가(판정불가)."""
+    """원격이 로컬보다 앞선 커밋 수 — 남은 차단 진단의 핵심 수치. None = 계산 불가(판정불가)."""
     dirty: tuple[tuple[str, str], ...] = ()
     """차단 시점의 미커밋 변경 `(코드, 경로)` — 안내에 표본 + 총계로 낸다."""
     detail: str = ""
@@ -222,12 +222,12 @@ _FRESHNESS_FETCH_TIMEOUT_SECONDS = 5   # advisory fetch 상한(대화형 hang �
 
 
 class _BoardFreshness(NamedTuple):
-    """freshness 1줄 + 그 줄이 근거로 쓴 원격-추적 스냅샷의 **검증 여부**.
+    """freshness 1줄 + 그 줄이 근거로 쓴 원격-추적 상태의 **검증 여부**.
 
     `verified` 는 "이번 조회가 원격을 실측했나" 다 — TTL 이내 직전 fetch 재사용 또는 이번
     fetch 성공일 때만 True. False 면 남아 있는 원격-추적 ref 는 **검증되지 않은 캐시**라
     그것으로 티켓 단위 stale 을 단정할 수 없다(판정 불능을 판정으로 위장하지 않는다).
-    freshness 줄 자체는 그 사실을 "판정불가 — 스냅샷일 수 있음" 으로 이미 말한다.
+    freshness 줄 자체는 그 사실을 "판정불가 — 옛 복사본일 수 있음" 으로 이미 말한다.
     """
 
     line: str | None

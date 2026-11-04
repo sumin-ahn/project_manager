@@ -22,8 +22,8 @@ REPO = Path(__file__).resolve().parents[1]
 ROOT_AGENTS = REPO / ".claude" / "agents"
 TEMPLATE_AGENTS = REPO / "templates" / "claude_code" / ".claude" / "agents"
 
-# 4 역할 축 + developer 의 hard 티어 카드(T-0766). 양 트리 byte-identical 축이 이 목록을
-# 순회하므로, 카드를 늘리고 여기를 안 늘리면 새 카드가 가드 시야 밖으로 조용히 빠진다.
+# 4 역할 기준 + developer 의 hard 티어 카드(T-0766). 양 트리 byte-identical 검사가 이 목록을
+# 순회하므로, 카드를 늘리고 여기를 안 늘리면 새 카드가 가드 검사 범위 밖으로 조용히 빠진다.
 AGENT_NAMES = [
     "architect.md", "code-reviewer.md", "developer.md", "developer-hard.md",
     "researcher.md",
@@ -32,8 +32,8 @@ REQUIRED_KEYS = ("name", "description", "tools")
 
 # researcher = 조사 전용 에이전트 — 제품 트리를 고치지 않는다(카드 가드 T-0086).
 # `Edit` 는 "모든 참여 역할이 자기 산출을 티켓 절로 남긴다"(ADR-0089·T-0696)의 최소 수단이다.
-# claude `tools` 는 가용성 축이라 대상 경로까지 좁히지는 못한다 — 범위 규율은 카드 문구와 위임
-# 전후 감사가 지고, 경로 격리는 codex(`--add-dir`)·opencode(permission) 축이 기계로 건다.
+# claude `tools` 는 가용성 기준이라 대상 경로까지 좁히지는 못한다 — 범위 규율은 카드 문구와 위임
+# 전후 감사가 지고, 경로 격리는 codex(`--add-dir`)·opencode(permission) 쪽이 기계로 건다.
 # 제품 트리를 새로 쓰는 `Write` 와 임의 명령을 실행하는 `Bash` 는 계속 금지다.
 RESEARCHER_FORBIDDEN_TOOLS = ("Write", "Bash")
 RESEARCHER_REQUIRED_TOOLS = ("Read", "Glob", "Grep")

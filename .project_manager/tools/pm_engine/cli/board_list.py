@@ -7,12 +7,12 @@ from pm_engine.domain import ticket_rules
 
 
 def _print_board_freshness(home) -> bool:
-    """board freshness 1줄을 **stderr** 로 표면화하고 스냅샷 검증 여부를 돌려준다 (advisory).
+    """board freshness 1줄을 **stderr** 로 드러내고 원격-추적 상태의 검증 여부를 돌려준다 (advisory).
 
     stdout 이 아니라 stderr 인 이유: `board list` stdout 를 파싱하는 소비처(회귀 파서·
-    pm_bootstrap counts·아래 anti-degrade warn 과 동형)를 오염시키지 않는다. board 비-git이면 line=None → 무출력(조용히 생략·오탐 0).
+    pm_bootstrap counts·아래 anti-degrade warn 과 같은 방식)를 오염시키지 않는다. board 비-git이면 line=None → 무출력(조용히 생략·오탐 0).
 
-    반환값은 **이 줄이 근거로 쓴 원격-추적 스냅샷이 실측 검증됐나**(TTL 이내 재사용 또는 이번
+    반환값은 **이 줄이 근거로 쓴 원격-추적 상태가 실측 검증됐나**(TTL 이내 재사용 또는 이번
     fetch 성공)다 — 같은 흐름에서 이어지는 티켓 단위 대조가 검증되지 않은 캐시로 단정하지
     않게 한다. `list` 는 이 값을 쓰지 않는다(현행 동작 무변경)."""
     freshness = board_git._board_git_freshness(home)
@@ -23,9 +23,9 @@ def _print_board_freshness(home) -> bool:
 
 def _print_ticket_remote_mismatch(home, ticket_id: str, local_status: str, *,
                                   snapshot_verified: bool) -> None:
-    """이 티켓의 로컬 status ↔ 원격-추적 status 불일치를 1줄(stderr) 표면화한다.
+    """이 티켓의 로컬 status ↔ 원격-추적 status 불일치를 1줄(stderr)로 드러낸다.
 
-    `show` 전용 추가 표면 — 전역 요약(`_print_board_freshness`)만으로는 "이 티켓" 이 stale
+    `show` 전용 추가 안내 — 전역 요약(`_print_board_freshness`)만으로는 "이 티켓" 이 stale
     한지 알 수 없다(다중 clone 에서 local open 인데 원격은 이미 done 인 사례가 실사고).
     판정은 claim 이 이미 쓰는 `_board_git_remote_ticket_status`(ls-tree·네트워크 0) 를
     그대로 재사용한다(새 판정 금지) — **fetch 는 새로 하지 않는다**: 직전
@@ -34,11 +34,11 @@ def _print_ticket_remote_mismatch(home, ticket_id: str, local_status: str, *,
 
     `snapshot_verified` 가 False 면 **판정 자체를 내지 않는다**(문구만 약하게 하지 않는다):
     원격-추적 ref 는 남아 있어도 이번 조회에서 검증되지 않은 캐시라, 그것으로 "로컬 사본
-    stale" 을 말하면 판정 불능을 판정으로 위장하게 된다. 그 형상의 강등 진술은 전역
-    freshness 줄("판정불가 — 스냅샷일 수 있음")이 이미 낸다 — 같은 사실을 두 줄로 말하지
+    stale" 을 말하면 판정 불능을 판정으로 위장하게 된다. 그 경우의 수준을 낮춘 안내는 전역
+    freshness 줄("판정불가 — 옛 복사본일 수 있음")이 이미 낸다 — 같은 사실을 두 줄로 말하지
     않는다.
 
-    무출력(오탐 0) 조건: 스냅샷 미검증(fetch 실패·TTL 밖) · board 비-git · upstream 미설정 ·
+    무출력(오탐 0) 조건: 원격-추적 상태 미검증(fetch 실패·TTL 밖) · board 비-git · upstream 미설정 ·
     원격 판정 불가(`None`·원격에 그 티켓 없음 포함) · local_status 가 STATUS_DIRS 밖(draft 는
     board-git 추적 대상이 아님) · 로컬==원격. 이 경우들은 "판정불가/무관"일 뿐 "최신" 을
     주장하지 않으므로 오탐이 아니다.
@@ -57,7 +57,7 @@ def _print_ticket_remote_mismatch(home, ticket_id: str, local_status: str, *,
         return
     behind = board_git._board_git_behind(home, upstream.tracking)
     # behind 계산 불가면 수치를 지어내지 않는다(F-003) — 불일치 사실 자체는 검증된
-    # 스냅샷에서 읽었으므로 그대로 말한다.
+    # 원격-추적 상태에서 읽었으므로 그대로 말한다.
     gap = f"behind {behind}" if behind is not None else "behind 판정불가"
     print(
         f"⚠ {ticket_id} 로컬 사본 stale — 로컬 status={local_status} · "
@@ -188,7 +188,7 @@ def cmd_list(home, args: argparse.Namespace) -> int:
                 elif multi_user and not strict_exclude_fired:
                     # 같은 predicate 를 단일 사용자로 재평가해 다중사용자 strict-exclude 때문에 숨긴
                     # 티켓인지 판정한다. 해소된 사용자 값이 과거 스탬프와 어긋난 경우도 같은
-                    # 세션 후보인지 확인하도록 조회 user만 미해소 상태로 완화한다. 세션 축은
+                    # 세션 후보인지 확인하도록 조회 user만 미해소 상태로 완화한다. 세션 기준은
                     # 그대로이므로 타 세션의 정상 제외는 경고 신호가 되지 않는다.
                     strict_exclude_fired = (
                         ticket_access._in_default_view(
@@ -225,8 +225,8 @@ def cmd_list(home, args: argparse.Namespace) -> int:
             "`board init --owner <you>`.",
             file=sys.stderr,
         )
-    # board-git freshness 표면화 (advisory·stderr) — 각 list 변형 공통·양 return 경로
-    # ("(no tickets)"·행 있음)를 커버하도록 여기서 한 번 소환. board 비-git 이면 무출력.
+    # board-git freshness 드러내기 (advisory·stderr) — 각 list 변형 공통·양 return 경로
+    # ("(no tickets)"·행 있음)를 커버하도록 여기서 한 번 부른다. board 비-git 이면 무출력.
     _print_board_freshness(home)
     if not rows:
         print("(no tickets)")
@@ -243,7 +243,7 @@ def cmd_show(home, args: argparse.Namespace) -> int:
     """명세 전문 + 라운드 파일들을 순번 순으로 이어 보여준다.
 
     티켓 하나는 명세 파일 하나와 라운드 파일 N 개다 — 조회는 그 둘을 한 화면에 조립하는
-    자리다. 라운드 렌더(구분선·산출 없음 표시)는 사이드카 seam 이 소유하고, 리뷰 finding
+    자리다. 라운드 렌더(구분선·산출 없음 표시)는 사이드카 공용 함수가 맡고, 리뷰 finding
     요약은 versioned 블록에서만 파생한다(산문에 같은 항목을 다시 적지 않는다).
     """
     try:
@@ -251,13 +251,13 @@ def cmd_show(home, args: argparse.Namespace) -> int:
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
-    # board-git freshness 표면화 (advisory·stderr) — list 와 같은 seam 소환 + 이
+    # board-git freshness 드러내기 (advisory·stderr) — list 와 같은 공용 함수 호출 + 이
     # 티켓 단위 로컬↔원격 status 불일치 1줄.
     #
-    # 대조할 원격이 아예 없는 형상(board 비-git · upstream 미설정)은 **둘 다 무출력**이다:
-    # 신선도라는 개념 자체가 없는데 advisory 를 내면 조회 표면에 무의미한 경고가 상주한다
-    # (upstream 판별은 네트워크 0 인 기존 `_board_git_upstream` seam 이 한다). `list` 는
-    # 현행 동작 그대로 둔다(이 게이트는 show 경로에만 있다).
+    # 대조할 원격이 아예 없는 구성(board 비-git · upstream 미설정)은 **둘 다 무출력**이다:
+    # 신선도라는 개념 자체가 없는데 advisory 를 내면 조회 화면에 무의미한 경고가 상주한다
+    # (upstream 판별은 네트워크 0 인 기존 `_board_git_upstream` 함수가 한다). `list` 는
+    # 현행 동작 그대로 둔다(이 확인은 show 경로에만 있다).
     if board_git._board_git_enabled(home) and board_git._board_git_upstream(home) is not None:
         snapshot_verified = _print_board_freshness(home)
         _print_ticket_remote_mismatch(home, args.id, status,
@@ -269,7 +269,7 @@ def cmd_show(home, args: argparse.Namespace) -> int:
         rounds = round_form.load_rounds(pm_paths.tickets_dir(home), args.id, ticket_text=body)
     except round_rules.RoundsError as exc:
         # 표시면은 조회를 막지 않는다 — 사유는 그 자리에 loud 하게 남기고 판정은 lint·
-        # 완료 게이트(같은 seam)가 한다.
+        # 완료 검사(같은 공용 함수)가 한다.
         print(f"⚠ 라운드 조회 실패: {exc}", file=sys.stderr)
         return 0
     if rounds:

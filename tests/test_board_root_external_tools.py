@@ -6,12 +6,12 @@ A(board.py board_root + pm_config)가 board/ 분리를 board.py 안에서 해소
 포착)을 닫는다. 각 도구가 board 루트(`pm_paths` 의 `Home.board_root`·`areas_file`)를 *추종*하는지를
 hermetic 하게 단언한다.
 
-검증 두 축(각 도구):
+검증 두 기준(각 도구):
   - **legacy 무변경**: board/ 부재 → 현 위치(wiki/tickets·.project_manager/areas.md)로 해소
     (기존 회귀 green 보존·상수→함수 전환이 legacy 경로를 안 바꿈).
   - **board/ 존재 추종**: board/tickets·board/areas.md 를 둔 hermetic tree 에서 각 도구가
     board/ 를 본다(wiki stale 안 봄). 이 단언은 *수정 전엔 legacy 상수가 wiki/ 를 가리켜
-    fail* 하는 것을 직접 박제한다(stale→fail 실증·아래 docstring 의 '수정 전' 주석).
+    fail* 하는 것을 직접 기록한다(stale→fail 실증·아래 docstring 의 '수정 전' 주석).
 
 **hermetic 필수**: 각 도구의 모듈-레벨 `REPO`(import 시점 실 repo 절대경로로 굳음)를 tmp 로
 monkeypatch 한 fresh 모듈 인스턴스를 매 테스트마다 로드한다(test_board_root 동류 패턴). 도구의
@@ -46,7 +46,7 @@ def _load(name: str):
 
 
 def _make_board_dir(root: Path) -> Path:
-    """`.project_manager/board/tickets/{open,...}` 를 만들어 board/ 분리 형상을 모사한다."""
+    """`.project_manager/board/tickets/{open,...}` 를 만들어 board/ 분리 구성을 모사한다."""
     board_dir = root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
         (board_dir / "tickets" / status).mkdir(parents=True, exist_ok=True)
@@ -126,7 +126,7 @@ def test_bootstrap_registered_repos_legacy_reads_project_manager_areas(bootstrap
 
 
 def test_bootstrap_auto_slot_uses_board_areas_when_separated(bootstrap, *, tmp_path):
-    """_auto_slot() 가 board/areas.md + 장부로 단일 self-host 슬롯을 해소한다(추종).
+    """_auto_slot() 가 board/areas.md + 슬롯 대여 기록으로 단일 self-host 슬롯을 해소한다(추종).
 
     *수정 전*: AREAS_FILE 기본이 stale legacy 라 등록 repo 0개 → 자동바인딩 미해소(None)."""
     _make_board_dir(tmp_path)
@@ -258,6 +258,6 @@ def test_ticket_finish_resolve_test_cmd_uses_board_areas_file(ticket_finish, tmp
 
 def test_ticket_finish_resolve_test_cmd_default_when_board_areas_absent(
         ticket_finish, tmp_path, monkeypatch):
-    """Home 의 areas.md 가 없으면 4층 기본 명령 — 솔로 폴백(현행 pytest 보존)."""
+    """Home 의 areas.md 가 없으면 4층 기본 명령 — 솔로 대체(현행 pytest 보존)."""
     assert regression._resolve_gate_cmd(
         pm_paths.home_at(tmp_path / "nonexistent")) == python_env.default_pytest_cmd()

@@ -6,7 +6,7 @@ areas.md 로 초기화 후 push(신규), 내용 있으면 재사용(2번째 유�
 그리고 이후 board.py 조작이 submodule board 를 타깃한다.
 
 **hermetic**: 임시 로컬 **bare remote**(`git init --bare`·네트워크 0)로 전 경로를 실측한다
-([[feature-ship-needs-fresh-adopter-gate]]). git 부재 환경은 실 git 케이스를 skip(입력 검증
+(새 채택자 설치 확인을 출하 조건으로 둔다). git 부재 환경은 실 git 케이스를 skip(입력 검증
 단위 테스트는 항상 실행). 실 github push 는 없다(로컬 remote 로만·비가역 부작용 0).
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ requires_git = pytest.mark.skipif(
     reason="git 바이너리 부재 — 실 submodule 통합 케이스 skip(입력 검증 단위 테스트는 항상 실행).",
 )
 
-# hermetic git commit 을 위한 결정적 author/committer (실 사용자 config 불요·test_board_git_sync 동형).
+# hermetic git commit 을 위한 결정적 author/committer (실 사용자 config 불요·test_board_git_sync 와 같은 방식).
 _GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
@@ -81,7 +81,7 @@ def _make_bare(path: Path) -> Path:
 
 
 def _seed_remote_with_ticket(bare: Path, tmp: Path, tid: str) -> None:
-    """bare remote 에 board 내용(tickets/ + 구별 티켓 + areas.md)을 미리 push (2번째-유저 형상)."""
+    """bare remote 에 board 내용(tickets/ + 구별 티켓 + areas.md)을 미리 push (2번째-유저 구성)."""
     clone = tmp / f"seed_{tid}"
     _git(["clone", "-q", str(bare), str(clone)])
     for status in ("open", "claimed", "blocked", "done"):
@@ -122,9 +122,9 @@ def _seed_task_folder(dest: Path, task: str) -> Path:
     _git(["init", "-q", "-b", "main"], folder)
     _git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
           "-m", "task folder"], folder)
-    ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(json.dumps({
+    record_path = dest / ".project_manager" / ".local" / "worktree-leases.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(json.dumps({
         "leases": [{"slot": "work/app_1", "repo": "app", "session": task,
                     "state": "leased", "role": "work"}],
         "tasks": [{"name": task}],
@@ -164,7 +164,7 @@ def test_empty_remote_scaffolds_and_configures(pm_import, tmp_path):
     assert rc == 0
 
     board = dest / ".project_manager" / "board"
-    # submodule 형상 — board/.git(gitlink) + board/tickets 존재로 board 루트가 board/ 로 해소.
+    # submodule 구성 — board/.git(gitlink) + board/tickets 존재로 board 루트가 board/ 로 해소.
     assert (board / ".git").exists()
     assert (board / "tickets").is_dir()
     for status in ("open", "claimed", "blocked", "done"):
@@ -179,16 +179,16 @@ def test_empty_remote_scaffolds_and_configures(pm_import, tmp_path):
     assert _gitmodules_ignore(dest) == "all"
     assert _config_ignore(dest) == "all"
 
-    # 복사된 dormant wiki/tickets 는 제거(② 참조 형상 — board 는 submodule 에 산다).
+    # 복사된 dormant wiki/tickets 는 제거(② 참조 구성 — board 는 submodule 에 산다).
     assert not (dest / ".project_manager" / "wiki" / "tickets").exists()
 
-    # remote 가 실제로 seed 됐다(빈→non-empty·push 확인).
+    # remote 가 실제로 스캐폴드로 채워졌다(빈→non-empty·push 확인).
     assert _git(["rev-parse", "--verify", "HEAD"], bare).returncode == 0
 
 
 @requires_git
 def test_empty_remote_areas_scaffold_parses_canonical(pm_import, tmp_path):
-    """seed 된 areas.md 헤더가 board 의 canonical 8칼럼과 일치(drift·파싱 가드)."""
+    """스캐폴드로 넣은 areas.md 헤더가 board 의 canonical 8칼럼과 일치(drift·파싱 가드)."""
     board_mod = _load_mod("board")
     bare = _make_bare(tmp_path / "board.git")
     dest = tmp_path / "home"
@@ -215,13 +215,13 @@ def test_existing_remote_reused_not_reinitialized(pm_import, tmp_path):
     # 기존 board 내용을 그대로 재사용 — 우리 스캐폴드가 덮어쓰지 않는다(합류).
     assert (board / "tickets" / "open" / "T-0042-existing.md").is_file()
     assert "existing" in (board / "areas.md").read_text(encoding="utf-8")
-    # 그래도 submodule 배선은 동일(ignore=all·wiki/tickets 제거).
+    # 그래도 submodule 연결은 동일(ignore=all·wiki/tickets 제거).
     assert _gitmodules_ignore(dest) == "all"
     assert not (dest / ".project_manager" / "wiki" / "tickets").exists()
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 3. fail-loud 게이트 — 부작용 전 거부
+# 3. fail-loud 검사 — 부작용 전 거부
 # ════════════════════════════════════════════════════════════════════════════
 
 def test_board_submodule_requires_remote(pm_import, tmp_path, capsys):
@@ -281,8 +281,8 @@ def test_board_remote_leading_dash_rejected(pm_import, tmp_path):
 def test_non_board_remote_rejected_wiki_preserved(pm_import, tmp_path, capsys):
     """non-empty 지만 non-board(tickets/·areas.md 부재) remote → 비0 실패 AND wiki/tickets 미삭제.
 
-    must-fix 회귀: 검증이 없으면 seeded=False 로 흘러 submodule add + step4(wiki/tickets 제거)가
-    실행돼 board/tickets 부재인데 폴백 wiki/tickets 마저 삭제된 *깨진 board* 를 rc0 로 낸다.
+    must-fix 회귀: 검증이 없으면 scaffolded=False 로 흘러 submodule add + step4(wiki/tickets 제거)가
+    실행돼 board/tickets 부재인데 대체 위치 wiki/tickets 마저 삭제된 *깨진 board* 를 rc0 로 낸다.
     """
     bare = _make_bare(tmp_path / "board.git")
     _seed_remote_non_board(bare, tmp_path)
@@ -291,16 +291,16 @@ def test_non_board_remote_rejected_wiki_preserved(pm_import, tmp_path, capsys):
                          "--board-submodule", "--board-remote", str(bare)])
     assert rc != 0
     assert "유효한 board repo" in capsys.readouterr().err
-    # 부작용 0 — board 미셋업 + 폴백 wiki/tickets 온전(깨진 board 아님).
+    # 부작용 0 — board 미셋업 + 대체 위치 wiki/tickets 온전(깨진 board 아님).
     assert not (dest / ".project_manager" / "board").exists()
     assert (dest / ".project_manager" / "wiki" / "tickets" / "_template.md").is_file()
 
 
 @requires_git
 def test_submodule_add_failure_cleans_partial_board(pm_import, tmp_path, monkeypatch):
-    """seed+push 성공 후 submodule add 실패 → _cleanup_partial_board 가 부분 board 를 0 으로 되돌린다.
+    """스캐폴드+push 성공 후 submodule add 실패 → _cleanup_partial_board 가 부분 board 를 0 으로 되돌린다.
 
-    seed 는 원 remote 에 push 되지만, submodule add 직전 remote 를 *빈 것*으로 갈아 add 를 rc128
+    스캐폴드는 원 remote 에 push 되지만, submodule add 직전 remote 를 *빈 것*으로 갈아 add 를 rc128
     (부분 board 잔재: board/·.git/modules/…/board)로 실패시킨다 — cleanup 경로를 실측 커버.
     """
     bare = tmp_path / "board.git"
@@ -310,7 +310,7 @@ def test_submodule_add_failure_cleans_partial_board(pm_import, tmp_path, monkeyp
 
     def wrapper(argv, cwd):
         if argv[:2] == ["submodule", "add"]:
-            # seed+push 는 이미 끝남(remote non-empty). remote 를 빈 것으로 갈아 add 를 실패시킨다.
+            # 스캐폴드+push 는 이미 끝남(remote non-empty). remote 를 빈 것으로 갈아 add 를 실패시킨다.
             shutil.rmtree(bare, ignore_errors=True)
             subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
         return real(argv, cwd)
@@ -329,10 +329,10 @@ def test_submodule_add_failure_cleans_partial_board(pm_import, tmp_path, monkeyp
 
 
 def _read_only_object_tree(root: Path) -> Path:
-    """git object 캐시 형상 — read-only object 파일 + 쓰기 권한 없는 디렉터리.
+    """git object 캐시 구성 — read-only object 파일 + 쓰기 권한 없는 디렉터리.
 
     git 은 object·packfile 을 read-only 로 만든다. 파일만 read-only 로 두면 POSIX 는 부모
-    디렉터리 권한만 보므로 그냥 지워진다 — 디렉터리 조합까지 넣어야 이 축이 Linux 에서도 red 로
+    디렉터리 권한만 보므로 그냥 지워진다 — 디렉터리 조합까지 넣어야 이 경우가 Linux 에서도 red 로
     재현된다(Windows 는 파일 속성만으로도 삭제가 거부된다·`[WinError 5]`).
     """
     objects = root / "objects" / "10"
@@ -395,7 +395,7 @@ def test_board_ops_target_submodule(pm_import, tmp_path):
     _git(["add", "-A"], board)
     _git(["commit", "-qm", f"seed {tid}"], board)
     _git(["push", "-q", "origin", "HEAD"], board)
-    # claim 은 귀속 쓰기라 `--task` 와 그 task 폴더(claim 앵커)가 필요하다(T-0962).
+    # claim 은 귀속 쓰기라 `--task` 와 그 task 폴더(claim 대상 저장소)가 필요하다(T-0962).
     _seed_task_folder(dest, _E2E_TASK)
     r = _board(dest, "claim", tid, "--task", _E2E_TASK)
     assert r.returncode == 0, r.stderr
@@ -412,7 +412,7 @@ def test_inline_default_unchanged(pm_import, tmp_path):
     dest = tmp_path / "home"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "claude", "--name", "H"])
     assert rc == 0
-    # board submodule 미셋업 — inline(legacy) 형상 그대로.
+    # board submodule 미셋업 — inline(legacy) 구성 그대로.
     assert not (dest / ".project_manager" / "board").exists()
     assert not (dest / ".gitmodules").exists()
     # inline board 는 wiki/tickets 안(현행).

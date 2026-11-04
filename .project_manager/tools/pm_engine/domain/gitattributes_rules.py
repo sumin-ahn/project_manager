@@ -14,12 +14,12 @@ import re
 #     `.project_manager/areas.md merge=union` 이 그대로 유효(engine.manifest 로 채택자에도 배포).
 #   - board 분리     : areas.md 는 board git(submodule) *안* 이라 루트 선언이 **다른 git** 이라 닿지
 #     않는다 — `git -C .project_manager/board check-attr merge -- areas.md` = unspecified.
-#     그래서 board git 자체에 `.gitattributes` 를 둔다: 신규는 pm_import seed, 기존 board 는
-#     `_ensure_board_gitattributes` backfill. 두 형상 다 union 이 성립한다(루트 선언은 유지).
+#     그래서 board git 자체에 `.gitattributes` 를 둔다: 신규는 pm_import 스캐폴드, 기존 board 는
+#     `_ensure_board_gitattributes` backfill. 두 구성 다 union 이 성립한다(루트 선언은 유지).
 # 판정은 전부 **파일 내용**으로 한다 — 런타임 `git check-attr` 호출을 늘리지 않는다(비용·이식성).
 _AREAS_UNION_DRIVER = "union"
 
-# 형상별 areas.md 경로 표기(그 git 의 `.gitattributes` 기준 상대). 선언 줄의 패턴을 이 표기들에
+# 구성별 areas.md 경로 표기(그 git 의 `.gitattributes` 기준 상대). 선언 줄의 패턴을 이 표기들에
 # 맞춰본다 — git slash anchoring + `*`·`**` 의미의 보수적 matcher를 공유한다.
 _BOARD_AREAS_ATTR_TARGETS: tuple[str, ...] = ("areas.md", "/areas.md")
 _INLINE_AREAS_ATTR_TARGETS: tuple[str, ...] = (
@@ -74,7 +74,7 @@ def _gitattributes_pattern_matches(pattern: str, targets: tuple[str, ...]) -> bo
 
     slash 없는 패턴은 어느 깊이의 basename에도 적용된다. slash가 있으면 파일 기준으로 앵커되고
     단일 ``*``는 slash를 넘지 않으며 ``**``만 디렉토리 경계를 넘는다. 선행 ``!`` 부정과
-    escape·문자 클래스처럼 이 함수가 확실히 판정하지 않는 표면은 False로 둔다.
+    escape·문자 클래스처럼 이 함수가 확실히 판정하지 않는 경우는 False로 둔다.
     """
     if pattern.startswith("!"):
         return False

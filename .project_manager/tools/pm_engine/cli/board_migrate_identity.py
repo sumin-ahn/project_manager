@@ -35,7 +35,7 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
     셀 수가 헤더보다 많은 wider row(비-canonical 구 헤더 아래에 canonical 8칼럼 row 가 append 된
     경우 포함)는 `upgrade` 여부와 무관하게 `_AREAS_COLUMNS` 의 area_owner 인덱스(7)로 area_owner
     셀을 찾는다 — `_parse_areas` 가 wider row 를 헤더 무시하고 canonical 순서로 매핑하는 것과
-    정확히 동형(must-fix). 그렇지 않으면 헤더 폭으로 읽다 index 3(`test_cmd`)을 area_owner 로
+    정확히 같은 방식(must-fix). 그렇지 않으면 헤더 폭으로 읽다 index 3(`test_cmd`)을 area_owner 로
     오인해 backfill 을 놓친다.
 
     인덱스 해소·구-헤더 업그레이드 계획·wider-row 보정은 **공용 헬퍼**(`_areas_column_index`·
@@ -65,7 +65,7 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
         cells = areas_rules._split_areas_row(body)
         if cells is None:
             # 비-table 줄(주석·빈 줄·구분선)은 기본 verbatim. 단 업그레이드 모드에서 헤더
-            # 직후 첫 구분선(`|---|`)은 새 칼럼 수에 맞춰 교체한다(헤더 폭과 정합).
+            # 직후 첫 구분선(`|---|`)은 새 칼럼 수에 맞춰 교체한다(헤더 폭과 일치).
             if upgrade and not sep_replaced and areas_rules._AREAS_SEP_RE.match(body.strip()):
                 out.append("|" + "|".join("---" for _ in range(sep_cols)) + "|" + nl)
                 sep_replaced = True
@@ -85,10 +85,10 @@ def _migrate_areas_text(text: str, user: str) -> tuple[str, list[str]]:
             continue
         # 헤더보다 넓은 row 는 `upgrade` 여부와 무관하게 canonical area_owner 인덱스(7)로
         # 매핑한다(`_areas_row_cell_index` 공용 보정) — `_parse_areas` 가 wider row 를 헤더
-        # 무시하고 `_AREAS_COLUMNS` 순서로 매핑하는 것과 정확히 동형이다. 비-canonical 구
+        # 무시하고 `_AREAS_COLUMNS` 순서로 매핑하는 것과 정확히 같은 방식이다. 비-canonical 구
         # 헤더(예 멀티-clone `prefix|area|owner`[3]) 아래에 canonical 8칼럼 row 가 append 된
         # 케이스에서 `ao_idx`(=헤더 폭) 로 읽으면 index 3(`test_cmd`)을 area_owner 로 오인해
-        # backfill 못 한다(must-fix·_parse_areas 정합).
+        # backfill 못 한다(must-fix·_parse_areas 와 일치).
         idx = areas_store._areas_row_cell_index(
             header_cells, cells,
             ao_idx if ao_idx is not None else canonical_ao, "area_owner")
@@ -322,7 +322,7 @@ def cmd_migrate_identity(home, args: argparse.Namespace) -> int:
     statuses = ("open", "claimed") if scope == "active" else ticket_rules.STATUS_DIRS
 
     tag = "[dry-run] " if dry_run else ""
-    # scope 문구 정합: migrate 는 소유 무관 *전 티켓*을 스캔·backfill 한다
+    # scope 문구 일치: migrate 는 소유 무관 *전 티켓*을 스캔·backfill 한다
     # (all=done 포함 전체·active=open+claimed, 둘 다 draft 포함). `list --mine`/`--task`(=현재-사용자
     # 뷰)와 스캔 대상이 다르므로 "전체 스캔" 을 명시해 두 기준이 어긋나 보이는 오독을 없앤다.
     scope_note = "전체 스캔·소유 무관" if scope == "all" else "open+claimed 스캔·소유 무관"

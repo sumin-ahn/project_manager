@@ -12,8 +12,8 @@ tags 를 다루는 세 표시 경로 중 둘을 **TypeError 로 크래시**시�
 실패)를 모두 못박는다. 출력 문자열 형식(구분자·공백)은 byte 그대로 유지 — 문자열 태그
 케이스가 회귀 없음을 확인한다.
 
-hermetic 패턴은 `test_board_list_scope.py`/`test_board_mine_view.py` 와 동형 — board.py 의
-경로 전역을 tmp 프로젝트로 monkeypatch 하고 git 폴백은 stub 한다.
+hermetic 패턴은 `test_board_list_scope.py`/`test_board_mine_view.py` 와 같은 방식 — board.py 의
+경로 전역을 tmp 프로젝트로 monkeypatch 하고 git 대체 조회는 stub 한다.
 """
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ def _seed_idea(board, iid, status, *, tags, title="t"):
 
 
 # `all=True` — 태그 렌더/필터는 뷰 스코프와 직교한 검증이라 전체 뷰(`--all`·ADR-0066)에서 돈다
-# (무인자 기본은 이제 세션 스코프라 무관 open 을 접어 단건 seed 가 상세 행으로 안 뜬다).
+# (무인자 기본은 이제 세션 스코프라 무관 open 을 감춰 단건 seed 가 상세 행으로 안 뜬다).
 def _list_args(*, tag=None, status=None):
     return argparse.Namespace(status=status, tag=tag, mine=False,
                               all=True, task=None, repo=None, slot=None)
@@ -160,7 +160,7 @@ def test_cmd_idea_list_numeric_tags_no_crash(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 태그 필터 경로 — 문자열 `--tag` 를 int 태그와 타입세이프 비교 (같은 결함 축)
+# 태그 필터 경로 — 문자열 `--tag` 를 int 태그와 타입세이프 비교 (같은 결함 종류)
 #   pre-fix: `"2026" in [2026, ...]` → False → 조용히 매치 실패(크래시 아님).
 # ════════════════════════════════════════════════════════════════════════
 

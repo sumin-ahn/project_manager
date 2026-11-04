@@ -1,11 +1,11 @@
 """티켓 상태 디렉토리 집합(`STATUS_DIRS`)의 단일 진실 — board 밖 소비처 3곳 (T-0839).
 
 `board.py` 가 상태를 추가하면(`discarded` — 처분 종결·T-0781) 밖에서 그 집합을 다시 적은 자리는
-조용히 옛 집합에 머문다. crash 가 없어 아무도 못 보고, 그 상태의 티켓만 표면에서 사라진다:
+조용히 옛 집합에 머문다. crash 가 없어 아무도 못 보고, 그 상태의 티켓만 화면에서 사라진다:
 
   - `additional_reviewer._find_ticket_file` — 그 상태의 리뷰 대상을 "board 에 없음"으로 fail-loud
   - `additional_reviewer._owns_real_board` — 그 상태만 가진 PM 홈을 빈 scaffold 로 오판
-  - `pm_log` 장부 census — 그 상태 티켓이 핸드오프 스냅샷 집계에서 누락
+  - `pm_log` 기록 census — 그 상태 티켓이 핸드오프 상태 기록 집계에서 누락
   - `pm_bootstrap` dump — `if status in counts` 가드가 그 상태 행을 버림
 
 여기서 고정하는 것은 **값의 단일 진실**이다: (1) 세 소비처가 `ticket_rules.STATUS_DIRS` 를 직접
@@ -103,7 +103,7 @@ def test_additional_reviewer_owns_real_board_matches_board_for_every_status(
     """상태 하나만 가진 board 를 additional_reviewer 와 board 가 **같게** 판정한다.
 
     `discarded` 만 가진 PM 홈은 board 기준 실 board 다 — 옛 사본은 이를 빈 scaffold(False)로
-    오판했다(가드가 엉뚱한 앵커를 통과시키는 축).
+    오판했다(가드가 엉뚱한 대상 저장소를 통과시키는 경우).
     """
     for index, status in enumerate(ticket_rules.STATUS_DIRS):
         pm_dir = tmp_path / f"home{index}" / ".project_manager"
@@ -130,7 +130,7 @@ def test_additional_reviewer_follows_injected_status_without_code_change(
     assert pm_paths._owns_real_board(tmp_path / ".project_manager") is True
 
 
-# ── (3) pm_log 장부 census ───────────────────────────────────────────────────
+# ── (3) pm_log 기록 census ───────────────────────────────────────────────────
 
 def _census_line(pm_log_mod, pm_home: Path) -> str:
     line = [
@@ -182,7 +182,7 @@ def _board_line(status: str, ticket_id: str) -> str:
 def test_pm_bootstrap_dump_counts_and_renders_every_status_dir(bootstrap, board):
     """board list 출력의 모든 `STATUS_DIRS` 행이 카운트되고 dump 줄에 표기된다.
 
-    옛 골격(`if status in counts`)은 `discarded` 행을 조용히 버렸다 — 여기선 값으로 잡힌다.
+    옛 뼈대(`if status in counts`)는 `discarded` 행을 조용히 버렸다 — 여기선 값으로 잡힌다.
     """
     output = "".join(
         _board_line(status, f"T-93{index:02d}")
@@ -201,7 +201,7 @@ def test_pm_bootstrap_dump_counts_and_renders_every_status_dir(bootstrap, board)
 def test_pm_bootstrap_dump_follows_injected_status_without_code_change(
     bootstrap, board, monkeypatch,
 ):
-    """상태 집합에 하나 주입하면 파서 골격과 dump 줄이 손대지 않고 그 버킷을 낸다."""
+    """상태 집합에 하나 주입하면 파서 뼈대와 dump 줄이 손대지 않고 그 버킷을 낸다."""
     monkeypatch.setattr(ticket_rules, "STATUS_DIRS", (*ticket_rules.STATUS_DIRS, FAKE_STATUS))
     output = _board_line(FAKE_STATUS, "T-9400") + _board_line("open", "T-9401")
 
@@ -212,7 +212,7 @@ def test_pm_bootstrap_dump_follows_injected_status_without_code_change(
 
 
 def test_pm_bootstrap_still_ignores_status_board_does_not_know(bootstrap, board):
-    """board 가 모르는 토큰은 여전히 무시된다 — 파생이 골격을 넓히는 게 아니다(오탐 0)."""
+    """board 가 모르는 토큰은 여전히 무시된다 — 파생이 뼈대를 넓히는 게 아니다(오탐 0)."""
     output = _board_line("archived", "T-9500") + _board_line("open", "T-9501")
     counts = bootstrap_rules.parse_board_counts(output)
     assert counts == dict.fromkeys(ticket_rules.STATUS_DIRS, 0) | {"open": 1}
@@ -220,11 +220,11 @@ def test_pm_bootstrap_still_ignores_status_board_does_not_know(bootstrap, board)
 
 # ── (5) 남은 하드코딩 0 (사본 재발 차단 · AST 기반) ─────────────────────────
 
-# 옛 가드(정규식·flat 문자열 나열만 시야)는 dict 골격·pair 목록·f-string 서브스크립트 연쇄
-# 3 shape 를 놓쳤다(가드 시야 < 실제 표면). AST 로 리터럴 컨테이너(Tuple/List/Set/Dict)와
+# 옛 가드(정규식·flat 문자열 나열만 검사 범위)는 dict 뼈대·pair 목록·f-string 서브스크립트 연쇄
+# 3 shape 를 놓쳤다(가드 검사 범위 < 실제 범위). AST 로 리터럴 컨테이너(Tuple/List/Set/Dict)와
 # f-string(JoinedStr) 을 직접 순회해 네 shape 를 모두 본다. 상태 이름이 3개 이상 모이면 사본으로
 # 본다(`("open", "claimed")` 같은 *정당하게 좁은* 필터는 여전히 통과 — 집합 복제가 아니라 그
-# 표면이 의도적으로 고른 부분집합이다).
+# 범위가 의도적으로 고른 부분집합이다).
 _COPY_THRESHOLD = 3
 
 
@@ -237,7 +237,7 @@ def _exempt_dict_ids(tree: ast.AST) -> frozenset[int]:
 
     둘 다 맞아야 예외다 — (1) 함수 이름이 `_EXEMPT_FUNCTION`(`_build_json`) 이고 (2) 그 함수
     몸통 안에서 어떤 dict 리터럴이 문자열 키 `_EXEMPT_DICT_KEY`(`"board"`) 의 값으로 곧바로
-    중첩된 dict 리터럴이다. 다른 파일·다른 함수의 동형 dict(같은 4상태 키를 가진 손사본)는 이
+    중첩된 dict 리터럴이다. 다른 파일·다른 함수의 같은 구조 dict(같은 4상태 키를 가진 손사본)는 이
     조건에 안 걸려 여전히 잡힌다 — 파일명이나 "값이 Call" 같은 값 종류로 면제하지 않는다.
     """
     exempt: set[int] = set()
@@ -262,7 +262,7 @@ def _literal_container_strings(
     """Tuple/List/Set/Dict 리터럴 안의 문자열 상수를 재귀 수집한다.
 
     리터럴 컨테이너만 타고 내려간다(Call/Name/Subscript 등 임의 표현식은 보지 않는다) — 그래야
-    `("done", "open")` 같은 하드코딩 골격과 `[s for s in STATUS_DIRS]` 같은 파생 표현식이 갈린다.
+    `("done", "open")` 같은 하드코딩 뼈대와 `[s for s in STATUS_DIRS]` 같은 파생 표현식이 갈린다.
     Dict 는 **키가 문자열 리터럴이면 값 노드 종류와 무관하게** 그 키를 센다 — `{"open":
     count("open"), ...}` 처럼 값이 `Call` 인 손사본도 상태 키 자체가 하드코딩이면 잡아야 한다
     (T-0839 라운드 4 반려: 옛 "값도 리터럴" 조건은 이 shape 를 전부 면제했다). 유일한 예외는
@@ -294,7 +294,7 @@ def _fstring_subscript_keys(node: ast.JoinedStr) -> list[str]:
 
     f-string 의 프로즈 텍스트(`f"done {...}"` 의 "done " 자체)는 보지 않는다 — 옛 4연 f-string
     (`f"done {counts['done']} … blocked {counts['blocked']}"`)은 정확히 이 subscript 키로 상태
-    이름을 실었으므로 이 좁은 시야로도 잡힌다. 인접 f-string 리터럴은 파서가 이미 하나의
+    이름을 실었으므로 이 좁은 검사 범위로도 잡힌다. 인접 f-string 리터럴은 파서가 이미 하나의
     `JoinedStr` 로 묶으므로(암묵적 문자열 연결) `ast.walk` 로 그 서브트리 전체를 본다.
     """
     keys: list[str] = []
@@ -307,11 +307,11 @@ def _fstring_subscript_keys(node: ast.JoinedStr) -> list[str]:
 
 
 def _status_literal_groups(source: str) -> list[tuple[str, ...]]:
-    """소스에서 상태 집합 사본 후보 리터럴 그룹을 뽑는다 — 4 shape 통합 시야.
+    """소스에서 상태 집합 사본 후보 리터럴 그룹을 뽑는다 — 4 shape 통합 검사 범위.
 
     각 Tuple/List/Set/Dict/JoinedStr 노드가 독립된 그룹이다(중첩 리터럴도 `ast.walk` 가 별도
     노드로 방문하므로 이중 집계가 아니다). `exempt_ids`(`_exempt_dict_ids()`)에 든 dict 노드만
-    빈 그룹으로 접는다 — 그 dict 의 하위 리터럴(예 `**(dict if … else {})` 의 조건부 dict)은
+    빈 그룹으로 바꾼다 — 그 dict 의 하위 리터럴(예 `**(dict if … else {})` 의 조건부 dict)은
     `ast.walk` 가 별도 노드로 계속 방문하므로 정보 손실이 없다.
     """
     tree = ast.parse(source)
@@ -352,7 +352,7 @@ def test_no_hardcoded_status_set_left_in_consumers(board, tool):
     assert copies == [], f"{tool}.py 에 상태 집합 사본이 남아 있다: {copies}"
 
 
-# 옛 가드가 놓친 3 shape(dict 골격·pair 목록·f-string 서브스크립트 연쇄) + 기존에 잡던 flat 튜플
+# 옛 가드가 놓친 3 shape(dict 뼈대·pair 목록·f-string 서브스크립트 연쇄) + 기존에 잡던 flat 튜플
 # + T-0839 라운드 4 반려 대상인 call_valued_dict(값이 `Call` 인 dict 손사본 — "값도 리터럴" 조건이
 # 던 옛 AST 가드는 이 shape 를 전부 면제했다). 마지막 항목은 reviewer 관측 증거의 예시 그대로다.
 _REINTRODUCED_COPY_SHAPES: dict[str, str] = {
@@ -379,7 +379,7 @@ _REINTRODUCED_COPY_SHAPES: dict[str, str] = {
 def test_hardcoded_status_guard_detects_a_reintroduced_copy(board, shape):
     """가드 민감도 — 5 shape 각각을 되살린 소스는 잡힌다(가드가 늘 green 이 아님을 실측).
 
-    옛 정규식 가드는 `dict_skeleton`·`pair_list`·`fstring_chain` 3 shape 를 놓쳤다(시야가 flat
+    옛 정규식 가드는 `dict_skeleton`·`pair_list`·`fstring_chain` 3 shape 를 놓쳤다(검사 범위가 flat
     문자열 나열만 봤다). 라운드 3 의 AST 가드는 그 셋을 잡았지만 `call_valued_dict`(상태 키는
     리터럴, 값은 `Call`)는 "키·값 둘 다 리터럴" 조건 때문에 여전히 놓쳤다(라운드 4 반려 F-002) —
     지금은 값 노드 종류와 무관하게 키만 보므로 다섯 shape 모두 잡힌다. 이 shape 가 red 인 동시에
@@ -395,4 +395,4 @@ def test_hardcoded_status_guard_detects_a_reintroduced_copy(board, shape):
 def test_pm_import_seeded_status_dirs_equal_board_status_dirs(board):
     """pm_import 가 신규 공유 board 에 스캐폴드하는 상태 디렉토리는 `ticket_rules.STATUS_DIRS` 와 값이 같다."""
     mod = _load("pm_import")
-    assert install_board._SEEDED_STATUS_DIRS == ticket_rules.STATUS_DIRS
+    assert install_board._SCAFFOLD_STATUS_DIRS == ticket_rules.STATUS_DIRS

@@ -1,9 +1,9 @@
-"""T-0636 신규-생성 축의 값-결속 사용자 승인 게이트.
+"""T-0636 신규-생성 경로의 값이 맞는 사용자 승인 확인.
 
-prefix 3소스 합집합(areas·기발행 티켓·task 장부)/6개 CLI 호출형(new·init·task prefix·
+prefix 3소스 합집합(areas·기발행 티켓·task 기록)/6개 CLI 호출형(new·init·task prefix·
 rename·merge·reid)과 물리
 worktree add 변형을 hermetic하게 검증한다. 기존 downstream 테스트에는 무차별 ack를
-붙이지 않고, 이 파일에서 거부/승인/오결속을 명시적으로 나눈다.
+붙이지 않고, 이 파일에서 거부/승인/값 불일치를 명시적으로 나눈다.
 """
 from __future__ import annotations
 from pm_engine.cli import config_slots
@@ -110,12 +110,12 @@ class _TaskPool:
 
 
 # 발행은 `--task` 와 그 task 가 보유한 제품 폴더가 필요하다(T-0962).
-_TASK = "gate-task"
+_TASK = "check-task"
 
 
 def _new_args(prefix: str, user_ack: str | None):
     return argparse.Namespace(
-        title="gate", prefix=prefix, user_ack=user_ack, touches=None, depends=None,
+        title="check", prefix=prefix, user_ack=user_ack, touches=None, depends=None,
         tag=None, estimate="small", design=None, task=_TASK, repo=None, slot=None,
         user=None,
     )
@@ -148,7 +148,7 @@ def _invoke_prefix_surface(board, pm_config, surface, prefix, user_ack, monkeypa
             old_id="T-0036", new_id=f"T-{prefix}-001", user_ack=user_ack,
             dry_run=False, repo=None, slot=None,
         ))
-    # relabel gate는 실제 변경 맵이 있을 때만 열린다. source 티켓을 시드해 gate+락 안
+    # relabel 승인 확인은 실제 변경 맵이 있을 때만 열린다. source 티켓을 미리 만들어 승인 확인+락 안
     # fresh 재검증까지 실 파이프라인으로 탄다(no-op 승인 불요 정책과 혼동하지 않음).
     _seed_ticket(board, "T-old-001")
     if surface == "rename":
@@ -185,7 +185,7 @@ def test_prefix_surface_matrix_calls_shared_loader(board, pm_config, monkeypatch
 
     monkeypatch.setattr(areas_registry, "known_prefixes", shared_loader)
     # surface 성공 mutation이 loader monkeypatch의 cache_clear 속성을 요구하지 않게 하고,
-    # 이 테스트는 오직 모든 표면이 같은 loader를 실제 호출하는지를 센다.
+    # 이 테스트는 오직 모든 명령이 같은 loader를 실제 호출하는지를 센다.
     monkeypatch.setattr(areas_registry, "invalidate_known_prefixes_cache", lambda: None)
 
     rc = _invoke_prefix_surface(
@@ -237,9 +237,9 @@ def test_known_prefixes_task_source_alone(board):
 
 
 def test_known_prefixes_local_conf_prefix_key_is_not_a_source(board):
-    """local.conf `prefix=` 는 승인 게이트의 소스가 아니다 (T-0779 · 3소스).
+    """local.conf `prefix=` 는 승인 확인의 소스가 아니다 (T-0779 · 3소스).
 
-    해소 체인(`id_prefix`)에서 그 층을 지웠으므로 게이트 합집합에도 없어야 한다 — 남아
+    해소 체인(`id_prefix`)에서 그 층을 지웠으므로 승인 확인 합집합에도 없어야 한다 — 남아
     있으면 도달 불가능한 clone-local 라벨을 whitelist 한다.
     """
     pm_paths.home_at(board.REPO).local_conf.write_text("prefix=SOLO\n", encoding="utf-8")
@@ -315,7 +315,7 @@ def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
 
 @pytest.mark.parametrize("derived", ["task", "single-area"])
 @pytest.mark.parametrize("split_case", [False, True], ids=["single-case", "split-case"])
-def test_cmd_new_derived_prefixes_share_canonical_gate(
+def test_cmd_new_derived_prefixes_share_canonical_check(
     board, capsys, derived, split_case,
 ):
     """task·단일 areas 유도값도 명시 prefix와 같은 판정을 지난다(세션 유도층은 없다·T-0962)."""
@@ -376,7 +376,7 @@ def test_known_prefixes_ignores_local_conf_prefix_when_area_registered(board):
     assert areas_registry.known_prefixes(pm_paths.home_at(board.REPO)) == frozenset({"AREA"})
 
 
-def test_known_prefixes_corrupt_task_ledger_fails_loud(board, capsys):
+def test_known_prefixes_corrupt_task_records_fails_loud(board, capsys):
     pm_paths.home_at(board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
     pm_paths.leases_file(pm_paths.home_at(board.REPO)).write_text('{"tasks": {}}', encoding="utf-8")
     assert areas_registry.require_prefix_user_ack(pm_paths.home_at(board.REPO), "fresh", "fresh", surface="test") is None
@@ -499,7 +499,7 @@ def test_cheap_case_conflict_preserves_known_sources_when_ticket_scan_is_broken(
 
 
 def _seed_ticket_without_cache_invalidation(board, ticket_id: str):
-    """다른 프로세스가 현재 프로세스 cache를 모른 채 티켓을 만든 TOCTOU 형상."""
+    """다른 프로세스가 현재 프로세스 cache를 모른 채 티켓을 만든 TOCTOU 상황."""
     path = pm_paths.tickets_dir(pm_paths.home_at(board.REPO)) / "open" / f"{ticket_id}-race.md"
     ticket_store.dump_ticket(
         path,
@@ -512,7 +512,7 @@ def _seed_ticket_without_cache_invalidation(board, ticket_id: str):
     "surface", ["new", "init", "task-prefix", "rename", "merge", "reid"],
 )
 def test_prefix_writes_revalidate_fresh_snapshot_inside_lock(board, pm_config, monkeypatch, capsys, surface):
-    """선판정 뒤 다른 case가 생기면 cache를 버린 락 안 재판정이 모든 쓰기 표면을 막는다."""
+    """선판정 뒤 다른 case가 생기면 cache를 버린 락 안 재판정이 모든 쓰기 명령을 막는다."""
     pool = bind_pool(monkeypatch, _TaskPool())
     if surface in {"rename", "merge", "reid"}:
         _seed_ticket(board, "T-old-001")

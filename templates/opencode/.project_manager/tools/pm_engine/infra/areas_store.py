@@ -22,7 +22,7 @@ def id_prefix(home, override: str | None = None) -> str | None:
           > 등록 repo(prefix) 가 정확히 1개면 그 prefix               (count-based)
           > None
 
-    None → 무prefix `T-NNNN`(`none` 카테고리·1급 형상). Non-None → `T-<PREFIX>-NNN` 네임스페이스.
+    None → 무prefix `T-NNNN`(`none` 카테고리·정식 구성). Non-None → `T-<PREFIX>-NNN` 네임스페이스.
 
     세션 이름에서 repo 를 떼어 prefix 를 유도하는 층은 없다 — 엔진은 세션 토큰을 분해하지 않는다.
 
@@ -98,7 +98,7 @@ def registered_prefixes(home) -> set[str]:
 
     등록 repo가 2개 이상이면 multi-repo(N×M) 신호로 쓰여 `board.py new`의
     prefix 미해소를 막는다. 단, 명시 prefix는 레지스트리 등록 자체가 필수가 아니며
-    3소스에 없는 새 카테고리라면 값-결속 사용자 승인을 지난 뒤 사용할 수 있다.
+    3소스에 없는 새 카테고리라면 값이 맞는 사용자 승인을 지난 뒤 사용할 수 있다.
     prefix 칼럼이 전부 빈 보드는 무prefix(`none` 카테고리)를, 1개인 보드는 그 단일 prefix
     유도를 허용한다.
 
@@ -114,7 +114,7 @@ def registered_repos(home) -> set[str]:
     """Repo names registered in areas.md (per-repo registry `repo` 칼럼). 부재→빈 set.
 
     `registered_prefixes` 의 repo-명 짝. `repo add`(pm_config)가 멱등 재등록을 판별할 때
-    쓴다 — repo명 자동시드 폐지후 prefix 칼럼이 비므로 repo 존재 여부를 prefix
+    쓴다 — repo명 자동 생성 폐지 후 prefix 칼럼이 비므로 repo 존재 여부를 prefix
     로 셀 수 없다(빈 prefix 는 `registered_prefixes` 에 안 잡힘). repo 칼럼으로 직접 세어
     중복 등록(같은 repo 두 번 append)을 막는다.
     """
@@ -128,14 +128,14 @@ def _repo_protected(home, repo: str) -> list[str]:
     areas.md `protected` 칼럼(쉼표분리·예 `main,develop`)을 읽는다. pre-push 훅 설치(sidecar
     채움)·bootstrap 보호 경고가 이 목록으로 PM 의 보호 브랜치 commit/push 를 막는다.
 
-    **default 폴백 = `DEFAULT_PROTECTED`(main/master/develop)** (`_repo_base` 의 None 폴백과
+    **default 대체 = `DEFAULT_PROTECTED`(main/master/develop)** (`_repo_base` 의 None 대체와
     다름 — 보호는 *안전 기본값이 있어야* 한다·미지정 repo 도 main 을 막는다). 다음 모두
     default 로 떨어진다:
       - areas.md 부재 — `_parse_areas()` 가 ([],[]).
       - 그 repo 행이 없음(미등록).
       - `protected` 칼럼 자체가 없는 구 레지스트리(헤더에 protected 없음 → 행 dict 에 키 없음).
       - `protected` 칼럼이 빈 값(부분 등록).
-    명시 지정이면 쉼표분리·strip·빈 토큰 제거 후 그 목록(전부 빈 토큰이면 default 폴백).
+    명시 지정이면 쉼표분리·strip·빈 토큰 제거 후 그 목록(전부 빈 토큰이면 default 로 대체).
     """
     _header, rows = _parse_areas(home)
     for row in rows:
@@ -155,10 +155,10 @@ def _areas_git_url(home, repo: str) -> str | None:
     `.repos/`(gitignore·per-clone)엔 mirror 가 없는 상황 — 등록된 URL 을 재제공 없이 재사용한다.
 
     repo 명은 areas.md `repo` 칼럼과 매칭한다(prefix 칼럼은 비므로 **repo 명 키**).
-    중복 행이면 first-match(`_repo_base`·`_areas_row_for_prefix` 동형·같은 repo=같은 URL 이라
+    중복 행이면 first-match(`_repo_base`·`_areas_row_for_prefix` 와 같은 방식·같은 repo=같은 URL 이라
     결정론적).
 
-    None 폴백(호출자 cmd_repo_add 가 fail-loud 또는 `--git` 명시 요구로 전환):
+    None 으로 대체(호출자 cmd_repo_add 가 fail-loud 또는 `--git` 명시 요구로 전환):
       - areas.md 부재 — `_parse_areas()` 가 ([],[]).
       - 그 repo 행이 없음(미등록).
       - `git` 칼럼 자체가 없는 구 레지스트리(헤더에 git 없음 → 행 dict 에 git 키 없음).
@@ -231,7 +231,7 @@ def _repo_base(home, repo: str) -> str | None:
     (`pm-config worktree add` → `create_slot(base=)`). repo 명은 areas.md `repo` 칼럼과
     매칭한다(repo add 가 `repo=name·prefix=name` 으로 등록하므로 repo==prefix 가 보통).
 
-    None 폴백(worktree add 가 현행 bare HEAD 동작·회귀 0):
+    None 으로 대체(worktree add 가 현행 bare HEAD 동작·회귀 0):
       - areas.md 부재 — `_parse_areas()` 가 ([],[]).
       - 그 repo 행이 없음(미등록).
       - `base` 칼럼 자체가 없는 구 레지스트리(헤더에 base 없음 → 행 dict 에 base 키 없음).
@@ -287,7 +287,7 @@ def _areas_set_cell_text(text: str, repo: str, column: str,
                          value: str) -> tuple[str, str]:
     """areas.md 텍스트에서 `repo` 행의 `column` 셀을 `value` 로 바꾼 (새 텍스트, 옛 값) 반환.
 
-    순수 변환(IO 없음·`_migrate_areas_text` 동형 관용구):
+    순수 변환(IO 없음·`_migrate_areas_text` 와 같은 관용구):
       - 줄 종결자(LF/CRLF)·주석·빈 줄·표 밖 텍스트·**다른 행**은 verbatim 보존.
       - 헤더에 그 칼럼이 없으면(구 레지스트리) `_areas_column_index` 계획대로 헤더 + 헤더 직후
         구분선 1개를 업그레이드한다(canonical 8칼럼 또는 기존 헤더 끝 append·비파괴).

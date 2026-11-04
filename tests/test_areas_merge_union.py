@@ -1,4 +1,4 @@
-"""areas.md `merge=union` 배포 — 두 형상(inline·board 분리) 다 동시 등록 안전 (T-0418).
+"""areas.md `merge=union` 배포 — 두 구성(inline·board 분리) 다 동시 등록 안전 (T-0418).
 
 areas.md 는 append-only 레지스트리라 두 clone 의 동시 등록이 merge 에서 **양쪽 행을 모두
 보존**해야 한다 — 그 보장은 git 내장 `merge=union` 드라이버에 기대고, 선언은 **areas.md 를 담은
@@ -9,11 +9,11 @@ submodule(별도 git) 안으로 옮겨졌는데 그 git 엔 `.gitattributes` 가
 여기서 검증하는 것:
   - **판정은 파일 내용으로** — `_gitattributes_merge_attr` last-match-wins 및 git의
     slash anchoring·`*`·`**` 의미를 파싱(런타임 `git check-attr` 호출 0·비용/이식성).
-  - **seed**: `pm_import.setup_board_submodule` 이 신규 board 에 `.gitattributes` 를 만든다.
+  - **스캐폴드**: `pm_import.setup_board_submodule` 이 신규 board 에 `.gitattributes` 를 만든다.
   - **backfill**: 이미 만들어진 board 는 `board._ensure_board_gitattributes` 가 **멱등 보강**
     (기존 내용·채택자 커스텀 줄 보존·덮어쓰기 없음) — board git commit funnel + `init` 에서.
   - **실측**: 보강 후 `check-attr merge -- areas.md` 가 실제로 `union` 으로 해소된다.
-  - **advisory**: 미배포면 `areas-merge-union`(never-block)이 표면화되고 보강 후 해소된다.
+  - **advisory**: 미배포면 `areas-merge-union`(never-block)이 드러나고 보강 후 해소된다.
   - **inline 회귀**: 루트 `.gitattributes` 의 `.project_manager/areas.md merge=union` 유지.
 
 hermetic: 실 git 은 tmp 안에서만 쓰고(네트워크 0), git 바이너리 부재 환경은 실-git 케이스만
@@ -60,7 +60,7 @@ requires_git = pytest.mark.skipif(
     reason="git 바이너리 부재 — 실 git 케이스 skip(내용 판정 단위 테스트는 항상 실행).",
 )
 
-# hermetic git commit 을 위한 결정적 author/committer (test_board_git_sync 동형).
+# hermetic git commit 을 위한 결정적 author/committer (test_board_git_sync 와 같은 방식).
 _GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
@@ -76,7 +76,7 @@ def _load_mod(name: str):
 
 @pytest.fixture
 def board(tmp_path, monkeypatch):
-    """REPO 를 tmp 로 재지정한 fresh board 모듈 (실 루트 미접촉·test_board_git_sync 동형)."""
+    """REPO 를 tmp 로 재지정한 fresh board 모듈 (실 루트 미접촉·test_board_git_sync 와 같은 방식)."""
     mod = _load_mod("board")
     anchor_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
@@ -98,10 +98,10 @@ _TICKET_TEXT = (
 
 def _make_board_dir(board_mod, root: Path, *, real_git: bool = False,
                     remote: Path | None = None, ticket: str | None = None) -> Path:
-    """`<root>/.project_manager/board/` 에 board 분리 형상을 만든다 (tickets/ + areas.md + .git).
+    """`<root>/.project_manager/board/` 에 board 분리 구성을 만든다 (tickets/ + areas.md + .git).
 
     `real_git=False` 면 `.git` 을 빈 파일로 둔다 — `_ensure_board_gitattributes`/`pm_paths._board_root_at`
-    은 *존재*만 보므로 git 바이너리 없이도 분리 형상을 정확히 모사한다(내용 판정 테스트용).
+    은 *존재*만 보므로 git 바이너리 없이도 분리 구성을 정확히 모사한다(내용 판정 테스트용).
     `remote` 를 주면 origin 등록 + main push(upstream) 로 pull/push 경로까지 살린다(claim 용).
     """
     board_dir = root / ".project_manager" / "board"
@@ -147,7 +147,7 @@ def test_union_detected_for_board_pattern(board):
 def _lf_declaration(board, pattern: str = "*.{extension}", attrs: str = "text eol=lf") -> str:
     """엔진-소유 확장자 **전부**에 같은 속성을 거는 본문 — 확장자 집합은 엔진에서 파생한다.
 
-    리터럴을 손으로 베끼면 대상 집합이 넓어질 때 이 파일만 구세대로 남는다."""
+    리터럴을 손으로 베끼면 대상 집합이 넓어질 때 이 파일만 옛 버전으로 남는다."""
     return "".join(
         f"{pattern.format(extension=extension)} {attrs}\n"
         for extension in board_git_rules._BOARD_TEXT_ATTR_EXTENSIONS)
@@ -164,7 +164,7 @@ def test_text_lf_rule_uses_last_matching_attributes(board):
 
 
 def test_text_lf_requires_every_status_draft_path_and_extension(board):
-    """상태·확장자 한 축만 덮는 규칙을 전체 board 텍스트 배포로 오판하지 않는다."""
+    """상태·확장자 한 기준만 덮는 규칙을 전체 board 텍스트 배포로 오판하지 않는다."""
     storage_dirs = (*ticket_rules.STATUS_DIRS, ".drafts")
     extensions = board_git_rules._BOARD_TEXT_ATTR_EXTENSIONS
     assert "md" in extensions, "티켓 Markdown 이 대상에서 빠졌다(공허 판정)"
@@ -243,7 +243,7 @@ def test_text_lf_judgment_covers_the_nested_rounds_path(board):
     probe = (
         f"tickets/{round_store.ROUNDS_DIRNAME}/T-0/{round_rules.round_filename(1, 'developer')}"
     )
-    # 프로브 경로의 값은 사이드카 seam 에서 파생한다(리터럴 복제 0).
+    # 프로브 경로의 값은 사이드카 공용 함수에서 파생한다(리터럴 복제 0).
     assert probe in board_git._board_text_attr_targets()
     assert probe not in board_git_rules._BOARD_TEXT_ATTR_TARGETS
 
@@ -251,7 +251,7 @@ def test_text_lf_judgment_covers_the_nested_rounds_path(board):
     assert all(
         board_git._target_lf_declared(partial, target)
         for target in board_git_rules._BOARD_TEXT_ATTR_TARGETS
-    ), "상태·루트 축은 이 선언이 이미 덮는다(테스트 전제)"
+    ), "상태·루트 기준은 이 선언이 이미 덮는다(테스트 전제)"
     assert board_git._target_lf_declared(partial, probe) is False
     assert board_git._board_text_lf_declared(partial) is False
     assert board_git._board_text_lf_declared(
@@ -327,7 +327,7 @@ def test_trailing_hash_invalidates_line_like_git(board):
 
 
 def test_hash_invalidated_line_does_not_shadow_valid_declaration(board):
-    """무효 줄은 *무시*될 뿐 앞선 유효 선언을 지우지 않는다(git 동형·last-match 는 유효 줄끼리)."""
+    """무효 줄은 *무시*될 뿐 앞선 유효 선언을 지우지 않는다(git 과 같은 방식·last-match 는 유효 줄끼리)."""
     text = "areas.md merge=union\nareas.md -merge # 무효 줄\n"
     assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is True
 
@@ -352,7 +352,7 @@ def test_simple_glob_declaration_is_recognized(board, glob_line):
 
 
 def test_simple_glob_matches_inline_target_by_basename(board):
-    """슬래시 없는 패턴은 git 처럼 basename 에도 걸린다 (inline 형상 `.project_manager/areas.md`)."""
+    """슬래시 없는 패턴은 git 처럼 basename 에도 걸린다 (inline 구성 `.project_manager/areas.md`)."""
     assert gitattributes_rules._areas_union_declared(
         "areas.* merge=union\n", gitattributes_rules._INLINE_AREAS_ATTR_TARGETS) is True
 
@@ -376,7 +376,7 @@ def test_double_star_pattern_crosses_directories_like_git(board):
 
 
 def test_inline_pattern_uses_project_manager_path(board):
-    """inline 형상 선언(`.project_manager/areas.md`)은 board 패턴과 섞이지 않는다."""
+    """inline 구성 선언(`.project_manager/areas.md`)은 board 패턴과 섞이지 않는다."""
     text = ".project_manager/areas.md merge=union\n"
     assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._INLINE_AREAS_ATTR_TARGETS) is True
     assert gitattributes_rules._areas_union_declared(text, gitattributes_rules._BOARD_AREAS_ATTR_TARGETS) is False
@@ -514,7 +514,7 @@ def test_check_attr_resolves_engine_text_lf_after_backfill(board, tmp_path):
     """실 git 판정도 board 의 엔진-소유 텍스트 전부를 text+LF checkout으로 해소한다."""
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
     targets = board_git_rules._BOARD_TEXT_ATTR_TARGETS
-    assert targets, "커버리지 대상 0 — 공허 게이트"
+    assert targets, "커버리지 대상 0 — 공허 검사"
     before = _check_attr_text_eol(board_dir, targets)
     assert set(before.values()) == {("unspecified", "unspecified")}
 
@@ -542,7 +542,7 @@ def test_engine_pattern_judgment_matches_check_attr_on_widened_targets(board, tm
         _lf_declaration(board) + _lf_declaration(board, attrs="eol=crlf"),
     )
     # 보수 판정만 요구하는 대상 — git 은 `.gitattributes` 의 부정 패턴을 무시하지만, 우리는
-    #   판정 불능으로 접는다(거짓 정상 대신 중복 backfill·`_gitattributes_pattern_matches` 계약).
+    #   판정 불능으로 바꾼다(거짓 정상 대신 중복 backfill·`_gitattributes_pattern_matches` 계약).
     conservative = (_lf_declaration(board) + "!tickets/done/*.md -text\n",)
     for declaration in (*exact, *conservative):
         (board_dir / ".gitattributes").write_text(
@@ -569,7 +569,7 @@ def test_engine_pattern_judgment_matches_check_attr_on_widened_targets(board, tm
 def test_stage_and_commit_backfills_and_commits_gitattributes(board, tmp_path):
     """board git commit funnel 이 backfill 하고 그 commit 에 `.gitattributes` 를 싣는다.
 
-    기존 board(seed 재실행 없음)가 다음 mutation 에서 자연 정합되는 경로 — commit 에 실려야
+    기존 board(스캐폴드 재실행 없음)가 다음 mutation 에서 자연스럽게 맞춰지는 경로 — commit 에 실려야
     push/pull 로 공유 remote·다른 clone 까지 전파된다.
     """
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
@@ -601,10 +601,10 @@ def test_init_leaves_board_clean_and_claim_not_blocked(board, tmp_path, monkeypa
 
     porcelain = _git(["status", "--porcelain"], board_dir).stdout.strip()
     assert porcelain == "", f"init 이 board 를 dirty 로 남김: {porcelain!r}"
-    # prefetch 가 차단 없이 anchor 를 낸다(ADR-0073 — 옛 dirty sentinel 비교의 후신).
+    # prefetch 가 차단 없이 orig_head 를 낸다(ADR-0073 — 옛 dirty sentinel 비교의 후신).
     assert board_claim._board_git_claim_prefetch(pm_paths.home_at(board.REPO), "T-0001").block is None
 
-    ensure_product_slot(board, task="pm")  # claim 앵커 = task 폴더(T-0962)
+    ensure_product_slot(board, task="pm")  # claim 대상 저장소 = task 폴더(T-0962)
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(
         id="T-0001", task="pm", user="me")) == 0
     assert (board_dir / "tickets" / "claimed" / "T-0001-t.md").exists()
@@ -628,7 +628,7 @@ def test_backfill_commit_excludes_drafts(board, tmp_path):
 
 
 def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypatch, capsys):
-    """잔여 dirty 차단 안내가 **막고 있는 파일을 지목**한다 — 일괄 `add -A` 유도 금지 (ADR-0073).
+    """남은 dirty 차단 안내가 **막고 있는 파일을 지목**한다 — 일괄 `add -A` 유도 금지 (ADR-0073).
 
     T-0418 시절 이 테스트는 "안내가 draft 제외 pathspec(`add -A -- . ':!tickets/.drafts'`)을
     쓰는가" 를 지켰다. ADR-0073 이 그 안내 자체를 폐기했다 — 공유 board 에서 그 커맨드는 **남의
@@ -641,7 +641,7 @@ def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypa
         dirty=((" M", "tickets/open/T-0002-other.md"), ("??", "areas.md")))
     monkeypatch.setattr(board_claim, "_board_git_claim_prefetch", lambda _home, tid: blocked)
 
-    ensure_product_slot(board, task="pm")  # claim 앵커 = task 폴더(T-0962)
+    ensure_product_slot(board, task="pm")  # claim 대상 저장소 = task 폴더(T-0962)
     assert board_ticket.cmd_claim(pm_paths.home_at(board.REPO), argparse.Namespace(
         id="T-0001", task="pm", user="me")) == 1
 
@@ -656,7 +656,7 @@ def test_dirty_claim_guidance_names_the_blocking_files(board, tmp_path, monkeypa
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 4. advisory — 미배포 표면화 (never-block·내용 판정)
+# 4. advisory — 미배포 드러내기 (never-block·내용 판정)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_advisory_fires_when_board_git_lacks_declaration(board, tmp_path):
@@ -669,7 +669,7 @@ def test_advisory_fires_when_board_git_lacks_declaration(board, tmp_path):
 
 
 def test_advisory_is_never_blocking(board):
-    """`--gate` 종료코드에 기여하지 않는다(advisory 등재)."""
+    """`--blocking` 종료코드에 기여하지 않는다(advisory 등재)."""
     assert "areas-merge-union" in board_lint._ADVISORY_LINT_KINDS
 
 
@@ -711,7 +711,7 @@ def test_missing_rule_in_dirty_gitattributes_is_preserved(
 
 
 def test_advisory_silent_for_inline_with_root_declaration(board, tmp_path):
-    """inline 형상 + 루트 선언 있음 → 무발화 (레거시 채택자 정상)."""
+    """inline 구성 + 루트 선언 있음 → 알리지 않음 (레거시 채택자 정상)."""
     (tmp_path / ".project_manager").mkdir(parents=True)
     (tmp_path / ".project_manager" / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     (tmp_path / ".gitattributes").write_text(
@@ -720,7 +720,7 @@ def test_advisory_silent_for_inline_with_root_declaration(board, tmp_path):
 
 
 def test_advisory_fires_for_inline_without_root_declaration(board, tmp_path):
-    """inline 형상인데 루트 선언이 없으면(선언 제거·미배포 clone) 표면화한다."""
+    """inline 구성인데 루트 선언이 없으면(선언 제거·미배포 clone) 드러낸다."""
     (tmp_path / ".project_manager").mkdir(parents=True)
     (tmp_path / ".project_manager" / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     findings = areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO))
@@ -730,12 +730,12 @@ def test_advisory_fires_for_inline_without_root_declaration(board, tmp_path):
 
 
 def test_advisory_silent_without_areas_file(board, tmp_path):
-    """areas.md 부재(솔로 미등록) → 무발화."""
+    """areas.md 부재(솔로 미등록) → 알리지 않음."""
     assert areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO)) == []
 
 
 def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
-    """`board lint` 집계에 배선돼 실제로 표면화된다(호출 누락 가드)."""
+    """`board lint` 집계에 연결돼 실제로 드러난다(호출 누락 가드)."""
     monkeypatch.setattr(areas_lint, "lint_areas_merge_union",
                         lambda home: [("areas.md", "areas-merge-union", "x")])
     for module, name, stub in (
@@ -762,7 +762,7 @@ def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 5. seed — pm_import 신규 board 스캐폴드 + drift 가드
+# 5. 스캐폴드 — pm_import 신규 board 스캐폴드 + drift 가드
 # ════════════════════════════════════════════════════════════════════════
 
 def test_import_scaffold_mirrors_board_block(board):
@@ -777,7 +777,7 @@ def test_import_scaffold_mirrors_board_block(board):
 
 @requires_git
 def test_new_board_submodule_seed_deploys_union(board, tmp_path, monkeypatch):
-    """`pm-import --new --board-submodule` seed 된 board 가 곧바로 union 으로 해소된다."""
+    """`pm-import --new --board-submodule` 스캐폴드로 만든 board 가 곧바로 union 으로 해소된다."""
     pm_import = _load_mod("pm_import")
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     for key, val in _GIT_IDENTITY.items():
@@ -792,7 +792,7 @@ def test_new_board_submodule_seed_deploys_union(board, tmp_path, monkeypatch):
     board_dir = dest / ".project_manager" / "board"
     assert (board_dir / ".gitattributes").is_file()
     assert _check_attr_merge(board_dir) == "union"
-    # seed 는 remote 에도 실린다 — 합류하는 다른 clone 이 같은 보장을 받는다.
+    # 스캐폴드는 remote 에도 실린다 — 합류하는 다른 clone 이 같은 보장을 받는다.
     assert _git(["cat-file", "-e", "HEAD:.gitattributes"], bare).returncode == 0
 
 
@@ -801,7 +801,7 @@ def test_ensure_fail_soft_on_non_utf8_gitattributes(board, tmp_path):
     """비-UTF8 `.gitattributes` 는 보강을 포기할 뿐 mutation commit 을 깨지 않는다 (fail-soft).
 
     `_ensure_board_gitattributes` 는 board git commit funnel 에서 불리므로, 어떤 예외도
-    ticket mutation 을 터뜨려선 안 된다. advisory 도 같은 규약으로 무발화한다 — 내용을 읽을 수
+    ticket mutation 을 터뜨려선 안 된다. advisory 도 같은 규약으로 알리지 않는다 — 내용을 읽을 수
     없으면 배포 여부가 *미상* 이지 미배포 단정이 아니고, lint 는 예외로 깨지지 않는다.
     """
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
@@ -809,4 +809,4 @@ def test_ensure_fail_soft_on_non_utf8_gitattributes(board, tmp_path):
 
     assert board_git._ensure_board_gitattributes(pm_paths.home_at(board.REPO)) is False
     assert board_git._board_git_stage_and_commit(pm_paths.home_at(board.REPO), "mutation") is True   # commit 은 정상 진행.
-    assert areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO)) == []                    # lint 도 안 깨진다(무발화).
+    assert areas_lint.lint_areas_merge_union(pm_paths.home_at(board.REPO)) == []                    # lint 도 안 깨진다(알리지 않음).

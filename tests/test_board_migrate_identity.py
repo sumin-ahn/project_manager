@@ -10,7 +10,7 @@ ADR-0033 이전 데이터(areas 빈 `area_owner`·ticket 부재 `created_by`·�
   6. **--scope** — active(open+claimed) vs all(done 포함) 경계.
   7. **abort** — 식별자 미해소 시 rc≠0·쓰기 0.
 
-**hermetic**: board.py 경로 전역을 tmp 프로젝트로 monkeypatch·git 폴백 stub
+**hermetic**: board.py 경로 전역을 tmp 프로젝트로 monkeypatch·git 대체 조회 stub
 (test_board_mine_view.py 패턴 동류).
 """
 from __future__ import annotations
@@ -124,7 +124,7 @@ _AREAS_EMPTY_OWNER = (
 # ════════════════════════════════════════════════════════════════════════
 
 def test_abort_when_user_unresolved(board, capsys):
-    """user 미해소(local.conf user= 없음·git 폴백 None)면 rc≠0·쓰기 0."""
+    """user 미해소(local.conf user= 없음·git 대체 조회 None)면 rc≠0·쓰기 0."""
     _write_conf(board)  # user 키 없음
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     p = _seed(board, "T-0001", "open")
@@ -314,7 +314,7 @@ def test_scope_all_includes_done(board, capsys):
 #
 # ADR-0033 이전 areas.md 는 area_owner 칼럼 *자체*가 없다(7/6/5칼럼). 이전엔 헤더에 채울
 # 자리가 없어 no-op → `_area_owner_in_use()` 가 영구 False → `--mine` 이 전체-open 으로 degrade.
-# migrate 가 헤더를 canonical 8칼럼으로 업그레이드해 area_owner 를 표면화해야 한다.
+# migrate 가 헤더를 canonical 8칼럼으로 업그레이드해 area_owner 를 드러내야 한다.
 
 # 7칼럼 (protected 스키마·T-0076·area_owner 부재).
 _AREAS_OLD_7COL = (
@@ -389,7 +389,7 @@ def test_old_7col_mine_narrows_after_migrate(board, capsys):
         + "| service-b | ACC | g:b | pytest -q | reg | develop | main | bob |\n",
         encoding="utf-8")
     # multi_user=True (alice·bob 두 area 소유자 = 다중사용자) — 단 my_user·owner 가 area_owner 로
-    # 둘 다 해소되므로 strict `owner == my_user` 가 먼저 판정하고 multi_user 게이트는 안 탄다(T-0302).
+    # 둘 다 해소되므로 strict `owner == my_user` 가 먼저 판정하고 multi_user 조건은 안 탄다(T-0302).
     my_pay = ticket_access._ticket_is_mine(
         pm_paths.home_at(board.REPO), "open", {"id": "T-PAY-009", "claimed_by": ""}, "alice", "pm-1",
         ticket_access._area_owner_in_use(pm_paths.home_at(board.REPO)), True)
@@ -429,7 +429,7 @@ def test_old_header_upgrade_preserves_existing_columns_and_comments(board, capsy
     _write_conf(board, user="alice")
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_AREAS_OLD_7COL, encoding="utf-8")
     _run(board, capsys)
-    # 기존 칼럼 값이 그대로 — 행 dict 로 읽어 검증(파서 동형).
+    # 기존 칼럼 값이 그대로 — 행 dict 로 읽어 검증(파서와 같은 방식).
     row = areas_store._areas_row_for_prefix(pm_paths.home_at(board.REPO), "PAY")
     assert row["repo"] == "service-a"
     assert row["git"] == "g:a"
@@ -493,14 +493,14 @@ def test_mixed_noncanon_header_backfills_both_rows(board, capsys):
     """비-canonical 3칼럼 헤더 아래 3칼럼 row + canonical 8칼럼 row 가 *둘 다* backfill 된다.
 
     - 3칼럼 row(LEG): 헤더 폭과 같음 → 헤더 append 위치(index 3)에 area_owner=user 패딩.
-    - 8칼럼 row(PAY): 헤더보다 넓음 → `_parse_areas` 동형으로 canonical index 7 의 빈 area_owner
+    - 8칼럼 row(PAY): 헤더보다 넓음 → `_parse_areas` 와 같은 방식으로 canonical index 7 의 빈 area_owner
       를 user 로 채움(must-fix 전엔 index 3 의 `pytest -q` 를 area_owner 로 오인해 no-op).
     """
     _write_conf(board, user="alice")
     pm_paths.areas_file(pm_paths.home_at(board.REPO)).write_text(_AREAS_MIXED_NONCANON_HEADER, encoding="utf-8")
     rc, out, _ = _run(board, capsys)
     assert rc == 0
-    # 두 행 모두 area_owner=alice 로 backfill — 파서 동형으로 읽어 검증.
+    # 두 행 모두 area_owner=alice 로 backfill — 파서와 같은 방식으로 읽어 검증.
     assert ticket_access._ticket_area_owner(pm_paths.home_at(board.REPO), "T-LEG-001") == "alice"   # 3칼럼 row(degrade append).
     assert ticket_access._ticket_area_owner(pm_paths.home_at(board.REPO), "T-PAY-001") == "alice"   # 8칼럼 wider row(index 7).
     # 8칼럼 row 의 기존 칼럼 값은 불변(test_cmd 오인 채움이 아님을 확인).
@@ -545,7 +545,7 @@ def test_mixed_noncanon_header_preserves_prefilled_wider_row(board, capsys):
 # ════════════════════════════════════════════════════════════════════════
 
 def test_refresh_board_called_on_write(board, capsys, monkeypatch):
-    """실제 쓰기가 있으면 끝에 refresh_board() 1회 호출(claimed 표시 갱신 정합)."""
+    """실제 쓰기가 있으면 끝에 refresh_board() 1회 호출(claimed 표시 갱신 일치)."""
     calls = []
     monkeypatch.setattr(board_dashboard, "refresh_board", lambda _home: calls.append(1))
     _write_conf(board, user="alice")
@@ -709,7 +709,7 @@ def test_ticket_moved_before_write_is_skipped(board, capsys, monkeypatch):
     방어적 재조회: 수동/구버전 writer가 open/→claimed/ 이동시킨 상황을 모사한다.
     `find_ticket_for_mutation`(쓰기 직전 재조회)을 래핑해 스캔 경로(open/)가 아닌 새 경로(claimed/)를
     돌려주면, 경로 불일치로 skip 되고 스캔 경로엔 절대 쓰지 않는다. (하드 보장 아님 — 재조회와
-    엔진 writer는 lock 때문에 이 형상에 못 끼지만, 재조회가 외부 이동도 stale write 없이 잡는다.)
+    엔진 writer는 lock 때문에 이 상황에 못 끼지만, 재조회가 외부 이동도 stale write 없이 잡는다.)
     """
     _write_conf(board, user="alice")
     scan_path = _seed(board, "T-0001", "open")  # 스캔이 보는 open/ 경로.

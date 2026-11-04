@@ -1,10 +1,10 @@
-"""구 역할 절(명세 본문 marker) 탐지 시야 — `legacy-growth-section` lint.
+"""구 역할 절(명세 본문 marker) 탐지 범위 — `legacy-growth-section` lint.
 
 라운드 사이드카 이전 board 는 역할 산출을 명세 본문 안에 marker 로 감싸 누적했다
-(`pm-ticket-section` + 봉인 줄). 변환 명령(`board.py rounds migrate`)은 v1.8.1 까지 있었고 이
+(`pm-ticket-section` + 확정 줄). 변환 명령(`board.py rounds migrate`)은 v1.8.1 까지 있었고 이
 엔진에는 없다. 남은 절은 `legacy-growth-section` lint 가 차단으로 보인다. 이 파일은 그 판정
-시야(column 0 주석 줄 · ``` 펜스 밖)가 산문 인용·들여쓰기·문법 예시를 데이터로 읽지 않는지와,
-신규 board 의 배포 선언에 구 성장 장부가 없는지를 잰다. 차단 여부·안내 문구는
+검사 범위(column 0 주석 줄 · ``` 펜스 밖)가 산문 인용·들여쓰기·문법 예시를 데이터로 읽지 않는지와,
+신규 board 의 배포 선언에 옛 성장 기록이 없는지를 잰다. 차단 여부·안내 문구는
 `tests/test_board_lint.py` 의 legacy-growth-section 시험이 본다.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ def _load_board():
 
 
 def _legacy_section(role: str, ordinal: int, *, body: str) -> str:
-    """구 형식 절 블록(marker·봉인 줄 포함)을 낸다."""
+    """구 형식 절 블록(marker·확정 줄 포함)을 낸다."""
     return (
         f"<!-- pm-ticket-section:start role={role} -->\n"
         f"## {role} ({role} · 2026-08-17)\n"
@@ -42,7 +42,7 @@ def _legacy_section(role: str, ordinal: int, *, body: str) -> str:
         f"{body}\n"
         f"<!-- pm-ticket-section:end role={role} -->\n"
         f"<!-- pm-ticket-seal role={role} ordinal={ordinal} "
-        f"sha256={_SEAL_SHA} by=harvest -->\n"
+        f"sha256={_SEAL_SHA} by=collect -->\n"
     )
 
 
@@ -65,8 +65,8 @@ def test_legacy_markers_inside_a_fenced_code_block_are_not_data():
     assert ticket_lint._has_legacy_growth_markers(body) is False
 
 
-def test_shipped_gitattributes_declarations_no_longer_seed_the_growth_ledger():
-    """신규 board 는 처음부터 라운드 레이아웃이다 — 배포 선언에 장부 union 이 없다."""
+def test_shipped_gitattributes_declarations_no_longer_seed_the_growth_records():
+    """신규 board 는 처음부터 라운드 레이아웃이다 — 배포 선언에 성장 기록 union 이 없다."""
     board = _load_board()
     pm_import_source = (
         REPO / ".project_manager" / "tools" / "pm_import.py"
@@ -91,7 +91,7 @@ def test_board_lint_skips_quoted_indented_and_fenced_markers(tmp_path, monkeypat
         "## 문법 설명\n"
         "구 형식은 이렇게 생겼다:\n\n"
         "  `<!-- pm-ticket-seal role=developer ordinal=0 "
-        f"sha256={_SEAL_SHA} by=harvest -->`\n"
+        f"sha256={_SEAL_SHA} by=collect -->`\n"
     )
     (tickets / "T-4200-quoted.md").write_text(
         _ticket_text("T-4200", "done") + "\n" + quoted_body,

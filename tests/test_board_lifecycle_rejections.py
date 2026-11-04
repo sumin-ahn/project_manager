@@ -1,11 +1,11 @@
 """board.py mutation 커맨드 — wrong-state 거부 매트릭스 (T-0784 공백 1).
 
-board 5축 감사(2026-08-20)로 확인된 공백: `claim`·`complete`·`block`·`unclaim`·`unblock`·
+board 5개 기준 감사(2026-08-20)로 확인된 공백: `claim`·`complete`·`block`·`unclaim`·`unblock`·
 `discard`·`reopen`·`promote` 8종 mutation 의 "존재하는 티켓·틀린 상태" 거부 문구를 단언하는
 회귀가 없었다(`grep "cannot complete|must be claimed|cannot unclaim|cannot unblock|must be
 blocked|cannot block from" tests/` → 0건). 소유 대조(T-0781)·claimed↔blocked 왕복(T-0783)은
 각 티켓이 소유한다 — 이 파일은 **상태 하나**만 본다(정확 일치 조회가 이미 성공한 뒤의 상태
-검사). 모든 mutation 이 상태 검사를 소유 대조보다 **먼저** 하므로(코드 실측) 이 축은 정체성
+검사). 모든 mutation 이 상태 검사를 소유 대조보다 **먼저** 하므로(코드 실측) 이 기준은 정체성
 바인딩 없이도 도달한다.
 
 **hermetic 필수**: board.py 경로 전역은 tmp 프로젝트로 monkeypatch 재지정한다
@@ -132,13 +132,13 @@ def _expected_rejection_text(board, command: str, tid: str, status: str) -> str:
 #   unblock:  status == "blocked"                                  (board.py cmd_unblock)
 #   discard:  status in _DISCARD_SOURCE_STATUSES = ACTIVE_STATUS_DIRS (open/claimed/blocked)
 #   reopen:   status in TERMINAL_STATUS_DIRS = ("done", "discarded")
-#   promote:  status in ("open", "draft")  — "draft" 는 STATUS_DIRS 밖(별도 축)이라 여기 무관.
+#   promote:  status in ("open", "draft")  — "draft" 는 STATUS_DIRS 밖(별도 기준)이라 여기 무관.
 # 무효 상태 = STATUS_DIRS - 유효 상태. 손으로 나열하지 않고 `ticket_rules` 상수에서 뺀다
 # (새 상태가 STATUS_DIRS 에 늘면 이 매트릭스가 자동으로 그 상태를 포함한다).
 
 def _args(board, command: str, tid: str) -> argparse.Namespace:
     if command == "claim":
-        ensure_product_slot(board, task="me")  # claim 은 task 폴더(앵커)를 먼저 해소한다(T-0962)
+        ensure_product_slot(board, task="me")  # claim 은 task 폴더(대상 저장소)를 먼저 해소한다(T-0962)
     extra = {
         "claim": dict(task="me", user="me"),
         "complete": dict(tests_pass=True, allow_missing_log=True, allow_untested=False),
