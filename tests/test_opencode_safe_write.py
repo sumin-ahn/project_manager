@@ -1,4 +1,4 @@
-"""opencode 어댑터 대용량 write/edit 신뢰성 가드 정합 테스트 (T-0334).
+"""opencode 어댑터 대용량 write/edit 신뢰성 가드 일치 테스트 (T-0334).
 
 opencode 1.17.x~1.18.x 는 대용량 write/edit 를 조용히 절단·유실한다(OUTPUT_TOKEN_MAX=32000
 하드코딩·silent truncation·auto-continue 부재·upstream #18108/#19604/#17471 미해결). 어댑터층
@@ -13,7 +13,7 @@ opencode 1.17.x~1.18.x 는 대용량 write/edit 를 조용히 절단·유실한�
   2. core 상수(DENY=64KB·CHUNK=16KB·T-opencode-002) + env override 키 정적 참조.
   3. opencode.jsonc `limit.output` 명시(왜: 32000 하드코딩 fallback) + 기존 config 무회귀.
   4. engine.manifest 등재(plugins/·lib/ 디렉토리 엔트리가 신규 파일 커버·전파 drift 0).
-  5. (node 있으면) core 순수 로직 자가검증 — deny 발화(write/edit >64KB)·safe_write create/
+  5. (node 있으면) core 순수 로직 자가검증 — deny 실행(write/edit >64KB)·safe_write create/
      append/상한거부(16KB 경계·multibyte·code)/기존파일 create 거부(read 후 append 재개 안내)·
      env override·endsWithNewline 경계 피드백. node 부재 시 skip(정적 검증만).
 
@@ -145,7 +145,7 @@ def test_core_declares_thresholds_and_env_overrides():
 
 
 def test_core_declares_guard_and_tool_wiring():
-    """deny-and-redirect(tool.execute.before) + safe_write custom tool 배선이 core 에 있다 (정적)."""
+    """deny-and-redirect(tool.execute.before) + safe_write custom tool 등록이 core 에 있다 (정적)."""
     src = _core_src()
     assert "tool.execute.before" in src, "deny-and-redirect 훅(tool.execute.before) 없음"
     assert "safe_write:" in src, "safe_write custom tool 등록 없음"
@@ -175,14 +175,14 @@ def test_core_declares_root_containment():
     # R4: append 도 커널 강제 O_NOFOLLOW — lstat 선검사↔write 사이 symlink 교체 TOCTOU 백스톱.
     assert "O_NOFOLLOW" in body, "append 가 O_NOFOLLOW open 을 안 씀 — symlink 교체 TOCTOU 미봉쇄"
     assert "O_APPEND" in body, "append 가 O_APPEND open 아님"
-    # safeWrite 가 세 containment 를 실제로 호출한다(선언만 있고 미배선 방지).
+    # safeWrite 가 세 containment 를 실제로 호출한다(선언만 있고 미연결 방지).
     assert "assertContainedPath(root, filePath)" in body, "safeWrite 가 lexical containment 미호출"
     assert "assertRealpathContained(root, target)" in body, "safeWrite 가 realpath containment 미호출"
     assert "assertLeafNotSymlink(target)" in body, "safeWrite 가 leaf symlink 거부 미호출"
 
 
 def test_core_documents_append_allowed_decision():
-    """core 가 '기존 파일 append 의식적 허용'(codex R4 reject·PM 70) 결정을 주석으로 박제한다.
+    """core 가 '기존 파일 append 의식적 허용'(codex R4 reject·PM 70) 결정을 주석으로 남긴다.
 
     append-only·chunk 상한·resume 보전이 근거 — deny 정책 목적은 신뢰성(접근통제 아님)임을 명시.
     후속 리뷰어가 '기존파일 append 거부' 를 재도입하려는 회귀를 막는 durable 근거.
@@ -258,7 +258,7 @@ def test_config_declares_output_limit():
 def test_config_keeps_existing_blocks():
     """safe-write config 추가가 기존 tool_output/permission 가드를 안 깬다 (회귀).
 
-    (자동 컴팩션 형상 불변은 test_opencode_ctx_guard 가 소유 — 여기선 중복하지 않는다.)"""
+    (자동 컴팩션 구성 불변은 test_opencode_ctx_guard 가 소유 — 여기선 중복하지 않는다.)"""
     data = _load_config()
     assert data.get("permission", {}).get("bash", {}).get("rm *") == "deny", (
         "bash rm 가드 손실 (T-0011 회귀)"
@@ -323,9 +323,9 @@ def test_node_inherits_pytest_session_tempdir_redirect():
 def test_core_pure_logic_node_selfcheck():
     """node 로 core 순수 로직 자가검증 (opencode 런타임 없이·ctx-guard 자가검증 패턴).
 
-    검증: env override · deny 발화(write>16KB new/existing·edit newString+oldString>16KB) ·
+    검증: env override · deny 실행(write>16KB new/existing·edit newString+oldString>16KB) ·
     safe_write create/append(누적 보고) · chunk 상한 거부 · 기존파일 create 거부 · append 부재 거부 ·
-    fake tool 주입 팩토리 배선(safe_write 등록 + before 훅 deny). node 부재 시 skip.
+    fake tool 주입 팩토리 등록(safe_write 등록 + before 훅 deny). node 부재 시 skip.
     """
     if _NODE is None:
         import pytest
@@ -339,7 +339,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-// export 표면.
+// export 범위.
 for (const fn of ["makeSafeWritePlugin","byteLength","resolveDenyBytes","resolveChunkBytes",
                   "checkOversizeWrite","validateSafeWrite","safeWrite",
                   "isWithinRoot","assertContainedPath","assertRealpathContained","assertLeafNotSymlink"]) {
@@ -355,7 +355,7 @@ assert.strictEqual(m.resolveDenyBytes({PM_SAFE_WRITE_DENY_BYTES:"0"}), 65536);  
 assert.strictEqual(m.resolveDenyBytes({PM_SAFE_WRITE_DENY_BYTES:"1.5"}), 65536); // 비정수→기본
 assert.strictEqual(m.resolveChunkBytes({PM_SAFE_WRITE_CHUNK_BYTES:"2048"}), 2048);
 
-// ── ① deny 발화: write 대형 (신규→safe_write 유도 / 기존→edit 유도) ──────────
+// ── ① deny 실행: write 대형 (신규→safe_write 유도 / 기존→edit 유도) ──────────
 const big = "x".repeat(70000);
 assert.strictEqual(m.checkOversizeWrite("write", {content:"small"}, 65536, false, 16384).deny, false);
 let v = m.checkOversizeWrite("write", {content:big}, 65536, false, 16384);
@@ -450,7 +450,7 @@ assert.strictEqual(r.wroteBytes, 16384, "code 경계 wroteBytes");
 // 마지막 개행 뒤 ";" 패딩이 붙으므로 비종단(false)이 정상 — 경계 피드백 대상.
 assert.strictEqual(r.endsWithNewline, false);
 
-// F1 강제 게이트(T-opencode-002): 비종단 파일+비개행 chunk append 는 거부(처방 포함)·
+// F1 강제 검사(T-opencode-002): 비종단 파일+비개행 chunk append 는 거부(해결 방법 포함)·
 // 개행으로 시작하는 chunk 는 허용 — line-aligned 계약 강제.
 assert.throws(() => m.safeWrite(td, "partial.txt", "more", "append", 16384),
               /개행[\s\S]*첫 문자/);
@@ -458,9 +458,9 @@ r = m.safeWrite(td, "partial.txt", "\nmore\n", "append", 16384);
 assert.strictEqual(fs.readFileSync(path.join(td, "partial.txt"), "utf-8"),
                    "no-trailing-newline\nmore\n");
 
-// F-006 정적 가드(T-opencode-002): core src 의 mode enum 배선 존재 — schema 회귀 무감시 방지.
+// F-006 정적 가드(T-opencode-002): core src 의 mode enum 정의 존재 — schema 회귀 무감시 방지.
 const coreSrc = fs.readFileSync(path.join(process.cwd(), "safe-write-core.cjs"), "utf-8");
-assert.ok(/create\|[\s]*"append"|enum\(/.test(coreSrc) || /"create".{0,40}"append"/.test(coreSrc), "mode enum 배선이 core src 에 없다");
+assert.ok(/create\|[\s]*"append"|enum\(/.test(coreSrc) || /"create".{0,40}"append"/.test(coreSrc), "mode enum 정의가 core src 에 없다");
 
 console.log("SAFE_WRITE_SELFCHECK_OK");
 } finally {
@@ -472,7 +472,7 @@ console.log("SAFE_WRITE_SELFCHECK_OK");
 
 
 def test_factory_wiring_node_selfcheck():
-    """node 로 fake tool 주입 팩토리 배선 검증 — safe_write 등록 + before 훅 deny/통과 (opencode 없이).
+    """node 로 fake tool 주입 팩토리 등록 검증 — safe_write 등록 + before 훅 deny/통과 (opencode 없이).
 
     makeSafeWritePlugin(fakeTool) 로 팩토리를 만들어 hooks.tool.safe_write.execute(create→append)
     와 hooks["tool.execute.before"](대형 deny·소형 통과)를 opencode 런타임 없이 실행한다. node 부재 skip.
@@ -480,7 +480,7 @@ def test_factory_wiring_node_selfcheck():
     if _NODE is None:
         import pytest
 
-        pytest.skip("node 없음 — 팩토리 배선 자가검증 skip")
+        pytest.skip("node 없음 — 팩토리 등록 자가검증 skip")
 
     script = r"""
 const m = require("./safe-write-core.cjs");
@@ -512,7 +512,7 @@ const fakeTool = (def) => def; fakeTool.schema = fakeSchema;
     assert.ok(out2.includes("append ok"), "append 보고 아님: " + out2);
     assert.strictEqual(fs.readFileSync(path.join(td, "doc.txt"), "utf-8"), "a\nb\n");
     // 종단 파일엔 경계 지시가 없다.
-    assert.ok(!out2.includes("끝나지 않는다"), "종단 파일인데 경계 지시 발화: " + out2);
+    assert.ok(!out2.includes("끝나지 않는다"), "종단 파일인데 경계 지시 출력: " + out2);
 
     // 비종단(\n 없는) 조각 → 응답에 다음 조각 첫 문자 \n 지시 포함(T-opencode-002).
     const out3 = await hooks.tool.safe_write.execute(
@@ -555,7 +555,7 @@ const fakeTool = (def) => def; fakeTool.schema = fakeSchema;
 })();
 """
     out = _run_node_check(script)
-    assert "FACTORY_WIRING_OK" in out, f"팩토리 배선 자가검증 실패. out={out!r}"
+    assert "FACTORY_WIRING_OK" in out, f"팩토리 등록 자가검증 실패. out={out!r}"
 
 
 def test_root_containment_node_selfcheck():

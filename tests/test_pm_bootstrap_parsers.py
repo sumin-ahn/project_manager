@@ -47,13 +47,13 @@ HANDOFF_PY = TOOLS / "pm_handoff.py"
 
 
 @pytest.fixture
-def isolated_board_anchor(tmp_path):
-    """실제 lint가 읽을 최소 독립 앵커와 도구 사본을 만든다."""
-    anchor = tmp_path / "anchor"
-    tools = anchor / ".project_manager" / "tools"
-    # 앵커는 subprocess cwd가 아니라 도구 사본의 위치로 결정되므로 copytree가 필요하다.
+def isolated_board_target_repo(tmp_path):
+    """실제 lint가 읽을 최소 독립 대상 저장소와 도구 사본을 만든다."""
+    target_repo = tmp_path / "target"
+    tools = target_repo / ".project_manager" / "tools"
+    # 대상 저장소는 subprocess cwd가 아니라 도구 사본의 위치로 결정되므로 copytree가 필요하다.
     shutil.copytree(TOOLS, tools)
-    tickets = anchor / ".project_manager" / "board" / "tickets"
+    tickets = target_repo / ".project_manager" / "board" / "tickets"
     for status in ("open", "claimed", "blocked", "done"):
         (tickets / status).mkdir(parents=True, exist_ok=True)
     (tickets / "open" / "T-0001.md").write_text(
@@ -77,27 +77,27 @@ tags: []
 # Independent lint input
 
 This deliberately omits every standard section and references [[T-9999]].
-It also uses [[0001-foo]] so gate output contains an advisory issue line.
+It also uses [[0001-foo]] so blocking output contains an advisory issue line.
 """,
         encoding="utf-8",
     )
-    decisions = anchor / ".project_manager" / "wiki" / "decisions"
+    decisions = target_repo / ".project_manager" / "wiki" / "decisions"
     decisions.mkdir(parents=True)
     (decisions / "0001-foo.md").write_text("# Fixture decision\n", encoding="utf-8")
-    return anchor, tools / "board.py"
+    return target_repo, tools / "board.py"
 
 
 @pytest.fixture(autouse=True)
-def _engine_anchor(monkeypatch):
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
+def _engine_target_repo(monkeypatch):
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home: None)
 
 
 def _load_module(name: str = "pm_bootstrap"):
     """pm_bootstrap 를 경로 로드한다 (도구는 패키지가 아니므로 importlib).
 
-    로드 직후 0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다 — 엔진 테스트는 worktree ①(엔진
-    canonical)에서 로드돼 실 REPO 가 PM 홈 등록 worktree 사본으로 보여 anchor 가 거부하기 때문(모듈이
-    per-test 라 autouse 대신 로더에서 처리·다른 부트스트랩 테스트의 autouse 픽스처와 동형)."""
+    로드 직후 0단계 엔진 대상 저장소 검사(T-0351)를 hermetic 무력화한다 — 엔진 테스트는 worktree ①(엔진
+    canonical)에서 로드돼 실 REPO 가 PM 홈 등록 worktree 사본으로 보여 대상 저장소 검사가 거부하기 때문(모듈이
+    per-test 라 autouse 대신 로더에서 처리·다른 부트스트랩 테스트의 autouse 픽스처와 같음)."""
     spec = importlib.util.spec_from_file_location(name, BOOTSTRAP_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -105,7 +105,7 @@ def _load_module(name: str = "pm_bootstrap"):
 
 
 def _load_board(name: str = "board"):
-    """board 를 경로 로드한다 — grammar 정합 가드용 (`_ticket_prefix` 비교)."""
+    """board 를 경로 로드한다 — grammar 일치 가드용 (`_ticket_prefix` 비교)."""
     spec = importlib.util.spec_from_file_location(name, BOARD_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -113,7 +113,7 @@ def _load_board(name: str = "board"):
 
 
 def _load_pm_handoff(name: str = "pm_handoff"):
-    """pm_handoff 를 경로 로드한다 — rewriter↔CLI 정합 가드용(rewriter 산출 재사용)."""
+    """pm_handoff 를 경로 로드한다 — rewriter↔CLI 일치 가드용(rewriter 산출 재사용)."""
     spec = importlib.util.spec_from_file_location(name, HANDOFF_PY)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -142,9 +142,9 @@ def test_parse_board_counts_happy():
 
 
 def test_parse_board_counts_empty():
-    """빈 입력 → 모든 status 0 (KeyError 없이 dict 골격 유지).
+    """빈 입력 → 모든 status 0 (KeyError 없이 dict 틀 유지).
 
-    골격 키는 `ticket_rules.STATUS_DIRS` 파생이라 손으로 적은 4버킷이 아니다(T-0839).
+    틀 키는 `ticket_rules.STATUS_DIRS` 파생이라 손으로 적은 4버킷이 아니다(T-0839).
     """
     mod = _load_module()
     assert bootstrap_rules.parse_board_counts("") == dict.fromkeys(ticket_rules.STATUS_DIRS, 0)
@@ -199,7 +199,7 @@ def test_parse_open_tickets_prefixed_ids():
 
 
 def test_parse_open_tickets_grammar_matches_board():
-    """parse_open_tickets grammar 가 board.py `_TICKET_PREFIX_RE` 와 정합인지 (drift 가드).
+    """parse_open_tickets grammar 가 board.py `_TICKET_PREFIX_RE` 와 일치하는지 (drift 가드).
 
     board.py 가 발행/검증하는 ID grammar 와 부트스트랩 소비측이 어긋나면 한쪽이 잡는 ID 를
     다른 쪽이 놓친다(T-0164 round-3 클래스). 같은 prefix 집합에서 대칭임을 못박는다.
@@ -243,8 +243,8 @@ def test_parse_lint_result_empty_is_clean():
     assert bootstrap_report.parse_lint_result("") == "clean"
 
 
-def test_parse_lint_result_gate_header_excluded():
-    """`--gate` 출력의 요약 헤더(⚠️ … lint issue(s) … 차단:)는 카운트에서 제외.
+def test_parse_lint_result_blocking_header_excluded():
+    """`--blocking` 출력의 요약 헤더(⚠️ … lint issue(s) … 차단:)는 카운트에서 제외.
 
     헤더 1 줄 + issue 3 줄(advisory 2·차단 1) → 헤더를 세면 off-by-one(4) 이지만
     실제 issue 줄만 세어 '3 warnings' 여야 한다(T-0038 회귀 방지).
@@ -260,11 +260,11 @@ def test_parse_lint_result_gate_header_excluded():
 
 
 def test_parse_lint_result_clean_marker_is_line_anchored():
-    """clean 판정은 줄 단위 양성 매칭 — 앵커 줄의 저장소 경로가 마커 문자열을 포함해도 오판 없음.
+    """clean 판정은 줄 단위 양성 매칭 — 대상 저장소 줄의 저장소 경로가 마커 문자열을 포함해도 오판 없음.
 
     T-0465 가 read 출력 첫 줄에 **임의의 사용자 경로**를 주입하면서, 그 전까지 board 생성
     텍스트만 보던 substring 검사가 unsound 해졌다(경로에 `no lint issues` 가 섞이면 실 이슈가
-    있어도 clean). codex 게이트 지적.
+    있어도 clean). codex 리뷰 지적.
     """
     mod = _load_module()
     poisoned = (
@@ -275,13 +275,13 @@ def test_parse_lint_result_clean_marker_is_line_anchored():
         "  [render-leak] c.md: z\n"
     )
     assert bootstrap_report.parse_lint_result(poisoned) == "3 warnings"
-    # 진짜 clean 은 앵커 줄이 있든 없든 clean.
+    # 진짜 clean 은 대상 저장소 줄이 있든 없든 clean.
     assert bootstrap_report.parse_lint_result("대상 저장소: /home/u/repo (PM 홈)\n\u2713 no lint issues\n") == "clean"
     assert bootstrap_report.parse_lint_result("\u2713 no lint issues\n") == "clean"
 
 
-def test_parse_lint_result_gate_advisory_only():
-    """advisory-only 게이트 출력(차단 0) — 헤더 제외하고 advisory 2 줄만 세어 '2 warnings'."""
+def test_parse_lint_result_blocking_advisory_only():
+    """advisory-only blocking 출력(차단 0) — 헤더 제외하고 advisory 2 줄만 세어 '2 warnings'."""
     mod = _load_module()
     out = (
         "⚠️  2 lint issue(s) (0 blocking 차단):\n"
@@ -293,23 +293,23 @@ def test_parse_lint_result_gate_advisory_only():
 
 @pytest.mark.parametrize("lint_argv", [["lint"], ["lint", "--blocking"]])
 def test_parse_lint_result_matches_actual_board_lint_output(
-    lint_argv, isolated_board_anchor
+    lint_argv, isolated_board_target_repo
 ):
     """실제 `board.py lint` 합성 출력의 자체 요약 N과 파서 결과가 일치한다.
 
-    T-0465 앵커 같은 새 표시 줄은 lint issue 형식이 아니므로 세지 않아야 한다.
+    T-0465 대상 저장소 줄 같은 새 표시 줄은 lint issue 형식이 아니므로 세지 않아야 한다.
     손으로 쓴 문자열만 쓰면 이 출력-계약 drift를 놓치므로 실제 CLI를 실행한다.
 
-    **두 모드 다 돈다** — 프로덕션 호출부(`pm_bootstrap._collect_board`)는 `--gate` 를 쓰는데
-    무-gate 만 실측하면 gate 쪽 issue 줄 형식(`  ✗ [kind]`)이 drift 할 때 *과소* 카운트로
-    조용히 뒤집힌다(무-gate 는 `  [kind]` 로 형식이 다르다).
+    **두 모드 다 돈다** — 프로덕션 호출부(`pm_bootstrap._collect_board`)는 `--blocking` 을 쓰는데
+    무-blocking 만 실측하면 blocking 쪽 issue 줄 형식(`  ✗ [kind]`)이 drift 할 때 *과소* 카운트로
+    조용히 뒤집힌다(무-blocking 은 `  [kind]` 로 형식이 다르다).
     """
     mod = _load_module()
     # encoding 명시 필수 — 자식은 UTF-8 을 내보내는데 text=True 만 주면 로캘 코덱으로 디코딩해
     # CP949 콘솔(Windows)에서 한글 lint 메시지가 UnicodeDecodeError 를 낸다(엔진 관례와 동일).
-    anchor, board_py = isolated_board_anchor
+    target_repo, board_py = isolated_board_target_repo
     result = subprocess.run(
-        [sys.executable, str(board_py), *lint_argv], cwd=anchor,
+        [sys.executable, str(board_py), *lint_argv], cwd=target_repo,
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     output = result.stdout + result.stderr  # pm_bootstrap._default_run_board 와 같은 합성 방식
@@ -410,7 +410,7 @@ def test_parse_git_ahead_behind_zero():
 
 
 def test_parse_git_ahead_behind_malformed_is_none():
-    """빈 문자열·형식 불일치(탭 없음·비-숫자) → None(upstream 미설정과 동형 graceful)."""
+    """빈 문자열·형식 불일치(탭 없음·비-숫자) → None(upstream 미설정과 같은 graceful)."""
     mod = _load_module()
     assert git_freshness.parse_git_ahead_behind("") is None
     assert git_freshness.parse_git_ahead_behind("no-upstream\n") is None
@@ -460,7 +460,7 @@ _LOG_TEXT = (
 )
 
 
-# handoff entry 가 없는 log — 차수 log-폴백 대상 부재(placeholder 유지·T-0208 회귀 가드).
+# handoff entry 가 없는 log — 차수 log 대체 대상 부재(placeholder 유지·T-0208 회귀 가드).
 _LOG_TEXT_NO_HANDOFF = (
     "# Project Log\n\n"
     "## [2026-06-14] note | 진행 메모\n"
@@ -485,7 +485,7 @@ def test_extract_last_log_entry_body_returns_full_body():
 def test_extract_last_log_entry_body_matches_pm_log_tail():
     """단일 진실 = `pm_log.split_entries` — tail 의 `entries[-1][1]` 과 동일 결과 (DRY 가드)."""
     mod = _load_module()
-    # pm_log 를 직접 로드해 split_entries 의 마지막 entry 와 동형인지 대조한다(tail 재사용 핀).
+    # pm_log 를 직접 로드해 split_entries 의 마지막 entry 와 같은지 대조한다(tail 재사용 핀).
     import importlib.util
     spec = importlib.util.spec_from_file_location("pm_log", TOOLS / "pm_log.py")
     real_pm_log = importlib.util.module_from_spec(spec)
@@ -495,7 +495,7 @@ def test_extract_last_log_entry_body_matches_pm_log_tail():
 
 
 def test_extract_last_log_entry_body_no_entries_is_none():
-    """entry 가 없으면 None (제목만 표시하던 현행으로 폴백 신호)."""
+    """entry 가 없으면 None (제목만 표시하던 현행으로 대체 신호)."""
     mod = _load_module()
     assert bootstrap_history.extract_last_log_entry_body("# Project Log\n\n> 설명만\n") is None
     assert bootstrap_history.extract_last_log_entry_body("") is None
@@ -545,7 +545,7 @@ def test_format_session_label_placeholder_cases():
     assert bootstrap_report._format_session_label(None) == bootstrap_report._SESSION_LABEL_PLACEHOLDER
 
 
-# ── 차수 log-폴백 + stale 교차검증 (T-0208·ADR-0035) ──────────────────────────
+# ── 차수 log 대체 + stale 교차검증 (T-0208·ADR-0035) ──────────────────────────
 
 _LOG_HANDOFF_TEXT = (
     "# Project Log\n\n"
@@ -588,7 +588,7 @@ def test_parse_last_handoff_session_num_takes_latest_handoff(tmp_path):
 
 
 def test_parse_last_handoff_session_num_none_when_no_handoff(tmp_path):
-    """handoff type entry 가 없으면(complete/note 만) None (폴백 없음·현행 유지)."""
+    """handoff type entry 가 없으면(complete/note 만) None (대체 없음·현행 유지)."""
     mod = _load_module()
     assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), _LOG_TEXT_NO_HANDOFF) is None
     assert bootstrap_history.parse_last_handoff_session_num(pm_paths.home_at(tmp_path), '') is None
@@ -623,14 +623,14 @@ def test_reconcile_session_num_log_wins_when_stale():
 
 
 def test_reconcile_session_num_falls_back_to_log():
-    """pm_state 미해소(`?`/None)면 log-derived 로 폴백(stale 아님·폴백 층)."""
+    """pm_state 미해소(`?`/None)면 log-derived 로 대체(stale 아님·대체 층)."""
     mod = _load_module()
     assert bootstrap_rules.reconcile_session_num("?", 48) == (48, False)
     assert bootstrap_rules.reconcile_session_num(None, 48) == (48, False)
 
 
 def test_reconcile_session_num_state_only_and_both_unresolved():
-    """log 폴백 없음(None)이면 pm_state 그대로; 둘 다 미해소면 placeholder 그대로."""
+    """log 대체 없음(None)이면 pm_state 그대로; 둘 다 미해소면 placeholder 그대로."""
     mod = _load_module()
     assert bootstrap_rules.reconcile_session_num(42, None) == (42, False)
     assert bootstrap_rules.reconcile_session_num("?", None) == ("?", False)
@@ -753,7 +753,7 @@ def _make_hermetic_bootstrap(
         pm_state_file.write_text(pm_state_text, encoding="utf-8")
         kwargs["pm_state_file"] = pm_state_file
     else:
-        # 미해소 graceful — 존재하지 않는 경로를 주입해 _collect_handoff_context 가 None 으로 폴백.
+        # 미해소 graceful — 존재하지 않는 경로를 주입해 _collect_handoff_context 가 None 으로 대체.
         kwargs["pm_state_file"] = tmp_path / "absent_pm_state.md"
     return bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), **kwargs)
 
@@ -823,7 +823,7 @@ def test_collect_board_git_head_failure_is_none(tmp_path):
 # ── run() 통합: 차수 announce + log 본문 dump + 남은작업 surface + 미해소 graceful ──
 
 
-# ── 차수 log-폴백 + stale 교차검증 run() 통합 (T-0208) ─────────────────────────
+# ── 차수 log 대체 + stale 교차검증 run() 통합 (T-0208) ─────────────────────────
 
 # pm_state 세션 식별 절은 있으나 entry 가 없는 template → session_history.infer_next_session_num == "?"(미해소).
 _PM_STATE_TEMPLATE = (
@@ -910,19 +910,19 @@ def test_collect_user_continuity_unresolved_is_none(monkeypatch, *, tmp_path):
 
 # ── _collect_board dump-then-warn (T-0195·abort-before-dump 제거) ────────────
 
-_BLOCKING_GATE_OUT = (
+_BLOCKING_LINT_OUT = (
     "⚠️  1 lint issue(s) (1 blocking 차단):\n"
     "  ✗ [dangling-wikilink] T-0003: 깨진 링크\n"
 )
 
 
 def _make_blocking_lint_board_fn():
-    """`lint --gate` 가 blocking(rc=1) 을 내는 fake run_board_fn (`list` 는 정상 rc=0)."""
+    """`lint --blocking` 이 blocking(rc=1) 을 내는 fake run_board_fn (`list` 는 정상 rc=0)."""
     def _fn(args: list[str]) -> tuple[int, str]:
         if args[0] == "list":
             return (0, "  [open   ] T-0010  x  -  adapter\n")
         if args[0] == "lint":
-            return (1, _BLOCKING_GATE_OUT)
+            return (1, _BLOCKING_LINT_OUT)
         raise AssertionError(f"예상치 못한 board 호출: {args}")
     return _fn
 
@@ -941,7 +941,7 @@ def test_collect_board_blocking_lint_does_not_abort(tmp_path):
     board = bootstrap._collect_board()  # SystemExit 를 던지면 이 테스트가 실패한다.
 
     assert board["lint_blocking"] is True
-    assert board["lint_gate_output"] == _BLOCKING_GATE_OUT
+    assert board["lint_blocking_output"] == _BLOCKING_LINT_OUT
     assert board["open_tickets"] == ["T-0010"]
 
 
@@ -959,7 +959,7 @@ def test_collect_board_advisory_only_lint_blocking_false(tmp_path):
     assert board["lint_blocking"] is False
 
 
-def _lint_gate_output(*, total: int, blocking: int) -> str:
+def _lint_blocking_output(*, total: int, blocking: int) -> str:
     assert 0 <= blocking <= total
     lines = [f"⚠️  {total} lint issue(s) ({blocking} blocking 차단):"]
     lines.extend(
@@ -974,9 +974,9 @@ def _lint_gate_output(*, total: int, blocking: int) -> str:
 
 
 def test_blocking_lint_warning_is_bounded_for_large_board():
-    """대량 gate 전문은 대표 3건으로 줄고 총계·blocking·opt-in 경로는 보존한다."""
+    """대량 blocking 전문은 대표 3건으로 줄고 총계·blocking·opt-in 경로는 보존한다."""
     mod = _load_module()
-    detail = _lint_gate_output(total=249, blocking=93)
+    detail = _lint_blocking_output(total=249, blocking=93)
     warning = bootstrap_report.format_blocking_lint_warning(detail)
 
     assert "총계 249건 · blocking 93건" in warning
@@ -1023,8 +1023,8 @@ def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt(tmp_path)
     assert board["lint"] == "check error (unparsed)"
     assert board["lint_blocking"] is True
     assert board["lint_parse_failed"] is True
-    assert board["lint_gate_rc"] == 2
-    assert board["lint_gate_output"] == lint_error
+    assert board["lint_blocking_rc"] == 2
+    assert board["lint_blocking_output"] == lint_error
 
     warning = bootstrap_report.format_blocking_lint_warning(lint_error, lint_rc=2)
     assert "실행/출력 파싱 실패 (rc=2)" in warning
@@ -1042,11 +1042,11 @@ def test_collect_board_preserves_noncanonical_lint_failure_and_excerpt(tmp_path)
         ("미인식 산문", "lint finished, nothing to report\n"),
     ),
 )
-def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint_output, tmp_path):
+def test_collect_board_flags_unparsed_lint_even_when_blocking_rc_is_zero(label, lint_output, tmp_path):
     """rc=0 이어도 출력을 못 읽으면 clean 이 아니다 — 모르는 상태를 성공으로 위장하지 않는다.
 
     `parse_lint_counts` 는 명시 clean 과 canonical 형식만 인식하므로 None 은 "이슈 0건" 이
-    아니라 "lint 상태를 모른다" 는 뜻이다. rc 축만 보면 빈 출력·traceback 이 `clean` 으로
+    아니라 "lint 상태를 모른다" 는 뜻이다. rc 값만 보면 빈 출력·traceback 이 `clean` 으로
     보고된다(회귀 전 실측). 판정은 rc 와 독립이어야 한다.
     """
     mod = _load_module()
@@ -1062,8 +1062,8 @@ def test_collect_board_flags_unparsed_lint_even_when_gate_rc_is_zero(label, lint
     assert board["lint_parse_failed"] is True, f"{label}: 파싱 실패를 인지해야 한다"
     assert board["lint"] == "check error (unparsed)", f"{label}: clean 으로 위장하면 안 된다"
     assert board["lint_blocking"] is True, f"{label}: 모르는 상태는 blocking 으로 surface"
-    assert board["lint_gate_rc"] == 0
-    assert board["lint_gate_output"] == lint_output
+    assert board["lint_blocking_rc"] == 0
+    assert board["lint_blocking_output"] == lint_output
 
 
 def test_collect_board_keeps_explicit_clean_nonblocking(tmp_path):
@@ -1105,10 +1105,10 @@ def test_blocking_lint_warning_clips_single_extreme_hook_detail():
 def test_blocking_lint_warning_rejects_negative_representative_limit():
     mod = _load_module()
     with pytest.raises(ValueError, match="0 이상"):
-        bootstrap_report.format_blocking_lint_warning(_BLOCKING_GATE_OUT, representative_limit=-1)
+        bootstrap_report.format_blocking_lint_warning(_BLOCKING_LINT_OUT, representative_limit=-1)
 
 
-# ── T-0217: git freshness (fetch + behind 표면화 + clean·ff 자동 pull) ─────────
+# ── T-0217: git freshness (fetch + behind 출력 + clean·ff 자동 pull) ─────────
 
 # ── freshness_decision (순수 판정 함수) ──────────────────────────────────────
 
@@ -1146,7 +1146,7 @@ def test_freshness_decision_status_unknown_no_pull():
 
 def test_freshness_decision_ahead_unknown_no_pull():
     """behind>0 · fetch 성공 · clean 이어도 **ahead=None(미확인)이면 자동 pull 금지**
-    (codex round-2 must-fix — `ahead or 0` 폴백이 미확인을 ff-확정으로 위장하던 구멍)."""
+    (codex round-2 must-fix — `ahead or 0` 대체값이 미확인을 ff-확정으로 위장하던 구멍)."""
     mod = _load_module()
     assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=False, ahead=None, behind=2) == (
@@ -1155,7 +1155,7 @@ def test_freshness_decision_ahead_unknown_no_pull():
 
 
 def test_behind_warning_ahead_unknown_reason():
-    """_behind_warning 이 ahead=None 을 'ahead 미확인' 사유로 표면화한다."""
+    """_behind_warning 이 ahead=None 을 'ahead 미확인' 사유로 출력한다."""
     mod = _load_module()
     warning = git_freshness._behind_warning(
         {"behind": 2, "fetched": True, "dirty": False, "ahead": None})
@@ -1163,7 +1163,7 @@ def test_behind_warning_ahead_unknown_reason():
 
 
 def test_freshness_decision_behind_dirty_no_pull():
-    """behind>0 인데 dirty → '수동 동기 필요' · pull False (표면화만)."""
+    """behind>0 인데 dirty → '수동 동기 필요' · pull False (출력만)."""
     mod = _load_module()
     assert git_freshness.freshness_decision(
         fetched=True, detached=False, dirty=True, ahead=0, behind=2) == (
@@ -1207,7 +1207,7 @@ def test_freshness_decision_ahead_only_no_pull():
     )
 
 
-# ── _format_freshness (표면화 문자열) ────────────────────────────────────────
+# ── _format_freshness (출력 문자열) ────────────────────────────────────────
 
 def test_format_freshness_behind_ahead():
     mod = _load_module()
@@ -1223,7 +1223,7 @@ def test_format_freshness_latest_with_note():
 
 
 def test_format_freshness_fetch_failure_prefixed():
-    """fetch 실패면 '⚠ fetch 실패' 접두 + stale local 측정 병기(fail-soft 표면화)."""
+    """fetch 실패면 '⚠ fetch 실패' 접두 + stale local 측정 병기(fail-soft 출력)."""
     mod = _load_module()
     scope = {"fetched": False, "detached": False, "behind": 2, "ahead": 0, "note": None}
     line = git_freshness._format_freshness(scope)
@@ -1279,7 +1279,7 @@ def _scope_git_fn(dir_str, *, fetch_rc=0, branch="main", detached=False, dirty=F
 
 
 def test_sync_scope_fetch_failure_behind_no_pull(tmp_path):
-    """codex must-fix ①: fetch 실패 + behind>0(clean·ff) → **pull 미실행** · 경고 표면화.
+    """codex must-fix ①: fetch 실패 + behind>0(clean·ff) → **pull 미실행** · 경고 출력.
 
     fetch 실패면 behind/ahead 는 stale 원격 데이터라 그 위에서 자동 pull 하면 안 된다.
     """
@@ -1293,13 +1293,13 @@ def test_sync_scope_fetch_failure_behind_no_pull(tmp_path):
     assert scope["pulled"] is False
     # pull 은 절대 호출되지 않는다(stale 원격 위 자동 동기 금지).
     assert not any(a[2:3] == ["pull"] for a in calls)
-    # 경고 표면화 — behind 유지 + 차단 사유(fetch 실패).
+    # 경고 출력 — behind 유지 + 차단 사유(fetch 실패).
     assert scope["behind"] == 3
     assert scope["note"] and "fetch 실패" in scope["note"]
 
 
 def test_sync_scope_status_failure_behind_no_pull(tmp_path):
-    """codex must-fix ②: `git status` 실패 + behind>0(ff) → **pull 미실행** · 경고 표면화.
+    """codex must-fix ②: `git status` 실패 + behind>0(ff) → **pull 미실행** · 경고 출력.
 
     status 조회 실패면 clean 을 증명 못 하므로 자동 pull 불가(fail-soft — abort 아님·pull 만 차단).
     """
@@ -1313,7 +1313,7 @@ def test_sync_scope_status_failure_behind_no_pull(tmp_path):
     assert scope["pulled"] is False
     # pull 은 절대 호출되지 않는다(clean 미증명).
     assert not any(a[2:3] == ["pull"] for a in calls)
-    # 경고 표면화 — behind 유지 + 차단 사유(status 미확인).
+    # 경고 출력 — behind 유지 + 차단 사유(status 미확인).
     assert scope["behind"] == 2
     assert scope["note"] and "status 미확인" in scope["note"]
 
@@ -1342,10 +1342,10 @@ def test_collect_scope_git_tag_collision_yields_pure_branch(tmp_path):
 # ── _default_run_git 네트워크 timeout → fail-soft (reviewer must-fix ③) ────────
 
 def test_default_run_git_fetch_timeout_is_failsoft(tmp_path, monkeypatch):
-    """reviewer must-fix ③: fetch 가 timeout(원격 무응답)이면 rc≠0 로 흡수 — hang·abort 없음.
+    """reviewer must-fix ③: fetch 가 timeout(원격 무응답)이면 rc≠0 로 처리 — hang·abort 없음.
 
     present-but-unresponsive 원격(VPN 미접속·captive portal)이 OS TCP 타임아웃(수 분)까지
-    세션 시작을 막던 hang 을 GIT_NETWORK_TIMEOUT 로 끊고 fail-soft(`fetched=False`) 경로로 흡수.
+    세션 시작을 막던 hang 을 GIT_NETWORK_TIMEOUT 로 끊고 fail-soft(`fetched=False`) 경로로 처리.
     """
     mod = _load_module()
     inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))  # 기본 러너(_default_run_git) 사용.
@@ -1360,7 +1360,7 @@ def test_default_run_git_fetch_timeout_is_failsoft(tmp_path, monkeypatch):
     rc, out = inst._default_run_git(["-C", str(tmp_path), "fetch", "origin"])
     # 네트워크 계열엔 timeout 이 실제로 전달된다(무-timeout hang 재발 방지).
     assert captured["timeout"] == bootstrap_cli.GIT_NETWORK_TIMEOUT
-    # fail-soft — SystemExit/TimeoutExpired 전파 아님·rc≠0 로 흡수.
+    # fail-soft — SystemExit/TimeoutExpired 전파 아님·rc≠0 로 처리.
     assert rc != 0
     assert "timeout" in out.lower()
 
@@ -1403,7 +1403,7 @@ def test_sync_scope_behind_clean_ff_performs_pull(tmp_path):
 
 
 def test_sync_scope_behind_dirty_surfaces_no_pull(tmp_path):
-    """① behind 표면화 + dirty → 경고만 · pull 없음 (DoD ①·③)."""
+    """① behind 출력 + dirty → 경고만 · pull 없음 (DoD ①·③)."""
     mod = _load_module()
     d = tmp_path / "repo"
     calls: list[list[str]] = []
@@ -1411,7 +1411,7 @@ def test_sync_scope_behind_dirty_surfaces_no_pull(tmp_path):
     scope = inst._sync_scope("① worktree", d)
     assert scope["state"] == "수동 동기 필요"
     assert scope["pulled"] is False
-    assert scope["behind"] == 2  # behind 표면화 유지(0 으로 덮이지 않음).
+    assert scope["behind"] == 2  # behind 출력 유지(0 으로 덮이지 않음).
     assert scope["note"] and "수동 동기 필요" in scope["note"]
     # pull 은 호출되지 않는다.
     assert not any(a[2:3] == ["pull"] for a in calls)
@@ -1527,19 +1527,19 @@ def _repo_scope_git_fn(repo_dir, *, behind, ahead=0, dirty=False, pull_rc=0):
     return _fn
 
 
-# ── positional repo 흡수 — rewriter↔CLI 정합 (T-0247·ADR-0043) ────────────────
+# ── positional repo 수용 — rewriter↔CLI 일치 (T-0247·ADR-0043) ────────────────
 
-# ── resolve_repo_arg (순수 정합 함수) ────────────────────────────────────────
+# ── resolve_repo_arg (순수 일치 함수) ────────────────────────────────────────
 
-# ── build_parser positional 흡수 (rewriter 산출 parse_args 수용) ──────────────
+# ── build_parser positional 수용 (rewriter 산출 parse_args 수용) ──────────────
 
 # ── main() CLI 레벨 fail-loud (positional↔--repo 불일치) ──────────────────────
 
 def test_collect_board_names_the_hook_generation_block_instead_of_unparsed(tmp_path):
-    """`lint --gate` 가 훅 세대 차단으로 끝난 출력은 '파싱 실패'가 아니라 그 사실로 surface 된다.
+    """`lint --blocking` 이 훅 버전 차단으로 끝난 출력은 '파싱 실패'가 아니라 그 사실로 출력된다.
 
-    흡수 직후~`board.py init` 전 창에서 채택자가 실제로 만나는 상태다 — dump 가
-    `gate error (unparsed)` 로 뭉뚱그리면 원인(구세대 훅)과 처방이 가려진다. 접두 문자열은
+    받아 반영한 직후~`board.py init` 전 창에서 채택자가 실제로 만나는 상태다 — dump 가
+    `check error (unparsed)` 로 뭉뚱그리면 원인(옛 버전 훅)과 해결 방법이 가려진다. 접두 문자열은
     board.py 가 소유하므로 여기서도 그 상수로 조립한다(사본 금지).
     """
     mod = _load_module()
@@ -1556,13 +1556,13 @@ def test_collect_board_names_the_hook_generation_block_instead_of_unparsed(tmp_p
 
     board = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)._collect_board()
     assert board["lint"] == bootstrap_rules._LINT_HOOK_GENERATION_RESULT
-    assert "board.py init" in board["lint_gate_output"]
+    assert "board.py init" in board["lint_blocking_output"]
     assert board["lint_blocking"] is True          # 차단 신호는 그대로다
     assert board["lint_parse_failed"] is True      # lint 수치는 여전히 미상
 
 
 def test_collect_board_keeps_unparsed_for_a_non_hook_lint_failure(tmp_path):
-    """훅 세대가 아닌 비정형 실패는 종전대로 `gate error (unparsed)` — 판정이 넓어지지 않았다."""
+    """훅 버전 문제가 아닌 비정형 실패는 종전대로 `check error (unparsed)` — 판정이 넓어지지 않았다."""
     mod = _load_module()
 
     def board_fn(args: list[str]) -> tuple[int, str]:

@@ -110,7 +110,7 @@ class PmBootstrap:
     def _pm_state_display_path(self) -> str:
         """첫-turn 안내에 쓸 pm_state 경로 — 이 task 의 서술 pm_state.
 
-        task 가 유일한 연속성 앵커이므로 task 바인딩이 해소한
+        task 가 유일한 연속성 기준이므로 task 바인딩이 해소한
         `.local/tasks/<task>/pm_state.md` 를 그대로 표시한다.
         """
         if self._task_pm_state_file is not None:
@@ -171,7 +171,7 @@ class PmBootstrap:
         라벨 명확화는 빌더(`_format_board_counts_line`)가 `counts_scope` 로 담당한다.
 
         **done 카운트는 default 뷰(무-`--status`) 비의존**:
-        `board.py list`(무-status)가 done 을 접어활성 상태(open/claimed/blocked)만
+        `board.py list`(무-status)가 done 을 빼고 활성 상태(open/claimed/blocked)만
         보여주므로, 위 default 뷰 호출 출력엔 done 행이 아예 없어 `counts["done"]` 이 항상
         그래서 done 전용으로
         `["list", "--status", "done", *lens]` 을 **별도 호출**해 그 출력만 파싱한 done 카운트로
@@ -214,9 +214,9 @@ class PmBootstrap:
             "open_tickets": open_tickets,
             "lint": lint_result,
             "lint_blocking": lint_rc != 0 or lint_parse_failed,
-            "lint_gate_rc": lint_rc,
+            "lint_blocking_rc": lint_rc,
             "lint_parse_failed": lint_parse_failed,
-            "lint_gate_output": lint_output,
+            "lint_blocking_output": lint_output,
         }
 
     def _collect_pytest(self) -> dict | None:
@@ -280,7 +280,7 @@ class PmBootstrap:
         """git 브랜치·최근 3 commit·working tree 상태를 수집한다.
 
         빈 repo(커밋 0 — fresh clone `pm_import --new` 직후)는 **정상 케이스**로
-        degrade 한다: branch 는 `symbolic-ref` 폴백, commits 는 빈 목록 +
+        degrade 한다: branch 는 `symbolic-ref` 로 대신 읽고, commits 는 빈 목록 +
         `no_commits=True`. **진짜 git repo 가 아닐 때만** (symbolic-ref·status 전부
         실패) sys.exit 로 중단한다. 빈-repo 판정은 commits==[] 기준 (로캘 독립 —
         git 메시지 텍스트를 파싱하지 않는다).
@@ -364,7 +364,7 @@ class PmBootstrap:
     def _probe_git_freshness(self, label: str, scope_dir: Path) -> dict:
         """한 git 컨텍스트를 fetch origin 후 branch/dirty/ahead·behind 로 측정한다 (pull 없음).
 
-        모든 호출은 `-C <dir>` 로 명시(러너 cwd 무관·`_collect_board_git` 동형·DI 보존).
+        모든 호출은 `-C <dir>` 로 명시(러너 cwd 무관·`_collect_board_git` 과 같은 구조·DI 보존).
         fetch 실패는 fail-soft(fetched=False·이후 측정은 stale local 기준). `state` 는
         `freshness_decision` — 호출부가 `state == "동기"` 로 clean·ff 인지 판정해 pull 한다.
         """
@@ -449,7 +449,7 @@ class PmBootstrap:
         board 미분리(`_board_dir` 비-디렉토리)면 None(skip). fetch 상시(fail-soft),
         clean·ff 면 `checkout <branch> && pull --ff-only` 로 branch 를 유지한 채 동기한다 —
         `git submodule update` 의 detached HEAD 를 피한다(그러면 이후 board mutation 기록이
-        sentinel 로 스킵된다). dirty·diverged·detached 는 표면화만(pull 안 함).
+        sentinel 로 스킵된다). dirty·diverged·detached 는 드러내기만 한다(pull 안 함).
         """
         board_dir = self._board_dir
         if not board_dir.is_dir():
@@ -496,7 +496,7 @@ class PmBootstrap:
         return freshness
 
     def _require_task_slot_ownership(self, slot: str, action: str) -> None:
-        """task 슬롯 변경/검증 직전 strict 장부 소유권 gate (TOCTOU 차단)."""
+        """task 슬롯 변경/검증 직전 strict 대여 기록 소유권 검사 (TOCTOU 차단)."""
         task = self._task_name
         try:
             owned = (
@@ -523,7 +523,7 @@ class PmBootstrap:
         **task 모드(`--task <task>`)면 `task:<task>` 태그**를 반환한다 — handoff write 측이
         task 세션 종료를 `(task:<task>)` sentinel 태그로 박고 task 서술 pm_state 를 쓰므로
         이 read 측이 같은 키로 자기 태그 entry(차수·본문)를 되읽어 resume 루프를
-        닫는다(write↔read 대칭). task 진입은 task 앵커만 사용한다.
+        닫는다(write↔read 대칭). task 진입은 task 기준만 사용한다.
 
         정체성 확정 전(수집 앞단 호출)이면 None 이다.
         """
@@ -535,11 +535,11 @@ class PmBootstrap:
         """**자기 슬롯**의 마지막 handoff entry 제목(date·type·title) + **본문 전체**를 수집한다.
 
         인계 컨텍스트 dump 를 전역 마지막 entry 가 아니라 *자기
-        슬롯의 마지막 handoff*(태그 필터·무태그 폴백=slot-1)로 좁혀 자기 컨텍스트를 복원한다
+        슬롯의 마지막 handoff*(태그 필터·무태그는 slot-1 로 대신)로 좁혀 자기 컨텍스트를 복원한다
         (타 슬롯 entry 본문 유입 차단). **MF-2**: bound 세션이 해소됐는데 자기 handoff 가 0개
-        (fresh 슬롯)면 **전역 마지막으로 폴백하지 않는다** — 그러면 타 슬롯 handoff 본문·branch 가
+        (fresh 슬롯)면 **전역 마지막으로 대신하지 않는다** — 그러면 타 슬롯 handoff 본문·branch 가
         유입된다("타 슬롯 최소 유입" 정면 위반). fresh
-        슬롯은 이 슬롯의 첫 세션이라 인계 dump 없음(None). 전역 폴백은 bound 가 **진짜 미해소**
+        슬롯은 이 슬롯의 첫 세션이라 인계 dump 없음(None). 전역 대체는 bound 가 **진짜 미해소**
         (식별 자체 없음)일 때만 — 그땐 현행 표시(전역 마지막 제목+본문)를 잃지 않는다.
         """
         if not self._log_file.exists():
@@ -590,13 +590,13 @@ class PmBootstrap:
                "state_path": str} 또는 None(pm_state·log·todo 전부 미해소 — surface 생략·graceful).
         - `session_num`: pm_state(`session_history.infer_next_session_num`) 와 log(`parse_last_handoff_session_num`+1)
           을 `reconcile_session_num` 으로 교차검증한 *최종* 차수. pm_state 해소 경로가 우선이되
-          (현행 무변경), pm_state 미해소(template/부재)면 log-derived N+1 로 **폴백**하고, pm_state
+          (현행 무변경), pm_state 미해소(template/부재)면 log-derived N+1 로 **대신 정하고**, pm_state
           가 해소돼도 log-derived 가 더 크면 **log 우선(max)** + stale 표시(머신 간 미동기).
         - `session_stale`: pm_state 가 log 보다 뒤처져 log 를 택했으면 True(경고 1줄).
         - `state_session_num`: pm_state-derived 원값(stale 경고 메시지의 진단용).
         - `todos`: 이 task 의 열린 todo 목록(`.local/tasks/<task>/todo.json` · 없으면 빈
           리스트 — 호출부가 등록 경로를 안내).
-        pm_state·log·todo 전부 미해소면 None — 호출부가 현행(placeholder)로 폴백한다.
+        pm_state·log·todo 전부 미해소면 None — 호출부가 현행(placeholder)로 대신한다.
         """
         state_path = self._resolve_pm_state_file()
         state_text: str | None = None
@@ -631,7 +631,7 @@ class PmBootstrap:
         }
 
     def _read_log_text(self) -> str | None:
-        """log/current.md 원문을 읽는다 (차수 log-폴백/user 연속성 공용·부재면 None)."""
+        """log/current.md 원문을 읽는다 (차수 log 대체/user 연속성 공용·부재면 None)."""
         if not self._log_file.exists():
             return None
         return fs.read_text_shared(self._log_file, encoding="utf-8")
@@ -641,7 +641,7 @@ class PmBootstrap:
 
         `git log -1 --format=%ae -S<header> -- <log_file>` — 그 헤더 줄을 추가한 commit 을
         pickaxe(-S)로 찾아 author email 을 얻는다. log/current.md 는 REPO가 소유하므로
-        `-C <REPO>` 로 명시(러너 cwd=worktree 무관·`_collect_board_git` 동형). rc≠0·빈 출력·git
+        `-C <REPO>` 로 명시(러너 cwd=worktree 무관·`_collect_board_git` 과 같은 구조). rc≠0·빈 출력·git
         실패 → None(fail-soft·줄 생략). DI 러너(`_run_git_fn`) 경유 — 테스트는 mock.
         """
         rc, out = self._run_git_fn(
@@ -693,9 +693,9 @@ class PmBootstrap:
           **활성(leased) 슬롯과 교집합** 섹션들을
           `{"mode":"dashboard","others":[{"session","body"}]}` 로 반환. 자기 섹션은 표시 안 함
           (자기 컨텍스트는 pm_state/log 몫). `--done` 으로 release 된 idle 슬롯 섹션은
-          활성 집합에 없어 배제된다(MF-1·codex·stale idle 노출 0). 활성 집합 판정불가(장부 부재)면
+          활성 집합에 없어 배제된다(MF-1·codex·stale idle 노출 0). 활성 집합 판정불가(대여 기록 부재)면
           필터 no-op(현행 표시 보존). 남는 타 슬롯 0개면 None(절 생략).
-        - 대시보드 부재/읽기 실패(OSError) → `_lease_others` 폴백(`{"mode":"lease","others":[…]}`).
+        - 대시보드 부재/읽기 실패(OSError) → `_lease_others` 로 대신(`{"mode":"lease","others":[…]}`).
         - 어느 쪽도 타 PM 0개 → None(절 생략·graceful).
         """
         dash_file = pm_paths._dashboard_file(self._home)
@@ -824,16 +824,16 @@ class PmBootstrap:
         if board.get("lint_blocking"):
             print(
                 bootstrap_report.format_blocking_lint_warning(
-                    board["lint_gate_output"], lint_rc=board.get("lint_gate_rc")
+                    board["lint_blocking_output"], lint_rc=board.get("lint_blocking_rc")
                 ),
                 file=sys.stderr,
             )
             return 1
         return 0
 
-    def _reject_worktree_copy_anchor(self) -> bool:
-        """실행 Home의 등록 worktree 앵커를 검사한다. 판정 실패는 전파한다."""
-        pm_home = pm_paths._pm_home_worktree_misanchor(self._home)
+    def _reject_worktree_copy_target_repo(self) -> bool:
+        """실행 Home의 등록 worktree 대상 저장소를 검사한다. 판정 실패는 전파한다."""
+        pm_home = pm_paths._pm_home_worktree_wrong_repo(self._home)
         if pm_home is None:
             return False
         print(
@@ -843,12 +843,12 @@ class PmBootstrap:
         return True
 
     def _phase0_preflight(self) -> int:
-        """0단계 — dump 이전 엔진 앵커 검증. 0=통과·1=거부(FAIL-LOUD).
+        """0단계 — dump 이전 엔진 대상 저장소 검증. 0=통과·1=거부(FAIL-LOUD).
 
         엔진 파일 위치(REPO)가 PM 홈이 아니라 worktree 사본이면 거부한다
-        (`pm_paths._pm_home_worktree_misanchor`와 명시 Home 사용).
+        (`pm_paths._pm_home_worktree_wrong_repo`와 명시 Home 사용).
         """
-        if self._reject_worktree_copy_anchor():
+        if self._reject_worktree_copy_target_repo():
             return 1
         return 0
 
@@ -870,7 +870,7 @@ class PmBootstrap:
         return seen
 
     def _handover_delegate_runs(self, slots: list[str]) -> list[str]:
-        """미회수 위임 준비와 그 라운드 단계 — 준비 사본 디렉터리를 읽어 실값으로 낸다.
+        """돌려받지 않은 위임 준비와 그 라운드 단계 — 준비 사본 디렉터리를 읽어 실값으로 낸다.
 
         준비 사본은 **그 세션이 잡고 있던 작업 폴더 안**에 생긴다(위임의 cwd 가 슬롯이다) —
         PM 홈 아래가 아니다. 그래서 뿌리는 `slots`(보유 작업 폴더 목록)이 준다. 상대 루트는
@@ -899,9 +899,9 @@ class PmBootstrap:
         return rows
 
     def _handover_slots(self, task: str) -> list[tuple[str, str]]:
-        """그 task 가 보유한 작업 폴더와 그 갈래 — 장부 행 + live 브랜치.
+        """그 task 가 보유한 작업 폴더와 그 갈래 — 대여 기록 행 + live 브랜치.
 
-        반환은 `(슬롯, 표시 문자열)` 쌍이다 — 같은 목록을 위임 준비 뿌리로도 쓴다(조회 축을
+        반환은 `(슬롯, 표시 문자열)` 쌍이다 — 같은 목록을 위임 준비 뿌리로도 쓴다(조회 경로를
         하나 더 열지 않는다).
         """
         if not task:
@@ -948,9 +948,9 @@ class PmBootstrap:
         return f"[{entry.get('date', '')}] {entry.get('type', '')} | {entry.get('title', '')}"
 
     def _render_handover(self, *, task: str, indent: str = "  ") -> str:
-        """이전 세션이 하던 것 — **읽기만** 한다(장부·log·board 를 쓰지 않는다).
+        """이전 세션이 하던 것 — **읽기만** 한다(대여 기록·log·board 를 쓰지 않는다).
 
-        재료는 전부 이미 조회 가능한 것들이다(새 기록 파일 0): claim 중인 티켓 · 미회수 위임
+        재료는 전부 이미 조회 가능한 것들이다(새 기록 파일 0): claim 중인 티켓 · 돌려받지 않은 위임
         준비와 그 라운드 단계 · 서술 pm_state · 마지막 기록 항목 · 보유 작업 폴더와 갈래.
         거부(묻는 자리)와 강제 인계가 같은 renderer 를 쓴다 — 표시 자리는 하나다.
         """
@@ -990,7 +990,7 @@ class PmBootstrap:
         **묻는다**(None → caller 가 dump 이전 중단). `force` 면 기록을 먼저 닫고
         (`close_task_session` — 기존 프리미티브) 같은 bind 경로를 그대로 탄다: 강제 전용 분기도,
         자동 승낙 값도 없다. 성공 시 surface 용 dict(name·prefix·action·서술 pm_state 경로/존재)를
-        반환한다. task 는 슬롯 축과 직교라 이 바인딩은 `.local/slots/` 를 건드리지 않는다.
+        반환한다. task 는 슬롯 기준과 직교라 이 바인딩은 `.local/slots/` 를 건드리지 않는다.
         """
         try:
             session = task_store.take_task_session_claim(self._home, task)
@@ -1088,7 +1088,7 @@ class PmBootstrap:
         보호브랜치·기록↔live compare — `_phase0_*`·`compare_slot_git` **재사용**·판정 재구현 0)를
         돌려 fault 를 모은다. 하나라도 있으면 **전 fault 를 한 번에** stderr 로 표시하고(각 슬롯·
         판정 근거·해소 커맨드 실값·순차 발견 금지) rc 1 로 진입을 차단한다 — 부분 dump 금지(0단계
-        동형·"해소 전 진행 없음"·ⓐC). 감지=기계·해소=사용자(부트스트랩 밖 record/prune-stale 등
+        와 같은 구조·"해소 전 진행 없음"·ⓐC). 감지=기계·해소=사용자(부트스트랩 밖 record/prune-stale 등
         실행 후 재진입). 0개 보유 = no-op(검증 대상 없음·진입). worktree_pool/slots_for_task 부재나
         조회 예외는 실제 빈 집합과 구분해 fail-loud 한다(집합을 모르면 검증을 통과시킬 수 없음).
         반환 0=통과·1=차단(FAIL-LOUD). `leases` 미주입 직접 호출도 같은 해소 choke를 탄다."""
@@ -1132,8 +1132,8 @@ class PmBootstrap:
 
         `slots_for_task(task)` → 슬롯별 {slot·repo·branch·head·record_live·dirty} dict 리스트를
         돌려준다 — 진입 검증(_validate_task_slot_set) **통과 후** surface 렌더(markdown 행렬·JSON)가
-        소비한다. run()은 최초 strict 조회·검증을 통과한 `leases` 스냅샷을 주입해 재조회 사이
-        장부 변경/오류로 surface가 검증 결과와 어긋나는 일을 막는다. 직접 호출 호환 경로만
+        소비한다. run()은 최초 strict 조회·검증을 통과한 `leases` 조회 결과를 주입해 재조회 사이
+        대여 기록 변경/오류로 surface가 검증 결과와 어긋나는 일을 막는다. 직접 호출 호환 경로만
         slots_for_task를 조회한다(빈 결과는 "(없음)" 분기). 조회 실패는 전파한다."""
         if leases is None:
             leases = list(pool_store.slots_for_task(self._home, task) or [])

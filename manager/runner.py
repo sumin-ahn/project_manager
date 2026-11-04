@@ -1,6 +1,6 @@
 """프로젝트 실행기 — 등록된 PM 홈의 사본을 부르고, local.conf 두 키를 읽는다.
 
-부르는 것은 `pm-config status --json` 하나다([[ADR-0098]]). 옛 세대 사본(`--json` 미지원·
+부르는 것은 `pm-config status --json` 하나다([[ADR-0098]]). 옛 버전 사본(`--json` 미지원·
 `pm_config.py` 부재)은 호환 분기 없이 실패 그대로 올라가 화면에서 "먼저 갱신" 이 된다.
 """
 from __future__ import annotations
@@ -58,7 +58,7 @@ def interpreter(pm_home: Path | str, *, os_name: str = os.name) -> tuple[str, ..
 def upstream(pm_home: Path | str) -> str | None:
     """`upstream.path` 를 조회 가능한 값으로 — 상대 경로는 PM 홈 기준(엔진 해소 규칙과 같다).
 
-    URL 은 그대로 둔다. 미등록이면 None 이고 그 프로젝트는 최신 태그 축이 없다.
+    URL 은 그대로 둔다. 미등록이면 None 이고 그 프로젝트는 최신 태그 값이 없다.
     """
     value = (conf_values(pm_home).get("upstream.path") or "").strip()
     if not value:

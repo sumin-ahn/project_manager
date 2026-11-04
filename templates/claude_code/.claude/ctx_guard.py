@@ -3,7 +3,7 @@
 
 statusLine(``ctx_statusline.py``)과 ctx 훅(``ctx_stop_hook.py``)이 Claude Code 입력에서 **현재 컨텍스트
 점유 토큰**을 얻는 자리다. 이 모듈은 엔진을 import 하지 않고 판정도 하지 않는다 — 적용 한도 E 대비
-쓴 %·밴드·안내·marker 는 엔진 공개 진입(``pm_engine.cli.hooks``의 ``context_status``·``judge_context``)이
+쓴 %·구간·안내·marker 는 엔진 공개 진입(``pm_engine.cli.hooks``의 ``context_status``·``judge_context``)이
 소유한다.
 
 점유 토큰 관측 (분모 = 적용 한도 E 하나·물리 window% 폐기):
@@ -15,7 +15,7 @@ statusLine(``ctx_statusline.py``)과 ctx 훅(``ctx_stop_hook.py``)이 Claude Cod
     뒤의 usage 만 현재 사이클 실측으로 인정한다. 기록은 끝에서부터 읽어 훅 1회 메모리·시간이
     기록 크기와 무관하다.
 
-훅 입력이 서브에이전트 발화인지(``is_subagent_hook``)도 이 모듈이 읽는다 — ctx 훅과 git-anchor 훅이
+훅 입력이 서브에이전트에서 실행됐는지(``is_subagent_hook``)도 이 모듈이 읽는다 — ctx 훅과 git 명령 검사 훅이
 같은 규칙을 쓴다.
 """
 from __future__ import annotations
@@ -53,9 +53,9 @@ def _statusline_used_tokens(cw: dict) -> int:
     """statusLine 의 현재 컨텍스트 점유 토큰 — current_usage(input+cache) 단일 소스.
 
     current_usage null/부재/빈 dict(세션초·/compact 직후)면 0 (0% graceful — 정보 없음 =
-    넛지 밴드로 판정하지 않음). total_input_tokens 폴백은 채택 안 함 —
+    경고 구간으로 판정하지 않음). total_input_tokens 대체 계산은 채택 안 함 —
     current_usage 가 null 인 바로 그 순간(post-compact) total_input 은 누적성/버전 의존이라
-    과대 표시→넛지 오판정 위험. current_usage 있으면 total_input 은 중복이라 불필요.
+    과대 표시→경고 오판정 위험. current_usage 있으면 total_input 은 중복이라 불필요.
     native 물리%(used_percentage)는 폐기(안 읽음).
     """
     return max(0, _current_usage_tokens(cw))
@@ -105,7 +105,7 @@ def context_tokens_from_transcript(transcript_path) -> tuple[int, str | None, st
     "uuid":..., "compactMetadata":{"trigger":..., "preTokens":..., "postTokens":...}}`` 이다
     (2.1.271~2.1.302 28건 모두 ``uuid`` 보유·파일 안 유일). ``compactMetadata.postTokens`` 는 새
     assistant 요청의 ``message.usage`` 실측이 아니므로, 경계 뒤 usage 가 아직 없는 첫 훅에서는
-    0(측정불가)을 반환해 ``raw_tokens > 0`` measured 재무장 신호와 marker 보존 계약을 지킨다.
+    0(측정불가)을 반환해 ``raw_tokens > 0`` measured 다시 켜기 신호와 marker 보존 계약을 지킨다.
 
     경계는 주 대화 기록에서 주 세션 압축만 남긴다(서브에이전트 압축의 경계는 서브에이전트 기록에
     남는다). 훅은 이 uuid 를 경계로 넘기고 엔진이 세션마다 한 번 처리한다. 경계에 ``uuid`` 가 없으면
@@ -210,10 +210,10 @@ def _boundary_uuid(entry: dict) -> str:
 
 
 def is_subagent_hook(stdin: dict) -> bool:
-    """서브에이전트 안에서 발화한 훅인가 — ``agent_id`` 하나로 판정한다.
+    """서브에이전트 안에서 실행된 훅인가 — ``agent_id`` 하나로 판정한다.
 
     서브에이전트 훅 입력의 ``session_id``·``transcript_path`` 는 주 세션과 같아 그 둘로는 가를 수
     없다. ``agent_type`` 은 주 스레드 ``--agent`` 세션에도 실리므로 판정에 쓰지 않는다. ctx 훅과
-    git-anchor 훅이 함께 쓴다."""
+    git 명령 검사 훅이 함께 쓴다."""
     agent_id = stdin.get("agent_id")
     return isinstance(agent_id, str) and bool(agent_id.strip())

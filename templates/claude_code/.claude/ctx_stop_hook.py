@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""claude ctx 임계 비차단 넛지 + 압축 기록 훅.
+"""claude ctx 임계 비차단 경고 + 압축 기록 훅.
 
 Claude Code 가 PreToolUse(도구 실행 전)와 UserPromptSubmit(prompt 처리 전)에서 호출한다. 그 밖의
 이벤트 입력은 아무것도 바꾸지 않는다. 훅 입력엔 ``context_window`` 가 **없을 수 있어**(statusline
 전용) — 그래서 훅은 ``transcript_path`` JSONL 끝부분을 한 번 읽어 점유 토큰·모델·마지막 압축 경계 uuid 를 얻고
 (``ctx_guard``), 엔진 ``judge_context`` 를 한 번 불러 그 결과를 Claude 훅 출력으로 옮긴다.
 
-밴드(warn/warn2/stop) 판정·안내 문구·사이클 marker 선점은 엔진 소유다. 이 훅은 엔진이 발화하라고 한
+구간(warn/warn2/stop) 판정·안내 문구·사이클 marker 먼저 차지하기는 엔진 소유다. 이 훅은 엔진이 실행하라고 한
 안내만 ``additionalContext`` 로 비차단 주입하고 deny/block/회전 marker 를 만들지 않는다.
 
 압축 감지: PreCompact·PostCompact 입력은 주 세션 압축과 서브에이전트 압축을 구별할 수 없다(둘 다
 주 세션 ID·주 대화 기록으로 온다). 그래서 압축 처리는 주 스레드 훅이 한다 — 주 대화 기록의 마지막
-압축 경계 항목의 uuid 를 경계로 넘기면 엔진이 ``<세션>.compact-<uuid>`` 를 배타 선점하고 밴드·원칙 marker 를
-재무장한다. 최초 처리일 때만 이 훅이 ``pm_log.py checkpoint``(골격·breadcrumb)와 ``pm_log.py snapshot``
+압축 경계 항목의 uuid 를 경계로 넘기면 엔진이 ``<세션>.compact-<uuid>`` 를 배타적으로 먼저 차지하고 구간·원칙 marker 를
+다시 켠다. 최초 처리일 때만 이 훅이 ``pm_log.py checkpoint``(빈 양식·breadcrumb)와 ``pm_log.py snapshot``
 주입을 한다. 기록에 실패하면 엔진 사유 한 줄을 ``systemMessage``·``additionalContext`` 로 보인다.
 
 서브에이전트 면제: 입력에 ``agent_id`` 가 있으면(서브에이전트의 도구 호출) 어떤 상태도 바꾸지 않고
@@ -86,7 +86,7 @@ def _compaction_failure_output(event: str, rc: int, stderr: str) -> dict:
 
 
 def _compaction_output(stdin: dict, home, *, boundary_id: str) -> dict:
-    """엔진이 정한 경계 ID 로 checkpoint 골격·breadcrumb 를 남기고 snapshot 을 주입한다(실패면 실패 신호)."""
+    """엔진이 정한 경계 ID 로 checkpoint 빈 양식·breadcrumb 를 남기고 snapshot 을 주입한다(실패면 실패 신호)."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     raw_sid = stdin.get("session_id")
     raw_sid = raw_sid if isinstance(raw_sid, str) else ""
@@ -103,10 +103,10 @@ def _compaction_output(stdin: dict, home, *, boundary_id: str) -> dict:
     )
     if rc != 0 or not stdout:
         return _compaction_failure_output(event, rc, stderr)
-    return nudge_output(stdin, stdout)
+    return warn_output(stdin, stdout)
 
 
-def nudge_output(stdin: dict, guidance: str) -> dict | None:
+def warn_output(stdin: dict, guidance: str) -> dict | None:
     """모델-facing 비차단 안내 주입. deny/block 하지 않는다.
 
     Claude Code v2.1.9부터 PreToolUse도 ``hookSpecificOutput``의
@@ -114,7 +114,7 @@ def nudge_output(stdin: dict, guidance: str) -> dict | None:
     ``permissionDecision``을 생략해 정상 권한 흐름과 도구 실행을 그대로 유지한다.
     ``additionalContext`` 10,000자 상한 안에 들도록 아래 세 고정 안내문을 검증한다.
 
-    문서의 주의대로 명령형 out-of-band 지시는 인젝션 방어를 발동시킬 수 있으므로,
+    문서의 주의대로 명령형 별도 채널 지시는 인젝션 방어를 발동시킬 수 있으므로,
     주입 문구는 현행 조건부 권고형을 재사용하고 채널별 변형을 두지 않는다.
     """
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
@@ -131,7 +131,7 @@ def nudge_output(stdin: dict, guidance: str) -> dict | None:
 
 
 def _principle_recall_signal(stdin: dict) -> tuple[str, str] | None:
-    """이 호출의 recall `on` 축 + 대조 텍스트(판별 불가면 None). 도구 이름 → `on` 매핑은
+    """이 호출의 recall `on` 기준 + 대조 텍스트(판별 불가면 None). 도구 이름 → `on` 매핑은
     어댑터 소유 — claude 실제 도구 이름(Bash·Edit/Write·Agent)을 레지스트리의 닫힌 4어휘로 줄인다."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     if event == "UserPromptSubmit":
@@ -170,15 +170,15 @@ def _principle_recall_text(stdin: dict, home) -> str:
     return result["text"] if result else ""
 
 
-# claude additionalContext 계약 상한(nudge_output 이 검증하는 것과 같은 값) — recall 채널은
+# claude additionalContext 계약 상한(warn_output 이 검증하는 것과 같은 값) — recall 채널은
 # 자기 문안만 이 상한 안으로 접지만(principle_rules._MAX_INJECT_CHARS), 다른 채널과 합본한 뒤에는
 # 재검사하지 않았다. 최종 합본 경계에서 다시 강제한다.
 _MAX_ADDITIONAL_CONTEXT_CHARS = 10_000
 
 
 def _cap_merged_context(existing: str, extra_text: str) -> str:
-    """`existing`(ctx 밴드 안내) + `extra_text`(recall 등 부가 채널)를 합본하되 최종 길이가
-    상한을 넘으면 원문을 자르지 않고 `extra_text` 를 생략 표시로 접는다 — ctx 밴드 안내가
+    """`existing`(ctx 구간 안내) + `extra_text`(recall 등 부가 채널)를 합본하되 최종 길이가
+    상한을 넘으면 원문을 자르지 않고 `extra_text` 를 생략 표시로 바꾼다 — ctx 구간 안내가
     안전 경계 안내라 우선순위가 높고, 부가 채널이 짧게 양보한다."""
     combined = f"{existing}\n{extra_text}" if existing else extra_text
     if len(combined) <= _MAX_ADDITIONAL_CONTEXT_CHARS:
@@ -187,15 +187,15 @@ def _cap_merged_context(existing: str, extra_text: str) -> str:
     reduced = f"{existing}\n{fallback}" if existing else fallback
     if len(reduced) <= _MAX_ADDITIONAL_CONTEXT_CHARS:
         return reduced
-    # existing 자체가 상한 초과인 극단 방어(ctx 밴드 고정 문구 현재 길이로는 도달하지 않는다).
+    # existing 자체가 상한 초과인 극단 방어(ctx 구간 고정 문구 현재 길이로는 도달하지 않는다).
     return reduced[:_MAX_ADDITIONAL_CONTEXT_CHARS]
 
 
 def _merge_additional_context(output: dict | None, event: str, extra_text: str) -> dict:
     """additionalContext 문자열 누적(codex `merge_hook_envelopes` 와 같은 의미론).
 
-    ctx 밴드 채널이 이미 안내를 냈으면 줄바꿈으로 이어붙이고, 없었으면 recall 문안 단독으로 낸다.
-    최종 길이가 상한을 넘으면 `_cap_merged_context` 가 원문 절단 대신 생략 표시로 접는다."""
+    ctx 구간 채널이 이미 안내를 냈으면 줄바꿈으로 이어붙이고, 없었으면 recall 문안 단독으로 낸다.
+    최종 길이가 상한을 넘으면 `_cap_merged_context` 가 원문 절단 대신 생략 표시로 바꾼다."""
     if output is None:
         capped = _cap_merged_context("", extra_text)
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": capped}}
@@ -234,11 +234,11 @@ def _combine_outputs(first: dict | None, second: dict | None) -> dict | None:
 
 
 def evaluate(stdin: dict, home) -> tuple[int, dict | None]:
-    """훅 핵심 진입 — 압축 경계 처리, ctx 밴드 안내, 원칙 recall 채널을 합본한다(모두 비차단).
+    """훅 핵심 진입 — 압축 경계 처리, ctx 구간 안내, 원칙 recall 채널을 합본한다(모두 비차단).
 
     주 스레드 훅(PreToolUse·UserPromptSubmit, ``agent_id`` 없음)만 판정한다. 대화 기록은 한 번
     읽어 점유 토큰·모델·마지막 경계 uuid 를 함께 얻고 엔진 ``judge_context`` 를 한 번 부른다. recall 은 독립
-    채널이라 밴드 판정과 무관하게 매칭되면 additionalContext 에 누적된다."""
+    채널이라 구간 판정과 무관하게 매칭되면 additionalContext 에 누적된다."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     if event not in _MAIN_THREAD_EVENTS or ctx_guard.is_subagent_hook(stdin):
         return 0, None
@@ -256,18 +256,18 @@ def evaluate(stdin: dict, home) -> tuple[int, dict | None]:
     output = None
     if decision["compaction_new"]:
         output = _compaction_output(stdin, home, boundary_id=decision["compaction_boundary_id"])
-    output = _combine_outputs(output, _evaluate_ctx_bands(stdin, decision))
+    output = _combine_outputs(output, _evaluate_ctx_levels(stdin, decision))
     recall_text = _principle_recall_text(stdin, home)
     if recall_text:
         output = _merge_additional_context(output, event, recall_text)
     return 0, output
 
 
-def _evaluate_ctx_bands(stdin: dict, decision: dict) -> dict | None:
+def _evaluate_ctx_levels(stdin: dict, decision: dict) -> dict | None:
     """엔진 ctx 판정 → Claude 훅 출력 또는 None. 모든 경로는 비차단이다."""
     if decision["status"] == "unavailable":  # 압축 한도 기록 부재·손상·입력 불일치 — 판정 불능을 알린다.
         return _budget_notice(stdin, None, f"[ctx-budget] {decision['notice']}", error=True)
-    output = nudge_output(stdin, decision["guidance"]) if decision["emit"] else None
+    output = warn_output(stdin, decision["guidance"]) if decision["emit"] else None
     if decision["notice"]:
         output = _budget_notice(stdin, output, f"[ctx-budget] {decision['notice']}", error=False)
     return output

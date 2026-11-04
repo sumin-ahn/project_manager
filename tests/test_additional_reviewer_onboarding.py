@@ -707,7 +707,7 @@ RETIRED_SWITCH_KEY = "additional_reviewer.enabled"
 # 판정 라운드 상한은 이 표에 없다 — conf 노브 없이 엔진 고정값 하나다(대체 키 없음).
 _KNOB_RESOLVERS = {
     "additional_reviewer.incomplete_rounds_max": ("_incomplete_round_limit", 2),
-    "additional_reviewer.session_budget": ("_wave_budget", 24),
+    "additional_reviewer.session_budget": ("_session_budget", 24),
 }
 KNOB_KEYS = tuple(_KNOB_RESOLVERS)
 

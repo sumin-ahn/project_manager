@@ -36,7 +36,7 @@ def _git_invocation(cwd: str | os.PathLike[str], argv: Sequence[str]) -> git_pol
 
     모르는 global option은 보수적으로 한 토큰 option으로 취급하고 뒤의 첫 non-option을
     subcommand로 삼는다. ``GIT_DIR``/``GIT_WORK_TREE``·``--git-dir``/``--work-tree``·셸 변수가 든
-    ``-C`` 는 실제 대상을 정적으로 정하지 못하므로 ``anchor_certain=False`` 다. 그런 호출은 파괴
+    ``-C`` 는 실제 대상을 정적으로 정하지 못하므로 ``target_repo_certain=False`` 다. 그런 호출은 파괴
     형태일 때만 거부하고(`judge_git_check`) 그 밖에는 warn 으로 흐른다. ``git -C``는 cwd 오인
     판정의 일부라 반복 지정도 순서대로 적용한다.
     """
@@ -47,8 +47,8 @@ def _git_invocation(cwd: str | os.PathLike[str], argv: Sequence[str]) -> git_pol
         start = next(i for i, token in enumerate(tokens) if Path(token).name == "git")
     except StopIteration:
         return None
-    anchor = Path(cwd).expanduser()
-    anchor_certain = not any(
+    target_repo = Path(cwd).expanduser()
+    target_repo_certain = not any(
         token.startswith(("GIT_WORK_TREE=", "GIT_DIR=")) for token in tokens[:start]
     )
     config: list[str] = []
@@ -58,23 +58,23 @@ def _git_invocation(cwd: str | os.PathLike[str], argv: Sequence[str]) -> git_pol
         token = tokens[i]
         if token == "-C":
             if i + 1 >= len(tokens):
-                return git_policy._GitInvocation(anchor, "", tuple(), anchor_certain, tuple(config))
+                return git_policy._GitInvocation(target_repo, "", tuple(), target_repo_certain, tuple(config))
             if any(ch in tokens[i + 1] for ch in "$`"):
-                anchor_certain = False
+                target_repo_certain = False
             target = Path(tokens[i + 1]).expanduser()
-            anchor = target if target.is_absolute() else anchor / target
+            target_repo = target if target.is_absolute() else target_repo / target
             i += 2
             continue
         if token in value_options:
             if token in {"--git-dir", "--work-tree"}:
-                anchor_certain = False
+                target_repo_certain = False
             if token == "-c" and i + 1 < len(tokens):
                 config.append(tokens[i + 1])
             i += 2
             continue
         if token.startswith("--git-dir=") or token.startswith("--work-tree=") or token.startswith("--namespace="):
             if token.startswith(("--git-dir=", "--work-tree=")):
-                anchor_certain = False
+                target_repo_certain = False
             i += 1
             continue
         if token == "--":
@@ -85,9 +85,9 @@ def _git_invocation(cwd: str | os.PathLike[str], argv: Sequence[str]) -> git_pol
             continue
         break
     if i >= len(tokens):
-        return git_policy._GitInvocation(anchor.resolve(), "", tuple(), anchor_certain, tuple(config))
+        return git_policy._GitInvocation(target_repo.resolve(), "", tuple(), target_repo_certain, tuple(config))
     return git_policy._GitInvocation(
-        anchor.resolve(), tokens[i], tuple(tokens[i + 1:]), anchor_certain, tuple(config),
+        target_repo.resolve(), tokens[i], tuple(tokens[i + 1:]), target_repo_certain, tuple(config),
     )
 
 
@@ -115,7 +115,7 @@ _GIT_UNKNOWN_LOCAL_BRANCH = git_policy._GitDestructiveForm(
 
 
 def _git_checkout_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> git_policy._GitDestructiveForm | None:
     parsed = git_policy._git_arguments(
         args, short_values="bB", long_values=frozenset({"--orphan", "--pathspec-from-file"}),
@@ -128,16 +128,16 @@ def _git_checkout_form(
         return git_policy._GIT_DISCARD_CHANGES
     if not parsed.operands or parsed.operands[0] == "-":
         return None
-    if ref_anchor is None:
+    if ref_target_repo is None:
         return _GIT_UNRESOLVED_REF
     # 커밋으로 풀리는 이름만 전환이다. 그 밖은 git 이 경로 복원이나 원격 추적 브랜치 추측 생성으로 읽는다.
-    if git._git_commit_exists(ref_anchor, parsed.operands[0], runner=runner):
+    if git._git_commit_exists(ref_target_repo, parsed.operands[0], runner=runner):
         return None
     return _GIT_UNKNOWN_CHECKOUT_NAME
 
 
 def _git_switch_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> git_policy._GitDestructiveForm | None:
     parsed = git_policy._git_arguments(
         args, short_values="cC",
@@ -153,15 +153,15 @@ def _git_switch_form(
         return None
     if parsed.operands[0] == "-":
         return None
-    if ref_anchor is None:
+    if ref_target_repo is None:
         return _GIT_UNRESOLVED_REF
-    if git._git_local_branch_exists(ref_anchor, parsed.operands[0], runner=runner):
+    if git._git_local_branch_exists(ref_target_repo, parsed.operands[0], runner=runner):
         return None
     return _GIT_UNKNOWN_LOCAL_BRANCH
 
 
 def _git_worktree_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> git_policy._GitDestructiveForm | None:
     parsed = git_policy._git_arguments(
         args, short_values="bB", long_values=frozenset({"--orphan", "--reason", "--expire"}),
@@ -178,15 +178,15 @@ def _git_worktree_form(
     rest = parsed.operands[1:]
     if git_policy._git_option_given(parsed, "-d", "--detach") or not rest:
         return None
-    if ref_anchor is None:
+    if ref_target_repo is None:
         return _GIT_UNRESOLVED_REF
     # commit-ish 가 커밋으로 풀리지 않으면 원격 추적 브랜치 추측 생성이고, 생략하면 경로 끝 이름의
     # 브랜치를 쓰되 없으면 새로 만든다.
     if len(rest) > 1:
-        if git._git_commit_exists(ref_anchor, rest[1], runner=runner):
+        if git._git_commit_exists(ref_target_repo, rest[1], runner=runner):
             return None
         return _GIT_UNKNOWN_LOCAL_BRANCH
-    if git._git_local_branch_exists(ref_anchor, Path(rest[0]).name, runner=runner):
+    if git._git_local_branch_exists(ref_target_repo, Path(rest[0]).name, runner=runner):
         return None
     return git_policy._GIT_BRANCH_CREATE
 
@@ -204,11 +204,11 @@ _GIT_DESTRUCTIVE_FORM_JUDGES = {
 
 
 def _git_destructive_form(
-    subcommand: str, args: Sequence[str], *, ref_anchor: Path | None, runner: Any,
+    subcommand: str, args: Sequence[str], *, ref_target_repo: Path | None, runner: Any,
 ) -> git_policy._GitDestructiveForm | None:
     """파괴 가능 서브커맨드 호출이 파괴 형태인지 git 의미로 판정한다.
 
-    ``ref_anchor`` 는 기존 브랜치·커밋 여부를 물을 저장소다. 대상을 정적으로 못 정한 호출은 None 을
+    ``ref_target_repo`` 는 기존 브랜치·커밋 여부를 물을 저장소다. 대상을 정적으로 못 정한 호출은 None 을
     넘기고, 그 조회가 필요한 형태는 확인할 수 없으므로 파괴 형태로 본다.
     """
     judge = _GIT_DESTRUCTIVE_FORM_JUDGES.get(subcommand)
@@ -216,7 +216,7 @@ def _git_destructive_form(
         return None
     if any(ch in value for value in args for ch in "$`"):
         return _GIT_UNRESOLVED_ARGUMENTS
-    return judge(tuple(args), ref_anchor, runner)
+    return judge(tuple(args), ref_target_repo, runner)
 
 
 def _git_alias_resolved(invocation: git_policy._GitInvocation, *, runner: Any) -> git_policy._GitInvocation:
@@ -241,7 +241,7 @@ def _git_alias_resolved(invocation: git_policy._GitInvocation, *, runner: Any) -
             if not hidden:
                 return current
             inner = _git_invocation(current.cwd, hidden[0])
-            return inner._replace(anchor_certain=False, config=current.config)
+            return inner._replace(target_repo_certain=False, config=current.config)
         try:
             words = shlex.split(value)
         except ValueError:
@@ -273,7 +273,7 @@ def _indirect_git_destructive_argvs(text: str) -> list[tuple[str, ...]]:
     for argv in candidates:
         invocation = _git_invocation(".", argv)
         if invocation is not None and _git_destructive_form(
-            invocation.subcommand, invocation.args, ref_anchor=None, runner=None,
+            invocation.subcommand, invocation.args, ref_target_repo=None, runner=None,
         ) is not None:
             argvs.append(argv)
     return argvs
@@ -294,7 +294,7 @@ def _shell_indirect_git_argvs(command: Sequence[str]) -> list[tuple[str, ...]]:
     return _indirect_git_destructive_argvs(" ".join(executor[1]))
 
 
-def _removal_path(anchor: Path, token: str, *, cwd_certain: bool) -> tuple[Path | None, bool]:
+def _removal_path(target_repo: Path, token: str, *, cwd_certain: bool) -> tuple[Path | None, bool]:
     """(대상 경로, 그 아래 항목만 지우는지). 정적으로 못 풀면 (None, False).
 
     glob 은 앞의 고정 폴더 아래 항목으로, 셸 변수·명령 치환은 그 앞에 ``/`` 로 끝난 고정 폴더가
@@ -315,7 +315,7 @@ def _removal_path(anchor: Path, token: str, *, cwd_certain: bool) -> tuple[Path 
     if not path.is_absolute():
         if not cwd_certain:
             return None, False
-        path = anchor / path
+        path = target_repo / path
     normalized = Path(os.path.normpath(path))
     if not normalized.name:
         return normalized, contents
@@ -378,14 +378,14 @@ _SHELL_ABSOLUTE_PATH = re.compile(
 )
 
 
-def _slot_ledger_rows(pm_home: Path) -> tuple[list[dict], list[dict]]:
-    """PM 홈 장부의 (leases, tasks) — 형식이 틀리면 올린다(빈 장부로 흘려 쓰기를 통과시키지 않는다)."""
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(fs.read_text_shared(ledger, encoding="utf-8"))
+def _slot_record_rows(pm_home: Path) -> tuple[list[dict], list[dict]]:
+    """PM 홈 대여 기록의 (leases, tasks) — 형식이 틀리면 올린다(빈 기록으로 흘려 쓰기를 통과시키지 않는다)."""
+    records = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    data = json.loads(fs.read_text_shared(records, encoding="utf-8"))
     leases = data.get("leases") if isinstance(data, dict) else None
     tasks = data.get("tasks", []) if isinstance(data, dict) else None
     if not isinstance(leases, list) or not isinstance(tasks, list):
-        raise ValueError(f"{ledger}: leases·tasks 가 list 가 아니다")
+        raise ValueError(f"{records}: leases·tasks 가 list 가 아니다")
     return (
         [row for row in leases if isinstance(row, dict)],
         [row for row in tasks if isinstance(row, dict)],
@@ -395,10 +395,10 @@ def _slot_ledger_rows(pm_home: Path) -> tuple[list[dict], list[dict]]:
 def slot_containing(
     pm_home: str | os.PathLike[str], path: str | os.PathLike[str],
 ) -> tuple[dict, list[dict]] | None:
-    """`pm_home` 슬롯 중 `path` 를 담은 것 — (그 슬롯 장부 행, task 행들). 슬롯 밖이면 None.
+    """`pm_home` 슬롯 중 `path` 를 담은 것 — (그 슬롯 대여 기록 행, task 행들). 슬롯 밖이면 None.
 
-    슬롯은 PM 홈 장부에 등록된 `work/<repo>_<N>` 폴더다. 판정 범위는 이 PM 홈(훅이 설치된 홈)의 슬롯이다.
-    장부가 없는 홈에는 슬롯이 없다."""
+    슬롯은 PM 홈 대여 기록에 등록된 `work/<repo>_<N>` 폴더다. 판정 범위는 이 PM 홈(훅이 설치된 홈)의 슬롯이다.
+    대여 기록이 없는 홈에는 슬롯이 없다."""
     home = Path(pm_home)
     try:
         relative = Path(path).expanduser().resolve().relative_to((home / "work").resolve())
@@ -406,7 +406,7 @@ def slot_containing(
         return None
     if not relative.parts or not (home / ".project_manager" / ".local" / "worktree-leases.json").is_file():
         return None
-    leases, tasks = _slot_ledger_rows(home)
+    leases, tasks = _slot_record_rows(home)
     key = f"work/{relative.parts[0]}"
     row = next((item for item in leases if item.get("slot") == key), None)
     return None if row is None else (row, tasks)
@@ -539,10 +539,10 @@ def _git_grant_path(root: str | os.PathLike[str], record: dict[str, object]) -> 
 
 
 def _use_git_grant(root: str | os.PathLike[str], session: str, cwd: str, command: str) -> str:
-    """정확히 같은 (세션·폴더·argv) 허용 기록을 이름 바꾸기로 선점해 지운다 — used/absent/forged.
+    """정확히 같은 (세션·폴더·argv) 허용 기록을 이름 바꾸기로 먼저 차지해 지운다 — used/absent/forged.
 
-    선점(rename)은 원자적이라 같은 기록을 두 호출이 함께 쓰지 못한다. 선점한 내용이 키와 다르면
-    (위조·손상) 지우고 forged 를 돌려준다. 선점 밖의 파일 시스템 실패는 올린다.
+    먼저 차지하기(rename)는 원자적이라 같은 기록을 두 호출이 함께 쓰지 못한다. 차지한 내용이 키와 다르면
+    (위조·손상) 지우고 forged 를 돌려준다. 차지하기 밖의 파일 시스템 실패는 올린다.
     """
     try:
         argv = _git_grant_argv(command)
@@ -584,14 +584,14 @@ def _engine_copy_freshness(
 ) -> str:
     """sha 가 다른 두 엔진 사본 중 **어느 쪽이 뒤졌는지**를 worktree 의 git 상태로 판정한다.
 
-    입력은 (정체, repo 앵커, 사본 경로, 소유 PM 홈) 두 짝이다. 네 값 모두 호출부가 이미
-    측정한 것이라 추가 앵커 조회가 없고, git 조회는 sha 가 다를 때 이 함수에서 딱 1회
+    입력은 (정체, repo 대상 저장소, 사본 경로, 소유 PM 홈) 두 짝이다. 네 값 모두 호출부가 이미
+    측정한 것이라 추가 대상 저장소 조회가 없고, git 조회는 sha 가 다를 때 이 함수에서 딱 1회
     일어난다. 방향 판정은 두 사본이 **같은 PM 홈에 속한 한 짝**일 때만 성립한다 — 정체
     클래스(pm-home/worktree)가 짝을 이루더라도 worktree 의 소유 PM 홈이 상대 사본의 PM 홈과
     다르면 서로 남남인 저장소라 어느 쪽도 상대의 import 사본이 아니다. 그래서 소유 일치를
     ``git status`` **전에** 값으로 확인하고, 다르면 조회 없이 판정 불가로 남긴다.
 
-    짝이 성립하면 판정 축은 worktree 사본의 미커밋 여부다 — 미커밋이면 그 사본이 편집
+    짝이 성립하면 판정 기준은 worktree 사본의 미커밋 여부다 — 미커밋이면 그 사본이 편집
     중(미확정)이라 PM 홈이 뒤졌다고 말할 수 없고, 커밋 상태면 PM 홈 import 사본이 뒤진
     것이다. 짝으로 해소되지 않거나 git 상태를 읽지 못하면 **단정하지 않는다** — 내용이
     다르다는 사실만 남기고 두 사본 경로(호출부 reason 이 이미 싣는다)를 직접 대조하게 한다.
@@ -636,7 +636,7 @@ def _engine_copy_freshness(
 
 
 def _shell_simple_command(
-    anchors: set[Path], cwd_certain: bool, segment: Sequence[str], execute: bool | None,
+    target_repos: set[Path], cwd_certain: bool, segment: Sequence[str], execute: bool | None,
     *, globally_certain: bool, structure_certain: bool,
 ) -> tuple[
     set[Path], bool, bool | None,
@@ -644,30 +644,30 @@ def _shell_simple_command(
 ]:
     """simple command 하나의 cwd/status를 추상 실행한다. ``execute=None``은 조건부 실행이다."""
     if execute is False or not segment:
-        return set(anchors), cwd_certain, None, [], []
+        return set(target_repos), cwd_certain, None, [], []
     command, redirected = shell_policy._shell_without_redirections(segment)
     if not command:
-        return set(anchors), cwd_certain, None, [], []
+        return set(target_repos), cwd_certain, None, [], []
     # shlex가 quote/POSIX escape 의미를 먼저 확정한 뒤, 보존된 Windows 절대경로 토큰만
-    # 판정용 표기로 접는다. 일반 ``t\\ests``는 shlex 결과 ``tests`` 그대로 남는다.
+    # 판정용 표기로 바꾼다. 일반 ``t\\ests``는 shlex 결과 ``tests`` 그대로 남는다.
     command = [shell_policy._normalize_shell_path_notation(value) for value in command]
     git_command = shell_policy._shell_git_command(command)
     if git_command is not None:
         # 조건부 실행 여부와 cwd 확정성은 별개다. ``git status && git add …``에서
         # 후자는 실행될 수도 있지만 실행되는 경우의 cwd는 하나로 확정되므로 위험 pathspec을
-        # 놓치지 않는다. false gate는 위에서 호출 자체를 제거한다.
-        anchor_certain = (
-            structure_certain and cwd_certain and len(anchors) == 1
-            and git_command.certain and not git_command.anchor_env_override
+        # 놓치지 않는다. 늘 거짓인 조건은 위에서 호출 자체를 제거한다.
+        target_repo_certain = (
+            structure_certain and cwd_certain and len(target_repos) == 1
+            and git_command.certain and not git_command.target_repo_env_override
         )
-        certain = globally_certain and anchor_certain
+        certain = globally_certain and target_repo_certain
         calls = [
             shell_policy._ShellGitInvocation(
-                str(anchor), tuple(command[git_command.index:]), certain, anchor_certain,
+                str(target_repo), tuple(command[git_command.index:]), certain, target_repo_certain,
             )
-            for anchor in sorted(anchors, key=str)
+            for target_repo in sorted(target_repos, key=str)
         ]
-        return set(anchors), cwd_certain, None, calls, []
+        return set(target_repos), cwd_certain, None, calls, []
 
     engine_command = shell_policy._shell_engine_command(command)
     engine_calls = []
@@ -679,42 +679,42 @@ def _shell_simple_command(
         )
         certain = (
             (globally_certain or unresolved_script)
-            and cwd_certain and len(anchors) == 1
+            and cwd_certain and len(target_repos) == 1
         )
         engine_calls = [
-            shell_policy._ShellGitInvocation(str(anchor), engine_command, certain, certain)
-            for anchor in sorted(anchors, key=str)
+            shell_policy._ShellGitInvocation(str(target_repo), engine_command, certain, certain)
+            for target_repo in sorted(target_repos, key=str)
         ]
 
     name = command[0]
     if name == "false":
-        return set(anchors), cwd_certain, (False if execute is True else None), [], engine_calls
+        return set(target_repos), cwd_certain, (False if execute is True else None), [], engine_calls
     if name == "true":
-        return set(anchors), cwd_certain, (True if execute is True else None), [], engine_calls
+        return set(target_repos), cwd_certain, (True if execute is True else None), [], engine_calls
     if name in {"echo", "printf", ":"}:
         # 셸 builtin의 정상 simple-command 형태는 status 0이다. 이 증명이 있어야
         # ``echo … && git …``의 실제 실행 경로를 불필요하게 uncertain으로 낮추지 않는다.
-        return set(anchors), cwd_certain, (True if execute is True else None), [], engine_calls
+        return set(target_repos), cwd_certain, (True if execute is True else None), [], engine_calls
     if name in {"pushd", "popd"}:
         # directory stack을 모델링하지 않는다. 실행 가능성이 있으면 이후 cwd는 unknown이며,
-        # false gate로 실행되지 않은 경우만 함수 상단에서 certainty를 보존한다.
-        return set(anchors), False, None, [], engine_calls
+        # 늘 거짓인 조건으로 실행되지 않은 경우만 함수 상단에서 certainty를 보존한다.
+        return set(target_repos), False, None, [], engine_calls
     if name != "cd":
-        return set(anchors), cwd_certain, None, [], engine_calls
+        return set(target_repos), cwd_certain, None, [], engine_calls
 
     operands = [value for value in command[1:] if value != "--"]
     if (redirected or len(operands) != 1 or operands[0].startswith("-")
             or any(ch in operands[0] for ch in "$`")):
         # cd가 실행될 수 있으나 지원 문법으로 target을 단일 증명하지 못했다.
-        return set(anchors), False, None, [], engine_calls
+        return set(target_repos), False, None, [], engine_calls
     target_arg = Path(operands[0]).expanduser()
     successes: set[Path] = set()
     failures: set[Path] = set()
-    for anchor in anchors:
-        target = (target_arg if target_arg.is_absolute() else anchor / target_arg).resolve()
-        (successes if target.is_dir() else failures).add(target if target.is_dir() else anchor)
+    for target_repo in target_repos:
+        target = (target_arg if target_arg.is_absolute() else target_repo / target_arg).resolve()
+        (successes if target.is_dir() else failures).add(target if target.is_dir() else target_repo)
     if execute is None:
-        return set(anchors) | successes | failures, False, None, [], engine_calls
+        return set(target_repos) | successes | failures, False, None, [], engine_calls
     if successes and not failures:
         return successes, cwd_certain, True, [], engine_calls
     if failures and not successes:
@@ -730,7 +730,7 @@ def _git_invocations_from_shell(
     ``&&``/``||``는 직전 status, ``;``/개행은 무조건 순차, ``|``는 각 pipeline command가 원래
     cwd의 subshell에서 실행되는 의미를 구분한다. ``true``/``false``/실재 여부가 확정된 ``cd``만
     status를 증명한다. 조건·cwd가 여러 가능성이면 call을 ``certain=False``로 표시해 후단 deny를
-    warn으로 강등한다(대상을 못 정해 이미 거부한 파괴 형태는 강등하지 않는다 — ``anchor_certain``).
+    warn 으로 수준을 낮춘다(대상을 못 정해 이미 거부한 파괴 형태는 낮추지 않는다 — ``target_repo_certain``).
     ``if …; then …; fi``의 단순형은 condition cwd를 body로 전달한다.
     """
     if not isinstance(command, str):
@@ -759,13 +759,13 @@ def _git_invocations_from_shell(
     if parsed is None:
         # 구문을 못 푼 명령 속 git 파괴 호출·파일 삭제도 대상 미확정 호출로 올린다(판정불가를 통과로
         # 두지 않는다).
-        anchor = str(Path(cwd).expanduser().resolve())
+        target_repo = str(Path(cwd).expanduser().resolve())
         hidden = tuple(
-            shell_policy._ShellGitInvocation(anchor, argv, False, False)
+            shell_policy._ShellGitInvocation(target_repo, argv, False, False)
             for argv in _indirect_git_destructive_argvs(command)
         )
         hidden_removals = tuple(
-            shell_policy._ShellGitInvocation(anchor, argv, False, False)
+            shell_policy._ShellGitInvocation(target_repo, argv, False, False)
             for argv in shell_policy._indirect_file_removal_argvs(command, stdin_operands=False)
         )
         return shell_policy._ShellParseResult(
@@ -774,7 +774,7 @@ def _git_invocations_from_shell(
         )
     segments, operators = parsed
     persistent_cd = False
-    anchors = {Path(cwd).expanduser().resolve()}
+    target_repos = {Path(cwd).expanduser().resolve()}
     cwd_certain = True
     found: list[shell_policy._ShellGitInvocation] = []
     engine_found: list[shell_policy._ShellGitInvocation] = []
@@ -782,7 +782,7 @@ def _git_invocations_from_shell(
     last_status: bool | None = None
     in_if_condition = False
     if_status: bool | None = None
-    if_body_gate: bool | None = True
+    if_body_check: bool | None = True
     shell_words = [word for segment in segments for word in segment]
     unsupported_control = any(
         segment and segment[0] in {
@@ -809,9 +809,9 @@ def _git_invocations_from_shell(
         while end < len(operators) and operators[end] == "|":
             end += 1
         previous_operator = operators[i - 1] if i > 0 else None
-        gate = shell_policy._shell_gate(previous_operator, last_status)
+        check = shell_policy._shell_check(previous_operator, last_status)
         pipeline = end > i
-        base_anchors = set(anchors)
+        base_target_repos = set(target_repos)
         base_cwd_certain = cwd_certain
         group_status: bool | None = None
 
@@ -830,46 +830,46 @@ def _git_invocations_from_shell(
                 segment = segment[1:]
             if starts_then:
                 in_if_condition = False
-                if_body_gate = if_status
+                if_body_check = if_status
                 segment = segment[1:]
-                gate = if_body_gate
+                check = if_body_check
             if starts_else:
                 in_if_condition = False
-                if_body_gate = None if if_status is None else not if_status
+                if_body_check = None if if_status is None else not if_status
                 segment = segment[1:]
-                gate = if_body_gate
+                check = if_body_check
             if starts_fi:
                 in_if_condition = False
-                if_body_gate = True
+                if_body_check = True
                 segment = segment[1:]
             if (not in_if_condition and not starts_then and not starts_else
-                    and if_body_gate is not True):
-                if gate is True:
-                    gate = if_body_gate
+                    and if_body_check is not True):
+                if check is True:
+                    check = if_body_check
 
-            command_anchors = base_anchors if pipeline else anchors
+            command_target_repos = base_target_repos if pipeline else target_repos
             command_cwd_certain = base_cwd_certain if pipeline else cwd_certain
-            new_anchors, new_cwd_certain, status, calls, engine_calls = _shell_simple_command(
-                command_anchors, command_cwd_certain, segment, gate,
+            new_target_repos, new_cwd_certain, status, calls, engine_calls = _shell_simple_command(
+                command_target_repos, command_cwd_certain, segment, check,
                 globally_certain=globally_certain, structure_certain=structure_certain,
             )
             command_without_redirections, _redirected = shell_policy._shell_without_redirections(segment)
-            if not calls and gate is not False:
+            if not calls and check is not False:
                 # 간접 실행 명령 인자 속 git 파괴 호출은 호출 좌표를 풀 수 없다 — 대상 미확정 호출로 올린다.
                 calls = [
-                    shell_policy._ShellGitInvocation(str(anchor), argv, False, False)
+                    shell_policy._ShellGitInvocation(str(target_repo), argv, False, False)
                     for argv in _shell_indirect_git_argvs(command_without_redirections)
-                    for anchor in sorted(command_anchors, key=str)
+                    for target_repo in sorted(command_target_repos, key=str)
                 ]
-            if gate is not False:
+            if check is not False:
                 removal_found.extend(shell_policy._shell_removal_calls(
-                    command_anchors,
-                    structure_certain and command_cwd_certain and len(command_anchors) == 1,
+                    command_target_repos,
+                    structure_certain and command_cwd_certain and len(command_target_repos) == 1,
                     command_without_redirections,
                 ))
             if (
                 not pipeline and not starts_if
-                and gate is not False and status is not False
+                and check is not False and status is not False
                 and command_without_redirections
                 and command_without_redirections[0] == "cd"
             ):
@@ -877,16 +877,16 @@ def _git_invocations_from_shell(
             found.extend(calls)
             engine_found.extend(engine_calls)
             group_status = status
-            if not pipeline and gate is not False:
-                anchors = new_anchors
+            if not pipeline and check is not False:
+                target_repos = new_target_repos
                 cwd_certain = new_cwd_certain
             if in_if_condition:
                 if_status = status
 
         if pipeline:
-            anchors = base_anchors
+            target_repos = base_target_repos
             cwd_certain = base_cwd_certain
-        if gate is not False:
+        if check is not False:
             last_status = group_status
         i = end + 1
     uncertain = heredoc_uncertain or (unsupported_control and git_or_engine_candidate)
@@ -900,7 +900,7 @@ def _finish_git_guard_judgment(
     result: dict[str, str], judgments: Sequence[dict[str, str]], *, cwd: str, command: str,
     grant_root: str | os.PathLike[str] | None, grant_session: str | None,
 ) -> dict[str, str]:
-    """멈춤 거부면 1회 허용을 소비하거나 멈춤 지시·다음 행동을 붙인다. 내부 표식(case)은 뺀다."""
+    """멈춤 거부면 1회 허용을 소비하거나 멈춤 지시·다음 행동을 붙인다. 내부 표시(case)는 뺀다."""
     final = {key: value for key, value in result.items() if key != "case"}
     denies = [item for item in judgments if item["verdict"] == "deny"]
     cases = [item["case"] for item in denies if "case" in item]

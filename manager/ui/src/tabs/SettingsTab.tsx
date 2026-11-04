@@ -33,7 +33,7 @@ function writeShowUnset(value: boolean): void {
  * 저장 직후·갱신 적용 직후·수동 새로고침 셋뿐이다.
  */
 
-/** 이름을 자유롭게 칠 수 있는 유일한 군 — 축이 그 프로젝트의 `qa.platforms` 값이라서다. */
+/** 이름을 자유롭게 칠 수 있는 유일한 군 — 선택지가 그 프로젝트의 `qa.platforms` 값이라서다. */
 export const FREE_INPUT_FAMILY = "test.<platform>.cmd";
 
 /**
@@ -141,7 +141,7 @@ export function fieldOf(key: string): string {
   return key.slice(key.lastIndexOf(".") + 1);
 }
 
-/** 그룹의 행을 그리는 단위로 접는다 — 엔진이 같은 `unit` 을 준 행이 한 줄이 된다. */
+/** 그룹의 행을 그리는 단위로 묶는다 — 엔진이 같은 `unit` 을 준 행이 한 줄이 된다. */
 export function buildItems(rows: Row[]): GroupItem[] {
   const items: GroupItem[] = [];
   const units = new Map<string, UnitRow>();
@@ -243,7 +243,7 @@ function ValueField({ row, value, options, dependsValue, dependsLabel, variantsM
              onChange={(event) => onChange(event.target.value)} />
     );
   }
-  // 고른 값이 목록에 없으면(사람이 직접 친 값·다른 세대의 값) 그 값을 지우지 않고 항목으로 남긴다.
+  // 고른 값이 목록에 없으면(사람이 직접 친 값·다른 버전의 값) 그 값을 지우지 않고 항목으로 남긴다.
   const listed = (items: string[]) => (value === "" || items.includes(value)
     ? items : [value, ...items]);
   const hint = blocked ? `먼저 ${dependsLabel} 를 고르세요`

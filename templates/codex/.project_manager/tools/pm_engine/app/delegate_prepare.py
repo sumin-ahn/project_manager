@@ -450,7 +450,7 @@ def prepare_cluster_copy(
         if base_rev:
             record_row["base_rev"] = base_rev
         try:
-            delegate_copy_store._append_delegate_rounds_ledger(home, record_row)
+            delegate_copy_store._append_delegate_rounds_record(home, record_row)
         except delegate_errors.DelegateError as exc:
             # 기록 행이 없으면 이 라운드는 돌려받기 자체가 막힌다 — 남은 좌표를 진단에 싣는다.
             raise delegate_errors.DelegateError(
@@ -661,7 +661,7 @@ def abandon_ticket_copy(
             abandoned["superseded_by_ordinal"] = superseded_by_ordinal
         if discard_confirmed_this_call:
             abandoned["discard_reason"] = discard_reason
-        delegate_copy_store._append_delegate_rounds_ledger(home, abandoned)
+        delegate_copy_store._append_delegate_rounds_record(home, abandoned)
         changed = True
 
     # 5단계의 파괴 효력은 **기록에 남은** 선언만 인정한다 — 재호출 인자는(다시 줬어도)

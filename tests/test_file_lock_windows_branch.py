@@ -2,8 +2,8 @@
 
 `file_lock.acquire_exclusive`/`release_exclusive` 의 Windows 경로는 지금까지 Windows 밖에서
 한 줄도 실행되지 않았다. 그 결과 "다른 프로세스를 실제로 배제하는가"를 CI 가 아니라 사람이
-Windows VM 에서만 알 수 있었고, 배제가 깨진 채로 여러 릴리즈를 살았다(멀티-PM 리스 장부
-lost update = 실 데이터 손상 축). 그래서 분기를 두 층으로 갈랐다:
+Windows VM 에서만 알 수 있었고, 배제가 깨진 채로 여러 릴리즈를 살았다(멀티-PM 대여 기록
+lost update = 실 데이터 손상). 그래서 분기를 두 층으로 갈랐다:
 
   - **정책층**(순수 파이썬) — 어느 영역에·어떤 플래그로 걸고 실패를 어떻게 올리는가.
     이 파일이 backend 판정(`lock_backend`)과 원시 API(`_windows_lock_api`)를 갈아끼워
@@ -124,7 +124,7 @@ def test_windows_acquire_waits_in_the_kernel_instead_of_failing_immediately(
 ):
     """획득 플래그는 배타 + **FAIL_IMMEDIATELY 없음** = 무기한 블로킹(flock 등가).
 
-    비차단으로 걸면 경합 시 그 자리에서 실패하고, 이 seam 은 획득 실패를 삼키지 않으므로
+    비차단으로 걸면 경합 시 그 자리에서 실패하고, 이 공용 함수는 획득 실패를 삼키지 않으므로
     호출부가 그대로 중단된다 — 직렬화가 아니라 기능 정지가 된다.
     """
     api = FakeWindowsLockApi()
@@ -147,7 +147,7 @@ def test_windows_lock_covers_the_first_byte_of_an_empty_lock_file(
     """빈(0바이트) 락 파일의 선두 1바이트를 잠근다 — 파일을 늘리지 않는다.
 
     영역이 바뀌면 옛 엔진 사본(`msvcrt.locking(fd, …, 1)`)과 서로 배제하지 못한다(사본 skew
-    형상에서 배타가 조용히 사라진다). 파일을 늘리면 "락 파일은 내용이 없다"는 관례가 깨진다.
+    경우에서 배타가 조용히 사라진다). 파일을 늘리면 "락 파일은 내용이 없다"는 관례가 깨진다.
     """
     api = FakeWindowsLockApi()
     _force_windows_branch(file_lock, monkeypatch, api)
@@ -185,7 +185,7 @@ def test_windows_acquire_failure_raises_instead_of_progressing_lockless(
 ):
     """획득이 Win32 에러로 실패하면 임계 구역에 들어가지 않는다 (fd 는 닫힌다).
 
-    프리미티브가 *있는데* 실패한 것이므로 무락 폴백 대상이 아니다 — 배타 없는 구간을 성공으로
+    프리미티브가 *있는데* 실패한 것이므로 무락 대체 동작 대상이 아니다 — 배타 없는 구간을 성공으로
     위장하면 직렬화가 조용히 사라진다.
     """
     api = FakeWindowsLockApi(lock_error=_ERROR_LOCK_VIOLATION)
@@ -222,12 +222,12 @@ def test_windows_release_failure_is_reported_instead_of_swallowed(
     assert str(_ERROR_LOCK_VIOLATION) in str(raised.value)
 
 
-# ── 무락 폴백은 loud ─────────────────────────────────────────────────────────
+# ── 무락 대체 동작은 loud ─────────────────────────────────────────────────────────
 
 def test_lockless_fallback_announces_itself(file_lock, tmp_path, monkeypatch):
     """프리미티브가 둘 다 없으면 무락으로 진행하되 **그 사실을 알린다** (조용한 degrade 0).
 
-    엔진의 다른 강등 신호(`repo_owned_files.RepoFilesFallbackWarning`)와 같은 수단을 쓴다.
+    엔진의 다른 수준 낮춤 신호(`repo_owned_files.RepoFilesFallbackWarning`)와 같은 수단을 쓴다.
     """
     monkeypatch.setattr(file_lock, "lock_backend", lambda: file_lock.NO_LOCK_BACKEND)
     lock_path = tmp_path / "lockless.lock"
@@ -237,7 +237,7 @@ def test_lockless_fallback_announces_itself(file_lock, tmp_path, monkeypatch):
             pass
 
     assert file_lock.LOCKLESS_FALLBACK_MESSAGE in str(recorded[0].message)
-    assert lock_path.is_file(), "폴백에서도 락 파일 자체는 생긴다(인터페이스 동일)"
+    assert lock_path.is_file(), "대체 동작에서도 락 파일 자체는 생긴다(인터페이스 동일)"
 
 
 def test_lockless_fallback_warning_is_a_runtime_warning_subclass(file_lock):
@@ -245,12 +245,12 @@ def test_lockless_fallback_warning_is_a_runtime_warning_subclass(file_lock):
     assert issubclass(file_lock.LocklessFallbackWarning, RuntimeWarning)
 
 
-def test_lockless_fallback_warning_is_attributed_to_the_seam(
+def test_lockless_fallback_warning_is_attributed_to_the_shared_lock(
     file_lock, tmp_path, monkeypatch,
 ):
-    """경고 귀속은 **seam 자신** — 기본 필터가 프로세스당 1회로 접는 근거다.
+    """경고 귀속은 **공용 함수 자신** — 기본 필터가 프로세스당 1회로 줄이는 근거다.
 
-    호출자 프레임에 귀속하면 락을 잡는 자리 수만큼 같은 줄이 새 지점으로 다시 뜬다(장부 op 마다
+    호출자 프레임에 귀속하면 락을 잡는 자리 수만큼 같은 줄이 새 지점으로 다시 뜬다(기록 op 마다
     반복). 귀속이 한 곳이면 기본 필터의 지점별 1회가 곧 프로세스당 1회가 된다.
     """
     monkeypatch.setattr(file_lock, "lock_backend", lambda: file_lock.NO_LOCK_BACKEND)
@@ -268,7 +268,7 @@ def test_lockless_fallback_warning_is_attributed_to_the_seam(
 def test_windows_platform_never_reaches_the_lockless_fallback(
     file_lock, tmp_path, monkeypatch,
 ):
-    """Windows 는 프리미티브가 있으므로 무락 폴백에 떨어지지 않는다 ([[no-green-by-disabling]])."""
+    """Windows 는 프리미티브가 있으므로 무락 대체 동작에 떨어지지 않는다 ([[no-green-by-disabling]])."""
     api = FakeWindowsLockApi()
     _force_windows_branch(file_lock, monkeypatch, api)
 
@@ -277,17 +277,17 @@ def test_windows_platform_never_reaches_the_lockless_fallback(
         with file_lock.exclusive_file_lock(tmp_path / "windows.lock"):
             pass
 
-    assert api.lock_calls, "주입이 no-op — 폴백 여부를 판정할 수 없다"
+    assert api.lock_calls, "주입이 no-op — 대체 동작 여부를 판정할 수 없다"
     assert not [
         item for item in recorded
         if issubclass(item.category, file_lock.LocklessFallbackWarning)
-    ], "Windows 인데 무락 폴백으로 떨어졌다"
+    ], "Windows 인데 무락 대체 동작으로 떨어졌다"
 
 
 # ── backend 판정 ─────────────────────────────────────────────────────────────
 
 def test_backend_names_are_distinct_and_support_derives_from_the_backend(file_lock):
-    """지원 판정은 backend 이름 하나에서 나온다(두 판정이 갈리면 폴백 규칙이 갈라진다)."""
+    """지원 판정은 backend 이름 하나에서 나온다(두 판정이 갈리면 대체 규칙이 갈라진다)."""
     names = {
         file_lock.POSIX_LOCK_BACKEND,
         file_lock.WINDOWS_LOCK_BACKEND,
@@ -315,7 +315,7 @@ def test_exclusive_lock_supported_follows_each_backend(
 def test_windows_backend_is_selected_by_the_handle_capability(file_lock, monkeypatch):
     """Windows backend 판정은 실제로 필요한 능력(`msvcrt.get_osfhandle`)을 본다.
 
-    `fcntl` 부재 + `msvcrt` 존재 형상을 만들어 판정 자체를 태운다 — 플랫폼 문자열이 아니라
+    `fcntl` 부재 + `msvcrt` 존재 경우를 만들어 판정 자체를 태운다 — 플랫폼 문자열이 아니라
     능력으로 갈리는지 확인한다.
     """
     import sys
@@ -344,8 +344,8 @@ def _win32_lock_api_reference_count(source: str) -> int:
     """소스 한 벌의 `LockFileEx`/`UnlockFileEx` 참조 수 (주석·문자열 제외·AST 판정).
 
     기존 가드(`test_file_lock.py`)는 `fcntl.flock`·`msvcrt.locking` 호출만 센다. Windows 분기가
-    Win32 API 직접 호출로 바뀌면 그 이름으로 재복제한 사본은 옛 가드의 사각이다 — 가드 시야를
-    자기 표면에 맞춰 넓힌다([[guard-must-cover-its-own-surface]]).
+    Win32 API 직접 호출로 바뀌면 그 이름으로 재복제한 사본은 옛 가드가 놓친다 — 가드 검사 범위를
+    자기 범위에 맞춰 넓힌다([[guard-must-cover-its-own-surface]]).
     """
     tree = ast.parse(source)
     count = 0
@@ -357,8 +357,8 @@ def _win32_lock_api_reference_count(source: str) -> int:
     return count
 
 
-def test_win32_lock_api_lives_only_in_the_shared_seam():
-    """Win32 파일 영역 락 호출도 공용 seam 한 곳뿐이다 (도구별 재복제 0)."""
+def test_win32_lock_api_lives_only_in_the_shared_lock():
+    """Win32 파일 영역 락 호출도 공용 함수 한 곳뿐이다 (도구별 재복제 0)."""
     measured = {
         path.relative_to(TOOLS).as_posix()
         for path in engine_python_files(TOOLS)
@@ -387,8 +387,8 @@ def test_win32_guard_counts_a_reintroduced_call_in_another_tool():
         "    yield",
         1,
     )
-    assert mutated != source, "변이 앵커 소실"
-    assert _win32_lock_api_reference_count(source) == 0, "worktree_pool 은 수렴 상태여야 한다"
+    assert mutated != source, "변이 표시 글 소실"
+    assert _win32_lock_api_reference_count(source) == 0, "worktree_pool 은 이전 완료 상태여야 한다"
     assert _win32_lock_api_reference_count(mutated) > 0
 
 
@@ -407,7 +407,7 @@ def test_a_non_blocking_windows_acquire_is_caught_by_the_guard(tmp_path, monkeyp
         "            LOCK_REGION_BYTES)",
         1,
     )
-    assert mutated != source, "변이 앵커 소실"
+    assert mutated != source, "변이 표시 글 소실"
     mutated_path = tmp_path / "file_lock_nonblocking.py"
     mutated_path.write_text(mutated, encoding="utf-8", newline="\n")
     module = _load(mutated_path, "file_lock_nonblocking_under_test")

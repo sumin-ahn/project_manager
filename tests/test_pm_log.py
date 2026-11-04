@@ -1,6 +1,6 @@
 """pm_log.py 직접 단위테스트 (T-0026).
 
-pm_log.py 는 227줄·직접 테스트 0 이었다. log/current.md 의 entry 분할·archive 봉인·migrate
+pm_log.py 는 227줄·직접 테스트 0 이었다. log/current.md 의 entry 분할·archive 확정·migrate
 를 직접 검증한다.
 
   - 순수 헬퍼(`split_entries`·`next_archive_index`)는 입력으로 직접 호출.
@@ -67,12 +67,12 @@ def _redirect_paths(mod, monkeypatch, root: Path):
     return (log_dir, archive_dir)
 
 
-@pytest.mark.parametrize("band", ["warn", "warn2", "final", "precompact"])
-def test_ctx_guidance_all_bands_preserve_required_and_forbid_accident_phrase(band):
-    """중앙 정책 상수의 필수·금지 표현을 네 band 최종 출력 전체에 고정한다."""
-    mod = _load_module(f"pm_log_ctx_policy_{band}")
+@pytest.mark.parametrize("level", ["warn", "warn2", "final", "precompact"])
+def test_ctx_guidance_all_levels_preserve_required_and_forbid_accident_phrase(level):
+    """중앙 정책 상수의 필수·금지 표현을 네 구간 최종 출력 전체에 고정한다."""
+    mod = _load_module(f"pm_log_ctx_policy_{level}")
     guidance = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
-        band,
+        level,
         used_pct=92,
         precompact_at_pct=80,
     )
@@ -218,7 +218,7 @@ def test_cmd_tail_missing_current(tmp_path, monkeypatch, capsys):
 # ── cmd_checkpoint ──────────────────────────────────────────────────────────
 
 def test_build_checkpoint_entry_explicit_date_is_deterministic():
-    """날짜 결정성은 CLI args 비공개 seam 없이 순수 빌더 입력으로 검증한다."""
+    """날짜 결정성은 CLI args 비공개 교체 지점 없이 순수 빌더 입력으로 검증한다."""
     mod = _load_module()
     assert pm_engine.domain.ctx_recovery.build_checkpoint_entry(
         "orch-dev-T0547", "compaction", date="2026-08-06"
@@ -228,7 +228,7 @@ def test_build_checkpoint_entry_explicit_date_is_deterministic():
 
 
 def test_checkpoint_task_header_remains_byte_compatible():
-    """T-0686: task 형상의 기존 헤더는 행 바이트까지 동일하다."""
+    """T-0686: task 구성의 기존 헤더는 행 바이트까지 동일하다."""
     mod = _load_module("pm_log_t0686_task_header")
 
     entry = pm_engine.domain.ctx_recovery.build_checkpoint_entry(
@@ -243,11 +243,11 @@ def test_checkpoint_task_header_remains_byte_compatible():
 # ── 압축 경로 세션 판정 (T-0953) ────────────────────────────────────────────
 
 def _write_task_records(pm_home: Path, tasks: list[dict]) -> Path:
-    """task 기록 파일(`worktree-leases.json` 최상위 `tasks`)을 실 형상으로 쓴다."""
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
-    return ledger
+    """task 기록 파일(`worktree-leases.json` 최상위 `tasks`)을 실 모양으로 쓴다."""
+    leases_file = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    leases_file.parent.mkdir(parents=True, exist_ok=True)
+    leases_file.write_text(json.dumps({"leases": [], "tasks": tasks}), encoding="utf-8")
+    return leases_file
 
 
 _T0953_TASKS = [
@@ -262,7 +262,7 @@ def test_t0953_session_task_lookup_rules(tmp_path):
     """세션 판정은 세션 ID 와 같은 `session` 을 가진 task 기록이 정확히 1개일 때만 해소다(AT-001)."""
     mod = _load_module()
     pm_home = tmp_path / "pm-home"
-    ledger = _write_task_records(pm_home, list(_T0953_TASKS))
+    leases_file = _write_task_records(pm_home, list(_T0953_TASKS))
 
     assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-main") == ("main", None)
     assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "  s-main \n") == ("main", None)
@@ -275,12 +275,12 @@ def test_t0953_session_task_lookup_rules(tmp_path):
     assert pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-hermes") == (
         None, "이 세션이 연 task 여럿 (세션 s-hermes: hermes, x)")
 
-    ledger.unlink()
+    leases_file.unlink()
     task, reason = pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-main")
     assert task is None and "이 세션이 연 task 없음" in reason
 
     for broken in ("[1]", '{"tasks": {}}', "{"):
-        ledger.write_text(broken, encoding="utf-8")
+        leases_file.write_text(broken, encoding="utf-8")
         with pytest.raises(ValueError):
             pm_engine.app.session_identity.resolve_session_task(pm_paths.home_at(pm_home), "s-main")
 
@@ -374,12 +374,12 @@ def test_t0953_checkpoint_and_snapshot_reject_cwd_option(argv):
 
 
 def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
-    """`_N` 형상 이름(`foo_1`)의 task 를 그 세션 ID 로 연 task 기록을 실 장부 파일로 세운다."""
+    """`_N` 모양 이름(`foo_1`)의 task 를 그 세션 ID 로 연 task 기록을 실 대여 기록 파일로 세운다."""
     log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     (pm_paths.wiki_dir(home) / 'log/current.md').write_text(_HEADER, encoding="utf-8")
-    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
+    leases_file = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    leases_file.parent.mkdir(parents=True)
     payload = {
         "leases": [{
             "slot": "work/project_manager_1",
@@ -388,7 +388,7 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
         }],
         "tasks": [{"name": "foo_1", "prefix": None, "session": "s-foo", "started": "t"}],
     }
-    ledger.write_text(json.dumps(payload), encoding="utf-8")
+    leases_file.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(areas_store, "registered_repos", lambda _home: set())
 
     rc = pm_engine.cli.log.cmd_checkpoint(home, SimpleNamespace(task=None, trigger='manual', session_id='s-foo', breadcrumb=False))
@@ -400,9 +400,9 @@ def _freeform_task_checkpoint(mod, monkeypatch, tmp_path):
 def test_checkpoint_registered_freeform_task_name_is_not_misclassified_as_slot(
     tmp_path, monkeypatch,
 ):
-    """T-0686 F-003: 장부에 **등록된** `_N` task 는 lease slot 이름과 달라도 task 태그를 쓴다.
+    """T-0686 F-003: 대여 기록에 **등록된** `_N` task 는 lease slot 이름과 달라도 task 태그를 쓴다.
 
-    판정 근거는 이름 모양이나 slot 경로 대조가 아니라 장부 `tasks` 등록이다.
+    판정 근거는 이름 모양이나 slot 경로 대조가 아니라 대여 기록 `tasks` 등록이다.
     """
     mod = _load_module("pm_log_t0686_freeform_task")
     entry = _freeform_task_checkpoint(mod, monkeypatch, tmp_path)
@@ -412,12 +412,9 @@ def test_checkpoint_registered_freeform_task_name_is_not_misclassified_as_slot(
 
 
 _T0952_REMOVED_DIAGNOSTIC_OPTIONS = [
-    ("checkpoint", "--trigger", "compaction", "--ctx-band-checked"),
-    ("checkpoint", "--trigger", "compaction", "--ctx-band-missed"),
     ("checkpoint", "--trigger", "compaction", "--ctx-window-tokens", "600000"),
     ("checkpoint", "--trigger", "compaction", "--ctx-observed-tokens", "30000"),
     ("checkpoint", "--trigger", "compaction", "--harness", "claude"),
-    ("snapshot", "--ctx-band-missed"),
     ("snapshot", "--ctx-window-tokens", "600000"),
     ("snapshot", "--ctx-observed-tokens", "30000"),
     ("snapshot", "--harness", "claude"),
@@ -435,7 +432,7 @@ def test_t0952_checkpoint_and_snapshot_reject_removed_diagnostic_options(argv, c
 
 
 def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatch):
-    """명시 trigger와 task 태그를 가진 골격을 기존 current.md 뒤에 append한다."""
+    """명시 trigger와 task 태그를 가진 틀을 기존 current.md 뒤에 append한다."""
     mod = _load_module()
     log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
@@ -499,9 +496,9 @@ def test_cmd_checkpoint_rejects_invalid_task_before_write(tmp_path, monkeypatch,
 
 
 def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
-    """공유 log append seam은 RMW 없이 O_APPEND 단일 write를 사용한다.
+    """공유 log append 공용 함수는 RMW 없이 O_APPEND 단일 write를 사용한다.
 
-    O_APPEND write 자체는 공용 `file_lock` seam이 소유하므로(T-0565) 관측도 그 seam에서
+    O_APPEND write 자체는 공용 `file_lock` 공용 함수가 소유하므로(T-0565) 관측도 그 함수에서
     한다 — pm_log는 락 경로 규약과 부모 디렉토리 생성만 정한다.
     """
     mod = _load_module()
@@ -529,8 +526,8 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
     ]
 
 
-def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch):
-    """append_log는 락 구간 *안에서* seam append를 호출한다 (직접 write 0)."""
+def test_append_log_delegates_the_write_to_the_shared_append(tmp_path, monkeypatch):
+    """append_log는 락 구간 *안에서* 공용 append를 호출한다 (직접 write 0)."""
     mod = _load_module()
     lock_mod = pm_engine.cli.log.fs
     calls = []
@@ -545,7 +542,7 @@ def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch
 
     assert calls == [(current, "\nentry")]
     assert (tmp_path / ".project_manager" / ".local" / "log.lock").is_file()
-    assert not current.exists()   # 실제 write는 seam이 소유(대역이 가로챔)
+    assert not current.exists()   # 실제 write는 공용 함수가 소유(대역이 가로챔)
 
 
 def test_append_log_locked_is_the_lock_free_inner_primitive(tmp_path, monkeypatch):
@@ -569,7 +566,7 @@ def test_append_log_locked_is_the_lock_free_inner_primitive(tmp_path, monkeypatc
 def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
     """운영 log 경로의 모든 writer는 `.project_manager/.local/log.lock` 하나를 쓴다.
 
-    플랫폼 분기는 공용 `file_lock` seam이 소유하므로(T-0561) 획득/해제 관측도 그 seam에서
+    플랫폼 분기는 공용 `file_lock` 공용 함수가 소유하므로(T-0561) 획득/해제 관측도 그 함수에서
     한다 — pm_log는 경로 규약만 정한다.
     """
     mod = _load_module()
@@ -604,7 +601,7 @@ def test_log_write_lock_uses_single_project_local_lock(tmp_path, monkeypatch):
     ]
 
 
-def test_all_current_log_writers_use_shared_seam_grep_guard():
+def test_all_current_log_writers_use_shared_append_grep_guard():
     """complete·handoff·decide·archive/checkpoint에 직접 current RMW가 재발하지 않는다."""
     consumer_sources = {
         name: (TOOLS / name).read_text(encoding="utf-8")
@@ -650,7 +647,7 @@ def test_checkpoint_parser_default_manual_appends_entry(tmp_path, monkeypatch):
 
 
 def test_checkpoint_propagates_non_utf8_areas_failure(monkeypatch, tmp_path):
-    'checkpoint 의 예약패턴 검증은 areas 판독 실패를 강등하지 않고 전파한다.'
+    'checkpoint 의 예약패턴 검증은 areas 판독 실패를 경고로 낮추지 않고 전파한다.'
     home = pm_paths.home_at(tmp_path)
     def broken(_home):
         raise UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid start byte')
@@ -662,16 +659,16 @@ def test_checkpoint_propagates_non_utf8_areas_failure(monkeypatch, tmp_path):
 # ── 소유 PM 홈 유도 (T-0888) ────────────────────────────────────────────────
 
 def _synthetic_pm_home(root: Path, *, repo: str = "app") -> Path:
-    """실 티켓 1건 + lease 장부 + `.repos/<repo>.git` 을 가진 합성 PM 홈."""
+    """실 티켓 1건 + lease 대여 기록 + `.repos/<repo>.git` 을 가진 합성 PM 홈."""
     pm_home = root / "pm-home"
     tickets = pm_home / ".project_manager" / "wiki" / "tickets" / "open"
     tickets.mkdir(parents=True)
     (tickets / "T-0001-fixture.md").write_text(
         "---\nid: T-0001\ntitle: fixture\nstatus: open\n---\n", encoding="utf-8",
     )
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(
+    leases_file = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    leases_file.parent.mkdir(parents=True)
+    leases_file.write_text(
         json.dumps({"leases": [{"slot": f"work/{repo}_1", "state": "leased"}]}),
         encoding="utf-8",
     )
@@ -694,8 +691,8 @@ def test_pm_home_resolution_is_position_independent(tmp_path):
     pm_home = _synthetic_pm_home(tmp_path)
     slot = pm_home / "work" / "app_1"
 
-    outside = _markerless_tree(tmp_path / "anchor")
-    inside = _markerless_tree(slot / ".project_manager" / ".local" / "tmp" / "anchor")
+    outside = _markerless_tree(tmp_path / "outside-tree")
+    inside = _markerless_tree(slot / ".project_manager" / ".local" / "tmp" / "inside-tree")
 
     # 조상 훑기를 되살리면 (b) 만 합성 PM 홈을 돌려줘 두 값이 갈린다.
     assert pm_paths.owning_pm_home(outside) == outside.resolve()
@@ -706,7 +703,7 @@ def test_pm_home_resolution_is_position_independent(tmp_path):
 def test_registered_slot_resolves_from_git_pointer_without_subprocess(
     tmp_path, monkeypatch,
 ):
-    """등록 슬롯·PM 홈 밖 절대 슬롯·저장소 밖 스냅샷 셋 다 subprocess 0회로 소유 홈을 낸다."""
+    """등록 슬롯·PM 홈 밖 절대 슬롯·저장소 밖 복사본 셋 다 subprocess 0회로 소유 홈을 낸다."""
     mod = _load_module()
     pm_home = _synthetic_pm_home(tmp_path)
     slot = pm_home / "work" / "app_1"
@@ -715,7 +712,7 @@ def test_registered_slot_resolves_from_git_pointer_without_subprocess(
     absolute_slot.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, absolute_slot, "app")
 
-    snapshot = tmp_path / "scratch" / "gate-X"
+    snapshot = tmp_path / "scratch" / "copy-X"
     snapshot.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, snapshot, "app")
 
@@ -724,12 +721,12 @@ def test_registered_slot_resolves_from_git_pointer_without_subprocess(
 
     monkeypatch.setattr(pm_engine.cli.log.subprocess, "run", _forbidden)
 
-    for anchor in (slot, absolute_slot, snapshot):
-        assert pm_paths.owning_pm_home(anchor) == pm_home.resolve(), anchor
+    for target_repo in (slot, absolute_slot, snapshot):
+        assert pm_paths.owning_pm_home(target_repo) == pm_home.resolve(), target_repo
 
 
 def _declare_slot_git_pointer(pm_home: Path, worktree: Path, repo: str = "product") -> None:
-    """슬롯이 소유 PM 홈을 선언하는 `.git` 포인터를 세운다(`worktree_pool` 실 형상).
+    """슬롯이 소유 PM 홈을 선언하는 `.git` 포인터를 세운다(`worktree_pool` 실 모양).
 
     공용 bare 저장소는 `<pm_home>/.repos/<repo>.git` 이고 슬롯의 `.git` 은 그 안 worktree
     gitdir 을 가리킨다. 소유 판정의 유일한 입력이라 이 선언이 없는 트리는 자기 자신이다.
@@ -750,9 +747,9 @@ def test_main_checkpoint_worktree_anchor_forwards_to_pm_home_engine(
     worktree.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, worktree)
     home = pm_paths.home_at(worktree)
-    ledger = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text('{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}', encoding='utf-8')
+    leases_file = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
+    leases_file.parent.mkdir(parents=True)
+    leases_file.write_text('{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}', encoding='utf-8')
     canonical = pm_home / '.project_manager' / 'tools' / 'pm_log.py'
     canonical.parent.mkdir(parents=True)
     canonical.write_text('# canonical test probe\n', encoding='utf-8')
@@ -777,9 +774,9 @@ def test_main_manual_checkpoint_forwards_pm_home_engine_rc(
     worktree.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, worktree)
     home = pm_paths.home_at(worktree)
-    ledger = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text('{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}', encoding='utf-8')
+    leases_file = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
+    leases_file.parent.mkdir(parents=True)
+    leases_file.write_text('{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}', encoding='utf-8')
     canonical = pm_home / '.project_manager' / 'tools' / 'pm_log.py'
     canonical.parent.mkdir(parents=True)
     canonical.write_text('# canonical test probe\n', encoding='utf-8')
@@ -806,9 +803,9 @@ def test_main_external_absolute_lease_uses_file_git_common_dir_pm_home(
     git_dir.mkdir(parents=True)
     (worktree / '.git').write_text(f'gitdir: {git_dir}\n', encoding='utf-8')
     (git_dir / 'commondir').write_text('../..\n', encoding='utf-8')
-    ledger = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(json.dumps({'leases': [{'slot': str(worktree), 'state': 'leased', 'session': 'main'}]}), encoding='utf-8')
+    leases_file = pm_home / '.project_manager' / '.local' / 'worktree-leases.json'
+    leases_file.parent.mkdir(parents=True)
+    leases_file.write_text(json.dumps({'leases': [{'slot': str(worktree), 'state': 'leased', 'session': 'main'}]}), encoding='utf-8')
     canonical = pm_home / '.project_manager' / 'tools' / 'pm_log.py'
     canonical.parent.mkdir(parents=True)
     canonical.write_text('# canonical test probe\n', encoding='utf-8')
@@ -852,13 +849,13 @@ def test_t0953_forwarding_returns_child_rc_without_cwd(tmp_path, monkeypatch, ar
 def test_main_checkpoint_unregistered_slot_fails_loud_without_self_demotion(
     tmp_path, monkeypatch,
 ):
-    '소유 PM 홈을 확정 못 하는 슬롯은 자기 트리에 stray log를 만들지 않고 그대로 터진다.\n\n    옛 경로는 lease 미등재를 board detector로 재확인해 안내 rc1(수동)·무음 rc0(hook)으로\n    나눴다. 1차 해소가 fail-loud가 되면 그 2차 축은 존재 이유가 없다 — 미해소 상태 자체가\n    생기지 않는다.\n    '
+    '소유 PM 홈을 확정 못 하는 슬롯은 자기 트리에 stray log를 만들지 않고 그대로 터진다.\n\n    옛 경로는 lease 미등재를 board detector로 재확인해 안내 rc1(수동)·무음 rc0(hook)으로\n    나눴다. 1차 해소가 fail-loud가 되면 그 2차 판정은 존재 이유가 없다 — 미해소 상태 자체가\n    생기지 않는다.\n    '
     mod = _load_module()
     pm_home = tmp_path / 'pm-home'
     worktree = pm_home / 'work' / 'product_1'
     worktree.mkdir(parents=True)
     _declare_slot_git_pointer(pm_home, worktree)
-    assert not (pm_home / '.project_manager').exists(), '전제 붕괴 — 미해소 형상이 아님'
+    assert not (pm_home / '.project_manager').exists(), '전제 붕괴 — 미해소 구성이 아님'
     home = pm_paths.home_at(worktree)
     with pytest.raises(pm_paths.PmHomeResolutionError, match='에 .project_manager 가 없습니다'):
         pm_engine.cli.log.main(home, ['checkpoint', '--task', 'main'])
@@ -866,7 +863,7 @@ def test_main_checkpoint_unregistered_slot_fails_loud_without_self_demotion(
 
 
 def test_main_tail_remains_ungated(tmp_path, monkeypatch, capsys):
-    """read-only tail은 worktree 앵커 판정을 호출하지 않고 현행 동작을 유지한다."""
+    """read-only tail은 worktree 대상 저장소 판정을 호출하지 않고 현행 동작을 유지한다."""
     mod = _load_module()
     log_dir, _ = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
@@ -874,7 +871,7 @@ def test_main_tail_remains_ungated(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         pm_paths,
         "owning_pm_home",
-        lambda *_: pytest.fail("tail must not resolve a PM-home anchor"),
+        lambda *_: pytest.fail("tail must not resolve a PM-home target"),
     )
 
     assert pm_engine.cli.log.main(home, ['tail']) == 0
@@ -918,22 +915,22 @@ def _snapshot_home(tmp_path: Path, *, tasks=("main",), lease_session="main"):
 # ── 진행 중 작업 절 픽스처 헬퍼 (T-0787) ────────────────────────────────────
 
 def _seed_delegate_rounds(pm_home: Path, rows: list[dict]) -> Path:
-    """`_snapshot_home` 픽스처 위에 delegate-rounds 장부를 얹는다."""
-    ledger = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
+    """`_snapshot_home` 픽스처 위에 delegate-rounds 기록을 얹는다."""
+    rounds_file = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
+    rounds_file.parent.mkdir(parents=True, exist_ok=True)
     body = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
-    ledger.write_text(body + ("\n" if rows else ""), encoding="utf-8")
-    return ledger
+    rounds_file.write_text(body + ("\n" if rows else ""), encoding="utf-8")
+    return rounds_file
 
 
-def _seed_raw_ledger(pm_home: Path, records: list[dict]) -> Path:
-    """`_snapshot_home` 픽스처 위에 raw 장부를 얹는다."""
-    ledger = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(
+def _seed_raw_records(pm_home: Path, records: list[dict]) -> Path:
+    """`_snapshot_home` 픽스처 위에 raw 기록을 얹는다."""
+    raw_file = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
+    raw_file.write_text(
         json.dumps({"version": 1, "records": records}, ensure_ascii=False), encoding="utf-8",
     )
-    return ledger
+    return raw_file
 
 
 def _delegate_row(
@@ -959,15 +956,15 @@ def _raw_record(
     }
 
 
-def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
-    """T-0787 — 존재 형상: 미회수·미마감 raw·claimed·슬롯 WIP 네 항목이 실값으로 편입된다."""
+def test_inflight_section_surfaces_uncollected_raw_claimed_and_wip(tmp_path):
+    """T-0787 — 존재하는 경우: 돌려받지 않은·미마감 raw·claimed·슬롯 WIP 네 항목이 실값으로 편입된다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     _seed_delegate_rounds(pm_home, [
         _delegate_row(tmp_path, "T-0787"),
         _delegate_row(tmp_path, "T-0786", collected_at="2026-08-20T00:00:00.000000+00:00"),
     ])
-    _seed_raw_ledger(pm_home, [_raw_record(tmp_path, "r1")])
+    _seed_raw_records(pm_home, [_raw_record(tmp_path, "r1")])
     claimed_dir = pm_home / ".project_manager" / "board" / "tickets" / "claimed"
     (claimed_dir / "T-9999-extra.md").write_text("fixture\n", encoding="utf-8")
 
@@ -975,15 +972,15 @@ def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
 
     assert warning is None
     assert "## 진행 중 작업 (기록 실측)" in text
-    # T-0786 은 collected_at 이 있어 미회수 집계에서 제외된다(1건만).
+    # T-0786 은 collected_at 이 있어 돌려받지 않은 집계에서 제외된다(1건만).
     assert "돌려받지 않은 라운드 준비 1건: T-0787 architect#1" in text
     assert "미마감 위임 raw 1건:" in text and "delegate/codex" in text
     assert "claimed 티켓 2건: T-0000-fixture · T-9999-extra" in text
     assert "슬롯 WIP: work/product_1" in text
 
 
-def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
-    """T-0787 — 부재 형상: 장부가 없어도 0건으로 표기되고 rc·warning 은 정상이다."""
+def test_inflight_section_absent_records_render_zero_counts(tmp_path):
+    """T-0787 — 부재하는 경우: 기록이 없어도 0건으로 표기되고 rc·warning 은 정상이다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
 
@@ -996,13 +993,13 @@ def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
     assert "슬롯 WIP: work/product_1" in text
 
 
-def test_inflight_section_corrupt_delegate_ledger_fails_snapshot(tmp_path, capsys):
-    """손상: 비-UTF8 위임 장부는 snapshot 을 실패시킨다(절 실패 줄로 접지 않는다)."""
+def test_inflight_section_corrupt_delegate_record_fails_snapshot(tmp_path, capsys):
+    """손상: 비-UTF8 위임 기록은 snapshot 을 실패시킨다(절 실패 줄로 접지 않는다)."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
-    ledger = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_bytes(b"\xff\xfe \xf8\xa1\xa1\xa1\xa1 not valid utf-8\n")
+    rounds_file = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
+    rounds_file.parent.mkdir(parents=True, exist_ok=True)
+    rounds_file.write_bytes(b"\xff\xfe \xf8\xa1\xa1\xa1\xa1 not valid utf-8\n")
 
     with pytest.raises(delegate_errors.DelegateError, match="비-UTF8"):
         pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
@@ -1012,17 +1009,17 @@ def test_inflight_section_corrupt_delegate_ledger_fails_snapshot(tmp_path, capsy
 
 
 
-def test_inflight_raw_query_never_enters_ledger_lock(tmp_path, monkeypatch):
-    """T-0787 — 무락 단언: 진행 중 작업 절의 raw 조회는 `_raw_ledger_lock` 에 진입하지 않는다."""
+def test_inflight_raw_query_never_enters_record_lock(tmp_path, monkeypatch):
+    """T-0787 — 무락 단언: 진행 중 작업 절의 raw 조회는 `_raw_record_lock` 에 진입하지 않는다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
-    _seed_raw_ledger(pm_home, [_raw_record(tmp_path, "r1")])
+    _seed_raw_records(pm_home, [_raw_record(tmp_path, "r1")])
     @contextlib.contextmanager
     def _fail_if_locked(*_a, **_k):
         pytest.fail("진행 중 작업 절의 raw 조회가 배타 파일락에 진입함(lock=False 계약 위반)")
         yield  # pragma: no cover — 도달하면 이미 실패
 
-    monkeypatch.setattr(raw_output, "_raw_ledger_lock", _fail_if_locked)
+    monkeypatch.setattr(raw_output, "_raw_record_lock", _fail_if_locked)
 
     text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
 
@@ -1031,7 +1028,7 @@ def test_inflight_raw_query_never_enters_ledger_lock(tmp_path, monkeypatch):
 
 
 def test_inflight_section_folds_pathological_counts_within_line_and_section_caps(tmp_path):
-    """T-0787 — cap/truncate: 미회수 500·claimed 300 에서도 줄·절·전체 상한을 지킨다."""
+    """T-0787 — cap/truncate: 돌려받지 않은 500·claimed 300 에서도 줄·절·전체 상한을 지킨다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     rows = [_delegate_row(tmp_path, f"T-{index:04d}") for index in range(500)]
@@ -1073,7 +1070,7 @@ def test_snapshot_cap_keeps_hearsay_when_identity_alone_is_oversized(tmp_path):
 
 
 def test_wip_slot_line_recomputes_remaining_budget_per_probe_call(tmp_path):
-    """T-0787 F-002 — 각 프로브 직전 잔여를 재계산 — 누적 timeout 합이 최초 잔여를 넘지 않는다."""
+    """T-0787 F-002 — 각 프로브 직전 남은 시간을 재계산 — 누적 timeout 합이 최초 남은 시간을 넘지 않는다."""
     mod = _load_module()
     fake_targets = [
         ("slot-a", tmp_path / "a"), ("slot-b", tmp_path / "b"), ("slot-c", tmp_path / "c"),
@@ -1109,13 +1106,13 @@ def test_wip_slot_line_recomputes_remaining_budget_per_probe_call(tmp_path):
 
 
 def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tmp_path):
-    """T-0787 F-003 — raw 장부 필드의 개행이 가짜 heading 주입·줄 수 상한 우회를 못 한다."""
+    """T-0787 F-003 — raw 기록 필드의 개행이 가짜 heading 주입·줄 수 상한 우회를 못 한다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     forged_started_at = "2026-08-21T00:00:00\n" + "\n".join(
         f"## forged-{index}" for index in range(8)
     )
-    _seed_raw_ledger(pm_home, [{
+    _seed_raw_records(pm_home, [{
         "id": "r1", "surface": "delegate\n## forged-surface", "harness": "codex",
         "model": "gpt", "role": "architect", "attempt": "1", "pid": 1,
         "started_at": forged_started_at, "raw_path": str(tmp_path / "raw.txt"),
@@ -1141,10 +1138,10 @@ def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tm
 
 def _seed_task_todos(pm_home: Path, task: str, todos: list[dict]) -> None:
     """`_snapshot_home` 픽스처에 그 task 행과 할 일 파일을 얹는다(ID 는 1부터 순서대로)."""
-    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(ledger.read_text(encoding="utf-8"))
+    leases_file = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    data = json.loads(leases_file.read_text(encoding="utf-8"))
     data["tasks"] = [{"name": task, "session": f"s-{task}"}]
-    ledger.write_text(json.dumps(data), encoding="utf-8")
+    leases_file.write_text(json.dumps(data), encoding="utf-8")
     path = pm_home / ".project_manager" / ".local" / "tasks" / task / "todo.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [{"id": index, **todo} for index, todo in enumerate(todos, start=1)]
@@ -1157,7 +1154,7 @@ def test_todo_section_lists_open_todos_with_date_and_age(tmp_path):
     pm_home, cwd = _snapshot_home(tmp_path)
     _seed_task_todos(pm_home, "main", [
         {"text": "주입 교체", "created": "2026-09-10T00:00:00+00:00"},
-        {"text": "가드 배선", "created": "2026-09-16T00:00:00+00:00"},
+        {"text": "가드 연결", "created": "2026-09-16T00:00:00+00:00"},
     ])
 
     text, warning = pm_engine.app.session_snapshot.build_snapshot(pm_paths.home_at(pm_home), "s-main")
@@ -1165,12 +1162,12 @@ def test_todo_section_lists_open_todos_with_date_and_age(tmp_path):
     assert warning is None
     section = text.split("## 열린 todo (파일 실측)\n", 1)[1].split("\n## ", 1)[0]
     assert "#1 주입 교체 (등록 2026-09-10 · " in section
-    assert "#2 가드 배선 (등록 2026-09-16 · " in section
+    assert "#2 가드 연결 (등록 2026-09-16 · " in section
     assert "없음" not in section
 
 
 def test_todo_section_folds_beyond_the_shown_cap(tmp_path):
-    """상한을 넘으면 나머지는 "외 N건" 한 줄로 접고 목록 명령을 가리킨다."""
+    """상한을 넘으면 나머지는 "외 N건" 한 줄로 줄이고 목록 명령을 가리킨다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     _seed_task_todos(pm_home, "main", [
@@ -1342,13 +1339,13 @@ def test_snapshot_timeout_returns_identity_and_hearsay_only(tmp_path):
 
 _T0952_LOGGED_WINDOW_MISMATCH = (
     "## [2026-10-10] checkpoint | (task:main) — compaction\n\n"
-    "<!-- ctx-band-check: missed -->\n"
+    "<!-- ctx-level-check: missed -->\n"
     "> ⚠ [ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼 — 이번 압축 사이클에서 "
-    "warn/warn2/final 밴드가 한 번도 발화하지 않음 (설정 600,000 tokens · PreCompact 관측 410,455 tokens).\n"
-    "> 처방: `.project_manager/local.conf`의 `harness.claude.ctx_window_tokens`를 "
-    "관측 사용량 410,455 tokens 이하로 낮추고 다음 사이클 밴드 발화를 확인.\n\n"
-    "- 구간: 변경량 상한 삭제 결정 기록 이후 ~ T-0950 설계 비준.\n"
-    "- 서사: T-0950 설계 라운드를 돌려받아 본문에 비준했다.\n"
+    "warn/warn2/final 구간 경고가 한 번도 나오지 않음 (설정 600,000 tokens · PreCompact 관측 410,455 tokens).\n"
+    "> 해결 방법: `.project_manager/local.conf`의 `harness.claude.ctx_window_tokens`를 "
+    "관측 사용량 410,455 tokens 이하로 낮추고 다음 사이클 구간 경고 출력을 확인.\n\n"
+    "- 구간: 변경량 상한 삭제 결정 기록 이후 ~ T-0950 설계 승인.\n"
+    "- 서사: T-0950 설계 라운드를 돌려받아 본문에 반영했다.\n"
 )
 
 
@@ -1557,16 +1554,16 @@ def test_cmd_checkpoint_dedup_io_failure_warns_but_appends(
     assert len(log_entries.split_entries((pm_paths.wiki_dir(home) / 'log/current.md').read_text(encoding="utf-8"))[1]) == 1
 
 
-def test_cmd_snapshot_reads_ledgers_without_subprocess_and_json_envelope_is_single_object(
+def test_cmd_snapshot_reads_records_without_subprocess_and_json_envelope_is_single_object(
         tmp_path, monkeypatch, capsys):
-    '장부 조회(ticket copies·raw·claimed)는 spawn 0 — WIP 프로브만 상한 내 예외로 허용한다.\n\n    T-0787 이전엔 어떤 ``subprocess.run`` 호출도 즉시 fail 이었다. WIP git 프로브 도입 이후에도\n    가드는 죽지 않는다 — "장부 조회는 spawn 0" 으로 **좁혀서** 재단언한다(가드 삭제 금지).\n    '
+    '기록 조회(ticket copies·raw·claimed)는 spawn 0 — WIP 프로브만 상한 내 예외로 허용한다.\n\n    T-0787 이전엔 어떤 ``subprocess.run`` 호출도 즉시 fail 이었다. WIP git 프로브 도입 이후에도\n    가드는 죽지 않는다 — "기록 조회는 spawn 0" 으로 **좁혀서** 재단언한다(가드 삭제 금지).\n    '
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     home = pm_paths.home_at(pm_home)
     probe_calls: list[list[str]] = []
     def _fake_run(argv, **kwargs):
         if argv[:1] != ['git']:
-            pytest.fail(f'장부 조회가 subprocess 를 spawn 함(spawn 0 계약 위반): {argv!r}')
+            pytest.fail(f'기록 조회가 subprocess 를 spawn 함(spawn 0 계약 위반): {argv!r}')
         assert '--no-optional-locks' in argv, 'WIP 프로브는 --no-optional-locks 필수'
         assert argv[-2:] == ['status', '--porcelain']
         timeout = kwargs.get('timeout')
@@ -1597,7 +1594,7 @@ def test_cmd_snapshot_unresolved_identity_returns_one(tmp_path, monkeypatch, cap
         assert '세션 task 미해소: 이 세션이 연 task 없음 (세션 s-main)' in captured.err
 
 
-def test_snapshot_missing_all_ledgers_is_fail_soft_one_line_warning(tmp_path):
+def test_snapshot_missing_all_records_is_fail_soft_one_line_warning(tmp_path):
     mod = _load_module()
     pm_home = tmp_path / "empty"
     pm_home.mkdir()
@@ -1609,27 +1606,27 @@ def test_snapshot_missing_all_ledgers_is_fail_soft_one_line_warning(tmp_path):
 # ── cmd_archive (파괴적 — tmp_path 에서만) ────────────────────────────────────
 
 def test_cmd_archive_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
-    """--before cutoff 미만 entry 를 archive 파일로 봉인하고 current.md 엔 잔여만 남긴다."""
+    """--before cutoff 미만 entry 를 archive 파일로 확정하고 current.md 엔 나머지만 남긴다."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     write_lf(current, _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C)
 
-    # 2026-06-13 미만 = ENTRY_A(06-10)·ENTRY_B(06-12) 봉인, ENTRY_C(06-14) 유지.
+    # 2026-06-13 미만 = ENTRY_A(06-10)·ENTRY_B(06-12) 확정, ENTRY_C(06-14) 유지.
     rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', dry_run=False))
     assert rc == 0
 
     # archive 파일 생성: idx 1(빈 dir·legacy 예약) + 첫/마지막 날짜 범위명.
     slice_path = archive_dir / "0001-2026-06-10_to_2026-06-12.md"
     assert slice_path.exists()
-    sealed = slice_path.read_text(encoding="utf-8")
-    assert "본문 A" in sealed and "본문 B" in sealed
-    assert "본문 C" not in sealed
-    assert "Log archive 0001" in sealed
-    assert "수정 금지" in sealed
+    confirmed = slice_path.read_text(encoding="utf-8")
+    assert "본문 A" in confirmed and "본문 B" in confirmed
+    assert "본문 C" not in confirmed
+    assert "Log archive 0001" in confirmed
+    assert "수정 금지" in confirmed
 
-    # current.md: preamble 보존 + ENTRY_C 만 잔여, 봉인된 건 제거.
+    # current.md: preamble 보존 + ENTRY_C 만 남김, 확정된 건 제거.
     remaining = current.read_text(encoding="utf-8")
     assert remaining == _HEADER + _ENTRY_C
     assert "본문 A" not in remaining and "본문 B" not in remaining
@@ -1693,7 +1690,7 @@ def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypa
     append_thread = threading.Thread(target=run_append)
     archive_thread.start()
     try:
-        assert replace_entered.wait(2), "archive did not reach replace seam"
+        assert replace_entered.wait(2), "archive did not reach replace step"
         append_thread.start()
         # archive가 lock을 가진 동안 append는 완료할 수 없다. 이 순서가 과거 lost-update
         # interleave(read archive → append → stale replace)를 닫는다.
@@ -1713,9 +1710,9 @@ def test_archive_and_append_interleave_preserves_both_writers(tmp_path, monkeypa
 
 def test_cmd_archive_cutoff_boundary_is_strict_keeps_on_date(tmp_path, monkeypatch, capsys):
     """cutoff 경계 못박기: "DATE 미만"(strict <) 의미 — cutoff 와 *정확히 같은* 날짜
-    entry 는 current.md 에 유지(봉인 안 함), *엄격히 이전* entry 만 봉인.
+    entry 는 current.md 에 유지(확정 안 함), *엄격히 이전* entry 만 확정.
 
-    pm_log.py:114-115 가 `< cutoff`(봉인) / `>= cutoff`(유지) 라서 경계 entry 는 keep
+    pm_log.py:114-115 가 `< cutoff`(확정) / `>= cutoff`(유지) 라서 경계 entry 는 keep
     쪽이다. 이걸 못박지 않으면 비교를 `<= / >`(inclusive)로 뒤집어도 테스트가 통과한다.
     """
     mod = _load_module()
@@ -1726,19 +1723,19 @@ def test_cmd_archive_cutoff_boundary_is_strict_keeps_on_date(tmp_path, monkeypat
     entry_boundary = "## [2026-06-13] update | cutoff 와 같은 날\n본문 경계\n"
     current.write_text(_HEADER + _ENTRY_A + entry_boundary, encoding="utf-8")
 
-    # --before 2026-06-13: 06-10 만 봉인, 06-13(경계)은 유지돼야 한다.
+    # --before 2026-06-13: 06-10 만 확정, 06-13(경계)은 유지돼야 한다.
     rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before='2026-06-13', dry_run=False))
     assert rc == 0
 
-    # 봉인 슬라이스: 엄격히 이전(06-10)만 — 경계 날짜는 범위명·본문에 없음.
+    # 확정 슬라이스: 엄격히 이전(06-10)만 — 경계 날짜는 범위명·본문에 없음.
     slice_path = archive_dir / "0001-2026-06-10_to_2026-06-10.md"
     assert slice_path.exists()
-    sealed = slice_path.read_text(encoding="utf-8")
-    assert "본문 A" in sealed
-    assert "본문 경계" not in sealed
-    # 경계 entry 의 `## [..]` 앵커는 봉인본에 없다 (cutoff 문자열은 헤더에 echo 되므로
-    # 날짜 substring 이 아니라 entry 앵커로 확인).
-    assert "## [2026-06-13]" not in sealed
+    confirmed = slice_path.read_text(encoding="utf-8")
+    assert "본문 A" in confirmed
+    assert "본문 경계" not in confirmed
+    # 경계 entry 의 `## [..]` 제목 줄은 확정본에 없다 (cutoff 문자열은 헤더에 echo 되므로
+    # 날짜 substring 이 아니라 entry 제목 줄로 확인).
+    assert "## [2026-06-13]" not in confirmed
 
     # current.md: 경계(cutoff 와 동일) entry 만 유지, 엄격히 이전 entry 는 제거.
     remaining = current.read_text(encoding="utf-8")
@@ -1764,7 +1761,7 @@ def test_cmd_archive_noop_when_nothing_old(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_archive_dry_run_no_write(tmp_path, monkeypatch, capsys):
-    """--dry-run: 봉인 계획만 출력하고 파일은 안 건드린다."""
+    """--dry-run: 확정 계획만 출력하고 파일은 안 건드린다."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
@@ -1799,7 +1796,7 @@ def test_cmd_archive_missing_current(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_archive_index_increments_with_existing(tmp_path, monkeypatch):
-    """기존 archive 슬라이스가 있으면 다음 인덱스로 봉인 (max+1)."""
+    """기존 archive 슬라이스가 있으면 다음 인덱스로 확정 (max+1)."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
@@ -1816,36 +1813,36 @@ def test_cmd_archive_index_increments_with_existing(tmp_path, monkeypatch):
 # ── cmd_archive --keep-last (개수 기반 슬라이스·T-0244) ───────────────────────
 
 def test_cmd_archive_keep_last_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
-    """--keep-last N: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 연번 봉인."""
+    """--keep-last N: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 연번 확정."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     write_lf(current, _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C)
 
-    # 최근 1개(ENTRY_C)만 유지 → ENTRY_A·ENTRY_B 봉인.
+    # 최근 1개(ENTRY_C)만 유지 → ENTRY_A·ENTRY_B 확정.
     rc = pm_engine.cli.log.cmd_archive(home, SimpleNamespace(before=None, keep_last=1, dry_run=False))
     assert rc == 0
 
-    # 슬라이스: idx 1(빈 dir·legacy 예약) + 봉인 첫/마지막 날짜 범위명.
+    # 슬라이스: idx 1(빈 dir·legacy 예약) + 확정 첫/마지막 날짜 범위명.
     slice_path = archive_dir / "0001-2026-06-10_to_2026-06-12.md"
     assert slice_path.exists()
-    sealed = slice_path.read_text(encoding="utf-8")
-    assert "본문 A" in sealed and "본문 B" in sealed
-    assert "본문 C" not in sealed
-    # 봉인 헤더 유래 줄이 --keep-last 모드를 반영.
-    assert "--keep-last 1" in sealed
-    assert "--before" not in sealed
-    assert "수정 금지" in sealed
+    confirmed = slice_path.read_text(encoding="utf-8")
+    assert "본문 A" in confirmed and "본문 B" in confirmed
+    assert "본문 C" not in confirmed
+    # 확정 헤더 유래 줄이 --keep-last 모드를 반영.
+    assert "--keep-last 1" in confirmed
+    assert "--before" not in confirmed
+    assert "수정 금지" in confirmed
 
-    # current.md: preamble 보존 + 최근 N(ENTRY_C)만 잔여.
+    # current.md: preamble 보존 + 최근 N(ENTRY_C)만 남김.
     remaining = current.read_text(encoding="utf-8")
     assert remaining == _HEADER + _ENTRY_C
     assert "본문 A" not in remaining and "본문 B" not in remaining
 
 
 def test_cmd_archive_keep_last_noop_when_n_ge_len(tmp_path, monkeypatch, capsys):
-    """N ≥ entry 수면 봉인할 게 없다 — no-op (archive 파일 미생성·current.md 무변)."""
+    """N ≥ entry 수면 확정할 게 없다 — no-op (archive 파일 미생성·current.md 무변)."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
@@ -1887,7 +1884,7 @@ def test_cmd_archive_requires_exactly_one_mode(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_archive_keep_last_lossless_preserves_all_entries(tmp_path, monkeypatch):
-    """무손실 불변식: 봉인 entry + 잔여 entry = 원본 entry (순서·본문 보존)."""
+    """무손실 불변식: 확정 entry + 나머지 entry = 원본 entry (순서·본문 보존)."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
@@ -1898,15 +1895,15 @@ def test_cmd_archive_keep_last_lossless_preserves_all_entries(tmp_path, monkeypa
     assert rc == 0
 
     slice_path = archive_dir / "0001-2026-06-10_to_2026-06-10.md"
-    sealed = slice_path.read_text(encoding="utf-8")
+    confirmed = slice_path.read_text(encoding="utf-8")
     remaining = current.read_text(encoding="utf-8")
 
-    # 봉인본에서 entry 만 추출 + 잔여 current 의 entry = 원본 entry (순서 보존).
-    _pre_sealed, sealed_entries = log_entries.split_entries(sealed)
+    # 확정본에서 entry 만 추출 + 나머지 current 의 entry = 원본 entry (순서 보존).
+    _pre_confirmed, confirmed_entries = log_entries.split_entries(confirmed)
     remaining_preamble, remaining_entries = log_entries.split_entries(remaining)
-    recombined = [e for _d, e in sealed_entries] + [e for _d, e in remaining_entries]
+    recombined = [e for _d, e in confirmed_entries] + [e for _d, e in remaining_entries]
     assert recombined == [_ENTRY_A, _ENTRY_B, _ENTRY_C]
-    # preamble 은 current 에만 남는다 (봉인본엔 봉인 헤더만).
+    # preamble 은 current 에만 남는다 (확정본엔 확정 헤더만).
     assert remaining_preamble == _HEADER
 
 
@@ -1927,7 +1924,7 @@ def test_cmd_archive_keep_last_index_continues_after_existing(tmp_path, monkeypa
 
 
 def test_cmd_archive_keep_last_dry_run_no_write(tmp_path, monkeypatch, capsys):
-    """--keep-last --dry-run: 봉인 계획만 출력, 파일 무변 (멱등·비편집)."""
+    """--keep-last --dry-run: 확정 계획만 출력, 파일 무변 (멱등·비편집)."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     log_dir.mkdir(parents=True)
@@ -1978,7 +1975,7 @@ def test_parser_archive_each_mode_parses_alone():
 # ── cmd_migrate (파괴적 — tmp_path 에서만) ────────────────────────────────────
 
 def test_cmd_migrate_seals_legacy_and_creates_current(tmp_path, monkeypatch, capsys):
-    """기존 log.md → archive/0000-legacy.md 봉인 + current.md(표준 헤더) 생성."""
+    """기존 log.md → archive/0000-legacy.md 확정 + current.md(표준 헤더) 생성."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
     legacy = pm_paths.wiki_dir(home) / "log.md"
@@ -1989,12 +1986,12 @@ def test_cmd_migrate_seals_legacy_and_creates_current(tmp_path, monkeypatch, cap
     rc = pm_engine.cli.log.cmd_migrate(home, SimpleNamespace(dry_run=False))
     assert rc == 0
 
-    # legacy 원본은 봉인 후 삭제.
+    # legacy 원본은 확정 후 삭제.
     assert not legacy.exists()
-    sealed = (archive_dir / "0000-legacy.md").read_text(encoding="utf-8")
-    assert "Log archive 0000" in sealed
-    assert "옛 본문" in sealed  # 원문 그대로 봉인.
-    assert "수정 금지" in sealed
+    confirmed = (archive_dir / "0000-legacy.md").read_text(encoding="utf-8")
+    assert "Log archive 0000" in confirmed
+    assert "옛 본문" in confirmed  # 원문 그대로 확정.
+    assert "수정 금지" in confirmed
 
     # current.md 는 표준 헤더로 새로 생성 (legacy 내용 미포함).
     current = (log_dir / "current.md").read_text(encoding="utf-8")
@@ -2005,7 +2002,7 @@ def test_cmd_migrate_seals_legacy_and_creates_current(tmp_path, monkeypatch, cap
 
 
 def test_cmd_migrate_no_legacy_creates_empty_current(tmp_path, monkeypatch, capsys):
-    """기존 log.md 가 없으면 빈(헤더만) current.md 만 생성, legacy 봉인 없음."""
+    """기존 log.md 가 없으면 빈(헤더만) current.md 만 생성, legacy 확정 없음."""
     mod = _load_module()
     log_dir, archive_dir = ((home := pm_paths.home_at(tmp_path)), (pm_paths.wiki_dir(home) / 'log', pm_paths.wiki_dir(home) / 'log/archive'))[1]
 
@@ -2062,8 +2059,8 @@ def test_package_identity_uses_home_data_without_target_engine(tmp_path):
         home = pm_paths.home_at(code, pm_home=data)
         home.local_dir.mkdir(parents=True)
         pm_paths.task_dir(home, label).mkdir(parents=True)
-        ledger = {"leases": [{"state": "leased", "session": label, "slot": "work/repo_1"}], "tasks": [{"name": label, "session": "same-harness"}]}
-        pm_paths.leases_file(home).write_text(json.dumps(ledger), encoding="utf-8")
+        lease_data = {"leases": [{"state": "leased", "session": label, "slot": "work/repo_1"}], "tasks": [{"name": label, "session": "same-harness"}]}
+        pm_paths.leases_file(home).write_text(json.dumps(lease_data), encoding="utf-8")
         assert not (data / ".project_manager" / "tools").exists()
         homes.append(home)
     alpha, beta = homes

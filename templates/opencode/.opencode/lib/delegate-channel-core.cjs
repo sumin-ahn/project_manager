@@ -126,7 +126,7 @@ function runtimeCandidate(root, platform) {
     || (platform === "win32" && path.win32.isAbsolute(runtime));
   const relative = runtime.includes("/") || (platform === "win32" && runtime.includes("\\"));
   const command = !absolute && relative ? path.resolve(root, runtime) : runtime;
-  // runtime.py는 program 한 토큰이다. launcher 인자로 분할하거나 기본 후보로 강등하지 않는다.
+  // runtime.py는 program 한 토큰이다. launcher 인자로 분할하거나 기본 후보로 낮추지 않는다.
   return {command, prefixArgs: [], label: runtime};
 }
 

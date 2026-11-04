@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from conftest import anchor_board_module
+from conftest import target_repo_board_module
 # 티켓 전문 조립은 라운드 예약 테스트의 헬퍼를 그대로 쓴다 — 두 벌 두면 한쪽만 현재화된다.
 from test_board_ticket_growth import _ticket_text
 from pm_engine.app import ticket_lint
@@ -83,7 +83,7 @@ def test_board_lint_skips_quoted_indented_and_fenced_markers(tmp_path, monkeypat
     **판정 결과**를 잰다.
     """
     board = _load_board()
-    anchor_board_module(board, tmp_path, monkeypatch)
+    target_repo_board_module(board, tmp_path, monkeypatch)
     tickets = tmp_path / ".project_manager" / "board" / "tickets" / "done"
     tickets.mkdir(parents=True)
 

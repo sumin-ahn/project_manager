@@ -60,7 +60,7 @@ def dispatcher():
 
 
 def _feature_by_id(dispatcher_module, feature_id: str):
-    """디스패처 registry 의 그 기능 1건 (없으면 red — 배선이 사라진 것)."""
+    """디스패처 registry 의 그 기능 1건 (없으면 red — 등록이 사라진 것)."""
     matches = [feature for feature in dispatcher_module.CODEX_HOOK_FEATURES
                if feature.feature_id == feature_id]
     assert len(matches) == 1, dispatcher_module.CODEX_HOOK_FEATURES
@@ -152,7 +152,7 @@ def _subagent_start() -> dict[str, object]:
     return _live_subagent_start()
 
 
-def test_live_spawn_payload_uses_t0641_decide_cli_seam(guard_home, guard, monkeypatch):
+def test_live_spawn_payload_uses_t0641_decide_cli(guard_home, guard, monkeypatch):
     evidence = _live_evidence()
     spawn = _live_spawn_payload()
     role_field, role = _live_role_item()
@@ -222,8 +222,8 @@ def test_codex_cross_mapping_denies_with_both_measured_fields_and_real_cwd(
     }
     assert "$pm-dev-delegate" in result["reason"]
     assert "backbone" in result["reason"]
-    # 처방의 인터프리터 표기는 실행 플랫폼 해소값이다(Windows 는 런처) — 기대값을 리터럴로
-    # 재타이핑하지 않고 가드의 해소 seam 에서 얻는다.
+    # 해결 방법의 인터프리터 표기는 실행 플랫폼 해소값이다(Windows 는 런처) — 기대값을 리터럴로
+    # 재타이핑하지 않고 가드의 해소 함수에서 얻는다.
     assert (
         f"{delegate_env._prescribed_interpreter()} .project_manager/tools/pm_delegate.py"
         in result["reason"]
@@ -490,7 +490,7 @@ def test_observation_failure_keeps_every_deny_key_from_the_constant(
 
 
 def test_observation_failure_on_partial_envelope_fails_loud(guard_home, guard, monkeypatch):
-    """부분 엔벨로프가 관측 실패 경로로 들어와도 조용히 강등되지 않는다."""
+    """부분 엔벨로프가 관측 실패 경로로 들어와도 말없이 수준이 낮아지지 않는다."""
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
@@ -671,7 +671,7 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     assert dispatcher._feature_matches(feature, spawn)
     assert not dispatcher._feature_matches(feature, _live_wait_payload())
     assert not dispatcher._feature_matches(feature, subagent_call)
-    # 진입점 뒤에서 실행되는 커맨드는 옛 배선과 같은 감독자 호출이다(동작 보존).
+    # 진입점 뒤에서 실행되는 커맨드는 옛 등록과 같은 감독자 호출이다(동작 보존).
     assert list(feature.argv) == [
         "{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
         "{py}", "{tools}/delegate_channel_guard.py", "codex-hook",
@@ -688,7 +688,7 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
         assert '"permissionDecision":"allow"' not in wrapper
         assert DISPATCHER_REL in wrapper
         assert f"{dispatcher.CODEX_HOOK_DISPATCH_FLAG} PreToolUse" in wrapper
-        # 배선이 진입점 하나로 접혔다 — 기능별 커맨드가 config 에 남아 있으면 원 결함 재발이다.
+        # 등록이 진입점 하나로 합쳐졌다 — 기능별 커맨드가 config 에 남아 있으면 원 결함 재발이다.
         assert "delegate_channel_guard" not in wrapper
         for payload in inline_script_payloads(wrapper):
             assert "delegate_channel_guard" not in payload
@@ -712,7 +712,7 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     assert re.fullmatch(observer_groups[0]["matcher"], "any-agent-name")
     observer = observer_groups[0]["hooks"]
     assert len(observer) == 1 and observer[0]["type"] == "command"
-    # T-0806 — 관측 배선도 진입점 뒤 registry 항목이다(옛 직결 커맨드 값이 그대로 옮겨 왔다).
+    # T-0806 — 관측 등록도 진입점 뒤 registry 항목이다(옛 직결 커맨드 값이 그대로 옮겨 왔다).
     for command_key in ("command", "commandWindows"):
         assert "codex-subagent-observe" not in observer[0][command_key], command_key
     observe_feature = _feature_by_id(dispatcher, "delegate-channel-subagent")
@@ -884,7 +884,7 @@ def _pretooluse_handler() -> dict[str, object]:
 def test_wrapper_fallback_envelope_matches_engine_warning_constant(
     guard, event, command_key
 ):
-    """훅이 엔진을 못 돌릴 때 내는 폴백도 완전한 엔벨로프여야 한다 (스키마=엔진 상수)."""
+    """훅이 엔진을 못 돌릴 때 내는 대체 출력도 완전한 엔벨로프여야 한다 (스키마=엔진 상수)."""
     hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
     wrapper = hooks[event][0]["hooks"][0][command_key]
     match = re.search(r'\{"systemMessage".*?\}', wrapper)
@@ -894,7 +894,7 @@ def test_wrapper_fallback_envelope_matches_engine_warning_constant(
     assert set(fallback) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
     assert fallback["suppressOutput"] is delegate_channel_rules.CODEX_WARNING_SUPPRESS_OUTPUT
     assert "fail-open" in fallback["systemMessage"]
-    # 어느 층이 답했는지 구별된다 — 셸 폴백과 supervisor 폴백은 다른 마커를 단다.
+    # 어느 층이 답했는지 구별된다 — 셸 대체 출력과 supervisor 대체 출력은 다른 마커를 단다.
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in fallback["systemMessage"]
     assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER not in fallback["systemMessage"]
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER != delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER
@@ -943,15 +943,15 @@ def test_posix_hook_wrapper_missing_guard_emits_valid_allow_json(guard, tmp_path
     assert elapsed < 2
     assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
     assert result["suppressOutput"] is False
-    # 폴백으로 답한 사실이 출력에 남는다 — 정상 통과와 구별되지 않으면 결함이 다시 숨는다.
+    # 대체 출력으로 답한 사실이 출력에 남는다 — 정상 통과와 구별되지 않으면 결함이 다시 숨는다.
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
 
 
 def _adopter_tree(tmp_path: Path, conf_lines: tuple[str, ...]) -> Path:
-    """실 엔진 사본 + 디스패처 + local.conf 로 채택자 형상을 만든다 (훅 커맨드를 그대로 태운다).
+    """실 엔진 사본 + 디스패처 + local.conf 로 채택자 구성을 만든다 (훅 커맨드를 그대로 태운다).
 
     훅 진입점이 부르는 건 manifest 등재 디스패처(`.codex/pm_orch_codex.py`)이므로 그 파일이
-    채택자 형상의 일부다 — 빼면 이 게이트가 가드 대신 어댑터 폴백만 재게 된다(T-0777)."""
+    채택자 구성의 일부다 — 빼면 이 검사가 가드 대신 어댑터 대체 출력만 재게 된다(T-0777)."""
     tools = tmp_path / ".project_manager" / "tools"
     shutil.copytree(REPO / ".project_manager" / "tools", tools)
     (tmp_path / ".codex").mkdir(parents=True, exist_ok=True)
@@ -978,9 +978,9 @@ def _adopter_tree(tmp_path: Path, conf_lines: tuple[str, ...]) -> Path:
 def test_posix_hook_wrapper_runs_the_real_guard_and_passes_its_envelope(
     guard, tmp_path, mapping, expected_keys
 ):
-    """래퍼가 **실제로 발화**했는지를 엔진 산출 엔벨로프의 존재로 판정한다 (T-0720 DoD).
+    """래퍼가 **실제로 실행**했는지를 엔진 산출 엔벨로프의 존재로 판정한다 (T-0720 DoD).
 
-    폴백은 2필드 경고 + 폴백 마커라 정상 경로와 관측치가 다르다.
+    대체 출력은 2필드 경고 + 대체 마커라 정상 경로와 관측치가 다르다.
     """
     root = _adopter_tree(tmp_path, ("delegate.enabled=true", *mapping))
 
@@ -1003,7 +1003,7 @@ def test_posix_hook_wrapper_runs_the_real_guard_and_passes_its_envelope(
 def test_posix_hook_wrapper_marks_the_fallback_when_the_guard_cannot_answer(
     guard, tmp_path
 ):
-    """엔진 사본이 깨진 채택자에서도 완전한 엔벨로프가 나가고, 폴백 사실이 남는다."""
+    """엔진 사본이 깨진 채택자에서도 완전한 엔벨로프가 나가고, 대체 출력 사실이 남는다."""
     root = _adopter_tree(tmp_path, ("delegate.enabled=true",))
     (root / ".project_manager" / "tools" / "delegate_channel_guard.py").write_text(
         "raise SystemExit(3)\n", encoding="utf-8", newline="\n"
@@ -1073,7 +1073,7 @@ def test_supervisor_passes_supported_envelopes_through_unchanged(guard_home, gua
 def test_supervisor_replaces_unusable_output_with_a_marked_fallback(
     guard_home, guard, child_body, marker
 ):
-    """부분·손상 엔벨로프는 호스트에 닿지 않고, 폴백이라는 사실이 사유에 남는다."""
+    """부분·손상 엔벨로프는 호스트에 닿지 않고, 대체 출력이라는 사실이 사유에 남는다."""
     result = codex_hook.supervise_codex_hook(
         guard_home, "PreToolUse",
         [sys.executable, "-c", child_body],
@@ -1087,7 +1087,7 @@ def test_supervisor_replaces_unusable_output_with_a_marked_fallback(
 
 
 def test_supervisor_fallback_leaves_a_durable_observation_row(guard_home, guard, tmp_path):
-    """폴백은 turn 과 함께 사라지지 않는다 — 장부 행이 남아 lint 스캔이 볼 수 있다."""
+    """대체 출력은 turn 과 함께 사라지지 않는다 — 기록 행이 남아 lint 스캔이 볼 수 있다."""
     spawn = _payload("developer")
     result = codex_hook.supervise_codex_hook(
         guard_home, "PreToolUse",

@@ -1,4 +1,4 @@
-"""JS 브리지 — 화면이 보는 표면과 오류 dict (T-0910 AT-004 · T-0921 AT-002).
+"""JS 브리지 — 화면이 보는 함수와 오류 dict (T-0910 AT-004 · T-0921 AT-002).
 
 정상은 엔진 JSON 그대로이고(감싸지 않는다), 실패는 `{"error": {kind, message, stderr, rc}}` 다.
 합성 클래스 `Api` 의 MRO 에 탭별 mixin 셋이 들어 있는지도 여기서 고정한다(묶음 분할의 계약).
@@ -74,7 +74,7 @@ def test_the_bridge_does_not_import_the_window_toolkit():
     assert "import webview" not in source
 
 
-# ── 등록부 표면 ──────────────────────────────────────────────────────────────
+# ── 등록부 함수 ──────────────────────────────────────────────────────────────
 
 
 def test_list_add_remove_round_trip(api, pm_home):
@@ -106,7 +106,7 @@ def test_folder_choice_and_cancel(api, picked, pm_home):
     assert api.pick_folder() == {"path": None}
 
 
-# ── 현황 표면 ────────────────────────────────────────────────────────────────
+# ── 현황 함수 ────────────────────────────────────────────────────────────────
 
 
 def test_status_is_the_engine_document_unwrapped(api, pm_home):
@@ -142,7 +142,7 @@ def test_failures_are_never_answered_with_none_or_an_empty_value(api, tmp_path):
     assert response["error"]["message"]
 
 
-# ── 최신 태그 표면 ───────────────────────────────────────────────────────────
+# ── 최신 태그 함수 ───────────────────────────────────────────────────────────
 
 
 def test_latest_tags_maps_projects_to_upstreams(api, pm_home, tmp_path):
@@ -160,7 +160,7 @@ def test_latest_tags_maps_projects_to_upstreams(api, pm_home, tmp_path):
     assert response["upstreams"] == {str(bare): {"tag": "v2.0.0"}}
 
 
-def test_a_project_without_upstream_has_no_tag_axis(api, pm_home, tmp_path):
+def test_a_project_without_upstream_has_no_tag_input(api, pm_home, tmp_path):
     without = tmp_path / "no-upstream"
     shutil.copytree(pm_home, without, symlinks=True)
     set_conf_key(without, "upstream.path", "")
@@ -230,7 +230,7 @@ def _listen(server: ManagerServer, seen: list, ready: threading.Event) -> None:
                 return
 
 
-def test_the_window_and_the_http_guest_share_one_bridge_instance(served, api, pm_home):
+def test_the_window_and_the_http_caller_share_one_bridge_instance(served, api, pm_home):
     """HTTP 로 등록한 프로젝트를 창 쪽 브리지가 그 자리에서 본다(값이 갈리지 않는다)."""
     added = _post(served, "add_project", str(pm_home))
 
@@ -238,7 +238,7 @@ def test_the_window_and_the_http_guest_share_one_bridge_instance(served, api, pm
     assert api.list_projects() == added
 
 
-def test_the_folder_dialog_is_refused_for_a_guest_that_is_not_the_window(served, picked, pm_home):
+def test_the_folder_dialog_is_refused_for_a_caller_that_is_not_the_window(served, picked, pm_home):
     picked["value"] = str(pm_home)
 
     refused = _post(served, "pick_folder")

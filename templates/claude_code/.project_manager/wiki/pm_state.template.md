@@ -23,7 +23,7 @@ type: handoff-state
 > 역할 네이밍 규칙(PM 세션 / 구현 세션 / orchestrator)은 [`pm_role.md`](pm_role.md) §"세션 식별 규칙" 참조.
 
 최근 N 차 (sliding window, 기본 3 차):
-<!-- /pm-handoff 가 자동 갱신 — 형식: "  - **N차** (YYYY-MM-DD · <wave_summary>): ..." -->
+<!-- /pm-handoff 가 자동 갱신 — 형식: "  - **N차** (YYYY-MM-DD · <session_summary>): ..." -->
   - **1차** ({{DATE}} · 부트스트랩): 초기 PM 세션.
   - 이전 차 = `log/current.md` handoff entry 단일 진실.
 

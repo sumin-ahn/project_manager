@@ -19,9 +19,9 @@ RAW_REF_RE = re.compile(r"(?:T|ADR)-\d{4}")
 SPECIFIC_REF_RE = re.compile(r"(?<![A-Za-z0-9_])(?:T|ADR)-\d{4}(?!\d)")
 _INLINE_CODE_RE = re.compile(r"(?<!`)({})(?!`)(.*?)\1(?!`)".format(r"`+"))
 # 채택자 디스크에 기록되는 wire 문자열은 산문이 아니다 — 리터럴 옆 소스 주석으로 그 사실을
-# 밝히면 스트립과 재유입 가드가 함께 제외한다. 표식을 리터럴 옆에 두는 이유는 새 마커를
+# 밝히면 스트립과 재유입 가드가 함께 제외한다. 표시를 리터럴 옆에 두는 이유는 새 마커를
 # 추가하는 사람이 같은 자리에서 보고 붙이게 하기 위해서다(별도 allow-list 파일은 drift 한다).
-# 두 패턴은 **주석 토큰 본문**에만 맞춘다 — 문자열 리터럴 안의 같은 글자는 데이터지 표식이
+# 두 패턴은 **주석 토큰 본문**에만 맞춘다 — 문자열 리터럴 안의 같은 글자는 데이터지 표시가
 # 아니라서 원문 정규식으로 보면 리터럴 한 줄로 재유입 검사를 우회할 수 있다.
 _DATA_LITERAL_MARKER = "pm:data-literal"
 _DATA_LITERAL_PREFIX_RE = re.compile(r"^#[ \t]*" + re.escape(_DATA_LITERAL_MARKER))
@@ -32,7 +32,7 @@ _DATA_LITERAL_BLOCK_RE = re.compile(
     r"^#[ \t]*" + re.escape(_DATA_LITERAL_MARKER) + r":(?P<edge>begin|end)[ \t]*$"
 )
 _LONE_CARRIAGE_RETURN_RE = re.compile(r"\r(?!\n)")
-# 문장 경계를 세는 데 쓰지 않는 토큰 — 라인 표식이 가리키는 문장 범위 계산용.
+# 문장 경계를 세는 데 쓰지 않는 토큰 — 라인 표시가 가리키는 문장 범위 계산용.
 _NON_STATEMENT_TOKENS = frozenset(
     {tokenize.NL, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER}
 )
@@ -43,7 +43,7 @@ _REFERENCE_ONLY_WRAPPER_RE = re.compile(
     + SPECIFIC_REF_RE.pattern
     + r")*[ \t]*\)"
 )
-_DELTA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+_DIFFERENCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("separator-space", re.compile(r"· ")),
     ("double-separator", re.compile(r"··")),
     ("open-separator", re.compile(r"\(·")),
@@ -61,8 +61,8 @@ _DELTA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     ("empty-paren", re.compile(r"\(\s*\)")),
-    # 설계 문서의 결정 항목·형상 번호로 쓰는 유니코드 원문자 — 경계(·) 유무와 무관하게 라인
-    # 어디든 나타나면 사설 표식이다.
+    # 설계 문서의 결정 항목·구성 번호로 쓰는 유니코드 원문자 — 경계(·) 유무와 무관하게 라인
+    # 어디든 나타나면 사설 표시다.
     ("circled-marker", re.compile(r"[\u2460-\u2473\u3251-\u325f\u32b1-\u32bf]")),
     # `F` + 숫자 형태로 쓰는 사설 fault 라벨 — 앞뒤가 식별자 문자(영숫자·`_`)나 base64 문자
     # (`+`·`/`)가 아닌 단독 토큰만 잡는다. 앞에 다른 알파벳이 붙은 리뷰-라운드 인용 표기, 뒤에
@@ -88,13 +88,13 @@ class RemovalSpan:
 
 
 class DataLiteralMarkerError(ValueError):
-    """데이터 리터럴 블록 표식의 짝이 맞지 않을 때 낸다."""
+    """데이터 리터럴 블록 표시의 짝이 맞지 않을 때 낸다."""
 
 
 
 
-# ── 언어 축 ────────────────────────────────────────────────────────────────
-# python·markdown 을 뺀 출하 표면 — 셸·JS·TOML·manifest 등 산문 경계가 언어마다 다른 축.
+# ── 언어별 검사 ───────────────────────────────────────────────────────────
+# python·markdown 을 뺀 출하 파일 — 셸·JS·TOML·manifest 등 산문 경계가 언어마다 다른 종류.
 LANGUAGE_NOEXT = "noext"
 LANGUAGE_SH = "sh"
 LANGUAGE_CMD = "cmd"
@@ -107,7 +107,7 @@ LANGUAGE_RULES = "rules"
 LANGUAGE_TXT = "txt"
 
 # 확장자 → 언어. 여기 없는 확장자는 ``language_of`` 가 예외를 낸다(fail-loud·조용한 통과 0) —
-# "아직 안 덮는 축" 목록을 두지 않는다(시야 정의가 두 벌이 되는 것을 막는다).
+# "아직 안 덮는 언어" 목록을 두지 않는다(검사 범위 정의가 두 벌이 되는 것을 막는다).
 _LANGUAGE_BY_SUFFIX: dict[str, str] = {
     "": LANGUAGE_NOEXT,
     ".sh": LANGUAGE_SH,
@@ -354,7 +354,7 @@ def _toml_prose_spans(source: str) -> list[tuple[int, int]]:
     """따옴표 인식 ``#`` 주석 + 문자열 **값**(단일행·다중행). 키는 산문이 아니다.
 
     에이전트 카드의 ``description``·프롬프트 문자열은 채택자가 읽는 출하 산문이라 데이터로
-    면제하지 않는다(python 축의 argparse ``help=`` 문자열과 같은 클래스). 반대로 따옴표 키
+    면제하지 않는다(python 쪽의 argparse ``help=`` 문자열과 같은 클래스). 반대로 따옴표 키
     (``"키" = 1`` · 점 표기 키 · ``["키"]`` 테이블 머리)는 값이 아니라 이름이라 판정면 밖이다.
     문자열 모양은 둘이 같으므로 구문 위치(키 자리인지 값 자리인지)로 가른다.
     """
@@ -578,7 +578,7 @@ def _js_is_regex_context(previous_token: str) -> bool:
 
 
 def _js_prose_spans(source: str) -> list[tuple[int, int]]:
-    """``//``·``/* */`` 주석 — 문자열·템플릿·정규식 리터럴을 인식해 그 안의 동형 글자를
+    """``//``·``/* */`` 주석 — 문자열·템플릿·정규식 리터럴을 인식해 그 안의 같은 모양 글자를
     주석 시작으로 오판하지 않는다.
 
     템플릿은 raw 구간(문자열 데이터)과 ``${...}`` 보간 구간(코드)을 나눈다 — 보간 안의
@@ -687,7 +687,7 @@ def _manifest_prose_spans(source: str) -> list[tuple[int, int]]:
     """엔진 파서 ``manifest_rules._parse_manifest_line`` 이 ``None`` 을 내는 비-빈 라인 전체.
 
     새 정규식을 쓰지 않는다(판정 사본 금지) — 그 함수가 항상 ``None`` 을 내도록 바뀌면
-    데이터 행까지 산문으로 잡혀 manifest 축 판정이 뒤집힌다(값 확인은 회귀가 한다).
+    데이터 행까지 산문으로 잡혀 manifest 판정이 뒤집힌다(값 확인은 회귀가 한다).
     """
     spans: list[tuple[int, int]] = []
     for start, end, text in _line_records(source):
@@ -775,7 +775,7 @@ def _subtract_spans(
 ) -> list[tuple[int, int]]:
     """``[start, end)`` 에서 보호 구간을 뺀 나머지를 낸다.
 
-    여러 줄 토큰이 보호 구간과 일부만 겹칠 때 토큰 전체를 버리면 표식이 없는 나머지 줄까지
+    여러 줄 토큰이 보호 구간과 일부만 겹칠 때 토큰 전체를 버리면 표시가 없는 나머지 줄까지
     스트립·검사에서 빠진다. 그래서 겹치는 부분만 도려낸다.
     """
     remaining = [(start, end)]
@@ -797,10 +797,10 @@ def _subtract_spans(
 def _data_literal_markers(
     source: str, records: list[tuple[int, int, str]]
 ) -> tuple[set[int], list[tuple[int, str]]]:
-    """표식 주석을 (라인 표식이 가리키는 라인, 블록 경계 목록) 으로 분류한다.
+    """표시 주석을 (라인 표시가 가리키는 라인, 블록 경계 목록) 으로 분류한다.
 
-    표식은 **실제 주석 토큰**일 때만 인정한다 — 문자열 리터럴 안의 같은 글자는 그 자체가
-    데이터지 표식이 아니다. 원문 정규식으로 보면 리터럴 한 줄로 스트립·재유입 검사를
+    표시는 **실제 주석 토큰**일 때만 인정한다 — 문자열 리터럴 안의 같은 글자는 그 자체가
+    데이터지 표시가 아니다. 원문 정규식으로 보면 리터럴 한 줄로 스트립·재유입 검사를
     통째로 우회할 수 있고, 여러 줄 문자열 안의 경계 글자가 짝 불일치를 내기도 한다.
     """
     marked: set[int] = set()
@@ -824,12 +824,12 @@ def _data_literal_markers(
         standalone = not records[index][2][: token.start[1]].strip()
         edge = _DATA_LITERAL_BLOCK_RE.match(token.string)
         if edge:
-            # 블록 경계는 단독 라인일 때만 구획을 연다 — 코드 뒤 표식은 경계가 아니다.
+            # 블록 경계는 단독 라인일 때만 구획을 연다 — 코드 뒤 표시는 경계가 아니다.
             if standalone:
                 edges.append((index, edge.group("edge")))
             continue
         if not _DATA_LITERAL_LINE_RE.match(token.string):
-            # 오탈자 표식은 보호를 만들지 못한 채 조용히 지나가 원래 사고를 재현한다.
+            # 오탈자 표시는 보호를 만들지 못한 채 조용히 지나가 원래 사고를 재현한다.
             raise DataLiteralMarkerError(
                 f"line {index + 1}: 표시로 보이는 주석이 정확 형태가 아니다 "
                 f"({token.string.strip()!r}) — 라인 표시는 '# {_DATA_LITERAL_MARKER}'"
@@ -839,7 +839,7 @@ def _data_literal_markers(
         marked.add(index)
         if not standalone:
             continue
-        # 표식만 있는 라인은 다음 **문장 전체**를 가리킨다 — 여러 줄 선언 위에 붙였을 때
+        # 표시만 있는 라인은 다음 **문장 전체**를 가리킨다 — 여러 줄 선언 위에 붙였을 때
         # 첫 줄만 보호되면 나머지 줄이 조용히 정리된다.
         following = index + 2
         end_line = statement_end.get(following, following)
@@ -852,7 +852,7 @@ def _data_literal_block_spans(
 ) -> list[tuple[int, int]]:
     """블록 경계를 짝지어 구간으로 만든다 — 짝이 안 맞으면 즉시 실패한다.
 
-    반만 남은 표식은 보호 구간이 사라졌다는 뜻인데 조용히 통과하면 아무도 모른다.
+    반만 남은 표시는 보호 구간이 사라졌다는 뜻인데 조용히 통과하면 아무도 모른다.
     """
     spans: list[tuple[int, int]] = []
     open_index: int | None = None
@@ -881,13 +881,13 @@ def _data_literal_block_spans(
 
 
 def _data_literal_spans(source: str) -> list[tuple[int, int]]:
-    """소스 주석 표식으로 데이터 선언임을 밝힌 라인 구간을 낸다.
+    """소스 주석 표시로 데이터 선언임을 밝힌 라인 구간을 낸다.
 
-    두 형태를 데이터로 판정한다 — 같은 라인 또는 바로 앞 라인에 표식 주석이 붙은 리터럴
-    라인 전체, 그리고 ``begin``/``end`` 표식으로 감싼 여러 줄 구간. 스트립과 재유입 가드가
+    두 형태를 데이터로 판정한다 — 같은 라인 또는 바로 앞 라인에 표시 주석이 붙은 리터럴
+    라인 전체, 그리고 ``begin``/``end`` 표시로 감싼 여러 줄 구간. 스트립과 재유입 가드가
     이 한 함수를 함께 소비하므로 한쪽만 아는 판정이 생기지 않는다.
 
-    표식이 있는 소스는 개행이 LF 여야 한다 — 홀로 선 CR 은 라인 판정을 어긋나게 해 구간이
+    표시가 있는 소스는 개행이 LF 여야 한다 — 홀로 선 CR 은 라인 판정을 어긋나게 해 구간이
     의도한 라인 밖까지 번지고, 그 안의 사설 참조가 조용히 검사에서 빠진다.
     """
     if _DATA_LITERAL_MARKER not in source:
@@ -1052,21 +1052,21 @@ def line_difference_counts(line: str) -> dict[str, int]:
     """Count mechanically invalid boundary patterns on one line."""
     return {
         name: sum(1 for _ in pattern.finditer(line))
-        for name, pattern in _DELTA_PATTERNS
+        for name, pattern in _DIFFERENCE_PATTERNS
     }
 
 
 def line_difference(before: str, after: str) -> dict[str, dict[str, int]]:
-    """Return before/after/delta counts for one changed line."""
+    """Return before/after/difference counts for one changed line."""
     before_counts = line_difference_counts(before)
     after_counts = line_difference_counts(after)
     return {
         name: {
             "before": before_counts[name],
             "after": after_counts[name],
-            "delta": after_counts[name] - before_counts[name],
+            "difference": after_counts[name] - before_counts[name],
         }
-        for name, _ in _DELTA_PATTERNS
+        for name, _ in _DIFFERENCE_PATTERNS
     }
 
 
@@ -1189,7 +1189,7 @@ def _line_rewrite_plan(text: str) -> tuple[str, int, list[RemovalSpan]]:
     assert cleaned == remove_matched_spans(text)
     if _unsafe_result(text, cleaned):
         return text, 0, []
-    if any(counts["delta"] > 0 for counts in line_difference(text, cleaned).values()):
+    if any(counts["difference"] > 0 for counts in line_difference(text, cleaned).values()):
         return text, 0, []
     return cleaned, sum(span.references for span in spans), spans
 

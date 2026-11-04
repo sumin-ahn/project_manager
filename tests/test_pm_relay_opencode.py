@@ -4,7 +4,7 @@
 (`pm_orch_opencode.py`·SessionDriver 구현)를 importlib 로 직접 검증한다. 실 opencode 불요 —
 FakeRunner DI(claude driver 테스트 패턴) 로 subprocess 폭발 없이 CLI 조립/파싱만 본다.
 
-검증 축 (ticket DoD):
+검증 항목 (ticket DoD):
   ① parse_opencode_json 순수 — sessionID→sid · type:"text" part.text 누적→reply · 비-JSON skip · edge.
   ② driver spawn — 엔진 uuid4 **무시** 하고 출력 파싱 sid 반환 · `--agent` · `--dir` 격리 · `--format json`.
   ③ driver relay_turn — `-s <sid>` 로 resume · reply 파싱 · spawn cwd 재사용.
@@ -12,7 +12,7 @@ FakeRunner DI(claude driver 테스트 패턴) 로 subprocess 폭발 없이 CLI �
   ⑤ subprocess 폭발 가드 — driver 가 실 opencode 를 부르지 않음(FakeRunner).
 
 엔진 Supervisor 재사용(spawn→relay→respawn 회전)은 `test_pm_relay.py` 가 FakeDriver 로
-이미 커버 — 여기선 opencode 고유 표면(파서·driver)만. 엔진 운영코드는 무수정(ADR-0009 불변식).
+이미 커버 — 여기선 opencode 고유 범위(파서·driver)만. 엔진 운영코드는 무수정(ADR-0009 불변식).
 
 + live smoke — 실 opencode(`@skipif`·기본 skip·로컬 ollama). spawn→relay(≥2턴)→marker 강제→
   swap→relay 완주 + **driver-파싱 sid == plugin-write marker sid 동일성 실측**(핵심 가정·silent-fail 방어).
@@ -152,7 +152,7 @@ def test_parse_opencode_text_event_without_part_text(orch):
 
 
 def test_parse_opencode_no_sessionid(orch):
-    """sessionID 없는 이벤트만 있으면 sid None(폴백은 driver 가 처리)."""
+    """sessionID 없는 이벤트만 있으면 sid None(대체는 driver 가 처리)."""
     lines = [_json.dumps({"type": "text", "part": {"type": "text", "text": "x"}})]
     sid, reply, _ = contract.parse_opencode_json(lines)
     assert sid is None and reply == "x"
@@ -288,7 +288,7 @@ def test_opencode_driver_spawn_ignores_uuid_returns_parsed_sid(orch, driver_mod,
 
 
 def test_opencode_driver_spawn_agent_arg(orch, driver_mod, tmp_path):
-    """`--agent` 인자화 — build 폴백 등 커스텀 agent 지정 가능."""
+    """`--agent` 인자화 — build 대체 등 커스텀 agent 지정 가능."""
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -330,8 +330,8 @@ def test_opencode_driver_rc0_empty_stdout_warns(orch, driver_mod, capsys):
 def test_opencode_driver_spawn_sid_parse_failure_raises(orch, driver_mod, tmp_path):
     """sid 파싱 실패 = 치명·명시 중단 (codex T-0048).
 
-    opencode 는 sid 사전지정 불가라 엔진 uuid 폴백 시 그 세션이 존재하지 않아 다음 relay_turn 의
-    `-s <uuid>` 가 "Session not found" → 연속성 침묵 파손. 따라서 폴백 대신 RuntimeError 로
+    opencode 는 sid 사전지정 불가라 엔진 uuid 대체 시 그 세션이 존재하지 않아 다음 relay_turn 의
+    `-s <uuid>` 가 "Session not found" → 연속성 침묵 파손. 따라서 대체 대신 RuntimeError 로
     명시 중단한다(relay 는 유효 세션 없이 못 돈다)."""
     import pytest
 
@@ -465,7 +465,7 @@ def test_opencode_driver_spawn_marks_after_turn_and_returns_spawn_result(
 def test_opencode_driver_relay_marks_when_usage_reaches_threshold(
     orch, driver_mod, tmp_path,
 ):
-    # old-red: 옛 input+output+reasoning=600은 미발화지만 cache 포함 fallback=8100은 발화한다.
+    # old-red: 옛 input+output+reasoning=600은 미실행이지만 cache 포함 fallback=8100은 실행한다.
     tokens = {"input": 500, "output": 100, "reasoning": 0, "cache": {"read": 7500, "write": 0}}
     driver = driver_mod.OpencodeCliDriver(
         contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
@@ -594,9 +594,9 @@ def test_opencode_main_rejects_unsafe_budget_before_supervisor(
 def test_opencode_driver_repo_root_is_the_adapter_parent(driver_mod, tmp_path):
     """repo_root 는 driver 설치 자리(.opencode/)의 부모다 — 조상을 훑지 않는다.
 
-    바깥 트리에만 엔진 사본이 있는 중첩 형상에서 조상 훑기는 바깥 루트를 답하고 `.parent`
-    는 자기 루트를 답한다. 어댑터가 위에 있는 남의 PM 홈에 착지하지 않게 하는 축이다
-    (claude ctx_guard.repo_root 동형).
+    바깥 트리에만 엔진 사본이 있는 중첩 구성에서 조상 훑기는 바깥 루트를 답하고 `.parent`
+    는 자기 루트를 답한다. 어댑터가 위에 있는 남의 PM 홈에 착지하지 않게 하는 기준이다
+    (claude ctx_guard.repo_root 와 같음).
     """
     outer = tmp_path / "outer"
     (outer / ".project_manager" / "tools").mkdir(parents=True)
@@ -646,7 +646,7 @@ def test_supervisor_with_opencode_driver_rotation(orch, driver_mod, tmp_path):
         counts["relay"] += 1
         sid = cmd[cmd.index("-s") + 1]
         tokens = (
-            # total 부재 cache-heavy: old 600(미발화), corrected 8100(≥8000, 발화).
+            # total 부재 cache-heavy: old 600(미실행), corrected 8100(≥8000, 실행).
             {"input": 500, "output": 100, "reasoning": 0,
              "cache": {"read": 7500, "write": 0}}
             if counts["relay"] == 1 else {"total": 200, "input": 200, "output": 0}
@@ -737,7 +737,7 @@ def _live_runner_with_model(model: str):
     """live smoke 전용 runner — driver 가 조립한 opencode 명령에 `-m <model>` 을 주입한다.
 
     프로덕션 driver 는 agent frontmatter 의 model 을 쓰지만(`-m` 생략·ADR-0006 D5), 로컬
-    smoke 는 ollama 가벼운 모델로 강제해야 하므로 runner seam 으로 `-m` 만 끼운다.
+    smoke 는 ollama 가벼운 모델로 강제해야 하므로 runner 교체 지점으로 `-m` 만 끼운다.
     """
     def runner(cmd, **kwargs):
         injected = list(cmd)
@@ -1036,7 +1036,7 @@ def test_harness_cli_spawns_resolve_executable_to_the_found_path(orch, tmp_path,
 
 def test_harness_cli_spawns_resolve_executable_failure_keeps_the_path_message(orch, tmp_path, monkeypatch):
     """해소 실패는 실행 없이 PATH 부재로 멈춘다 — model_listing 은 지금 문구의 HarnessContractError,
-    `_WatchedPopen` 은 확정 기동 실패(`FileNotFoundError`·자식 없음 표식)다."""
+    `_WatchedPopen` 은 확정 기동 실패(`FileNotFoundError`·자식 없음 표시)다."""
     monkeypatch.setattr(contract.subprocess, "run",
                         lambda *a, **k: pytest.fail("해소 실패인데 실행했다"))
     monkeypatch.setattr(contract.subprocess, "Popen",

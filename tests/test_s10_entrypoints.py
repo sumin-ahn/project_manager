@@ -1,4 +1,4 @@
-"""board·pm-config 잔여 CLI 와 어댑터 git 진입의 패키지 소유 계약.
+"""board·pm-config 나머지 CLI 와 어댑터 git 진입의 패키지 소유 계약.
 
 어댑터 공개 진입(`cli.hooks`)의 판정·허용 기록, `pm-config init` 의 board 명령 직접 위임,
 board 명령 dispatch 의 읽기 Home 선택과 쓰기 가드 순서를 실제 소유 모듈로 검증한다.
@@ -60,9 +60,9 @@ def topology(tmp_path):
     slot = home / "work" / "product_1"
     slot.parent.mkdir(parents=True)
     _git(bare, "worktree", "add", "-q", str(slot))
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    records.parent.mkdir(parents=True)
+    records.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
                                                "state": "leased", "session": "t1"}],
                                   "tasks": [{"name": "t1", "session": "S"}]}) + "\n", encoding="utf-8")
     return home, slot
@@ -70,42 +70,42 @@ def topology(tmp_path):
 
 def test_public_git_api_preserves_verdict_and_grant_use(topology):
     home, slot = topology
-    anchor = hooks.adapter_home(home)
-    assert hooks.adapter_home(str(home)) == anchor
-    assert hooks.judge_git_check_command(anchor, "S", str(home), "echo ok", main_thread=True)["verdict"] == "ok"
+    target_repo = hooks.adapter_home(home)
+    assert hooks.adapter_home(str(home)) == target_repo
+    assert hooks.judge_git_check_command(target_repo, "S", str(home), "echo ok", main_thread=True)["verdict"] == "ok"
 
-    denied = hooks.judge_git_check_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)
+    denied = hooks.judge_git_check_command(target_repo, "S", str(slot), "git branch -D main", grants=True, main_thread=True)
     assert denied["verdict"] == "deny" and denied["code"] == git_policy.GIT_DESTRUCTIVE_DENY_CODE
-    assert hooks.record_git_grants(anchor, "S", str(slot), "git 허용: git branch -D main") == [
+    assert hooks.record_git_grants(target_repo, "S", str(slot), "git 허용: git branch -D main") == [
         "git branch -D main"
     ]
-    assert hooks.judge_git_check_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)[
+    assert hooks.judge_git_check_command(target_repo, "S", str(slot), "git branch -D main", grants=True, main_thread=True)[
         "verdict"
     ] == "warn"
-    assert hooks.judge_git_check_command(anchor, "S", str(slot), "git branch -D main", grants=True, main_thread=True)[
+    assert hooks.judge_git_check_command(target_repo, "S", str(slot), "git branch -D main", grants=True, main_thread=True)[
         "verdict"
     ] == "deny"
     assert _grant_files(home) == []
 
     forged = hooks.judge_tool_input(
-        anchor, "S", str(home), "Write",
+        target_repo, "S", str(home), "Write",
         {"file_path": str(home / _GRANT_DIR / "x.json"), "content": "{}"}, main_thread=True,
     )
     assert forged["verdict"] == "deny"
     assert hooks.judge_tool_input(
-        anchor, "S", str(home), "Write", {"file_path": str(home / "notes.txt"), "content": "x"}, main_thread=True,
+        target_repo, "S", str(home), "Write", {"file_path": str(home / "notes.txt"), "content": "x"}, main_thread=True,
     )["verdict"] != "deny"
 
 
 def test_invalid_grant_batch_has_no_partial_write(topology):
     home, slot = topology
-    anchor = hooks.adapter_home(home)
+    target_repo = hooks.adapter_home(home)
     prompt = "git 허용: git branch -D ok\ngit 허용: git branch -D a && git branch -D b\n"
     with pytest.raises(git_policy.GitGrantShapeError):
-        hooks.record_git_grants(anchor, "S", str(slot), prompt)
+        hooks.record_git_grants(target_repo, "S", str(slot), prompt)
     assert _grant_files(home) == []
     with pytest.raises(ValueError):
-        hooks.record_git_grants(anchor, "", str(slot), "git 허용: git branch -D ok")
+        hooks.record_git_grants(target_repo, "", str(slot), "git 허용: git branch -D ok")
     assert _grant_files(home) == []
 
 
@@ -132,7 +132,7 @@ def test_config_init_preserves_raw_tokens_and_prog(tmp_path, monkeypatch, capsys
         return 7
 
     monkeypatch.setattr(board_init, "cmd_init", record)
-    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_wrong_repo", lambda _home, _action: False)
     argv = ["init", "--prefix", "X", "--area", "a", "--owner", "me"]
     assert config_cmd._main(home, argv) == 7
     assert seen == [(home, "X", "a", "me")]
@@ -188,13 +188,13 @@ def test_mutation_guard_precedes_handler_and_runtime_errors_propagate(tmp_path, 
     monkeypatch.setattr(board_ticket, "cmd_new", handler)
     guard = []
     monkeypatch.setattr(
-        board_dispatch, "_guard_worktree_misanchor",
+        board_dispatch, "_guard_worktree_wrong_repo",
         lambda actual, action: guard.append((actual, action)) or True,
     )
     assert board_cmd.main(home, ["new", "stray", "--task", "t1"]) == 1
     assert guard == [(home, "board.py new")] and calls == []
 
-    monkeypatch.setattr(board_dispatch, "_guard_worktree_misanchor", lambda _home, _action: False)
+    monkeypatch.setattr(board_dispatch, "_guard_worktree_wrong_repo", lambda _home, _action: False)
     with pytest.raises(OSError, match="disk full"):
         board_cmd.main(home, ["new", "real", "--task", "t1"])
     assert calls == ["real"]

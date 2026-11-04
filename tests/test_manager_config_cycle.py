@@ -9,9 +9,9 @@
     repo add → task new → worktree add → alloc → task prefix → release(거부) → release
     → task end → task reopen → worktree remove → prune-stale
 
-축 다섯:
+검사 다섯:
   1. 14개 명령이 **실제 인자 형식 그대로** 통과한다(이름은 위치 인자·URL 은 `--git` 플래그).
-  2. 단계마다 장부가 바뀐다 — 판정은 관리자가 아니라 `status --json` 의 repos·slots·tasks 다.
+  2. 단계마다 기록이 바뀐다 — 판정은 관리자가 아니라 `status --json` 의 repos·slots·tasks 다.
   3. 엔진의 거부(승인 없음·task 없음·남의 task 반납)는 rc 와 문구가 원문 그대로 올라온다.
   4. 승인 토큰은 인자로 준 값뿐이다 — 브리지가 붙여 주는 자리가 없어 없으면 그대로 거부된다.
   5. 조회 명령은 프로젝트 트리를 한 파일도 바꾸지 않는다.
@@ -32,7 +32,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 pytestmark = git_required
 
-# 사이클이 쓰는 이름 — repo 이름은 `--user-ack` 값과 정확히 같아야 한다(엔진 결속 규칙).
+# 사이클이 쓰는 이름 — repo 이름은 `--user-ack` 값과 정확히 같아야 한다(엔진 연결 규칙).
 # PM 홈 폴더 이름(`demo`)은 그 자신이 repo 로 등록돼 있어 다른 이름을 쓴다(같으면 `repo add`
 # 가 "이미 등록됨" 으로 등록을 건너뛴다 — 실측).
 REPO_NAME = "app"
@@ -143,14 +143,14 @@ def test_repo_add_takes_the_url_as_a_flag_and_registers_the_row(cycle):
     assert "protected" in cycle.steps["repo protected show"]["stdout"]
 
 
-def test_repo_protected_set_changes_the_ledger_column(cycle):
+def test_repo_protected_set_changes_the_record_column(cycle):
     assert cycle.steps["repo protected set"]["rc"] == 0
     row = next(row for row in cycle.steps["repo protected set"]["status"]["repos"]
                if row["repo"] == REPO_NAME)
     assert row["protected"] == "main"
 
 
-# ── ② 장부 변화 — 판정은 status --json 이 낸다 ───────────────────────────────
+# ── ② 기록 변화 — 판정은 status --json 이 낸다 ───────────────────────────────
 
 
 def test_worktree_add_creates_a_slot_and_alloc_binds_it_to_the_task(cycle):
@@ -201,7 +201,7 @@ def test_task_end_drops_the_row_and_reopen_restores_it_reset(cycle):
     assert restored[0]["prefix"] is None and restored[0]["alive"] is False
 
 
-def test_worktree_remove_and_prune_stale_clear_the_ledger(cycle):
+def test_worktree_remove_and_prune_stale_clear_the_records(cycle):
     removed = cycle.steps["worktree remove"]
     slot = _work_slot(cycle.steps["release"]["status"])
 

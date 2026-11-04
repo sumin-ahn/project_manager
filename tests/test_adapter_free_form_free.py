@@ -4,7 +4,7 @@
 value-fill 기계(overlay·slot-fill·conditional-omit)는 ADR-0031 로 제거됐으므로 — 어댑터에 free-form
 `{{KEY}}` 토큰이 남아 있으면 그 토큰을 아무도 채우지 않아 `_assert_no_leak` 가 **RenderLeakError 로
 hard-fail**(자족 산출물 = 토큰 0). 즉 채택자 customization·**안전 라인(보호 영역)**이 조용히 소실되는
-대신 emission 순간 큰소리로 표면화된다.
+대신 emission 순간 큰소리로 드러난다.
 
 결정(ADR-0030·amends ADR-0028, ADR-0031 cleanup): @render 어댑터 파일은 **operational 토큰만** 보유한다
 (free-form 0). 채택자 free-form 은 *기존 canonical home* 에 둔다 — 고유 제약 = root doc(CLAUDE.md/
@@ -13,7 +13,7 @@ FILL 채널이 거기서 전담하며, 어댑터는 이를 포인터로 참조.
 
 이 가드는 그 불변식을 lock-in 한다 — @render 될 어댑터 경로의 출하 .md 에 free-form 토큰이
 하나라도 있으면 fail. 미래 어댑터가 free-form 을 재유입하면 여기서 잡힌다
-(feature-ship-needs-fresh-adopter-gate 클래스).
+(새 기능 출하 전 새 채택자 설치로 확인해야 하는 결함 종류).
 """
 from pathlib import Path
 
@@ -34,7 +34,7 @@ FREEFORM_TOKENS = (
 
 # @render 활성화 scope (ADR-0030 · T-0133/0135/0136): 하네스별 어댑터 agent/skill 디렉토리.
 # root doc(CLAUDE.md/AGENTS.md)·lite·pm_role.local.md 은 @render 밖 = free-form 의 canonical home → 제외.
-#   축은 파생(HARNESSES)이되 각 하네스의 agent/skill 트리 경로는 harness-특수(remap 이 달라 손으로
+#   하네스 목록은 파생(HARNESSES)이되 각 하네스의 agent/skill 트리 경로는 harness-특수(remap 이 달라 손으로
 #   못 지운다) — codex 는 `.codex/agents`(.toml @render)·`.agents/skills`(SKILL.md @render·@source remap).
 #   신규 하네스가 이 맵을 안 채우면 아래 completeness 가드가 loud 로 죽어 편입을 강제한다(T-0429).
 _RENDER_SCOPED_BY_HARNESS = {
@@ -67,7 +67,7 @@ def _render_scoped_text_files():
 def test_render_scoped_dir_present_and_nonempty(rel):
     """RENDER_SCOPED_DIRS **각 등록 경로**가 실존 + 파일 ≥1 (경로별·MF3). aggregate `assert scoped`
     만 있으면 특정 하네스 경로가 stale/누락돼도 다른 하네스 파일로 green 이 된다 — 경로별로 못박아
-    한 하네스의 render-scoped 트리 소실을 즉시 red 로 표면화한다(하네스 축은 파생·경로 실존은 경로별)."""
+    한 하네스의 render-scoped 트리 소실을 즉시 red 로 드러낸다(하네스 목록은 파생·경로 실존은 경로별)."""
     d = REPO_ROOT / rel
     assert d.is_dir(), f"render-scoped 경로 부재(stale/누락?): {rel}"
     files = repo_owned_paths(REPO_ROOT, rel, mode=TRACKED_ONLY)

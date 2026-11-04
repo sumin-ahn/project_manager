@@ -1,6 +1,6 @@
 """git 명령 판정 규칙 (층: domain).
 
-서브커맨드 분류, 멈춤 거부 경우·문구, 사용자 1회 허용 표식, 인자·pathspec 해석, 저장소 조회 없이
+서브커맨드 분류, 멈춤 거부 경우·문구, 사용자 1회 허용 표시, 인자·pathspec 해석, 저장소 조회 없이
 정해지는 파괴 형태, 허용 위조 판정, 가장 강한 판정 선택. 판정 흐름(`judge_*`)은 board 가 소유한다.
 """
 from __future__ import annotations
@@ -29,8 +29,8 @@ _GIT_SLOT_WRITE_SUBCOMMANDS: frozenset[str] = frozenset({
     "sparse-checkout", "submodule",
 })
 
-# 멈춤 거부 deny 표식 — 손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조·남의 슬롯 쓰기. 셸 파서의 조건/cwd
-# 불확실 강등(deny→warn)은 이 표식이 붙은 판정을 낮추지 않는다 — 대상을 못 정한 호출은 이미
+# 멈춤 거부 deny 표시 — 손 git 파괴 형태·슬롯/공용 저장소 파일 삭제·허용 위조·남의 슬롯 쓰기. 셸 파서의 조건/cwd
+# 불확실에 따른 수준 낮춤(deny→warn)은 이 표시가 붙은 판정을 낮추지 않는다 — 대상을 못 정한 호출은 이미
 # 슬롯·공용 저장소일 수 있다고 보고 거부한 결과다.
 GIT_DESTRUCTIVE_DENY_CODE = "git-destructive-form"
 
@@ -58,28 +58,28 @@ _GIT_GUARD_CASE_SLOT_NOT_OWNED = "slot-not-owned"
 # task 를 열거나 슬롯을 잡지 않고 거부를 위임한 PM 에게 돌려준다.
 _GIT_GUARD_CASE_DELEGATED_TASK = "delegated-task"
 
-# 열린 todo 없이 파일을 고치려는 경우 — 무엇을 하는 중인지 장부에 없으면 다음 세션도 사용자도
+# 열린 todo 없이 파일을 고치려는 경우 — 무엇을 하는 중인지 기록에 없으면 다음 세션도 사용자도
 # 그 일을 못 본다. 등록 경로(`pm-config task todo add`)는 셸 명령이라 이 판정을 타지 않는다.
 _GIT_GUARD_CASE_NO_OPEN_TODO = "no-open-todo"
 
 # 사용자 1회 허용 입력 한 줄 — `git 허용: <명령 원문>`. 사용자 프롬프트 훅만 이 줄로 허용 기록을
-# 만든다. 도구 호출 입력에 이 표식이나 허용 기록 폴더 이름이 있으면 위조 시도로 거부한다.
+# 만든다. 도구 호출 입력에 이 표시나 허용 기록 폴더 이름이 있으면 위조 시도로 거부한다.
 GIT_GRANT_LINE = re.compile(r"^[ \t]*git[ \t]+허용[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 
 _GIT_GRANT_MARKER = re.compile(r"git[ \t]+허용[ \t]*:")
 
 GIT_GRANT_DIR_NAME = "git-grants"
 
-_GIT_ANCHOR_DENY_ROOTS: frozenset[str] = frozenset({"tests", "templates"})
+_GIT_TARGET_REPO_DENY_ROOTS: frozenset[str] = frozenset({"tests", "templates"})
 
 
 class _GitInvocation(NamedTuple):
-    """정규화한 git 호출. ``cwd``는 global ``-C``를 적용한 실제 명령 앵커다."""
+    """정규화한 git 호출. ``cwd``는 global ``-C``를 적용한 실제 명령의 대상 저장소다."""
 
     cwd: Path
     subcommand: str
     args: tuple[str, ...]
-    anchor_certain: bool
+    target_repo_certain: bool
     # global ``-c <키>=<값>`` 들 — alias 풀이가 대상 저장소 설정과 함께 읽는다(git 과 같은 우선순위).
     config: tuple[str, ...]
 
@@ -91,7 +91,7 @@ def _git_operand_pathspecs(
     """option 값을 건너뛰고 명시 operand만 반환한다.
 
     ``--pathspec-from-file``은 파일 *내용*이 pathspec이고 옵션 값은 그 파일 경로일 뿐이다. 훅이
-    파일 내용을 읽어 shell 실행 시점 의미를 재현하는 것은 TOCTOU라, 이 축은 통째로 fail-open한다.
+    파일 내용을 읽어 shell 실행 시점 의미를 재현하는 것은 TOCTOU라, 이 경우는 통째로 fail-open한다.
     """
     values = list(args)
     if any(
@@ -273,7 +273,7 @@ _GIT_REF_REWRITE = _GitDestructiveForm(
 
 
 def _git_branch_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     parsed = _git_arguments(
         args, short_values="u",
@@ -298,14 +298,14 @@ def _git_branch_form(
 
 
 def _git_reset_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     parsed = _git_arguments(args, long_values=frozenset({"--pathspec-from-file"}))
     return _GIT_DISCARD_CHANGES if _git_option_given(parsed, "--hard") else None
 
 
 def _git_restore_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     parsed = _git_arguments(
         args, short_values="s", long_values=frozenset({"--source", "--pathspec-from-file"}),
@@ -318,7 +318,7 @@ def _git_restore_form(
 
 
 def _git_clean_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     # ``-f`` 없는 clean 도 ``clean.requireForce=false`` 설정이면 지운다 — 미리보기(-n)만 통과.
     parsed = _git_arguments(args, short_values="e", long_values=frozenset({"--exclude"}))
@@ -326,7 +326,7 @@ def _git_clean_form(
 
 
 def _git_stash_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     parsed = _git_arguments(
         args, short_values="m", long_values=frozenset({"--message", "--pathspec-from-file"}),
@@ -336,7 +336,7 @@ def _git_stash_form(
 
 
 def _git_push_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     parsed = _git_arguments(
         args, short_values="o",
@@ -350,7 +350,7 @@ def _git_push_form(
 
 
 def _git_update_ref_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     # ``update-ref [-d] <ref> …`` 이 로컬 브랜치(refs/heads/·HEAD)를 지우거나 옮기면 `branch -D`·
     # `reset` 과 같은 결과다. ``--stdin`` 은 명령 목록을 입력으로 받아 대상을 정적으로 볼 수 없다.
@@ -362,7 +362,7 @@ def _git_update_ref_form(
 
 
 def _git_symbolic_ref_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     # 이름 하나만 주면 읽기다. 대상까지 주거나 ``-d`` 면 HEAD 가 가리키는 브랜치를 바꾸거나 지운다.
     parsed = _git_arguments(args, short_values="m", long_values=frozenset({"--message"}))
@@ -372,14 +372,14 @@ def _git_symbolic_ref_form(
 
 
 def _git_checkout_index_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     parsed = _git_arguments(args, long_values=frozenset({"--prefix", "--stage"}))
     return _GIT_DISCARD_CHANGES if _git_option_given(parsed, "-f", "--force") else None
 
 
 def _git_read_tree_form(
-    args: Sequence[str], ref_anchor: Path | None, runner: Any,
+    args: Sequence[str], ref_target_repo: Path | None, runner: Any,
 ) -> _GitDestructiveForm | None:
     parsed = _git_arguments(
         args, long_values=frozenset({"--prefix", "--index-output", "--exclude-per-directory"}),
@@ -391,7 +391,7 @@ def _git_read_tree_form(
 # 멈춤 거부 중 사용자에게 물어 실행할 수 있는 경우(ASK_USER)는 사용자가 `git 허용: <명령 원문>`
 # 한 줄을 보내면 그 명령 한 번만 통과한다. 허용 기록은 사용자 프롬프트 훅만 만든다
 # (`record_git_grants`). 기록은 (세션·실행 폴더·정규화 argv) 에 묶이고, 가드가 정확히 같은 호출을
-# 만나면 파일을 이름 바꾸기로 선점해 지운 뒤 통과시킨다 — 두 번째 호출은 기록이 없어 거부된다.
+# 만나면 파일을 이름 바꾸기로 먼저 차지해 지운 뒤 통과시킨다 — 두 번째 호출은 기록이 없어 거부된다.
 _GIT_GUARD_ACTION_LINES: dict[str, str] = {
     _GIT_GUARD_CASE_FOLDER_UNKNOWN: (
         "대상 폴더를 절대경로로 적어 다시 실행한다(git 은 `git -C <절대경로> …`)."
@@ -477,7 +477,7 @@ def _git_grant_forgery_judgment(detail: str) -> dict[str, str]:
 
 
 def _git_grant_forgery_in_command(command: str) -> dict[str, str] | None:
-    """셸 명령에 허용 표식·허용 기록 폴더가 있으면 위조 시도 판정(파일 쓰기·중첩 하네스 프롬프트)."""
+    """셸 명령에 허용 표시·허용 기록 폴더가 있으면 위조 시도 판정(파일 쓰기·중첩 하네스 프롬프트)."""
     text = command.replace("\\", "/").replace("'", "").replace('"', "")
     if GIT_GRANT_DIR_NAME in text or _GIT_GRANT_MARKER.search(text):
         return _git_grant_forgery_judgment(
@@ -529,7 +529,7 @@ def _git_writes_slot(subcommand: str, args: Sequence[str]) -> bool:
 
 
 def _strongest_git_guard_judgment(judgments: Sequence[dict[str, str]]) -> dict[str, str]:
-    """가장 강한 판정 하나로 접는다 — 여럿이면 같은 판정 호출들의 사유를 번호와 함께 잇는다."""
+    """가장 강한 판정 하나로 합친다 — 여럿이면 같은 판정 호출들의 사유를 번호와 함께 잇는다."""
     rank = {"ok": 0, "warn": 1, "deny": 2}
     strongest = max(judgments, key=lambda item: rank[item["verdict"]])
     if len(judgments) == 1:

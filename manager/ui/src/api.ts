@@ -1,4 +1,4 @@
-/** 브리지 타입과 HTTP 배선 — 화면이 파이썬을 부르는 유일한 자리. */
+/** 브리지 타입과 HTTP 연결 — 화면이 파이썬을 부르는 유일한 자리. */
 
 export type BridgeError = {
   /**
@@ -189,7 +189,7 @@ export type ConfKeyRow = {
   choices: ConfChoices | null;
   recommended: string | null;
   members: ConfKeyMember[] | null;
-} & ConfRowAxes;
+} & ConfRowFields;
 
 /**
  * 그 절을 켜는 스위치 — 꺼져 있으면 이 행은 아무 효과가 없다.
@@ -197,8 +197,8 @@ export type ConfKeyRow = {
  */
 export type ConfGovernor = { key: string; on: string[] | null; reason: string };
 
-/** 행마다 붙는 축 셋 (schema 6). */
-export type ConfRowAxes = {
+/** 행마다 붙는 필드 셋 (schema 6). */
+export type ConfRowFields = {
   /** 도구·모델·생각 깊이를 한 세트로 읽는 묶음 이름 — 체크박스가 하나다. */
   unit: string | null;
   governed_by: ConfGovernor | null;
@@ -213,7 +213,7 @@ export type ConfKeyMember = {
   unset: string | null;
   choices: ConfChoices | null;
   recommended: string | null;
-} & ConfRowAxes;
+} & ConfRowFields;
 
 export type ConfKeysDocument = {
   schema: number;
@@ -349,7 +349,7 @@ export function isError<T>(response: T | ErrorResponse): response is ErrorRespon
 /** 서버가 보내는 알림 하나 — 저장·적용이 끝났다는 사실과 그 자리. */
 export type ChangeEvent = { name: string; path: string };
 
-/** 창이 자기를 밝히는 표식 — 창이 여는 주소의 질의 하나다(그 밖의 손님은 브라우저다). */
+/** 창이 자기를 밝히는 표시 — 창이 여는 주소의 질의 하나다(그 밖의 손님은 브라우저다). */
 const CLIENT_QUERY = "client";
 const CLIENT_HEADER = "X-Manager-Client";
 const WINDOW_CLIENT = "window";

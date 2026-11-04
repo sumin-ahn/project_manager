@@ -1,6 +1,6 @@
 """브리지 `run` 의 허용 목록 — 무엇을 부를 수 있고 무엇이 서브프로세스 전에 거절되나 (T-0913 AT-002).
 
-축 넷:
+검사 넷:
   1. 허용 목록은 **선행 토큰 튜플**의 집합이다. `argv[0]` 만 보면 `repo`·`worktree`·`task` 가
      통째로 열려 `repo remove` 같은 형제와 앞으로 생길 하위명령이 자동으로 들어온다.
   2. 목록 밖과 `--force` 는 **서브프로세스를 띄우기 전에** 거절된다 — 스폰 자리에 세운 관찰자가
@@ -102,19 +102,19 @@ def no_spawn(monkeypatch):
     monkeypatch.setattr("manager.bridge_settings.subprocess.run", observer)
 
 
-# ── ① 허용 목록의 결속 축 ────────────────────────────────────────────────────
+# ── ① 허용 목록의 연결 기준 ────────────────────────────────────────────────────
 
 
 def test_the_allowlist_is_a_set_of_leading_token_tuples(api):
     assert len(ALLOWED_COMMANDS) == 16
-    assert ("whoami",) not in ALLOWED_COMMANDS      # 부르는 곳 없는 표면을 두지 않는다
+    assert ("whoami",) not in ALLOWED_COMMANDS      # 부르는 곳 없는 명령을 두지 않는다
     assert all(isinstance(command, tuple) for command in ALLOWED_COMMANDS)
-    # 한 축에 두 낱말이 필요한 것과 한 낱말짜리가 같은 집합에 있다.
+    # 한 명령에 두 낱말이 필요한 것과 한 낱말짜리가 같은 집합에 있다.
     assert ("repo", "add") in ALLOWED_COMMANDS and ("repo",) not in ALLOWED_COMMANDS
     assert ("alloc",) in ALLOWED_COMMANDS
 
 
-def test_the_screen_argv_of_all_commands_passes_the_gate():
+def test_the_screen_argv_of_all_commands_passes_the_check():
     """정상 명령이 막히지 않는다 — 16개 각각의 실제 인자 형식으로 맞춘다."""
     assert set(SCREEN_ARGV) == set(ALLOWED_COMMANDS)
     for command, argv in SCREEN_ARGV.items():
@@ -228,7 +228,7 @@ def test_rejections_leave_the_project_tree_untouched(api, pm_home, tmp_path):
 
 def test_the_refusal_has_the_shape_the_screen_already_knows(api, pm_home, no_spawn):
     error = api.run(str(pm_home), ["update"])["error"]
-    known = CallError("spawn", "다른 축의 실패").as_error_dict()["error"]
+    known = CallError("spawn", "다른 종류의 실패").as_error_dict()["error"]
 
     assert error.keys() == known.keys()
     assert "허용:" in error["message"]                # 무엇을 부를 수 있는지 말해 준다

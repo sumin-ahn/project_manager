@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from _git import commit_env
-from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
+from conftest import target_repo_board_module, bind_product_cluster, ensure_product_slot
 from pm_engine.domain import ticket_rules
 from pm_engine.infra import pm_paths, ticket_store
 from pm_engine.domain import design_rules, review_form
@@ -138,7 +138,7 @@ def board_env(tmp_path, monkeypatch):
     assert _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path).returncode == 0
     board_dir = _make_board_git(tmp_path, bare)
     board = _load_board()
-    anchor_board_module(board, tmp_path, monkeypatch)
+    target_repo_board_module(board, tmp_path, monkeypatch)
     for key, value in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, value)
     return board, board_dir, bare

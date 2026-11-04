@@ -1,4 +1,4 @@
-"""T-0587 — raw git cwd-misanchor 판정 seam + 3하네스 배선."""
+"""T-0587 — raw git cwd 대상 저장소 판정 공용 함수 + 3하네스 연결."""
 from __future__ import annotations
 
 from pm_engine.app import engine_guard
@@ -97,7 +97,7 @@ def _seed_engine_copy(root: Path, rev: str) -> None:
 
 
 def _commit_engine_copy(root: Path) -> None:
-    """`_seed_engine_copy` 가 쓴 사본을 그 저장소의 커밋으로 확정한다(clean worktree 형상)."""
+    """`_seed_engine_copy` 가 쓴 사본을 그 저장소의 커밋으로 확정한다(clean worktree 구성)."""
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "engine copy")
 
@@ -138,7 +138,7 @@ def topology(tmp_path):
 
     source = tmp_path / "product-source"
     _seed_repo(source)
-    # ADR-0027 실 형상 — 공유 저장소는 PM 홈 안 `.repos/<repo>.git`(`worktree_pool.bare_repo_path`).
+    # ADR-0027 실 구성 — 공유 저장소는 PM 홈 안 `.repos/<repo>.git`(`worktree_pool.bare_repo_path`).
     # 슬롯의 `.git` 포인터가 이 자리를 통해 소유 PM 홈을 선언한다(product git 은 여전히 별개).
     bare = home / ".repos" / "product.git"
     bare.parent.mkdir(parents=True)
@@ -146,10 +146,10 @@ def topology(tmp_path):
     slot = home / "work" / "product_1"
     slot.parent.mkdir(parents=True)
     _git(bare, "worktree", "add", "-q", str(slot))
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    records.parent.mkdir(parents=True)
     # 슬롯 주인 = task t1, 그 task 를 연 하네스 세션 = "S"(판정 호출의 세션 인자).
-    ledger.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
+    records.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
                                                "state": "leased", "session": "t1"}],
                                   "tasks": [{"name": "t1", "session": "S"}]}) + "\n", encoding="utf-8")
     return home, slot
@@ -159,7 +159,7 @@ def topology(tmp_path):
 def foreign_pm_home(topology, tmp_path):
     """`topology` 와 소유 관계가 전혀 없는 **다른** PM 홈 git 저장소.
 
-    저장소 3개(PM 홈 + 그 등록 slot + 남남인 PM 홈) 형상을 만들어, 정체 클래스만으로는
+    저장소 3개(PM 홈 + 그 등록 slot + 남남인 PM 홈) 구성을 만들어, 정체 클래스만으로는
     짝처럼 보이는 두 사본이 실제로는 서로의 import 사본이 아닌 경우를 재현한다.
     """
     home = tmp_path / "other-pm-home"
@@ -170,14 +170,14 @@ def foreign_pm_home(topology, tmp_path):
 
 @pytest.fixture
 def topology_without_home_tests(topology):
-    """PM 홈 정체는 유지하되 pytest 대상 ``tests/``만 실재하지 않는 형상."""
+    """PM 홈 정체는 유지하되 pytest 대상 ``tests/``만 실재하지 않는 구성."""
     home, slot = topology
     shutil.rmtree(home / "tests")
     return home, slot
 
 
 def test_cross_existing_pathspec_is_the_only_deny(topology):
-    board = _load("git_anchor_board_deny", BOARD_PY)
+    board = _load("git_target_repo_board_deny", BOARD_PY)
     home, _slot = topology
     got = engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home), ["git", "add", "tests/shared.txt"])
     assert got["verdict"] == "deny"
@@ -186,7 +186,7 @@ def test_cross_existing_pathspec_is_the_only_deny(topology):
 
 
 def test_false_deny_zero_for_normal_home_slot_and_missing_path(topology, tmp_path):
-    board = _load("git_anchor_board_normal", BOARD_PY)
+    board = _load("git_target_repo_board_normal", BOARD_PY)
     home, slot = topology
     normal_home = engine_guard.judge_git_check(pm_paths.home_at(home), "S",
         str(home), ["git", "commit", "-m", "done", "--", ".project_manager/wiki/status.md"]
@@ -203,7 +203,7 @@ def test_false_deny_zero_for_normal_home_slot_and_missing_path(topology, tmp_pat
 
 
 def test_read_git_is_ok_and_git_dash_c_changes_anchor(topology):
-    board = _load("git_anchor_board_read", BOARD_PY)
+    board = _load("git_target_repo_board_read", BOARD_PY)
     home, slot = topology
     assert engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home), ["git", "status"])["verdict"] == "ok"
     got = engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home), ["git", "-C", str(slot), "add", "tests/shared.txt"])
@@ -240,7 +240,7 @@ def test_shell_parser_uses_worst_git_judgment(topology, path_notation):
 )
 def test_engine_guard_allows_pm_home_pytest_when_tests_exist(topology, argv):
     """(a) 임베드 채택자의 PM 홈에 tests/가 실재하면 출하 회귀 명령은 ok."""
-    board = _load(f"engine_anchor_home_pytest_{len(argv)}", BOARD_PY)
+    board = _load(f"engine_target_repo_home_pytest_{len(argv)}", BOARD_PY)
     home, _slot = topology
     got = engine_guard.judge_engine_invocation(str(home), argv)
     assert got["verdict"] == "ok"
@@ -259,7 +259,7 @@ def test_engine_guard_denies_pm_home_pytest_when_tests_missing(
     topology_without_home_tests, argv,
 ):
     """(a) PM 홈 cwd에 명시 대상 tests/가 없을 때만 기계 확정 deny."""
-    board = _load(f"engine_anchor_missing_home_pytest_{len(argv)}", BOARD_PY)
+    board = _load(f"engine_target_repo_missing_home_pytest_{len(argv)}", BOARD_PY)
     home, _slot = topology_without_home_tests
     got = engine_guard.judge_engine_invocation(str(home), argv)
     assert got["verdict"] == "deny"
@@ -289,7 +289,7 @@ def test_engine_guard_denies_worktree_board_mutation(topology):
     )
     assert repeated_slash["verdict"] == "deny"
 
-    # cwd가 아니라 선택한 script 사본이 엔진 repo 앵커를 정한다.
+    # cwd가 아니라 선택한 script 사본이 엔진 repo 대상 저장소를 정한다.
     slot_script = slot / ".project_manager" / "tools" / "board.py"
     from_home = engine_guard.judge_engine_invocation(
         str(home), ["python3", str(slot_script), "complete", "T-0001"],
@@ -305,8 +305,8 @@ def test_engine_guard_denies_worktree_board_mutation(topology):
 def test_relative_engine_call_warns_on_same_rev_different_bytes(topology):
     """(c) 같은 release rev여도 도구 bytes가 다르면 stale import를 검출한다.
 
-    T-0800 이후 이 진단은 worktree 사본이 **커밋으로 확정된** 형상에서만 나온다 —
-    fixture 도 그 형상(slot 사본 커밋)으로 고정한다.
+    T-0800 이후 이 진단은 worktree 사본이 **커밋으로 확정된** 상태에서만 나온다 —
+    fixture 도 그 상태(slot 사본 커밋)로 고정한다.
     """
     home, slot = topology
     _seed_engine_copy(home, "v1.7.5")
@@ -339,10 +339,10 @@ def test_relative_engine_call_warns_on_same_rev_different_bytes(topology):
 
 
 class _GitStatusCountingRunner:
-    """실 git 을 그대로 실행하되 방향 판정용 ``status`` 조회만 세는 seam.
+    """실 git 을 그대로 실행하되 방향 판정용 ``status`` 조회만 세는 교체 함수.
 
     합성은 ``fail_mode="oserror"`` 하나뿐이다 — git 실행 파일 부재는 프로세스 전역 PATH 를
-    바꿔야 재현되고, 그러면 정체 해소용 ``rev-parse`` 까지 같이 죽어 이 형상(정체는 해소되는데
+    바꿔야 재현되고, 그러면 정체 해소용 ``rev-parse`` 까지 같이 죽어 이 경우(정체는 해소되는데
     방향 조회만 실패) 자체가 사라진다. 반환코드 실패는 합성하지 않고 실제 git 실패
     경계(`_corrupt_git_index`)를 쓴다.
     """
@@ -416,7 +416,7 @@ def _mismatched_engine_copies(home: Path, slot: Path, *, commit_slot: bool) -> N
     """두 사본의 ``pm_delegate.py`` bytes 를 서로 다르게 만든다.
 
     ``commit_slot`` 이 참이면 worktree 사본을 커밋으로 확정(clean)하고 PM 홈 사본만 바꾼다 —
-    진짜 stale import 형상이다. 거짓이면 worktree 사본이 미커밋(편집 중) 형상이 된다.
+    진짜 stale import 상태다. 거짓이면 worktree 사본이 미커밋(편집 중) 상태가 된다.
     """
     _seed_engine_copy(home, "v1.7.9")
     _seed_engine_copy(slot, "v1.7.9")
@@ -444,10 +444,10 @@ def test_sha_mismatch_with_dirty_worktree_copy_does_not_claim_stale_import(
 ):
     """worktree 사본이 미커밋이면 방향을 단정하지 않는다(역방향 오안내 차단).
 
-    ``gitignored`` 는 사본이 `.gitignore` 에 걸려 추적되지 않는 실제 형상이다 — ``--ignored``
+    ``gitignored`` 는 사본이 `.gitignore` 에 걸려 추적되지 않는 실제 경우다 — ``--ignored``
     없이 조회하면 출력이 비어 clean(=stale import)으로 오독된다.
     """
-    board = _load(f"engine_anchor_dirty_worktree_{dirt}", BOARD_PY)
+    board = _load(f"engine_target_repo_dirty_worktree_{dirt}", BOARD_PY)
     home, slot = topology
     if dirt == "untracked":
         _mismatched_engine_copies(home, slot, commit_slot=False)
@@ -484,7 +484,7 @@ def test_sha_mismatch_with_dirty_worktree_copy_does_not_claim_stale_import(
 
 def test_sha_mismatch_with_clean_worktree_copy_reports_stale_import(topology):
     """worktree 사본이 커밋 상태면 기존 stale import 안내가 그대로 나온다(PM 홈 cwd)."""
-    board = _load("engine_anchor_clean_worktree_from_home", BOARD_PY)
+    board = _load("engine_target_repo_clean_worktree_from_home", BOARD_PY)
     home, slot = topology
     _mismatched_engine_copies(home, slot, commit_slot=True)
     home_script = _engine_script(home)
@@ -510,7 +510,7 @@ def test_sha_mismatch_with_clean_worktree_copy_reports_stale_import(topology):
 
 def test_freshness_git_query_happens_only_when_sha_differs(topology):
     """성능 제약: 사본이 같으면 git 조회 0회, 다를 때만 1회."""
-    board = _load("engine_anchor_freshness_query_count", BOARD_PY)
+    board = _load("engine_target_repo_freshness_query_count", BOARD_PY)
     home, slot = topology
     _seed_engine_copy(home, "v1.7.9")
     _seed_engine_copy(slot, "v1.7.9")
@@ -559,7 +559,7 @@ def test_sha_mismatch_with_unreadable_git_state_does_not_assert_direction(
     topology, fail_mode,
 ):
     """git 상태를 못 읽으면 어느 쪽이 최신인지 단정하지 않고 두 경로를 남긴다."""
-    board = _load(f"engine_anchor_freshness_git_fail_{fail_mode}", BOARD_PY)
+    board = _load(f"engine_target_repo_freshness_git_fail_{fail_mode}", BOARD_PY)
     home, slot = topology
     _mismatched_engine_copies(home, slot, commit_slot=False)
     home_script = _engine_script(home)
@@ -591,7 +591,7 @@ def test_cross_owner_copies_are_undecided_without_git_query(topology, foreign_pm
     정체 클래스만 보면 pm-home + slot 이라 짝처럼 보이지만, 그 slot 을 소유하는 PM 홈은
     사본이 있는 PM 홈이 아니다. 서로 남남인 저장소라 어느 쪽도 상대의 import 사본이 아니다.
     """
-    board = _load("engine_anchor_cross_owner", BOARD_PY)
+    board = _load("engine_target_repo_cross_owner", BOARD_PY)
     home, slot = topology
     _seed_engine_copy(slot, "v1.7.9")
     _commit_engine_copy(slot)
@@ -621,7 +621,7 @@ def test_cross_owner_copies_are_undecided_without_git_query(topology, foreign_pm
 
 def test_freshness_without_home_worktree_pair_is_undecided_without_git_query(topology):
     """정체 클래스가 PM 홈–worktree 짝을 이루지 않으면 git 조회 없이 판정 불가로 남긴다."""
-    board = _load("engine_anchor_freshness_unpaired", BOARD_PY)
+    board = _load("engine_target_repo_freshness_unpaired", BOARD_PY)
     home, slot = topology
     _mismatched_engine_copies(home, slot, commit_slot=False)
     relative = Path(".project_manager") / "tools" / "pm_delegate.py"
@@ -639,8 +639,8 @@ def test_freshness_without_home_worktree_pair_is_undecided_without_git_query(top
     assert runner.status_calls == []
 
 
-def test_unexpanded_engine_path_reports_unknown_without_changing_deny_axis(topology):
-    """F-008: 미확장 parameter로 사본·앵커를 조립하지 않고 deny 강도는 보존한다."""
+def test_unexpanded_engine_path_reports_unknown_without_changing_deny_strength(topology):
+    """F-008: 미확장 parameter로 사본·대상 저장소를 조립하지 않고 deny 강도는 보존한다."""
     home, slot = topology
 
     for token in ("$PMH", "${PMH}", "$1"):
@@ -667,8 +667,8 @@ def test_unexpanded_engine_path_reports_unknown_without_changing_deny_axis(topol
 def test_relative_engine_copy_hash_read_failure_is_fail_soft(
     monkeypatch, topology, capsys,
 ):
-    """도구 사본을 읽지 못해도 판정 seam은 warn dict를 반환해 훅 rc0을 보존한다."""
-    board = _load("engine_anchor_copy_hash_failure", BOARD_PY)
+    """도구 사본을 읽지 못해도 판정 함수는 warn dict를 반환해 훅 rc0을 보존한다."""
+    board = _load("engine_target_repo_copy_hash_failure", BOARD_PY)
     home, slot = topology
     _seed_engine_copy(home, "v1.7.5")
     _seed_engine_copy(slot, "v1.7.5")
@@ -676,7 +676,7 @@ def test_relative_engine_copy_hash_read_failure_is_fail_soft(
     def unreadable(_path):
         raise OSError("fixture unreadable")
 
-    # 사본 해시 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
+    # 사본 해시 판독은 공유 읽기 함수를 지난다([[T-0729]]) — 주입도 그 자리에 건다.
     monkeypatch.setattr(fs, "read_bytes_shared", unreadable)
     got = engine_guard.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
@@ -684,7 +684,7 @@ def test_relative_engine_copy_hash_read_failure_is_fail_soft(
     assert got["verdict"] == "warn"
     assert "sha256 비교 불가(파일 읽기 실패)" in got["reason"]
 
-    driver = _load("engine_anchor_copy_hash_failure_hook", CLAUDE_DRIVER)
+    driver = _load("engine_target_repo_copy_hash_failure_hook", CLAUDE_DRIVER)
     payload = {
         "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(slot),
         "tool_input": {
@@ -692,7 +692,7 @@ def test_relative_engine_copy_hash_read_failure_is_fail_soft(
         },
     }
     monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
-    rc = driver.run_git_anchor_hook(home)
+    rc = driver.run_git_target_repo_hook(home)
     hook_output = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert "sha256 비교 불가(파일 읽기 실패)" in (
@@ -702,7 +702,7 @@ def test_relative_engine_copy_hash_read_failure_is_fail_soft(
 
 def test_absolute_engine_call_is_ok(topology):
     """(d) 명시 사본의 비-mutation 엔진 호출은 정체가 확정되므로 ok."""
-    board = _load("engine_anchor_absolute_copy", BOARD_PY)
+    board = _load("engine_target_repo_absolute_copy", BOARD_PY)
     home, slot = topology
     _seed_engine_copy(home, "v1")
     _seed_engine_copy(slot, "v1")
@@ -727,7 +727,7 @@ def test_mixed_git_and_engine_calls_use_strongest_judgment(topology):
 def test_mixed_git_and_engine_calls_promote_missing_tests_deny(
     topology_without_home_tests,
 ):
-    """(e) tests/ 부재가 실측된 형상에서는 혼합 호출의 deny가 최강 판정이다."""
+    """(e) tests/ 부재가 실측된 경우에는 혼합 호출의 deny가 최강 판정이다."""
     home, _slot = topology_without_home_tests
     got = cli_hooks.judge_git_check_command(cli_hooks.adapter_home(home), "S", 
         str(home), "git status && python3 -m pytest tests/", main_thread=True,
@@ -1118,7 +1118,7 @@ def test_if_else_tracks_failed_cd_branch_cwd(topology):
     ],
 )
 def test_git_pathspec_normalization_and_no_separator_forms_deny(topology, argv):
-    board = _load(f"git_anchor_pathspec_{abs(hash(tuple(argv)))}", BOARD_PY)
+    board = _load(f"git_target_repo_pathspec_{abs(hash(tuple(argv)))}", BOARD_PY)
     home, _slot = topology
     got = engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home), argv)
     assert got["verdict"] == "deny"
@@ -1151,7 +1151,7 @@ def test_attached_redirection_still_recognizes_git(topology, command):
 
 
 def test_pathspecs_resolve_from_invocation_cwd(topology):
-    board = _load("git_anchor_pathspec_cwd", BOARD_PY)
+    board = _load("git_target_repo_pathspec_cwd", BOARD_PY)
     home, _slot = topology
     assert engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home / "tests"), ["git", "add", "shared.txt"])["verdict"] == "deny"
     assert engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home), ["git", "-C", "tests", "add", "shared.txt"])["verdict"] == "deny"
@@ -1162,7 +1162,7 @@ def test_work_tree_and_git_dir_overrides_are_never_approved_and_deny_only_destru
     topology,
 ):
     """대상 지정 override 는 승인하지 않는다. 비파괴면 warn, 파괴 형태면 대상 미확정 거부다."""
-    board = _load("git_anchor_work_tree_override", BOARD_PY)
+    board = _load("git_target_repo_work_tree_override", BOARD_PY)
     home, slot = topology
     cases = [
         (str(slot), ["git", "--work-tree", str(home), "add", "tests/shared.txt"]),
@@ -1183,7 +1183,7 @@ def test_work_tree_and_git_dir_overrides_are_never_approved_and_deny_only_destru
 
 
 def test_git_clean_exclude_values_are_not_pathspecs(topology):
-    board = _load("git_anchor_clean_exclude", BOARD_PY)
+    board = _load("git_target_repo_clean_exclude", BOARD_PY)
     home, _slot = topology
     assert engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home), ["git", "clean", "-e", "tests/shared.txt"])["verdict"] == "warn"
     assert engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home), ["git", "clean", "--exclude", "tests/shared.txt"])["verdict"] == "warn"
@@ -1310,12 +1310,12 @@ def test_pathspec_file_and_ambiguous_ref_forms_fail_open(topology):
     assert top_magic_shell["verdict"] == "deny"
 
 
-def test_malicious_ledger_parent_and_symlink_slots_are_not_registered(topology, tmp_path):
-    board = _load("git_anchor_lease_containment", BOARD_PY)
+def test_malicious_record_parent_and_symlink_slots_are_not_registered(topology, tmp_path):
+    board = _load("git_target_repo_lease_containment", BOARD_PY)
     home, _slot = topology
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
 
-    ledger.write_text(json.dumps({"leases": [
+    records.write_text(json.dumps({"leases": [
         {"slot": "../product-source", "repo": "product", "state": "leased"},
     ]}) + "\n", encoding="utf-8")
     assert engine_guard.judge_git_check(pm_paths.home_at(home), "S",
@@ -1325,7 +1325,7 @@ def test_malicious_ledger_parent_and_symlink_slots_are_not_registered(topology, 
     outside = tmp_path / "product-source"
     symlink_slot = home / "work" / "evil_1"
     symlink_slot.symlink_to(outside, target_is_directory=True)
-    ledger.write_text(json.dumps({"leases": [
+    records.write_text(json.dumps({"leases": [
         {"slot": "work/evil_1", "repo": "evil", "state": "leased"},
     ]}) + "\n", encoding="utf-8")
     assert engine_guard.judge_git_check(pm_paths.home_at(home), "S",
@@ -1341,22 +1341,22 @@ def test_malicious_ledger_parent_and_symlink_slots_are_not_registered(topology, 
     ],
 )
 def test_only_canonical_active_lease_is_slot_identity(topology, lease):
-    board = _load(f"git_anchor_lease_identity_{lease['state']}_{len(lease['slot'])}", BOARD_PY)
+    board = _load(f"git_target_repo_lease_identity_{lease['state']}_{len(lease['slot'])}", BOARD_PY)
     home, slot = topology
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text(json.dumps({"leases": [lease]}) + "\n", encoding="utf-8")
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    records.write_text(json.dumps({"leases": [lease]}) + "\n", encoding="utf-8")
     got = engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(slot), ["git", "commit", "-m", "normal"])
     assert got["verdict"] == ("deny" if lease["state"] == "idle" else "warn")
     assert got["cwd_identity"] == "worktree"
 
 
 def test_internal_symlink_slot_alias_and_target_are_not_registered(topology):
-    board = _load("git_anchor_lease_internal_symlink", BOARD_PY)
+    board = _load("git_target_repo_lease_internal_symlink", BOARD_PY)
     home, slot = topology
     alias = home / "work" / "evil_1"
     alias.symlink_to(slot, target_is_directory=True)
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text(json.dumps({"leases": [
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    records.write_text(json.dumps({"leases": [
         {"slot": "work/evil_1", "repo": "evil", "state": "leased"},
     ]}) + "\n", encoding="utf-8")
 
@@ -1367,7 +1367,7 @@ def test_internal_symlink_slot_alias_and_target_are_not_registered(topology):
 
 
 def test_registered_slot_mutation_is_explicitly_allowed(topology):
-    board = _load("git_anchor_registered_slot_allow", BOARD_PY)
+    board = _load("git_target_repo_registered_slot_allow", BOARD_PY)
     home, slot = topology
     got = engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(slot), ["git", "add", "tests/shared.txt"])
     assert got["verdict"] == "ok"
@@ -1377,7 +1377,7 @@ def test_registered_slot_mutation_is_explicitly_allowed(topology):
 @pytest.mark.parametrize("subcommand", ["rm", "mv", "clean", "apply", "stash"])
 def test_additional_mutations_warn_at_home_and_judge_form_in_registered_slot(topology, subcommand):
     """PM 홈은 종전 판정 그대로다. 슬롯에서는 파괴 형태(`clean` 미리보기 없음)만 거부한다."""
-    board = _load(f"git_anchor_mutation_{subcommand}", BOARD_PY)
+    board = _load(f"git_target_repo_mutation_{subcommand}", BOARD_PY)
     home, slot = topology
     argv = ["git", subcommand]
     if subcommand == "mv":
@@ -1399,7 +1399,7 @@ def test_additional_mutations_warn_at_home_and_judge_form_in_registered_slot(top
 
 
 def test_claude_hook_prefilter_warn_and_deny(monkeypatch, topology):
-    driver = _load("git_anchor_claude", CLAUDE_DRIVER)
+    driver = _load("git_target_repo_claude", CLAUDE_DRIVER)
     home, _slot = topology
     calls = []
 
@@ -1413,27 +1413,27 @@ def test_claude_hook_prefilter_warn_and_deny(monkeypatch, topology):
     monkeypatch.setattr(cli_hooks, "judge_git_check_command", FakeBoard.judge_git_check_command)
     base = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(home)}
     # 선필터 없음 — git 이 아닌 명령도 원문 그대로 엔진 판정에 도달한다.
-    plain = driver.git_anchor_hook_evaluate(
+    plain = driver.git_target_repo_hook_evaluate(
         {**base, "tool_input": {"command": "python3 build.py"}}, home
     )["hookSpecificOutput"]
     assert plain["additionalContext"] == "[git-check/warn] fixture"
     assert calls == [(str(home), "python3 build.py")]
-    warn = driver.git_anchor_hook_evaluate(
+    warn = driver.git_target_repo_hook_evaluate(
         {**base, "tool_input": {"command": "git commit -m x"}}, home
     )["hookSpecificOutput"]
-    deny = driver.git_anchor_hook_evaluate(
+    deny = driver.git_target_repo_hook_evaluate(
         {**base, "tool_input": {"command": "git add tests/x"}}, home
     )["hookSpecificOutput"]
-    attached = driver.git_anchor_hook_evaluate(
+    attached = driver.git_target_repo_hook_evaluate(
         {**base, "tool_input": {"command": "git>/tmp/out add tests/x"}}, home
     )["hookSpecificOutput"]
-    fragmented = driver.git_anchor_hook_evaluate(
+    fragmented = driver.git_target_repo_hook_evaluate(
         {**base, "tool_input": {"command": "g''it add tests/x"}}, home
     )["hookSpecificOutput"]
-    escaped = driver.git_anchor_hook_evaluate(
+    escaped = driver.git_target_repo_hook_evaluate(
         {**base, "tool_input": {"command": 'echo \\"; git\\\n add tests/x'}}, home
     )["hookSpecificOutput"]
-    dynamic = driver.git_anchor_hook_evaluate(
+    dynamic = driver.git_target_repo_hook_evaluate(
         {**base, "tool_input": {"command": "$WRAPPER git add tests/x"}}, home
     )["hookSpecificOutput"]
     assert "additionalContext" in warn and "permissionDecision" not in warn
@@ -1448,7 +1448,7 @@ def test_claude_hook_prefilter_warn_and_deny(monkeypatch, topology):
 def test_claude_hook_system_exit_is_warn_and_rc0(
     monkeypatch, topology, capsys, failure_site,
 ):
-    driver = _load(f"git_anchor_claude_system_exit_{failure_site}", CLAUDE_DRIVER)
+    driver = _load(f"git_target_repo_claude_system_exit_{failure_site}", CLAUDE_DRIVER)
     home, _slot = topology
 
     class ExitBoard:
@@ -1462,7 +1462,7 @@ def test_claude_hook_system_exit_is_warn_and_rc0(
         "tool_input": {"command": "git add tests/shared.txt"},
     }
     monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
-    rc = driver.run_git_anchor_hook(home)
+    rc = driver.run_git_target_repo_hook(home)
     got = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert "additionalContext" in got["hookSpecificOutput"]
@@ -1471,7 +1471,7 @@ def test_claude_hook_system_exit_is_warn_and_rc0(
 
 @pytest.mark.parametrize("failure_site", ["usage", "root"])
 def test_claude_hook_mode_outer_boundary_is_warn_rc0(monkeypatch, capsys, failure_site):
-    driver = _load(f"git_anchor_claude_outer_{failure_site}", CLAUDE_DRIVER)
+    driver = _load(f"git_target_repo_claude_outer_{failure_site}", CLAUDE_DRIVER)
     if failure_site == "usage":
         argv = ["--git-anchor-hook", "--bogus"]
     else:
@@ -1487,8 +1487,8 @@ def test_claude_hook_mode_outer_boundary_is_warn_rc0(monkeypatch, capsys, failur
 
 
 # ── 세션 내 완전일치 중복 억제 (T-0764) ────────────────────────────────────
-# 발화 문구·차단 동작은 그대로 두고 *같은 말을 두 번 하지 않는* 것만 본다.
-# stdin 형상은 라이브 훅과 같다 — `session_id` 는 ctx_stop_hook 이 marker 파일명으로 쓰는 그 필드다
+# 경고 문구·차단 동작은 그대로 두고 *같은 말을 두 번 하지 않는* 것만 본다.
+# stdin 모양은 라이브 훅과 같다 — `session_id` 는 ctx_stop_hook 이 marker 파일명으로 쓰는 그 필드다
 # (실 세션 marker `.project_manager/.local/ctx-stop/<uuid>.warn` 가 그 값의 실재 증거).
 
 def _hook_stdin(monkeypatch, driver, home: Path, command: str, session_id: str) -> dict:
@@ -1505,32 +1505,32 @@ def _hook_stdin(monkeypatch, driver, home: Path, command: str, session_id: str) 
 def test_claude_hook_emits_once_per_session_for_identical_message(
     monkeypatch, topology, capsys,
 ):
-    """같은 세션·같은 문구는 첫 1회만 발화하고, 이후 호출의 stdout 은 0바이트다."""
-    driver = _load("git_anchor_claude_once", CLAUDE_DRIVER)
+    """같은 세션·같은 문구는 첫 1회만 출력하고, 이후 호출의 stdout 은 0바이트다."""
+    driver = _load("git_target_repo_claude_once", CLAUDE_DRIVER)
     home, _slot = topology
 
     # 명령은 두 OS 모두 warn 인 git mutation 두 종으로 둔다 — cd 잔존 advisory 는 POSIX 셸
-    # 문법 축이라 Windows 판정에 없다(플랫폼 의존 픽스처 금지·VM 실측).
+    # 문법 차이라 Windows 판정에 없다(플랫폼 의존 픽스처 금지·VM 실측).
     _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-a")
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     first = json.loads(capsys.readouterr().out)[
         "hookSpecificOutput"]["additionalContext"]
     assert first.startswith("[git-check/warn]") and "git commit" in first
 
     # ① 완전일치 재호출 = 침묵(빈 JSON 도 쓰지 않는다).
     _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-a")
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     assert capsys.readouterr().out == ""
 
-    # ② 문구가 다르면 그대로 발화한다(클래스 전면 침묵 아님).
+    # ② 문구가 다르면 그대로 출력한다(클래스 전면 침묵 아님).
     _hook_stdin(monkeypatch, driver, home, "git push", "sess-a")
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     other = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert other != first and "실행 대상 저장소=" in other
 
-    # ③ 세션이 다르면 같은 문구도 그 세션의 첫 1회로 발화한다(세션 격리).
+    # ③ 세션이 다르면 같은 문구도 그 세션의 첫 1회로 출력한다(세션 격리).
     _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-b")
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     assert json.loads(capsys.readouterr().out)[
         "hookSpecificOutput"]["additionalContext"] == first
 
@@ -1545,45 +1545,45 @@ def test_claude_hook_emits_once_per_session_for_identical_message(
 
 
 def test_claude_hook_never_suppresses_repeated_deny(monkeypatch, topology, capsys):
-    """차단(deny)은 중복이어도 매번 발화한다 — 억제하면 두 번째 위험 명령이 통과한다."""
-    driver = _load("git_anchor_claude_deny_repeat", CLAUDE_DRIVER)
+    """차단(deny)은 중복이어도 매번 출력한다 — 억제하면 두 번째 위험 명령이 통과한다."""
+    driver = _load("git_target_repo_claude_deny_repeat", CLAUDE_DRIVER)
     home, _slot = topology
 
     emitted = []
     for _attempt in range(3):
         _hook_stdin(monkeypatch, driver, home, "git add tests/shared.txt", "sess-deny")
-        assert driver.run_git_anchor_hook(home) == 0
+        assert driver.run_git_target_repo_hook(home) == 0
         emitted.append(json.loads(capsys.readouterr().out)["hookSpecificOutput"])
 
     assert all(item["permissionDecision"] == "deny" for item in emitted)
     assert len({item["permissionDecisionReason"] for item in emitted}) == 1
     assert "tests/shared.txt" in emitted[0]["permissionDecisionReason"]
-    # deny 는 멤버십 장부에 들어가지도 않는다(억제 대상 아님).
+    # deny 는 멤버십 기록에 들어가지도 않는다(억제 대상 아님).
     assert not (home / ".project_manager" / ".local" / "ctx-stop").exists()
 
 
 def test_claude_hook_keeps_uncertain_downgrade_channel_open(
     monkeypatch, topology, capsys,
 ):
-    """판정불능(deny→warn 강등) 발화는 유지된다 — 사유 전문이 그대로 실린다."""
-    driver = _load("git_anchor_claude_uncertain", CLAUDE_DRIVER)
+    """판정불능(deny→warn 수준 낮춤) 출력은 유지된다 — 사유 전문이 그대로 실린다."""
+    driver = _load("git_target_repo_claude_uncertain", CLAUDE_DRIVER)
     home, _slot = topology
 
     loop = "for f in x; do git add tests/shared.txt; done"
     _hook_stdin(monkeypatch, driver, home, loop, "sess-uncertain")
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     text = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "조건/cwd를 정적으로 단일 증명할 수 없음 — 차단하지 않음" in text
     assert "PM 홈에서 등록 worktree와 양쪽에 실재하는 코드 경로(tests/shared.txt)" in text
 
     # 완전일치 재호출만 침묵이고, 사유가 다른 판정불능은 계속 나온다.
     _hook_stdin(monkeypatch, driver, home, loop, "sess-uncertain")
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     assert capsys.readouterr().out == ""
 
     other_loop = "for f in x; do git add templates/shared.txt; done"
     _hook_stdin(monkeypatch, driver, home, other_loop, "sess-uncertain")
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     other = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "조건/cwd를 정적으로 단일 증명할 수 없음 — 차단하지 않음" in other
     assert "templates/shared.txt" in other
@@ -1592,24 +1592,24 @@ def test_claude_hook_keeps_uncertain_downgrade_channel_open(
 def test_claude_hook_keeps_emitting_when_membership_io_fails(
     monkeypatch, topology, capsys,
 ):
-    """멤버십 파일 I/O 실패는 fail-open — 같은 문구라도 매번 발화한다."""
-    driver = _load("git_anchor_claude_marker_failure", CLAUDE_DRIVER)
+    """멤버십 파일 I/O 실패는 fail-open — 같은 문구라도 매번 출력한다."""
+    driver = _load("git_target_repo_claude_marker_failure", CLAUDE_DRIVER)
     home, _slot = topology
     # marker 디렉토리 자리를 파일이 점유 = mkdir 실패(플랫폼 무관·chmod 불요).
     blocked = home / ".project_manager" / ".local" / "ctx-stop"
     blocked.write_text("not a directory\n", encoding="utf-8")
 
     # 명령은 두 OS 모두 warn 인 git mutation 으로 둔다 — cd 잔존 advisory 는 POSIX 셸 문법
-    # 축이라 Windows 판정에 없다(플랫폼 의존 픽스처가 이 테스트의 실패 원인이었다·VM 실측).
+    # 차이라 Windows 판정에 없다(플랫폼 의존 픽스처가 이 테스트의 실패 원인이었다·VM 실측).
     emitted: list[str] = []
     for _attempt in range(2):
         _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-io")
-        assert driver.run_git_anchor_hook(home) == 0
+        assert driver.run_git_target_repo_hook(home) == 0
         emitted.append(json.loads(capsys.readouterr().out)[
             "hookSpecificOutput"]["additionalContext"])
     assert emitted[0].startswith("[git-check/warn]")
     assert "git commit" in emitted[0]
-    # fail-open 의 핵심: 완전히 같은 문구가 두 번째에도 그대로 발화된다(억제 없음).
+    # fail-open 의 핵심: 완전히 같은 문구가 두 번째에도 그대로 출력된다(억제 없음).
     assert emitted[1] == emitted[0]
     assert blocked.is_file()
 
@@ -1617,8 +1617,8 @@ def test_claude_hook_keeps_emitting_when_membership_io_fails(
 def test_claude_hook_infra_failure_warn_is_never_suppressed(
     monkeypatch, topology, capsys,
 ):
-    """판정 인프라 손상(`판정 불가`) 발화는 중복 억제를 지나지 않는다(fail-open 무조건)."""
-    driver = _load("git_anchor_claude_infra_repeat", CLAUDE_DRIVER)
+    """판정 인프라 손상(`판정 불가`) 출력은 중복 억제를 지나지 않는다(fail-open 무조건)."""
+    driver = _load("git_target_repo_claude_infra_repeat", CLAUDE_DRIVER)
     home, _slot = topology
 
     def fail_judge(*_args, **_kwargs):
@@ -1627,7 +1627,7 @@ def test_claude_hook_infra_failure_warn_is_never_suppressed(
     monkeypatch.setattr(cli_hooks, "judge_git_check_command", fail_judge)
     for _attempt in range(2):
         _hook_stdin(monkeypatch, driver, home, "git add tests/shared.txt", "sess-infra")
-        assert driver.run_git_anchor_hook(home) == 0
+        assert driver.run_git_target_repo_hook(home) == 0
         got = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
         assert "판정 불가" in got["additionalContext"]
 
@@ -1641,23 +1641,23 @@ def test_claude_settings_and_self_resolving_wrapper_are_wired():
     # 출하 template 은 파일 쓰기·편집·위임 도구 입력의 허용 위조도 보고, 사용자 프롬프트에서 허용을 기록한다.
     template = json.loads(
         (REPO / "templates" / "claude_code" / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    anchor_rows = [row for row in template["hooks"]["PreToolUse"]
+    target_repo_rows = [row for row in template["hooks"]["PreToolUse"]
                    if "--git-anchor-hook" in json.dumps(row)]
-    assert [row["matcher"] for row in anchor_rows] == [
+    assert [row["matcher"] for row in target_repo_rows] == [
         "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"]
     assert any("--git-anchor-hook" in json.dumps(row)
                for row in template["hooks"]["UserPromptSubmit"])
 
 
-def test_codex_execpolicy_stays_static_while_the_hook_axis_carries_the_dynamic_guard():
-    """execpolicy는 여전히 정적 판정만 갖고(과차단 방지), 동적 판정은 PreToolUse 훅 축의
-    git-anchor 등록 기능이 담당한다 — [[T-0765]] 가 배선을 더한 뒤에는 사유 문구가 아니라
-    실 registry 값을 요구한다(부재를 강제하던 옛 봉인은 배선 시 red 가 나지 않았다)."""
+def test_codex_execpolicy_stays_static_while_the_hook_path_carries_the_dynamic_guard():
+    """execpolicy는 여전히 정적 판정만 갖고(과차단 방지), 동적 판정은 PreToolUse 훅 경로의
+    git-check 등록 기능이 담당한다 — [[T-0765]] 가 등록을 더한 뒤에는 사유 문구가 아니라
+    실 registry 값을 요구한다(부재를 강제하던 옛 확정 단언은 등록 시 red 가 나지 않았다)."""
     text = CODEX_RULES.read_text(encoding="utf-8")
     assert "false-deny 0" in text
     assert "pm_orch_codex.py" in text and "git-check" in text
 
-    dispatcher = _load("git_anchor_codex_dispatcher_seal", CODEX_DISPATCHER)
+    dispatcher = _load("git_target_repo_codex_dispatcher_seal", CODEX_DISPATCHER)
     features = [feature for feature in dispatcher.CODEX_HOOK_FEATURES
                 if feature.feature_id == "git-check"]
     assert len(features) == 1, dispatcher.CODEX_HOOK_FEATURES
@@ -1666,9 +1666,9 @@ def test_codex_execpolicy_stays_static_while_the_hook_axis_carries_the_dynamic_g
     assert feature.tool_pattern == "^(Bash|apply_patch)$"
 
 
-# ── codex Bash 축 배선 (T-0765 — claude_code·opencode 2타깃엔 있고 codex 엔 없던 gap) ──────────
+# ── codex Bash 경로 등록 (T-0765 — claude_code·opencode 2타깃엔 있고 codex 엔 없던 gap) ──────────
 # 판정 로직은 새로 만들지 않는다 — 세 하네스가 공유하는 `cli.hooks.judge_git_check_command` 를
-# 그대로 재사용한다. 아래는 codex PreToolUse(Bash) payload → 그 판정 → codex 엔벨로프 변환·배선만
+# 그대로 재사용한다. 아래는 codex PreToolUse(Bash) payload → 그 판정 → codex 엔벨로프 변환·등록만
 # 고정한다. payload 는 조립 dict 가 아니라 라이브 캡처 픽스처(`codex_0_147_0_live_hook_payloads.
 # json`)의 Bash 이벤트를 그대로 쓴다(cwd·command 만 시나리오별로 덮어쓴다).
 
@@ -1682,7 +1682,7 @@ def _codex_live_bash_event() -> dict:
 
 
 def test_codex_explicit_tool_coordinate_precedes_session_cwd(monkeypatch, tmp_path):
-    dispatcher = _load("git_anchor_codex_coordinate_priority", CODEX_DISPATCHER)
+    dispatcher = _load("git_target_repo_codex_coordinate_priority", CODEX_DISPATCHER)
     calls = []
 
     class FakeBoard:
@@ -1699,11 +1699,11 @@ def test_codex_explicit_tool_coordinate_precedes_session_cwd(monkeypatch, tmp_pa
     payload["tool_input"] = {
         "command": "git status", "cwd": "tool-cwd", "workdir": "tool-workdir",
     }
-    assert dispatcher.git_anchor_hook_evaluate(payload, session) == {}
+    assert dispatcher.git_target_repo_hook_evaluate(payload, session) == {}
     assert calls[-1][0] == str((session / "tool-workdir").resolve())
 
     payload["tool_input"].pop("workdir")
-    assert dispatcher.git_anchor_hook_evaluate(payload, session) == {}
+    assert dispatcher.git_target_repo_hook_evaluate(payload, session) == {}
     assert calls[-1][0] == str((session / "tool-cwd").resolve())
 
 
@@ -1711,15 +1711,15 @@ def test_codex_live_bash_without_internal_workdir_inherits_central_pytest_deny_e
         monkeypatch, topology_without_home_tests):
     """좌표(workdir) 없는 PM 홈 상대 pytest 도 중앙 판정의 거부를 그대로 받는다 — 매 호출 거부다
     (warn 세션 중복 억제는 거부에 적용하지 않는다)."""
-    dispatcher = _load("git_anchor_codex_missing_workdir", CODEX_DISPATCHER)
+    dispatcher = _load("git_target_repo_codex_missing_workdir", CODEX_DISPATCHER)
     home, _slot = topology_without_home_tests
     payload = _codex_live_bash_event()
     payload["cwd"] = str(home)
     payload["session_id"] = "t0872-missing-workdir"
     payload["tool_input"] = {"command": "python3 -m pytest tests/ -q -n auto"}
 
-    first = dispatcher.git_anchor_hook_evaluate(payload, home)
-    second = dispatcher.git_anchor_hook_evaluate(payload, home)
+    first = dispatcher.git_target_repo_hook_evaluate(payload, home)
+    second = dispatcher.git_target_repo_hook_evaluate(payload, home)
     for envelope in (first, second):
         assert envelope["decision"] == "block"
         assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -1744,7 +1744,7 @@ def test_pm_home_relative_pytest_absolute_path_retry_passes_every_harness_hook(
         driver = _load("pm_home_pytest_retry_claude", CLAUDE_DRIVER)
 
         def evaluate(command):
-            return driver.git_anchor_hook_evaluate({
+            return driver.git_target_repo_hook_evaluate({
                 "session_id": "S", "hook_event_name": "PreToolUse", "tool_name": "Bash",
                 "cwd": str(home), "tool_input": {"command": command},
             }, home)
@@ -1761,7 +1761,7 @@ def test_pm_home_relative_pytest_absolute_path_retry_passes_every_harness_hook(
             payload.pop("agent_id", None)
             payload.pop("agent_type", None)
             payload.update(session_id="S", cwd=str(home), tool_input={"command": command})
-            return dispatcher.git_anchor_hook_evaluate(payload, home)
+            return dispatcher.git_target_repo_hook_evaluate(payload, home)
 
         denied = evaluate(relative)
         assert denied["decision"] == "block"
@@ -1798,48 +1798,48 @@ const [home, relative, absolute, guidance] = process.argv.slice(1);
 
 def test_codex_missing_coordinate_keeps_real_git_mutation_deny(
         monkeypatch, topology_without_home_tests):
-    dispatcher = _load("git_anchor_codex_missing_coordinate_mutation", CODEX_DISPATCHER)
+    dispatcher = _load("git_target_repo_codex_missing_coordinate_mutation", CODEX_DISPATCHER)
     home, _slot = topology_without_home_tests
     payload = _codex_live_bash_event()
     payload["cwd"] = str(home)
     payload["tool_input"] = {"command": "git add templates/shared.txt"}
-    assert dispatcher.git_anchor_hook_evaluate(payload, home)["decision"] == "block"
+    assert dispatcher.git_target_repo_hook_evaluate(payload, home)["decision"] == "block"
 
     payload["tool_input"] = {
         "command": "python3 -m pytest tests/ -q; git add templates/shared.txt",
     }
-    compound = dispatcher.git_anchor_hook_evaluate(payload, home)
+    compound = dispatcher.git_target_repo_hook_evaluate(payload, home)
     assert compound["decision"] == "block"
 
 
 def test_codex_explicit_coordinate_keeps_engine_mutation_and_pytest_denies(
         monkeypatch, topology_without_home_tests):
-    dispatcher = _load("git_anchor_codex_explicit_coordinate_denies", CODEX_DISPATCHER)
+    dispatcher = _load("git_target_repo_codex_explicit_coordinate_denies", CODEX_DISPATCHER)
     home, slot = topology_without_home_tests
     payload = _codex_live_bash_event()
     payload["cwd"] = str(home)
     payload["tool_input"] = {
         "command": "python3 -m pytest tests/ -q", "workdir": str(home),
     }
-    assert dispatcher.git_anchor_hook_evaluate(payload, home)["decision"] == "block"
+    assert dispatcher.git_target_repo_hook_evaluate(payload, home)["decision"] == "block"
 
     _seed_engine_copy(slot, "slot-rev")
     payload["tool_input"] = {
         "command": "python3 .project_manager/tools/board.py claim T-0001",
         "workdir": str(slot),
     }
-    assert dispatcher.git_anchor_hook_evaluate(payload, home)["decision"] == "block"
+    assert dispatcher.git_target_repo_hook_evaluate(payload, home)["decision"] == "block"
 
 
-def test_codex_bash_axis_deny_matches_the_measured_five_field_envelope(monkeypatch, topology):
+def test_codex_bash_hook_deny_matches_the_measured_five_field_envelope(monkeypatch, topology):
     """라이브 픽스처의 Bash 이벤트로 판정을 호출하고 deny 엔벨로프 5필드가 값으로 일치한다."""
-    dispatcher = _load("git_anchor_codex_deny", CODEX_DISPATCHER)
+    dispatcher = _load("git_target_repo_codex_deny", CODEX_DISPATCHER)
     home, _slot = topology
     payload = _codex_live_bash_event()
     payload["cwd"] = str(home)
     payload["tool_input"] = {"command": "git add tests/shared.txt"}
 
-    envelope = dispatcher.git_anchor_hook_evaluate(payload, home)
+    envelope = dispatcher.git_target_repo_hook_evaluate(payload, home)
 
     reason = envelope.get("reason", "")
     assert reason.startswith("[git-check/deny]")
@@ -1857,30 +1857,30 @@ def test_codex_bash_axis_deny_matches_the_measured_five_field_envelope(monkeypat
     }
 
 
-def test_codex_bash_axis_ok_stays_the_measured_allow_shape_not_zero_bytes(topology):
-    """ok·정상 미매칭은 codex 축에서 `{}`(측정된 allow)다 — claude 의 0바이트와 다르다.
+def test_codex_bash_hook_ok_stays_the_measured_allow_shape_not_zero_bytes(topology):
+    """ok·정상 미매칭은 codex 경로에서 `{}`(측정된 allow)다 — claude 의 0바이트와 다르다.
 
-    디스패처 `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 adapter-fallback 으로 강등한다 —
+    디스패처 `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 adapter-fallback 으로 낮춘다 —
     0바이트를 쓰면 정상 통과마다 경고가 나간다(T-0765 §역방향 확인)."""
-    dispatcher = _load("git_anchor_codex_ok", CODEX_DISPATCHER)
+    dispatcher = _load("git_target_repo_codex_ok", CODEX_DISPATCHER)
     home, _slot = topology
     payload = _codex_live_bash_event()
     payload["cwd"] = str(home)
     payload["tool_input"] = {"command": "ls -la"}
-    assert dispatcher.git_anchor_hook_evaluate(payload, home) == {}
+    assert dispatcher.git_target_repo_hook_evaluate(payload, home) == {}
 
     non_bash = dict(payload)
     non_bash["tool_name"] = "collaborationwait_agent"
     non_bash["tool_input"] = {}
-    assert dispatcher.git_anchor_hook_evaluate(non_bash, home) == {}
+    assert dispatcher.git_target_repo_hook_evaluate(non_bash, home) == {}
 
 
 def test_codex_dispatcher_routes_bash_tool_names_to_the_self_invoking_child(topology):
-    """`dispatch_hook` 이 Bash tool_name 이면 git-anchor 기능(자기참조 `--git-anchor-hook`)을
-    스폰한다(등록 축은 tool_name 만 본다 — git 관련성 선별은 그 자식 안에서 돈다). 다른
-    tool_name 은 스폰하지 않는다(배선 자체의 값 확인 — 판정은 위 테스트가 별도로 본다).
+    """`dispatch_hook` 이 Bash tool_name 이면 git-check 기능(자기참조 `--git-anchor-hook`)을
+    스폰한다(등록 기준은 tool_name 만 본다 — git 관련성 선별은 그 자식 안에서 돈다). 다른
+    tool_name 은 스폰하지 않는다(등록 자체의 값 확인 — 판정은 위 테스트가 별도로 본다).
 
-    `{self}`는 root 파생이 아니라 실행 중인 파일 자신이다(T-0845) — 이 축을 재려면 디스패처를
+    `{self}`는 root 파생이 아니라 실행 중인 파일 자신이다(T-0845) — 이 경로를 재려면 디스패처를
     home 의 **출하 레이아웃**(`<home>/.codex/pm_orch_codex.py`)에 실제로 복사해 그 사본에서
     로드해야, "실행 중인 파일 좌표"가 곧 그 출하 경로가 된다. 원본 template 경로에서 로드하면
     `{self}`가 그 template 경로로 전개되는 게 옳은 동작이라 옛 root 재구성 기대와 어긋난다."""
@@ -1888,7 +1888,7 @@ def test_codex_dispatcher_routes_bash_tool_names_to_the_self_invoking_child(topo
     shipped_dispatcher = home / ".codex" / "pm_orch_codex.py"
     shipped_dispatcher.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(CODEX_DISPATCHER, shipped_dispatcher)
-    dispatcher = _load("git_anchor_codex_route", shipped_dispatcher)
+    dispatcher = _load("git_target_repo_codex_route", shipped_dispatcher)
     calls: list[list[str]] = []
 
     def runner(argv, **_kwargs):
@@ -1915,36 +1915,36 @@ def test_codex_dispatcher_routes_bash_tool_names_to_the_self_invoking_child(topo
     assert calls == []
 
 
-def test_codex_bash_axis_warn_is_suppressed_once_per_session(monkeypatch, topology):
-    """같은 세션·같은 문구는 첫 1회만 발화하고, 이후는 `{}`([[T-0764]] 침묵 기준 승계).
+def test_codex_bash_hook_warn_is_suppressed_once_per_session(monkeypatch, topology):
+    """같은 세션·같은 문구는 첫 1회만 출력하고, 이후는 `{}`([[T-0764]] 침묵 기준 승계).
 
-    deny 는 중복이어도 매번 발화한다(억제하면 두 번째 위험 명령이 통과한다)."""
-    dispatcher = _load("git_anchor_codex_once", CODEX_DISPATCHER)
+    deny 는 중복이어도 매번 출력한다(억제하면 두 번째 위험 명령이 통과한다)."""
+    dispatcher = _load("git_target_repo_codex_once", CODEX_DISPATCHER)
     home, _slot = topology
     payload = _codex_live_bash_event()
     payload["cwd"] = str(home)
     payload["tool_input"] = {"command": "git commit -m x"}
 
-    first = dispatcher.git_anchor_hook_evaluate(payload, home)
+    first = dispatcher.git_target_repo_hook_evaluate(payload, home)
     assert first["systemMessage"].startswith("[git-check/warn]")
 
-    second = dispatcher.git_anchor_hook_evaluate(payload, home)
+    second = dispatcher.git_target_repo_hook_evaluate(payload, home)
     assert second == {}  # 완전일치 중복 — 측정된 allow 형태로 침묵.
 
     other_command = dict(payload)
     other_command["tool_input"] = {"command": "git push"}
-    other = dispatcher.git_anchor_hook_evaluate(other_command, home)
-    assert other["systemMessage"] != first["systemMessage"]  # 문구가 다르면 그대로 발화.
+    other = dispatcher.git_target_repo_hook_evaluate(other_command, home)
+    assert other["systemMessage"] != first["systemMessage"]  # 문구가 다르면 그대로 출력.
 
     other_session = dict(payload)
     other_session["session_id"] = "different-session"
-    assert dispatcher.git_anchor_hook_evaluate(other_session, home)["systemMessage"] == \
+    assert dispatcher.git_target_repo_hook_evaluate(other_session, home)["systemMessage"] == \
         first["systemMessage"]  # 세션이 다르면 같은 문구도 첫 1회.
 
     deny_payload = dict(payload)
     deny_payload["tool_input"] = {"command": "git add tests/shared.txt"}
-    deny_first = dispatcher.git_anchor_hook_evaluate(deny_payload, home)
-    deny_second = dispatcher.git_anchor_hook_evaluate(deny_payload, home)
+    deny_first = dispatcher.git_target_repo_hook_evaluate(deny_payload, home)
+    deny_second = dispatcher.git_target_repo_hook_evaluate(deny_payload, home)
     assert deny_first["decision"] == "block"
     assert deny_second == deny_first  # deny 는 중복 억제 대상이 아니다.
 
@@ -1953,9 +1953,9 @@ def test_codex_bash_axis_warn_is_suppressed_once_per_session(monkeypatch, topolo
 def test_codex_git_anchor_hook_infra_failure_is_warn_rc0_and_bypasses_dedup(
     monkeypatch, topology, failure_site,
 ):
-    """판정 인프라 손상은 rc0 + warn 으로 강등되고, 중복 억제 게이트를 지나지 않는다(fail-open —
-    claude `run_git_anchor_hook` 동형)."""
-    dispatcher = _load(f"git_anchor_codex_infra_{failure_site}", CODEX_DISPATCHER)
+    """판정 인프라 손상은 rc0 + warn 으로 낮춰지고, 중복 억제를 지나지 않는다(fail-open —
+    claude `run_git_target_repo_hook` 와 같음)."""
+    dispatcher = _load(f"git_target_repo_codex_infra_{failure_site}", CODEX_DISPATCHER)
     home, _slot = topology
 
     class ExitBoard:
@@ -1969,10 +1969,10 @@ def test_codex_git_anchor_hook_infra_failure_is_warn_rc0_and_bypasses_dedup(
     payload["cwd"] = str(home)
     payload["tool_input"] = {"command": "git add tests/shared.txt"}
 
-    for _attempt in range(2):  # 두 번 호출해도 매번 발화(중복 억제 미적용).
+    for _attempt in range(2):  # 두 번 호출해도 매번 출력(중복 억제 미적용).
         stdin = io.StringIO(json.dumps(payload))
         stdout = io.StringIO()
-        rc = dispatcher.run_git_anchor_hook(home, stdin=stdin, stdout=stdout)
+        rc = dispatcher.run_git_target_repo_hook(home, stdin=stdin, stdout=stdout)
         assert rc == 0
         got = json.loads(stdout.getvalue())
         assert "판정 불가" in got["systemMessage"]
@@ -1981,7 +1981,7 @@ def test_codex_git_anchor_hook_infra_failure_is_warn_rc0_and_bypasses_dedup(
 
 def test_codex_run_git_anchor_hook_writes_the_measured_allow_shape_for_ok(topology):
     """`--git-anchor-hook` CLI 엔트리(stdin→stdout)도 ok 에서 `{}`(0바이트 아님)를 쓴다."""
-    dispatcher = _load("git_anchor_codex_hook_ok", CODEX_DISPATCHER)
+    dispatcher = _load("git_target_repo_codex_hook_ok", CODEX_DISPATCHER)
     home, _slot = topology
     payload = _codex_live_bash_event()
     payload["cwd"] = str(home)
@@ -1989,7 +1989,7 @@ def test_codex_run_git_anchor_hook_writes_the_measured_allow_shape_for_ok(topolo
     stdin = io.StringIO(json.dumps(payload))
     stdout = io.StringIO()
 
-    rc = dispatcher.run_git_anchor_hook(home, stdin=stdin, stdout=stdout)
+    rc = dispatcher.run_git_target_repo_hook(home, stdin=stdin, stdout=stdout)
 
     assert rc == 0
     assert stdout.getvalue() == "{}\n"
@@ -2177,12 +2177,12 @@ function reply(git) {
   assert.match(errorContext.system[0], /git-check\/warn/);
   assert.match(errorContext.system[0], /판정 인프라 예외\(fixture boom\)/);
   assert.strictEqual(errorToasts.length, 1);
-  console.log("GIT_ANCHOR_CORE_OK");
+  console.log("GIT_CHECK_CORE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 """
     result = subprocess.run([node, "-e", script, str(root)], cwd=OPEN_CORE.parent, check=True,
                             capture_output=True, text=True, encoding="utf-8")
-    assert "GIT_ANCHOR_CORE_OK" in result.stdout
+    assert "GIT_CHECK_CORE_OK" in result.stdout
 
 
 def test_opencode_git_anchor_blocks_when_engine_absent_at_install_root(tmp_path):
@@ -2225,9 +2225,9 @@ const repoWithEngine = process.argv[1];
   );
   const context = {system: []};
   await hooks["experimental.chat.system.transform"]({sessionID:"S"}, context);
-  assert.deepStrictEqual(context.system, [], "차단 대신 경고로 강등됨");
-  assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 강등됨");
-  console.log("GIT_ANCHOR_INSTALL_BLOCK_OK");
+  assert.deepStrictEqual(context.system, [], "차단 대신 경고로 수준이 낮아짐");
+  assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 수준이 낮아짐");
+  console.log("GIT_CHECK_INSTALL_BLOCK_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 """
     grant_line = "git " + "허용" + ": git branch -D x"
@@ -2235,7 +2235,7 @@ const repoWithEngine = process.argv[1];
         [node, "-e", script, str(REPO), grant_line], cwd=lib, check=True,
         capture_output=True, text=True, encoding="utf-8",
     )
-    assert "GIT_ANCHOR_INSTALL_BLOCK_OK" in result.stdout
+    assert "GIT_CHECK_INSTALL_BLOCK_OK" in result.stdout
 
 
 # ── 손 git 파괴 형태 거부 (슬롯·공용 저장소 대상 · 세 하네스 공통 판정) ─────────────────────────
@@ -2393,8 +2393,8 @@ def test_shared_repository_and_unleased_worktree_are_protected_targets(topology)
     assert listing["verdict"] == "warn" and listing["cwd_identity"] == "shared-repo"
     assert engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(bare), ["git", "fetch"])["verdict"] == "ok"
 
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    records.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
                                                "state": "idle"}]}) + "\n", encoding="utf-8")
     idle = engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(slot), ["git", "stash", "clear"])
     assert idle["verdict"] == "deny" and idle["cwd_identity"] == "worktree"
@@ -2558,7 +2558,7 @@ def test_claude_hook_denies_destructive_slot_git_with_permission_decision(
         "cwd": str(slot), "tool_input": {"command": "git branch -D main"},
     }
     monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
     assert output["permissionDecision"] == "deny"
     reason_lines = output["permissionDecisionReason"].splitlines()
@@ -2569,7 +2569,7 @@ def test_claude_hook_denies_destructive_slot_git_with_permission_decision(
 
     read_only = {**payload, "tool_input": {"command": "git branch --show-current"}}
     monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(read_only)))
-    assert driver.run_git_anchor_hook(home) == 0
+    assert driver.run_git_target_repo_hook(home) == 0
     assert capsys.readouterr().out == ""
 
 
@@ -2577,11 +2577,11 @@ def test_codex_hook_blocks_destructive_slot_git_with_measured_envelope(monkeypat
     dispatcher = _load("git_destructive_codex", CODEX_DISPATCHER)
     home, slot = topology
     payload = _codex_live_bash_event()
-    payload["session_id"] = "S"  # 슬롯 주인 task 를 연 세션(topology 장부).
+    payload["session_id"] = "S"  # 슬롯 주인 task 를 연 세션(topology 대여 기록).
     payload["cwd"] = str(home)
     payload["tool_input"] = {"command": "git reset --hard", "workdir": str(slot)}
     stdout = io.StringIO()
-    assert dispatcher.run_git_anchor_hook(
+    assert dispatcher.run_git_target_repo_hook(
         home, stdin=io.StringIO(json.dumps(payload)), stdout=stdout,
     ) == 0
     envelope = json.loads(stdout.getvalue())
@@ -2602,7 +2602,7 @@ def test_codex_hook_blocks_destructive_slot_git_with_measured_envelope(monkeypat
     }
 
     payload["tool_input"] = {"command": "git stash list", "workdir": str(slot)}
-    assert dispatcher.git_anchor_hook_evaluate(payload, home) == {}
+    assert dispatcher.git_target_repo_hook_evaluate(payload, home) == {}
 
 
 def test_opencode_plugin_rejects_destructive_slot_git_through_the_real_board(topology):
@@ -2641,7 +2641,7 @@ const [engineRoot, slot] = process.argv.slice(1);
   const context = {system: []};
   await hooks["experimental.chat.system.transform"]({sessionID:"S"}, context);
   assert.deepStrictEqual(context.system, []);
-  console.log("GIT_ANCHOR_DESTRUCTIVE_BLOCK_OK");
+  console.log("GIT_CHECK_DESTRUCTIVE_BLOCK_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
     shutil.copytree(BOARD_PY.parent, home / ".project_manager/tools")
@@ -2649,7 +2649,7 @@ const [engineRoot, slot] = process.argv.slice(1);
         [node, "-e", script, str(home), str(slot)], cwd=OPEN_CORE.parent, check=True,
         capture_output=True, text=True, encoding="utf-8",
     )
-    assert "GIT_ANCHOR_DESTRUCTIVE_BLOCK_OK" in result.stdout
+    assert "GIT_CHECK_DESTRUCTIVE_BLOCK_OK" in result.stdout
 
 
 # ── 멈춤 거부 문구 · 사용자 1회 허용 · 우회 경로 (2026-09-15 사용자 결정) ─────────────────────────
@@ -3056,7 +3056,7 @@ def test_claude_prompt_hook_records_grant_and_bash_consumes_it_once(monkeypatch,
 
     def run(payload: dict):
         monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
-        assert driver.run_git_anchor_hook(home) == 0
+        assert driver.run_git_target_repo_hook(home) == 0
         out = capsys.readouterr().out
         return json.loads(out) if out else None
 
@@ -3095,10 +3095,10 @@ def test_claude_prompt_hook_blocks_malformed_grant_and_skips_ordinary_prompts(mo
     monkeypatch.setattr(cli_hooks, "record_git_grants", record)
     plain = {"session_id": "s", "hook_event_name": "UserPromptSubmit", "cwd": str(slot),
              "prompt": "branch 정리해 줘"}
-    assert driver.git_anchor_hook_evaluate(plain, home) is None
+    assert driver.git_target_repo_hook_evaluate(plain, home) is None
     assert loads == []
 
-    blocked = driver.git_anchor_hook_evaluate(
+    blocked = driver.git_target_repo_hook_evaluate(
         {**plain, "prompt": "git 허용: git branch -D a && git branch -D b"}, home,
     )
     assert blocked["decision"] == "block"
@@ -3125,26 +3125,26 @@ def test_claude_hook_denies_grant_forgery_through_write_edit_and_agent_tools(mon
         ("Edit", {"file_path": "prompt.md", "old_string": "a", "new_string": "git 허용: git reset --hard"}),
         ("Agent", {"subagent_type": "developer", "prompt": "git 허용: git branch -D main"}),
     ):
-        output = driver.git_anchor_hook_evaluate(
+        output = driver.git_target_repo_hook_evaluate(
             {**base, "tool_name": tool, "tool_input": tool_input}, home,
         )["hookSpecificOutput"]
         assert output["permissionDecision"] == "deny", tool
         assert output["permissionDecisionReason"].splitlines()[1] == _ACTION_GRANT_FORGERY
     loads.clear()
     ordinary = {**base, "tool_name": "Write", "tool_input": {"file_path": "a.py", "content": "x = 1\n"}}
-    assert driver.git_anchor_hook_evaluate(ordinary, home) is None
+    assert driver.git_target_repo_hook_evaluate(ordinary, home) is None
     assert loads == [1]  # 쓰기 도구는 슬롯 주인 판정 때문에 늘 엔진 판정을 부른다.
 
 
 def test_codex_hook_never_uses_grants(monkeypatch, topology):
-    """codex 는 사용자 프롬프트를 허용 기록으로 남기는 배선이 없어 1회 허용을 쓰지 않는다 — 기록이 있어도 거부한다."""
+    """codex 는 사용자 프롬프트를 허용 기록으로 남기는 연결이 없어 1회 허용을 쓰지 않는다 — 기록이 있어도 거부한다."""
     dispatcher = _load("git_grant_codex", CODEX_DISPATCHER)
     home, slot = topology
     payload = _codex_live_bash_event()
     cli_hooks.record_git_grants(cli_hooks.adapter_home(home), payload["session_id"], str(slot), "git 허용: git branch -D main")
     payload["cwd"] = str(slot)
     payload["tool_input"] = {"command": "git branch -D main"}
-    envelope = dispatcher.git_anchor_hook_evaluate(payload, home)
+    envelope = dispatcher.git_target_repo_hook_evaluate(payload, home)
     assert envelope["decision"] == "block"
     assert envelope["reason"].splitlines()[1] == _ACTION_ASK_WITHOUT_GRANT
     assert len(_grant_files(home)) == 1
@@ -3253,18 +3253,18 @@ def test_slot_git_writes_pass_only_for_the_session_whose_task_holds_the_slot(top
     # 보기만 하는 형태는 막지 않는다 — 남의 슬롯이면 셸 경고만 한다.
     for command in ("git stash list", "git clean -n", "git status"):
         assert cli_hooks.judge_git_check_command(cli_hooks.adapter_home(home), "S-other", str(slot), command, main_thread=True)["verdict"] == "warn", command
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(ledger.read_text(encoding="utf-8"))
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    data = json.loads(records.read_text(encoding="utf-8"))
     data["tasks"].append({"name": "t2", "session": "S2"})
-    ledger.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    records.write_text(json.dumps(data) + "\n", encoding="utf-8")
     other = cli_hooks.judge_git_check_command(cli_hooks.adapter_home(home), "S2", str(home), f"git -C {slot} commit -m x", main_thread=True)
     assert other["verdict"] == "deny"
     assert other["reason"].splitlines()[1] == not_owned
 
 
 def _t0931_guard_owner(home: Path, mode: str):
-    ledger = home / '.project_manager/.local/worktree-leases.json'
-    data = json.loads(ledger.read_text(encoding='utf-8'))
+    records = home / '.project_manager/.local/worktree-leases.json'
+    data = json.loads(records.read_text(encoding='utf-8'))
     row = data['leases'][0]
     data['tasks'].append({'name': 't2', 'session': 'F'})
     if mode == 'foreign':
@@ -3273,7 +3273,7 @@ def _t0931_guard_owner(home: Path, mode: str):
         row.update(state='idle', session='')
     elif mode == 'readonly':
         row.update(role='readonly', session='')
-    ledger.write_text(json.dumps(data), encoding='utf-8')
+    records.write_text(json.dumps(data), encoding='utf-8')
 
 
 @pytest.mark.parametrize('mode', ['own', 'foreign', 'idle', 'readonly', 'no-task'])
@@ -3286,7 +3286,7 @@ def _t0931_guard_owner(home: Path, mode: str):
 def test_t0931_slot_paths_global_options_alias_and_ownership(topology, mode, command):
     home, slot = topology
     _t0931_guard_owner(home, mode)
-    board = _load('t0931_anchor_alias', BOARD_PY)
+    board = _load('t0931_target_repo_alias', BOARD_PY)
     result = engine_guard.judge_git_check(pm_paths.home_at(home), 'missing' if mode == 'no-task' else 'S', str(home), ['git', '-C', str(slot), *command])
     assert result['verdict'] == ('ok' if mode == 'own' else 'deny'), result
 
@@ -3320,7 +3320,7 @@ def test_t0931_slot_paths_populated_nested_submodule_joins_parent(topology, tmp_
 
 @pytest.mark.parametrize('harness', ['claude', 'codex', 'opencode'])
 def test_t0931_harness_hooks_share_owner_and_query_contract(topology, monkeypatch, capsys, harness):
-    """실제 hook 입력/출력 배선을 사용하며 git 변경 명령 자체는 실행하지 않는다."""
+    """실제 hook 입력/출력 연결을 사용하며 git 변경 명령 자체는 실행하지 않는다."""
     home, slot = topology
     _t0931_guard_owner(home, 'foreign')
     cases = [('git sparse-checkout set src', True), ('git submodule --quiet update -- status', True), ('git sparse-checkout list', False), ('git submodule', False)]
@@ -3329,7 +3329,7 @@ def test_t0931_harness_hooks_share_owner_and_query_contract(topology, monkeypatc
         for command, denied in cases:
             payload = {'session_id': 'S', 'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'cwd': str(slot), 'tool_input': {'command': command}}
             monkeypatch.setattr(driver.sys, 'stdin', io.StringIO(json.dumps(payload)))
-            assert driver.run_git_anchor_hook(home) == 0
+            assert driver.run_git_target_repo_hook(home) == 0
             raw = capsys.readouterr().out
             result = json.loads(raw) if raw else {}
             assert (result.get('hookSpecificOutput', {}).get('permissionDecision') == 'deny') is denied
@@ -3339,7 +3339,7 @@ def test_t0931_harness_hooks_share_owner_and_query_contract(topology, monkeypatc
         (home / '.project_manager/.local/worktree-leases.json').write_text(json.dumps(data), encoding='utf-8')
         payload['tool_input'] = {'command': 'git sparse-checkout add src'}
         monkeypatch.setattr(driver.sys, 'stdin', io.StringIO(json.dumps(payload)))
-        assert driver.run_git_anchor_hook(home) == 0
+        assert driver.run_git_target_repo_hook(home) == 0
         raw = capsys.readouterr().out
         assert not raw or json.loads(raw).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
     elif harness == 'codex':
@@ -3348,13 +3348,13 @@ def test_t0931_harness_hooks_share_owner_and_query_contract(topology, monkeypatc
             payload = _codex_live_bash_event()
             payload.update(session_id='S', cwd=str(slot), tool_input={'command': command})
             out = io.StringIO()
-            assert dispatcher.run_git_anchor_hook(home, stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
+            assert dispatcher.run_git_target_repo_hook(home, stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
             assert (json.loads(out.getvalue()).get('decision') == 'block') is denied
-        ledger = home / '.project_manager/.local/worktree-leases.json'
-        data = json.loads(ledger.read_text(encoding='utf-8')); data['leases'][0].update(session='t1', role='work', state='leased')
-        ledger.write_text(json.dumps(data), encoding='utf-8')
+        records = home / '.project_manager/.local/worktree-leases.json'
+        data = json.loads(records.read_text(encoding='utf-8')); data['leases'][0].update(session='t1', role='work', state='leased')
+        records.write_text(json.dumps(data), encoding='utf-8')
         payload['tool_input'] = {'command': 'git sparse-checkout add src'}
-        assert dispatcher.git_anchor_hook_evaluate(payload, home).get('decision') != 'block'
+        assert dispatcher.git_target_repo_hook_evaluate(payload, home).get('decision') != 'block'
     else:
         node = shutil.which('node')
         assert node is not None, '실제 OpenCode hook 검증에 node가 필요하다'
@@ -3451,8 +3451,8 @@ def test_t0931_foreach_payload_help_git_query(topology, command):
 def test_t0931_foreach_payload_help_harness_hooks(topology, monkeypatch, capsys, harness, help_arg):
     """각 실제 hook에 소유 행렬과 Git 자체 help를 전달한다. payload는 실행하지 않는다."""
     home, slot = topology
-    ledger = home / '.project_manager/.local/worktree-leases.json'
-    original = ledger.read_text(encoding='utf-8')
+    records = home / '.project_manager/.local/worktree-leases.json'
+    original = records.read_text(encoding='utf-8')
     command = f'git submodule foreach printf %s {help_arg}'
     if harness == 'claude':
         driver = _load('t0931_foreach_claude', CLAUDE_DRIVER)
@@ -3463,14 +3463,14 @@ def test_t0931_foreach_payload_help_harness_hooks(topology, monkeypatch, capsys,
         assert node is not None, '실제 OpenCode hook 검증에 node가 필요하다'
         shutil.copytree(BOARD_PY.parent, home / '.project_manager/tools')
     for mode in ['own', 'foreign', 'idle', 'readonly', 'no-task']:
-        ledger.write_text(original, encoding='utf-8')
+        records.write_text(original, encoding='utf-8')
         _t0931_guard_owner(home, mode)
         session = 'missing' if mode == 'no-task' else 'S'
         for text, denied in [(command, mode != 'own'), ('git submodule foreach --help', False)]:
             if harness == 'claude':
                 payload = {'session_id': session, 'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'cwd': str(slot), 'tool_input': {'command': text}}
                 monkeypatch.setattr(driver.sys, 'stdin', io.StringIO(json.dumps(payload)))
-                assert driver.run_git_anchor_hook(home) == 0
+                assert driver.run_git_target_repo_hook(home) == 0
                 raw = capsys.readouterr().out
                 result = json.loads(raw) if raw else {}
                 assert (result.get('hookSpecificOutput', {}).get('permissionDecision') == 'deny') is denied, (mode, result)
@@ -3478,7 +3478,7 @@ def test_t0931_foreach_payload_help_harness_hooks(topology, monkeypatch, capsys,
                 payload = _codex_live_bash_event()
                 payload.update(session_id=session, cwd=str(slot), tool_input={'command': text})
                 out = io.StringIO()
-                assert driver.run_git_anchor_hook(home, stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
+                assert driver.run_git_target_repo_hook(home, stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
                 assert (json.loads(out.getvalue()).get('decision') == 'block') is denied, (mode, out.getvalue())
             else:
                 script = r"""

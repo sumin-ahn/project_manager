@@ -104,7 +104,7 @@ def running(api, dist):
 def post(server: ManagerServer, name: str, *args, client: str | None = BROWSER_CLIENT,
          host: str | None = None, content_type: str = "application/json",
          origin: str | None = None):
-    """화면이 보내는 모양 그대로 — 표식 머리를 뺄 때만 `client=None`."""
+    """화면이 보내는 모양 그대로 — 표시 머리를 뺄 때만 `client=None`."""
     headers = {"Content-Type": content_type}
     if client is not None:
         headers[CLIENT_HEADER] = client
@@ -167,7 +167,7 @@ def test_the_name_set_is_not_written_down_anywhere_in_the_manager(running):
     assert listed == []
 
 
-# ── 표식 요구 (화면만 부른다) ────────────────────────────────────────────────
+# ── 표시 요구 (화면만 부른다) ────────────────────────────────────────────────
 
 
 def test_a_post_without_the_client_marker_is_refused_before_the_method_runs(running, api):
@@ -178,7 +178,7 @@ def test_a_post_without_the_client_marker_is_refused_before_the_method_runs(runn
 
     assert refused["error"]["kind"] == "not-allowed"
     assert CLIENT_HEADER in refused["error"]["message"]
-    assert api.saved == [], "표식이 없는데 브리지를 불렀다"
+    assert api.saved == [], "표시가 없는데 브리지를 불렀다"
 
 
 def test_an_unknown_client_marker_is_refused_too(running, api):
@@ -199,7 +199,7 @@ def test_the_two_markers_the_screen_sends_are_the_ones_that_pass(running, api):
 
 
 def test_the_folder_dialog_stays_window_only_under_the_marker_requirement(running):
-    """표식 요구가 창 전용 판정을 덮지 않는다 — 브라우저는 여전히 폴더 고르기를 못 연다."""
+    """표시 요구가 창 전용 판정을 덮지 않는다 — 브라우저는 여전히 폴더 고르기를 못 연다."""
     refused = post(running, "pick_folder", client=BROWSER_CLIENT)
 
     assert refused["error"]["kind"] == "not-allowed"

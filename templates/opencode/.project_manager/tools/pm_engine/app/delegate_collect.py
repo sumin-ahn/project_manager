@@ -31,7 +31,7 @@ from pm_engine.infra import ticket_store
 
 
 def collect_ticket_copy(
-    home, *, copy_path: Path, cwd: Path, ) -> delegate_rounds.TicketHarvestResult:
+    home, *, copy_path: Path, cwd: Path, ) -> delegate_rounds.TicketCollectResult:
     """슬롯 라운드 파일로 board 라운드 파일을 원자 교체하고 그 티켓의 자리를 닫는다.
 
     돌려받기 성공 = 그 티켓 자리 삭제 = 그 자리 닫힘(빈 run-dir 은 함께 걷는다 — 크기 1 이면 곧
@@ -91,7 +91,7 @@ def collect_ticket_copy(
             f"ticket={row['ticket']} {board_path.name} · run-dir 을 유지합니다: {run_dir}",
             file=sys.stderr,
         )
-        return delegate_rounds.TicketHarvestResult(False, True)
+        return delegate_rounds.TicketCollectResult(False, True)
     if row["role"] == "architect":
         try:
             review_contract.parse_architect_tests(text)
@@ -161,7 +161,7 @@ def collect_ticket_copy(
     collected["collected_at"] = datetime.datetime.now(
         datetime.timezone.utc
     ).isoformat()
-    delegate_copy_store._append_delegate_rounds_ledger(home, collected)
+    delegate_copy_store._append_delegate_rounds_record(home, collected)
 
     # run-dir 은 엔진 소유 임시 산출물이다(사용자 파일 아님) — 삭제가 곧 run 닫힘이다.
     fs.force_rmtree(run_dir)
@@ -175,7 +175,7 @@ def collect_ticket_copy(
         )
         if message is not None:
             print(f"슬롯 커밋: {row['ticket']} — {message} ({cwd})")
-    return delegate_rounds.TicketHarvestResult(True, sync_ready)
+    return delegate_rounds.TicketCollectResult(True, sync_ready)
 
 
 class ClusterCollectOutcome(NamedTuple):
@@ -188,7 +188,7 @@ class ClusterCollectOutcome(NamedTuple):
 
     ticket: str
     copy: Path
-    result: delegate_rounds.TicketHarvestResult | None
+    result: delegate_rounds.TicketCollectResult | None
     refusal: str | None
     terminal: bool = False
 

@@ -11,7 +11,7 @@ _MARKER_DIR_REL = Path("principle-recall")
 
 
 def _read_text(path: Path) -> str:
-    """레지스트리·marker 판독 한 지점(공용 읽기 seam 위임). 파일 부재만 빈 본문이고 다른 판독 오류는 올린다."""
+    """레지스트리·marker 판독 한 지점(공용 읽기 함수 위임). 파일 부재만 빈 본문이고 다른 판독 오류는 올린다."""
     try:
         return fs.read_text_shared(path, encoding="utf-8")
     except FileNotFoundError:
@@ -21,7 +21,7 @@ def _read_text(path: Path) -> str:
 def _load_all(home) -> tuple[tuple[principle_rules.Rule, ...], int]:
     """출하층 + 로컬층 합성(같은 key 면 로컬층이 이긴다) + 합산 파손 건수.
 
-    파일 부재는 파손이 아니다(채택자 형상 — 로컬층 없음이 정상). 디렉터리·권한 등 실제 판독 불능은
+    파일 부재는 파손이 아니다(채택자 구성 — 로컬층 없음이 정상). 디렉터리·권한 등 실제 판독 불능은
     규칙 0건으로 접지 않고 그대로 올린다. 형식이 틀린 항목은 파손 건수로 센다."""
     shipped_rules, shipped_broken = principle_rules._parse_text(
         _read_text(pm_paths.wiki_dir(home) / _SHIPPED_REL), layer="shipped"

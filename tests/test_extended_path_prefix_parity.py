@@ -1,14 +1,14 @@
-r"""경로 표기 직렬화 규칙의 **사본 대조** — 확장 길이 prefix 축은 pm_import 단일 (T-0712).
+r"""경로 표기 직렬화 규칙의 **사본 대조** — 확장 길이 prefix 처리는 pm_import 단일 (T-0712).
 
 경로를 값(비교·기록·표시)으로 내보내는 자리는 지금 셋이다:
 
-  `pm_import._path_notation_text`      — Windows 확장 길이 prefix(`\\?\`) 제거. 이 축의 유일한 입구는
+  `pm_import._path_notation_text`      — Windows 확장 길이 prefix(`\\?\`) 제거. 이 처리의 유일한 입구는
                                           `os.readlink`(Windows 커널이 `\??\` 로 저장한 symlink 대상)이고
                                           그 호출은 pm_import 에만 있다.
-  `pm_handoff._lease_slot_path_text`   — lease 슬롯 경로를 POSIX 표기로 직렬화(장부 키 산출·repo 상대화).
+  `pm_handoff._lease_slot_path_text`   — lease 슬롯 경로를 POSIX 표기로 직렬화(대여 기록 키 산출·repo 상대화).
   `pm_bootstrap._display_path_text`    — 표시/대조 경로를 POSIX 표기로 직렬화.
 
-셋은 "플랫폼 표기를 값에 남기지 않는다" 는 같은 목적을 갖지만 축이 다르다 — 뒤 둘은 **구분자**(`\` →
+셋은 "플랫폼 표기를 값에 남기지 않는다" 는 같은 목적을 갖지만 대상이 다르다 — 뒤 둘은 **구분자**(`\` →
 `/`), 앞 하나는 **prefix** 다. `as_posix()` 는 prefix 를 벗기지 않으므로(아래 값 단언) 한 함수로 합칠
 수 없고, 반대로 prefix 규칙이 모듈마다 복제되면 반드시 갈라진다. 그래서 이 파일이 (a) prefix 규칙의
 구현이 pm_import 하나뿐임을 지키고 (b) 세 직렬화가 같은 슬롯 경로에서 같은 문자열을 낸다는 것을
@@ -83,8 +83,8 @@ def test_the_owner_module_strips_the_prefix_on_both_spellings(modules, monkeypat
     assert install_files._path_notation_text("//?/C:/pm/a.md") == "C:/pm/a.md"
 
 
-def test_posix_serialization_alone_does_not_close_the_prefix_axis(modules, monkeypatch):
-    """`as_posix()` 는 prefix 를 남긴다 — 뒤 둘의 규칙을 재사용해서는 이 축이 안 닫힌다(분리 근거).
+def test_posix_serialization_alone_does_not_close_the_prefix_kind(modules, monkeypatch):
+    """`as_posix()` 는 prefix 를 남긴다 — 뒤 둘의 규칙을 재사용해서는 이 경우가 안 닫힌다(분리 근거).
 
     이 값이 바뀌면(=구분자 직렬화가 prefix 까지 벗기게 되면) 세 번째 규칙을 둘 이유가 사라진다.
     """
@@ -101,7 +101,7 @@ def test_posix_serialization_alone_does_not_close_the_prefix_axis(modules, monke
 def test_the_three_serializers_agree_on_the_same_slot_path(modules, tmp_path):
     """같은 슬롯 경로를 셋이 같은 문자열로 직렬화한다 — 표기가 모듈마다 갈리지 않는다.
 
-    prefix 가 없는 정상 입력이 세 함수의 공통 정의역이다(pm_import 는 prefix 축만 다루므로 구분자
+    prefix 가 없는 정상 입력이 세 함수의 공통 정의역이다(pm_import 는 prefix 처리만 다루므로 구분자
     단일화는 `as_posix()` 와 조합해 비교한다).
     """
     pm_import, handoff, bootstrap = modules

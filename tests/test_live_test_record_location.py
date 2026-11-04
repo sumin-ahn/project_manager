@@ -7,14 +7,14 @@ ADR-0027)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면, 
 때 훅이 안 읽는 worktree `.local` 에 조용히 기록→pass 위장→push 순간에야 불일치로 드러났다
 (PM 60 v1.1.0 릴리즈 실측). 여기선:
 
-  - `_resolve_livegate_flag` 가 훅과 **동일 engine-root sidecar 해소**로 PM 홈 `.local` 을
+  - `_resolve_live_test_flag` 가 훅과 **동일 engine-root sidecar 해소**로 PM 홈 `.local` 을
     돌려주는지(단일 소스) — 실 git two-git 토폴로지를 모사해 단언.
   - end-to-end `record` 가 worktree board.py 로 돌아도 훅 read 위치(PM 홈 `.local`)에 기록하고
     호출된 사본의 `.local` 에는 안 쓰는지(단일 소스).
   - live-test 보호훅 없음(단일-repo/솔로)이면 현행 `REPO/.local` 로 대체(채택자 무변경).
   - 훅 sidecar 는 있으나 engine-root 무효면 pass 대신 fail-loud(false-green 백스톱).
   - 훅 본문(worktree_pool)이 record 와 같은 engine-root 규약을 읽는지(공유 규약 드리프트 가드).
-  - `check` 도 `record` 와 **대칭**으로 `_resolve_livegate_flag` 를 거쳐(모듈상수 직독 제거·
+  - `check` 도 `record` 와 **대칭**으로 `_resolve_live_test_flag` 를 거쳐(모듈상수 직독 제거·
     T-0306) 어느 board.py 사본/cwd 로 check 하든 훅이 기록한 engine-root 파일을 읽는지
     (single-source·wrong-copy false-green/false-red 차단)·engine-root 무효면 record 와 같은 방식으로
     fail-loud·솔로 대체 경로 무변경.
@@ -140,7 +140,7 @@ def _hook_read_flag(hooks_dir: Path) -> Path:
 
     훅은 `<hooks_dir>/engine-root`(PM 홈 절대경로)로 `<root>/.project_manager/tools/board.py`
     를 돌리고, 그 사본의 기본 기록 위치(`pm_paths.live_test_flag` = `<root>/.project_manager/.local/live-test.json`)를
-    읽는다. record 가 정렬해야 할 목표 위치 — `_resolve_livegate_flag` 와 독립 계산해 대조한다.
+    읽는다. record 가 정렬해야 할 목표 위치 — `_resolve_live_test_flag` 와 독립 계산해 대조한다.
     """
     root = (hooks_dir / "engine-root").read_text(encoding="utf-8").splitlines()[0].strip()
     return Path(root) / ".project_manager" / ".local" / "live-test.json"
@@ -176,10 +176,10 @@ def _readonly_tree(tmp_path: Path, hooks_dir: Path) -> Path:
 
 @_git_required
 def test_resolve_live_test_flag_engine_root_matches_hook_read(tmp_path, monkeypatch):
-    """훅 활성 two-git 토폴로지 → `_resolve_livegate_flag` = 훅 read 위치(PM 홈 .local)·단일 소스."""
+    """훅 활성 two-git 토폴로지 → `_resolve_live_test_flag` = 훅 read 위치(PM 홈 .local)·단일 소스."""
     mod, engine, worktree, hooks_dir = _make_topology(tmp_path, monkeypatch)
 
-    flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(worktree))
+    flag, mode = regression_store._resolve_live_test_flag(pm_paths.home_at(mod.REPO), str(worktree))
 
     assert mode == regression_store._LG_ENGINE_ROOT
     # 독립 재구성한 훅-read 위치와 일치(record 위치 == 훅 read 위치).
@@ -275,7 +275,7 @@ def test_resolve_no_hookspath_falls_back_to_repo_local(tmp_path, monkeypatch):
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, with_hookspath=False)
 
-    flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(worktree))
+    flag, mode = regression_store._resolve_live_test_flag(pm_paths.home_at(mod.REPO), str(worktree))
 
     assert mode == regression_store._LG_NO_HOOK
     assert flag == pm_paths.live_test_flag(pm_paths.home_at(mod.REPO))
@@ -287,7 +287,7 @@ def test_resolve_hookspath_without_engine_root_is_no_hook_not_broken(tmp_path, m
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, write_engine_root=False)
 
-    flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(worktree))
+    flag, mode = regression_store._resolve_live_test_flag(pm_paths.home_at(mod.REPO), str(worktree))
 
     assert mode == regression_store._LG_NO_HOOK, "live-test 훅 아닌 hooksPath 를 broken 으로 오탐하면 안 됨"
     assert flag == pm_paths.live_test_flag(pm_paths.home_at(mod.REPO))
@@ -318,7 +318,7 @@ def test_resolve_broken_when_engine_root_empty(tmp_path, monkeypatch):
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, engine_root_value="")
 
-    _flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(worktree))
+    _flag, mode = regression_store._resolve_live_test_flag(pm_paths.home_at(mod.REPO), str(worktree))
 
     assert mode == regression_store._LG_BROKEN
 
@@ -329,7 +329,7 @@ def test_resolve_broken_when_engine_root_lacks_board(tmp_path, monkeypatch):
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, board_in_engine=False)
 
-    _flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(worktree))
+    _flag, mode = regression_store._resolve_live_test_flag(pm_paths.home_at(mod.REPO), str(worktree))
 
     assert mode == regression_store._LG_BROKEN
 
@@ -361,7 +361,7 @@ def test_record_broken_engine_root_fails_loud_no_write(tmp_path, monkeypatch, ca
 # ── ④ 공유 규약 가드: 훅 본문 == record 해소가 읽는 engine-root 규약 ──────────
 
 def test_hook_body_shares_engine_root_live_test_convention():
-    """protected_hooks 본문이 record(`_resolve_livegate_flag`)와 같은 engine-root 규약을 읽는다.
+    """protected_hooks 본문이 record(`_resolve_live_test_flag`)와 같은 engine-root 규약을 읽는다.
 
     훅이 sidecar 이름(`engine-root`)·board.py 경로·`live-test check` 소비를 바꾸면 record 해소와
     갈라져 단일 소스가 깨진다 — 그 드리프트를 여기서 못박는다(정렬 계약 회귀).
@@ -384,7 +384,7 @@ def test_resolve_live_test_flag_no_hook_when_not_git_repo(tmp_path, monkeypatch)
     local = proj / ".project_manager" / ".local"
     monkeypatch.setattr(mod, "REPO", proj)
 
-    flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(tmp_path / "nonrepo"))
+    flag, mode = regression_store._resolve_live_test_flag(pm_paths.home_at(mod.REPO), str(tmp_path / "nonrepo"))
 
     assert mode == regression_store._LG_NO_HOOK
     assert flag == pm_paths.live_test_flag(pm_paths.home_at(mod.REPO))
@@ -418,14 +418,14 @@ def test_resolve_relative_hookspath_resolves_against_worktree_root(tmp_path, mon
     monkeypatch.setattr(mod, "REPO", worktree)
 
     # 프로세스 cwd(=pytest 실행 위치)가 worktree 가 아니어도 worktree root 기준으로 해소돼야 한다.
-    flag, mode = regression_store._resolve_livegate_flag(pm_paths.home_at(mod.REPO), str(worktree))
+    flag, mode = regression_store._resolve_live_test_flag(pm_paths.home_at(mod.REPO), str(worktree))
 
     assert mode == regression_store._LG_ENGINE_ROOT, "상대 core.hooksPath 를 worktree root 기준 해소하지 못함"
     assert flag == engine / ".project_manager" / ".local" / "live-test.json"
 
 
 # ── ⑥ check 단일 소스: record 와 대칭 (T-0306·모듈상수 직독 제거·wrong-copy 오독 차단) ──
-# check 도 record 와 **동일 해소**(`_resolve_livegate_flag`)를 거쳐 어느 board.py 사본/cwd 로 check
+# check 도 record 와 **동일 해소**(`_resolve_live_test_flag`)를 거쳐 어느 board.py 사본/cwd 로 check
 # 하든 훅이 기록한 engine-root 파일을 읽는다(single-source). 기본 위치(`pm_paths.live_test_flag`) 직독을 남겨두면
 # 호출-사본의 stale/wrong `.local` 을 읽어 false-green/false-red 오독이 난다 — 그걸 못박는다.
 

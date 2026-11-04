@@ -309,7 +309,7 @@ def _read_claude_native_agent_model(
     return delegate_channel_rules._frontmatter_model_scalar(values[0]), relative
 
 
-# 마스터 스위치가 off 일 때의 처방 — 매핑을 고치라고 하면 안 된다(막는 것은 매핑이 아니다).
+# 마스터 스위치가 off 일 때의 해결 방법 — 매핑을 고치라고 하면 안 된다(막는 것은 매핑이 아니다).
 # `pm_delegate` CLI 로 재지향해도 그 CLI 가 같은 스위치로 rc=3 을 내므로 순환이 된다.
 _ENABLED_REMEDIATION = (
     "local.conf 에 `delegate.enabled=true` 를 두거나 그 줄을 지우세요(기본 허용)."

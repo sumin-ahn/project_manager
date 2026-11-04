@@ -97,7 +97,7 @@ def _round_pending_abandon_command(home, tid: str, ordinal: int, role: str) -> s
     이 (순번, 역할)의 돌려받지 않은 행 부재·경로 형태 불일치는 해소 불능으로 `None`(호출부가
     `ticket copies --uncollected` 조회 안내로 대신한다). 기록 조회 예외는 전파한다."""
     owner = _round_pending_record_owner(home)
-    rows = delegate_records.ticket_copy_records(owner, ticket=tid, unharvested=True)
+    rows = delegate_records.ticket_copy_records(owner, ticket=tid, uncollected=True)
     match = next((row for row in rows if row.get('ordinal') == ordinal and row.get('role') == role), None)
     if match is None:
         return None

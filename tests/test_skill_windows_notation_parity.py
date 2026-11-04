@@ -30,7 +30,7 @@ def _cards() -> list[Path]:
 
 # The 15 canonical preimages normalize to exactly these four semantic families.
 # Each tuple lists the load-bearing tokens that must survive relocation; this is
-# intentionally separate from T-0681's derived-template surface axis.
+# intentionally separate from T-0681's derived-template surface check.
 _PREIMAGE_VARIANTS = {
     "python-shim-and-ps5": (
         "python3 …", "py -3.12", "WindowsApps", "Permission denied",

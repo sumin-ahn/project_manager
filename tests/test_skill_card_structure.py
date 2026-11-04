@@ -66,7 +66,7 @@ def _covered_card_roots(repo: Path, cards: list[Path]) -> set[str]:
     }
 
 
-# 현재 출하 표면에서 실제 카드를 가진 root를 한 번 측정해 inventory 축으로 고정한다. adapter 후보는
+# 현재 출하 범위에서 실제 카드를 가진 root를 한 번 측정해 inventory 기준으로 고정한다. adapter 후보는
 # HARNESS_ADAPTER_DIRS에서 파생하므로 `.opencode` 및 향후 하네스 namespace가 자동으로 검색에 들어간다.
 _REQUIRED_CARD_ROOTS = frozenset(_covered_card_roots(REPO, _skill_cards(REPO)))
 

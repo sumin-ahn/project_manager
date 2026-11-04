@@ -31,7 +31,7 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node 없음")
 RESPONSE_KEYS = {"version", "git", "context", "context_error", "recall", "recall_error"}
 CONTEXT_KEYS = {"version", "status", "measured", "used_pct", "level", "notice", "guidance", "emit",
                 "compaction_new", "compaction_guidance", "compaction_boundary_id"}
-# 사용자 허용 표식 — 판정 대상 문자열로만 쓴다.
+# 사용자 허용 표시 — 판정 대상 문자열로만 쓴다.
 GRANT_MARK = "git " + "\uD5C8\uC6A9" + ":"
 RULES = "#### 번들\n- `[shell: git\\s+status]` 상태 확인 규칙 본문.\n"
 # 판정 경계가 세 하네스 공통으로 원문 전달해야 하는 셸 문자열(선필터가 놓치던 형태 포함).
@@ -65,7 +65,7 @@ const requestOf = (launch) => JSON.parse(launch.input);
 
 
 def _project(tmp_path: Path) -> Path:
-    """실제 엔진·lib 사본·OpenCode 압축 한도 기록·원칙 규칙을 갖춘 설치 형상 루트."""
+    """실제 엔진·lib 사본·OpenCode 압축 한도 기록·원칙 규칙을 갖춘 설치 구성 루트."""
     root = _make_ctx_guard_project(tmp_path)
     for name in PLUGIN_CORES:
         shutil.copyfile(CORE_DIR / name, root / ".opencode" / "lib" / name)
@@ -89,8 +89,8 @@ def _markers(root: Path) -> list[str]:
     return sorted(path.name for path in directory.iterdir()) if directory.exists() else []
 
 
-def _guidance(band: str, used: int) -> str:
-    return ctx_recovery.build_ctx_guard_guidance(band, used_pct=used, precompact_at_pct=80)
+def _guidance(level: str, used: int) -> str:
+    return ctx_recovery.build_ctx_guard_guidance(level, used_pct=used, precompact_at_pct=80)
 
 
 def _hook_tool(root: Path, payload) -> subprocess.CompletedProcess:
@@ -266,7 +266,7 @@ const tool = Object.assign((definition) => definition, {schema});
 
 
 def test_native_context_policy_and_delivery(tmp_path):
-    """엔진 판정 그대로 — warn2·final 독립, 0 미재무장·양수 ok 재무장, 재시작·다른 process 억제, 불능 notice."""
+    """엔진 판정 그대로 — warn2·final 독립, 0 은 다시 켜지 않음·양수 ok 는 다시 켬, 재시작·다른 process 억제, 불능 notice."""
     root = _project(tmp_path)
     script = r"""
 const fs = require("node:fs");
@@ -280,7 +280,7 @@ const ctx = require("./ctx-guard-core.cjs");
   const hooks = await make();
   const sid = "ses_policy";
   const out = {};
-  await observe(hooks, sid, 156000); out.warn2 = await deliver(hooks, sid); out.nudge2Again = await deliver(hooks, sid);
+  await observe(hooks, sid, 156000); out.warn2 = await deliver(hooks, sid); out.warn2Again = await deliver(hooks, sid);
   await observe(hooks, sid, 190000); out.final = await deliver(hooks, sid);
   await observe(hooks, sid, 0); await observe(hooks, sid, 190000); out.afterZero = await deliver(hooks, sid);
   await observe(hooks, sid, 4000); await observe(hooks, sid, 156000); out.afterOk = await deliver(hooks, sid);
@@ -295,11 +295,11 @@ const ctx = require("./ctx-guard-core.cjs");
 """
     budget = (root / ".project_manager" / ".local" / "ctx-budget.json").read_bytes()
     result = _node(root, script)
-    assert result["warn2"] == [_guidance("warn2", 78)] and result["nudge2Again"] == []
-    assert result["final"] == [_guidance("final", 95)], "warn2 발화가 final 을 소모했다"
-    assert result["afterZero"] == [], "미측정 0 이 밴드를 재무장했다"
-    assert result["afterOk"] == [_guidance("warn2", 78)], "양수 ok 관측이 밴드를 재무장하지 않았다"
-    assert result["restarted"] == [], "plugin 재시작이 같은 세션 밴드를 다시 냈다"
+    assert result["warn2"] == [_guidance("warn2", 78)] and result["warn2Again"] == []
+    assert result["final"] == [_guidance("final", 95)], "warn2 출력이 final 을 소모했다"
+    assert result["afterZero"] == [], "미측정 0 이 구간을 다시 켰다"
+    assert result["afterOk"] == [_guidance("warn2", 78)], "양수 ok 관측이 구간을 다시 켜지 않았다"
+    assert result["restarted"] == [], "plugin 재시작이 같은 세션 구간을 다시 냈다"
     assert result["notice"] == []
     assert len(result["budgetToasts"]) == 1 and "`pm_config.py apply`" in result["budgetToasts"][0]
 
@@ -312,7 +312,7 @@ const ctx = require("./ctx-guard-core.cjs");
   console.log(JSON.stringify({delivered: await deliver(hooks, "ses_policy")}));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """)
-    assert other["delivered"] == [], "다른 process 가 같은 세션 밴드를 다시 냈다"
+    assert other["delivered"] == [], "다른 process 가 같은 세션 구간을 다시 냈다"
 
 
 def test_epoch_and_session_ownership(tmp_path):
@@ -324,9 +324,9 @@ const root = process.argv[1];
 (async () => {
   const out = {};
   let release;
-  const gate = new Promise((resolve) => { release = resolve; });
+  const pending = new Promise((resolve) => { release = resolve; });
   const late = await ctx.CtxGuardPlugin({directory: root, client: {
-    session: {get: async ({path: {id}}) => { await gate; return {data: {id}}; }}, tui: {showToast: async () => {}}}});
+    session: {get: async ({path: {id}}) => { await pending; return {data: {id}}; }}, tui: {showToast: async () => {}}}});
   let start = spawned.length;
   const message = observe(late, "ses_late", 156000);
   await new Promise((resolve) => setImmediate(resolve));
@@ -416,8 +416,8 @@ def test_unfiltered_inputs_reach_central_guard(tmp_path, monkeypatch):
     for command in UNFILTERED:
         payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(root), "session_id": "S",
                    "tool_input": {"command": command}}
-        assert claude.git_anchor_hook_evaluate(payload, root) is None
-        assert codex.git_anchor_hook_evaluate(payload, root) == {}
+        assert claude.git_target_repo_hook_evaluate(payload, root) is None
+        assert codex.git_target_repo_hook_evaluate(payload, root) == {}
     home = cli_hooks.adapter_home(root)
     assert calls == [(home, str(root), command) for command in UNFILTERED for _harness in ("claude", "codex")]
 

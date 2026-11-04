@@ -37,7 +37,7 @@ from types import SimpleNamespace
 import pytest
 
 from _git_fixture import init_git_repo
-from conftest import write_cluster_ledger
+from conftest import write_cluster_records
 from pm_engine.infra import git, areas_store, cluster_store, conf_store, doc_page_store, fs, pm_paths, python_env, repo_coordinates, ticket_store
 from pm_engine.app import doc_affected, doc_staleness, freshness_lint, regression, slot_resolution
 from pm_engine.app import finish_context, finish_private_refs
@@ -71,7 +71,7 @@ def _neutralize_wrong_repo_guard(tf, monkeypatch):
     가드가 아니라 main() 의 정체성/모호 판정 등 orthogonal 로직을 검증하므로, 오실행 감지를
     None(미해소)로 격리해 가드를 통과시킨다. 가드 자체의 검증은 전용 파일
     `test_board_worktree_wrong_repo_guard.py` 가 담당한다."""
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home: None)
 
 
 def _git_seed(root: Path) -> None:
@@ -148,7 +148,7 @@ def test_is_pytest_green_no_passed_is_false(tf):
 #
 # 활성 repo 가 비-Python 이거나 `tests/` 가 없으면 `pytest tests/ -q` 가 틀린다 — 회귀는 그
 # repo 의 test_cmd 를 써야 한다. 해소는 4층이다(prefix 행 > repo 행 > local.conf > 솔로 대체·
-# 체인 본체는 `regression._resolve_gate_cmd` 단일 사본이고 이 도구는 자기 트리의 `Home` 을 넘겨
+# 체인 본체는 `regression._resolve_check_cmd` 단일 사본이고 이 도구는 자기 트리의 `Home` 을 넘겨
 # 위임한다). 단 **솔로/프레임워크 자기 회귀(어느 층도 미해소)는 현행 `pytest tests/ -q` venv
 # 실행을 반드시 보존**(도그푸딩 불변). 층별 우선순위·두 도구 파리티·무prefix 채택자 e2e 는
 # `test_regression_check_resolution.py` 가 소유하고, 여기서는 이 도구 명령의 계약을 본다.
@@ -159,7 +159,7 @@ def test_is_pytest_green_no_passed_is_false(tf):
 class _FakeBoard:
     """board.py 대역 — 해소 체인이 읽는 함수를 흉내낸다(areas 해소 가로채기).
 
-    `areas_file()` = board_root 추종 결과(T-0162 A6) — `regression._resolve_gate_cmd` 의 존재
+    `areas_file()` = board_root 추종 결과(T-0162 A6) — `regression._resolve_check_cmd` 의 존재
     가드가 board 모듈 함수로 위임되므로 대역도 그 함수를 제공한다(실재 areas.md 경로 주입).
     prefix 층 뒤에 repo 행·local.conf 층이 있으므로(T-0730) 그 함수도 대역이 갖는다 — 없으면
     체인이 AttributeError 로 조기 탈출해 "None 이 나온 이유"가 흐려진다.
@@ -206,7 +206,7 @@ def _install_stub(stub, monkeypatch):
 def test_resolve_per_repo_cmd_solo_no_areas_returns_default(tf, tmp_path, monkeypatch):
     """솔로 대체 — areas.md 부재면 4층 기본 명령(`python_env.default_pytest_cmd`)."""
     _install_stub(_FakeBoard(None, None, areas_path=tmp_path / "no-areas.md"), monkeypatch)
-    assert regression._resolve_gate_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
+    assert regression._resolve_check_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
 
 
 def test_resolve_per_repo_cmd_multipm_returns_row_cmd(tf, tmp_path, monkeypatch):
@@ -214,7 +214,7 @@ def test_resolve_per_repo_cmd_multipm_returns_row_cmd(tf, tmp_path, monkeypatch)
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
     _install_stub(_FakeBoard("A1", {"test_cmd": "go test ./..."}, areas_path=areas), monkeypatch)
-    assert regression._resolve_gate_cmd(pm_paths.home_at(REPO)) == "go test ./..."
+    assert regression._resolve_check_cmd(pm_paths.home_at(REPO)) == "go test ./..."
 
 
 def test_resolve_per_repo_cmd_multipm_no_prefix_returns_default(tf, tmp_path, monkeypatch):
@@ -222,7 +222,7 @@ def test_resolve_per_repo_cmd_multipm_no_prefix_returns_default(tf, tmp_path, mo
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
     _install_stub(_FakeBoard(None, None, areas_path=areas), monkeypatch)
-    assert regression._resolve_gate_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
+    assert regression._resolve_check_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
 
 
 def test_resolve_per_repo_cmd_multipm_empty_test_cmd_returns_default(tf, tmp_path, monkeypatch):
@@ -230,7 +230,7 @@ def test_resolve_per_repo_cmd_multipm_empty_test_cmd_returns_default(tf, tmp_pat
     areas = tmp_path / "areas.md"
     areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
     _install_stub(_FakeBoard("A1", {"test_cmd": ""}, areas_path=areas), monkeypatch)
-    assert regression._resolve_gate_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
+    assert regression._resolve_check_cmd(pm_paths.home_at(REPO)) == python_env.default_pytest_cmd()
 
 
 def test_resolve_per_repo_cmd_blank_prefix_uses_repo_row(tf, tmp_path, monkeypatch):
@@ -247,14 +247,14 @@ def test_resolve_per_repo_cmd_blank_prefix_uses_repo_row(tf, tmp_path, monkeypat
         rows=[{"repo": "heru", "prefix": "", "test_cmd": "viewer bind"}],
         repos={"heru"},
     ), monkeypatch)
-    assert regression._resolve_gate_cmd(pm_paths.home_at(REPO)) == "viewer bind"
+    assert regression._resolve_check_cmd(pm_paths.home_at(REPO)) == "viewer bind"
 
 
 def test_resolve_per_repo_cmd_reads_local_conf_without_areas(tf, tmp_path, monkeypatch):
     """areas.md 가 아예 없어도 local.conf test_cmd 를 읽는다 (T-0730·3층은 areas 가드 밖)."""
     _install_stub(_FakeBoard(None, None, areas_path=tmp_path / "no-areas.md",
                              conf={"test.cmd": "go test ./..."}), monkeypatch)
-    assert regression._resolve_gate_cmd(pm_paths.home_at(REPO)) == "go test ./..."
+    assert regression._resolve_check_cmd(pm_paths.home_at(REPO)) == "go test ./..."
 
 
 def test_default_run_pytest_solo_uses_venv_pytest_argv(tf, tmp_path, monkeypatch):
@@ -273,7 +273,7 @@ def test_default_run_pytest_solo_uses_venv_pytest_argv(tf, tmp_path, monkeypatch
             stderr = ""
         return R()
 
-    monkeypatch.setattr(regression, "_resolve_gate_cmd", lambda _home: None)
+    monkeypatch.setattr(regression, "_resolve_check_cmd", lambda _home: None)
     monkeypatch.setattr(finish_record.subprocess, "run", fake_run)
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python="/venv/bin/python", regression_cwd="/repo")
     rc, out = finisher._default_run_pytest()
@@ -303,7 +303,7 @@ def test_default_run_pytest_multipm_uses_per_repo_shell_cmd(tf, tmp_path, monkey
             stderr = ""
         return R()
 
-    monkeypatch.setattr(regression, "_resolve_gate_cmd", lambda _home: "go test ./...")
+    monkeypatch.setattr(regression, "_resolve_check_cmd", lambda _home: "go test ./...")
     monkeypatch.setattr(finish_record.subprocess, "run", fake_run)
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python="/venv/bin/python", regression_cwd="/wt/A_1")
     rc, out = finisher._default_run_pytest()
@@ -403,7 +403,7 @@ def test_soft_step_exception_propagates_before_completion(tf, tmp_path, capsys):
 
 def test_dry_run_label_shows_resolved_check(tf, tmp_path, monkeypatch, capsys):
     """dry-run 안내는 **실제로 돌 명령**을 보여준다 — 해소된 회귀 명령이 있으면 그 문자열 (T-0730)."""
-    monkeypatch.setattr(regression, "_resolve_gate_cmd", lambda _home: "go test ./...")
+    monkeypatch.setattr(regression, "_resolve_check_cmd", lambda _home: "go test ./...")
     finisher = finish_record.TicketFinisher(
         pm_paths.home_at(REPO),
         dod_block_fn=lambda tid: None,
@@ -424,7 +424,7 @@ def test_dry_run_label_shows_resolved_check(tf, tmp_path, monkeypatch, capsys):
 
 def test_dry_run_label_shows_solo_argv_when_unresolved(tf, tmp_path, monkeypatch, capsys):
     """해소 실패(솔로) dry-run 안내도 병렬 기본을 보여준다."""
-    monkeypatch.setattr(regression, "_resolve_gate_cmd", lambda _home: None)
+    monkeypatch.setattr(regression, "_resolve_check_cmd", lambda _home: None)
     finisher = _make_finisher(tf, tmp_path, affected=[])
     rc = finisher.run("T-1234", section=None, dry_run=True)
     assert rc == 0
@@ -1023,7 +1023,7 @@ def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkey
             stderr = ""
         return R()
 
-    monkeypatch.setattr(regression, "_resolve_gate_cmd", lambda _home: None)
+    monkeypatch.setattr(regression, "_resolve_check_cmd", lambda _home: None)
     monkeypatch.setattr(slot_resolution, "_regression_cwd", lambda _home: "/wt/project_manager_1")
     monkeypatch.setattr(finish_record.subprocess, "run", fake_run)
     finisher = finish_record.TicketFinisher(pm_paths.home_at(REPO), venv_python="/venv/bin/python")  # regression_cwd 미주입
@@ -2240,7 +2240,7 @@ def _cluster_repo(tmp_path: Path, *, git: bool = True,
     _cluster_ticket(root, _CLUSTER_TICKET, status="open", touch="src/")
     if base_branch is not None:
         # 판정 기준은 묶음 기록이 소유한다 — 실 board 는 발행이 이 파일을 만든다.
-        write_cluster_ledger(
+        write_cluster_records(
             root / ".project_manager" / "board", _CLUSTER_TICKET,
             base_branch=base_branch, branch=f"dev/{_CLUSTER_TICKET}")
     _cluster_write(root / "src" / "app.py", 5)

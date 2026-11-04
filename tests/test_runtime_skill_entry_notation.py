@@ -20,7 +20,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 
 def _exposes_runtime_skill_entry(tree: ast.AST) -> bool:
-    """로컬 정의든 공용 helper alias든 런타임 표기 seam을 노출하는 모듈인지 판정한다."""
+    """로컬 정의든 공용 helper alias든 런타임 표기 공용 함수를 노출하는 모듈인지 판정한다."""
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name == "_runtime_skill_entry":
@@ -46,7 +46,7 @@ def _runtime_modules() -> tuple[str, ...]:
     ))
 
 
-# 손-열거하지 않는다. 새 출력 모듈이 runtime seam을 정의/alias하면 이 파라미터 축에 자동 편입된다.
+# 손-열거하지 않는다. 새 출력 모듈이 runtime 공용 함수를 정의/alias하면 이 파라미터 목록에 자동 편입된다.
 RUNTIME_MODULES = _runtime_modules()
 _SLASH_SKILL_ENTRY = re.compile(
     r"(?<![A-Za-z0-9_.>/\-])/pm-[a-z0-9-]+(?![A-Za-z0-9_.>/\-])"
@@ -98,7 +98,7 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
 def _allowed_canonical_literal(node: ast.Constant, tree: ast.AST) -> bool:
     """출력 전 runtime 변환이 보장된 authoring 리터럴과 파서 oracle만 허용한다.
 
-    ``skill(<첫 인자>)``는 ``_runtime_skill_entry``를 반드시 거치는 카드 authoring seam이다.
+    ``skill(<첫 인자>)``는 ``_runtime_skill_entry``를 반드시 거치는 카드 authoring 공용 함수다.
     ``_BARE_BOOTSTRAP_TRIGGER``는 사용자에게 출력하지 않고 양 접두사를 읽는 파서의 canonical
     fixture다. 일반 상수·help·print·return 문자열에는 이 예외가 적용되지 않는다.
     """
@@ -130,7 +130,7 @@ def _allowed_canonical_literal(node: ast.Constant, tree: ast.AST) -> bool:
 
 def test_all_tool_modules_have_no_hardcoded_slash_skill_output_string():
     failures = {}
-    # runtime seam 보유 목록과 별개로 tools 전체를 스캔한다. 따라서 helper를 추가하지 않은 새
+    # runtime 공용 함수 보유 목록과 별개로 tools 전체를 스캔한다. 따라서 helper를 추가하지 않은 새
     # 출력 모듈도 slash 리터럴을 넣는 순간 red가 된다(목록 누락으로 숨을 수 없음).
     for path in engine_python_files(TOOLS):
         tree = ast.parse(path.read_text(encoding="utf-8"))

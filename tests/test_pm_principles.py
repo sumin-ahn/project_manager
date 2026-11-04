@@ -2,13 +2,13 @@
 
 레지스트리(`.project_manager/wiki/pm_principles.md` + PM 홈 로컬층 `pm_principles.local.md`)를
 importlib 로 직접 로드해 검증한다. 실 canonical 레지스트리 파일도 형태(태그 유무 → 분류)를
-값으로 확인한다 — 검증 축:
-  1. 파서 정합 — 태그 항목/무태그 항목/파손 태그가 RECALL/JUDGMENT/broken 으로 갈린다. 로더
+값으로 확인한다 — 검증 항목:
+  1. 파서 일치 — 태그 항목/무태그 항목/파손 태그가 RECALL/JUDGMENT/broken 으로 갈린다. 로더
      경계값(빈 파일·CRLF·같은 파일 안 중복·실제 10,000자 임계)도 값으로 확인한다.
-  2. 층 합성 — 로컬층이 뒤에 붙고 같은 (on, match) 면 로컬층이 이긴다 · 로컬층 부재(채택자 형상)에서도 출하층만으로 동작.
+  2. 층 합성 — 로컬층이 뒤에 붙고 같은 (on, match) 면 로컬층이 이긴다 · 로컬층 부재(채택자 구성)에서도 출하층만으로 동작.
   3. 비차단·상한 — `judge_recall` 은 어떤 입력에도 예외를 던지지 않고, 매칭 다수 시 상한 안으로 접히며 매칭 수를 값으로 싣는다.
   4. opencode plugin core 순수함수 자가검증(node) — `require` 성공 + `toolSignal`/`extractPromptText` 값 +
-     실 subprocess 발화-억제-재무장 사이클 + 파손 경고 표면화.
+     실 subprocess 출력-억제-다시 켜기 사이클 + 파손 경고 출력.
   5. codex 어댑터 — 실 캡처 fixture(`tests/fixtures/codex_0_147_0_live_hook_payloads.json`)로 도구
      이름 매핑·파손 경고·최종 합본 상한을 값으로 확인한다.
 """
@@ -30,7 +30,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_PRINCIPLES_PY = TOOLS / "pm_principles.py"
 # 로더가 import 하는 엔진 패키지(콘솔·공용 읽기·repo 파일). 채택자 트리엔 항상 함께 있으므로
-# 사본 fixture 도 같이 깔아야 실제 형상과 같아진다.
+# 사본 fixture 도 같이 깔아야 실제 구성과 같아진다.
 ENGINE_PACKAGE = "pm_engine"
 CANONICAL_REGISTRY = REPO / ".project_manager" / "wiki" / "pm_principles.md"
 CODEX_DISPATCHER_PY = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
@@ -38,7 +38,7 @@ CODEX_LIVE_HOOK_FIXTURE = REPO / "tests" / "fixtures" / "codex_0_147_0_live_hook
 
 
 def _write_engine_tools(tools_dir: Path) -> None:
-    """tmp 채택자 트리의 `.project_manager/tools/` 에 로더와 그 형제 seam 을 배치한다."""
+    """tmp 채택자 트리의 `.project_manager/tools/` 에 로더와 그 형제 공용 모듈을 배치한다."""
     tools_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(PM_PRINCIPLES_PY, tools_dir / "pm_principles.py")
     shutil.copytree(TOOLS / ENGINE_PACKAGE, tools_dir / ENGINE_PACKAGE,
@@ -86,7 +86,7 @@ def _write_registry(root: Path, text: str, *, local: str | None = None) -> None:
         (wiki / "pm_principles.local.md").write_text(local, encoding="utf-8")
 
 
-# ── 1. 파서 정합 ──────────────────────────────────────────────────────────
+# ── 1. 파서 일치 ──────────────────────────────────────────────────────────
 
 def test_tagged_item_parses_as_recall_with_on_and_match(m, tmp_path):
     _write_registry(tmp_path, (
@@ -119,7 +119,7 @@ def test_untagged_item_parses_as_judgment(m, tmp_path):
 ])
 def test_broken_tag_is_excluded_and_not_silently_a_pass(m, tmp_path, broken_line):
     """파손 항목은 규칙 목록에서 빠지고(judge_recall 이 아무것도 매칭 안 함), 판정 불능은
-    `judge_recall` 의 `broken` 필드로 표면화된다 — 조용한 통과가 아니다."""
+    `judge_recall` 의 `broken` 필드로 출력된다 — 조용한 통과가 아니다."""
     _write_registry(tmp_path, f"#### 번들\n{broken_line}\n")
     rules = principle_recall.load(pm_paths.home_at(tmp_path))
     assert rules == ()
@@ -181,13 +181,6 @@ def test_duplicate_item_within_the_same_file_last_one_wins(m, tmp_path):
     assert rules[0].text == "두 번째 문구(이게 이긴다)."
 
 
-def test_principles_cli_has_no_rearm_subcommand(m, tmp_path):
-    """부르는 곳이 없던 `rearm` 서브커맨드는 지워졌다 — 인자 오류(종료 코드 2)로 거부된다."""
-    with pytest.raises(SystemExit) as excinfo:
-        m.main(["rearm", "--root", str(tmp_path), "--session", "s"])
-    assert excinfo.value.code == 2
-
-
 def test_judge_recall_text_at_exact_10000_char_cap_is_not_summarized(m, tmp_path):
     """실제 `_MAX_INJECT_CHARS`(10,000) 경계 — 정확히 상한이면 원문 그대로다(monkeypatch 아님)."""
     fixed_len = len(principle_rules._INJECT_PREFIX) + 3  # f"{prefix} - {rule_text}" 의 고정 부분(공백 1 + "- ").
@@ -238,7 +231,7 @@ def test_local_layer_adds_distinct_rule_without_dropping_shipped(m, tmp_path):
 
 
 def test_adopter_shape_without_local_file_uses_shipped_only(m, tmp_path):
-    """로컬층 파일이 아예 없는 채택자 형상에서도 출하층만으로 정상 동작한다."""
+    """로컬층 파일이 아예 없는 채택자 구성에서도 출하층만으로 정상 동작한다."""
     _write_registry(tmp_path, "#### 공유\n- `[edit: tests/]` 출하 문구.\n")
     assert (tmp_path / ".project_manager" / "wiki" / "pm_principles.local.md").exists() is False
     rules = principle_recall.load(pm_paths.home_at(tmp_path))
@@ -259,9 +252,9 @@ def test_judge_recall_never_raises_on_hostile_input(m, tmp_path, text):
     principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='shell', text=text, seen=set())
 
 
-def test_judge_recall_unknown_on_axis_returns_none(m, tmp_path):
+def test_judge_recall_unknown_on_kind_returns_none(m, tmp_path):
     _write_registry(tmp_path, "#### 공유\n- `[shell: git]` 문구.\n")
-    assert principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='not-a-real-axis', text='git', seen=set()) is None
+    assert principle_recall.judge_recall(pm_paths.home_at(tmp_path), on='not-a-real-kind', text='git', seen=set()) is None
 
 
 def test_judge_recall_dedups_against_seen(m, tmp_path):
@@ -288,7 +281,7 @@ def test_judge_recall_caps_rendered_text_and_reports_match_count(m, tmp_path, mo
 
 
 def test_broken_registry_pattern_is_undecidable_not_a_pass(m, tmp_path):
-    """파손 항목이 섞여도 정상 항목 판정은 그대로 살아 있고, broken 건수가 함께 표면화된다."""
+    """파손 항목이 섞여도 정상 항목 판정은 그대로 살아 있고, broken 건수가 함께 출력된다."""
     _write_registry(tmp_path, (
         "#### 공유\n"
         "- `[shell: (unclosed]` 파손 항목.\n"
@@ -348,7 +341,7 @@ def test_canonical_delegate_rule_requires_contracts_for_every_finding():
 
 
 def test_delegator_grants_equal_authority_is_registered(m, tmp_path):
-    """위임 권한 동등 규칙이 레지스트리 항목으로 실려 있고 위임 축에서 회상된다 (T-0887).
+    """위임 권한 동등 규칙이 레지스트리 항목으로 실려 있고 위임 종류에서 회상된다 (T-0887).
 
     카드 산문만으로는 하네스가 바뀌면 규칙이 사라진다 — 세 하네스가 공유하는 이 표에 있어야
     코덱스·오픈코드가 PM 일 때도 같은 규칙을 받는다.
@@ -360,7 +353,7 @@ def test_delegator_grants_equal_authority_is_registered(m, tmp_path):
     rule = matched[0]
     assert "위임 방향·하네스 조합 무관" in rule.text
     assert rule.on == "edit"
-    # 위임을 말하는 편집에서 실제로 회상된다(태그가 하네스 이름만 보면 이 축을 놓친다).
+    # 위임을 말하는 편집에서 실제로 회상된다(태그가 하네스 이름만 보면 이 종류를 놓친다).
     for probe in ("delegate 경로를 고친다", "위임 경로를 고친다", "codex argv"):
         recalled = principle_recall.judge_recall(pm_paths.home_at(REPO), on='edit', text=probe)
         assert recalled is not None, probe
@@ -368,14 +361,14 @@ def test_delegator_grants_equal_authority_is_registered(m, tmp_path):
 
 
 def test_canonical_registry_loads_from_each_shipped_target(m, tmp_path):
-    """3타깃 사본 각자의 트리에서 로더가 항목을 읽는다(값으로 확인 — 채택자 시야)."""
+    """3타깃 사본 각자의 트리에서 로더가 항목을 읽는다(값으로 확인 — 채택자 관점)."""
     for target in ("claude_code", "codex", "opencode"):
         target_root = REPO / "templates" / target
         rules = principle_recall.load(pm_paths.home_at(target_root))
         assert len(rules) == 29, target
 
 
-# ── engine.manifest 정합 ──────────────────────────────────────────────────
+# ── engine.manifest 일치 ──────────────────────────────────────────────────
 
 _MANIFEST_PATHS = (
     REPO / ".project_manager" / "engine.manifest",
@@ -395,7 +388,7 @@ def _covered_by_current_entry(path: str, current_paths: set[str]) -> bool:
     """상위 디렉터리 등재가 그 경로를 계속 동기하는가 — 그러면 등재 소실이 아니다.
 
     부모 등재가 없는 경로(개별 등록된 `.project_manager/tools/*.py` 등)가 빠지면 그대로 red 다.
-    소스 동등성은 보지 않는다 — `@source` 값은 flavor manifest parity 가드
+    소스 동등성은 보지 않는다 — `@source` 값은 variant manifest parity 가드
     (`test_manifest_template_parity`·`test_opencode_adapter_parity`) 소관이다."""
     parts = path.split("/")
     return any("/".join(parts[:i]) in current_paths for i in range(1, len(parts)))
@@ -427,7 +420,7 @@ def test_manifest_bare_entries_are_a_superset_of_the_pre_regression_baseline(man
     if baseline.returncode != 0:
         pytest.skip(f"task/main 참조 없음 — 이 환경에선 기준선 비교 불가: {baseline.stderr.strip()}")
     # 재는 것은 **등재 경로가 사라졌는가** 하나다 — 주석 문면과 `@source` 값은 등재가 아니라
-    # flavor manifest parity 가드의 소관이다.
+    # variant manifest parity 가드의 소관이다.
     missing = {path for path in _manifest_entry_paths(baseline.stdout) - current_paths
                if not _covered_by_current_entry(path, current_paths)}
     # 선언된 retire는 기존 bare 파일과 그 이름을 설명하던 주석의 의도적 제거다. 그 밖의
@@ -462,7 +455,7 @@ def _run_node_check(script: str) -> str:
 
 
 def _install_recall_core(root: Path) -> Path:
-    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 형상 그대로.
+    """core 사본을 픽스처의 `<root>/.opencode/lib/` 에 둔다 — 설치 구성 그대로.
 
     core 는 엔진 루트를 자기 위치(`path.resolve(__dirname, "..", "..")`)에서 내므로, 소스
     트리에서 require 하면 judge-recall 이 `templates/opencode` 의 registry 를 읽고 그 트리에
@@ -542,7 +535,6 @@ const brokenFake = () => {probes += 1; return {status:9009,error:null};};
 const broken = m.judgeRecall(root,"edit","text","SID",brokenFake,"win32");
 assert.strictEqual(probes, 1, "no actual engine or fallback for broken configured runtime");
 assert.match(broken.infra_error, /broken-runtime.*9009/);
-assert.strictEqual(m.rearmRecall, undefined, "compaction rearm belongs to the ctx boundary API");
 console.log("T0934_RECALL_ONCE_OK");
 '''
     result = subprocess.run([_NODE, "-e", script, str(root)], cwd=_OPENCODE_LIB,
@@ -594,24 +586,24 @@ console.log("SELFCHECK_OK");
     assert "SELFCHECK_OK" in out, out
 
 
-def test_opencode_principle_recall_core_fires_suppresses_and_rearms_on_compaction(tmp_path):
-    """실 python subprocess(board.py hook-tool/hook-context) 를 통한 값 사이클 — 발화 → 같은 세션
-    재호출 억제(marker dedup) → `session.compacted` 재무장 → 재발화. 순수함수 자가검증과 달리
+def test_opencode_principle_recall_core_fires_suppresses_and_resets_on_compaction(tmp_path):
+    """실 python subprocess(board.py hook-tool/hook-context) 를 통한 값 사이클 — 출력 → 같은 세션
+    재호출 억제(marker dedup) → `session.compacted` 다시 켜기 → 재출력. 순수함수 자가검증과 달리
     마커 파일 IO 를 실제로 태운다(판정을 mock 하지 않는다)."""
     if _NODE is None:
-        pytest.skip("node 없음 — 재무장 사이클 skip")
+        pytest.skip("node 없음 — 다시 켜기 사이클 skip")
     _write_engine_tools(tmp_path / ".project_manager" / "tools")
     wiki_dir = tmp_path / ".project_manager" / "wiki"
     wiki_dir.mkdir(parents=True)
     (wiki_dir / "pm_principles.md").write_text(
-        "#### 번들\n- `[shell: git\\s+push]` 재무장 사이클 확인용 규칙 본문.\n",
+        "#### 번들\n- `[shell: git\\s+push]` 다시 켜기 사이클 확인용 규칙 본문.\n",
         encoding="utf-8",
     )
     script = f"""
 const assert = require("node:assert");
 const ctx = require("./ctx-guard-core.cjs");
 const root = {json.dumps(str(tmp_path))};
-const sessionID = "rearm-cycle-session";
+const sessionID = "reset-cycle-session";
 
 const client = {{ session: {{ get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}) }} }};
 
@@ -623,10 +615,10 @@ async function fireCount() {{
     {{ tool: "Bash", sessionID }}, {{ args: {{ command: "git push" }} }},
   );
   await instance["experimental.chat.system.transform"]({{ sessionID }}, output);
-  return output.system.filter((text) => text.includes("재무장 사이클 확인용 규칙 본문")).length;
+  return output.system.filter((text) => text.includes("다시 켜기 사이클 확인용 규칙 본문")).length;
 }}
 
-// 압축 경계 재무장은 ctx 판정(hook-context 의 압축 경계 처리)이 한다.
+// 압축 경계 다시 켜기는 ctx 판정(hook-context 의 압축 경계 처리)이 한다.
 async function compact() {{
   const instance = await ctx.CtxGuardPlugin({{ client, directory: root }});
   await instance.event({{ event: {{ type: "session.compacted", properties: {{ sessionID }} }} }});
@@ -634,30 +626,30 @@ async function compact() {{
 
 (async () => {{
   const first = await fireCount();
-  assert.strictEqual(first, 1, "1차 발화 실패: " + first);
+  assert.strictEqual(first, 1, "1차 출력 실패: " + first);
   const second = await fireCount();
   assert.strictEqual(second, 0, "같은 세션 재호출이 억제되지 않음: " + second);
   await compact();
   const third = await fireCount();
-  assert.strictEqual(third, 1, "session.compacted 재무장 뒤 재발화 실패: " + third);
-  console.log("REARM_CYCLE_OK");
+  assert.strictEqual(third, 1, "session.compacted 다시 켜기 뒤 재출력 실패: " + third);
+  console.log("RESET_CYCLE_OK");
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
     result = subprocess.run(
         ["node", "-e", script], cwd=str(_install_recall_core(tmp_path)),
         capture_output=True, text=True, timeout=30,
     )
-    assert "REARM_CYCLE_OK" in result.stdout, (result.stdout, result.stderr)
+    assert "RESET_CYCLE_OK" in result.stdout, (result.stdout, result.stderr)
     assert not (_OPENCODE_LIB.parents[1] / ".project_manager" / ".local").exists(), (
         "팩토리 구동이 templates/opencode 소스 트리에 marker 를 남김"
     )
 
 
 def test_opencode_principle_recall_core_surfaces_broken_registry_warning(tmp_path):
-    """opencode 축도 파손 경고를 무출력으로 버리지 않는다 — `tool.execute.before` 가 예외 없이
-    끝나면(node 프로세스 rc0 과 동형) system.transform 출력에 경고 문안이 실린다."""
+    """opencode 쪽도 파손 경고를 무출력으로 버리지 않는다 — `tool.execute.before` 가 예외 없이
+    끝나면(node 프로세스 rc0 과 같은 구조) system.transform 출력에 경고 문안이 실린다."""
     if _NODE is None:
-        pytest.skip("node 없음 — 파손 경고 표면화 skip")
+        pytest.skip("node 없음 — 파손 경고 출력 skip")
     _write_engine_tools(tmp_path / ".project_manager" / "tools")
     wiki_dir = tmp_path / ".project_manager" / "wiki"
     wiki_dir.mkdir(parents=True)
@@ -678,7 +670,7 @@ const sessionID = "broken-registry-session";
     {{ tool: "Bash", sessionID }}, {{ args: {{ command: "ls -la" }} }},
   );
   await instance["experimental.chat.system.transform"]({{ sessionID }}, output);
-  assert.strictEqual(output.system.length, 1, "파손 경고가 표면화되지 않음: " + JSON.stringify(output));
+  assert.strictEqual(output.system.length, 1, "파손 경고가 출력되지 않음: " + JSON.stringify(output));
   assert.ok(output.system[0].includes("[principle-recall]"), output.system[0]);
   assert.ok(output.system[0].includes("파손"), output.system[0]);
   console.log("BROKEN_WARNING_OK");
@@ -703,7 +695,7 @@ def _write_codex_root(root: Path, registry_text: str) -> None:
 
 def test_codex_principle_recall_envelope_surfaces_broken_registry_warning(codex, tmp_path):
     """codex `principle_recall_envelope` 도 파손 경고를 무출력으로 버리지 않는다 — 비차단이라
-    `decision` 키가 없다(codex 축의 "rc0" 과 동형: 판정을 막지 않는 엔벨로프 형태)."""
+    `decision` 키가 없다(codex 쪽의 "rc0" 과 같은 구조: 판정을 막지 않는 엔벨로프 형태)."""
     _write_codex_root(tmp_path, "#### 공유\n- `[shell: (unclosed]` 파손 항목.\n")
     payload = {"hook_event_name": "UserPromptSubmit", "prompt": "ls -la", "session_id": "sess-codex-broken"}
     envelope = codex.principle_recall_envelope(payload, tmp_path)
@@ -724,7 +716,7 @@ def test_codex_cap_envelope_additional_context_at_exact_cap_is_untouched(codex):
 
 
 def test_codex_cap_envelope_additional_context_over_by_one_char_is_summarized(codex):
-    """상한을 딱 1자 넘기면(10,001) 원문을 자르지 않고 생략 표시로 접는다(원문 잔존 없음)."""
+    """상한을 딱 1자 넘기면(10,001) 원문을 자르지 않고 생략 표시로 줄인다(원문 잔존 없음)."""
     cap = codex.CODEX_ADDITIONAL_CONTEXT_MAX_CHARS
     text = "x" * (cap + 1)
     envelope = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}
@@ -749,7 +741,7 @@ def test_codex_merge_hook_envelopes_caps_the_single_answer_early_return_path(cod
 def test_codex_merge_hook_envelopes_caps_the_combined_multi_answer_path(codex):
     """짧은 응답(ctx-warn) + 거의 상한까지 찬 응답(recall) 을 합치면 총합이 상한을 넘긴다
     (리뷰 실측 10,091 재현 — recall 단독 상한과 별개로 합본 뒤 재검사가 없었다). 원문을 그대로
-    자르지 않고 생략 표시로 접는다(비차단 — `decision` 키 없음)."""
+    자르지 않고 생략 표시로 줄인다(비차단 — `decision` 키 없음)."""
     cap = codex.CODEX_ADDITIONAL_CONTEXT_MAX_CHARS
     warn = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "ctx-warn 안내"}}
     recall = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "x" * cap}}

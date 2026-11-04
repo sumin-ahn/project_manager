@@ -587,9 +587,9 @@ def test_v160_terminology_scope_covers_readmes_and_canonical_engine():
 # ── T-0562: 변형 클래스 매칭 데모·경계 ─────────────────────────────────────
 # 아래 샘플 문자열은 정규 표기를 담지 않은 **변형**이라 분할 리터럴이 필요 없다. 게다가
 # `_v160_shipping_surface` 가 `tests/` 를 통째로 제외하므로 이 파일은 자기 검사 대상이 아니다.
-_SEPARATOR_AXIS = "구분자"
-_LETTER_CASE_AXIS = "대소문자"
-_MIXED_LANGUAGE_AXIS = "한영"
+_SEPARATOR_KIND = "구분자"
+_LETTER_CASE_KIND = "대소문자"
+_MIXED_LANGUAGE_KIND = "한영"
 
 
 def _term_by_canonical(canonical: str) -> _RetiredCtxTerm:
@@ -600,22 +600,22 @@ def _term_by_canonical(canonical: str) -> _RetiredCtxTerm:
     raise AssertionError(f"표기표에 없는 정규 표기: {canonical!r}")
 
 
-def _supported_variant_axes(term: _RetiredCtxTerm) -> tuple[str, ...]:
+def _supported_variant_kinds(term: _RetiredCtxTerm) -> tuple[str, ...]:
     """그 항목이 실제로 지원하는 변형 축 — 표기표에서 파생한다(손 선언 아님).
 
     한글 음역을 표기표에 추가하면 한영 축이 자동으로 생기고, 아래 커버리지 테스트가 그 축의
     샘플을 요구한다. 표기만 늘리고 샘플은 안 늘리는 drift 를 기계로 막는다.
     """
-    axes = [_SEPARATOR_AXIS]  # 모든 항목이 낱말 2개 이상이라 구분자 축은 항상 있다
+    kinds = [_SEPARATOR_KIND]  # 모든 항목이 낱말 2개 이상이라 구분자 축은 항상 있다
     if any(_has_latin_letter(word) for word in _iter_spelling_words(term.words)):
-        axes.append(_LETTER_CASE_AXIS)
+        kinds.append(_LETTER_CASE_KIND)
     if any(
         any(_has_latin_letter(_spelling_words(s)[0]) for s in position)
         and any(_is_hangul_spelling(s) for s in position)
         for position in term.words
     ):
-        axes.append(_MIXED_LANGUAGE_AXIS)
-    return tuple(axes)
+        kinds.append(_MIXED_LANGUAGE_KIND)
+    return tuple(kinds)
 
 
 def _matched_separators(term: _RetiredCtxTerm, text: str) -> tuple[str, ...] | None:
@@ -646,31 +646,31 @@ def _is_separator_variant(term: _RetiredCtxTerm, sample: str) -> bool:
 # 보강 전(정확 문자열 매칭) 가드를 그대로 통과하던 변형들 — (정규 표기, 그 샘플이 보이는 변형
 # 축, 출하 표면에 이렇게 새어들 수 있는 문장). 축 태그는 커버리지 테스트가 소비한다.
 _V160_VARIANT_RED_SAMPLES = (
-    ("hard" + "-stop", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS),
+    ("hard" + "-stop", (_SEPARATOR_KIND, _LETTER_CASE_KIND),
      "잔여 5% 밴드에서 Hard Stop 으로 세션을 끊는다"),
-    ("hard" + "-stop", (_SEPARATOR_AXIS,), "hardstop 밴드에 닿으면 새 세션으로 넘긴다"),
-    ("hard" + "-stop", (_SEPARATOR_AXIS,), "hard_stop_pct 임계를 다시 넣는다"),
-    ("hard" + "-stop", (_MIXED_LANGUAGE_AXIS,), "하드스톱 이 걸리면 핸드오프를 먼저 쓴다"),
-    ("hard" + "-stop", (_SEPARATOR_AXIS, _MIXED_LANGUAGE_AXIS),
+    ("hard" + "-stop", (_SEPARATOR_KIND,), "hardstop 밴드에 닿으면 새 세션으로 넘긴다"),
+    ("hard" + "-stop", (_SEPARATOR_KIND,), "hard_stop_pct 임계를 다시 넣는다"),
+    ("hard" + "-stop", (_MIXED_LANGUAGE_KIND,), "하드스톱 이 걸리면 핸드오프를 먼저 쓴다"),
+    ("hard" + "-stop", (_SEPARATOR_KIND, _MIXED_LANGUAGE_KIND),
      "hard 스톱 안내를 statusline 에 띄운다"),
-    ("stop" + " marker", (_SEPARATOR_AXIS,), "stop-marker 를 지운 뒤 relay 를 되살린다"),
-    ("stop" + " marker", (_LETTER_CASE_AXIS, _MIXED_LANGUAGE_AXIS),
+    ("stop" + " marker", (_SEPARATOR_KIND,), "stop-marker 를 지운 뒤 relay 를 되살린다"),
+    ("stop" + " marker", (_LETTER_CASE_KIND, _MIXED_LANGUAGE_KIND),
      "STOP 마커 가 남아 있으면 회전으로 본다"),
-    ("pre" + "-turn", (_SEPARATOR_AXIS,), "pre_turn 훅에서 잔여 컨텍스트를 잰다"),
-    ("pre" + "-turn", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS), "Pre Turn 훅을 되살린다"),
-    ("pre" + "-turn", (_MIXED_LANGUAGE_AXIS,), "프리턴 단계에서 안내를 주입한다"),
-    ("재" + "전송", (_SEPARATOR_AXIS,), "직전 프롬프트를 재 전송 해서 복구한다"),
-    ("ctx" + "-tripwire", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS),
+    ("pre" + "-turn", (_SEPARATOR_KIND,), "pre_turn 훅에서 잔여 컨텍스트를 잰다"),
+    ("pre" + "-turn", (_SEPARATOR_KIND, _LETTER_CASE_KIND), "Pre Turn 훅을 되살린다"),
+    ("pre" + "-turn", (_MIXED_LANGUAGE_KIND,), "프리턴 단계에서 안내를 주입한다"),
+    ("재" + "전송", (_SEPARATOR_KIND,), "직전 프롬프트를 재 전송 해서 복구한다"),
+    ("ctx" + "-tripwire", (_SEPARATOR_KIND, _LETTER_CASE_KIND),
      "CTX Tripwire 가 발화하면 훅이 막는다"),
-    ("ctx" + "-tripwire", (_MIXED_LANGUAGE_AXIS,), "ctx 트립와이어 임계를 conf 로 조정한다"),
-    ("break" + "-glass", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS), "Break Glass 절차로 훅을 우회한다"),
-    ("break" + "-glass", (_MIXED_LANGUAGE_AXIS,), "브레이크글라스 로 강제 진행한다"),
-    ("--disable" + " hooks", (_SEPARATOR_AXIS,), "--disable-hooks 로 가드를 끈다"),
-    ("--disable" + " hooks", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS), "--DISABLE_HOOKS 로 우회한다"),
-    ("ctx" + "-stop", (_SEPARATOR_AXIS,), "ctx stop 이 걸리면 대화를 새로 연다"),
-    ("ctx" + "-stop", (_SEPARATOR_AXIS, _LETTER_CASE_AXIS), "CTXStop 상태를 손으로 해제한다"),
-    ("ctx" + "-stop", (_MIXED_LANGUAGE_AXIS,), "ctx 스톱 이 걸리면 새 세션을 연다"),
-    ("ctx" + "-stop", (_SEPARATOR_AXIS, _MIXED_LANGUAGE_AXIS), "ctx스톱 안내를 지운다"),
+    ("ctx" + "-tripwire", (_MIXED_LANGUAGE_KIND,), "ctx 트립와이어 임계를 conf 로 조정한다"),
+    ("break" + "-glass", (_SEPARATOR_KIND, _LETTER_CASE_KIND), "Break Glass 절차로 훅을 우회한다"),
+    ("break" + "-glass", (_MIXED_LANGUAGE_KIND,), "브레이크글라스 로 강제 진행한다"),
+    ("--disable" + " hooks", (_SEPARATOR_KIND,), "--disable-hooks 로 가드를 끈다"),
+    ("--disable" + " hooks", (_SEPARATOR_KIND, _LETTER_CASE_KIND), "--DISABLE_HOOKS 로 우회한다"),
+    ("ctx" + "-stop", (_SEPARATOR_KIND,), "ctx stop 이 걸리면 대화를 새로 연다"),
+    ("ctx" + "-stop", (_SEPARATOR_KIND, _LETTER_CASE_KIND), "CTXStop 상태를 손으로 해제한다"),
+    ("ctx" + "-stop", (_MIXED_LANGUAGE_KIND,), "ctx 스톱 이 걸리면 새 세션을 연다"),
+    ("ctx" + "-stop", (_SEPARATOR_KIND, _MIXED_LANGUAGE_KIND), "ctx스톱 안내를 지운다"),
 )
 
 # v1.6.0 이후에도 live 인 런타임 이름·marker 경로(canonical 엔진에서 그대로 옮긴 줄). 변형
@@ -758,24 +758,24 @@ def test_v160_underscore_exclusion_declares_reason(term):
 
 
 @pytest.mark.parametrize("term", _V160_RETIRED_CTX_TERMS, ids=lambda t: t.canonical)
-def test_v160_every_supported_variant_axis_has_red_sample(term):
+def test_v160_every_supported_variant_kind_has_red_sample(term):
     """항목이 지원하는 변형 축마다 red 샘플이 최소 1개 있어야 한다 (커버리지 강제).
 
     샘플이 들쭉날쭉하면 축 하나가 통째로 미검증으로 남는다(ctx-stop 한글 축이 그랬다).
     """
     covered = {
-        axis
-        for canonical, axes, _ in _V160_VARIANT_RED_SAMPLES
+        kind
+        for canonical, kinds, _ in _V160_VARIANT_RED_SAMPLES
         if canonical == term.canonical
-        for axis in axes
+        for kind in kinds
     }
-    missing = [axis for axis in _supported_variant_axes(term) if axis not in covered]
+    missing = [kind for kind in _supported_variant_kinds(term) if kind not in covered]
     assert not missing, f"'{term.canonical}' 의 변형 축 샘플 누락: {missing}"
 
 
-@pytest.mark.parametrize("term,axes,sample", _V160_VARIANT_RED_SAMPLES)
+@pytest.mark.parametrize("term,kinds,sample", _V160_VARIANT_RED_SAMPLES)
 def test_v160_variant_escapes_exact_match_but_guard_blocks(
-        term, axes, sample, tmp_path, monkeypatch):
+        term, kinds, sample, tmp_path, monkeypatch):
     """보강 전 정확 매칭이 놓치던 변형을 지금은 차단한다 (T-0562 red 재현).
 
     첫 assert 가 red 상태의 재현이다 — 이 문장은 옛 정확 문자열 규칙(`term in line.lower()`)에
@@ -786,15 +786,15 @@ def test_v160_variant_escapes_exact_match_but_guard_blocks(
     assert term not in sample.lower(), (
         f"샘플이 정규 표기 '{term}' 을 그대로 담고 있어 변형 데모가 아니다"
     )
-    if _SEPARATOR_AXIS in axes:
+    if _SEPARATOR_KIND in kinds:
         assert _is_separator_variant(_term_by_canonical(term), sample), (
             f"구분자 축 태그인데 샘플 구분자가 정규 표기 '{term}' 과 같다: {sample!r}"
         )
-    if _LETTER_CASE_AXIS in axes:
+    if _LETTER_CASE_KIND in kinds:
         assert re.search(r"[A-Z]", sample), (
             f"대소문자 축 태그인데 샘플에 대문자가 없다: {sample!r}"
         )
-    if _MIXED_LANGUAGE_AXIS in axes:
+    if _MIXED_LANGUAGE_KIND in kinds:
         korean = [
             word
             for position in _term_by_canonical(term).words for spelling in position
@@ -810,7 +810,7 @@ def test_v160_variant_escapes_exact_match_but_guard_blocks(
     )
 
 
-def test_v160_separator_axis_truth_check_rejects_a_mistagged_sample():
+def test_v160_separator_kind_truth_check_rejects_a_mistagged_sample():
     """구분자 축 진실성 검사 자체의 감도 — 정규 구분자 그대로면 그 축 변형이 아니다.
 
     "STOP 마커" 는 대소문자·한영 변형이지만 구분자는 정규 표기와 같은 공백이다. 이 판정이
@@ -834,7 +834,7 @@ def test_v160_separator_capture_regex_matches_the_same_span(term):
         term.canonical,
         term.canonical.upper(),
         *(
-            sample for canonical, _axes, sample in _V160_VARIANT_RED_SAMPLES
+            sample for canonical, _kinds, sample in _V160_VARIANT_RED_SAMPLES
             if canonical == term.canonical
         ),
         *_V160_COMPOUND_SAFE_LINES,
@@ -911,7 +911,7 @@ def _historical_record(rel: str, *, include_tests: bool = False) -> bool:
         return True
     if not include_tests and rel.startswith("tests/"):
         return True
-    if rel.startswith(".pm_import_backups/"):
+    if rel.startswith(".pm_import_backups/") or rel.startswith("tests/fixtures/"):
         return True
     if any(seg in rel for seg in (
         "/wiki/decisions/", "/wiki/log/", "/wiki/tickets/open/",
@@ -1031,14 +1031,69 @@ def test_review_loop_guard_detects_each_retired_phrase(
 # ── 지어낸 말 폐기 검사 (대응표에서 바꿈이 끝난 낱말) ─────────────────────────
 # 출하 원칙 레지스트리의 평어 항목(`pm_principles.md` §"티켓과 위임")이 규칙을, `pm_playbook.md`
 # §"용어 대응표" 가 낱말을 정한다. 이 검사는 바꿈이 끝난 낱말이 출하 글 범위(엔진 메시지·방법론·
-# 스킬·3타깃 사본)와 시험 단언에 다시 들어오지 않았는지만 본다. 바꿈이 끝나지 않은 낱말의 남은
-# 수는 세어 고정하지 않는다(줄어들기만 하는 상한은 두지 않는다). 후속 치환이 낱말을 끝내면
-# `_RETIRED_PLAIN_WORDS` 에 더한다. 낱말을 정의하는 두 자리(대응표 절, 평어 항목 줄)는 뺀다.
+# 스킬·3타깃 사본)와 시험 단언에 다시 들어오지 않았는지만 본다. 낱말을 정의하는 두 자리(대응표 절,
+# 평어 항목 줄)는 뺀다.
 # 런타임 메시지를 문자열로 단언하는 시험이 같은 표기를 들고 있어야 하므로 `tests/` 도 검사 범위 안이다.
 # 기록성 파일(CHANGELOG·log·decisions·tickets·확정된 spike·갱신 백업)은 그 시점 표기라 뺀다.
 #
 # 리터럴 분할: 이 검사 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
-_RETIRED_PLAIN_WORDS = ("부" + "기", "래" + "칫")
+_RETIRED_PLAIN_WORDS = (
+    "부" + "기", "래" + "칫",
+    "회" + "수", "장" + "부", "원" + "장", "박" + "제", "델" + "타", "스냅" + "샷", "시" + "드", "게이" + "트",
+    "폴" + "백", "처" + "방", "결" + "속", "잔" + "여", "표" + "식", "강" + "등", "수" + "렴", "선" + "점",
+    "밴" + "드", "축", "재무" + "장",
+    "har" + "vest", "led" + "ger", "del" + "ta", "ga" + "te", "livega" + "te", "rat" + "chet", "se" + "am",
+    "reme" + "dy", "ba" + "nd", "gue" + "st", "ax" + "is", "fla" + "vor", "wa" + "ve", "re" + "arm",
+)
+# 지어낸 말이 아닌 일반 낱말 — 줄에서 지운 뒤 본다.
+_RETIRED_PLAIN_WORD_ORDINARY = ("압축", "단축", "구축", "축소", "축약", "축적", "문장부호", "게이트웨이", "guest@")
+# 바꾸지 않는 글 — 디스크 데이터 값, 옛 이름을 옮기거나 알아보는 기록, 라운드 빈 양식 글, 렌더 토큰,
+# 채택자 문서를 읽는 규칙. 줄에서 지운 뒤 본다.
+_RETIRED_PLAIN_WORD_KEPT_TEXTS = (
+    "ledger-missing", "ledger-unreadable", "ledger-session", "ledger-blocked", "ledger-failed",
+    "timeout_axis", "gate-contract", 'SESSION_BUDGET_SECTION_KEY = "wave"', "evidence_gate", "gate-snapshot.json",
+    "gate_contract_file", "$gate_mode", 'gate_mode=""', "read -r gate_mode", "gate_rc=$?", '"$gate_rc"',
+    "harvested_at", "pm add-harness guest",
+    "additional_reviewer.wave_budget", "additional_reviewer_wave_budget", "external_review_wave_budget",
+    "pm pre-push gate", "board.py lint --gate || exit 1",
+    "green 회귀 AND lint 게이트만 push", "회귀 게이트(tests/ 있는 트리만) AND lint 게이트(항상)",
+    "회귀 게이트 비대상 — 이 트리에 tests/ 없음(PM 홈) · lint 게이트만",
+    "pm-wave-claim", "pm-wave-finish", "pm-wave-*", "gate_snapshot.py", "by=harvest",
+    "경로 뒤 설명의 다른 파일은 결속하지 않는다", "같은 ID 를 양쪽에 실으면 회수가 그 라운드를 거부한다",
+    "다시 선언하면 이 라운드는 회수되지 않는다", "첫 공백 구분 토큰 하나만 결속한다", "실제 잔여 건수를 기대값으로 쓴다",
+    "USER_GATE_ITEMS", "delta|changelog", "(PM 12차) delta ([[T-0467]])",
+)
+_CAMEL_HUMP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _retired_english_pattern(word: str) -> re.Pattern[str]:
+    """영어 낱말의 꼴(원형·s·es·ed·d·ing, y→ies, is→es, e 탈락 ing)을 글자 경계로 찾는 정규식."""
+    forms = {word, word + "s", word + "es", word + "ed", word + "d", word + "ing"}
+    if word.endswith("y"):
+        forms.add(word[:-1] + "ies")
+    if word.endswith("is"):
+        forms.add(word[:-2] + "es")
+    if word.endswith("e"):
+        forms.add(word[:-1] + "ing")
+    return re.compile(
+        r"(?<![a-z])(?:" + "|".join(sorted(forms, key=len, reverse=True)) + r")(?![a-z])"
+    )
+
+
+_RETIRED_ENGLISH_PATTERNS = {
+    word: _retired_english_pattern(word) for word in _RETIRED_PLAIN_WORDS if word.isascii()
+}
+
+
+def _retired_words_in_line(line: str) -> list[str]:
+    """한 줄에서 바꿈이 끝난 낱말을 찾는다(바꾸지 않는 글·일반 낱말을 지운 뒤)."""
+    for text in (*_RETIRED_PLAIN_WORD_KEPT_TEXTS, *_RETIRED_PLAIN_WORD_ORDINARY):
+        line = line.replace(text, " ")
+    lowered = _CAMEL_HUMP.sub("_", line).lower()
+    return [
+        word for word in _RETIRED_PLAIN_WORDS
+        if (_RETIRED_ENGLISH_PATTERNS[word].search(lowered) if word.isascii() else word in line)
+    ]
 _PLAIN_WORD_TABLE_HEADING = "### 용어 대응표"
 _PLAIN_WORD_RULE_POINTER = '§"용어 대응표"'
 _PLAYBOOK_SUFFIX = ".project_manager/wiki/pm_playbook.md"
@@ -1072,9 +1127,8 @@ def _retired_plain_word_offenders(files: list[Path]) -> list[str]:
                 continue
             if rel.endswith(_PRINCIPLES_SUFFIX) and _PLAIN_WORD_RULE_POINTER in line:
                 continue
-            for word in _RETIRED_PLAIN_WORDS:
-                if word in line:
-                    offenders.append(f"{rel}:{lineno} :: {word}")
+            for word in _retired_words_in_line(line):
+                offenders.append(f"{rel}:{lineno} :: {word}")
     return offenders
 
 
@@ -1146,7 +1200,7 @@ def test_plain_word_rule_is_an_edit_recall_rule_pointing_at_the_table():
     "templates/opencode/.opencode/agents/pm.md",
     "templates/claude_code/.project_manager/wiki/tickets/README.md",
 ])
-def test_retired_plain_word_scope_includes_every_sweep_axis(relpath):
+def test_retired_plain_word_scope_includes_every_sweep_area(relpath):
     """엔진·manifest·방법론·스킬·README·시험·3타깃 사본이 검사 범위 안이다.
 
     manifest·타깃 어댑터 진입·타깃 wiki 스캐폴드는 `pm_update` 전파 대상이 아니라 손 정리가
@@ -1160,6 +1214,7 @@ def test_retired_plain_word_scope_includes_every_sweep_axis(relpath):
 @pytest.mark.parametrize("relpath", [
     "CHANGELOG.md",
     ".pm_import_backups/2026-08-10/AGENTS.md",
+    "tests/fixtures/legacy_review_blocks_v1.json",
 ])
 def test_retired_plain_word_scope_leaves_historical_records_alone(relpath):
     """기록성 파일은 검사 범위 밖이다. 그 시점 표기라 고칠 수 없고 실패로 만들면 안 된다."""
@@ -1187,13 +1242,25 @@ def test_retired_plain_word_guard_detects_reintroduction(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     tool = tmp_path / "tool.py"
-    tool.write_text(f'print("[완료] {{tid}} {word} 완료.")\n', encoding="utf-8")
+    tool.write_text(
+        f'print("[완료] {{tid}} {word} 완료.")\n'
+        # 영어 낱말은 글자 경계로만 잡는다 — 다른 낱말 안의 같은 글자는 잡지 않는다.
+        "delegate = aggregate(timedelta(1))  # abandon seamless gatekeeper 압축 문장부호\n"
+        # 낙타 표기·밑줄 경계와 활용형은 잡고, 바꾸지 않는 글은 지운 뒤 본다.
+        "led" "ger_path = ClusterHar" "vestOutcome  # ledger-missing timeout_axis\n"
+        "reme" "dies = ax" "es\n",
+        encoding="utf-8",
+    )
     monkeypatch.setitem(globals(), "REPO", tmp_path)
 
     assert _retired_plain_word_offenders([playbook, principles, tool]) == [
         f".project_manager/wiki/pm_playbook.md:5 :: {word}",
         f".project_manager/wiki/pm_principles.md:2 :: {word}",
         f"tool.py:1 :: {word}",
+        "tool.py:3 :: har" "vest",
+        "tool.py:3 :: led" "ger",
+        "tool.py:4 :: reme" "dy",
+        "tool.py:4 :: ax" "is",
     ]
     playbook.write_text(f"## 메타 정책\n{word} 표가 없다.\n", encoding="utf-8")
     with pytest.raises(ValueError):
@@ -1292,7 +1359,7 @@ def test_no_retired_outsider_naming_of_our_own_actors():
     "templates/opencode/.opencode/lib/safe-write-core.cjs",
     ".opencode/lib/safe-write-core.cjs",
 ])
-def test_outsider_naming_guard_scope_includes_every_sweep_axis(relpath):
+def test_outsider_naming_guard_scope_includes_every_sweep_area(relpath):
     """sweep 이 손댄 축(엔진·역할 카드·스킬·방법론·README·문서·테스트·3타깃 사본)이 시야 안이다."""
     view = {path.relative_to(REPO).as_posix()
             for path in _shipped_text_surface(include_tests=True)}
@@ -1314,7 +1381,7 @@ def test_outsider_naming_guard_detects_each_retired_phrase(
 # CHANGELOG 는 기록이라 원문을 지우지 않는다(용어 가드 시야 밖). 대신 폐지된 축을 설명하는 항목
 # 마다 무효 표시를 달아, 위에서 아래로 읽는 채택자가 없는 스위치·격리·전송 동의 축을 현행으로
 # 오해하지 않게 한다. 판정 단위는 **항목 블록**이다(`- ` 시작 + 이어지는 들여쓰기 줄).
-_RETIRED_AXIS_MARKERS = (
+_RETIRED_OPTION_MARKERS = (
     f"{_RETIRED_OUTSIDER} 리뷰", f"{_RETIRED_OUTSIDER}리뷰",
     f"{_RETIRED_OUTSIDER} 전송", f"{_RETIRED_OUTSIDER} 송신",
     "additional_reviewer_enabled", "additional_reviewer.enabled",
@@ -1345,13 +1412,13 @@ def _past_release_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
     return blocks
 
 
-def _uninvalidated_retired_axis_notes() -> list[str]:
+def _uninvalidated_retired_option_notes() -> list[str]:
     """폐지 축을 설명하면서 무효 표시가 없는 과거 릴리즈 항목 전수."""
     lines = (REPO / "CHANGELOG.md").read_text(encoding="utf-8").splitlines()
     offenders = []
     for lineno, block in _past_release_blocks(lines):
         body = "\n".join(block)
-        if not any(marker in body for marker in _RETIRED_AXIS_MARKERS):
+        if not any(marker in body for marker in _RETIRED_OPTION_MARKERS):
             continue
         if _INVALIDATION_NOTE in body:
             continue
@@ -1359,12 +1426,12 @@ def _uninvalidated_retired_axis_notes() -> list[str]:
     return offenders
 
 
-def test_retired_axis_release_notes_carry_an_invalidation_note():
+def test_retired_option_release_notes_carry_an_invalidation_note():
     """과거 릴리즈 절의 폐지 축 항목이 전부 무효 표시를 달고 있다 (T-0887).
 
     원문 서술은 기록이라 지우지 않는다 — 그 축이 지금은 없다는 사실만 항목 끝에 덧붙인다.
     """
-    offenders = _uninvalidated_retired_axis_notes()
+    offenders = _uninvalidated_retired_option_notes()
     assert not offenders, (
         f"폐지 축을 설명하면서 무효 표시가 없는 과거 릴리즈 항목 — `{_INVALIDATION_NOTE}` 를 "
         f"항목 끝에 달라 (T-0887): {offenders}"

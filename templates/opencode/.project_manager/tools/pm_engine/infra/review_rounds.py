@@ -343,10 +343,10 @@ def describe_pm_verified_resolution(declared: dict) -> str:
 
 # ── 기록 파일 위치와 리뷰 집계 티켓 판정 (회귀 수준 낮춤·릴리즈 차단·조회 표 공용) ─────────────
 REVIEW_ROUNDS_RECORD_NAME = "review_rounds.json"
-_REVIEW_LEDGER_WAVE_KEY = reviewer_budget.SESSION_BUDGET_SECTION_KEY  # 리뷰 집계 티켓이 아닌 예약 키
+_REVIEW_RECORD_SESSION_BUDGET_KEY = reviewer_budget.SESSION_BUDGET_SECTION_KEY  # 리뷰 집계 티켓이 아닌 예약 키
 
 
-def _review_rounds_ledger(home) -> Path:
+def _review_rounds_records(home) -> Path:
     """추가 리뷰 라운드 기록 파일 경로 — `home.local_dir` 파생(테스트 격리 추종)."""
     return home.local_dir / REVIEW_ROUNDS_RECORD_NAME
 
@@ -511,7 +511,7 @@ def review_ticket_resolution_is_stale(entry: dict, declared: dict) -> bool:
     return any(current[key] != declared.get(key) for key in _REVIEW_TICKET_RESOLUTION_BINDING_KEYS)
 
 
-def _gate_disposition_problem(
+def _review_ticket_disposition_problem(
     review_ticket: str,
     entry: object,
     *,
@@ -575,7 +575,7 @@ def _gate_disposition_problem(
 # `--no-review-ticket` opt-out)은 기록 밖이고 어느 예산도 쓰지 않으며, 그 사실을 loud 로 표기한다.
 
 
-def _round_ledger_path(home) -> Path:
+def _round_record_path(home) -> Path:
     """리뷰 라운드 기록 파일 경로 — 해소된 **소유 PM 홈**의 `.local/json`.
 
     Home.local_dir는 호출부가 확정한 PM 소유자의 기록 파일 디렉터리다.
@@ -608,7 +608,7 @@ def _read_round_records_at(path: Path) -> dict:
 
 def _load_round_records(home) -> dict:
     """리뷰 라운드 기록 파일(리뷰 집계 티켓→{count, records, rounds})을 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
-    return _read_round_records_at(_round_ledger_path(home))
+    return _read_round_records_at(_round_record_path(home))
 
 
 def _restrict_to_owner(path: Path) -> None:
@@ -628,7 +628,7 @@ def _round_record_lock_path(home) -> Path:
     락 파일 위치를 기록 파일 경로에서 파생한다 — 락과 기록 파일이 각자 기록 위치를 계산하면 그 규칙이 갈릴 때 서로 다른
     파일을 잠근 두 실행이 같은 기록 파일을 동시에 read-modify-write 한다(상한 우회 창).
     """
-    return _round_ledger_path(home).with_name("review_rounds.lock")
+    return _round_record_path(home).with_name("review_rounds.lock")
 
 
 @contextlib.contextmanager

@@ -4,7 +4,7 @@
 **크래시 없이 degrade** 하는지 본다. 실 git 비의존 — run_git_fn 을 DI 로 갈아끼워
 결정론적으로 검증한다 (test_pm_bootstrap_tz 의 _load_module + PmBootstrap DI 패턴 재사용).
 
-검증 축:
+검증 항목:
   - 빈 repo: rev-parse rc≠0 + symbolic-ref OK + log rc≠0 → no_commits=True·
     branch="main"·commits==[], sys.exit 하지 않음.
   - 렌더가 "초기 커밋 없음 — fresh clone" 표시.
@@ -56,7 +56,7 @@ def _make_board_fn(list_resp: tuple[int, str], lint_resp: tuple[int, str],
                     done_resp: tuple[int, str] | None = None):
     """board argv 의 첫 토큰(list/lint)으로 (rc, out) 을 반환하는 fake run_board_fn.
 
-    `_collect_board` 가 lint 를 게이트(`["lint", "--gate"]`)로 부르는지도 함께 검증한다.
+    `_collect_board` 가 lint 를 blocking 모드(`["lint", "--blocking"]`)로 부르는지도 함께 검증한다.
     `done_resp`(T-0198) 로 done 전용 재조회(`["list", "--status", "done", "--task", "t"]`)에
     별도 응답을 줄 수 있다 — 생략하면 `list_resp` 를 재사용(기존 테스트 호환·done count
     무관 케이스).
@@ -73,21 +73,21 @@ def _make_board_fn(list_resp: tuple[int, str], lint_resp: tuple[int, str],
     return _fn
 
 
-# ── _collect_board lint 게이트 정합 (T-0038) ─────────────────────────────────
+# ── _collect_board lint --blocking 일치 (T-0038) ─────────────────────────────────
 
 def test_collect_board_advisory_only_does_not_abort(tmp_path):
-    """advisory-only 게이트 출력(rc=0) → _collect_board 가 abort 안 함 · summary 정확.
+    """advisory-only lint 출력(rc=0) → _collect_board 가 abort 안 함 · summary 정확.
 
-    `lint --gate` 는 advisory(unstable-ref-advice·status drift)만 있으면 rc=0 →
+    `lint --blocking` 은 advisory(unstable-ref-advice·status drift)만 있으면 rc=0 →
     부트스트랩이 sys.exit 하지 않고 통과하고, lint 요약은 헤더 제외 issue 수(2)다.
     """
     mod = _load_module()
-    gate_out = (
+    blocking_out = (
         "⚠️  2 lint issue(s) (0 blocking 차단):\n"
         "    [unstable-ref-advice] T-0001: 슬러그 참조 권고\n"
         "    [status-done-accum] T-0002: status drift\n"
     )
-    board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (0, gate_out))
+    board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (0, blocking_out))
     bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)
 
     # sys.exit 가 나면 SystemExit 으로 테스트 실패 — 발생하지 않아야 한다.
@@ -98,27 +98,27 @@ def test_collect_board_advisory_only_does_not_abort(tmp_path):
 
 
 def test_collect_board_blocking_lint_carries_flag_not_abort(tmp_path):
-    """차단 카테고리 게이트 출력(rc=1) → _collect_board 는 **abort 하지 않고** `lint_blocking`
-    플래그를 실어 반환한다 (dump-then-warn·T-0195·ADR-0038 wave). abort-before-dump 폐기 —
+    """차단 카테고리 lint 출력(rc=1) → _collect_board 는 **abort 하지 않고** `lint_blocking`
+    플래그를 실어 반환한다 (dump-then-warn·T-0195·ADR-0038). abort-before-dump 폐기 —
     run() 이 board/git/log 전체 dump 를 출력한 *뒤* 경고 + 비-0 종료(그 계약은
     test_pm_bootstrap_parsers 가 별도 가드). 여기선 _collect_board 가 SystemExit 안 냄을 고정."""
     mod = _load_module()
-    gate_out = (
+    blocking_out = (
         "⚠️  1 lint issue(s) (1 blocking 차단):\n"
         "  ✗ [dangling-wikilink] T-0003: 깨진 링크\n"
     )
-    board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (1, gate_out))
+    board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (1, blocking_out))
     bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)
 
     # sys.exit 가 나면 SystemExit 으로 실패 — dump-then-warn 이라 여기서 abort 하지 않는다.
     board = bootstrap._collect_board()
     assert board["lint_blocking"] is True
-    assert board["lint_gate_output"] == gate_out
+    assert board["lint_blocking_output"] == blocking_out
     assert board["open_tickets"] == ["T-0010"]
 
 
 def test_collect_board_clean_passes(tmp_path):
-    """clean 게이트 출력(rc=0) → lint='clean' 으로 통과."""
+    """clean lint 출력(rc=0) → lint='clean' 으로 통과."""
     mod = _load_module()
     board_fn = _make_board_fn((0, _BOARD_LIST_OUTPUT), (0, "✓ no lint issues\n"))
     bootstrap = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), run_board_fn=board_fn)
@@ -137,7 +137,7 @@ _BOARD_DONE_OUTPUT = (
 
 
 def test_collect_board_done_count_positive_via_separate_query(tmp_path):
-    """done(mine) > 0 인 실제 케이스 — default 뷰(무-status)가 done 을 접어도(T-0197)
+    """done(mine) > 0 인 실제 케이스 — default 뷰(무-status)가 done 을 빼도(T-0197)
     별도 done 전용 재조회(T-0198)가 정확한 카운트를 채운다(0 으로 고착되는 회귀 방지).
 
     default 뷰 응답(`_BOARD_LIST_OUTPUT`)엔 done 행이 없다(T-0197 이 접음) — 이것만
@@ -283,7 +283,7 @@ def test_empty_repo_json_carries_no_commits_flag(tmp_path):
 # ── 정상 repo: rev-parse OK → 기존 동작 보존 ──────────────────────────────────
 
 def test_normal_repo_preserves_existing_behavior(tmp_path):
-    """커밋이 있는 정상 repo는 symbolic-ref 폴백 없이 rev-parse 만으로 동작한다."""
+    """커밋이 있는 정상 repo는 symbolic-ref 대체 조회 없이 rev-parse 만으로 동작한다."""
     mod = _load_module()
     git_fn = _make_git_fn({
         "rev-parse": (0, "main\n"),
@@ -304,7 +304,7 @@ def test_normal_repo_preserves_existing_behavior(tmp_path):
 def test_non_git_repo_aborts_clearly(tmp_path):
     """git repo 자체가 아니면(rev-parse·symbolic-ref 둘 다 실패) sys.exit 로 중단.
 
-    빈 repo 의 fail-soft 와 달리, 폴백 brnach 조회까지 실패하면 진짜 비-git 상태다.
+    빈 repo 의 fail-soft 와 달리, 대체 branch 조회까지 실패하면 진짜 비-git 상태다.
     중단 메시지는 빈 repo 와 구분되도록 "git repo 아님" 을 담아야 한다.
     """
     mod = _load_module()

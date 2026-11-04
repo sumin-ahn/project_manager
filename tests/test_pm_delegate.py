@@ -63,7 +63,7 @@ from _git_fixture import init_git_repo
 from _textio import normalize_newline_bytes
 from _win_skip import _can_symlink, posix_bash_supported, posix_mode_supported
 from pm_engine.domain import conf_schema
-from conftest import write_cluster_ledger
+from conftest import write_cluster_records
 from pm_engine.infra import raw_output
 from pm_engine.infra.harness import contract, watchdog
 from pm_engine.domain import delegate_errors, model_lint, review_form, review_state, review_verdict, round_rules
@@ -2592,7 +2592,7 @@ def test_read_tmp_attempt_name_fits_the_windows_path_budget(pd):
 
 def _fake_pm_home(tmp_path: Path) -> tuple[Path, Path]:
     """실 board 소유(board/tickets/open/T-*.md) + canonical worktree(work/wt/.project_manager/tools/
-    additional_reviewer.py)를 가진 PM 홈 구성 — additional_reviewer._pm_home_reanchor 판정 대상."""
+    additional_reviewer.py)를 가진 PM 홈 구성 — additional_reviewer._pm_home_retarget 판정 대상."""
     home = tmp_path / "pmhome"
     open_dir = home / ".project_manager" / "board" / "tickets" / "open"
     open_dir.mkdir(parents=True)
@@ -4922,7 +4922,7 @@ def _scope_workspace(
     # 항상 architect→developer→code-reviewer→developer 4단계를 모두 선언하고,
     # 현재 역할 앞의 완료 라운드는 실물 sidecar로 미리 채운다. 범위 감사 테스가 고정
     # 수열 통과 조건을 무효화하지 않으면서 자기 관심사에 진입하기 위한 구성이다.
-    write_cluster_ledger(
+    write_cluster_records(
         pm_home / ".project_manager" / "wiki", TICKET_ID,
         base_branch="task/main",
     )

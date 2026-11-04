@@ -13,7 +13,7 @@
 red** 로 오판된다. 판정도 통과 조건 종류로 가른다 — pytest 통과 조건은 기존 요약행(불변), 비-pytest
 통과 조건은 exit code 0 만 green 이고 rc != 0 은 그대로 중단이다(fail-soft 아님).
 
-체인의 단일 사본은 `regression._resolve_gate_cmd` 이고 두 도구(`cli.finish_record`·`cli.handoff`)는
+체인의 단일 사본은 `regression._resolve_check_cmd` 이고 두 도구(`cli.finish_record`·`cli.handoff`)는
 자기 트리의 `Home` 을 넘겨 이 함수를 직접 부른다.
 
 해소 체인이 읽는 패키지 함수(`pm_paths.areas_file`·`areas_store`·`conf_store.local_config`·
@@ -136,7 +136,7 @@ def _install_stub(stub, monkeypatch):
 
 def _resolve(mod, stub, monkeypatch):
     _install_stub(stub, monkeypatch)
-    return pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
+    return pm_engine.app.regression._resolve_check_cmd(pm_paths.home_at(Path("/tmp/t0989-check")))
 
 
 # ── 층별 우선순위 ────────────────────────────────────────────────────────
@@ -249,11 +249,11 @@ def test_session_resolution_failure_falls_back_to_count(tool, monkeypatch):
 def test_check_is_pytest_classification(tool):
     """None(해소 실패)=솔로 pytest argv → True. pytest 토큰 포함 → True. 그 외 → False."""
     mod = pm_engine.domain.handoff_text  # 두 도구의 통과 조건 판정 소유자
-    assert mod._gate_is_pytest(None) is True
-    assert mod._gate_is_pytest("pytest tests/ -q") is True
-    assert mod._gate_is_pytest("python3 -m pytest tests/ -q") is True
-    assert mod._gate_is_pytest(NON_PYTEST_CMD) is False
-    assert mod._gate_is_pytest(LOCAL_CONF_CMD) is False
+    assert mod._check_is_pytest(None) is True
+    assert mod._check_is_pytest("pytest tests/ -q") is True
+    assert mod._check_is_pytest("python3 -m pytest tests/ -q") is True
+    assert mod._check_is_pytest(NON_PYTEST_CMD) is False
+    assert mod._check_is_pytest(LOCAL_CONF_CMD) is False
 
 
 def test_non_pytest_check_green_is_exit_code_only(tool):
@@ -285,8 +285,8 @@ def test_pytest_check_verdict_unchanged(tool):
 def test_check_label_shows_solo_argv_for_none(tool):
     """안내 문구 — 해소 실패(None)는 실제 실행 argv 라벨을 보여준다."""
     mod = pm_engine.domain.handoff_text  # 두 도구의 통과 조건 판정 소유자
-    assert mod._gate_label(None) == "pytest tests/ -q -n auto"
-    assert mod._gate_label(NON_PYTEST_CMD) == NON_PYTEST_CMD
+    assert mod._check_label(None) == "pytest tests/ -q -n auto"
+    assert mod._check_label(NON_PYTEST_CMD) == NON_PYTEST_CMD
 
 
 # ── 두 도구 파리티 (해소·판정이 갈리면 red) ──────────────────────────────
@@ -332,7 +332,7 @@ def test_resolution_parity_across_tools(tf, hf, monkeypatch, case, tmp_path):
     home = pm_paths.home_at(tmp_path)
     stub = _PARITY_BOARDS[case]
     _install_stub(stub, monkeypatch)
-    assert pm_engine.app.regression._resolve_gate_cmd(home) == _PARITY_EXPECTED[case]
+    assert pm_engine.app.regression._resolve_check_cmd(home) == _PARITY_EXPECTED[case]
 
 
 @pytest.mark.parametrize(
@@ -357,14 +357,14 @@ def test_verdict_parity_across_tools(tf, hf, output, returncode, check_cmd, expe
 
 def test_check_surface_parity_across_tools(tf, hf):
     """두 도구가 같은 이름의 통과 조건 함수와 같은 라벨 상수를 노출한다."""
-    for name in ("_gate_is_pytest", "_gate_label", "_regression_is_green"):
+    for name in ("_check_is_pytest", "_check_label", "_regression_is_green"):
         assert callable(getattr(pm_engine.domain.handoff_text, name)), f"handoff_text 에 {name} 부재"
     check = pm_engine.domain.handoff_text  # finish_record 의 통과 조건 판정 소유자
-    assert check._DEFAULT_GATE_LABEL == pm_engine.domain.handoff_text._DEFAULT_GATE_LABEL
-    assert check._PYTEST_GATE_TOKEN == pm_engine.domain.handoff_text._PYTEST_GATE_TOKEN
+    assert check._DEFAULT_CHECK_LABEL == pm_engine.domain.handoff_text._DEFAULT_CHECK_LABEL
+    assert check._PYTEST_CHECK_TOKEN == pm_engine.domain.handoff_text._PYTEST_CHECK_TOKEN
     for check_cmd in (None, "pytest tests/ -q", NON_PYTEST_CMD, LOCAL_CONF_CMD):
-        assert check._gate_is_pytest(check_cmd) == pm_engine.domain.handoff_text._gate_is_pytest(check_cmd)
-        assert check._gate_label(check_cmd) == pm_engine.domain.handoff_text._gate_label(check_cmd)
+        assert check._check_is_pytest(check_cmd) == pm_engine.domain.handoff_text._check_is_pytest(check_cmd)
+        assert check._check_label(check_cmd) == pm_engine.domain.handoff_text._check_label(check_cmd)
 
 
 # ── 무prefix 채택자 구성 e2e (repo add + tests/ 없음 + 비-pytest 통과 조건) ──
@@ -460,7 +460,7 @@ def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
     assert areas_store.registered_prefixes(pm_paths.home_at(adopter_board.REPO)) == set()
     assert areas_store.registered_repos(pm_paths.home_at(adopter_board.REPO)) == {'heru'}
     home = pm_paths.home_at(adopter_board.REPO)
-    assert pm_engine.app.regression._resolve_gate_cmd(home) == NON_PYTEST_CMD
+    assert pm_engine.app.regression._resolve_check_cmd(home) == NON_PYTEST_CMD
 
 
 def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_path,
@@ -524,7 +524,7 @@ def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tm
 def test_no_prefix_adopter_handoff_verdict_and_command(adopter_board, hf, monkeypatch):
     '핸드오프도 같은 통과 조건으로 판정하고, 실행은 그 명령을 shell 로 돌린다.'
     home = pm_paths.home_at(adopter_board.REPO)
-    check_cmd = pm_engine.app.regression._resolve_gate_cmd(home)
+    check_cmd = pm_engine.app.regression._resolve_check_cmd(home)
     assert check_cmd == NON_PYTEST_CMD
     assert pm_engine.domain.handoff_text._regression_is_green('✅ 매니페스트 검증 통과', 0, check_cmd) is True
     assert pm_engine.domain.handoff_text._regression_is_green('✗ 실패', 1, check_cmd) is False
@@ -550,7 +550,7 @@ def test_no_prefix_adopter_handoff_verdict_and_command(adopter_board, hf, monkey
 def test_solo_shape_keeps_venv_pytest_argv(hf, monkeypatch, tmp_path):
     '도그푸딩 불변 — 해소 실패(솔로)면 핸드오프는 현행 venv pytest argv 를 그대로 쓴다.'
     home = pm_paths.home_at(tmp_path)
-    monkeypatch.setattr(pm_engine.app.regression, '_resolve_gate_cmd', lambda _home: None)
+    monkeypatch.setattr(pm_engine.app.regression, '_resolve_check_cmd', lambda _home: None)
     captured = {}
     def fake_run(cmd, **kwargs):
         captured['cmd'] = cmd
@@ -583,6 +583,6 @@ def test_verdict_parity_across_tools_with_declared_platforms(
         conf["test.windows.cmd"] = platform_command
     stub = _StubBoard(areas_exists=False, conf=conf)
     _install_stub(stub, monkeypatch)
-    command = pm_engine.app.regression._resolve_gate_cmd(pm_paths.home_at(Path("/tmp/t0989-gate")))
+    command = pm_engine.app.regression._resolve_check_cmd(pm_paths.home_at(Path("/tmp/t0989-check")))
     assert command == check_cmd
     assert pm_engine.domain.handoff_text._regression_is_green(output, rc, command) is expected

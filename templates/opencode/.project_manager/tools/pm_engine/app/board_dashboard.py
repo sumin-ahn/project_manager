@@ -170,5 +170,5 @@ def status_snapshot(home) -> dict:
         "open": open_rows,
         "lint": lint,
         "regression": regression_store._sidecar_document(regression_store._resolve_regression_flag(home, str(home.root))[0]),
-        "live_test": regression_store._sidecar_document(regression_store._resolve_livegate_flag(home, str(home.root))[0]),
+        "live_test": regression_store._sidecar_document(regression_store._resolve_live_test_flag(home, str(home.root))[0]),
     }

@@ -1,4 +1,4 @@
-"""훅 커맨드 문자열의 **인용 표면** 추출 헬퍼 (T-0720).
+"""훅 커맨드 문자열의 **인용 부분** 추출 헬퍼 (T-0720).
 
 PowerShell 5.x 는 native 명령 인자의 큰따옴표를 보존하지 않는다 (Windows 11 실측:
 ``py -3.12 -c 'print("quoted")'`` → ``NameError: name 'quoted' is not defined``). 따라서

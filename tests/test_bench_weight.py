@@ -3,7 +3,7 @@
 라이브 호출 0 — claude/opencode subprocess 를 일절 부르지 않고, 캡처 stub JSON
 과 격리된 tmp 파일만으로 파싱·계측·표 생성 로직을 검증한다.
 
-검증 축:
+검증 항목:
   - parse_claude_usage — 실제 캡처 JSON 정규화 정확성.
   - parse_opencode_usage — JSONL 이벤트 스트림 파싱·합산·방어성(누락 키 KeyError 안 남).
   - count_entry_files — byte/char/per-file breakdown·합계·누락 파일 처리.
@@ -143,7 +143,7 @@ def test_parse_opencode_usage_missing_keys_safe(bench):
 
 
 def test_parse_opencode_usage_array_variant(bench):
-    """단일 JSON 배열 변종도 관용적으로 흡수한다(스키마 불확실성 방어)."""
+    """단일 JSON 배열 변종도 관용적으로 받아들인다(스키마 불확실성 방어)."""
     arr = (
         '[{"type":"step_finish","part":{"type":"step-finish",'
         '"tokens":{"total":10,"input":8,"output":2},"cost":0.0}}]'

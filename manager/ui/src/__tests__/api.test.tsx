@@ -31,7 +31,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("HTTP 배선", () => {
+describe("HTTP 연결", () => {
   it("이름 하나를 POST /api/<method> 로 한 번 부르고 응답 JSON 을 그대로 돌려준다", async () => {
     const saved = { changed: true, conf: { missing_required: [] } };
     globalThis.fetch = jsonOnce(saved);
@@ -46,7 +46,7 @@ describe("HTTP 배선", () => {
     expect(response).toEqual(saved);
   });
 
-  it("창 손님은 여는 주소의 질의로 갈리고 그 표식이 요청 머리에 실린다", async () => {
+  it("창 손님은 여는 주소의 질의로 갈리고 그 표시가 요청 머리에 실린다", async () => {
     globalThis.fetch = jsonOnce({ path: null });
     expect(isWindowClient()).toBe(false);
     await httpBridge().status(DEMO, false, false);

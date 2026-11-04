@@ -1,11 +1,11 @@
-"""T-0092 — claude_code 어댑터 진입문서 v2 정합 회귀 가드.
+"""T-0092 — claude_code 어댑터 진입문서 v2 일치 회귀 가드.
 
 v2 재설계(ADR-0017~0020)가 도입한 변경이 claude_code 어댑터 진입문서
 (CLAUDE.md·CLAUDE.lite.md)에 반영돼 있는지 단언한다. README 는 이미 v2 갱신
 완료였으나 CLAUDE.md 스캐폴드가 drift 했던 것(architecture.md 잔존·researcher 누락·
 domain 미언급·CLAUDE_SESSION_NAME)을 회귀로 막는다.
 
-검사 축:
+검사 항목:
   (a) architecture.md(retired·ADR-0017) 부트스트랩 링크가 없다 — domain/ 으로 대체.
   (b) researcher agent(ADR-0019)가 문서에 등장.
   (c) domain 지식 레이어(ADR-0018)가 문서에 등장.
@@ -43,7 +43,7 @@ def test_claude_md_links_architecture():
 def test_claude_lite_links_architecture():
     """CLAUDE.lite.md도 architecture.md의 현재-진실 지위를 링크로 보존한다.
 
-    T-0102 가 full CLAUDE.md 에만 배선하고 lite 진입문서를 놓쳤던 것(잔여)을 못박는다 —
+    T-0102 가 full CLAUDE.md 에만 등록하고 lite 진입문서를 놓쳤던 것(남은 일)을 못박는다 —
     시작 시 통독 대상은 아니지만 필요 시 읽을 현재 아키텍처 단일 진실 포인터는 유지한다.
     """
     text = CLAUDE_LITE_MD.read_text(encoding="utf-8")

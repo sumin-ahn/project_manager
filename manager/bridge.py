@@ -1,4 +1,4 @@
-"""JS 브리지 — 화면이 부를 수 있는 표면 전부.
+"""JS 브리지 — 화면이 부를 수 있는 함수 전부.
 
 묶음 다섯 티켓이 한 파일을 고치는 일을 없애려고 **평범한 다중 상속**으로 나눈다(동적 등록·
 플러그인 기계 0). 이 파일이 기본 여섯 메서드(`BaseApi`)와 최종 합성(`Api`)을 소유하고,
@@ -21,7 +21,7 @@ from .bridge_update import UpdateApi
 
 
 class BaseApi:
-    """프로젝트 목록·현황·최신 태그 — 어느 탭에도 속하지 않는 골격 여섯."""
+    """프로젝트 목록·현황·최신 태그 — 어느 탭에도 속하지 않는 기본 함수 여섯."""
 
     def __init__(self, *, folder_picker, registry_file: Path | str | None = None) -> None:
         # 폴더 선택 대화는 창이 소유한다 — 브리지는 pywebview 를 import 하지 않는다.
@@ -81,4 +81,4 @@ class BaseApi:
 
 
 class Api(BaseApi, SettingsApi, UpdateApi, RunApi):
-    """창에 붙는 최종 브리지 — 골격 + 탭별 mixin 셋."""
+    """창에 붙는 최종 브리지 — 기본 함수 + 탭별 mixin 셋."""

@@ -1,4 +1,4 @@
-"""status/DoD 문서군이 ADR-0023(status judgment-only) 모델과 정합함을 한 곳에서 못박는다.
+"""status/DoD 문서군이 ADR-0023(status judgment-only) 모델과 일치함을 한 곳에서 못박는다.
 
 ADR-0023 은 status.md 에서 derivable 테스트 숫자(헤더 scalar·합계표·소계)를 제거했다. 그런데
 이 결정 후 *기존 자산*(wiki index·playbook·skill·status_done·lite DoD 예시)이 한동안 "테스트

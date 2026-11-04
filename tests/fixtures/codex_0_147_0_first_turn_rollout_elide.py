@@ -13,7 +13,7 @@ scratchpad 산출물 참조도 없다.
      `<work>`로 치환한다(개인 로컬 경로 제거).
   2. `session_meta.payload.base_instructions.text` — codex 기본 지시문 원문. 길이만 남기고
      `<codex 기본 지시문 원문 · elided · 원본 N자>`로 축약한다(원문은 공개 repo에 넣지 않는다
-     · PM 비준 Q6).
+     · PM 승인 Q6).
   3. `response_item.payload.role == "developer"`인 메시지의 `content[0].text`(skills 지시문
      본문, 500자 초과분만) — 같은 규칙으로 축약.
   4. `world_state.payload.state.host_skills.body` — (3)과 같은 본문의 world_state 중복 — 같은
@@ -26,7 +26,7 @@ scratchpad 산출물 참조도 없다.
 
 stdout에 elide된 각 필드의 `path`·`original_length`·`original_sha256`을 JSON 한 줄로 낸다 —
 이 값이 fixture metadata(`codex_0_147_0_live_hook_payloads.json`의 `first_turn_rollout_provenance`)
-에 박제된 값과 같아야 재현이 확인된 것이다.
+에 기록된 값과 같아야 재현이 확인된 것이다.
 """
 from __future__ import annotations
 

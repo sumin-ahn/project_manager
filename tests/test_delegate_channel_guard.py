@@ -28,7 +28,7 @@ from pm_engine.cli import delegate_channel_guard as cli_delegate_channel_guard
 REPO = Path(__file__).resolve().parents[1]
 GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
 ROLES = ("developer", "code-reviewer", "researcher", "architect")
-# claude 카드 stem — 4 역할 축 + developer 의 hard 티어 변주(T-0766). 토큰 이름은 stem 파생이라
+# claude 카드 stem — 4 역할 + developer 의 hard 티어 변주(T-0766). 토큰 이름은 stem 파생이라
 # 새 카드가 늘어도 픽스처가 손열거를 따로 들지 않는다.
 CARD_STEMS = ROLES + ("developer-hard",)
 
@@ -445,10 +445,10 @@ def test_hook_deny_remediation_materializes_payload_cwd(guard_home, guard, tmp_p
 
 
 def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard_home, guard, tmp_path):
-    """AT-019 — 리뷰 거부 처방은 묶음 실행 형식(`--cluster`)이다. 프롬프트 파일·`--ticket` 을 싣지 않는다.
+    """AT-019 — 리뷰 거부 해결 방법은 묶음 실행 형식(`--cluster`)이다. 프롬프트 파일·`--ticket` 을 싣지 않는다.
 
-    리뷰 실 실행은 `--cluster` 만 받는다 — `--ticket`/`--prompt-file` 처방은 그대로 실행하면 rc 2 사용
-    오류로 끝난다. 처방은 역할 축으로 갈리고 developer 는 `--ticket` 형식을 지킨다.
+    리뷰 실 실행은 `--cluster` 만 받는다 — `--ticket`/`--prompt-file` 안내는 그대로 실행하면 rc 2 사용
+    오류로 끝난다. 해결 방법은 역할에 따라 갈리고 developer 는 `--ticket` 형식을 지킨다.
     """
     conf = {
         "delegate.enabled": "true",
@@ -478,7 +478,7 @@ def test_code_reviewer_deny_remediation_uses_the_cluster_form(guard_home, guard,
 def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
     guard_home, guard, monkeypatch
 ):
-    """T-0714 — 처방은 실행 셸 인용 규칙을 따른다 (Windows 렌더러 직접 주입).
+    """T-0714 — 해결 방법은 실행 셸 인용 규칙을 따른다 (Windows 렌더러 직접 주입).
 
     POSIX 단일따옴표를 Windows 셸에 붙여넣으면 `'--cwd'`가 리터럴 인자로 들어가 실행이 깨진다.
     """
@@ -509,11 +509,11 @@ def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
 def test_deny_remediation_interpreter_follows_the_execution_platform(
     guard_home, guard, monkeypatch
 ):
-    """T-0728 — 처방의 인터프리터 표기가 실행 플랫폼을 따른다 (두 표기를 여기서 다 태운다).
+    """T-0728 — 해결 방법의 인터프리터 표기가 실행 플랫폼을 따른다 (두 표기를 여기서 다 태운다).
 
     Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어(가드 자신이 rc 9009 로
     기록해 둔 표기다) 사람이 붙여넣어도 실행되지 않는다. 표기 판정은 `contract` 하나가 소유하므로
-    여기서는 그 해소가 처방까지 도달하는지만 고정한다.
+    여기서는 그 해소가 해결 방법까지 도달하는지만 고정한다.
     """
     conf = {
         "delegate.enabled": "true",
@@ -647,7 +647,7 @@ def test_real_decide_process_usage_errors_are_rc0_one_line_json(argv):
 def test_switch_off_denies_every_channel_with_the_switch_prescription(
     guard_home, guard, switch, mapping
 ):
-    """마스터 스위치 off 는 채널 무관 deny 이고, 처방은 그 스위치 한 줄이다 (Row 0.5).
+    """마스터 스위치 off 는 채널 무관 deny 이고, 해결 방법은 그 스위치 한 줄이다 (Row 0.5).
 
     끄기가 cross 만 막던 시절엔 native 스폰이 그대로 통과해 "위임을 껐는데 돈다"가 됐다.
     판정을 매핑 해소 앞으로 올려 그 틈을 닫는다.
@@ -945,7 +945,7 @@ def test_claude_agent_card_inode_swap_is_rejected_before_read(
     `_secure_dir_fd_supported()` 를 참으로 **위조하면** dir-fd 원시연산이 없는 인터프리터
     (Windows: `os.O_DIRECTORY` 부재·`supports_dir_fd` 공집합)에서 파일을 열기도 전에
     AttributeError 로 죽어 교체 판정이 아예 돌지 않는다. 능력을 위조하지 않고 이 인터프리터가
-    실제로 고르는 reader 를 태운다 — 판정은 세 형상 모두에서 성립해야 한다.
+    실제로 고르는 reader 를 태운다 — 판정은 세 경우 모두에서 성립해야 한다.
     """
     if interpreter != "native":
         monkeypatch.setattr(guard.os, "supports_dir_fd", set())
@@ -1024,7 +1024,7 @@ def test_zero_file_index_card_read_fails_loud_instead_of_matching(
         return observed
 
     monkeypatch.setattr(Path, "lstat", zero_index_lstat)
-    assert target.lstat().st_ino == 0        # 주입 확인: 실제로 정체성 없는 형상이 관측된다
+    assert target.lstat().st_ino == 0        # 주입 확인: 실제로 정체성 없는 상태가 관측된다
     conf = {
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
@@ -1058,7 +1058,7 @@ def test_portable_reader_normal_tracked_cards_are_quiet_match(
 def test_unrendered_source_card_is_diagnosed_as_unrendered_not_mismatch(guard_home, guard, role):
     """T-0731 — 소스 트리(프레임워크 루트·templates)나 렌더가 실패한 채택자 트리에서 카드 model 이
     `{{DELEGATE_MODEL_*}}` 토큰이면 "불일치(conf 를 고쳐라)" 가 아니라 "미렌더(pm-update 로 다시
-    렌더하라)" 로 진단해야 처방이 맞다. 판정은 여전히 fail-open allow.
+    렌더하라)" 로 진단해야 해결 방법이 맞다. 판정은 여전히 fail-open allow.
     """
     conf = {
         f"delegate.{role}.harness": "claude",
@@ -1124,11 +1124,11 @@ def test_windows_reparse_metadata_is_linklike(guard):
 
 
 def _windows_shaped_metadata(observed: object, *, st_ino: int) -> SimpleNamespace:
-    """10-tuple 로 만든 Windows ``stat_result`` 형상을 POSIX 에서 재현한다.
+    """10-tuple 로 만든 Windows ``stat_result`` 모양을 POSIX 에서 재현한다.
 
     Windows CPython 의 ``st_file_attributes`` 는 structseq 의 **선택 필드**라, 10-tuple 로 만든
     ``stat_result`` 는 그 이름을 가지되 값이 ``None`` 이다(POSIX 빌드는 이름 자체가 없다). 이
-    형상을 POSIX 에서 만들려면 stat_result 로는 안 되고 필드를 직접 세운 객체가 필요하다.
+    모양을 POSIX 에서 만들려면 stat_result 로는 안 되고 필드를 직접 세운 객체가 필요하다.
     """
     return SimpleNamespace(
         st_mode=observed.st_mode,
@@ -1149,7 +1149,7 @@ def test_metadata_without_attribute_value_is_judged_not_type_error(guard):
         st_mode=stat.S_IFREG, st_ino=7, st_dev=1, st_nlink=1,
         st_file_attributes=None,
     )
-    # 주입 확인: 필드가 **있고** 값이 없는 형상이어야 이 회귀가 그 연산을 태운다.
+    # 주입 확인: 필드가 **있고** 값이 없는 모양이어야 이 회귀가 그 연산을 태운다.
     assert hasattr(metadata, "st_file_attributes")
     assert metadata.st_file_attributes is None
 
@@ -1159,7 +1159,7 @@ def test_metadata_without_attribute_value_is_judged_not_type_error(guard):
 def test_zero_file_index_windows_shaped_card_reports_the_identity_reason(
     guard_home, guard, monkeypatch, tmp_path
 ):
-    """Windows 형상(속성 값 없음 + st_ino 0)에서도 사유는 정체성 판정 불능 하나다.
+    """Windows 모양(속성 값 없음 + st_ino 0)에서도 사유는 정체성 판정 불능 하나다.
 
     타입 오류가 같은 경고 채널로 새면 코드 결함과 진짜 판정 불능이 한 문구로 덮인다.
     """
@@ -1177,7 +1177,7 @@ def test_zero_file_index_windows_shaped_card_reports_the_identity_reason(
         return observed
 
     monkeypatch.setattr(Path, "lstat", windows_shaped_lstat)
-    # 주입 확인: 카드 경로만 Windows 형상이고 부모 디렉터리는 실 metadata 그대로다.
+    # 주입 확인: 카드 경로만 Windows 모양이고 부모 디렉터리는 실 metadata 그대로다.
     injected = target.lstat()
     assert injected.st_ino == 0 and injected.st_file_attributes is None
     assert isinstance(target.parent.lstat(), guard.os.stat_result)
@@ -1356,9 +1356,9 @@ def test_claude_hard_tier_reads_its_own_card_and_is_quiet_on_match(
 def test_claude_hard_tier_card_drift_is_loud_and_names_the_hard_card(
     guard_home, guard, rendered_cards
 ):
-    """hard 카드가 normal 모델로 렌더돼 있으면(=티어 강등) 조용히 통과하지 않는다.
+    """hard 카드가 normal 모델로 렌더돼 있으면(=티어 낮춤) 조용히 통과하지 않는다.
 
-    민감도 축 — 카드 매핑만 늘리고 값을 안 재면 "카드를 읽었다" 는 사실이 아무것도 막지 못한다.
+    민감도 근거 — 카드 매핑만 늘리고 값을 안 재면 "카드를 읽었다" 는 사실이 아무것도 막지 못한다.
     """
     rendered_cards("sonnet", hard_model="sonnet")
     conf = {

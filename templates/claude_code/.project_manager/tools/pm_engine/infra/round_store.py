@@ -228,7 +228,7 @@ def _find_ticket_file(home, ticket_id: str, ) -> Path:
     충돌이 불가능한 정확 이름이라 함수가 비면 그 대체 경로를 그대로 본다(종전 동작).
     """
     if not ticket_id or re.search(r"[\\/*?\[\]]", ticket_id):
-        raise pm_paths.AnchorResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
+        raise pm_paths.TargetRepoResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
     tickets_dir = pm_paths.tickets_dir(home)
     status_dirs = tuple(ticket_rules.STATUS_DIRS)
     found = ticket_store.find_ticket_exact(
@@ -241,7 +241,7 @@ def _find_ticket_file(home, ticket_id: str, ) -> Path:
         exact = tickets_dir / status_dir / f"{ticket_id}.md"
         if exact.exists():
             return exact
-    raise pm_paths.AnchorResolutionError(
+    raise pm_paths.TargetRepoResolutionError(
         f"ticket {ticket_id} 을 해소된 board에서 찾지 못했습니다: {tickets_dir}"
     )
 
@@ -274,14 +274,14 @@ def _split_ticket_frontmatter(text: str, *, source: Path) -> tuple[str | None, s
 
     ticket_store.load_ticket을 재사용하지 않는 이유는 본문을 YAML 재직렬화나 strip 없이 byte-for-byte
     보존해야 하고, touches의 경량 파서도 YAML 의존 없이 같은 원문을 소비하기 때문이다. opener가
-    있으면 closer도 반드시 있어야 하며 두 소비자 모두 같은 AnchorResolutionError로 fail-loud 한다.
+    있으면 closer도 반드시 있어야 하며 두 소비자 모두 같은 TargetRepoResolutionError로 fail-loud 한다.
     """
     if not text.startswith("---\n"):
         return None, text
     after_open = text[4:]
     end = after_open.find("\n---\n")
     if end == -1:
-        raise pm_paths.AnchorResolutionError(f"ticket frontmatter가 닫히지 않았습니다: {source}")
+        raise pm_paths.TargetRepoResolutionError(f"ticket frontmatter가 닫히지 않았습니다: {source}")
     return after_open[:end], after_open[end + 5:]
 
 

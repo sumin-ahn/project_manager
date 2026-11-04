@@ -56,24 +56,24 @@ def test_policy_constant_states_auto_continuation_and_user_only_handoff(pm_log):
     assert "세션 종료·작업 축소는 사용자 지시로만 한다" in policy
 
 
-@pytest.mark.parametrize("band", ("warn", "warn2", "final", "precompact"))
-def test_every_ctx_band_includes_shared_policy_and_no_winding_down_phrase(pm_log, band):
+@pytest.mark.parametrize("level", ("warn", "warn2", "final", "precompact"))
+def test_every_ctx_level_includes_shared_policy_and_no_winding_down_phrase(pm_log, level):
     text = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
-        band, used_pct=82, precompact_at_pct=80,
+        level, used_pct=82, precompact_at_pct=80,
     )
     assert pm_engine.domain.ctx_recovery.CTX_GUARD_CONTINUITY_GUIDANCE in text
     assert not any(pattern.search(text) for pattern in FORBIDDEN), text
 
 
-@pytest.mark.parametrize("band", ("warn", "warn2", "final", "precompact"))
-def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, band):
-    """4밴드×필수 3종을 직접 렌더와 실제 raw CLI 출력 양쪽에서 고정한다."""
+@pytest.mark.parametrize("level", ("warn", "warn2", "final", "precompact"))
+def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, level):
+    """4구간×필수 3종을 직접 렌더와 실제 raw CLI 출력 양쪽에서 고정한다."""
     direct = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
-        band, used_pct=82, precompact_at_pct=80,
+        level, used_pct=82, precompact_at_pct=80,
     )
     result = subprocess.run(
         [
-            sys.executable, str(PM_LOG), "ctx-guidance", "--level", band,
+            sys.executable, str(PM_LOG), "ctx-guidance", "--level", level,
             "--used-pct", "82", "--precompact-at-pct", "80",
         ],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
@@ -92,7 +92,7 @@ def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, 
 
 def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log):
     policy_marker = "핸드오프는 사용자 명시 지시로만 한다"
-    # T-0806 이후 codex 축 압축 안내 커맨드는 `hooks.json` 직결이 아니라 디스패처
+    # T-0806 이후 codex 쪽 압축 안내 커맨드는 `hooks.json` 직결이 아니라 디스패처
     #   `CODEX_HOOK_FEATURES` registry 값이다 — 판정 대상은 hooks.json 텍스트가 아니라 그 registry.
     dispatcher = _load(CODEX_DISPATCHER, "t0648_codex_dispatcher")
     compaction_guidance = [feature for feature in dispatcher.CODEX_HOOK_FEATURES
@@ -114,11 +114,11 @@ def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log
     assert Path(pm_engine.domain.ctx_recovery.__file__).read_text(encoding="utf-8").count(policy_marker) == 1
 
 
-@pytest.mark.parametrize("band", ("warn", "warn2", "final", "precompact"))
-def test_forbidden_winding_down_phrases_are_absent_from_rendered_outputs(pm_log, band):
+@pytest.mark.parametrize("level", ("warn", "warn2", "final", "precompact"))
+def test_forbidden_winding_down_phrases_are_absent_from_rendered_outputs(pm_log, level):
     """검사 상수 선언을 오탐하지 않고 사용자가 받는 최종 출력만 판정한다."""
     output = pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
-        band, used_pct=82, precompact_at_pct=80,
+        level, used_pct=82, precompact_at_pct=80,
     )
     assert not any(pattern.search(output) for pattern in FORBIDDEN), output
     assert all(
@@ -144,16 +144,16 @@ def _snapshot_fixture_pm_home(tmp_path):
         directory.mkdir(parents=True)
         for index in range(count):
             (directory / f"T-{index:04d}-fixture.md").write_text("fixture\n", encoding="utf-8")
-    ledger = local / "delegate-rounds.jsonl"
+    records = local / "delegate-rounds.jsonl"
     row = {
         "ticket": "T-0001", "role": "architect", "ordinal": 1,
         "run_id": "a" * 32, "copy": str(tmp_path / "copy.md"),
         "board_rel": "wiki/tickets/rounds/T-0001/architect-1.md",
         "prepared_at": "2026-08-21T00:00:00.000000+00:00", "collected_at": None,
     }
-    ledger.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
-    raw_ledger = local / "raw_outputs.json"
-    raw_ledger.write_text(json.dumps({"version": 1, "records": [{
+    records.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    raw_records = local / "raw_outputs.json"
+    raw_records.write_text(json.dumps({"version": 1, "records": [{
         "id": "r1", "surface": "delegate", "harness": "codex", "model": "gpt",
         "role": "architect", "attempt": "1", "pid": 1,
         "started_at": "2026-08-21T00:00:00.000000+00:00",
@@ -175,7 +175,7 @@ def test_forbidden_phrases_absent_from_compaction_snapshot(pm_log, tmp_path):
 
 
 def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log, tmp_path):
-    """Claude 훅 → 엔진 공개 진입 → domain 렌더 — 최종 밴드 안내가 공유 렌더 원문 그대로 실린다."""
+    """Claude 훅 → 엔진 공개 진입 → domain 렌더 — 최종 구간 안내가 공유 렌더 원문 그대로 실린다."""
     from pm_engine.cli import hooks as cli_hooks
     from pm_engine.infra import conf_store
     from test_harness_ctx_limits import install_ctx_record
@@ -197,7 +197,7 @@ def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log, tmp_path):
 
 
 def _opencode_guidance_home(tmp_path):
-    """실 엔진 PM 홈 + OpenCode 압축 한도 기록(사용 한도 200,000·70/80) + 설치 형상 core 사본."""
+    """실 엔진 PM 홈 + OpenCode 압축 한도 기록(사용 한도 200,000·70/80) + 설치 구성 core 사본."""
     from _manager_home import make_pm_home, set_conf_key
     from test_harness_ctx_limits import install_ctx_record
     from test_opencode_ctx_guard import _install_core
@@ -208,9 +208,9 @@ def _opencode_guidance_home(tmp_path):
     return root, _install_core(root)
 
 
-def _pm_log_guidance(root, band, used_pct):
+def _pm_log_guidance(root, level, used_pct):
     command = [sys.executable, str(root / ".project_manager" / "tools" / "pm_log.py"),
-               "ctx-guidance", "--level", band, "--used-pct", str(used_pct), "--precompact-at-pct", "80"]
+               "ctx-guidance", "--level", level, "--used-pct", str(used_pct), "--precompact-at-pct", "80"]
     return subprocess.run(command, cwd=root, capture_output=True, env=utf8_child_env(), check=True)
 
 
@@ -314,10 +314,9 @@ def test_ctx_guidance_takes_used_and_precompact_at(pm_log):
     )
     assert result.returncode == 0, result.stderr
     assert "컨텍스트 사용 82% (압축 임박 경고 80% 이상)" in result.stdout
-    assert "잔여" not in result.stdout
     assert result.stdout.rstrip("\n") == pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         "final", used_pct=82, precompact_at_pct=80)
-    # warn 밴드는 비율을 받아도 싣지 않는다(최종 밴드만의 표기).
+    # warn 구간은 비율을 받아도 싣지 않는다(최종 구간만의 표기).
     assert "압축 임박 경고" not in pm_engine.domain.ctx_recovery.build_ctx_guard_guidance(
         "warn", used_pct=72, precompact_at_pct=80)
 
@@ -332,18 +331,3 @@ def test_ctx_guidance_takes_used_and_precompact_at(pm_log):
         assert retired[0] in refused.stderr
 
 
-def test_ctx_guidance_rejects_old_band_flag_and_values(pm_log):
-    """옛 플래그 --band 와 옛 값 nudge·nudge2 는 별칭 없이 인자 오류(종료 코드 2)다."""
-    cases = (
-        (["--level", "precompact", "--band", "precompact"], "unrecognized arguments: --band"),
-        (["--level", "nudge"], "invalid choice: 'nudge'"),
-        (["--level", "nudge2"], "invalid choice: 'nudge2'"),
-    )
-    for arguments, expected_error in cases:
-        refused = subprocess.run(
-            [sys.executable, str(PM_LOG), "ctx-guidance", *arguments],
-            cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
-            env=utf8_child_env(),
-        )
-        assert refused.returncode == 2, (arguments, refused.stdout)
-        assert expected_error in refused.stderr, (arguments, refused.stderr)

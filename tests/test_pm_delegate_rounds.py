@@ -60,7 +60,7 @@ import pytest
 from _test_exec import python_argv_command
 from _win_skip import _can_symlink as can_symlink, posix_mode_supported
 from pm_engine.infra import conf_store, pm_paths, raw_output, ticket_store
-from conftest import write_cluster_ledger
+from conftest import write_cluster_records
 from pm_engine.domain import delegate_errors, design_rules, review_form, review_state, round_rules
 from pm_engine.infra import delegate_records, round_store
 from pm_engine.app import round_form
@@ -359,7 +359,7 @@ def _declare_rounds(tickets: Path, members, rounds, *, cluster: str | None = Non
 
     `cluster` 를 생략하면 그 티켓의 크기 1 묶음(`C-<티켓>`)이다.
     """
-    return write_cluster_ledger(
+    return write_cluster_records(
         tickets.parent.parent, members, base_branch=_CLUSTER_RECORD_BASE_BRANCH,
         cluster=cluster, rounds=rounds,
     )

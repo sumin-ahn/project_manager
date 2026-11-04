@@ -29,21 +29,21 @@ TASK = "alpha"
 
 
 class _TaskPool:
-    """task membership·보유 슬롯만 답하는 최소 seam — 장부 조회를 통과시킨다."""
+    """task membership·보유 슬롯만 답하는 최소 교체 지점 — 기록 조회를 통과시킨다."""
 
     def find_task(self, name):
         # 기록이 열려 있다 = bootstrap 을 거친 새 세션 — 차수는 직전 log 차수 다음이다.
         return type("_T", (), {"name": name, "open": True})()
 
     def find_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.find_task(name)
 
     def slots_for_task(self, name):
         return []
 
     def slots_for_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.slots_for_task(name)
 
 REPO = Path(__file__).resolve().parents[1]
@@ -52,9 +52,9 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 
 def _run_handoff(inst, **kw):
-    """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
+    """핸드오프 실행 — 승인 검사에 정식 승인값을 실어 통과시킨다.
 
-    이 모듈의 축은 승인 게이트가 아니다(그 축은 ``tests/test_pm_handoff_user_ack.py``가
+    이 모듈의 대상은 승인 검사가 아니다(그 대상은 ``tests/test_pm_handoff_user_ack.py``가
     소유한다). 승인 대상값은 정체성 그 자체, 곧 task 이름이다.
     """
     task = kw.pop("task", TASK)
@@ -75,7 +75,7 @@ def handoff():
 
 @pytest.fixture(autouse=True)
 def _registered_home(handoff, tmp_path, monkeypatch):
-    '모든 테스트의 기본 형상 = **등록된 홈**(N=1 슬롯 행) — 정체성이 장부에서 온다.\n\n    다른 형상을 보는 테스트는 같은 파일들을 덮어써서 자기 형상을 만든다(모호·미등록).\n    '
+    '모든 테스트의 기본 구성 = **등록된 홈**(N=1 슬롯 행) — 정체성이 대여 기록에서 온다.\n\n    다른 구성을 보는 테스트는 같은 파일들을 덮어써서 자기 구성을 만든다(모호·미등록).\n    '
     home = pm_paths.home_at(tmp_path)
     seed_areas(tmp_path)
     seed_slot(tmp_path, session=TASK, tasks=[{'name': TASK, 'prefix': None}])
@@ -88,7 +88,7 @@ def _make_handoff_missing_state(handoff, tmp_path: Path):
     playbook_file = tmp_path / 'pm_playbook.md'
     missing_state = tmp_path / 'does_not_exist' / 'pm_state.md'
     log_file.write_text('# log\n', encoding='utf-8')
-    playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
+    playbook_file.write_text('# pm_playbook (no marker)\n', encoding='utf-8')
     inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('skip_pytest 인데 pytest 호출')), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_playbook_file=playbook_file, pm_state_file=missing_state)
     return (inst, log_file, missing_state)
 
@@ -105,7 +105,7 @@ def _make_handoff_missing_state(handoff, tmp_path: Path):
 
 # ── guarded 슬롯해소 — bare handoff 멀티-PM 모호 → fail-loud (T-0178·ADR-0035) ──────
 # session-entry(bare handoff·worktree_slot 미지정)가 멀티-PM 모호 셋업이면 없는 legacy 로
-# 조용히 폴백하지 않고 명시 에러로 중단한다. solo·단일 self-host 는 현행 폴백 유지(무변경).
+# 조용히 대체하지 않고 명시 에러로 중단한다. solo·단일 self-host 는 현행 대체 동작 유지(무변경).
 
 
 def _write_areas(path: Path, repos: list[str]) -> None:
@@ -139,10 +139,10 @@ def _write_leases(path: Path, entries: list[tuple[str, int]]) -> None:
 
 
 
-# ── run() e2e guard — REPO monkeypatch 로 모호 형상 ──────────────
+# ── run() e2e guard — REPO monkeypatch 로 모호 구성 ──────────────
 
 def _make_multipm_ambiguous_repo(tmp_path: Path) -> None:
-    """REPO 에 멀티-PM 모호 형상(등록 repo 2개)을 깐다 — bare handoff fail-loud 전제."""
+    """REPO 에 멀티-PM 모호 구성(등록 repo 2개)을 깐다 — bare handoff fail-loud 전제."""
     _write_areas(tmp_path / ".project_manager" / "areas.md", ["A", "B"])
     _write_leases(
         tmp_path / ".project_manager" / ".local" / "worktree-leases.json",
@@ -168,7 +168,7 @@ def _bare_handoff(handoff, tmp_path: Path):
 # ── 해소 슬롯 threading 일관성 — pm_state·회귀cwd·handoff entry 한 슬롯 (codex round2) ──
 # bare handoff 가 default-1/idle-필터 슬롯을 한 번 해소해 실행 슬롯에 박으면, downstream
 # 전부(pm_state read 위치·회귀 cwd·entry worktree 줄)가 *같은* 슬롯을 일관되게 쓴다. 특히
-# self-split(② 홈엔 tests/ 없음)에서 회귀 cwd 가 활성 worktree(slot1)로 가야 한다(REPO 폴백 X).
+# self-split(② 홈엔 tests/ 없음)에서 회귀 cwd 가 활성 worktree(slot1)로 가야 한다(REPO 대체 X).
 
 def _bare_handoff_capturing_cwd(handoff, tmp_path: Path):
     'pm_state 미주입 PmHandoff — run_pytest stub 이 _regression_cwd(self._worktree_slot)를 캡처.'
@@ -192,13 +192,13 @@ def _bare_handoff_capturing_cwd(handoff, tmp_path: Path):
 
 
 
-# ── 앵커 부재 fail-soft — step3 만 스킵, 핸드오프 완주 (T-0243·finance_dev D3) ──────
-# pm_state.md 는 *존재*하나 세션 식별 절 앵커가 없으면 update_session_window→ValueError.
+# ── 표시 글 부재 fail-soft — step3 만 스킵, 핸드오프 완주 (T-0243·finance_dev D3) ──────
+# pm_state.md 는 *존재*하나 세션 식별 절 표시 글이 없으면 update_session_window→ValueError.
 # 종전엔 `return 1` 로 핸드오프 전체가 죽어 채택자가 9세션 연속 수동 우회했다. fail-soft 로
 # step3(sliding window)만 스킵하고 나머지(4~7)는 계속 진행한다. 추측 편집 금지 유지 —
 # window 를 지어내지 않되(pm_state 무변경) 죽지도 않는다.
 
-_PM_STATE_NO_ANCHOR = (
+_PM_STATE_NO_MARKER = (
     "# PM State\n\n"
     "## 현재 세션 요약\n\n"
     "세션 식별 절이 없는 채택자 pm_state.\n\n"
@@ -208,13 +208,13 @@ _PM_STATE_NO_ANCHOR = (
 
 
 def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str, *, monkeypatch):
-    '세션 식별 앵커가 없는 pm_state.md 를 *실재*하게 주입한 PmHandoff 인스턴스.\n\n    log 에는 이 task 의 직전 handoff entry 를 깔아 둔다 — 차수는 state 와 log 에서 함께\n    복구되므로, state 가 깨진 채택자도 log 가 있으면 차수(4차→5차)가 나오고 그제야 step3\n    앵커 부재가 드러난다(둘 다 없으면 차수 미해소로 그 앞에서 중단이다).\n    '
+    '세션 식별 표시 글이 없는 pm_state.md 를 *실재*하게 주입한 PmHandoff 인스턴스.\n\n    log 에는 이 task 의 직전 handoff entry 를 깔아 둔다 — 차수는 state 와 log 에서 함께\n    복구되므로, state 가 깨진 채택자도 log 가 있으면 차수(4차→5차)가 나오고 그제야 step3\n    표시 글 부재가 드러난다(둘 다 없으면 차수 미해소로 그 앞에서 중단이다).\n    '
     home = pm_paths.home_at(tmp_path)
     log_file = tmp_path / 'current.md'
     playbook_file = tmp_path / 'pm_playbook.md'
     pm_state = tmp_path / 'pm_state.md'
     log_file.write_text('# log\n\n## [2026-07-05] handoff | PM 4차 (task:alpha) → 다음 PM 세션\n\n- 이 세션 기록 entries: (이 세션 기록 entry 없음)\n', encoding='utf-8')
-    playbook_file.write_text('# pm_playbook (no anchor)\n', encoding='utf-8')
+    playbook_file.write_text('# pm_playbook (no marker)\n', encoding='utf-8')
     pm_state.write_text(state_text, encoding='utf-8')
     bind_pool(monkeypatch, _TaskPool())
     inst = pm_engine.cli.handoff.PmHandoff(home, run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError('skip_pytest 인데 pytest 호출')), run_git_fn=lambda args: (0, ''), log_file=log_file, pm_playbook_file=playbook_file, pm_state_file=pm_state)
@@ -223,20 +223,20 @@ def _make_handoff_with_state(handoff, tmp_path: Path, state_text: str, *, monkey
 
 def test_extract_session_section_none_when_anchor_absent(handoff):
     """세션 식별 절이 완전 부재하면 _extract_session_section 은 None (추측 편집 금지)."""
-    assert session_history._extract_session_section(_PM_STATE_NO_ANCHOR) is None
+    assert session_history._extract_session_section(_PM_STATE_NO_MARKER) is None
 
 
 def test_update_session_window_raises_when_anchor_absent(handoff):
-    """부재 시 update_session_window 는 종전대로 ValueError (앵커 못 찾으면 지어내지 않음)."""
+    """부재 시 update_session_window 는 종전대로 ValueError (표시 글 못 찾으면 지어내지 않음)."""
     with pytest.raises(ValueError):
         pm_engine.domain.handoff_text.update_session_window(
-            _PM_STATE_NO_ANCHOR, 5, "2026-07-06", "요약"
+            _PM_STATE_NO_MARKER, 5, "2026-07-06", "요약"
         )
 
 
 def test_run_failsoft_skips_step3_when_anchor_absent(handoff, monkeypatch, tmp_path, capsys):
-    """앵커 부재 pm_state → step3 스킵 경고 + rc 0(완주)·pm_state 무변경 (return 1 아님)."""
-    inst, _, pm_state = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR, monkeypatch=monkeypatch)
+    """표시 글 부재 pm_state → step3 스킵 경고 + rc 0(완주)·pm_state 무변경 (return 1 아님)."""
+    inst, _, pm_state = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_MARKER, monkeypatch=monkeypatch)
     before = pm_state.read_text(encoding="utf-8")
 
     rc = _run_handoff(inst, dry_run=False, skip_pytest=True)
@@ -251,7 +251,7 @@ def test_run_failsoft_skips_step3_when_anchor_absent(handoff, monkeypatch, tmp_p
 
 def test_run_failsoft_continues_remaining_steps_when_anchor_absent(handoff, monkeypatch, tmp_path, capsys):
     """step3 스킵 이후에도 나머지 단계(log entry append·완료 메시지)는 진행한다."""
-    inst, log_file, _ = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR, monkeypatch=monkeypatch)
+    inst, log_file, _ = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_MARKER, monkeypatch=monkeypatch)
 
     rc = _run_handoff(inst, dry_run=False, skip_pytest=True)
 

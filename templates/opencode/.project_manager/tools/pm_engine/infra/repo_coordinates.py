@@ -7,10 +7,10 @@ Ticket ``touches`` 는 PM 홈 기준이라 ``work/<repo>_<N>/path`` 형태일 �
 검증 소스는 두 가지다.
 
 * ``workspace`` 가 주어지면 그 실재 디렉토리가 정확히 ``pm_root/work/<repo>_<N>`` 인지 본다.
-  ``ticket_finish --task`` 처럼 호출부가 이미 lease 소유검사를 마친 경로가 이 seam 을 쓴다.
-* ``workspace`` 가 없으면 PM 홈의 lease 장부에서 같은 지속 slot↔repo 매핑을 찾고, 실제
+  ``ticket_finish --task`` 처럼 호출부가 이미 lease 소유검사를 마친 경로가 이 경로를 쓴다.
+* ``workspace`` 가 없으면 PM 홈의 lease 대여 기록에서 같은 지속 slot↔repo 매핑을 찾고, 실제
   디렉토리도 확인한다. lease의 활동 상태는 완료 직후 ``idle``일 수 있으므로 보지 않는다.
-  ``domain affected --ticket`` 같이 task 인자를 받지 않는 조회 표면이 이 경로다.
+  ``domain affected --ticket`` 같이 task 인자를 받지 않는 조회 명령이 이 경로다.
 
 ``work/<repo>_<N>/`` 접두가 없으면 문자열을 그대로 돌려준다. 접두가 있는데 검증된 슬롯과
 다르면 조용히 strip하지 않고 ``RepoCoordinateError`` 를 낸다. 잘못된 stage 귀속이 recall
@@ -24,7 +24,7 @@ ticket_finish.py,additional_reviewer.py}`` 로 ticket 경로 생산·소비와 s
 domain 알림/task stage이며 모두 이 normalizer를 지난다. board scoped regression은
 ``_ticket_touches``→``_scope_args``에서 ``Path(t).stem``만 써 좌표 무관, freshness는
 owner-repo clock을 쓴다. additional_reviewer는 **canonical worktree에서 ``--ticket``은
-접두 경로→빈 diff 차단·엔진 티켓 codex 게이트는 ``--paths`` 필수**다.
+접두 경로→빈 diff 차단·엔진 티켓 codex 리뷰는 ``--paths`` 필수**다.
 """
 
 from __future__ import annotations
@@ -90,8 +90,8 @@ _WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 def _normalize_relative(relative: str, original: str) -> str:
     """slot 접두 뒤 상대부를 안전한 POSIX repo-relative 경로로 정규화한다.
 
-    중복 ``/``와 ``.`` 세그먼트는 접고, 그 결과가 repo 루트이거나 상대 좌표가 아닌
-    절대/drive/UNC 표기면 slot 전체 선언과 같은 위험으로 fail-loud 한다. ``..``는 접어서
+    중복 ``/``와 ``.`` 세그먼트는 합치고, 그 결과가 repo 루트이거나 상대 좌표가 아닌
+    절대/drive/UNC 표기면 slot 전체 선언과 같은 위험으로 fail-loud 한다. ``..``는 합쳐서
     다른 위치로 재해석하지 않고 원문 세그먼트가 하나라도 있으면 traversal로 거부한다.
     """
     segments = relative.split("/")
@@ -155,16 +155,16 @@ def _workspace_slot(workspace: Path | str, pm_root: Path) -> tuple[str, Path]:
 
 
 # REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
-# 앵커 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
+# 기준 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
 
 
-# ── 공유 읽기 (원자 교체 대상 장부) ──────────────────────────────────────
-# 이 모듈이 읽는 리스 장부(`worktree-leases.json`)는 `worktree_pool` 이 **원자 교체**하는
+# ── 공유 읽기 (원자 교체 대상 기록) ──────────────────────────────────────
+# 이 모듈이 읽는 대여 기록(`worktree-leases.json`)는 `worktree_pool` 이 **원자 교체**하는
 # 파일이다. 일반 `open` 리더가 하나라도 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막으므로,
-# 판독도 공용 seam 의 공유 읽기(`fs.read_text_shared`)를 지난다.
+# 판독도 공용 함수의 공유 읽기(`fs.read_text_shared`)를 지난다.
 
 def _registered_lease_slot(slot: str, repo: str, leases_file: Path) -> bool:
-    """장부에서 state와 무관한 지속 slot↔repo 소유 매핑이 정확히 존재하는지 조회한다."""
+    """대여 기록에서 state와 무관한 지속 slot↔repo 소유 매핑이 정확히 존재하는지 조회한다."""
     try:
         data = json.loads(fs.read_text_shared(leases_file, encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -220,13 +220,13 @@ def normalize_repo_path(
             )
         return NormalizedRepoPath(relative, repo=repo, workspace=candidate)
 
-    ledger = Path(leases_file) if leases_file is not None else (
+    records = Path(leases_file) if leases_file is not None else (
         root / ".project_manager" / ".local" / "worktree-leases.json"
     )
-    if not _registered_lease_slot(slot, repo, ledger):
+    if not _registered_lease_slot(slot, repo, records):
         raise RepoCoordinateError(
             f"touches slot 불일치: 선언={slot!r}, 슬롯 대여 기록의 지속 slot↔repo 매핑에 "
-            f"일치 항목 없음 ({ledger})"
+            f"일치 항목 없음 ({records})"
         )
     slot_path = root / slot
     if not slot_path.is_dir():

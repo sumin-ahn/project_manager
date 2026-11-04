@@ -4,7 +4,7 @@
 실 claude 불요 — FakeDriver DI·tmp_path·StringIO 스트림만 본다(test_handoff_trigger·
 test_claude_ctx_guard 패턴: importlib 로드·DI runner·subprocess 폭발 가드).
 
-검증 축 (ticket DoD):
+검증 항목 (ticket DoD):
   ① marker-watch 분기(있음/없음) — stop_marker_present stat.
   ② respawn 결정 — marker 시 새 session·없으면 relay 지속(호출 카운트).
   ③ parse_stream_json — sid/result/usage 추출 + JSONDecodeError 라인 skip.
@@ -85,23 +85,23 @@ def test_opencode_runtime_role_config_is_self_contained_and_stable(orch, role):
 @pytest.mark.parametrize("role", ("developer", "architect", "code-reviewer", "researcher"))
 def test_opencode_runtime_role_fragment_matches_shipped_card_permission(orch, role):
     """fragment(contract.opencode_runtime_role_config) permission == 출하 카드 frontmatter
-    permission — 두 표면이 어긋나도 잡는 가드가 없어 [[T-0696]] 이 카드만 바꾸고 fragment 를
+    permission — 두 쪽이 어긋나도 잡는 가드가 없어 [[T-0696]] 이 카드만 바꾸고 fragment 를
     남긴 half-fix([[T-0745]])가 나왔다. 카드 없는 cross cwd 위임이 fragment 의 존재 이유라
-    파생 방향은 fragment→카드가 아니므로, 이 대조가 두 표면의 단일 진실 보증이다. 카드 파서는
+    파생 방향은 fragment→카드가 아니므로, 이 대조가 두 쪽의 단일 진실 보증이다. 카드 파서는
     test_opencode_permission_guard 의 기존 헬퍼를 재사용한다.
 
-    파리티(fragment == 카드)는 상대 단언이라 두 표면이 *동시에* 완화돼도(예: webfetch
+    파리티(fragment == 카드)는 상대 단언이라 두 쪽이 *동시에* 완화돼도(예: webfetch
     deny→allow 를 fragment 4사본 + 카드 5장에 함께 적용) 잡지 못한다(리뷰어 실측: 관련 39개
-    테스트 파일 1943 passed/0 failed). webfetch deny 는 절대 앵커로 별도 고정한다(F-001).
+    테스트 파일 1943 passed/0 failed). webfetch deny 는 절대값으로 별도 고정한다(F-001).
     """
     fragment = json.loads(contract.opencode_runtime_role_config(role))
     fragment_permission = fragment["agent"][contract.OPENCODE_AGENT[role]]["permission"]
     card_permission = _load_agent_frontmatter(OPENCODE_AGENTS / f"{role}.md")["permission"]
 
-    # 절대 앵커 — 파리티(상대 단언)만으로는 두 표면의 동시 완화를 못 잡는다(F-001).
+    # 절대값 — 파리티(상대 단언)만으로는 두 쪽의 동시 완화를 못 잡는다(F-001).
     assert fragment_permission["webfetch"] == "deny"
 
-    # 파리티 — 카드 permission 의 모든 키(장래 신설 축 포함, 손기입 키 목록 없이)가 fragment
+    # 파리티 — 카드 permission 의 모든 키(장래 신설 종류 포함, 손기입 키 목록 없이)가 fragment
     # 와 정확히 같다(F-002). bash 는 매핑 규칙 없이 그대로 대조한다: researcher 는 양쪽 모두
     # 문자열 "deny", 나머지 역할은 양쪽 모두 동일한 위험-bash 패턴맵(dict).
     assert set(card_permission) <= set(fragment_permission), (
@@ -115,7 +115,7 @@ def test_opencode_runtime_role_fragment_matches_shipped_card_permission(orch, ro
 
 
 def test_opencode_runtime_role_overrides_untrusted_incoming_content_without_mutation(orch):
-    """사용자 runtime JSON은 plugin/secret 표면이라 병합하지 않고 입력 dict도 변경하지 않는다."""
+    """사용자 runtime JSON은 plugin/secret 범위라 병합하지 않고 입력 dict도 변경하지 않는다."""
     original = {"PATH": "/bin", "OPENCODE_CONFIG_CONTENT": "SECRET_PLUGIN_CONFIG"}
     resolved = contract.with_opencode_runtime_role(original, "code-reviewer")
     assert original["OPENCODE_CONFIG_CONTENT"] == "SECRET_PLUGIN_CONFIG"
@@ -138,7 +138,7 @@ class FakeDriver:
     stop_on_even_spawn: 짝수 번째 bootstrap turn 직후에만 marker 를 박는다.
     spawn_reply: bootstrap reply(None이면 구 sid 계약).
     spawn_result_factory: reply 를 선언 계약 타입으로 감싸는 factory(미주입이면 tuple 호환 계약).
-    stop_predicate: (relay_index, session_id, text) -> bool. True 면 그 relay 직후 marker 박제.
+    stop_predicate: (relay_index, session_id, text) -> bool. True 면 그 relay 직후 marker 기록.
     relay 별 marker 를 정밀 제어한다(1-based index).
     relay 가 실 claude 를 부르지 않음을 보장(subprocess 폭발 가드 — 여긴 순수 인메모리).
     """
@@ -183,13 +183,13 @@ class FakeDriver:
     def relay_turn(self, session_id: str, text: str) -> str:
         self.relays.append((session_id, text))
         relay_index = len(self.relays)  # 1-based.
-        # always_stop: 매 완료 relay 직후 post-turn marker 박제.
+        # always_stop: 매 완료 relay 직후 post-turn marker 기록.
         if self.always_stop:
             self._write_marker(session_id)
         elif self.stop_predicate is not None:
             if self.stop_predicate(relay_index, session_id, text):
                 self._write_marker(session_id)
-        # 누적 relay 가 임계 도달 시 marker 박제(ctx_stop_hook 모사).
+        # 누적 relay 가 임계 도달 시 marker 기록(ctx_stop_hook 모사).
         elif self.stop_after_relays is not None and relay_index == self.stop_after_relays:
             self._write_marker(session_id)
         return f"reply:{text}"
@@ -253,7 +253,7 @@ def test_sanitize_session_id_matches_hook_rule(orch):
         "11111111-2222-3333-4444-555555555555"
 
 
-# ── claim_session_once — 세션·namespace 스코프 1회 선점 (T-0764) ─────────────
+# ── claim_session_once — 세션·namespace 스코프 1회 먼저 차지하기 (T-0764) ─────────────
 
 def test_claim_session_once_first_claim_then_duplicate(orch, tmp_path):
     """같은 (세션, namespace, key) 는 첫 호출만 True 고 이후는 False 다."""
@@ -263,12 +263,12 @@ def test_claim_session_once_first_claim_then_duplicate(orch, tmp_path):
 
 
 def test_claim_session_once_isolates_key_session_and_namespace(orch, tmp_path):
-    """키·세션·namespace 중 하나만 달라도 별개 선점이다(다른 클래스를 함께 삼키지 않음)."""
+    """키·세션·namespace 중 하나만 달라도 별개로 차지한다(다른 클래스를 함께 삼키지 않음)."""
     assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "key-a") is True
     assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "key-b") is True
     assert orch.claim_session_once(tmp_path, "sid-2", "git-check", "key-a") is True
     assert orch.claim_session_once(tmp_path, "sid-1", "run-tests", "key-a") is True
-    # 각 축은 자기 스코프 안에서만 중복이다.
+    # 각 기준은 자기 스코프 안에서만 중복이다.
     assert orch.claim_session_once(tmp_path, "sid-2", "git-check", "key-a") is False
     assert orch.claim_session_once(tmp_path, "sid-1", "run-tests", "key-a") is False
 
@@ -290,11 +290,11 @@ def test_claim_session_once_uses_one_membership_file_per_session_namespace(orch,
 
 
 def test_claim_session_once_refuses_reserved_marker_namespaces(orch, tmp_path):
-    """예약 marker 이름은 선점 대상이 아니다 — 같은 디렉토리 다른 생산자의 신호 위조 차단.
+    """예약 marker 이름은 먼저 차지하기 대상이 아니다 — 같은 디렉토리 다른 생산자의 신호 위조 차단.
 
     namespace "done" 을 허용하면 멤버십 파일이 `<sid>.done` 이 되어 회전 marker 와 같은
     이름이 된다(`stop_marker_present` False→True). warn·warn2·final(ctx_stop_hook)·
-    compact-*(pm_log·opencode ctx-guard)도 같은 충돌 축이다.
+    compact-*(pm_log·opencode ctx-guard)도 같은 충돌 종류다.
     """
     reserved = (
         "done", "warn", "warn2", "final",
@@ -308,7 +308,7 @@ def test_claim_session_once_refuses_reserved_marker_namespaces(orch, tmp_path):
     # 회전 신호가 위조되지 않았고, 거부 경로는 파일도 디렉토리도 만들지 않는다.
     assert orch.stop_marker_present(tmp_path, "sid-1") is False
     assert not (tmp_path / orch.MARKER_DIR).exists()
-    # 예약어가 아닌 namespace 는 그대로 선점된다(전면 거부 아님).
+    # 예약어가 아닌 namespace 는 그대로 차지된다(전면 거부 아님).
     assert orch.claim_session_once(tmp_path, "sid-1", "git-check", "k") is True
 
 
@@ -555,7 +555,7 @@ def test_parse_stream_json_extracts_sid_and_result(orch):
 
 
 def test_parse_stream_json_usage_includes_output_tokens(orch):
-    """회전 판정 usage 는 입력 계열 + output 합 — 다음 turn 컨텍스트 기준(codex 게이트 회귀).
+    """회전 판정 usage 는 입력 계열 + output 합 — 다음 turn 컨텍스트 기준(codex 리뷰 회귀).
 
     입력 계열이 임계 직하이고 출력이 임계를 넘기는 케이스에서 output 미합산이면 marker 없이
     다음 입력이 전달된다 — output 포함을 고정한다.
@@ -588,7 +588,7 @@ def test_parse_stream_json_skips_malformed_lines(orch):
 
 
 def test_parse_stream_json_falls_back_to_result_sid(orch):
-    """system/init 없으면 result 이벤트의 session_id 로 폴백."""
+    """system/init 없으면 result 이벤트의 session_id 로 대체."""
     lines = [json.dumps({"type": "result", "result": "r", "session_id": "sid-from-result"})]
     sid, result, used_tokens = contract.parse_stream_json(lines)
     assert sid == "sid-from-result"
@@ -727,7 +727,7 @@ def test_supervisor_without_task_or_bootstrap_is_refused(orch, tmp_path):
 
 
 def test_supervisor_explicit_bootstrap_override_wins(orch, tmp_path):
-    """명시 bootstrap override(테스트/커스텀)가 task 파생보다 우선 — 하위호환 seam 보존."""
+    """명시 bootstrap override(테스트/커스텀)가 task 파생보다 우선 — 하위호환 교체 지점 보존."""
     driver = _make_driver(orch, tmp_path)
     sup = orch.Supervisor(driver, root=tmp_path, bootstrap="CUSTOM", task="mytask")
     assert sup.bootstrap == "CUSTOM"
@@ -738,7 +738,7 @@ def test_supervisor_task_bakes_and_forwards_on_respawn(orch, tmp_path):
 
     (b) 명시 전달 — 회전된 새 PM 이 같은 task 를 resume. spawn·respawn 모두 self.bootstrap 을 쓰므로
     respawn 후에도 task 가 유지된다(cwd 추론 없이·stateless). task 는 별도 인스턴스 필드로 retain 하지
-    않는다(stateless 불변식 — bootstrap 에 흡수)."""
+    않는다(stateless 불변식 — bootstrap 에 합쳐짐)."""
     seen: list[str] = []
 
     class _RecordDriver(FakeDriver):
@@ -752,7 +752,7 @@ def test_supervisor_task_bakes_and_forwards_on_respawn(orch, tmp_path):
     )
     sup = orch.Supervisor(driver, root=tmp_path, task="mytask")
     assert "--task mytask" in sup.bootstrap
-    # stateless 불변식 — task 는 인스턴스 필드로 안 남는다(bootstrap 에만 흡수).
+    # stateless 불변식 — task 는 인스턴스 필드로 안 남는다(bootstrap 에만 합쳐짐).
     assert "task" not in vars(sup)
     # 한 입력 → relay 1회 후 marker → respawn(재호출 없음). 두 spawn 모두 task 포함.
     sup.run_loop("/cwd", io.StringIO("hello\n"), io.StringIO())
@@ -925,7 +925,7 @@ def test_engine_core_exposes_no_identity_cli_surface():
         assert legacy not in text, f"엔진 core 에 구 alias {legacy!r} 가 있으면 안 된다."
 
 
-# ── claude driver (어댑터) 얇은 단위 — subprocess seam DI ────────────────────
+# ── claude driver (어댑터) 얇은 단위 — subprocess 교체 지점 DI ────────────────────
 
 @pytest.fixture(scope="module")
 def driver_mod():
@@ -1151,7 +1151,7 @@ def test_claude_driver_real_marker_integration_old_red_controls(
 def test_claude_driver_warns_once_when_usage_missing_with_complete_ctx_di(
     orch, driver_mod, tmp_path, capsys,
 ):
-    """ctx DI는 완비됐는데 usage만 소실되면 never-block advisory를 1회 표면화한다."""
+    """ctx DI는 완비됐는데 usage만 소실되면 never-block advisory를 1회 출력한다."""
     driver = driver_mod.ClaudeCliDriver(
         contract.parse_stream_json, spawn_result=relay.SpawnResult,
         ctx_budget=100_000,

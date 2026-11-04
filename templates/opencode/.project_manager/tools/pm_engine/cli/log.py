@@ -65,13 +65,13 @@ def cmd_archive(home, args: argparse.Namespace) -> int:
         preamble, entries = log_entries.split_entries(text)
 
         if cutoff is not None:
-            # 날짜 기반: DATE 미만(strict <)만 봉인, DATE 이상은 유지.
+            # 날짜 기반: DATE 미만(strict <)만 archive 로 확정, DATE 이상은 유지.
             old = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) < cutoff]
             keep = [(d, e) for d, e in entries if datetime.date.fromisoformat(d) >= cutoff]
             mode_line = f"--before {before}"
             noop_msg = f"옮길 entry 없음 (--before {before} 미만 entry 0개) — no-op."
         else:
-            # 개수 기반: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 봉인. entry 단위.
+            # 개수 기반: 최근 N entry(tail)만 유지, 나머지 오래된 쪽을 archive 로 확정. entry 단위.
             n = keep_last
             old = entries[:-n] if n < len(entries) else []
             keep = entries[-n:] if n < len(entries) else entries
@@ -107,7 +107,7 @@ def cmd_archive(home, args: argparse.Namespace) -> int:
 
 
 def cmd_migrate(home, args: argparse.Namespace) -> int:
-    """기존 단일 log.md → archive/0000-legacy.md 봉인 + current.md 생성. 멱등."""
+    """기존 단일 log.md → archive/0000-legacy.md 로 확정 + current.md 생성. 멱등."""
     if (pm_paths.wiki_dir(home) / 'log/current.md').exists():
         print(f"이미 마이그레이션됨 ({_rel(home, pm_paths.wiki_dir(home) / 'log/current.md')} 존재) — no-op.")
         return 0
@@ -124,13 +124,13 @@ def cmd_migrate(home, args: argparse.Namespace) -> int:
     (pm_paths.wiki_dir(home) / 'log/archive').mkdir(parents=True, exist_ok=True)
     if (pm_paths.wiki_dir(home) / 'log.md').exists():
         legacy_text = log_store._read_text_exact((pm_paths.wiki_dir(home) / 'log.md'))
-        sealed = (
+        confirmed = (
             "# Log archive 0000 (legacy — 마이그레이션 이전 단일 log.md)\n\n"
             "> 구조 전환 전의 기존 `log.md` 를 그대로 옮겨 확정. 수정 금지. "
             "이후 새 entry 는 `log/current.md`.\n\n"
             + legacy_text
         )
-        legacy_dst.write_text(sealed, encoding="utf-8", newline="\n")
+        legacy_dst.write_text(confirmed, encoding="utf-8", newline="\n")
         (pm_paths.wiki_dir(home) / 'log.md').unlink()
         print(f"✓ {_rel(home, pm_paths.wiki_dir(home) / 'log.md')} → {_rel(home, legacy_dst)} 로 옮겨 확정.")
     else:
@@ -166,7 +166,7 @@ def cmd_snapshot(home, args: argparse.Namespace) -> int:
         print(warning, file=sys.stderr)
     if not text:
         # 주입할 것을 만들지 못한 실행(세션 task 미해소)은 실패다. 실패에 반쪽 답(무응답 엔벨로프)을
-        # 내지 않는다: 소비자가 그 한 줄을 "답" 으로 세면 조용한 생략이 되고, 셸 폴백 배선
+        # 내지 않는다: 소비자가 그 한 줄을 "답" 으로 세면 조용한 생략이 되고, 셸 대체 경로 연결
         # (`snapshot --json || printf …`)에서는 엔벨로프가 두 줄이 된다. stdout 0줄 + rc 1 이면 세 하네스가 같은 실패를 같은 자리에서 본다.
         return 1
     if args.json:
@@ -180,7 +180,7 @@ def cmd_snapshot(home, args: argparse.Namespace) -> int:
 
 
 def cmd_checkpoint(home, args: argparse.Namespace) -> int:
-    """checkpoint 골격 append. compaction은 boundary/phase marker로 경계당 1건만 허용한다."""
+    """checkpoint 빈 양식 append. compaction은 boundary/phase marker로 경계당 1건만 허용한다."""
     task = getattr(args, "task", None)
     identity_name = task
     if not task:
@@ -218,7 +218,7 @@ def cmd_checkpoint(home, args: argparse.Namespace) -> int:
 
     marker = None
     claimed = None
-    # boundary 유도→marker 선점→append를 log lock 하나에 묶어 동시 호출도 같은 log 상태를 본다.
+    # boundary 유도→marker 먼저 차지하기→append를 log lock 하나에 묶어 동시 호출도 같은 log 상태를 본다.
     with log_store.log_write_lock((pm_paths.wiki_dir(home) / 'log/current.md')):
         current_text = fs.read_text_shared((pm_paths.wiki_dir(home) / 'log/current.md'), encoding="utf-8")
         boundary_id, phase, implicit_state = compaction_store._resolve_compaction_boundary(home, args, task=identity_name, current_text=current_text)
@@ -245,7 +245,7 @@ def cmd_checkpoint(home, args: argparse.Namespace) -> int:
         try:
             log_store.append_log_locked((pm_paths.wiki_dir(home) / 'log/current.md'), payload)
         except Exception:
-            # 같은 log lock 안에서만 rollback하므로 후속 선점과 unlink 경쟁이 생기지 않는다.
+            # 같은 log lock 안에서만 rollback하므로 뒤이은 차지하기와 unlink 경쟁이 생기지 않는다.
             if marker is not None and claimed is True:
                 with contextlib.suppress(OSError):
                     marker.unlink()

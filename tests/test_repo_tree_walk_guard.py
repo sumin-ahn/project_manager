@@ -1,4 +1,4 @@
-"""repo-owned 열거 seam을 우회하는 재귀 tree-walk 등가 API 재발 방지 정적 가드."""
+"""repo-owned 열거 공용 함수를 우회하는 재귀 tree-walk 등가 API 재발 방지 정적 가드."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class WalkException:
     expected_count: int = 1
 
 
-# 아직 seam으로 전환하지 않은 repo 인벤토리 소비처. 담당 티켓이 전환할 때 코드와 이 예외를
+# 아직 공용 함수로 전환하지 않은 repo 인벤토리 소비처. 담당 티켓이 전환할 때 코드와 이 예외를
 # 함께 지운다. 키 = (repo-relative 파일, 함수, 호출 종류, 첫 인자 AST).
 MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
     (
@@ -34,8 +34,8 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
 }
 
 
-# repo 소유 인벤토리가 아닌 닫힌 트리 관리/fixture 판정과 canonical seam 자체. 새 호출은 이
-# 원장에 사유와 기대 개수를 명시하지 않는 한 red다.
+# repo 소유 인벤토리가 아닌 닫힌 트리 관리/fixture 판정과 canonical 공용 함수 자체. 새 호출은 이
+# 기록에 사유와 기대 개수를 명시하지 않는 한 red다.
 REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
     (
         "tests/test_tests_text_io_discipline.py",
@@ -79,7 +79,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "templates/*/.github/workflows라는 닫힌 출하 금지 표면에 실파일이 0개임을 검증"
+        "templates/*/.github/workflows라는 닫힌 출하 금지 범위에 실파일이 0개임을 검증"
     ),
     (
         "tests/test_template_scaffold_parity.py",
@@ -93,8 +93,8 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "비-git tmp dest 트리의 실행 전후 파일 스냅샷 — clone/fetch 실패가 dest 를 한 바이트도 "
-        "건드리지 않았음을 파일 단위로 재는 것이 판정의 본질이다(T-0908). repo-owned seam 은 "
+        "비-git tmp dest 트리의 실행 전후 파일 복사본 — clone/fetch 실패가 dest 를 한 바이트도 "
+        "건드리지 않았음을 파일 단위로 재는 것이 판정의 본질이다(T-0908). repo-owned 공용 함수는 "
         "git 추적분만 세어 이 트리에서 0건을 낸다."
     ),
     (
@@ -104,7 +104,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException(
         "tmp PM 홈 `.project_manager/` 픽스처 트리의 조회 전후 해시 — 읽기 전용 JSON 경로가 "
-        "파일을 만들지도 고치지도 않았음을 재는 것이 판정의 본질이다(T-0907). repo-owned seam 은 "
+        "파일을 만들지도 고치지도 않았음을 재는 것이 판정의 본질이다(T-0907). repo-owned 공용 함수는 "
         "git 추적분만 세어 조회가 새로 만든 미추적 파일을 놓친다."
     ),
     (
@@ -114,7 +114,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException(
         "tmp PM 홈 트리의 조회·저장 전후 파일별 해시 — 관리자가 직접 쓰는 파일이 local.conf "
-        "하나뿐임을 이름 단위로 재는 것이 판정의 본질이다(T-0911). repo-owned seam 은 git "
+        "하나뿐임을 이름 단위로 재는 것이 판정의 본질이다(T-0911). repo-owned 공용 함수는 git "
         "추적분만 세어 저장이 만든 미추적 락 파일과 tmp 홈 전체를 놓친다."
     ),
     (
@@ -123,8 +123,8 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "라이브 board 소유 루트의 세션 전후 스냅샷 — 산출 파일명을 나열하지 않고 소유 루트를 "
-        "단일 진실로 두는 것이 오염 검출의 본질이다(T-0654 세션 가드). repo-owned seam 은 "
+        "라이브 board 소유 루트의 세션 전후 복사본 — 산출 파일명을 나열하지 않고 소유 루트를 "
+        "단일 진실로 두는 것이 오염 검출의 본질이다(T-0654 세션 가드). repo-owned 공용 함수는 "
         "git 추적분만 세어 테스트가 새로 만든 미추적 산출을 놓친다."
     ),
     (
@@ -132,7 +132,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "list_repo_owned_entries",
         "rglob",
         "'*'",
-    ): WalkException("canonical seam의 loud filesystem fallback 구현"),
+    ): WalkException("canonical 공용 함수의 loud filesystem fallback 구현"),
     (
         ".project_manager/tools/pm_engine/infra/doc_page_store.py",
         "load_pages",
@@ -164,7 +164,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*.py'",
     ): WalkException(
         "엔진 전수 규율 스캔의 단일 열거 — 평면 진입 파일과 `pm_engine/` 패키지 모듈을 함께 본다. "
-        "repo-owned seam 은 git 추적분만 세어 아직 추적되지 않은 엔진 코드를 놓친다."
+        "repo-owned 공용 함수는 git 추적분만 세어 아직 추적되지 않은 엔진 코드를 놓친다."
     ),
     (
         "tests/test_repo_tree_walk_guard.py",
@@ -189,7 +189,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "_snapshot_tree",
         "rglob",
         "'*'",
-    ): WalkException("tmp_path에 생성한 adopter fixture의 add-harness 전후 바이트 스냅샷"),
+    ): WalkException("tmp_path에 생성한 adopter fixture의 add-harness 전후 바이트 복사본"),
     (
         "tests/test_pm_update.py",
         "test_fresh_adopter_card_model_follows_delegate_conf_across_updates",
@@ -206,8 +206,8 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException(
         "tmp_path adopter fixture를 CRLF 체크아웃 등가로 재표기하고(1회) 전파 트리 바이트를 "
-        "재기록 여부 대조용으로 스냅샷한다(1회). repo 소유 인벤토리가 아니라 그 fixture 트리 "
-        "자체가 판정 대상이라 seam이 답할 수 있는 질문이 아니다",
+        "재기록 여부 대조용으로 복사해 둔다(1회). repo 소유 인벤토리가 아니라 그 fixture 트리 "
+        "자체가 판정 대상이라 공용 함수가 답할 수 있는 질문이 아니다",
         expected_count=2,
     ),
     (
@@ -233,7 +233,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "test_add_harness_apply_claude_creates_adapter_and_preserves_devstate",
         "rglob",
         "'SKILL.md'",
-    ): WalkException("tmp_path live-instance fixture의 add-harness 전 스킬 바이트 스냅샷"),
+    ): WalkException("tmp_path live-instance fixture의 add-harness 전 스킬 바이트 복사본"),
     (
         "tests/test_pm_import.py",
         "test_non_git_target_all_central_backup_no_siblings",
@@ -248,7 +248,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
     ): WalkException("tmp_path refresh fixture가 만든 중앙 backup 산출물만 검증"),
     (
         "tests/test_pm_import.py",
-        "test_add_harness_opencode_guest_cross_ns_skills_by_host",
+        "test_add_harness_opencode_added_harness_cross_ns_skills_by_host",
         "rglob",
         "'SKILL.md'",
     ): WalkException("tmp_path host fixture에 add-harness가 landing한 cross-namespace 스킬을 검증"),
@@ -294,9 +294,9 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "tmp_path 합성 tickets 트리(비-git)의 거부 전후 전수 바이트 스냅샷 — 판정이 '거부인데 "
-        "파일이 하나라도 생기거나 옮겨지지 않았다'라 전수 열거가 본질이고, repo-owned seam 은 "
-        "git 추적분만 세어 거부가 새로 만든 미추적 산출을 놓친다(conftest 세션 스냅샷과 같은 축)"),
+        "tmp_path 합성 tickets 트리(비-git)의 거부 전후 전수 바이트 복사본 — 판정이 '거부인데 "
+        "파일이 하나라도 생기거나 옮겨지지 않았다'라 전수 열거가 본질이고, repo-owned 공용 함수는 "
+        "git 추적분만 세어 거부가 새로 만든 미추적 산출을 놓친다(conftest 세션 복사본과 같은 기준)"),
     (
         "tests/test_pm_update.py",
         "_landed",
@@ -304,14 +304,14 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException(
         "tmp_path 합성 dest fixture에 **무엇이 착지했는가** 전수 확인 — 경로 스코프의 판정이 "
-        "'요청 밖 파일이 하나도 안 왔다'라 열거 자체가 본질(seam 열거로는 미착지 증명 불가)"),
+        "'요청 밖 파일이 하나도 안 왔다'라 열거 자체가 본질(공용 함수 열거로는 미착지 증명 불가)"),
     (
         "tests/test_pm_update.py",
         "_tree_digest",
         "rglob",
         "'*'",
     ): WalkException(
-        "tmp_path 합성 dest fixture의 read-only 불변식 스냅샷 — `--changes` 판정이 '어떤 파일도 "
+        "tmp_path 합성 dest fixture의 read-only 불변식 복사본 — `--changes` 판정이 '어떤 파일도 "
         "추가/수정되지 않았다'라 전수 해시가 본질(좁힌 열거는 예기치 못한 write를 놓친다)"),
     (
         "tests/test_adapter_token_substitution.py",
@@ -325,7 +325,7 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "rglob",
         "'*'",
     ): WalkException(
-        "tmp_path 합성 상류 checkout의 read-only 불변식 스냅샷 — 선언 조회가 '어떤 파일도 추가/수정하지 "
+        "tmp_path 합성 상류 checkout의 read-only 불변식 복사본 — 선언 조회가 '어떤 파일도 추가/수정하지 "
         "않았다'가 판정 대상이라 전수 bytes 가 본질(좁힌 열거는 예기치 못한 write를 놓친다)"),
     (
         "tests/test_s9_hook_declarations.py",
@@ -501,11 +501,11 @@ def test_repo_tree_walks_have_reviewed_nonempty_exceptions_only():
     unauthorized, stale, blank = _audit(REPO)
     assert not blank, f"repo tree walk 예외 사유가 비어 있음: {blank}"
     assert not unauthorized, (
-        "repo-owned 열거 seam을 우회한 신규 재귀 tree-walk 호출: "
+        "repo-owned 열거 공용 함수를 우회한 신규 재귀 tree-walk 호출: "
         f"{list(unauthorized.elements())}"
     )
     assert not stale, (
-        "사라졌거나 개수가 바뀐 repo tree walk 예외를 원장에서 제거/재검토하라: "
+        "사라졌거나 개수가 바뀐 repo tree walk 예외를 기록에서 제거/재검토하라: "
         f"{list(stale.elements())}"
     )
 
@@ -710,7 +710,7 @@ def test_guard_recursively_scans_nested_python_files(tmp_path):
     ],
 )
 def test_removed_migration_walk_restoration_is_rejected(tmp_path, key, body):
-    """T-0506 전환을 옛 disk walk로 되돌리면 실 원장 가드가 즉시 red다."""
+    """T-0506 전환을 옛 disk walk로 되돌리면 실 기록 가드가 즉시 red다."""
     target = tmp_path / key[0]
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(body, encoding="utf-8")

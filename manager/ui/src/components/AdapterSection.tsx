@@ -18,7 +18,7 @@ const STATUS_LABEL: Record<string, string> = {
   "in-sync": "최신",
   unedited: "무편집",
   edited: "채택자 편집",
-  unrecorded: "원장 부재",
+  unrecorded: "기록 없음",
   unchecked: "검사 없음",
 };
 

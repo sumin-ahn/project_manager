@@ -177,10 +177,10 @@ def _import_adopter(tmp_path: Path, harness: str, *, ctx_model: str = "fixture-m
     pm_import = _load_pm_import()
     dest = tmp_path / f"adopter-{harness}"
     # 모델 한도 조회 고정은 이 설치 실행 구간에만 건다(끝나면 원래 함수로 돌아간다).
-    from _manager_home import known_ctx_seams
+    from _manager_home import known_ctx_overrides
     from pm_engine.app import harness_ctx
     with pytest.MonkeyPatch.context() as patch:
-        for name, override in known_ctx_seams(model=ctx_model).items():
+        for name, override in known_ctx_overrides(model=ctx_model).items():
             patch.setattr(harness_ctx, name, override)
         rc = import_cmd.main(pm_paths.home_at(pm_import.REPO),
             ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]

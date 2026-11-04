@@ -193,7 +193,7 @@ DEVELOPER_REGRESSION_RULE = (
 REVIEW_SUBJECT_ROLE = "developer"
 
 
-def unharvested_developer_round(rounds: Sequence):
+def uncollected_developer_round(rounds: Sequence):
     """리뷰 라운드가 딛고 설 **직전 developer 라운드**가 산출 없음이면 그 라운드(아니면 None).
 
     검사 범위는 그 티켓의 마지막 developer 라운드 하나다 — 리뷰 입력은 역할별 **마지막 산출**만
@@ -227,13 +227,13 @@ def _warn_uncollected_developer_round(rounds: Sequence) -> None:
 
     준비 시점에 내는 이유는 하나다 — 리뷰가 실행되기 **전**이라야 돌려받고 다시 걸 수 있다.
     """
-    stale = unharvested_developer_round(rounds)
+    stale = uncollected_developer_round(rounds)
     if stale is None:
         return
     name = round_rules.round_filename(stale.ordinal, stale.role)
     # 단정문 대신 값 진술 — 앞선 라운드에 산출이 있으면(구성 B) 그것이 리뷰어 입력에 실린다.
     # "실리지 않습니다" 는 그 구성에서 거짓이라 쓰지 않는다. 스폰면
-    # (`additional_reviewer._warn_seed_developer_round`)과 같은 계산 하나(
+    # (`additional_reviewer._warn_empty_form_developer_round`)과 같은 계산 하나(
     # `latest_round_of_role`)를 써 두 쪽이 같은 값을 말하게 한다.
     latest = round_rules.latest_round_of_role(rounds, REVIEW_SUBJECT_ROLE)
     latest_name = (

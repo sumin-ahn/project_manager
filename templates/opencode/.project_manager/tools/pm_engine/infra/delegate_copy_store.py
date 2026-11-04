@@ -46,7 +46,7 @@ def _write_exclusive_file(
         os.close(fd)
 
 
-def _append_delegate_rounds_ledger(home, row: dict) -> None:
+def _append_delegate_rounds_record(home, row: dict) -> None:
     """공유 atomic-append 함수로 0600 기록에 한 행을 덧붙인다(기존 bytes 불변)."""
     pm_home_root = home.local_dir.parent.parent
     delegate_records._delegate_rounds_record_row(row, line_number=0)
@@ -79,7 +79,7 @@ def _delegate_round_record(home, copy_path: Path) -> dict:
     pm_home_root = home.local_dir.parent.parent
     resolved = str(Path(copy_path).resolve())
     matches = [
-        row for row in delegate_records._delegate_rounds_ledger_records(pm_home_root)
+        row for row in delegate_records._delegate_rounds_records(pm_home_root)
         if str(Path(row["copy"]).resolve()) == resolved
     ]
     if not matches:
@@ -527,7 +527,7 @@ def _cluster_run_rows(home, run_dir: Path) -> list[dict]:
     run_id = run_dir.name
     cluster = run_dir.parent.name
     latest: dict[str, dict] = {}
-    for row in delegate_records._delegate_rounds_ledger_records(pm_home_root):
+    for row in delegate_records._delegate_rounds_records(pm_home_root):
         if row.get("run_id") == run_id and str(row.get("cluster") or "") == cluster:
             latest[row["copy"]] = row
     rows = [

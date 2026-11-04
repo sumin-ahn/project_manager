@@ -9,7 +9,7 @@
     사본의 명령이 한다.
   - 항목 목록의 정본은 **그 프로젝트 사본의** 키 레지스트리다
     (`<interpreter> <pm_home>/.project_manager/tools/local_conf.py --keys --json`).
-    번들 레지스트리로 대신 그리지 않는다 — 세대가 다르면 키 집합이 다르다.
+    번들 레지스트리로 대신 그리지 않는다 — 버전이 다르면 키 집합이 다르다.
 
 저장 직후에는 같은 사본을 `status --json` 으로 다시 읽어 그 판정을 돌려준다(낙관적 갱신 없음).
 
@@ -36,7 +36,7 @@ UPSTREAM_PATH_KEY = "upstream.path"
 
 
 def _pm_home(path: Path | str) -> Path:
-    """등록된 PM 홈으로 해소한다 — 사본을 부르기 전에 절대화·표식 확인(runner 와 같은 규칙)."""
+    """등록된 PM 홈으로 해소한다 — 사본을 부르기 전에 절대화·표시 확인(runner 와 같은 규칙)."""
     home = Path(path).resolve()
     if not (home / ".project_manager").is_dir():
         raise CallError("invalid-path", f"PM 홈이 아니다 (.project_manager/ 없음): {home}")
@@ -70,8 +70,8 @@ def _completed(completed: subprocess.CompletedProcess) -> dict:
 
 
 # 사본의 `apply` 반영 전 거부 rc — 화면 오류 종류 `invalid-value` 로 넘기는 것은 이 값뿐이다(값 검사·
-# 렌더 검사·렌더 원본 세대 거부가 모두 이 값이다). 처리하지 못한 예외로 끝난 파이썬의 1 과 겹치지
-# 않는 전용 값이라, 그 밖의 rc(사본 안의 실패·그 명령을 모르는 옛 세대·인자 오류)는 저장 오류로 넘긴다.
+# 렌더 검사·렌더 원본 버전 거부가 모두 이 값이다). 처리하지 못한 예외로 끝난 파이썬의 1 과 겹치지
+# 않는 전용 값이라, 그 밖의 rc(사본 안의 실패·그 명령을 모르는 옛 버전·인자 오류)는 저장 오류로 넘긴다.
 APPLY_REFUSED_RC = 3
 
 
@@ -129,7 +129,7 @@ class SettingsApi:
                     stderr=completed.stderr or completed.stdout,
                     rc=completed.returncode) from exc
             # 화면은 행마다 선택지(`choices`)와 권장값(`recommended`)을 읽는다 — 그 필드가 없는
-            # 세대의 산출로 절반만 그리지 않고, 무엇이 모자란지 말한다. 기준 세대는 번들 엔진이
+            # 버전의 산출로 절반만 그리지 않고, 무엇이 모자란지 말한다. 기준 버전은 번들 엔진이
             # 선언한 값이다(관리자가 숫자를 따로 들지 않는다).
             with ENGINE_LOCK:
                 expected = local_conf_cli.KEY_JSON_SCHEMA
@@ -233,7 +233,7 @@ class SettingsApi:
     def adapter_accept(self, path: str, relpath: str) -> dict:
         """상류 값 수용 — 그 사본의 `sync-adapter-config --accept <relpath>` 한 번.
 
-        관리자가 파일을 복사하거나 백업하지 않는다(백업·원장 기록은 엔진이 한다).
+        관리자가 파일을 복사하거나 백업하지 않는다(백업·기록은 엔진이 한다).
         """
         try:
             home = _pm_home(path)

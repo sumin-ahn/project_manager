@@ -1,4 +1,4 @@
-"""압축 경계 marker·FIFO 상태와 ctx 밴드 marker 저장."""
+"""압축 경계 marker·FIFO 상태와 ctx 구간 marker 저장."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,7 +11,7 @@ import os
 import uuid
 
 
-# ctx 밴드 marker 종류 — 사이클마다 밴드별로 한 번 선점한다(서로 독립).
+# ctx 구간 marker 종류 — 사이클마다 구간별로 한 번 먼저 차지한다(서로 독립).
 CTX_LEVEL_MARKER_KINDS = ("warn", "warn2", "final")
 # 압축 경계 처리 marker 종류의 접두. 뒤에 경계 ID 의 파일명 안전 키가 붙는다.
 CTX_COMPACTION_MARKER_PREFIX = "compact-"
@@ -22,7 +22,7 @@ def _safe_marker_key(value: str) -> str:
 
 
 def _ctx_marker_kind(kind: str) -> str:
-    """ctx marker 종류를 파일명 접미로 — 밴드 셋 또는 ``compact-<경계>``(경계는 안전 키로)."""
+    """ctx marker 종류를 파일명 접미로 — 구간 셋 또는 ``compact-<경계>``(경계는 안전 키로)."""
     if kind in CTX_LEVEL_MARKER_KINDS:
         return kind
     boundary = kind[len(CTX_COMPACTION_MARKER_PREFIX):] if kind.startswith(CTX_COMPACTION_MARKER_PREFIX) else ""
@@ -38,7 +38,7 @@ def ctx_marker_path(home, session: str, kind: str) -> Path:
 
 
 def claim_ctx_marker(home, session: str, kind: str) -> bool:
-    """ctx marker 를 ``O_EXCL`` 로 선점한다 — True 는 이번 호출의 선점, False 는 이미 있는 marker.
+    """ctx marker 를 ``O_EXCL`` 로 먼저 차지한다 — True 는 이번 호출이 차지함, False 는 이미 있는 marker.
 
     이미 있는 파일(``FileExistsError``)만 정상 중복이다. 그 밖의 디렉터리 생성·파일 생성 오류는 그대로
     올린다."""
@@ -53,7 +53,7 @@ def claim_ctx_marker(home, session: str, kind: str) -> bool:
 
 
 def reset_ctx_cycle(home, session: str) -> None:
-    """세션의 밴드 marker 셋을 지워 다음 상승 사이클을 연다. 삭제 오류는 그대로 올린다."""
+    """세션의 구간 marker 셋을 지워 다음 상승 사이클을 연다. 삭제 오류는 그대로 올린다."""
     for kind in CTX_LEVEL_MARKER_KINDS:
         ctx_marker_path(home, session, kind).unlink(missing_ok=True)
 
@@ -76,9 +76,9 @@ def claim_compaction_checkpoint(
     *,
     phase: str,
 ) -> bool | None:
-    """경계 marker를 단일 ``O_EXCL``로 선점한다.
+    """경계 marker를 단일 ``O_EXCL``로 먼저 차지한다.
 
-    ``True``는 선점 성공, ``False``는 같은 경계의 실제 중복, ``None``은 장부 I/O 실패다.
+    ``True``는 차지 성공, ``False``는 같은 경계의 실제 중복, ``None``은 기록 I/O 실패다.
     marker 경로가 boundary id를 포함하므로 시간창·stat·만료 unlink가 전혀 필요 없다.
     """
     marker = Path(marker)
@@ -187,13 +187,13 @@ def _resolve_compaction_boundary(home, args: argparse.Namespace, *, task: str, c
         try:
             state_path = _write_implicit_boundary_state(state_prefix, boundary_id)
         except OSError:
-            # pending 장부 I/O 실패여도 pre checkpoint 자체는 고유 ID로 계속 기록한다.
+            # pending 기록 I/O 실패여도 pre checkpoint 자체는 고유 ID로 계속 기록한다.
             state_path = None
         return boundary_id, phase, state_path
 
     pending = _read_implicit_boundary_state(state_prefix)
     if pending is None:
-        # pre가 없거나 pending 장부가 손상된 post도 과거 marker와 재충돌하지 않는다.
+        # pre가 없거나 pending 기록이 손상된 post도 과거 marker와 재충돌하지 않는다.
         boundary_id = _new_implicit_boundary_id()
         state_path = None
     else:

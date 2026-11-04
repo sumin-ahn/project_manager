@@ -1,8 +1,8 @@
 """스킬-우선 운영 규율 durable 가드 (T-0281 · ADR-0052).
 
-[[ADR-0052]] 규율(PM wave 운영은 스킬로 invoke·backbone CLI 직접호출 금지)을 문구 rot·pointer
+[[ADR-0052]] 규율(PM 일상 운영은 스킬로 invoke·backbone CLI 직접호출 금지)을 문구 rot·pointer
 dangling·**카드↔pm_role 카탈로그 drift** 로부터 지키는 결정론적 가드다. 특히 #3 은 T-0280 codex
-게이트가 2 라운드에 걸쳐 손으로 잡던 카드↔카탈로그 불일치 클래스(additional_reviewer 오귀속·facade
+리뷰가 2 라운드에 걸쳐 손으로 잡던 카드↔카탈로그 불일치 클래스(additional_reviewer 오귀속·facade
 우회·sub-op 누락 등)를 LLM whack-a-mole 대신 상시 회귀로 닫는 **class-closer** 다.
 
 검사 소스 두 개 — 둘 다 살아있어 어느 쪽이 drift 해도 fail 한다:
@@ -13,13 +13,13 @@ dangling·**카드↔pm_role 카탈로그 drift** 로부터 지키는 결정론�
 렌더하고, pm_role.md 는 정적 텍스트로 읽는다(무거운 런타임·실 자산 mutation 0). 4 단언:
 
   1. pm_role 규율 문구 존재(prose rot 가드) — 규율 섹션 + 3요소 키워드.
-  2. 카드 pointer → pm_role 섹션 정합(dangling 방지).
-  3. **카드 강등 엔진 ↔ pm_role 카탈로그 정합(CLASS-CLOSER)** — 카탈로그를 파싱해 각 skill→엔진을
-     뽑고, 렌더 카드의 강등 backbone 과 양방향(exact-set) 대조. non-vacuous(≥5 skill 실검사).
-  4. 카드 스킬-우선 대표 백스톱 — 대표 op 에서 `/pm-…` 스킬이 강등 backbone 보다 먼저(primary).
+  2. 카드 pointer → pm_role 섹션 일치(dangling 방지).
+  3. **카드 보조 엔진 ↔ pm_role 카탈로그 일치(CLASS-CLOSER)** — 카탈로그를 파싱해 각 skill→엔진을
+     뽑고, 렌더 카드의 보조 backbone 줄과 양방향(exact-set) 대조. non-vacuous(≥5 skill 실검사).
+  4. 카드 스킬-우선 대표 백스톱 — 대표 op 에서 `/pm-…` 스킬이 보조 backbone 줄보다 먼저(primary).
 
 T-0280 의 카드-구조 test(`test_pm_bootstrap_card.py`)와 비중복: 거긴 카드 내부 구조/불변식,
-여긴 카드↔pm_role *두 소스 정합* + 규율 자산 존재(rot).
+여긴 카드↔pm_role *두 소스 일치* + 규율 자산 존재(rot).
 """
 from __future__ import annotations
 
@@ -48,9 +48,9 @@ REVIEW_OPERATION_DOCS = (
     REPO / "templates" / "codex" / ".project_manager" / "wiki" / "pm_playbook.md",
 )
 
-# 규율 섹션 헤더(ADR-0052·T-0279) + 카드가 가리키는 pointer 앵커 문구(T-0280).
+# 규율 섹션 헤더(ADR-0052·T-0279) + 카드가 가리키는 pointer 표시 글(T-0280).
 _DISCIPLINE_HEADER = "## 스킬 우선 운영 규율 (backbone 직접호출 금지)"
-_POINTER_ANCHOR = "pm_role §스킬 우선 운영 규율"
+_POINTER_MARKER = "pm_role §스킬 우선 운영 규율"
 
 # 카탈로그 표 헤더(2 표 공유) — 이 줄 아래 row 들이 skill→엔진 매핑이다.
 _CATALOG_HEADER = "| skill | 역할 | 감싸는 내부 엔진 (직접호출 금지) |"
@@ -108,12 +108,12 @@ def _section_body(text: str, header_line: str) -> str | None:
 
 
 def _engine_tokens_from_cell(cell: str) -> set[str]:
-    """카탈로그 엔진 셀 → 기대 강등 엔진 토큰 집합(`<tool> <sub-op>` 또는 `<tool>`).
+    """카탈로그 엔진 셀 → 기대 보조 엔진 토큰 집합(`<tool> <sub-op>` 또는 `<tool>`).
 
     분류(T-0280 확립·ADR-0052):
       - **facade 셸**(`pm-config.sh`·`pm-update.sh` 등 `pm-*.sh`): 엔진이 facade 뒤라 카드는
-        raw `python3 tools/*.py` 강등을 지어내지 않는다(skill-only) → 빈 집합. (`.sh` 우선 —
-        셀에 `pm_config.py`/`pm_update.py` 가 딸려 있어도 facade 경유라 raw 강등 아님.)
+        raw `python3 tools/*.py` 보조 줄을 지어내지 않는다(skill-only) → 빈 집합. (`.sh` 우선 —
+        셀에 `pm_config.py`/`pm_update.py` 가 딸려 있어도 facade 경유라 raw 보조 줄 아님.)
       - **CLI 엔진**(tools/*.py 토큰): 그 도구 + `/`-joined sub-op 을 토큰화(예 `board.py
         show/lint/claim` → {board.py show, board.py lint, board.py claim}).
       - **비-CLI**(`Agent 툴` 등 tools/*.py 없음): 빈 집합(skill-only).
@@ -170,7 +170,7 @@ def _parse_catalog(text: str) -> dict[str, set[str]]:
 
 # ── 카드 파싱 ─────────────────────────────────────────────────────────────────
 
-# 강등 backbone 줄 = engine() 이 2-space 들여쓴 `python3 …/tools/<tool>` 줄. 직접 sibling
+# 보조 backbone 줄 = engine() 이 2-space 들여쓴 `python3 …/tools/<tool>` 줄. 직접 sibling
 # (additional_reviewer 등 cmd() 산출)은 들여쓰기가 없어 제외된다 — 이 구분이 must-fix #1
 # (additional_reviewer 오귀속) 클래스를 닫는다.
 _DEMOTION_RE = re.compile(
@@ -201,11 +201,11 @@ def _card_skill_block(card_lines: list[str], skill_token: str) -> list[str] | No
 
 
 def _demotion_engine_tokens(block_lines: list[str]) -> set[str]:
-    """block 의 강등 backbone 줄에서 `<tool> <sub-op>`(또는 `<tool>`) 토큰을 뽑는다."""
+    """block 의 보조 backbone 줄에서 `<tool> <sub-op>`(또는 `<tool>`) 토큰을 뽑는다."""
     tokens: set[str] = set()
     for raw in block_lines:
         if not raw.startswith(" "):
-            continue  # 들여쓰기 없는 직접 sibling(additional_reviewer 등)은 강등 아님.
+            continue  # 들여쓰기 없는 직접 sibling(additional_reviewer 등)은 보조 줄 아님.
         s = raw.strip()
         cmd_part = s.split("#", 1)[0].strip()  # trailing '# ↳ 주석' 제거.
         m = _DEMOTION_RE.match(cmd_part)
@@ -225,7 +225,7 @@ def _crosscheck(card: str, catalog: dict[str, set[str]]):
     """카드↔카탈로그 양방향 exact-set 대조 → (checked_skills, mismatches).
 
     카드에 렌더된 skill block 만 검사한다 — /pm-bootstrap(카드 producer 자신)·/pm-env(facade·
-    카드 미렌더)는 block 부재라 skip(강등 지어냄 0 이라 규율 위반 대상 아님).
+    카드 미렌더)는 block 부재라 skip(보조 줄 지어냄 0 이라 규율 위반 대상 아님).
     """
     card_lines = card.splitlines()
     checked: list[str] = []
@@ -267,28 +267,28 @@ def test_review_operation_docs_keep_current_and_legacy_names_in_the_right_direct
         assert "`additional_reviewer` 는 엔진 모듈 파일 이름" not in text, path
 
 
-# ── 2. 카드 pointer → pm_role 섹션 정합 (dangling 방지) ────────────────────────
+# ── 2. 카드 pointer → pm_role 섹션 일치 (dangling 방지) ────────────────────────
 
 
 def test_card_pointer_targets_live_pm_role_section(bootstrap, *, tmp_path):
     """카드의 `pm_role §스킬 우선 운영 규율` pointer 가 실제 pm_role 헤더로 non-dangling."""
     card = _render_card(bootstrap, tmp_path=tmp_path)
-    assert _POINTER_ANCHOR in card, f"카드에 규율 pointer {_POINTER_ANCHOR!r} 부재"
+    assert _POINTER_MARKER in card, f"카드에 규율 pointer {_POINTER_MARKER!r} 부재"
     text = _pm_role_text()
-    # pointer 가 가리키는 섹션명이 실제 `## ` 헤더로 존재한다(앵커 살아있음).
+    # pointer 가 가리키는 섹션명이 실제 `## ` 헤더로 존재한다(표시 글 살아있음).
     assert any(
         ln.startswith("## 스킬 우선 운영 규율") for ln in text.splitlines()
     ), "카드 pointer 가 가리키는 규율 섹션 헤더가 pm_role 에 없음(dangling)"
 
 
-# ── 3. 카드 강등 엔진 ↔ pm_role 카탈로그 정합 (CLASS-CLOSER·핵심) ──────────────
+# ── 3. 카드 보조 엔진 ↔ pm_role 카탈로그 일치 (CLASS-CLOSER·핵심) ──────────────
 
 
 def test_catalog_parse_is_non_vacuous():
     """카탈로그 파싱이 실제로 skill 을 뽑고 CLI/비-CLI 를 둘 다 분류한다(공허 가드 방지)."""
     catalog = _parse_catalog(_pm_role_text())
     assert len(catalog) >= 7, f"카탈로그에서 파싱된 skill 이 너무 적음({len(catalog)})"
-    cli = {k for k, v in catalog.items() if v}          # tools/*.py 강등 엔진 있음.
+    cli = {k for k, v in catalog.items() if v}          # tools/*.py 보조 엔진 있음.
     non_cli = {k for k, v in catalog.items() if not v}  # Agent 툴·facade(skill-only).
     assert cli, "CLI 엔진 skill 이 하나도 파싱되지 않음"
     assert non_cli, "비-CLI(Agent/facade) skill 이 하나도 파싱되지 않음"
@@ -304,22 +304,22 @@ def test_catalog_parse_is_non_vacuous():
 
 
 def test_card_demotion_matches_pm_role_catalog(bootstrap, *, tmp_path):
-    """카드 강등 backbone 이 pm_role 카탈로그 엔진 열과 양방향(exact-set) 정합한다.
+    """카드 보조 backbone 줄이 pm_role 카탈로그 엔진 열과 양방향(exact-set) 일치한다.
 
     각 카드-렌더 skill 에서: 카탈로그 CLI 셀의 (tool, sub-op) 토큰 == 카드 그 skill block 의
-    강등 backbone 토큰. 비-CLI(Agent/facade) 셀은 카드 block 에 강등 python3 줄이 없어야(빈 집합).
-    카드가 엔진을 빠뜨리거나(강등 줄 삭제)·지어내거나(오귀속) 카탈로그 열이 편집되면 red.
+    보조 backbone 토큰. 비-CLI(Agent/facade) 셀은 카드 block 에 보조 python3 줄이 없어야(빈 집합).
+    카드가 엔진을 빠뜨리거나(보조 줄 삭제)·지어내거나(오귀속) 카탈로그 열이 편집되면 red.
     """
     card = _render_card(bootstrap, tmp_path=tmp_path)
     catalog = _parse_catalog(_pm_role_text())
     checked, mismatches = _crosscheck(card, catalog)
     # non-vacuous: 카드-렌더 skill 을 실제로 ≥4 검사했다(파싱 0건이면 가드 무의미).
-    # task 카드가 강등 backbone 을 싣는 skill 은 wave-claim·regression·wave-finish·handoff 넷이다.
+    # task 카드가 보조 backbone 줄을 싣는 skill 은 cluster-claim·regression·cluster-finish·handoff 넷이다.
     assert len(checked) >= 4, f"카드↔카탈로그 실검사 skill 이 너무 적음({len(checked)}): {checked}"
     assert not mismatches, (
         "카드↔pm_role 카탈로그 엔진 불일치:\n"
         + "\n".join(
-            f"  {skill}: 카탈로그={cat} vs 카드강등={cardt}"
+            f"  {skill}: 카탈로그={cat} vs 카드보조={cardt}"
             for skill, cat, cardt in mismatches
         )
     )
@@ -328,23 +328,23 @@ def test_card_demotion_matches_pm_role_catalog(bootstrap, *, tmp_path):
 def test_card_demotion_guard_is_sensitive_to_drift(bootstrap, *, tmp_path):
     """sensitivity(non-vacuous 실증) — 카드/카탈로그 어느 쪽을 깨도 #3 cross-check 가 잡는다.
 
-    (a) 카드 강등 엔진 줄을 지우면 forward 방향으로, (b) 카탈로그 엔진 열을 바꾸면 backward
+    (a) 카드 보조 엔진 줄을 지우면 forward 방향으로, (b) 카탈로그 엔진 열을 바꾸면 backward
     방향으로 mismatch 가 뜬다 — 원본 소스는 건드리지 않고 파싱 산출물만 변조해 실증한다.
     """
     card = _render_card(bootstrap, tmp_path=tmp_path)
     catalog = _parse_catalog(_pm_role_text())
-    # baseline 은 정합(green).
+    # baseline 은 일치(green).
     _, base_mismatch = _crosscheck(card, catalog)
     assert not base_mismatch
 
-    # (a) 카드에서 /pm-cluster-claim 의 `board.py lint` 강등 줄을 지운다 → forward 불일치.
+    # (a) 카드에서 /pm-cluster-claim 의 `board.py lint` 보조 줄을 지운다 → forward 불일치.
     claim_block = _card_skill_block(card.splitlines(), "/pm-cluster-claim")
     assert claim_block is not None
     drop = next(ln for ln in claim_block if ln.startswith(" ") and "board.py lint" in ln)
     broken_card = "\n".join(ln for ln in card.splitlines() if ln != drop)
     _, mm_card = _crosscheck(broken_card, catalog)
     assert any(skill == "/pm-cluster-claim" for skill, *_ in mm_card), \
-        "카드 강등 줄 삭제를 #3 이 잡지 못함(forward 가드 공허)"
+        "카드 보조 줄 삭제를 #3 이 잡지 못함(forward 가드 공허)"
 
     # (b) 카탈로그 /pm-handoff 엔진 열을 다른 엔진으로 바꾼다 → /pm-handoff backward 불일치.
     drifted = dict(catalog)
@@ -365,12 +365,12 @@ def _line_index(card: str, needle: str) -> int:
 
 
 def test_card_skill_precedes_backbone_representative(bootstrap, *, tmp_path):
-    """대표 op(claim·handoff)에서 `/pm-…` 스킬 진입이 강등 backbone 줄보다 먼저(primary)."""
+    """대표 op(claim·handoff)에서 `/pm-…` 스킬 진입이 보조 backbone 줄보다 먼저(primary)."""
     card = _render_card(bootstrap, tmp_path=tmp_path)
     for skill_needle, backbone_needle in (
         ("/pm-cluster-claim", "board.py claim T-NNNN"),
         ("/pm-handoff", "pm_handoff.py"),
     ):
         assert _line_index(card, skill_needle) < _line_index(card, backbone_needle), (
-            f"{skill_needle!r} 스킬이 backbone {backbone_needle!r} 뒤에 옴(강등 실패)"
+            f"{skill_needle!r} 스킬이 backbone {backbone_needle!r} 뒤에 옴(우선순위 실패)"
         )

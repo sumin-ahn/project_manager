@@ -1,4 +1,4 @@
-"""도구 자기-`--help` usage 블록 ↔ 등록 subparser 정합 가드 (T-0348 · spike §F13 · 결정 ⑱).
+"""도구 자기-`--help` usage 블록 ↔ 등록 subparser 일치 가드 (T-0348 · spike §F13 · 결정 ⑱).
 
 엔진 CLI 중 일부는 모듈 docstring 에 **손-작성 `사용:` 블록**(서브커맨드 표)을 둔다. 이 손-작성
 표는 `build_parser()` 가 실제 등록하는 subparser 집합과 *어긋날 수 있다*: 티켓이 새 서브커맨드를
@@ -9,10 +9,10 @@
 이 `사용:` 블록이 `--help` 에 *실제로 뜨는지*는 도구마다 다르다 — 가드는 두 경우 다 지킨다:
   - **pm_config**: 파서 소유 모듈 `pm_engine.cli.config_cmd` 가 `ArgumentParser(description=__doc__,
     formatter_class=RawDescriptionHelpFormatter)` 라 그 모듈 docstring(=`사용:` 블록 포함)이 `--help` 에
-    verbatim 표면화된다. drift = 문자 그대로
+    verbatim 출력된다. drift = 문자 그대로
     *틀린 `--help`*.
   - **pm_log**: `build_parser()`(pm_log.py:233)가 짧은 하드코딩 `description=` 을 써서 `--help` 에
-    모듈 docstring 이 안 뜬다. 여기선 가드가 "`--help` 표면"이 아니라 *소스-doc `사용:` 블록*
+    모듈 docstring 이 안 뜬다. 여기선 가드가 "`--help` 출력"이 아니라 *소스-doc `사용:` 블록*
     (사람이 읽는 소스 문서)이 subparser 와 일관되게 유지되도록 지킨다.
 
 이 가드는 그 drift 클래스를 상시 회귀로 닫는다 — 각 대상 도구에서:
@@ -22,17 +22,17 @@
   - 두 집합이 **양방향 일치**해야 한다. usage 에 있는데 파서에 없거나(오탈자) 파서에 있는데
     usage 에 없으면(누락) fail.
 
-스킬 md↔CLI 가드(T-0347)와 **별개 표면**이다 — 이건 도구가 *자기 자신*을 설명하는 손-작성
-help 이고, 저건 스킬 문서가 CLI 를 설명하는 표면이다.
+스킬 md↔CLI 가드(T-0347)와 **별개 대상**이다 — 이건 도구가 *자기 자신*을 설명하는 손-작성
+help 이고, 저건 스킬 문서가 CLI 를 설명하는 글이다.
 
 대상 도구(스캔 판단·근거는 아래 `_TOOLS` 주석):
   - `pm_config` — 손-작성 `사용:` 블록 + subparsers. **drift 해소 대상**(T-0348).
-  - `pm_log`    — 손-작성 `사용:` 블록 + subparsers. 현행 정합(가드가 지속 검증).
+  - `pm_log`    — 손-작성 `사용:` 블록 + subparsers. 현행 일치(가드가 지속 검증).
   - board.py/pm_update.py/domain.py/worktree_pool.py 는 **비대상** — board/domain/worktree_pool 은
     docstring 에 손-작성 서브커맨드 `사용:` 블록이 없다(usage=argparse 자동생성이라 원리적 drift
     불가), pm_update 는 `사용:` 블록이 있으나 flag 기반(subparsers 0)이라 대조 대상이 없다.
 
-sensitivity(T-0347 동형): 스캔 대상 0·leaf 집합 空 이면 vacuous green — 이를 fail 로 못박고,
+sensitivity(T-0347 와 같음): 스캔 대상 0·leaf 집합 空 이면 vacuous green — 이를 fail 로 못박고,
 합성 drift 를 comparator 가 실제로 잡는지도 별도 단언한다(가드 no-op 방지).
 
 registry completeness: `_TOOLS` 는 수동 하드코딩이라, 미래에 새 도구(또는 flag-only→subparsers
@@ -128,14 +128,14 @@ def _usage_command_tokens(doc: str, prog: str) -> list[list[str]]:
         if stripped == "":
             break
         tokens = stripped.split()
-        anchor = None
+        prog_index = None
         for i, token in enumerate(tokens):
             if token == prog or token.endswith("/" + prog):
-                anchor = i
+                prog_index = i
                 break
-        if anchor is None:
+        if prog_index is None:
             continue
-        out.append(tokens[anchor + 1:])
+        out.append(tokens[prog_index + 1:])
     return out
 
 
@@ -199,7 +199,7 @@ def test_usage_block_matches_subparsers(name: str, prog: str) -> None:
         f"{name}: usage 블록 ↔ subparser drift.\n"
         f"  subparser 엔 있으나 usage 누락: {sorted(missing_in_usage)}\n"
         f"  usage 엔 있으나 subparser 부재(오탈자): {sorted(unknown_in_usage)}\n"
-        f"  → {name}.py 의 `사용:` docstring 블록과 build_parser() 를 정합시켜라."
+        f"  → {name}.py 의 `사용:` docstring 블록과 build_parser() 를 일치시켜라."
     )
 
 

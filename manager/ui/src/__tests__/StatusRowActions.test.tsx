@@ -8,11 +8,11 @@ import { ProjectRunContext } from "../lib/run";
 import { rowDot } from "../lib/status";
 
 /**
- * 현황 탭 동작 — 아이들 규칙(비활성 + 사유)·대여와 반납의 자리·확인 대화의 값 결속.
+ * 현황 탭 동작 — 아이들 규칙(비활성 + 사유)·대여와 반납의 자리·확인 대화의 값 연결.
  *
  * 행은 실 엔진 산출(`status --json`) 픽스처의 네 형태다: 아이들 · 작업 중(열린 기록) ·
  * 닫힘(대여 중이나 종료 기록 있음) · readonly.
- * [대여]는 행이 아니라 슬롯 표 머리에 있다 — `alloc` 이 repo 축이라 어느 idle 슬롯이 나갈지는
+ * [대여]는 행이 아니라 슬롯 표 머리에 있다 — `alloc` 이 repo 단위라 어느 idle 슬롯이 나갈지는
  * 엔진이 고르고(최소 번호), 아이들이 둘 이상이면 누른 행과 대여되는 행이 달라진다.
  */
 const DEMO = "/projects/demo";
@@ -165,7 +165,7 @@ describe("아이들 규칙", () => {
 });
 
 describe("확인 대화와 승인 토큰", () => {
-  it("prefix 는 대화를 승인해야 나가고 --user-ack 값이 그 값에 결속된다", async () => {
+  it("prefix 는 대화를 승인해야 나가고 --user-ack 값이 그 값에 연결된다", async () => {
     const { run } = renderRow(taskOf("demo"));
 
     fireEvent.change(screen.getByLabelText("demo prefix"), { target: { value: "dm" } });
@@ -178,7 +178,7 @@ describe("확인 대화와 승인 토큰", () => {
       DEMO, ["task", "prefix", "demo", "dm", "--user-ack", "dm"]));
   });
 
-  it("취소하면 서브프로세스 축으로 아무것도 나가지 않는다", () => {
+  it("취소하면 서브프로세스 쪽으로 아무것도 나가지 않는다", () => {
     const { run } = renderRow(taskOf("demo"));
 
     fireEvent.change(screen.getByLabelText("demo prefix"), { target: { value: "dm" } });

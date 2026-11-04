@@ -3,7 +3,7 @@
 실 `pm_import --new` PM 홈, 로컬 clone 상류, 서브프로세스로 갱신과 소스 보존을 검증한다.
 호출 상한과 스폰·timeout 등 실패 분기는 대역으로 주입해 실행 횟수와 출력 보존을 확인한다.
 
-축 여섯:
+검사 여섯:
   1. 미리보기는 엔진 출력 원문을 한 글자도 바꾸지 않고 넘긴다(요약·파싱 0).
   2. 소스는 사본이 자기 `upstream.path` 로 해소한다 — 관리자는 `--from` 을 주지 않는다.
   3. 미리보기는 프로젝트 폴더를 한 바이트도 건드리지 않는다.
@@ -33,7 +33,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 pytestmark = git_required
 
-# 상류가 다는 릴리즈 태그 = 그 상류 엔진의 rev. 갱신 축 전체가 이 한 값으로 묶인다.
+# 상류가 다는 릴리즈 태그 = 그 상류 엔진의 rev. 갱신 판정 전체가 이 한 값으로 묶인다.
 UPSTREAM_REV = "v9.9.9"
 # 관리자 패키지에서 파일을 만들거나 복사하는 API — 등록부(`registry.py`) 밖에 있으면 red.
 FILE_WRITING_APIS = ("copy", "copy2", "copyfile", "copytree", "copyfileobj",
@@ -47,7 +47,7 @@ BUILD_TIME_MODULE = "build.py"
 # 폴더에는 쓰지 않으므로 이 검사의 목적(엔진 복사 금지)과 부딪히지 않는다.
 DOCK_ENTRY_MODULE = "desktop_entry.py"
 # 엔진이 소유한 per-clone 스크래치(락 파일·임시 트리) — git-ignored 이고 명령마다 생겼다 사라진다.
-# "갱신이 무엇을 남겼는가" 는 이 축을 걷어낸 트리에서만 말할 수 있다.
+# "갱신이 무엇을 남겼는가" 는 이 자리를 걷어낸 트리에서만 말할 수 있다.
 ENGINE_SCRATCH_ROOT = ".project_manager/.local"
 # 엔진이 갱신을 예고하는 두 채널 — byte-copy 와 토큰 치환(@render). 둘 다 예고다.
 ANNOUNCE_PREFIXES = ("[update] ", "[render] ")
@@ -95,7 +95,7 @@ def api(tmp_path, monkeypatch) -> Api:
 
 
 def _durable(snapshot: dict[str, str]) -> dict[str, str]:
-    """엔진 스크래치와 패키지 교체 락을 걷어낸 트리 스냅샷."""
+    """엔진 스크래치와 패키지 교체 락을 걷어낸 트리 상태 기록."""
     return {name: digest for name, digest in snapshot.items()
             if not name.startswith(ENGINE_SCRATCH_ROOT) and name != ENGINE_TRANSFER_LOCK}
 
@@ -127,7 +127,7 @@ def test_update_preview_hands_over_the_engine_output_unchanged(api, pm_home):
 
 def test_update_preview_shows_the_pending_engine_files_in_the_engines_own_words(api, pm_home):
     direct = _direct_update(pm_home, "--dry-run")
-    assert "[dry-run]" in direct.stdout, direct.stdout      # 상류가 앞서 있는 형상인지 먼저 확인
+    assert "[dry-run]" in direct.stdout, direct.stdout      # 상류가 앞서 있는 상태인지 먼저 확인
 
     stdout = api.update_preview(str(pm_home))["stdout"]
 
@@ -177,7 +177,7 @@ def test_the_source_is_the_copys_own_upstream_not_the_manager_bundle(api, pm_hom
 
 
 def test_update_preview_touches_no_file_in_the_project(api, pm_home):
-    api.status(str(pm_home))                                   # 공유 읽기 seam 을 먼저 세운다
+    api.status(str(pm_home))                                   # 공유 읽기 함수를 먼저 세운다
     before = _durable(tree_snapshot(pm_home))
 
     api.update_preview(str(pm_home))
@@ -198,7 +198,7 @@ def test_update_apply_moves_the_copys_engine_rev_forward(api, pm_home):
     assert api.status(str(pm_home))["engine_rev"] == UPSTREAM_REV
 
 
-def test_the_latest_tag_axis_reads_the_same_upstream(api, pm_home, upstream):
+def test_the_latest_tag_input_reads_the_same_upstream(api, pm_home, upstream):
     """"갱신 있음" 판정의 두 입력(사본 rev · 상류 최신 태그)이 같은 상류에서 온다."""
     api.add_project(str(pm_home))
 

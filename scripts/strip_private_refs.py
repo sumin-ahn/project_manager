@@ -8,7 +8,7 @@ and test inventories are read-only so later phases can be sized without
 changing their files.
 
 판정식 자체는 이 스크립트가 아니라 엔진 모듈
-``pm_engine.domain.private_refs``가 소유한다. 출하 표면은
+``pm_engine.domain.private_refs``가 소유한다. 출하 범위는
 ``pm_engine.infra.private_surface``를 직접 소비한다. 이 파일은 파일 재작성과 보고서·CLI를 담당한다.
 """
 
@@ -72,8 +72,8 @@ def self_sufficiency_issues(before: str, after: str) -> list[str]:
         if old == new:
             continue
         for name, counts in private_refs.line_difference(old, new).items():
-            if counts["delta"] > 0:
-                issues.append(f"line {number} {name}: +{counts['delta']}")
+            if counts["difference"] > 0:
+                issues.append(f"line {number} {name}: +{counts['difference']}")
     return issues
 
 
@@ -138,44 +138,44 @@ def _changed_line_records(before: str, after: str, path: str) -> list[dict[str, 
                     "before": old,
                     "after": new,
                     "invariant": line_invariant(old, new),
-                    "delta": private_refs.line_difference(old, new),
+                    "difference": private_refs.line_difference(old, new),
                 }
             )
     return records
 
 
-def _delta_summary(
+def _difference_summary(
     records: Iterable[dict[str, object]],
 ) -> dict[str, dict[str, int]]:
     summary = {
-        name: {"before": 0, "after": 0, "delta": 0, "increased_lines": 0}
-        for name, _ in private_refs._DELTA_PATTERNS
+        name: {"before": 0, "after": 0, "difference": 0, "increased_lines": 0}
+        for name, _ in private_refs._DIFFERENCE_PATTERNS
     }
     for record in records:
-        delta = record["delta"]
-        assert isinstance(delta, dict)
-        for name, counts in delta.items():
+        difference = record["difference"]
+        assert isinstance(difference, dict)
+        for name, counts in difference.items():
             assert isinstance(counts, dict)
             summary[name]["before"] += int(counts["before"])
             summary[name]["after"] += int(counts["after"])
-            summary[name]["delta"] += int(counts["delta"])
-            summary[name]["increased_lines"] += int(counts["delta"] > 0)
+            summary[name]["difference"] += int(counts["difference"])
+            summary[name]["increased_lines"] += int(counts["difference"] > 0)
     return summary
 
 
-def _delta_failures(
+def _difference_failures(
     records: Iterable[dict[str, object]],
 ) -> list[str]:
     failures: list[str] = []
     for record in records:
-        delta = record["delta"]
-        assert isinstance(delta, dict)
-        for name, counts in delta.items():
+        difference = record["difference"]
+        assert isinstance(difference, dict)
+        for name, counts in difference.items():
             assert isinstance(counts, dict)
-            if int(counts["delta"]) > 0:
+            if int(counts["difference"]) > 0:
                 failures.append(
                     f"{record['path']}:{record['line']} {name} "
-                    f"+{counts['delta']}"
+                    f"+{counts['difference']}"
                 )
     return failures
 
@@ -196,7 +196,7 @@ def _invariant_failures(
 
 
 def process_python(
-    path: Path, root: Path, *, write: bool, verify_delta: bool = False
+    path: Path, root: Path, *, write: bool, verify_difference: bool = False
 ) -> FileResult:
     with path.open("r", encoding="utf-8", newline="") as stream:
         before = stream.read()
@@ -212,8 +212,8 @@ def process_python(
         len(private_refs._actionable_matches(span.text)) for span in private_refs.prose_token_spans(after)
     )
     changed_lines = _changed_line_records(before, after, relative)
-    failures = _invariant_failures(changed_lines) + _delta_failures(changed_lines)
-    if verify_delta and failures:
+    failures = _invariant_failures(changed_lines) + _difference_failures(changed_lines)
+    if verify_difference and failures:
         raise SelfSufficiencyError("; ".join(failures))
     if write and before != after:
         with path.open("w", encoding="utf-8", newline="") as stream:
@@ -280,18 +280,18 @@ def _write_sample_report(
         f"- emitted: {len(chosen)}",
         f"- seed: {seed}",
         "",
-        "## Mechanical delta verification",
+        "## Mechanical difference verification",
         "",
-        "| pattern | before | after | delta | increased lines |",
+        "| pattern | before | after | difference | increased lines |",
         "|---|---:|---:|---:|---:|",
     ]
-    summary = _delta_summary(records)
+    summary = _difference_summary(records)
     for name, counts in summary.items():
         lines.append(
             f"| {name} | {counts['before']} | {counts['after']} | "
-            f"{counts['delta']:+d} | {counts['increased_lines']} |"
+            f"{counts['difference']:+d} | {counts['increased_lines']} |"
         )
-    failures = _delta_failures(records)
+    failures = _difference_failures(records)
     invariant_failures = _invariant_failures(records)
     lines.extend(
         [
@@ -313,14 +313,14 @@ def _write_sample_report(
     )
     for index, record in enumerate(chosen, 1):
         issues = [
-            f"{name} +{counts['delta']}"
-            for name, counts in record["delta"].items()
-            if counts["delta"] > 0
+            f"{name} +{counts['difference']}"
+            for name, counts in record["difference"].items()
+            if counts["difference"] > 0
         ]
         verdict = (
-            "FAIL — mechanical delta: " + ", ".join(issues)
+            "FAIL — mechanical difference: " + ", ".join(issues)
             if issues
-            else "PASS — mechanical delta has no pattern increase"
+            else "PASS — mechanical difference has no pattern increase"
         )
         lines.extend(
             [
@@ -395,7 +395,7 @@ def _inventory_tests(paths: Iterable[Path], root: Path) -> dict[str, object]:
 
 def _write_inventory(root: Path, output: Path) -> dict[str, object]:
     _, markdown_paths = private_surface.shipping_paths(root)
-    # v1.5.0보다 넓은 출하 표면(CLAUDE.md·templates 포함)을 보고용으로 집계한다.
+    # v1.5.0보다 넓은 출하 범위(CLAUDE.md·templates 포함)를 보고용으로 집계한다.
     tests = sorted((root / "tests").glob("*.py"))
     report = {
         "p2_shipping_markdown": _inventory_markdown(markdown_paths, root),
@@ -417,17 +417,17 @@ def run(args: argparse.Namespace) -> int:
     try:
         results = [
             process_python(
-                path, root, write=False, verify_delta=args.verify_delta
+                path, root, write=False, verify_difference=args.verify_difference
             )
             for path in paths
         ]
     except SelfSufficiencyError as error:
-        print(f"ERROR mechanical delta verification failed: {error}", file=sys.stderr)
+        print(f"ERROR mechanical difference verification failed: {error}", file=sys.stderr)
         return 2
     if not args.dry_run:
         for path in paths:
             process_python(
-                path, root, write=True, verify_delta=args.verify_delta
+                path, root, write=True, verify_difference=args.verify_difference
             )
 
     residual_path = report_dir / "p1-residuals.md"
@@ -438,8 +438,8 @@ def run(args: argparse.Namespace) -> int:
     changed_records = [
         record for result in results for record in result.changed_lines
     ]
-    delta_summary = _delta_summary(changed_records)
-    delta_failures = _delta_failures(changed_records)
+    difference_summary = _difference_summary(changed_records)
+    difference_failures = _difference_failures(changed_records)
     invariant_failures = _invariant_failures(changed_records)
     emitted = _write_sample_report(
         changed_records, sample_path, args.sample_size, args.seed
@@ -460,15 +460,15 @@ def run(args: argparse.Namespace) -> int:
         "residual_entries": residual_count,
         "sample_entries": emitted,
         "invariant_verification": {
-            "enabled": args.verify_delta,
+            "enabled": args.verify_difference,
             "verdict": "PASS" if not invariant_failures else "FAIL",
             "failure_count": len(invariant_failures),
         },
-        "delta_verification": {
-            "enabled": args.verify_delta,
-            "verdict": "PASS" if not delta_failures else "FAIL",
-            "failure_count": len(delta_failures),
-            "patterns": delta_summary,
+        "difference_verification": {
+            "enabled": args.verify_difference,
+            "verdict": "PASS" if not difference_failures else "FAIL",
+            "failure_count": len(difference_failures),
+            "patterns": difference_summary,
         },
         "per_file": [
             {
@@ -526,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-dir", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
-        "--verify-delta",
+        "--verify-difference",
         action="store_true",
         help="fail if any changed line gains a mechanical boundary pattern",
     )

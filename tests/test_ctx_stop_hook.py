@@ -1,8 +1,8 @@
 """claude `ctx_stop_hook.py` — 판단 원칙 recall 채널 합본 테스트.
 
-ctx 밴드(넛지/최종 안내)는 `tests/test_claude_ctx_guard.py` 가 이미 전량 덮는다. 이 파일은 이
-티켓이 새로 얹은 축 하나만 본다 — recall 문안이 ctx 밴드 안내와 **동시에** additionalContext 에
-실리는가(문자열 누적)와, 레지스트리 부재가 기존 ctx 밴드 출력을 바꾸지 않는가(비차단 계약).
+ctx 구간(경고/최종 안내)은 `tests/test_claude_ctx_guard.py` 가 이미 전량 덮는다. 이 파일은 이
+티켓이 새로 얹은 부분 하나만 본다 — recall 문안이 ctx 구간 안내와 **동시에** additionalContext 에
+실리는가(문자열 누적)와, 레지스트리 부재가 기존 ctx 구간 출력을 바꾸지 않는가(비차단 계약).
 """
 from __future__ import annotations
 
@@ -55,8 +55,8 @@ def _write_registry(root: Path, text: str, *, with_loader: bool = True) -> None:
                         ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
 
 
-def test_recall_and_ctx_band_additional_context_coexist(tmp_path):
-    """밴드(stop) 안내 + recall 문안이 같은 additionalContext 에 둘 다 실린다(합본)."""
+def test_recall_and_ctx_level_additional_context_coexist(tmp_path):
+    """구간(stop) 안내 + recall 문안이 같은 additionalContext 에 둘 다 실린다(합본)."""
     stop_hook = _load("ctx_stop_hook")
     _write_registry(tmp_path, (
         "#### 번들\n"
@@ -66,7 +66,7 @@ def test_recall_and_ctx_band_additional_context_coexist(tmp_path):
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
         "tool_input": {"command": "git push --force origin main"},
-        # input_tokens 190_000 / window 200_000 = 95% used → stop 밴드.
+        # input_tokens 190_000 / window 200_000 = 95% used → stop 구간.
         "transcript_path": str(_write_transcript(tmp_path, 190_000)),
         "session_id": "sess-recall-merge",
     }
@@ -81,8 +81,8 @@ def test_recall_and_ctx_band_additional_context_coexist(tmp_path):
     assert guidance.index("ctx-warn/최종") < guidance.index("[principle-recall]")
 
 
-def test_recall_alone_when_ctx_band_is_ok(tmp_path):
-    """ctx 밴드가 'ok'(출력 없음)여도 recall 매칭만으로 additionalContext 가 생긴다."""
+def test_recall_alone_when_ctx_level_is_ok(tmp_path):
+    """ctx 구간이 'ok'(출력 없음)여도 recall 매칭만으로 additionalContext 가 생긴다."""
     stop_hook = _load("ctx_stop_hook")
     _write_registry(tmp_path, (
         "#### 번들\n"
@@ -100,8 +100,8 @@ def test_recall_alone_when_ctx_band_is_ok(tmp_path):
     assert "[principle-recall]" in output["hookSpecificOutput"]["additionalContext"]
 
 
-def test_missing_registry_leaves_ctx_band_output_unchanged(tmp_path):
-    """레지스트리 파일 부재에서도 훅은 도구 실행을 막지 않고 기존 ctx 밴드 출력이 그대로 실린다."""
+def test_missing_registry_leaves_ctx_level_output_unchanged(tmp_path):
+    """레지스트리 파일 부재에서도 훅은 도구 실행을 막지 않고 기존 ctx 구간 출력이 그대로 실린다."""
     stop_hook = _load("ctx_stop_hook")
     assert not (tmp_path / ".project_manager" / "wiki" / "pm_principles.md").exists()
     stdin = {
@@ -117,8 +117,8 @@ def test_missing_registry_leaves_ctx_band_output_unchanged(tmp_path):
     assert "[principle-recall]" not in guidance
 
 
-def test_no_match_and_no_band_returns_none(tmp_path):
-    """recall 도 ctx 밴드도 발화하지 않으면 기존 계약대로 rc0·output None."""
+def test_no_match_and_no_level_returns_none(tmp_path):
+    """recall 도 ctx 구간 안내도 나가지 않으면 기존 계약대로 rc0·output None."""
     stop_hook = _load("ctx_stop_hook")
     _write_registry(tmp_path, (
         "#### 번들\n"
@@ -136,24 +136,24 @@ def test_no_match_and_no_band_returns_none(tmp_path):
     assert output is None
 
 
-def test_boundary_rearm_does_not_raise_without_registry(tmp_path):
-    """레지스트리·로더 부재에서도 압축 경계 처리(재무장) 경로가 예외 없이 통과한다(비차단)."""
+def test_boundary_reset_does_not_raise_without_registry(tmp_path):
+    """레지스트리·로더 부재에서도 압축 경계 처리(다시 켜기) 경로가 예외 없이 통과한다(비차단)."""
     stop_hook = _load("ctx_stop_hook")
     transcript = tmp_path / "transcript.jsonl"
     transcript.write_text(
         json.dumps({"type": "system", "subtype": "compact_boundary",
                     "uuid": "00000000-0000-4000-8000-000000000001"}) + "\n", encoding="utf-8")
-    stdin = {"hook_event_name": "UserPromptSubmit", "session_id": "sess-rearm",
+    stdin = {"hook_event_name": "UserPromptSubmit", "session_id": "sess-reset",
              "transcript_path": str(transcript), "prompt": "계속"}
     rc, output = stop_hook.evaluate(stdin, cli_hooks.adapter_home(tmp_path))
     assert rc == 0
-    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-rearm.compact-00000000-0000-4000-8000-000000000001").is_file()
+    assert (tmp_path / ".project_manager" / ".local" / "ctx-stop" / "sess-reset.compact-00000000-0000-4000-8000-000000000001").is_file()
     assert output["systemMessage"] == "[ctx-checkpoint] 압축 기록 실패: pm_log.py 없음"
 
 
 def test_broken_registry_surfaces_a_non_blocking_warning_in_additional_context(tmp_path):
     """파손 태그 항목은 매칭 0 이어도 조용히 사라지지 않고 rc0 을 유지한 채 경고 문안으로
-    additionalContext 에 표면화된다(어댑터가 `result.text` 하나만 보고 주입하기 때문)."""
+    additionalContext 에 드러난다(어댑터가 `result.text` 하나만 보고 주입하기 때문)."""
     stop_hook = _load("ctx_stop_hook")
     _write_registry(tmp_path, "#### 번들\n- `[shell: (unclosed]` 파손 항목.\n")
     stdin = {
@@ -182,7 +182,7 @@ def test_cap_merged_context_at_exact_cap_is_untouched():
 
 
 def test_cap_merged_context_over_by_one_char_is_summarized_not_truncated():
-    """상한을 딱 1자 넘기면(10,001) ctx 밴드 안내는 보존하고 recall 쪽만 생략 표시로 접는다
+    """상한을 딱 1자 넘기면(10,001) ctx 구간 안내는 보존하고 recall 쪽만 생략 표시로 바꾼다
     (원문을 자르지 않는다 — F-006 리뷰 실측 10,091 재현)."""
     stop_hook = _load("ctx_stop_hook")
     existing = "ctx-warn/최종 안내"
@@ -190,13 +190,13 @@ def test_cap_merged_context_over_by_one_char_is_summarized_not_truncated():
     extra = "x" * (cap - len(existing))  # 위 exact-cap 테스트보다 정확히 1자 더 김.
     combined = stop_hook._cap_merged_context(existing, extra)
     assert len(combined) <= cap
-    assert existing in combined  # ctx 밴드 안내는 그대로 보존된다.
+    assert existing in combined  # ctx 구간 안내는 그대로 보존된다.
     assert "x" * 50 not in combined  # recall 원문은 절단된 채로 남지 않는다(생략 표시로 대체).
     assert "[principle-recall]" in combined
 
 @pytest.fixture(autouse=True)
 def _ctx_record(tmp_path):
-    """밴드 판정의 분모 — 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록."""
+    """구간 판정의 분모 — 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록."""
     from test_harness_ctx_limits import install_ctx_record
     install_ctx_record(tmp_path)
 

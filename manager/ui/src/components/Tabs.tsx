@@ -29,7 +29,7 @@ export default function Tabs({ bridge, path, light, heavy, remote, settings, lat
   const [adapterConf, setAdapterConf] = useState<ConfSection | null>(null);
   useEffect(() => { setAdapterConf(null); }, [path]);
   // 사본을 부르는 자리 하나 — 구성 탭과 현황 탭 행 동작이 같은 값을 쓴다(현황 탭의 읽기
-  // 구조를 고치지 않고 행 동작에 바깥을 주는 유일한 배선이다).
+  // 구조를 고치지 않고 행 동작에 바깥을 주는 유일한 연결이다).
   const run = useMemo(
     () => (path === null ? null : { bridge, path, status: light?.status, onChanged }),
     [bridge, path, light, onChanged]);

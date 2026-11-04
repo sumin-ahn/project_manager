@@ -118,7 +118,7 @@ def _delegate_rounds_record_row(row: object, *, line_number: int) -> dict:
     return dict(row)
 
 
-def _delegate_rounds_ledger_records(pm_home: Path) -> list[dict]:
+def _delegate_rounds_records(pm_home: Path) -> list[dict]:
     """append-only 기록을 쓴 순서대로 읽는다 (부재는 빈 목록 · 손상 행은 경고 후 건너뜀).
 
     손상 행 하나가 다른 run 의 돌려받기를 막지 않는다 — 조회는 `copy` 경로 일치로 하고, 그 경로
@@ -152,22 +152,22 @@ def _delegate_rounds_ledger_records(pm_home: Path) -> list[dict]:
 
 
 def ticket_copy_records(
-    pm_home: Path, *, ticket: str | None = None, unharvested: bool = False,
+    pm_home: Path, *, ticket: str | None = None, uncollected: bool = False,
 ) -> list[dict]:
     """copy 별 최신 append snapshot 을 prepare 최신순으로 반환한다 (`ticket copies` 입력).
 
-    `unharvested` 는 "아직 처분되지 않은 준비"다 — 돌려받기(`collected_at`)도 포기(`abandoned_at`)도
+    `uncollected` 는 "아직 처분되지 않은 준비"다 — 돌려받기(`collected_at`)도 포기(`abandoned_at`)도
     거치지 않은 행만 남긴다. 포기된 행을 돌려받지 않은 행으로 계속 세면 abandon 이 남은 것을 지워도 조회면에는
     그대로 남아 정리 수단이 무효로 보인다.
     """
     latest: dict[str, dict] = {}
-    for row in _delegate_rounds_ledger_records(pm_home):
+    for row in _delegate_rounds_records(pm_home):
         latest[row["copy"]] = row
     rows = [
         row for row in latest.values()
         if (ticket is None or row["ticket"] == ticket)
         and (
-            not unharvested
+            not uncollected
             or (row["collected_at"] is None and "abandoned_at" not in row)
         )
     ]

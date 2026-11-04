@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module, bind_product_cluster, ensure_product_slot
+from conftest import target_repo_board_module, bind_product_cluster, ensure_product_slot
 from pm_engine.infra import pm_paths, ticket_store
 
 from pm_engine.infra import ticket_store
@@ -109,7 +109,7 @@ def _seed(mod, status: str, tid: str, touches, **extra) -> Path:
 def retargeted(tmp_path, monkeypatch):
     """board-git 없이 헬퍼 함수만 태우는 tmp 홈."""
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     (tmp_path / ".project_manager" / "board" / "tickets").mkdir(parents=True)
     return mod
 
@@ -319,7 +319,7 @@ def test_corrupt_records_omits_slot_line_without_crash(retargeted):
 @pytest.fixture
 def board_git(tmp_path, monkeypatch):
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     board = tmp_path / ".project_manager" / "board"
@@ -564,7 +564,7 @@ def test_cmd_new_material_total_lines_stay_within_budget_with_slot_and_many_cand
 
 def test_legacy_no_board_git_still_emits_material(tmp_path, monkeypatch, capsys):
     mod = _load_board()
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     wiki = tmp_path / ".project_manager" / "wiki"
     for status in ("open", "claimed", "blocked", "done"):
         (wiki / "tickets" / status).mkdir(parents=True, exist_ok=True)

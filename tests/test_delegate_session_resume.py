@@ -749,7 +749,7 @@ def test_review_round_record_is_never_touched(pd, monkeypatch, tmp_path, capsys)
     pm_home = tmp_path / "pm_home"
     (pm_home / ".project_manager" / ".local").mkdir(parents=True)
     monkeypatch.setattr(external, "REPO", pm_home)
-    rounds_record = review_rounds._round_ledger_path(pm_paths.home_at(external.REPO))
+    rounds_record = review_rounds._round_record_path(pm_paths.home_at(external.REPO))
     assert not rounds_record.exists()
 
     out_dir = tmp_path / "raw"

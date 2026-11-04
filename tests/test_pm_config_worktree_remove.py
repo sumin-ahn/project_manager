@@ -217,7 +217,7 @@ def _seed(wp, *leases, tree=True):
     트리가 이미 사라진 상황(dangling 기록)을 재현하는 자리다.
     """
     with pool_store._lease_lock(pm_paths.home_at(wp.REPO)):
-        pool_store._write_ledger(pm_paths.home_at(wp.REPO), list(leases))
+        pool_store._write_records(pm_paths.home_at(wp.REPO), list(leases))
     if tree:
         for lease in leases:
             pm_paths.slot_path(pm_paths.home_at(wp.REPO), lease.slot).mkdir(parents=True, exist_ok=True)

@@ -35,7 +35,7 @@ MACOS_INSTALL_LINES = (
     "  python3 -m pip install --upgrade pywebview",
     "  (macOS 웹뷰는 내장이다 — 빠진 것은 pyobjc 쪽 바인딩이다)",
 )
-# WebView2 Evergreen 런타임의 설치 표식 — EdgeUpdate 가 이 제품 GUID 키의 `pv` 에 버전을 쓴다.
+# WebView2 Evergreen 런타임의 설치 표시 — EdgeUpdate 가 이 제품 GUID 키의 `pv` 에 버전을 쓴다.
 # EdgeUpdate 자체가 32비트라 64비트 Windows 의 시스템 설치는 WOW6432Node 쪽에 남고, 사용자
 # 단위 설치는 HKCU 에 남는다. 세 자리를 다 보고 나서 한 번 판정한다.
 WEBVIEW2_CLIENT_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"

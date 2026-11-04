@@ -1,6 +1,6 @@
 """화면이 파이썬을 부르는 자리는 하나다 — HTTP (T-0921 AT-003).
 
-창 주입 배선(`window.pywebview`·`pywebviewready`)은 남지 않는다. `api.ts` 의 `Bridge` 타입이
+창 주입 연결(`window.pywebview`·`pywebviewready`)은 남지 않는다. `api.ts` 의 `Bridge` 타입이
 내는 이름과 파이썬 `Api` 의 public 메서드를 **같은 실행에서** 비교해, 브리지에 메서드가 늘면
 화면도 따라오도록 강제한다. 화면 쪽 동작 단언은 `manager/ui/src/__tests__/api.test.tsx` 가
 `npm --prefix manager/ui test` 로 잰다.
@@ -19,7 +19,7 @@ API_TS = SOURCE_DIR / "api.ts"
 MAIN_TSX = SOURCE_DIR / "main.tsx"
 APP_TSX = SOURCE_DIR / "App.tsx"
 SCREEN_TEST = SOURCE_DIR / "__tests__" / "api.test.tsx"
-# 창 주입 배선의 흔적 — 한 자리라도 남으면 데이터 경로가 둘이 된다.
+# 창 주입 연결의 흔적 — 한 자리라도 남으면 데이터 경로가 둘이 된다.
 INJECTION_MARKERS = ("pywebview", "pywebviewBridge", "pywebviewready")
 
 
@@ -39,7 +39,7 @@ def _bridge_type_names() -> set[str]:
 
 
 def _bridge_wiring_names() -> set[str]:
-    """`httpBridge()` 가 실제로 배선한 이름 — 타입과 배선이 갈리면 여기서 드러난다."""
+    """`httpBridge()` 가 실제로 연결한 이름 — 타입과 연결이 갈리면 여기서 드러난다."""
     text = API_TS.read_text(encoding="utf-8")
     start = text.index("export function httpBridge()")
     block = text[start:text.index("\n}", start)]
@@ -53,7 +53,7 @@ def test_the_injected_bridge_is_gone_from_every_screen_file():
     for source in (API_TS, MAIN_TSX, APP_TSX):
         text = source.read_text(encoding="utf-8")
         for marker in INJECTION_MARKERS:
-            assert marker not in text, f"{source.name} 에 창 주입 배선 {marker!r} 이 남아 있다"
+            assert marker not in text, f"{source.name} 에 창 주입 연결 {marker!r} 이 남아 있다"
     assert "declare global" not in API_TS.read_text(encoding="utf-8")
 
 
@@ -94,22 +94,22 @@ def test_a_new_python_method_makes_the_screen_red_until_it_follows():
     assert _bridge_type_names() != grown
 
 
-# ── 창 표식이 갈리는 자리는 하나 ─────────────────────────────────────────────
+# ── 창 표시가 갈리는 자리는 하나 ─────────────────────────────────────────────
 
 
 def test_the_window_marker_decides_one_thing_only():
-    """표식으로 갈리는 동작이 폴더 고르기 말고 또 생기면 그것이 곧 결함이다."""
+    """표시로 갈리는 동작이 폴더 고르기 말고 또 생기면 그것이 곧 결함이다."""
     screen = API_TS.read_text(encoding="utf-8")
     others = [source.name for source in _screen_sources()
               if source not in (API_TS, SCREEN_TEST)
               and "isWindowClient" in source.read_text(encoding="utf-8")]
-    assert others == [], f"창 표식이 {others} 에서도 갈린다"
+    assert others == [], f"창 표시가 {others} 에서도 갈린다"
     # 선언 1 + 요청 머리 1 + 폴더 고르기 갈림 1.
     assert screen.count("isWindowClient") == 3
     assert screen.count("if (isWindowClient())") == 1
     assert "chooseFolder" in screen[screen.index("if (isWindowClient())") - 400:]
 
-    # 갈리는 자리 = 표식 값으로 **분기하는** 줄. 값 선언(`WINDOW_CLIENT`·부를 수 있는 표식
+    # 갈리는 자리 = 표시 값으로 **분기하는** 줄. 값 선언(`WINDOW_CLIENT`·부를 수 있는 표시
     # 집합 `API_CLIENTS`)은 갈림이 아니라 그 분기가 읽는 값이다.
     server = (REPO / "manager" / "server.py").read_text(encoding="utf-8")
     deciding = [line for line in server.splitlines()

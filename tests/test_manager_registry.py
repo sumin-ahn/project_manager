@@ -1,7 +1,7 @@
 """프로젝트 등록부 — 실 파일·실 `HOME`/`APPDATA` 로 판정한다 (T-0910 AT-001).
 
 담는 값은 PM 홈 절대경로 목록 하나이고, 쓰기는 같은 디렉터리 tmp → `os.replace` 원자 교체다.
-비-PM홈은 등록 자체가 거부된다(`.project_manager/` 표식이 없으면 사본을 부를 수 없다).
+비-PM홈은 등록 자체가 거부된다(`.project_manager/` 표시가 없으면 사본을 부를 수 없다).
 """
 from __future__ import annotations
 

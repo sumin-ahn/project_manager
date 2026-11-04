@@ -225,7 +225,7 @@ _OWNERS = {
     '_validate_todo_doc': (task_rules, False),
     '_worktree_registered': (worktree_git, True),
     '_write_branch_config': (branch_store, False),
-    '_write_ledger': (pool_store, True),
+    '_write_records': (pool_store, True),
     '_write_records_raw': (pool_store, True),
     '_write_tasks': (pool_store, True),
     '_write_todo_doc': (task_store, True),
@@ -322,12 +322,12 @@ def bind_board(monkeypatch, fake):
         "scan_task_tickets": ticket_access,
         "_board_git_sync_best_effort": board_sync,
         "board_lock": fs,
-        "_pm_home_worktree_misanchor": pm_paths,
+        "_pm_home_worktree_wrong_repo": pm_paths,
     }
     for name, owner in owners.items():
         if fake is None or not hasattr(fake, name):
             continue
-        if name in {"invalidate_known_prefixes_cache", "_pm_home_worktree_misanchor"}:
+        if name in {"invalidate_known_prefixes_cache", "_pm_home_worktree_wrong_repo"}:
             monkeypatch.setattr(owner, name, getattr(fake, name))
         else:
             def invoke(_home, *args, _name=name, **kwargs):

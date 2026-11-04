@@ -48,12 +48,12 @@ SHIPPING_GLOBS = (
     ".project_manager/wiki/README.md",
     ".project_manager/wiki/_template/**",
     ".project_manager/wiki/domain/**",
-    # ── engine.manifest 정합 갭 (정확 경로 1:1·과잉발동 회피) ──────────
+    # ── engine.manifest 일치 갭 (정확 경로 1:1·과잉발동 회피) ──────────
     # manifest 출하 항목 중 위 글롭에 안 잡히던 5경로를 *정확 경로* 글롭으로 1:1 닫는다
     # 포괄 글롭(`**/_template.md`·`**/*.template.md`·`**/.gitignore` 등)은 repo
     # 전체를 매칭해 비-출하(tests/fixtures/_template.md·wiki decisions/foo.template.md 등)
-    # 까지 게이트를 false-fire 시킨다 — ticket 결정("정밀·과잉발동 회피")·tests/ non-shipping
-    # 원칙과 모순. 1:1 정확 경로라도 미래 manifest 항목 추가는 정합 가드(test)가 잡아 동기화 강제.
+    # 까지 검사를 false-fire 시킨다 — ticket 결정("정밀·과잉발동 회피")·tests/ non-shipping
+    # 원칙과 모순. 1:1 정확 경로라도 미래 manifest 항목 추가는 일치 가드(test)가 잡아 동기화 강제.
     ".project_manager/wiki/tickets/_template.md",     # ticket 스캐폴드 (manifest 갭)
     ".project_manager/wiki/raw/spikes/_template.md",  # spike 스캐폴드 (manifest 갭)
     ".project_manager/wiki/pm_state.template.md",     # pm_state 템플릿 (manifest 갭)
@@ -69,11 +69,11 @@ PENDING_INTENT_PLACEHOLDER = (
 
 # task 세션 정체성의 log 헤더 태그 sentinel — task 모드는 헤더 태그를 `(task:<name>)` 로
 # 박아 서술형 괄호(`PM 4차 (아침 대화)`)·슬롯 태그(`<repo>_<N>`)와 기계적으로 구분한다. task 명은
-# 자유 포맷(한글·공백 허용)이라 bare `(<name>)` 로는 서술 괄호와 오탐이 나서 무태그 흡수 회귀
+# 자유 포맷(한글·공백 허용)이라 bare `(<name>)` 로는 서술 괄호와 오탐이 나서 무태그 오인 회귀
 # (`test_handoff_regex_ignores_descriptive_parens_when_untagged`)를 깬다 — sentinel 이 그 클래스를
 # 닫는다. domain.bootstrap_rules 소비측(`_LOG_HANDOFF_HEADER_RE`·`_session_owns_untagged`)의 `task:` 판별과
 # 미러(모듈 격리라 상수를 각 모듈에 inline). dashboard 자기 섹션은 sentinel 없이 verbatim
-# `## <task>`(interface 2) — 사람 가독 표면과 기계 파싱 표면의 요구가 달라 값을 분리한다.
+# `## <task>`(interface 2) — 사람 가독 쪽과 기계 파싱 쪽의 요구가 달라 값을 분리한다.
 _TASK_TAG_PREFIX = "task:"
 
 
@@ -130,9 +130,9 @@ def _collect_session_entries(
     ``feat``/``fix``/``verify`` 등 임의 단어이며 board 발행 문법의 ticket ID 뒤 ``— …`` 형태로
     판별한다. slot 세션도 같은 canonical session 태그 entry만 소비한다. legacy 무태그 entry는
     동시 slot 혼입 위험 때문에 slot 모드에서 수집하지 않는다. 정체성 미해소 수집만 태그 없는 canonical
-    handoff를 경계로 삼고, 자기 경계가 없으면 가장 최근의 다른 handoff로 폴백한다. 본문은
+    handoff를 경계로 삼고, 자기 경계가 없으면 가장 최근의 다른 handoff로 대신한다. 본문은
     반환하지 않아 log 원문이 서사의 단일 진실로 남는다. ``boundary_task``를 명시하면 entry
-    귀속 task와 handoff 생산 축을 분리한다. 특히 legacy 연속성을 유지하는 수집 전용 모드는
+    귀속 task와 handoff 생산 방식을 분리한다. 특히 legacy 연속성을 유지하는 수집 전용 모드는
     ``task=<해소 identity>, boundary_task=None``으로 태그 entry를 무태그 handoff 이후만
     수집한다.
     """
@@ -164,8 +164,8 @@ def _collect_session_entries(
             index for index, header in enumerate(headers)
             if handoff_re.fullmatch(header)
         ]
-        # 수집 전용 legacy 축은 자기 생산 문법인 무태그 handoff를 우선하고, 기존 무태그
-        # 경계 폴백을 그대로 유지한다. 실행 task 축은 태그가 권위라 무관 경계를 쓰지 않는다.
+        # 수집 전용 legacy 모드는 자기 생산 문법인 무태그 handoff를 우선하고, 기존 무태그
+        # 경계 대체를 그대로 유지한다. 실행 task 모드는 태그가 권위라 무관 경계를 쓰지 않는다.
         fallback_boundaries = (
             [
                 index for index, header in enumerate(headers)
@@ -217,7 +217,7 @@ def _collect_session_entries(
         index for index, header in enumerate(headers)
         if handoff_re.fullmatch(header)
     ]
-    # 무관 handoff 경계 폴백은 태그 귀속 권위가 없는 무태그 legacy에만 허용한다.
+    # 무관 handoff 경계 대체는 태그 귀속 권위가 없는 무태그 legacy에만 허용한다.
     fallback_boundaries = (
         [
             index for index, header in enumerate(headers)
@@ -252,7 +252,7 @@ def collect_session_entries(
 
 
 def _session_entries_text(entries: list[str], boundary_unresolved: bool = False) -> str:
-    """handoff skeleton의 자동 박제 목록을 compact한 중첩 목록으로 렌더한다."""
+    """handoff skeleton의 자동 기록 목록을 compact한 중첩 목록으로 렌더한다."""
     notice = (
         f" (경계 미해소 — 최근 {_UNRESOLVED_BOUNDARY_ENTRY_LIMIT}건)"
         if boundary_unresolved else ""
@@ -312,11 +312,11 @@ _INCIDENT_LINE_RE = re.compile(r"^- 회귀/incident:", re.MULTILINE)
 
 
 class DirtyAckStampError(RuntimeError):
-    """기존 handoff entry 에 ack 사유를 박제할 자리를 찾지 못했다 (부작용 0 상태에서 발생)."""
+    """기존 handoff entry 에 ack 사유를 적어 둘 자리를 찾지 못했다 (부작용 0 상태에서 발생)."""
 
 
 def _dirty_ack_line(note: str | None) -> str:
-    """handoff entry 의 dirty-tree ack 박제 줄을 빌드한다 (미ack 이면 줄 자체 생략).
+    """handoff entry 의 dirty-tree ack 기록 줄을 빌드한다 (미ack 이면 줄 자체 생략).
 
     dirty 를 override 하고 나간 세션(`--ack-dirty` 또는 사용자 명시 핸드오프 호환 신호)만
     이 줄을 갖는다 —
@@ -336,18 +336,18 @@ def upsert_dirty_ack_line(entry_text: str, note: str, newline: str = "\n") -> st
       - 이미 있으면 그 줄을 **교체**(재삽입 없음·같은 입력이면 byte 동일 → 멱등). 기존 줄의
         종결자(CRLF/LF)를 그대로 되살려 CRLF 로그에 bare LF 를 섞지 않는다.
       - 없으면 `- 회귀/incident:` 줄 바로 앞에 삽입(신규 skeleton 과 같은 자리).
-      - 그 앵커도 없으면 entry 끝에 붙인다.
-    entry 가 비어 앵커도 끝줄도 없으면 `DirtyAckStampError` — 조용히 통과시키지 않는다
-    (박제 불가는 차단이 기본).
+      - 그 표시 글도 없으면 entry 끝에 붙인다.
+    entry 가 비어 표시 글도 끝줄도 없으면 `DirtyAckStampError` — 조용히 통과시키지 않는다
+    (적어 둘 수 없으면 차단이 기본).
     """
     line = f"{DIRTY_ACK_ENTRY_LABEL}: {note}"
     existing = _DIRTY_ACK_LINE_RE.search(entry_text)
     if existing is not None:
         replacement = line + existing.group("cr")
         return entry_text[:existing.start()] + replacement + entry_text[existing.end():]
-    anchor = _INCIDENT_LINE_RE.search(entry_text)
-    if anchor is not None:
-        return entry_text[:anchor.start()] + line + newline + entry_text[anchor.start():]
+    marker = _INCIDENT_LINE_RE.search(entry_text)
+    if marker is not None:
+        return entry_text[:marker.start()] + line + newline + entry_text[marker.start():]
     if not entry_text.strip():
         raise DirtyAckStampError(
             "기존 handoff entry 가 비어 ack 사유를 기록할 자리가 없다"
@@ -369,7 +369,7 @@ def build_handoff_log_skeleton(
     log_text 와 task 로 직전 자기 handoff 이후 complete/checkpoint 헤더를 자동 채운다.
     session 주입 시(정체성 태그 `task:<task>`) 헤더 차수 뒤에 `({session})` 태그를 박는다 —
     task 시퀀스의 감사 단서(이벤트 메타·상태 저장 아님). 미지정이면 태그를 생략한다.
-    dirty_ack_note 주입 시(dirty-tree 게이트 override) ack 사유 줄을 추가한다 — 미지정이면
+    dirty_ack_note 주입 시(dirty-tree 통과 조건 override) ack 사유 줄을 추가한다 — 미지정이면
     줄 생략(clean 핸드오프는 현행 스키마 byte-호환).
     """
     if date is None:
@@ -434,7 +434,7 @@ def _prepare_handoff_log_change(
     반환은 ``(update_mode, payload, preview, warning)`` 이다. update_mode면 payload는
     기존 log 전체를 비파괴 갱신한 값이고, 아니면 append할 문자열이다. 같은 정체성의 마지막
     handoff 차수가 이번 차수와 같을 때만 갱신한다. 헤더 차수 파싱 실패나 기계 구획 경계
-    모호(marker 0/2+)는 현행 append로 보수적 폴백하며 warning 한 줄을 돌려준다.
+    모호(marker 0/2+)는 현행 append로 보수적으로 대신하며 warning 한 줄을 돌려준다.
 
     dirty_ack_note 는 신규 entry(append) skeleton 에만 박힌다 — 같은-세션 갱신 모드는 기계
     소유 구획('이 세션 기록 entries')만 건드리는 byte-멱등 경로라 본문 줄을 새로 끼우지 않는다.
@@ -465,7 +465,7 @@ def _prepare_handoff_log_change(
             target = candidate
 
     if target is not None:
-        # entry 경계는 다음 canonical log entry 직전. 중첩 박제 목록의 `  - ## [...]`는
+        # entry 경계는 다음 canonical log entry 직전. 중첩 기록 목록의 `  - ## [...]`는
         # 두 칸 들여써 `_LOG_ENTRY_RE` 경계가 되지 않는다.
         next_entry = _LOG_ENTRY_RE.search(log_text, target.end())
         entry_end = next_entry.start() if next_entry is not None else len(log_text)
@@ -503,7 +503,7 @@ def _prepare_handoff_log_change(
                 + entry_text[blocks[0].end():]
             )
             # ack 사유는 기존 entry 안에서 **기계 소유 줄 하나**로 멱등 upsert 한다 — 재실행이
-            # 줄을 쌓지 않고, 박제할 자리가 없으면 DirtyAckStampError 로 fail-loud(무접촉 상태에서
+            # 줄을 쌓지 않고, 적어 둘 자리가 없으면 DirtyAckStampError 로 fail-loud(무접촉 상태에서
             # 발생 — 이 함수는 계획만 만들고 write 는 호출부가 뒤에 한다).
             if dirty_ack_note:
                 new_entry_text = upsert_dirty_ack_line(
@@ -533,14 +533,14 @@ def _prepare_handoff_log_change(
 def _build_new_session_entry(
     session_num: int | str,
     date_str: str,
-    wave_summary: str,
+    session_summary: str,
 ) -> str:
     """새 pm 세션 entry 줄을 빌드한다 (줄바꿈 포함).
 
-    형식: "  - **N차** (YYYY-MM-DD · <wave_summary>): <wave_summary>."
+    형식: "  - **N차** (YYYY-MM-DD · <session_summary>): <session_summary>."
     """
     return (
-        f"  - **{_normalize_session_num(session_num)}차** ({date_str} · {wave_summary}): {wave_summary}.\n"
+        f"  - **{_normalize_session_num(session_num)}차** ({date_str} · {session_summary}): {session_summary}.\n"
     )
 
 
@@ -548,7 +548,7 @@ def update_session_window(
     pm_state_text: str,
     session_num: int | str,
     date_str: str,
-    wave_summary: str,
+    session_summary: str,
 ) -> str:
     """pm_state.md 의 세션 식별 절에 sliding window 를 적용한 새 텍스트를 반환한다.
 
@@ -556,12 +556,12 @@ def update_session_window(
     - 기존 entry가 이미 3개일 때만 가장 오래된 세션 entry 제거 (3 차 sliding window)
     - "이전 차 (PM N차~M차)" 포인터 줄 갱신
 
-    앵커 불일치 시 ValueError (추측 편집 금지).
+    표시 글 불일치 시 ValueError (추측 편집 금지).
     """
     result = session_history._extract_session_section(pm_state_text)
     if result is None:
         raise ValueError(
-            f"절 제목 불일치: '{session_history._SESSION_SECTION_ANCHOR}' 가 pm_state.md 에서 발견되지 않았다."
+            f"절 제목 불일치: '{session_history._SESSION_SECTION_MARKER}' 가 pm_state.md 에서 발견되지 않았다."
         )
     section_text, start_offset, end_offset = result
 
@@ -575,7 +575,7 @@ def update_session_window(
             raise ValueError(
                 "절 형식 불일치: 세션 식별 절에 기존 pm 세션 entry (- **N차** ...) 가 없다."
             )
-        new_entry_line = _build_new_session_entry(session_num, date_str, wave_summary)
+        new_entry_line = _build_new_session_entry(session_num, date_str, session_summary)
         new_section = section_text.replace(
             identity_args.TASK_PM_STATE_EMPTY_MARKER,
             new_entry_line.rstrip("\n"),
@@ -599,7 +599,7 @@ def update_session_window(
     # 연속성이 끊긴다. 1→2→3차까지 공존시키고, **기존 3개 + 신규 1개**가 되는 4차부터만
     # 최고령을 밀어낸다.
     if len(existing_entries) < SLIDING_WINDOW_SIZE:
-        new_entry_line = _build_new_session_entry(session_num, date_str, wave_summary)
+        new_entry_line = _build_new_session_entry(session_num, date_str, session_summary)
         last_entry = existing_entries[-1]
         insert_pos = last_entry.end()
         if insert_pos < len(section_text) and section_text[insert_pos] == "\n":
@@ -703,10 +703,10 @@ def update_session_window(
         new_section += pointer_line
 
     # 3. 신규 세션 entry 추가 — 기존 entry 목록의 마지막 줄 이후에 삽입
-    new_entry_line = _build_new_session_entry(session_num, date_str, wave_summary)
+    new_entry_line = _build_new_session_entry(session_num, date_str, session_summary)
 
     # 현재 entry 목록 마지막 위치 찾기 (재탐색)
-    updated_entries = list(session_history._PM_SESSION_ANCHOR_RE.finditer(new_section))
+    updated_entries = list(session_history._PM_SESSION_MARKER_RE.finditer(new_section))
     if updated_entries:
         last_entry = max(updated_entries, key=lambda m: int(m.group(1).replace("차", "")))
         insert_pos = last_entry.end()
@@ -764,32 +764,32 @@ def parse_pytest_summary(output: str) -> str:
     return output.strip()[-200:] if output.strip() else ""
 
 
-_PYTEST_GATE_TOKEN = "pytest"
+_PYTEST_CHECK_TOKEN = "pytest"
 
 
-_DEFAULT_GATE_LABEL = "pytest tests/ -q -n auto"
+_DEFAULT_CHECK_LABEL = "pytest tests/ -q -n auto"
 
 
-def _gate_is_pytest(gate_cmd: str | None) -> bool:
+def _check_is_pytest(check_cmd: str | None) -> bool:
     """해소된 회귀 명령이 pytest 스위트면 True.
 
     `None`(해소 실패) = 프레임워크 자기 회귀 기본값 = venv pytest argv 이므로 True.
     """
-    return gate_cmd is None or _PYTEST_GATE_TOKEN in gate_cmd
+    return check_cmd is None or _PYTEST_CHECK_TOKEN in check_cmd
 
 
-def _gate_label(gate_cmd: str | None) -> str:
-    """회귀 게이트를 사람이 읽는 한 줄로 (안내 출력용)."""
-    return gate_cmd if gate_cmd else _DEFAULT_GATE_LABEL
+def _check_label(check_cmd: str | None) -> str:
+    """회귀 통과 조건을 사람이 읽는 한 줄로 (안내 출력용)."""
+    return check_cmd if check_cmd else _DEFAULT_CHECK_LABEL
 
 
-def _regression_is_green(output: str, returncode: int, gate_cmd: str | None) -> bool:
-    """회귀가 green 이면 True — 판정 기준은 게이트 종류가 정한다(`_gate_is_pytest`).
+def _regression_is_green(output: str, returncode: int, check_cmd: str | None) -> bool:
+    """회귀가 green 이면 True — 판정 기준은 통과 조건 종류가 정한다(`_check_is_pytest`).
 
-    - pytest 게이트 — 기존 요약행 판정(`is_pytest_green`) 100% 불변.
-    - 비-pytest 게이트 — exit code 0 만 green(요약행 개념이 없다).
+    - pytest 통과 조건 — 기존 요약행 판정(`is_pytest_green`) 100% 불변.
+    - 비-pytest 통과 조건 — exit code 0 만 green(요약행 개념이 없다).
     """
-    if _gate_is_pytest(gate_cmd):
+    if _check_is_pytest(check_cmd):
         return is_pytest_green(output, returncode)
     return returncode == 0
 
@@ -813,7 +813,7 @@ def flatten_ack_reason(reason: str) -> str:
 
 
 def _format_dirty_paths(paths: list[str]) -> list[str]:
-    """차단/경고 메시지의 경로 열거 줄 목록 — DIRTY_CHECK_LIST_LIMIT 초과분은 '… 외 N건' 으로 접는다."""
+    """차단/경고 메시지의 경로 열거 줄 목록 — DIRTY_CHECK_LIST_LIMIT 초과분은 '… 외 N건' 으로 줄인다."""
     ordered = sorted(paths)
     lines = [f"    {path}" for path in ordered[:DIRTY_CHECK_LIST_LIMIT]]
     if len(ordered) > DIRTY_CHECK_LIST_LIMIT:
@@ -822,10 +822,10 @@ def _format_dirty_paths(paths: list[str]) -> list[str]:
 
 
 def build_dirty_ack_note(reason: str, dirty_count: int, *, auto: bool) -> str:
-    """handoff entry 에 박제할 dirty-tree ack 사유 문장을 만든다 (**단일행 보장**).
+    """handoff entry 에 적어 둘 dirty-tree ack 사유 문장을 만든다 (**단일행 보장**).
 
     `auto`(사용자 명시 핸드오프 호출부 호환 신호)면 별도 dirty 사유가 없으므로 그 신호로
-    차단을 강등했다는 사실 자체를 박는다. 명시 `--ack-dirty` 면 사람이 준 사유를 평탄화해
+    차단을 낮췄다는 사실 자체를 적는다. 명시 `--ack-dirty` 면 사람이 준 사유를 평탄화해
     그대로 싣고 override 수단을 병기한다. 둘 다 잔존 건수를 함께 남겨 다음 세션이 "몇 개를
     못 보고 넘어왔나"를 log 만 읽고 안다.
     """

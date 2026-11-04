@@ -2,9 +2,9 @@
 
 pm_state 를 *슬롯별*로 분리한다 — multi-PM 연속성(여러 PM 슬롯이 한 clone 공유 보드 위에서
 각자 핸드오프 상태 유지·spike §1.3·§3.1). 경로 = `.project_manager/.local/slots/<slot>/pm_state.md`
-(gitignored·per-slot). slot 키 = lease 장부 슬롯과 동형(`<repo>_<N>`·`_auto_slot`·T-0123 재사용).
+(gitignored·per-slot). slot 키 = lease 대여 기록 슬롯과 같은 구조(`<repo>_<N>`·`_auto_slot`·T-0123 재사용).
 
-검증 세 축 (pm_handoff·pm_bootstrap):
+검증 세 항목 (pm_handoff·pm_bootstrap):
   - **per-slot read/write**: 슬롯 해소(`<repo>_<N>`) → `.local/slots/<slot>/pm_state.md`.
   - **미해소 fail-loud**: 슬롯 미해소(`_auto_slot` None) → 경로를 지어내지 않고 중단.
   - **graceful 마이그레이션**: legacy 존재 + slot 경로 부재 → 첫 접근 시 slot 경로로 이동.
@@ -57,7 +57,7 @@ def _write_leases(path: Path, repo: str = "project_manager", n: int = 1) -> None
 
 
 def _make_single_self_host(root: Path, repo: str = "project_manager", n: int = 1) -> None:
-    """단일 self-host(repo 1개 + 슬롯 1개) 형상을 tmp REPO 에 만든다 → _auto_slot=(repo, n)."""
+    """단일 self-host(repo 1개 + 슬롯 1개) 구성을 tmp REPO 에 만든다 → _auto_slot=(repo, n)."""
     _write_areas(root / ".project_manager" / "areas.md", repo)
     _write_leases(root / ".project_manager" / ".local" / "worktree-leases.json", repo, n)
 
@@ -120,7 +120,7 @@ def _write_leases_states(path, repo: str, slots: list[tuple[int, str]]) -> None:
 
 
 
-# ── _pm_state_path: per-slot / 솔로 폴백 / graceful 마이그레이션 ──────────────
+# ── _pm_state_path: per-slot / 솔로 대체 / graceful 마이그레이션 ──────────────
 
 
 
@@ -158,12 +158,12 @@ def _bare_slot_dir(hf, n: int = 1) -> Path:
 
 # ── incidental(회귀 cwd) fail-soft 무변경 재확인 (T-0178 should-fix·continuity 와 비대칭) ──
 # continuity(`_resolve_state_slot`)는 default-1(`{1,2}`→slot1)로 라우팅하지만, incidental
-# `_regression_cwd` 는 여전히 `_auto_slot`(exactly-1)을 쓴다 — `{1,2}`→None→REPO 폴백 유지.
-# 회귀 cwd 는 *슬롯 무관*(어느 슬롯이든 같은 worktree 트리)이라 REPO 폴백으로 충분하므로,
-# 모호함으로 깨뜨리지 않는다(solo 도그푸딩 보존·최우선). 이 비대칭이 의도적임을 박제한다.
+# `_regression_cwd` 는 여전히 `_auto_slot`(exactly-1)을 쓴다 — `{1,2}`→None→REPO 대체 유지.
+# 회귀 cwd 는 *슬롯 무관*(어느 슬롯이든 같은 worktree 트리)이라 REPO 대체로 충분하므로,
+# 모호함으로 깨뜨리지 않는다(solo 도그푸딩 보존·최우선). 이 비대칭이 의도적임을 기록한다.
 
 def test_regression_cwd_default_1_setup_falls_back_to_repo(hf):
-    """`{1,2}` 셋업에서도 `_regression_cwd` 는 REPO 폴백(incidental fail-soft 불변).
+    """`{1,2}` 셋업에서도 `_regression_cwd` 는 REPO 대체(incidental fail-soft 불변).
 
     continuity 는 slot1 로 라우팅되지만 회귀 cwd 는 `_auto_slot`(exactly-1·미변경)→None→
     REPO — 모호함으로 회귀 러너를 깨지 않는다(should-fix 가 건드린 건 continuity 한정)."""
@@ -178,7 +178,7 @@ def test_regression_cwd_default_1_setup_falls_back_to_repo(hf):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# pm_handoff — PmHandoff.__init__ per-slot 배선 (명시 주입 vs 프로덕션)
+# pm_handoff — PmHandoff.__init__ per-slot 연결 (명시 주입 vs 프로덕션)
 # ══════════════════════════════════════════════════════════════════════════
 
 def test_handoff_init_explicit_pm_state_honored(hf, tmp_path):
@@ -203,7 +203,7 @@ def bs(tmp_path, monkeypatch):
 
 
 def test_resolve_pm_state_bound_slot_no_legacy_fallback(bs, monkeypatch, tmp_path):
-    """codex R5: 양성 슬롯 바인딩인데 자기 pm_state 부재 시 legacy 로 폴백하면 안 된다.
+    """codex R5: 양성 슬롯 바인딩인데 자기 pm_state 부재 시 legacy 로 대체하면 안 된다.
 
     `_pm_state_path(migrate=False)` 는 slot 부재 + legacy 존재면 legacy `wiki/pm_state.md`
     (솔로/slot-1 상태)를 반환한다. bound slot-2 가 그걸 읽으면 타 슬롯 차수·남은작업이 유입돼
@@ -219,14 +219,14 @@ def test_resolve_pm_state_bound_slot_no_legacy_fallback(bs, monkeypatch, tmp_pat
 
     inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path))
     inst._bound_slot = "work/project_manager_2"   # 양성 슬롯 바인딩(fresh slot-2)
-    assert inst._resolve_pm_state_file() is None, "bound slot-2 는 legacy 폴백 유입 금지(None)."
+    assert inst._resolve_pm_state_file() is None, "bound slot-2 는 legacy 대체 유입 금지(None)."
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # pm_handoff — run() end-to-end per-slot read/write (프로덕션 경로·명시 주입 없음)
 # ══════════════════════════════════════════════════════════════════════════
 
-# 실 pm_state.md "세션 식별" 절 최소 형식(앵커·entry·포인터·다음 헤더) — sliding window 전제.
+# 실 pm_state.md "세션 식별" 절 최소 형식(표시 글·entry·포인터·다음 헤더) — sliding window 전제.
 _SESSION_SECTION = (
     "# PM State\n\n"
     "## 세션 식별 (현재까지 사용된 이름)\n\n"
@@ -245,7 +245,7 @@ def _make_handoff_production(
 ):
     """명시 pm_state_file 주입 *없는*(프로덕션) PmHandoff — run() 이 per-slot 해소.
 
-    단일 self-host 형상(areas+leases)을 monkeypatch 된 tmp REPO 에 깐다. log/playbook 은
+    단일 self-host 구성(areas+leases)을 monkeypatch 된 tmp REPO 에 깐다. log/playbook 은
     tmp(REPO 추종). subprocess 는 결정론 DI. with_legacy=True 면 legacy pm_state 를 미리
     seed(마이그레이션 케이스), slot_seeded=True 면 slot 경로를 미리 seed(이미 per-slot).
     run_pytest_fn 주입 시 기계회귀 red 케이스(중단 시 무접촉 가드)에 쓴다.
@@ -257,7 +257,7 @@ def _make_handoff_production(
     log_file = tmp / "log.md"
     log_file.write_text("# log\n", encoding="utf-8")
     playbook_file = tmp / "playbook.md"
-    playbook_file.write_text("# pm_playbook (no anchor)\n", encoding="utf-8")
+    playbook_file.write_text("# pm_playbook (no marker)\n", encoding="utf-8")
 
     if with_legacy:
         legacy = tmp / ".project_manager" / "wiki" / "pm_state.md"
@@ -295,12 +295,12 @@ def _make_handoff_production(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 트랜잭션 계약 — 중단 게이트(기계회귀) red → legacy 미이동 (codex must-fix)
+# 트랜잭션 계약 — 중단 검사(기계회귀) red → legacy 미이동 (codex must-fix)
 # ══════════════════════════════════════════════════════════════════════════
 #
-# 마이그레이션(legacy→slot replace())이 *중단 게이트 통과 후*·pm_state 첫 접촉 직전에만
+# 마이그레이션(legacy→slot replace())이 *중단 검사 통과 후*·pm_state 첫 접촉 직전에만
 # 일어나야 한다 — 기계회귀 red 로 중단되면 pm_state 무접촉(legacy 그대로·slot 미생성).
-# (출하 step 은 ADR-0039 D4 로 비차단 surface 화 — 더는 중단 게이트가 아니다.)
+# (출하 step 은 ADR-0039 D4 로 비차단 출력으로 — 더는 중단 검사가 아니다.)
 
 _PYTEST_RED = "1 passed, 1 failed in 0.1s"  # is_pytest_green → False(중단).
 _PYTEST_GREEN = "2 passed in 0.1s"          # is_pytest_green → True(통과).
@@ -315,7 +315,7 @@ _PYTEST_GREEN = "2 passed in 0.1s"          # is_pytest_green → True(통과).
 # T-0316 이 BREAKING 제거했다 — canonical 은 이제 분해형 `--repo <name> [--slot <N>]`
 # (`identity_args.parse_identity`)이라, bare 숫자 문자열이 CLI 로 들어올 경로 자체가 없다
 # (`--slot` 단독은 `--repo` 필수 위반으로 구조적 fail-loud). 그 대체 동작(`--repo`/`--slot` 해소·
-# M3 리스 조인·`_resolve_explicit_identity_slot`)은 test_pm_handoff.py 의 "ADR-0057 세션
+# M3 대여 조인·`_resolve_explicit_identity_slot`)은 test_pm_handoff.py 의 "ADR-0057 세션
 # 정체성 canonical" 스위트(`test_resolve_explicit_identity_slot_*`·`hf.main(["--repo", ...])`)
 # 가 대체 커버한다 — 여기선 dead 테스트만 제거.
 
@@ -388,7 +388,7 @@ def test_last_handoff_header_line_solo_keeps_global(bs, *, tmp_path):
 
 
 def test_last_handoff_header_line_fresh_slot3_no_leak(bs, *, tmp_path):
-    """fresh slot-3(자기 handoff 0)은 None — 타 슬롯 handoff 헤더로 폴백 안 함."""
+    """fresh slot-3(자기 handoff 0)은 None — 타 슬롯 handoff 헤더로 대체 안 함."""
     assert bootstrap_history.last_handoff_header_line(pm_paths.home_at(tmp_path), _MULTI_SLOT_LOG, bound_session='project_manager_3') is None
 
 
@@ -464,7 +464,7 @@ def test_extract_slot_handoff_entry_slot2_last_own_handoff(bs, *, tmp_path):
 
 
 def test_extract_slot_handoff_entry_untagged_fallback_for_slot1(bs, *, tmp_path):
-    """무태그 폴백 — slot-1 은 태그 도입 전 무태그 handoff 도 자기 것으로 본다."""
+    """무태그 대체 — slot-1 은 태그 도입 전 무태그 handoff 도 자기 것으로 본다."""
     log = (
         "## [2026-07-01] handoff | PM 40차 → 다음 PM 세션\n"
         "- 무태그 인계 본문.\n"
@@ -475,7 +475,7 @@ def test_extract_slot_handoff_entry_untagged_fallback_for_slot1(bs, *, tmp_path)
 
 
 def test_extract_slot_handoff_entry_slot2_no_own_handoff_is_none(bs, *, tmp_path):
-    """slot-2 가 자기 handoff 0개(무태그만) → None(호출부가 전역 마지막으로 폴백)."""
+    """slot-2 가 자기 handoff 0개(무태그만) → None(호출부가 전역 마지막으로 대체)."""
     log = (
         "## [2026-07-01] handoff | PM 40차 → 다음 PM 세션\n"
         "- 무태그.\n"
@@ -513,7 +513,7 @@ def test_slot2_filter_zero_other_slot_asset_leak(bs, *, tmp_path):
     assert "slot2 2차 인계" in entry["body"]
 
 
-# ── _collect_handoff_context: 슬롯 스코프 배선 + fresh 슬롯 = 1차 ──────────────
+# ── _collect_handoff_context: 슬롯 스코프 연결 + fresh 슬롯 = 1차 ──────────────
 
 def _bootstrap_for_ctx(bs, tmp_path, *, bound_slot, pm_state_text=None):
     """`_collect_handoff_context` 호출용 최소 PmBootstrap — pm_state 주입·슬롯 바인딩.
@@ -550,17 +550,17 @@ def _bootstrap_single_self_host(bs, tmp_path, *, pm_state_file=None, log_file=No
 
 # ── _bound_session_name / _auto_bound_session: write↔read 대칭 (MF-1) ──────────
 
-# ── MF-2: fresh slot-2+ 는 전역 폴백 금지 (타 슬롯 handoff 본문·branch·reattach 유입 0) ──
+# ── MF-2: fresh slot-2+ 는 전역 대체 금지 (타 슬롯 handoff 본문·branch·reattach 유입 0) ──
 
 def test_collect_log_entry_solo_unresolved_keeps_global_fallback(bs, tmp_path):
-    """MF-2 경계: bound **진짜 미해소**(genuine solo·note 만) → 전역 마지막 폴백 유지(현행 표시)."""
+    """MF-2 경계: bound **진짜 미해소**(genuine solo·note 만) → 전역 마지막 대체 유지(현행 표시)."""
     log = "## [2026-07-09] note | 진행 메모\n- 전역 note 본문.\n"
     log_file = tmp_path / "current.md"
     log_file.write_text(log, encoding="utf-8")
     inst = bootstrap_cli.PmBootstrap(pm_paths.home_at(tmp_path), log_file=log_file, areas_file=tmp_path / 'no-areas.md')
     inst._bound_slot = None  # genuine solo — 자동해소 None
     entry = inst._collect_log_entry()
-    assert entry is not None, "솔로(bound 미해소)는 전역 폴백 유지 — 현행 표시 보존."
+    assert entry is not None, "솔로(bound 미해소)는 전역 대체 유지 — 현행 표시 보존."
     assert "전역 note 본문" in entry["body"]
 
 
@@ -568,11 +568,11 @@ def test_collect_log_entry_solo_note_after_handoff_returns_note(bs, tmp_path):
     """codex R2 회귀: 솔로에서 handoff **뒤에** note 가 오면 마지막 entry(=note)를 dump 해야 한다.
 
     T-0179 계약 = 마지막 entry(모든 타입). handoff-우선 필터를 솔로에도 태우면 최신 note/complete
-    ("wave 진행 중" 신호)를 과거 handoff 로 가린다. note-만 테스트는 이 회귀를 못 잡으므로(handoff
-    부재라 어차피 전역 폴백) handoff→note 순서를 명시적으로 고정한다."""
+    ("작업 진행 중" 신호)를 과거 handoff 로 가린다. note-만 테스트는 이 회귀를 못 잡으므로(handoff
+    부재라 어차피 전역 대체) handoff→note 순서를 명시적으로 고정한다."""
     log = (
         "## [2026-07-08] handoff | PM 50차 → 다음 PM 세션\n- 과거 handoff 본문.\n\n"
-        "## [2026-07-09] complete | T-9999 — 뭔가 완료\n- 최신 complete 본문(wave 진행 중).\n"
+        "## [2026-07-09] complete | T-9999 — 뭔가 완료\n- 최신 complete 본문(작업 진행 중).\n"
     )
     log_file = tmp_path / "current.md"
     log_file.write_text(log, encoding="utf-8")
@@ -644,7 +644,7 @@ def test_handoff_task_tag_owned_and_num_inferred(bs, *, tmp_path):
 
 
 def test_handoff_task_tag_excludes_other_task_and_slot(bs, *, tmp_path):
-    """task bound 는 타 task·슬롯 태그 entry 를 자기 것으로 안 본다(cross-anchor 유입 차단)."""
+    """task bound 는 타 task·슬롯 태그 entry 를 자기 것으로 안 본다(cross-task 유입 차단)."""
     log = (
         "## [2026-07-10] handoff | PM 9차 (project_manager_2) → 다음 PM 세션\n- 슬롯 본문.\n\n"
         "## [2026-07-11] handoff | PM 3차 (task:other) → 다음 PM 세션\n- other 본문.\n\n"
@@ -671,8 +671,8 @@ def test_handoff_slot_bound_ignores_task_tags(bs, *, tmp_path):
 # ── reconcile_session_num: 순수 함수 단위 (DoD·test_pm_state_per_slot 확장) ────
 
 def test_reconcile_session_num_slot_scoped_log_next(bs):
-    """슬롯-스코프 log_next 소비 — pm_state 미해소면 슬롯 log_next 로 폴백(stale 아님)."""
-    # slot-2 자기 태그 max=2 → log_next=3. pm_state 미해소(`?`) → 3 폴백.
+    """슬롯-스코프 log_next 소비 — pm_state 미해소면 슬롯 log_next 로 대체(stale 아님)."""
+    # slot-2 자기 태그 max=2 → log_next=3. pm_state 미해소(`?`) → 3 대체.
     assert bootstrap_rules.reconcile_session_num("?", 3) == (3, False)
 
 
@@ -700,8 +700,8 @@ def test_reconcile_session_num_both_unresolved_placeholder(bs):
 
 # ══════════════════════════════════════════════════════════════════════════
 # pm_handoff — 오형식 차수 정규화 (`**N차차+**` → `**N차**`·T-0254·ADR-0044·§1.6)
-# T-0100 이중-차 잔재(finance 솔로 실측)가 앵커 정규식(`\d+차` 1회) 미매치 → pm_state
-# derive 실패 → log 폴백 은닉 의존. 파서 관대화(fallback)가 아니라 멱등·비파괴 데이터
+# T-0100 이중-차 잔재(finance 솔로 실측)가 표시 글 정규식(`\d+차` 1회) 미매치 → pm_state
+# derive 실패 → log 대체 은닉 의존. 파서 관대화(fallback)가 아니라 멱등·비파괴 데이터
 # 정규화 도구로 원천 해소(prefer-data-migration-over-fallback).
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -749,9 +749,9 @@ def _write_legacy_state(hf, text: str) -> Path:
 
 
 
-# finance 실 타깃 형상 — 설명 절(`## 세션 식별 규칙`·anchor 매치하나 entry 0)이 **먼저** 오고,
+# finance 실 타깃 구성 — 설명 절(`## 세션 식별 규칙`·표시 글 매치하나 entry 0)이 **먼저** 오고,
 # 그 뒤 실제 window 절의 entry 가 **전부 오형식**(`**N차차**`·well-formed 0). 절 선택을 정상
-# anchor 만으로 하면 window 가 "entry 없음"→설명 절로 폴백→silent no-op(codex must-fix 재현).
+# 표시 글만으로 하면 window 가 "entry 없음"→설명 절로 대체→silent no-op(codex must-fix 재현).
 _FINANCE_MALFORMED_ONLY_STATE = (
     "# PM State\n\n"
     "## 세션 식별 규칙\n\n"

@@ -4,9 +4,9 @@ task 모드 부트스트랩(F1 bind/resume 후)이 `slots_for_task` 보유 집�
 branch·head·기록↔live·dirty 행렬)하고 **슬롯별 0단계 검증**(stale·main-참조·기록↔live diverged —
 기존 `_phase0_*`/`compare_slot_git` 프리미티브 재사용)을 돈다. fault 1+ = 진입 차단(부분 dump 금지·
 전 fault 일괄 표시·해소 커맨드 실값). 0개 = "작업공간: (없음)"+진입. `--repo/--slot` 편입은 편입 후
-같은 열거 합류. slot-모드/솔로 경로는 gate 미진입(100% 불변).
+같은 열거 합류. slot-모드/솔로 경로는 검사 미진입(100% 불변).
 
-worktree_pool 은 **DI mock**(실 장부/git 미접촉·folder 존재는 tmp 실디렉터리로 모델). test_pm_
+worktree_pool 은 **DI mock**(실 대여 기록/git 미접촉·folder 존재는 tmp 실디렉터리로 모델). test_pm_
 bootstrap_phase0.py 의 hermetic DI 패턴 동류.
 """
 from __future__ import annotations
@@ -50,13 +50,13 @@ def bootstrap():
 
 
 class _FakeBoard:
-    """board 대역 — 엔진 앵커(anchor=None→통과) + 보호브랜치 목록(`_repo_protected`)."""
+    """board 대역 — 엔진 대상 저장소 검사(잘못된 대상=None→통과) + 보호브랜치 목록(`_repo_protected`)."""
 
     def __init__(self, *, protected=None):
         self._protected = protected if protected is not None else ["main", "master", "develop"]
 
-    def _pm_home_worktree_misanchor(self, anchor, **_kw):
-        return None  # PM 홈(통과) — 앵커 거부 안 함.
+    def _pm_home_worktree_wrong_repo(self, target_repo, **_kw):
+        return None  # PM 홈(통과) — 대상 저장소 거부 안 함.
 
 
     def _repo_protected(self, repo):
@@ -146,7 +146,7 @@ class _TaskPool:
         self.bind_task_calls: list[dict] = []
         self.slots_for_task_calls: list[str] = []
 
-    # task 축
+    # task 기준
     NoTaskSessionClaim = type("NoTaskSessionClaim", (Exception,), {})
 
     def take_task_session_claim(self, name):
@@ -181,7 +181,7 @@ class _TaskPool:
         return out
 
     def slots_for_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.slots_for_task(name)
 
     def _normalize_branch_name(self, branch, *, git_runner):
@@ -255,7 +255,7 @@ def _make(bootstrap, tmp_path, pool, *, board=None, board_fn=None, pytest_fn=Non
         if args[:2] == ["log", "--oneline"]:
             return 0, "abc123 subj\n"
         if "show-ref" in args:
-            # remedy 브랜치 후보 존재 검사(T-0412) — 이 대역 슬롯엔 브랜치가 없다(rc≠0).
+            # 해결 브랜치 후보 존재 검사(T-0412) — 이 대역 슬롯엔 브랜치가 없다(rc≠0).
             return 1, ""
         return 0, ""
 
@@ -313,11 +313,11 @@ def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, monkeyp
 
     class BrokenPool(_TaskPool):
         def slots_for_task(self, name):
-            raise OSError("ledger unreadable")
+            raise OSError("records unreadable")
 
         def slots_for_task_strict(self, name):
-            """장부를 못 읽는 상태는 두 API 모두에서 같다 — 진입이 막히는지를 본다."""
-            raise OSError("ledger unreadable")
+            """대여 기록을 못 읽는 상태는 두 API 모두에서 같다 — 진입이 막히는지를 본다."""
+            raise OSError("records unreadable")
 
     board_calls: list[list[str]] = []
 
@@ -333,25 +333,25 @@ def test_task_slot_resolution_exception_blocks_bootstrap_dump(bootstrap, monkeyp
     assert "실제 0슬롯으로 간주하지 않고" in captured.err
     assert "PM bootstrap dump" not in captured.out
     assert board_calls == []
-    assert pool.bind_task_calls == [], "슬롯 장부 해소 실패 뒤 task 장부/state write가 일어났다"
+    assert pool.bind_task_calls == [], "슬롯 대여 기록 해소 실패 뒤 task 기록/state write가 일어났다"
 
 
-def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, monkeypatch, tmp_path, capsys):
-    """실 strict 파서가 손상 JSON을 0슬롯으로 오인하지 않고 rc1·장부 무재작성으로 막는다."""
+def test_corrupt_real_record_blocks_bootstrap_without_rewrite(bootstrap, monkeypatch, tmp_path, capsys):
+    """실 strict 파서가 손상 JSON을 0슬롯으로 오인하지 않고 rc1·대여 기록 무재작성으로 막는다."""
     wp = bind_pool(monkeypatch, _load("worktree_pool"))
     local = tmp_path / "real-local"
-    ledger = local / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text('{"leases": [', encoding="utf-8")
+    records = local / "worktree-leases.json"
+    records.parent.mkdir(parents=True)
+    records.write_text('{"leases": [', encoding="utf-8")
     for name, value in {
-        "LEASES_FILE": ledger,
+        "LEASES_FILE": records,
         "LEASES_LOCK": local / "worktree-leases.lock",
         "TASKS_DIR": local / "tasks",
         "WORK_DIR": tmp_path / "real-work",
     }.items():
         setattr(wp, name, value)
     monkeypatch.setattr(pm_paths, "home_at", lambda root: home_module.Home(Path(root), Path(root) / ".project_manager/wiki", local, Path(root) / ".project_manager/local.conf"))
-    before = ledger.read_bytes()
+    before = records.read_bytes()
     board_calls: list[list[str]] = []
     inst = _make(
         bootstrap,
@@ -365,7 +365,7 @@ def test_corrupt_real_ledger_blocks_bootstrap_without_rewrite(bootstrap, monkeyp
     captured = capsys.readouterr()
     assert "보유 슬롯 대여 기록 조회 실패" in captured.err
     assert "실제 0슬롯으로 간주하지 않고" in captured.err
-    assert ledger.read_bytes() == before
+    assert records.read_bytes() == before
     assert board_calls == []
     assert "PM bootstrap dump" not in captured.out
 
@@ -384,7 +384,7 @@ def test_single_slot_enumerated_as_matrix(bootstrap, monkeypatch, tmp_path, caps
     assert "작업공간 (task 'mytask' 보유 1 — 전수 검증):" in out
     assert "work/A_1 · repo=A · branch=a5 · head=abcdef123456 · 기록↔live ✓ · dirty" in out
     assert "F2 alloc" not in out                     # generic 안내는 0개일 때만(억제)
-    assert pool.slots_for_task_calls == ["mytask"], "검증 lease 스냅샷 대신 surface가 장부를 재조회했다"
+    assert pool.slots_for_task_calls == ["mytask"], "검증 lease 복사본 대신 출력 단계가 대여 기록을 재조회했다"
 
 
 def test_multiple_slots_all_enumerated(bootstrap, monkeypatch, tmp_path, capsys):
@@ -641,17 +641,17 @@ def _git_call_targets_slot(args, slot: str) -> bool:
     엔진은 `-C` 인자에 **플랫폼 native** 표기(`str(Path)`)를 넘긴다(git 에 그대로 들어가는 실경로라
     표시 경로처럼 POSIX 로 고정하지 않는다). Windows 에선 그 값이 `…\\work\\A_1` 이라 `slot in arg`
     같은 POSIX 전용 부분문자열 판정은 어떤 호출도 못 잡고, 그 판정에 얹은 주입·단언이 조용히 no-op
-    이 된다(소유권 차단이 발화하지 않는 게 아니라 **테스트가 그 상황을 못 만든다**·T-0718 축 C).
+    이 된다(소유권 차단이 실행되지 않는 게 아니라 **테스트가 그 상황을 못 만든다**·T-0718 경우 C).
     """
     return any(slot in str(arg).replace("\\", "/") for arg in args)
 
 
-def _windows_flavour_worktree_cwd(inst):
-    """슬롯 cwd 산출(`_worktree_cwd`)을 Windows 표기로 바꾸는 주입 seam.
+def _windows_variant_worktree_cwd(inst):
+    """슬롯 cwd 산출(`_worktree_cwd`)을 Windows 표기로 바꾸는 주입 교체 지점.
 
     경로 구분자는 OS 가 정하므로 Linux 회귀는 그대로면 Windows 분기를 못 태운다. 슬롯 cwd 는
     엔진의 단일 지점에서 나오므로 여기만 바꾸면 freshness scope → git `-C` 인자까지 Windows 표기가
-    흐르고, 그 표기에서도 소유권 재검증이 발화하는지 Linux 에서 확인할 수 있다."""
+    흐르고, 그 표기에서도 소유권 재검증이 실행되는지 Linux 에서 확인할 수 있다."""
     base = PureWindowsPath("C:/pmhome")
 
     def _cwd(slot=None, _inst=inst):
@@ -663,14 +663,14 @@ def _windows_flavour_worktree_cwd(inst):
     return _cwd
 
 
-@pytest.mark.parametrize("path_flavour", ["native", "windows"])
+@pytest.mark.parametrize("path_variant", ["native", "windows"])
 def test_task_pull_rechecks_owner_before_mutation(
-    bootstrap, monkeypatch, tmp_path, capsys, path_flavour
+    bootstrap, monkeypatch, tmp_path, capsys, path_variant
 ):
     """fetch 뒤 release/realloc되어도 pull은 새 소유자 슬롯에서 실행하지 않고 loud 중단한다.
 
-    슬롯 cwd 표기(native·Windows)는 이 판정의 축이 아니다 — 두 표기 모두에서 같은 차단이
-    발화해야 다중 창 동시 push 방어가 OS 를 건너 살아 있다(T-0718 축 C)."""
+    슬롯 cwd 표기(native·Windows)는 이 판정의 기준이 아니다 — 두 표기 모두에서 같은 차단이
+    실행돼야 다중 창 동시 push 방어가 OS 를 건너 살아 있다(T-0718 경우 C)."""
     slot = "work/A_1"
     pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=(slot,), branches={slot: "a5"}))
     calls = []
@@ -689,8 +689,8 @@ def test_task_pull_rechecks_owner_before_mutation(
         return 0, ""
 
     inst = _make(bootstrap, tmp_path, pool, git_fn=git_fn, monkeypatch=monkeypatch)
-    if path_flavour == "windows":
-        inst._worktree_cwd = _windows_flavour_worktree_cwd(inst)
+    if path_variant == "windows":
+        inst._worktree_cwd = _windows_variant_worktree_cwd(inst)
     with pytest.raises(SystemExit) as exc:
         inst.run(task="mytask")
     assert exc.value.code == 1
@@ -711,7 +711,7 @@ def test_task_pull_rechecks_owner_before_mutation(
 
 
 def test_stale_slot_blocks_entry_with_prune_stale(bootstrap, monkeypatch, tmp_path, capsys):
-    """stale 슬롯(장부 有·폴더 無) = fault → 진입 차단 + prune-stale 해소 안내 + 부분 dump 금지."""
+    """stale 슬롯(대여 기록 有·폴더 無) = fault → 진입 차단 + prune-stale 해소 안내 + 부분 dump 금지."""
     pool = bind_pool(monkeypatch, _TaskPool(
         slot_root=tmp_path / "wt", task_slots=("work/A_1",),
         missing_dirs=("work/A_1",),                  # 폴더 부재 → stale
@@ -775,7 +775,7 @@ def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, monkeypatch, tm
     cap = capsys.readouterr()
     assert cap.out == ""
     assert "main-참조" in cap.err
-    # 엔진 단일 커맨드(생성+부모 기록+장부 스냅 재기록) — raw git 안내는 부모 기록을 남기지 않고
+    # 엔진 단일 커맨드(생성+부모 기록+대여 기록 재기록) — raw git 안내는 부모 기록을 남기지 않고
     # 해소 직후 '기록↔live diverged' 2차 차단을 유발하므로 싣지 않는다.
     assert "pm_config.py task branch mytask work/A_1 mytask --from main" in cap.err
     assert "git -C work/A_1 switch -c" not in cap.err
@@ -833,10 +833,10 @@ def test_unrecorded_slot_passes_and_marks(bootstrap, monkeypatch, tmp_path, caps
     assert "기록↔live 미기록" in capsys.readouterr().out
 
 
-# ── 4. slot-모드 / 솔로 불변 (gate 미진입) ───────────────────────────────────
+# ── 4. slot-모드 / 솔로 불변 (검사 미진입) ───────────────────────────────────
 
 
-# ── 6. sensitivity — stale 판정 배선 무력화 시 차단이 통과로 뒤집힌다 ─────────
+# ── 6. sensitivity — stale 판정 연결 무력화 시 차단이 통과로 뒤집힌다 ─────────
 
 
 def test_sensitivity_stale_detection_flips(bootstrap, tmp_path, capsys, monkeypatch):
@@ -846,7 +846,7 @@ def test_sensitivity_stale_detection_flips(bootstrap, tmp_path, capsys, monkeypa
     pool = bind_pool(monkeypatch, _TaskPool(slot_root=tmp_path / "wt", task_slots=("work/A_1",),
                      missing_dirs=("work/A_1",), branches={"work/A_1": "a5"}))
     inst = _make(bootstrap, tmp_path, pool, monkeypatch=monkeypatch)
-    # 배선 무력화 — 폴더가 항상 실재한다고 보면 stale fault 가 사라진다.
+    # 연결 무력화 — 폴더가 항상 실재한다고 보면 stale fault 가 사라진다.
     monkeypatch.setattr(bootstrap_slots, "_phase0_slot_folder_exists", lambda _home, slot: True)
     rc = inst.run(task="mytask")
     assert rc == 0, "폴더 실재 검사를 무력화했는데도 차단됐다(stale 판정이 그 프리미티브 소비가 아님)"

@@ -26,7 +26,7 @@ from typing import TypeVar
 
 import pytest
 
-from conftest import current_branch, write_cluster_ledger
+from conftest import current_branch, write_cluster_records
 from pm_engine.domain import install_rules
 from pm_engine.infra import install_source
 from _engine_tree import engine_python_files
@@ -46,7 +46,7 @@ from pm_engine.infra import manifest_store
 REPO = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO / "tests/data"
 HARD_REPORT = DATA_DIR / "private_context_hard_allowlist.json"
-RATCHET_BASELINE = DATA_DIR / "private_context_baseline.json"
+SHRINK_ONLY_BASELINE = DATA_DIR / "private_context_baseline.json"
 HARD_REPORT_VERSION = 2
 # 대장 재생성은 이 모듈을 직접 실행한다 — pytest 안에서는 절대 자기치유하지 않는다.
 REGENERATE_COMMAND = (
@@ -62,7 +62,7 @@ HARD_PATTERNS = {
         r"|§\s*[A-Z]\d{1,2}[A-Za-z]?"
     ),
 }
-RATCHET_PATTERNS = {
+SHRINK_ONLY_PATTERNS = {
     "circled_marker": re.compile(r"[\u2460-\u2473\u3251-\u325f]"),
     "decision_label": re.compile(r"\b[A-Z]\d{1,2}\b"),
     "session_stamp": re.compile(
@@ -89,7 +89,7 @@ def _load_tool_module(name: str):
 
 
 def _import_channel_python_paths(repo: Path) -> set[Path]:
-    """import 채널 python 축 — ``pm_import`` 의 **실제 출하 열거**를 소비한다.
+    """import 채널 python 갈래 — ``pm_import`` 의 **실제 출하 열거**를 소비한다.
 
     열거 규칙을 테스트가 다시 쓰지 않고 ``_iter_source_files``(내부적으로
     ``_shippable_template_files`` 의 일반파일 판정 + ``COPY_EXCLUDE_*`` 정책)를 그대로
@@ -125,10 +125,10 @@ def _manifest_dest_roots(repo: Path) -> list[Path]:
 
 
 def _manifest_channel_python_paths(repo: Path) -> set[Path]:
-    """update 채널 python 축 — ``pm_update`` 의 **실제 출하 전개**를 소비한다.
+    """update 채널 python 갈래 — ``pm_update`` 의 **실제 출하 전개**를 소비한다.
 
     각 dest 루트의 manifest 를 ``resolve_manifest_for_dest`` 로 찾고, 항목마다
-    ``manifest_entry_shipping_inventory`` 로 전개한다. 이 seam 은 ``plan`` 이 쓰는 바로 그
+    ``manifest_entry_shipping_inventory`` 로 전개한다. 이 공용 함수는 ``plan`` 이 쓰는 바로 그
     함수라 디렉터리 항목의 tracked 열거·``@source`` 리매핑·항목 소유권·dest 리매핑이
     update 계획과 같은 결과를 낸다(``@render`` 항목도 같은 전개를 거친다 — render 는 내용을
     쓰는 방식만 바꾸지 어떤 파일이 출하되는지를 바꾸지 않는다).
@@ -159,16 +159,16 @@ def _manifest_channel_python_paths(repo: Path) -> set[Path]:
 
 def _shipping_surface_python_oracle(repo: Path = REPO) -> set[Path]:
     """``shipping_paths`` 와 독립된 코드 경로(pm_import 출하 열거 + pm_update 출하 전개)로
-    출하 표면 python 축을 파생한다 — I1 대조가 tautology 가 되지 않게 한다(설계 §I1).
+    출하 범위 python 갈래를 파생한다 — I1 대조가 tautology 가 되지 않게 한다(설계 §I1).
     """
     repo = repo.resolve()
     return _import_channel_python_paths(repo) | _manifest_channel_python_paths(repo)
 
 
-def _python_surface_delta(repo: Path) -> tuple[list[str], list[str]]:
-    """``shipping_paths`` python 축과 파생 oracle 의 양방향 차집합 ``(missing, extra)``.
+def _python_surface_difference(repo: Path) -> tuple[list[str], list[str]]:
+    """``shipping_paths`` python 갈래와 파생 oracle 의 양방향 차집합 ``(missing, extra)``.
 
-    집합 동등 단언과 그 민감도 실험이 **같은 비교**를 쓰게 하는 seam 이다 — 민감도 쪽이
+    집합 동등 단언과 그 민감도 실험이 **같은 비교**를 쓰게 하는 공용 함수다 — 민감도 쪽이
     비교를 따로 구현하면 "실제 단언이 red 가 된다"를 보인 게 아니게 된다.
     """
     repo = repo.resolve()
@@ -189,7 +189,7 @@ _LANGUAGE_ORACLE_UNREGISTERED_ROOT_DESTINATIONS: tuple[Path, ...] = (
 
 
 def _import_channel_language_paths(repo: Path) -> set[Path]:
-    """import 채널 언어 축 — ``pm_import`` 실제 출하 열거에서 python·markdown 이 아닌 것."""
+    """import 채널 언어 갈래 — ``pm_import`` 실제 출하 열거에서 python·markdown 이 아닌 것."""
     sources: set[Path] = set()
     for dirnames in install_rules.HARNESS_TEMPLATE_DIRS.values():
         for dirname in dirnames:
@@ -205,7 +205,7 @@ def _import_channel_language_paths(repo: Path) -> set[Path]:
 
 
 def _manifest_channel_language_paths(repo: Path) -> set[Path]:
-    """update 채널 언어 축 — ``pm_update`` 실제 출하 전개에서 python·markdown 이 아닌 것.
+    """update 채널 언어 갈래 — ``pm_update`` 실제 출하 전개에서 python·markdown 이 아닌 것.
 
     ``_manifest_dest_roots`` 는 repo(루트) 자신도 dest 로 포함하므로, 루트 manifest 가 선언한
     루트 목적지 사본(``.gitattributes``·``.project_manager/.gitignore``·
@@ -233,7 +233,7 @@ def _manifest_channel_language_paths(repo: Path) -> set[Path]:
 
 
 def _language_surface_oracle(repo: Path = REPO) -> set[Path]:
-    """``language_paths`` 와 독립된 코드 경로로 언어 축 출하 표면을 파생한다.
+    """``language_paths`` 와 독립된 코드 경로로 언어 갈래 출하 범위를 파생한다.
 
     두 채널(import·update)의 합집합 + manifest 미등재 단일 예외. ``language_paths`` 자신을
     호출하지 않으므로 대조가 tautology 가 되지 않는다.
@@ -247,7 +247,7 @@ def _language_surface_oracle(repo: Path = REPO) -> set[Path]:
     return found
 
 
-def _language_surface_delta(repo: Path) -> tuple[list[str], list[str]]:
+def _language_surface_difference(repo: Path) -> tuple[list[str], list[str]]:
     """``language_paths`` 와 파생 oracle 의 양방향 차집합 ``(missing, extra)``."""
     repo = repo.resolve()
     actual = set(_language_paths(repo))
@@ -257,13 +257,13 @@ def _language_surface_delta(repo: Path) -> tuple[list[str], list[str]]:
     return missing, extra
 
 
-def test_language_axis_matches_independent_surface_derivation():
-    """언어 축 시야 == 출하 표면 − python − markdown — 양방향 차집합 0."""
-    missing, extra = _language_surface_delta(REPO)
+def test_language_scan_matches_independent_surface_derivation():
+    """언어 갈래 검사 범위 == 출하 범위 − python − markdown — 양방향 차집합 0."""
+    missing, extra = _language_surface_difference(REPO)
     assert not missing and not extra, (
         "language_paths 가 독립 파생 오라클과 어긋남 — "
-        f"missing(시야 미포함) {len(missing)}: {missing}; "
-        f"extra(시야 초과) {len(extra)}: {extra}"
+        f"missing(검사 범위 미포함) {len(missing)}: {missing}; "
+        f"extra(검사 범위 초과) {len(extra)}: {extra}"
     )
 
 
@@ -318,8 +318,8 @@ def _is_data_literal(
 ) -> bool:
     """데이터 구간에 **완전히 포함된** 출현만 면제한다.
 
-    hard/ratchet 패턴의 ``\\s`` 는 개행을 삼키므로 표식 경계를 걸친 출현이 나올 수 있다.
-    걸친 출현은 표식 밖 문맥을 함께 담으므로 데이터가 아니다 — 탐지를 유지한다.
+    hard/줄어들기만 하는 패턴의 ``\\s`` 는 개행을 삼키므로 표시 경계를 걸친 출현이 나올 수 있다.
+    걸친 출현은 표시 밖 문맥을 함께 담으므로 데이터가 아니다 — 탐지를 유지한다.
     """
     return any(
         span_start <= start and end <= span_end for span_start, span_end in spans
@@ -366,7 +366,7 @@ def _python_prose_ranges(source: str) -> list[tuple[int, int, str]]:
 
 
 def _python_data_literal_spans(source: str) -> list[tuple[int, int]]:
-    # 스트립 도구와 같은 판정 함수를 소비한다 — 표식이 붙은 리터럴은 채택자 디스크에
+    # 스트립 도구와 같은 판정 함수를 소비한다 — 표시가 붙은 리터럴은 채택자 디스크에
     # 기록되는 wire 문자열이라 사설 참조 재유입이 아니다(판정 사본을 두지 않는다).
     return private_refs._data_literal_spans(source)
 
@@ -400,12 +400,12 @@ def _python_hard_occurrences(path: str, source: str) -> list[Occurrence]:
     return found
 
 
-def _python_ratchet_occurrences(path: str, source: str) -> list[Occurrence]:
+def _python_shrink_only_occurrences(path: str, source: str) -> list[Occurrence]:
     return _scan_ranges(
         path=path,
         source=source,
         ranges=_python_prose_ranges(source),
-        patterns=RATCHET_PATTERNS,
+        patterns=SHRINK_ONLY_PATTERNS,
         exempt=_python_data_literal_spans(source),
     )
 
@@ -423,8 +423,8 @@ def _markdown_occurrences(
     )
 
 
-# ── 언어 축 — python·markdown 을 뺀 출하 표면. HARD 는 전-파일 스캔 + surface 라벨
-# (python 축과 동일 구조), RATCHET 은 언어별 산문 구간 한정. 판정 사본이 아니라 엔진 모듈
+# ── 언어 갈래 — python·markdown 을 뺀 출하 범위. HARD 는 전-파일 스캔 + surface 라벨
+# (python 갈래와 동일 구조), SHRINK_ONLY 는 언어별 산문 구간 한정. 판정 사본이 아니라 엔진 모듈
 # (``private_surface.language_paths``/``language_of``/``language_prose_spans``)을 그대로 소비한다.
 LANGUAGE_PROSE_SURFACE = "language-prose"
 LANGUAGE_NON_PROSE_SURFACE = "language-non-prose"
@@ -468,16 +468,16 @@ def _language_hard_occurrences(
     return found
 
 
-def _language_ratchet_occurrences(
+def _language_shrink_only_occurrences(
     path: str, source: str, prose_ranges: list[tuple[int, int, str]]
 ) -> list[Occurrence]:
     return _scan_ranges(
-        path=path, source=source, ranges=prose_ranges, patterns=RATCHET_PATTERNS
+        path=path, source=source, ranges=prose_ranges, patterns=SHRINK_ONLY_PATTERNS
     )
 
 
 def _shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
-    # 테스트와 재생성 스크립트가 같은 공용 OWNED 열거·표면 분류를 사용해야
+    # 테스트와 재생성 스크립트가 같은 공용 OWNED 열거·범위 분류를 사용해야
     # 한쪽에서만 ignored 파생 파일을 baseline에 다시 넣는 판정 어긋남이 없다.
     return private_surface.shipping_paths(root)
 
@@ -485,26 +485,26 @@ def _shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
 @lru_cache(maxsize=None)
 def _collect(root: Path = REPO) -> tuple[list[Occurrence], list[Occurrence]]:
     hard: list[Occurrence] = []
-    ratchet: list[Occurrence] = []
+    shrink_only: list[Occurrence] = []
     python_paths, markdown_paths = _shipping_paths(root)
     for path in python_paths:
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
         hard.extend(_python_hard_occurrences(relative, source))
-        ratchet.extend(_python_ratchet_occurrences(relative, source))
+        shrink_only.extend(_python_shrink_only_occurrences(relative, source))
     for path in markdown_paths:
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
         hard.extend(_markdown_occurrences(relative, source, HARD_PATTERNS))
-        ratchet.extend(
-            _markdown_occurrences(relative, source, RATCHET_PATTERNS)
+        shrink_only.extend(
+            _markdown_occurrences(relative, source, SHRINK_ONLY_PATTERNS)
         )
     for path in _language_paths(root):
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
         prose_ranges = _language_prose_ranges(path, source)
         hard.extend(_language_hard_occurrences(relative, source, prose_ranges))
-        ratchet.extend(_language_ratchet_occurrences(relative, source, prose_ranges))
+        shrink_only.extend(_language_shrink_only_occurrences(relative, source, prose_ranges))
     key = lambda item: (
         item.path,
         item.line,
@@ -513,7 +513,7 @@ def _collect(root: Path = REPO) -> tuple[list[Occurrence], list[Occurrence]]:
         item.surface,
         item.digest,
     )
-    return sorted(hard, key=key), sorted(ratchet, key=key)
+    return sorted(hard, key=key), sorted(shrink_only, key=key)
 
 
 def _hard_key(item: Occurrence) -> HardKey:
@@ -581,7 +581,7 @@ def _format_hard_key(key: HardKey) -> str:
     return f"{path}:{kind}:{match}:{surface}:{digest[:12]}"
 
 
-def _ratchet_counter(
+def _shrink_only_counter(
     occurrences: list[Occurrence],
 ) -> Counter[tuple[str, str, str]]:
     return Counter(
@@ -589,10 +589,10 @@ def _ratchet_counter(
     )
 
 
-def _ratchet_baseline(occurrences: list[Occurrence]) -> dict[str, object]:
+def _shrink_only_baseline(occurrences: list[Occurrence]) -> dict[str, object]:
     grouped: dict[str, list[dict[str, object]]] = {}
     for (path, kind, digest), count in sorted(
-        _ratchet_counter(occurrences).items()
+        _shrink_only_counter(occurrences).items()
     ):
         grouped.setdefault(path, []).append(
             {"kind": kind, "hash": digest, "count": count}
@@ -619,25 +619,25 @@ def _baseline_counter(
     return counter
 
 
-def _inventory_delta(
+def _inventory_difference(
     expected: Counter[InventoryKey],
     actual: Counter[InventoryKey],
 ) -> tuple[Counter[InventoryKey], Counter[InventoryKey]]:
-    # ratchet baseline과 hard 대장이 같은 델타 판정을 쓴다(키 모양만 다르다).
+    # 줄어들기만 하는 baseline과 hard 대장이 같은 차이 판정을 쓴다(키 모양만 다르다).
     return actual - expected, expected - actual
 
 
-def _format_ratchet_key(key: tuple[str, str, str]) -> str:
+def _format_shrink_only_key(key: tuple[str, str, str]) -> str:
     path, kind, digest = key
     return f"{path}:{kind}:{digest[:12]}"
 
 
-def _describe_delta(
+def _describe_difference(
     unexpected: Counter[InventoryKey],
     stale: Counter[InventoryKey],
     format_key: Callable[[InventoryKey], str],
 ) -> str:
-    # ratchet baseline과 hard 대장이 같은 델타 서술을 쓴다(키 표기만 다르다).
+    # 줄어들기만 하는 baseline과 hard 대장이 같은 차이 서술을 쓴다(키 표기만 다르다).
     def sample(items: Counter[InventoryKey]) -> list[str]:
         return [
             f"{format_key(key)} x{count}"
@@ -666,15 +666,15 @@ def test_shipping_inventory_covers_primary_and_template_surfaces():
         assert any(path.startswith(prefix) for path in relative_markdown)
     assert path_names
 
-    # I1 — python 축은 존재 단언(예: "이 파일이 보이는가")이 아니라 shipping_paths 와
+    # I1 — python 갈래는 존재 단언(예: "이 파일이 보이는가")이 아니라 shipping_paths 와
     # 독립된 코드 경로(pm_import 출하 열거 + pm_update 출하 전개)에서 파생한 기대집합과의
-    # 집합 동등으로 판정한다(설계 §M1 "집합 동등으로 교체한다·추가 아님"). 존재 단언은 시야가
-    # 112 건이든 6 건이든 통과했었다 — 집합 동등만 시야 축소를 값으로 잡는다.
-    missing, extra = _python_surface_delta(REPO)
+    # 집합 동등으로 판정한다(설계 §M1 "집합 동등으로 교체한다·추가 아님"). 존재 단언은 검사 범위가
+    # 112 건이든 6 건이든 통과했었다 — 집합 동등만 검사 범위 축소를 값으로 잡는다.
+    missing, extra = _python_surface_difference(REPO)
     assert not missing and not extra, (
-        "shipping_paths python 축이 파생 출하 표면과 어긋남 — "
-        f"missing(시야 미포함) {len(missing)}: {missing}; "
-        f"extra(시야 초과) {len(extra)}: {extra}"
+        "shipping_paths python 갈래가 파생 출하 범위와 어긋남 — "
+        f"missing(검사 범위 미포함) {len(missing)}: {missing}; "
+        f"extra(검사 범위 초과) {len(extra)}: {extra}"
     )
 
 
@@ -785,7 +785,7 @@ def test_shipping_inventory_git_missing_archive_falls_back_loudly(
 
 
 def _narrow_scope_python_paths(root: Path) -> set[Path]:
-    """T-0814 이전 시야 규칙의 사본 — templates 의 python 은 ``.project_manager/tools/``
+    """T-0814 이전 검사 범위 규칙의 사본 — templates 의 python 은 ``.project_manager/tools/``
     이하로만 한정한다. sensitivity 대조 전용(프로덕션 코드가 아니다)."""
     resolved_root = root.resolve()
     narrow: set[Path] = set()
@@ -819,11 +819,11 @@ def _count_lint_offenders(paths) -> int:
 
 
 def test_sensitivity_python_scope_widening_is_load_bearing(tmp_path):
-    """M2 — 시야 확장이 load-bearing 인지 tmp git 트리 주입으로 고정한다(설계 §M2).
+    """M2 — 검사 범위 확장이 load-bearing 인지 tmp git 트리 주입으로 고정한다(설계 §M2).
 
-    실 트리에서는 확장 후 offender 가 0 이라 "옛 시야로 되돌리면 red 가 사라진다"를
-    관측할 수 없다. 합성 파일을 주입해 현행(넓은) 시야는 offender **1**, 옛(좁은·
-    ``.project_manager/tools/`` 한정) 시야는 offender **0** 을 같은 테스트에서 값으로
+    실 트리에서는 확장 후 offender 가 0 이라 "옛 검사 범위로 되돌리면 red 가 사라진다"를
+    관측할 수 없다. 합성 파일을 주입해 현행(넓은) 검사 범위는 offender **1**, 옛(좁은·
+    ``.project_manager/tools/`` 한정) 검사 범위는 offender **0** 을 같은 테스트에서 값으로
     대조한다. 실 트리를 더럽히지 않는다(tmp_path 격리).
     """
     _git(tmp_path, "init", "-q")
@@ -849,11 +849,11 @@ def test_sensitivity_python_scope_widening_is_load_bearing(tmp_path):
 
     wide_python, _ = _shipping_paths(tmp_path)
     wide_python = set(wide_python)
-    assert injected in wide_python, "현행 시야는 어댑터 python 을 포함해야 함"
+    assert injected in wide_python, "현행 검사 범위는 어댑터 python 을 포함해야 함"
     assert _count_lint_offenders(wide_python) == 1
 
     narrow_python = _narrow_scope_python_paths(tmp_path)
-    assert injected not in narrow_python, "옛 시야는 .project_manager/tools/ 밖을 안 봄"
+    assert injected not in narrow_python, "옛 검사 범위는 .project_manager/tools/ 밖을 안 봄"
     assert clean_tool in narrow_python
     assert _count_lint_offenders(narrow_python) == 0
 
@@ -916,11 +916,11 @@ def test_sensitivity_new_harness_update_only_python_makes_equality_red(
     )
 
     wide_python = set(_shipping_paths(tmp_path)[0])
-    # 목적지 사본은 templates/ 아래라 옛 규칙도 본다 — 시야 갭은 오직 상류 canonical 쪽이다.
+    # 목적지 사본은 templates/ 아래라 옛 규칙도 본다 — 검사 범위 차이는 오직 상류 canonical 쪽이다.
     assert tmp_path / f"{template}/.future/runtime.py" in wide_python
     assert tmp_path / "canonical/runtime.py" not in wide_python
 
-    missing, extra = _python_surface_delta(tmp_path)
+    missing, extra = _python_surface_difference(tmp_path)
 
     assert missing == [
         "canonical/pkg/helper.py",
@@ -933,15 +933,15 @@ def test_sensitivity_new_harness_update_only_python_makes_equality_red(
 def test_hard_private_context_matches_reviewed_allowlist():
     hard, _ = _collect()
     expected = json.loads(HARD_REPORT.read_text(encoding="utf-8"))
-    unexpected, stale = _inventory_delta(
+    unexpected, stale = _inventory_difference(
         _hard_baseline_counter(expected), _hard_counter(hard)
     )
     assert not unexpected and not stale, (
         "Hard private context changed. Review every occurrence, then rerun "
         f"`{REGENERATE_COMMAND}`. "
-        + _describe_delta(unexpected, stale, _format_hard_key)
+        + _describe_difference(unexpected, stale, _format_hard_key)
     )
-    # 델타가 없어도 구조(정렬·집계 필드·version)까지 정규 덤프와 같아야 한다. 값 비교라
+    # 차이가 없어도 구조(정렬·집계 필드·version)까지 정규 덤프와 같아야 한다. 값 비교라
     # 들여쓰기 같은 순수 재포맷은 여기서 통과하고, byte 동일성은 재생성 헬퍼 테스트가 본다.
     assert _hard_report(hard) == expected, (
         "대장 내용은 같지만 구조가 정규 덤프와 다르다 — "
@@ -996,8 +996,8 @@ def _legacy_hard_report(occurrences: list[Occurrence]) -> dict[str, object]:
     }
 
 
-def test_hard_ledger_is_invariant_to_line_only_moves():
-    """빈 줄 삽입·블록 재배치처럼 자리만 바뀌는 리팩터에서 대장 델타는 0이다."""
+def test_hard_record_is_invariant_to_line_only_moves():
+    """빈 줄 삽입·블록 재배치처럼 자리만 바뀌는 리팩터에서 대장 차이는 0이다."""
     source = _synthetic_hard_document()
     baseline_occurrences = _markdown_occurrences("doc.md", source, HARD_PATTERNS)
     baseline = _hard_report(baseline_occurrences)
@@ -1014,25 +1014,25 @@ def test_hard_ledger_is_invariant_to_line_only_moves():
     assert _hard_report(padded_occurrences) == baseline
     assert _synthetic_report(reordered) == baseline
     assert baseline["count"] == len(baseline_occurrences)
-    # 자리 중복이 실제로 접혔다 — 집계 축이 태워졌다는 근거.
+    # 자리 중복이 실제로 접혔다 — 집계 경로가 태워졌다는 근거.
     assert len(baseline["entries"]) < baseline["count"]
 
 
-def test_hard_ledger_flags_reference_inflow_removal_and_rewording():
-    """참조 유입·삭제·문구 변경은 여전히 red 다(ratchet 성질 유지)."""
+def test_hard_record_flags_reference_inflow_removal_and_rewording():
+    """참조 유입·삭제·문구 변경은 여전히 red 다(줄어들기만 하는 성질 유지)."""
     source = _synthetic_hard_document()
     baseline = _synthetic_report(source)
     lines = source.splitlines()
 
     inflow = _synthetic_report(source + f"\n- 신규 참조 {_SYNTHETIC_INFLOW} 유입")
-    unexpected, stale = _inventory_delta(
+    unexpected, stale = _inventory_difference(
         _hard_baseline_counter(baseline), _hard_baseline_counter(inflow)
     )
     assert inflow["count"] == baseline["count"] + 1
     assert unexpected and not stale
 
     removal = _synthetic_report("\n".join(lines[:2] + lines[3:]))
-    unexpected, stale = _inventory_delta(
+    unexpected, stale = _inventory_difference(
         _hard_baseline_counter(baseline), _hard_baseline_counter(removal)
     )
     assert removal["count"] == baseline["count"] - 1
@@ -1041,32 +1041,32 @@ def test_hard_ledger_flags_reference_inflow_removal_and_rewording():
     reworded = _synthetic_report(
         source.replace("첫 항목은", "첫 항목(문구가 바뀐 항목)은")
     )
-    unexpected, stale = _inventory_delta(
+    unexpected, stale = _inventory_difference(
         _hard_baseline_counter(baseline), _hard_baseline_counter(reworded)
     )
     # 문구 변경은 출현 수가 아니라 문맥 digest 로 잡힌다.
     assert reworded["count"] == baseline["count"]
     assert unexpected and stale
 
-    # 파일만 바뀌는 이동: 문맥 digest 는 그대로고 path 축만 갈라져 red 가 된다.
+    # 파일만 바뀌는 이동: 문맥 digest 는 그대로고 path 값만 갈라져 red 가 된다.
     single = f"- 이 항목만 {_SYNTHETIC_REF} 를 참조한다"
     origin = _hard_report(_markdown_occurrences("doc.md", single, HARD_PATTERNS))
     relocated = _hard_report(
         _markdown_occurrences("moved.md", single, HARD_PATTERNS)
     )
-    unexpected, stale = _inventory_delta(
+    unexpected, stale = _inventory_difference(
         _hard_baseline_counter(origin), _hard_baseline_counter(relocated)
     )
     assert (sum(unexpected.values()), sum(stale.values())) == (1, 1)
     assert origin["entries"][0]["hash"] == relocated["entries"][0]["hash"]
 
-    # 표면만 바뀌는 전환: 같은 라인 텍스트를 prose 에서 non-prose 로 옮겨도 red 다.
+    # 범위만 바뀌는 전환: 같은 라인 텍스트를 prose 에서 non-prose 로 옮겨도 red 다.
     literal = f'"""{_SYNTHETIC_REF} 를 본다"""'
     prose = _hard_report(_python_hard_occurrences("mod.py", literal + "\n"))
     non_prose = _hard_report(
         _python_hard_occurrences("mod.py", f"VALUE = (\n{literal}\n)\n")
     )
-    unexpected, stale = _inventory_delta(
+    unexpected, stale = _inventory_difference(
         _hard_baseline_counter(prose), _hard_baseline_counter(non_prose)
     )
     assert prose["surface_counts"] == {"python-prose": 1}
@@ -1075,7 +1075,7 @@ def test_hard_ledger_flags_reference_inflow_removal_and_rewording():
     assert (sum(unexpected.values()), sum(stale.values())) == (1, 1)
 
 
-def test_hard_ledger_separates_multiple_occurrences_by_count():
+def test_hard_record_separates_multiple_occurrences_by_count():
     """같은 파일의 동일 match 다중 출현은 자리가 아니라 count 로 구분한다."""
     source = _synthetic_hard_document()
     baseline = _synthetic_report(source)
@@ -1089,13 +1089,13 @@ def test_hard_ledger_separates_multiple_occurrences_by_count():
 
     lines = source.splitlines()
     dropped = _synthetic_report("\n".join(lines[:-1]))
-    _, stale = _inventory_delta(
+    _, stale = _inventory_difference(
         _hard_baseline_counter(baseline), _hard_baseline_counter(dropped)
     )
     assert stale
 
 
-def test_reviewed_ledger_uses_line_independent_schema():
+def test_reviewed_record_uses_line_independent_schema():
     data = json.loads(HARD_REPORT.read_text(encoding="utf-8"))
     entries = data["entries"]
     keys = [
@@ -1117,7 +1117,7 @@ def test_reviewed_ledger_uses_line_independent_schema():
     assert len(set(keys)) == len(keys)
 
 
-def test_legacy_line_keyed_ledger_migrates_without_loss():
+def test_legacy_line_keyed_record_migrates_without_loss():
     """옛 (path, line, match) 대장은 같은 multiset 으로 읽혀 출현 총계를 보존한다."""
     occurrences = _markdown_occurrences(
         "doc.md", _synthetic_hard_document(), HARD_PATTERNS
@@ -1131,7 +1131,7 @@ def test_legacy_line_keyed_ledger_migrates_without_loss():
     assert len(migrated["entries"]) < len(legacy["entries"])
 
 
-def test_regeneration_helper_reproduces_reviewed_ledger(tmp_path):
+def test_regeneration_helper_reproduces_reviewed_records(tmp_path):
     destination = tmp_path / "regenerated.json"
 
     assert main(["--regenerate", "--output", str(destination)]) == 0
@@ -1153,14 +1153,14 @@ def test_regeneration_helper_reproduces_reviewed_ledger(tmp_path):
     assert json.loads(destination.read_text(encoding="utf-8")) == tampered
 
 
-def test_ratchet_matches_reviewed_baseline_without_stale_entries():
-    _, ratchet = _collect()
-    expected_data = json.loads(RATCHET_BASELINE.read_text(encoding="utf-8"))
+def test_shrink_only_matches_reviewed_baseline_without_stale_entries():
+    _, shrink_only = _collect()
+    expected_data = json.loads(SHRINK_ONLY_BASELINE.read_text(encoding="utf-8"))
     expected = _baseline_counter(expected_data)
-    actual = _ratchet_counter(ratchet)
-    unexpected, stale = _inventory_delta(expected, actual)
-    assert not unexpected and not stale, _describe_delta(
-        unexpected, stale, _format_ratchet_key
+    actual = _shrink_only_counter(shrink_only)
+    unexpected, stale = _inventory_difference(expected, actual)
+    assert not unexpected and not stale, _describe_difference(
+        unexpected, stale, _format_shrink_only_key
     )
     assert expected_data["count"] == sum(expected.values())
 
@@ -1177,7 +1177,7 @@ def test_ratchet_matches_reviewed_baseline_without_stale_entries():
 )
 def test_hard_pattern_sensitivity(sample):
     found = _markdown_occurrences("injected.md", sample, HARD_PATTERNS)
-    unexpected, stale = _inventory_delta(Counter(), _ratchet_counter(found))
+    unexpected, stale = _inventory_difference(Counter(), _shrink_only_counter(found))
     assert unexpected
     assert not stale
 
@@ -1201,9 +1201,9 @@ def test_hard_pattern_sensitivity(sample):
         "round",
     ],
 )
-def test_ratchet_pattern_sensitivity(sample):
-    found = _markdown_occurrences("injected.md", sample, RATCHET_PATTERNS)
-    unexpected, stale = _inventory_delta(Counter(), _ratchet_counter(found))
+def test_shrink_only_pattern_sensitivity(sample):
+    found = _markdown_occurrences("injected.md", sample, SHRINK_ONLY_PATTERNS)
+    unexpected, stale = _inventory_difference(Counter(), _shrink_only_counter(found))
     assert unexpected
     assert not stale
 
@@ -1211,7 +1211,7 @@ def test_ratchet_pattern_sensitivity(sample):
 def test_python_scanning_reuses_prose_classifier():
     private_ref = "T-" + "4" * 4
     source = f'"""prose {private_ref}"""\nvalue = "{private_ref}"\n'
-    prose = _python_ratchet_occurrences("injected.py", source)
+    prose = _python_shrink_only_occurrences("injected.py", source)
     hard = _python_hard_occurrences("injected.py", source)
     assert not prose
     assert [item.surface for item in hard] == [
@@ -1221,22 +1221,22 @@ def test_python_scanning_reuses_prose_classifier():
 
 
 def test_marked_data_literals_are_not_reference_inflow():
-    """표식이 붙은 wire 리터럴은 재유입이 아니다 — 스트립과 같은 구간 판정을 소비한다."""
+    """표시가 붙은 wire 리터럴은 재유입이 아니다 — 스트립과 같은 구간 판정을 소비한다."""
     marker = "# " + private_refs._DATA_LITERAL_MARKER
     source = "\n".join(
         (
             marker + ":begin",
-            f'_WIRE_BEGIN = "<!-- guest {_SYNTHETIC_REF} begin -->"',
+            f'_WIRE_BEGIN = "<!-- added-harness {_SYNTHETIC_REF} begin -->"',
             marker + ":end",
-            f'_WIRE_END = "<!-- guest {_SYNTHETIC_OTHER} end -->"  {marker}',
+            f'_WIRE_END = "<!-- added-harness {_SYNTHETIC_OTHER} end -->"  {marker}',
             "",
         )
     )
 
     assert not _python_hard_occurrences("wire.py", source)
-    assert not _python_ratchet_occurrences("wire.py", source)
+    assert not _python_shrink_only_occurrences("wire.py", source)
 
-    # 민감도: 표식을 떼면 같은 리터럴이 즉시 재유입으로 잡힌다.
+    # 민감도: 표시를 떼면 같은 리터럴이 즉시 재유입으로 잡힌다.
     bare = (
         source.replace(marker + ":begin\n", "")
         .replace(marker + ":end\n", "")
@@ -1249,7 +1249,7 @@ def test_marked_data_literals_are_not_reference_inflow():
 
 
 def test_marker_text_inside_string_literal_does_not_hide_hard_reference():
-    """리터럴 속 표식 글자로는 재유입 검사를 우회하지 못한다 — 표식은 주석 토큰만이다."""
+    """리터럴 속 표시 글자로는 재유입 검사를 우회하지 못한다 — 표시는 주석 토큰만이다."""
     marker = "# " + private_refs._DATA_LITERAL_MARKER
     source = f'VALUE = "payload {marker} {_SYNTHETIC_REF}"\n'
 
@@ -1258,7 +1258,7 @@ def test_marker_text_inside_string_literal_does_not_hide_hard_reference():
         _SYNTHETIC_REF
     ]
 
-    # 같은 참조를 진짜 주석 표식으로 덮으면 그때는 데이터로 빠진다(민감도 대조).
+    # 같은 참조를 진짜 주석 표시로 덮으면 그때는 데이터로 빠진다(민감도 대조).
     covered = f'VALUE = "payload {_SYNTHETIC_REF}"  {marker}\n'
     assert not _python_hard_occurrences("wire.py", covered)
 
@@ -1269,7 +1269,7 @@ _SESSION_LABEL = "PM"
 
 
 def test_data_literal_exemption_requires_full_containment():
-    """면제는 완전 포함만 — 경계를 걸친 출현은 표식 밖 문맥을 담아 데이터가 아니다."""
+    """면제는 완전 포함만 — 경계를 걸친 출현은 표시 밖 문맥을 담아 데이터가 아니다."""
     spans = [(10, 20)]
 
     assert _is_data_literal(spans, 10, 20)
@@ -1282,7 +1282,7 @@ def test_data_literal_exemption_requires_full_containment():
 
 
 def test_hard_match_straddling_a_data_boundary_stays_detected():
-    """표식 경계를 걸친 hard 출현은 면제되지 않는다(양방향)."""
+    """표시 경계를 걸친 hard 출현은 면제되지 않는다(양방향)."""
     marker = "# " + private_refs._DATA_LITERAL_MARKER
     entering = f'A = """{_SECTION_MARK}\n{_SECTION_CODE}"""  {marker}\n'
     leaving = f"B = 1  {marker} 설명 {_SECTION_MARK}\n{_SECTION_CODE} = 2\n"
@@ -1295,33 +1295,33 @@ def test_hard_match_straddling_a_data_boundary_stays_detected():
         straddle
     ]
 
-    # 민감도: 같은 출현이 표식 구간 안에 온전히 들어가면 그때는 면제된다.
+    # 민감도: 같은 출현이 표시 구간 안에 온전히 들어가면 그때는 면제된다.
     contained = f"C = 1  {marker} 설명 {_SECTION_MARK} {_SECTION_CODE}\n"
     assert not _python_hard_occurrences("wire.py", contained)
 
 
-def test_ratchet_match_straddling_a_data_boundary_stays_detected():
-    """표식 경계를 걸친 ratchet 출현도 유지된다 — 판정은 분할 전 문맥에서 한다.
+def test_shrink_only_match_straddling_a_data_boundary_stays_detected():
+    """표시 경계를 걸친 줄어들기만 하는 패턴 출현도 유지된다 — 판정은 분할 전 문맥에서 한다.
 
-    반대 방향(구간 안에서 시작해 밖으로 나가는 출현)은 ratchet 축에서 만들 수 없다.
+    반대 방향(구간 안에서 시작해 밖으로 나가는 출현)은 줄어들기만 하는 패턴에서 만들 수 없다.
     구간이 라인 단위이고 산문 범위가 토큰 단위라, 한 토큰 안에서 앞줄만 보호되고 뒷줄이
     열리는 형태가 나오지 않는다. 그 방향은 완전 포함 판정 테스트가 직접 덮는다.
     """
     marker = "# " + private_refs._DATA_LITERAL_MARKER
     source = f'"""문맥 {_SESSION_LABEL}\n{7} 회차"""  {marker}\n'
 
-    assert [item.match for item in _python_ratchet_occurrences("wire.py", source)] == [
+    assert [item.match for item in _python_shrink_only_occurrences("wire.py", source)] == [
         f"{_SESSION_LABEL}\n{7}"
     ]
 
-    # 민감도: 출현 전체가 표식 라인 안에 들어가면 면제된다.
+    # 민감도: 출현 전체가 표시 라인 안에 들어가면 면제된다.
     contained = f'"""문맥\n{_SESSION_LABEL} {7} 회차"""  {marker}\n'
-    assert not _python_ratchet_occurrences("wire.py", contained)
+    assert not _python_shrink_only_occurrences("wire.py", contained)
 
 
-def test_inventory_delta_flags_stale_entries():
+def test_inventory_difference_flags_stale_entries():
     key = ("removed.md", "session_stamp", "0" * 64)
-    unexpected, stale = _inventory_delta(Counter({key: 1}), Counter())
+    unexpected, stale = _inventory_difference(Counter({key: 1}), Counter())
     assert not unexpected
     assert stale == Counter({key: 1})
 
@@ -1331,19 +1331,19 @@ def test_inventory_delta_flags_stale_entries():
 # 현행 사설-참조 가드(``prose_context_spans`` 계열)는 COMMENT·doc-expression STRING(모듈/함수
 # docstring)만 본다 — 함수-호출 인자 문자열도, f-string 내용(Python 3.12+ 는 ``FSTRING_MIDDLE``
 # 로 토큰화돼 ``STRING`` 이 아니다)도 구조적으로 못 본다. circled 번호·``F1``·``F6`` 류 사설
-# fault 라벨은 그 시야 밖(런타임 문자열)에 몰려 있었다. 아래는 이 클래스 전용 판정면 —
-# 기존 hard/ratchet 대장(``private_context_baseline.json``·``private_context_hard_allowlist.json``)
-# 이 소비하는 ``_python_prose_ranges``/``RATCHET_PATTERNS`` 는 건드리지 않는다(그 대장은 T-번호·
+# fault 라벨은 그 검사 범위 밖(런타임 문자열)에 몰려 있었다. 아래는 이 클래스 전용 판정면 —
+# 기존 hard/줄어들기만 하는 대장(``private_context_baseline.json``·``private_context_hard_allowlist.json``)
+# 이 소비하는 ``_python_prose_ranges``/``SHRINK_ONLY_PATTERNS`` 는 건드리지 않는다(그 대장은 T-번호·
 # ADR-번호·세션 표기 등 다른 클래스를 추적하며, 이 판정면과 공유하면 대장 재생성이 강제된다).
 
-_MARKER_LABEL_PATTERNS = dict(private_refs._DELTA_PATTERNS)
+_MARKER_LABEL_PATTERNS = dict(private_refs._DIFFERENCE_PATTERNS)
 _CIRCLED_MARKER_RE = _MARKER_LABEL_PATTERNS["circled-marker"]
 _DESIGN_LABEL_RE = _MARKER_LABEL_PATTERNS["design-label"]
 _FSTRING_START = getattr(tokenize, "FSTRING_START", None)
 _FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", None)
 _FSTRING_END = getattr(tokenize, "FSTRING_END", None)
 # Python 3.12+ 토큰 모델 — f-string 내용이 ``FSTRING_MIDDLE`` 로 분리된다. 3.11 은 f-string
-# 전체가 단일 ``STRING`` 이라 그 축이 없다(지원 하한이 3.11 이므로 두 모델 다 통과해야 한다).
+# 전체가 단일 ``STRING`` 이라 그 경로가 없다(지원 하한이 3.11 이므로 두 모델 다 통과해야 한다).
 _HAS_FSTRING_TOKENS = _FSTRING_MIDDLE is not None
 _MARKER_LABEL_TOOLS_DIR = REPO / ".project_manager" / "tools"
 
@@ -1405,9 +1405,9 @@ def _marker_label_token_spans(
 ) -> list[tuple[int, str, bool]]:
     """(시작 line, 토큰 원문, escape 해석 여부) — STRING·COMMENT(+FSTRING_MIDDLE) 넓은 판정면.
 
-    ``include_fstring=False`` 로 f-string 축만 뺀 판정면을 재현해 그 축 단독 기여를 잰다
+    ``include_fstring=False`` 로 f-string 경로만 뺀 판정면을 재현해 그 경로 단독 기여를 잰다
     (민감도 반사실). Python 3.11(``FSTRING_MIDDLE`` 미존재)에서는 f-string 이 이미 단일
-    ``STRING`` 토큰이라 그 축이 존재하지 않는다(토큰 모델 차이 — 두 모델의 값은 각 테스트가
+    ``STRING`` 토큰이라 그 경로가 존재하지 않는다(토큰 모델 차이 — 두 모델의 값은 각 테스트가
     버전별로 정확히 단언한다).
 
     escape 해석 여부는 런타임 값이 소스 표기와 갈리는 토큰에서만 참이다 — 주석은 소스 표기가
@@ -1468,7 +1468,7 @@ def _marker_label_hits(
 
 
 def marker_label_residuals(root: Path = REPO) -> list[tuple[str, int, str, str]]:
-    """(path, line, kind, match) — canonical 출하 python 표면의 실 잔재 (합성 픽스처 아님).
+    """(path, line, kind, match) — canonical 출하 python 범위의 실 잔재 (합성 픽스처 아님).
 
     ``test_public_reference_lint.py`` 가 여러 출하 타깃(루트·templates 3벌)에 재사용한다.
     """
@@ -1482,7 +1482,7 @@ def marker_label_residuals(root: Path = REPO) -> list[tuple[str, int, str, str]]
 
 
 def test_marker_label_scan_surface_matches_independent_glob_of_shipping_tools():
-    """가드가 스캔하는 canonical python 파일 집합이 독립 glob 결과와 같다(시야==표면)."""
+    """가드가 스캔하는 canonical python 파일 집합이 독립 glob 결과와 같다(검사 범위==출하 범위)."""
     python_paths, _ = _shipping_paths(REPO)
     canonical_python = {
         path for path in python_paths if path.is_relative_to(_MARKER_LABEL_TOOLS_DIR)
@@ -1490,11 +1490,11 @@ def test_marker_label_scan_surface_matches_independent_glob_of_shipping_tools():
     assert canonical_python == set(engine_python_files(_MARKER_LABEL_TOOLS_DIR))
 
 
-def test_marker_label_scan_fstring_axis_toggle_before_after():
-    """f-string 안 마커 — 기능 커버리지는 두 토큰 모델 공통, 축 반사실은 모델별 정확한 값.
+def test_marker_label_scan_fstring_case_toggle_before_after():
+    """f-string 안 마커 — 기능 커버리지는 두 토큰 모델 공통, 경로 반사실은 모델별 정확한 값.
 
-    Python 3.12+ 는 f-string 내용을 ``FSTRING_MIDDLE`` 로 내므로 그 축을 빼면 0건이 된다
-    (축이 실제로 하중을 받는다). Python 3.11 은 f-string 전체가 단일 ``STRING`` 이라 그 축이
+    Python 3.12+ 는 f-string 내용을 ``FSTRING_MIDDLE`` 로 내므로 그 경로를 빼면 0건이 된다
+    (경로가 실제로 하중을 받는다). Python 3.11 은 f-string 전체가 단일 ``STRING`` 이라 그 경로가
     존재하지 않고, 빼도 같은 1건이 ``STRING`` 으로 그대로 잡힌다. 두 모델 다 *잡는다*는
     결과(기능 커버리지)는 같고 반사실만 다르다 — 어느 쪽도 skip 하지 않는다."""
     marker = chr(0x2460)  # ①
@@ -1566,7 +1566,7 @@ def test_marker_label_scan_ignores_identifier_quotes_and_code_names():
 
 
 def test_marker_label_scan_covers_comment_plain_string_and_fstring():
-    """세 표면(주석·plain 문자열·f-string) 모두에서 circled 마커·design-label 을 잡는다."""
+    """세 자리(주석·plain 문자열·f-string) 모두에서 circled 마커·design-label 을 잡는다."""
     marker = chr(0x2460)  # ①
     source = (
         f"# comment {marker}\n"
@@ -1580,9 +1580,9 @@ def test_marker_label_scan_covers_comment_plain_string_and_fstring():
     assert kinds["design-label"] == 1
 
 
-def test_marker_label_axis_sensitivity_reverting_one_marker_trips_and_clears():
-    """민감도(양방향, 실 canonical 파일) — circled 마커 1건을 되돌리면 가드 red, f-string 축을
-    판정면에서 빼면 그 red 가 사라진다(시야 축의 반사실).
+def test_marker_label_sensitivity_reverting_one_marker_trips_and_clears():
+    """민감도(양방향, 실 canonical 파일) — circled 마커 1건을 되돌리면 가드 red, f-string 경로를
+    판정면에서 빼면 그 red 가 사라진다(검사 범위의 반사실).
 
     복원 대상은 실제 f-string 자리(``pm_engine/cli/bootstrap.py`` 의
     ``f"작업 폴더 ..."`` ← 원문 ``f"① task worktree (...)"``)."""
@@ -1609,9 +1609,9 @@ def test_marker_label_axis_sensitivity_reverting_one_marker_trips_and_clears():
         if kind == "circled-marker"
     ]
     if _HAS_FSTRING_TOKENS:
-        assert cleared == [], "f-string 축을 뺐는데도 여전히 잡힘 — 축 제거가 무효"
+        assert cleared == [], "f-string 경로를 뺐는데도 여전히 잡힘 — 경로 제거가 무효"
     else:
-        # Python 3.11 — f-string 전체가 단일 ``STRING`` 이라 뺄 축이 없다. 같은 1건 그대로.
+        # Python 3.11 — f-string 전체가 단일 ``STRING`` 이라 뺄 경로가 없다. 같은 1건 그대로.
         assert cleared == red
 
 
@@ -1627,7 +1627,7 @@ def test_marker_label_residuals_are_zero_on_real_canonical_tree():
 def test_temp_output_guard_scopes_concurrent_process_output_to_session_directory(
     tmp_path,
 ):
-    """자식 프로세스의 동형 이름은 무시하고 세션 디렉터리의 산출물만 관찰한다."""
+    """자식 프로세스의 같은 이름은 무시하고 세션 디렉터리의 산출물만 관찰한다."""
     suite_conftest = sys.modules["conftest"]
     session_dir = tmp_path / "session-temp"
     external_dir = tmp_path / "external-temp"
@@ -1668,12 +1668,12 @@ def test_temp_output_guard_scopes_concurrent_process_output_to_session_directory
     assert after_owned_write != before
 
 
-def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path):
-    """repo 기본 raw 목적지 축이 실제로 관찰한다 — tempdir 격리만으로는 못 보는 경로.
+def test_repo_raw_output_guard_observes_default_destination_and_records(tmp_path):
+    """repo 기본 raw 목적지 검사가 실제로 관찰한다 — tempdir 격리만으로는 못 보는 경로.
 
     위임·추가리뷰 raw 의 **기본** 목적지는 tempdir 가 아니라 해소된 repo 의
-    `.project_manager/.local/` 하위로 옮겼다. 이 축이 없으면 기본 경로를 밟는 신규 테스트가
-    실 작업 트리를 오염시켜도 세션 가드가 조용히 통과한다(vacuous). 빈 트리에서 스냅샷이
+    `.project_manager/.local/` 하위로 옮겼다. 이 검사가 없으면 기본 경로를 밟는 신규 테스트가
+    실 작업 트리를 오염시켜도 세션 가드가 조용히 통과한다(vacuous). 빈 트리에서 파일 목록이
     비어 있는지까지 단언해 "아무것도 안 보고 통과"를 배제한다.
     """
     suite_conftest = sys.modules["conftest"]
@@ -1682,7 +1682,7 @@ def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path)
     (local / "review").mkdir(parents=True)
 
     empty = suite_conftest._snapshot_repo_raw_outputs(tmp_path)
-    assert empty == {}, "빈 목적지에서 비-빈 스냅샷이 나오면 판정 입력이 오염됐다"
+    assert empty == {}, "빈 목적지에서 비-빈 파일 목록이 나오면 판정 입력이 오염됐다"
 
     raw = local / "delegate" / "pm_delegate_codex_1_probe.txt"
     raw.write_text("raw", encoding="utf-8")
@@ -1691,31 +1691,31 @@ def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path)
 
     review = local / "review" / "additional_reviewer_codex_probe.txt"
     review.write_text("raw", encoding="utf-8")
-    ledger = local / "raw_outputs.json"
-    ledger.write_text("{}", encoding="utf-8")
+    records = local / "raw_outputs.json"
+    records.write_text("{}", encoding="utf-8")
     after_all = suite_conftest._snapshot_repo_raw_outputs(tmp_path)
-    assert set(after_all) == {raw, review, ledger}
+    assert set(after_all) == {raw, review, records}
 
-    # 동일 이름 덮어쓰기도 델타로 잡아야 한다(경로 집합 비교만으로는 놓친다).
-    ledger.write_text('{"records": []}', encoding="utf-8")
-    assert suite_conftest._snapshot_repo_raw_outputs(tmp_path)[ledger] != after_all[ledger]
+    # 동일 이름 덮어쓰기도 차이로 잡아야 한다(경로 집합 비교만으로는 놓친다).
+    records.write_text('{"records": []}', encoding="utf-8")
+    assert suite_conftest._snapshot_repo_raw_outputs(tmp_path)[records] != after_all[records]
 
-    # `.local` 자체가 없는 트리(신규 clone)는 빈 스냅샷이며 예외를 내지 않는다.
+    # `.local` 자체가 없는 트리(신규 clone)는 빈 파일 목록이며 예외를 내지 않는다.
     assert suite_conftest._snapshot_repo_raw_outputs(tmp_path / "absent") == {}
 
 
-# ── 언어 축 시야 fail-loud · 산문 경계 · 민감도 ───────────────────────────────
-# 미등록 확장자는 예외로 막고(조용한 통과 0), 축마다 산문 파일 1건 + 산문 아닌 형상 1건을
-# 실파일로 써서 span 텍스트·줄 번호와 offender 수를 값으로 고정한다. 민감도는 그 축의 산문
+# ── 언어 갈래 검사 범위 fail-loud · 산문 경계 · 민감도 ───────────────────────────────
+# 미등록 확장자는 예외로 막고(조용한 통과 0), 갈래마다 산문 파일 1건 + 산문 아닌 모양 1건을
+# 실파일로 써서 span 텍스트·줄 번호와 offender 수를 값으로 고정한다. 민감도는 그 갈래의 산문
 # 분류기를 레지스트리에서 무력화했을 때 산문 한정 offender 가 N→0 이 되는지로 잰다.
 
-# 픽스처 전용 합성 표식 — 실 코퍼스 값이 아니다. 리터럴로 적으면 이 파일 자신이 사설 참조
+# 픽스처 전용 합성 표시 — 실 코퍼스 값이 아니다. 리터럴로 적으면 이 파일 자신이 사설 참조
 # 감사 대상이 되므로 조립해서 만든다.
 _WORK_ITEM_SAMPLE = "T-" + "9" * 4  # HARD work_item 트리거
-_DECISION_LABEL_SAMPLE = "A" + "1"  # RATCHET decision_label 트리거
+_DECISION_LABEL_SAMPLE = "A" + "1"  # SHRINK_ONLY decision_label 트리거
 
 
-def _language_axis_spans(path: Path, source: str) -> tuple[tuple[int, str], ...]:
+def _language_scan_spans(path: Path, source: str) -> tuple[tuple[int, str], ...]:
     """(줄 번호, span 텍스트) 전수 — 개수만이 아니라 내용까지 값으로 대조한다."""
     return tuple(
         (span.line, span.text)
@@ -1723,13 +1723,13 @@ def _language_axis_spans(path: Path, source: str) -> tuple[tuple[int, str], ...]
     )
 
 
-def _language_axis_counts(path: Path, source: str) -> tuple[int, int, int]:
-    """(전-파일 HARD 출현, 그중 산문 표면 출현, 산문 한정 RATCHET 출현)."""
+def _language_scan_counts(path: Path, source: str) -> tuple[int, int, int]:
+    """(전-파일 HARD 출현, 그중 산문 범위 출현, 산문 한정 SHRINK_ONLY 출현)."""
     prose_ranges = _language_prose_ranges(path, source)
     hard = _language_hard_occurrences(path.as_posix(), source, prose_ranges)
-    ratchet = _language_ratchet_occurrences(path.as_posix(), source, prose_ranges)
+    shrink_only = _language_shrink_only_occurrences(path.as_posix(), source, prose_ranges)
     prose_hard = [item for item in hard if item.surface == LANGUAGE_PROSE_SURFACE]
-    return len(hard), len(prose_hard), len(ratchet)
+    return len(hard), len(prose_hard), len(shrink_only)
 
 
 def _write_language_fixture(tmp_path: Path, name: str, suffix: str, source: str) -> Path:
@@ -1756,7 +1756,7 @@ def test_unregistered_extension_is_fail_loud(tmp_path, monkeypatch):
     )
 
     wide = _language_paths(tmp_path)
-    assert injected in wide, "언어 축 열거는 미등록 확장자도 시야에 넣어야 한다(필터 없음)"
+    assert injected in wide, "언어 갈래 열거는 미등록 확장자도 검사 범위에 넣어야 한다(필터 없음)"
 
     with pytest.raises(ValueError, match="미등록 확장자"):
         private_refs.language_of(injected)
@@ -1765,11 +1765,11 @@ def test_unregistered_extension_is_fail_loud(tmp_path, monkeypatch):
 
 
 @dataclass(frozen=True)
-class LanguageAxisFixture:
-    """축 하나의 산문 경계 회귀 입력.
+class LanguageScanFixture:
+    """갈래 하나의 산문 경계 회귀 입력.
 
-    ``prose_source`` 는 그 언어의 산문 자리(주석·문자열 값·전-파일)에 표식을 심은 파일이고,
-    ``data_source`` 는 산문으로 번지기 쉬운 형상(heredoc 본문·중첩 따옴표·따옴표 키·정규식
+    ``prose_source`` 는 그 언어의 산문 자리(주석·문자열 값·전-파일)에 표시를 심은 파일이고,
+    ``data_source`` 는 산문으로 번지기 쉬운 모양(heredoc 본문·중첩 따옴표·따옴표 키·정규식
     리터럴·템플릿 raw)이다. 기대값은 전부 손으로 고정한 값이라 스캐너가 조용히 좁아지거나
     넓어지면 값 불일치로 드러난다.
     """
@@ -1779,22 +1779,22 @@ class LanguageAxisFixture:
     prose_source: str
     prose_spans: tuple[tuple[int, str], ...]
     prose_hard_hits: int
-    prose_ratchet_hits: int
+    prose_shrink_only_hits: int
     data_source: str
     data_spans: tuple[tuple[int, str], ...]
     data_hard_total: int
     data_prose_hard_hits: int
 
 
-_LANGUAGE_AXIS_FIXTURES = [
+_LANGUAGE_SCAN_FIXTURES = [
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix="",
             language=private_refs.LANGUAGE_NOEXT,
             prose_source=f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\nbuild/\n",
             prose_spans=((1, f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),),
             prose_hard_hits=1,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             # `.gitignore`·`.gitattributes` 에는 인라인 주석 문법이 없다 — 패턴 안 `#` 는 데이터다.
             data_source=f"pattern#{_WORK_ITEM_SAMPLE}\n*.{_DECISION_LABEL_SAMPLE}\n",
             data_spans=(),
@@ -1804,7 +1804,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="noext",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".sh",
             language=private_refs.LANGUAGE_SH,
             prose_source=(
@@ -1816,7 +1816,7 @@ _LANGUAGE_AXIS_FIXTURES = [
                 (2, f"# 라인 선두 설명 {_WORK_ITEM_SAMPLE}"),
             ),
             prose_hard_hits=2,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             # heredoc 본문·중첩 따옴표 안·파라미터 확장의 `#` 는 주석이 아니라 데이터다.
             data_source=(
                 "cat <<'EOF'\n"
@@ -1832,7 +1832,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="sh",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".cmd",
             language=private_refs.LANGUAGE_CMD,
             prose_source=(
@@ -1844,7 +1844,7 @@ _LANGUAGE_AXIS_FIXTURES = [
                 (2, f":: 두 번째 설명 {_WORK_ITEM_SAMPLE}\n"),
             ),
             prose_hard_hits=2,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             data_source=f"echo {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n",
             data_spans=(),
             data_hard_total=1,
@@ -1853,7 +1853,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="cmd",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".toml",
             language=private_refs.LANGUAGE_TOML,
             prose_source=(
@@ -1869,7 +1869,7 @@ _LANGUAGE_AXIS_FIXTURES = [
                 (5, f"# 후행 주석 {_WORK_ITEM_SAMPLE}"),
             ),
             prose_hard_hits=3,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             # 따옴표 키·테이블 머리는 값이 아니라 이름이라 판정면 밖이다.
             data_source=(
                 f'"{_WORK_ITEM_SAMPLE}" = 1\n'
@@ -1883,7 +1883,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="toml",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".js",
             language=private_refs.LANGUAGE_JS,
             prose_source=(
@@ -1896,7 +1896,7 @@ _LANGUAGE_AXIS_FIXTURES = [
                 (2, f"// 후행 설명 {_WORK_ITEM_SAMPLE}"),
             ),
             prose_hard_hits=2,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             # 제어문 머리 뒤 정규식·문자열 안 `//`·템플릿 raw 는 전부 데이터다.
             data_source=(
                 f"if (ok) /[//]{_WORK_ITEM_SAMPLE}/.test(value);\n"
@@ -1910,7 +1910,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="js",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".cjs",
             language=private_refs.LANGUAGE_JS,
             prose_source=(
@@ -1921,7 +1921,7 @@ _LANGUAGE_AXIS_FIXTURES = [
                 (1, f"/* 블록 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE} */"),
             ),
             prose_hard_hits=1,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             data_source=(
                 f"const pattern = /{_WORK_ITEM_SAMPLE}\\/{_DECISION_LABEL_SAMPLE}/;\n"
                 f"const text = '//{_WORK_ITEM_SAMPLE}';\n"
@@ -1933,7 +1933,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="cjs",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".manifest",
             language=private_refs.LANGUAGE_MANIFEST,
             prose_source=(
@@ -1942,7 +1942,7 @@ _LANGUAGE_AXIS_FIXTURES = [
             ),
             prose_spans=((1, f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),),
             prose_hard_hits=1,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             # 엔진 파서가 엔트리로 읽는 데이터 행은 산문이 아니다.
             data_source=f"path/{_WORK_ITEM_SAMPLE}/{_DECISION_LABEL_SAMPLE}.py\n",
             data_spans=(),
@@ -1952,7 +1952,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="manifest",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".json",
             language=private_refs.LANGUAGE_JSON,
             prose_source=(
@@ -1960,7 +1960,7 @@ _LANGUAGE_AXIS_FIXTURES = [
             ),
             prose_spans=((1, f'"설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"'),),
             prose_hard_hits=1,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             # 키 문자열은 판정면이 아니다(값만 산문).
             data_source=f'{{"{_WORK_ITEM_SAMPLE}.{_DECISION_LABEL_SAMPLE}": 1}}\n',
             data_spans=(),
@@ -1970,7 +1970,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="json",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".jsonc",
             language=private_refs.LANGUAGE_JSONC,
             prose_source=(
@@ -1984,7 +1984,7 @@ _LANGUAGE_AXIS_FIXTURES = [
                 (3, f'"값 {_WORK_ITEM_SAMPLE}"'),
             ),
             prose_hard_hits=2,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             # 문자열 안 `//` 는 주석 시작이 아니다.
             data_source=f'{{"{_WORK_ITEM_SAMPLE}//{_DECISION_LABEL_SAMPLE}": 1}}\n',
             data_spans=(),
@@ -1994,7 +1994,7 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="jsonc",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".rules",
             language=private_refs.LANGUAGE_RULES,
             prose_source=(
@@ -2004,7 +2004,7 @@ _LANGUAGE_AXIS_FIXTURES = [
                 (1, f"# 후행 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"),
             ),
             prose_hard_hits=1,
-            prose_ratchet_hits=1,
+            prose_shrink_only_hits=1,
             # `match = [...]` 는 샘플 argv 데이터다.
             data_source=f'match = ["cmd {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"]\n',
             data_spans=(),
@@ -2014,14 +2014,14 @@ _LANGUAGE_AXIS_FIXTURES = [
         id="rules",
     ),
     pytest.param(
-        LanguageAxisFixture(
+        LanguageScanFixture(
             suffix=".txt",
             language=private_refs.LANGUAGE_TXT,
             prose_source=f"안내 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n",
             prose_spans=((1, f"안내 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),),
             prose_hard_hits=1,
-            prose_ratchet_hits=1,
-            # 전-파일 산문 축이라 면제 구간이 없다 — 코드처럼 보이는 줄도 산문으로 남는다.
+            prose_shrink_only_hits=1,
+            # 전-파일 산문 갈래라 면제 구간이 없다 — 코드처럼 보이는 줄도 산문으로 남는다.
             data_source=f'match = ["cmd {_WORK_ITEM_SAMPLE}"]\n',
             data_spans=((1, f'match = ["cmd {_WORK_ITEM_SAMPLE}"]\n'),),
             data_hard_total=1,
@@ -2032,71 +2032,71 @@ _LANGUAGE_AXIS_FIXTURES = [
 ]
 
 
-@pytest.mark.parametrize("fixture", _LANGUAGE_AXIS_FIXTURES)
-def test_language_axis_prose_spans_are_asserted_by_value(fixture, tmp_path):
-    """축마다 산문 파일을 실파일로 쓰고 span 텍스트·줄 번호·offender 수를 값으로 고정한다."""
+@pytest.mark.parametrize("fixture", _LANGUAGE_SCAN_FIXTURES)
+def test_language_scan_prose_spans_are_asserted_by_value(fixture, tmp_path):
+    """갈래마다 산문 파일을 실파일로 쓰고 span 텍스트·줄 번호·offender 수를 값으로 고정한다."""
     path = _write_language_fixture(tmp_path, "prose", fixture.suffix, fixture.prose_source)
     source = path.read_text(encoding="utf-8")
 
     assert private_refs.language_of(path) == fixture.language
-    assert _language_axis_spans(path, source) == fixture.prose_spans
+    assert _language_scan_spans(path, source) == fixture.prose_spans
 
-    _hard_total, prose_hard, ratchet = _language_axis_counts(path, source)
-    assert (prose_hard, ratchet) == (fixture.prose_hard_hits, fixture.prose_ratchet_hits)
-    # 산문 표식이 0 이면 이 축의 경계·민감도 단언이 통째로 공허해진다.
+    _hard_total, prose_hard, shrink_only = _language_scan_counts(path, source)
+    assert (prose_hard, shrink_only) == (fixture.prose_hard_hits, fixture.prose_shrink_only_hits)
+    # 산문 표시가 0 이면 이 갈래의 경계·민감도 단언이 통째로 공허해진다.
     assert prose_hard >= 1
-    assert ratchet >= 1
+    assert shrink_only >= 1
 
 
-@pytest.mark.parametrize("fixture", _LANGUAGE_AXIS_FIXTURES)
-def test_language_axis_data_shapes_keep_their_surface(fixture, tmp_path):
-    """산문으로 번지기 쉬운 형상의 span 과 표면 라벨을 값으로 고정한다.
+@pytest.mark.parametrize("fixture", _LANGUAGE_SCAN_FIXTURES)
+def test_language_scan_data_shapes_keep_their_surface(fixture, tmp_path):
+    """산문으로 번지기 쉬운 모양의 span 과 범위 라벨을 값으로 고정한다.
 
-    HARD 는 전-파일 스캔이라 데이터 구간 출현도 총량에 남고, 달라지는 것은 표면 라벨뿐이다.
+    HARD 는 전-파일 스캔이라 데이터 구간 출현도 총량에 남고, 달라지는 것은 범위 라벨뿐이다.
     """
     path = _write_language_fixture(tmp_path, "data", fixture.suffix, fixture.data_source)
     source = path.read_text(encoding="utf-8")
 
-    assert _language_axis_spans(path, source) == fixture.data_spans
+    assert _language_scan_spans(path, source) == fixture.data_spans
 
-    hard_total, prose_hard, _ratchet = _language_axis_counts(path, source)
+    hard_total, prose_hard, _shrink_only = _language_scan_counts(path, source)
     assert hard_total == fixture.data_hard_total
     assert prose_hard == fixture.data_prose_hard_hits
 
 
-@pytest.mark.parametrize("fixture", _LANGUAGE_AXIS_FIXTURES)
-def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
+@pytest.mark.parametrize("fixture", _LANGUAGE_SCAN_FIXTURES)
+def test_language_scan_sensitivity_disabling_scanner_clears_prose_offenders(
     fixture, tmp_path, monkeypatch
 ):
-    """그 축의 산문 분류기를 무력화하면 산문 한정 offender 가 N→0 이다.
+    """그 갈래의 산문 분류기를 무력화하면 산문 한정 offender 가 N→0 이다.
 
     비활성화 전 N>0 을 먼저 값으로 확인해 "원래부터 0 이라 통과"하는 공허 민감도를 막는다.
     """
     path = _write_language_fixture(tmp_path, "prose", fixture.suffix, fixture.prose_source)
     source = path.read_text(encoding="utf-8")
 
-    hard_total, prose_hard, ratchet = _language_axis_counts(path, source)
+    hard_total, prose_hard, shrink_only = _language_scan_counts(path, source)
     assert prose_hard == fixture.prose_hard_hits >= 1
-    assert ratchet == fixture.prose_ratchet_hits >= 1
+    assert shrink_only == fixture.prose_shrink_only_hits >= 1
 
     disabled = dict(private_refs._LANGUAGE_PROSE_SCANNERS)
     disabled[fixture.language] = lambda _source: []
     monkeypatch.setattr(private_refs, "_LANGUAGE_PROSE_SCANNERS", disabled)
 
-    after_total, after_prose_hard, after_ratchet = _language_axis_counts(path, source)
-    assert (after_prose_hard, after_ratchet) == (0, 0)
-    # HARD 총량은 불변 — 산문 표면 라벨만 뒤집힌다(축 구조가 python 축과 같다는 확인).
+    after_total, after_prose_hard, after_shrink_only = _language_scan_counts(path, source)
+    assert (after_prose_hard, after_shrink_only) == (0, 0)
+    # HARD 총량은 불변 — 산문 범위 라벨만 뒤집힌다(갈래 구조가 python 갈래와 같다는 확인).
     assert after_total == hard_total
 
 # ── 사설 참조 완료 기록 preflight(``cli.finish_record.TicketFinisher._default_private_ref_block``) ──
 #
 # 판정식 자체는 이 파일이 직접 import한 ``domain.private_refs``와 같은 소스다 — 여기서
-# 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter(묶음 장부 포함) 로 재현한다(DI 로
+# 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter(묶음 기록 포함) 로 재현한다(DI 로
 # git 을 가짜로 만들지 않는다) — 측정 폭의 기준점(``additional_reviewer.integration_base``)을
-# 그대로 태워야 통합 브랜치가 이미 가진 줄 같은 실제 형상이 재현된다.
+# 그대로 태워야 통합 브랜치가 이미 가진 줄 같은 실제 모양이 재현된다.
 #
 # 합성 티켓 ID·참조 문자열은 이 파일의 기존 관례대로 **조각으로 조립**한다. 완전한 사설 ID
-# 리터럴을 새 추가줄에 남기면 이 게이트가 막으려는 유입을 테스트가 스스로 저지른다.
+# 리터럴을 새 추가줄에 남기면 이 검사가 막으려는 유입을 테스트가 스스로 저지른다.
 
 _PREF_TOUCH = ".project_manager/tools/pref_target.py"
 _PREF_NON_ASCII_TOUCH = ".project_manager/tools/한글표본.py"
@@ -2104,9 +2104,9 @@ _PREF_RENAME_SOURCE = ".project_manager/tools/pref_rename_source.py"
 _PREF_BASE_BODY = '"""표본 shipping 모듈."""\n\n\ndef greet():\n    return "hi"\n'
 _PREF_TICKET_PREFIX = "T-" + "9"
 _PREF_BASE_REF = "T-" + "1" * 4
-# 안전 삭제가 불가능한 형태(괄호 안 혼합 문맥) — raw 축에만 걸리는 실측 형상이다.
+# 안전 삭제가 불가능한 형태(괄호 안 혼합 문맥) — raw 판정에만 걸리는 실측 모양이다.
 _PREF_MIXED_CONTEXT_COMMENT = (
-    f'    # 완료 조건(DoD) 기록 게이트 (complete 차단 — {_SYNTHETIC_REF})\n'
+    f'    # 완료 조건(DoD) 기록 검사 (complete 차단 — {_SYNTHETIC_REF})\n'
 )
 
 
@@ -2116,7 +2116,7 @@ def _pref_ticket(suffix: str) -> str:
 
 
 def _pref_repo(tmp_path: Path) -> Path:
-    """``.project_manager/tools/`` 실 사본 + board 골격을 갖춘 최소 git 저장소."""
+    """``.project_manager/tools/`` 실 사본 + board 틀을 갖춘 최소 git 저장소."""
     root = tmp_path / "pref-repo"
     shutil.copytree(REPO / ".project_manager" / "tools", root / ".project_manager" / "tools")
     for status in ("open", "claimed", "blocked", "done"):
@@ -2156,9 +2156,9 @@ def _pref_write_ticket(
         "estimate: small\ntags: []\n---\n\n# 픽스처\n\n## 목표\nx\n",
         encoding="utf-8",
     )
-    # 사설 참조 판정의 신규/흡수 기준은 묶음 장부가 선언한 통합 브랜치다 — 선언이 없으면
+    # 사설 참조 판정의 신규/기존 기준은 묶음 기록이 선언한 통합 브랜치다 — 선언이 없으면
     # 엔진이 멈춘다(다른 기준으로 접지 않는다).
-    write_cluster_ledger(
+    write_cluster_records(
         root / ".project_manager" / "board", ticket_id,
         base_branch=current_branch(root), branch=current_branch(root))
 
@@ -2168,7 +2168,7 @@ def _pref_finisher(root: Path):
 
 
 def _pref_block_with_stderr(root: Path, ticket_id: str) -> tuple[str | None, str]:
-    """(차단 문자열 또는 None, 그 실행이 낸 stderr) — 경고 축까지 값으로 본다."""
+    """(차단 문자열 또는 None, 그 실행이 낸 stderr) — 경고 쪽까지 값으로 본다."""
     buffer = io.StringIO()
     with contextlib.redirect_stderr(buffer):
         block = _pref_finisher(root)._default_private_ref_block(ticket_id)
@@ -2185,7 +2185,7 @@ def test_private_ref_preflight_blocks_new_actionable_reference(tmp_path):
     _pref_write_target(
         root,
         '"""표본 shipping 모듈."""\n\n\ndef greet():\n'
-        f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
+        f'    # 사설 참조 표시 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
     block = _pref_finisher(root)._default_private_ref_block(ticket)
@@ -2197,11 +2197,11 @@ def test_private_ref_preflight_blocks_new_actionable_reference(tmp_path):
 def test_private_ref_preflight_blocks_reference_added_below_the_docstring_head(
     tmp_path,
 ):
-    """여러 줄 docstring 의 **2행 이후**에 들어온 참조도 차단한다(줄 번호 결합 정합).
+    """여러 줄 docstring 의 **2행 이후**에 들어온 참조도 차단한다(줄 번호 연결 일치).
 
     ``_actionable_matches`` 는 줄마다 안전 삭제 계획을 세우고 그 **줄 기준** offset 의 match 를
     돌려준다. span 전체 offset 으로 읽으면 이 유입이 앞줄로 붙어 추가 줄 집합과 어긋나고,
-    차단돼야 할 유입이 경고로 강등된다. 전량 회귀 가드가 같은 소스에서 내는 좌표와 대조한다.
+    차단돼야 할 유입이 경고로 수준이 낮아진다. 전량 회귀 가드가 같은 소스에서 내는 좌표와 대조한다.
     """
     root = _pref_repo(tmp_path)
     base_body = (
@@ -2228,7 +2228,7 @@ def test_private_ref_preflight_blocks_reference_added_below_the_docstring_head(
     ]
     assert hard == [(7, "work_item", _SYNTHETIC_REF)]
     assert block is not None
-    # 차단 목록(✗)에 실려야 한다 — 경고 목록에만 있으면 차단이 경고로 강등된 것이다.
+    # 차단 목록(✗)에 실려야 한다 — 경고 목록에만 있으면 차단이 경고로 수준이 낮아진 것이다.
     assert f"✗ {_PREF_TOUCH}:7 {_SYNTHETIC_REF}" in block
 
 
@@ -2238,7 +2238,7 @@ def test_private_ref_preflight_pre_existing_offense_is_not_a_false_block(tmp_pat
     _pref_write_target(
         root,
         '"""표본."""\n\n\ndef greet():\n'
-        f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
+        f'    # 사설 참조 표시 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
     claimed_rev = _pref_commit(root, "seed with pre-existing offense")
@@ -2248,7 +2248,7 @@ def test_private_ref_preflight_pre_existing_offense_is_not_a_false_block(tmp_pat
     _pref_write_target(
         root,
         '"""표본."""\n\n\ndef greet():\n'
-        f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
+        f'    # 사설 참조 표시 ({_SYNTHETIC_REF})\n'
         '    return "hi" + "!"\n',
     )
     block = _pref_finisher(root)._default_private_ref_block(ticket)
@@ -2261,7 +2261,7 @@ def test_private_ref_preflight_cites_only_the_new_line(tmp_path):
     _pref_write_target(
         root,
         '"""표본."""\n\n\ndef greet():\n'
-        f'    # 사설 참조 표식 ({_PREF_BASE_REF})\n'
+        f'    # 사설 참조 표시 ({_PREF_BASE_REF})\n'
         '    return "hi"\n',
     )
     claimed_rev = _pref_commit(root, "seed with pre-existing offense")
@@ -2270,8 +2270,8 @@ def test_private_ref_preflight_cites_only_the_new_line(tmp_path):
     _pref_write_target(
         root,
         '"""표본."""\n\n\ndef greet():\n'
-        f'    # 사설 참조 표식 ({_PREF_BASE_REF})\n'
-        f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
+        f'    # 사설 참조 표시 ({_PREF_BASE_REF})\n'
+        f'    # 사설 참조 표시 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
     block = _pref_finisher(root)._default_private_ref_block(ticket)
@@ -2300,7 +2300,7 @@ def test_private_ref_preflight_ignores_a_line_the_integration_branch_already_has
     """통합 브랜치가 이미 가진 줄은 이번 폭 밖이다 — 차단도 경고도 없다.
 
     폭의 기준점이 통합 브랜치와의 merge-base 라, 그 브랜치가 이미 가진 유입은 이 작업의
-    산출이 아니다(그 줄을 이 티켓에 다시 지목하면 매 완료 기록이 남의 잔여를 되짚는다).
+    산출이 아니다(그 줄을 이 티켓에 다시 지목하면 매 완료 기록이 남의 남은 줄을 되짚는다).
     """
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
@@ -2370,7 +2370,7 @@ def test_private_ref_preflight_block_lists_only_this_widths_offenders(
         root,
         '"""표본."""\n\n\ndef greet():\n'
         + _PREF_MIXED_CONTEXT_COMMENT
-        + f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
+        + f'    # 사설 참조 표시 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
     block, stderr = _pref_block_with_stderr(root, ticket)
@@ -2382,7 +2382,7 @@ def test_private_ref_preflight_block_lists_only_this_widths_offenders(
 
 
 def test_private_ref_preflight_silent_when_touches_outside_python_surface(tmp_path):
-    """touches 가 사설 참조 python 표면과 안 겹치면 판정 로딩조차 안 하고 무발화한다."""
+    """touches 가 사설 참조 python 범위와 안 겹치면 판정 로딩조차 안 하고 아무것도 출력하지 않는다."""
     root = _pref_repo(tmp_path)
     (root / "docs").mkdir()
     (root / "docs" / "readme.md").write_text("hello\n", encoding="utf-8")
@@ -2406,7 +2406,7 @@ def test_private_ref_preflight_blocks_inflow_in_non_ascii_tracked_path(tmp_path)
     ticket = _pref_ticket("113")
     _pref_write_ticket(root, ticket, claimed_rev, touches=(_PREF_NON_ASCII_TOUCH,))
     target.write_text(
-        f'"""표본."""\n# 사설 참조 표식 ({_SYNTHETIC_REF})\n', encoding="utf-8",
+        f'"""표본."""\n# 사설 참조 표시 ({_SYNTHETIC_REF})\n', encoding="utf-8",
     )
     block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is not None
@@ -2416,7 +2416,7 @@ def test_private_ref_preflight_blocks_inflow_in_non_ascii_tracked_path(tmp_path)
 def test_private_ref_preflight_blocks_inflow_in_non_ascii_untracked_new_file(
     tmp_path,
 ):
-    """아직 추적되지 않은 신규 파일도 같은 폭의 구성원이다 — 비-ASCII 이름이면 그 축
+    """아직 추적되지 않은 신규 파일도 같은 폭의 구성원이다 — 비-ASCII 이름이면 그 경로
     (``--no-index`` 실행) 헤더도 인용 표기로 나온다."""
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
@@ -2424,7 +2424,7 @@ def test_private_ref_preflight_blocks_inflow_in_non_ascii_untracked_new_file(
     ticket = _pref_ticket("114")
     _pref_write_ticket(root, ticket, claimed_rev, touches=(_PREF_NON_ASCII_TOUCH,))
     (root / _PREF_NON_ASCII_TOUCH).write_text(
-        f'"""표본."""\n# 사설 참조 표식 ({_SYNTHETIC_REF})\n', encoding="utf-8",
+        f'"""표본."""\n# 사설 참조 표시 ({_SYNTHETIC_REF})\n', encoding="utf-8",
     )
     block = _pref_finisher(root)._default_private_ref_block(ticket)
     assert block is not None
@@ -2432,7 +2432,7 @@ def test_private_ref_preflight_blocks_inflow_in_non_ascii_untracked_new_file(
 
 
 def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(tmp_path):
-    """rename 은 목적지 경로로 접어 판정한다 — 목적지가 인용되는 비-ASCII 이름이어도 같다."""
+    """rename 은 목적지 경로로 바꿔 판정한다 — 목적지가 인용되는 비-ASCII 이름이어도 같다."""
     root = _pref_repo(tmp_path)
     (root / _PREF_RENAME_SOURCE).write_text(
         '"""표본."""\n\n\ndef greet():\n    return "hi"\n', encoding="utf-8",
@@ -2446,7 +2446,7 @@ def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(tmp_pa
     _git(root, "mv", _PREF_RENAME_SOURCE, _PREF_NON_ASCII_TOUCH)
     (root / _PREF_NON_ASCII_TOUCH).write_text(
         '"""표본."""\n\n\ndef greet():\n'
-        f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
+        f'    # 사설 참조 표시 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
         encoding="utf-8",
     )
@@ -2456,7 +2456,7 @@ def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(tmp_pa
         claimed_rev=claimed_rev,
     )
     block = _pref_finisher(root)._default_private_ref_block(ticket)
-    # rename 메타데이터 형상을 실제로 태웠다는 값 증거(신규 파일 형상으로 접히지 않았다).
+    # rename 메타데이터 모양을 실제로 태웠다는 값 증거(신규 파일 모양으로 바뀌지 않았다).
     assert "rename to " in diff_text
     assert block is not None
     assert f"{_PREF_NON_ASCII_TOUCH}:5 {_SYNTHETIC_REF}" in block
@@ -2464,7 +2464,7 @@ def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(tmp_pa
 
 def test_private_ref_preflight_skips_binary_python_without_traceback(tmp_path):
     """NUL 을 담은 이진 ``.py`` 는 diff 에 추가 줄이 잡히지 않는다 — 판정 대상이 아니고
-    예외 없이 지나간다(제어군: 아래 UTF-8 미해석 파일과 갈리는 축이 NUL 유무다)."""
+    예외 없이 지나간다(제어군: 아래 UTF-8 미해석 파일과 갈리는 기준이 NUL 유무다)."""
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
     claimed_rev = _pref_commit(root, "seed")
@@ -2494,7 +2494,7 @@ def test_private_ref_preflight_warns_when_changed_python_is_not_utf8(tmp_path):
 
 
 def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(tmp_path):
-    """표면 해소는 `shipping_paths` 결과를 touches 로 좁힌 것과 값으로 일치한다
+    """범위 해소는 `shipping_paths` 결과를 touches 로 좁힌 것과 값으로 일치한다
     (하드코딩 목록이 아니다)."""
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
@@ -2512,7 +2512,7 @@ def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(tmp_
 
 
 def test_private_ref_preflight_surface_excludes_machine_mirror_copies():
-    """표면 = 출하 python ∩ touches ∖ 기계 mirror. 실 트리에서 canonical 엔진 파일 하나와
+    """범위 = 출하 python ∩ touches ∖ 기계 mirror. 실 트리에서 canonical 엔진 파일 하나와
     그 template 사본 전부를 선언해도 남는 것은 canonical 하나다 — 같은 유입을 사본 수만큼
     중복 지목하지 않는다(제외 술어는 `additional_reviewer` 소유)."""
     external = _load_tool_module("additional_reviewer")
@@ -2536,7 +2536,7 @@ def test_private_ref_preflight_surface_excludes_machine_mirror_copies():
 
 def test_private_ref_preflight_runs_before_regression_log_board_git(tmp_path):
     """이 preflight 가 차단하면 회귀·log·board·git mutation 어떤 부작용도 없다(DoD
-    preflight 와 동형인 자리 계약). 실 판정으로 재현한다 — DI 스텁이 아니라 실 판정이 앞자리에서
+    preflight 와 같은 구조인 자리 계약). 실 판정으로 재현한다 — DI 스텁이 아니라 실 판정이 앞자리에서
     막는지를 본다."""
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
@@ -2546,7 +2546,7 @@ def test_private_ref_preflight_runs_before_regression_log_board_git(tmp_path):
     _pref_write_target(
         root,
         '"""표본 shipping 모듈."""\n\n\ndef greet():\n'
-        f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
+        f'    # 사설 참조 표시 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
     finisher = finish_record.TicketFinisher(
@@ -2572,7 +2572,7 @@ def test_private_ref_preflight_sensitivity_removed_call_lets_offense_through(tmp
     _pref_write_target(
         root,
         '"""표본 shipping 모듈."""\n\n\ndef greet():\n'
-        f'    # 사설 참조 표식 ({_SYNTHETIC_REF})\n'
+        f'    # 사설 참조 표시 ({_SYNTHETIC_REF})\n'
         '    return "hi"\n',
     )
     finisher = finish_record.TicketFinisher(
@@ -2634,7 +2634,7 @@ def test_private_ref_block_defers_entirely_to_loaded_scanner_no_duplicate(
 
 
 def test_private_ref_preflight_does_not_reference_allowlist_or_baseline_files():
-    """판정 코드는 재유입 가드의 allowlist/ratchet 원장 파일 경로를 참조하지 않는다
+    """판정 코드는 재유입 가드의 allowlist/줄어들기만 하는 기록 파일 경로를 참조하지 않는다
     (재생성으로 통과시키는 경로가 구조적으로 없다)."""
     tools = REPO / ".project_manager" / "tools" / "pm_engine"
     source = "".join(
@@ -2682,8 +2682,8 @@ def _require_historical_inflow_commit() -> None:
 def test_real_historical_inflow_agrees_with_the_reinflow_guard(tmp_path):
     """실 사고 커밋 1건 — 그 커밋이 추가한 줄에서 두 경로의 값을 대조한다.
 
-    전량 회귀 가드(HARD)가 그 줄들에서 내는 출현 4건과 완료 preflight 의 raw 축 4건이 같은
-    좌표이고, 안전 삭제가 가능한 actionable 축은 그 부분집합 3건이다(한 건은 괄호 안 혼합
+    전량 회귀 가드(HARD)가 그 줄들에서 내는 출현 4건과 완료 preflight 의 raw 판정 4건이 같은
+    좌표이고, 안전 삭제가 가능한 actionable 판정은 그 부분집합 3건이다(한 건은 괄호 안 혼합
     문맥이라 삭제 단위가 없다). 합성 repo 로는 이 분포가 재현되지 않는다.
     """
     _require_historical_inflow_commit()
@@ -2726,11 +2726,11 @@ def test_real_historical_inflow_agrees_with_the_reinflow_guard(tmp_path):
 
 
 def test_real_historical_inflow_blocks_when_reproduced_uncommitted(tmp_path):
-    """같은 사고를 완료 기록 시점 형상(=변경이 아직 미커밋)으로 재현하면 4줄 전부 차단이다.
+    """같은 사고를 완료 기록 시점 모양(=변경이 아직 미커밋)으로 재현하면 4줄 전부 차단이다.
 
-    사고 당시 이 유입은 병합 뒤 전량 회귀에서야 드러났다. 차단 축이 actionable 단독이면
-    괄호 안 혼합 문맥 1건이 경고로 강등돼 같은 사고의 4분의 1이 그대로 통과한다 — 커밋
-    여부를 축으로 삼아야 그 한 건까지 같은 라운드에서 막힌다.
+    사고 당시 이 유입은 병합 뒤 전량 회귀에서야 드러났다. 차단 기준이 actionable 단독이면
+    괄호 안 혼합 문맥 1건이 경고로 수준이 낮아져 같은 사고의 4분의 1이 그대로 통과한다 — 커밋
+    여부를 기준으로 삼아야 그 한 건까지 같은 라운드에서 막힌다.
     """
     _require_historical_inflow_commit()
     parent_source = _historical_git_text(
@@ -2755,7 +2755,7 @@ def test_real_historical_inflow_blocks_when_reproduced_uncommitted(tmp_path):
     citations = [int(line.split(":")[1].split()[0]) for line in blocked]
     assert "(4건)" in block.splitlines()[0]
     assert citations == [4677, 4688, 4786, 7764]
-    # 혼합 문맥 1건만 raw 축에서 편입된다(나머지 3건은 actionable 축이 이미 차단한다).
+    # 혼합 문맥 1건만 raw 판정에서 편입된다(나머지 3건은 actionable 판정이 이미 차단한다).
     assert sum("미커밋 신규" in line for line in blocked) == 1
     assert "같은 폭 커밋된 raw 목록" not in block and stderr == ""
 
@@ -2767,11 +2767,11 @@ def _dump_hard_report(report: dict[str, object]) -> str:
 def main(argv: list[str] | None = None) -> int:
     """검토된 hard 대장을 현재 트리에서 다시 덤프한다.
 
-    기본은 비파괴 검사(드리프트를 델타로 출력하고 rc=1)이고, ``--regenerate`` 일 때만
+    기본은 비파괴 검사(드리프트를 차이로 출력하고 rc=1)이고, ``--regenerate`` 일 때만
     파일을 다시 쓴다. 재생성 경로를 pytest 밖에 두어 회귀가 대장을 자기치유하지 못하게 한다.
     """
     if hasattr(sys.stdout, "reconfigure"):
-        # 델타 샘플에 비-ASCII match(§ 절 표기·한글 문맥)가 섞일 수 있다.
+        # 차이 샘플에 비-ASCII match(§ 절 표기·한글 문맥)가 섞일 수 있다.
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -2803,8 +2803,8 @@ def main(argv: list[str] | None = None) -> int:
     expected: Counter[HardKey] = (
         _hard_baseline_counter(json.loads(current)) if current else Counter()
     )
-    unexpected, stale = _inventory_delta(expected, _hard_counter(hard))
-    print(_describe_delta(unexpected, stale, _format_hard_key))
+    unexpected, stale = _inventory_difference(expected, _hard_counter(hard))
+    print(_describe_difference(unexpected, stale, _format_hard_key))
     if not args.regenerate:
         print(f"drift {args.output} — {summary}; rerun with --regenerate")
         return 1

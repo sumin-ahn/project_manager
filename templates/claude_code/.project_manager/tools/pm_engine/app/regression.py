@@ -208,7 +208,7 @@ def _regression_cwd(home, override: str | None = None) -> str:
 def _ticket_touches(home, tid: str) -> list[str] | None:
     """회귀 스코프용 티켓 touches — **canonical ID 정확 일치**만 · 확정 실패면 None.
 
-    조회 규칙은 수준 낮춤 판정(`_gate_ticket`)과 같은 한 지점이다 — 판정은 정확 일치로 하고 스코프는
+    조회 규칙은 수준 낮춤 판정(`_find_review_ticket`)과 같은 한 지점이다 — 판정은 정확 일치로 하고 스코프는
     glob 첫 매칭으로 읽으면 두 명령이 서로 다른 티켓을 볼 수 있다(무관 touches 로 좁혀진 '가짜
     green'). 티켓을 못 찾으면 빈 목록이고, 호출부는 그때 FULL 로 남긴다(좁히는 방향으로는 안
     틀린다).
@@ -216,7 +216,7 @@ def _ticket_touches(home, tid: str) -> list[str] | None:
     반환 None 은 **스코프를 확정하지 못했다**는 뜻이다 — 손상/비-매핑 frontmatter
     (`load_ticket_soft` 규약으로 skip)와 형식 불명 touches(`_normalized_touches`)가 같은 기준이고,
     호출부는 둘 다 FULL 로 남긴다."""
-    found = _gate_ticket(home, tid)
+    found = _find_review_ticket(home, tid)
     if found is None:
         return []
     loaded = ticket_store.load_ticket_soft(home, found[1])
@@ -239,7 +239,7 @@ def _scope_args(touches: list[str]) -> str:
 #
 # 판정 입력은 additional_reviewer 의 라운드 기록(`.local/review_rounds.json`)뿐이다. 기록을 읽는
 # 규칙은 `review_rounds` 가 소유하고 여기서는 **읽기만** 한다.
-def _gate_ticket(home, review_ticket: str) -> tuple[str, Path] | None:
+def _find_review_ticket(home, review_ticket: str) -> tuple[str, Path] | None:
     """리뷰 집계 티켓 이름이 가리키는 티켓의 (status, path) — **canonical ID 정확 일치**만 (아니면 None).
 
     리뷰 집계 티켓 이름은 자유 문자열이 실사용이다(기록 실측: 티켓 ID 가 아닌 라벨). 그 문자열을 그대로 조회에
@@ -268,7 +268,7 @@ def _review_ticket_is_claimed(home, review_ticket: str) -> bool:
     쓰는 대신 **이미 있는 데이터**(보드 티켓 status)를 대조한다: 리뷰 사이클은 그 티켓이 작업 중
     (claimed)일 때만 살아 있고, done/open/blocked/draft 는 정의상 라운드를 더 돌지 않는다.
     """
-    found = _gate_ticket(home, review_ticket)
+    found = _find_review_ticket(home, review_ticket)
     return found is not None and found[0] == "claimed"
 
 
@@ -281,14 +281,14 @@ def _active_review_tickets(home) -> list[str]:
     못 찾으면 수준을 낮추지 않는다 — 이 판정의 실패가 회귀 통과 조건을 좁히면 안 된다(fail-open 이 안전한
     방향이다)."""
     try:
-        data = json.loads(fs.read_text_shared(review_rounds._review_rounds_ledger(home), encoding="utf-8"))
+        data = json.loads(fs.read_text_shared(review_rounds._review_rounds_records(home), encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
         return []
     if not isinstance(data, dict):
         return []
     active: list[str] = []
     for review_ticket, entry in sorted(data.items()):
-        if review_ticket == review_rounds._REVIEW_LEDGER_WAVE_KEY or not isinstance(entry, dict):
+        if review_ticket == review_rounds._REVIEW_RECORD_SESSION_BUDGET_KEY or not isinstance(entry, dict):
             continue
         verdict = review_rounds._last_round_verdict(entry)
         if verdict is not None and verdict != 0 and _review_ticket_is_claimed(home, review_ticket):
@@ -902,7 +902,7 @@ LIVE_TEST_RELEASE_PIN = 22  # `pytest -m release` 로 돌아야 하는 라이브
 # → 진짜 red 를 놓친다).
 #
 # 이 절이 해소 체인의 **단일 사본**이다 — `cli.handoff`·`cli.finish_record` 는 명시 `Home` 을 넘겨
-# `_resolve_gate_cmd(home)` 를 직접 부른다. 해소 함수가 한 도구에만
+# `_resolve_check_cmd(home)` 를 직접 부른다. 해소 함수가 한 도구에만
 # 있던 미러 이탈이 이 결함의 절반이었다.
 
 def _active_repo_name(home) -> str | None:
@@ -934,7 +934,7 @@ def _areas_test_cmd_by_repo(home) -> str | None:
     return None
 
 
-def _resolve_gate_cmd(home) -> str | None:
+def _resolve_check_cmd(home) -> str | None:
     """활성 회귀 통과 조건 명령(문자열)을 해소한다. 해소 예외는 전파한다.
 
     해소 체인 — 앞선 층이 비어 있지 않은 값을 주면 거기서 멈춘다:

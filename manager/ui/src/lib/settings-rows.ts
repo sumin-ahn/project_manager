@@ -2,7 +2,7 @@
 import type { ConfGovernor, ConfSection } from "../api";
 import rule from "./settings-rows.json";
 
-/** 접기 판정이 보는 행의 축 셋(넷째 축인 배지는 `markedKeys` 가 잰다). */
+/** 접기 판정이 보는 행의 필드 셋(넷째 기준인 배지는 `markedKeys` 가 잰다). */
 export type FoldRow = { key: string; default: string | null; required: boolean };
 
 /**
@@ -24,7 +24,7 @@ export function markedKeys(conf: ConfSection): Set<string> {
   return marked;
 }
 
-/** 그 행을 접는가 — 네 축이 전부 규칙표의 값과 같을 때만 접는다. */
+/** 그 행을 접는가 — 네 기준이 전부 규칙표의 값과 같을 때만 접는다. */
 export function foldable(row: FoldRow, value: string, marked: Set<string>): boolean {
   return value === rule.fold.value
     && row.required === rule.fold.required

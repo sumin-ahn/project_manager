@@ -11,7 +11,7 @@
 (목록을 따로 적으면 두 벌이 되어 갈린다).
 
 동시 변경: 저장·적용이 도는 동안 **같은 프로젝트**의 다른 요청은 거절한다(사유 포함). 새 상태
-축이 아니라 거절 하나이고, 엔진 호출 직렬화는 `manager.ENGINE_LOCK` 이 이미 한다 — 여기서
+분기가 아니라 거절 하나이고, 엔진 호출 직렬화는 `manager.ENGINE_LOCK` 이 이미 한다 — 여기서
 두 번째 잠금을 만들지 않는다(프로젝트별 진행 표시는 그 잠금과 층이 다르다).
 """
 from __future__ import annotations
@@ -29,16 +29,16 @@ from . import PACKAGE_ROOT
 HOST = "127.0.0.1"
 API_PREFIX = "/api/"
 EVENTS_PATH = "/events"
-# 창이 자기를 밝히는 표식 — 폴더 고르기 대화가 창 전용이라 그 한 가지에만 쓴다. 창이 여는
+# 창이 자기를 밝히는 표시 — 폴더 고르기 대화가 창 전용이라 그 한 가지에만 쓴다. 창이 여는
 # 주소의 질의 `client=window` 를 화면이 읽어 요청 머리에 그대로 싣는다.
 CLIENT_QUERY = "client"
 CLIENT_HEADER = "X-Manager-Client"
 WINDOW_CLIENT = "window"
 BROWSER_CLIENT = "browser"
-# `/api/` 를 부를 수 있는 표식 값 — 화면이 싣는 두 가지뿐이다(창·브라우저). 표식이 없거나 다른
+# `/api/` 를 부를 수 있는 표시 값 — 화면이 싣는 두 가지뿐이다(창·브라우저). 표시가 없거나 다른
 # 값이면 메서드를 부르기 전에 거절한다: 커스텀 머리는 다른 출처에서 preflight 를 부르고 이
 # 서버는 CORS 응답을 내지 않으므로, 아무 웹페이지가 열어 둔 채로 이 서버의 이름을 부르는 길이
-# 닫힌다(표식을 읽기만 하면 `run`·`conf_save` 가 그대로 돈다).
+# 닫힌다(표시를 읽기만 하면 `run`·`conf_save` 가 그대로 돈다).
 API_CLIENTS = frozenset({WINDOW_CLIENT, BROWSER_CLIENT})
 # 저장·적용 — 도는 동안 같은 프로젝트의 다른 요청을 거절하는 호출.
 WRITE_NAMES = frozenset({
@@ -212,7 +212,7 @@ def _handler_class(server: ManagerServer):
             if self.path.split("?")[0] == EVENTS_PATH:
                 self._stream_events()
                 return
-            # 창이 자기를 밝히는 표식은 질의 문자열로 온다 — 정적 파일 이름에서 떼어 낸다.
+            # 창이 자기를 밝히는 표시는 질의 문자열로 온다 — 정적 파일 이름에서 떼어 낸다.
             self.path = self.path.split("?")[0]
             super().do_GET()
 

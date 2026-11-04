@@ -1,4 +1,4 @@
-"""세션 복구 스냅샷 구성."""
+"""세션 복구 상태 기록 구성."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -33,7 +33,7 @@ def _ticket_counts(home) -> tuple[Path, dict[str, int]]:
     상태 디렉토리 스캔 자체는 board.py 호출 없이 디렉토리 존재만 본다(집합만 `ticket_rules` 에서 온다).
     """
     manager = home.local_dir.parent
-    # board 분리 형상 우선, legacy는 wiki/tickets.
+    # board 분리 구성 우선, legacy는 wiki/tickets.
     board_root = manager / "board"
     tickets = (board_root if board_root.is_dir() else manager / "wiki") / "tickets"
     counts: dict[str, int] = {}
@@ -46,9 +46,9 @@ def _ticket_counts(home) -> tuple[Path, dict[str, int]]:
 
 
 def _lease_task_slots(home, task: str) -> list[tuple[str, Path]]:
-    """현재 task 가 leased 로 보유한 슬롯 — (장부 표기, 해소 경로) 쌍.
+    """현재 task 가 leased 로 보유한 슬롯 — (대여 기록 표기, 해소 경로) 쌍.
 
-    ``_ledger_section``(장부 표기 문자열만)과 슬롯 WIP 프로브(해소 경로가 필요)가 같은
+    ``_record_section``(대여 기록 표기 문자열만)과 슬롯 WIP 프로브(해소 경로가 필요)가 같은
     lease 판정 한 번을 공유한다 — 판정을 두 곳에 복제하면 갈릴 수 있다.
     """
     slots: list[tuple[str, Path]] = []
@@ -60,7 +60,7 @@ def _lease_task_slots(home, task: str) -> list[tuple[str, Path]]:
     return slots
 
 
-def _ledger_section(home, task: str) -> str:
+def _record_section(home, task: str) -> str:
     active = session_store._active_tasks(home)
     leases = session_store._lease_rows(home)
     states: dict[str, int] = {}
@@ -162,7 +162,7 @@ def _wip_probe_targets(home, task: str) -> tuple[list[tuple[str, Path]], int]:
     때 뒤에 append 되는 PM 홈이 slice 로 조용히 밀려나던 결함(4-slot 프로브
     실측: PM 홈·slot-d 소실)을 막는다 — PM 홈이 기존 슬롯과 겹치지 않을 때만 자리를 예약해
     상한을 낭비하지 않는다. 못 본 슬롯은 spawn 없이 개수만 돌려준다(``_wip_slot_line`` 이
-    "외 N개(프로브 생략)"로 표면화 — 침묵 누락 금지).
+    "외 N개(프로브 생략)"로 드러냄 — 침묵 누락 금지).
     """
     slots = list(_lease_task_slots(home, task))
     seen = {os.path.normcase(str(path.resolve(strict=False))) for _label, path in slots}
@@ -179,13 +179,13 @@ def _wip_probe_targets(home, task: str) -> tuple[list[tuple[str, Path]], int]:
 
 
 def _wip_slot_line(home, task: str, *, deadline: float, monotonic=time.monotonic) -> str:
-    """슬롯 WIP 프로브 결과 불릿 — subprocess 0 계약의 유일한 예외(장부 조회는 여전히 spawn 0).
+    """슬롯 WIP 프로브 결과 불릿 — subprocess 0 계약의 유일한 예외(기록 조회는 여전히 spawn 0).
 
-    각 프로브 **직전**에 ``deadline - monotonic()`` 으로 잔여 예산을 다시 계산한다 — 한 번 계산한
-    값을 여러 호출에 재사용하면(4-slot·잔여 0.2s 프로브에서 timeout 합계 0.6s
+    각 프로브 **직전**에 ``deadline - monotonic()`` 으로 남은 예산을 다시 계산한다 — 한 번 계산한
+    값을 여러 호출에 재사용하면(4-slot·남은 시간 0.2s 프로브에서 timeout 합계 0.6s
     실측) 앞선 호출의 실제 소요가 뒤 호출 예산을 깎지 않는다는 착시가 생겨 snapshot 자체의
-    deadline 을 넘길 수 있다. 잔여가 0 이하면 그 대상부터는 spawn 하지 않고 "예산 소진"으로
-    표기한다(장부 조회 subprocess 0 계약과 별개로, 프로브 자신의 시간 계약).
+    deadline 을 넘길 수 있다. 남은 시간이 0 이하면 그 대상부터는 spawn 하지 않고 "예산 소진"으로
+    표기한다(기록 조회 subprocess 0 계약과 별개로, 프로브 자신의 시간 계약).
     """
     targets, skipped = _wip_probe_targets(home, task)
     parts: list[str] = []
@@ -211,18 +211,18 @@ def _wip_slot_line(home, task: str, *, deadline: float, monotonic=time.monotonic
 
 
 def _inflight_section(home, task: str, *, deadline: float, monotonic=time.monotonic) -> str:
-    """미회수 라운드 준비·미마감 raw·claimed 티켓·슬롯 WIP 을 in-process 조회로 편입한다.
+    """돌려받지 않은 라운드 준비·미마감 raw·claimed 티켓·슬롯 WIP 을 in-process 조회로 편입한다.
 
-    장부 조회는 subprocess 0(``delegate_records.ticket_copy_records``·``raw_output.raw_records``
+    기록 조회는 subprocess 0(``delegate_records.ticket_copy_records``·``raw_output.raw_records``
     in-process 호출) — WIP git 프로브(``_wip_slot_line``)만 유일한 예외(자체 상한). 조회 예외는
     전파해 snapshot 명령이 실패한다.
     각 불릿은 ``_inflight_safe_text``/``_inflight_capped_line`` 으로 이미 단일 줄이지만, 물리
     행 수도 조립 단계에서 실제로 강제한다(``_INFLIGHT_MAX_LINES`` — 선언만
     되고 조립에서 미강제였던 결함).
     """
-    unharvested_rows = delegate_records.ticket_copy_records(home.local_dir.parent.parent, unharvested=True)
-    _raw_dir, raw_ledger = raw_output.raw_storage_paths(home.local_dir.parent.parent, "delegate")
-    unfinished_raw_rows = raw_output.unfinished_raw_records(raw_ledger, lock=False)
+    uncollected_rows = delegate_records.ticket_copy_records(home.local_dir.parent.parent, uncollected=True)
+    _raw_dir, raw_records = raw_output.raw_storage_paths(home.local_dir.parent.parent, "delegate")
+    unfinished_raw_rows = raw_output.unfinished_raw_records(raw_records, lock=False)
     tickets_dir, _counts = _ticket_counts(home)
     claimed_ids = [
         path.stem for path in (tickets_dir / "claimed").glob("T-*.md")
@@ -230,8 +230,8 @@ def _inflight_section(home, task: str, *, deadline: float, monotonic=time.monoto
     ]
 
     lines = [
-        ctx_recovery._unharvested_copies_line(unharvested_rows),
-        ctx_recovery._unfinished_raw_line(unfinished_raw_rows, raw_ledger),
+        ctx_recovery._uncollected_copies_line(uncollected_rows),
+        ctx_recovery._unfinished_raw_line(unfinished_raw_rows, raw_records),
         ctx_recovery._claimed_tickets_line(claimed_ids),
         _wip_slot_line(home, task, deadline=deadline, monotonic=monotonic),
     ]
@@ -243,9 +243,9 @@ def _inflight_section(home, task: str, *, deadline: float, monotonic=time.monoto
 def build_snapshot(home, session_id: str | None, *, monotonic=time.monotonic) -> tuple[str | None, str | None]:
     """주입 최종 텍스트를 조립한다. 반환은 ``(text, warning)``.
 
-    정체성은 `resolve_session_task`(세션 판정) 하나다. 장부 조회는 subprocess·lock 0 (진행 중
+    정체성은 `resolve_session_task`(세션 판정) 하나다. 기록 조회는 subprocess·lock 0 (진행 중
     작업 절의 WIP git 프로브만 상한 3회의 유일한 예외 — `_wip_slot_line` 참고). 절 순서: 전언
-    경고(always-keep) → 장부 포인터 → 진행 중 작업 → 열린 todo → 복구 포인터.
+    경고(always-keep) → 기록 포인터 → 진행 중 작업 → 열린 todo → 복구 포인터.
     """
     started = monotonic()
     identity_name, reason = session_identity.resolve_session_task(home, session_id)
@@ -260,12 +260,12 @@ def build_snapshot(home, session_id: str | None, *, monotonic=time.monotonic) ->
     # ``required=always_keep`` 로 cap_snapshot_sections 에 보존 경계를 명시한다.
     sections.append(_hearsay_section())
     always_keep = len(sections)
-    # WIP 프로브(F-002)가 절 진입 전이 아니라 **호출 직전마다** 잔여를 재는 절대 deadline.
+    # WIP 프로브(F-002)가 절 진입 전이 아니라 **호출 직전마다** 남은 시간을 재는 절대 deadline.
     deadline = started + ctx_recovery.SNAPSHOT_TIMEOUT_SECONDS
     if monotonic() - started >= ctx_recovery.SNAPSHOT_TIMEOUT_SECONDS:
         return ctx_recovery.cap_snapshot_sections(identity, sections, required=always_keep), None
 
-    sections.append(_ledger_section(home, identity_name))
+    sections.append(_record_section(home, identity_name))
     if monotonic() - started >= ctx_recovery.SNAPSHOT_TIMEOUT_SECONDS:
         return ctx_recovery.cap_snapshot_sections(
             identity, sections[:always_keep], required=always_keep,

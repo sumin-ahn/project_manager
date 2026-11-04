@@ -909,7 +909,7 @@ def test_three_ticket_consumers_never_answer_with_a_prefixed_ticket(
 
     # ① 회귀 수준 낮춤 스코프 (board)
     assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0036") == ["src/pay.py"]
-    assert regression._gate_ticket(pm_paths.home_at(board.REPO), "T-0036")[1].name.startswith("T-0036-본래")
+    assert regression._find_review_ticket(pm_paths.home_at(board.REPO), "T-0036")[1].name.startswith("T-0036-본래")
     # ② 리뷰 범위 (추가 리뷰어)
     assert round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036", ) == ["src/pay.py"]
     # ③ 완료 통과 조건 티켓 로드 (ticket_finish)
@@ -933,7 +933,7 @@ def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
 
     assert regression._ticket_touches(pm_paths.home_at(board.REPO), "T-0036-002") == []              # 스코프 없음 = FULL
     assert finish_store.get_ticket_touches(finish_home, "T-0036-002") == []
-    with pytest.raises(pm_paths.AnchorResolutionError):           # touches 는 fail-loud 유지
+    with pytest.raises(pm_paths.TargetRepoResolutionError):           # touches 는 fail-loud 유지
         round_store.parse_ticket_touches(pm_paths.home_at(Path(tmp_path).resolve()), "T-0036-002", )
 
 

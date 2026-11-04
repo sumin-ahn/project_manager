@@ -95,7 +95,7 @@ def live_board(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     local = proj / ".project_manager" / ".local"
     seed_slot(proj)
-    # 픽스처가 자기 저장소라고 선언한다 — 선언이 없으면 `_resolve_livegate_flag` 의
+    # 픽스처가 자기 저장소라고 선언한다 — 선언이 없으면 `_resolve_live_test_flag` 의
     # `git config core.hooksPath` 가 이 저장소를 답해 실 PM 홈의 live-test.json 을 쓴다.
     init_git_repo(proj)
     mod = _load_board()
@@ -409,16 +409,16 @@ def test_drift_changes_none_when_manifest_entry_source_missing(
     assert "[source 에 없음]" in err
 
 
-def test_drift_changes_detects_legacy_add_harness_guest_block_rebuild(
+def test_drift_changes_detects_legacy_added_harness_block_rebuild(
         tmp_path, pm_update_module, monkeypatch, capsys):
     """실 legacy add-harness 픽스처(추가 하네스 절 provenance 미기록) — 첫 sync 는 구획을 그 판의 출하
     manifest 에서 다시 만들어 `.project_manager/engine.manifest` 를 update 한다. `drift_changes` 가
     이 변경을 빠뜨리지 않아야 하고, 판정 불능(None)이 되지 않아야 한다(재발 방지 회귀)."""
-    from test_pm_update import _make_guest_framework, _make_legacy_guest_adopter
+    from test_pm_update import _make_added_harness_framework, _make_legacy_added_harness_adopter
 
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    _make_legacy_guest_adopter(pm_update_module, dest)
+    _make_legacy_added_harness_adopter(pm_update_module, dest)
     (dest / ".project_manager" / "local.conf").write_text(
         f"upstream.path={framework}\n", encoding="utf-8")
 
@@ -444,11 +444,11 @@ def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_cha
     """`main()` 의 self-update 경로와 `drift_changes()` 가 **같은 함수를 실제로 공동 호출**한다는
     것을 사람용 stdout 파싱이 아니라 호출 인자·반환된 구조화 계획으로 직접 잠근다 — legacy
     add-harness 픽스처(구획 재생성 경로)에서 두 호출의 `changes`/`missing` 집합이 일치한다."""
-    from test_pm_update import _make_guest_framework, _make_legacy_guest_adopter
+    from test_pm_update import _make_added_harness_framework, _make_legacy_added_harness_adopter
 
-    framework = _make_guest_framework(tmp_path / "fw")
+    framework = _make_added_harness_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    _make_legacy_guest_adopter(pm_update_module, dest)
+    _make_legacy_added_harness_adopter(pm_update_module, dest)
     (dest / ".project_manager" / "local.conf").write_text(
         f"upstream.path={framework}\n", encoding="utf-8")
 
@@ -802,7 +802,7 @@ def test_record_uses_regression_cwd_override(live_board, monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake)
     regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _rec_args())
     assert fake.calls, "pytest subprocess 가 호출되지 않았다"
-    # record 는 pytest run 前에 `_resolve_livegate_flag`(→ git config)를 먼저 호출한다(T-0287
+    # record 는 pytest run 前에 `_resolve_live_test_flag`(→ git config)를 먼저 호출한다(T-0287
     # fail-fast). 순서 무관하게 pytest run(shell=True)을 골라 cwd 를 검증한다.
     pytest_call = next((c for c in fake.calls if c["kwargs"].get("shell")), None)
     assert pytest_call is not None, "pytest -m release subprocess 가 호출되지 않았다"
@@ -1058,7 +1058,7 @@ def test_record_pass_then_check_green_roundtrip(live_board, monkeypatch, capsys)
 # ── pm-verified 처분 — 추가 리뷰어(release) 채널 스코프 재검증 ──────────────
 # 채널 폐지 뒤에도 additional-reviewer 라운드 기록(review_rounds.json)의 남은 반려를 재호출 없이
 # 종결하는 `--resolve-review --pm-verified` 처분이 릴리즈 검사(`_unresolved_must_fix_data` →
-# `_gate_disposition_problem`)에서 실제로 열리고, `pm-fixed` 는 여전히 막히며, 다른 채널의
+# `_review_ticket_disposition_problem`)에서 실제로 열리고, `pm-fixed` 는 여전히 막히며, 다른 채널의
 # accepted 남은 지적이 이 채널 처분을 막지 않는지(채널 격리)를 실 board 트리 + 실 라운드/명세 파일 +
 # 실 review_rounds.json 으로 검증한다. `--resolve-review --pm-verified` CLI 선언면(호출 0 단언 포함)
 # 은 `tests/test_additional_reviewer.py` 가 진다.
@@ -1167,7 +1167,7 @@ def _pv_round_outcome(sequence: int, must_fix: int) -> dict:
     }
 
 
-def _pv_ledger_entry(rounds: list, *, confirm_fix: int = 0) -> dict:
+def _pv_record_entry(rounds: list, *, confirm_fix: int = 0) -> dict:
     return {"count": len(rounds), "confirm_fix": confirm_fix, "rounds": rounds}
 
 
@@ -1177,7 +1177,7 @@ def _pv_seed_v178_shape(proj: Path, tid: str) -> dict:
         1, [_pv_decision("X-001", "rejected")], reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
-    return _pv_ledger_entry([_pv_round_outcome(1, 1)])
+    return _pv_record_entry([_pv_round_outcome(1, 1)])
 
 
 def _pv_developer_round_block(finding_ids: list) -> str:
@@ -1253,7 +1253,7 @@ def _pv_seed_mixed_channel_shape(proj: Path, tid: str, *, machine_channel: str) 
         )
         + _pv_machine_confirmation_block(3, machine_ids)
     ))
-    return {_PV_CHANNEL_ADDITIONAL: _pv_ledger_entry([_pv_round_outcome(1, 1)])}
+    return {_PV_CHANNEL_ADDITIONAL: _pv_record_entry([_pv_round_outcome(1, 1)])}
 
 
 def _pv_pm_fixed_resolution(round_sequence: int, count: int) -> dict:
@@ -1276,15 +1276,15 @@ def _pv_round_tuple(ordinal: int, role: str, text: str):
 
 
 def _pv_complete(mod, tid: str) -> list[str]:
-    """`_complete_gate` 를 `cmd_complete` 처럼 부른다 — 본문·명세를 넘겨야 남은 리뷰 지적까지 본다."""
+    """`_complete_check` 를 `cmd_complete` 처럼 부른다 — 본문·명세를 넘겨야 남은 리뷰 지적까지 본다."""
     _status, path = ticket_store.find_ticket_exact(pm_paths.home_at(mod.REPO), tid)
     spec_text = path.read_text(encoding="utf-8")
     _fm, body = ticket_store.load_ticket(path)
-    return board_ticket._complete_gate(pm_paths.home_at(mod.REPO), tid, _pv_check_args(), body, spec_text=spec_text)
+    return board_ticket._complete_check(pm_paths.home_at(mod.REPO), tid, _pv_check_args(), body, spec_text=spec_text)
 
 
 def _pv_check_args() -> argparse.Namespace:
-    """`_complete_gate` 인자 — log·회귀 검사는 통과로 두고 리뷰 통과 조건만 판정 대상에 남긴다."""
+    """`_complete_check` 인자 — log·회귀 검사는 통과로 두고 리뷰 통과 조건만 판정 대상에 남긴다."""
     return argparse.Namespace(
         allow_missing_log=True, tests_pass=True, allow_untested=False,
     )
@@ -1294,7 +1294,7 @@ def _pv_check_args() -> argparse.Namespace:
 def pm_verified_release(tmp_path, monkeypatch):
     """pm-verified 처분 검증 시나리오 — 실 티켓 트리 + 실 라운드 파일 + 추가 리뷰어 실 라운드 기록.
 
-    한 시나리오가 생산 경로를 그대로 태운다: 리뷰 라운드 완료 판정(`board._complete_gate`) ·
+    한 시나리오가 생산 경로를 그대로 태운다: 리뷰 라운드 완료 판정(`board._complete_check`) ·
     릴리즈 재검증(`board live-test record`). 추가 채널 선언 CLI 는 `tests/test_additional_reviewer.py` 가
     같은 빌더를 import 해 태운다 — 구성 정의는 한 곳(`_pv_seed_mixed_channel_shape`)뿐이다.
     """
@@ -1377,7 +1377,7 @@ def test_pm_verified_declaration_blocks_when_surface_finding_count_is_short(pm_v
         1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
-    entry = _pv_ledger_entry([_pv_round_outcome(1, 5)])
+    entry = _pv_record_entry([_pv_round_outcome(1, 5)])
     problem = completion_check._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
@@ -1395,7 +1395,7 @@ def test_pm_verified_declaration_blocks_on_undisposed_finding(pm_verified_releas
         1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
-    entry = _pv_ledger_entry([_pv_round_outcome(1, 2)])
+    entry = _pv_record_entry([_pv_round_outcome(1, 2)])
     problem = completion_check._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
@@ -1412,7 +1412,7 @@ def test_pm_verified_declaration_blocks_on_blank_rejection_reason(pm_verified_re
         1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
-    entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
+    entry = _pv_record_entry([_pv_round_outcome(1, 1)])
     problem = completion_check._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
@@ -1429,7 +1429,7 @@ def test_pm_verified_declaration_blocks_on_open_accepted_finding(pm_verified_rel
         1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
     _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
-    entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
+    entry = _pv_record_entry([_pv_round_outcome(1, 1)])
     problem = completion_check._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
@@ -1449,7 +1449,7 @@ def test_pm_verified_declaration_blocks_when_accepted_lacks_machine_confirmation
     _pv_write_round(proj, tid, 2, _PV_ADDITIONAL_ROLE, _pv_confirmation_only_block([
         {"id": "X-001", "status": "resolved", "evidence": "재검토 결과 해소 확인"},
     ]))
-    entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
+    entry = _pv_record_entry([_pv_round_outcome(1, 1)])
     problem = completion_check._pm_verified_evidence_problem(pm_paths.home_at(mod.REPO),
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
     )
@@ -1512,15 +1512,15 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
     }
     pm_verified_release.write_records({tid: entry})
     # 연결대로(allow_pm_verified=True) 면 통과.
-    assert review_rounds._gate_disposition_problem(
+    assert review_rounds._review_ticket_disposition_problem(
         tid, entry,
         allow_pm_verified=True,
-        pm_verified_problem=completion_check._gate_pm_verified_problem(pm_paths.home_at(mod.REPO),
+        pm_verified_problem=completion_check._review_ticket_pm_verified_problem(pm_paths.home_at(mod.REPO),
             tid, entry, _PV_CHANNEL_ADDITIONAL,
         ),
     ) is None
     # 되돌리면(기본 False) 같은 구성이 다시 차단된다.
-    reverted = review_rounds._gate_disposition_problem(tid, entry)
+    reverted = review_rounds._review_ticket_disposition_problem(tid, entry)
     assert reverted is not None
     assert "허용하지 않습니다" in reverted
 
@@ -1630,7 +1630,7 @@ def t0936_release(tmp_path, monkeypatch):
         monkeypatch.setattr(board, name, value)
     head = 'T0936-REV'
     monkeypatch.setattr(git, '_git_head_at', lambda cwd: head)
-    monkeypatch.setattr(regression_store, '_resolve_livegate_flag', lambda home, cwd: (pm_paths.live_test_flag(home), regression_store._LG_ENGINE_ROOT))
+    monkeypatch.setattr(regression_store, '_resolve_live_test_flag', lambda home, cwd: (pm_paths.live_test_flag(home), regression_store._LG_ENGINE_ROOT))
     monkeypatch.setattr(regression_store, '_resolve_regression_flag', lambda home, cwd: (pm_paths.regression_flag(home), regression_store._LG_ENGINE_ROOT))
     monkeypatch.setattr(completion_check, '_sync_release_must_fix_marker', lambda _home, flag: [])
     monkeypatch.setattr(regression_cmd, "_refuse_release_for_engine_drift", lambda _home, flag, cwd: 0)
@@ -1774,12 +1774,12 @@ def test_t0936_readonly_and_engine_root_coordinates(t0936_release, monkeypatch, 
         elif defect in ['A-head','L-head']: monkeypatch.setattr(git,'_git_head_at',lambda cwd:'old' if str(cwd)==str(f.target_repo if defect=='A-head' else f.cwd) else f.head)
         elif defect=='L-missing': f.cwd=f.cwd/'missing'
         elif defect=='A-F': monkeypatch.setattr(regression_store,'_resolve_regression_flag',lambda _home, cwd:(f.target_repo/'regression.json',regression_store._LG_ENGINE_ROOT))
-        elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(f.target_repo/'live-test.json',regression_store._LG_ENGINE_ROOT))
-        elif defect=='broken': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.live_test_flag(home),regression_store._LG_BROKEN))
+        elif defect=='L-F': monkeypatch.setattr(regression_store,'_resolve_live_test_flag',lambda _home, cwd:(f.target_repo/'live-test.json',regression_store._LG_ENGINE_ROOT))
+        elif defect=='broken': monkeypatch.setattr(regression_store,'_resolve_live_test_flag',lambda home, cwd: (pm_paths.live_test_flag(home),regression_store._LG_BROKEN))
         elif defect=='clone-only':
             engine_home=pm_paths.home_at(f.board.REPO); called=pm_paths.home_at(f.board.REPO, f.target_repo)
             pm_paths.regression_flag(engine_home).unlink()
-            monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda _home, cwd:(pm_paths.live_test_flag(engine_home),regression_store._LG_ENGINE_ROOT))
+            monkeypatch.setattr(regression_store,'_resolve_live_test_flag',lambda _home, cwd:(pm_paths.live_test_flag(engine_home),regression_store._LG_ENGINE_ROOT))
             record_home = called
             pm_paths.regression_flag(called).write_text(json.dumps(core),encoding='utf-8')
         if defect!='clone-only': pm_paths.regression_flag(pm_paths.home_at(f.board.REPO)).write_text(json.dumps(core),encoding='utf-8')
@@ -1832,7 +1832,7 @@ def test_t0936_failed_record_invalidates_previous_green(t0936_release, monkeypat
 def test_t0936_existing_release_guards_precede_platforms(t0936_release, monkeypatch, guard):
     f=t0936_release
     assert regression.LIVE_TEST_RELEASE_PIN==22
-    if guard=='sidecar': monkeypatch.setattr(regression_store,'_resolve_livegate_flag',lambda home, cwd: (pm_paths.live_test_flag(home),regression_store._LG_BROKEN))
+    if guard=='sidecar': monkeypatch.setattr(regression_store,'_resolve_live_test_flag',lambda home, cwd: (pm_paths.live_test_flag(home),regression_store._LG_BROKEN))
     elif guard=='must-fix': monkeypatch.setattr(completion_check,'_sync_release_must_fix_marker',lambda home, flag:['must-fix'])
     elif guard=='drift': monkeypatch.setattr(regression_cmd,"_refuse_release_for_engine_drift",lambda _home,flag,cwd:1)
     else:
@@ -1851,7 +1851,7 @@ def test_t0936_readonly_and_engine_root_coordinates_cold_no_platform(t0936_relea
     (f.target_repo / '.project_manager/local.conf').write_text("test.cmd=core-full\n", encoding="utf-8")
     (f.board.REPO / ".project_manager/local.conf").write_text("test.cmd=core-full\n", encoding="utf-8")
     flag = f.board.REPO / "cold" / ".project_manager" / ".local/live-test.json"
-    monkeypatch.setattr(regression_store, "_resolve_livegate_flag", lambda _home, cwd: (flag, regression_store._LG_ENGINE_ROOT))
+    monkeypatch.setattr(regression_store, "_resolve_live_test_flag", lambda _home, cwd: (flag, regression_store._LG_ENGINE_ROOT))
     assert _t0936_record(f) == 0
     assert json.loads(flag.read_text(encoding="utf-8"))["status"] == "pass"
     assert f.calls == [] and len(f.live) == 1
@@ -1924,7 +1924,7 @@ def t0982_board(tmp_path, monkeypatch):
     def resolve_flag(_home,cwd):
         state.effects.append(("flag",cwd))
         return flag,regression_store._LG_NO_HOOK
-    monkeypatch.setattr(regression_store,"_resolve_livegate_flag",resolve_flag)
+    monkeypatch.setattr(regression_store,"_resolve_live_test_flag",resolve_flag)
     monkeypatch.setattr(completion_check,"_sync_release_must_fix_marker",lambda *a: state.effects.append(("marker",None)) or [])
     monkeypatch.setattr(regression_cmd,"_refuse_release_for_engine_drift",lambda *a: state.effects.append(("drift",None)) or 0)
     monkeypatch.setattr(release,"_release_core_context",lambda _home,_flag,cwd,_session: (None,cwd,(),None))

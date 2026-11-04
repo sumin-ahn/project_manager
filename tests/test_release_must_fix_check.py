@@ -102,7 +102,7 @@ def test_legacy_resolution_kinds_are_not_current_board_resolutions():
             "kind": kind, "round_sequence": 1, "rounds": 1,
         })
         assert review_rounds.review_ticket_resolution(entry) is None
-        problem = review_rounds._gate_disposition_problem("T-0610", entry)
+        problem = review_rounds._review_ticket_disposition_problem("T-0610", entry)
         assert problem is not None and "처분 선언 없음" in problem
 
 
@@ -113,10 +113,10 @@ def test_pm_verified_is_the_only_current_resolution_and_revalidates_callback():
         "round_sequence": 1, "rounds": 1,
     })
     assert review_rounds.review_ticket_resolution(entry)["kind"] == "pm-verified"
-    assert review_rounds._gate_disposition_problem(
+    assert review_rounds._review_ticket_disposition_problem(
         "T-0610", entry, allow_pm_verified=True, pm_verified_problem=lambda: None,
     ) is None
-    problem = review_rounds._gate_disposition_problem(
+    problem = review_rounds._review_ticket_disposition_problem(
         "T-0610", entry, allow_pm_verified=True,
         pm_verified_problem=lambda: "accepted 남은 지적 F-001",
     )
@@ -195,7 +195,7 @@ def test_pm_verified_resolution_is_bound_to_the_latest_round():
         "kind": "pm-verified", "round_sequence": 1, "rounds": 1,
     })
     entry["rounds"].append({"sequence": 2, "verdict": 1, "must_fix": 1})
-    problem = review_rounds._gate_disposition_problem(
+    problem = review_rounds._review_ticket_disposition_problem(
         "T-0610", entry, allow_pm_verified=True, pm_verified_problem=lambda: None,
     )
     assert problem is not None and "새 라운드" in problem

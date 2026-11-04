@@ -18,7 +18,7 @@ from pm_engine.infra import areas_store, finish_store, lease_store, pm_paths
 
 def _guard_worktree_wrong_repo(home) -> bool:
     """쓰기-경로 진입 가드 — 오실행이면 fail-loud 후 True(차단), 아니면 False(통과)."""
-    pm_home = pm_paths._pm_home_worktree_misanchor(home)
+    pm_home = pm_paths._pm_home_worktree_wrong_repo(home)
     if pm_home is None:
         return False
     print(

@@ -424,7 +424,7 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
 
         monkeypatch.setattr(delegate_copy_store, "_write_exclusive_file", write)
     elif failure.startswith("record-"):
-        original = delegate_copy_store._append_delegate_rounds_ledger
+        original = delegate_copy_store._append_delegate_rounds_record
         count = []
 
         def append(home, row):
@@ -433,7 +433,7 @@ def test_t0928_prepare_boundaries_preserve_failure_evidence(pd, cluster_env, mon
                 raise delegate_errors.DelegateError("기록 오류")
             return original(home, row)
 
-        monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_ledger", append)
+        monkeypatch.setattr(delegate_copy_store, "_append_delegate_rounds_record", append)
     with pytest.raises((delegate_errors.DelegateError, OSError)) as caught:
         delegate_prepare.prepare_cluster_copy(pm_paths.home_at(Path(pm_home).resolve()), cluster="C-failure", role="architect",
                                 cwd=slot, )
@@ -642,7 +642,7 @@ def test_a_record_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
     copy_path = legacy_dir / "01-architect.md"
     copy_path.write_text(seed, encoding="utf-8", newline="")
     _fill(copy_path, "## 경계 실측\n- 옛 세대 산출")
-    delegate_copy_store._append_delegate_rounds_ledger(pm_paths.home_at(Path(pm_home).resolve()), {
+    delegate_copy_store._append_delegate_rounds_record(pm_paths.home_at(Path(pm_home).resolve()), {
         "ticket": "T-6016", "role": "architect", "ordinal": 1, "run_id": "b" * 32,
         "copy": str(copy_path), "board_rel": str(
             board_path.relative_to(pm_home)).replace("\\", "/"),

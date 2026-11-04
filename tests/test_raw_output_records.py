@@ -879,7 +879,7 @@ def _stub_reviewer(external, monkeypatch) -> None:
     # board 의 티켓 해소를 통과하지 못한다 — 돌려받기는 `test_additional_reviewer_ticket_collect.py`
     # 가 소유하므로 여기서는 격리한다.
     monkeypatch.setattr(
-        reviewer_collect, "_harvest_additional_reviewer_section", lambda *args, **kwargs: None,
+        reviewer_collect, "_collect_additional_reviewer_section", lambda *args, **kwargs: None,
     )
 
 
@@ -1103,7 +1103,7 @@ def test_legacy_diff_root_round_anchor_resets_the_count_per_slot(
             external.REPO / ".project_manager" / ".local" / "review_rounds.json"
         )
 
-    monkeypatch.setattr(review_rounds, "_round_ledger_path", legacy_round_record_path)
+    monkeypatch.setattr(review_rounds, "_round_record_path", legacy_round_record_path)
 
     monkeypatch.setattr(external, "REPO", worktree)
     assert external.main(["--paths", "seed.txt", "--review-ticket", review_ticket]) == 0

@@ -59,8 +59,8 @@ def _conftest_declares_ambient_pythonutf8() -> bool:
     """`tests/conftest.py` 소스에 ``os.environ["PYTHONUTF8"] = "1"`` 대입문이 있는지 AST 로 본다.
 
     값 단언(``os.environ.get("PYTHONUTF8") == "1"``)만으로는 conftest 가 심은 게 아니라
-    ambient 셸이 이미 ``PYTHONUTF8=1`` 로 pytest 를 기동한 형상과 구분하지 못한다(F-001 —
-    ambient PYTHONUTF8=1 형상에서 이 대입문을 지워도 값 단언만으로는 28 passed 로 false-green
+    ambient 셸이 이미 ``PYTHONUTF8=1`` 로 pytest 를 기동한 경우와 구분하지 못한다(F-001 —
+    ambient PYTHONUTF8=1 환경에서 이 대입문을 지워도 값 단언만으로는 28 passed 로 false-green
     이었다). 소스 자체에 이 대입문이 있는지를 값과 별개로 고정해, 대입문이 사라지면 ambient
     셸이 우연히 ``PYTHONUTF8=1`` 이어도 이 단언은 그것과 무관하게 red 가 되게 한다.
     """
@@ -100,8 +100,8 @@ def console_encoding():
             delattr(builtins, PROCESS_STATE_KEY)
 
 
-def test_probe_os_name_seam_defaults_to_the_real_interpreter_value(console_encoding):
-    """기본 프로브는 전역 `os.name` 그대로다 — seam 추가가 동작을 바꾸지 않는다(T-0741)."""
+def test_probe_os_name_override_defaults_to_the_real_interpreter_value(console_encoding):
+    """기본 프로브는 전역 `os.name` 그대로다 — 교체 지점 추가가 동작을 바꾸지 않는다(T-0741)."""
     assert console_encoding._probe_os_name() == os.name
 
 
@@ -311,7 +311,7 @@ def test_powershell_process_shape_and_destination_matrix(
     reader_encoding,
     hint_count,
 ):
-    """실측/직접 부모/파사드 cmd 형상 각각에서 캡처와 콘솔 bytes가 독자 코덱으로 왕복한다."""
+    """실측/직접 부모/파사드 cmd 경우 각각에서 캡처와 콘솔 bytes가 독자 코덱으로 왕복한다."""
     kernel32 = _FakeKernel32(entries=chain)
     stdout = _Stream(tty=tty)
     stderr = _Stream(tty=tty)
@@ -333,7 +333,7 @@ def test_powershell_process_shape_and_destination_matrix(
     assert stderr.reconfigure_calls == [expected]
     assert kernel32.output_cp_calls == [65001]
     assert len(stderr.writes) == hint_count
-    sample = "repo 앵커: 한글 · 완료"
+    sample = "repo 기준: 한글 · 완료"
     emitted = sample.encode(expected_encoding, errors=expected["errors"])
     assert emitted.decode(reader_encoding) == sample
     assert console_encoding.console_state() == {
@@ -403,7 +403,7 @@ def test_stdout_and_stderr_apply_and_report_their_own_isatty_decision(
 def test_capturing_python_parent_is_not_skipped_to_powershell(
     console_encoding, monkeypatch
 ):
-    """python 부모가 UTF-8로 읽는 캡처 형상에서는 cp949 전환을 하지 않는다."""
+    """python 부모가 UTF-8로 읽는 캡처 경우에는 cp949 전환을 하지 않는다."""
     kernel32 = _FakeKernel32(entries=CAPTURING_PYTHON_PARENT_CHAIN)
     stdout = _Stream(tty=False)
     stderr = _Stream(tty=False)
@@ -452,11 +452,11 @@ def test_conftest_declares_ambient_python_utf8_for_pytest_process():
     Windows 단독 실행(-n 없음·PowerShell 부모)에서 엔진 CLI `main()` 을 in-process 로 호출하는
     테스트가 `configure_console_utf8()` 을 거쳐 pytest 캡처 스트림을 cp949 로 오염시키는 결함을,
     엔진의 기존 탈출구 `_utf8_reader_requested()` 가 자식 env 가 아니라 **호출 프로세스 자신의**
-    `os.environ` 을 읽는 값으로 닫는다. 발화 여부는 아래
+    `os.environ` 을 읽는 값으로 닫는다. 효과 여부는 아래
     `test_ambient_pytest_utf8_reader_declaration_suppresses_capture_codec_switch` 가 잇는다.
 
     **F-001**: 값 단언(``os.environ.get`` 확인)만으로는 conftest 가 심은 게 아니라 ambient
-    셸이 이미 ``PYTHONUTF8=1`` 로 pytest 를 기동한 형상과 구분하지 못해, 대입문을 지워도 값이
+    셸이 이미 ``PYTHONUTF8=1`` 로 pytest 를 기동한 경우와 구분하지 못해, 대입문을 지워도 값이
     우연히 ``"1"`` 이면 false-green 이었다 — 소스 존재 단언(AST)을 값 단언과 병행한다.
     """
     assert _conftest_declares_ambient_pythonutf8(), (
@@ -474,16 +474,16 @@ def test_ambient_pytest_utf8_reader_declaration_suppresses_capture_codec_switch(
     """conftest 가 심은 ambient PYTHONUTF8=1(T-0762)을 지우지 않은 채로도 cp949 전환이 억제된다.
 
     이 파일의 다른 테스트는 `_install_windows()` 가 각 테스트마다 ambient
-    PYTHONUTF8/PYTHONIOENCODING 을 지워 PowerShell 콘솔 CP reader 형상을 독립적으로 재현한다
+    PYTHONUTF8/PYTHONIOENCODING 을 지워 PowerShell 콘솔 CP reader 상황을 독립적으로 재현한다
     (그 헬퍼 주석 참고) — 그래서 conftest 선언과 무관하게 성립한다. 이 테스트만 PYTHONUTF8 의
-    delenv 를 건너뛰어, ambient 선언 **그 자체가 값으로 발화**하는지를 고정한다:
+    delenv 를 건너뛰어, ambient 선언 **그 자체가 값으로 효과를 내는지**를 고정한다:
     `tests/conftest.py` 의 ``os.environ["PYTHONUTF8"] = "1"`` 선언을 지우면 이 테스트가 red 로
     돌아간다(cp949 로 reconfigure 되어 `selected_encoding` 이 ``"cp949"`` 가 된다).
 
     **F-001**: PYTHONIOENCODING 은 명시적으로 delenv 한다 — `_utf8_reader_requested()` 는
-    PYTHONIOENCODING=utf-8 도 같은 축으로 존중하므로, 그걸 지우지 않으면 ambient 셸에
+    PYTHONIOENCODING=utf-8 도 같은 방식으로 존중하므로, 그걸 지우지 않으면 ambient 셸에
     PYTHONIOENCODING=utf-8 만 있어도(PYTHONUTF8 대입문이 없어도) 이 테스트가 green 이 되는
-    혼선(PYTHONUTF8 축을 검증한다는 착각)이 생긴다.
+    혼선(PYTHONUTF8 경로를 검증한다는 착각)이 생긴다.
     """
     kernel32 = _FakeKernel32(entries=REAL_PY_LAUNCHER_CHAIN)
     stdout = _Stream(tty=False)
@@ -494,9 +494,9 @@ def test_ambient_pytest_utf8_reader_declaration_suppresses_capture_codec_switch(
     monkeypatch.setattr(console_encoding.sys, "stdout", stdout)
     monkeypatch.setattr(console_encoding.sys, "stderr", stderr)
     # 의도적으로 `_install_windows()` 를 쓰지 않는다 — ambient PYTHONUTF8 을 지우면 conftest
-    # 선언이 살아 있는 실제 pytest 프로세스 형상을 재현하지 못한다. PYTHONIOENCODING 만 지워
-    # (F-001) 그 축의 ambient 가 이 테스트를 PYTHONUTF8 축과 무관하게 통과시키지 못하게 한다
-    # (ambient PYTHONIOENCODING=utf-8 형상에서 PYTHONUTF8 대입문을 지워도 green 이었다).
+    # 선언이 살아 있는 실제 pytest 프로세스 상태를 재현하지 못한다. PYTHONIOENCODING 만 지워
+    # (F-001) 그 변수의 ambient 가 이 테스트를 PYTHONUTF8 경로와 무관하게 통과시키지 못하게 한다
+    # (ambient PYTHONIOENCODING=utf-8 환경에서 PYTHONUTF8 대입문을 지워도 green 이었다).
     monkeypatch.delenv("PYTHONIOENCODING", raising=False)
 
     console_encoding.configure_console_utf8()

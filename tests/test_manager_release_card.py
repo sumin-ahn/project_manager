@@ -5,7 +5,7 @@
 `release-manager.yml` 이 올린다. 그 카드는 루트 하나를 고치고 `pm_update.py --all-targets` 로
 출하 사본에 내보내므로, 여기서 실 파일 전수를 대조한다(손으로 고친 사본은 여기서 red 다).
 
-`--smoke` 세 OS 결과는 livegate 기록에 넣지 않는다(그 스키마는 `pytest -m release` 축이다).
+`--smoke` 세 OS 결과는 라이브 시험 기록에 넣지 않는다(그 스키마는 `pytest -m release` 결과다).
 CI job 성공·실패가 기계 기록이고 카드는 그 결과를 본다.
 """
 from __future__ import annotations
@@ -138,7 +138,7 @@ def test_the_manager_step_says_what_to_do_when_a_job_is_red():
     assert "gh run rerun" in step
 
 
-def test_the_smoke_results_are_not_recorded_in_the_livegate():
+def test_the_smoke_results_are_not_recorded_in_the_live_test():
     text = ROOT_CARD.read_text(encoding="utf-8")
 
     assert "live-test 기록에 넣지 않는다" in text

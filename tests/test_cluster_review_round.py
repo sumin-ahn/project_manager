@@ -1874,7 +1874,7 @@ def test_t0929_finish_confirmation_uses_declared_branch_tree(pd, review_env, mon
     assert problem is None and found == five
     forwarded = []
     closer._run_delegate_fn = lambda argv: (forwarded.append(argv) or (0, ''))
-    closer._pending_gates = lambda: list(_MEMBERS)
+    closer._pending_review_tickets = lambda: list(_MEMBERS)
     assert closer._step_resolve() is None
     # finish의 기존 argv 계약은 task 단독이며 슬롯 좌표를 넣지 않는다.
     assert forwarded == [[

@@ -141,13 +141,13 @@ def test_canonical_worktree_ignores_upstream_foreign_checkout(external, tmp_path
     assert pm_paths._canonical_worktree(home) is None
 
 
-# ── _pm_home_reanchor (2중 conjunction) ────────────────────────────────────
+# ── _pm_home_retarget (2중 conjunction) ────────────────────────────────────
 
 
 def test_reanchor_detects_pm_home(external, tmp_path):
     """실 board + canonical worktree(work/ 슬롯) 둘 다 → 재지정 대상 worktree 반환 (검사 실행)."""
     home, worktree = _make_pm_home(tmp_path)
-    assert pm_paths._pm_home_reanchor(home) == worktree
+    assert pm_paths._pm_home_retarget(home) == worktree
 
 
 def test_reanchor_none_for_worktree_shape(external, tmp_path):
@@ -156,7 +156,7 @@ def test_reanchor_none_for_worktree_shape(external, tmp_path):
     검사가 실행 위치(worktree)를 PM 홈으로 오인해 정당 실행을 막지 않음을 못박는다."""
     home, worktree = _make_pm_home(tmp_path)
     # worktree 대상 저장소 자신은 실 board 미소유 → conjunction (1) 탈락.
-    assert pm_paths._pm_home_reanchor(worktree) is None
+    assert pm_paths._pm_home_retarget(worktree) is None
 
 
 def test_reanchor_none_when_no_worktree(external, tmp_path):
@@ -164,7 +164,7 @@ def test_reanchor_none_when_no_worktree(external, tmp_path):
 
     conjunction (2) 탈락 — 정규 채택자를 adopter#0 으로 오인해 hard-block 하지 않는다."""
     home, _ = _make_pm_home(tmp_path, with_worktree=False)
-    assert pm_paths._pm_home_reanchor(home) is None
+    assert pm_paths._pm_home_retarget(home) is None
 
 
 # ── main() 검사 (sensitivity: PM 홈 대상 저장소 + paths 미지정 → 차단) ────────────
@@ -202,7 +202,7 @@ def _run_main(external, monkeypatch, target_repo_root: Path, conf: dict, argv: l
     # 이 파일은 PM 홈/diff 대상 저장소 파생 기준을 소유한다. 산출 돌려받기(T-0696)는 별도 기준이라
     # tests/test_additional_reviewer_ticket_collect.py 가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
-        reviewer_collect, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_collect, "_collect_additional_reviewer_section", lambda *_a, **_k: None,
     )
     return external.main(argv), called["reviewer"]
 

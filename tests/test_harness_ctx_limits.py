@@ -8,16 +8,16 @@ local.conf 의 하네스별 사용 한도 W(`harness.<이름>.ctx_window_tokens`
 지어낸 설정 문서만으로 바이트 보존·고정점을 단언하지 않는다. opencode 전역 설정 폴더는 늘 `tmp_path`
 아래 폴더를 `opencode_config_dir` 로 넘기고 실제 `~/.config/opencode` 를 읽지 않는다.
 
-축:
+검증 항목:
   1. 검사 — 위반을 모두 모아 한 번에 거부한다(비율 순서·범위·하네스별 규칙).
   2. 목표값 — 압축 지점 P = floor(W × compact_at / 100), opencode reserved = W − P.
   3. 파일 형식별 반영 — 바뀌는 바이트는 관리 키 자리(없어서 넣는 멤버·쉼표 포함)뿐이고 멱등이다.
   4. opencode 대상 모델 — 전역 세 파일(읽기만)과 프로젝트 파일의 합집합, 출력 상한 우선순위.
   5. 이전 계획 — 남은 % → 쓴 %, 공통 한도 → 하네스별 한도.
-  6. 보고 채널·원장 — 관리 키는 기능 표에서 빠지고, 무편집 증언은 반영 뒤에도 유지된다.
+  6. 보고 채널·기록 — 관리 키는 기능 표에서 빠지고, 무편집 증언은 반영 뒤에도 유지된다.
   7. 적용 시점 고정(T-0943) — 기록 형식·읽기 계약·도구별 C 조회. 조회는 교체 지점
      (`_read_harness_ctx_metadata`·`_ctx_claude_threshold`·`_ctx_native_protocol`)만 바꾸고 실제 CLI 를
-     부르지 않는다. 축 1~6 은 고정 C(`_manager_home.known_ctx_seams`)로 돈다.
+     부르지 않는다. 항목 1~6 은 고정 C(`_manager_home.known_ctx_overrides`)로 돈다.
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from _manager_home import _known_ctx_installation, known_ctx_seams
+from _manager_home import _known_ctx_installation, known_ctx_overrides
 from _opencode_model import SHIPPED_MODEL, SHIPPED_MODEL_ID
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store
@@ -70,7 +70,7 @@ def _load(name: str):
     return module
 
 
-# 모델 한도 조회의 실제 함수 — 축 7 의 조회 시험은 고정 값 대신 이 함수로 되돌려 교체 지점 아래를 잰다.
+# 모델 한도 조회의 실제 함수 — 항목 7 의 조회 시험은 고정 값 대신 이 함수로 되돌려 교체 지점 아래를 잰다.
 _REAL_CTX_QUERIES = {name: getattr(harness_ctx, name)
                      for name in ("_read_harness_ctx_metadata", "_ctx_claude_threshold")}
 
@@ -88,9 +88,9 @@ def local_conf():
 
 @pytest.fixture(autouse=True)
 def _known_capacity(monkeypatch):
-    """축 1~6 의 모델 한도 — C 200,000 · 모델 창 232,000 · Claude 압축 예약 0(autoCompactWindow = P)."""
-    for name, seam in known_ctx_seams(capacity=200000, context=232000).items():
-        monkeypatch.setattr(harness_ctx, name, seam)
+    """항목 1~6 의 모델 한도 — C 200,000 · 모델 창 232,000 · Claude 압축 예약 0(autoCompactWindow = P)."""
+    for name, override in known_ctx_overrides(capacity=200000, context=232000).items():
+        monkeypatch.setattr(harness_ctx, name, override)
 
 
 def _project(tmp_path: Path, *, conf: str = "", harnesses=("claude", "codex", "opencode"),
@@ -135,7 +135,7 @@ def _only_insertions(old: str, new: str) -> bool:
 
 
 def _snapshot_fixture_bytes(root, *, excluded_names=()):
-    """격리 fixture 바이트를 기존 열거 seam으로 전수 확인한다."""
+    """격리 fixture 바이트를 기존 열거 함수로 전수 확인한다."""
     repo_files = _load('pm_engine/infra/repo_files')
     entries = repo_files.list_repo_owned_entries(
         root, '.', mode=repo_files.OWNED,
@@ -264,7 +264,7 @@ def test_apply_codex_config_top_level_keys(tmp_path):
     shipped = TEMPLATE_FILES["codex"][0].read_text(encoding="utf-8")
     managed = "model_auto_compact_token_limit = 180000\n"
     assert shipped.count(managed) == 1
-    # 앞 세대 채택자 파일: 한도 키 하나(900000)만 있고 뒤에 표가 하나 더 있다.
+    # 앞 버전 채택자 파일: 한도 키 하나(900000)만 있고 뒤에 표가 하나 더 있다.
     previous = shipped.replace(managed, "model_auto_compact_token_limit = 900000\n", 1) + (
         "\n[tui]\n# 알림 표시\nnotifications = true\n")
     root = _project(tmp_path, harnesses=("codex",), texts={".codex/config.toml": previous})
@@ -308,7 +308,7 @@ def test_toml_bracket_lines_inside_multiline_values_are_not_the_first_table():
 def test_apply_codex_config_crlf_and_quoted_table_headers(tmp_path):
     """표 머리 판정은 TOML 키 문법과 CRLF 줄 끝을 따른다 (T-0923 리뷰 F-001).
 
-    CRLF 로 저장한 앞 세대 파일(한도 키 하나 · 900000)에서도 두 키가 최상위에 들어가고, 넣은 줄도
+    CRLF 로 저장한 앞 버전 파일(한도 키 하나 · 900000)에서도 두 키가 최상위에 들어가고, 넣은 줄도
     CRLF 다. 인용 키에 `/`·`@`·`:`·한글이 든 표 머리는 표의 시작이다 — 그 표 안의 같은 이름 키는
     관리 키가 아니므로 바뀌지 않는다."""
     shipped = TEMPLATE_FILES["codex"][0].read_text(encoding="utf-8")
@@ -512,10 +512,10 @@ def test_rename_updates_keeps_explicit_new_key_over_non_integer_old(local_conf, 
         _plan(local_conf, tmp_path, "ctx.checkpoint_pct=abc\n")
 
 
-# ── AT-011 보고 채널·원장 ────────────────────────────────────────────────────
+# ── AT-011 보고 채널·기록 ────────────────────────────────────────────────────
 
 
-def _ledger(root: Path, relpath: str, digest: str) -> Path:
+def _records(root: Path, relpath: str, digest: str) -> Path:
     path = root / ".project_manager" / "adapter_baseline.json"
     path.write_text(json.dumps({"schema": 1, "files": {relpath: {
         "sha256": digest, "recorded_at": "2026-09-01T00:00:00+09:00",
@@ -523,7 +523,7 @@ def _ledger(root: Path, relpath: str, digest: str) -> Path:
     return path
 
 
-def test_report_skips_managed_keys_and_ledger_follows_apply(tmp_path):
+def test_report_skips_managed_keys_and_record_follows_apply(tmp_path):
     assert "model_auto_compact_token_limit" not in install_rules.ADAPTER_SETTINGS_KEYS[".codex/config.toml"]
 
     latest = _jsonc(TEMPLATE_FILES["opencode"][0])
@@ -549,40 +549,40 @@ def test_report_skips_managed_keys_and_ledger_follows_apply(tmp_path):
         if row.name == "provider"]
     assert [row.verdict for row in provider_rows] == ["differs"]
 
-    # 원장이 증언하던 파일 — 반영 뒤 sha256 만 새 내용 해시, template_rev·recorded_at 은 그대로.
+    # 기록이 증언하던 파일 — 반영 뒤 sha256 만 새 내용 해시, template_rev·recorded_at 은 그대로.
     root = _project(tmp_path, harnesses=("claude",), conf="ctx.compact_at_pct=85\n")
     settings = root / ".claude" / "settings.json"
-    ledger = _ledger(root, ".claude/settings.json", adapter_baseline.content_sha256(settings))
+    records = _records(root, ".claude/settings.json", adapter_baseline.content_sha256(settings))
     _apply(root, _global_dir(tmp_path))
-    entry = json.loads(ledger.read_text(encoding="utf-8"))["files"][".claude/settings.json"]
+    entry = json.loads(records.read_text(encoding="utf-8"))["files"][".claude/settings.json"]
     assert entry == {"sha256": adapter_baseline.content_sha256(settings),
                      "recorded_at": "2026-09-01T00:00:00+09:00", "template_rev": "rev-at-install"}
     judged = adapter_report.judge_adapter_configs(root, REPO, harnesses=["claude"])
     assert [(item.relpath, item.status) for item in judged] == [(".claude/settings.json", "unedited")]
 
-    # 편집된 파일 — 원장 항목을 건드리지 않는다.
+    # 편집된 파일 — 기록 항목을 건드리지 않는다.
     edited_root = _project(tmp_path / "edited", harnesses=("claude",), conf="ctx.compact_at_pct=85\n")
-    edited_ledger = _ledger(edited_root, ".claude/settings.json", "0" * 64)
-    ledger_before = edited_ledger.read_bytes()
+    edited_records = _records(edited_root, ".claude/settings.json", "0" * 64)
+    record_before = edited_records.read_bytes()
     _apply(edited_root, _global_dir(tmp_path))
-    assert edited_ledger.read_bytes() == ledger_before
+    assert edited_records.read_bytes() == record_before
 
 
-def test_partial_write_failure_keeps_ledger_for_written_files(tmp_path, monkeypatch):
-    """한 파일을 교체하지 못해도 이미 교체한 파일의 원장은 기록한다 (T-0923 리뷰 F-002).
+def test_partial_write_failure_keeps_record_for_written_files(tmp_path, monkeypatch):
+    """한 파일을 교체하지 못해도 이미 교체한 파일의 기록은 남긴다 (T-0923 리뷰 F-002).
 
-    원장이 무편집을 증언하던 settings.json 은 교체 뒤에도 무편집으로 판정되고(편집됨이면 세트 수용에서
-    빠진다), 예외 문구는 교체한 파일과 못 한 파일을 나눠 적는다. 못 쓴 config.toml 과 그 원장 항목은
+    기록이 무편집을 증언하던 settings.json 은 교체 뒤에도 무편집으로 판정되고(편집됨이면 세트 수용에서
+    빠진다), 예외 문구는 교체한 파일과 못 한 파일을 나눠 적는다. 못 쓴 config.toml 과 그 기록 항목은
     그대로이고, 쓰기가 되살아난 다음 반영이 남은 파일만 바꾼다."""
     root = _project(tmp_path, harnesses=("claude", "codex"), conf="ctx.compact_at_pct=85\n")
     settings, config = root / ".claude" / "settings.json", root / ".codex" / "config.toml"
-    ledger = root / ".project_manager" / "adapter_baseline.json"
+    records = root / ".project_manager" / "adapter_baseline.json"
     recorded = {"recorded_at": "2026-09-01T00:00:00+09:00", "template_rev": "rev-at-install"}
-    ledger.write_text(json.dumps({"schema": 1, "files": {
+    records.write_text(json.dumps({"schema": 1, "files": {
         relpath: {"sha256": adapter_baseline.content_sha256(root / relpath), **recorded}
         for relpath in (".claude/settings.json", ".codex/config.toml")}}), encoding="utf-8")
     config_before = config.read_bytes()
-    config_entry = json.loads(ledger.read_text(encoding="utf-8"))["files"][".codex/config.toml"]
+    config_entry = json.loads(records.read_text(encoding="utf-8"))["files"][".codex/config.toml"]
     replace = adapter_baseline._atomic_write_dest_bytes
 
     def codex_folder_is_read_only(dest_root, rel, payload, **kwargs):
@@ -598,7 +598,7 @@ def test_partial_write_failure_keeps_ledger_for_written_files(tmp_path, monkeypa
     assert ".codex/config.toml 를 쓰지 못했습니다" in message and "반영하지 않았습니다" not in message
 
     assert json.loads(settings.read_text(encoding="utf-8"))["autoCompactWindow"] == 170000
-    entries = json.loads(ledger.read_text(encoding="utf-8"))["files"]
+    entries = json.loads(records.read_text(encoding="utf-8"))["files"]
     assert entries[".claude/settings.json"] == {"sha256": adapter_baseline.content_sha256(settings), **recorded}
     assert config.read_bytes() == config_before and entries[".codex/config.toml"] == config_entry
     judged = {item.relpath: item.status
@@ -656,7 +656,7 @@ def test_opencode_output_precedence_and_global_read_errors(tmp_path):
                                          '{"limit": {"context": 9, "output": "big"}}}}}}'})):
         broken_dir = _global_dir(tmp_path / folder, files)
         root = _project(tmp_path / f"stop-{folder}", conf="ctx.compact_at_pct=85\n")
-        _ledger(root, ".claude/settings.json", adapter_baseline.content_sha256(root / ".claude/settings.json"))
+        _records(root, ".claude/settings.json", adapter_baseline.content_sha256(root / ".claude/settings.json"))
         watched = [root / relpath for _template, relpath in TEMPLATE_FILES.values()]
         watched.append(root / ".project_manager" / "adapter_baseline.json")
         before = {path: path.read_bytes() for path in watched}
@@ -716,8 +716,8 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
         install_conf._write_conf_keys(conf, dict(values))
     # 고정 모델 한도는 이 적용 구간에만 건다(끝나면 원래 조회 함수로 돌아간다).
     with pytest.MonkeyPatch.context() as patch:
-        for name, seam in known_ctx_seams(capacity=capacity, context=3000000, model=model).items():
-            patch.setattr(harness_ctx, name, seam)
+        for name, override in known_ctx_overrides(capacity=capacity, context=3000000, model=model).items():
+            patch.setattr(harness_ctx, name, override)
         harness_ctx.apply_harness_ctx(root, write=True, opencode_config_dir=root / "global")
     return SHIPPED_MODEL if harness == "opencode" else model
 
@@ -741,7 +741,7 @@ T0943_RETIRED_FIELDS = ("verification", "physical", "fingerprint", "valid_until"
                         "digest", "environment", "native", "profile", "identity", "receipt")
 
 
-def _t0943_seams(monkeypatch, *, threshold_offset=T0943_CLAUDE_RESERVE):
+def _t0943_overrides(monkeypatch, *, threshold_offset=T0943_CLAUDE_RESERVE):
     """모델 한도 조회 교체 — 확정 값 행과 Claude 확인 조회(창 − d)."""
     def reader(root, harness, documents, models):
         if harness == "claude":
@@ -756,7 +756,7 @@ def _t0943_seams(monkeypatch, *, threshold_offset=T0943_CLAUDE_RESERVE):
 
 
 def _t0943_applied(local_conf, tmp_path, monkeypatch):
-    _t0943_seams(monkeypatch)
+    _t0943_overrides(monkeypatch)
     root = _project(tmp_path, conf=T0943_CONF)
     _apply(root, _global_dir(tmp_path))
     return root, local_conf.load(root / ".project_manager" / "local.conf").values
@@ -906,7 +906,7 @@ def test_t0943_record_write_failure_returns_rc1(local_conf, tmp_path, monkeypatc
     """F-005 — 쓰기 단계 실패는 바꾼 파일이 없어도 `apply` rc 1 이다. 같은 입력의 재적용에서 Claude 출처
     표시값만 달라 기록만 다시 써야 할 때 기록 쓰기가 실패하면 local.conf·설정 파일·기록은 그대로다.
     조회·검사 단계의 거부는 그대로 rc 3 이다(역방향). 사용 한도 키만 보내 렌더 단계는 돌지 않는다."""
-    _t0943_seams(monkeypatch)
+    _t0943_overrides(monkeypatch)
     pm_config = _load("pm_config")
     parser = config_cmd.build_parser()
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
@@ -1230,9 +1230,9 @@ def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, mon
 
 def test_t0955_cache_absent_exclusion_names_missing_catalog(local_conf, tmp_path, monkeypatch, capsys):
     """리뷰 F-001 — 모델 목록 캐시 파일이 없으면 제외 알림의 원인이 캐시 부재와 그 경로이고, 남은 행이 0개면
-    opencode 를 한 번 실행해 목록을 받으라는 처방이 붙는다. 판정 규칙은 그대로다(캐시가 없으면 목록 밖).
+    opencode 를 한 번 실행해 목록을 받으라는 해결 방법이 붙는다. 판정 규칙은 그대로다(캐시가 없으면 목록 밖).
 
-    선택 model 키 anthropic/claude-x(설정 블록 없음 · `opencode auth login` 연결 형상)를 둔 프로젝트에서
+    선택 model 키 anthropic/claude-x(설정 블록 없음 · `opencode auth login` 연결 상태)를 둔 프로젝트에서
     전역 설정에 연결된 ollama 가 없으면 남은 행 0개, 있으면 그 모델로 반영한다."""
     _use_real_ctx_queries(monkeypatch)
     cache = tmp_path / "cache"
@@ -1433,7 +1433,7 @@ def test_t0949_absent_bool_and_unreadable(local_conf, tmp_path, monkeypatch):
 def test_t0949_apply_reread_refuses_unwritten_value(tmp_path, monkeypatch):
     """AT-003 — 같음 규칙(`_harness_ctx_same`)을 반영 재판독과 함께 쓴다. 값을 쓰지 않는 JSONC 편집 대역으로
     반영하면 재판독이 거부하고 어떤 파일도 바뀌지 않는다."""
-    _t0943_seams(monkeypatch)
+    _t0943_overrides(monkeypatch)
     root = _project(tmp_path, harnesses=("claude",), conf=T0943_CONF)
     monkeypatch.setattr(jsonc, "_jsonc_set_value", lambda text, path, value: (text, None))
     before = _t0943_watched(root)

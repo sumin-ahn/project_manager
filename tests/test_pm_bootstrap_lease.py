@@ -1,16 +1,16 @@
-"""bootstrap/handoff 리스 라이프사이클 바인딩 (T-0060 · ADR-0013·0011) 단위 테스트.
+"""bootstrap/handoff 대여 라이프사이클 바인딩 (T-0060 · ADR-0013·0011) 단위 테스트.
 
 엔진 canonical(루트 .project_manager/tools/pm_bootstrap.py·pm_handoff.py)을 importlib 로
-직접 검증한다. worktree_pool 은 **DI mock** 으로 주입해 hermetic — 실 리스 장부·git·
+직접 검증한다. worktree_pool 은 **DI mock** 으로 주입해 hermetic — 실 대여 기록·git·
 work/ 풀을 절대 건드리지 않는다(test_handoff_trigger.py 의 DI 패턴 동류).
 
-검증 축:
+검증 항목:
   - bootstrap --repo --branch → alloc 호출·identity surface 출력·cwd 슬롯 보고.
   - 무인자(솔로) → 현행 동작 (alloc 경로 미진입·worktree_pool 안 건드림).
-  - NeedsCreate (풀 소진) → 사용자 게이트 안내·자동 git worktree add 안 함.
-  - handoff payload 에 slot/branch 기록 · --done → release · --done 없으면 리스 유지(release X).
+  - NeedsCreate (풀 소진) → 사용자 승인 안내·자동 git worktree add 안 함.
+  - handoff payload 에 slot/branch 기록 · --done → release · --done 없으면 대여 유지(release X).
   - 회전 재부착(resume) 연속성 · worktree_pool 부재 시 명시 에러(침묵 무력화 금지).
-  - sensitivity: 배선 무력화 시 fail.
+  - sensitivity: 연결 무력화 시 fail.
 """
 from __future__ import annotations
 
@@ -67,9 +67,9 @@ def handoff():
 
 @pytest.fixture(autouse=True)
 def _hermetic_dashboard(bootstrap, handoff, tmp_path, monkeypatch):
-    """slot 대시보드 렌더를 tmp 로 재앵커한다.
+    """slot 대시보드 렌더를 tmp 로 다시 잡는다.
 
-    `_dashboard_file()` 은 모듈 `REPO` 를 따라가므로 재앵커 없이 부트스트랩/핸드오프를 돌리면
+    `_dashboard_file()` 은 모듈 `REPO` 를 따라가므로 다시 잡지 않고 부트스트랩/핸드오프를 돌리면
     실 작업 트리의 `wiki/log/dashboard.md` 를 갱신한다(tests/conftest.py 의 live board 오염
     가드가 teardown 에서 이를 잡는다)."""
     for module in (bootstrap, handoff):
@@ -81,18 +81,18 @@ def _hermetic_dashboard(bootstrap, handoff, tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_engine_anchor(bootstrap, monkeypatch):
-    """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다.
+def _hermetic_engine_target_repo(bootstrap, monkeypatch):
+    """0단계 엔진 대상 저장소 검사(T-0351)를 hermetic 무력화한다.
 
     엔진 테스트는 worktree ①(엔진 canonical·`work/<repo>_<N>`)에서 로드되므로 실 `REPO` 가 PM 홈
-    등록 worktree 사본으로 보인다 → 0단계 앵커 검사(`board._pm_home_worktree_misanchor(REPO)`)가
+    등록 worktree 사본으로 보인다 → 0단계 대상 저장소 검사(`board._pm_home_worktree_wrong_repo(REPO)`)가
     거부한다(프로덕션 ②-홈에선 실 board 소유로 통과·`work/`-misuse 만 거부). 실 board 를 로드해
-    `_pm_home_worktree_misanchor`→None 으로만 패치(나머지 board 동작=실물 보존)하고, board=None 경로가
+    `_pm_home_worktree_wrong_repo`→None 으로만 패치(나머지 board 동작=실물 보존)하고, board=None 경로가
     그 패치본을 받게 `_load_board` 를 대체한다 — board 를 명시 주입한 구성은 영향 없음(`self._board` 승)."""
-    monkeypatch.setattr(pm_paths, "_pm_home_worktree_misanchor", lambda _home, **_kw: None)
+    monkeypatch.setattr(pm_paths, "_pm_home_worktree_wrong_repo", lambda _home, **_kw: None)
 
 
-# ── worktree_pool DI mock (hermetic — 실 장부/git 미접촉) ─────────────────────
+# ── worktree_pool DI mock (hermetic — 실 대여 기록/git 미접촉) ─────────────────────
 
 
 class _FakeLease:
@@ -103,11 +103,11 @@ class _FakeLease:
 
 
 class _FakeLeaseEntry:
-    """list_leases() 가 돌려주는 장부 엔트리 대역 — state/session/slot/role surface (상태점검용).
+    """list_leases() 가 돌려주는 대여 기록 엔트리 대역 — state/session/slot/role surface (상태점검용).
 
     `role` = canonical 슬롯 role(T-0358 이 `Lease.role` 로 승격) — 0단계 readonly carve-out(⑬·
     `_phase0_is_readonly`)이 **`lease.role`** 을 직접 읽는다("readonly"=공유 자산·타-점유/보호브랜치
-    검사 비적용). `extra` = 미지 최상위 키 보존(T-0350·`Lease.extra` 동형·role 은 canonical 로 이관)."""
+    검사 비적용). `extra` = 미지 최상위 키 보존(T-0350·`Lease.extra` 와 같음·role 은 canonical 로 이관)."""
 
     def __init__(self, slot: str, repo: str, session: str, *, state: str = "leased",
                  role: str = "work", extra: dict | None = None):
@@ -120,7 +120,7 @@ class _FakeLeaseEntry:
 
 
 class _FakeCompare:
-    """`compare_slot_git` 결과 대역 (T-0350 GitCompareResult 소비 표면·0단계 record-vs-live·T-0351).
+    """`compare_slot_git` 결과 대역 (T-0350 GitCompareResult 소비 쪽·0단계 record-vs-live·T-0351).
 
     0단계는 `fail_loud`/`unrecorded`/`submodule_drift`/`recorded`/`live` 만 읽으므로 그것들만 든다."""
 
@@ -190,7 +190,7 @@ class FakeWorktreePool:
                  task_open_started: "str | None" = None,
                  task_invalid_reason: "str | None" = None):
         self.NeedsCreate = _FakeNeedsCreate
-        # task 축(T-0353·F1) — bind_task/task_dir/TaskActiveElsewhere/InvalidTaskName 대역.
+        # task 기준(T-0353·F1) — bind_task/task_dir/TaskActiveElsewhere/InvalidTaskName 대역.
         self.TaskActiveElsewhere = _FakeTaskActiveElsewhere
         self.InvalidTaskName = _FakeInvalidTaskName
         self._task_dir_root = task_dir_root       # None=미설정(테스트가 세팅)
@@ -209,13 +209,13 @@ class FakeWorktreePool:
         self.release_calls: list[dict] = []
         self.current_branch_calls: list[str] = []
         self.release_raises_keyerror = False
-        # 0단계(T-0351) 실재 검사가 통과하도록 사전 시드하는 **idle** 슬롯 — 그 idle 리스를
-        # list_leases 에 실어 phantom-거부를 피한다(§F1b "장부·폴더에 실재"). idle 이라 점유(leased)·"다른 활성 PM" surface 엔 안 잡힌다(회귀 0).
+        # 0단계(T-0351) 실재 검사가 통과하도록 미리 넣는 **idle** 슬롯 — 그 idle 대여 행을
+        # list_leases 에 실어 phantom-거부를 피한다(§F1b "대여 기록·폴더에 실재"). idle 이라 점유(leased)·"다른 활성 PM" surface 엔 안 잡힌다(회귀 0).
         self._present_slots: tuple[str, ...] = present_slots or ()
-        # readonly 공유 슬롯(⑬·T-0358) 시드 — role="readonly"·무소유(session 없음)·leased state
+        # readonly 공유 슬롯(⑬·T-0358) 행 — role="readonly"·무소유(session 없음)·leased state
         # (create_slot 확정 형태). 0단계 carve-out(타-점유/보호브랜치 비적용)이 이걸 읽는다.
         self._readonly_slots: tuple[str, ...] = readonly_slots or ()
-        # 0단계 record-vs-live(compare_slot_git·T-0350) 결과 대역 — None=미설정(정합 검사 no-op).
+        # 0단계 record-vs-live(compare_slot_git·T-0350) 결과 대역 — None=미설정(일치 검사 no-op).
         self._compare_result = compare_result
         # 슬롯 → live 브랜치 매핑(ADR-0013 amend T-0072 — identity/release surface 가
         # lease.branch 대신 current_branch(slot) 를 읽는다). alloc 이 effective 를 기록.
@@ -223,7 +223,7 @@ class FakeWorktreePool:
         # 슬롯 → live HEAD override — alloc 이 심은 값을 *덮어쓴다*(사용자가 슬롯서 직접
         # git checkout 한 drift 모델링). 있으면 current_branch 가 이걸 우선 반환한다.
         self.live_branch_override: dict[str, str | None] = {}
-        # 상태점검(다른 활성 PM) surface 용 — list_leases 가 돌려줄 추가 리스(이 세션 외).
+        # 상태점검(다른 활성 PM) surface 용 — list_leases 가 돌려줄 추가 대여 행(이 세션 외).
         self._extra_leases: list = []
 
     def lease_is_open(self, lease):
@@ -231,7 +231,7 @@ class FakeWorktreePool:
         return getattr(lease, "state", None) == "leased" and bool(getattr(lease, "session", ""))
 
     def list_leases(self):
-        # 상태점검 surface — 미리 심은 다른 활성 리스 + 0단계 실재 검사용 idle 시드(§F1b).
+        # 상태점검 surface — 미리 심은 다른 활성 대여 행 + 0단계 실재 검사용 idle 행(§F1b).
         leased: list = []
         for slot in self._present_slots:
             _, _, tail = slot.rpartition("/")
@@ -250,7 +250,7 @@ class FakeWorktreePool:
         return []
 
     def slots_for_task_strict(self, name):
-        """실 엔진과 같은 짝 — 결과는 같고 장부 손상만 올린다(이 대역은 손상 없음)."""
+        """실 엔진과 같은 짝 — 결과는 같고 기록 손상만 올린다(이 대역은 손상 없음)."""
         return self.slots_for_task(name)
 
     def compare_slot_git(self, slot, *, git_runner=None):
@@ -367,15 +367,15 @@ class _FakeBoard:
 def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str | None=None, board=None, pm_state_text: str | None=None, monkeypatch):
     """격리된 PmBootstrap — board/git/log 는 stub, worktree_pool/board 는 mock 주입.
 
-    pm_state 도 hermetic seam 으로 주입한다(T-0179·차수/인계 dump) — 미지정이면 빈 pm_state
-    파일을 둬 실 worktree pm_state 누수를 막는다(차수 placeholder·남은작업 미해소로 폴백).
+    pm_state 도 hermetic 교체 지점으로 주입한다(T-0179·차수/인계 dump) — 미지정이면 빈 pm_state
+    파일을 둬 실 worktree pm_state 누수를 막는다(차수 placeholder·남은작업 미해소로 대신).
     """
     log_file = tmp_path / "current.md"
     log_file.write_text("# log\n", encoding="utf-8")
     areas_file = tmp_path / "areas.md"
     if areas_text is not None:
         areas_file.write_text(areas_text, encoding="utf-8")
-    # pm_state hermetic seam — 명시 텍스트면 그걸, 아니면 빈 파일(handoff_ctx 는 placeholder).
+    # pm_state hermetic 교체 지점 — 명시 텍스트면 그걸, 아니면 빈 파일(handoff_ctx 는 placeholder).
     pm_state_file = tmp_path / "pm_state.md"
     pm_state_file.write_text(pm_state_text if pm_state_text is not None else "", encoding="utf-8")
 
@@ -404,7 +404,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
     return inst
 
 
-# ── readonly 공유 슬롯 0단계 carve-out (⑬·T-0358·seam #1 파급) ─────────────────
+# ── readonly 공유 슬롯 0단계 carve-out (⑬·T-0358·교체 지점 #1 파급) ─────────────────
 # `Lease.role` 을 canonical 필드로 승격(T-0358)하면 extra 에서 빠지므로, T-0351 의 extra["role"]
 # 훅은 조용히 무력화된다 → `_phase0_is_readonly` 를 canonical `lease.role` read 로 갱신했다.
 # 아래가 그 파급(readonly lease → 0단계 carve-out 실동작)을 못박는다.
@@ -413,7 +413,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
 # ── 2c. 보호 브랜치 경고 (소프트·T-0076) — 라이브 브랜치가 보호목록이면 🚫 surface ──
 
 
-# ── 3. NeedsCreate (풀 소진) → 사용자 게이트·자동 생성 안 함 ───────────────────
+# ── 3. NeedsCreate (풀 소진) → 사용자 승인·자동 생성 안 함 ───────────────────
 
 
 # ── 4. worktree_pool 부재 시 명시 에러 (침묵 무력화 금지) ─────────────────────
@@ -425,7 +425,7 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool=None, areas_text: str 
 
 
 def test_handoff_skeleton_solo_omits_slot_line(handoff):
-    """솔로면 worktree를 생략하고 자동 박제 목록 + 손-채움 신 스키마를 보존한다."""
+    """솔로면 worktree를 생략하고 자동 기록 목록 + 손-채움 신 스키마를 보존한다."""
     sk = pm_engine.domain.handoff_text.build_handoff_log_skeleton(session_num=9, date="2026-06-16")
     assert "worktree: slot" not in sk
     assert "- 이 세션 기록 entries: (이 세션 기록 entry 없음)" in sk
@@ -446,7 +446,7 @@ _PM_STATE_FIXTURE = """\
 ## 세션 식별 (현재까지 사용된 이름)
 
 최근 N 차 (sliding window, 기본 3 차):
-  - **4차** (2026-06-14 · 직전 wave): 직전 PM 세션.
+  - **4차** (2026-06-14 · 직전 세션 요약): 직전 PM 세션.
   - 이전 차 (PM 1차~3차) = `log/current.md` handoff entry 단일 진실.
 
 ## 진행 중인 의사결정
@@ -485,7 +485,7 @@ def _make_handoff(handoff, tmp_path, *, worktree_pool=None, green_pytest=True, m
 # ── 8. 회전 재부착(resume) 연속성 ─────────────────────────────────────────────
 
 
-# ── 9. CLI parser 배선 ────────────────────────────────────────────────────────
+# ── 9. CLI parser 연결 ────────────────────────────────────────────────────────
 
 
 def test_bootstrap_branch_without_repo_errors(bootstrap, tmp_path):
@@ -513,7 +513,7 @@ def test_bootstrap_slot_with_resume_rejected(bootstrap, tmp_path):
 
 
 def test_bootstrap_slot_below_one_rejected(bootstrap, tmp_path):
-    """--slot 0/음수는 거부 — 슬롯 번호는 1부터(work/<repo>_<N> 정합·codex 게이트)."""
+    """--slot 0/음수는 거부 — 슬롯 번호는 1부터(work/<repo>_<N> 일치·codex 리뷰)."""
     with pytest.raises(SystemExit):
         bootstrap_cli.main(pm_paths.home_at(tmp_path), ['--repo', 'X', '--slot', '0'])
     with pytest.raises(SystemExit):
@@ -526,7 +526,7 @@ def test_bootstrap_slot_below_one_rejected(bootstrap, tmp_path):
 
 
 
-# ── 10. sensitivity — 배선 무력화 시 fail 재현 ─────────────────────────────────
+# ── 10. sensitivity — 연결 무력화 시 fail 재현 ─────────────────────────────────
 
 
 
@@ -534,8 +534,8 @@ def test_bootstrap_slot_below_one_rejected(bootstrap, tmp_path):
 
 
 # ── 11. _auto_slot — 단일 self-host 슬롯 판정 (Part B) ────────────────────────
-# `_auto_slot(areas_file=, leases_file=)` 는 인자로 파일 seam 을 노출하므로 실 장부/areas
-# 를 안 건드린다(hermetic·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 동형 패턴).
+# `_auto_slot(areas_file=, leases_file=)` 는 인자로 파일 교체 지점을 노출하므로 실 대여 기록/areas
+# 를 안 건드린다(hermetic·_registered_repos 가 areas.md 를 stdlib 로 읽는 것과 같은 패턴).
 
 import json as _auto_json  # noqa: E402 — Part B 테스트 전용 로컬 import
 
@@ -552,12 +552,12 @@ def _write_areas(path: Path, repos: list[str]) -> None:
 
 
 def _write_leases(path: Path, entries: list[dict]) -> None:
-    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 와 동형)."""
+    """worktree-leases.json — {"leases": [...]} 스키마 (worktree_pool.Lease.to_dict 와 같음)."""
     path.write_text(_auto_json.dumps({"leases": entries}), encoding="utf-8")
 
 
 def test_auto_slot_single_repo_single_slot_returns_identity(bootstrap, tmp_path):
-    """등록 repo 정확히 1개 + 그 repo 슬롯 정확히 1개 → 그 행의 정체성(키 + 장부 경로 값)."""
+    """등록 repo 정확히 1개 + 그 repo 슬롯 정확히 1개 → 그 행의 정체성(키 + 대여 기록 경로 값)."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
@@ -607,7 +607,7 @@ def test_auto_slot_two_slots_returns_none(bootstrap, tmp_path):
 
 
 def test_auto_slot_missing_leases_returns_none(bootstrap, tmp_path):
-    """등록 repo 1개지만 lease 장부 부재 → None (슬롯 0개·fail-soft)."""
+    """등록 repo 1개지만 lease 대여 기록 부재 → None (슬롯 0개·fail-soft)."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"  # 미생성 → 부재
     _write_areas(areas, ["project_manager"])
@@ -615,7 +615,7 @@ def test_auto_slot_missing_leases_returns_none(bootstrap, tmp_path):
 
 
 def test_auto_slot_corrupt_leases_returns_none(bootstrap, tmp_path):
-    """등록 repo 1개 + 깨진 JSON 장부 → None (fail-soft·크래시 안 함)."""
+    """등록 repo 1개 + 깨진 JSON 대여 기록 → None (fail-soft·크래시 안 함)."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
@@ -633,7 +633,7 @@ def test_auto_slot_schema_mismatch_returns_none(bootstrap, tmp_path):
 
 
 def test_auto_slot_slot_for_other_repo_returns_none(bootstrap, tmp_path):
-    """등록 repo 1개지만 장부 슬롯이 *다른* repo 것뿐 → None (그 repo 슬롯 0개)."""
+    """등록 repo 1개지만 대여 기록 슬롯이 *다른* repo 것뿐 → None (그 repo 슬롯 0개)."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
@@ -666,8 +666,8 @@ def _lease(repo: str, n: int, state: str = "leased") -> dict:
 def test_auto_slot_idle_slot1_resolves_leased_slot2(bootstrap, tmp_path):
     """`{1:idle, 2:leased}` → _auto_slot 도 leased={2}→exactly-1→(repo, 2) (의도된 변화).
 
-    이전엔 2개 엔트리→None→폴백이었으나, idle 필터로 *활성* 슬롯만 세 exactly-1 해소된다 —
-    incidental(`_regression_cwd`·display)이 활성 슬롯을 찾는 것이라 정합·개선."""
+    이전엔 2개 엔트리→None→대체 경로였으나, idle 필터로 *활성* 슬롯만 세 exactly-1 해소된다 —
+    incidental(`_regression_cwd`·display)이 활성 슬롯을 찾는 것이라 일치·개선."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
@@ -686,7 +686,7 @@ def test_auto_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
 
 
 def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
-    """`{1:idle}`(활성 0개) → None — _auto_slot 도 활성만 센다(fail-soft·솔로 폴백)."""
+    """`{1:idle}`(활성 0개) → None — _auto_slot 도 활성만 센다(fail-soft·솔로 대체)."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
@@ -694,9 +694,9 @@ def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
     assert slot_resolution._auto_slot(pm_paths.home_at(tmp_path), areas_file=areas, leases_file=leases) is None
 
 
-# ── 13. _worktree_cwd — git/pytest 러너 worktree cwd 자동해소 (T-0125·T-0124 동형) ─
+# ── 13. _worktree_cwd — git/pytest 러너 worktree cwd 자동해소 (T-0125·T-0124 와 같음) ─
 # `_worktree_cwd(slot=)` 는 명시 slot > `_auto_slot()` > REPO 순으로 해소한다. _auto_slot
-# 은 areas/leases 파일 seam 으로 hermetic(위 Part B 헬퍼 _write_areas/_write_leases 재사용).
+# 은 areas/leases 파일 교체 지점으로 hermetic(위 Part B 헬퍼 _write_areas/_write_leases 재사용).
 # 자동해소 경로는 _auto_slot 을 monkeypatch 로 결정값 주입(REPO 상수 의존 회피).
 
 
@@ -767,7 +767,7 @@ def test_bootstrap_task_resume_reads_pm_state_pointer(bootstrap, monkeypatch, tm
 
 
 def test_bootstrap_task_open_record_asks_before_dump(bootstrap, monkeypatch, tmp_path, capsys):
-    """열린 기록이면 rc1 로 묻고 **부분 dump 도 금지**(⑧ 동형) — 정체·복원·택1 을 싣는다."""
+    """열린 기록이면 rc1 로 묻고 **부분 dump 도 금지**(⑧ 와 같음) — 정체·복원·택1 을 싣는다."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks",
                           task_open_started="2026-09-09T01:02:03+00:00"))
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
@@ -810,15 +810,6 @@ def test_bootstrap_task_json_includes_task(bootstrap, monkeypatch, tmp_path, cap
     assert data["task"]["action"] == "resumed"
 
 
-def test_bootstrap_task_entry_has_no_reclaim_notice(bootstrap, monkeypatch, tmp_path, capsys):
-    """자동 회수 개념이 사라졌다 — 진입 표면에 회수 문구가 없다(대체 장치 0)."""
-    wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="created"))
-    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
-    inst.run(task="job1")
-    out = capsys.readouterr().out
-    assert "회수 진입" not in out
-
-
 def test_bootstrap_task_invalid_name_rejected_rc1(bootstrap, monkeypatch, tmp_path, capsys):
     """엔진 명 검증 거부(InvalidTaskName) → rc1·부분 dump 금지(must-fix)."""
     wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks",
@@ -832,14 +823,14 @@ def test_bootstrap_task_invalid_name_rejected_rc1(bootstrap, monkeypatch, tmp_pa
 
 
 # ── F1b 동시 세션 거부의 실효 (기록 pid = 하네스 세션·T-0915) ────────────────────
-# 위 F1 은 `FakeWorktreePool` DI 로 부트스트랩 배선을 본다. 거부가 **실제로 발화하는지**는
+# 위 F1 은 `FakeWorktreePool` DI 로 부트스트랩 연결을 본다. 거부가 **실제로 나오는지**는
 # 살아 있는 세션이 있어야 알 수 있어서, 여기서는 더미 하네스 세션을 띄워 그 아래에서 실
-# 엔진으로 task 를 바인딩하고 같은 장부에 다른 세션으로 들어가 본다.
+# 엔진으로 task 를 바인딩하고 같은 대여 기록에 다른 세션으로 들어가 본다.
 
 
 @pytest.fixture
 def pool_home(tmp_path):
-    """실 엔진 사본을 담은 tmp PM 홈 — 그 사본의 `worktree_pool` 이 자기 장부를 소유한다."""
+    """실 엔진 사본을 담은 tmp PM 홈 — 그 사본의 `worktree_pool` 이 자기 대여 기록을 소유한다."""
     home = tmp_path / "pool-home"
     (home / ".project_manager" / ".local").mkdir(parents=True)
     (home / ".project_manager" / "wiki").mkdir(parents=True)
@@ -851,7 +842,7 @@ def pool_home(tmp_path):
 
 
 def _load_pool(home: Path):
-    """홈 사본의 `worktree_pool` 을 로드한다 — 경로 전역이 그 홈으로 굳는다(재배선 0)."""
+    """홈 사본의 `worktree_pool` 을 로드한다 — 경로 전역이 그 홈으로 굳는다(재설정 0)."""
     target = home / ".project_manager" / "tools" / "worktree_pool.py"
     spec = importlib.util.spec_from_file_location("worktree_pool_bootstrap_lease", target)
     module = importlib.util.module_from_spec(spec)
@@ -862,7 +853,7 @@ def _load_pool(home: Path):
 def test_bind_task_refuses_a_task_with_an_open_record(pool_home, tmp_path, *, monkeypatch):
     """실 서브프로세스가 연 task 는 그 명령이 끝난 뒤에도 `TaskActiveElsewhere` 로 거부된다.
 
-    프로세스 번호를 보던 시절엔 bind 직후 그 번호가 죽어 거부가 사실상 발화하지 못했다.
+    프로세스 번호를 보던 시절엔 bind 직후 그 번호가 죽어 거부가 사실상 나오지 못했다.
     이제 판정 재료가 기록이라, 종료 기록이 남기 전에는 두 번째 진입이 막힌다 — 닫는 것은
     사용자 행위(`task close`)다.
     """
@@ -888,7 +879,7 @@ def test_bind_task_refuses_a_task_with_an_open_record(pool_home, tmp_path, *, mo
     assert record.open is True
 
 
-# ── F7 resume-read 소비 배선 (task 태그 귀속·task pm_state 본문 dump·T-0374) ──────
+# ── F7 resume-read 소비 연결 (task 태그 귀속·task pm_state 본문 dump·T-0374) ──────
 # T-0356 이 낸 log 태그 파서(`(task:<이름>)`)+handoff task pm_state 쓰기를 부트스트랩 dump 가
 # 직접 소비하는지 검증한다. slot/solo 불변은 기존 441 테스트(this 파일 + per_slot)가 담보.
 
@@ -954,14 +945,14 @@ def test_task_tag_log_entry_attributed_and_session_inferred(bootstrap, monkeypat
     log = (
         "# log\n\n"
         "## [2026-07-18] handoff | PM 3차 (task:job1) → 다음 PM 세션\n"
-        "- 남은작업: TASK태그-본문-표식\n"
+        "- 남은작업: TASK태그-본문-표시\n"
     )
     inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="resumed", log_text=log, monkeypatch=monkeypatch)
     rc = inst.run(task="job1")  # task pm_state 부재 — 차수는 log 태그 entry 에서만 추론.
     assert rc == 0
     out = capsys.readouterr().out
     assert "## PM 4차 부트스트랩" in out              # log 태그 entry 차수 추론(3→4)
-    assert "TASK태그-본문-표식" in out                # 자기 태그 entry 본문 dump(귀속)
+    assert "TASK태그-본문-표시" in out                # 자기 태그 entry 본문 dump(귀속)
 
 
 def test_task_bootstrap_uses_log_when_state_lags_after_interrupted_handoff(
@@ -995,35 +986,35 @@ def test_task_ignores_untagged_and_slot_tagged_log(bootstrap, monkeypatch, tmp_p
     log = (
         "# log\n\n"
         "## [2026-07-12] handoff | PM 7차 → 다음 PM 세션\n"
-        "- 남은작업: 무태그-타슬롯-표식\n\n"
+        "- 남은작업: 무태그-타슬롯-표시\n\n"
         "## [2026-07-13] handoff | PM 5차 (project_manager_1) → 다음 PM 세션\n"
-        "- 남은작업: 슬롯태그-표식\n"
+        "- 남은작업: 슬롯태그-표시\n"
     )
     inst, _ = _task_read_bootstrap(bootstrap, tmp_path, action="created", log_text=log, monkeypatch=monkeypatch)
     rc = inst.run(task="job1")  # task 태그 entry 0개 → 자기 컨텍스트 없음.
     assert rc == 0
     out = capsys.readouterr().out
-    # 무태그 PM 7차·슬롯태그 PM 5차 를 자기 차수/본문으로 흡수하지 않는다(귀속 격리).
+    # 무태그 PM 7차·슬롯태그 PM 5차 를 자기 차수/본문으로 받아 반영하지 않는다(귀속 격리).
     assert "## PM 7차 부트스트랩" not in out
     assert "## PM 5차 부트스트랩" not in out
-    assert "무태그-타슬롯-표식" not in out
-    assert "슬롯태그-표식" not in out
+    assert "무태그-타슬롯-표시" not in out
+    assert "슬롯태그-표시" not in out
 
 
 # ── task pm_state 포인터의 경로 표기 (Windows 분기를 Linux 에서 태운다·T-0718) ──────
 # 구분자는 OS 가 정하므로(`str(WindowsPath)` → `\`) Linux 회귀는 그대로면 Windows 분기를 못 태운다.
 # `PureWindowsPath` 대역을 pool 에 주입해 그 표기만 재현하고, 포인터 surface 가 POSIX 단일
-# (`_display_path_text`)로 나오는지 본다 — 표기가 갈리면 세션 정체성 복구 앵커가 OS 를 건너
-# 다른 문자열로 읽힌다(축 A·B).
+# (`_display_path_text`)로 나오는지 본다 — 표기가 갈리면 세션 정체성 복구 기준이 OS 를 건너
+# 다른 문자열로 읽힌다(경우 A·B).
 
 _WINDOWS_TASK_ROOT = "C:/pmhome/.project_manager/.local/tasks"
 
 
-class _WindowsFlavourPath(PureWindowsPath):
+class _WindowsVariantPath(PureWindowsPath):
     """Linux 에서 `WindowsPath` 표기(역슬래시 `str()`)를 태우는 경로 대역 — 실 IO 는 없다.
 
     부트스트랩이 task 경로에 거는 실 IO 는 bind 뒤 존재 확인뿐이라(`pm_state.exists()`) 그것만
-    True 로 고정하고, pool 대역이 부르는 `mkdir` 은 no-op 로 흡수한다."""
+    True 로 고정하고, pool 대역이 부르는 `mkdir` 은 no-op 로 처리한다."""
 
     def exists(self) -> bool:
         return True
@@ -1032,15 +1023,15 @@ class _WindowsFlavourPath(PureWindowsPath):
         return None
 
 
-class _WindowsFlavourTaskPool(FakeWorktreePool):
+class _WindowsVariantTaskPool(FakeWorktreePool):
     """`task_dir` 만 Windows 표기로 돌려주는 pool 대역 — 나머지 bind/resume 동작은 공용 mock."""
 
     def task_dir(self, name):
-        return _WindowsFlavourPath(_WINDOWS_TASK_ROOT) / name
+        return _WindowsVariantPath(_WINDOWS_TASK_ROOT) / name
 
 
-def _windows_task_pm_state(name: str) -> _WindowsFlavourPath:
-    return _WindowsFlavourPath(_WINDOWS_TASK_ROOT) / name / "pm_state.md"
+def _windows_task_pm_state(name: str) -> _WindowsVariantPath:
+    return _WindowsVariantPath(_WINDOWS_TASK_ROOT) / name / "pm_state.md"
 
 
 def test_display_path_text_serializes_windows_path_as_posix(bootstrap):
@@ -1054,8 +1045,8 @@ def test_display_path_text_serializes_windows_path_as_posix(bootstrap):
 
 
 def test_task_pm_state_pointer_is_posix_on_windows_path(bootstrap, monkeypatch, tmp_path, capsys):
-    """축 A — Windows 표기 경로에서도 pm_state 포인터가 POSIX 단일 표기로 나온다."""
-    wp = bind_pool(monkeypatch, _WindowsFlavourTaskPool(task_dir_root=tmp_path / "tasks", task_action="resumed"))
+    """경우 A — Windows 표기 경로에서도 pm_state 포인터가 POSIX 단일 표기로 나온다."""
+    wp = bind_pool(monkeypatch, _WindowsVariantTaskPool(task_dir_root=tmp_path / "tasks", task_action="resumed"))
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
 
     rc = inst.run(task="job1")
@@ -1068,10 +1059,10 @@ def test_task_pm_state_pointer_is_posix_on_windows_path(bootstrap, monkeypatch, 
 
 
 def test_task_first_session_pointer_announced_on_windows_path(bootstrap, monkeypatch, tmp_path, capsys):
-    """축 B — 신규 task 첫 진입 안내(포인터 줄)가 Windows 표기 경로에서도 뜬다.
+    """경우 B — 신규 task 첫 진입 안내(포인터 줄)가 Windows 표기 경로에서도 뜬다.
 
     `_pm_state_file` 주입을 우회해 task 서술 pm_state 해소 경로(F7)를 태운다."""
-    wp = bind_pool(monkeypatch, _WindowsFlavourTaskPool(task_dir_root=tmp_path / "tasks", task_action="created"))
+    wp = bind_pool(monkeypatch, _WindowsVariantTaskPool(task_dir_root=tmp_path / "tasks", task_action="created"))
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=bind_pool(monkeypatch, wp), monkeypatch=monkeypatch)
     inst._pm_state_file = None
 
@@ -1087,12 +1078,12 @@ def test_task_first_session_pointer_announced_on_windows_path(bootstrap, monkeyp
 
 
 # ── F1c 인계 표시 (T-0920) — 이전 세션이 하던 것을 **읽기만** 해서 보여 준다 ─────────
-# 재료 여섯은 전부 이미 조회 가능한 것들이다(새 기록 파일 0): claim 티켓 · 미회수 위임 준비와
+# 재료 여섯은 전부 이미 조회 가능한 것들이다(새 기록 파일 0): claim 티켓 · 돌려받지 않은 위임 준비와
 # 그 라운드 단계 · 서술 pm_state · 마지막 기록 항목 · 보유 작업 폴더와 갈래.
 
 
 def _handover_home(bootstrap, tmp_path, monkeypatch):
-    """인계 표시의 여섯 재료를 실값으로 갖춘 PM 홈 + 그 홈을 앵커로 하는 부트스트랩.
+    """인계 표시의 여섯 재료를 실값으로 갖춘 PM 홈 + 그 홈을 기준으로 하는 부트스트랩.
 
     위임 준비 사본은 **그 세션이 잡고 있던 슬롯 안**에 둔다(실제 위임의 cwd 가 슬롯이다).
     PM 홈(`REPO`) 아래에는 준비 사본을 하나도 두지 않는다 — 뿌리를 홈으로 잡으면 이 자리가
@@ -1101,7 +1092,7 @@ def _handover_home(bootstrap, tmp_path, monkeypatch):
     wp = bind_pool(monkeypatch, FakeWorktreePool(task_dir_root=tmp_path / "tasks"))
     wp._extra_leases = [_FakeLeaseEntry("work/X_7", "X", "job1", state="leased")]
     run_dir = (wp.slot_path("work/X_7") / ".project_manager" / ".local"
-               / "delegate-ticket-copies" / "C-wave" / "abc123" / "T-0777")
+               / "delegate-ticket-copies" / "C-session" / "abc123" / "T-0777")
     if (run_dir / "rounds").is_dir():
         for stale in (run_dir / "rounds").iterdir():
             stale.unlink()
@@ -1133,7 +1124,7 @@ def test_handover_shows_the_six_materials_with_real_values(bootstrap, tmp_path, 
     text = inst._render_handover(task="job1")
 
     assert "T-0777" in text                                   # claim 중인 티켓
-    assert str(run_dir) in text or run_dir.name in text        # 미회수 위임 준비(run-dir)
+    assert str(run_dir) in text or run_dir.name in text        # 돌려받지 않은 위임 준비(run-dir)
     assert "02-developer.md" in text                           # 라운드 단계(마지막 순번)
     assert "tasks/job1/pm_state.md" in text.replace("\\", "/")  # 서술 pm_state
     assert "PM 12차 (task:job1) → 다음 PM 세션" in text          # 마지막 기록 항목
@@ -1141,7 +1132,7 @@ def test_handover_shows_the_six_materials_with_real_values(bootstrap, tmp_path, 
 
 
 def test_handover_delegate_runs_read_the_held_slot_not_the_pm_home(bootstrap, tmp_path, monkeypatch):
-    """미회수 위임 준비는 **보유 슬롯** 아래를 읽는다 — PM 홈 아래 사본은 그 세션 것이 아니다."""
+    """돌려받지 않은 위임 준비는 **보유 슬롯** 아래를 읽는다 — PM 홈 아래 사본은 그 세션 것이 아니다."""
     inst, run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
     decoy = (tmp_path / ".project_manager" / ".local" / "delegate-ticket-copies"
              / "C-other" / "zzz999" / "T-9999" / "rounds")
@@ -1171,7 +1162,7 @@ def test_handover_claimed_lens_is_the_session_that_held_the_place(bootstrap, tmp
 
 
 def test_handover_only_reads(bootstrap, tmp_path, monkeypatch):
-    """복원은 읽기만 한다 — log·장부·준비 사본 어느 것도 1바이트 바뀌지 않는다."""
+    """복원은 읽기만 한다 — log·대여 기록·준비 사본 어느 것도 1바이트 바뀌지 않는다."""
     inst, run_dir = _handover_home(bootstrap, tmp_path, monkeypatch)
     watched = [inst._log_file, run_dir / "rounds" / "02-developer.md"]
     before = {path: path.read_bytes() for path in watched}

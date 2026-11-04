@@ -128,7 +128,7 @@ def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
     # 이 파일은 프롬프트 입력 기준(T-0695)을 소유한다. 산출 돌려받기(T-0696)는 실 board 왕복이 필요한
     # 별도 기준이라 tests/test_additional_reviewer_ticket_collect.py가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
-        reviewer_collect, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
+        reviewer_collect, "_collect_additional_reviewer_section", lambda *_a, **_k: None,
     )
 
 
@@ -352,9 +352,9 @@ def test_unterminated_frontmatter_fails_loud_for_body_and_touches(
         round_store, "_find_ticket_file", lambda _home, ticket_id, pm_home=None: broken,
     )
 
-    with pytest.raises(pm_paths.AnchorResolutionError, match="frontmatter가 닫히지"):
+    with pytest.raises(pm_paths.TargetRepoResolutionError, match="frontmatter가 닫히지"):
         round_store._load_ticket_text_and_body(broken)
-    with pytest.raises(pm_paths.AnchorResolutionError, match="frontmatter가 닫히지"):
+    with pytest.raises(pm_paths.TargetRepoResolutionError, match="frontmatter가 닫히지"):
         round_store._parse_touches_from_file(broken)
 
 

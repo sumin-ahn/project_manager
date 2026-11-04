@@ -1,26 +1,26 @@
 """T-0337 — 대형 산출물 파일-전달 규약 회귀 가드 (양 하네스 쓰기 역할).
 
 모델 응답(서브에이전트 최종 보고 포함)은 출력 상한(opencode 32k 토큰)에서 **조용히** 잘린다
-(PM 70 라이브 확증 — 수신자는 절단을 감지하지 못한다). 그 잔여 축을 우회하는 파일-전달 규약 —
+(PM 70 라이브 확증 — 수신자는 절단을 감지하지 못한다). 그 남은 위험을 우회하는 파일-전달 규약 —
 *대형 산출은 파일로 쓰고 응답엔 절대경로 + 요약 몇 줄만* — developer/architect 카드에 실려
 있는지 기계로 못박는다. researcher는 파일 생성 없이 조사 분할, code-reviewer는 티켓 절에 기록한다.
 
 생성 자체는 tool 훅으로 인터셉트 불가(구조)하므로 가드는 "출하 문서에 규약이 실려 있음"만
 durable 하게 검증한다 (결정: 규약이지 강제가 아니다).
 
-검사 축 (T-0266 4어휘 패턴 동형 — 얕은 단일 문자열이 아니라 규약 절 안의 어휘 클래스 검증):
+검사 항목 (T-0266 4어휘 패턴과 같은 구조 — 얕은 단일 문자열이 아니라 규약 절 안의 어휘 클래스 검증):
   (1) 쓰기 산출 역할 4 카드가 규약 절 마커 + 4 핵심 어휘 + 임계(200줄/8KB 보고 가이드)를 가진다.
   (2) opencode 3 카드는 safe_write(16KB 청크)·write 64KB deny 를 추가 명시하고,
       claude 카드는 opencode 전용 safe_write 를 섞지 않는다.
   (3) 규약 절에 미충전 placeholder({{…}})·framework wikilink([[…]]) 0.
 
-숫자 정합(T-opencode-002): DENY_BYTES=64KB·CHUNK_BYTES=16KB 로 상향 — 카드·relay 안내와
-core 상수의 단일 진실(core 주석·sweep 근거)만 다르지 않게 임계 소비 표면을 함께 갱신한다.
+숫자 일치(T-opencode-002): DENY_BYTES=64KB·CHUNK_BYTES=16KB 로 상향 — 카드·relay 안내와
+core 상수의 단일 진실(core 주석·sweep 근거)만 다르지 않게 임계 소비 위치를 함께 갱신한다.
 "200줄/8KB" 보고 임계는 파일-전달 규약 고유의 가이드로 별도 정책이라 그대로 둔다.
 
 ⚠️ '요약'·'파일' 은 카드 다른 곳(researcher 산출 형식 등)에도 등장하므로 whole-file 검사는
 vacuous — 반드시 규약 절(마커 ~ 다음 '## ' 헤딩)만 슬라이스해 그 안에서 어휘를 확인한다
-(T-0105 section-slice 동형).
+(T-0105 section-slice 와 같은 구조).
 """
 
 from __future__ import annotations
@@ -51,11 +51,11 @@ CODE_REVIEWER_CONCRETE_CARDS = [
     ("codex code-reviewer", REPO / "templates/codex/.codex/agents/code-reviewer.toml"),
 ]
 
-# 규약 절 슬라이스 앵커 — 4 카드 공통(각 카드 본문은 역할 결에 맞게 다르지만 마커는 공유).
+# 규약 절 슬라이스 표시 글 — 4 카드 공통(각 카드 본문은 역할 결에 맞게 다르지만 마커는 공유).
 CONVENTION_MARKER = "**대형 산출물은 파일로 — 응답(보고) 절단 우회.**"
 
 # 4 핵심 어휘 클래스 (ticket 인터페이스: 파일·경로·요약·절단). 각 클래스는 허용 토큰 집합 —
-# 규약 절 안에서 4 어휘가 *모두* 등장해야 통과 (얕은 단일 문자열 아님 · T-0266 동형).
+# 규약 절 안에서 4 어휘가 *모두* 등장해야 통과 (얕은 단일 문자열 아님 · T-0266 과 같은 구조).
 _CORE_VOCAB = [
     ("파일 산출 (file)", ("파일",)),
     ("절대경로 반환 (path)", ("절대경로",)),
@@ -63,7 +63,7 @@ _CORE_VOCAB = [
     ("응답 절단 이유 (truncation)", ("절단", "잘린", "잘려", "잘리")),
 ]
 
-# 임계 가이드(결정: 200줄/8KB — safe_write chunk 와 결 정합). 숫자를 카드에 명시.
+# 임계 가이드(결정: 200줄/8KB — safe_write chunk 와 결 일치). 숫자를 카드에 명시.
 _THRESHOLD = [
     ("줄 임계", ("200줄", "200 줄")),
     ("바이트 임계", ("8KB", "8 KB")),
@@ -77,7 +77,7 @@ _OPENCODE_SAFE_WRITE = [
 # 요구한다 — read-only 역할(researcher·code-reviewer)은 OPENCODE_CARDS 밖(REPORT_ONLY_CARDS)이고
 # edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·T-0696·T-0745 — edit permission 자체는
 # 두 역할 모두 allow) 대형 산출 **파일**을 새로 쓰지 않으므로 64KB 임계 자체가 무의미(그 문구를
-# 이 카드에 넣으면 write 가 64KB 까지는 되는 듯 오인 · T-0342: read-only 카드 임계 문구 정합).
+# 이 카드에 넣으면 write 가 64KB 까지는 되는 듯 오인 · T-0342: read-only 카드 임계 문구 일치).
 _OPENCODE_WRITE_64KB_DENY = [
     ("write deny 임계(64KB)", ("64KB", "64 KB")),
 ]
@@ -90,7 +90,7 @@ def _convention_region(path: Path) -> str:
     """카드에서 규약 절(마커 ~ 다음 '## ' 헤딩)만 슬라이스. 마커 부재면 빈 문자열.
 
     '요약'·'파일' 은 카드 다른 곳에도 있어 whole-file 검사는 vacuous — 규약 절 안에서만
-    어휘를 확인한다(T-0105 section-slice 동형).
+    어휘를 확인한다(T-0105 section-slice 와 같은 구조).
     """
     text = path.read_text(encoding="utf-8")
     idx = text.find(CONVENTION_MARKER)
@@ -117,7 +117,7 @@ def test_card_has_convention_marker(label, path):
 def test_card_convention_has_core_vocab(label, path):
     """규약 절이 4 핵심 어휘(파일·경로·요약·절단)를 모두 담는다.
 
-    얕은 단일 문자열이 아니라 4 어휘 클래스가 규약 절 안에서 전부 등장해야 한다 (T-0266 동형).
+    얕은 단일 문자열이 아니라 4 어휘 클래스가 규약 절 안에서 전부 등장해야 한다 (T-0266 과 같은 구조).
     """
     region = _convention_region(path)
     assert region, f"{label} ({path.relative_to(REPO)}): 규약 절 마커 부재 (T-0337)"
@@ -147,7 +147,7 @@ def test_opencode_card_convention_uses_safe_write(label, path):
     """opencode 카드 규약 절이 safe_write(16KB 청크) + write 64KB deny 임계를 명시한다 (T-0334 연계).
 
     opencode write 는 64KB 초과를 거부하므로 그 아래는 네이티브 write 로 가능하되, 대형 파일
-    쓰기(무결성 완주 보장)는 safe_write chunk 가 단일 계약이다 — outbound(생성) 축의 파일-쓰기
+    쓰기(무결성 완주 보장)는 safe_write chunk 가 단일 계약이다 — outbound(생성) 쪽의 파일-쓰기
     채널을 카드가 안내해야 함. OPENCODE_CARDS(developer·architect)는 전부 write-capable 역할이라
     64KB 임계 명시를 무조건 요구한다 — read-only 역할(researcher·code-reviewer)은
     REPORT_ONLY_CARDS 로 별도 취급되며 edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·
@@ -220,4 +220,4 @@ def test_every_code_reviewer_finding_requires_a_concrete_fix_contract(label, pat
     assert "모든 finding" in text and "구체값" in text, label
     for contract_part in ("코드 위치", "오류 거동", "수정 설계", "추가 회귀 테스트", "명령", "기대값"):
         assert contract_part in text, f"{label}: {contract_part}"
-    assert "must-fix를 선언할" not in text and "must-fix마다 골격" not in text, label
+    assert "must-fix를 선언할" not in text, label

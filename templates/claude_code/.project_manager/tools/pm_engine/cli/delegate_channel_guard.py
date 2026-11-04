@@ -57,18 +57,18 @@ def _cli_fail_open(reason: str) -> dict[str, str]:
     )
 
 
-def _write_machine_line(text: str, stream: TextIO, seam) -> None:
+def _write_machine_line(text: str, stream: TextIO, console_module) -> None:
     """호스트가 파싱하는 한 줄을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
-    ``seam`` 은 ``main`` 이 넘기는 ``pm_engine.infra.console`` 모듈이다. 가드 자신이 죽은
+    ``console_module`` 은 ``main`` 이 넘기는 ``pm_engine.infra.console`` 모듈이다. 가드 자신이 죽은
     fail-open 경계는 ``None`` 을 받는다 — 그 자리는 ``configure_console_utf8`` 이 아예 돌지
     않은 상태라 텍스트 레이어가 로케일 코덱(Windows cp949·errors=strict)일 수 있고, 한글과
     em dash 가 실린 엔벨로프가 통째로 ``UnicodeEncodeError`` 로 사라진다. 그래서 형제 없이도
     같은 보장을 준다 — ``.buffer`` 로 UTF-8 bytes 를 직접 쓰고, ``.buffer`` 가 없는 스트림
     (테스트 캡처·``io.StringIO``)만 텍스트 write 로 내려간다.
     """
-    if seam is not None:
-        seam.write_machine_line(text, stream=stream)
+    if console_module is not None:
+        console_module.write_machine_line(text, stream=stream)
         return
     line = text + "\n"
     buffer = getattr(stream, "buffer", None)
@@ -76,7 +76,7 @@ def _write_machine_line(text: str, stream: TextIO, seam) -> None:
         stream.write(line)
         return
     try:
-        # 텍스트 레이어에 남은 출력이 bytes 뒤로 밀리지 않게 먼저 비운다(seam 과 같은 규율).
+        # 텍스트 레이어에 남은 출력이 bytes 뒤로 밀리지 않게 먼저 비운다(console 모듈과 같은 규율).
         stream.flush()
     except (OSError, ValueError):
         pass
@@ -89,7 +89,7 @@ def _run_decide_cli(
     *,
     stdout: TextIO,
     config_loader: Callable[[home.Home], Mapping[str, str]],
-    machine_seam=None,
+    console_module=None,
 ) -> int:
     """Run the non-stdin CLI; every path writes exactly one JSON line and rc0."""
     args = _parse_decide_args(argv)
@@ -100,7 +100,7 @@ def _run_decide_cli(
     _write_machine_line(
         json.dumps(result, ensure_ascii=False, separators=(",", ":")),
         stdout,
-        machine_seam,
+        console_module,
     )
     return 0
 
@@ -163,7 +163,7 @@ def main(
     """Run decide CLI when argv is non-empty, otherwise the legacy Claude hook."""
     try:
         output_stream = sys.stdout if stdout is None else stdout
-        # ``None`` preserves the historical direct-call hook seam used by tests
+        # ``None`` preserves the historical direct-call hook override used by tests
         # and wrappers; the module entry point passes process argv explicitly.
         cli_argv = list(argv or [])
         if cli_argv and cli_argv[0] == "supervise":
@@ -180,7 +180,7 @@ def main(
                 payload_bytes=payload_bytes,
                 state_dir=state_dir,
             )
-            # 이 줄은 PowerShell/bash 캡처를 거쳐 호스트로 간다 — seam 이 콘솔 코덱과
+            # 이 줄은 PowerShell/bash 캡처를 거쳐 호스트로 간다 — console 모듈이 콘솔 코덱과
             # 무관하게 UTF-8 로 쓰고, ASCII 이스케이프는 종전 바이트를 유지한다.
             _write_machine_line(
                 json.dumps(result, separators=(",", ":")),
@@ -232,7 +232,7 @@ def main(
                 home, cli_argv,
                 stdout=output_stream,
                 config_loader=config_loader,
-                machine_seam=console,
+                console_module=console,
             )
 
         input_stream = sys.stdin if stdin is None else stdin
@@ -250,9 +250,9 @@ def main(
     except BaseException as exc:
         # 호스트 오류는 기존 fail-open envelope로 보고한다.
         output_stream = sys.stdout if stdout is None else stdout
-        # 가드 자신이 죽은 경계의 emit 은 seam 에 기대지 않는다 — 콘솔 설정 없이 패키지 main 을
-        # 직접 부른 경우도 여기로 오므로, 아래 emit 은 seam 없이 UTF-8 bytes 를 쓰는 폴백을 탄다.
-        machine_seam = None
+        # 가드 자신이 죽은 경계의 emit 은 console 모듈에 기대지 않는다 — 콘솔 설정 없이 패키지 main 을
+        # 직접 부른 경우도 여기로 오므로, 아래 emit 은 console 모듈 없이 UTF-8 bytes 를 쓰는 대체 경로를 탄다.
+        console_module = None
         cli_argv = list(argv or [])
         if cli_argv and cli_argv[0] == "supervise":
             # supervisor 자신이 죽어도 호스트는 완전한 엔벨로프 한 줄을 받는다.
@@ -268,7 +268,7 @@ def main(
                     separators=(",", ":"),
                 ),
                 output_stream,
-                machine_seam,
+                console_module,
             )
             _report_fail_open(exc, sys.stderr if stderr is None else stderr)
             return 0
@@ -285,7 +285,7 @@ def main(
                     separators=(",", ":"),
                 ),
                 output_stream,
-                machine_seam,
+                console_module,
             )
             _report_fail_open(exc, sys.stderr if stderr is None else stderr)
             return 0
@@ -297,7 +297,7 @@ def main(
                     separators=(",", ":"),
                 ),
                 output_stream,
-                machine_seam,
+                console_module,
             )
             return 0
         _report_fail_open(exc, sys.stderr if stderr is None else stderr)

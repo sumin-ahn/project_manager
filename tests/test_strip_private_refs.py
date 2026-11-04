@@ -24,7 +24,7 @@ PRIVATE_REFS_MODULES = tuple(
 from pm_engine.domain import private_refs
 from pm_engine.infra import private_surface
 
-# 엔진 사본 규약이 소유하는 이름 — 판정식이 아니라 엔진 패키지 import 머리 표면이라
+# 엔진 사본 규약이 소유하는 이름 — 판정식이 아니라 엔진 패키지 import 머리 부분이라
 # 스크립트가 재수출하지 않는다.
 _ENGINE_COPY_SURFACE = frozenset({"_TOOLS_DIR"})
 
@@ -83,7 +83,7 @@ def test_only_whole_delimiter_units_are_removed(
         "board root (graceful 탐지· {a} ① 분리)",
         "세션 식별자 ({a} D1· 층위 amend·{t} 3모듈)",
         "합성한다 (spike §3.2· {t} ③)",
-        "깔때기 검증(must-fix· {t} 게이트)",
+        "깔때기 검증(must-fix· {t} 검사)",
         "board root 추종 (board/ 분리· {t} ①· A6)",
         "reason [[{t}]]",
         "reason ({t}/{a})",
@@ -138,11 +138,11 @@ def _marker(stripper, suffix: str = "") -> str:
     return "# " + private_refs._DATA_LITERAL_MARKER + suffix
 
 
-def _guest_marker_source(stripper, ref: str, *, marked: bool) -> str:
-    """디스크에 기록되는 guest 마커 선언부 형상을 픽스처로 재현한다."""
+def _added_harness_marker_source(stripper, ref: str, *, marked: bool) -> str:
+    """디스크에 기록되는 added-harness 마커 선언부 모양을 픽스처로 재현한다."""
     body = [
         f"# 마커 절은 read_manifest 가 무시한다 (local·pm_update-preserved·{ref})",
-        f'_GUEST_MANIFEST_BEGIN = "# >>> pm add-harness @render ({ref}) >>>"',
+        f'_ADDED_HARNESS_MANIFEST_BEGIN = "# >>> pm add-harness @render ({ref}) >>>"',
     ]
     if marked:
         body = [_marker(stripper, ":begin"), *body, _marker(stripper, ":end")]
@@ -151,13 +151,13 @@ def _guest_marker_source(stripper, ref: str, *, marked: bool) -> str:
 
 def test_block_marked_wire_declaration_survives_strip(stripper):
     ref = _ticket()
-    source = _guest_marker_source(stripper, ref, marked=True)
+    source = _added_harness_marker_source(stripper, ref, marked=True)
     assert stripper.rewrite_python(source) == (source, 0)
 
 
 def test_unmarked_prose_still_loses_the_reference(stripper):
     ref = _ticket()
-    source = _guest_marker_source(stripper, ref, marked=False)
+    source = _added_harness_marker_source(stripper, ref, marked=False)
     rewritten, count = stripper.rewrite_python(source)
     assert count == 1
     assert "(local·pm_update-preserved)" in rewritten
@@ -182,15 +182,15 @@ def test_standalone_marker_protects_the_following_declaration_line(stripper):
         "\n".join(
             (
                 f"{_marker(stripper)} 아래 한 줄은 디스크에 기록되는 wire 문자열이다",
-                f'WIRE = "guest ({ref}) begin"  # 데이터 마커 ({ref})',
-                f"# 표식 범위 밖 산문 ({ref}) 은 정리된다",
+                f'WIRE = "added-harness ({ref}) begin"  # 데이터 마커 ({ref})',
+                f"# 표시 범위 밖 산문 ({ref}) 은 정리된다",
             )
         )
         + "\n"
     )
     rewritten, count = stripper.rewrite_python(source)
-    assert f'WIRE = "guest ({ref}) begin"  # 데이터 마커 ({ref})' in rewritten
-    assert "# 표식 범위 밖 산문 은 정리된다" in rewritten
+    assert f'WIRE = "added-harness ({ref}) begin"  # 데이터 마커 ({ref})' in rewritten
+    assert "# 표시 범위 밖 산문 은 정리된다" in rewritten
     assert count == 1
 
 
@@ -201,8 +201,8 @@ def test_block_marker_covers_multiline_declarations(stripper):
             (
                 _marker(stripper, ":begin"),
                 "_WIRE_GENERATIONS = (",
-                f'    "guest ({legacy})",   # 옛 세대 ({legacy})',
-                f'    "guest ({current})",  # 현 세대 ({current})',
+                f'    "added-harness ({legacy})",   # 옛 버전 ({legacy})',
+                f'    "added-harness ({current})",  # 현 버전 ({current})',
                 ")",
                 _marker(stripper, ":end"),
                 f"# 블록 밖 산문 ({current}) 은 정리된다",
@@ -212,8 +212,8 @@ def test_block_marker_covers_multiline_declarations(stripper):
     )
     rewritten, count = stripper.rewrite_python(source)
     assert count == 1
-    assert f'"guest ({legacy})",   # 옛 세대 ({legacy})' in rewritten
-    assert f'"guest ({current})",  # 현 세대 ({current})' in rewritten
+    assert f'"added-harness ({legacy})",   # 옛 버전 ({legacy})' in rewritten
+    assert f'"added-harness ({current})",  # 현 버전 ({current})' in rewritten
     assert "# 블록 밖 산문 은 정리된다" in rewritten
 
 
@@ -263,10 +263,10 @@ def test_unbalanced_block_markers_fail_loudly(stripper, suffixes, expected):
 
 def test_marked_regions_are_not_prose_for_downstream_consumers(stripper):
     ref = _ticket()
-    source = _guest_marker_source(stripper, ref, marked=True)
+    source = _added_harness_marker_source(stripper, ref, marked=True)
     assert private_refs.prose_token_spans(source) == []
     assert private_refs._prose_count(source) == 0
-    # 출하 lint 는 산문 span 단위로 소비한다 — 표식 구간은 span 자체가 없어 검사 대상 밖이다.
+    # 출하 lint 는 산문 span 단위로 소비한다 — 표시 구간은 span 자체가 없어 검사 대상 밖이다.
     assert not [
         match
         for span in private_refs.prose_token_spans(source)
@@ -275,7 +275,7 @@ def test_marked_regions_are_not_prose_for_downstream_consumers(stripper):
 
 
 def test_marker_text_inside_string_literal_is_not_a_marker(stripper):
-    """리터럴 속 표식 글자는 데이터지 표식이 아니다 — 그 줄의 산문은 종전대로 검사한다."""
+    """리터럴 속 표시 글자는 데이터지 표시가 아니다 — 그 줄의 산문은 종전대로 검사한다."""
     ref = _ticket()
     source = f'VALUE = "payload {_marker(stripper)}"  # 산문 참조 ({ref})\n'
     rewritten, count = stripper.rewrite_python(source)
@@ -288,54 +288,54 @@ def test_marker_text_inside_triple_quoted_string_does_not_break_pairing(stripper
     """여러 줄 문자열 속 경계 글자는 짝 판정 대상이 아니다(유효 소스가 실패하면 안 된다)."""
     ref = _ticket()
     source = (
-        '"""표식 사용 예시:\n'
-        f"{_marker(stripper, ':begin')} 은 여기서 표식이 아니다\n"
-        f"표식 밖 참조 ({ref}) 는 정리된다\n"
+        '"""표시 사용 예시:\n'
+        f"{_marker(stripper, ':begin')} 은 여기서 표시가 아니다\n"
+        f"표시 밖 참조 ({ref}) 는 정리된다\n"
         '"""\n'
     )
     rewritten, count = stripper.rewrite_python(source)
     assert private_refs._data_literal_spans(source) == []
     assert count == 1
-    assert "표식 밖 참조 는 정리된다" in rewritten
+    assert "표시 밖 참조 는 정리된다" in rewritten
 
 
 def test_marked_line_does_not_shield_the_rest_of_a_multiline_token(stripper):
-    """표식 줄과 일부만 겹치는 여러 줄 산문은 나머지 줄을 계속 검사한다."""
+    """표시 줄과 일부만 겹치는 여러 줄 산문은 나머지 줄을 계속 검사한다."""
     ref = _ticket()
     source = (
-        f'"""첫 줄 ({ref}) 은 표식 밖이다\n'
-        f"둘째 줄 ({ref}) 도 표식 밖이다\n"
+        f'"""첫 줄 ({ref}) 은 표시 밖이다\n'
+        f"둘째 줄 ({ref}) 도 표시 밖이다\n"
         f'"""  {_marker(stripper)}\n'
     )
     rewritten, count = stripper.rewrite_python(source)
     assert count == 2
-    assert "첫 줄 은 표식 밖이다" in rewritten
-    assert "둘째 줄 도 표식 밖이다" in rewritten
+    assert "첫 줄 은 표시 밖이다" in rewritten
+    assert "둘째 줄 도 표시 밖이다" in rewritten
     assert f'"""  {_marker(stripper)}' in rewritten
-    # lint 축도 나머지 줄을 본다 — 토큰 전체가 아니라 보호된 줄만 빠진다.
+    # lint 쪽도 나머지 줄을 본다 — 토큰 전체가 아니라 보호된 줄만 빠진다.
     assert private_refs._prose_count(source) == 2
 
 
 def test_standalone_marker_protects_the_whole_following_statement(stripper):
-    """표식만 있는 라인은 다음 문장 전체를 가리킨다 — 여러 줄 선언도 통째로 보호된다."""
+    """표시만 있는 라인은 다음 문장 전체를 가리킨다 — 여러 줄 선언도 통째로 보호된다."""
     ref = _ticket()
     source = (
         f"{_marker(stripper)}\n"
         "_WIRE_GENERATIONS = (\n"
-        f'    "guest ({ref})",   # 옛 세대 ({ref})\n'
-        f'    "guest ({ref})",   # 현 세대 ({ref})\n'
+        f'    "added-harness ({ref})",   # 옛 버전 ({ref})\n'
+        f'    "added-harness ({ref})",   # 현 버전 ({ref})\n'
         ")\n"
         f"# 문장 밖 산문 ({ref}) 은 정리된다\n"
     )
     rewritten, count = stripper.rewrite_python(source)
     assert count == 1
-    assert f'"guest ({ref})",   # 옛 세대 ({ref})' in rewritten
-    assert f'"guest ({ref})",   # 현 세대 ({ref})' in rewritten
+    assert f'"added-harness ({ref})",   # 옛 버전 ({ref})' in rewritten
+    assert f'"added-harness ({ref})",   # 현 버전 ({ref})' in rewritten
     assert "# 문장 밖 산문 은 정리된다" in rewritten
 
 
 def test_block_marker_after_code_is_not_a_boundary_and_does_not_raise(stripper):
-    """코드 뒤 경계 표식은 구획을 열지 않는다 — 정상 파일이 짝 불일치로 죽으면 안 된다."""
+    """코드 뒤 경계 표시는 구획을 열지 않는다 — 정상 파일이 짝 불일치로 죽으면 안 된다."""
     ref = _ticket()
     source = (
         f"X = 1  {_marker(stripper, ':begin')}\n"
@@ -351,7 +351,7 @@ def test_block_marker_after_code_is_not_a_boundary_and_does_not_raise(stripper):
 
 @pytest.mark.parametrize("suffix", [":begin", ":end"], ids=["begin", "end"])
 def test_line_input_of_a_boundary_marker_is_inert_in_exposed_api(stripper, suffix):
-    """노출 API 에 라인 하나만 들어와도 표식 판정이 재적용돼 죽지 않는다."""
+    """노출 API 에 라인 하나만 들어와도 표시 판정이 재적용돼 죽지 않는다."""
     line = f"X = 1  {_marker(stripper, suffix)}"
     assert private_refs.remove_matched_spans(line) == line
     assert private_refs._specific_matches(line) == []
@@ -364,7 +364,7 @@ def test_line_input_of_a_boundary_marker_is_inert_in_exposed_api(stripper, suffi
     ids=["wrong-edge-word", "plural-typo", "suffixed-typo"],
 )
 def test_near_miss_marker_fails_loudly(stripper, suffix):
-    """오탈자 표식은 보호를 못 만든 채 조용히 지나가면 안 된다."""
+    """오탈자 표시는 보호를 못 만든 채 조용히 지나가면 안 된다."""
     ref = _ticket()
     source = f"{_marker(stripper, suffix)}\nV = 1  # prose ({ref})\n"
     with pytest.raises(private_refs.DataLiteralMarkerError, match="정확 형태가 아니다"):
@@ -374,34 +374,34 @@ def test_near_miss_marker_fails_loudly(stripper, suffix):
 
 
 def test_prose_mentioning_the_marker_mid_comment_is_not_a_marker(stripper):
-    """주석 중간의 표식 언급은 표식이 아니다 — near-miss 판정이 산문을 잡으면 안 된다."""
+    """주석 중간의 표시 언급은 표시가 아니다 — near-miss 판정이 산문을 잡으면 안 된다."""
     ref = _ticket()
-    source = f"# 표식은 {_marker(stripper)[2:]} 를 쓴다 ({ref})\n"
+    source = f"# 표시는 {_marker(stripper)[2:]} 를 쓴다 ({ref})\n"
     rewritten, count = stripper.rewrite_python(source)
     assert private_refs._data_literal_spans(source) == []
     assert count == 1
-    assert rewritten == f"# 표식은 {_marker(stripper)[2:]} 를 쓴다\n"
+    assert rewritten == f"# 표시는 {_marker(stripper)[2:]} 를 쓴다\n"
 
 
 def _lone_carriage_return_sources(stripper, ref: str) -> dict[str, str]:
-    """표식이 있는데 개행이 LF 가 아닌 소스들 — 라인 판정이 어긋나는 형태."""
+    """표시가 있는데 개행이 LF 가 아닌 소스들 — 라인 판정이 어긋나는 형태."""
     return {
         "line-marker": (
             f'V = "wire ({ref})"  {_marker(stripper)}\r'
-            f"W = 1  # 표식 밖 산문 ({ref})\n"
+            f"W = 1  # 표시 밖 산문 ({ref})\n"
         ),
         # 짝이 맞는 블록이라도 경계 라인의 CR 이 구간을 블록 밖 논리 라인까지 늘린다.
         "closed-block": (
             f"{_marker(stripper, ':begin')}\n"
             f'V = "wire ({ref})"\n'
             f"{_marker(stripper, ':end')}\r"
-            f"X = 1  # 표식 밖 산문 ({ref})\n"
+            f"X = 1  # 표시 밖 산문 ({ref})\n"
         ),
         "unpaired-block": (
             f"{_marker(stripper, ':begin')}\r"
             f'V = "wire ({ref})"\r'
             f"{_marker(stripper, ':end')}\n"
-            f"W = 1  # 표식 밖 산문 ({ref})\n"
+            f"W = 1  # 표시 밖 산문 ({ref})\n"
         ),
     }
 
@@ -410,18 +410,18 @@ def _lone_carriage_return_sources(stripper, ref: str) -> dict[str, str]:
     "shape", ["line-marker", "closed-block", "unpaired-block"]
 )
 def test_lone_carriage_return_with_markers_is_rejected(stripper, shape):
-    """표식이 있는 소스의 홀로 선 CR 은 거부한다 — 구간이 의도 밖까지 번지면 참조가 샌다."""
+    """표시가 있는 소스의 홀로 선 CR 은 거부한다 — 구간이 의도 밖까지 번지면 참조가 샌다."""
     ref = _ticket()
     source = _lone_carriage_return_sources(stripper, ref)[shape]
     for call in (private_refs._data_literal_spans, stripper.rewrite_python):
         with pytest.raises(private_refs.DataLiteralMarkerError, match="CR"):
             call(source)
-    # 거부이므로 산출물이 없다 — 표식 밖 참조가 조용히 사라질 여지 자체가 없다.
+    # 거부이므로 산출물이 없다 — 표시 밖 참조가 조용히 사라질 여지 자체가 없다.
     assert source.count(ref) >= 2
 
 
 def test_lone_carriage_return_without_markers_keeps_previous_behaviour(stripper):
-    """표식이 없는 소스는 종전대로다 — 거부는 표식이 있는 입력에만 적용한다."""
+    """표시가 없는 소스는 종전대로다 — 거부는 표시가 있는 입력에만 적용한다."""
     ref = _ticket()
     source = f"A = 1  # 산문 ({ref})\rB = 2\n"
     assert private_refs._data_literal_spans(source) == []
@@ -432,10 +432,10 @@ def test_lone_carriage_return_without_markers_keeps_previous_behaviour(stripper)
 
 def test_process_python_counts_marked_region_as_allowed_data(stripper, tmp_path):
     ref = _ticket()
-    source = _guest_marker_source(stripper, ref, marked=True)
+    source = _added_harness_marker_source(stripper, ref, marked=True)
     path = tmp_path / "wire.py"
     path.write_text(source, encoding="utf-8")
-    result = stripper.process_python(path, tmp_path, write=True, verify_delta=True)
+    result = stripper.process_python(path, tmp_path, write=True, verify_difference=True)
     assert (result.replacements, result.after_prose, result.actionable_after) == (
         0,
         0,
@@ -556,14 +556,14 @@ def test_line_invariant_requires_exact_matched_span_reconstruction(stripper):
         ("A B", "A F1 B", "design-label"),
     ],
 )
-def test_delta_scan_rejects_each_new_pattern(
+def test_difference_scan_rejects_each_new_pattern(
     stripper, before, after, expected_kind
 ):
     issues = stripper.self_sufficiency_issues(before, after)
     assert any(expected_kind in issue for issue in issues)
 
 
-def test_delta_scan_design_label_ignores_identifier_boundaries(stripper):
+def test_difference_scan_design_label_ignores_identifier_boundaries(stripper):
     """정상 파이썬 식별자(`F1_score`·`F1_foo`·`_F1`)는 design-label 로 세지 않는다(오차단 0).
 
     경계 클래스에 `_` 가 빠져 있으면 코드에서 뜻이 서는 식별자를 사설 fault 라벨로 오차단한다
@@ -579,14 +579,14 @@ def test_delta_scan_design_label_ignores_identifier_boundaries(stripper):
     )
 
 
-def test_delta_scan_is_per_line_not_aggregate(stripper):
+def test_difference_scan_is_per_line_not_aggregate(stripper):
     before = "A· B\nC·D"
     after = "A·B\nC· D"
     issues = stripper.self_sufficiency_issues(before, after)
     assert any("line 2 separator-space" in issue for issue in issues)
 
 
-def test_delta_scan_ignores_preexisting_notation(stripper):
+def test_difference_scan_ignores_preexisting_notation(stripper):
     text = "call foo(); intentional · spacing; session (PM 47 실측)"
     assert stripper.self_sufficiency_issues(text, text) == []
 
@@ -599,7 +599,7 @@ def test_verification_mode_fails_before_write(stripper, tmp_path, monkeypatch):
         stripper, "rewrite_python", lambda source: (source.replace("A B", "A  B"), 1)
     )
     with pytest.raises(stripper.SelfSufficiencyError):
-        stripper.process_python(path, tmp_path, write=True, verify_delta=True)
+        stripper.process_python(path, tmp_path, write=True, verify_difference=True)
     assert path.read_text(encoding="utf-8") == before
 
 
@@ -650,7 +650,7 @@ def test_cli_dry_run_writes_reports_without_source_changes(tmp_path):
             "--report-dir",
             str(report_dir),
             "--dry-run",
-            "--verify-delta",
+            "--verify-difference",
         ],
         capture_output=True,
         text=True,
@@ -665,9 +665,9 @@ def test_cli_dry_run_writes_reports_without_source_changes(tmp_path):
     assert counters["replacements"] == 1
     assert counters["after_prose"] == 0
     assert counters["allowed_non_prose"] == 1
-    assert counters["delta_verification"]["verdict"] == "PASS"
+    assert counters["difference_verification"]["verdict"] == "PASS"
     sample = (report_dir / "p1-sample.md").read_text(encoding="utf-8")
-    assert "Mechanical delta verification" in sample
+    assert "Mechanical difference verification" in sample
     assert "zero per-line pattern increases" in sample
 
 
@@ -681,7 +681,7 @@ def test_cli_apply_then_dry_run_reports_zero_drift(tmp_path):
         str(tmp_path),
         "--report-dir",
         str(report_dir),
-        "--verify-delta",
+        "--verify-difference",
     ]
     assert subprocess.run(command, check=False).returncode == 0
     command.append("--dry-run")
@@ -727,7 +727,7 @@ def test_dry_run_residual_report_uses_transformed_snapshot(stripper, tmp_path):
 
 # ── 판정식 이관 (엔진 모듈 소유 · 스크립트는 재수출만) ────────────────────────
 #
-# 판정식과 파일 표면은 domain.private_refs와 infra.private_surface가 소유한다.
+# 판정식과 파일 범위는 domain.private_refs와 infra.private_surface가 소유한다.
 # 스크립트의 본체 복제·재수출 부재와 기존 입력의 판정 값을 검사한다.
 
 
@@ -797,13 +797,13 @@ def _parity_cases(stripper):
         ),
         (
             "docstring-residual-unit",
-            f'"""문맥 ({ticket} 게이트)."""\n',
+            f'"""문맥 ({ticket} 수정본)."""\n',
             {
-                "spans": [(0, 22, 1, f'"""문맥 ({ticket} 게이트)."""')],
+                "spans": [(0, 22, 1, f'"""문맥 ({ticket} 수정본)."""')],
                 "data_literal_spans": [],
                 "actionable": [],
                 "prose_before": 1,
-                "rewritten": f'"""문맥 ({ticket} 게이트)."""\n',
+                "rewritten": f'"""문맥 ({ticket} 수정본)."""\n',
                 "replacements": 0,
                 "prose_after": 1,
             },
@@ -823,13 +823,13 @@ def _parity_cases(stripper):
         ),
         (
             "data-literal-line",
-            f'WIRE = "<!-- guest {ticket} -->"  {marker}\n',
+            f'WIRE = "<!-- added {ticket} -->"  {marker}\n',
             {
                 "spans": [],
                 "data_literal_spans": [(0, 50)],
                 "actionable": [],
                 "prose_before": 0,
-                "rewritten": f'WIRE = "<!-- guest {ticket} -->"  {marker}\n',
+                "rewritten": f'WIRE = "<!-- added {ticket} -->"  {marker}\n',
                 "replacements": 0,
                 "prose_after": 0,
             },
@@ -883,7 +883,7 @@ def _parity_cases(stripper):
             },
         ),
         (
-            "delta-guarded-line",
+            "difference-guarded-line",
             f"z = 3  # A·{ticket}·B\n",
             {
                 "spans": [(7, 19, 1, f"# A·{ticket}·B")],
@@ -920,7 +920,7 @@ def _verdict(stripper, source):
 def test_migrated_judgment_reproduces_pre_migration_verdicts(stripper):
     """이관 전 구현이 같은 입력에 내던 판정 결과를 값으로 재현한다.
 
-    기대값은 판정식이 아직 스크립트 안에 있던 시점의 실측 결과다. 이관이 시야를 넓히거나
+    기대값은 판정식이 아직 스크립트 안에 있던 시점의 실측 결과다. 이관이 검사 범위를 넓히거나
     좁히면(산문 구간·데이터 면제·제거 가능 판정·재작성 결과 중 무엇이든) 같은 입력에서 다른
     값이 나와 red 다 — 존재 검사가 아니라 결과 값 비교다.
     """

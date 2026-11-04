@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """벤치마크 — full vs lite 진입 토큰·자족성 정량 (XDG sandbox).
 
-2D 무게축의 **lite 구현 범위(A/B/C)를 데이터로 결정**하기 위해, full 진입 vs
+2D 무게 기준의 **lite 구현 범위(A/B/C)를 데이터로 결정**하기 위해, full 진입 vs
 lite 진입을 동일 시나리오로 돌려 **진입 토큰·완주 토큰·자족성**(lite 가 추가 read
 없이 완주했나)을 정량 측정하는 도구다 (T-0008).
 
@@ -114,7 +114,7 @@ def _opencode_events(json_str: str) -> list[dict[str, Any]]:
 
     실제 출력(opencode 1.17.6, `opencode run --help` + 라이브 캡처로 확인)은
     **JSONL 이벤트 스트림**이다 — 한 줄당 한 JSON 객체. 단일 JSON 배열/객체로
-    오는 변종도 관용적으로 흡수한다(스키마 불확실성 방어).
+    오는 변종도 관용적으로 받아들인다(스키마 불확실성 방어).
     """
     json_str = json_str.strip()
     if not json_str:
@@ -173,7 +173,7 @@ def parse_opencode_usage(json_str: str) -> dict[str, Any]:
     를 이어붙인다.
 
     스키마 불확실 → 여러 후보 키를 관용적으로 탐색한다(`tokens` 가 part 밖/
-    이벤트 최상위에 오거나, `cost` 가 다른 이름으로 와도 흡수). 누락 키에
+    이벤트 최상위에 오거나, `cost` 가 다른 이름으로 와도 받아들인다). 누락 키에
     KeyError 안 남.
 
     반환: input/output/cache_read/cache_creation/cost/total 정규화 + result.

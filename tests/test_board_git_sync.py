@@ -38,8 +38,8 @@ from pathlib import Path
 import pytest
 
 from _git_fixture import remove_git_tree
-from conftest import (anchor_board_module, bind_product_cluster, ensure_product_slot,
-                      write_cluster_ledger)
+from conftest import (target_repo_board_module, bind_product_cluster, ensure_product_slot,
+                      write_cluster_records)
 from pm_engine.infra import delegate_records, ticket_store
 from pm_engine.app import body_lint
 
@@ -144,7 +144,7 @@ def _t0928_prepare_fixture(board, tmp_path, monkeypatch, *, legacy=False):
         board_dir = _make_board_git(tmp_path, remote=remote)
     spec = board_dir / "tickets/open/T-0001-t.md"
     spec.write_text(_spec_text("T-0001", status="open"), encoding="utf-8")
-    write_cluster_ledger(board_dir, "T-0001", base_branch="task/main")
+    write_cluster_records(board_dir, "T-0001", base_branch="task/main")
     if not legacy:
         board_git._ensure_board_root_files(pm_paths.home_at(board.REPO))
         for name in ("user.staged", "user.unstaged"):
@@ -190,7 +190,7 @@ def test_t0928_prepare_sync_preserves_scope_and_reports_local_vs_remote(
         monkeypatch.setattr(git, "git_scope_stage_and_commit", lambda *a, **k: None)
     plan = delegate_prepare.prepare_ticket_copy(pm_paths.home_at(tmp_path), ticket="T-0001", role="architect", cwd=slot)
     assert plan.path.is_file() and plan.board_path.is_file()
-    assert len(delegate_records.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
+    assert len(delegate_records.ticket_copy_records(tmp_path, ticket="T-0001", uncollected=True)) == 1
     out = capsys.readouterr()
     diagnostic = out.out + out.err
     if mode == "commit":
@@ -249,7 +249,7 @@ def test_t0928_prepare_sync_marks_malformed_touches_and_preserves_source(
     assert ticket_store.load_ticket(spec)[0]["touches"] == malformed
     assert spec.read_bytes() == original
     assert (plan.run_dir / "spec.md").read_bytes() == original
-    assert len(delegate_records.ticket_copy_records(tmp_path, ticket="T-0001", unharvested=True)) == 1
+    assert len(delegate_records.ticket_copy_records(tmp_path, ticket="T-0001", uncollected=True)) == 1
     assert board_git._board_git_head(pm_paths.home_at(board.REPO)) != head
     assert _git(["show", "--format=", "--name-only", "HEAD"], board_dir).stdout.splitlines() == [
         "tickets/rounds/T-0001/01-architect.md"]
@@ -261,7 +261,7 @@ def board(tmp_path, monkeypatch):
     mod = _load_board()
     # board_lock() / best-effort sync 가 .local/ 을 건드리고 렌더가 wiki/board.md 를 쓴다 —
     # REPO 파생 상수를 공용 헬퍼로 한꺼번에 tmp 로 격리한다.
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     # 엔진의 board git subprocess(os.environ 상속)가 결정적 author 를 쓰도록 git identity 만 주입.
     # `os.environ` 전체를 갈아끼우지 않고(fragile·HOME/PATH 등 보존) 필요한 키만 setenv 한다.
     for key, val in _GIT_IDENTITY.items():

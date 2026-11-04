@@ -16,7 +16,7 @@ def parse_board_counts(board_output: str) -> dict[str, int]:
       "  [open   ] T-NNNN  title...  claimed_by  tags"
     status 필드는 7자 width 로 패딩된다.
 
-    버킷 골격 = `ticket_rules.STATUS_DIRS` 파생이므로 board 가 아는 상태는 전부
+    버킷 틀 = `ticket_rules.STATUS_DIRS` 파생이므로 board 가 아는 상태는 전부
     키로 존재하고(행이 없으면 0), board 가 모르는 토큰(예 `archived`)만 무시된다. 반환 키 순서는
     `STATUS_DIRS` 순서다.
     """
@@ -39,7 +39,7 @@ def parse_open_tickets(board_output: str) -> list[str]:
     """board list 출력에서 open status 의 ticket ID 목록을 반환한다.
 
     claim 가능한 open ticket 만 추출한다 (claimed/blocked/done 제외). prefixed(multi-repo
-    `T-PAY-001`)·legacy(숫자형 legacy ID) ID 를 둘 다 파싱한다 (board.py grammar 정합).
+    `T-PAY-001`)·legacy(숫자형 legacy ID) ID 를 둘 다 파싱한다 (board.py grammar 와 일치).
     """
     tickets: list[str] = []
     line_pattern = re.compile(f"^\\s+\\[open\\s*\\]\\s+({_TICKET_ID})\\b")
@@ -50,7 +50,7 @@ def parse_open_tickets(board_output: str) -> list[str]:
     return tickets
 
 
-_LINT_GATE_HEADER = re.compile(
+_LINT_BLOCKING_HEADER = re.compile(
     "^\\s*⚠️\\s+(?P<total>\\d+)\\s+lint issue\\(s\\)\\s+\\((?P<blocking>\\d+)\\s+blocking 차단\\):\\s*$"
 )
 _LINT_ISSUE_LINE = re.compile("^(?:\\s*✗\\s*\\[[^\\]]+\\]|\\s+\\[[^\\]]+\\])")
@@ -62,19 +62,19 @@ _LINT_ERROR_EXCERPT_LIMIT = 3
 
 
 def _lint_issue_lines(lint_output: str) -> list[str]:
-    """`board.py lint --gate` 상세에서 실제 issue 행만 반환한다."""
+    """`board.py lint --blocking` 상세에서 실제 issue 행만 반환한다."""
     return [line for line in lint_output.splitlines() if _LINT_ISSUE_LINE.match(line)]
 
 
 def parse_lint_counts(lint_output: str) -> tuple[int, int] | None:
-    """gate 헤더의 (총계, blocking)를 파싱한다.
+    """blocking 헤더의 (총계, blocking)를 파싱한다.
 
-    비정형 헤더라도 issue 행이 있으면 그 행으로 보수 폴백한다. clean marker도 명시적인
+    비정형 헤더라도 issue 행이 있으면 그 행으로 보수적으로 대신 판정한다. clean marker도 명시적인
     ``(0, 0)`` 이다. 어느 신호도 없는 traceback/usage error/빈 출력은 ``None`` 으로
     반환해 "lint 이슈 0건"과 실행·파싱 실패를 구분한다.
     """
     for line in lint_output.splitlines():
-        match = _LINT_GATE_HEADER.match(line)
+        match = _LINT_BLOCKING_HEADER.match(line)
         if match:
             try:
                 return (int(match.group("total")), int(match.group("blocking")))
@@ -226,11 +226,11 @@ def reconcile_session_num(
       - state int · log_next int:
           `log_next > state` → `(log_next, True)`   # pm_state stale — log 우선(max) + 경고
           그 외              → `(state, False)`      # 현행(state 우선·회귀 0)
-      - state int · log_next None → `(state, False)`      # 현행(log 폴백 없음)
-      - state 미해소(`"?"`/None) · log_next int → `(log_next, False)`  # 차수 log-폴백
+      - state int · log_next None → `(state, False)`      # 현행(log 대체 없음)
+      - state 미해소(`"?"`/None) · log_next int → `(log_next, False)`  # 차수 log 대체
       - 둘 다 미해소 → `(state, False)`  # `"?"`/None 그대로(placeholder·crash 금지)
 
-    순수 함수 — stale 교차검증(1축)과 폴백(1축)을 한 곳에 모아 단위테스트로 못박는다.
+    순수 함수 — stale 교차검증(1단계)과 대체 판정(1단계)을 한 곳에 모아 단위테스트로 못박는다.
     """
     if isinstance(state_num, int) and isinstance(log_next, int):
         if log_next > state_num:
@@ -243,8 +243,8 @@ def reconcile_session_num(
     return (state_num, False)
 
 
-_REMEDY_BRANCH_PREFIX = "task/"
-_REMEDY_BRANCH_SUFFIX_LIMIT = 20
+_FIX_BRANCH_PREFIX = "task/"
+_FIX_BRANCH_SUFFIX_LIMIT = 20
 
 
 def _phase0_diverge_reason(result) -> str:
@@ -252,7 +252,7 @@ def _phase0_diverge_reason(result) -> str:
 
     `compare_slot_git` 의 `fail_loud`(branch 변경 또는 head diverged)를 사람이 읽을 수 있는
     사유로 푼다 — `head_relation`/`branch_match` 원값만으로는 PM 이 "왜 diverged 인지"를 코드
-    판정/거동은 안 바꾸고 근거만 표면화한다.
+    판정/거동은 안 바꾸고 근거만 드러낸다.
       - branch_match False → 브랜치가 바뀜(세션 중 checkout·외부 개입).
       - branch 동일·head_relation diverged → 같은 브랜치인데 live HEAD 가 기록 커밋의 후손이
         아님(reset·force·rebase 등 되감기/divergent — 내 커밋 위 진행이 아님).
@@ -270,7 +270,7 @@ def _phase0_incomplete_create(lease) -> bool:
     creating 은 create_slot 의 provisional 마커(worktree add *전* 선기록·확정 시 leased·중단 시
     흔적). 이 상태 슬롯은 아무도 안전히 진입할 수 없다(alloc 은 creating 을 재부착하지 않는다). 그래서 **세션 동일 여부·readonly 무관** 차단한다(내 중단 흔적이든 타 세션 in-flight
     든 슬롯이 불완전한 건 동일). lease None/미상 state 는 False(fail-soft·열림 기록 검사
-    와 분리 — 열린 기록 판정은 task 장부 축이 따로 본다)."""
+    와 분리 — 열린 기록 판정은 task 대여 기록 쪽이 따로 본다)."""
     if lease is None:
         return False
     return getattr(lease, "state", None) == "creating"

@@ -125,9 +125,9 @@ export default function App({ bridge }: { bridge: Bridge }) {
     for (const entry of keys.keys) {
       const rows = entry.kind === "key" ? [entry] : (entry.members ?? []);
       for (const row of rows) {
-        const axis = row.choices;
-        if (axis === null || axis.fetch === null || axis.depends_on === null) continue;
-        const harness = values[axis.depends_on] ?? "";
+        const choices = row.choices;
+        if (choices === null || choices.fetch === null || choices.depends_on === null) continue;
+        const harness = values[choices.depends_on] ?? "";
         if (harness !== "") wanted.add(harness);
       }
     }

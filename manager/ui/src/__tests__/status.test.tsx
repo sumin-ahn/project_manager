@@ -22,7 +22,7 @@ describe("상태 점 — 판정 순서(첫 일치가 이긴다)", () => {
     expect(rowDot(tasks.find((task) => task.name === "demo")!).actions).toBe("change");
   });
 
-  it("idle 슬롯은 회색 · 열린 기록은 주황 (빨강 축은 없다)", () => {
+  it("idle 슬롯은 회색 · 열린 기록은 주황 (빨강 기준은 없다)", () => {
     expect(rowDot(slotOf("work/app_3")).dot).toBe("gray");
     expect(rowDot(slotOf("work/app_2")).dot).toBe("orange");
     expect(rowDot(slotOf(".")).dot).toBe("orange");
@@ -43,7 +43,7 @@ describe("프로젝트 목록 점", () => {
     expect(projectDot(slots)).toBe("orange");
   });
 
-  it("열린 기록이 없으면 회색 · readonly 는 목록 점 축이 아니다", () => {
+  it("열린 기록이 없으면 회색 · readonly 는 목록 점 기준이 아니다", () => {
     expect(projectDot([slotOf("."), slotOf("work/app_1")])).toBe("orange");
     expect(projectDot([slotOf("work/app_1"), slotOf("work/app_3")])).toBe("gray");
   });

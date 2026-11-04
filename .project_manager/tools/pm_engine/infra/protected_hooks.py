@@ -590,7 +590,7 @@ def _atomic_write_protected_artifact(artifact: ProtectedHookArtifact) -> None:
 
 
 def protected_hook_artifacts(home,
-    repo: str, protected: list[str], *, gate_mode: str = "release",
+    repo: str, protected: list[str], *, check_mode: str = "release",
     test_cmd: str = "pytest -q",
 ) -> list[ProtectedHookArtifact]:
     """`install_protected_hook` 이 쓰는 **파일 전수** + 각 파일의 기대 내용/실행권한.
@@ -601,8 +601,8 @@ def protected_hook_artifacts(home,
 
     ⚠ bare `core.hooksPath` **등록**은 파일이 아니라 git config 라 이 목록 밖이다 — 판정은
     `protected_hook_wired()`(공용 헬퍼)로 그 항목을 따로 본다."""
-    if gate_mode not in _PROTECTED_CHECK_MODES:
-        raise ValueError(f"알 수 없는 보호 push 검사 모드: {gate_mode!r}")
+    if check_mode not in _PROTECTED_CHECK_MODES:
+        raise ValueError(f"알 수 없는 보호 push 검사 모드: {check_mode!r}")
     if not test_cmd.strip() or "\n" in test_cmd or "\r" in test_cmd:
         raise ValueError("보호 push test_cmd는 비어 있지 않은 한 줄이어야 한다")
     if not protected or any(
@@ -611,7 +611,7 @@ def protected_hook_artifacts(home,
             for branch in protected):
         raise ValueError("보호 브랜치 목록은 비어 있지 않은 공백 없는 이름이어야 한다")
     hook_dir = pm_paths.repo_hooks_dir(home) / repo
-    check_contract = f"{gate_mode}\n{test_cmd}\n"
+    check_contract = f"{check_mode}\n{test_cmd}\n"
     return [
         ProtectedHookArtifact(
             hook_dir / "protected", "".join(f"{b}\n" for b in protected), False),
@@ -628,7 +628,7 @@ def install_protected_hook(
     repo: str,
     protected: list[str],
     *,
-    gate_mode: str,
+    check_mode: str,
     test_cmd: str,
     git_runner: worktree_records.GitRunner | None = None,
 ) -> bool:
@@ -654,7 +654,7 @@ def install_protected_hook(
     argv 의 `--git-dir <bare>` 가 묶는다. LF 줄바꿈 명시(Windows 에서도 sh
     가 읽도록·newline="\\n").
 
-    `gate_mode`/`test_cmd`는 의도적으로 기본값 없는 keyword-only다. 설치 경로가 repo별 계약
+    `check_mode`/`test_cmd`는 의도적으로 기본값 없는 keyword-only다. 설치 경로가 repo별 계약
     해소를 잊으면 즉시 TypeError로 실패해야 하며, framework `release/pytest`로 조용히 되돌아가면
     안 된다. 프로덕션 호출은 `repo_protection._install_protected_hook` 한 깔때기를 탄다.
     """
@@ -679,7 +679,7 @@ def install_protected_hook(
     #     설치자는 PM 홈 컨텍스트에서 도므로 REPO 를 안다 — 훅은 슬롯 worktree(회사/family
     #     checkout·PM 엔진 파일 없음)에서 돌아 self-locate 가 불가하다.
     for artifact in protected_hook_artifacts(home,
-            repo, protected, gate_mode=gate_mode, test_cmd=test_cmd):
+            repo, protected, check_mode=check_mode, test_cmd=test_cmd):
         _atomic_write_protected_artifact(artifact)
 
     # 3) bare core.hooksPath wiring (절대경로) — client-side·우리 미러 config 1줄.

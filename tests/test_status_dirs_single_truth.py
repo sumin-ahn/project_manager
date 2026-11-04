@@ -134,7 +134,7 @@ def test_additional_reviewer_follows_injected_status_without_code_change(
 
 def _census_line(pm_log_mod, pm_home: Path) -> str:
     line = [
-        row for row in pm_engine.app.session_snapshot._ledger_section(pm_paths.home_at(pm_home), "main").splitlines()
+        row for row in pm_engine.app.session_snapshot._record_section(pm_paths.home_at(pm_home), "main").splitlines()
         if row.startswith("- board tickets: ")
     ]
     assert len(line) == 1, f"census 줄 유일성 — {line!r}"

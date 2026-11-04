@@ -507,9 +507,9 @@ def _hook_artifact_executable(path: Path) -> bool:
 
 def _protected_hook_in_sync(home, repo: str) -> bool:
     expected = areas_store._repo_protected(home, repo)
-    mode, test_cmd = repo_protection._protected_push_gate_config(home, repo, report_downgrade=False)
+    mode, test_cmd = repo_protection._protected_push_check_config(home, repo, report_downgrade=False)
     for artifact in protected_hooks.protected_hook_artifacts(
-            home, repo, expected, gate_mode=mode, test_cmd=test_cmd):
+            home, repo, expected, check_mode=mode, test_cmd=test_cmd):
         if _read_hook_artifact(artifact.path) != artifact.content:
             return False
         if artifact.executable and not _hook_artifact_executable(artifact.path):

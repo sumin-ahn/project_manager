@@ -1,6 +1,6 @@
 // opencode 일반 도구 호출 판정 경계와 사용자 1회 허용 core.
 // 판정(git·엔진 호출·파일 삭제·도구 입력·ctx·원칙 recall)은 Python 엔진 `board.py hook-tool` 한 번이
-// 한다. 이 모듈은 판정 요청 조립·process 실행·응답 형식 검사·경고 합본과 opencode hook 배선만 소유하고,
+// 한다. 이 모듈은 판정 요청 조립·process 실행·응답 형식 검사·경고 합본과 opencode hook 등록만 소유하고,
 // 명령 문자열을 미리 거르거나 정책을 해석하지 않는다. plugins/ 진입점은 팩토리 하나만 export한다.
 //
 // 일반 도구 호출: 모든 도구가 `tool.execute.before` 를 지난다. 그 before 의 등록 소유자는 ctx-guard-core
@@ -24,7 +24,7 @@ const { toolSignal } = require("./principle-recall-core.cjs");
 const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 const BOARD_PY = path.join(ENGINE_ROOT, ".project_manager", "tools", "board.py");
 
-// 사용자 프롬프트의 허용 표식 — 허용 기록 진입 여부만 고른다(판정 우회 아님).
+// 사용자 프롬프트의 허용 표시 — 허용 기록 진입 여부만 고른다(판정 우회 아님).
 // pm_engine/domain/git_policy.py `GIT_GRANT_LINE` 과 같은 값.
 const GRANT_MARKER = /git[ \t]+허용[ \t]*:/;
 const BOARD_TIMEOUT_MS = 10000;
@@ -34,7 +34,7 @@ const BOARD_MAX_BUFFER = 1024 * 1024;
 const SESSION_LOOKUP_TIMEOUT_MS = 1000;
 // 부모 역조회 방문 상한 — 잘못된 SDK 고리·무한 역조회를 끝내는 자원 경계(정상 깊이 정책 아님).
 const ROOT_SESSION_VISIT_LIMIT = 32;
-// `hook-tool`·`hook-context` 기계 JSON 세대와 키 집합.
+// `hook-tool`·`hook-context` 기계 JSON 버전과 키 집합.
 const WIRE_VERSION = 1;
 const TOOL_RESPONSE_KEYS = ["version", "git", "context", "context_error", "recall", "recall_error"];
 const CONTEXT_RESPONSE_KEYS = [
@@ -171,7 +171,7 @@ function createToolBoundary({
   const board = path.join(root, ".project_manager", "tools", "board.py");
 
   // native task 는 자식 세션을 새 ID 로 만든다(실측 opencode 1.18.31 `session.create({parentID})`).
-  // SDK 표면: client.session.get({ path: { id } }) -> { data: Session }. 조회 실패는 삼키지 않고 올린다.
+  // SDK 함수: client.session.get({ path: { id } }) -> { data: Session }. 조회 실패는 삼키지 않고 올린다.
   async function sessionRecord(id) {
     if (!client || !client.session || typeof client.session.get !== "function") {
       throw new Error("SDK client.session.get 없음");

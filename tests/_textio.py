@@ -1,4 +1,4 @@
-"""테스트 픽스처의 텍스트 I/O를 플랫폼과 무관하게 만드는 공용 seam."""
+"""테스트 픽스처의 텍스트 I/O를 플랫폼과 무관하게 만드는 공용 함수."""
 from __future__ import annotations
 
 import os
@@ -14,7 +14,7 @@ def write_lf(path: Path, text: str, *, encoding: str = "utf-8") -> int:
 def write_crlf(path: Path, text: str, *, encoding: str = "utf-8") -> int:
     """CRLF 체크아웃(`core.autocrlf=true`)·플랫폼 텍스트 쓰기를 LF 환경에서 재현한다.
 
-    개행 표기에 민감한 가드가 LF 환경(Linux CI)에서도 CRLF 축을 실제로 태우게 하는 픽스처 writer다.
+    개행 표기에 민감한 가드가 LF 환경(Linux CI)에서도 CRLF 경로를 실제로 태우게 하는 픽스처 writer다.
     """
     return path.write_text(text, encoding=encoding, newline="\r\n")
 
@@ -66,7 +66,7 @@ def write_matching_newlines(
     """``like``의 지배 개행 표기로 쓴다 — 픽스처가 대상 파일의 표기를 바꾸지 않게 한다.
 
     표기를 보존하는 엔진에서는 "픽스처가 내용을 손상시킨다"와 "픽스처가 표기를 바꾼다"가 다른
-    축이다. 플랫폼 기본 텍스트 쓰기(`write_text`)는 Windows에서 후자를 함께 일으켜, 엔진이 바뀐
+    경우다. 플랫폼 기본 텍스트 쓰기(`write_text`)는 Windows에서 후자를 함께 일으켜, 엔진이 바뀐
     표기를 충실히 보존한 결과가 byte 비교에서 "갱신 실패"로 보였다(T-0724 실측).
     """
     newline = "\r\n" if dominant_newline_bytes(like) == _CRLF_BYTES else "\n"

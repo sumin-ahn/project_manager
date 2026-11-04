@@ -2,7 +2,7 @@
 
 opencode 어댑터의 **위임 1차 경로를 `opencode run` 자식 프로세스 → 네이티브 `task` tool 로
 뒤집었다** (PM 9차 deciding test 실증 + 회사 라이브 PM 결론과 일치). `opencode run` 은 삭제가
-아니라 headless·CI·task tool 미노출 빌드용 *폴백*으로 강등됐고, 위임마다 모델을 명시하던
+아니라 headless·CI·task tool 미노출 빌드용 *대체 경로*로 낮춰졌고, 위임마다 모델을 명시하던
 `-m {{OPENCODE_PRO_MODEL}}` 은 전부 제거됐다 — 모델은 subagent 정의(`.opencode/agents/*.md`
 frontmatter `model:`)가 정한다. (ADR-0006 §3/D3/D5 supersede.)
 
@@ -41,15 +41,15 @@ AGENT_FILES = [
     OPENCODE / ".opencode" / "agents" / "researcher.md",
 ]
 
-# 위임마다 모델을 명시하던 강등 대상 패턴 — task tool 1차는 인자 없음, opencode run 폴백도
-# `-m {{OPENCODE_PRO_MODEL}}` 을 생략한다. 폴백도 `mode: all` custom 역할 카드를 직접 선택해
-# 카드의 `model:`을 읽으며 build/plan으로 강등하지 않는다. 어댑터 어디에도 수기 모델 pin이 남으면 안 된다.
+# 위임마다 모델을 명시하던 지운 패턴 — task tool 1차는 인자 없음, opencode run 대체 경로도
+# `-m {{OPENCODE_PRO_MODEL}}` 을 생략한다. 대체 경로도 `mode: all` custom 역할 카드를 직접 선택해
+# 카드의 `model:`을 읽으며 build/plan으로 낮추지 않는다. 어댑터 어디에도 수기 모델 pin이 남으면 안 된다.
 DASH_M_PIN = "-m {{OPENCODE_PRO_MODEL}}"
 PRO_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 
-# cross 폴백도 custom 역할명을 직접 선택한다. 다섯 카드는 mode: all이라 native task와
+# cross 대체 경로도 custom 역할명을 직접 선택한다. 다섯 카드는 mode: all이라 native task와
 # `opencode run --agent <role>` 양쪽에서 동일한 prompt/model/permission을 쓴다.
-# developer-hard 는 developer 축의 hard 티어 변주다 — 역할 축이 늘어난 게 아니라
+# developer-hard 는 developer 역할의 hard 티어 변주다 — 역할이 늘어난 게 아니라
 # 티어가 자기 카드를 갖는다(T-0766·세 하네스 같은 규칙).
 FALLBACK_AGENT = {
     "developer.md": "developer",
@@ -106,7 +106,7 @@ def test_adapter_files_present():
 def test_no_opencode_run_with_model_flag():
     """`opencode run` 명령에 `-m {{OPENCODE_PRO_MODEL}}` (위임마다 모델 명시)이 0건.
 
-    위임 1차가 task tool 로 뒤집혔고 모델은 subagent 정의가 정한다 — `opencode run` 폴백도
+    위임 1차가 task tool 로 뒤집혔고 모델은 subagent 정의가 정한다 — `opencode run` 대체 경로도
     `-m` 을 생략한다 (정의/기본 상속). (ADR-0006 D3/D5 supersede.)
     """
     offenders = []
@@ -117,7 +117,7 @@ def test_no_opencode_run_with_model_flag():
                 offenders.append(f"{path.relative_to(REPO)}:{i}: {line.strip()}")
     assert not offenders, (
         "opencode 어댑터에 `opencode run ... -m {{OPENCODE_PRO_MODEL}}` 잔존 "
-        "(T-0032 위임마다 모델 명시 강등 회귀):\n" + "\n".join(offenders)
+        "(T-0032 위임마다 모델 명시 회귀):\n" + "\n".join(offenders)
     )
 
 
@@ -154,12 +154,12 @@ def test_pm_instructions_documents_task_tool_delegation():
 
 
 def test_pm_instructions_demotes_opencode_run_to_fallback():
-    """위임 규약이 `opencode run` 을 폴백으로 명시(강등)한다 — 삭제가 아닌 강등 (pm-instructions.md 이관).
+    """위임 규약이 `opencode run` 을 대체 경로로 명시한다 — 삭제가 아닌 보조 경로 (pm-instructions.md 이관).
 
-    T-0401: opencode run 폴백 서술(§3.7)도 위임 규약과 함께 pm-instructions.md 로 이관됐다.
+    T-0401: opencode run 대체 경로 서술(§3.7)도 위임 규약과 함께 pm-instructions.md 로 이관됐다.
     """
     text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
-    assert "opencode run" in text, "pm-instructions.md 에서 opencode run 폴백이 사라짐 (강등 ≠ 삭제)"
+    assert "opencode run" in text, "pm-instructions.md 에서 opencode run 대체 경로가 사라짐 (보조 경로 ≠ 삭제)"
     assert "대체 동작" in text, "pm-instructions.md 에 opencode run 대체 동작 문구가 없음 (T-0032·T-0401)"
 
 
@@ -169,7 +169,7 @@ def test_agent_fallback_run_mapping_matches_permission():
         text = path.read_text(encoding="utf-8")
         want = FALLBACK_AGENT[path.name]
         assert f"opencode run --agent {want}" in text, (
-            f"{path.name} 폴백이 `opencode run --agent {want}` 가 아님 (T-0032 권한 매핑)"
+            f"{path.name} 대체 경로가 `opencode run --agent {want}` 가 아님 (T-0032 권한 매핑)"
         )
         assert _load_frontmatter(path).get("mode") == "all", (
             f"{path.name}가 native subagent와 cross primary를 함께 지원하지 않음"

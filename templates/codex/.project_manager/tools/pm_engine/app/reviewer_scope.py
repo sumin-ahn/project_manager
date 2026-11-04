@@ -56,7 +56,7 @@ def _resolve_diff_root(
         and (root := pm_paths._path_repo_root(Path(raw).resolve())) is not None
     }
     if len(absolute_roots) > 1:
-        raise pm_paths.AnchorResolutionError(
+        raise pm_paths.TargetRepoResolutionError(
             "--paths가 여러 git repo를 가리킵니다 — 추가 리뷰 1회는 diff 대상 저장소 하나만 허용합니다."
         )
     if absolute_roots:
@@ -72,7 +72,7 @@ def _resolve_diff_root(
             and selected_root in candidates
             and selected_root != engine_repo.resolve()
         ):
-            raise pm_paths.AnchorResolutionError(
+            raise pm_paths.TargetRepoResolutionError(
                 "ticket touches가 실행 엔진 worktree와 다른 등록 worktree를 가리킵니다: "
                 f"engine={engine_repo.resolve()} touches={selected_root}"
             )
@@ -87,13 +87,13 @@ def _resolve_diff_root(
                 engine_repo.resolve() != pm_home.resolve()
                 and selected[0] != engine_repo.resolve()
             ):
-                raise pm_paths.AnchorResolutionError(
+                raise pm_paths.TargetRepoResolutionError(
                     "ticket touches가 실행 엔진 worktree와 다른 등록 worktree를 가리킵니다: "
                     f"engine={engine_repo.resolve()} touches={selected[0]}"
                 )
             return selected[0]
         if len(selected) > 1:
-            raise pm_paths.AnchorResolutionError(
+            raise pm_paths.TargetRepoResolutionError(
                 "ticket touches가 여러 등록 worktree를 가리킵니다 — diff 대상 저장소가 모호합니다."
             )
 
@@ -120,7 +120,7 @@ def _resolve_diff_root(
     if len(candidates) == 1:
         return candidates[0]
     detail = ", ".join(str(path) for path in (changed or candidates)) or "(후보 0)"
-    raise pm_paths.AnchorResolutionError(
+    raise pm_paths.TargetRepoResolutionError(
         "명시 경로에서 diff worktree를 하나로 해소할 수 없습니다. "
         f"ticket touches에 등록 슬롯 경로를 포함하거나 절대 --paths를 사용하세요: {detail}\n"
         "  · 변경을 이미 커밋했다면 `--base <공통 base ref>`로 기준 커밋을 명시하세요 — 직전 커밋 한 "
@@ -142,7 +142,7 @@ def _normalize_review_paths(
             try:
                 value = absolute.relative_to(diff_root).as_posix()
             except ValueError as exc:
-                raise pm_paths.AnchorResolutionError(
+                raise pm_paths.TargetRepoResolutionError(
                     f"검토 경로가 해소된 diff worktree 밖입니다: {raw} (diff={diff_root})"
                 ) from exc
         elif ticket_selected:
@@ -157,5 +157,5 @@ def _normalize_review_paths(
         if value:
             normalized.append(value)
     if not normalized:
-        raise pm_paths.AnchorResolutionError("검토 경로가 0개로 해소됐습니다.")
+        raise pm_paths.TargetRepoResolutionError("검토 경로가 0개로 해소됐습니다.")
     return tuple(dict.fromkeys(normalized))

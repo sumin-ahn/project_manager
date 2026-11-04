@@ -193,7 +193,7 @@ def _cmd_raw(home, argv: list[str]) -> int:
     _raw_dir, record_path = raw_output._raw_storage(home, output_dir)
     resolved_record = record_path.resolve()
     print(f"조회 기록 파일: {resolved_record}")
-    for peer_record in raw_output._peer_engine_ledgers(
+    for peer_record in raw_output._peer_engine_records(
         home, None if home.local_dir.parent.parent == home.root else home.local_dir.parent.parent,
     ):
         if peer_record != resolved_record:
@@ -526,7 +526,7 @@ def _cmd_ticket(home, argv: list[str]) -> int:
             record_file = delegate_records._delegate_rounds_record_path(owner)
             print(f"조회 기록 파일: {record_file}")
             rows = delegate_records.ticket_copy_records(
-                owner, ticket=args.ticket, unharvested=args.uncollected,
+                owner, ticket=args.ticket, uncollected=args.uncollected,
             )
             label = "돌려받지 않은 라운드 준비" if args.uncollected else "최근 라운드 준비"
             if not rows:

@@ -34,10 +34,10 @@ def log_write_lock(log_path: Path) -> Iterator[None]:
     """모든 `log/current.md` writer를 단일 OS 파일락으로 직렬화한다.
 
     운영 경로의 잠금 파일은 `.project_manager/.local/log.lock` 하나다. append와
-    archive 재작성 모두 이 seam을 거쳐 서로의 갱신을 덮어쓰지 않는다. 프로세스가
-    종료되면 OS가 락을 회수하므로 stale lock은 남지 않는다. 재진입은 지원하지 않는다.
+    archive 재작성 모두 이 함수를 거쳐 서로의 갱신을 덮어쓰지 않는다. 프로세스가
+    종료되면 OS가 락을 해제하므로 stale lock은 남지 않는다. 재진입은 지원하지 않는다.
 
-    플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)는 공용 `fs` seam이 소유하고
+    플랫폼 분기(POSIX flock·Windows msvcrt·무락 대체 동작)는 공용 `fs` 모듈이 소유하고
     경로 규약만 이 도구가 정한다.
     """
     with fs.exclusive_file_lock(_log_lock_path(Path(log_path))):
@@ -45,9 +45,9 @@ def log_write_lock(log_path: Path) -> Iterator[None]:
 
 
 def append_log(path: Path, text: str) -> None:
-    """공유 log append 공개 seam — flock 안에서 O_APPEND 단일 write.
+    """공유 log append 공용 함수 — flock 안에서 O_APPEND 단일 write.
 
-    O_APPEND 원자 추가 자체는 공용 `fs` seam이 소유한다 — 이 모듈은 락 경로
+    O_APPEND 원자 추가 자체는 공용 `fs` 모듈이 소유한다 — 이 모듈은 락 경로
     규약과 부모 디렉토리 생성만 정한다.
     """
     path = Path(path)

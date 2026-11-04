@@ -34,15 +34,15 @@ def _unresolved_must_fix_data(home, data: object, record_path: Path) -> list[str
                 "없어 차단합니다"]
     problems: list[str] = []
     for review_ticket, entry in sorted(data.items()):
-        if review_ticket == review_rounds._REVIEW_LEDGER_WAVE_KEY:
+        if review_ticket == review_rounds._REVIEW_RECORD_SESSION_BUDGET_KEY:
             continue                     # 예약 키(세션 호출 예산 절)는 리뷰 집계 티켓이 아니다.
         # 추가 리뷰어(release) 판정 출처는 pm-verified 처분을 허용한다 — PM rejected/기계 확인 증거로
         # 채널 폐지 뒤에도 재호출 없이 남은 지적을 종결할 수 있어야 한다(콜백은 그 리뷰 집계 티켓의
         # 남은 must-fix 건수로 스코프한 채널 격리 재검증).
-        problem = review_rounds._gate_disposition_problem(
+        problem = review_rounds._review_ticket_disposition_problem(
             review_ticket, entry,
             allow_pm_verified=True,
-            pm_verified_problem=_gate_pm_verified_problem(home,
+            pm_verified_problem=_review_ticket_pm_verified_problem(home,
                 review_ticket, entry, CHECK_CHANNEL_ADDITIONAL,
             ),
         )
@@ -74,20 +74,20 @@ def _sync_release_must_fix_marker(home, flag: Path) -> list[str]:
 
     live-test record/check 경로다. additional_reviewer 는 이미 같은 락을 보유한 `_save_round_records` 안에서
     `_unresolved_must_fix_data` + `_write_release_must_fix_marker` 를 직접 호출해 재진입을 피한다."""
-    record_path = release._release_rounds_ledger(flag)
+    record_path = release._release_rounds_records(flag)
     with fs.exclusive_file_lock(release._release_rounds_lock(record_path)):
         problems = _unresolved_must_fix_review_tickets(home, record_path)
         release._write_release_must_fix_marker(flag, problems)
     return problems
 
 
-def _livegate_check(home, args: argparse.Namespace) -> int:
+def _live_test_check(home, args: argparse.Namespace) -> int:
     """기록된 라이브 시험이 `--rev <sha>` 에 대해 green 인지 검증한다 (보호훅 소비 채널).
 
     기록 존재 ∧ status==pass ∧ head==rev → rc0. 아니면 rc1 + 사유 3분화(기록 부재 / red /
     rev 불일치 — 각각 다른 메시지로 훅이 그대로 surface). fail-soft 아님(명확 rc).
 
-    읽을 livegate.json 은 record 와 **동일 해소**(`_resolve_livegate_flag` — engine-root sidecar)
+    읽을 live-test.json 은 record 와 **동일 해소**(`_resolve_live_test_flag` — engine-root sidecar)
     를 거친다(단일 소스). 기본 위치(`pm_paths.live_test_flag`) 직독이 아니라, 어느 board.py 사본/cwd 로
     check 하든 push 보호훅이 기록한 **바로 그** 파일을 읽어 stale/wrong-copy 오독(false-green/
     false-red)을 원천 차단한다 — record(`_live_test_record`)의 기록-위치 정렬과 대칭이다.
@@ -102,7 +102,7 @@ def _livegate_check(home, args: argparse.Namespace) -> int:
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 사본으로 check 해도
     # 훅이 기록한 한 파일을 읽는다. hooksPath 미설정/훅 부재면 지금처럼 `pm_paths.live_test_flag`(REPO/.local) 로 대체한다.
     cwd = getattr(args, "cwd", None) or str((home.root))
-    flag, mode = regression_store._resolve_livegate_flag(home, cwd)
+    flag, mode = regression_store._resolve_live_test_flag(home, cwd)
     if mode == regression_store._LG_BROKEN:
         # 보호훅 활성(hooksPath+engine-root sidecar)인데 engine-root 가 무효(board.py 미해소) →
         # 기록 위치와 훅 read 위치가 갈릴 수 있어 pass/fail 판정을 신뢰 못 한다. 조용한 통과 대신
@@ -129,7 +129,7 @@ def _livegate_check(home, args: argparse.Namespace) -> int:
     if problems:
         print(release._MUST_FIX_BLOCK_GUIDANCE.format(
             count=len(problems), items="\n".join(problems),
-            ledger=release._release_rounds_ledger(flag)), file=sys.stderr)
+            record_path=release._release_rounds_records(flag)), file=sys.stderr)
         return 1
     if not flag.exists():
         print("live-test: 기록 없음 — `board.py live-test record` 필요 (릴리즈 차단).",
@@ -209,12 +209,12 @@ def _pm_verified_evidence_problem(home, tid: str, *, channel: str, entry: dict) 
     )
 
 
-def _gate_pm_verified_problem(home,
+def _review_ticket_pm_verified_problem(home,
     review_ticket: str, entry: dict, channel: str,
 ) -> Callable[[], str | None]:
     """리뷰 집계 티켓별 pm-verified 콜백 factory — 루프 클로저의 뒤늦은 바인딩을 피한다.
 
-    `_gate_disposition_problem` 은 이 콜백을 같은 순회 안에서 즉시 호출하지만, 인자를 함수
+    `_review_ticket_disposition_problem` 은 이 콜백을 같은 순회 안에서 즉시 호출하지만, 인자를 함수
     시그니처로 고정해 두면 나중에 호출 지점이 지연·재배치되더라도 클로저가 마지막 `review_ticket`/`entry`
     를 참조하는 사고가 구조적으로 막힌다."""
     return lambda: _pm_verified_evidence_problem(home, review_ticket, channel=channel, entry=entry)
@@ -270,7 +270,7 @@ def _dod_heading_mismatch(body: str) -> str | None:
 def _dod_open_items(body: str) -> list[str]:
     """done 을 막는 DoD 사유 목록 — 전부 통과하면 빈 리스트.
 
-    `_complete_gate` 가 쓰는 단일 깔때기다(ticket_finish 의 선-검사도 이 함수를 부른다).
+    `_complete_check` 가 쓰는 단일 깔때기다(ticket_finish 의 선-검사도 이 함수를 부른다).
     막는 경우 넷:
 
       1. **절 부재** — `## 완료 조건` 절이 없다. 판정할 완료 조건이 없으면 완료를 증명할 수

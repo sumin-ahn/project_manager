@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import anchor_board_module, ensure_product_slot
+from conftest import target_repo_board_module, ensure_product_slot
 from pm_engine.domain import gitattributes_rules, round_rules, ticket_rules
 from pm_engine.infra import pre_push_hook, round_store
 from pm_engine.app import areas_lint, body_lint, conf_lint, doc_lint, freshness_lint, ticket_lint, wiki_lint, wikilink_lint
@@ -78,7 +78,7 @@ def _load_mod(name: str):
 def board(tmp_path, monkeypatch):
     """REPO 를 tmp 로 재지정한 fresh board 모듈 (실 루트 미접촉·test_board_git_sync 와 같은 방식)."""
     mod = _load_mod("board")
-    anchor_board_module(mod, tmp_path, monkeypatch)
+    target_repo_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     return mod

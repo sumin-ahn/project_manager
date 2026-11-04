@@ -38,7 +38,7 @@ def _read_records_raw(home) -> dict:
     **_lease_lock 보유 전제**.
 
     `leases`(슬롯 대여)·`tasks`·향후 additive 최상위 컬렉션이 한 파일에 공존하므로,
-    특정 컬렉션만 갱신할 때(`_write_ledger`/`_write_tasks`) 나머지 최상위 키를 무손실 보존하는
+    특정 컬렉션만 갱신할 때(`_write_records`/`_write_tasks`) 나머지 최상위 키를 무손실 보존하는
     read-modify-write 의 read 측이다. Lease-내부 미지 키 보존(`extra`)의 **최상위판** —
     구 엔진(신규 최상위 키를 모르는 import 사본 lag)이 아무 op 해도 형제 컬렉션이 안 날아가게
     한다([[robustness-value-connections-before-ship]] silent degrade 방지)."""
@@ -96,7 +96,7 @@ def _read_records_strict(home) -> list[worktree_records.Lease]:
     return leases
 
 
-def _write_ledger(home, leases: list[worktree_records.Lease]) -> None:
+def _write_records(home, leases: list[worktree_records.Lease]) -> None:
     """`leases` 컬렉션만 교체해 기록을 atomic replace 로 쓴다. **_lease_lock 보유 전제**.
 
     **형제 최상위 키 보존**(top-level round-trip): 현 파일 원본을 읽어(`_read_records_raw`)
@@ -135,7 +135,7 @@ def _read_tasks_strict(home) -> list[worktree_records.Task]:
 def _write_tasks(home, tasks: list[worktree_records.Task]) -> None:
     """`tasks` 컬렉션만 교체해 기록을 atomic replace 로 쓴다 — 형제 `leases`·미지 키 보존(top-level
     round-trip). **_lease_lock 보유 전제**."""
-    # `_write_ledger`와 같은 최종 방어: 손상 원본을 빈 dict로 축약한 뒤 tasks만 쓰는
+    # `_write_records`와 같은 최종 방어: 손상 원본을 빈 dict로 축약한 뒤 tasks만 쓰는
     # destructive rewrite를 허용하지 않는다.
     data = _read_records_raw_strict(home)
     data["tasks"] = [t.to_dict() for t in tasks]

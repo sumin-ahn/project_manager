@@ -1220,7 +1220,7 @@ def test_removed_confirm_fix_is_rejected_before_ticket_collect(
     assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
     assert calls["n"] == 0
     assert _round_paths(tmp_path) == []
-    assert not review_rounds._round_ledger_path(pm_paths.home_at(external.REPO)).exists()
+    assert not review_rounds._round_record_path(pm_paths.home_at(external.REPO)).exists()
 
 
 # ── F-021 프롬프트 양식: 확인 가능한 ID 실값(직전 라운드 파일) ─────────────

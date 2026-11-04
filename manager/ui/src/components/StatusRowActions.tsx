@@ -14,7 +14,7 @@ import ConfirmDialog from "./ConfirmDialog";
  * 가부는 상태 판정표(`status-dots.json`)의 첫 일치가 그대로 낸다 — 관리자 쪽 생존 조회 코드는
  * 없고, 판정 필드는 엔진 JSON 값이다.
  *
- * [대여]가 표 머리에 있는 이유: `alloc` 은 repo 축이고 어느 idle 슬롯이 나갈지는 엔진이
+ * [대여]가 표 머리에 있는 이유: `alloc` 은 repo 단위이고 어느 idle 슬롯이 나갈지는 엔진이
  * 고른다(최소 번호). 행마다 버튼을 두면 아이들이 둘 이상일 때 누른 행과 대여되는 행이 다르다.
  *
  * 이름만 있는 동작(`task new`·`task reopen`)은 행이 없어 이 자리에 오지 않는다 — 종료한 task 는
@@ -114,7 +114,7 @@ export function SlotTableAllocate() {
 /**
  * 그 task 명의로 슬롯을 하나 더 대여하는 자리 — task 는 슬롯을 여럿 쥘 수 있다.
  *
- * 공용 탭의 [대여]와 같은 엔진 명령(`alloc <repo> --task <task>`)이고, task 축이 이미
+ * 공용 탭의 [대여]와 같은 엔진 명령(`alloc <repo> --task <task>`)이고, task 가 이미
  * 정해져 있어 repo 만 고른다. 어느 유휴 슬롯이 나갈지는 고르지 않는다 — 엔진이 최소 번호로
  * 정한다. 유휴 슬롯이 없으면 엔진이 거부하며(`NeedsCreate`), 슬롯을 새로 만드는 것은
  * 구성 탭의 사용자 승인 행위다.
@@ -213,7 +213,7 @@ function TaskActions({ row }: { row: TaskRow }) {
       {asking && (
         <ConfirmDialog
           title={`task ${row.name} 의 prefix 를 ${value} 로 —  승인?`}
-          note="엔진은 새 prefix 신설에 사용자 승인을 요구한다. 승인은 이 값에만 결속된다."
+          note="엔진은 새 prefix 신설에 사용자 승인을 요구한다. 승인은 이 값에만 연결된다."
           value={value}
           onConfirm={(ack) => {
             setAsking(false);

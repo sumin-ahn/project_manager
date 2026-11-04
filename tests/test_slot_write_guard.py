@@ -52,7 +52,7 @@ def board():
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    """PM 홈 장부 — 슬롯 1(task alpha) · 2(빈 슬롯) · 3(readonly) · 4(닫힌 task beta)."""
+    """PM 홈 대여 기록 — 슬롯 1(task alpha) · 2(빈 슬롯) · 3(readonly) · 4(닫힌 task beta)."""
     monkeypatch.delenv("PM_DELEGATE_TASK", raising=False)
     root = tmp_path / "pm-home"
     for number in (1, 2, 3, 4):
@@ -61,9 +61,9 @@ def home(tmp_path, monkeypatch):
     # 이 픽스처는 실 엔진을 그대로 깐다(할 일 파일 형식을 흉내 내는 대역 금지).
     shutil.copytree(TOOLS, root / ".project_manager" / "tools")
     (root / ".project_manager" / "tools" / "worktree_pool.py").unlink()
-    ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(json.dumps({
+    records = root / ".project_manager" / ".local" / "worktree-leases.json"
+    records.parent.mkdir(parents=True, exist_ok=True)
+    records.write_text(json.dumps({
         "leases": [
             {"slot": "work/app_1", "repo": "app", "session": "alpha", "state": "leased"},
             {"slot": "work/app_2", "repo": "app", "session": "", "state": "idle"},
@@ -103,7 +103,7 @@ def test_write_warns_when_the_session_task_has_no_open_todo(home):
     """열린 todo 가 없으면 자기 슬롯이어도 경고가 붙는다 — 막지는 않는다.
 
     막지 않는 이유: 셸 쓰기(`sed -i`·리다이렉션)는 이 판정을 타지 않아 막아도 우회로가 남고,
-    이 축은 나머지 여덟 판정과 달리 "명령이 위험한가" 가 아니라 "일을 적었나" 다.
+    이 판정은 나머지 여덟 판정과 달리 "명령이 위험한가" 가 아니라 "일을 적었나" 다.
     """
     _set_todos(home, "alpha", [])
     judgment = cli_hooks.judge_tool_input(
@@ -166,9 +166,9 @@ def test_todo_rule_only_applies_to_write_tools(home, tmp_path):
 def test_write_without_an_engine_copy_uses_execution_engine(tmp_path):
     """대상 Home에 평면 엔진이 없어도 실행 엔진으로 열린 할 일을 판정한다."""
     root = tmp_path / "no-engine"
-    ledger = root / ".project_manager" / ".local" / "worktree-leases.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(json.dumps({
+    records = root / ".project_manager" / ".local" / "worktree-leases.json"
+    records.parent.mkdir(parents=True)
+    records.write_text(json.dumps({
         "leases": [],
         "tasks": [{"name": "alpha", "session": "S-alpha"}],
     }) + "\n", encoding="utf-8")
@@ -272,7 +272,7 @@ def test_shell_command_naming_a_foreign_slot_warns_once_per_slot(home):
     assert own["verdict"] == "ok"
 
 
-def test_corrupt_ledger_is_raised_not_read_as_empty(home):
+def test_corrupt_record_is_raised_not_read_as_empty(home):
     (home / ".project_manager" / ".local" / "worktree-leases.json").write_text("{", encoding="utf-8")
     with pytest.raises(json.JSONDecodeError):
         cli_hooks.judge_tool_input(cli_hooks.adapter_home(home), "S-alpha", str(home), "Write", {"file_path": str(home / "work" / "app_1" / "a.py")}, main_thread=True)
@@ -286,9 +286,9 @@ def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(home):
     assert got["verdict"] != "deny"
     assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-new"}
     cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), f"python3 {home}/.project_manager/tools/pm_bootstrap.py --task=delta", main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(home), f"python3 {home}/.project_manager/tools/pm_bootstrap.py --task=zeta", main_thread=True,
     )
-    assert (claims / "delta.json").is_file()
+    assert (claims / "zeta.json").is_file()
     # 인자를 정적으로 못 정하거나 세션 ID 가 없으면 남기지 않는다 — 부트스트랩이 기록 없음으로 멈춘다.
     cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-new", str(home), 'python3 .project_manager/tools/pm_bootstrap.py --task "$NAME"', main_thread=True,
@@ -296,14 +296,14 @@ def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(home):
     cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon", main_thread=True,
     )
-    assert sorted(path.name for path in claims.iterdir()) == ["delta.json", "gamma.json"]
+    assert sorted(path.name for path in claims.iterdir()) == ["gamma.json", "zeta.json"]
 
 
 def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(home, tmp_path):
     """다른 홈 B 의 부트스트랩 호출이면 그 기록은 B 의 엔진이 쓴다(이 프로세스의 `pm_engine` 이 아니다).
 
-    B 의 `pm_engine/infra/fs.py` 의 `atomic_replace` 가 표식 파일을 남기게 덧붙인다 — 이 프로세스에
-    이미 적재된 checkout 패키지가 쓰면 표식이 생기지 않는다."""
+    B 의 `pm_engine/infra/fs.py` 의 `atomic_replace` 가 표시 파일을 남기게 덧붙인다 — 이 프로세스에
+    이미 적재된 checkout 패키지가 쓰면 표시가 생기지 않는다."""
     other = tmp_path / "other-home"
     shutil.copytree(TOOLS, other / ".project_manager" / "tools",
                     ignore=shutil.ignore_patterns("__pycache__"))
@@ -373,7 +373,7 @@ def test_delegate_env_names_the_task_that_holds_the_slot(board, home, monkeypatc
 def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(home, monkeypatch):
     claude = _load("slot_write_guard_claude", CLAUDE_DRIVER)
     target = str(home / "work" / "app_2" / "a.py")
-    output = claude.git_anchor_hook_evaluate({
+    output = claude.git_target_repo_hook_evaluate({
         "session_id": "S-alpha", "hook_event_name": "PreToolUse", "tool_name": "Write",
         "cwd": str(home), "tool_input": {"file_path": target, "content": "x"},
     }, home)["hookSpecificOutput"]
@@ -382,13 +382,13 @@ def test_claude_and_codex_hooks_route_write_tools_to_the_slot_judgment(home, mon
 
     codex = _load("slot_write_guard_codex", CODEX_DISPATCHER)
     patch = f"*** Begin Patch\n*** Add File: {target}\n+x\n*** End Patch\n"
-    envelope = codex.git_anchor_hook_evaluate({
+    envelope = codex.git_target_repo_hook_evaluate({
         "session_id": "S-alpha", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
         "cwd": str(home), "tool_input": {"command": patch},
     }, home)
     assert envelope["decision"] == "block"
     own = f"*** Begin Patch\n*** Add File: {home}/work/app_1/a.py\n+x\n*** End Patch\n"
-    assert codex.git_anchor_hook_evaluate({
+    assert codex.git_target_repo_hook_evaluate({
         "session_id": "S-alpha", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
         "cwd": str(home), "tool_input": {"command": own},
     }, home) == {}
@@ -444,10 +444,10 @@ def test_delegated_bootstrap_is_denied_without_a_session_claim(home):
 
 def test_slot_write_and_compaction_share_the_session_task_rule(home, monkeypatch):
     """같은 세션 행이 둘이면 슬롯 쓰기와 압축 경로가 같은 "여럿" 사유로 미해소, 한 행이면 같은 task 로 해소한다."""
-    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
-    data = json.loads(ledger.read_text(encoding="utf-8"))
+    records = home / ".project_manager" / ".local" / "worktree-leases.json"
+    data = json.loads(records.read_text(encoding="utf-8"))
     data["tasks"].append({"name": "gamma", "session": "S-alpha"})
-    ledger.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    records.write_text(json.dumps(data) + "\n", encoding="utf-8")
     many = "이 세션이 연 task 여럿 (세션 S-alpha: alpha, gamma)"
     target = {"file_path": str(home / "work" / "app_1" / "a.py"), "content": "x"}
 
@@ -467,7 +467,7 @@ def test_slot_write_and_compaction_share_the_session_task_rule(home, monkeypatch
     monkeypatch.delenv("PM_DELEGATE_TASK")
 
     data["tasks"] = [row for row in data["tasks"] if row["name"] != "gamma"]
-    ledger.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    records.write_text(json.dumps(data) + "\n", encoding="utf-8")
     assert write()["verdict"] == "ok"
     assert session_identity.resolve_session_task(pm_paths.home_at(home), "S-alpha") == ("alpha", None)
 
@@ -484,13 +484,13 @@ def test_claude_and_codex_subagent_hooks_pass_main_thread_false(home):
     base = {"session_id": "S-alpha", "hook_event_name": "PreToolUse", "cwd": str(home)}
     subagent = {**base, "agent_id": "a9c733a29cf3baa21", "agent_type": "general-purpose"}
     write = {"tool_name": "Write", "tool_input": {"file_path": target, "content": "x"}}
-    sub_write = claude.git_anchor_hook_evaluate({**subagent, **write}, home)["hookSpecificOutput"]
+    sub_write = claude.git_target_repo_hook_evaluate({**subagent, **write}, home)["hookSpecificOutput"]
     assert sub_write["permissionDecision"] == "deny"
     assert delegated in sub_write["permissionDecisionReason"]
     assert not_owned not in sub_write["permissionDecisionReason"]
-    main_write = claude.git_anchor_hook_evaluate({**base, **write}, home)["hookSpecificOutput"]
+    main_write = claude.git_target_repo_hook_evaluate({**base, **write}, home)["hookSpecificOutput"]
     assert not_owned in main_write["permissionDecisionReason"]
-    sub_shell = claude.git_anchor_hook_evaluate(
+    sub_shell = claude.git_target_repo_hook_evaluate(
         {**subagent, "tool_name": "Bash", "tool_input": {"command": bootstrap}}, home,
     )["hookSpecificOutput"]
     assert sub_shell["permissionDecision"] == "deny"
@@ -500,16 +500,16 @@ def test_claude_and_codex_subagent_hooks_pass_main_thread_false(home):
     codex = _load("slot_write_guard_codex_subagent", CODEX_DISPATCHER)
     codex_subagent = {**base, "agent_id": "agent-1", "agent_type": "default"}
     patch = f"*** Begin Patch\n*** Add File: {target}\n+x\n*** End Patch\n"
-    sub_patch = codex.git_anchor_hook_evaluate(
+    sub_patch = codex.git_target_repo_hook_evaluate(
         {**codex_subagent, "tool_name": "apply_patch", "tool_input": {"command": patch}}, home,
     )
     assert sub_patch["decision"] == "block"
     assert delegated in sub_patch["reason"] and not_owned not in sub_patch["reason"]
-    main_patch = codex.git_anchor_hook_evaluate(
+    main_patch = codex.git_target_repo_hook_evaluate(
         {**base, "tool_name": "apply_patch", "tool_input": {"command": patch}}, home,
     )
     assert not_owned in main_patch["reason"]
-    codex_shell = codex.git_anchor_hook_evaluate(
+    codex_shell = codex.git_target_repo_hook_evaluate(
         {**codex_subagent, "tool_name": "Bash", "tool_input": {"command": bootstrap}}, home,
     )
     assert codex_shell["decision"] == "block"
@@ -701,7 +701,7 @@ _T0931_GIT_FORMS = [
 @pytest.mark.parametrize('subcommand,args,writes', _T0931_GIT_FORMS)
 def test_t0931_git_forms_read_write_and_owner_matrix(board, home, monkeypatch, subcommand, args, writes):
     """명령 형태별로 자기·타 task·idle·readonly·세션 부재를 같은 판정자로 확인한다."""
-    monkeypatch.setattr(engine_guard, '_git_anchor_identity', lambda anchor, **kw: ('slot', Path(anchor), home))
+    monkeypatch.setattr(engine_guard, '_git_target_repo_identity', lambda target_repo, **kw: ('slot', Path(target_repo), home))
     monkeypatch.setattr(hooks, '_git_alias_resolved', lambda invocation, **kw: invocation)
     def no_git_mutation(*a, **k):
         pytest.fail('판정 테스트가 git 변경을 실행했다')

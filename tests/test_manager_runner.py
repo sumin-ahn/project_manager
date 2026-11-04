@@ -1,6 +1,6 @@
 """프로젝트 실행기 — 실 PM 홈 사본을 실제로 불러 판정한다 (T-0910 AT-002).
 
-인터프리터 해소는 엔진 `pm_bootstrap._resolve_python_argv` 와 같은 규칙이고, 옛 세대 사본은
+인터프리터 해소는 엔진 `pm_bootstrap._resolve_python_argv` 와 같은 규칙이고, 옛 버전 사본은
 **실물**(`--json` 을 모르는 실제 스크립트 · 파일 부재)로 재현한다. 실패는 예외로 올라오며
 stderr 원문과 rc 가 보존된다(빈 dict·None 으로 삼키지 않는다).
 """
@@ -240,9 +240,9 @@ print("failures:", failures)
 def test_engine_modules_survive_concurrent_first_loads(pm_home, tmp_path):
     """창은 브리지 호출을 스레드마다 따로 처리한다 — 첫 로드가 겹쳐도 반쯤 채워진 모듈이 새지 않는다.
 
-    새 프로세스로 잰다: 로드도 강등 경고도 프로세스당 한 번이라, 이미 로드된 pytest 안에서는
+    새 프로세스로 잰다: 로드도 수준 낮춤 경고도 프로세스당 한 번이라, 이미 로드된 pytest 안에서는
     이 결함이 재현되지 않는다. 실측(잠금 없이 프로젝트 7개 동시 조회)에서는 `local_conf` 에
-    `load` 가 없다는 AttributeError 와 공유 읽기 강등 경고가 함께 났다.
+    `load` 가 없다는 AttributeError 와 공유 읽기 수준 낮춤 경고가 함께 났다.
     """
     probe = tmp_path / "probe.py"
     probe.write_text(CONCURRENT_PROBE, encoding="utf-8")
@@ -255,4 +255,4 @@ def test_engine_modules_survive_concurrent_first_loads(pm_home, tmp_path):
 
     assert completed.returncode == 0, completed.stderr
     assert "failures: []" in completed.stdout, completed.stdout
-    assert completed.stderr == "", f"엔진이 강등 경고를 냈다: {completed.stderr}"
+    assert completed.stderr == "", f"엔진이 수준 낮춤 경고를 냈다: {completed.stderr}"

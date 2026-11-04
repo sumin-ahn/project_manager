@@ -490,14 +490,14 @@ def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
     except FileNotFoundError:
         return ()
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 읽기 실패: {records} ({exc})") from exc
+        raise pm_paths.TargetRepoResolutionError(f"슬롯 대여 기록 파일 읽기 실패: {records} ({exc})") from exc
     rows = data.get("leases") if isinstance(data, dict) else None
     if not isinstance(rows, list):
-        raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 형식 오류: {records}")
+        raise pm_paths.TargetRepoResolutionError(f"슬롯 대여 기록 파일 형식 오류: {records}")
     found: set[Path] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or not isinstance(row.get("slot"), str):
-            raise pm_paths.AnchorResolutionError(f"슬롯 대여 기록 파일 leases[{index}] 형식 오류: {records}")
+            raise pm_paths.TargetRepoResolutionError(f"슬롯 대여 기록 파일 leases[{index}] 형식 오류: {records}")
         candidate = (pm_home / row["slot"]).resolve()
         if candidate.is_dir() and (candidate / ".git").exists():
             found.add(candidate)

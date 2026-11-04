@@ -142,7 +142,7 @@ def _mk_real_bare(wp, repo: str, tmp_path: Path) -> Path:
 class _FakeBoard:
     """board 대역 — 엔진 대상 저장소 검사(통과) + 보호브랜치 목록(`_repo_protected`)."""
 
-    def _pm_home_worktree_misanchor(self, anchor, **_kw):
+    def _pm_home_worktree_wrong_repo(self, anchor, **_kw):
         return None  # PM 홈(통과) — 대상 저장소 거부 안 함.
 
     def _repo_protected(self, repo):

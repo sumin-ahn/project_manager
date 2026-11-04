@@ -96,20 +96,20 @@ def _load_ticket_rounds_for(
             pm_paths.tickets_dir(home), ticket_id, ticket_text=ticket_text,
         )
     except round_rules.RoundsError as exc:
-        raise pm_paths.AnchorResolutionError(
+        raise pm_paths.TargetRepoResolutionError(
             f"티켓 라운드 사이드카가 손상돼 리뷰 입력을 조립할 수 없습니다: {exc}"
         ) from exc
 
 
-def _warn_seed_developer_round(rounds: Sequence, *, ticket: str) -> None:
+def _warn_empty_form_developer_round(rounds: Sequence, *, ticket: str) -> None:
     """추가 리뷰어 스폰면의 loud 경고 — 경고이지 거부가 아니다(rc 는 바꾸지 않는다).
 
     판정은 준비면(`round_form._warn_uncollected_developer_round`)이 쓰는 공개 함수
-    `round_form.unharvested_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 경로가
+    `round_form.uncollected_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 경로가
     어긋난다. `prepare_ticket_body` 한 공용 함수가 미리보기(`--dry-run`)와 실 스폰을 모두
     지나므로 이 호출 하나가 두 채널을 함께 덮는다.
     """
-    stale = round_form.unharvested_developer_round(rounds)
+    stale = round_form.uncollected_developer_round(rounds)
     if stale is None:
         return
     name = round_rules.round_filename(stale.ordinal, stale.role)

@@ -1,9 +1,9 @@
-"""커맨드 카드 ↔ CLI 정합 가드 (T-0362 · spike §F12 · 결정 ⑰).
+"""커맨드 카드 ↔ CLI 일치 가드 (T-0362 · spike §F12 · 결정 ⑰).
 
 커맨드 카드(ADR-0045)의 커맨드 토큰은 **공용 정의서**(`pm_bootstrap._CARD_TASK_CLI` ·
 `_CardCmd` records) 단일 진실에서 온다 — 손 문자열 하드코딩을 제거해 "가이드가 실제 옵션과
 다른" drift 를 구조적으로 불가능하게 만든다(⑰·⑭ PM 실수 기계 차단). task 모델(`--task`·alloc/
-release/task end/prefix·readonly refresh)이 표면을 대폭 바꾸는데 카드를 손 갱신하면 정확히 그
+release/task end/prefix·readonly refresh)이 명령을 대폭 바꾸는데 카드를 손 갱신하면 정확히 그
 drift 가 재발한다 — 이 가드가 **양방향**으로 못박는다:
 
   - **정의서 → 파서** (카드 토큰이 파서에 있나): 각 record 의 서브커맨드 leaf(`subpath`)가 그
@@ -14,9 +14,9 @@ drift 가 재발한다 — 이 가드가 **양방향**으로 못박는다:
     정의서와 **(도구, base-render) 집합**이 **정확히 일치**하는지(누락·잉여 둘 다 red).
     granularity = (tool, render) — leaf-set 은 같은 leaf 의 render 변종 제거를 통과시켜(reviewer
     should-fix·mutation 실증) render 급으로 올렸다(정체성 실값만 벗기고 base render 정확 대조).
-  - **파서 → 정의서** (신규 커맨드가 카드에 표면화됐나): task parser-backed 커맨드
+  - **파서 → 정의서** (신규 커맨드가 카드에 드러났나): task parser-backed 커맨드
     (alloc·release·task end·task prefix)가 정의서에 covered 됐는지 **curated spot-check** —
-    완전 generic(모든 파서 leaf 강제)은 부적절(카드=curated 표면·전부 뿌리면 컨텍스트 잠식). 한계·
+    완전 generic(모든 파서 leaf 강제)은 부적절(카드=curated 목록·전부 뿌리면 컨텍스트 잠식). 한계·
     근거는 `test_task_mode_covers_new_task_commands` docstring. worktree_pool refresh/rebase 는
     build_parser 없는 스킬-렌더라 이 required 대상 아님.
 
@@ -24,9 +24,9 @@ drift 가 재발한다 — 이 가드가 **양방향**으로 못박는다:
 합성 drift(없는 flag·없는 leaf)를 comparator 가 실제로 잡는지 별도 단언.
 
 **templates 사본 전수**: 엔진 canonical(루트) + 출하 템플릿(claude_code·opencode)의 pm_bootstrap
-사본이 *각자의* board/pm_config 파서와 정합하는지 트리별 parametrize(사본 stale=drift 클래스).
+사본이 *각자의* board/pm_config 파서와 일치하는지 트리별 parametrize(사본 stale=drift 클래스).
 
-skill(`/pm-…`) 줄은 CLI 가 아니라 대상 밖(backbone 강등 `python3 …` 줄만 파서-검증). worktree_pool
+skill(`/pm-…`) 줄은 CLI 가 아니라 대상 밖(backbone 보조 `python3 …` 줄만 파서-검증). worktree_pool
 (build_parser 없음)·additional_reviewer(build_parser 없음)는 파서-backed 도구가 아니라 leaf/flag 강제
 검증에서 제외하되, 정의서 record 로는 카드↔정의서 대조에 남는다(카드가 지어낸 도구 방지).
 """
@@ -57,7 +57,7 @@ _TREES = {
 _PARSER_TOOLS = ("board.py", "pm_config.py", "pm_handoff.py",
                  "ticket_finish.py", "pm_log.py", "domain.py")
 
-# 정체성 축 flag (ADR-0057) — leaf-등록 여부와 무관하게 허용(identity_args grammar 로 별도 검증됨).
+# 정체성 flag (ADR-0057) — leaf-등록 여부와 무관하게 허용(identity_args grammar 로 별도 검증됨).
 _IDENTITY_FLAGS = frozenset({"--task"})
 
 
@@ -132,7 +132,7 @@ def _resolve_leaf(leaf_options: dict[tuple, set], tokens: list[str]) -> tuple:
 def _card_cli_commands(card: str, bootstrap, *, tmp_path) -> list[tuple[str, list[str]]]:
     """카드에서 설정으로 해소된 도구 접두의 줄만 (tool, arg-tokens) 로 추출.
 
-    engine 강등 줄(2-스페이스 들여쓰기)·주석(`# …`)을 벗겨 CLI 인자만. skill(`/pm-…`) 줄·평문
+    engine 보조 줄(2-스페이스 들여쓰기)·주석(`# …`)을 벗겨 CLI 인자만. skill(`/pm-…`) 줄·평문
     note(`↳ …`)는 도구 접두로 시작하지 않아 제외한다.
     """
     card_prefix = bootstrap_card._resolve_card_tool_invoke(pm_paths.home_at(tmp_path)) + "/"
@@ -168,7 +168,7 @@ def _tool_reference_lines(card: str) -> list[str]:
 # ── 0. per-clone 인터프리터 표기 ─────────────────────────────────────────────
 
 def test_card_uses_local_interpreter_for_every_tool_reference(tmp_path, monkeypatch):
-    """`runtime.py=python` 형상은 카드의 도구 참조를 같은 `python` 접두로 렌더한다."""
+    """`runtime.py=python` 구성은 카드의 도구 참조를 같은 `python` 접두로 렌더한다."""
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
     conf_dir = tmp_path / ".project_manager"
     conf_dir.mkdir()
@@ -196,28 +196,28 @@ def test_card_interpreter_missing_or_empty_uses_platform_default(
 
     cards = _render_card(bootstrap, tmp_path=tmp_path)
     references = _tool_reference_lines(cards)
-    assert references, "카드의 Python 도구 참조가 비어 폴백 검사가 공허함"
+    assert references, "카드의 Python 도구 참조가 비어 대체 검사가 공허함"
     expected = bootstrap_card._resolve_card_tool_invoke(pm_paths.home_at(tmp_path))
     assert all(expected in line for line in references)
 
 
 def test_card_interpreter_read_failure_uses_platform_default(tmp_path, monkeypatch):
-    """설정 읽기가 실패해도 카드 렌더를 깨뜨리지 않고 플랫폼 접두로 폴백한다."""
+    """설정 읽기가 실패해도 카드 렌더를 깨뜨리지 않고 플랫폼 접두로 대신한다."""
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
     conf_dir = tmp_path / ".project_manager"
     conf_dir.mkdir()
     conf_path = conf_dir / "local.conf"
     conf_path.write_text("runtime.py=python\n", encoding="utf-8")
-    # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
-    seam = fs
-    original_read_text = seam.read_text_shared
+    # conf 판독은 공유 읽기 함수를 지난다([[T-0729]]) — 주입도 그 자리에 건다.
+    override = fs
+    original_read_text = override.read_text_shared
 
     def fail_for_local_conf(path, *args, **kwargs):
         if Path(path) == conf_path:
             raise OSError("unreadable")
         return original_read_text(path, *args, **kwargs)
 
-    monkeypatch.setattr(seam, "read_text_shared", fail_for_local_conf)
+    monkeypatch.setattr(override, "read_text_shared", fail_for_local_conf)
     expected = python_env._detect_command_environment(pm_paths.home_at(tmp_path))
     assert expected.python_source == "os-default"
     assert bootstrap_card._resolve_card_tool_invoke(pm_paths.home_at(tmp_path)) == bootstrap_card._resolve_card_tool_invoke(pm_paths.home_at(tmp_path), environment=expected)
@@ -313,7 +313,7 @@ def test_card_render_matches_definition(tree, *, tmp_path):
         f"[{tree}] 카드 ↔ 정의서 drift.\n"
         f"  정의서엔 있으나 카드 미렌더/변형: {sorted(missing)}\n"
         f"  카드엔 있으나 정의서 밖(지어냄/변형): {sorted(extra)}\n"
-        "  → pm_bootstrap 의 _CARD_TASK_CLI 와 카드 렌더를 정합시켜라."
+        "  → pm_bootstrap 의 _CARD_TASK_CLI 와 카드 렌더를 일치시켜라."
     )
     # sensitivity — 카드가 실제로 CLI 줄을 렌더했다(추출 0 이면 대조 공허).
     assert rendered, f"[{tree}] 카드에서 추출된 CLI 커맨드가 0 (렌더 회귀?)"
@@ -344,15 +344,15 @@ def test_card_rendered_flags_exist_in_parser(tree, *, tmp_path):
                 )
 
 
-# ── 3. 파서 → 정의서 (신규 task/readonly 커맨드가 카드에 표면화됐나) ───────────
+# ── 3. 파서 → 정의서 (신규 task/readonly 커맨드가 카드에 드러났나) ───────────
 
 
 def test_task_mode_covers_new_task_commands():
     """task 모드 정의서가 task 관리 커맨드(alloc·release·end·reopen·prefix)를 covered.
 
     **한계 (spot-check·not generic 자동검출)**: 파서→정의서 방향을 완전 generic 으로(모든 파서 leaf
-    가 카드에 있나) 강제하면 잘못이다 — 카드는 **curated** 표면(모드-스코프·신호 대 잡음·⑰)이라
-    board/pm_config 의 모든 서브커맨드를 뿌리지 않는다(전부 뿌리면 컨텍스트 잠식). 그래서 이 wave
+    가 카드에 있나) 강제하면 잘못이다 — 카드는 **curated** 목록(모드-스코프·신호 대 잡음·⑰)이라
+    board/pm_config 의 모든 서브커맨드를 뿌리지 않는다(전부 뿌리면 컨텍스트 잠식). 그래서 이 작업
     가 실제로 추가한 **parser-backed** task 관리 leaf 만 명시 required 로 못박는다 — 새 서브커맨드가
     카드에서 조용히 빠지는 클래스의 teeth. (worktree_pool refresh/rebase 는 build_parser 없는
     스킬-렌더 backbone 이라 parser-backed required 대상이 아니다 — readonly 카드의 status 는 별도
@@ -369,7 +369,7 @@ def test_task_mode_covers_new_task_commands():
         ("pm_config.py", ("task", "prefix")),
     }
     missing = required - declared
-    assert not missing, f"task 카드가 신규 task 커맨드 미표면화: {sorted(missing)}"
+    assert not missing, f"task 카드가 신규 task 커맨드를 드러내지 않음: {sorted(missing)}"
 
 
 # ── 4. sensitivity (합성 drift 를 comparator 가 실제로 잡나·공허 가드 방지) ──────
@@ -416,7 +416,7 @@ def test_card_definition_non_empty():
     assert bootstrap_card._CARD_TASK_CLI, "카드 정의서가 비었다(가드 vacuous)"
 
 
-# ── 5. ㉓ 하네스 파리티 (템플릿 사본이 같은 정의서·같은 파서와 정합) ────────────
+# ── 5. ㉓ 하네스 파리티 (템플릿 사본이 같은 정의서·같은 파서와 일치) ────────────
 
 
 def test_template_copies_share_engine_definition():
@@ -424,7 +424,7 @@ def test_template_copies_share_engine_definition():
 
     ㉓ — 카드 렌더는 하네스-무관 Python 엔진이라 opencode 도 같은 정의를 소비(같은 부트스트랩 dump·
     같은 카드) → 어댑터 md 분기 0. 사본이 stale 하면 여기서 red(drift-0 은 pm_update 가 강제하나
-    이 가드가 카드-표면 관점에서 이중화).
+    이 가드가 카드 관점에서 이중화).
     """
     root = _load(_TREES["root"], "pm_engine/cli/bootstrap_card")
     root_decl = {(r.tool, r.subpath, r.render, r.flags) for r in root._CARD_TASK_CLI}

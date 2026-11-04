@@ -10,7 +10,7 @@ import StatusRowActions, { holderLabel, SlotTableAllocate, TaskSlotAllocate, Tas
 
 /**
  * 기계 기록 한 줄 — 판정(`status`) · 수집 수 · 시각. 값은 엔진 sidecar 그대로 고르고 여기서
- * 다시 계산하지 않는다. 회귀는 `collected`, 게이트는 `n` 이라 이름만 다르다.
+ * 다시 계산하지 않는다. 회귀는 `collected`, 라이브 시험은 `n` 이라 이름만 다르다.
  *
  * 하한(`floor`)은 **수집 수가 그에 못 미칠 때만** 붙는다 — 넘긴 하한은 사람이 읽을 것이 없고,
  * 미달은 그 자체가 봐야 할 사실이다. 수집 수가 없는 옛 기록은 그 자리를 비운 채 나머지를 낸다.
@@ -40,7 +40,7 @@ function MachineRecord({ name, label, record }:
   );
 }
 
-/** 현황 탭의 읽기 부분 — 보드 counts · task 표 · 슬롯 표 · 회귀/게이트 · lint 수. */
+/** 현황 탭의 읽기 부분 — 보드 counts · task 표 · 슬롯 표 · 회귀/라이브 시험 · lint 수. */
 export default function StatusTab({ light, heavy, remote }:
   { light: Entry | undefined; heavy: Entry | undefined; remote?: Entry | undefined }) {
   const document_ = light?.status;
@@ -68,7 +68,7 @@ export default function StatusTab({ light, heavy, remote }:
           <MachineRecord name="regression" label="회귀" record={board.regression} />
         )}
         {board?.live_test != null && (
-          <MachineRecord name="live-test" label="게이트" record={board.live_test} />
+          <MachineRecord name="live-test" label="라이브 시험" record={board.live_test} />
         )}
       </section>
 
@@ -108,7 +108,7 @@ function SlotRow_({ slot, remote }: { slot: SlotRow; remote?: Entry | undefined 
  *
  * 어느 task 도 쥐지 않은 슬롯(아이들·readonly·세션이 잡은 것)은 마지막 `공용` 탭에 모인다 —
  * task 탭에 남의 슬롯이 섞이면 "이 task 가 무엇을 쥐고 있나" 를 한눈에 못 읽는다. 대여는
- * repo 축이라 공용 탭에 하나만 둔다(누른 자리와 대여되는 자리가 갈리지 않게).
+ * repo 단위라 공용 탭에 하나만 둔다(누른 자리와 대여되는 자리가 갈리지 않게).
  */
 function TaskTabs({ tasks, slots, remote }:
   { tasks: TaskRow[]; slots: SlotRow[]; remote?: Entry | undefined }) {

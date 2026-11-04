@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from _slot_seed import seed_slot
-from conftest import current_branch, write_cluster_ledger
+from conftest import current_branch, write_cluster_records
 from test_cluster_close import _review_round_text
 
 
@@ -46,7 +46,7 @@ def _write_claimed_ticket(root: Path, ticket_id: str, touches: list[str]) -> Non
         "status: claimed\n"
         f"touches:\n{touch_lines}\n"
         "estimate: small\n"
-        # 묶음 기록(`write_cluster_ledger`)과 명세의 귀속은 **양방향**이어야 한다 — 한쪽만 있으면
+        # 묶음 기록(`write_cluster_records`)과 명세의 귀속은 **양방향**이어야 한다 — 한쪽만 있으면
         # 실 `board complete` 가 첫 write 앞에서 거부하는 경우다(board 대역이 가리던 자리).
         f"cluster: C-{ticket_id}\n"
         "---\n\n"
@@ -85,7 +85,7 @@ def _seed_git_tree(root: Path, files: dict[str, int], *,
     _git(root, "config", "user.email", "ticket-finish-test@example.invalid")
     _git(root, "config", "user.name", "ticket finish test")
     if record_ticket is not None:
-        write_cluster_ledger(
+        write_cluster_records(
             root / ".project_manager" / "wiki", record_ticket,
             base_branch=current_branch(root), branch=current_branch(root))
     (root / "seed.txt").write_text("seed\n", encoding="utf-8")

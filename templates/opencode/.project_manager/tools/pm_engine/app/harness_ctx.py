@@ -235,13 +235,13 @@ def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path
     """local.conf 의 사용 한도·압축 비율을 설정 파일이 있는 하네스에 반영한다 — 바뀐 줄 목록.
 
     순서: 검사(옛 키면 멈춤) → 설정 파일·opencode 전역 설정 읽기 → 도구별 모델 한도 조회·계산·설정 형식
-    확인 → 새 내용 재판독 확인 → (`write`) 원자 쓰기 → 원장 → 압축 한도 기록. 앞 단계의 `HarnessCtxError`
+    확인 → 새 내용 재판독 확인 → (`write`) 원자 쓰기 → 기록 → 압축 한도 기록. 앞 단계의 `HarnessCtxError`
     는 어떤 파일도 쓰지 않았다는 뜻이다. 반환 줄은 "<relpath> <경로> <옛 값> → <새 값>"(없던 키는 `(없음)`,
     점이 든 경로 조각은 큰따옴표: `provider.ollama.models."glm-5.2:cloud"…`).
 
-    원장 규칙: 반영 직전 파일을 원장이 증언하면(`_baseline_attests_dest`) 그 항목의 `sha256` 만 새
+    기록 규칙: 반영 직전 파일을 기록이 증언하면(`_baseline_attests_dest`) 그 항목의 `sha256` 만 새
     내용 해시로 바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다.
-    편집됨·원장 없음은 원장을 건드리지 않는다. 원장이 상위 schema 면 파일을 쓰지 않고 멈춘다.
+    편집됨·기록 없음은 기록을 건드리지 않는다. 기록이 상위 schema 면 파일을 쓰지 않고 멈춘다.
     `harness.opencode.pro_model` 은 읽지 않는다 — 대상 모델은 설정 파일에 적힌 모델 전부와 선택 모델이되,
     공급자 연결 설정이 없는 모델(`_ctx_opencode_unconnected`)은 빼고 반영마다 표준오류로 알린다. 남은
     모델이 없으면 opencode 는 반영하지 않는다(설정 파일 그대로·기록에 opencode 항목 없음)."""
@@ -403,7 +403,7 @@ def _opencode_rows_left(models: dict, rows: list) -> bool:
 
     모델 목록 캐시 파일이 없으면 공급자 연결 여부를 알 수 없어 models.dev 공급자 모델도 빠진다 — 그때는
     원인을 공급자 연결 설정 없음 대신 캐시 부재와 그 경로로 적고, 미반영 줄에 opencode 를 한 번 실행해
-    목록을 받으라는 처방을 더한다."""
+    목록을 받으라는 해결 방법을 더한다."""
     rerun = conf_schema._CTX_RERUN
     catalog_path = _opencode_model_catalog_path()
     catalog_missing = not catalog_path.is_file()
@@ -951,7 +951,7 @@ def _toml_set_top_level_integer(text: str, key: str, value: int) -> tuple[str, s
     """TOML 최상위 키 줄의 값 자리만 정수로 바꾼다 — 없으면 첫 `[표]` 머리 줄 앞에 한 줄 넣는다.
 
     반환 (새 텍스트, 옛 값 리터럴 또는 None). 최상위 구간은 첫 표 머리 줄 전까지다(그 뒤의 같은
-    이름은 표 안 키다). 넣는 줄은 머리 줄 바로 위의 빈 줄들 앞에 둔다. 결과의 정합은 호출부가
+    이름은 표 안 키다). 넣는 줄은 머리 줄 바로 위의 빈 줄들 앞에 둔다. 결과의 일치는 호출부가
     `tomllib` 로 다시 읽어 확인한다."""
     header = _toml_first_table_header(text)
     region_end = header.start() if header else len(text)
@@ -982,7 +982,7 @@ def _toml_set_top_level_integer(text: str, key: str, value: int) -> tuple[str, s
 
 
 def _harness_ctx_baseline_writable(dest_root: Path) -> None:
-    """원장이 이 엔진보다 새 schema 면 `HarnessCtxError` — 반영이 어떤 파일도 쓰기 전에 본다."""
+    """기록이 이 엔진보다 새 schema 면 `HarnessCtxError` — 반영이 어떤 파일도 쓰기 전에 본다."""
     if adapter_baseline._load_adapter_baseline_document(dest_root).status == "newer-schema":
         raise HarnessCtxError([
             f"어댑터 설정 기록 schema 가 이 엔진(지원 상한 {adapter_baseline.ADAPTER_BASELINE_SCHEMA})보다 새로워 "
@@ -990,10 +990,10 @@ def _harness_ctx_baseline_writable(dest_root: Path) -> None:
 
 
 def _harness_ctx_write(dest_root: Path, changed: dict[str, tuple[str, str]]) -> None:
-    """바뀐 설정 파일을 원자 쓰기하고 원장 규칙을 적용한다(`apply_harness_ctx` docstring).
+    """바뀐 설정 파일을 원자 쓰기하고 기록 규칙을 적용한다(`apply_harness_ctx` docstring).
 
-    파일마다 교체를 시도해 결과를 모은 뒤, 교체에 성공한 원장 증언 파일의 `sha256` 을 먼저 기록하고
-    나서 쓰지 못한 파일이 있으면 멈춘다 — 이미 바뀐 파일이 원장의 옛 해시에 걸려 편집됨으로 판정되지
+    파일마다 교체를 시도해 결과를 모은 뒤, 교체에 성공한 기록 증언 파일의 `sha256` 을 먼저 기록하고
+    나서 쓰지 못한 파일이 있으면 멈춘다 — 이미 바뀐 파일이 기록의 옛 해시에 걸려 편집됨으로 판정되지
     않게 한다(편집됨 판정은 세트 수용에서도 그 파일을 뺀다)."""
     document = adapter_baseline.read_adapter_baseline(dest_root)
     files = dict(document.get("files") or {})

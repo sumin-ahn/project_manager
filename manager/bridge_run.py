@@ -10,11 +10,11 @@
     강제로 닫는다")의 자리라 화면에서도 부를 수 있다.
   - `--user-ack <값>` 을 이 파일이 만들지 않는다. 화면의 확인 대화가 사용자 클릭으로 돌려준
     값이 argv 에 실려 올 뿐이라, 이 모듈에 그 문자열이 없다.
-  - 관리자가 장부 파일(`worktree-leases.json`·`areas.md`·`install.json`)을 직접 여는 자리는
-    없다. 장부 변화는 전부 이 서브프로세스의 부작용이다.
+  - 관리자가 기록 파일(`worktree-leases.json`·`areas.md`·`install.json`)을 직접 여는 자리는
+    없다. 기록 변화는 전부 이 서브프로세스의 부작용이다.
 
 거부(허용 목록 밖·금지 플래그)는 **서브프로세스 0개**이고, 실패 형태는 `CallError` 가 아니다 —
-바깥을 부르다 실패한 것이 아니라 부르기를 거절한 것이라 kind 축이 다르다(화면은 같은
+바깥을 부르다 실패한 것이 아니라 부르기를 거절한 것이라 kind 값이 다르다(화면은 같은
 `{"error": {...}}` 모양으로 받는다).
 """
 from __future__ import annotations
@@ -92,7 +92,7 @@ class RunApi:
     def run(self, path: str, argv: list[str]) -> dict:
         """그 사본의 `pm-config <argv…>` 한 번 — rc·stdout·stderr 를 원문 그대로 돌려준다.
 
-        엔진의 거부(승인 토큰·소유검사·dirty·claimed 게이트)는 rc 와 문구 그대로 올라간다.
+        엔진의 거부(승인 토큰·소유검사·dirty·claimed 검사)는 rc 와 문구 그대로 올라간다.
         관리자가 그 판정을 다시 하거나 문구를 고쳐 쓰는 자리는 없다.
         """
         tokens = list(argv)

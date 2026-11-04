@@ -1,16 +1,16 @@
-"""엔진 세대 값 `pm_engine.ENGINE_REV` 와 CHANGELOG 최신 릴리스 버전 정합 (릴리즈 bump 누락 차단).
+"""엔진 버전 값 `pm_engine.ENGINE_REV` 와 CHANGELOG 최신 릴리스 버전 일치 (릴리즈 bump 누락 차단).
 
 `pm_engine.ENGINE_REV`(관리자 버전·status JSON·설치 하네스 별칭 기한이 읽는 단일 진실·릴리즈마다
-고치는 유일 지점)가 CHANGELOG 의 최신 *릴리스* 절 버전과 일치하는지 릴리즈 게이트에서 기계
+고치는 유일 지점)가 CHANGELOG 의 최신 *릴리스* 절 버전과 일치하는지 릴리즈 검사에서 기계
 단언한다. 값 갱신 누락을 릴리즈 절차가 조용히 통과하지 못하게 못박는다.
 
 **release 마커**라 평시 회귀(`pytest tests/ -q`)엔 걸리지 않고(PM_ORCH_LIVE_RELEASE 미설정 시
-skip), `pytest -m release`(릴리즈 게이트·PM_ORCH_LIVE_RELEASE=1)에서만 실행된다. 라이브 LLM
-불요·순수 기계지만 release 티어에 편입해 릴리즈마다 rev↔CHANGELOG 정합을 강제한다
-(test_task_cycle_e2e 동형 — 기계 e2e 를 릴리즈 게이트에 편입한 선례).
+skip), `pytest -m release`(릴리즈 검사·PM_ORCH_LIVE_RELEASE=1)에서만 실행된다. 라이브 LLM
+불요·순수 기계지만 release 티어에 편입해 릴리즈마다 rev↔CHANGELOG 일치를 강제한다
+(test_task_cycle_e2e 와 같은 구조 — 기계 e2e 를 릴리즈 검사에 편입한 선례).
 
-시퀀스(의도된 red→green): 코드 wave 가 `ENGINE_REV="vX.Y.Z"`(다음 릴리스)로 먼저 고쳐지면
-CHANGELOG 최신 릴리스 절은 아직 이전 버전이라 이 테스트가 릴리즈 게이트에서 **red** 다(정상)
+시퀀스(의도된 red→green): 코드 작업이 `ENGINE_REV="vX.Y.Z"`(다음 릴리스)로 먼저 고쳐지면
+CHANGELOG 최신 릴리스 절은 아직 이전 버전이라 이 테스트가 릴리즈 검사에서 **red** 다(정상)
 — PM 이 릴리즈 기록에서 CHANGELOG `## [X.Y.Z]` 절을 쓰면 **green** 이 된다. 즉 "CHANGELOG 를
 안 쓰면 릴리즈 못 나감"을 기계로 보장한다.
 """
@@ -43,7 +43,7 @@ def _latest_changelog_version(text: str) -> str | None:
 @pytest.mark.release
 @pytest.mark.skipif(
     not os.environ.get("PM_ORCH_LIVE_RELEASE"),
-    reason="release bump 게이트 — PM_ORCH_LIVE_RELEASE=1 (릴리즈 절차). 평시 회귀엔 skip.",
+    reason="release bump 검사 — PM_ORCH_LIVE_RELEASE=1 (릴리즈 절차). 평시 회귀엔 skip.",
 )
 def test_engine_rev_matches_latest_changelog_release():
     """`pm_engine.ENGINE_REV` == CHANGELOG 최신 릴리스 버전 (값 갱신 누락 릴리즈 차단)."""

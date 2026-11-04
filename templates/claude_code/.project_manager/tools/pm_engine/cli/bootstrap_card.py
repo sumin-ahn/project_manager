@@ -22,7 +22,7 @@ def _resolve_card_tool_invoke(
 ) -> str:
     """커맨드 카드 도구 접두를 per-clone `local.conf`의 `runtime.py=` 값으로 완성한다.
 
-    설정 파일 부재·읽기 실패·키 부재·빈 값은 OS 기본으로 조용히 폴백한다. 인터프리터의 실행
+    설정 파일 부재·읽기 실패·키 부재·빈 값은 OS 기본으로 조용히 대신한다. 인터프리터의 실행
     가능 여부와 지원 버전은 설정을 기록하는 초기화 단계가 검증하므로 여기서는 선택을 반복하지
     않고 표기만 일치시킨다.
     """
@@ -125,20 +125,20 @@ def _build_command_card_markdown(home, task_name, *, environment=None) -> str:
     ("--help 자체를 안 가게"·사용자 지시). 정체성(`--task <task>`)은 **실값으로 보간**하고,
     사용자 입력(`T-NNNN`·`<PFX>`·`<요약>` 등)만 placeholder 로 남긴다.
 
-    숨은 전제 4대장(claim=promote 선행·prefix rename/merge=홈 git clean·livegate record=
+    숨은 전제 4대장(claim=promote 선행·prefix rename/merge=홈 git clean·live-test record=
     release-marked pin·migrate-identity=단일세션) + reid=홈 git clean 을 해당 커맨드 줄 바로
     아래 1줄 ⚠ 경고로 인접 배치한다(별도 절 금지·인접성이 학습 보장).
 
-    wave 운영(claim·regression·finish·qa·dev 위임·handoff·엔진 갱신)은 **스킬(`/pm-…`) 진입을
-    primary** 로 올리고 감싸는 backbone 은 강등한다(boundary=래핑 스킬
-    유무). 강등 줄은 pm_role skill 카탈로그의 "감싸는 내부 엔진" 열과 정확히 일치시킨다(카드=
+    일상 운영(claim·regression·finish·qa·dev 위임·handoff·엔진 갱신)은 **스킬(`/pm-…`) 진입을
+    primary** 로 올리고 감싸는 backbone 은 보조 줄로 낮춘다(boundary=래핑 스킬
+    유무). 보조 줄은 pm_role skill 카탈로그의 "감싸는 내부 엔진" 열과 정확히 일치시킨다(카드=
     pm_role 표기). **엔진이 Python CLI(`tools/*.py` — board.py/ticket_finish.py/
-    pm_handoff.py)일 때만** "직접 금지" 강등 줄로 그리고, 엔진이 Agent 툴(`/pm-dev-delegate`)·
+    pm_handoff.py)일 때만** "직접 금지" 보조 줄로 그리고, 엔진이 Agent 툴(`/pm-dev-delegate`)·
     facade 셸(`/pm-update`=pm-update.sh)이면 python3 줄을 지어내지 않고 skill-only + 평문 note
-    로 둔다. additional_reviewer 는 래핑 스킬 없는 별도 추가 리뷰어 게이트라 강등이 아니라 직접-CLI 예외
+    로 둔다. additional_reviewer 는 래핑 스킬 없는 별도 추가 리뷰어 검사라 보조 줄이 아니라 직접-CLI 예외
     (`board.py new`/`promote` 발행 authoring 도 동일 · 완료 진입은 /pm-cluster-finish 하나라
-    direct `board.py complete` 줄은 카드에 없다). 강등 = 제거 아님: CLI backbone
-    줄은 정체성 보간·⚠ 인접·argparse 정합 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
+    direct `board.py complete` 줄은 카드에 없다). 보조 줄 = 제거 아님: CLI backbone
+    줄은 정체성 보간·⚠ 인접·argparse 일치 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
     카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
     """
     environment = environment or python_env._detect_command_environment(home)
@@ -158,9 +158,9 @@ def _build_command_card_markdown(home, task_name, *, environment=None) -> str:
         return f"{line}  # {comment}" if comment else line
 
     def skill(invocation: str, comment: str = "") -> str:
-        """`/pm-…` 스킬 진입 줄(wave 운영 primary).
+        """`/pm-…` 스킬 진입 줄(일상 운영 primary).
 
-        해소된 도구 접두로 시작하지 않으므로 카드↔CLI argparse 정합 가드·정체성 `--repo/--slot`
+        해소된 도구 접두로 시작하지 않으므로 카드↔CLI argparse 일치 가드·정체성 `--repo/--slot`
         검사(불변식 3)의 대상이 아니다 — backbone 은 아래 `engine()` 줄로 종속화한다.
         """
         rendered_invocation = _runtime_skill_entry(invocation.lstrip("/$"))
@@ -172,10 +172,10 @@ def _build_command_card_markdown(home, task_name, *, environment=None) -> str:
         suffix: str = "",
         prefix: str = "",
     ) -> str:
-        """스킬에 종속된 backbone 줄 — 2-스페이스 들여쓰기 + '직접 금지' 주석(강등 표기).
+        """스킬에 종속된 backbone 줄 — 2-스페이스 들여쓰기 + '직접 금지' 주석(보조 줄 표기).
 
         해소된 도구 접두로 시작해(들여쓰기는 strip 됨) 정체성 `--repo/--slot` 보간·카드↔CLI
-        argparse 정합 가드의 대상으로 남는다(불변식 1·3 무손상). 스킬 줄(`/pm-…`)만 그
+        argparse 일치 가드의 대상으로 남는다(불변식 1·3 무손상). 스킬 줄(`/pm-…`)만 그
         가드 밖이다.
         """
         return "  " + cmd(rec, f"↳ {note}", suffix, prefix)
@@ -213,11 +213,11 @@ def _task_command_card_lines(
 ) -> str:
     """task 모드 커맨드 카드 — task 세션이 쓸 task-스코프 커맨드만 dump.
 
-    task 세션의 진입 정체성 앵커는 task 명 하나(`--task <name>`)다(log/pm_state 귀속·
-    board/lease 소유검사). 보유 슬롯 집합은 장부에서 자동 수령한다. 슬롯-전용 커맨드
-    (worktree 관리·prefix rename/merge·livegate)는 안
+    task 세션의 진입 정체성 기준은 task 명 하나(`--task <name>`)다(log/pm_state 귀속·
+    board/lease 소유검사). 보유 슬롯 집합은 대여 기록에서 자동 수령한다. 슬롯-전용 커맨드
+    (worktree 관리·prefix rename/merge·live-test)는 안
     뿌린다(신호 대 잡음·컨텍스트 잠식 방지) — task 작업공간 대여/반납·task 정체성·task-스코프
-    wave 운영만. 커맨드 토큰은 공용 정의서(`_CARD_TASK_CLI`) 단일 진실에서 온다(손 하드코딩 0).
+    일상 운영만. 커맨드 토큰은 공용 정의서(`_CARD_TASK_CLI`) 단일 진실에서 온다(손 하드코딩 0).
     """
     ti = f" --task {task_name}"
     lines: list[str] = []

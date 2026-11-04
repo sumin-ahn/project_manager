@@ -43,11 +43,11 @@ def repo_owned_paths(
     *,
     mode: str,
 ) -> list[Path]:
-    """seam 엔트리를 working-tree 재검사 없이 checkout 기준 절대 경로로 반환한다.
+    """공용 열거 엔트리를 working-tree 재검사 없이 checkout 기준 절대 경로로 반환한다.
 
     git 성공 결과는 index/``ls-files``가 진실이다. 여기서 ``is_file()``로 다시 거르면
     삭제된 tracked 파일뿐 아니라 symlink(mode 120000)·gitlink(mode 160000)까지 조용히
-    사라져 출하 가드가 false-green이 될 수 있다. 따라서 canonical seam과 같이 엔트리를
+    사라져 출하 가드가 false-green이 될 수 있다. 따라서 canonical 공용 열거와 같이 엔트리를
     보존하고, 실제 byte 읽기/파일형 제한이 필요한 소비처가 loud하게 판정하게 한다.
     """
     root = checkout.resolve()

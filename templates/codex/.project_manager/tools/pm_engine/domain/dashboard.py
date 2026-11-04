@@ -41,8 +41,8 @@ _DASHBOARD_HEADER = (
 def _flatten_dashboard_value(value: object) -> str:
     """대시보드 본문 한 줄 값으로 안전화 — 개행 평탄화·trim·char cap (섹션 위조 방어).
 
-    render_dashboard_section 인자는 공개라 다중행 입력(wave_summary·next_plan)이 `## ` 헤딩을
-    위조하거나 상한 줄수를 우회할 수 있다 — 개행을 공백으로 접고(single line) char cap 을 씌워
+    render_dashboard_section 인자는 공개라 다중행 입력(session_summary·next_plan)이 `## ` 헤딩을
+    위조하거나 상한 줄수를 우회할 수 있다 — 개행을 공백으로 바꾸고(single line) char cap 을 씌워
     자기 규격(줄단위·경량)을 엔진이 직접 방어한다.
     """
     flat = " ".join(part.strip() for part in str(value).splitlines() if part.strip())
@@ -57,7 +57,7 @@ def _sanitize_dashboard_key(session: object) -> str:
 
     session 키는 `## <session>` 헤딩으로 쓰이고 upsert 의 경계 정규식이 그걸 매칭한다 —
     개행이나 `#` 가 섞이면 가짜 헤딩/섹션 경계를 위조할 수 있다(render/upsert 인자는 공개).
-    `#` 를 공백으로 바꾸고 whitespace(개행 포함)를 단일 공백으로 접어 한 줄 안전 토큰으로 만든다.
+    `#` 를 공백으로 바꾸고 whitespace(개행 포함)를 단일 공백으로 합쳐 한 줄 안전 토큰으로 만든다.
     render(헤딩 출력)·upsert(경계 검색)가 **같은 정규화**를 써 같은 raw 키에 일관 동작한다.
     정상 키(`<repo>_<N>`)는 공백·`#` 가 없어 항등(무변경).
     """
@@ -68,7 +68,7 @@ def render_dashboard_section(
     session: str,
     *,
     session_num: int | str,
-    wave_summary: str,
+    session_summary: str,
     claimed_tickets: list[str] | None = None,
     next_plan: str | None = None,
     date: str | None = None,
@@ -78,7 +78,7 @@ def render_dashboard_section(
 
     본문 줄(순서·상한 `max_lines`=DASHBOARD_SECTION_MAX_LINES):
       - 차수: PM <N>차 (<date>)
-      - wave: <wave_summary 1줄 평탄화>
+      - 세션 요약: <session_summary 1줄 평탄화>
       - claimed: <T-…, …>   (claimed_tickets 비면 줄 생략)
       - 다음: <next_plan>    (없으면 줄 생략)
     각 값은 `_flatten_dashboard_value`(개행 평탄화·char cap)로 경량화하고, 본문을 `max_lines`
@@ -91,7 +91,7 @@ def render_dashboard_section(
         max_lines = DASHBOARD_SECTION_MAX_LINES
     body_lines = [
         f"- 차수: PM {handoff_text._normalize_session_num(session_num)}차 ({date})",
-        f"- 세션 요약: {_flatten_dashboard_value(wave_summary)}",
+        f"- 세션 요약: {_flatten_dashboard_value(session_summary)}",
     ]
     if claimed_tickets:
         body_lines.append(
