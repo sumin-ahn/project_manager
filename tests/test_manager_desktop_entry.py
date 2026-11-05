@@ -10,7 +10,7 @@ import os
 import stat
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -26,7 +26,8 @@ ICON_BYTES = b"\x89PNG fake icon"
 DESKTOP_NAME = "pm-manager.desktop"
 ICON_RELATIVE = Path("icons") / "hicolor" / "256x256" / "apps" / "pm-manager.png"
 
-ICON_FILE = Path("/data") / ICON_RELATIVE
+# `.desktop` 은 Linux 파일이라 경로를 Linux 표기로 만든다(Windows 에서 돌아도 같은 글).
+ICON_FILE = PurePosixPath("/data", *ICON_RELATIVE.parts)
 
 BUNDLE_ENTRY_TEXT = """[Desktop Entry]
 Type=Application
@@ -74,11 +75,11 @@ def test_the_entry_text_for_the_bundle_and_the_source_tree():
         executable="/opt/My Apps/pm-manager-linux-x86_64", frozen=True, repo_root=Path("/repo"))
     source = desktop_entry.launch_command(
         executable="/home/u/venv dir/bin/python3", frozen=False,
-        repo_root=Path("/home/u/work/project_manager_5"))
+        repo_root=PurePosixPath("/home/u/work/project_manager_5"))
 
     assert bundle == (["/opt/My Apps/pm-manager-linux-x86_64"], None)
     assert source == (["/home/u/venv dir/bin/python3", "-m", "manager"],
-                      Path("/home/u/work/project_manager_5"))
+                      PurePosixPath("/home/u/work/project_manager_5"))
     assert desktop_entry.entry_text(*bundle, "Project Manager", ICON_FILE) == BUNDLE_ENTRY_TEXT
     assert desktop_entry.entry_text(*source, "Project Manager", ICON_FILE) == SOURCE_ENTRY_TEXT
 

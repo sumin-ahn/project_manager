@@ -2588,7 +2588,8 @@ def test_legacy_opencode_manifest_provenance_upgrade_avoids_bare_source_rc2(
     ]) == 0
     capsys.readouterr()
     manifest = dest / ".project_manager" / "engine.manifest"
-    manifest.write_text(_strip_to_legacy_manifest(manifest.read_text(encoding="utf-8")), encoding="utf-8")
+    manifest.write_text(_strip_to_legacy_manifest(manifest.read_text(encoding="utf-8")), encoding="utf-8",
+                        newline="\n")
     shipped = update_manifest.shipped_manifest(dest, REPO)
     assert [path.parents[1].name for path in shipped["manifests"]] == ["opencode"]
     capsys.readouterr()

@@ -495,7 +495,9 @@ def _build_windows_rename_api() -> WindowsRenameApi:
         handle = create_file(
             path, access, share, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None)
         if handle == invalid_handle:
-            raise ctypes.WinError(ctypes.get_last_error())
+            code = ctypes.get_last_error()
+            # 내장 open 처럼 어느 파일인지 오류에 싣는다(`ctypes.WinError` 는 경로를 담지 않는다).
+            raise OSError(None, ctypes.FormatError(code), path, code)
         return handle
 
     def rename(handle: int, target: str, flags: int) -> int:
@@ -662,7 +664,9 @@ def _build_windows_shared_open_api() -> WindowsSharedOpenApi:
         handle = create_file(
             path, access, share, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None)
         if handle == invalid_handle:
-            raise ctypes.WinError(ctypes.get_last_error())
+            code = ctypes.get_last_error()
+            # 내장 open 처럼 어느 파일인지 오류에 싣는다(`ctypes.WinError` 는 경로를 담지 않는다).
+            raise OSError(None, ctypes.FormatError(code), path, code)
         return handle
 
     def close_handle(handle: int) -> None:

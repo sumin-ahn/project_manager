@@ -156,10 +156,11 @@ def test_update_apply_runs_the_bundled_updater_into_the_copy_first(api, tmp_path
     assert api.update_apply(str(tmp_path))["rc"] == 0
     assert api.update_preview(str(tmp_path))["rc"] == 0
 
+    interpreter = list(bridge_update.runner.interpreter(tmp_path))
     run1, run2, preview = calls
-    assert run1[1:] == [bundled, "--into", str(tmp_path)]
-    assert run2[1:] == [str(tmp_path / ".project_manager" / "tools" / "pm_config.py"), "update"]
-    assert preview[1:] == [bundled, "--into", str(tmp_path), "--dry-run"]
+    assert run1 == [*interpreter, bundled, "--into", str(tmp_path)]
+    assert run2 == [*interpreter, str(tmp_path / ".project_manager" / "tools" / "pm_config.py"), "update"]
+    assert preview == [*interpreter, bundled, "--into", str(tmp_path), "--dry-run"]
     assert all("--from" not in argv for argv in calls)
 
 

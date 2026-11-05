@@ -832,7 +832,8 @@ def test_main_stops_when_upstream_manifest_absent(pm_update, tmp_path, monkeypat
     rc = update_cmd.main(pm_paths.home_at(pm_update.REPO), [])
 
     assert rc == 1
-    assert ".project_manager/engine.manifest" in capsys.readouterr().err
+    # Windows 는 오류에 경로를 repr(역슬래시 두 번)로 싣는다.
+    assert ".project_manager/engine.manifest" in capsys.readouterr().err.replace("\\\\", "/")
     assert not (fake_repo / SENTINEL_REL).exists()
     conf = install_conf._read_local_conf(fake_repo / ".project_manager" / "local.conf")
     assert "upstream.rev" not in conf
@@ -1397,8 +1398,9 @@ def test_named_second_variant_missing_manifest_stops(pm_update, tmp_path):
     )
     second.unlink()
 
-    with pytest.raises(FileNotFoundError, match="templates/second"):
+    with pytest.raises(FileNotFoundError) as raised:
         update_manifest.shipped_manifest(dest, source)
+    assert "templates/second/" in Path(raised.value.filename).as_posix()
 
 
 def test_declared_manifest_warns_on_undeclared_variant_tree_without_promoting(
@@ -1552,8 +1554,9 @@ def test_source_naming_a_variant_missing_upstream_stops(pm_update, tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(FileNotFoundError, match="templates/no_such"):
+    with pytest.raises(FileNotFoundError) as raised:
         update_manifest.shipped_manifest(dest, source)
+    assert "templates/no_such/" in Path(raised.value.filename).as_posix()
 
 
 _RETIRE_OLD = ".project_manager/tools/external_review.py"
@@ -8051,5 +8054,7 @@ def test_a_variant_named_by_source_but_missing_upstream_stops_before_planning(
 
         captured = capsys.readouterr()
         assert rc == 1, f"{copy.name}\n{captured.out}\n{captured.err}"
-        assert "templates/codex/.project_manager/engine.manifest" in captured.err, captured.err
+        # Windows 는 오류에 경로를 repr(역슬래시 두 번)로 싣는다.
+        assert "templates/codex/.project_manager/engine.manifest" in captured.err.replace("\\\\", "/"), \
+            captured.err
         assert _durable_tree(copy) == before, copy.name
