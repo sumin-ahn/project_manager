@@ -17,9 +17,9 @@ upstream 엔진 변경을 raw `pm_update.py`가 아닌 facade(`./pm-update.sh`)�
 - **pm-update** = 엔진 + 기본 하네스 어댑터 갱신(upstream→채택자).
 - upstream 값 전환은 [[pm-env]], 세션 시작 상태점검은 [[pm-bootstrap]].
 - **두 하네스 구성의 추가 하네스**(`add-harness`로 얹은 `.opencode/*` 등)도 engine.manifest 추가 하네스 절째로 pm-update가 전파한다 — 한 줄의 `@render` 유무가 **전파 방식**을 정한다(채널은 하나다).
-  - **어댑터 렌더물**(`@render @target-owned`, 예 `.opencode/agents`·`.claude/agents`): pm-update가 채택자 `local.conf` 값으로 **다시 렌더**한다. 카드의 `model`을 손으로 고쳐도 다음 pm-update가 conf 값으로 되돌린다 — 값을 바꾸는 자리는 `local.conf`의 `delegate.<role>[.<tier>].{model,reasoning}`다. `add-harness <harness>` 재실행은 그 하네스 어댑터 파일이 새로 추가/폐기됐을 때 쓰고, 값 반영에는 필요하지 않다.
+  - **어댑터 렌더물**(`@render @target-owned`, 예 `.opencode/agents`·`.claude/agents`): pm-update가 채택자 `local.conf` 값으로 **다시 렌더**한다. 카드의 `model`을 손으로 고쳐도 다음 pm-update가 conf 값으로 되돌린다 — 값을 바꾸는 자리는 `local.conf`의 `delegate.<role>[.<tier>].{model,reasoning}`다. 추가 하네스 구획은 pm-update가 갱신마다 그 하네스의 상류 manifest에서 다시 만들므로, 상류가 어댑터 파일을 더하거나 지워도 `add-harness`를 다시 실행하지 않는다.
   - **어댑터 엔진 파일**(`@source=templates/<harness>/… @target-owned`, 예 `.opencode/lib`·`.codex/pm_orch_codex.py`·claude ctx 가드): pm-update가 byte-copy로 갱신한다. 엔진 패키지(`pm_engine`)와 짝인 파일들이라 이 채널이 없으면 코어↔드라이버 skew가 쌓인다.
-- 구버전에서 얹은 추가 하네스 절에는 엔진 행이 없을 수 있다. 이 경우 pm-update가 하네스별 판을 1회 추론해 엔진 행을 절에 기록하며(이후 실행은 기록된 `@source` provenance를 따른다), 화면에 `추가 하네스 엔진 행 N건 파생`으로 표시한다.
+- 구획에 손으로 넣은 행은 갱신 때 관리에서 빠지고 파일은 그대로 남는다. 갱신 출력이 그 목록을 알린다.
 
 사용 시점: upstream 변경/주기적 freshness 점검 또는 `board.py lint`의 `adapter-drift` advisory 발생 시.
 

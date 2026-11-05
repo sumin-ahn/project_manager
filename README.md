@@ -495,9 +495,9 @@ opencode 를 codex 프로젝트에 붙일 때 opencode 가 소비하는 `.claude
 매핑·추가 하네스의 드라이버/훅 등)은 byte-copy 로 갱신한다. 렌더물이므로 추가 하네스 어댑터 카드의
 손편집(예 agent 카드의 `model`)은 다음 `pm-update` 가 `local.conf` 값으로 되돌린다 — 값을 바꾸는
 자리는 카드가 아니라 `local.conf` 의 `delegate.<role>[.<tier>].{model,reasoning}` 이다.
-`add-harness <harness>` 재실행은 그 하네스의 어댑터 파일이 새로 추가/폐기됐을 때(구획 등재 갱신)
-쓰고, 값 반영에는 필요하지 않다. 옛 버전 구획(엔진 행 미등재)은 다음 `pm-update` 가 하네스별 판 배타
-경로 증거로 엔진 행을 파생·등재해 동결 없이 일치한다.
+구획은 갱신마다 상류 manifest 에서 다시 만들어지므로, 상류가 어댑터 파일을 더하거나 지워도
+`add-harness <harness>` 를 다시 실행할 필요가 없다. 옛 버전에서 얹은 구획도 다음 `pm-update` 가 같은 방식으로
+다시 만든다.
 
 엔진 버전 관리는 별도 `engine.version` 파일이 아니라 git 으로 한다. 릴리즈는 git tag 와
 CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 `upstream.rev` baseline 으로 "어디까지 받았는지"를
