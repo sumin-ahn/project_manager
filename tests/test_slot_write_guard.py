@@ -28,6 +28,7 @@ from pm_engine.app import hooks
 from pm_engine.cli import hooks as cli_hooks
 from pm_engine.domain import git_policy
 from pm_engine.infra import conf_store
+from pm_engine.infra import task_store
 from pm_engine.cli import delegate_run as cli_delegate_run
 
 REPO = Path(__file__).resolve().parents[1]
@@ -297,6 +298,35 @@ def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(home):
         cli_hooks.adapter_home(home), "", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon", main_thread=True,
     )
     assert sorted(path.name for path in claims.iterdir()) == ["gamma.json", "zeta.json"]
+
+
+_BOOTSTRAP_WITH_TRAILING_EXPANSION = "python3 .project_manager/tools/pm_bootstrap.py --task gamma; echo rc=$?"
+
+
+def test_bootstrap_call_followed_by_a_shell_expansion_leaves_no_session_claim(home):
+    """부트스트랩과 상관없는 자리의 `$` 도 호출을 확정하지 못하게 해, 판정은 통과해도 기록이 남지 않는다."""
+    claims = home / ".project_manager" / ".local" / "task-session-claims"
+    got = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S-new", str(home), _BOOTSTRAP_WITH_TRAILING_EXPANSION, main_thread=True,
+    )
+    assert got["verdict"] != "deny"
+    assert not (claims / "gamma.json").exists()
+
+
+def test_missing_session_claim_message_names_shell_expansion_before_hook_install(home):
+    """기록이 없어 멈출 때 안내는 셸 확장과 다시 실행할 꼴을 훅 설치 확인보다 먼저 말하고 기록 경로로 끝난다."""
+    claims = home / ".project_manager" / ".local" / "task-session-claims"
+    got = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S-new", str(home), _BOOTSTRAP_WITH_TRAILING_EXPANSION, main_thread=True,
+    )
+    assert got["verdict"] != "deny"
+    with pytest.raises(task_store.NoTaskSessionClaim) as caught:
+        task_store.take_task_session_claim(pm_paths.home_at(home), "gamma")
+    message = str(caught.value)
+    assert "$" in message
+    positions = [message.index(phrase) for phrase in ("세션 기록이 없다", "셸 도구", "셸 확장", "다시 실행", "훅 설치")]
+    assert positions == sorted(positions)
+    assert message.endswith(f"{claims / 'gamma.json'}).")
 
 
 def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(home, tmp_path):
