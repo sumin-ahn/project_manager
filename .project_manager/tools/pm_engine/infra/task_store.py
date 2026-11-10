@@ -90,14 +90,19 @@ def ensure_task_pm_state(home, name: str) -> Path:
 
 
 class NoTaskSessionClaim(Exception):
-    """부트스트랩할 task 의 세션 기록이 없다 — 하네스 밖 실행이거나 가드 훅이 없다."""
+    """부트스트랩할 task 의 세션 기록이 없다. 하네스 밖 실행, 가드 훅 없음·미실행, 또는 훅이 그 호출을 기록하지 않은 경우(셸 확장이 섞인 명령 등)다."""
 
     def __init__(self, home, name: str):
         self.name = name
         super().__init__(
-            f"task {name!r} 의 하네스 세션 기록이 없다 — 부트스트랩은 하네스(claude·codex·opencode) "
-            "안에서 셸 도구로 실행해야 가드 훅이 세션 ID 를 남긴다. 훅 설치를 확인하라"
-            f" ({pm_paths._task_session_claim_path(home, name)})."
+            f"task {name!r} 의 하네스 세션 기록이 없다. 부트스트랩은 하네스(claude·codex·opencode) "
+            "안에서 셸 도구로 실행해야 가드 훅이 세션 ID 를 남긴다.\n"
+            "  가드 훅은 명령을 실행하기 전에 판단하므로, 부트스트랩 호출의 실행 위치와 인자를 "
+            "확정하지 못하거나 명령에 셸 확장(`$`·백틱)이 하나라도 보이면 기록을 남기지 않는다. "
+            "셸 확장은 부트스트랩과 상관없는 자리에 있어도 그렇다(예: 뒤에 붙인 `; echo rc=$?`).\n"
+            "  → 셸 확장 없이 부트스트랩 호출만 따로 다시 실행하라. 그래도 같으면 가드 훅 설치와 "
+            "하네스가 그 훅을 실행하는지 확인하라"
+            f" (기록 경로: {pm_paths._task_session_claim_path(home, name)})."
         )
 
 
