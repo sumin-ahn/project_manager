@@ -804,8 +804,11 @@ def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | N
         argv = shlex.split(cmd)
     except ValueError:
         return None
-    details = shell_policy._engine_invocation_details(cwd, argv)
-    if details is None or details.kind != "pytest":
+    details = next(
+        (call for call in shell_policy._engine_invocation_details(cwd, argv) if call.kind == "pytest"),
+        None,
+    )
+    if details is None:
         return None
     if shell_policy._pytest_targets_tests(details.args):
         why = _SUITELESS_WHY_TARGETS_TESTS

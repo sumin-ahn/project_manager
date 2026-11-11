@@ -10,6 +10,7 @@ from pm_engine.domain import git_policy
 from pm_engine.app import hooks
 from pm_engine.infra import pm_paths
 from pm_engine.domain import shell_policy
+import os
 import subprocess
 import sys
 from pm_engine.infra import task_store
@@ -226,9 +227,10 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
     """
     cwd_path = Path(cwd).expanduser().resolve()
     identity, cwd_root, cwd_pm_home = _git_target_repo_identity(cwd_path, runner=runner)
-    details = shell_policy._engine_invocation_details(cwd, argv)
-    if details is None:
+    calls = shell_policy._engine_invocation_details(cwd, argv)
+    if not calls:
         return {'verdict': 'ok', 'cwd_identity': identity, 'reason': '엔진/pytest 호출이 아님'}
+    details = calls[0]
     if details.kind == 'pytest':
         if identity == 'pm-home' and shell_policy._pytest_targets_tests(details.args) and (not (cwd_path / 'tests').is_dir()):
             return {'verdict': 'deny', 'cwd_identity': identity, 'code': 'pm-home-relative-pytest-tests-missing', 'reason': 'PM 홈 cwd에서 pytest tests/를 실행하려 하나 cwd의 tests/ 디렉터리가 실재하지 않음 — 작업 폴더의 시험 경로를 절대경로로 적어 다시 실행하라'}
@@ -243,7 +245,7 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
         if unresolved_mutation and identity in {'slot', 'worktree'}:
             return {'verdict': 'deny', 'cwd_identity': identity, 'reason': f"board mutation '{unresolved_mutation}'이 non-PM cwd에서 감지됨 — {unresolved_reason}; board mutation은 PM 홈 사본으로 실행하라"}
         return {'verdict': 'warn', 'cwd_identity': identity, 'reason': f'{unresolved_reason}; board mutation은 PM 홈 사본으로 실행하라'}
-    relative = not Path(details.script).expanduser().is_absolute()
+    relative = not Path(os.path.expanduser(details.script)).is_absolute()
     script_root = script_path.parents[2]
     script_identity, _resolved_root, script_pm_home = _git_target_repo_identity(script_root, runner=runner)
     relative_script = Path('.project_manager') / 'tools' / script_path.name
@@ -278,7 +280,7 @@ def _engine_script_path(cwd: str | Path, script: str) -> Path | None:
     """엔진 호출이 실행할 사본 경로. `~` 는 풀고, 셸 변수(`$`)가 든 경로는 정적으로 못 정해 None 이다."""
     if shell_policy._unexpanded_shell_parameters(script):
         return None
-    return (Path(cwd).expanduser() / Path(script).expanduser()).resolve()
+    return (Path(cwd) / os.path.expanduser(script)).resolve()
 
 def _bootstrap_task_calls(parsed: shell_policy._ShellParseResult) -> list[tuple[Path | None, str]]:
     """셸 명령 속 `pm_bootstrap.py --task <task>` 호출의 (부트스트랩 스크립트 경로, task) 목록.
@@ -287,7 +289,7 @@ def _bootstrap_task_calls(parsed: shell_policy._ShellParseResult) -> list[tuple[
     자리가 None 이다. 서브에이전트 거부는 경로와 상관없이 쓰고, 세션 기록은 경로가 있을 때만 남긴다."""
     calls: list[tuple[Path | None, str]] = []
     for call in parsed.engine_invocations:
-        details = shell_policy._engine_invocation_details(call.cwd, call.argv)
+        details = shell_policy._engine_invocation_details(call.cwd, call.argv)[0]
         if not call.certain or details.kind != 'engine' or (Path(details.script).name != 'pm_bootstrap.py'):
             continue
         task = shell_policy._bootstrap_task_argument(details.args)

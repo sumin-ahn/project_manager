@@ -3548,15 +3548,52 @@ def test_pm_home_pytest_through_a_launcher_is_denied_when_tests_are_missing(topo
 
 
 def test_engine_invocation_details_reads_the_word_after_the_first_marker():
-    """엔진 스크립트 경로·pytest 낱말 가운데 첫 표지 뒤가 인자다. 앞에 붙은 것은 보지 않고, 따옴표 안 명령 글은 quoted 다."""
+    """표지 낱말마다 호출 하나이고 그 표지 뒤가 인자다. 앞에 붙은 것은 보지 않고, 따옴표 안 명령 글은 quoted 다."""
     details = shell_policy._engine_invocation_details
     call = shell_policy._EngineInvocation
     script = ".project_manager/tools/board.py"
-    assert details(".", ["py", "-3", script, "claim", "T-1"]) == call("engine", script, ("claim", "T-1"), False)
-    assert details(".", ["nohup", f"./{script}", "list"]) == call("engine", f"./{script}", ("list",), False)
-    assert details(".", ["cat", script]) == call("engine", script, (), False)
-    assert details(".", ["uv", "run", "pytest", "-q"]) == call("pytest", None, ("-q",), False)
-    assert details(".", ["py", "-3", "-m", "pytest", "tests/"]) == call("pytest", None, ("tests/",), False)
-    assert details(".", ["bash", "-c", f"python3 {script} claim T-1"]) == call("engine", script, ("claim", "T-1"), True)
-    assert details(".", ["bash", "-c", "echo a\necho b"]) is None
-    assert details(".", ["python3", "build.py"]) is None
+    assert details(".", ["py", "-3", script, "claim", "T-1"]) == (call("engine", script, ("claim", "T-1"), False),)
+    assert details(".", ["nohup", f"./{script}", "list"]) == (call("engine", f"./{script}", ("list",), False),)
+    assert details(".", ["cat", script]) == (call("engine", script, (), False),)
+    assert details(".", ["uv", "run", "pytest", "-q"]) == (call("pytest", None, ("-q",), False),)
+    assert details(".", ["py", "-3", "-m", "pytest", "tests/"]) == (call("pytest", None, ("tests/",), False),)
+    assert details(".", ["bash", "-c", f"python3 {script} claim T-1"]) == (call("engine", script, ("claim", "T-1"), True),)
+    assert details(".", ["bash", "-c", "echo a\necho b"]) == ()
+    assert details(".", ["python3", "build.py"]) == ()
+
+
+def test_a_marker_looking_word_before_the_engine_call_does_not_hide_it(topology):
+    """표지로 읽히는 앞 낱말(대입 값·옵션 값·따옴표 든 대입)이 있어도 뒤의 엔진 호출은 그대로 판정된다."""
+    home, slot = topology
+    _seed_engine_copy(home, "v1")
+    _seed_engine_copy(slot, "v1")
+    call = "python3 .project_manager/tools/board.py claim T-0001"
+    for prefix in (
+        "PYTEST_BIN=/usr/bin/pytest", "env -u PYTEST", "exec -a pytest",
+        'X="see .project_manager/tools/x.py"',
+    ):
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S", str(slot), f"{prefix} {call}", main_thread=True,
+        )
+        assert got["verdict"] == "deny", prefix
+        assert "board mutation 'claim'" in got["reason"], prefix
+    bootstrap = home / ".project_manager" / "tools" / "pm_bootstrap.py"
+    denied = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S", str(home),
+        f"PYTEST_BIN=/usr/bin/pytest python3 {bootstrap} --task omega", main_thread=False,
+    )
+    assert denied["verdict"] == "deny"
+    assert "위임받은 에이전트의 task 열기(pm_bootstrap.py --task omega)" in denied["reason"]
+
+
+def test_engine_path_with_an_unknown_user_tilde_is_judged_without_an_exception(topology):
+    """셸이 풀지 못하는 `~이름` 경로는 글자 그대로 실행 위치 아래 경로로 보고 예외 없이 판정한다."""
+    home, _slot = topology
+    for command in (
+        "cat ~nosuchuserzz/.project_manager/tools/board.py",
+        "python3 ~nosuchuserzz/.project_manager/tools/board.py list",
+    ):
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True,
+        )
+        assert got["verdict"] == "warn", command

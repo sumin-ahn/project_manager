@@ -353,27 +353,30 @@ def _engine_marker(value: str) -> str | None:
 
 def _engine_invocation_details(
     _cwd: str | Path, argv: Sequence[str],
-) -> _EngineInvocation | None:
-    """argv 의 첫 엔진·pytest 표지 낱말을 찾아 그 뒤를 호출 인자로 본다.
+) -> tuple[_EngineInvocation, ...]:
+    """argv 의 엔진·pytest 표지 낱말마다 호출 하나를 내고, 그 표지 뒤 낱말을 호출 인자로 본다.
 
     표지는 ``.project_manager/tools/<이름>.py`` 경로 낱말과 ``pytest`` 낱말(``python -m pytest`` 의
-    ``pytest`` 포함)이다. 표지 앞에 붙은 인터프리터·옵션·감싸는 명령은 보지 않는다. 표지가 아닌 낱말이
-    간접 실행 문자열의 낱말 규칙으로 여러 낱말이 되면(따옴표로 묶인 명령 글 등) 그 안에서 같은 표지를
-    찾고 ``quoted`` 로 표시한다.
+    ``pytest`` 포함)이다. 표지 앞에 붙은 인터프리터·옵션·감싸는 명령은 보지 않는다. 앞 낱말이 표지로
+    읽혀도 뒤의 실제 호출이 가려지지 않도록 첫 표지에서 멈추지 않는다. 표지가 아닌 낱말이 간접 실행
+    문자열의 낱말 규칙으로 여러 낱말이 되면(따옴표로 묶인 명령 글 등) 그 안의 표지도 모두 찾고
+    ``quoted`` 로 표시한다.
     """
     values = [str(value) for value in argv]
+    found: list[_EngineInvocation] = []
     for index, value in enumerate(values):
         kind = _engine_marker(value)
         if kind is not None:
-            return _EngineInvocation(
+            found.append(_EngineInvocation(
                 kind, value if kind == "engine" else None, tuple(values[index + 1:]), False,
-            )
+            ))
+            continue
         words = _INDIRECT_WORD.findall(value)
         if len(words) > 1:
-            inner = _engine_invocation_details(_cwd, words)
-            if inner is not None:
-                return inner._replace(quoted=True)
-    return None
+            found.extend(
+                inner._replace(quoted=True) for inner in _engine_invocation_details(_cwd, words)
+            )
+    return tuple(found)
 
 
 def _pytest_targets_tests(args: Sequence[str]) -> bool:
