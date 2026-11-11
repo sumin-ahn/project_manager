@@ -27,6 +27,7 @@ from pm_engine.app import update_plan
 from pm_engine.app import update_render
 from pm_engine.cli import update_cmd
 from pm_engine.domain import manifest_rules
+from pm_engine.infra import console
 from pm_engine.infra import engine_transfer as package_transfer
 from pm_engine.infra import fs
 from pm_engine.infra import manifest_store
@@ -872,7 +873,7 @@ class _ImportWatch:
         return None
 
 
-def test_package_delivery_uses_preloaded_code_and_fresh_completion(tmp_path, monkeypatch, capsys):
+def test_package_delivery_uses_preloaded_code_and_fresh_completion(tmp_path, monkeypatch, capfd):
     """전달과 일반 적용은 같은 교체 함수를 쓰고, 패키지 → 평면 → backup 정리 → 완료 프로세스 순이다.
 
     첫 디스크 변경 뒤 부모는 pm_engine 을 새로 적재·reload 하지 않는다. 완료 프로세스는 실제 새 프로세스로
@@ -931,7 +932,7 @@ def test_package_delivery_uses_preloaded_code_and_fresh_completion(tmp_path, mon
     finally:
         if watch in sys.meta_path:
             sys.meta_path.remove(watch)
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert rc == 0, captured.err
     assert events == ["publish", "flat", "cleanup", "launch"], events
     assert watch.names == [] and reloads == [], (watch.names, reloads)
@@ -983,5 +984,22 @@ def test_package_delivery_uses_preloaded_code_and_fresh_completion(tmp_path, mon
     events.clear()
     with complete_in_process(monkeypatch):
         assert update_cmd.main(pm_paths.home_at(dest), ["--from", str(source)]) == 1
-    assert "완료 단계에서 엔진 코드 변경 1건" in capsys.readouterr().err
+    assert "완료 단계에서 엔진 코드 변경 1건" in capfd.readouterr().err
     assert events == [] and _snapshot_tree(dest) == before
+
+
+def test_completion_process_inherits_stdio_and_the_capture_encoding(tmp_path, monkeypatch):
+    """완료 프로세스는 표준 출력·표준 오류를 물려받고(받아서 다시 찍지 않는다) 부모가 고른 받아 가는 출력 인코딩을 넘겨받는다."""
+    calls = []
+    monkeypatch.setattr(engine_transfer.subprocess, "run",
+                        lambda argv, **kwargs: calls.append((argv, kwargs)) or subprocess.CompletedProcess(argv, 3))
+    monkeypatch.setitem(console._process_state(), "capture_encoding", "cp949")
+    dest, source = tmp_path / "dest", tmp_path / "source"
+    assert engine_transfer._launch_completion(dest, source, 2, ["--x"]) == 3
+    argv, kwargs = calls[0]
+    assert argv == [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"), "--x"]
+    assert "stdout" not in kwargs and "stderr" not in kwargs
+    assert kwargs["env"]["PM_CONSOLE_CAPTURE_ENCODING"] == f"{os.getpid()}:cp949"
+    assert kwargs["env"]["PYTHONUNBUFFERED"] == "1"
+    assert json.loads(kwargs["env"][engine_transfer.COMPLETION_ENV]) == {
+        "dest": str(dest), "source": str(source), "transferred": 2}

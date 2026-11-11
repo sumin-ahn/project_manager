@@ -15,6 +15,7 @@ import ctypes
 import ntpath
 import os
 import sys
+from collections.abc import Mapping
 from ctypes import wintypes
 from typing import Any
 
@@ -29,6 +30,9 @@ _POWERSHELL_PROCESS_NAMES = frozenset({"powershell.exe", "pwsh.exe"})
 _STDIO_PASSTHROUGH_PROCESS_NAMES = frozenset({"py.exe", "pyw.exe", "cmd.exe"})
 _MAX_ANCESTOR_DEPTH = 8
 _PROCESS_STATE_KEY = "_project_manager_console_encoding_state_v1"
+# 표준 출력·표준 오류를 물려주며 띄운 엔진 하위 프로세스에 부모가 넘기는 값 `<부모 프로세스 번호>:<코덱>`.
+# 사용자가 정하는 값이 아니다. 그 부모의 바로 아래 프로세스만 쓴다(손자 프로세스는 부모 번호가 달라 쓰지 않는다).
+_INHERITED_CAPTURE_ENV = "PM_CONSOLE_CAPTURE_ENCODING"
 _TRANSLIT = {
     "—": "-",
     "–": "-",
@@ -64,6 +68,7 @@ def _process_state() -> dict[str, Any]:
             "original_input_cp": None,
             "parent_name": None,
             "selected_encoding": None,
+            "capture_encoding": None,
             "restore_registered": False,
             "hint_shown": False,
             "isatty": None,
@@ -255,6 +260,11 @@ def _powershell_capture_encoding() -> str | None:
         return None
     parent_name = _parent_process_name()
     state["parent_name"] = parent_name.lower() if parent_name else None
+    parent_pid, _, inherited = os.environ.get(_INHERITED_CAPTURE_ENV, "").partition(":")
+    if parent_pid == str(os.getppid()):
+        # 표준 출력·표준 오류를 물려준 엔진 부모가 고른 인코딩이다. 같은 출력에 부모가 안내를 이미 냈다.
+        state["hint_shown"] = True
+        return inherited
     original_output_cp = state["original_output_cp"]
     if (
         state["parent_name"] not in _POWERSHELL_PROCESS_NAMES
@@ -325,6 +335,7 @@ def configure_console_utf8() -> None:
     _set_console_codepage_utf8()
     capture_encoding = _powershell_capture_encoding()
     state = _process_state()
+    state["capture_encoding"] = capture_encoding
     stdout_isatty = _stream_isatty(sys.stdout)
     state["isatty"] = stdout_isatty
     state["selected_encoding"] = None
@@ -364,6 +375,17 @@ def configure_console_utf8() -> None:
     )
     if capture_applied:
         _show_powershell_hint_once()
+
+
+def inherited_stdio_env(env: Mapping[str, str]) -> dict[str, str]:
+    """표준 출력·표준 오류를 물려주며 띄우는 엔진 하위 프로세스의 환경.
+
+    이 프로세스가 받아 가는 출력 인코딩을 골랐으면(PowerShell 이 받아 가는 Windows 출력) 그 코덱을 이
+    프로세스 번호와 함께 넘긴다. 하위 프로세스는 부모 python 을 PowerShell 로 알아보지 못하고, 부모가 이미
+    콘솔 코드페이지를 UTF-8 로 바꿔 둬서 스스로는 같은 코덱을 고르지 못한다.
+    """
+    encoding = _process_state()["capture_encoding"]
+    return {**env, _INHERITED_CAPTURE_ENV: f"{os.getpid()}:{encoding}"} if encoding else dict(env)
 
 
 def _flush_quietly(stream: Any) -> None:

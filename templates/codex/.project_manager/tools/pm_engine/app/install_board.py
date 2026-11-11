@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pm_engine.infra import console
 from pm_engine.infra import install_conf
 from pm_engine.infra import install_files
 from pm_engine.infra import raw_output
@@ -296,11 +297,15 @@ def run_board_init(dest_root: Path) -> int:
         # 복사가 반쪽이라는 뜻이라 여기서 멈춘다 — board 로 우회하면 등록이 조용히 빠진다.
         print(f"경고: pm_config.py 없음 ({entry}) — init 건너뜀.", file=sys.stderr)
         return 1
+    # 하위 프로세스가 같은 표준 출력·표준 오류에 쓴다. 부모가 먼저 쓴 출력을 비워 받은 출력의 줄 순서를 지킨다.
+    sys.stdout.flush()
+    sys.stderr.flush()
     result = subprocess.run(
         [sys.executable, str(entry), "init"],
         cwd=str(dest_root),
         stdin=subprocess.DEVNULL,
-        env={**os.environ, "PM_NONINTERACTIVE": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+        env=console.inherited_stdio_env(
+            {**os.environ, "PM_NONINTERACTIVE": "1", "PYTHONDONTWRITEBYTECODE": "1"}),
         encoding="utf-8",
         errors="replace",
     )

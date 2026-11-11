@@ -44,6 +44,7 @@ from pm_engine.infra.harness import contract
 from pm_engine.cli import regression_cmd
 from pm_engine.infra import pre_push_hook, python_env
 from pm_engine.app import install_board
+from pm_engine.infra import console
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -583,3 +584,40 @@ def test_gitattributes_enforces_cmd_crlf():
     assert "*.cmd text eol=crlf" in text, "*.cmd eol=crlf 룰 누락"
     assert "*.bat text eol=crlf" in text, "*.bat eol=crlf 룰 누락"
     assert "*.sh text eol=lf" in text, "*.sh eol=lf 룰 누락"
+
+
+def test_pm_import_board_init_child_inherits_the_capture_encoding(pm_import, monkeypatch, tmp_path):
+    """board init 하위 프로세스는 표준 출력·표준 오류를 물려받으므로 부모가 고른 받아 가는 출력 인코딩을 넘겨받는다."""
+    tools = tmp_path / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "pm_config.py").write_text("# stub", encoding="utf-8")
+    rec = _Recorder()
+    monkeypatch.setattr(subprocess, "run", rec)
+    monkeypatch.setitem(console._process_state(), "capture_encoding", "cp949")
+    install_board.run_board_init(tmp_path)
+    env = rec.calls[0]["env"]
+    assert env["PM_CONSOLE_CAPTURE_ENCODING"] == f"{os.getpid()}:cp949"
+    assert env["PM_NONINTERACTIVE"] == "1"
+
+
+def test_pm_import_board_init_child_starts_after_the_parent_output_is_flushed(pm_import, monkeypatch, tmp_path):
+    """board init 하위 프로세스는 부모가 먼저 쓴 표준 출력·표준 오류를 비운 뒤 뜬다(받은 출력에서 부모 줄이 하위 프로세스 줄 뒤로 밀리지 않는다)."""
+    tools = tmp_path / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "pm_config.py").write_text("# stub", encoding="utf-8")
+    events: list[str] = []
+
+    class _Stream(io.StringIO):
+        def __init__(self, label: str):
+            super().__init__()
+            self.label = label
+
+        def flush(self):
+            events.append(self.label)
+            super().flush()
+
+    monkeypatch.setattr("sys.stdout", _Stream("stdout"))
+    monkeypatch.setattr("sys.stderr", _Stream("stderr"))
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: events.append("run") or subprocess.CompletedProcess(argv, 0))
+    install_board.run_board_init(tmp_path)
+    assert events == ["stdout", "stderr", "run"]
