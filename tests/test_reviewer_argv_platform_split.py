@@ -297,3 +297,10 @@ def test_a_mangled_executable_names_the_declared_command(external, monkeypatch):
     _ok, output, _started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", "codex --model x", 5, missing)
     assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
     assert "해소된 커맨드에 없는" not in output.answer
+
+
+def test_windows_rule_keeps_relative_backslash_paths_and_shell_escapes():
+    """Windows 규칙은 상대경로의 ``\\`` 구분자도 보존하고, 공백 앞 ``\\`` 는 escape 로 읽는다."""
+    assert process.split_command_argv(r".\bin\codex.exe exec --note a\ b", windows=True) == [
+        r".\bin\codex.exe", "exec", "--note", "a b"]
+    assert process.split_command_argv(r".\bin\codex.exe exec", windows=False) == [".bincodex.exe", "exec"]

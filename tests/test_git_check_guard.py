@@ -24,7 +24,7 @@ import pytest
 from pm_engine.app import hooks
 from pm_engine.cli import hooks as cli_hooks
 from pm_engine.domain import git_policy, shell_policy
-from pm_engine.infra import fs
+from pm_engine.infra import fs, process
 
 REPO = Path(__file__).resolve().parents[1]
 BOARD_PY = REPO / ".project_manager" / "tools" / "board.py"
@@ -916,9 +916,10 @@ def test_existing_git_mutation_deny_is_unchanged(topology):
     assert shell["verdict"] == "deny"
 
 
-def test_posix_escaped_path_operand_keeps_shell_meaning(topology):
-    """Windows 표기 정규화가 POSIX ``\\`` escape를 경로 구분자로 바꾸지 않는다."""
+def test_posix_escaped_path_operand_keeps_shell_meaning(topology, monkeypatch):
+    """POSIX 읽기는 ``\\`` escape를 경로 구분자로 바꾸지 않는다(Windows 읽기는 보통 글자 앞 ``\\`` 를 구분자로 본다)."""
     home, _slot = topology
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
     got = cli_hooks.judge_git_check_command(cli_hooks.adapter_home(home), "S", 
         str(home), r"git add t\ests/shared.txt", main_thread=True,
     )
@@ -3601,3 +3602,54 @@ def test_engine_path_with_an_unknown_user_tilde_is_judged_without_an_exception(t
             cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True,
         )
         assert got["verdict"] == expected, command
+
+
+def _segment_words(command: str, *, windows: bool) -> list[list[str]]:
+    segments, _operators = shell_policy._shell_segments(command, windows=windows)
+    return [[shell_policy._normalize_shell_path_notation(word) for word in segment] for segment in segments]
+
+
+def test_windows_reading_keeps_backslashes_outside_quotes_except_shell_escapes():
+    """Windows 읽기는 따옴표 밖 역슬래시를 경로 구분자로 두고, 공백·따옴표·역슬래시·명령 구분 기호 앞의 역슬래시만 escape 로 읽는다."""
+    command = r"py -3 .\.project_manager\tools\board.py claim T-1"
+    assert _segment_words(command, windows=True) == [["py", "-3", "./.project_manager/tools/board.py", "claim", "T-1"]]
+    assert _segment_words(command, windows=False) == [["py", "-3", "..project_managertoolsboard.py", "claim", "T-1"]]
+    assert _segment_words(r"cd sp\ ace && grep a\|b f", windows=True) == [["cd", "sp ace"], ["grep", "a|b", "f"]]
+    assert _segment_words(r'echo \"a b\" \(x\)', windows=True) == [["echo", '"a', 'b"', "(x)"]]
+    assert _segment_words(r'py -3 ".\x\y.py" c\d', windows=True) == [["py", "-3", r".\x\y.py", "c/d"]]
+
+
+def test_windows_backslash_paths_are_judged_like_forward_slash_paths(topology, monkeypatch):
+    """Windows 에서 읽는 명령의 따옴표 밖 역슬래시 경로는 같은 경로를 `/` 로 적은 꼴과 같은 판정을 받는다.
+
+    역슬래시가 공백·따옴표 앞의 escape 인 꼴(Git Bash)은 POSIX 읽기와 같은 판정을 받는다."""
+    home, slot = topology
+    _seed_engine_copy(home, "v1")
+    _seed_engine_copy(slot, "v1")
+    (home / "sp ace").mkdir()
+    forward = slot.relative_to(home).as_posix()
+    backward = forward.replace("/", "\\")
+
+    def judge(cwd: Path, command: str) -> tuple[str, str]:
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S", str(cwd), command, main_thread=True,
+        )
+        return got["verdict"], got["reason"]
+
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
+    pairs = [
+        (slot, r"py -3 .\.project_manager\tools\board.py claim T-0001",
+         "py -3 ./.project_manager/tools/board.py claim T-0001"),
+        (home, f"cd {backward}; git reset --hard", f"cd {forward}; git reset --hard"),
+        (home, f"git -C {backward} reset --hard", f"git -C {forward} reset --hard"),
+        (home, f"rmdir /s /q {backward}", f"rmdir /s /q {forward}"),
+    ]
+    for cwd, backslash_form, slash_form in pairs:
+        got = judge(cwd, backslash_form)
+        assert got == judge(cwd, slash_form), backslash_form
+        assert got[0] == "deny", backslash_form
+    escaped = [r"cd sp\ ace && git reset --hard", r"git -C sp\ ace reset --hard",
+               r'echo \"done\" && git reset --hard']
+    windows_reading = [judge(home, command) for command in escaped]
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
+    assert windows_reading == [judge(home, command) for command in escaped]

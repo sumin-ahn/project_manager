@@ -754,7 +754,7 @@ def _git_invocations_from_shell(
             if heredoc_uncertain else ""
         )
         return shell_policy._ShellParseResult((), (), (), False, heredoc_uncertain, reason)
-    parsed = shell_policy._shell_segments(command)
+    parsed = shell_policy._shell_segments(command, windows=process._probe_os_name() == "nt")
     if parsed is None:
         # 구문을 못 푼 명령 속 git 파괴 호출·파일 삭제도 대상 미확정 호출로 올린다(판정불가를 통과로
         # 두지 않는다).

@@ -30,9 +30,9 @@ def split_command_argv(command: str, *, windows: bool | None = None) -> list[str
     POSIX 규칙에서 ``\\`` 는 escape 라 `shlex.split` 만 쓰면 Windows 실행 경로의 구분자가 통째로
     사라진다 — ``C:\\Users\\pm\\codex.exe`` 가 ``C:Userspmcodex.exe`` 가 되어 실행이 `FileNotFoundError`
     로 끝난다. Windows 에서는 `pm_engine.domain.shell_policy` 의 shell 판정 경로와 **같은 보호 규칙**
-    (`_SHELL_WINDOWS_ABSOLUTE_PATH`)으로 절대경로 토큰의 구분자를 표시로 바꾼 뒤 shlex 인용
-    규칙을 적용하고, 토큰화가 끝난 다음 표시를 원래 ``\\`` 로 되돌린다. 인용 의미(따옴표·공백)는
-    그대로 두고 경로 구분자만 살린다.
+    (Windows 읽기)으로 따옴표 밖 경로 구분자와 drive/UNC 절대경로의 구분자를 표시로 바꾼 뒤 shlex
+    인용 규칙을 적용하고, 토큰화가 끝난 다음 표시를 원래 ``\\`` 로 되돌린다. 따옴표와 메타문자·
+    따옴표 문자 앞 escape 는 그대로 두고 경로 구분자만 살린다.
 
     POSIX 실행 플랫폼에서는 종전 `shlex.split` 그대로다 — 그쪽에서 ``\\`` 는 실제로 escape 이므로
     보호를 걸면 채택자가 의도한 escape 를 바꾼다.
@@ -46,5 +46,5 @@ def split_command_argv(command: str, *, windows: bool | None = None) -> list[str
         return shlex.split(command)
     return [
         shell_policy.restore_shell_windows_path_separators(token)
-        for token in shlex.split(shell_policy._protect_shell_windows_path_separators(command))
+        for token in shlex.split(shell_policy._protect_shell_windows_path_separators(command, windows=True))
     ]

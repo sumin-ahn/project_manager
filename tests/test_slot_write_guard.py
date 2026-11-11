@@ -10,7 +10,7 @@ from pm_engine.app import delegate_execute
 
 from pm_engine.app import engine_guard
 from pm_engine.app import session_identity
-from pm_engine.infra import pm_paths
+from pm_engine.infra import pm_paths, process
 
 
 import importlib.util
@@ -805,3 +805,25 @@ def test_bootstrap_call_inside_a_quoted_command_string_warns_without_a_session_c
         )
         assert got["verdict"] == "warn", command
         assert not (claims / "gamma.json").exists(), command
+
+
+def test_bootstrap_path_written_with_windows_backslashes_records_the_session(home, monkeypatch):
+    """Windows 에서 읽는 명령은 따옴표 없는 역슬래시 부트스트랩 경로도 세션 기록을 남긴다. POSIX 읽기는 지금처럼 남기지 않는다."""
+    claims = home / ".project_manager" / ".local" / "task-session-claims"
+    commands = {
+        "dotted": r"py -3 .\.project_manager\tools\pm_bootstrap.py --task dotted",
+        "plain": r"py -3 .project_manager\tools\pm_bootstrap.py --task plain",
+    }
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
+    for task, command in commands.items():
+        cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S-new", str(home), command, main_thread=True,
+        )
+        assert not (claims / f"{task}.json").exists(), command
+    monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
+    for task, command in commands.items():
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S-new", str(home), command, main_thread=True,
+        )
+        assert got["verdict"] != "deny", command
+        assert json.loads((claims / f"{task}.json").read_text(encoding="utf-8")) == {"task": task, "session": "S-new"}, command

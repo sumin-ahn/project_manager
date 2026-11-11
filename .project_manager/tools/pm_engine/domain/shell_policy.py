@@ -664,12 +664,25 @@ _SHELL_WINDOWS_ABSOLUTE_PATH = re.compile(
 )
 
 
-def _protect_shell_windows_path_separators(command: str) -> str:
-    """POSIX shlex가 Windows 절대경로의 ``\\``를 escape로 소비하지 않게 표시한다.
+# 따옴표로 묶인 글, 메타문자·따옴표 문자·역슬래시 앞의 escape 짝, 또는 그 밖의 따옴표 밖 역슬래시 한 글자.
+_SHELL_QUOTED_TEXT_OR_BACKSLASH = re.compile(
+    r"""('[^']*'|"(?:\\.|[^"\\])*"|\\[ \t\r\n|&;()<>\\'"])|\\""", re.DOTALL,
+)
 
-    이 단계는 정규화하지 않는다. 경로형 토큰임이 드러난 drive/UNC 표기의 구분자만 보존하고,
-    실제 ``/`` 변환은 shlex 토큰화 뒤 simple-command가 토큰을 소비할 때 수행한다.
+
+def _protect_shell_windows_path_separators(command: str, *, windows: bool) -> str:
+    """POSIX shlex가 Windows 경로의 ``\\``를 escape로 소비하지 않게 표시한다.
+
+    ``windows`` 가 참이면(Windows 에서 읽는 명령) 따옴표 밖 ``\\`` 중 바로 뒤 글자가 메타문자
+    (공백·탭·CR·LF·``|&;()<>``)·따옴표 문자·``\\`` 가 아닌 것을 경로 구분자로 본다. 그 글자들
+    앞의 ``\\`` 는 POSIX escape 로 둔다. 어느 플랫폼에서든 drive/UNC 절대경로 표기의 구분자는
+    따옴표 안에서도 보존한다. 이 단계는 정규화하지 않는다. 실제 ``/`` 변환은 shlex 토큰화 뒤
+    simple-command가 토큰을 소비할 때 수행한다.
     """
+    if windows:
+        command = _SHELL_QUOTED_TEXT_OR_BACKSLASH.sub(
+            lambda match: match.group(1) or _SHELL_WINDOWS_PATH_SEPARATOR, command,
+        )
     return _SHELL_WINDOWS_ABSOLUTE_PATH.sub(
         lambda match: match.group(0).replace("\\", _SHELL_WINDOWS_PATH_SEPARATOR),
         command,
@@ -818,7 +831,7 @@ def _strip_shell_heredoc_bodies(command: str) -> tuple[str, bool]:
     return "".join(output), uncertain
 
 
-def _shell_segments(command: str) -> tuple[list[list[str]], list[str]] | None:
+def _shell_segments(command: str, *, windows: bool) -> tuple[list[list[str]], list[str]] | None:
     """shell 문자열을 simple-command segment와 그 사이 operator로 나눈다."""
     separator_chars = "".join(sorted({
         char for separator in _SHELL_COMMAND_SEPARATORS for char in separator
@@ -826,7 +839,7 @@ def _shell_segments(command: str) -> tuple[list[list[str]], list[str]] | None:
     try:
         lexer = shlex.shlex(
             _protect_shell_windows_path_separators(
-                _strip_shell_comments(command),
+                _strip_shell_comments(command), windows=windows,
             ), posix=True,
             punctuation_chars=separator_chars + "<>",
         )
