@@ -1885,28 +1885,28 @@ def _pin_git(rev=0, mb=0, oid=None, ambig=False):
 
 
 # `_sha_pin_status` 는 `(verdict, full_oid)` 반환 — full_oid 는 OK 일 때만(codex R16).
-def test_sha_anchor_status_ok_returns_full_oid(board):
+def test_sha_pin_status_ok_returns_full_oid(board):
     verdict, full_oid = freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_pin_git(0, 0))
     assert verdict == freshness_lint._PIN_OK
     assert full_oid == "cafe0001".ljust(40, "0")   # rev-parse 해소 canonical full OID
 
 
-def test_sha_anchor_status_unresolved(board):
+def test_sha_pin_status_unresolved(board):
     assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_pin_git(1, 0)) == \
         (freshness_lint._PIN_UNRESOLVED, None)
 
 
-def test_sha_anchor_status_non_ancestor(board):
+def test_sha_pin_status_non_ancestor(board):
     assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "beef0042", runner=_pin_git(0, 1)) == \
         (freshness_lint._PIN_NON_ANCESTOR, None)
 
 
-def test_sha_anchor_status_non_sha(board):
+def test_sha_pin_status_non_sha(board):
     assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "HEAD", runner=_pin_git(0, 0)) == \
         (freshness_lint._PIN_NON_SHA, None)
 
 
-def test_sha_anchor_status_hex_named_ref_is_non_sha(board):
+def test_sha_pin_status_hex_named_ref_is_non_sha(board):
     # codex R5: rev-parse 해소(rc0)하나 OID 가 입력 prefix 아님(ref 로 해소) → non-sha.
     ref_oid = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
     assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO),
@@ -1915,12 +1915,12 @@ def test_sha_anchor_status_hex_named_ref_is_non_sha(board):
         "deadbeef", runner=_pin_git(0, 0, oid="deadbeef" + "0" * 32))[0] == freshness_lint._PIN_OK
 
 
-def test_sha_anchor_status_unknown_env_error(board):
+def test_sha_pin_status_unknown_env_error(board):
     assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_pin_git(128, 0))[0] == freshness_lint._PIN_UNKNOWN
     assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "deadbeef", runner=_pin_git(0, 128))[0] == freshness_lint._PIN_UNKNOWN
 
 
-def test_sha_anchor_status_ambiguous(board):
+def test_sha_pin_status_ambiguous(board):
     # codex R22: --quiet rev-parse 실패(rc1·stderr 억제) + non-quiet 진단이 모호 stderr → ambiguous
     # (env/unresolved 아님). rc≥2 로 억제되는 git 버전도 진단이 잡게(양쪽 rev 확인).
     for rev in (1, 128):
@@ -1956,7 +1956,7 @@ def test_real_git_path_timeout_propagates(board, tmp_path, monkeypatch, probe):
             freshness_lint._rev_parse_ambiguous(home, "cafe0001", repo=tmp_path)
 
 
-def test_sha_anchor_status_unknown_empty_or_raise(board):
+def test_sha_pin_status_unknown_empty_or_raise(board):
     assert freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "", runner=_pin_git())[0] == freshness_lint._PIN_UNKNOWN
     with pytest.raises(RuntimeError, match="git unavailable"):
         freshness_lint._sha_pin_status(pm_paths.home_at(board.REPO), "cafe0001", runner=_raising_git)
