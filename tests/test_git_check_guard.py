@@ -3504,3 +3504,100 @@ const [home, slot, session, command, denied] = process.argv.slice(1);
 def test_t0931_foreach_payload_help_option_value():
     """공유 분류기의 옵션 값 소비 계약이다. 이 argv의 실제 Git 유효성을 주장하거나 실행하지 않는다."""
     assert git_policy._git_writes_slot('submodule', ['--path', 'vendor/status', 'foreach', 'printf', '%s', '--help'])
+
+
+# ── 런처·옵션·감싸는 명령·따옴표가 붙은 엔진·pytest 호출 ─────────────────────────
+
+def test_slot_board_mutation_is_denied_whatever_launcher_runs_it(topology):
+    """슬롯 사본 board 쓰기는 앞에 붙은 런처·옵션·감싸는 명령과 상관없이 `python3` 꼴과 같은 판정이고, 따옴표 안이면 경고다."""
+    home, slot = topology
+    _seed_engine_copy(home, "v1")
+    _seed_engine_copy(slot, "v1")
+    call = ".project_manager/tools/board.py claim T-0001"
+    expected = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S", str(slot), f"python3 {call}", main_thread=True,
+    )
+    assert expected["verdict"] == "deny"
+    for prefix in ("py -3", "py -3.12", "python3 -X utf8", "timeout 60 python3", "uv run python"):
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S", str(slot), f"{prefix} {call}", main_thread=True,
+        )
+        assert got == expected, prefix
+    quoted = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S", str(slot), f'bash -c "python3 {call}"', main_thread=True,
+    )
+    assert quoted["verdict"] == "warn"
+    assert "board mutation 'claim'" in quoted["reason"]
+
+
+def test_pm_home_pytest_through_a_launcher_is_denied_when_tests_are_missing(topology_without_home_tests):
+    """PM 홈 상대 `tests/` pytest 는 `py` 런처·옵션·감싸는 명령이 붙거나 `pytest.exe` 로 불러도 `python3 -m pytest` 꼴과 같이 거부된다."""
+    home, _slot = topology_without_home_tests
+    expected = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S", str(home), "python3 -m pytest tests/ -q", main_thread=True,
+    )
+    assert expected["verdict"] == "deny"
+    for command in (
+        "py -3 -m pytest tests/ -q", "py -3.12 -X utf8 -m pytest tests/ -q",
+        "timeout 600 pytest tests/ -q", "uv run pytest tests/ -q", "pytest.exe tests/ -q",
+    ):
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True,
+        )
+        assert got == expected, command
+
+
+def test_engine_invocation_details_reads_the_word_after_the_first_marker():
+    """표지 낱말마다 호출 하나이고 그 표지 뒤가 인자다. 앞에 붙은 것은 보지 않고, 따옴표 안 명령 글은 quoted 다."""
+    details = shell_policy._engine_invocation_details
+    call = shell_policy._EngineInvocation
+    script = ".project_manager/tools/board.py"
+    assert details(".", ["py", "-3", script, "claim", "T-1"]) == (call("engine", script, ("claim", "T-1"), False),)
+    assert details(".", ["nohup", f"./{script}", "list"]) == (call("engine", f"./{script}", ("list",), False),)
+    assert details(".", ["cat", script]) == (call("engine", script, (), False),)
+    assert details(".", ["uv", "run", "pytest", "-q"]) == (call("pytest", None, ("-q",), False),)
+    assert details(".", ["py", "-3", "-m", "pytest", "tests/"]) == (call("pytest", None, ("tests/",), False),)
+    assert details(".", ["bash", "-c", f"python3 {script} claim T-1"]) == (call("engine", script, ("claim", "T-1"), True),)
+    assert details(".", ["bash", "-c", "echo a\necho b"]) == ()
+    assert details(".", ["python3", "build.py"]) == ()
+
+
+def test_a_marker_looking_word_before_the_engine_call_does_not_hide_it(topology):
+    """표지로 읽히는 앞 낱말(대입 값·옵션 값·따옴표 든 대입)이 있어도 뒤의 엔진 호출은 그대로 판정된다."""
+    home, slot = topology
+    _seed_engine_copy(home, "v1")
+    _seed_engine_copy(slot, "v1")
+    call = "python3 .project_manager/tools/board.py claim T-0001"
+    for prefix in (
+        "PYTEST_BIN=/usr/bin/pytest", "env -u PYTEST", "exec -a pytest",
+        'X="see .project_manager/tools/x.py"',
+    ):
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S", str(slot), f"{prefix} {call}", main_thread=True,
+        )
+        assert got["verdict"] == "deny", prefix
+        assert "board mutation 'claim'" in got["reason"], prefix
+    bootstrap = home / ".project_manager" / "tools" / "pm_bootstrap.py"
+    denied = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S", str(home),
+        f"PYTEST_BIN=/usr/bin/pytest python3 {bootstrap} --task omega", main_thread=False,
+    )
+    assert denied["verdict"] == "deny"
+    assert "위임받은 에이전트의 task 열기(pm_bootstrap.py --task omega)" in denied["reason"]
+
+
+def test_engine_path_with_an_unknown_user_tilde_is_judged_without_an_exception(topology):
+    """없는 사용자의 `~이름` 경로도 예외 없이 판정한다.
+
+    파이썬이 못 풀면 글자 그대로 실행 위치 아래 상대경로로 보고(warn), Windows 처럼 이웃 프로필
+    폴더로 추측해 풀면 절대경로로 본다(ok)."""
+    home, _slot = topology
+    expected = "ok" if os.path.isabs(os.path.expanduser("~nosuchuserzz")) else "warn"
+    for command in (
+        "cat ~nosuchuserzz/.project_manager/tools/board.py",
+        "python3 ~nosuchuserzz/.project_manager/tools/board.py list",
+    ):
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True,
+        )
+        assert got["verdict"] == expected, command

@@ -669,22 +669,21 @@ def _shell_simple_command(
         ]
         return set(target_repos), cwd_certain, None, calls, []
 
-    engine_command = shell_policy._shell_engine_command(command)
     engine_calls = []
-    if engine_command is not None:
-        details = shell_policy._engine_invocation_details(".", engine_command)
+    for details in shell_policy._engine_invocation_details(".", command):
         unresolved_script = bool(
-            details is not None and details.script is not None
-            and shell_policy._unexpanded_shell_parameters(details.script)
+            details.script is not None and shell_policy._unexpanded_shell_parameters(details.script)
         )
         certain = (
-            (globally_certain or unresolved_script)
+            not details.quoted and (globally_certain or unresolved_script)
             and cwd_certain and len(target_repos) == 1
         )
-        engine_calls = [
-            shell_policy._ShellGitInvocation(str(target_repo), engine_command, certain, certain)
+        # 판정은 이 호출의 표지 낱말부터 다시 읽는다(앞 낱말과 다른 표지가 섞이지 않게).
+        argv = (details.script or details.kind, *details.args)
+        engine_calls.extend(
+            shell_policy._ShellGitInvocation(str(target_repo), argv, certain, certain)
             for target_repo in sorted(target_repos, key=str)
-        ]
+        )
 
     name = command[0]
     if name == "false":
@@ -740,7 +739,7 @@ def _git_invocations_from_shell(
     prefilter = shell_policy._git_prefilter_text(command)
     engine_candidate = (
         re.search(r"\.project_manager[\\/]+tools[\\/]+", prefilter) is not None
-        or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter) is not None
+        or re.search(r"(?<![A-Za-z0-9_.-])pytest(?:\.exe)?(?=\s|$)", prefilter, re.IGNORECASE) is not None
         or shell_policy._persistent_cd_prefilter(prefilter)
     )
     removal_candidate = any(

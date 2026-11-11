@@ -741,3 +741,67 @@ def test_t0931_git_forms_read_write_and_owner_matrix(board, home, monkeypatch, s
         expected = 'deny' if writes and (number != 1 or session != 'S-alpha') else 'ok'
         assert result['verdict'] == expected, (number, session, result)
     assert git_policy._git_writes_slot(subcommand, args) is writes
+
+
+# ── 런처·옵션·감싸는 명령·따옴표가 붙은 부트스트랩 호출 ─────────────────────────
+
+_LAUNCHED_BOOTSTRAP_FORMS = {
+    "launcher": "py -3 {script} --task {task}",
+    "versioned": "py -3.12 {script} --task {task}",
+    "option": "python3 -X utf8 {script} --task {task}",
+    "wrapper": "timeout 600 python3 {script} --task {task}",
+    "runner": "uv run python {script} --task {task}",
+}
+
+
+def test_bootstrap_call_behind_a_launcher_option_or_wrapper_records_the_session(home):
+    """`py` 런처·인터프리터 옵션·감싸는 명령이 앞에 붙어도 부트스트랩 호출의 세션 기록이 남고, 서브에이전트면 거부된다."""
+    claims = home / ".project_manager" / ".local" / "task-session-claims"
+    script = ".project_manager/tools/pm_bootstrap.py"
+    for task, form in _LAUNCHED_BOOTSTRAP_FORMS.items():
+        command = form.format(script=script, task=task)
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S-new", str(home), command, main_thread=True,
+        )
+        assert got["verdict"] != "deny", command
+        assert json.loads((claims / f"{task}.json").read_text(encoding="utf-8")) == {"task": task, "session": "S-new"}, command
+    denied = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S-new", str(home), f"py -3 {script} --task omega", main_thread=False,
+    )
+    assert denied["verdict"] == "deny"
+    assert "위임받은 에이전트의 task 열기(pm_bootstrap.py --task omega)" in denied["reason"]
+    assert not (claims / "omega.json").exists()
+
+
+def test_bootstrap_script_path_with_tilde_or_variable_keeps_the_hook_running(home, monkeypatch):
+    """스크립트 경로의 `~` 는 풀어서 기록하고, `$` 가 든 경로는 기록하지 않되 훅은 예외 없이 경고로 판정한다."""
+    claims = home / ".project_manager" / ".local" / "task-session-claims"
+    monkeypatch.setenv("HOME", str(home.parent))
+    monkeypatch.setenv("USERPROFILE", str(home.parent))
+    tilde = f"python3 ~/{home.name}/.project_manager/tools/pm_bootstrap.py --task gamma"
+    got = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S-new", str(home), tilde, main_thread=True,
+    )
+    assert got["verdict"] != "deny"
+    assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-new"}
+    variable = "python3 $PWD/.project_manager/tools/pm_bootstrap.py --task zeta"
+    got = cli_hooks.judge_git_check_command(
+        cli_hooks.adapter_home(home), "S-new", str(home), variable, main_thread=True,
+    )
+    assert got["verdict"] == "warn"
+    assert "미확장 토큰=$PWD" in got["reason"]
+    assert not (claims / "zeta.json").exists()
+
+
+def test_bootstrap_call_inside_a_quoted_command_string_warns_without_a_session_claim(home):
+    """따옴표로 묶인 명령 글 안의 부트스트랩 호출은 실행 여부를 몰라 기록하지 않고, 통과로 두지 않고 경고한다."""
+    claims = home / ".project_manager" / ".local" / "task-session-claims"
+    for command in (
+        'bash -c "python3 .project_manager/tools/pm_bootstrap.py --task gamma"',
+        f"sh -c 'py -3 {home}/.project_manager/tools/pm_bootstrap.py --task gamma'",
+    ):
+        got = cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S-new", str(home), command, main_thread=True,
+        )
+        assert got["verdict"] == "warn", command
+        assert not (claims / "gamma.json").exists(), command
