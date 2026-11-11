@@ -3661,3 +3661,10 @@ def _t0983_complete_fixture_records(board):
         record.setdefault("previous_collected",None)
         record.setdefault("collected",None)
         flag.write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_a_launcher_pytest_command_is_refused_on_a_suiteless_tree(board):
+    """`py` 런처·옵션·감싸는 명령으로 부른 pytest 도 스위트 없는 트리에서 `python3 -m pytest` 꼴과 같이 거부된다."""
+    _without_suite(board)
+    for command in ("py -3.12 -m pytest -q", "python3 -X utf8 -m pytest tests/ -q", "uv run pytest -q"):
+        assert regression._suiteless_tree_refusal(command, str(board.REPO), None) is not None, command

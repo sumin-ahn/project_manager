@@ -234,17 +234,16 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
             return {'verdict': 'deny', 'cwd_identity': identity, 'code': 'pm-home-relative-pytest-tests-missing', 'reason': 'PM 홈 cwd에서 pytest tests/를 실행하려 하나 cwd의 tests/ 디렉터리가 실재하지 않음 — 작업 폴더의 시험 경로를 절대경로로 적어 다시 실행하라'}
         return {'verdict': 'ok', 'cwd_identity': identity, 'reason': 'pytest 호출은 PM 홈 tests/ 대상 저장소 오인 패턴이 아님'}
     assert details.script is not None
-    unexpanded = shell_policy._unexpanded_shell_parameters(details.script)
-    unresolved_reason = f'엔진 호출 경로의 미확장 토큰={', '.join(unexpanded)} — 확장 불가 — 실제 사본 미상; 이 사본의 대상 저장소도 미상' if unexpanded else ''
-    unresolved_script_name = Path(details.script.replace('\\', '/')).name
-    unresolved_mutation = board_command_rules._board_mutation_subcommand(details.args) if unresolved_script_name == 'board.py' else ''
-    if unexpanded:
+    script_path = _engine_script_path(cwd_path, details.script)
+    if script_path is None:
+        unexpanded = shell_policy._unexpanded_shell_parameters(details.script)
+        unresolved_reason = f'엔진 호출 경로의 미확장 토큰={', '.join(unexpanded)} — 확장 불가 — 실제 사본 미상; 이 사본의 대상 저장소도 미상'
+        unresolved_script_name = Path(details.script.replace('\\', '/')).name
+        unresolved_mutation = board_command_rules._board_mutation_subcommand(details.args) if unresolved_script_name == 'board.py' else ''
         if unresolved_mutation and identity in {'slot', 'worktree'}:
             return {'verdict': 'deny', 'cwd_identity': identity, 'reason': f"board mutation '{unresolved_mutation}'이 non-PM cwd에서 감지됨 — {unresolved_reason}; board mutation은 PM 홈 사본으로 실행하라"}
         return {'verdict': 'warn', 'cwd_identity': identity, 'reason': f'{unresolved_reason}; board mutation은 PM 홈 사본으로 실행하라'}
-    script_token = Path(details.script).expanduser()
-    relative = not script_token.is_absolute()
-    script_path = (cwd_path / script_token).resolve() if relative else script_token.resolve()
+    relative = not Path(details.script).expanduser().is_absolute()
     script_root = script_path.parents[2]
     script_identity, _resolved_root, script_pm_home = _git_target_repo_identity(script_root, runner=runner)
     relative_script = Path('.project_manager') / 'tools' / script_path.name
@@ -275,19 +274,26 @@ def judge_engine_invocation(cwd: str, argv: list[str], *, runner: Any=subprocess
 
 _RECORD_TASK_SESSION_CLAIM_PROGRAM = 'import sys\nsys.path.insert(0, sys.argv[1])\nfrom pathlib import Path\nfrom pm_engine.infra import pm_paths, task_store\ntask_store.record_task_session_claim(pm_paths.home_at(Path(sys.argv[1]).parents[1]), sys.argv[2], sys.argv[3])\n'
 
-def _bootstrap_task_calls(parsed: shell_policy._ShellParseResult) -> list[tuple[Path, str]]:
-    """셸 명령 속 `pm_bootstrap.py --task <task>` 호출 — (부트스트랩 스크립트 경로, task) 목록.
+def _engine_script_path(cwd: str | Path, script: str) -> Path | None:
+    """엔진 호출이 실행할 사본 경로. `~` 는 풀고, 셸 변수(`$`)가 든 경로는 정적으로 못 정해 None 이다."""
+    if shell_policy._unexpanded_shell_parameters(script):
+        return None
+    return (Path(cwd).expanduser() / Path(script).expanduser()).resolve()
 
-    실행 위치가 확실하고 엔진 호출이며 `--task` 값이 정적인 호출만 고른다."""
-    calls: list[tuple[Path, str]] = []
+def _bootstrap_task_calls(parsed: shell_policy._ShellParseResult) -> list[tuple[Path | None, str]]:
+    """셸 명령 속 `pm_bootstrap.py --task <task>` 호출의 (부트스트랩 스크립트 경로, task) 목록.
+
+    확정 호출이고 `--task` 값이 정적인 것만 고른다. 스크립트 경로를 정적으로 정하지 못하면(`$`) 경로
+    자리가 None 이다. 서브에이전트 거부는 경로와 상관없이 쓰고, 세션 기록은 경로가 있을 때만 남긴다."""
+    calls: list[tuple[Path | None, str]] = []
     for call in parsed.engine_invocations:
         details = shell_policy._engine_invocation_details(call.cwd, call.argv)
-        if not call.certain or details is None or details.kind != 'engine' or (Path(details.script).name != 'pm_bootstrap.py'):
+        if not call.certain or details.kind != 'engine' or (Path(details.script).name != 'pm_bootstrap.py'):
             continue
         task = shell_policy._bootstrap_task_argument(details.args)
         if task is None:
             continue
-        calls.append(((Path(call.cwd).expanduser() / details.script).resolve(), task))
+        calls.append((_engine_script_path(call.cwd, details.script), task))
     return calls
 
 def _delegated_bootstrap_denials(parsed: shell_policy._ShellParseResult) -> list[dict[str, str]]:
@@ -313,6 +319,8 @@ def _record_bootstrap_session_claims(session: str, parsed: shell_policy._ShellPa
     if not session:
         return
     for script, task in _bootstrap_task_calls(parsed):
+        if script is None:
+            continue
         result = subprocess.run([sys.executable, '-c', _RECORD_TASK_SESSION_CLAIM_PROGRAM, str(script.parent), task, session], capture_output=True, text=True, encoding='utf-8')
         if result.returncode != 0:
             raise RuntimeError(f'세션 기록을 남기지 못했다 ({script.with_name('worktree_pool.py')} · rc={result.returncode}): {result.stderr.strip()}')

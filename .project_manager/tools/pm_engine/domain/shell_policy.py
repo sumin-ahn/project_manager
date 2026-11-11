@@ -337,33 +337,42 @@ class _EngineInvocation(NamedTuple):
     kind: str
     script: str | None
     args: tuple[str, ...]
+    # 따옴표로 묶인 문자열 안에서 찾은 호출이다. 그 문자열을 무엇이 실행하는지는 정적으로 모른다.
+    quoted: bool
+
+
+def _engine_marker(value: str) -> str | None:
+    """낱말이 엔진 스크립트 경로면 ``engine``, pytest 실행 파일이면 ``pytest``, 아니면 None."""
+    path = Path(value)
+    if path.suffix == ".py" and path.parts[-3:-1] == (".project_manager", "tools"):
+        return "engine"
+    if path.name.lower() in {"pytest", "pytest.exe"}:
+        return "pytest"
+    return None
 
 
 def _engine_invocation_details(
     _cwd: str | Path, argv: Sequence[str],
 ) -> _EngineInvocation | None:
-    """pytest 또는 ``.project_manager/tools/*.py`` 호출 모양을 정규화한다."""
+    """argv 의 첫 엔진·pytest 표지 낱말을 찾아 그 뒤를 호출 인자로 본다.
+
+    표지는 ``.project_manager/tools/<이름>.py`` 경로 낱말과 ``pytest`` 낱말(``python -m pytest`` 의
+    ``pytest`` 포함)이다. 표지 앞에 붙은 인터프리터·옵션·감싸는 명령은 보지 않는다. 표지가 아닌 낱말이
+    간접 실행 문자열의 낱말 규칙으로 여러 낱말이 되면(따옴표로 묶인 명령 글 등) 그 안에서 같은 표지를
+    찾고 ``quoted`` 로 표시한다.
+    """
     values = [str(value) for value in argv]
-    if not values:
-        return None
-    executable = Path(values[0]).name.lower()
-    if executable.endswith(".exe"):
-        executable = executable[:-4]
-    if executable == "pytest":
-        return _EngineInvocation("pytest", None, tuple(values[1:]))
-    is_python = re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable) is not None
-    if is_python and len(values) >= 3 and values[1:3] == ["-m", "pytest"]:
-        return _EngineInvocation("pytest", None, tuple(values[3:]))
-    script_index = 1 if is_python and len(values) >= 2 else 0
-    script = values[script_index]
-    path = Path(script)
-    parts = path.parts
-    if (
-        path.suffix == ".py"
-        and len(parts) >= 3
-        and parts[-3:-1] == (".project_manager", "tools")
-    ):
-        return _EngineInvocation("engine", script, tuple(values[script_index + 1:]))
+    for index, value in enumerate(values):
+        kind = _engine_marker(value)
+        if kind is not None:
+            return _EngineInvocation(
+                kind, value if kind == "engine" else None, tuple(values[index + 1:]), False,
+            )
+        words = _INDIRECT_WORD.findall(value)
+        if len(words) > 1:
+            inner = _engine_invocation_details(_cwd, words)
+            if inner is not None:
+                return inner._replace(quoted=True)
     return None
 
 
@@ -603,86 +612,6 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
 
         return None
     return None
-
-
-def _shell_engine_command(segment: Sequence[str]) -> tuple[str, ...] | None:
-    """지원 wrapper 뒤의 엔진/pytest command argv를 반환한다.
-
-    git 파서와 같은 simple-command 토큰을 소비하되, 여기서는 deny를 만들 수 있는 모양만
-    확정한다. 미지원 wrapper option은 fail-open(None)해 일반 argv의 ``python3``를 실행으로
-    오인하지 않는다.
-    """
-    values = list(segment)
-    index = 0
-
-    def _assignment(value: str) -> bool:
-        return re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*=.*", value, flags=re.DOTALL,
-        ) is not None
-
-    while index < len(values) and _assignment(values[index]):
-        index += 1
-    while index < len(values):
-        wrapper = Path(values[index]).name
-        if wrapper == "env":
-            index += 1
-            option_phase = True
-            while index < len(values):
-                token = values[index]
-                if option_phase and token == "--":
-                    option_phase = False
-                    index += 1
-                    continue
-                if _assignment(token):
-                    index += 1
-                    continue
-                if option_phase and token in {
-                    "-i", "--ignore-environment", "-0", "--null", "--debug",
-                }:
-                    index += 1
-                    continue
-                if option_phase and token in {"-u", "--unset", "-a", "--argv0"}:
-                    if index + 1 >= len(values):
-                        return None
-                    index += 2
-                    continue
-                if option_phase and token in {"-C", "--chdir"}:
-                    return None
-                if option_phase and token.startswith(
-                    ("--unset=", "--argv0=")
-                ):
-                    index += 1
-                    continue
-                if option_phase and (token.startswith("--chdir=") or token.startswith("-")):
-                    return None
-                break
-            continue
-        if wrapper == "command":
-            index += 1
-            while index < len(values) and values[index] in {"--", "-p"}:
-                index += 1
-            if index < len(values) and values[index].startswith("-"):
-                return None
-            continue
-        if wrapper == "exec":
-            index += 1
-            while index < len(values):
-                token = values[index]
-                if token in {"--", "-c", "-l"}:
-                    index += 1
-                    continue
-                if token == "-a":
-                    if index + 1 >= len(values):
-                        return None
-                    index += 2
-                    continue
-                if token.startswith("-"):
-                    return None
-                break
-            continue
-        break
-    candidate = tuple(values[index:])
-    return candidate if _engine_invocation_details(".", candidate) is not None else None
 
 
 def _normalize_shell_line_continuations(command: str) -> str:
