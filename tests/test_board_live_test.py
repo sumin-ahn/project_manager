@@ -1041,6 +1041,66 @@ def test_check_requires_rev(live_board, capsys):
     assert "--rev" in err
 
 
+_NO_HEAD = object()
+
+
+def _write_pass_record(live_board, head) -> None:
+    """pass 기록을 쓴다. head 에 _NO_HEAD 를 주면 head 키를 빼고 쓴다."""
+    pm_paths.home_at(live_board.REPO).local_dir.mkdir(parents=True, exist_ok=True)
+    record = {"status": "pass", "n": 7, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}
+    if head is not _NO_HEAD:
+        record["head"] = head
+    pm_paths.live_test_flag(pm_paths.home_at(live_board.REPO)).write_text(
+        json.dumps(record), encoding="utf-8")
+
+
+def test_check_seven_or_more_leading_chars_of_recorded_head_is_green(live_board, capsys):
+    """기록 head 의 앞 7자·8자·전체를 --rev 로 주면 green 이고 문구는 기록의 전체 ID 를 보여 준다."""
+    head = "cafef00dcafef00d0011223344556677"
+    _write_pass_record(live_board, head)
+    for rev in (head[:7], head[:8], head):
+        rc = regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _chk_args(rev=rev))
+        assert rc == 0, rev
+        assert f"live-test: green @ {head} ✓" in capsys.readouterr().out
+
+
+def test_check_rev_shorter_than_seven_chars_blocks_with_full_values(live_board, capsys):
+    """기록 head 의 앞 6자는 같은 커밋이어도 rc 1 이고, 문구가 두 값을 자르지 않고 7자 하한을 알린다."""
+    head = "cafef00dcafef00d0011223344556677"
+    _write_pass_record(live_board, head)
+    rc = regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _chk_args(rev=head[:6]))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert f"rev 불일치 (기록 {head} ≠ --rev {head[:6]})" in err
+    assert "앞 7자 이상" in err
+
+
+def test_check_other_commit_or_bad_head_blocks_with_one_message(live_board, capsys):
+    """다른 커밋·head 없음·빈 head·글자열 아닌 head 는 예외 없이 같은 불일치 문구로 rc 1 이다."""
+    cases = (("a" * 40, "b" * 40), (_NO_HEAD, "1234567"), ("", "1234567"), (1234567890, "1234567"))
+    for head, rev in cases:
+        _write_pass_record(live_board, head)
+        rc = regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _chk_args(rev=rev))
+        assert rc == 1, head
+        err = capsys.readouterr().err
+        shown = None if head is _NO_HEAD else head
+        assert f"rev 불일치 (기록 {shown} ≠ --rev {rev})" in err
+        assert "앞 7자 이상" in err
+
+
+def test_check_short_rev_with_platform_record_compares_full_head_downstream(
+        live_board, monkeypatch, capsys):
+    """플랫폼 기록이 있을 때 앞 8자로 check 해도 뒤 비교가 기록의 전체 ID 를 받아 green 이다."""
+    _platform_conf(live_board, monkeypatch)
+    _platform_regression_record(live_board)
+    monkeypatch.setattr(subprocess, "run", _FakeRun(0, "22 passed in 1.00s"))
+    assert regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _rec_args()) == 0
+    head = _read_flag(live_board)["head"]
+    capsys.readouterr()
+    assert regression_cmd.cmd_live_test(pm_paths.home_at(live_board.REPO), _chk_args(rev=head[:8])) == 0
+    assert f"green @ {head}" in capsys.readouterr().out
+
+
 # ── 라운드트립: record(pass) → check green ──────────────────────────────────
 
 def test_record_pass_then_check_green_roundtrip(live_board, monkeypatch, capsys):
