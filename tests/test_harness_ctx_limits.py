@@ -1575,3 +1575,42 @@ def test_apply_writes_the_planned_values_into_the_settings_text_of_that_moment(t
     assert after["autoCompactWindow"] == 170000
     assert ".claude/settings.json" in written
     assert ".claude/settings.json autoCompactWindow 180000 → 170000" in lines
+
+
+def test_update_plan_lookup_failure_lists_moved_keys_without_value_instruction(tmp_path, monkeypatch):
+    """옮길 옛 키가 있는 홈에서 모델 한도 조회가 실패하면, 갱신 계획의 문구는 옮기는 옛 키와 새 이름을 적고
+    값 검사가 옮긴 값으로 됐다는 사실만 알린다(앞에 값 줄이 없으니 '위 값' 을 가리키지 않는다)."""
+    root = _project(tmp_path, harnesses=("claude",),
+                    conf="ctx.nudge_pct=30\nctx.stop_pct=20\nctx.window_tokens=200000\n")
+
+    def lookup_fails(*args):
+        raise harness_ctx.HarnessCtxError(["Claude Code 모델 한도를 확인하지 못했습니다 (claude 실행 파일 PATH 부재)."])
+
+    monkeypatch.setattr(harness_ctx, "_read_harness_ctx_metadata", lookup_fails)
+    with pytest.raises(harness_ctx.HarnessCtxError) as raised:
+        update_adapters.plan_harness_ctx_limits(root)
+
+    message = str(raised.value)
+    assert "Claude Code 모델 한도를 확인하지 못했습니다" in message, message
+    assert "`ctx.stop_pct=20` → `ctx.precompact_at_pct`" in message, message
+    assert "값 검사는 옮긴 뒤의 값으로 했습니다" in message, message
+    assert "위 값은 옮긴 뒤의 값입니다" not in message, message
+
+
+def test_apply_skips_a_planned_harness_whose_settings_file_is_gone(tmp_path):
+    """계획한 하네스 중 쓸 때 설정 파일이 없는 것은 쓰지도 기록하지도 않는다(설정 파일을 새로 만들지 않는다)."""
+    root = _project(tmp_path, harnesses=("claude", "codex"), conf="ctx.compact_at_pct=85\n")
+    conf_path = root / ".project_manager" / "local.conf"
+    planned = harness_ctx.plan_harness_ctx(root, conf_store.load(conf_path).values, {})
+    assert set(planned.entries) == {"claude", "codex"}
+    codex_config = root / ".codex" / "config.toml"
+    codex_config.unlink()
+
+    with fs.local_conf_write_lock(conf_path):
+        written, _lines = harness_ctx.apply_harness_ctx(root, planned)
+
+    assert ".claude/settings.json" in written
+    assert ".codex/config.toml" not in written
+    assert not codex_config.exists()
+    record = json.loads((root / conf_store.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))
+    assert set(record["harnesses"]) == {"claude"}

@@ -7033,6 +7033,29 @@ def test_update_changes_nothing_when_the_moved_ctx_keys_fail_the_value_check(pm_
     assert "`ctx.stop_pct=10` → `ctx.precompact_at_pct`" in run.stderr, run.stderr
 
 
+def test_update_stops_before_moving_v100_default_ctx_keys(pm_update, tmp_path, monkeypatch):
+    """v1.0.0·v1.0.1 이 만든 기본 local.conf(`ctx_nudge_pct=20`·`ctx_stop_pct=10`)는 갱신마다 값 검사에 걸린다.
+
+    `ctx_stop_pct=10` 은 `ctx.precompact_at_pct=90` 으로 옮겨져 기본 `ctx.compact_at_pct=90` 과 같다. 갱신은 키를
+    옮기기 전에 rc 1 로 멈추고 실행 전후 홈의 파일이 같으며, 문구가 옛 이름 키와 새 이름을 짚는다."""
+    from _manager_home import tree_snapshot
+
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
+    dest = tmp_path / "adopter"
+    _import_adopter(dest, "claude")
+    conf = dest / ".project_manager" / "local.conf"
+    kept = [line for line in conf.read_text(encoding="utf-8").splitlines() if not line.startswith("ctx.")]
+    conf.write_text("\n".join([*kept, "ctx_nudge_pct=20", "ctx_stop_pct=10"]) + "\n", encoding="utf-8")
+
+    before = tree_snapshot(dest)
+    run = _adopter_update(dest)
+
+    assert run.returncode == 1, run.stdout[-2000:] + run.stderr[-2000:]
+    assert tree_snapshot(dest) == before
+    assert "`ctx_stop_pct=10` → `ctx.precompact_at_pct`" in run.stderr, run.stderr
+    assert "`ctx.precompact_at_pct=90` 는 `ctx.compact_at_pct=90`(기본값) 보다 작아야 합니다" in run.stderr, run.stderr
+
+
 def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch):
     """옛 남은 %·공통 한도 conf → 이동(쓴 %·하네스별 한도) → 검사 → 설정 파일 반영.
 

@@ -203,8 +203,9 @@ def plan_harness_ctx_limits(effective_dest: Path) -> harness_ctx.HarnessCtxPlan:
         if not moved:
             raise
         raise harness_ctx.HarnessCtxError([*exc.violations, (
-            f"이 갱신이 옮기는 local.conf 옛 키: {', '.join(moved)}. 위 값은 옮긴 뒤의 값입니다(남은 % 는 쓴 % 로 "
-            "옮기고, 새 이름에 이미 값이 있으면 그 값을 씁니다). 새 이름으로 값을 적은 뒤 다시 실행하십시오.")]) from exc
+            f"이 갱신이 옮기는 local.conf 옛 키: {', '.join(moved)}. 값 검사는 옮긴 뒤의 값으로 했습니다(남은 % 는 "
+            "쓴 % 로 옮기고, 새 이름에 이미 값이 있으면 그 값을 씁니다). 값을 고칠 때는 옛 키가 남은 동안 설정 탭이 "
+            "저장을 거부하므로 local.conf 에 새 이름으로 직접 적습니다.")]) from exc
 
 
 def apply_harness_ctx_limits(effective_dest: Path, planned, *, write: bool) -> bool:
