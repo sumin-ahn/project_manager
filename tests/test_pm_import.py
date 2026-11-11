@@ -6305,3 +6305,30 @@ def test_t0956_zero_commit_guided_command_refuses_without_bare(tmp_path):
     assert not (dest / ".repos" / f"{dest.name}.git").exists()
     work = dest / "work"
     assert not work.exists() or not any(work.iterdir())
+
+
+def test_new_install_lays_no_file_when_the_model_limit_lookup_fails(tmp_path):
+    """하네스 실행 파일이 PATH 에 없어 모델 한도를 조회하지 못하면 `--new` 는 파일을 깔기 전에 rc 1 로 멈춘다.
+
+    대상 폴더는 비어 있으므로 같은 명령을 다시 실행할 수 있고, 조회가 되는 환경에서는 그 재실행이 끝까지 간다."""
+    from _manager_home import known_ctx_env
+    dest = tmp_path / "home"
+    argv = [sys.executable, str(TOOLS / "pm_import.py"), "--new", str(dest), "--harness", "claude",
+            "--name", "x", "--fill", "manual", "--from", str(REPO)]
+    no_claude = os.pathsep.join(folder for folder in os.environ["PATH"].split(os.pathsep)
+                                if shutil.which("claude", path=folder) is None)
+    env = {**os.environ, "PATH": no_claude, "PM_NONINTERACTIVE": "1"}
+    env.pop("_KNOWN_CTX_FIXTURE_BIN", None)
+
+    stopped = subprocess.run(argv, env=env, capture_output=True, text=True, encoding="utf-8",
+                             stdin=subprocess.DEVNULL)
+
+    assert stopped.returncode == 1, stopped.stdout[-2000:] + stopped.stderr[-2000:]
+    assert "Claude Code 모델 한도를 확인하지 못했습니다" in stopped.stderr, stopped.stderr[-2000:]
+    assert sorted(path.name for path in dest.iterdir()) == []
+
+    again = subprocess.run(argv, env=known_ctx_env({**os.environ, "PM_NONINTERACTIVE": "1"}),
+                           capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL)
+
+    assert again.returncode == 0, again.stdout[-2000:] + again.stderr[-2000:]
+    assert (dest / ".project_manager" / "install.json").is_file()

@@ -573,3 +573,30 @@ def test_add_harness_from_surfaced_in_help(pm_config, capsys):
         pm_config.main(["add-harness", "--help"])
     assert exc.value.code == 0
     assert "--from" in capsys.readouterr().out
+
+
+def test_add_harness_changes_nothing_when_the_model_limit_lookup_fails(pm_import, tmp_path, monkeypatch, capsys):
+    """더할 하네스의 모델 한도를 조회하지 못하면 add-harness 는 복사 전에 rc 1 로 멈춘다.
+
+    홈의 파일(설치 기록·어댑터 설정 기록·local.conf 포함)이 실행 전과 같다. 조회 실패는 실제 조회 함수가 내는
+    것과 같은 `HarnessCtxError` 로 대신한다(실행 파일 PATH 부재)."""
+    from _manager_home import tree_snapshot
+
+    dest = _build_live_instance(pm_import, tmp_path / "lookup_host", "claude")
+    _set_conf_upstream(dest, str(REPO))
+    known = harness_ctx._read_harness_ctx_metadata
+
+    def lookup(dest_root, harness, documents, models):
+        if harness == "codex":
+            raise harness_ctx.HarnessCtxError(
+                ["Codex 모델 한도를 확인하지 못했습니다 ([Errno 2] codex 실행 파일 PATH 부재)."])
+        return known(dest_root, harness, documents, models)
+
+    monkeypatch.setattr(harness_ctx, "_read_harness_ctx_metadata", lookup)
+    before = tree_snapshot(dest)
+    capsys.readouterr()
+
+    assert add_harness.add_harness_cli(ENGINE_HOME, dest, "codex", dry_run=False) == 1
+
+    assert "Codex 모델 한도를 확인하지 못했습니다" in capsys.readouterr().err
+    assert tree_snapshot(dest) == before

@@ -33,6 +33,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
 import tomllib
 from pathlib import Path
 
@@ -42,6 +43,7 @@ from _manager_home import _known_ctx_installation, known_ctx_overrides
 from _opencode_model import SHIPPED_MODEL, SHIPPED_MODEL_ID
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store
+from pm_engine.infra import fs
 from pm_engine.app import adapter_report
 from pm_engine.app import harness_ctx
 from pm_engine.infra import adapter_baseline
@@ -120,7 +122,14 @@ def _global_dir(tmp_path: Path, files: dict[str, str] | None = None) -> Path:
 
 
 def _apply(root: Path, config_dir: Path, *, write: bool = True):
-    return harness_ctx.apply_harness_ctx(root, write=write, opencode_config_dir=config_dir)
+    conf_path = root / ".project_manager" / "local.conf"
+    planned = harness_ctx._harness_ctx_plan(root, harness_ctx._conf_values(conf_path, None), config_dir, {})
+    for notice in planned.notices:
+        print(notice, file=sys.stderr)
+    if not write:
+        return planned.lines
+    with fs.local_conf_write_lock(conf_path):
+        return harness_ctx.apply_harness_ctx(root, planned)[1]
 
 
 def _jsonc(path: Path) -> dict:
@@ -718,7 +727,7 @@ def install_ctx_record(root, values=None, harness="claude", capacity=2000000, mo
     with pytest.MonkeyPatch.context() as patch:
         for name, override in known_ctx_overrides(capacity=capacity, context=3000000, model=model).items():
             patch.setattr(harness_ctx, name, override)
-        harness_ctx.apply_harness_ctx(root, write=True, opencode_config_dir=root / "global")
+        _apply(root, root / "global")
     return SHIPPED_MODEL if harness == "opencode" else model
 
 
@@ -1346,7 +1355,8 @@ def test_t0955_update_apply_without_provider_settings(tmp_path, monkeypatch, cap
         monkeypatch.setenv(name, value)
     root = _project(tmp_path, harnesses=("opencode",), conf=T0943_CONF)
     capsys.readouterr()
-    assert update_adapters.apply_harness_ctx_limits(root, write=True) is True
+    assert update_adapters.apply_harness_ctx_limits(
+        root, update_adapters.plan_harness_ctx_limits(root), write=True) is True
     err = capsys.readouterr().err
     assert SHIPPED_MODEL in err and "[중단]" not in err, err
 
@@ -1542,3 +1552,26 @@ def test_t0949_file_state_matrix(local_conf, tmp_path, monkeypatch, case):
             {"path": "compaction.reserved", "file": None, "record": 12000}]
     elif case != "record-missing":
         assert status["opencode"]["settings_mismatch"] == [] and status["codex"]["settings_mismatch"] == []
+
+
+def test_apply_writes_the_planned_values_into_the_settings_text_of_that_moment(tmp_path):
+    """쓰기 단계는 계획한 관리 키 값을 쓰는 시점의 설정 파일 텍스트에 넣는다.
+
+    계획 뒤 같은 실행의 앞 단계가 관리 키 밖을 바꿨으면(갱신의 진입 문서 이관이 opencode `instructions` 를 더하는
+    것과 같은 경우) 그 내용은 남고 관리 키만 계획 값이 된다."""
+    root = _project(tmp_path, harnesses=("claude",), conf="ctx.compact_at_pct=85\n")
+    conf_path = root / ".project_manager" / "local.conf"
+    planned = harness_ctx.plan_harness_ctx(root, conf_store.load(conf_path).values, {})
+    settings = root / ".claude" / "settings.json"
+    document = json.loads(settings.read_text(encoding="utf-8"))
+    document["env"]["ADDED_AFTER_PLAN"] = "1"
+    settings.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    with fs.local_conf_write_lock(conf_path):
+        written, lines = harness_ctx.apply_harness_ctx(root, planned)
+
+    after = json.loads(settings.read_text(encoding="utf-8"))
+    assert after["env"]["ADDED_AFTER_PLAN"] == "1"
+    assert after["autoCompactWindow"] == 170000
+    assert ".claude/settings.json" in written
+    assert ".claude/settings.json autoCompactWindow 180000 → 170000" in lines

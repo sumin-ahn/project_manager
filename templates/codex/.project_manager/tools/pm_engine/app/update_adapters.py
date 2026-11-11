@@ -188,34 +188,48 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
     return result
 
 
-def apply_harness_ctx_limits(effective_dest: Path, *, write: bool) -> bool:
-    """local.conf 의 하네스별 사용 한도·압축 비율을 하네스 설정 파일에 반영한다 — 멈추면 False.
+def plan_harness_ctx_limits(effective_dest: Path) -> harness_ctx.HarnessCtxPlan:
+    """갱신의 하네스 설정 반영 검사·조회 — 갱신의 첫 파일 변경(local.conf 키 이름 이동) 앞에서 부른다.
 
-    무엇을 어디에 쓰는지·검사·어댑터 설정 기록 처리는 `app.harness_ctx.apply_harness_ctx` 한 곳이 정하고 여기서는
-    출력과 멈춤만 맡는다. 어댑터 config 채널(`sync_adapter_configs`) **뒤**에 돈다 — 채널이 템플릿
-    갱신·어댑터 설정 기록 쓰기를 끝낸 파일 위에 관리 키를 쓴다. `write=False`(dry-run)는 바뀔 줄만 낸다.
+    local.conf 는 이 갱신이 옮길 이름을 옮긴 값(`conf_schema.rename_updates`)으로 본다. 걸리면 `HarnessCtxError`
+    이고 어떤 파일도 쓰지 않았다. 옮긴 키가 있으면 문구 끝에 옛 키와 새 이름을 한 줄로 붙인다."""
+    loaded = conf_store.load(Path(effective_dest) / ".project_manager" / "local.conf")
+    updates = conf_schema.rename_updates(loaded)
+    values = {key: value for key, value in {**loaded.values, **updates}.items() if value is not None}
+    try:
+        return harness_ctx.plan_harness_ctx(effective_dest, values, {})
+    except harness_ctx.HarnessCtxError as exc:
+        moved = [f"`{old}={loaded.values[old]}` → `{new}`" for old, new in loaded.legacy.items() if new is not None]
+        if not moved:
+            raise
+        raise harness_ctx.HarnessCtxError([*exc.violations, (
+            f"이 갱신이 옮기는 local.conf 옛 키: {', '.join(moved)}. 위 값은 옮긴 뒤의 값입니다(남은 % 는 쓴 % 로 "
+            "옮기고, 새 이름에 이미 값이 있으면 그 값을 씁니다). 새 이름으로 값을 적은 뒤 다시 실행하십시오.")]) from exc
 
-    local.conf 에 값 공급을 잃는 옛 키가 남아 있으면 반영을 계산하지 않고 그 사실을 한 줄로 낸다 —
-    이 채널은 구표기 conf 를 가진 채택자에게도 엔진 파일을 배달해야 하고(`_read_local_conf`),
-    반영은 옛 이름을 읽지 않는다. dry-run 은 이름 이동 전의 conf 를 보므로 이 줄이 나오고, 실제
-    실행은 이동(`migrate_renamed_conf_keys`)을 먼저 끝낸 뒤 반영한다. 검사를 통과하지 못한 값
-    (`HarnessCtxError`)은 설정 파일을 쓰지 않고 멈춘다 — 호출부가 rc 1 로 끝내 upstream.rev 기록에
-    닿지 않는다. 그 밖의 실패는 그대로 올라간다."""
+
+def apply_harness_ctx_limits(effective_dest: Path, planned, *, write: bool) -> bool:
+    """갱신의 하네스 설정 반영 쓰기 — 계획(`plan_harness_ctx_limits`)대로 쓰고 줄을 낸다. 멈추면 False.
+
+    어댑터 config 채널(`sync_adapter_configs`) **뒤**에 돈다 — 채널이 템플릿 갱신·어댑터 설정 기록 쓰기를 끝낸 파일
+    위에 관리 키를 쓴다. `write=False`(dry-run)는 바뀔 줄만 낸다. 계획이 옛 키 때문에 반영을 건너뛰는 것이면 그
+    사실을 한 줄로 낸다(대체 없는 폐지 키는 사람이 지운 뒤의 pm-update 가 반영한다). 쓰기 단계의
+    `HarnessCtxError` 는 rc 1 로 끝내 upstream.rev 기록에 닿지 않는다. 그 밖의 실패는 그대로 올라간다."""
     prefix = "[dry-run] 하네스 설정 반영 예정" if not write else "  ✓ 하네스 설정 반영"
-    remaining = conf_schema.blocking_legacy(conf_store.load(
-        Path(effective_dest) / ".project_manager" / "local.conf").legacy)
-    if remaining:
+    if planned.legacy:
         print(f"{'[dry-run] ' if not write else ''}하네스 설정 반영을 건너뛴다 — local.conf 에 "
-              f"옛 키({', '.join(remaining)})가 남아 있다. 이름 이동과 폐지 키 정리가 끝난 뒤의 "
+              f"옛 키({', '.join(planned.legacy)})가 남아 있다. 이름 이동과 폐지 키 정리가 끝난 뒤의 "
               "pm-update 가 반영한다.")
         return True
-    try:
-        lines = harness_ctx.apply_harness_ctx(
-            effective_dest, write=write,
-            opencode_config_dir=harness_ctx.opencode_global_config_dir(os.environ, Path.home()))
-    except harness_ctx.HarnessCtxError as exc:
-        print(f"[중단] {exc}", file=sys.stderr)
-        return False
+    for notice in planned.notices:
+        print(notice, file=sys.stderr)
+    lines = planned.lines
+    if write:
+        try:
+            with fs.local_conf_write_lock(Path(effective_dest) / ".project_manager" / "local.conf"):
+                _written, lines = harness_ctx.apply_harness_ctx(Path(effective_dest), planned)
+        except harness_ctx.HarnessCtxError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return False
     for line in lines:
         print(f"{prefix}: {line}")
     return True

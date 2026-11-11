@@ -12,6 +12,7 @@ from pm_engine.domain import install_rules
 from pm_engine.domain import manifest_rules
 from pm_engine.domain import render_rules
 from pm_engine.infra import adapter_baseline
+from pm_engine.infra import conf_store
 from pm_engine.infra import fs
 from pm_engine.infra import install_conf
 from pm_engine.infra import install_files
@@ -624,6 +625,11 @@ def add_harness(
     # 복사 **직전** 루트 재확인 — 뒤에 두면 첫 mkdir/쓰기가 이미 교체된 트리에 들어간다.
     #   fd 가드는 *열 파일이 있을 때만* 돌므로 단계 경계 검사가 false-green(대응 경로 없는
     #   교체 트리에서 아무 일도 안 하고 rc0)까지 막는다.
+    # 하네스 설정 반영의 검사·조회 — 첫 파일 변경(복사) 앞이다. 걸리면 HarnessCtxError(ValueError)라
+    #   `add_harness_cli` 가 rc 1 로 번역한다.
+    ctx_plan = harness_ctx.plan_harness_ctx(
+        dest_root, conf_store.load(dest_root / ".project_manager" / "local.conf").values,
+        {action.dst.relative_to(dest_root).as_posix(): action.src for action in plan})
     install_files.assert_dest_root_unchanged(dest_root, root_identity)
     # 파일 단위 위반(경로 교체·계획 뒤 상태 변화)은 그 파일만 빼고 loud 로 알린다 — 적용 단계
     #   rc 정책과 같은 규칙이고, 후속 채널 범위는 **성공분만** 이다(제외분 미접촉).
@@ -733,7 +739,7 @@ def add_harness(
     # 하네스 사용 한도 반영 — 어댑터 설정 기록을 적은 **뒤**라야 방금 내려놓은 설정 파일이 무편집으로 증언되고
     #   반영 뒤에도 그 판정이 유지된다(`apply_harness_ctx` 의 기록 규칙). 검사 거부는 ValueError 라
     #   `add_harness_cli` 가 rc 1 로 번역한다.
-    harness_ctx._print_harness_ctx_apply(dest_root)
+    harness_ctx._print_harness_ctx_apply(dest_root, ctx_plan)
     # 실복사 수를 보고한다(계획 수 아님) — 제외가 있었으면 위 요약이 사유를 이미 말한다.
     print(f"✓ add-harness 완료: {harness} 어댑터 {len(copied_relpaths)} 파일 복사 · "
           f"{n_subst} 파일 토큰 치환 (스코프: {adapter_scope} + {root_doc})")

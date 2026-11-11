@@ -11,6 +11,7 @@ from pm_engine.app import hook_sets
 from pm_engine.app import repo_protection
 from pm_engine.domain import install_rules
 from pm_engine.infra import adapter_baseline
+from pm_engine.infra import conf_store
 from pm_engine.infra import upstream_git
 
 
@@ -81,6 +82,17 @@ def _accept_adapter_config_one(home, dest: Path, source_root: Path,
     #   **template**(검사가 확인한 bytes 와 실제 복사할 bytes 의 연결) — 후자가 없으면 상류가
     #   그 사이 바뀌어도 "검사한 버전" 와 다른 내용이 설치된다.
     judged = next((item for item in judgments if item.relpath == relpath), None)
+    # 하네스 설정 반영의 검사·조회 — 교체(첫 파일 변경) 앞이다. 교체할 설정 파일은 그 template 을 읽는다.
+    #   걸리면 아무 파일도 바꾸지 않고 rc 1 이다(설치·add-harness·갱신과 같은 규칙).
+    ctx_plan = None
+    if judged is not None and relpath in harness_ctx.HARNESS_CTX_FILES.values():
+        try:
+            ctx_plan = harness_ctx.plan_harness_ctx(
+                dest, conf_store.load(dest / ".project_manager" / "local.conf").values,
+                {relpath: judged.template})
+        except harness_ctx.HarnessCtxError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
     try:
         # 검사한 상태와의 연결은 **둘이 한 벌**이다(상류 config bytes + 선언 package snapshot digest).
         outcome = adapter_accept.accept_adapter_config(
@@ -110,12 +122,11 @@ def _accept_adapter_config_one(home, dest: Path, source_root: Path,
     note = install_rules.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(relpath)
     if note:
         print(f"  ⚠️ {note}")
-    if relpath in harness_ctx.HARNESS_CTX_FILES.values():
-        # 템플릿 값으로 돌아간 관리 키에 local.conf 의 사용 한도를 다시 쓴다(어댑터 설정 기록이 방금 증언한
-        #   파일이라 반영 뒤에도 무편집 판정이 유지된다). 설치·add-harness 와 같은 한 번이다 —
-        #   옛 키가 남은 conf 면 반영을 건너뛰고 알리며, 검사 거부만 rc 1(설정 파일 무변경)이다.
+    if ctx_plan is not None:
+        # 템플릿 값으로 돌아간 관리 키에 계획한 사용 한도를 쓴다(어댑터 설정 기록이 방금 증언한 파일이라 반영
+        #   뒤에도 무편집 판정이 유지된다). 옛 키가 남은 conf 면 반영을 건너뛰고 알린다. 쓰기 단계에서 멈추면 rc 1.
         try:
-            harness_ctx._print_harness_ctx_apply(dest)
+            harness_ctx._print_harness_ctx_apply(dest, ctx_plan)
         except harness_ctx.HarnessCtxError as exc:
             print(f"[중단] {exc}", file=sys.stderr)
             return 1
