@@ -311,7 +311,7 @@ def assert_no_project_above(folder: Path) -> None:
     """폴더의 어느 상위에도 하네스가 읽는 지시 파일이나 PM 홈 폴더가 없음을 단언한다."""
     found = [str(parent / name) for parent in Path(folder).resolve().parents
              for name in PROJECT_MARKERS if (parent / name).exists()]
-    assert not found, f"하네스 폴더 {folder} 의 상위에 하네스가 읽는 프로젝트가 있다: {found}"
+    assert not found, f"하네스 폴더 {folder} 의 상위에 하네스가 읽는 프로젝트가 있다: {', '.join(found)}"
 
 
 @pytest.fixture
