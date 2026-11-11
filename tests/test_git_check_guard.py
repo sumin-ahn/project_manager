@@ -3587,8 +3587,12 @@ def test_a_marker_looking_word_before_the_engine_call_does_not_hide_it(topology)
 
 
 def test_engine_path_with_an_unknown_user_tilde_is_judged_without_an_exception(topology):
-    """셸이 풀지 못하는 `~이름` 경로는 글자 그대로 실행 위치 아래 경로로 보고 예외 없이 판정한다."""
+    """없는 사용자의 `~이름` 경로도 예외 없이 판정한다.
+
+    파이썬이 못 풀면 글자 그대로 실행 위치 아래 상대경로로 보고(warn), Windows 처럼 이웃 프로필
+    폴더로 추측해 풀면 절대경로로 본다(ok)."""
     home, _slot = topology
+    expected = "ok" if os.path.isabs(os.path.expanduser("~nosuchuserzz")) else "warn"
     for command in (
         "cat ~nosuchuserzz/.project_manager/tools/board.py",
         "python3 ~nosuchuserzz/.project_manager/tools/board.py list",
@@ -3596,4 +3600,4 @@ def test_engine_path_with_an_unknown_user_tilde_is_judged_without_an_exception(t
         got = cli_hooks.judge_git_check_command(
             cli_hooks.adapter_home(home), "S", str(home), command, main_thread=True,
         )
-        assert got["verdict"] == "warn", command
+        assert got["verdict"] == expected, command
