@@ -912,7 +912,7 @@ class _CodexHomeRunner:
     not (PM_RELAY_LIVE or PM_ORCH_LIVE_RELEASE) or not shutil.which("codex") or not codex_auth_available(),
     reason="live smoke — (PM_RELAY_LIVE 또는 PM_ORCH_LIVE_RELEASE)=1 + codex CLI(gpt-5.5 과금·~/.codex/auth.json) 필요(기본 skip·CI green 불변).",
 )
-def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
+def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, harness_tmp_path):
     """실 codex 1회 e2e (T-0407 본체) — spawn→resume 연속성·driver-파싱 tid==marker tid·usage 누적 실측.
 
     검증 항목:
@@ -930,13 +930,13 @@ def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
     `test_release_cluster._EXPECTED_RELEASE_TESTS`+`_RELEASE_TEST_FILES`·`regression.LIVE_TEST_RELEASE_PIN`·
     `test_board_live_test` 동시 갱신·templates 는 PM 통합 시 pm_update 전파). 이 smoke 가 skip/누락되면
     수집<pin 으로 `live-test record` red — codex green 없이 v1.4.0 push 차단(티켓 목표)."""
-    home = make_codex_home(tmp_path)
+    home = make_codex_home(harness_tmp_path)
     runner = _CodexHomeRunner(home)
-    workdir = tmp_path / "cwd"
+    workdir = harness_tmp_path / "cwd"
     workdir.mkdir()
     try:
         driver = driver_mod.CodexCliDriver(
-            contract.parse_codex_json, spawn_result=relay.SpawnResult, mark_ctx_if_over=relay.mark_ctx_post_turn_if_over, mark_stop=orch.write_post_turn_marker, root=tmp_path,
+            contract.parse_codex_json, spawn_result=relay.SpawnResult, mark_ctx_if_over=relay.mark_ctx_post_turn_if_over, mark_stop=orch.write_post_turn_marker, root=harness_tmp_path,
             runner=runner,  # 격리 홈 주입 + stdout 기록.
         )
         # spawn — 엔진 uuid4 는 driver 가 무시(codex 발급 thread_id 가 권위).
@@ -951,8 +951,8 @@ def test_live_codex_thread_marker_identity_smoke(orch, driver_mod, tmp_path):
         )
         assert "MANGO77" in reply.upper(), f"resume 연속성 실패 — reply={reply!r}"
         # driver-파싱 tid == marker tid: 그 tid 로 쓴 marker 를 supervisor 가 stat(sid 예측 성립).
-        assert orch.write_post_turn_marker(tmp_path, observed) is True
-        assert orch.stop_marker_present(tmp_path, observed) is True
+        assert orch.write_post_turn_marker(harness_tmp_path, observed) is True
+        assert orch.stop_marker_present(harness_tmp_path, observed) is True
         # input_tokens 누적 실측(usage 2턴 대조·runner 기록 stdout): 차분·rollout 기준값의 원천.
         _, _, usage1 = contract.parse_codex_json(runner.stdouts[0].splitlines())
         _, _, usage2 = contract.parse_codex_json(runner.stdouts[1].splitlines())

@@ -530,7 +530,7 @@ def _dead_server():
     reason="결정적 stall e2e — 실 opencode 바이너리 필요(CI 상시 경로는 hermetic 단위테스트).",
 )
 @pytest.mark.integration
-def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
+def test_opencode_stall_watchdog_e2e_kill_retry_failloud(harness_tmp_path, monkeypatch):
     """무응답 서버를 baseURL 로 물린 실 opencode 를 워치독이 kill+재시도+fail-loud 하는지 e2e.
 
     first-event timeout 을 env 로 5초로 낮춰(총 소요 짧게) 무한 hang 이 아니라 유한 재시도 후
@@ -549,11 +549,11 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
                 }
             },
         }
-        (tmp_path / "opencode.json").write_text(
+        (harness_tmp_path / "opencode.json").write_text(
             json.dumps(cfg, indent=2), encoding="utf-8"
         )
         argv = [
-            "opencode", "run", "--format", "json", "--dir", str(tmp_path),
+            "opencode", "run", "--format", "json", "--dir", str(harness_tmp_path),
             "--dangerously-skip-permissions", "-m", "stall/stall-model",
             "Reply with exactly: PONG",
         ]
@@ -562,7 +562,7 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
         monkeypatch.setenv("PM_OC_STALL_RETRIES", "1")
         # opencode 는 XDG 데이터·캐시·상태 폴더에 로그와 세션을 쓴다. 실제 홈 대신 시험 폴더를 준다.
         for name in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
-            monkeypatch.setenv(name, str(tmp_path / name.lower()))
+            monkeypatch.setenv(name, str(harness_tmp_path / name.lower()))
         logs: list[str] = []
         started = time.monotonic()
         with pytest.raises(watchdog.StallWatchdogError):
@@ -571,7 +571,7 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
                 first_event_timeout=watchdog.first_event_timeout_default(),
                 overall_timeout=1800.0,   # turn 상한(백스톱) — 여기 도달 전에 stall 이 잡혀야.
                 retries=watchdog.stall_retries_default(),
-                cwd=str(tmp_path),
+                cwd=str(harness_tmp_path),
                 log=logs.append,
             )
         elapsed = time.monotonic() - started

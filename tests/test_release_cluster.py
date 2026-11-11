@@ -673,7 +673,7 @@ def _guided_adopter(tmp_path: Path, harness: str, *, task: str, folders: int) ->
     not _RELEASE_LIVE or not shutil.which("claude"),
     reason="release cluster — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
-def test_release_cluster_claude_full_cluster(tmp_path):
+def test_release_cluster_claude_full_cluster(harness_tmp_path):
     """실 claude 전체 묶음 시험 + native auto-compaction이 snapshot을 재주입한다.
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
@@ -682,7 +682,7 @@ def test_release_cluster_claude_full_cluster(tmp_path):
     단언한 뒤 같은 세션을 낮은 native `--autocompact` 경계로 resume한다. 압축 뒤 첫 주 스레드 훅의
     checkpoint 1건 이상과 snapshot 전달, 모델 sentinel 응답을 함께 확인한다. API 과금.
     """
-    dest = _guided_adopter(tmp_path, "claude", task=_CLUSTER_TASK, folders=2)
+    dest = _guided_adopter(harness_tmp_path, "claude", task=_CLUSTER_TASK, folders=2)
     session_id = str(uuid.uuid4())
     checkpoints_before = _compaction_checkpoint_count(dest)
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
@@ -754,10 +754,10 @@ def test_release_cluster_claude_full_cluster(tmp_path):
     not _RELEASE_LIVE or not shutil.which("codex") or not codex_auth_available(),
     reason="release cluster native codex — PM_ORCH_LIVE_RELEASE=1 + codex auth 필요.",
 )
-def test_release_cluster_codex_native_ticket_growth(tmp_path):
+def test_release_cluster_codex_native_ticket_growth(harness_tmp_path):
     """실 Codex main이 spawn_agent 3역할로 같은 ticket copy를 성장·collect하고 done까지 완주한다."""
-    dest = _guided_adopter(tmp_path, "codex", task=_CLUSTER_TASK, folders=2)
-    home = make_codex_home(tmp_path)
+    dest = _guided_adopter(harness_tmp_path, "codex", task=_CLUSTER_TASK, folders=2)
+    home = make_codex_home(harness_tmp_path)
     try:
         proc = run_codex_exec(
             _full_cluster_prompt("AGENTS.md", "codex"), dest, home,
@@ -773,7 +773,7 @@ def test_release_cluster_codex_native_ticket_growth(tmp_path):
     not _RELEASE_LIVE or not shutil.which("opencode"),
     reason="release cluster — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
 )
-def test_release_cluster_opencode_full_cluster(tmp_path):
+def test_release_cluster_opencode_full_cluster(harness_tmp_path):
     """실 opencode 전체 묶음 시험 + 강제 native 임계가 snapshot 재주입·checkpoint를 남긴다.
 
     opencode 의 위임 관측 수단은 claude 의 stream-json `subagent_type` 와 다르다 — PM 36 라이브 probe
@@ -788,7 +788,7 @@ def test_release_cluster_opencode_full_cluster(tmp_path):
     `cluster` 하나인지 단언하고, 같은 세션(`--continue`)으로 압축을 일으킨다 — 압축 기록의 task 는 세션
     ID 로 찾는다.
     """
-    dest = _guided_adopter(tmp_path, "opencode", task=_CLUSTER_TASK, folders=2)
+    dest = _guided_adopter(harness_tmp_path, "opencode", task=_CLUSTER_TASK, folders=2)
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
     checkpoints_before = _compaction_checkpoint_count(dest)
     checkpoint_markers_before = _compaction_checkpoint_markers(marker_dir)
@@ -1147,7 +1147,7 @@ def _assert_multirepo_cluster_side_effects(home: Path, proc: subprocess.Complete
     reason="release cluster multi-repo — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
            "기본 skip·사용자 트리거.",
 )
-def test_release_cluster_multirepo_opencode_full_cluster(tmp_path):
+def test_release_cluster_multirepo_opencode_full_cluster(harness_tmp_path):
     """실 opencode(agentic·ollama)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 묶음 시험을 닫는다.
 
     홈은 `_multirepo_cluster_home`(저장소마다 통합 폴더 1번·작업 폴더 2번을 task 가 보유)이고, 프롬프트
@@ -1159,7 +1159,7 @@ def test_release_cluster_multirepo_opencode_full_cluster(tmp_path):
     closed 와 base_branch `<repo>_1`, 묶음 브랜치와 통합 브랜치의 cluster-done.txt 내용. 출력 문구 비결정에
     강건하다(T-0157 과 같은 방식). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama).
     """
-    home = _multirepo_cluster_home(tmp_path, "opencode")
+    home = _multirepo_cluster_home(harness_tmp_path, "opencode")
 
     proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
@@ -1180,7 +1180,7 @@ def test_release_cluster_multirepo_opencode_full_cluster(tmp_path):
     reason="release cluster multi-repo — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
-def test_release_cluster_multirepo_claude_full_cluster(tmp_path):
+def test_release_cluster_multirepo_claude_full_cluster(harness_tmp_path):
     """실 claude(`claude-sonnet-4-6`)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 묶음 시험을 닫는다.
 
     opencode 짝(`test_release_cluster_multirepo_opencode_full_cluster`)과 같은 홈·프롬프트·단언에 단일 claude
@@ -1190,7 +1190,7 @@ def test_release_cluster_multirepo_claude_full_cluster(tmp_path):
     묶음 브랜치와 통합 브랜치의 cluster-done.txt 내용이다(`_assert_multirepo_cluster_side_effects`). 묶음 시험에
     developer·reviewer 위임이 없어 stream-json `subagent_type` 단언은 하지 않는다. API 과금.
     """
-    home = _multirepo_cluster_home(tmp_path, "claude")
+    home = _multirepo_cluster_home(harness_tmp_path, "claude")
 
     proc = subprocess.run(
         # `--allowedTools Bash`: 묶음 시험은 부트스트랩·카드 줄 실행(board.py·worktree_pool.py·ticket_finish.py)과
@@ -1437,7 +1437,7 @@ def _assert_multiuser_view_isolation(home: Path, proc: subprocess.CompletedProce
     reason="release cluster multiuser composite — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
            "기본 skip·사용자 트리거.",
 )
-def test_release_cluster_multiuser_composite_opencode(tmp_path):
+def test_release_cluster_multiuser_composite_opencode(harness_tmp_path):
     """실 opencode 세션이 공유 보드에서 2 distinct user(alice/bob)로 티켓을 만들고 세션 뷰가 섞이지 않음을 라이브 실증.
 
     T-0304(`test_board_scoping_isolation`)의 무-LLM composite 검사의 **라이브 opencode 짝**(ADR-0053).
@@ -1450,7 +1450,7 @@ def test_release_cluster_multiuser_composite_opencode(tmp_path):
     즉 **뷰가 섞이지 않음**을 실 산출로 assert(`_assert_multiuser_view_isolation`). `--dir` 로 루트 핀
     (opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama). cross-slot 기준은 T-0304 기계 검사 커버.
     """
-    home = _import_multiuser_home(tmp_path, "opencode")
+    home = _import_multiuser_home(harness_tmp_path, "opencode")
 
     proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
@@ -1561,7 +1561,7 @@ def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProc
     reason="release cluster final warn — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
-def test_release_cluster_claude_final_warn_driver_marker_contract(tmp_path):
+def test_release_cluster_claude_final_warn_driver_marker_contract(harness_tmp_path):
     """실 claude transcript 로 PreToolUse 마지막 경고·driver marker 소유권을 라이브 단언.
 
     fresh claude adopter 에 극소 컨텍스트 예산을 적용하고, 1회의 실 Claude 턴으로 만든
@@ -1581,7 +1581,7 @@ def test_release_cluster_claude_final_warn_driver_marker_contract(tmp_path):
     """
     # 설치가 기록하는 모델을 이 테스트의 실제 세션 모델로 둔다 — 고정 한도 픽스처 기본 이름이면
     # UserPromptSubmit 에 모델 불일치 경고(T-0943)가 실려 중복 경고 단언과 섞인다.
-    dest = _import_adopter(tmp_path, "claude", ctx_model=CLAUDE_MODEL)
+    dest = _import_adopter(harness_tmp_path, "claude", ctx_model=CLAUDE_MODEL)
     _append_tiny_ctx_window(dest)
     test_start = time.time()  # transcript 탐색 스코프(과거 run 잔재 배제·reviewer should-fix).
 
@@ -1805,7 +1805,7 @@ def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
     assert all("--dangerously-bypass-hook-trust" in call for call in calls)
 
     live_source = inspect.getsource(test_release_cluster_codex_native_ticket_growth)
-    assert live_source.index('_guided_adopter(tmp_path, "codex"') < live_source.index(
+    assert live_source.index('_guided_adopter(harness_tmp_path, "codex"') < live_source.index(
         "run_codex_exec("
     )
     assert 'sandbox="danger-full-access"' in live_source

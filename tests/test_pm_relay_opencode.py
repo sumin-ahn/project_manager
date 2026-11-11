@@ -680,7 +680,7 @@ LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/gemma4:26b")
     not PM_RELAY_LIVE or not shutil.which("opencode"),
     reason="live smoke — PM_RELAY_LIVE=1 + opencode CLI 필요(기본 skip·CI green 불변).",
 )
-def test_live_opencode_sid_marker_identity_smoke(orch, driver_mod, tmp_path):
+def test_live_opencode_sid_marker_identity_smoke(orch, driver_mod, harness_tmp_path):
     """실 opencode 1회 e2e: spawn → relay(≥2턴) → marker(driver-파싱 sid 로) → swap → relay.
 
     **핵심 검증 — driver-파싱 sid == plugin 이 쓸 marker sid 동일성**(ADR-0009 핵심 가정·
@@ -697,7 +697,7 @@ def test_live_opencode_sid_marker_identity_smoke(orch, driver_mod, tmp_path):
 
     # ── spawn: opencode 가 sid 발급 → driver 가 출력에서 파싱·반환 ──
     spawned = driver.spawn(
-        str(tmp_path),
+        str(harness_tmp_path),
         orch.new_session_id(),  # 엔진 uuid4 — driver 가 무시할 값.
         "Remember this code word: MANGO77. Reply with exactly: STORED",
     )
@@ -714,16 +714,16 @@ def test_live_opencode_sid_marker_identity_smoke(orch, driver_mod, tmp_path):
     # ── *** driver-파싱 sid == marker sid 동일성 *** ──
     # plugin 은 sanitize(currentSessionID).done 을 쓴다 — driver 파싱 sid 를 같은 규칙으로
     # sanitize 한 marker 경로가 supervisor 의 예측과 일치해야 한다.
-    marker = orch._marker_path(tmp_path, observed)
+    marker = orch._marker_path(harness_tmp_path, observed)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("ctx-stop handoff triggered\n", encoding="utf-8")
-    assert orch.stop_marker_present(tmp_path, observed) is True, (
+    assert orch.stop_marker_present(harness_tmp_path, observed) is True, (
         "driver 파싱 sid 로 쓴 marker 를 supervisor 가 stat 하지 못함 — sid 예측 깨짐."
     )
 
     # ── swap: 새 세션 spawn(다른 sid) → relay 완주 ──
     new_spawned = driver.spawn(
-        str(tmp_path),
+        str(harness_tmp_path),
         orch.new_session_id(),
         "Prior code word was MANGO77. Reply with exactly: CONTINUED",
     )
@@ -742,8 +742,8 @@ def _live_runner_with_model(model: str):
     def runner(cmd, **kwargs):
         injected = list(cmd)
         if "-m" not in injected:
-            # message positional(맨 끝) 앞에 -m <model> 삽입.
-            injected = injected[:-1] + ["-m", model] + injected[-1:]
+            # 드라이버 인자 끝에 -m <model> 을 붙인다.
+            injected = injected + ["-m", model]
         return subprocess.run(injected, **kwargs)
 
     return runner

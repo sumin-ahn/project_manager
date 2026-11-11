@@ -262,7 +262,8 @@ def build_parser(*, prog: str = "board.py") -> argparse.ArgumentParser:
                        help="릴리즈 라이브 시험 통과 조건 — record=`pytest -m release` "
                             "실행·수집 pin 강제·기록 / check=보호훅이 HEAD-매칭 green 검증")
     p.add_argument("action", choices=["record", "check"])
-    p.add_argument("--rev", help="check 대상 sha (보호훅이 push HEAD 를 넘김·record 는 무시)")
+    p.add_argument("--rev", help="check 대상 커밋 ID(전체나 앞 7자 이상·기록 head 가 이 값으로 "
+                        "시작하면 같은 커밋·보호훅은 push 한 커밋의 전체 ID 를 넘김·record 는 무시)")
     p.add_argument("--cwd", help="record=pytest 실행 cwd(기본=활성 slot worktree, 빈 값 및 "
                                  "--task/--repo/--slot과 혼합 불가, 경로는 --cwd만 지정) / "
                                  "check=live-test.json 해소 cwd(훅 정렬·기본=이 board.py 사본 REPO) "

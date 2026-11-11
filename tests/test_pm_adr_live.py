@@ -124,9 +124,9 @@ def _assert_adr_issued(dest: Path, proc: subprocess.CompletedProcess, harness: s
     not PM_ORCH_LIVE or not shutil.which("claude"),
     reason="pm-adr 라이브 — PM_ORCH_LIVE=1 + claude CLI(API 과금) 필요. 기본 skip·on-demand.",
 )
-def test_pm_adr_live_claude(tmp_path):
+def test_pm_adr_live_claude(harness_tmp_path):
     """실 claude 가 pm-adr 스킬만 보고 ADR 발행 flow 를 원자 수행·실 decisions 상태 단언."""
-    dest = _import_adopter(tmp_path, "claude")
+    dest = _import_adopter(harness_tmp_path, "claude")
     _seed_decisions(dest)
     prompt = _issue_prompt(_SKILL.read_text(encoding="utf-8"))
     proc = subprocess.run(
@@ -144,9 +144,9 @@ def test_pm_adr_live_claude(tmp_path):
     not PM_ORCH_LIVE or not shutil.which("opencode"),
     reason="pm-adr 라이브 — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
 )
-def test_pm_adr_live_opencode(tmp_path):
+def test_pm_adr_live_opencode(harness_tmp_path):
     """실 opencode(출하 모델)가 스킬만 보고 ADR 발행 flow 수행·실 decisions 상태 단언."""
-    dest = _import_adopter(tmp_path, "opencode")
+    dest = _import_adopter(harness_tmp_path, "opencode")
     _seed_decisions(dest)
     prompt = _issue_prompt(_SKILL.read_text(encoding="utf-8"))
     proc = subprocess.run(
@@ -163,7 +163,7 @@ def test_pm_adr_live_opencode(tmp_path):
     not PM_ORCH_LIVE or not shutil.which("codex") or not codex_auth_available(),
     reason="pm-adr 라이브 — PM_ORCH_LIVE=1 + codex CLI(gpt-5.5 과금·~/.codex/auth.json) 필요. 기본 skip·on-demand.",
 )
-def test_pm_adr_live_codex(tmp_path):
+def test_pm_adr_live_codex(harness_tmp_path):
     """실 codex(gpt-5.5)가 pm-adr 스킬만 보고 ADR 발행 flow 를 원자 수행·실 decisions 상태 단언.
 
     claude/opencode 와 같은 스킬-only 프롬프트. side-effect(실 decisions 파일 상태)로만 판정 — codex
@@ -171,10 +171,10 @@ def test_pm_adr_live_codex(tmp_path):
     stdin=DEVNULL`(미닫힘 시 무기한 대기·spike §D3 실측)·`-s workspace-write`(board.py 실행/파일 쓰기)·
     `-C dest`(cwd 핀). 모델 기본 = 로컬 config 상속(gpt-5.5)·`PM_ORCH_LIVE_CODEX_MODEL` override. gpt-5.5
     과금(승인 완료·D7). T-0407 실측: gpt-5.5·codex-cli 0.144.6·ADR-0002 발행 flow green."""
-    dest = _import_adopter(tmp_path, "codex")
+    dest = _import_adopter(harness_tmp_path, "codex")
     _seed_decisions(dest)
     prompt = _issue_prompt(_SKILL.read_text(encoding="utf-8"))
-    home = make_codex_home(tmp_path)
+    home = make_codex_home(harness_tmp_path)
     try:
         proc = run_codex_exec(prompt, dest, home, model=CODEX_MODEL, timeout=_CODEX_TIMEOUT)
     finally:

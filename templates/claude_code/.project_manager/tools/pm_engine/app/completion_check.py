@@ -25,6 +25,8 @@ CHECK_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰�
 
 
 _TARGET_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+# git 이 설정 없이 줄여 보여 주는 커밋 ID 의 가장 짧은 길이. 이보다 짧은 --rev 는 같은 커밋으로 보지 않는다.
+_MIN_SHORT_REV = 7
 
 
 def _unresolved_must_fix_data(home, data: object, record_path: Path) -> list[str]:
@@ -84,8 +86,10 @@ def _sync_release_must_fix_marker(home, flag: Path) -> list[str]:
 def _live_test_check(home, args: argparse.Namespace) -> int:
     """기록된 라이브 시험이 `--rev <sha>` 에 대해 green 인지 검증한다 (보호훅 소비 채널).
 
-    기록 존재 ∧ status==pass ∧ head==rev → rc0. 아니면 rc1 + 사유 3분화(기록 부재 / red /
-    rev 불일치 — 각각 다른 메시지로 훅이 그대로 surface). fail-soft 아님(명확 rc).
+    기록 존재 ∧ status==pass ∧ 기록 head 가 `--rev`(7자 이상)로 시작 → rc0. 7자는 git 이 설정 없이
+    줄여 보여 주는 커밋 ID 의 가장 짧은 길이다. 전체 ID 는 자기 자신의 앞자리라 보호훅 경로의 판정은
+    그대로다. 아니면 rc1 + 사유 3분화(기록 부재 / red / rev 불일치 — 각각 다른 메시지로 훅이 그대로
+    surface). fail-soft 아님(명확 rc). git 을 부르지 않으며, 뒤 비교와 green 문구에는 기록의 전체 ID 를 쓴다.
 
     읽을 live-test.json 은 record 와 **동일 해소**(`_resolve_live_test_flag` — engine-root sidecar)
     를 거친다(단일 소스). 기본 위치(`pm_paths.live_test_flag`) 직독이 아니라, 어느 board.py 사본/cwd 로
@@ -142,12 +146,13 @@ def _live_test_check(home, args: argparse.Namespace) -> int:
               "— 릴리즈 차단.", file=sys.stderr)
         return 1
     head = data.get("head")
-    if head != rev:
-        print(f"live-test: rev 불일치 (기록 {str(head)[:8]} ≠ push {str(rev)[:8]}) "
-              "— `live-test record` 재실행 필요 (릴리즈 차단).", file=sys.stderr)
+    if not (len(rev) >= _MIN_SHORT_REV and isinstance(head, str) and head.startswith(rev)):
+        print(f"live-test: rev 불일치 (기록 {head} ≠ --rev {rev}). --rev 는 커밋 ID 전체나 "
+              f"앞 {_MIN_SHORT_REV}자 이상이어야 한다. 다른 커밋이면 `live-test record` 재실행 필요 "
+              "(릴리즈 차단).", file=sys.stderr)
         return 1
     if "platforms" in data:
-        problem = release._release_evidence_problem(home, data, flag, rev)
+        problem = release._release_evidence_problem(home, data, flag, head)
         if problem is not None:
             print(f"live-test: platform snapshot 불일치({problem}) — 릴리즈 차단.", file=sys.stderr)
             return 1
@@ -157,7 +162,7 @@ def _live_test_check(home, args: argparse.Namespace) -> int:
             print(f"live-test: platform snapshot 누락({problem or '현재 선언 플랫폼 존재'}) — "
                   "live-test record 재실행 필요. 릴리즈 차단.", file=sys.stderr)
             return 1
-    print(f"live-test: green @ {str(rev)[:8]} ✓")
+    print(f"live-test: green @ {head} ✓")
     return 0
 
 
