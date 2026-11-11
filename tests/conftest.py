@@ -300,6 +300,48 @@ def _isolate_opencode_global_config(tmp_path_factory):
             os.environ["XDG_CONFIG_HOME"] = previous
 
 
+# 하네스(claude·codex·opencode)를 실제로 띄우는 시험의 작업 폴더. 하네스는 작업 폴더의 상위에서
+# 지시 파일을 찾아 읽으므로, 저장소 안 pytest 임시 루트를 쓰면 바깥 저장소와 PM 홈의 지시를 받는다.
+# 부모는 이 파일을 읽는 때(세션 픽스처가 임시 폴더 환경을 저장소 안으로 바꾸기 전)의 OS 임시 폴더다.
+HARNESS_TEMP_PARENT = Path(tempfile.gettempdir())
+PROJECT_MARKERS = ("CLAUDE.md", "AGENTS.md", ".project_manager")
+
+
+def assert_no_project_above(folder: Path) -> None:
+    """폴더의 어느 상위에도 하네스가 읽는 지시 파일이나 PM 홈 폴더가 없음을 단언한다."""
+    found = [str(parent / name) for parent in Path(folder).resolve().parents
+             for name in PROJECT_MARKERS if (parent / name).exists()]
+    assert not found, f"하네스 폴더 {folder} 의 상위에 하네스가 읽는 프로젝트가 있다: {found}"
+
+
+@pytest.fixture
+def harness_tmp_path(monkeypatch):
+    """하네스를 띄우는 시험의 작업 폴더. OS 임시 폴더 아래 새 폴더를 만들고 상위를 확인한 뒤 준다.
+
+    시험 동안 프로세스 위치와 임시·설정 폴더 환경도 이 폴더 안으로 옮겨, cwd 를 주지 않는 하네스
+    실행과 하네스의 자식 임시물이 저장소로 가지 않게 한다. 끝나면(실패해도) 폴더를 지운다.
+    """
+    from _git_fixture import remove_git_tree  # 이 파일은 홀로 복사되어 읽히기도 해 함수 안에서 가져온다
+
+    root = Path(tempfile.mkdtemp(prefix="pm-harness-", dir=HARNESS_TEMP_PARENT))
+    previous = os.getcwd()
+    try:
+        assert_no_project_above(root)
+        scratch = root / "tmp"
+        scratch.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        for key in _TEMPDIR_ENV_KEYS:
+            monkeypatch.setenv(key, str(scratch))
+        config = root / "xdg-config"
+        config.mkdir()
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+        monkeypatch.chdir(root)
+        yield root
+    finally:
+        os.chdir(previous)          # Windows 는 현재 폴더를 지우지 못한다
+        remove_git_tree(root)
+
+
 _LIVE_RENDER_OUTPUTS = (
     Path(".project_manager/wiki/board.md"),
     Path(".project_manager/wiki/log/dashboard.md"),

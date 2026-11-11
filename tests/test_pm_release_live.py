@@ -410,9 +410,9 @@ def _pm_release_prompt(skill_text: str, *, repo: str, home: Path,
     push 를 아직 승인하지 않았다** — 스킬이 정의한 로컬·가역 pre-push 단계(release live-test 기록)만
     수행하고 push/tag/gh 는 하지 않는다(승인 대기). pm_worktree_live 의 --help 금지 문구 미러(사용성).
 
-    프로젝트 루트는 **절대경로 값**으로 준다(서술 지칭 0). 격리 홈은 바깥 저장소 트리 안에
-    만들어지므로(임시 루트 규약), "the PM home root" 같은 서술은 바깥 홈도 만족한다 — 실제로
-    모델이 그 접두를 루트로 읽고 바깥 기록에 record 를 걸어 실패했다(2026-09-02 live-test #2).
+    프로젝트 루트는 **절대경로 값**으로 준다(서술 지칭 0). "the PM home root" 같은 서술은 상위에
+    다른 홈이 있으면 그 홈도 만족한다 — 2026-09-02 live-test #2 실측 당시 격리 홈은 저장소 안 시험
+    임시 폴더였고, 모델이 그 접두를 루트로 읽고 바깥 기록에 record 를 걸어 실패했다.
     """
     exact_record = (
         "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py live-test record "
@@ -445,7 +445,7 @@ def _pm_release_prompt(skill_text: str, *, repo: str, home: Path,
     reason="pm-release 라이브 — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
-def test_pm_release_live_claude(tmp_path):
+def test_pm_release_live_claude(harness_tmp_path):
     """실 claude 가 pm-release 스킬만 보고 pre-push 준비를 수행 — live-test record 실행(engagement) +
     공개 main push/gh 자동실행 안 함(safety) 을 stream-json 으로 hard 관측 + green live-test.json.
 
@@ -455,7 +455,7 @@ def test_pm_release_live_claude(tmp_path):
     이 **green**(status=pass·n==pin·rc=0·존재만 아님)인지 hard 단언한다. 홈엔 원격이 없어 push 시도도
     비가역 부작용 0(safety).
     """
-    home = _setup_home(tmp_path, "claude")
+    home = _setup_home(harness_tmp_path, "claude")
     readonly = _prepare_release_readonly(home)
     pin = _home_live_test_pin(home)
 
@@ -496,7 +496,7 @@ def test_pm_release_live_claude(tmp_path):
     )
     # (4) 좌표(hard) — 샌드박스 밖(중첩된 바깥 PM 홈)에 대고 돈 커맨드가 0. 격리 홈이 바깥 저장소
     #     트리 안에 있어 그 접두를 루트로 오독하면 바깥 기록에 부딪힌다(2026-09-02 live-test #2).
-    escaped = _commands_leaving_the_sandbox(commands, tmp_path)
+    escaped = _commands_leaving_the_sandbox(commands, harness_tmp_path)
     assert not escaped, (
         f"claude 가 테스트 샌드박스 밖 디렉터리에 대고 커맨드를 실행함(격리 위반·바깥 PM 홈 "
         f"오배치): {escaped}\n" + _proc_tail(proc, "claude")
@@ -509,7 +509,7 @@ def test_pm_release_live_claude(tmp_path):
     reason="pm-release 라이브 — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
            "기본 skip·사용자 트리거.",
 )
-def test_pm_release_live_opencode_best_effort(tmp_path):
+def test_pm_release_live_opencode_best_effort(harness_tmp_path):
     """실 opencode(출하 모델)가 스킬만 보고 pre-push 준비를 수행 (best-effort — claude 대비 비대칭).
 
     claude 와 같은 스킬-only 프롬프트지만 **판정 강도가 낮다**(테스트명 `_best_effort`가 표기).
@@ -521,7 +521,7 @@ def test_pm_release_live_opencode_best_effort(tmp_path):
     는 PWD 로 루트 오판)·`--dangerously-skip-permissions`(비대화 헤드리스 auto-reject 회피·throwaway
     tmp 홈 격리). API 과금 0(ollama).
     """
-    home = _setup_home(tmp_path, "opencode")
+    home = _setup_home(harness_tmp_path, "opencode")
     readonly = _prepare_release_readonly(home)
     pin = _home_live_test_pin(home)
 
@@ -579,8 +579,8 @@ def test_pm_release_skill_files_exist_and_reference_backbone():
 def test_pm_release_prompt_embeds_skill_and_scenario(tmp_path):
     """프롬프트가 스킬 전문 + 시나리오(릴리즈 버전·push 금지·유일 컨텍스트)를 담고 --help 를 금한다.
 
-    루트 지칭은 **절대경로 값**이다 — 격리 홈이 바깥 저장소 트리 안에 있어 "the PM home root"
-    같은 서술은 바깥 홈도 만족한다(그 오독이 live-test #2 의 원인이었다).
+    루트 지칭은 **절대경로 값**이다 — "the PM home root" 같은 서술은 상위에 다른 홈이 있으면 그 홈도
+    만족한다(2026-09-02 live-test #2 실측 당시 격리 홈은 저장소 안 시험 임시 폴더였고, 그 오독이 원인이었다).
     """
     skill_text = _CLAUDE_SKILL.read_text(encoding="utf-8")
     home = tmp_path / "adopter-claude"

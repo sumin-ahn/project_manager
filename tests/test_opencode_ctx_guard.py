@@ -2546,14 +2546,14 @@ def _stage_opencode_project(root: Path, plugin_body: str | None = None) -> Path:
 
 
 @_live_skip
-def test_live_opencode_loads_ctx_guard_plugin(tmp_path):
+def test_live_opencode_loads_ctx_guard_plugin(harness_tmp_path):
     """실 opencode 헤드리스가 출하 ctx-guard 플러그인을 autoload 성공하는지 실측 (T-0283 핵심 검사).
 
     단언: (1) "failed to load plugin" 부재 (2) "Plugin export is not a function" 부재
     (3) factory 실행 마커 존재 = 플러그인이 실제로 로드되고 팩토리가 돌았다. 유닛 green 만으론
     못 잡던 갭(실 세션 로드 실패)을 이 검사가 닫는다.
     """
-    td = tmp_path / "live-load"
+    td = harness_tmp_path / "live-load"
     td.mkdir()
     _stage_opencode_project(td)
     log = _run_opencode_load(str(td))
@@ -2569,7 +2569,7 @@ def test_live_opencode_loads_ctx_guard_plugin(tmp_path):
 
 
 @_live_skip
-def test_live_check_rejects_broken_object_export(tmp_path):
+def test_live_check_rejects_broken_object_export(harness_tmp_path):
     """sensitivity 대조군: T-0283 원 버그 형태(CJS 객체 export)를 심으면 이 검사가 *실제로* 로드 실패를
     잡는지 실측 — false-green(무조건 통과) 방지. 대조군 진입점만 교체하고 core 는 그대로 둔다.
 
@@ -2581,7 +2581,7 @@ def test_live_check_rejects_broken_object_export(tmp_path):
         "module.exports = { CtxGuardPlugin: core.CtxGuardPlugin, "
         "parseLocalConf: core.parseLocalConf, accumulateTokens: core.accumulateTokens };\n"
     )
-    td = tmp_path / "live-broken"
+    td = harness_tmp_path / "live-broken"
     td.mkdir()
     _stage_opencode_project(td, plugin_body=broken)
     log = _run_opencode_load(str(td))

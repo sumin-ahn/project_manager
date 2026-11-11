@@ -160,13 +160,13 @@ def _assert_self_contained_ticket(dest: Path, proc: subprocess.CompletedProcess,
     not PM_ORCH_LIVE or not shutil.which("claude"),
     reason="pm-ticket 라이브 — PM_ORCH_LIVE=1 + claude CLI(API 과금) 필요. 기본 skip·on-demand.",
 )
-def test_pm_ticket_live_claude(tmp_path):
+def test_pm_ticket_live_claude(harness_tmp_path):
     """실 claude 가 pm-ticket 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언(hard).
 
     스킬(SKILL.md)만 컨텍스트로 주고 [발행 → 5절 fill → promote]를 시킨다 — 진입문서 미제공. claude 는
     subprocess cwd 존중(`--dir` 불요). 발행된 티켓이 존재 + placeholder 0 + 주제 marker(SIGTERM) 포함을
     hard 단언(미실행/미충전 시 red). API 과금."""
-    dest = _import_adopter(tmp_path, "claude")
+    dest = _import_adopter(harness_tmp_path, "claude")
     prompt = _authoring_prompt(_SKILL.read_text(encoding="utf-8"))
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL, "--allowedTools", "Bash",
@@ -183,13 +183,13 @@ def test_pm_ticket_live_claude(tmp_path):
     not PM_ORCH_LIVE or not shutil.which("opencode"),
     reason="pm-ticket 라이브 — PM_ORCH_LIVE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·on-demand.",
 )
-def test_pm_ticket_live_opencode(tmp_path):
+def test_pm_ticket_live_opencode(harness_tmp_path):
     """실 opencode(출하 모델)가 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언.
 
     claude 와 같은 스킬-only 프롬프트. side-effect(실 board 파일 상태)로만 판정해 opencode 의 tool-call
     비노출에 강건(release_cluster 위임-관측 비대칭 상속). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판)·
     `--dangerously-skip-permissions`(비대화 헤드리스 auto-reject 회피·throwaway tmp 홈 격리). API 과금 0."""
-    dest = _import_adopter(tmp_path, "opencode")
+    dest = _import_adopter(harness_tmp_path, "opencode")
     prompt = _authoring_prompt(_SKILL.read_text(encoding="utf-8"))
     proc = subprocess.run(
         ["opencode", "run", "--agent", "build", "--dir", str(dest),
@@ -205,7 +205,7 @@ def test_pm_ticket_live_opencode(tmp_path):
     not PM_ORCH_LIVE or not shutil.which("codex") or not codex_auth_available(),
     reason="pm-ticket 라이브 — PM_ORCH_LIVE=1 + codex CLI(gpt-5.5 과금·~/.codex/auth.json) 필요. 기본 skip·on-demand.",
 )
-def test_pm_ticket_live_codex(tmp_path):
+def test_pm_ticket_live_codex(harness_tmp_path):
     """실 codex(gpt-5.5)가 pm-ticket 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언(hard).
 
     claude/opencode 와 같은 스킬-only 프롬프트([발행 → 5절 fill → promote]·진입문서 미제공). side-effect
@@ -213,9 +213,9 @@ def test_pm_ticket_live_codex(tmp_path):
     격리 CODEX_HOME(auth 복사·종료 시 삭제)·`codex exec … stdin=DEVNULL`(무기한 대기 방어·spike §D3)·
     `-s workspace-write`(board.py 실행)·`-C dest`(cwd 핀·codex 는 opencode 와 달리 `-C` 로 루트 핀). 모델
     기본 = 로컬 config 상속(gpt-5.5)·`PM_ORCH_LIVE_CODEX_MODEL` override. gpt-5.5 과금(승인 완료·D7)."""
-    dest = _import_adopter(tmp_path, "codex")
+    dest = _import_adopter(harness_tmp_path, "codex")
     prompt = _authoring_prompt(_SKILL.read_text(encoding="utf-8"))
-    home = make_codex_home(tmp_path)
+    home = make_codex_home(harness_tmp_path)
     try:
         proc = run_codex_exec(prompt, dest, home, model=CODEX_MODEL, timeout=_CODEX_TIMEOUT)
     finally:

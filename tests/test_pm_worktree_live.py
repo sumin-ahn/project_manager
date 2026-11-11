@@ -302,9 +302,9 @@ def _pm_worktree_prompt(skill_text: str, *, root: Path) -> str:
     옮겨야 한다. 두 단계: (1) dev submodule 을 dev 브랜치로 지정("작업 중" 선언·pool 보호) (2) 슬롯
     submodule 을 pin 에 재동기. command_card_usability 의 --help 금지 문구를 미러(사용성 판정).
 
-    루트는 **절대경로 값**으로 준다 — 격리 홈이 바깥 저장소 트리 안에 만들어지므로 "the
-    directory that contains .project_manager" 같은 서술은 바깥 홈도 만족한다(pm_release_live 에서
-    실제로 그 오독이 났다).
+    루트는 **절대경로 값**으로 준다 — "the directory that contains .project_manager" 같은 서술은
+    상위에 다른 홈이 있으면 그 홈도 만족한다. 2026-09-02 실측 당시 격리 홈은 저장소 안 시험 임시
+    폴더였고, pm_release_live 에서 실제로 그 오독이 났다.
     """
     return (
         "You are the PM operating this project's worktree pool. Below (between <<<SKILL and "
@@ -336,7 +336,7 @@ def _pm_worktree_prompt(skill_text: str, *, root: Path) -> str:
     reason="pm-worktree 라이브 — PM_ORCH_LIVE_RELEASE=1 + claude CLI(API 과금) + git 필요. "
            "기본 skip·사용자 트리거.",
 )
-def test_pm_worktree_live_claude(tmp_path, monkeypatch):
+def test_pm_worktree_live_claude(harness_tmp_path, monkeypatch):
     """실 claude 가 pm-worktree 스킬만 보고 dev/sync 시나리오를 운영·실 git 3 단언 (hard).
 
     스킬(SKILL.md)만 컨텍스트로 주고 [dev 지정 → 재동기]를 시킨다 — 진입문서 경로 미제공. claude 는
@@ -344,7 +344,7 @@ def test_pm_worktree_live_claude(tmp_path, monkeypatch):
     **hard** 관측(false-green 백스톱)하고, 실 git 상태(dev no-clobber·consume 재동기·슬롯 no-track)를
     hard 단언한다. 초기 비공허(`_assert_initial_state`)라 미실행 시 red. API 과금(dev+sync 2콜).
     """
-    fx = _setup_home_with_submodule_slot(tmp_path, "claude", monkeypatch)
+    fx = _setup_home_with_submodule_slot(harness_tmp_path, "claude", monkeypatch)
     _assert_initial_state(fx)
 
     prompt = _pm_worktree_prompt(
@@ -378,7 +378,7 @@ def test_pm_worktree_live_claude(tmp_path, monkeypatch):
     reason="pm-worktree 라이브 — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) + git 필요. "
            "기본 skip·사용자 트리거.",
 )
-def test_pm_worktree_live_opencode_best_effort(tmp_path, monkeypatch):
+def test_pm_worktree_live_opencode_best_effort(harness_tmp_path, monkeypatch):
     """실 opencode(출하 모델)가 스킬만 보고 dev/sync 시나리오를 운영 (best-effort — claude 대비 비대칭).
 
     claude 와 같은 스킬-only 프롬프트지만 **판정 강도가 낮다**(테스트명 `_best_effort`가 표기).
@@ -389,7 +389,7 @@ def test_pm_worktree_live_opencode_best_effort(tmp_path, monkeypatch):
     `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판)·`--dangerously-skip-permissions`(비대화 헤드리스
     auto-reject 회피·throwaway tmp 홈 격리·release_cluster 동일 근거). API 과금 0(ollama).
     """
-    fx = _setup_home_with_submodule_slot(tmp_path, "opencode", monkeypatch)
+    fx = _setup_home_with_submodule_slot(harness_tmp_path, "opencode", monkeypatch)
     _assert_initial_state(fx)
 
     prompt = _pm_worktree_prompt(
@@ -447,8 +447,8 @@ def test_pm_worktree_prompt_embeds_skill_and_scenario(tmp_path):
 def test_pm_worktree_prompt_names_the_root_by_absolute_path(tmp_path):
     """루트 지칭은 절대경로 **값**이다 — 서술 지칭("`.project_manager` 를 가진 디렉터리")은 0.
 
-    격리 홈은 바깥 저장소 트리 안에 만들어지므로(임시 루트 규약) 그 서술은 바깥 홈도 만족한다 —
-    같은 문안이 pm_release_live 에서 실제 오배치를 냈다(2026-09-02 라이브 시험 #2).
+    상위에 다른 홈이 있으면 그 서술은 바깥 홈도 만족한다 — 2026-09-02 라이브 시험 #2 실측 당시
+    격리 홈은 저장소 안 시험 임시 폴더였고, 같은 문안이 pm_release_live 에서 실제 오배치를 냈다.
     """
     root = tmp_path / "adopter-claude"
     prompt = _pm_worktree_prompt(_CLAUDE_SKILL.read_text(encoding="utf-8"), root=root)

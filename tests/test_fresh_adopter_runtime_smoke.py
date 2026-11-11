@@ -249,10 +249,10 @@ def _self_update(dest: Path) -> subprocess.CompletedProcess:
     not PM_ORCH_LIVE_RELEASE or not shutil.which("opencode"),
     reason="release 묶음 — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
 )
-def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
+def test_live_opencode_adopter_survives_pm_update_then_operates(harness_tmp_path):
     """opencode 채택자가 self-update 후에도 안 깨지고 board 운영 가능 (.opencode/* @source 재렌더 경로)."""
     pm_import = _load_pm_import()
-    dest = _import_adopter(tmp_path, "opencode")
+    dest = _import_adopter(harness_tmp_path, "opencode")
     # 1) self-update: .opencode/agents·command 는 @source(ADR-0054·templates/opencode) 재렌더로
     #    *전파*된다(옛 @target-owned skip 아님). 이 채택자는 opencode 없이 import(=_import_adopter 가
     #    _real_models_runner 를 (False,[]) 스텁) 해 local.conf 에 harness.opencode.pro_model 이 미해소다 —
@@ -300,9 +300,9 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     not PM_ORCH_LIVE_RELEASE or not shutil.which("claude"),
     reason="release 묶음 — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
-def test_live_claude_adopter_survives_pm_update_then_operates(tmp_path):
+def test_live_claude_adopter_survives_pm_update_then_operates(harness_tmp_path):
     """claude 채택자가 self-update(.claude/* @render 재렌더) 후에도 안 깨지고 board 운영 가능."""
-    dest = _import_adopter(tmp_path, "claude")
+    dest = _import_adopter(harness_tmp_path, "claude")
     # 1) self-update: .claude/* 는 @render(framework-root=claude 가 source 보유) 재렌더·rc0.
     upd = _self_update(dest)
     assert upd.returncode == 0, (
@@ -545,13 +545,13 @@ def _run_opencode_warn(dest: Path, attempts: int = 2) -> str:
     not PM_ORCH_LIVE or not shutil.which("opencode"),
     reason="warn 주입-도달 on-demand — PM_ORCH_LIVE=1 + opencode CLI(+출하 모델) 필요. 기본 skip·CI green 불변.",
 )
-def test_live_opencode_nudge_injection_reaches_model(tmp_path):
+def test_live_opencode_nudge_injection_reaches_model(harness_tmp_path):
     """실 opencode 세션서 graceful warn 주입(experimental.chat.system.transform)이 모델에 도달 (T-0286).
 
     구간 강제(격리·per-harness 키) → 도구 호출로 2번째 턴 유발 → 그 턴 system[] 에 warn 주입 →
     모델이 `ctx-warn` 토큰 인용. probe 관찰(behavioral)이라 LLM phrasing 비결정에 강건(토큰 도달만 본다).
     """
-    dest = _import_adopter(tmp_path, "opencode")
+    dest = _import_adopter(harness_tmp_path, "opencode")
     _force_warn_level_conf(dest, "opencode")
     out = _run_opencode_warn(dest)
     assert _WARN_PROBE_MARKER in out, (
@@ -564,14 +564,14 @@ def test_live_opencode_nudge_injection_reaches_model(tmp_path):
     not PM_ORCH_LIVE or not shutil.which("claude"),
     reason="warn 주입-도달 on-demand — PM_ORCH_LIVE=1 + claude CLI(API 과금) 필요. 기본 skip·CI green 불변.",
 )
-def test_live_claude_nudge_injection_reaches_model(tmp_path):
+def test_live_claude_nudge_injection_reaches_model(harness_tmp_path):
     """실 claude 세션서 graceful warn 주입(UserPromptSubmit additionalContext)이 모델에 도달 (T-0286).
 
     claude 는 UserPromptSubmit 에서만 주입하고 그 훅은 transcript 의 assistant usage 로 used% 를
     잰다 — fresh -p 의 첫 프롬프트는 transcript 가 비어 used 0(주입 없음). 그래서 (1) seed 로
     transcript 를 쌓고 (2) `--continue` 로 이어, 2번째 UserPromptSubmit 이 구간에 들어 주입되게 한다.
     """
-    dest = _import_adopter(tmp_path, "claude")
+    dest = _import_adopter(harness_tmp_path, "claude")
     _force_warn_level_conf(dest, "claude")
     # 1) seed: transcript 축적(첫 UserPromptSubmit=빈 transcript→used 0→warn 안 뜸·세션 정상 진행).
     seed = subprocess.run(

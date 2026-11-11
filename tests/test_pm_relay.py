@@ -1220,7 +1220,7 @@ PM_RELAY_LIVE = os.environ.get("PM_RELAY_LIVE") == "1"
     not PM_RELAY_LIVE or not shutil.which("claude"),
     reason="통합 스모크 — PM_RELAY_LIVE=1 + claude CLI 필요(기본 skip·CI green 불변).",
 )
-def test_live_spawn_relay_swap_smoke(orch, driver_mod, tmp_path):
+def test_live_spawn_relay_swap_smoke(orch, driver_mod, harness_tmp_path):
     """실 claude 1회 e2e: spawn(`--session-id <uuid>`) → relay(≥2턴 resume·turn2 가 turn1
     사실 회상) → marker 강제 생성 → swap → relay 완주. frugal haiku·단발 프롬프트.
 
@@ -1237,7 +1237,7 @@ def test_live_spawn_relay_swap_smoke(orch, driver_mod, tmp_path):
 
     # ── spawn: --session-id 로 세션 id 지정 + 사실 심기 ──
     spawned = driver.spawn(
-        str(tmp_path),
+        str(harness_tmp_path),
         requested_sid,
         "Remember this code word for our chat: MANGO77. Reply with exactly: STORED",
     )
@@ -1256,16 +1256,16 @@ def test_live_spawn_relay_swap_smoke(orch, driver_mod, tmp_path):
     assert "MANGO77" in reply.upper(), f"resume 연속성 실패 — reply={reply!r}"
 
     # ── marker 강제 생성(ctx_stop_hook 모사) → supervisor STOP 관측 ──
-    marker = orch._marker_path(tmp_path, observed)
+    marker = orch._marker_path(harness_tmp_path, observed)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("ctx-stop handoff triggered\n", encoding="utf-8")
-    assert orch.stop_marker_present(tmp_path, observed) is True
+    assert orch.stop_marker_present(harness_tmp_path, observed) is True
 
     # ── swap: 새 세션 spawn(다른 sid) → relay 완주 ──
     new_sid = orch.new_session_id()
     assert new_sid != requested_sid
     new_spawned = driver.spawn(
-        str(tmp_path),
+        str(harness_tmp_path),
         new_sid,
         "Context handoff: the prior code word was MANGO77. Reply with exactly: CONTINUED",
     )

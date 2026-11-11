@@ -1749,10 +1749,10 @@ def _codex_read_tmp_profile_value(read_tmp, ticket_copy_dir=None):
     ),
 )
 def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
-        pd, monkeypatch, tmp_path):
+        pd, monkeypatch, harness_tmp_path):
     """실 Codex sandbox에서 0-byte write까지 tmp=성공/worktree=open 거부를 단언한다."""
-    pm_home_temp = tmp_path / "pm-home-temp"
-    worktree = tmp_path / "worktree"
+    pm_home_temp = harness_tmp_path / "pm-home-temp"
+    worktree = harness_tmp_path / "worktree"
     pm_home_temp.mkdir()
     worktree.mkdir()
     target = worktree / "tracked.py"
@@ -6232,10 +6232,10 @@ def test_t0650_codex_rc0_session_id_mismatch_still_blocks_write_fresh(
     or shutil.which("codex") is None,
     reason="유료 Codex 2-turn 실측은 PM_DELEGATE_LIVE_CODEX_RESUME=1 opt-in",
 )
-def test_t0650_live_codex_exec_resume_json_round_trip(pd, tmp_path):
+def test_t0650_live_codex_exec_resume_json_round_trip(pd, harness_tmp_path):
     """[C] opt-in 라이브: fresh exec의 thread id를 exec resume --json으로 이어받는다."""
     fresh = subprocess.run(
-        contract.build_codex_argv("", None, "researcher", str(tmp_path)),
+        contract.build_codex_argv("", None, "researcher", str(harness_tmp_path)),
         input="Reply with only T0650_LIVE_CODE.",
         text=True,
         capture_output=True,
@@ -6249,7 +6249,7 @@ def test_t0650_live_codex_exec_resume_json_round_trip(pd, tmp_path):
     assert session_id and "T0650_LIVE_CODE" in (first_reply or "")
 
     resumed = subprocess.run(
-        contract.build_codex_argv("", None, "researcher", str(tmp_path), session_id),
+        contract.build_codex_argv("", None, "researcher", str(harness_tmp_path), session_id),
         input="Reply with only the code from the previous turn.",
         text=True,
         capture_output=True,

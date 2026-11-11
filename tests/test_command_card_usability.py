@@ -332,9 +332,10 @@ def _directory_targets(command: str) -> list[str]:
 def _commands_leaving_the_sandbox(commands: Sequence[str], sandbox: Path) -> list[str]:
     """샌드박스(테스트 `tmp_path`) 밖 디렉터리를 지목한 커맨드만 골라낸다.
 
-    라이브 격리 홈은 바깥 저장소 트리 **안**에 만들어진다(임시 루트 규약·T-0890). 그래서 홈
-    경로의 접두를 프로젝트 루트로 오독하면 모델이 바깥 PM 홈에 대고 backbone 을 돌린다
-    (2026-09-02 live-test #2 실측). 경계는 격리 홈이 아니라 **샌드박스**다 — 홈의 형제인
+    2026-09-02 live-test #2 실측 당시 라이브 격리 홈은 저장소 안 시험 임시 폴더였고, 모델이 홈
+    경로의 접두를 프로젝트 루트로 오독해 바깥 PM 홈에 대고 backbone 을 돌렸다. 지금 격리 홈은
+    저장소 밖 하네스 폴더지만, 홈 밖 절대경로(PM 홈 포함)를 지목한 커맨드는 여전히 잡아야
+    한다. 경계는 격리 홈이 아니라 **샌드박스**다 — 홈의 형제인
     readonly 좌표도 정당한 홈 밖 절대경로라, 홈으로 경계를 잡으면 그 정상 커맨드가 오탐이 된다.
     """
     root = Path(sandbox).resolve()
@@ -708,7 +709,7 @@ def _run_live_or_timeout(argv: list[str], *, cwd: str, env: dict, timeout: int, 
     reason="command-card usability — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). "
            "기본 skip·사용자 트리거.",
 )
-def test_command_card_usability_claude(tmp_path):
+def test_command_card_usability_claude(harness_tmp_path):
     """실 claude 가 부트스트랩 카드만 보고 표준 lifecycle 을 첫 시도에 rc0 로 운영한다 (--help/재시도 0).
 
     카드(ADR-0045)만 컨텍스트로 주고 카드 순서의 new→cluster new→promote→claim→종결을 시킨다 — 진입문서 경로 미제공.
@@ -717,7 +718,7 @@ def test_command_card_usability_claude(tmp_path):
     단건 1회 재실행으로 받아들임. claude 는 subprocess cwd 를 존중(`--dir` 불요). API 과금.
     """
     def run_attempt(attempt: int) -> tuple[bool, str]:
-        dest = _import_attempt(tmp_path, "claude", attempt)
+        dest = _import_attempt(harness_tmp_path, "claude", attempt)
         prompt = _usability_prompt(_render_command_card(dest))
         proc, timeout_detail = _run_live_or_timeout(
             ["claude", "-p", "--model", CLAUDE_MODEL,
@@ -741,7 +742,7 @@ def test_command_card_usability_claude(tmp_path):
     reason="command-card usability — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. "
            "기본 skip·사용자 트리거.",
 )
-def test_command_card_usability_opencode_best_effort(tmp_path):
+def test_command_card_usability_opencode_best_effort(harness_tmp_path):
     """실 opencode(출하 모델)가 카드만 보고 표준 lifecycle 을 운영한다 (best-effort — claude 대비 비대칭).
 
     claude 와 같은 카드-only 프롬프트지만 **판정 강도가 낮다** — 테스트명 `_best_effort` 가 그 한계를
@@ -753,7 +754,7 @@ def test_command_card_usability_opencode_best_effort(tmp_path):
     로 보고 auto-reject 하지 않게(throwaway tmp adopter 격리·release_cluster 동일 근거). API 과금 0(ollama).
     """
     def run_attempt(attempt: int) -> tuple[bool, str]:
-        dest = _import_attempt(tmp_path, "opencode", attempt)
+        dest = _import_attempt(harness_tmp_path, "opencode", attempt)
         prompt = _usability_prompt(_render_command_card(dest))
         proc, timeout_detail = _run_live_or_timeout(
             ["opencode", "run", "--agent", "build", "--dir", str(dest),
@@ -2268,8 +2269,8 @@ def test_command_has_help_flag_detects_shlex_tokens():
 def test_commands_leaving_the_sandbox_are_detected(tmp_path):
     """샌드박스 밖으로 나가는 커맨드만 잡는다 — 홈의 형제(readonly 좌표)는 오탐이 아니다.
 
-    라이브 격리 홈은 바깥 PM 홈 트리 안에 만들어지므로(임시 루트 규약), 모델이 홈 경로의 접두를
-    프로젝트 루트로 오독하면 바깥 슬롯 대여 기록에 대고 backbone 을 돈다(2026-09-02 live-test #2 의 그 한 줄이
+    2026-09-02 live-test #2 실측 당시 라이브 격리 홈은 저장소 안 시험 임시 폴더였고, 모델이 홈 경로의
+    접두를 프로젝트 루트로 오독해 바깥 슬롯 대여 기록에 대고 backbone 을 돌았다(그 한 줄이
     아래 음성 사례다). 경계는 홈이 아니라 샌드박스라, 홈 밖이지만 샌드박스 안인 readonly 좌표를
     위반으로 잡으면 정상 커맨드가 red 가 된다.
     """

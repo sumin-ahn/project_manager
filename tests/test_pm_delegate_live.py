@@ -456,15 +456,15 @@ def _assert_delegate_ok(rc: int, reply: str, err: str, output_dir: Path, harness
     reason="pm_delegate 라이브(codex) — PM_DELEGATE_LIVE=1 + codex CLI(과금·~/.codex/auth.json) 필요. "
            "기본 skip·on-demand.",
 )
-def test_delegate_live_codex(tmp_path, monkeypatch, capsys):
+def test_delegate_live_codex(harness_tmp_path, monkeypatch, capsys):
     """claude/codex/opencode PM → **codex** researcher 위임 1회 — reply marker + rc0 + raw 기록.
 
     격리 CODEX_HOME(auth 복사·종료 시 삭제)·read-only sandbox(researcher=순수읽기·기계적)·reasoning=low
     (`-c model_reasoning_effort=low`·drive)."""
     pd = _load_pd()
-    repo, prompt = _seed_repo(tmp_path)
-    out_dir = tmp_path / "raw"
-    home = make_codex_home(tmp_path)
+    repo, prompt = _seed_repo(harness_tmp_path)
+    out_dir = harness_tmp_path / "raw"
+    home = make_codex_home(harness_tmp_path)
     monkeypatch.setenv("CODEX_HOME", str(home))
     try:
         rc, reply, err = _delegate(pd, monkeypatch, capsys, repo, prompt, "codex",
@@ -479,15 +479,15 @@ def test_delegate_live_codex(tmp_path, monkeypatch, capsys):
     reason="pm_delegate 라이브(opencode) — PM_DELEGATE_LIVE=1 + opencode CLI(+ollama 모델) 필요. "
            "기본 skip·on-demand.",
 )
-def test_delegate_live_opencode(tmp_path, monkeypatch, capsys):
+def test_delegate_live_opencode(harness_tmp_path, monkeypatch, capsys):
     """claude/codex PM → **opencode**(출하 모델·$0) researcher 위임 1회 — reply marker + rc0 + raw.
 
     `--file` 프롬프트 채널·`--dir` cwd 핀·`--agent researcher`(런타임 role config로
     edit/bash deny). 추론 값은 싣지 않는다 — 테스트 env 모델은 variants 가 없어 어떤 값이든 실행 직전
     확인이 거부한다(`--variant` 확인은 가짜 실행 파일 단위 시험이 맡는다)."""
     pd = _load_pd()
-    repo, prompt = _seed_repo(tmp_path)
-    out_dir = tmp_path / "raw"
+    repo, prompt = _seed_repo(harness_tmp_path)
+    out_dir = harness_tmp_path / "raw"
     rc, reply, err = _delegate(pd, monkeypatch, capsys, repo, prompt, "opencode",
                                LIVE_MODEL, None, out_dir, _OPENCODE_TIMEOUT)
     _assert_delegate_ok(rc, reply, err, out_dir, "opencode")
@@ -498,14 +498,14 @@ def test_delegate_live_opencode(tmp_path, monkeypatch, capsys):
     reason="pm_delegate 라이브(claude) — PM_DELEGATE_LIVE=1 + claude CLI(API 과금) 필요. "
            "기본 skip·on-demand.",
 )
-def test_delegate_live_claude(tmp_path, monkeypatch, capsys):
+def test_delegate_live_claude(harness_tmp_path, monkeypatch, capsys):
     """codex/opencode PM → **claude** researcher 위임 1회 — reply marker + rc0 + raw 기록.
 
     `--tools Read,Glob,Grep,Edit`(researcher=Bash/Write 제외·Edit 는 티켓 사본 자기 절
     기록 전용·T-0696)·`--effort low`(drive)·cwd 존중."""
     pd = _load_pd()
-    repo, prompt = _seed_repo(tmp_path)
-    out_dir = tmp_path / "raw"
+    repo, prompt = _seed_repo(harness_tmp_path)
+    out_dir = harness_tmp_path / "raw"
     rc, reply, err = _delegate(pd, monkeypatch, capsys, repo, prompt, "claude",
                                CLAUDE_MODEL, "low", out_dir, _CLAUDE_TIMEOUT)
     _assert_delegate_ok(rc, reply, err, out_dir, "claude")
@@ -516,7 +516,7 @@ def test_delegate_live_claude(tmp_path, monkeypatch, capsys):
     reason="pm_delegate 세션 재사용 라이브(claude) — PM_DELEGATE_LIVE=1 + claude CLI(API 과금) 필요. "
            "기본 skip·on-demand.",
 )
-def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
+def test_delegate_live_claude_resume_round(harness_tmp_path, monkeypatch, capsys):
     """실 경로 2라운드 — R1 fresh 스폰 → `--resume-from` 으로 **같은 세션** 이어받기(T-0595 DoD).
 
     R1 은 marker 인용까지 완주해 기록에 세션 id 를 남기고, R2 는 그 레코드 id 로 재개해 바뀐 부분만
@@ -525,8 +525,8 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
     프롬프트는 README 를 다시 읽으라고 하지 않는데 marker 를 그대로 말한다 — fresh 세션이면 못
     한다). 미일치면 엔진이 fresh + full payload 로 재실행하므로 라운드 수(기록 행)로도 갈린다."""
     pd = _load_pd()
-    repo, prompt = _seed_repo(tmp_path)
-    out_dir = tmp_path / "raw"
+    repo, prompt = _seed_repo(harness_tmp_path)
+    out_dir = harness_tmp_path / "raw"
     rc, reply, err = _delegate(pd, monkeypatch, capsys, repo, prompt, "claude",
                                CLAUDE_MODEL, "low", out_dir, _CLAUDE_TIMEOUT)
     _assert_delegate_ok(rc, reply, err, out_dir, "claude")
@@ -578,15 +578,15 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
     reason="pm_delegate 릴리즈 라이브(codex) — PM_ORCH_LIVE_RELEASE=1 + codex CLI(과금·auth) 필요. "
            "기본 skip·릴리즈 트리거.",
 )
-def test_delegate_live_codex_release(tmp_path, monkeypatch, capsys):
+def test_delegate_live_codex_release(harness_tmp_path, monkeypatch, capsys):
     """릴리즈 라이브 tier — codex cross 위임 green 없이 관련 버전 push 차단(spike §9·codex load-bearing).
 
     on-demand codex 스모크와 동일 본문·release tier 참여자. 커플드 전역 pin +1 등재는 orchestrator
     소유(파일 docstring ⚠ 참조)."""
     pd = _load_pd()
-    repo, prompt = _seed_repo(tmp_path)
-    out_dir = tmp_path / "raw"
-    home = make_codex_home(tmp_path)
+    repo, prompt = _seed_repo(harness_tmp_path)
+    out_dir = harness_tmp_path / "raw"
+    home = make_codex_home(harness_tmp_path)
     monkeypatch.setenv("CODEX_HOME", str(home))
     try:
         rc, reply, err = _delegate(pd, monkeypatch, capsys, repo, prompt, "codex",
@@ -601,14 +601,14 @@ def test_delegate_live_codex_release(tmp_path, monkeypatch, capsys):
     not _RELEASE_LIVE or not shutil.which("codex") or not codex_auth_available(),
     reason="선택 cross Claude→Codex 성장 — PM_ORCH_LIVE_RELEASE=1 + codex auth 필요.",
 )
-def test_ticket_growth_cross_claude_to_codex_release(tmp_path, monkeypatch, capsys):
+def test_ticket_growth_cross_claude_to_codex_release(harness_tmp_path, monkeypatch, capsys):
     """Claude main이 쓰는 cross Codex transport에서 성장 역할 3종을 실제 왕복한다."""
     pd = _load_pd()
-    home = make_codex_home(tmp_path)
+    home = make_codex_home(harness_tmp_path)
     monkeypatch.setenv("CODEX_HOME", str(home))
     try:
         _run_cross_growth_route(
-            pd, monkeypatch, capsys, tmp_path, target="codex", model=CODEX_MODEL,
+            pd, monkeypatch, capsys, harness_tmp_path, target="codex", model=CODEX_MODEL,
             reasoning="low", timeout=_CODEX_TIMEOUT,
         )
     finally:
@@ -620,10 +620,10 @@ def test_ticket_growth_cross_claude_to_codex_release(tmp_path, monkeypatch, caps
     not _RELEASE_LIVE or not shutil.which("opencode"),
     reason="선택 cross Claude→OpenCode 성장 — PM_ORCH_LIVE_RELEASE=1 + opencode 필요.",
 )
-def test_ticket_growth_cross_claude_to_opencode_release(tmp_path, monkeypatch, capsys):
+def test_ticket_growth_cross_claude_to_opencode_release(harness_tmp_path, monkeypatch, capsys):
     """Claude main이 쓰는 cross OpenCode transport에서 성장 역할 3종을 실제 왕복한다."""
     _run_cross_growth_route(
-        _load_pd(), monkeypatch, capsys, tmp_path, target="opencode", model=LIVE_MODEL,
+        _load_pd(), monkeypatch, capsys, harness_tmp_path, target="opencode", model=LIVE_MODEL,
         reasoning=None, timeout=_OPENCODE_TIMEOUT,
     )
 
@@ -633,10 +633,10 @@ def test_ticket_growth_cross_claude_to_opencode_release(tmp_path, monkeypatch, c
     not _RELEASE_LIVE or not shutil.which("claude"),
     reason="선택 cross Codex→Claude 성장 — PM_ORCH_LIVE_RELEASE=1 + claude 필요.",
 )
-def test_ticket_growth_cross_codex_to_claude_release(tmp_path, monkeypatch, capsys):
+def test_ticket_growth_cross_codex_to_claude_release(harness_tmp_path, monkeypatch, capsys):
     """Codex main이 쓰는 cross Claude transport에서 성장 역할 3종을 실제 왕복한다."""
     _run_cross_growth_route(
-        _load_pd(), monkeypatch, capsys, tmp_path, target="claude", model=CLAUDE_MODEL,
+        _load_pd(), monkeypatch, capsys, harness_tmp_path, target="claude", model=CLAUDE_MODEL,
         reasoning="low", timeout=_CLAUDE_TIMEOUT,
     )
 

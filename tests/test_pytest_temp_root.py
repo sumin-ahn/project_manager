@@ -1,8 +1,10 @@
-"""pytest 임시 루트가 프로젝트 안에 선언되는지 기계로 고정한다 (T-0888).
+"""pytest 임시 루트가 프로젝트 안에 선언되는지, 하네스 폴더가 프로젝트 밖에 있는지 기계로 고정한다.
 
 위치가 판정을 바꾸지 않는다는 이 저장소의 계약은 회귀 자신에게도 적용된다 — 임시물을
 프로젝트 밖에 두면 "위에 아무것도 없어서" 통과하는 것이지 판정이 옳아서 통과하는 것이
-아니다. 그래서 임시 루트는 프로젝트 안 per-clone 스크래치 하나이고, 예외 목록을 두지 않는다.
+아니다. 그래서 하네스를 띄우지 않는 시험의 임시 루트는 프로젝트 안 per-clone 스크래치
+하나다. 하네스(claude·codex·opencode)를 띄우는 시험은 하네스가 상위 폴더의 지시 파일을 읽으므로
+`harness_tmp_path` 로 프로젝트 밖(OS 임시 폴더 아래)에 둔다.
 """
 from __future__ import annotations
 
@@ -13,9 +15,13 @@ import ast
 import importlib.util
 import os
 import re
+import tempfile
 from pathlib import Path
 
+import pytest
+
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from conftest import HARNESS_TEMP_PARENT, assert_no_project_above
 from _engine_tree import engine_python_files
 from pm_engine.infra import raw_output
 
@@ -304,3 +310,38 @@ def test_engine_temp_root_is_the_project_local_tmp(tmp_path):
     assert root.is_dir()
     # 두 번 불러도 같은 자리다 — 자리 규약이지 매번 새로 잡는 예약이 아니다.
     assert raw_output.temp_root(tmp_path) == root
+
+
+def test_harness_tmp_path_is_outside_every_project(harness_tmp_path):
+    """하네스 폴더는 OS 임시 폴더 바로 아래이고 저장소·pytest 임시 루트 밖이며 상위에 프로젝트 표시가 없다."""
+    root = harness_tmp_path.resolve()
+    assert root.parent == HARNESS_TEMP_PARENT.resolve()
+    assert ROOT.resolve() not in root.parents
+    assert EXPECTED_TEMP_ROOT.resolve() not in root.parents
+    assert_no_project_above(root)
+
+
+def test_project_marker_above_folder_fails_the_check(harness_tmp_path):
+    """상위에 CLAUDE.md·AGENTS.md·.project_manager 가 하나라도 있으면 단언이 실패하고, 없으면 통과한다."""
+    clean = harness_tmp_path / "clean" / "inner"
+    clean.mkdir(parents=True)
+    assert_no_project_above(clean)
+    for index, marker in enumerate(("CLAUDE.md", "AGENTS.md", ".project_manager")):
+        outer = harness_tmp_path / f"case{index}" / "outer"
+        inner = outer / "inner"
+        inner.mkdir(parents=True)
+        if marker.endswith(".md"):
+            (outer / marker).write_text("x\n", encoding="utf-8")
+        else:
+            (outer / marker).mkdir()
+        with pytest.raises(AssertionError, match=re.escape(str((outer / marker).resolve()))):
+            assert_no_project_above(inner)
+
+
+def test_harness_tmp_path_moves_process_and_temp_folders_inside(harness_tmp_path):
+    """시험 동안 프로세스 위치·임시 폴더 환경·tempfile·설정 폴더 환경이 하네스 폴더 안이다."""
+    root = harness_tmp_path.resolve()
+    assert Path(os.getcwd()).resolve() == root
+    for key in ("TMPDIR", "TEMP", "TMP", "XDG_CONFIG_HOME"):
+        assert root in Path(os.environ[key]).resolve().parents
+    assert root in Path(tempfile.gettempdir()).resolve().parents
