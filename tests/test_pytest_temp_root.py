@@ -345,3 +345,21 @@ def test_harness_tmp_path_moves_process_and_temp_folders_inside(harness_tmp_path
     for key in ("TMPDIR", "TEMP", "TMP", "XDG_CONFIG_HOME"):
         assert root in Path(os.environ[key]).resolve().parents
     assert root in Path(tempfile.gettempdir()).resolve().parents
+
+
+def test_harness_tmp_path_setup_fails_and_removes_folder_under_a_project(tmp_path, monkeypatch, request):
+    """상위에 프로젝트가 있는 폴더를 받으면 픽스처가 준비 단계에서 실패하고, 그 폴더를 지운다.
+
+    `tmp_path` 는 저장소 안이라 상위에 CLAUDE.md 와 .project_manager 가 있다. 픽스처가 만드는
+    폴더를 그 아래로 돌려, 상위 확인이 시험 본문보다 먼저 돌고 실패해도 폴더가 남지 않음을 본다.
+    """
+    inside = tmp_path / "pm-harness-inside"
+
+    def make_folder_inside(**_keywords):
+        inside.mkdir()
+        return str(inside)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", make_folder_inside)
+    with pytest.raises(AssertionError, match="상위에 하네스가 읽는 프로젝트가 있다"):
+        request.getfixturevalue("harness_tmp_path")
+    assert not inside.exists()

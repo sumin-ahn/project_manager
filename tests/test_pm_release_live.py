@@ -494,8 +494,9 @@ def test_pm_release_live_claude(harness_tmp_path):
         f"live-test.json 이 green 이 아님(존재만으론 불충분·record 오호출/실패 의심) — 기록={lg} "
         f"(기대 status=pass·n={pin}·rc=0).\n" + _proc_tail(proc, "claude")
     )
-    # (4) 좌표(hard) — 샌드박스 밖(중첩된 바깥 PM 홈)에 대고 돈 커맨드가 0. 격리 홈이 바깥 저장소
-    #     트리 안에 있어 그 접두를 루트로 오독하면 바깥 기록에 부딪힌다(2026-09-02 live-test #2).
+    # (4) 좌표(hard) — 샌드박스 밖(홈 밖 절대경로, PM 홈 포함)에 대고 돈 커맨드가 0. 2026-09-02
+    #     live-test #2 실측 당시 격리 홈은 저장소 안 시험 임시 폴더였고, 모델이 그 접두를 루트로
+    #     오독해 바깥 기록에 부딪혔다.
     escaped = _commands_leaving_the_sandbox(commands, harness_tmp_path)
     assert not escaped, (
         f"claude 가 테스트 샌드박스 밖 디렉터리에 대고 커맨드를 실행함(격리 위반·바깥 PM 홈 "
