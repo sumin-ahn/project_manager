@@ -543,12 +543,12 @@ _codex_live_test = pytest.mark.skipif(
 
 
 @_codex_live_test
-def test_codex_live_fill_real_binary(pm_import, tmp_path):
+def test_codex_live_fill_real_binary(pm_import, harness_tmp_path):
     """[blocking·실 실행 T-0407·과금] 실 codex 바이너리로 codex fill — argv=codex exec·harness=codex 라벨.
 
     통과 조건(PM_IMPORT_LIVE_HARNESS + codex 설치) 미충족이면 collection 단계에서 skip(일반 서브셋
     무영향). 충족 시 실 gpt-5.5 구동 — argv 가 codex 커맨드이고 라벨이 일치(claude 오호출 아님)."""
-    dest = _make_imported_tree(pm_import, tmp_path, harness="codex", name="CodexLive")
+    dest = _make_imported_tree(pm_import, harness_tmp_path, harness="codex", name="CodexLive")
     result = import_fill.run_fill(dest, "codex", live=True, copied_relpaths=None)
     assert result.harness == "codex"
     assert result.runner_calls and result.runner_calls[0][:2] == ["codex", "exec"]
