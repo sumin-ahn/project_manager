@@ -19,6 +19,7 @@ from pm_engine.cli import import_args
 from pm_engine.domain import install_rules
 from pm_engine.domain import upstream_rules
 from pm_engine.infra import adapter_baseline
+from pm_engine.infra import conf_store
 from pm_engine.infra import install_conf
 from pm_engine.infra import install_files
 from pm_engine.infra import install_git
@@ -430,8 +431,17 @@ def main(home, argv: list[str] | None = None) -> int:
         return 0
 
     # ── 적용 ──
+    # 하네스 설정 반영의 검사·조회 — 첫 파일 변경(git init·복사) 앞이다. 모델 한도 조회는 대상 폴더에서 하므로 폴더만
+    #   먼저 둔다(빈 폴더는 --new 가 받는 대상이라 여기서 멈춰도 같은 명령을 다시 실행할 수 있다).
+    dest_root.mkdir(parents=True, exist_ok=True)
+    try:
+        ctx_plan = harness_ctx.plan_harness_ctx(
+            dest_root, conf_store.load(dest_root / ".project_manager" / "local.conf").values,
+            {action.dst.relative_to(dest_root).as_posix(): action.src for action in actions})
+    except harness_ctx.HarnessCtxError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
     if is_new:
-        dest_root.mkdir(parents=True, exist_ok=True)
         # MF2: git init 실패 시 git repo 없는 불완전 import — board.py init 의 pre-push 훅이
         #      git repo 에 의존하므로 비0 전파(복사 전에 중단).
         git_rc = install_board.git_init(dest_root)
@@ -646,7 +656,7 @@ def main(home, argv: list[str] | None = None) -> int:
     # 하네스 사용 한도 반영 — add-harness 와 같은 자리(어댑터 설정 기록을 적은 뒤)·같은 규칙. `--into` 재적용이면
     #   보존된 conf 값(예 `ctx.compact_at_pct`)이 여기서 설정 파일에 들어간다.
     try:
-        harness_ctx._print_harness_ctx_apply(dest_root)
+        harness_ctx._print_harness_ctx_apply(dest_root, ctx_plan)
     except harness_ctx.HarnessCtxError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1

@@ -60,6 +60,7 @@ import sys
 from pm_engine.app import conf_apply
 from pm_engine.app import engine_transfer
 from pm_engine.app import entry_doc_migration
+from pm_engine.app import harness_ctx
 from pm_engine.app import hook_sets
 from pm_engine.app import update_adapters
 from pm_engine.app import update_finish
@@ -259,6 +260,19 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     #    이 자리를 지난다: 전달 프로세스가 옮기면 완료 프로세스에서는 옮길 것이 없고, 전달 프로세스가
     #    이 자리를 모르는 옛 갱신기였으면 완료 프로세스가 옮긴다. 옮길 것이 없으면 쓰지 않는다.
     #    `--target` 내보내기·`--paths` 부분 전파는 건드리지 않는다.
+    # 하네스 설정 반영의 검사·조회 — 이 갱신의 첫 파일 변경(아래 키 이름 이동) 앞이다. 두 프로세스가 모두 이
+    #   자리를 지난다: 전달 프로세스는 엔진 코드를 옮기기 전에 같은 검사로 멈추고, 완료 프로세스는 이 계획으로 반영한다.
+    do_adapter_config = (
+        not args.target and not scope_paths
+        and update_adapters._has_adapter_config_candidate(effective_dest)
+    )
+    ctx_plan = None
+    if do_adapter_config:
+        try:
+            ctx_plan = update_adapters.plan_harness_ctx_limits(effective_dest)
+        except harness_ctx.HarnessCtxError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
     if not args.target and not scope_paths:
         entry_doc_migration.migrate_renamed_conf_keys(effective_dest, write=not args.dry_run)
         update_finish.rename_added_harness_markers(effective_dest, write=not args.dry_run)
@@ -472,10 +486,6 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
     #    `--target`(엔진 export)은 dest 가 출하 템플릿 트리라 채택자 config 개념이 없고,
     #    `--paths`(부분 전파)는 요청 밖 write 를 하지 않는다. changes 유무와 독립인 것도 같다 —
     #    이 채널이 나르는 건 manifest 밖 파일이라 엔진 변경 0 인 실행에서도 할 일이 있다.
-    do_adapter_config = (
-        not args.target and not scope_paths
-        and update_adapters._has_adapter_config_candidate(effective_dest)
-    )
     # instance-owned 버전 요약은 각 종료 분기에서 config 채널의 **최종 판정 뒤** 계산한다.
     # 무편집 managed는 같은 실행에서 자동 갱신·기록되므로 사전 계산한 --accept 안내를 뒤늦게
     # 출력하면 실제 최종 상태와 모순된다. report-drift·edited managed는 어댑터 설정 기록이 전진하지 않아
@@ -519,7 +529,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
                 effective_dest, source_root, write=not args.dry_run)
             update_adapters._print_adapter_config_finding(configs, dry_run=args.dry_run)
             # 하네스 사용 한도·압축 비율 반영 — 채널이 템플릿 갱신·어댑터 설정 기록 쓰기를 끝낸 파일 위에 쓴다.
-            if not update_adapters.apply_harness_ctx_limits(effective_dest, write=not args.dry_run):
+            if not update_adapters.apply_harness_ctx_limits(effective_dest, ctx_plan, write=not args.dry_run):
                 return 1
             # 버전 일치는 config 채널과 **같은 경계·같은 자리**에서 본다(둘 다 manifest 밖
             #   config 를 대상으로 하는 판정이라 한쪽만 도는 실행이 있으면 안 된다). 검사 순서는
@@ -579,7 +589,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         if do_adapter_config:  # 판정만(write=False·파일·어댑터 설정 기록 미변경).
             configs = update_adapters.sync_adapter_configs(effective_dest, source_root, write=False)
             update_adapters._print_adapter_config_finding(configs, dry_run=True)
-            if not update_adapters.apply_harness_ctx_limits(effective_dest, write=False):
+            if not update_adapters.apply_harness_ctx_limits(effective_dest, ctx_plan, write=False):
                 return 1
             update_adapters._print_adapter_hook_set_finding(
                 update_adapters.check_adapter_hook_sets(home, effective_dest, source_root), dry_run=True)
@@ -622,7 +632,7 @@ def _main(home, argv: list[str] | None = None, *, prog: str = "pm_update.py") ->
         #   어댑터 config 만 새 버전으로 앞서가지 않게·migrate 와 같은 시퀀싱 논거).
         configs = update_adapters.sync_adapter_configs(effective_dest, source_root, write=True)
         update_adapters._print_adapter_config_finding(configs, dry_run=False)
-        if not update_adapters.apply_harness_ctx_limits(effective_dest, write=True):
+        if not update_adapters.apply_harness_ctx_limits(effective_dest, ctx_plan, write=True):
             return 1
         # apply 로 방금 착지한 **새 훅 세트**를 기준으로 판정한다 — 이 순서라야 "엔진 파일이
         #   뒤처져서 난 불일치" 가 이번 실행에서 저절로 해소되고, 그래도 남는 것만 red 다.

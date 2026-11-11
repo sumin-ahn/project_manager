@@ -7006,6 +7006,56 @@ def _conf_values(dest: Path) -> dict[str, str]:
     return values
 
 
+def test_update_changes_nothing_when_the_moved_ctx_keys_fail_the_value_check(pm_update, tmp_path, monkeypatch):
+    """옛 남은 % 키를 옮긴 값이 값 검사에 걸리면 갱신은 첫 파일 변경 앞에서 rc 1 로 멈춘다.
+
+    옛 `ctx.stop_pct=10` 은 `ctx.precompact_at_pct=90` 으로 옮겨져 기본 `ctx.compact_at_pct=90` 과 같다. 엔진 파일
+    하나를 옛 내용으로 두어 전달 단계가 옮길 것이 있게 한다. 실행 전후 홈의 파일(local.conf·설치 기록·엔진
+    코드·훅 포함)이 같고, 문구가 고칠 키·조건·옛 키 이름을 알린다."""
+    from _manager_home import tree_snapshot
+
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
+    dest = tmp_path / "adopter"
+    _import_adopter(dest, "claude,codex")
+    conf = dest / ".project_manager" / "local.conf"
+    kept = [line for line in conf.read_text(encoding="utf-8").splitlines() if not line.startswith("ctx.")]
+    conf.write_text("\n".join([*kept, "ctx.nudge_pct=30", "ctx.stop_pct=10", "ctx.window_tokens=200000"]) + "\n",
+                    encoding="utf-8")
+    stale = dest / ".project_manager" / "tools" / "pm_engine" / "domain" / "jsonc.py"
+    stale.write_text(stale.read_text(encoding="utf-8") + "# stale\n", encoding="utf-8")
+
+    before = tree_snapshot(dest)
+    run = _adopter_update(dest)
+
+    assert run.returncode == 1, run.stdout[-2000:] + run.stderr[-2000:]
+    assert tree_snapshot(dest) == before
+    assert "`ctx.precompact_at_pct=90` 는 `ctx.compact_at_pct=90`(기본값) 보다 작아야 합니다" in run.stderr, run.stderr
+    assert "`ctx.stop_pct=10` → `ctx.precompact_at_pct`" in run.stderr, run.stderr
+
+
+def test_update_stops_before_moving_v100_default_ctx_keys(pm_update, tmp_path, monkeypatch):
+    """v1.0.0·v1.0.1 이 만든 기본 local.conf(`ctx_nudge_pct=20`·`ctx_stop_pct=10`)는 갱신마다 값 검사에 걸린다.
+
+    `ctx_stop_pct=10` 은 `ctx.precompact_at_pct=90` 으로 옮겨져 기본 `ctx.compact_at_pct=90` 과 같다. 갱신은 키를
+    옮기기 전에 rc 1 로 멈추고 실행 전후 홈의 파일이 같으며, 문구가 옛 이름 키와 새 이름을 짚는다."""
+    from _manager_home import tree_snapshot
+
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
+    dest = tmp_path / "adopter"
+    _import_adopter(dest, "claude")
+    conf = dest / ".project_manager" / "local.conf"
+    kept = [line for line in conf.read_text(encoding="utf-8").splitlines() if not line.startswith("ctx.")]
+    conf.write_text("\n".join([*kept, "ctx_nudge_pct=20", "ctx_stop_pct=10"]) + "\n", encoding="utf-8")
+
+    before = tree_snapshot(dest)
+    run = _adopter_update(dest)
+
+    assert run.returncode == 1, run.stdout[-2000:] + run.stderr[-2000:]
+    assert tree_snapshot(dest) == before
+    assert "`ctx_stop_pct=10` → `ctx.precompact_at_pct`" in run.stderr, run.stderr
+    assert "`ctx.precompact_at_pct=90` 는 `ctx.compact_at_pct=90`(기본값) 보다 작아야 합니다" in run.stderr, run.stderr
+
+
 def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch):
     """옛 남은 %·공통 한도 conf → 이동(쓴 %·하네스별 한도) → 검사 → 설정 파일 반영.
 
@@ -7029,7 +7079,8 @@ def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch)
     planned = _adopter_update(dest, "--dry-run")
     assert planned.returncode == 0, planned.stdout + planned.stderr
     assert {path: path.read_bytes() for path in watched} == before, "dry-run 이 파일을 바꿨다"
-    assert "하네스 설정 반영을 건너뛴다" in planned.stdout      # 이동 전 이름은 읽지 않는다
+    assert ("[dry-run] 하네스 설정 반영 예정: .claude/settings.json autoCompactWindow 180000 → 270000"
+            in planned.stdout), planned.stdout   # 옮길 이름을 옮긴 값으로 미리 보인다
 
     run = _adopter_update(dest)
     assert run.returncode == 0, run.stdout + run.stderr

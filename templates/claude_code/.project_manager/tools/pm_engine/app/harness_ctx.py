@@ -165,6 +165,12 @@ def _harness_ctx_value(values, key: str) -> str:
     return str(raw).strip()
 
 
+def _harness_ctx_shown(values, key: str, value) -> str:
+    """검사 문구의 `키=값` — local.conf 에 그 키가 없거나 비어 기본값을 쓴 것이면 `(기본값)` 을 붙인다."""
+    raw = values.get(key)
+    return f"`{key}={value}`" + ("(기본값)" if raw is None or not str(raw).strip() else "")
+
+
 def _harness_ctx_integer(text: str) -> int | None:
     """정수 표기(부호 허용·ASCII 숫자)면 그 값, 아니면 None."""
     return int(text) if re.fullmatch(r"[+-]?[0-9]+", text) else None
@@ -183,16 +189,16 @@ def validate_harness_ctx(values, present: frozenset) -> None:
         text = _harness_ctx_value(values, key)
         number = _harness_ctx_integer(text)
         if number is None:
-            violations.append(f"`{key}={text}` 는 정수가 아닙니다.")
+            violations.append(f"{_harness_ctx_shown(values, key, text)} 는 정수가 아닙니다.")
             continue
         ratios[key] = number
         if not 0 < number < 100:
-            violations.append(f"`{key}={number}` 는 0 보다 크고 100 보다 작아야 합니다.")
+            violations.append(f"{_harness_ctx_shown(values, key, number)} 는 0 보다 크고 100 보다 작아야 합니다.")
     for low_key, high_key in zip(_HARNESS_CTX_RATIO_KEYS, _HARNESS_CTX_RATIO_KEYS[1:]):
         low, high = ratios.get(low_key), ratios.get(high_key)
         if low is not None and high is not None and not low < high:
             violations.append(
-                f"`{low_key}={low}` 는 `{high_key}={high}` 보다 작아야 합니다"
+                f"{_harness_ctx_shown(values, low_key, low)} 는 {_harness_ctx_shown(values, high_key, high)} 보다 작아야 합니다"
                 " (중간 기록 권고 < 압축 임박 경고 < 압축).")
     for harness in HARNESS_CTX_FILES:
         if harness not in present:
@@ -201,7 +207,7 @@ def validate_harness_ctx(values, present: frozenset) -> None:
         text = _harness_ctx_value(values, key)
         window = _harness_ctx_integer(text)
         if window is None or window <= 0:
-            violations.append(f"`{key}={text}` 는 양의 정수여야 합니다.")
+            violations.append(f"{_harness_ctx_shown(values, key, text)} 는 양의 정수여야 합니다.")
     if violations:
         raise HarnessCtxError(violations)
 
@@ -231,37 +237,36 @@ def harness_ctx_targets(opencode_models, entries) -> dict[str, dict[tuple[str, .
     return targets
 
 
-def apply_harness_ctx(dest_root: Path, *, write: bool, opencode_config_dir: Path) -> tuple[str, ...]:
-    """local.conf 의 사용 한도·압축 비율을 설정 파일이 있는 하네스에 반영한다 — 바뀐 줄 목록.
+class HarnessCtxPlan(NamedTuple):
+    """반영 계획 — `legacy` 가 있으면 값 공급을 잃는 옛 키가 남아 반영하지 않는 계획이고 나머지는 비어 있다.
+    `values` 는 검사한 local.conf 값, `entries` 는 도구 기록 항목, `targets` 는 설정 파일 relpath → 관리 키 목표값,
+    `lines` 는 계획 시점 텍스트로 낸 바뀔 줄, `notices` 는 표준오류에 낼 opencode 제외 알림이다."""
+    legacy: tuple[str, ...]
+    values: dict
+    entries: dict
+    targets: dict
+    lines: tuple[str, ...]
+    notices: tuple[str, ...]
 
-    순서: 검사(옛 키면 멈춤) → 설정 파일·opencode 전역 설정 읽기 → 도구별 모델 한도 조회·계산·설정 형식
-    확인 → 새 내용 재판독 확인 → (`write`) 원자 쓰기 → 기록 → 압축 한도 기록. 앞 단계의 `HarnessCtxError`
-    는 어떤 파일도 쓰지 않았다는 뜻이다. 반환 줄은 "<relpath> <경로> <옛 값> → <새 값>"(없던 키는 `(없음)`,
-    점이 든 경로 조각은 큰따옴표: `provider.ollama.models."glm-5.2:cloud"…`).
 
-    기록 규칙: 반영 직전 파일을 기록이 증언하면(`_baseline_attests_dest`) 그 항목의 `sha256` 만 새
-    내용 해시로 바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다.
-    편집됨·기록 없음은 기록을 건드리지 않는다. 기록이 상위 schema 면 파일을 쓰지 않고 멈춘다.
-    `harness.opencode.pro_model` 은 읽지 않는다 — 대상 모델은 설정 파일에 적힌 모델 전부와 선택 모델이되,
-    공급자 연결 설정이 없는 모델(`_ctx_opencode_unconnected`)은 빼고 반영마다 표준오류로 알린다. 남은
-    모델이 없으면 opencode 는 반영하지 않는다(설정 파일 그대로·기록에 opencode 항목 없음)."""
-    dest_root = Path(dest_root)
-    conf_path = dest_root / ".project_manager" / "local.conf"
-    if not write:
-        return _harness_ctx_plan(dest_root, _conf_values(conf_path, None), opencode_config_dir)[1]
-    with fs.local_conf_write_lock(conf_path):
-        values = _conf_values(conf_path, None)
-        changed, lines, entries = _harness_ctx_plan(dest_root, values, opencode_config_dir)
-        if changed:
-            _harness_ctx_baseline_writable(dest_root)
-        _harness_ctx_commit(dest_root, values, changed, entries)
-        return lines
+def plan_harness_ctx(dest_root: Path, values, laid_down) -> HarnessCtxPlan:
+    """설치·add-harness·어댑터 수용·갱신의 반영 검사·조회 — 그 명령의 첫 파일 변경 앞에서 부른다.
+
+    `values` 는 반영할 때의 local.conf 값(갱신은 옮길 이름을 옮긴 값), `laid_down` 은 이번 실행이 까는 설정 파일
+    relpath → 원본 경로다. 값 공급을 잃는 옛 키가 남아 있으면 조회하지 않고 그 키만 담은 계획을 돌려준다(반영은
+    건너뛴다). 걸리면 `HarnessCtxError` 이고 어떤 파일도 쓰지 않았다. 쓰기는 호출부가 local.conf 쓰기 락 안에서
+    `apply_harness_ctx` 로 한다."""
+    remaining = conf_schema.blocking_legacy(conf_schema.legacy_keys(values))
+    if remaining:
+        return HarnessCtxPlan(tuple(remaining), dict(values), {}, {}, (), ())
+    return _harness_ctx_plan(Path(dest_root), values,
+                             opencode_global_config_dir(os.environ, Path.home()), laid_down)
 
 
 def _conf_values(conf_path: Path, updates) -> dict[str, str]:
     """local.conf 값에 `updates`(None·빈 값은 줄 삭제)를 덮은 제안 값 — 옛 키가 남았거나 들어오면 멈춘다.
 
-    저장(`app.conf_apply.apply_conf`)의 모든 반영 단계와 이 모듈의 반영이 같은 값 하나를 쓴다."""
+    저장(`app.conf_apply.apply_conf`)의 모든 반영 단계가 같은 값 하나를 쓴다."""
     loaded = conf_store.load(conf_path)
     conf_schema.assert_no_legacy(loaded)
     values = {key: value for key, value in loaded.values.items() if key not in (updates or {})}
@@ -271,60 +276,47 @@ def _conf_values(conf_path: Path, updates) -> dict[str, str]:
     return values
 
 
-def _harness_ctx_commit(dest_root: Path, values, changed: dict[str, tuple[str, str]], entries) -> tuple[str, ...]:
-    """계획(`_harness_ctx_plan`)대로 설정 파일과 압축 한도 기록을 쓴다 — 바꾼 파일 relpath.
+def apply_harness_ctx(dest_root: Path, planned: HarnessCtxPlan) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """계획(`plan_harness_ctx`)의 관리 키 값을 지금 설정 파일에 넣어 쓰고 압축 한도 기록을 남긴다 — (바꾼 파일, 바뀐 줄).
 
-    local.conf 쓰기 락 안에서 부른다(락을 다시 잡지 않는다). 쓰기 단계에서 멈추면 `HarnessCtxError.written`
-    이 바꾼 파일을 적고 `write_stage` 가 참이다(바꾼 파일이 없어도 검사 거부가 아니다)."""
-    record = {"schema": conf_schema.CTX_BUDGET_SCHEMA, "inputs": conf_schema.ctx_input_values(values),
+    local.conf 쓰기 락 안에서 부른다(락을 다시 잡지 않는다). 설정 파일은 여기서 다시 읽는다 — 계획 뒤 같은
+    실행의 앞 단계가 관리 키 밖을 바꿨어도(예: 진입 문서 이관의 opencode `instructions`) 그 내용은 두고 관리
+    키만 바꾼다. 계획한 하네스 중 설정 파일이 없는 것(복사에서 빠짐)은 쓰지도 기록하지도 않는다. 바뀐 줄은
+    "<relpath> <경로> <옛 값> → <새 값>"(없던 키는 `(없음)`, 점이 든 경로 조각은 큰따옴표:
+    `provider.ollama.models."glm-5.2:cloud"…`).
+
+    기록 규칙: 반영 직전 파일을 기록이 증언하면(`_baseline_attests_dest`) 그 항목의 `sha256` 만 새 내용 해시로
+    바꾸고 `recorded_at`·`template_rev` 는 둔다 — 무편집 판정이 반영 뒤에도 유지된다. 편집됨·기록 없음은 기록을
+    건드리지 않는다. 쓰기 단계에서 멈추면 `HarnessCtxError.written` 이 바꾼 파일을 적고 `write_stage` 가 참이다
+    (바꾼 파일이 없어도 검사 거부가 아니다)."""
+    entries = {harness: entry for harness, entry in planned.entries.items()
+               if (dest_root / HARNESS_CTX_FILES[harness]).is_file()}
+    record = {"schema": conf_schema.CTX_BUDGET_SCHEMA, "inputs": conf_schema.ctx_input_values(planned.values),
               "applied_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
               "harnesses": entries}
     payload = (json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
     record_relpath = conf_store.CTX_BUDGET_RELPATH.as_posix()
     try:
+        texts = {HARNESS_CTX_FILES[harness]: _harness_ctx_read_text(dest_root / HARNESS_CTX_FILES[harness],
+                                                                    HARNESS_CTX_FILES[harness]) for harness in entries}
+        changed, lines = _harness_ctx_edits(texts, planned.targets)
         if changed:
             _harness_ctx_write(dest_root, changed)
         if _ctx_record_unchanged(dest_root / conf_store.CTX_BUDGET_RELPATH, record):
-            return tuple(changed)
+            return tuple(changed), lines
         if not adapter_baseline._atomic_write_dest_bytes(dest_root, conf_store.CTX_BUDGET_RELPATH, payload):
             raise HarnessCtxError([f"압축 한도 기록({record_relpath})을 쓰지 못했습니다."], written=tuple(changed))
     except HarnessCtxError as exc:
         failure = HarnessCtxError(exc.violations, written=exc.written)
         failure.write_stage = True
         raise failure from exc
-    return (*changed, record_relpath)
+    return (*changed, record_relpath), lines
 
 
-def _harness_ctx_plan(dest_root: Path, values, opencode_config_dir: Path):
-    """제안 값(`_conf_values`) 검사·조회·계산 — (바뀔 설정 파일, 바뀐 줄, 기록 항목). 아무것도 쓰지 않는다."""
-    present = frozenset(harness for harness, relpath in HARNESS_CTX_FILES.items()
-                        if (dest_root / relpath).is_file())
-    validate_harness_ctx(values, present)
-
-    texts = {relpath: _harness_ctx_read_text(dest_root / relpath, relpath)
-             for harness, relpath in HARNESS_CTX_FILES.items() if harness in present}
-    documents = {relpath: _harness_ctx_parse(relpath, text) for relpath, text in texts.items()}
-    sources: dict[str, list[dict]] = {}
-    models: dict[tuple[str, str], int] = {}
-    for harness, relpath in HARNESS_CTX_FILES.items():
-        if harness not in present:
-            continue
-        sources[harness] = [documents[relpath]]
-        if HARNESS_CTX_RULES[relpath].model_limits:
-            global_documents = _opencode_global_documents(opencode_config_dir)
-            models = _opencode_target_models(documents[relpath], relpath, global_documents)
-            sources[harness] = [document for _label, document in global_documents] + [documents[relpath]]
-    entries: dict[str, dict] = {}
-    for harness, relpath in HARNESS_CTX_FILES.items():
-        if harness not in present:
-            continue
-        rows = _read_harness_ctx_metadata(dest_root, harness, sources[harness], models)
-        if HARNESS_CTX_RULES[relpath].model_limits and not _opencode_rows_left(models, rows):
-            continue
-        entries[harness] = _harness_ctx_entry(dest_root, harness, values, rows, models)
-    targets = harness_ctx_targets(models, entries)
-    lines: list[str] = []
+def _harness_ctx_edits(texts, targets) -> tuple[dict[str, tuple[str, str]], tuple[str, ...]]:
+    """설정 텍스트에 관리 키 목표값을 넣은 결과 — (바뀐 파일 relpath → (옛 텍스트, 새 텍스트), 바뀐 줄)."""
     changed: dict[str, tuple[str, str]] = {}
+    lines: list[str] = []
     for relpath, text in texts.items():
         if relpath not in targets:  # 반영하지 않는 도구의 설정 파일은 그대로 둔다
             continue
@@ -332,10 +324,48 @@ def _harness_ctx_plan(dest_root: Path, values, opencode_config_dir: Path):
         lines.extend(file_lines)
         if new_text != text:
             changed[relpath] = (text, new_text)
+    return changed, tuple(lines)
+
+
+def _harness_ctx_plan(dest_root: Path, values, opencode_config_dir: Path, laid_down) -> HarnessCtxPlan:
+    """제안 값 검사·조회·계산 — 아무것도 쓰지도 출력하지도 않는다.
+
+    설정 파일은 `laid_down`(relpath → 이번 실행이 깔 원본)에 있으면 그 원본을, 없으면 대상의 파일을 읽는다. 모델
+    한도 조회는 대상 폴더에서 한다. 바뀔 파일이 있으면 어댑터 설정 기록 schema 도 여기서 확인한다."""
+    sources = {relpath: Path(laid_down.get(relpath, dest_root / relpath)) for relpath in HARNESS_CTX_FILES.values()}
+    present = frozenset(harness for harness, relpath in HARNESS_CTX_FILES.items() if sources[relpath].is_file())
+    validate_harness_ctx(values, present)
+
+    texts = {relpath: _harness_ctx_read_text(sources[relpath], relpath)
+             for harness, relpath in HARNESS_CTX_FILES.items() if harness in present}
+    documents = {relpath: _harness_ctx_parse(relpath, text) for relpath, text in texts.items()}
+    documents_by_harness: dict[str, list[dict]] = {}
+    models: dict[tuple[str, str], int] = {}
+    for harness, relpath in HARNESS_CTX_FILES.items():
+        if harness not in present:
+            continue
+        documents_by_harness[harness] = [documents[relpath]]
+        if HARNESS_CTX_RULES[relpath].model_limits:
+            global_documents = _opencode_global_documents(opencode_config_dir)
+            models = _opencode_target_models(documents[relpath], relpath, global_documents)
+            documents_by_harness[harness] = [document for _label, document in global_documents] + [documents[relpath]]
+    entries: dict[str, dict] = {}
+    notices: list[str] = []
+    for harness, relpath in HARNESS_CTX_FILES.items():
+        if harness not in present:
+            continue
+        rows = _read_harness_ctx_metadata(dest_root, harness, documents_by_harness[harness], models)
+        if HARNESS_CTX_RULES[relpath].model_limits and not _opencode_rows_left(models, rows, notices):
+            continue
+        entries[harness] = _harness_ctx_entry(dest_root, harness, values, rows, models)
+    targets = harness_ctx_targets(models, entries)
+    changed, lines = _harness_ctx_edits(texts, targets)
     for harness, entry in entries.items():
         entry["settings"] = {_harness_ctx_dotted(path): value
                              for path, value in targets[HARNESS_CTX_FILES[harness]].items()}
-    return changed, tuple(lines), entries
+    if changed:
+        _harness_ctx_baseline_writable(dest_root)
+    return HarnessCtxPlan((), dict(values), entries, targets, lines, tuple(notices))
 
 
 def _ctx_record_unchanged(path: Path, record: dict) -> bool:
@@ -397,7 +427,7 @@ def ctx_budget_status(dest_root, values) -> dict:
     return result
 
 
-def _opencode_rows_left(models: dict, rows: list) -> bool:
+def _opencode_rows_left(models: dict, rows: list, notices: list) -> bool:
     """opencode 조회 행이 남았는가 — 대상 중 행이 없는 모델을 표준오류 한 줄로 알리고, 남은 행이 없으면
     반영하지 않는다는 줄을 더한다. 행의 형식은 `_harness_ctx_entry` 가 본다.
 
@@ -411,13 +441,13 @@ def _opencode_rows_left(models: dict, rows: list) -> bool:
     excluded = [f"{provider}/{model}" for provider, model in models if (provider, model) not in listed]
     if excluded:
         cause = f"모델 목록 캐시 없음: {catalog_path}" if catalog_missing else "공급자 연결 설정 없음"
-        print(f"opencode 사용 한도 대상에서 뺀 모델({cause}): {', '.join(excluded)}", file=sys.stderr)
+        notices.append(f"opencode 사용 한도 대상에서 뺀 모델({cause}): {', '.join(excluded)}")
     if rows:
         return True
     catalog_hint = (f" 모델 목록 캐시가 없으니 opencode 를 한 번 실행해 모델 목록을 받은 뒤 {rerun}."
                     if catalog_missing else "")
-    print(f"opencode 사용 한도를 반영하지 않았습니다 (쓸 수 있는 모델 없음). 공급자 연결 설정을 넣은 뒤 "
-          f"{rerun}.{catalog_hint}", file=sys.stderr)
+    notices.append(f"opencode 사용 한도를 반영하지 않았습니다 (쓸 수 있는 모델 없음). 공급자 연결 설정을 넣은 뒤 "
+                   f"{rerun}.{catalog_hint}")
     return False
 
 
@@ -1033,20 +1063,18 @@ def _harness_ctx_write(dest_root: Path, changed: dict[str, tuple[str, str]]) -> 
         raise HarnessCtxError(violations, written=written)
 
 
-def _print_harness_ctx_apply(dest_root: Path) -> None:
-    """설치·add-harness·어댑터 config 수용 뒤의 반영 한 번 — 운영 환경의 opencode 전역 설정
-    디렉터리로 쓰고 줄을 낸다.
+def _print_harness_ctx_apply(dest_root: Path, planned: HarnessCtxPlan) -> None:
+    """설치·add-harness·어댑터 config 수용의 반영 쓰기 — 계획(`plan_harness_ctx`)대로 쓰고 줄을 낸다.
 
-    local.conf 에 값 공급을 잃는 옛 키가 남아 있으면 반영하지 않고 한 줄로 알린다 — 이 단계는
-    파일을 다 깐 뒤의 후속이고, 이름 이동은 pm-update(`migrate_renamed_conf_keys`)가 하며 그 실행이
-    이어서 반영한다(pm_update 의 반영 단계와 같은 처분)."""
-    remaining = conf_schema.blocking_legacy(
-        conf_store.load(Path(dest_root) / ".project_manager" / "local.conf").legacy)
-    if remaining:
-        print(f"  ⚠️ 하네스 설정 반영을 건너뜁니다 — local.conf 에 옛 키({', '.join(remaining)})가 "
+    계획이 옛 키 때문에 반영을 건너뛰는 것이면 그 사실을 한 줄로 알린다 — 이름 이동은 pm-update
+    (`migrate_renamed_conf_keys`)가 하고 그 실행이 이어서 반영한다(pm_update 의 반영 단계와 같은 처분)."""
+    if planned.legacy:
+        print(f"  ⚠️ 하네스 설정 반영을 건너뜁니다 — local.conf 에 옛 키({', '.join(planned.legacy)})가 "
               "남아 있습니다. pm-update 가 키 이름을 옮긴 뒤 반영합니다.")
         return
-    for line in apply_harness_ctx(
-            dest_root, write=True,
-            opencode_config_dir=opencode_global_config_dir(os.environ, Path.home())):
+    for notice in planned.notices:
+        print(notice, file=sys.stderr)
+    with fs.local_conf_write_lock(Path(dest_root) / ".project_manager" / "local.conf"):
+        _written, lines = apply_harness_ctx(Path(dest_root), planned)
+    for line in lines:
         print(f"  ✓ 하네스 설정 반영: {line}")

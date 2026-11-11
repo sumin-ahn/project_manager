@@ -1336,6 +1336,28 @@ def test_accept_proceeds_when_engine_files_are_current(pm_config, tmp_path):
     assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == _settings(git_anchor=True)
 
 
+def test_accept_changes_nothing_when_the_harness_ctx_check_fails(pm_config, tmp_path, capsys):
+    """하네스 설정 반영의 값 검사에 걸리는 local.conf 면 설정 파일 수용은 교체 전에 rc 1 로 멈춘다.
+
+    반영 계획은 교체할 template 을 원본으로 교체 앞에서 하므로, 걸리면 백업·교체·어댑터 설정 기록 어느 것도
+    생기거나 바뀌지 않는다."""
+    from _manager_home import tree_snapshot
+
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        template_settings=_settings(git_anchor=True))
+    (dest / ".project_manager" / "local.conf").write_text("ctx.compact_at_pct=100\n", encoding="utf-8")
+    before = tree_snapshot(dest)
+
+    rc = config_adapter.cmd_sync_adapter_config(pm_paths.home_at(pm_config.REPO),
+        _accept_args(source, accept=_SETTINGS_REL), dest_root=dest)
+
+    assert rc == 1
+    assert "`ctx.compact_at_pct=100` 는 0 보다 크고 100 보다 작아야 합니다" in capsys.readouterr().err
+    assert tree_snapshot(dest) == before
+
+
 def test_accept_of_absent_config_reports_channel_error_not_order_refusal(
         pm_config, tmp_path, capsys):
     """dest 에 없는 config 를 수용하려 하면 채널 오류가 그대로 나온다(순서 검사가 가로채지 않음)."""

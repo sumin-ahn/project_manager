@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
 import os
+import sys
 from pm_engine.app import harness_ctx
 from pm_engine.app import update_plan
 from pm_engine.app import update_render
@@ -93,19 +94,18 @@ def _installed_generation_source(dest_root: Path, conf: Mapping[str, str]) -> Pa
 def _plan_harness_ctx(dest_root: Path, values: dict, opencode_config_dir: Path):
     """사용 한도 묶음 계획 — 검사·모델 한도 조회·계산과 어댑터 설정 기록 쓰기 가능 확인. 거부는 `ConfApplyError`."""
     try:
-        changed, lines, entries = harness_ctx._harness_ctx_plan(dest_root, values, opencode_config_dir)
-        if changed:
-            harness_ctx._harness_ctx_baseline_writable(dest_root)
+        planned = harness_ctx._harness_ctx_plan(dest_root, values, opencode_config_dir, {})
     except harness_ctx.HarnessCtxError as exc:
         raise ConfApplyError(exc.violations) from exc
-    return values, changed, lines, entries
+    for notice in planned.notices:
+        print(notice, file=sys.stderr)
+    return planned
 
 
 def _commit_harness_ctx(dest_root: Path, planned) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """사용 한도 묶음 기록 — 하네스 설정 파일·압축 한도 기록. (반영 줄, 바꾼 파일)."""
-    values, changed, lines, entries = planned
     try:
-        written = harness_ctx._harness_ctx_commit(dest_root, values, changed, entries)
+        written, lines = harness_ctx.apply_harness_ctx(dest_root, planned)
     except harness_ctx.HarnessCtxError as exc:
         raise ConfApplyError(exc.violations, written=exc.written, write_stage=True) from exc
     return lines, written
