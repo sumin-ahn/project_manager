@@ -3670,6 +3670,27 @@ def test_powershell_and_cmd_readings_take_backslash_as_path_separator(topology, 
                 assert _judge_verdict(home, cwd, backslash_form, shell) == "deny", (os_name, shell, backslash_form)
 
 
+def test_powershell_backtick_escape_keeps_slot_denials(topology):
+    """PowerShell 문법에서 백틱은 escape 라 읽기를 불확실로 두지 않는다. 백틱으로 쪼갠 board 쓰기·교차 pathspec 과
+    백틱 escape 문자열이 붙은 board 쓰기도 백틱 없는 꼴과 같이 거부한다. bash 문법에서 백틱은 명령 치환이라 지금처럼
+    불확실(warn)이다."""
+    home, slot = topology
+    _seed_engine_copy(home, "v1")
+    _seed_engine_copy(slot, "v1")
+    board = r"py -3 .\.project_manager\tools\board.py"
+    denied = [
+        (slot, r"py -3 .\.project_manager\tools\b`oard.py claim T-0001"),
+        (slot, f'{board} claim T-0001; Write-Host "done`n"'),
+        (home, "git add te`sts/shared.txt"),
+    ]
+    for shell in ("powershell", "unknown"):
+        for cwd, command in denied:
+            assert _judge_verdict(home, cwd, command, shell) == "deny", (shell, command)
+    assert _judge_verdict(
+        home, slot, "python3 .project_manager/tools/board.py claim T-0001; echo `date`", "bash",
+    ) == "warn"
+
+
 def test_unknown_shell_takes_the_strictest_of_the_three_readings(topology):
     """셸을 모르면(``unknown``) bash·PowerShell·cmd 문법으로 모두 읽어 가장 엄한 판정을 받는다.
 

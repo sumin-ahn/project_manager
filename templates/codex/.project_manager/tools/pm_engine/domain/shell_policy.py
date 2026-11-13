@@ -718,7 +718,7 @@ def _protect_cmd_text(command: str) -> str:
 
 
 class _ShellSyntax(NamedTuple):
-    """셸 한 종류의 읽기 규칙. 가드가 쓰는 만큼만 담는다(따옴표·escape 글자·주석·명령 구분 기호·역슬래시)."""
+    """셸 한 종류의 읽기 규칙. 가드가 쓰는 만큼만 담는다(따옴표·escape 글자·주석·명령 구분 기호·역슬래시·펼침 글자)."""
     escape: str                     # 따옴표 밖에서 다음 글자를 글자 그대로 만드는 글자(줄 이음 포함)
     lexer_escape: str               # shlex 에 주는 escape 글자. cmd 는 준비 단계에서 지우므로 비운다
     quotes: frozenset[str]          # 따옴표 글자
@@ -726,6 +726,7 @@ class _ShellSyntax(NamedTuple):
     comment: str                    # 낱말 머리에서 주석을 여는 글자(없으면 빈 글)
     operators: dict[str, str]       # 명령 구분 기호 → 판정이 쓰는 구분 기호
     protect: Callable[[str], str]   # 낱말 나누기 전에 경로 구분자 ``\\`` 를 표시로 바꾸는 준비
+    expansion: str                  # 명령에 있으면 읽기를 불확실로 두는 펼침 글자(변수·명령 치환)
 
 
 _BASH_OPERATORS = {separator: separator for separator in _SHELL_COMMAND_SEPARATORS}
@@ -733,16 +734,16 @@ _BASH_OPERATORS = {separator: separator for separator in _SHELL_COMMAND_SEPARATO
 _SHELL_SYNTAX_RULES: dict[str, _ShellSyntax] = {
     SHELL_BASH: _ShellSyntax(
         "\\", "\\", frozenset("'\""), frozenset('"'), "#", _BASH_OPERATORS,
-        _protect_shell_windows_path_separators,
+        _protect_shell_windows_path_separators, "$`",
     ),
     SHELL_POWERSHELL: _ShellSyntax(
-        "`", "`", frozenset("'\""), frozenset('"'), "#", _BASH_OPERATORS, _mark_every_backslash,
+        "`", "`", frozenset("'\""), frozenset('"'), "#", _BASH_OPERATORS, _mark_every_backslash, "$",
     ),
     # cmd 는 ``&`` 가 순차 실행이고 ``#`` 주석과 작은따옴표가 없다. ``;`` 는 명령을 나누지 않지만 내장 명령
     # (``rmdir`` 등)이 ``;``·``,`` 를 인자 구분으로 읽어 두 대상을 모두 처리하므로, ``;`` 를 명령 구분으로 읽어
     # 앞 대상을 놓치지 않는다. ``,`` 는 보통 인자에 흔해 나누지 않는다.
     SHELL_CMD: _ShellSyntax(
-        "^", "", frozenset('"'), frozenset(), "", {**_BASH_OPERATORS, "&": ";"}, _protect_cmd_text,
+        "^", "", frozenset('"'), frozenset(), "", {**_BASH_OPERATORS, "&": ";"}, _protect_cmd_text, "$`",
     ),
 }
 

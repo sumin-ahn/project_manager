@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import builtins
 import importlib.util
+import io
 import os
 from pathlib import Path
 
@@ -712,3 +713,34 @@ def test_inherited_capture_encoding_reaches_only_the_direct_childs_non_console_s
         assert stdout.reconfigure_calls == [expected], (parent_pid, tty, os_name)
         assert stderr.reconfigure_calls == [expected], (parent_pid, tty, os_name)
         assert console_encoding.inherited_stdio_env({}) == forwarded, (parent_pid, tty, os_name)
+
+
+def test_malformed_inherited_capture_encoding_fails_at_startup(console_encoding, monkeypatch):
+    """바로 위 부모가 넘긴 값의 코덱 이름이 틀리면 하위 엔진 프로세스는 시작에서 LookupError 로 멈춘다.
+
+    값이 없거나 값을 넘긴 부모가 자기 부모가 아니면 지금처럼 UTF-8 로 쓴다. 코덱을 실제로 찾는 스트림으로 잰다."""
+
+    def configure(parent_pid):
+        if hasattr(builtins, PROCESS_STATE_KEY):
+            delattr(builtins, PROCESS_STATE_KEY)
+        stdout, stderr = io.TextIOWrapper(io.BytesIO()), io.TextIOWrapper(io.BytesIO())
+        _install_windows(monkeypatch, console_encoding,
+                         _FakeKernel32(output_cp=65001, input_cp=65001, entries=ENGINE_CHILD_CHAIN), stdout, stderr)
+        monkeypatch.setattr(console_encoding.os, "getpid", lambda: 60)
+        monkeypatch.setattr(console_encoding.os, "getppid", lambda: parent_pid)
+        console_encoding.configure_console_utf8()
+        return stdout, stderr
+
+    monkeypatch.delenv("PM_CONSOLE_CAPTURE_ENCODING", raising=False)
+    for stream in configure(50):
+        assert stream.encoding == "utf-8"
+    assert console_encoding.console_state()["applied"] is True
+
+    monkeypatch.setenv("PM_CONSOLE_CAPTURE_ENCODING", "45:bogus")
+    for stream in configure(50):
+        assert stream.encoding == "utf-8"
+    assert console_encoding.console_state()["applied"] is True
+
+    monkeypatch.setenv("PM_CONSOLE_CAPTURE_ENCODING", "50:bogus")
+    with pytest.raises(LookupError, match="bogus"):
+        configure(50)

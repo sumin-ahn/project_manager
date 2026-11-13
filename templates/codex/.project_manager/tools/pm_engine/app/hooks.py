@@ -808,7 +808,7 @@ def _shell_reading(
         for word in shell_words
     )
     globally_certain = (
-        "$" not in command and "`" not in command
+        not any(char in command for char in shell_policy._SHELL_SYNTAX_RULES[syntax].expansion)
         and not has_grouping and not unsupported_control
     )
     # 실행 위치만의 확실성은 괄호 속 데이터(``echo "(done)"``)로는 흐려지지 않는다. 파서가 좌표를

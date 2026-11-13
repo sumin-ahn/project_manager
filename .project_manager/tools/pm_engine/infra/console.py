@@ -368,7 +368,7 @@ def configure_console_utf8() -> None:
                     stream_state["selected_encoding"] = selected
                     if name == "stdout":
                         state["selected_encoding"] = selected
-            except (OSError, ValueError, LookupError):
+            except (OSError, ValueError):
                 pass
     state["applied"] = all(
         stream_state["applied"] for stream_state in state["streams"].values()
