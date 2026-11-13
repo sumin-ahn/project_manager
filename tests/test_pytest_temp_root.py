@@ -363,3 +363,61 @@ def test_harness_tmp_path_setup_fails_and_removes_folder_under_a_project(tmp_pat
     with pytest.raises(AssertionError, match="상위에 하네스가 읽는 프로젝트가 있다"):
         request.getfixturevalue("harness_tmp_path")
     assert not inside.exists()
+
+
+def _fixture_folder_inside_a_project(tmp_path, monkeypatch):
+    """픽스처가 만드는 폴더를 저장소 안으로 돌린다. 준비 단계가 실패해 정리가 그 호출 안에서 돈다."""
+    inside = tmp_path / "pm-harness-inside"
+
+    def make_folder_inside(**_keywords):
+        inside.mkdir()
+        return str(inside)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", make_folder_inside)
+    return inside
+
+
+def test_harness_tmp_path_removal_waits_for_a_file_an_exiting_process_still_holds(tmp_path, monkeypatch, request):
+    """방금 끝난 하네스 프로세스가 아직 쥔 파일이 있어도, 놓을 때까지 기다려 폴더를 지운다.
+
+    Windows 는 프로세스가 끝난 직후에도 그 프로세스가 임시 폴더에 풀어 둔 파일을 잠깐 쥐고 있어
+    지우기가 PermissionError 로 실패한다(실측: 시험 직후 실패, 프로세스가 사라진 뒤에는 지워짐).
+    """
+    import _git_fixture
+    import conftest
+
+    inside = _fixture_folder_inside_a_project(tmp_path, monkeypatch)
+    real_remove = _git_fixture.remove_git_tree
+    attempts = []
+
+    def held_for_two_attempts(root):
+        attempts.append(root)
+        if len(attempts) <= 2:
+            raise PermissionError(13, "방금 끝난 프로세스가 아직 쥔 파일", str(Path(root) / "tmp" / "held.node"))
+        real_remove(root)
+
+    monkeypatch.setattr(_git_fixture, "remove_git_tree", held_for_two_attempts)
+    monkeypatch.setattr(conftest.time, "sleep", lambda _seconds: None)
+    with pytest.raises(AssertionError, match="상위에 하네스가 읽는 프로젝트가 있다"):
+        request.getfixturevalue("harness_tmp_path")
+    assert len(attempts) == 3
+    assert not inside.exists()
+
+
+def test_harness_tmp_path_removal_fails_when_the_file_is_never_released(tmp_path, monkeypatch, request):
+    """한도 안에 파일을 놓지 않으면 지우기 실패를 그대로 올린다(지워졌다고 넘어가지 않는다)."""
+    import _git_fixture
+    import conftest
+
+    inside = _fixture_folder_inside_a_project(tmp_path, monkeypatch)
+    clock = iter(range(0, 10_000, 5))
+
+    def always_held(root):
+        raise PermissionError(13, "놓지 않는 파일", str(Path(root) / "tmp" / "held.node"))
+
+    monkeypatch.setattr(_git_fixture, "remove_git_tree", always_held)
+    monkeypatch.setattr(conftest.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(conftest.time, "monotonic", lambda: float(next(clock)))
+    with pytest.raises(PermissionError, match="놓지 않는 파일"):
+        request.getfixturevalue("harness_tmp_path")
+    assert inside.exists()

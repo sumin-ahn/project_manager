@@ -48,6 +48,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -314,6 +315,30 @@ def assert_no_project_above(folder: Path) -> None:
     assert not found, f"하네스 폴더 {folder} 의 상위에 하네스가 읽는 프로젝트가 있다: {', '.join(found)}"
 
 
+# 방금 끝난 하네스 프로세스가 임시 폴더에 풀어 둔 파일을 놓기까지 기다리는 한도(초).
+HARNESS_FILE_RELEASE_SECONDS = 15.0
+
+
+def remove_harness_folder(root: Path) -> None:
+    """하네스 폴더를 지운다. 방금 끝난 하네스 프로세스가 아직 쥔 파일은 놓을 때까지 기다린다.
+
+    Windows 는 프로세스가 끝난 직후에도 그 프로세스가 올려 쓰던 파일(하네스가 임시 폴더에 풀어 둔
+    네이티브 모듈 등)을 잠깐 쥐고 있어 지우기가 PermissionError 로 실패한다. 한도 안에 놓지 않으면
+    그 예외를 그대로 올린다.
+    """
+    from _git_fixture import remove_git_tree  # 이 파일은 홀로 복사되어 읽히기도 해 함수 안에서 가져온다
+
+    deadline = time.monotonic() + HARNESS_FILE_RELEASE_SECONDS
+    while True:
+        try:
+            remove_git_tree(root)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+
+
 @pytest.fixture
 def harness_tmp_path(monkeypatch):
     """하네스를 띄우는 시험의 작업 폴더. OS 임시 폴더 아래 새 폴더를 만들고 상위를 확인한 뒤 준다.
@@ -321,8 +346,6 @@ def harness_tmp_path(monkeypatch):
     시험 동안 프로세스 위치와 임시·설정 폴더 환경도 이 폴더 안으로 옮겨, cwd 를 주지 않는 하네스
     실행과 하네스의 자식 임시물이 저장소로 가지 않게 한다. 끝나면(실패해도) 폴더를 지운다.
     """
-    from _git_fixture import remove_git_tree  # 이 파일은 홀로 복사되어 읽히기도 해 함수 안에서 가져온다
-
     root = Path(tempfile.mkdtemp(prefix="pm-harness-", dir=HARNESS_TEMP_PARENT))
     previous = os.getcwd()
     try:
@@ -339,7 +362,7 @@ def harness_tmp_path(monkeypatch):
         yield root
     finally:
         os.chdir(previous)          # Windows 는 현재 폴더를 지우지 못한다
-        remove_git_tree(root)
+        remove_harness_folder(root)
 
 
 _LIVE_RENDER_OUTPUTS = (
