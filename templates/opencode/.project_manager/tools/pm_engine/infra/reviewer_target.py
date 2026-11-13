@@ -178,16 +178,14 @@ def check_reviewer_reasoning(target: ReviewerTarget, *, cwd: Path) -> None:
 
 
 def _split_reviewer_argv(reviewer_cmd: str) -> list[str]:
-    """`reviewer_cmd` 를 **실행 플랫폼 규칙**으로 argv 분해한다 (분해 규칙은 `pm_engine.infra.process` 소유).
+    """`reviewer_cmd` 를 argv 로 분해한다. 엔진이 `shlex.join` 으로 만든 bash 문법 글이다(분해 규칙은 `pm_engine.infra.process` 소유).
 
     `shlex.split` 를 직접 부르면 POSIX 규칙이라 Windows 실행 경로의 ``\\`` 가 escape 로 소비된다 —
     ``C:\\Users\\pm\\codex.exe`` 가 ``C:Userspmcodex.exe`` 로 뭉개져 확정 기동 실패로 끝나고, 그
     실행은 "리뷰어를 찾을 수 없음"으로 바뀌어 교차검증이 조용히 환불된다. 분해 규칙 사본을 여기
     만들지 않고 `pm_engine.infra.process.split_command_argv` 하나를 쓴다(같은 보호 규칙·같은 복원).
     """
-    return process.split_command_argv(
-        reviewer_cmd, windows=contract.running_on_windows(),
-    )
+    return process.split_command_argv(reviewer_cmd)
 
 
 def _normalized_reviewer_key(argv: list[str]) -> str:

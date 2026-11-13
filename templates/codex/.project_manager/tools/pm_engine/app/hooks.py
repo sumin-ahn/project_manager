@@ -648,8 +648,8 @@ def _shell_simple_command(
     command, redirected = shell_policy._shell_without_redirections(segment)
     if not command:
         return set(target_repos), cwd_certain, None, [], []
-    # shlex가 quote/POSIX escape 의미를 먼저 확정한 뒤, 보존된 Windows 절대경로 토큰만
-    # 판정용 표기로 바꾼다. 일반 ``t\\ests``는 shlex 결과 ``tests`` 그대로 남는다.
+    # shlex가 그 셸 문법의 quote/escape 의미를 먼저 확정한 뒤, 경로 구분자 표시가 든 토큰을
+    # 판정용 표기로 바꾼다. bash 읽기의 일반 ``t\\ests``는 shlex 결과 ``tests`` 그대로 남는다.
     command = [shell_policy._normalize_shell_path_notation(value) for value in command]
     git_command = shell_policy._shell_git_command(command)
     if git_command is not None:
@@ -722,9 +722,21 @@ def _shell_simple_command(
 
 
 def _git_invocations_from_shell(
-    cwd: str, command: str
+    cwd: str, command: str, shell: str,
 ) -> shell_policy._ShellParseResult:
-    """shell 제어연산과 ``cd``를 보수적으로 추상 실행해 git/엔진 호출 좌표를 반환한다.
+    """``shell`` 은 그 명령을 실행할 셸이다. 그 셸 문법으로 읽은 호출 좌표를 반환한다.
+
+    셸을 모르면(``unknown``) 하네스가 쓸 수 있는 세 문법으로 모두 읽어 호출을 합친다(가장 엄한 판정이 이긴다).
+    """
+    return shell_policy._merge_shell_readings([
+        _shell_reading(cwd, command, syntax) for syntax in shell_policy.SHELL_READINGS[shell]
+    ])
+
+
+def _shell_reading(
+    cwd: str, command: str, syntax: str,
+) -> shell_policy._ShellParseResult:
+    """shell 제어연산과 ``cd``를 보수적으로 추상 실행해 git/엔진 호출 좌표를 반환한다(``syntax`` 문법 하나).
 
     ``&&``/``||``는 직전 status, ``;``/개행은 무조건 순차, ``|``는 각 pipeline command가 원래
     cwd의 subshell에서 실행되는 의미를 구분한다. ``true``/``false``/실재 여부가 확정된 ``cd``만
@@ -735,7 +747,9 @@ def _git_invocations_from_shell(
     if not isinstance(command, str):
         return shell_policy._ShellParseResult((), (), (), False, False, "")
     executable, heredoc_uncertain = shell_policy._strip_shell_heredoc_bodies(command)
-    command = shell_policy._normalize_shell_line_continuations(executable)
+    command = shell_policy._normalize_shell_line_continuations(
+        executable, shell_policy._SHELL_SYNTAX_RULES[syntax],
+    )
     prefilter = shell_policy._git_prefilter_text(command)
     engine_candidate = (
         re.search(r"\.project_manager[\\/]+tools[\\/]+", prefilter) is not None
@@ -754,7 +768,7 @@ def _git_invocations_from_shell(
             if heredoc_uncertain else ""
         )
         return shell_policy._ShellParseResult((), (), (), False, heredoc_uncertain, reason)
-    parsed = shell_policy._shell_segments(command)
+    parsed = shell_policy._shell_segments(command, syntax)
     if parsed is None:
         # 구문을 못 푼 명령 속 git 파괴 호출·파일 삭제도 대상 미확정 호출로 올린다(판정불가를 통과로
         # 두지 않는다).
@@ -794,7 +808,7 @@ def _git_invocations_from_shell(
         for word in shell_words
     )
     globally_certain = (
-        "$" not in command and "`" not in command
+        not any(char in command for char in shell_policy._SHELL_SYNTAX_RULES[syntax].expansion)
         and not has_grouping and not unsupported_control
     )
     # 실행 위치만의 확실성은 괄호 속 데이터(``echo "(done)"``)로는 흐려지지 않는다. 파서가 좌표를

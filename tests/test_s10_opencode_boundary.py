@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -105,7 +107,7 @@ def test_hook_tool_json_contract_and_failures(tmp_path):
     root = _project(tmp_path)
     context = {"session": "native", "tokens": 156_000, "model": None, "main_thread": True, "boundary": None}
     request = {"version": 1, "cwd": str(root), "tool_name": "bash", "tool_input": {"command": "git status"},
-               "shell_command": "git status", "main_thread": True, "context": context,
+               "shell_command": "git status", "shell": "unknown", "main_thread": True, "context": context,
                "recall": {"session": "native", "on": "shell", "text": "git status", "main_thread": True}}
     ok = _hook_tool(root, request)
     assert ok.returncode == 0, ok.stderr.decode("utf-8", "replace")
@@ -146,7 +148,7 @@ def test_hook_tool_json_contract_and_failures(tmp_path):
 
     denied = json.loads(_hook_tool(root, {
         "version": 1, "cwd": str(root), "tool_name": "write",
-        "tool_input": {"filePath": "notes.md", "content": f"{GRANT_MARK} git push\n"}, "shell_command": None, "main_thread": True,
+        "tool_input": {"filePath": "notes.md", "content": f"{GRANT_MARK} git push\n"}, "shell_command": None, "shell": "unknown", "main_thread": True,
         "context": {**context, "session": "deny"},
         "recall": {"session": "deny", "on": "edit", "text": "notes.md", "main_thread": True}}).stdout)
     assert denied["git"]["verdict"] == "deny"
@@ -406,7 +408,7 @@ def test_unfiltered_inputs_reach_central_guard(tmp_path, monkeypatch):
     root = _project(tmp_path)
     calls = []
 
-    def judge_git_check_command(home, session, cwd, command, *, main_thread, grants=False):
+    def judge_git_check_command(home, session, cwd, command, *, shell, main_thread, grants=False):
         calls.append((home, cwd, command))
         return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
 
@@ -511,3 +513,68 @@ const listing = (prefix) => fs.readdirSync(markers).filter((name) => name.starts
     foreign_generation = result["foreign"].split(".", 2)[2]
     assert result["receipts"] == sorted([f"compact-snapshot-receipt.ses_snap.{own_generation}",
                                          f"compact-snapshot-receipt.ses_snap.{foreign_generation}"])
+
+
+def _os_named(name: str):
+    """어댑터 모듈에만 넣는 ``os`` 사본. 실행 OS 값(``os.name``)만 바꾸고 전역 ``os`` 는 건드리지 않는다
+    (전역을 바꾸면 ``pathlib`` 이 경로 종류를 잘못 골라 같은 프로세스의 경로 연산이 깨진다)."""
+    fake = types.ModuleType("os")
+    fake.__dict__.update(vars(os))
+    fake.name = name
+    return fake
+
+
+def test_adapters_pass_the_shell_that_runs_the_command(tmp_path, monkeypatch):
+    """어댑터는 그 명령을 실행할 셸을 셸 값으로 넘긴다.
+
+    Claude 는 도구 이름으로 정한다(``Bash`` 는 Windows 에서도 Git Bash, ``PowerShell`` 은 PowerShell). Codex·OpenCode 는
+    훅 입력에 셸이 없어 Windows 에서는 ``unknown``, 그 밖의 OS 에서는 ``bash`` 를 넘긴다(값은 판정을 부를 때의
+    실행 OS 로 정한다). Claude git 명령 검사 matcher 는 셸 값을 정하는 도구 이름을 모두 담는다."""
+    root = _project(tmp_path)
+    shells = []
+
+    def judge_git_check_command(home, session, cwd, command, *, shell, main_thread, grants=False):
+        shells.append(shell)
+        return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
+
+    monkeypatch.setattr(cli_hooks, "judge_git_check_command", judge_git_check_command)
+    claude = _load(TEMPLATES / "claude_code" / ".claude" / "pm_orch_claude.py", "s10_shell_claude")
+    codex = _load(TEMPLATES / "codex" / ".codex" / "pm_orch_codex.py", "s10_shell_codex")
+    for tool in ("Bash", "PowerShell"):
+        payload = {"hook_event_name": "PreToolUse", "tool_name": tool, "cwd": str(root), "session_id": "S",
+                   "tool_input": {"command": "git status"}}
+        assert claude.git_target_repo_hook_evaluate(payload, root) is None
+    assert shells == ["bash", "powershell"]
+
+    payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(root), "session_id": "S",
+               "tool_input": {"command": "git status"}}
+    codex_shells = {}
+    for os_name in ("nt", "posix"):
+        monkeypatch.setattr(codex, "os", _os_named(os_name))
+        shells.clear()
+        assert codex.git_target_repo_hook_evaluate(payload, root) == {}
+        codex_shells[os_name] = shells[:]
+    assert codex_shells == {"nt": ["unknown"], "posix": ["bash"]}
+
+    settings = json.loads((TEMPLATES / "claude_code" / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    git_check = [group for group in settings["hooks"]["PreToolUse"]
+                 if any("--git-anchor-hook" in hook["command"] for hook in group["hooks"])]
+    assert len(git_check) == 1
+    assert set(claude.GIT_TARGET_REPO_SHELL_TOOLS) <= set(git_check[0]["matcher"].split("|"))
+
+    # 실행기는 local.conf 로 고정한다(Windows 값으로 바꿔도 PATH 에서 py 런처를 찾지 않게).
+    (root / ".project_manager" / "local.conf").write_text(f"runtime.py={sys.executable}\n", encoding="utf-8")
+    script = r"""
+const [root, platform] = process.argv.slice(1);
+Object.defineProperty(process, "platform", {value: platform});
+const ctx = require("./ctx-guard-core.cjs");
+(async () => {
+  const hooks = await ctx.CtxGuardPlugin({client: sdk(), directory: root});
+  const start = spawned.length;
+  await hooks["tool.execute.before"]({tool: "bash", sessionID: "ses_shell"}, {args: {command: "git status"}});
+  const launches = spawned.slice(start);
+  console.log(JSON.stringify({count: launches.length, shell: requestOf(launches[0]).shell}));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    assert _node(root, script, "win32") == {"count": 1, "shell": "unknown"}
+    assert _node(root, script, "linux") == {"count": 1, "shell": "bash"}

@@ -12,6 +12,7 @@ import datetime
 from pm_engine.infra import fs
 from pm_engine.domain import identity_args
 import json
+import os
 from pm_engine.domain import log_entries
 from pm_engine.infra import log_store
 from pm_engine.infra import pm_paths
@@ -321,7 +322,7 @@ def main(home, argv: list[str] | None=None) -> int:
                 return 2
             timeout = ctx_recovery.SNAPSHOT_TIMEOUT_SECONDS if args.cmd == 'snapshot' else 5.0
             try:
-                result = subprocess.run([sys.executable, str(canonical), *raw_argv], cwd=str(pm_home), timeout=timeout, check=False)
+                result = subprocess.run([sys.executable, str(canonical), *raw_argv], cwd=str(pm_home), env=console.inherited_stdio_env(os.environ), timeout=timeout, check=False)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 print(f'[pm-{args.cmd}] PM 홈 엔진 실행 실패: {exc}', file=sys.stderr)
                 return 1

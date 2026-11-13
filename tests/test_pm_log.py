@@ -28,6 +28,7 @@ from pm_engine.domain import log_entries
 import contextlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -38,7 +39,7 @@ from types import SimpleNamespace
 import pytest
 
 from _textio import normalize_newlines, write_lf
-from pm_engine.infra import areas_store, log_store, pm_paths, raw_output
+from pm_engine.infra import areas_store, console, log_store, pm_paths, raw_output
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -2077,3 +2078,21 @@ def test_package_identity_uses_home_data_without_target_engine(tmp_path):
     with pytest.raises(json.JSONDecodeError):
         session_identity.resolve_session_task(beta, "same-harness")
     assert session_identity.resolve_session_task(alpha, "same-harness") == ("alpha", None)
+
+
+def test_slot_snapshot_passes_the_capture_encoding_to_the_pm_home_engine(tmp_path, monkeypatch):
+    """슬롯 엔진이 PM 홈 엔진으로 넘기는 snapshot 하위 프로세스는 표준 출력·표준 오류와 함께 부모가 고른 인코딩을 넘겨받는다."""
+    pm_home = tmp_path / 'pm-home'
+    worktree = pm_home / 'work' / 'product_1'
+    worktree.mkdir(parents=True)
+    _declare_slot_git_pointer(pm_home, worktree)
+    canonical = pm_home / '.project_manager' / 'tools' / 'pm_log.py'
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text('# canonical test probe\n', encoding='utf-8')
+    calls = []
+    monkeypatch.setattr(pm_engine.cli.log.subprocess, 'run', lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0))
+    monkeypatch.setitem(console._process_state(), "capture_encoding", "cp949")
+    assert pm_engine.cli.log.main(pm_paths.home_at(worktree), ['snapshot']) == 0
+    argv, kwargs = calls[0]
+    assert Path(argv[1]) == canonical
+    assert kwargs['env']['PM_CONSOLE_CAPTURE_ENCODING'] == f"{os.getpid()}:cp949"

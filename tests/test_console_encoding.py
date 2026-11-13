@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import builtins
 import importlib.util
+import io
 import os
 from pathlib import Path
 
@@ -649,3 +650,97 @@ def test_console_hint_can_be_suppressed(console_encoding, monkeypatch):
 
     assert stderr.reconfigure_calls == [{"encoding": "cp949", "errors": "pm_translit"}]
     assert stderr.writes == []
+
+
+# 부모 엔진(python 50)이 띄운 하위 엔진 프로세스(python 60)의 체인.
+ENGINE_CHILD_CHAIN = [
+    *REAL_PY_LAUNCHER_CHAIN,
+    (60, 50, r"C:\Users\u\AppData\Local\Programs\Python\Python312\python.exe"),
+]
+
+
+def _configure_engine_child(monkeypatch, module, *, tty, parent_pid, os_name="nt"):
+    """부모 엔진이 콘솔 코드페이지를 이미 65001 로 바꾼 뒤 뜬 하위 엔진 프로세스(pid 60)를 설정한다."""
+    if hasattr(builtins, PROCESS_STATE_KEY):
+        delattr(builtins, PROCESS_STATE_KEY)
+    stdout, stderr = _Stream(tty=tty), _Stream(tty=tty)
+    _install_windows(monkeypatch, module,
+                     _FakeKernel32(output_cp=65001, input_cp=65001, entries=ENGINE_CHILD_CHAIN), stdout, stderr)
+    monkeypatch.setattr(module, "_probe_os_name", lambda: os_name)
+    monkeypatch.setattr(module.os, "getpid", lambda: 60)
+    monkeypatch.setattr(module.os, "getppid", lambda: parent_pid)
+    module.configure_console_utf8()
+    return stdout, stderr
+
+
+def test_engine_child_with_inherited_stdio_writes_with_the_parent_capture_encoding(console_encoding, monkeypatch):
+    """PowerShell 이 받아 가는 출력에서 표준 출력·표준 오류를 물려받은 하위 엔진 프로세스가 부모 엔진이 고른 코덱으로 쓴다."""
+    _install_windows(monkeypatch, console_encoding, _FakeKernel32(entries=REAL_PY_LAUNCHER_CHAIN),
+                     _Stream(tty=False), _Stream(tty=False))
+    console_encoding.configure_console_utf8()
+    env = console_encoding.inherited_stdio_env({"KEEP": "1"})
+    assert env == {"KEEP": "1", "PM_CONSOLE_CAPTURE_ENCODING": "50:cp949"}
+
+    monkeypatch.setenv("PM_CONSOLE_CAPTURE_ENCODING", env["PM_CONSOLE_CAPTURE_ENCODING"])
+    stdout, stderr = _configure_engine_child(monkeypatch, console_encoding, tty=False, parent_pid=50)
+    expected = {"encoding": "cp949", "errors": "pm_translit"}
+    assert stdout.reconfigure_calls == [expected]
+    assert stderr.reconfigure_calls == [expected]
+    assert stderr.writes == [], "같은 출력에 부모가 이미 안내를 냈다"
+    assert console_encoding.console_state()["parent_name"] == "python.exe"
+
+
+def test_inherited_capture_encoding_reaches_only_the_direct_childs_non_console_streams(console_encoding, monkeypatch):
+    """물려받은 코덱은 바로 위 부모가 넘긴 값일 때 그 하위 프로세스의 콘솔 아닌 스트림에만 쓴다.
+
+    받아 가는 출력 인코딩을 고르지 않은 부모(콘솔 코드페이지 UTF-8·Linux)는 값을 넘기지 않는다."""
+    _install_windows(monkeypatch, console_encoding,
+                     _FakeKernel32(output_cp=65001, input_cp=65001, entries=REAL_PY_LAUNCHER_CHAIN),
+                     _Stream(tty=False), _Stream(tty=False))
+    console_encoding.configure_console_utf8()
+    assert console_encoding.inherited_stdio_env({"KEEP": "1"}) == {"KEEP": "1"}
+
+    monkeypatch.setenv("PM_CONSOLE_CAPTURE_ENCODING", "50:cp949")
+    cases = (
+        (50, True, "nt", {"PM_CONSOLE_CAPTURE_ENCODING": "60:cp949"}),  # 콘솔에 바로 찍는 하위 프로세스
+        (45, False, "nt", {}),  # 손자 프로세스: 값을 넘긴 부모가 자기 부모가 아니다
+        (50, False, "posix", {}),  # Linux·macOS: 값을 보지 않는다
+    )
+    for parent_pid, tty, os_name, forwarded in cases:
+        stdout, stderr = _configure_engine_child(
+            monkeypatch, console_encoding, tty=tty, parent_pid=parent_pid, os_name=os_name)
+        expected = {"encoding": "utf-8", "errors": "replace"}
+        assert stdout.reconfigure_calls == [expected], (parent_pid, tty, os_name)
+        assert stderr.reconfigure_calls == [expected], (parent_pid, tty, os_name)
+        assert console_encoding.inherited_stdio_env({}) == forwarded, (parent_pid, tty, os_name)
+
+
+def test_malformed_inherited_capture_encoding_fails_at_startup(console_encoding, monkeypatch):
+    """바로 위 부모가 넘긴 값의 코덱 이름이 틀리면 하위 엔진 프로세스는 시작에서 LookupError 로 멈춘다.
+
+    값이 없거나 값을 넘긴 부모가 자기 부모가 아니면 지금처럼 UTF-8 로 쓴다. 코덱을 실제로 찾는 스트림으로 잰다."""
+
+    def configure(parent_pid):
+        if hasattr(builtins, PROCESS_STATE_KEY):
+            delattr(builtins, PROCESS_STATE_KEY)
+        stdout, stderr = io.TextIOWrapper(io.BytesIO()), io.TextIOWrapper(io.BytesIO())
+        _install_windows(monkeypatch, console_encoding,
+                         _FakeKernel32(output_cp=65001, input_cp=65001, entries=ENGINE_CHILD_CHAIN), stdout, stderr)
+        monkeypatch.setattr(console_encoding.os, "getpid", lambda: 60)
+        monkeypatch.setattr(console_encoding.os, "getppid", lambda: parent_pid)
+        console_encoding.configure_console_utf8()
+        return stdout, stderr
+
+    monkeypatch.delenv("PM_CONSOLE_CAPTURE_ENCODING", raising=False)
+    for stream in configure(50):
+        assert stream.encoding == "utf-8"
+    assert console_encoding.console_state()["applied"] is True
+
+    monkeypatch.setenv("PM_CONSOLE_CAPTURE_ENCODING", "45:bogus")
+    for stream in configure(50):
+        assert stream.encoding == "utf-8"
+    assert console_encoding.console_state()["applied"] is True
+
+    monkeypatch.setenv("PM_CONSOLE_CAPTURE_ENCODING", "50:bogus")
+    with pytest.raises(LookupError, match="bogus"):
+        configure(50)

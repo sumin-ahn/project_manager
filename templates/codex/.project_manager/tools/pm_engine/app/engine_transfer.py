@@ -1,19 +1,18 @@
-"""자기 갱신의 엔진 코드 전달과 완료 프로세스 인계·출력 중계 (층: app)."""
+"""자기 갱신의 엔진 코드 전달과 완료 프로세스 인계 (층: app)."""
 from __future__ import annotations
 
 from pathlib import Path
 import contextlib
-import io
 import json
 import os
 import shutil
 import subprocess
 import sys
-import threading
 from pm_engine.app import update_adapters
 from pm_engine.app import update_plan
 from pm_engine.app import upstream_changes
 from pm_engine.domain import manifest_rules
+from pm_engine.infra import console
 from pm_engine.infra import engine_transfer as package_transfer
 from pm_engine.infra import retired_paths
 
@@ -165,36 +164,18 @@ def _print_engine_changes(changes, package_plan) -> None:
 
 def _launch_completion(dest_root: Path, source_root: Path, transferred: int,
                        argv: list[str]) -> int:
-    """받은 갱신기를 같은 인자로 새 프로세스에서 띄우고 그 출력과 종료 코드를 그대로 돌려준다.
+    """받은 갱신기를 같은 인자로 새 프로세스에서 띄우고 그 종료 코드를 그대로 돌려준다.
 
-    출력은 이 프로세스가 받아 같은 스트림에 다시 쓴다 — 완료 프로세스의 부모는 python.exe 라
-    PowerShell 캡처를 알아보지 못하므로, 직접 쓰게 하면 그 파이프에서 한글이 깨진다. 이 프로세스의
-    콘솔 판정(`console`)이 그대로 적용되게 줄 단위로 중계한다. `PYTHONIOENCODING=utf-8` 은
-    완료 프로세스가 콘솔 설정에 닿기 전의 출력도 UTF-8 로, `PYTHONUNBUFFERED=1` 은 두 스트림의 줄이
-    도착 순서대로 오게 한다. 기동 실패(인터프리터·파일 부재)는 그대로 올라간다. 테스트 교체 지점이다
-    (`tests/_manager_home.complete_in_process`)."""
+    완료 프로세스는 이 프로세스의 표준 출력·표준 오류를 물려받고, 이 프로세스가 고른 받아 가는 출력
+    인코딩을 이어받는다(`console.inherited_stdio_env`). `PYTHONUNBUFFERED=1` 은 두 스트림을 합쳐 받는 출력에서
+    완료 프로세스의 줄이 쓴 순서대로 오게 한다. 기동 실패(인터프리터·파일 부재)는 그대로 올라간다.
+    테스트 교체 지점이다(`tests/_manager_home.complete_in_process`)."""
     sys.stdout.flush()
     sys.stderr.flush()
-    env = {
-        **os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
+    env = console.inherited_stdio_env({
+        **os.environ, "PYTHONUNBUFFERED": "1",
         COMPLETION_ENV: json.dumps({"dest": str(dest_root), "source": str(source_root),
                                     "transferred": transferred}),
-    }
+    })
     updater = Path(dest_root) / ".project_manager" / "tools" / "pm_update.py"
-    proc = subprocess.Popen([sys.executable, str(updater), *argv],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-    readers = [threading.Thread(target=_relay_lines, args=(proc.stdout, sys.stdout)),
-               threading.Thread(target=_relay_lines, args=(proc.stderr, sys.stderr))]
-    for reader in readers:
-        reader.start()
-    rc = proc.wait()
-    for reader in readers:
-        reader.join()
-    return rc
-
-
-def _relay_lines(pipe, stream) -> None:
-    """파이프의 UTF-8 줄을 읽어 이 프로세스의 스트림에 그대로 쓴다(줄마다 flush)."""
-    for line in io.TextIOWrapper(pipe, encoding="utf-8", errors="replace"):
-        stream.write(line)
-        stream.flush()
+    return subprocess.run([sys.executable, str(updater), *argv], env=env, check=False).returncode
