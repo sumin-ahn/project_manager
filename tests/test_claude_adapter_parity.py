@@ -80,8 +80,8 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
     assert root.get("autoCompactEnabled") is not False, "root 는 auto-compact 유지여야 함"
     # root 는 Bash 만, template 은 파일 쓰기·편집·위임 도구 입력(허용 위조)까지 git 명령 검사 훅에 건다.
     for config, label, matcher in (
-        (root, "root", "Bash"),
-        (tmpl, "template", "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"),
+        (root, "root", "Bash|PowerShell"),
+        (tmpl, "template", "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"),
     ):
         git_hooks = [entry for entry in config["hooks"]["PreToolUse"]
                      if entry.get("matcher") == matcher

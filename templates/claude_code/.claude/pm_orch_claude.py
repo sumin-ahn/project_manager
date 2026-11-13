@@ -42,8 +42,9 @@ TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn �
 
 # 사용자 1회 허용 표시 — 사용자 프롬프트 훅이 허용 기록 진입 여부를 고르는 데만 쓴다.
 GIT_GRANT_MARKER = r"git[ \t]+허용[ \t]*:"
-# git 명령 검사 훅이 명령을 보는 셸 도구. 그 밖의 도구(파일 쓰기·편집·위임)는 엔진이 입력을 본다.
-GIT_TARGET_REPO_SHELL_TOOL = "Bash"
+# git 명령 검사 훅이 명령을 보는 셸 도구와 그 도구가 명령을 실행하는 셸(엔진 셸 값). Bash 도구는 Windows
+# 에서도 Git Bash 로 실행한다. 그 밖의 도구(파일 쓰기·편집·위임)는 엔진이 입력을 본다.
+GIT_TARGET_REPO_SHELL_TOOLS = {"Bash": "bash", "PowerShell": "powershell"}
 
 
 def _hook_session_id(stdin: dict) -> str:
@@ -111,9 +112,9 @@ def git_grant_prompt_evaluate(stdin: dict, root: Path) -> dict | None:
 def git_target_repo_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     """Claude 훅 입력을 엔진 공개 판정(`pm_engine.cli.hooks`)에 연결한다.
 
-    PreToolUse(Bash) 는 ``judge_git_check_command`` 로(세션이 있으면 1회 허용 소비 포함), 그 밖의
-    PreToolUse 도구(settings matcher 가 연 쓰기·편집·위임 도구)는 ``judge_tool_input`` 으로(허용 위조·
-    슬롯 쓰기 주인), UserPromptSubmit 은 허용 기록으로 보낸다. 세션 ID 는 훅 입력의 ``session_id`` 다.
+    PreToolUse(Bash·PowerShell) 는 그 도구의 셸 값으로 ``judge_git_check_command`` 에(세션이 있으면
+    1회 허용 소비 포함), 그 밖의 PreToolUse 도구(settings matcher 가 연 쓰기·편집·위임 도구)는
+    ``judge_tool_input`` 으로(허용 위조·슬롯 쓰기 주인), UserPromptSubmit 은 허용 기록으로 보낸다. 세션 ID 는 훅 입력의 ``session_id`` 다.
     서브에이전트 훅 입력(``agent_id`` 있음)은 ``main_thread=False`` 로 판정받는다."""
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     if event == "UserPromptSubmit":
@@ -126,7 +127,8 @@ def git_target_repo_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     target_repo = cwd if isinstance(cwd, str) and cwd else str(root)
     session = _hook_session_id(stdin)
     main_thread = not ctx_guard.is_subagent_hook(stdin)
-    if tool != GIT_TARGET_REPO_SHELL_TOOL:
+    shell = GIT_TARGET_REPO_SHELL_TOOLS.get(tool)
+    if shell is None:
         from pm_engine.cli import hooks
 
         return _pre_tool_use_output(
@@ -142,7 +144,7 @@ def git_target_repo_hook_evaluate(stdin: dict, root: Path) -> dict | None:
 
     return _pre_tool_use_output(
         hooks.judge_git_check_command(
-            hooks.adapter_home(root), session, target_repo, command, main_thread=main_thread,
+            hooks.adapter_home(root), session, target_repo, command, shell=shell, main_thread=main_thread,
             grants=bool(session),
         )
     )

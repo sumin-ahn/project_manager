@@ -10,7 +10,7 @@ from pm_engine.app import delegate_execute
 
 from pm_engine.app import engine_guard
 from pm_engine.app import session_identity
-from pm_engine.infra import pm_paths, process
+from pm_engine.infra import pm_paths
 
 
 import importlib.util
@@ -263,12 +263,12 @@ def test_delegated_harness_writes_as_the_open_task_it_was_given(home, monkeypatc
 def test_shell_command_naming_a_foreign_slot_warns_once_per_slot(home):
     slot_4 = home / "work" / "app_4"
     got = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-alpha", str(home), f"sed -i s/a/b/ {slot_4}/a.txt {slot_4}/b.txt", main_thread=True,
+        cli_hooks.adapter_home(home), "S-alpha", str(home), f"sed -i s/a/b/ {slot_4}/a.txt {slot_4}/b.txt", shell="bash", main_thread=True,
     )
     assert got["verdict"] == "warn"
     assert got["reason"].count("work/app_4") == 1
     own = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-alpha", str(home / "work" / "app_1"), f"sed -i s/a/b/ {home}/work/app_1/a.txt", main_thread=True,
+        cli_hooks.adapter_home(home), "S-alpha", str(home / "work" / "app_1"), f"sed -i s/a/b/ {home}/work/app_1/a.txt", shell="bash", main_thread=True,
     )
     assert own["verdict"] == "ok"
 
@@ -282,20 +282,20 @@ def test_corrupt_record_is_raised_not_read_as_empty(home):
 def test_bootstrap_shell_call_records_the_session_for_its_engine_copy(home):
     claims = home / ".project_manager" / ".local" / "task-session-claims"
     got = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task gamma", main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task gamma", shell="bash", main_thread=True,
     )
     assert got["verdict"] != "deny"
     assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-new"}
     cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), f"python3 {home}/.project_manager/tools/pm_bootstrap.py --task=zeta", main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(home), f"python3 {home}/.project_manager/tools/pm_bootstrap.py --task=zeta", shell="bash", main_thread=True,
     )
     assert (claims / "zeta.json").is_file()
     # 인자를 정적으로 못 정하거나 세션 ID 가 없으면 남기지 않는다 — 부트스트랩이 기록 없음으로 멈춘다.
     cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), 'python3 .project_manager/tools/pm_bootstrap.py --task "$NAME"', main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(home), 'python3 .project_manager/tools/pm_bootstrap.py --task "$NAME"', shell="bash", main_thread=True,
     )
     cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon", main_thread=True,
+        cli_hooks.adapter_home(home), "", str(home), "python3 .project_manager/tools/pm_bootstrap.py --task epsilon", shell="bash", main_thread=True,
     )
     assert sorted(path.name for path in claims.iterdir()) == ["gamma.json", "zeta.json"]
 
@@ -307,7 +307,7 @@ def test_bootstrap_call_followed_by_a_shell_expansion_leaves_no_session_claim(ho
     """부트스트랩과 상관없는 자리의 `$` 도 호출을 확정하지 못하게 해, 판정은 통과해도 기록이 남지 않는다."""
     claims = home / ".project_manager" / ".local" / "task-session-claims"
     got = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), _BOOTSTRAP_WITH_TRAILING_EXPANSION, main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(home), _BOOTSTRAP_WITH_TRAILING_EXPANSION, shell="bash", main_thread=True,
     )
     assert got["verdict"] != "deny"
     assert not (claims / "gamma.json").exists()
@@ -317,7 +317,7 @@ def test_missing_session_claim_message_names_shell_expansion_before_hook_install
     """기록이 없어 멈출 때 안내는 셸 확장과 다시 실행할 꼴을 훅 설치 확인보다 먼저 말하고 기록 경로로 끝난다."""
     claims = home / ".project_manager" / ".local" / "task-session-claims"
     got = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), _BOOTSTRAP_WITH_TRAILING_EXPANSION, main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(home), _BOOTSTRAP_WITH_TRAILING_EXPANSION, shell="bash", main_thread=True,
     )
     assert got["verdict"] != "deny"
     with pytest.raises(task_store.NoTaskSessionClaim) as caught:
@@ -347,7 +347,7 @@ def test_bootstrap_claim_for_another_home_is_written_by_that_home_engine(home, t
     claims = other / ".project_manager" / ".local" / "task-session-claims"
 
     got = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(other), "python3 .project_manager/tools/pm_bootstrap.py --task gamma", main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(other), "python3 .project_manager/tools/pm_bootstrap.py --task gamma", shell="bash", main_thread=True,
     )
 
     assert got["verdict"] != "deny"
@@ -359,7 +359,7 @@ def test_denied_bootstrap_command_records_nothing(home):
     marker = "git " + "허용" + ":"
     got = cli_hooks.judge_git_check_command(
         cli_hooks.adapter_home(home), "S-new", str(home),
-        f"python3 .project_manager/tools/pm_bootstrap.py --task gamma; echo '{marker} x'", main_thread=True,
+        f"python3 .project_manager/tools/pm_bootstrap.py --task gamma; echo '{marker} x'", shell="bash", main_thread=True,
     )
     assert got["verdict"] == "deny"
     assert not (home / ".project_manager" / ".local" / "task-session-claims").exists()
@@ -450,7 +450,7 @@ def test_delegated_slot_denial_hands_back_to_pm(home):
         assert stranger["reason"].splitlines()[1] == _action(no_task)
         assert write("S-alpha", slot_1 / "a.py")["verdict"] != "deny", main_thread
         shell = cli_hooks.judge_git_check_command(
-            adapter, "S-alpha", str(home), f"sed -i s/a/b/ {slot_2}/a.txt", main_thread=main_thread,
+            adapter, "S-alpha", str(home), f"sed -i s/a/b/ {slot_2}/a.txt", shell="bash", main_thread=main_thread,
         )
         assert shell["verdict"] == "warn", main_thread
         assert _action(not_owned) in shell["reason"], main_thread
@@ -461,13 +461,13 @@ def test_delegated_bootstrap_is_denied_without_a_session_claim(home):
     adapter = cli_hooks.adapter_home(home)
     claims = home / ".project_manager" / ".local" / "task-session-claims"
     command = "python3 .project_manager/tools/pm_bootstrap.py --task gamma"
-    denied = cli_hooks.judge_git_check_command(adapter, "S-alpha", str(home), command, main_thread=False)
+    denied = cli_hooks.judge_git_check_command(adapter, "S-alpha", str(home), command, shell="bash", main_thread=False)
     assert denied["verdict"] == "deny"
     lines = denied["reason"].splitlines()
     assert lines[:2] == [git_policy.GIT_GUARD_STOP_LINE, _action(git_policy._GIT_GUARD_CASE_DELEGATED_TASK)]
     assert "위임받은 에이전트의 task 열기(pm_bootstrap.py --task gamma)" in denied["reason"]
     assert not (claims / "gamma.json").exists()
-    allowed = cli_hooks.judge_git_check_command(adapter, "S-alpha", str(home), command, main_thread=True)
+    allowed = cli_hooks.judge_git_check_command(adapter, "S-alpha", str(home), command, shell="bash", main_thread=True)
     assert allowed["verdict"] != "deny"
     assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-alpha"}
 
@@ -552,7 +552,7 @@ def test_hook_tool_main_thread_selects_the_slot_guidance(home):
     request = {
         "version": 1, "cwd": str(home), "tool_name": "write",
         "tool_input": {"filePath": str(home / "work" / "app_2" / "a.py"), "content": "x"},
-        "shell_command": None, "context": None, "recall": None,
+        "shell_command": None, "shell": "unknown", "context": None, "recall": None,
     }
 
     def run(payload: dict) -> subprocess.CompletedProcess:
@@ -761,12 +761,12 @@ def test_bootstrap_call_behind_a_launcher_option_or_wrapper_records_the_session(
     for task, form in _LAUNCHED_BOOTSTRAP_FORMS.items():
         command = form.format(script=script, task=task)
         got = cli_hooks.judge_git_check_command(
-            cli_hooks.adapter_home(home), "S-new", str(home), command, main_thread=True,
+            cli_hooks.adapter_home(home), "S-new", str(home), command, shell="bash", main_thread=True,
         )
         assert got["verdict"] != "deny", command
         assert json.loads((claims / f"{task}.json").read_text(encoding="utf-8")) == {"task": task, "session": "S-new"}, command
     denied = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), f"py -3 {script} --task omega", main_thread=False,
+        cli_hooks.adapter_home(home), "S-new", str(home), f"py -3 {script} --task omega", shell="bash", main_thread=False,
     )
     assert denied["verdict"] == "deny"
     assert "위임받은 에이전트의 task 열기(pm_bootstrap.py --task omega)" in denied["reason"]
@@ -780,13 +780,13 @@ def test_bootstrap_script_path_with_tilde_or_variable_keeps_the_hook_running(hom
     monkeypatch.setenv("USERPROFILE", str(home.parent))
     tilde = f"python3 ~/{home.name}/.project_manager/tools/pm_bootstrap.py --task gamma"
     got = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), tilde, main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(home), tilde, shell="bash", main_thread=True,
     )
     assert got["verdict"] != "deny"
     assert json.loads((claims / "gamma.json").read_text(encoding="utf-8")) == {"task": "gamma", "session": "S-new"}
     variable = "python3 $PWD/.project_manager/tools/pm_bootstrap.py --task zeta"
     got = cli_hooks.judge_git_check_command(
-        cli_hooks.adapter_home(home), "S-new", str(home), variable, main_thread=True,
+        cli_hooks.adapter_home(home), "S-new", str(home), variable, shell="bash", main_thread=True,
     )
     assert got["verdict"] == "warn"
     assert "미확장 토큰=$PWD" in got["reason"]
@@ -801,29 +801,29 @@ def test_bootstrap_call_inside_a_quoted_command_string_warns_without_a_session_c
         f"sh -c 'py -3 {home}/.project_manager/tools/pm_bootstrap.py --task gamma'",
     ):
         got = cli_hooks.judge_git_check_command(
-            cli_hooks.adapter_home(home), "S-new", str(home), command, main_thread=True,
+            cli_hooks.adapter_home(home), "S-new", str(home), command, shell="bash", main_thread=True,
         )
         assert got["verdict"] == "warn", command
         assert not (claims / "gamma.json").exists(), command
 
 
-def test_bootstrap_path_written_with_windows_backslashes_records_the_session(home, monkeypatch):
-    """Windows 에서 읽는 명령은 따옴표 없는 역슬래시 부트스트랩 경로도 세션 기록을 남긴다. POSIX 읽기는 지금처럼 남기지 않는다."""
+def test_backslash_bootstrap_path_records_the_session_in_powershell_and_cmd_readings(home):
+    """PowerShell·cmd 문법에서 ``\\`` 는 글자 그대로라 따옴표 없는 역슬래시 부트스트랩 경로도 세션 기록을 남긴다.
+
+    셸을 모를 때(``unknown``)도 두 문법 읽기가 기록을 남긴다. bash 문법(Windows 의 Git Bash 포함)에서는 ``\\`` 가
+    escape 라 엔진 스크립트 경로가 아니어서 지금처럼 기록을 남기지 않는다."""
     claims = home / ".project_manager" / ".local" / "task-session-claims"
-    commands = {
-        "dotted": r"py -3 .\.project_manager\tools\pm_bootstrap.py --task dotted",
-        "plain": r"py -3 .project_manager\tools\pm_bootstrap.py --task plain",
-    }
-    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
-    for task, command in commands.items():
-        cli_hooks.judge_git_check_command(
-            cli_hooks.adapter_home(home), "S-new", str(home), command, main_thread=True,
-        )
-        assert not (claims / f"{task}.json").exists(), command
-    monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
-    for task, command in commands.items():
-        got = cli_hooks.judge_git_check_command(
-            cli_hooks.adapter_home(home), "S-new", str(home), command, main_thread=True,
-        )
-        assert got["verdict"] != "deny", command
-        assert json.loads((claims / f"{task}.json").read_text(encoding="utf-8")) == {"task": task, "session": "S-new"}, command
+    for shell in ("powershell", "cmd", "unknown", "bash"):
+        for form, script in (("dotted", r".\.project_manager\tools\pm_bootstrap.py"),
+                             ("plain", r".project_manager\tools\pm_bootstrap.py")):
+            task = f"{form}-{shell}"
+            got = cli_hooks.judge_git_check_command(
+                cli_hooks.adapter_home(home), "S-new", str(home), f"py -3 {script} --task {task}",
+                shell=shell, main_thread=True,
+            )
+            assert got["verdict"] != "deny", (shell, script)
+            claim = claims / f"{task}.json"
+            if shell == "bash":
+                assert not claim.exists(), (shell, script)
+            else:
+                assert json.loads(claim.read_text(encoding="utf-8")) == {"task": task, "session": "S-new"}, (shell, script)

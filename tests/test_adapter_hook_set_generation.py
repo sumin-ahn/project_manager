@@ -427,7 +427,7 @@ def test_codex_entrypoint_migration_left_claude_wiring_untouched():
     groups = document["hooks"]["PreToolUse"]
 
     assert [group["matcher"] for group in groups] == [
-        "*", "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task", "Agent"]
+        "*", "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Agent|Task", "Agent"]
     commands = [handler["command"] for group in groups
                 for handler in group["hooks"]]
     assert any(command.endswith(_GIT_ANCHOR_FLAG) for command in commands)
@@ -2210,7 +2210,7 @@ def test_feature_column_reuses_the_entrypoint_presence_judgment():
 # `--git-anchor-hook` 로 부른다)을 통째로 지워도 집합이 안 변해 표가 `same` 으로 접혔다 —
 # 채택자가 git-anchor 가드를 잃은 상태가 관리자 화면에서 "차이 없음" 이었다.
 
-_GIT_ANCHOR_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"
+_GIT_ANCHOR_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Agent|Task"
 _SHIPPED_CLAUDE_UNITS = {
     "PreToolUse": ("*:.claude/ctx_stop_hook.sh",
                    "Agent:.claude/delegate_channel_guard_hook.sh",

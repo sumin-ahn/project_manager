@@ -1136,8 +1136,13 @@ def git_target_repo_hook_evaluate(payload: dict, root: Path) -> dict:
         # 셸 명령 원문은 거르지 않고 전부 엔진 판정에 넘긴다 — 판정 대상인지는 엔진이 정한다.
         from pm_engine.cli import hooks
 
+        # 셸 값(그 명령을 실행할 셸). codex 훅 입력(`tool_name`=Bash·`tool_input`={command})에는 셸이 없다.
+        #   Windows 에서는 PowerShell·cmd·Git Bash 중 무엇이 실행할지 몰라(플랫폼 기본값과 모델이 호출마다
+        #   고르는 값이 정한다) unknown 을 넘긴다. Windows 가 아니면 cmd 가 없고 bash 문법 셸이 실행한다.
+        shell = "unknown" if os.name == "nt" else "bash"
         judgment = hooks.judge_git_check_command(
-            hooks.adapter_home(root), session, target_repo, command, main_thread=not hook_is_subagent(payload),
+            hooks.adapter_home(root), session, target_repo, command, shell=shell,
+            main_thread=not hook_is_subagent(payload),
         )
     verdict = judgment.get("verdict")
     reason = judgment.get("reason", "git cwd 정체 판정")

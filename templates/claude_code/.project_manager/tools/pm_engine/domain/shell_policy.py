@@ -8,7 +8,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import shlex
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -419,6 +419,26 @@ class _ShellParseResult(NamedTuple):
     reason: str
 
 
+def _merge_shell_readings(readings: Sequence[_ShellParseResult]) -> _ShellParseResult:
+    """같은 명령을 여러 셸 문법으로 읽은 결과를 합친다. 첫 읽기는 그대로 두고 뒤 읽기에서 새로 나온 호출만 잇는다.
+
+    판정은 합친 호출 모두에서 가장 엄한 것이 이긴다. ``cd`` 남음·구문 불확실은 한 읽기라도 참이면 참이다.
+    읽기가 하나면 결과는 그 읽기와 같다."""
+    first, later = readings[0], readings[1:]
+
+    def calls(field: str) -> tuple[_ShellGitInvocation, ...]:
+        kept = getattr(first, field)
+        return kept + tuple(dict.fromkeys(
+            call for reading in later for call in getattr(reading, field) if call not in kept))
+
+    return _ShellParseResult(
+        calls("invocations"), calls("engine_invocations"), calls("removal_invocations"),
+        any(reading.persistent_cd for reading in readings),
+        any(reading.uncertain for reading in readings),
+        "; ".join(dict.fromkeys(reading.reason for reading in readings if reading.reason)),
+    )
+
+
 class _ShellGitCommand(NamedTuple):
     """wrapper를 걷어낸 git command word와 그 해석 확실성."""
 
@@ -617,18 +637,19 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
     return None
 
 
-def _normalize_shell_line_continuations(command: str) -> str:
-    """quote/heredoc data 밖의 backslash-newline만 POSIX continuation으로 합친다.
+def _normalize_shell_line_continuations(command: str, rule: "_ShellSyntax") -> str:
+    """quote/heredoc data 밖의 escape 글자-newline 을 그 셸의 줄 이음으로 합친다.
 
-    heredoc body는 caller가 먼저 제거한다. quote 내부 bytes는 delimiter/data 의미를 보존하기
-    위해 그대로 두며, command-word quote fragment 결합은 후속 shlex에 맡긴다.
+    escape 글자는 문법마다 다르다(bash ``\\``·PowerShell 백틱·cmd ``^``). heredoc body는 caller가
+    먼저 제거한다. quote 내부 bytes는 delimiter/data 의미를 보존하기 위해 그대로 두며,
+    command-word quote fragment 결합은 후속 shlex에 맡긴다.
     """
     output: list[str] = []
     quote: str | None = None
     index = 0
     while index < len(command):
         char = command[index]
-        if quote is None and char == "\\":
+        if quote is None and char == rule.escape:
             if index + 1 < len(command) and command[index + 1] == "\n":
                 index += 2
                 continue
@@ -644,11 +665,11 @@ def _normalize_shell_line_continuations(command: str) -> str:
             index += 1
             continue
         output.append(char)
-        if quote is None and char in {"'", '"'}:
+        if quote is None and char in rule.quotes:
             quote = char
         elif quote == char:
             quote = None
-        elif quote == '"' and char == "\\" and index + 1 < len(command):
+        elif quote in rule.escaped_quotes and char == rule.escape and index + 1 < len(command):
             index += 1
             output.append(command[index])
         index += 1
@@ -659,38 +680,84 @@ _SHELL_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "\n", "|"})
 
 _SHELL_WINDOWS_PATH_SEPARATOR = "\ue000"
 
+# 어댑터가 넘기는 셸 값. 그 명령을 실행할 셸이고, 하네스가 셸을 알려 주지 않으면 unknown 이다.
+SHELL_BASH = "bash"              # bash·sh·zsh (Windows 의 Git Bash 포함)
+SHELL_POWERSHELL = "powershell"  # Windows PowerShell 5.1·PowerShell 7
+SHELL_CMD = "cmd"                # cmd.exe
+SHELL_UNKNOWN = "unknown"
+
 _SHELL_WINDOWS_ABSOLUTE_PATH = re.compile(
     r"(?<![A-Za-z0-9_])(?:[A-Za-z]:\\|\\\\)[^ \t\r\n;&|<>\"']+"
 )
 
 
-# 따옴표로 묶인 글, 메타문자·따옴표 문자·역슬래시 앞의 escape 짝, 또는 그 밖의 따옴표 밖 역슬래시 한 글자.
-_SHELL_QUOTED_TEXT_OR_BACKSLASH = re.compile(
-    r"""('[^']*'|"(?:\\.|[^"\\])*"|\\[ \t\r\n|&;()<>\\'"])|\\""", re.DOTALL,
-)
+def _protect_shell_windows_path_separators(command: str) -> str:
+    """POSIX shlex가 Windows 절대경로의 ``\\``를 escape로 소비하지 않게 표시한다.
 
-
-def _protect_shell_windows_path_separators(command: str, *, windows: bool) -> str:
-    """POSIX shlex가 Windows 경로의 ``\\``를 escape로 소비하지 않게 표시한다.
-
-    ``windows`` 가 참이면(Windows 에서 읽는 명령) 따옴표 밖 ``\\`` 중 바로 뒤 글자가 메타문자
-    (공백·탭·CR·LF·``|&;()<>``)·따옴표 문자·``\\`` 가 아닌 것을 경로 구분자로 본다. 그 글자들
-    앞의 ``\\`` 는 POSIX escape 로 둔다. 어느 플랫폼에서든 drive/UNC 절대경로 표기의 구분자는
-    따옴표 안에서도 보존한다. 이 단계는 정규화하지 않는다. 실제 ``/`` 변환은 shlex 토큰화 뒤
-    simple-command가 토큰을 소비할 때 수행한다.
+    이 단계는 정규화하지 않는다. 경로형 토큰임이 드러난 drive/UNC 표기의 구분자만 보존하고,
+    실제 ``/`` 변환은 shlex 토큰화 뒤 simple-command가 토큰을 소비할 때 수행한다.
     """
-    if windows:
-        command = _SHELL_QUOTED_TEXT_OR_BACKSLASH.sub(
-            lambda match: match.group(1) or _SHELL_WINDOWS_PATH_SEPARATOR, command,
-        )
     return _SHELL_WINDOWS_ABSOLUTE_PATH.sub(
         lambda match: match.group(0).replace("\\", _SHELL_WINDOWS_PATH_SEPARATOR),
         command,
     )
 
 
+def _mark_every_backslash(command: str) -> str:
+    """PowerShell·cmd 의 ``\\`` 는 escape 가 아니라 글자 그대로라 모두 경로 구분자 표시로 바꾼다."""
+    return command.replace("\\", _SHELL_WINDOWS_PATH_SEPARATOR)
+
+
+# cmd: 큰따옴표 안 글은 그대로 두고, 따옴표 밖 ``^`` 는 지우고 다음 글자를 남긴다.
+_CMD_QUOTED_TEXT_OR_CARET = re.compile(r'("[^"]*"?)|\^(.?)', re.DOTALL)
+
+
+def _protect_cmd_text(command: str) -> str:
+    """cmd 읽기 준비. 따옴표 밖 ``^`` 를 지우고(다음 글자는 남긴다) ``\\`` 를 경로 구분자 표시로 바꾼다."""
+    return _CMD_QUOTED_TEXT_OR_CARET.sub(r"\1\2", _mark_every_backslash(command))
+
+
+class _ShellSyntax(NamedTuple):
+    """셸 한 종류의 읽기 규칙. 가드가 쓰는 만큼만 담는다(따옴표·escape 글자·주석·명령 구분 기호·역슬래시)."""
+    escape: str                     # 따옴표 밖에서 다음 글자를 글자 그대로 만드는 글자(줄 이음 포함)
+    lexer_escape: str               # shlex 에 주는 escape 글자. cmd 는 준비 단계에서 지우므로 비운다
+    quotes: frozenset[str]          # 따옴표 글자
+    escaped_quotes: frozenset[str]  # 안에서 escape 글자가 통하는 따옴표
+    comment: str                    # 낱말 머리에서 주석을 여는 글자(없으면 빈 글)
+    operators: dict[str, str]       # 명령 구분 기호 → 판정이 쓰는 구분 기호
+    protect: Callable[[str], str]   # 낱말 나누기 전에 경로 구분자 ``\\`` 를 표시로 바꾸는 준비
+
+
+_BASH_OPERATORS = {separator: separator for separator in _SHELL_COMMAND_SEPARATORS}
+
+_SHELL_SYNTAX_RULES: dict[str, _ShellSyntax] = {
+    SHELL_BASH: _ShellSyntax(
+        "\\", "\\", frozenset("'\""), frozenset('"'), "#", _BASH_OPERATORS,
+        _protect_shell_windows_path_separators,
+    ),
+    SHELL_POWERSHELL: _ShellSyntax(
+        "`", "`", frozenset("'\""), frozenset('"'), "#", _BASH_OPERATORS, _mark_every_backslash,
+    ),
+    # cmd 는 ``&`` 가 순차 실행이고 ``#`` 주석과 작은따옴표가 없다. ``;`` 는 명령을 나누지 않지만 내장 명령
+    # (``rmdir`` 등)이 ``;``·``,`` 를 인자 구분으로 읽어 두 대상을 모두 처리하므로, ``;`` 를 명령 구분으로 읽어
+    # 앞 대상을 놓치지 않는다. ``,`` 는 보통 인자에 흔해 나누지 않는다.
+    SHELL_CMD: _ShellSyntax(
+        "^", "", frozenset('"'), frozenset(), "", {**_BASH_OPERATORS, "&": ";"}, _protect_cmd_text,
+    ),
+}
+
+# 셸 값 → 읽을 문법. 셸을 모르면 세 문법으로 모두 읽고 호출을 합쳐 가장 엄한 판정을 쓴다.
+SHELL_READINGS: dict[str, tuple[str, ...]] = {
+    SHELL_BASH: (SHELL_BASH,),
+    SHELL_POWERSHELL: (SHELL_POWERSHELL,),
+    SHELL_CMD: (SHELL_CMD,),
+    SHELL_UNKNOWN: (SHELL_BASH, SHELL_POWERSHELL, SHELL_CMD),
+}
+
+
 def _normalize_shell_path_notation(token: str) -> str:
-    """토큰화가 끝난 Windows 절대경로 토큰만 POSIX 표기로 정규화한다."""
+    """토큰화가 끝난 경로 구분자 표시 토큰(bash 읽기의 drive/UNC 절대경로, PowerShell·cmd 읽기의 모든 ``\\``)을
+    POSIX 표기로 정규화한다."""
     windows_path = (
         _SHELL_WINDOWS_PATH_SEPARATOR in token
         or re.match(r"^(?:[A-Za-z]:\\|\\\\)", token) is not None
@@ -730,8 +797,8 @@ def _persistent_cd_prefilter(text: str) -> bool:
     return re.search(rf"(?:^|(?:{separators}))\s*cd(?=\s)", text) is not None
 
 
-def _strip_shell_comments(command: str) -> str:
-    """quote/escape 밖 command-word 경계의 ``#`` comment를 newline은 보존해 제거한다."""
+def _strip_shell_comments(command: str, rule: _ShellSyntax) -> str:
+    """quote/escape 밖 command-word 경계의 주석을 newline은 보존해 제거한다(cmd 는 주석이 없다)."""
     output: list[str] = []
     quote: str | None = None
     escaped = False
@@ -749,22 +816,22 @@ def _strip_shell_comments(command: str) -> str:
             output.append(char)
             if char == quote:
                 quote = None
-            elif char == "\\" and quote == '"':
+            elif char == rule.escape and quote in rule.escaped_quotes:
                 escaped = True
             index += 1
             continue
-        if char == "\\":
+        if char == rule.escape:
             output.append(char)
             escaped = True
             index += 1
             continue
-        if char in {"'", '"'}:
+        if char in rule.quotes:
             output.append(char)
             quote = char
             word_start = False
             index += 1
             continue
-        if char == "#" and word_start:
+        if char == rule.comment and word_start:
             while index < len(command) and command[index] != "\n":
                 index += 1
             if index < len(command):
@@ -781,7 +848,9 @@ def _strip_shell_comments(command: str) -> str:
 def _heredoc_declarations(line: str) -> tuple[list[tuple[str, bool]], bool]:
     """한 command line의 quote/comment 밖 실제 heredoc operator를 token 단위로 읽는다."""
     try:
-        lexer = shlex.shlex(_strip_shell_comments(line), posix=True, punctuation_chars="<>")
+        lexer = shlex.shlex(
+            _strip_shell_comments(line, _SHELL_SYNTAX_RULES[SHELL_BASH]), posix=True, punctuation_chars="<>",
+        )
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)
@@ -831,18 +900,18 @@ def _strip_shell_heredoc_bodies(command: str) -> tuple[str, bool]:
     return "".join(output), uncertain
 
 
-def _shell_segments(command: str, *, windows: bool) -> tuple[list[list[str]], list[str]] | None:
-    """shell 문자열을 simple-command segment와 그 사이 operator로 나눈다."""
-    separator_chars = "".join(sorted({
-        char for separator in _SHELL_COMMAND_SEPARATORS for char in separator
-    }))
+def _shell_segments(command: str, syntax: str) -> tuple[list[list[str]], list[str]] | None:
+    """shell 문자열을 ``syntax`` 문법으로 simple-command segment와 그 사이 operator로 나눈다."""
+    rule = _SHELL_SYNTAX_RULES[syntax]
+    separator_chars = "".join(sorted({char for separator in rule.operators for char in separator}))
     try:
         lexer = shlex.shlex(
-            _protect_shell_windows_path_separators(
-                _strip_shell_comments(command), windows=windows,
-            ), posix=True,
+            rule.protect(_strip_shell_comments(command, rule)), posix=True,
             punctuation_chars=separator_chars + "<>",
         )
+        lexer.escape = rule.lexer_escape
+        lexer.quotes = "".join(sorted(rule.quotes))
+        lexer.escapedquotes = "".join(sorted(rule.escaped_quotes))
         lexer.whitespace_split = True
         # unquoted newline은 ``;``와 같은 순차 command 경계다. 기본 shlex whitespace로
         # 버리면 두 git 호출이 한 argv로 합쳐져 뒤 호출을 놓친다. quote 안 newline은 token에 남는다.
@@ -857,9 +926,9 @@ def _shell_segments(command: str, *, windows: bool) -> tuple[list[list[str]], li
     for token in tokens:
         if token and set(token) == {"\n"}:
             token = "\n"
-        if token in _SHELL_COMMAND_SEPARATORS:
+        if token in rule.operators:
             segments.append(current)
-            operators.append(token)
+            operators.append(rule.operators[token])
             current = []
         elif token and all(ch in separator_chars for ch in token):
             # case/and-or 확장 연산자 등 미지원 shell 문법은 해석하지 않는다(never-block).

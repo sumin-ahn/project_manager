@@ -1,4 +1,4 @@
-r"""reviewer_cmd argv 분해의 **실행 플랫폼 규칙**과 분해 규칙 사본 대조 (T-0722).
+r"""reviewer_cmd argv 분해 규칙(bash 문법 · 모든 실행 플랫폼 같음)과 분해 규칙 사본 대조 (T-0722).
 
 `additional_reviewer` 는 `reviewer_cmd`(local.conf 자유 문자열)를 argv 로 분해해 추가 리뷰어를 띄운다.
 그 분해가 POSIX `shlex.split` 단독이면 Windows 실행 경로의 ``\`` 가 escape 로 소비돼
@@ -11,10 +11,11 @@ r"""reviewer_cmd argv 분해의 **실행 플랫폼 규칙**과 분해 규칙 사
   1. 분해 규칙의 구현은 `pm_engine/domain/shell_policy.py` 하나다(사본 0). 규칙 표시(`_SHELL_WINDOWS_PATH_SEPARATOR`)의
      소유 모듈을 값으로 확인하고, 다른 엔진 모듈에 사본이 생기면 red 다([[T-0712]] 의 `~user` 기준과
      같은 대조).
-  2. Windows 규칙은 실행 경로 구분자를 보존하고, POSIX 규칙은 종전 `shlex.split` 그대로다.
+  2. 분해는 실행 플랫폼과 무관하게 bash 문법 한 가지다. drive/UNC 절대경로의 구분자는 보존하고, 그 밖의
+     글은 `shlex.split` 과 같다.
   3. `additional_reviewer` 는 그 공용 함수를 **호출**한다(자기 사본 아님) — `process.split_command_argv` 자리를 갈아끼워 확인한다.
-  4. Windows 경로를 담은 `reviewer_cmd` 가 러너까지 실행 가능한 argv 로 도착한다(POSIX 개발기에서
-     플랫폼 교체 지점 주입으로 태운다 · 주입이 실제로 걸렸는지 선-단언).
+  4. Windows 경로를 담은 `reviewer_cmd` 가 러너까지 실행 가능한 argv 로 도착한다(어느 개발기에서나 같은
+     규칙이라 플랫폼 주입이 없다).
   5. 실행 파일 해소 실패는 loud 이고 "설정상 리뷰어 없음"과 **다른 진단**이다(무음 환불 0).
 """
 from __future__ import annotations
@@ -22,7 +23,6 @@ from __future__ import annotations
 from pm_engine.infra import pm_paths
 import pm_engine.infra.harness.reviewer_run
 
-from pm_engine.infra.harness import contract
 from pm_engine.infra import reviewer_target
 
 import importlib.util
@@ -88,7 +88,7 @@ def test_the_windows_argv_split_rule_has_exactly_one_implementation():
         "process.split_command_argv 를 부르라")
     # 스캔이 본 소스 표기와 실행 값이 같은 글자임을 못 박는다(표기만 바꾼 사본 회피 방지).
     assert shell_policy._SHELL_WINDOWS_PATH_SEPARATOR == WINDOWS_PATH_SEPARATOR_MARK
-    assert process.split_command_argv(WINDOWS_REVIEWER_CMD, windows=True)[0] == (
+    assert process.split_command_argv(WINDOWS_REVIEWER_CMD)[0] == (
         WINDOWS_EXECUTABLE), "소유 모듈이 그 규칙을 실제로 구현하지 않는다"
 
 
@@ -108,21 +108,19 @@ def test_additional_reviewer_keeps_no_second_split_of_the_reviewer_command():
 
 def test_additional_reviewer_calls_the_shared_function_instead_of_its_own_copy(external, monkeypatch):
     """분해는 `process.split_command_argv` 를 **거쳐서만** 일어난다 — 그 자리를 갈아끼우면 결과가 따라 바뀐다."""
-    seen: list[tuple[str, bool]] = []
+    seen: list[str] = []
 
-    def _stub_split_command_argv(command, *, windows=None):
-        seen.append((command, windows))
+    def _stub_split_command_argv(command):
+        seen.append(command)
         return ["stub-argv"]
 
     monkeypatch.setattr(process, "split_command_argv", _stub_split_command_argv)
-    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
 
     assert reviewer_target._split_reviewer_argv("codex --model x") == ["stub-argv"]
-    assert seen == [("codex --model x", True)], (
-        "분해가 process.split_command_argv 를 타지 않았거나 플랫폼 판정을 넘기지 않았다")
+    assert seen == ["codex --model x"], "분해가 process.split_command_argv 를 타지 않았다"
 
 
-def test_the_shared_function_and_additional_reviewer_agree_token_for_token(external, monkeypatch):
+def test_the_shared_function_and_additional_reviewer_agree_token_for_token(external):
     """같은 커맨드를 두 경로가 같은 argv 로 읽는다 (분해 결과 대조)."""
     commands = (
         WINDOWS_REVIEWER_CMD,
@@ -130,54 +128,60 @@ def test_the_shared_function_and_additional_reviewer_agree_token_for_token(exter
         r"\\srv\share\codex.exe --model x",
         "codex --model gpt-5.6 exec",
     )
-    for windows in (True, False):
-        monkeypatch.setattr(contract, 'running_on_windows', lambda: windows)
-        for command in commands:
-            assert reviewer_target._split_reviewer_argv(command) == process.split_command_argv(
-                command, windows=windows), (command, windows)
+    for command in commands:
+        assert reviewer_target._split_reviewer_argv(command) == process.split_command_argv(
+            command), command
 
 
-# ── 2. 플랫폼 규칙 ──────────────────────────────────────────────────────────
+# ── 2. 분해 규칙 ────────────────────────────────────────────────────────────
 
 
-def test_windows_rule_preserves_executable_path_separators():
-    """Windows 규칙은 드라이브/UNC 절대경로의 구분자를 보존한다 (인용 유무 무관)."""
-    assert process.split_command_argv(WINDOWS_REVIEWER_CMD, windows=True) == [
+def test_drive_and_unc_paths_keep_their_separators():
+    """drive/UNC 절대경로의 구분자를 보존한다 (인용 유무 무관)."""
+    assert process.split_command_argv(WINDOWS_REVIEWER_CMD) == [
         WINDOWS_EXECUTABLE, "-c", "pass"]
     assert process.split_command_argv(
-        r'"C:\Program Files\Codex\codex.exe" --model gpt-5.6', windows=True) == [
+        r'"C:\Program Files\Codex\codex.exe" --model gpt-5.6') == [
         r"C:\Program Files\Codex\codex.exe", "--model", "gpt-5.6"]
-    assert process.split_command_argv(r"\\srv\share\codex.exe -q", windows=True) == [
+    assert process.split_command_argv(r"\\srv\share\codex.exe -q") == [
         r"\\srv\share\codex.exe", "-q"]
     assert WINDOWS_PATH_SEPARATOR_MARK not in "".join(
-        process.split_command_argv(WINDOWS_REVIEWER_CMD, windows=True)), (
+        process.split_command_argv(WINDOWS_REVIEWER_CMD)), (
         "보호 표시가 argv 에 남으면 그 자체가 실행 불가 경로다")
 
 
-def test_posix_rule_is_unchanged_shlex_split():
-    """POSIX 실행 플랫폼에서는 종전 `shlex.split` 그대로다 — escape 의미를 바꾸지 않는다."""
+def test_commands_without_drive_or_unc_paths_split_like_shlex():
+    """drive/UNC 절대경로가 없는 글은 `shlex.split` 과 같아 bash escape 의미를 바꾸지 않는다."""
     for command in ("/usr/bin/codex --model x", r"codex --sandbox 'a b' --flag x\ y",
-                    WINDOWS_REVIEWER_CMD):
-        assert process.split_command_argv(command, windows=False) == shlex.split(command)
+                    shlex.join([WINDOWS_EXECUTABLE, "exec", "--note", "a b"])):
+        assert process.split_command_argv(command) == shlex.split(command)
 
 
-def test_the_posix_rule_really_mangles_the_windows_path():
-    """두 규칙이 **다른 결과**를 낸다는 값 단언 — 이 차이가 실재함을 픽스처로 고정한다.
+def test_plain_shlex_really_mangles_the_unquoted_windows_path():
+    """보호 없는 `shlex.split` 은 픽스처의 경로를 뭉갠다. 그래서 보존 단언이 실제로 무언가를 지킨다.
 
-    이게 참이 아니게 되면(예: 픽스처에서 백슬래시가 사라지면) 위 Windows 단언은 아무것도 검증하지
+    이게 참이 아니게 되면(예: 픽스처에서 백슬래시가 사라지면) 보존 단언은 아무것도 검증하지
     않는다([[guard-must-cover-its-own-surface]]).
     """
-    mangled = process.split_command_argv(WINDOWS_REVIEWER_CMD, windows=False)
+    mangled = shlex.split(WINDOWS_REVIEWER_CMD)
     assert mangled[0] != WINDOWS_EXECUTABLE
     assert "\\" not in mangled[0] and "/" not in mangled[0]
 
 
-def test_platform_default_follows_the_running_platform(monkeypatch):
-    """`windows=None` 은 실행 플랫폼(`os.name`)을 본다 — 주입 인자는 그 판정을 대체할 뿐이다."""
-    monkeypatch.setattr(process, "_probe_os_name", lambda: "nt")
-    assert process.split_command_argv(WINDOWS_REVIEWER_CMD)[0] == WINDOWS_EXECUTABLE
-    monkeypatch.setattr(process, "_probe_os_name", lambda: "posix")
-    assert process.split_command_argv(WINDOWS_REVIEWER_CMD)[0] != WINDOWS_EXECUTABLE
+def test_split_command_argv_reads_bash_syntax_on_every_platform(monkeypatch):
+    """분해 규칙은 실행 플랫폼을 보지 않는다. 두 호출처의 글(`shlex.join` 으로 만든 리뷰어 커맨드, 1회 허용
+    명령 원문)은 bash 문법이다. Windows 에서도 drive/UNC 절대경로가 아닌 `\\` 는 bash escape 다."""
+    commands = {
+        WINDOWS_REVIEWER_CMD: [WINDOWS_EXECUTABLE, "-c", "pass"],
+        r"git -C sp\ ace reset --hard": ["git", "-C", "sp ace", "reset", "--hard"],
+        r"git reset --ha\rd": ["git", "reset", "--hard"],
+        shlex.join([r"C:\Program Files\Codex\codex.exe", "--note", "a b"]): [
+            r"C:\Program Files\Codex\codex.exe", "--note", "a b"],
+    }
+    for os_name in ("nt", "posix"):
+        monkeypatch.setattr(process, "_probe_os_name", lambda: os_name)
+        for command, argv in commands.items():
+            assert process.split_command_argv(command) == argv, (os_name, command)
 
 
 def test_probe_os_name_override_defaults_to_the_real_interpreter_value():
@@ -188,18 +192,14 @@ def test_probe_os_name_override_defaults_to_the_real_interpreter_value():
 # ── 3. 러너까지 도달하는 argv ───────────────────────────────────────────────
 
 
-def test_windows_reviewer_command_reaches_the_runner_as_an_executable_argv(
-        external, monkeypatch):
+def test_windows_reviewer_command_reaches_the_runner_as_an_executable_argv(external):
     """Windows 경로 `reviewer_cmd` 가 러너에 실행 가능한 argv 로 도착한다 (수정 전 red).
 
     수정 전에는 argv[0] 이 ``C:Userspm...python.exe`` 로 뭉개져 `FileNotFoundError` →
     (ok, started) == (False, False) 였다.
     """
-    # 선-단언 ①: 이 픽스처가 실제로 Windows 규칙을 태운다 — POSIX 규칙이면 argv[0] 이 뭉개진다.
+    # 선-단언: 이 픽스처는 보호 없는 shlex 분해로는 argv[0] 이 뭉개진다.
     assert shlex.split(WINDOWS_REVIEWER_CMD)[0] != WINDOWS_EXECUTABLE
-    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
-    # 선-단언 ②: 플랫폼 주입이 실제로 걸렸다(주입이 no-op 이면 가드가 시험되지 않는다).
-    assert contract.running_on_windows() is True
 
     seen: dict[str, list[str]] = {}
 
@@ -214,34 +214,32 @@ def test_windows_reviewer_command_reaches_the_runner_as_an_executable_argv(
     assert seen["argv"] == [WINDOWS_EXECUTABLE, "-c", "pass"]
 
 
-def test_real_subprocess_run_still_works_under_the_windows_rule(external, monkeypatch):
-    """Windows 규칙을 켠 채 실 인터프리터를 태운다 — 규칙이 POSIX 경로를 깨지 않는다.
+def test_real_subprocess_run_still_works_under_the_split_rule(external):
+    """분해 규칙으로 실 인터프리터를 태운다. 규칙이 POSIX 경로를 깨지 않는다.
 
     실행 플랫폼과 무관하게 `_run_reviewer_ex` → `subprocess.run` 경로가 살아 있음을 실 프로세스로
-    확인한다(POSIX 개발기에서 Windows 분해를 태우는 경로와 같은 자리).
+    확인한다.
 
     커맨드는 엔진이 실제로 만드는 모양(`shlex.join`)으로 조립한다. 실 Windows 인터프리터 경로는
     `C:\\Program Files\\Python312\\python.exe` 처럼 공백을 포함하므로, 인용 없이 조립하면 규칙과
-    무관하게 실행 파일이 두 토큰으로 갈린다. 인용된 모양이 Windows 규칙을 통과해도 공백을 유지하는지가
+    무관하게 실행 파일이 두 토큰으로 갈린다. 인용된 모양이 분해 규칙을 통과해도 공백을 유지하는지가
     이 회귀가 지켜야 할 값이다.
     """
     import sys
 
-    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
     command = shlex.join([sys.executable, "-c", "pass"])
     assert reviewer_target._split_reviewer_argv(command)[0] == sys.executable, (
-        "Windows 규칙이 인용된 인터프리터 경로를 단일 토큰으로 복원하지 못했다")
+        "분해 규칙이 인용된 인터프리터 경로를 단일 토큰으로 복원하지 못했다")
     ok, _output, started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", command, 5, subprocess.run)
     assert (ok, started) == (True, True)
 
 
-def test_the_watchdog_join_and_split_round_trip_keeps_the_executable(external, monkeypatch):
+def test_the_watchdog_join_and_split_round_trip_keeps_the_executable(external):
     """기본 러너는 argv 를 다시 `shlex.join` 해 설정을 해소한다 — 그 왕복이 경로를 잃지 않는다.
 
     왕복이 깨지면 Windows 에서 프로필 키가 뭉개진 실행 파일 이름이 되어, 진행신호 계약과 무진행
     상한이 조용히 "미지 CLI" 로 내려앉는다(같은 결함의 두 번째 경로).
     """
-    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
     argv = [r"C:\Users\pm\AppData\Local\Programs\codex\codex.exe", "exec", "--model", "gpt-5.6"]
     joined = shlex.join(argv)
 
@@ -252,14 +250,12 @@ def test_the_watchdog_join_and_split_round_trip_keeps_the_executable(external, m
 # ── 4. 진단 분리 (무음 환불 0) ──────────────────────────────────────────────
 
 
-def test_unresolved_executable_is_loud_and_distinct_from_no_reviewer_configured(
-        external, monkeypatch):
+def test_unresolved_executable_is_loud_and_distinct_from_no_reviewer_configured(external):
     """실행 파일 해소 실패와 "설정상 리뷰어 없음" 은 서로 다른 진단이다.
 
     한 문구로 합치면 "리뷰어를 안 깔았나 보다"에 묻혀, 교차검증이 돌지 않은 실행이 정상 경우와
     같은 모양이 된다(30여 릴리즈 은닉된 경로).
     """
-    monkeypatch.setattr(contract, 'running_on_windows', lambda: True)
 
     def missing(argv, **kwargs):
         raise FileNotFoundError(argv[0])
@@ -278,29 +274,23 @@ def test_unresolved_executable_is_loud_and_distinct_from_no_reviewer_configured(
     assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER not in output.answer
 
 
-def test_a_mangled_executable_names_the_declared_command(external, monkeypatch):
+def test_a_mangled_executable_names_the_declared_command(external):
     """선언 커맨드에 없는 실행 파일로 분해되면 진단이 그 대조를 낸다 (분해·인용 사고 식별).
 
     "설치 안 됨"과 "엔진이 커맨드를 잘못 분해함"을 사람이 그 자리에서 가를 수 있는 유일한 사실이다.
+    인용 없는 상대경로 역슬래시는 bash 문법에서 escape 라 뭉개진다.
     """
-    monkeypatch.setattr(contract, 'running_on_windows', lambda: False)  # POSIX 규칙 = 훼손
+    mangled_cmd = r".\bin\codex.exe --model x"
 
     def missing(argv, **kwargs):
         raise FileNotFoundError(argv[0])
 
     _ok, output, _started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(
-        pm_paths.home_at(external.REPO), "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
+        pm_paths.home_at(external.REPO), "prompt", mangled_cmd, 5, missing)
     assert "해소된 커맨드에 없는 실행 파일로 분해됐습니다" in output.answer
-    assert WINDOWS_REVIEWER_CMD in output.answer
+    assert mangled_cmd in output.answer
 
     # PATH 에 없는 평범한 커맨드는 그 대조를 붙이지 않는다 (선언과 시도가 같다).
     _ok, output, _started = pm_engine.infra.harness.reviewer_run._run_reviewer_ex(pm_paths.home_at(external.REPO), "prompt", "codex --model x", 5, missing)
     assert pm_engine.infra.harness.reviewer_run.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
     assert "해소된 커맨드에 없는" not in output.answer
-
-
-def test_windows_rule_keeps_relative_backslash_paths_and_shell_escapes():
-    """Windows 규칙은 상대경로의 ``\\`` 구분자도 보존하고, 공백 앞 ``\\`` 는 escape 로 읽는다."""
-    assert process.split_command_argv(r".\bin\codex.exe exec --note a\ b", windows=True) == [
-        r".\bin\codex.exe", "exec", "--note", "a b"]
-    assert process.split_command_argv(r".\bin\codex.exe exec", windows=False) == [".bincodex.exe", "exec"]

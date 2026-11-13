@@ -24,7 +24,7 @@ from typing import Any
 from pm_engine.app import ctx_hooks, engine_guard, principle_recall
 from pm_engine.app import hooks as app_hooks
 from pm_engine.app.session import relay
-from pm_engine.domain import conf_schema, git_policy
+from pm_engine.domain import conf_schema, git_policy, shell_policy
 from pm_engine.domain import home
 from pm_engine.domain import principle_rules
 from pm_engine.infra import console, fs, pm_paths, principle_store, raw_output
@@ -103,8 +103,8 @@ def record_git_grants(home: home.Home, session: str, cwd: str, prompt: str) -> l
 
 
 def judge_git_check_command(
-    home: home.Home, session: str, cwd: str, command: str, *, main_thread: bool, grants: bool = False,
-    runner: Any = subprocess.run,
+    home: home.Home, session: str, cwd: str, command: str, *, shell: str, main_thread: bool,
+    grants: bool = False, runner: Any = subprocess.run,
 ) -> dict[str, str]:
     """셸 command의 모든 git/엔진/파일 삭제 호출을 중앙 파싱하고 가장 강한 판정을 반환한다.
 
@@ -118,8 +118,9 @@ def judge_git_check_command(
     세션 ID 는 주 세션과 같다) 슬롯 거부·경고의 다음 행동은 PM 에게 돌려주라는 안내다.
     """
     _check_type("main_thread", main_thread, (bool,))
+    _check_shell(shell)
     root = home.root
-    parsed = app_hooks._git_invocations_from_shell(cwd, command)
+    parsed = app_hooks._git_invocations_from_shell(cwd, command, shell)
     invocations = parsed.invocations
     judgments: list[dict[str, str]] = []
     for call in invocations:
@@ -208,7 +209,7 @@ _NOTICE_STATUS = {True: "claimed", False: "seen", None: "unavailable"}
 HOOK_WIRE_VERSION = 1
 HOOK_CONTEXT_KEYS = frozenset({"version", "tokens", "model", "main_thread", "boundary"})
 HOOK_TOOL_KEYS = frozenset({
-    "version", "cwd", "tool_name", "tool_input", "shell_command", "main_thread", "context", "recall",
+    "version", "cwd", "tool_name", "tool_input", "shell_command", "shell", "main_thread", "context", "recall",
 })
 HOOK_TOOL_CONTEXT_KEYS = frozenset({"session", "tokens", "model", "main_thread", "boundary"})
 HOOK_RECALL_KEYS = frozenset({"session", "on", "text", "main_thread"})
@@ -216,6 +217,13 @@ HOOK_RECALL_KEYS = frozenset({"session", "on", "text", "main_thread"})
 HOOK_TOOL_HARNESS = "opencode"
 # 기계 입력 형식 오류의 종료 코드(argparse 사용 오류와 같은 값).
 HOOK_WIRE_ERROR_RC = 2
+
+
+def _check_shell(shell: object) -> None:
+    """어댑터가 넘긴 셸 값. 정해진 넷만 받고, 그 밖의 값이면 판정하지 않고 올린다."""
+    _check_type("shell", shell, (str,))
+    if shell not in shell_policy.SHELL_READINGS:
+        raise ValueError(f"셸 값은 {sorted(shell_policy.SHELL_READINGS)} 중 하나여야 한다: {shell!r}")
 
 
 def _check_type(name: str, value: object, expected: tuple[type, ...]) -> None:
@@ -409,6 +417,7 @@ def _hook_tool_request(request: dict) -> None:
     _check_type("tool_name", request["tool_name"], (str,))
     _check_type("shell_command", request["shell_command"], (str, type(None)))
     _check_type("main_thread", request["main_thread"], (bool,))
+    _check_shell(request["shell"])
     if request["shell_command"] is not None:
         tool_input = request["tool_input"]
         _check_type("tool_input", tool_input, (dict,))
@@ -446,7 +455,7 @@ def cmd_hook_tool(home: home.Home, args: argparse.Namespace) -> int:
         return _wire_failure("hook-tool", exc)
     if request["shell_command"] is not None:
         git = judge_git_check_command(
-            home, args.session, request["cwd"], request["shell_command"],
+            home, args.session, request["cwd"], request["shell_command"], shell=request["shell"],
             main_thread=request["main_thread"], grants=True,
         )
     else:

@@ -350,7 +350,7 @@ def _run_reviewer_ex(
     삼키지 않고 교체 지점 오류로 loud 구분한다.
 
     `argv`/`stdin_text` = 구조화 대상의 wire transport 주입. 미지정이면 종전대로
-    `_split_reviewer_argv(reviewer_cmd)`(실행 플랫폼 규칙 분해) + 프롬프트 stdin 이다.
+    `_split_reviewer_argv(reviewer_cmd)`(bash 문법 분해) + 프롬프트 stdin 이다.
 
     `on_spawn_attempt` = **실제 자식 생성 직전** 1회 호출되는 교체 지점(기본 None = 종전 동작). 라운드
     예약 소유권 이전(`_PreSpawnReservation.hand_off`)이 이 콜백을 탄다. 호출 지점은 러너가 스폰
