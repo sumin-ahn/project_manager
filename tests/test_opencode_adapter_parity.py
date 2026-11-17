@@ -388,16 +388,20 @@ def _items(toks, k):
     return [span for span in spans + [(start, end)] if span[0] < span[1]]
 
 
-def _option_problems(toks, a, b):
-    """옵션 인자 하나 — 객체 리터럴(같은 파일 상수면 그 리터럴)에 timeout 키가 있거나 확인할 수 없으면 문제."""
+def _option_problems(toks, a, b, option_spots):
+    """옵션 인자 하나 — 객체 리터럴(같은 파일 상수면 그 리터럴)에 timeout 키가 있거나 확인할 수 없으면 문제.
+
+    이름으로 넘긴 옵션은 그 이름이 선언(const·let·var 이름 =)과 동기 실행 호출의 옵션 인자 자리(option_spots)
+    밖에 한 번이라도 나오면 리터럴이 바뀌었을 수 있어 확인할 수 없음으로 본다.
+    """
     if b - a == 1 and _NAME.fullmatch(toks[a]):
         name = toks[a]
-        values = [j + 3 for j in range(len(toks) - 3) if toks[j] in ("const", "let", "var") and toks[j + 1:j + 3] == [name, "="]]
-        if not values or any(toks[v] not in ("{", "[") for v in values):
+        declared = {j + 1 for j in range(len(toks) - 3) if toks[j] in ("const", "let", "var") and toks[j + 1:j + 3] == [name, "="]}
+        values = sorted(j + 2 for j in declared)
+        elsewhere = any(tok == name and j not in declared and j not in option_spots for j, tok in enumerate(toks))
+        if not values or elsewhere or any(toks[v] not in ("{", "[") for v in values):
             return [f"{name}: 같은 파일의 리터럴로 확인할 수 없음"]
-        if any(toks[j:j + 4] == [name, ".", "timeout", "="] for j in range(len(toks) - 3)):
-            return [f"{name}.timeout 대입"]
-        return [problem for v in values for problem in _option_problems(toks, v, _close(toks, v) + 1)]
+        return [problem for v in values for problem in _option_problems(toks, v, _close(toks, v) + 1, option_spots)]
     if toks[a] == "[" and _close(toks, a) == b - 1:
         return []
     if toks[a] != "{" or _close(toks, a) != b - 1:
@@ -405,7 +409,7 @@ def _option_problems(toks, a, b):
     problems = []
     for s, e in _items(toks, a):
         if toks[s] == "...":
-            problems += _option_problems(toks, s + 1, e)
+            problems += _option_problems(toks, s + 1, e, option_spots)
         elif toks[s] == "[" or toks[s].strip("'\"") == "timeout":
             problems.append("timeout 키(또는 계산된 키)")
     return problems
@@ -416,8 +420,10 @@ def timed_sync_runs(source):
     toks = _js_tokens(source)
     calls = [k for k, tok in enumerate(toks)
              if tok in SYNC_RUNS and toks[k + 1:k + 2] == ["("] and toks[k - 1:k] != ["function"]]
-    return len(calls), [f"{toks[k]} 호출: {problem}" for k in calls
-                        for a, b in _items(toks, k + 1)[1:] for problem in _option_problems(toks, a, b)]
+    options = [(k, a, b) for k in calls for a, b in _items(toks, k + 1)[1:]]
+    option_spots = {j for _, a, b in options for j in range(a, b)}
+    return len(calls), [f"{toks[k]} 호출: {problem}" for k, a, b in options
+                        for problem in _option_problems(toks, a, b, option_spots)]
 
 
 def test_opencode_plugin_sync_process_runs_take_no_time_limit():
@@ -437,3 +443,19 @@ def test_opencode_plugin_sync_process_runs_take_no_time_limit():
             problems += [f"{path.relative_to(REPO)}: {issue}" for issue in issues]
     assert found, "동기 프로세스 실행을 하나도 찾지 못함 — 훑기가 코드 문법을 놓쳤다"
     assert not problems, problems
+
+
+def test_timed_sync_runs_rejects_option_name_changed_after_literal():
+    """이름으로 넘긴 옵션은 선언 리터럴 뒤에 그 이름이 다른 자리에 나오면(바꿨을 수 있음) 확인할 수 없음으로 본다."""
+    declared = 'const o = {encoding: "utf8"};\n'
+    call = 'spawnSync("python", [], o);\n'
+    changed = {
+        "점 대입": declared + "o.timeout = 5;\n" + call,
+        "대괄호 대입": declared + 'o["timeout"] = 5;\n' + call,
+        "Object.assign": declared + "Object.assign(o, {timeout: 5});\n" + call,
+        "재대입": 'let o = {encoding: "utf8"};\no = {timeout: 5};\n' + call,
+        "매개변수 가림": declared + "function run(o) {\n  " + call + "}\n",
+    }
+    for form, source in changed.items():
+        assert timed_sync_runs(source)[1], form
+    assert timed_sync_runs(declared + call + call) == (2, [])

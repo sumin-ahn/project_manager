@@ -640,6 +640,7 @@ const root = process.argv[1];
   const start = spawned.length;
   out.registered = await attempt(hooks["tool.execute.before"], "ses_fail", "read", {filePath: "README.md"});
   out.registered.launches = spawned.length - start;
+  out.registered.published = await deliver(hooks, "ses_fail");
   console.log(JSON.stringify(out));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """
