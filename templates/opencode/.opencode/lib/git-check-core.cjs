@@ -14,7 +14,7 @@
 const path = require("node:path");
 const childProcess = require("node:child_process");
 const { createWarningChannel } = require("./warning-channel-core.cjs");
-const { selectPython } = require("./delegate-channel-core.cjs");
+const { noVerdict, selectPython } = require("./delegate-channel-core.cjs");
 const { toolSignal } = require("./principle-recall-core.cjs");
 
 // 엔진 루트는 이 파일 자기 위치에서 나온다 — 훅은 언제나 `<root>/.opencode/lib/*.cjs` 에 설치되고
@@ -42,14 +42,6 @@ const VERDICTS = ["ok", "warn", "deny"];
 
 function errorText(error) {
   return error && error.message ? error.message : String(error);
-}
-
-// 판정을 얻지 못한 도구 호출을 막는 오류 — 원인과 다음에 할 일을 싣는다.
-function noVerdict(cause) {
-  return new Error(
-    `[git-check/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다(${cause}). 같은 호출을 한 번 다시 실행하라. `
-    + "다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라.",
-  );
 }
 
 // board.py 하위 명령 1회 실행 — 실행기는 프로세스 없이 고르고, 실행 실패·rc≠0 은 예외로 올린다.
@@ -233,7 +225,7 @@ function createToolBoundary({
     try {
       rootSID = await rootSessionID(sessionID);
     } catch (error) {
-      throw noVerdict(`세션 확인 실패: ${errorText(error)}`);
+      throw noVerdict("git-check", `세션 확인 실패: ${errorText(error)}`);
     }
     const mainThread = rootSID === sessionID;
     const observed = sessionID && mainThread ? contextFor(sessionID) : null;
@@ -260,7 +252,7 @@ function createToolBoundary({
     try {
       response = runHookTool(root, rootSID, request, { spawnSync, platform });
     } catch (error) {
-      throw noVerdict(errorText(error));
+      throw noVerdict("git-check", errorText(error));
     }
     if (response.git.verdict === "deny") throw new Error(`[git-check/deny] ${response.git.reason}`);
     if (response.context) await acceptContext(sessionID, response.context, observed);

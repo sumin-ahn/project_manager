@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from _win_skip import posix_bash_supported
 from pm_engine.app import hooks
 from pm_engine.cli import hooks as cli_hooks
 from pm_engine.domain import git_policy, shell_policy
@@ -1444,48 +1445,6 @@ def test_claude_hook_prefilter_warn_and_deny(monkeypatch, topology):
     assert "additionalContext" in dynamic and "permissionDecision" not in dynamic
 
 
-@pytest.mark.parametrize("failure_site", ["judge"])
-def test_claude_hook_system_exit_is_warn_and_rc0(
-    monkeypatch, topology, capsys, failure_site,
-):
-    driver = _load(f"git_target_repo_claude_system_exit_{failure_site}", CLAUDE_DRIVER)
-    home, _slot = topology
-
-    class ExitBoard:
-        @staticmethod
-        def judge_git_check_command(_root, _session, _cwd, _command, *, shell, main_thread, grants=False):
-            raise SystemExit(23)
-
-    monkeypatch.setattr(cli_hooks, "judge_git_check_command", ExitBoard.judge_git_check_command)
-    payload = {
-        "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(home),
-        "tool_input": {"command": "git add tests/shared.txt"},
-    }
-    monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
-    rc = driver.run_git_target_repo_hook(home)
-    got = json.loads(capsys.readouterr().out)
-    assert rc == 0
-    assert "additionalContext" in got["hookSpecificOutput"]
-    assert "판정 불가" in got["hookSpecificOutput"]["additionalContext"]
-
-
-@pytest.mark.parametrize("failure_site", ["usage", "root"])
-def test_claude_hook_mode_outer_boundary_is_warn_rc0(monkeypatch, capsys, failure_site):
-    driver = _load(f"git_target_repo_claude_outer_{failure_site}", CLAUDE_DRIVER)
-    if failure_site == "usage":
-        argv = ["--git-anchor-hook", "--bogus"]
-    else:
-        monkeypatch.setattr(
-            driver.ctx_guard, "repo_root", lambda _path: (_ for _ in ()).throw(SystemExit(31)),
-        )
-        argv = ["--git-anchor-hook"]
-    rc = driver.main(argv)
-    got = json.loads(capsys.readouterr().out)
-    assert rc == 0
-    assert "additionalContext" in got["hookSpecificOutput"]
-    assert "판정 불가" in got["hookSpecificOutput"]["additionalContext"]
-
-
 # ── 세션 내 완전일치 중복 억제 (T-0764) ────────────────────────────────────
 # 경고 문구·차단 동작은 그대로 두고 *같은 말을 두 번 하지 않는* 것만 본다.
 # stdin 모양은 라이브 훅과 같다 — `session_id` 는 ctx_stop_hook 이 marker 파일명으로 쓰는 그 필드다
@@ -1612,24 +1571,6 @@ def test_claude_hook_keeps_emitting_when_membership_io_fails(
     # fail-open 의 핵심: 완전히 같은 문구가 두 번째에도 그대로 출력된다(억제 없음).
     assert emitted[1] == emitted[0]
     assert blocked.is_file()
-
-
-def test_claude_hook_infra_failure_warn_is_never_suppressed(
-    monkeypatch, topology, capsys,
-):
-    """판정 인프라 손상(`판정 불가`) 출력은 중복 억제를 지나지 않는다(fail-open 무조건)."""
-    driver = _load("git_target_repo_claude_infra_repeat", CLAUDE_DRIVER)
-    home, _slot = topology
-
-    def fail_judge(*_args, **_kwargs):
-        raise SystemExit(17)
-
-    monkeypatch.setattr(cli_hooks, "judge_git_check_command", fail_judge)
-    for _attempt in range(2):
-        _hook_stdin(monkeypatch, driver, home, "git add tests/shared.txt", "sess-infra")
-        assert driver.run_git_target_repo_hook(home) == 0
-        got = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
-        assert "판정 불가" in got["additionalContext"]
 
 
 def test_claude_settings_and_self_resolving_wrapper_are_wired():
@@ -1950,11 +1891,11 @@ def test_codex_bash_hook_warn_is_suppressed_once_per_session(monkeypatch, topolo
 
 
 @pytest.mark.parametrize("failure_site", ["judge"])
-def test_codex_git_anchor_hook_infra_failure_is_warn_rc0_and_bypasses_dedup(
+def test_codex_git_anchor_hook_infra_failure_propagates(
     monkeypatch, topology, failure_site,
 ):
-    """판정 인프라 손상은 rc0 + warn 으로 낮춰지고, 중복 억제를 지나지 않는다(fail-open —
-    claude `run_git_target_repo_hook` 와 같음)."""
+    """판정 인프라 손상은 기능 자식 밖으로 그대로 올라가고(rc≠0) 아무것도 쓰지 않는다 —
+    그 호출을 막는 응답은 디스패처(`hook_failure_envelope`)가 낸다."""
     dispatcher = _load(f"git_target_repo_codex_infra_{failure_site}", CODEX_DISPATCHER)
     home, _slot = topology
 
@@ -1969,14 +1910,13 @@ def test_codex_git_anchor_hook_infra_failure_is_warn_rc0_and_bypasses_dedup(
     payload["cwd"] = str(home)
     payload["tool_input"] = {"command": "git add tests/shared.txt"}
 
-    for _attempt in range(2):  # 두 번 호출해도 매번 출력(중복 억제 미적용).
+    for _attempt in range(2):  # 두 번 호출해도 매번 같은 실패(중복 억제가 삼키지 않는다).
         stdin = io.StringIO(json.dumps(payload))
         stdout = io.StringIO()
-        rc = dispatcher.run_git_target_repo_hook(home, stdin=stdin, stdout=stdout)
-        assert rc == 0
-        got = json.loads(stdout.getvalue())
-        assert "판정 불가" in got["systemMessage"]
-        assert got["suppressOutput"] is False
+        with pytest.raises(SystemExit) as raised:
+            dispatcher.run_git_target_repo_hook(home, stdin=stdin, stdout=stdout)
+        assert raised.value.code == 23
+        assert stdout.getvalue() == ""
 
 
 def test_codex_run_git_anchor_hook_writes_the_measured_allow_shape_for_ok(topology):
@@ -3712,3 +3652,112 @@ def test_unknown_shell_takes_the_strictest_of_the_three_readings(topology):
         assert {shell: _judge_verdict(home, cwd, command, shell) for shell in single} == single, command
         strictest = max(single.values(), key=rank.__getitem__)
         assert _judge_verdict(home, cwd, command, "unknown") == strictest, command
+
+
+CLAUDE_NO_VERDICT_PREFIX = "[git-check/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다("
+NO_VERDICT_TAIL = (
+    "). 같은 호출을 한 번 다시 실행하라. 다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라.\n"
+)
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님")
+def test_claude_git_check_no_verdict_blocks(monkeypatch, topology, capsys, tmp_path):
+    """Claude git 명령 검사 훅이 판정을 얻지 못하면 rc 2 와 [git-check/판정 실패] 문구로 그 호출을 막는다.
+
+    판정 예외(SystemExit 포함)·인자 오류·설치 루트 해소 실패·훅 입력 해석 실패와, 엔진 import 가 깨진
+    설치에서 실제 래퍼를 돈다. 어느 꼴도 stdout 에 경고 JSON 을 쓰지 않는다(경고 후 통과 없음)."""
+    home, _slot = topology
+    payload = json.dumps({
+        "session_id": "S", "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(home),
+        "tool_input": {"command": "git add tests/shared.txt"},
+    })
+
+    def raising(exc):
+        def judge(*_args, **_kwargs):
+            raise exc
+        return judge
+
+    cases = [
+        ("judge-exit", raising(SystemExit(23)), ["--git-anchor-hook"], payload, "SystemExit: 23"),
+        ("judge-error", raising(RuntimeError("engine boom")), ["--git-anchor-hook"], payload, "RuntimeError: engine boom"),
+        ("usage", None, ["--git-anchor-hook", "--bogus"], payload, "SystemExit: 2"),
+        ("not-json", None, ["--git-anchor-hook"], "{bad", "JSONDecodeError: "),
+        ("not-object", None, ["--git-anchor-hook"], "[]", "TypeError: 훅 입력이 JSON 객체가 아님"),
+    ]
+    for name, judge, argv, stdin, cause in cases:
+        driver = _load(f"git_check_claude_no_verdict_{name}", CLAUDE_DRIVER)
+        monkeypatch.setattr(driver.ctx_guard, "repo_root", lambda _path: home)
+        if judge is not None:
+            monkeypatch.setattr(cli_hooks, "judge_git_check_command", judge)
+        monkeypatch.setattr(driver.sys, "stdin", io.StringIO(stdin))
+        assert driver.main(argv) == 2, name
+        captured = capsys.readouterr()
+        assert captured.out == "", name
+        # 인자 오류는 argparse 가 사용법을 먼저 쓴다 — 막는 문구는 stderr 의 마지막 줄이다.
+        assert captured.err.splitlines()[-1].startswith(CLAUDE_NO_VERDICT_PREFIX + cause), (name, captured.err)
+        assert captured.err.endswith(NO_VERDICT_TAIL), (name, captured.err)
+        monkeypatch.undo()
+
+    driver = _load("git_check_claude_no_verdict_root", CLAUDE_DRIVER)
+    monkeypatch.setattr(driver.ctx_guard, "repo_root", lambda _path: (_ for _ in ()).throw(SystemExit(31)))
+    monkeypatch.setattr(driver.sys, "stdin", io.StringIO(payload))
+    assert driver.main(["--git-anchor-hook"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == CLAUDE_NO_VERDICT_PREFIX + "SystemExit: 31" + NO_VERDICT_TAIL
+    monkeypatch.undo()
+
+    install = tmp_path / "broken-install"
+    shutil.copytree(CLAUDE_WRAPPER.parent, install / ".claude",
+                    ignore=shutil.ignore_patterns("__pycache__", "skills", "agents"))
+    package = install / ".project_manager" / "tools" / "pm_engine"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('raise RuntimeError("engine import broken")\n', encoding="utf-8")
+    proc = subprocess.run(
+        ["bash", str(install / ".claude" / "ctx_stop_hook.sh"), "--git-anchor-hook"],
+        input=payload, capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    assert proc.returncode == 2, proc.stderr
+    assert proc.stdout == ""
+    assert proc.stderr == CLAUDE_NO_VERDICT_PREFIX + "RuntimeError: engine import broken" + NO_VERDICT_TAIL
+
+
+def test_claude_git_check_rerun_after_no_verdict_applies_verdict(monkeypatch, topology, capsys):
+    """판정 실패로 막힌 호출을 다시 실행해 판정을 얻으면 지금과 같은 거부·경고 출력이 나온다."""
+    home, slot = topology
+    deny_payload = {
+        "session_id": "S", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+        "cwd": str(slot), "tool_input": {"command": "git branch -D main"},
+    }
+    warn_payload = {**deny_payload, "tool_input": {"command": "cd tests && git status"}}
+    driver = _load("git_check_claude_rerun", CLAUDE_DRIVER)
+    expected = {
+        key: driver._pre_tool_use_output(cli_hooks.judge_git_check_command(
+            cli_hooks.adapter_home(home), "S", str(slot), payload["tool_input"]["command"],
+            shell="bash", main_thread=True, grants=True,
+        ))
+        for key, payload in (("deny", deny_payload), ("warn", warn_payload))
+    }
+    assert expected["deny"]["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert expected["warn"]["hookSpecificOutput"]["additionalContext"].startswith("[git-check/warn] ")
+    real_judge = cli_hooks.judge_git_check_command
+    monkeypatch.setattr(driver.ctx_guard, "repo_root", lambda _path: home)
+    for key, payload in (("deny", deny_payload), ("warn", warn_payload)):
+        def broken(*_args, **_kwargs):
+            raise RuntimeError("engine boom")
+        monkeypatch.setattr(cli_hooks, "judge_git_check_command", broken)
+        monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
+        assert driver.main(["--git-anchor-hook"]) == 2
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err.startswith(CLAUDE_NO_VERDICT_PREFIX + "RuntimeError: engine boom")
+        monkeypatch.setattr(cli_hooks, "judge_git_check_command", real_judge)
+        monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps({**payload, "session_id": f"S-{key}"})))
+        assert driver.main(["--git-anchor-hook"]) == 0
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        got = json.loads(captured.out)
+        want = driver._pre_tool_use_output(real_judge(
+            cli_hooks.adapter_home(home), f"S-{key}", str(slot), payload["tool_input"]["command"],
+            shell="bash", main_thread=True, grants=True,
+        ))
+        assert got == want
+        assert got["hookSpecificOutput"].keys() == expected[key]["hookSpecificOutput"].keys()

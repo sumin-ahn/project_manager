@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Harness-neutral native delegation-channel guard entry point and Claude hook.
+"""Harness-neutral native delegation-channel guard entry point.
 
-The decision CLI and hook protocol live in ``pm_engine.cli.delegate_channel_guard``.
-The argument-based ``decide`` CLI always emits one JSON line and exits successfully,
-including usage and infrastructure failures.  With no arguments, the historical
-Claude ``PreToolUse`` stdin/stdout hook protocol remains intact.  This file only
-configures the console and calls the CLI with the Home where the tool is installed.
+The decision CLI and hook protocols live in ``pm_engine.cli.delegate_channel_guard``:
+``decide`` for the opencode plugin, ``codex-hook``·``codex-subagent-observe`` for the
+Codex dispatcher and, with no arguments, the Claude ``PreToolUse`` hook protocol for
+the Claude driver ``pm_orch_claude.py``.  Failures exit non-zero and the adapter that
+started this process blocks the call.  This file only configures the console and
+calls the CLI with the Home where the tool is installed.
 """
 import os
 import sys

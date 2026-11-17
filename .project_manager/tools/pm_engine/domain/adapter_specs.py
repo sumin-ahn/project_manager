@@ -10,8 +10,7 @@ from typing import NamedTuple
 # 래퍼/드라이버는 manifest 등재라 pm_update 가 덮는다. 그래서 한쪽만 새 버전인 창이 구조적으로
 # 열리고, 그중 **config 가 앞선 조합만** 락아웃이다(v1.7.0 갱신 반영 실측: 신 settings.json 의
 # `--git-anchor-hook` 을 구 pm_orch_claude.py 가 argparse rc2 로 거부 → PreToolUse rc2 = 도구 차단
-# → Bash 전면 락아웃). 반대 방향(구 config + 신 드라이버)은 훅이 돌지 않아 무해하다
-# (tests/test_git_check_guard.py 의 unknown-flag rc0 관용).
+# → Bash 전면 락아웃). 반대 방향(구 config + 신 드라이버)은 훅이 돌지 않아 무해하다.
 #
 # 판정을 하드코딩 claude 전용으로 두지 않기 위해 검사 대상은 전부 이 표에서만 온다. 등록 하네스
 # 전수가 키를 가져야 하며(가드가 강제), 훅 커맨드를 선언하는 config 가 없는 하네스는 빈
@@ -64,7 +63,7 @@ class AdapterHookSetSpec(NamedTuple):
     coupled_groups : **한 버전으로 함께 옮겨야** 하는 묶음(로드 시점 결합). 부분 전파가 묶음의
                      일부만 갱신하면 그 자리에서 버전이 갈린다. `live_files` 와 관심사가 다르다 —
                      저쪽은 "원자 write 대상"(파일 단위 torn read)이고 이쪽은 "함께 움직여야
-                     하는 단위"다. 결합이 없는 파일(독립 relay 드라이버·위임 채널 가드)은 어느
+                     하는 단위"다. 결합이 없는 파일(독립 relay 드라이버)은 어느
                      묶음에도 들지 않아 단건 전파가 정당하다.
     entrypoints    : 이 엔진 버전이 config 에 기대하는 **범용 진입점**(`AdapterHookEntrypoint`).
                      역방향 검사라 판정은 loud advisory 다 — config 는 채택자 소유이고 그 파일엔
@@ -97,9 +96,11 @@ ADAPTER_HOOK_SET = {
         },
         coupled_groups=(
             # 훅 체인 + 공유 코어: 래퍼가 플래그로 두 파이썬 진입 중 하나를 고르고, 그 둘이
-            #   ctx_guard 를 import 한다. 일부만 옮기면 미지원 플래그·import 불일치가 난다.
+            #   ctx_guard 를 import 한다. 위임 채널 래퍼는 드라이버를 `--delegate-channel-hook` 으로
+            #   부른다. 일부만 옮기면 미지원 플래그·import 불일치가 난다.
             (".claude/ctx_stop_hook.sh", ".claude/ctx_stop_hook.py",
-             ".claude/pm_orch_claude.py", ".claude/ctx_guard.py"),
+             ".claude/pm_orch_claude.py", ".claude/ctx_guard.py",
+             ".claude/delegate_channel_guard_hook.sh"),
             # statusline 래퍼/구현 쌍(같은 근거·독립 묶음).
             (".claude/ctx_statusline.sh", ".claude/ctx_statusline.py"),
         ),

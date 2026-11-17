@@ -218,8 +218,9 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
   `hookSpecificOutput.permissionDecision:"deny"` + `systemMessage` + `suppressOutput:false`)를
   출력하게 한 뒤 spawn을 지시했다. 재시도로 `PreToolUse` 4건과 `error` 2건이
   기록됐지만 `SubagentStart`는 0건이라 실제 spawn이 차단됐다. 같은 지시를 allow-only tee hook으로
-  바꾼 대조군(현재 출하 allow와 같은 빈 객체 `{}`)은 `SubagentStart` 1건이 실행됐다. 출하 wrapper는
-  이 exact deny 5필드·빈 allow·2필드 fail-open 경고만 통과시키며 다른 shape은 경고로 낮춘다.
+  바꾼 대조군(현재 출하 allow와 같은 빈 객체 `{}`)은 `SubagentStart` 1건이 실행됐다. 위임 채널
+  판정 자식(`codex-hook`)은 이 exact deny 5필드·빈 allow·2필드 경고만 내고 다른 모양은 오류로
+  끝나며, 디스패처는 판정 자식의 실패를 `[hook-dispatch/판정 실패]` 로 막는다.
   현재 공식 문서는 PreToolUse의 `suppressOutput`을
   미지원으로 적고 그런 출력은 hook failure 후 tool을 계속한다고 설명하지만, 0.147.0 host 실동작은
   deny를 먼저 적용했다. 따라서 문서 schema만으로 차단 실패를 추론하지 말고 버전별 host를 끝까지
@@ -243,11 +244,11 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
 - 대기 도구 `collaborationwait_agent`와 `agent_id`가 동반된 서브에이전트 자신의 도구 호출은 spawn이
   아니므로 matcher와 가드 내부 판정 모두 통과한다.
 - execpolicy는 argv-only라 동적 `task_name` 판정을 구조적으로 수행할 수 없으며, hooks의
-  `PreToolUse`만 차단 채널이다. 각 hook command는 10초 외부 제한보다 짧은 8초 subprocess 제한으로
-  가드를 감싸 가드 파일 부재·비정상 종료·정지에도 유효한 allow JSON을 출력한다.
-  단, POSIX shell 자체의 기동 실패나 command 문자열 파싱 실패는 이 wrapper가 실행되기 전이라
-  JSON fallback을 출력할 수 없다. 이 최외곽 실패가 Codex hook host에서 fail-open인지 live probe로
-  입증하지 못했으므로 보장하지 않는다.
+  `PreToolUse`만 차단 채널이다. 디스패처는 PreToolUse 기능(git 명령 검사·위임 채널)을 15초 훅
+  제한보다 짧은 12초 예산 안에서 돌리고, 기능이 판정을 내지 못하면(실행 실패·rc≠0·예산 초과·출력
+  형식 오류·판별 불가) 막는 응답을 낸다. 막지 못하는 길: Python 실행기가 없거나 디스패처가 비정상
+  종료하면 `hooks.json` 래퍼가 `[hook-dispatch/warn] adapter-fallback` 경고만 내고 통과시키고, 훅이
+  15초를 넘거나 `sh` 를 띄우지 못하면 Codex 가 도구를 그대로 실행한다(0.166.0, 막는 설정 없음).
 
 ## 스킬 (canonical `.agents/skills` · `$` 멘션 · auto-trigger)
 

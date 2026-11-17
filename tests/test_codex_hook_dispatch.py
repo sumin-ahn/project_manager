@@ -11,8 +11,9 @@
   - 진입점 집합은 hooks.json·디스패처·엔진 역방향 선언 **세 곳에서 같은 값**이다(선언 두 벌 금지).
   - 진입점 뒤 분기가 옛 matcher 판정을 값으로 보존한다(스폰만 위임 가드로 간다).
   - 걸리는 기능이 없으면 자식 프로세스를 하나도 안 띄운다(진입점이 넓어진 비용 상한).
-  - 기능 고장·구버전 디스패처·디스패처 부재 어느 경우에도 **도구 호출이 막히지 않는다**
-    (rc0 + 완전한 엔벨로프 · 대체 출력 사실은 마커로 남는다).
+  - PreToolUse 기능이 판정을 내지 못하면(자식 실패·판별 불가·디스패처 예외) 디스패처가 그 도구 호출을
+    5필드 막는 응답으로 막고, 그 밖의 이벤트 기능 실패는 마커 붙은 경고로 남는다(rc0 + 완전한 엔벨로프).
+    구버전 디스패처·디스패처 부재는 `hooks.json` 래퍼가 처리하므로 지금처럼 경고 후 통과한다.
 
 판정 근거는 조립한 문자열이 아니라 **출하 hooks.json 의 커맨드를 실제 셸로 실행한 rc/출력**이다.
 """
@@ -21,6 +22,7 @@ from __future__ import annotations
 from pm_engine.domain import delegate_channel_rules
 
 import importlib.util
+import io
 import json
 import os
 import re
@@ -176,14 +178,13 @@ def test_no_hook_event_is_left_outside_the_entrypoint_set():
                     assert "delegate_channel_guard.py" not in handler[key], (event, key)
 
 
-def test_timeout_layers_are_ordered_supervisor_dispatcher_host(dispatcher, guard):
-    """엔진 감독자 < 디스패처 예산 < 호스트 훅 timeout.
+def test_timeout_layers_are_ordered_dispatcher_host(dispatcher, guard):
+    """디스패처 예산 < 호스트 훅 timeout.
 
-    디스패처 예산이 감독자보다 짧으면 감독자가 완전한 엔벨로프를 내기 전에 죽여 사유가 사라지고,
-    호스트 timeout 보다 길면 호스트가 먼저 죽여 같은 일이 벌어진다."""
+    호스트 timeout 보다 길면 호스트가 먼저 죽여 Codex 가 그 도구 호출을 그대로 실행한다 — 예산 안에서
+    끝나야 디스패처가 판정을 얻지 못한 PreToolUse 호출을 막는 응답으로 바꿀 수 있다."""
     for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
-        assert (delegate_channel_rules.CODEX_SUPERVISOR_TIMEOUT_SECONDS
-                < dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC
+        assert (dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC
                 < _entry_handler(event)["timeout"]), event
 
 
@@ -315,8 +316,7 @@ def test_only_matching_features_spawn_a_child(dispatcher, tmp_path):
     assert argv[0] == sys.executable
     assert Path(argv[1]) == (tmp_path / ".project_manager" / "tools"
                              / "delegate_channel_guard.py")
-    assert argv[2:4] == ["supervise", "PreToolUse"]
-    assert argv[-1] == "codex-hook"
+    assert argv[2:] == ["codex-hook"]
 
 
 def test_events_without_registered_features_answer_the_measured_allow_shape(
@@ -331,11 +331,9 @@ def test_events_without_registered_features_answer_the_measured_allow_shape(
 
 def test_unparsable_payload_still_runs_tool_agnostic_features(dispatcher, guard,
                                                               tmp_path):
-    """payload 를 못 읽어도 도구 무관 기능은 돌고, 도구 판별 기능은 **경고**로 남는다.
+    """payload 를 못 읽어도 도구 무관 기능은 돌고, PreToolUse 도구 판별 기능은 그 호출을 **막는다**.
 
-    도구 판별 기능이 안 도는 것은 보수적 처분이라 맞다. 그 사실이 통과와 같은 값(`{}`)으로
-    나가면 가드가 꺼진 구성과 구별되지 않는다 — 옛 등록에서 같은 입력에 가드 자식이 내던
-    경고를 여기서 낸다."""
+    도구 판별 기능이 판정을 얻지 못한 것이므로, 통과와 같은 값(`{}`)이나 경고로 내보내지 않는다."""
     runner = _RecordingRunner()
     agnostic = dispatcher.CodexHookFeature(
         "fixture-agnostic", "PostToolUse", None, ("{py}", "-c", "print('{}')"))
@@ -347,9 +345,14 @@ def test_unparsable_payload_still_runs_tool_agnostic_features(dispatcher, guard,
         "PreToolUse", b"not json", tmp_path,
         features=dispatcher.CODEX_HOOK_FEATURES, runner=runner)
 
-    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
-    assert "delegate-channel" in envelope["systemMessage"]
+    assert set(envelope) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
+    assert envelope["decision"] == "block"
+    assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert envelope["reason"].startswith(CODEX_NO_VERDICT_PREFIX)
+    assert envelope["reason"] == envelope["systemMessage"]
+    assert envelope["suppressOutput"] is False
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in envelope["reason"]
+    assert "delegate-channel 판정 불가" in envelope["reason"]
     assert len(runner.calls) == 1, "판별식 있는 기능이 미지 payload 에 실행됐다"
 
 
@@ -357,7 +360,7 @@ def test_unparsable_payload_still_runs_tool_agnostic_features(dispatcher, guard,
 # 옛 등록은 hooks.json matcher 가 호스트 쪽에서 판별했고, 판별 근거가 없는 입력은 가드 자식이
 # 경고로 냈다(실측: 빈 stdin·`{}`·파손 JSON 모두 rc0 경고 엔벨로프). 판별이 진입점 뒤로 옮겨
 # 온 뒤에도 그 의미가 남아야 한다 — 아래는 "못 판정했다" 와 "안 걸렸다" 가 같은 값으로 바뀌지
-# 않는지를 고정한다. 등급은 종전대로 rc0·차단 0 이다(경고만 복원·승격 아님).
+# 않는지를 고정한다. PreToolUse 에서 못 판정한 호출은 막는다(rc0 + 5필드 막는 응답).
 
 
 @pytest.mark.parametrize("label,payload_bytes,detail_fragment", (
@@ -365,26 +368,28 @@ def test_unparsable_payload_still_runs_tool_agnostic_features(dispatcher, guard,
     ("파손 JSON", b"{not json", "JSONDecodeError"),
     ("라우팅 필드 부재", b"{}", "tool_name 이 없어"),
     # 빈 이름·비문자열 이름도 라우팅 값이 없는 것과 같다 — 옛 출하 커맨드도 이 입력에
-    #   rc0 경고를 냈다(실측: `{"tool_name":""}` → supervisor-fallback 경고).
+    #   판정 없이 끝났다(실측: `{"tool_name":""}` → 대체 경고).
     ("빈 tool_name", b'{"tool_name": ""}', "tool_name 이 없어"),
     ("비문자열 tool_name", b'{"tool_name": 12}', "tool_name 이 없어"),
     ("JSON 객체가 아님", b"[1, 2]", "JSON 객체가 아님"),
 ))
-def test_undecidable_routing_is_warned_not_silently_skipped(
+def test_undecidable_routing_blocks_not_silently_skipped(
         dispatcher, guard, tmp_path, label, payload_bytes, detail_fragment):
-    """판별 근거가 없으면 조용한 통과가 아니라 마커 붙은 경고다(자식은 안 띄운다)."""
+    """판별 근거가 없으면 조용한 통과가 아니라 그 호출을 막는 응답이다(자식은 안 띄운다)."""
     runner = _RecordingRunner()
 
     envelope = dispatcher.dispatch_hook("PreToolUse", payload_bytes, tmp_path,
                                         runner=runner)
 
-    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS), label
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
-    assert "delegate-channel" in envelope["systemMessage"], label
-    assert detail_fragment in envelope["systemMessage"], envelope["systemMessage"]
-    assert envelope["suppressOutput"] is delegate_channel_rules.CODEX_WARNING_SUPPRESS_OUTPUT
-    assert "decision" not in envelope and "hookSpecificOutput" not in envelope, \
-        "판정 불능이 차단으로 승격됐다"
+    assert set(envelope) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS), label
+    assert envelope["decision"] == "block", label
+    assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny", label
+    assert envelope["reason"].startswith(CODEX_NO_VERDICT_PREFIX), label
+    assert envelope["reason"] == envelope["systemMessage"], label
+    assert envelope["suppressOutput"] is False, label
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in envelope["reason"], label
+    assert "delegate-channel 판정 불가" in envelope["reason"], label
+    assert detail_fragment in envelope["reason"], envelope["reason"]
     assert runner.calls == [], label
 
 
@@ -399,9 +404,14 @@ def test_broken_registry_pattern_is_undecidable_not_a_pass(dispatcher, guard,
         "PreToolUse", json.dumps(_spawn_payload()).encode("utf-8"), tmp_path,
         features=(broken,), runner=runner)
 
-    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
-    assert "정규식 오류" in envelope["systemMessage"]
+    assert set(envelope) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
+    assert envelope["decision"] == "block"
+    assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert envelope["reason"].startswith(CODEX_NO_VERDICT_PREFIX)
+    assert envelope["reason"] == envelope["systemMessage"]
+    assert envelope["suppressOutput"] is False
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in envelope["reason"]
+    assert "정규식 오류" in envelope["reason"]
     assert runner.calls == []
 
 
@@ -661,22 +671,7 @@ def test_merged_deny_and_ctx_envelope_carries_no_new_unhandled_key_warning(dispa
     assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER not in merged["systemMessage"]
 
 
-# ── 고장 경계 — 어떤 실패도 도구 호출을 막지 않는다 ──────────────────────────
-
-
-def test_feature_failure_degrades_to_a_marked_fallback(dispatcher, guard, tmp_path):
-    """기능 자식이 못 답하면 마커 붙은 2필드 경고로 낮춘다(스키마=엔진 상수)."""
-    runner = _RecordingRunner(stdout=b"", returncode=3)
-
-    envelope = dispatcher.dispatch_hook(
-        "PreToolUse", json.dumps(_spawn_payload()).encode("utf-8"), tmp_path,
-        runner=runner)
-
-    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert envelope["suppressOutput"] is delegate_channel_rules.CODEX_WARNING_SUPPRESS_OUTPUT
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"]
-    assert "delegate-channel" in envelope["systemMessage"]
-    assert "fail-open" in envelope["systemMessage"]
+# ── 고장 경계 — CLI 는 어떤 실패에도 rc0 + 완전한 엔벨로프 한 줄 ─────────────
 
 
 def test_hung_feature_is_bounded_by_the_dispatch_budget(dispatcher, tmp_path):
@@ -765,7 +760,6 @@ def test_shipped_entrypoint_runs_the_registered_guard_for_a_spawn_payload(
     assert "pm_delegate.py" in result["reason"]
     rendered = json.dumps(result, ensure_ascii=False)
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in rendered
-    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
@@ -835,7 +829,7 @@ def _windows_dispatcher_argv(event: str) -> list[str]:
 
     PowerShell 이 없는 호스트에서도 그 커맨드가 넘기는 argv 자체는 그대로 실행할 수 있다.
     인터프리터 해소 래퍼(프로브 루프·대체 분기)는 `test_codex_ctx_guard` 의 정적 파서가 따로
-    고정하므로, 여기서 보는 것은 판정 불능 경고가 그 호출로 실제 나오는가다."""
+    고정하므로, 여기서 보는 것은 판정 불능 막는 응답이 그 호출로 실제 나오는가다."""
     windows = _entry_handler(event)["commandWindows"]
     invocations = [segment for segment in powershell_native_arguments(windows)
                    if f"--hook-dispatch {event}" in segment]
@@ -860,7 +854,7 @@ def _run_shipped_command(event: str, root: Path, payload_text: str, *,
                           timeout=_entry_handler(event)["timeout"] + 5)
 
 
-# (라벨, stdin 원문, 깨진 판별식 사본을 심을지, 경고 사유에 있어야 할 조각)
+# (라벨, stdin 원문, 깨진 판별식 사본을 심을지, 막는 사유에 있어야 할 조각)
 _UNDECIDABLE_SHIPPED_INPUTS = (
     ("빈 stdin", "", False, "빈 stdin"),
     ("파손 JSON", "{not json", False, "JSONDecodeError"),
@@ -873,9 +867,9 @@ _UNDECIDABLE_SHIPPED_INPUTS = (
                     reason="POSIX bash wrapper 실행 환경이 아님")
 @pytest.mark.parametrize("label,payload_text,broken_pattern,detail_fragment",
                          _UNDECIDABLE_SHIPPED_INPUTS)
-def test_shipped_posix_entrypoint_warns_when_it_cannot_decide(
+def test_shipped_posix_entrypoint_blocks_when_it_cannot_decide(
         guard, tmp_path, label, payload_text, broken_pattern, detail_fragment):
-    """출하 POSIX 커맨드가 판정 불능 입력에 rc0 **경고**를 낸다(옛 경로와 같은 의미)."""
+    """출하 POSIX 커맨드가 판정 불능 입력에 rc0 + 5필드 막는 응답을 낸다."""
     root = _adopter_tree(
         tmp_path, conf_lines=_CROSS_CONF,
         dispatcher_body=(dispatcher_source_with_broken_tool_pattern()
@@ -887,17 +881,21 @@ def test_shipped_posix_entrypoint_warns_when_it_cannot_decide(
 
     assert completed.returncode == 0, (label, completed.stderr)
     envelope = json.loads(completed.stdout)
-    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS), label
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
-    assert detail_fragment in envelope["systemMessage"], envelope["systemMessage"]
-    assert "decision" not in envelope, "판정 불능이 차단으로 승격됐다"
+    assert set(envelope) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS), label
+    assert envelope["decision"] == "block", label
+    assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny", label
+    assert envelope["reason"].startswith(CODEX_NO_VERDICT_PREFIX), label
+    assert envelope["reason"] == envelope["systemMessage"], label
+    assert envelope["suppressOutput"] is False, label
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in envelope["reason"], label
+    assert detail_fragment in envelope["reason"], envelope["reason"]
 
 
 @pytest.mark.parametrize("label,payload_text,broken_pattern,detail_fragment",
                          _UNDECIDABLE_SHIPPED_INPUTS)
-def test_shipped_windows_entrypoint_warns_when_it_cannot_decide(
+def test_shipped_windows_entrypoint_blocks_when_it_cannot_decide(
         guard, tmp_path, label, payload_text, broken_pattern, detail_fragment):
-    """Windows 쪽 출하 커맨드도 같은 입력에 같은 경고를 낸다(플랫폼 간 판정 비대칭 0)."""
+    """Windows 쪽 출하 커맨드도 같은 입력에 같은 막는 응답을 낸다(플랫폼 간 판정 비대칭 0)."""
     root = _adopter_tree(
         tmp_path, conf_lines=_CROSS_CONF,
         dispatcher_body=(dispatcher_source_with_broken_tool_pattern()
@@ -909,10 +907,14 @@ def test_shipped_windows_entrypoint_warns_when_it_cannot_decide(
 
     assert completed.returncode == 0, (label, completed.stderr)
     envelope = json.loads(completed.stdout)
-    assert set(envelope) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS), label
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in envelope["systemMessage"], label
-    assert detail_fragment in envelope["systemMessage"], envelope["systemMessage"]
-    assert "decision" not in envelope, "판정 불능이 차단으로 승격됐다"
+    assert set(envelope) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS), label
+    assert envelope["decision"] == "block", label
+    assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny", label
+    assert envelope["reason"].startswith(CODEX_NO_VERDICT_PREFIX), label
+    assert envelope["reason"] == envelope["systemMessage"], label
+    assert envelope["suppressOutput"] is False, label
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in envelope["reason"], label
+    assert detail_fragment in envelope["reason"], envelope["reason"]
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
@@ -1216,7 +1218,9 @@ def _equivalence_inputs(schemas: dict, event: str) -> list[tuple[str, str]]:
                     reason="POSIX bash wrapper 실행 환경이 아님")
 # PostCompact 는 동치 대조 대상이 아니다 — 아래 `test_post_compact_names_the_unresolved_
 # identity_that_the_old_wiring_hid` 가 그 이벤트의 값(옛=침묵 / 새=미해소 명시)을 따로 고정한다.
-@pytest.mark.parametrize("event", ("SubagentStart", "PreCompact"))
+# SubagentStart 도 대상이 아니다 — 옛 직결 커맨드의 위임 채널 감독 호출(`supervise`)은 이 판의
+# 엔진에 없어 대체 경고로 통과한다(`test_legacy_wiring_adopter_is_told_future_guards_not_current_ones`).
+@pytest.mark.parametrize("event", ("PreCompact",))
 def test_migrated_event_answers_exactly_what_the_old_direct_wiring_answered(
         tmp_path, hook_io_schema, event):
     """이관 전/후가 **같은 입력에 같은 답**을 낸다 (rc·stdout 엔벨로프 값 대조).
@@ -1312,7 +1316,6 @@ def test_compaction_normal_traffic_warns_only_where_identity_is_unresolved(
             assert "세션 task 미해소" in rendered, (trigger, rendered)
         else:
             assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in rendered, (trigger, rendered)
-        assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered, trigger
         assert "decision" not in envelope and "continue" not in envelope, trigger
 
 
@@ -1495,11 +1498,12 @@ def test_default_field_values_keep_older_positional_construction_working(dispatc
                     reason="POSIX bash wrapper 실행 환경이 아님")
 def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
         pm_import, tmp_path, hook_io_schema):
-    """옛 직결 등록 채택자의 소견은 "앞으로 등록될 가드" 를 말한다 — 그 가드는 계속 돈다.
+    """옛 직결 등록 채택자의 소견은 "앞으로 등록될 가드" 를 말하고 옛 등록의 실제 상태를 적는다.
 
     옛 문구("이 이벤트에 등록된 가드는 한 번도 실행되지 않는다")는 이 채택자에서 **거짓**이다:
-    같은 트리에서 옛 커맨드를 태우면 가드가 정상 엔벨로프를 낸다. 해결 안내가 거짓 사실을 근거로
-    들면 채택자는 그 안내를 안 믿는다."""
+    같은 트리에서 옛 압축 커맨드를 태우면 정상 엔벨로프를 낸다. 옛 SubagentStart 커맨드의 위임 채널
+    감독 호출(`supervise`)은 이 판의 엔진에 없어 대체 경고로 통과하고, 소견 문구가 그 사실을 말한다.
+    해결 안내가 거짓 사실을 근거로 들면 채택자는 그 안내를 안 믿는다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
     seed_slot(root)
     (root / ".project_manager").mkdir(exist_ok=True)
@@ -1516,7 +1520,9 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
         assert finding.kind == hook_sets.HOOK_ENTRYPOINT_MISSING
         assert "앞으로 등록될 가드는 실행되지 않는다" in finding.detail
         assert "한 번도 실행되지 않는다" not in finding.detail
-    # 문구가 참인지의 판정 근거 — 그 채택자에서 옛 커맨드는 지금도 정상 실행된다.
+        assert ("(옛 직결 등록 중 위임 채널 감독 호출(`supervise`)은 이 판의 엔진에 없어 "
+                "대체 경고로 통과하고, 그 밖의 옛 직결 등록은 계속 돈다)") in finding.detail
+    # 문구가 참인지의 판정 근거 — 옛 감독 호출은 대체 경고로, 그 밖의 옛 커맨드는 정상 실행된다.
     for event in _MIGRATED_EVENTS:
         returncode, stdout = _run_command_in_tree(
             _LEGACY_DIRECT_COMMANDS[event], root,
@@ -1524,7 +1530,16 @@ def test_legacy_wiring_adopter_is_told_future_guards_not_current_ones(
         assert returncode == 0, (event, stdout)
         envelope = json.loads(stdout)
         assert isinstance(envelope, dict) and envelope, event
-        assert "adapter-fallback" not in json.dumps(envelope, ensure_ascii=False), event
+        rendered = json.dumps(envelope, ensure_ascii=False)
+        if event == "SubagentStart":
+            assert envelope == {
+                "systemMessage": "[delegate-channel/warn] adapter-fallback: interpreter or guard file "
+                                 "unavailable; SubagentStart observation skipped, native spawn remains "
+                                 "allowed fail-open.",
+                "suppressOutput": False,
+            }, rendered
+        else:
+            assert "adapter-fallback" not in rendered, event
 
 
 # ── 라이브 캡처: PostCompact 는 실제로 실행된다 (T-0806 · 2026-08-22) ────────
@@ -1605,3 +1620,85 @@ def test_unregistered_home_compaction_is_loud_not_silent(guard, tmp_path, hook_i
     rendered = json.dumps(envelope, ensure_ascii=False)
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in rendered, rendered
     assert "compaction-snapshot" in rendered, rendered
+
+
+CODEX_NO_VERDICT_PREFIX = "[hook-dispatch/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다("
+CODEX_NO_VERDICT_TAIL = (
+    "). 같은 호출을 한 번 다시 실행하라. 다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라."
+)
+
+
+def _assert_no_verdict_block(envelope: dict, cause: str) -> None:
+    text = envelope["reason"]
+    assert text.startswith(CODEX_NO_VERDICT_PREFIX + cause), text
+    assert text.endswith(CODEX_NO_VERDICT_TAIL), text
+    assert envelope == {
+        "decision": "block", "reason": text, "systemMessage": text, "suppressOutput": False,
+        "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                               "permissionDecisionReason": text},
+    }
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님")
+def test_pretooluse_no_verdict_blocks_and_other_events_keep_warning(dispatcher, tmp_path):
+    """PreToolUse 에서 기능이 판정을 얻지 못하면(자식 rc≠0·판별 불가·디스패처 예외) 그 호출을 막는다.
+
+    출하 진입점을 실제 셸로 태운다. 다른 이벤트의 기능 실패는 지금처럼 마커 붙은 경고로 남는다."""
+    root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
+    tools = root / ".project_manager" / "tools" / "pm_engine"
+    with (tools / "cli" / "hooks.py").open("a", encoding="utf-8") as handle:
+        handle.write('\nraise RuntimeError("engine import broken")\n')
+    bash = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": "S",
+            "tool_input": {"command": "echo ok"}, "cwd": str(root)}
+    envelope, _elapsed = _run_entrypoint("PreToolUse", root, bash)
+    _assert_no_verdict_block(envelope, "git-check 판정 불가: ValueError: 기능 rc=1 · RuntimeError: engine import broken")
+
+    with (tools / "app" / "delegate_channel.py").open("a", encoding="utf-8") as handle:
+        handle.write('\nraise RuntimeError("delegate engine broken")\n')
+    envelope, _elapsed = _run_entrypoint("PreToolUse", root, {**_spawn_payload(), "cwd": str(root)})
+    _assert_no_verdict_block(envelope, "delegate-channel 판정 불가: ValueError: 기능 rc=1 · RuntimeError: ")
+
+    # 판별 근거가 없는 입력은 두 기능 모두 판별 불가다 — 막는 응답 둘이 하나로 합쳐지고 첫 원인이 앞에 온다.
+    merged = dispatcher.dispatch_hook("PreToolUse", b"{}", tmp_path)
+    assert merged["decision"] == "block"
+    assert merged["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert merged["reason"].startswith(
+        CODEX_NO_VERDICT_PREFIX + "delegate-channel 판정 불가: payload 에 tool_name 이 없어 판별 불가")
+    assert CODEX_NO_VERDICT_PREFIX + "git-check 판정 불가: payload 에 tool_name 이 없어 판별 불가" in merged["reason"]
+
+    class Broken:
+        def read(self):
+            raise OSError("stdin closed")
+    sink = io.StringIO()
+    assert dispatcher.run_hook_dispatch("PreToolUse", tmp_path, stdin=Broken(), stdout=sink) == 0
+    _assert_no_verdict_block(json.loads(sink.getvalue()), "dispatch:PreToolUse 판정 불가: OSError: stdin closed")
+
+    failing = dispatcher.CodexHookFeature("fixture-fail", "PostToolUse", None, ("{py}", "-c", "raise SystemExit(3)"))
+    warning = dispatcher.dispatch_hook("PostToolUse", b"{}", tmp_path, features=(failing,))
+    assert set(warning) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
+    assert warning["systemMessage"] == (
+        "[hook-dispatch/warn] adapter-fallback: fixture-fail 판정 불가(ValueError: 기능 rc=3) — 가드 없이 통과(fail-open)")
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님")
+def test_pretooluse_rerun_after_no_verdict_applies_verdict(tmp_path):
+    """판정 실패로 막힌 호출을 엔진을 고친 뒤 다시 실행하면 지금과 같은 경고·거부 엔벨로프가 나온다."""
+    root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF)
+    hooks_py = root / ".project_manager" / "tools" / "pm_engine" / "cli" / "hooks.py"
+    original = hooks_py.read_bytes()
+    hooks_py.write_bytes(original + b'\nraise RuntimeError("engine import broken")\n')
+    bash = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": "S",
+            "tool_input": {"command": "cd .codex && echo ok"}, "cwd": str(root)}
+    envelope, _elapsed = _run_entrypoint("PreToolUse", root, bash)
+    _assert_no_verdict_block(envelope, "git-check 판정 불가: ValueError: 기능 rc=1")
+    hooks_py.write_bytes(original)
+    envelope, _elapsed = _run_entrypoint("PreToolUse", root, bash)
+    assert envelope == {
+        "systemMessage": "[git-check/warn] cd는 셸 cwd를 호출 뒤에도 잔존시킬 수 있음 — 대상을 절대경로로 지정하라; "
+                         "cd가 꼭 필요하면 이 호출 안에서만 사용하고, 다음 호출은 cwd를 가정하지 마라",
+        "suppressOutput": False,
+    }
+    envelope, _elapsed = _run_entrypoint("PreToolUse", root, {**_spawn_payload(), "cwd": str(root)})
+    assert envelope["decision"] == "block"
+    assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert envelope["reason"].startswith("[delegate-channel/deny] conf 는 opencode/qwen3-coder")

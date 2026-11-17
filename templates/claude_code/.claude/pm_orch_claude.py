@@ -214,44 +214,47 @@ def _git_target_repo_already_emitted(root: Path, payload: dict, output: dict | N
 
 
 def run_git_target_repo_hook(root: Path) -> int:
-    """stdin JSON을 읽어 Claude hook JSON을 쓰는 얇은 CLI 모드."""
-    try:
-        payload = json.loads(sys.stdin.read() or "{}")
-    except (TypeError, ValueError):
-        payload = {}
+    """stdin JSON을 읽어 Claude hook JSON을 쓰는 얇은 CLI 모드. 입력이 JSON 객체가 아니면 예외로 올린다."""
+    payload = json.loads(sys.stdin.read())
     if not isinstance(payload, dict):
-        payload = {}
-    try:
-        output = git_target_repo_hook_evaluate(payload, root)
-    except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash를 막지 않는다.
-        event = payload.get("hook_event_name") or payload.get("hookEventName")
-        output = {
-            "hookSpecificOutput": {
-                # 훅 출력의 이벤트 이름은 실행된 이벤트와 같아야 한다(허용 기록 실패도 같은 경고 형태).
-                "hookEventName": "UserPromptSubmit" if event == "UserPromptSubmit" else "PreToolUse",
-                "additionalContext": f"[git-check/warn] 판정 불가({exc}) — cwd를 직접 확인",
-            }
-        }
-    else:
-        # 세션 내 완전일치 중복은 낼 것을 비운다 — stdout 0바이트(빈 JSON 도 쓰지 않는다).
-        # 판정 인프라 손상 출력(위 except)은 이 중복 억제를 지나지 않는다(fail-open 무조건 출력).
-        if _git_target_repo_already_emitted(root, payload, output):
-            output = None
+        raise TypeError("훅 입력이 JSON 객체가 아님")
+    output = git_target_repo_hook_evaluate(payload, root)
+    # 세션 내 완전일치 중복은 낼 것을 비운다 — stdout 0바이트(빈 JSON 도 쓰지 않는다).
+    if _git_target_repo_already_emitted(root, payload, output):
+        output = None
     if output is not None:
         _write_hook_json(output)
     return 0
 
 
-def _emit_git_target_repo_boundary_warn(exc: BaseException) -> int:
-    """hook-mode 최외곽 실패를 Claude advisory JSON + rc0으로 낮춘다."""
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": f"[git-check/warn] 판정 불가({exc}) — cwd를 직접 확인",
-        }
-    }
-    _write_hook_json(output)
+def run_delegate_channel_hook(root: Path) -> int:
+    """위임 채널 판정 프로세스(엔진 진입 파일, 인자 없음 = Claude 훅 프로토콜)에 훅 입력 바이트를 넘기고
+    그 출력 바이트를 그대로 쓴다. 판정 프로세스가 0 이 아닌 코드로 끝나면 그 stderr 마지막 줄을 실어
+    예외로 올린다 — 막는 것은 `main` 의 경계다."""
+    completed = subprocess.run(
+        [sys.executable, str(root / ".project_manager" / "tools" / "delegate_channel_guard.py")],
+        input=sys.stdin.buffer.read(), capture_output=True, check=False,
+    )
+    if completed.returncode != 0:
+        last_line = completed.stderr.decode("utf-8", "replace").strip().splitlines()[-1:]
+        raise RuntimeError(f"판정 프로세스 rc={completed.returncode}: {' '.join(last_line)}")
+    sys.stdout.buffer.write(completed.stdout)
+    sys.stdout.buffer.flush()
     return 0
+
+
+def _no_verdict(guard: str, exc: BaseException) -> int:
+    """판정을 얻지 못한 호출을 막는다 — 원인과 다음에 할 일을 stderr 에 쓰고 rc 2(Claude 가 그 호출을 막는다)."""
+    detail = " ".join(str(exc).split())
+    message = (
+        f"[{guard}/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다({type(exc).__name__}: {detail}). "
+        "같은 호출을 한 번 다시 실행하라. 다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라.\n"
+    )
+    # 콘솔 코덱과 무관하게 UTF-8 bytes 로 쓴다(`_write_hook_json` 과 같은 규율).
+    sys.stderr.flush()
+    sys.stderr.buffer.write(message.encode("utf-8"))
+    sys.stderr.buffer.flush()
+    return 2
 
 
 class ClaudeCliDriver:
@@ -411,19 +414,29 @@ def build_parser() -> argparse.ArgumentParser:
              "박아 같은 task 를 이어가게 한다(명시 전달·cwd 추론 금지).",
     )
     parser.add_argument("--git-anchor-hook", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--delegate-channel-hook", action="store_true", help=argparse.SUPPRESS)
     return parser
+
+
+# 훅 진입 플래그 → (막는 문구의 가드 이름, 훅 실행 함수). 래퍼가 플래그 하나를 넘긴다(git 명령 검사는
+# `ctx_stop_hook.sh --git-anchor-hook`, 위임 채널은 `delegate_channel_guard_hook.sh`).
+HOOK_MODES = {
+    "--git-anchor-hook": ("git-check", run_git_target_repo_hook),
+    "--delegate-channel-hook": ("delegate-channel", run_delegate_channel_hook),
+}
 
 
 def main(argv: list[str] | None = None) -> int:
     actual_argv = list(sys.argv[1:] if argv is None else argv)
-    hook_requested = "--git-anchor-hook" in actual_argv
-    if hook_requested:
+    hook_modes = [HOOK_MODES[arg] for arg in actual_argv if arg in HOOK_MODES]
+    if hook_modes:
+        guard, run_hook = hook_modes[0]
+        # 훅 진입의 경계 — 판정을 얻지 못하면(엔진 import 포함) 그 호출을 막는다.
         try:
-            args = build_parser().parse_args(actual_argv)
-            root = ctx_guard.repo_root(Path(__file__).resolve().parent)
-            return run_git_target_repo_hook(root)
+            build_parser().parse_args(actual_argv)
+            return run_hook(ctx_guard.repo_root(Path(__file__).resolve().parent))
         except BaseException as exc:
-            return _emit_git_target_repo_boundary_warn(exc)
+            return _no_verdict(guard, exc)
     parser = build_parser()
     args = parser.parse_args(actual_argv)
     if not args.task:

@@ -34,8 +34,6 @@ from pm_engine.app import delegate_collect
 from pm_engine.app import delegate_prepare
 from pm_engine.domain import delegate_rounds
 
-from pm_engine.domain import delegate_channel_rules
-
 from pm_engine.infra import pm_paths
 import pm_engine.app.session_snapshot
 import pm_engine.cli.log
@@ -355,7 +353,6 @@ def test_delegate_channel_guard_hook_payloads_are_utf8(
         argv or None,
         stdin=io.StringIO(json.dumps(stdin_payload or {})),
         stdout=stream,
-        stderr=io.StringIO(),
         config_loader=_guard_conf,
         state_dir=tmp_path,
     ) == 0
@@ -363,62 +360,6 @@ def test_delegate_channel_guard_hook_payloads_are_utf8(
     result = _machine_payload(stream)
     # deny 사유는 한글 해결 방법 문구다 — cp949 를 탔다면 대체표가 문자를 지웠을 것이다.
     assert "—" in json.dumps(result, ensure_ascii=False)
-
-
-def _break_console_writer_loader(guard, monkeypatch):
-    """가드 패키지 CLI 의 콘솔 출력 함수(`console.write_machine_line`)만 실패시킨다."""
-
-    def _broken_write(*_args, **_kwargs):
-        raise RuntimeError("simulated missing console_encoding")
-
-    monkeypatch.setattr(
-        cli_delegate_channel_guard, "console", SimpleNamespace(write_machine_line=_broken_write))
-
-
-def test_delegate_channel_guard_fallback_line_survives_a_missing_console_writer(
-    capture_console, monkeypatch, tmp_path
-):
-    """콘솔 모듈 로드 자체가 실패한 경계도 호스트에 완전한 엔벨로프 한 줄을 준다(fail-open 계약)."""
-    guard = _load("delegate_channel_guard")
-    _break_console_writer_loader(guard, monkeypatch)
-    stream = capture_console()
-    stderr = io.StringIO()
-
-    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        ["supervise", "PreToolUse", sys.executable, "-c", "pass"],
-        stdin=io.StringIO("{}"),
-        stdout=stream,
-        stderr=stderr,
-        config_loader=_guard_conf,
-        state_dir=tmp_path,
-    ) == 0
-
-    text = _written_bytes(stream).decode("utf-8")
-    assert text.count("\n") == 1
-    assert set(json.loads(text)) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    # 말없이 수준을 낮추는 것이 아니다 — 원인(콘솔 모듈 로드 실패)이 fail-open 보고에 남는다.
-    assert "simulated missing console_encoding" in stderr.getvalue()
-
-
-def test_missing_console_writer_fallback_still_writes_utf8_bytes(
-    capture_console, monkeypatch, tmp_path
-):
-    """콘솔 모듈 없는 대체 경로도 UTF-8 bytes 다 — 한글+em dash 사유가 strict cp949 로 유실되지 않는다."""
-    guard = _load("delegate_channel_guard")
-    _break_console_writer_loader(guard, monkeypatch)
-    stream = capture_console()
-
-    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        ["decide", "--role", "developer", "--harness", "claude"],
-        stdout=stream,
-        stderr=io.StringIO(),
-        config_loader=_guard_conf,
-        state_dir=tmp_path,
-    ) == 0
-
-    payload = _machine_payload(stream)
-    assert payload["verdict"] == "allow"
-    assert "—" in payload["reason"] and "통과(fail-open)" in payload["reason"]
 
 
 # ── (b) 사람 출력은 종전대로 콘솔 코덱 · 순서 보존 ───────────────────────────
@@ -725,29 +666,27 @@ def test_allowed_exceptions_are_reasoned():
         ),
         (
             ".project_manager/tools/pm_engine/cli/delegate_channel_guard.py",
-            "            _write_machine_line(\n"
-            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
-            "                output_stream,\n"
-            "                console,\n"
-            "            )\n",
-            "            json.dump(\n"
-            "                codex_envelope._validated_codex_envelope(result), output_stream, ensure_ascii=False\n"
-            "            )\n"
-            "            output_stream.write(\"\\n\")\n",
+            "        console.write_machine_line(\n"
+            "            json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
+            "            stream=output_stream,\n"
+            "        )\n",
+            "        json.dump(\n"
+            "            codex_envelope._validated_codex_envelope(result), output_stream, ensure_ascii=False\n"
+            "        )\n"
+            "        output_stream.write(\"\\n\")\n",
             STREAM_DUMP_SHAPE,
             True,
         ),
         (
             ".project_manager/tools/pm_engine/cli/delegate_channel_guard.py",
-            "            _write_machine_line(\n"
-            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
-            "                output_stream,\n"
-            "                console,\n"
-            "            )\n",
-            "            output_stream.write(\n"
-            "                json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False)\n"
-            "                + \"\\n\"\n"
-            "            )\n",
+            "        console.write_machine_line(\n"
+            "            json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False),\n"
+            "            stream=output_stream,\n"
+            "        )\n",
+            "        output_stream.write(\n"
+            "            json.dumps(codex_envelope._validated_codex_envelope(result), ensure_ascii=False)\n"
+            "            + \"\\n\"\n"
+            "        )\n",
             STDOUT_WRITE_SHAPE,
             False,  # 수신자와 `json.dumps` 가 다른 줄 — 텍스트 측정의 하한 경계.
         ),
@@ -838,7 +777,7 @@ if mode == "evaluate":
         }
     }
     sys.exit(module.run_git_target_repo_hook(Path(root)))
-sys.exit(module._emit_git_target_repo_boundary_warn(RuntimeError(advisory)))
+sys.exit(module._no_verdict("git-check", RuntimeError(advisory)))
 """
 
 
@@ -851,7 +790,7 @@ def _strict_cp949_env() -> dict[str, str]:
 
 @pytest.mark.parametrize("mode", ("evaluate", "boundary"))
 def test_claude_adapter_git_anchor_hook_writes_utf8_under_strict_cp949(tmp_path, mode):
-    """어댑터 훅의 두 emit 이 strict cp949 콘솔에서도 UTF-8 bytes 로 나간다 (T-0736)."""
+    """어댑터 훅의 두 emit(판정 JSON stdout·막는 문구 stderr)이 strict cp949 콘솔에서도 UTF-8 bytes 로 나간다 (T-0736)."""
     proc = subprocess.run(
         [
             sys.executable, "-c", _HOOK_DRIVER,
@@ -863,9 +802,16 @@ def test_claude_adapter_git_anchor_hook_writes_utf8_under_strict_cp949(tmp_path,
         check=False,
     )
 
-    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
-    payload = json.loads(proc.stdout.decode("utf-8"))  # 손실이면 여기서 깨진다.
-    context = payload["hookSpecificOutput"]["additionalContext"]
+    if mode == "boundary":
+        # 판정을 얻지 못한 경계 — rc 2 와 막는 문구(stderr)만 낸다.
+        assert proc.returncode == 2, proc.stderr.decode("utf-8", "replace")
+        assert proc.stdout == b""
+        context = proc.stderr.decode("utf-8")  # 손실이면 여기서 깨진다.
+        assert context.startswith("[git-check/판정 실패] ")
+    else:
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+        payload = json.loads(proc.stdout.decode("utf-8"))  # 손실이면 여기서 깨진다.
+        context = payload["hookSpecificOutput"]["additionalContext"]
     assert HOOK_ADVISORY in context
     for symbol in ("—", "✓", "⚠", "판정"):
         assert symbol in context

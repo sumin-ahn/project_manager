@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from _win_skip import posix_bash_supported
 from _repo_owned_inventory import (
     OWNED,
     REPO_FILES,
@@ -356,3 +357,40 @@ def test_harness_bash_cap_margin_is_positive():
     assert actual_slack >= 2 * delegate_run_rules._HARNESS_CAP_MARGIN_SEC, (
         f"출하 상한 실여유 {actual_slack:g}s가 측정 기반 margin "
         f"{delegate_run_rules._HARNESS_CAP_MARGIN_SEC}s의 2배 미만")
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님")
+def test_claude_guard_hooks_block_on_failure_and_wrappers_fail_without_python(tmp_path):
+    """Claude 의 두 가드 훅 항목(git 명령 검사·위임 채널)만 실패하면 막고, 래퍼는 실행기가 없으면 실패로 끝난다.
+
+    훅을 띄우지 못함·실행기 없음·시간 초과·잘못된 출력은 하네스가 `onFailure: "block"` 으로 막는다. ctx 훅과
+    사용자 프롬프트 항목은 막지 않는다(판정 대상 밖). 래퍼는 실행기가 없으면 원인 한 줄과 rc 1 로 끝난다."""
+    import shutil
+    import subprocess
+
+    claude_dir = _SHIP_TEMPLATE.parent
+    settings = json.loads(_SHIP_TEMPLATE.read_text(encoding="utf-8"))
+    seen = {}
+    for event, groups in settings["hooks"].items():
+        for group in groups:
+            for hook in group["hooks"]:
+                seen[(event, group.get("matcher"), hook["command"])] = hook.get("onFailure")
+    guards = {
+        ("PreToolUse", "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Agent|Task",
+         "${CLAUDE_PROJECT_DIR}/.claude/ctx_stop_hook.sh --git-anchor-hook"),
+        ("PreToolUse", "Agent", "${CLAUDE_PROJECT_DIR}/.claude/delegate_channel_guard_hook.sh"),
+    }
+    assert {key for key, value in seen.items() if value == "block"} == guards
+    assert set(seen.values()) == {"block", None}
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("dirname",):
+        (bin_dir / tool).symlink_to(shutil.which(tool))
+    bash = shutil.which("bash")
+    for argv in (["ctx_stop_hook.sh", "--git-anchor-hook"], ["ctx_stop_hook.sh"], ["delegate_channel_guard_hook.sh"]):
+        proc = subprocess.run([bash, str(claude_dir / argv[0]), *argv[1:]], input="{}", capture_output=True,
+                              text=True, encoding="utf-8", env={"PATH": str(bin_dir)}, check=False)
+        assert proc.returncode == 1, (argv, proc.returncode, proc.stderr)
+        assert proc.stdout == ""
+        assert proc.stderr == "Python 실행기 없음(python3·python 을 PATH 에서 찾지 못함). 훅을 실행하지 못했다.\n"

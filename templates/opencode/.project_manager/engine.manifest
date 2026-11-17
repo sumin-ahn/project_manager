@@ -82,7 +82,7 @@
 #   (domain/conf_schema·infra/conf_store·cli/local_conf). 관리자가 프로젝트 사본마다 `--keys --json` 으로
 #   부른다.
 .project_manager/tools/local_conf.py
-# delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·자체 고장 fail-open. 래퍼 delegate_channel_guard_hook.sh 는 claude 어댑터층(ADAPTER_HOOK_SET)
+# delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·판정을 얻지 못하면 막음. 래퍼 delegate_channel_guard_hook.sh 는 claude 어댑터층(ADAPTER_HOOK_SET)
 .project_manager/tools/delegate_channel_guard.py
 # delegate_scope: 위임 전/후 porcelain 상태를 비교해 ticket touches 밖 변경을 loud 경고로
 #   드러내는 비차단 판정기. PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
