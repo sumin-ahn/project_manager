@@ -96,7 +96,7 @@ def cmd_lint(home, args: argparse.Namespace) -> int:
 #   - codex-delegate-matcher-miss : SubagentStart 는 `(session_id, turn_id, agent_id)`로 식별하고,
 #     같은 session 의 선행 allow-spawn을 FIFO 1:1 대조했을 때 대응 PreToolUse 처리 기록이 없는
 #     start를 가시화한다. 이미 시작된 native spawn의 사후 advisory라 push는 막지 않는다.
-#     (`SubagentStart.agent_type="default"`는 역할도 상관 키도 아니다 — 라이브 payload 실측)
+#     (`SubagentStart.agent_type` 은 시작된 서브에이전트의 역할이고 상관 키가 아니다. 라이브 payload 실측)
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice", "coverage",
      "stale", "orphan", "oversized", "history", "adr-lifecycle", "architecture-stale",

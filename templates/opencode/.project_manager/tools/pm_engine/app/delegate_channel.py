@@ -188,8 +188,8 @@ def _is_absolute_path(value: str) -> bool:
     The payload comes from the host process on this machine, so the rule is the
     local one: POSIX needs a leading ``/`` while Windows needs a drive or UNC
     root (``C:\\work`` is absolute there, ``/work`` is drive-relative and
-    ``C:\\work`` is not absolute on POSIX).  Anything else keeps the caller on
-    the measured fail-open path instead of prescribing an unpastable cwd.  Kept
+    ``C:\\work`` is not absolute on POSIX).  Anything else is not a decision
+    input: the Codex adapter raises and the ``decide`` CLI rejects ``--cwd``.  Kept
     as one injectable override so the other platform's branch is testable here.
     """
     return Path(value).is_absolute()
@@ -268,47 +268,36 @@ def _evaluate_codex_decision(
     home, payload: Mapping[str, object],
     *,
     config_loader: Callable[[home.Home], Mapping[str, str]] = conf_store.local_config,
-) -> dict[str, object] | None:
-    """Adapt Codex native spawn input to the shared decision function."""
-    if payload.get("tool_name") != delegate_channel_rules.CODEX_SPAWN_TOOL_NAME:
-        return None
+) -> dict[str, object]:
+    """Adapt Codex native spawn input to the shared decision function.
 
+    The adapter dispatcher routes only spawn payloads here; this function does not
+    re-check the tool name.  The hook ``cwd`` fills the ``--cwd`` of a deny
+    prescription, so an input without an absolute ``cwd`` is not a decision input:
+    it raises and the dispatcher blocks the call."""
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not _is_absolute_path(cwd.strip()):
+        raise ValueError(f"Codex PreToolUse 훅 입력 cwd 가 절대경로가 아니다: {cwd!r}")
     tool_input = payload.get("tool_input") or {}
     agent_name = (
         tool_input.get(delegate_channel_rules.CODEX_ROLE_INPUT_FIELD)
         if isinstance(tool_input, Mapping)
         else None
     )
-    cwd = payload.get("cwd")
-    result = _decide_agent_input(
+    return _decide_agent_input(
         home, agent_name if isinstance(agent_name, str) else "", "codex",
-        cwd=cwd.strip() if isinstance(cwd, str) and cwd.strip() and _is_absolute_path(cwd.strip()) else None,
-        config_loader=config_loader,
+        cwd=cwd.strip(), config_loader=config_loader,
     )
-
-    if result["verdict"] == "deny":
-        if (
-            not isinstance(cwd, str)
-            or not cwd.strip()
-            or not _is_absolute_path(cwd.strip())
-        ):
-            result = delegate_channel_rules._result(
-                "allow",
-                "[delegate-channel/warn] Codex PreToolUse cwd 절대경로 누락 — 통과(fail-open)",
-            )
-        else:
-            result = _materialize_cwd(result, cwd)
-    return result
 
 
 def evaluate_codex_hook(
     home, payload: Mapping[str, object],
     *,
     config_loader: Callable[[home.Home], Mapping[str, str]] = conf_store.local_config,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Return only the host envelope; keep allow decisions out of host output."""
-    result = _evaluate_codex_decision(home, payload, config_loader=config_loader)
-    return None if result is None else codex_envelope._codex_decision_envelope(result)
+    return codex_envelope._codex_decision_envelope(
+        _evaluate_codex_decision(home, payload, config_loader=config_loader))
 
 
 def _decide_agent_input(

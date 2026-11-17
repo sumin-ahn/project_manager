@@ -91,12 +91,13 @@ false-green이었다. direct TUI rollout의 token_count는 관측되지만 stabl
 `hooks.json`이 선언하는 이벤트(`PreToolUse`·`UserPromptSubmit`·`PostToolUse`·`SubagentStart`·
 `PreCompact`·`PostCompact`)는 이벤트당 진입점을 **하나씩만** 연다. 실행 대상은 manifest 등재
 디스패처 `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`다. `PreToolUse`의 native matcher는
-exact `^(Bash|apply_patch|collaborationspawn_agent)$`이고, 나머지 다섯 이벤트만 `.*`다. 따라서 대기·일반 도구는
+`^(Bash|apply_patch|.*spawn_agent)$`이고(서브에이전트를 띄우는 도구는 훅 이름이 `spawn_agent` 로 끝난다.
+근거는 §위임 의 native spawn 채널 가드 실측 항목), 나머지 다섯 이벤트만 `.*`다. 따라서 대기·일반 도구는
 PreToolUse 디스패처 프로세스를 시작하지 않는다.
 "이 payload에 어떤 가드를 돌릴지"의 판단은 그 코드 안의 registry가 쥔다. native spawn 위임 채널,
-SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry의 항목이고, 옛
-`^collaborationspawn_agent$`·`^auto$`·`^manual$` matcher 판정은 값 그대로 진입점 뒤 분기로 옮겨 왔다
-(`^auto$`+`^manual$`는 `trigger` enum 전수라 `.*` 하나와 값이 같다).
+SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry의 항목이다. 위임 채널의 판별식은
+`^.*spawn_agent$`이고, 압축 이벤트의 옛 `^auto$`·`^manual$` matcher 판정은 값 그대로 진입점 뒤 분기로
+옮겨 왔다(`^auto$`+`^manual$`는 `trigger` enum 전수라 `.*` 하나와 값이 같다).
 
 열린 도구·이벤트 안의 **가드 기능 추가는 엔진 코드 변경뿐**이다. 채택자는 `.codex/hooks.json`을
 다시 고치지 않고 `/hooks` 재승인도 다시 하지 않는다. 등록된 기능 목록은
@@ -106,9 +107,12 @@ SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry
 1회 마이그레이션으로만 바꾼다. 진입점이 빠진 채택자는 `pm_update`가 이벤트 이름을 지목해
 알린다(advisory — 훅을 의도적으로 끈 채택자를 차단하지 않는다). 자식 가드가 못 답하거나 설치된
 디스패처가 옛 버전이어도 훅은 rc0 + 완전한 엔벨로프로 끝난다. `PreToolUse` 기능이 판정을 내지 못하면
-그 도구 호출은 `[hook-dispatch/판정 실패]` 로 막힌다. 그 밖의 이벤트의 기능 실패와 디스패처를 돌리지
-못한 경우(Python 실행기 없음·디스패처 비정상 종료)는 `adapter-fallback` 마커를 단 경고를 남기고
-진행한다.
+그 도구 호출은 `[hook-dispatch/판정 실패]` 로 막힌다. 디스패처를 돌리지 못한 경우(Python 실행기 없음·
+디스패처 비정상 종료)도 `PreToolUse` 래퍼가 같은 문구로 그 호출을 막는다. 이때는 Codex 안의 Bash·
+apply_patch·spawn 이 모두 막히므로 Codex 밖 터미널에서 `python3 .codex/pm_orch_codex.py --hook-features` 로
+원인을 보고, Python 3.11 이상을 PATH 에 두거나 `pm_update` 로 디스패처를 다시 받는다. 그 밖의 이벤트는 도구
+호출을 판정하지 않으므로 기능 실패와 디스패처를 돌리지 못한 경우 모두 `adapter-fallback` 마커를 단 경고를
+남기고 진행한다.
 
 진입점 밖에 남은 이벤트는 없다. 열린 matcher 범위 안에서 두 번째 기능을 얹을 때는
 `.codex/hooks.json`과 `/hooks` 재승인이 다시 필요하지 않다.
@@ -132,7 +136,12 @@ instance-owned 어댑터 config는 manifest 밖이라 byte-copy 전파를 타지
 반영되지 않는다. 편집분(`edited`)은 어느 분류에서도 자동 갱신되지 않고 보존된다.
 
 `managed` 갱신 뒤에는 trusted project에서 `/hooks` 승인을 다시 확인한다 — hook trust는 현재 hook
-정의의 hash에 연결되므로 정의가 바뀌면 재승인 전까지 실행되지 않는다.
+정의의 hash에 연결되므로 정의가 바뀌면 재승인 전까지 실행되지 않는다. 신뢰는 hook 항목마다 기록되므로
+바뀐 항목만 멈추고 나머지 항목은 계속 돈다. 예를 들어 `PreToolUse` 항목만 바뀌면 재승인 전까지 git 명령
+검사와 위임 채널 가드가 돌지 않는다. 대화형 `codex`는 시작할 때 "Hooks need review"(바뀐 hook 수와
+`Review hooks`·`Trust all and continue`·`Continue without trusting` 선택지)를 보이고, `codex exec`(relay·
+다른 하네스가 Codex 로 위임한 실행 포함)는 묻지 않고 바뀐 hook을 건너뛴다(codex-cli 0.166.0 실측). 그
+사이 실행된 spawn은 `board.py lint`의 `codex-delegate-matcher-miss`로 드러난다.
 
 ## 채택 (pm_import — 정규 경로)
 
@@ -162,8 +171,8 @@ instance-owned 어댑터 config는 manifest 밖이라 byte-copy 전파를 타지
 
 codex 의 `.codex/config.toml`·`.codex/hooks.json`·`.codex/agents/*.toml` 은 **trusted project + hook
 trust 승인** 후에만 로드·실행한다. hook trust는 **현재 hook 정의의 hash**에 연결되므로 새 hook이나
-변경된 hook은 다시 검토할 때까지 skip된다. 재검토가 필요하면 Codex host가 시작 시 경고하고 `/hooks`에서
-source·상태를 확인해 review/trust하거나 개별 hook을 disable할 수 있다. hook command 자신은 미승인일 때
+변경된 hook은 다시 검토할 때까지 skip된다. 재검토가 필요하면 대화형 Codex host가 시작 시 경고하고(`codex exec`는
+경고 없이 건너뛴다) `/hooks`에서 source·상태를 확인해 review/trust하거나 개별 hook을 disable할 수 있다. hook command 자신은 미승인일 때
 아예 실행되지 않으므로 자기 미승인을 감지하거나 차단할 수 없지만, host 측 감지 수단(startup warning·
 `/hooks`)은 존재한다. 승인 전에는 위임 spawn 가드와 PreCompact ctx checkpoint가 설치돼 있어도 무력하다.
 ([공식 review/trust 계약](https://developers.openai.com/codex/hooks#review-and-trust-hooks))
@@ -209,9 +218,13 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
   코드·board·git 수정은 역할 규약과 감사로 금지한다). `model`·`model_reasoning_effort` 는 local.conf 값으로
   채워지는 렌더 토큰이다(값이 없으면 사용자 config 기본 상속).
 - 표준 위임 프롬프트는 `$pm-dev-delegate` 스킬. (위임 *개념*·generate≠evaluate 는 루트 README.)
-- **native spawn 채널 가드 실측**(codex-cli 0.147.0): 라이브 `PreToolUse` payload의 native spawn
-  tool 이름은 `collaborationspawn_agent`이고 선택 역할은 `tool_input.task_name`에 실린다.
-  spawn payload에는 `tool_input.agent_type`이 없다. cross-harness deny만
+- **native spawn 채널 가드 실측**(codex-cli 0.166.0): Codex 는 모델 정보에 따라 multi-agent v1·v2 중
+  하나를 쓴다. v1(내장 모델 목록에 없는 모델·`gpt-5.6-luna` 등)의 spawn 훅 이름은 `spawn_agent`
+  (matcher 별칭 `Agent`)이고, v2(`gpt-6.1-sol`·`gpt-6-sol`·`gpt-5.6-sol` 등)는 네임스페이스를 앞에 붙인
+  `collaborationspawn_agent`다(네임스페이스는 `features.multi_agent_v2.tool_namespace`로 바뀐다). 그래서
+  진입점 matcher와 디스패처 판별식은 이름이 `spawn_agent`로 끝나는 도구를 잡는다. v1·v2 모두 선택
+  역할을 `tool_input.agent_type`에 싣고(없으면 Codex 의 `default` 역할로 뜬다), v2 의 `tool_input.task_name`은
+  작업 이름표라 역할로 읽지 않는다. cross-harness deny만
   `hookSpecificOutput.permissionDecision="deny"` + `permissionDecisionReason` 및
   `decision="block"` + `reason`을 출력한다. 정상 allow는 빈 객체 `{}`라 host 판정에 무개입이다.
 - **deny host 실효성 실측**(codex-cli 0.147.0): 격리 `CODEX_HOME`에서
@@ -235,7 +248,7 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
 - **matcher drift 관측**: `SubagentStart`는 deny 필드가 없는 관측 전용 hook이다. 두 hook은 소비
   가능한 receipt를 만들지 않고 append-only JSONL만 남긴다.
   `PreToolUse`는 처리 결과를, deny 필드가 없는 `SubagentStart`는 실제 start를 기록한다.
-  `SubagentStart.agent_type`의 실값 `default`는 역할이 아니므로 대조에 쓰지 않는다. parent spawn과
+  `SubagentStart.agent_type`은 시작된 서브에이전트의 역할이고 상관 키가 아니므로 대조에 쓰지 않는다. parent spawn과
   child start의 `turn_id`가 서로 다르고 spawn에는 `agent_id`가 없으므로, `board.py lint`는 같은
   `session_id`의 선행 allow-spawn을 start와 1:1 대조하고 start 자체는
   `(session_id, turn_id, agent_id)`로 식별한다. 대조가 없는 start를 PM이 읽는 advisory 한 줄로
@@ -243,14 +256,18 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
   `.project_manager/.local/delegate-channel/codex-observations.jsonl`이고 세그먼트당 256 KiB·활성 파일
   포함 최대 4개로 회전해 디렉터리 크기와 JSONL 개수를 제한한다. hook의 `systemMessage`는 기록 실패
   때의 부가 시도일 뿐 TUI 도달 보장이 아니며, matcher-miss 보장 수단은 `board.py lint`다.
-- 대기 도구 `collaborationwait_agent`와 `agent_id`가 동반된 서브에이전트 자신의 도구 호출은 spawn이
-  아니므로 matcher와 가드 내부 판정 모두 통과한다.
-- execpolicy는 argv-only라 동적 `task_name` 판정을 구조적으로 수행할 수 없으며, hooks의
+- 대기 도구(`collaborationwait_agent`·`multi_agent_v1wait_agent`)는 이름이 `spawn_agent`로 끝나지 않아
+  위임 채널 가드가 돌지 않고, `agent_id`가 동반된 서브에이전트 자신의 도구 호출도 spawn이 아니므로
+  위임 채널 판별식에 걸리지 않는다.
+- execpolicy는 argv-only라 동적 `agent_type` 판정을 구조적으로 수행할 수 없으며, hooks의
   `PreToolUse`만 차단 채널이다. 디스패처는 PreToolUse 기능(git 명령 검사·위임 채널)을 15초 훅
   제한보다 짧은 12초 예산 안에서 돌리고, 기능이 판정을 내지 못하면(실행 실패·rc≠0·예산 초과·출력
-  형식 오류·판별 불가) 막는 응답을 낸다. 막지 못하는 길: Python 실행기가 없거나 디스패처가 비정상
-  종료하면 `hooks.json` 래퍼가 `[hook-dispatch/warn] adapter-fallback` 경고만 내고 통과시키고, 훅이
-  15초를 넘거나 `sh` 를 띄우지 못하면 Codex 가 도구를 그대로 실행한다(0.166.0, 막는 설정 없음).
+  형식 오류·판별 불가) 막는 응답을 낸다. 위임 채널 기능은 훅 입력 `cwd` 가 절대경로가 아니면(상대경로·빈
+  값·없음) 판정을 내지 않는다(거부의 해결 방법이 그 경로를 `--cwd` 로 싣는다). Python 실행기가 없거나 디스패처가 비정상 종료하면 `hooks.json`
+  래퍼가 같은 모양의 막는 응답(`[hook-dispatch/판정 실패] …(dispatch:PreToolUse 판정 불가: Python 실행기
+  없음 또는 디스패처 비정상 종료). …`)을 낸다. 막지 못하는 길: 훅이 15초를 넘거나 `sh` 를 띄우지 못하면
+  Codex 가 도구를 그대로 실행하고(0.166.0, 막는 설정 없음), 바뀐 `hooks.json`을 다시 신뢰하기 전에는
+  PreToolUse 진입점 자체가 돌지 않는다(§어댑터 config 도달 채널).
 
 ## 스킬 (canonical `.agents/skills` · `$` 멘션 · auto-trigger)
 

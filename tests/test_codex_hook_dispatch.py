@@ -13,7 +13,8 @@
   - 걸리는 기능이 없으면 자식 프로세스를 하나도 안 띄운다(진입점이 넓어진 비용 상한).
   - PreToolUse 기능이 판정을 내지 못하면(자식 실패·판별 불가·디스패처 예외) 디스패처가 그 도구 호출을
     5필드 막는 응답으로 막고, 그 밖의 이벤트 기능 실패는 마커 붙은 경고로 남는다(rc0 + 완전한 엔벨로프).
-    구버전 디스패처·디스패처 부재는 `hooks.json` 래퍼가 처리하므로 지금처럼 경고 후 통과한다.
+    디스패처를 돌리지 못하면(Python 실행기 없음·디스패처 비정상 종료) PreToolUse 래퍼가 같은 모양의 막는
+    응답을 내고, 그 밖의 이벤트 래퍼는 마커 붙은 경고를 낸다.
 
 판정 근거는 조립한 문자열이 아니라 **출하 hooks.json 의 커맨드를 실제 셸로 실행한 rc/출력**이다.
 """
@@ -91,7 +92,7 @@ def test_shipped_hooks_json_opens_one_entrypoint_per_declared_event(
     """선언된 이벤트마다 진입점이 하나이고 PreToolUse만 안전 도구로 좁다."""
     events = _hooks()
     for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
-        expected = "^(Bash|apply_patch|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        expected = "^(Bash|apply_patch|.*spawn_agent)$" if event == "PreToolUse" else ".*"
         assert events[event][0]["matcher"] == expected, event
         handler = _entry_handler(event)
         assert handler["type"] == "command"
@@ -109,23 +110,29 @@ def test_engine_reverse_declaration_names_the_same_entrypoints(dispatcher, pm_im
     assert tuple(item.event for item in declared) == tuple(
         dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS)
     for item in declared:
-        expected = "^(Bash|apply_patch|collaborationspawn_agent)$" if item.event == "PreToolUse" else ".*"
+        expected = "^(Bash|apply_patch|.*spawn_agent)$" if item.event == "PreToolUse" else ".*"
         assert item.matcher == expected
         assert item.dispatcher == DISPATCHER_REL
         assert item.flag == dispatcher.CODEX_HOOK_DISPATCH_FLAG
 
 
 def test_pretooluse_native_matcher_is_exact_bash_patch_and_live_spawn_only():
+    """PreToolUse 진입점은 Bash·apply_patch 와 훅 이름이 `spawn_agent` 로 끝나는 서브에이전트 생성 도구만 연다.
+
+    multi-agent 판은 모델 정보가 고른다. v1·v2 의 실측 spawn 이름이 모두 걸리고 wait 은 걸리지 않는다."""
     pattern = _hooks()["PreToolUse"][0]["matcher"]
-    live = json.loads((REPO / "tests" / "fixtures" /
-                       "codex_0_147_0_live_hook_payloads.json").read_text(encoding="utf-8"))
-    live_tools = [event["tool_name"] for event in live["events"]
-                  if event.get("hook_event_name") == "PreToolUse"]
-    assert "Bash" in live_tools and "collaborationspawn_agent" in live_tools
-    for tool in ("Bash", "apply_patch", "collaborationspawn_agent"):
+    evidence = json.loads((REPO / "tests" / "fixtures" /
+                           "codex_0_166_0_spawn_hook_payloads.json").read_text(encoding="utf-8"))
+    live_tools = {tool_set: [event["tool_name"] for event in item["events"]
+                             if event.get("hook_event_name") == "PreToolUse"]
+                  for tool_set, item in evidence["tool_sets"].items()}
+    assert live_tools == {"v1": ["spawn_agent", "multi_agent_v1wait_agent"],
+                          "v2": ["collaborationspawn_agent", "collaborationwait_agent"]}
+    for tool in ("Bash", "apply_patch", "spawn_agent", "collaborationspawn_agent"):
         assert re.fullmatch(pattern, tool), tool
-    for tool in ("Agent", "spawn_agent", "collaborationwait_agent", "apply_patch_extra",
-                 "update_plan", "BashExtra", "xBash", "collaborationspawn_agent_extra"):
+    for tool in ("Agent", "collaborationwait_agent", "multi_agent_v1wait_agent",
+                 "apply_patch_extra", "update_plan", "BashExtra", "xBash",
+                 "collaborationspawn_agent_extra", "spawn_agents_on_csv"):
         assert re.fullmatch(pattern, tool) is None, tool
 
 
@@ -163,7 +170,7 @@ def test_no_hook_event_is_left_outside_the_entrypoint_set():
     assert set(events) == set(_load("pm_orch_codex", DISPATCHER_PY)
                               .CODEX_HOOK_ENTRYPOINT_EVENTS)
     for event in events:
-        expected = "^(Bash|apply_patch|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        expected = "^(Bash|apply_patch|.*spawn_agent)$" if event == "PreToolUse" else ".*"
         assert [group["matcher"] for group in events[event]] == [expected], event
         handler = _entry_handler(event)
         for key in ("command", "commandWindows"):
@@ -231,7 +238,9 @@ def test_readme_documents_the_universal_entrypoint_and_feature_registry(dispatch
     readme = " ".join(README.read_text(encoding="utf-8").split())
 
     for marker in (
-        "`PreToolUse`의 native matcher는 exact `^(Bash|apply_patch|collaborationspawn_agent)$`",
+        "`PreToolUse`의 native matcher는 `^(Bash|apply_patch|.*spawn_agent)$`",
+        "바뀐 항목만 멈추고 나머지 항목은 계속 돈다",
+        "묻지 않고 바뀐 hook을 건너뛴다",
         "나머지 다섯 이벤트만 `.*`",
         "대기·일반 도구는 PreToolUse 디스패처 프로세스를 시작하지 않는다",
         "진입점 밖에 남은 이벤트는 없다",
@@ -278,7 +287,8 @@ def test_readme_states_that_report_files_stay_a_manual_accept():
 
 def _spawn_payload() -> dict:
     return {"hook_event_name": "PreToolUse", "tool_name": "collaborationspawn_agent",
-            "tool_input": {"task_name": "developer"}, "cwd": "/abs/adopter"}
+            "tool_input": {"task_name": "orch_dev_tnnnn", "agent_type": "developer"},
+            "cwd": "/abs/adopter"}
 
 
 def _delegate_feature(dispatcher_module):
@@ -423,13 +433,13 @@ def test_broken_registry_pattern_is_undecidable_not_a_pass(dispatcher, guard,
     assert runner.calls == []
 
 
-def test_old_matcher_equivalence_is_preserved_without_new_noise(dispatcher, tmp_path):
-    """옛 exact matcher 의 판정 동치 — 일치만 실행하고 불일치·경계는 **조용하다**.
+def test_spawn_routing_runs_only_for_spawn_names_and_stays_quiet_otherwise(dispatcher, tmp_path):
+    """서브에이전트 생성 도구(훅 이름이 `spawn_agent` 로 끝남)만 위임 가드를 돌리고 나머지는 **조용하다**.
 
-    이 fix 는 경고를 더하는 방향이라, 정상 경로가 같이 시끄러워지면 그게 곧 새 결함이다."""
+    정상 경로가 같이 시끄러워지면 그게 곧 새 결함이다."""
     feature = _delegate_feature(dispatcher)
-    quiet = ("shell", "collaborationwait_agent", "Collaborationspawn_agent",
-             "xcollaborationspawn_agent", "collaborationspawn_agentx")
+    quiet = ("shell", "collaborationwait_agent", "multi_agent_v1wait_agent",
+             "collaborationspawn_agentx", "spawn_agents_on_csv", "Agent")
 
     for tool_name in quiet:
         runner = _RecordingRunner()
@@ -440,12 +450,14 @@ def test_old_matcher_equivalence_is_preserved_without_new_noise(dispatcher, tmp_
         assert runner.calls == [], tool_name
         assert not dispatcher._feature_matches(feature, payload), tool_name
 
-    runner = _RecordingRunner()
-    assert dispatcher.dispatch_hook(
-        "PreToolUse", json.dumps(_spawn_payload()).encode("utf-8"), tmp_path,
-        runner=runner) == {}
-    assert len(runner.calls) == 1
-    assert dispatcher._feature_matches(feature, _spawn_payload())
+    for tool_name in ("spawn_agent", "collaborationspawn_agent"):
+        runner = _RecordingRunner()
+        payload = {**_spawn_payload(), "tool_name": tool_name}
+        assert dispatcher.dispatch_hook(
+            "PreToolUse", json.dumps(payload).encode("utf-8"), tmp_path,
+            runner=runner) == {}, tool_name
+        assert len(runner.calls) == 1, tool_name
+        assert dispatcher._feature_matches(feature, payload), tool_name
 
 
 def test_route_names_the_three_outcomes(dispatcher):
@@ -772,6 +784,31 @@ def test_shipped_entrypoint_runs_the_registered_guard_for_a_spawn_payload(
 
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
+def test_shipped_entrypoint_blocks_a_spawn_whose_cwd_is_not_absolute(guard, tmp_path):
+    """cwd 가 절대경로가 아닌(상대경로·빈 값·없음) spawn 은 판정을 얻지 못한 호출로 막힌다.
+
+    위임을 꺼 둔 설치와 같은 하네스 설치 모두 같다. 판정이 거부든 허용이든 통과로 바뀌지 않는다."""
+    native_conf = ("delegate.enabled=true", "delegate.developer.harness=codex",
+                   "delegate.developer.model=gpt-6.1-sol")
+    for label, conf_lines in (("off", ("delegate.enabled=false",)), ("native", native_conf)):
+        root = _adopter_tree(tmp_path / label, conf_lines=conf_lines)
+        for cwd in ("relative/path", "", None):
+            payload = _spawn_payload()
+            if cwd is None:
+                payload.pop("cwd")
+            else:
+                payload["cwd"] = cwd
+
+            result, _elapsed = _run_entrypoint("PreToolUse", root, payload)
+
+            assert set(result) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS), (label, cwd)
+            assert result["reason"].startswith(CODEX_NO_VERDICT_PREFIX), (label, cwd)
+            assert "delegate-channel 판정 불가" in result["reason"], (label, cwd)
+            assert "cwd 가 절대경로가 아니다" in result["reason"], (label, cwd)
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
 def test_shipped_entrypoint_keeps_spawn_deny_without_pretooluse_ctx_nudge(
         tmp_path):
     """PreToolUse 스폰 deny는 유지되고 프롬프트 단위 ctx 경고는 섞이지 않는다."""
@@ -820,7 +857,7 @@ def test_shipped_entrypoint_passes_unmatched_payloads_through(
 # 판별이 옮겨 온 뒤에도 그 경고가 나오는지를 **실 출하 커맨드 실행**으로 고정한다 — 디스패처
 # 단위 판정만으로는 래퍼가 그 출력을 삼키는 경우를 못 본다.
 
-_SHIPPED_TOOL_PATTERN = 'tool_pattern="^collaborationspawn_agent$"'
+_SHIPPED_TOOL_PATTERN = 'tool_pattern="^.*spawn_agent$"'
 _BROKEN_TOOL_PATTERN = 'tool_pattern="["'
 _POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
@@ -951,21 +988,20 @@ def test_shipped_entrypoint_stays_quiet_on_normal_traffic(guard, tmp_path, windo
 
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
-def test_stale_dispatcher_generation_falls_back_instead_of_locking_out(
+def test_stale_dispatcher_generation_blocks_pretooluse_with_the_wrapper_envelope(
         guard, tmp_path):
-    """신 config + 구 디스패처(플래그 미지원)는 **락아웃이 아니라** 대체 출력이다.
+    """신 config + 구 디스패처(플래그 미지원 rc2)는 PreToolUse 호출을 래퍼의 막는 응답으로 막는다.
 
-    claude v1.7.0 락아웃은 훅이 rc2 를 그대로 흘려 도구 호출이 통째로 막힌 사건이다. codex
-    진입점은 rc 를 붙잡아 완전한 엔벨로프로 낮추므로 같은 버전 혼합에서도 통과한다 —
-    대신 그 사실이 마커로 남고 엔진 역방향 가드가 지목한다."""
+    판정을 얻지 못한 호출이다. 엔진 역방향 가드(`stale-hook-dispatcher`)가 디스패처를 먼저 받으라고 지목한다."""
     root = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF,
                          dispatcher_body="import sys\nraise SystemExit(2)\n")
 
     result, elapsed = _run_entrypoint("PreToolUse", root, _spawn_payload())
 
     assert elapsed < 5
-    assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
+    assert set(result) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
+    assert result["reason"].startswith(CODEX_NO_VERDICT_PREFIX)
+    assert "dispatch:PreToolUse 판정 불가" in result["reason"]
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
@@ -981,6 +1017,52 @@ def test_adopter_without_the_dispatcher_is_warned_not_blocked(guard, tmp_path):
     assert elapsed < 5
     assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
+
+
+# PreToolUse 래퍼가 디스패처를 돌리지 못했을 때의 원인. 래퍼는 둘을 가르지 않는다.
+_WRAPPER_NO_DISPATCH_DETAIL = "Python 실행기 없음 또는 디스패처 비정상 종료"
+
+
+def _pretooluse_wrapper_fallback(dispatcher, command_key: str) -> str:
+    """출하 PreToolUse 래퍼의 대체 출력. 디스패처가 같은 원인에 낼 막는 응답과 같은 바이트여야 한다."""
+    expected = json.dumps(dispatcher.hook_failure_envelope(
+        "PreToolUse", "dispatch:PreToolUse", _WRAPPER_NO_DISPATCH_DETAIL), separators=(",", ":"))
+    assert _entry_handler("PreToolUse")[command_key].count(expected) == 1, command_key
+    return expected
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
+def test_pretooluse_wrapper_blocks_without_python_or_dispatcher(dispatcher, tmp_path):
+    """PreToolUse 래퍼는 Python 실행기가 없거나 디스패처가 비정상 종료하면 그 호출을 막는다.
+
+    대체 출력은 디스패처의 `hook_failure_envelope` 가 같은 원인에 낼 5필드 응답과 같은 바이트이고 ASCII 다
+    (cp949 콘솔을 거쳐도 JSON 이 깨지지 않는다). 도구 호출을 판정하지 않는 이벤트의 래퍼는 경고 그대로다."""
+    for command_key in ("command", "commandWindows"):
+        fallback = _pretooluse_wrapper_fallback(dispatcher, command_key)
+        assert fallback.isascii(), command_key
+        envelope = json.loads(fallback)
+        assert set(envelope) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
+        assert envelope["reason"] == (CODEX_NO_VERDICT_PREFIX + "dispatch:PreToolUse 판정 불가: "
+                                      + _WRAPPER_NO_DISPATCH_DETAIL + CODEX_NO_VERDICT_TAIL)
+    for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
+        for command_key in ("command", "commandWindows"):
+            fallback_is_warning = (delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER
+                                   in _entry_handler(event)[command_key])
+            assert fallback_is_warning is (event != "PreToolUse"), (event, command_key)
+    bash = shutil.which("bash")
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    broken = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF, dispatcher_body=")(\n")
+    expected_stdout = _pretooluse_wrapper_fallback(dispatcher, "command") + "\n"
+    for label, cwd, env in (("Python 실행기 없음", tmp_path, {"PATH": str(empty_bin)}),
+                            ("디스패처 문법 오류", broken, None)):
+        completed = subprocess.run(
+            [bash, "-c", _entry_handler("PreToolUse")["command"]], cwd=cwd, env=env,
+            input=json.dumps(_spawn_payload()), text=True, capture_output=True,
+            timeout=_entry_handler("PreToolUse")["timeout"] + 5)
+        assert completed.returncode == 0, (label, completed.stderr)
+        assert completed.stdout == expected_stdout, label
 
 
 # 코드로만 얹는 가드 한 건 — "이후 기능은 registry 한 줄" 이라는 이 등록 방식의 주장 그대로다.

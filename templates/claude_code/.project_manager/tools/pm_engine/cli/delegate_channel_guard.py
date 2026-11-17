@@ -90,19 +90,18 @@ def main(
         decision = delegate_channel._evaluate_codex_decision(
             home, payload, config_loader=config_loader
         )
-        if decision is not None:
-            result = codex_envelope._codex_decision_envelope(decision)
-            result = codex_hook.observe_codex_pretooluse(
-                home, payload, result, decision=decision, state_dir=state_dir
-            )
-            console.write_machine_line(
-                json.dumps(
-                    codex_envelope._validated_codex_envelope(result),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-                stream=output_stream,
-            )
+        result = codex_envelope._codex_decision_envelope(decision)
+        result = codex_hook.observe_codex_pretooluse(
+            home, payload, result, decision=decision, state_dir=state_dir
+        )
+        console.write_machine_line(
+            json.dumps(
+                codex_envelope._validated_codex_envelope(result),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            stream=output_stream,
+        )
         return 0
     if cli_argv and cli_argv[0] == "codex-subagent-observe":
         if cli_argv != ["codex-subagent-observe"]:

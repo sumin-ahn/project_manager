@@ -325,7 +325,7 @@ def _codex_hook_payload(worktree: Path) -> dict[str, object]:
     return {
         "hook_event_name": "PreToolUse",
         "tool_name": "collaborationspawn_agent",
-        "tool_input": {"task_name": "developer"},
+        "tool_input": {"task_name": "orch_dev_tnnnn", "agent_type": "developer"},
         "cwd": str(worktree),
     }
 
