@@ -247,6 +247,14 @@ def test_readme_documents_the_universal_entrypoint_and_feature_registry(dispatch
     assert "`.codex/hooks.json`은 instance-owned라 `pm_update`가 덮지 않는다" not in readme
 
 
+def test_readme_entrypoint_section_says_a_pretooluse_feature_failure_blocks():
+    """출하 README 진입점 절이 PreToolUse 기능 실패는 막힌다는 지금 동작을 적는다."""
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+
+    assert "도구 호출은 어느 경우에도 막히지 않는다" not in readme
+    assert "`PreToolUse` 기능이 판정을 내지 못하면 그 도구 호출은 `[hook-dispatch/판정 실패]` 로 막힌다" in readme
+
+
 def test_readme_states_that_report_files_stay_a_manual_accept():
     """`report` 3파일의 이벤트 등록이 수동 `--accept` 로 남는다는 사실이 출하 문서에 있다.
 
