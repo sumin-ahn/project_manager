@@ -16,7 +16,6 @@ const GUARD_PY = path.join(
   ENGINE_ROOT, ".project_manager", "tools", "delegate_channel_guard.py",
 );
 
-const DECIDE_TIMEOUT_MS = 10000;
 const MIN_PYTHON = Object.freeze([3, 11]);
 
 // Live probes on OpenCode 1.18.12 and the company baseline 1.18.5 measured the
@@ -169,7 +168,6 @@ function selectPython(root, {platform = process.platform, env = process.env} = {
 function* supportedPythonCandidates(root, {
   spawnSync = childProcess.spawnSync,
   platform = process.platform,
-  timeout = DECIDE_TIMEOUT_MS,
   attempts = [],
 } = {}) {
   let configured;
@@ -181,9 +179,7 @@ function* supportedPythonCandidates(root, {
   }
   const candidates = configured ? [configured] : pythonCandidates(platform);
   const floorProbe = path.join(root, ".project_manager", "tools", "python_floor.py");
-  const spawnOptions = {
-    encoding: "utf8", timeout: Math.min(timeout || DECIDE_TIMEOUT_MS, DECIDE_TIMEOUT_MS), input: "",
-  };
+  const spawnOptions = {encoding: "utf8", input: ""};
   for (const candidate of candidates) {
     let probeResult;
     try {
@@ -220,11 +216,7 @@ function judgeDelegation(
   if (tier) args.push("--tier", String(tier));
 
   const attempts = [];
-  const spawnOptions = {
-    encoding: "utf8",
-    timeout: DECIDE_TIMEOUT_MS,
-    input: "",
-  };
+  const spawnOptions = {encoding: "utf8", input: ""};
   for (const candidate of supportedPythonCandidates(root, {spawnSync, platform, attempts})) {
     let result;
     try {
@@ -341,7 +333,6 @@ function makeDelegateChannelPlugin(
 const DelegateChannelPlugin = makeDelegateChannelPlugin();
 
 module.exports = {
-  DECIDE_TIMEOUT_MS,
   DEFAULT_SURFACE,
   MIN_PYTHON,
   DelegateChannelPlugin,

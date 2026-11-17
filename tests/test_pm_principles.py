@@ -504,11 +504,11 @@ for (const platform of ["win32", "linux"]) {
           assert.strictEqual(command, chosen.command);
           if (probe) {
             assert.deepStrictEqual(args, [...chosen.prefixArgs, floor]);
-            assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000, input:""});
+            assert.deepStrictEqual(options, {encoding:"utf8", input:""});
             return {status:0, stdout:"Python 3.12\n"};
           }
           assert.deepStrictEqual(args, [...chosen.prefixArgs, engine, ...argv]);
-          assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000});
+          assert.deepStrictEqual(options, {encoding:"utf8"});
           if (outcome === "throw") throw new Error("engine throw");
           if (outcome === "rc") return {status:7, stderr:"engine rc"};
           if (outcome === "missing") return {status:null, error:{code:"ENOENT", message:"engine missing"}};

@@ -605,7 +605,7 @@ const seen = [];
 const spy = (py, argv, opts) => {
   assert.strictEqual(py, "python3");
   assert.deepStrictEqual(argv, [path.join(root, ".project_manager", "tools", "board.py"), "hook-tool", "--session", "S"]);
-  assert.deepStrictEqual(Object.keys(opts).sort(), ["encoding", "input", "maxBuffer", "timeout"]);
+  assert.deepStrictEqual(Object.keys(opts).sort(), ["encoding", "input", "maxBuffer"]);
   const request = JSON.parse(opts.input);
   seen.push([request.tool_name, request.cwd, request.tool_input, request.shell_command]);
   return reply(request.tool_name === "read" ? "ok" : "deny");
@@ -678,10 +678,12 @@ const root = process.argv[1];
       tui: {showToast: async (value) => toasts.push(value)},
       session: {get: async () => { throw new Error("SDK down"); }},
     }, contextFor: () => null, acceptContext: async () => {}});
-  await failing.before({tool: "write", sessionID: "C"}, {args: {filePath: "/h/work/app_1/a.py"}});
+  await assert.rejects(failing.before({tool: "write", sessionID: "C"}, {args: {filePath: "/h/work/app_1/a.py"}}),
+    /\[git-check\/판정 실패\] .*\(세션 확인 실패: SDK down\)/);
   const context = {system: []};
   failing.inject({sessionID: "C"}, context);
-  assert.match(context.system[0], /판정 인프라 예외\(세션 확인 실패: SDK down\)/);
+  assert.deepStrictEqual(context.system, []);
+  assert.deepStrictEqual(toasts, []);
   console.log("OPENCODE_ROOT_SESSION_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''

@@ -369,9 +369,14 @@ const root = process.argv[1];
   for (const [name, client] of Object.entries(clients)) {
     const hooks = await ctx.CtxGuardPlugin({directory: root, client: {...client, tui: {showToast: async () => {}}}});
     start = spawned.length;
-    await hooks["tool.execute.before"]({tool: "bash", sessionID: sids[name]}, {args: {command: "git status"}});
+    let blocked = null;
+    try {
+      await hooks["tool.execute.before"]({tool: "bash", sessionID: sids[name]}, {args: {command: "git status"}});
+    } catch (error) {
+      blocked = error.message;
+    }
     await observe(hooks, sids[name], 190000);
-    failures[name] = {launches: spawned.length - start, delivered: await deliver(hooks, sids[name])};
+    failures[name] = {launches: spawned.length - start, blocked, delivered: await deliver(hooks, sids[name])};
   }
   out.failures = failures;
   console.log(JSON.stringify(out));
@@ -392,6 +397,7 @@ const root = process.argv[1];
     for name, needle in expected.items():
         failure = result["failures"][name]
         assert failure["launches"] == 0, (name, failure)
+        assert failure["blocked"].startswith("[git-check/판정 실패] ") and needle in failure["blocked"], (name, failure)
         assert len(failure["delivered"]) == 1 and needle in failure["delivered"][0], (name, failure)
         assert "[ctx-warn" not in failure["delivered"][0], "SDK 불능을 main 으로 처리했다"
 
@@ -578,3 +584,235 @@ const ctx = require("./ctx-guard-core.cjs");
 """
     assert _node(root, script, "win32") == {"count": 1, "shell": "unknown"}
     assert _node(root, script, "linux") == {"count": 1, "shell": "bash"}
+
+
+# 판정 프로세스 대역 — 실제 프로세스 없이 spawnSync 결과만 돌려준다(실패 꼴 재현용).
+FAKE_RUN = r"""
+const reply = (result) => () => result;
+const goodReply = {version: 1, git: {verdict: "ok", cwd_identity: "non-repo", reason: "x"}, context: null,
+  context_error: null, recall: null, recall_error: null};
+const stdoutOf = (value) => ({status: 0, signal: null, stdout: value, stderr: ""});
+async function attempt(before, sessionID, tool, args) {
+  try {
+    await before({tool, sessionID, callID: "c"}, {args});
+    return {ran: true, error: null};
+  } catch (error) {
+    return {ran: false, error: error.message};
+  }
+}
+"""
+
+
+def test_judge_failure_blocks_tool_call(tmp_path):
+    """판정을 얻지 못한 도구 호출은 실행하지 않는다. 세션 확인 실패·프로세스 실행 실패(시작 즉시 시간 초과 포함)·
+    rc≠0·출력 형식 오류·응답 형식 오류 모두 원인과 다시 실행 안내를 담아 막고, 통과시키는 경고를 내지 않는다."""
+    root = _project(tmp_path)
+    conf = root / ".project_manager" / "local.conf"
+    conf.write_text(conf.read_text(encoding="utf-8") + f"runtime.py={tmp_path / 'no-such-python'}\n",
+                    encoding="utf-8")
+    script = FAKE_RUN + r"""
+const git = require("./git-check-core.cjs");
+const ctx = require("./ctx-guard-core.cjs");
+const root = process.argv[1];
+(async () => {
+  const cases = {
+    launch: reply({status: null, signal: null, stdout: "", stderr: "", error: new Error("spawnSync python ENOENT")}),
+    startTimeout: reply({status: null, signal: "SIGTERM", stdout: "", stderr: "",
+      error: new Error("spawnSync python ETIMEDOUT")}),
+    rc: reply({status: 1, signal: null, stdout: "", stderr: "엔진 오류"}),
+    noResult: reply(null),
+    notLine: reply(stdoutOf("진단\n" + JSON.stringify(goodReply) + "\n")),
+    keys: reply(stdoutOf(JSON.stringify({...goodReply, extra: 1}) + "\n")),
+    verdict: reply(stdoutOf(JSON.stringify({...goodReply, git: {verdict: "maybe", reason: "x"}}) + "\n")),
+    session: reply(stdoutOf(JSON.stringify(goodReply) + "\n")),
+  };
+  const out = {};
+  for (const [name, spawnSync] of Object.entries(cases)) {
+    const published = [];
+    const session = name === "session" ? {get: async () => { throw new Error("SDK down"); }} : sdk().session;
+    const boundary = git.createToolBoundary({root, directory: root, worktree: root, spawnSync,
+      client: {session, tui: {showToast: async ({body}) => { published.push(body.message); }}},
+      contextFor: () => null, acceptContext: async () => {}});
+    out[name] = {...(await attempt(boundary.before, "ses_fail", "bash", {command: "git status"})), published};
+  }
+  // 등록된 before(실제 실행 경로): local.conf 의 실행기가 없으면 판정 프로세스를 못 띄워 막는다(읽기 도구도 같다).
+  const hooks = await ctx.CtxGuardPlugin({client: sdk(), directory: root});
+  const start = spawned.length;
+  out.registered = await attempt(hooks["tool.execute.before"], "ses_fail", "read", {filePath: "README.md"});
+  out.registered.launches = spawned.length - start;
+  out.registered.published = await deliver(hooks, "ses_fail");
+  console.log(JSON.stringify(out));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = _node(root, script)
+    causes = {"launch": "ENOENT", "startTimeout": "ETIMEDOUT", "rc": "엔진 오류", "noResult": "실행 결과 없음",
+              "notLine": "JSON 한 줄이 아님", "keys": "키 집합이 다름", "verdict": "git 판정 형식 불명",
+              "session": "SDK down", "registered": "no-such-python"}
+    for name, cause in causes.items():
+        row = result[name]
+        assert row["ran"] is False, (name, row)
+        assert row["error"].startswith("[git-check/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다("), (name, row)
+        assert cause in row["error"] and "같은 호출을 한 번 다시 실행하라" in row["error"], (name, row)
+        assert not row.get("published"), (name, row)
+    assert result["registered"]["launches"] == 1
+
+
+def test_judge_rerun_after_failure_applies_verdict(tmp_path):
+    """판정 호출이 실패해 막힌 도구 호출을 다시 실행하면 그때 얻은 판정대로 처리한다 — 거부는 거부, 통과는 통과."""
+    root = _project(tmp_path)
+    script = FAKE_RUN + r"""
+const git = require("./git-check-core.cjs");
+const [root, grantMark] = process.argv.slice(1);
+(async () => {
+  let calls = 0;
+  const failOnce = (command, args, options) => {
+    calls += 1;
+    if (calls === 1) {
+      return {status: null, signal: "SIGTERM", stdout: "", stderr: "", error: new Error("spawnSync python ETIMEDOUT")};
+    }
+    return childProcess.spawnSync(command, args, options);
+  };
+  const boundary = git.createToolBoundary({root, directory: root, worktree: root, spawnSync: failOnce, client: sdk(),
+    contextFor: () => null, acceptContext: async () => {}});
+  const out = {};
+  const forged = {command: `echo '${grantMark} git push'`};
+  out.denyFirst = await attempt(boundary.before, "ses_rerun", "bash", forged);
+  out.denySecond = await attempt(boundary.before, "ses_rerun", "bash", forged);
+  calls = 0;
+  out.okFirst = await attempt(boundary.before, "ses_rerun", "bash", {command: "echo ok"});
+  out.okSecond = await attempt(boundary.before, "ses_rerun", "bash", {command: "echo ok"});
+  console.log(JSON.stringify(out));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = _node(root, script, GRANT_MARK)
+    for first in ("denyFirst", "okFirst"):
+        assert result[first]["ran"] is False and result[first]["error"].startswith("[git-check/판정 실패] "), result
+    assert result["denySecond"]["ran"] is False and result["denySecond"]["error"].startswith("[git-check/deny] "), result
+    assert "허용 줄·허용 기록은 사용자 입력으로만 만든다" in result["denySecond"]["error"]
+    assert result["okSecond"] == {"ran": True, "error": None}, result
+
+
+# Windows 의 opencode 런타임(Bun 1.3.x) spawnSync 시간 제한 결함 대역 — 시간 제한을 앞 spawnSync 가 끝난 시각부터
+# 잰다. 그 뒤 제한보다 오래 쉬었으면 자식을 띄우자마자 끝내고 ETIMEDOUT·SIGTERM·종료 코드 없음으로 돌려준다
+# (VM 실측과 같은 꼴). 쉬는 시간은 시계를 앞당겨 흉내 내고 실제로 기다리지 않는다.
+IDLE_TIMER_DEFECT = r"""
+let skew = 0;
+let lastEnd = null;
+const clock = () => Date.now() + skew;
+const spied = childProcess.spawnSync;
+childProcess.spawnSync = (command, args, options) => {
+  if (options && options.timeout && lastEnd !== null && clock() - lastEnd >= options.timeout) {
+    lastEnd = clock();
+    return {pid: 1, status: null, signal: "SIGTERM", stdout: "", stderr: "",
+      error: Object.assign(new Error(`spawnSync ${command} ETIMEDOUT`), {code: "ETIMEDOUT"})};
+  }
+  const result = spied(command, args, options);
+  lastEnd = clock();
+  return result;
+};
+const idle = (ms) => { skew += ms; };
+"""
+
+
+def test_judge_success_unchanged(tmp_path):
+    """판정을 얻으면 지금과 같다 — 통과는 조용히 통과, 경고는 엔진 사유 그대로 경고 채널, 거부는 엔진 사유 그대로
+    막음. 앞 판정 뒤 10초 넘게 쉬어도(Windows 런타임 결함 조건) 판정·ctx 판정·허용 기록을 그대로 얻는다."""
+    root = _project(tmp_path)
+    warn_command = "git -C $HOME status"
+    warn_request = {"version": 1, "cwd": str(root), "tool_name": "bash", "tool_input": {"command": warn_command},
+                    "shell_command": warn_command, "shell": "bash", "main_thread": True, "context": None,
+                    "recall": None}
+    engine_warn = json.loads(_hook_tool(root, warn_request).stdout)["git"]
+    assert engine_warn["verdict"] == "warn"
+    script = IDLE_TIMER_DEFECT + FAKE_RUN + r"""
+const ctx = require("./ctx-guard-core.cjs");
+const git = require("./git-check-core.cjs");
+const [root, grantMark, warnCommand] = process.argv.slice(1);
+(async () => {
+  const toasts = [];
+  const client = {...sdk(), tui: {showToast: async ({body}) => { toasts.push(body.message); }}};
+  const hooks = await ctx.CtxGuardPlugin({client, directory: root});
+  const before = hooks["tool.execute.before"];
+  const out = {};
+  const start = spawned.length;
+  out.ok = await attempt(before, "ses_same", "bash", {command: "echo ok"});
+  out.okDelivered = await deliver(hooks, "ses_same");
+  idle(11000);
+  out.warn = await attempt(before, "ses_same", "bash", {command: warnCommand});
+  out.warnDelivered = await deliver(hooks, "ses_same");
+  idle(11000);
+  out.deny = await attempt(before, "ses_same", "bash", {command: `echo '${grantMark} git push'`});
+  idle(11000);
+  await observe(hooks, "ses_same", 156000);
+  out.ctxDelivered = await deliver(hooks, "ses_same");
+  idle(11000);
+  const grants = await git.GitCheckPlugin({client, directory: root, worktree: root});
+  await grants["chat.message"]({sessionID: "ses_same"}, {parts: [{type: "text", text: `${grantMark} git status`}]});
+  out.launches = spawned.slice(start).map((launch) => launch.args.find((arg) => arg.startsWith("hook-")
+    || arg === "git-grant"));
+  out.toasts = toasts;
+  console.log(JSON.stringify(out));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = _node(root, script, GRANT_MARK, warn_command)
+    assert result["ok"] == {"ran": True, "error": None} and result["okDelivered"] == []
+    assert result["warn"] == {"ran": True, "error": None}
+    assert result["warnDelivered"] == [f"[git-check/warn] {engine_warn['reason']}"]
+    assert result["deny"]["ran"] is False and result["deny"]["error"].startswith("[git-check/deny] 다른 명령으로")
+    assert result["ctxDelivered"] == [_guidance("warn2", 78)]
+    assert result["launches"] == ["hook-tool", "hook-tool", "hook-tool", "hook-context", "git-grant"]
+    assert any(text.startswith("[git-check/허용] ") for text in result["toasts"])
+
+
+def test_plugin_process_runs_get_results_after_idle_gap(tmp_path):
+    """위임 채널 판정·원칙 recall·압축 기록도 앞 실행 뒤 시간 제한보다 오래 쉬어(Windows 런타임 결함 조건) 결과를 얻는다.
+    실패했을 때의 동작(위임 채널 통과 경고 등)은 이 시험의 대상이 아니다 — 판정을 얻었으니 그 길에 들지 않는다."""
+    root = _project(tmp_path)
+    tools = root / ".project_manager" / "tools"
+    for name in ("delegate_channel_guard.py", "pm_principles.py"):
+        shutil.copyfile(REPO / ".project_manager" / "tools" / name, tools / name)
+    wiki = root / ".project_manager" / "wiki" / "pm_principles.md"
+    wiki.write_text(wiki.read_text(encoding="utf-8") + "- `[prompt: release]` 릴리즈 확인 규칙 본문.\n", encoding="utf-8")
+    conf = root / ".project_manager" / "local.conf"
+    conf.write_text(conf.read_text(encoding="utf-8") + f"runtime.py={sys.executable}\ndelegate.enabled=false\n",
+                    encoding="utf-8")
+    script = IDLE_TIMER_DEFECT + FAKE_RUN + r"""
+const path = require("node:path");
+const delegate = require("./delegate-channel-core.cjs");
+const recall = require("./principle-recall-core.cjs");
+const ctx = require("./ctx-guard-core.cjs");
+const root = process.argv[1];
+(async () => {
+  const client = sdk();
+  const out = {};
+  const delegation = await delegate.DelegateChannelPlugin({client, directory: root, worktree: root});
+  const before = delegation["tool.execute.before"];
+  const task = {subagent_type: "developer", description: "d", prompt: "p"};
+  out.delegateFirst = await attempt(before, "ses_idle", "task", task);
+  idle(11000);
+  out.delegateIdle = await attempt(before, "ses_idle", "task", task);
+  out.delegateDelivered = await deliver(delegation, "ses_idle");
+  const recaller = await recall.PrincipleRecallPlugin({client});
+  idle(11000);
+  await recaller.event({event: {type: "message.updated", properties: {info: {sessionID: "ses_idle", role: "user",
+    text: "release now"}}}});
+  out.recallDelivered = await deliver(recaller, "ses_idle");
+  idle(4000);
+  out.snapshot = ctx.buildCompactionSnapshot(root, "ses_idle");
+  idle(6000);
+  const before6 = spawned.length;
+  ctx.createCompactionCheckpoint(root, "ses_idle", "boundary-idle");
+  out.checkpointRuns = spawned.slice(before6).map((launch) => path.basename(launch.args.find((arg) => arg.endsWith(".py"))));
+  out.engines = spawned.map((launch) => path.basename(launch.args.find((arg) => arg.endsWith(".py"))));
+  console.log(JSON.stringify(out));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = _node(root, script)
+    for key in ("delegateFirst", "delegateIdle"):
+        assert result[key]["ran"] is False, result
+        assert result[key]["error"].startswith("[delegate-channel/deny] "), result
+    assert result["delegateDelivered"] == [], result
+    assert any("릴리즈 확인 규칙 본문" in text for text in result["recallDelivered"]), result
+    assert result["snapshot"]["ok"] is True, result
+    assert result["checkpointRuns"] == ["python_floor.py", "pm_log.py"], result
+    assert result["engines"].count("delegate_channel_guard.py") == 2 and "pm_principles.py" in result["engines"], result

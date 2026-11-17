@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
 from _skill_command import expected_command_bytes, normalized_bytes
 from _textio import dominant_newline_bytes, renotated, write_crlf, write_lf
 from pm_engine.infra import manifest_store
@@ -337,3 +338,124 @@ def test_opencode_hook_cores_have_no_ancestor_engine_root_search():
             f"엔진 경로 base 가 자기 위치·인자 밖으로 늘어남: {core} · "
             f"{sorted(bases - ALLOWED_ENGINE_PATH_BASES)}"
         )
+
+
+# opencode 플러그인 코드가 사는 두 자리 — 출하 템플릿과 이 저장소 자기 사본.
+OPENCODE_ADAPTER_DIRS = ("templates/opencode/.opencode", ".opencode")
+SYNC_RUNS = frozenset({"spawnSync", "execFileSync", "execSync"})
+_JS_TOKEN = re.compile(r"""\s+ | //[^\n]* | /\*.*?\*/
+  | (?P<tok>'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`|[A-Za-z_$][\w$]*|\.\.\.|.)""", re.S | re.X)
+_JS_REGEX = re.compile(r"/(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\\n\[])+/[a-z]*")
+_REGEX_AFTER = frozenset("(,=:[!&|?{};") | {"", "return", "typeof"}
+_OPEN, _CLOSE = frozenset("([{"), frozenset(")]}")
+_NAME = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _js_tokens(source):
+    """주석을 버리고 문자열·템플릿·정규식은 한 덩어리로 둔 토큰 목록."""
+    out, i = [], 0
+    while i < len(source):
+        if source[i] == "/" and source[i + 1:i + 2] not in ("/", "*") and (out[-1] if out else "") in _REGEX_AFTER:
+            literal = _JS_REGEX.match(source, i)
+            if literal:
+                out.append(literal.group())
+                i = literal.end()
+                continue
+        match = _JS_TOKEN.match(source, i)
+        if match.group("tok"):
+            out.append(match.group("tok"))
+        i = match.end()
+    return out
+
+
+def _close(toks, k):
+    depth = 0
+    for j in range(k, len(toks)):
+        depth += (toks[j] in _OPEN) - (toks[j] in _CLOSE)
+        if depth == 0:
+            return j
+    raise AssertionError("괄호 짝이 맞지 않음")
+
+
+def _items(toks, k):
+    """괄호 k 안의 맨 바깥 쉼표로 나눈 구간들."""
+    end, spans, depth, start = _close(toks, k), [], 0, k + 1
+    for j in range(k + 1, end):
+        depth += (toks[j] in _OPEN) - (toks[j] in _CLOSE)
+        if toks[j] == "," and depth == 0:
+            spans.append((start, j))
+            start = j + 1
+    return [span for span in spans + [(start, end)] if span[0] < span[1]]
+
+
+def _option_problems(toks, a, b, option_spots):
+    """옵션 인자 하나 — 객체 리터럴(같은 파일 상수면 그 리터럴)에 timeout 키가 있거나 확인할 수 없으면 문제.
+
+    이름으로 넘긴 옵션은 그 이름이 선언(const·let·var 이름 =)과 동기 실행 호출의 옵션 인자 자리(option_spots)
+    밖에 한 번이라도 나오면 리터럴이 바뀌었을 수 있어 확인할 수 없음으로 본다.
+    """
+    if b - a == 1 and _NAME.fullmatch(toks[a]):
+        name = toks[a]
+        declared = {j + 1 for j in range(len(toks) - 3) if toks[j] in ("const", "let", "var") and toks[j + 1:j + 3] == [name, "="]}
+        values = sorted(j + 2 for j in declared)
+        elsewhere = any(tok == name and j not in declared and j not in option_spots for j, tok in enumerate(toks))
+        if not values or elsewhere or any(toks[v] not in ("{", "[") for v in values):
+            return [f"{name}: 같은 파일의 리터럴로 확인할 수 없음"]
+        return [problem for v in values for problem in _option_problems(toks, v, _close(toks, v) + 1, option_spots)]
+    if toks[a] == "[" and _close(toks, a) == b - 1:
+        return []
+    if toks[a] != "{" or _close(toks, a) != b - 1:
+        return ["옵션을 확인할 수 없음"]
+    problems = []
+    for s, e in _items(toks, a):
+        if toks[s] == "...":
+            problems += _option_problems(toks, s + 1, e, option_spots)
+        elif toks[s] == "[" or toks[s].strip("'\"") == "timeout":
+            problems.append("timeout 키(또는 계산된 키)")
+    return problems
+
+
+def timed_sync_runs(source):
+    """(동기 실행 호출 수, 시간 제한 옵션 문제 목록)."""
+    toks = _js_tokens(source)
+    calls = [k for k, tok in enumerate(toks)
+             if tok in SYNC_RUNS and toks[k + 1:k + 2] == ["("] and toks[k - 1:k] != ["function"]]
+    options = [(k, a, b) for k in calls for a, b in _items(toks, k + 1)[1:]]
+    option_spots = {j for _, a, b in options for j in range(a, b)}
+    return len(calls), [f"{toks[k]} 호출: {problem}" for k, a, b in options
+                        for problem in _option_problems(toks, a, b, option_spots)]
+
+
+def test_opencode_plugin_sync_process_runs_take_no_time_limit():
+    """opencode 플러그인 코드의 동기 프로세스 실행(spawnSync·execFileSync·execSync 호출)은 시간 제한(timeout)을 받지 않는다.
+
+    opencode 가 싣는 Bun 1.3 의 Windows spawnSync 는 시간 제한을 앞 spawnSync 가 끝난 시각부터 재어, 그 뒤 제한보다 오래
+    쉬었으면 자식을 띄우자마자 끝낸다(ETIMEDOUT). 두 자리의 js·cjs·mjs 를 모두 훑어 호출마다 옵션 인자를 읽는다. 옵션은 그
+    자리의 객체 리터럴이거나 같은 파일 상수의 리터럴이어야 하고, 그렇게 확인할 수 없는 호출도 실패로 본다.
+    """
+    found, problems = 0, []
+    for base in OPENCODE_ADAPTER_DIRS:
+        for path in sorted(repo_owned_paths(REPO, base, mode=OWNED)):
+            if path.suffix not in (".js", ".cjs", ".mjs"):
+                continue
+            count, issues = timed_sync_runs(path.read_text(encoding="utf-8"))
+            found += count
+            problems += [f"{path.relative_to(REPO)}: {issue}" for issue in issues]
+    assert found, "동기 프로세스 실행을 하나도 찾지 못함 — 훑기가 코드 문법을 놓쳤다"
+    assert not problems, problems
+
+
+def test_timed_sync_runs_rejects_option_name_changed_after_literal():
+    """이름으로 넘긴 옵션은 선언 리터럴 뒤에 그 이름이 다른 자리에 나오면(바꿨을 수 있음) 확인할 수 없음으로 본다."""
+    declared = 'const o = {encoding: "utf8"};\n'
+    call = 'spawnSync("python", [], o);\n'
+    changed = {
+        "점 대입": declared + "o.timeout = 5;\n" + call,
+        "대괄호 대입": declared + 'o["timeout"] = 5;\n' + call,
+        "Object.assign": declared + "Object.assign(o, {timeout: 5});\n" + call,
+        "재대입": 'let o = {encoding: "utf8"};\no = {timeout: 5};\n' + call,
+        "매개변수 가림": declared + "function run(o) {\n  " + call + "}\n",
+    }
+    for form, source in changed.items():
+        assert timed_sync_runs(source)[1], form
+    assert timed_sync_runs(declared + call + call) == (2, [])

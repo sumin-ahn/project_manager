@@ -31,8 +31,6 @@ const { createToolBoundary, runHookContext } = require("./git-check-core.cjs");
 // 규칙이다. 조상을 훑으면 중첩 트리에서 바깥 프로젝트의 pm_log.py 를 실행한다.
 const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 const CTX_STOP_REL = path.join(".project_manager", ".local", "ctx-stop");
-const SNAPSHOT_TIMEOUT_MS = 3000;
-const CHECKPOINT_TIMEOUT_MS = 5000;
 const COMPACTION_SNAPSHOT_RECEIPT_RETAIN = 8;
 // 압축 기록 실패 신호 머리 — claude `ctx_stop_hook` 과 같은 문구(압축 안내 첫 줄).
 const COMPACTION_FAILURE_PREFIX = "[ctx-checkpoint] 압축 기록 실패: ";
@@ -59,15 +57,11 @@ function runPmLog(root, args, options = {}, spawnSync = childProcess.spawnSync) 
   const engine = path.join(root, ".project_manager", "tools", "pm_log.py");
   const capture = options.capture === true;
   const captureStderr = options.captureStderr === true;
-  const timeout = options.timeout || SNAPSHOT_TIMEOUT_MS;
-  const candidate = supportedPythonCandidates(root, {
-    spawnSync, platform: options.platform, timeout, attempts: options.attempts,
-  }).next().value;
+  const candidate = supportedPythonCandidates(root, { spawnSync, platform: options.platform }).next().value;
   if (!candidate) return null;
   return spawnSync(candidate.command, [...candidate.prefixArgs, engine, ...args], {
     cwd: root,
     encoding: "utf8",
-    timeout,
     maxBuffer: 32 * 1024,
     stdio: ["ignore", capture ? "pipe" : "ignore", captureStderr ? "pipe" : "ignore"],
   }) || null;
@@ -79,7 +73,7 @@ function buildCompactionSnapshot(root, sessionID, spawnSync = childProcess.spawn
   const result = runPmLog(
     root,
     ["snapshot", "--session-id", String(sessionID || "")],
-    { capture: true, captureStderr: true, timeout: SNAPSHOT_TIMEOUT_MS },
+    { capture: true, captureStderr: true },
     spawnSync,
   );
   if (result && result.status === 0 && typeof result.stdout === "string" && result.stdout) {
@@ -312,7 +306,7 @@ function createCompactionCheckpoint(
   if (typeof boundaryID === "string" && boundaryID.trim()) {
     args.push("--boundary-id", boundaryID.trim());
   }
-  runPmLog(root, args, { capture: false, timeout: CHECKPOINT_TIMEOUT_MS }, spawnSync);
+  runPmLog(root, args, { capture: false }, spawnSync);
 }
 
 // ── plugin 팩토리 (진입점 ../plugins/ctx-guard.js 가 ESM named-export 로 재노출·opencode autoload) ──
@@ -452,7 +446,7 @@ const CtxGuardPlugin = async ({ client, $, directory, worktree }) => {
         session.cycleEpoch += 1;
         // 압축 전 토큰 관측은 새 사이클의 사용량이 아니다 — 다음 assistant 관측까지 ctx 를 싣지 않는다.
         session.observation = null;
-        // 자식 세션은 snapshot/checkpoint 모두 면제다. 최대 3초 동기 subprocess 전에 판정해
+        // 자식 세션은 snapshot/checkpoint 모두 면제다. 동기 subprocess 전에 판정해
         // 면제 대상 compaction 이벤트가 메인 세션용 snapshot 때문에 멈추지 않게 한다.
         if ((await sessionOwner(sessionID)) !== "main") return;
         // 압축 경계 ID 를 엔진 ctx 판정(구간·원칙 recall 다시 켜기)과 checkpoint 에 같은 값으로 넘긴다.
@@ -575,6 +569,4 @@ module.exports = {
   createCompactionSnapshotGeneration,
   createCompactionBoundaryID,
   createCompactionCheckpoint,
-  SNAPSHOT_TIMEOUT_MS,
-  CHECKPOINT_TIMEOUT_MS,
 };
