@@ -51,20 +51,9 @@ CODEX_DENY_SUPPRESS_OUTPUT = False
 CODEX_WARNING_SUPPRESS_OUTPUT = False
 CODEX_OBSERVATION_SUPPRESS_OUTPUT = True
 
-# Hook supervision.  The adapter used to inline this as a ``python -c``
-# script, but PowerShell 5.1 does not preserve double quotes in native command
-# arguments (measured on Windows 11: ``py -3.12 -c 'print("quoted")'`` raises
-# ``NameError: name 'quoted' is not defined``), so every quoted literal in that
-# script was destroyed and the wrapper fell back on every single call — the deny
-# guard never fired.  Supervision therefore lives here, in an already-shipped
-# file that the hook invokes by path, and the adapter carries no quoted script.
-CODEX_SUPERVISOR_TIMEOUT_SECONDS = 8
-CODEX_SUPERVISOR_EVENTS = ("PreToolUse", "SubagentStart")
-# Which layer answered is part of the answer: a fallback envelope must never be
-# indistinguishable from a guard that actually ran (as seen in the earlier fallback incident).
-CODEX_SUPERVISOR_FALLBACK_MARKER = "supervisor-fallback"
+# Which layer answered is part of the answer: the adapter's fallback envelope must
+# never be indistinguishable from a guard that actually ran.
 CODEX_ADAPTER_FALLBACK_MARKER = "adapter-fallback"
-CODEX_SUPERVISOR_FALLBACK_STATUS = "wrapper_fallback"
 
 # Agent names are harness-owned surface literals.  Keep their translation in
 # this Python truth rather than duplicating the role set in JavaScript adapters.

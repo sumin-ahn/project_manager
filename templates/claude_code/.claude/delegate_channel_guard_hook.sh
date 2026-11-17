@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# PreToolUse(Agent) hook 래퍼: delegate_channel_guard.py 를 인터프리터 self-resolve 로 실행한다.
-# stdin: Claude Code hook JSON (그대로 python 에 전달). stdout: deny 훅 JSON 또는 없음(통과). rc 보존.
+# PreToolUse(Agent) hook 래퍼: 드라이버 pm_orch_claude.py --delegate-channel-hook 을 인터프리터 self-resolve 로
+# 실행한다. 드라이버가 판정 엔진(.project_manager/tools/delegate_channel_guard.py)을 부른다.
+# stdin: Claude Code hook JSON (그대로 python 에 전달). stdout: 판정 훅 JSON 또는 없음(통과). rc 보존.
 #
 # 위임 채널 기계 가드: native Agent 위임(developer·code-reviewer·researcher·architect)이
 # local.conf `delegate.<role>.harness` 매핑과 어긋나면 deny + pm_delegate 해결 방법을 반환한다.
 # 멀티-유저/멀티-프로젝트 안전(portable-by-construction): 치환 토큰·절대경로 없음 —
 # 자기 디렉토리 self-resolve + 인터프리터 python3→python 런타임 대체(ctx_stop_hook.sh 와 동일 패턴).
 #
-# 인터프리터 부재 시 rc0 조용히 통과(fail-open) — 가드 고장이 정상 위임을 막지 않는다.
+# 자기 위치나 인터프리터를 찾지 못하면 원인 한 줄과 rc 1 로 끝나고, settings.json 의
+# `onFailure: "block"` 이 그 위임 호출을 막는다. 판정을 얻지 못한 그 밖의 실패는 드라이버가 막는 문구와 rc 2 로 낸다.
 set -u
 
-hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 
 py=""
 for _cand in python3 python; do
@@ -19,11 +21,6 @@ for _cand in python3 python; do
         break
     fi
 done
-[ -n "$py" ] || exit 0
+[ -n "$py" ] || { echo "Python 실행기 없음(python3·python 을 PATH 에서 찾지 못함). 훅을 실행하지 못했다." >&2; exit 1; }
 
-# 엔진 파일 부재(버전 불일치·구 엔진 사본 등)면 rc0 조용 통과(fail-open) — rc≠0 은 Agent 호출
-# 전면 차단으로 번역되므로, 가드 설치 결손이 정상 위임을 볼모로 잡지 않게 한다.
-target="$hook_dir/../.project_manager/tools/delegate_channel_guard.py"
-[ -f "$target" ] || exit 0
-
-exec "$py" "$target"
+exec "$py" "$hook_dir/pm_orch_claude.py" --delegate-channel-hook

@@ -10,8 +10,8 @@ def _validated_codex_envelope(envelope: Mapping[str, object]) -> dict[str, objec
     """Fail loud on a partial host envelope instead of emitting it silently.
 
     Every emitter routes its return value through here, so a missing key is a
-    guard failure (absorbed by the fail-open boundary into a complete warning
-    envelope) instead of a host-side ``KeyError`` that drops the block reason.
+    guard failure (raised; the adapter boundary blocks the tool call) instead of
+    a host-side ``KeyError`` that drops the block reason.
     """
     if not isinstance(envelope, Mapping):
         raise ValueError(

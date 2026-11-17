@@ -1,14 +1,11 @@
-"""Codex 훅 관측과 감독 (층: app)."""
+"""Codex 훅 관측 (층: app)."""
 from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from collections.abc import Sequence
 from pm_engine.domain import codex_envelope
 from pm_engine.infra import codex_observation
 from pm_engine.domain import delegate_channel_rules
-import json
-import subprocess
 
 
 def _codex_observation_failure(
@@ -94,95 +91,3 @@ def observe_codex_subagent_start(
     except OSError as exc:  # 관측 기록 실패는 판정을 바꾸지 않는다(차단 판정 유지 경고).
         return _codex_observation_failure(result, exc)
     return codex_envelope._validated_codex_envelope(result)
-
-
-def _codex_supervisor_fallback(event: str, detail: str) -> dict[str, object]:
-    """The complete warning envelope a failed/absent guard run is replaced with."""
-    reason = (
-        f"[delegate-channel/warn] Codex {event} 가드 실행 실패({detail}) — "
-        f"{delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER}: native 통과(fail-open)"
-    )
-    return codex_envelope._validated_codex_envelope({
-        "systemMessage": reason,
-        "suppressOutput": delegate_channel_rules.CODEX_WARNING_SUPPRESS_OUTPUT,
-    })
-
-
-def _record_supervisor_fallback(
-    home, event: str, payload_bytes: bytes, detail: str, state_dir: Path | None
-) -> None:
-    """Leave a durable trace that this hook answered without running the guard.
-
-    stdout alone disappears with the turn, and a fallback that looks like a normal
-    pass is what let a permanently-failing wrapper hide.  The row also makes the
-    unpaired spawn visible to the existing ``board.py lint`` miss scan, because no
-    ``decision_allow`` was ever recorded for it.  A failing record write
-    propagates; the guard entry point's fail-open reports it with the same
-    fallback envelope.
-    """
-    try:
-        payload = json.loads(payload_bytes.decode("utf-8"))
-        if not isinstance(payload, Mapping):
-            payload = {}
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
-        payload = {}
-    codex_observation._append_codex_observation(
-        home, payload,
-        hook_event_name=event,
-        status=delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_STATUS,
-        reason=(
-            f"[delegate-channel/warn] {delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER}: "
-            f"{detail} — 가드 판정 없이 통과(fail-open)"
-        ),
-        state_dir=state_dir,
-    )
-
-
-def supervise_codex_hook(
-    home, event: str,
-    child_argv: Sequence[str],
-    *,
-    payload_bytes: bytes,
-    state_dir: Path | None = None,
-) -> dict[str, object]:
-    """Run the guard as a bounded child and answer with a valid envelope either way.
-
-    The guard owns the decision; this layer only bounds its runtime, checks the
-    envelope against the engine's own key sets, and substitutes a complete
-    warning envelope when the child cannot answer.  Nothing here re-types the
-    envelope schema, and nothing here needs shell quoting.
-
-    ``child_argv`` comes from the adapter hook config, which the host already
-    executes verbatim, so this adds no authority beyond that trust boundary.
-    """
-    if event not in delegate_channel_rules.CODEX_SUPERVISOR_EVENTS:
-        return _codex_supervisor_fallback(
-            delegate_channel_rules.CODEX_SUPERVISOR_EVENTS[0], f"미지 hook 이벤트 {event!r}"
-        )
-    argv = [str(token) for token in child_argv]
-    if not argv:
-        detail = "가드 실행 커맨드 없음"
-        _record_supervisor_fallback(home, event, payload_bytes, detail, state_dir)
-        return _codex_supervisor_fallback(event, detail)
-    try:
-        completed = subprocess.run(
-            argv,
-            input=payload_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=delegate_channel_rules.CODEX_SUPERVISOR_TIMEOUT_SECONDS,
-        )
-        returncode = getattr(completed, "returncode", None)
-        if returncode != 0:
-            raise ValueError(f"가드 rc={returncode}")
-        stdout = getattr(completed, "stdout", b"") or b""
-        candidate = json.loads(stdout.decode("utf-8"))
-        if not isinstance(candidate, dict):
-            raise ValueError("가드 stdout 이 JSON 객체가 아님")
-        envelope = codex_envelope._validated_codex_envelope(candidate)
-    except (subprocess.SubprocessError, OSError, ValueError) as exc:
-        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-        detail = f"{type(exc).__name__}: {detail}"
-        _record_supervisor_fallback(home, event, payload_bytes, detail, state_dir)
-        return _codex_supervisor_fallback(event, detail)
-    return envelope

@@ -7,15 +7,16 @@
 # 인터프리터는 python3→python 런타임 대체(ctx_statusline.sh 와 동일 패턴). 이 파일은 치환 토큰이
 # 없어 모든 머신/프로젝트에서 byte-identical 하다.
 #
-# 인터프리터 부재 시 rc0 조용히 통과 — 훅은 정상 작업을 막지 않는다(엔진 자체가 python 필수라
-# 부재 머신에선 어차피 프레임워크 전체가 비동작·경고 훅만 따로 살릴 수 없음).
+# 자기 위치나 인터프리터를 찾지 못하면 원인 한 줄을 stderr 에 쓰고 rc 1 로 끝난다. 막을지는
+# settings.json 이 정한다: 판정 훅 항목(git 명령 검사)은 `onFailure: "block"` 이라 그 도구 호출이
+# 막히고, ctx 안내·사용자 프롬프트 항목은 막지 않는 오류로 보인다.
 set -u
 
-hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 
 # 인터프리터 선택 — 후보를 순회하며 *실행검증*(--version rc)으로 채택(엔진 _detect_py 시맨틱과
 # 와 같은 구조·python3 → python). 존재검증(command -v)만으론 Windows WindowsApps 가짜 shim(command -v 통과·
-# 실행 시 Permission denied rc126)을 못 거른다. 전부 실패 시 rc0 조용 통과(훅은 정상 작업을 막지 않음).
+# 실행 시 Permission denied rc126)을 못 거른다. 전부 실패하면 위 규칙대로 rc 1.
 py=""
 for _cand in python3 python; do
     if command -v "$_cand" >/dev/null 2>&1 && "$_cand" --version >/dev/null 2>&1; then
@@ -23,7 +24,7 @@ for _cand in python3 python; do
         break
     fi
 done
-[ -n "$py" ] || exit 0
+[ -n "$py" ] || { echo "Python 실행기 없음(python3·python 을 PATH 에서 찾지 못함). 훅을 실행하지 못했다." >&2; exit 1; }
 
 target="$hook_dir/ctx_stop_hook.py"
 if [ "${1-}" = "--git-anchor-hook" ]; then

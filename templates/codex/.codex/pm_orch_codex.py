@@ -537,9 +537,9 @@ GIT_ANCHOR_HOOK_FLAG = "--git-anchor-hook"
 #   다시 채택자 config 변경 + `/hooks` 재승인을 요구한다.
 CODEX_HOOK_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit", "PostToolUse",
                                 "SubagentStart", "PreCompact", "PostCompact")
-# 한 훅 실행에서 기능 자식들에게 나눠 주는 총 예산(초). hooks.json 의 바깥 timeout 보다 작고
-#   엔진 감독자(delegate_channel_guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS=8)보다 커야 한다 —
-#   감독자보다 짧으면 감독자가 완전한 엔벨로프를 내기 전에 이쪽이 먼저 죽여 사유가 사라진다.
+# 한 훅 실행에서 기능 자식들에게 나눠 주는 총 예산(초). hooks.json 의 바깥 timeout(15초)보다 작아야
+#   예산을 넘긴 PreToolUse 기능을 이 디스패처가 막는 응답으로 바꿀 수 있다(바깥 timeout 을 넘기면 Codex 가
+#   그 도구 호출을 그대로 실행한다).
 CODEX_HOOK_DISPATCH_BUDGET_SEC = 12
 # 압축 이벤트 — 서브에이전트(`agent_id`·`agent_type`)에서 실행되면 기능을 하나도 돌리지 않는다.
 CODEX_COMPACTION_EVENTS = frozenset({"PreCompact", "PostCompact"})
@@ -595,13 +595,12 @@ class CodexHookFeature(NamedTuple):
 #   채택자 `.codex/hooks.json` 은 그대로다(이 구조가 닫은 마찰).
 CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
     CodexHookFeature(
-        # 옛 등록: hooks.json `PreToolUse` matcher `^collaborationspawn_agent$` 가 직접 감독자를
-        #   불렀다. 판별식과 커맨드가 값 그대로 여기로 옮겨 왔다(진입점 뒤 분기·동작 보존).
+        # 옛 등록: hooks.json `PreToolUse` matcher `^collaborationspawn_agent$` 가 엔진 판정을 불렀다.
+        #   판별식은 값 그대로 옮겨 왔고, 판정 자식(`codex-hook`)은 이 디스패처가 직접 부른다.
         feature_id="delegate-channel",
         event="PreToolUse",
         tool_pattern="^collaborationspawn_agent$",
-        argv=("{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
-              "{py}", "{tools}/delegate_channel_guard.py", "codex-hook"),
+        argv=("{py}", "{tools}/delegate_channel_guard.py", "codex-hook"),
     ),
     # 세션 안 ctx 경고는 프롬프트 단위 채널에서 한 번 판정한다.
     CodexHookFeature(
@@ -628,15 +627,14 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         side_effect_only=True,
     ),
     CodexHookFeature(
-        # 옛 등록: hooks.json `SubagentStart` matcher `.*` 가 직접 감독자를 불렀다. 그 matcher 는
+        # 옛 등록: hooks.json `SubagentStart` matcher `.*` 가 엔진 관측을 불렀다. 그 matcher 는
         #   `agent_type` 값 공간을 전수 덮으므로(=판별 없음) 판별식 자리는 None 이다 — 여기에
         #   `agent_type` 정규식을 새로 세우면 옛 등록이 실행되던 입력(빈 값·읽을 수 없는 payload)
         #   에서 가드가 안 돌아 판정이 바뀐다.
         feature_id="delegate-channel-subagent",
         event="SubagentStart",
         tool_pattern=None,
-        argv=("{py}", "{tools}/delegate_channel_guard.py", "supervise", "SubagentStart",
-              "{py}", "{tools}/delegate_channel_guard.py", "codex-subagent-observe"),
+        argv=("{py}", "{tools}/delegate_channel_guard.py", "codex-subagent-observe"),
     ),
     # 압축 두 이벤트의 옛 커맨드는 **2단**이었다 — 기록 checkpoint(출력 폐기) 다음 엔벨로프 생성.
     #   그 2단을 등재 2행으로 옮긴다(순서 = 옛 셸 순서). 옛 matcher 2개(`^auto$`·`^manual$`)는
@@ -710,10 +708,25 @@ def hook_feature_registry(features=None) -> dict:
     }
 
 
-def hook_fallback_envelope(subject: str, detail: str) -> dict:
-    """가드를 못 돌렸다는 사실이 남는 2필드 경고 엔벨로프 (fail-open·차단 0).
+def hook_failure_envelope(event: str, subject: str, detail: str) -> dict:
+    """기능을 못 돌렸을 때의 엔벨로프. PreToolUse 는 판정을 얻지 못한 그 도구 호출을 막는다.
 
-    통과와 구별되지 않는 침묵이 이 클래스가 숨는 방식이라, 대체 경고는 항상 마커를 단다."""
+    그 밖의 이벤트는 도구 호출을 판정하지 않으므로 마커를 단 2필드 경고로 남긴다(통과와 구별)."""
+    if event == "PreToolUse":
+        text = (f"[hook-dispatch/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다"
+                f"({subject} 판정 불가: {detail}). 같은 호출을 한 번 다시 실행하라. "
+                "다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라.")
+        return {
+            "decision": "block",
+            "reason": text,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": text,
+            },
+            "systemMessage": text,
+            "suppressOutput": False,
+        }
     return {
         "systemMessage": (f"[hook-dispatch/warn] {CODEX_HOOK_ADAPTER_FALLBACK_MARKER}: "
                           f"{subject} 판정 불가({detail}) — 가드 없이 통과(fail-open)"),
@@ -822,7 +835,7 @@ def _expand_hook_argv(argv, root: Path, payload: dict) -> list[str]:
 
 def _run_hook_feature(feature: CodexHookFeature, payload: dict, payload_bytes: bytes,
                       root: Path, *, runner=subprocess.run, timeout: float) -> dict:
-    """기능 자식을 시간 상한 안에서 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 대체 경고).
+    """기능 자식을 시간 상한 안에서 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 `hook_failure_envelope`).
 
     `payload` 는 `dispatch_hook` 이 해석한 훅 입력이고 argv 자리표시자 `{session_id}` 를 여기서
     채운다. 자식 stdin 에는 원래 바이트 `payload_bytes` 를 그대로 넘긴다."""
@@ -831,13 +844,13 @@ def _run_hook_feature(feature: CodexHookFeature, payload: dict, payload_bytes: b
         #   커맨드가 이 자식의 출력·rc 를 `>/dev/null 2>&1 || true` 로 버리던 동작을 값 그대로
         #   옮긴 것이라, 여기서 경고를 내면 **모든 압축마다** 없던 소음이 새로 생긴다.
         #   이 침묵은 판정 불능의 조용한 통과와 다르다: 이 기능은 애초에 판정을 하지 않는다.
-        #   자식 기동 실패·시간 초과는 다르다 — 기록이 아예 남지 않으므로 원인을 담은 대체 경고로 보인다.
+        #   자식 기동 실패·시간 초과는 다르다 — 기록이 아예 남지 않으므로 원인을 담은 경고로 보인다.
         try:
             runner(_expand_hook_argv(feature.argv, root, payload), input=bytes(payload_bytes),
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-        except BaseException as exc:  # noqa: BLE001 — 기능 고장이 도구 호출을 막지 않는다.
+        except BaseException as exc:  # noqa: BLE001 — 실패 응답은 이벤트에 따라 hook_failure_envelope 가 정한다.
             detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-            return hook_fallback_envelope(feature.feature_id, f"{type(exc).__name__}: {detail}")
+            return hook_failure_envelope(feature.event, feature.feature_id, f"{type(exc).__name__}: {detail}")
         return {}
     try:
         completed = runner(
@@ -857,24 +870,23 @@ def _run_hook_feature(feature: CodexHookFeature, payload: dict, payload_bytes: b
         if not isinstance(envelope, dict):
             raise ValueError("엔벨로프가 JSON 객체가 아님")
         return envelope
-    except BaseException as exc:  # noqa: BLE001 — 기능 고장이 도구 호출을 막지 않는다.
+    except BaseException as exc:  # noqa: BLE001 — 실패 응답은 이벤트에 따라 hook_failure_envelope 가 정한다.
         detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-        return hook_fallback_envelope(feature.feature_id, f"{type(exc).__name__}: {detail}")
+        return hook_failure_envelope(feature.event, feature.feature_id, f"{type(exc).__name__}: {detail}")
 
 
 def _run_hook_feature_inprocess(feature: CodexHookFeature, payload: dict, root: Path) -> dict:
-    """in-process 기능을 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 대체 경고).
+    """in-process 기능을 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 `hook_failure_envelope`).
 
-    자식 프로세스 경로(`_run_hook_feature`)와 **같은 실패 계약**이다 — 기능 고장이 도구 호출을
-    막지 않고, 대체 경고는 마커를 달아 통과와 구별된다."""
+    자식 프로세스 경로(`_run_hook_feature`)와 **같은 실패 계약**이다."""
     try:
         envelope = feature.handler(payload, root)
         if not isinstance(envelope, dict):
             raise ValueError("엔벨로프가 dict 가 아님")
         return envelope
-    except BaseException as exc:  # noqa: BLE001 — 기능 고장이 도구 호출을 막지 않는다.
+    except BaseException as exc:  # noqa: BLE001 — 실패 응답은 이벤트에 따라 hook_failure_envelope 가 정한다.
         detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-        return hook_fallback_envelope(feature.feature_id, f"{type(exc).__name__}: {detail}")
+        return hook_failure_envelope(feature.event, feature.feature_id, f"{type(exc).__name__}: {detail}")
 
 
 def _is_blocking_envelope(envelope: dict) -> bool:
@@ -1024,8 +1036,8 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
     구성과 출력이 같아진다."""
     if event not in CODEX_HOOK_ENTRYPOINT_EVENTS:
         # config 가 이 디스패처 버전이 모르는 진입점을 열었다 — 조용히 통과하지 않는다.
-        return hook_fallback_envelope(
-            f"dispatch:{event}", "이 디스패처 버전에 없는 진입점 이벤트")
+        return hook_failure_envelope(
+            event, f"dispatch:{event}", "이 디스패처 버전에 없는 진입점 이벤트")
     payload, payload_error = _parse_hook_payload(payload_bytes)
     if event in CODEX_COMPACTION_EVENTS and hook_is_subagent(payload):
         # 서브에이전트 압축은 부모와 같은 `session_id` 로 온다 — 기능을 돌리면 부모 task 의 압축
@@ -1040,7 +1052,7 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
         if route.decision == CODEX_HOOK_ROUTE_SKIP:
             continue  # 정상 미매칭 — 옛 구성에서 호스트 matcher 가 조용히 걸러 주던 값이다.
         if route.decision == CODEX_HOOK_ROUTE_UNDECIDABLE:
-            answers.append(hook_fallback_envelope(feature.feature_id, route.detail))
+            answers.append(hook_failure_envelope(event, feature.feature_id, route.detail))
             continue
         if feature.handler is not None:
             answers.append(_run_hook_feature_inprocess(feature, payload, root))
@@ -1052,10 +1064,10 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
 
 
 def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int:
-    """stdin 훅 payload → 합본 엔벨로프 한 줄. **어떤 실패도 rc0 + 유효 엔벨로프**.
+    """stdin 훅 payload → 합본 엔벨로프 한 줄. 어떤 실패도 rc0 + 유효 엔벨로프다(PreToolUse 는 막는 엔벨로프).
 
     비-ASCII 는 `\\uXXXX` 로 이스케이프해 낸다 — 이 줄은 PowerShell/bash 캡처를 거쳐 호스트로
-    가므로 cp949 콘솔에서도 JSON 이 깨지지 않아야 한다(엔진 감독자 출력과 같은 규약)."""
+    가므로 cp949 콘솔에서도 JSON 이 깨지지 않아야 한다."""
     stream = sys.stdin.buffer if stdin is None else stdin
     sink = sys.stdout if stdout is None else stdout
     try:
@@ -1063,10 +1075,10 @@ def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int
         if isinstance(payload_bytes, str):
             payload_bytes = payload_bytes.encode("utf-8")
         envelope = dispatch_hook(event, payload_bytes, root)
-    except BaseException as exc:  # noqa: BLE001 — 디스패처 고장이 도구 호출을 막지 않는다.
+    except BaseException as exc:  # noqa: BLE001 — 디스패처가 하네스와 맞닿은 경계다(PreToolUse 는 막는다).
         detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-        envelope = hook_fallback_envelope(
-            f"dispatch:{event}", f"{type(exc).__name__}: {detail}")
+        envelope = hook_failure_envelope(
+            event, f"dispatch:{event}", f"{type(exc).__name__}: {detail}")
     sink.write(json.dumps(envelope, separators=(",", ":")) + "\n")
     sink.flush()
     return 0
@@ -1180,22 +1192,12 @@ def _git_target_repo_duplicate(root: Path, payload: dict, text: str) -> bool:
 
 
 def run_git_target_repo_hook(root: Path, *, stdin=None, stdout=None) -> int:
-    """stdin JSON 훅 payload → codex 엔벨로프 한 줄(항상 유효한 JSON). rc 는 항상 0.
+    """stdin JSON 훅 payload → codex 엔벨로프 한 줄, rc 0. 디스패처가 부르는 기능 자식이다.
 
-    예외(판정 인프라 손상)는 중복 억제 판정을 지나지 않고 무조건 출력한다(fail-open ·
-    claude `run_git_target_repo_hook` 와 같은 구조)."""
+    판정을 얻지 못하면(입력 해석 실패·판정 예외) 예외로 끝나고(rc≠0), 디스패처가 그 호출을 막는다."""
     stream = sys.stdin if stdin is None else stdin
     sink = sys.stdout if stdout is None else stdout
-    try:
-        raw = stream.read()
-        payload = json.loads(raw) if raw else {}
-        if not isinstance(payload, dict):
-            payload = {}
-        envelope = git_target_repo_hook_evaluate(payload, root)
-    except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash 를 막지 않는다.
-        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-        text = f"[git-check/warn] 판정 불가({type(exc).__name__}: {detail}) — cwd를 직접 확인"
-        envelope = {"systemMessage": text, "suppressOutput": False}
+    envelope = git_target_repo_hook_evaluate(json.loads(stream.read()), root)
     sink.write(json.dumps(envelope, separators=(",", ":")) + "\n")
     sink.flush()
     return 0
@@ -1228,7 +1230,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     actual_argv = sys.argv[1:] if argv is None else argv
     # 훅 경로는 relay 부팅(엔진 적재·local.conf·supervisor)을 타지 않는다 — 훅은 매 도구 호출마다
-    #   실행되므로 진입점이 얇아야 하고, 엔진 적재 실패가 도구 호출을 막으면 그게 곧 락아웃이다.
+    #   실행되므로 진입점이 얇아야 한다.
     if CODEX_HOOK_FEATURES_FLAG in actual_argv:
         sys.stdout.write(json.dumps(hook_feature_registry(), ensure_ascii=False,
                                     indent=2, sort_keys=True) + "\n")

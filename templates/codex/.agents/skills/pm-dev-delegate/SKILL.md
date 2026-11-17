@@ -224,9 +224,11 @@ delegate.enabled = false
 밖이다(진행 중 라운드가 고아가 되지 않게).
 
 **차단 범위의 한계**: 훅 등록 파일(`settings.json`·`hooks.json`·`opencode.jsonc`)은 채택자 소유라
-엔진이 전파하지 않고, 가드는 자기 고장 시 fail-open이다. 훅을 깔지 않았거나 가드가 고장난 구성에서는
-티켓 없는 ad-hoc native spawn을 막지 못한다 — 스위치가 "모든 native를 막는다"고 읽으면 그것이
-false-green이다.
+엔진이 전파하지 않는다. 가드는 판정을 얻지 못하면 그 위임 호출을 막는다(Claude Code·opencode
+`[delegate-channel/판정 실패]`, Codex `[hook-dispatch/판정 실패]`). 훅을 깔지 않은 구성과 하네스가 막을
+방법을 주지 않는 실패(Codex 의 훅 시간 초과·Python 실행기 없음, v2.1.295 미만 Claude Code 의 훅 시작
+실패·시간 초과)에서는 티켓 없는 ad-hoc native spawn을 막지 못한다 — 스위치가 "모든 native를 막는다"고
+읽으면 그것이 false-green이다.
 
 ## 실행 패턴
 

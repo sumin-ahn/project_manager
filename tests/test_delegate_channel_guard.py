@@ -13,6 +13,7 @@ from pm_engine.infra import pm_paths
 import importlib.util
 import io
 import json
+import shutil
 import stat
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _win_skip import posix_bash_supported
 from pm_engine.infra.harness import contract
 from pm_engine.domain import delegate_errors
 from pm_engine.cli import delegate_channel_guard as cli_delegate_channel_guard
@@ -288,25 +290,6 @@ def test_non_agent_or_non_delegate_role_passes_without_loading_conf(guard_home, 
     assert delegate_channel.evaluate_hook(guard_home, payload, config_loader=unexpected_loader) is None
 
 
-def test_config_error_is_one_line_fail_open(guard):
-    stdin = io.StringIO(json.dumps(_payload("developer")))
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-
-    def broken_config(_home):
-        raise OSError("broken\nlocal.conf")
-
-    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        stdin=stdin,
-        stdout=stdout,
-        stderr=stderr,
-        config_loader=broken_config,
-    ) == 0
-    assert stdout.getvalue() == ""
-    assert stderr.getvalue().count("\n") == 1
-    assert "fail-open" in stderr.getvalue()
-
-
 def test_missing_pyyaml_keeps_module_cli_and_hook_nonblocking(tmp_path):
     """MF4: a hook interpreter without PyYAML degrades only model inspection."""
     (tmp_path / "yaml.py").write_text(
@@ -365,32 +348,8 @@ print(json.dumps({"rc": rc, "decision": decision, "hook": hook}))
     assert "permissionDecision" not in output
 
 
-def test_malformed_json_is_one_line_fail_open(guard):
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-    # pytest.fail 은 BaseException 계열이라 fail-open except 에 삼켜져 단언이 무력화된다 —
-    # sentinel 기록 + 사후 assert 로 load-bearing 하게 판정한다(내부 리뷰 지적).
-    loader_calls = []
-
-    def sentinel_loader():
-        loader_calls.append(True)
-        return {}
-
-    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        stdin=io.StringIO("{not-json"),
-        stdout=stdout,
-        stderr=stderr,
-        config_loader=sentinel_loader,
-    ) == 0
-    assert loader_calls == []
-    assert stdout.getvalue() == ""
-    assert stderr.getvalue().count("\n") == 1
-    assert "fail-open" in stderr.getvalue()
-
-
 def test_deny_json_schema_and_remediation(guard):
     stdout = io.StringIO()
-    stderr = io.StringIO()
     conf = {
         "delegate.enabled": "true",
         "delegate.researcher.harness": "opencode",
@@ -400,7 +359,6 @@ def test_deny_json_schema_and_remediation(guard):
     assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
         stdin=io.StringIO(json.dumps(_payload("researcher"))),
         stdout=stdout,
-        stderr=stderr,
         config_loader=lambda _home: conf,
     ) == 0
     result = json.loads(stdout.getvalue())
@@ -420,7 +378,6 @@ def test_deny_json_schema_and_remediation(guard):
             ),
         }
     }
-    assert stderr.getvalue() == ""
 
 
 def test_hook_deny_remediation_materializes_payload_cwd(guard_home, guard, tmp_path):
@@ -570,7 +527,7 @@ def test_deny_remediation_keeps_posix_quoting_off_windows(guard_home, guard, mon
         ["decide", "--role", "developer", "--harness", "opencode", "--cwd", "relative"],
     ),
 )
-def test_decide_cli_always_one_json_line_rc0_and_never_reads_stdin(
+def test_decide_cli_one_json_line_or_usage_error_and_never_reads_stdin(
     guard, argv, monkeypatch
 ):
     calls = []
@@ -587,37 +544,28 @@ def test_decide_cli_always_one_json_line_rc0_and_never_reads_stdin(
             raise AssertionError("decide CLI must not read stdin")
 
     stdout = io.StringIO()
-    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        argv,
-        stdin=UnreadableInput("must-not-be-read"),
-        stdout=stdout,
-        config_loader=lambda _home: {},
-    ) == 0
-    assert stdout.getvalue().count("\n") == 1
-    payload = json.loads(stdout.getvalue())
-    assert set(payload) == {"verdict", "reason", "harness", "model"}
-    assert payload["verdict"] in {"allow", "deny"}
+
+    def run():
+        return cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
+            argv,
+            stdin=UnreadableInput("must-not-be-read"),
+            stdout=stdout,
+            config_loader=lambda _home: {},
+        )
 
     if argv == ["decide", "--role", "developer", "--harness", "opencode"]:
+        assert run() == 0
+        assert stdout.getvalue().count("\n") == 1
+        payload = json.loads(stdout.getvalue())
+        assert set(payload) == {"verdict", "reason", "harness", "model"}
+        assert payload["verdict"] in {"allow", "deny"}
         assert calls == [(pm_paths.home_at(GUARD_PY.resolve().parents[2]), "developer", "opencode", None, None)]
     else:
+        # 인자 오류는 판정으로 바꾸지 않고 올린다(argparse 는 SystemExit(2)).
+        with pytest.raises((SystemExit, cli_delegate_channel_guard._CliUsageError)):
+            run()
+        assert stdout.getvalue() == ""
         assert calls == []
-
-
-def test_decide_cli_internal_error_is_one_line_allow_reason(guard):
-    def broken_config(_home):
-        raise RuntimeError("broken\nconfig")
-
-    stdout = io.StringIO()
-    assert cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        ["decide", "--role", "developer", "--harness", "opencode"],
-        stdout=stdout,
-        config_loader=broken_config,
-    ) == 0
-    assert stdout.getvalue().count("\n") == 1
-    payload = json.loads(stdout.getvalue())
-    assert payload["verdict"] == "allow"
-    assert "RuntimeError" in payload["reason"] and "fail-open" in payload["reason"]
 
 
 @pytest.mark.parametrize(
@@ -628,7 +576,7 @@ def test_decide_cli_internal_error_is_one_line_allow_reason(guard):
         ["bogus"],
     ),
 )
-def test_real_decide_process_usage_errors_are_rc0_one_line_json(argv):
+def test_real_decide_process_usage_errors_are_nonzero_without_stdout(argv):
     proc = subprocess.run(
         [sys.executable, str(GUARD_PY), *argv],
         stdin=subprocess.DEVNULL,
@@ -637,9 +585,9 @@ def test_real_decide_process_usage_errors_are_rc0_one_line_json(argv):
         encoding="utf-8",
         check=False,
     )
-    assert proc.returncode == 0
-    assert proc.stdout.count("\n") == 1
-    assert json.loads(proc.stdout)["verdict"] == "allow"
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "usage" in proc.stderr or "error" in proc.stderr
 
 
 @pytest.mark.parametrize("switch", ("false", "0", "no", "off"))
@@ -1306,7 +1254,7 @@ def test_portable_reader_root_swap_during_resolve_rejects_before_read(
     assert "ROOT_SWAP_SENTINEL" not in result["reason"]
 
 
-def test_claude_agent_card_reader_exception_is_nonblocking_warning(
+def test_claude_agent_card_reader_exception_propagates_out_of_the_cli(
     guard_home, guard, monkeypatch
 ):
     def broken_reader(_home, _role, _tier):
@@ -1317,19 +1265,17 @@ def test_claude_agent_card_reader_exception_is_nonblocking_warning(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    # 이름 없는 판독기 예외는 판정 함수 밖으로 전파하고, 훅 진입 fail-open 이 받는다.
+    # 이름 없는 판독기 예외는 판정 함수와 CLI 밖으로 전파한다 — 막는 문구는 Claude 드라이버 경계가 낸다.
     with pytest.raises(RuntimeError, match="reader"):
         delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     stdout = io.StringIO()
-    stderr = io.StringIO()
-    assert cli_delegate_channel_guard.main(guard_home,
-        stdin=io.StringIO(json.dumps(_payload("developer"))),
-        stdout=stdout,
-        stderr=stderr,
-        config_loader=lambda _home: conf,
-    ) == 0
-    assert "permissionDecision" not in stdout.getvalue()
-    assert "fail-open" in stderr.getvalue() and "RuntimeError" in stderr.getvalue()
+    with pytest.raises(RuntimeError, match="reader"):
+        cli_delegate_channel_guard.main(guard_home,
+            stdin=io.StringIO(json.dumps(_payload("developer"))),
+            stdout=stdout,
+            config_loader=lambda _home: conf,
+        )
+    assert stdout.getvalue() == ""
 
 
 def test_claude_hard_tier_reads_its_own_card_and_is_quiet_on_match(
@@ -1443,3 +1389,65 @@ def guard_home(tmp_path):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((REPO / relative).read_bytes())
     return pm_paths.home_at(root)
+
+
+DELEGATE_NO_VERDICT_PREFIX = "[delegate-channel/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다("
+DELEGATE_NO_VERDICT_TAIL = (
+    "). 같은 호출을 한 번 다시 실행하라. 다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라.\n"
+)
+
+
+CLAUDE_ADAPTER = REPO / "templates" / "claude_code" / ".claude"
+JUDGE_FAILED = "RuntimeError: 판정 프로세스 rc="
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님")
+def test_claude_delegate_hook_no_verdict_blocks_and_rerun_applies_verdict(tmp_path):
+    """Claude 위임 채널 훅(래퍼 → 드라이버 경계 → 엔진 진입 파일)이 판정을 얻지 못하면 rc 2 와
+    [delegate-channel/판정 실패] 로 막는다.
+
+    훅 입력 해석 실패·local.conf 판독 실패(UTF-8 아님)·엔진 import 실패·엔진 진입 파일 없음을 실제 래퍼로 돌리고,
+    local.conf 를 고친 뒤 다시 실행하면 rc·stdout·stderr 바이트가 엔진 진입 파일을 바로 부른 것과 같다."""
+    install = tmp_path / "install"
+    shutil.copytree(CLAUDE_ADAPTER, install / ".claude",
+                    ignore=shutil.ignore_patterns("__pycache__", "skills", "agents"))
+    shutil.copytree(GUARD_PY.parent, install / ".project_manager" / "tools",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    wrapper = install / ".claude" / "delegate_channel_guard_hook.sh"
+    entry = install / ".project_manager" / "tools" / GUARD_PY.name
+    conf = install / ".project_manager" / "local.conf"
+    payload = json.dumps(_payload("developer")).encode("utf-8")
+
+    def run(argv, stdin):
+        return subprocess.run(argv, input=stdin, capture_output=True, check=False)
+
+    def assert_blocked(stdin, cause):
+        proc = run(["bash", str(wrapper)], stdin)
+        assert proc.returncode == 2, proc.stderr
+        assert proc.stdout == b""
+        message = proc.stderr.decode("utf-8")
+        assert message.startswith(DELEGATE_NO_VERDICT_PREFIX + JUDGE_FAILED + cause), message
+        assert message.endswith(DELEGATE_NO_VERDICT_TAIL) and message.count("\n") == 1, message
+
+    conf.write_text("delegate.enabled=false\n", encoding="utf-8")
+    assert_blocked(b"{not-json", "1: json.decoder.JSONDecodeError: ")
+    assert_blocked(b"[]", "1: TypeError: hook input JSON must be an object")
+    conf.write_bytes(b"delegate.enabled=\xff\xfe\n")  # 판독 실패(UTF-8 아님) — 엔진이 설정을 읽지 못한다.
+    assert_blocked(payload, "1: UnicodeDecodeError: ")
+
+    conf.write_text("delegate.enabled=false\n", encoding="utf-8")
+    hooked = run(["bash", str(wrapper)], payload)
+    direct = run([sys.executable, str(entry)], payload)
+    assert (hooked.returncode, hooked.stdout, hooked.stderr) == (direct.returncode, direct.stdout, direct.stderr)
+    assert hooked.returncode == 0 and hooked.stderr == b""
+    output = json.loads(hooked.stdout)["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert output["permissionDecisionReason"].startswith("[delegate-channel/deny] 위임이 꺼져 있습니다")
+
+    init = install / ".project_manager" / "tools" / "pm_engine" / "__init__.py"
+    original = init.read_bytes()
+    init.write_text('raise RuntimeError("delegate engine broken")\n', encoding="utf-8")
+    assert_blocked(payload, "1: RuntimeError: delegate engine broken")
+    init.write_bytes(original)
+    entry.rename(entry.with_name("moved.py"))
+    assert_blocked(payload, "2: ")

@@ -201,7 +201,7 @@ def test_opencode_plugin_shape_defaults_and_no_javascript_role_truth():
         assert f'"{role}"' not in core, f"JS must not duplicate Python role literal {role}"
 
 
-def test_opencode_core_spawn_contract_deny_and_warn_fail_open():
+def test_opencode_core_spawn_contract_deny_and_blocks_without_verdict():
     script = r'''
 const assert = require("node:assert");
 const m = require("./delegate-channel-core.cjs");
@@ -247,15 +247,12 @@ for (const result of [
   {status: 0, stdout: "{}\n", stderr: ""},
   {status: null, stdout: "", stderr: "", error: {code: "ETIMEDOUT", message: "timeout"}},
 ]) {
-  const got = m.judgeDelegation(
+  assert.throws(() => m.judgeDelegation(
     "/repo", "/repo", "developer", null,
     (_py, argv) => argv[argv.length - 1].endsWith("python_floor.py")
       ? {status: 0, stdout: "Python 3.12\n", stderr: ""}
       : result,
-  );
-  assert.strictEqual(got.verdict, "allow");
-  assert.strictEqual(got.warning, true);
-  assert.match(got.reason, /fail-open/);
+  ), /Python 판정 후보 소진/);
 }
 
 (async () => {
@@ -292,23 +289,25 @@ for (const result of [
   );
   assert.deepStrictEqual(seenAgents, ["", "developer"]);
 
-  const warningHooks = await m.makeDelegateChannelPlugin(() => {
+  const failingHooks = await m.makeDelegateChannelPlugin(() => {
     throw new Error("fixture boom");
   })({
     directory: "/repo",
     client: {tui: {showToast: async (value) => toasts.push(value)}},
   });
-  await warningHooks["tool.execute.before"](
-    {tool: "task", sessionID: "warn"},
-    {args: {subagent_type: "researcher"}},
+  await assert.rejects(
+    failingHooks["tool.execute.before"](
+      {tool: "task", sessionID: "warn"},
+      {args: {subagent_type: "researcher"}},
+    ),
+    (error) => error.message.startsWith("[delegate-channel/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다(fixture boom)."),
   );
   const context = {system: []};
-  await warningHooks["experimental.chat.system.transform"](
+  await failingHooks["experimental.chat.system.transform"](
     {sessionID: "warn"}, context,
   );
-  assert.strictEqual(context.system.length, 1);
-  assert.match(context.system[0], /판정 인프라 예외\(fixture boom\)/);
-  assert.strictEqual(toasts.length, 1);
+  assert.strictEqual(context.system.length, 0);
+  assert.strictEqual(toasts.length, 0);
 
   let injectedAgent;
   const injected = await m.makeDelegateChannelPlugin(
@@ -468,7 +467,7 @@ assert.deepStrictEqual(calls, ["py:probe", "python3:probe", "python3:guard"]);
     ("first_missing", "first_guard_rc", "all_missing"),
 )
 def test_opencode_python_candidate_retry_boundary_matrix(scenario):
-    """후보 부재/guard rc 실패는 재시도하고 전 후보 부재만 fail-open 한다."""
+    """후보 부재/guard rc 실패는 재시도하고, 전 후보 부재는 예외로 올린다(위임 채널 경계가 막는다)."""
     script = r'''
 const assert = require("node:assert");
 const m = require("./delegate-channel-core.cjs");
@@ -500,7 +499,7 @@ const fakeSpawn = (command, argv) => {
   return judgment;
 };
 
-const got = m.judgeDelegation(
+const judge = () => m.judgeDelegation(
   "C:\\repo", "C:\\repo", "developer", null, fakeSpawn, "win32",
 );
 const expectedCalls = {
@@ -508,12 +507,12 @@ const expectedCalls = {
   first_guard_rc: ["py:probe", "py:guard", "python3:probe", "python3:guard"],
   all_missing: ["py:probe", "python3:probe", "python:probe"],
 };
-assert.deepStrictEqual(calls, expectedCalls[scenario]);
 if (scenario === "all_missing") {
-  assert.strictEqual(got.verdict, "allow");
-  assert.strictEqual(got.warning, true);
-  assert.match(got.reason, /Python 판정 후보 소진/);
+  assert.throws(judge, /Python 판정 후보 소진/);
+  assert.deepStrictEqual(calls, expectedCalls[scenario]);
 } else {
+  const got = judge();
+  assert.deepStrictEqual(calls, expectedCalls[scenario]);
   assert.strictEqual(got.verdict, "deny");
   assert.strictEqual(got.warning, undefined);
 }
@@ -522,45 +521,6 @@ if (scenario === "all_missing") {
         [_node(), "-e", script], cwd=OPEN_LIB,
         env={**os.environ, "RETRY_SCENARIO": scenario},
         check=True, capture_output=True, text=True, encoding="utf-8",
-    )
-
-
-def test_opencode_all_python_candidates_fail_open_with_fixed_attempt_reason():
-    script = r'''
-const assert = require("node:assert");
-const m = require("./delegate-channel-core.cjs");
-const calls = [];
-const fakeSpawn = (command) => {
-  calls.push(command);
-  if (command === "py") {
-    return {
-      status: null, stdout: "", stderr: "",
-      error: {code: "ENOENT", message: "py missing"},
-    };
-  }
-  if (command === "python3") {
-    return {status: 126, stdout: "", stderr: "Permission denied"};
-  }
-  return {status: 0, stdout: "Python 3.10\n", stderr: ""};
-};
-const got = m.judgeDelegation(
-  "C:\\repo", "C:\\repo", "developer", null, fakeSpawn, "win32",
-);
-assert.strictEqual(got.verdict, "allow");
-assert.strictEqual(got.warning, true);
-assert.deepStrictEqual(calls, ["py", "python3", "python"]);
-assert.strictEqual(
-  got.reason,
-  "[delegate-channel/warn] Python 판정 후보 소진(" +
-    "시도 후보: py -3, python3, python; 실패: " +
-    "py -3=버전 검증 실행 불가(ENOENT: py missing); " +
-    "python3=버전 검증 rc=126(Permission denied); " +
-    "python=Python 3.10 < 3.11) — 통과(fail-open)",
-);
-'''
-    subprocess.run(
-        [_node(), "-e", script], cwd=OPEN_LIB, check=True,
-        capture_output=True, text=True, encoding="utf-8",
     )
 
 
@@ -669,49 +629,115 @@ const m = require("./delegate-channel-core.cjs");
     assert "DELEGATE_CWD_SOURCE_OK" in result.stdout
 
 
-def test_opencode_delegate_channel_blocks_when_guard_engine_absent(tmp_path):
-    """설치 트리에 판정 엔진이 없으면 fail-open 경고가 아니라 위임 자체를 막는다.
-
-    payload `directory` 와 조상(이 저장소)에는 `delegate_channel_guard.py` 가 있다 — 그 둘 중
-    하나로 엔진 루트를 잡는 코드라면 판정이 호출돼 통과한다. enforceDeny 는 역할 판정 deny 의
-    스위치라 설치 무결성에는 적용하지 않는다.
-    """
-    lib = _install_core(tmp_path / "install", with_engine=False)
-    assert not (tmp_path / "install" / ".project_manager").exists()
-    script = r"""
-const assert = require("node:assert");
-const m = require("./delegate-channel-core.cjs");
-const repoWithEngine = process.argv[1];
-(async () => {
-  const toasts = [];
-  const judge = () => { throw new Error("설치가 깨졌는데 판정을 호출함"); };
-  const hooks = await m.makeDelegateChannelPlugin(judge)({
-    directory: repoWithEngine,
-    worktree: repoWithEngine,
-    client: {tui: {showToast: async (value) => toasts.push(value)}},
-  });
-  // 설치 확인은 toolName 선필터 뒤다 — 다른 도구는 그대로 지나간다.
-  await hooks["tool.execute.before"]({tool: "bash", sessionID: "S"}, {args: {}});
-  await assert.rejects(
-    hooks["tool.execute.before"](
-      {tool: "task", sessionID: "S"}, {args: {subagent_type: "developer"}},
-    ),
-    /\[delegate-channel\/설치\]/,
-  );
-  const context = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
-  assert.deepStrictEqual(context.system, [], "차단 대신 경고로 수준이 낮아짐");
-  assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 수준이 낮아짐");
-  console.log("DELEGATE_INSTALL_BLOCK_OK");
-})().catch((error) => { console.error(error); process.exit(1); });
-"""
-    result = subprocess.run(
-        [_node(), "-e", script, str(REPO)], cwd=lib, check=True,
-        capture_output=True, text=True, encoding="utf-8",
-    )
-    assert "DELEGATE_INSTALL_BLOCK_OK" in result.stdout
-
-
 @pytest.fixture
 def guard_home(tmp_path):
     return pm_paths.home_at(tmp_path / "rendered")
+
+
+NO_VERDICT_TAIL = (
+    "). 같은 호출을 한 번 다시 실행하라. 다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라."
+)
+
+
+def test_opencode_delegate_no_verdict_blocks_task_call(tmp_path):
+    """위임 채널이 판정을 얻지 못한 task 호출은 실행되지 않고 [delegate-channel/판정 실패] 로 막힌다.
+
+    후보 실행기 소진·판정 프로세스 rc≠0·판정 함수 예외·판정 형식 오류와, 판정 엔진 파일이 없는 설치를 돈다.
+    어느 꼴도 경고 채널·toast 를 쓰지 않는다(경고 후 통과 없음)."""
+    install = tmp_path / "install"
+    _install_core(install, with_engine=False)
+    (install / ".project_manager").mkdir()
+    (install / ".project_manager" / "local.conf").write_text(f"runtime.py={sys.executable}\n", encoding="utf-8")
+    script = r'''
+const assert = require("node:assert");
+const path = require("node:path");
+const m = require("./delegate-channel-core.cjs");
+const installed = require(path.join(process.argv[1], ".opencode", "lib", "delegate-channel-core.cjs"));
+const PREFIX = "[delegate-channel/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다(";
+const TAIL = process.argv[2];
+const exhausted = (_root, _cwd, agent) => m.judgeDelegation("C:\\repo", "C:\\repo", agent, null, (command) => {
+  if (command === "py") return {status: null, stdout: "", stderr: "", error: {code: "ENOENT", message: "py missing"}};
+  if (command === "python3") return {status: 126, stdout: "", stderr: "Permission denied"};
+  return {status: 0, stdout: "Python 3.10\n", stderr: ""};
+}, "win32");
+const decideFails = (_root, _cwd, agent) => m.judgeDelegation("/repo", "/repo", agent, null, (_py, argv) =>
+  argv[argv.length - 1].endsWith("python_floor.py")
+    ? {status: 0, stdout: "Python 3.12\n", stderr: ""}
+    : {status: 1, stdout: "", stderr: "Traceback (most recent call last):\nRuntimeError: engine boom\n"}, "linux");
+const cases = [
+  [m.makeDelegateChannelPlugin(exhausted), (msg) => msg === PREFIX + "Python 판정 후보 소진(시도 후보: py -3, python3, python; 실패: "
+    + "py -3=버전 검증 실행 불가(ENOENT: py missing); python3=버전 검증 rc=126(Permission denied); python=Python 3.10 < 3.11)" + TAIL],
+  [m.makeDelegateChannelPlugin(decideFails), (msg) => msg.startsWith(PREFIX + "Python 판정 후보 소진(")
+    && msg.includes("python3=판정 rc=1(Traceback (most recent call last): RuntimeError: engine boom)") && msg.endsWith(TAIL)],
+  [m.makeDelegateChannelPlugin(() => { throw new Error("fixture boom"); }), (msg) => msg === PREFIX + "fixture boom" + TAIL],
+  [m.makeDelegateChannelPlugin(() => ({verdict: "allow"})), (msg) => msg === PREFIX + "판정 결과 계약 불일치" + TAIL],
+  [installed.DelegateChannelPlugin, (msg) => msg.startsWith(PREFIX + "Python 판정 후보 소진(") && msg.includes("python_floor.py")
+    && msg.endsWith(TAIL)],
+];
+(async () => {
+  for (const [factory, check] of cases) {
+    const toasts = [];
+    const hooks = await factory({directory: "/repo", client: {tui: {showToast: async (value) => toasts.push(value)}}});
+    await assert.rejects(
+      hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer"}}),
+      (error) => { assert.ok(check(error.message), error.message); return true; },
+    );
+    const context = {system: []};
+    await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
+    assert.deepStrictEqual(context.system, []);
+    assert.deepStrictEqual(toasts, []);
+  }
+  console.log("DELEGATE_NO_VERDICT_BLOCK_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
+'''
+    result = subprocess.run(
+        [_node(), "-e", script, str(install), NO_VERDICT_TAIL], cwd=OPEN_LIB, check=False,
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "DELEGATE_NO_VERDICT_BLOCK_OK" in result.stdout
+
+
+def test_opencode_delegate_rerun_after_no_verdict_applies_verdict(tmp_path):
+    """판정 실패로 막힌 task 호출을 다시 실행해 판정을 얻으면 그 판정대로 처리된다(실제 엔진 CLI).
+
+    위임이 꺼진 홈에서 첫 실행은 하한 검사 시작 실패로 막히고, 다시 실행하면 엔진의 위임 꺼짐 거부를 받는다.
+    역할 매핑 불일치가 아닌 엔진 경고 판정(카드 미렌더 등)은 지금처럼 경고 채널에 실린다."""
+    engine_root = tmp_path / "adopter"
+    shutil.copytree(REPO / ".project_manager" / "tools", engine_root / ".project_manager" / "tools")
+    (engine_root / ".project_manager" / "local.conf").write_text(
+        f"runtime.py={sys.executable}\ndelegate.enabled=false\n", encoding="utf-8")
+    script = r'''
+const assert = require("node:assert");
+const childProcess = require("node:child_process");
+const m = require("./delegate-channel-core.cjs");
+const root = process.argv[1];
+let calls = 0;
+const flaky = (command, argv, options) => {
+  calls += 1;
+  if (calls === 1) return {status: null, stdout: "", stderr: "", error: {code: "ETIMEDOUT", message: `spawnSync ${command} ETIMEDOUT`}};
+  return childProcess.spawnSync(command, argv, options);
+};
+const judge = (_root, cwd, agent, tier) => m.judgeDelegation(root, cwd, agent, tier, flaky);
+(async () => {
+  const toasts = [];
+  const hooks = await m.makeDelegateChannelPlugin(judge)({directory: root, client: {tui: {showToast: async (v) => toasts.push(v)}}});
+  const call = () => hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer"}});
+  await assert.rejects(call(), /^Error: \[delegate-channel\/판정 실패\] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다\(Python 판정 후보 소진/);
+  await assert.rejects(call(), /^Error: \[delegate-channel\/deny\] 위임이 꺼져 있습니다/);
+  assert.deepStrictEqual(toasts, []);
+  const warned = await m.makeDelegateChannelPlugin(() => ({verdict: "allow", reason: "[delegate-channel/warn] engine fixture", harness: "", model: ""}))(
+    {directory: root, client: {tui: {showToast: async (v) => toasts.push(v)}}});
+  await warned["tool.execute.before"]({tool: "task", sessionID: "W"}, {args: {subagent_type: "developer"}});
+  const context = {system: []};
+  await warned["experimental.chat.system.transform"]({sessionID: "W"}, context);
+  assert.deepStrictEqual(context.system, ["[delegate-channel/warn] engine fixture"]);
+  console.log("DELEGATE_RERUN_VERDICT_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
+'''
+    result = subprocess.run(
+        [_node(), "-e", script, str(engine_root)], cwd=OPEN_LIB, check=False,
+        capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "DELEGATE_RERUN_VERDICT_OK" in result.stdout

@@ -660,7 +660,7 @@ def test_delegate_switch_section_is_identical_across_targets():
     assert len(set(sections.values())) == 1, [str(p) for p in sections]
     section = next(iter(sections.values()))
     for contract in ("기본은 허용", "rc=3", "ticket prepare", "ticket collect", "--dry-run",
-                     "fail-open", "false-green"):
+                     "판정을 얻지 못하면", "false-green"):
         assert contract in section, contract
 
 

@@ -93,8 +93,8 @@ def decide(
 
     Row 0.5 (master switch) sits between name normalisation and mapping
     resolution: ``delegate.enabled=false`` denies every role spawn regardless of
-    channel.  The guard's own failures stay fail-open — a broken guard must not
-    lock delegation out, because the recovery path itself needs delegation.
+    channel.  Failures outside these rows are not verdicts: they propagate, and
+    the adapter boundary that ran the guard blocks that delegation call.
     """
     known_harnesses = delegate_env._known_harnesses()
     self_name = self_harness.strip().lower() if isinstance(self_harness, str) else ""
@@ -141,9 +141,9 @@ def decide(
     harness, model, resolution_error = delegate_config._resolved_mapping(role_name, tier_name, conf)
 
     # The engine rejects an absent/incomplete profile (hard included) instead
-    # of inheriting another tier.  Keep native available because this guard's
-    # infrastructure boundary is fail-open, but surface the same engine fact
-    # and never prescribe an execution-impossible ``--tier hard`` redirect.
+    # of inheriting another tier.  This row keeps native available as an engine
+    # verdict (a warning pass), surfaces the same engine fact, and never
+    # prescribes an execution-impossible ``--tier hard`` redirect.
     if resolution_error:
         channel = "record" if mapping_unset else "warn"
         return delegate_channel_rules._result(

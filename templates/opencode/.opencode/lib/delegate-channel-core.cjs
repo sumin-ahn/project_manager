@@ -12,9 +12,6 @@ const { createWarningChannel } = require("./warning-channel-core.cjs");
 // Python tools' `Path(__file__).resolve().parents[2]`.  Walking ancestors picks the
 // outer project inside nested trees.
 const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
-const GUARD_PY = path.join(
-  ENGINE_ROOT, ".project_manager", "tools", "delegate_channel_guard.py",
-);
 
 const MIN_PYTHON = Object.freeze([3, 11]);
 
@@ -30,14 +27,12 @@ const DEFAULT_SURFACE = Object.freeze({
   enforceDeny: true,
 });
 
-function warning(reason) {
-  return {
-    verdict: "allow",
-    reason: `[delegate-channel/warn] ${reason} — 통과(fail-open)`,
-    harness: "",
-    model: "",
-    warning: true,
-  };
+// 판정을 얻지 못한 도구 호출을 막는 오류 — 원인과 다음에 할 일을 싣는다. 판정 경계와 위임 채널이 함께 쓴다.
+function noVerdict(guard, cause) {
+  return new Error(
+    `[${guard}/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다(${cause}). 같은 호출을 한 번 다시 실행하라. `
+    + "다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라.",
+  );
 }
 
 function validJudgment(value) {
@@ -252,9 +247,7 @@ function judgeDelegation(
   const failures = attempts
     .map((item) => `${item.label}=${item.failure}`)
     .join("; ");
-  return warning(
-    `Python 판정 후보 소진(시도 후보: ${labels}; 실패: ${failures})`,
-  );
+  throw new Error(`Python 판정 후보 소진(시도 후보: ${labels}; 실패: ${failures})`);
 }
 
 function resolveSurface(overrides = {}) {
@@ -288,11 +281,6 @@ function makeDelegateChannelPlugin(
       "tool.execute.before": async (input, output) => {
         const tool = String((input && input.tool) || "").toLowerCase();
         if (tool !== String(surface.toolName).toLowerCase()) return;
-        // A broken install is not a transient failure, and enforceDeny only governs
-        // role denials, so a missing decision engine blocks unconditionally.
-        if (!fs.existsSync(GUARD_PY)) {
-          throw new Error(`[delegate-channel/설치] 판정 엔진 부재: ${GUARD_PY}`);
-        }
         const args = output && output.args;
         const agentName = agentNameFromArgs(args, surface);
         const sessionID = (input && input.sessionID) || "__global__";
@@ -305,16 +293,14 @@ function makeDelegateChannelPlugin(
           judgment = await judge(root, cwd, agentName === null ? "" : agentName, null);
           if (!validJudgment(judgment)) throw new Error("판정 결과 계약 불일치");
         } catch (error) {
-          const detail = error && error.message ? error.message : String(error);
-          judgment = warning(`판정 인프라 예외(${detail})`);
+          throw noVerdict("delegate-channel", error && error.message ? error.message : String(error));
         }
 
         if (judgment.verdict === "deny" && surface.enforceDeny) {
           throw new Error(judgment.reason);
         }
         if (
-          judgment.warning
-          || judgment.reason.startsWith("[delegate-channel/warn]")
+          judgment.reason.startsWith("[delegate-channel/warn]")
           || (judgment.verdict === "deny" && !surface.enforceDeny)
         ) {
           const text = judgment.verdict === "deny"
@@ -339,6 +325,7 @@ module.exports = {
   agentNameFromArgs,
   judgeDelegation,
   makeDelegateChannelPlugin,
+  noVerdict,
   parseLocalConf,
   pythonCandidates,
   supportedPythonCandidates,

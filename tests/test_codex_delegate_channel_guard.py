@@ -19,7 +19,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 from copy import deepcopy
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -508,7 +507,7 @@ def test_observation_failure_on_partial_envelope_fails_loud(guard_home, guard, m
 def test_codex_hook_never_writes_a_partial_envelope_to_the_host(
     guard, monkeypatch, tmp_path
 ):
-    """엔벨로프 조립이 깨져도 호스트에는 사유를 담은 완전한 엔벨로프만 나간다."""
+    """엔벨로프 조립이 깨지면 예외로 올라가고 호스트에는 아무것도 쓰지 않는다(막는 응답은 디스패처 몫)."""
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
@@ -523,23 +522,17 @@ def test_codex_hook_never_writes_a_partial_envelope_to_the_host(
 
     monkeypatch.setattr(codex_envelope, '_codex_decision_envelope', partial_envelope)
     stdout = io.StringIO()
-    stderr = io.StringIO()
 
-    rc = cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        ["codex-hook"],
-        stdin=io.StringIO(json.dumps(_payload("developer"))),
-        stdout=stdout,
-        stderr=stderr,
-        config_loader=lambda _home: conf,
-        state_dir=tmp_path,
-    )
-    emitted = json.loads(stdout.getvalue())
+    with pytest.raises(ValueError):
+        cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
+            ["codex-hook"],
+            stdin=io.StringIO(json.dumps(_payload("developer"))),
+            stdout=stdout,
+            config_loader=lambda _home: conf,
+            state_dir=tmp_path,
+        )
 
-    assert rc == 0
-    assert set(emitted) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert "delegate-channel/warn" in emitted["systemMessage"]
-    assert emitted["suppressOutput"] is False
-    assert "fail-open" in stderr.getvalue()
+    assert stdout.getvalue() == ""
 
 
 def test_codex_native_mapping_allows_with_recorded_reason(guard_home, guard):
@@ -611,31 +604,6 @@ def test_codex_missing_absolute_cwd_fails_open_instead_of_emitting_placeholder_d
     assert "<worktree>" not in decision["reason"]
 
 
-def test_codex_hook_cli_infrastructure_failure_is_rc0_allow_and_user_warning(guard):
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-
-    def broken_config():
-        raise OSError("broken\nlocal.conf")
-
-    rc = cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        ["codex-hook"],
-        stdin=io.StringIO(json.dumps(_payload("developer"))),
-        stdout=stdout,
-        stderr=stderr,
-        config_loader=broken_config,
-    )
-    result = json.loads(stdout.getvalue())
-
-    assert rc == 0
-    assert stdout.getvalue().count("\n") == 1
-    assert set(result) == {"systemMessage", "suppressOutput"}
-    assert "delegate-channel/warn" in result["systemMessage"]
-    assert result["suppressOutput"] is False
-    assert stderr.getvalue().count("\n") == 1
-    assert "fail-open" in stderr.getvalue()
-
-
 def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     guard, dispatcher,
 ):
@@ -671,17 +639,15 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     assert dispatcher._feature_matches(feature, spawn)
     assert not dispatcher._feature_matches(feature, _live_wait_payload())
     assert not dispatcher._feature_matches(feature, subagent_call)
-    # 진입점 뒤에서 실행되는 커맨드는 옛 등록과 같은 감독자 호출이다(동작 보존).
+    # 진입점 뒤에서 디스패처가 판정 자식(`codex-hook`)을 직접 부른다(감독 단계 없음).
     assert list(feature.argv) == [
-        "{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
         "{py}", "{tools}/delegate_channel_guard.py", "codex-hook",
     ]
     handlers = groups[0]["hooks"]
     assert len(handlers) == 1 and handlers[0]["type"] == "command"
-    # 시간 상한 3층: 엔진 감독자 < 디스패처 예산 < 호스트 훅 timeout.
-    assert (delegate_channel_rules.CODEX_SUPERVISOR_TIMEOUT_SECONDS
-            < dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC < handlers[0]["timeout"])
-    # 감독(시간 상한·엔벨로프 검증)은 엔진 소유다 — 어댑터엔 가드 인라인 스크립트가 없다(T-0720).
+    # 시간 상한 두 층: 디스패처 예산 < 호스트 훅 timeout.
+    assert dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC < handlers[0]["timeout"]
+    # 시간 상한·엔벨로프 검증은 디스패처와 엔진 소유다 — 어댑터엔 가드 인라인 스크립트가 없다(T-0720).
     for command_key in ("command", "commandWindows"):
         wrapper = handlers[0][command_key]
         assert '"decision":"approve"' not in wrapper
@@ -720,11 +686,9 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     # 옛 matcher 는 `.*`(agent_type 값 공간 전수)이었다 — 판별 없음이 그 값의 이관이다.
     assert observe_feature.tool_pattern is None
     assert list(observe_feature.argv) == [
-        "{py}", "{tools}/delegate_channel_guard.py", "supervise", "SubagentStart",
         "{py}", "{tools}/delegate_channel_guard.py", "codex-subagent-observe",
     ]
-    assert (delegate_channel_rules.CODEX_SUPERVISOR_TIMEOUT_SECONDS
-            < dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC < observer[0]["timeout"])
+    assert dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC < observer[0]["timeout"]
     assert "Execpolicy" in data["description"] and "argv-only" in data["description"]
 
     readme = README.read_text(encoding="utf-8")
@@ -751,7 +715,8 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
         "`SubagentStart`는 0건",
         "allow-only tee hook",
         "`SubagentStart` 1건",
-        "exact deny 5필드·빈 allow·2필드 fail-open 경고",
+        "exact deny 5필드·빈 allow·2필드 경고",
+        "[hook-dispatch/판정 실패]",
         "Operation not permitted",
         "`PreToolUse=0`, `SubagentStart=0` 각각",
         "공식 문서",
@@ -894,10 +859,8 @@ def test_wrapper_fallback_envelope_matches_engine_warning_constant(
     assert set(fallback) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
     assert fallback["suppressOutput"] is delegate_channel_rules.CODEX_WARNING_SUPPRESS_OUTPUT
     assert "fail-open" in fallback["systemMessage"]
-    # 어느 층이 답했는지 구별된다 — 셸 대체 출력과 supervisor 대체 출력은 다른 마커를 단다.
+    # 어느 층이 답했는지 구별된다 — 셸 대체 출력은 어댑터 마커를 단다.
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in fallback["systemMessage"]
-    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER not in fallback["systemMessage"]
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER != delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER
 
 
 @pytest.mark.parametrize("event", ("PreToolUse", "SubagentStart"))
@@ -994,16 +957,15 @@ def test_posix_hook_wrapper_runs_the_real_guard_and_passes_its_envelope(
         assert result == {}
     rendered = json.dumps(result, ensure_ascii=False)
     assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in rendered
-    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered
 
 
 @pytest.mark.skipif(
     not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님"
 )
-def test_posix_hook_wrapper_marks_the_fallback_when_the_guard_cannot_answer(
+def test_posix_hook_wrapper_blocks_when_the_guard_cannot_answer(
     guard, tmp_path
 ):
-    """엔진 사본이 깨진 채택자에서도 완전한 엔벨로프가 나가고, 대체 출력 사실이 남는다."""
+    """엔진 사본이 깨진 채택자에서는 디스패처가 그 위임 호출을 5필드 막는 응답으로 막는다."""
     root = _adopter_tree(tmp_path, ("delegate.enabled=true",))
     (root / ".project_manager" / "tools" / "delegate_channel_guard.py").write_text(
         "raise SystemExit(3)\n", encoding="utf-8", newline="\n"
@@ -1011,144 +973,12 @@ def test_posix_hook_wrapper_marks_the_fallback_when_the_guard_cannot_answer(
 
     result, _elapsed = _run_posix_hook(_pretooluse_handler()["command"], root)
 
-    assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
-
-
-def test_supervisor_bounds_a_hung_guard_before_the_outer_hook_timeout(guard_home, guard):
-    """시간 상한은 엔진 감독자가 소유한다 — 훅 timeout 안에서 완전한 엔벨로프로 끝난다."""
-    started = time.monotonic()
-    result = codex_hook.supervise_codex_hook(
-        guard_home, "PreToolUse",
-        [sys.executable, "-c", "import time; time.sleep(30)"],
-        payload_bytes=json.dumps(_payload("developer")).encode("utf-8"),
-    )
-    elapsed = time.monotonic() - started
-
-    assert delegate_channel_rules.CODEX_SUPERVISOR_TIMEOUT_SECONDS <= elapsed
-    assert elapsed < _pretooluse_handler()["timeout"]
-    assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER in result["systemMessage"]
-    assert "TimeoutExpired" in result["systemMessage"]
-
-
-@pytest.mark.parametrize(
-    "candidate",
-    (
-        "{}",
-        json.dumps({
-            "decision": "block",
-            "reason": "fixture deny",
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": "fixture deny",
-            },
-            "systemMessage": "fixture deny",
-            "suppressOutput": False,
-        }),
-    ),
-    ids=("empty-allow", "measured-deny"),
-)
-def test_supervisor_passes_supported_envelopes_through_unchanged(guard_home, guard, candidate):
-    result = codex_hook.supervise_codex_hook(
-        guard_home, "PreToolUse",
-        [sys.executable, "-c", f"print({candidate!r})"],
-        payload_bytes=b"{}",
-    )
-
-    assert result == json.loads(candidate)
-
-
-@pytest.mark.parametrize(
-    "child_body,marker",
-    (
-        ("print('not json')", "JSONDecodeError"),
-        ("print('[]')", "JSON 객체가 아님"),
-        ("print('{\"decision\": \"block\"}')", "필드 불일치"),
-        ("import sys; sys.exit(3)", "rc=3"),
-    ),
-    ids=("garbage", "not-object", "partial-deny", "nonzero-rc"),
-)
-def test_supervisor_replaces_unusable_output_with_a_marked_fallback(
-    guard_home, guard, child_body, marker
-):
-    """부분·손상 엔벨로프는 호스트에 닿지 않고, 대체 출력이라는 사실이 사유에 남는다."""
-    result = codex_hook.supervise_codex_hook(
-        guard_home, "PreToolUse",
-        [sys.executable, "-c", child_body],
-        payload_bytes=b"{}",
-    )
-
-    assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER in result["systemMessage"]
-    assert marker in result["systemMessage"]
-    assert "fail-open" in result["systemMessage"]
-
-
-def test_supervisor_fallback_leaves_a_durable_observation_row(guard_home, guard, tmp_path):
-    """대체 출력은 turn 과 함께 사라지지 않는다 — 기록 행이 남아 lint 스캔이 볼 수 있다."""
-    spawn = _payload("developer")
-    result = codex_hook.supervise_codex_hook(
-        guard_home, "PreToolUse",
-        [sys.executable, "-c", "import sys; sys.exit(3)"],
-        payload_bytes=json.dumps(spawn).encode("utf-8"),
-        state_dir=tmp_path,
-    )
-    rows = [
-        json.loads(line)
-        for line in codex_observation._codex_audit_path(guard_home, tmp_path)
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-
-    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER in result["systemMessage"]
-    assert [row["status"] for row in rows] == [
-        delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_STATUS
-    ]
-    assert rows[0]["hook_event_name"] == "PreToolUse"
-    assert rows[0]["session_id"] == spawn["session_id"]
-    # 판정 없이 통과한 spawn 은 allow 로 세지 않으므로 뒤따르는 start 가 miss 로 보인다.
-    codex_hook.observe_codex_subagent_start(guard_home, _subagent_start(), state_dir=tmp_path)
-    assert len(codex_observation.scan_codex_observation_misses(guard_home, state_dir=tmp_path)) == 1
-
-
-def test_supervisor_cli_emits_one_json_line_and_rc0(guard, tmp_path):
-    stdout = io.StringIO()
-
-    rc = cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        ["supervise", "SubagentStart", sys.executable, "-c", "import sys; sys.exit(4)"],
-        stdin=io.StringIO(json.dumps(_subagent_start())),
-        stdout=stdout,
-        state_dir=tmp_path,
-    )
-    emitted = json.loads(stdout.getvalue())
-
-    assert rc == 0
-    assert stdout.getvalue().count("\n") == 1
-    # 콘솔 코드페이지 무관하게 실려야 하므로 ASCII 이스케이프로 나간다.
-    assert stdout.getvalue().isascii()
-    assert set(emitted) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert "SubagentStart" in emitted["systemMessage"]
-    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER in emitted["systemMessage"]
-
-
-def test_supervisor_cli_without_a_child_command_is_still_a_full_envelope(
-    guard, tmp_path
-):
-    stdout = io.StringIO()
-
-    rc = cli_delegate_channel_guard.main(pm_paths.home_at(guard.REPO),
-        ["supervise", "PreToolUse"],
-        stdin=io.StringIO("{}"),
-        stdout=stdout,
-        state_dir=tmp_path,
-    )
-    emitted = json.loads(stdout.getvalue())
-
-    assert rc == 0
-    assert set(emitted) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert delegate_channel_rules.CODEX_SUPERVISOR_FALLBACK_MARKER in emitted["systemMessage"]
+    assert set(result) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
+    assert result["decision"] == "block"
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert result["reason"].startswith("[hook-dispatch/판정 실패] ")
+    assert "delegate-channel 판정 불가" in result["reason"]
+    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER not in result["systemMessage"]
 
 
 @pytest.fixture

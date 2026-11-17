@@ -386,7 +386,8 @@ def judge_adapter_hook_entrypoints(dest_root: Path, source_root: Path | None = N
                     f"{spec.config_relpath} 에 {entrypoint.event} 범용 진입점"
                     f"(matcher {entrypoint.matcher!r} → {entrypoint.dispatcher})이 없다 — "
                     f"이 이벤트에 앞으로 등록될 가드는 실행되지 않는다"
-                    f"(옛 직결 등록이 남아 있으면 그 기능 자체는 계속 돈다)"))
+                    f"(옛 직결 등록 중 위임 채널 감독 호출(`supervise`)은 이 판의 엔진에 없어 "
+                    f"대체 경고로 통과하고, 그 밖의 옛 직결 등록은 계속 돈다)"))
                 continue
             gap = _entrypoint_dispatcher_gap(dest_root, entrypoint)
             if gap is not None:
