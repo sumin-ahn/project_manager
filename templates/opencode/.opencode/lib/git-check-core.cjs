@@ -12,7 +12,6 @@
 // SessionPrompt.createUserMessage 에서 실측)가 사용자가 직접 친 텍스트 조각(synthetic 아님)의
 // `git 허용: <명령 원문>` 줄을 허용 기록으로 남긴다.
 const path = require("node:path");
-const fs = require("node:fs");
 const childProcess = require("node:child_process");
 const { createWarningChannel } = require("./warning-channel-core.cjs");
 const { selectPython } = require("./delegate-channel-core.cjs");
@@ -22,12 +21,10 @@ const { toolSignal } = require("./principle-recall-core.cjs");
 // (pm_import 가 그 깊이를 못박는다) 이는 파이썬 도구의 `Path(__file__).resolve().parents[2]` 와 같은
 // 규칙이다. 조상을 훑으면 중첩 트리에서 바깥 프로젝트의 board.py 를 실행한다.
 const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
-const BOARD_PY = path.join(ENGINE_ROOT, ".project_manager", "tools", "board.py");
 
 // 사용자 프롬프트의 허용 표시 — 허용 기록 진입 여부만 고른다(판정 우회 아님).
 // pm_engine/domain/git_policy.py `GIT_GRANT_LINE` 과 같은 값.
 const GRANT_MARKER = /git[ \t]+허용[ \t]*:/;
-const BOARD_TIMEOUT_MS = 10000;
 // 판정 응답 stdout 상한(바이트) — 한 줄 JSON 응답이 넘을 수 없는 크기.
 const BOARD_MAX_BUFFER = 1024 * 1024;
 // SDK 세션 조회 1회 제한 시간.
@@ -47,12 +44,22 @@ function errorText(error) {
   return error && error.message ? error.message : String(error);
 }
 
+// 판정을 얻지 못한 도구 호출을 막는 오류 — 원인과 다음에 할 일을 싣는다.
+function noVerdict(cause) {
+  return new Error(
+    `[git-check/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다(${cause}). 같은 호출을 한 번 다시 실행하라. `
+    + "다시 실행해도 이 문구가 나오면 멈추고 사용자에게 이 문구를 그대로 보여라.",
+  );
+}
+
 // board.py 하위 명령 1회 실행 — 실행기는 프로세스 없이 고르고, 실행 실패·rc≠0 은 예외로 올린다.
+// 시간 제한(timeout)을 주지 않는다. opencode 가 싣는 Bun 1.3 의 Windows spawnSync 는 시간 제한을 앞
+// spawnSync 가 끝난 시각부터 재므로, 그 뒤 제한보다 오래 쉬었으면 자식을 띄우자마자 끝낸다(ETIMEDOUT).
 function runBoard(root, argv, input, { spawnSync = childProcess.spawnSync, platform = process.platform, env = process.env } = {}) {
   const python = selectPython(root, { platform, env });
   const board = path.join(root, ".project_manager", "tools", "board.py");
   const result = spawnSync(python.command, [...python.prefixArgs, board, ...argv], {
-    encoding: "utf8", timeout: BOARD_TIMEOUT_MS, maxBuffer: BOARD_MAX_BUFFER, input,
+    encoding: "utf8", maxBuffer: BOARD_MAX_BUFFER, input,
   });
   if (!result) throw new Error("board.py 실행 결과 없음");
   if (result.error) throw new Error(`board.py 실행 불가(${errorText(result.error)})`);
@@ -168,7 +175,6 @@ function createToolBoundary({
   spawnSync = childProcess.spawnSync, platform = process.platform,
 }) {
   const warnings = createWarningChannel(client);
-  const board = path.join(root, ".project_manager", "tools", "board.py");
 
   // native task 는 자식 세션을 새 ID 로 만든다(실측 opencode 1.18.31 `session.create({parentID})`).
   // SDK 함수: client.session.get({ path: { id } }) -> { data: Session }. 조회 실패는 삼키지 않고 올린다.
@@ -222,16 +228,12 @@ function createToolBoundary({
     const sessionID = (input && input.sessionID) || "";
     const channel = sessionID || "__global__";
     const cwd = String(args.workdir || args.cwd || directory || worktree || process.cwd());
-    // 설치 깨짐은 일시 실패가 아니다 — 판정 엔진이 자기 위치 아래 없으면 경고로 낮추지 않고 막는다.
-    if (!fs.existsSync(board)) throw new Error(`[git-check/설치] 판정 엔진 부재: ${board}`);
+    // 판정을 얻지 못한 호출은 실행하지 않는다 — 세션 확인·판정 실행·응답 형식 어디서 실패해도 같다.
     let rootSID;
     try {
       rootSID = await rootSessionID(sessionID);
     } catch (error) {
-      await warnings.publish(
-        channel, `[git-check/warn] 판정 인프라 예외(세션 확인 실패: ${errorText(error)}) — cwd=${cwd}를 직접 확인`,
-      );
-      return;
+      throw noVerdict(`세션 확인 실패: ${errorText(error)}`);
     }
     const mainThread = rootSID === sessionID;
     const observed = sessionID && mainThread ? contextFor(sessionID) : null;
@@ -258,9 +260,7 @@ function createToolBoundary({
     try {
       response = runHookTool(root, rootSID, request, { spawnSync, platform });
     } catch (error) {
-      // 판정 인프라 실패 자체가 사용자 명령을 차단하면 never-block 계약을 뒤집는다.
-      await warnings.publish(channel, `[git-check/warn] 판정 인프라 예외(${errorText(error)}) — cwd=${cwd}를 직접 확인`);
-      return;
+      throw noVerdict(errorText(error));
     }
     if (response.git.verdict === "deny") throw new Error(`[git-check/deny] ${response.git.reason}`);
     if (response.context) await acceptContext(sessionID, response.context, observed);
@@ -285,7 +285,6 @@ function makeGitCheckPlugin(recordGrant = recordGrants) {
       "chat.message": async (input, output) => {
         const prompt = userPromptText(output && output.parts);
         if (!GRANT_MARKER.test(prompt)) return;
-        if (!fs.existsSync(BOARD_PY)) throw new Error(`[git-check/설치] 판정 엔진 부재: ${BOARD_PY}`);
         const sessionID = input && input.sessionID;
         const cwd = directory || worktree || process.cwd();
         const granted = await recordGrant(root, sessionID, cwd, prompt);

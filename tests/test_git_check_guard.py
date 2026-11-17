@@ -2055,7 +2055,7 @@ for (const platform of process.platform === "win32" ? ["win32"] : ["linux", "win
           calls.push(command);
           assert.strictEqual(command, chosen.command);
           assert.deepStrictEqual(args, [...chosen.prefixArgs, board, ...operation.argv]);
-          assert.deepStrictEqual(options, {encoding:"utf8", timeout:10000, maxBuffer:1048576, input:operation.input});
+          assert.deepStrictEqual(options, {encoding:"utf8", maxBuffer:1048576, input:operation.input});
           if (outcome === "throw") throw new Error("engine throw");
           if (outcome === "null") return null;
           if (outcome === "rc") return {status:7, stderr:"engine rc"};
@@ -2170,13 +2170,14 @@ function reply(git) {
     client: {tui: {showToast: async (value) => errorToasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}},
     contextFor: () => null, acceptContext: async () => {},
   });
-  await failing.before({tool:"bash", sessionID:"ERR"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}});
+  await assert.rejects(
+    failing.before({tool:"bash", sessionID:"ERR"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}}),
+    /\[git-check\/판정 실패\] .*\(fixture boom\)/,
+  );
   const errorContext = {system: []};
   failing.inject({sessionID:"ERR"}, errorContext);
-  assert.strictEqual(errorContext.system.length, 1);
-  assert.match(errorContext.system[0], /git-check\/warn/);
-  assert.match(errorContext.system[0], /판정 인프라 예외\(fixture boom\)/);
-  assert.strictEqual(errorToasts.length, 1);
+  assert.strictEqual(errorContext.system.length, 0);
+  assert.strictEqual(errorToasts.length, 0);
   console.log("GIT_CHECK_CORE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 """
@@ -2215,13 +2216,13 @@ const repoWithEngine = process.argv[1];
   for (const command of ["echo hello", "git commit -m x"]) {
     await assert.rejects(
       hooks["tool.execute.before"]({tool:"bash", sessionID:"S"}, {args:{command}}),
-      /\[git-check\/설치\]/,
+      /\[git-check\/판정 실패\] .*board\.py/,
     );
   }
   const grants = await git.GitCheckPlugin({directory: repoWithEngine, worktree: repoWithEngine, client});
   await assert.rejects(
     grants["chat.message"]({sessionID:"S"}, {parts:[{type:"text", text:process.argv[2]}]}),
-    /\[git-check\/설치\]/,
+    /\[git-check\/허용 거부\] .*board\.py/,
   );
   const context = {system: []};
   await hooks["experimental.chat.system.transform"]({sessionID:"S"}, context);

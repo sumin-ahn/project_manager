@@ -70,7 +70,7 @@ function judgeRecall(root, on, text, sessionID, spawnSync = childProcess.spawnSy
         candidate.command,
         [...candidate.prefixArgs, engine, "judge-recall", "--root", root, "--on", on, "--text", String(text || ""),
          "--session", String(sessionID || "unknown")],
-        { encoding: "utf8", timeout: 10000 },
+        { encoding: "utf8" },
       );
     } catch (error) {
       lastError = error && error.message ? error.message : String(error);

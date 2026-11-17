@@ -85,7 +85,7 @@ for (const platform of ["win32", "linux"]) {
   const attempts = [];
   const spawnSync = (command, argv, options) => {
     calls.push({command, argv, options});
-    assert.deepStrictEqual(options, {encoding: "utf8", timeout: 37, input: ""});
+    assert.deepStrictEqual(options, {encoding: "utf8", input: ""});
     if (platform === "win32") {
       if (command === "py") return missing;
       if (command === "python3") return {status: 9009, error: null, stderr: "Store alias"};
@@ -95,7 +95,7 @@ for (const platform of ["win32", "linux"]) {
     }
     return supported;
   };
-  const iterator = m.supportedPythonCandidates(root, {platform, spawnSync, timeout: 37, attempts});
+  const iterator = m.supportedPythonCandidates(root, {platform, spawnSync, attempts});
   assert.deepStrictEqual(calls, [], "probe must be lazy");
   const chosen = iterator.next().value;
   const expected = platform === "win32"
@@ -115,12 +115,12 @@ for (const platform of ["win32", "linux"]) {
     fs.writeFileSync(conf, "runtime.py=ignored\nruntime.py=" + runtime + "\r\n");
     const calls = [];
     const expected = runtime === "venv/python" ? path.resolve(root, runtime) : runtime;
-    const iterator = m.supportedPythonCandidates(root, {platform, timeout: 20000,
+    const iterator = m.supportedPythonCandidates(root, {platform,
       spawnSync: (command, argv, options) => {
         calls.push(command);
         assert.strictEqual(command, expected);
         assert.deepStrictEqual(argv, [floor]);
-        assert.strictEqual(options.timeout, m.DECIDE_TIMEOUT_MS);
+        assert.deepStrictEqual(options, {encoding: "utf8", input: ""});
         return supported;
       }});
     assert.deepStrictEqual(iterator.next().value, {command: expected, prefixArgs: [], label: runtime});
@@ -229,7 +229,7 @@ const expected = platform === "win32" ? {command: "py", prefixArgs: ["-3"]} : {c
 const denied = m.judgeDelegation("/repo", "/repo with space", "developer", null, fakeSpawn, platform);
 assert.strictEqual(denied.verdict, "deny");
 assert.strictEqual(spawned.options.input, "");
-assert.strictEqual(spawned.options.timeout, m.DECIDE_TIMEOUT_MS);
+assert.deepStrictEqual(spawned.options, {encoding: "utf8", input: ""});
 assert.strictEqual(spawned.py, expected.command);
 assert.strictEqual(probed.py, expected.command);
 assert.deepStrictEqual(probed.argv, [...expected.prefixArgs, path.join("/repo", ".project_manager", "tools", "python_floor.py")]);

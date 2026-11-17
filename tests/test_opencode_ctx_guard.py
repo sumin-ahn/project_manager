@@ -187,7 +187,7 @@ for (const platform of ["linux", "win32"]) {
         const probe = args[args.length-1] === floor;
         calls.push({command, args, options, probe});
         if (probe) {
-          assert.deepStrictEqual(options, {encoding:"utf8", timeout:137, input:""});
+          assert.deepStrictEqual(options, {encoding:"utf8", input:""});
           if (configured) {
             assert.strictEqual(command, runtime);
             assert.deepStrictEqual(args, [floor]);
@@ -199,13 +199,13 @@ for (const platform of ["linux", "win32"]) {
         }
         assert.strictEqual(command, configured ? runtime : "python");
         assert.deepStrictEqual(args, [engine, ...argv]);
-        assert.deepStrictEqual(options, {cwd:root, encoding:"utf8", timeout:137,
+        assert.deepStrictEqual(options, {cwd:root, encoding:"utf8",
           maxBuffer:32768, stdio:capture ? ["ignore","pipe","ignore"] : ["ignore","ignore","ignore"]});
         if (outcome === "throw") throw new Error("engine throw");
         return expected;
       };
-      if (outcome === "throw") assert.throws(() => m.runPmLog(root, argv, {capture,timeout:137,platform}, fake), /engine throw/);
-      else assert.strictEqual(m.runPmLog(root, argv, {capture,timeout:137,platform}, fake), expected);
+      if (outcome === "throw") assert.throws(() => m.runPmLog(root, argv, {capture,platform}, fake), /engine throw/);
+      else assert.strictEqual(m.runPmLog(root, argv, {capture,platform}, fake), expected);
       assert.strictEqual(calls.filter((call) => !call.probe).length, 1);
       assert.strictEqual(calls[calls.length-1].probe, false, "no probe after actual engine failure");
     }
@@ -233,7 +233,7 @@ const fake = (command, args, options) => {
   if (args[args.length-1] === floor) return {status:0, stdout:"Python 3.12\n"};
   assert.deepStrictEqual(args, [...selected.prefixArgs, engine, "checkpoint", "--trigger", "compaction",
     "--phase", "post", "--session-id", "SID", "--boundary-id", "boundary"]);
-  assert.strictEqual(options.timeout, m.CHECKPOINT_TIMEOUT_MS);
+  assert.ok(!("timeout" in options));
   assert.deepStrictEqual(options.stdio, ["ignore","ignore","ignore"]);
   return {status:9};
 };
@@ -241,7 +241,7 @@ m.createCompactionCheckpoint(root, " SID ", " boundary ", fake);
 assert.strictEqual(calls.length, 2);
 assert.strictEqual(calls[0].command, selected.command);
 assert.deepStrictEqual(calls[0].args, [...selected.prefixArgs, floor]);
-assert.strictEqual(calls[0].options.timeout, m.CHECKPOINT_TIMEOUT_MS);
+assert.deepStrictEqual(calls[0].options, {encoding:"utf8", input:""});
 const snapshot = m.buildCompactionSnapshot(root, "SID", (command,args) =>
   args[args.length-1] === floor ? {status:0, stdout:"Python 3.12\n"} : {status:0, stdout:raw});
 assert.deepStrictEqual(snapshot, {ok:true, text:raw});
