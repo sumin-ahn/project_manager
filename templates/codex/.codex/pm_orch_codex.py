@@ -579,7 +579,8 @@ class CodexHookFeature(NamedTuple):
     side_effect_only
                  자식을 **부작용만** 위해 돌린다 — rc·stdout 을 판정에 쓰지 않고 합본에 `{}` 를
                  기여한다. 옛 압축 커맨드의 `>/dev/null 2>&1 || true` 단계가 값 그대로 여기다.
-                 기본(False) 자식 계약은 "rc0 + JSON dict stdout" 이고 위반은 대체 경고인데,
+                 기본(False) 자식 계약은 "rc0 + JSON dict stdout" 이고 위반은 판정 실패다
+                 (`hook_failure_envelope` — PreToolUse 는 막는 응답, 그 밖의 이벤트는 마커 붙은 경고).
                  사람글을 stdout 에 내는 기록 CLI 를 그 계약으로 옮기면 압축마다 경고가 나간다.
     """
     feature_id: str
@@ -736,9 +737,10 @@ def hook_failure_envelope(event: str, subject: str, detail: str) -> dict:
 
 # 판별 결과는 셋이다 — **정상 미매칭**(조용한 통과)과 **판정 불능**을 같은 값으로 접지 않는다.
 #   옛 등록에서는 hooks.json matcher 가 호스트 쪽에서 판별했고, 판별 근거가 없는 입력(빈 stdin·
-#   `{}`·파손 JSON)은 가드 자식이 경고 엔벨로프로 냈다. 판별이 진입점 뒤로 옮겨 온 뒤에도 그
-#   경고 의미가 남아야 한다 — 판정 불능이 통과와 같은 출력이면 가드가 꺼진 것과 구별되지
-#   않는다(불변식 — 조용한 실패 금지).
+#   `{}`·파손 JSON)은 가드 자식이 경고 엔벨로프로 냈다. 판별이 진입점 뒤로 옮겨 온 뒤에는 판정
+#   불능을 `hook_failure_envelope` 로 낸다 — PreToolUse 는 그 호출을 막고, 그 밖의 이벤트는 마커
+#   붙은 경고다. 판정 불능이 통과와 같은 출력이면 가드가 꺼진 것과 구별되지 않는다(불변식 — 조용한
+#   실패 금지).
 CODEX_HOOK_ROUTE_MATCH = "match"
 CODEX_HOOK_ROUTE_SKIP = "skip"
 CODEX_HOOK_ROUTE_UNDECIDABLE = "undecidable"
@@ -1031,9 +1033,9 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
     걸리는 기능이 없으면 자식을 **하나도 띄우지 않는다** — 진입점이 전 도구 호출로 넓어졌으므로
     in-process 판별이 없으면 매 호출이 프로세스 하나를 더 만든다. 예산은 기능들이 나눠 쓴다.
 
-    판별을 **못 한** 기능은 조용히 건너뛰지 않고 경고 엔벨로프로 남긴다(rc 는 종전대로 0·차단
-    0) — 옛 등록에서 같은 입력에 가드 자식이 내던 경고가 진입점 뒤에서 사라지면, 가드가 꺼진
-    구성과 출력이 같아진다."""
+    판정을 **못 낸** 기능(판별 불가·자식 실패·빈 출력)은 조용히 건너뛰지 않고 `hook_failure_envelope`
+    로 남긴다(rc 는 0) — PreToolUse 는 그 호출을 막는 응답이고, 그 밖의 이벤트는 마커 붙은 경고다.
+    판정 불능이 진입점 뒤에서 조용히 사라지면 가드가 꺼진 구성과 출력이 같아진다."""
     if event not in CODEX_HOOK_ENTRYPOINT_EVENTS:
         # config 가 이 디스패처 버전이 모르는 진입점을 열었다 — 조용히 통과하지 않는다.
         return hook_failure_envelope(
@@ -1102,7 +1104,7 @@ def git_target_repo_hook_evaluate(payload: dict, root: Path) -> dict:
     서브에이전트에서 실행된 훅(`hook_is_subagent`)은 `main_thread=False` 로 판정받는다.
 
     반환은 **항상 유효한 dict** 다 — 이 기능은 자식 프로세스로 돌고, 디스패처
-    `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 adapter-fallback 경고로 낮춘다. 그래서
+    `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 PreToolUse 호출을 막는 응답으로 바꾼다. 그래서
     codex 경로의 "침묵"은 claude 처럼 0바이트가 아니라 **측정된 allow 형태 `{}`** 다(`merge_hook_
     envelopes` 가 이미 그 값을 "기여 없음"으로 다룬다). ok·정상 미매칭·세션 내 완전일치 중복
     warn 이 이 값을 낸다. 판정불능(uncertain)은 엔진이 이미 warn 으로 바꿔 넣으므로 여기서

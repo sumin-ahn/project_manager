@@ -218,9 +218,9 @@ codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 
   `hookSpecificOutput.permissionDecision:"deny"` + `systemMessage` + `suppressOutput:false`)를
   출력하게 한 뒤 spawn을 지시했다. 재시도로 `PreToolUse` 4건과 `error` 2건이
   기록됐지만 `SubagentStart`는 0건이라 실제 spawn이 차단됐다. 같은 지시를 allow-only tee hook으로
-  바꾼 대조군(현재 출하 allow와 같은 빈 객체 `{}`)은 `SubagentStart` 1건이 실행됐다. 디스패처는
-  이 exact deny 5필드·빈 allow·2필드 경고만 받아들이고, 다른 모양이나 판정 자식의 실패는
-  `[hook-dispatch/판정 실패]` 로 그 호출을 막는다.
+  바꾼 대조군(현재 출하 allow와 같은 빈 객체 `{}`)은 `SubagentStart` 1건이 실행됐다. 위임 채널
+  판정 자식(`codex-hook`)은 이 exact deny 5필드·빈 allow·2필드 경고만 내고 다른 모양은 오류로
+  끝나며, 디스패처는 판정 자식의 실패를 `[hook-dispatch/판정 실패]` 로 막는다.
   현재 공식 문서는 PreToolUse의 `suppressOutput`을
   미지원으로 적고 그런 출력은 hook failure 후 tool을 계속한다고 설명하지만, 0.147.0 host 실동작은
   deny를 먼저 적용했다. 따라서 문서 schema만으로 차단 실패를 추론하지 말고 버전별 host를 끝까지

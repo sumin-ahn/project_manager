@@ -1451,3 +1451,25 @@ def test_claude_delegate_hook_no_verdict_blocks_and_rerun_applies_verdict(tmp_pa
     init.write_bytes(original)
     entry.rename(entry.with_name("moved.py"))
     assert_blocked(payload, "2: ")
+
+
+def test_claude_delegate_wrapper_and_driver_refuse_partial_update():
+    """위임 채널 래퍼는 드라이버의 `--delegate-channel-hook` 에 기대므로 둘은 한 결합 묶음이다.
+
+    래퍼만 옮기면 옛 드라이버가 그 플래그를 인자 오류(rc 2)로 거부해 모든 `Agent` 호출이 막히고,
+    드라이버만 옮기면 옛 래퍼가 엔진 진입 파일을 바로 불러 새 경계를 지나지 않는다. 경로 지정
+    전파는 둘 중 하나만 옮기는 것을 거부하고, 둘을 함께 옮기면 받아들인다."""
+    from pm_engine.app import hook_sets
+
+    wrapper = ".claude/delegate_channel_guard_hook.sh"
+    driver = ".claude/pm_orch_claude.py"
+    pending = [wrapper, driver]
+
+    for moving, left_behind in (([wrapper], driver), ([driver], wrapper)):
+        refused = hook_sets.hook_set_partial_update(moving, pending)
+        assert len(refused) == 1, refused
+        harness, left, group = refused[0]
+        assert harness == "claude"
+        assert left == (left_behind,)
+        assert {wrapper, driver} <= set(group)
+    assert hook_sets.hook_set_partial_update(pending, pending) == []
