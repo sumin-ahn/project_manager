@@ -17,8 +17,11 @@ from pm_engine.infra import task_store
 from pm_engine.infra import worktree_paths
 
 
-def _git_target_repo_identity(target_repo: Path, *, runner: Any=subprocess.run, slot_home: Path | None=None) -> tuple[str, Path | None, Path | None]:
-    """(public identity, git root, owning PM home)를 기존 wrong-repo 판정 함수로 해소한다."""
+def _git_target_repo_identity(target_repo: Path, *, runner: Any=subprocess.run) -> tuple[str, Path | None, Path | None]:
+    """(public identity, git root, owning PM home)를 대상 저장소의 `.git` 선언으로 해소한다.
+
+    PM 홈이 만든 linked worktree 를 선언하지 않는 저장소(일반 저장소·하위 저장소·PM 과 무관한 저장소의
+    linked worktree·`--separate-git-dir` 저장소)는 `foreign` 이다. 선언을 읽지 못하면 그대로 올린다."""
     root = git._git_repo_root(target_repo, runner=runner)
     if root is None:
         shared = git._shared_repository_root(target_repo, runner=runner)
@@ -27,17 +30,11 @@ def _git_target_repo_identity(target_repo: Path, *, runner: Any=subprocess.run, 
         return ('non-repo', None, None)
     if pm_paths._has_real_board(root / '.project_manager'):
         return ('pm-home', root, root)
-    if slot_home is not None:
-        containing = hooks.slot_containing(slot_home, root)
-        if containing is not None:
-            parent = slot_home / containing[0]['slot']
-            if root != parent.resolve() and (not (slot_home / 'work').is_symlink()) and (not parent.is_symlink()):
-                return ('foreign', root, None)
-    pm_home = pm_paths._pm_home_worktree_wrong_repo(pm_paths.home_at(root))
-    if pm_home is not None:
-        registered_slots = worktree_paths._registered_slot_paths(pm_paths.home_at(pm_home), runner=runner)
-        return ('slot' if root in registered_slots else 'worktree', root, pm_home)
-    return ('foreign', root, None)
+    pm_home, _undeclared = pm_paths._pm_home_declaration(root)
+    if pm_home is None or pm_home == root:
+        return ('foreign', root, None)
+    registered_slots = worktree_paths._registered_slot_paths(pm_paths.home_at(pm_home), runner=runner)
+    return ('slot' if root in registered_slots else 'worktree', root, pm_home)
 
 def _dangerous_cross_repo_pathspecs(home, repo_root: Path, path_base: Path, pathspecs: Sequence[str], *, runner: Any=subprocess.run) -> tuple[str, ...]:
     """PM 홈과 등록 slot 양쪽에 실재하는 좁은 코드-root pathspec만 반환한다.
@@ -165,7 +162,7 @@ def judge_git_check(home, session: str, cwd: str, argv: list[str], *, runner: An
     invocation = hooks._git_invocation(cwd, argv)
     if invocation is None:
         return {'verdict': 'ok', 'cwd_identity': 'non-repo', 'reason': 'git 호출이 아님'}
-    identity, repo_root, pm_home = _git_target_repo_identity(invocation.cwd, runner=runner, slot_home=Path(home.root))
+    identity, repo_root, pm_home = _git_target_repo_identity(invocation.cwd, runner=runner)
     target_certain = cwd_certain and invocation.target_repo_certain
     containing = hooks.slot_containing(home.root, repo_root) if repo_root is not None else None
     if identity in git_policy._GIT_PROTECTED_IDENTITIES or containing is not None or (not target_certain):

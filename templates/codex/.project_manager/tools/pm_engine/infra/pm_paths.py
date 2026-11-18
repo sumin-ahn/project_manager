@@ -213,18 +213,19 @@ def _pm_home_from_common_dir(common_dir: Path) -> Path | None:
     return None
 
 
-def owning_pm_home(target_repo: Path) -> Path:
-    """대상 저장소 자신이 들고 있는 선언만으로 소유 PM 홈을 유도한다 — 답은 하나이거나 예외다.
+def _pm_home_declaration(target_repo: Path) -> tuple[Path | None, str]:
+    """대상 저장소의 `.git` 선언이 지목하는 소유 PM 홈과, 지목하지 않을 때의 사유 — `(PM 홈, "")` 또는 `(None, 사유)`.
 
     입력은 대상 저장소의 `.git` 포인터(슬롯을 만든 도구가 쓴 값) 하나다. 조상 훑기·cwd·환경·
     subprocess 를 쓰지 않으므로 같은 모양의 트리는 파일시스템 어디에 있어도 같은 답을 낸다.
 
       - `.git` 없음/디렉터리        → 대상 저장소 자신 (아무의 linked worktree 도 아니다)
-      - `.git` 파일 → `<X>/.repos/<repo>.git` 또는 `<X>/.git` → `X`
-      - 그 밖의 commondir           → 실패
+      - `.git` 파일 → `<X>/.repos/<repo>.git` 또는 `<X>/.git` 이고 `<X>/.project_manager` 실재 → `X`
+      - 그 밖의 공용 저장소 구성     → None (하위 저장소·PM 과 무관한 저장소의 linked worktree·
+                                       `--separate-git-dir` 저장소는 PM 홈이 만든 작업 폴더가 아니다)
 
-    유도된 `X` 는 `<X>/.project_manager` 실재를 요구하고, 부재는 실패다 — 못 받으면 대상 저장소
-    자신으로 대신하지 않는다.
+    `.git` 포인터에서 공용 Git 저장소를 읽지 못하면 PmHomeResolutionError 를 올린다 — 선언이 없는
+    것과 선언을 읽지 못한 것은 다르다.
 
     lease 대여 기록은 판정 입력이 아니다. 그 파일은 어느 슬롯을 누구에게 빌려줬는지 적는 슬롯 배정
     기록이지 소유 증거가 아니며, gitignored·per-clone 이라 대상 저장소의 함수도 아니다. 소유는
@@ -234,7 +235,7 @@ def owning_pm_home(target_repo: Path) -> Path:
     target_repo = Path(target_repo).resolve(strict=False)
     if not (target_repo / _GIT_DIR_NAME).is_file():
         # 없음(합성 트리·비-git 채택 폴더) · 디렉터리(PM 홈 main checkout·일반 clone).
-        return target_repo
+        return target_repo, ""
     common_dir = _git_common_dir_from_files(target_repo)
     if common_dir is None:
         raise PmHomeResolutionError(
@@ -242,15 +243,26 @@ def owning_pm_home(target_repo: Path) -> Path:
         )
     pm_home = _pm_home_from_common_dir(common_dir)
     if pm_home is None:
-        raise PmHomeResolutionError(
-            f"{target_repo}: 공용 Git 저장소 {common_dir} 구성에서 소유 PM 홈을 찾지 못했습니다."
-        )
+        return None, f"{target_repo}: 공용 Git 저장소 {common_dir} 구성에서 소유 PM 홈을 찾지 못했습니다."
     pm_home = pm_home.resolve(strict=False)
     if not (pm_home / ".project_manager").is_dir():
-        raise PmHomeResolutionError(
+        return None, (
             f"{target_repo}: 공용 Git 저장소 {common_dir} 의 소유 PM 홈을 찾지 못했습니다 — "
             f"{pm_home} 에 .project_manager 가 없습니다."
         )
+    return pm_home, ""
+
+
+def owning_pm_home(target_repo: Path) -> Path:
+    """대상 저장소 자신이 들고 있는 선언만으로 소유 PM 홈을 유도한다 — 답은 하나이거나 예외다.
+
+    유도 규칙은 `_pm_home_declaration` 하나다. 선언이 소유 PM 홈을 지목하지 않으면 그 사유로
+    실패한다 — 못 받으면 대상 저장소 자신으로 대신하지 않는다(엔진 도구가 자기 위치의 소유 PM 홈을
+    찾을 때의 규칙).
+    """
+    pm_home, undeclared = _pm_home_declaration(target_repo)
+    if pm_home is None:
+        raise PmHomeResolutionError(undeclared)
     return pm_home
 
 
