@@ -39,6 +39,11 @@ README = REPO / "templates" / "codex" / "README.md"
 LIVE_PAYLOADS_FIXTURE = (
     REPO / "tests" / "fixtures" / "codex_0_147_0_live_hook_payloads.json"
 )
+# spawn 훅 입력의 실측 근거(codex-cli 0.166.0). multi-agent v1·v2 각각의 spawn·wait·SubagentStart.
+SPAWN_PAYLOADS_FIXTURE = (
+    REPO / "tests" / "fixtures" / "codex_0_166_0_spawn_hook_payloads.json"
+)
+SPAWN_TOOL_SETS = ("v1", "v2")
 
 
 @pytest.fixture()
@@ -81,28 +86,40 @@ def _live_events() -> list[dict[str, object]]:
     return events
 
 
-def _live_spawn_payload() -> dict[str, object]:
-    return deepcopy(_live_events()[0])
+def _spawn_evidence() -> dict[str, object]:
+    return json.loads(SPAWN_PAYLOADS_FIXTURE.read_text(encoding="utf-8"))
 
 
-def _live_wait_payload() -> dict[str, object]:
-    return deepcopy(_live_events()[1])
+def _spawn_events(tool_set: str) -> list[dict[str, object]]:
+    events = _spawn_evidence()["tool_sets"][tool_set]["events"]
+    assert isinstance(events, list) and len(events) == 3
+    return events
+
+
+def _live_spawn_payload(tool_set: str = "v2") -> dict[str, object]:
+    return deepcopy(_spawn_events(tool_set)[0])
+
+
+def _live_wait_payload(tool_set: str = "v2") -> dict[str, object]:
+    return deepcopy(_spawn_events(tool_set)[1])
 
 
 def _live_subagent_tool_payload() -> dict[str, object]:
     return deepcopy(_live_events()[2])
 
 
-def _live_subagent_start() -> dict[str, object]:
-    return deepcopy(_live_events()[3])
+def _live_subagent_start(tool_set: str = "v2") -> dict[str, object]:
+    return deepcopy(_spawn_events(tool_set)[2])
 
 
-def _live_role_item() -> tuple[str, str]:
-    tool_input = _live_spawn_payload()["tool_input"]
+def _live_role_item(tool_set: str = "v2") -> tuple[str, str]:
+    """spawn 입력 중 시작된 서브에이전트의 역할(SubagentStart.agent_type)과 같은 값을 실은 필드."""
+    started_role = _live_subagent_start(tool_set)["agent_type"]
+    tool_input = _live_spawn_payload(tool_set)["tool_input"]
     assert isinstance(tool_input, dict) and tool_input
-    field, value = next(iter(tool_input.items()))
-    assert isinstance(field, str) and isinstance(value, str)
-    return field, value
+    items = [(field, value) for field, value in tool_input.items() if value == started_role]
+    assert len(items) == 1, tool_input
+    return items[0]
 
 
 def _live_correlation_fields() -> tuple[str, str, str]:
@@ -152,12 +169,16 @@ def _subagent_start() -> dict[str, object]:
 
 
 def test_live_spawn_payload_uses_t0641_decide_cli(guard_home, guard, monkeypatch):
-    evidence = _live_evidence()
+    evidence = _spawn_evidence()
     spawn = _live_spawn_payload()
     role_field, role = _live_role_item()
-    assert evidence["captured_on_version"] == "codex-cli 0.147.0"
+    assert evidence["captured_on_version"] == "codex-cli 0.166.0"
+    # 실측 기록의 cwd 는 경로를 가린 `<worktree>` 다. 판정 입력은 절대경로라야 하므로 이 플랫폼의 절대경로로 바꾼다.
+    assert spawn["cwd"] == "<worktree>"
+    spawn["cwd"] = _fixture_cwd("fixture", "worktree")
     assert spawn["hook_event_name"] == "PreToolUse"
-    assert "agent_type" not in spawn["tool_input"]
+    # multi-agent v1·v2 모두 역할을 같은 필드에 싣는다(v2 의 task_name 은 작업 이름표다).
+    assert {_live_role_item(tool_set)[0] for tool_set in SPAWN_TOOL_SETS} == {role_field}
 
     cli_calls = []
 
@@ -172,7 +193,6 @@ def test_live_spawn_payload_uses_t0641_decide_cli(guard_home, guard, monkeypatch
         guard_home, spawn, config_loader=lambda _home: conf
     )
 
-    assert delegate_channel_rules.CODEX_SPAWN_TOOL_NAME == spawn["tool_name"]
     assert delegate_channel_rules.CODEX_ROLE_INPUT_FIELD == role_field
     envelope_evidence = codex_envelope._codex_decision_envelope.__doc__ or ""
     for measured in (
@@ -186,7 +206,7 @@ def test_live_spawn_payload_uses_t0641_decide_cli(guard_home, guard, monkeypatch
         "measured 0.147.0 host",
     ):
         assert measured in envelope_evidence
-    assert cli_calls == [(guard_home, spawn["tool_input"][role_field], "codex", None, None, conf)]
+    assert cli_calls == [(guard_home, spawn["tool_input"][role_field], "codex", None, spawn["cwd"], conf)]
     assert result == {}
 
 
@@ -284,29 +304,20 @@ def test_native_cwd_notation_yields_the_full_deny_envelope_on_each_platform(
         ("posix", r"C:\fixture\worktree"),
     ),
 )
-def test_foreign_cwd_notation_takes_the_measured_fail_open_allow_shape(
+def test_foreign_cwd_notation_is_not_a_verdict_input(
     guard_home, guard, monkeypatch, platform, foreign_cwd
 ):
-    """다른 플랫폼 표기의 cwd 는 절대경로가 아니다 — 빈 allow 는 부분 엔벨로프가 아니라 측정된 형태다.
-
-    소비자가 `hookSpecificOutput`/`reason` 에서 KeyError 를 만나는 이유가 검증 우회가 아니라
-    이 앞단 분기임을 고정한다 (실측 판별 근거).
-    """
+    """다른 플랫폼 표기의 cwd 는 그 플랫폼에서 절대경로가 아니다. 판정 입력이 아니므로 예외로 올라간다."""
     _inject_platform(guard, monkeypatch, platform)
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
-    payload = _payload("developer", foreign_cwd)
 
-    decision = delegate_channel._evaluate_codex_decision(guard_home, payload, config_loader=lambda _home: conf)
-    envelope = delegate_channel.evaluate_codex_hook(guard_home, payload, config_loader=lambda _home: conf)
-
-    assert decision["verdict"] == "allow"
-    assert "cwd 절대경로 누락" in decision["reason"]
-    assert envelope == {}
-    assert codex_envelope._validated_codex_envelope(envelope) == {}
+    with pytest.raises(ValueError, match="cwd 가 절대경로가 아니다"):
+        delegate_channel._evaluate_codex_decision(
+            guard_home, _payload("developer", foreign_cwd), config_loader=lambda _home: conf)
 
 
 def test_windows_rule_observation_failure_keeps_every_deny_key(guard_home, guard, monkeypatch):
@@ -331,6 +342,41 @@ def test_windows_rule_observation_failure_keeps_every_deny_key(guard_home, guard
     assert result["reason"] == result["systemMessage"]
     assert "관측 기록 실패" in result["reason"]
     assert r"--cwd C:\fixture\worktree" in result["reason"]
+
+
+def test_codex_hook_cli_judges_the_agent_type_role_in_both_multi_agent_versions(
+    guard_home, guard, monkeypatch, tmp_path
+):
+    """multi-agent v1·v2 의 실측 spawn 입력 그대로 `codex-hook` 이 `agent_type` 을 역할로 판정한다.
+
+    v2 의 `task_name`(작업 이름표)은 역할이 아니다. 역할이 비면 Codex 는 `default` 역할로 띄우므로 통과다."""
+    monkeypatch.setenv("CODEX_CI", "1")
+    cross = {"delegate.enabled": "true", "delegate.developer.harness": "opencode",
+             "delegate.developer.model": "qwen3-coder"}
+    off = {"delegate.enabled": "false"}
+
+    def run(payload, conf, state_dir):
+        stdout = io.StringIO()
+        assert cli_delegate_channel_guard.main(
+            pm_paths.home_at(guard.REPO), ["codex-hook"],
+            stdin=io.StringIO(json.dumps(payload)), stdout=stdout,
+            config_loader=lambda _home: conf, state_dir=state_dir,
+        ) == 0
+        return json.loads(stdout.getvalue())
+
+    for tool_set in SPAWN_TOOL_SETS:
+        spawn = _live_spawn_payload(tool_set)
+        spawn["cwd"] = _fixture_cwd("fixture", "worktree")
+        assert spawn["tool_input"]["agent_type"] == "developer", tool_set
+        crossed = run(spawn, cross, tmp_path / tool_set / "cross")
+        assert set(crossed) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS), tool_set
+        assert "conf 는 opencode/qwen3-coder" in crossed["reason"], tool_set
+        assert "위임이 꺼져 있습니다" in run(spawn, off, tmp_path / tool_set / "off")["reason"], tool_set
+        spawn["tool_input"].pop("agent_type")
+        assert run(spawn, off, tmp_path / tool_set / "default") == {}, tool_set
+        rows = codex_observation._codex_audit_path(
+            guard_home, tmp_path / tool_set / "default").read_text(encoding="utf-8").splitlines()
+        assert [json.loads(row)["role"] for row in rows] == [""], tool_set
 
 
 def test_codex_cross_mapping_cli_emits_exact_measured_json_bytes(
@@ -586,22 +632,38 @@ def test_codex_hard_profile_missing_allows_without_normal_fallback_or_warning(gu
     assert "--tier hard" not in decision["reason"]
 
 
-def test_codex_missing_absolute_cwd_fails_open_instead_of_emitting_placeholder_deny(
-    guard_home, guard,
+def test_codex_hook_input_without_an_absolute_cwd_is_not_a_verdict_input(
+    guard_home, guard, tmp_path,
 ):
-    conf = {
-        "delegate.enabled": "true",
-        "delegate.developer.harness": "claude",
-        "delegate.developer.model": "opus",
-    }
-    decision = delegate_channel._evaluate_codex_decision(
-        guard_home, _payload("developer", "relative/path"), config_loader=lambda _home: conf
-    )
+    """cwd 가 절대경로가 아닌 훅 입력은 판정을 낼 입력이 아니다. 판정이 거부든 허용이든 예외로 올라간다.
 
-    assert codex_envelope._codex_decision_envelope(decision) == {}
-    assert "delegate-channel/warn" in decision["reason"]
-    assert "cwd 절대경로 누락" in decision["reason"]
-    assert "<worktree>" not in decision["reason"]
+    `codex-hook` CLI 도 그 예외를 그대로 올려(rc≠0) 디스패처가 그 spawn 을 막는다. 거부일 때만 막고
+    허용은 통과시키는 갈래를 두지 않는다."""
+    confs = {
+        "off": {"delegate.enabled": "false"},
+        "cross": {"delegate.enabled": "true", "delegate.developer.harness": "claude",
+                  "delegate.developer.model": "opus"},
+        "native": {"delegate.enabled": "true", "delegate.developer.harness": "codex",
+                   "delegate.developer.model": "gpt-6.1-sol"},
+    }
+    for label, conf in confs.items():
+        for cwd in ("relative/path", "", "   ", None):
+            payload = _payload("developer")
+            if cwd is None:
+                payload.pop("cwd")
+            else:
+                payload["cwd"] = cwd
+            with pytest.raises(ValueError, match="cwd 가 절대경로가 아니다"):
+                delegate_channel._evaluate_codex_decision(
+                    guard_home, payload, config_loader=lambda _home, conf=conf: conf)
+            stdout = io.StringIO()
+            with pytest.raises(ValueError, match="cwd 가 절대경로가 아니다"):
+                cli_delegate_channel_guard.main(
+                    pm_paths.home_at(guard.REPO), ["codex-hook"],
+                    stdin=io.StringIO(json.dumps(payload)), stdout=stdout,
+                    config_loader=lambda _home, conf=conf: conf, state_dir=tmp_path / label,
+                )
+            assert stdout.getvalue() == "", (label, cwd)
 
 
 def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
@@ -611,34 +673,38 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     events = data["hooks"]
     spawn = _live_spawn_payload()
     subagent_call = _live_subagent_tool_payload()
-    subagent_start = _live_subagent_start()
     role_field, _ = _live_role_item()
     correlation_fields = _live_correlation_fields()
 
+    # 서브에이전트 자신의 도구 호출은 그 SubagentStart 와 같은 상관 키를 싣는다(0.147.0 실측).
+    subagent_call_start = deepcopy(_live_events()[3])
     assert tuple(subagent_call[field] for field in correlation_fields) == tuple(
-        subagent_start[field] for field in correlation_fields
+        subagent_call_start[field] for field in correlation_fields
     )
-    assert subagent_call["agent_type"] == subagent_start["agent_type"]
+    assert subagent_call["agent_type"] == subagent_call_start["agent_type"]
     assert delegate_channel_rules.CODEX_CORRELATION_FIELDS == correlation_fields
 
     assert "PreToolUse" in events
     assert "SubagentStart" in events
-    # T-0872 — PreToolUse native 진입점은 실제 안전 판정 대상 둘만 연다.
+    # PreToolUse native 진입점은 실제 안전 판정 대상만 연다. 서브에이전트 생성 도구는 훅 이름이
+    #   `spawn_agent` 로 끝난다(multi-agent v1 `spawn_agent`, v2 `collaborationspawn_agent`).
     groups = events["PreToolUse"]
     assert len(groups) == 1
-    assert groups[0]["matcher"] == "^(Bash|apply_patch|collaborationspawn_agent)$"
-    assert re.fullmatch(groups[0]["matcher"], spawn["tool_name"])
+    assert groups[0]["matcher"] == "^(Bash|apply_patch|.*spawn_agent)$"
     assert re.fullmatch(groups[0]["matcher"], subagent_call["tool_name"])
-    assert not re.fullmatch(groups[0]["matcher"], _live_wait_payload()["tool_name"])
-    # 스폰 판별은 config 가 아니라 디스패처 registry 가 한다 — 값은 그대로 옮겨 왔다.
     feature = _delegate_feature(dispatcher)
     assert feature.event == "PreToolUse"
-    assert re.fullmatch(feature.tool_pattern, spawn["tool_name"])
-    assert not re.fullmatch(feature.tool_pattern, _live_wait_payload()["tool_name"])
     assert not re.fullmatch(feature.tool_pattern, subagent_call["tool_name"])
-    assert dispatcher._feature_matches(feature, spawn)
-    assert not dispatcher._feature_matches(feature, _live_wait_payload())
     assert not dispatcher._feature_matches(feature, subagent_call)
+    # 스폰 판별은 config 가 아니라 디스패처 registry 가 한다. v1·v2 의 spawn 만 걸리고 wait 은 걸리지 않는다.
+    for tool_set in SPAWN_TOOL_SETS:
+        tool_spawn, tool_wait = _live_spawn_payload(tool_set), _live_wait_payload(tool_set)
+        assert re.fullmatch(groups[0]["matcher"], tool_spawn["tool_name"]), tool_set
+        assert not re.fullmatch(groups[0]["matcher"], tool_wait["tool_name"]), tool_set
+        assert re.fullmatch(feature.tool_pattern, tool_spawn["tool_name"]), tool_set
+        assert not re.fullmatch(feature.tool_pattern, tool_wait["tool_name"]), tool_set
+        assert dispatcher._feature_matches(feature, tool_spawn), tool_set
+        assert not dispatcher._feature_matches(feature, tool_wait), tool_set
     # 진입점 뒤에서 디스패처가 판정 자식(`codex-hook`)을 직접 부른다(감독 단계 없음).
     assert list(feature.argv) == [
         "{py}", "{tools}/delegate_channel_guard.py", "codex-hook",
@@ -666,7 +732,7 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     assert set(events) == set(dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS)
     for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
         entry_groups = events[event]
-        expected = "^(Bash|apply_patch|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        expected = "^(Bash|apply_patch|.*spawn_agent)$" if event == "PreToolUse" else ".*"
         assert len(entry_groups) == 1 and entry_groups[0]["matcher"] == expected, event
         entry = entry_groups[0]["hooks"][0]
         for command_key in ("command", "commandWindows"):
@@ -692,11 +758,13 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     assert "Execpolicy" in data["description"] and "argv-only" in data["description"]
 
     readme = README.read_text(encoding="utf-8")
+    for tool_set in SPAWN_TOOL_SETS:
+        assert str(_live_spawn_payload(tool_set)["tool_name"]) in readme, tool_set
     for measured in (
         "codex-cli 0.147.0",
-        str(spawn["tool_name"]),
+        "codex-cli 0.166.0",
         f"tool_input.{role_field}",
-        "spawn payload에는 `tool_input.agent_type`이 없다",
+        "작업 이름표라 역할로 읽지 않는다",
         'hookSpecificOutput.permissionDecision="deny"',
         "permissionDecisionReason",
         'decision="block"',
@@ -723,23 +791,6 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
         "0.147.0 host 실동작",
     ):
         assert measured in readme
-
-
-@pytest.mark.parametrize(
-    "payload_factory", (_live_wait_payload, _live_subagent_tool_payload)
-)
-def test_live_non_spawn_pretooluse_events_are_not_intercepted(
-    guard_home, guard, payload_factory
-):
-    payload = payload_factory()
-
-    def unexpected_loader():
-        raise AssertionError("live non-spawn event must not load config")
-
-    assert payload["hook_event_name"] == "PreToolUse"
-    assert delegate_channel.evaluate_codex_hook(
-        guard_home, payload, config_loader=unexpected_loader
-    ) is None
 
 
 def test_append_only_scan_finds_miss_and_is_idempotent_without_consumption(
@@ -844,12 +895,14 @@ def _pretooluse_handler() -> dict[str, object]:
     return hooks["PreToolUse"][0]["hooks"][0]
 
 
-@pytest.mark.parametrize("event", ("PreToolUse", "SubagentStart"))
+@pytest.mark.parametrize("event", ("SubagentStart",))
 @pytest.mark.parametrize("command_key", ("command", "commandWindows"))
 def test_wrapper_fallback_envelope_matches_engine_warning_constant(
     guard, event, command_key
 ):
-    """훅이 엔진을 못 돌릴 때 내는 대체 출력도 완전한 엔벨로프여야 한다 (스키마=엔진 상수)."""
+    """도구 호출을 판정하지 않는 이벤트의 래퍼 대체 출력도 완전한 경고 엔벨로프다 (스키마=엔진 상수).
+
+    PreToolUse 래퍼의 대체 출력은 막는 응답이다(`test_codex_hook_dispatch.py`)."""
     hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
     wrapper = hooks[event][0]["hooks"][0][command_key]
     match = re.search(r'\{"systemMessage".*?\}', wrapper)
@@ -900,14 +953,14 @@ def _run_posix_hook(
 @pytest.mark.skipif(
     not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님"
 )
-def test_posix_hook_wrapper_missing_guard_emits_valid_allow_json(guard, tmp_path):
+def test_posix_hook_wrapper_missing_dispatcher_blocks_the_call(guard, tmp_path):
+    """디스패처가 없는 설치에서 PreToolUse 래퍼는 그 호출을 막는 5필드 응답을 낸다."""
     result, elapsed = _run_posix_hook(_pretooluse_handler()["command"], tmp_path)
 
     assert elapsed < 2
-    assert set(result) == set(delegate_channel_rules.CODEX_WARNING_ENVELOPE_KEYS)
-    assert result["suppressOutput"] is False
-    # 대체 출력으로 답한 사실이 출력에 남는다 — 정상 통과와 구별되지 않으면 결함이 다시 숨는다.
-    assert delegate_channel_rules.CODEX_ADAPTER_FALLBACK_MARKER in result["systemMessage"]
+    assert set(result) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert result["reason"].startswith("[hook-dispatch/판정 실패] ")
 
 
 def _adopter_tree(tmp_path: Path, conf_lines: tuple[str, ...]) -> Path:

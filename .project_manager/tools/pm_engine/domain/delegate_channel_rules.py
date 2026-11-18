@@ -21,12 +21,13 @@ _CLUSTER_PLACEHOLDER = "C-<ticket-group>"
 _REVIEW_ROLE = "code-reviewer"
 _CODEX_PROMPT_DIR = Path(".project_manager/.local/delegate")
 
-# codex-cli 0.147.0 live hook payload: native delegation exposes this exact
-# separator-free tool name and carries the selected custom-agent name in
-# ``tool_input.task_name``.  ``SubagentStart.agent_type`` is merely ``default``;
-# it is never used as a delegation role or correlation value.
-CODEX_SPAWN_TOOL_NAME = "collaborationspawn_agent"
-CODEX_ROLE_INPUT_FIELD = "task_name"
+# Codex native spawn carries the selected custom-agent name in
+# ``tool_input.agent_type`` under both multi-agent v1 and v2 (codex-cli 0.166.0
+# hook payloads: v1 ``spawn_agent``, v2 ``collaborationspawn_agent``).  Without it
+# the sub-agent runs as Codex's ``default`` role.  The v2 ``task_name`` is only a
+# task label.  Which payloads reach this guard is decided by the adapter
+# dispatcher's routing.
+CODEX_ROLE_INPUT_FIELD = "agent_type"
 CODEX_CORRELATION_FIELDS = ("session_id", "turn_id", "agent_id")
 
 # Host envelope shapes.  The hook must never emit a partially built

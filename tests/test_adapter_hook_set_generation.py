@@ -468,7 +468,7 @@ def _codex_hooks(events=_CODEX_ENTRYPOINT_EVENTS, *, matcher: str | None = None)
     return json.dumps({"hooks": {
         event: [{
             "matcher": (matcher if matcher is not None else
-                        ("^(Bash|apply_patch|collaborationspawn_agent)$"
+                        ("^(Bash|apply_patch|.*spawn_agent)$"
                          if event == "PreToolUse" else ".*")),
             "hooks": [{"type": "command", "timeout": 15,
                        "command": f'"$py" {_CODEX_DISPATCHER_REL} '

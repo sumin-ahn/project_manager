@@ -596,11 +596,13 @@ class CodexHookFeature(NamedTuple):
 #   채택자 `.codex/hooks.json` 은 그대로다(이 구조가 닫은 마찰).
 CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
     CodexHookFeature(
-        # 옛 등록: hooks.json `PreToolUse` matcher `^collaborationspawn_agent$` 가 엔진 판정을 불렀다.
-        #   판별식은 값 그대로 옮겨 왔고, 판정 자식(`codex-hook`)은 이 디스패처가 직접 부른다.
+        # 서브에이전트를 띄우는 도구는 훅 이름이 `spawn_agent` 로 끝난다. Codex 는 모델 정보에 따라
+        #   multi-agent v1·v2 중 하나를 쓰고, v2 는 도구 이름 앞에 네임스페이스를 붙인다(`spawn_agent`,
+        #   `collaborationspawn_agent`, 네임스페이스는 설정으로 바꿀 수 있다). 판정 자식(`codex-hook`)은
+        #   이 디스패처가 직접 부른다.
         feature_id="delegate-channel",
         event="PreToolUse",
-        tool_pattern="^collaborationspawn_agent$",
+        tool_pattern="^.*spawn_agent$",
         argv=("{py}", "{tools}/delegate_channel_guard.py", "codex-hook"),
     ),
     # 세션 안 ctx 경고는 프롬프트 단위 채널에서 한 번 판정한다.

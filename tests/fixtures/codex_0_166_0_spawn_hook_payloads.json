@@ -1,0 +1,100 @@
+{
+  "evidence": "가짜 모델 세션 · codex-cli 0.166.0 · 격리 CODEX_HOME + --dangerously-bypass-hook-trust · 모든 PreToolUse·SubagentStart 를 받는 기록 전용 훅이 받은 훅 입력 원문(경로만 <worktree>·<rollout> 로 바꿈). multi-agent 판은 모델 정보가 정한다: v1 은 내장 모델 목록에 없는 모델(fake-model, 네임스페이스 multi_agent_v1), v2 는 내장 모델 목록이 multi_agent_version v2 로 정한 모델(gpt-6.1-sol, 네임스페이스 collaboration). 이벤트 순서는 spawn PreToolUse, wait PreToolUse, SubagentStart.",
+  "captured_on_version": "codex-cli 0.166.0",
+  "tool_sets": {
+    "v1": {
+      "model": "fake-model",
+      "events": [
+        {
+          "session_id": "01a1e830-ded7-7893-90d5-a6f53d90898f",
+          "turn_id": "01a1e830-df1b-7ed1-8ae0-564327d87516",
+          "transcript_path": "<rollout>",
+          "cwd": "<worktree>",
+          "hook_event_name": "PreToolUse",
+          "model": "fake-model",
+          "permission_mode": "default",
+          "tool_name": "spawn_agent",
+          "tool_input": {
+            "message": "Reply with hi.",
+            "agent_type": "developer"
+          },
+          "tool_use_id": "call_1"
+        },
+        {
+          "session_id": "01a1e830-ded7-7893-90d5-a6f53d90898f",
+          "turn_id": "01a1e830-df1b-7ed1-8ae0-564327d87516",
+          "transcript_path": "<rollout>",
+          "cwd": "<worktree>",
+          "hook_event_name": "PreToolUse",
+          "model": "fake-model",
+          "permission_mode": "default",
+          "tool_name": "multi_agent_v1wait_agent",
+          "tool_input": {
+            "targets": [
+              "00000000-0000-0000-0000-000000000000"
+            ],
+            "timeout_ms": 10000
+          },
+          "tool_use_id": "call_2"
+        },
+        {
+          "session_id": "01a1e830-ded7-7893-90d5-a6f53d90898f",
+          "turn_id": "01a1e830-df7f-7d10-9a2c-9ab4288299a8",
+          "transcript_path": "<rollout>",
+          "cwd": "<worktree>",
+          "hook_event_name": "SubagentStart",
+          "model": "fake-model",
+          "permission_mode": "default",
+          "agent_id": "01a1e830-df7a-7160-b03e-53ec15fe1507",
+          "agent_type": "developer"
+        }
+      ]
+    },
+    "v2": {
+      "model": "gpt-6.1-sol",
+      "events": [
+        {
+          "session_id": "01a1e830-e63e-7fa1-9b75-4384b00f8f2a",
+          "turn_id": "01a1e830-e67f-73a3-8b5b-ed1ed55558a4",
+          "transcript_path": "<rollout>",
+          "cwd": "<worktree>",
+          "hook_event_name": "PreToolUse",
+          "model": "gpt-6.1-sol",
+          "permission_mode": "default",
+          "tool_name": "collaborationspawn_agent",
+          "tool_input": {
+            "task_name": "probe_task",
+            "message": "Reply with hi.",
+            "agent_type": "developer"
+          },
+          "tool_use_id": "call_1"
+        },
+        {
+          "session_id": "01a1e830-e63e-7fa1-9b75-4384b00f8f2a",
+          "turn_id": "01a1e830-e67f-73a3-8b5b-ed1ed55558a4",
+          "transcript_path": "<rollout>",
+          "cwd": "<worktree>",
+          "hook_event_name": "PreToolUse",
+          "model": "gpt-6.1-sol",
+          "permission_mode": "default",
+          "tool_name": "collaborationwait_agent",
+          "tool_input": {
+            "timeout_ms": 10000
+          },
+          "tool_use_id": "call_2"
+        },
+        {
+          "session_id": "01a1e830-e63e-7fa1-9b75-4384b00f8f2a",
+          "turn_id": "01a1e830-e6fc-76b2-9b12-3592847e6f02",
+          "transcript_path": "<rollout>",
+          "cwd": "<worktree>",
+          "hook_event_name": "SubagentStart",
+          "model": "gpt-6.1-sol",
+          "permission_mode": "default",
+          "agent_id": "01a1e830-e6eb-7381-96e2-38297d028d5b",
+          "agent_type": "developer"
+        }
+      ]
+    }
+  }
+}
