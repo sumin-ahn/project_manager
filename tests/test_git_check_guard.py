@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from pm_engine.app import hooks
 from pm_engine.cli import hooks as cli_hooks
@@ -3761,3 +3762,151 @@ def test_claude_git_check_rerun_after_no_verdict_applies_verdict(monkeypatch, to
         ))
         assert got == want
         assert got["hookSpecificOutput"].keys() == expected[key]["hookSpecificOutput"].keys()
+
+
+# ── PM 홈이 만들지 않은 저장소의 정체 ─────────────────────────────────────────────────────
+# 하위 저장소·그 안의 하위 저장소·PM 과 무관한 저장소의 linked worktree·`--separate-git-dir` 저장소·
+# PM 홈 board 하위 저장소·슬롯 안의 하위 저장소는 `.git` 선언이 소유 PM 홈을 지목하지 않는다. 정체 분류는
+# 이들을 `foreign` 으로 보고 판정을 낸다. 선언을 읽지 못한 경우는 그대로 실패한다.
+
+
+def _repositories_no_pm_home_declares(topology, tmp_path) -> dict[str, Path]:
+    """`topology` 옆과 안에 PM 홈이 만들지 않은 저장소를 실제 git 으로 만든다(이름 → 작업 폴더)."""
+    home, slot = topology
+
+    def submodule_git(cwd: Path, *args: str) -> None:
+        _git(cwd, "-c", "protocol.file.allow=always", *args)
+
+    nested_source = tmp_path / "nested-source"
+    _seed_repo(nested_source)
+    inner_source = tmp_path / "inner-source"
+    _seed_repo(inner_source)
+    submodule_git(inner_source, "submodule", "add", "-q", str(nested_source), "nested")
+    _git(inner_source, "commit", "-qm", "nested")
+    app = tmp_path / "app"
+    _seed_repo(app)
+    submodule_git(app, "submodule", "add", "-q", str(inner_source), "sub")
+    _git(app, "commit", "-qm", "sub")
+    submodule_git(app, "submodule", "update", "-q", "--init", "--recursive")
+    _git(app, "worktree", "add", "-q", "--detach", str(tmp_path / "app-wt"))
+    _git(tmp_path, "init", "-q", "--separate-git-dir", str(tmp_path / "sep-gitdir"), str(tmp_path / "sep"))
+    board_source = tmp_path / "board-source"
+    _seed_repo(board_source)
+    submodule_git(home, "submodule", "add", "-q", str(board_source), ".project_manager/board")
+    submodule_git(slot, "submodule", "add", "-q", str(nested_source), "vendor/lib")
+    return {
+        "submodule": app / "sub",
+        "nested submodule": app / "sub" / "nested",
+        "unrelated linked worktree": tmp_path / "app-wt",
+        "separate git dir": tmp_path / "sep",
+        "PM home board submodule": home / ".project_manager" / "board",
+        "slot submodule": slot / "vendor" / "lib",
+    }
+
+
+def test_repositories_no_pm_home_declares_are_foreign(topology, tmp_path, monkeypatch):
+    """`.git` 선언이 소유 PM 홈을 지목하지 않는 저장소는 `foreign` 이고, 엔진 도구의 소유 PM 홈 유도는
+    그대로 실패한다. 선언을 읽지 못하면 정체 분류도 실패한다(판정을 얻지 못한 호출은 경계가 막는다)."""
+    home, slot = topology
+    repositories = _repositories_no_pm_home_declares(topology, tmp_path)
+    for label, path in repositories.items():
+        assert engine_guard._git_target_repo_identity(path) == ("foreign", path.resolve(), None), label
+        with pytest.raises(pm_paths.PmHomeResolutionError):
+            pm_paths.owning_pm_home(path)
+    assert engine_guard._git_target_repo_identity(home) == ("pm-home", home.resolve(), home.resolve())
+    assert engine_guard._git_target_repo_identity(slot) == ("slot", slot.resolve(), home.resolve())
+    monkeypatch.setattr(pm_paths, "_git_common_dir_from_files", lambda _repo: None)
+    with pytest.raises(pm_paths.PmHomeResolutionError, match="포인터에서 공용 Git 저장소를 읽지 못했습니다"):
+        engine_guard._git_target_repo_identity(slot)
+
+
+def test_three_harness_hooks_judge_git_status_on_repositories_no_pm_home_declares(
+    topology, tmp_path, monkeypatch, capsys,
+):
+    """Claude Code 드라이버·Codex git 명령 검사·OpenCode 가 부르는 `board.py hook-tool` 이 PM 홈이 만들지
+    않은 저장소를 대상으로 한 `git status` 에 판정(통과)을 낸다 — 판정 실패로 막지 않는다."""
+    home, _slot = topology
+    repositories = _repositories_no_pm_home_declares(topology, tmp_path)
+    shutil.copytree(BOARD_PY.parent, home / ".project_manager" / "tools",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    commands = {label: f"git -C {path.as_posix()} status" for label, path in repositories.items()}
+    commands["PM home board submodule"] = "git -C .project_manager/board status"
+    driver = _load("git_check_foreign_claude", CLAUDE_DRIVER)
+    monkeypatch.setattr(driver.ctx_guard, "repo_root", lambda _path: home)
+    dispatcher = _load("git_check_foreign_codex", CODEX_DISPATCHER)
+    for label, command in commands.items():
+        payload = {"session_id": "S", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                   "cwd": str(home), "tool_input": {"command": command}}
+        monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
+        assert driver.main(["--git-anchor-hook"]) == 0, label
+        assert capsys.readouterr() == ("", ""), label
+        out = io.StringIO()
+        assert dispatcher.run_git_target_repo_hook(home, stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
+        assert out.getvalue() == "{}\n", label
+        request = {"version": 1, "cwd": str(home), "tool_name": "bash", "tool_input": {"command": command},
+                   "shell_command": command, "shell": "bash", "main_thread": True, "context": None,
+                   "recall": None}
+        result = subprocess.run(
+            [sys.executable, str(home / ".project_manager" / "tools" / "board.py"), "hook-tool",
+             "--session", "S"],
+            input=json.dumps(request).encode("utf-8"), capture_output=True, env=utf8_child_env(), timeout=120,
+        )
+        assert result.returncode == 0, (label, result.stderr.decode("utf-8", "replace"))
+        assert json.loads(result.stdout)["git"]["verdict"] == "ok", label
+
+
+def test_discarding_changes_in_repositories_no_pm_home_declares_warns_and_slot_submodule_stays_denied(
+    topology, tmp_path, monkeypatch, capsys,
+):
+    """PM 홈이 만들지 않은 저장소의 `git reset --hard` 는 `foreign` 대상 경고 후 통과이고, 슬롯 안 하위
+    저장소의 같은 명령은 지금처럼 거부된다(두 어댑터가 같은 판정을 싣는다)."""
+    home, _slot = topology
+    repositories = _repositories_no_pm_home_declares(topology, tmp_path)
+    driver = _load("git_check_foreign_discard_claude", CLAUDE_DRIVER)
+    monkeypatch.setattr(driver.ctx_guard, "repo_root", lambda _path: home)
+    dispatcher = _load("git_check_foreign_discard_codex", CODEX_DISPATCHER)
+    for index, (label, path) in enumerate(repositories.items()):
+        payload = {"session_id": f"S-discard-{index}", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                   "cwd": str(home), "tool_input": {"command": f"git -C {path.as_posix()} reset --hard"}}
+        monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
+        assert driver.main(["--git-anchor-hook"]) == 0, label
+        claude = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        codex = dispatcher.git_target_repo_hook_evaluate({**payload, "session_id": f"X-discard-{index}"}, home)
+        if label == "slot submodule":
+            assert claude["permissionDecision"] == "deny", claude
+            assert "손 git 변경 버리기" in claude["permissionDecisionReason"]
+            assert codex["decision"] == "block" and "손 git 변경 버리기" in codex["reason"]
+            continue
+        warn = f"[git-check/warn] git reset 실행 대상 저장소={path.resolve()} (정체=foreign) — 의도한 repo인지 확인"
+        assert claude == {"hookEventName": "PreToolUse", "additionalContext": warn}, label
+        assert codex == {"systemMessage": warn, "suppressOutput": False}, label
+
+
+def test_file_removal_and_engine_calls_inside_repositories_no_pm_home_declares_are_judged(topology, tmp_path):
+    """파일 삭제 검사와 엔진·pytest 호출 검사도 PM 홈이 만들지 않은 저장소를 실행 위치·대상으로 판정한다."""
+    home, _slot = topology
+    repositories = _repositories_no_pm_home_declares(topology, tmp_path)
+    for label, path in repositories.items():
+        for cwd, command in (
+            (path, "rm -f zz-none"),
+            (home, f"rm -f {path.as_posix()}/zz-none"),
+            (path, "python3 -m pytest -q tests"),
+            (home, f"python3 {path.as_posix()}/.project_manager/tools/board.py new zz"),
+        ):
+            judgment = cli_hooks.judge_git_check_command(
+                cli_hooks.adapter_home(home), "S", str(cwd), command, shell="bash", main_thread=True,
+            )
+            assert judgment["verdict"] in {"ok", "warn"}, (label, command, judgment)
+
+
+def test_pm_worktree_inside_a_slot_folder_is_a_worktree_not_foreign(topology):
+    """슬롯 폴더 안에 둔 PM 공용 저장소의 linked worktree 는 슬롯 밖에 둔 것과 같이 `worktree` 다."""
+    home, slot = topology
+    inner = slot / "inner-wt"
+    _git(slot, "worktree", "add", "-q", "--detach", str(inner))
+    outer = home.parent / "outer-wt"
+    _git(slot, "worktree", "add", "-q", "--detach", str(outer))
+    assert engine_guard._git_target_repo_identity(inner) == ("worktree", inner.resolve(), home.resolve())
+    assert engine_guard._git_target_repo_identity(outer) == ("worktree", outer.resolve(), home.resolve())
+    got = engine_guard.judge_git_check(pm_paths.home_at(home), "S", str(home), ["git", "-C", str(inner), "reset", "--hard"])
+    assert got["verdict"] == "deny" and got["cwd_identity"] == "worktree", got
