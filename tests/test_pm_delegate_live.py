@@ -482,9 +482,9 @@ def test_delegate_live_codex(harness_tmp_path, monkeypatch, capsys):
 def test_delegate_live_opencode(harness_tmp_path, monkeypatch, capsys):
     """claude/codex PM → **opencode**(출하 모델·$0) researcher 위임 1회 — reply marker + rc0 + raw.
 
-    `--file` 프롬프트 채널·`--dir` cwd 핀·`--agent researcher`(런타임 role config로
+    `--file` 프롬프트 채널·자식 cwd·`--standalone`·`--agent researcher`(런타임 role config로
     edit/bash deny). 추론 값은 싣지 않는다 — 테스트 env 모델은 variants 가 없어 어떤 값이든 실행 직전
-    확인이 거부한다(`--variant` 확인은 가짜 실행 파일 단위 시험이 맡는다)."""
+    확인이 거부한다(`-m 모델#강도` 확인은 가짜 실행 파일 단위 시험이 맡는다)."""
     pd = _load_pd()
     repo, prompt = _seed_repo(harness_tmp_path)
     out_dir = harness_tmp_path / "raw"

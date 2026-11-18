@@ -50,14 +50,13 @@ RESUME_MUTATING_ROLES: frozenset[str] = WRITE_ROLES | frozenset(
 #     다시 잡았을 때 tmp와 정확한 copy run-dir만 writable로 만들고 원 worktree는 read-only로 남긴다.
 #     named profile 문자열의 존재가 아니라 실제 모델 edit→돌려받기를 release live가 단언한다.
 #   · claude 2.1.227: `--help`의 `--add-dir <directories...>`가 추가 tool-access 루트를 받는다.
-#   · opencode 1.18.16: `run --help`에는 추가-dir 플래그가 없다. custom 역할 카드를 `mode: all`로
+#   · opencode 2.3.0: `run` 에는 추가 폴더 인자가 없다. custom 역할 카드를 `mode: all`로
 #     출하해 native task와 cross `run --agent <role>`가 같은 정의를 쓰며, code-reviewer 카드는
 #     run-dir 라운드 파일 기록을 위해 edit 가능하다. repo 쓰기 범위는 경고와 위임 전후 감사로
 #     관리한다.
-#     researcher 카드의 read-only 권한에는
-#     TMPDIR=/tmp/pm_delegate_probe일 때
-#     `external_directory /tmp/pm_delegate_probe/opencode/* = allow`, `edit * = deny`가 나왔다.
-#     즉 고정 `/tmp/opencode/*`가 아니라 `${TMPDIR}/opencode/*`이므로 attempt의 그 하위만 안내한다.
+#     역할 권한의 첫 규칙은 `* * allow` 이고 바깥 폴더(external_directory) 규칙이 없어 attempt
+#     tmp 쓰기를 막지 않는다(`opencode debug agents --standalone` 실측). read 역할의 임시 쓰기는
+#     attempt 의 `${TMPDIR}/opencode` 하위로 안내한다.
 # 버전 문자열을 런타임 추측해 분기하지 않는다. 위 값이 바뀌면 이 선언·회귀를 함께 갱신한다.
 _OPENCODE_READ_TMP_PARENT = "opencode"
 _OPENCODE_ALLOWED_TMP_COMPONENT = "opencode"

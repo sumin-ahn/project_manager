@@ -46,7 +46,7 @@ _CLAUDE_STUB = (
 )
 
 # opencode `run --format json` 실제 캡처 (라이브 검증 — JSONL 이벤트 스트림).
-# step_finish.part.tokens.{total,input,output,cache.{write,read}} + part.cost.
+# step_finish.part.tokens.{input,output,reasoning,cache.{write,read}} + part.cost (2.3.0 출력에는 합계 값이 없다).
 _OPENCODE_STUB = "\n".join(
     [
         '{"type":"step_start","timestamp":1,"sessionID":"ses_x",'
@@ -55,7 +55,7 @@ _OPENCODE_STUB = "\n".join(
         '"part":{"id":"prt_b","type":"text","text":"done"}}',
         '{"type":"step_finish","timestamp":3,"sessionID":"ses_x",'
         '"part":{"id":"prt_c","type":"step-finish","reason":"stop",'
-        '"tokens":{"total":6983,"input":6977,"output":6,"reasoning":0,'
+        '"tokens":{"input":6977,"output":6,"reasoning":0,'
         '"cache":{"write":0,"read":0}},"cost":0.0012}}',
     ]
 )
@@ -107,18 +107,18 @@ def test_parse_opencode_usage_aggregates_multistep(bench):
         [
             '{"type":"text","part":{"type":"text","text":"a"}}',
             '{"type":"step_finish","part":{"type":"step-finish",'
-            '"tokens":{"total":100,"input":80,"output":20,"cache":{"read":5,"write":3}},'
+            '"tokens":{"input":80,"output":20,"reasoning":0,"cache":{"read":5,"write":3}},'
             '"cost":0.001}}',
             '{"type":"text","part":{"type":"text","text":"b"}}',
             '{"type":"step_finish","part":{"type":"step-finish",'
-            '"tokens":{"total":50,"input":40,"output":10,"cache":{"read":2,"write":1}},'
+            '"tokens":{"input":40,"output":10,"reasoning":0,"cache":{"read":2,"write":1}},'
             '"cost":0.002}}',
         ]
     )
     u = bench.parse_opencode_usage(multi)
     assert u["input"] == 120
     assert u["output"] == 30
-    assert u["total"] == 150
+    assert u["total"] == 161  # 다섯 값 합: (80+20+0+5+3) + (40+10+0+2+1)
     assert u["cache_read"] == 7
     assert u["cache_creation"] == 4
     assert u["cost"] == pytest.approx(0.003)
@@ -146,7 +146,7 @@ def test_parse_opencode_usage_array_variant(bench):
     """단일 JSON 배열 변종도 관용적으로 받아들인다(스키마 불확실성 방어)."""
     arr = (
         '[{"type":"step_finish","part":{"type":"step-finish",'
-        '"tokens":{"total":10,"input":8,"output":2},"cost":0.0}}]'
+        '"tokens":{"input":8,"output":2},"cost":0.0}}]'
     )
     u = bench.parse_opencode_usage(arr)
     assert u["input"] == 8 and u["output"] == 2 and u["total"] == 10

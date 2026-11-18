@@ -281,7 +281,7 @@ def main(home, argv: list[str] | None = None, run_fn: Callable | None = None,
             f"· pm_home={config_repo.resolve()} · source={profile_source} · resolved_profile={profile}",
             file=sys.stderr,
         )
-        # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 ``--dir`` 아래
+        # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 작업 폴더 아래
         # wire 사본으로 만들어 --file 전달하므로, dry-run argv 는 사용자 prompt-file 경로로만 표시한다.
         argv_display = delegate_run._build_target_argv(
             harness, model, reasoning, args.role, cwd, prompt_file,

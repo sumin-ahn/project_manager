@@ -50,7 +50,7 @@ def extract_reply(harness: str, stdout: str) -> str | None:
 #   · 인증: `unexpected status 401 Unauthorized`, `invalid_api_key`, "not logged in" /
 #           "please run codex login", OAuth `invalid_state`.
 # **커버리지 경계(§help 에도 명시)**: 기존 codex 실근거에 claude 2.1.220 stdout JSONL 실측/
-# 바이너리 enum, opencode 1.18.4 provider responseBody passthrough 실측과 Anthropic API enum을
+# 바이너리 enum, opencode 2.3.0 provider 응답 본문(`error.response.body`) passthrough 실측과 Anthropic API enum을
 # 편입했다. opencode 연결 거부·첫 provider 패키지 fetch stall은 stdout/stderr 무진단 침묵이라
 # 패턴이 아니라 기존 첫-이벤트 stall 시간 제한이 커버한다. `Model not found` 같은 카탈로그/config 오류는
 # 한도/인증이 아니므로 의도적으로 미분류해 fail-loud 를 유지한다.
@@ -95,7 +95,7 @@ _INFRA_AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # claude 2.1.220 미로그인 assistant/error 및 무효-key api_retry 이벤트의 error enum —
     # claude 내부 enum 이라 단독-줄 고정(사유는 _INFRA_QUOTA_PATTERNS 블록 주석).
     re.compile(r"^\s*authentication_failed\s*$", re.IGNORECASE | re.MULTILINE),
-    # opencode 1.18.4 responseBody passthrough 실측 + Anthropic 공식 401 error enum.
+    # opencode 2.3.0 응답 본문 passthrough 실측 + Anthropic 공식 401 error enum.
     re.compile(r"\bauthentication_error\b", re.IGNORECASE),
 )
 
@@ -474,9 +474,7 @@ def _build_target_argv(
         )
     if harness == "claude":
         return contract.build_claude_argv(model, reasoning, role, resume_session_id)
-    return contract.build_opencode_argv(
-        model, reasoning, role, str(cwd), str(prompt_file),
-    )
+    return contract.build_opencode_argv(model, reasoning, role, str(prompt_file))
 
 
 def _observe_harness_result(harness: str, stdout: str):

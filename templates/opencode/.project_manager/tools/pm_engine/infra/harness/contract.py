@@ -117,15 +117,15 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None, int | None]:
       을 잡는다(opencode 가 sid 를 발급 — claude 와 달리 사전지정 불가, 출력 파싱으로 획득).
     - reply: `type:"text"` 이벤트의 `part.text` 를 등장 순서대로 누적(멀티-part 답변 대응).
       reply 가 없으면(text part 0) None.
-    - used_tokens: 마지막 `step_finish` 이벤트의 `part.tokens` 에서 유효한 `total`(양의 정수)을
-      우선하고, 없으면 `input + output + reasoning + cache.read + cache.write`로 대신 계산한다. 이때
-      reasoning을 별도 가산해 보수적 상위집합으로 잡는다. tokens가 없거나 어느 값/cache 구성이
-      비정상이면 None.
-      설치 opencode 1.18.5 바이너리 실측도 total 우선 + cache 합산 대체 계산을 확인했다.
+    - used_tokens: 마지막 `step_finish` 이벤트의 `part.tokens` 다섯 값의 합
+      (`input + output + reasoning + cache.read + cache.write`, opencode 2.x 의 사용량 합과 같은 식).
+      tokens가 없거나 어느 값/cache 구성이 비정상이면 None.
     - 비-JSON / 비-dict 라인은 skip(부분/노이즈 라인에 robust — claude 파서와 동일 정책).
 
-    실측 이벤트 형식(opencode 1.17.6):
+    실측 이벤트 형식(opencode 2.3.0):
       {"type":"text","sessionID":"ses_...","part":{"type":"text","text":"PONG",...}}
+      {"type":"step_finish",...,"part":{"tokens":{"input":100,"output":2,"reasoning":0,
+       "cache":{"read":0,"write":0}},...}}
     """
     import json  # 지연 import — 순수 헬퍼만 쓰는 경로의 import 비용 회피(claude 파서 대칭).
 
@@ -155,23 +155,18 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None, int | None]:
             part = event.get("part")
             tokens = part.get("tokens") if isinstance(part, dict) else None
             if isinstance(tokens, dict):
-                total = tokens.get("total")
-                if isinstance(total, int) and not isinstance(total, bool) and total > 0:
-                    used_tokens = total
+                cache = tokens.get("cache", {})
+                values = [tokens.get(key, 0) for key in ("input", "output", "reasoning")]
+                if isinstance(cache, dict):
+                    values.extend(cache.get(key, 0) for key in ("read", "write"))
                 else:
-                    cache = tokens.get("cache", {})
-                    values = [tokens.get(key, 0) for key in ("input", "output", "reasoning")]
-                    if isinstance(cache, dict):
-                        values.extend(cache.get(key, 0) for key in ("read", "write"))
-                    else:
-                        values.append(None)
-                    # Upstream v1.18.5 근거 파일: session.ts, overflow.ts.
-                    used_tokens = (
-                        sum(values)
-                        if all(isinstance(value, int) and not isinstance(value, bool)
-                               and value >= 0 for value in values)
-                        else None
-                    )
+                    values.append(None)
+                used_tokens = (
+                    sum(values)
+                    if all(isinstance(value, int) and not isinstance(value, bool)
+                           and value >= 0 for value in values)
+                    else None
+                )
             else:
                 used_tokens = None
     reply = "".join(reply_parts) if reply_parts else None
@@ -533,8 +528,9 @@ def opencode_runtime_role_config(role: str) -> str:
     allowlisting. Incoming content is intentionally not merged or inherited: it is an arbitrary runtime
     override surface and may contain plugins, commands, or secrets. Normal user/project config files still
     load through the separately allowlisted ``OPENCODE_CONFIG``/``OPENCODE_CONFIG_DIR`` locations; this
-    highest-precedence fragment only pins the delegated role's identity, its permissions, and
-    how an automatically rejected permission request is handled.
+    highest-precedence fragment only pins the delegated role's identity and its permissions. It reaches
+    the role only through the private server that ``--standalone`` starts (a run attached to a running
+    background service uses the service's configuration).
     """
     perm_kind(role)  # shared role allowlist and wording
     # ``edit`` is allowed for every role, researcher included: all participating roles record
@@ -564,12 +560,6 @@ def opencode_runtime_role_config(role: str) -> str:
                 "permission": permission,
             },
         },
-        # Non-interactive ``opencode run`` auto-rejects every ``ask`` request, and on the resulting
-        # RejectedError it ends the whole run unless this flag is true (OpenCode 1.18.34 failToolCall).
-        # With it the rejection goes back to the model as a tool error and the run continues, like
-        # claude ``-p`` and codex ``-a never``. It changes no allow/deny/ask decision. The key is
-        # experimental: re-measure this behaviour whenever the pinned OpenCode version changes.
-        "experimental": {"continue_loop_on_deny": True},
     }
     return json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -824,27 +814,29 @@ def build_claude_argv(model: str, reasoning: str | None, role: str,
 
 
 def build_opencode_argv(
-    model: str, reasoning: str | None, role: str, cwd: str, prompt_file: str,
+    model: str, reasoning: str | None, role: str, prompt_file: str,
 ) -> list[str]:
-    """opencode argv. 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피)·cwd 는 `--dir`
-    로 핀하고, `--agent <role>`로 네이티브와 같은 custom 역할 정의를 선택한다."""
+    """opencode argv. 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피), `--agent <role>`로
+    네이티브와 같은 custom 역할 정의를 선택한다. 작업 폴더는 실행 인자가 아니라 자식 프로세스의 cwd 다.
+
+    `--standalone` 은 이 실행 전용 서버를 띄운다. 떠 있는 상주 서비스에 붙으면 그 서비스의 설정을 써서
+    `OPENCODE_CONFIG_CONTENT` 의 역할 정의가 빠진다(2.3.0 실측: `Agent not found`). 추론 강도는 모델 지정
+    `provider/model#강도` 에 붙는다(모델 없는 추론 강도는 `validate_reasoning` 이 먼저 거부한다)."""
     perm_kind(role)  # 공용 역할 allowlist 검증(예외 문구 단일 진실).
     agent = OPENCODE_AGENT[role]
     argv = ["opencode", "run", OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
-            "--agent", agent, "--format", "json", "--dir", str(cwd)]
+            "--agent", agent, "--format", "json", "--standalone"]
     if model:
-        argv += ["-m", model]
-    if reasoning:
-        argv += ["--variant", reasoning]
+        argv += ["-m", f"{model}#{reasoning}" if reasoning else model]
     return argv
 
 
 def assert_opencode_prompt_in_cwd(cwd: str | Path, prompt_file: str | Path) -> None:
-    """opencode ``--file`` 이 ``--dir`` sandbox의 실제 하위 경로인지 단언한다.
+    """opencode ``--file`` 프롬프트가 작업 폴더(sandbox)의 실제 하위 경로인지 단언한다.
 
     argv 빌더 자체는 추가 리뷰어의 표시용 placeholder도 조립하므로 순수 함수로 둔다. 실제 파일을
     넘기는 호출부가 이 가드를 직전에 호출한다. 양쪽 경로를 resolve해 실제 containment를 판정하며,
-    해소 자체가 실패하면 공용 계약 예외로 번역한다. 따라서 ``--dir`` 안의 symlink가 바깥 파일을
+    해소 자체가 실패하면 공용 계약 예외로 번역한다. 따라서 작업 폴더 안의 symlink가 바깥 파일을
     가리키는 구성도 거부하며, 파일 경로가 sandbox 루트와 같은 값인 구성도 하위로 인정하지 않는다.
     """
     try:
@@ -852,20 +844,20 @@ def assert_opencode_prompt_in_cwd(cwd: str | Path, prompt_file: str | Path) -> N
         attached = Path(prompt_file).resolve()
     except (OSError, RuntimeError) as exc:
         raise HarnessContractError(
-            "opencode --file/--dir 실경로 해소 실패 — "
-            f"--file={prompt_file} · --dir={cwd} · {type(exc).__name__}: {exc}"
+            "opencode --file/작업 폴더 실경로 해소 실패 — "
+            f"--file={prompt_file} · 작업 폴더={cwd} · {type(exc).__name__}: {exc}"
         ) from exc
     try:
         relative = attached.relative_to(sandbox)
     except ValueError as exc:
         raise HarnessContractError(
-            "opencode 전달 프롬프트가 --dir sandbox 밖입니다 — "
-            f"--file={attached} · --dir={sandbox}"
+            "opencode 전달 프롬프트가 작업 폴더 sandbox 밖입니다 — "
+            f"--file={attached} · 작업 폴더={sandbox}"
         ) from exc
     if not relative.parts:
         raise HarnessContractError(
-            "opencode 전달 프롬프트는 --dir sandbox의 파일 하위 경로여야 합니다 — "
-            f"--file={attached} · --dir={sandbox}"
+            "opencode 전달 프롬프트는 작업 폴더 sandbox의 파일 하위 경로여야 합니다 — "
+            f"--file={attached} · 작업 폴더={sandbox}"
         )
 
 

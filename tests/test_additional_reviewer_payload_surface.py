@@ -150,10 +150,9 @@ def test_opencode_transport_is_inside_review_sandbox_and_self_hidden(external, t
 
     with reviewer_raw._structured_transport(target, "검토 diff", sandbox) as (argv, stdin_text):
         prompt_file = Path(argv[argv.index("--file") + 1])
-        wire_dir = Path(argv[argv.index("--dir") + 1])
         ignore = prompt_file.parent / ".gitignore"
         assert prompt_file.resolve().is_relative_to(sandbox.resolve())
-        assert wire_dir == sandbox.resolve()
+        assert "--dir" not in argv  # 작업 폴더는 자식 cwd(리뷰 sandbox)다
         assert prompt_file.read_text(encoding="utf-8") == "검토 diff"
         # 접근 제한 판정은 퍼미션 비트가 아니라 **OS 되묻기**다 — Windows 의 `chmod` 는 아무
         # 제한도 걸지 않아(`S_IMODE`=0o666 실측) 비트 단언이 그 플랫폼에서 항상 거짓이 된다.

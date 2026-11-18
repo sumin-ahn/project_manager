@@ -518,8 +518,8 @@ def test_pm_release_live_opencode_best_effort(harness_tmp_path):
     못 한다(release_cluster 위임-관측 비대칭 상속). 그래서 hard 상한 = **green live-test.json**
     (status=pass·n==pin·rc=0·존재만 아님·미실행/오호출 시 red)이고, push/gh 부재 관측은 stdout 에
     있을 때만 best-effort 다. claude 경로(`test_pm_release_live_claude`)가 커맨드 부재를 hard 로
-    커버하는 짝이다. 홈엔 원격이 없어 push 시도도 비가역 부작용 0(safety). `--dir` 로 루트 핀(opencode
-    는 PWD 로 루트 오판)·`--dangerously-skip-permissions`(비대화 헤드리스 auto-reject 회피·throwaway
+    커버하는 짝이다. 홈엔 원격이 없어 push 시도도 비가역 부작용 0(safety). 실행 위치는 자식 cwd·
+    `--standalone`(이 실행 전용 서버)·`--auto`(비대화 헤드리스에서 묻는 권한 자동 승인·throwaway
     tmp 홈 격리). API 과금 0(ollama).
     """
     home = _setup_home(harness_tmp_path, "opencode")
@@ -533,8 +533,7 @@ def test_pm_release_live_opencode_best_effort(harness_tmp_path):
         readonly_cwd=readonly,
     )
     proc = subprocess.run(
-        ["opencode", "run", "--agent", "build", "--dir", str(home),
-         "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
+        ["opencode", "run", "--standalone", "--agent", "build", "--auto", "-m", LIVE_MODEL, prompt],
         cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )

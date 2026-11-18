@@ -643,6 +643,10 @@ class _WatchedPopen:
 
     def __init__(self, argv, *, cwd=None, env=None, text=True,
                  input_text: str | None = None, clock=None):
+        if cwd is not None:
+            # 자식의 `PWD` 는 자식 cwd 와 같다. opencode 2.x `run` 은 `PWD` 를 cwd 보다 먼저 작업 폴더로
+            # 쓴다(2.3.0 실측: 부모 `PWD` 를 물려받으면 부모 폴더에서 세션이 돈다).
+            env = {**(os.environ if env is None else env), "PWD": os.path.abspath(os.fspath(cwd))}
         # fork/exec 전에 확정 판정 가능한 입력(NUL)은 여기서 거절한다 — 그 거절의 '자식 없음'
         # 표시는 `Popen` 예외 종류를 보고 추측한 것이 아니라 경계 **앞**의 관측이다.
         _preflight_spawn_inputs(argv, cwd=cwd, env=env)

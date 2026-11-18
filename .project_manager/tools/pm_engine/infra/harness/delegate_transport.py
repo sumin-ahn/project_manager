@@ -366,7 +366,7 @@ def _read_tmp_prompt_note(
 
 
 # codex read 역할만 `-C`(실행 root)를 격리 tmp로 다시 잡는다(_READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS
-# — claude·opencode는 -C/--dir을 건드리지 않아 이 클래스가 구조적으로 없다). 실행 위치를 다시 잡은 tmp는 절대
+# — claude·opencode는 실행 위치 인자가 없어 이 클래스가 구조적으로 없다). 실행 위치를 다시 잡은 tmp는 절대
 # git 저장소가 아니므로(매 attempt 새로 만드는 빈 0700 디렉터리), 모델은 프롬프트 지시
 # (`_read_tmp_prompt_note`의 codex_note)로 `--cwd` 복귀를 기대받는다 — 그 준수를 기계가 보장할
 # 수는 없다: `codex exec --help` 실측상 `-C`는 항상 암묵적 쓰기 가능 root이고 `--add-dir`는
@@ -458,7 +458,7 @@ def _prepare_attempt_transport(
     )
     try:
         if harness == "opencode":
-            # PM 홈 감사 raw와 별개로 wire 사본은 opencode ``--dir`` sandbox 안에 둔다.
+            # PM 홈 감사 raw와 별개로 wire 사본은 opencode 작업 폴더(sandbox) 안에 둔다.
             wire_cwd = Path(os.path.abspath(cwd))
             prompt_path = delegate_temp._save_opencode_transport_prompt(wire_cwd, outgoing_prompt)
             # 파일 생성 뒤 argv 조립 직전에도 containment를 재검사한다. runner 직전에는 같은

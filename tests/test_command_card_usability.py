@@ -749,16 +749,15 @@ def test_command_card_usability_opencode_best_effort(harness_tmp_path):
     표기한다. opencode 는 stream-json 처럼 tool-call 을 정밀 노출하지 않아(stdout 스캔뿐) 기대 op 각
     정확-1회를 hard-claim 할 수 없다(`_judge_opencode` docstring). 그래서 hard 상한 = side-effect(done)
     + --help 호출 스캔이고, op 실행 관측은 stdout 에코가 있을 때만 best-effort 다. claude 경로
-    (`test_command_card_usability_claude`)가 정확-1회를 hard 로 커버하는 짝이다. `--dir` 로 루트 핀
-    (opencode 는 PWD 로 루트 오판). `--dangerously-skip-permissions`: 비대화 헤드리스라 --dir 를 external
-    로 보고 auto-reject 하지 않게(throwaway tmp adopter 격리·release_cluster 동일 근거). API 과금 0(ollama).
+    (`test_command_card_usability_claude`)가 정확-1회를 hard 로 커버하는 짝이다. 실행 위치는 자식 cwd 이고
+    `--standalone` 은 이 실행 전용 서버다. `--auto`: 비대화 헤드리스에서 묻는 권한을 자동 승인한다
+    (throwaway tmp adopter 격리·release_cluster 동일 근거). API 과금 0(ollama).
     """
     def run_attempt(attempt: int) -> tuple[bool, str]:
         dest = _import_attempt(harness_tmp_path, "opencode", attempt)
         prompt = _usability_prompt(_render_command_card(dest))
         proc, timeout_detail = _run_live_or_timeout(
-            ["opencode", "run", "--agent", "build", "--dir", str(dest),
-             "--dangerously-skip-permissions", "-m", LIVE_MODEL,
+            ["opencode", "run", "--standalone", "--agent", "build", "--auto", "-m", LIVE_MODEL,
              prompt],
             cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT, harness="opencode",
         )

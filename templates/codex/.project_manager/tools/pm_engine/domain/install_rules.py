@@ -182,7 +182,7 @@ LIVE_HARNESS_ENV = "PM_IMPORT_LIVE_HARNESS"
 # claude·codex 는 표준 입력(전문을 쓰고 닫아 EOF), opencode 는 대상 폴더 안 프롬프트 파일(`--file`).
 # 여러 줄 프롬프트를 실행 인자에 싣지 않는다: Windows 에서 실행 파일이 npm 셈(`.cmd`)이면 cmd.exe 가
 # 인자를 해석해 첫 줄 뒤를 조용히 버린다(VM 실측). -s workspace-write·--skip-git-repo-check·
-# -C <dest>·--dir <dest> 는 _build_runner_argv 가 붙인다. codex 는 `model` 생략=사용자 config 상속.
+# -C <dest>·--standalone 은 _build_runner_argv 가 붙인다. codex 는 `model` 생략=사용자 config 상속.
 CLAUDE_FILL_CMD = ("claude", "-p")
 
 

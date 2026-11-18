@@ -194,7 +194,7 @@ def test_developer_role_never_reaches_preflight(pd, tmp_path):
 )
 def test_claude_and_opencode_reviewer_not_subject_to_this_class(
         pd, tmp_path, harness, stdout_fn):
-    """claude·opencode 는 `_READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS` 가 False 라 -C/--dir 을 건드리지
+    """claude·opencode 는 `_READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS` 가 False 라 실행 위치 인자를 건드리지
     않는다 — 같은 비-저장소·staged-0 cwd 로도 이 preflight 가 아예 발동하지 않고 정상 스폰된다."""
     assert delegate_run_rules._READ_TMP_RETARGET_EXEC_ROOT_BY_HARNESS[harness] is False
     cwd = tmp_path / "worktree"   # 의도적으로 git 저장소가 아님 · staged 도 없음

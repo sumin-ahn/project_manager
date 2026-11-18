@@ -512,7 +512,7 @@ def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Pat
 def _write_fill_private_file(dest_root: Path, prefix: str, suffix: str, text: str) -> Path:
     """`<dest>/.project_manager/.local/fill/<prefix><무작위><suffix>` 에 0600·O_EXCL 로 쓴다(fill 실패 원문·
     opencode 프롬프트 파일). 경로 조상이 repo 밖을 가리키거나 부모가 symlink 면 `OSError` 다. 반환 경로는
-    `dest_root` 기준 lexical 경로다(opencode `--dir <dest>` 와 같은 접두)."""
+    `dest_root` 기준 lexical 경로다(opencode 실행 위치 `<dest>` 와 같은 접두)."""
     dest_root = Path(dest_root)
     repo_root = dest_root.resolve(strict=True)
     if not repo_root.is_dir():
@@ -677,12 +677,13 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
     """하니스별 헤드리스 구동 명령 조립(runner 매핑·명시 등록). 프롬프트는 실행 인자에 없다.
 
       claude   → `claude -p` (프롬프트 = 표준 입력)
-      opencode → `opencode run "<첨부 안내>" --file <prompt_file> --format json --dir <dest>`
+      opencode → `opencode run "<첨부 안내>" --file <prompt_file> --format json --standalone`
+                 (실행 위치 = `<dest>`, 자식 cwd)
                  (cross 위임과 같은 `--file` 전달·안내 문구는 `contract` 의 한 줄 상수)
       codex    → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest>` (표준 입력)
 
     `prompt_file` 은 `--file` 전달 하네스에 run_fill 이 `dest_root` 안에 쓴 프롬프트 파일이다(opencode
-    `--dir` 하위). 표준 입력 전달 하네스는 None 이다.
+    실행 위치 하위). 표준 입력 전달 하네스는 None 이다.
 
     미지원 harness 는 **fail-loud**(ValueError). 과거 codex 가 이 매핑에 없어 조용히 `claude -p`
     를 대신 써 *잘못된 바이너리*를 호출하고 출력만 harness=codex 로 오표기하던 클래스를 닫는다 —
@@ -691,7 +692,7 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
         return [*install_rules.CLAUDE_FILL_CMD]
     if harness == "opencode":
         return [*install_rules.OPENCODE_FILL_CMD, contract.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
-                "--format", "json", "--dir", str(dest_root)]
+                "--format", "json", "--standalone"]
     if harness == "codex":
         # workdir 핀(codex 는 -C 로 작업 디렉토리 고정).
         return [*install_rules.CODEX_FILL_CMD, "--json", "-s", "workspace-write", "--skip-git-repo-check",
@@ -1038,7 +1039,7 @@ def run_fill(
         )
 
     # 프롬프트 전달 방식은 FILL_DRIVER_BY_CMD 선언이 정한다. `--file` 전달이면 대상 폴더 안
-    # (opencode `--dir` 하위·gitignore 된 `.local/fill`)에 프롬프트 파일을 쓰고 실행 뒤 지운다.
+    # (opencode 실행 위치 하위·gitignore 된 `.local/fill`)에 프롬프트 파일을 쓰고 실행 뒤 지운다.
     prompt_transport = next(
         driver[2] for driver in install_rules.FILL_DRIVER_BY_CMD.values() if driver[0] == harness)
     prompt_file = (

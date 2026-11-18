@@ -219,7 +219,7 @@ class CodexCliDriver:
 
         - resume_id 없으면: fresh `codex exec`(codex 가 thread_id 발급).
         - resume_id 주어지면: `resume <tid>` 로 그 세션 이어감.
-        child cwd 격리 — `-C <cwd>` 로 PM repo root 를 명시(opencode `--dir` 대칭).
+        child cwd 격리 — `-C <cwd>` 로 PM repo root 를 명시(opencode 는 자식 cwd 와 `PWD` 로 준다).
         커맨드 형 = `codex exec --json -s workspace-write --skip-git-repo-check [-C <cwd>]
         [resume <tid> -]` 이고 프롬프트는 표준 입력이다(cross 위임 `build_codex_argv` 와 같다 — 여러 줄
         프롬프트를 실행 인자에 실으면 Windows 에서 `codex.cmd` 를 거칠 때 cmd.exe 가 첫 줄 뒤를 버린다). `-C` 는 exec-레벨 플래그라 `resume` 서브커맨드

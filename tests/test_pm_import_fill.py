@@ -390,7 +390,7 @@ class _FileReadingRunner(_StubRunner):
 
 
 def test_runner_argv_opencode_branch(pm_import, tmp_path):
-    """opencode 분기: `opencode run "<첨부 안내>" --file <대상 폴더 안 파일> --format json --dir <dest>`.
+    """opencode 분기: `opencode run "<첨부 안내>" --file <대상 폴더 안 파일> --format json --standalone`(실행 위치 = dest).
 
     cross 위임과 같은 `--file` 전달이다 — 파일 내용이 프롬프트이고, 실행 뒤 파일은 지워진다."""
     dest = _make_imported_tree(pm_import, tmp_path, harness="opencode", name="ArgvOpen")
@@ -400,7 +400,7 @@ def test_runner_argv_opencode_branch(pm_import, tmp_path):
     argv, prompt = stub.calls[0]
     prompt_file = Path(argv[argv.index("--file") + 1])
     assert argv == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
-                    "--format", "json", "--dir", str(dest)]
+                    "--format", "json", "--standalone"]
     assert prompt_file.parent == dest / ".project_manager" / ".local" / "fill"
     assert stub.read == prompt and prompt not in argv
     assert not prompt_file.exists(), "fill 이 프롬프트 파일을 남겼다"
@@ -412,7 +412,7 @@ def test_build_runner_argv_units(pm_import, tmp_path):
     assert import_fill._build_runner_argv("claude", tmp_path, None) == ["claude", "-p"]
     open_argv = import_fill._build_runner_argv("opencode", tmp_path, prompt_file)
     assert open_argv == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG,
-                         "--file", str(prompt_file), "--format", "json", "--dir", str(tmp_path)]
+                         "--file", str(prompt_file), "--format", "json", "--standalone"]
 
 
 @pytest.mark.parametrize("harness", ("claude", "opencode", "codex"))

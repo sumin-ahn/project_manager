@@ -150,8 +150,7 @@ def test_pm_adr_live_opencode(harness_tmp_path):
     _seed_decisions(dest)
     prompt = _issue_prompt(_SKILL.read_text(encoding="utf-8"))
     proc = subprocess.run(
-        ["opencode", "run", "--agent", "build", "--dir", str(dest),
-         "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
+        ["opencode", "run", "--standalone", "--agent", "build", "--auto", "-m", LIVE_MODEL, prompt],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )

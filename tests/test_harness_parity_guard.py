@@ -79,7 +79,7 @@ CONDITION_BRANCHES: dict[RegistryKey, Site] = {
     ('delegate_run.py', '_build_target_argv', 'claude'): Site(
         "argv 조립 — claude 빌더 분기(형식 계약은 contract 소유)"),
     ("delegate_cmd.py", "_dry_run_harness_annotations", "opencode"): Site(
-        "dry-run 표기 — opencode 만 `--dir`/`--file` 자리표시자를 미리보기에 덧붙인다",
+        "dry-run 표기 — opencode 만 `--file` 전달 안내를 미리보기에 덧붙인다",
         expected_count=2),
     ('delegate_transport.py', '_prepare_attempt_transport', 'opencode'): Site(
         "CLI 형식 — opencode 만 프롬프트 파일 sandbox 를 준비한다"),

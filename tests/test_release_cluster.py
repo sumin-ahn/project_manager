@@ -781,7 +781,7 @@ def test_release_cluster_opencode_full_cluster(harness_tmp_path):
     그래서 **side-effect(probe.txt·done)만 hard 단언**하고(probe.txt=developer 가 위임받아 작성·done=묶음
     완주 → side-effect 가 위임 *결과*를 커버), 위임 흔적(stdout 에 'developer'/'code-reviewer' 등장)은
     **best-effort**(있으면 단언·없으면 skip)다. opencode 위임 관측 수단은 PM probe 후 보강한다.
-    gemma 는 느리고 변동 커 timeout 1800s. `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판).
+    gemma 는 느리고 변동 커 timeout 1800s. 실행 위치는 자식 cwd(워치독이 PWD 도 같은 값으로 둔다).
     compaction 경계는 격리 adopter의 `harness.opencode.ctx_window_tokens`(하네스별 키) + 선택
     모델 `limit.context-output`만 낮추고 반복 입력으로 넘긴다. 출하 config/generic 예산은 무변경.
     두 단계다(T-0953): 첫 실행(`--format json`)에서 루트 세션 ID 를 얻어 그 세션이 연 task 가 정확히
@@ -795,11 +795,9 @@ def test_release_cluster_opencode_full_cluster(harness_tmp_path):
     receipts_before_turn = _opencode_snapshot_receipts(marker_dir)
 
     proc = _run_opencode_live(
-        # `--dangerously-skip-permissions`: 비대화 헤드리스라 opencode 가 `--dir` 디렉토리를
-        # external_directory 로 보고 권한을 auto-reject → AGENTS.md 도 못 읽고 묶음 시험 시작에 실패한다.
-        # 이 플래그로 권한을 통과시켜야 묶음 시험 완주(throwaway tmp adopter 격리라 안전·PM 36 probe 실측).
-        ["opencode", "run", "--format", "json", "--agent", "build", "--dir", str(dest),
-         "--dangerously-skip-permissions", "-m", LIVE_MODEL,
+        # `--standalone`: 이 실행 전용 서버(상주 서비스에 붙지 않는다). `--auto`: 비대화 헤드리스에서 묻는
+        # 권한을 자동 승인한다(throwaway tmp adopter 격리라 안전).
+        ["opencode", "run", "--standalone", "--format", "json", "--agent", "build", "--auto", "-m", LIVE_MODEL,
          _full_cluster_prompt("AGENTS.md", "opencode")],
         cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
@@ -838,8 +836,7 @@ def test_release_cluster_opencode_full_cluster(harness_tmp_path):
         start=1,
     ):
         compacted = _run_opencode_live(
-            ["opencode", "run", "--continue", "--agent", "build", "--dir", str(dest),
-             "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
+            ["opencode", "run", "--standalone", "--continue", "--agent", "build", "--auto", "-m", LIVE_MODEL, prompt],
             cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
         )
         probe_results.append(compacted)
@@ -865,8 +862,7 @@ def test_release_cluster_opencode_full_cluster(harness_tmp_path):
     # fallback push/receipt까지 한 번 더 관측한다. in-memory 소비면 이미 receipt가 있어 생략된다.
     if checkpoint_increased and not delivered_receipts:
         recovered = _run_opencode_live(
-            ["opencode", "run", "--continue", "--agent", "build", "--dir", str(dest),
-             "--dangerously-skip-permissions", "-m", LIVE_MODEL,
+            ["opencode", "run", "--standalone", "--continue", "--agent", "build", "--auto", "-m", LIVE_MODEL,
              "If a PM recovery snapshot is present in system context, reply with exactly "
              f"{_COMPACTION_RECOVERY_SENTINEL}; otherwise reply with exactly NO_COMPACTION_RECOVERY."],
             cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
@@ -1157,15 +1153,13 @@ def test_release_cluster_multirepo_opencode_full_cluster(harness_tmp_path):
     prefix(`--prefix <repo>`)와 폴더 지목(`--repo <repo> --slot <N>`)을 바르게 다루는가.
     단언은 결과의 실체만 본다(`_assert_multirepo_cluster_side_effects`): 저장소마다 done 티켓 1개, 그 묶음
     closed 와 base_branch `<repo>_1`, 묶음 브랜치와 통합 브랜치의 cluster-done.txt 내용. 출력 문구 비결정에
-    강건하다(T-0157 과 같은 방식). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama).
+    강건하다(T-0157 과 같은 방식). 실행 위치는 자식 cwd. API 과금 0(로컬/cloud ollama).
     """
     home = _multirepo_cluster_home(harness_tmp_path, "opencode")
 
     proc = _run_opencode_live(
-        # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
-        # 단일 묶음 시험과 동일 근거(opencode 가 --dir 디렉토리를 external 로 보고 auto-reject).
-        ["opencode", "run", "--agent", "build", "--dir", str(home),
-         "--dangerously-skip-permissions", "-m", LIVE_MODEL,
+        # `--auto`: 비대화 헤드리스 격리(throwaway tmp home)라 안전. 단일 묶음 시험과 같은 근거.
+        ["opencode", "run", "--standalone", "--agent", "build", "--auto", "-m", LIVE_MODEL,
          _multirepo_cluster_prompt()],
         cwd=str(home), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
@@ -1447,16 +1441,14 @@ def test_release_cluster_multiuser_composite_opencode(harness_tmp_path):
 
     격리 판정은 **테스트가 직접** board.py list 를 돌려(side-effect·LLM phrasing 비결정 강건) —
     alice task(alice-cluster) 뷰는 bob 티켓(T-be-*) 미열람·자기(T-al-*) 열람, bob task(bob-cluster) 뷰는 역 —
-    즉 **뷰가 섞이지 않음**을 실 산출로 assert(`_assert_multiuser_view_isolation`). `--dir` 로 루트 핀
-    (opencode 는 PWD 로 루트 오판). API 과금 0(로컬/cloud ollama). cross-slot 기준은 T-0304 기계 검사 커버.
+    즉 **뷰가 섞이지 않음**을 실 산출로 assert(`_assert_multiuser_view_isolation`). 실행 위치는 자식 cwd.
+    API 과금 0(로컬/cloud ollama). cross-slot 기준은 T-0304 기계 검사 커버.
     """
     home = _import_multiuser_home(harness_tmp_path, "opencode")
 
     proc = _run_opencode_live(
-        # `--dangerously-skip-permissions`: 비대화 헤드리스 격리(throwaway tmp home)라 안전 —
-        # multi-repo 라이브 테스트와 동일 근거(opencode 가 --dir 디렉토리를 external 로 보고 auto-reject).
-        ["opencode", "run", "--agent", "build", "--dir", str(home),
-         "--dangerously-skip-permissions", "-m", LIVE_MODEL,
+        # `--auto`: 비대화 헤드리스 격리(throwaway tmp home)라 안전. multi-repo 라이브 테스트와 같은 근거.
+        ["opencode", "run", "--standalone", "--agent", "build", "--auto", "-m", LIVE_MODEL,
          _multiuser_cluster_prompt()],
         cwd=str(home), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
