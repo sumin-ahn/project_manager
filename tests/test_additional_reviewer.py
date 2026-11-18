@@ -160,15 +160,14 @@ def test_harness_cap_advisory_ignores_config_and_unmeasured_keys(external, key):
 
 
 def test_harness_cap_advisory_warns_for_all_nested_session_harnesses(external, monkeypatch):
-    """중첩 세션의 공개 호출층 상한을 모두 검사해 경고를 합친다."""
+    """중첩 세션 가운데 상한 변수가 있는 하네스(claude)의 호출층 상한을 검사한다."""
     warning = pm_engine.infra.harness.reviewer_run.harness_cap_advisory(
         {"OPENCODE": "child", "CLAUDECODE": "parent"},
         execution_budget=10,
     )
     assert warning is not None
-    assert warning.count("[additional-reviewer] 경고:") == 2
+    assert warning.count("[additional-reviewer] 경고:") == 1
     assert "BASH_MAX_TIMEOUT_MS" in warning
-    assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
 
 
 def test_harness_cap_advisory_keeps_claude_harness_with_opencode_config(
@@ -184,12 +183,10 @@ def test_harness_cap_advisory_keeps_claude_harness_with_opencode_config(
 
 def test_harness_cap_advisory_accepts_secondary_opencode_session_marker(
         external, monkeypatch):
-    """보조 OpenCode 세션 마커도 공용 표 계약에 따라 OpenCode 상한을 안내한다."""
-    warning = pm_engine.infra.harness.reviewer_run.harness_cap_advisory(
+    """보조 OpenCode 세션 마커만 있으면 안내하지 않는다(opencode 는 상한 변수가 없다)."""
+    assert pm_engine.infra.harness.reviewer_run.harness_cap_advisory(
         {"OPENCODE_PID": "123"}, execution_budget=10,
-    )
-    assert warning is not None
-    assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
+    ) is None
 
 
 def test_timeout_output_routes_through_shared_partial_formatter(external, monkeypatch):

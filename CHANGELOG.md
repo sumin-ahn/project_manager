@@ -21,6 +21,10 @@
 - 사용 한도 반영이 opencode 설정 파일에 쓰는 키는 모델마다 `limit.input` 과 최상위 `compaction.reserved` 둘이다. 전에 반영이 쓴 `limit.context`·`limit.output` 은 지우지 않으며 사용자 값으로 읽는다.
 - opencode 전역 설정 폴더는 `OPENCODE_CONFIG_DIR` 이 있으면 그 폴더이고, 전역 설정 파일은 `opencode.json`·`opencode.jsonc` 둘이다. opencode 모델 목록에 없는 대상 모델은 사용 한도 대상에서 빼고 "opencode 모델 목록에 없음" 으로 알린다.
 - opencode 를 쓰는 설치·갱신·`pm_config.py apply` 는 PATH 에 opencode 2.x 가 있어야 한다. opencode 가 없거나 1.x 면 사용 한도 반영 단계에서 멈춘다. 모델 조회 명령이 실패하면 사유 앞에 `(opencode 2.x 가 있어야 합니다)` 가 붙는다(1.x 는 이 명령에 도움말만 내고 끝나 사유만으로는 원인이 보이지 않는다). 이미 설치한 곳은 opencode 를 2.x(npm 패키지 `@opencode/cli`)로 올린 뒤 갱신(`pm_update.py`, 관리자 앱 [적용])한다. 엔진 파일과 relay 드라이버(`.opencode/pm_orch_opencode.py`)는 갱신으로 바뀐다.
+- OpenCode 위임 안내(`.opencode/pm-instructions.md`·`AGENTS.lite.md`·역할 카드·`templates/opencode/README.md`·`/pm-dev-delegate`·`pm_playbook.md`)를 opencode 2.x 의 `subagent` 도구(인자 `agent`·`description`·`prompt`)로 고쳤다. 2.x 의 `subagent` 호출은 곧바로 돌아오고 자식은 백그라운드에서 돌며, 끝나면 자식의 마지막 응답이 `<subagent>` 메시지로 온다(2.3.0·2.3.2 에서 확인). 1.x `task` 도구의 `subagent_type` 인자와 '도구가 없는 빌드용 `opencode run` 대체 동작' 안내를 지웠다. `opencode run` 은 다른 하네스 PM 의 위임을 엔진이 실행하는 경로로만 남는다.
+- OpenCode 셸 도구의 시간 제한 안내를 고쳤다. opencode 2.x 셸 도구는 `timeout` 을 주지 않은 명령을 120초 뒤에 멈추거나(2.3.0) 백그라운드로 넘기고(2.3.1 이상), 이 기본값을 바꾸는 설정·환경 변수가 없다. 오래 걸리는 엔진 명령은 호출마다 `timeout: 29300000`(ms)을 준다. 위임·추가 리뷰어·설치 때 자유서술 채움의 호출층 상한 경고는 opencode 세션에서 `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` 를 찾지 않는다.
+- opencode 2.x 는 설정·에이전트 카드·지침 파일 변경을 실행 중에 다시 읽으므로(2.3.0 에서 확인) PM 지침의 '바꾸면 opencode 를 재시작' 안내를 고쳤다.
+- README 와 OpenCode 어댑터 README 에 opencode 지원 버전(2.3.0 이상)과 설치(npm 패키지 `@opencode/cli`)를 적고, 모델 조회 안내를 2.x 모델 목록 조회(`opencode api GET /api/model --standalone`)로 고쳤다.
 
 ### Removed
 
@@ -28,6 +32,9 @@
 - OpenCode 어댑터의 stall-watchdog 플러그인(`.opencode/plugins/stall-watchdog.js`·`.opencode/lib/stall-watchdog-core.cjs`)을 지웠다. 세션이 쉬는 상태(`session.idle`)가 될 때 할 일을 남긴 채 턴을 끝낸 것 같다고 판단하면 `[stall-watchdog]` 로 시작하는 안내 문구를 세션에 넣던 플러그인으로, 제대로 동작하지 않고 불편만 줘서 지웠다. 이미 설치한 곳은 갱신(`pm_update.py`, 관리자 앱 [적용])이 두 파일을 `.pm_import_backups/<날짜>/` 아래로 옮긴다. 손으로 고친 사본도 옮기며 원래 내용은 그 백업에 남는다. 실행 중인 OpenCode 는 다시 띄워야 플러그인이 빠진다. 이 플러그인만 읽던 환경 변수 `PM_STALL_WATCHDOG_MAX_CONSEC`·`PM_STALL_WATCHDOG_MAX_TOTAL`·`PM_STALL_WATCHDOG_DISABLED` 는 더 쓰이지 않고, 플러그인이 상태를 적던 `.project_manager/.local/stall-watchdog/` 폴더는 지워도 된다. 위임 실행이 첫 출력 없이 멈추면 끊고 다시 띄우는 엔진의 감시(`PM_OC_FIRST_EVENT_TIMEOUT`·`PM_OC_STALL_RETRIES`)는 그대로다.
 - opencode 런타임 역할 설정의 `experimental.continue_loop_on_deny` 를 지웠다. 2.x 는 묻는 권한을 자동으로 거부한 뒤에도 실행을 잇는다.
 - 1.x 용 opencode 조회 경로(`opencode models --verbose` 판독, 모델 목록 캐시 `models.json`, Ollama `/api/show` 조회, 공급자 연결 추정, 전역 `config.json`, 출력 상한 환경 변수 `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX`)를 지웠다.
+- opencode 1.x 가 `.opencode/` 에 만들던 npm 산출물의 무시 규칙(`.opencode/.gitignore`)을 출하에서 뺐다. opencode 2.x 는 그 산출물을 만들지 않는다. 이미 설치한 곳은 갱신(`pm_update.py`, 관리자 앱 [적용])이 이 파일을 `.pm_import_backups/<날짜>/` 아래로 옮긴다. 1.x 가 남긴 `.opencode/node_modules`·`.opencode/package.json`·`.opencode/package-lock.json`·`.opencode/bun.lock` 은 이제 git 상태에 나타나므로 지운다.
+- OpenCode 역할 카드의 `temperature` 를 지웠다. opencode 2.x 는 에이전트의 `temperature` 를 모델 요청에 싣지 않는다(2.3.0·2.3.2 에서 확인).
+- `opencode` 를 `--pure` 대신 `--dir` 로 격리하라는 라이브 검증 원칙을 지우고, `/pm-release` 의 격리 `--dir` 안내를 실행 위치로 고쳤다. opencode 2.x 의 `run` 에는 두 옵션이 없다.
 
 ### Fixed
 

@@ -255,8 +255,8 @@ CLOUD_WALL_TIMEOUT_SEC = 3600.0   # 관측 최대 완주(1429.1s)의 2.5배 — 
 LOCAL_GPU_IDLE_TIMEOUT_SEC = 5400.0    # 1.5시간
 LOCAL_GPU_WALL_TIMEOUT_SEC = 14400.0   # 4시간
 
-# 호출층 Bash 상한을 관측할 수 있는 세션 종류의 단일 선언. 공개 상한이 없는 codex는 None으로
-# 남기며, 그 자체는 advisory 대상이 아니다.
+# 호출층 Bash 상한을 관측할 수 있는 세션 종류의 단일 선언. 상한 환경 변수가 없는 codex 와 opencode(셸
+# 도구가 호출마다 `timeout` 을 받는다)는 None으로 남기며, 그 자체는 advisory 대상이 아니다.
 HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
     "codex": ("CODEX_THREAD_ID", "CODEX_CI"),
     "claude": ("CLAUDECODE",),
@@ -265,7 +265,7 @@ HARNESS_SESSION_MARKERS: dict[str, tuple[str, ...]] = {
 HARNESS_CAP_ENV: dict[str, str | None] = {
     "codex": None,
     "claude": "BASH_MAX_TIMEOUT_MS",
-    "opencode": "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+    "opencode": None,
 }
 
 

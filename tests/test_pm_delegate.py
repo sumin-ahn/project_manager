@@ -4625,11 +4625,10 @@ def test_runtime_harness_cap_advisory_is_loud_for_existing_adopter(pd, monkeypat
     }) is None
 
 
-def test_runtime_opencode_cap_missing_is_loud(pd, monkeypatch):
+def test_runtime_opencode_session_has_no_cap_advisory(pd, monkeypatch):
+    """opencode 셸 도구는 시간 제한을 호출마다 받아 엔진이 읽을 상한 변수가 없다 — 경고하지 않는다."""
     monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 18220)
-    warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), {"OPENCODE": "1"})
-    assert warning is not None
-    assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS 미해소" in warning
+    assert delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), {"OPENCODE": "1"}) is None
 
 
 def test_runtime_harness_cap_table_matches_session_markers(pd):
@@ -4655,24 +4654,23 @@ def test_runtime_harness_cap_ignores_config_and_unmeasured_keys(pd, key):
 
 
 def test_runtime_harness_cap_warns_for_all_nested_sessions(pd, monkeypatch):
-    """둘 이상의 실측 세션이 겹치면 각 공개 상한을 모두 검사한다."""
+    """둘 이상의 실측 세션이 겹치면 상한 변수가 있는 하네스(claude)마다 검사한다."""
     monkeypatch.setattr(delegate_env, 'max_declared_execution_path_budget', lambda _home: 10)
     env = {"OPENCODE": "child", "CLAUDECODE": "parent"}
     assert _harness_cap_pairs(pd, env) == (
         ("claude", "BASH_MAX_TIMEOUT_MS"),
-        ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
+        ("opencode", None),
     )
     warning = delegate_execute.harness_cap_advisory(pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), env)
     assert warning is not None
-    assert warning.count("[pm-delegate] 경고:") == 2
+    assert warning.count("[pm-delegate] 경고:") == 1
     assert "BASH_MAX_TIMEOUT_MS" in warning
-    assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
 
 
 def test_runtime_harness_cap_accepts_secondary_opencode_session_marker(pd):
-    """OpenCode가 세션에 주입하는 보조 마커도 공용 표를 통해 상한 선언을 선택한다."""
+    """OpenCode가 세션에 주입하는 보조 마커도 공용 표를 통해 opencode 를 고른다(상한 변수는 없다)."""
     assert _harness_cap_pairs(pd, {"OPENCODE_PID": "123"}) == (
-        ("opencode", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
+        ("opencode", None),
     )
 
 

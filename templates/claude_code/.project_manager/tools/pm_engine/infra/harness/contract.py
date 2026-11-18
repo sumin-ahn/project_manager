@@ -500,7 +500,7 @@ CODEX_WORKSPACE_EXEC_OPTIONS: tuple[str, ...] = (
 # 판독한다(모르는 토큰을 만나면 손상 argv 로 멈춘다).
 _CODEX_GLOBAL_VALUE_OPTIONS: frozenset[str] = frozenset({"-a", "-s", "-c", "-C", "--add-dir"})
 _CODEX_EXEC_SUBCOMMAND = "exec"
-# opencode 역할 agent — 네이티브 task와 cross `run --agent`가 같은 custom 정의를 쓴다.
+# opencode 역할 agent — 네이티브 `subagent` 도구와 cross `run --agent`가 같은 custom 정의를 쓴다.
 # 네 역할 카드는 `mode: all`이라 subagent/primary 양쪽에서 유효하다. build/plan으로 축약하면
 # 역할 prompt·모델·권한을 잃고(특히 reviewer가 Plan Mode로 사본을 못 씀) default agent로 오동작한다.
 OPENCODE_AGENT: dict[str, str] = {

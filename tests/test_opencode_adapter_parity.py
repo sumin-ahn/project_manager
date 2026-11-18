@@ -336,8 +336,8 @@ def test_opencode_hook_cores_have_no_ancestor_engine_root_search():
         )
 
 
-# opencode 플러그인 코드가 사는 두 자리 — 출하 템플릿과 이 저장소 자기 사본.
-OPENCODE_ADAPTER_DIRS = ("templates/opencode/.opencode", ".opencode")
+# opencode 플러그인 코드가 사는 자리 — 출하 템플릿.
+OPENCODE_ADAPTER_DIRS = ("templates/opencode/.opencode",)
 SYNC_RUNS = frozenset({"spawnSync", "execFileSync", "execSync"})
 _JS_TOKEN = re.compile(r"""\s+ | //[^\n]* | /\*.*?\*/
   | (?P<tok>'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`|[A-Za-z_$][\w$]*|\.\.\.|.)""", re.S | re.X)

@@ -2,7 +2,6 @@
 description: "{{PROJECT_NAME}} 프로젝트의 PM(Project Manager) primary agent. orchestrator(ADR-0009)가 PM 세션을 deterministic 하게 spawn 하는 타깃 — `opencode run --agent pm` 으로 올바른 모델/권한/프롬프트가 박힌 PM 세션을 띄운다. PM 운영의 단일 진실은 AGENTS.md(harness-neutral 공통 코어) + .opencode/pm-instructions.md(opencode 실행 모델·위임 규약·instructions 배열로 함께 자동 로드)다 — 이 정의는 그 문서들로 부트스트랩·운영하라고 가리키는 thin 진입점이다."
 mode: primary
 model: "{{OPENCODE_PRO_MODEL}}"
-temperature: 0.2
 permission:
   read: allow
   edit: allow

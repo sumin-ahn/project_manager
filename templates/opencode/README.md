@@ -22,23 +22,31 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
   happy-path(부트스트랩 → 발행 → 위임 → finish)를 자족 운영하도록 압축한 판. 회사 200K 배포 1급.
   도입 시 `--weight lite` 로 선택 (아래 §채택).
 - **`.opencode/agents/`** — pm primary 정의(`mode: primary` — orchestrator relay spawn 타깃) +
-  researcher · developer · code-reviewer · architect subagent 정의(`mode: subagent`).
-  위임 1차 = 네이티브 `task` tool 이 이 정의를 별도 자식 세션에서 구동한다.
+  researcher · developer · developer-hard · code-reviewer · architect 역할 정의(`mode: all`).
+  같은 하네스 위임은 네이티브 `subagent` 도구가 이 정의를 별도 자식 세션에서 구동한다.
 - **`.claude/skills/`** — PM workflow canonical 스킬 15개. opencode 모델이 `skill` tool로 소비하는
   채널이며 canonical은 이 경로 하나다. 스킬 스캔 비활성화 금지
   (`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정).
-- **`.opencode/command/`** — `/pm-bootstrap` 같은 사람 슬래시 팔레트 진입 15개. opencode 1.18.16
-  실측에서 팔레트는 `{command,commands}/**/*.md`, 스킬은 별도 `skill` tool 진입점이므로 둘 다
+- **`.opencode/command/`** — `/pm-bootstrap` 같은 사람 슬래시 팔레트 진입 15개. opencode 2.3.0
+  에서 팔레트는 `{command,commands}/**/*.md`, 스킬은 별도 `skill` tool 진입점이므로 둘 다
   출하한다. 각 `<name>.md`는 root canonical `.claude/skills/<name>/SKILL.md`에서 `pm_update`가
   기계 생성하며 command 파일을 손으로 편집하지 않는다(T-0674·ADR-0065 개정 대기).
 
 ### 위임 규약 단일 진실 = `.opencode/pm-instructions.md §2`
 
-위임 1차는 **opencode 네이티브 `task` tool** 이다 — PM(build primary)이 `task` tool 을
-`subagent_type=developer|architect|code-reviewer|researcher` 로 호출하면 opencode 가 `.opencode/agents/*.md`
-를 별도 자식 세션(fresh 200K 격리·subagent `model:` 대로)에서 구동한다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. `opencode run` 외부
-프로세스는 headless·CI·task tool 미노출 빌드용 **대체 동작**으로 낮아졌다(pm-instructions.md §2.7). 자세한 규약·프롬프트는
+같은 하네스 위임은 **opencode 네이티브 `subagent` 도구** 다 — PM(pm primary)이 `subagent` 도구를
+`agent=developer|architect|code-reviewer|researcher` 로 호출하면 opencode 가 `.opencode/agents/*.md`
+를 별도 자식 세션(새 컨텍스트·subagent `model:` 대로)에서 백그라운드로 구동하고, 끝나면 마지막 응답을
+`<subagent>` 메시지로 돌려준다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다.
+cross 는 엔진이 `opencode run --agent <role>` 로 실행한다(pm-instructions.md §2.7). 자세한 규약·프롬프트는
 `.opencode/pm-instructions.md §2`(공통 코어 `AGENTS.md` 와 함께 자동 로드)가 단일 진실. 결정 근거는 ADR-0006(§3·D2·D3·D5).
+
+## 지원 버전과 설치
+
+opencode **2.3.0 이상**을 쓴다(1.x 는 지원하지 않는다). 2.x 의 npm 패키지는 `@opencode/cli` 다(1.x 패키지
+`opencode-ai` 가 아니다). `npm i -g @opencode/cli@latest` 또는 opencode 안내의 설치 스크립트
+(`curl -fsSL https://opencode.ai/v2/install | bash`)로 설치하고, `opencode --version` 이 `opencode v2.` 로
+시작하는지 확인한다.
 
 ## 채택 (pm_import — 정규 경로)
 
@@ -63,12 +71,12 @@ opencode 는 모델 placeholder 해소가 필수라 **수동 `cp -r` 은 불완�
 
 ## Context safety: native compaction + checkpoint
 
-OpenCode의 native compaction을 유지하고 `.opencode/plugins/ctx-guard.js`가 메인 세션의 최신
-`AssistantMessage.tokens`를 관측한다. warn·강화·final 구간은 다음 model turn의 system context에
+OpenCode의 native compaction을 유지하고 `.opencode/plugins/ctx-guard.js`가 메인 세션의 단계 끝
+(`session.step.ended`) 토큰을 관측한다. warn·강화·final 구간은 다음 model turn의 system context에
 checkpoint 안내를 사이클당 한 번씩 추가할 뿐 prompt, 도구 실행, compaction을
-차단하지 않는다. `session.compacted` 뒤에는 `pm_log.py snapshot` 최종 텍스트를 다음 model turn의
+차단하지 않는다. 압축이 끝나면(`session.compaction.ended`) `pm_log.py snapshot` 최종 텍스트를 다음 model turn의
 system context에 verbatim 1회 주입하고 dedup checkpoint 빈 양식을 만든 뒤 다음 사이클을 다시 켠다.
-native task가 만든 자식 세션은 checkpoint 안내 대상에서 제외되고 자체 compaction으로 정리된다.
+`subagent` 도구가 만든 자식 세션은 checkpoint 안내 대상에서 제외되고 자체 compaction으로 정리된다.
 
 안내를 받은 PM은 현재 ticket 경계를 닫고 수동 checkpoint의 진행·결정·검증 상태를 기록한다.
 압축 경계 빈 양식은 기계 생성되며 PM은 구간·서사 불릿을 채운다. 기본 하네스로 채택한 인스턴스의 plugin은
@@ -79,15 +87,15 @@ native task가 만든 자식 세션은 checkpoint 안내 대상에서 제외되�
 
 opencode 어댑터의 PM primary 카드(`.opencode/agents/pm.md`) `model:` 필드는 placeholder
 `{{OPENCODE_PRO_MODEL}}` 로 출하된다.
-pm_import 가 이를 **추측 없이 `opencode models` 결정적 조회**로 해소한다 (해소 순서):
+pm_import 가 이를 **추측 없이 opencode 모델 목록(`opencode api GET /api/model --standalone`) 결정적 조회**로 해소한다 (해소 순서):
 
 1. **`--opencode-model PROVIDER/MODEL`** (비대화/CI) — 먼저 치환, 가용목록 대조는 best-effort 경고.
    ```bash
    python3 .project_manager/tools/pm_import.py --new <PATH> --harness opencode \
      --opencode-model ollama/glm-5.3:cloud
    ```
-2. **tty 대화형** — `--opencode-model` 미지정·터미널이면 `opencode models` 목록에서 번호 선택.
-3. **비-tty·조회 실패·미선택 등**(비-tty/CI·opencode 바이너리 부재·`opencode models` 조회 실패·
+2. **tty 대화형** — `--opencode-model` 미지정·터미널이면 opencode 모델 목록에서 번호 선택.
+3. **비-tty·조회 실패·미선택 등**(비-tty/CI·opencode 바이너리 부재·opencode 모델 목록 조회 실패·
    tty에서 가용목록 없음 또는 선택 건너뜀) — frontmatter 의 `model:` **줄 전체를 YAML 주석(`#`)으로
    비활성화**하고 (조회 성공 시) 가용목록을 인라인한 TODO 안내 + 경고를 남긴다. 이렇게 하면
    frontmatter 에 `model` 키가 *부재*하므로 **opencode 가 기본 모델로 agent 를 그대로 띄운다**

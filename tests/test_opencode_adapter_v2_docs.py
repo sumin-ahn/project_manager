@@ -213,7 +213,7 @@ def test_canonical_delegate_card_routes_every_harness_to_its_native_channel():
 
     claude 와 opencode 는 같은 물리 경로(`.claude/skills/pm-dev-delegate/SKILL.md`)를 읽으므로
     그 자리에 하네스별 판을 얹지 않는다. 위임 블록은 claude 표기 한 벌이고, 카드 머리의 harness
-    노트가 opencode(native `task` 툴·background 필드 없음)와 codex(`spawn_agent`)를 안내한다.
+    노트가 opencode(native `subagent` 도구·background 필드 없음)와 codex(`spawn_agent`)를 안내한다.
     노트가 사라지면 opencode PM 은 claude 블록만 읽고 자기에게 없는 필드를 싣는다(실사고).
     블록 자체의 필드 계약은 `test_claude_adapter_parity` 가 소유한다.
     """
@@ -222,7 +222,7 @@ def test_canonical_delegate_card_routes_every_harness_to_its_native_channel():
         (line for line in text.splitlines() if line.startswith("> **harness 노트:**")), "")
     assert note, "canonical pm-dev-delegate 카드에 harness 노트가 없음 — opencode PM 은 claude 블록만 읽는다"
     for harness, channel in (
-        ("claude", "`Agent` 툴"), ("opencode", "`task`"), ("codex", "spawn_agent"),
+        ("claude", "`Agent` 툴"), ("opencode", "`subagent`"), ("codex", "spawn_agent"),
     ):
         assert harness in note and channel in note, (
             f"harness 노트가 {harness} 의 native 호출 채널({channel})을 안내하지 않음: {note}")
@@ -330,11 +330,11 @@ def test_pm_instructions_has_execution_model_and_delegation():
     text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
     for marker in (
         "실행 모델",         # §1 opencode 실행 모델
-        "task tool",         # 위임 1차 채널
+        "`subagent` 도구",   # 위임 채널
         "pm primary",        # PM 실행 모델
-        "재시작",            # config 1회 로드 캐싱 노트
+        "다시 읽",           # 실행 중 config 다시 읽기 노트
         "위임 규약",         # §2 위임 규약
-        "subagent_type",     # role 매핑
+        "- `agent` —",      # role 매핑
         "opencode run",      # §2.7 대체 경로
     ):
         assert marker in text, f"pm-instructions.md 에 이관 전문 마커 '{marker}' 누락 (ADR-0069·T-0401)"

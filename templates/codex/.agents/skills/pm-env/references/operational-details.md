@@ -56,13 +56,12 @@ prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다
   명령용, `BASH_MAX_TIMEOUT_MS`(ms·출하 기본 29300000=8시간 8분 20초)는 명시 timeout 상한이다.
   `.claude/settings.json` `env` 블록의 출하 기본이며 변경 후 세션을 재시작한다. cross 위임처럼
   장시간 예산이 필요한 호출은 Bash 툴에 MAX 이하 timeout을 명시한다.
-- **opencode 하네스** `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`(ms). config나 `.env` 자동로드가
-  없으므로 shell export:
-  `export OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=29300000`
-  (shell 프로파일/direnv `.envrc`). `EXPERIMENTAL`은 회사 버전에서 라이브 확인한다.
+- **opencode 하네스** 셸 도구(`shell`)의 기본 시간 제한은 120초이고 이를 바꾸는 설정·환경 변수가 없다.
+  오래 걸리는 명령은 호출마다 `timeout: 29300000`(ms)을 준다. 시간이 지나면 2.3.0 은 명령을 멈추고
+  2.3.1 이상은 백그라운드로 넘긴다.
 
 초과 시 엔진은 `터미널 직접 실행(PM_GIT_TIMEOUT=none)`을 안내한다. 변경 시 엔진 env·claude
-settings.json·opencode shell export를 각각 조정한다.
+settings.json·opencode 셸 도구 호출 `timeout`을 각각 조정한다.
 
 ## opencode stall 워치독
 

@@ -10,9 +10,6 @@
 
   ① 디스크에 있는 템플릿 ignore 파일은 전부 git 추적 대상이어야 한다 (미추적 = 출하 누락).
   ② 어떤 ignore 파일도 자기 자신을 무시하면 안 된다 (자기-은닉 = ① 을 영구히 은폐하는 원인).
-  ③ opencode 어댑터 `.gitignore` 는 출하 경로(opencode 하네스별 판 engine.manifest)에 실려야 한다 —
-     추적만 하면 *신규* 채택자(pm_import 트리 복사)만 받고 *기존* 채택자(pm_update manifest 전파)는
-     영영 못 받는다([[T-0473]] 출하 경로 미등재 클래스 선례).
 
 **가드 자신의 sensitivity 도 검증한다**(안 돌려보면 가짜 검사 — 출하 기능은 새 채택자 설치로 확인한다는 원칙):
 판정 로직을 독립 헬퍼로 떼어 (a) opencode 원본 5줄 본문에 자기-은닉을 실제로 검출하고 (b) 임시 git
@@ -28,10 +25,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from pm_engine.infra import manifest_store
 
 REPO = Path(__file__).resolve().parents[1]
-OC_MANIFEST = REPO / "templates" / "opencode" / ".project_manager" / "engine.manifest"
 
 # 가드 ① 스캔 대상 = 출하 누락 시 각 도구의 패키징/빌드 동작이 바뀌는 ignore 규칙 파일 전부.
 IGNORE_FILE_NAMES = frozenset({".gitignore", ".npmignore", ".dockerignore"})
@@ -159,14 +154,6 @@ def _self_hiding_entries(text: str, file_name: str, tmp_path: Path) -> list[str]
     return hits
 
 
-def _manifest_entry_source(manifest: Path, relpath: str) -> str | None:
-    """manifest 에서 relpath 엔트리의 `@source=<rel>` 값. 미등재면 KeyError 대신 명시 sentinel."""
-    for entry in manifest_store.read_manifest(manifest):
-        if str(entry).replace("\\", "/") == relpath:
-            return getattr(entry, "source_rel", None)
-    raise AssertionError(f"{manifest.name} 에 {relpath} 미등재")
-
-
 # ── 가드 ① 템플릿 ignore 파일 전량 추적 ────────────────────────────────────────
 
 
@@ -207,102 +194,6 @@ def test_template_ignore_files_do_not_self_hide(tmp_path):
         "ignore 규칙 파일이 자기 자신을 무시 — 어느 clone 에서도 git status 에 안 떠 영영 미추적으로 "
         f"남는다(T-0492). 해당 줄을 제거하라(무시 대상은 안 바뀐다):\n" + "\n".join(offenders)
     )
-
-
-# ── 가드 ③ opencode 어댑터 .gitignore 의 내용 + 출하 경로 ────────────────────────
-
-
-@requires_git_worktree
-def test_opencode_adapter_gitignore_tracked_and_keeps_artifact_rules(tmp_path):
-    """opencode 어댑터 `.gitignore` 가 추적되고, opencode 생성 산출물 무시 규칙을 그대로 유지한다.
-
-    추적 전환은 **additive** — 자기-은닉 줄만 빼고 산출물 4종(`node_modules`·`package.json`·
-    `package-lock.json`·`bun.lock`)은 계속 무시한다. 이 4종은 opencode 가 `.opencode/` 마다 자동
-    생성/설치하는 머신-로컬 재생성물이라(실행 중인 opencode 버전으로 `@opencode-ai/plugin` 설치)
-    커밋·출하 대상이 아니다 — 핀된 lock 을 출하하면 채택자 런타임과 어긋난 버전을 박는다.
-    """
-    rel = "templates/opencode/.opencode/.gitignore"
-    path = REPO / rel
-    assert path.is_file(), f"opencode 어댑터 ignore 규칙 파일 부재: {rel}"
-    assert rel in _tracked_relpaths(REPO, "templates"), (
-        f"{rel} 미추적 — fresh clone 에 없어 pm_import 가 못 싣는다(T-0492 회귀)")
-
-    body = path.read_text(encoding="utf-8")
-    rules = {line.strip() for line in body.splitlines()
-             if line.strip() and not line.strip().startswith("#")}
-    missing = {"node_modules", "package.json", "package-lock.json", "bun.lock"} - rules
-    assert not missing, (
-        f"opencode 로컬 산출물 무시 규칙 누락 {sorted(missing)} — 추적 전환은 additive 여야 한다"
-        "(무시되던 산출물은 계속 무시)")
-    assert _self_hiding_entries(body, ".gitignore", tmp_path) == [], \
-        "opencode 어댑터 .gitignore 가 자기 자신을 무시 — 자기-은닉 재발(T-0492)"
-
-
-def test_opencode_manifest_registers_adapter_gitignore():
-    """opencode 하네스별 판 manifest 가 `.opencode/.gitignore` 를 `@source` 로 등록 (출하 경로·T-0492 DoD).
-
-    추적만 하면 `pm_import`(템플릿 트리 통째 복사)로 **신규** 채택자만 받는다. **기존** 채택자에게
-    닿는 채널은 manifest 기반 `pm_update` 전파뿐이라, 미등재면 이미 채택한 사람은 영영 못 받는다
-    ([[T-0473]] 출하 경로 미등재 클래스). canonical 이 `templates/opencode/` 라 루트 `.opencode/`
-    부재 비대칭을 잇는 `@source` remap 이 필수다(lib·plugins·pm_orch_opencode.py 와 같은 방식).
-    """
-    assert _manifest_entry_source(OC_MANIFEST, ".opencode/.gitignore") == \
-        "templates/opencode/.opencode/.gitignore", (
-        "opencode manifest 의 .opencode/.gitignore @source remap 이 templates/opencode/ 를 "
-        "가리키지 않음 — self-update 가 소스를 못 찾아 전파 실패(rc2)")
-
-
-# ── 가드 ④ 제품 루트 opencode npm 산출물 재추적 방지 ───────────────────────────
-
-# 루트 .opencode 추적 허용집합 — ignore 규칙 파일 하나.
-# npm 재생성물(node_modules·package.json·package-lock.json·bun.lock)은 계속 금지다 — 집합 일치
-# 비교라 허용집합 밖 신규 추적 전환은 즉시 걸린다.
-ROOT_OPENCODE_TRACKED_ALLOWLIST = frozenset({
-    ".opencode/.gitignore",
-})
-
-
-@requires_git_worktree
-def test_root_opencode_tracks_only_its_gitignore():
-    """제품 루트 `.opencode` 추적 집합은 허용집합에 머문다 (T-0631 · OpenCode 묶음 갱신).
-
-    opencode 런타임이 `node_modules`·`package*.json` 을 다시 만들어도 제품 소스가 아니므로 index 에
-    들어오면 안 된다. 반대로 `.gitignore` 자체는 fresh clone 에 있어야 한다.
-    """
-    rel = ".opencode/.gitignore"
-    assert (REPO / rel).is_file(), f"루트 opencode ignore 규칙 파일 부재: {rel}"
-    tracked = _tracked_relpaths(REPO, ".opencode")
-    unexpected = sorted(tracked - ROOT_OPENCODE_TRACKED_ALLOWLIST)
-    missing = sorted(ROOT_OPENCODE_TRACKED_ALLOWLIST - tracked)
-    assert not unexpected and not missing, (
-        "루트 .opencode 추적 집합이 허용집합에서 이탈했다 — npm 재생성물 재추적 회귀"
-        f"(unexpected={unexpected}, missing={missing})")
-
-
-@requires_git_binary
-def test_root_opencode_gitignore_matches_template_and_ignores_runtime_artifacts():
-    """루트 판은 템플릿과 같은 방식이고, 런타임 npm 재생성물 4종을 실제 git 의미론으로 무시한다."""
-    root_ignore = REPO / ".opencode" / ".gitignore"
-    template_ignore = REPO / "templates" / "opencode" / ".opencode" / ".gitignore"
-    assert root_ignore.read_bytes() == template_ignore.read_bytes(), \
-        "루트 .opencode/.gitignore 가 canonical 템플릿 판과 다름"
-
-    artifacts = (
-        ".opencode/node_modules/runtime-regenerated.js",
-        ".opencode/package.json",
-        ".opencode/package-lock.json",
-        ".opencode/bun.lock",
-    )
-    decision = subprocess.run(
-        [_GIT, "check-ignore", "--no-index", "--", *artifacts],
-        cwd=str(REPO), capture_output=True, text=True, encoding="utf-8",
-    )
-    assert decision.returncode == 0, (
-        f"opencode 런타임 재생성물이 ignore 되지 않음(rc={decision.returncode}): "
-        f"{decision.stderr.strip()}")
-    assert set(decision.stdout.splitlines()) == set(artifacts), (
-        "opencode 런타임 재생성물 중 일부가 ignore 밖이라 다시 추적될 수 있음: "
-        f"{decision.stdout.splitlines()}")
 
 
 # ── sensitivity — 가드가 실제로 도는지 (가짜 검사 방지) ────────────────────────

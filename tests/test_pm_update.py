@@ -1754,8 +1754,7 @@ def test_legacy_opencode_manifest_follows_the_opencode_variant(pm_update, tmp_pa
     local_lines = [
         (line.split(" @source=", 1)[0] if " @source=" in line else line)
         for line in upstream.read_text(encoding="utf-8").splitlines()
-        if not line.startswith(".opencode/.gitignore")
-        and not line.startswith(MANIFEST_SELF_REL)
+        if not line.startswith(MANIFEST_SELF_REL)
     ]
     dest = tmp_path / "legacy-opencode"
     manifest = dest / ".project_manager" / "engine.manifest"
@@ -7542,6 +7541,25 @@ def test_update_moves_removed_stall_watchdog_plugin_out_of_an_opencode_install(t
         assert [path.read_text(encoding="utf-8") for path in backups] == [f"// 손으로 고친 옛 사본 {rel}\n"]
     assert sorted(path.name for path in (dest / ".opencode" / "plugins").glob("*.js")) == [
         "ctx-guard.js", "delegate-channel.js", "git-check.js", "principle-recall.js"]
+
+
+def test_update_moves_retired_opencode_gitignore_out_of_an_opencode_install(tmp_path, monkeypatch):
+    """opencode 1.x 산출물 무시 규칙(`.opencode/.gitignore`)이 남은 설치본은 갱신 한 번으로 그 파일을 잃는다.
+
+    원래 바이트는 백업 폴더(`.pm_import_backups/<날짜>/`)에 남는다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
+    dest = tmp_path / "adopter"
+    _import_adopter(dest, "opencode")
+    rel = ".opencode/.gitignore"
+    (dest / rel).write_text("node_modules\npackage.json\n", encoding="utf-8")
+
+    run = _adopter_update(dest)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert not (dest / rel).exists()
+    assert f"[퇴역] {rel} ->" in run.stdout, run.stdout
+    backups = sorted((dest / ".pm_import_backups").glob(f"*/{rel}"))
+    assert [path.read_text(encoding="utf-8") for path in backups] == ["node_modules\npackage.json\n"]
 
 
 _SAFE_WRITE_FILES = (".opencode/plugins/safe-write.js", ".opencode/lib/safe-write-core.cjs")

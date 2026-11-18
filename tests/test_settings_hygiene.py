@@ -103,8 +103,8 @@ def _claude_bash_timeouts_ms() -> tuple[int, int]:
 
 def _opencode_bash_cap_sec() -> float:
     text = _OPENCODE_INSTRUCTIONS.read_text(encoding="utf-8")
-    match = re.search(r"OPENCODE_EXPERIMENTAL_\s*\n?\s*BASH_DEFAULT_TIMEOUT_MS=(\d+)", text)
-    assert match, "opencode PM 지침에 Bash 상한 export 부재"
+    match = re.search(r"`timeout: (\d+)`", text)
+    assert match, "opencode PM 지침에 셸 도구 호출 timeout 안내 부재"
     return int(match.group(1)) / 1000.0
 
 
@@ -333,7 +333,7 @@ def test_all_pm_env_cards_match_shipped_harness_caps():
         text = _card_with_operational_details(path)
         assert f"`BASH_DEFAULT_TIMEOUT_MS`(ms·출하 기본 {default_ms}=30분)" in text, path
         assert f"`BASH_MAX_TIMEOUT_MS`(ms·출하 기본 {max_ms}=8시간 8분 20초)" in text, path
-        assert f"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS={max_ms}" in text, path
+        assert f"`timeout: {max_ms}`" in text and "OPENCODE_EXPERIMENTAL" not in text, path
 
 
 def test_harness_bash_cap_covers_local_gpu_delegation():

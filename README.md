@@ -4,7 +4,8 @@ LLM 코딩 에이전트의 작업을 대화가 아니라 repo 안의 `board/wiki
 Claude Code·opencode·codex가 같은 프로젝트를 안전하게 이어받고 병렬로 진행하게 하는
 harness-neutral PM 운영 프레임워크다.
 
-실행 환경은 **Python 3.11 이상**이 필요하다(`tomllib` 표준 라이브러리가 지배 제약).
+실행 환경은 **Python 3.11 이상**이 필요하다(`tomllib` 표준 라이브러리가 지배 제약). opencode 하네스는
+**opencode 2.3.0 이상**(npm 패키지 `@opencode/cli`)이 필요하다(설치는 [`templates/opencode/README.md`](templates/opencode/README.md)).
 
 LLM 으로 하루짜리 수정은 쉽게 끝난다. 문제는 며칠짜리 프로젝트다. 세션이 compaction 되고,
 어제의 결정이 사라지고, 여러 에이전트가 같은 파일을 고치며, 만든 주체가 스스로 검토한다.
@@ -580,7 +581,7 @@ wrapper 소유이며 board는 이 프로토콜만 검증한다. wrapper는 자�
 역할 모델을 고를 때는 **generate≠evaluate**가 기준이다. 위임은 매번 새 세션이라 모델이 같아도
 전사 공유가 없지만, `delegate.code-reviewer.model`을 developer와 다르게 두면 맹점을 공유하지 않아
 검출력이 는다(하네스는 달라도 된다). `.reasoning`은 claude·codex 는 엔진이 정한 허용값 중
-하나여야 하고, opencode 는 그 모델의 variant(`opencode models --verbose` 의 `variants`) 중 하나여야
+하나여야 하고, opencode 는 그 모델의 variant(opencode 모델 목록 `opencode api GET /api/model` 의 variants) 중 하나여야
 한다. 아니면 저장과 위임이 멈추고, 갱신은 그 opencode 줄을 지우고 알린다.
 
 **추가 리뷰어**(additional reviewer) 는 developer·architect·code-reviewer 와 같이 **부르면 도는
@@ -624,8 +625,8 @@ additional_reviewer.reasoning=max
 E=200000토큰, 체크포인트160000토큰·압축 임박 경고180000토큰·압축188000토큰이다.
 
 C 조회 방법은 도구마다 다르다. Claude Code는 모델 답변 없이 제어 요청으로 압축 기준을 조회하고, Codex는
-앱 서버의 실효 설정과 Codex 모델 목록 캐시의 해당 모델 행을 읽는다. OpenCode는 models.dev 모델 목록
-캐시를 읽고, 목록에 없는 모델은 OpenAI 호환(Ollama) 서버의 모델 정보를 읽는다. C를 조회하지 못하거나
+앱 서버의 실효 설정과 Codex 모델 목록 캐시의 해당 모델 행을 읽는다. OpenCode는 opencode 모델 목록
+(`opencode api GET /api/model --standalone`)이 낸 그 모델의 창과 출력 상한으로 계산한다. C를 조회하지 못하거나
 계산한 설정값을 도구가 받지 않으면 적용 전체를 거부하고 local.conf·설정 파일·기록을 바꾸지 않는다.
 컨텍스트 항목을 포함한 저장 요청도 같은 규칙으로 전체를 거부한다. 관리자 저장은 키와 무관하게
 `pm-config apply` 한 번이고, 반영 전 검사를 통과하지 못하면 아무것도 쓰지 않는다. 렌더 산출물은 저장이
