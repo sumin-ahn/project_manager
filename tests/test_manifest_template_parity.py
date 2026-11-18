@@ -843,17 +843,26 @@ def test_stall_watchdog_plugin_removal_retires_its_files_in_all_manifests():
     assert shipped and named == [], named
 
 
-RETIRED_SAFE_WRITE_ENTRY = ".opencode/plugins/safe-write.js"
+RETIRED_SAFE_WRITE_OLD = (".opencode/plugins/safe-write.js", ".opencode/lib/safe-write-core.cjs")
 
 
-def test_safe_write_entry_retirement_is_declared_in_all_manifests():
-    """opencode 2.x 가 적재하지 못하는 safe-write 진입 파일은 4 manifest 모두 퇴역 지시로만 남는다.
+def test_safe_write_removal_retires_its_files_in_all_manifests():
+    """지운 OpenCode 쓰기 가드(safe-write)의 진입·본체 두 파일은 4 manifest 모두 퇴역 지시로만 남는다.
 
-    출하 트리와 제품 루트에는 그 파일이 없다. core 모듈은 처분 결정까지 남는다(이 시험의 대상이 아니다)."""
+    출하 트리와 제품 루트에는 두 파일이 없고, OpenCode 출하 템플릿(엔진 사본 제외)의 어떤 파일도
+    쓰기 가드 이름(safe-write·safe_write)을 말하지 않는다.
+    """
     for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
         declared = retired_paths.parse_retired_path_directives(manifest)
-        assert (RETIRED_SAFE_WRITE_ENTRY, RETIRED_STALL_WATCHDOG_NEW) in declared, manifest
-        assert RETIRED_SAFE_WRITE_ENTRY not in _manifest_path_set(manifest), manifest
+        for old in RETIRED_SAFE_WRITE_OLD:
+            assert (old, RETIRED_STALL_WATCHDOG_NEW) in declared, (manifest, old)
+            assert old not in _manifest_path_set(manifest), manifest
         retired_paths.validated_retired_path_directives(REPO, [manifest])
     for root in (REPO, *TEMPLATE_ROOTS.values()):
-        assert not (root / RETIRED_SAFE_WRITE_ENTRY).exists(), root
+        for old in RETIRED_SAFE_WRITE_OLD:
+            assert not (root / old).exists(), (root, old)
+    shipped = [path for path in repo_owned_paths(REPO, "templates/opencode", mode=OWNED)
+               if ".project_manager" not in path.relative_to(REPO).parts]
+    named = [path.relative_to(REPO).as_posix() for path in shipped
+             if re.search(rb"safe[-_]write", path.read_bytes())]
+    assert shipped and named == [], named

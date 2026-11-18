@@ -2275,7 +2275,7 @@ def test_combination_install_manifest_is_selected_tree_union(pm_import, pm_updat
     assert not missing
     assert {
         ".opencode/agents/developer.md",
-        ".opencode/lib/safe-write-core.cjs",
+        ".opencode/lib/git-check-core.cjs",
         ".opencode/plugins/git-check.js",
         ".opencode/pm-instructions.md",
         ".opencode/pm_orch_opencode.py",
@@ -2803,7 +2803,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_variant
     write_lf(dest_manifest, legacy_text)
     victim_rels = (
         Path(".claude/ctx_guard.py"),
-        Path(".opencode/lib/safe-write-core.cjs"),
+        Path(".opencode/lib/git-check-core.cjs"),
     )
     expected = {
         rel: (

@@ -1,6 +1,6 @@
 """T-0337 — 대형 산출물 파일-전달 규약 회귀 가드 (양 하네스 쓰기 역할).
 
-모델 응답(서브에이전트 최종 보고 포함)은 출력 상한(opencode 32k 토큰)에서 **조용히** 잘린다
+모델 응답(서브에이전트 최종 보고 포함)은 출력 상한에서 **조용히** 잘린다
 (PM 70 라이브 확증 — 수신자는 절단을 감지하지 못한다). 그 남은 위험을 우회하는 파일-전달 규약 —
 *대형 산출은 파일로 쓰고 응답엔 절대경로 + 요약 몇 줄만* — developer/architect 카드에 실려
 있는지 기계로 못박는다. researcher는 파일 생성 없이 조사 분할, code-reviewer는 티켓 절에 기록한다.
@@ -10,13 +10,10 @@ durable 하게 검증한다 (결정: 규약이지 강제가 아니다).
 
 검사 항목 (T-0266 4어휘 패턴과 같은 구조 — 얕은 단일 문자열이 아니라 규약 절 안의 어휘 클래스 검증):
   (1) 쓰기 산출 역할 4 카드가 규약 절 마커 + 4 핵심 어휘 + 임계(200줄/8KB 보고 가이드)를 가진다.
-  (2) opencode 3 카드는 safe_write(16KB 청크)·write 64KB deny 를 추가 명시하고,
-      claude 카드는 opencode 전용 safe_write 를 섞지 않는다.
+  (2) 규약 절에 지운 opencode 쓰기 가드의 안내(safe_write·64KB 거부)가 없다.
   (3) 규약 절에 미충전 placeholder({{…}})·framework wikilink([[…]]) 0.
 
-숫자 일치(T-opencode-002): DENY_BYTES=64KB·CHUNK_BYTES=16KB 로 상향 — 카드·relay 안내와
-core 상수의 단일 진실(core 주석·sweep 근거)만 다르지 않게 임계 소비 위치를 함께 갱신한다.
-"200줄/8KB" 보고 임계는 파일-전달 규약 고유의 가이드로 별도 정책이라 그대로 둔다.
+"200줄/8KB" 보고 임계는 파일-전달 규약 고유의 가이드다.
 
 ⚠️ '요약'·'파일' 은 카드 다른 곳(researcher 산출 형식 등)에도 등장하므로 whole-file 검사는
 vacuous — 반드시 규약 절(마커 ~ 다음 '## ' 헤딩)만 슬라이스해 그 안에서 어휘를 확인한다
@@ -63,23 +60,10 @@ _CORE_VOCAB = [
     ("응답 절단 이유 (truncation)", ("절단", "잘린", "잘려", "잘리")),
 ]
 
-# 임계 가이드(결정: 200줄/8KB — safe_write chunk 와 결 일치). 숫자를 카드에 명시.
+# 임계 가이드(결정: 200줄/8KB). 숫자를 카드에 명시.
 _THRESHOLD = [
     ("줄 임계", ("200줄", "200 줄")),
     ("바이트 임계", ("8KB", "8 KB")),
-]
-
-# opencode 하네스 관용 — 대형 파일 쓰기 = safe_write(16KB chunk). 4 카드 공통 요구.
-_OPENCODE_SAFE_WRITE = [
-    ("safe_write 지시", ("safe_write",)),
-]
-# write 64KB deny 임계는 OPENCODE_CARDS(developer·architect·전부 write-capable)에 무조건
-# 요구한다 — read-only 역할(researcher·code-reviewer)은 OPENCODE_CARDS 밖(REPORT_ONLY_CARDS)이고
-# edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·T-0696·T-0745 — edit permission 자체는
-# 두 역할 모두 allow) 대형 산출 **파일**을 새로 쓰지 않으므로 64KB 임계 자체가 무의미(그 문구를
-# 이 카드에 넣으면 write 가 64KB 까지는 되는 듯 오인 · T-0342: read-only 카드 임계 문구 일치).
-_OPENCODE_WRITE_64KB_DENY = [
-    ("write deny 임계(64KB)", ("64KB", "64 KB")),
 ]
 
 # 출하 doc 이 wikilink 하면 안 되는 framework-내부 ID (채택자 트리엔 부재 → dangling · T-0090).
@@ -140,43 +124,21 @@ def test_card_convention_states_threshold(label, path):
     )
 
 
-# ── (2) 하네스 관용 — opencode safe_write / claude 미혼입 ─────────────────────
+# ── (2) 지운 쓰기 가드 안내 없음 ─────────────────────────────────────────────
 
-@pytest.mark.parametrize("label,path", OPENCODE_CARDS)
-def test_opencode_card_convention_uses_safe_write(label, path):
-    """opencode 카드 규약 절이 safe_write(16KB 청크) + write 64KB deny 임계를 명시한다 (T-0334 연계).
+def test_card_conventions_have_no_write_guard_guidance():
+    """규약 절은 지운 opencode 쓰기 가드의 도구(safe_write)와 64KB 쓰기 거부를 안내하지 않는다.
 
-    opencode write 는 64KB 초과를 거부하므로 그 아래는 네이티브 write 로 가능하되, 대형 파일
-    쓰기(무결성 완주 보장)는 safe_write chunk 가 단일 계약이다 — outbound(생성) 쪽의 파일-쓰기
-    채널을 카드가 안내해야 함. OPENCODE_CARDS(developer·architect)는 전부 write-capable 역할이라
-    64KB 임계 명시를 무조건 요구한다 — read-only 역할(researcher·code-reviewer)은
-    REPORT_ONLY_CARDS 로 별도 취급되며 edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·
-    T-0696·T-0745 — edit permission 자체는 두 역할 모두 allow) 대형 산출 파일을 새로 쓰지 않으므로
-    64KB 임계가 무의미하다(T-0342).
+    opencode 2.x 는 큰 파일을 내장 write·edit 로 쓰므로 두 하네스 카드의 규약 절이 같은 말을 한다.
     """
-    region = _convention_region(path)
-    assert region, f"{label} ({path.relative_to(REPO)}): 규약 절 마커 부재 (T-0337)"
-    required = list(_OPENCODE_SAFE_WRITE) + list(_OPENCODE_WRITE_64KB_DENY)
-    missing = [name for name, tokens in required if not any(t in region for t in tokens)]
-    assert not missing, (
-        f"{label} ({path.relative_to(REPO)}) 규약 절에 opencode 대형-쓰기 지시 누락: {missing} "
-        f"— safe_write(16KB 청크)·write 64KB deny 를 명시해야 함 (T-0334 · T-0337 · T-0342)"
-    )
-
-
-@pytest.mark.parametrize("label,path", CLAUDE_CARDS)
-def test_claude_card_convention_no_safe_write(label, path):
-    """claude 2 카드 규약 절은 opencode 전용 safe_write 를 섞지 않는다 (하네스 관용).
-
-    safe_write 는 opencode plugin custom tool — claude 카드에 넣으면 부정확하다. 하네스별
-    관용대로 유지(byte-identical 강제 아님)한다는 결정을 못박는다.
-    """
-    region = _convention_region(path)
-    assert region, f"{label} ({path.relative_to(REPO)}): 규약 절 마커 부재 (T-0337)"
-    assert "safe_write" not in region, (
-        f"{label} ({path.relative_to(REPO)}) 규약 절에 opencode 전용 safe_write 가 섞임 "
-        f"— claude 카드는 하네스 관용대로 (T-0337)"
-    )
+    stale = {}
+    for label, path in ALL_CARDS:
+        region = _convention_region(path)
+        assert region, f"{label} ({path.relative_to(REPO)}): 규약 절 마커 부재 (T-0337)"
+        found = [token for token in ("safe_write", "64KB", "16KB") if token in region]
+        if found:
+            stale[label] = found
+    assert stale == {}, f"규약 절에 지운 쓰기 가드 안내 잔존: {stale}"
 
 
 # ── (3) 규약 절 = placeholder·framework wikilink 0 ────────────────────────────

@@ -21,28 +21,20 @@
   // 압축도 안내도 없이 컨텍스트 초과로 죽는다. agent 별 compaction 토글은 현재 config 스키마에
   // 없으므로(per-agent 미지원) "전역 기본 켜짐 + PM 은 압축 전 checkpoint 기록" 이 둘 다 지키는 조합이다.
   // 압축 지점(관리 키): 프레임워크가 local.conf 의 opencode 사용 한도(`harness.opencode.ctx_window_tokens`)
-  //   와 압축 비율(`ctx.compact_at_pct`)로 최상위 `compaction.reserved`(= 사용 한도 − 압축 지점)와 모델
-  //   항목의 `limit` 을 쓴다 — 값은 local.conf 에서 고친다(pm-update·pm-config apply 가 다시 쓴다).
-  //   opencode 는 `limit.input` 이 있으면 `input − reserved` 에서 압축한다. 사용 한도는 그 하네스에서
-  //   쓰는 모델 중 가장 작은 창 이하로 두십시오 — 사용 한도가 실제 창보다 크면 안내가 압축보다 늦게 온다.
+  //   와 압축 비율(`ctx.compact_at_pct`)로 최상위 `compaction.reserved`(= 적용 한도 − 압축 지점)와 모델
+  //   항목의 `limit.input`(= 적용 한도)을 쓴다. 값은 local.conf 에서 고친다(pm-update·pm-config apply 가
+  //   다시 쓴다). 적용 한도는 사용 한도와 대상 모델 가용 한도 가운데 가장 작은 값이다. opencode 는
+  //   min(`limit.input`, `limit.context`) − `compaction.reserved` 에서 압축한다.
   // (토큰추적·경고·checkpoint 안내는 .opencode/plugins/ctx-guard.js 가 autoload 로 담당 — 차단 없음.)
   "compaction": {
     "reserved": 20000
   },
-  // 모델 출력 상한 명시 (대용량 write 신뢰성 3층 가드의 3번째 층). limit.output 을 명시해 fallback
-  // *미정의* 상태를 없앤다. ⚠️ 실효 출력은 여전히 min(limit.output, 32000)=32000 이라 이 명시가
-  // 출력 상한 자체를 32000 위로 올리진 못한다 — 32000 상향은 env OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX
-  // 로만 가능(upstream 실측). 실질 억제 레버는 deny-and-redirect + safe_write chunk 도구
-  // (.opencode/plugins/safe-write.js)다. 하드 절단(finish_reason=length)은 config 로 못 막는다.
-  // 채택자는 자기 provider/model 에 맞춰 아래 엔트리를 조정한다.
-  // ⚠️ opencode(≥1.17.19)는 config 에 model `limit` 지정 시 context·output 을 *둘 다* 요구한다
-  //   (dynamic ollama 모델은 models.dev 카탈로그 context 부재 → 명시 필수·라이브 실측).
-  // ⚠️ output 은 context 보다 충분히 작게 둔다. `limit.input` 이 없는 모델의 자동 컴팩션 트리거가
-  //   "입력 > context - output" 이라, output ≥ context 이면 세션이 실제 작업 대신 요약만 무한
-  //   반복한다(라이브 실측·연속 실행).
-  // 설정 파일에 적힌 모델 전부의 `limit` 을 프레임워크가 local.conf 사용 한도로 쓴다 — context·input 은
-  //   사용 한도, `output` 은 있으면 두고 없으면 32000 을 쓴다(opencode 전역 설정에만 적힌 모델도 여기에
-  //   `limit` 항목이 생긴다). 설정 파일에 없는 모델(카탈로그 기본값만 쓰는 모델)과 연결 설정이 없는 공급자(모델 목록 밖이고 주소·npm 미설정)의 모델은 대상이 아니다.
+  // 모델 한도: `limit.context` 는 모델 창, `limit.output` 은 한 요청에 청하는 출력 상한이다(opencode 는
+  //   min(limit.output, 256000) 을 청하고 값이 없으면 32000 을 쓴다). 프레임워크는 두 값으로 그 모델의 가용
+  //   한도(limit.context − 출력 상한)를 계산하고 두 값을 쓰지도 지우지도 않는다. 채택자는 자기
+  //   provider/model 에 맞춰 아래 엔트리를 조정한다. 이 파일과 opencode 전역 설정에 적힌 모델 가운데
+  //   opencode 모델 목록에 있는 모델마다 프레임워크가 이 파일에 `limit.input` 을 쓴다(전역 설정에만
+  //   적힌 모델도 여기에 항목이 생긴다).
   "provider": {
     "ollama": {
       "models": {

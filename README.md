@@ -39,7 +39,7 @@ flowchart TB
     Risk ==>|"상태와 절차를 밖으로"| Persist --> Outcome
 ```
 
-opencode 의 대용량 응답·write 잘림과 startup stall, Claude Code 의 컨텍스트 임계와 권한·훅 차이는
+opencode 의 대용량 응답 잘림과 startup stall, Claude Code 의 컨텍스트 임계와 권한·훅 차이는
 이 문제가 실제 하네스마다 다른 형태로 드러나는 사례다. 프레임워크는 이를 더 긴 프롬프트가 아니라
 파일로 남는 상태, 역할 분리, 하네스별 안전장치로 다룬다.
 
@@ -416,7 +416,7 @@ flowchart TB
 하네스를 섞어 쓸 수 있다.
 
 이게 중요한 이유는 하네스마다 강점과 실패 모드가 다르기 때문이다. PM 대화는 Claude Code 로
-열고, 대용량 산출은 opencode 의 파일-전달 규약과 safe_write 를 쓰고, codex 는 별도 실행 하네스나
+열고, 대용량 산출은 opencode 의 파일-전달 규약을 쓰고, codex 는 별도 실행 하네스나
 추가 리뷰로 돌릴 수 있다. 어느 하나가 토큰 한도나 도구 문제에 걸려도 ticket, log, ADR,
 domain 지식은 같은 PM 홈에 남아 다른 하네스가 이어받는다.
 
@@ -424,7 +424,7 @@ domain 지식은 같은 PM 홈에 남아 다른 하네스가 이어받는다.
 flowchart LR
     Home["공유 PM 홈<br/>board · wiki · engine"]
     Claude["Claude Code<br/>대화형 PM · 설계"]
-    OpenCode["opencode<br/>대용량 산출 · safe_write"]
+    OpenCode["opencode<br/>대용량 산출"]
     Codex["codex<br/>실행 하네스 · 추가 리뷰"]
 
     Claude --> Home

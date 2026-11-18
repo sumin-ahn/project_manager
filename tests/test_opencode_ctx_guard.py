@@ -329,10 +329,10 @@ def test_config_does_not_disable_auto_compaction():
 
 
 def test_config_model_limits_keep_output_below_context():
-    """명시한 모든 모델 limit 은 output < context — 컴팩션 무한 루프 구성 차단.
+    """명시한 모든 모델 limit 은 output < context 다.
 
-    자동 컴팩션 트리거가 "입력 > context - output" 이라 output ≥ context 면 조건이 항상 참이 되어
-    세션이 실제 작업 대신 요약만 반복한다(라이브 실측). 값 가드 + 그 근거 주석의 존재를 함께 본다.
+    프레임워크는 그 모델의 가용 한도를 limit.context − 출력 상한으로 계산하므로 output ≥ context 면
+    가용 한도가 0 이하라 사용 한도 반영이 멈춘다. 값과 그 계산을 적은 주석의 존재를 함께 본다.
     """
     data = _load_config()
     checked_limits = 0
@@ -354,7 +354,7 @@ def test_config_model_limits_keep_output_below_context():
     assert checked_limits, "출하 모델에 검증할 limit 설정이 없음"
     # 왜(주석) 정적 확인 — 채택자가 자기 모델 엔트리를 더할 때 이 제약을 읽게 한다.
     raw = PROJECT_CONFIG.read_text(encoding="utf-8")
-    assert "context - output" in raw, "limit 주석에 컴팩션 트리거 제약(무한 루프) 경고 없음"
+    assert "limit.context − 출력 상한" in raw, "limit 주석에 가용 한도 계산(limit.context − 출력 상한) 안내 없음"
 
 
 def test_config_keeps_existing_permission_guard():

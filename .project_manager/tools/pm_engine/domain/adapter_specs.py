@@ -140,9 +140,8 @@ ADAPTER_HOOK_SET = {
     ),
     # opencode 는 훅 커맨드를 선언하는 config 가 없다 — 플러그인은 `.opencode/plugins/`
     #   autoload 라 config 가 호출 형태를 담지 않는다. 판정 대상은 없지만 실행 중 하네스가 읽는
-    #   파일이라 원자 write 대상에는 든다. `lib/` 도 함께다 — 플러그인 3종이 로드 시점에
-    #   `../lib/*-core.cjs` 를 즉시 import 하므로(plugins/ctx-guard.js·git-check.js·
-    #   safe-write.js 실측) 코어가 부분 파일이면 플러그인 로드 자체가 깨진다. claude 쪽이 공유
+    #   파일이라 원자 write 대상에는 든다. `lib/` 도 함께다 — 플러그인 네 개가 모두 로드 시점에
+    #   `../lib/*-core.cjs` 를 즉시 import 하므로 코어가 부분 파일이면 플러그인 로드 자체가 깨진다. claude 쪽이 공유
     #   코어 `ctx_guard.py` 를 넣은 것과 같은 이유다(하네스 간 비대칭 금지).
     "opencode": AdapterHookSetSpec(
         config_relpath="",

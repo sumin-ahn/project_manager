@@ -31,13 +31,12 @@ DOCS = (
     REPO / "templates" / "opencode" / "AGENTS.lite.md",
     REPO / "templates" / "opencode" / "README.md",
 )
-# 훅 core 가 사는 두 자리 — 출하 템플릿과 이 저장소 자기 어댑터 사본(손복사·전파 경로 없음).
+# 훅 core 가 사는 자리 — 출하 템플릿.
 HOOK_CORE_DIRS = (
     REPO / "templates" / "opencode" / ".opencode" / "lib",
-    REPO / ".opencode" / "lib",
 )
-# 엔진 루트를 자기 위치에서 내야 하는 core (판정·주입·감시 훅). 나머지 core 는 엔진 루트를
-# 쓰지 않는다 — safe-write 의 root 는 write 경로 해소용 context.directory 로 별개다.
+# 엔진 루트를 자기 위치에서 내야 하는 core (판정·주입·감시 훅). 나머지 core(warning-channel)는 엔진
+# 루트를 쓰지 않는다.
 SELF_LOCATED_CORES = (
     "templates/opencode/.opencode/lib/git-check-core.cjs",
     "templates/opencode/.opencode/lib/principle-recall-core.cjs",
@@ -305,8 +304,7 @@ def test_entry_docs_describe_both_distinct_surfaces():
 def test_opencode_hook_cores_have_no_ancestor_engine_root_search():
     """훅 core 는 엔진 루트를 조상에서 찾지 않고 자기 설치 위치에서 낸다.
 
-    조상 탐색은 중첩 트리(PM 홈 안 worktree 슬롯)에서 바깥 프로젝트의 엔진을 실행한다. 두 자리를
-    모두 본다 — 출하 템플릿과 이 저장소 자기 사본(전파 경로가 없어 손복사로 유지된다).
+    조상 탐색은 중첩 트리(PM 홈 안 worktree 슬롯)에서 바깥 프로젝트의 엔진을 실행한다.
     """
     scanned = []
     for core_dir in HOOK_CORE_DIRS:
