@@ -1127,9 +1127,8 @@ def test_import_cli_judges_alias_deadline_with_package_engine_rev(pm_import, tmp
     assert not (tmp_path / "dest").exists()
 
 
-def test_import_ships_only_tracked_template_files_and_keeps_tracked_gitignore(
-        pm_import, tmp_path):
-    """출하 e2e: 임의 미추적 파일은 목적지 0, ignore되지만 추적된 .gitignore는 정상 출하."""
+def test_import_ships_only_tracked_template_files(pm_import, tmp_path):
+    """출하 e2e: 임의 미추적 파일은 목적지 0, 추적된 파일은 바이트 그대로 출하."""
     source = tmp_path / "source"
     template = source / "templates" / "opencode"
     shutil.copytree(REPO / "templates" / "opencode", template)
@@ -1137,11 +1136,11 @@ def test_import_ships_only_tracked_template_files_and_keeps_tracked_gitignore(
 
     injected_rel = Path(".opencode/arbitrary-machine-local.json")
     (template / injected_rel).write_text('{"machine": "local"}\n', encoding="utf-8")
-    tracked_gitignore = template / ".opencode" / ".gitignore"
-    assert tracked_gitignore.is_file()
+    tracked_core = template / ".opencode" / "lib" / "git-check-core.cjs"
+    assert tracked_core.is_file()
     tracked = subprocess.run(
         ["git", "-C", str(source), "ls-files", "--error-unmatch",
-         "templates/opencode/.opencode/.gitignore"],
+         "templates/opencode/.opencode/lib/git-check-core.cjs"],
         capture_output=True,
         text=True,
     )
@@ -1155,7 +1154,7 @@ def test_import_ships_only_tracked_template_files_and_keeps_tracked_gitignore(
 
     assert rc == 0
     assert not (dest / injected_rel).exists(), "미추적 template 파일이 adopter로 출하됨"
-    assert (dest / ".opencode" / ".gitignore").read_bytes() == tracked_gitignore.read_bytes()
+    assert (dest / ".opencode" / "lib" / "git-check-core.cjs").read_bytes() == tracked_core.read_bytes()
 
 
 @requires_symlink
@@ -1917,18 +1916,18 @@ def test_entry_document_execution_models_are_isolated_for_every_selection_and_we
             assert FULL_AGENTS_MARKER in agents_text
             assert "## 0. opencode 실행 모델" not in agents_text
             assert ".opencode/agents/*.md" not in agents_text
-            assert "네이티브 `task` tool" not in agents_text
+            assert "네이티브 `subagent` 도구" not in agents_text
             assert "spawn_agent" not in agents_text
         elif "codex" in selected:
             assert FULL_AGENTS_MARKER in agents_text
-            assert "네이티브 `task` tool" not in agents_text
+            assert "네이티브 `subagent` 도구" not in agents_text
         elif "opencode" in selected and weight == "lite":
             assert "## 0. opencode 실행 모델" in agents_text
 
     if "opencode" in selected:
         opencode_instructions = (
             dest / ".opencode" / "pm-instructions.md").read_text(encoding="utf-8")
-        assert "네이티브 `task` tool" in opencode_instructions
+        assert "네이티브 `subagent` 도구" in opencode_instructions
         assert ".opencode/agents/*.md" in opencode_instructions
     if "codex" in selected:
         codex_instructions = (
@@ -2275,11 +2274,10 @@ def test_combination_install_manifest_is_selected_tree_union(pm_import, pm_updat
     assert not missing
     assert {
         ".opencode/agents/developer.md",
-        ".opencode/lib/safe-write-core.cjs",
+        ".opencode/lib/git-check-core.cjs",
         ".opencode/plugins/git-check.js",
         ".opencode/pm-instructions.md",
         ".opencode/pm_orch_opencode.py",
-        ".opencode/.gitignore",
     } <= opencode_files
 
 
@@ -2615,7 +2613,7 @@ def test_legacy_opencode_primary_with_missing_file_heals_in_one_run(
     capsys.readouterr()
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.write_text(_strip_to_legacy_manifest(manifest.read_text(encoding="utf-8")), encoding="utf-8")
-    victim_rel = Path(".opencode/.gitignore")
+    victim_rel = Path(".opencode/pm_orch_opencode.py")
     victim = dest / victim_rel
     expected = (REPO / "templates" / "opencode" / victim_rel).read_bytes()
     victim.unlink()
@@ -2803,7 +2801,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_variant
     write_lf(dest_manifest, legacy_text)
     victim_rels = (
         Path(".claude/ctx_guard.py"),
-        Path(".opencode/lib/safe-write-core.cjs"),
+        Path(".opencode/lib/git-check-core.cjs"),
     )
     expected = {
         rel: (
@@ -4711,7 +4709,7 @@ def test_add_harness_added_harness_registration_within_namespace_or_variant_rend
 #   `delegate_channel_guard_hook.sh` 7(압축 전 훅 스크립트는 T-0953 퇴역). 구조 단언과 별개로
 #   **수**를 못박아, 새로 얹을 때 그것이 추가 하네스 채널을 타는지 사람이 한 번 확인하게 만든다
 #   (등재 누락 = 그 하네스의 영구 동결). codex 의 2번째가 T-0584 로 편입된 execpolicy rules 다.
-_ADDED_HARNESS_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 7}
+_ADDED_HARNESS_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 3, "claude": 7}
 
 
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)

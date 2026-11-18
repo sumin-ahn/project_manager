@@ -136,31 +136,29 @@ def test_no_dash_m_pro_model_anywhere():
 
 # ── (b) task tool 위임 · subagent_type 매핑 문구 존재 (ADR-0069·T-0401: pm-instructions.md 이관) ──
 
-def test_pm_instructions_documents_task_tool_delegation():
-    """위임 규약(네이티브 task tool 1차)이 pm-instructions.md 에 명시된다 (T-0032·ADR-0069 이관).
+def test_pm_instructions_documents_subagent_tool_delegation():
+    """위임 규약(네이티브 `subagent` 도구)이 pm-instructions.md 에 명시된다.
 
-    T-0401: 위임 규약(§3)이 AGENTS.md 공통 코어에서 pm-instructions.md 로 이관됐다(opencode.jsonc
-    instructions 배열 로드). task tool / subagent_type 매핑 문구 단언은 이관처를 본다.
+    opencode 2.x 의 위임 도구는 `subagent`(인자 `agent`·`description`·`prompt`)이고 결과는 백그라운드
+    자식이 끝난 뒤 `<subagent>` 메시지로 온다. 1.x `task` 도구의 `subagent_type` 인자는 남지 않는다.
     """
     text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
-    assert "task" in text and "subagent_type" in text, (
-        "pm-instructions.md 에 task tool / subagent_type 위임 문구가 없음 (T-0032·T-0401)"
-    )
-    # role → subagent_type 매핑표의 세 타입이 모두 문서화돼야 한다.
-    for subagent_type in ("developer", "code-reviewer", "architect"):
-        assert subagent_type in text, (
-            f"pm-instructions.md 에 subagent_type {subagent_type!r} 매핑 누락 (T-0032·T-0401)"
-        )
+    assert "`subagent` 도구" in text and "- `agent` —" in text and "<subagent" in text, (
+        "pm-instructions.md 에 subagent 도구 위임 문구가 없음")
+    assert "subagent_type" not in text, "pm-instructions.md 에 1.x task 도구 인자(subagent_type) 잔존"
+    for agent in ("developer", "code-reviewer", "architect"):
+        assert f"`{agent}`" in text, f"pm-instructions.md 에 agent {agent!r} 매핑 누락"
 
 
-def test_pm_instructions_demotes_opencode_run_to_fallback():
-    """위임 규약이 `opencode run` 을 대체 경로로 명시한다 — 삭제가 아닌 보조 경로 (pm-instructions.md 이관).
+def test_pm_instructions_routes_cross_opencode_run_through_engine():
+    """`opencode run` 은 다른 하네스 PM 의 위임(cross)을 엔진이 실행하는 경로로만 남는다.
 
-    T-0401: opencode run 대체 경로 서술(§3.7)도 위임 규약과 함께 pm-instructions.md 로 이관됐다.
+    opencode 2.x 는 `subagent` 도구를 늘 싣고 `opencode run` 도 백그라운드 자식을 기다리므로 1.x 의
+    '도구 미노출 빌드용 대체 동작'은 없다.
     """
     text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
-    assert "opencode run" in text, "pm-instructions.md 에서 opencode run 대체 경로가 사라짐 (보조 경로 ≠ 삭제)"
-    assert "대체 동작" in text, "pm-instructions.md 에 opencode run 대체 동작 문구가 없음 (T-0032·T-0401)"
+    assert "opencode run --agent" in text and "pm_delegate.py" in text, "cross opencode run 서술이 사라짐"
+    assert "대체 동작" not in text, "pm-instructions.md 에 1.x 대체 동작 서술 잔존"
 
 
 def test_agent_fallback_run_mapping_matches_permission():
@@ -176,13 +174,30 @@ def test_agent_fallback_run_mapping_matches_permission():
         )
 
 
-def test_agents_lite_md_documents_task_tool_delegation():
-    """AGENTS.lite.md 도 task tool 위임(1차)을 명시한다."""
+def test_agents_lite_md_documents_subagent_tool_delegation():
+    """AGENTS.lite.md 도 `subagent` 도구 위임을 명시한다."""
     text = AGENTS_LITE_MD.read_text(encoding="utf-8")
-    assert "task" in text and "subagent_type" in text, (
-        "AGENTS.lite.md 에 task tool / subagent_type 위임 문구가 없음 (T-0032)"
-    )
+    assert "`subagent` 도구" in text and "`agent`" in text, "AGENTS.lite.md 에 subagent 도구 위임 문구가 없음"
+    assert "subagent_type" not in text, "AGENTS.lite.md 에 1.x task 도구 인자(subagent_type) 잔존"
 
+
+
+def test_subagent_message_states_guide_collect_and_failure():
+    """`<subagent>` 메시지는 state 로 판정한다.
+
+    opencode 2.x 는 자식에 백그라운드 작업이 남아 있으면 `state="running"` 메시지를 먼저 보내고 그
+    작업이 끝나면 한 번 더 보낸다. 지침은 running 이면 다음 메시지를 기다리고 `state="completed"` 를
+    받은 뒤 돌려받으며, error·cancelled 만 실패로 본다.
+    """
+    text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
+    assert 'state="running"' in text and 'state="completed"' in text, (
+        "pm-instructions.md 가 subagent 메시지 state(running·completed)를 가르지 않음")
+    running_lines = [line for line in text.splitlines() if 'state="running"' in line]
+    assert any("기다" in line for line in running_lines), (
+        f"running 메시지를 받으면 기다린다는 안내가 없음: {running_lines}")
+    lite = AGENTS_LITE_MD.read_text(encoding="utf-8")
+    assert "completed 아님" not in lite, "AGENTS.lite.md 가 running 메시지를 위임 실패로 판정함"
+    assert "error" in lite, "AGENTS.lite.md 위임 실패 판정에 error state 가 없음"
 
 # ── (c) agents/*.md `model:` 토큰 유지 ──────────────────────────────────────
 
@@ -195,10 +210,12 @@ def test_agent_model_token_is_role_scoped():
     """
     for path in AGENT_FILES:
         fm = _load_frontmatter(path)
+        assert "temperature" not in fm, f"{path.name}: opencode 2.x 가 보내지 않는 temperature 잔존"
         assert fm.get("model") == ROLE_MODEL_TOKENS[path.name], (
             f"{path.name} 의 model 이 {ROLE_MODEL_TOKENS[path.name]!r} 가 아님: "
             f"{fm.get('model')!r} — 역할별 해소가 깨진다"
         )
+    assert "temperature" not in _load_frontmatter(PM_CARD), "pm.md: opencode 2.x 가 보내지 않는 temperature 잔존"
     assert _load_frontmatter(PM_CARD).get("model") == PRO_MODEL_TOKEN, (
         f"pm.md 의 model pin 이 {PRO_MODEL_TOKEN!r} 가 아님 (PM 자신의 모델은 위임 역할이 아님)"
     )

@@ -195,8 +195,8 @@ def test_fill_harness_cap_advisory_counts_startup_budget_without_progress_signal
         install_rules.OPENCODE_FILL_CMD,
         ("opencode", False, None),
     )
-    monkeypatch.setenv("OPENCODE", "session")
-    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS", "14619000")
+    monkeypatch.setenv("CLAUDECODE", "session")
+    monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "14619000")
 
     warning = import_fill.fill_harness_cap_advisory("opencode", tmp_path)
 

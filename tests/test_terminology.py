@@ -1355,9 +1355,8 @@ def test_no_retired_outsider_naming_of_our_own_actors():
     "templates/codex/.agents/skills/pm-review/SKILL.md",
     "templates/opencode/.opencode/agents/architect.md",
     "templates/claude_code/.project_manager/tools/additional_reviewer.py",
-    # 출하 어댑터 plugin/lib — 루트 사본만 고쳐 드리프트가 났던 자리(T-0887 fix).
-    "templates/opencode/.opencode/lib/safe-write-core.cjs",
-    ".opencode/lib/safe-write-core.cjs",
+    # 출하 어댑터 plugin/lib.
+    "templates/opencode/.opencode/lib/git-check-core.cjs",
 ])
 def test_outsider_naming_guard_scope_includes_every_sweep_area(relpath):
     """sweep 이 손댄 범위(엔진·역할 카드·스킬·방법론·README·문서·테스트·3타깃 사본)이 검사 범위 안이다."""

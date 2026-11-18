@@ -9,7 +9,7 @@ cap 근방이면 loud advisory 를 낸다. **advisory·never-block** — 경고+
   ① 순수 detector `detect_output_cap_hit` — cap 근방 대형 출력 주입 → 감지 / 정상 크기 → 미감지(오탐 0).
   ② char 임계 경계(threshold-1 미감지 · threshold 감지) + 근사 token 보수적 상한.
   ③ env 노브 `PM_OC_CAP_HIT_THRESHOLD` 해소기 + detector override.
-  ④ 경고 문구 `cap_hit_warning_message` 에 파일-전달 규약(T-0337) 안내 포함(파일·경로·safe_write·절단).
+  ④ 경고 문구 `cap_hit_warning_message` 에 파일-전달 규약(T-0337) 안내 포함(파일·경로·절단).
   ⑤ run_loop 연결 — cap 근방 응답 → cap_hit_log 출력 · 정상 응답 → 출력 없음 · never-block(전체 응답은
      그대로 out_stream 에 전달·경고는 stdout 무오염).
 
@@ -129,12 +129,12 @@ def test_env_knob_drives_detector_default(engine, monkeypatch):
 def test_warning_message_carries_file_delivery_convention(engine):
     """cap_hit_warning_message 는 파일-전달 규약을 안내한다.
 
-    얕은 단일 문자열 1개가 아니라 규약 키워드 클래스(파일·절대경로·safe_write·절단·요약)를
+    얕은 단일 문자열 1개가 아니라 규약 키워드 클래스(파일·절대경로·절단·요약)를
     검증해 규약 요지가 실려야 우회 재시도로 이어지게 한다.
     """
     _, reason = engine.detect_output_cap_hit("가" * (engine.CAP_HIT_CHAR_THRESHOLD + 10))
     msg = engine.cap_hit_warning_message(reason)
-    for keyword in ("파일-전달 규약", "파일", "절대경로", "safe_write", "절단", "요약"):
+    for keyword in ("파일-전달 규약", "파일", "절대경로", "절단", "요약"):
         assert keyword in msg, f"경고 문구에 규약 키워드 {keyword!r} 누락"
     assert reason in msg           # 진단(char 수·cap 맥락)도 실린다.
     assert msg.startswith("[pm-orch]")  # loud prefix(다른 driver 진단과 결 일치).
@@ -178,7 +178,7 @@ def test_run_loop_warns_on_near_cap_reply(engine, tmp_path):
     # advisory 정확히 1회 · 하니스-중립 문구 + 파일-전달 규약 안내 실림.
     assert len(logs) == 1
     assert "출력 상한" in logs[0] and "opencode 하니스라면" in logs[0]
-    assert "파일-전달 규약" in logs[0] and "safe_write" in logs[0]
+    assert "파일-전달 규약" in logs[0] and "safe_write" not in logs[0]
     # never-block — 전체(잘렸을 수 있는) 응답은 그대로 out_stream(PM 채널)에 전달된다.
     assert big in out.getvalue()
     # stdout(PM 대화 채널)은 경고로 오염되지 않는다 — 경고는 별도 sink 로만.

@@ -90,10 +90,6 @@ _PROJECT_TEMPDIR_GLOBS = (
     "pm_delegate_*",
     "additional_reviewer_*",
     "pm_board_seed_*",
-    "safewrite-*",
-    "safewrite-fac-*",
-    "swroot-*",
-    "swout-*",
 )
 _TEMPDIR_ENV_KEYS = ("TMPDIR", "TEMP", "TMP")
 

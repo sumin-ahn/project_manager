@@ -51,7 +51,7 @@ RESUME_MUTATING_ROLES: frozenset[str] = WRITE_ROLES | frozenset(
 #     named profile 문자열의 존재가 아니라 실제 모델 edit→돌려받기를 release live가 단언한다.
 #   · claude 2.1.227: `--help`의 `--add-dir <directories...>`가 추가 tool-access 루트를 받는다.
 #   · opencode 2.3.0: `run` 에는 추가 폴더 인자가 없다. custom 역할 카드를 `mode: all`로
-#     출하해 native task와 cross `run --agent <role>`가 같은 정의를 쓰며, code-reviewer 카드는
+#     출하해 native `subagent` 도구와 cross `run --agent <role>`가 같은 정의를 쓰며, code-reviewer 카드는
 #     run-dir 라운드 파일 기록을 위해 edit 가능하다. repo 쓰기 범위는 경고와 위임 전후 감사로
 #     관리한다.
 #     역할 권한의 첫 규칙은 `* * allow` 이고 바깥 폴더(external_directory) 규칙이 없어 attempt

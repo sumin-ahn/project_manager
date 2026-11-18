@@ -5,7 +5,7 @@
 > 가드) 위에 opencode 실행 모델과 위임 규약을 얹는다.
 >
 > 대응 관계: 이 파일 = Claude Code 타깃 CLAUDE.md 의 opencode-고유 부분. 그대로 번역이 아니라
-> opencode 실행 모델(pm primary + 네이티브 `task` tool 위임)에 맞게 재서술했다.
+> opencode 실행 모델(pm primary + 네이티브 `subagent` 도구 위임)에 맞게 재서술했다.
 > **@source 전파** — 이 지침의 방법론 갱신은 pm_update 로 채택자에 도달한다(instance-owned
 > AGENTS.md 와 대비). (ADR-0006 · amended by ADR-0069 — 진입 doc 공통 코어 + 하네스별 전달 채널)
 
@@ -16,61 +16,64 @@
     supervisor·ADR-0020 개명)가 PM 세션을 **deterministic 하게 spawn** 하는 타깃이다 — `opencode run --agent pm` 으로 올바른
     모델(Pro)·풀권한·안전 가드가 박힌 PM 세션이 뜬다. pm.md 본문은 thin — 공통 코어 AGENTS.md +
     이 지침으로 부트스트랩하라고 가리킨다.
-  - OpenCode 1.18.16 실측에서 custom primary가 직접 기동된다. PM 카드의 `permission.task`는
-    architect/developer/code-reviewer/researcher 네 역할만 허용하며 임의 subagent 위임은 막는다.
-- **위임 = 네이티브 `task` tool.** PM 은 dev/architect 역할을 내장 `task` tool 로
+  - opencode 2.3.0 실측에서 custom primary(`--agent pm`)가 직접 기동된다. PM 카드의 `permission.task`
+    (opencode 2.x 가 `subagent` 도구 권한으로 읽는 옛 형식 키)는 architect/developer/code-reviewer/researcher
+    네 역할만 허용하며 임의 subagent 위임은 막는다.
+- **위임 = 네이티브 `subagent` 도구.** PM 은 dev/architect 역할을 내장 `subagent` 도구로
   위임한다 — opencode 가 `.opencode/agents/*.md` (`mode: all`) 를 **별도 자식 세션**에서
-  구동한다 (fresh 컨텍스트 = 200K 격리 · 자식 model/권한이 subagent 정의대로 — PM 9차 실증).
-  **대체 동작 = `opencode run` 자식 프로세스** (headless·CI·task tool 미노출 빌드). §2 위임 규약.
+  백그라운드로 구동하고(새 컨텍스트 · 자식 model/권한이 subagent 정의대로), 자식이 끝나면 마지막
+  응답을 `<subagent>` 메시지로 돌려준다. §2 위임 규약.
 - **엔진 = 공유 python.** PM 운영 로직은 `.project_manager/tools/*.py` (board.py·pm_*.py)에
-  있다. PM 은 bash tool 로 이 CLI 를 호출·해석한다. **엔진은 0 수정** — 어댑터(공통 코어
+  있다. PM 은 셸 도구(`shell`)로 이 CLI 를 호출·해석한다. **엔진은 0 수정** — 어댑터(공통 코어
   AGENTS.md·이 지침·`.opencode/`)만 타깃별로 다르다.
-- **config = 프로세스 시작 시 로드·캐싱 (변경은 재시작 후 반영).** opencode 는
-  `opencode.jsonc`·플러그인(`.opencode/plugins/`·`lib/`)·에이전트 frontmatter
-  (`.opencode/agents/*.md`)를 **세션 프로세스 시작 시 한 번 읽어 캐싱**한다 — 실행 중 이 파일들을
-  고쳐도 **그 세션엔 반영되지 않는다**(PM 59 라이브 실측). 권한·모델·플러그인·ctx-guard 노브를
-  바꿨으면 opencode 를 **재시작**해야 새 값이 산다 (위임된 subagent 도 부모 세션 시작 시점의
-  config 로 뜬다). 이 지침(`.opencode/pm-instructions.md`)·공통 코어(`AGENTS.md`)도 `instructions`
-  배열로 세션 시작 시 로드된다.
-- **bash 툴 timeout (worktree add false-kill 방지·T-0293)**: 대형 repo `worktree add`(full checkout·느린
-  디스크/VPN)가 opencode bash 툴 기본 120초에 죽으면, opencode 실행 쉘에 **`export OPENCODE_EXPERIMENTAL_
-  BASH_DEFAULT_TIMEOUT_MS=29300000`**(8시간 8분 20초)을 상속시킨다 — opencode 는 config 파일로 못 실어(`.env` 미로드·
-  실측) shell export/`.envrc`(direnv) 필요. `EXPERIMENTAL` = 버전 의존(회사 버전서 라이브 확인). 엔진
-  타임아웃은 `PM_GIT_TIMEOUT`(초·`none`=무제한). 상세는 `/pm-env` 스킬 §timeout 노브.
+- **config 는 실행 중에도 다시 읽힌다.** opencode 2.x 는 `opencode.jsonc`·에이전트 카드
+  (`.opencode/agents/*.md`)·플러그인(`.opencode/plugins/`·`lib/`)·`instructions` 배열의 지침 파일을
+  감시해 바뀌면 다시 읽는다. 2.3.0 실측: 카드 본문·권한 변경은 다음 요청의 시스템 프롬프트·도구
+  목록에 반영되고, 이 지침(`.opencode/pm-instructions.md`)의 변경은 `<system-update>` 변경분 메시지로 온다.
+- **셸 도구 시간 제한**: opencode 셸 도구(`shell`)는 `timeout` 을 주지 않은 명령을 120초에 끊는다
+  (2.3.0 은 멈추고 2.3.1 이상은 백그라운드로 넘긴다). 이 기본값을 바꾸는 설정·환경 변수는 없다. 대형 repo
+  `worktree add`·cross 위임(`pm_delegate.py`)·추가 리뷰어처럼 오래 걸리는 엔진 명령은 호출마다
+  **`timeout: 29300000`**(ms, 8시간 8분 20초)을 준다. 카드가 "Claude PM은 … `timeout: 29300000`(ms)을
+  반드시 명시한다" 고 적은 명령은 opencode PM 에도 같다. 엔진 타임아웃은 `PM_GIT_TIMEOUT`(초·`none`=무제한).
+  상세는 `/pm-env` 스킬 §timeout 노브.
 
-## 2. 위임 규약 (네이티브 `task` tool — 1차)
+## 2. 위임 규약 (네이티브 `subagent` 도구)
 
 PM 은 ticket 구현/검토/설계를 직접 하지 않는다. transport 규칙은 한 문장이다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. 위임 흐름은 claim → 설계·구현
-(native `task`) → 리뷰(같은 하네스면 `ticket prepare --cluster C-<ticket-group> --role code-reviewer` 뒤 `task`) → finish 다.
+(native `subagent`) → 리뷰(같은 하네스면 `ticket prepare --cluster C-<ticket-group> --role code-reviewer` 뒤 `subagent`) → finish 다.
 리뷰 절차는 `/pm-dev-delegate` 카드의 code-reviewer 위임 절이 단일 진실이다.
 
-### 2.1 위임 = `task` tool 호출
+### 2.1 위임 = `subagent` 도구 호출
 
-PM(primary)이 내장 `task` tool 을 호출한다 — opencode 가 `.opencode/agents/*.md`
-(`mode: all`) 를 **별도 자식 세션**에서 구동하고 결과를 task 결과로 PM 에 돌려준다
-(PM 9차 deciding test 실증 — opencode agent list 등록 + task tool json `"subagent_type"`/
-`"output"` + 자식이 부모와 다른 sessionId·subagent `model:` 대로 구동).
+PM(primary)이 내장 `subagent` 도구를 호출한다 — opencode 가 `.opencode/agents/*.md`
+(`mode: all`) 를 **별도 자식 세션**에서 백그라운드로 구동한다. 호출은 곧바로 "running" 을 돌려주고,
+자식이 끝나면 그 자식의 **마지막 응답**이 `<subagent ... state="completed">` 메시지로 PM 에 온다
+(opencode 2.3.0·2.3.2 실측).
 
-task tool 인자:
+`subagent` 도구 인자:
 
-- `subagent_type` — 위임 대상 (아래 §2.2 매핑: `developer` / `architect` / `code-reviewer` / `researcher`).
+- `agent` — 위임 대상 (아래 §2.2 매핑: `developer` / `architect` / `code-reviewer` / `researcher`).
 - `description` — 짧은 한 줄 (예: `"T-NNNN 구현"`).
 - `prompt` — role 프롬프트 (§2.4).
 
 특성:
 
 - subagent 의 `permission:`/`model:` (`.opencode/agents/*.md` frontmatter) 가 그대로
-  권한·모델을 정한다. 자식 세션이
-  fresh 컨텍스트(200K 격리)에서 subagent 정의대로 구동한다 (실증). **단 frontmatter 를 고쳤으면
-  opencode 를 재시작해야 반영된다** — config 는 프로세스 시작 시 캐싱된다(§1 config 캐싱).
-- PM 은 task 결과로 위임 완료를 인지한다. 순차 위임(architect → developer)은 opencode 가 자식
-  세션으로 관리한다.
+  권한·모델을 정한다. `model` 인자는 주지 않는다. 자식 세션은 새 컨텍스트에서 subagent 정의대로
+  구동한다.
+- PM 은 `<subagent>` 메시지의 state 로 위임 결과를 판정한다. 진행을 묻거나 기다리는 명령을 돌리지 않는다.
+  - `state="completed"` — 완료. 돌려받기와 다음 위임으로 넘어간다.
+  - `state="running"` — 백그라운드 작업이 남았다. 다음 `<subagent>` 메시지를 기다린다(돌려받기·재위임
+    안 함). 자식의 백그라운드 작업(셸 백그라운드 실행 등)이 끝나면 메시지가 한 번 더 온다.
+  - `state="error"`·`state="cancelled"` — 실패.
+  순차 위임(architect → developer)은 앞 위임의 `state="completed"` 메시지를 받은 뒤 다음을 부른다.
+- 자식은 마지막 응답만 돌려준다. 역할 카드의 대형 산출 파일 전달 규약이 이 때문에 필요하다.
 
-### 2.2 role → subagent_type 매핑
+### 2.2 role → `agent` 매핑
 
-| PM role | task `subagent_type` | 권한 (agent 정의가 강제) |
+| PM role | `subagent` 의 `agent` | 권한 (agent 정의가 강제) |
 |---|---|---|
-| orchestrator(PM) | (위임 안 함 — pm primary 자신) | board/status/log 쓰기 + 역할 task 위임 |
+| orchestrator(PM) | (위임 안 함 — pm primary 자신) | board/status/log 쓰기 + 역할 위임 |
 | developer | `developer` | 쓰기 (read/edit/write/bash/glob/grep) |
 | architect | `architect` | 설계 (읽기 + 문서 쓰기) |
 | code-reviewer | `code-reviewer` | 검토 (읽기 + 테스트 + 지정 라운드 파일 쓰기) |
@@ -88,8 +91,7 @@ task tool 인자:
 - **컨텍스트 예산** — touches 가 대형 파일·광범위 읽기를 요구하면 dev 가 truncation 위험.
   본문이 정확한 함수/라인·패턴 reference 로 읽기를 좁히는지 확인 (안 되면 위임 전 본문 보강·분할).
 - **병렬 위임 시 touches disjoint** — 동시 위임할 ticket 들의 touches 가 완전히 겹치지
-  않을 때만. (task 병렬은 opencode 가 자식 세션을 관리한다. `opencode run` 대체 동작 경로의
-  병렬은 세션 DB 락 가능성 — 미검증·순차 안전, §2.7 노트.)
+  않을 때만. (`subagent` 병렬은 opencode 가 자식 세션을 관리한다.)
 
 ### 2.4 위임 프롬프트 (developer)
 
@@ -113,8 +115,8 @@ ticket 본문은 다음으로 확인:
 ### 2.5 리뷰 (code-reviewer)
 
 손 프롬프트가 없다 — 엔진이 프롬프트 파일·라운드 자리를 만든다. 같은 하네스면 `ticket prepare --cluster
-C-<ticket-group> --role code-reviewer` 가 낸 `prompt` 파일 경로를 `task`(`subagent_type: code-reviewer`)에 넘기고
-종료 뒤 `ticket collect` 로 돌려받는다. `/pm-dev-delegate` 카드의 code-reviewer 위임 절을 따른다.
+C-<ticket-group> --role code-reviewer` 가 낸 `prompt` 파일 경로를 `subagent`(`agent: code-reviewer`)에 넘기고
+`state="completed"` 인 `<subagent>` 메시지를 받은 뒤 `ticket collect` 로 돌려받는다. `/pm-dev-delegate` 카드의 code-reviewer 위임 절을 따른다.
 
 ### 2.6 reviewer 후 PM 처리
 
@@ -124,22 +126,13 @@ C-<ticket-group> --role code-reviewer` 가 낸 `prompt` 파일 경로를 `task`(
 - **reviewer cross-check** — reviewer 도 틀릴 수 있다. should-fix 처리 전 코드 흐름 독립
   점검 · 부정확이면 변경 불필요 + log 영구 기록.
 
-### 2.7 자식 프로세스 진입 (대체 동작) — `opencode run`
+### 2.7 다른 하네스 PM 의 opencode 위임 — `opencode run`
 
-`task` tool 을 못 쓰는 환경 — headless 자동화·CI·task tool 미노출 빌드 — 에서만 동일
-인터페이스를 자식 프로세스로 띄운다:
-
-```bash
-opencode run --agent developer    --format json "<developer 프롬프트>"
-opencode run --agent architect    --format json "<architect 프롬프트>"
-opencode run --agent researcher   --format json "<researcher 프롬프트>"
-```
-
-- 네 역할 카드는 `mode: all`이므로 `run --agent <role>`도 native task와 같은 custom prompt·model·permission을 쓴다. build/plan으로 축약하거나 default agent로 낮추지 않는다.
-- `--format json` — ANSI escape 회피, 결과를 PM 이 파싱 가능하게.
-- 컨텍스트는 프로세스마다 fresh → 200K 한도를 위임으로 격리. PM 은 exit code + json 결과로
-  완료를 인지한다. **병렬 `opencode run` 은 세션 DB 락 가능성 — 미검증·순차 안전**
-  (병렬 필요 시 XDG sandbox 격리 검토).
+target 하네스가 opencode 이고 PM 하네스가 다르면 엔진(`pm_delegate.py`)이 같은 역할 카드를
+`opencode run --agent <role> --format json --standalone` 자식 프로세스로 실행한다(프롬프트는 `--file`).
+네 역할 카드는 `mode: all`이므로 `run --agent <role>`도 native `subagent` 와 같은 custom
+prompt·model·permission을 쓴다. build/plan으로 축약하거나 default agent로 낮추지 않는다. opencode PM 은
+이 경로를 손으로 띄우지 않고 §2.1 의 `subagent` 도구를 쓴다.
 
 ## 참고
 
@@ -151,7 +144,7 @@ opencode run --agent researcher   --format json "<researcher 프롬프트>"
 
 ## PM-workflow 두 진입점
 
-opencode 는 사람 슬래시 팔레트와 모델 스킬 진입점을 따로 만든다(1.18.16 실측).
+opencode 는 사람 슬래시 팔레트와 모델 스킬 진입점을 따로 만든다(opencode 2.3.0).
 
 - `.opencode/command/*.md` — 팔레트 진입(`/pm-bootstrap` 등 15개). 입력한 인자를 그대로 전달한다.
 - `.claude/skills/<skill>/SKILL.md` — canonical 저작 소스이자 모델 `skill` tool 이 읽는 파일.

@@ -10,8 +10,8 @@
 ## 0. opencode 실행 모델
 
 - **build primary=PM(orchestrator).**
-- **위임=네이티브 `task` tool.** `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx=200K, 정의된 model/권한)에서 실행한다. 대체 동작은 `opencode run` 자식 프로세스(§3).
-- **엔진=공유 python**(`.project_manager/tools/*.py`). PM이 bash로 호출·해석하며 **엔진은 수정하지 않는다.**
+- **위임=네이티브 `subagent` 도구.** `.opencode/agents/*.md` subagent를 별도 자식 세션(새 컨텍스트, 정의된 model/권한)에서 백그라운드로 실행하고, 끝나면 마지막 응답이 `<subagent>` 메시지로 온다(§3).
+- **엔진=공유 python**(`.project_manager/tools/*.py`). PM이 셸 도구(`shell`)로 호출·해석하며 **엔진은 수정하지 않는다.**
 - **인코딩**은 엔진이 파일·콘솔에서 처리하므로 PowerShell/CP949도 env prefix 불필요. 필요할 때만 PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`.
 - **PowerShell 5.x `&&` 미지원**(ParseError): `cd X && cmd` 대신 workdir 파라미터/명령 분리. Windows 진입은 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).
 
@@ -46,16 +46,16 @@
 {{PROJECT_CONSTRAINTS}}
 <!-- TODO: 아키텍처 불변식·안전 경계. 위임 프롬프트(§3)에도 인용. 없으면 이 절 삭제. -->
 
-## 3. 위임 규약 (네이티브 `task` tool — 1차)
+## 3. 위임 규약 (네이티브 `subagent` 도구)
 
 `claim → 설계·구현 위임 → 리뷰 위임 → finish`. PM은 직접 구현하지 않는다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다.
 
-- **1차=`task` tool** — `subagent_type`(=`developer`|`architect`|`code-reviewer`)·`description`(한 줄)·`prompt`(role 프롬프트)를 전달한다. opencode가 `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx·200K)에서 실행한다. 권한·모델은 subagent `permission:`/`model:`이 정하므로 `--agent`/`-m` 분기 불필요.
+- **`subagent` 도구** — `agent`(=`developer`|`architect`|`code-reviewer`)·`description`(한 줄)·`prompt`(role 프롬프트)를 전달한다. opencode가 `.opencode/agents/*.md` subagent를 별도 자식 세션(새 컨텍스트)에서 백그라운드로 실행하고, 자식이 끝나면 그 마지막 응답이 `<subagent>` 메시지로 온다. 권한·모델은 subagent `permission:`/`model:`이 정하므로 `model` 인자는 주지 않는다.
 - role: developer=쓰기(코드+테스트), code-reviewer=독립 검토+라운드 파일 쓰기(제품 코드 수정 금지), architect=설계+라운드 파일 쓰기. 각 역할은 위임 프롬프트가 지정한 `NN-<역할>.md` 하나에만 쓴다.
 - **사전조건:** ticket claim(`--task <task>`), depends_on done, touches 명시, 검증 가능한 DoD. **병렬은 touches가 disjoint일 때만** 한다.
 - dev prompt: "T-NNNN 구현. 본문 단일진실(`board.py show T-NNNN`). board/status/log 는 PM — 너는 코드+테스트. 보고: 변경파일·테스트수·회귀결과·DoD evidence."
 - reviewer 후 PM 직접 fix(1줄·1패턴)/dev 재작업(여러 줄)/별도 ticket(범위 외). reviewer의 should-fix도 흐름 cross-check한다.
-- **대체 동작**(headless·CI·task tool 미노출): `opencode run --agent <developer|architect> --format json "<프롬프트>"`. 역할 카드는 `mode: all`이라 primary 실행에서도 같은 `model:`/`permission:`을 쓰며 build/plan으로 축약하지 않는다. `pm_delegate.py` cross 실행은 카드가 없는 타 하네스 adopter에서도 같은 역할을 런타임 config로 주입한다. 병렬 대체 동작은 세션 DB 락 가능성이 있어 순차가 안전하다.
+- **cross**(target 하네스가 opencode 이고 PM 하네스가 다름): 엔진(`pm_delegate.py`)이 `opencode run --agent <role>` 자식 프로세스로 실행한다. 역할 카드는 `mode: all`이라 primary 실행에서도 같은 `model:`/`permission:`을 쓰며 build/plan으로 축약하지 않는다. 카드가 없는 타 하네스 adopter에서도 같은 역할을 런타임 config로 주입한다.
 
 ## 4. ticket 발행 계약 (PM 자족 — board.py new)
 
@@ -100,13 +100,13 @@ bare commit은 남이 stage한 변경도 싣는다. 티켓 이동은 옛·새 �
 |---|---|
 | `.project_manager/tools/` | 공유 엔진 board.py·pm_*.py(0 수정) |
 | `.project_manager/wiki/` | status·pm_state/domain(`domain.py`)/pm_role·pm_playbook(lazy)/log/decisions/raw |
-| `.claude/skills/` · `.opencode/command/` · `.opencode/agents/` | canonical 모델 스킬 · 기계 생성 slash `/pm-…` 팔레트 · subagent(`task` 위임 1차) |
+| `.claude/skills/` · `.opencode/command/` · `.opencode/agents/` | canonical 모델 스킬 · 기계 생성 slash `/pm-…` 팔레트 · subagent(`subagent` 도구 위임) |
 | `AGENTS.md` | 이 파일(=claude_code의 CLAUDE.md lite) |
 
 ## 9. 막혔을 때 / lazy 참조 (happy-path 밖 → 그때 Read)
 
 - 의존 미완·키 없음 → `board.py block --reason`; 잘못 claim → `board.py unclaim`; 본문 부족 → 보강 후 계속.
-- 위임 실패(`task` 결과 또는 대체 동작 exit≠0)·결과 불완전 → 재위임 전 본문·컨텍스트 예산 점검.
+- 위임 실패(`<subagent>` 메시지 state 가 error·cancelled 또는 cross exit≠0. running 은 백그라운드 작업이 남은 것이라 다음 메시지를 기다린다)·결과 불완전 → 재위임 전 본문·컨텍스트 예산 점검.
 - domain 지식 레이어(`domain.py list/affected/capture/lint`, stale 가시화) → full [`AGENTS.md`](AGENTS.md) §10.
 - 묶음 충돌·incident·핸드오프 심층·멀티-PM·결정권한 경계·프레임워크 갱신 → [`pm_role.md`](.project_manager/wiki/pm_role.md)·[`pm_playbook.md`](.project_manager/wiki/pm_playbook.md) Read.
 - 모르는 구조 결정 → `.project_manager/wiki/decisions/`에 ADR.

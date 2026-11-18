@@ -89,10 +89,9 @@ def test_surface_has_no_engine_only_review_rule(surface):
 
 
 def test_reviewer_card_states_both_execution_paths():
-    """opencode `code-reviewer` 카드는 같은 하네스면 PM 의 `task`, 다르면 엔진의 `opencode run` 을 말한다."""
+    """opencode `code-reviewer` 카드는 같은 하네스면 PM 의 `subagent` 도구, 다르면 엔진의 `opencode run` 을 말한다."""
     text = _flat(OPENCODE_REVIEWER_CARD)
-    assert "PM 은 리뷰를 `task` 로 호출하지 않는다" not in text
-    assert "PM 이 `task` 로" in text
+    assert "PM 이 `subagent` 도구로" in text
     assert "opencode run --agent code-reviewer" in text
 
 

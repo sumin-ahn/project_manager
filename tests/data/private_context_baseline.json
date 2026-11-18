@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 336,
+  "count": 318,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -1147,22 +1147,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "98b9788fc9d59a6cd765a744091a766472074084a4d364e167d36db8cc269081",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "99fae46962277745e30328dd8db303ec3bcbc0fcfab1c5ca1b88fee61a609783",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "bee2b6446b42bc7749bc08f9659e2df1020d218e968cd21af07221868f2d9c13",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       }
     ],
@@ -1206,27 +1191,12 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "3c9489a57a42d1efc90039dfe3b9cd4a217e9bce1b13a924c8e165dd71499ab4",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "73731e4f54b17eba20ce41b9e84b572fb69e8a9689a255833a05010863ab7e58",
         "count": 1
       },
       {
         "kind": "session_stamp",
         "hash": "bee2b6446b42bc7749bc08f9659e2df1020d218e968cd21af07221868f2d9c13",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c1a03df07f3b92baae3df3723db6207d18fc54dfada7490d02a1d52fdf256454",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       }
     ],
@@ -1248,22 +1218,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "786679a4f8cc0fa8544f3c71211264fdb4a34941cd1e56d74e2f936a5efee4d3",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "98b9788fc9d59a6cd765a744091a766472074084a4d364e167d36db8cc269081",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "bee2b6446b42bc7749bc08f9659e2df1020d218e968cd21af07221868f2d9c13",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       }
     ],
@@ -1277,27 +1232,7 @@
     "templates/opencode/.opencode/pm-instructions.md": [
       {
         "kind": "session_stamp",
-        "hash": "0ffed779a1c38ffda989068844de3d468571ec4ebd06a6d6365f4ce0aa31a9da",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "171ed574ad364ad582909455b8b22f379adf1e1ef99b7b434aa3aa3afc81d751",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "4db5ba8f97028199f463d3c3e97218c6d1bbc0234507eec24dbde53274b89932",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "b1bb3f71ba257679754e54b1bd9d7cc1e27d5db96ef2a1b4a6768a26511041a1",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "c8e967003e2e44ac412dd3814469e0b0768ceab9d467908415cc96198a30da0a",
         "count": 1
       }
     ],
@@ -1637,38 +1572,11 @@
         "count": 1
       }
     ],
-    "templates/opencode/AGENTS.lite.md": [
-      {
-        "kind": "session_stamp",
-        "hash": "05d27f845ee22b51fe82c6fddcbf93ebabd06d0922d01a0a158612c54f5a2e79",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "9569d7c98bcdb66dbdbfa467b5e41b103a0fe8d22a8566fb2bce187849332e5f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f94574db2e9deaf3ce112cb3f67326744709457f547716a5a8f9ce13c8a9d292",
-        "count": 1
-      }
-    ],
     "templates/opencode/README.md": [
       {
         "kind": "decision_label",
         "hash": "f59d827406510a1ebdf7ea35d8a353d5f58bde96ecf3a25215c01635f93f77f9",
         "count": 3
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "81899d35ee091d9fcbab677502e5906ac3528dee28c8014bd162ad4203f4cd59",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "9d9a17a35e1435b21307859d4dbc1b0ab65675b140770f14bdc44d2225517a30",
-        "count": 1
       }
     ]
   }

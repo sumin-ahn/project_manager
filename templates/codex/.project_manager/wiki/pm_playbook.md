@@ -111,7 +111,7 @@ run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래) 하나에 티�
 라운드 파일만 쓰고 명세·이전 라운드는 읽기 전용으로 읽는다. board 상태 전이는 PM 몫이고, 커밋·재배치·
 머지는 묶음 종결(`ticket_finish.py --cluster`)이 실행한다.
 
-> **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 역할 분리·touches disjoint·single-source 프롬프트·PM 산출 승인 원칙은 동일하다.
+> **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `subagent` 도구**(백그라운드 자식 세션·결과는 `<subagent>` 메시지)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 역할 분리·touches disjoint·single-source 프롬프트·PM 산출 승인 원칙은 동일하다.
 
 transport 규칙은 한 문장이다. 설계·구현·리뷰·조사는 target 하네스 == PM 하네스면 native, 다르면 `pm_delegate.py` cross 다. 리뷰 절차(준비·돌려받기·트리 검사)는 `/pm-dev-delegate`
 리뷰 절에 있다.

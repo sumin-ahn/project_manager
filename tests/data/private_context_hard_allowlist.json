@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "count": 220,
+  "count": 219,
   "surface_counts": {
-    "markdown": 136,
+    "markdown": 135,
     "python-non-prose": 20,
     "python-prose": 64
   },
@@ -1269,14 +1269,6 @@
       "match": "ADR-0069",
       "surface": "markdown",
       "hash": "64e3bdcfbd83a0e4a33fe96b8f0d025cfb051f0119f8fd5445438e07d5ab14db",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.opencode/pm-instructions.md",
-      "kind": "work_item",
-      "match": "T-0293",
-      "surface": "markdown",
-      "hash": "d078e094573092d5c8066ada6356b799983ffa5b2ea6b1e8db88e6d2467ef578",
       "count": 1
     },
     {

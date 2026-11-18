@@ -250,7 +250,7 @@ ADD_HARNESS_ADAPTER = {
 
 # 둘 이상의 하네스가 같은 루트 진입 문서를 자동 로드할 때의 공존 정책.
 # 값 = (문서를 공유하는 하네스 집합, harness-neutral 원본을 소유한 하네스). opencode 단독 lite는
-# 자족형 AGENTS.lite.md를 계속 쓰지만, opencode+codex 공존에서는 그 opencode 실행 모델(task tool)이
+# 자족형 AGENTS.lite.md를 계속 쓰지만, opencode+codex 공존에서는 그 opencode 실행 모델(`subagent` 도구 위임)이
 # codex에도 자동 로드되지 않도록 두 트리의 AGENTS.md source를 공통 코어로 통일한다. full도 같은
 # 선언을 타므로 두 설치 무게의 정책이 갈리지 않는다. 하네스별 실행/위임 지침은 각 namespace
 # (.opencode/pm-instructions.md, .agents/skills·.codex/agents)에 그대로 분리되어 있다.

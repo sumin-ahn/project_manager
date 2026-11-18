@@ -41,13 +41,13 @@ def _delegation_section(text: str) -> str:
 
 @pytest.mark.parametrize("path", PLAYBOOKS, ids=lambda p: str(p.relative_to(REPO)))
 def test_delegation_section_has_opencode_harness_pointer(path):
-    """위임 절에 opencode harness 포인터(task tool·AGENTS.md §3)가 있다."""
+    """위임 절에 opencode harness 포인터(`subagent` 도구·AGENTS.md §3)가 있다."""
     assert path.is_file(), f"누락: {path}"
     section = _delegation_section(path.read_text(encoding="utf-8"))
     assert "opencode" in section, (
         f"{path.relative_to(REPO)} 위임 절에 opencode 포인터 없음 — 공유 방법론이 "
         f"claude 전용 어휘로만 쓰임 (harness 누출)")
-    assert "task" in section, (
-        f"{path.relative_to(REPO)} 위임 절이 opencode 위임 도구(task tool)를 안내하지 않음")
+    assert "`subagent`" in section, (
+        f"{path.relative_to(REPO)} 위임 절이 opencode 위임 도구(`subagent`)를 안내하지 않음")
     assert "AGENTS.md" in section, (
         f"{path.relative_to(REPO)} 위임 절이 opencode 위임 단일진실(AGENTS.md §3)을 가리키지 않음")

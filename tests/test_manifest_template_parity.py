@@ -81,10 +81,6 @@ OPENCODE_ONLY_PATHS = {
     #   (실행 모델·위임 규약). @render @source 전파 등록이라 claude_code 엔 없는 opencode-only 경로.
     ".opencode/pm-instructions.md",
     ".opencode/lib", ".opencode/plugins", ".opencode/pm_orch_opencode.py",
-    # .gitignore (T-0492): `.opencode/` 로컬 산출물(node_modules·package.json·lock) 무시 규칙.
-    #   opencode 가 생성하는 원본은 자기 자신까지 무시해 영영 미추적으로 남는다 → 프레임워크가
-    #   자기-은닉 줄을 뺀 판을 소유·@source 전파한다. claude 엔 없는 opencode-only 경로.
-    ".opencode/.gitignore",
 }
 CLAUDE_ONLY_PATHS = {
     ".claude/agents",
@@ -823,8 +819,8 @@ RETIRED_STALL_WATCHDOG_OLD = (".opencode/plugins/stall-watchdog.js", ".opencode/
 def test_stall_watchdog_plugin_removal_retires_its_files_in_all_manifests():
     """지운 OpenCode stall-watchdog 플러그인의 두 파일은 4 manifest 모두 퇴역 지시로만 남는다.
 
-    출하 트리와 제품 루트에는 두 파일이 없고, OpenCode 출하 템플릿(엔진 사본 제외)과 제품 루트
-    `.opencode` 의 어떤 파일도 그 이름을 말하지 않는다.
+    출하 트리와 제품 루트에는 두 파일이 없고, OpenCode 출하 템플릿(엔진 사본 제외)의 어떤 파일도
+    그 이름을 말하지 않는다.
     """
     for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
         declared = retired_paths.parse_retired_path_directives(manifest)
@@ -835,25 +831,50 @@ def test_stall_watchdog_plugin_removal_retires_its_files_in_all_manifests():
     for root in (REPO, *TEMPLATE_ROOTS.values()):
         for old in RETIRED_STALL_WATCHDOG_OLD:
             assert not (root / old).exists(), (root, old)
-    shipped = [path for base in ("templates/opencode", ".opencode")
-               for path in repo_owned_paths(REPO, base, mode=OWNED)
+    shipped = [path for path in repo_owned_paths(REPO, "templates/opencode", mode=OWNED)
                if ".project_manager" not in path.relative_to(REPO).parts]
     named = [path.relative_to(REPO).as_posix() for path in shipped
              if b"stall-watchdog" in path.read_bytes()]
     assert shipped and named == [], named
 
 
-RETIRED_SAFE_WRITE_ENTRY = ".opencode/plugins/safe-write.js"
+RETIRED_SAFE_WRITE_OLD = (".opencode/plugins/safe-write.js", ".opencode/lib/safe-write-core.cjs")
 
 
-def test_safe_write_entry_retirement_is_declared_in_all_manifests():
-    """opencode 2.x 가 적재하지 못하는 safe-write 진입 파일은 4 manifest 모두 퇴역 지시로만 남는다.
+def test_safe_write_removal_retires_its_files_in_all_manifests():
+    """지운 OpenCode 쓰기 가드(safe-write)의 진입·본체 두 파일은 4 manifest 모두 퇴역 지시로만 남는다.
 
-    출하 트리와 제품 루트에는 그 파일이 없다. core 모듈은 처분 결정까지 남는다(이 시험의 대상이 아니다)."""
+    출하 트리와 제품 루트에는 두 파일이 없고, OpenCode 출하 템플릿(엔진 사본 제외)의 어떤 파일도
+    쓰기 가드 이름(safe-write·safe_write)을 말하지 않는다.
+    """
     for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
         declared = retired_paths.parse_retired_path_directives(manifest)
-        assert (RETIRED_SAFE_WRITE_ENTRY, RETIRED_STALL_WATCHDOG_NEW) in declared, manifest
-        assert RETIRED_SAFE_WRITE_ENTRY not in _manifest_path_set(manifest), manifest
+        for old in RETIRED_SAFE_WRITE_OLD:
+            assert (old, RETIRED_STALL_WATCHDOG_NEW) in declared, (manifest, old)
+            assert old not in _manifest_path_set(manifest), manifest
         retired_paths.validated_retired_path_directives(REPO, [manifest])
     for root in (REPO, *TEMPLATE_ROOTS.values()):
-        assert not (root / RETIRED_SAFE_WRITE_ENTRY).exists(), root
+        for old in RETIRED_SAFE_WRITE_OLD:
+            assert not (root / old).exists(), (root, old)
+    shipped = [path for path in repo_owned_paths(REPO, "templates/opencode", mode=OWNED)
+               if ".project_manager" not in path.relative_to(REPO).parts]
+    named = [path.relative_to(REPO).as_posix() for path in shipped
+             if re.search(rb"safe[-_]write", path.read_bytes())]
+    assert shipped and named == [], named
+
+
+RETIRED_OPENCODE_GITIGNORE = ".opencode/.gitignore"
+
+
+def test_opencode_gitignore_retirement_is_declared_in_all_manifests():
+    """opencode 1.x 산출물 무시 규칙(`.opencode/.gitignore`)은 4 manifest 모두 퇴역 지시로만 남는다.
+
+    opencode 2.x 는 `.opencode/` 에 npm 산출물을 만들지 않는다. 출하 트리와 제품 루트에 그 파일이 없다.
+    """
+    for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
+        declared = retired_paths.parse_retired_path_directives(manifest)
+        assert (RETIRED_OPENCODE_GITIGNORE, RETIRED_STALL_WATCHDOG_NEW) in declared, manifest
+        assert RETIRED_OPENCODE_GITIGNORE not in _manifest_path_set(manifest), manifest
+        retired_paths.validated_retired_path_directives(REPO, [manifest])
+    for root in (REPO, *TEMPLATE_ROOTS.values()):
+        assert not (root / RETIRED_OPENCODE_GITIGNORE).exists(), root
